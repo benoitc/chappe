@@ -1,7 +1,7 @@
 // Copyright 2026 Benoit Chesneau
 // SPDX-License-Identifier: Apache-2.0
 
-// Drive a real JsSIP UA through a REGISTER against enki_sipserver over
+// Drive a real JsSIP UA through a REGISTER against chappe_sip over
 // WebSocket (RFC 7118). Proves the WS transport, subprotocol negotiation, and
 // registrar accept a real browser stack's output.
 //
@@ -56,11 +56,11 @@ const ua = new JsSIP.UA({
   uri: SIP_URI,
   register: true,
   register_expires: EXPIRES,
-  // enki's registrar does not challenge; a placeholder keeps JsSIP happy if it
+  // chappe's registrar does not challenge; a placeholder keeps JsSIP happy if it
   // ever does, without failing an unchallenged flow.
   authorization_user: 'interop',
   password: 'interop',
-  user_agent: 'enki-interop-jssip',
+  user_agent: 'chappe-interop-jssip',
 });
 
 ua.on('registered', (e) => {

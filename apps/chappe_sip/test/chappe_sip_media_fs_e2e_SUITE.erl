@@ -5,7 +5,7 @@
 %%
 %% Opt-in: runs only when INTEROP=1 is set, so it stays out of the fast
 %% `rebar3 ct' run. It brings up FreeSWITCH in docker (Event Socket reachable,
-%% a minimal "enki_wait" dialplan) and drives the real ESL control path through
+%% a minimal "chappe_wait" dialplan) and drives the real ESL control path through
 %% chappe_sip_media: connect + status roundtrip, then create a live channel and join
 %% it to a conference with chappe_sip_media:conference/3, asserting membership on the
 %% node.
@@ -109,10 +109,10 @@ status_roundtrip(Config) ->
 conference_join(Config) ->
     Conn = ?config(conn, Config),
     Uuid = new_uuid(),
-    Room = <<"enki-e2e-room">>,
+    Room = <<"chappe-e2e-room">>,
     %% create a live, parked channel with a known uuid via a loopback originate
     Cmd = "originate {origination_uuid=" ++ binary_to_list(Uuid) ++
-          "}loopback/enki_wait/default &park()",
+          "}loopback/chappe_wait/default &park()",
     {ok, _Job} = chappe_esl:bgapi(Conn, Cmd),
     ?assert(poll_uuid_up(Conn, Uuid, 50)),
     %% join it to a conference through the facade, assert it shows up

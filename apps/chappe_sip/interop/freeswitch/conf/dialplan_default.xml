@@ -1,10 +1,10 @@
 <include>
-  <!-- Minimal default context for the chappe_sip_media e2e. The "enki_wait"
+  <!-- Minimal default context for the chappe_sip_media e2e. The "chappe_wait"
        extension answers and parks, so a loopback originate yields a live,
        controllable channel the test can drive over ESL. -->
   <context name="default">
-    <extension name="enki_wait">
-      <condition field="destination_number" expression="^enki_wait$">
+    <extension name="chappe_wait">
+      <condition field="destination_number" expression="^chappe_wait$">
         <action application="answer"/>
         <action application="park"/>
       </condition>

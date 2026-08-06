@@ -220,7 +220,7 @@ uas(UasPort, ScenarioFun) ->
 
 pick() -> 40000 + rand:uniform(20000).
 contact_bind(P) -> <<"sip:127.0.0.1:", (integer_to_binary(P))/binary>>.
-contact(P) -> <<"sip:enki@127.0.0.1:", (integer_to_binary(P))/binary>>.
+contact(P) -> <<"sip:chappe@127.0.0.1:", (integer_to_binary(P))/binary>>.
 tag() -> binary:encode_hex(crypto:strong_rand_bytes(5), lowercase).
 sdp() ->
     <<"v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\n"

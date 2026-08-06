@@ -1,9 +1,9 @@
 {
-  "name": "enki-sipserver-interop",
+  "name": "chappe-sip-interop",
   "version": "0.1.0",
   "private": true,
   "license": "Apache-2.0",
-  "description": "Interop drivers that exercise enki_sipserver against real SIP stacks (JsSIP over WebSocket).",
+  "description": "Interop drivers that exercise chappe_sip against real SIP stacks (JsSIP over WebSocket).",
   "scripts": {
     "register": "node jssip_register.js",
     "call": "node jssip_call.js"

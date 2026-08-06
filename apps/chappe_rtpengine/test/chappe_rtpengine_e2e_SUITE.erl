@@ -164,7 +164,7 @@ media_relay_through_session(_Config) ->
 
     Host = os:getenv("RTPENGINE_HOST"),
     {ok, RtpeIP} = inet:parse_address(Host),
-    Payload = <<"enki-rtpengine-e2e-payload">>,
+    Payload = <<"chappe-rtpengine-e2e-payload">>,
     %% caller -> rtpengine (caller-side port) -> callee socket
     ok = relay(SockA, RtpeIP, ToCallerPort, SockB, rtp(1, Payload)),
     %% callee -> rtpengine (callee-side port) -> caller socket
@@ -213,7 +213,7 @@ interpreter_primitives(_Config) ->
         ice => remove
     }),
     ToCallerPort = sdp_audio_port(chappe_rtpengine_ng:sdp(AnswerReply)),
-    Payload = <<"enki-interpreter-e2e">>,
+    Payload = <<"chappe-interpreter-e2e">>,
     ok = relay(SockA, RtpeIP, ToCallerPort, SockB, rtp(1, Payload)),
 
     %% 1) fork the caller's media to the receiver as plain PCMU
@@ -365,7 +365,7 @@ ws_media_relay_through_session(_Config) ->
     ToCallerPort = sdp_audio_port(chappe_rtpengine_ng:sdp(AnswerReply)),
 
     {ok, RtpeIP} = inet:parse_address(Host),
-    Payload = <<"enki-rtpengine-ws-e2e">>,
+    Payload = <<"chappe-rtpengine-ws-e2e">>,
     ok = relay(SockA, RtpeIP, ToCallerPort, SockB, rtp(1, Payload)),
     ok = relay(SockB, RtpeIP, ToCalleePort, SockA, rtp(2, Payload)),
 
@@ -531,7 +531,7 @@ assert_blocked(FromSock, RtpeIP, RtpePort, ToSock) ->
 tags(Kind) ->
     Suffix = integer_to_binary(erlang:unique_integer([positive])),
     {
-        <<"enki-e2e-", Kind/binary, "-", Suffix/binary>>,
+        <<"chappe-e2e-", Kind/binary, "-", Suffix/binary>>,
         <<"from-", Suffix/binary>>,
         <<"to-", Suffix/binary>>
     }.

@@ -18,7 +18,7 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 suites=${1:-test/chappe_sip_engine_smoke_SUITE,test/chappe_sip_dialog_ops_SUITE,test/chappe_sip_engine_lifecycle_SUITE}
-img=enki-asan
+img=chappe-asan
 
 echo "==> building $img image"
 docker build -q -t "$img" "$here" >/dev/null
@@ -26,7 +26,7 @@ docker build -q -t "$img" "$here" >/dev/null
 echo "==> running $suites under AddressSanitizer"
 docker run --rm \
   -v "$root":/host:ro \
-  -v enki_asan_work:/work \
+  -v chappe_asan_work:/work \
   -e "SUITES=$suites" \
   "$img" bash -euc '
     # exclude host build outputs (macOS _build, sofia build, and the Mach-O

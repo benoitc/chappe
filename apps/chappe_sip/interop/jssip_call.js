@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Drive two real JsSIP UAs (caller + callee) through a media call bridged by
-// enki_sipserver as a B2BUA over WebSocket. Both UAs use @roamhq/wrtc for a
-// real RTCPeerConnection, so the SDP offer/answer are genuine WebRTC. enki
+// chappe_sip as a B2BUA over WebSocket. Both UAs use @roamhq/wrtc for a
+// real RTCPeerConnection, so the SDP offer/answer are genuine WebRTC. chappe
 // passes the SDP through (media is peer-to-peer, loopback), so the caller's
-// RTCPeerConnection reaching `connected` proves enki carried the browser's
+// RTCPeerConnection reaching `connected` proves chappe carried the browser's
 // WebRTC signaling intact end to end.
 //
 // Config via env:
@@ -75,7 +75,7 @@ function mkUA(uri) {
     uri,
     register: true,
     register_expires: 120,
-    user_agent: 'enki-interop-jssip',
+    user_agent: 'chappe-interop-jssip',
   });
 }
 
@@ -105,10 +105,10 @@ function placeCall() {
   const session = callerUA.call(CALLEE_URI, media);
   session.on('failed', (e) => done(4, `RESULT failed caller-${(e && e.cause) || '?'}`));
   // `confirmed` fires after the caller sends ACK for the 200 OK, i.e. INVITE ->
-  // 200 (with the callee's SDP answer) -> ACK all traversed enki and JsSIP
+  // 200 (with the callee's SDP answer) -> ACK all traversed chappe and JsSIP
   // accepted the dialog. It only fires if setRemoteDescription(answer)
-  // succeeded, which proves enki passed the WebRTC SDP through intact. Media
-  // (ICE/DTLS) is peer-to-peer and outside enki's signaling role.
+  // succeeded, which proves chappe passed the WebRTC SDP through intact. Media
+  // (ICE/DTLS) is peer-to-peer and outside chappe's signaling role.
   session.on('confirmed', () => done(0, 'RESULT established'));
 }
 

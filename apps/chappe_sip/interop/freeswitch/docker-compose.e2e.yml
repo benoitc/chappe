@@ -36,13 +36,13 @@ services:
       - erl
       - -noshell
       - -pa
-      - /build/test/lib/enki_sipserver/ebin
+      - /build/test/lib/chappe_sip/ebin
       - -pa
-      - /build/test/lib/enki_sipserver/test
+      - /build/test/lib/chappe_sip/test
       - -eval
       - >-
         ok = code:add_pathsz(filelib:wildcard("/build/default/lib/*/ebin")),
-        R = ct:run_test([{dir, "/build/test/lib/enki_sipserver/test"},
+        R = ct:run_test([{dir, "/build/test/lib/chappe_sip/test"},
                          {suite, chappe_sip_media_fs_e2e_SUITE},
                          {logdir, "/tmp"}, {auto_compile, false}]),
         io:format("CT_RESULT=~p~n", [R]),

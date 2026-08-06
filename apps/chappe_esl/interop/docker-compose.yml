@@ -14,7 +14,7 @@
 services:
   freeswitch:
     image: safarov/freeswitch:latest
-    container_name: enki_esl_fs
+    container_name: chappe_esl_fs
     ports:
       - "8021:8021"
     environment:

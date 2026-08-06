@@ -58,7 +58,7 @@ ping(_Config) ->
 
 offer_answer_query_delete(_Config) ->
     Suffix = integer_to_binary(erlang:unique_integer([positive])),
-    CallId = <<"enki-rtpengine-live-", Suffix/binary>>,
+    CallId = <<"chappe-rtpengine-live-", Suffix/binary>>,
     FromTag = <<"from-", Suffix/binary>>,
     ToTag = <<"to-", Suffix/binary>>,
 
@@ -108,7 +108,7 @@ tcp_transport(_Config) ->
             {ok, #{<<"result">> := <<"pong">>}} =
                 chappe_rtpengine:ping(chappe_rtpengine_live_tcp),
             Suffix = integer_to_binary(erlang:unique_integer([positive])),
-            CallId = <<"enki-rtpengine-tcp-", Suffix/binary>>,
+            CallId = <<"chappe-rtpengine-tcp-", Suffix/binary>>,
             FromTag = <<"from-", Suffix/binary>>,
             {ok, OfferReply} = chappe_rtpengine:offer(chappe_rtpengine_live_tcp, #{
                 call_id => CallId,
@@ -140,7 +140,7 @@ ws_transport(_Config) ->
             {ok, #{<<"result">> := <<"pong">>}} =
                 chappe_rtpengine:ping(chappe_rtpengine_live_ws),
             Suffix = integer_to_binary(erlang:unique_integer([positive])),
-            CallId = <<"enki-rtpengine-ws-", Suffix/binary>>,
+            CallId = <<"chappe-rtpengine-ws-", Suffix/binary>>,
             FromTag = <<"from-", Suffix/binary>>,
             {ok, OfferReply} = chappe_rtpengine:offer(chappe_rtpengine_live_ws, #{
                 call_id => CallId,
@@ -177,7 +177,7 @@ wss_transport(_Config) ->
             {ok, #{<<"result">> := <<"pong">>}} =
                 chappe_rtpengine:ping(chappe_rtpengine_live_wss),
             Suffix = integer_to_binary(erlang:unique_integer([positive])),
-            CallId = <<"enki-rtpengine-wss-", Suffix/binary>>,
+            CallId = <<"chappe-rtpengine-wss-", Suffix/binary>>,
             FromTag = <<"from-", Suffix/binary>>,
             {ok, OfferReply} = chappe_rtpengine:offer(chappe_rtpengine_live_wss, #{
                 call_id => CallId,
@@ -195,7 +195,7 @@ wss_transport(_Config) ->
 
 media_subscription(_Config) ->
     Suffix = integer_to_binary(erlang:unique_integer([positive])),
-    CallId = <<"enki-rtpengine-sub-", Suffix/binary>>,
+    CallId = <<"chappe-rtpengine-sub-", Suffix/binary>>,
     FromTag = <<"from-", Suffix/binary>>,
     ToTag = <<"to-", Suffix/binary>>,
 

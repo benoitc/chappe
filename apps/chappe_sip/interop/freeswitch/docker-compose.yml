@@ -3,13 +3,13 @@
 # Brings up a vanilla FreeSWITCH with its Event Socket reachable from the host:
 # the mounted event_socket.conf.xml binds 0.0.0.0 and drops the loopback ACL so
 # the test can connect over the published port. The mounted dialplan replaces
-# the default context with a single "enki_wait" extension (answer + park) so the
+# the default context with a single "chappe_wait" extension (answer + park) so the
 # suite can create a deterministic, controllable channel with a loopback
 # originate. Test-only, insecure: do not use this config in production.
 services:
   freeswitch:
     image: ${FREESWITCH_IMAGE:-safarov/freeswitch:latest}
-    container_name: enki-fs-e2e
+    container_name: chappe-fs-e2e
     ports:
       - "127.0.0.1:8021:8021"
     volumes:

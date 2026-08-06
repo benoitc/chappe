@@ -57,7 +57,7 @@ init_per_testcase(kamailio_options, Config) ->
           end,
     case docker_image_ready(Img) of
         ok ->
-            CN = "enki-kam-" ++
+            CN = "chappe-kam-" ++
                  integer_to_list(erlang:unique_integer([positive])),
             [{kam_image, Img}, {kam_container, CN} | Config];
         {skip, R} ->
@@ -110,8 +110,8 @@ jssip_register(Config) ->
     ok.
 
 %% Two real JsSIP UAs (caller + callee) place a WebRTC media call bridged by
-%% enki as a B2BUA over WebSocket. The caller's session reaching `confirmed`
-%% proves INVITE/200/ACK traversed enki and the WebRTC SDP passed through
+%% chappe as a B2BUA over WebSocket. The caller's session reaching `confirmed`
+%% proves INVITE/200/ACK traversed chappe and the WebRTC SDP passed through
 %% intact (setRemoteDescription of the answer succeeded).
 jssip_call(Config) ->
     WP = pick(),
@@ -139,9 +139,9 @@ jssip_call(Config) ->
     match = re:run(Out, "RESULT established", [{capture, none}]),
     ok.
 
-%% Kamailio pings enki with OPTIONS (dispatcher); enki answers 200 and
+%% Kamailio pings chappe with OPTIONS (dispatcher); chappe answers 200 and
 %% Kamailio marks the destination Active. Proves both wire directions:
-%% Kamailio emits OPTIONS enki parses, enki emits 200 Kamailio accepts.
+%% Kamailio emits OPTIONS chappe parses, chappe emits 200 Kamailio accepts.
 kamailio_options(Config) ->
     EP = pick(),
     Test = self(),
@@ -164,10 +164,10 @@ kamailio_options(Config) ->
           "-v ~s:/etc/kamailio/kamailio.cfg:ro "
           "-v ~s:/etc/kamailio/dispatcher.list:ro ~s >/dev/null 2>&1",
           [CN, shell_quote(Cfg), shell_quote(DList), Img]))),
-    %% enki must receive an OPTIONS ping from Kamailio.
+    %% chappe must receive an OPTIONS ping from Kamailio.
     receive options_ping -> ok
     after 30000 -> ct:fail(no_options_from_kamailio) end,
-    %% Kamailio must mark enki Active (it accepted enki's 200).
+    %% Kamailio must mark chappe Active (it accepted chappe's 200).
     true = poll_active(CN, 20),
     ok.
 
