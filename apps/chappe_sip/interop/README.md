@@ -3,7 +3,7 @@
 Drivers that exercise chappe_sip against real stacks: a real JsSIP UA over
 WebSocket (register and a WebRTC media call), a Kamailio container over UDP, and
 a FreeSWITCH container for the media control plane (chappe_sip_media over ESL). Use
-this to confirm enki interoperates on the wire with software it does not control.
+this to confirm chappe_sip interoperates on the wire with software it does not control.
 The tests are opt-in (`INTEROP=1`) so they stay out of the fast `rebar3 ct` run.
 
 ## When to use
@@ -33,7 +33,7 @@ cd ..
 INTEROP=1 rebar3 ct --suite test/chappe_sip_interop_SUITE
 ```
 
-A single driver by hand (enki must be listening; see the suite for how it
+A single driver by hand (chappe_sip must be listening; see the suite for how it
 starts one):
 
 ```
@@ -48,11 +48,11 @@ WS_URL=ws://127.0.0.1:9001/ws node jssip_call.js
   transport, `sip` subprotocol negotiation, and registrar accept a browser
   stack's output, and Via `received`/`rport` are stamped.
 - `jssip_call.js`: two JsSIP UAs (caller + callee) place a WebRTC call bridged
-  by enki as a b2bua over WS. The caller reaching `confirmed` proves
-  INVITE/200/ACK traversed enki and the WebRTC SDP passed through intact.
-- `kamailio/`: Kamailio's dispatcher pings enki with OPTIONS; enki answers 200
+  by chappe_sip as a b2bua over WS. The caller reaching `confirmed` proves
+  INVITE/200/ACK traversed chappe_sip and the WebRTC SDP passed through intact.
+- `kamailio/`: Kamailio's dispatcher pings chappe_sip with OPTIONS; chappe_sip answers 200
   and Kamailio marks it Active. Proves both directions: Kamailio emits OPTIONS
-  enki parses, enki emits a 200 Kamailio accepts. The container reaches enki
+  chappe_sip parses, chappe_sip emits a 200 Kamailio accepts. The container reaches chappe_sip
   via `host.docker.internal`.
 - `freeswitch/` (suite `chappe_sip_media_fs_e2e_SUITE`): brings up FreeSWITCH with its
   Event Socket reachable, then drives the real ESL control path through

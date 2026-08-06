@@ -3,7 +3,7 @@
 You place calls and send out-of-dialog requests with the UAC API. `create_uac`
 originates an INVITE and returns an established dialog; `request` sends a
 one-shot method (OPTIONS, MESSAGE) and returns a handle you await. Read this to
-call out from enki.
+call out from chappe_sip.
 
 ## When to use it
 
@@ -56,7 +56,7 @@ Originate the B leg without ACKing, so you can bridge its SDP into another leg:
 
 ## Notes
 
-- Digest auth: pass `auth => #{user => U, pass => P}` and enki retries on
+- Digest auth: pass `auth => #{user => U, pass => P}` and chappe_sip retries on
   401/407. See [Authentication](authentication.md).
 - `timeout` bounds the whole attempt (default 32000 ms).
 - To bridge an inbound call to an originated one, use the

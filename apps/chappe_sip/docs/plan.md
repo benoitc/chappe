@@ -172,7 +172,7 @@ One commit closes each milestone.
 - [x] M15 part E (interop track): opt-in (`INTEROP=1`) chappe_sip_interop_SUITE and
       an `interop/` harness. A real JsSIP UA registers over WS; two JsSIP UAs
       place a WebRTC media call bridged by the b2bua over WS; a Kamailio
-      container OPTIONS-pings enki both directions (via host.docker.internal,
+      container OPTIONS-pings chappe_sip both directions (via host.docker.internal,
       dispatcher). Real JsSIP caught two RFC gaps the lenient UDP peers never
       did, now fixed: a dialog-forming 2xx MUST carry a Contact (RFC 3261
       12.1.1; chappe_sip_engine:send_uas_response adds one, bare URI from the bound

@@ -1,14 +1,14 @@
 # Leaf library contract
 
-This is the shared contract for the enki stack's leaf protocol clients
-(chappe_esl for FreeSWITCH Event Socket, enki_rtpengine for the rtpengine NG
+This is the shared contract for the chappe stack's leaf protocol clients
+(chappe_esl for FreeSWITCH Event Socket, chappe_rtpengine for the rtpengine NG
 protocol). Read it before starting or reviewing a leaf library so both are built
 the same way. A leaf library speaks one wire protocol and depends on nothing
 else in the stack.
 
 ## Scope
 
-- Speak exactly one wire protocol. No dependency on enki_sipserver, enki_media,
+- Speak exactly one wire protocol. No dependency on chappe_sip,
   SIP, or any media concept.
 - No runtime dependencies beyond kernel and stdlib unless the protocol truly
   needs one. Prefer OTP built-ins (for example the `json` module).
@@ -16,8 +16,8 @@ else in the stack.
 
 ## Layout
 
-- Public facade module named `enki_<thing>`; every internal module prefixed with
-  a short tag (`chappe_esl_`, `rtpe_`).
+- Public facade module named `chappe_<thing>`; every internal module prefixed with
+  a short tag (`chappe_esl_`, `chappe_rtpengine_`).
 - `src/` for code, `test/` for tests (flat), `docs/` for authored markdown,
   `doc/` for generated ex_doc HTML (git-ignored), `interop/` for a live test
   harness.

@@ -26,12 +26,12 @@ The node refuses to boot with the placeholder cookie. Put a real secret in an
 env file, not in the unit:
 
 ```sh
-sudo install -d /etc/enki
-sudo cp deploy/chappe_sip.env.example /etc/enki/chappe_sip.env
+sudo install -d /etc/chappe
+sudo cp deploy/chappe_sip.env.example /etc/chappe/chappe_sip.env
 sudo sed -i "s/CHANGE_ME_SET_NODE_COOKIE/$(openssl rand -hex 32)/" \
-  /etc/enki/chappe_sip.env
-sudo chown enki:enki /etc/enki/chappe_sip.env
-sudo chmod 600 /etc/enki/chappe_sip.env
+  /etc/chappe/chappe_sip.env
+sudo chown chappe:chappe /etc/chappe/chappe_sip.env
+sudo chmod 600 /etc/chappe/chappe_sip.env
 ```
 
 Distribution is bound to loopback (`config/vm.args.src`). Expose it only behind

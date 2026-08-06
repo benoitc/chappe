@@ -1,6 +1,6 @@
 # SIP over WebSocket and the WebRTC gateway
 
-enki terminates SIP-over-WebSocket (RFC 7118) with an Erlang transport built on
+chappe_sip terminates SIP-over-WebSocket (RFC 7118) with an Erlang transport built on
 livery, so browsers (JsSIP) register and call through the same TU logic as UDP
 peers. Bridge a browser to a UDP/TCP peer as a proxy or a B2BUA. Read this to
 put a WebRTC front end on your SIP network.
@@ -68,7 +68,7 @@ end).
 - A browser is reachable only over its flow; its `.invalid` Contact is not
   routable. Always resolve the flow with `chappe_sip:location_flow/1`.
 - Via `received`/`rport` are stamped from the client peer.
-- Media (RTP/SRTP, ICE) is peer-to-peer or orchestrated by your app; enki carries
+- Media (RTP/SRTP, ICE) is peer-to-peer or orchestrated by your app; chappe_sip carries
   the WebRTC SDP unchanged.
 - Verified against real JsSIP (register and a WebRTC call). See
   [Interop testing](interop-testing.md).

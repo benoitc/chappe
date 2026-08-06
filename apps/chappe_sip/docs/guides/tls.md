@@ -1,6 +1,6 @@
 # TLS
 
-enki can bind a TLS (`sips`) listener on its own port, in addition to UDP/TCP.
+chappe_sip can bind a TLS (`sips`) listener on its own port, in addition to UDP/TCP.
 It is a second sofia transport with your certificate and cipher policy. Read
 this to accept `sips:` traffic.
 
@@ -25,7 +25,7 @@ ok = chappe_sip:start(#{
     contact => <<"sip:127.0.0.1:5060">>,
     tls => #{
         contact => <<"sips:0.0.0.0:5061;transport=tls">>,
-        cert_dir => <<"/etc/enki/certs">>,
+        cert_dir => <<"/etc/chappe/certs">>,
         verify   => none            %% or `peer' to require a client cert
     }
 }).
@@ -41,7 +41,7 @@ ok = chappe_sip:start(#{
   `{error, {tls, {bad_verify, _}}}` rather than silently disabling
   verification. `peer` requires each client to present a certificate that
   `cafile.pem` validates.
-- sofia rejects a null cipher list; enki sends a sane default. Override with
+- sofia rejects a null cipher list; chappe_sip sends a sane default. Override with
   `ciphers => <<"...">>` and set `passphrase` if the key is encrypted.
 - Comma-listed transports share one port, so TLS binds on its own port
   (typically 5061), separate from the UDP/TCP `contact`.

@@ -1,7 +1,7 @@
 # Reliable provisionals (PRACK)
 
 100rel (RFC 3262) makes a provisional response reliable: the UAS retransmits it
-until the UAC confirms with PRACK. enki lets a UAS send a reliable 1xx and block
+until the UAC confirms with PRACK. chappe_sip lets a UAS send a reliable 1xx and block
 for the PRACK, and a UAC advertise 100rel and auto-PRACK. Read this when a
 provisional carries state (early media SDP) that must not be lost.
 

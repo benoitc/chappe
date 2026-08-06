@@ -30,13 +30,17 @@ for the NIF and thread model.
   legs) to the Erlang processes that own them, and it dispatches inbound
   events.
 - **A call is a process.** Each inbound out-of-dialog request runs in its
-  own `chappe_sip_request_worker`. Each dialog is an `chappe_sip_dialog_fsm`; each
-  outbound transaction an `chappe_sip_uac_fsm`.
+  own `chappe_sip_request_worker`. Each dialog is a `chappe_sip_dialog_fsm`; each
+  outbound transaction a `chappe_sip_uac_fsm`.
 
 ## Supervision
 
 ```
 chappe_sip_sup (one_for_one)
+|-- chappe_sip_registry_keeper         location-store ETS owner
+|-- chappe_sip_registry                location store
+|-- chappe_sip_ws_sup                  WS transport
+|-- chappe_sip_media_sup               media control plane
 `-- chappe_sip_stack_sup (rest_for_one)   engine crash tears down call state
     |-- chappe_sip_engine                 NIF owner + dispatcher
     |-- chappe_sip_request_sup            per-request workers

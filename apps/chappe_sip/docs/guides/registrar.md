@@ -2,7 +2,7 @@
 
 The registrar is a location store: it records REGISTER bindings (AOR to contact,
 with expiry) and lets your routing logic resolve an address of record to its
-current contacts. enki ships a ready-made REGISTER handler backed by it. Read
+current contacts. chappe_sip ships a ready-made REGISTER handler backed by it. Read
 this to accept registrations and route to registered users.
 
 ## When to use it

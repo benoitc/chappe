@@ -146,7 +146,7 @@ tracker; the milestone history is in `docs/plan.md`.
 ### Interop
 - Opt-in interop track (`INTEROP=1`, out of the fast run) against real stacks:
   a real JsSIP UA registers over WS, two JsSIP UAs place a WebRTC media call
-  through the b2bua, and a Kamailio container OPTIONS-pings enki both
+  through the b2bua, and a Kamailio container OPTIONS-pings chappe_sip both
   directions. Drivers and setup live in `interop/`.
 
 ## Planned

@@ -1,15 +1,15 @@
 # Interop testing
 
-The interop track drives real SIP stacks at enki: a real JsSIP UA over
+The interop track drives real SIP stacks at chappe_sip: a real JsSIP UA over
 WebSocket (register and a WebRTC call) and a Kamailio container over UDP. It is
-opt-in so it stays out of the fast test run. Read this to verify enki
+opt-in so it stays out of the fast test run. Read this to verify chappe_sip
 interoperates on the wire before a release.
 
 ## When to use it
 
 - You changed the WebSocket transport, the registrar, or the b2bua/proxy
   response building.
-- You want to confirm real-client compatibility, not just enki-vs-enki tests.
+- You want to confirm real-client compatibility, not just chappe_sip-vs-chappe_sip tests.
 
 ## Prerequisites
 
@@ -35,14 +35,14 @@ unaffected.
   store.
 - `jssip_call`: two JsSIP UAs place a WebRTC call bridged by the b2bua over WS;
   the SDP passes through intact.
-- `kamailio_options`: Kamailio's dispatcher OPTIONS-pings enki and marks it
+- `kamailio_options`: Kamailio's dispatcher OPTIONS-pings chappe_sip and marks it
   active; proves both wire directions.
 
 ## Notes
 
 - The drivers live in `interop/` (node) and `interop/kamailio/` (config); each
   prints a `RESULT ...` line.
-- The Kamailio container reaches enki via `host.docker.internal`; no
+- The Kamailio container reaches chappe_sip via `host.docker.internal`; no
   `--network host` needed.
 - `test/asan/run.sh` runs the C NIF under AddressSanitizer in a Linux container
   (macOS cannot install interceptors for a dlopen'd NIF).

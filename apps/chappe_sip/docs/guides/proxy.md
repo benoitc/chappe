@@ -1,7 +1,7 @@
 # Proxy
 
 A proxy forwards a request to one or more destinations without terminating the
-dialog. enki forks sequentially or in parallel, relays provisionals, forwards
+dialog. chappe_sip forks sequentially or in parallel, relays provisionals, forwards
 the first 2xx and cancels the losers, and can record-route so in-dialog requests
 (ACK, BYE, re-INVITE) traverse it. Read this to route calls transparently.
 
@@ -45,7 +45,7 @@ chappe_sip:proxy_request(Req, {ws, Flow}, #{record_route => true}).
 
 ## Record-route and in-dialog
 
-With `record_route => true`, enki inserts one Record-Route carrying a flow
+With `record_route => true`, chappe_sip inserts one Record-Route carrying a flow
 token, so the browser's ACK/BYE/re-INVITE come back through the proxy and are
 forwarded to the far end in both directions. A forked second 2xx (a different
 To-tag arriving later) is forwarded upstream statelessly.

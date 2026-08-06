@@ -1,6 +1,6 @@
 # Authentication
 
-enki does SIP digest authentication (RFC 2617/7118, MD5 with `qop=auth`) in
+chappe_sip does SIP digest authentication (RFC 2617/7118, MD5 with `qop=auth`) in
 Erlang, both as the client (a UAC retries automatically on a challenge) and as
 the server (you challenge a request and verify the response). Read this to
 authenticate outbound requests, protect REGISTER, or challenge any inbound
@@ -15,7 +15,7 @@ request.
 
 ## Authenticate outbound requests (UAC)
 
-Pass `auth`; enki parses the challenge and resends with credentials.
+Pass `auth`; chappe_sip parses the challenge and resends with credentials.
 
 ```erlang
 {ok, Dialog} = chappe_sip:create_uac(<<"sip:bob@example.com">>,
@@ -23,7 +23,7 @@ Pass `auth`; enki parses the challenge and resends with credentials.
                                            pass => <<"secret">>}}).
 ```
 
-The same option works for `chappe_sip:request/2` (OPTIONS, MESSAGE, ...). enki retries
+The same option works for `chappe_sip:request/2` (OPTIONS, MESSAGE, ...). chappe_sip retries
 once, using `Authorization` for a 401 and `Proxy-Authorization` for a 407.
 
 ## Protect REGISTER (registrar)

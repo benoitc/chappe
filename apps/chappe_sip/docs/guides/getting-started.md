@@ -9,7 +9,7 @@ the stack up and answer your first call.
 
 - You want a UAS, UAC, B2BUA, proxy, or registrar driven by Erlang, with no
   separate signaling daemon.
-- You are comfortable orchestrating media (RTP) yourself; enki moves signaling
+- You are comfortable orchestrating media (RTP) yourself; chappe_sip moves signaling
   only (see the non-goals in [Features](../features.md)).
 
 ## Build
@@ -29,7 +29,7 @@ SKIP_ENGINE_BUILD=1 rebar3 compile
 
 ## Start the stack
 
-`contact` is the SIP URI enki binds and advertises. Use the address you want to
+`contact` is the SIP URI chappe_sip binds and advertises. Use the address you want to
 listen on.
 
 ```erlang

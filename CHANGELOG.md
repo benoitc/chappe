@@ -21,4 +21,5 @@ Notable in this move:
 - Apps live in one umbrella and reference each other by name (no cross-repo git
   deps); each is published to hex independently.
 - Internal module prefixes (`chappe_sip_*`, `chappe_rtpengine_*`, `chappe_esl_*`) and the public `chappe_sip`
-  facade are unchanged.
+  facade now carry the `chappe_` brand, matching their app names (they were
+  `esip`/`esip_*`, `rtpe_*`, and `esl_*`).

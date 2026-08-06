@@ -1,6 +1,6 @@
 # Design overview
 
-This document describes the architecture of chappe_rtpengine and the design of the pieces still on the roadmap. It is the reference you need when extending the library: it explains why the client is shaped the way it is, what the media session state machine will look like, and how failures are handled at each level.
+This document describes the architecture of chappe_rtpengine. It is the reference you need when extending the library: it explains why the client is shaped the way it is, how the media session state machine works, and how failures are handled at each level.
 
 ## Scope
 
@@ -10,10 +10,10 @@ chappe_rtpengine controls rtpengine media proxies over the NG protocol (UDP data
 
 ```
 chappe_rtpengine_sup (rest_for_one)
-|-- chappe_rtpengine_pool          (roadmap: node registry, health, selection, pinning)
+|-- chappe_rtpengine_pool          (node registry, health, selection, pinning)
 |-- chappe_rtpengine_client_sup    (simple_one_for_one)
 |   `-- chappe_rtpengine_client    (gen_server, one per rtpengine node)
-`-- chappe_rtpengine_session_sup   (roadmap: simple_one_for_one)
+`-- chappe_rtpengine_session_sup   (simple_one_for_one)
     `-- chappe_rtpengine_session   (gen_statem, one per call)
 ```
 
@@ -24,8 +24,8 @@ chappe_rtpengine_sup (rest_for_one)
 | `chappe_rtpengine_ng` | Command dictionary building, key/value wire mapping, reply classification |
 | `chappe_rtpengine_client` | Transport gen_server, one per node: socket, cookies, pending map, retransmits |
 | `chappe_rtpengine_client_sup` | Runtime-added clients, transient restarts |
-| `chappe_rtpengine_pool` | Roadmap: ETS registry read directly by callers, gen_server serializes writes and health transitions |
-| `chappe_rtpengine_session` | Roadmap: per-call FSM owning call-id, tags, and the pinned node |
+| `chappe_rtpengine_pool` | ETS registry read directly by callers, gen_server serializes writes and health transitions |
+| `chappe_rtpengine_session` | Per-call FSM owning call-id, tags, and the pinned node |
 
 ## The client
 
@@ -49,7 +49,7 @@ Commands are Erlang maps with atom keys; replies are maps with binary keys.
 - Values: binaries and integers pass through, atoms hyphenate (`trust_address` to `trust-address`), lists and maps recurse. Bencode has no booleans; NG flags are list membership, `flags => [trust_address]`.
 - Replies keep their wire types. Some fields flip between integer and string across rtpengine versions, so no coercion happens. Classification looks only at `result`: `ok` and `pong` give `{ok, Reply}`; `error` gives `{error, Reason, Reply}` with a missing `error-reason` tolerated; a `warning` key is logged.
 
-## Media session state machine (roadmap)
+## Media session state machine
 
 One rtpengine session spans both B2BUA legs, driven by one `chappe_rtpengine_session` gen_statem:
 
@@ -59,7 +59,7 @@ established -> reoffering -> offered' (re-INVITE, hold/resume)
 any -> deleting -> terminated
 ```
 
-Design points settled in advance:
+Design points:
 
 - The FSM never blocks in a state callback. The external API is `gen_statem:call`; the FSM stores the caller, issues the client request asynchronously, and replies when the client's message arrives. The intermediate states exist precisely to await that message, which keeps delete, owner-down, and node-down events live during the retry window.
 - The FSM data records which SIP leg owns which tag and who initiated each offer. rtpengine's `from-tag` is always the tag of the party sending the offer, so a callee-initiated re-INVITE swaps the tags. Making this explicit in the data avoids the classic re-INVITE direction bug.
@@ -67,7 +67,7 @@ Design points settled in advance:
 - Glare: a modify request while a reoffer is in flight returns `{error, glare}` immediately. SIP owns glare resolution (491 and offset retry timers); the FSM must not queue competing offers.
 - Cleanup: the FSM monitors its owner. Owner death or an explicit stop moves to `deleting`, sends delete with retries, and terminates whatever the outcome.
 
-## Node pool (roadmap)
+## Node pool
 
 - ETS registry with `read_concurrency`, read directly by callers; the pool gen_server only serializes writes and health transitions. In-flight and pinned-session counters via `ets:update_counter` are the primary load metric. The NG `statistics` command reports session totals but is seconds-stale, so it serves periodic sanity checks, not per-call selection.
 - Health: K consecutive timeouts mark a node down; a periodic ping recovers it.
@@ -83,6 +83,6 @@ Design points settled in advance:
 | Request | rtpengine error | `{error, Reason, Reply}` |
 | Client | Process not running | `{error, client_down}` from the facade |
 | Client | Crash | Supervisor restarts it; in-flight requests are lost |
-| Node | Consecutive timeouts (roadmap) | Marked down, excluded from selection, ping recovery |
-| Node | Restart while pinned (roadmap) | Generation mismatch notifies affected sessions |
-| Session | Owner death (roadmap) | Best-effort delete, then terminate |
+| Node | Consecutive timeouts | Marked down, excluded from selection, ping recovery |
+| Node | Restart while pinned | Generation mismatch notifies affected sessions |
+| Session | Owner death | Best-effort delete, then terminate |

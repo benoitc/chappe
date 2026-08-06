@@ -1,6 +1,6 @@
 # chappe_rtpengine
 
-An Erlang/OTP client for controlling [rtpengine](https://github.com/sipwise/rtpengine) media proxies over the NG protocol. You use it from a SIP application (a B2BUA such as enki_sipserver) to anchor media: send it your SDP offers and answers, and it returns the rewritten SDP pointing at rtpengine. Pure Erlang, no NIFs, one dependency ([erlang_ws](https://github.com/benoitc/erlang_ws), for the WebSocket transport). SIP signalling and SDP interpretation stay outside this library; SDP bodies are opaque binaries.
+An Erlang/OTP client for controlling [rtpengine](https://github.com/sipwise/rtpengine) media proxies over the NG protocol. You use it from a SIP application (a B2BUA such as chappe_sip) to anchor media: send it your SDP offers and answers, and it returns the rewritten SDP pointing at rtpengine. Pure Erlang, no NIFs, one dependency ([erlang_ws](https://github.com/benoitc/erlang_ws), for the WebSocket transport). SIP signalling and SDP interpretation stay outside this library; SDP bodies are opaque binaries.
 
 ## Requirements
 

@@ -57,7 +57,7 @@ ok = chappe_esl:execute(Conn, Uuid, "playback", "tone_stream://%(2000,4000,440)"
 
 ## Outbound
 
-Listen for dialplan socket connections and handle each channel with an
+Listen for dialplan socket connections and handle each channel with a
 `chappe_esl_handler`:
 
 ```erlang

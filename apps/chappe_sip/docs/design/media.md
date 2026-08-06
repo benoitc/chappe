@@ -163,7 +163,8 @@ FreeSWITCH Event Socket. Neither touches SIP. `chappe_sip_media` does the opposi
 binds media to SIP, reading dialog identity, originating legs, and tying session
 lifetime to the call process. That coupling is why it belongs here rather than in
 a third leaf library. No non-SIP consumer drives media today, so there is no
-`signaling` behaviour and no standalone `enki_media` app; because the facade is a
+`signaling` behaviour and no separate media app: the media facade is the in-repo
+`chappe_sip_media` module. Because the facade is a
 clean module boundary, extracting it later (behind a `signaling` behaviour that
 chappe_sip implements) stays cheap if one ever appears.
 

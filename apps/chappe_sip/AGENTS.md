@@ -88,7 +88,7 @@ builds the shim with ASan (see `test/asan/`).
 ### Supervision tree
 
 `chappe_sip_app` -> `chappe_sip_sup` (one_for_one) -> `chappe_sip_registry_keeper`,
-`chappe_sip_registry`, `chappe_sip_ws_sup`, `chappe_sip_stack_sup`. The keeper and registry sit
+`chappe_sip_registry`, `chappe_sip_ws_sup`, `chappe_sip_media_sup`, `chappe_sip_stack_sup`. The keeper and registry sit
 above the stack so location bindings survive engine restarts (and a registry
 crash). `chappe_sip_stack_sup` (rest_for_one) -> `chappe_sip_engine`, `chappe_sip_request_sup`
 (request workers, simple_one_for_one temporary), `chappe_sip_dialog_sup`,

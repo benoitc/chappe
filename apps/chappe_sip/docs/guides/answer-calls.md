@@ -7,7 +7,7 @@ this to accept calls and handle what happens during them.
 
 ## When to use it
 
-- You terminate the call in enki (you are the endpoint), not bridging or
+- You terminate the call in chappe_sip (you are the endpoint), not bridging or
   proxying it elsewhere.
 - You want to answer, then react to re-INVITE (hold), INFO, or the peer's BYE.
 

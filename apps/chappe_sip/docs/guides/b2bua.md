@@ -1,7 +1,7 @@
 # B2BUA
 
 A back-to-back user agent terminates the inbound call and originates a fresh
-one, so enki sits in the middle of two independent dialogs. It relays
+one, so chappe_sip sits in the middle of two independent dialogs. It relays
 provisionals, the answer, ACKs, and BYE between the legs, and can rewrite
 headers. Read this to bridge a caller to a callee under your control.
 

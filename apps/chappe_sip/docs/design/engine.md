@@ -132,7 +132,7 @@ UDP/TCP contact, because comma-listed transports share one port. Pass a
 chappe_sip:start(#{
     contact => <<"sip:0.0.0.0:5060">>,
     tls => #{contact => <<"sips:0.0.0.0:5061;transport=tls">>,
-             cert_dir => <<"/etc/enki/certs">>,
+             cert_dir => <<"/etc/chappe/certs">>,
              verify => none}}).
 ```
 
