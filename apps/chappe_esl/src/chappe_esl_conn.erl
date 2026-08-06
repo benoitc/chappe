@@ -257,10 +257,18 @@ sockopts() ->
     [binary, {packet, raw}, {active, once}, {nodelay, true}].
 
 feed(Bytes, #data{parser = P0} = Data) ->
-    arm(Data),
     {Frames, P1} = chappe_esl_parser:feed(Bytes, P0),
-    Events = [{next_event, internal, {frame, F}} || F <- Frames],
-    {keep_state, Data#data{parser = P1}, Events}.
+    case chappe_esl_parser:overflowed(P1) of
+        true ->
+            ?LOG_WARNING(
+                "chappe_esl_conn: frame exceeds max_frame_bytes; closing"
+            ),
+            {stop, {shutdown, frame_too_large}, Data#data{parser = P1}};
+        false ->
+            arm(Data),
+            Events = [{next_event, internal, {frame, F}} || F <- Frames],
+            {keep_state, Data#data{parser = P1}, Events}
+    end.
 
 arm(#data{socket = undefined}) ->
     ok;

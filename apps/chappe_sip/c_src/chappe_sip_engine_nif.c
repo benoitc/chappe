@@ -937,20 +937,27 @@ static void *stack_main(void *arg) {
 /* Ask a running (READY) stack thread to stop. The OP_STOP op_cb breaks the
  * loop on the stack thread itself, so we do not touch e->root cross-thread. */
 static void request_stop(engine_t *e) {
+    /* Take the WRITE lock so the state flip + OP_STOP enqueue is mutually
+     * exclusive with foreign enqueue(), which holds the READ lock across its
+     * state-check AND su_msg_send. That guarantees every foreign op already
+     * in flight is queued before OP_STOP, and any enqueue after us sees
+     * ST_STOPPING and is rejected. Without this, both post under a shared read
+     * lock, so an op could land behind OP_STOP; su_root_break then tears down
+     * before its op_cb runs, leaking the op payload + the kept engine ref
+     * (refcount never hits 0, wedging the engine at G_STOPPING). */
+    enif_rwlock_rwlock(e->root_lock);
     int expect = ST_READY;
     if (atomic_compare_exchange_strong(&e->state, &expect, ST_STOPPING)) {
-        op_t op = {.kind = OP_STOP};
         /* We hold the READY->STOPPING transition, so su_root_run is still
-         * running and root is alive; post OP_STOP under the read lock (the
-         * root destroy waits on it). enqueue() itself would reject a non-READY
-         * state, so use the locked core directly. If it fails (OOM) the loop is
-         * not woken and a waiter times out rather than breaking root here. */
-        enif_rwlock_rlock(e->root_lock);
-        if (e->root != NULL)
+         * running and root is alive. If enqueue fails (OOM) the loop is not
+         * woken and a waiter times out rather than breaking root here. */
+        if (e->root != NULL) {
+            op_t op = {.kind = OP_STOP};
             (void)enqueue_locked(e, &op);
-        enif_rwlock_runlock(e->root_lock);
+        }
         atomic_store(&g_engine_state, G_STOPPING);
     }
+    enif_rwlock_rwunlock(e->root_lock);
 }
 
 /* Stop the stack thread and join it. MUST be called off the stack thread.
@@ -989,7 +996,14 @@ static void engine_dtor(ErlNifEnv *env, void *obj) {
         enif_rwlock_destroy(e->root_lock);
         e->root_lock = NULL;
     }
-    atomic_store(&g_engine_state, G_NONE);
+    /* Release the singleton only if it is still G_STOPPING -- i.e. this engine
+     * (abandoned/hung start, or an owner-death stop) still holds the slot and
+     * no successor exists (none can start while STOPPING). A clean nif_stop
+     * already set G_NONE, after which a new engine may hold G_RUNNING;
+     * unconditionally storing G_NONE here would clobber that successor and
+     * break the one-engine invariant during stop/start churn. */
+    int expect = G_STOPPING;
+    atomic_compare_exchange_strong(&g_engine_state, &expect, G_NONE);
 }
 
 static void engine_down(ErlNifEnv *env, void *obj, ErlNifPid *pid,

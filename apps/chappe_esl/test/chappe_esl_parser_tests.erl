@@ -223,3 +223,38 @@ bad_content_length_test() ->
 
 empty_test() ->
     ?assertEqual(<<>>, chappe_esl_parser:buffer(chappe_esl_parser:new())).
+
+%% A partial frame exceeding the cap flips the parser to overflowed and drops
+%% the buffer, so a peer that never completes a frame cannot grow memory.
+
+overflow_unterminated_header_test() ->
+    P0 = chappe_esl_parser:new(64),
+    {Frames, P1} = chappe_esl_parser:feed(binary:copy(<<"a">>, 65), P0),
+    ?assertEqual([], Frames),
+    ?assert(chappe_esl_parser:overflowed(P1)),
+    ?assertEqual(<<>>, chappe_esl_parser:buffer(P1)).
+
+overflow_huge_content_length_test() ->
+    P0 = chappe_esl_parser:new(64),
+    Bin = <<"Content-Length: 1000000000\n\nstarting-body">>,
+    {Frames, P1} = chappe_esl_parser:feed(Bin, P0),
+    ?assertEqual([], Frames),
+    ?assert(chappe_esl_parser:overflowed(P1)).
+
+%% Once overflowed, further input is dropped (no growth, no frames).
+
+overflow_drops_further_input_test() ->
+    P0 = chappe_esl_parser:new(64),
+    {_, P1} = chappe_esl_parser:feed(binary:copy(<<"a">>, 65), P0),
+    {Frames, P2} = chappe_esl_parser:feed(reply_ok(), P1),
+    ?assertEqual([], Frames),
+    ?assert(chappe_esl_parser:overflowed(P2)),
+    ?assertEqual(<<>>, chappe_esl_parser:buffer(P2)).
+
+%% A complete frame that fits under the cap still parses, and a fully consumed
+%% stream leaves the parser un-overflowed.
+
+no_overflow_when_under_cap_test() ->
+    {Frames, P} = chappe_esl_parser:feed(reply_ok(), chappe_esl_parser:new(1024)),
+    ?assertEqual([reply_ok_frame()], Frames),
+    ?assertNot(chappe_esl_parser:overflowed(P)).

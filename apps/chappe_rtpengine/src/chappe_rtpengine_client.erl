@@ -45,6 +45,11 @@
 -define(DEFAULT_ATTEMPTS, 3).
 -define(ACTIVE_N, 64).
 -define(RECONNECT_AFTER, 1000).
+%% Cap on the un-consumed TCP stream buffer. NG replies are small bencode
+%% dicts; a peer that never sends a space or advertises a huge string length
+%% would otherwise grow the buffer without bound (the UDP path is capped by
+%% recbuf). On exceed we drop the connection and reconnect.
+-define(MAX_STREAM_BYTES, (4 * 1024 * 1024)).
 -define(CALL_TIMEOUT, 5000).
 -define(CONNECT_TIMEOUT, 3000).
 -define(NG_SUBPROTOCOL, <<"ng.rtpengine.com">>).
@@ -187,7 +192,8 @@ handle_info({udp_passive, Socket}, #state{socket = Socket} = State) ->
     {noreply, State};
 handle_info({tcp, Socket, Data}, #state{socket = Socket} = State) ->
     Buffer = <<(State#state.buffer)/binary, Data/binary>>,
-    {noreply, parse_stream(State#state{buffer = Buffer})};
+    State1 = parse_stream(State#state{buffer = Buffer}),
+    {noreply, guard_stream_buffer(State1)};
 handle_info({tcp_passive, Socket}, #state{socket = Socket} = State) ->
     ok = inet:setopts(Socket, [{active, ?ACTIVE_N}]),
     {noreply, State};
@@ -444,6 +450,20 @@ parse_stream(State) ->
                     drop_connection(State)
             end
     end.
+
+%% Bound the un-consumed stream buffer: a peer that never completes a message
+%% cannot grow it without limit. drop_connection already empties the buffer, so
+%% this is a no-op right after a corrupt-stream drop.
+guard_stream_buffer(#state{buffer = Buf, name = Name} = State) when
+    byte_size(Buf) > ?MAX_STREAM_BYTES
+->
+    ?LOG_WARNING(
+        "chappe_rtpengine_client ~p: stream buffer over ~p bytes; dropping",
+        [Name, ?MAX_STREAM_BYTES]
+    ),
+    drop_connection(State);
+guard_stream_buffer(State) ->
+    State.
 
 deliver(Cookie, Decoded, State0) ->
     case take_pending(Cookie, State0) of
