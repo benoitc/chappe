@@ -11,7 +11,7 @@
 %% set_controlling_process/2.
 %%
 %% Outbound: start_listener/3 listens for dialplan socket connections and runs
-%% an chappe_esl_handler per accepted channel.
+%% a chappe_esl_handler per accepted channel.
 -module(chappe_esl).
 
 %% Inbound connection.
@@ -155,7 +155,7 @@ stats(Conn) ->
 %% Outbound listener
 
 %% Listen for outbound (dialplan socket) connections on Port and run Handler
-%% (an chappe_esl_handler module) per accepted channel. Returns a reference for
+%% (a chappe_esl_handler module) per accepted channel. Returns a reference for
 %% stop_listener/1.
 -spec start_listener(inet:port_number(), module(), term()) ->
     {ok, term()} | {error, term()}.

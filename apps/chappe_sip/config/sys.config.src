@@ -2,7 +2,7 @@
 %% SPDX-License-Identifier: Apache-2.0
 
 [
- {enki_sipserver, [
+ {chappe_sip, [
      {engine_failure_action, halt}
  ]},
  {kernel, [

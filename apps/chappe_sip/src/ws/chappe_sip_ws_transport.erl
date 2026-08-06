@@ -689,7 +689,7 @@ drop_ctxn(TxnH, S) ->
 %% a stable-ish node identifier for our WS Via sent-by (RFC 7118 allows a
 %% .invalid name; responses route by the connection, not by resolving it)
 node_id() ->
-    <<"enki.invalid">>.
+    <<"chappe.invalid">>.
 
 hex(N) ->
     binary:encode_hex(crypto:strong_rand_bytes(N), lowercase).

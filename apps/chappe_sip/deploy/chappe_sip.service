@@ -2,24 +2,24 @@
 # SPDX-License-Identifier: Apache-2.0
 
 [Unit]
-Description=enki_sipserver SIP server
+Description=chappe_sip SIP server
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=enki
-Group=enki
+User=chappe
+Group=chappe
 
 # NODE_COOKIE (and any NODE_NAME / SIP config) live here, not in the unit.
 # The node refuses to boot with the placeholder cookie.
-EnvironmentFile=/etc/enki/enki_sipserver.env
+EnvironmentFile=/etc/chappe/chappe_sip.env
 
 # Run the release in the foreground so systemd is the supervisor. The engine's
 # hang policy (engine_failure_action=halt) calls erlang:halt(1) if the sofia
 # stack wedges, which exits non-zero and triggers the restart below.
-ExecStart=/opt/enki_sipserver/bin/enki_sipserver foreground
-ExecStop=/opt/enki_sipserver/bin/enki_sipserver stop
+ExecStart=/opt/chappe_sip/bin/chappe_sip foreground
+ExecStop=/opt/chappe_sip/bin/chappe_sip stop
 
 Restart=on-failure
 RestartSec=2

@@ -4,7 +4,7 @@
 %% @doc Supervisor for the SIP-over-WebSocket subsystem.
 %%
 %% Owns chappe_sip_ws_transport (always running, holds WS connection and
-%% transaction state) and, on demand, an chappe_sip_ws_listener child started by
+%% transaction state) and, on demand, a chappe_sip_ws_listener child started by
 %% chappe_sip:start/1's ws' option. Sits under chappe_sip_sup, above the stack
 %% supervisor, so WS state survives sofia engine restarts.
 -module(chappe_sip_ws_sup).
