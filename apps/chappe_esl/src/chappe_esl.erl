@@ -214,7 +214,18 @@ await_job(Conn, JobId, Deadline, Stash) ->
                     {ok, chappe_esl_event:body(Event)};
                 false ->
                     await_job(Conn, JobId, Deadline, [Msg | Stash])
-            end
+            end;
+        %% The connection died: wake the wait (otherwise a `infinity' deadline
+        %% would block forever on a job event that can never arrive). Requeue
+        %% the notice so the owner's own loop still sees it.
+        {chappe_esl_disconnect, Conn} = Msg ->
+            requeue(Stash),
+            self() ! Msg,
+            {error, disconnected};
+        {chappe_esl_closed, Conn} = Msg ->
+            requeue(Stash),
+            self() ! Msg,
+            {error, closed}
     after remaining(Deadline) ->
         requeue(Stash),
         {error, timeout}

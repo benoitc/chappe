@@ -75,7 +75,10 @@ typedef struct obj_ctx {
 
 typedef struct engine {
     ErlNifTid tid;
-    int tid_valid;
+    /* Atomic so the join is claimed exactly once: stop_wait_join and
+     * engine_dtor both atomic_exchange it to 0 and only the winner joins,
+     * so the two stop paths can never double-join the same tid. */
+    _Atomic int tid_valid;
     ErlNifPid owner;
     ErlNifMonitor owner_mon;
     char contact[MAX_CONTACT];
@@ -973,9 +976,8 @@ static int stop_wait_join(engine_t *e) {
         msleep(POLL_STEP_MS);
         waited += POLL_STEP_MS;
     }
-    if (e->tid_valid) {
+    if (atomic_exchange(&e->tid_valid, 0)) {
         enif_thread_join(e->tid, NULL);
-        e->tid_valid = 0;
     }
     return 1;
 }
@@ -988,9 +990,9 @@ static void engine_dtor(ErlNifEnv *env, void *obj) {
      * needed, and memory is never freed under a running (or stuck) thread.
      * Reclaim the thread handle unless we ARE the stack thread dropping its own
      * last ref (an abandoned start/stop), where a self-join would deadlock. */
-    if (e->tid_valid && !enif_equal_tids(e->tid, enif_thread_self())) {
+    if (!enif_equal_tids(e->tid, enif_thread_self()) &&
+        atomic_exchange(&e->tid_valid, 0)) {
         enif_thread_join(e->tid, NULL);
-        e->tid_valid = 0;
     }
     if (e->root_lock) {
         enif_rwlock_destroy(e->root_lock);
@@ -1269,10 +1271,14 @@ static ERL_NIF_TERM nif_request(ErlNifEnv *env, int argc,
     op.raw_len = raw.size;
     if (have_route && route.size > 0) {
         op.route = enif_alloc(route.size + 1);
-        if (op.route) {
-            memcpy(op.route, route.data, route.size);
-            op.route[route.size] = 0;
+        if (!op.route) {
+            /* Fail rather than send without the caller's Route: dropping it
+             * would send the request direct instead of via the route. */
+            enif_free(op.raw);
+            return enif_make_tuple2(env, am_error, am_badarg);
         }
+        memcpy(op.route, route.data, route.size);
+        op.route[route.size] = 0;
     }
     if (enqueue(e, &op) != 0) {
         enif_free(op.raw);
@@ -1352,10 +1358,14 @@ static ERL_NIF_TERM nif_send(ErlNifEnv *env, int argc,
     op.raw_len = raw.size;
     if (have_route && route.size > 0) {
         op.route = enif_alloc(route.size + 1);
-        if (op.route) {
-            memcpy(op.route, route.data, route.size);
-            op.route[route.size] = 0;
+        if (!op.route) {
+            /* Fail rather than send without the caller's Route: dropping it
+             * would send the request direct instead of via the route. */
+            enif_free(op.raw);
+            return enif_make_tuple2(env, am_error, am_badarg);
         }
+        memcpy(op.route, route.data, route.size);
+        op.route[route.size] = 0;
     }
     if (enqueue(e, &op) != 0) {
         enif_free(op.raw);
