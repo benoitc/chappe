@@ -1,0 +1,11 @@
+%% Copyright 2026 Benoit Chesneau
+%% SPDX-License-Identifier: Apache-2.0
+
+[
+ {enki_sipserver, [
+     {engine_failure_action, halt}
+ ]},
+ {kernel, [
+     {logger_level, ${LOG_LEVEL:-info}}
+ ]}
+].

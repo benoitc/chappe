@@ -1,0 +1,42 @@
+# chappe_sip documentation
+
+Start here.
+
+- [Features](features.md): what chappe_sip does today, what is opt-in, what
+  is planned.
+
+## Guides
+
+- [Getting started](guides/getting-started.md): embed the stack in an Erlang
+  release and answer your first call.
+- [Answer calls (UAS)](guides/answer-calls.md): `chappe_sip:create_uas`, the
+  `chappe_sip_handler` behaviour, and in-dialog operations.
+- [Originate calls (UAC)](guides/originate-calls.md): place calls and send
+  out-of-dialog requests with `chappe_sip:create_uac` / `chappe_sip:request`.
+- [B2BUA](guides/b2bua.md): bridge an inbound call to a new one.
+- [Proxy](guides/proxy.md): forking, first-2xx-wins, and record-routed
+  in-dialog forwarding.
+- [Registrar](guides/registrar.md): the AOR-to-contact location store.
+- [Authentication](guides/authentication.md): SIP digest auth as a UAC, on a
+  registrar, and challenging any inbound request.
+- [SIP over WebSocket and the WebRTC gateway](guides/websocket.md): register
+  browsers (JsSIP) and bridge them to UDP/TCP peers.
+- [TLS](guides/tls.md): a `sips` listener on its own port.
+- [Reliable provisionals (PRACK)](guides/reliable-provisionals.md): 100rel on
+  the UAS and the UAC.
+- [Configuration and limits](guides/configuration.md): the tunables in
+  `chappe_sip_config`.
+- [Deployment](guides/deployment.md): build the release and run it under
+  systemd with the engine hang policy.
+- [Interop testing](guides/interop-testing.md): the opt-in JsSIP and Kamailio
+  interop track.
+
+## Architecture
+
+- [Overview](design/overview.md): the layers and the supervision tree.
+- [Engine](design/engine.md): the sofia-sip NIF shim and the stack thread.
+
+## Development
+
+- [AGENTS.md](../AGENTS.md): module layout and the required checks
+  (`compile`, `eunit`, `ct`, `lint`, `xref`, `dialyzer`).

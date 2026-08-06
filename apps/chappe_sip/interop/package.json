@@ -1,0 +1,17 @@
+{
+  "name": "enki-sipserver-interop",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "Interop drivers that exercise enki_sipserver against real SIP stacks (JsSIP over WebSocket).",
+  "scripts": {
+    "register": "node jssip_register.js",
+    "call": "node jssip_call.js"
+  },
+  "dependencies": {
+    "jssip": "^3.13.8"
+  },
+  "optionalDependencies": {
+    "@roamhq/wrtc": "^0.8.0"
+  }
+}

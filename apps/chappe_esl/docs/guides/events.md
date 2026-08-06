@@ -1,0 +1,58 @@
+# Events
+
+FreeSWITCH events arrive as messages to the controlling process. Read this to
+subscribe, read event fields, and route events to another process.
+
+## When to use it
+
+- You need channel state, DTMF, background job results, or any FreeSWITCH event.
+- You want to move event handling to a dedicated process.
+
+## Subscribe
+
+Choose a format and an event list. `subscribe/2` uses the plain format:
+
+```erlang
+ok = chappe_esl:subscribe(Conn, ['CHANNEL_CREATE', 'CHANNEL_ANSWER']),
+ok = chappe_esl:events(Conn, json, ['ALL']).
+```
+
+## Receive messages
+
+The controlling process receives:
+
+- `{chappe_esl_event, Conn, Event}` for every subscribed event
+- `{chappe_esl_disconnect, Conn}` on a disconnect notice
+- `{chappe_esl_log, Conn, Headers, Body}` for log data
+- `{chappe_esl_closed, Conn}` when the socket closes
+
+```erlang
+receive
+    {chappe_esl_event, Conn, Event} ->
+        handle(Event);
+    {chappe_esl_closed, Conn} ->
+        reconnect()
+end.
+```
+
+## Read event fields
+
+```erlang
+Name = chappe_esl_event:name(Event),
+Uuid = chappe_esl_event:header(<<"Unique-ID">>, Event),
+Body = chappe_esl_event:body(Event),
+All  = chappe_esl_event:headers(Event).
+```
+
+Plain event values are URL-decoded for you. JSON events decode with the OTP
+`json` module; XML events keep the raw body.
+
+## Route events elsewhere
+
+Move delivery to another process:
+
+```erlang
+ok = chappe_esl:set_controlling_process(Conn, Pid).
+```
+
+From then on `Pid` receives the event messages.

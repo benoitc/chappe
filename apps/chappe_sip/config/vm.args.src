@@ -1,0 +1,15 @@
+# Copyright 2026 Benoit Chesneau
+# SPDX-License-Identifier: Apache-2.0
+
+## Distribution. Set NODE_COOKIE to a real secret before starting: the node
+## refuses to boot with the placeholder cookie. Distribution is bound to the
+## loopback interface; expose it only behind a firewall (or over TLS
+## distribution) if you actually need remote nodes. If you do not need
+## clustering or a remote console, comment out -name and -setcookie to run
+## without distribution at all.
+-name ${NODE_NAME:-enki_sipserver@127.0.0.1}
+-setcookie ${NODE_COOKIE:-CHANGE_ME_SET_NODE_COOKIE}
+-kernel inet_dist_use_interface {127,0,0,1}
+
++K true
++A 16

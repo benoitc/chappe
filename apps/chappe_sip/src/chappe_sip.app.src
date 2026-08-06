@@ -1,0 +1,17 @@
+%% Copyright 2026 Benoit Chesneau
+%% SPDX-License-Identifier: Apache-2.0
+
+{application, chappe_sip, [
+    {description,
+        "SIP application server: drachtio ported to Erlang on sofia-sip"},
+    {vsn, "0.2.0"},
+    {registered, [chappe_sip_sup, chappe_sip_engine]},
+    {mod, {chappe_sip_app, []}},
+    %% livery is started lazily by chappe_sip_ws_sup when a WS listener is configured
+    %% (chappe_sip:start with a `ws' option), so a UDP/TCP/TLS-only node pays nothing
+    %% for the WebSocket dependency tree.
+    {applications, [kernel, stdlib, crypto]},
+    {env, []},
+    {licenses, ["Apache-2.0"]},
+    {links, []}
+]}.

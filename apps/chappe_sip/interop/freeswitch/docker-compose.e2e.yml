@@ -1,0 +1,49 @@
+# Runs chappe_sip_media_fs_e2e_SUITE inside a Linux erlang container on the same
+# docker network as FreeSWITCH, so the ESL client reaches FreeSWITCH by service
+# name (container-to-container) rather than over a published host port. This
+# avoids Docker Desktop's host<->container loopback forwarding quirk and is how
+# the media e2e is meant to run on Linux/CI.
+#
+# Build the test profile on the host first, then run:
+#   rebar3 as test compile
+#   docker compose -f interop/freeswitch/docker-compose.e2e.yml up \
+#     --abort-on-container-exit --exit-code-from runner
+#
+# The runner reuses the host-built beams (BEAM bytecode is architecture
+# independent; this test loads no NIFs) mounted read-only, so it needs neither
+# the private media dep repos nor a C toolchain. Its exit code is the result.
+services:
+  freeswitch:
+    image: ${FREESWITCH_IMAGE:-safarov/freeswitch:latest}
+    volumes:
+      - ./conf/event_socket.conf.xml:/etc/freeswitch/autoload_configs/event_socket.conf.xml:ro
+      - ./conf/acl.conf.xml:/etc/freeswitch/autoload_configs/acl.conf.xml:ro
+      - ./conf/dialplan_default.xml:/etc/freeswitch/dialplan/default.xml:ro
+
+  runner:
+    image: erlang:29
+    depends_on:
+      freeswitch:
+        condition: service_healthy
+    working_dir: /tmp
+    volumes:
+      - ../../_build:/build:ro
+    environment:
+      INTEROP: "1"
+      FS_HOST: freeswitch
+      FS_PORT: "8021"
+    command:
+      - erl
+      - -noshell
+      - -pa
+      - /build/test/lib/enki_sipserver/ebin
+      - -pa
+      - /build/test/lib/enki_sipserver/test
+      - -eval
+      - >-
+        ok = code:add_pathsz(filelib:wildcard("/build/default/lib/*/ebin")),
+        R = ct:run_test([{dir, "/build/test/lib/enki_sipserver/test"},
+                         {suite, chappe_sip_media_fs_e2e_SUITE},
+                         {logdir, "/tmp"}, {auto_compile, false}]),
+        io:format("CT_RESULT=~p~n", [R]),
+        case R of {N, 0, {0, 0}} when N > 0 -> halt(0); _ -> halt(1) end

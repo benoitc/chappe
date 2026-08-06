@@ -1,0 +1,26 @@
+# Copyright 2026 Benoit Chesneau
+# SPDX-License-Identifier: Apache-2.0
+
+# FreeSWITCH with mod_event_socket for the live interop suite.
+#
+#   docker compose -f interop/docker-compose.yml up -d
+#   FS_HOST=127.0.0.1 FS_PORT=8021 FS_PASSWORD=ClueCon \
+#     rebar3 ct --suite test/chappe_esl_live_SUITE
+#   docker compose -f interop/docker-compose.yml down
+#
+# The event socket must listen on 0.0.0.0 (not the default 127.0.0.1) so the
+# host can reach it. See interop/README.md if you build your own image.
+
+services:
+  freeswitch:
+    image: safarov/freeswitch:latest
+    container_name: enki_esl_fs
+    ports:
+      - "8021:8021"
+    environment:
+      - EVENT_SOCKET_PASSWORD=ClueCon
+    healthcheck:
+      test: ["CMD", "fs_cli", "-x", "status"]
+      interval: 5s
+      timeout: 3s
+      retries: 10

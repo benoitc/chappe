@@ -1,0 +1,32 @@
+_build/
+_checkouts/
+*.beam
+*.plt
+rebar3.crashdump
+erl_crash.dump
+.rebar3/
+doc/
+apps/*/priv/lib/*.so
+apps/*/priv/lib/*.dSYM/
+apps/*/c_src/build/
+apps/*/interop/node_modules/
+*.dSYM/
+
+# sofia-sip: track the portable autoreconf output (configure, Makefile.in,
+# aclocal.m4, config.h.in, build-aux, m4) but not the machine-specific configure
+# output, so builds need only a C toolchain + pkg-config + libssl (no autotools).
+apps/chappe_sip/c_src/sofia-sip/**/Makefile
+apps/chappe_sip/c_src/sofia-sip/**/config.h
+apps/chappe_sip/c_src/sofia-sip/**/su_configure.h
+apps/chappe_sip/c_src/sofia-sip/config.status
+apps/chappe_sip/c_src/sofia-sip/config.log
+apps/chappe_sip/c_src/sofia-sip/config.cache
+apps/chappe_sip/c_src/sofia-sip/libtool
+apps/chappe_sip/c_src/sofia-sip/**/stamp-h1
+apps/chappe_sip/c_src/sofia-sip/**/.deps/
+apps/chappe_sip/c_src/sofia-sip/**/.libs/
+apps/chappe_sip/c_src/sofia-sip/**/*.[oa]
+apps/chappe_sip/c_src/sofia-sip/**/*.lo
+apps/chappe_sip/c_src/sofia-sip/**/*.la
+apps/chappe_sip/c_src/sofia-sip/**/*.so
+apps/chappe_sip/c_src/sofia-sip/autom4te.cache/

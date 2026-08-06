@@ -1,0 +1,9 @@
+enki_sipserver
+Copyright 2026 Benoit Chesneau
+
+This product includes software developed by Benoit Chesneau.
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Bundled third-party components (sofia-sip, LGPL-2.1) and design references
+(drachtio-srf, MIT) are described in THIRD_PARTY_LICENSES.md.
