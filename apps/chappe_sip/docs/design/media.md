@@ -29,6 +29,40 @@ chappe_sip:start(#{
 Configuring a backend starts its library and registers the nodes. Omit a backend
 and its library stays dormant (nothing in it runs).
 
+## Which backend does what
+
+The two engines do different shapes of media work, so each capability has a
+natural home:
+
+- **rtpengine anchors packets.** It takes SDP in, gives SDP out, and relays or
+  rewrites the RTP with no SIP leg of its own. Reach for it to put media under a
+  call, hide topology, fork a stream, or duck a party.
+- **FreeSWITCH terminates a leg.** You originate a SIP leg into it and drive the
+  channel over ESL, so it can mix, prompt, and run menus. Reach for it when you
+  need a conference or an IVR, not just anchoring.
+
+| Capability | Backend | What you get |
+|---|---|---|
+| `anchor`, `relay` | rtpengine | anchor or relay the call's RTP and rewrite SDP (`offer`/`answer`) |
+| `transcode` | rtpengine | codec transcoding (needs a transcoding-enabled rtpengine) |
+| `subscribe` | rtpengine | fork a party's media to another consumer (a tap) |
+| `duck` | rtpengine | block or silence a party while a prompt plays |
+| `conference` | FreeSWITCH | multi-party mixing in a room |
+| `ivr` | FreeSWITCH | menus and prompts on a channel |
+| `play`, `record`, `dtmf` | either (rtpengine by default) | play a file, record, send DTMF; both engines implement these |
+
+- **rtpengine only:** `offer`/`answer`, `relay`, `transcode`, `subscribe`,
+  `duck`. On FreeSWITCH these return `{error, unsupported}` (offer/answer) or
+  `{error, {unsupported, _}}` (subscribe/duck): that backend has no SDP for you
+  to rewrite and no anchored RTP to tap.
+- **FreeSWITCH only:** `conference` and `ivr`, which need a mixing bridge
+  rtpengine does not provide.
+- **Either engine:** `play`, `record`, `dtmf`. The default routes them to
+  rtpengine; pass `backend => freeswitch` on a session to run them on a
+  FreeSWITCH channel instead.
+
+The rest of this page shows each capability in use, grouped by backend.
+
 ## Anchor a call's media (rtpengine)
 
 Anchor the caller's media through rtpengine, forward the rewritten offer to the
@@ -139,14 +173,12 @@ connections are pooled per node under `chappe_sip_media_sup` and reconnect on fa
 You do not clean up on the normal BYE path, but you can tear a session down early
 with `chappe_sip_media:stop/1`.
 
-## Route a capability to a backend
+## Override the default routing
 
-The facade routes each capability to a default backend: `relay`, `anchor`,
-`transcode`, `play`, `record`, `dtmf`, `subscribe`, and `duck` go to rtpengine;
-`conference` and `ivr` go to FreeSWITCH. Override the choice for one session with
-`backend => rtpengine | freeswitch` in the session options, or change the default
-map globally with a `capabilities => #{Capability => Backend}` entry in the media
-config.
+Each capability has a default backend (see Which backend does what). Override the
+choice for one session with `backend => rtpengine | freeswitch` in the session
+options, or change the default map globally with a
+`capabilities => #{Capability => Backend}` entry in the media config.
 
 To add a backend, write an adapter module exposing the operation set (`start/2`,
 `offer/4`, `answer/4`, `play/2`, `record/2`, `stop_record/1`, `dtmf/2`,
