@@ -115,6 +115,10 @@ carries its own client/server transaction timers.
   they exercise (e.g. `chappe_sip_uac_SUITE`, `chappe_sip_registrar_SUITE`,
   `chappe_sip_websocket_SUITE`), driven by live UDP peers and `ws:connect` clients.
 - `test/*_tests.erl` — EUnit (message model, digest, RFC 4475 corpus).
+- `test/doc_snippets_tests.erl` — parses every ```erlang block in the docs of
+  all three apps and asserts each `chappe_*:fun/arity' it calls exists and is
+  exported, so guide snippets cannot drift from the API. Add a runnable example
+  and it is checked automatically; use `...' for elisions.
 - `test/chappe_sip_engine_fake.erl` — pure-Erlang engine backend (no NIF).
 - `test/chappe_sip_interop_SUITE.erl` — opt-in (`INTEROP=1`) real-stack interop
   (JsSIP over WS, Kamailio over UDP); harness in `interop/`.
