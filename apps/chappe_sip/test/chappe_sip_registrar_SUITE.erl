@@ -292,7 +292,7 @@ register_req(LP, Exp, CSeq) ->
       "Call-ID: reg-", P/binary, "@ct\r\n"
       "CSeq: ", CS/binary, " REGISTER\r\nContent-Length: 0\r\n\r\n">>.
 
-pick() -> 40000 + rand:uniform(20000).
+pick() -> chappe_sip_test_port:pick().
 lport(Sock) -> {ok, P} = inet:port(Sock), P.
 send(Sock, Dst, Bin) -> gen_udp:send(Sock, {127,0,0,1}, Dst, Bin).
 

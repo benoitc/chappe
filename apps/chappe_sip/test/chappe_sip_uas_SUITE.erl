@@ -237,7 +237,7 @@ owner_exit_destroys(_Config) ->
 
 %% ---- helpers ----
 
-port() -> 40000 + rand:uniform(20000).
+port() -> chappe_sip_test_port:pick().
 contact(P) -> <<"sip:127.0.0.1:", (integer_to_binary(P))/binary>>.
 udp() -> gen_udp:open(0, [binary, {active, true}, {ip, {127,0,0,1}}]).
 call_id() ->

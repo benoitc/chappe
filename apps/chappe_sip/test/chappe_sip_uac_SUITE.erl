@@ -255,7 +255,7 @@ uas(UasPort, ScenarioFun) ->
     receive {uas_ready, Pid} -> ok after 2000 -> ct:fail(uas_not_ready) end,
     Pid.
 
-pick() -> 40000 + rand:uniform(20000).
+pick() -> chappe_sip_test_port:pick().
 contact_bind(P) -> <<"sip:127.0.0.1:", (integer_to_binary(P))/binary>>.
 contact(P) -> <<"sip:chappe@127.0.0.1:", (integer_to_binary(P))/binary>>.
 tag() -> binary:encode_hex(crypto:strong_rand_bytes(5), lowercase).

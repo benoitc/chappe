@@ -194,7 +194,7 @@ caller(EnginePort, Fun) ->
 
 expect(Msg) -> receive Msg -> ok after 6000 -> ct:fail({expected, Msg}) end.
 
-pick() -> 40000 + rand:uniform(20000).
+pick() -> chappe_sip_test_port:pick().
 ctc(P) -> <<"sip:x@127.0.0.1:", (integer_to_binary(P))/binary>>.
 callid() ->
     <<"m7-", (binary:encode_hex(crypto:strong_rand_bytes(4)))/binary, "@ct">>.

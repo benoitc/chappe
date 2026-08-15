@@ -127,7 +127,7 @@ gen_certs(Dir) ->
             ok
     end.
 
-pick() -> 40000 + rand:uniform(20000).
+pick() -> chappe_sip_test_port:pick().
 lport(Sock) -> {ok, P} = inet:port(Sock), P.
 
 options_req() ->

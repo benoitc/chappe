@@ -134,7 +134,7 @@ await_200_invite(Sock) ->
     after 6000 -> ct:fail(no_200_invite)
     end.
 
-pick() -> 40000 + rand:uniform(20000).
+pick() -> chappe_sip_test_port:pick().
 lport(Sock) -> {ok, P} = inet:port(Sock), P.
 send(Sock, Dst, Bin) -> gen_udp:send(Sock, {127,0,0,1}, Dst, Bin).
 sdp() ->

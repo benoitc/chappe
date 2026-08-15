@@ -189,7 +189,7 @@ fake_health(_Config) ->
 %% ---- live group ----
 
 live_options_headers(_Config) ->
-    Port = 40000 + rand:uniform(20000),
+    Port = chappe_sip_test_port:pick(),
     ok = chappe_sip:start(#{contact => contact(Port)}),
     ok = chappe_sip:options(fun(_Req, Res) ->
         ok = chappe_sip_res:send(Res, 200,
@@ -206,7 +206,7 @@ live_options_headers(_Config) ->
     gen_udp:close(Sock).
 
 live_message_dispatch(_Config) ->
-    Port = 40000 + rand:uniform(20000),
+    Port = chappe_sip_test_port:pick(),
     ok = chappe_sip:start(#{contact => contact(Port)}),
     Test = self(),
     ok = chappe_sip:message(fun(Req, Res) ->

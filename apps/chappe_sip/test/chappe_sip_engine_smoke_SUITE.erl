@@ -93,7 +93,7 @@ health_roundtrip(_Config) ->
 %% helpers
 
 pick_port() ->
-    40000 + rand:uniform(20000).
+    chappe_sip_test_port:pick().
 
 contact(Port) ->
     <<"sip:127.0.0.1:", (integer_to_binary(Port))/binary>>.
