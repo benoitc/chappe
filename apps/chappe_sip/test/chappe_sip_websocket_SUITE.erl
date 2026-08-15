@@ -241,7 +241,7 @@ recv_ws(Code) ->
     end.
 
 to_tag(Resp) -> {ok, M} = chappe_sip_msg:parse(Resp), chappe_sip_msg:to_tag(M).
-pick() -> 40000 + rand:uniform(20000).
+pick() -> chappe_sip_test_port:pick().
 
 sdp() ->
     <<"v=0\r\no=alice 0 0 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\n"

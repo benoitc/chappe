@@ -33,7 +33,7 @@ end_per_testcase(_Case, _Config) ->
     ok.
 
 source_ip_reported(_Config) ->
-    EP = 40000 + rand:uniform(20000),
+    EP = chappe_sip_test_port:pick(),
     ok = chappe_sip:start(#{contact => <<"sip:127.0.0.1:",
                                    (integer_to_binary(EP))/binary>>}),
     Test = self(),

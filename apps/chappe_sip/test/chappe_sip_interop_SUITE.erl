@@ -235,4 +235,4 @@ contact(Port) ->
 ws_url(Port) ->
     "ws://127.0.0.1:" ++ integer_to_list(Port) ++ "/ws".
 
-pick() -> 40000 + rand:uniform(20000).
+pick() -> chappe_sip_test_port:pick().

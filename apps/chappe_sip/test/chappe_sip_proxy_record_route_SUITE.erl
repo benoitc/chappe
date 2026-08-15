@@ -217,7 +217,7 @@ expect(Msg) ->
 
 %% ---- SIP helpers ----
 
-pick() -> 40000 + rand:uniform(20000).
+pick() -> chappe_sip_test_port:pick().
 dest(P) -> <<"127.0.0.1:", (integer_to_binary(P))/binary>>.
 ctc(P) -> <<"sip:x@127.0.0.1:", (integer_to_binary(P))/binary>>.
 tag() -> binary:encode_hex(crypto:strong_rand_bytes(5), lowercase).
