@@ -63,7 +63,9 @@ OfferSDP = chappe_rtpengine_ng:sdp(Sub),
 }).
 ```
 
-Repeat that for `{label, <<"2">>}` and `{label, <<"3">>}` and you have three subscriptions, each a PCMU stream at 20 ms landing at its own receiver ip:port. Select by position instead with `{index, N}` (0-based, m-line order). The `siprec` flag on the request adds a second, zero-based label per stream; either label matches.
+Repeat that for `{label, <<"2">>}` and `{label, <<"3">>}` and you have three subscriptions, each a PCMU stream at 20 ms landing at its own receiver ip:port. Select by position instead with `{index, N}` (0-based, m-line order).
+
+The `siprec` flag on the request adds a second, zero-based label per stream, so a three-stream tap comes back with `labels` of `["1","0"]`, `["2","1"]`, `["3","2"]` and either label selects. Beware the overlap that creates: `{label, <<"1">>}` matches both the first stream's source label and the second stream's added one, and the earlier m-line wins. Use `{index, N}` when you want the position rather than the name.
 
 One subscription can also feed several receivers, which costs the daemon three times fewer ports for the same three flows. Pass the routes as a list:
 

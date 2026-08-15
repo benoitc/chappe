@@ -13,6 +13,9 @@
   `streams` alongside the SDP and the to-tag.
 - `chappe_sip`: `create_uac/2` accepts `body` plus `content_type` for a request
   body that is not application/sdp (a SIPREC multipart/mixed, for instance).
+- CI: an `interop` job runs the rtpengine-gated suites against the `interop/`
+  container, so the anchor, the per-stream forks and the interpreter inject are
+  verified against the real daemon on every change.
 
 ## [0.1.0]
 

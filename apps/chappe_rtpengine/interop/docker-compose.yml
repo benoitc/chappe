@@ -10,6 +10,11 @@ services:
   rtpengine:
     build: .
     container_name: rtpe-e2e
+    # Docker Desktop provides host.docker.internal; plain Linux (CI) does
+    # not, and without it e2e.sh finds no RTPENGINE_MEDIA_IP and every
+    # media case skips. host-gateway maps it to the bridge gateway there.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "12222:12222/udp"
       - "12223:12223/tcp"
