@@ -98,6 +98,22 @@ publish_anchors_every_stream(_Config) ->
     {ok, _} = chappe_rtpengine_session:unsubscribe(Sess, #{
         to_tag => maps:get(<<"to-tag">>, Sub)
     }),
+
+    %% the siprec flag adds a zero-based label beside the source one, so
+    %% a stream is selectable either way. Note they collide: label "1" is
+    %% stream 0's source label and stream 1's added one, and the first
+    %% match wins.
+    {ok, Sub2} = chappe_rtpengine_session:subscribe_request(Sess, #{
+        from_tags => [SrcTag], flags => [siprec]
+    }),
+    Labelled = chappe_rtpengine_sdp:streams(chappe_rtpengine_ng:sdp(Sub2)),
+    ?assertEqual(
+        [[<<"1">>, <<"0">>], [<<"2">>, <<"1">>], [<<"3">>, <<"2">>]],
+        [Ls || #{labels := Ls} <- Labelled]
+    ),
+    {ok, _} = chappe_rtpengine_session:unsubscribe(Sess, #{
+        to_tag => maps:get(<<"to-tag">>, Sub2)
+    }),
     ok = chappe_rtpengine_session:stop(Sess),
     ok.
 
@@ -224,7 +240,7 @@ inject_into_one_leg_while_ducked(_Config) ->
     %% arriving at the callee socket is the injected clip
     case
         chappe_rtpengine_session:play_media(Sess, #{
-            blob => wav_blob(8000), party => callee
+            blob => wav_blob(400), party => callee
         })
     of
         {ok, _} ->
@@ -235,8 +251,10 @@ inject_into_one_leg_while_ducked(_Config) ->
             end,
             timer:sleep(300),
             drain(SockB);
+        {error, <<"Unrecognized command">>, _} ->
+            ct:log("rtpengine built without the media player");
         Other ->
-            ct:log("media playback unavailable: ~p", [Other])
+            error({play_media_failed, Other})
     end,
 
     %% restore: the caller's own media relays again
@@ -423,6 +441,9 @@ leg_sdp(IP, Port) ->
 
 %% 8 kHz mono 16-bit PCM WAV of silence, a stand-in for a TTS clip.
 %% rtpengine paces it out as RTP, which is what the assertion needs.
+%% Keep it under one MTU: a blob rides inside the NG datagram, so a
+%% real-size clip needs the TCP or WebSocket transport (proven by
+%% chappe_rtpengine_e2e_SUITE:ws_blob_playback_over_mtu/1) or a file path.
 wav_blob(Samples) ->
     Data = binary:copy(<<0, 0>>, Samples),
     Sz = byte_size(Data),

@@ -27,11 +27,14 @@ docker compose -f interop/docker-compose.yml down
 ```
 
 Set `RTPENGINE_MEDIA_IP` to the address rtpengine can send media back to
-(the media relay and interpreter cases skip without it):
+(the media relay, fork and interpreter cases skip without it):
 
 ```sh
 docker exec rtpe-e2e getent hosts host.docker.internal
 ```
+
+`host.docker.internal` comes free with Docker Desktop; on plain Linux the
+compose file maps it to `host-gateway` so the same lookup works there.
 
 ## Notes
 
@@ -48,4 +51,9 @@ docker exec rtpe-e2e getent hosts host.docker.internal
   TLS WebSocket with a throwaway self-signed certificate generated at
   container start).
 - The suites are opt-in: without `RTPENGINE_HOST` they return
-  `{skip, ...}`, so `rebar3 ct` stays green with no docker at all.
+  `{skip, ...}`, so `rebar3 ct` stays green with no docker at all. CI runs
+  them in a separate `interop` job, gated on the build like `ct` is.
+- A blob for `play media` rides inside the NG datagram, so a real-size
+  clip needs the TCP or WebSocket transport rather than UDP; the suites
+  keep UDP blobs under one MTU and prove the large-clip path over
+  WebSocket instead.

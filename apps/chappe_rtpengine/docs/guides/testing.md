@@ -12,7 +12,7 @@ make test-static   # lint + xref + dialyzer + fmt-check
 make check         # everything above plus compile
 ```
 
-The seven gates (compile, eunit, ct, lint, xref, dialyzer, fmt -c) also run in CI (.github/workflows/ci.yml) and must pass before a change lands. The gated suites (`chappe_rtpengine_live_SUITE`, `chappe_rtpengine_e2e_SUITE`) skip when `RTPENGINE_HOST` is not set.
+The seven gates (compile, eunit, ct, lint, xref, dialyzer, fmt -c) also run in CI (.github/workflows/ci.yml) and must pass before a change lands. The gated suites (`chappe_rtpengine_live_SUITE`, `chappe_rtpengine_e2e_SUITE`, `chappe_rtpengine_siprec_SUITE`) skip when `RTPENGINE_HOST` is not set; CI runs them too, in a separate `interop` job that brings up the container.
 
 ## End-to-end against a real rtpengine
 
@@ -22,12 +22,13 @@ One command, needs docker:
 make interop
 ```
 
-That runs `test/e2e.sh`, which brings up `interop/docker-compose.yml`: a transcoding-enabled rtpengine built from `interop/Dockerfile` (Ubuntu's rtpengine package, native arch, subscribe/playback/silence available), NG on UDP and TCP, a published media port range, media bound on the container interface but advertised as 127.0.0.1. The script discovers the address rtpengine can reach your machine at, runs `chappe_rtpengine_live_SUITE` and `chappe_rtpengine_e2e_SUITE`, and tears the stack down. See `interop/README.md` for running the stack by hand.
+That runs `test/e2e.sh`, which brings up `interop/docker-compose.yml`: a transcoding-enabled rtpengine built from `interop/Dockerfile` (Ubuntu's rtpengine package, native arch, subscribe/playback/silence available), NG on UDP and TCP, a published media port range, media bound on the container interface but advertised as 127.0.0.1. The script discovers the address rtpengine can reach your machine at, runs `chappe_rtpengine_live_SUITE`, `chappe_rtpengine_e2e_SUITE` and `chappe_rtpengine_siprec_SUITE`, and tears the stack down. See `interop/README.md` for running the stack by hand.
 
 What the end-to-end suites prove:
 
 - `chappe_rtpengine_live_SUITE`: ping, the offer/answer/query/delete cycle with SDP rewriting, media subscriptions, and NG over TCP against the real daemon.
 - `chappe_rtpengine_e2e_SUITE`: SDES-SRTP negotiation (plain caller bridged to an SRTP callee: crypto attributes appear in the rewritten offer and not in the answer), DTLS-SRTP negotiation (fingerprint and setup role in the rewritten offer), an actual RTP packet relayed through rtpengine in both directions via a media session, and the interpreter primitives over one anchored call: a party's media forked to a receiver socket as transcoded PCMU (real RTP asserted at the receiver), a WAV blob injected into the other leg, and one direction blocked (relay stops) and unblocked (relay resumes).
+- `chappe_rtpengine_siprec_SUITE`: the recording-server shapes. A three-stream sendonly offer anchored with `publish` (every m-line answered, labels preserved in m-line order on the tap), then each stream forked to its own receiver socket as PCMU at 20 ms, once with one subscription per stream and once with a single subscription routing all three. Each receiver decodes only its own party's tone, which is what proves the forks are separate streams and not one mixed feed. Plus the interpreter inject on a two-legged call: block the caller, play a clip into the callee's leg and assert it lands, then unblock and see the caller's own media relay again.
 
 ## Against your own rtpengine
 
