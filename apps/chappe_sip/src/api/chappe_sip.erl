@@ -109,6 +109,9 @@ create_uas(Req, Res, Opts) ->
 %% Originate a UAC request. For INVITE, blocks until the final result:
 %% {ok, Dialog} on 2xx, {error, #chappe_sip_error{}} on a non-2xx final.
 %% Provisional responses are forwarded to a notify pid if one is given.
+%% The body is `local_sdp' (sent as application/sdp) or, for anything else,
+%% `body' with `content_type' (a SIPREC multipart/mixed, for instance).
+%% The peer's answer is on the dialog: chappe_sip_dialog:remote_sdp/1.
 -spec create_uac(binary(), map()) ->
     {ok, chappe_sip_dialog:dialog()} | {error, term()}.
 create_uac(Uri, Opts) ->

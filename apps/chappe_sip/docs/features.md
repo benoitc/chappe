@@ -41,7 +41,9 @@ tracker; the milestone history is in `docs/plan.md`.
 - `chappe_sip:create_uas/3`: answer an incoming dialog-forming request.
 - `chappe_sip:create_uac/2` and `chappe_sip:request/2`: originate INVITE and
   out-of-dialog requests, with provisional delivery, digest 401/407
-  retry, 3xx redirects, and 3PCC (`no_ack`).
+  retry, 3xx redirects, and 3PCC (`no_ack`). The body is `local_sdp`
+  (application/sdp) or `body` plus `content_type` for anything else, such as a
+  SIPREC `multipart/mixed` of SDP and rs-metadata.
 - `chappe_sip:create_b2bua/4`: bridge an incoming INVITE to a new one, with
   header proxy rules, CANCEL relay, and failure/provisional passthrough.
 - `chappe_sip:proxy_request/3`: sequential and parallel forking, CANCEL of
@@ -134,7 +136,11 @@ tracker; the milestone history is in `docs/plan.md`.
   media with `chappe_sip_media:offer/2` and `answer/2` (SDP in, rewritten SDP out),
   plus `play`/`record`/`dtmf`, `subscribe` (tap a party's media to an external
   consumer such as an STT receiver), and `duck` (block or silence a party while
-  a prompt plays). A session is correlated by SIP dialog identity (Call-ID +
+  a prompt plays). `publish/2` anchors a call with no second leg (a recording
+  server taking N sendonly streams): rtpengine answers the offer itself, and
+  `subscribe/2` reports the tapped streams in m-line order with their labels so
+  each one can be forked to its own receiver. A session is correlated by SIP
+  dialog identity (Call-ID +
   from/to tags) and bound to the call-owner process, so it is torn down when the
   call ends.
 - FreeSWITCH backend (via the `chappe_esl` library): drive a channel over ESL for

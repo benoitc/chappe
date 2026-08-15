@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- `chappe_rtpengine`: `publish` on sessions and nodes, the one-sided anchor for
+  a call with no second leg (a recording server, a publisher). rtpengine writes
+  the answer and the session goes straight to established.
+- `chappe_rtpengine_sdp`: `streams/1` for a subscription offer's m-line order
+  and labels, `fork_answer/2,3` to answer it with one stream (by `a=label` or
+  m-line index) routed to one receiver and the rest rejected. rtpengine has no
+  request-side stream selector, so the selection lives in the answer.
+- `chappe_sip_media`: `publish/2,3`, and `subscribe/2` now reports the tapped
+  `streams` alongside the SDP and the to-tag.
+- `chappe_sip`: `create_uac/2` accepts `body` plus `content_type` for a request
+  body that is not application/sdp (a SIPREC multipart/mixed, for instance).
+
 ## [0.1.0]
 
 Initial chappe umbrella. The SIP/media platform, previously the separate

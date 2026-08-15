@@ -20,6 +20,7 @@
     start/2,
     offer/4,
     answer/4,
+    publish/4,
     play/2,
     record/2,
     stop_record/1,
@@ -73,6 +74,10 @@ offer(_Ref, _Id, _Sdp, _Opts) ->
 
 -spec answer(ref(), identity(), iodata(), map()) -> {error, unsupported}.
 answer(_Ref, _Id, _Sdp, _Opts) ->
+    {error, unsupported}.
+
+-spec publish(ref(), identity(), iodata(), map()) -> {error, unsupported}.
+publish(_Ref, _Id, _Sdp, _Opts) ->
     {error, unsupported}.
 
 -spec play(ref(), map()) -> ok | {error, term()}.

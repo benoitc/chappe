@@ -40,7 +40,7 @@ RTPENGINE_HOST=127.0.0.1 \
     RTPENGINE_HTTP_PORT=$NG_HTTP_PORT \
     RTPENGINE_HTTPS_PORT=$NG_HTTPS_PORT \
     RTPENGINE_MEDIA_IP="$MEDIA_IP" \
-    rebar3 ct --suite rtpe_live_SUITE,rtpe_e2e_SUITE
+    rebar3 ct --suite chappe_rtpengine_live_SUITE,chappe_rtpengine_e2e_SUITE,chappe_rtpengine_siprec_SUITE
 RC=$?
 
 $COMPOSE down >/dev/null 2>&1

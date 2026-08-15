@@ -18,12 +18,12 @@
 -export([offer_answer/1, play_and_dtmf/1, capability_routing/1,
          unknown_capability/1, owner_death_tears_down/1,
          subscribe_tap/1, duck_block/1, duck_silence/1,
-         unsupported_on_freeswitch/1]).
+         unsupported_on_freeswitch/1, publish_anchor/1]).
 
 all() ->
-    [offer_answer, play_and_dtmf, capability_routing, unknown_capability,
-     owner_death_tears_down, subscribe_tap, duck_block, duck_silence,
-     unsupported_on_freeswitch].
+    [offer_answer, publish_anchor, play_and_dtmf, capability_routing,
+     unknown_capability, owner_death_tears_down, subscribe_tap, duck_block,
+     duck_silence, unsupported_on_freeswitch].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_engine_fake,
@@ -66,6 +66,24 @@ offer_answer(_Config) ->
     ?assertEqual(<<"tt-1">>, tag_of(<<"answer">>, <<"to-tag">>, Cmds)),
     ?assertEqual(<<"call-1">>, tag_of(<<"offer">>, <<"call-id">>, Cmds)).
 
+%% A call with no second leg: publish anchors the offer and the engine
+%% answers it, so there is no answer/2 to follow and the tap works straight
+%% away.
+publish_anchor(_Config) ->
+    {ok, S} = chappe_sip_media:session(identity(), #{capability => anchor}),
+    {ok, AnswerOut} = chappe_sip_media:publish(S, <<"v=0 recorder-offer">>),
+    ?assertEqual(<<"v=0 fake-publish">>, AnswerOut),
+    {ok, Sub} = chappe_sip_media:subscribe(S, #{party => caller}),
+    ?assertEqual(<<"sub-1">>, maps:get(to_tag, Sub)),
+    ok = chappe_sip_media:stop(S),
+    Cmds = drain_cmds(),
+    ?assertEqual(<<"ft-1">>, tag_of(<<"publish">>, <<"from-tag">>, Cmds)),
+    ?assertEqual(<<"call-1">>, tag_of(<<"publish">>, <<"call-id">>, Cmds)),
+    ?assertEqual(<<"v=0 recorder-offer">>, tag_of(<<"publish">>, <<"sdp">>, Cmds)),
+    %% the tap follows the publish with no answer in between
+    ?assertEqual([<<"ft-1">>],
+                 tag_of(<<"subscribe request">>, <<"from-tags">>, Cmds)).
+
 play_and_dtmf(_Config) ->
     {ok, S} = chappe_sip_media:session(identity(), #{capability => anchor}),
     {ok, _} = chappe_sip_media:offer(S, <<"v=0 caller-offer">>),
@@ -94,8 +112,12 @@ subscribe_tap(_Config) ->
     {ok, _} = chappe_sip_media:answer(S, <<"v=0 callee-answer">>),
     _ = drain_cmds(),
     {ok, Sub} = chappe_sip_media:subscribe(S, #{party => caller}),
-    ?assertEqual(<<"v=0 fake-sub">>, maps:get(sdp, Sub)),
+    ?assertEqual(fake_sub_sdp(), maps:get(sdp, Sub)),
     ?assertEqual(<<"sub-1">>, maps:get(to_tag, Sub)),
+    %% the tapped streams, in m-line order, keyed by their SDP label: what a
+    %% per-stream fork selects on
+    ?assertEqual([{0, <<"1">>}, {1, <<"2">>}],
+                 [{I, L} || #{index := I, label := L} <- maps:get(streams, Sub)]),
     ?assertEqual(ok, chappe_sip_media:subscribe_answer(
                        S, #{to_tag => <<"sub-1">>, sdp => <<"v=0 consumer">>})),
     ?assertEqual(ok, chappe_sip_media:unsubscribe(S, #{to_tag => <<"sub-1">>})),
@@ -248,8 +270,17 @@ fake_reply(<<"offer">>) ->
     #{<<"result">> => <<"ok">>, <<"sdp">> => <<"v=0 fake-offer">>};
 fake_reply(<<"answer">>) ->
     #{<<"result">> => <<"ok">>, <<"sdp">> => <<"v=0 fake-answer">>};
+fake_reply(<<"publish">>) ->
+    #{<<"result">> => <<"ok">>, <<"sdp">> => <<"v=0 fake-publish">>};
 fake_reply(<<"subscribe request">>) ->
-    #{<<"result">> => <<"ok">>, <<"sdp">> => <<"v=0 fake-sub">>,
+    %% a two-stream tap, as a multi-stream (SIPREC) recording offer taps
+    #{<<"result">> => <<"ok">>, <<"sdp">> => fake_sub_sdp(),
       <<"to-tag">> => <<"sub-1">>};
 fake_reply(_Other) ->
     #{<<"result">> => <<"ok">>}.
+
+fake_sub_sdp() ->
+    <<"v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\n"
+      "t=0 0\r\n"
+      "m=audio 30010 RTP/AVP 0\r\na=label:1\r\na=rtpmap:0 PCMU/8000\r\n"
+      "m=audio 30012 RTP/AVP 0\r\na=label:2\r\na=rtpmap:0 PCMU/8000\r\n">>.

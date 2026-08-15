@@ -14,11 +14,12 @@
 -export([all/0, init_per_suite/1, end_per_suite/1, end_per_testcase/2]).
 -export([uac_180_200_bye/1, uac_486/1, uac_cancel/1, uac_digest_407/1,
          options_request/1, uac_cap_enforced/1, uac_engine_restart/1,
-         uac_redirect_strips_auth/1]).
+         uac_redirect_strips_auth/1, uac_raw_body/1]).
 
 all() ->
     [uac_180_200_bye, uac_486, uac_cancel, uac_digest_407, options_request,
-     uac_cap_enforced, uac_engine_restart, uac_redirect_strips_auth].
+     uac_cap_enforced, uac_engine_restart, uac_redirect_strips_auth,
+     uac_raw_body].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -119,6 +120,42 @@ uac_180_200_bye(_Config) ->
     receive acked -> ok after 4000 -> ct:fail(no_ack) end,
     ok = chappe_sip_dialog:destroy(Dialog),
     receive byed -> ok after 4000 -> ct:fail(no_bye) end.
+
+%% A body that is not application/sdp: `body' plus `content_type' send it
+%% verbatim (a SIPREC multipart of SDP and rs-metadata here), and the peer's
+%% answer still comes back through the dialog.
+uac_raw_body(_Config) ->
+    {EnginePort, UasPort} = setup(),
+    Test = self(),
+    Body = multipart(),
+    uas(UasPort, fun(Uas) ->
+        {Inv, Src} = uas_recv(Uas, <<"INVITE">>),
+        {ok, Msg} = chappe_sip_msg:parse(Inv),
+        Test ! {invite, chappe_sip_msg:get(<<"content-type">>, Msg),
+                chappe_sip_msg:body(Msg)},
+        ToTag = tag(),
+        uas_send(Uas, Src, resp(Inv, 200, <<"OK">>, ToTag,
+                                [{<<"Contact">>, contact(UasPort)}], sdp())),
+        {_Ack, _} = uas_recv(Uas, <<"ACK">>),
+        Test ! acked,
+        {Bye, BSrc} = uas_recv(Uas, <<"BYE">>),
+        uas_send(Uas, BSrc, resp(Bye, 200, <<"OK">>, ToTag, [], <<>>))
+    end),
+    Uri = <<"sip:srs@127.0.0.1:", (integer_to_binary(UasPort))/binary>>,
+    {ok, Dialog} = chappe_sip:create_uac(Uri, #{
+        contact => contact(EnginePort),
+        body => Body,
+        content_type => <<"multipart/mixed;boundary=chappe">>
+    }),
+    receive
+        {invite, CT, Received} ->
+            ?assertEqual(<<"multipart/mixed;boundary=chappe">>, CT),
+            ?assertEqual(Body, Received)
+    after 4000 -> ct:fail(no_invite)
+    end,
+    receive acked -> ok after 4000 -> ct:fail(no_ack) end,
+    ?assertEqual(sdp(), chappe_sip_dialog:remote_sdp(Dialog)),
+    ok = chappe_sip_dialog:destroy(Dialog).
 
 %% INVITE -> 486 -> app gets SipError 486
 uac_486(_Config) ->
@@ -225,6 +262,14 @@ tag() -> binary:encode_hex(crypto:strong_rand_bytes(5), lowercase).
 sdp() ->
     <<"v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\n"
       "t=0 0\r\nm=audio 40000 RTP/AVP 0\r\n">>.
+
+%% A SIPREC body: the recording offer plus its metadata part.
+multipart() ->
+    <<"--chappe\r\nContent-Type: application/sdp\r\n\r\n",
+      (sdp())/binary,
+      "\r\n--chappe\r\nContent-Type: application/rs-metadata+xml\r\n\r\n"
+      "<recording xmlns=\"urn:ietf:params:xml:ns:recording:1\"/>\r\n"
+      "--chappe--\r\n">>.
 
 uas_recv(Sock, Method) ->
     Len = byte_size(Method),

@@ -27,6 +27,7 @@
     node_restart_notifies_owner/1,
     unknown_call_id_notifies_owner_once/1,
     media_subscription_flow/1,
+    publish_one_sided/1,
     media_ducking/1,
     play_media_blob/1
 ]).
@@ -44,6 +45,7 @@ all() ->
         node_restart_notifies_owner,
         unknown_call_id_notifies_owner_once,
         media_subscription_flow,
+        publish_one_sided,
         media_ducking,
         play_media_blob
     ].
@@ -385,6 +387,45 @@ unknown_call_id_notifies_owner_once(Config) ->
     #{media_lost := true} = chappe_rtpengine_session:info(Sess),
     ok = chappe_rtpengine_session:stop(Sess),
     wait_dead(Sess),
+    ok.
+
+%% A one-sided call: publish establishes the session on its own, an
+%% answer never follows, and the tap and the delete both work from
+%% there with only a from-tag.
+publish_one_sided(Config) ->
+    Server = ?config(server, Config),
+    CallId = <<"sess-publish">>,
+    {ok, Sess} = chappe_rtpengine:start_session(#{call_id => CallId}),
+    {error, {missing_params, [sdp]}} =
+        chappe_rtpengine_session:publish(Sess, #{from_tag => <<"ft-p">>}),
+    {ok, Reply} = chappe_rtpengine_session:publish(Sess, #{
+        from_tag => <<"ft-p">>, sdp => sdp()
+    }),
+    ?assertNotEqual(
+        nomatch,
+        binary:match(
+            chappe_rtpengine_ng:sdp(Reply), <<"a=rtpengine:fake-publish">>
+        )
+    ),
+    #{state := established, to_tag := undefined} =
+        chappe_rtpengine_session:info(Sess),
+    %% a second offer on an established session is a re-INVITE, and a
+    %% second publish is refused rather than silently re-anchoring
+    {error, busy} = chappe_rtpengine_session:publish(Sess, #{
+        from_tag => <<"ft-p">>, sdp => sdp()
+    }),
+    {ok, _} = chappe_rtpengine_session:subscribe_request(Sess, #{
+        from_tags => [<<"ft-p">>]
+    }),
+    ok = chappe_rtpengine_session:stop(Sess),
+    wait_dead(Sess),
+    %% the refused second publish never reached the wire
+    ?assertEqual(
+        [<<"publish">>, <<"subscribe request">>, <<"delete">>],
+        commands(Server)
+    ),
+    {_, Delete} = lists:last(chappe_rtpengine_fake_server:received(Server)),
+    ?assertEqual(<<"ft-p">>, maps:get(<<"from-tag">>, Delete)),
     ok.
 
 media_subscription_flow(Config) ->

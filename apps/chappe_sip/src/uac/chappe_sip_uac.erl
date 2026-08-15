@@ -23,6 +23,7 @@
 %% Opts: #{method => binary() (default INVITE),
 %%         from => binary(), to => binary(), contact => binary(),
 %%         local_sdp => iodata(), headers => [{binary(), iodata()}],
+%%         body => iodata(), content_type => binary(),
 %%         proxy => binary(), auth => #{user := binary(), pass := binary()},
 %%         follow_redirects => boolean(), no_ack => boolean(),
 %%         owner => pid(), notify => pid()}

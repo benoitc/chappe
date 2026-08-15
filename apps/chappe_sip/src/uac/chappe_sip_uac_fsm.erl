@@ -329,16 +329,7 @@ build_request(#data{
             _ -> ExtraHeaders0
         end,
     AuthHeaders = maps:get('$auth_headers', Opts, []),
-    {CT, Body} =
-        case maps:get(local_sdp, Opts, undefined) of
-            undefined ->
-                {[], <<>>};
-            Sdp ->
-                {
-                    [{<<"Content-Type">>, <<"application/sdp">>}],
-                    iolist_to_binary(Sdp)
-                }
-        end,
+    {CT, Body} = request_body(Opts),
     HdrBin = chappe_sip_hdr_io:join(ExtraHeaders ++ AuthHeaders ++ CT),
     <<Method/binary, " ", Uri/binary, " SIP/2.0\r\n", "From: ", From/binary,
         "\r\n", "To: ", To/binary, "\r\n", "Call-ID: ", CallId/binary, "\r\n",
@@ -346,6 +337,27 @@ build_request(#data{
         Contact/binary, ">\r\n", "Max-Forwards: 70\r\n", HdrBin/binary,
         "Content-Length: ", (integer_to_binary(byte_size(Body)))/binary,
         "\r\n\r\n", Body/binary>>.
+
+%% The request body: local_sdp is the common case and types itself
+%% application/sdp; body carries anything else (a SIPREC
+%% multipart/mixed of SDP plus rs-metadata, an ISUP body, ...) with
+%% content_type naming it. body wins when both are given.
+request_body(Opts) ->
+    case maps:get(body, Opts, undefined) of
+        undefined ->
+            case maps:get(local_sdp, Opts, undefined) of
+                undefined ->
+                    {[], <<>>};
+                Sdp ->
+                    {content_type(<<"application/sdp">>), iolist_to_binary(Sdp)}
+            end;
+        Body ->
+            CT = maps:get(content_type, Opts, <<"application/sdp">>),
+            {content_type(CT), iolist_to_binary(Body)}
+    end.
+
+content_type(CT) ->
+    [{<<"Content-Type">>, CT}].
 
 %% ACK to a 2xx (unless no_ack for 3PCC). Built from the response so the
 %% To carries the peer tag.

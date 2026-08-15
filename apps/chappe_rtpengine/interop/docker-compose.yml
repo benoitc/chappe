@@ -15,7 +15,7 @@ services:
       - "12223:12223/tcp"
       - "12224:12224/tcp"
       - "12225:12225/tcp"
-      - "30000-30020:30000-30020/udp"
+      - "30000-30100:30000-30100/udp"
     command: >
       sh -c "openssl req -x509 -newkey rsa:2048 -nodes -days 1
       -subj /CN=localhost
@@ -28,6 +28,6 @@ services:
       --listen-http=0.0.0.0:12224
       --listen-https=0.0.0.0:12225
       --https-cert=/tmp/rtpe.crt --https-key=/tmp/rtpe.key
-      --port-min=30000 --port-max=30020
+      --port-min=30000 --port-max=30100
       --delete-delay=0
       --foreground --log-stderr"

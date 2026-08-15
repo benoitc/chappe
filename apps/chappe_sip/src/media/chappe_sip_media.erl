@@ -32,6 +32,7 @@
     session/2,
     offer/2, offer/3,
     answer/2, answer/3,
+    publish/2, publish/3,
     play/2,
     record/2,
     stop_record/1,
@@ -174,6 +175,22 @@ answer(#media_session{backend = rtpengine, ref = R, identity = I}, Sdp, O) ->
 answer(#media_session{backend = freeswitch, ref = R, identity = I}, Sdp, O) ->
     chappe_sip_media_freeswitch:answer(R, I, Sdp, O).
 
+%% Anchor a call that has no second leg: the offer is answered by the media
+%% engine itself and the returned SDP is what goes into the 200 OK. Use it for
+%% a receive-only session (a SIPREC recording server taking N sendonly streams,
+%% a publisher feeding subscribers) where there is no onward UAC to negotiate
+%% with. Every m-line of the offer is answered. Tap the streams afterwards with
+%% subscribe/2. rtpengine only.
+-spec publish(session(), iodata()) -> {ok, binary()} | {error, term()}.
+publish(S, Sdp) ->
+    publish(S, Sdp, #{}).
+
+-spec publish(session(), iodata(), map()) -> {ok, binary()} | {error, term()}.
+publish(#media_session{backend = rtpengine, ref = R, identity = I}, Sdp, O) ->
+    chappe_sip_media_rtpengine:publish(R, I, Sdp, O);
+publish(#media_session{backend = freeswitch, ref = R, identity = I}, Sdp, O) ->
+    chappe_sip_media_freeswitch:publish(R, I, Sdp, O).
+
 %% Play a prompt into the session. Media is a backend param map (rtpengine:
 %% #{file => _} etc.).
 -spec play(session(), map()) -> ok | {error, term()}.
@@ -215,8 +232,19 @@ conference(#media_session{backend = freeswitch, ref = R}, Room, Opts) ->
 %% defaults to PCMU so the receiver decode is trivial. Transcoded forks need an
 %% rtpengine built with transcoding support; a node without it surfaces the
 %% rtpengine error. rtpengine only.
+%%
+%% `streams' lists the offered media streams in m-line order with their
+%% a=label, which is what a multi-stream tap (one m-line per recorded party)
+%% is keyed on: subscribe once per stream and answer each subscription with
+%% chappe_rtpengine_sdp:fork_answer/3 to route that one stream to its own
+%% receiver.
 -spec subscribe(session(), map()) ->
-    {ok, #{sdp := binary(), to_tag := binary()}} | {error, term()}.
+    {ok, #{
+        sdp := binary(),
+        to_tag := binary(),
+        streams := [chappe_rtpengine_sdp:stream()]
+    }}
+    | {error, term()}.
 subscribe(#media_session{backend = rtpengine, ref = R, identity = I}, Opts) ->
     chappe_sip_media_rtpengine:subscribe(R, I, Opts);
 subscribe(#media_session{backend = freeswitch, ref = R}, Opts) ->

@@ -13,7 +13,8 @@ make interop
 
 That runs `test/e2e.sh`, which builds the image, starts the compose stack,
 discovers the address rtpengine can reach your machine at, runs
-`chappe_rtpengine_live_SUITE` and `chappe_rtpengine_e2e_SUITE`, and tears the stack down.
+`chappe_rtpengine_live_SUITE`, `chappe_rtpengine_e2e_SUITE` and
+`chappe_rtpengine_siprec_SUITE`, and tears the stack down.
 
 ## Run the stack by hand
 
@@ -21,7 +22,7 @@ discovers the address rtpengine can reach your machine at, runs
 docker compose -f interop/docker-compose.yml up -d --build
 RTPENGINE_HOST=127.0.0.1 RTPENGINE_PORT=12222 RTPENGINE_TCP_PORT=12223 \
     RTPENGINE_HTTP_PORT=12224 RTPENGINE_HTTPS_PORT=12225 \
-    rebar3 ct --suite chappe_rtpengine_live_SUITE,chappe_rtpengine_e2e_SUITE
+    rebar3 ct --suite chappe_rtpengine_live_SUITE,chappe_rtpengine_e2e_SUITE,chappe_rtpengine_siprec_SUITE
 docker compose -f interop/docker-compose.yml down
 ```
 
@@ -39,7 +40,9 @@ docker exec rtpe-e2e getent hosts host.docker.internal
   publish/subscribe, playback and silence, and those cases skip with an
   explanatory message.
 - `--delete-delay=0` matters: without it deleted sessions hold their ports
-  for 30 seconds and the small published port range runs out mid-suite.
+  for 30 seconds and the published port range runs out mid-suite. The range
+  is 30000-30100: a three-stream recording fork alone takes 24 ports (the
+  anchor plus one subscription per stream, RTP and RTCP each).
 - The stack exposes all four NG listeners: UDP 12222, TCP 12223, HTTP
   12224 (`--listen-http`, WebSocket) and HTTPS 12225 (`--listen-https`,
   TLS WebSocket with a throwaway self-signed certificate generated at

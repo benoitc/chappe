@@ -6,6 +6,7 @@
 %%
 %% States:
 %%   idle -> offering -> offered -> answering -> established
+%%   idle -> publishing -> established     (one-sided offer)
 %%   established -> reoffering -> offered  (re-INVITE)
 %%   any active state -> deleting -> stop
 %%
@@ -38,7 +39,7 @@
 -behaviour(gen_statem).
 
 -export([start/1, start_link/2]).
--export([offer/2, answer/2, query/1, stop/1, info/1]).
+-export([offer/2, answer/2, publish/2, query/1, stop/1, info/1]).
 -export([
     cmd/3,
     play_media/2,
@@ -109,6 +110,18 @@ offer(Session, Params) ->
     chappe_rtpengine_ng:result() | {error, term()}.
 answer(Session, Params) ->
     safe_call(Session, {answer, Params}).
+
+%% One-sided offer: rtpengine answers it itself, so the call is
+%% established with a single party and no second leg to negotiate.
+%% That is the anchor for a receive-only session (a SIPREC recording
+%% server, a media publisher): every m-line of the offer comes back
+%% answered in the reply SDP, ready to go into the 200 OK, and the
+%% streams are then tapped with subscribe_request/2. Needs from_tag
+%% and sdp; goes straight to established (answer/2 does not follow).
+-spec publish(pid(), chappe_rtpengine_ng:params()) ->
+    chappe_rtpengine_ng:result() | {error, term()}.
+publish(Session, Params) ->
+    safe_call(Session, {publish, Params}).
 
 -spec query(pid()) -> chappe_rtpengine_ng:result() | {error, term()}.
 query(Session) ->
@@ -216,6 +229,13 @@ stop_recording(Session) ->
 %% pass party => caller | callee (or from_tags => [Tag]) to tap one
 %% participant, or flags => [all] for everyone. Control the output
 %% with codec => #{mask => [...], transcode => [...]} and ptime.
+%%
+%% The offer describes every media stream of the tapped participants,
+%% so a participant with N streams (a SIPREC recording offer, one
+%% m-line per party) is tapped as N streams in m-line order. rtpengine
+%% has no request-side selector for one of them: the answer decides,
+%% by giving that m-line a port and rejecting the rest. Build it with
+%% chappe_rtpengine_sdp:fork_answer/3 to send one stream to one receiver.
 -spec subscribe_request(pid(), chappe_rtpengine_ng:params()) ->
     chappe_rtpengine_ng:result() | {error, term()}.
 subscribe_request(Session, Params) ->
@@ -305,6 +325,26 @@ handle_event({call, From}, {offer, Params0}, established, Data) ->
 handle_event({call, From}, {offer, _Params}, reoffering, _Data) ->
     {keep_state_and_data, [{reply, From, {error, glare}}]};
 handle_event({call, From}, {offer, _Params}, _State, _Data) ->
+    {keep_state_and_data, [{reply, From, {error, busy}}]};
+%% publish (one-sided offer; rtpengine writes the answer)
+
+handle_event({call, From}, {publish, Params}, idle, Data) ->
+    case check([from_tag, sdp], Params) of
+        ok ->
+            case send_async(publish, Params, Data) of
+                {ok, Ref, Data1} ->
+                    Data2 = Data1#data{
+                        from_tag = maps:get(from_tag, Params)
+                    },
+                    {next_state, publishing,
+                        add_pending(Ref, From, publish, Data2)};
+                {error, Reason} ->
+                    {keep_state_and_data, [{reply, From, {error, Reason}}]}
+            end;
+        {error, _} = Error ->
+            {keep_state_and_data, [{reply, From, Error}]}
+    end;
+handle_event({call, From}, {publish, _Params}, _State, _Data) ->
     {keep_state_and_data, [{reply, From, {error, busy}}]};
 %% answer
 
@@ -527,6 +567,13 @@ handle_reply(offer, From, Result, offering, Data) ->
             _ -> idle
         end,
     {next_state, Next, Data, [{reply, From, Result}]};
+handle_reply(publish, From, Result, publishing, Data) ->
+    Next =
+        case Result of
+            {ok, _} -> established;
+            _ -> idle
+        end,
+    {next_state, Next, Data, [{reply, From, Result}]};
 handle_reply(reoffer, From, Result, reoffering, Data) ->
     case Result of
         {ok, _} ->
@@ -623,7 +670,7 @@ is_unknown_call_id(_Result) ->
 
 active(State) ->
     lists:member(State, [
-        offering, offered, answering, established, reoffering
+        offering, offered, answering, established, reoffering, publishing
     ]).
 
 notify_owner(Event, Data) ->

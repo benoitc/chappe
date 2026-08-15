@@ -17,6 +17,7 @@
     start/2,
     offer/4,
     answer/4,
+    publish/4,
     play/2,
     record/2,
     stop_record/1,
@@ -70,6 +71,15 @@ answer(Pid, Id, Sdp, Opts) ->
     Params = tag_param(to_tag, Id, Opts, #{sdp => Sdp}),
     reply_sdp(chappe_rtpengine_session:answer(Pid, Params)).
 
+%% One-sided anchor: rtpengine answers the offer itself, so the rewritten SDP
+%% out is the answer to send back to the offering party. from_tag is that
+%% party's dialog tag; there is no answer/4 to follow.
+-spec publish(pid(), identity(), iodata(), map()) ->
+    {ok, binary()} | {error, term()}.
+publish(Pid, Id, Sdp, Opts) ->
+    Params = tag_param(from_tag, Id, Opts, #{sdp => Sdp}),
+    reply_sdp(chappe_rtpengine_session:publish(Pid, Params)).
+
 -spec play(pid(), map()) -> ok | {error, term()}.
 play(Pid, Media) ->
     to_ok(chappe_rtpengine_session:play_media(Pid, Media)).
@@ -96,7 +106,12 @@ conference(_Pid, _Room, _Opts) ->
 %% party against the tags it stored during offer/answer. Returns the tapped
 %% SDP offer plus the subscription to-tag.
 -spec subscribe(pid(), identity(), map()) ->
-    {ok, #{sdp := binary(), to_tag := binary()}} | {error, term()}.
+    {ok, #{
+        sdp := binary(),
+        to_tag := binary(),
+        streams := [chappe_rtpengine_sdp:stream()]
+    }}
+    | {error, term()}.
 subscribe(Pid, _Id, Opts) ->
     reply_sub(
         chappe_rtpengine_session:subscribe_request(Pid, sub_params(Opts))
@@ -239,9 +254,16 @@ reply_sub({ok, Reply}) ->
             maps:get(<<"to-tag">>, Reply, undefined)
         }
     of
-        {undefined, _} -> {error, no_sdp};
-        {_, undefined} -> {error, no_to_tag};
-        {Sdp, ToTag} -> {ok, #{sdp => Sdp, to_tag => ToTag}}
+        {undefined, _} ->
+            {error, no_sdp};
+        {_, undefined} ->
+            {error, no_to_tag};
+        {Sdp, ToTag} ->
+            {ok, #{
+                sdp => Sdp,
+                to_tag => ToTag,
+                streams => chappe_rtpengine_sdp:streams(Sdp)
+            }}
     end;
 reply_sub({error, Reason, _Reply}) ->
     {error, Reason};

@@ -125,6 +125,13 @@ default_handler(_N, #{<<"command">> := Cmd, <<"sdp">> := SDP} = Dict) when
         <<"sdp">> => <<SDP/binary, "a=rtpengine:fake\r\n">>,
         <<"call-id-echo">> => maps:get(<<"call-id">>, Dict, <<>>)
     }};
+%% publish is one-sided: rtpengine answers the offer itself, so the
+%% reply SDP is an answer with every m-line accepted.
+default_handler(_N, #{<<"command">> := <<"publish">>, <<"sdp">> := SDP}) ->
+    {reply, #{
+        <<"result">> => <<"ok">>,
+        <<"sdp">> => <<SDP/binary, "a=rtpengine:fake-publish\r\n">>
+    }};
 default_handler(_N, #{<<"command">> := <<"query">>}) ->
     {reply, #{
         <<"result">> => <<"ok">>,
