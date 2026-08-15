@@ -18,6 +18,7 @@
     ping/1,
     offer/2,
     answer/2,
+    publish/2,
     delete/2,
     query/2,
     cmd/3,
@@ -68,14 +69,26 @@ ping(Node) ->
 %% transport_protocol, replace, direction, ...) passes through.
 -spec offer(node_name(), chappe_rtpengine_ng:params()) -> result().
 offer(Node, Params) ->
-    ok = required([call_id, from_tag, sdp], Params),
-    safe_cmd(Node, offer, Params).
+    offering(Node, offer, Params).
 
 %% Same as offer plus the answering party's to_tag.
 -spec answer(node_name(), chappe_rtpengine_ng:params()) -> result().
 answer(Node, Params) ->
     ok = required([call_id, from_tag, to_tag, sdp], Params),
     safe_cmd(Node, answer, Params).
+
+%% One-sided offer for a session with no second leg: rtpengine answers
+%% it itself and the reply SDP is the answer to send back. Params:
+%% call_id, from_tag, sdp required.
+-spec publish(node_name(), chappe_rtpengine_ng:params()) -> result().
+publish(Node, Params) ->
+    offering(Node, publish, Params).
+
+%% offer and publish take the same parameters; only the party count on
+%% the far side differs.
+offering(Node, Command, Params) ->
+    ok = required([call_id, from_tag, sdp], Params),
+    safe_cmd(Node, Command, Params).
 
 -spec delete(node_name(), chappe_rtpengine_ng:params()) -> result().
 delete(Node, Params) ->

@@ -51,8 +51,8 @@ natural home:
 | `ivr` | FreeSWITCH | menus and prompts on a channel |
 | `play`, `record`, `dtmf` | either (rtpengine by default) | play a file, record, send DTMF; both engines implement these |
 
-- **rtpengine only:** `offer`/`answer`, `relay`, `transcode`, `subscribe`,
-  `duck`. On FreeSWITCH these return `{error, unsupported}` (offer/answer) or
+- **rtpengine only:** `offer`/`answer`/`publish`, `relay`, `transcode`,
+  `subscribe`, `duck`. On FreeSWITCH these return `{error, unsupported}` or
   `{error, {unsupported, _}}` (subscribe/duck): that backend has no SDP for you
   to rewrite and no anchored RTP to tap.
 - **FreeSWITCH only:** `conference` and `ivr`, which need a mixing bridge
@@ -127,6 +127,58 @@ ok = chappe_sip_media:unsubscribe(S, #{to_tag => SubTag}).
 Use `party => caller | callee` to tap one leg, or omit `party` to tap the whole
 call.
 
+## Anchor a recording (SIPREC) call (rtpengine)
+
+A recording server is a call with one leg. The recorder sends you an INVITE whose
+`multipart/mixed` body is an SDP offer with one sendonly `m=audio` per recorded
+party (each with an `a=label`) plus an `application/rs-metadata+xml` part. You
+receive every stream and fork each one out; you never bridge an onward leg, so
+there is no `answer/2` to make and no UAC to originate.
+
+Use `publish/2` for that anchor: the media engine answers the offer itself and
+gives you the SDP for your 200 OK. `chappe_sip_req:body/1` hands you the multipart
+untouched, so split it and pass the SDP part in.
+
+```erlang
+chappe_sip:invite(fun(Req, Res) ->
+    {ok, S} = chappe_sip_media:session(
+                #{call_id => chappe_sip_req:call_id(Req),
+                  from_tag => chappe_sip_req:from_tag(Req)},
+                #{capability => anchor}),
+
+    %% the recorder's N sendonly streams, answered by rtpengine itself
+    {ok, AnswerSdp} = chappe_sip_media:publish(S, SrcOfferSdp),
+    {ok, _Dialog} = chappe_sip:create_uas(Req, Res, #{local_sdp => AnswerSdp})
+end).
+```
+
+Then fork each recorded party to its own receiver. One subscription per stream,
+each answered with only that stream live: `subscribe/2` reports the offered
+streams in m-line order with their labels, and
+`chappe_rtpengine_sdp:fork_answer/3` builds the aligned answer.
+
+```erlang
+{ok, #{sdp := TapOffer, to_tag := SubTag, streams := Streams}} =
+    chappe_sip_media:subscribe(S, #{party => caller, ptime => 20}),
+#{label := Label} = hd(Streams),
+{ok, Answer} = chappe_rtpengine_sdp:fork_answer(
+                 TapOffer, {label, Label},
+                 #{address => <<"198.51.100.7">>, port => 40000, ptime => 20}),
+ok = chappe_sip_media:subscribe_answer(S, #{to_tag => SubTag, sdp => Answer,
+                                            flags => [allow_transcoding]}).
+```
+
+Each receiver gets its own PCMU flow at its own ip:port, so a transcriber runs per
+participant. rtpengine has no request-side selector for one media stream of a
+participant: the answer decides, which is why the selection lives there. See the
+`chappe_rtpengine` subscriptions guide for the wire-level detail and for feeding
+several receivers from a single subscription.
+
+To originate a SIPREC INVITE rather than receive one, `create_uac/2` takes
+`body` plus `content_type` instead of `local_sdp`, so you can send the
+`multipart/mixed` yourself; the peer's answer is on the dialog
+(`chappe_sip_dialog:remote_sdp/1`).
+
 ## Duck a party while a prompt plays (rtpengine)
 
 Block or silence one party's media, play into the call, then restore it. `duck/2`
@@ -181,7 +233,7 @@ options, or change the default map globally with a
 `capabilities => #{Capability => Backend}` entry in the media config.
 
 To add a backend, write an adapter module exposing the operation set (`start/2`,
-`offer/4`, `answer/4`, `play/2`, `record/2`, `stop_record/1`, `dtmf/2`,
+`offer/4`, `answer/4`, `publish/4`, `play/2`, `record/2`, `stop_record/1`, `dtmf/2`,
 `conference/3`, `subscribe/3`, `subscribe_answer/2`, `unsubscribe/2`, `duck/2`,
 `unduck/2`, `stop/1`, `info/1`, `configure/1`) and dispatch to it from
 `chappe_sip_media`. Return `{error, {unsupported, Capability}}` for anything the
