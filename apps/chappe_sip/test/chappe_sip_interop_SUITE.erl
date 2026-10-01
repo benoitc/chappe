@@ -145,8 +145,9 @@ jssip_call(Config) ->
 kamailio_options(Config) ->
     EP = pick(),
     Test = self(),
-    %% Kamailio reaches the host through host-gateway (the docker bridge on
-    %% Linux), which a loopback-bound listener never sees
+    %% On Linux Kamailio shares the host network and pings 127.0.0.1;
+    %% elsewhere (Docker Desktop, OrbStack on macOS) it reaches the host
+    %% through host.docker.internal. chappe listens on every address.
     ok = chappe_sip:start(#{
         contact => <<"sip:0.0.0.0:", (integer_to_binary(EP))/binary>>
     }),
@@ -157,21 +158,29 @@ kamailio_options(Config) ->
     end),
     Img = ?config(kam_image, Config),
     CN = ?config(kam_container, Config),
+    {NetOpt, Target} =
+        case os:type() of
+            {unix, linux} -> {"--network host", "127.0.0.1"};
+            _ ->
+                {"--add-host=host.docker.internal:host-gateway",
+                    "host.docker.internal"}
+        end,
     DList = filename:join(?config(priv_dir, Config), "dispatcher.list"),
     ok = file:write_file(DList, io_lib:format(
-           "1 sip:host.docker.internal:~w 0 0~n", [EP])),
+           "1 sip:~s:~w 0 0~n", [Target, EP])),
     Cfg = filename:join([?config(interop_dir, Config),
                          "kamailio", "kamailio.cfg"]),
     _ = os:cmd(lists:flatten(io_lib:format(
-          "docker run -d --name ~s "
-          "--add-host=host.docker.internal:host-gateway "
+          "docker run -d --name ~s ~s "
           "-v ~s:/etc/kamailio/kamailio.cfg:ro "
           "-v ~s:/etc/kamailio/dispatcher.list:ro ~s >/dev/null 2>&1",
-          [CN, shell_quote(Cfg), shell_quote(DList), Img]))),
+          [CN, NetOpt, shell_quote(Cfg), shell_quote(DList), Img]))),
     %% chappe must receive an OPTIONS ping from Kamailio.
     receive options_ping -> ok
-    after 30000 -> ct:fail(no_options_from_kamailio) end,
-    %% Kamailio must mark chappe Active (it accepted chappe's 200).
+    after 30000 ->
+        ct:log("kamailio logs:~n~s", [os:cmd("docker logs " ++ CN ++ " 2>&1")]),
+        ct:fail(no_options_from_kamailio)
+    end,
     true = poll_active(CN, 20),
     ok.
 
