@@ -34,6 +34,8 @@ make test       # eunit + ct
 make test-static  # lint + xref + dialyzer + fmt-check
 make check      # everything
 make asan       # the C NIF under AddressSanitizer (Linux container)
+make cover      # eunit + ct line coverage (MIN_COVERAGE=N to gate)
+make compliance # per-app RFC requirement matrices (GATE=demo to gate)
 ```
 
 ## Layout

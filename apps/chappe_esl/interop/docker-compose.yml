@@ -8,15 +8,20 @@
 #     rebar3 ct --suite test/chappe_esl_live_SUITE
 #   docker compose -f interop/docker-compose.yml down
 #
-# The event socket must listen on 0.0.0.0 (not the default 127.0.0.1) so the
-# host can reach it. See interop/README.md if you build your own image.
+# The mounted event_socket.conf.xml listens on 0.0.0.0 and applies the
+# allow-all ACL from the mounted acl.conf.xml, so the host reaches the
+# published port (the source is the bridge gateway on Linux). Test-only and
+# insecure: never ship an allow-all ESL ACL. See interop/README.md.
 
 services:
   freeswitch:
     image: safarov/freeswitch:latest
     container_name: chappe_esl_fs
     ports:
-      - "8021:8021"
+      - "127.0.0.1:8021:8021"
+    volumes:
+      - ./conf/event_socket.conf.xml:/etc/freeswitch/autoload_configs/event_socket.conf.xml:ro
+      - ./conf/acl.conf.xml:/etc/freeswitch/autoload_configs/acl.conf.xml:ro
     environment:
       - EVENT_SOCKET_PASSWORD=ClueCon
     healthcheck:

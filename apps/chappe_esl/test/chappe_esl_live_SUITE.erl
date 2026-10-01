@@ -37,7 +37,13 @@ init_per_suite(Config) ->
                 {ok, Conn} ->
                     [{conn, Conn} | Config];
                 {error, Reason} ->
-                    {skip, {connect_failed, Reason}}
+                    %% FS_REQUIRED=1 (the CI job): a FreeSWITCH that
+                    %% cannot be reached fails the run instead of
+                    %% skipping every case
+                    case os:getenv("FS_REQUIRED") of
+                        "1" -> ct:fail({connect_failed, Reason});
+                        _ -> {skip, {connect_failed, Reason}}
+                    end
             end
     end.
 

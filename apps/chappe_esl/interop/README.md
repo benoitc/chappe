@@ -39,9 +39,13 @@ docker compose -f interop/docker-compose.yml down
 
 ## Notes
 
-- The event socket must listen on `0.0.0.0` for the host to reach it. If you
-  build your own image, set `<param name="listen-ip" value="0.0.0.0"/>` and the
-  password in `autoload_configs/event_socket.conf.xml`.
+- `conf/event_socket.conf.xml` and `conf/acl.conf.xml` are mounted into the
+  container: the socket listens on `0.0.0.0` with an allow-all ACL so the host
+  reaches the published port. Test-only; never ship that ACL.
+- `make interop-esl` from the umbrella root brings the container up, waits for
+  it to be healthy, runs the suite with `FS_REQUIRED=1` (no silent skip) and
+  tears it down. Docker Desktop for Mac can reset the published ESL
+  connection; run it on Linux.
 - `originate_and_events` and `conference` expect the default dialplan apps
   (`park`, `conference`) to be loaded. Adjust the commands in
   `test/chappe_esl_live_SUITE.erl` if your FreeSWITCH profile differs.

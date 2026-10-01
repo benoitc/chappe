@@ -50,8 +50,12 @@ rebar3 ct           # Common Test suites (chappe_sip_*_SUITE, chappe_rtpengine_*
 
 `make check` runs all of them. CI (`.github/workflows/ci.yml`) runs
 `format`/`lint`/`xref`/`dialyzer` as fast-fail static checks, then gates
-`build`/`eunit`/`ct` on them. The C NIF is validated under AddressSanitizer with
-`make asan` (Linux container; see `apps/chappe_sip/test/asan/`).
+`build`/`eunit`/`ct` on them. `ct` also runs `make cover`, which fails under
+the `MIN_COVERAGE` floor set in the workflow (raise it, never lower it). The
+docker jobs run the conformance lab and the compliance gate
+(`make interop-conformance`, `make compliance GATE=demo`), the JsSIP/Kamailio
+suite, `make interop`, `make interop-mix`, `make interop-esl`, and the C NIF
+under AddressSanitizer (`make asan`; see `apps/chappe_sip/test/asan/`).
 
 ## Build & Development Commands
 
@@ -59,8 +63,10 @@ rebar3 ct           # Common Test suites (chappe_sip_*_SUITE, chappe_rtpengine_*
 rebar3 compile                                   # build (first run builds sofia)
 SKIP_ENGINE_BUILD=1 rebar3 compile               # skip the C build (fake engine)
 rebar3 ct --dir apps/chappe_sip/test             # one app's suites
-rebar3 shell                                     # dev shell (all three apps)
+rebar3 shell                                     # dev shell (all apps)
 make asan                                        # NIF under ASan (Linux)
+make cover MIN_COVERAGE=80                       # eunit + ct line coverage
+make compliance GATE=demo                        # requirement matrices
 ```
 
 Per-app design docs live under each app's `docs/`. The C engine + NIF design is

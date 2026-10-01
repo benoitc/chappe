@@ -5,7 +5,7 @@
 
 .PHONY: all compile test test-static check eunit ct lint xref dialyzer \
         fmt fmt-check asan interop interop-mix interop-conformance \
-        compliance clean
+        interop-esl compliance cover clean
 
 all: compile
 
@@ -15,7 +15,10 @@ compile:
 eunit:
 	rebar3 eunit
 
+# rebar3 copies each app's test dir into _build and never prunes it, so a
+# deleted suite would still run; drop the copies first.
 ct:
+	rm -rf _build/test/lib/chappe_*/test
 	rebar3 ct
 
 lint:
@@ -47,6 +50,10 @@ asan:
 interop:
 	apps/chappe_rtpengine/test/e2e.sh
 
+# The ESL client against a real FreeSWITCH in docker.
+interop-esl:
+	apps/chappe_esl/test/e2e.sh
+
 # The mixer behind a real rtpengine (transcoded legs, N-1 by Goertzel).
 interop-mix:
 	apps/chappe_mix/test/interop.sh
@@ -71,6 +78,16 @@ compliance:
 interop-conformance:
 	CONFORMANCE=1 rebar3 ct \
 	    --suite apps/chappe_sip/test/chappe_sip_conformance_SUITE
+
+# eunit + ct line coverage over every app; fails under MIN_COVERAGE percent.
+# Raise MIN_COVERAGE as coverage grows, never lower it.
+MIN_COVERAGE ?= 0
+
+cover:
+	rm -rf _build/test/cover _build/test/lib/chappe_*/test
+	rebar3 eunit --cover
+	rebar3 ct --cover
+	rebar3 cover --verbose --min_coverage=$(MIN_COVERAGE)
 
 clean:
 	rebar3 clean
