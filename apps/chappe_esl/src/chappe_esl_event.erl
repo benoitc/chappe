@@ -5,7 +5,9 @@
 %%
 %% FreeSWITCH tags every frame with a Content-Type. command/reply and
 %% api/response are answers to commands; the text/event-* types carry events;
-%% text/disconnect-notice and log/data are out-of-band notices. An event is a
+%% text/disconnect-notice and log/data are out-of-band notices, and
+%% text/rude-rejection is sent instead of auth/request when the ACL denies the
+%% client (the body is the reason; the socket closes next). An event is a
 %% map of header keys to values plus a decoded body. event-plain values are
 %% URL-encoded (%XX, space is %20); event-json is a JSON object whose optional
 %% "_body" field holds the body; event-xml is kept raw (no xmerl dependency).
@@ -29,6 +31,7 @@
     | {event, event()}
     | {disconnect, headers(), binary()}
     | {log, headers(), binary()}
+    | {rejected, binary()}
     | {unknown, headers(), binary()}.
 
 %% Classify and decode one frame.
@@ -51,6 +54,8 @@ decode(#{headers := H, body := B}) ->
             {disconnect, H, B};
         <<"log/data">> ->
             {log, H, B};
+        <<"text/rude-rejection">> ->
+            {rejected, string:trim(B)};
         _Other ->
             {unknown, H, B}
     end.

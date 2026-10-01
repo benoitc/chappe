@@ -4,7 +4,8 @@
 %% ws_handler for the fake rtpengine WebSocket node: every binary
 %% frame goes to the fake's control process, which decides what (and
 %% when) to send back by messaging the session:
-%%   {send, Bin}  send Bin as one binary frame
+%%   {send, Bin}       send Bin as one binary frame
+%%   {send_text, Bin}  send Bin as one text frame
 %%   close        close the connection
 -module(chappe_rtpengine_fake_ws_handler).
 -behaviour(ws_handler).
@@ -22,6 +23,8 @@ handle_in(_Other, State) ->
 
 handle_info({send, Bin}, State) ->
     {reply, {binary, Bin}, State};
+handle_info({send_text, Bin}, State) ->
+    {reply, {text, Bin}, State};
 handle_info(close, State) ->
     {stop, normal, State};
 handle_info(_Msg, State) ->

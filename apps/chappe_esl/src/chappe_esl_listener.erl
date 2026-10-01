@@ -39,6 +39,7 @@ init(Opts) ->
     Port = maps:get(port, Opts),
     Handler = maps:get(handler, Opts),
     Args = maps:get(handler_args, Opts, undefined),
+    ConnOpts = maps:with([linger], Opts),
     ListenOpts = [
         binary,
         {packet, raw},
@@ -50,7 +51,7 @@ init(Opts) ->
         {ok, Listen} ->
             Self = self(),
             Acceptor = spawn_link(fun() ->
-                accept_loop(Self, Listen, Handler, Args)
+                accept_loop(Self, Listen, Handler, Args, ConnOpts)
             end),
             {ok, #state{
                 ref = maps:get(ref, Opts, Port),
@@ -80,21 +81,21 @@ terminate(_Reason, #state{listen = Listen}) ->
 
 %% internal
 
-accept_loop(Owner, Listen, Handler, Args) ->
+accept_loop(Owner, Listen, Handler, Args, ConnOpts) ->
     case gen_tcp:accept(Listen) of
         {ok, Socket} ->
-            handoff(Socket, Handler, Args),
-            accept_loop(Owner, Listen, Handler, Args);
+            handoff(Socket, Handler, Args, ConnOpts),
+            accept_loop(Owner, Listen, Handler, Args, ConnOpts);
         {error, closed} ->
             ok;
         {error, Reason} ->
             ?LOG_WARNING("chappe_esl_listener: accept error ~p", [Reason]),
             timer:sleep(?ACCEPT_ERROR_BACKOFF_MS),
-            accept_loop(Owner, Listen, Handler, Args)
+            accept_loop(Owner, Listen, Handler, Args, ConnOpts)
     end.
 
-handoff(Socket, Handler, Args) ->
-    case chappe_esl_outbound_sup:start_conn(Handler, Args) of
+handoff(Socket, Handler, Args, ConnOpts) ->
+    case chappe_esl_outbound_sup:start_conn(Handler, Args, ConnOpts) of
         {ok, Conn} ->
             ok = gen_tcp:controlling_process(Socket, Conn),
             ok = chappe_esl_conn:activate(Conn, Socket);

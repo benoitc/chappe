@@ -20,7 +20,15 @@ channels from Erlang.
 }).
 ```
 
-The connecting process becomes the controlling process for events.
+The connecting process becomes the controlling process for events and is
+linked to the connection.
+
+Connect fails with a tagged error:
+
+```erlang
+{error, {auth_failed, <<"-ERR invalid">>}} = chappe_esl:connect(BadPassword),
+{error, {rejected, <<"Access Denied, go away.">>}} = chappe_esl:connect(DeniedByAcl).
+```
 
 ## Run api commands
 
@@ -29,6 +37,14 @@ The connecting process becomes the controlling process for events.
 ```erlang
 {ok, Body} = chappe_esl:api(Conn, "sofia status"),
 {ok, Body2} = chappe_esl:api(Conn, ["uuid_getvar ", Uuid, " state"]).
+```
+
+A `-ERR` body comes back as an error, and a slow command as a timeout (the
+default is 10 s; the caller does not exit):
+
+```erlang
+{error, <<"-ERR nope Command not found!">>} = chappe_esl:api(Conn, "nope"),
+{error, timeout} = chappe_esl:api(Conn, "sofia status", 100).
 ```
 
 ## Run background jobs
@@ -47,6 +63,9 @@ from the controlling process:
 {ok, Result} = chappe_esl:bgapi_await(Conn, "reloadxml", 15000).
 ```
 
+It subscribes with `event plain BACKGROUND_JOB`, which switches the
+connection's event format to plain, and leaves that subscription in place.
+
 ## Execute applications on a channel
 
 `execute/4` sends a dialplan application with event-lock:
@@ -57,6 +76,8 @@ ok = chappe_esl:execute(Conn, Uuid, "playback", "ivr/ivr-welcome.wav").
 ```
 
 ## Filters and injected events
+
+Both send headers only; a body is not supported yet.
 
 ```erlang
 ok = chappe_esl:filter(Conn, "Event-Name CHANNEL_ANSWER"),

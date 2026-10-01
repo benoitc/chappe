@@ -98,6 +98,13 @@ log_data_test() ->
     F = frame(<<"log/data">>, #{<<"Log-Level">> => <<"7">>}, <<"line\n">>),
     ?assertMatch({log, _, <<"line\n">>}, chappe_esl_event:decode(F)).
 
+%% req: ESL-12
+rude_rejection_test() ->
+    F = frame(<<"text/rude-rejection">>, #{}, <<"Access Denied, go away.\n">>),
+    ?assertEqual(
+        {rejected, <<"Access Denied, go away.">>}, chappe_esl_event:decode(F)
+    ).
+
 unknown_type_test() ->
-    F = frame(<<"text/rude-rejection">>, #{}, <<>>),
+    F = frame(<<"text/unknown-thing">>, #{}, <<>>),
     ?assertMatch({unknown, _, <<>>}, chappe_esl_event:decode(F)).

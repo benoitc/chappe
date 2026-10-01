@@ -3,12 +3,12 @@
 %%
 %% Per-channel handler pool for outbound connections. simple_one_for_one of
 %% chappe_esl_conn processes started in outbound mode; each owns one accepted socket.
-%% The listener calls start_conn/2 on accept, then transfers socket ownership
+%% The listener calls start_conn/3 on accept, then transfers socket ownership
 %% and activates the connection.
 -module(chappe_esl_outbound_sup).
 -behaviour(supervisor).
 
--export([start_link/0, start_conn/2]).
+-export([start_link/0, start_conn/2, start_conn/3]).
 -export([init/1]).
 
 start_link() ->
@@ -16,7 +16,14 @@ start_link() ->
 
 -spec start_conn(module(), term()) -> {ok, pid()} | {error, term()}.
 start_conn(Handler, Args) ->
-    Opts = #{mode => outbound, handler => Handler, handler_args => Args},
+    start_conn(Handler, Args, #{}).
+
+%% ConnOpts carries per-listener connection options (`linger').
+-spec start_conn(module(), term(), map()) -> {ok, pid()} | {error, term()}.
+start_conn(Handler, Args, ConnOpts) ->
+    Opts = ConnOpts#{
+        mode => outbound, handler => Handler, handler_args => Args
+    },
     supervisor:start_child(?MODULE, [Opts]).
 
 init([]) ->

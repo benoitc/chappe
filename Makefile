@@ -54,7 +54,7 @@ interop-mix:
 # Each app's compliance matrix from its requirements, the `%% req:'
 # annotations and the latest CT results. GATE=demo fails on any hard
 # requirement of the demo tier that is not passing.
-COMPLIANCE_APPS = chappe_sip chappe_mix
+COMPLIANCE_APPS = chappe_sip chappe_mix chappe_rtpengine chappe_esl
 
 compliance:
 	rebar3 as test compile

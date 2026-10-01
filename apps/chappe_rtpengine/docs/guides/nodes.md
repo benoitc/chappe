@@ -18,6 +18,13 @@ ok = chappe_rtpengine:remove_node(rtpe1).
 
 Each node gets one client process and one socket. Requests carry unique cookies; over UDP the identical datagram is retransmitted per attempt, which is safe because rtpengine serves duplicates from its reply cache.
 
+A UDP request larger than `max_datagram` (default 65507 bytes, the IPv4 payload limit) returns `{error, too_large}` without being sent, and so does one the kernel refuses as too big. Lower it to your path MTU budget if you want large offers refused early, and use the TCP or WebSocket transport for bodies that do not fit:
+
+```erlang
+ok = chappe_rtpengine:add_node(rtpe1, #{host => "192.168.1.10", port => 2223,
+                                       max_datagram => 8000}).
+```
+
 ## Select a node per call
 
 ```erlang
@@ -59,6 +66,11 @@ ok = chappe_rtpengine:add_node(rtpe1, #{
 
 The API is identical. Nothing is retransmitted (the transport is reliable), timeouts still bound every request, and a broken connection fails in-flight requests with `{error, closed}` and reconnects in the background. Requests made while disconnected return `{error, {send_failed, not_connected}}`.
 
+Notes:
+
+- The host name is resolved on every connect attempt, so a node that moves to a new address is found on reconnect, and a name that does not resolve yet is retried like a refused connection (`add_node/2` succeeds; requests fail with `not_connected` until it resolves).
+- A reply stream that announces a message over 4 MiB, or sends a cookie over 256 bytes, or bytes that are not bencode, drops the connection and reconnects.
+
 ## NG over WebSocket
 
 To drive an rtpengine across a firewall or over 443, point the node at its HTTP interface (`--listen-http` or `--listen-https`). The NG channel rides a WebSocket negotiating the `ng.rtpengine.com` subprotocol; a server that does not grant it never becomes connected.
@@ -73,7 +85,7 @@ ok = chappe_rtpengine:add_node(rtpe1, #{
 }).
 ```
 
-Use `transport => ws` for a plain `--listen-http` listener; `path` defaults to `/` and `tls_opts` (any `ssl:tls_client_option()`) only apply to `wss`. Reliability semantics match TCP: nothing is retransmitted, timeouts bound every request, broken connections fail in-flight requests with `{error, closed}` and reconnect in the background.
+Use `transport => ws` for a plain `--listen-http` listener; `path` defaults to `/` and `tls_opts` (any `ssl:tls_client_option()`) only apply to `wss`. Replies are accepted in binary or text frames. Reliability semantics match TCP: nothing is retransmitted, timeouts bound every request, broken connections fail in-flight requests with `{error, closed}` and reconnect in the background.
 
 ## Inspect a node
 

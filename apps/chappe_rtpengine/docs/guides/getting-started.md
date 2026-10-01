@@ -55,6 +55,8 @@ SDPForCaller = chappe_rtpengine_ng:sdp(AnswerReply),
 
 Notes:
 
-- Parameters are maps with atom keys; underscores map to the NG wire names (`call_id` becomes `call-id`, `ice` becomes `ICE`). Binary keys pass through unmapped.
+- Parameters are maps with atom keys; underscores map to the NG wire names (`call_id` becomes `call-id`, `ice` becomes `ICE`, `media_address` becomes `media address`, `t38` becomes `T.38`). Binary keys pass through unmapped.
+- Atom values in `flags`, `replace`, `rtcp_mux`, `ice`, `ice_lite`, `dtls`, `dtls_reverse`, `osrtp`, `t38` and `record_call` are NG option words and hyphenate (`trust_address` becomes `trust-address`); any other atom value goes out as written (`sdes => [unencrypted_srtp]`). A float or tuple value returns `{error, {bad_param, Key, Value}}`.
+- A reply may carry a `warning` key next to `result`; it stays in the reply map. A node shedding load replies `{error, load_limit, Reply}`.
 - SDP bodies are opaque binaries. The library never parses SDP; your SIP stack owns it.
 - For per-call use, prefer a media session over raw commands: see the sessions guide.

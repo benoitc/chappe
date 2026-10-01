@@ -15,7 +15,7 @@ media concepts.
   channel.
 - A streaming frame parser that tolerates arbitrary TCP chunking.
 - Event decoding for command/reply, api/response, event-plain, event-json,
-  event-xml (raw), disconnect-notice, and log/data.
+  event-xml (raw), disconnect-notice, log/data, and rude-rejection.
 
 ## Requirements
 
@@ -81,9 +81,11 @@ handle_channel(Conn, Channel, _Args) ->
 The controlling process receives:
 
 - `{chappe_esl_event, Conn, Event}` for every subscribed event
-- `{chappe_esl_disconnect, Conn}` on a disconnect notice
+- `{chappe_esl_linger, Conn}` on a disconnect notice with Content-Disposition
+  `linger` (outbound: the channel hung up, events keep coming)
+- `{chappe_esl_disconnect, Conn}` on any other disconnect notice
 - `{chappe_esl_log, Conn, Headers, Body}` for log data
-- `{chappe_esl_closed, Conn}` when the socket closes
+- `{chappe_esl_closed, Conn}` when the socket closes, or after a framing error
 
 Read event fields with `chappe_esl_event:name/1`, `chappe_esl_event:header/2`, and
 `chappe_esl_event:body/1`. Change the controlling process with

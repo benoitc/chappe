@@ -22,9 +22,11 @@ ok = chappe_esl:events(Conn, json, ['ALL']).
 The controlling process receives:
 
 - `{chappe_esl_event, Conn, Event}` for every subscribed event
-- `{chappe_esl_disconnect, Conn}` on a disconnect notice
+- `{chappe_esl_linger, Conn}` on a disconnect notice with Content-Disposition
+  `linger` (outbound: the channel hung up, events keep coming)
+- `{chappe_esl_disconnect, Conn}` on any other disconnect notice
 - `{chappe_esl_log, Conn, Headers, Body}` for log data
-- `{chappe_esl_closed, Conn}` when the socket closes
+- `{chappe_esl_closed, Conn}` when the socket closes, or after a framing error
 
 ```erlang
 receive
@@ -55,4 +57,6 @@ Move delivery to another process:
 ok = chappe_esl:set_controlling_process(Conn, Pid).
 ```
 
-From then on `Pid` receives the event messages.
+From then on `Pid` receives the event messages. On an inbound connection the
+link moves too: the old controlling process is unlinked and `Pid` is linked,
+so the connection closes when `Pid` exits.

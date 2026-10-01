@@ -8,6 +8,8 @@
 %%   idle -> offering -> offered -> answering -> established
 %%   idle -> publishing -> established     (one-sided offer)
 %%   established -> reoffering -> offered  (re-INVITE)
+%%   offered -> established                 (re-INVITE rejected,
+%%                                           reoffer_rejected/1)
 %%   any active state -> deleting -> stop
 %%
 %% The FSM never blocks in a state callback: the public API is
@@ -18,9 +20,20 @@
 %% handling live during the client's retry window.
 %%
 %% The owner (the process that started the session) is monitored;
-%% owner death triggers a delete. A re-INVITE while another one is in
-%% flight gets {error, glare} immediately: SIP owns glare resolution
-%% (491), the FSM must not queue competing offers.
+%% owner death triggers a delete. An offer while another offer/answer
+%% exchange is open (offering, offered, answering, reoffering,
+%% publishing) gets {error, glare} immediately: SIP owns glare
+%% resolution (491), the FSM must not queue competing offers.
+%%
+%% stop/1 and owner death move to deleting even with a request in
+%% flight. Its reply, when it arrives there, answers the original
+%% caller with {error, stopped} and leaves the FSM in deleting; any
+%% request still pending when the delete completes gets the same.
+%%
+%% The FSM uses handle_event_function rather than state_functions:
+%% most events (info, the auxiliary commands, client replies) are
+%% handled the same in several states, and the reply to a call often
+%% depends on the state it lands in.
 %%
 %% Tag direction: rtpengine's from-tag is always the tag of the party
 %% sending the offer. The session stores the caller's tag (from_tag)
@@ -39,7 +52,9 @@
 -behaviour(gen_statem).
 
 -export([start/1, start_link/2]).
--export([offer/2, answer/2, publish/2, query/1, stop/1, info/1]).
+-export([
+    offer/2, answer/2, publish/2, reoffer_rejected/1, query/1, stop/1, info/1
+]).
 -export([
     cmd/3,
     play_media/2,
@@ -73,6 +88,8 @@
     from_tag :: binary() | undefined,
     to_tag :: binary() | undefined,
     reoffer_initiator = caller :: caller | callee,
+    %% true while the open offer is a re-INVITE of an established call
+    reoffer = false :: boolean(),
     branches = [] :: [binary()],
     media_lost = false :: boolean(),
     pending = #{} ::
@@ -122,6 +139,15 @@ answer(Session, Params) ->
     chappe_rtpengine_ng:result() | {error, term()}.
 publish(Session, Params) ->
     safe_call(Session, {publish, Params}).
+
+%% The peer rejected the re-INVITE whose offer this session relayed
+%% (a 488 or any other final error): go back to established with the
+%% dialog's tags as they were. rtpengine is not told; the next offer
+%% renegotiates. Only valid in offered after a re-INVITE offer,
+%% {error, no_reoffer} otherwise.
+-spec reoffer_rejected(pid()) -> ok | {error, term()}.
+reoffer_rejected(Session) ->
+    safe_call(Session, reoffer_rejected).
 
 -spec query(pid()) -> chappe_rtpengine_ng:result() | {error, term()}.
 query(Session) ->
@@ -322,10 +348,21 @@ handle_event({call, From}, {offer, Params0}, established, Data) ->
         {error, _} = Error ->
             {keep_state_and_data, [{reply, From, Error}]}
     end;
-handle_event({call, From}, {offer, _Params}, reoffering, _Data) ->
-    {keep_state_and_data, [{reply, From, {error, glare}}]};
-handle_event({call, From}, {offer, _Params}, _State, _Data) ->
+handle_event({call, From}, {offer, _Params}, deleting, _Data) ->
     {keep_state_and_data, [{reply, From, {error, busy}}]};
+handle_event({call, From}, {offer, _Params}, _State, _Data) ->
+    %% an offer/answer exchange is already open
+    {keep_state_and_data, [{reply, From, {error, glare}}]};
+%% re-INVITE rejected by the peer
+handle_event(
+    {call, From}, reoffer_rejected, offered, #data{reoffer = true} = Data
+) ->
+    {next_state, established,
+        Data#data{reoffer = false, reoffer_initiator = caller}, [
+            {reply, From, ok}
+        ]};
+handle_event({call, From}, reoffer_rejected, _State, _Data) ->
+    {keep_state_and_data, [{reply, From, {error, no_reoffer}}]};
 %% publish (one-sided offer; rtpengine writes the answer)
 
 handle_event({call, From}, {publish, Params}, idle, Data) ->
@@ -510,6 +547,7 @@ terminate(_Reason, State, Data) ->
 do_answer(From, Params0, StateKind, Data) ->
     Final = maps:get(final, Params0, false),
     Params1 = maps:remove(final, Params0),
+    PrevToTag = Data#data.to_tag,
     NeedToTag =
         Data#data.reoffer_initiator =:= caller andalso
             Data#data.to_tag =:= undefined andalso
@@ -518,7 +556,7 @@ do_answer(From, Params0, StateKind, Data) ->
         ok ->
             {Tags, BranchTag} = answer_tags(Params1, Data),
             Params = maps:merge(Tags, Params1),
-            Kind = {answer_sent, StateKind, BranchTag, Final},
+            Kind = {answer_sent, StateKind, BranchTag, Final, PrevToTag},
             case send_async(answer, Params, Data) of
                 {ok, Ref, Data1} ->
                     Data2 =
@@ -560,45 +598,81 @@ answer_tags(Params, Data) ->
     ToTag = maps:get(to_tag, Params, Data#data.to_tag),
     {#{from_tag => Data#data.from_tag, to_tag => ToTag}, ToTag}.
 
-handle_reply(offer, From, Result, offering, Data) ->
+handle_reply(Kind, From, Result, State, Data) ->
+    case pinned_state(Kind) of
+        any ->
+            reply(Kind, From, Result, State, Data);
+        State ->
+            reply(Kind, From, Result, State, Data);
+        _Other ->
+            %% stop/1 or owner death moved on while this was in flight
+            {keep_state, Data, reply_stopped(From)}
+    end.
+
+%% The state a reply of this kind must find the FSM in; any other
+%% state means the session is being torn down.
+pinned_state(offer) -> offering;
+pinned_state(publish) -> publishing;
+pinned_state(reoffer) -> reoffering;
+pinned_state({answer_sent, answering, _, _, _}) -> answering;
+pinned_state(_Kind) -> any.
+
+reply_stopped(undefined) -> [];
+reply_stopped(From) -> [{reply, From, {error, stopped}}].
+
+reply(offer, From, Result, offering, Data) ->
     Next =
         case Result of
             {ok, _} -> offered;
             _ -> idle
         end,
     {next_state, Next, Data, [{reply, From, Result}]};
-handle_reply(publish, From, Result, publishing, Data) ->
+reply(publish, From, Result, publishing, Data) ->
     Next =
         case Result of
             {ok, _} -> established;
             _ -> idle
         end,
     {next_state, Next, Data, [{reply, From, Result}]};
-handle_reply(reoffer, From, Result, reoffering, Data) ->
+reply(reoffer, From, Result, reoffering, Data) ->
     case Result of
         {ok, _} ->
-            {next_state, offered, Data, [{reply, From, Result}]};
+            {next_state, offered, Data#data{reoffer = true}, [
+                {reply, From, Result}
+            ]};
         _ ->
             {next_state, established, Data#data{reoffer_initiator = caller}, [
                 {reply, From, Result}
             ]}
     end;
-handle_reply(
-    {answer_sent, answering, BranchTag, Final}, From, Result, answering, Data
+reply(
+    {answer_sent, answering, BranchTag, Final, PrevToTag},
+    From,
+    Result,
+    answering,
+    Data
 ) ->
     case Result of
         {ok, _} ->
             Data1 = settle_answer(BranchTag, Final, Data),
-            {next_state, established, Data1#data{reoffer_initiator = caller}, [
-                {reply, From, Result}
-            ]};
+            {next_state, established,
+                Data1#data{reoffer_initiator = caller, reoffer = false}, [
+                    {reply, From, Result}
+                ]};
         _ ->
-            {next_state, offered, Data#data{to_tag = undefined}, [
+            %% a failed answer leaves the dialog's to-tag as it was:
+            %% undefined before the first answer, the established
+            %% call's tag after a re-INVITE
+            {next_state, offered, Data#data{to_tag = PrevToTag}, [
                 {reply, From, Result}
             ]}
     end;
-handle_reply(
-    {answer_sent, established, BranchTag, Final}, From, Result, _State, Data
+reply(
+    {answer_sent, established, BranchTag, Final, _PrevToTag},
+    From,
+    Result,
+    _State,
+    Data
 ) ->
     Data1 =
         case Result of
@@ -606,16 +680,25 @@ handle_reply(
             _ -> Data
         end,
     {keep_state, Data1, [{reply, From, Result}]};
-handle_reply(query, From, Result, _State, Data) ->
+reply(query, From, Result, _State, Data) ->
     {keep_state, Data, [{reply, From, Result}]};
-handle_reply(aux, From, Result, _State, Data) ->
+reply(aux, From, Result, _State, Data) ->
     {keep_state, Data, [{reply, From, Result}]};
-handle_reply(branch_delete, undefined, _Result, _State, Data) ->
+reply(branch_delete, undefined, _Result, _State, Data) ->
     {keep_state, Data};
-handle_reply(delete, undefined, _Result, _State, Data) ->
-    {stop, normal, Data};
-handle_reply(delete, From, Result, _State, Data) ->
-    {stop_and_reply, normal, [{reply, From, delete_result(Result)}], Data}.
+reply(delete, undefined, _Result, _State, Data) ->
+    {stop_and_reply, normal, stopped_replies(Data), Data};
+reply(delete, From, Result, _State, Data) ->
+    {stop_and_reply, normal,
+        [{reply, From, delete_result(Result)} | stopped_replies(Data)], Data}.
+
+%% Callers still waiting when the session ends hear that it stopped
+%% rather than seeing the process exit.
+stopped_replies(Data) ->
+    lists:append([
+        reply_stopped(From)
+     || {From, _Kind} <- maps:values(Data#data.pending)
+    ]).
 
 %% Record the branch tag; on the final answer, best-effort delete of
 %% every losing branch by its to-tag.
@@ -708,6 +791,8 @@ send_async(Command, Params0, Data) ->
         end,
     try chappe_rtpengine_client:cmd_async(Data#data.node, Command, Params) of
         {ok, Ref} -> {ok, Ref, Data};
+        {error, {bad_param, _, _}} = Error -> Error;
+        {error, too_large} = Error -> Error;
         {error, Reason} -> {error, {send_failed, Reason}}
     catch
         exit:_ -> {error, client_down}

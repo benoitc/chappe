@@ -98,6 +98,7 @@ one_byte_chunks(Bin) ->
 
 %% Feed the whole binary in one shot.
 
+%% req: ESL-01
 single_no_body_test() ->
     {Frames, P} = feed_all([auth_request()]),
     ?assertEqual([auth_request_frame()], Frames),
@@ -176,6 +177,7 @@ one_byte_at_a_time_test_() ->
 
 %% Split a back-to-back stream at every byte boundary: always the same frames.
 
+%% req: ESL-02
 every_boundary_test_() ->
     Stream = <<
         (auth_request())/binary,
@@ -201,23 +203,34 @@ every_boundary_test_() ->
      || K <- lists:seq(0, Size)
     ].
 
-%% Robustness: malformed Content-Length must not crash the parser.
+%% A malformed Content-Length is a protocol error: the frames before it are
+%% kept, the parser reports the error and drops further input.
+%% req: ESL-03
+bad_content_length_test_() ->
+    [
+        fun() ->
+            Bin = <<(reply_ok())/binary, "Content-Type: api/response\n",
+                "Content-Length: ", CL/binary, "\n\nbody">>,
+            {Frames, P} = feed_all([Bin]),
+            ?assertEqual([reply_ok_frame()], Frames),
+            ?assertEqual(
+                {bad_content_length, CL}, chappe_esl_parser:error(P)
+            ),
+            ?assertEqual(<<>>, chappe_esl_parser:buffer(P)),
+            ?assertEqual({[], P}, chappe_esl_parser:feed(reply_ok(), P))
+        end
+     || CL <- [<<"x">>, <<"-5">>, <<>>, <<"12abc">>]
+    ].
 
-bad_content_length_test() ->
-    Bin = <<"Content-Type: api/response\nContent-Length: x\n\n">>,
-    {Frames, _} = feed_all([Bin]),
-    ?assertEqual(
-        [
-            #{
-                headers => #{
-                    <<"Content-Type">> => <<"api/response">>,
-                    <<"Content-Length">> => <<"x">>
-                },
-                body => <<>>
-            }
-        ],
-        Frames
-    ).
+no_error_on_good_stream_test() ->
+    {_, P} = feed_all([api_response()]),
+    ?assertEqual(undefined, chappe_esl_parser:error(P)).
+
+overflow_reports_error_test() ->
+    {_, P} = chappe_esl_parser:feed(
+        binary:copy(<<"a">>, 65), chappe_esl_parser:new(64)
+    ),
+    ?assertEqual(frame_too_large, chappe_esl_parser:error(P)).
 
 %% An empty parser holds nothing.
 
@@ -227,6 +240,7 @@ empty_test() ->
 %% A partial frame exceeding the cap flips the parser to overflowed and drops
 %% the buffer, so a peer that never completes a frame cannot grow memory.
 
+%% req: ESL-04
 overflow_unterminated_header_test() ->
     P0 = chappe_esl_parser:new(64),
     {Frames, P1} = chappe_esl_parser:feed(binary:copy(<<"a">>, 65), P0),

@@ -6,7 +6,11 @@
 %% sendmsg, filter, exit), and lets a test push arbitrary frames with inject/2.
 %% bgapi answers with a Job-UUID and then pushes the matching BACKGROUND_JOB
 %% event. api bodies are configured with the `api' option (a command => body
-%% map); everything else defaults to +OK.
+%% map, where a body may be {delay, Ms, Body} to answer late); everything else
+%% defaults to +OK. Options: `auth => reject' answers the password with -ERR,
+%% `greeting => {rude, Text}' sends a text/rude-rejection and closes instead of
+%% the auth/request. Every command block received is reported to the process
+%% that started the fake as {fake_server, Server, Block}.
 -module(chappe_esl_fake_server).
 
 -export([start/0, start/1, stop/1, inject/2]).
@@ -57,9 +61,23 @@ init(Parent, Opts) ->
     {ok, Port} = inet:port(Listen),
     Parent ! {self(), port, Port},
     {ok, Sock} = gen_tcp:accept(Listen),
-    ok = inet:setopts(Sock, [{active, true}]),
-    ok = gen_tcp:send(Sock, <<"Content-Type: auth/request\n\n">>),
-    loop(#{sock => Sock, listen => Listen, buf => <<>>, opts => Opts}).
+    case maps:get(greeting, Opts, auth) of
+        {rude, Text} ->
+            ok = gen_tcp:send(Sock, frame(<<"text/rude-rejection">>, [], Text)),
+            _ = gen_tcp:close(Sock),
+            _ = gen_tcp:close(Listen),
+            ok;
+        auth ->
+            ok = inet:setopts(Sock, [{active, true}]),
+            ok = gen_tcp:send(Sock, <<"Content-Type: auth/request\n\n">>),
+            loop(#{
+                sock => Sock,
+                listen => Listen,
+                buf => <<>>,
+                opts => Opts,
+                parent => Parent
+            })
+    end.
 
 loop(State) ->
     receive
@@ -72,7 +90,9 @@ loop(State) ->
             ok = gen_tcp:send(maps:get(sock, State), Bytes),
             loop(State);
         stop ->
-            shutdown(State)
+            shutdown(State);
+        _Other ->
+            loop(State)
     end.
 
 shutdown(State) ->
@@ -92,12 +112,13 @@ process(State) ->
 handle_command(Block, State) ->
     Sock = maps:get(sock, State),
     Opts = maps:get(opts, State),
+    maps:get(parent, State) ! {fake_server, self(), Block},
     [First | _] = binary:split(Block, <<"\n">>),
     case First of
         <<"auth ", _/binary>> ->
-            send(Sock, command_reply(<<"+OK accepted">>));
+            send(Sock, auth_reply(maps:get(auth, Opts, accept)));
         <<"api ", Cmd/binary>> ->
-            send(Sock, api_response(api_reply(Cmd, Opts)));
+            send_api(Sock, api_reply(Cmd, Opts));
         <<"bgapi ", Cmd/binary>> ->
             handle_bgapi(Sock, Cmd, Opts);
         <<"event ", _/binary>> ->
@@ -121,6 +142,15 @@ handle_bgapi(Sock, Cmd, Opts) ->
     send(Sock, command_reply(<<"+OK Job-UUID: ", Uuid/binary>>)),
     Result = api_reply(Cmd, Opts),
     send(Sock, background_job(Uuid, Result)).
+
+auth_reply(accept) -> command_reply(<<"+OK accepted">>);
+auth_reply(reject) -> command_reply(<<"-ERR invalid">>).
+
+send_api(Sock, {delay, Ms, Body}) ->
+    timer:sleep(Ms),
+    send_api(Sock, Body);
+send_api(Sock, Body) ->
+    send(Sock, api_response(Body)).
 
 api_reply(Cmd, Opts) ->
     Key = string:trim(Cmd),

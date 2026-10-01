@@ -19,14 +19,17 @@
 %% time, re-accepting after a close, incremental stream parsing).
 %% TCP handlers may additionally return:
 %%   {reply_split, Map}  send the reply in two chunks with a delay
+%%   {reply_raw, Bin}    send the cookie, a space, then raw bytes
+%%   {raw, Bin}          send raw bytes with no cookie at all
 %%   close               close the connection without replying
 %%
 %% start_ws/1 and start_wss/1 run the fake over NG-WebSocket using
 %% erlang_ws's reference server (ws_h1_tcp_server), granting the
 %% ng.rtpengine.com subprotocol and terminating TLS for wss with an
 %% in-memory throwaway certificate. One binary frame is one message;
-%% handlers may return {reply, _} | {reply_raw, _} | {reply_after, _}
-%% | drop | close, and replies are cached by cookie like the UDP
+%% handlers may return {reply, _} | {reply_text, _} (the reply in a
+%% text frame) | {reply_raw, _} | {reply_after, _} | drop | close, and
+%% replies are cached by cookie like the UDP
 %% fake. start_ws/2 takes #{subprotocols => [binary()] | none} to
 %% model a server granting a different (or no) subprotocol.
 -module(chappe_rtpengine_fake_server).
@@ -176,7 +179,12 @@ default_handler(_N, _Dict) ->
 
 init(Parent, Handler) ->
     {ok, Socket} = gen_udp:open(0, [
-        binary, {active, true}, {ip, {127, 0, 0, 1}}
+        binary,
+        {active, true},
+        {ip, {127, 0, 0, 1}},
+        {recbuf, 262144},
+        {sndbuf, 262144},
+        {buffer, 65536}
     ]),
     {ok, Port} = inet:port(Socket),
     Parent ! {self(), Port},
@@ -331,6 +339,16 @@ tcp_consume(Socket, Handler, N, Log, Buffer) ->
                             tcp_consume(
                                 Socket, Handler, N + 1, Log1, Remainder
                             );
+                        {reply_raw, Raw} ->
+                            ok = gen_tcp:send(Socket, [Cookie, $\s, Raw]),
+                            tcp_consume(
+                                Socket, Handler, N + 1, Log1, Remainder
+                            );
+                        {raw, Raw} ->
+                            ok = gen_tcp:send(Socket, Raw),
+                            tcp_consume(
+                                Socket, Handler, N + 1, Log1, Remainder
+                            );
                         drop ->
                             tcp_consume(
                                 Socket, Handler, N + 1, Log1, Remainder
@@ -405,6 +423,10 @@ ws_loop(Srv, Handler, N, Log, Cache) ->
 ws_handle_request(Session, Cookie, {reply, Map}, Cache) ->
     Bin = frame(Cookie, Map),
     Session ! {send, Bin},
+    Cache#{Cookie => Bin};
+ws_handle_request(Session, Cookie, {reply_text, Map}, Cache) ->
+    Bin = frame(Cookie, Map),
+    Session ! {send_text, Bin},
     Cache#{Cookie => Bin};
 ws_handle_request(Session, Cookie, {reply_raw, Raw}, Cache) ->
     Bin = iolist_to_binary([Cookie, $\s, Raw]),

@@ -48,7 +48,7 @@ test-static: lint xref dialyzer fmt-check
 check: compile test test-static
 
 interop:
-	rebar3 ct --suite test/esl_live_SUITE
+	rebar3 ct --suite test/chappe_esl_live_SUITE
 
 clean:
 	rebar3 clean

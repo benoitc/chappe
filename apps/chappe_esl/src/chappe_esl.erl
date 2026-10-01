@@ -10,8 +10,10 @@
 %% {chappe_esl_event, Conn, Event} messages; change it with
 %% set_controlling_process/2.
 %%
-%% Outbound: start_listener/3 listens for dialplan socket connections and runs
-%% a chappe_esl_handler per accepted channel.
+%% Outbound: start_listener/3,4 listens for dialplan socket connections and
+%% runs a chappe_esl_handler per accepted channel. Each connection sends
+%% `linger' after `connect' unless the listener is started with
+%% #{linger => false}.
 -module(chappe_esl).
 
 %% Inbound connection.
@@ -25,15 +27,24 @@
 %% Introspection.
 -export([stats/1]).
 %% Outbound listener.
--export([start_listener/3, stop_listener/1]).
+-export([start_listener/3, start_listener/4, stop_listener/1]).
 
--export_type([conn/0]).
+-export_type([conn/0, listener_opts/0, api_error/0]).
 
 -type conn() :: pid().
+%% linger: true (default) sends `linger', a positive integer sends
+%% `linger <Seconds>', false sends nothing.
+-type listener_opts() :: #{linger => boolean() | pos_integer()}.
+-type api_error() ::
+    timeout | closed | binary() | {unexpected_reply, term()} | inet:posix().
 
 %% Inbound connection
 
 %% Connect and authenticate. Opts keys: host, port, password, connect_timeout.
+%% Errors: {auth_failed, ReplyText} when the password is refused,
+%% {rejected, Text} when FreeSWITCH answers with text/rude-rejection (ACL),
+%% {protocol_error, Reason} on a framing error, closed, timeout, or
+%% {connect_failed, Reason}.
 -spec connect(map()) -> {ok, conn()} | {error, term()}.
 connect(Opts) when is_map(Opts) ->
     chappe_esl_inbound:connect(Opts).
@@ -50,12 +61,15 @@ close(Conn) ->
 
 %% Commands
 
-%% Run a blocking api command, returning its response body.
--spec api(conn(), iodata()) -> {ok, binary()} | {error, term()}.
+%% Run a blocking api command, returning its response body. A body starting
+%% with -ERR returns {error, Text} (trailing newline trimmed). No reply within
+%% Timeout (default 10 s) returns {error, timeout}; the caller does not exit.
+-spec api(conn(), iodata()) -> {ok, binary()} | {error, api_error()}.
 api(Conn, Command) ->
     api(Conn, Command, 10000).
 
--spec api(conn(), iodata(), timeout()) -> {ok, binary()} | {error, term()}.
+-spec api(conn(), iodata(), timeout()) ->
+    {ok, binary()} | {error, api_error()}.
 api(Conn, Command, Timeout) ->
     chappe_esl_conn:request(
         Conn, [<<"api ">>, Command, <<"\n\n">>], api, Timeout
@@ -142,6 +156,8 @@ sendevent(Conn, Name, Headers) ->
 %% Events
 
 %% Change the process that receives {chappe_esl_event, Conn, Event} messages.
+%% On an inbound connection the link moves with it: the old controlling
+%% process is unlinked and the new one linked.
 -spec set_controlling_process(conn(), pid()) -> ok.
 set_controlling_process(Conn, Pid) ->
     chappe_esl_conn:set_owner(Conn, Pid).
@@ -160,16 +176,26 @@ stats(Conn) ->
 -spec start_listener(inet:port_number(), module(), term()) ->
     {ok, term()} | {error, term()}.
 start_listener(Port, Handler, HandlerArgs) ->
-    Opts = #{
-        ref => Port,
-        port => Port,
-        handler => Handler,
-        handler_args => HandlerArgs
-    },
-    case chappe_esl_sup:start_listener(Opts) of
-        {ok, _Pid} -> {ok, Port};
-        {error, {already_started, _}} -> {error, already_started};
-        {error, Reason} -> {error, Reason}
+    start_listener(Port, Handler, HandlerArgs, #{}).
+
+-spec start_listener(inet:port_number(), module(), term(), listener_opts()) ->
+    {ok, term()} | {error, term()}.
+start_listener(Port, Handler, HandlerArgs, ListenerOpts) ->
+    case valid_linger(maps:get(linger, ListenerOpts, true)) of
+        true ->
+            Opts = (maps:with([linger], ListenerOpts))#{
+                ref => Port,
+                port => Port,
+                handler => Handler,
+                handler_args => HandlerArgs
+            },
+            case chappe_esl_sup:start_listener(Opts) of
+                {ok, _Pid} -> {ok, Port};
+                {error, {already_started, _}} -> {error, already_started};
+                {error, Reason} -> {error, Reason}
+            end;
+        false ->
+            {error, {bad_option, linger}}
     end.
 
 -spec stop_listener(term()) -> ok | {error, term()}.
@@ -177,6 +203,10 @@ stop_listener(Ref) ->
     chappe_esl_sup:stop_listener(Ref).
 
 %% internal
+
+valid_linger(L) when is_boolean(L) -> true;
+valid_linger(L) when is_integer(L), L > 0 -> true;
+valid_linger(_) -> false.
 
 header_lines(Headers) ->
     [[K, <<": ">>, V, <<"\n">>] || {K, V} <- Headers].

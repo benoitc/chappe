@@ -12,12 +12,15 @@
 %% frame, several frames, or a frame split anywhere including inside the body
 %% or between the two separator newlines. feed/2 buffers whatever it is given
 %% and returns every complete frame it can peel off, keeping the trailing
-%% partial bytes for the next call. It never throws on malformed input.
+%% partial bytes for the next call. It never throws on malformed input: a
+%% Content-Length that is not a non-negative integer, or a frame larger than
+%% the cap, puts the parser in an error state (see error/1) and it drops all
+%% further input, since the frame boundary can no longer be trusted.
 -module(chappe_esl_parser).
 
--export([new/0, new/1, feed/2, buffer/1, overflowed/1]).
+-export([new/0, new/1, feed/2, buffer/1, overflowed/1, error/1]).
 
--export_type([parser/0, frame/0, headers/0]).
+-export_type([parser/0, frame/0, headers/0, error/0]).
 
 -define(SEP, <<"\n\n">>).
 %% Cap on the bytes retained for a single not-yet-complete frame. A peer that
@@ -29,12 +32,13 @@
 -record(parser, {
     buffer = <<>> :: binary(),
     max = ?DEFAULT_MAX_FRAME_BYTES :: pos_integer() | infinity,
-    overflow = false :: boolean()
+    error = undefined :: error() | undefined
 }).
 
 -opaque parser() :: #parser{}.
 -type headers() :: #{binary() => binary()}.
 -type frame() :: #{headers := headers(), body := binary()}.
+-type error() :: frame_too_large | {bad_content_length, binary()}.
 
 %% Start an empty parser. The max retained-buffer size comes from the
 %% `chappe_esl' app env `max_frame_bytes' (default 10 MiB).
@@ -61,24 +65,33 @@ buffer(#parser{buffer = Buf}) ->
 %% Whether a partial frame has exceeded the configured max size. Once true the
 %% parser drops further input; the caller should close the connection.
 -spec overflowed(parser()) -> boolean().
-overflowed(#parser{overflow = Overflow}) ->
-    Overflow.
+overflowed(#parser{error = Error}) ->
+    Error =:= frame_too_large.
+
+%% The protocol error that stopped the parser, or undefined. Once set the
+%% parser drops further input; the caller should close the connection.
+-spec error(parser()) -> error() | undefined.
+error(#parser{error = Error}) ->
+    Error.
 
 %% Append bytes and peel off every complete frame. Returns the frames in
 %% arrival order plus the parser holding the trailing partial bytes. If the
 %% retained partial exceeds the max, the parser flips to overflowed and drops
-%% the partial (and all subsequent input) so memory stays bounded.
+%% the partial (and all subsequent input) so memory stays bounded. A malformed
+%% Content-Length does the same with a {bad_content_length, Value} error.
 -spec feed(binary(), parser()) -> {[frame()], parser()}.
-feed(_Data, #parser{overflow = true} = P) ->
+feed(_Data, #parser{error = Error} = P) when Error =/= undefined ->
     {[], P};
 feed(Data, #parser{buffer = Buf, max = Max} = P) ->
     case parse_all(<<Buf/binary, Data/binary>>, [], Max) of
-        {Frames, overflow} ->
-            {Frames, P#parser{buffer = <<>>, overflow = true}};
+        {Frames, {error, Error}} ->
+            {Frames, P#parser{buffer = <<>>, error = Error}};
         {Frames, Rest} ->
             case over_cap(byte_size(Rest), Max) of
-                true -> {Frames, P#parser{buffer = <<>>, overflow = true}};
-                false -> {Frames, P#parser{buffer = Rest}}
+                true ->
+                    {Frames, P#parser{buffer = <<>>, error = frame_too_large}};
+                false ->
+                    {Frames, P#parser{buffer = Rest}}
             end
     end.
 
@@ -95,13 +108,15 @@ parse_all(Buf, Acc, Max) ->
         [HeadersBin, Rest] ->
             Headers = parse_headers(HeadersBin),
             case content_length(Headers) of
+                {error, _} = Error ->
+                    {lists:reverse(Acc), Error};
                 0 ->
                     Frame = #{headers => Headers, body => <<>>},
                     parse_all(Rest, [Frame | Acc], Max);
                 Len when Len > Max ->
                     %% Declared body can never fit the cap: reject now rather
                     %% than buffer toward it (Max = infinity never matches).
-                    {lists:reverse(Acc), overflow};
+                    {lists:reverse(Acc), {error, frame_too_large}};
                 Len when byte_size(Rest) >= Len ->
                     <<Body:Len/binary, Remainder/binary>> = Rest,
                     Frame = #{headers => Headers, body => Body},
@@ -135,13 +150,17 @@ trim_leading(Bin) -> Bin.
 content_length(Headers) ->
     case maps:get(<<"Content-Length">>, Headers, undefined) of
         undefined -> 0;
-        Bin -> safe_int(Bin)
+        Bin -> parse_length(Bin)
     end.
 
-safe_int(Bin) ->
-    try binary_to_integer(string:trim(Bin)) of
-        N when N >= 0 -> N;
-        _ -> 0
-    catch
-        error:badarg -> 0
+%% Only ASCII digits (surrounding blanks allowed) are a valid length.
+parse_length(Bin) ->
+    Trimmed = string:trim(Bin),
+    case Trimmed =/= <<>> andalso digits(Trimmed) of
+        true -> binary_to_integer(Trimmed);
+        false -> {error, {bad_content_length, Bin}}
     end.
+
+digits(<<C, Rest/binary>>) when C >= $0, C =< $9 -> digits(Rest);
+digits(<<>>) -> true;
+digits(_) -> false.

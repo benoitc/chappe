@@ -12,14 +12,19 @@
 %% decoded JSON object.
 %%
 %% The listener is disabled until opened: set the application
-%% environment {dtmf_listen, Port} or call open/1. Point rtpengine's
-%% --dtmf-log-dest at this host and port. Sessions started with
+%% environment {dtmf_listen, Port} or call open/1,2. Point rtpengine's
+%% --dtmf-log-dest at this host and port. open/2 takes
+%%   ip               the local address to bind (default: any)
+%%   allowed_sources  source IPs whose datagrams are accepted
+%%                    (default: any); others are dropped and counted
+%% and the application environment keys dtmf_ip and
+%% dtmf_allowed_sources set the same for the boot-time listener. Sessions started with
 %% dtmf => true subscribe themselves and forward events to their
 %% owner as {chappe_rtpengine_session, Pid, {dtmf, Event}}.
 -module(chappe_rtpengine_dtmf).
 -behaviour(gen_server).
 
--export([start_link/0, open/1, close/0, port/0]).
+-export([start_link/0, open/1, open/2, close/0, port/0]).
 -export([subscribe/1, unsubscribe/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
@@ -30,9 +35,17 @@
 -define(ACTIVE_N, 64).
 -define(CALL_TIMEOUT, 5000).
 
+-type open_opts() :: #{
+    ip => inet:ip_address(),
+    allowed_sources => any | [inet:ip_address()]
+}.
+
+-export_type([open_opts/0]).
+
 -record(state, {
     socket :: gen_udp:socket() | undefined,
     port :: inet:port_number() | undefined,
+    allowed = any :: any | [inet:ip_address()],
     monitors = #{} :: #{reference() => {binary(), pid()}}
 }).
 
@@ -47,7 +60,12 @@ start_link() ->
 -spec open(inet:port_number()) ->
     {ok, inet:port_number()} | {error, term()}.
 open(Port) ->
-    gen_server:call(?MODULE, {open, Port}, ?CALL_TIMEOUT).
+    open(Port, #{}).
+
+-spec open(inet:port_number(), open_opts()) ->
+    {ok, inet:port_number()} | {error, term()}.
+open(Port, Opts) when is_map(Opts) ->
+    gen_server:call(?MODULE, {open, Port, Opts}, ?CALL_TIMEOUT).
 
 -spec close() -> ok.
 close() ->
@@ -73,9 +91,14 @@ init([]) ->
     ?SUBS = ets:new(?SUBS, [named_table, bag, protected]),
     case application:get_env(chappe_rtpengine, dtmf_listen) of
         {ok, Port} when is_integer(Port) ->
-            case open_socket(Port) of
+            Opts = env_opts(),
+            case open_socket(Port, Opts) of
                 {ok, Socket, ActualPort} ->
-                    {ok, #state{socket = Socket, port = ActualPort}};
+                    {ok, #state{
+                        socket = Socket,
+                        port = ActualPort,
+                        allowed = maps:get(allowed_sources, Opts, any)
+                    }};
                 {error, Reason} ->
                     {stop, {dtmf_listen_failed, Reason}}
             end;
@@ -83,12 +106,14 @@ init([]) ->
             {ok, #state{}}
     end.
 
-handle_call({open, Port}, _From, State0) ->
+handle_call({open, Port, Opts}, _From, State0) ->
     State = close_socket(State0),
-    case open_socket(Port) of
+    case open_socket(Port, Opts) of
         {ok, Socket, ActualPort} ->
             {reply, {ok, ActualPort}, State#state{
-                socket = Socket, port = ActualPort
+                socket = Socket,
+                port = ActualPort,
+                allowed = maps:get(allowed_sources, Opts, any)
             }};
         {error, Reason} ->
             {reply, {error, Reason}, State}
@@ -128,8 +153,15 @@ handle_call(_Request, _From, State) ->
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
-handle_info({udp, Socket, _IP, _Port, Packet}, #state{socket = Socket} = State) ->
-    dispatch(Packet),
+handle_info({udp, Socket, IP, _Port, Packet}, #state{socket = Socket} = State) ->
+    case allowed(IP, State#state.allowed) of
+        true ->
+            dispatch(Packet);
+        false ->
+            ?LOG_DEBUG("chappe_rtpengine_dtmf: datagram from ~s dropped", [
+                inet:ntoa(IP)
+            ])
+    end,
     {noreply, State};
 handle_info({udp_passive, Socket}, #state{socket = Socket} = State) ->
     ok = inet:setopts(Socket, [{active, ?ACTIVE_N}]),
@@ -147,8 +179,28 @@ handle_info(_Info, State) ->
 
 %% internal
 
-open_socket(Port) ->
-    SockOpts = [binary, {active, ?ACTIVE_N}, {recbuf, 65535}],
+env_opts() ->
+    Ip =
+        case application:get_env(chappe_rtpengine, dtmf_ip) of
+            {ok, Addr} -> #{ip => Addr};
+            undefined -> #{}
+        end,
+    case application:get_env(chappe_rtpengine, dtmf_allowed_sources) of
+        {ok, Sources} -> Ip#{allowed_sources => Sources};
+        undefined -> Ip
+    end.
+
+allowed(_IP, any) -> true;
+allowed(IP, Sources) -> lists:member(IP, Sources).
+
+open_socket(Port, Opts) ->
+    Bind =
+        case maps:find(ip, Opts) of
+            {ok, IP} when tuple_size(IP) =:= 8 -> [inet6, {ip, IP}];
+            {ok, IP} -> [{ip, IP}];
+            error -> []
+        end,
+    SockOpts = [binary, {active, ?ACTIVE_N}, {recbuf, 65535} | Bind],
     case gen_udp:open(Port, SockOpts) of
         {ok, Socket} ->
             {ok, ActualPort} = inet:port(Socket),

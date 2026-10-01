@@ -33,7 +33,17 @@ Offer again from an established session. The stored tags are reused; a callee-in
 {ok, Reply2} = chappe_rtpengine_session:offer(Sess, #{sdp => NewCalleeSDP, initiator => callee}).
 ```
 
-A competing offer while one is in flight returns `{error, glare}` immediately. SIP owns glare resolution (491 and offset retry timers); resolve it in signalling and offer again.
+Any offer while an offer/answer exchange is open (the first offer, a re-INVITE, or a publish still waiting for its reply or its answer) returns `{error, glare}` immediately. SIP owns glare resolution (491 and offset retry timers); resolve it in signalling and offer again.
+
+If the peer rejects the re-INVITE (488 or any other final error), roll the session back to `established` with the tags it had:
+
+```erlang
+{ok, _} = chappe_rtpengine_session:offer(Sess, #{sdp => NewCallerSDP}),
+%% the callee answered 488
+ok = chappe_rtpengine_session:reoffer_rejected(Sess).
+```
+
+`reoffer_rejected/1` returns `{error, no_reoffer}` outside a re-INVITE (an initial offer that fails ends the call: stop the session). A failed answer to a re-INVITE leaves the session in `offered` with its to-tag unchanged, so you can answer again or roll back.
 
 Hold itself is an SDP concern (`a=sendonly` in the re-INVITE offer); your SIP stack rewrites the SDP, the session just relays it.
 
@@ -74,7 +84,7 @@ The library never re-offers on its own; the decision and the new SDP belong to s
 
 ## Cleanup guarantees
 
-- `stop/1` deletes the rtpengine session and stops the process.
-- Owner death triggers the same delete.
+- `stop/1` deletes the rtpengine session and stops the process. It works with a request in flight: that request's caller gets `{error, stopped}` and `stop/1` still returns `ok` once the delete is answered.
+- Owner death triggers the same delete, also with a request in flight.
 - Any other exit path (crash, supervisor shutdown) makes a best-effort synchronous delete in `terminate/3`.
 - The node pin is always released.

@@ -35,8 +35,9 @@
 %% siprec flag added a second) or by its 0-based m-line index.
 -type selector() :: {label, binary()} | {index, non_neg_integer()}.
 
-%% Where the selected stream is sent: the receiver's address and port,
-%% plus an optional ptime for the answered packetization.
+%% Where the selected stream is sent: the receiver's address (an IPv4
+%% or IPv6 literal; IPv6 gets IN IP6 in o= and c=) and port, plus an
+%% optional ptime for the answered packetization.
 -type dest() :: #{
     address := binary(),
     port := pos_integer(),
@@ -67,7 +68,9 @@ fork_answer(Offer, Selector, Dest) ->
     fork_answer(Offer, [{Selector, Dest}]).
 
 %% Answer a subscription offer, routing each selected stream to its own
-%% receiver and rejecting every other m-line (port 0). One entry per
+%% receiver and rejecting every other m-line (port 0). Errors:
+%% {no_such_stream, Sel}, {duplicate_stream, Sel}, {rejected_stream,
+%% Sel} (the offer already has port 0 there), {bad_selector, Sel}. One entry per
 %% receiver: N entries fork N streams out of one subscription, a single
 %% entry forks one stream and is the shape a per-stream subscription
 %% wants.
@@ -94,11 +97,18 @@ resolve([{Selector, Dest} | T], Sections, Acc) ->
     case find(Selector, Sections) of
         {ok, #sec{index = I}} when is_map_key(I, Acc) ->
             {error, {duplicate_stream, Selector}};
+        {ok, #sec{port = 0}} ->
+            %% the offerer already rejected this m-line
+            {error, {rejected_stream, Selector}};
         {ok, #sec{index = I}} ->
             resolve(T, Sections, Acc#{I => Dest});
         error ->
-            {error, {no_such_stream, Selector}}
-    end.
+            {error, {no_such_stream, Selector}};
+        {error, _} = Error ->
+            Error
+    end;
+resolve([Route | _], _Sections, _Acc) ->
+    {error, {bad_route, Route}}.
 
 find({index, I}, Sections) ->
     case [S || #sec{index = J} = S <- Sections, J =:= I] of
@@ -111,20 +121,27 @@ find({label, L}, Sections) ->
         [] -> error
     end;
 find(Selector, _Sections) ->
-    error({bad_selector, Selector}).
+    {error, {bad_selector, Selector}}.
 
 session(Address) ->
     [
         <<"v=0\r\n">>,
-        <<"o=- 1 1 IN IP4 ">>,
-        Address,
+        <<"o=- 1 1 ">>,
+        addr(Address),
         <<"\r\n">>,
         <<"s=chappe-fork\r\n">>,
-        <<"c=IN IP4 ">>,
-        Address,
+        <<"c=">>,
+        addr(Address),
         <<"\r\n">>,
         <<"t=0 0\r\n">>
     ].
+
+%% "IN IP6 addr" for an IPv6 literal (it has a colon), else IN IP4.
+addr(Address) ->
+    case binary:match(Address, <<":">>) of
+        nomatch -> [<<"IN IP4 ">>, Address];
+        _ -> [<<"IN IP6 ">>, Address]
+    end.
 
 %% An accepted stream echoes the offered profile and format list at the
 %% receiver's address; a rejected one keeps its m-line (the answer must
@@ -138,8 +155,8 @@ answer_section(#sec{index = I} = S, ByIndex) ->
 accepted(#sec{} = S, #{address := Address, port := Port} = Dest) ->
     [
         mline(S, Port),
-        <<"c=IN IP4 ">>,
-        Address,
+        <<"c=">>,
+        addr(Address),
         <<"\r\n">>,
         [[<<"a=">>, A, <<"\r\n">>] || A <- S#sec.attrs, keep_attr(A)],
         ptime(Dest),

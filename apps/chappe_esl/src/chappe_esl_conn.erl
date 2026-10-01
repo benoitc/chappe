@@ -6,16 +6,21 @@
 %% Inbound: init connects to mod_event_socket, then the `authenticating' state
 %% answers the auth/request with the password and waits for +OK before telling
 %% the owner it is ready. Outbound: the listener hands over an accepted socket,
-%% the `accepting' state sends "connect", reads the initial channel data, and
-%% starts the user handler. Both converge on `ready'.
+%% the `accepting' state sends "connect", reads the initial channel data, sends
+%% "linger" (unless disabled) so events after hangup still arrive, and starts
+%% the user handler. Both converge on `ready'.
 %%
 %% In `ready', bytes are fed to chappe_esl_parser and each frame is classified:
 %% command/reply and api/response are answers to the oldest still-unanswered
 %% command (FreeSWITCH replies in order, so a FIFO queue correlates them);
 %% every text/event-* frame is an event delivered to the owner process as
-%% {chappe_esl_event, Conn, Event}. Disconnect notices and logs are delivered as
-%% {chappe_esl_disconnect, Conn} and {chappe_esl_log, Conn, Headers, Body}. Bad input from
-%% the socket is logged, never thrown.
+%% {chappe_esl_event, Conn, Event}. A disconnect notice is delivered as
+%% {chappe_esl_linger, Conn} when its Content-Disposition is `linger' (the
+%% channel hung up, events keep coming until the final notice) and as
+%% {chappe_esl_disconnect, Conn} otherwise; logs as
+%% {chappe_esl_log, Conn, Headers, Body}. Bad input from the socket is logged,
+%% never thrown; a framing error (bad Content-Length, oversized frame) closes
+%% the connection.
 -module(chappe_esl_conn).
 -behaviour(gen_statem).
 
@@ -30,6 +35,7 @@
 -define(CALL_TIMEOUT, 10000).
 
 -type kind() :: api | bgapi | command.
+-type linger() :: boolean() | pos_integer().
 
 -record(data, {
     mode :: inbound | outbound,
@@ -41,8 +47,11 @@
     handler :: module() | undefined,
     handler_args :: term(),
     handler_pid :: pid() | undefined,
+    linger = true :: linger(),
     channel :: chappe_esl_event:event() | undefined,
-    pending = queue:new() :: queue:queue({gen_statem:from(), kind()}),
+    %% `internal' marks a command the connection sent itself (linger): its
+    %% reply keeps the FIFO aligned and is dropped.
+    pending = queue:new() :: queue:queue({gen_statem:from() | internal, kind()}),
     stats = #{commands => 0, replies => 0, events => 0, unsolicited => 0} ::
         #{atom() => non_neg_integer()}
 }).
@@ -58,15 +67,22 @@ activate(Conn, Socket) ->
     gen_statem:cast(Conn, {activate, Socket}).
 
 %% Send a command and wait for its reply. Kind selects how the reply is read.
+%% A reply that does not arrive in time returns {error, timeout}; the command
+%% keeps its slot, so its late reply is dropped and later replies still match.
 -spec request(pid(), iodata(), kind()) -> term().
 request(Conn, Bytes, Kind) ->
     request(Conn, Bytes, Kind, ?CALL_TIMEOUT).
 
 -spec request(pid(), iodata(), kind(), timeout()) -> term().
 request(Conn, Bytes, Kind, Timeout) ->
-    gen_statem:call(Conn, {request, iolist_to_binary(Bytes), Kind}, Timeout).
+    try
+        gen_statem:call(Conn, {request, iolist_to_binary(Bytes), Kind}, Timeout)
+    catch
+        exit:{timeout, _} -> {error, timeout}
+    end.
 
-%% Change the process that receives event messages.
+%% Change the process that receives event messages. On an inbound connection
+%% the link moves too: the old owner is unlinked and the new one linked.
 -spec set_owner(pid(), pid()) -> ok.
 set_owner(Conn, Pid) ->
     gen_statem:call(Conn, {set_owner, Pid}, ?CALL_TIMEOUT).
@@ -114,7 +130,8 @@ init(#{mode := outbound} = Opts) ->
         mode = outbound,
         parser = chappe_esl_parser:new(),
         handler = maps:get(handler, Opts),
-        handler_args = maps:get(handler_args, Opts, undefined)
+        handler_args = maps:get(handler_args, Opts, undefined),
+        linger = maps:get(linger, Opts, true)
     },
     {ok, accepting, Data}.
 
@@ -122,6 +139,9 @@ init(#{mode := outbound} = Opts) ->
 
 authenticating(info, {tcp, S, Bytes}, #data{socket = S} = Data) ->
     feed(Bytes, Data);
+authenticating(internal, {protocol_error, Reason}, Data) ->
+    notify(Data, {chappe_esl_auth_error, self(), {protocol_error, Reason}}),
+    {stop, normal, Data};
 authenticating(info, {tcp_closed, S}, #data{socket = S} = Data) ->
     notify(Data, {chappe_esl_auth_error, self(), closed}),
     {stop, normal, Data};
@@ -138,6 +158,9 @@ authenticating(_Type, _Msg, Data) ->
 handle_auth_frame({auth_request, _}, #data{socket = S, password = Pw} = Data) ->
     ok = gen_tcp:send(S, <<"auth ", Pw/binary, "\n\n">>),
     {keep_state, Data};
+handle_auth_frame({rejected, Text}, Data) ->
+    notify(Data, {chappe_esl_auth_error, self(), {rejected, Text}}),
+    {stop, normal, Data};
 handle_auth_frame({reply, Text, _}, Data) ->
     case is_ok(Text) of
         true ->
@@ -162,6 +185,8 @@ accepting(info, {tcp_closed, S}, #data{socket = S} = Data) ->
     {stop, normal, Data};
 accepting(info, {tcp_error, S, _Reason}, #data{socket = S} = Data) ->
     {stop, normal, Data};
+accepting(internal, {protocol_error, _Reason}, Data) ->
+    {stop, normal, Data};
 accepting(internal, {frame, Frame}, Data) ->
     Channel = chappe_esl_event:channel(Frame),
     start_handler(Channel, Data);
@@ -170,7 +195,8 @@ accepting({call, _From}, _Msg, Data) ->
 accepting(_Type, _Msg, Data) ->
     {keep_state, Data}.
 
-start_handler(Channel, #data{handler = Mod, handler_args = Args} = Data) ->
+start_handler(Channel, #data{handler = Mod, handler_args = Args} = Data0) ->
+    Data = send_linger(Data0),
     Conn = self(),
     Pid = spawn_link(fun() -> Mod:handle_channel(Conn, Channel, Args) end),
     Data1 = Data#data{
@@ -180,6 +206,21 @@ start_handler(Channel, #data{handler = Mod, handler_args = Args} = Data) ->
         owner_mon = monitor(process, Pid)
     },
     {next_state, ready, Data1}.
+
+%% Ask FreeSWITCH to keep the socket open after hangup so the final channel
+%% events arrive. The reply is queued as `internal' and dropped.
+send_linger(#data{linger = false} = Data) ->
+    Data;
+send_linger(#data{linger = Linger, socket = S, pending = Q} = Data) ->
+    Cmd =
+        case Linger of
+            true -> <<"linger\n\n">>;
+            Secs -> <<"linger ", (integer_to_binary(Secs))/binary, "\n\n">>
+        end,
+    case gen_tcp:send(S, Cmd) of
+        ok -> Data#data{pending = queue:in({internal, command}, Q)};
+        {error, _} -> Data
+    end.
 
 %% ready (both modes)
 
@@ -205,6 +246,11 @@ ready(info, {'EXIT', Pid, _R}, #data{handler_pid = Pid} = Data) ->
     {stop, normal, Data};
 ready(internal, {frame, Frame}, Data) ->
     {keep_state, handle_ready_frame(chappe_esl_event:decode(Frame), Data)};
+ready(internal, {protocol_error, _Reason}, Data) ->
+    notify(Data, {chappe_esl_closed, self()}),
+    {stop, normal, Data};
+ready({call, From}, _Msg, Data) ->
+    {keep_state, Data, [{reply, From, {error, unknown_call}}]};
 ready(_Type, _Msg, Data) ->
     {keep_state, Data}.
 
@@ -224,8 +270,11 @@ handle_ready_frame({reply, _, _} = Dec, Data) ->
 handle_ready_frame({event, Event}, Data) ->
     notify(Data, {chappe_esl_event, self(), Event}),
     bump(events, Data);
-handle_ready_frame({disconnect, _, _}, Data) ->
-    notify(Data, {chappe_esl_disconnect, self()}),
+handle_ready_frame({disconnect, H, _}, Data) ->
+    case maps:get(<<"Content-Disposition">>, H, undefined) of
+        <<"linger">> -> notify(Data, {chappe_esl_linger, self()});
+        _ -> notify(Data, {chappe_esl_disconnect, self()})
+    end,
     Data;
 handle_ready_frame({log, H, B}, Data) ->
     notify(Data, {chappe_esl_log, self(), H, B}),
@@ -235,6 +284,8 @@ handle_ready_frame(_Other, Data) ->
 
 reply_head(Decoded, #data{pending = Q} = Data) ->
     case queue:out(Q) of
+        {{value, {internal, _Kind}}, Q1} ->
+            Data#data{pending = Q1};
         {{value, {From, Kind}}, Q1} ->
             gen_statem:reply(From, translate(Kind, Decoded)),
             bump(replies, Data#data{pending = Q1});
@@ -256,18 +307,22 @@ terminate(_Reason, _State, #data{socket = Socket, pending = Q}) ->
 sockopts() ->
     [binary, {packet, raw}, {active, once}, {nodelay, true}].
 
+%% Frames parsed before a framing error are still handled; the error then
+%% arrives as an internal {protocol_error, Reason} event that closes the
+%% connection (the frame boundary can no longer be trusted).
 feed(Bytes, #data{parser = P0} = Data) ->
     {Frames, P1} = chappe_esl_parser:feed(Bytes, P0),
-    case chappe_esl_parser:overflowed(P1) of
-        true ->
-            ?LOG_WARNING(
-                "chappe_esl_conn: frame exceeds max_frame_bytes; closing"
-            ),
-            {stop, {shutdown, frame_too_large}, Data#data{parser = P1}};
-        false ->
+    Events = [{next_event, internal, {frame, F}} || F <- Frames],
+    case chappe_esl_parser:error(P1) of
+        undefined ->
             arm(Data),
-            Events = [{next_event, internal, {frame, F}} || F <- Frames],
-            {keep_state, Data#data{parser = P1}, Events}
+            {keep_state, Data#data{parser = P1}, Events};
+        Reason ->
+            ?LOG_WARNING("chappe_esl_conn: protocol error ~p; closing", [
+                Reason
+            ]),
+            Error = {next_event, internal, {protocol_error, Reason}},
+            {keep_state, Data#data{parser = P1}, Events ++ [Error]}
     end.
 
 arm(#data{socket = undefined}) ->
@@ -278,7 +333,18 @@ arm(#data{socket = S}) ->
 
 replace_owner(Pid, #data{owner_mon = Old} = Data) ->
     _ = demonitor_if(Old),
+    move_link(Pid, Data),
     Data#data{owner = Pid, owner_mon = monitor(process, Pid)}.
+
+%% Inbound connections are linked to their controlling process. Outbound ones
+%% stay linked to the handler (its exit ends the channel), so only inbound
+%% moves the link.
+move_link(Pid, #data{mode = inbound, owner = Old}) ->
+    _ = is_pid(Old) andalso Old =/= Pid andalso unlink(Old),
+    link(Pid),
+    ok;
+move_link(_Pid, _Data) ->
+    ok.
 
 demonitor_if(undefined) -> ok;
 demonitor_if(Ref) -> demonitor(Ref, [flush]).
@@ -291,15 +357,22 @@ notify(#data{owner = Pid}, Msg) ->
 
 fail_pending(Q) ->
     lists:foreach(
-        fun({From, _Kind}) -> gen_statem:reply(From, {error, closed}) end,
+        fun
+            ({internal, _Kind}) -> ok;
+            ({From, _Kind}) -> gen_statem:reply(From, {error, closed})
+        end,
         queue:to_list(Q)
     ).
 
 close_socket(undefined) -> ok;
 close_socket(Socket) -> gen_tcp:close(Socket).
 
+translate(api, {api, <<"-ERR", _/binary>> = Body}) ->
+    {error, string:trim(Body, trailing)};
 translate(api, {api, Body}) ->
     {ok, Body};
+translate(api, {reply, <<"-ERR", _/binary>> = Text, _}) ->
+    {error, Text};
 translate(api, {reply, Text, _}) ->
     {ok, Text};
 translate(bgapi, {reply, Text, H}) ->

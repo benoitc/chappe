@@ -33,7 +33,8 @@ record.
 
 - Inbound: `authenticating` answers the auth/request with the password and waits
   for +OK, then enters `ready`.
-- Outbound: `accepting` sends `connect`, reads the channel data, starts the
+- Outbound: `accepting` sends `connect`, reads the channel data, sends
+  `linger` (unless disabled; its reply is consumed internally), starts the
   handler process, then enters `ready`.
 - `ready` classifies each frame. command/reply and api/response answer the
   oldest unanswered command (FreeSWITCH replies in order, so a FIFO queue
@@ -50,5 +51,10 @@ feeding real frames split at every byte boundary.
 
 Bad input from the socket is logged, never thrown. A closed socket answers every
 pending caller with `{error, closed}` and notifies the owner with
-`{chappe_esl_closed, Conn}`. Inbound connections link to the connecting process;
-outbound handlers link to their connection.
+`{chappe_esl_closed, Conn}`. A framing error (a Content-Length that is not a
+non-negative integer, or a frame over `max_frame_bytes`) is handled the same
+way after the frames parsed before it; during authentication it fails
+connect with `{protocol_error, Reason}`. A request that times out returns
+`{error, timeout}` and keeps its FIFO slot, so its late reply is dropped.
+Inbound connections link to the controlling process (the link follows
+`set_controlling_process/2`); outbound handlers link to their connection.

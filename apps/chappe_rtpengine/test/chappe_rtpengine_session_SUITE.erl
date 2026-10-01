@@ -29,7 +29,13 @@
     media_subscription_flow/1,
     publish_one_sided/1,
     media_ducking/1,
-    play_media_blob/1
+    play_media_blob/1,
+    stop_while_offer_pending/1,
+    owner_dies_while_offering/1,
+    failed_reanswer_keeps_to_tag/1,
+    reoffer_rejected_rolls_back/1,
+    competing_offers_are_glare/1,
+    bad_param_keeps_session/1
 ]).
 
 all() ->
@@ -47,7 +53,13 @@ all() ->
         media_subscription_flow,
         publish_one_sided,
         media_ducking,
-        play_media_blob
+        play_media_blob,
+        stop_while_offer_pending,
+        owner_dies_while_offering,
+        failed_reanswer_keeps_to_tag,
+        reoffer_rejected_rolls_back,
+        competing_offers_are_glare,
+        bad_param_keeps_session
     ].
 
 init_per_suite(Config) ->
@@ -81,6 +93,18 @@ handler(unknown_call_id_notifies_owner_once) ->
                 <<"result">> => <<"error">>,
                 <<"error-reason">> => <<"Unknown call-ID">>
             }};
+        (N, Cmd) ->
+            chappe_rtpengine_fake_server:default_handler(N, Cmd)
+    end;
+handler(Case) when
+    Case =:= stop_while_offer_pending; Case =:= owner_dies_while_offering
+->
+    %% the offer reply lands while the delete is still in flight
+    fun
+        (_N, #{<<"command">> := <<"offer">>}) ->
+            {reply_after, 150, #{<<"result">> => <<"ok">>, <<"sdp">> => sdp()}};
+        (_N, #{<<"command">> := <<"delete">>}) ->
+            {reply_after, 400, #{<<"result">> => <<"ok">>}};
         (N, Cmd) ->
             chappe_rtpengine_fake_server:default_handler(N, Cmd)
     end;
@@ -121,6 +145,7 @@ commands(Server) ->
 
 %% cases
 
+%% req: RNG-11
 full_lifecycle(Config) ->
     Server = ?config(server, Config),
     CallId = <<"sess-lifecycle">>,
@@ -158,6 +183,7 @@ full_lifecycle(Config) ->
     error = chappe_rtpengine_pool:pinned(CallId),
     ok.
 
+%% req: RNG-11
 owner_crash_sends_delete(Config) ->
     Server = ?config(server, Config),
     Test = self(),
@@ -199,6 +225,7 @@ offer_timeout_returns_error(Config) ->
     wait_dead(Sess),
     ok.
 
+%% req: RNG-12
 reinvite_glare_rejected(Config) ->
     Server = ?config(server, Config),
     {ok, Sess} = chappe_rtpengine:start_session(#{
@@ -246,6 +273,7 @@ establish(CallId, FromTag, ToTag) ->
     #{state := established} = chappe_rtpengine_session:info(Sess),
     Sess.
 
+%% req: RNG-11
 callee_reinvite_swaps_tags(Config) ->
     Server = ?config(server, Config),
     Sess = establish(<<"sess-callee">>, <<"ft-c">>, <<"tt-c">>),
@@ -345,6 +373,7 @@ media_commands(Config) ->
     wait_dead(Sess),
     ok.
 
+%% req: RNG-11
 node_restart_notifies_owner(Config) ->
     Server = ?config(server, Config),
     Node = ?config(node, Config),
@@ -392,6 +421,7 @@ unknown_call_id_notifies_owner_once(Config) ->
 %% A one-sided call: publish establishes the session on its own, an
 %% answer never follows, and the tap and the delete both work from
 %% there with only a from-tag.
+%% req: RNG-11
 publish_one_sided(Config) ->
     Server = ?config(server, Config),
     CallId = <<"sess-publish">>,
@@ -521,6 +551,180 @@ play_media_blob(Config) ->
     %% party => callee targets the callee's tag, not the session's
     ?assertEqual(<<"tt-b">>, maps:get(<<"from-tag">>, Play)),
     ?assertEqual(2, maps:get(<<"repeat-times">>, Play)),
+    ok = chappe_rtpengine_session:stop(Sess),
+    wait_dead(Sess),
+    ok.
+
+%% stop/1 while the offer is on the wire: the offer reply arrives in
+%% the deleting state, the offer caller is told the session stopped,
+%% and stop/1 still gets its ok once the delete is answered.
+%% req: RNG-11
+stop_while_offer_pending(Config) ->
+    Server = ?config(server, Config),
+    {ok, Sess} = chappe_rtpengine:start_session(#{call_id => <<"sess-sp">>}),
+    Mon = erlang:monitor(process, Sess),
+    Test = self(),
+    spawn_link(fun() ->
+        Test ! {offer, chappe_rtpengine_session:offer(Sess, #{
+            from_tag => <<"ft-sp">>, sdp => sdp()
+        })}
+    end),
+    ok = wait_until(fun() ->
+        maps:get(state, chappe_rtpengine_session:info(Sess)) =:= offering
+    end),
+    ok = chappe_rtpengine_session:stop(Sess),
+    receive
+        {offer, {error, stopped}} -> ok;
+        {offer, Other} -> error({offer_result, Other})
+    after 5000 -> error(no_offer_result)
+    end,
+    receive
+        {'DOWN', Mon, process, Sess, Reason} -> ?assertEqual(normal, Reason)
+    after 5000 -> error(session_alive)
+    end,
+    ?assertEqual([<<"offer">>, <<"delete">>], commands(Server)),
+    ok.
+
+%% The owner dies while its offer is in flight: the session deletes
+%% and exits normally even though the offer reply arrives first.
+%% req: RNG-11
+owner_dies_while_offering(Config) ->
+    Server = ?config(server, Config),
+    Test = self(),
+    Owner = spawn(fun() ->
+        {ok, Sess} = chappe_rtpengine:start_session(#{
+            call_id => <<"sess-od">>
+        }),
+        Test ! {sess, Sess},
+        _ = chappe_rtpengine_session:offer(Sess, #{
+            from_tag => <<"ft-od">>, sdp => sdp()
+        }),
+        receive
+            never -> ok
+        end
+    end),
+    Sess =
+        receive
+            {sess, S} -> S
+        after 5000 -> error(no_session)
+        end,
+    Mon = erlang:monitor(process, Sess),
+    ok = wait_until(fun() ->
+        maps:get(state, chappe_rtpengine_session:info(Sess)) =:= offering
+    end),
+    exit(Owner, kill),
+    receive
+        {'DOWN', Mon, process, Sess, Reason} -> ?assertEqual(normal, Reason)
+    after 5000 -> error(session_alive)
+    end,
+    ?assertEqual([<<"offer">>, <<"delete">>], commands(Server)),
+    error = chappe_rtpengine_pool:pinned(<<"sess-od">>),
+    ok.
+
+%% A failed answer to a re-INVITE leaves the dialog's to-tag alone.
+failed_reanswer_keeps_to_tag(Config) ->
+    Server = ?config(server, Config),
+    Sess = establish(<<"sess-fra">>, <<"ft-fra">>, <<"tt-fra">>),
+    {ok, _} = chappe_rtpengine_session:offer(Sess, #{sdp => sdp()}),
+    chappe_rtpengine_fake_server:set_handler(Server, fun
+        (_N, #{<<"command">> := <<"answer">>}) ->
+            {reply, #{
+                <<"result">> => <<"error">>,
+                <<"error-reason">> => <<"Incomplete SDP">>
+            }};
+        (N, Cmd) ->
+            chappe_rtpengine_fake_server:default_handler(N, Cmd)
+    end),
+    {error, <<"Incomplete SDP">>, _} =
+        chappe_rtpengine_session:answer(Sess, #{sdp => sdp()}),
+    #{state := offered, to_tag := <<"tt-fra">>} =
+        chappe_rtpengine_session:info(Sess),
+    ok = chappe_rtpengine_session:stop(Sess),
+    wait_dead(Sess),
+    ok.
+
+%% The peer refused the re-INVITE (488): the owner rolls the session
+%% back to established and the call carries on with its old tags.
+%% req: RNG-12
+reoffer_rejected_rolls_back(Config) ->
+    {ok, Fresh} = chappe_rtpengine:start_session(#{call_id => <<"sess-rr0">>}),
+    {ok, _} = chappe_rtpengine_session:offer(Fresh, #{
+        from_tag => <<"ft-rr0">>, sdp => sdp()
+    }),
+    %% an initial offer is not a re-offer: nothing to roll back to
+    {error, no_reoffer} = chappe_rtpengine_session:reoffer_rejected(Fresh),
+    ok = chappe_rtpengine_session:stop(Fresh),
+    wait_dead(Fresh),
+
+    Server = ?config(server, Config),
+    Sess = establish(<<"sess-rr">>, <<"ft-rr">>, <<"tt-rr">>),
+    {ok, _} = chappe_rtpengine_session:offer(Sess, #{
+        sdp => sdp(), initiator => callee
+    }),
+    #{state := offered} = chappe_rtpengine_session:info(Sess),
+    ok = chappe_rtpengine_session:reoffer_rejected(Sess),
+    #{state := established, from_tag := <<"ft-rr">>, to_tag := <<"tt-rr">>} =
+        chappe_rtpengine_session:info(Sess),
+    {error, no_reoffer} = chappe_rtpengine_session:reoffer_rejected(Sess),
+    %% the next re-INVITE uses the canonical direction again
+    {ok, _} = chappe_rtpengine_session:offer(Sess, #{sdp => sdp()}),
+    {_, Reoffer} = lists:last(chappe_rtpengine_fake_server:received(Server)),
+    ?assertEqual(<<"ft-rr">>, maps:get(<<"from-tag">>, Reoffer)),
+    ok = chappe_rtpengine_session:stop(Sess),
+    wait_dead(Sess),
+    ok.
+
+%% Any offer while another offer/answer exchange is open is glare.
+%% req: RNG-12
+competing_offers_are_glare(Config) ->
+    Server = ?config(server, Config),
+    chappe_rtpengine_fake_server:set_handler(Server, fun
+        (_N, #{<<"command">> := C}) when C =:= <<"offer">>; C =:= <<"answer">> ->
+            {reply_after, 200, #{<<"result">> => <<"ok">>, <<"sdp">> => sdp()}};
+        (N, Cmd) ->
+            chappe_rtpengine_fake_server:default_handler(N, Cmd)
+    end),
+    {ok, Sess} = chappe_rtpengine:start_session(#{call_id => <<"sess-gl">>}),
+    Test = self(),
+    Async = fun(Fun) -> spawn_link(fun() -> Test ! {async, Fun()} end) end,
+    State = fun() -> maps:get(state, chappe_rtpengine_session:info(Sess)) end,
+    Offer = fun() -> chappe_rtpengine_session:offer(Sess, #{sdp => sdp()}) end,
+    Async(fun() ->
+        chappe_rtpengine_session:offer(Sess, #{
+            from_tag => <<"ft-gl">>, sdp => sdp()
+        })
+    end),
+    ok = wait_until(fun() -> State() =:= offering end),
+    {error, glare} = Offer(),
+    receive
+        {async, {ok, _}} -> ok
+    after 5000 -> error(no_offer_reply)
+    end,
+    offered = State(),
+    {error, glare} = Offer(),
+    Async(fun() ->
+        chappe_rtpengine_session:answer(Sess, #{
+            to_tag => <<"tt-gl">>, sdp => sdp()
+        })
+    end),
+    ok = wait_until(fun() -> State() =:= answering end),
+    {error, glare} = Offer(),
+    receive
+        {async, {ok, _}} -> ok
+    after 5000 -> error(no_answer_reply)
+    end,
+    established = State(),
+    ok = chappe_rtpengine_session:stop(Sess),
+    wait_dead(Sess),
+    ok.
+
+%% A parameter bencode cannot carry fails the call, not the session.
+bad_param_keeps_session(Config) ->
+    _ = Config,
+    Sess = establish(<<"sess-bp">>, <<"ft-bp">>, <<"tt-bp">>),
+    {error, {bad_param, volume, 0.5}} =
+        chappe_rtpengine_session:play_dtmf(Sess, #{code => 1, volume => 0.5}),
+    #{state := established} = chappe_rtpengine_session:info(Sess),
     ok = chappe_rtpengine_session:stop(Sess),
     wait_dead(Sess),
     ok.

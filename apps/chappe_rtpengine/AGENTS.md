@@ -10,7 +10,7 @@ takes opaque SDP and params and speaks to rtpengine; it never touches a dialog,
 tag, or SIP message. Facade module: `chappe_rtpengine`. Internal module prefix:
 `chappe_rtpengine_*`.
 
-Layers: `chappe_rtpengine_bencode` (codec), `chappe_rtpengine_ng` (NG command/result model), `chappe_rtpengine_client`
+Layers: `chappe_rtpengine_bencode` (codec), `chappe_rtpengine_stream` (pure NG-over-TCP framer), `chappe_rtpengine_ng` (NG command/result model), `chappe_rtpengine_client`
 (one process per node, cookie/retransmit/timeout), `chappe_rtpengine_pool` (node registry +
 health + call pinning), `chappe_rtpengine_session` (per-call gen_statem: offer/answer,
 subscribe/duck, node pinning, owner-death teardown), `chappe_rtpengine_dtmf`.

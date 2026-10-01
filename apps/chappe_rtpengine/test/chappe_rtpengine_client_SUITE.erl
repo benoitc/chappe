@@ -34,7 +34,18 @@
     ws_subprotocol_rejection_fails_connect/1,
     ws_peer_close_fails_pending_then_reconnects/1,
     ws_deadline_timeout_no_retransmit/1,
-    wss_commands/1
+    wss_commands/1,
+    warning_kept_in_reply/1,
+    load_limit_reply/1,
+    bad_param_is_an_error/1,
+    udp_large_request/1,
+    udp_too_large_refused/1,
+    udp_emsgsize_is_too_large/1,
+    tcp_large_reply_reassembled/1,
+    tcp_oversized_length_drops_connection/1,
+    tcp_runaway_cookie_drops_connection/1,
+    tcp_unresolved_host_retries/1,
+    ws_text_frame_reply/1
 ]).
 
 all() ->
@@ -56,7 +67,18 @@ all() ->
         ws_subprotocol_rejection_fails_connect,
         ws_peer_close_fails_pending_then_reconnects,
         ws_deadline_timeout_no_retransmit,
-        wss_commands
+        wss_commands,
+        warning_kept_in_reply,
+        load_limit_reply,
+        bad_param_is_an_error,
+        udp_large_request,
+        udp_too_large_refused,
+        udp_emsgsize_is_too_large,
+        tcp_large_reply_reassembled,
+        tcp_oversized_length_drops_connection,
+        tcp_runaway_cookie_drops_connection,
+        tcp_unresolved_host_retries,
+        ws_text_frame_reply
     ].
 
 init_per_suite(Config) ->
@@ -91,12 +113,15 @@ transport_of(Case) ->
     prefix_transport(atom_to_list(Case)).
 
 prefix_transport("tcp_" ++ _) -> tcp;
+prefix_transport("udp_" ++ _) -> udp;
 prefix_transport("wss_" ++ _) -> wss;
 prefix_transport("ws_" ++ _) -> ws;
 prefix_transport(_) -> udp.
 
 %% SNI must carry a name, not an address, so the wss cases dial by
 %% hostname
+host(tcp_unresolved_host_retries) ->
+    <<"chappe-no-such-host.invalid">>;
 host(Case) ->
     case transport_of(Case) of
         wss -> <<"localhost">>;
@@ -145,6 +170,28 @@ handler(ws_peer_close_fails_pending_then_reconnects) ->
     fun(_N, _Cmd) -> close end;
 handler(ws_deadline_timeout_no_retransmit) ->
     fun(_N, _Cmd) -> drop end;
+handler(warning_kept_in_reply) ->
+    fun(_N, _Cmd) ->
+        {reply, #{
+            <<"result">> => <<"ok">>,
+            <<"warning">> => <<"Unknown flag ignored">>
+        }}
+    end;
+handler(load_limit_reply) ->
+    fun(_N, _Cmd) ->
+        {reply, #{
+            <<"result">> => <<"load limit">>,
+            <<"message">> => <<"Parallel session limit reached">>
+        }}
+    end;
+handler(tcp_oversized_length_drops_connection) ->
+    %% a reply announcing a 5 MB string, beyond the 4 MiB stream cap
+    fun(_N, _Cmd) -> {reply_raw, <<"d3:sdp5000000:v=0">>} end;
+handler(tcp_runaway_cookie_drops_connection) ->
+    %% bytes that never contain the cookie separator
+    fun(_N, _Cmd) -> {raw, binary:copy(<<"x">>, 4096)} end;
+handler(ws_text_frame_reply) ->
+    fun(_N, _Cmd) -> {reply_text, #{<<"result">> => <<"pong">>}} end;
 handler(_Case) ->
     fun chappe_rtpengine_fake_server:default_handler/2.
 
@@ -154,6 +201,15 @@ opts(request_timeout) ->
     #{timeout => 100, attempts => 3};
 opts(ws_deadline_timeout_no_retransmit) ->
     #{transport => ws, timeout => 100, attempts => 3};
+opts(udp_too_large_refused) ->
+    #{max_datagram => 1000};
+opts(udp_emsgsize_is_too_large) ->
+    %% above what IPv4 can carry: the socket refuses the send
+    #{max_datagram => 100000};
+opts(tcp_oversized_length_drops_connection) ->
+    #{transport => tcp, timeout => 2000, attempts => 1};
+opts(tcp_runaway_cookie_drops_connection) ->
+    #{transport => tcp, timeout => 2000, attempts => 1};
 opts(Case) ->
     case transport_of(Case) of
         udp -> #{};
@@ -178,6 +234,7 @@ sdp() ->
 
 %% cases
 
+%% req: RNG-01
 ping_pong(Config) ->
     Node = ?config(node, Config),
     {ok, Reply} = chappe_rtpengine:ping(Node),
@@ -185,6 +242,7 @@ ping_pong(Config) ->
     #{sent := 1, replies := 1, retransmits := 0} = chappe_rtpengine:stats(Node),
     ok.
 
+%% req: RNG-01 RNG-04 RNG-10
 offer_answer_query_delete(Config) ->
     Node = ?config(node, Config),
     Server = ?config(server, Config),
@@ -231,12 +289,14 @@ offer_answer_query_delete(Config) ->
     ?assertEqual([<<"trust-address">>], maps:get(<<"flags">>, Offer)),
     ok.
 
+%% req: RNG-07
 node_error_reply(Config) ->
     Node = ?config(node, Config),
     {error, <<"Unknown call-id">>, _} =
         chappe_rtpengine:query(Node, #{call_id => <<"nope">>}),
     ok.
 
+%% req: RNG-05
 retransmit_recovers(Config) ->
     Node = ?config(node, Config),
     Server = ?config(server, Config),
@@ -249,6 +309,7 @@ retransmit_recovers(Config) ->
         chappe_rtpengine:stats(Node),
     ok.
 
+%% req: RNG-05
 request_timeout(Config) ->
     Node = ?config(node, Config),
     Server = ?config(server, Config),
@@ -260,11 +321,13 @@ request_timeout(Config) ->
     #{timeouts := 1, retransmits := 2} = chappe_rtpengine:stats(Node),
     ok.
 
+%% req: RNG-07
 malformed_reply(Config) ->
     Node = ?config(node, Config),
     {error, {bad_reply, <<"not bencode">>}} = chappe_rtpengine:ping(Node),
     ok.
 
+%% req: RNG-04
 duplicate_reply_ignored(Config) ->
     Node = ?config(node, Config),
     {ok, _} = chappe_rtpengine:ping(Node),
@@ -276,6 +339,7 @@ duplicate_reply_ignored(Config) ->
     {ok, _} = chappe_rtpengine:ping(Node),
     ok.
 
+%% req: RNG-04
 concurrent_requests_correlate(Config) ->
     Node = ?config(node, Config),
     Parent = self(),
@@ -309,6 +373,7 @@ client_down(_Config) ->
 %% rtpengine serves duplicate cookies from its reply cache without
 %% reprocessing; the fake models that. A byte-identical retransmit
 %% must yield the original reply, and a fresh cookie a fresh one.
+%% req: RNG-05
 duplicate_request_served_from_cache(Config) ->
     Port = ?config(fake_port, Config),
     {ok, Sock} = gen_udp:open(0, [binary, {active, true}]),
@@ -337,6 +402,7 @@ reply_n(Sock) ->
     after 2000 -> error(no_reply)
     end.
 
+%% req: RNG-02 RNG-06
 tcp_commands(Config) ->
     Node = ?config(node, Config),
     Server = ?config(server, Config),
@@ -363,6 +429,7 @@ tcp_commands(Config) ->
     #{replies := 4, retransmits := 0} = chappe_rtpengine:stats(Node),
     ok.
 
+%% req: RNG-02
 tcp_split_reply_reassembled(Config) ->
     Node = ?config(node, Config),
     %% the reply arrives in two TCP chunks; the stream parser buffers
@@ -394,6 +461,7 @@ tcp_close_fails_pending_then_reconnects(Config) ->
     ?assert(Reconnects >= 1),
     ok.
 
+%% req: RNG-01
 ws_commands(Config) ->
     Node = ?config(node, Config),
     Server = ?config(server, Config),
@@ -451,6 +519,7 @@ ws_peer_close_fails_pending_then_reconnects(Config) ->
     ?assert(Reconnects >= 1),
     ok.
 
+%% req: RNG-06
 ws_deadline_timeout_no_retransmit(Config) ->
     Node = ?config(node, Config),
     Server = ?config(server, Config),
@@ -477,6 +546,119 @@ wss_commands(Config) ->
         call_id => <<"wss-call-1">>, from_tag => <<"ft">>
     }),
     #{replies := 3, retransmits := 0} = chappe_rtpengine:stats(Node),
+    ok.
+
+sdp_of_size(Size) ->
+    Head = sdp(),
+    Pad = Size - byte_size(Head),
+    Line = <<"a=x-pad:", (binary:copy(<<"p">>, 60))/binary, "\r\n">>,
+    Lines = binary:copy(Line, Pad div byte_size(Line) + 1),
+    <<Head/binary, (binary:part(Lines, 0, Pad))/binary>>.
+
+%% The reply map keeps rtpengine's warning next to the result.
+%% req: RNG-07
+warning_kept_in_reply(Config) ->
+    Node = ?config(node, Config),
+    {ok, Reply} = chappe_rtpengine:ping(Node),
+    ?assertEqual(<<"Unknown flag ignored">>, maps:get(<<"warning">>, Reply)),
+    ok.
+
+%% req: RNG-07
+load_limit_reply(Config) ->
+    Node = ?config(node, Config),
+    {error, load_limit, Reply} = chappe_rtpengine:ping(Node),
+    ?assertEqual(
+        <<"Parallel session limit reached">>, maps:get(<<"message">>, Reply)
+    ),
+    ok.
+
+%% A value bencode cannot carry is refused before anything is sent.
+%% req: RNG-10
+bad_param_is_an_error(Config) ->
+    Node = ?config(node, Config),
+    Server = ?config(server, Config),
+    {error, {bad_param, ptime, 20.5}} = chappe_rtpengine:offer(Node, #{
+        call_id => <<"c">>, from_tag => <<"f">>, sdp => sdp(), ptime => 20.5
+    }),
+    {error, {bad_param, ptime, 20.5}} =
+        chappe_rtpengine_client:cmd_async(Node, offer, #{ptime => 20.5}),
+    ?assertEqual([], chappe_rtpengine_fake_server:received(Server)),
+    ok.
+
+%% A 30 KB offer goes out as one datagram and its echoed reply comes
+%% back whole: send and receive buffers are sized for it.
+%% req: RNG-03
+udp_large_request(Config) ->
+    Node = ?config(node, Config),
+    Sdp = sdp_of_size(30000),
+    {ok, Reply} = chappe_rtpengine:offer(Node, #{
+        call_id => <<"big">>, from_tag => <<"f">>, sdp => Sdp
+    }),
+    ?assertEqual(
+        <<Sdp/binary, "a=rtpengine:fake\r\n">>, chappe_rtpengine_ng:sdp(Reply)
+    ),
+    ok.
+
+%% req: RNG-03
+udp_too_large_refused(Config) ->
+    Node = ?config(node, Config),
+    Server = ?config(server, Config),
+    {error, too_large} = chappe_rtpengine:offer(Node, #{
+        call_id => <<"big">>, from_tag => <<"f">>, sdp => sdp_of_size(2000)
+    }),
+    ?assertEqual([], chappe_rtpengine_fake_server:received(Server)),
+    #{sent := 0} = chappe_rtpengine:stats(Node),
+    ok.
+
+%% req: RNG-03
+udp_emsgsize_is_too_large(Config) ->
+    Node = ?config(node, Config),
+    {error, too_large} = chappe_rtpengine:offer(Node, #{
+        call_id => <<"big">>, from_tag => <<"f">>, sdp => sdp_of_size(70000)
+    }),
+    ok.
+
+%% A 1 MB reply arrives over many TCP segments and is reassembled.
+%% req: RNG-02
+tcp_large_reply_reassembled(Config) ->
+    Node = ?config(node, Config),
+    Sdp = sdp_of_size(1000000),
+    {ok, Reply} = chappe_rtpengine:offer(Node, #{
+        call_id => <<"big">>, from_tag => <<"f">>, sdp => Sdp
+    }),
+    ?assertEqual(
+        <<Sdp/binary, "a=rtpengine:fake\r\n">>, chappe_rtpengine_ng:sdp(Reply)
+    ),
+    ok.
+
+%% A reply announcing more than the 4 MiB stream cap drops the
+%% connection at once instead of buffering toward it.
+%% req: RNG-02
+tcp_oversized_length_drops_connection(Config) ->
+    Node = ?config(node, Config),
+    {error, closed} = chappe_rtpengine:ping(Node),
+    #{reconnects := 1} = chappe_rtpengine:stats(Node),
+    ok.
+
+%% A stream that never sends the cookie separator is cut off.
+%% req: RNG-02
+tcp_runaway_cookie_drops_connection(Config) ->
+    Node = ?config(node, Config),
+    {error, closed} = chappe_rtpengine:ping(Node),
+    ok.
+
+%% The host is resolved on every connect attempt, so a name that does
+%% not resolve yet is retried like a refused connection.
+tcp_unresolved_host_retries(Config) ->
+    Node = ?config(node, Config),
+    {error, {send_failed, not_connected}} = chappe_rtpengine:ping(Node),
+    ok.
+
+%% rtpengine's HTTP interface may answer in a text frame.
+%% req: RNG-01
+ws_text_frame_reply(Config) ->
+    Node = ?config(node, Config),
+    {ok, #{<<"result">> := <<"pong">>}} = chappe_rtpengine:ping(Node),
     ok.
 
 wait_until(Fun) ->

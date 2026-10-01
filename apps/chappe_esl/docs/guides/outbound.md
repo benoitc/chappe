@@ -56,6 +56,24 @@ handle_channel(Conn, _Channel, _Args) ->
     end.
 ```
 
+## Linger after hangup
+
+Each connection sends `linger` right after `connect`, so FreeSWITCH keeps the
+socket open after hangup and the final channel events still arrive. The
+handler then receives `{chappe_esl_linger, Conn}` at hangup, the remaining
+events, `{chappe_esl_disconnect, Conn}` on the final notice, and
+`{chappe_esl_closed, Conn}` when the socket closes.
+
+Change it per listener with `start_listener/4`:
+
+```erlang
+{ok, _} = chappe_esl:start_listener(8084, my_handler, [], #{linger => 30}),
+{ok, _} = chappe_esl:start_listener(8085, my_handler, [], #{linger => false}).
+```
+
+`true` (default) sends `linger`, an integer sends `linger <Seconds>`, `false`
+sends nothing.
+
 ## Stop the listener
 
 ```erlang
