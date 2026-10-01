@@ -18,3 +18,7 @@ leak:^/bin/
 # OTP's crypto NIF: cipher contexts owned by Erlang resources that are still
 # alive when the VM halts (rebar3 fetching from hex over TLS).
 leak:priv/lib/crypto.so
+
+# erts: the alternate signal stacks of the VM's scheduler and async threads,
+# still mapped when beam.smp halts (sys/unix/sys_signal_stack.c).
+leak:sys_thread_init_signal_stack

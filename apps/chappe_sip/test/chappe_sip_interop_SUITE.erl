@@ -145,7 +145,11 @@ jssip_call(Config) ->
 kamailio_options(Config) ->
     EP = pick(),
     Test = self(),
-    ok = chappe_sip:start(#{contact => contact(EP)}),
+    %% Kamailio reaches the host through host-gateway (the docker bridge on
+    %% Linux), which a loopback-bound listener never sees
+    ok = chappe_sip:start(#{
+        contact => <<"sip:0.0.0.0:", (integer_to_binary(EP))/binary>>
+    }),
     ok = chappe_sip:options(fun(_Req, Res) ->
         Test ! options_ping,
         _ = chappe_sip_res:send(Res, 200),
