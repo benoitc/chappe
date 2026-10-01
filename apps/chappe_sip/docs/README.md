@@ -43,6 +43,8 @@ Start here.
 
 - [Overview](design/overview.md): the layers and the supervision tree.
 - [Engine](design/engine.md): the sofia-sip NIF shim and the stack thread.
+- [Media](design/media.md): the media facade, rtpengine anchoring and
+  conferences on chappe_mix.
 
 ## Development
 

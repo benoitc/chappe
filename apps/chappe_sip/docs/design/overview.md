@@ -41,6 +41,7 @@ chappe_sip_sup (one_for_one)
 |-- chappe_sip_registry                location store
 |-- chappe_sip_ws_sup                  WS transport
 |-- chappe_sip_media_sup               media control plane
+|   `-- chappe_sip_media_mix           conference rooms (when `mix` is configured)
 `-- chappe_sip_stack_sup (rest_for_one)   engine crash tears down call state
     |-- chappe_sip_engine                 NIF owner + dispatcher
     |-- chappe_sip_request_sup            per-request workers

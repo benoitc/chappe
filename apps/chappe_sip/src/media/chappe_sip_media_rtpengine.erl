@@ -22,7 +22,6 @@
     record/2,
     stop_record/1,
     dtmf/2,
-    conference/3,
     subscribe/3,
     subscribe_answer/2,
     unsubscribe/2,
@@ -95,11 +94,6 @@ stop_record(Pid) ->
 -spec dtmf(pid(), map()) -> ok | {error, term()}.
 dtmf(Pid, Params) ->
     to_ok(chappe_rtpengine_session:play_dtmf(Pid, Params)).
-
-%% Conferencing is a FreeSWITCH capability; rtpengine only relays media.
--spec conference(pid(), binary(), map()) -> {error, unsupported}.
-conference(_Pid, _Room, _Opts) ->
-    {error, unsupported}.
 
 %% Tap the media to an external consumer. Party/flags/codec/ptime select the
 %% source and the fork output; chappe_rtpengine_session injects call-id and resolves the

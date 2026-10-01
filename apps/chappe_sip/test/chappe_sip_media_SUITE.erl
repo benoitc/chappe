@@ -1,29 +1,51 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 
-%% @doc chappe_sip_media facade tests against a fake rtpengine NG node.
+%% @doc chappe_sip_media facade tests.
 %%
-%% A minimal in-suite UDP server speaks the NG wire protocol (cookie SP
-%% bencode) using chappe_rtpengine's own bencode codec, so the whole path
-%% facade -> chappe_sip_media_rtpengine -> chappe_rtpengine_session -> chappe_rtpengine_client -> wire is
-%% exercised without a real rtpengine. Live coverage against a real node is in
-%% chappe_rtpengine's own interop track.
+%% rtpengine: a minimal in-suite UDP server speaks the NG wire protocol
+%% (cookie SP bencode) using chappe_rtpengine's own bencode codec, so the
+%% whole path facade -> chappe_sip_media_rtpengine -> chappe_rtpengine_session
+%% -> chappe_rtpengine_client -> wire is exercised without a real rtpengine.
+%%
+%% conference: real chappe_mix rooms on loopback, with G.711 RTP sent and
+%% received over UDP by in-suite peers, so each case hears what the mixer
+%% actually sends. The `rtpengine_live' group puts a real rtpengine in front
+%% of one leg; it runs only when RTPENGINE_HOST and RTPENGINE_MEDIA_IP are
+%% set (`make interop' brings one up).
 -module(chappe_sip_media_SUITE).
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
 
--export([all/0, init_per_suite/1, end_per_suite/1,
+-export([all/0, groups/0, init_per_suite/1, end_per_suite/1,
+         init_per_group/2, end_per_group/2,
          init_per_testcase/2, end_per_testcase/2]).
 -export([offer_answer/1, play_and_dtmf/1, capability_routing/1,
          unknown_capability/1, owner_death_tears_down/1,
          subscribe_tap/1, duck_block/1, duck_silence/1,
-         unsupported_on_freeswitch/1, publish_anchor/1]).
+         unsupported_on_mix/1, publish_anchor/1,
+         dialog_identity_uas/1, dialog_identity_uac/1,
+         media_env_config/1]).
+-export([conference_two_legs/1, conference_leave/1, conference_mute/1,
+         conference_owner_death/1, conference_leg_owner_death/1,
+         conference_sdp/1]).
+-export([conference_behind_rtpengine/1]).
+
+-define(LIVE_NODE, chappe_sip_media_live).
 
 all() ->
     [offer_answer, publish_anchor, play_and_dtmf, capability_routing,
      unknown_capability, owner_death_tears_down, subscribe_tap, duck_block,
-     duck_silence, unsupported_on_freeswitch].
+     duck_silence, unsupported_on_mix, dialog_identity_uas,
+     dialog_identity_uac, media_env_config,
+     {group, mix}, {group, rtpengine_live}].
+
+groups() ->
+    [{mix, [], [conference_two_legs, conference_leave, conference_mute,
+                conference_owner_death, conference_leg_owner_death,
+                conference_sdp]},
+     {rtpengine_live, [], [conference_behind_rtpengine]}].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_engine_fake,
@@ -34,7 +56,33 @@ init_per_suite(Config) ->
 end_per_suite(_Config) ->
     ok = application:stop(chappe_sip),
     _ = application:stop(chappe_rtpengine),
+    _ = application:stop(chappe_mix),
     application:unset_env(chappe_sip, engine_mod, [{persistent, true}]),
+    ok.
+
+init_per_group(mix, Config) ->
+    ok = chappe_sip_media:configure(#{mix => #{ip => {127, 0, 0, 1}}}),
+    Config;
+init_per_group(rtpengine_live, Config) ->
+    case {os:getenv("RTPENGINE_HOST"), os:getenv("RTPENGINE_MEDIA_IP")} of
+        {false, _} ->
+            {skip, "RTPENGINE_HOST not set"};
+        {_, M} when M =:= false; M =:= "" ->
+            {skip, "RTPENGINE_MEDIA_IP not set"};
+        {Host, MediaIp} ->
+            Port = list_to_integer(os:getenv("RTPENGINE_PORT", "2223")),
+            {ok, RtpeIp} = inet:parse_address(Host),
+            ok = chappe_sip_media:configure(
+                   #{rtpengine => #{nodes => [#{name => ?LIVE_NODE,
+                                                host => Host, port => Port}]},
+                     mix => #{ip => {0, 0, 0, 0}, advertise => MediaIp}}),
+            [{rtpe_ip, RtpeIp}, {media_ip, list_to_binary(MediaIp)} | Config]
+    end.
+
+end_per_group(rtpengine_live, _Config) ->
+    _ = chappe_rtpengine:remove_node(?LIVE_NODE),
+    ok;
+end_per_group(_Group, _Config) ->
     ok.
 
 init_per_testcase(_Case, Config) ->
@@ -50,7 +98,7 @@ end_per_testcase(_Case, _Config) ->
     stop_fake(),
     ok.
 
-%% ---- tests ----
+%% ---- rtpengine ----
 
 offer_answer(_Config) ->
     {ok, S} = chappe_sip_media:session(identity(), #{capability => anchor}),
@@ -91,16 +139,23 @@ play_and_dtmf(_Config) ->
     ?assertEqual(ok, chappe_sip_media:dtmf(S, #{code => 1})),
     ?assertEqual(ok, chappe_sip_media:stop(S)).
 
+%% conference routes to chappe_mix: refused while mix is not configured,
+%% a session once it is. The FreeSWITCH backend is gone and its config is
+%% refused rather than ignored.
 capability_routing(_Config) ->
-    %% conference routes to the FreeSWITCH backend, which rejects for the
-    %% missing channel (no_node only comes from that adapter, proving routing)
-    ?assertEqual({error, no_node},
+    ok = chappe_sip_media_sup:stop_child(chappe_sip_media_mix),
+    ?assertEqual({error, {not_configured, mix}},
                  chappe_sip_media:session(identity(), #{capability => conference})),
-    %% explicit backend override to freeswitch, same result
-    ?assertEqual({error, no_node},
-                 chappe_sip_media:session(identity(),
-                                    #{capability => anchor,
-                                      backend => freeswitch})).
+    ok = chappe_sip_media:configure(#{mix => #{ip => {127, 0, 0, 1}}}),
+    ?assertMatch({ok, _},
+                 chappe_sip_media:session(identity(), #{capability => conference})),
+    ?assertMatch({ok, _},
+                 chappe_sip_media:session(identity(), #{capability => anchor,
+                                                        backend => mix})),
+    ?assertEqual({error, {unsupported_backend, freeswitch}},
+                 chappe_sip_media:configure(#{freeswitch => #{nodes => []}})),
+    ?assertEqual({error, {no_backend, ivr}},
+                 chappe_sip_media:session(identity(), #{capability => ivr})).
 
 unknown_capability(_Config) ->
     ?assertEqual({error, {no_backend, bogus}},
@@ -154,19 +209,80 @@ duck_silence(_Config) ->
     ?assertEqual(<<"ft-1">>,
                  tag_of(<<"unsilence media">>, <<"from-tag">>, Cmds)).
 
-unsupported_on_freeswitch(_Config) ->
+%% The mixer has no SDP to rewrite and no anchored RTP: every rtpengine
+%% operation is refused on a conference session, and the conference
+%% operations on an rtpengine one.
+unsupported_on_mix(_Config) ->
+    ok = chappe_sip_media:configure(#{mix => #{ip => {127, 0, 0, 1}}}),
     {ok, S} = chappe_sip_media:session(#{call_id => <<"c">>},
-                                 #{capability => conference, node => fs1,
-                                   uuid => <<"chan">>}),
+                                       #{capability => conference}),
+    ?assertEqual({error, {unsupported, offer}},
+                 chappe_sip_media:offer(S, <<"v=0">>)),
+    ?assertEqual({error, {unsupported, answer}},
+                 chappe_sip_media:answer(S, <<"v=0">>)),
+    ?assertEqual({error, {unsupported, play}},
+                 chappe_sip_media:play(S, #{file => <<"x">>})),
+    ?assertEqual({error, {unsupported, record}},
+                 chappe_sip_media:record(S, #{})),
+    ?assertEqual({error, {unsupported, dtmf}},
+                 chappe_sip_media:dtmf(S, #{code => 1})),
     ?assertEqual({error, {unsupported, subscribe}},
                  chappe_sip_media:subscribe(S, #{})),
-    ?assertEqual({error, {unsupported, subscribe}},
-                 chappe_sip_media:subscribe_answer(
-                   S, #{to_tag => <<"x">>, sdp => <<"s">>})),
-    ?assertEqual({error, {unsupported, subscribe}},
-                 chappe_sip_media:unsubscribe(S, #{to_tag => <<"x">>})),
     ?assertEqual({error, {unsupported, duck}}, chappe_sip_media:duck(S, #{})),
-    ?assertEqual({error, {unsupported, duck}}, chappe_sip_media:unduck(S, #{})).
+    ?assertEqual({error, {missing, room}}, chappe_sip_media:conference(S, #{})),
+    ?assertEqual({error, not_joined}, chappe_sip_media:mute(S)),
+    {ok, R} = chappe_sip_media:session(identity(), #{capability => anchor}),
+    ?assertEqual({error, {unsupported, conference}},
+                 chappe_sip_media:conference(R, <<"room">>, #{})),
+    ?assertEqual({error, {unsupported, conference}}, chappe_sip_media:leave(R)),
+    ?assertEqual({error, {unsupported, conference}}, chappe_sip_media:mute(R)).
+
+%% A UAS dialog: the From tag is the peer's, so it is what rtpengine gets as
+%% from-tag, and our tag goes out as to-tag.
+dialog_identity_uas(_Config) ->
+    {Dialog, Fake} = fake_dialog(uas),
+    {ok, S} = chappe_sip_media:session(Dialog, #{capability => anchor}),
+    {ok, _} = chappe_sip_media:offer(S, <<"v=0 caller-offer">>),
+    {ok, _} = chappe_sip_media:answer(S, <<"v=0 callee-answer">>),
+    ok = chappe_sip_media:stop(S),
+    exit(Fake, kill),
+    Cmds = drain_cmds(),
+    ?assertEqual(<<"remote-tag">>, tag_of(<<"offer">>, <<"from-tag">>, Cmds)),
+    ?assertEqual(<<"local-tag">>, tag_of(<<"answer">>, <<"to-tag">>, Cmds)),
+    ?assertEqual(<<"dlg-call">>, tag_of(<<"offer">>, <<"call-id">>, Cmds)).
+
+%% A UAC dialog: we sent the INVITE, so the From tag is ours.
+dialog_identity_uac(_Config) ->
+    {Dialog, Fake} = fake_dialog(uac),
+    {ok, S} = chappe_sip_media:session(Dialog, #{capability => anchor}),
+    {ok, _} = chappe_sip_media:offer(S, <<"v=0 caller-offer">>),
+    {ok, _} = chappe_sip_media:answer(S, <<"v=0 callee-answer">>),
+    ok = chappe_sip_media:stop(S),
+    exit(Fake, kill),
+    Cmds = drain_cmds(),
+    ?assertEqual(<<"local-tag">>, tag_of(<<"offer">>, <<"from-tag">>, Cmds)),
+    ?assertEqual(<<"remote-tag">>, tag_of(<<"answer">>, <<"to-tag">>, Cmds)).
+
+%% With no `media' option, configure reads the application env; an
+%% explicit config wins over it.
+media_env_config(_Config) ->
+    ok = chappe_sip_media_sup:stop_child(chappe_sip_media_mix),
+    application:set_env(chappe_sip, media, #{mix => #{ip => {127, 0, 0, 1}}}),
+    try
+        ok = chappe_sip_media:configure(undefined),
+        ?assert(is_pid(whereis(chappe_sip_media_mix))),
+        ok = chappe_sip_media_sup:stop_child(chappe_sip_media_mix),
+        %% the option overrides the env: a bad address in the option fails
+        %% although the env is fine
+        ?assertMatch({error, {bad_address, _}},
+                     chappe_sip_media:configure(#{mix => #{ip => "nope"}})),
+        ?assertEqual(undefined, whereis(chappe_sip_media_mix))
+    after
+        application:unset_env(chappe_sip, media)
+    end,
+    %% no env, no option: nothing starts
+    ok = chappe_sip_media:configure(undefined),
+    ?assertEqual(undefined, whereis(chappe_sip_media_mix)).
 
 owner_death_tears_down(_Config) ->
     Collector = self(),
@@ -185,10 +301,365 @@ owner_death_tears_down(_Config) ->
     %% chappe_rtpengine_session monitors its owner and issues a delete on its death
     ?assert(wait_for_cmd(<<"delete">>, 3000)).
 
+%% ---- conference (chappe_mix) ----
+
+%% Two calls in one room, one per SDP direction: A offers PCMA without
+%% rtcp-mux and the mixer answers; the mixer offers PCMU to B, which
+%% answers through set_remote/2. Each hears the other and not itself.
+conference_two_legs(_Config) ->
+    Room = room(),
+    {A, APort} = peer_start(alaw),
+    {ok, SA} = conf_session(),
+    {ok, AnswerA} = chappe_sip_media:conference(
+                      SA, Room, #{sdp => peer_sdp(APort, alaw, false)}),
+    ?assertNotEqual(nomatch, binary:match(AnswerA, <<"a=rtpmap:8 PCMA/8000">>)),
+    ?assertEqual(nomatch, binary:match(AnswerA, <<"a=rtcp-mux">>)),
+    ?assertNotEqual(nomatch, binary:match(AnswerA, <<"a=sendrecv">>)),
+    peer_dst(A, audio_port(AnswerA)),
+
+    {B, BPort} = peer_start(ulaw),
+    {ok, SB} = conf_session(),
+    {ok, OfferB} = chappe_sip_media:conference(SB, Room, #{}),
+    ?assertNotEqual(nomatch, binary:match(OfferB, <<"a=rtpmap:0 PCMU/8000">>)),
+    ?assertNotEqual(nomatch, binary:match(OfferB, <<"a=rtcp-mux">>)),
+    ok = chappe_sip_media:set_remote(SB, peer_sdp(BPort, ulaw, true)),
+    peer_dst(B, audio_port(OfferB)),
+
+    #{conf := Conf} = chappe_sip_media:info(SA),
+    ?assertMatch(#{conf := Conf, room := Room}, chappe_sip_media:info(SB)),
+
+    %% only A talks: B hears it, A hears silence
+    peer_talk(A, true),
+    ?assert(hears(B, 2000)),
+    ?assertNot(hears(A, 300)),
+    %% both talk: A hears B too
+    peer_talk(B, true),
+    ?assert(hears(A, 2000)),
+    ok = chappe_sip_media:leave(SA),
+    ok = chappe_sip_media:leave(SB),
+    peer_stop(A),
+    peer_stop(B).
+
+%% Leaving takes the leg out; the room stops with its last leg.
+conference_leave(_Config) ->
+    Room = room(),
+    {ok, SA} = conf_session(),
+    {ok, SB} = conf_session(),
+    {ok, _} = chappe_sip_media:conference(SA, Room, #{}),
+    {ok, _} = chappe_sip_media:conference(SB, Room, #{}),
+    ?assertEqual({error, already_joined},
+                 chappe_sip_media:conference(SA, Room, #{})),
+    #{conf := Conf} = chappe_sip_media:info(SA),
+    MRef = monitor(process, Conf),
+    ok = chappe_sip_media:leave(SA),
+    ?assertEqual({error, not_joined}, chappe_sip_media:info(SA)),
+    ?assertEqual(1, length(chappe_mix:legs(Conf))),
+    ok = chappe_sip_media:stop(SB),
+    receive {'DOWN', MRef, process, Conf, _} -> ok
+    after 2000 -> ct:fail(room_not_stopped)
+    end,
+    ?assertEqual({error, not_joined}, chappe_sip_media:leave(SB)),
+    %% the name is free again: a new join makes a new room
+    {ok, SC} = conf_session(),
+    {ok, _} = chappe_sip_media:conference(SC, Room, #{}),
+    #{conf := Conf2} = chappe_sip_media:info(SC),
+    ?assertNotEqual(Conf, Conf2),
+    ok = chappe_sip_media:leave(SC).
+
+%% A muted leg still hears the room but nobody hears it.
+conference_mute(_Config) ->
+    Room = room(),
+    {A, SA} = joined_peer(Room),
+    {B, SB} = joined_peer(Room),
+    ok = chappe_sip_media:mute(SA),
+    ?assertMatch(#{muted := true}, chappe_sip_media:info(SA)),
+    peer_talk(A, true),
+    peer_talk(B, true),
+    ?assert(hears(A, 2000)),
+    timer:sleep(200),
+    peer_clear(B),
+    ?assertNot(hears(B, 400)),
+    ok = chappe_sip_media:unmute(SA),
+    ?assert(hears(B, 2000)),
+    ok = chappe_sip_media:leave(SA),
+    ok = chappe_sip_media:leave(SB),
+    peer_stop(A),
+    peer_stop(B).
+
+%% The room owner going away stops the room under every leg in it.
+conference_owner_death(_Config) ->
+    Room = room(),
+    Owner = spawn(fun() -> receive stop -> ok end end),
+    {ok, SA} = conf_session(),
+    {ok, SB} = conf_session(),
+    {ok, _} = chappe_sip_media:conference(SA, Room, #{owner => Owner}),
+    {ok, _} = chappe_sip_media:conference(SB, Room, #{}),
+    #{conf := Conf} = chappe_sip_media:info(SA),
+    MRef = monitor(process, Conf),
+    exit(Owner, kill),
+    receive {'DOWN', MRef, process, Conf, _} -> ok
+    after 2000 -> ct:fail(room_not_stopped)
+    end,
+    ?assertEqual({error, not_joined}, chappe_sip_media:info(SA)),
+    ?assertEqual({error, not_joined}, chappe_sip_media:info(SB)).
+
+%% A call process going away takes its leg out of the room.
+conference_leg_owner_death(_Config) ->
+    Room = room(),
+    {ok, SA} = conf_session(),
+    {ok, _} = chappe_sip_media:conference(SA, Room, #{}),
+    #{conf := Conf} = chappe_sip_media:info(SA),
+    Self = self(),
+    Call = spawn(fun() ->
+        {ok, S} = conf_session(),
+        {ok, _} = chappe_sip_media:conference(S, Room, #{}),
+        Self ! {joined, self()},
+        receive stop -> ok end
+    end),
+    receive {joined, Call} -> ok after 2000 -> ct:fail(not_joined) end,
+    ?assertEqual(2, length(chappe_mix:legs(Conf))),
+    exit(Call, kill),
+    ?assert(wait_until(fun() -> length(chappe_mix:legs(Conf)) =:= 1 end, 2000)),
+    ok = chappe_sip_media:leave(SA).
+
+%% What the mixer answers and what it refuses.
+conference_sdp(_Config) ->
+    Room = room(),
+    {ok, S} = conf_session(),
+    Opus = <<"v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\n"
+             "t=0 0\r\nm=audio 4000 RTP/AVP 96\r\n"
+             "a=rtpmap:96 opus/48000/2\r\n">>,
+    ?assertEqual({error, no_common_codec},
+                 chappe_sip_media:conference(S, Room, #{sdp => Opus})),
+    Srtp = <<"v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\n"
+             "t=0 0\r\nm=audio 4000 RTP/SAVP 0\r\n">>,
+    ?assertEqual({error, {unsupported_proto, <<"RTP/SAVP">>}},
+                 chappe_sip_media:conference(S, Room, #{sdp => Srtp})),
+    %% video is rejected in place, audio answered with the offer's
+    %% preferred law, the muxed RTCP kept
+    Offer = <<"v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\n"
+              "t=0 0\r\nm=video 5000 RTP/AVP 97\r\na=rtpmap:97 VP8/90000\r\n"
+              "m=audio 4000 RTP/AVP 96 8 0\r\na=rtpmap:96 opus/48000/2\r\n"
+              "a=rtcp-mux\r\n">>,
+    {ok, Answer} = chappe_sip_media:conference(S, Room, #{sdp => Offer}),
+    ?assertNotEqual(nomatch, binary:match(Answer, <<"m=video 0 RTP/AVP 97">>)),
+    ?assertNotEqual(nomatch, binary:match(Answer, <<" RTP/AVP 8\r\n">>)),
+    ?assertNotEqual(nomatch, binary:match(Answer, <<"a=rtcp-mux">>)),
+    ?assertNotEqual(nomatch, binary:match(Answer, <<"c=IN IP4 127.0.0.1">>)),
+    ?assertMatch(#{law := alaw}, chappe_sip_media:info(S)),
+    %% an answer in another law than the leg's is refused
+    ?assertEqual({error, {law_mismatch, ulaw}},
+                 chappe_sip_media:set_remote(S, peer_sdp(4000, ulaw, true))),
+    ok = chappe_sip_media:leave(S).
+
+%% ---- conference behind rtpengine ----
+
+%% The deployed shape: the caller is anchored on rtpengine, which offers
+%% toward the mixer leg; the mixer answers, and rtpengine's answer goes
+%% back to the caller. A second leg joins the room directly. Both hear the
+%% other.
+conference_behind_rtpengine(Config) ->
+    RtpeIp = ?config(rtpe_ip, Config),
+    MediaIp = ?config(media_ip, Config),
+    Room = room(),
+    Suffix = integer_to_binary(erlang:unique_integer([positive])),
+    CallId = <<"chappe-sip-media-live-", Suffix/binary>>,
+    {Caller, CallerPort} = peer_start(ulaw, {0, 0, 0, 0}),
+    {ok, Anchor} = chappe_sip_media:session(
+                     #{call_id => CallId, from_tag => <<"caller-", Suffix/binary>>},
+                     #{capability => anchor, node => ?LIVE_NODE}),
+    {ok, ToMixer} = chappe_sip_media:offer(
+                      Anchor, peer_sdp(CallerPort, ulaw, false, MediaIp),
+                      #{params => #{ice => remove}}),
+    {ok, SM} = chappe_sip_media:session(#{call_id => CallId},
+                                        #{capability => conference}),
+    {ok, MixAnswer} = chappe_sip_media:conference(SM, Room, #{sdp => ToMixer}),
+    %% rtpengine advertises the address it is published on; reach it where
+    %% the test does
+    ok = chappe_sip_media:set_remote(SM, {RtpeIp, audio_port(ToMixer)}),
+    {ok, ToCaller} = chappe_sip_media:answer(
+                       Anchor, MixAnswer,
+                       #{to_tag => <<"mix-", Suffix/binary>>,
+                         params => #{ice => remove}}),
+    ct:log("to mixer:~n~s~nmixer answer:~n~s~nto caller:~n~s",
+           [ToMixer, MixAnswer, ToCaller]),
+    peer_dst(Caller, {RtpeIp, audio_port(ToCaller)}),
+
+    {Direct, DirectPort} = peer_start(ulaw),
+    {ok, SD} = conf_session(),
+    {ok, DAnswer} = chappe_sip_media:conference(
+                      SD, Room, #{sdp => peer_sdp(DirectPort, ulaw, true)}),
+    peer_dst(Direct, audio_port(DAnswer)),
+
+    peer_talk(Caller, true),
+    ?assert(hears(Direct, 4000)),
+    peer_talk(Direct, true),
+    ?assert(hears(Caller, 4000)),
+    ok = chappe_sip_media:leave(SD),
+    ok = chappe_sip_media:leave(SM),
+    ok = chappe_sip_media:stop(Anchor),
+    peer_stop(Caller),
+    peer_stop(Direct).
+
 %% ---- helpers ----
 
 identity() ->
     #{call_id => <<"call-1">>, from_tag => <<"ft-1">>, to_tag => <<"tt-1">>}.
+
+room() ->
+    <<"room-", (integer_to_binary(erlang:unique_integer([positive])))/binary>>.
+
+conf_session() ->
+    chappe_sip_media:session(#{call_id => room()}, #{capability => conference}).
+
+%% A peer joined to Room by answering its offer.
+joined_peer(Room) ->
+    {P, Port} = peer_start(ulaw),
+    {ok, S} = conf_session(),
+    {ok, Answer} = chappe_sip_media:conference(
+                     S, Room, #{sdp => peer_sdp(Port, ulaw, true)}),
+    peer_dst(P, audio_port(Answer)),
+    {P, S}.
+
+%% A dialog handle backed by a stand-in for the dialog fsm (it answers the
+%% tag and Call-ID queries) and indexed under Role, as a confirmed dialog
+%% is.
+fake_dialog(Role) ->
+    Pid = spawn(fun fake_dialog_loop/0),
+    Key = {<<"dlg-call">>, <<"local-tag">>, <<"remote-tag">>},
+    ok = chappe_sip_dialog_index:insert(Key, 1, confirmed, Role, Pid),
+    {chappe_sip_dialog:make(Pid, 1), Pid}.
+
+fake_dialog_loop() ->
+    receive
+        {'$gen_call', From, Query} ->
+            gen_statem:reply(From, fake_dialog_reply(Query)),
+            fake_dialog_loop()
+    end.
+
+fake_dialog_reply(call_id) -> <<"dlg-call">>;
+fake_dialog_reply(local_tag) -> <<"local-tag">>;
+fake_dialog_reply(remote_tag) -> <<"remote-tag">>.
+
+wait_until(Fun, Timeout) when Timeout =< 0 ->
+    Fun();
+wait_until(Fun, Timeout) ->
+    case Fun() of
+        true -> true;
+        false -> timer:sleep(20), wait_until(Fun, Timeout - 20)
+    end.
+
+audio_port(Sdp) ->
+    {match, [Port]} = re:run(Sdp, <<"m=audio ([0-9]+)">>,
+                             [{capture, all_but_first, binary}]),
+    binary_to_integer(Port).
+
+peer_sdp(Port, Law, Mux) ->
+    peer_sdp(Port, Law, Mux, <<"127.0.0.1">>).
+
+peer_sdp(Port, Law, Mux, Ip) ->
+    {Pt, Map} = case Law of
+                    ulaw -> {<<"0">>, <<"a=rtpmap:0 PCMU/8000\r\n">>};
+                    alaw -> {<<"8">>, <<"a=rtpmap:8 PCMA/8000\r\n">>}
+                end,
+    iolist_to_binary(
+      [<<"v=0\r\no=- 1 1 IN IP4 ">>, Ip, <<"\r\ns=peer\r\nc=IN IP4 ">>, Ip,
+       <<"\r\nt=0 0\r\nm=audio ">>, integer_to_binary(Port), <<" RTP/AVP ">>,
+       Pt, <<"\r\n">>, Map, <<"a=ptime:20\r\na=sendrecv\r\n">>,
+       case Mux of
+           true -> <<"a=rtcp-mux\r\n">>;
+           false -> <<>>
+       end]).
+
+%% ---- G.711 RTP peer ----
+%%
+%% One UDP socket. While talking it sends a loud constant frame every 20 ms
+%% to its destination; it keeps whether any audio frame (not the law's
+%% silence code) came back.
+
+peer_start(Law) ->
+    peer_start(Law, {127, 0, 0, 1}).
+
+peer_start(Law, Ip) ->
+    Self = self(),
+    Pid = spawn_link(fun() ->
+        {ok, Sock} = gen_udp:open(0, [binary, {ip, Ip}, {active, true}]),
+        {ok, Port} = inet:port(Sock),
+        Self ! {self(), port, Port},
+        peer_loop(#{sock => Sock, law => Law, dst => undefined, talk => false,
+                    seq => 0, heard => false})
+    end),
+    receive {Pid, port, Port} -> {Pid, Port}
+    after 2000 -> ct:fail(peer_start)
+    end.
+
+peer_stop(Pid) ->
+    unlink(Pid),
+    exit(Pid, kill).
+
+peer_dst(Pid, Port) when is_integer(Port) ->
+    peer_dst(Pid, {{127, 0, 0, 1}, Port});
+peer_dst(Pid, Dst) ->
+    Pid ! {dst, Dst},
+    ok.
+
+peer_talk(Pid, Talk) ->
+    Pid ! {talk, Talk},
+    ok.
+
+peer_clear(Pid) ->
+    Pid ! clear,
+    ok.
+
+%% Whether the peer hears audio within Timeout ms.
+hears(Pid, Timeout) ->
+    wait_until(fun() -> peer_heard(Pid) end, Timeout).
+
+peer_heard(Pid) ->
+    Ref = make_ref(),
+    Pid ! {heard, self(), Ref},
+    receive {Ref, Heard} -> Heard
+    after 1000 -> false
+    end.
+
+peer_loop(#{sock := Sock, law := Law} = P) ->
+    receive
+        {dst, Dst} ->
+            erlang:send_after(20, self(), tick),
+            peer_loop(P#{dst => Dst});
+        {talk, Talk} ->
+            peer_loop(P#{talk => Talk});
+        clear ->
+            peer_loop(P#{heard => false});
+        {heard, From, Ref} ->
+            From ! {Ref, maps:get(heard, P)},
+            peer_loop(P);
+        tick ->
+            erlang:send_after(20, self(), tick),
+            peer_loop(peer_send(P));
+        {udp, Sock, _Ip, _Port, <<2:2, _:7, Pt:7, _:16, _:32, _:32,
+                                  Payload/binary>>} when Pt =:= 0; Pt =:= 8 ->
+            Heard = maps:get(heard, P) orelse
+                        Payload =/= binary:copy(<<(silence(Law))>>,
+                                                byte_size(Payload)),
+            peer_loop(P#{heard => Heard});
+        {udp, Sock, _, _, _} ->
+            peer_loop(P)
+    end.
+
+peer_send(#{talk := false} = P) ->
+    P;
+peer_send(#{sock := Sock, law := Law, dst := {Ip, Port}, seq := Seq} = P) ->
+    Pt = case Law of ulaw -> 0; alaw -> 8 end,
+    Hdr = <<2:2, 0:1, 0:1, 0:4, 0:1, Pt:7, (Seq band 16#FFFF):16,
+            (Seq * 160 band 16#FFFFFFFF):32, 16#5EED:32>>,
+    %% a loud constant: 0x80 is near full scale in mu-law, 0xAA in A-law
+    Loud = case Law of ulaw -> 16#80; alaw -> 16#AA end,
+    _ = gen_udp:send(Sock, Ip, Port, <<Hdr/binary, (binary:copy(<<Loud>>, 160))/binary>>),
+    P#{seq => Seq + 1}.
+
+silence(ulaw) -> 16#FF;
+silence(alaw) -> 16#D5.
 
 %% Value of Key in the last command named Name, out of an already-drained list.
 tag_of(Name, Key, Cmds) ->

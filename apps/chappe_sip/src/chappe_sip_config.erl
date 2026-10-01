@@ -60,11 +60,12 @@ default(registrar_max_bindings_per_aor) -> 10;
 %% random secret is generated at boot; set a stable shared value only if
 %% record-routed dialogs must survive a restart or span a cluster.
 default(flow_token_secret) -> undefined;
-%% Media control-plane backends (chappe_sip_media). Empty disables media entirely;
-%% nothing in chappe_rtpengine/chappe_esl is started. Shape:
+%% Media control-plane backends (chappe_sip_media), read when
+%% chappe_sip:start/1 gets no `media' option. Empty disables media entirely;
+%% nothing in chappe_rtpengine/chappe_mix is started. Shape:
 %%   #{rtpengine => #{nodes => [#{name := atom(), host := _, port := _}]},
-%%     freeswitch => #{nodes => [#{name := atom(), host := _, port := _,
-%%                                 password => binary()}]}}
+%%     mix => #{ip => inet:ip_address(), advertise => inet:ip_address(),
+%%              law => ulaw | alaw, depth => pos_integer()}}
 default(media) -> #{};
 %% Session timers (RFC 4028). session_expires: the interval (s) a UAC asks
 %% for and a UAS asks for when the caller supports timers; undefined never

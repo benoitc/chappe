@@ -1,8 +1,7 @@
 # Interop harness
 
 Drivers that exercise chappe_sip against real stacks: a real JsSIP UA over
-WebSocket (register and a WebRTC media call), a Kamailio container over UDP, and
-a FreeSWITCH container for the media control plane (chappe_sip_media over ESL). Use
+WebSocket (register and a WebRTC media call) and a Kamailio container over UDP. Use
 this to confirm chappe_sip interoperates on the wire with software it does not control.
 The tests are opt-in (`INTEROP=1`) so they stay out of the fast `rebar3 ct` run.
 
@@ -19,8 +18,6 @@ The tests are opt-in (`INTEROP=1`) so they stay out of the fast `rebar3 ct` run.
   (installed as an optional dependency; ships prebuilt binaries).
 - The Kamailio case needs docker running and the image pulled:
   `docker pull ghcr.io/kamailio/kamailio-ci:5.8`
-- The FreeSWITCH media e2e needs docker running with `docker compose`. The image
-  (`safarov/freeswitch` by default) is pulled on first `docker compose up`.
 
 ## Run
 
@@ -55,13 +52,6 @@ WS_URL=ws://127.0.0.1:9001/ws node jssip_call.js
   and Kamailio marks it Active. Proves both directions: Kamailio emits OPTIONS
   chappe_sip parses, chappe_sip emits a 200 Kamailio accepts. The container reaches chappe_sip
   via `host.docker.internal`.
-- `freeswitch/` (suite `chappe_sip_media_fs_e2e_SUITE`): brings up FreeSWITCH with its
-  Event Socket reachable, then drives the real ESL control path through
-  `chappe_sip_media` (`status_roundtrip` connects and runs an api command;
-  `conference_join` originates a live channel and joins it to a conference with
-  `chappe_sip_media:conference/3`, asserting membership on the node). Run it with
-  `INTEROP=1 rebar3 ct --suite test/chappe_sip_media_fs_e2e_SUITE`. The suite brings
-  the container up and down itself.
 
 ## Notes
 
@@ -70,21 +60,5 @@ WS_URL=ws://127.0.0.1:9001/ws node jssip_call.js
   failure.
 - `node_modules/` is gitignored and never touched by the fast test run.
 - Set `DEBUG=1` on a JsSIP driver for wire-level logs on stderr.
-- Override the Kamailio image with `KAMAILIO_IMAGE=...`, the FreeSWITCH image
-  with `FREESWITCH_IMAGE=...`, and the harness location with `CHAPPE_SIP_INTEROP_DIR=...`.
-- The FreeSWITCH config under `freeswitch/conf/` is test-only and insecure (an
-  allow-all ESL ACL). It exists to make the Event Socket reachable from the test.
-- Docker Desktop for Mac: its published-port loopback forwarding can reset the
-  ESL connection to the container (an empty banner), so the host-run
-  `chappe_sip_media_fs_e2e_SUITE` skips there. Instead run it container-to-container:
-
-  ```
-  rebar3 as test compile
-  docker compose -f interop/freeswitch/docker-compose.e2e.yml up \
-    --abort-on-container-exit --exit-code-from runner
-  ```
-
-  This runs the suite inside a Linux `erlang` container on FreeSWITCH's own
-  network (the runner's exit code is the result). It reuses the host-built beams
-  read-only, so it needs neither the private media dep repos nor a C toolchain.
-  On a Linux runner the host-run suite works directly over the published port.
+- Override the Kamailio image with `KAMAILIO_IMAGE=...` and the harness location
+  with `CHAPPE_SIP_INTEROP_DIR=...`.

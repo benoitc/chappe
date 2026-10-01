@@ -205,10 +205,9 @@ tracker; the milestone history is in `docs/plan.md`.
 
 ### Media control plane
 - `chappe_sip_media`: a capability-based facade that maps a SIP call to a media
-  session on an external engine. You ask for a capability (anchor, relay,
-  conference, ...) and it routes to a backend; the media plane (RTP) stays in
-  the external daemon, only the control plane runs in the BEAM. See
-  `docs/design/media.md`.
+  session. You ask for a capability (anchor, relay, conference, ...) and it
+  routes to a backend: rtpengine for anchoring, chappe_mix for conferences. The
+  SIP processes never touch RTP. See `docs/design/media.md`.
 - rtpengine backend (via the `chappe_rtpengine` library): anchor/relay a call's
   media with `chappe_sip_media:offer/2` and `answer/2` (SDP in, rewritten SDP out),
   plus `play`/`record`/`dtmf`, `subscribe` (tap a party's media to an external
@@ -220,11 +219,20 @@ tracker; the milestone history is in `docs/plan.md`.
   dialog identity (Call-ID +
   from/to tags) and bound to the call-owner process, so it is torn down when the
   call ends.
-- FreeSWITCH backend (via the `chappe_esl` library): drive a channel over ESL for
-  `conference`, `play`, `record`, and `dtmf`. Media rides the real SIP leg you
-  originate to FreeSWITCH, so offer/answer do not apply on this backend.
+- chappe_mix backend (the `conference` capability): `conference/3` starts or
+  joins a named room, opens a mixer leg for the call and returns its G.711 SDP
+  (an answer to the call's offer, or an offer you complete with `set_remote/2`).
+  `leave/1`, `mute/1` and `unmute/1` act on the leg. A room stops with its last
+  leg or when its owner exits; a leg leaves when its call process exits. G.711
+  (PCMU/PCMA) over RTP/AVP in 20 ms frames only: anchor other calls on
+  rtpengine and give the mixer rtpengine's offer, so rtpengine transcodes and
+  terminates SRTP/DTLS.
+- `play`, `record` and `dtmf` run on rtpengine only.
+- A dialog handle passed to `session/2` maps its tags by role: the From tag is
+  the peer's on a UAS dialog and ours on a UAC dialog.
 - Optional and dormant: the media libraries are load-only and nothing in them
-  starts unless you pass a `media` config to `chappe_sip:start/1`.
+  starts unless a `media` config is given, as the `chappe_sip:start/1` option
+  or the `media` application env (the option wins).
 
 ### Interop
 - Opt-in interop track (`INTEROP=1`, out of the fast run) against real stacks:
@@ -258,6 +266,6 @@ Gaps relative to drachtio, in rough order of impact.
 ## Non-goals
 
 - Media plane. chappe_sip moves SIP signaling and controls media
-  engines through `chappe_sip_media`, but RTP never flows through it: the media
-  plane stays in rtpengine / FreeSWITCH. It is not a media relay or a media
-  server itself.
+  engines through `chappe_sip_media`, but RTP never flows through the SIP
+  processes: it stays in rtpengine and in the chappe_mix conference processes.
+  chappe_sip is not a media relay or a media server itself.
