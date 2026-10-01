@@ -12,12 +12,12 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -export([all/0, init_per_suite/1, end_per_suite/1, end_per_testcase/2]).
--export([reinvite_hold/1, indialog_info/1, engine_restart_tears_down/1,
-         engine_crash_reestablishes/1]).
+-export([reinvite_hold/1, indialog_info/1, getters_during_request/1,
+         engine_restart_tears_down/1, engine_crash_reestablishes/1]).
 
 all() ->
-    [reinvite_hold, indialog_info, engine_restart_tears_down,
-     engine_crash_reestablishes].
+    [reinvite_hold, indialog_info, getters_during_request,
+     engine_restart_tears_down, engine_crash_reestablishes].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -60,8 +60,11 @@ reinvite_hold(_Config) ->
         %% receive the re-INVITE, answer 200, expect ACK
         {Re, RSrc} = recv(Sock, <<"INVITE">>),
         {_, _} = binary:match(Re, <<"sendonly">>),      % hold offer
+        %% the Contact of a 2xx to a target refresh is the new remote
+        %% target (RFC 3261 12.2.1.2): ours, so the ACK comes back here
         send(Sock, RSrc, resp(Re, 200, <<"OK">>, TT,
-                              [{<<"Contact">>, ctc(Port)}], sdp(<<"callee">>))),
+                              [{<<"Contact">>, ctc(lport(Sock))}],
+                              sdp(<<"callee">>))),
         {_Ack, _} = recv(Sock, <<"ACK">>),
         Test ! reinvite_acked,
         {_Bye, BSrc} = recv(Sock, <<"BYE">>),
@@ -111,6 +114,52 @@ indialog_info(_Config) ->
                      after 4000 -> ct:fail(no_dialog) end,
     ok = expect(caller_up),
     Handler ! do_info,
+    receive {info_result, {ok, Msg}} ->
+        ?assertEqual(200, chappe_sip_msg:status(Msg))
+    after 5000 -> ct:fail(no_info_result) end,
+    ok = chappe_sip_dialog:destroy(Dlg).
+
+%% the query and set_handled calls answer while an app-initiated in-dialog
+%% request is in flight (the peer holds its answer back meanwhile).
+getters_during_request(_Config) ->
+    EP = setup(),
+    Test = self(),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        {ok, Dlg} = chappe_sip:create_uas(Req, Res, #{local_sdp => sdp(<<"app">>)}),
+        Test ! {dialog, Dlg, self()},
+        receive
+            do_info ->
+                R = chappe_sip_dialog:request(Dlg, #{method => <<"INFO">>}),
+                Test ! {info_result, R}
+        end,
+        {destroyed, _} = chappe_sip_dialog:wait(Dlg)
+    end),
+    Call = callid(),
+    FT = <<"m7ft4">>,
+    Caller = caller(EP, fun(Sock, Port) ->
+        send(Sock, Port, invite(Sock, Call, FT)),
+        R200 = recv_status(Sock, 200),
+        TT = to_tag(R200),
+        send(Sock, Port, ack(Sock, Call, FT, TT)),
+        Test ! caller_up,
+        {Info, ISrc} = recv(Sock, <<"INFO">>),
+        Test ! info_held,
+        receive release -> ok after 6000 -> ok end,
+        send(Sock, ISrc, resp(Info, 200, <<"OK">>, TT, [], <<>>)),
+        {_Bye, BSrc} = recv(Sock, <<"BYE">>),
+        send(Sock, BSrc, resp(_Bye, 200, <<"OK">>, TT, [], <<>>))
+    end),
+    {Dlg, Handler} = receive {dialog, D, H} -> {D, H}
+                     after 4000 -> ct:fail(no_dialog) end,
+    ok = expect(caller_up),
+    Handler ! do_info,
+    ok = expect(info_held),
+    ?assertEqual(FT, chappe_sip_dialog:remote_tag(Dlg)),
+    ?assert(is_binary(chappe_sip_dialog:local_tag(Dlg))),
+    ?assertEqual(Call, chappe_sip_dialog:call_id(Dlg)),
+    ?assertMatch(<<"v=0", _/binary>>, chappe_sip_dialog:remote_sdp(Dlg)),
+    ?assertEqual(ok, chappe_sip_dialog:set_handled(Dlg, [info])),
+    Caller ! release,
     receive {info_result, {ok, Msg}} ->
         ?assertEqual(200, chappe_sip_msg:status(Msg))
     after 5000 -> ct:fail(no_info_result) end,

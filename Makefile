@@ -4,7 +4,8 @@
 # chappe umbrella convenience targets over rebar3.
 
 .PHONY: all compile test test-static check eunit ct lint xref dialyzer \
-        fmt fmt-check asan interop clean
+        fmt fmt-check asan interop interop-mix interop-conformance \
+        compliance clean
 
 all: compile
 
@@ -45,6 +46,31 @@ asan:
 # The gated rtpengine suites against a real daemon in docker.
 interop:
 	apps/chappe_rtpengine/test/e2e.sh
+
+# The mixer behind a real rtpengine (transcoded legs, N-1 by Goertzel).
+interop-mix:
+	apps/chappe_mix/test/interop.sh
+
+# Each app's compliance matrix from its requirements, the `%% req:'
+# annotations and the latest CT results. GATE=demo fails on any hard
+# requirement of the demo tier that is not passing.
+COMPLIANCE_APPS = chappe_sip chappe_mix
+
+compliance:
+	rebar3 as test compile
+	@set -e; for app in $(COMPLIANCE_APPS); do \
+	    echo "$$app:"; \
+	    scripts/compliance.escript apps/$$app/docs/compliance/requirements.tsv \
+	        apps/$$app/test _build/test/logs apps/$$app/docs/compliance.md \
+	        $(if $(GATE),--gate $(GATE)); \
+	done
+
+# chappe_sip against SIPp and pjsua in docker, one flow per RFC clause
+# (apps/chappe_sip/interop/conformance). Known gaps are listed in
+# apps/chappe_sip/interop/conformance/expected-fail.
+interop-conformance:
+	CONFORMANCE=1 rebar3 ct \
+	    --suite apps/chappe_sip/test/chappe_sip_conformance_SUITE
 
 clean:
 	rebar3 clean

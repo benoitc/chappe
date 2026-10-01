@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!-- Copyright 2026 Benoit Chesneau
+     SPDX-License-Identifier: Apache-2.0
+
+     OPTIONS to the node, answered by a plain application handler (a bare
+     200). RFC 3261 11.2: the 200 SHOULD carry Allow and Supported (and
+     Accept); the stack fills them in. Allow must list every method the node
+     takes (20.5), ACK and CANCEL included. -->
+<scenario name="options">
+  <send retrans="500">
+    <![CDATA[
+      OPTIONS sip:conf@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:sipp@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:conf@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 OPTIONS
+      Contact: <sip:sipp@[local_ip]:[local_port]>
+      Max-Forwards: 70
+      Accept: application/sdp
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv response="200">
+    <action>
+      <ereg regexp="
+Allow[ 	]*:[ 	]*([^
+]*[ ,])?INVITE[^-A-Za-z0-9]" search_in="msg" check_it="true" assign_to="chk"/>
+      <ereg regexp="
+Allow[ 	]*:[ 	]*([^
+]*[ ,])?ACK[^-A-Za-z0-9]" search_in="msg" check_it="true" assign_to="chk"/>
+      <ereg regexp="
+Allow[ 	]*:[ 	]*([^
+]*[ ,])?BYE[^-A-Za-z0-9]" search_in="msg" check_it="true" assign_to="chk"/>
+      <ereg regexp="
+Allow[ 	]*:[ 	]*([^
+]*[ ,])?CANCEL[^-A-Za-z0-9]" search_in="msg" check_it="true" assign_to="chk"/>
+      <ereg regexp="
+Allow[ 	]*:[ 	]*([^
+]*[ ,])?OPTIONS[^-A-Za-z0-9]" search_in="msg" check_it="true" assign_to="chk"/>
+      <ereg regexp="
+Allow[ 	]*:[ 	]*([^
+]*[ ,])?SUBSCRIBE[^-A-Za-z0-9]" search_in="msg" check_it="true" assign_to="chk"/>
+      <ereg regexp="
+Supported[ 	]*:[^
+]*" search_in="msg" check_it="true" assign_to="chk"/>
+    </action>
+  </recv>
+
+  <Reference variables="chk"/>
+</scenario>

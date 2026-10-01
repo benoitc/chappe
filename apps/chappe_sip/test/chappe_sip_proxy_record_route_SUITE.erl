@@ -177,12 +177,13 @@ forged_route_marker_not_relayed(_Config) ->
         Short = <<"<sip:127.0.0.1:", EPB/binary, ";lr;espx=abc>">>,
         send(Sock, EP, bye(Sock, Call, <<"atk">>, <<"vtag">>, Short,
                            ctc(VictimP), 2)),
-        _ = recv_status(Sock, 405),
+        %% a BYE naming no dialog of ours (RFC 3261 15.1.2)
+        _ = recv_status(Sock, 481),
         Full = <<"<sip:127.0.0.1:", EPB/binary,
                  ";lr;espx=00000000000000000000000000000000>">>,
         send(Sock, EP, bye(Sock, Call, <<"atk">>, <<"vtag">>, Full,
                            ctc(VictimP), 3)),
-        _ = recv_status(Sock, 405),          % refused, not relayed
+        _ = recv_status(Sock, 481),          % refused, not relayed
         Test ! atk_refused
     end),
     ok = expect(atk_refused),

@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!-- Copyright 2026 Benoit Chesneau
+     SPDX-License-Identifier: Apache-2.0
+
+     A request whose Via carries rport. RFC 3581 section 4: the response Via
+     MUST carry received (even when equal to the sent-by host) and rport set
+     to the source port, and it goes back to that source address and port. -->
+<scenario name="rport_response">
+  <send retrans="500">
+    <![CDATA[
+      INVITE sip:uas@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:sipp@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:uas@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 INVITE
+      Contact: <sip:sipp@[local_ip]:[local_port]>
+      Max-Forwards: 70
+      Allow: INVITE, ACK, BYE, CANCEL, OPTIONS, UPDATE, REFER, NOTIFY, SUBSCRIBE
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 1 IN IP[local_ip_type] [local_ip]
+      s=-
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0
+      a=rtpmap:0 PCMU/8000
+
+    ]]>
+  </send>
+  <recv response="100" optional="true"/>
+  <recv response="180" optional="true"/>
+  <recv response="200">
+    <action>
+      <ereg regexp="
+To[ 	]*:[^
+]*;tag=([-A-Za-z0-9.!%*_+`'~]+)" search_in="msg" check_it="true" assign_to="chk,peer_tag"/>
+      <ereg regexp="
+Contact[ 	]*:[^
+]*&lt;([^&gt;
+]+)&gt;" search_in="msg" check_it="true" assign_to="chk,peer_contact"/>
+      <ereg regexp="
+Via[ 	]*:[^
+]*;received=[0-9.]+" search_in="msg" check_it="true" assign_to="chk"/>
+      <ereg regexp="
+Via[ 	]*:[^
+]*;rport=[0-9]+" search_in="msg" check_it="true" assign_to="chk"/>
+    </action>
+  </recv>
+  <send>
+    <![CDATA[
+      ACK [$peer_contact] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:sipp@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:uas@[remote_ip]:[remote_port]>;tag=[$peer_tag]
+      Call-ID: [call_id]
+      CSeq: 1 ACK
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <send retrans="500">
+    <![CDATA[
+      BYE [$peer_contact] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:sipp@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:uas@[remote_ip]:[remote_port]>;tag=[$peer_tag]
+      Call-ID: [call_id]
+      CSeq: 2 BYE
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv response="200"/>
+
+  <Reference variables="chk"/>
+</scenario>

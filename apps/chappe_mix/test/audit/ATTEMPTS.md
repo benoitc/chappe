@@ -1,0 +1,252 @@
+# What was tried
+
+Approaches tried for chappe_mix and what became of them, kept or reverted,
+with the numbers that decided it. Read this before proposing an optimisation,
+so you do not rediscover something already measured and thrown away. The
+numbers behind each entry are in `PERF.md`.
+
+## Tests that were checked against a broken implementation
+
+Every new test module is run before the code it covers exists, and again
+against deliberate mutations. A test that cannot fail is worse than no test.
+
+- `chappe_mix_g711_tests`: 24 cases, all failing with no implementation.
+  Three mutations were all caught: mu-law bias `0x84` to `0x80` (2 failures),
+  A-law XOR mask `0x55` to `0x54` (7 failures), and a frame clip that wraps
+  instead of saturating (1 failure).
+- `rebar3 eunit --app chappe_mix` ran 0 tests while the app had no source
+  module: `--app` only finds test modules paired with source modules. Run a
+  new module with `--module` until then, and check the count.
+- `chappe_mix_jbuf_tests`: two mutations survived the first version and
+  each got a test. Advancing the playout point on an empty buffer
+  (`underrun_waits_test`) and accepting the frame just behind the playout
+  point (`late_by_one_test`). Four more mutations (depth bound, extended
+  sequence wrap, RTCP detection, padding strip) were caught from the start.
+- Restoring a mutated file within the same second as the mutated build left
+  a stale beam: rebar3 compares mtimes at one-second resolution, and a
+  mutated table was still loaded. Remove `_build/test/lib/chappe_mix`
+  between mutations; the scratch `mutate.sh` does.
+
+- `chappe_mix_SUITE:tick_trace`: without the `trace` option the conference
+  sends nothing, which is the first mutation below. Three mutations of the
+  trace, each caught: the message never sent (`no_tick_trace`), the leg
+  count reported as 0 (`expected [2], got [0]`), and trace on by default to
+  the owner (`untraced_conf_traced`).
+- `chappe_mix_SUITE:probe_calibration`: the probe stamping a burst one tick
+  late (`+ 20000` us) reads below the reflector's 60 ms and fails
+  (`below_delay`).
+- `chappe_mix_live_SUITE` and `chappe_mix_ref_SUITE` against a mixer that
+  does not subtract a leg's own frame (`own/3` returning the sum): the live
+  suite fails with `{leaked, 440, -14.7}` at the PCMU party, and
+  `same_detection_as_reference` sees every chappe_mix receiver leak while the
+  reference does not. Against a mixer that sends only silence: the live
+  suite fails with `{missing, 1100, 0, 10}`, the ref suite with every tone
+  missing and `burst_latency_logged` with all 20 bursts lost.
+- `chappe_mix_ref_SUITE:reference_n_minus_one` against a reference made deaf
+  (`conference <name> deaf all` through `fs_cli` after the joins, "+OK deaf"
+  three times in the log): every receiver misses its tones. The suite can
+  tell a reference that does not deliver.
+- The suites judge with `chappe_mix_test_tone:hears/3`, moved out of
+  `chappe_mix_SUITE` unchanged in its rule so the three suites share it. At
+  load 143 `chappe_mix_SUITE` failed three presence checks on this branch
+  and three on `359a605` in the next minute (different cases each time,
+  never a leak), so those failures are the load and not the move.
+
+## The first tick-trace run: ticks fire early
+
+`tick_trace` first asserted due =< start. It failed: a tick fired 546 us
+before it was due. The timer is armed with `erlang:start_timer/4` at
+millisecond resolution, and the due time is truncated to the millisecond,
+so a tick can fire up to 1 ms early. The bench then showed it is the common
+case (over 94% of ticks, see `PERF.md`). The histogram clamps early ticks to
+zero, so it never showed. The mixer is unchanged: rounding the arm time up
+would move every tick up to 1 ms later, and whether that is better is a
+question for a quiet box. The assertion allows 1 ms early.
+
+## Reference suite: what the first versions got wrong
+
+- A fixed 2 s settle after the joins was not enough: emulated FreeSWITCH
+  took over a second to start mixing, and the first five windows of a
+  reference receiver were near silence. Replaced by a wait for the steady
+  state: two polls in a row where every receiver's last 200 ms shows the
+  contract, up to 15 s. A mixer that leaks for good never gets there and is
+  judged after 15 s anyway (the leak mutation above took 15.2 s).
+- With 440, 1100 and 1700 Hz the reference leaked the 440 Hz party's own
+  tone at -50.9 dBFS in the first two windows, twice. The enter tone that
+  mod_conference plays on each join is 500, 600 and 700 Hz; delivered late
+  by the emulated reference, a 500 Hz burst reads about -50 dBFS in a 440 Hz
+  Goertzel bin over 200 ms, and only the 440 Hz receiver showed it. The
+  suite now uses 1100, 1700 and 2300 Hz.
+- FreeSWITCH's SDP names its container address (192.168.x), which the host
+  cannot reach under Docker Desktop. The caller sends media to
+  `FREESWITCH_HOST` on the SDP's port instead, and puts the address the
+  container reaches the host at (`host.docker.internal`, 0.250.250.254 on
+  this box) in Via, Contact and its own SDP. RTP flowed both ways with no
+  other change.
+
+## Opus on the live suite: through rtpengine twice
+
+The Ubuntu 24.04 rtpengine transcodes opus (`rtpengine --codecs`: fully
+supported), but a test party cannot speak opus without an Erlang codec.
+The opus party therefore speaks PCMU into one rtpengine call that encodes
+opus, a UDP relay on the host carries the opus to a second call that decodes
+it to PCMU for the mixer, and back. Both directions of a negotiated opus
+leg go through rtpengine's encoder and decoder. G.722 in Erlang was the
+fallback and was not needed. The PCMA party speaks PCMA directly.
+
+## Bench traffic: in a peer node, not in the mixer's node
+
+The capacity and jitter arms put the synthetic senders in a second VM
+started with `peer`. In the mixer's node they would share its one scheduler
+and be counted in its utilisation and lateness. One sender process per
+conference, one socket for all four legs, pre-encoded frames, and the
+socket never read. The first capacity run compared what the mixer received
+with legs x 50 x seconds and read 0.48 to 1.01: that mixed senders falling
+behind with the window being read at slightly different times. The senders
+now count the sends their socket accepted, and the arm reports
+`sent_per_expected` (1.0 in every step so far) and `rx_per_sent`
+separately; the second still wanders by a few percent on 3 s steps.
+
+## The latency probe took a late burst for the next one
+
+`probe_calibration` failed once at load 103: against a 60 ms reflector the
+probe read 48.5 ms for one burst. The reflector's timer had fired late
+enough that the previous burst, never counted, arrived after the next one
+had started and was taken for it. The probe now cycles its bursts through
+700, 1100 and 1500 Hz (whole cycles in 20 ms, so orthogonal in a frame) and
+counts a loud frame only when the burst's own tone carries four times the
+power of each other one; that holds down to 20 samples of tone in a frame.
+Three runs passed after it, and a timestamp one tick late still fails the
+case. The latency numbers taken before the fix were dropped from
+`PERF.md`. Disabling the tone check is not caught deterministically: it
+only matters when a burst arrives more than a gap late.
+
+## Single-frame bursts and the jitter buffer
+
+Under load the latency arm missed 9 of 50 bursts. The legs' jitter buffers
+had dropped 864 of 4034 frames and every prefill had grown to 2: a sender
+that stalls and then bursts overflows the depth of 3, and the one loud frame
+is trimmed with the rest. The probe counts that as a missed burst rather
+than retrying, since it is what a listener would hear. Nothing was changed;
+it is worth a look on a quiet box, together with the prefill, which only
+grows.
+
+## Tables built lazily inside a call: reverted
+
+`chappe_mix_g711` first built its frame tables on first use. Each
+`persistent_term:put` stalls every process on the node, and the first frame
+of the first conference paid for it: one tick 126 ms late, 13 skipped
+ticks, and 35 to 40 frames trimmed per leg from the backlog. The tables are
+now built by `chappe_mix_g711:init/0` from `chappe_mix_app:start/2`. After:
+no overruns in the same diagnostic.
+
+## Holding the playout point after an underrun: not enough
+
+The first jitter buffer held the playout point on an empty tick so a late
+packet would still play. That gives no slack: the late frame is consumed by
+the very next tick, so a sender whose 20 ms clock is in phase with the
+mixer's races the tick forever. Measured: 2 of 4 runs had 31 silent frames
+in 100 at the receiver, with 29 frames trimmed per leg. Kept the hold and
+added an adaptive prefill (start at 1 frame, grow by 1 per underrun up to
+depth - 1), `underrun_adds_slack_test`.
+
+## The load on the test box
+
+Timing results from 2026-09-23 are void. The load average was 34 to 48,
+from ten CPU-bound loops left by another session. Bare 20 ms
+`erlang:send_after/4` timers with no mixer involved woke up to 164 ms late
+(6 to 34 gaps over 30 ms in 250 ticks, 3 runs). A trace of one bad mixer run
+showed the ticks on time and the test senders bursting: nothing for 110 ms,
+then 5 packets in 50 us. `chappe_mix_SUITE` therefore judges a present tone
+per 200 ms window and requires it in 70% of windows, while a leak must be
+absent from every window. Rerun the suite and every bench arm on a quiet
+box before quoting any number.
+
+## rtpengine as the mixer: not on Ubuntu 24.04
+
+Spike on 2026-09-23, three parties with distinct PCMU tones, Goertzel on
+every receiver.
+
+- Ubuntu 24.04 ships rtpengine 11.5.1.18. `subscribe request` with several
+  from-tags gives one m-line per source, and one SSRC per source when all
+  m-lines are answered on one port. The `mix` flag is ignored,
+  `audio-player=always` re-encodes each stream separately, and `connect`
+  and `mesh` are unknown commands. No N-1 mix is possible.
+- rtpengine 26.0.1.21 (Debian sid) does it. Two calls with
+  `audio-player=always` and `connect` with `directional,bidirectional`
+  give every party a single SSRC at 50 pps carrying the others at about
+  -13 dBFS and its own tone at -58 to -70 dBFS. Without the audio player
+  the routing is right but nothing is mixed. The mix is a plain sum with no
+  gain control.
+- Verdict: a usable fallback only if we ship rtpengine 26.x ourselves.
+  Script: `/private/tmp/claude-501/rtpe-spike/mixspike.escript` (scratch).
+
+## move_leg
+
+`move_keeps_the_port` failed with `undef` before `chappe_mix:move_leg/3`
+existed, and catches the mutation that skips
+`gen_udp:controlling_process/2` in the hand-off (1100 Hz heard in 0 of 3
+windows: the socket died with the first conference). Passed 3 of 3 at a
+load average of 89.
+- The same stale beam reached across repos: i3_bridge builds chappe_mix
+  through `_checkouts`, and a build made during a mutation run here kept
+  the mutant. After mutating anything in this tree, remove
+  `_build/*/checkouts/chappe_mix` in any repo that checks it out.
+
+## RFC 3550 mixer rules (RTCP, CSRC, latch, collisions)
+
+- Seen failing first: the new eunit modules (`chappe_mix_rtcp_tests` undef,
+  `chappe_mix_rtp_tests` 29 failures: CSRC build and parse, and 27 second
+  octets 192..199 and 205..223 not taken for RTCP) and the ten new suite
+  cases against the old conference (the timestamp case with
+  `{ts, 3270885907, 3270886067, 6}`: 6 ticks skipped, timestamp +160).
+- RTCP was first sent to the address the far end's RTCP came from
+  (symmetric). Reverted to the RTP remote, or its port + 1 on a pair: RFC
+  3550 11 says the source port is not a destination.
+- The first packet of a leg had M=1; RFC 3551 4.1 wants 0 without silence
+  suppression, so M is always 0 now.
+- Lint refused the conference at 36 record fields and 758 lines. Rather
+  than add ignores, the per-leg RTP session moved to `chappe_mix_session`
+  and the socket side of a leg to `chappe_mix_leg`.
+- Jitter reads 0 in `rtcp_sender_reports`: a timestamp unit is 125 us and
+  the loopback peer's timers are more precise than that. The formula is
+  checked in `chappe_mix_rtcp_tests:jitter_test`.
+- Live against rtpengine with the default `rtcp => mux` and an SDP without
+  a=rtcp-mux, rtpengine logged "RTP packet with unknown payload type 72"
+  four times (our SRs, dropped; N-1 still held). The live suite now opens
+  its legs with `rtcp => pair`, and rtpengine then counts our reports on its
+  RTCP ports with no error.
+- Mutations, each on a fresh build: 33, two rewritten after they failed to
+  compile, 28 caught. Not caught: NAME in every report instead of every
+  third; the interval without its random factor (the bounds hold either
+  way); sender counts kept after an SSRC change (no case waits for an SR
+  after a collision); a new SSRC equal to one in use (random, a test would
+  have to force the draw); a BYE from a leg that never sent (such a leg has
+  no far end to send to in the suite).
+
+## The demo gate rows on the wire (`chappe_mix_rfc_SUITE`)
+
+- The compliance gate reads only CT results, so the rows proved by eunit
+  alone (RTCP layout, jitter) were untested there. `chappe_mix_rfc_SUITE`
+  walks the mixer's RTCP datagrams with its own parser and drives RTP from
+  a plain socket; two codec cases call the session and RTCP modules where
+  the row is a state the mixer never reaches on the wire (an empty RR:
+  RTP goes out from the first tick with a far end) or a formula (A.8).
+- Seen failing first: `rtcp_on_the_wire` (the collision BYE had no
+  reason, so no reason padding to check) and `new_ssrc_not_seen` (no way
+  to script the draw). The mixer now says "SSRC collision" in that BYE and
+  takes `ssrc_draw`. The seven other cases passed on the code as it was
+  and each was then shown to catch a mutation.
+- Mutations, 18, all caught: extension skipped in half-words, A-law mask
+  0x54, mu-law sign flipped, an 80-octet silence frame, any payload type
+  mixed, an underrun counted as loss, the remote following the source,
+  an RTCP length one word long, the padding bit set, an SDES chunk with no
+  terminator or not word padded, an unpadded BYE reason, a BYE from a leg
+  that never sent, a taken SSRC accepted, the old SSRC left out of the
+  taken set, an SR before any RTP, jitter gain 1/8, jitter without abs.
+  The two survivors of the first run (never-sent BYE, SSRC redraw) are
+  among them.
+- The padding check first asked for the exact set {1, 3, 4} nulls; the
+  forwarded chunk of leg A carries its NAME on the first report, so it
+  needed 2. The case now asks for a word of nulls and two other paddings;
+  every chunk is still checked byte by byte.

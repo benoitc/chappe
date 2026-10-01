@@ -16,7 +16,10 @@
 %% Event is one of
 %%   {request, TxnH, LegH | undefined, Meta, RawSip}  inbound request
 %%   {response, TxnH, Meta, RawSip}                   response to our request
-%%   {ack, LegH, RawSip}                              2xx ACK on a dialog leg
+%%   {ack, LegH | TxnH, RawSip}                       2xx ACK on a dialog leg,
+%%                                                    or on the INVITE server
+%%                                                    txn answered 2xx
+%%   {ack_timeout, LegH | TxnH}                       that 2xx never ACKed
 %%   {cancel, TxnH}                                   CANCEL of our server txn
 %%   {op_ok, H} | {op_failed, H, Reason}              deferred op result
 %%   {health_ok, Seq}
@@ -36,6 +39,7 @@
     send_response/2,
     relay/4,
     cancel/2,
+    cancel/3,
     txn_done/2,
     leg_create/4,
     leg_destroy/2,
@@ -51,6 +55,7 @@
     send_response/2,
     relay/4,
     cancel/2,
+    cancel/3,
     txn_done/2,
     leg_create/4,
     leg_destroy/2,
@@ -154,6 +159,12 @@ relay(_Engine, _TxnH, _Status, _Raw) ->
 %% CANCEL an outstanding INVITE client transaction.
 -spec cancel(engine(), handle()) -> ok | {error, not_ready}.
 cancel(_Engine, _TxnH) ->
+    erlang:nif_error(engine_nif_not_loaded).
+
+%% CANCEL with extra headers (CRLF-joined), e.g. a Reason (RFC 3326).
+-spec cancel(engine(), handle(), binary()) ->
+    ok | {error, not_ready | too_large}.
+cancel(_Engine, _TxnH, _Headers) ->
     erlang:nif_error(engine_nif_not_loaded).
 
 %% Release a client transaction handle once the UAC is done with it

@@ -28,6 +28,9 @@ default(max_request_workers) -> 10000;
 default(max_dialogs) -> 100000;
 default(max_uac_transactions) -> 100000;
 default(handler_deadline_ms) -> 30000;
+%% The same for a non-INVITE request, never more than handler_deadline_ms:
+%% its client times out at 64*T1 (32 s).
+default(non_invite_deadline_ms) -> 30000;
 %% SIP-over-WebSocket. Idle connections are closed after this (clients
 %% keepalive per RFC 7118); WS transactions have no sofia timers, so cap them
 %% here to bound leaked client/server transaction state.
@@ -63,4 +66,13 @@ default(flow_token_secret) -> undefined;
 %%     freeswitch => #{nodes => [#{name := atom(), host := _, port := _,
 %%                                 password => binary()}]}}
 default(media) -> #{};
+%% Session timers (RFC 4028). session_expires: the interval (s) a UAC asks
+%% for and a UAS asks for when the caller supports timers; undefined never
+%% asks (a peer's request is still honored). session_min_se: the smallest
+%% interval accepted, below it a request with Supported: timer gets 422
+%% (RFC 4028 5 puts the floor at 90). session_refresher: who refreshes when
+%% the UAS picks (uac | uas).
+default(session_expires) -> undefined;
+default(session_min_se) -> 90;
+default(session_refresher) -> uac;
 default(_) -> undefined.

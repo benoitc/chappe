@@ -218,14 +218,14 @@ sh(Cmd) -> string:trim(os:cmd(Cmd)).
 shell_quote(S) ->
     "'" ++ lists:flatten(string:replace(S, "'", "'\\''", all)) ++ "'".
 
+%% interop/ sits next to this suite's source (apps/chappe_sip/test), which
+%% holds from the umbrella root as well as from the app directory.
 interop_dir() ->
     case os:getenv("CHAPPE_SIP_INTEROP_DIR") of
         false ->
-            Lib = code:lib_dir(chappe_sip),
-            Parts = filename:split(Lib),
-            Root = filename:join(
-                     lists:takewhile(fun(P) -> P =/= "_build" end, Parts)),
-            filename:join(Root, "interop");
+            Src = proplists:get_value(source, ?MODULE:module_info(compile)),
+            filename:join(filename:dirname(filename:dirname(Src)),
+                          "interop");
         D -> D
     end.
 

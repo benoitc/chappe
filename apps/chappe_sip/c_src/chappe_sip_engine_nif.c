@@ -39,6 +39,7 @@
 #include <sofia-sip/sip_header.h>
 #include <sofia-sip/sip_tag.h>
 #include <sofia-sip/sip_status.h>
+#include <sofia-sip/sip_util.h>
 #include <sofia-sip/msg.h>
 #include <sofia-sip/msg_addr.h>
 #include <sofia-sip/url.h>
@@ -71,7 +72,29 @@ typedef struct hent {
 typedef struct obj_ctx {
     struct engine *e;
     uint64_t h;
+    /* incoming INVITE only: the dialog leg it arrived on (0 out of dialog),
+     * and set once a 2xx to an in-dialog INVITE is sent, while the
+     * transaction is kept for its ACK */
+    uint64_t leg;
+    int await_ack;
+    /* incoming INVITE only: a reliable 1xx was sent, so its PRACK callback
+     * holds this ctx as magic. nta keeps the transaction (and calls that
+     * callback for a late PRACK) after our final response and destroy, so
+     * the ctx outlives the handle as an orphan until nta is surely done. */
+    int rel;
+    /* the RSeq of the last reliable 1xx PRACKed (RFC 3262 3: a PRACK for
+     * one already acknowledged matches nothing unacknowledged) */
+    uint32_t rel_acked;
+    /* offerless INVITE only (RFC 3262 5): 1 once a reliable 1xx carried
+     * our offer, 2 once a PRACK brought the answer */
+    int rel_offer;
+    uint64_t orphan_ms;
+    struct obj_ctx *next_orphan;
 } obj_ctx_t;
+
+/* nta gives up on an unacknowledged reliable 1xx after 64*T1 (32 s with
+ * the default T1); an orphan ctx is freed well after that */
+#define ORPHAN_TTL_MS 70000
 
 typedef struct engine {
     ErlNifTid tid;
@@ -97,6 +120,7 @@ typedef struct engine {
     nta_leg_t *dleg;
     su_home_t home[1];
     hent_t *handles;
+    obj_ctx_t *orphans;
     uint64_t health_seq;
 
     _Atomic int state;
@@ -116,7 +140,8 @@ static ERL_NIF_TERM am_ok, am_error, am_undefined, am_chappe_sip_engine, am_requ
     am_stopping, am_already_started, am_hung, am_badarg, am_contact,
     am_max_message_size, am_engine_start, am_op_ok, am_op_failed, am_response,
     am_ack, am_cancel, am_status, am_tls, am_cert_dir, am_passphrase, am_verify,
-    am_peer, am_ciphers, am_prack, am_source_ip, am_source_port;
+    am_peer, am_ciphers, am_prack, am_source_ip, am_source_port,
+    am_ack_timeout;
 
 /* operations enqueued to the stack thread */
 enum { OP_RESPOND = 1, OP_HEALTH, OP_STOP, OP_REQUEST, OP_LEG_CREATE,
@@ -205,13 +230,48 @@ static void *tab_get_ctx(engine_t *e, uint64_t id, int kind) {
     return NULL;
 }
 
+static uint64_t now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
+}
+
+/* Free the orphans nta can no longer call back (all of them once the agent
+ * is gone). */
+static void orphans_sweep(engine_t *e, int all) {
+    uint64_t now = now_ms();
+    obj_ctx_t **p = &e->orphans;
+    while (*p) {
+        obj_ctx_t *o = *p;
+        if (all || now - o->orphan_ms > ORPHAN_TTL_MS) {
+            *p = o->next_orphan;
+            enif_free(o);
+        } else {
+            p = &o->next_orphan;
+        }
+    }
+}
+
+/* the handle is gone; its ctx too, unless a PRACK callback may still use it */
+static void ctx_release(engine_t *e, int kind, void *ctx) {
+    if (!ctx) return;
+    obj_ctx_t *c = ctx;
+    if (kind == H_INCOMING && c->rel) {
+        c->orphan_ms = now_ms();
+        c->next_orphan = e->orphans;
+        e->orphans = c;
+    } else {
+        enif_free(ctx);
+    }
+}
+
 static void tab_del(engine_t *e, uint64_t id) {
     hent_t **p = &e->handles;
     while (*p) {
         if ((*p)->id == id) {
             hent_t *dead = *p;
             *p = dead->next;
-            if (dead->ctx) enif_free(dead->ctx);
+            ctx_release(e, dead->kind, dead->ctx);
             enif_free(dead);
             return;
         }
@@ -234,7 +294,7 @@ static void tab_drain(engine_t *e) {
             nta_outgoing_destroy((nta_outgoing_t *)h->ptr);
             break;
         }
-        if (h->ctx) enif_free(h->ctx);
+        ctx_release(e, h->kind, h->ctx);
         enif_free(h);
     }
 }
@@ -351,14 +411,30 @@ static ERL_NIF_TERM mk_ack_ev(ErlNifEnv *env, engine_t *e, void *arg) {
                                    : mkbin(env, "", 0));
 }
 
-static ERL_NIF_TERM mk_cancel_ev(ErlNifEnv *env, engine_t *e, void *arg) {
+struct cancel_ev {
+    uint64_t h; /* the INVITE server-transaction handle */
+    char *raw;  /* the CANCEL request */
+    size_t raw_len;
+};
+
+static ERL_NIF_TERM mk_ack_timeout_ev(ErlNifEnv *env, engine_t *e,
+                                      void *arg) {
     (void)e;
     uint64_t *h = arg;
-    return enif_make_tuple2(env, am_cancel, enif_make_uint64(env, *h));
+    return enif_make_tuple2(env, am_ack_timeout, enif_make_uint64(env, *h));
+}
+
+static ERL_NIF_TERM mk_cancel_ev(ErlNifEnv *env, engine_t *e, void *arg) {
+    (void)e;
+    struct cancel_ev *c = arg;
+    return enif_make_tuple3(env, am_cancel, enif_make_uint64(env, c->h),
+                            c->raw ? mkbin(env, c->raw, c->raw_len)
+                                   : mkbin(env, "", 0));
 }
 
 struct prack_ev {
     uint64_t h; /* the INVITE server-transaction handle */
+    uint64_t ph; /* the PRACK's own handle when the app answers it, else 0 */
     char *raw;
     size_t raw_len;
 };
@@ -366,19 +442,45 @@ struct prack_ev {
 static ERL_NIF_TERM mk_prack_ev(ErlNifEnv *env, engine_t *e, void *arg) {
     (void)e;
     struct prack_ev *p = arg;
-    return enif_make_tuple3(env, am_prack, enif_make_uint64(env, p->h),
-                            p->raw ? mkbin(env, p->raw, p->raw_len)
-                                   : mkbin(env, "", 0));
+    ERL_NIF_TERM raw = p->raw ? mkbin(env, p->raw, p->raw_len)
+                              : mkbin(env, "", 0);
+    if (p->ph)
+        return enif_make_tuple4(env, am_prack, enif_make_uint64(env, p->h),
+                                raw, enif_make_uint64(env, p->ph));
+    return enif_make_tuple3(env, am_prack, enif_make_uint64(env, p->h), raw);
 }
 
 /* PRACK arrived for a reliable provisional. Notify Erlang (routed by the
- * INVITE handle) and return 200 so nta auto-answers the PRACK. */
+ * INVITE handle). Without a body nta answers it 200 on our return; with
+ * one (an offer, RFC 3262 5) the answer is the app's, so the PRACK gets a
+ * handle and its 2xx goes out through OP_RESPOND. nta still matches a
+ * PRACK for a response it already saw PRACKed: that one gets 481 (3). */
 static int prack_cb(nta_reliable_magic_t *magic, nta_reliable_t *rel,
                     nta_incoming_t *prack, sip_t const *sip) {
     (void)rel;
-    (void)sip;
     obj_ctx_t *ctx = (obj_ctx_t *)magic;
     engine_t *e = ctx->e;
+    if (prack && sip && sip->sip_rack) {
+        uint32_t rseq = sip->sip_rack->ra_response;
+        if (ctx->rel_acked && rseq <= ctx->rel_acked) {
+            nta_incoming_treply(prack, SIP_481_NO_TRANSACTION, TAG_END());
+            return 0;
+        }
+        ctx->rel_acked = rseq;
+    }
+    uint64_t ph = 0;
+    int body = prack && sip && sip->sip_payload && sip->sip_payload->pl_len > 0;
+    if (body && ctx->rel_offer == 1) {
+        /* the answer to the offer our reliable 1xx made: nta says 200 */
+        ctx->rel_offer = 2;
+    } else if (body) {
+        ph = tab_put(e, H_INCOMING, prack, NULL);
+        if (ph == 0) {
+            nta_incoming_treply(prack, SIP_500_INTERNAL_SERVER_ERROR,
+                                TAG_END());
+            return 0;
+        }
+    }
     char *raw = NULL;
     size_t raw_len = 0;
     msg_t *req = prack ? nta_incoming_getrequest(prack) : NULL;
@@ -386,10 +488,12 @@ static int prack_cb(nta_reliable_magic_t *magic, nta_reliable_t *rel,
         raw = msg_as_string(e->home, req, NULL, 0, &raw_len);
         msg_destroy(req);
     }
-    struct prack_ev p = {ctx->h, raw, raw_len};
+    struct prack_ev p = {ctx->h, ph, raw, raw_len};
     send_event(e, mk_prack_ev, &p);
     if (raw) su_free(e->home, raw);
-    return 200; /* nta answers the PRACK 200 and destroys its incoming txn */
+    /* 0 keeps the PRACK transaction for the app's answer; 200 has nta
+     * answer it and destroy its incoming txn */
+    return ph ? 0 : 200;
 }
 
 /* ---------- sofia logging bridge ---------- */
@@ -417,15 +521,59 @@ static void log_cb(void *stream, char const *fmt, va_list ap) {
 
 /* ---------- incoming requests (stack thread) ---------- */
 
+/* the ACK or CANCEL the callback is running for, as text (caller frees) */
+static char *ackcancel_raw(engine_t *e, nta_incoming_t *irq, size_t *len) {
+    char *raw = NULL;
+    msg_t *m = nta_incoming_getrequest_ackcancel(irq);
+    *len = 0;
+    if (m) {
+        raw = msg_as_string(e->home, m, NULL, 0, len);
+        msg_destroy(m);
+    }
+    return raw;
+}
+
 /* ACK or CANCEL hitting a bound INVITE server transaction */
 static int invite_ack_cancel_cb(nta_incoming_magic_t *magic,
                                 nta_incoming_t *irq, sip_t const *sip) {
     obj_ctx_t *ctx = (obj_ctx_t *)magic;
     engine_t *e = ctx->e;
-    (void)irq;
-    if (sip && sip->sip_request &&
+    if (!sip) {
+        /* timer H: a 2xx we kept for its ACK was never acknowledged; the
+         * dialog ends the session (RFC 3261 13.3.1.4, 14.2) */
+        if (ctx->await_ack) {
+            uint64_t h = ctx->h;
+            /* named like the ACK would be: the leg, or this transaction */
+            uint64_t target = ctx->leg ? ctx->leg : h;
+            send_event(e, mk_ack_timeout_ev, &target);
+            nta_incoming_destroy(irq);
+            tab_del(e, h);
+        }
+        return 0;
+    }
+    if (sip->sip_request &&
         sip->sip_request->rq_method == sip_method_cancel) {
-        send_event(e, mk_cancel_ev, &ctx->h);
+        /* the CANCEL itself goes up too: its Reason (RFC 3326) is the app's */
+        struct cancel_ev c = {ctx->h, NULL, 0};
+        c.raw = ackcancel_raw(e, irq, &c.raw_len);
+        send_event(e, mk_cancel_ev, &c);
+        if (c.raw) su_free(e->home, c.raw);
+    } else if (sip->sip_request &&
+               sip->sip_request->rq_method == sip_method_ack &&
+               ctx->await_ack) {
+        /* UA mode matches the 2xx ACK to its INVITE transaction; hand it
+         * to the dialog (it may carry the SDP answer) and release the
+         * transaction. A re-INVITE names its dialog leg; the leg of a
+         * dialog-forming INVITE is made later, from Erlang, which maps
+         * this transaction to the dialog instead. The ctx is freed by
+         * tab_del, so read it first. */
+        uint64_t h = ctx->h;
+        struct ack_ev a = {ctx->leg ? ctx->leg : h, NULL, 0};
+        a.raw = ackcancel_raw(e, irq, &a.raw_len);
+        send_event(e, mk_ack_ev, &a);
+        if (a.raw) su_free(e->home, a.raw);
+        nta_incoming_destroy(irq);
+        tab_del(e, h);
     }
     /* ACK for a non-2xx final is absorbed here; nothing to tell Erlang.
      * Returning 0 lets nta do its default handling. */
@@ -469,8 +617,18 @@ static int deliver_request(engine_t *e, uint64_t leg_h, nta_incoming_t *irq,
     if (ictx) {
         ictx->e = e;
         ictx->h = h;
+        ictx->leg = leg_h;
+        ictx->await_ack = 0;
+        ictx->rel = 0;
+        ictx->rel_acked = 0;
+        ictx->rel_offer = 0;
+        ictx->next_orphan = NULL;
         nta_incoming_bind(irq, invite_ack_cancel_cb,
                           (nta_incoming_magic_t *)ictx);
+        /* RFC 3261 17.2.1: 100 Trying unless the TU answers within 200 ms.
+         * The TU is an Erlang process we cannot time, and over UDP nta only
+         * sends it on a retransmission, so send it now. */
+        nta_incoming_treply(irq, SIP_100_TRYING, TAG_END());
     }
 
     char *raw = NULL;
@@ -509,11 +667,28 @@ static int deliver_request(engine_t *e, uint64_t leg_h, nta_incoming_t *irq,
     return 0; /* we own irq now; reply comes via OP_RESPOND */
 }
 
-/* default leg: out-of-dialog requests */
+static int leg_request_cb(nta_leg_magic_t *magic, nta_leg_t *leg,
+                          nta_incoming_t *irq, sip_t const *sip);
+
+/* default leg: out-of-dialog requests.
+ * nta never matches a SUBSCRIBE to a dialog leg (it leaves that to nua,
+ * which we do not use), so an in-dialog SUBSCRIBE (refresh/unsubscribe,
+ * RFC 6665) lands here: hand it to its subscription dialog's leg. */
 static int request_cb(nta_leg_magic_t *magic, nta_leg_t *leg,
                       nta_incoming_t *irq, sip_t const *sip) {
+    engine_t *e = (engine_t *)magic;
     (void)leg;
-    return deliver_request((engine_t *)magic, 0, irq, sip);
+    if (sip && sip->sip_request &&
+        sip->sip_request->rq_method == sip_method_subscribe &&
+        sip->sip_call_id && sip->sip_from && sip->sip_to &&
+        sip->sip_to->a_tag) {
+        nta_leg_t *dl = nta_leg_by_dialog(e->agent, NULL, sip->sip_call_id,
+                                          sip->sip_from->a_tag, NULL,
+                                          sip->sip_to->a_tag, NULL);
+        obj_ctx_t *ctx = (obj_ctx_t *)nta_leg_magic(dl, leg_request_cb);
+        if (ctx) return deliver_request(ctx->e, ctx->h, irq, sip);
+    }
+    return deliver_request(e, 0, irq, sip);
 }
 
 /* dialog legs: in-dialog requests, magic is the per-leg obj_ctx */
@@ -553,6 +728,27 @@ static int outgoing_response_cb(nta_outgoing_magic_t *magic,
     return 0;
 }
 
+/* the request carries a body (for an INVITE: an offer) */
+static int request_has_body(nta_incoming_t *irq) {
+    msg_t *m = nta_incoming_getrequest(irq);
+    sip_t const *sip = sip_object(m);
+    int ok = sip && sip->sip_payload && sip->sip_payload->pl_len > 0;
+    if (m) msg_destroy(m);
+    return ok;
+}
+
+/* the request supports or requires 100rel (RFC 3262 3) */
+static int peer_rel100(nta_incoming_t *irq) {
+    msg_t *m = nta_incoming_getrequest(irq);
+    sip_t const *sip = sip_object(m);
+    int ok = sip && ((sip->sip_require &&
+                      sip_has_feature(sip->sip_require, "100rel")) ||
+                     (sip->sip_supported &&
+                      sip_has_feature(sip->sip_supported, "100rel")));
+    if (m) msg_destroy(m);
+    return ok;
+}
+
 /* ---------- op execution (stack thread) ---------- */
 
 static void op_cb(su_root_magic_t *magic, su_msg_r msg, su_msg_arg_t *arg) {
@@ -563,6 +759,7 @@ static void op_cb(su_root_magic_t *magic, su_msg_r msg, su_msg_arg_t *arg) {
 
     switch (op->kind) {
     case OP_HEALTH: {
+        orphans_sweep(e, 0);
         uint64_t seq = ++e->health_seq;
         send_event(e, mk_health_ev, &seq);
         break;
@@ -580,8 +777,16 @@ static void op_cb(su_root_magic_t *magic, su_msg_r msg, su_msg_arg_t *arg) {
             TAG_IF(op->body, SIPTAG_PAYLOAD_STR(op->body)), TAG_END());
         if (rc < 0) send_op_failed(e, op->h, "treply failed");
         if (op->status >= 200) {
-            nta_incoming_destroy(irq);
-            tab_del(e, op->h);
+            obj_ctx_t *ictx = tab_get_ctx(e, op->h, H_INCOMING);
+            if (rc >= 0 && op->status < 300 && ictx) {
+                /* a 2xx to an INVITE: keep the transaction, its ACK (or
+                 * Timer H) reaches the dialog through invite_ack_cancel_cb:
+                 * the callee sends no BYE before it (RFC 3261 15) */
+                ictx->await_ack = 1;
+            } else {
+                nta_incoming_destroy(irq);
+                tab_del(e, op->h);
+            }
         }
         break;
     }
@@ -596,12 +801,36 @@ static void op_cb(su_root_magic_t *magic, su_msg_r msg, su_msg_arg_t *arg) {
             break;
         }
         if (op->to_tag[0]) nta_incoming_tag(irq, op->to_tag);
+        if (!peer_rel100(irq)) {
+            /* RFC 3261 8.2.4: the caller did not offer 100rel, so the
+             * provisional goes out on baseline SIP, unreliably */
+            if (nta_incoming_treply(
+                    irq, op->status, op->reason[0] ? op->reason : NULL,
+                    TAG_IF(op->headers, SIPTAG_HEADER_STR(op->headers)),
+                    TAG_IF(op->body, SIPTAG_PAYLOAD_STR(op->body)),
+                    TAG_END()) < 0)
+                send_op_failed(e, op->h, "treply failed");
+            break;
+        }
+        int has_body = op->body && op->body[0];
+        int offerless = ctx->rel_offer == 0 && !request_has_body(irq);
+        if (offerless && !has_body) {
+            /* RFC 3262 5: the first reliable 1xx to an INVITE without an
+             * offer carries one */
+            send_op_failed(e, op->h, "reliable 1xx needs the offer");
+            break;
+        }
         nta_reliable_t *rel = nta_reliable_treply(
             irq, prack_cb, (nta_reliable_magic_t *)ctx,
             op->status, op->reason[0] ? op->reason : NULL,
             TAG_IF(op->headers, SIPTAG_HEADER_STR(op->headers)),
             TAG_IF(op->body, SIPTAG_PAYLOAD_STR(op->body)), TAG_END());
-        if (!rel) send_op_failed(e, op->h, "nta_reliable_treply failed");
+        if (!rel) {
+            send_op_failed(e, op->h, "nta_reliable_treply failed");
+        } else {
+            ctx->rel = 1;
+            if (offerless) ctx->rel_offer = 1;
+        }
         break;
     }
     case OP_REQUEST: {
@@ -702,8 +931,11 @@ static void op_cb(su_root_magic_t *magic, su_msg_r msg, su_msg_arg_t *arg) {
     case OP_CANCEL: {
         nta_outgoing_t *orq = tab_get(e, op->h, H_OUTGOING);
         if (orq) {
-            nta_outgoing_t *cancel =
-                nta_outgoing_tcancel(orq, NULL, NULL, TAG_END());
+            /* extra headers (a Reason, RFC 3326) ride on the CANCEL */
+            nta_outgoing_t *cancel = nta_outgoing_tcancel(
+                orq, NULL, NULL,
+                TAG_IF(op->headers, SIPTAG_HEADER_STR(op->headers)),
+                TAG_END());
             if (cancel) nta_outgoing_destroy(cancel);
         }
         break;
@@ -825,6 +1057,7 @@ static void teardown_sofia(engine_t *e) {
     tab_drain(e);
     if (e->dleg) { nta_leg_destroy(e->dleg); e->dleg = NULL; }
     if (e->agent) { nta_agent_destroy(e->agent); e->agent = NULL; }
+    orphans_sweep(e, 1);
     enif_rwlock_rwlock(e->root_lock);
     if (e->root) { su_root_destroy(e->root); e->root = NULL; }
     enif_rwlock_rwunlock(e->root_lock);
@@ -845,13 +1078,23 @@ static void *stack_main(void *arg) {
 
     /* NTATAG_UA(1): act as a UA endpoint so nta absorbs INVITE ACKs for
      * non-2xx and retransmits 2xx until ACK, matching our UAS model.
-     * NTATAG_EXTRA_100(1): let nta send 100 Trying for an INVITE server
-     * transaction (RFC 3261 17.2.1). NTATAG_MERGE_482(1): detect merged
-     * requests and answer 482 (RFC 3261 8.2.2.2). */
-    e->agent = nta_agent_create(e->root, URL_STRING_MAKE(e->contact), NULL,
-                                NULL, NTATAG_MAXSIZE(e->max_msg_size),
-                                NTATAG_UA(1), NTATAG_EXTRA_100(1),
-                                NTATAG_MERGE_482(1), TAG_END());
+     * NTATAG_EXTRA_100(1): let nta answer a retransmitted request with 100
+     * Trying; the first 100 for an INVITE is ours (deliver_request).
+     * NTATAG_MERGE_482(1): detect merged requests and answer 482 (RFC 3261
+     * 8.2.2.2). NTATAG_RPORT(1): an empty rport in the Via of our UDP
+     * requests (RFC 3581 3). NTATAG_BAD_REQ_MASK: a malformed header
+     * answers 400 only when a UA needs it to process any request (RFC 3261
+     * 8.2.2); the nta default also counts the events and publish classes,
+     * so a bad Expires on an INVITE would be fatal. */
+    e->agent = nta_agent_create(
+        e->root, URL_STRING_MAKE(e->contact), NULL, NULL,
+        NTATAG_MAXSIZE(e->max_msg_size), NTATAG_UA(1), NTATAG_EXTRA_100(1),
+        NTATAG_MERGE_482(1), NTATAG_RPORT(1),
+        NTATAG_BAD_REQ_MASK(~(sip_mask_response | sip_mask_proxy |
+                              sip_mask_registrar | sip_mask_pref |
+                              sip_mask_privacy | sip_mask_events |
+                              sip_mask_publish)),
+        TAG_END());
     if (!e->agent) {
         set_failed(e, "nta_agent_create failed (bad or busy contact?)");
         su_root_destroy(e->root);
@@ -1434,19 +1677,29 @@ static ERL_NIF_TERM nif_send_response(ErlNifEnv *env, int argc,
     return am_ok;
 }
 
-/* cancel(Engine, TxnH) -> ok  (CANCEL an outstanding INVITE client txn) */
+/* cancel(Engine, TxnH[, Headers]) -> ok  (CANCEL an outstanding INVITE
+ * client txn; Headers is a CRLF-joined blob added to the CANCEL) */
 static ERL_NIF_TERM nif_cancel(ErlNifEnv *env, int argc,
                                const ERL_NIF_TERM argv[]) {
     engine_t *e;
     ErlNifUInt64 h;
-    if (argc != 2 || !enif_get_resource(env, argv[0], ENGINE_RT, (void **)&e) ||
-        !enif_get_uint64(env, argv[1], &h))
+    ErlNifBinary headers = {0};
+    if ((argc != 2 && argc != 3) ||
+        !enif_get_resource(env, argv[0], ENGINE_RT, (void **)&e) ||
+        !enif_get_uint64(env, argv[1], &h) ||
+        (argc == 3 && !enif_inspect_binary(env, argv[2], &headers)))
         return enif_make_badarg(env);
     if (atomic_load(&e->state) != ST_READY)
         return enif_make_tuple2(env, am_error, am_not_ready);
+    if (headers.size > e->max_msg_size)
+        return enif_make_tuple2(env, am_error,
+                                enif_make_atom(env, "too_large"));
     op_t op = {.kind = OP_CANCEL, .h = h};
-    if (enqueue(e, &op) != 0)
+    op.headers = bin_dup(&headers);
+    if (enqueue(e, &op) != 0) {
+        if (op.headers) enif_free(op.headers);
         return enif_make_tuple2(env, am_error, am_not_ready);
+    }
     return am_ok;
 }
 
@@ -1555,6 +1808,7 @@ static int load(ErlNifEnv *env, void **priv, ERL_NIF_TERM info) {
     am_method = enif_make_atom(env, "method");
     am_source_ip = enif_make_atom(env, "source_ip");
     am_source_port = enif_make_atom(env, "source_port");
+    am_ack_timeout = enif_make_atom(env, "ack_timeout");
     am_not_ready = enif_make_atom(env, "not_ready");
     am_not_found = enif_make_atom(env, "not_found");
     am_stopping = enif_make_atom(env, "stopping");
@@ -1608,6 +1862,7 @@ static ErlNifFunc nif_funcs[] = {
     {"send_response", 2, nif_send_response, 0},
     {"relay", 4, nif_relay, 0},
     {"cancel", 2, nif_cancel, 0},
+    {"cancel", 3, nif_cancel, 0},
     {"txn_done", 2, nif_txn_done, 0},
     {"leg_create", 4, nif_leg_create, 0},
     {"leg_destroy", 2, nif_leg_destroy, 0},

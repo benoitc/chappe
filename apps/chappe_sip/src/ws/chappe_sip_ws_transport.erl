@@ -20,7 +20,7 @@
 %% engine op surface (called by chappe_sip_engine for WS handles)
 -export([respond/6, relay/3, leg_create/4, leg_destroy/1, finish_txn/1]).
 %% outbound-to-WS: originate a request/ACK to a registered WS UA over a flow
--export([send_request/3, send_stateless/2, cancel/1]).
+-export([send_request/3, send_stateless/2, cancel/1, cancel/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -record(s, {
@@ -105,7 +105,12 @@ send_stateless(Flow, Raw) ->
 %% CANCEL an outstanding WS client INVITE transaction.
 -spec cancel(integer()) -> ok.
 cancel(TxnH) ->
-    gen_server:cast(?MODULE, {cancel, TxnH}).
+    cancel(TxnH, <<>>).
+
+%% Headers: a CRLF-joined blob added to the CANCEL (a Reason, RFC 3326).
+-spec cancel(integer(), binary()) -> ok.
+cancel(TxnH, Headers) ->
+    gen_server:cast(?MODULE, {cancel, TxnH, Headers}).
 
 %% ---- gen_server ----
 
@@ -231,10 +236,10 @@ handle_cast({send_stateless, Flow, Raw}, S) ->
     %% it, as send_request does. A forwarded request already has one - leave it.
     send(Flow, ensure_via(Raw), S),
     {noreply, S};
-handle_cast({cancel, TxnH}, S) ->
+handle_cast({cancel, TxnH, Hdrs}, S) ->
     case S#s.ctxn of
         #{TxnH := #{flow := Flow, req := Req}} ->
-            case build_cancel(Req) of
+            case build_cancel(Req, Hdrs) of
                 {ok, Cancel} -> send(Flow, Cancel, S);
                 error -> ok
             end;
@@ -438,7 +443,9 @@ route_cancel(Flow, Msg, Branch, S) ->
             send(
                 Flow, build_response(Msg, 200, <<>>, <<>>, <<>>, <<>>, Peer), S
             ),
-            engine_event({cancel, InvTxnH}),
+            engine_event(
+                {cancel, InvTxnH, iolist_to_binary(chappe_sip_msg:encode(Msg))}
+            ),
             S
     end.
 
@@ -651,7 +658,7 @@ add_received(Via, _Peer) ->
 
 %% CANCEL built from the original request: same top Via/branch, R-URI,
 %% From, To (no to-tag), Call-ID, CSeq number with method CANCEL.
-build_cancel(Raw) ->
+build_cancel(Raw, Hdrs) ->
     case chappe_sip_msg:parse(Raw) of
         {ok, M} ->
             RURI = chappe_sip_msg:uri(M),
@@ -668,7 +675,7 @@ build_cancel(Raw) ->
                 <<"CANCEL ", RURI/binary, " SIP/2.0\r\n", "Via: ", Via/binary,
                     "\r\n", "Max-Forwards: 70\r\n", "From: ", From/binary,
                     "\r\n", "To: ", To/binary, "\r\n", "Call-ID: ", Call/binary,
-                    "\r\n", "CSeq: ", Seq/binary, " CANCEL\r\n",
+                    "\r\n", "CSeq: ", Seq/binary, " CANCEL\r\n", Hdrs/binary,
                     "Content-Length: 0\r\n\r\n">>};
         {error, _} ->
             error

@@ -26,6 +26,25 @@ ok = chappe_sip_dialog:destroy(Dialog).
 (`{error, #chappe_sip_error{status = 486}}`, `{error, timeout}`, ...). It handles
 provisionals, digest 401/407 retry, and 3xx redirects.
 
+The dialog's `chappe_sip_dialog:remote_sdp/1` is the first SDP the callee
+sent: an answer in a 183 wins over a different body in the 200 (RFC 3261
+13.2.1).
+
+## Call without an offer
+
+Leave out `local_sdp` to send an INVITE with no offer. The 2xx then carries
+the callee's offer and your answer goes in the ACK; `answer` computes it:
+
+```erlang
+{ok, Dialog} = chappe_sip:create_uac(<<"sip:bob@10.0.0.2">>, #{
+    answer => fun(Offer) -> {ok, my_answer(Offer)} end
+}).
+```
+
+Without `answer`, or when it returns anything but `{ok, Answer}`, chappe_sip
+ACKs with an answer refusing every stream, sends a BYE (RFC 3261 13.2.2.4),
+and `create_uac/2` returns `{error, offer_not_acceptable}`.
+
 ## Watch provisionals
 
 To see ringing before the answer, drive the reference yourself:
@@ -37,6 +56,17 @@ case chappe_sip_uac:await(Ref, 32000) of
     {error, Reason} -> {error, Reason}
 end.
 ```
+
+## Cancel a ringing call
+
+`chappe_sip_uac:cancel/1` sends a CANCEL once the call rings. To say why
+(RFC 3326), put a Reason on it:
+
+```erlang
+ok = chappe_sip_uac:cancel(Ref, #{headers => [{<<"Reason">>, <<"SIP;cause=200">>}]}).
+```
+
+`await/2` then returns `{error, #chappe_sip_error{status = 487}}`.
 
 ## Send an out-of-dialog request
 

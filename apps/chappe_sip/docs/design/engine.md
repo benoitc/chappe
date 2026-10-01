@@ -11,6 +11,14 @@ There is no dialog, proxy, or offer/answer logic in C; all of that is
 Erlang. The shim wraps four nta object kinds: agent, leg, incoming
 (server transaction), outgoing (client transaction).
 
+Requests reach Erlang through two nta callbacks: the default leg (out of
+dialog) and one leg per dialog. nta never matches a SUBSCRIBE to a dialog
+leg (it leaves subscriptions to nua, which the shim does not use), so the
+default-leg callback looks a To-tagged SUBSCRIBE up with
+`nta_leg_by_dialog` and delivers it on that dialog's leg. That is what lets
+a subscription dialog see its refreshes; the WS transport matches legs by
+Call-ID and tags for every method and needs no such step.
+
 ## Threads
 
 - `su_init()` runs once at NIF load; `su_deinit()` at unload. Per-engine

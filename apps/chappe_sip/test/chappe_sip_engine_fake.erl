@@ -13,7 +13,7 @@
 
 %% chappe_sip_nif call surface
 -export([start/2, stop/1, respond/7, reliable_respond/7, request/3, send/3,
-         send_response/2, relay/4, cancel/2, txn_done/2, leg_create/4,
+         send_response/2, relay/4, cancel/2, cancel/3, txn_done/2, leg_create/4,
          leg_destroy/2, health/1]).
 %% test driver API
 -export([boot/0, shutdown/0, inject_request/2, inject_indialog/3,
@@ -47,6 +47,9 @@ relay(_Ref, TxnH, Status, Raw) ->
     gen_server:call(?MODULE, {nif_relay, TxnH, Status, Raw}).
 
 cancel(_Ref, _TxnH) ->
+    ok.
+
+cancel(_Ref, _TxnH, _Headers) ->
     ok.
 
 txn_done(_Ref, _TxnH) ->

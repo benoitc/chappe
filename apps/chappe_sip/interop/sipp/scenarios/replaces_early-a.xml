@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!-- Copyright 2026 Benoit Chesneau
+     SPDX-License-Identifier: Apache-2.0
+
+     Twin a of replaces_early: a call the node leaves ringing (an early
+     dialog the node did not initiate). It hands b the dialog identity, waits
+     for b's verdict, then cancels. -->
+<scenario name="replaces_early-a">
+  <send retrans="500">
+    <![CDATA[
+      INVITE sip:ringing@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=z9hG4bK-early-[call_number];rport
+      From: <sip:sipp@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:ringing@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 INVITE
+      Contact: <sip:sipp@[local_ip]:[local_port]>
+      Max-Forwards: 70
+      Allow: INVITE, ACK, BYE, CANCEL, OPTIONS, UPDATE, REFER, NOTIFY, SUBSCRIBE
+      Supported: replaces
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 1 IN IP[local_ip_type] [local_ip]
+      s=-
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0
+      a=rtpmap:0 PCMU/8000
+
+    ]]>
+  </send>
+  <recv response="100" optional="true"/>
+  <recv response="180">
+    <action>
+      <ereg regexp="
+To[ 	]*:[^
+]*;tag=([-A-Za-z0-9.!%*_+`'~]+)" search_in="msg" check_it="true" assign_to="chk,peer_tag"/>
+    </action>
+  </recv>
+  <sendCmd>
+    <![CDATA[
+      Call-ID: rep-[call_id]
+      X-Rep-Call-Id: [call_id]
+      X-Rep-To-Tag: [$peer_tag]
+      X-Rep-From-Tag: [pid]SIPpTag00[call_number]
+
+    ]]>
+  </sendCmd>
+  <recvCmd/>
+  <send retrans="500">
+    <![CDATA[
+      CANCEL sip:ringing@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=z9hG4bK-early-[call_number];rport
+      From: <sip:sipp@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:ringing@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 CANCEL
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv response="200"/>
+  <recv response="487"/>
+  <send>
+    <![CDATA[
+      ACK sip:ringing@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=z9hG4bK-early-[call_number];rport
+      From: <sip:sipp@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      [last_To:]
+      Call-ID: [call_id]
+      CSeq: 1 ACK
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <Reference variables="chk"/>
+</scenario>

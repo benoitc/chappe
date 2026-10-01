@@ -1,0 +1,33 @@
+#!/bin/sh
+# Copyright 2026 Benoit Chesneau
+# SPDX-License-Identifier: Apache-2.0
+#
+# chappe-conf build   copy /host (the chappe tree, read-only) into /work
+#                     and compile it with the conformance node module
+# chappe-conf run IP  start the node on IP:5060 in the foreground
+set -eu
+
+case "${1:-}" in
+    build)
+        # the host's macOS build outputs must not reach the Linux build
+        rsync -a --delete \
+            --exclude=/_build --exclude=c_src/build --exclude=priv/lib \
+            --exclude=node_modules --exclude=/.claude --exclude=/.git \
+            /host/ /work/src/
+        cd /work/src
+        rebar3 compile
+        mkdir -p /work/conf_ebin
+        erlc -o /work/conf_ebin \
+            apps/chappe_sip/interop/conformance/node/chappe_conf_node.erl
+        ;;
+    run)
+        IP="${2:?usage: chappe-conf run IP}"
+        cd /work/src
+        exec erl -noshell -pa _build/default/lib/*/ebin /work/conf_ebin \
+            -eval "ok = chappe_conf_node:start(\"$IP\")."
+        ;;
+    *)
+        echo "usage: chappe-conf build | run IP" >&2
+        exit 2
+        ;;
+esac

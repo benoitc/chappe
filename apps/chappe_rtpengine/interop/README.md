@@ -16,6 +16,10 @@ discovers the address rtpengine can reach your machine at, runs
 `chappe_rtpengine_live_SUITE`, `chappe_rtpengine_e2e_SUITE` and
 `chappe_rtpengine_siprec_SUITE`, and tears the stack down.
 
+The same stack serves the mixer: `make interop-mix` brings it up, runs
+`chappe_mix_live_SUITE` (legs behind rtpengine, transcoded to PCMU), and tears
+it down.
+
 ## Run the stack by hand
 
 ```sh

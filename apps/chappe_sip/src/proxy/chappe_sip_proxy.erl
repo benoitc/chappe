@@ -121,7 +121,7 @@ loop(#px{server = ServerTxn} = P) ->
             branch_done(P, TxnH, undefined);
         {chappe_sip_op, _TxnH, ok} ->
             loop(P);
-        {chappe_sip_cancel, ServerTxn} ->
+        {chappe_sip_cancel, ServerTxn, _CancelReq} ->
             cancel_all(P),
             loop(P)
     after remaining(P#px.deadline) ->

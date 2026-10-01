@@ -23,6 +23,26 @@
 -module(chappe_sip_engine).
 -behaviour(gen_server).
 
+-include("chappe_sip.hrl").
+
+%% the methods chappe_sip recognises; any other is answered 501
+-define(KNOWN_METHODS, [
+    <<"INVITE">>,
+    <<"ACK">>,
+    <<"CANCEL">>,
+    <<"BYE">>,
+    <<"OPTIONS">>,
+    <<"REGISTER">>,
+    <<"INFO">>,
+    <<"UPDATE">>,
+    <<"PRACK">>,
+    <<"REFER">>,
+    <<"SUBSCRIBE">>,
+    <<"NOTIFY">>,
+    <<"MESSAGE">>,
+    <<"PUBLISH">>
+]).
+
 %% guard-legal test for a WS-transport handle (mirrors chappe_sip_ws:base/0)
 -define(IS_WS(H), (is_integer(H) andalso (H) >= 16#4000000000000000)).
 
@@ -39,6 +59,7 @@
     use/2,
     handle/3,
     unhandle/1,
+    allow_events/0,
     reset_routes/0,
     respond/3,
     check_health/1
@@ -55,6 +76,7 @@
     relay_response/3,
     forward_response/1,
     cancel_txn/1,
+    cancel_txn/2,
     finish_txn/1,
     destroy_leg/1,
     contact/0
@@ -197,7 +219,13 @@ send_stateless(Route, Raw, Pid) ->
 %% CANCEL an outstanding INVITE client transaction.
 -spec cancel_txn(non_neg_integer()) -> ok | {error, term()}.
 cancel_txn(TxnH) ->
-    gen_server:call(?MODULE, {cancel_txn, TxnH}).
+    cancel_txn(TxnH, []).
+
+%% CANCEL carrying extra headers (a Reason, RFC 3326).
+-spec cancel_txn(non_neg_integer(), [{binary(), iodata()}]) ->
+    ok | {error, term()}.
+cancel_txn(TxnH, Headers) ->
+    gen_server:call(?MODULE, {cancel_txn, TxnH, Headers}).
 
 %% Release a client transaction handle and stop routing for it.
 -spec finish_txn(non_neg_integer()) -> ok.
@@ -323,16 +351,20 @@ handle_call({use, Method, Fun}, _From, #state{middlewares = MW} = S) ->
     MW1 = MW ++ [{Method, Fun}],
     cfg_put(middlewares, MW1),
     {reply, ok, S#state{middlewares = MW1}};
-handle_call({handle, Method, Fun, _Opts}, _From, #state{routes = R} = S) ->
+handle_call({handle, Method, Fun, Opts}, _From, #state{routes = R} = S) ->
     R1 = R#{Method => Fun},
     cfg_put(routes, R1),
+    Method =:= <<"SUBSCRIBE">> andalso
+        cfg_put(events, maps:get(events, Opts, any)),
     {reply, ok, S#state{routes = R1}};
 handle_call({unhandle, Method}, _From, #state{routes = R} = S) ->
     R1 = maps:remove(Method, R),
     cfg_put(routes, R1),
+    Method =:= <<"SUBSCRIBE">> andalso cfg_put(events, any),
     {reply, ok, S#state{routes = R1}};
 handle_call(reset_routes, _From, S) ->
     cfg_put(routes, #{}),
+    cfg_put(events, any),
     cfg_put(middlewares, []),
     {reply, ok, S#state{routes = #{}, middlewares = []}};
 handle_call({respond, _, _, _}, _From, #state{engine = undefined} = S) ->
@@ -365,15 +397,21 @@ handle_call(
     %% fire-and-forget (a 2xx ACK / stateless BYE): no response is expected, so
     %% do not retain a handle route (it would linger until the owner exits)
     {reply, Mod:send(Engine, Route, Raw), S};
-handle_call({cancel_txn, TxnH}, _From, S) when ?IS_WS(TxnH) ->
-    _ = chappe_sip_ws_transport:cancel(TxnH),
+handle_call({cancel_txn, TxnH, Hdrs}, _From, S) when ?IS_WS(TxnH) ->
+    _ = chappe_sip_ws_transport:cancel(TxnH, chappe_sip_hdr_io:join(Hdrs)),
     {reply, ok, S};
 handle_call(
-    {cancel_txn, TxnH},
+    {cancel_txn, TxnH, []},
     _From,
     #state{mod = Mod, engine = Engine} = S
 ) when Engine =/= undefined ->
     {reply, Mod:cancel(Engine, TxnH), S};
+handle_call(
+    {cancel_txn, TxnH, Hdrs},
+    _From,
+    #state{mod = Mod, engine = Engine} = S
+) when Engine =/= undefined ->
+    {reply, Mod:cancel(Engine, TxnH, chappe_sip_hdr_io:join(Hdrs)), S};
 handle_call(
     {relay_response, ServerTxnH, Status, Raw},
     _From,
@@ -821,9 +859,19 @@ handle_event({ack, LegH, Raw}, #state{handles = HM, contact = Contact} = S) ->
             end
     end,
     S;
-handle_event({cancel, TxnH}, #state{handles = HM} = S) ->
+handle_event({ack_timeout, H}, #state{handles = HM} = S) ->
+    %% our 2xx to an INVITE was never ACKed (Timer H)
     case HM of
-        #{TxnH := Pid} -> Pid ! {chappe_sip_cancel, TxnH};
+        #{H := Pid} -> Pid ! {chappe_sip_ack_timeout, H};
+        _ -> ok
+    end,
+    S;
+handle_event({cancel, TxnH}, S) ->
+    handle_event({cancel, TxnH, <<>>}, S);
+handle_event({cancel, TxnH, Raw}, #state{handles = HM} = S) ->
+    %% the CANCEL request goes along so the app sees its Reason (RFC 3326)
+    case HM of
+        #{TxnH := Pid} -> Pid ! {chappe_sip_cancel, TxnH, cancel_req(Raw)};
         _ -> ok
     end,
     S;
@@ -832,6 +880,19 @@ handle_event({prack, TxnH, Raw}, #state{handles = HM} = S) ->
     case HM of
         #{TxnH := Pid} -> Pid ! {chappe_sip_prack, TxnH, Raw};
         _ -> ok
+    end,
+    S;
+handle_event(
+    {prack, TxnH, Raw, PrackH},
+    #state{handles = HM, mod = Mod, engine = Engine} = S
+) ->
+    %% a PRACK with an offer (RFC 3262 5): the INVITE's owner answers it
+    %% through the PRACK's own handle
+    case HM of
+        #{TxnH := Pid} ->
+            Pid ! {chappe_sip_prack, TxnH, Raw, PrackH};
+        _ ->
+            shed(Mod, Engine, PrackH, 500, <<"Server Internal Error">>)
     end,
     S;
 handle_event({response, TxnH, Meta, Raw}, #state{handles = HM} = S) ->
@@ -856,6 +917,12 @@ handle_event(Event, S) ->
     logger:debug("chappe_sip_engine: unhandled event ~p", [Event]),
     S.
 
+cancel_req(Raw) ->
+    case chappe_sip_msg:parse(Raw) of
+        {ok, Msg} -> chappe_sip_req:new(Msg, undefined, #{});
+        {error, _} -> undefined
+    end.
+
 %% Build a UAS dialog: allocate the leg, register it, start the fsm, and
 %% send the dialog-forming response with the local tag. op_ok/op_failed
 %% for the leg routes to the fsm, which confirms or fails setup.
@@ -876,12 +943,18 @@ do_create_uas_1(Req, Opts, WorkerPid, S) ->
     LocalAddr = <<ToVal/binary, ";tag=", LocalTag/binary>>,
     TxnH = chappe_sip_req:txn(Req),
     RTarget = contact_uri(chappe_sip_msg:get(<<"contact">>, Msg), FromVal),
+    %% a 2xx to an INVITE on the native stack keeps its server transaction
+    %% until the ACK or Timer H, and both are the dialog's to handle
+    AckWait =
+        not ?IS_WS(TxnH) andalso chappe_sip_msg:method(Msg) =:= <<"INVITE">> andalso
+            is_2xx(maps:get(status, Opts, 200)),
     case leg_create(TxnH, Req, CallId, LocalAddr, FromVal, S) of
         {ok, LegH} ->
             Owner = maps:get(owner, Opts, WorkerPid),
             FsmArgs = #{
                 leg => LegH,
                 txn => TxnH,
+                role => uas,
                 opts => Opts,
                 owner => Owner,
                 local_tag => LocalTag,
@@ -895,7 +968,13 @@ do_create_uas_1(Req, Opts, WorkerPid, S) ->
                 %% a WS-originated request carries its flow so the
                 %% dialog can send in-dialog requests back over it
                 flow => maps:get(flow, chappe_sip_req:meta(Req), undefined),
-                call_id => CallId
+                %% the Contact the 2xx carries; a subscription repeats it on
+                %% a refresh 2xx (SUBSCRIBE is a target refresh request)
+                local_contact => dialog_contact(Opts, S),
+                call_id => CallId,
+                %% RFC 3261 12.1.1: the remote CSeq starts at the request's
+                remote_cseq => req_cseq(Msg),
+                ack_wait => AckWait
             },
             case chappe_sip_dialog_sup:start_dialog(FsmArgs) of
                 {ok, Pid} ->
@@ -907,8 +986,14 @@ do_create_uas_1(Req, Opts, WorkerPid, S) ->
                     %% the owner now blocks for the call's lifetime; disarm its
                     %% handler deadline so it is not killed mid-call
                     S1 = disarm_deadline(Owner, S),
+                    HM0 = S1#state.handles,
+                    HM1 =
+                        case AckWait of
+                            true -> HM0#{TxnH => Pid};
+                            false -> HM0
+                        end,
                     {reply, {ok, Pid}, S1#state{
-                        handles = (S1#state.handles)#{LegH => Pid},
+                        handles = HM1#{LegH => Pid},
                         dialogs = (S1#state.dialogs)#{Pid => true}
                     }};
                 {error, Reason} ->
@@ -917,6 +1002,14 @@ do_create_uas_1(Req, Opts, WorkerPid, S) ->
             end;
         Err ->
             {reply, Err, S}
+    end.
+
+is_2xx(Status) -> is_integer(Status) andalso Status >= 200 andalso Status < 300.
+
+req_cseq(Msg) ->
+    case chappe_sip_msg:cseq(Msg) of
+        {ok, #{seq := N}} -> N;
+        _ -> 0
     end.
 
 %% create the dialog leg on the backend that owns the request's transaction
@@ -949,7 +1042,13 @@ leg_destroy(_TxnH, _LegH, _S) ->
 send_uas_response(TxnH, LocalTag, Opts, S) ->
     Status = maps:get(status, Opts, 200),
     Reason = maps:get(reason, Opts, <<"OK">>),
-    ExtraHeaders = with_contact(Status, maps:get(headers, Opts, []), S),
+    ExtraHeaders = with_allow(
+        Status,
+        Opts,
+        with_supported(
+            Status, Opts, with_contact(Status, maps:get(headers, Opts, []), S)
+        )
+    ),
     {Headers, Body} =
         case maps:get(local_sdp, Opts, undefined) of
             undefined ->
@@ -999,6 +1098,40 @@ with_contact(Status, Headers, S) when Status >= 200, Status < 300 ->
     end;
 with_contact(_Status, Headers, _S) ->
     Headers.
+
+%% the 2xx forming an INVITE dialog lists our option tags (RFC 3891 6.2),
+%% unless the app set its own Supported
+with_supported(Status, #{subscription := _}, Headers) when Status >= 200 ->
+    Headers;
+with_supported(Status, _Opts, Headers) when Status >= 200, Status < 300 ->
+    case has_hdr(<<"supported">>, Headers) of
+        true -> Headers;
+        false -> Headers ++ [{<<"Supported">>, ?SUPPORTED}]
+    end;
+with_supported(_Status, _Opts, Headers) ->
+    Headers.
+
+%% RFC 3261 13.3.1.4: a 2xx to an INVITE SHOULD carry Allow
+with_allow(Status, #{subscription := _}, Headers) when Status >= 200 ->
+    Headers;
+with_allow(Status, _Opts, Headers) when Status >= 200, Status < 300 ->
+    case has_hdr(<<"allow">>, Headers) of
+        true -> Headers;
+        false -> Headers ++ [{<<"Allow">>, ?ALLOW}]
+    end;
+with_allow(_Status, _Opts, Headers) ->
+    Headers.
+
+dialog_contact(Opts, S) ->
+    Supplied = [
+        iolist_to_binary(V)
+     || {N, V} <- maps:get(headers, Opts, []),
+        string:lowercase(N) =:= <<"contact">>
+    ],
+    case Supplied of
+        [C | _] -> C;
+        [] -> local_contact(S)
+    end.
 
 has_hdr(Lname, Headers) ->
     lists:any(
@@ -1130,7 +1263,33 @@ dispatch(
             dispatch_local(TxnH, Meta, Raw, S)
     end.
 
-dispatch_local(
+dispatch_local(TxnH, #{method := Method} = Meta, Raw, S) ->
+    case stray_in_dialog(Method, Raw) of
+        true ->
+            %% RFC 3261 12.2.2 and 15.1.2: a request for a dialog we do not
+            %% have is not a new one
+            respond_txn(TxnH, 481, <<"Call/Transaction Does Not Exist">>, S),
+            S;
+        false ->
+            dispatch_route(TxnH, Meta, Raw, S)
+    end.
+
+%% A BYE, or a request tagged for a dialog, reaching the default leg names
+%% no dialog of ours. A NOTIFY is left to its handler: the application runs
+%% its own subscriptions, and their NOTIFYs carry our tag.
+stray_in_dialog(Method, _Raw) when
+    Method =:= <<"ACK">>; Method =:= <<"CANCEL">>; Method =:= <<"NOTIFY">>
+->
+    false;
+stray_in_dialog(<<"BYE">>, _Raw) ->
+    true;
+stray_in_dialog(_Method, Raw) ->
+    case chappe_sip_msg:parse(Raw) of
+        {ok, Msg} -> chappe_sip_msg:to_tag(Msg) =/= undefined;
+        {error, _} -> false
+    end.
+
+dispatch_route(
     TxnH,
     #{method := Method} = Meta,
     Raw,
@@ -1144,27 +1303,122 @@ dispatch_local(
 ) ->
     case Routes of
         #{Method := Handler} ->
-            case map_size(W) >= chappe_sip_config:get(max_request_workers) of
-                true ->
+            Max = chappe_sip_config:get(max_request_workers),
+            case bad_event(Method, Raw) of
+                {true, Events} ->
+                    reject_event(TxnH, Events, S);
+                refer ->
+                    respond_txn(TxnH, 403, <<"Forbidden">>, <<>>, S),
+                    S;
+                false when map_size(W) >= Max ->
                     shed(Mod, Engine, TxnH, 503, <<"Service Unavailable">>),
                     S;
                 false ->
                     spawn_worker(TxnH, Meta, Raw, Handler, MW, S)
             end;
-        _ when Method =:= <<"ACK">>; Method =:= <<"CANCEL">> ->
-            %% ACK never needs an answer; CANCEL correlation lands in M3
+        _ when Method =:= <<"ACK">> ->
+            %% ACK never needs an answer
+            S;
+        _ when Method =:= <<"CANCEL">> ->
+            %% nta answers a CANCEL matching one of our transactions; this
+            %% one matches none (RFC 3261 9.2)
+            respond_txn(TxnH, 481, <<"Call/Transaction Does Not Exist">>, S),
             S;
         _ ->
-            %% RFC 3261 21.4.5: a 405 MUST carry Allow. respond_txn handles a
-            %% WS or native transaction (a bare shed would send a WS txn to nta)
-            Allow = chappe_sip_hdr_io:join([{<<"Allow">>, allow_value(Routes)}]),
-            respond_txn(TxnH, 405, <<"Method Not Allowed">>, Allow, S),
+            %% respond_txn handles a WS or native transaction (a bare shed
+            %% would send a WS txn to nta)
+            {Status, Reason, Hdrs} = unhandled(Method, Routes),
+            respond_txn(
+                TxnH, Status, Reason, chappe_sip_hdr_io:join(Hdrs), S
+            ),
             S
     end.
 
-%% the methods we have a handler for, for the Allow header
+%% No handler for the method. OPTIONS is answered 200 with what we take,
+%% as every UA must (RFC 3261 11); a method we know gets 405 and one we do
+%% not 501 (21.4.5, 21.5.2), both with Allow.
+unhandled(<<"OPTIONS">>, Routes) ->
+    Events =
+        case allow_events() of
+            any ->
+                [];
+            [] ->
+                [];
+            Pkgs ->
+                [
+                    {<<"Allow-Events">>,
+                        iolist_to_binary(lists:join(<<", ">>, Pkgs))}
+                ]
+        end,
+    {200, <<"OK">>,
+        [
+            {<<"Allow">>, allow_value(Routes)},
+            {<<"Accept">>, <<"application/sdp">>},
+            {<<"Supported">>, ?SUPPORTED}
+        ] ++ Events};
+unhandled(Method, Routes) ->
+    Allow = [{<<"Allow">>, allow_value(Routes)}],
+    case lists:member(Method, ?KNOWN_METHODS) of
+        true -> {405, <<"Method Not Allowed">>, Allow};
+        false -> {501, <<"Not Implemented">>, Allow}
+    end.
+
+%% A SUBSCRIBE for a package the notifier does not serve, or with no Event
+%% (the PINT default, never served), is answered 489 with the packages it
+%% does serve (RFC 6665 4.2.1.1, 7.2.1, 8.3.2). An out-of-dialog SUBSCRIBE
+%% for refer is refused 403.
+bad_event(<<"SUBSCRIBE">>, Raw) ->
+    case {event_package(Raw), allow_events()} of
+        {<<"refer">>, _} ->
+            %% a refer subscription exists only inside its REFER's dialog:
+            %% out of dialog it matches none (RFC 3515 2.4.4)
+            refer;
+        {_, any} ->
+            false;
+        {Pkg, Events} ->
+            case lists:member(Pkg, Events) of
+                true -> false;
+                false -> {true, Events}
+            end
+    end;
+bad_event(_Method, _Raw) ->
+    false.
+
+reject_event(TxnH, Events, S) ->
+    Hdr = chappe_sip_hdr_io:join([
+        {<<"Allow-Events">>, iolist_to_binary(lists:join(<<", ">>, Events))}
+    ]),
+    respond_txn(TxnH, 489, <<"Bad Event">>, Hdr, S),
+    S.
+
+%% The event packages the SUBSCRIBE handler serves (chappe_sip:subscribe/2),
+%% or `any' when it was registered without a list.
+-spec allow_events() -> any | [binary()].
+allow_events() ->
+    cfg_get(events, any).
+
+event_package(Raw) ->
+    case chappe_sip_msg:parse(Raw) of
+        {ok, Msg} ->
+            case chappe_sip_msg:get(<<"event">>, Msg) of
+                undefined ->
+                    undefined;
+                Ev ->
+                    [Pkg | _] = binary:split(Ev, <<";">>),
+                    string:lowercase(string:trim(Pkg))
+            end;
+        _ ->
+            undefined
+    end.
+
+%% the methods we take out of dialog: those with a handler, plus the ones
+%% the stack answers itself (ACK, CANCEL, BYE in a dialog, OPTIONS)
 allow_value(Routes) ->
-    iolist_to_binary(lists:join(<<", ">>, lists:sort(maps:keys(Routes)))).
+    Methods = lists:usort(
+        maps:keys(Routes) ++
+            [<<"ACK">>, <<"BYE">>, <<"CANCEL">>, <<"OPTIONS">>]
+    ),
+    iolist_to_binary(lists:join(<<", ">>, Methods)).
 
 %% True when the top Route header targets this proxy (a request the far end
 %% loose-routed back to us after we record-routed the dialog). Gated on a
@@ -1258,9 +1512,7 @@ spawn_worker(
         {ok, Pid} ->
             MRef = erlang:monitor(process, Pid),
             DTRef = erlang:send_after(
-                chappe_sip_config:get(handler_deadline_ms),
-                self(),
-                {worker_deadline, Pid}
+                handler_deadline(Meta), self(), {worker_deadline, Pid}
             ),
             %% route a later CANCEL for this server txn to the worker
             S#state{
@@ -1272,6 +1524,17 @@ spawn_worker(
             shed(Mod, Engine, TxnH, 500, <<"Server Internal Error">>),
             S
     end.
+
+%% A non-INVITE request is answered before its client gives up (Timer F,
+%% 64*T1): a handler waiting on a user must not hold a SUBSCRIBE or a
+%% REFER past it (RFC 6665 4.2.1.1, RFC 3515 6).
+handler_deadline(#{method := <<"INVITE">>}) ->
+    chappe_sip_config:get(handler_deadline_ms);
+handler_deadline(_Meta) ->
+    min(
+        chappe_sip_config:get(handler_deadline_ms),
+        chappe_sip_config:get(non_invite_deadline_ms)
+    ).
 
 %% the sender fun runs in the worker process; the NIF respond call is
 %% enqueue-only and safe from any process

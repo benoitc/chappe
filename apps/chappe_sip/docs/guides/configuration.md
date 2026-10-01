@@ -32,6 +32,7 @@ tune its safety limits.
 | `max_dialogs` | `100000` | Dialog ceiling. |
 | `max_uac_transactions` | `100000` | Outgoing transaction ceiling. |
 | `handler_deadline_ms` | `30000` | Bounds a handler's pre-dialog phase; disarmed once the worker owns a dialog or forks. Expiry answers 500. |
+| `non_invite_deadline_ms` | `30000` | The same for a non-INVITE request (SUBSCRIBE, REFER, MESSAGE...), capped by `handler_deadline_ms`: its client gives up after 32 s. |
 | `health_interval_ms` | `5000` | Engine health-check period. |
 | `health_miss_limit` | `3` | Missed health ticks before the engine is declared hung. |
 | `engine_failure_action` | `halt` | `halt` (heart/systemd restarts the node) or `degrade` (SIP down, node up). |
@@ -45,6 +46,9 @@ tune its safety limits.
 | `registrar_default_expires` | `3600` | REGISTER expiry when the request gives none. |
 | `registrar_max_expires` | `86400` | Upper clamp on REGISTER expiry. |
 | `registrar_min_expires` | `0` | Lower bound on a non-zero REGISTER expiry; a shorter one is refused 423 Interval Too Brief. 0 disables it. |
+| `session_expires` | `undefined` | Session timer interval (s) to ask for (RFC 4028); undefined never asks, a peer request is still honored. |
+| `session_min_se` | `90` | Smallest session interval accepted; a shorter one with `Supported: timer` gets 422 with `Min-SE`. |
+| `session_refresher` | `uac` | Who refreshes when chappe_sip, as UAS, picks (`uac` or `uas`). |
 | `registrar_max_aors` | `100000` | Distinct AORs the location store holds; a new AOR past this is rejected 503. |
 | `registrar_max_bindings_per_aor` | `10` | Contacts bound to one AOR; a REGISTER exceeding this is rejected 403. |
 | `flow_token_secret` | (random) | Secret keying the Record-Route marker/flow-token HMAC. Unset generates a per-node random secret at boot; set a stable shared value only if record-routed dialogs must survive a restart or span a cluster. |

@@ -1,0 +1,8 @@
+# Conformance cases that fail on purpose: the feature is not built yet.
+# One line per case: the case name, then why it fails today (what the
+# scenario saw). chappe_sip_conformance_SUITE reports these as skipped
+# while they fail and fails them once they pass, so remove a line in the
+# same change that makes its case pass. Never weaken a scenario instead.
+#
+# Seen failing against i3-bridge-media 2ee8b11; trimmed as the tracks merged.
+rport_response           response Via has rport=N but no received: nta adds received only when the source differs from the Via host (deviation R3581-010, sofia vendored unmodified)

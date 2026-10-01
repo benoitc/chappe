@@ -26,11 +26,12 @@ The tests are opt-in (`INTEROP=1`) so they stay out of the fast `rebar3 ct` run.
 
 All interop cases:
 
+From the umbrella root:
+
 ```
-cd interop && npm install
+(cd apps/chappe_sip/interop && npm install)
 docker pull ghcr.io/kamailio/kamailio-ci:5.8
-cd ..
-INTEROP=1 rebar3 ct --suite test/chappe_sip_interop_SUITE
+INTEROP=1 rebar3 ct --suite apps/chappe_sip/test/chappe_sip_interop_SUITE
 ```
 
 A single driver by hand (chappe_sip must be listening; see the suite for how it

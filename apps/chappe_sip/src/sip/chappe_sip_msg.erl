@@ -371,6 +371,7 @@ parsed(Name, M) ->
         {<<"from">>, V} -> chappe_sip_hdr:name_addr(V);
         {<<"to">>, V} -> chappe_sip_hdr:name_addr(V);
         {<<"refer-to">>, V} -> chappe_sip_hdr:name_addr(V);
+        {<<"replaces">>, V} -> chappe_sip_hdr:replaces(V);
         {<<"contact">>, V} -> chappe_sip_hdr:name_addr_list(V);
         {<<"route">>, V} -> chappe_sip_hdr:name_addr_list(V);
         {<<"record-route">>, V} -> chappe_sip_hdr:name_addr_list(V);

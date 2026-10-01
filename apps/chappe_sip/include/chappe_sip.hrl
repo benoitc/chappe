@@ -9,3 +9,23 @@
     reason :: binary(),
     response :: chappe_sip_msg:msg() | undefined
 }).
+
+%% Option tags we support, for Supported on INVITE, its 2xx and OPTIONS
+%% responses, and accepted in Require without a 420 (RFC 3261 8.2.2).
+-define(SUPPORTED, <<"replaces, timer">>).
+%% tdialog (RFC 4538, which RFC 7647 4 makes a REFER recipient process) and
+%% norefersub (RFC 4488) are REFER's, handled by chappe_sip_refer.
+-define(SUPPORTED_TAGS, [
+    <<"100rel">>, <<"replaces">>, <<"timer">>, <<"tdialog">>, <<"norefersub">>
+]).
+
+%% Body types an INVITE may carry (RFC 3261 8.2.3): the SDP offer, alone or
+%% in a multipart with other parts, for Accept on a 415.
+-define(ACCEPT, <<"application/sdp, multipart/mixed, multipart/alternative">>).
+
+%% Methods we accept, ACK and CANCEL included (RFC 3261 13.1, 20.5), for
+%% Allow on INVITE, its 2xx, OPTIONS responses and 405/501.
+-define(ALLOW, <<
+    "INVITE, ACK, CANCEL, BYE, OPTIONS, INFO, UPDATE, REFER, NOTIFY, "
+    "SUBSCRIBE, MESSAGE, PRACK"
+>>).

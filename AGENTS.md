@@ -18,12 +18,17 @@ apps/chappe_rtpengine/   rtpengine NG control client (media relay/anchoring,
                          subscribe/duck). SIP-free. Facade module: chappe_rtpengine.
 apps/chappe_esl/         FreeSWITCH Event Socket (ESL) client. SIP-free.
                          Facade module: chappe_esl.
+apps/chappe_mix/         RTP audio conference mixer (G.711, N-1 mix, one
+                         process per conference). SIP-free; rtpengine in
+                         front handles SRTP and transcoding. Facade module:
+                         chappe_mix.
 ```
 
 Inside the umbrella the apps reference each other by name (no fetched cross
 deps). External deps (`livery`, `ws`) are git/hex. Each app is published to hex
-independently. Module prefixes are `chappe_sip_*` / `chappe_rtpengine_*` / `chappe_esl_*`; only the
-app-named facade modules carry the `chappe_` brand.
+independently. Module prefixes are `chappe_sip_*` / `chappe_rtpengine_*` /
+`chappe_esl_*` / `chappe_mix_*`; only the app-named facade modules carry the
+`chappe_` brand.
 
 sofia-sip is vendored in `apps/chappe_sip/c_src/sofia-sip` (no git submodule), so
 the NIF builds from a clean clone with no network. It is LGPL-2.1 (see NOTICE);
@@ -71,6 +76,10 @@ in `apps/chappe_sip/docs/design/engine.md`.
 - Never use the em-dash character in code, docs, or messages.
 - Never use the word "comprehensive" in tickets, comments, PRs, or MRs.
 - OTP 29 only. sofia pin: freeswitch/sofia-sip v1.13.17-55 (vendored).
-- Keep the two leaf clients (chappe_rtpengine, chappe_esl) SIP-free; SIP-coupled
-  logic belongs in chappe_sip or a consuming product.
+- Keep the leaf apps (chappe_rtpengine, chappe_esl, chappe_mix) SIP-free;
+  SIP-coupled logic belongs in chappe_sip or a consuming product.
+- Measure before you claim: chappe_mix keeps its thresholds and results in
+  `apps/chappe_mix/test/audit/PERF.md` and what was tried and reverted in
+  `ATTEMPTS.md`. Check the load average before timing anything, and run every
+  new test against the code before the change to see it fail.
 - `verify_none`/permissive TLS is test-only; never ship it in `src/`.
