@@ -277,3 +277,25 @@ once in any listen.
 - Mutations, both caught: the mixer sending each party the full sum
   (`{leaked, 440, -14.7}` on the first listen) and sending only silence
   (`{missing, 1100, 0, 5}` after three listens; the settle gave up at 5 s).
+## The far end wins the latch (`interop-mix` on Linux)
+
+- `chappe_mix_live_SUITE` failed on ubuntu-24.04 CI and passed on macOS:
+  one party's tone was missing at the others (-85 dB). On an OrbStack
+  Ubuntu VM with docker.io it failed 2 runs in 12. The leg counters of a
+  failing run: `remote => {127.0.0.1, 30050}`, `source => {172.18.0.2,
+  30050}`, `filtered => 199`, `received => 1`.
+- Why: Docker runs a userland proxy for the published ports, so what the
+  mixer sends to 127.0.0.1 reaches rtpengine from 172.18.0.1 on a proxy
+  port, while rtpengine sends to the SDP address (host-gateway) straight
+  from the container. When rtpengine forwarded a packet before the mixer's
+  first one reached it, that packet came from 172.18.0.2 and the leg
+  latched it. Once rtpengine confirmed the proxy address it sent through
+  the proxy, from 127.0.0.1, the far end set on the leg, and the latch
+  dropped every packet. OrbStack on macOS shows both paths as 127.0.0.1.
+- Kept: RTP from the leg's far end is always taken and moves the latch to
+  it (RFC 4961: a symmetric peer sends from where it receives). A stray
+  first sender no longer holds the leg. Thresholds unchanged.
+- `far_end_wins_the_latch` failed on the old code (source stayed on the
+  first sender). Mutations, 3, all caught: far end accepted but latch not
+  moved, latch moved but far end still filtered, no source filter.
+- After: Linux 30 runs, 30 passed; macOS 3 runs, 3 passed.

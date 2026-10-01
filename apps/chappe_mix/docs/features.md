@@ -15,8 +15,9 @@ What chappe_mix does today, and what is planned.
   dropped, bounded depth, adaptive prefill after an underrun, restart on a new
   SSRC or a large sequence jump.
 - Symmetric RTP: the far end is learnt from the first packet unless set.
-  Once latched, RTP from any other address is dropped and counted;
-  `set_remote/3` resets the latch.
+  Once latched, RTP from any other address is dropped and counted, except
+  from the far end itself, which moves the latch to it; `set_remote/3`
+  resets the latch.
 - Join, leave and mute at any time. Telephone-event, comfort noise and
   malformed packets are counted and dropped.
 - RFC 3550 mixer behaviour on every leg. Mixed packets carry the SSRCs in

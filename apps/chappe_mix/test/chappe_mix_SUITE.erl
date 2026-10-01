@@ -32,6 +32,7 @@
     csrc_list/1,
     csrc_list_capped/1,
     source_filter/1,
+    far_end_wins_the_latch/1,
     timestamp_after_overrun/1,
     ssrc_collision/1,
     member_timeout/1
@@ -66,6 +67,7 @@ all() ->
         csrc_list,
         csrc_list_capped,
         source_filter,
+        far_end_wins_the_latch,
         timestamp_after_overrun,
         ssrc_collision,
         member_timeout
@@ -649,6 +651,39 @@ source_filter(_Config) ->
     #{filtered := F3} = leg_stats(Conf, LA),
     ?assert(F3 - F2 >= 5, {old_source_accepted, F2, F3}),
     [chappe_mix_test_peer:stop(P) || P <- [PA, Intruder]],
+    ok = chappe_mix:stop(Conf).
+
+%% The far end set on the leg is taken even when another address got
+%% latched first, and the latch moves to it. Behind rtpengine in Docker
+%% the first packets come straight from the container and the rest, once
+%% rtpengine has learnt the leg's address, through the port proxy: a
+%% latch that kept the first address dropped the whole stream.
+%% req: R3550-177
+far_end_wins_the_latch(_Config) ->
+    {ok, Conf} = chappe_mix:start(#{}),
+    {Far, FarPort} = chappe_mix_test_peer:start(#{
+        ssrc => 16#A, sending => false
+    }),
+    {ok, Leg, #{port := MPort}} = chappe_mix:add_leg(
+        Conf, #{remote => {?LO, FarPort}}
+    ),
+    ok = chappe_mix_test_peer:set(Far, dst, {?LO, MPort}),
+    {First, FirstPort} = chappe_mix_test_peer:start(#{
+        ssrc => 16#A, dst => {?LO, MPort}
+    }),
+    timer:sleep(200),
+    ?assertMatch(#{source := {?LO, FirstPort}}, leg_stats(Conf, Leg)),
+    ok = chappe_mix_test_peer:set(Far, sending, true),
+    timer:sleep(200),
+    #{source := Source, received := R1, filtered := F1} = leg_stats(
+        Conf, Leg
+    ),
+    ?assertEqual({?LO, FarPort}, Source),
+    timer:sleep(300),
+    #{received := R2, filtered := F2} = leg_stats(Conf, Leg),
+    ?assert(R2 - R1 >= 10, {far_end_dropped, R1, R2}),
+    ?assert(F2 - F1 >= 10, {first_sender_kept, F1, F2}),
+    [chappe_mix_test_peer:stop(P) || P <- [Far, First]],
     ok = chappe_mix:stop(Conf).
 
 %% After an overrun (the tick fired periods late and skipped them) the

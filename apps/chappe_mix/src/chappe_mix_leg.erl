@@ -116,10 +116,13 @@ info(#leg{} = L) ->
 %% ---- in ----
 
 %% Once a source address is latched, RTP from anywhere else is dropped
-%% and counted.
+%% and counted, except from the far end itself: a symmetric peer (RFC
+%% 4961) sends from where it receives, so the far end the caller set wins
+%% over a first packet that came another way (a NAT path that changed
+%% when rtpengine learnt this leg's address).
 -spec accepts_rtp(addr(), #leg{}) -> {boolean(), #leg{}}.
-accepts_rtp(From, #leg{source = Source} = L) when
-    Source =/= undefined, Source =/= From
+accepts_rtp(From, #leg{source = Source, remote = Remote} = L) when
+    Source =/= undefined, Source =/= From, Remote =/= From
 ->
     {false, L#leg{filtered = L#leg.filtered + 1}};
 accepts_rtp(_From, L) ->
@@ -139,11 +142,12 @@ accepts_rtcp(From, #leg{rtcp = mux, source = Src} = L) when
 accepts_rtcp(_From, L) ->
     {false, L#leg{filtered = L#leg.filtered + 1}}.
 
-%% A packet the session took: latch the addresses, buffer the audio.
+%% A packet the session took: latch the addresses (the far end moves the
+%% source latch to itself), buffer the audio.
 -spec take(chappe_mix_rtp:packet(), addr(), #leg{}) -> #leg{}.
 take(#{pt := PT, ssrc := Ssrc, seq := Seq, payload := P}, From, L) ->
     L1 = L#leg{
-        source = latch(L#leg.source, From),
+        source = latch_source(L, From),
         remote = latch(L#leg.remote, From)
     },
     case PT =:= law_pt(L#leg.law) of
@@ -156,6 +160,9 @@ take(#{pt := PT, ssrc := Ssrc, seq := Seq, payload := P}, From, L) ->
 
 latch(undefined, From) -> From;
 latch(Addr, _From) -> Addr.
+
+latch_source(#leg{remote = From}, From) -> From;
+latch_source(#leg{source = Source}, From) -> latch(Source, From).
 
 law_pt(ulaw) -> 0;
 law_pt(alaw) -> 8.
