@@ -72,6 +72,9 @@
     unreg_handle/1,
     dialog_respond/6,
     send_request/3,
+    send_request/4,
+    mark_proxied/1,
+    disarm/1,
     send_stateless/3,
     relay_response/3,
     forward_response/1,
@@ -79,8 +82,10 @@
     cancel_txn/2,
     finish_txn/1,
     destroy_leg/1,
-    contact/0
+    contact/0,
+    tls_contact/0
 ]).
+-export([validate_tls/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -record(state, {
@@ -102,7 +107,14 @@
     contact :: binary() | undefined,
     tref :: reference() | undefined,
     misses = 0 :: non_neg_integer(),
-    health_waiters = [] :: [gen_server:from()]
+    health_waiters = [] :: [gen_server:from()],
+    %% server transactions a proxy owns (TxnH => owner pid): their CANCEL is
+    %% forwarded, not answered 487 here, and a request merging with one is
+    %% a spiral, not a merged request
+    proxied = #{} :: #{non_neg_integer() => pid()},
+    %% RFC 3261 8.2.2.2 merge index for out-of-dialog requests with no
+    %% To-tag: {From-tag, Call-ID, CSeq} => {top Via branch, TxnH, worker}
+    merge = #{} :: #{tuple() => {binary(), non_neg_integer(), pid()}}
 }).
 
 start_link() ->
@@ -129,7 +141,10 @@ restart_engine() ->
 use(Method, Fun) when is_function(Fun, 3) ->
     gen_server:call(?MODULE, {use, Method, Fun}).
 
-%% Register the handler for a SIP method: fun(Req, Res).
+%% Register the handler for a SIP method: fun(Req, Res). Opts:
+%% option_tags (accepted in Require on top of supported_option_tags),
+%% proxy (the handler proxies: Proxy-Require is checked, not Require),
+%% events (SUBSCRIBE only, see chappe_sip:subscribe/2).
 -spec handle(binary(), fun(), map()) -> ok.
 handle(Method, Fun, Opts) when is_binary(Method), is_function(Fun, 2) ->
     gen_server:call(?MODULE, {handle, Method, Fun, Opts}).
@@ -182,10 +197,32 @@ dialog_respond(TxnH, Status, Reason, Headers, Body, ToTag) ->
     ).
 
 %% Send a complete request; responses/op results route to Pid.
--spec send_request(binary() | undefined, binary(), pid()) ->
+-spec send_request(binary() | {ws, integer()} | undefined, binary(), pid()) ->
     {ok, non_neg_integer()} | {error, term()}.
 send_request(Route, Raw, Pid) ->
-    gen_server:call(?MODULE, {send_request, Route, Raw, Pid}).
+    send_request(Route, Raw, Pid, #{}).
+
+%% The same with options: `branch' sets the Via branch of the request (a
+%% proxy puts its loop-detection hash there, RFC 3261 16.6 step 8).
+-spec send_request(
+    binary() | {ws, integer()} | undefined, binary(), pid(), map()
+) ->
+    {ok, non_neg_integer()} | {error, term()}.
+send_request(Route, Raw, Pid, Opts) ->
+    gen_server:call(?MODULE, {send_request, Route, Raw, Pid, Opts}).
+
+%% A proxy owns this server transaction: a CANCEL is relayed to its
+%% branches and the downstream 487 (or a late 2xx) goes upstream, instead
+%% of the stack answering 487 itself (RFC 3261 16.10).
+-spec mark_proxied(non_neg_integer()) -> ok.
+mark_proxied(TxnH) ->
+    gen_server:call(?MODULE, {mark_proxied, TxnH}).
+
+%% Pid owns a call (it originated an INVITE through a UAC, a b2bua): its
+%% handler deadline no longer applies.
+-spec disarm(pid()) -> ok.
+disarm(Pid) ->
+    gen_server:call(?MODULE, {disarm, Pid}).
 
 %% Proxy: relay a downstream response upstream on a server transaction.
 -spec relay_response(non_neg_integer(), 100..699, binary()) ->
@@ -237,6 +274,12 @@ finish_txn(TxnH) ->
 contact() ->
     gen_server:call(?MODULE, contact).
 
+%% The TLS listener's URI (sips:host:port), or undefined without one. A
+%% wildcard bind address is replaced by the primary contact's host.
+-spec tls_contact() -> binary() | undefined.
+tls_contact() ->
+    gen_server:call(?MODULE, tls_contact).
+
 %% Destroy a dialog leg (from the fsm's terminate).
 -spec destroy_leg(non_neg_integer()) -> ok.
 destroy_leg(LegH) ->
@@ -278,7 +321,7 @@ handle_call({start, _}, _From, #state{engine = E} = S) when E =/= undefined ->
 handle_call({start, Opts}, _From, #state{mod = Mod} = S) ->
     case validate_tls(maps:get(tls, Opts, undefined)) of
         ok ->
-            NOpts = normalize_contact(Opts),
+            NOpts = with_max_size(normalize_contact(Opts)),
             case
                 start_engine(
                     Mod,
@@ -354,19 +397,29 @@ handle_call({use, Method, Fun}, _From, #state{middlewares = MW} = S) ->
 handle_call({handle, Method, Fun, Opts}, _From, #state{routes = R} = S) ->
     R1 = R#{Method => Fun},
     cfg_put(routes, R1),
+    cfg_put({route_opts, Method}, route_opts(Opts)),
     Method =:= <<"SUBSCRIBE">> andalso
         cfg_put(events, maps:get(events, Opts, any)),
     {reply, ok, S#state{routes = R1}};
 handle_call({unhandle, Method}, _From, #state{routes = R} = S) ->
     R1 = maps:remove(Method, R),
     cfg_put(routes, R1),
+    cfg_del({route_opts, Method}),
     Method =:= <<"SUBSCRIBE">> andalso cfg_put(events, any),
     {reply, ok, S#state{routes = R1}};
-handle_call(reset_routes, _From, S) ->
+handle_call(reset_routes, _From, #state{routes = R} = S) ->
+    _ = [cfg_del({route_opts, M}) || M <- maps:keys(R)],
     cfg_put(routes, #{}),
     cfg_put(events, any),
     cfg_put(middlewares, []),
     {reply, ok, S#state{routes = #{}, middlewares = []}};
+handle_call({respond, TxnH, Status, Reason}, _From, S) when ?IS_WS(TxnH) ->
+    {reply,
+        ws_call(fun() ->
+            chappe_sip_ws_transport:respond(
+                TxnH, Status, Reason, <<>>, <<>>, <<>>
+            )
+        end), S};
 handle_call({respond, _, _, _}, _From, #state{engine = undefined} = S) ->
     {reply, {error, not_started}, S};
 handle_call(
@@ -442,6 +495,11 @@ handle_call(
     {reply, R, S#state{handles = HM1}};
 handle_call({forward_response, _}, _From, #state{engine = undefined} = S) ->
     {reply, {error, not_started}, S};
+handle_call({Op, _, _, _}, _From, #state{engine = undefined} = S) when
+    Op =:= relay_response; Op =:= cancel_txn
+->
+    %% a proxy or UAC still running after the stack was stopped
+    {reply, {error, not_started}, S};
 handle_call(
     {forward_response, Raw},
     _From,
@@ -450,6 +508,21 @@ handle_call(
     {reply, Mod:send_response(Engine, Raw), S};
 handle_call(contact, _From, #state{contact = C} = S) ->
     {reply, C, S};
+handle_call(tls_contact, _From, S) ->
+    {reply, tls_uri(S), S};
+handle_call({mark_proxied, TxnH}, {Pid, _}, S) when ?IS_WS(TxnH) ->
+    {reply, ok, S#state{proxied = (S#state.proxied)#{TxnH => Pid}}};
+handle_call(
+    {mark_proxied, TxnH},
+    {Pid, _},
+    #state{mod = Mod, engine = Engine} = S
+) when Engine =/= undefined ->
+    _ = Mod:proxy_mark(Engine, TxnH),
+    {reply, ok, S#state{proxied = (S#state.proxied)#{TxnH => Pid}}};
+handle_call({mark_proxied, _TxnH}, _From, S) ->
+    {reply, ok, S};
+handle_call({disarm, Pid}, _From, S) ->
+    {reply, ok, disarm_deadline(Pid, S)};
 handle_call({reg_handle, H, Pid}, _From, S) ->
     S1 = ensure_monitored(Pid, S),
     {reply, ok, S1#state{handles = (S1#state.handles)#{H => Pid}}};
@@ -474,7 +547,11 @@ handle_call(
     Engine =/= undefined
 ->
     {reply, Mod:respond(Engine, TxnH, Status, Reason, Headers, Body, ToTag), S};
-handle_call({send_request, {ws, Flow}, Raw, Pid}, _From, S) ->
+handle_call(
+    {dialog_respond, _, _, _, _, _, _}, _From, #state{engine = undefined} = S
+) ->
+    {reply, {error, not_started}, S};
+handle_call({send_request, {ws, Flow}, Raw, Pid, _Opts}, _From, S) ->
     case
         ws_call(fun() ->
             chappe_sip_ws_transport:send_request(Flow, Raw, Pid)
@@ -491,16 +568,23 @@ handle_call({send_request, {ws, Flow}, Raw, Pid}, _From, S) ->
         Err ->
             {reply, Err, S}
     end;
-handle_call({send_request, _, _, _}, _From, #state{engine = undefined} = S) ->
+handle_call(
+    {send_request, _, _, _, _}, _From, #state{engine = undefined} = S
+) ->
     {reply, {error, not_started}, S};
 handle_call(
-    {send_request, Route, Raw, Pid},
+    {send_request, Route, Raw, Pid, Opts},
     _From,
     #state{mod = Mod, engine = Engine} = S
 ) when
     Engine =/= undefined
 ->
-    case Mod:request(Engine, Route, Raw) of
+    Sent =
+        case maps:get(branch, Opts, undefined) of
+            undefined -> Mod:request(Engine, Route, Raw);
+            Branch -> Mod:request(Engine, Route, Raw, Branch)
+        end,
+    case Sent of
         {ok, TxnH} ->
             S1 = ensure_monitored(Pid, disarm_deadline(Pid, S)),
             {reply, {ok, TxnH}, S1#state{
@@ -637,17 +721,21 @@ handle_info(
             %% a proxy worker also registered client-branch handles; destroy
             %% their C-side transactions and drop every handle it owned
             destroy_owned_handles(Pid, S),
-            {noreply, S#state{workers = W1, handles = drop_pid(Pid, HM)}};
+            {noreply,
+                forget_txns(Pid, S#state{
+                    workers = W1, handles = drop_pid(Pid, HM)
+                })};
         error ->
             %% a dialog fsm / UAC fsm / other handle owner exited (possibly a
             %% crash, so terminate did not run): destroy its C-side legs/txns
             %% and drop its handle routes
             destroy_owned_handles(Pid, S),
-            {noreply, S#state{
-                handles = drop_pid(Pid, HM),
-                dialogs = maps:remove(Pid, S#state.dialogs),
-                monitored = maps:remove(Pid, S#state.monitored)
-            }}
+            {noreply,
+                forget_txns(Pid, S#state{
+                    handles = drop_pid(Pid, HM),
+                    dialogs = maps:remove(Pid, S#state.dialogs),
+                    monitored = maps:remove(Pid, S#state.monitored)
+                })}
     end;
 handle_info(_Info, S) ->
     {noreply, S}.
@@ -657,6 +745,16 @@ terminate(_Reason, #state{engine = undefined}) ->
 terminate(_Reason, #state{mod = Mod, engine = Engine}) ->
     _ = Mod:stop(Engine),
     ok.
+
+%% what a route registration keeps for its workers
+route_opts(Opts) ->
+    Tags = maps:get(option_tags, Opts, []),
+    Role =
+        case maps:get(proxy, Opts, false) of
+            true -> proxy;
+            false -> uas
+        end,
+    #{option_tags => Tags, role => Role}.
 
 %% internal: config snapshot (survives an engine-process crash in the keeper's
 %% ETS table, so a restarted engine can re-establish itself)
@@ -718,18 +816,76 @@ normalize_contact(#{contact := C} = Opts) ->
 normalize_contact(Opts) ->
     Opts.
 
-%% Reject an unrecognised TLS verify value instead of silently treating it as
-%% "no verification" (which would weaken security without any signal).
+%% TLS verifies the server certificate of every outbound connection by
+%% default (verify => peer, with the RFC 5922 subject check against the
+%% target host). verify => none turns that off and is accepted only with
+%% allow_insecure => true (tests). verify_clients => true also requires a
+%% verified client certificate on inbound connections. An unrecognised
+%% value fails the start rather than weakening verification silently.
+-spec validate_tls(term()) -> ok | {error, {tls, term()}}.
 validate_tls(undefined) ->
     ok;
 validate_tls(Tls) when is_map(Tls) ->
-    case maps:get(verify, Tls, none) of
-        none -> ok;
-        peer -> ok;
-        Other -> {error, {tls, {bad_verify, Other}}}
+    Insecure = maps:get(allow_insecure, Tls, false),
+    case {maps:get(verify, Tls, peer), maps:get(verify_clients, Tls, false)} of
+        {_, VC} when not is_boolean(VC) ->
+            {error, {tls, {bad_verify_clients, VC}}};
+        {peer, _} ->
+            ok;
+        {none, _} ->
+            case Insecure of
+                true -> ok;
+                _ -> {error, {tls, insecure_verify_none}}
+            end;
+        {Other, _} ->
+            {error, {tls, {bad_verify, Other}}}
     end;
 validate_tls(_) ->
     {error, {tls, bad_options}}.
+
+%% the configured message-size cap goes to the NIF unless start/1 set one
+with_max_size(Opts) ->
+    case maps:is_key(max_message_size, Opts) of
+        true ->
+            Opts;
+        false ->
+            Opts#{max_message_size => chappe_sip_config:get(max_message_size)}
+    end.
+
+%% the TLS listener URI, a wildcard host replaced by the primary one
+tls_uri(#state{engine_opts = #{tls := #{contact := C}}} = S) ->
+    case chappe_sip_uri:parse(strip_angle(C)) of
+        {ok, #{host := H} = U} ->
+            Host =
+                case lists:member(H, [<<"0.0.0.0">>, <<"[::]">>, <<"*">>]) of
+                    true -> primary_host(S, H);
+                    false -> H
+                end,
+            Port =
+                case maps:get(port, U, undefined) of
+                    undefined -> <<>>;
+                    P -> <<":", (integer_to_binary(P))/binary>>
+                end,
+            <<"sips:", Host/binary, Port/binary>>;
+        _ ->
+            undefined
+    end;
+tls_uri(_S) ->
+    undefined.
+
+primary_host(#state{contact = C}, Default) when is_binary(C) ->
+    case chappe_sip_uri:parse(strip_angle(C)) of
+        {ok, #{host := H}} -> H;
+        _ -> Default
+    end;
+primary_host(_S, Default) ->
+    Default.
+
+strip_angle(C) ->
+    case chappe_sip_hdr:name_addr(C) of
+        {ok, #{uri := U}} -> U;
+        _ -> C
+    end.
 
 engine_failed(#state{mod = Mod, engine = Engine} = S) ->
     logger:critical(
@@ -777,7 +933,9 @@ stack_down(#state{tref = TRef, workers = W} = S) ->
         handles = #{},
         dialogs = #{},
         monitored = #{},
-        health_waiters = []
+        health_waiters = [],
+        proxied = #{},
+        merge = #{}
     }.
 
 schedule_health(Engine) ->
@@ -882,17 +1040,14 @@ handle_event({prack, TxnH, Raw}, #state{handles = HM} = S) ->
         _ -> ok
     end,
     S;
-handle_event(
-    {prack, TxnH, Raw, PrackH},
-    #state{handles = HM, mod = Mod, engine = Engine} = S
-) ->
+handle_event({prack, TxnH, Raw, PrackH}, #state{handles = HM} = S) ->
     %% a PRACK with an offer (RFC 3262 5): the INVITE's owner answers it
     %% through the PRACK's own handle
     case HM of
         #{TxnH := Pid} ->
             Pid ! {chappe_sip_prack, TxnH, Raw, PrackH};
         _ ->
-            shed(Mod, Engine, PrackH, 500, <<"Server Internal Error">>)
+            shed(PrackH, 500, <<"Server Internal Error">>, S)
     end,
     S;
 handle_event({response, TxnH, Meta, Raw}, #state{handles = HM} = S) ->
@@ -943,10 +1098,12 @@ do_create_uas_1(Req, Opts, WorkerPid, S) ->
     LocalAddr = <<ToVal/binary, ";tag=", LocalTag/binary>>,
     TxnH = chappe_sip_req:txn(Req),
     RTarget = contact_uri(chappe_sip_msg:get(<<"contact">>, Msg), FromVal),
-    %% a 2xx to an INVITE on the native stack keeps its server transaction
-    %% until the ACK or Timer H, and both are the dialog's to handle
+    Contact = uas_contact(Req, S),
+    %% a 2xx to an INVITE waits for its ACK (RFC 3261 13.3.1.4). The native
+    %% stack keeps its server transaction until the ACK or Timer H and names
+    %% it in both; the WS transport names the dialog leg.
     AckWait =
-        not ?IS_WS(TxnH) andalso chappe_sip_msg:method(Msg) =:= <<"INVITE">> andalso
+        chappe_sip_msg:method(Msg) =:= <<"INVITE">> andalso
             is_2xx(maps:get(status, Opts, 200)),
     case leg_create(TxnH, Req, CallId, LocalAddr, FromVal, S) of
         {ok, LegH} ->
@@ -970,7 +1127,7 @@ do_create_uas_1(Req, Opts, WorkerPid, S) ->
                 flow => maps:get(flow, chappe_sip_req:meta(Req), undefined),
                 %% the Contact the 2xx carries; a subscription repeats it on
                 %% a refresh 2xx (SUBSCRIBE is a target refresh request)
-                local_contact => dialog_contact(Opts, S),
+                local_contact => dialog_contact(Opts, Contact),
                 call_id => CallId,
                 %% RFC 3261 12.1.1: the remote CSeq starts at the request's
                 remote_cseq => req_cseq(Msg),
@@ -982,13 +1139,13 @@ do_create_uas_1(Req, Opts, WorkerPid, S) ->
                     %% send the dialog-forming response here (not from the
                     %% fsm init: that would re-enter this gen_server and
                     %% deadlock). op_ok/op_failed for the leg routes to Pid.
-                    _ = send_uas_response(TxnH, LocalTag, Opts, S),
+                    _ = send_uas_response(TxnH, LocalTag, Opts, Contact, S),
                     %% the owner now blocks for the call's lifetime; disarm its
                     %% handler deadline so it is not killed mid-call
                     S1 = disarm_deadline(Owner, S),
                     HM0 = S1#state.handles,
                     HM1 =
-                        case AckWait of
+                        case AckWait andalso not ?IS_WS(TxnH) of
                             true -> HM0#{TxnH => Pid};
                             false -> HM0
                         end,
@@ -1039,14 +1196,16 @@ leg_destroy(_TxnH, LegH, #state{mod = Mod, engine = Engine}) when
 leg_destroy(_TxnH, _LegH, _S) ->
     ok.
 
-send_uas_response(TxnH, LocalTag, Opts, S) ->
+send_uas_response(TxnH, LocalTag, Opts, Contact, S) ->
     Status = maps:get(status, Opts, 200),
     Reason = maps:get(reason, Opts, <<"OK">>),
     ExtraHeaders = with_allow(
         Status,
         Opts,
         with_supported(
-            Status, Opts, with_contact(Status, maps:get(headers, Opts, []), S)
+            Status,
+            Opts,
+            with_contact(Status, maps:get(headers, Opts, []), Contact)
         )
     ),
     {Headers, Body} =
@@ -1091,12 +1250,12 @@ send_uas_response(TxnH, LocalTag, Opts, S) ->
 %% A dialog-forming 2xx MUST carry a Contact (RFC 3261 12.1.1) so the peer
 %% can build the dialog and target in-dialog requests. Add our own unless the
 %% app already supplied one.
-with_contact(Status, Headers, S) when Status >= 200, Status < 300 ->
+with_contact(Status, Headers, Contact) when Status >= 200, Status < 300 ->
     case has_hdr(<<"contact">>, Headers) of
         true -> Headers;
-        false -> Headers ++ [{<<"Contact">>, local_contact(S)}]
+        false -> Headers ++ [{<<"Contact">>, Contact}]
     end;
-with_contact(_Status, Headers, _S) ->
+with_contact(_Status, Headers, _Contact) ->
     Headers.
 
 %% the 2xx forming an INVITE dialog lists our option tags (RFC 3891 6.2),
@@ -1122,7 +1281,7 @@ with_allow(Status, _Opts, Headers) when Status >= 200, Status < 300 ->
 with_allow(_Status, _Opts, Headers) ->
     Headers.
 
-dialog_contact(Opts, S) ->
+dialog_contact(Opts, Contact) ->
     Supplied = [
         iolist_to_binary(V)
      || {N, V} <- maps:get(headers, Opts, []),
@@ -1130,7 +1289,7 @@ dialog_contact(Opts, S) ->
     ],
     case Supplied of
         [C | _] -> C;
-        [] -> local_contact(S)
+        [] -> Contact
     end.
 
 has_hdr(Lname, Headers) ->
@@ -1141,6 +1300,41 @@ has_hdr(Lname, Headers) ->
         end,
         Headers
     ).
+
+%% RFC 3261 12.1.1: the 2xx Contact is a SIPS URI when the request had one
+%% in its Request-URI, its top Record-Route, or (with no Record-Route) its
+%% Contact; RFC 5630 also gives a dialog formed over TLS our sips Contact.
+uas_contact(Req, S) ->
+    Msg = chappe_sip_req:msg(Req),
+    Secure =
+        maps:get(transport, chappe_sip_req:meta(Req), undefined) =:= <<"tls">> orelse
+            lists:any(fun is_sips/1, [
+                chappe_sip_msg:uri(Msg) | sips_candidates(Msg)
+            ]),
+    case {Secure, tls_uri(S)} of
+        {true, Tls} when is_binary(Tls) -> <<"<", Tls/binary, ">">>;
+        _ -> local_contact(S)
+    end.
+
+%% the top Record-Route, else the Contact, as bare URIs
+sips_candidates(Msg) ->
+    Hdr =
+        case chappe_sip_msg:get(<<"record-route">>, Msg) of
+            undefined -> chappe_sip_msg:get(<<"contact">>, Msg);
+            RR -> RR
+        end,
+    case Hdr of
+        undefined ->
+            [];
+        V ->
+            case chappe_sip_hdr:split_list(V) of
+                [Top | _] -> [strip_angle(Top)];
+                [] -> []
+            end
+    end.
+
+is_sips(<<"sips:", _/binary>>) -> true;
+is_sips(_) -> false.
 
 %% The bound contact may arrive as a name-addr (<uri;params>); extract the
 %% bare URI and drop params so the Contact is a single well-formed name-addr.
@@ -1240,24 +1434,22 @@ dispatch(
     TxnH,
     Meta,
     Raw,
-    #state{
-        contact = Contact,
-        mod = Mod,
-        engine = Engine,
-        workers = W
-    } = S
+    #state{contact = Contact, workers = W} = S
 ) ->
     case is_own_route(Raw, Contact) of
         true ->
             case map_size(W) >= chappe_sip_config:get(max_request_workers) of
                 true ->
-                    shed(Mod, Engine, TxnH, 503, <<"Service Unavailable">>),
+                    shed(TxnH, 503, <<"Service Unavailable">>, S),
                     S;
                 false ->
                     Handler = fun(Req, Res) ->
                         chappe_sip_proxy:forward_indialog(Req, Res)
                     end,
-                    spawn_worker(TxnH, Meta, Raw, Handler, [], S)
+                    %% a proxy: Require is the far UAS's (RFC 3261 16)
+                    spawn_worker(
+                        TxnH, Meta, Raw, Handler, [], #{role => proxy}, S
+                    )
             end;
         false ->
             dispatch_local(TxnH, Meta, Raw, S)
@@ -1293,13 +1485,7 @@ dispatch_route(
     TxnH,
     #{method := Method} = Meta,
     Raw,
-    #state{
-        mod = Mod,
-        engine = Engine,
-        routes = Routes,
-        middlewares = MW,
-        workers = W
-    } = S
+    #state{routes = Routes, middlewares = MW, workers = W} = S
 ) ->
     case Routes of
         #{Method := Handler} ->
@@ -1311,10 +1497,28 @@ dispatch_route(
                     respond_txn(TxnH, 403, <<"Forbidden">>, <<>>, S),
                     S;
                 false when map_size(W) >= Max ->
-                    shed(Mod, Engine, TxnH, 503, <<"Service Unavailable">>),
+                    shed(TxnH, 503, <<"Service Unavailable">>, S),
                     S;
                 false ->
-                    spawn_worker(TxnH, Meta, Raw, Handler, MW, S)
+                    case merge_check(TxnH, Method, Raw, S) of
+                        merged ->
+                            respond_txn(TxnH, 482, <<"Loop Detected">>, S),
+                            S;
+                        Key ->
+                            index_merge(
+                                Key,
+                                TxnH,
+                                spawn_worker(
+                                    TxnH,
+                                    Meta,
+                                    Raw,
+                                    Handler,
+                                    MW,
+                                    cfg_get({route_opts, Method}, #{}),
+                                    S
+                                )
+                            )
+                    end
             end;
         _ when Method =:= <<"ACK">> ->
             %% ACK never needs an answer
@@ -1411,6 +1615,87 @@ event_package(Raw) ->
             undefined
     end.
 
+%% RFC 3261 8.2.2.2: a request with no To-tag whose From-tag, Call-ID and
+%% CSeq match a transaction in progress but whose branch differs reached us
+%% twice (a fork upstream): merged, 482. When that transaction is proxied
+%% the request is a spiral through us (16.3) and goes on. Native
+%% transactions only, the stack keys the WS ones by flow.
+merge_check(TxnH, _Method, _Raw, _S) when ?IS_WS(TxnH) ->
+    none;
+merge_check(_TxnH, Method, _Raw, _S) when
+    Method =:= <<"ACK">>; Method =:= <<"CANCEL">>
+->
+    none;
+merge_check(_TxnH, _Method, Raw, #state{merge = Idx, proxied = Px}) ->
+    case merge_key(Raw) of
+        none ->
+            none;
+        {Key, Branch} ->
+            case Idx of
+                #{Key := {B, T, _}} when B =/= Branch ->
+                    case maps:is_key(T, Px) of
+                        true -> {Key, Branch};
+                        false -> merged
+                    end;
+                _ ->
+                    {Key, Branch}
+            end
+    end.
+
+merge_key(Raw) ->
+    case chappe_sip_msg:parse(Raw) of
+        {ok, Msg} ->
+            case
+                {
+                    chappe_sip_msg:to_tag(Msg),
+                    chappe_sip_msg:from_tag(Msg),
+                    chappe_sip_msg:cseq(Msg),
+                    top_branch(Msg)
+                }
+            of
+                {undefined, FT, {ok, #{seq := N, method := M}}, Branch} when
+                    is_binary(FT), is_binary(Branch)
+                ->
+                    {{FT, chappe_sip_msg:call_id(Msg), N, M}, Branch};
+                _ ->
+                    none
+            end;
+        {error, _} ->
+            none
+    end.
+
+top_branch(Msg) ->
+    case chappe_sip_msg:get(<<"via">>, Msg) of
+        undefined ->
+            undefined;
+        V ->
+            [Top | _] = chappe_sip_hdr:split_list(V) ++ [V],
+            case chappe_sip_hdr:via(Top) of
+                {ok, #{params := #{<<"branch">> := B}}} when is_binary(B) -> B;
+                _ -> undefined
+            end
+    end.
+
+%% the first transaction of a merge key stays indexed while its worker runs
+index_merge(none, _TxnH, S) ->
+    S;
+index_merge({Key, Branch}, TxnH, #state{merge = Idx, handles = HM} = S) ->
+    case {Idx, HM} of
+        {#{Key := _}, _} ->
+            S;
+        {_, #{TxnH := Pid}} ->
+            S#state{merge = Idx#{Key => {Branch, TxnH, Pid}}};
+        _ ->
+            S
+    end.
+
+%% a worker (or proxy owner) is gone: drop its merge and proxied entries
+forget_txns(Pid, #state{merge = Idx, proxied = Px} = S) ->
+    S#state{
+        merge = maps:filter(fun(_K, {_, _, P}) -> P =/= Pid end, Idx),
+        proxied = maps:filter(fun(_T, P) -> P =/= Pid end, Px)
+    }.
+
 %% the methods we take out of dialog: those with a handler, plus the ones
 %% the stack answers itself (ACK, CANCEL, BYE in a dialog, OPTIONS)
 allow_value(Routes) ->
@@ -1424,21 +1709,23 @@ allow_value(Routes) ->
 %% loose-routed back to us after we record-routed the dialog). Gated on a
 %% cheap byte scan so requests without a Route header skip the parse.
 is_own_route(Raw, Contact) ->
-    case binary:match(Raw, <<"\nRoute">>) of
+    case binary:match(Raw, <<"espx=">>) of
         nomatch ->
             false;
         _ ->
             case chappe_sip_msg:parse(Raw) of
                 {ok, Msg} ->
-                    case chappe_sip_msg:get(<<"route">>, Msg) of
-                        undefined ->
-                            false;
-                        RVal ->
-                            chappe_sip_route:is_self(
-                                RVal,
-                                Contact,
-                                chappe_sip_msg:call_id(Msg)
-                            )
+                    CallId = chappe_sip_msg:call_id(Msg),
+                    case chappe_sip_route:routes(Msg) of
+                        [Top | _] ->
+                            chappe_sip_route:is_self(Top, Contact, CallId) orelse
+                                %% behind a strict router our Record-Route
+                                %% is the Request-URI (RFC 3261 16.4)
+                                chappe_sip_route:uri_is_self(
+                                    chappe_sip_msg:uri(Msg), CallId
+                                );
+                        [] ->
+                            false
                     end;
                 {error, _} ->
                     false
@@ -1490,6 +1777,7 @@ spawn_worker(
     Raw,
     Handler,
     MW,
+    RouteOpts,
     #state{
         mod = Mod,
         engine = Engine,
@@ -1500,7 +1788,7 @@ spawn_worker(
     FinalRef = atomics:new(1, []),
     Sender = make_sender(Mod, Engine),
     Res = chappe_sip_res:new(TxnH, Sender, FinalRef),
-    Args = #{
+    Args = RouteOpts#{
         raw => Raw,
         txn => TxnH,
         meta => Meta,
@@ -1521,7 +1809,7 @@ spawn_worker(
             };
         {error, Reason} ->
             logger:error("chappe_sip: cannot start request worker: ~p", [Reason]),
-            shed(Mod, Engine, TxnH, 500, <<"Server Internal Error">>),
+            shed(TxnH, 500, <<"Server Internal Error">>, S),
             S
     end.
 
@@ -1546,15 +1834,12 @@ make_sender(Mod, Engine) ->
         ToTag = maps:get(to_tag, Opts, <<>>),
         case chappe_sip_ws:is_ws(TxnH) of
             true ->
-                %% WS is reliable; a reliable 1xx is just a 1xx here
+                %% WS is reliable: a reliable 1xx carries RSeq and is
+                %% matched to its PRACK, but is never retransmitted
+                Reliable = maps:get(reliable, Opts, false),
                 ws_call(fun() ->
-                    chappe_sip_ws_transport:respond(
-                        TxnH,
-                        Status,
-                        Reason,
-                        Headers,
-                        Body,
-                        ToTag
+                    ws_respond(
+                        Reliable, TxnH, Status, Reason, Headers, Body, ToTag
                     )
                 end);
             false ->
@@ -1586,9 +1871,18 @@ make_sender(Mod, Engine) ->
         end
     end.
 
-shed(Mod, Engine, TxnH, Status, Reason) ->
-    _ = Mod:respond(Engine, TxnH, Status, Reason, <<>>, <<>>, <<>>),
-    ok.
+ws_respond(true, TxnH, Status, Reason, Headers, Body, ToTag) ->
+    chappe_sip_ws_transport:reliable_respond(
+        TxnH, Status, Reason, Headers, Body, ToTag
+    );
+ws_respond(false, TxnH, Status, Reason, Headers, Body, ToTag) ->
+    chappe_sip_ws_transport:respond(TxnH, Status, Reason, Headers, Body, ToTag).
+
+%% Answer a request the node will not process (overload, a worker that could
+%% not start or died without a final). The transaction may live in the WS
+%% transport, and a WS-only node has no native engine at all.
+shed(TxnH, Status, Reason, S) ->
+    respond_txn(TxnH, Status, Reason, S).
 
 %% Respond on a server transaction whether it lives in the WS transport or the
 %% native backend. The /5 form carries a header blob (e.g. Allow on a 405).
@@ -1596,9 +1890,11 @@ respond_txn(TxnH, Status, Reason, S) ->
     respond_txn(TxnH, Status, Reason, <<>>, S).
 
 respond_txn(TxnH, Status, Reason, Headers, _S) when ?IS_WS(TxnH) ->
-    _ = chappe_sip_ws_transport:respond(
-        TxnH, Status, Reason, Headers, <<>>, <<>>
-    ),
+    _ = ws_call(fun() ->
+        chappe_sip_ws_transport:respond(
+            TxnH, Status, Reason, Headers, <<>>, <<>>
+        )
+    end),
     ok;
 respond_txn(TxnH, Status, Reason, Headers, #state{mod = Mod, engine = Engine}) when
     Engine =/= undefined
@@ -1610,18 +1906,11 @@ respond_txn(_TxnH, _Status, _Reason, _Headers, _S) ->
 
 %% A worker gone without a final response gets a 500, whatever the exit
 %% reason: exiting normal without answering is a handler bug too.
-maybe_500(
-    _Reason,
-    TxnH,
-    FinalRef,
-    #state{mod = Mod, engine = Engine}
-) when Engine =/= undefined ->
+maybe_500(_Reason, TxnH, FinalRef, S) ->
     case atomics:get(FinalRef, 1) of
-        0 -> shed(Mod, Engine, TxnH, 500, <<"Server Internal Error">>);
+        0 -> shed(TxnH, 500, <<"Server Internal Error">>, S);
         _ -> ok
-    end;
-maybe_500(_, _, _, _) ->
-    ok.
+    end.
 
 drop_pid(Pid, HM) ->
     maps:filter(fun(_H, P) -> P =/= Pid end, HM).

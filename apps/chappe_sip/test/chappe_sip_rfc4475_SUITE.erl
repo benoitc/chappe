@@ -18,13 +18,14 @@
 -export([corpus_present/1, parse_never_crashes/1, wellformed_accepted/1,
          malformed_startline_rejected/1, wellformed_fields/1,
          mandatory_headers_validated/1, deep_parse_defects/1,
-         stack_udp_responses/1]).
+         stack_udp_responses/1, semiuri_user/1, message_syntax/1,
+         uri_comparison/1]).
 
 all() ->
     [corpus_present, parse_never_crashes, wellformed_accepted,
      malformed_startline_rejected, wellformed_fields,
      mandatory_headers_validated, deep_parse_defects,
-     stack_udp_responses].
+     stack_udp_responses, semiuri_user, message_syntax, uri_comparison].
 
 init_per_suite(Config) ->
     [{corpus, filename:join(?config(data_dir, Config), "rfc4475")} | Config].
@@ -137,6 +138,73 @@ deep_parse_defects(Config) ->
     ?assertMatch({error, _},
                  chappe_sip_hdr:cseq(chappe_sip_msg:get(<<"cseq">>, Sl))).
 
+%% RFC 4475 3.1.1.10 (semiuri): the Request-URI's user part carries a ';'
+%% and an escaped '@'; the parameters begin after the host.
+%% req: R3261-U-09
+semiuri_user(Config) ->
+    {ok, M} = chappe_sip_msg:parse(read(Config, semiuri)),
+    {ok, U} = chappe_sip_uri:parse(chappe_sip_msg:uri(M)),
+    ?assertEqual(<<"user;par=u%40example.net">>, maps:get(user, U)),
+    ?assertEqual(<<"example.com">>, maps:get(host, U)),
+    ?assertEqual(#{}, maps:get(params, U)),
+    {ok, A} = chappe_sip_uri:parse(<<"sip:alice;day=tuesday@example.com">>),
+    ?assertEqual({<<"alice;day=tuesday">>, <<"example.com">>},
+                 {maps:get(user, A), maps:get(host, A)}).
+
+%% Message syntax the parser enforces: a header name is a token, the
+%% SIP-Version is case-insensitive, compact and long header names are the
+%% same header, a request's CSeq names its own method, and a proxy adds
+%% Max-Forwards: 70 to a request that has none.
+%% req: R3261-U-01 R3261-U-02 R3261-U-03 R3261-U-04 R3261-U-06
+message_syntax(_Config) ->
+    Req = fun(Line, Extra) ->
+        iolist_to_binary([Line, <<"\r\nVia: SIP/2.0/UDP h;branch=z9hG4bK1\r\n"
+                                   "From: <sip:a@b>;tag=1\r\nTo: <sip:x@y>\r\n"
+                                   "Call-ID: c@h\r\nCSeq: 1 OPTIONS\r\n">>,
+                          Extra, <<"\r\n">>])
+    end,
+    ?assertEqual({error, malformed},
+                 chappe_sip_msg:parse(Req(<<"OPTIONS sip:x@y SIP/2.0">>, <<"Bad Name: 1\r\n">>))),
+    {ok, Lower} = chappe_sip_msg:parse(Req(<<"OPTIONS sip:x@y sip/2.0">>, <<>>)),
+    ?assertEqual(ok, chappe_sip_msg:validate(Lower)),
+    ?assertMatch({ok, _}, chappe_sip_msg:parse(<<"Sip/2.0 200 OK\r\n\r\n">>)),
+    %% what we send is upper-case
+    ?assertMatch(<<"OPTIONS sip:x@y SIP/2.0\r\n", _/binary>>,
+                 iolist_to_binary(chappe_sip_msg:encode(Lower))),
+    {ok, Compact} = chappe_sip_msg:parse(
+                      Req(<<"OPTIONS sip:x@y SIP/2.0">>,
+                          <<"a: *;audio\r\nj: *;video\r\nd: proxy\r\ny: abc\r\nn: <https://x>\r\n">>)),
+    ?assertEqual(<<"*;audio">>, chappe_sip_msg:get(<<"Accept-Contact">>, Compact)),
+    ?assertEqual(<<"*;video">>, chappe_sip_msg:get(<<"Reject-Contact">>, Compact)),
+    ?assertEqual(<<"proxy">>, chappe_sip_msg:get(<<"Request-Disposition">>, Compact)),
+    ?assertEqual(<<"abc">>, chappe_sip_msg:get(<<"Identity">>, Compact)),
+    ?assertEqual(<<"<https://x>">>, chappe_sip_msg:get(<<"Identity-Info">>, Compact)),
+    ?assertEqual({error, bad_cseq},
+                 chappe_sip_msg:validate(
+                   chappe_sip_msg:set(<<"CSeq">>, <<"1 INVITE">>, Lower))),
+    {ok, Fwd} = chappe_sip_msg:decr_max_forwards(Lower),
+    ?assertEqual(<<"70">>, chappe_sip_msg:get(<<"max-forwards">>, Fwd)).
+
+%% RFC 3261 19.1.4 on its own examples: escaped and case variants match,
+%% a header component, a port, a transport, a maddr or a different
+%% security param do not.
+%% req: R3261-U-10 R3261-397
+uri_comparison(_Config) ->
+    Eq = fun chappe_sip_uri:equal/2,
+    ?assert(Eq(<<"sip:%61lice@atlanta.com;transport=TCP">>,
+               <<"sip:alice@AtLanTa.CoM;Transport=tcp">>)),
+    ?assert(Eq(<<"sip:carol@chicago.com">>, <<"sip:carol@chicago.com;newparam=5">>)),
+    ?assert(Eq(<<"sip:alice@atlanta.com?subject=project%20x&priority=urgent">>,
+               <<"sip:alice@atlanta.com?priority=urgent&subject=project%20x">>)),
+    ?assertNot(Eq(<<"sip:carol@chicago.com">>,
+                  <<"sip:carol@chicago.com?Subject=next%20meeting">>)),
+    ?assertNot(Eq(<<"sip:bob@biloxi.com">>, <<"sip:bob@biloxi.com:5060">>)),
+    ?assertNot(Eq(<<"sip:bob@biloxi.com">>, <<"sip:bob@biloxi.com;transport=udp">>)),
+    ?assertNot(Eq(<<"SIP:ALICE@AtLanTa.CoM;Transport=udp">>,
+                  <<"sip:alice@AtLanTa.CoM;Transport=UDP">>)),
+    ?assertNot(Eq(<<"sip:carol@chicago.com;security=on">>,
+                  <<"sip:carol@chicago.com;security=off">>)).
+
 %% ---- the corpus through the running stack ----
 
 %% What RFC 4475 expects of a UA receiving each vector over UDP, as the
@@ -225,7 +293,7 @@ stack_udp_responses(Config, Socks) ->
     ok = chappe_sip:invite(reply(486)),
     ok = chappe_sip:options(reply(200)),
     ok = chappe_sip:message(reply(200)),
-    ok = chappe_sip:register(chappe_sip:registrar()),
+    ok = chappe_sip:register(chappe_sip:registrar(#{allow_unauthenticated => true})),
     Expect = rfc4475_expect(),
     Known = rfc4475_known(),
     Seen = [{N, send_vector(read(Config, N), Socks, Port)}

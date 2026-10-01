@@ -9,24 +9,46 @@ tracker; the milestone history is in `docs/plan.md`.
 - Embedded SIP engine (sofia-sip nta) started and supervised by the
   Erlang application, over a plain-C NIF. No external signaling daemon.
 - UDP and TCP contacts, plus an optional TLS listener on its own port
-  (`tls => #{contact, cert_dir, verify}` in `chappe_sip:start/1`; see
-  `docs/design/engine.md`).
+  (`tls => #{contact, cert_dir, verify, verify_clients}` in
+  `chappe_sip:start/1`; see `docs/guides/tls.md`). Outbound TLS checks the
+  server certificate and host (RFC 5922) by default; client certificates are
+  opt-in.
 - SIP-over-WebSocket (RFC 7118) via livery (`ws => #{port}` in
-  `chappe_sip:start/1`): an Erlang WS transport bridges frames to the shared
-  transaction-user logic, so UAS/registrar/etc. work over WS. The engine
-  multiplexes each operation to the sofia NIF or the WS transport by
-  handle. The `sip` subprotocol is negotiated, the idle timeout is
-  disabled (long-lived registrations), and the client peer is stamped into
-  Via `received`/`rport`. livery starts lazily, only when a WS listener is
-  configured.
+  `chappe_sip:start/1`, and `wss => #{port, cert_dir}` for secure WebSocket
+  with the `agent.pem` of the SIP TLS cert dir): an Erlang WS transport
+  bridges frames to the shared transaction-user logic, so UAS/registrar/etc.
+  work over WS. The engine multiplexes each operation to the sofia NIF or the
+  WS transport by handle. The `sip` subprotocol is required (a client that
+  does not offer it is refused); text and binary frames are accepted, and a
+  message that is not valid UTF-8 goes out in a binary frame. Requests over
+  WSS carry a `WSS` Via. livery starts lazily, only when a WS listener is
+  configured. To terminate TLS at a load balancer instead, point it at the
+  plain `ws` port.
+- WS transactions follow the RFC 3261 rules for a reliable transport: no
+  retransmissions, a retransmitted request gets the last response again, a
+  non-2xx INVITE final waits for its ACK (Timer H), Timer B/F bound a client
+  transaction, Timer C (180 s) CANCELs an INVITE stuck after a provisional,
+  a CANCEL waits for a provisional, and a non-2xx final is ACKed with the
+  INVITE's branch. A CANCEL of an unanswered INVITE gets the 487, a 2xx
+  never ACKed within 64*T1 is BYEd, reliable provisionals (100rel) carry
+  RSeq and are matched to their PRACK, and dialog-forming responses carry
+  the request's Record-Route.
+- Via `received` is stamped when the sent-by is not the client address (a
+  WS client's `.invalid` host always is); `rport` is filled in only when the
+  client asked with a bare `rport` (RFC 3581).
+- Keepalive: a CRLFCRLF ping gets a CRLF pong on WS and, through sofia, on
+  TCP/TLS (RFC 5626 4.4.1). The server pings each WS connection every
+  `ws_ping_interval_ms` (30 s); a connection with no inbound traffic for
+  `ws_idle_timeout_ms` (600 s) is closed, so only a client that stopped
+  answering is reaped.
 - WebRTC gateway: bridge a browser (WS) and a UDP/TCP peer in both
   directions, as a proxy (`chappe_sip:proxy_request` to a `{ws, Flow}` target,
   Record-Route with a flow token so in-dialog ACK/BYE/re-INVITE traverse) or
   a B2BUA (`chappe_sip:create_b2bua` with a `flow` opt). Resolve a registered
   browser with `chappe_sip:location_flow/1`. A real JsSIP-to-JsSIP WebRTC call
-  completes through the b2bua over WS (verified in the interop track). Limits:
-  a WS-to-WS proxied dialog (two WS legs) needs two flow tokens; the token is
-  trusted-gateway scoped.
+  completes through the b2bua over WS (verified in the interop track). A
+  WS-to-WS proxied dialog carries a flow token per leg, so both directions
+  route; the tokens are trusted-gateway scoped.
 - Dialog-forming 2xx responses carry a Contact (RFC 3261 12.1.1), and a
   UAC-built request over WS (e.g. a 2xx ACK) gets a Via from the transport, so
   strict clients (JsSIP) build the dialog and accept in-dialog requests.
@@ -40,29 +62,46 @@ tracker; the milestone history is in `docs/plan.md`.
   `chappe_sip:options/1`, and so on; connect-style middleware with `chappe_sip:use/1,2`.
 - `chappe_sip:create_uas/3`: answer an incoming dialog-forming request.
 - `chappe_sip:create_uac/2` and `chappe_sip:request/2`: originate INVITE and
-  out-of-dialog requests, with provisional delivery, digest 401/407
-  retry, 3xx redirects, and 3PCC (`no_ack`). The body is `local_sdp`
+  out-of-dialog requests, with provisional delivery, digest 401/407 retry
+  (one credential per realm, so a 407 then a 401 works; `stale=true` retried
+  with the new nonce; SHA-256 preferred over MD5; nonce counts per nonce),
+  3xx redirects (Contacts best `q` first, the next one on a 4xx/5xx, sip/sips
+  only, `?headers` dropped), and 3PCC (`no_ack`, then
+  `chappe_sip_dialog:ack/2` sends the ACK with the answer). A
+  `create_uac/2` timeout CANCELs the INVITE and BYEs a 2xx that crosses it.
+  The 2xx ACK carries the INVITE's credentials. The body is `local_sdp`
   (application/sdp) or `body` plus `content_type` for anything else, such as a
   SIPREC `multipart/mixed` of SDP and rs-metadata.
 - `chappe_sip:create_b2bua/4`: bridge an incoming INVITE to a new one, with
   header proxy rules both ways, CANCEL relay, failure passthrough, and
-  provisionals relayed with their body (early media) and 100rel on each leg.
+  provisionals relayed with their body (early media) and 100rel on each leg,
+  and Timer C on the B leg (restarted by each provisional, 408 on expiry).
   `chappe_sip_b2b:relay/1,2` carries re-INVITE and UPDATE offers across the
   legs (answer, failure and 491 back to the offerer, an optional SDP rewrite),
   lets each leg answer its own session refreshes, and repeats the `Reason` of
   a BYE or CANCEL (RFC 3326) on the other leg.
-- `chappe_sip:proxy_request/3`: sequential and parallel forking, CANCEL of
-  losing branches, best-final selection, Record-Route insertion, and
-  in-dialog forwarding through the record route (2xx ACK, BYE, re-INVITE
-  loose-routed back to the proxy are forwarded to the far end in both
-  directions). A forked second 2xx (a different To-tag arriving after the
-  first) is forwarded statelessly upstream. One Record-Route (single
-  interface); a pre-existing multi-hop Route set is forwarded by its next
-  Route or the Request-URI, and strict-router (non-`;lr`) recovery is not
-  implemented.
+- `chappe_sip:proxy_request/3`: a stateful proxy after RFC 3261 section 16.
+  Sequential and parallel forking with the Request-URI rewritten to each
+  target, a pre-existing Route set honoured (loose and strict next hops,
+  strict-router recovery), Timer C per INVITE branch, CANCEL relayed to the
+  branches (the downstream 487 or a crossing 2xx goes upstream), loop
+  detection (482) that lets spirals through, and the 16.7 best response (6xx
+  first, lowest class, retry-able 4xx preferred, challenges and 3xx Contacts
+  merged, 503 sent as 500). Every 2xx is forwarded for 64*T1 after the first
+  (RFC 6026). Record-Route insertion (sips when the forwarded request is
+  SIPS, rewritten in responses across TLS/non-TLS) and in-dialog forwarding
+  through it, CANCEL of a transit re-INVITE included.
 - Dialogs as processes: `chappe_sip_dialog:destroy/1,2` (headers such as a
   Reason on the BYE), `modify/2,3` (re-INVITE, including `hold`/`unhold`, with
   an optional RFC 3261 14.1 retry after 491), `request/2` (INFO/REFER/UPDATE).
+  `hold` marks each live stream sendonly (inactive when it was recvonly) and
+  `unhold` reverses it, stream by stream, with the next o= version. A
+  provisional to our re-INVITE keeps its transaction open until the final.
+  An early dialog our 18x formed (`create_uas/3` with a 1xx `status`) takes
+  UPDATE both ways, and the caller's BYE in it gets 200 and its INVITE 487.
+  The early dialogs of an INVITE we send are not exposed as dialog handles:
+  the callee's UPDATE or BYE in one gets 481 (only PRACK and CANCEL work
+  there).
   Unclaimed in-dialog requests are answered by the dialog: offers in re-INVITE
   and UPDATE with the current local SDP (488 without one), an offerless
   re-INVITE with our SDP as the offer (answer taken from the ACK), REFER 603,
@@ -129,8 +168,9 @@ tracker; the milestone history is in `docs/plan.md`.
   1xx with `chappe_sip_res:send_reliable/2` and blocks for the PRACK with
   `chappe_sip_res:await_prack/2`, which hands back a PRACK carrying an offer
   for the app to answer; a UAC opts in with `rel100 => supported` and
-  auto-PRACKs reliable provisionals it receives, in RSeq order, answering an
-  offer they carry in the PRACK.
+  auto-PRACKs reliable provisionals it receives (those with
+  `Require: 100rel` and an RSeq), in RSeq order, through the early dialog's
+  route set to its Contact, answering an offer they carry in the PRACK.
 - Session timers (RFC 4028): `Supported: timer` on every request,
   `Require: timer` accepted, `Session-Expires`/`Min-SE` negotiated on the
   INVITE and its 2xx (422 below `min_se`, a UAC retry after 422), refresher
@@ -138,29 +178,48 @@ tracker; the milestone history is in `docs/plan.md`.
   unchanged SDP), and a BYE with destroy reason `session_expired` when no
   refresh arrives. Asking for a timer is opt-in (`session_expires`); a peer's
   request is always honored. See the session timers guide.
-- Registrar location store: `chappe_sip:registrar/0` is a ready REGISTER handler
-  backed by a persistent AOR to contact store (per-contact and header
-  `Expires`, `expires=0` removal, `Contact: *` clear, CSeq reorder
-  rejection, expiry sweep); `chappe_sip:location/1` resolves an AOR. A WS binding is
-  purged when its connection drops (RFC 5626: the flow is the only path to the
-  UA), so a browser that disconnects is deregistered.
+- Registrar (RFC 3261 10.3): `chappe_sip:registrar/1` is a ready REGISTER
+  handler backed by a persistent AOR to contact store. The AOR is the
+  canonical To URI (host case-insensitive, parameters dropped, escapes
+  undone); comma-joined Contacts each take their own `expires`; a Contact
+  matches its binding by the 19.1.4 URI rules; the CSeq check is per binding
+  and a failing REGISTER writes nothing; `expires=0` removal, `Contact: *`
+  clear, 423 with `Min-Expires` below `registrar_min_expires` (60), 404
+  outside `registrar_domains`; the 200 lists every binding with `expires` and
+  `q`, and a `Date`. `chappe_sip:location/1` resolves an AOR the highest q
+  first and `chappe_sip:bindings/1` gives each binding with its Path. Path
+  (RFC 3327) is stored and echoed (420 without `Supported: path`). Outbound
+  (RFC 5626): one binding per (instance, reg-id) flow, `Require: outbound` and
+  `Flow-Timer` in the 200, 439 past a first hop without an `ob` Path. A WS
+  binding is purged when its connection drops (the flow is the only path to
+  the UA), so a browser that disconnects is deregistered; only that flow's
+  binding goes.
 
 ### Limits and overload
 - Bounded request workers (503 shed past the cap), per-request handler
   deadline (500 on expiry), and a message-size cap on both directions of
-  the NIF boundary. All tunable in `chappe_sip_config`.
+  the NIF boundary, all on WS too (a WS-only node answers them without a
+  native engine). Over WS a message past `max_message_size` closes the
+  connection with 1009 inbound and is refused (`{error, too_large}`)
+  outbound; the ws library still buffers up to its own 64 MiB message limit
+  before that check, since livery does not pass a parser limit through. All
+  tunable in `chappe_sip_config`.
 
 ### Reliability
 - A call is not bounded by the handler deadline: once a worker owns a dialog
   (or forks as a proxy) its deadline is disarmed, so long calls are not torn
   down. The deadline still catches a handler that never responds.
 - WS state survives an engine restart: the transport tolerates a briefly-absent
-  engine, and a WS connection re-registers if the transport itself restarts.
+  engine. If the WS transport process itself restarts, its connections close
+  and their bindings are dropped; the UAs reconnect and register again.
 - Registrations survive a registry-process crash (the ETS is held by a separate
   keeper), and a WS binding is dropped when its connection closes (RFC 5626).
 - Handle and C-object cleanup on crash paths (UAC/dialog/proxy), WS transaction
-  timers (no sofia Timer B/F over WS), and absolute proxy/b2bua timeouts bound
-  resource use. The C engine start/stop/restart lifecycle is use-after-free-free
+  timers (no sofia timers over WS; a server transaction the app never answers
+  gets 408 or 500), and Timer C on proxy and b2bua INVITE branches bound
+  resource use. A worker that sends an INVITE (a b2bua B leg) owns the call, so
+  a callee ringing past the handler deadline is not cut. The C engine
+  start/stop/restart lifecycle is use-after-free-free
   (an RWLock guards the sofia root, CAS transitions guard start/abandon, and the
   stack thread holds its own resource ref so the destructor never frees under
   it) validated under AddressSanitizer via the `chappe_sip_engine_lifecycle` stress
@@ -171,16 +230,24 @@ tracker; the milestone history is in `docs/plan.md`.
   work cleanly.
 
 ### Security
-- The Record-Route marker and WS flow token are HMAC-authenticated (per-node
-  secret), so a crafted Route cannot turn the proxy into an open relay or target
-  another WS leg. The registrar takes a mandatory digest/callback auth hook.
+- The Record-Route marker and WS flow tokens are HMAC-authenticated (per-node
+  secret, at least 16 bytes when configured) and carry a signed expiry, so a
+  crafted or replayed Route cannot turn the proxy into an open relay or target
+  another WS leg. The registrar requires a digest/callback auth hook; running
+  without one takes an explicit `allow_unauthenticated => true`.
 - Resource ceilings: dialogs, UAC transactions, WS connections, the WS transport
   mailbox, and registrar AORs/bindings are all bounded.
-- Refuses the default distribution cookie at boot; distribution binds to
-  loopback. TLS floors at 1.2 and rejects an invalid verify value. The WS
+- Refuses the default distribution cookie at boot; distribution and epmd bind
+  to loopback. TLS floors at 1.2, verifies outbound peers by default, and
+  rejects an invalid verify value; `verify => none` needs `allow_insecure`. The WS
   upgrade honours an optional Origin allowlist.
-- Digest does not replay credentials across a cross-authority redirect and
-  refuses an unsupported qop instead of downgrading.
+- Digest (RFC 2617, RFC 7616, RFC 8760: MD5, MD5-sess, SHA-256,
+  SHA-256-sess) does not replay credentials across a redirect to another
+  scheme, host or port, and refuses an unsupported qop instead of
+  downgrading. The server side refuses a replayed nonce count (stale), an
+  answer without the qop it offered, and a digest uri that is not the
+  Request-URI; `chappe_sip_digest:challenges/2` offers SHA-256 and MD5. The
+  registrar checks the AOR's user and domain against the credentials.
 
 ### Protocol compliance (RFC 3261)
 - The RFC 4475 torture-test corpus is embedded (`test/chappe_sip_rfc4475_SUITE`,
@@ -189,19 +256,34 @@ tracker; the milestone history is in `docs/plan.md`.
   rejected, and the rest survive without crashing.
 - The message parser is total: `chappe_sip_msg:parse/1` never throws on any input
   (a non-token or non-UTF-8 header name yields `{error, malformed}`, not a
-  worker crash). `chappe_sip_msg:validate/1` checks the mandatory headers
-  (Via/From/To/Call-ID/CSeq); a missing one is a 400 on both the UDP and WS
-  ingress.
+  worker crash), and header values are trimmed byte-wise, so `get/2`,
+  `get_all/2` and `validate/1` never throw either. The SIP-Version is
+  case-insensitive, the method a token, and every IANA compact header form is
+  read. `chappe_sip_msg:validate/1` checks the mandatory headers
+  (Via/From/To/Call-ID/CSeq) and that a request's CSeq is `1*DIGIT LWS Method`
+  naming its own method; a failure is a 400 on both the UDP and WS ingress.
+  Over WS a Content-Length that is repeated, negative or not the body size is
+  a 400 too; a response with either problem is dropped.
+  Max-Forwards is not required of a received request (a proxy adds 70).
+- URIs: a user part may carry `;` (`sip:alice;day=tuesday@example.com`), the
+  scheme is case-insensitive, and `chappe_sip_uri:equal/2` compares by RFC
+  3261 19.1.4.
 - Handling MUSTs: an out-of-dialog method with no handler gets 405 with
   `Allow` (21.4.5), or 501 when unknown (21.5.2), and OPTIONS 200 with our
   capabilities (11); a non-100 response
-  carries a To-tag (8.2.6.2), an unsupported `Require`/`Proxy-Require` gets a
-  420 with `Unsupported` (8.2.2), a too-brief REGISTER gets a 423 with
+  carries a To-tag (8.2.6.2), an unsupported `Require` gets a 420 with
+  `Unsupported` (8.2.2.3), in a dialog too, never for ACK or CANCEL, while a
+  UAS ignores `Proxy-Require`. The accepted tags are `supported_option_tags`
+  plus a route's own (`chappe_sip:handle/3` `option_tags`, e.g. `siprec` for a
+  recording server, RFC 7866 6.1.1); a route with `proxy => true` and the
+  in-dialog forwarding of a record-routed dialog leave `Require` to the far
+  UAS and check `Proxy-Require` (16.3). A too-brief REGISTER gets a 423 with
   `Min-Expires` (10.3), INVITE gets a 100 Trying, and merged requests get a
   482 (8.2.2.2).
-- Dialogs build a route set from Record-Route and loose-route in-dialog
-  requests through it (12.1.1/12.2.1.1); an out-of-order in-dialog request is
-  rejected (12.2.2).
+- Dialogs build a route set from Record-Route and route in-dialog
+  requests through it (12.1.1/12.2.1.1): loose routing, or behind a strict
+  router the first route as the Request-URI and the remote target last in
+  Route; an out-of-order in-dialog request is rejected (12.2.2).
 
 ### Media control plane
 - `chappe_sip_media`: a capability-based facade that maps a SIP call to a media
@@ -255,13 +337,9 @@ Gaps relative to drachtio, in rough order of impact.
 - **Event packages on top of subscriptions**: besides `conference`, no
   presence (PUBLISH/PIDF) or MWI package; PUBLISH only routes as a method. The subscriber side (sending
   SUBSCRIBE and keeping it refreshed) is not implemented either.
-- **RFC 3327 Path in the registrar**: no Path support, so an edge/outbound
-  registrar in front of the location store is not covered.
 - **Multi-homed contacts**: one contact per transport today; binding several
   listen addresses on the same transport is not supported.
 - **SIP capture (HEP/Homer)**: no native trace export to a capture agent.
-- **WS-to-WS proxied dialogs**: two WS legs need two record-route flow
-  tokens (a single token routes one direction today).
 
 ## Non-goals
 

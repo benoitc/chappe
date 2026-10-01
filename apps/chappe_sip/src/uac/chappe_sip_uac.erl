@@ -16,7 +16,7 @@
 %% blocked in await/2 is not the only one who can cancel.
 -module(chappe_sip_uac).
 
--export([start/2, await/2, await_response/2, cancel/1, cancel/2]).
+-export([start/2, await/2, await_response/2, cancel/1, cancel/2, abandon/1]).
 
 -include("chappe_sip_uac.hrl").
 -opaque uac_ref() :: #uac_ref{}.
@@ -26,8 +26,11 @@
 %%         from => binary(), to => binary(), contact => binary(),
 %%         local_sdp => iodata(), headers => [{binary(), iodata()}],
 %%         body => iodata(), content_type => binary(),
-%%         proxy => binary(), auth => #{user := binary(), pass := binary()},
-%%         follow_redirects => boolean(), no_ack => boolean(),
+%%         proxy => binary(),
+%%         auth => #{user := binary(), pass := binary(), realm => binary()}
+%%           or a list of them (a realm-less entry answers any realm),
+%%         follow_redirects => boolean() (3xx Contacts tried best q first),
+%%         no_ack => boolean() (3PCC: chappe_sip_dialog:ack/2 sends the ACK),
 %%         answer => fun((Offer :: binary()) -> {ok, iodata()} | reject)
 %%           (an INVITE without local_sdp: the answer to the offer in the
 %%           2xx, sent in the ACK; without it the offer is refused),
@@ -116,3 +119,10 @@ cancel(#uac_ref{pid = Pid}) ->
 -spec cancel(uac_ref(), #{headers => [{binary(), iodata()}]}) -> ok.
 cancel(#uac_ref{pid = Pid}, Opts) ->
     gen_statem:cast(Pid, {cancel, maps:get(headers, Opts, [])}).
+
+%% Give up on an INVITE nobody waits for any more (create_uac's timeout):
+%% CANCEL it while it rings and, should a 2xx win the race, ACK and BYE
+%% that call instead of handing it to anyone.
+-spec abandon(uac_ref()) -> ok.
+abandon(#uac_ref{pid = Pid}) ->
+    gen_statem:cast(Pid, abandon).

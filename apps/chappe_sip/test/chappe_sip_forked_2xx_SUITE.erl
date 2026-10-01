@@ -12,10 +12,10 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -export([all/0, init_per_suite/1, end_per_suite/1, end_per_testcase/2]).
--export([proxy_dual_2xx/1]).
+-export([proxy_dual_2xx/1, same_branch_second_2xx/1, late_fork_2xx/1]).
 
 all() ->
-    [proxy_dual_2xx].
+    [proxy_dual_2xx, same_branch_second_2xx, late_fork_2xx].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -54,6 +54,63 @@ proxy_dual_2xx(_Config) ->
     after 9000 -> ct:fail(no_tags) end,
     receive {proxy_done, {ok, #{final_status := 200}}} -> ok
     after 6000 -> ct:fail(no_proxy_done) end.
+
+%% RFC 6026 Accepted state: a forking proxy downstream sends two 2xx with
+%% different To-tags on our one client transaction; the caller gets both.
+%% req: R6026-01 R6026-03 R6026-04 R3261-P-024
+same_branch_second_2xx(_Config) ->
+    {EP, [D1]} = setup(1),
+    Test = self(),
+    ok = chappe_sip:invite(fun(Req, _Res) ->
+        Test ! {proxy_done, chappe_sip:proxy_request(Req, [dest(D1)], #{})}
+    end),
+    peer(D1, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        send(Sock, Src, resp(Inv, 200, <<"OK">>, <<"tagA">>,
+                             [{<<"Contact">>, ctc(D1)}], sdp())),
+        timer:sleep(300),
+        send(Sock, Src, resp(Inv, 200, <<"OK">>, <<"tagB">>,
+                             [{<<"Contact">>, ctc(D1)}], sdp())),
+        drain_cancel(Sock)
+    end),
+    caller(fun(Sock) ->
+        send(Sock, EP, invite(Sock, callid(), <<"sb2">>)),
+        Test ! {caller_tags, collect_tags(Sock, [], 2)}
+    end),
+    receive {caller_tags, Tags} ->
+        ?assertEqual([<<"tagA">>, <<"tagB">>], lists:usort(Tags))
+    after 9000 -> ct:fail(no_tags) end,
+    receive {proxy_done, {ok, #{final_status := 200}}} -> ok
+    after 6000 -> ct:fail(no_proxy_done) end.
+
+%% RFC 6026: a 2xx of another fork arriving 6 s after the first (more than
+%% the old 5 s drain, within 64*T1) still reaches the caller.
+%% req: R6026-01 R6026-02
+late_fork_2xx(_Config) ->
+    {EP, [D1, D2]} = setup(2),
+    ok = chappe_sip:invite(fun(Req, _Res) ->
+        chappe_sip:proxy_request(Req, [dest(D1), dest(D2)],
+                                 #{forking => parallel})
+    end),
+    branch_uas(D1, <<"tagA">>),
+    peer(D2, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        send(Sock, Src, resp(Inv, 180, <<"Ringing">>, <<"tagB">>, [], <<>>)),
+        {Cancel, CSrc} = recv(Sock, <<"CANCEL">>),
+        send(Sock, CSrc, resp(Cancel, 200, <<"OK">>, <<"tagB">>, [], <<>>)),
+        timer:sleep(6000),
+        send(Sock, Src, resp(Inv, 200, <<"OK">>, <<"tagB">>,
+                             [{<<"Contact">>, ctc(D2)}], sdp())),
+        receive stop -> ok after 3000 -> ok end
+    end),
+    Test = self(),
+    caller(fun(Sock) ->
+        send(Sock, EP, invite(Sock, callid(), <<"lf2">>)),
+        Test ! {caller_tags, collect_tags(Sock, [], 2, 9000)}
+    end),
+    receive {caller_tags, Tags} ->
+        ?assertEqual([<<"tagA">>, <<"tagB">>], lists:usort(Tags))
+    after 12000 -> ct:fail(no_tags) end.
 
 %% ---- peers ----
 
@@ -98,18 +155,21 @@ peer(Port, Fun) ->
 %% ---- SIP helpers ----
 
 collect_tags(Sock, Acc, N) ->
+    collect_tags(Sock, Acc, N, 4000).
+
+collect_tags(Sock, Acc, N, Wait) ->
     case length(lists:usort(Acc)) >= N of
         true -> Acc;
         false ->
             receive
                 {udp, Sock, _, _, <<"SIP/2.0 200", _/binary>> = Bin} ->
                     case to_tag(Bin) of
-                        undefined -> collect_tags(Sock, Acc, N);
-                        Tag -> collect_tags(Sock, [Tag | Acc], N)
+                        undefined -> collect_tags(Sock, Acc, N, Wait);
+                        Tag -> collect_tags(Sock, [Tag | Acc], N, Wait)
                     end;
                 {udp, Sock, _, _, _} ->
-                    collect_tags(Sock, Acc, N)
-            after 4000 -> Acc
+                    collect_tags(Sock, Acc, N, Wait)
+            after Wait -> Acc
             end
     end.
 

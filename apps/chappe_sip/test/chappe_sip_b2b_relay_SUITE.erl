@@ -266,8 +266,9 @@ session_timers_per_leg(_Config) ->
 
 %% ---- while ringing ----
 
-%% B's 183 with SDP reaches A with the same body.
-%% req: R3261-13.3.1.1-1
+%% B's 183 with SDP reaches A with the same body. It is not reliable but
+%% carries A's To-tag, so it sets up an early dialog and has our Contact.
+%% req: R3261-13.3.1.1-1 R3261-124
 early_media_relayed(_Config) ->
     {EP, CP} = setup_raw(#{}),
     ?UA:peer(CP, fun(Sock) ->
@@ -291,6 +292,8 @@ early_media_relayed(_Config) ->
     {R183, R200} = got2(a_183),
     ?assertEqual(?UA:sdp(<<"early">>), ?UA:body(R183)),
     ?assertEqual(<<"application/sdp">>, ?UA:hdr(R183, <<"content-type">>)),
+    ?assertEqual(undefined, ?UA:hdr(R183, <<"rseq">>)),
+    ?assertMatch(<<"<sip:", _/binary>>, ?UA:hdr(R183, <<"contact">>)),
     ?assertEqual(?UA:to_tag(R183), ?UA:to_tag(R200)).
 
 %% A and B both support 100rel. B's reliable 183 is PRACKed on the B leg by

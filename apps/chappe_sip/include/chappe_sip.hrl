@@ -10,11 +10,13 @@
     response :: chappe_sip_msg:msg() | undefined
 }).
 
-%% Option tags we support, for Supported on INVITE, its 2xx and OPTIONS
-%% responses, and accepted in Require without a 420 (RFC 3261 8.2.2).
+%% Option tags we advertise in Supported on INVITE, its 2xx and OPTIONS
+%% responses. What a request may list in Require without a 420 (RFC 3261
+%% 8.2.2.3) is the `supported_option_tags' setting of chappe_sip_config.
 -define(SUPPORTED, <<"replaces, timer">>).
-%% tdialog (RFC 4538, which RFC 7647 4 makes a REFER recipient process) and
-%% norefersub (RFC 4488) are REFER's, handled by chappe_sip_refer.
+%% The default of supported_option_tags. tdialog (RFC 4538, which RFC 7647 4
+%% makes a REFER recipient process) and norefersub (RFC 4488) are REFER's,
+%% handled by chappe_sip_refer.
 -define(SUPPORTED_TAGS, [
     <<"100rel">>, <<"replaces">>, <<"timer">>, <<"tdialog">>, <<"norefersub">>
 ]).

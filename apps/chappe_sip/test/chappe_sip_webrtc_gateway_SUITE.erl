@@ -15,12 +15,12 @@
 -export([ws_received/1, b2b_browser_to_udp/1, b2b_udp_to_browser/1,
          proxy_browser_to_udp/1, proxy_udp_to_browser/1,
          proxy_callee_bye/1, b2b_server_bye_to_browser/1,
-         b2b_browser_bye_over_ws/1]).
+         b2b_browser_bye_over_ws/1, proxy_ws_to_ws/1]).
 
 all() ->
     [ws_received, b2b_browser_to_udp, b2b_udp_to_browser,
      proxy_browser_to_udp, proxy_udp_to_browser, proxy_callee_bye,
-     b2b_server_bye_to_browser, b2b_browser_bye_over_ws].
+     b2b_server_bye_to_browser, b2b_browser_bye_over_ws, proxy_ws_to_ws].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -39,8 +39,10 @@ end_per_testcase(_Case, _Config) ->
     _ = chappe_sip_registry:clear(),
     ok.
 
-%% a WS response's top Via carries received/rport from the client peer
-%% (livery surfaces the peer via the subprotocol/idle/peer plumbing).
+%% a WS response's top Via carries received from the client peer, and the
+%% rport value the client asked for with a bare rport (livery surfaces the
+%% peer from the accepted socket).
+%% req: R3581-009 R3261-360 R3261-361
 ws_received(_Config) ->
     {_EP, WP} = start(),
     ok = chappe_sip:options(fun(_Req, Res) -> chappe_sip_res:send(Res, 200, #{}) end),
@@ -90,7 +92,7 @@ b2b_browser_to_udp(_Config) ->
 b2b_udp_to_browser(_Config) ->
     {EP, WP} = start(),
     Test = self(),
-    ok = chappe_sip:register(chappe_sip:registrar()),
+    ok = chappe_sip:register(chappe_sip:registrar(#{allow_unauthenticated => true})),
     ok = chappe_sip:invite(fun(Req, Res) ->
         {ok, Uri, Flow} = chappe_sip:location_flow(<<"sip:bob@127.0.0.1">>),
         case chappe_sip:create_b2bua(Req, Res, Uri, #{flow => Flow}) of
@@ -126,7 +128,7 @@ b2b_udp_to_browser(_Config) ->
 b2b_server_bye_to_browser(_Config) ->
     {EP, WP} = start(),
     Test = self(),
-    ok = chappe_sip:register(chappe_sip:registrar()),
+    ok = chappe_sip:register(chappe_sip:registrar(#{allow_unauthenticated => true})),
     ok = chappe_sip:invite(fun(Req, Res) ->
         {ok, Uri, Flow} = chappe_sip:location_flow(<<"sip:bob@127.0.0.1">>),
         case chappe_sip:create_b2bua(Req, Res, Uri, #{flow => Flow}) of
@@ -171,7 +173,7 @@ b2b_server_bye_to_browser(_Config) ->
 b2b_browser_bye_over_ws(_Config) ->
     {EP, WP} = start(),
     Test = self(),
-    ok = chappe_sip:register(chappe_sip:registrar()),
+    ok = chappe_sip:register(chappe_sip:registrar(#{allow_unauthenticated => true})),
     ok = chappe_sip:invite(fun(Req, Res) ->
         {ok, Uri, Flow} = chappe_sip:location_flow(<<"sip:bob@127.0.0.1">>),
         case chappe_sip:create_b2bua(Req, Res, Uri, #{flow => Flow}) of
@@ -245,7 +247,7 @@ proxy_browser_to_udp(_Config) ->
 proxy_udp_to_browser(_Config) ->
     {EP, WP} = start(),
     Test = self(),
-    ok = chappe_sip:register(chappe_sip:registrar()),
+    ok = chappe_sip:register(chappe_sip:registrar(#{allow_unauthenticated => true})),
     ok = chappe_sip:invite(fun(Req, _Res) ->
         {ok, _Uri, Flow} = chappe_sip:location_flow(<<"sip:bob@127.0.0.1">>),
         chappe_sip:proxy_request(Req, {ws, Flow}, #{record_route => true})
@@ -278,7 +280,7 @@ proxy_udp_to_browser(_Config) ->
 proxy_callee_bye(_Config) ->
     {EP, WP} = start(),
     Test = self(),
-    ok = chappe_sip:register(chappe_sip:registrar()),
+    ok = chappe_sip:register(chappe_sip:registrar(#{allow_unauthenticated => true})),
     ok = chappe_sip:invite(fun(Req, _Res) ->
         {ok, _Uri, Flow} = chappe_sip:location_flow(<<"sip:bob@127.0.0.1">>),
         chappe_sip:proxy_request(Req, {ws, Flow}, #{record_route => true})
@@ -309,7 +311,69 @@ proxy_callee_bye(_Config) ->
     ok = expect(caller_relayed_bye),
     ws:close(C, 1000).
 
+%% proxy browser(WS) -> browser(WS): the Record-Route carries a flow token
+%% for each leg, so the caller's ACK reaches the callee over its connection
+%% and the callee's BYE reaches the caller over the caller's.
+proxy_ws_to_ws(_Config) ->
+    {_EP, WP} = start(),
+    ok = chappe_sip:register(chappe_sip:registrar(#{allow_unauthenticated => true})),
+    ok = chappe_sip:invite(fun(Req, _Res) ->
+        {ok, _Uri, Flow} = chappe_sip:location_flow(<<"sip:bob@127.0.0.1">>),
+        chappe_sip:proxy_request(Req, {ws, Flow}, #{record_route => true})
+    end),
+    Test = self(),
+    %% the callee's frames come tagged so they are told from the caller's
+    Tagger = spawn_link(fun Loop() ->
+        receive {ws_in, B} -> Test ! {ws_bob, B}, Loop() end
+    end),
+    Bob = connect_as(WP, Tagger),
+    ws:send(Bob, {text, register_bob()}),
+    _ = recv_bob(<<"SIP/2.0 200">>),
+    Alice = connect(WP),
+    ws:send(Alice, {text, invite_req(<<"w2w">>)}),
+    Inv = recv_bob(<<"INVITE">>),
+    ws:send(Bob, {text, ws_ok200(Inv, top_via(Inv), <<"bobW">>)}),
+    R200 = recv_ws(200),
+    RR = record_route_of(R200),
+    TT = to_tag(R200),
+    Bob1 = <<"sip:bob@df7jal.invalid;transport=ws">>,
+    ws:send(Alice, {text, ws_indialog(<<"ACK">>, <<"w2w">>, TT, RR, 1, Bob1)}),
+    _ = recv_bob(<<"ACK">>),
+    %% the callee hangs up: its BYE goes to the caller's connection
+    ws:send(Bob, {text, ws_w2w_bye(RR, TT)}),
+    Bye = recv_ws_method(<<"BYE">>),
+    ws:send(Alice, {text, ws_resp200(Bye)}),
+    _ = recv_bob(<<"SIP/2.0 200">>),
+    ws:close(Alice, 1000),
+    ws:close(Bob, 1000).
+
 %% ---- helpers ----
+
+connect_as(WP, Notify) ->
+    Url = <<"ws://127.0.0.1:", (integer_to_binary(WP))/binary, "/ws">>,
+    {ok, C} = ws:connect(Url, #{handler => chappe_sip_ws_test_client,
+                                handler_opts => #{notify => Notify},
+                                subprotocols => [<<"sip">>]}),
+    C.
+
+%% the next frame the callee got that starts with Prefix
+recv_bob(Prefix) ->
+    L = byte_size(Prefix),
+    receive
+        {ws_bob, <<P:L/binary, _/binary>> = Bin} when P =:= Prefix -> Bin;
+        {ws_bob, _} -> recv_bob(Prefix)
+    after 6000 -> ct:fail({no_bob_frame, Prefix})
+    end.
+
+%% the callee's BYE toward the caller, routed through our record-route
+ws_w2w_bye(RR, BobTag) ->
+    <<"BYE sip:alice@df7jal.invalid;transport=ws SIP/2.0\r\n"
+      "Via: SIP/2.0/WS bobhost.invalid;branch=", (branch())/binary, "\r\n"
+      "Max-Forwards: 70\r\n"
+      "Route: ", RR/binary, "\r\n"
+      "From: <sip:app@127.0.0.1>;tag=", BobTag/binary, "\r\n"
+      "To: Browser <sip:alice@127.0.0.1>;tag=w2w\r\n"
+      "Call-ID: wscallA@ct\r\nCSeq: 7 BYE\r\nContent-Length: 0\r\n\r\n">>.
 
 start() ->
     EP = pick(),
@@ -401,7 +465,7 @@ urecv_status(Sock, Code) ->
 
 options_req() ->
     <<"OPTIONS sip:app@127.0.0.1 SIP/2.0\r\n"
-      "Via: SIP/2.0/WS df7jal.invalid;branch=", (branch())/binary, "\r\n"
+      "Via: SIP/2.0/WS df7jal.invalid;rport;branch=", (branch())/binary, "\r\n"
       "Max-Forwards: 70\r\n"
       "From: <sip:p@127.0.0.1>;tag=o1\r\nTo: <sip:app@127.0.0.1>\r\n"
       "Call-ID: wsopt@ct\r\nCSeq: 1 OPTIONS\r\nContent-Length: 0\r\n\r\n">>.

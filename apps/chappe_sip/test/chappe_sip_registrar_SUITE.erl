@@ -4,8 +4,8 @@
 %% Registrar location store.
 %%
 %% The fake group drives chappe_sip_registry directly with constructed REGISTER
-%% requests (no engine). The live group registers chappe_sip:registrar() as the
-%% REGISTER handler and drives real REGISTERs over gen_udp.
+%% requests (no engine). The live group registers chappe_sip:registrar/1 as
+%% the REGISTER handler and drives real REGISTERs over gen_udp.
 -module(chappe_sip_registrar_SUITE).
 
 -include_lib("common_test/include/ct.hrl").
@@ -16,8 +16,15 @@
 -export([add_and_lookup/1, refresh/1, add_second/1, remove_one/1,
          star_clear/1, expires_zero/1, query_bindings/1, reorder_rejected/1,
          read_time_expiry/1, survives_registry_crash/1,
-         bindings_cap/1, aors_cap/1, malformed_contact_rejected/1]).
--export([live_register/1, live_register_auth/1, live_min_expires_423/1]).
+         bindings_cap/1, aors_cap/1, malformed_contact_rejected/1,
+         comma_contacts/1, callid_replaces_binding/1, q_ordering/1,
+         star_invalid/1, star_cseq_rules/1, cseq_per_binding/1,
+         aor_canonical/1, contact_uri_comparison/1, domains_404/1,
+         path_stored/1, outbound_flows/1, outbound_rules/1,
+         min_expires_default/1, auth_required/1]).
+-export([live_register/1, live_register_auth/1, live_min_expires_423/1,
+         live_path_outbound/1, live_require_path/1,
+         live_record_route_ignored/1]).
 
 all() ->
     [{group, fake}, {group, live}].
@@ -26,8 +33,15 @@ groups() ->
     [{fake, [], [add_and_lookup, refresh, add_second, remove_one, star_clear,
                  expires_zero, query_bindings, reorder_rejected,
                  read_time_expiry, survives_registry_crash,
-                 bindings_cap, aors_cap, malformed_contact_rejected]},
-     {live, [], [live_register, live_register_auth, live_min_expires_423]}].
+                 bindings_cap, aors_cap, malformed_contact_rejected,
+                 comma_contacts, callid_replaces_binding, q_ordering,
+                 star_invalid, star_cseq_rules, cseq_per_binding,
+                 aor_canonical, contact_uri_comparison, domains_404,
+                 path_stored, outbound_flows, outbound_rules,
+                 min_expires_default, auth_required]},
+     {live, [], [live_register, live_register_auth, live_min_expires_423,
+                 live_path_outbound, live_require_path,
+                 live_record_route_ignored]}].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -50,10 +64,13 @@ end_per_testcase(_Case, _Config) ->
     application:unset_env(chappe_sip, registrar_max_bindings_per_aor),
     application:unset_env(chappe_sip, registrar_max_aors),
     application:unset_env(chappe_sip, registrar_min_expires),
+    application:unset_env(chappe_sip, registrar_domains),
     ok.
 
 %% ---- fake group ----
 
+%% A contact's own expires parameter sets its expiry.
+%% req: R3261-R-21
 add_and_lookup(_Config) ->
     {ok, Bs} = reg(aor(), [contact(1, 3600)], undefined, <<"c1">>, 1),
     ?assertEqual(1, length(Bs)),
@@ -78,6 +95,8 @@ wait_restart(Old, N) ->
         _ -> timer:sleep(20), wait_restart(Old, N - 1)
     end.
 
+%% A higher CSeq on the same Call-ID updates the binding.
+%% req: R3261-R-28
 refresh(_Config) ->
     {ok, _} = reg(aor(), [contact(1, 3600)], undefined, <<"c1">>, 1),
     {ok, Bs} = reg(aor(), [contact(1, 1800)], undefined, <<"c1">>, 2),
@@ -92,42 +111,52 @@ add_second(_Config) ->
     ?assertEqual(lists:sort([curi(1), curi(2)]),
                  lists:sort(chappe_sip_registry:lookup(aor()))).
 
+%% expires=0 from another Call-ID removes the binding.
+%% req: R3261-R-27
 remove_one(_Config) ->
     {ok, _} = reg(aor(), [contact(1, 3600)], undefined, <<"c1">>, 1),
     {ok, _} = reg(aor(), [contact(2, 3600)], undefined, <<"c2">>, 1),
     {ok, Bs} = reg(aor(), [contact(1, 0)], undefined, <<"c3">>, 1),
     ?assertEqual([curi(2)], [maps:get(contact, B) || B <- Bs]).
 
+%% Contact: * with Expires: 0 clears the AOR.
+%% req: R3261-R-18
 star_clear(_Config) ->
     {ok, _} = reg(aor(), [contact(1, 3600)], undefined, <<"c1">>, 1),
     {ok, Bs} = reg(aor(), [<<"*">>], 0, <<"c4">>, 2),
     ?assertEqual([], Bs),
     ?assertEqual([], chappe_sip_registry:lookup(aor())).
 
+%% a contact with no expires param takes the header Expires (0: removed)
+%% req: R3261-R-22
 expires_zero(_Config) ->
     {ok, _} = reg(aor(), [contact(1, 3600)], undefined, <<"c1">>, 1),
-    %% a contact with no expires param takes the header Expires (0) -> removed
     {ok, Bs} = reg(aor(), [bare_contact(1)], 0, <<"c5">>, 2),
     ?assertEqual([], Bs).
 
+%% a REGISTER with no Contact returns current bindings unchanged
+%% req: R3261-R-32
 query_bindings(_Config) ->
     {ok, _} = reg(aor(), [contact(1, 3600)], undefined, <<"c1">>, 1),
-    %% a REGISTER with no Contact returns current bindings unchanged
     {ok, Bs} = reg(aor(), [], undefined, <<"c6">>, 2),
     ?assertEqual([curi(1)], [maps:get(contact, B) || B <- Bs]).
 
+%% A lower CSeq on the binding's own Call-ID fails the request.
+%% req: R3261-R-29 R3261-R-05
 reorder_rejected(_Config) ->
     {ok, _} = reg(aor(), [contact(1, 3600)], undefined, <<"c1">>, 5),
     ?assertEqual({error, 400},
                  reg(aor(), [contact(1, 3600)], undefined, <<"c1">>, 3)).
 
 read_time_expiry(_Config) ->
+    application:set_env(chappe_sip, registrar_min_expires, 0),
     {ok, _} = reg(aor(), [contact(1, 1)], undefined, <<"c1">>, 1),
     ?assertEqual([curi(1)], chappe_sip_registry:lookup(aor())),
     timer:sleep(1100),
     ?assertEqual([], chappe_sip_registry:lookup(aor())).
 
-%% F9: too many contacts on one AOR is rejected (403)
+%% F9: too many contacts on one AOR is rejected (403) and nothing is written
+%% req: R3261-R-30
 bindings_cap(_Config) ->
     application:set_env(chappe_sip, registrar_max_bindings_per_aor, 2),
     ?assertEqual({error, 403},
@@ -152,13 +181,241 @@ malformed_contact_rejected(_Config) ->
                  reg(aor(), [<<"@@ not a contact @@">>], 3600, <<"mc">>, 1)),
     ?assertEqual([], chappe_sip_registry:bindings(aor())).
 
+%% Two contacts in one comma-joined Contact header are two bindings, each
+%% with its own expires parameter (the header Expires for the one without).
+%% req: R3261-R-21 R3261-R-22
+comma_contacts(_Config) ->
+    Joined = <<"<", (curi(1))/binary, ">;expires=100, <", (curi(2))/binary,
+               ">, \"Desk, 2\" <", (curi(3))/binary, ">;expires=300">>,
+    {ok, Bs} = reg(aor(), [Joined], 200, <<"cc">>, 1),
+    ?assertEqual(3, length(Bs)),
+    Exp = maps:from_list([{maps:get(contact, B), maps:get(expires, B)} || B <- Bs]),
+    ?assert(maps:get(curi(1), Exp) =< 100 andalso maps:get(curi(1), Exp) > 90),
+    ?assert(maps:get(curi(2), Exp) =< 200 andalso maps:get(curi(2), Exp) > 190),
+    ?assert(maps:get(curi(3), Exp) =< 300 andalso maps:get(curi(3), Exp) > 290).
+
+%% A binding refreshed from a new Call-ID is updated whatever its CSeq, and
+%% records the new Call-ID and CSeq.
+%% req: R3261-R-27
+callid_replaces_binding(_Config) ->
+    {ok, _} = reg(aor(), [contact(1, 3600)], undefined, <<"old">>, 50),
+    {ok, [B]} = reg(aor(), [contact(1, 600)], undefined, <<"new">>, 1),
+    ?assertEqual(<<"new@ct">>, maps:get(callid, B)),
+    ?assertEqual(1, maps:get(cseq, B)),
+    ?assert(maps:get(expires, B) =< 600).
+
+%% Bindings come back the highest q first (no q counts as 1.0), and q is
+%% kept on each binding.
+%% req: R3261-R-36
+q_ordering(_Config) ->
+    Cs = [<<"<", (curi(1))/binary, ">;q=0.1">>,
+          <<"<", (curi(2))/binary, ">;q=0.9">>,
+          <<"<", (curi(3))/binary, ">">>,
+          <<"<", (curi(4))/binary, ">;q=0.5">>],
+    {ok, Bs} = reg(aor(), Cs, 3600, <<"q">>, 1),
+    ?assertEqual([curi(3), curi(2), curi(4), curi(1)],
+                 [maps:get(contact, B) || B <- Bs]),
+    ?assertEqual([curi(3), curi(2), curi(4), curi(1)],
+                 chappe_sip:location(<<"sip:alice@example.com">>)),
+    ?assertEqual([undefined, <<"0.9">>, <<"0.5">>, <<"0.1">>],
+                 [maps:get(q, B) || B <- chappe_sip:bindings(aor())]).
+
+%% "*" needs Expires: 0 and no other Contact; anything else is a 400 that
+%% leaves the bindings alone.
+%% req: R3261-R-17
+star_invalid(_Config) ->
+    {ok, _} = reg(aor(), [contact(1, 3600)], undefined, <<"s">>, 1),
+    ?assertEqual({error, 400}, reg(aor(), [<<"*">>], 3600, <<"s">>, 2)),
+    ?assertEqual({error, 400}, reg(aor(), [<<"*">>], undefined, <<"s">>, 3)),
+    ?assertEqual({error, 400}, reg(aor(), [<<"*">>, contact(2, 0)], 0, <<"s">>, 4)),
+    ?assertEqual({error, 400}, reg(aor(), [<<"*, ", (contact(2, 0))/binary>>], 0,
+                                   <<"s">>, 5)),
+    ?assertEqual([curi(1)], chappe_sip_registry:lookup(aor())).
+
+%% "*" removes a binding of another Call-ID, and one of the same Call-ID
+%% only with a higher CSeq; otherwise the whole update is aborted.
+%% req: R3261-R-18 R3261-R-19 R3261-R-20
+star_cseq_rules(_Config) ->
+    {ok, _} = reg(aor(), [contact(1, 3600)], undefined, <<"a">>, 5),
+    {ok, _} = reg(aor(), [contact(2, 3600)], undefined, <<"b">>, 1),
+    ?assertEqual({error, 400}, reg(aor(), [<<"*">>], 0, <<"a">>, 5)),
+    ?assertEqual(2, length(chappe_sip_registry:lookup(aor()))),
+    ?assertEqual({ok, []}, reg(aor(), [<<"*">>], 0, <<"a">>, 6)),
+    ?assertEqual([], chappe_sip_registry:lookup(aor())).
+
+%% The CSeq check is per binding: a new contact on a Call-ID whose other
+%% binding has a higher CSeq is still added. A REGISTER whose one contact
+%% fails the check writes none of its contacts.
+%% req: R3261-R-28 R3261-R-29 R3261-R-06 R3261-R-30
+cseq_per_binding(_Config) ->
+    {ok, _} = reg(aor(), [contact(1, 3600)], undefined, <<"c1">>, 5),
+    {ok, Bs} = reg(aor(), [contact(2, 3600)], undefined, <<"c1">>, 3),
+    ?assertEqual(2, length(Bs)),
+    ?assertEqual({error, 400},
+                 reg(aor(), [contact(3, 3600), contact(1, 3600)], undefined,
+                     <<"c1">>, 4)),
+    ?assertEqual(lists:sort([curi(1), curi(2)]),
+                 lists:sort(chappe_sip_registry:lookup(aor()))).
+
+%% The AOR is the To URI in canonical form: no parameters, unescaped,
+%% host case-insensitive. Any spelling of it finds the bindings.
+%% req: R3261-R-15 R3261-R-16
+aor_canonical(_Config) ->
+    {ok, _} = reg(<<"<sip:alice@EXAMPLE.COM;user=phone>">>, [contact(1, 3600)],
+                  undefined, <<"ac">>, 1),
+    ?assertEqual([curi(1)], chappe_sip_registry:lookup(<<"sip:alice@example.com">>)),
+    ?assertEqual([curi(1)], chappe_sip:location(<<"sip:%61lice@Example.Com">>)),
+    ?assertEqual([curi(1)], chappe_sip:location(<<"Alice <sip:alice@example.com;x=1>">>)),
+    %% the user part stays case-sensitive, an explicit port is another AOR
+    ?assertEqual([], chappe_sip:location(<<"sip:ALICE@example.com">>)),
+    ?assertEqual([], chappe_sip:location(<<"sip:alice@example.com:5060">>)).
+
+%% Contacts are matched with the URI comparison rules: a case or an unknown
+%% parameter does not make a new binding, a port does.
+%% req: R3261-R-35
+contact_uri_comparison(_Config) ->
+    {ok, [_]} = reg(aor(), [<<"<sip:alice@10.0.0.1;transport=TCP>">>], 3600,
+                    <<"cu">>, 1),
+    {ok, [B]} = reg(aor(), [<<"<sip:alice@10.0.0.1;Transport=tcp;x=1>;expires=60">>],
+                    3600, <<"cu">>, 2),
+    ?assert(maps:get(expires, B) =< 60),
+    {ok, Bs} = reg(aor(), [<<"<sip:alice@10.0.0.1:5060;transport=tcp>">>], 3600,
+                   <<"cu">>, 3),
+    ?assertEqual(2, length(Bs)),
+    {ok, [_]} = reg(aor(), [<<"<sip:alice@10.0.0.1;TRANSPORT=TCP>;expires=0">>],
+                    3600, <<"cu">>, 4).
+
+%% With registrar_domains set, a REGISTER for another domain (in the
+%% Request-URI or the To) gets 404, as does a To that is not a URI.
+%% req: R3261-R-04 R3261-R-14
+domains_404(_Config) ->
+    ?assertEqual({error, 404},
+                 regx(#{to => <<"<garbage>">>, contacts => [contact(1, 3600)]})),
+    application:set_env(chappe_sip, registrar_domains, [<<"Example.com">>]),
+    ?assertMatch({ok, [_], _}, regx(#{contacts => [contact(1, 3600)]})),
+    ?assertEqual({error, 404},
+                 regx(#{ruri => <<"sip:other.example">>, cseq => 2,
+                        contacts => [contact(1, 3600)]})),
+    ?assertEqual({error, 404},
+                 regx(#{to => <<"<sip:alice@other.example>">>, cseq => 3,
+                        contacts => [contact(1, 3600)]})),
+    ?assertEqual([], chappe_sip:location(<<"sip:alice@other.example">>)).
+
+%% RFC 3327: the Path values are kept in order with the binding, and given
+%% back by bindings/1 as the route set toward the contact. A Path the UA
+%% did not declare support for is refused 420.
+%% req: R3327-R-01 R3327-R-02 R3327-R-05 R5626-R-01
+path_stored(_Config) ->
+    Path = [{<<"Path">>, <<"<sip:p1.example.net;lr>">>},
+            {<<"Path">>, <<"<sip:p2.example.net;lr>, <sip:p3.example.net;lr>">>}],
+    ?assertEqual({error, 420},
+                 regx(#{contacts => [contact(1, 3600)], headers => Path})),
+    ?assertEqual([], chappe_sip:location(<<"sip:alice@example.com">>)),
+    {ok, _, #{path := P}} =
+        regx(#{contacts => [contact(1, 3600)], cseq => 2,
+               headers => [{<<"Supported">>, <<"path">>} | Path]}),
+    Want = [<<"<sip:p1.example.net;lr>">>, <<"<sip:p2.example.net;lr>">>,
+            <<"<sip:p3.example.net;lr>">>],
+    ?assertEqual(Want, P),
+    [B] = chappe_sip:bindings(<<"sip:alice@example.com">>),
+    ?assertEqual(Want, maps:get(path, B)).
+
+%% RFC 5626: one binding per (instance, reg-id) flow, beside a plain
+%% binding; a re-registration of a flow updates its transport flow; a flow
+%% that drops takes only its own binding with it.
+%% req: R5626-R-09 R5626-R-10 R5626-R-11 R5626-R-14 R5626-R-17 R5626-R-12
+outbound_flows(_Config) ->
+    Inst = <<"\"<urn:uuid:00000000-0000-1000-8000-000A95A0E128>\"">>,
+    Ob = fun(RegId) ->
+        <<"<", (curi(1))/binary, ";ob>;+sip.instance=", Inst/binary,
+          ";reg-id=", RegId/binary>>
+    end,
+    Sup = [{<<"Supported">>, <<"outbound, path">>}],
+    {ok, _, #{outbound := true}} =
+        regx(#{contacts => [Ob(<<"1">>)], headers => Sup, flow => f1,
+               callid => <<"ob1">>}),
+    {ok, _, #{outbound := true}} =
+        regx(#{contacts => [Ob(<<"2">>)], headers => Sup, flow => f2,
+               callid => <<"ob2">>}),
+    {ok, Bs, #{outbound := false}} =
+        regx(#{contacts => [contact(1, 3600)], callid => <<"plain">>}),
+    ?assertEqual(3, length(Bs)),
+    ?assertEqual(lists:sort([{Inst, <<"1">>}, {Inst, <<"2">>}, {undefined, undefined}]),
+                 lists:sort([{maps:get(instance, B), maps:get(reg_id, B)} || B <- Bs])),
+    %% every Contact parameter is kept
+    [B1] = [B || B <- Bs, maps:get(reg_id, B) =:= <<"1">>],
+    ?assertEqual(Inst, maps:get(<<"+sip.instance">>, maps:get(params, B1))),
+    %% flow 1 re-registers over a new transport flow
+    {ok, _, _} = regx(#{contacts => [Ob(<<"1">>)], headers => Sup, flow => f3,
+                        callid => <<"ob1">>, cseq => 2}),
+    Flows = [maps:get(flow, B) || B <- chappe_sip:bindings(aor()),
+                                  maps:get(reg_id, B) =:= <<"1">>],
+    ?assertEqual([f3], Flows),
+    ok = chappe_sip_registry:remove_flow(f2),
+    _ = sys:get_state(chappe_sip_registry),
+    ?assertEqual(lists:sort([<<"1">>, undefined]),
+                 lists:sort([maps:get(reg_id, B) || B <- chappe_sip:bindings(aor())])),
+    ok = chappe_sip_registry:remove_flow(f1),
+    _ = sys:get_state(chappe_sip_registry),
+    ?assertEqual(2, length(chappe_sip:bindings(aor()))).
+
+%% RFC 5626 6: a reg-id without +sip.instance is ignored; past the first
+%% hop without an "ob" Path the reg-id is ignored, or a 439 when the UA
+%% asked for outbound; with an "ob" Path it applies; a reg-id with two
+%% non-zero Contacts is a 400.
+%% req: R5626-R-02 R5626-R-03 R5626-R-04 R5626-R-05 R5626-R-06 R5626-R-07 R5626-R-08
+outbound_rules(_Config) ->
+    Inst = <<"\"<urn:uuid:1>\"">>,
+    Sup = {<<"Supported">>, <<"outbound, path">>},
+    TwoVias = [<<"SIP/2.0/UDP edge.example.net;branch=z9hG4bKe">>,
+               <<"SIP/2.0/UDP 192.0.2.4;branch=z9hG4bKu">>],
+    Lone = <<"<", (curi(1))/binary, ">;reg-id=1">>,
+    {ok, [B0], #{outbound := false}} =
+        regx(#{contacts => [Lone], headers => [Sup], callid => <<"r0">>}),
+    ?assertEqual(undefined, maps:get(reg_id, B0)),
+    Flow = <<"<", (curi(2))/binary, ">;+sip.instance=", Inst/binary, ";reg-id=1">>,
+    ?assertEqual({error, 439},
+                 regx(#{contacts => [Flow], headers => [Sup], vias => TwoVias,
+                        callid => <<"r1">>})),
+    {ok, _, #{outbound := false}} =
+        regx(#{contacts => [Flow], vias => TwoVias, callid => <<"r2">>,
+               headers => [{<<"Supported">>, <<"path">>}]}),
+    [B2] = [B || B <- chappe_sip:bindings(aor()), maps:get(contact, B) =:= curi(2)],
+    ?assertEqual(undefined, maps:get(reg_id, B2)),
+    {ok, _, #{outbound := true, first_hop := false}} =
+        regx(#{contacts => [Flow], vias => TwoVias, callid => <<"r3">>,
+               headers => [Sup, {<<"Path">>, <<"<sip:edge.example.net;lr;ob>">>}]}),
+    Two = [Flow, <<"<", (curi(3))/binary, ">">>],
+    ?assertEqual({error, 400},
+                 regx(#{contacts => Two, headers => [Sup], callid => <<"r4">>})).
+
+%% registrar_min_expires defaults to 60, so 423 works out of the box; only
+%% an interval under an hour is ever refused.
+%% req: R3261-R-25
+min_expires_default(_Config) ->
+    ?assertEqual(60, chappe_sip_config:get(registrar_min_expires)),
+    ?assertEqual({error, 423}, reg(aor(), [contact(1, 30)], undefined, <<"m">>, 1)),
+    ?assertMatch({ok, [_]}, reg(aor(), [contact(1, 60)], undefined, <<"m">>, 2)),
+    application:set_env(chappe_sip, registrar_min_expires, 7200),
+    ?assertMatch({ok, [_]}, reg(aor(), [contact(1, 3700)], undefined, <<"m">>, 3)).
+
+%% A registrar authenticates: without an auth hook it must be opted out
+%% explicitly.
+%% req: R3261-R-10
+auth_required(_Config) ->
+    ?assertError({registrar, auth_required}, chappe_sip:registrar(#{})),
+    ?assertError({registrar, auth_required},
+                 chappe_sip:registrar(#{allow_unauthenticated => false})),
+    ?assert(is_function(chappe_sip:registrar(#{allow_unauthenticated => true}), 2)),
+    ?assert(is_function(chappe_sip:registrar(#{auth => fun(_) -> ok end}), 2)).
+
 %% ---- live group ----
 
+%% The 200 lists every binding with its expires (and q), and a Date.
+%% req: R3261-R-32 R3261-R-33 R3261-R-34
 live_register(_Config) ->
-    EP = pick(),
-    ok = chappe_sip:start(#{contact => <<"sip:127.0.0.1:",
-                                   (integer_to_binary(EP))/binary>>}),
-    ok = chappe_sip:register(chappe_sip:registrar()),
+    EP = start(),
+    ok = chappe_sip:register(chappe_sip:registrar(#{allow_unauthenticated => true})),
     {ok, Sock} = gen_udp:open(0, [binary, {active, true}, {ip, {127,0,0,1}}]),
     LP = lport(Sock),
     send(Sock, EP, register_req(LP, 3600, 1)),
@@ -167,20 +424,29 @@ live_register(_Config) ->
     %% the binding is now resolvable
     ?assertMatch([_], chappe_sip:location(<<"sip:alice@127.0.0.1">>)),
     %% a refresh with a higher CSeq is accepted
-    send(Sock, EP, register_req(LP, 7200, 2)),
-    _ = recv_status(Sock, 200),
-    [Ct] = chappe_sip:location(<<"sip:alice@127.0.0.1">>),
+    send(Sock, EP, register_req(LP, 7200, 2, [{<<"Contact">>, <<"<sip:bob@127.0.0.1:9>;q=0.5">>}])),
+    R2 = recv_status(Sock, 200),
+    {ok, M} = chappe_sip_msg:parse(R2),
+    Contacts = chappe_sip_msg:get_all(<<"contact">>, M),
+    ?assertEqual(2, length(Contacts)),
+    [?assertMatch({match, _}, re:run(C, ";expires=[0-9]+$")) || C <- Contacts],
+    ?assertMatch([<<"<sip:alice@127.0.0.1:", _/binary>>,
+                  <<"<sip:bob@127.0.0.1:9>;q=0.5;expires=", _/binary>>], Contacts),
+    Date = chappe_sip_msg:get(<<"date">>, M),
+    ?assertMatch({match, _},
+                 re:run(Date, "^[A-Z][a-z]{2}, [0-9]{2} [A-Z][a-z]{2} [0-9]{4} "
+                              "[0-9]{2}:[0-9]{2}:[0-9]{2} GMT$")),
+    [Ct, _] = chappe_sip:location(<<"sip:alice@127.0.0.1">>),
     ?assertEqual(<<"sip:alice@127.0.0.1:", (integer_to_binary(LP))/binary>>, Ct),
     gen_udp:close(Sock).
 
 %% RFC 3261 10.3 step 7: a REGISTER whose expiry is below the configured floor
 %% is refused 423 with a Min-Expires header.
+%% req: R3261-R-25 R3261-R-26
 live_min_expires_423(_Config) ->
-    EP = pick(),
-    ok = chappe_sip:start(#{contact => <<"sip:127.0.0.1:",
-                                   (integer_to_binary(EP))/binary>>}),
+    EP = start(),
     application:set_env(chappe_sip, registrar_min_expires, 60),
-    ok = chappe_sip:register(chappe_sip:registrar()),
+    ok = chappe_sip:register(chappe_sip:registrar(#{allow_unauthenticated => true})),
     {ok, Sock} = gen_udp:open(0, [binary, {active, true}, {ip, {127,0,0,1}}]),
     LP = lport(Sock),
     send(Sock, EP, register_req(LP, 30, 1)),        % 30 < 60
@@ -196,11 +462,10 @@ live_min_expires_423(_Config) ->
 
 %% F9: a REGISTER must authenticate before it can write bindings, and an
 %% authenticated user cannot register a different AOR.
+%% req: R3261-R-10 R3261-R-12 R3261-R-13
 live_register_auth(_Config) ->
-    EP = pick(),
-    ok = chappe_sip:start(#{contact => <<"sip:127.0.0.1:",
-                                   (integer_to_binary(EP))/binary>>}),
-    Auth = #{realm => <<"sip">>,
+    EP = start(),
+    Auth = #{realm => <<"sip">>, domain => <<"127.0.0.1">>,
              secret => fun(<<"alice">>) -> {ok, <<"secret">>};
                           (_) -> error end},
     ok = chappe_sip:register(chappe_sip:registrar(#{auth => Auth})),
@@ -216,17 +481,91 @@ live_register_auth(_Config) ->
     send(Sock, EP, register_auth_req(LP, 3600, 2, <<"alice">>, Creds)),
     _ = recv_status(Sock, 200),
     ?assertMatch([_], chappe_sip:location(<<"sip:alice@127.0.0.1">>)),
-    %% 3) alice's credentials cannot register bob's AOR
-    send(Sock, EP, register_auth_req(LP, 3600, 3, <<"bob">>, Creds)),
+    %% 3) alice's credentials cannot register bob's AOR (a fresh nonce
+    %% count: the same one again is a replay)
+    Creds2 = client_creds(Chal, <<"alice">>, <<"secret">>, 2),
+    send(Sock, EP, register_auth_req(LP, 3600, 3, <<"bob">>, Creds2)),
     _ = recv_status(Sock, 403),
     ?assertEqual([], chappe_sip:location(<<"sip:bob@127.0.0.1">>)),
     gen_udp:close(Sock).
 
+%% On the wire: Path is echoed in the 200; an outbound flow gets Require:
+%% outbound, and a Flow-Timer when we are the first hop; a UA that did not
+%% ask for outbound gets no Require.
+%% req: R3327-R-03 R5626-R-12 R5626-R-16 R5626-R-08
+live_path_outbound(_Config) ->
+    EP = start(),
+    ok = chappe_sip:register(chappe_sip:registrar(#{allow_unauthenticated => true})),
+    {ok, Sock} = gen_udp:open(0, [binary, {active, true}, {ip, {127,0,0,1}}]),
+    LP = lport(Sock),
+    P = integer_to_binary(LP),
+    Flow = {<<"Contact">>, <<"<sip:alice@127.0.0.1:", P/binary,
+                             ";ob>;+sip.instance=\"<urn:uuid:1>\";reg-id=1">>},
+    %% direct: Require: outbound and Flow-Timer
+    send(Sock, EP, register_req(LP, 3600, 1, [Flow, {<<"Supported">>, <<"outbound, path">>}])),
+    {ok, M1} = chappe_sip_msg:parse(recv_status(Sock, 200)),
+    ?assertEqual(<<"outbound">>, chappe_sip_msg:get(<<"require">>, M1)),
+    ?assertEqual(<<"120">>, chappe_sip_msg:get(<<"flow-timer">>, M1)),
+    ?assertMatch({match, _}, re:run(chappe_sip_msg:get(<<"contact">>, M1), "reg-id=1")),
+    %% through an edge that put itself in an "ob" Path: Path echoed,
+    %% Require: outbound, no Flow-Timer
+    Edge = [{<<"Path">>, <<"<sip:edge.example.net;lr;ob>">>},
+            {<<"Via">>, <<"SIP/2.0/UDP 192.0.2.4:5060;branch=z9hG4bKua">>}],
+    send(Sock, EP, register_req(LP, 3600, 2,
+                                [Flow, {<<"Supported">>, <<"outbound, path">>} | Edge])),
+    {ok, M2} = chappe_sip_msg:parse(recv_status(Sock, 200)),
+    ?assertEqual(<<"<sip:edge.example.net;lr;ob>">>, chappe_sip_msg:get(<<"path">>, M2)),
+    ?assertEqual(<<"outbound">>, chappe_sip_msg:get(<<"require">>, M2)),
+    ?assertEqual(undefined, chappe_sip_msg:get(<<"flow-timer">>, M2)),
+    %% the UA did not list outbound: no Require
+    send(Sock, EP, register_req(LP, 3600, 3, [Flow])),
+    {ok, M3} = chappe_sip_msg:parse(recv_status(Sock, 200)),
+    ?assertEqual(undefined, chappe_sip_msg:get(<<"require">>, M3)),
+    gen_udp:close(Sock).
+
+%% A registrar processes Require as a UAS: path in Require gets 420 unless
+%% the route takes it (handle/3 option_tags).
+%% req: R3261-R-09
+live_require_path(_Config) ->
+    EP = start(),
+    Reg = chappe_sip:registrar(#{allow_unauthenticated => true}),
+    ok = chappe_sip:register(Reg),
+    {ok, Sock} = gen_udp:open(0, [binary, {active, true}, {ip, {127,0,0,1}}]),
+    LP = lport(Sock),
+    Hdrs = [{<<"Require">>, <<"path">>}, {<<"Supported">>, <<"path">>},
+            {<<"Path">>, <<"<sip:edge.example.net;lr>">>}],
+    send(Sock, EP, register_req(LP, 3600, 1, Hdrs)),
+    {ok, M} = chappe_sip_msg:parse(recv_status(Sock, 420)),
+    ?assertEqual(<<"path">>, chappe_sip_msg:get(<<"unsupported">>, M)),
+    ok = chappe_sip:handle(<<"REGISTER">>, Reg,
+                           #{option_tags => [<<"path">>, <<"outbound">>]}),
+    send(Sock, EP, register_req(LP, 3600, 2, Hdrs)),
+    _ = recv_status(Sock, 200),
+    gen_udp:close(Sock).
+
+%% A Record-Route in a REGISTER is ignored and never echoed.
+%% req: R3261-R-02 R3261-R-03
+live_record_route_ignored(_Config) ->
+    EP = start(),
+    ok = chappe_sip:register(chappe_sip:registrar(#{allow_unauthenticated => true})),
+    {ok, Sock} = gen_udp:open(0, [binary, {active, true}, {ip, {127,0,0,1}}]),
+    LP = lport(Sock),
+    send(Sock, EP, register_req(LP, 3600, 1,
+                                [{<<"Record-Route">>, <<"<sip:rr.example.net;lr>">>}])),
+    {ok, M} = chappe_sip_msg:parse(recv_status(Sock, 200)),
+    ?assertEqual(undefined, chappe_sip_msg:get(<<"record-route">>, M)),
+    [B] = chappe_sip:bindings(<<"sip:alice@127.0.0.1">>),
+    ?assertEqual([], maps:get(path, B)),
+    gen_udp:close(Sock).
+
 client_creds(Chal, User, Pass) ->
+    client_creds(Chal, User, Pass, 1).
+
+client_creds(Chal, User, Pass, Nc) ->
     {ok, Creds} = chappe_sip_digest:credentials(
                     #{method => <<"REGISTER">>, uri => <<"sip:127.0.0.1">>,
                       username => User, password => Pass, challenge => Chal,
-                      nc => 1, cnonce => <<"abcd1234">>}),
+                      nc => Nc, cnonce => <<"abcd1234">>}),
     Creds.
 
 www_auth_of(Bin) ->
@@ -250,9 +589,43 @@ register_auth_req(LP, Exp, CSeq, User, Auth) ->
 
 %% ---- helpers ----
 
+start() ->
+    EP = pick(),
+    ok = chappe_sip:start(#{contact => <<"sip:127.0.0.1:",
+                                         (integer_to_binary(EP))/binary>>}),
+    EP.
+
 reg(Aor, Contacts, ExpiresHdr, CallId, CSeq) ->
     {ok, Msg} = chappe_sip_msg:parse(reg_raw(Aor, Contacts, ExpiresHdr, CallId, CSeq)),
     chappe_sip_registry:register_contacts(chappe_sip_req:new(Msg, undefined, #{}), #{}).
+
+%% a REGISTER through register_request/2. Opts: to, ruri, contacts,
+%% expires, callid, cseq, headers, vias, flow.
+regx(Opts) ->
+    To = maps:get(to, Opts, aor()),
+    Vias = maps:get(vias, Opts, [<<"SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKreg">>]),
+    Raw = iolist_to_binary(
+      [<<"REGISTER ">>, maps:get(ruri, Opts, <<"sip:example.com">>), <<" SIP/2.0\r\n">>,
+       [[<<"Via: ">>, V, <<"\r\n">>] || V <- Vias],
+       <<"Max-Forwards: 70\r\n">>,
+       <<"From: ">>, To, <<";tag=ft\r\n">>,
+       <<"To: ">>, To, <<"\r\n">>,
+       <<"Call-ID: ">>, maps:get(callid, Opts, <<"x">>), <<"@ct\r\n">>,
+       <<"CSeq: ">>, integer_to_binary(maps:get(cseq, Opts, 1)), <<" REGISTER\r\n">>,
+       [[<<"Contact: ">>, C, <<"\r\n">>] || C <- maps:get(contacts, Opts, [])],
+       [[N, <<": ">>, V, <<"\r\n">>] || {N, V} <- maps:get(headers, Opts, [])],
+       case maps:get(expires, Opts, undefined) of
+           undefined -> [];
+           E -> [<<"Expires: ">>, integer_to_binary(E), <<"\r\n">>]
+       end,
+       <<"Content-Length: 0\r\n\r\n">>]),
+    {ok, Msg} = chappe_sip_msg:parse(Raw),
+    RegOpts = case maps:get(flow, Opts, undefined) of
+                  undefined -> #{};
+                  F -> #{flow => F}
+              end,
+    chappe_sip_registry:register_request(chappe_sip_req:new(Msg, undefined, #{}),
+                                         RegOpts).
 
 aor() -> <<"<sip:alice@example.com>">>.
 curi(N) -> <<"sip:alice@10.0.0.", (integer_to_binary(N))/binary>>.
@@ -279,18 +652,33 @@ reg_raw(Aor, Contacts, ExpiresHdr, CallId, CSeq) ->
        <<"Content-Length: 0\r\n\r\n">>]).
 
 register_req(LP, Exp, CSeq) ->
+    register_req(LP, Exp, CSeq, []).
+
+%% Extra headers go after the Contact; an extra Via goes below ours.
+register_req(LP, Exp, CSeq, Extra) ->
     P = integer_to_binary(LP),
     CS = integer_to_binary(CSeq),
     E = integer_to_binary(Exp),
-    <<"REGISTER sip:127.0.0.1 SIP/2.0\r\n"
-      "Via: SIP/2.0/UDP 127.0.0.1:", P/binary, ";rport;branch=z9hG4bKr", CS/binary,
-      "\r\nMax-Forwards: 70\r\n"
-      "From: Alice <sip:alice@127.0.0.1>;tag=ft\r\n"
-      "To: Alice <sip:alice@127.0.0.1>\r\n"
-      "Contact: <sip:alice@127.0.0.1:", P/binary, ">\r\n"
-      "Expires: ", E/binary, "\r\n"
-      "Call-ID: reg-", P/binary, "@ct\r\n"
-      "CSeq: ", CS/binary, " REGISTER\r\nContent-Length: 0\r\n\r\n">>.
+    {Vias, Others} = lists:partition(fun({N, _}) -> N =:= <<"Via">> end, Extra),
+    {Contacts, Rest} = lists:partition(fun({N, _}) -> N =:= <<"Contact">> end, Others),
+    ContactLines = case Contacts of
+                       [] -> [<<"Contact: <sip:alice@127.0.0.1:", P/binary, ">\r\n">>];
+                       _ -> [<<"Contact: <sip:alice@127.0.0.1:", P/binary, ">\r\n">> ||
+                                not lists:any(fun({_, V}) -> binary:match(V, <<"alice">>) =/= nomatch end, Contacts)]
+                   end,
+    iolist_to_binary(
+      [<<"REGISTER sip:127.0.0.1 SIP/2.0\r\n">>,
+       <<"Via: SIP/2.0/UDP 127.0.0.1:", P/binary, ";rport;branch=z9hG4bKr", CS/binary, "\r\n">>,
+       [[<<"Via: ">>, V, <<"\r\n">>] || {_, V} <- Vias],
+       <<"Max-Forwards: 70\r\n">>,
+       <<"From: Alice <sip:alice@127.0.0.1>;tag=ft\r\n">>,
+       <<"To: Alice <sip:alice@127.0.0.1>\r\n">>,
+       ContactLines,
+       [[<<"Contact: ">>, V, <<"\r\n">>] || {_, V} <- Contacts],
+       [[N, <<": ">>, V, <<"\r\n">>] || {N, V} <- Rest],
+       <<"Expires: ">>, E, <<"\r\n">>,
+       <<"Call-ID: reg-">>, P, <<"@ct\r\n">>,
+       <<"CSeq: ">>, CS, <<" REGISTER\r\nContent-Length: 0\r\n\r\n">>]).
 
 pick() -> chappe_sip_test_port:pick().
 lport(Sock) -> {ok, P} = inet:port(Sock), P.

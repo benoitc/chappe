@@ -25,6 +25,10 @@
 -export([init/1, callback_mode/0, terminate/3]).
 -export([trying/3, established/3]).
 
+%% challenged requests one INVITE may send: a realm per round, plus
+%% stale nonces
+-define(MAX_AUTH_ROUNDS, 4).
+
 -record(data, {
     uri :: binary(),
     method :: binary(),
@@ -45,7 +49,23 @@
     % when set, originate over this WS flow
     flow :: integer() | undefined,
     txn :: non_neg_integer() | undefined,
-    auth_tried = false :: boolean(),
+    %% the Digest challenges we answer, one per (header, realm), with the
+    %% header our credentials go in (RFC 3261 22.2, 22.3)
+    challenges = [] :: [{binary(), map()}],
+    %% challenged requests sent so far (stale nonces included), bounded
+    auth_rounds = 0 :: non_neg_integer(),
+    %% requests sent per nonce: the nc of the next one (RFC 7616 3.4)
+    nonce_count = #{} :: #{binary() => pos_integer()},
+    %% the credentials of the last request sent, repeated on its 2xx ACK
+    %% (RFC 3261 13.2.2.4)
+    auth_hdrs = [] :: [{binary(), binary()}],
+    %% 3xx targets still to try, best q first, and the ones tried
+    targets = [] :: [binary()],
+    tried = [] :: [binary()],
+    %% the caller gave up (create_uac timeout): CANCEL, and BYE a 2xx
+    abandoned = false :: boolean(),
+    %% the dialog the 2xx formed, while forked 2xx linger
+    dialog :: chappe_sip_dialog:dialog() | undefined,
     %% retried once without the option tags a 420 named
     ext_retried = false :: boolean(),
     redirects = 0 :: non_neg_integer(),
@@ -99,11 +119,16 @@ init(#{
         cseq = 1,
         next_cseq = 2,
         proxy = maps:get(proxy, Opts, undefined),
-        flow = maps:get(flow, Opts, undefined)
+        flow = maps:get(flow, Opts, undefined),
+        tried = [Uri]
     },
     case send_request(Data) of
-        {ok, TxnH} ->
-            {ok, trying, Data#data{txn = TxnH}};
+        {ok, Data1} ->
+            %% the owner waits on this INVITE for as long as it rings (a
+            %% b2bua A leg, a handler originating a call): its handler
+            %% deadline no longer applies
+            _ = Method =:= <<"INVITE">> andalso chappe_sip_engine:disarm(Owner),
+            {ok, trying, Data1};
         {error, Reason} ->
             %% surfaced to the caller as start/2 -> {error, Reason}
             {stop, Reason}
@@ -135,6 +160,9 @@ trying(cast, {cancel, Hdrs}, #data{txn = TxnH} = D) when TxnH =/= undefined ->
     {keep_state, D};
 trying(cast, {cancel, _}, D) ->
     {keep_state, D};
+trying(cast, abandon, #data{txn = TxnH} = D) ->
+    _ = TxnH =/= undefined andalso chappe_sip_engine:cancel_txn(TxnH, []),
+    {keep_state, D#data{abandoned = true}};
 trying({call, From}, destroy, D) ->
     trying({call, From}, {destroy, #{}}, D);
 trying({call, From}, {destroy, Opts}, #data{txn = TxnH} = D) when
@@ -189,6 +217,14 @@ established({call, From}, _Req, D) ->
     {keep_state, D, [{reply, From, {error, answered}}]};
 established(cast, {cancel, _}, D) ->
     {keep_state, D};
+established(cast, abandon, #data{dialog = Dialog} = D) when
+    Dialog =/= undefined
+->
+    %% the 2xx beat the caller's timeout: nobody will use this dialog
+    _ = spawn(fun() -> chappe_sip_dialog:destroy(Dialog) end),
+    {keep_state, D#data{dialog = undefined}};
+established(cast, abandon, D) ->
+    {keep_state, D};
 established(state_timeout, linger_done, #data{txn = TxnH} = D) ->
     chappe_sip_engine:finish_txn(TxnH),
     {stop, normal, D};
@@ -222,6 +258,22 @@ handle_response(Status, Raw, D) when Status >= 100, Status < 200 ->
             notify(D, {provisional, Msg}),
             {keep_state, first_sdp(Msg, D2)}
     end;
+handle_response(
+    Status, Raw, #data{method = <<"INVITE">>, abandoned = true} = D
+) when
+    Status >= 200, Status < 300
+->
+    %% the caller timed out and our CANCEL lost the race: end the call
+    {ok, Msg} = chappe_sip_msg:parse(Raw),
+    AckBody =
+        case ack_answer(Msg, D) of
+            {ok, B} -> B;
+            reject -> reject_answer(chappe_sip_msg:body(Msg))
+        end,
+    _ = send_ack(Msg, AckBody, D),
+    _ = send_bye(Msg, D),
+    chappe_sip_engine:finish_txn(D#data.txn),
+    {stop, normal, unindex_early(D)};
 handle_response(Status, Raw, #data{method = <<"INVITE">>} = D0) when
     Status >= 200, Status < 300
 ->
@@ -254,16 +306,13 @@ handle_response(Status, Raw, D) when Status >= 200, Status < 300 ->
     notify(D, {response, Msg}),
     chappe_sip_engine:finish_txn(D#data.txn),
     {stop, normal, D};
-handle_response(Status, Raw, #data{auth_tried = false} = D) when
-    Status =:= 401; Status =:= 407
-->
+handle_response(Status, Raw, D) when Status =:= 401; Status =:= 407 ->
     {ok, Msg} = chappe_sip_msg:parse(Raw),
     case retry_with_auth(Status, Msg, D) of
         {ok, D2} ->
             {next_state, trying, D2};
-        {error, Reason} ->
+        {error, _Reason} ->
             notify(D, {error, sip_error(Status, Msg)}),
-            _ = Reason,
             chappe_sip_engine:finish_txn(D#data.txn),
             {stop, normal, D}
     end;
@@ -282,8 +331,8 @@ handle_response(420, Raw, #data{ext_retried = false} = D) ->
                 ext_retried = true
             },
             case send_request(D2) of
-                {ok, TxnH} ->
-                    {keep_state, D2#data{txn = TxnH}};
+                {ok, D3} ->
+                    {keep_state, D3};
                 {error, Reason} ->
                     notify(D, {error, Reason}),
                     {stop, normal, D}
@@ -303,13 +352,27 @@ handle_response(Status, Raw, #data{opts = Opts, redirects = R} = D) when
                 {ok, D2} ->
                     {next_state, trying, D2};
                 {error, _} ->
+                    %% redirect/2 released the transaction
                     notify(D, {error, sip_error(Status, Msg)}),
-                    chappe_sip_engine:finish_txn(D#data.txn),
                     {stop, normal, D}
             end;
         false ->
             notify(D, {error, sip_error(Status, Msg)}),
             chappe_sip_engine:finish_txn(D#data.txn),
+            {stop, normal, D}
+    end;
+handle_response(Status, Raw, #data{targets = [_ | _]} = D) when
+    Status >= 400, Status < 600
+->
+    %% RFC 3261 8.1.3.4: a redirect target failed; try the next one (a
+    %% 6xx is a global failure and ends the search)
+    {ok, Msg} = chappe_sip_msg:parse(Raw),
+    chappe_sip_engine:finish_txn(D#data.txn),
+    case next_target(D) of
+        {ok, D2} ->
+            {next_state, trying, D2};
+        {error, _} ->
+            notify(D, {error, sip_error(Status, Msg)}),
             {stop, normal, D}
     end;
 handle_response(Status, Raw, D) ->
@@ -332,9 +395,10 @@ answered(Msg, AckBody, D) ->
                         maps:get(report_answer, D#data.opts, false) andalso
                             notify(D, {answer, Msg}),
                     notify(D, {ok, Dialog}),
-                    {next_state, established, D1#data{winner_tag = ToTag}, [
-                        {state_timeout, 4000, linger_done}
-                    ]};
+                    {next_state, established,
+                        D1#data{winner_tag = ToTag, dialog = Dialog}, [
+                            {state_timeout, 4000, linger_done}
+                        ]};
                 {error, Reason} ->
                     notify(D, {error, Reason}),
                     chappe_sip_engine:finish_txn(D#data.txn),
@@ -359,6 +423,9 @@ first_sdp(_Msg, D) ->
 %% carries the offer (an INVITE without one). Without an answer fun, or
 %% when it refuses, the offer is not acceptable.
 ack_answer(_Msg, #data{local_answer = A}) when A =/= <<>> ->
+    {ok, <<>>};
+ack_answer(_Msg, #data{opts = #{no_ack := true}}) ->
+    %% 3PCC: the answer goes in the ACK the app sends (chappe_sip_dialog:ack/2)
     {ok, <<>>};
 ack_answer(Msg, #data{opts = Opts}) ->
     Offer = chappe_sip_msg:body(Msg),
@@ -419,7 +486,7 @@ retry_session_interval(Msg, #data{cseq = CSeq} = D) ->
                 retries_422 = D#data.retries_422 + 1
             },
             case send_request(D2) of
-                {ok, TxnH} -> {ok, D2#data{txn = TxnH}};
+                {ok, D3} -> {ok, D3};
                 {error, _} -> give_up
             end;
         _ ->
@@ -468,12 +535,18 @@ terminate(_Reason, _State, D) ->
 
 %% ---- reliable provisionals (100rel): PRACK ----
 
-%% RFC 3262 4: a 101..199 with RSeq is reliable (a 100 never is). In each
-%% early dialog the first one sets the sequence; after it only RSeq + 1
-%% is new, a lower or equal RSeq is a retransmission and a higher one is
-%% out of order: both are dropped without a PRACK.
+%% RFC 3262 4: a 101..199 with Require: 100rel and an RSeq is reliable (a
+%% 100 never is); one lacking either is an ordinary provisional, never
+%% PRACKed. In each early dialog the first one sets the sequence; after it
+%% only RSeq + 1 is new, a lower or equal RSeq is a retransmission and a
+%% higher one is out of order: both are dropped without a PRACK.
 reliable(Status, Msg, #data{rseq = Seen}) when Status > 100 ->
-    case rseq(Msg) of
+    Required = lists:member(
+        <<"100rel">>, option_tags(chappe_sip_msg:get_all(<<"require">>, Msg))
+    ),
+    case Required andalso rseq(Msg) of
+        false ->
+            unreliable;
         undefined ->
             unreliable;
         N ->
@@ -516,21 +589,17 @@ prack_answer(Msg, #data{opts = Opts, local_answer = <<>>} = D) ->
 prack_answer(_Msg, D) ->
     {<<>>, D}.
 
-%% RAck = RSeq CSeq method
+%% RAck = RSeq CSeq method. The PRACK is a request of the early dialog
+%% the 1xx formed: to its Contact, through its route set (RFC 3262 4,
+%% RFC 3261 12.1.2), like the 2xx ACK.
 send_prack(
     RSeq,
     Msg,
     #data{
-        call_id = CallId,
         cseq = InvCSeq,
         next_cseq = PCSeq
     } = D
 ) ->
-    % our From (our tag)
-    From = chappe_sip_msg:get(<<"from">>, Msg),
-    % To with the peer's early tag
-    To = chappe_sip_msg:get(<<"to">>, Msg),
-    RURI = target_uri(Msg),
     RAck = <<
         (integer_to_binary(RSeq))/binary,
         " ",
@@ -543,19 +612,9 @@ send_prack(
             <<>> -> <<>>;
             _ -> <<"Content-Type: application/sdp\r\n">>
         end,
-    Raw =
-        <<"PRACK ", RURI/binary, " SIP/2.0\r\n", "From: ", From/binary, "\r\n",
-            "To: ", To/binary, "\r\n", "Call-ID: ", CallId/binary, "\r\n",
-            "CSeq: ", (integer_to_binary(PCSeq))/binary, " PRACK\r\n", "RAck: ",
-            RAck/binary, "\r\n", "Max-Forwards: 70\r\n", CT/binary,
-            "Content-Length: ", (integer_to_binary(byte_size(Body)))/binary,
-            "\r\n\r\n", Body/binary>>,
-    PRoute =
-        case D#data.flow of
-            undefined -> RURI;
-            F -> {ws, F}
-        end,
-    case chappe_sip_engine:send_request(PRoute, Raw, self()) of
+    Hdrs = <<"RAck: ", RAck/binary, "\r\n", CT/binary>>,
+    Raw = dialog_request(<<"PRACK">>, PCSeq, Hdrs, Body, Msg, D1),
+    case chappe_sip_engine:send_request(ack_route(Msg, D1), Raw, self()) of
         {ok, PTxn} ->
             D1#data{
                 next_cseq = PCSeq + 1,
@@ -576,9 +635,15 @@ prack_done(PTxn, D) ->
 
 %% ---- request building / sending ----
 
-send_request(#data{} = D) ->
+%% Send the request D describes, with fresh credentials for every challenge
+%% we answer; {ok, D} carries the new client transaction.
+send_request(#data{} = D0) ->
+    D = with_credentials(D0),
     Raw = build_request(D),
-    chappe_sip_engine:send_request(route(D), Raw, self()).
+    case chappe_sip_engine:send_request(route(D), Raw, self()) of
+        {ok, TxnH} -> {ok, D#data{txn = TxnH}};
+        {error, _} = Err -> Err
+    end.
 
 %% originate over the WS flow when targeting a registered browser, else the
 %% proxy URL (or undefined, letting sofia route by the Request-URI)
@@ -594,7 +659,8 @@ build_request(#data{
     cseq = CSeq,
     contact = Contact,
     opts = Opts,
-    min_se_422 = MinSE
+    min_se_422 = MinSE,
+    auth_hdrs = AuthHeaders
 }) ->
     Seq = integer_to_binary(CSeq),
     ExtraHeaders0 = maps:get(headers, Opts, []),
@@ -610,7 +676,6 @@ build_request(#data{
                 ExtraHeaders0
         end ++ supported_header(Supported, ExtraHeaders0) ++
             allow_header(Method, ExtraHeaders0),
-    AuthHeaders = maps:get('$auth_headers', Opts, []),
     %% RFC 4028 7.1: an INVITE asks for a Session-Expires when configured
     StHeaders =
         case Method of
@@ -696,7 +761,9 @@ send_ack(Msg, Body, #data{cseq = CSeq} = D) ->
             <<>> -> <<>>;
             _ -> <<"Content-Type: application/sdp\r\n">>
         end,
-    Raw = dialog_request(<<"ACK">>, CSeq, CT, Body, Msg, D),
+    %% the ACK carries the INVITE's credentials (13.2.2.4, 22.1)
+    Hdrs = <<(chappe_sip_hdr_io:join(D#data.auth_hdrs))/binary, CT/binary>>,
+    Raw = dialog_request(<<"ACK">>, CSeq, Hdrs, Body, Msg, D),
     case chappe_sip_engine:send_stateless(ack_route(Msg, D), Raw, self()) of
         {ok, _} -> ok;
         Err -> Err
@@ -707,23 +774,27 @@ send_bye(Msg, #data{cseq = CSeq} = D) ->
     Raw = dialog_request(<<"BYE">>, CSeq + 1, <<>>, <<>>, Msg, D),
     chappe_sip_engine:send_stateless(ack_route(Msg, D), Raw, self()).
 
+%% RFC 3261 12.2.1.1: a strict router (no ;lr) takes the Request-URI
 dialog_request(Method, Seq, Hdrs, Body, Msg, #data{call_id = CallId}) ->
     From = chappe_sip_msg:get(<<"from">>, Msg),
     To = chappe_sip_msg:get(<<"to">>, Msg),
-    Routes = <<<<"Route: ", R/binary, "\r\n">> || R <- route_set(Msg)>>,
-    <<Method/binary, " ", (target_uri(Msg))/binary, " SIP/2.0\r\n",
-        Routes/binary, "From: ", From/binary, "\r\n", "To: ", To/binary, "\r\n",
-        "Call-ID: ", CallId/binary, "\r\n", "CSeq: ",
-        (integer_to_binary(Seq))/binary, " ", Method/binary, "\r\n",
-        "Max-Forwards: 70\r\n", Hdrs/binary, "Content-Length: ",
-        (integer_to_binary(byte_size(Body)))/binary, "\r\n\r\n", Body/binary>>.
+    {RURI, RouteSet} = chappe_sip_route:request_target(
+        target_uri(Msg), route_set(Msg)
+    ),
+    Routes = <<<<"Route: ", R/binary, "\r\n">> || R <- RouteSet>>,
+    <<Method/binary, " ", RURI/binary, " SIP/2.0\r\n", Routes/binary, "From: ",
+        From/binary, "\r\n", "To: ", To/binary, "\r\n", "Call-ID: ",
+        CallId/binary, "\r\n", "CSeq: ", (integer_to_binary(Seq))/binary, " ",
+        Method/binary, "\r\n", "Max-Forwards: 70\r\n", Hdrs/binary,
+        "Content-Length: ", (integer_to_binary(byte_size(Body)))/binary,
+        "\r\n\r\n", Body/binary>>.
 
 %% RFC 3261 12.1.2: the route set is the 2xx Record-Route, reversed
 route_set(Msg) ->
     lists:reverse(chappe_sip_msg:get_all(<<"record-route">>, Msg)).
 
-%% ACK/BYE destination: the WS flow for a browser target, else the first
-%% Route (loose routing), else by Request-URI
+%% ACK/BYE/PRACK destination: the WS flow for a browser target, else the
+%% first route (a loose or a strict router), else by Request-URI
 ack_route(_Msg, #data{flow = Flow}) when Flow =/= undefined -> {ws, Flow};
 ack_route(Msg, _D) ->
     case route_set(Msg) of
@@ -789,10 +860,22 @@ establish_dialog(
         session_timer => St
     },
     %% our session is the answer a PRACK carried, else the opts' offer
-    DialogArgs =
+    DialogArgs1 =
         case D#data.local_answer of
             <<>> -> DialogArgs0;
             A -> DialogArgs0#{local_sdp => A}
+        end,
+    %% no_ack (3PCC): the dialog sends the 2xx ACK when the app has it
+    DialogArgs =
+        case Opts of
+            #{no_ack := true} ->
+                DialogArgs1#{
+                    pending_ack => #{
+                        cseq => D#data.cseq, headers => D#data.auth_hdrs
+                    }
+                };
+            _ ->
+                DialogArgs1
         end,
     case chappe_sip_engine:create_dialog(DialogArgs) of
         {ok, Pid, LegH} ->
@@ -806,77 +889,189 @@ establish_dialog(
             {error, Reason}
     end.
 
-retry_with_auth(Status, Msg, #data{opts = Opts, cseq = CSeq} = D) ->
-    Auth = maps:get(auth, Opts, undefined),
+%% RFC 3261 22.2, 22.3: answer every Digest challenge of the 401/407, one
+%% per realm (the strongest algorithm, RFC 8760), and keep answering the
+%% ones of earlier rounds: a 407 then a 401 ends with both credentials on
+%% the request. A new challenge for a realm we already answered means our
+%% credentials were refused, unless it says stale=true (only the nonce
+%% expired: retry with the new one, RFC 7616 3.3).
+retry_with_auth(Status, Msg, #data{cseq = CSeq} = D) ->
     {ChalHdr, AuthHdrName} = challenge_header(Status),
-    case {Auth, chappe_sip_msg:parsed(ChalHdr, Msg)} of
-        {#{user := User, pass := Pass}, {ok, Challenge}} ->
-            case
-                chappe_sip_digest:credentials(
-                    #{
-                        method => D#data.method,
-                        uri => D#data.uri,
-                        username => User,
-                        password => Pass,
-                        challenge => Challenge
-                    }
-                )
-            of
-                {ok, Creds} ->
-                    chappe_sip_engine:finish_txn(D#data.txn),
-                    Opts2 = Opts#{'$auth_headers' => [{AuthHdrName, Creds}]},
-                    D2 = D#data{
-                        opts = Opts2,
-                        cseq = CSeq + 1,
-                        next_cseq = CSeq + 2,
-                        auth_tried = true
-                    },
-                    case send_request(D2) of
-                        {ok, TxnH} -> {ok, D2#data{txn = TxnH}};
-                        Err -> Err
-                    end;
-                Err ->
-                    Err
-            end;
-        _ ->
-            {error, no_auth}
+    Auth = maps:get(auth, D#data.opts, undefined),
+    Parsed = [
+        C
+     || V <- chappe_sip_msg:get_all(ChalHdr, Msg),
+        {ok, C} <- [chappe_sip_hdr:auth(V)]
+    ],
+    Usable = [
+        C
+     || C <- chappe_sip_digest:select(Parsed),
+        credentials_for(challenge_realm(C), Auth) =/= none
+    ],
+    case merge_challenges(AuthHdrName, Usable, D#data.challenges) of
+        {ok, Cs} when D#data.auth_rounds < ?MAX_AUTH_ROUNDS ->
+            chappe_sip_engine:finish_txn(D#data.txn),
+            send_request(D#data{
+                challenges = Cs,
+                auth_rounds = D#data.auth_rounds + 1,
+                cseq = CSeq + 1,
+                next_cseq = CSeq + 2
+            });
+        {ok, _} ->
+            {error, too_many_challenges};
+        Err ->
+            Err
     end.
 
-redirect(
-    Msg,
-    #data{
-        cseq = CSeq,
-        redirects = R,
-        uri = OldUri,
-        opts = Opts
-    } = D
-) ->
-    case chappe_sip_msg:get(<<"contact">>, Msg) of
-        undefined ->
-            {error, no_contact};
-        Contact ->
-            case chappe_sip_hdr:name_addr(Contact) of
-                {ok, #{uri := NewUri}} ->
-                    chappe_sip_engine:finish_txn(D#data.txn),
-                    %% do not replay an Authorization issued for the old
-                    %% authority to a different one (credential leak)
-                    Opts2 = strip_auth_across_authority(OldUri, NewUri, Opts),
-                    D2 = D#data{
-                        uri = NewUri,
-                        to = <<"<", NewUri/binary, ">">>,
-                        cseq = CSeq + 1,
-                        next_cseq = CSeq + 2,
-                        redirects = R + 1,
-                        opts = Opts2
-                    },
-                    case send_request(D2) of
-                        {ok, TxnH} -> {ok, D2#data{txn = TxnH}};
-                        Err -> Err
-                    end;
-                _ ->
-                    {error, bad_contact}
-            end
+merge_challenges(_Name, [], _Old) ->
+    {error, no_auth};
+merge_challenges(Name, New, Old) ->
+    lists:foldl(
+        fun
+            (_C, {error, _} = Err) ->
+                Err;
+            (C, {ok, Acc}) ->
+                Key = {Name, challenge_realm(C)},
+                case [X || {N, X} <- Acc, {N, challenge_realm(X)} =:= Key] of
+                    [] ->
+                        {ok, Acc ++ [{Name, C}]};
+                    [_ | _] ->
+                        case is_stale(C) of
+                            true -> {ok, replace_challenge(Key, C, Acc)};
+                            false -> {error, rejected}
+                        end
+                end
+        end,
+        {ok, Old},
+        New
+    ).
+
+replace_challenge({Name, Realm}, C, Cs) ->
+    [
+        case N =:= Name andalso challenge_realm(X) =:= Realm of
+            true -> {N, C};
+            false -> {N, X}
+        end
+     || {N, X} <- Cs
+    ].
+
+is_stale(#{params := P}) ->
+    string:lowercase(maps:get(<<"stale">>, P, <<"false">>)) =:= <<"true">>.
+
+challenge_realm(#{params := P}) -> maps:get(<<"realm">>, P, <<>>).
+
+challenge_nonce(#{params := P}) -> maps:get(<<"nonce">>, P, <<>>).
+
+%% auth is #{user, pass} or a list of them; one naming a realm answers only
+%% that realm's challenges
+credentials_for(_Realm, undefined) ->
+    none;
+credentials_for(Realm, #{} = A) ->
+    credentials_for(Realm, [A]);
+credentials_for(Realm, List) when is_list(List) ->
+    Named = [A || #{realm := R} = A <- List, R =:= Realm],
+    Any = [A || A <- List, not maps:is_key(realm, A)],
+    case Named ++ Any of
+        [#{user := U, pass := P} | _] -> {U, P};
+        _ -> none
     end.
+
+%% the Authorization / Proxy-Authorization headers of the next request:
+%% one per challenge, each nonce counting its requests (RFC 7616 3.4)
+with_credentials(#data{challenges = Cs, opts = Opts} = D) ->
+    Auth = maps:get(auth, Opts, undefined),
+    {Hdrs, NC} = lists:foldl(
+        fun({Name, Chal}, {HAcc, NAcc}) ->
+            Nonce = challenge_nonce(Chal),
+            N = maps:get(Nonce, NAcc, 0) + 1,
+            {User, Pass} = credentials_for(challenge_realm(Chal), Auth),
+            case
+                chappe_sip_digest:credentials(#{
+                    method => D#data.method,
+                    uri => D#data.uri,
+                    username => User,
+                    password => Pass,
+                    challenge => Chal,
+                    nc => N
+                })
+            of
+                {ok, V} -> {HAcc ++ [{Name, V}], NAcc#{Nonce => N}};
+                {error, _} -> {HAcc, NAcc}
+            end
+        end,
+        {[], D#data.nonce_count},
+        Cs
+    ),
+    D#data{auth_hdrs = Hdrs, nonce_count = NC}.
+
+%% RFC 3261 8.1.3.4: the Contacts of a 3xx are new targets, tried best q
+%% first; each failure moves to the next one
+redirect(Msg, #data{redirects = R} = D) ->
+    New = redirect_targets(Msg, D),
+    Targets = New ++ (D#data.targets -- New),
+    chappe_sip_engine:finish_txn(D#data.txn),
+    next_target(D#data{targets = Targets, redirects = R + 1}).
+
+next_target(#data{targets = []}) ->
+    {error, no_target};
+next_target(#data{targets = [T | Rest], uri = OldUri, cseq = CSeq} = D) ->
+    D1 = strip_auth_across_authority(OldUri, T, D#data{
+        uri = T,
+        to = <<"<", T/binary, ">">>,
+        cseq = CSeq + 1,
+        next_cseq = CSeq + 2,
+        targets = Rest,
+        tried = [T | D#data.tried],
+        rseq = #{},
+        first_sdp = <<>>
+    }),
+    case send_request(D1) of
+        {ok, D2} -> {ok, D2};
+        {error, _} -> next_target(D1)
+    end.
+
+%% sip/sips Contacts not tried yet, by q (1.0 when absent), header order
+%% on a tie. A URI's ?headers part is dropped: we do not let a redirect
+%% add headers to our request (RFC 3261 19.1.5 makes them optional).
+redirect_targets(Msg, #data{tried = Tried}) ->
+    Contacts = lists:append([
+        L
+     || V <- chappe_sip_msg:get_all(<<"contact">>, Msg),
+        {ok, L} <- [chappe_sip_hdr:name_addr_list(V)]
+    ]),
+    Ranked = [
+        {-q_value(maps:get(params, C, #{})), I, without_headers(Uri)}
+     || {I, #{uri := Uri} = C} <- lists:enumerate(Contacts),
+        supported_target(Uri)
+    ],
+    Uris = [U || {_, _, U} <- lists:sort(Ranked)],
+    dedup([U || U <- Uris, not lists:member(U, Tried)]).
+
+dedup([]) -> [];
+dedup([H | T]) -> [H | dedup([X || X <- T, X =/= H])].
+
+supported_target(Uri) ->
+    case chappe_sip_uri:parse(Uri) of
+        {ok, #{scheme := S}} -> S =:= sip orelse S =:= sips;
+        _ -> false
+    end.
+
+without_headers(Uri) ->
+    hd(binary:split(Uri, <<"?">>)).
+
+q_value(#{<<"q">> := Q}) when is_binary(Q) ->
+    try
+        binary_to_float(Q)
+    catch
+        error:badarg ->
+            try
+                float(binary_to_integer(Q))
+            catch
+                error:badarg -> 0.0
+            end
+    end;
+q_value(_) ->
+    1.0.
 
 %% The request options with the option tags a 420 named taken out of what
 %% we require; error when we required none of them (nothing to retry).
@@ -922,21 +1117,13 @@ option_tags(Values) ->
         string:trim(T) =/= <<>>
     ].
 
-%% Drop a computed Authorization header when the redirect crosses to a
-%% different host:port; keep it for an intra-authority redirect.
-strip_auth_across_authority(OldUri, NewUri, Opts) ->
-    case same_authority(OldUri, NewUri) of
-        true -> Opts;
-        false -> maps:remove('$auth_headers', Opts)
-    end.
-
-same_authority(A, B) ->
-    authority(A) =:= authority(B).
-
-authority(Uri) ->
-    case chappe_sip_uri:parse(Uri) of
-        {ok, M} -> {maps:get(host, M, undefined), maps:get(port, M, undefined)};
-        _ -> undefined
+%% Forget the challenges (and so the credentials) of the old target when a
+%% redirect leaves its scheme, host or port, or when either URI does not
+%% parse: they were issued for that authority only.
+strip_auth_across_authority(OldUri, NewUri, D) ->
+    case chappe_sip_uri:same_authority(OldUri, NewUri) of
+        true -> D;
+        false -> D#data{challenges = [], nonce_count = #{}, auth_hdrs = []}
     end.
 
 %% ---- helpers ----
@@ -1025,6 +1212,9 @@ gen_call_id() ->
         "@chappe"
     >>.
 
+notify(#data{abandoned = true}, _Event) ->
+    %% the caller stopped listening
+    ok;
 notify(#data{notify = Pid, ref = Ref}, Event) ->
     Pid ! {chappe_sip_uac, #uac_ref{pid = self(), ref = Ref}, Event},
     ok.

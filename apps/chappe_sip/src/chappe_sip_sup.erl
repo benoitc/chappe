@@ -11,6 +11,8 @@
 %% 3. chappe_sip_dialog_index: sweeps index entries of dialog fsms that die
 %%    without cleaning up (the table itself lives in the keeper). Above the
 %%    stack so it sees the dialogs of an engine restart go down.
+%% 3a. chappe_sip_digest_nc: the nonce counts the digest server accepted,
+%%    so a replayed Authorization is refused across engine restarts.
 %% 3b. chappe_sip_refer_sup: REFER subscriptions and their registry; each
 %%    subscription watches its dialog, so it too sits above the stack.
 %% 4. chappe_sip_ws_sup / chappe_sip_media_sup: optional subsystems (WS transport, media
@@ -34,6 +36,7 @@ init([]) ->
         worker(chappe_sip_registry_keeper),
         worker(chappe_sip_registry),
         worker(chappe_sip_dialog_index),
+        worker(chappe_sip_digest_nc),
         sup(chappe_sip_refer_sup),
         sup(chappe_sip_ws_sup),
         sup(chappe_sip_media_sup),

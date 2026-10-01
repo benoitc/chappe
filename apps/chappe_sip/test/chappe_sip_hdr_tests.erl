@@ -338,3 +338,19 @@ refer_to_value_test() ->
                  chappe_sip_hdr:refer_to_value(
                    #{uri => <<"sip:c@h">>, method => <<"BYE">>,
                      display => <<"C">>})).
+
+%% header values that are not UTF-8 are trimmed and parsed byte-wise (U1)
+non_utf8_test() ->
+    {ok, N} = chappe_sip_hdr:name_addr(<<" ", 16#FF, " <sip:a@b>;X-P=", 16#FE, " \t">>),
+    ?assertEqual(<<16#FE>>, maps:get(<<"x-p">>, maps:get(params, N))),
+    ?assertEqual(<<16#FF>>, maps:get(display, N)),
+    ?assertMatch({ok, _}, chappe_sip_hdr:via(<<"SIP/2.0/UDP h;branch=", 16#FF, " ">>)),
+    ?assertMatch({ok, #{params := #{<<"realm">> := <<16#E9>>}}},
+                 chappe_sip_hdr:auth(<<"Digest realm=\"", 16#E9, "\"">>)),
+    ?assertMatch({error, _}, chappe_sip_hdr:cseq(<<16#FF, " INVITE">>)).
+
+%% CSeq: 1*DIGIT LWS Method, a 32-bit unsigned number (RFC 3261 20.16)
+cseq_lws_test() ->
+    ?assertMatch({ok, #{seq := 7, method := <<"INVITE">>}}, chappe_sip_hdr:cseq(<<"7\tINVITE">>)),
+    ?assertMatch({ok, #{seq := 4294967295}}, chappe_sip_hdr:cseq(<<"4294967295 INVITE">>)),
+    ?assertEqual({error, bad_cseq}, chappe_sip_hdr:cseq(<<"+7 INVITE">>)).

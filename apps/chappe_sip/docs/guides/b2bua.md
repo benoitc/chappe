@@ -41,6 +41,7 @@ chappe_sip:create_b2bua(Req, Res, Callee, #{
     proxy_response_headers => [<<"X-Account">>],     %% copy B's 2xx -> A's 2xx
     pass_failure           => true,                  %% relay a B failure to A
     session_expires        => 1800,                  %% a session timer per leg
+    timer_c                => 60000,                 %% how long B may ring (ms)
     flow                   => Flow                   %% originate B over a WS flow
 }).
 ```
@@ -51,6 +52,14 @@ chappe_sip:create_b2bua(Req, Res, Callee, #{
 `Allow` and `RSeq`: those belong to one leg. A `Privacy: none` from A always
 reaches B unchanged, whatever you copy (RFC 3323 4.2). Set `flow` (from
 `chappe_sip:location_flow/1`) to send the B leg to a registered WebSocket UA.
+
+## How long B may ring
+
+B rings as long as it keeps sending provisionals: each one other than 100
+restarts Timer C on the B leg (RFC 3261 16.7). When Timer C fires, B is
+CANCELled and the caller gets a 408. `timer_c` sets it per call; the default
+is the `timer_c_ms` setting (185 s). The handler deadline does not apply
+while B rings: the worker owns the call from the moment the B leg is sent.
 
 ## Rewrite the SDP that crosses
 

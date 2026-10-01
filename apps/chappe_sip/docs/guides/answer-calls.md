@@ -233,6 +233,25 @@ Notes:
   `Require: replaces` is accepted.
 - Authorize the request (RFC 3891 section 6) before acting on a match.
 
+## Accept an extension in Require
+
+An INVITE (or an in-dialog request) listing an option tag you do not support
+in `Require` gets 420 with `Unsupported` before your handler runs (RFC 3261
+8.2.2.3). ACK and CANCEL are never refused for it, and `Proxy-Require` is
+ignored. The tags taken everywhere are `supported_option_tags` (`100rel`,
+`replaces`, `timer`, `tdialog`, `norefersub`). A recording server (SRS) takes
+the SRC's `Require: siprec` (RFC 7866 6.1.1) on its own route:
+
+```erlang
+ok = chappe_sip:handle(<<"INVITE">>, fun(Req, Res) ->
+    {ok, _} = chappe_sip:create_uas(Req, Res, #{local_sdp => Sdp})
+end, #{option_tags => [<<"siprec">>]}).
+```
+
+The dialog the route creates takes the same tags in its in-dialog requests.
+Any method takes the same option, and adding the tag to
+`supported_option_tags` accepts it on every route.
+
 ## Notes
 
 - The dialog fsm monitors its owner; if your handler crashes, the dialog is torn

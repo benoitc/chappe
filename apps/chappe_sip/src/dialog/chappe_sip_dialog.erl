@@ -26,6 +26,7 @@
     modify/3,
     request/2,
     notify/2,
+    ack/2,
     id/1,
     local_tag/1,
     remote_tag/1,
@@ -130,8 +131,16 @@ create_subscription(Req, Res, Opts) ->
             })
     end.
 
-create_uas_1(Req, Res, Opts) ->
-    Owner = maps:get(owner, Opts, self()),
+create_uas_1(Req, Res, Opts0) ->
+    Owner = maps:get(owner, Opts0, self()),
+    %% the route's extra option tags stay accepted in Require in the dialog
+    Opts = Opts0#{
+        option_tags => maps:get(
+            option_tags,
+            Opts0,
+            maps:get(option_tags, chappe_sip_req:meta(Req), [])
+        )
+    },
     case chappe_sip_engine:create_uas(Req, Opts#{owner => Owner}) of
         {ok, Pid} ->
             case gen_statem:call(Pid, await_ready, 32000) of
@@ -202,6 +211,17 @@ request(#dialog{pid = Pid}, ReqSpec) ->
 -spec notify(dialog(), map()) -> {ok, chappe_sip_msg:msg()} | {error, term()}.
 notify(#dialog{pid = Pid}, Spec) ->
     gen_statem:call(Pid, {notify, Spec}, ?REQUEST_TIMEOUT).
+
+%% Send the ACK of the 2xx of an INVITE started with no_ack => true (third
+%% party call control, RFC 3725): the 2xx is held unacknowledged until you
+%% have the answer, then this ACK carries it. Opts:
+%%   #{local_sdp => iodata()}    the answer, when the 2xx carried an offer
+%% The ACK reuses the INVITE's CSeq number and credentials. Returns
+%% {error, no_pending_ack} on a dialog with no unacknowledged 2xx (or one
+%% already ACKed).
+-spec ack(dialog(), #{local_sdp => iodata()}) -> ok | {error, term()}.
+ack(#dialog{pid = Pid}, Opts) ->
+    gen_statem:call(Pid, {ack, Opts}, ?REQUEST_TIMEOUT).
 
 %% The dialog fsm's pid (what chappe_sip_refer keys a dialog's REFER
 %% subscriptions by).

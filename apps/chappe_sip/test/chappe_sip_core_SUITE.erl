@@ -44,7 +44,11 @@
          indialog_timeout_ends_dialog/1, bye_timeout_ends_dialog/1,
          offerless_invite/1, offerless_reinvite/1, reoffer_bumps_version/1,
          tagless_from_accepted/1, merged_request_482/1, contact_reachable/1,
-         reliable_provisional_require/1, unsupported_body_415/1]).
+         reliable_provisional_require/1, unsupported_body_415/1,
+         cseq_method_mismatch_400/1, no_max_forwards_served/1,
+         uas_ignores_proxy_require/1, proxy_route_checks_proxy_require/1,
+         siprec_require/1, indialog_require_420/1,
+         ack_cancel_require_ignored/1]).
 
 all() ->
     [{group, wire}, {group, timers}].
@@ -66,7 +70,9 @@ groups() ->
      indialog_481_ends_dialog, session_over_at_bye, offerless_invite,
      offerless_reinvite, reoffer_bumps_version, tagless_from_accepted,
      merged_request_482, contact_reachable, reliable_provisional_require,
-     unsupported_body_415]},
+     unsupported_body_415, cseq_method_mismatch_400, no_max_forwards_served,
+     uas_ignores_proxy_require, proxy_route_checks_proxy_require,
+     siprec_require, indialog_require_420, ack_cancel_require_ignored]},
      %% each waits 64*T1 (32 s)
      {timers, [],
       [no_ack_ends_session, error_response_timer_h, non_invite_timer_j,
@@ -1362,3 +1368,186 @@ from_uri(X) -> addr_uri(hdr(<<"from">>, X)).
 addr_uri(V) ->
     {ok, #{uri := U}} = chappe_sip_hdr:name_addr(V),
     U.
+
+%% ---- extensions and request validation (8.2.2.3, 16.3, RFC 7866) ----
+
+%% A request whose CSeq method is not its own method is malformed: 400,
+%% and the app never sees it.
+%% req: R3261-U-04
+cseq_method_mismatch_400(Config) ->
+    {Port, Sock} = {?config(port, Config), ?config(sock, Config)},
+    Test = self(),
+    ok = chappe_sip:options(fun(_Req, Res) ->
+        Test ! handler,
+        chappe_sip_res:send(Res, 200)
+    end),
+    send(Sock, Port, request(<<"OPTIONS">>, <<"sip:app@127.0.0.1">>,
+                             #{port => port(Sock), cseq_method => <<"INVITE">>})),
+    {R, _} = recv(Sock, any, 3000),
+    ?assertEqual(400, status(R)),
+    receive handler -> ct:fail(handler_ran) after 0 -> ok end.
+
+%% A request without Max-Forwards (an RFC 2543 peer) is still served.
+%% req: R3261-U-05
+no_max_forwards_served(Config) ->
+    {Port, Sock} = {?config(port, Config), ?config(sock, Config)},
+    ok = chappe_sip:options(fun(_Req, Res) -> chappe_sip_res:send(Res, 200) end),
+    send(Sock, Port, request(<<"OPTIONS">>, <<"sip:app@127.0.0.1">>,
+                             #{port => port(Sock), max_forwards => false})),
+    {R, _} = recv(Sock, any, 3000),
+    ?assertEqual(200, status(R)).
+
+%% Proxy-Require is for proxies: a UAS takes the request.
+%% req: R3261-U-08
+uas_ignores_proxy_require(Config) ->
+    {Port, Sock} = {?config(port, Config), ?config(sock, Config)},
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        {ok, _} = chappe_sip:create_uas(Req, Res, #{local_sdp => sdp()})
+    end),
+    send(Sock, Port, request(<<"INVITE">>, <<"sip:app@127.0.0.1">>,
+                             #{port => port(Sock), body => sdp(),
+                               headers => [{<<"Proxy-Require">>, <<"foo">>}]})),
+    {R, _} = recv(Sock, final, 3000),
+    ?assertEqual(200, status(R)),
+    send(Sock, Port, chappe_sip_core_peer:ack_for(R, #{port => port(Sock)})).
+
+%% A route registered as a proxy leaves Require to the far UAS and answers
+%% 420 to a Proxy-Require it does not support.
+%% req: R3261-U-07
+proxy_route_checks_proxy_require(Config) ->
+    {Port, Sock} = {?config(port, Config), ?config(sock, Config)},
+    Test = self(),
+    ok = chappe_sip:handle(<<"OPTIONS">>, fun(_Req, Res) ->
+        Test ! handler,
+        chappe_sip_res:send(Res, 200)
+    end, #{proxy => true}),
+    send(Sock, Port, request(<<"OPTIONS">>, <<"sip:app@127.0.0.1">>,
+                             #{port => port(Sock),
+                               headers => [{<<"Require">>, <<"foo">>}]})),
+    {R1, _} = recv(Sock, any, 3000),
+    ?assertEqual(200, status(R1)),
+    receive handler -> ok after 1000 -> ct:fail(handler_not_run) end,
+    send(Sock, Port, request(<<"OPTIONS">>, <<"sip:app@127.0.0.1">>,
+                             #{port => port(Sock),
+                               headers => [{<<"Proxy-Require">>, <<"foo">>}]})),
+    {R2, _} = recv(Sock, any, 3000),
+    ?assertEqual(420, status(R2)),
+    ?assertEqual(<<"foo">>, hdr(<<"unsupported">>, R2)),
+    receive handler -> ct:fail(handler_ran) after 0 -> ok end.
+
+%% An SRC's INVITE requires siprec: a plain route answers 420 (a UA that
+%% is not a recording server), a route that takes siprec answers it, and
+%% so does its dialog's in-dialog requests. The supported_option_tags
+%% setting does the same for every route.
+%% req: R7866-6.1.1-1 R7866-6.1.1-2 R3261-083
+siprec_require(Config) ->
+    {Port, Sock} = {?config(port, Config), ?config(sock, Config)},
+    LP = port(Sock),
+    Test = self(),
+    Answer = fun(Req, Res) ->
+        {ok, D} = chappe_sip:create_uas(Req, Res, #{local_sdp => sdp(),
+                                                    owner => Test}),
+        Test ! {dialog, D}
+    end,
+    Siprec = [{<<"Require">>, <<"siprec">>}],
+    ok = chappe_sip:invite(Answer),
+    Inv1 = request(<<"INVITE">>, <<"sip:srs@127.0.0.1">>,
+                   #{port => LP, body => sdp(), headers => Siprec}),
+    send(Sock, Port, Inv1),
+    {R1, _} = recv(Sock, final, 3000),
+    ?assertEqual(420, status(R1)),
+    ?assertEqual(<<"siprec">>, hdr(<<"unsupported">>, R1)),
+    send(Sock, Port, ack_non2xx(Inv1, R1)),
+    ok = chappe_sip:handle(<<"INVITE">>, Answer, #{option_tags => [<<"siprec">>]}),
+    Inv2 = request(<<"INVITE">>, <<"sip:srs@127.0.0.1">>,
+                   #{port => LP, body => sdp(), headers => Siprec}),
+    send(Sock, Port, Inv2),
+    {R2, _} = recv(Sock, final, 3000),
+    ?assertEqual(200, status(R2)),
+    send(Sock, Port, chappe_sip_core_peer:ack_for(R2, #{port => LP})),
+    receive {dialog, _} -> ok after 3000 -> ct:fail(no_dialog) end,
+    {ok, I2} = chappe_sip_msg:parse(Inv2),
+    Info = request(<<"INFO">>, <<"sip:srs@127.0.0.1">>,
+                   #{port => LP, call_id => chappe_sip_msg:call_id(I2),
+                     from_tag => chappe_sip_msg:from_tag(I2),
+                     to_tag => to_tag(R2), cseq => 2, headers => Siprec}),
+    send(Sock, Port, Info),
+    {R3, _} = recv(Sock, final, 3000),
+    ?assertEqual(200, status(R3)),
+    application:set_env(chappe_sip, supported_option_tags,
+                        [<<"100rel">>, <<"replaces">>, <<"timer">>, <<"siprec">>]),
+    try
+        ok = chappe_sip:invite(Answer),
+        Inv3 = request(<<"INVITE">>, <<"sip:srs@127.0.0.1">>,
+                       #{port => LP, body => sdp(), headers => Siprec}),
+        send(Sock, Port, Inv3),
+        {R4, _} = recv(Sock, final, 3000),
+        ?assertEqual(200, status(R4)),
+        send(Sock, Port, chappe_sip_core_peer:ack_for(R4, #{port => LP}))
+    after
+        application:unset_env(chappe_sip, supported_option_tags)
+    end.
+
+%% In a dialog, an unknown option tag in Require gets 420 with Unsupported
+%% too; the dialog goes on.
+%% req: R3261-083 R3261-084
+indialog_require_420(Config) ->
+    {Port, Sock} = {?config(port, Config), ?config(sock, Config)},
+    LP = port(Sock),
+    {Inv, _D, R200} = call(Sock, Port, #{}),
+    InDialog = fun(N, Hdrs) ->
+        request(<<"INFO">>, <<"sip:app@127.0.0.1">>,
+                #{port => LP, call_id => hdr(<<"call-id">>, Inv),
+                  from_tag => from_tag(Inv), to_tag => to_tag(R200),
+                  cseq => N, headers => Hdrs})
+    end,
+    send(Sock, Port, InDialog(2, [{<<"Require">>, <<"foo, timer">>}])),
+    {R1, _} = recv(Sock, final, 3000),
+    ?assertEqual(420, status(R1)),
+    ?assertEqual(<<"foo">>, hdr(<<"unsupported">>, R1)),
+    send(Sock, Port, InDialog(3, [{<<"Proxy-Require">>, <<"foo">>}])),
+    {R2, _} = recv(Sock, final, 3000),
+    ?assertEqual(200, status(R2)).
+
+%% ACK and CANCEL are never refused for their Require (they must not carry
+%% one, and its values are ignored): the request worker passes them on.
+%% req: R3261-086
+ack_cancel_require_ignored(_Config) ->
+    Test = self(),
+    [begin
+         Res = chappe_sip_res:new(99, fun(_, Code, _Opts) ->
+             Test ! {response, Code}, ok
+         end),
+         Raw = worker_req(Method, <<"Require: foo\r\nProxy-Require: bar\r\n">>),
+         {ok, _} = chappe_sip_request_worker:start_link(
+                     #{raw => Raw, txn => 99, meta => #{}, res => Res,
+                       middlewares => [],
+                       handler => fun(_, _) -> Test ! {handler, Method} end}),
+         receive {handler, Method} -> ok
+         after 1000 -> ct:fail({not_dispatched, Method})
+         end,
+         receive {response, Code} -> ct:fail({answered, Method, Code})
+         after 0 -> ok
+         end
+     end || Method <- [<<"ACK">>, <<"CANCEL">>]],
+    %% the probe: an INVITE requiring siprec on a route without it is a 420
+    Res = chappe_sip_res:new(99, fun(_, Code, Opts) ->
+        Test ! {response, Code, Opts}, ok
+    end),
+    {ok, _} = chappe_sip_request_worker:start_link(
+                #{raw => worker_req(<<"INVITE">>, <<"Require: siprec\r\n">>),
+                  txn => 99, meta => #{}, res => Res, middlewares => [],
+                  handler => fun(_, _) -> Test ! handler_called end}),
+    receive {response, 420, #{headers := H}} ->
+        ?assertEqual([{<<"Unsupported">>, <<"siprec">>}], H)
+    after 1000 -> ct:fail(no_420)
+    end.
+
+worker_req(Method, Extra) ->
+    iolist_to_binary(
+      [Method, <<" sip:example.com SIP/2.0\r\n"
+                 "Via: SIP/2.0/UDP 192.0.2.1;branch=z9hG4bKw\r\n"
+                 "From: <sip:alice@example.com>;tag=a\r\n"
+                 "To: <sip:alice@example.com>\r\n"
+                 "Call-ID: worker\r\nCSeq: 10 ">>, Method,
+       <<"\r\nMax-Forwards: 70\r\n">>, Extra, <<"Content-Length: 0\r\n\r\n">>]).

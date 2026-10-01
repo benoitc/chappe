@@ -14,6 +14,7 @@
     cseq/1,
     name_addr/1,
     name_addr_list/1,
+    split_list/1,
     auth/1,
     params/1
 ]).
@@ -101,20 +102,23 @@ via(Bin0) ->
 %% CSeq: 314159 INVITE -> #{seq := integer(), method := binary()}
 -spec cseq(binary()) -> {ok, map()} | {error, term()}.
 cseq(Bin) ->
-    case binary:split(trim(Bin), <<" ">>) of
+    case binary:split(trim(Bin), [<<" ">>, <<"\t">>]) of
         [SeqBin, Method] ->
-            try binary_to_integer(trim(SeqBin)) of
-                %% RFC 3261 8.1.1.5: 0 =< CSeq < 2^31
-                Seq when Seq >= 0, Seq < (1 bsl 31) ->
+            case all_digits(SeqBin) andalso binary_to_integer(SeqBin) of
+                %% RFC 3261 20.16: a 32-bit unsigned integer, 1*DIGIT
+                Seq when is_integer(Seq), Seq < (1 bsl 32) ->
                     {ok, #{seq => Seq, method => trim(Method)}};
                 _ ->
                     {error, bad_cseq}
-            catch
-                _:_ -> {error, bad_cseq}
             end;
         _ ->
             {error, bad_cseq}
     end.
+
+all_digits(<<>>) ->
+    false;
+all_digits(Bin) ->
+    lists:all(fun(D) -> D >= $0 andalso D =< $9 end, binary_to_list(Bin)).
 
 %% name-addr or addr-spec with header params:
 %%   "Display" <sip:a@b>;tag=x  |  <sip:a@b>;x  |  sip:a@b;tag=x
@@ -171,6 +175,12 @@ name_addr_list(Bin) ->
         [] -> {ok, [M || {ok, M} <- Res]};
         [E | _] -> E
     end.
+
+%% The elements of a comma-joined header value (Route, Record-Route,
+%% Contact...), split outside quotes and angle brackets and trimmed.
+-spec split_list(binary()) -> [binary()].
+split_list(Bin) ->
+    [T || P <- split_commas(Bin), T <- [trim(P)], T =/= <<>>].
 
 %% Digest challenge/credentials:
 %%   Digest realm="r", nonce="n", qop="auth", algorithm=MD5
@@ -319,7 +329,7 @@ uri_method(Main) ->
             case binary:split(P, <<"=">>) of
                 [K, V] ->
                     case lower(K) of
-                        <<"method">> -> {Acc, string:uppercase(V)};
+                        <<"method">> -> {Acc, upper(V)};
                         _ -> {[P | Acc], M}
                     end;
                 _ ->
@@ -748,9 +758,31 @@ split_angle(<<$>, Rest/binary>>, Cur, Acc, Start, I) ->
 split_angle(<<C, Rest/binary>>, Cur, Acc, Start, I) ->
     split_angle(Rest, [C | Cur], Acc, Start, I).
 
-trim(B) -> string:trim(B, both, " \t").
+%% byte-wise, so a header value that is not UTF-8 cannot raise
+trim(B) -> trim_trailing(trim_leading(B)).
 
-lower(B) -> string:lowercase(B).
+trim_leading(<<C, R/binary>>) when C =:= $\s; C =:= $\t -> trim_leading(R);
+trim_leading(B) -> B.
+
+trim_trailing(<<>>) ->
+    <<>>;
+trim_trailing(B) ->
+    case binary:last(B) of
+        C when C =:= $\s; C =:= $\t ->
+            trim_trailing(binary:part(B, 0, byte_size(B) - 1));
+        _ ->
+            B
+    end.
+
+lower(B) -> <<<<(lower_byte(C))>> || <<C>> <= B>>.
+
+lower_byte(C) when C >= $A, C =< $Z -> C + 32;
+lower_byte(C) -> C.
+
+upper(B) -> <<<<(upper_byte(C))>> || <<C>> <= B>>.
+
+upper_byte(C) when C >= $a, C =< $z -> C - 32;
+upper_byte(C) -> C.
 
 unquote(<<"\"", Rest/binary>>) ->
     case binary:split(Rest, <<"\"">>) of

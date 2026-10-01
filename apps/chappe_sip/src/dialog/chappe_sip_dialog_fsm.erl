@@ -97,6 +97,9 @@
     %% the peer's refreshes
     st :: chappe_sip_session_timer:st() | undefined,
     st_cfg :: chappe_sip_session_timer:cfg() | undefined,
+    %% option tags an in-dialog request may list in Require besides the
+    %% supported_option_tags setting (the route's, RFC 3261 8.2.2.3)
+    option_tags = [] :: [binary()],
     %% the destroy reason of a BYE we send on our own (session expiry)
     bye_reason :: term(),
     %% incoming re-INVITE / UPDATE the app claimed and has not answered
@@ -123,7 +126,12 @@
     refresh = #{} :: #{non_neg_integer() => binary()},
     %% a re-INVITE of ours held while an INVITE server transaction of the
     %% dialog is not confirmed yet (RFC 3261 14.1)
-    modify_wait :: {gen_statem:from(), term(), map()} | undefined
+    modify_wait :: {gen_statem:from(), term(), map()} | undefined,
+    %% a UAC dialog whose 2xx we did not ACK (no_ack, 3PCC): the INVITE's
+    %% CSeq number and credentials, until the app sends the ACK (ack/2)
+    pending_ack ::
+        #{cseq := pos_integer(), headers := [{binary(), iodata()}]}
+        | undefined
 }).
 
 %% event: the SUBSCRIBE's Event value (with any id param), reused on every
@@ -203,10 +211,12 @@ init(
         local_contact = maps:get(local_contact, Args, undefined),
         remote_cseq = maps:get(remote_cseq, Args, 0),
         ack_wait = maps:get(ack_wait, Args, false),
+        pending_ack = maps:get(pending_ack, Args, undefined),
         st = maps:get(
             session_timer, Args, maps:get(session_timer, Opts, undefined)
         ),
-        st_cfg = chappe_sip_session_timer:config(Opts)
+        st_cfg = chappe_sip_session_timer:config(Opts),
+        option_tags = maps:get(option_tags, Opts, [])
     },
     Data1 = Data#data{ack_answer = answer_in_ack(Data)},
     %% Any dialog-forming response (UAS) is sent by chappe_sip_engine (sending
@@ -353,6 +363,8 @@ confirmed({timeout, glare_retry}, retry, #data{glare_wait = {From, Spec}} = D) -
     start_reinvite(From, Spec, #{}, D#data{glare_wait = undefined});
 confirmed({call, From}, {request, ReqSpec}, D) ->
     start_request(From, ReqSpec, D);
+confirmed({call, From}, {ack, Opts}, D) ->
+    send_delayed_ack(From, Opts, D);
 confirmed({call, From}, Query, D) when ?IS_QUERY(Query) ->
     query(From, Query, D);
 confirmed(info, {chappe_sip_engine_restart, _}, D) ->
@@ -421,6 +433,7 @@ in_transaction(
 in_transaction({call, _From}, Op, D) when
     element(1, Op) =:= modify;
     element(1, Op) =:= request;
+    element(1, Op) =:= ack;
     element(1, Op) =:= notify;
     element(1, Op) =:= destroy;
     Op =:= destroy
@@ -526,7 +539,7 @@ finish_txn_response(From, {reinvite, _}, Status, Raw, D) when
     {ok, Msg} = chappe_sip_msg:parse(Raw),
     reply(From, {error, chappe_sip_error(Status, Msg)}),
     request_failed(Status, D);
-finish_txn_response(From, {reinvite, _}, Status, Raw, D) ->
+finish_txn_response(From, {reinvite, _}, Status, Raw, D) when Status >= 200 ->
     {ok, Msg} = chappe_sip_msg:parse(Raw),
     %% re-INVITE rejected: the dialog stays as it was. The INVITE client
     %% transaction ACKs a non-2xx itself (RFC 3261 17.1.1.3); a second ACK
@@ -537,7 +550,8 @@ finish_txn_response(From, {reinvite, _}, Status, Raw, D) ->
         glare_retry = undefined
     }};
 finish_txn_response(_From, _Kind, Status, _Raw, D) when Status < 200 ->
-    %% provisional to a non-INVITE request: keep waiting
+    %% a provisional (to our re-INVITE or another request): the
+    %% transaction stays open until its final response
     {keep_state, D};
 finish_txn_response(From, Kind, Status, Raw, D) ->
     %% final to a request or a NOTIFY
@@ -678,7 +692,7 @@ handle_indialog(TxnH, _Meta, Raw, D) ->
     Req = parse_req(Raw, TxnH),
     case in_order(Req, D) of
         {ok, D1} ->
-            route_indialog(TxnH, Req, D1);
+            require_check(TxnH, Req, D1);
         out_of_order ->
             %% RFC 3261 12.2.2: an in-dialog request with a CSeq lower than the
             %% highest seen is out of order and is rejected 500
@@ -692,6 +706,39 @@ handle_indialog(TxnH, _Meta, Raw, D) ->
             ),
             {keep_state, D}
     end.
+
+%% RFC 3261 8.2.2.3: an in-dialog request listing an option tag we do not
+%% support in Require gets 420 with Unsupported. ACK and CANCEL never reach
+%% here (and must be exempt).
+require_check(TxnH, Req, D) ->
+    Supported = [
+        lower(T)
+     || T <- chappe_sip_config:get(supported_option_tags) ++ D#data.option_tags
+    ],
+    Msg = chappe_sip_req:msg(Req),
+    case
+        [
+            T
+         || T <- chappe_sip_msg:option_tags(<<"require">>, Msg),
+            not lists:member(T, Supported)
+        ]
+    of
+        [] ->
+            route_indialog(TxnH, Req, D);
+        Bad ->
+            Hdrs = [
+                {<<"Unsupported">>, iolist_to_binary(lists:join(<<", ">>, Bad))}
+            ],
+            _ = chappe_sip_engine:dialog_respond(
+                TxnH, 420, <<"Bad Extension">>, hdrs(Hdrs), <<>>, <<>>
+            ),
+            {keep_state, D}
+    end.
+
+lower(B) -> <<<<(lower_byte(C))>> || <<C>> <= B>>.
+
+lower_byte(C) when C >= $A, C =< $Z -> C + 32;
+lower_byte(C) -> C.
 
 %% track the remote CSeq; a strictly lower number than the highest seen is out
 %% of order (retransmits are absorbed at the transaction layer, so an equal
@@ -741,6 +788,9 @@ handle_indialog_1(TxnH, Req, D) ->
                 )
              || {Pending, _} <- [D#data.srv_invite, D#data.srv_update]
             ],
+            %% and so does the INVITE of an early dialog of ours (the
+            %% caller's BYE ends the early dialog, RFC 3261 15)
+            _ = early_invite_terminated(D),
             _ = chappe_sip_engine:dialog_respond(
                 TxnH,
                 200,
@@ -764,6 +814,15 @@ handle_indialog_1(TxnH, Req, D) ->
                     {keep_state, D}
             end
     end.
+
+early_invite_terminated(#data{role = uas, index_state = early, txn = Txn}) when
+    Txn =/= undefined
+->
+    chappe_sip_engine:dialog_respond(
+        Txn, 487, <<"Request Terminated">>, <<>>, <<>>, <<>>
+    );
+early_invite_terminated(_D) ->
+    ok.
 
 %% RFC 4028 9: an INVITE or UPDATE refreshes the session; one below our
 %% minimum interval gets 422
@@ -1301,32 +1360,108 @@ next_version(Sdp) ->
             Sdp
     end.
 
-chappe_sip_sdp_hold(Sdp, true) ->
-    S1 = binary:replace(Sdp, <<"a=sendrecv">>, <<"a=sendonly">>, [global]),
-    case S1 of
-        % none present, append
-        Sdp -> <<Sdp/binary, "a=sendonly\r\n">>;
-        _ -> S1
-    end;
-chappe_sip_sdp_hold(Sdp, false) ->
-    binary:replace(
-        Sdp,
-        [<<"a=sendonly">>, <<"a=inactive">>],
-        <<"a=sendrecv">>,
-        [global]
-    ).
+%% RFC 3264 8.4: hold moves every live stream to sendonly
+%% (or inactive when it was recvonly); unhold reverses that. Each m= section
+%% gets its own direction attribute, so a session-level one is folded into
+%% them. A rejected stream (port 0) is left alone.
+chappe_sip_sdp_hold(Sdp, Hold) ->
+    Eol =
+        case binary:match(Sdp, <<"\r\n">>) of
+            nomatch -> <<"\n">>;
+            _ -> <<"\r\n">>
+        end,
+    Lines = [L || L <- binary:split(Sdp, Eol, [global]), L =/= <<>>],
+    {Session, Medias} = sdp_sections(Lines),
+    SessDir = sdp_direction(Session, <<"sendrecv">>),
+    Out =
+        case Medias of
+            [] ->
+                set_direction(Session, hold_direction(SessDir, Hold));
+            _ ->
+                [L || L <- Session, not is_direction(L)] ++
+                    lists:append([
+                        media_hold(M, SessDir, Hold)
+                     || M <- Medias
+                    ])
+        end,
+    iolist_to_binary([[L, Eol] || L <- Out]).
 
-%% Build an in-dialog request (From=local, To=remote, RURI=remote target).
-%% RFC 3261 12.2.1.1: with a route set it loose-routes, i.e. the route set
-%% goes into Route headers and the Request-URI stays the remote target (we
-%% assume loose-routing proxies, which put ;lr in their Record-Route).
+%% session lines, then one list of lines per m= section
+sdp_sections(Lines) ->
+    {Session, Rest} = lists:splitwith(
+        fun(L) -> not is_mline(L) end, Lines
+    ),
+    {Session, media_sections(Rest)}.
+
+media_sections([]) ->
+    [];
+media_sections([M | Rest]) ->
+    {Body, More} = lists:splitwith(fun(L) -> not is_mline(L) end, Rest),
+    [[M | Body] | media_sections(More)].
+
+is_mline(<<"m=", _/binary>>) -> true;
+is_mline(_) -> false.
+
+media_hold([M | _] = Section, SessDir, Hold) ->
+    case binary:split(M, <<" ">>, [global]) of
+        [_, <<"0">> | _] ->
+            Section;
+        _ ->
+            Dir = sdp_direction(Section, SessDir),
+            set_direction(Section, hold_direction(Dir, Hold))
+    end.
+
+hold_direction(<<"sendrecv">>, true) -> <<"sendonly">>;
+hold_direction(<<"recvonly">>, true) -> <<"inactive">>;
+hold_direction(<<"sendonly">>, false) -> <<"sendrecv">>;
+hold_direction(<<"inactive">>, false) -> <<"recvonly">>;
+hold_direction(Dir, _Hold) -> Dir.
+
+sdp_direction(Lines, Default) ->
+    case [D || <<"a=", D/binary>> <- Lines, is_direction(<<"a=", D/binary>>)] of
+        [] -> Default;
+        Dirs -> lists:last(Dirs)
+    end.
+
+is_direction(<<"a=", D/binary>>) ->
+    lists:member(D, [
+        <<"sendrecv">>, <<"sendonly">>, <<"recvonly">>, <<"inactive">>
+    ]);
+is_direction(_) ->
+    false.
+
+%% replace the section's direction attribute in place, or add one
+set_direction(Lines, Dir) ->
+    Attr = <<"a=", Dir/binary>>,
+    case lists:any(fun is_direction/1, Lines) of
+        true ->
+            {Out, _} = lists:mapfoldl(
+                fun(L, Done) ->
+                    case is_direction(L) of
+                        true when not Done -> {[Attr], true};
+                        true -> {[], Done};
+                        false -> {[L], Done}
+                    end
+                end,
+                false,
+                Lines
+            ),
+            lists:append(Out);
+        false ->
+            Lines ++ [Attr]
+    end.
+
+%% Build an in-dialog request (From=local, To=remote). RFC 3261 12.2.1.1:
+%% behind a loose router (;lr) the Request-URI is the remote target and the
+%% route set goes in Route; behind a strict router the first route is the
+%% Request-URI and the remote target ends the Route list.
 build_indialog(
     #data{
-        remote_target = RURI,
+        remote_target = Target,
         local_addr = LocalAddr,
         remote_addr = RemoteAddr,
         call_id = CallId,
-        route_set = RouteSet,
+        route_set = RouteSet0,
         local_contact = Contact
     },
     Method,
@@ -1334,6 +1469,7 @@ build_indialog(
     Headers,
     Body
 ) ->
+    {RURI, RouteSet} = chappe_sip_route:request_target(Target, RouteSet0),
     Seq = integer_to_binary(CSeq),
     HdrBin = chappe_sip_hdr_io:join(
         with_supported(Method, with_contact(Method, Contact, Headers))
@@ -1373,6 +1509,29 @@ route_headers([]) ->
     <<>>;
 route_headers(RouteSet) ->
     iolist_to_binary([[<<"Route: ">>, R, <<"\r\n">>] || R <- RouteSet]).
+
+%% The ACK of a 2xx the UAC fsm left unacknowledged (no_ack, 3PCC): the
+%% INVITE's CSeq number and credentials (RFC 3261 13.2.2.4), and the answer
+%% to an offer the 2xx carried when Opts has one.
+send_delayed_ack(From, _Opts, #data{pending_ack = undefined} = D) ->
+    {keep_state, D, [{reply, From, {error, no_pending_ack}}]};
+send_delayed_ack(From, Opts, #data{pending_ack = #{cseq := CSeq} = P} = D) ->
+    Body = iolist_to_binary(maps:get(local_sdp, Opts, <<>>)),
+    Hdrs =
+        maps:get(headers, P) ++
+            [{<<"Content-Type">>, <<"application/sdp">>} || Body =/= <<>>],
+    Raw = build_indialog(D, <<"ACK">>, CSeq, Hdrs, Body),
+    case chappe_sip_engine:send_stateless(route(D), Raw, self()) of
+        {ok, _} ->
+            D1 =
+                case Body of
+                    <<>> -> D;
+                    _ -> D#data{local_sdp = Body}
+                end,
+            {keep_state, D1#data{pending_ack = undefined}, [{reply, From, ok}]};
+        Err ->
+            {keep_state, D, [{reply, From, Err}]}
+    end.
 
 %% ACK a re-INVITE 2xx (in-dialog, its own transaction; ACK reuses the
 %% re-INVITE's CSeq number).

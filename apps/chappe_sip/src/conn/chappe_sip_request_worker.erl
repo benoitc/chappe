@@ -8,6 +8,13 @@
 %% call context. A handler that works asynchronously simply does not
 %% return until it is done. Exiting without a final response means the
 %% engine's monitor sends 500 (see chappe_sip_engine).
+%%
+%% Extensions: as a UAS (the default) the worker answers 420 to an option
+%% tag in Require it does not support, and ignores Proxy-Require (RFC 3261
+%% 8.2.2.3). A route registered with `proxy => true', and the in-dialog
+%% forwarding of a dialog we record-routed, act as a proxy instead: Require
+%% is the UAS's business and only Proxy-Require is checked (16.3 step 5,
+%% where we support no proxy extension). ACK and CANCEL are never checked.
 -module(chappe_sip_request_worker).
 
 -include("chappe_sip.hrl").
@@ -18,15 +25,23 @@
 start_link(Args) ->
     proc_lib:start_link(?MODULE, init, [Args]).
 
-init(#{
-    raw := Raw,
-    txn := TxnH,
-    meta := Meta,
-    res := Res,
-    middlewares := Middlewares,
-    handler := Handler
-}) ->
+init(
+    #{
+        raw := Raw,
+        txn := TxnH,
+        meta := Meta0,
+        res := Res,
+        middlewares := Middlewares,
+        handler := Handler
+    } = Args
+) ->
     proc_lib:init_ack({ok, self()}),
+    %% the route's extra option tags ride on the request, so a dialog it
+    %% creates accepts them in Require too
+    Meta = Meta0#{
+        option_tags => maps:get(option_tags, Args, []),
+        role => maps:get(role, Args, uas)
+    },
     case parse_valid(Raw) of
         {ok, Msg} ->
             run(Msg, TxnH, Meta, Res, Middlewares, Handler);
@@ -61,7 +76,7 @@ run(Msg, TxnH, Meta, Res, Middlewares, Handler) ->
 request_uri(Uri) ->
     case binary:split(Uri, <<":">>) of
         [Scheme, Rest] ->
-            case string:lowercase(Scheme) of
+            case ascii_lower(Scheme) of
                 S when S =:= <<"sip">>; S =:= <<"sips">> -> sip_user(Rest);
                 S when S =:= <<"tel">>; S =:= <<"urn">> -> ok;
                 _ -> {416, <<"Unsupported URI Scheme">>}
@@ -74,7 +89,7 @@ sip_user(<<"@", _/binary>>) -> {400, <<"Empty User In Request-URI">>};
 sip_user(_) -> ok.
 
 run_1(Msg, TxnH, Meta, Res, Middlewares, Handler) ->
-    case unsupported_extensions(Msg) of
+    case unsupported_extensions(Msg, Meta) of
         [] ->
             case body_understood(Msg) of
                 true ->
@@ -91,8 +106,8 @@ run_1(Msg, TxnH, Meta, Res, Middlewares, Handler) ->
                     })
             end;
         Bad ->
-            %% RFC 3261 8.2.2: an option-tag we do not understand in
-            %% Require/Proxy-Require is a 420 listing the unsupported tags
+            %% RFC 3261 8.2.2.3 (16.3 step 5 for a proxy): an option tag
+            %% we do not understand is a 420 listing the unsupported tags
             _ = chappe_sip_res:send(
                 Res,
                 420,
@@ -148,36 +163,64 @@ optional(Disposition) ->
         nomatch.
 
 identity(undefined) -> true;
-identity(Enc) -> string:lowercase(string:trim(Enc)) =:= <<"identity">>.
+identity(Enc) -> ascii_lower(trim(Enc)) =:= <<"identity">>.
 
 known_type(undefined) ->
     %% no Content-Type on a body: RFC 3261 20.15 requires one
     false;
 known_type(CT) ->
     [Type | _] = binary:split(CT, <<";">>),
-    lists:member(string:lowercase(string:trim(Type)), [
+    lists:member(ascii_lower(trim(Type)), [
         <<"application/sdp">>,
         <<"multipart/mixed">>,
         <<"multipart/alternative">>
     ]).
 
-%% option-tags in Require/Proxy-Require we do not support (RFC 3261 8.2.2).
-%% We understand ?SUPPORTED_TAGS (100rel, replaces, timer, and for REFER
-%% tdialog and norefersub); anything else is a 420.
-unsupported_extensions(Msg) ->
-    Tags =
-        option_tags(chappe_sip_msg:get_all(<<"require">>, Msg)) ++
-            option_tags(chappe_sip_msg:get_all(<<"proxy-require">>, Msg)),
-    [T || T <- Tags, not lists:member(T, ?SUPPORTED_TAGS)].
+%% The option tags the request needs that we do not support: those of
+%% Require for a UAS, of Proxy-Require for a proxy; none for ACK and CANCEL,
+%% which must not carry them and whose values are ignored (8.2.2.3).
+unsupported_extensions(Msg, Meta) ->
+    case chappe_sip_msg:method(Msg) of
+        M when M =:= <<"ACK">>; M =:= <<"CANCEL">> ->
+            [];
+        _ ->
+            case maps:get(role, Meta, uas) of
+                proxy ->
+                    chappe_sip_msg:option_tags(<<"proxy-require">>, Msg);
+                uas ->
+                    Supported =
+                        chappe_sip_config:get(supported_option_tags) ++
+                            maps:get(option_tags, Meta, []),
+                    [
+                        T
+                     || T <- chappe_sip_msg:option_tags(<<"require">>, Msg),
+                        not lists:member(T, lower_all(Supported))
+                    ]
+            end
+    end.
 
-option_tags(Values) ->
-    [
-        T1
-     || V <- Values,
-        T <- binary:split(V, <<",">>, [global]),
-        T1 <- [trim(T)],
-        T1 =/= <<>>
-    ].
+lower_all(Tags) ->
+    [ascii_lower(T) || T <- Tags].
+
+%% byte-wise, so a request that is not UTF-8 cannot crash the worker
+ascii_lower(B) ->
+    <<<<(lower_byte(C))>> || <<C>> <= B>>.
+
+lower_byte(C) when C >= $A, C =< $Z -> C + 32;
+lower_byte(C) -> C.
 
 trim(B) ->
-    list_to_binary(string:trim(binary_to_list(B))).
+    trim_trailing(trim_leading(B)).
+
+trim_leading(<<C, R/binary>>) when C =:= $\s; C =:= $\t -> trim_leading(R);
+trim_leading(B) -> B.
+
+trim_trailing(<<>>) ->
+    <<>>;
+trim_trailing(B) ->
+    case binary:last(B) of
+        C when C =:= $\s; C =:= $\t ->
+            trim_trailing(binary:part(B, 0, byte_size(B) - 1));
+        _ ->
+            B
+    end.

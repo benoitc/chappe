@@ -35,6 +35,8 @@
     respond/7,
     reliable_respond/7,
     request/3,
+    request/4,
+    proxy_mark/2,
     send/3,
     send_response/2,
     relay/4,
@@ -51,6 +53,8 @@
     respond/7,
     reliable_respond/7,
     request/3,
+    request/4,
+    proxy_mark/2,
     send/3,
     send_response/2,
     relay/4,
@@ -80,7 +84,11 @@ init() ->
 
 %% Opts: #{contact := binary(), max_message_size => pos_integer(),
 %%         tls => #{contact := binary(), cert_dir => binary(),
-%%                  passphrase => binary(), verify => none | peer}}
+%%                  passphrase => binary(), verify => none | peer,
+%%                  verify_clients => boolean()}}
+%% verify (default peer) checks the server certificate of outbound TLS
+%% connections against cafile.pem and the target host (RFC 5922);
+%% verify_clients asks inbound clients for a certificate.
 %% The tls contact binds a secondary TLS listener on its own port; cert_dir
 %% holds agent.pem (cert+key) and cafile.pem.
 -spec start(map(), pid()) -> {ok, engine()} | {error, term()}.
@@ -131,6 +139,18 @@ reliable_respond(_Engine, _TxnH, _Status, _Reason, _Headers, _Body, _ToTag) ->
 -spec request(engine(), binary() | undefined, binary()) ->
     {ok, handle()} | {error, not_ready | too_large | badarg}.
 request(_Engine, _Route, _Raw) ->
+    erlang:nif_error(engine_nif_not_loaded).
+
+%% The same with the Via branch to use (a proxy's loop-detection branch).
+-spec request(engine(), binary() | undefined, binary(), binary()) ->
+    {ok, handle()} | {error, not_ready | too_large | badarg}.
+request(_Engine, _Route, _Raw, _Branch) ->
+    erlang:nif_error(engine_nif_not_loaded).
+
+%% A proxy owns this INVITE server transaction: a CANCEL of it is reported
+%% but not answered 487 by the engine (RFC 3261 16.10).
+-spec proxy_mark(engine(), handle()) -> ok | {error, not_ready}.
+proxy_mark(_Engine, _TxnH) ->
     erlang:nif_error(engine_nif_not_loaded).
 
 %% Fire-and-forget send (ACK to a 2xx). Returns {ok, OpH}; {op_ok, OpH} or

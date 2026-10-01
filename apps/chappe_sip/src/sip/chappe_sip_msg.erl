@@ -12,10 +12,10 @@
 -module(chappe_sip_msg).
 
 -export([parse/1, encode/1, validate/1]).
--export([type/1, method/1, uri/1, status/1, reason/1, body/1]).
+-export([type/1, method/1, uri/1, set_uri/2, status/1, reason/1, body/1]).
 -export([get/2, get_all/2, has/2, set/3, add/3, remove/2, set_body/2]).
 -export([all_headers/1, drop_first/2, prepend/3, decr_max_forwards/1]).
--export([parsed/2]).
+-export([parsed/2, option_tags/2, is_token/1]).
 -export([
     call_id/1,
     cseq/1,
@@ -45,22 +45,28 @@
 -opaque msg() :: #sip_msg{}.
 -export_type([msg/0]).
 
-%% RFC 3261 compact forms plus common extensions.
-compact(<<"v">>) -> <<"via">>;
-compact(<<"f">>) -> <<"from">>;
-compact(<<"t">>) -> <<"to">>;
-compact(<<"m">>) -> <<"contact">>;
-compact(<<"i">>) -> <<"call-id">>;
-compact(<<"e">>) -> <<"content-encoding">>;
-compact(<<"l">>) -> <<"content-length">>;
-compact(<<"c">>) -> <<"content-type">>;
-compact(<<"s">>) -> <<"subject">>;
-compact(<<"k">>) -> <<"supported">>;
-compact(<<"o">>) -> <<"event">>;
-compact(<<"u">>) -> <<"allow-events">>;
-compact(<<"r">>) -> <<"refer-to">>;
+%% Every compact form in the IANA SIP header field registry: RFC 3261 7.3.3
+%% and the extensions that define one.
+compact(<<"a">>) -> <<"accept-contact">>;
 compact(<<"b">>) -> <<"referred-by">>;
+compact(<<"c">>) -> <<"content-type">>;
+compact(<<"d">>) -> <<"request-disposition">>;
+compact(<<"e">>) -> <<"content-encoding">>;
+compact(<<"f">>) -> <<"from">>;
+compact(<<"i">>) -> <<"call-id">>;
+compact(<<"j">>) -> <<"reject-contact">>;
+compact(<<"k">>) -> <<"supported">>;
+compact(<<"l">>) -> <<"content-length">>;
+compact(<<"m">>) -> <<"contact">>;
+compact(<<"n">>) -> <<"identity-info">>;
+compact(<<"o">>) -> <<"event">>;
+compact(<<"r">>) -> <<"refer-to">>;
+compact(<<"s">>) -> <<"subject">>;
+compact(<<"t">>) -> <<"to">>;
+compact(<<"u">>) -> <<"allow-events">>;
+compact(<<"v">>) -> <<"via">>;
 compact(<<"x">>) -> <<"session-expires">>;
+compact(<<"y">>) -> <<"identity">>;
 compact(Name) -> Name.
 
 norm(Name) ->
@@ -116,24 +122,73 @@ do_parse(Bin) ->
         [Head] -> parse_head(Head, <<>>)
     end.
 
-%% Presence of the mandatory header fields (RFC 3261 8.1.1). A message missing
-%% any of these cannot be dispatched, so the ingress answers 400. Used on the
-%% WS ingress (no sofia to validate) and as a backstop on the engine ingress.
--spec validate(msg()) -> ok | {error, missing_header}.
+%% Presence of the mandatory header fields (RFC 3261 8.1.1) and, on a
+%% request, a CSeq of `1*DIGIT LWS Method' whose method is the request's
+%% (8.1.1.5, 20.16). A message failing this cannot be dispatched, so the
+%% ingress answers 400. Used on the WS ingress (no sofia to validate) and as
+%% a backstop on the engine ingress. Max-Forwards is not required: a UAS
+%% takes a request without one (RFC 2543 peers, RFC 4475 3.4.1) and a proxy
+%% adds it (16.6 step 3).
+-spec validate(msg()) -> ok | {error, missing_header | bad_cseq}.
 validate(#sip_msg{} = M) ->
     Mandatory = [<<"via">>, <<"from">>, <<"to">>, <<"call-id">>, <<"cseq">>],
     case lists:all(fun(H) -> get(H, M) =/= undefined end, Mandatory) of
-        true -> ok;
+        true -> validate_cseq(M);
         false -> {error, missing_header}
     end.
+
+validate_cseq(#sip_msg{type = response}) ->
+    ok;
+validate_cseq(#sip_msg{method = Method} = M) ->
+    case split_cseq(get(<<"cseq">>, M)) of
+        {Seq, Method} when Seq =< 16#FFFFFFFF -> ok;
+        _ -> {error, bad_cseq}
+    end.
+
+%% "1*DIGIT LWS Method"; clean/1 has already unfolded the LWS
+split_cseq(Value) ->
+    case digits(Value, <<>>) of
+        {<<>>, _} ->
+            error;
+        {Digits, <<C, _/binary>> = Rest} when C =:= $\s; C =:= $\t ->
+            Method = trim_ows(Rest),
+            case is_token(Method) of
+                true -> {binary_to_integer(Digits), Method};
+                false -> error
+            end;
+        _ ->
+            error
+    end.
+
+digits(<<D, Rest/binary>>, Acc) when D >= $0, D =< $9 ->
+    digits(Rest, <<Acc/binary, D>>);
+digits(Rest, Acc) ->
+    {Acc, Rest}.
+
+%% RFC 3261 25.1 token: 1*(alphanum / "-" / "." / "!" / "%" / "*" / "_" /
+%% "+" / "`" / "'" / "~")
+-spec is_token(binary()) -> boolean().
+is_token(<<>>) ->
+    false;
+is_token(Bin) ->
+    lists:all(fun token_char/1, binary_to_list(Bin)).
+
+token_char(C) when C >= $a, C =< $z -> true;
+token_char(C) when C >= $A, C =< $Z -> true;
+token_char(C) when C >= $0, C =< $9 -> true;
+token_char(C) -> lists:member(C, "-.!%*_+`'~").
 
 parse_head(Head, Body) ->
     case binary:split(Head, <<"\r\n">>) of
         [StartLine, HeaderBlock] ->
             case parse_start(StartLine) of
                 {ok, M0} ->
-                    Headers = parse_headers(HeaderBlock),
-                    {ok, M0#sip_msg{headers = Headers, body = Body}};
+                    case parse_headers(HeaderBlock) of
+                        {ok, Headers} ->
+                            {ok, M0#sip_msg{headers = Headers, body = Body}};
+                        error ->
+                            {error, malformed}
+                    end;
                 E ->
                     E
             end;
@@ -144,7 +199,17 @@ parse_head(Head, Body) ->
             end
     end.
 
-parse_start(<<"SIP/2.0 ", Rest/binary>>) ->
+%% The SIP-Version is case-insensitive (RFC 3261 7.1): a status line may
+%% start "sip/2.0".
+parse_start(<<V:7/binary, " ", Rest/binary>> = Line) ->
+    case ascii_lower(V) of
+        <<"sip/2.0">> -> parse_status(Rest);
+        _ -> parse_request(Line)
+    end;
+parse_start(Line) ->
+    parse_request(Line).
+
+parse_status(Rest) ->
     case Rest of
         <<S1, S2, S3, " ", Reason/binary>> when
             S1 >= $1, S1 =< $6, S2 >= $0, S2 =< $9, S3 >= $0, S3 =< $9
@@ -163,20 +228,37 @@ parse_start(<<"SIP/2.0 ", Rest/binary>>) ->
             {ok, #sip_msg{type = response, status = Status, reason = <<>>}};
         _ ->
             {error, bad_status_line}
-    end;
-parse_start(Line) ->
+    end.
+
+%% Request-Line = Method SP Request-URI SP SIP-Version (7.1); the method is
+%% a case-sensitive token, the version case-insensitive.
+parse_request(Line) ->
     case binary:split(Line, <<" ">>, [global]) of
-        [Method, Uri, <<"SIP/2.0">>] ->
-            {ok, #sip_msg{type = request, method = Method, uri = Uri}};
+        [Method, Uri, Version] ->
+            case is_token(Method) andalso ascii_lower(Version) of
+                <<"sip/2.0">> ->
+                    {ok, #sip_msg{type = request, method = Method, uri = Uri}};
+                _ ->
+                    {error, bad_request_line}
+            end;
         _ ->
             {error, bad_request_line}
     end.
 
 %% Splits the header block into entries, keeping folded continuation
-%% lines (leading SP/HT) inside the previous entry's raw value.
+%% lines (leading SP/HT) inside the previous entry's raw value. A header
+%% name that is not a token (RFC 3261 7.3.1, 25.1) makes the message
+%% malformed.
 parse_headers(Block) ->
     Lines = binary:split(Block, <<"\r\n">>, [global]),
-    lists:reverse(fold_lines(Lines, [])).
+    Hs = fold_lines(Lines, []),
+    case lists:all(fun valid_name/1, Hs) of
+        true -> {ok, lists:reverse(Hs)};
+        false -> error
+    end.
+
+valid_name({_, _, no_colon}) -> true;
+valid_name({_, RawName, _}) -> is_token(trim_ows(RawName)).
 
 fold_lines([], Acc) ->
     Acc;
@@ -238,6 +320,11 @@ method(#sip_msg{method = M}) -> M.
 
 -spec uri(msg()) -> binary() | undefined.
 uri(#sip_msg{uri = U}) -> U.
+
+%% Replace the Request-URI of a request (a proxy retargeting, RFC 3261 16.6).
+-spec set_uri(binary(), msg()) -> msg().
+set_uri(Uri, #sip_msg{type = request} = M) when is_binary(Uri) ->
+    M#sip_msg{uri = Uri}.
 
 -spec status(msg()) -> 100..699 | undefined.
 status(#sip_msg{status = S}) -> S.
@@ -329,23 +416,26 @@ prepend(Name, Value, #sip_msg{headers = Hs} = M) ->
     Entry = {norm(Name), canonical_name(Name), iolist_to_binary([" ", Value])},
     M#sip_msg{headers = [Entry | Hs]}.
 
-%% Decrement Max-Forwards (proxy). Defaults to 70 if absent.
+%% Decrement Max-Forwards (proxy). A request without one passes the check
+%% (RFC 3261 16.3 step 3) and the copy gets Max-Forwards: 70 (16.6 step 3).
 -spec decr_max_forwards(msg()) -> {ok, msg()} | {error, loop_detected}.
 decr_max_forwards(M) ->
-    N =
-        case get(<<"max-forwards">>, M) of
-            undefined ->
-                70;
-            V ->
+    case get(<<"max-forwards">>, M) of
+        undefined ->
+            {ok, set(<<"Max-Forwards">>, <<"70">>, M)};
+        V ->
+            N =
                 try
                     binary_to_integer(V)
                 catch
                     _:_ -> 70
-                end
-        end,
-    case N =< 0 of
-        true -> {error, loop_detected};
-        false -> {ok, set(<<"Max-Forwards">>, integer_to_binary(N - 1), M)}
+                end,
+            case N =< 0 of
+                true ->
+                    {error, loop_detected};
+                false ->
+                    {ok, set(<<"Max-Forwards">>, integer_to_binary(N - 1), M)}
+            end
     end.
 
 %% Sets the body and refreshes Content-Length.
@@ -381,6 +471,19 @@ parsed(Name, M) ->
         {<<"proxy-authorization">>, V} -> chappe_sip_hdr:auth(V);
         {_, V} -> {ok, V}
     end.
+
+%% The option tags listed in every Name header (Require, Proxy-Require,
+%% Supported...), lowercased: option tags compare case-insensitively
+%% (RFC 3261 19.2).
+-spec option_tags(binary(), msg()) -> [binary()].
+option_tags(Name, M) ->
+    [
+        T1
+     || V <- get_all(Name, M),
+        T <- binary:split(V, <<",">>, [global]),
+        T1 <- [ascii_lower(trim_ows(T))],
+        T1 =/= <<>>
+    ].
 
 %% ---- conveniences ----
 
@@ -439,7 +542,8 @@ new_response(Status, Reason, Headers) ->
 
 %% ---- internal ----
 
-%% unfold and trim a raw header value
+%% unfold and trim a raw header value, byte-wise so a non-UTF-8 value
+%% cannot raise
 clean(RV) ->
     Unfolded = binary:replace(
         RV,
@@ -447,7 +551,7 @@ clean(RV) ->
         <<" ">>,
         [global]
     ),
-    string:trim(Unfolded, both, " \t").
+    trim_ows(Unfolded).
 
 %% Preserve the caller's spelling for added headers.
 canonical_name(Name) ->

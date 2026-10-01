@@ -41,7 +41,8 @@
     bye_with_reason/1,
     bye_reason_received/1,
     uac_cancel_with_reason/1,
-    uas_cancel_reason_received/1
+    uas_cancel_reason_received/1,
+    early_dialog_update_and_bye/1
 ]).
 
 -define(P, chappe_sip_raw_peer).
@@ -70,7 +71,8 @@ all() ->
         bye_with_reason,
         bye_reason_received,
         uac_cancel_with_reason,
-        uas_cancel_reason_received
+        uas_cancel_reason_received,
+        early_dialog_update_and_bye
     ].
 
 init_per_suite(Config) ->
@@ -575,7 +577,67 @@ uas_cancel_reason_received(Config) ->
     end,
     ?assertEqual(487, ?P:status(?P:recv_final(Peer, 1, <<"INVITE">>))).
 
+%% ---- early dialogs (RFC 3261 12.1, 15; RFC 3311 5.1) ----
+
+%% Our 183 forms an early dialog with the caller. In it the caller's
+%% UPDATE offer is answered with our session and our own UPDATE goes out
+%% and is answered; the caller's BYE then ends the early dialog: 200 to
+%% the BYE and 487 to its INVITE.
+%% req: R3311-001 R3261-250 R3261-259 R3261-260
+early_dialog_update_and_bye(Config) ->
+    EP = ?config(ep, Config),
+    Test = self(),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        {ok, D} = chappe_sip:create_uas(Req, Res, #{
+            status => 183, local_sdp => ?P:sdp(<<"app">>), owner => Test
+        }),
+        Test ! {dialog, D},
+        receive stop -> ok after 60000 -> ok end
+    end),
+    Peer0 = ?P:invite(?P:open(EP), <<"caller">>, #{}),
+    R183 = recv_provisional(Peer0, 183),
+    Peer = Peer0#{tt => chappe_sip_msg:to_tag(R183)},
+    Dlg = receive {dialog, D} -> D after 5000 -> ct:fail(no_dialog) end,
+    {N1, P1} = ?P:request(Peer, <<"UPDATE">>, [], ?P:sdp(<<"u1">>)),
+    R1 = ?P:recv_final(P1, N1, <<"UPDATE">>),
+    ?assertEqual(200, ?P:status(R1)),
+    ?assertEqual(?P:sdp(<<"app">>), ?P:body(R1)),
+    spawn_link(fun() ->
+        Test !
+            {updated,
+                chappe_sip_dialog:request(Dlg, #{
+                    method => <<"UPDATE">>,
+                    content_type => <<"application/sdp">>,
+                    body => ?P:sdp(<<"app2">>)
+                })}
+    end),
+    {Upd, UMsg, Src} = ?P:recv_request(P1, <<"UPDATE">>),
+    ?assertEqual(
+        chappe_sip_msg:to_tag(R183), chappe_sip_msg:from_tag(UMsg)
+    ),
+    ok = ?P:reply(P1, Upd, Src, 200, ?P:sdp(<<"u2">>)),
+    receive
+        {updated, {ok, M}} -> ?assertEqual(200, chappe_sip_msg:status(M))
+    after 5000 -> ct:fail(no_update)
+    end,
+    {N3, P3} = ?P:request(P1, <<"BYE">>, [], <<>>),
+    ?assertEqual(200, ?P:status(?P:recv_final(P3, N3, <<"BYE">>))),
+    ?assertEqual(487, ?P:status(?P:recv_final(P3, 1, <<"INVITE">>))),
+    receive
+        {chappe_sip_dialog, Dlg, destroy, _} -> ok
+    after 5000 -> ct:fail(no_destroy)
+    end,
+    ?P:close(P3).
+
 %% ---- helpers ----
+
+recv_provisional(Peer, Want) ->
+    R = ?P:recv_response(Peer, 1, <<"INVITE">>),
+    case ?P:status(R) of
+        Want -> R;
+        S when S < Want -> recv_provisional(Peer, Want);
+        S -> ct:fail({status, S, expected, Want})
+    end.
 
 recv_status(Peer, N, Method, Want) ->
     case ?P:status(?P:recv_response(Peer, N, Method)) of

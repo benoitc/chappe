@@ -31,6 +31,22 @@ Call-ID and tags for every method and needs no such step.
   `enif_send` from the stack thread.
 - Scheduler threads never block on the engine: `start/2` and `stop/1`
   are dirty IO NIFs, everything else is enqueue-only.
+- The handle table (handle id to nta object) is a chained hash table with
+  4096 buckets, touched only by the stack thread, so a lookup stays
+  constant time however many transactions and legs are live.
+
+## nta settings that differ from a plain UA
+
+- `NTATAG_MERGE_482(0)`: merged-request detection (RFC 3261 8.2.2.2) runs
+  in `chappe_sip_engine`, which knows which server transactions a proxy
+  owns, so a request spiralling back through the proxy is not refused.
+- `NTATAG_CANCEL_487(0)`: the CANCEL callback answers a UAS INVITE 487
+  itself, but not one a proxy owns (`proxy_mark/2`): the proxy relays the
+  downstream 487, or a 2xx that crossed the CANCEL (RFC 3261 16.10).
+- A proxy INVITE branch (`request/4`, which also sets the Via branch to the
+  loop-detection hash) is created with UA mode off for that call, so the
+  client transaction passes every 2xx up instead of ACKing and BYEing a
+  second one (RFC 6026).
 
 ## Lifecycle protocols
 
@@ -140,8 +156,7 @@ UDP/TCP contact, because comma-listed transports share one port. Pass a
 chappe_sip:start(#{
     contact => <<"sip:0.0.0.0:5060">>,
     tls => #{contact => <<"sips:0.0.0.0:5061;transport=tls">>,
-             cert_dir => <<"/etc/chappe/certs">>,
-             verify => none}}).
+             cert_dir => <<"/etc/chappe/certs">>}}).
 ```
 
 - The TLS contact must use the `sips:` scheme (a `sip:` URI only resolves
@@ -152,7 +167,12 @@ chappe_sip:start(#{
 - The shim passes an explicit `TPTAG_TLS_VERSION` floored at TLS 1.2 (the
   sofia default disables modern TLS) and a default cipher list (sofia rejects a
   NULL cipher list); override the ciphers with the `ciphers` key.
-- `verify => peer` requires a client certificate; the default is `none`.
+- `verify => peer` (the default) checks the server certificate of outbound
+  connections: `TPTLS_VERIFY_SUBJECTS_OUT`, so the chain must reach
+  `cafile.pem` and the target host must be among the certificate's
+  subjectAltName URI/DNS entries (RFC 5922). `verify_clients => true` adds
+  `TPTLS_VERIFY_IN` (a client certificate is required). `verify => none` is
+  accepted only with `allow_insecure => true`.
 - Portability: a build host without OpenSSL development headers makes
   `build.sh` pass `--with-openssl=no`, which silently drops TLS (and WSS).
 

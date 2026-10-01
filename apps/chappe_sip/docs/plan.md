@@ -120,7 +120,7 @@ One commit closes each milestone.
 - [x] M12 TLS contacts: a TLS listener bound on its own port via a second
       nta_agent_add_tport (comma-listed transports share one port). C shim
       parses a tls start opt (contact/cert_dir/passphrase/verify/ciphers),
-      passes TPTAG_CERTIFICATE + explicit TPTAG_TLS_VERSION (1.1/1.2) +
+      passes TPTAG_CERTIFICATE + explicit TPTAG_TLS_VERSION (TLS 1.2 floor) +
       TPTAG_TLS_CIPHERS (default; sofia rejects NULL) + verify policy. The
       TLS contact must be sips:...;transport=tls (a sip: URI excludes tls).
       cert_dir holds agent.pem + cafile.pem. Closed 2026-07-14:
@@ -182,6 +182,19 @@ One commit closes each milestone.
       (RFC 5626; chappe_sip_registry:remove_flow from chappe_sip_ws_transport drop_flow) so
       a disconnected browser is deregistered. Closed 2026-07-16: interop 3/3
       (INTEROP=1), regression 64 CT + 29 eunit green.
+- [x] M16 WS transport conformance (RFC 7118, RFC 3261 reliable-transport
+      rules, RFC 3262, RFC 5626 keepalive). Server transactions match on
+      {Flow, Branch, Method} and answer retransmissions; a non-2xx INVITE
+      final waits for its ACK (Timer H); CANCEL answers the INVITE 487; the
+      reaper answers 408/500; an unACKed 2xx is BYEd. Client transactions get
+      Timer B/F, Timer C with CANCEL, a held CANCEL and the non-2xx ACK.
+      100rel over WS (RSeq, PRACK matching, 481). Binary frames both ways,
+      400 on a missing header or bad Content-Length, Record-Route mirrored,
+      RFC 3581 rport. Overload 503/500 go over WS (and work on a WS-only
+      node). CRLF pong on WS and on TCP/TLS (sofia TPTAG_PONG2PING), server
+      pings below the 600 s idle timeout (which replaced the earlier
+      idle_timeout=infinity), a WSS listener, 1009 close past
+      max_message_size. chappe_sip_ws_conf_SUITE.
 
 ## Notes
 

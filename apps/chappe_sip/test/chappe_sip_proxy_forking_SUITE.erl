@@ -124,7 +124,9 @@ proxy_parallel_first_wins(_Config) ->
     after 6000 -> ct:fail(no_proxy_done) end.
 
 %% F13: a 6xx from one branch is a global failure that cancels the other
-%% branches and is relayed upstream (RFC 3261 16.7).
+%% branches and is relayed upstream once they answered the CANCEL (RFC 3261
+%% 16.7 step 5).
+%% req: R3261-P-020
 proxy_parallel_6xx_cancels(_Config) ->
     {EP, [D1, D2]} = setup(2),
     Test = self(),
@@ -145,6 +147,7 @@ proxy_parallel_6xx_cancels(_Config) ->
         send(Sock, Src, resp(Inv, 180, <<"Ringing">>, tag(), [], <<>>)),
         {_Cancel, CSrc} = recv(Sock, <<"CANCEL">>),
         send(Sock, CSrc, resp(_Cancel, 200, <<"OK">>, tag(), [], <<>>)),
+        send(Sock, Src, resp(Inv, 487, <<"Request Terminated">>, tag(), [], <<>>)),
         Test ! d2_cancelled
     end),
     caller(fun(Sock) ->

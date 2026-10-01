@@ -92,7 +92,7 @@ jssip_register(Config) ->
     WP = pick(),
     EP = pick(),
     ok = chappe_sip:start(#{contact => contact(EP), ws => #{port => WP}}),
-    ok = chappe_sip:register(chappe_sip:registrar()),
+    ok = chappe_sip:register(chappe_sip:registrar(#{allow_unauthenticated => true})),
     Aor = <<"sip:alice@127.0.0.1">>,
     Self = self(),
     _ = spawn(fun() ->
@@ -117,7 +117,7 @@ jssip_call(Config) ->
     WP = pick(),
     EP = pick(),
     ok = chappe_sip:start(#{contact => contact(EP), ws => #{port => WP}}),
-    ok = chappe_sip:register(chappe_sip:registrar()),
+    ok = chappe_sip:register(chappe_sip:registrar(#{allow_unauthenticated => true})),
     Callee = <<"sip:callee@127.0.0.1">>,
     ok = chappe_sip:invite(fun(Req, Res) ->
         case chappe_sip:location_flow(Callee) of

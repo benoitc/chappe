@@ -42,7 +42,11 @@
 %%   pass_provisional_responses => boolean (default true)
 %%   proxy, auth           => passed to the B-leg UAC
 %%   session_expires, min_se, session_refresher => each leg's session timer
-%%   timeout               => overall B answer timeout (default 32000)
+%%   timer_c               => Timer C on the B leg in ms (RFC 3261 16.6
+%%                            step 11): how long B may ring, restarted by
+%%                            each provisional; on expiry B is CANCELled and
+%%                            A gets 408 (default: the timer_c_ms config,
+%%                            185000). `timeout' is the old name.
 -spec create_b2bua(chappe_sip_req:req(), chappe_sip_res:res(), binary(), map()) ->
     {ok, #{
         uas := chappe_sip_dialog:dialog(), uac := chappe_sip_dialog:dialog()
@@ -78,12 +82,12 @@ create_b2bua(Req, Res, Uri, Opts) ->
     ATag = chappe_sip_dialog:gen_tag(),
     case chappe_sip_uac:start(Uri, BOpts) of
         {ok, BRef} ->
-            %% absolute deadline: provisionals must not extend the B answer
-            %% window (a browser streaming 180 would keep the worker forever)
-            Deadline =
-                erlang:monotonic_time(millisecond) +
-                    maps:get(timeout, Opts, 32000),
+            %% Timer C: B may ring as long as it keeps sending provisionals,
+            %% each one restarting the timer
+            TimerC = timer_c(Opts),
+            Deadline = erlang:monotonic_time(millisecond) + TimerC,
             b2b_wait(#{
+                timer_c => TimerC,
                 req => Req,
                 res => Res,
                 opts => Opts,
@@ -105,13 +109,28 @@ create_b2bua(Req, Res, Uri, Opts) ->
 
 st_opts() -> [session_expires, min_se, session_refresher].
 
+timer_c(Opts) ->
+    case maps:get(timer_c, Opts, maps:get(timeout, Opts, undefined)) of
+        T when is_integer(T), T > 0 -> T;
+        _ -> chappe_sip_config:get(timer_c_ms)
+    end.
+
+%% a provisional other than 100 restarts Timer C (RFC 3261 16.7 step 2)
+restart_timer_c(BMsg, #{timer_c := TimerC} = W) ->
+    case chappe_sip_msg:status(BMsg) of
+        100 ->
+            W;
+        _ ->
+            W#{deadline := erlang:monotonic_time(millisecond) + TimerC}
+    end.
+
 b2b_wait(#{res := Res, bref := BRef, deadline := Deadline} = W) ->
     ATxn = chappe_sip_res:req_txn(Res),
     receive
         {chappe_sip_uac, BRef, {request_sent, _}} ->
             b2b_wait(W);
         {chappe_sip_uac, BRef, {provisional, BMsg}} ->
-            b2b_wait(provisional(BMsg, b_sdp(BMsg, W)));
+            b2b_wait(provisional(BMsg, b_sdp(BMsg, restart_timer_c(BMsg, W))));
         {chappe_sip_uac, BRef, {answer, BMsg}} ->
             b2b_wait(b_sdp(BMsg, W#{answer := BMsg}));
         {chappe_sip_uac, BRef, {ok, BDialog}} ->
@@ -137,8 +156,9 @@ b2b_wait(#{res := Res, bref := BRef, deadline := Deadline} = W) ->
             }),
             {error, cancelled}
     after max(0, Deadline - erlang:monotonic_time(millisecond)) ->
+        %% Timer C fired (RFC 3261 16.8): CANCEL B, A gets a 408
         cancel_b(W, []),
-        _ = chappe_sip_res:send(Res, 504, #{reason => <<"Server Time-out">>}),
+        _ = chappe_sip_res:send(Res, 408, #{reason => <<"Request Timeout">>}),
         {error, timeout}
     end.
 
@@ -251,7 +271,9 @@ send_provisional(BMsg, #{res := Res, atag := ATag, opts := Opts} = W) ->
     Reason = default_reason(chappe_sip_msg:reason(BMsg)),
     {CT, Body} = early_body(BMsg, Opts),
     Reliable = reliable(BMsg, W),
-    Hdrs = CT ++ [{<<"Contact">>, contact()} || Reliable],
+    %% every relayed 1xx carries A's To-tag, so it establishes an early
+    %% dialog and needs our Contact (RFC 3261 12.1.1)
+    Hdrs = CT ++ [{<<"Contact">>, contact()}],
     _ = chappe_sip_res:send(Res, Status, #{
         reason => Reason,
         headers => Hdrs,

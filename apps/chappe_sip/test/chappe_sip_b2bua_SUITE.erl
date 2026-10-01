@@ -13,11 +13,13 @@
 
 -export([all/0, init_per_suite/1, end_per_suite/1, end_per_testcase/2]).
 -export([b2b_success_bye/1, b2b_callee_busy/1, b2b_caller_cancel/1,
-         b2b_survives_deadline/1]).
+         b2b_survives_deadline/1, b2b_rings_past_deadline/1,
+         b2b_timer_c_408/1, b2b_timer_c_restarted/1]).
 
 all() ->
     [b2b_success_bye, b2b_callee_busy, b2b_caller_cancel,
-     b2b_survives_deadline].
+     b2b_survives_deadline, b2b_rings_past_deadline, b2b_timer_c_408,
+     b2b_timer_c_restarted].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -34,6 +36,7 @@ end_per_testcase(_Case, _Config) ->
     _ = chappe_sip:stop(),
     _ = chappe_sip_engine:reset_routes(),
     application:unset_env(chappe_sip, handler_deadline_ms),
+    application:unset_env(chappe_sip, timer_c_ms),
     ok.
 
 %% caller INVITE -> app b2bua -> callee; 180 relayed, 200 bridged, ACK both
@@ -131,6 +134,116 @@ b2b_survives_deadline(_Config) ->
     ok = expect(caller_byed),
     ok = expect(callee_byed),
     ok = expect({relay_done, a_bye}).
+
+%% B rings longer than the handler deadline before it answers: the worker
+%% waits on the B-leg UAC, which owns the call, so its deadline is disarmed
+%% and A gets the 200, not a 500.
+b2b_rings_past_deadline(_Config) ->
+    application:set_env(chappe_sip, handler_deadline_ms, 600),
+    {EnginePort, CalleePort} = setup(),
+    Test = self(),
+    CalleeUri = <<"sip:callee@127.0.0.1:", (integer_to_binary(CalleePort))/binary>>,
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        {ok, Legs} = chappe_sip:create_b2bua(Req, Res, CalleeUri, #{}),
+        Test ! b2b_up,
+        {done, _} = chappe_sip_b2b:relay(Legs)
+    end),
+    callee(CalleePort, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        ToTag = tag(),
+        [begin
+             send(Sock, Src, resp(Inv, 180, <<"Ringing">>, ToTag, [], <<>>)),
+             timer:sleep(400)
+         end || _ <- lists:seq(1, 4)],
+        send(Sock, Src, resp(Inv, 200, <<"OK">>, ToTag,
+                             [{<<"Contact">>, ctc(CalleePort)}], sdp(<<"callee">>))),
+        {_Ack, _} = recv(Sock, <<"ACK">>),
+        {Bye, BSrc} = recv(Sock, <<"BYE">>),
+        send(Sock, BSrc, resp(Bye, 200, <<"OK">>, ToTag, [], <<>>))
+    end),
+    caller(fun(Sock) ->
+        Call = callid(),
+        FT = <<"cftr">>,
+        send(Sock, EnginePort, invite(Sock, EnginePort, Call, FT)),
+        R = recv_final(Sock),
+        Test ! {caller_final, status_of(R)},
+        TT = to_tag(R),
+        send(Sock, EnginePort, ack(Sock, EnginePort, Call, FT, TT)),
+        send(Sock, EnginePort, bye(Sock, EnginePort, Call, FT, TT)),
+        _ = recv_status(Sock, 200)
+    end),
+    ok = expect(b2b_up),
+    ok = expect({caller_final, 200}).
+
+%% Timer C on the B leg (RFC 3261 16.8): B sends one 180 and then nothing;
+%% when Timer C fires B is CANCELled and A gets a 408.
+%% req: R3261-P-019
+b2b_timer_c_408(_Config) ->
+    {EnginePort, CalleePort} = setup(),
+    Test = self(),
+    CalleeUri = <<"sip:callee@127.0.0.1:", (integer_to_binary(CalleePort))/binary>>,
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        R = chappe_sip:create_b2bua(Req, Res, CalleeUri, #{timer_c => 500}),
+        Test ! {b2b_result, R}
+    end),
+    callee(CalleePort, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        send(Sock, Src, resp(Inv, 180, <<"Ringing">>, tag(), [], <<>>)),
+        {Cancel, CSrc} = recv(Sock, <<"CANCEL">>),
+        send(Sock, CSrc, resp(Cancel, 200, <<"OK">>, tag(), [], <<>>)),
+        send(Sock, Src, resp(Inv, 487, <<"Request Terminated">>, tag(), [], <<>>)),
+        Test ! callee_cancelled
+    end),
+    caller(fun(Sock) ->
+        Call = callid(),
+        send(Sock, EnginePort, invite(Sock, EnginePort, Call, <<"cftc">>)),
+        R = recv_final(Sock),
+        send(Sock, EnginePort, ack_status(Sock, EnginePort, Call, <<"cftc">>, R)),
+        Test ! {caller_final, status_of(R)}
+    end),
+    ok = expect(callee_cancelled),
+    ok = expect({caller_final, 408}),
+    receive {b2b_result, {error, timeout}} -> ok
+    after 5000 -> ct:fail(no_b2b_timeout)
+    end.
+
+%% Each provisional restarts Timer C: B rings for three times the timer
+%% with a 180 every 300 ms and still connects.
+%% req: R3261-P-018
+b2b_timer_c_restarted(_Config) ->
+    application:set_env(chappe_sip, timer_c_ms, 600),
+    {EnginePort, CalleePort} = setup(),
+    Test = self(),
+    CalleeUri = <<"sip:callee@127.0.0.1:", (integer_to_binary(CalleePort))/binary>>,
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        {ok, Legs} = chappe_sip:create_b2bua(Req, Res, CalleeUri, #{}),
+        {done, _} = chappe_sip_b2b:relay(Legs)
+    end),
+    callee(CalleePort, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        ToTag = tag(),
+        [begin
+             send(Sock, Src, resp(Inv, 180, <<"Ringing">>, ToTag, [], <<>>)),
+             timer:sleep(300)
+         end || _ <- lists:seq(1, 6)],
+        send(Sock, Src, resp(Inv, 200, <<"OK">>, ToTag,
+                             [{<<"Contact">>, ctc(CalleePort)}], sdp(<<"callee">>))),
+        {_Ack, _} = recv(Sock, <<"ACK">>),
+        {Bye, BSrc} = recv(Sock, <<"BYE">>),
+        send(Sock, BSrc, resp(Bye, 200, <<"OK">>, ToTag, [], <<>>))
+    end),
+    caller(fun(Sock) ->
+        Call = callid(),
+        FT = <<"cftk">>,
+        send(Sock, EnginePort, invite(Sock, EnginePort, Call, FT)),
+        R = recv_final(Sock),
+        Test ! {caller_final, status_of(R)},
+        TT = to_tag(R),
+        send(Sock, EnginePort, ack(Sock, EnginePort, Call, FT, TT)),
+        send(Sock, EnginePort, bye(Sock, EnginePort, Call, FT, TT)),
+        _ = recv_status(Sock, 200)
+    end),
+    ok = expect({caller_final, 200}).
 
 %% callee 486 -> caller gets 486 (pass_failure default true)
 b2b_callee_busy(_Config) ->
@@ -266,6 +379,17 @@ recv_status(Sock, Code) ->
 to_tag(Resp) ->
     {ok, M} = chappe_sip_msg:parse(Resp),
     chappe_sip_msg:to_tag(M).
+
+%% the first final response
+recv_final(Sock) ->
+    receive
+        {udp, Sock, _, _, <<"SIP/2.0 1", _/binary>>} -> recv_final(Sock);
+        {udp, Sock, _, _, <<"SIP/2.0 ", _/binary>> = Bin} -> Bin;
+        {udp, Sock, _, _, _} -> recv_final(Sock)
+    after 6000 -> ct:fail(no_final)
+    end.
+
+status_of(<<"SIP/2.0 ", C:3/binary, _/binary>>) -> binary_to_integer(C).
 
 invite(Sock, _EP, Call, FT) ->
     P = integer_to_binary(lport(Sock)),
