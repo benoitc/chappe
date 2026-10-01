@@ -2,7 +2,7 @@
 
 An opensource SIP/media platform for Erlang/OTP. `chappe` is an umbrella of
 composable apps you build voice services on: a SIP stack, an rtpengine control
-client, an RTP conference mixer, and a FreeSWITCH Event Socket client.
+client, and an RTP conference mixer.
 
 Named after Claude Chappe, who built the first practical telecommunications
 network (the optical semaphore telegraph, 1794).
@@ -16,8 +16,6 @@ network (the optical semaphore telegraph, 1794).
   relay/anchoring, subscribe/duck). SIP-free.
 - **chappe_mix** - an RTP audio conference mixer (G.711, RFC 3550 mixer
   behaviour). The `conference` backend of `chappe_sip_media`. SIP-free.
-- **chappe_esl** - a standalone FreeSWITCH Event Socket (ESL) client for
-  products that drive FreeSWITCH directly. chappe_sip does not use it. SIP-free.
 
 Products are built on top of chappe as separate applications (an SBC, an AI
 voice product, a PBX); they depend on these packages, they are not part of this
@@ -44,7 +42,6 @@ make compliance # per-app RFC requirement matrices (GATE=demo to gate)
 apps/chappe_sip/         # SIP stack + media facade; c_src (vendored sofia)
 apps/chappe_rtpengine/   # rtpengine NG client
 apps/chappe_mix/         # RTP conference mixer
-apps/chappe_esl/         # FreeSWITCH ESL client (standalone)
 ```
 
 Inside the umbrella the apps reference each other by name. Each app is published

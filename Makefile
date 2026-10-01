@@ -5,7 +5,7 @@
 
 .PHONY: all compile test test-static check eunit ct lint xref dialyzer \
         fmt fmt-check asan interop interop-mix interop-conformance \
-        interop-esl compliance cover clean
+        compliance cover clean
 
 all: compile
 
@@ -50,10 +50,6 @@ asan:
 interop:
 	apps/chappe_rtpengine/test/e2e.sh
 
-# The ESL client against a real FreeSWITCH in docker.
-interop-esl:
-	apps/chappe_esl/test/e2e.sh
-
 # The mixer behind a real rtpengine (transcoded legs, N-1 by Goertzel).
 interop-mix:
 	apps/chappe_mix/test/interop.sh
@@ -61,7 +57,7 @@ interop-mix:
 # Each app's compliance matrix from its requirements, the `%% req:'
 # annotations and the latest CT results. GATE=demo fails on any hard
 # requirement of the demo tier that is not passing.
-COMPLIANCE_APPS = chappe_sip chappe_mix chappe_rtpengine chappe_esl
+COMPLIANCE_APPS = chappe_sip chappe_mix chappe_rtpengine
 
 compliance:
 	rebar3 as test compile

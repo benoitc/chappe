@@ -1,8 +1,7 @@
 # Leaf library contract
 
 This is the shared contract for the chappe stack's leaf protocol clients
-(chappe_esl for FreeSWITCH Event Socket, chappe_rtpengine for the rtpengine NG
-protocol). Read it before starting or reviewing a leaf library so both are built
+(chappe_rtpengine for the rtpengine NG protocol, chappe_mix for RTP mixing). Read it before starting or reviewing a leaf library so both are built
 the same way. A leaf library speaks one wire protocol and depends on nothing
 else in the stack.
 
@@ -19,7 +18,7 @@ else in the stack.
 ## Layout
 
 - Public facade module named `chappe_<thing>`; every internal module prefixed with
-  a short tag (`chappe_esl_`, `chappe_rtpengine_`).
+  a short tag (`chappe_rtpengine_`, `chappe_mix_`).
 - `src/` for code, `test/` for tests (flat), `docs/` for authored markdown,
   `doc/` for generated ex_doc HTML (git-ignored), `interop/` for a live test
   harness.
