@@ -1,0 +1,20 @@
+# LeakSanitizer suppressions for test/asan/run.sh.
+#
+# LD_PRELOAD puts ASan in every process the run starts, not only the BEAM
+# that loads the NIF. A template suppresses a leak when it matches any frame
+# (function, source file or module path), so nothing here may match a frame
+# that a NIF call stack carries: the BEAM (erts-*/bin/beam.smp, hence the
+# anchored /bin/ paths), sofia-sip or chappe_sip_engine_nif.c. A leak
+# allocated under the NIF is always reported.
+
+# erts DNS port helper: exits with its last request buffer allocated.
+leak:inet_gethost
+
+# Programs rebar3 and the hooks run (cp, sh); coreutils also close stderr
+# before LSan reports, so an unsuppressed leak there is a silent abort.
+leak:^/usr/bin/
+leak:^/bin/
+
+# OTP's crypto NIF: cipher contexts owned by Erlang resources that are still
+# alive when the VM halts (rebar3 fetching from hex over TLS).
+leak:priv/lib/crypto.so

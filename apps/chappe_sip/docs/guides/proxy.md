@@ -65,13 +65,26 @@ Resolve an AOR to a WebSocket flow and forward over it:
 chappe_sip:proxy_request(Req, {ws, Flow}, #{record_route => true}).
 ```
 
+## Route to an outbound (RFC 5626) binding
+
+A UA that registered with `+sip.instance` and `reg-id` straight to you over
+TCP, TLS or UDP is reached over that flow, not by its Contact address:
+
+```erlang
+{ok, Uri, Flow} = chappe_sip:location_flow(<<"sip:bob@example.com">>),
+chappe_sip:proxy_request(Req, {flow, Uri, Flow}, #{}).
+```
+
+The Request-URI becomes the contact `Uri`. A TCP/TLS flow is the connection
+the REGISTER came on; a UDP flow is its source address and port.
+
 ## What reaches the caller
 
 - Provisionals (but 100 Trying) are relayed as they arrive.
 - Every 2xx is forwarded: the first on the server transaction, then, for
   64*T1 (`proxy_accepted_ms`), each 2xx with a new To-tag, from another branch
-  or from a fork further downstream (RFC 6026). A retransmission of a 2xx
-  already forwarded is absorbed.
+  or from a fork further downstream (RFC 6026), over UDP, TCP and TLS. A
+  retransmission of a 2xx already forwarded is absorbed.
 - With no 2xx, the best final once every branch is done (16.7 step 6): a 6xx
   first (it also CANCELs the other branches), else the lowest class, and in
   4xx a 401, 407, 415, 420 or 484. The challenges of every 401 and 407 branch

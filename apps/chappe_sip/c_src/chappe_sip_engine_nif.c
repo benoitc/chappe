@@ -63,7 +63,10 @@ enum { G_NONE = 0, G_RUNNING, G_STOPPING };
 static _Atomic int g_engine_state = G_NONE;
 
 /* handle table entry kinds */
-enum { H_INCOMING = 1, H_LEG, H_OUTGOING };
+enum { H_INCOMING = 1, H_LEG, H_OUTGOING, H_FLOW };
+
+/* flow table buckets, keyed by tport (power of two) */
+#define FBUCKETS 1024
 
 typedef struct hent {
     uint64_t id;
@@ -99,7 +102,26 @@ typedef struct obj_ctx {
     int rel_offer;
     uint64_t orphan_ms;
     struct obj_ctx *next_orphan;
+    /* outgoing proxy INVITE branch only: the Via branch nta gave it, and
+     * the links of the engine's branch list. nta ends a client transaction
+     * on a reliable transport at its first 2xx, so a later 2xx of the same
+     * branch (a downstream fork) matches no transaction and reaches
+     * stray_cb, which finds the branch here (RFC 6026). */
+    int px;
+    char px_branch[96];
+    struct obj_ctx *px_prev, *px_next;
 } obj_ctx_t;
+
+/* An RFC 5626 flow: a TCP/TLS connection a request arrived on. The engine
+ * holds a tport reference, so the pointer stays valid, and a pending entry
+ * on it, so tport reports the close (flow_err_cb). */
+typedef struct flow {
+    struct engine *e;
+    uint64_t id;
+    tport_t *tp;
+    int pendd;
+    struct flow *next;
+} flow_t;
 
 /* nta gives up on an unacknowledged reliable 1xx after 64*T1 (32 s with
  * the default T1); an orphan ctx is freed well after that */
@@ -134,6 +156,10 @@ typedef struct engine {
     /* handle table: chained hash buckets keyed by handle id */
     hent_t *handles[HBUCKETS];
     obj_ctx_t *orphans;
+    /* live proxy INVITE branches (obj_ctx px list) */
+    obj_ctx_t *px_head;
+    /* RFC 5626 flows by tport (each is also a H_FLOW handle by id) */
+    flow_t *flows[FBUCKETS];
     uint64_t health_seq;
 
     _Atomic int state;
@@ -154,7 +180,8 @@ static ERL_NIF_TERM am_ok, am_error, am_undefined, am_chappe_sip_engine, am_requ
     am_max_message_size, am_engine_start, am_op_ok, am_op_failed, am_response,
     am_ack, am_cancel, am_status, am_tls, am_cert_dir, am_passphrase, am_verify,
     am_peer, am_ciphers, am_prack, am_source_ip, am_source_port,
-    am_ack_timeout, am_transport, am_verify_clients, am_true;
+    am_ack_timeout, am_transport, am_verify_clients, am_true, am_conn,
+    am_flow_closed;
 
 /* operations enqueued to the stack thread */
 enum { OP_RESPOND = 1, OP_HEALTH, OP_STOP, OP_REQUEST, OP_LEG_CREATE,
@@ -180,6 +207,8 @@ typedef struct op {
     char *raw;
     size_t raw_len;
     char *route;
+    /* OP_REQUEST / OP_SEND: send over this RFC 5626 flow (0: none) */
+    uint64_t flow;
 } op_t;
 
 /* ---------- small helpers ---------- */
@@ -274,10 +303,21 @@ static void orphans_sweep(engine_t *e, int all) {
     }
 }
 
+/* off the list of proxy INVITE branches stray_cb searches */
+static void px_unlink(engine_t *e, obj_ctx_t *c) {
+    if (!c->px) return;
+    if (c->px_prev) c->px_prev->px_next = c->px_next;
+    else e->px_head = c->px_next;
+    if (c->px_next) c->px_next->px_prev = c->px_prev;
+    c->px = 0;
+    c->px_prev = c->px_next = NULL;
+}
+
 /* the handle is gone; its ctx too, unless a PRACK callback may still use it */
 static void ctx_release(engine_t *e, int kind, void *ctx) {
     if (!ctx) return;
     obj_ctx_t *c = ctx;
+    if (kind == H_OUTGOING) px_unlink(e, c);
     if (kind == H_INCOMING && c->rel) {
         c->orphan_ms = now_ms();
         c->next_orphan = e->orphans;
@@ -301,6 +341,97 @@ static void tab_del(engine_t *e, uint64_t id) {
     }
 }
 
+/* ---------- RFC 5626 flows (stack thread only) ---------- */
+
+static unsigned flow_slot(const tport_t *tp) {
+    return (unsigned)((((uintptr_t)tp >> 4) * 0x9E3779B97F4A7C15ULL) >> 54) &
+           (FBUCKETS - 1);
+}
+
+static flow_t *flow_by_tport(engine_t *e, const tport_t *tp) {
+    for (flow_t *f = e->flows[flow_slot(tp)]; f; f = f->next)
+        if (f->tp == tp) return f;
+    return NULL;
+}
+
+/* Forget a flow: off the tport index, its pending entry released and its
+ * tport reference dropped. The caller removes its H_FLOW handle. */
+static void flow_free(engine_t *e, flow_t *f) {
+    flow_t **p = &e->flows[flow_slot(f->tp)];
+    while (*p && *p != f) p = &(*p)->next;
+    if (*p) *p = f->next;
+    if (f->pendd > 0)
+        tport_release(f->tp, f->pendd, NULL, NULL, (tp_client_t *)f, 0);
+    tport_unref(f->tp);
+    enif_free(f);
+}
+
+static ERL_NIF_TERM mk_flow_closed_ev(ErlNifEnv *env, engine_t *e,
+                                      void *arg) {
+    (void)e;
+    uint64_t *id = arg;
+    return enif_make_tuple2(env, am_flow_closed, enif_make_uint64(env, *id));
+}
+
+/* the flow is gone: tell Erlang (which drops its bindings, RFC 5626 7) */
+static void flow_closed(engine_t *e, flow_t *f) {
+    uint64_t id = f->id;
+    flow_free(e, f);
+    tab_del(e, id);
+    if (atomic_load(&e->state) == ST_READY)
+        send_event(e, mk_flow_closed_ev, &id);
+}
+
+/* tport reports an error or the close of a connection we hold a flow on */
+static void flow_err_cb(tp_stack_t *stack, tp_client_t *client, tport_t *tp,
+                        msg_t *msg, int error) {
+    (void)stack;
+    (void)tp;
+    (void)msg;
+    (void)error;
+    flow_t *f = (flow_t *)client;
+    flow_closed(f->e, f);
+}
+
+/* The flow id of a connection-oriented transport (TCP, TLS), made on its
+ * first request; 0 for a datagram or primary transport. */
+static uint64_t flow_of(engine_t *e, tport_t *tp) {
+    if (!tp || !tport_is_secondary(tp) || !tport_is_reliable(tp) ||
+        tport_is_closed(tp))
+        return 0;
+    flow_t *f = flow_by_tport(e, tp);
+    if (f) return f->id;
+    f = enif_alloc(sizeof *f);
+    if (!f) return 0;
+    f->e = e;
+    f->tp = tport_ref(tp);
+    f->pendd = tport_pend(tp, NULL, flow_err_cb, (tp_client_t *)f);
+    f->id = f->pendd > 0 ? tab_put(e, H_FLOW, f, NULL) : 0;
+    if (f->id == 0) {
+        if (f->pendd > 0)
+            tport_release(tp, f->pendd, NULL, NULL, (tp_client_t *)f, 0);
+        tport_unref(tp);
+        enif_free(f);
+        return 0;
+    }
+    unsigned slot = flow_slot(tp);
+    f->next = e->flows[slot];
+    e->flows[slot] = f;
+    return f->id;
+}
+
+/* a closed tport that did not report (a pending entry is reported once) */
+static void flows_sweep(engine_t *e) {
+    for (unsigned slot = 0; slot < FBUCKETS; slot++) {
+        flow_t *f = e->flows[slot];
+        while (f) {
+            flow_t *next = f->next;
+            if (tport_is_closed(f->tp)) flow_closed(e, f);
+            f = next;
+        }
+    }
+}
+
 static void tab_drain(engine_t *e) {
     for (unsigned slot = 0; slot < HBUCKETS; slot++) {
         while (e->handles[slot]) {
@@ -315,6 +446,9 @@ static void tab_drain(engine_t *e) {
                 break;
             case H_OUTGOING:
                 nta_outgoing_destroy((nta_outgoing_t *)h->ptr);
+                break;
+            case H_FLOW:
+                flow_free(e, (flow_t *)h->ptr);
                 break;
             }
             ctx_release(e, h->kind, h->ctx);
@@ -335,6 +469,7 @@ struct req_ev {
     char src_ip[64]; /* peer address of the received request ("" if unknown) */
     int src_port;
     char transport[16]; /* "udp", "tcp", "tls"... ("" if unknown) */
+    uint64_t flow; /* the TCP/TLS connection's flow id (0: none) */
 };
 
 static ERL_NIF_TERM mk_request_ev(ErlNifEnv *env, engine_t *e, void *arg) {
@@ -350,6 +485,9 @@ static ERL_NIF_TERM mk_request_ev(ErlNifEnv *env, engine_t *e, void *arg) {
     if (r->transport[0])
         enif_make_map_put(env, meta, am_transport,
                           mkbin(env, r->transport, strlen(r->transport)),
+                          &meta);
+    if (r->flow)
+        enif_make_map_put(env, meta, am_conn, enif_make_uint64(env, r->flow),
                           &meta);
     ERL_NIF_TERM raw = r->raw ? mkbin(env, r->raw, r->raw_len)
                               : mkbin(env, "", 0);
@@ -641,6 +779,7 @@ static int deliver_request(engine_t *e, uint64_t leg_h, nta_incoming_t *irq,
     if (method == sip_method_invite) {
         ictx = enif_alloc(sizeof *ictx);
         if (!ictx) return 503;
+        memset(ictx, 0, sizeof *ictx);
     }
 
     uint64_t h = tab_put(e, H_INCOMING, irq, ictx);
@@ -690,8 +829,12 @@ static int deliver_request(engine_t *e, uint64_t leg_h, nta_incoming_t *irq,
     /* the transport it came over: a TLS request is record-routed and
      * answered with our sips contact (RFC 5630) */
     char transport[16] = {0};
+    uint64_t flow = 0;
     {
         tport_t *tp = nta_incoming_transport(e->agent, irq, NULL);
+        /* the connection it came over, as an RFC 5626 flow a later
+         * request can be sent back on */
+        flow = flow_of(e, tp);
         tp_name_t const *tpn = tp ? tport_name(tp) : NULL;
         if (tpn && tpn->tpn_proto) {
             size_t i;
@@ -710,6 +853,7 @@ static int deliver_request(engine_t *e, uint64_t leg_h, nta_incoming_t *irq,
         .raw = raw,
         .raw_len = raw_len,
         .src_port = src_port,
+        .flow = flow,
     };
     snprintf(r.src_ip, sizeof(r.src_ip), "%s", src_ip);
     snprintf(r.transport, sizeof(r.transport), "%s", transport);
@@ -779,6 +923,37 @@ static int outgoing_response_cb(nta_outgoing_magic_t *magic,
     return 0;
 }
 
+/* A response that matched no client transaction (the agent message
+ * callback). nta ends an INVITE client transaction on a reliable transport
+ * at its first final response, so a further 2xx of a proxy branch (another
+ * To-tag: a fork downstream) lands here instead of being dropped. While
+ * the proxy is in the RFC 6026 Accepted state it still holds that branch's
+ * handle: the 2xx goes to it, matched by the Via branch nta gave the
+ * branch. Anything else is dropped, as nta would (RFC 6026 6). */
+static int stray_cb(nta_agent_magic_t *magic, nta_agent_t *agent,
+                    msg_t *msg, sip_t *sip) {
+    engine_t *e = (engine_t *)magic;
+    (void)agent;
+    if (atomic_load(&e->state) == ST_READY && sip && sip->sip_status &&
+        sip->sip_status->st_status >= 200 &&
+        sip->sip_status->st_status < 300 && sip->sip_cseq &&
+        sip->sip_cseq->cs_method == sip_method_invite && sip->sip_via &&
+        sip->sip_via->v_branch) {
+        for (obj_ctx_t *c = e->px_head; c; c = c->px_next) {
+            if (!su_casematch(c->px_branch, sip->sip_via->v_branch)) continue;
+            size_t raw_len = 0;
+            char *raw = msg_as_string(e->home, msg, NULL, 0, &raw_len);
+            struct resp_ev r = {c->h, sip->sip_status->st_status, raw,
+                                raw_len};
+            send_event(e, mk_response_ev, &r);
+            if (raw) su_free(e->home, raw);
+            break;
+        }
+    }
+    msg_destroy(msg);
+    return 0;
+}
+
 /* the request carries a body (for an INVITE: an offer) */
 static int request_has_body(nta_incoming_t *irq) {
     msg_t *m = nta_incoming_getrequest(irq);
@@ -811,6 +986,7 @@ static void op_cb(su_root_magic_t *magic, su_msg_r msg, su_msg_arg_t *arg) {
     switch (op->kind) {
     case OP_HEALTH: {
         orphans_sweep(e, 0);
+        flows_sweep(e);
         uint64_t seq = ++e->health_seq;
         send_event(e, mk_health_ev, &seq);
         break;
@@ -897,10 +1073,23 @@ static void op_cb(su_root_magic_t *magic, su_msg_r msg, su_msg_arg_t *arg) {
             send_op_failed(e, op->h, "alloc failed");
             break;
         }
+        memset(ctx, 0, sizeof *ctx);
         ctx->e = e;
         ctx->h = op->h;
         url_string_t *route =
             op->route ? URL_STRING_MAKE(op->route) : NULL;
+        /* RFC 5626 5.3: a request for a flow goes over that connection */
+        tport_t *ftp = NULL;
+        if (op->flow) {
+            flow_t *f = tab_get(e, op->flow, H_FLOW);
+            if (!f) {
+                msg_destroy(m);
+                enif_free(ctx);
+                send_op_failed(e, op->h, "unknown flow");
+                break;
+            }
+            ftp = f->tp;
+        }
         /* A proxy branch (one with our loop-detection branch) of an INVITE
          * is created outside UA mode: a UA client transaction ACKs and BYEs
          * a second 2xx with another To-tag itself, while a proxy forwards
@@ -913,7 +1102,7 @@ static void op_cb(su_root_magic_t *magic, su_msg_r msg, su_msg_arg_t *arg) {
         nta_outgoing_t *orq = nta_outgoing_mcreate(
             e->agent, outgoing_response_cb, (nta_outgoing_magic_t *)ctx,
             route, m, TAG_IF(op->branch[0], NTATAG_BRANCH_KEY(op->branch)),
-            TAG_END());
+            TAG_IF(ftp, NTATAG_TPORT(ftp)), TAG_END());
         if (proxy_inv) nta_agent_set_params(e->agent, NTATAG_UA(1), TAG_END());
         if (!orq) {
             /* nta owns/destroys msg only on success */
@@ -928,6 +1117,16 @@ static void op_cb(su_root_magic_t *magic, su_msg_r msg, su_msg_arg_t *arg) {
             send_op_failed(e, op->h, "alloc failed");
             break;
         }
+        const char *br = proxy_inv ? nta_outgoing_branch(orq) : NULL;
+        if (br && strlen(br) < sizeof ctx->px_branch) {
+            /* a proxy INVITE branch: a later 2xx of it may match no
+             * transaction (stray_cb) */
+            strcpy(ctx->px_branch, br);
+            ctx->px = 1;
+            ctx->px_next = e->px_head;
+            if (e->px_head) e->px_head->px_prev = ctx;
+            e->px_head = ctx;
+        }
         send_op_ok(e, op->h);
         break;
     }
@@ -937,6 +1136,7 @@ static void op_cb(su_root_magic_t *magic, su_msg_r msg, su_msg_arg_t *arg) {
             send_op_failed(e, op->h, "alloc failed");
             break;
         }
+        memset(ctx, 0, sizeof *ctx);
         ctx->e = e;
         ctx->h = op->h;
         /* raw = call-id, headers = local (From w/ tag),
@@ -979,8 +1179,15 @@ static void op_cb(su_root_magic_t *magic, su_msg_r msg, su_msg_arg_t *arg) {
             break;
         }
         url_string_t *route = op->route ? URL_STRING_MAKE(op->route) : NULL;
+        flow_t *f = op->flow ? tab_get(e, op->flow, H_FLOW) : NULL;
+        if (op->flow && !f) {
+            msg_destroy(m);
+            send_op_failed(e, op->h, "unknown flow");
+            break;
+        }
         nta_outgoing_t *orq = nta_outgoing_mcreate(
-            e->agent, NULL, NULL, route, m, TAG_END());
+            e->agent, NULL, NULL, route, m,
+            TAG_IF(f, NTATAG_TPORT(f ? f->tp : NULL)), TAG_END());
         if (!orq) {
             msg_destroy(m);
             send_op_failed(e, op->h, "nta_outgoing_mcreate (send) failed");
@@ -1157,9 +1364,11 @@ static void *stack_main(void *arg) {
      * 8.2.2); the nta default also counts the events and publish classes,
      * so a bad Expires on an INVITE would be fatal. TPTAG_PONG2PING(1):
      * answer a CRLFCRLF keepalive ping on a TCP/TLS connection with a CRLF
-     * pong (RFC 5626 4.4.1); tport passes it on to the transports. */
+     * pong (RFC 5626 4.4.1); tport passes it on to the transports.
+     * stray_cb gets the responses that match no client transaction: a
+     * second 2xx of a proxy branch on TCP/TLS (RFC 6026). */
     e->agent = nta_agent_create(
-        e->root, URL_STRING_MAKE(e->contact), NULL, NULL,
+        e->root, URL_STRING_MAKE(e->contact), stray_cb, (nta_agent_magic_t *)e,
         NTATAG_MAXSIZE(e->max_msg_size), NTATAG_UA(1), NTATAG_EXTRA_100(1),
         NTATAG_MERGE_482(0), NTATAG_CANCEL_487(0), NTATAG_RPORT(1),
         TPTAG_PONG2PING(1),
@@ -1572,8 +1781,9 @@ static uint64_t reserve_id(void) {
     return atomic_fetch_add(&g_next_id, 1);
 }
 
-/* request(Engine, Route|undefined, Raw) -> {ok, TxnH} | {error, ...}
- * Sends a complete Erlang-built message. op_ok/op_failed follows. */
+/* request(Engine, Route|FlowId|undefined, Raw) -> {ok, TxnH} | {error, ...}
+ * Sends a complete Erlang-built message, over the RFC 5626 flow when a
+ * flow id is given. op_ok/op_failed follows. */
 static ERL_NIF_TERM nif_request(ErlNifEnv *env, int argc,
                                 const ERL_NIF_TERM argv[]) {
     engine_t *e;
@@ -1587,8 +1797,11 @@ static ERL_NIF_TERM nif_request(ErlNifEnv *env, int argc,
                       branch.size == 0 || branch.size >= 96 ||
                       memchr(branch.data, 0, branch.size)))
         return enif_make_badarg(env);
+    /* the route: a URI, undefined, or an RFC 5626 flow id */
+    ErlNifUInt64 flow = 0;
     have_route = enif_inspect_binary(env, argv[1], &route);
-    if (!have_route && !enif_is_identical(argv[1], am_undefined))
+    if (!have_route && !enif_is_identical(argv[1], am_undefined) &&
+        !(enif_get_uint64(env, argv[1], &flow) && flow > 0))
         return enif_make_badarg(env);
     if (!enif_inspect_binary(env, argv[2], &raw))
         return enif_make_badarg(env);
@@ -1597,7 +1810,7 @@ static ERL_NIF_TERM nif_request(ErlNifEnv *env, int argc,
     if (raw.size > e->max_msg_size)
         return enif_make_tuple2(env, am_error, enif_make_atom(env, "too_large"));
 
-    op_t op = {.kind = OP_REQUEST, .h = reserve_id()};
+    op_t op = {.kind = OP_REQUEST, .h = reserve_id(), .flow = flow};
     if (branch.size) {
         memcpy(op.branch, branch.data, branch.size);
         op.branch[branch.size] = 0;
@@ -1668,7 +1881,7 @@ static ERL_NIF_TERM nif_reliable_respond(ErlNifEnv *env, int argc,
     return am_ok;
 }
 
-/* send(Engine, Route|undefined, Raw) -> {ok, OpH}
+/* send(Engine, Route|FlowId|undefined, Raw) -> {ok, OpH}
  * Stateless fire-and-forget send (ACK to a 2xx). op_ok/op_failed follows;
  * no response is delivered. */
 static ERL_NIF_TERM nif_send(ErlNifEnv *env, int argc,
@@ -1678,8 +1891,10 @@ static ERL_NIF_TERM nif_send(ErlNifEnv *env, int argc,
     int have_route;
     if (argc != 3 || !enif_get_resource(env, argv[0], ENGINE_RT, (void **)&e))
         return enif_make_badarg(env);
+    ErlNifUInt64 flow = 0;
     have_route = enif_inspect_binary(env, argv[1], &route);
-    if (!have_route && !enif_is_identical(argv[1], am_undefined))
+    if (!have_route && !enif_is_identical(argv[1], am_undefined) &&
+        !(enif_get_uint64(env, argv[1], &flow) && flow > 0))
         return enif_make_badarg(env);
     if (!enif_inspect_binary(env, argv[2], &raw))
         return enif_make_badarg(env);
@@ -1688,7 +1903,7 @@ static ERL_NIF_TERM nif_send(ErlNifEnv *env, int argc,
     if (raw.size > e->max_msg_size)
         return enif_make_tuple2(env, am_error, enif_make_atom(env, "too_large"));
 
-    op_t op = {.kind = OP_SEND, .h = reserve_id()};
+    op_t op = {.kind = OP_SEND, .h = reserve_id(), .flow = flow};
     op.raw = enif_alloc(raw.size);
     if (!op.raw) return enif_make_tuple2(env, am_error, am_badarg);
     memcpy(op.raw, raw.data, raw.size);
@@ -1945,6 +2160,8 @@ static int load(ErlNifEnv *env, void **priv, ERL_NIF_TERM info) {
     am_transport = enif_make_atom(env, "transport");
     am_verify_clients = enif_make_atom(env, "verify_clients");
     am_true = enif_make_atom(env, "true");
+    am_conn = enif_make_atom(env, "conn");
+    am_flow_closed = enif_make_atom(env, "flow_closed");
     return 0;
 }
 

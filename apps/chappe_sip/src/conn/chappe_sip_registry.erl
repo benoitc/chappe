@@ -9,7 +9,8 @@
 %% ETS survives SIP engine restarts.
 %%
 %% Mutations (register/remove/sweep) are serialized through this
-%% gen_server, so a REGISTER is processed atomically and in arrival order;
+%% gen_server, so a REGISTER is processed atomically and in arrival order
+%% (one whose caller already gave up on it, 500, is refused unapplied);
 %% lookups read the public ETS directly and filter expired bindings at read
 %% time. Binding semantics follow RFC 3261 10.3: the AOR is the canonical To
 %% URI, Contact URIs compare by 19.1.4, per-contact or header Expires,
@@ -28,12 +29,18 @@
     bindings/1,
     remove/1,
     remove_flow/1,
+    remove_conn_flows/0,
     clear/0
 ]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -define(TAB, ?MODULE).
 -define(SWEEP_INTERVAL_MS, 30000).
+%% how long a REGISTER waits for the store; one not started this long
+%% before that deadline is refused, so it cannot land after its caller
+%% has answered 500
+-define(REGISTER_TIMEOUT_MS, 5000).
+-define(REGISTER_MARGIN_MS, 100).
 
 -record(binding, {
     contact :: binary(),
@@ -42,7 +49,8 @@
     callid :: binary() | undefined,
     cseq :: non_neg_integer(),
     q :: binary() | undefined,
-    % transport flow (WS conn), undefined otherwise
+    % transport flow: the WS conn of a WS binding, the direct TCP/TLS or
+    % UDP flow of an RFC 5626 one, undefined otherwise
     flow :: term(),
     % RFC 3327 Path values, in order: the route set toward the contact
     path = [] :: [binary()],
@@ -90,7 +98,10 @@ register_contacts(Req, Opts) ->
 -spec register_request(chappe_sip_req:req(), map()) ->
     {ok, [map()], info()} | {error, 100..699}.
 register_request(Req, Opts) ->
-    gen_server:call(?MODULE, {register, Req, Opts}).
+    Deadline = erlang:monotonic_time(millisecond) + ?REGISTER_TIMEOUT_MS,
+    gen_server:call(
+        ?MODULE, {register, Req, Opts, Deadline}, ?REGISTER_TIMEOUT_MS
+    ).
 
 %% Live contact URIs for an AOR (or a To/Contact header value / URI), the
 %% highest q first.
@@ -128,6 +139,12 @@ remove_flow(undefined) ->
 remove_flow(Flow) ->
     gen_server:cast(?MODULE, {remove_flow, Flow}).
 
+%% Drop every binding learned on a TCP/TLS connection of the native stack:
+%% the engine restarted and those connections are gone.
+-spec remove_conn_flows() -> ok.
+remove_conn_flows() ->
+    gen_server:cast(?MODULE, remove_conn_flows).
+
 %% Drop the whole store (tests, reconfiguration).
 -spec clear() -> ok.
 clear() ->
@@ -152,8 +169,16 @@ init([]) ->
         end,
     {ok, schedule_sweep(#{})}.
 
-handle_call({register, Req, Opts}, _From, S) ->
-    {reply, do_register(Req, Opts), S};
+handle_call({register, Req, Opts, Deadline}, {Caller, _}, S) ->
+    %% RFC 3261 10.3: a REGISTER whose caller gave up (its call timed out
+    %% and the request failed 500) must leave no binding behind
+    case
+        erlang:monotonic_time(millisecond) < Deadline - ?REGISTER_MARGIN_MS andalso
+            is_process_alive(Caller)
+    of
+        true -> {reply, do_register(Req, Opts), S};
+        false -> {reply, {error, 500}, S}
+    end;
 handle_call({remove, Aor}, _From, S) ->
     ets:delete(?TAB, Aor),
     {reply, ok, S};
@@ -165,6 +190,9 @@ handle_call(_Req, _From, S) ->
 
 handle_cast({remove_flow, Flow}, S) ->
     purge_flow(Flow),
+    {noreply, S};
+handle_cast(remove_conn_flows, S) ->
+    purge(fun(#binding{flow = F}) -> not is_conn(F) end),
     {noreply, S};
 handle_cast(_Msg, S) ->
     {noreply, S}.
@@ -443,7 +471,17 @@ apply_contacts(Aor, Contacts, Msg, Opts, Info) ->
                 path = maps:get(path, Info)
             },
             Max = chappe_sip_config:get(registrar_max_expires),
-            case update(Contacts, Template, Max, live(Aor, Now)) of
+            %% RFC 5626 6: a UA with a direct flow to us has its outbound
+            %% bindings tied to that flow; past an edge proxy the flow is
+            %% the edge's, not ours
+            ObFlow =
+                case Info of
+                    #{first_hop := true} ->
+                        maps:get(outbound_flow, Opts, undefined);
+                    _ ->
+                        undefined
+                end,
+            case update(Contacts, Template, Max, ObFlow, live(Aor, Now)) of
                 {ok, Updated} ->
                     case commit(Aor, Updated, Now) of
                         {ok, Bs} -> {ok, Bs, Info};
@@ -474,9 +512,9 @@ below_min(Contacts) ->
 %% equal (19.1.4). On another Call-ID it is replaced (or removed with
 %% expiry 0); on the same Call-ID only when the CSeq is higher, otherwise
 %% the whole request fails and nothing is written.
-update([], _T, _Max, Acc) ->
+update([], _T, _Max, _ObFlow, Acc) ->
     {ok, Acc};
-update([C | Rest], T, Max, Acc) ->
+update([C | Rest], T, Max, ObFlow, Acc) ->
     Match = [B || B <- Acc, same_binding(C, B)],
     Reordered = [
         B
@@ -488,7 +526,7 @@ update([C | Rest], T, Max, Acc) ->
         {[_ | _], _} ->
             {error, 400};
         {[], 0} ->
-            update(Rest, T, Max, Acc -- Match);
+            update(Rest, T, Max, ObFlow, Acc -- Match);
         {[], Exp} ->
             B = T#binding{
                 contact = C#contact.uri,
@@ -496,10 +534,21 @@ update([C | Rest], T, Max, Acc) ->
                 q = C#contact.q,
                 instance = C#contact.instance,
                 reg_id = C#contact.reg_id,
-                params = C#contact.params
+                params = C#contact.params,
+                flow = binding_flow(C, T, ObFlow)
             },
-            update(Rest, T, Max, replace(Match, B, Acc))
+            update(Rest, T, Max, ObFlow, replace(Match, B, Acc))
     end.
+
+%% an outbound binding (a reg-id kept by outbound/3) on a direct flow is
+%% tied to that flow; a re-registration over another one moves it there
+%% (RFC 5626 6)
+binding_flow(#contact{reg_id = R}, _T, ObFlow) when
+    R =/= undefined, ObFlow =/= undefined
+->
+    ObFlow;
+binding_flow(_C, #binding{flow = F}, _ObFlow) ->
+    F.
 
 %% a refreshed binding keeps its place, so equal-q order stays stable
 replace([], B, Acc) ->
@@ -578,10 +627,17 @@ sweep(Now) ->
 
 %% Remove every binding whose flow matches, deleting an AOR left empty.
 purge_flow(Flow) ->
+    purge(fun(#binding{flow = F}) -> F =/= Flow end).
+
+is_conn({conn, _}) -> true;
+is_conn(_) -> false.
+
+%% Keep the bindings Keep accepts, deleting an AOR left empty.
+purge(Keep) ->
     Changes =
         ets:foldl(
             fun({Aor, Bs}, Acc) ->
-                case [B || B <- Bs, B#binding.flow =/= Flow] of
+                case lists:filter(Keep, Bs) of
                     % unchanged
                     Bs -> Acc;
                     [] -> [{delete, Aor} | Acc];

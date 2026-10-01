@@ -41,6 +41,9 @@
          prack_follows_route_set/1, rseq_without_require/1,
          redirect_q_order_fallback/1, delayed_ack_3pcc/1,
          create_uac_timeout_cancels/1]).
+-export([early_update_from_callee/1, early_bye_from_callee/1,
+         early_update_from_caller/1, early_forks_ended/1,
+         early_ended_by_final/1]).
 
 all() ->
     [{group, wire}, {group, timers}].
@@ -63,7 +66,10 @@ groups() ->
                  auth_two_realms, auth_basic_refused,
                  prack_follows_route_set, rseq_without_require,
                  redirect_q_order_fallback, delayed_ack_3pcc,
-                 create_uac_timeout_cancels]},
+                 create_uac_timeout_cancels,
+                 early_update_from_callee, early_bye_from_callee,
+                 early_update_from_caller, early_forks_ended,
+                 early_ended_by_final]},
      %% each waits 64*T1 (32 s)
      {timers, [], [invite_timeout, uac_timer_d, uac_timer_f_proceeding]}].
 
@@ -1139,6 +1145,202 @@ create_uac_timeout_cancels(Config) ->
     {Bye, _} = recv(Sock, {method, <<"BYE">>}, 3000),
     send(Sock, EP, response(Bye, 200, #{})),
     ?assertEqual(ToTag, to_tag(Bye)).
+
+%% ---- early dialogs of our INVITE (12.1, 13.2.2.4, RFC 3311 5.1) ----
+
+%% A tagged 183 forms an early dialog: the app gets its handle before the
+%% provisional. The callee's UPDATE in it is answered 200 with our SDP. The
+%% 200 with that To tag confirms the same dialog, and the route set and the
+%% remote target of the dialog are taken again from the 200.
+%% req: R3261-198 R3311-001
+early_update_from_callee(Config) ->
+    {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
+    LP = integer_to_binary(port(Sock)),
+    {ok, Ref} = chappe_sip_uac:start(callee(Sock), #{local_sdp => sdp(),
+                                                     notify => self()}),
+    {Inv, _} = recv(Sock, {method, <<"INVITE">>}, 3000),
+    ToTag = tag(),
+    Early = <<"sip:early@127.0.0.1:", LP/binary>>,
+    R183 = response(Inv, 183, #{
+        to_tag => ToTag, body => sdp(),
+        headers => [{<<"Contact">>, <<"<", Early/binary, ">">>}]}),
+    send(Sock, EP, R183),
+    ED = early_dialog(Ref),
+    ?assertEqual(ToTag, chappe_sip_dialog:remote_tag(ED)),
+    Offer = chappe_sip_core_peer:sdp(45000),
+    send(Sock, EP, callee_request(Sock, <<"UPDATE">>, Inv, R183, 1,
+                                  #{body => Offer})),
+    {R, _} = recv(Sock, {status, 200, <<"UPDATE">>}, 3000),
+    ?assertEqual(sdp(), body(R)),
+    receive {chappe_sip_dialog, ED, {auto_answered, update}, _} -> ok
+    after 3000 -> ct:fail(no_update_event)
+    end,
+    RR = <<"<sip:127.0.0.1:", LP/binary, ";lr;x-final=1>">>,
+    send(Sock, EP, response(Inv, 200, #{
+        to_tag => ToTag, body => sdp(),
+        headers => [{<<"Record-Route">>, RR},
+                    {<<"Contact">>, <<"<", (callee(Sock))/binary, ">">>}]})),
+    {ok, D} = chappe_sip_uac:await(Ref, 3000),
+    ?assertEqual(ED, D),
+    ?assertEqual(Offer, chappe_sip_dialog:remote_sdp(D)),
+    {Ack, _} = recv(Sock, {method, <<"ACK">>}, 3000),
+    ?assertEqual(callee(Sock), uri(Ack)),
+    Bye = async(fun() -> chappe_sip_dialog:destroy(D) end),
+    {ByeReq, _} = recv(Sock, {method, <<"BYE">>}, 3000),
+    send(Sock, EP, response(ByeReq, 200, #{})),
+    ok = await(Bye),
+    ?assertEqual(callee(Sock), uri(ByeReq)),
+    ?assertEqual([RR], route_values(ByeReq)).
+
+%% The callee's BYE in the early dialog gets 200 and ends that dialog (its
+%% owner gets destroy with the BYE); the INVITE then completes with the
+%% callee's final response.
+%% req: R3261-258 R3261-256
+early_bye_from_callee(Config) ->
+    {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
+    {ok, Ref} = chappe_sip_uac:start(callee(Sock), #{local_sdp => sdp(),
+                                                     notify => self()}),
+    {Inv, _} = recv(Sock, {method, <<"INVITE">>}, 3000),
+    ToTag = tag(),
+    R180 = response(Inv, 180, #{
+        to_tag => ToTag,
+        headers => [{<<"Contact">>, <<"<", (callee(Sock))/binary, ">">>}]}),
+    send(Sock, EP, R180),
+    ED = early_dialog(Ref),
+    send(Sock, EP, callee_request(Sock, <<"BYE">>, Inv, R180, 1, #{})),
+    {R, _} = recv(Sock, {status, 200, <<"BYE">>}, 3000),
+    ?assertEqual(200, status(R)),
+    receive {chappe_sip_dialog, ED, destroy, Req} ->
+                ?assertEqual(<<"BYE">>, chappe_sip_req:method(Req))
+    after 3000 -> ct:fail(no_destroy)
+    end,
+    send(Sock, EP, response(Inv, 487, #{to_tag => ToTag})),
+    ?assertMatch({error, #chappe_sip_error{status = 487}},
+                 chappe_sip_uac:await(Ref, 3000)).
+
+%% The caller sends UPDATE in the early dialog formed by a reliable 183:
+%% to the 183's Contact with its To tag, a CSeq above the PRACK's; its
+%% answer becomes the session, which the 200 to the INVITE leaves alone.
+%% req: R3311-001
+early_update_from_caller(Config) ->
+    {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
+    {ok, Ref} = chappe_sip_uac:start(callee(Sock), #{local_sdp => sdp(),
+                                                     rel100 => supported,
+                                                     notify => self()}),
+    {Inv, _} = recv(Sock, {method, <<"INVITE">>}, 3000),
+    ToTag = tag(),
+    Contact = [{<<"Contact">>, <<"<", (callee(Sock))/binary, ">">>}],
+    send(Sock, EP, response(Inv, 183, #{
+        to_tag => ToTag, body => sdp(),
+        headers => [{<<"Require">>, <<"100rel">>},
+                    {<<"RSeq">>, <<"1">>} | Contact]})),
+    {Prack, _} = recv(Sock, {method, <<"PRACK">>}, 3000),
+    send(Sock, EP, response(Prack, 200, #{})),
+    ED = early_dialog(Ref),
+    New = chappe_sip_core_peer:sdp(46000),
+    Answer = chappe_sip_core_peer:sdp(47000),
+    Upd = async(fun() ->
+        chappe_sip_dialog:request(ED, #{method => <<"UPDATE">>, body => New,
+                                        content_type => <<"application/sdp">>})
+    end),
+    {U, _} = recv(Sock, {method, <<"UPDATE">>}, 3000),
+    ?assertEqual(callee(Sock), uri(U)),
+    ?assertEqual(ToTag, to_tag(U)),
+    ?assertEqual(from_tag(Inv), from_tag(U)),
+    ?assertEqual(hdr(<<"call-id">>, Inv), hdr(<<"call-id">>, U)),
+    ?assertEqual(New, body(U)),
+    {PN, _} = cseq(Prack),
+    {UN, _} = cseq(U),
+    ?assert(UN > PN),
+    send(Sock, EP, response(U, 200, #{body => Answer})),
+    {ok, _} = await(Upd),
+    ?assertEqual(New, chappe_sip_dialog:local_sdp(ED)),
+    ?assertEqual(Answer, chappe_sip_dialog:remote_sdp(ED)),
+    send(Sock, EP, response(Inv, 200, #{to_tag => ToTag, body => sdp(),
+                                        headers => Contact})),
+    {ok, D} = chappe_sip_uac:await(Ref, 3000),
+    ?assertEqual(ED, D),
+    ?assertEqual(Answer, chappe_sip_dialog:remote_sdp(D)),
+    {_, _} = recv(Sock, {method, <<"ACK">>}, 3000),
+    Bye = async(fun() -> chappe_sip_dialog:destroy(D) end),
+    {ByeReq, _} = recv(Sock, {method, <<"BYE">>}, 3000),
+    send(Sock, EP, response(ByeReq, 200, #{})),
+    ok = await(Bye),
+    {BN, _} = cseq(ByeReq),
+    ?assert(BN > UN).
+
+%% Two forks each form an early dialog. The 200 of one confirms its
+%% dialog; the other one ends (its owner gets destroy) and a request in it
+%% then gets 481.
+%% req: R3261-122
+early_forks_ended(Config) ->
+    {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
+    {ok, Ref} = chappe_sip_uac:start(callee(Sock), #{local_sdp => sdp(),
+                                                     notify => self()}),
+    {Inv, _} = recv(Sock, {method, <<"INVITE">>}, 3000),
+    {TagA, TagB} = {tag(), tag()},
+    Contact = [{<<"Contact">>, <<"<", (callee(Sock))/binary, ">">>}],
+    RA = response(Inv, 180, #{to_tag => TagA, headers => Contact}),
+    RB = response(Inv, 180, #{to_tag => TagB, headers => Contact}),
+    send(Sock, EP, RA),
+    EA = early_dialog(Ref),
+    send(Sock, EP, RB),
+    EB = early_dialog(Ref),
+    ?assertNotEqual(EA, EB),
+    ?assertEqual(TagB, chappe_sip_dialog:remote_tag(EB)),
+    send(Sock, EP, response(Inv, 200, #{to_tag => TagA, body => sdp(),
+                                        headers => Contact})),
+    {ok, D} = chappe_sip_uac:await(Ref, 3000),
+    ?assertEqual(EA, D),
+    receive {chappe_sip_dialog, EB, destroy, {early_ended, 200}} -> ok
+    after 3000 -> ct:fail(fork_not_ended)
+    end,
+    {_, _} = recv(Sock, {method, <<"ACK">>}, 3000),
+    send(Sock, EP, callee_request(Sock, <<"INFO">>, Inv, RB, 1, #{})),
+    {R, _} = recv(Sock, {status, 481, <<"INFO">>}, 3000),
+    ?assertEqual(481, status(R)),
+    hang_up(Sock, EP, D).
+
+%% A non-2xx final ends the early dialogs of the INVITE: the owner gets
+%% destroy and the callee's UPDATE in one then gets 481.
+%% req: R3261-122
+early_ended_by_final(Config) ->
+    {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
+    {ok, Ref} = chappe_sip_uac:start(callee(Sock), #{local_sdp => sdp(),
+                                                     notify => self()}),
+    {Inv, _} = recv(Sock, {method, <<"INVITE">>}, 3000),
+    ToTag = tag(),
+    R180 = response(Inv, 180, #{
+        to_tag => ToTag,
+        headers => [{<<"Contact">>, <<"<", (callee(Sock))/binary, ">">>}]}),
+    send(Sock, EP, R180),
+    ED = early_dialog(Ref),
+    send(Sock, EP, response(Inv, 486, #{to_tag => ToTag})),
+    ?assertMatch({error, #chappe_sip_error{status = 486}},
+                 chappe_sip_uac:await(Ref, 3000)),
+    receive {chappe_sip_dialog, ED, destroy, {early_ended, 486}} -> ok
+    after 3000 -> ct:fail(early_not_ended)
+    end,
+    send(Sock, EP, callee_request(Sock, <<"UPDATE">>, Inv, R180, 1,
+                                  #{body => sdp()})),
+    {R, _} = recv(Sock, {status, 481, <<"UPDATE">>}, 3000),
+    ?assertEqual(481, status(R)).
+
+%% the early dialog handle the next tagged provisional formed
+early_dialog(Ref) ->
+    receive {chappe_sip_uac, Ref, {early_dialog, D}} -> D
+    after 3000 -> ct:fail(no_early_dialog)
+    end.
+
+%% a request the callee sends in the dialog its response Resp formed
+callee_request(Sock, Method, Inv, Resp, CSeq, Opts) ->
+    request(Method, addr_uri(hdr(<<"contact">>, Inv)),
+            maps:merge(#{port => port(Sock),
+                         call_id => hdr(<<"call-id">>, Inv),
+                         from => addr(hdr(<<"to">>, Resp)),
+                         from_tag => to_tag(Resp),
+                         to => addr(hdr(<<"from">>, Inv)),
+                         to_tag => from_tag(Inv), cseq => CSeq}, Opts)).
 
 %% ---- helpers of the cases above ----
 

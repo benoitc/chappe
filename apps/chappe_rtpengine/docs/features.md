@@ -9,6 +9,7 @@
 - Commands: ping, offer, answer, delete, query, plus any NG command through `chappe_rtpengine:cmd/3`
 - Reply classification: ok/pong (with any `warning` kept in the reply), rtpengine errors with reason, `load_limit`, unexpected results, timeout, malformed reply
 - UDP size guard: `max_datagram` (default 65507) and kernel `emsgsize` both give `{error, too_large}`; 256 KiB socket buffers for large SDP
+- Node addresses follow DNS: TCP and WebSocket resolve the host on every connect; UDP re-resolves every `resolve_interval_ms` (default 60000, `infinity` disables) and after `resolve_after_timeouts` consecutive timeouts (default 2), in a helper process, swapping the destination (and the socket when the address family changes); `resolver` replaces inet for custom lookups; `address_changes` counts moves
 - NG over TCP framed by a pure incremental parser (`chappe_rtpengine_stream`): linear in the stream size, 4 MiB stream and 256-byte cookie caps
 - TCP host re-resolution on every connect attempt; WebSocket replies accepted in binary or text frames
 - Per-node transport counters (sent, replies, retransmits, timeouts, bad replies, unknown cookies)

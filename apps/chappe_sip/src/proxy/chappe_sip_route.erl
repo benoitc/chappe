@@ -27,7 +27,7 @@
 -export([record_route/3, is_self/3, pop_self/1, strip_via/1]).
 -export([ensure_secret/0, check_secret/1]).
 -export([routes/1, set_routes/2, uri_is_self/2, recover_strict/1]).
--export([next_flow/2, request_target/2]).
+-export([next_flow/2, request_target/2, flow_route/1]).
 
 -export_type([flows/0]).
 
@@ -400,3 +400,10 @@ route_uri(RouteValue) ->
         _ ->
             error
     end.
+
+%% The engine route that sends over Flow: a WS connection, a TCP/TLS
+%% connection of the native stack, or a UDP source address (RFC 5626 5.3).
+-spec flow_route(chappe_sip_engine:flow()) -> chappe_sip_engine:route().
+flow_route(Flow) when is_integer(Flow) -> {ws, Flow};
+flow_route({conn, _} = Flow) -> Flow;
+flow_route({udp, _, _} = Flow) -> Flow.

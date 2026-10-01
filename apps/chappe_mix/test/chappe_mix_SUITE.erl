@@ -82,14 +82,12 @@ end_per_suite(_Config) ->
 
 three_party(_Config) ->
     {Conf, Eps} = conference(lists:sublist(?F, 3)),
-    listen(Eps, 1000),
-    assert_n_minus_one(Eps),
+    judge_n_minus_one(Conf, Eps),
     close(Conf, Eps).
 
 four_party(_Config) ->
     {Conf, Eps} = conference(?F),
-    listen(Eps, 1000),
-    assert_n_minus_one(Eps),
+    judge_n_minus_one(Conf, Eps),
     close(Conf, Eps).
 
 %% A party joining is heard from then on; a party leaving stops being
@@ -876,10 +874,88 @@ listen(Eps, Ms) ->
     [chappe_mix_test_tone:clear(P) || {P, _, _} <- Eps],
     timer:sleep(Ms).
 
-assert_n_minus_one(Eps) ->
+%% Every party hears all the others and never itself, judged like
+%% assert_hears/3 on every endpoint at once.
+%%
+%% The endpoints and the mixer share this node, so a loaded host stalls
+%% the test senders: the leg's jitter buffer underruns and plays silence,
+%% grows its prefill, then trims the catch-up burst past its depth, and
+%% a mixer tick more than a period late skips the frames it missed, so a
+%% second of listening can come back with two or three 200 ms windows.
+%% One stall across a window edge then costs two windows and the tone
+%% reads {missing, F, 3, 5}. So: wait until the mix is steady (the last
+%% 200 ms of every receiver meets the contract twice in a row, up to
+%% 5 s), and when a listen comes back short of presence or samples,
+%% listen again, up to three times, with the same thresholds. A leak
+%% fails at once in any listen: no load excuses one, and a mixer that
+%% stops mixing fails all three.
+judge_n_minus_one(Conf, Eps) ->
     Freqs = [F || {_, _, F} <- Eps],
-    [assert_hears(E, Freqs -- [F], [F]) || {_, _, F} = E <- Eps],
-    ok.
+    Checks = [{P, Freqs -- [F], [F]} || {P, _, F} <- Eps],
+    Waited = steady(Checks, erlang:monotonic_time(millisecond) + 5000),
+    ct:log("steady after ~p ms", [Waited]),
+    judge(Conf, Checks, 1000, 3).
+
+judge(Conf, Checks, Ms, Tries) ->
+    [chappe_mix_test_tone:clear(P) || {P, _, _} <- Checks],
+    timer:sleep(Ms),
+    Results = [
+        {Present,
+            chappe_mix_test_tone:hears(
+                P, {?PRESENT, ?ABSENT}, {Present, Absent}
+            )}
+     || {P, Present, Absent} <- Checks
+    ],
+    [ct:log("hears ~p: ~p", [Present, R]) || {Present, R} <- Results],
+    Leaks = [L || {_, {error, {leaked, _, _} = L, _}} <- Results],
+    Short = [E || {_, {error, E, _}} <- Results],
+    case {Leaks, Short} of
+        {[], []} ->
+            ok;
+        {[L | _], _} ->
+            ct:fail(L);
+        {[], [E | _]} when Tries > 1 ->
+            ct:log("listening again after ~p; conference ~p, legs ~p", [
+                E, chappe_mix:stats(Conf), chappe_mix:legs(Conf)
+            ]),
+            judge(Conf, Checks, Ms, Tries - 1);
+        {[], [E | _]} ->
+            ct:fail(E)
+    end.
+
+%% Poll every 200 ms until two polls in a row find every receiver's last
+%% 200 ms meeting its contract, or the deadline passes. Returns the wait.
+steady(Checks, Deadline) ->
+    steady(Checks, erlang:monotonic_time(millisecond), Deadline, 0).
+
+steady(Checks, Start, Deadline, Good) ->
+    timer:sleep(200),
+    Now = erlang:monotonic_time(millisecond),
+    Good1 =
+        case lists:all(fun last_window_ok/1, Checks) of
+            true -> Good + 1;
+            false -> 0
+        end,
+    case Good1 >= 2 orelse Now > Deadline of
+        true -> Now - Start;
+        false -> steady(Checks, Start, Deadline, Good1)
+    end.
+
+last_window_ok({P, Present, Absent}) ->
+    S = chappe_mix_test_tone:samples(P),
+    N = length(S),
+    N >= 1600 andalso
+        lists:all(
+            fun({F, L}) ->
+                case lists:member(F, Absent) of
+                    true -> L < ?ABSENT;
+                    false -> L > ?PRESENT
+                end
+            end,
+            chappe_mix_test_tone:levels(
+                lists:nthtail(N - 1600, S), Absent ++ Present
+            )
+        ).
 
 %% Judged by chappe_mix_test_tone:hears/3: an absent tone must be absent
 %% from every 200 ms window, a present one present in 70% of them. Timing

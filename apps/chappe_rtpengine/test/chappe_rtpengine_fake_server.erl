@@ -37,6 +37,7 @@
 -export([
     start/0,
     start/1,
+    start_at/3,
     start_tcp/0,
     start_tcp/1,
     start_ws/0,
@@ -54,10 +55,17 @@ start() ->
     start(fun default_handler/2).
 
 start(Handler) ->
+    {ok, _, _} = start_at(Handler, {127, 0, 0, 1}, 0).
+
+%% A UDP fake bound to a given address and port (0 picks one), so two
+%% fakes can share a port on different addresses; {error, Reason} when
+%% the address is not available on this host.
+start_at(Handler, IP, Port0) ->
     Parent = self(),
-    Pid = spawn_link(fun() -> init(Parent, Handler) end),
+    Pid = spawn_link(fun() -> init(Parent, Handler, IP, Port0) end),
     receive
-        {Pid, Port} -> {ok, Pid, Port}
+        {Pid, {ok, Port}} -> {ok, Pid, Port};
+        {Pid, {error, _} = Error} -> Error
     after 5000 -> error(fake_server_start_timeout)
     end.
 
@@ -177,18 +185,30 @@ default_handler(_N, _Dict) ->
 
 %% internal
 
-init(Parent, Handler) ->
-    {ok, Socket} = gen_udp:open(0, [
-        binary,
-        {active, true},
-        {ip, {127, 0, 0, 1}},
-        {recbuf, 262144},
-        {sndbuf, 262144},
-        {buffer, 65536}
-    ]),
-    {ok, Port} = inet:port(Socket),
-    Parent ! {self(), Port},
-    loop(Socket, Handler, 0, [], #{}).
+init(Parent, Handler, IP, Port0) ->
+    Family =
+        case tuple_size(IP) of
+            8 -> inet6;
+            4 -> inet
+        end,
+    case
+        gen_udp:open(Port0, [
+            binary,
+            Family,
+            {active, true},
+            {ip, IP},
+            {recbuf, 262144},
+            {sndbuf, 262144},
+            {buffer, 65536}
+        ])
+    of
+        {ok, Socket} ->
+            {ok, Port} = inet:port(Socket),
+            Parent ! {self(), {ok, Port}},
+            loop(Socket, Handler, 0, [], #{});
+        {error, _} = Error ->
+            Parent ! {self(), Error}
+    end.
 
 %% Like real rtpengine, replies are cached by cookie: a duplicate
 %% request (a retransmit) is served the cached bytes without invoking

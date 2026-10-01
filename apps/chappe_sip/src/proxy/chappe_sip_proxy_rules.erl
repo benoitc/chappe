@@ -203,6 +203,9 @@ uri_of(Value) ->
 %% third element is that TLS next hop, or undefined).
 retarget({ws, _}, Msg) ->
     {ok, Msg, undefined};
+retarget({flow, Uri, _Flow}, Msg) ->
+    %% a binding reached over its flow: the Request-URI is its contact
+    retarget(Uri, Msg);
 retarget(<<"sip:", _/binary>> = Uri, Msg) ->
     case is_sips(chappe_sip_msg:uri(Msg)) of
         true -> {error, sips_required};

@@ -19,6 +19,13 @@
 %% by {CallId, LocalTag, RemoteTag} (RFC 3891 Replaces lookups). It removes
 %% the entry before it tells the owner (or a destroy/1 caller) the dialog is
 %% gone, and again in terminate/3; the index server sweeps a killed fsm.
+%%
+%% An early dialog of an INVITE we send (a tagged 1xx, RFC 3261 12.1) runs
+%% here too, with uac set to the INVITE's UAC fsm: it answers the callee's
+%% requests (UPDATE, INFO, a BYE that ends it), sends UPDATE and INFO, and
+%% shares the INVITE's CSeq counter with the PRACKs the UAC fsm sends. A
+%% destroy CANCELs the INVITE. The 2xx with its To tag confirms it
+%% ({confirm, Args}, 13.2.2.4); any other final ends it ({early_end, _}).
 -module(chappe_sip_dialog_fsm).
 -behaviour(gen_statem).
 
@@ -62,7 +69,7 @@
     route_set = [] :: [binary()],
     %% when set, in-dialog requests originate over this WS flow (a browser is
     %% reachable only via its flow, not by resolving its .invalid Contact)
-    flow :: integer() | undefined,
+    flow :: chappe_sip_engine:flow() | undefined,
     call_id :: binary(),
     owner :: pid(),
     owner_mon :: reference(),
@@ -131,7 +138,11 @@
     %% CSeq number and credentials, until the app sends the ACK (ack/2)
     pending_ack ::
         #{cseq := pos_integer(), headers := [{binary(), iodata()}]}
-        | undefined
+        | undefined,
+    %% an early dialog of an INVITE we send: the UAC fsm, and the CSeq
+    %% counter it shares with us until the dialog is confirmed
+    uac :: pid() | undefined,
+    cseq_ref :: atomics:atomics_ref() | undefined
 }).
 
 %% event: the SUBSCRIBE's Event value (with any id param), reused on every
@@ -203,7 +214,7 @@ init(
         ),
         remote_sdp = maps:get(remote_sdp, Args, <<>>),
         role = maps:get(role, Args, uac),
-        index_state = initial_index_state(Opts),
+        index_state = initial_index_state(Args, Opts),
         sub = init_sub(
             maps:get(subscription, Opts, undefined),
             maps:get(local_contact, Args, undefined)
@@ -216,7 +227,9 @@ init(
             session_timer, Args, maps:get(session_timer, Opts, undefined)
         ),
         st_cfg = chappe_sip_session_timer:config(Opts),
-        option_tags = maps:get(option_tags, Opts, [])
+        option_tags = maps:get(option_tags, Opts, []),
+        uac = maps:get(early_uac, Args, undefined),
+        cseq_ref = maps:get(cseq_ref, Args, undefined)
     },
     Data1 = Data#data{ack_answer = answer_in_ack(Data)},
     %% Any dialog-forming response (UAS) is sent by chappe_sip_engine (sending
@@ -310,8 +323,22 @@ confirmed(
 confirmed(info, {chappe_sip_cancel, _TxnH, _Req}, D) ->
     %% late CANCEL after the dialog was established; ignore
     {keep_state, D};
+confirmed({call, From}, {confirm, Args}, D) ->
+    early_confirm(From, Args, D);
+confirmed(cast, {early_end, Reason}, D) ->
+    notify_terminal(D, Reason),
+    {stop, normal, D};
+confirmed(cast, {early_sdp, Sdp}, D) ->
+    {keep_state, early_sdp(Sdp, D)};
 confirmed({call, From}, destroy, D) ->
     confirmed({call, From}, {destroy, #{}}, D);
+confirmed({call, From}, {destroy, Opts}, #data{uac = Uac} = D) when
+    Uac =/= undefined
+->
+    %% RFC 3261 15: the caller ends an early dialog of its INVITE with a
+    %% CANCEL of that INVITE
+    gen_statem:cast(Uac, {cancel, maps:get(headers, Opts, [])}),
+    {keep_state, D, [{reply, From, ok}]};
 confirmed(
     {call, From}, {destroy, _}, #data{sub = #{state := terminated}} = D
 ) ->
@@ -348,6 +375,12 @@ confirmed(info, {st_refreshed, St}, D) ->
     st_apply(St, D);
 confirmed({call, From}, {modify, SdpSpec}, D) ->
     confirmed({call, From}, {modify, SdpSpec, #{}}, D);
+confirmed({call, From}, {modify, _, _}, #data{uac = Uac} = D) when
+    Uac =/= undefined
+->
+    %% no re-INVITE before the INVITE completes (RFC 3261 14.1); an early
+    %% dialog takes UPDATE
+    {keep_state, D, [{reply, From, {error, early}}]};
 confirmed({call, From}, {modify, SdpSpec, Opts}, D) ->
     case {invite_server_open(D), D#data.modify_wait} of
         {true, undefined} ->
@@ -370,6 +403,12 @@ confirmed({call, From}, Query, D) when ?IS_QUERY(Query) ->
 confirmed(info, {chappe_sip_engine_restart, _}, D) ->
     notify_terminal(D, engine_restart),
     {stop, normal, D};
+confirmed(
+    info,
+    {'DOWN', MRef, process, _, _},
+    #data{owner_mon = MRef, on_owner_exit = destroy, uac = Uac} = D
+) when Uac =/= undefined ->
+    early_owner_down(D);
 confirmed(
     info,
     {'DOWN', MRef, process, _, _},
@@ -423,6 +462,15 @@ in_transaction(info, {chappe_sip_ack_timeout, _}, D) ->
     {keep_state, D, [postpone]};
 in_transaction(info, {chappe_sip_final, TxnH, Status, Body}, D) ->
     {keep_state, claimed_final(TxnH, Status, Body, D)};
+in_transaction({call, From}, {confirm, Args}, D) ->
+    %% the 2xx to the INVITE while our UPDATE in the early dialog runs
+    early_confirm(From, Args, D);
+in_transaction(cast, {early_end, Reason}, D) ->
+    reply(txning_from(D), {error, terminated}),
+    notify_terminal(D, Reason),
+    {stop, normal, D};
+in_transaction(cast, {early_sdp, Sdp}, D) ->
+    {keep_state, early_sdp(Sdp, D)};
 in_transaction(
     info,
     {chappe_sip_indialog, LegH, TxnH, Meta, Raw},
@@ -449,6 +497,12 @@ in_transaction(info, {chappe_sip_engine_restart, _}, D) ->
     reply(txning_from(D), {error, engine_restart}),
     notify_terminal(D, engine_restart),
     {stop, normal, D};
+in_transaction(
+    info,
+    {'DOWN', MRef, process, _, _},
+    #data{owner_mon = MRef, on_owner_exit = destroy, uac = Uac} = D
+) when Uac =/= undefined ->
+    early_owner_down(D);
 in_transaction(
     info,
     {'DOWN', MRef, process, _, _},
@@ -791,6 +845,7 @@ handle_indialog_1(TxnH, Req, D) ->
             %% and so does the INVITE of an early dialog of ours (the
             %% caller's BYE ends the early dialog, RFC 3261 15)
             _ = early_invite_terminated(D),
+            early_byed(D),
             _ = chappe_sip_engine:dialog_respond(
                 TxnH,
                 200,
@@ -823,6 +878,62 @@ early_invite_terminated(#data{role = uas, index_state = early, txn = Txn}) when
     );
 early_invite_terminated(_D) ->
     ok.
+
+%% the callee's BYE ended an early dialog of our INVITE: the INVITE still
+%% completes with its final response, which no longer confirms this dialog
+early_byed(#data{uac = Uac, remote_addr = RA}) when Uac =/= undefined ->
+    Uac ! {chappe_sip_early_byed, addr_tag(RA)},
+    ok;
+early_byed(_D) ->
+    ok.
+
+%% ---- early dialogs of an INVITE we send (RFC 3261 12.1, 13.2.2.4) ----
+
+%% The 2xx with our To tag: the dialog is confirmed, its route set and
+%% remote target are taken from the 2xx, and the session timer starts. The
+%% session an UPDATE settled while early stands over the one the UAC fsm
+%% computed from the responses.
+early_confirm(From, Args, #data{cseq_ref = Ref} = D) when Ref =/= undefined ->
+    D1 = D#data{
+        remote_addr = maps:get(remote_addr, Args, D#data.remote_addr),
+        remote_target = maps:get(remote_target, Args, D#data.remote_target),
+        route_set = maps:get(route_set, Args, D#data.route_set),
+        remote_sdp = keep_sdp(
+            D#data.remote_sdp, maps:get(remote_sdp, Args, <<>>)
+        ),
+        local_sdp = keep_sdp(D#data.local_sdp, maps:get(local_sdp, Args, <<>>)),
+        local_cseq = max(D#data.local_cseq, atomics:get(Ref, 1)),
+        pending_ack = maps:get(pending_ack, Args, undefined),
+        st = maps:get(session_timer, Args, undefined),
+        index_state = confirmed,
+        uac = undefined,
+        cseq_ref = undefined
+    },
+    set_index_state(D1, confirmed),
+    {keep_state, D1, [{reply, From, ok} | st_timers(D1#data.st)]};
+early_confirm(From, _Args, D) ->
+    {keep_state, D, [{reply, From, {error, not_early}}]}.
+
+keep_sdp(<<>>, New) -> New;
+keep_sdp(Mine, _New) -> Mine.
+
+%% a later provisional of this early dialog carried the first SDP
+early_sdp(Sdp, #data{remote_sdp = <<>>} = D) -> D#data{remote_sdp = Sdp};
+early_sdp(_Sdp, D) -> D.
+
+%% the owner is gone before the INVITE completed: the UAC fsm CANCELs it
+%% and ends the call should a 2xx still come
+early_owner_down(#data{uac = Uac} = D) ->
+    gen_statem:cast(Uac, abandon),
+    {keep_state, D}.
+
+%% the CSeq of our next request: an early dialog shares the INVITE's
+%% counter with the PRACKs of the UAC fsm
+next_cseq(#data{cseq_ref = undefined, local_cseq = CSeq} = D) ->
+    {CSeq + 1, D#data{local_cseq = CSeq + 1}};
+next_cseq(#data{cseq_ref = Ref} = D) ->
+    Seq = atomics:add_get(Ref, 1, 1),
+    {Seq, D#data{local_cseq = Seq}}.
 
 %% RFC 4028 9: an INVITE or UPDATE refreshes the session; one below our
 %% minimum interval gets 422
@@ -913,6 +1024,11 @@ offer_out(#data{txning = {_, _, {update, _}}}) ->
     true;
 offer_out(#data{txning = {_, _, {st_refresh, <<"INVITE">>}}} = D) ->
     D#data.local_sdp =/= <<>>;
+offer_out(#data{uac = Uac, local_sdp = L, remote_sdp = <<>>}) when
+    Uac =/= undefined, L =/= <<>>
+->
+    %% early: our INVITE's offer has no answer yet
+    true;
 offer_out(#data{ack_answer = Pending}) ->
     Pending.
 
@@ -1306,10 +1422,9 @@ start_request(From, #{method := <<"UPDATE">>} = ReqSpec, D) ->
 start_request(From, ReqSpec, D) ->
     start_request(From, ReqSpec, D, request).
 
-start_request(From, ReqSpec, #data{local_cseq = CSeq0} = D, Kind) ->
+start_request(From, ReqSpec, D, Kind) ->
     Method = maps:get(method, ReqSpec),
-    Seq = CSeq0 + 1,
-    D1 = D#data{local_cseq = Seq},
+    {Seq, D1} = next_cseq(D),
     Body = iolist_to_binary(maps:get(body, ReqSpec, <<>>)),
     Headers0 = maps:get(headers, ReqSpec, []),
     Headers =
@@ -1544,7 +1659,8 @@ send_ack_indialog(#data{local_cseq = CSeq} = D) ->
 %% Send destination: a WS flow wins (a browser is reached over its flow); else
 %% with a route set (loose routing) the request goes to the first Route's URI
 %% (RFC 3261 12.2.1.1), otherwise nta routes by the Request-URI.
-route(#data{flow = Flow}) when Flow =/= undefined -> {ws, Flow};
+route(#data{flow = Flow}) when Flow =/= undefined ->
+    chappe_sip_route:flow_route(Flow);
 route(#data{route_set = [First | _]}) ->
     case chappe_sip_hdr:name_addr(First) of
         {ok, #{uri := Uri}} -> Uri;
@@ -1863,7 +1979,9 @@ st_done(D) ->
 
 %% ---- dialog index (RFC 3891 Replaces) ----
 
-initial_index_state(Opts) ->
+initial_index_state(#{early_uac := Pid}, _Opts) when is_pid(Pid) ->
+    early;
+initial_index_state(_Args, Opts) ->
     case maps:get(status, Opts, 200) of
         S when is_integer(S), S < 200 -> early;
         _ -> confirmed

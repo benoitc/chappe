@@ -13,12 +13,19 @@
 #
 # The source is rsynced into a named volume (excluding the host's macOS build
 # artifacts), so the sofia-sip build is cached across runs.
+#
+# LeakSanitizer is on: test/asan/lsan.supp suppresses the helper programs,
+# the compiler and OTP's crypto NIF, never a stack through
+# chappe_sip_engine_nif.c. ASAN_DETECT_LEAKS=0 turns leak checking off.
+# ASAN_VOLUME names the build volume (default chappe_asan_work).
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 suites=${1:-test/chappe_sip_engine_smoke_SUITE,test/chappe_sip_dialog_ops_SUITE,test/chappe_sip_engine_lifecycle_SUITE}
 img=chappe-asan
+detect_leaks=${ASAN_DETECT_LEAKS:-1}
+volume=${ASAN_VOLUME:-chappe_asan_work}
 
 echo "==> building $img image"
 docker build -q -t "$img" "$here" >/dev/null
@@ -26,8 +33,9 @@ docker build -q -t "$img" "$here" >/dev/null
 echo "==> running $suites under AddressSanitizer"
 docker run --rm \
   -v "$root":/host:ro \
-  -v chappe_asan_work:/work \
+  -v "$volume":/work \
   -e "SUITES=$suites" \
+  -e "DETECT_LEAKS=$detect_leaks" \
   "$img" bash -euc '
     # exclude host build outputs (macOS _build, sofia build, and the Mach-O
     # NIF under priv/lib) so the Linux build is not clobbered
@@ -48,9 +56,14 @@ docker run --rm \
     # force a fresh NIF relink against the current source (the volume caches
     # the previous stamp)
     rm -f c_src/build/.nif.stamp
+    # build both profiles before the preload, and keep ct from relinking
+    # the NIF: its hook would rebuild it without the sanitizer, and run the
+    # compiler under LSan
     ENGINE_SANITIZE=address rebar3 compile
+    ENGINE_SANITIZE=address rebar3 as test compile
+    export SKIP_ENGINE_BUILD=1
     export LD_PRELOAD=$(gcc -print-file-name=libasan.so)
-    # LSan is too noisy against the BEAM; focus on UAF / overflow / bad-free.
-    export ASAN_OPTIONS=detect_leaks=0:abort_on_error=1:halt_on_error=1
+    export LSAN_OPTIONS=suppressions=/work/test/asan/lsan.supp
+    export ASAN_OPTIONS=detect_leaks=$DETECT_LEAKS:abort_on_error=1:halt_on_error=1
     rebar3 ct --suite "$SUITES"
   '

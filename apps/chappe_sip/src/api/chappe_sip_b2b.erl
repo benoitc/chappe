@@ -72,7 +72,8 @@ create_b2bua(Req, Res, Uri, Opts) ->
             none -> BOpts0;
             _ -> BOpts0#{rel100 => supported}
         end,
-    %% flow' lets the B-leg originate over a registered WS connection
+    %% flow' lets the B-leg originate over a registered flow (a WS or an
+    %% RFC 5626 TCP/TLS/UDP one)
     BOpts = maps:merge(
         BOpts1, maps:with([proxy, auth, flow | st_opts()], Opts)
     ),
@@ -128,6 +129,10 @@ b2b_wait(#{res := Res, bref := BRef, deadline := Deadline} = W) ->
     ATxn = chappe_sip_res:req_txn(Res),
     receive
         {chappe_sip_uac, BRef, {request_sent, _}} ->
+            b2b_wait(W);
+        {chappe_sip_uac, BRef, {early_dialog, _}} ->
+            %% B's early dialog answers B's requests itself; the 2xx hands
+            %% over the same dialog
             b2b_wait(W);
         {chappe_sip_uac, BRef, {provisional, BMsg}} ->
             b2b_wait(provisional(BMsg, b_sdp(BMsg, restart_timer_c(BMsg, W))));

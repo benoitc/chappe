@@ -1,6 +1,6 @@
 # Nodes, health and transports
 
-This guide covers running against one or several rtpengine nodes: health checking, load-based selection, call pinning, restart detection, and the TCP transport. You need it when you deploy more than one rtpengine, or when you want to react to a node going away.
+This guide covers running against one or several rtpengine nodes: health checking, load-based selection, call pinning, restart detection, address changes, and the TCP and WebSocket transports. You need it when you deploy more than one rtpengine, or when you want to react to a node going away.
 
 ## Add and remove nodes
 
@@ -24,6 +24,36 @@ A UDP request larger than `max_datagram` (default 65507 bytes, the IPv4 payload 
 ok = chappe_rtpengine:add_node(rtpe1, #{host => "192.168.1.10", port => 2223,
                                        max_datagram => 8000}).
 ```
+
+## Follow a node that moves
+
+If you address a UDP node by name, the client looks the name up when the node is added, then again every `resolve_interval_ms` and after `resolve_after_timeouts` requests in a row time out. When the address changes, requests go to the new one, including retransmits of requests already in flight.
+
+```erlang
+ok = chappe_rtpengine:add_node(rtpe1, #{
+    host => "rtpengine.internal",
+    port => 2223,
+    resolve_interval_ms => 30000,   % default 60000; infinity turns it off
+    resolve_after_timeouts => 2     % default 2
+}),
+#{address_changes := _} = chappe_rtpengine:stats(rtpe1).
+```
+
+To resolve through something other than inet (a service registry, a test fixture), pass a resolver fun:
+
+```erlang
+Resolver = fun(_Host) -> {ok, {10, 0, 0, 7}} end,
+ok = chappe_rtpengine:add_node(rtpe1, #{host => <<"rtpe1">>, port => 2223,
+                                       resolver => Resolver}).
+```
+
+Notes:
+
+- The lookup runs in a helper process, so a slow resolver never delays replies. A lookup that fails keeps the current address.
+- A host given as an IP address is never re-resolved.
+- The name must resolve when you add the node: a UDP node whose name does not resolve fails `add_node/2`.
+- If the new address is in another family (IPv4 to IPv6), the client opens a new socket; a reply still on its way to the old one is lost and the request retransmits.
+- TCP and WebSocket nodes do not use these options: they resolve on every connect.
 
 ## Select a node per call
 

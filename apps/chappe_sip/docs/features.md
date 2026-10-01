@@ -88,7 +88,8 @@ tracker; the milestone history is in `docs/plan.md`.
   detection (482) that lets spirals through, and the 16.7 best response (6xx
   first, lowest class, retry-able 4xx preferred, challenges and 3xx Contacts
   merged, 503 sent as 500). Every 2xx is forwarded for 64*T1 after the first
-  (RFC 6026). Record-Route insertion (sips when the forwarded request is
+  (RFC 6026), also over TCP/TLS, where nta ends the client transaction at
+  the first 2xx: the shim's agent callback catches the later ones. Record-Route insertion (sips when the forwarded request is
   SIPS, rewritten in responses across TLS/non-TLS) and in-dialog forwarding
   through it, CANCEL of a transit re-INVITE included.
 - Dialogs as processes: `chappe_sip_dialog:destroy/1,2` (headers such as a
@@ -99,9 +100,17 @@ tracker; the milestone history is in `docs/plan.md`.
   provisional to our re-INVITE keeps its transaction open until the final.
   An early dialog our 18x formed (`create_uas/3` with a 1xx `status`) takes
   UPDATE both ways, and the caller's BYE in it gets 200 and its INVITE 487.
-  The early dialogs of an INVITE we send are not exposed as dialog handles:
-  the callee's UPDATE or BYE in one gets 481 (only PRACK and CANCEL work
-  there).
+  Each early dialog of an INVITE we send (a 101..199 with a new To tag) is a
+  dialog handle too, reported as `{early_dialog, Dialog}` just before its
+  provisional: the callee's UPDATE and INFO in it are delivered or answered
+  as in a confirmed dialog, its BYE gets 200 and ends that dialog (the
+  INVITE still completes with its final), and `request/2` sends UPDATE or
+  INFO in it, sharing the INVITE's CSeq counter with the PRACKs. `destroy/1`
+  on it CANCELs the INVITE, `modify/2` returns `{error, early}`. The 2xx
+  with its To tag confirms the same handle (route set and remote target
+  taken again from the 2xx, RFC 3261 13.2.2.4); the other early dialogs end
+  on the INVITE's final, their owner getting `destroy` with reason
+  `{early_ended, Status}`.
   Unclaimed in-dialog requests are answered by the dialog: offers in re-INVITE
   and UPDATE with the current local SDP (488 without one), an offerless
   re-INVITE with our SDP as the offer (answer taken from the ACK), REFER 603,
@@ -160,9 +169,9 @@ tracker; the milestone history is in `docs/plan.md`.
   `replaces_value/1`, `escape/1` and `refer_to_replaces/1` parse and build the
   value, including inside a Refer-To URI. `chappe_sip:replaces_response/1`
   gives the section 3 answer (accept, or reject 400/481/486/603);
-  `replaces_response/2` adds your authorization policy (403). A ringing
-  UAC call indexes its early dialogs, so it can be replaced (destroy sends the
-  CANCEL). `replaces` is in Supported on our INVITE and its 2xx and accepted in
+  `replaces_response/2` adds your authorization policy (403). The early
+  dialogs of a ringing UAC call are indexed, so it can be replaced (destroy
+  sends the CANCEL). `replaces` is in Supported on our INVITE and its 2xx and accepted in
   Require. See the answer-calls guide.
 - Reliable provisionals (PRACK / 100rel, RFC 3262): a UAS sends a reliable
   1xx with `chappe_sip_res:send_reliable/2` and blocks for the PRACK with
@@ -183,17 +192,24 @@ tracker; the milestone history is in `docs/plan.md`.
   canonical To URI (host case-insensitive, parameters dropped, escapes
   undone); comma-joined Contacts each take their own `expires`; a Contact
   matches its binding by the 19.1.4 URI rules; the CSeq check is per binding
-  and a failing REGISTER writes nothing; `expires=0` removal, `Contact: *`
+  and a failing REGISTER writes nothing (one the store could not apply in
+  time gets 500 and is never applied); `expires=0` removal, `Contact: *`
   clear, 423 with `Min-Expires` below `registrar_min_expires` (60), 404
-  outside `registrar_domains`; the 200 lists every binding with `expires` and
-  `q`, and a `Date`. `chappe_sip:location/1` resolves an AOR the highest q
+  outside `registrar_domains`, never a 6xx (an auth policy's 6xx goes out
+  as 403); the 200 lists every binding with `expires` and `q`, and a
+  `Date`. A UA registering directly gets its keep-alives answered: STUN
+  Binding on UDP, CRLF pong on TCP, TLS and WS (RFC 5626 5.4). `chappe_sip:location/1` resolves an AOR the highest q
   first and `chappe_sip:bindings/1` gives each binding with its Path. Path
   (RFC 3327) is stored and echoed (420 without `Supported: path`). Outbound
   (RFC 5626): one binding per (instance, reg-id) flow, `Require: outbound` and
   `Flow-Timer` in the 200, 439 past a first hop without an `ob` Path. A WS
   binding is purged when its connection drops (the flow is the only path to
   the UA), so a browser that disconnects is deregistered; only that flow's
-  binding goes.
+  binding goes. An outbound binding registered directly over TCP/TLS is tied
+  to its connection (`{conn, Id}`, from the request meta `conn`) and purged
+  when it closes; over UDP to its source address and port. A request reaches
+  it over that flow (`proxy_request/3` with `{flow, Uri, Flow}`, or the
+  `flow` option of a UAC or b2bua).
 
 ### Limits and overload
 - Bounded request workers (503 shed past the cap), per-request handler
@@ -222,7 +238,8 @@ tracker; the milestone history is in `docs/plan.md`.
   (an RWLock guards the sofia root, CAS transitions guard start/abandon, and the
   stack thread holds its own resource ref so the destructor never frees under
   it) validated under AddressSanitizer via the `chappe_sip_engine_lifecycle` stress
-  suite in `test/asan/`.
+  suite in `test/asan/`, with LeakSanitizer reporting any leak on a NIF call
+  path (`test/asan/lsan.supp` covers only stacks without a NIF frame).
 - A crash of the engine process re-establishes the native stack and its
   handlers from a config snapshot (held in the keeper's ETS), so SIP recovers
   without a manual restart; a controlled restart also fails in-flight UAC/dialog

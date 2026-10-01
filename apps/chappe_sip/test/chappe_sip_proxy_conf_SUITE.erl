@@ -23,7 +23,8 @@
          best_3xx_contacts_merged/1, best_4xx_retry_preferred/1,
          best_6xx_waits_for_branches/1, comma_route/1,
          strict_router_recovered/1, expired_marker_refused/1,
-         reinvite_cancel_relayed/1]).
+         reinvite_cancel_relayed/1, no_final_408/1,
+         stray_response_dropped/1]).
 
 all() ->
     [ruri_rewritten, bare_host_keeps_user, preloaded_route, max_forwards_483,
@@ -32,7 +33,7 @@ all() ->
      best_challenges_merged, best_503_is_500, best_3xx_contacts_merged,
      best_4xx_retry_preferred, best_6xx_waits_for_branches, comma_route,
      strict_router_recovered, expired_marker_refused,
-     reinvite_cancel_relayed].
+     reinvite_cancel_relayed, no_final_408, stray_response_dropped].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -179,6 +180,59 @@ timer_c_no_provisional(_Config) ->
         Test ! {final, status(recv_final(Sock))}
     end),
     ok = expect({final, 408}).
+
+%% 16.7 step 10: two parallel branches, neither of which gives a final
+%% response before Timer C: the response context holds no final, so the
+%% caller gets a 408.
+%% req: R3261-P-030
+no_final_408(_Config) ->
+    {EP, [D1, D2]} = setup(2),
+    proxy_app(fun(_Req) ->
+        {[dest(D1), dest(D2)], #{forking => parallel, timer_c => 500}}
+    end),
+    Test = self(),
+    Silent = fun(Sock) ->
+        {_Inv, _Src} = recv(Sock, <<"INVITE">>),
+        Test ! branch_reached,
+        receive never -> ok after 4000 -> ok end
+    end,
+    peer(D1, Silent),
+    peer(D2, Silent),
+    caller(fun(Sock) ->
+        send(Sock, EP, req(<<"INVITE">>, <<"sip:callee@127.0.0.1">>, Sock, #{})),
+        Test ! {final, status(recv_final(Sock))}
+    end),
+    ok = expect(branch_reached),
+    ok = expect(branch_reached),
+    ok = expect({final, 408}).
+
+%% RFC 6026 6: a response that matches no client transaction of ours (a
+%% branch we never sent) is not forwarded, neither a 2xx nor a 1xx; the
+%% caller only sees the final of its real branch.
+%% req: R6026-05
+stray_response_dropped(_Config) ->
+    {EP, [D1]} = setup(1),
+    proxy_app(fun(_Req) -> {[dest(D1)], #{}} end),
+    Test = self(),
+    peer(D1, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        Stray = re:replace(Inv, "branch=z9hG4bK[^;\r\n]*",
+                           "branch=z9hG4bKstray" ++ binary_to_list(tag()),
+                           [{return, binary}]),
+        send(Sock, Src, resp(Stray, 180, <<"Ringing">>, <<"st">>, [], <<>>)),
+        send(Sock, Src, resp(Stray, 200, <<"OK">>, <<"st">>,
+                             [{<<"Contact">>, ctc(D1)}], sdp())),
+        timer:sleep(500),
+        send(Sock, Src, resp(Inv, 486, <<"Busy Here">>, tag(), [], <<>>))
+    end),
+    caller(fun(Sock) ->
+        send(Sock, EP, req(<<"INVITE">>, <<"sip:callee@127.0.0.1">>, Sock, #{})),
+        Test ! {seen, collect_statuses(Sock, 2500)}
+    end),
+    receive
+        {seen, Seen} -> ?assertEqual([486], lists:usort(Seen) -- [100])
+    after 6000 -> ct:fail(no_result)
+    end.
 
 %% 16.7 step 2: each provisional restarts Timer C, so a callee that keeps
 %% ringing for three times the timer still connects.
@@ -585,6 +639,21 @@ recv_status(Sock, Code) ->
                 _ -> recv_status(Sock, Code)
             end
     after 6000 -> ct:fail({no_status, Code})
+    end.
+
+%% the status of every response the socket gets for Ms milliseconds
+collect_statuses(Sock, Ms) ->
+    Deadline = erlang:monotonic_time(millisecond) + Ms,
+    collect_statuses(Sock, Deadline, []).
+
+collect_statuses(Sock, Deadline, Acc) ->
+    Left = max(0, Deadline - erlang:monotonic_time(millisecond)),
+    receive
+        {udp, Sock, _, _, <<"SIP/2.0 ", _/binary>> = Bin} ->
+            collect_statuses(Sock, Deadline, [status(Bin) | Acc]);
+        {udp, Sock, _, _, _} ->
+            collect_statuses(Sock, Deadline, Acc)
+    after Left -> lists:reverse(Acc)
     end.
 
 %% the first final response

@@ -8,7 +8,8 @@ this to accept registrations and route to registered users.
 ## When to use it
 
 - You accept REGISTER from UAs and route calls to wherever they last registered.
-- You bridge or proxy to a registered WebSocket browser (you need its flow).
+- You bridge or proxy to a registered WebSocket browser, or to an RFC 5626
+  outbound UA (you need its flow).
 
 ## Accept registrations
 
@@ -62,7 +63,9 @@ A replayed response gets a fresh challenge with `stale=true`, a digest `uri`
 other than the Request-URI gets 400. `secret` returns `{ok, Password}`,
 `{ha1, HA1}` (a precomputed `MD5(user:realm:password)`), or `error` for an
 unknown user. For a custom policy pass a `fun((Req) -> ok |
-{reject, Status} | {reject, Status, Headers})` instead of the map.
+{reject, Status} | {reject, Status, Headers})` instead of the map. A
+registrar never answers 6xx (RFC 3261 10.3): a policy that rejects with one
+sends 403.
 
 ## Serve some domains only
 
@@ -125,6 +128,18 @@ REGISTER gets 439 (the UA asked for outbound) or the reg-id is ignored. A
 reg-id with two non-zero Contacts is a 400. When a WebSocket flow drops, only
 its bindings go.
 
+An outbound binding registered straight to you (a single Via) is tied to the
+flow the REGISTER came on: its TCP/TLS connection (`{conn, Id}`), or its UDP
+source address and port (`{udp, Ip, Port}`). Reach the UA over it:
+
+```erlang
+{ok, Uri, Flow} = chappe_sip:location_flow(<<"sip:alice@example.com">>),
+chappe_sip:proxy_request(Req, {flow, Uri, Flow}, #{}).
+```
+
+When that TCP/TLS connection closes, its bindings go (RFC 5626 7). A
+re-registration over another connection moves the binding to it.
+
 ## Notes
 
 - A WebSocket UA is reachable only over its flow; use `location_flow/1` and pass
@@ -136,6 +151,11 @@ its bindings go.
   `registrar_max_expires` and `registrar_min_expires` (60: a shorter non-zero
   expiry under an hour gets 423 with `Min-Expires`) in
   [Configuration](configuration.md).
-- Only a WebSocket flow is stored with a binding. Over UDP, TCP and TLS
-  sofia-sip does not hand the connection to the registrar, so an outbound
-  binding there is not tied to its flow.
+- Each REGISTER is applied on its own, in arrival order. One the store
+  cannot apply within 5 s gets 500 and is never applied later.
+- A UA that registers directly gets its keep-alives answered (RFC 5626
+  5.4): a STUN Binding request on the UDP port, a CRLFCRLF ping on TCP, TLS
+  and WebSocket with a CRLF pong.
+- A plain binding (no reg-id) over TCP or TLS is not tied to its
+  connection: it stays until its `Expires`. A UDP flow has no failure
+  detection (no STUN keepalive), so it also lasts until `Expires`.

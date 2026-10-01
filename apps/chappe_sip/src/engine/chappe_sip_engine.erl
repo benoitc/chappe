@@ -85,6 +85,23 @@
     contact/0,
     tls_contact/0
 ]).
+-export_type([flow/0, route/0]).
+
+%% An RFC 5626 flow a request can be sent back over: a WebSocket connection
+%% (an integer), a TCP/TLS connection of the native stack ({conn, Id}), or
+%% the address a UDP request came from ({udp, Ip, Port}).
+-type flow() ::
+    integer()
+    | {conn, pos_integer()}
+    | {udp, binary(), inet:port_number()}.
+%% Where a request goes: a URI (the next hop), a flow, or undefined (by the
+%% Request-URI).
+-type route() ::
+    binary()
+    | {ws, integer()}
+    | {conn, pos_integer()}
+    | {udp, binary(), inet:port_number()}
+    | undefined.
 -export([validate_tls/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
@@ -197,16 +214,14 @@ dialog_respond(TxnH, Status, Reason, Headers, Body, ToTag) ->
     ).
 
 %% Send a complete request; responses/op results route to Pid.
--spec send_request(binary() | {ws, integer()} | undefined, binary(), pid()) ->
+-spec send_request(route(), binary(), pid()) ->
     {ok, non_neg_integer()} | {error, term()}.
 send_request(Route, Raw, Pid) ->
     send_request(Route, Raw, Pid, #{}).
 
 %% The same with options: `branch' sets the Via branch of the request (a
 %% proxy puts its loop-detection hash there, RFC 3261 16.6 step 8).
--spec send_request(
-    binary() | {ws, integer()} | undefined, binary(), pid(), map()
-) ->
+-spec send_request(route(), binary(), pid(), map()) ->
     {ok, non_neg_integer()} | {error, term()}.
 send_request(Route, Raw, Pid, Opts) ->
     gen_server:call(?MODULE, {send_request, Route, Raw, Pid, Opts}).
@@ -244,11 +259,7 @@ create_dialog(DialogArgs) ->
     gen_server:call(?MODULE, {create_dialog, DialogArgs}).
 
 %% Fire-and-forget send (ACK to a 2xx); op result routes to Pid.
--spec send_stateless(
-    binary() | {ws, integer()} | undefined,
-    binary(),
-    pid()
-) ->
+-spec send_stateless(route(), binary(), pid()) ->
     {ok, non_neg_integer() | ws_ack} | {error, term()}.
 send_stateless(Route, Raw, Pid) ->
     gen_server:call(?MODULE, {send_stateless, Route, Raw, Pid}).
@@ -449,7 +460,7 @@ handle_call(
 ->
     %% fire-and-forget (a 2xx ACK / stateless BYE): no response is expected, so
     %% do not retain a handle route (it would linger until the owner exits)
-    {reply, Mod:send(Engine, Route, Raw), S};
+    {reply, Mod:send(Engine, native_route(Route), Raw), S};
 handle_call({cancel_txn, TxnH, Hdrs}, _From, S) when ?IS_WS(TxnH) ->
     _ = chappe_sip_ws_transport:cancel(TxnH, chappe_sip_hdr_io:join(Hdrs)),
     {reply, ok, S};
@@ -579,10 +590,11 @@ handle_call(
 ) when
     Engine =/= undefined
 ->
+    NRoute = native_route(Route),
     Sent =
         case maps:get(branch, Opts, undefined) of
-            undefined -> Mod:request(Engine, Route, Raw);
-            Branch -> Mod:request(Engine, Route, Raw, Branch)
+            undefined -> Mod:request(Engine, NRoute, Raw);
+            Branch -> Mod:request(Engine, NRoute, Raw, Branch)
         end,
     case Sent of
         {ok, TxnH} ->
@@ -795,6 +807,9 @@ start_engine(_Mod, _Opts, 0, _Backoff) ->
 start_engine(Mod, Opts, Retries, Backoff) ->
     case Mod:start(Opts, self()) of
         {ok, Engine} ->
+            %% the connections of a previous engine are gone, and so are
+            %% the bindings learned on them
+            chappe_sip_registry:remove_conn_flows(),
             {ok, Engine};
         {error, stopping} ->
             %% a previous instance is tearing down; starts are serialized
@@ -947,11 +962,30 @@ schedule_health(Engine) ->
 
 %% internal: events
 
+%% the native stack's route: a TCP/TLS flow by its id, a UDP flow as the
+%% address it came from (RFC 5626 5.3: the request goes back over it)
+native_route({conn, Id}) ->
+    Id;
+native_route({udp, Ip, Port}) ->
+    Host =
+        case binary:match(Ip, <<":">>) of
+            nomatch -> Ip;
+            _ -> <<"[", Ip/binary, "]">>
+        end,
+    <<"sip:", Host/binary, ":", (integer_to_binary(Port))/binary,
+        ";transport=udp">>;
+native_route(Route) ->
+    Route.
+
 handle_event({health_ok, _Seq}, #state{health_waiters = W} = S) ->
     [gen_server:reply(From, ok) || From <- W],
     S#state{misses = 0, health_waiters = []};
 handle_event({log, Level, Text}, S) ->
     logger:log(log_level(Level), "chappe_sip_engine: ~s", [Text]),
+    S;
+handle_event({flow_closed, Id}, S) ->
+    %% a TCP/TLS connection a binding was learned on closed: RFC 5626 7
+    chappe_sip_registry:remove_flow({conn, Id}),
     S;
 handle_event({started, Contact}, S) ->
     logger:info("chappe_sip_engine: SIP stack up at ~s", [Contact]),

@@ -10,11 +10,16 @@
 %% reported only after the engine confirms the send (op_ok), never on mere
 %% enqueue.
 %%
-%% While an INVITE rings, each early dialog a tagged provisional forms is
-%% indexed in chappe_sip_dialog_index (state early, role uac) under this
-%% fsm's pid, so an INVITE with Replaces can name it (RFC 3891). A
-%% destroy/1,2 on that handle CANCELs the INVITE. The entries go before the
-%% dialog fsm of the answering 2xx indexes itself, and on every exit.
+%% While an INVITE rings, each tagged provisional (101..199) with a new To
+%% tag forms an early dialog (RFC 3261 12.1): a dialog fsm in the early
+%% state, reported to the caller as {early_dialog, Dialog} before the
+%% provisional. It answers the callee's requests in that dialog, sends
+%% UPDATE and INFO, and is indexed for Replaces (RFC 3891) as an early
+%% dialog of ours; a destroy/1,2 on it CANCELs the INVITE. The 2xx with its
+%% To tag confirms it and returns the same handle (13.2.2.4); every other
+%% early dialog ends when the INVITE gets its final response, the owner
+%% getting destroy with reason {early_ended, Status}. The INVITE, its
+%% PRACKs and the early dialogs' requests share one CSeq counter.
 -module(chappe_sip_uac_fsm).
 -behaviour(gen_statem).
 
@@ -47,7 +52,7 @@
     cseq :: pos_integer(),
     proxy :: binary() | undefined,
     % when set, originate over this WS flow
-    flow :: integer() | undefined,
+    flow :: chappe_sip_engine:flow() | undefined,
     txn :: non_neg_integer() | undefined,
     %% the Digest challenges we answer, one per (header, realm), with the
     %% header our credentials go in (RFC 3261 22.2, 22.3)
@@ -70,8 +75,9 @@
     ext_retried = false :: boolean(),
     redirects = 0 :: non_neg_integer(),
     winner_tag :: binary() | undefined,
-    %% next available in-dialog CSeq (for PRACK); the INVITE keeps cseq
-    next_cseq :: pos_integer(),
+    %% the last CSeq number sent: the INVITE's, then each PRACK's and each
+    %% request of an early dialog (shared with their fsms)
+    seq :: atomics:atomics_ref(),
     prack_txns = [] :: [non_neg_integer()],
     %% RFC 3262 4: the last in-order RSeq of each early dialog (To tag)
     rseq = #{} :: #{binary() | undefined => pos_integer()},
@@ -81,8 +87,10 @@
     %% many times we retried after one
     min_se_422 = 0 :: non_neg_integer(),
     retries_422 = 0 :: non_neg_integer(),
-    %% early dialogs indexed for Replaces (INVITE only)
-    early = [] :: [chappe_sip_dialog_index:key()],
+    %% the early dialogs of this INVITE by To tag, and the To tags whose
+    %% early dialog the callee ended with a BYE
+    early = #{} :: #{binary() => chappe_sip_dialog:dialog()},
+    byed = [] :: [binary()],
     %% the first SDP a response brought: the answer to our offer (RFC 3261
     %% 13.2.1), whatever a later response carries
     first_sdp = <<>> :: binary()
@@ -117,7 +125,7 @@ init(#{
         contact = Contact,
         local_tag = LocalTag,
         cseq = 1,
-        next_cseq = 2,
+        seq = atomics:new(1, []),
         proxy = maps:get(proxy, Opts, undefined),
         flow = maps:get(flow, Opts, undefined),
         tried = [Uri]
@@ -146,8 +154,19 @@ trying(
     info,
     {chappe_sip_response, TxnH, #{status := Status}, Raw},
     #data{txn = TxnH} = D
+) when Status >= 300 ->
+    %% a non-2xx final ends the early dialogs of the INVITE (RFC 3261 12.3)
+    handle_response(Status, Raw, end_early(Status, D));
+trying(
+    info,
+    {chappe_sip_response, TxnH, #{status := Status}, Raw},
+    #data{txn = TxnH} = D
 ) ->
     handle_response(Status, Raw, D);
+trying(info, {chappe_sip_early_byed, Tag}, #data{early = Early} = D) ->
+    {keep_state, D#data{
+        early = maps:remove(Tag, Early), byed = [Tag | D#data.byed]
+    }};
 trying(info, {chappe_sip_response, PTxn, #{status := St}, _Raw}, D) when
     St >= 200
 ->
@@ -244,7 +263,7 @@ handle_response(Status, Raw, D) when Status >= 100, Status < 200 ->
             %% RFC 3262 4: a retransmission or out of order, not processed
             {keep_state, D};
         Rel ->
-            D1 = index_early(Msg, D),
+            D1 = early_dialog(Status, Msg, D),
             %% a reliable provisional (100rel) is PRACKed
             D2 =
                 case Rel of
@@ -273,22 +292,31 @@ handle_response(
     _ = send_ack(Msg, AckBody, D),
     _ = send_bye(Msg, D),
     chappe_sip_engine:finish_txn(D#data.txn),
-    {stop, normal, unindex_early(D)};
+    {stop, normal, end_early(Status, D)};
 handle_response(Status, Raw, #data{method = <<"INVITE">>} = D0) when
     Status >= 200, Status < 300
 ->
     {ok, Msg} = chappe_sip_msg:parse(Raw),
     D = first_sdp(Msg, D0),
+    Byed = lists:member(chappe_sip_msg:to_tag(Msg), D#data.byed),
     case ack_answer(Msg, D) of
-        {ok, AckBody} ->
+        {ok, AckBody} when not Byed ->
             answered(Msg, AckBody, D);
+        {ok, AckBody} ->
+            %% the callee BYEd this early dialog: the 2xx confirms nothing,
+            %% so the call it would set up ends here (RFC 3261 13.2.2.4)
+            _ = maybe_ack(Msg, AckBody, D),
+            _ = send_bye(Msg, D),
+            notify(D, {error, early_dialog_terminated}),
+            chappe_sip_engine:finish_txn(D#data.txn),
+            {stop, normal, end_early(Status, D)};
         reject ->
             %% RFC 3261 13.2.2.4: a valid answer in the ACK, then a BYE
             _ = maybe_ack(Msg, reject_answer(chappe_sip_msg:body(Msg)), D),
             _ = send_bye(Msg, D),
             notify(D, {error, offer_not_acceptable}),
             chappe_sip_engine:finish_txn(D#data.txn),
-            {stop, normal, unindex_early(D)}
+            {stop, normal, end_early(Status, D)}
     end;
 handle_response(422, Raw, #data{method = <<"INVITE">>} = D) ->
     {ok, Msg} = chappe_sip_msg:parse(Raw),
@@ -327,7 +355,6 @@ handle_response(420, Raw, #data{ext_retried = false} = D) ->
             D2 = D#data{
                 opts = Opts2,
                 cseq = D#data.cseq + 1,
-                next_cseq = D#data.cseq + 2,
                 ext_retried = true
             },
             case send_request(D2) of
@@ -384,11 +411,11 @@ handle_response(Status, Raw, D) ->
 
 answered(Msg, AckBody, D) ->
     ToTag = chappe_sip_msg:to_tag(Msg),
-    %% the answering dialog indexes itself under one of these keys
-    D1 = unindex_early(D),
-    case maybe_ack(Msg, AckBody, D1) of
+    case maybe_ack(Msg, AckBody, D) of
         ok ->
-            case establish_dialog(Msg, D) of
+            %% the early dialog of this To tag is confirmed; the others end
+            {Mine, D1} = take_early(ToTag, D),
+            case establish_dialog(Mine, Msg, D1) of
                 {ok, Dialog} ->
                     %% a b2bua copies headers from the 2xx it bridges
                     _ =
@@ -481,7 +508,6 @@ retry_session_interval(Msg, #data{cseq = CSeq} = D) ->
             chappe_sip_engine:finish_txn(D#data.txn),
             D2 = D#data{
                 cseq = CSeq + 1,
-                next_cseq = CSeq + 2,
                 min_se_422 = MinSE,
                 retries_422 = D#data.retries_422 + 1
             },
@@ -499,38 +525,72 @@ requested_interval(#data{opts = Opts, min_se_422 = M}) ->
         undefined -> undefined;
         Mine -> max(Mine, M)
     end.
-%% ---- early dialogs (RFC 3891 Replaces) ----
+%% ---- early dialogs (RFC 3261 12.1, 13.2.2.4) ----
 
-%% a provisional with a To tag forms an early dialog {CallId, OurTag, Tag}
-index_early(Msg, #data{method = <<"INVITE">>, early = Early} = D) ->
+%% A 101..199 with a To tag forms an early dialog {CallId, OurTag, Tag}:
+%% a dialog fsm in the early state, its route set and remote target from
+%% this provisional (12.1.2). A later one of the same dialog only brings
+%% the SDP it may lack. When the fsm cannot start (the max_dialogs cap),
+%% the call goes on without an early handle.
+early_dialog(Status, Msg, #data{method = <<"INVITE">>} = D) when Status > 100 ->
     case chappe_sip_msg:to_tag(Msg) of
         undefined ->
             D;
         Tag ->
-            Key = {D#data.call_id, D#data.local_tag, Tag},
-            case lists:member(Key, Early) of
-                true ->
+            case
+                {maps:find(Tag, D#data.early), lists:member(Tag, D#data.byed)}
+            of
+                {{ok, Dialog}, _} ->
+                    Body = chappe_sip_msg:body(Msg),
+                    _ =
+                        Body =/= <<>> andalso
+                            gen_statem:cast(
+                                chappe_sip_dialog:pid(Dialog), {early_sdp, Body}
+                            ),
                     D;
-                false ->
-                    case
-                        chappe_sip_dialog_index:insert(
-                            Key, D#data.txn, early, uac, self()
-                        )
-                    of
-                        ok -> D#data{early = [Key | Early]};
-                        {error, _} -> D
-                    end
+                {error, true} ->
+                    D;
+                {error, false} ->
+                    start_early(Tag, Msg, D)
             end
     end;
-index_early(_Msg, D) ->
+early_dialog(_Status, _Msg, D) ->
     D.
 
-unindex_early(#data{early = Early} = D) ->
-    lists:foreach(fun chappe_sip_dialog_index:delete/1, Early),
-    D#data{early = []}.
+start_early(Tag, Msg, D) ->
+    Args = (dialog_args(Msg, undefined, D))#{
+        early_uac => self(),
+        cseq_ref => D#data.seq,
+        remote_sdp => chappe_sip_msg:body(Msg),
+        pending_ack => undefined
+    },
+    case create_dialog(Args) of
+        {ok, Dialog} ->
+            notify(D, {early_dialog, Dialog}),
+            D#data{early = (D#data.early)#{Tag => Dialog}};
+        {error, Reason} ->
+            logger:info("chappe_sip_uac: no early dialog ~s: ~p", [Tag, Reason]),
+            D
+    end.
+
+%% the early dialog the 2xx with To tag Tag confirms, the others ended
+take_early(Tag, #data{early = Early} = D) ->
+    Mine = maps:get(Tag, Early, undefined),
+    D1 = end_early(200, D#data{early = maps:remove(Tag, Early)}),
+    {Mine, D1}.
+
+%% the INVITE got its final response: its early dialogs end
+end_early(Status, #data{early = Early} = D) ->
+    _ = [
+        gen_statem:cast(
+            chappe_sip_dialog:pid(Dialog), {early_end, {early_ended, Status}}
+        )
+     || Dialog <- maps:values(Early)
+    ],
+    D#data{early = #{}}.
 
 terminate(_Reason, _State, D) ->
-    _ = unindex_early(D),
+    _ = end_early(undefined, D),
     ok.
 
 %% ---- reliable provisionals (100rel): PRACK ----
@@ -595,11 +655,9 @@ prack_answer(_Msg, D) ->
 send_prack(
     RSeq,
     Msg,
-    #data{
-        cseq = InvCSeq,
-        next_cseq = PCSeq
-    } = D
+    #data{cseq = InvCSeq, seq = Seq} = D
 ) ->
+    PCSeq = atomics:add_get(Seq, 1, 1),
     RAck = <<
         (integer_to_binary(RSeq))/binary,
         " ",
@@ -616,10 +674,7 @@ send_prack(
     Raw = dialog_request(<<"PRACK">>, PCSeq, Hdrs, Body, Msg, D1),
     case chappe_sip_engine:send_request(ack_route(Msg, D1), Raw, self()) of
         {ok, PTxn} ->
-            D1#data{
-                next_cseq = PCSeq + 1,
-                prack_txns = [PTxn | D1#data.prack_txns]
-            };
+            D1#data{prack_txns = [PTxn | D1#data.prack_txns]};
         _ ->
             D1
     end.
@@ -637,7 +692,9 @@ prack_done(PTxn, D) ->
 
 %% Send the request D describes, with fresh credentials for every challenge
 %% we answer; {ok, D} carries the new client transaction.
-send_request(#data{} = D0) ->
+send_request(#data{seq = Seq, cseq = CSeq} = D0) ->
+    %% a new INVITE (a retry) sets the counter the next PRACK takes from
+    atomics:put(Seq, 1, CSeq),
     D = with_credentials(D0),
     Raw = build_request(D),
     case chappe_sip_engine:send_request(route(D), Raw, self()) of
@@ -647,8 +704,10 @@ send_request(#data{} = D0) ->
 
 %% originate over the WS flow when targeting a registered browser, else the
 %% proxy URL (or undefined, letting sofia route by the Request-URI)
-route(#data{flow = Flow}) when Flow =/= undefined -> {ws, Flow};
-route(#data{proxy = Proxy}) -> Proxy.
+route(#data{flow = Flow}) when Flow =/= undefined ->
+    chappe_sip_route:flow_route(Flow);
+route(#data{proxy = Proxy}) ->
+    Proxy.
 
 build_request(#data{
     method = Method,
@@ -795,7 +854,8 @@ route_set(Msg) ->
 
 %% ACK/BYE/PRACK destination: the WS flow for a browser target, else the
 %% first route (a loose or a strict router), else by Request-URI
-ack_route(_Msg, #data{flow = Flow}) when Flow =/= undefined -> {ws, Flow};
+ack_route(_Msg, #data{flow = Flow}) when Flow =/= undefined ->
+    chappe_sip_route:flow_route(Flow);
 ack_route(Msg, _D) ->
     case route_set(Msg) of
         [First | _] ->
@@ -815,14 +875,31 @@ remote_sdp(Msg, #data{opts = Opts, first_sdp = First, local_answer = A}) ->
         false -> chappe_sip_msg:body(Msg)
     end.
 
-establish_dialog(Msg, #data{min_se_422 = MinSE} = D) ->
+%% The dialog of the 2xx: its early dialog confirmed (13.2.2.4: route set
+%% and remote target taken again from the 2xx), else a new one (12.1.2).
+%% An early dialog gone meanwhile (its request got 481) gives a new one.
+establish_dialog(Early, Msg, #data{min_se_422 = MinSE} = D) ->
     %% RFC 4028 7.2: the session timer the 2xx sets up
     St = chappe_sip_session_timer:uac_answer(
         Msg, requested_interval(D), MinSE
     ),
-    establish_dialog(Msg, St, D).
+    Args = dialog_args(Msg, St, D),
+    case confirm_early(Early, Args) of
+        ok -> {ok, Early};
+        error -> create_dialog(Args)
+    end.
 
-establish_dialog(
+confirm_early(undefined, _Args) ->
+    error;
+confirm_early(Dialog, Args) ->
+    try gen_statem:call(chappe_sip_dialog:pid(Dialog), {confirm, Args}, 5000) of
+        ok -> ok;
+        _ -> error
+    catch
+        exit:_ -> error
+    end.
+
+dialog_args(
     Msg,
     St,
     #data{
@@ -830,7 +907,7 @@ establish_dialog(
         local_tag = LocalTag,
         owner = Owner,
         opts = Opts,
-        next_cseq = NextCSeq,
+        seq = Seq,
         flow = Flow
     } = D
 ) ->
@@ -850,7 +927,7 @@ establish_dialog(
         owner => Owner,
         opts => Opts,
         %% the last CSeq number used; in-dialog requests take the next one
-        cseq => NextCSeq - 1,
+        cseq => atomics:get(Seq, 1),
         flow => Flow,
         %% RFC 3261 12.1.2: route set = 2xx Record-Route reversed
         route_set => route_set(Msg),
@@ -866,24 +943,27 @@ establish_dialog(
             A -> DialogArgs0#{local_sdp => A}
         end,
     %% no_ack (3PCC): the dialog sends the 2xx ACK when the app has it
-    DialogArgs =
-        case Opts of
-            #{no_ack := true} ->
-                DialogArgs1#{
-                    pending_ack => #{
-                        cseq => D#data.cseq, headers => D#data.auth_hdrs
-                    }
-                };
-            _ ->
-                DialogArgs1
-        end,
+    case Opts of
+        #{no_ack := true} ->
+            DialogArgs1#{
+                pending_ack => #{
+                    cseq => D#data.cseq, headers => D#data.auth_hdrs
+                }
+            };
+        _ ->
+            DialogArgs1
+    end.
+
+create_dialog(DialogArgs) ->
     case chappe_sip_engine:create_dialog(DialogArgs) of
         {ok, Pid, LegH} ->
             %% wait for the leg to be confirmed before handing the dialog
             %% to the app (else an immediate destroy hits setup state)
-            case gen_statem:call(Pid, await_ready, 5000) of
+            try gen_statem:call(Pid, await_ready, 5000) of
                 {ok, _} -> {ok, chappe_sip_dialog:make(Pid, LegH)};
                 {error, Reason} -> {error, Reason}
+            catch
+                exit:Reason -> {error, Reason}
             end;
         {error, Reason} ->
             {error, Reason}
@@ -914,8 +994,7 @@ retry_with_auth(Status, Msg, #data{cseq = CSeq} = D) ->
             send_request(D#data{
                 challenges = Cs,
                 auth_rounds = D#data.auth_rounds + 1,
-                cseq = CSeq + 1,
-                next_cseq = CSeq + 2
+                cseq = CSeq + 1
             });
         {ok, _} ->
             {error, too_many_challenges};
@@ -1019,7 +1098,6 @@ next_target(#data{targets = [T | Rest], uri = OldUri, cseq = CSeq} = D) ->
         uri = T,
         to = <<"<", T/binary, ">">>,
         cseq = CSeq + 1,
-        next_cseq = CSeq + 2,
         targets = Rest,
         tried = [T | D#data.tried],
         rseq = #{},

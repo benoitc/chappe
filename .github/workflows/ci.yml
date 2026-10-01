@@ -249,7 +249,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: npm ci
+      # no lockfile is committed for the interop drivers
+      - run: npm install --no-audit --no-fund
         working-directory: apps/chappe_sip/interop
       - run: docker pull ghcr.io/kamailio/kamailio-ci:5.8
       - run: INTEROP=1 rebar3 ct --suite apps/chappe_sip/test/chappe_sip_interop_SUITE

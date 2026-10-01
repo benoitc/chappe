@@ -15,6 +15,8 @@
 %%   {chappe_sip_engine, EngineRef, Event}
 %% Event is one of
 %%   {request, TxnH, LegH | undefined, Meta, RawSip}  inbound request
+%%                                                    (Meta conn: its TCP/TLS
+%%                                                    connection's flow id)
 %%   {response, TxnH, Meta, RawSip}                   response to our request
 %%   {ack, LegH | TxnH, RawSip}                       2xx ACK on a dialog leg,
 %%                                                    or on the INVITE server
@@ -22,6 +24,7 @@
 %%   {ack_timeout, LegH | TxnH}                       that 2xx never ACKed
 %%   {cancel, TxnH}                                   CANCEL of our server txn
 %%   {op_ok, H} | {op_failed, H, Reason}              deferred op result
+%%   {flow_closed, FlowId}                            that connection closed
 %%   {health_ok, Seq}
 %%   {started, Contact}
 %%   {log, Level, Text}
@@ -69,7 +72,10 @@
 
 -type engine() :: reference().
 -type handle() :: non_neg_integer().
--export_type([engine/0, handle/0]).
+%% an outbound proxy URL, the id of an RFC 5626 TCP/TLS flow (the conn of a
+%% request's meta) to send over, or undefined (by the Request-URI)
+-type route() :: binary() | pos_integer() | undefined.
+-export_type([engine/0, handle/0, route/0]).
 
 init() ->
     Priv =
@@ -133,16 +139,17 @@ reliable_respond(_Engine, _TxnH, _Status, _Reason, _Headers, _Body, _ToTag) ->
     erlang:nif_error(engine_nif_not_loaded).
 
 %% Send a complete Erlang-built request. Route is an outbound proxy URL
-%% binary or undefined. Returns {ok, TxnH} once enqueued; {op_ok, TxnH}
-%% or {op_failed, TxnH, Reason} follows. Responses arrive as
+%% binary, a flow id (the request goes over that connection), or
+%% undefined. Returns {ok, TxnH} once enqueued; {op_ok, TxnH} or
+%% {op_failed, TxnH, Reason} follows. Responses arrive as
 %% {response, TxnH, Meta, RawSip}.
--spec request(engine(), binary() | undefined, binary()) ->
+-spec request(engine(), route(), binary()) ->
     {ok, handle()} | {error, not_ready | too_large | badarg}.
 request(_Engine, _Route, _Raw) ->
     erlang:nif_error(engine_nif_not_loaded).
 
 %% The same with the Via branch to use (a proxy's loop-detection branch).
--spec request(engine(), binary() | undefined, binary(), binary()) ->
+-spec request(engine(), route(), binary(), binary()) ->
     {ok, handle()} | {error, not_ready | too_large | badarg}.
 request(_Engine, _Route, _Raw, _Branch) ->
     erlang:nif_error(engine_nif_not_loaded).
@@ -155,7 +162,7 @@ proxy_mark(_Engine, _TxnH) ->
 
 %% Fire-and-forget send (ACK to a 2xx). Returns {ok, OpH}; {op_ok, OpH} or
 %% {op_failed, OpH, Reason} follows. No response is delivered.
--spec send(engine(), binary() | undefined, binary()) ->
+-spec send(engine(), route(), binary()) ->
     {ok, handle()} | {error, not_ready | too_large | badarg}.
 send(_Engine, _Route, _Raw) ->
     erlang:nif_error(engine_nif_not_loaded).

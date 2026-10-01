@@ -6,6 +6,10 @@
 %% start/2 returns immediately with a reference; the caller (or an
 %% explicit notify pid) receives events:
 %%   {chappe_sip_uac, Ref, {request_sent, ReqInfo}}   after nta accepts the send
+%%   {chappe_sip_uac, Ref, {early_dialog, Dialog}}     a 101..199 to an INVITE
+%%                                                    formed an early dialog
+%%                                                    (a new To tag), just
+%%                                                    before its provisional
 %%   {chappe_sip_uac, Ref, {provisional, Res}}         each 1xx
 %%   {chappe_sip_uac, Ref, {answer, Msg}}              the 2xx, just before ok,
 %%                                                    with report_answer => true

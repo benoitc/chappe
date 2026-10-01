@@ -16,6 +16,12 @@
 %% also receives {chappe_sip_dialog, Dialog, {refreshed, Seconds}, Req} and
 %% {chappe_sip_dialog, Dialog, unsubscribed, Req}, and the destroy reason is
 %% terminated | expired | {notify_failed, Status}.
+%%
+%% An early dialog of an INVITE you send ({early_dialog, Dialog} from
+%% chappe_sip_uac) takes request/2 (UPDATE, INFO) and destroy/1,2 (a CANCEL
+%% of the INVITE); modify/2,3 returns {error, early}. The 2xx with its To
+%% tag makes it the confirmed dialog; otherwise it ends with destroy reason
+%% {early_ended, Status}, Status being the INVITE's final.
 -module(chappe_sip_dialog).
 
 -export([create_uas/3]).

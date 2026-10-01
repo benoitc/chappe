@@ -250,3 +250,30 @@ load average of 89.
   forwarded chunk of leg A carries its NAME on the first report, so it
   needed 2. The case now asks for a word of nulls and two other paddings;
   every chunk is still checked byte by byte.
+
+## four_party under load: settle, then listen again on a short listen
+
+`four_party` failed once in a full-suite run with `{missing, 1700, 3, 5}`
+and passed alone. The endpoints share the mixer's node: a stalled test
+sender underruns its leg's jitter buffer (silence, then a larger prefill),
+its catch-up burst is trimmed past the depth of 3, and a mixer tick more
+than a period late skips the frames it missed, so one second of listening
+can come back as two or three 200 ms windows. One stall across a window
+edge costs two windows, and 70% of 5 is 4. Twenty runs at load 24 to 211
+(CPU burners plus `chappe_sip` CT) reproduced it once, as
+`{missing, 440, 1, 2}`.
+
+Not taken: lowering the 70% or the 3 dB, or one longer listen (a stall
+still lands in it). Taken: `three_party` and `four_party` wait for two
+200 ms polls in a row where every receiver meets the contract (up to 5 s,
+as in the reference suite), then judge a 1 s listen with
+`chappe_mix_test_tone:hears/3` unchanged, and listen again, up to three
+times, only when a listen is short of presence or samples. A leak fails at
+once in any listen.
+
+- After: 20 of 20 at load 196 to 288, and 20 of 20 at load 64 to 165
+  without the extra load. No run needed a second listen; the settle took
+  402 to 1299 ms.
+- Mutations, both caught: the mixer sending each party the full sum
+  (`{leaked, 440, -14.7}` on the first listen) and sending only silence
+  (`{missing, 1100, 0, 5}` after three listens; the settle gave up at 5 s).

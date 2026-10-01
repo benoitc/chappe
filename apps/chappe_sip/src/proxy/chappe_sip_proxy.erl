@@ -26,9 +26,15 @@
 -module(chappe_sip_proxy).
 
 -export([proxy_request/3, forward_indialog/2, forward_indialog_ack/2]).
+-export_type([dest/0]).
+
+-type dest() ::
+    binary()
+    | {ws, integer()}
+    | {flow, binary(), chappe_sip_engine:flow()}.
 
 -record(br, {
-    dest :: binary() | {ws, integer()},
+    dest :: dest(),
     %% Timer C deadline (monotonic ms), set once the branch is sent
     timer_c :: integer() | undefined,
     provisional = false :: boolean(),
@@ -44,7 +50,7 @@
     %% media anchored
     msg :: chappe_sip_msg:msg(),
     pending = #{} :: #{non_neg_integer() => #br{}},
-    remaining = [] :: [binary() | {ws, integer()}],
+    remaining = [] :: [dest()],
     opts :: map(),
     mode :: sequential | parallel,
     %% non-2xx finals of the branches: {Status, Raw | undefined}
@@ -59,13 +65,7 @@
     closed = false :: boolean()
 }).
 
--spec proxy_request(
-    chappe_sip_req:req(),
-    binary()
-    | {ws, integer()}
-    | [binary() | {ws, integer()}],
-    map()
-) ->
+-spec proxy_request(chappe_sip_req:req(), dest() | [dest()], map()) ->
     {ok, #{
         final_status := 100..699,
         final_response := binary(),
@@ -75,6 +75,8 @@
 proxy_request(Req, Dest, Opts) when is_binary(Dest) ->
     proxy_request(Req, [Dest], Opts);
 proxy_request(Req, {ws, _} = Dest, Opts) ->
+    proxy_request(Req, [Dest], Opts);
+proxy_request(Req, {flow, _, _} = Dest, Opts) ->
     proxy_request(Req, [Dest], Opts);
 proxy_request(_Req, [], _Opts) ->
     {error, no_destination};
@@ -444,9 +446,11 @@ launch(#px{msg = Msg} = P, Dest) ->
 send_branch(P, #br{dest = Dest} = B0, Route, Msg) ->
     Raw = iolist_to_binary(chappe_sip_msg:encode(Msg)),
     Opts =
-        case Dest of
-            {ws, _} -> #{};
-            _ -> #{branch => chappe_sip_proxy_rules:new_branch(P#px.hash)}
+        case down_flow(Dest) of
+            undefined ->
+                #{branch => chappe_sip_proxy_rules:new_branch(P#px.hash)};
+            _ ->
+                #{}
         end,
     case chappe_sip_engine:send_request(Route, Raw, self(), Opts) of
         {ok, TxnH} ->
@@ -471,11 +475,7 @@ record_route(#px{opts = Opts} = P, Dest, Msg) ->
             %% the flow tokens name the WS legs (the inbound one and this
             %% branch's) so in-dialog requests route back over those
             %% connections; the marker MAC binds them with the Call-ID
-            Down =
-                case Dest of
-                    {ws, F} -> F;
-                    _ -> undefined
-                end,
+            Down = down_flow(Dest),
             RR = chappe_sip_route:record_route(
                 Contact,
                 {P#px.up_flow, Down},
@@ -500,11 +500,7 @@ upstream_rr(
 ) when
     is_boolean(Sips), Sips =/= InTls
 ->
-    Down =
-        case B#br.dest of
-            {ws, F} -> F;
-            _ -> undefined
-        end,
+    Down = down_flow(B#br.dest),
     Contact =
         case InTls of
             true -> chappe_sip_engine:tls_contact();
@@ -544,6 +540,9 @@ upstream_rr(_P, _B, Raw) ->
 %% target a SIP request goes to over TLS.
 next_hop({ws, _} = D, _Via, Msg) ->
     {D, Msg};
+next_hop({flow, _Uri, Flow}, _Via, Msg) ->
+    %% RFC 5626 5.3: a binding's flow is the way to reach it
+    {chappe_sip_route:flow_route(Flow), Msg};
 next_hop(_Dest, Via, Msg) ->
     case chappe_sip_route:routes(Msg) of
         [] when is_binary(Via) ->
@@ -569,6 +568,11 @@ cancel_all(#px{pending = Pending}) ->
     maps:foreach(
         fun(TxnH, _) -> chappe_sip_engine:cancel_txn(TxnH) end, Pending
     ).
+
+%% the WS flow a target is reached over, if any
+down_flow({ws, F}) -> F;
+down_flow({flow, _Uri, F}) when is_integer(F) -> F;
+down_flow(_Dest) -> undefined.
 
 %% the WS flow the request came in on, if any
 up_flow(Req) ->

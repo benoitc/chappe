@@ -201,16 +201,20 @@ request(Uri, Opts) ->
 create_b2bua(Req, Res, Uri, Opts) ->
     chappe_sip_b2b:create_b2bua(Req, Res, Uri, Opts).
 
-%% Proxy an incoming request to one or more targets (RFC 3261 16). Opts:
+%% Proxy an incoming request to one or more targets (RFC 3261 16). A
+%% target is a URI (or host[:port]), {ws, Flow} (a WS connection), or
+%% {flow, Uri, Flow}: the contact Uri reached over the RFC 5626 flow of its
+%% binding (location_flow/1). Opts:
 %%   forking => sequential | parallel, record_route => boolean,
 %%   timer_c => ms (Timer C per INVITE branch, default timer_c_ms).
 %% Returns the aggregate result.
--spec proxy_request(
-    chappe_sip_req:req(),
-    binary() | {ws, integer()} | [binary() | {ws, integer()}],
-    map()
-) ->
-    {ok, map()} | {error, term()}.
+-spec proxy_request(chappe_sip_req:req(), Dest | [Dest], map()) ->
+    {ok, map()} | {error, term()}
+when
+    Dest ::
+        binary()
+        | {ws, integer()}
+        | {flow, binary(), chappe_sip_engine:flow()}.
 proxy_request(Req, Dest, Opts) ->
     chappe_sip_proxy:proxy_request(Req, Dest, Opts).
 
@@ -324,10 +328,12 @@ bindings(AorOrUri) ->
     chappe_sip_registry:bindings(AorOrUri).
 
 %% Resolve an AOR to its first binding's contact URI and transport flow.
-%% A registered WS UA has a flow'; pass it (and the URI) to create_uac/
-%% create_b2bua as #{flow => Flow}' to originate over that WS connection.
+%% A registered WS UA has a flow', and so has an RFC 5626 outbound binding
+%% registered directly over TCP/TLS ({conn, Id}) or UDP ({udp, Ip, Port});
+%% pass it to proxy_request/3 as {flow, Uri, Flow}', or to create_uac/
+%% create_b2bua as #{flow => Flow}', to reach the UA over that flow.
 -spec location_flow(binary()) ->
-    {ok, binary(), term()} | {error, not_found}.
+    {ok, binary(), chappe_sip_engine:flow() | undefined} | {error, not_found}.
 location_flow(AorOrUri) ->
     case chappe_sip_registry:bindings(AorOrUri) of
         [B | _] -> {ok, maps:get(contact, B), maps:get(flow, B, undefined)};

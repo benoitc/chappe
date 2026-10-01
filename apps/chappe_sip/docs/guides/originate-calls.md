@@ -59,6 +59,34 @@ case chappe_sip_uac:await(Ref, 32000) of
 end.
 ```
 
+## Work in an early dialog
+
+A provisional with a To tag (180, 183, ...) forms an early dialog with that
+callee (RFC 3261 12.1). You get its handle as `{early_dialog, Dialog}`, just
+before the provisional itself, once per To tag (a forked call gives you
+one per fork). Use it to send UPDATE before the answer (RFC 3311):
+
+```erlang
+{ok, Ref} = chappe_sip_uac:start(<<"sip:bob@10.0.0.2">>, #{local_sdp => Offer}),
+Early = receive {chappe_sip_uac, Ref, {early_dialog, D}} -> D end,
+{ok, _Resp} = chappe_sip_dialog:request(Early, #{
+    method => <<"UPDATE">>, body => NewOffer,
+    content_type => <<"application/sdp">>
+}),
+{ok, Dialog} = chappe_sip_uac:await(Ref, 32000).
+```
+
+- The callee's UPDATE and INFO in the early dialog reach its owner as in a
+  confirmed dialog (claimed with `handled_events`, else auto-answered).
+- The callee's BYE in it gets 200, and the owner gets `destroy` with the
+  BYE; the INVITE still ends with the callee's final response.
+- The 2xx with that To tag confirms the same handle: `Dialog =:= Early`.
+  Its route set and remote target are taken again from the 2xx.
+- The other early dialogs end when the INVITE gets its final response;
+  their owner gets `destroy` with reason `{early_ended, Status}`.
+- `chappe_sip_dialog:destroy/1` on an early handle CANCELs the INVITE, and
+  `modify/2` returns `{error, early}` (no re-INVITE before the answer).
+
 ## Cancel a ringing call
 
 `chappe_sip_uac:cancel/1` sends a CANCEL once the call rings. To say why

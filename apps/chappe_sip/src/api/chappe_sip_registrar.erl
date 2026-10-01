@@ -24,7 +24,8 @@
 %%     Authentication before any binding is written. The map form runs
 %%     built-in digest (challenges 401, verifies the response, and binds the
 %%     authenticated user to the AOR: its user part, and its host one of
-%%     domain, the realm by default). The fun form is a custom policy.
+%%     domain, the realm by default). The fun form is a custom policy; a
+%%     6xx it rejects with is sent as 403 (RFC 3261 10.3).
 %%   allow_unauthenticated => true
 %%     Required to run without auth (a closed test network): a registrar
 %%     with neither raises error({registrar, auth_required}).
@@ -48,19 +49,29 @@ registrar_fun(Opts0) ->
                     maps:without([auth, allow_unauthenticated], Opts0), Req, Res
                 );
             {reject, Status} ->
-                _ = chappe_sip_res:send(Res, Status),
+                _ = chappe_sip_res:send(Res, no_6xx(Status)),
                 ok;
             {reject, Status, Headers} ->
-                _ = chappe_sip_res:send(Res, Status, #{headers => Headers}),
+                _ = chappe_sip_res:send(Res, no_6xx(Status), #{
+                    headers => Headers
+                }),
                 ok
         end
     end.
 
+%% RFC 3261 10.3: a registrar never answers 6xx; a policy that declines
+%% with one gets 403 on the wire
+no_6xx(Status) when Status >= 600 -> 403;
+no_6xx(Status) -> Status.
+
 do_register(Opts0, Req, Res) ->
-    %% a WS-originated REGISTER carries its flow in the request meta
+    %% a WS-originated REGISTER carries its flow in the request meta; over
+    %% TCP/TLS and UDP the flow it came on is kept for outbound bindings
+    %% (RFC 5626 6)
+    Meta = chappe_sip_req:meta(Req),
     Opts =
-        case maps:get(flow, chappe_sip_req:meta(Req), undefined) of
-            undefined -> Opts0;
+        case maps:get(flow, Meta, undefined) of
+            undefined -> with_direct_flow(direct_flow(Meta), Opts0);
             Flow -> Opts0#{flow => Flow}
         end,
     case chappe_sip_registry:register_request(Req, Opts) of
@@ -106,6 +117,20 @@ do_register(Opts0, Req, Res) ->
             _ = chappe_sip_res:send(Res, Status),
             ok
     end.
+
+%% the flow a request arrived on: its TCP/TLS connection, or the address
+%% and port a UDP request came from (RFC 5626 3.3)
+direct_flow(#{conn := Id}) when is_integer(Id) ->
+    {conn, Id};
+direct_flow(#{transport := <<"udp">>, source_ip := Ip, source_port := Port}) when
+    Ip =/= <<>>, Port > 0
+->
+    {udp, Ip, Port};
+direct_flow(_Meta) ->
+    undefined.
+
+with_direct_flow(undefined, Opts) -> Opts;
+with_direct_flow(Flow, Opts) -> Opts#{outbound_flow => Flow}.
 
 %% allow_unauthenticated: accept (a closed network only)
 registrar_auth(undefined, _Req) ->

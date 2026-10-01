@@ -47,6 +47,26 @@ Call-ID and tags for every method and needs no such step.
   loop-detection hash) is created with UA mode off for that call, so the
   client transaction passes every 2xx up instead of ACKing and BYEing a
   second one (RFC 6026).
+- On TCP/TLS nta terminates an INVITE client transaction at its first
+  final response, so a later 2xx of the same branch (a fork downstream)
+  matches no transaction. The agent is created with a message callback
+  (`stray_cb`), which nta calls for such a response: a 2xx to an INVITE
+  whose top Via branch is a live proxy branch (`nta_outgoing_branch`) goes
+  to that branch's handle, the proxy still being in the Accepted state;
+  anything else is dropped as before.
+
+## Flows (RFC 5626)
+
+A request that arrives over a TCP or TLS connection (a secondary, reliable
+tport) carries `conn => FlowId` in its meta. The first request on a
+connection creates the flow: the shim takes a `tport_ref` (the pointer stays
+valid) and a pending entry with `tport_pend(tp, NULL, ...)`, so tport
+reports the connection's close or error to `flow_err_cb`. That drops the
+reference and sends `{flow_closed, FlowId}`; the engine then removes the
+bindings learned on it. The health tick also sweeps flows whose tport is
+closed. `request/3,4` and `send/3` take a flow id as the route and send with
+`NTATAG_TPORT`, so the request goes over that connection. Engine teardown
+releases every flow before the agent is destroyed.
 
 ## Lifecycle protocols
 
@@ -135,6 +155,11 @@ DYLD_INSERT_LIBRARIES=$(cc -print-file-name=libclang_rt.asan_osx_dynamic.dylib) 
 `test/asan/run.sh` runs the lifecycle suites (`chappe_sip_engine_smoke`, `chappe_sip_dialog_ops`,
 `chappe_sip_engine_lifecycle`) under ASan in a Linux container; macOS strips ASan
 interceptors for a dlopen'd NIF, so use the container.
+LeakSanitizer is on: a leak allocated on a NIF call path (sofia or the shim)
+fails the run. `test/asan/lsan.supp` suppresses only stacks that never carry a
+NIF frame: the erts DNS helper, the programs rebar3 runs, and OTP's crypto NIF.
+Set `ASAN_DETECT_LEAKS=0` to check memory errors only, and `ASAN_VOLUME` to
+use another build volume when two runs share a Docker host.
 `chappe_sip_engine_lifecycle_SUITE` is the lifecycle stress: it races inbound
 traffic against stop and restart over many cycles, exercising the
 enqueue-vs-root-destroy lock, the INIT->READY/abandon CAS, and the thread-ref

@@ -32,6 +32,17 @@
 %% WebSocket client resolves the URL host itself), so a node that
 %% moves to a new address is found on reconnect, and a name that does
 %% not resolve yet is retried like a refused connection.
+%% Over UDP there is no connect to hook, so a host name is resolved
+%% at start and again every resolve_interval_ms (default 60000,
+%% infinity disables) and after resolve_after_timeouts consecutive
+%% request timeouts (default 2). Resolution runs in a helper process so
+%% a slow resolver never stalls replies; when the address changes the
+%% client sends to the new one (reopening the socket if the address
+%% family changed), and requests still being retransmitted follow it.
+%% A failed re-resolution keeps the current address. An IP address
+%% host is never re-resolved. The resolver option (a fun taking the
+%% host and returning {ok, IP} | {error, Reason}) replaces inet for
+%% custom lookups and tests.
 %% The ws/wss transports behave like TCP (deadline only, no
 %% retransmit, background reconnect) but need no stream parser:
 %% WebSocket preserves message boundaries, so each binary (or text)
@@ -65,6 +76,8 @@
 -define(CALL_TIMEOUT, 5000).
 -define(CONNECT_TIMEOUT, 3000).
 -define(NG_SUBPROTOCOL, <<"ng.rtpengine.com">>).
+-define(DEFAULT_RESOLVE_INTERVAL, 60000).
+-define(DEFAULT_RESOLVE_AFTER_TIMEOUTS, 2).
 
 -type opts() :: #{
     host := inet:ip_address() | string() | binary(),
@@ -74,7 +87,10 @@
     tls_opts => [ssl:tls_client_option()],
     timeout => pos_integer(),
     attempts => pos_integer(),
-    max_datagram => pos_integer()
+    max_datagram => pos_integer(),
+    resolve_interval_ms => pos_integer() | infinity,
+    resolve_after_timeouts => pos_integer(),
+    resolver => chappe_rtpengine_resolve:resolver()
 }.
 
 -export_type([opts/0]).
@@ -104,6 +120,12 @@
     timeout :: pos_integer(),
     attempts :: pos_integer(),
     pending = #{} :: #{binary() => #pending{}},
+    resolver :: chappe_rtpengine_resolve:resolver() | undefined,
+    resolve_interval = ?DEFAULT_RESOLVE_INTERVAL :: pos_integer() | infinity,
+    resolve_after = ?DEFAULT_RESOLVE_AFTER_TIMEOUTS :: pos_integer(),
+    consecutive_timeouts = 0 :: non_neg_integer(),
+    %% {Ref, MRef} of the lookup in flight
+    resolving :: {reference(), reference()} | undefined,
     stats = #{
         sent => 0,
         replies => 0,
@@ -111,7 +133,8 @@
         timeouts => 0,
         bad_replies => 0,
         unknown_cookies => 0,
-        reconnects => 0
+        reconnects => 0,
+        address_changes => 0
     } :: #{atom() => non_neg_integer()}
 }).
 
@@ -184,14 +207,25 @@ init([Name, Opts]) ->
         tls_opts = maps:get(tls_opts, Opts, []),
         timeout = Timeout,
         attempts = Attempts,
-        max_datagram = maps:get(max_datagram, Opts, ?DEFAULT_MAX_DATAGRAM)
+        max_datagram = maps:get(max_datagram, Opts, ?DEFAULT_MAX_DATAGRAM),
+        resolver = maps:get(resolver, Opts, undefined),
+        resolve_interval = maps:get(
+            resolve_interval_ms, Opts, ?DEFAULT_RESOLVE_INTERVAL
+        ),
+        resolve_after = maps:get(
+            resolve_after_timeouts, Opts, ?DEFAULT_RESOLVE_AFTER_TIMEOUTS
+        )
     },
     case Transport of
         udp ->
-            %% connectionless: resolved once, there is no reconnect
-            case resolve(Host) of
-                {ok, IP} -> connect(State#state{ip = IP});
-                {error, Reason} -> {stop, {resolve_failed, Host, Reason}}
+            %% connectionless: resolved now, then again on a timer and
+            %% after repeated timeouts (there is no reconnect to hook)
+            case resolve(State) of
+                {ok, IP} ->
+                    schedule_resolve(State),
+                    connect(State#state{ip = IP});
+                {error, Reason} ->
+                    {stop, {resolve_failed, Host, Reason}}
             end;
         _ ->
             connect(State)
@@ -266,6 +300,23 @@ handle_info(reconnect, State) ->
     {noreply, State};
 handle_info({timeout, TRef, Cookie}, State) ->
     {noreply, handle_attempt_timeout(Cookie, TRef, State)};
+handle_info(re_resolve, State) ->
+    schedule_resolve(State),
+    {noreply, start_resolve(State)};
+handle_info(
+    {chappe_rtpengine_resolved, Ref, Result},
+    #state{resolving = {Ref, MRef}} = State
+) ->
+    erlang:demonitor(MRef, [flush]),
+    {noreply, resolved(Result, State#state{resolving = undefined})};
+handle_info(
+    {'DOWN', MRef, process, _Pid, Reason},
+    #state{resolving = {_Ref, MRef}} = State
+) ->
+    ?LOG_WARNING("chappe_rtpengine_client ~p: resolver crashed: ~p", [
+        State#state.name, Reason
+    ]),
+    {noreply, State#state{resolving = undefined}};
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -283,26 +334,14 @@ terminate(_Reason, #state{pending = Pending} = State) ->
 %% internal
 
 connect(#state{transport = udp, ip = IP} = State) ->
-    Family = family(IP),
-    %% Large SDP bodies exceed default buffers: the kernel refuses
-    %% datagrams beyond sndbuf, and gen_udp silently truncates replies
-    %% beyond its user buffer, which must hold one maximal datagram.
-    SockOpts = [
-        binary,
-        Family,
-        {active, ?ACTIVE_N},
-        {sndbuf, ?UDP_SOCKBUF},
-        {recbuf, ?UDP_SOCKBUF},
-        {buffer, 65536}
-    ],
-    case gen_udp:open(0, SockOpts) of
+    case open_udp(IP) of
         {ok, Socket} ->
             {ok, State#state{socket = Socket, connected = true}};
         {error, Reason} ->
             {stop, {socket_open_failed, Reason}}
     end;
 connect(#state{transport = tcp, host = Host, port = Port} = State) ->
-    case resolve(Host) of
+    case resolve(State) of
         {ok, IP} ->
             SockOpts = [
                 binary,
@@ -354,6 +393,20 @@ connect(#state{transport = WsT} = State) when WsT =:= ws; WsT =:= wss ->
                 socket = undefined, ws_mref = undefined, connected = false
             }}
     end.
+
+open_udp(IP) ->
+    %% Large SDP bodies exceed default buffers: the kernel refuses
+    %% datagrams beyond sndbuf, and gen_udp silently truncates replies
+    %% beyond its user buffer, which must hold one maximal datagram.
+    SockOpts = [
+        binary,
+        family(IP),
+        {active, ?ACTIVE_N},
+        {sndbuf, ?UDP_SOCKBUF},
+        {recbuf, ?UDP_SOCKBUF},
+        {buffer, 65536}
+    ],
+    gen_udp:open(0, SockOpts).
 
 connect_failed(Reason, State) ->
     ?LOG_WARNING("chappe_rtpengine_client ~p: connect failed: ~p", [
@@ -514,7 +567,9 @@ deliver(Cookie, Decoded, State0) ->
     case take_pending(Cookie, State0) of
         {ok, #pending{from = From, tref = TRef}, State1} ->
             erlang:cancel_timer(TRef),
-            reply_to_caller(From, Decoded, State1);
+            reply_to_caller(
+                From, Decoded, State1#state{consecutive_timeouts = 0}
+            );
         error ->
             %% Late reply for a request that already timed out, or a
             %% duplicate reply. Drop it.
@@ -559,7 +614,7 @@ retransmit_or_fail(Cookie, #pending{attempts_left = 0} = Pending, State0) ->
         ]
     ),
     reply_pending(Pending#pending.from, {error, timeout}),
-    State = bump(timeouts, State0),
+    State = timed_out(bump(timeouts, State0)),
     State#state{pending = maps:remove(Cookie, State#state.pending)};
 retransmit_or_fail(Cookie, Pending0, State0) ->
     State1 =
@@ -593,6 +648,17 @@ retransmit_or_fail(Cookie, Pending0, State0) ->
     },
     add_pending(Cookie, Pending, State1).
 
+%% A UDP node that stops answering may have moved: after
+%% resolve_after_timeouts timeouts in a row, look the name up again.
+timed_out(#state{transport = udp} = State) ->
+    N = State#state.consecutive_timeouts + 1,
+    case N >= State#state.resolve_after of
+        true -> start_resolve(State#state{consecutive_timeouts = 0});
+        false -> State#state{consecutive_timeouts = N}
+    end;
+timed_out(State) ->
+    State.
+
 add_pending(Cookie, Pending, State) ->
     State#state{pending = maps:put(Cookie, Pending, State#state.pending)}.
 
@@ -611,17 +677,62 @@ make_cookie() ->
     Uniq = integer_to_binary(erlang:unique_integer([positive, monotonic])),
     <<Rand/binary, "-", Uniq/binary>>.
 
-resolve(IP) when is_tuple(IP) ->
-    {ok, IP};
-resolve(Host) when is_binary(Host) ->
-    resolve(binary_to_list(Host));
-resolve(Host) when is_list(Host) ->
-    case inet:parse_address(Host) of
-        {ok, IP} ->
-            {ok, IP};
-        {error, _} ->
-            case inet:getaddr(Host, inet) of
-                {ok, IP} -> {ok, IP};
-                {error, _} -> inet:getaddr(Host, inet6)
-            end
+resolve(#state{resolver = Resolver, host = Host}) ->
+    chappe_rtpengine_resolve:resolve(Resolver, Host).
+
+schedule_resolve(#state{resolve_interval = infinity}) ->
+    ok;
+schedule_resolve(#state{host = Host, resolve_interval = Interval}) ->
+    case chappe_rtpengine_resolve:is_name(Host) of
+        true ->
+            _ = erlang:send_after(Interval, self(), re_resolve),
+            ok;
+        false ->
+            ok
     end.
+
+%% One lookup at a time, in a helper so a slow resolver never delays
+%% replies.
+start_resolve(#state{resolving = {_, _}} = State) ->
+    State;
+start_resolve(#state{host = Host, resolver = Resolver} = State) ->
+    case chappe_rtpengine_resolve:is_name(Host) of
+        true ->
+            State#state{
+                resolving = chappe_rtpengine_resolve:async(Resolver, Host)
+            };
+        false ->
+            State
+    end.
+
+resolved({ok, IP}, #state{ip = IP} = State) ->
+    State;
+resolved({ok, IP}, #state{ip = Old} = State) ->
+    ?LOG_NOTICE("chappe_rtpengine_client ~p: ~p moved from ~p to ~p", [
+        State#state.name, State#state.host, Old, IP
+    ]),
+    case family(IP) =:= family(Old) of
+        true ->
+            bump(address_changes, State#state{ip = IP});
+        false ->
+            case open_udp(IP) of
+                {ok, Socket} ->
+                    close_socket(State),
+                    bump(address_changes, State#state{
+                        ip = IP, socket = Socket
+                    });
+                {error, Reason} ->
+                    ?LOG_WARNING(
+                        "chappe_rtpengine_client ~p: socket for ~p: ~p", [
+                            State#state.name, IP, Reason
+                        ]
+                    ),
+                    State
+            end
+    end;
+resolved({error, Reason}, State) ->
+    ?LOG_WARNING(
+        "chappe_rtpengine_client ~p: re-resolving ~p failed: ~p, keeping ~p",
+        [State#state.name, State#state.host, Reason, State#state.ip]
+    ),
+    State.

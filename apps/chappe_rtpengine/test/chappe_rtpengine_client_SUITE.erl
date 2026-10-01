@@ -45,7 +45,9 @@
     tcp_oversized_length_drops_connection/1,
     tcp_runaway_cookie_drops_connection/1,
     tcp_unresolved_host_retries/1,
-    ws_text_frame_reply/1
+    ws_text_frame_reply/1,
+    udp_resolve_interval_follows_move/1,
+    udp_timeouts_re_resolve/1
 ]).
 
 all() ->
@@ -78,7 +80,9 @@ all() ->
         tcp_oversized_length_drops_connection,
         tcp_runaway_cookie_drops_connection,
         tcp_unresolved_host_retries,
-        ws_text_frame_reply
+        ws_text_frame_reply,
+        udp_resolve_interval_follows_move,
+        udp_timeouts_re_resolve
     ].
 
 init_per_suite(Config) ->
@@ -90,6 +94,36 @@ end_per_suite(_Config) ->
 
 init_per_testcase(client_down, Config) ->
     Config;
+init_per_testcase(Case, Config) when
+    Case =:= udp_resolve_interval_follows_move;
+    Case =:= udp_timeouts_re_resolve
+->
+    %% two fakes on one port at two addresses; the node name resolves
+    %% to whichever address the test stores
+    {ok, A, Port} = chappe_rtpengine_fake_server:start_at(
+        handler(Case), {127, 0, 0, 1}, 0
+    ),
+    case second_fake(Port) of
+        {ok, B, IPB} ->
+            persistent_term:put({?MODULE, addr}, {127, 0, 0, 1}),
+            Resolver = fun(<<"rtpengine.test">>) ->
+                {ok, persistent_term:get({?MODULE, addr})}
+            end,
+            Node = list_to_atom("chappe_rtpengine_test_" ++ atom_to_list(Case)),
+            Opts = maps:merge(
+                #{
+                    host => <<"rtpengine.test">>,
+                    port => Port,
+                    resolver => Resolver
+                },
+                opts(Case)
+            ),
+            ok = chappe_rtpengine:add_node(Node, Opts),
+            [{node, Node}, {server, A}, {server_b, B}, {ip_b, IPB} | Config];
+        error ->
+            chappe_rtpengine_fake_server:stop(A),
+            {skip, no_second_loopback_address}
+    end;
 init_per_testcase(Case, Config) ->
     {ok, Server, Port} = start_fake(Case),
     Node = list_to_atom("chappe_rtpengine_test_" ++ atom_to_list(Case)),
@@ -118,6 +152,21 @@ prefix_transport("wss_" ++ _) -> wss;
 prefix_transport("ws_" ++ _) -> ws;
 prefix_transport(_) -> udp.
 
+%% 127.0.0.2 answers on Linux; macOS only configures 127.0.0.1, so
+%% fall back to the IPv6 loopback (which also moves the node across
+%% address families).
+second_fake(Port) ->
+    second_fake(Port, [{127, 0, 0, 2}, {0, 0, 0, 0, 0, 0, 0, 1}]).
+
+second_fake(_Port, []) ->
+    error;
+second_fake(Port, [IP | Rest]) ->
+    Handler = fun chappe_rtpengine_fake_server:default_handler/2,
+    case chappe_rtpengine_fake_server:start_at(Handler, IP, Port) of
+        {ok, Pid, Port} -> {ok, Pid, IP};
+        {error, _} -> second_fake(Port, Rest)
+    end.
+
 %% SNI must carry a name, not an address, so the wss cases dial by
 %% hostname
 host(tcp_unresolved_host_retries) ->
@@ -130,6 +179,13 @@ host(Case) ->
 
 end_per_testcase(client_down, _Config) ->
     ok;
+end_per_testcase(Case, Config) when
+    Case =:= udp_resolve_interval_follows_move;
+    Case =:= udp_timeouts_re_resolve
+->
+    chappe_rtpengine_fake_server:stop(?config(server_b, Config)),
+    _ = persistent_term:erase({?MODULE, addr}),
+    end_per_testcase(default, Config);
 end_per_testcase(_Case, Config) ->
     _ = chappe_rtpengine:remove_node(?config(node, Config)),
     chappe_rtpengine_fake_server:stop(?config(server, Config)),
@@ -190,6 +246,9 @@ handler(tcp_oversized_length_drops_connection) ->
 handler(tcp_runaway_cookie_drops_connection) ->
     %% bytes that never contain the cookie separator
     fun(_N, _Cmd) -> {raw, binary:copy(<<"x">>, 4096)} end;
+handler(udp_timeouts_re_resolve) ->
+    %% the old address went silent
+    fun(_N, _Cmd) -> drop end;
 handler(ws_text_frame_reply) ->
     fun(_N, _Cmd) -> {reply_text, #{<<"result">> => <<"pong">>}} end;
 handler(_Case) ->
@@ -201,6 +260,15 @@ opts(request_timeout) ->
     #{timeout => 100, attempts => 3};
 opts(ws_deadline_timeout_no_retransmit) ->
     #{transport => ws, timeout => 100, attempts => 3};
+opts(udp_resolve_interval_follows_move) ->
+    #{resolve_interval_ms => 100, resolve_after_timeouts => 100};
+opts(udp_timeouts_re_resolve) ->
+    #{
+        resolve_interval_ms => infinity,
+        resolve_after_timeouts => 2,
+        timeout => 50,
+        attempts => 2
+    };
 opts(udp_too_large_refused) ->
     #{max_datagram => 1000};
 opts(udp_emsgsize_is_too_large) ->
@@ -649,6 +717,7 @@ tcp_runaway_cookie_drops_connection(Config) ->
 
 %% The host is resolved on every connect attempt, so a name that does
 %% not resolve yet is retried like a refused connection.
+%% req: RNG-13
 tcp_unresolved_host_retries(Config) ->
     Node = ?config(node, Config),
     {error, {send_failed, not_connected}} = chappe_rtpengine:ping(Node),
@@ -659,6 +728,41 @@ tcp_unresolved_host_retries(Config) ->
 ws_text_frame_reply(Config) ->
     Node = ?config(node, Config),
     {ok, #{<<"result">> := <<"pong">>}} = chappe_rtpengine:ping(Node),
+    ok.
+
+%% A UDP node has no connect to hook: its name is looked up again on a
+%% timer and the client follows the new address.
+%% req: RNG-13
+udp_resolve_interval_follows_move(Config) ->
+    Node = ?config(node, Config),
+    A = ?config(server, Config),
+    B = ?config(server_b, Config),
+    {ok, _} = chappe_rtpengine:ping(Node),
+    persistent_term:put({?MODULE, addr}, ?config(ip_b, Config)),
+    ok = wait_until(fun() ->
+        maps:get(address_changes, chappe_rtpengine:stats(Node)) =:= 1
+    end),
+    {ok, _} = chappe_rtpengine:ping(Node),
+    ?assertEqual(1, length(chappe_rtpengine_fake_server:received(A))),
+    ?assertEqual(1, length(chappe_rtpengine_fake_server:received(B))),
+    ok.
+
+%% With the periodic lookup off, resolve_after_timeouts timeouts in a
+%% row trigger a lookup; fewer do not.
+%% req: RNG-13
+udp_timeouts_re_resolve(Config) ->
+    Node = ?config(node, Config),
+    B = ?config(server_b, Config),
+    persistent_term:put({?MODULE, addr}, ?config(ip_b, Config)),
+    {error, timeout} = chappe_rtpengine:ping(Node),
+    timer:sleep(100),
+    #{address_changes := 0} = chappe_rtpengine:stats(Node),
+    {error, timeout} = chappe_rtpengine:ping(Node),
+    ok = wait_until(fun() ->
+        maps:get(address_changes, chappe_rtpengine:stats(Node)) =:= 1
+    end),
+    {ok, _} = chappe_rtpengine:ping(Node),
+    ?assertEqual(1, length(chappe_rtpengine_fake_server:received(B))),
     ok.
 
 wait_until(Fun) ->

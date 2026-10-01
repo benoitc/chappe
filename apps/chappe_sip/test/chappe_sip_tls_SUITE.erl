@@ -20,14 +20,14 @@
          client_cert_required/1, outbound_verified/1, outbound_untrusted/1,
          record_route_sips/1, record_route_tls_to_sip/1,
          sip_request_to_sips_target/1, sips_request_to_sip_target/1,
-         uas_contact_sips/1]).
+         uas_contact_sips/1, forked_2xx_over_tls/1]).
 
 all() ->
     [tls_options, udp_still_works, tls_bad_verify, verify_none_needs_insecure,
      old_versions_refused, client_cert_required, outbound_verified,
      outbound_untrusted, record_route_sips, record_route_tls_to_sip,
      sip_request_to_sips_target, sips_request_to_sip_target,
-     uas_contact_sips].
+     uas_contact_sips, forked_2xx_over_tls].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -279,6 +279,37 @@ uas_contact_sips(Config) ->
         ssl:close(S)
     end).
 
+%% RFC 6026 over TLS: nta ends a reliable INVITE client transaction at the
+%% first 2xx, yet a second 2xx with another To-tag on the same branch (a
+%% fork past the TLS hop) still reaches the caller.
+%% req: R6026-01 R6026-03
+forked_2xx_over_tls(Config) ->
+    with_ca(Config, "fork", fun(Dir) ->
+        _ = start_tls(Dir, #{}),
+        {ok, L} = ssl:listen(0, [{certfile, file(Dir, "server.pem")},
+                                 {keyfile, file(Dir, "server.key")}, binary,
+                                 {active, false}, {reuseaddr, true}]),
+        {ok, {_, SP}} = ssl:sockname(L),
+        _ = spawn_link(fun() ->
+            {ok, T} = ssl:transport_accept(L, 5000),
+            {ok, S} = ssl:handshake(T, 5000),
+            {ok, M} = chappe_sip_msg:parse(tls_recv_msg(S, <<>>)),
+            ok = ssl:send(S, resp_2xx(M, <<"fa">>)),
+            timer:sleep(300),
+            ok = ssl:send(S, resp_2xx(M, <<"fb">>)),
+            _ = ssl:recv(S, 0, 4000),
+            ssl:close(L)
+        end),
+        ok = chappe_sip:invite(fun(Req, _Res) ->
+            chappe_sip:proxy_request(Req, [sips_uri(SP)], #{})
+        end),
+        {ok, U} = gen_udp:open(0, [binary, {active, true}, {ip, {127,0,0,1}}]),
+        ok = gen_udp:send(U, {127,0,0,1}, engine_port(),
+                          invite_udp(U, <<"sip:callee@127.0.0.1">>)),
+        ?assertEqual([<<"fa">>, <<"fb">>], lists:usort(udp_2xx_tags(U, [], 2))),
+        gen_udp:close(U)
+    end).
+
 %% the primary UDP transport still works alongside the TLS listener.
 udp_still_works(Config) ->
     CertDir = filename:join(?config(priv_dir, Config), "tlscerts2"),
@@ -423,6 +454,54 @@ ok200(M, RR) ->
        <<"Call-ID: ">>, chappe_sip_msg:call_id(M), <<"\r\n">>,
        <<"CSeq: ">>, chappe_sip_msg:get(<<"cseq">>, M), <<"\r\n">>,
        <<"Contact: <sip:callee@127.0.0.1:9>\r\nContent-Length: 0\r\n\r\n">>]).
+
+%% the To-tags of the 2xx the caller gets, until N distinct ones
+udp_2xx_tags(U, Acc, N) ->
+    case length(lists:usort(Acc)) >= N of
+        true ->
+            Acc;
+        false ->
+            receive
+                {udp, U, _, _, <<"SIP/2.0 2", _/binary>> = B} ->
+                    {ok, M} = chappe_sip_msg:parse(B),
+                    udp_2xx_tags(U, [chappe_sip_msg:to_tag(M) | Acc], N);
+                {udp, U, _, _, _} ->
+                    udp_2xx_tags(U, Acc, N)
+            after 5000 -> Acc
+            end
+    end.
+
+%% one SIP message off a TLS connection, framed by Content-Length
+tls_recv_msg(S, Buf) ->
+    case binary:split(Buf, <<"\r\n\r\n">>) of
+        [Head, Tail] ->
+            {ok, M} = chappe_sip_msg:parse(<<Head/binary, "\r\n\r\n">>),
+            Len = binary_to_integer(
+                    chappe_sip_msg:get(<<"content-length">>, M)),
+            case Tail of
+                <<Body:Len/binary, _/binary>> ->
+                    <<Head/binary, "\r\n\r\n", Body/binary>>;
+                _ ->
+                    tls_recv_more(S, Buf)
+            end;
+        _ ->
+            tls_recv_more(S, Buf)
+    end.
+
+tls_recv_more(S, Buf) ->
+    {ok, D} = ssl:recv(S, 0, 5000),
+    tls_recv_msg(S, <<Buf/binary, D/binary>>).
+
+%% a callee 2xx to the forwarded INVITE M with To-tag Tag
+resp_2xx(M, Tag) ->
+    Vias = [[<<"Via: ">>, V, <<"\r\n">>] || V <- chappe_sip_msg:get_all(<<"via">>, M)],
+    iolist_to_binary(
+      [<<"SIP/2.0 200 OK\r\n">>, Vias,
+       <<"From: ">>, chappe_sip_msg:get(<<"from">>, M), <<"\r\n">>,
+       <<"To: ">>, chappe_sip_msg:get(<<"to">>, M), <<";tag=">>, Tag, <<"\r\n">>,
+       <<"Call-ID: ">>, chappe_sip_msg:call_id(M), <<"\r\n">>,
+       <<"CSeq: ">>, chappe_sip_msg:get(<<"cseq">>, M), <<"\r\n">>,
+       <<"Contact: <sips:callee@127.0.0.1:9>\r\nContent-Length: 0\r\n\r\n">>]).
 
 recv_udp_final(U) ->
     receive

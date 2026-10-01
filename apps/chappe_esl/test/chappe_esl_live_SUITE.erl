@@ -15,11 +15,14 @@
 -include_lib("stdlib/include/assert.hrl").
 
 -export([all/0, init_per_suite/1, end_per_suite/1]).
+-export([init_per_testcase/2, end_per_testcase/2]).
 -export([status/1, reloadxml/1, originate_and_events/1, conference/1]).
 
 all() ->
     [status, reloadxml, originate_and_events, conference].
 
+%% The connection is opened per test case: its controlling process is the
+%% process that connects, and init_per_suite's exits before any case runs.
 init_per_suite(Config) ->
     case os:getenv("FS_HOST") of
         false ->
@@ -27,31 +30,36 @@ init_per_suite(Config) ->
         Host ->
             Port = list_to_integer(os:getenv("FS_PORT", "8021")),
             Password = list_to_binary(os:getenv("FS_PASSWORD", "ClueCon")),
-            case
-                chappe_esl:connect(#{
-                    host => Host,
-                    port => Port,
-                    password => Password
-                })
-            of
-                {ok, Conn} ->
-                    [{conn, Conn} | Config];
-                {error, Reason} ->
-                    %% FS_REQUIRED=1 (the CI job): a FreeSWITCH that
-                    %% cannot be reached fails the run instead of
-                    %% skipping every case
-                    case os:getenv("FS_REQUIRED") of
-                        "1" -> ct:fail({connect_failed, Reason});
-                        _ -> {skip, {connect_failed, Reason}}
-                    end
+            [{fs, #{host => Host, port => Port, password => Password}} | Config]
+    end.
+
+end_per_suite(_Config) ->
+    ok.
+
+init_per_testcase(_Case, Config) ->
+    case chappe_esl:connect(?config(fs, Config)) of
+        {ok, Conn} ->
+            [{conn, Conn} | Config];
+        {error, Reason} ->
+            %% FS_REQUIRED=1 (the CI job): a FreeSWITCH that cannot be
+            %% reached fails the run instead of skipping every case
+            case os:getenv("FS_REQUIRED") of
+                "1" -> ct:fail({connect_failed, Reason});
+                _ -> {skip, {connect_failed, Reason}}
             end
     end.
 
-end_per_suite(Config) ->
+end_per_testcase(_Case, Config) ->
     case ?config(conn, Config) of
         undefined -> ok;
-        Conn -> chappe_esl:close(Conn)
-    end.
+        Conn ->
+            try
+                chappe_esl:close(Conn)
+            catch
+                _:_ -> ok
+            end
+    end,
+    ok.
 
 status(Config) ->
     Conn = ?config(conn, Config),
