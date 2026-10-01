@@ -200,10 +200,9 @@ tracker; the milestone history is in `docs/plan.md`.
   deadline (500 on expiry), and a message-size cap on both directions of
   the NIF boundary, all on WS too (a WS-only node answers them without a
   native engine). Over WS a message past `max_message_size` closes the
-  connection with 1009 inbound and is refused (`{error, too_large}`)
-  outbound; the ws library still buffers up to its own 64 MiB message limit
-  before that check, since livery does not pass a parser limit through. All
-  tunable in `chappe_sip_config`.
+  connection with 1009 inbound, checked by the ws parser on each frame and
+  reassembled message before it is buffered, and is refused
+  (`{error, too_large}`) outbound. All tunable in `chappe_sip_config`.
 
 ### Reliability
 - A call is not bounded by the handler deadline: once a worker owns a dialog

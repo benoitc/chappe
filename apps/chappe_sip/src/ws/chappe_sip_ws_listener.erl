@@ -26,8 +26,9 @@ start_link(Opts) ->
 %% The session closes a connection with no inbound traffic for
 %% ws_idle_timeout_ms (a half-open one left by a crashed browser); the
 %% connection pings the client more often than that, so a live client always
-%% has traffic. The peer reaches the handler in the WS Req (livery reads it
-%% from the accepted socket).
+%% has traffic. The ws parser refuses a frame or a reassembled message past
+%% max_message_size with 1009 before buffering it. The peer reaches the
+%% handler in the WS Req (livery reads it from the accepted socket).
 ws_route(Req) ->
     route(Req, ws).
 
@@ -37,6 +38,7 @@ wss_route(Req) ->
 route(Req, Proto) ->
     case origin_allowed(livery_req:header(<<"origin">>, Req, undefined)) of
         true ->
+            MaxSize = chappe_sip_config:get(max_message_size),
             livery_ws:upgrade(
                 Req,
                 chappe_sip_ws_conn,
@@ -44,6 +46,8 @@ route(Req, Proto) ->
                     subprotocols => [<<"sip">>],
                     idle_timeout =>
                         chappe_sip_config:get(ws_idle_timeout_ms),
+                    max_frame_size => MaxSize,
+                    max_message_size => MaxSize,
                     proto => Proto
                 }
             );
