@@ -12,11 +12,12 @@
 -behaviour(gen_server).
 
 %% chappe_sip_nif call surface
--export([start/2, stop/1, respond/7, reliable_respond/7, request/3, send/3,
-         send_response/2, relay/4, cancel/2, txn_done/2, leg_create/4,
+-export([start/2, stop/1, respond/7, reliable_respond/7, request/3, request/4,
+         proxy_mark/2, send/3,
+         send_response/2, relay/4, cancel/2, cancel/3, txn_done/2, leg_create/4,
          leg_destroy/2, health/1]).
 %% test driver API
--export([boot/0, shutdown/0, inject_request/2, inject_indialog/3,
+-export([boot/0, shutdown/0, inject_request/2, inject_indialog/3, set_health/1,
          await_response/1, await_response/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
@@ -37,6 +38,12 @@ reliable_respond(_Ref, TxnH, Status, Reason, Headers, Body, ToTag) ->
 request(_Ref, Route, Raw) ->
     gen_server:call(?MODULE, {nif_request, Route, Raw}).
 
+request(Ref, Route, Raw, _Branch) ->
+    request(Ref, Route, Raw).
+
+proxy_mark(_Ref, _TxnH) ->
+    ok.
+
 send(_Ref, Route, Raw) ->
     gen_server:call(?MODULE, {nif_send, Route, Raw}).
 
@@ -47,6 +54,9 @@ relay(_Ref, TxnH, Status, Raw) ->
     gen_server:call(?MODULE, {nif_relay, TxnH, Status, Raw}).
 
 cancel(_Ref, _TxnH) ->
+    ok.
+
+cancel(_Ref, _TxnH, _Headers) ->
     ok.
 
 txn_done(_Ref, _TxnH) ->
@@ -70,6 +80,11 @@ boot() ->
 shutdown() ->
     _ = gen_server:stop(?MODULE),
     ok.
+
+%% false: the fake stack thread stops answering health checks (a hang).
+-spec set_health(boolean()) -> ok.
+set_health(On) ->
+    gen_server:call(?MODULE, {set_health, On}).
 
 %% Feed a request event into the owner (as the NIF would) and register
 %% the calling test process as the observer of responses to TxnH.
@@ -138,6 +153,10 @@ handle_call({nif_leg_create, _CallId, _Local, _Remote}, _From,
     Owner ! {chappe_sip_engine, self(), {op_ok, H}},
     {reply, {ok, H}, S#{seq => H}};
 handle_call({nif_leg_destroy, _LegH}, _From, S) ->
+    {reply, ok, S};
+handle_call({set_health, On}, _From, S) ->
+    {reply, ok, S#{silent => not On}};
+handle_call(nif_health, _From, #{silent := true} = S) ->
     {reply, ok, S};
 handle_call(nif_health, _From, #{owner := Owner, seq := Seq} = S) ->
     Owner ! {chappe_sip_engine, self(), {health_ok, Seq + 1}},

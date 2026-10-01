@@ -14,7 +14,8 @@
     dispatch_is_per_call/1,
     unsubscribe_stops_delivery/1,
     malformed_datagram_ignored/1,
-    session_forwards_dtmf_to_owner/1
+    session_forwards_dtmf_to_owner/1,
+    bind_ip_and_allowed_sources/1
 ]).
 
 all() ->
@@ -23,7 +24,9 @@ all() ->
         dispatch_is_per_call,
         unsubscribe_stops_delivery,
         malformed_datagram_ignored,
-        session_forwards_dtmf_to_owner
+        session_forwards_dtmf_to_owner,
+        %% last: it moves the listener to other ports
+        bind_ip_and_allowed_sources
     ].
 
 init_per_suite(Config) ->
@@ -116,6 +119,26 @@ malformed_datagram_ignored(Config) ->
     %% the listener survives and keeps dispatching
     send_event(Config, CallId, 7),
     _ = expect_digit(CallId, $7),
+    ok = chappe_rtpengine_dtmf:unsubscribe(CallId),
+    ok.
+
+%% The listener binds the address it is given, and datagrams from a
+%% source outside allowed_sources are dropped.
+bind_ip_and_allowed_sources(Config) ->
+    {ok, Port} = chappe_rtpengine_dtmf:open(0, #{
+        ip => {127, 0, 0, 1}, allowed_sources => [{127, 0, 0, 2}]
+    }),
+    Local = [{dtmf_port, Port} | Config],
+    CallId = <<"dtmf-acl">>,
+    ok = chappe_rtpengine_dtmf:subscribe(CallId),
+    %% sent from 127.0.0.1: not allowed
+    send_event(Local, CallId, 1),
+    expect_silence(),
+    {ok, Port2} = chappe_rtpengine_dtmf:open(0, #{
+        ip => {127, 0, 0, 1}, allowed_sources => [{127, 0, 0, 1}]
+    }),
+    send_event([{dtmf_port, Port2} | Config], CallId, 2),
+    _ = expect_digit(CallId, $2),
     ok = chappe_rtpengine_dtmf:unsubscribe(CallId),
     ok.
 

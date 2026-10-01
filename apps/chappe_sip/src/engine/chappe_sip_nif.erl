@@ -15,10 +15,16 @@
 %%   {chappe_sip_engine, EngineRef, Event}
 %% Event is one of
 %%   {request, TxnH, LegH | undefined, Meta, RawSip}  inbound request
+%%                                                    (Meta conn: its TCP/TLS
+%%                                                    connection's flow id)
 %%   {response, TxnH, Meta, RawSip}                   response to our request
-%%   {ack, LegH, RawSip}                              2xx ACK on a dialog leg
+%%   {ack, LegH | TxnH, RawSip}                       2xx ACK on a dialog leg,
+%%                                                    or on the INVITE server
+%%                                                    txn answered 2xx
+%%   {ack_timeout, LegH | TxnH}                       that 2xx never ACKed
 %%   {cancel, TxnH}                                   CANCEL of our server txn
 %%   {op_ok, H} | {op_failed, H, Reason}              deferred op result
+%%   {flow_closed, FlowId}                            that connection closed
 %%   {health_ok, Seq}
 %%   {started, Contact}
 %%   {log, Level, Text}
@@ -32,10 +38,13 @@
     respond/7,
     reliable_respond/7,
     request/3,
+    request/4,
+    proxy_mark/2,
     send/3,
     send_response/2,
     relay/4,
     cancel/2,
+    cancel/3,
     txn_done/2,
     leg_create/4,
     leg_destroy/2,
@@ -47,10 +56,13 @@
     respond/7,
     reliable_respond/7,
     request/3,
+    request/4,
+    proxy_mark/2,
     send/3,
     send_response/2,
     relay/4,
     cancel/2,
+    cancel/3,
     txn_done/2,
     leg_create/4,
     leg_destroy/2,
@@ -60,7 +72,10 @@
 
 -type engine() :: reference().
 -type handle() :: non_neg_integer().
--export_type([engine/0, handle/0]).
+%% an outbound proxy URL, the id of an RFC 5626 TCP/TLS flow (the conn of a
+%% request's meta) to send over, or undefined (by the Request-URI)
+-type route() :: binary() | pos_integer() | undefined.
+-export_type([engine/0, handle/0, route/0]).
 
 init() ->
     Priv =
@@ -75,7 +90,11 @@ init() ->
 
 %% Opts: #{contact := binary(), max_message_size => pos_integer(),
 %%         tls => #{contact := binary(), cert_dir => binary(),
-%%                  passphrase => binary(), verify => none | peer}}
+%%                  passphrase => binary(), verify => none | peer,
+%%                  verify_clients => boolean()}}
+%% verify (default peer) checks the server certificate of outbound TLS
+%% connections against cafile.pem and the target host (RFC 5922);
+%% verify_clients asks inbound clients for a certificate.
 %% The tls contact binds a secondary TLS listener on its own port; cert_dir
 %% holds agent.pem (cert+key) and cafile.pem.
 -spec start(map(), pid()) -> {ok, engine()} | {error, term()}.
@@ -120,17 +139,30 @@ reliable_respond(_Engine, _TxnH, _Status, _Reason, _Headers, _Body, _ToTag) ->
     erlang:nif_error(engine_nif_not_loaded).
 
 %% Send a complete Erlang-built request. Route is an outbound proxy URL
-%% binary or undefined. Returns {ok, TxnH} once enqueued; {op_ok, TxnH}
-%% or {op_failed, TxnH, Reason} follows. Responses arrive as
+%% binary, a flow id (the request goes over that connection), or
+%% undefined. Returns {ok, TxnH} once enqueued; {op_ok, TxnH} or
+%% {op_failed, TxnH, Reason} follows. Responses arrive as
 %% {response, TxnH, Meta, RawSip}.
--spec request(engine(), binary() | undefined, binary()) ->
+-spec request(engine(), route(), binary()) ->
     {ok, handle()} | {error, not_ready | too_large | badarg}.
 request(_Engine, _Route, _Raw) ->
     erlang:nif_error(engine_nif_not_loaded).
 
+%% The same with the Via branch to use (a proxy's loop-detection branch).
+-spec request(engine(), route(), binary(), binary()) ->
+    {ok, handle()} | {error, not_ready | too_large | badarg}.
+request(_Engine, _Route, _Raw, _Branch) ->
+    erlang:nif_error(engine_nif_not_loaded).
+
+%% A proxy owns this INVITE server transaction: a CANCEL of it is reported
+%% but not answered 487 by the engine (RFC 3261 16.10).
+-spec proxy_mark(engine(), handle()) -> ok | {error, not_ready}.
+proxy_mark(_Engine, _TxnH) ->
+    erlang:nif_error(engine_nif_not_loaded).
+
 %% Fire-and-forget send (ACK to a 2xx). Returns {ok, OpH}; {op_ok, OpH} or
 %% {op_failed, OpH, Reason} follows. No response is delivered.
--spec send(engine(), binary() | undefined, binary()) ->
+-spec send(engine(), route(), binary()) ->
     {ok, handle()} | {error, not_ready | too_large | badarg}.
 send(_Engine, _Route, _Raw) ->
     erlang:nif_error(engine_nif_not_loaded).
@@ -154,6 +186,12 @@ relay(_Engine, _TxnH, _Status, _Raw) ->
 %% CANCEL an outstanding INVITE client transaction.
 -spec cancel(engine(), handle()) -> ok | {error, not_ready}.
 cancel(_Engine, _TxnH) ->
+    erlang:nif_error(engine_nif_not_loaded).
+
+%% CANCEL with extra headers (CRLF-joined), e.g. a Reason (RFC 3326).
+-spec cancel(engine(), handle(), binary()) ->
+    ok | {error, not_ready | too_large}.
+cancel(_Engine, _TxnH, _Headers) ->
     erlang:nif_error(engine_nif_not_loaded).
 
 %% Release a client transaction handle once the UAC is done with it

@@ -70,10 +70,10 @@ builds the shim with ASan (see `test/asan/`).
 - **Proxy** (`proxy/`): `chappe_sip_proxy` (forking + in-dialog forwarding),
   `chappe_sip_route` (Record-Route + flow tokens).
 - **Media** (`media/`): `chappe_sip_media` (capability-based control-plane facade),
-  `chappe_sip_media_rtpengine` / `chappe_sip_media_freeswitch` (backend adapters),
-  `chappe_sip_media_esl_mgr` (pooled ESL control connections), `chappe_sip_media_sup`. The
-  media plane stays external; these drive rtpengine (via the `chappe_rtpengine`
-  dep) and FreeSWITCH (via the `chappe_esl` dep). Both deps are dormant unless
+  `chappe_sip_media_rtpengine` / `chappe_sip_media_mix` (backend adapters),
+  `chappe_sip_media_mix_sdp` (the mixer leg's SDP), `chappe_sip_media_sup`. The
+  media plane stays external to the SIP code; these drive rtpengine (via the
+  `chappe_rtpengine` dep) and conferences on `chappe_mix`. Both are dormant unless
   `media` is configured. See `docs/design/media.md`.
 - **WebSocket** (`ws/`): `chappe_sip_ws` (handle-range helper), `chappe_sip_ws_sup`,
   `chappe_sip_ws_listener` (a livery HTTP service upgrading `GET /ws`), `chappe_sip_ws_conn`

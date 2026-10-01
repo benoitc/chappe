@@ -1,7 +1,8 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 
-%% @doc Owner of the registrar's ETS table and the engine-config snapshot.
+%% @doc Owner of the registrar's ETS table, the engine-config snapshot, and
+%% the dialog index (chappe_sip_dialog_index).
 %%
 %% The tables live in this process, not in chappe_sip_registry or chappe_sip_engine, so a
 %% crash of either gen_server does not destroy the location bindings or the
@@ -16,6 +17,7 @@
 
 -define(TAB, chappe_sip_registry).
 -define(CFG_TAB, chappe_sip_engine_cfg).
+-define(DIALOG_TAB, chappe_sip_dialog_index).
 
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
@@ -23,6 +25,13 @@ start_link() ->
 init([]) ->
     _ = ensure_table(?TAB, [named_table, set, public, {read_concurrency, true}]),
     _ = ensure_table(?CFG_TAB, [named_table, set, public]),
+    _ = ensure_table(?DIALOG_TAB, [
+        named_table,
+        set,
+        public,
+        {read_concurrency, true},
+        {write_concurrency, true}
+    ]),
     {ok, #{}}.
 
 ensure_table(Name, Opts) ->

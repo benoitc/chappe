@@ -24,6 +24,14 @@ Start here.
 - [TLS](guides/tls.md): a `sips` listener on its own port.
 - [Reliable provisionals (PRACK)](guides/reliable-provisionals.md): 100rel on
   the UAS and the UAC.
+- [Subscriptions (SUBSCRIBE/NOTIFY)](guides/subscriptions.md): accept a
+  SUBSCRIBE, send NOTIFYs, and handle refresh, unsubscribe, and expiry.
+- [Session timers](guides/session-timers.md): RFC 4028 refresh and expiry
+  on the calls you answer and place.
+- [REFER (call transfer)](guides/refer.md): accept a REFER and report the
+  transfer, or send one and follow its progress.
+- [Conference focus](guides/conference-focus.md): the `isfocus` Contact and
+  RFC 4575 conference state for a conference you run.
 - [Configuration and limits](guides/configuration.md): the tunables in
   `chappe_sip_config`.
 - [Deployment](guides/deployment.md): build the release and run it under
@@ -35,6 +43,8 @@ Start here.
 
 - [Overview](design/overview.md): the layers and the supervision tree.
 - [Engine](design/engine.md): the sofia-sip NIF shim and the stack thread.
+- [Media](design/media.md): the media facade, rtpengine anchoring and
+  conferences on chappe_mix.
 
 ## Development
 

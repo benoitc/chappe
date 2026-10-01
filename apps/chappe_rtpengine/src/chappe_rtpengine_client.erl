@@ -16,16 +16,37 @@
 %% retransmission is idempotent and a duplicate request is served the
 %% cached reply. Cookies carry a random component because a restarted
 %% client reusing a cookie within the cache window would be served a
-%% stale reply for a different command. Over TCP nothing is
+%% stale reply for a different command. A UDP request larger than
+%% max_datagram (default 65507, the IPv4 payload limit) is refused with
+%% {error, too_large} before anything is sent, as is one the socket
+%% rejects with emsgsize; use the TCP or WebSocket transport for bodies
+%% that size. Over TCP nothing is
 %% retransmitted (the transport is reliable); the same timers only
 %% enforce the attempts * timeout deadline, and messages are parsed
-%% incrementally out of the byte stream. A broken connection fails
+%% incrementally out of the byte stream by chappe_rtpengine_stream
+%% (linear in the stream size, 4 MiB and 256-byte cookie caps; a
+%% stream it rejects drops the connection). A broken connection fails
 %% all pending requests with {error, closed} and reconnects in the
 %% background; requests made while disconnected fail immediately.
+%% The host name is resolved again on every TCP connect attempt (the
+%% WebSocket client resolves the URL host itself), so a node that
+%% moves to a new address is found on reconnect, and a name that does
+%% not resolve yet is retried like a refused connection.
+%% Over UDP there is no connect to hook, so a host name is resolved
+%% at start and again every resolve_interval_ms (default 60000,
+%% infinity disables) and after resolve_after_timeouts consecutive
+%% request timeouts (default 2). Resolution runs in a helper process so
+%% a slow resolver never stalls replies; when the address changes the
+%% client sends to the new one (reopening the socket if the address
+%% family changed), and requests still being retransmitted follow it.
+%% A failed re-resolution keeps the current address. An IP address
+%% host is never re-resolved. The resolver option (a fun taking the
+%% host and returning {ok, IP} | {error, Reason}) replaces inet for
+%% custom lookups and tests.
 %% The ws/wss transports behave like TCP (deadline only, no
 %% retransmit, background reconnect) but need no stream parser:
-%% WebSocket preserves message boundaries, so each binary frame is
-%% exactly one "Cookie SP bencode" message. The connection is a
+%% WebSocket preserves message boundaries, so each binary (or text)
+%% frame is exactly one "Cookie SP bencode" message. The connection is a
 %% ws_session process (erlang_ws) negotiating the ng.rtpengine.com
 %% subprotocol; a connect to a server that does not grant it fails.
 %%
@@ -45,14 +66,18 @@
 -define(DEFAULT_ATTEMPTS, 3).
 -define(ACTIVE_N, 64).
 -define(RECONNECT_AFTER, 1000).
-%% Cap on the un-consumed TCP stream buffer. NG replies are small bencode
-%% dicts; a peer that never sends a space or advertises a huge string length
-%% would otherwise grow the buffer without bound (the UDP path is capped by
-%% recbuf). On exceed we drop the connection and reconnect.
--define(MAX_STREAM_BYTES, (4 * 1024 * 1024)).
+%% Largest UDP payload over IPv4; IPv6 allows 65527 but the smaller
+%% bound is the safe default for either family.
+-define(DEFAULT_MAX_DATAGRAM, 65507).
+%% Socket buffers sized for several maximal datagrams in flight; the
+%% kernel default send buffer (9216 bytes on macOS) refuses large
+%% offers outright.
+-define(UDP_SOCKBUF, (256 * 1024)).
 -define(CALL_TIMEOUT, 5000).
 -define(CONNECT_TIMEOUT, 3000).
 -define(NG_SUBPROTOCOL, <<"ng.rtpengine.com">>).
+-define(DEFAULT_RESOLVE_INTERVAL, 60000).
+-define(DEFAULT_RESOLVE_AFTER_TIMEOUTS, 2).
 
 -type opts() :: #{
     host := inet:ip_address() | string() | binary(),
@@ -61,7 +86,11 @@
     path => binary() | string(),
     tls_opts => [ssl:tls_client_option()],
     timeout => pos_integer(),
-    attempts => pos_integer()
+    attempts => pos_integer(),
+    max_datagram => pos_integer(),
+    resolve_interval_ms => pos_integer() | infinity,
+    resolve_after_timeouts => pos_integer(),
+    resolver => chappe_rtpengine_resolve:resolver()
 }.
 
 -export_type([opts/0]).
@@ -81,15 +110,22 @@
     socket :: gen_udp:socket() | gen_tcp:socket() | pid() | undefined,
     ws_mref :: reference() | undefined,
     connected = false :: boolean(),
-    buffer = <<>> :: binary(),
+    stream = chappe_rtpengine_stream:new() :: chappe_rtpengine_stream:stream(),
+    max_datagram = ?DEFAULT_MAX_DATAGRAM :: pos_integer(),
     host :: inet:ip_address() | string() | binary(),
-    ip :: inet:ip_address(),
+    ip :: inet:ip_address() | undefined,
     port :: inet:port_number(),
     path = <<"/">> :: binary(),
     tls_opts = [] :: [ssl:tls_client_option()],
     timeout :: pos_integer(),
     attempts :: pos_integer(),
     pending = #{} :: #{binary() => #pending{}},
+    resolver :: chappe_rtpengine_resolve:resolver() | undefined,
+    resolve_interval = ?DEFAULT_RESOLVE_INTERVAL :: pos_integer() | infinity,
+    resolve_after = ?DEFAULT_RESOLVE_AFTER_TIMEOUTS :: pos_integer(),
+    consecutive_timeouts = 0 :: non_neg_integer(),
+    %% {Ref, MRef} of the lookup in flight
+    resolving :: {reference(), reference()} | undefined,
     stats = #{
         sent => 0,
         replies => 0,
@@ -97,7 +133,8 @@
         timeouts => 0,
         bad_replies => 0,
         unknown_cookies => 0,
-        reconnects => 0
+        reconnects => 0,
+        address_changes => 0
     } :: #{atom() => non_neg_integer()}
 }).
 
@@ -115,8 +152,10 @@ cmd(Node, Command) ->
 -spec cmd(atom(), atom(), chappe_rtpengine_ng:params()) ->
     chappe_rtpengine_ng:result() | {error, term()}.
 cmd(Node, Command, Params) ->
-    Body = chappe_rtpengine_ng:encode_command(Command, Params),
-    gen_server:call(Node, {cmd, Body}, infinity).
+    case encode(Command, Params) of
+        {ok, Body} -> gen_server:call(Node, {cmd, Body}, infinity);
+        {error, _} = Error -> Error
+    end.
 
 %% Fire-and-collect variant for state machines that must not block:
 %% the result arrives as a {chappe_rtpengine_reply, Ref, Result} message. The
@@ -125,11 +164,25 @@ cmd(Node, Command, Params) ->
 -spec cmd_async(atom(), atom(), chappe_rtpengine_ng:params()) ->
     {ok, reference()} | {error, term()}.
 cmd_async(Node, Command, Params) ->
-    Body = chappe_rtpengine_ng:encode_command(Command, Params),
-    Ref = make_ref(),
-    case gen_server:call(Node, {cmd_async, Body, self(), Ref}, infinity) of
-        ok -> {ok, Ref};
-        {error, _} = Error -> Error
+    case encode(Command, Params) of
+        {ok, Body} ->
+            Ref = make_ref(),
+            Request = {cmd_async, Body, self(), Ref},
+            case gen_server:call(Node, Request, infinity) of
+                ok -> {ok, Ref};
+                {error, _} = Error -> Error
+            end;
+        {error, _} = Error ->
+            Error
+    end.
+
+%% A parameter bencode cannot carry (a float, a tuple) is the caller's
+%% error, returned rather than raised in a session process.
+encode(Command, Params) ->
+    try
+        {ok, chappe_rtpengine_ng:encode_command(Command, Params)}
+    catch
+        error:{bad_param, _, _} = Reason -> {error, Reason}
     end.
 
 -spec stats(atom()) -> #{atom() => non_neg_integer()}.
@@ -145,22 +198,37 @@ init([Name, Opts]) ->
     Transport = maps:get(transport, Opts, udp),
     Timeout = maps:get(timeout, Opts, ?DEFAULT_TIMEOUT),
     Attempts = maps:get(attempts, Opts, ?DEFAULT_ATTEMPTS),
-    case resolve(Host) of
-        {ok, IP} ->
-            State = #state{
-                name = Name,
-                transport = Transport,
-                host = Host,
-                ip = IP,
-                port = Port,
-                path = normalize_path(maps:get(path, Opts, <<"/">>)),
-                tls_opts = maps:get(tls_opts, Opts, []),
-                timeout = Timeout,
-                attempts = Attempts
-            },
-            connect(State);
-        {error, Reason} ->
-            {stop, {resolve_failed, Host, Reason}}
+    State = #state{
+        name = Name,
+        transport = Transport,
+        host = Host,
+        port = Port,
+        path = normalize_path(maps:get(path, Opts, <<"/">>)),
+        tls_opts = maps:get(tls_opts, Opts, []),
+        timeout = Timeout,
+        attempts = Attempts,
+        max_datagram = maps:get(max_datagram, Opts, ?DEFAULT_MAX_DATAGRAM),
+        resolver = maps:get(resolver, Opts, undefined),
+        resolve_interval = maps:get(
+            resolve_interval_ms, Opts, ?DEFAULT_RESOLVE_INTERVAL
+        ),
+        resolve_after = maps:get(
+            resolve_after_timeouts, Opts, ?DEFAULT_RESOLVE_AFTER_TIMEOUTS
+        )
+    },
+    case Transport of
+        udp ->
+            %% connectionless: resolved now, then again on a timer and
+            %% after repeated timeouts (there is no reconnect to hook)
+            case resolve(State) of
+                {ok, IP} ->
+                    schedule_resolve(State),
+                    connect(State#state{ip = IP});
+                {error, Reason} ->
+                    {stop, {resolve_failed, Host, Reason}}
+            end;
+        _ ->
+            connect(State)
     end.
 
 handle_call({cmd, Body}, From, State0) ->
@@ -168,14 +236,14 @@ handle_call({cmd, Body}, From, State0) ->
         {ok, State} ->
             {noreply, State};
         {error, Reason, State} ->
-            {reply, {error, {send_failed, Reason}}, State}
+            {reply, send_error(Reason), State}
     end;
 handle_call({cmd_async, Body, Pid, Ref}, _From, State0) ->
     case send_request(Body, {async, Pid, Ref}, State0) of
         {ok, State} ->
             {reply, ok, State};
         {error, Reason, State} ->
-            {reply, {error, {send_failed, Reason}}, State}
+            {reply, send_error(Reason), State}
     end;
 handle_call(stats, _From, State) ->
     {reply, State#state.stats, State};
@@ -191,9 +259,7 @@ handle_info({udp_passive, Socket}, #state{socket = Socket} = State) ->
     ok = inet:setopts(Socket, [{active, ?ACTIVE_N}]),
     {noreply, State};
 handle_info({tcp, Socket, Data}, #state{socket = Socket} = State) ->
-    Buffer = <<(State#state.buffer)/binary, Data/binary>>,
-    State1 = parse_stream(State#state{buffer = Buffer}),
-    {noreply, guard_stream_buffer(State1)};
+    {noreply, stream_in(Data, State)};
 handle_info({tcp_passive, Socket}, #state{socket = Socket} = State) ->
     ok = inet:setopts(Socket, [{active, ?ACTIVE_N}]),
     {noreply, State};
@@ -234,6 +300,23 @@ handle_info(reconnect, State) ->
     {noreply, State};
 handle_info({timeout, TRef, Cookie}, State) ->
     {noreply, handle_attempt_timeout(Cookie, TRef, State)};
+handle_info(re_resolve, State) ->
+    schedule_resolve(State),
+    {noreply, start_resolve(State)};
+handle_info(
+    {chappe_rtpengine_resolved, Ref, Result},
+    #state{resolving = {Ref, MRef}} = State
+) ->
+    erlang:demonitor(MRef, [flush]),
+    {noreply, resolved(Result, State#state{resolving = undefined})};
+handle_info(
+    {'DOWN', MRef, process, _Pid, Reason},
+    #state{resolving = {_Ref, MRef}} = State
+) ->
+    ?LOG_WARNING("chappe_rtpengine_client ~p: resolver crashed: ~p", [
+        State#state.name, Reason
+    ]),
+    {noreply, State#state{resolving = undefined}};
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -251,41 +334,35 @@ terminate(_Reason, #state{pending = Pending} = State) ->
 %% internal
 
 connect(#state{transport = udp, ip = IP} = State) ->
-    Family = family(IP),
-    %% Large SDP bodies exceed default buffers and gen_udp silently
-    %% truncates datagrams beyond recbuf.
-    SockOpts = [
-        binary,
-        Family,
-        {active, ?ACTIVE_N},
-        {recbuf, 65535},
-        {buffer, 65536}
-    ],
-    case gen_udp:open(0, SockOpts) of
+    case open_udp(IP) of
         {ok, Socket} ->
             {ok, State#state{socket = Socket, connected = true}};
         {error, Reason} ->
             {stop, {socket_open_failed, Reason}}
     end;
-connect(#state{transport = tcp, ip = IP, port = Port} = State) ->
-    SockOpts = [
-        binary,
-        family(IP),
-        {active, ?ACTIVE_N},
-        {packet, raw},
-        {nodelay, true}
-    ],
-    case gen_tcp:connect(IP, Port, SockOpts, 3000) of
-        {ok, Socket} ->
-            {ok, State#state{
-                socket = Socket, connected = true, buffer = <<>>
-            }};
+connect(#state{transport = tcp, host = Host, port = Port} = State) ->
+    case resolve(State) of
+        {ok, IP} ->
+            SockOpts = [
+                binary,
+                family(IP),
+                {active, ?ACTIVE_N},
+                {packet, raw},
+                {nodelay, true}
+            ],
+            case gen_tcp:connect(IP, Port, SockOpts, ?CONNECT_TIMEOUT) of
+                {ok, Socket} ->
+                    {ok, State#state{
+                        ip = IP,
+                        socket = Socket,
+                        connected = true,
+                        stream = chappe_rtpengine_stream:new()
+                    }};
+                {error, Reason} ->
+                    connect_failed(Reason, State)
+            end;
         {error, Reason} ->
-            ?LOG_WARNING("chappe_rtpengine_client ~p: connect failed: ~p", [
-                State#state.name, Reason
-            ]),
-            _ = erlang:send_after(?RECONNECT_AFTER, self(), reconnect),
-            {ok, State#state{socket = undefined, connected = false}}
+            connect_failed({resolve_failed, Host, Reason}, State)
     end;
 connect(#state{transport = WsT} = State) when WsT =:= ws; WsT =:= wss ->
     Opts0 = #{
@@ -316,6 +393,27 @@ connect(#state{transport = WsT} = State) when WsT =:= ws; WsT =:= wss ->
                 socket = undefined, ws_mref = undefined, connected = false
             }}
     end.
+
+open_udp(IP) ->
+    %% Large SDP bodies exceed default buffers: the kernel refuses
+    %% datagrams beyond sndbuf, and gen_udp silently truncates replies
+    %% beyond its user buffer, which must hold one maximal datagram.
+    SockOpts = [
+        binary,
+        family(IP),
+        {active, ?ACTIVE_N},
+        {sndbuf, ?UDP_SOCKBUF},
+        {recbuf, ?UDP_SOCKBUF},
+        {buffer, 65536}
+    ],
+    gen_udp:open(0, SockOpts).
+
+connect_failed(Reason, State) ->
+    ?LOG_WARNING("chappe_rtpengine_client ~p: connect failed: ~p", [
+        State#state.name, Reason
+    ]),
+    _ = erlang:send_after(?RECONNECT_AFTER, self(), reconnect),
+    {ok, State#state{socket = undefined, connected = false}}.
 
 ws_url(#state{transport = WsT, host = Host, port = Port, path = Path}) ->
     Scheme =
@@ -375,7 +473,7 @@ drop_connection(State0) ->
         socket = undefined,
         ws_mref = undefined,
         connected = false,
-        buffer = <<>>,
+        stream = chappe_rtpengine_stream:new(),
         pending = #{}
     }.
 
@@ -384,7 +482,7 @@ send_request(_Body, _ReplyTo, #state{connected = false} = State) ->
 send_request(Body, ReplyTo, State0) ->
     Cookie = make_cookie(),
     Datagram = <<Cookie/binary, $\s, Body/binary>>,
-    case transport_send(State0, Datagram) of
+    case checked_send(State0, Datagram) of
         ok ->
             TRef = erlang:start_timer(State0#state.timeout, self(), Cookie),
             Pending = #pending{
@@ -397,6 +495,23 @@ send_request(Body, ReplyTo, State0) ->
         {error, Reason} ->
             {error, Reason, State0}
     end.
+
+%% Refused sends that retrying cannot fix: a UDP datagram over the
+%% configured limit, or one the kernel rejects as too big.
+send_error(too_large) -> {error, too_large};
+send_error(Reason) -> {error, {send_failed, Reason}}.
+
+checked_send(#state{transport = udp, max_datagram = Max}, Datagram) when
+    byte_size(Datagram) > Max
+->
+    {error, too_large};
+checked_send(#state{transport = udp} = State, Datagram) ->
+    case transport_send(State, Datagram) of
+        {error, emsgsize} -> {error, too_large};
+        Other -> Other
+    end;
+checked_send(State, Datagram) ->
+    transport_send(State, Datagram).
 
 transport_send(#state{transport = udp, socket = S, ip = IP, port = Port}, Data) ->
     gen_udp:send(S, IP, Port, Data);
@@ -429,47 +544,32 @@ handle_packet(Packet, State0) ->
             bump(bad_replies, State0)
     end.
 
-%% One complete message at a time out of the TCP byte stream: bytes up
-%% to the first space are the cookie, then exactly one bencode value.
-parse_stream(State) ->
-    case binary:split(State#state.buffer, <<" ">>) of
-        [_NoSpaceYet] ->
-            State;
-        [Cookie, Rest] ->
-            case chappe_rtpengine_bencode:decode_prefix(Rest) of
-                {ok, Value, Remainder} ->
-                    State1 = State#state{buffer = Remainder},
-                    parse_stream(deliver(Cookie, {ok, Value}, State1));
-                incomplete ->
-                    State;
-                {error, Reason} ->
-                    ?LOG_WARNING(
-                        "chappe_rtpengine_client ~p: corrupt stream (~p), reconnecting",
-                        [State#state.name, Reason]
-                    ),
-                    drop_connection(State)
-            end
+%% TCP byte stream: deliver every message the chunk completed; a
+%% stream the framer rejects (corrupt, or over its caps) is dropped
+%% after delivering what came before the bad bytes.
+stream_in(Data, State0) ->
+    Deliver = fun({Cookie, Value}, Acc) ->
+        deliver(Cookie, {ok, Value}, Acc)
+    end,
+    case chappe_rtpengine_stream:feed(Data, State0#state.stream) of
+        {ok, Messages, Stream} ->
+            lists:foldl(Deliver, State0#state{stream = Stream}, Messages);
+        {error, Reason, Messages} ->
+            State = lists:foldl(Deliver, State0, Messages),
+            ?LOG_WARNING(
+                "chappe_rtpengine_client ~p: bad stream (~p), reconnecting",
+                [State#state.name, Reason]
+            ),
+            drop_connection(State)
     end.
-
-%% Bound the un-consumed stream buffer: a peer that never completes a message
-%% cannot grow it without limit. drop_connection already empties the buffer, so
-%% this is a no-op right after a corrupt-stream drop.
-guard_stream_buffer(#state{buffer = Buf, name = Name} = State) when
-    byte_size(Buf) > ?MAX_STREAM_BYTES
-->
-    ?LOG_WARNING(
-        "chappe_rtpengine_client ~p: stream buffer over ~p bytes; dropping",
-        [Name, ?MAX_STREAM_BYTES]
-    ),
-    drop_connection(State);
-guard_stream_buffer(State) ->
-    State.
 
 deliver(Cookie, Decoded, State0) ->
     case take_pending(Cookie, State0) of
         {ok, #pending{from = From, tref = TRef}, State1} ->
             erlang:cancel_timer(TRef),
-            reply_to_caller(From, Decoded, State1);
+            reply_to_caller(
+                From, Decoded, State1#state{consecutive_timeouts = 0}
+            );
         error ->
             %% Late reply for a request that already timed out, or a
             %% duplicate reply. Drop it.
@@ -514,7 +614,7 @@ retransmit_or_fail(Cookie, #pending{attempts_left = 0} = Pending, State0) ->
         ]
     ),
     reply_pending(Pending#pending.from, {error, timeout}),
-    State = bump(timeouts, State0),
+    State = timed_out(bump(timeouts, State0)),
     State#state{pending = maps:remove(Cookie, State#state.pending)};
 retransmit_or_fail(Cookie, Pending0, State0) ->
     State1 =
@@ -548,6 +648,17 @@ retransmit_or_fail(Cookie, Pending0, State0) ->
     },
     add_pending(Cookie, Pending, State1).
 
+%% A UDP node that stops answering may have moved: after
+%% resolve_after_timeouts timeouts in a row, look the name up again.
+timed_out(#state{transport = udp} = State) ->
+    N = State#state.consecutive_timeouts + 1,
+    case N >= State#state.resolve_after of
+        true -> start_resolve(State#state{consecutive_timeouts = 0});
+        false -> State#state{consecutive_timeouts = N}
+    end;
+timed_out(State) ->
+    State.
+
 add_pending(Cookie, Pending, State) ->
     State#state{pending = maps:put(Cookie, Pending, State#state.pending)}.
 
@@ -566,17 +677,62 @@ make_cookie() ->
     Uniq = integer_to_binary(erlang:unique_integer([positive, monotonic])),
     <<Rand/binary, "-", Uniq/binary>>.
 
-resolve(IP) when is_tuple(IP) ->
-    {ok, IP};
-resolve(Host) when is_binary(Host) ->
-    resolve(binary_to_list(Host));
-resolve(Host) when is_list(Host) ->
-    case inet:parse_address(Host) of
-        {ok, IP} ->
-            {ok, IP};
-        {error, _} ->
-            case inet:getaddr(Host, inet) of
-                {ok, IP} -> {ok, IP};
-                {error, _} -> inet:getaddr(Host, inet6)
-            end
+resolve(#state{resolver = Resolver, host = Host}) ->
+    chappe_rtpengine_resolve:resolve(Resolver, Host).
+
+schedule_resolve(#state{resolve_interval = infinity}) ->
+    ok;
+schedule_resolve(#state{host = Host, resolve_interval = Interval}) ->
+    case chappe_rtpengine_resolve:is_name(Host) of
+        true ->
+            _ = erlang:send_after(Interval, self(), re_resolve),
+            ok;
+        false ->
+            ok
     end.
+
+%% One lookup at a time, in a helper so a slow resolver never delays
+%% replies.
+start_resolve(#state{resolving = {_, _}} = State) ->
+    State;
+start_resolve(#state{host = Host, resolver = Resolver} = State) ->
+    case chappe_rtpengine_resolve:is_name(Host) of
+        true ->
+            State#state{
+                resolving = chappe_rtpengine_resolve:async(Resolver, Host)
+            };
+        false ->
+            State
+    end.
+
+resolved({ok, IP}, #state{ip = IP} = State) ->
+    State;
+resolved({ok, IP}, #state{ip = Old} = State) ->
+    ?LOG_NOTICE("chappe_rtpengine_client ~p: ~p moved from ~p to ~p", [
+        State#state.name, State#state.host, Old, IP
+    ]),
+    case family(IP) =:= family(Old) of
+        true ->
+            bump(address_changes, State#state{ip = IP});
+        false ->
+            case open_udp(IP) of
+                {ok, Socket} ->
+                    close_socket(State),
+                    bump(address_changes, State#state{
+                        ip = IP, socket = Socket
+                    });
+                {error, Reason} ->
+                    ?LOG_WARNING(
+                        "chappe_rtpengine_client ~p: socket for ~p: ~p", [
+                            State#state.name, IP, Reason
+                        ]
+                    ),
+                    State
+            end
+    end;
+resolved({error, Reason}, State) ->
+    ?LOG_WARNING(
+        "chappe_rtpengine_client ~p: re-resolving ~p failed: ~p, keeping ~p",
+        [State#state.name, State#state.host, Reason, State#state.ip]
+    ),
+    State.

@@ -17,12 +17,15 @@
 -export([all/0, init_per_suite/1, end_per_suite/1]).
 -export([corpus_present/1, parse_never_crashes/1, wellformed_accepted/1,
          malformed_startline_rejected/1, wellformed_fields/1,
-         mandatory_headers_validated/1, deep_parse_defects/1]).
+         mandatory_headers_validated/1, deep_parse_defects/1,
+         stack_udp_responses/1, semiuri_user/1, message_syntax/1,
+         uri_comparison/1]).
 
 all() ->
     [corpus_present, parse_never_crashes, wellformed_accepted,
      malformed_startline_rejected, wellformed_fields,
-     mandatory_headers_validated, deep_parse_defects].
+     mandatory_headers_validated, deep_parse_defects,
+     stack_udp_responses, semiuri_user, message_syntax, uri_comparison].
 
 init_per_suite(Config) ->
     [{corpus, filename:join(?config(data_dir, Config), "rfc4475")} | Config].
@@ -134,3 +137,262 @@ deep_parse_defects(Config) ->
     {ok, Sl} = chappe_sip_msg:parse(read(Config, scalarlg)),
     ?assertMatch({error, _},
                  chappe_sip_hdr:cseq(chappe_sip_msg:get(<<"cseq">>, Sl))).
+
+%% RFC 4475 3.1.1.10 (semiuri): the Request-URI's user part carries a ';'
+%% and an escaped '@'; the parameters begin after the host.
+%% req: R3261-U-09
+semiuri_user(Config) ->
+    {ok, M} = chappe_sip_msg:parse(read(Config, semiuri)),
+    {ok, U} = chappe_sip_uri:parse(chappe_sip_msg:uri(M)),
+    ?assertEqual(<<"user;par=u%40example.net">>, maps:get(user, U)),
+    ?assertEqual(<<"example.com">>, maps:get(host, U)),
+    ?assertEqual(#{}, maps:get(params, U)),
+    {ok, A} = chappe_sip_uri:parse(<<"sip:alice;day=tuesday@example.com">>),
+    ?assertEqual({<<"alice;day=tuesday">>, <<"example.com">>},
+                 {maps:get(user, A), maps:get(host, A)}).
+
+%% Message syntax the parser enforces: a header name is a token, the
+%% SIP-Version is case-insensitive, compact and long header names are the
+%% same header, a request's CSeq names its own method, and a proxy adds
+%% Max-Forwards: 70 to a request that has none.
+%% req: R3261-U-01 R3261-U-02 R3261-U-03 R3261-U-04 R3261-U-06
+message_syntax(_Config) ->
+    Req = fun(Line, Extra) ->
+        iolist_to_binary([Line, <<"\r\nVia: SIP/2.0/UDP h;branch=z9hG4bK1\r\n"
+                                   "From: <sip:a@b>;tag=1\r\nTo: <sip:x@y>\r\n"
+                                   "Call-ID: c@h\r\nCSeq: 1 OPTIONS\r\n">>,
+                          Extra, <<"\r\n">>])
+    end,
+    ?assertEqual({error, malformed},
+                 chappe_sip_msg:parse(Req(<<"OPTIONS sip:x@y SIP/2.0">>, <<"Bad Name: 1\r\n">>))),
+    {ok, Lower} = chappe_sip_msg:parse(Req(<<"OPTIONS sip:x@y sip/2.0">>, <<>>)),
+    ?assertEqual(ok, chappe_sip_msg:validate(Lower)),
+    ?assertMatch({ok, _}, chappe_sip_msg:parse(<<"Sip/2.0 200 OK\r\n\r\n">>)),
+    %% what we send is upper-case
+    ?assertMatch(<<"OPTIONS sip:x@y SIP/2.0\r\n", _/binary>>,
+                 iolist_to_binary(chappe_sip_msg:encode(Lower))),
+    {ok, Compact} = chappe_sip_msg:parse(
+                      Req(<<"OPTIONS sip:x@y SIP/2.0">>,
+                          <<"a: *;audio\r\nj: *;video\r\nd: proxy\r\ny: abc\r\nn: <https://x>\r\n">>)),
+    ?assertEqual(<<"*;audio">>, chappe_sip_msg:get(<<"Accept-Contact">>, Compact)),
+    ?assertEqual(<<"*;video">>, chappe_sip_msg:get(<<"Reject-Contact">>, Compact)),
+    ?assertEqual(<<"proxy">>, chappe_sip_msg:get(<<"Request-Disposition">>, Compact)),
+    ?assertEqual(<<"abc">>, chappe_sip_msg:get(<<"Identity">>, Compact)),
+    ?assertEqual(<<"<https://x>">>, chappe_sip_msg:get(<<"Identity-Info">>, Compact)),
+    ?assertEqual({error, bad_cseq},
+                 chappe_sip_msg:validate(
+                   chappe_sip_msg:set(<<"CSeq">>, <<"1 INVITE">>, Lower))),
+    {ok, Fwd} = chappe_sip_msg:decr_max_forwards(Lower),
+    ?assertEqual(<<"70">>, chappe_sip_msg:get(<<"max-forwards">>, Fwd)).
+
+%% RFC 3261 19.1.4 on its own examples: escaped and case variants match,
+%% a header component, a port, a transport, a maddr or a different
+%% security param do not.
+%% req: R3261-U-10 R3261-397
+uri_comparison(_Config) ->
+    Eq = fun chappe_sip_uri:equal/2,
+    ?assert(Eq(<<"sip:%61lice@atlanta.com;transport=TCP">>,
+               <<"sip:alice@AtLanTa.CoM;Transport=tcp">>)),
+    ?assert(Eq(<<"sip:carol@chicago.com">>, <<"sip:carol@chicago.com;newparam=5">>)),
+    ?assert(Eq(<<"sip:alice@atlanta.com?subject=project%20x&priority=urgent">>,
+               <<"sip:alice@atlanta.com?priority=urgent&subject=project%20x">>)),
+    ?assertNot(Eq(<<"sip:carol@chicago.com">>,
+                  <<"sip:carol@chicago.com?Subject=next%20meeting">>)),
+    ?assertNot(Eq(<<"sip:bob@biloxi.com">>, <<"sip:bob@biloxi.com:5060">>)),
+    ?assertNot(Eq(<<"sip:bob@biloxi.com">>, <<"sip:bob@biloxi.com;transport=udp">>)),
+    ?assertNot(Eq(<<"SIP:ALICE@AtLanTa.CoM;Transport=udp">>,
+                  <<"sip:alice@AtLanTa.CoM;Transport=UDP">>)),
+    ?assertNot(Eq(<<"sip:carol@chicago.com;security=on">>,
+                  <<"sip:carol@chicago.com;security=off">>)).
+
+%% ---- the corpus through the running stack ----
+
+%% What RFC 4475 expects of a UA receiving each vector over UDP, as the
+%% set of acceptable outcomes: a final status, `none' (no response: a
+%% response message is discarded, 3.1.2.x allow a malformed datagram to be
+%% dropped), or `any' (any final status, the vector only has to leave the
+%% stack running). The node runs handlers for INVITE (486), OPTIONS and
+%% MESSAGE (200) and a registrar, so a well-formed request meets a real
+%% handler and the stack's own checks come first.
+rfc4475_expect() ->
+    Valid = [valid],
+    #{
+      %% 3.1.1 well-formed: a final response other than 400
+      wsinv => Valid, esc01 => Valid, escnull => Valid, lwsdisp => Valid,
+      dblreq => Valid, semiuri => Valid, transports => Valid,
+      mpart01 => Valid, unreason => [none], noreason => [none],
+      %% Via over TCP (or TLS): the response goes over a connection we do
+      %% not hold, so only the node's survival is checked
+      intmeth => [any, none], esc02 => [any, none], longreq => [any, none],
+      trws => [any, none], scalar02 => [any, none], unkscm => [any, none],
+      novelsc => [any, none], regaut01 => [any, none],
+      bext01 => [any, none], scalarlg => [none],
+      %% 3.1.2 malformed requests: 400, except where the RFC allows
+      %% another answer or a drop
+      badinv01 => [400], clerr => [400], ncl => [400, none],
+      quotbal => [400], ltgtruri => [400, none], lwsruri => [400],
+      lwsstart => [400, none, valid], escruri => [400, valid],
+      baddate => [400, valid], regbadct => [400, valid],
+      badaspec => [400, valid], baddn => [400], badvers => [505],
+      mismatch01 => [400], mismatch02 => [501, 400], bigcode => [none],
+      %% 3.3 transaction and application layer semantics
+      badbranch => [any], insuf => [400], unksm2 => [400, 404, 416],
+      invut => [415], multi01 => [400], mcl01 => [400, none],
+      bcast => [none], zeromf => Valid, cparam01 => Valid,
+      cparam02 => Valid, regescrt => Valid, sdp01 => [400, 406, valid],
+      %% 3.4 RFC 2543 backward compatibility
+      inv2543 => Valid,
+      test => [400, none]
+    }.
+
+%% Where the stack does not meet rfc4475_expect/0 today: the outcome it
+%% gives and why. A vector here that starts to conform fails the case, so
+%% the list only shrinks.
+rfc4475_known() ->
+    #{
+      %% sofia cannot parse the Via (empty parameters), so it has nowhere
+      %% to send the 400 and drops the request (3.1.2.1 wants a 400)
+      badinv01 => none,
+      %% SIP/7.0 in the start line and the Via: dropped, no 505 (3.1.2.16)
+      badvers => none,
+      %% LWS inside the Request-URI: dropped, no 400 (3.1.2.8)
+      lwsruri => none
+    }.
+
+%% Every vector of the corpus sent over UDP to a running stack
+%% (sofia's nta through the NIF), from a socket on the vector's Via
+%% sent-by port so the response comes back to it. The stack must answer
+%% as RFC 4475 describes and stay up; an OPTIONS round trip at the end
+%% proves it is still serving.
+%% req: R3261-373 R3261-360 R3261-361 R3261-368
+stack_udp_responses(Config) ->
+    Socks = listen_sockets([5050, 5060, 5070]),
+    case Socks of
+        {error, Port} ->
+            {skip, io_lib:format("UDP 127.0.0.1:~b is busy", [Port])};
+        _ ->
+            try stack_udp_responses(Config, Socks)
+            after
+                [gen_udp:close(S) || S <- maps:values(Socks)],
+                _ = chappe_sip:stop(),
+                _ = chappe_sip_engine:reset_routes(),
+                _ = application:stop(chappe_sip),
+                application:unset_env(chappe_sip, engine_mod,
+                                      [{persistent, true}])
+            end
+    end.
+
+stack_udp_responses(Config, Socks) ->
+    application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
+                        [{persistent, true}]),
+    {ok, _} = application:ensure_all_started(chappe_sip),
+    Port = chappe_sip_test_port:pick(),
+    ok = chappe_sip:start(#{contact => iolist_to_binary(
+                                         ["sip:127.0.0.1:",
+                                          integer_to_list(Port)])}),
+    ok = chappe_sip:invite(reply(486)),
+    ok = chappe_sip:options(reply(200)),
+    ok = chappe_sip:message(reply(200)),
+    ok = chappe_sip:register(chappe_sip:registrar(#{allow_unauthenticated => true})),
+    Expect = rfc4475_expect(),
+    Known = rfc4475_known(),
+    Seen = [{N, send_vector(read(Config, N), Socks, Port)}
+            || N <- lists:sort(all_names())],
+    ct:log("outcomes: ~p", [Seen]),
+    Bad = [{N, Got, maps:get(N, Expect)}
+           || {N, Got} <- Seen,
+              not conforms(Got, maps:get(N, Expect)),
+              maps:get(N, Known, undefined) =/= Got],
+    Fixed = [{N, Got} || {N, Got} <- Seen,
+                         maps:is_key(N, Known),
+                         conforms(Got, maps:get(N, Expect))],
+    ?assertEqual([], Bad),
+    ?assertEqual([], Fixed),
+    %% still serving
+    ?assertEqual(200, send_vector(options_probe(Port), Socks, Port)).
+
+reply(Status) ->
+    fun(_Req, Res) -> chappe_sip_res:send(Res, Status) end.
+
+conforms(Got, Accept) ->
+    lists:any(fun(A) -> accepts(A, Got) end, Accept).
+
+accepts(any, S) -> is_integer(S);
+accepts(valid, S) -> is_integer(S) andalso S =/= 400;
+accepts(A, S) -> A =:= S.
+
+listen_sockets(Ports) ->
+    lists:foldl(
+      fun(_, {error, _} = E) -> E;
+         (P, Acc) ->
+              case gen_udp:open(P, [binary, {ip, {127, 0, 0, 1}},
+                                    {active, false}]) of
+                  {ok, S} -> Acc#{P => S};
+                  {error, _} ->
+                      [gen_udp:close(S) || S <- maps:values(Acc)],
+                      {error, P}
+              end
+      end, #{}, Ports).
+
+%% Send one datagram from the socket of its Via port and return the first
+%% final status for it that comes back within a second, or none. The
+%% Call-ID tells its responses from the retransmitted finals of earlier
+%% INVITEs, which nobody ACKs.
+send_vector(Bin, Socks, Port) ->
+    S = maps:get(via_port(Bin), Socks, maps:get(5060, Socks)),
+    [flush(X) || X <- maps:values(Socks)],
+    ok = gen_udp:send(S, {127, 0, 0, 1}, Port, Bin),
+    first_final(S, call_id(Bin), erlang:monotonic_time(millisecond) + 1000).
+
+first_final(S, CallId, Deadline) ->
+    Left = Deadline - erlang:monotonic_time(millisecond),
+    case Left > 0 andalso gen_udp:recv(S, 0, Left) of
+        {ok, {_, _, Data}} ->
+            Ours = CallId =:= any orelse CallId =:= call_id(Data),
+            case {status(Data), Ours} of
+                {N, true} when is_integer(N), N >= 200 -> N;
+                _ -> first_final(S, CallId, Deadline)
+            end;
+        _ ->
+            none
+    end.
+
+status(Data) ->
+    case re:run(Data, "^SIP/2\\.0 ([0-9]{3}) ",
+                [{capture, all_but_first, binary}]) of
+        {match, [St]} -> binary_to_integer(St);
+        nomatch -> undefined
+    end.
+
+call_id(Bin) ->
+    case re:run(Bin, "\\n(?:Call-ID|i)[ \\t]*:[ \\t]*([^\\r\\n]+)",
+                [caseless, {capture, all_but_first, binary}]) of
+        {match, [C]} -> string:trim(C);
+        nomatch -> any
+    end.
+
+flush(S) ->
+    case gen_udp:recv(S, 0, 0) of
+        {ok, _} -> flush(S);
+        {error, _} -> ok
+    end.
+
+%% the port of the top Via's sent-by, 5060 when it has none
+via_port(Bin) ->
+    case re:run(Bin, "\\n(?:Via|v)[ \\t]*:[^\\n]*?/[ \\t]*(?:UDP|udp)"
+                     "[ \\t]+[^ \\t;:\\r\\n]+:([0-9]+)",
+                [{capture, all_but_first, binary}]) of
+        {match, [P]} -> binary_to_integer(P);
+        nomatch -> 5060
+    end.
+
+options_probe(Port) ->
+    P = integer_to_binary(Port),
+    <<"OPTIONS sip:probe@127.0.0.1:", P/binary, " SIP/2.0\r\n",
+      "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK-4475-probe\r\n",
+      "From: <sip:probe@127.0.0.1:5060>;tag=4475\r\n",
+      "To: <sip:probe@127.0.0.1:", P/binary, ">\r\n",
+      "Call-ID: rfc4475-probe@127.0.0.1\r\n",
+      "CSeq: 1 OPTIONS\r\n",
+      "Max-Forwards: 70\r\n",
+      "Content-Length: 0\r\n\r\n">>.

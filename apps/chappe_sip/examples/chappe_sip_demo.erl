@@ -58,9 +58,9 @@ b2bua(Port, Dest) ->
 -spec registrar(inet:port_number()) -> ok.
 registrar(Port) ->
     ok = chappe_sip:start(#{contact => contact(Port)}),
-    %% chappe_sip:registrar/0 records contacts and answers 200 with the live
+    %% chappe_sip:registrar/1 records contacts and answers 200 with the live
     %% bindings; chappe_sip:location/1 resolves an AOR to its contacts.
-    ok = chappe_sip:register(chappe_sip:registrar()),
+    ok = chappe_sip:register(chappe_sip:registrar(#{allow_unauthenticated => true})),
     ok.
 
 contact(Port) ->

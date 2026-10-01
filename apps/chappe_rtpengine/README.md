@@ -53,7 +53,7 @@ Inspect and tear down the session when the call ends:
 
 ## Parameters and results
 
-Parameters are maps with atom keys. Underscored atoms map to the NG wire names (`call_id` becomes `call-id`, `transport_protocol` becomes `transport-protocol`); irregular casings are handled (`ice` becomes `ICE`, `dtls` becomes `DTLS`). Atom values hyphenate the same way, so `flags => [trust_address]` goes out as `trust-address`. Binary keys and values pass through untouched, which covers anything not mapped yet. Any other NG command is reachable through `chappe_rtpengine:cmd(Node, Command, Params)`.
+Parameters are maps with atom keys. Underscored atoms map to the NG wire names (`call_id` becomes `call-id`, `transport_protocol` becomes `transport-protocol`); irregular casings are handled (`ice` becomes `ICE`, `dtls` becomes `DTLS`). Atom values under the option-word keys (`flags`, `replace`, `rtcp_mux`, `ice`, `ice_lite`, `dtls`, `dtls_reverse`, `osrtp`, `t38`, `record_call`) hyphenate the same way, so `flags => [trust_address]` goes out as `trust-address`; every other atom value is sent verbatim, so SDES suite names and codec names keep their underscores. Floats and tuples are refused with `{error, {bad_param, Key, Value}}`. Binary keys and values pass through untouched, which covers anything not mapped yet. Any other NG command is reachable through `chappe_rtpengine:cmd(Node, Command, Params)`.
 
 Results are:
 

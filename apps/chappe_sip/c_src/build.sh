@@ -2,7 +2,7 @@
 # Copyright 2026 Benoit Chesneau
 # SPDX-License-Identifier: Apache-2.0
 # Builds sofia-sip (static) and links priv/lib/chappe_sip_engine_nif.so.
-# Two-stage stamps: sofia rebuilds only when the submodule SHA changes,
+# Two-stage stamps: sofia rebuilds only when its vendored tree changes,
 # the NIF recompiles only when the shim or this script changes.
 # SKIP_ENGINE_BUILD=1 skips everything (pure Erlang work).
 set -e
@@ -19,11 +19,13 @@ NIF_SRC="$CSRC/chappe_sip_engine_nif.c"
 NIF_SO="$PRIV/chappe_sip_engine_nif.so"
 
 if [ ! -f "$SOFIA/configure.ac" ]; then
-    echo "error: sofia-sip submodule missing; run: git submodule update --init" >&2
+    echo "error: vendored sofia-sip missing under $SOFIA" >&2
     exit 1
 fi
 
-SOFIA_SHA=$(git -C "$SOFIA" rev-parse HEAD 2>/dev/null || echo unknown)
+# sofia is vendored, not a submodule: HEAD would be the umbrella's commit and
+# rebuild sofia on every commit, so key on the hash of its tree instead
+SOFIA_SHA=$(git -C "$SOFIA" rev-parse HEAD:./ 2>/dev/null || echo unknown)
 
 # The NIF stamp must change when anything that affects the built object does:
 # the shim source, this script, the sanitizer, the target arch/OS, and the

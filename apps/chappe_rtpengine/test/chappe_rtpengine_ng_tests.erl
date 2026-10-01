@@ -29,14 +29,97 @@ command_key_mapping_test() ->
 irregular_casing_test() ->
     Dict = chappe_rtpengine_ng:command(offer, #{
         dtls => off,
-        sdes => [no_srtp],
+        sdes => [unencrypted_srtp],
         osrtp => accept,
         record_call => yes
     }),
     ?assertEqual(<<"off">>, maps:get(<<"DTLS">>, Dict)),
-    ?assertEqual([<<"no-srtp">>], maps:get(<<"SDES">>, Dict)),
+    ?assertEqual([<<"unencrypted_srtp">>], maps:get(<<"SDES">>, Dict)),
     ?assertEqual(<<"accept">>, maps:get(<<"OSRTP">>, Dict)),
     ?assertEqual(<<"yes">>, maps:get(<<"record call">>, Dict)).
+
+%% Keys whose NG names are not the hyphenated atom.
+%% req: RNG-10
+documented_key_names_test() ->
+    Dict = chappe_rtpengine_ng:command(offer, #{
+        media_address => <<"203.0.113.1">>,
+        address_family => 'IP6',
+        received_from => [<<"IP4">>, <<"198.51.100.1">>],
+        ice_lite => forward,
+        tos => 184,
+        dtls_fingerprint => 'SHA-256',
+        dtls_reverse => passive,
+        t38 => [decode]
+    }),
+    ?assertEqual(<<"203.0.113.1">>, maps:get(<<"media address">>, Dict)),
+    ?assertEqual(<<"IP6">>, maps:get(<<"address family">>, Dict)),
+    ?assertEqual(
+        [<<"IP4">>, <<"198.51.100.1">>], maps:get(<<"received from">>, Dict)
+    ),
+    ?assertEqual(<<"forward">>, maps:get(<<"ICE-lite">>, Dict)),
+    ?assertEqual(184, maps:get(<<"TOS">>, Dict)),
+    ?assertEqual(<<"SHA-256">>, maps:get(<<"DTLS-fingerprint">>, Dict)),
+    ?assertEqual(<<"passive">>, maps:get(<<"DTLS-reverse">>, Dict)),
+    ?assertEqual([<<"decode">>], maps:get(<<"T.38">>, Dict)).
+
+%% Option words (flags, replace, ICE, ...) are hyphenated; every other
+%% atom value goes out verbatim, so SDES suite names and codec names
+%% keep their underscores.
+%% req: RNG-10
+atom_value_rule_test() ->
+    Dict = chappe_rtpengine_ng:command(offer, #{
+        flags => [trust_address, strict_source],
+        replace => [session_connection, origin],
+        ice => force_relay,
+        sdes => [no_AES_CM_128_HMAC_SHA1_32, 'only-AES_CM_128_HMAC_SHA1_80'],
+        codec => #{transcode => [opus], mask => ['G722_1']},
+        direction => [pub_net, priv_net]
+    }),
+    ?assertEqual(
+        [<<"trust-address">>, <<"strict-source">>], maps:get(<<"flags">>, Dict)
+    ),
+    ?assertEqual(
+        [<<"session-connection">>, <<"origin">>], maps:get(<<"replace">>, Dict)
+    ),
+    ?assertEqual(<<"force-relay">>, maps:get(<<"ICE">>, Dict)),
+    ?assertEqual(
+        [<<"no_AES_CM_128_HMAC_SHA1_32">>, <<"only-AES_CM_128_HMAC_SHA1_80">>],
+        maps:get(<<"SDES">>, Dict)
+    ),
+    ?assertEqual(
+        #{<<"transcode">> => [<<"opus">>], <<"mask">> => [<<"G722_1">>]},
+        maps:get(<<"codec">>, Dict)
+    ),
+    ?assertEqual([<<"pub_net">>, <<"priv_net">>], maps:get(<<"direction">>, Dict)).
+
+%% Bencode has no floats or tuples: a clear error, not a function_clause.
+bad_value_rejected_test() ->
+    ?assertError(
+        {bad_param, ptime, 20.0},
+        chappe_rtpengine_ng:command(offer, #{ptime => 20.0})
+    ),
+    ?assertError(
+        {bad_param, address, {1, 2, 3, 4}},
+        chappe_rtpengine_ng:command(offer, #{address => {1, 2, 3, 4}})
+    ),
+    ?assertError(
+        {bad_param, codec, 1.5},
+        chappe_rtpengine_ng:command(offer, #{codec => #{mask => [1.5]}})
+    ).
+
+%% rtpengine sheds load with result "load limit".
+%% req: RNG-07
+decode_reply_load_limit_test() ->
+    Reply = #{<<"result">> => <<"load limit">>, <<"message">> => <<"busy">>},
+    ?assertEqual(
+        {error, load_limit, Reply}, chappe_rtpengine_ng:decode_reply(Reply)
+    ).
+
+%% A warning rides on a successful reply and stays in the map.
+%% req: RNG-07
+decode_reply_keeps_warning_test() ->
+    Reply = #{<<"result">> => <<"ok">>, <<"warning">> => <<"codec dropped">>},
+    ?assertEqual({ok, Reply}, chappe_rtpengine_ng:decode_reply(Reply)).
 
 binary_key_passthrough_test() ->
     Dict = chappe_rtpengine_ng:command(offer, #{<<"generic key">> => <<"value">>}),

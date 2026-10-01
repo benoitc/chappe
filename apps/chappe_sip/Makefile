@@ -8,10 +8,13 @@
 #   make test-static  lint + xref + dialyzer
 #   make check      build + test + test-static
 #   make interop    real-stack interop (needs node + docker)
+#   make interop-conformance
+#                   SIPp and pjsua against a chappe node (needs docker)
 #   make asan       run the C NIF under AddressSanitizer (Linux container)
 
 .PHONY: all compile test test-static check eunit ct lint xref dialyzer \
-        fmt fmt-check docs interop asan clean
+        fmt fmt-check docs interop interop-conformance asan \
+        clean
 
 all: compile
 
@@ -48,8 +51,13 @@ test-static: lint xref dialyzer
 
 check: compile test test-static
 
+# chappe_sip is an umbrella app: its suites run from the umbrella root
 interop:
-	INTEROP=1 rebar3 ct --suite test/esip_interop_SUITE
+	cd ../.. && INTEROP=1 rebar3 ct \
+	    --suite apps/chappe_sip/test/chappe_sip_interop_SUITE
+
+interop-conformance:
+	$(MAKE) -C ../.. interop-conformance
 
 asan:
 	test/asan/run.sh

@@ -47,8 +47,34 @@ run(Dialog) ->
     end.
 ```
 
-Unclaimed in-dialog requests (INFO/UPDATE) are auto-answered 200; a peer BYE
-arrives as `destroy`.
+A peer BYE arrives as `destroy` with the BYE request, so you can read its
+`Reason` (RFC 3326) with `chappe_sip_req:get(<<"reason">>, Req)`.
+
+In-dialog requests you did not claim with `handled_events` are answered by
+the dialog and reported as `{auto_answered, Event}`:
+
+| Request | Answer |
+|---|---|
+| re-INVITE or UPDATE with an SDP offer | 200 with your current local SDP (the session is unchanged); 488 if the dialog has no local SDP |
+| re-INVITE without SDP | 200 with your local SDP as the offer; the answer in the ACK becomes the remote SDP |
+| UPDATE without SDP, INFO, NOTIFY, MESSAGE | 200 |
+| OPTIONS | 200 with Allow, Accept and Supported |
+| REFER | 603 |
+| REGISTER, PUBLISH | 405 with Allow |
+| any other method | 501 with Allow |
+
+Whether claimed or not, the dialog keeps `chappe_sip_dialog:remote_sdp/1` (the
+peer's SDP) and `chappe_sip_dialog:local_sdp/1` (yours) up to date across
+re-INVITE, UPDATE and ACK, and applies the overlap rules of
+RFC 3261 14.2 and RFC 3311 5.2: an INVITE arriving while your own re-INVITE is
+pending gets 491, and an INVITE or UPDATE arriving before you answered the
+previous one gets 500 with Retry-After.
+
+Out of dialog, a method you registered no handler for is answered by the
+stack: OPTIONS gets 200 with Allow, Accept, Supported (and Allow-Events when
+you gave `chappe_sip:subscribe/2` a package list), a method it knows gets 405
+and any other 501, both with Allow. Register `chappe_sip:options/1` to answer
+OPTIONS yourself.
 
 ## Drive the dialog
 
@@ -59,6 +85,51 @@ arrives as `destroy`.
                                            content_type => <<"application/dtmf">>,
                                            body => <<"1">>}),
 ok = chappe_sip_dialog:destroy(Dialog).                        %% send BYE
+```
+
+Put a Reason (RFC 3326), or any header, on the BYE:
+
+```erlang
+ok = chappe_sip_dialog:destroy(Dialog, #{headers => [{<<"Reason">>, <<"Q.850;cause=16">>}]}).
+```
+
+The dialog keeps RFC 3261 timing for you:
+
+- `destroy/1` before the caller has ACKed your 200 holds the BYE until the
+  ACK arrives (RFC 3261 15). If no ACK comes within 64*T1 (32 s), the dialog
+  sends the BYE itself and you get `destroy` with reason `no_ack`.
+- `destroy/1` on a dialog you created with a provisional `status` (still
+  ringing) answers the INVITE 480 instead of sending a BYE.
+- `modify/2` while an INVITE from the peer is still open (unanswered, or
+  answered 2xx and not yet ACKed) waits for it to finish (RFC 3261 14.1).
+- A 481 or 408 to one of your in-dialog requests ends the dialog: you get
+  `destroy` with reason `{request_failed, Status}`.
+- A peer BYE while you hold a claimed re-INVITE or UPDATE answers it 487
+  first.
+
+If the peer re-INVITEs at the same moment you do, your re-INVITE gets 491.
+Ask for the RFC 3261 14.1 retry (once, after 2.1 to 4 s if you placed the call,
+0 to 2 s otherwise):
+
+```erlang
+{ok, RemoteSdp} = chappe_sip_dialog:modify(Dialog, hold, #{retry_on_glare => true}).
+```
+
+Without it, or on a second 491, you get
+`{error, #chappe_sip_error{status = 491}}` and the session is unchanged.
+
+## Handle a CANCEL
+
+While your handler has not sent a final response, a CANCEL of the INVITE
+arrives as `{chappe_sip_cancel, TxnH, CancelReq}`. `CancelReq` is the CANCEL
+request, so its Reason is readable. Answer the INVITE with 487:
+
+```erlang
+receive
+    {chappe_sip_cancel, _TxnH, CancelReq} ->
+        _Reason = chappe_sip_req:get(<<"reason">>, CancelReq),
+        chappe_sip_res:send(Res, 487)
+end.
 ```
 
 ## Structured handlers
@@ -90,6 +161,96 @@ ok = chappe_sip:invite(fun(Req, Res) -> chappe_sip_handler:start(my_call, Req, R
 `init/1` returns `{answer, Opts, State}`, `{reject, Status, State}`, or
 `{ignore, State}`. A `handle_dialog` callback returns `{ok, State}` or
 `{stop, State}` (which sends BYE).
+
+## Match an INVITE with Replaces
+
+An INVITE carrying a `Replaces` header (RFC 3891) asks you to swap one of your
+dialogs for the new one: attended transfer, call pickup, or a conference bridge
+taking over a leg. `chappe_sip:replaces_response/1` finds the dialog it names
+and applies the RFC 3891 section 3 rules for you:
+
+```erlang
+ok = chappe_sip:invite(fun(Req, Res) ->
+    case chappe_sip:replaces_response(Req) of
+        no_replaces ->
+            {ok, _Dlg} = chappe_sip:create_uas(Req, Res, #{local_sdp => Sdp});
+        {reject, Status} ->
+            chappe_sip_res:send(Res, Status);
+        {accept, Old, _Info} ->
+            {ok, _New} = chappe_sip:create_uas(Req, Res, #{local_sdp => Sdp}),
+            ok = chappe_sip_dialog:destroy(Old)
+    end
+end).
+```
+
+It answers 400 for two Replaces headers, a malformed one, one on a request
+other than INVITE, or one alongside Join; 481 when no dialog matches or the
+match is an early dialog you did not originate; 603 when the dialog is being
+torn down; 486 for a confirmed dialog and the `early-only` flag. On `accept`,
+`destroy/1` sends a BYE for a confirmed dialog and a CANCEL for your own
+ringing call. For the raw match, use `chappe_sip:find_replaced/1`.
+
+RFC 3891 section 3 has you check that the sender may replace the dialog
+before you do. Pass your policy to `replaces_response/2`; it is asked only
+when the match would be accepted, and a `false` gives `{reject, 403}` with the
+old dialog left alone:
+
+```erlang
+Authorize = fun(Old, Req) -> referred_by_peer(Old, Req) end,
+case chappe_sip:replaces_response(Req, #{authorize => Authorize}) of
+    {reject, Status} -> chappe_sip_res:send(Res, Status);
+    Other -> handle(Other)
+end.
+```
+
+A Referred-By naming the party being replaced, or an authenticated identity
+equal to it, are the grounds the RFC gives.
+
+To look a dialog up by identity yourself, use
+`chappe_sip:find_dialog(CallId, LocalTag, RemoteTag)`, where `LocalTag` is the
+tag you put in the dialog.
+
+To send a Replaces, build the value and add it as a header, or escape it into
+a Refer-To URI for a REFER:
+
+```erlang
+Value = chappe_sip_hdr:replaces_value(#{call_id => CallId, to_tag => PeerTag,
+                                        from_tag => MyTag}),
+ReferTo = <<"<sip:bridge@example.org?Replaces=",
+            (chappe_sip_hdr:escape(Value))/binary, ">">>.
+```
+
+A REFER target read the other way: `chappe_sip_hdr:refer_to_replaces(ReferTo)`.
+
+Notes:
+
+- The recipient's view decides the tags: `to-tag` is the recipient's local
+  tag, `from-tag` the recipient's peer. When you send a Replaces, `to_tag` is
+  the tag of the UA you send it to.
+- Only dialogs chappe_sip created are indexed: UAS dialogs, UAC dialogs, and
+  the early dialogs of a UAC call still ringing (one per tagged provisional).
+- Your INVITEs and their 2xx carry `Supported: replaces`, and an INVITE with
+  `Require: replaces` is accepted.
+- Authorize the request (RFC 3891 section 6) before acting on a match.
+
+## Accept an extension in Require
+
+An INVITE (or an in-dialog request) listing an option tag you do not support
+in `Require` gets 420 with `Unsupported` before your handler runs (RFC 3261
+8.2.2.3). ACK and CANCEL are never refused for it, and `Proxy-Require` is
+ignored. The tags taken everywhere are `supported_option_tags` (`100rel`,
+`replaces`, `timer`, `tdialog`, `norefersub`). A recording server (SRS) takes
+the SRC's `Require: siprec` (RFC 7866 6.1.1) on its own route:
+
+```erlang
+ok = chappe_sip:handle(<<"INVITE">>, fun(Req, Res) ->
+    {ok, _} = chappe_sip:create_uas(Req, Res, #{local_sdp => Sdp})
+end, #{option_tags => [<<"siprec">>]}).
+```
+
+The dialog the route creates takes the same tags in its in-dialog requests.
+Any method takes the same option, and adding the tag to
+`supported_option_tags` accepts it on every route.
 
 ## Notes
 

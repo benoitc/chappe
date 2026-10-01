@@ -15,11 +15,11 @@
 
 -export([all/0, init_per_suite/1, end_per_suite/1, end_per_testcase/2]).
 -export([record_route_call/1, callee_bye/1, reinvite_through_proxy/1,
-         forged_route_marker_not_relayed/1]).
+         forged_route_marker_not_relayed/1, require_left_to_uas/1]).
 
 all() ->
     [record_route_call, callee_bye, reinvite_through_proxy,
-     forged_route_marker_not_relayed].
+     forged_route_marker_not_relayed, require_left_to_uas].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -177,18 +177,67 @@ forged_route_marker_not_relayed(_Config) ->
         Short = <<"<sip:127.0.0.1:", EPB/binary, ";lr;espx=abc>">>,
         send(Sock, EP, bye(Sock, Call, <<"atk">>, <<"vtag">>, Short,
                            ctc(VictimP), 2)),
-        _ = recv_status(Sock, 405),
+        %% a BYE naming no dialog of ours (RFC 3261 15.1.2)
+        _ = recv_status(Sock, 481),
         Full = <<"<sip:127.0.0.1:", EPB/binary,
                  ";lr;espx=00000000000000000000000000000000>">>,
         send(Sock, EP, bye(Sock, Call, <<"atk">>, <<"vtag">>, Full,
                            ctc(VictimP), 3)),
-        _ = recv_status(Sock, 405),          % refused, not relayed
+        _ = recv_status(Sock, 481),          % refused, not relayed
         Test ! atk_refused
     end),
     ok = expect(atk_refused),
     ok = expect(victim_quiet).
 
 %% ---- app + peers ----
+
+%% Require is for the far UAS: a proxy route forwards an INVITE requiring
+%% an extension we do not know, and the in-dialog BYE that comes back
+%% through our Record-Route with the same Require is forwarded too, not
+%% answered 420.
+%% req: R3261-U-11
+require_left_to_uas(_Config) ->
+    {EP, CP} = setup(),
+    Test = self(),
+    ok = chappe_sip:handle(<<"INVITE">>, fun(Req, _Res) ->
+        chappe_sip:proxy_request(Req, [dest(CP)], #{record_route => true})
+    end, #{proxy => true}),
+    Call = callid(),
+    FT = <<"rq1">>,
+    Req = <<"Require: x-far-end\r\n">>,
+    peer(CP, fun(Sock) ->
+        {Inv, PSrc} = recv(Sock, <<"INVITE">>),
+        Test ! {callee_invite, Inv},
+        RR = record_route_of(Inv),
+        send(Sock, PSrc, resp(Inv, 200, <<"OK">>, tag(),
+                              [{<<"Contact">>, ctc(CP)},
+                               {<<"Record-Route">>, RR}], sdp())),
+        {_Ack, _} = recv(Sock, <<"ACK">>),
+        {Bye, BSrc} = recv(Sock, <<"BYE">>),
+        Test ! {callee_bye, Bye},
+        send(Sock, BSrc, resp(Bye, 200, <<"OK">>, tag(), [], <<>>))
+    end),
+    peer(0, fun(Sock) ->
+        send(Sock, EP, with_header(invite(Sock, Call, FT), Req)),
+        R200 = recv_status(Sock, 200),
+        TT = to_tag(R200),
+        RR = record_route_of(R200),
+        Callee = contact_of(R200),
+        send(Sock, EP, ack(Sock, Call, FT, TT, RR, Callee, 1)),
+        send(Sock, EP, with_header(bye(Sock, Call, FT, TT, RR, Callee, 2), Req)),
+        _ = recv_status(Sock, 200),
+        Test ! caller_got_bye_200
+    end),
+    Inv = receive {callee_invite, I} -> I after 6000 -> ct:fail(no_invite) end,
+    ?assertNotEqual(nomatch, binary:match(Inv, <<"x-far-end">>)),
+    Bye = receive {callee_bye, B} -> B after 6000 -> ct:fail(no_bye) end,
+    ?assertNotEqual(nomatch, binary:match(Bye, <<"x-far-end">>)),
+    ok = expect(caller_got_bye_200).
+
+%% a request with one more header line after its start line
+with_header(Bin, Line) ->
+    [Start, Rest] = binary:split(Bin, <<"\r\n">>),
+    <<Start/binary, "\r\n", Line/binary, Rest/binary>>.
 
 proxy_app(CP) ->
     ok = chappe_sip:invite(fun(Req, _Res) ->

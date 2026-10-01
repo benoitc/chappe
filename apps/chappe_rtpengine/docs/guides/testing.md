@@ -14,6 +14,20 @@ make check         # everything above plus compile
 
 The seven gates (compile, eunit, ct, lint, xref, dialyzer, fmt -c) also run in CI (.github/workflows/ci.yml) and must pass before a change lands. The gated suites (`chappe_rtpengine_live_SUITE`, `chappe_rtpengine_e2e_SUITE`, `chappe_rtpengine_siprec_SUITE`) skip when `RTPENGINE_HOST` is not set; CI runs them too, in a separate `interop` job that brings up the container.
 
+## Claim a protocol requirement
+
+`docs/compliance/requirements.tsv` lists the NG protocol and bencode behaviours this library implements, one row each, in the same ten-column format as the chappe_sip catalogue (`id`, `source`, `section`, `line`, `keyword`, `actor`, `row`, `tier`, `text`, `notes`). A test that proves a row carries its id on a `%% req:` line directly above the test function:
+
+```text
+%% A reply announcing more than the 4 MiB stream cap drops the
+%% connection at once instead of buffering toward it.
+%% req: RNG-02
+tcp_oversized_length_drops_connection(Config) ->
+    ...
+```
+
+Ids are `RNG-<n>`, stable, never renumbered. Write the test first and see it fail against the code before your change.
+
 ## End-to-end against a real rtpengine
 
 One command, needs docker:

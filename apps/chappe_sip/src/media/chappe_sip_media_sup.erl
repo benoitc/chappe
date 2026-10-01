@@ -4,13 +4,13 @@
 %% @doc Supervisor for the media control-plane subsystem.
 %%
 %% Sits under chappe_sip_sup, above the stack supervisor, so media backend
-%% connections survive SIP engine restarts. It starts empty; the media
-%% libraries (chappe_rtpengine, chappe_esl) stay dormant until
+%% state survives SIP engine restarts. It starts empty; the media libraries
+%% (chappe_rtpengine, chappe_mix) stay dormant until
 %% chappe_sip_media:configure/1 brings a backend up with ensure_app/1
-%% (mirroring chappe_sip_ws_sup's lazy
-%% application:ensure_all_started of livery). rtpengine supervises its own
-%% sessions inside chappe_rtpengine; the ESL control manager (FreeSWITCH backend)
-%% is added here as a child when that backend is configured.
+%% (mirroring chappe_sip_ws_sup's lazy application:ensure_all_started of
+%% livery). rtpengine supervises its own sessions inside chappe_rtpengine;
+%% the conference room server (chappe_sip_media_mix) is added here as a
+%% child when the mix backend is configured.
 -module(chappe_sip_media_sup).
 -behaviour(supervisor).
 
@@ -32,7 +32,7 @@ ensure_app(App) ->
         {error, _} = Err -> Err
     end.
 
-%% Add a backend-owned child (the ESL control manager for FreeSWITCH).
+%% Add a backend-owned child (the conference room server for chappe_mix).
 -spec start_child(supervisor:child_spec()) ->
     {ok, pid()} | {error, term()}.
 start_child(Spec) ->

@@ -37,6 +37,22 @@ sudo chmod 600 /etc/chappe/chappe_sip.env
 Distribution is bound to loopback (`config/vm.args.src`). Expose it only behind
 a firewall, or comment out `-name`/`-setcookie` to run with no distribution.
 
+## Keep epmd on loopback
+
+epmd, the port mapper the node registers with, listens on every interface
+unless `ERL_EPMD_ADDRESS` says otherwise. `config/vm.args.src` sets it with
+`-env`, but an epmd started earlier (by the release script's ping, or by
+another node on the host) never reads that file, so set it in the
+environment too. The env file does:
+
+```sh
+ERL_EPMD_ADDRESS=127.0.0.1
+```
+
+Check with `ss -ltnp | grep 4369`: epmd must show `127.0.0.1:4369`. If an
+epmd is already bound to all interfaces, stop it (`epmd -kill`) before the
+node starts.
+
 ## Install the systemd unit
 
 ```sh

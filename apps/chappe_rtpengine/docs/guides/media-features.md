@@ -61,7 +61,16 @@ rtpengine reports detected digits as JSON datagrams to `--dtmf-log-dest`. Open t
 %% rtpengine: --dtmf-log-dest=YOUR_HOST:2225
 ```
 
-Or set `{dtmf_listen, 2225}` in the application environment. Then start sessions with `dtmf => true` and read digits from the owner mailbox:
+To bind one address and accept datagrams only from your rtpengine hosts, pass options; datagrams from any other source are dropped:
+
+```erlang
+{ok, _Port} = chappe_rtpengine_dtmf:open(2225, #{
+    ip => {10, 0, 0, 5},
+    allowed_sources => [{10, 0, 0, 21}, {10, 0, 0, 22}]
+}).
+```
+
+Or set `{dtmf_listen, 2225}` (plus `dtmf_ip` and `dtmf_allowed_sources`) in the application environment. Both default to any. Then start sessions with `dtmf => true` and read digits from the owner mailbox:
 
 ```erlang
 {ok, Sess} = chappe_rtpengine:start_session(#{call_id => CallId, dtmf => true}),

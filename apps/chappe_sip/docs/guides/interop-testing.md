@@ -20,10 +20,12 @@ interoperates on the wire before a release.
 
 ## Run
 
+From the umbrella root:
+
 ```bash
-cd interop && npm install && cd ..
-INTEROP=1 rebar3 ct --suite test/chappe_sip_interop_SUITE
-# or: make interop
+(cd apps/chappe_sip/interop && npm install)
+INTEROP=1 rebar3 ct --suite apps/chappe_sip/test/chappe_sip_interop_SUITE
+# or, from apps/chappe_sip: make interop
 ```
 
 Without `INTEROP=1` the suite skips, so the normal `rebar3 ct` run is
@@ -46,3 +48,47 @@ unaffected.
   `--network host` needed.
 - `test/asan/run.sh` runs the C NIF under AddressSanitizer in a Linux container
   (macOS cannot install interceptors for a dlopen'd NIF).
+
+## Conformance lab (SIPp and pjsua)
+
+The conformance lab checks chappe_sip against two independent SIP stacks,
+one RFC flow per case: SIPp scenarios that fail on any header the RFC
+requires and does not see, and pjsua for transfers and session timers. You
+need it when you change dialog, REFER, Replaces, session timer or
+subscription behaviour, and before a release.
+
+Everything runs in docker on one network (`10.253.7.0/24`): a chappe node
+(`interop/conformance/node/chappe_conf_node.erl`, on the public API), SIPp
+and pjsua. Docker Desktop on macOS cannot send UDP from the host to a
+container, so the node runs in a container too.
+
+```bash
+make interop-conformance
+```
+
+The first run builds three images and compiles the tree into a volume;
+later runs recompile only what changed. To run one case, or to keep the lab
+up and drive it by hand:
+
+```bash
+CONFORMANCE=1 rebar3 ct --suite apps/chappe_sip/test/chappe_sip_conformance_SUITE \
+    --case refer_notify
+apps/chappe_sip/interop/conformance/lab.sh build
+apps/chappe_sip/interop/conformance/lab.sh up
+apps/chappe_sip/interop/conformance/lab.sh sipp refer_notify
+apps/chappe_sip/interop/conformance/lab.sh down
+```
+
+Notes:
+
+- Each case is `interop/sipp/scenarios/<case>.xml`, or a pjsua flow in
+  `interop/pjsua/scenario.sh`; the case comment in the suite names the RFC
+  clause and carries the `%% req:` ids.
+- `interop/conformance/expected-fail` lists the cases for features not built
+  yet. A listed case that fails is reported skipped; one that passes fails
+  the run, so remove its line in the change that fixes it. Do not weaken a
+  scenario to make it pass.
+- Without `CONFORMANCE=1`, or without docker, the suite skips.
+- `CONFORMANCE_NOBUILD=1` skips the image and compile steps.
+- `LAB_PROXY=http://host.docker.internal:8888` sends the build container's
+  hex fetches through an HTTP proxy on your machine.

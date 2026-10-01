@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!-- Copyright 2026 Benoit Chesneau
+     SPDX-License-Identifier: Apache-2.0
+
+     A subscription's lifetime (RFC 6665). The SUBSCRIBE gets a 200 with the
+     granted Expires (4.2.1.1) and a NOTIFY right away (4.2.1.2) with
+     Subscription-State active;expires; a refresh gets a 200 and another
+     NOTIFY (4.2.1.2); Expires: 0 gets a 200 and a final NOTIFY with
+     Subscription-State terminated (4.2.1.4, 4.2.2). -->
+<scenario name="subscribe">
+  <send retrans="500">
+    <![CDATA[
+      SUBSCRIBE sip:conf@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:sipp@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:conf@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 SUBSCRIBE
+      Contact: <sip:sipp@[local_ip]:[local_port]>
+      Max-Forwards: 70
+      Event: conference
+      Accept: application/conference-info+xml
+      Expires: 600
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv response="200">
+    <action>
+      <ereg regexp="
+To[ 	]*:[^
+]*;tag=([-A-Za-z0-9.!%*_+`'~]+)" search_in="msg" check_it="true" assign_to="chk,peer_tag"/>
+      <ereg regexp="
+Contact[ 	]*:[^
+]*&lt;([^&gt;
+]+)&gt;" search_in="msg" check_it="true" assign_to="chk,peer_contact"/>
+      <ereg regexp="
+Expires[ 	]*:[ 	]* *[0-9]+" search_in="msg" check_it="true" assign_to="chk"/>
+    </action>
+  </recv>
+  <recv request="NOTIFY">
+    <action>
+      <ereg regexp="
+Event[ 	]*:[ 	]* *conference" search_in="msg" check_it="true" assign_to="chk"/>
+      <ereg regexp="
+Subscription-State[ 	]*:[ 	]* *active *;[^
+]*expires *= *[0-9]+" search_in="msg" check_it="true" assign_to="chk"/>
+    </action>
+  </recv>
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <send retrans="500">
+    <![CDATA[
+      SUBSCRIBE [$peer_contact] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:sipp@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:conf@[remote_ip]:[remote_port]>;tag=[$peer_tag]
+      Call-ID: [call_id]
+      CSeq: 2 SUBSCRIBE
+      Contact: <sip:sipp@[local_ip]:[local_port]>
+      Max-Forwards: 70
+      Event: conference
+      Accept: application/conference-info+xml
+      Expires: 600
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv response="200">
+    <action>
+      <ereg regexp="
+Expires[ 	]*:[ 	]* *[0-9]+" search_in="msg" check_it="true" assign_to="chk"/>
+    </action>
+  </recv>
+  <recv request="NOTIFY">
+    <action>
+      <ereg regexp="
+Event[ 	]*:[ 	]* *conference" search_in="msg" check_it="true" assign_to="chk"/>
+      <ereg regexp="
+Subscription-State[ 	]*:[ 	]* *active *;[^
+]*expires *= *[0-9]+" search_in="msg" check_it="true" assign_to="chk"/>
+    </action>
+  </recv>
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <send retrans="500">
+    <![CDATA[
+      SUBSCRIBE [$peer_contact] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:sipp@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:conf@[remote_ip]:[remote_port]>;tag=[$peer_tag]
+      Call-ID: [call_id]
+      CSeq: 3 SUBSCRIBE
+      Contact: <sip:sipp@[local_ip]:[local_port]>
+      Max-Forwards: 70
+      Event: conference
+      Accept: application/conference-info+xml
+      Expires: 0
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv response="200"/>
+  <recv request="NOTIFY">
+    <action>
+      <ereg regexp="
+Subscription-State[ 	]*:[ 	]* *terminated" search_in="msg" check_it="true" assign_to="chk"/>
+    </action>
+  </recv>
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <Reference variables="chk"/>
+</scenario>

@@ -1,4 +1,0 @@
-Content-Type: text/event-json
-Content-Length: 44
-
-{"Event-Name":"HEARTBEAT","Core-UUID":"abc"}

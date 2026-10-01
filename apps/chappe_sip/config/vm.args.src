@@ -10,6 +10,11 @@
 -name ${NODE_NAME:-chappe_sip@127.0.0.1}
 -setcookie ${NODE_COOKIE:-CHANGE_ME_SET_NODE_COOKIE}
 -kernel inet_dist_use_interface {127,0,0,1}
+## epmd (the port mapper the node registers with) listens on loopback only.
+## An epmd started before this file is read (by the release script's
+## nodetool ping, or another node) takes ERL_EPMD_ADDRESS from the
+## environment instead: deploy/chappe_sip.env.example sets it too.
+-env ERL_EPMD_ADDRESS 127.0.0.1
 
 +K true
 +A 16

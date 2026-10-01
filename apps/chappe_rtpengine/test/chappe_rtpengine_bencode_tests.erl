@@ -22,6 +22,7 @@ encode_list_test() ->
     ),
     ?assertEqual(<<"le">>, chappe_rtpengine_bencode:encode_to_binary([])).
 
+%% req: RNG-08
 encode_dict_canonical_order_test() ->
     %% keys must be emitted in ascending raw byte order regardless of
     %% map internals
@@ -237,4 +238,74 @@ decode_error_test_() ->
         ?_assertMatch(
             {error, {trailing_bytes, 1}}, chappe_rtpengine_bencode:decode(<<"i1ee">>)
         )
+    ].
+
+%% Integers are canonical: no leading zeros, no negative zero, no plus
+%% sign, at least one digit.
+%% req: RNG-08
+non_canonical_integer_rejected_test_() ->
+    [
+        ?_assertMatch({error, {bad_integer, _}}, chappe_rtpengine_bencode:decode(B))
+     || B <- [<<"i03e">>, <<"i-0e">>, <<"i+1e">>, <<"i-e">>, <<"ie">>, <<"i-01e">>]
+    ] ++
+        [
+            ?_assertEqual({ok, 0}, chappe_rtpengine_bencode:decode(<<"i0e">>)),
+            ?_assertEqual({ok, -10}, chappe_rtpengine_bencode:decode(<<"i-10e">>)),
+            %% an unfinished canonical integer is incomplete on a stream,
+            %% a prefix that can never become canonical is an error
+            ?_assertEqual(incomplete, chappe_rtpengine_bencode:decode_prefix(<<"i0">>)),
+            ?_assertEqual(incomplete, chappe_rtpengine_bencode:decode_prefix(<<"i-">>)),
+            ?_assertMatch({error, _}, chappe_rtpengine_bencode:decode_prefix(<<"i00">>)),
+            ?_assertMatch({error, _}, chappe_rtpengine_bencode:decode_prefix(<<"i-0">>))
+        ].
+
+%% String length prefixes are canonical too.
+%% req: RNG-08
+non_canonical_length_rejected_test_() ->
+    [
+        ?_assertMatch(
+            {error, {bad_length, _}}, chappe_rtpengine_bencode:decode(<<"05:hello">>)
+        ),
+        ?_assertMatch({error, _}, chappe_rtpengine_bencode:decode_prefix(<<"00">>)),
+        ?_assertEqual({ok, <<>>}, chappe_rtpengine_bencode:decode(<<"0:">>)),
+        ?_assertEqual({ok, <<"hello">>}, chappe_rtpengine_bencode:decode(<<"5:hello">>))
+    ].
+
+nested(0) -> <<"i1e">>;
+nested(N) -> <<"l", (nested(N - 1))/binary, "e">>.
+
+%% Nesting is bounded so a hostile reply cannot exhaust the stack.
+%% req: RNG-09
+nesting_depth_bounded_test() ->
+    ?assertMatch({ok, _}, chappe_rtpengine_bencode:decode(nested(64))),
+    ?assertEqual({error, too_deep}, chappe_rtpengine_bencode:decode(nested(65))),
+    ?assertEqual(
+        {error, too_deep}, chappe_rtpengine_bencode:decode_prefix(nested(65))
+    ).
+
+%% An atom key and a binary key that encode to the same bytes would
+%% produce a dictionary with a duplicate key.
+%% req: RNG-08
+encode_duplicate_key_rejected_test() ->
+    ?assertError(
+        {duplicate_key, <<"a">>},
+        chappe_rtpengine_bencode:encode(#{a => 1, <<"a">> => 2})
+    ).
+
+%% decode_stream/1 says how many more bytes a partial value needs at
+%% least, so a stream reader does not rescan the buffer on every chunk.
+%% req: RNG-02
+stream_need_test_() ->
+    [
+        ?_assertEqual({more, 3}, chappe_rtpengine_bencode:decode_stream(<<"5:ab">>)),
+        ?_assertEqual(
+            {more, 7}, chappe_rtpengine_bencode:decode_stream(<<"d3:sdp10:abc">>)
+        ),
+        ?_assertEqual({more, 1}, chappe_rtpengine_bencode:decode_stream(<<"d">>)),
+        ?_assertEqual({more, 1}, chappe_rtpengine_bencode:decode_stream(<<>>)),
+        ?_assertEqual(
+            {ok, 1, <<"rest">>},
+            chappe_rtpengine_bencode:decode_stream(<<"i1erest">>)
+        ),
+        ?_assertMatch({error, _}, chappe_rtpengine_bencode:decode_stream(<<"x">>))
     ].

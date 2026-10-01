@@ -81,6 +81,8 @@ Notes:
 
 - `chappe_rtpengine_sdp` is the one place this library looks inside SDP, and it is opt-in: build the answer yourself if you prefer. The rule it encodes is that the answer stays aligned with the offer, one m-line per offered stream, in order.
 - Unknown keys on a subscribe request are ignored by rtpengine, so a made-up selector fails silently by tapping everything. Check what you got with `streams/1`.
+- An IPv6 receiver address (`<<"2001:db8::7">>`) gets `IN IP6` in the answer's `o=` and `c=` lines; each accepted m-line carries its own receiver's address family.
+- `fork_answer` returns an error instead of an answer when a selector does not name a stream (`{no_such_stream, Sel}`), names one twice (`{duplicate_stream, Sel}`), names an m-line the offer already rejected with port 0 (`{rejected_stream, Sel}`), or is not `{label, L}` or `{index, N}` (`{bad_selector, Sel}`).
 
 ## An STT feed
 

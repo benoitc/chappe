@@ -45,7 +45,7 @@ end_per_testcase(_Case, _Config) ->
 %% REGISTER over WS is answered over WS and stored with its flow.
 ws_register(_Config) ->
     {_EP, WP} = start(),
-    ok = chappe_sip:register(chappe_sip:registrar()),
+    ok = chappe_sip:register(chappe_sip:registrar(#{allow_unauthenticated => true})),
     C = connect(WP),
     ws:send(C, {text, register_req()}),
     R = recv_ws(200),
@@ -57,7 +57,7 @@ ws_register(_Config) ->
 %% over its flow (RFC 5626), so a dropped flow deregisters it.
 ws_deregister_on_close(_Config) ->
     {_EP, WP} = start(),
-    ok = chappe_sip:register(chappe_sip:registrar()),
+    ok = chappe_sip:register(chappe_sip:registrar(#{allow_unauthenticated => true})),
     C = connect(WP),
     ws:send(C, {text, register_req()}),
     _ = recv_ws(200),
@@ -78,7 +78,7 @@ wait_gone(Aor, N) ->
 %% WS transport (it would take all WS state down with it).
 ws_transport_survives_engine_gap(_Config) ->
     {_EP, WP} = start(),
-    ok = chappe_sip:register(chappe_sip:registrar()),
+    ok = chappe_sip:register(chappe_sip:registrar(#{allow_unauthenticated => true})),
     C = connect(WP),
     ws:send(C, {text, register_req()}),
     _ = recv_ws(200),
@@ -102,7 +102,7 @@ ws_transport_survives_engine_gap(_Config) ->
 %% must not crash the singleton transport (which would close every session).
 ws_malformed_does_not_crash(_Config) ->
     {_EP, WP} = start(),
-    ok = chappe_sip:register(chappe_sip:registrar()),
+    ok = chappe_sip:register(chappe_sip:registrar(#{allow_unauthenticated => true})),
     C = connect(WP),
     TPid = whereis(chappe_sip_ws_transport),
     %% valid request line + Via, but no From/To/Call-ID/CSeq (reviewer's repro)

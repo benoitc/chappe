@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!-- Copyright 2026 Benoit Chesneau
+     SPDX-License-Identifier: Apache-2.0
+
+     A SUBSCRIBE for an event package the node does not serve. RFC 6665
+     4.2.1.1: the notifier answers 489 (Bad Event), listing the packages it
+     does serve in Allow-Events (RFC 6665 8.2.2). -->
+<scenario name="subscribe_489">
+  <send retrans="500">
+    <![CDATA[
+      SUBSCRIBE sip:conf@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:sipp@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:conf@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 SUBSCRIBE
+      Contact: <sip:sipp@[local_ip]:[local_port]>
+      Max-Forwards: 70
+      Event: no-such-package
+      Accept: application/conference-info+xml
+      Expires: 600
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv response="489">
+    <action>
+      <ereg regexp="
+Allow-Events[ 	]*:[^
+]*[a-z]" search_in="msg" check_it="true" assign_to="chk"/>
+    </action>
+  </recv>
+
+  <Reference variables="chk"/>
+</scenario>

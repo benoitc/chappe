@@ -185,3 +185,44 @@ lenient_parsing_test() ->
 
 dest(Port) ->
     #{address => <<"192.0.2.7">>, port => Port, ptime => 20}.
+
+%% An IPv6 receiver gets IN IP6 in o= and c=, per stream as well.
+fork_answer_ipv6_test() ->
+    {ok, Answer} = chappe_rtpengine_sdp:fork_answer(offer(), [
+        {{label, <<"1">>}, #{address => <<"2001:db8::7">>, port => 41000}},
+        {{label, <<"3">>}, #{address => <<"192.0.2.3">>, port => 41002}}
+    ]),
+    ?assertNotEqual(
+        nomatch, binary:match(Answer, <<"o=- 1 1 IN IP6 2001:db8::7\r\n">>)
+    ),
+    ?assertNotEqual(nomatch, binary:match(Answer, <<"c=IN IP6 2001:db8::7\r\n">>)),
+    ?assertNotEqual(nomatch, binary:match(Answer, <<"c=IN IP4 192.0.2.3\r\n">>)),
+    ?assertEqual(nomatch, binary:match(Answer, <<"IN IP4 2001">>)).
+
+%% An m-line the offerer already rejected (port 0) cannot carry a fork.
+fork_answer_rejected_stream_test() ->
+    Offer = <<
+        "v=0\r\n"
+        "c=IN IP4 203.0.113.9\r\n"
+        "m=audio 30010 RTP/AVP 0\r\n"
+        "a=label:1\r\n"
+        "m=audio 0 RTP/AVP 0\r\n"
+        "a=label:2\r\n"
+    >>,
+    ?assertEqual(
+        {error, {rejected_stream, {label, <<"2">>}}},
+        chappe_rtpengine_sdp:fork_answer(Offer, {label, <<"2">>}, dest(1))
+    ),
+    ?assertMatch(
+        {ok, _}, chappe_rtpengine_sdp:fork_answer(Offer, {index, 0}, dest(1))
+    ).
+
+fork_answer_bad_selector_test() ->
+    ?assertEqual(
+        {error, {bad_selector, {port, 30010}}},
+        chappe_rtpengine_sdp:fork_answer(offer(), {port, 30010}, dest(1))
+    ),
+    ?assertEqual(
+        {error, {bad_selector, nope}},
+        chappe_rtpengine_sdp:fork_answer(offer(), [{nope, dest(1)}])
+    ).

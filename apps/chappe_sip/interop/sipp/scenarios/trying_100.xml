@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!-- Copyright 2026 Benoit Chesneau
+     SPDX-License-Identifier: Apache-2.0
+
+     An INVITE over UDP the application answers only after 1 s. RFC 3261
+     17.2.1: the INVITE server transaction MUST send a 100 Trying unless the
+     TU answers within 200 ms (8.2.6.1), so a 100 must come before the 200. -->
+<scenario name="trying_100">
+  <send retrans="500">
+    <![CDATA[
+      INVITE sip:slow@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:sipp@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:slow@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 INVITE
+      Contact: <sip:sipp@[local_ip]:[local_port]>
+      Max-Forwards: 70
+      Allow: INVITE, ACK, BYE, CANCEL, OPTIONS, UPDATE, REFER, NOTIFY, SUBSCRIBE
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 1 IN IP[local_ip_type] [local_ip]
+      s=-
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0
+      a=rtpmap:0 PCMU/8000
+
+    ]]>
+  </send>
+  <recv response="100"/>
+  <recv response="180" optional="true"/>
+  <recv response="200">
+    <action>
+      <ereg regexp="
+To[ 	]*:[^
+]*;tag=([-A-Za-z0-9.!%*_+`'~]+)" search_in="msg" check_it="true" assign_to="chk,peer_tag"/>
+      <ereg regexp="
+Contact[ 	]*:[^
+]*&lt;([^&gt;
+]+)&gt;" search_in="msg" check_it="true" assign_to="chk,peer_contact"/>
+    </action>
+  </recv>
+  <send>
+    <![CDATA[
+      ACK [$peer_contact] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:sipp@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:slow@[remote_ip]:[remote_port]>;tag=[$peer_tag]
+      Call-ID: [call_id]
+      CSeq: 1 ACK
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <send retrans="500">
+    <![CDATA[
+      BYE [$peer_contact] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:sipp@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:slow@[remote_ip]:[remote_port]>;tag=[$peer_tag]
+      Call-ID: [call_id]
+      CSeq: 2 BYE
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv response="200"/>
+
+  <Reference variables="chk"/>
+</scenario>

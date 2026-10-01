@@ -118,14 +118,15 @@ vendor_header_names_test() ->
 
 %% parse/1 is total: even a non-UTF-8 header name (which the old Unicode
 %% lowercase raised on) must return a result, never throw. A crafted UDP
-%% packet must not crash the request worker.
+%% packet must not crash the request worker. Such a name is not a token, so
+%% the message is malformed.
 parse_total_test() ->
     Bad = <<"OPTIONS sip:x@y SIP/2.0\r\n",
             "Via: SIP/2.0/UDP h;branch=z9hG4bK1\r\n",
             16#FF, 16#FE, ": junk\r\n",              % invalid UTF-8 header name
             "From: <sip:a@b>;tag=1\r\nTo: <sip:x@y>\r\n",
             "Call-ID: t@h\r\nCSeq: 1 OPTIONS\r\nContent-Length: 0\r\n\r\n">>,
-    ?assertMatch({ok, _}, chappe_sip_msg:parse(Bad)),
+    ?assertEqual({error, malformed}, chappe_sip_msg:parse(Bad)),
     %% arbitrary garbage never throws
     ?assertMatch({_, _}, chappe_sip_msg:parse(<<0, 1, 2, 255, "\r\n\r\n">>)),
     ?assertMatch({_, _}, chappe_sip_msg:parse(<<>>)).
@@ -187,3 +188,104 @@ builder_test() ->
     ?assertMatch({0, _}, binary:match(Enc, <<"OPTIONS sip:ping@example.com SIP/2.0\r\n">>)),
     {ok, Re} = chappe_sip_msg:parse(Enc),
     ?assertEqual(<<"b1@h">>, chappe_sip_msg:call_id(Re)).
+
+opts(Extra) ->
+    iolist_to_binary(
+      [<<"OPTIONS sip:x@y SIP/2.0\r\n"
+         "Via: SIP/2.0/UDP h;branch=z9hG4bK1\r\n"
+         "From: <sip:a@b>;tag=1\r\nTo: <sip:x@y>\r\n"
+         "Call-ID: t@h\r\nCSeq: 1 OPTIONS\r\n">>,
+       Extra, <<"Content-Length: 0\r\n\r\n">>]).
+
+%% a header VALUE that is not UTF-8 is still read, byte for byte: get/2,
+%% get_all/2, all_headers/1 and validate/1 never throw (U1)
+non_utf8_value_test() ->
+    Raw = opts([<<"Subject: ">>, 16#FF, 16#FE, <<" x \t\r\n">>,
+                <<"Subject: \t">>, 16#C3, <<"\r\n">>]),
+    {ok, M} = chappe_sip_msg:parse(Raw),
+    ?assertEqual(<<16#FF, 16#FE, " x">>, chappe_sip_msg:get(<<"subject">>, M)),
+    ?assertEqual([<<16#FF, 16#FE, " x">>, <<16#C3>>],
+                 chappe_sip_msg:get_all(<<"subject">>, M)),
+    ?assertMatch([_ | _], chappe_sip_msg:all_headers(M)),
+    ?assertEqual(ok, chappe_sip_msg:validate(M)).
+
+%% header names are tokens (RFC 3261 7.3.1, 25.1); anything else is a
+%% malformed message (U2)
+header_name_token_test() ->
+    [?assertEqual({error, malformed}, chappe_sip_msg:parse(opts([N, <<": v\r\n">>])))
+     || N <- [<<"Bad Name">>, <<"X(y)">>, <<"X<y>">>, <<"X/y">>, <<"X\"y">>,
+              <<"X@y">>, <<"X,y">>]],
+    %% space before the colon is LWS, not part of the name
+    ?assertMatch({ok, _}, chappe_sip_msg:parse(opts(<<"X-Ok : v\r\n">>))).
+
+%% SIP-Version is case-insensitive, the method a token (RFC 3261 7.1) (U6)
+start_line_test() ->
+    {ok, R} = chappe_sip_msg:parse(<<"INVITE sip:a@b sip/2.0\r\nCall-ID: c\r\n\r\n">>),
+    ?assertEqual(<<"INVITE">>, chappe_sip_msg:method(R)),
+    {ok, S} = chappe_sip_msg:parse(<<"sip/2.0 180 Ringing\r\nCall-ID: c\r\n\r\n">>),
+    ?assertEqual(180, chappe_sip_msg:status(S)),
+    ?assertMatch({error, _}, chappe_sip_msg:parse(<<"INV@TE sip:a@b SIP/2.0\r\n\r\n">>)),
+    ?assertMatch({error, _}, chappe_sip_msg:parse(<<"INVITE sip:a@b SIP/3.0\r\n\r\n">>)),
+    %% an extension method token is fine
+    ?assertMatch({ok, _}, chappe_sip_msg:parse(<<"NEWMETHOD.x sip:a@b SIP/2.0\r\n\r\n">>)).
+
+%% every IANA compact form (RFC 3261 7.3.3 and extensions) (U9)
+compact_forms_registry_test() ->
+    Pairs = [{<<"a">>, <<"Accept-Contact">>}, {<<"b">>, <<"Referred-By">>},
+             {<<"c">>, <<"Content-Type">>}, {<<"d">>, <<"Request-Disposition">>},
+             {<<"e">>, <<"Content-Encoding">>}, {<<"f">>, <<"From">>},
+             {<<"i">>, <<"Call-ID">>}, {<<"j">>, <<"Reject-Contact">>},
+             {<<"k">>, <<"Supported">>}, {<<"l">>, <<"Content-Length">>},
+             {<<"m">>, <<"Contact">>}, {<<"n">>, <<"Identity-Info">>},
+             {<<"o">>, <<"Event">>}, {<<"r">>, <<"Refer-To">>},
+             {<<"s">>, <<"Subject">>}, {<<"t">>, <<"To">>},
+             {<<"u">>, <<"Allow-Events">>}, {<<"v">>, <<"Via">>},
+             {<<"x">>, <<"Session-Expires">>}, {<<"y">>, <<"Identity">>}],
+    Raw = iolist_to_binary(
+            [<<"MESSAGE sip:x@y SIP/2.0\r\n">>,
+             [[C, <<": v-">>, C, <<"\r\n">>] || {C, _} <- Pairs], <<"\r\n">>]),
+    {ok, M} = chappe_sip_msg:parse(Raw),
+    [?assertEqual(<<"v-", C/binary>>, chappe_sip_msg:get(Long, M)) || {C, Long} <- Pairs].
+
+%% a request's CSeq is 1*DIGIT LWS Method, the method its own, the number
+%% a 32-bit unsigned (RFC 3261 8.1.1.5, 20.16) (U7)
+validate_cseq_test() ->
+    {ok, M} = chappe_sip_msg:parse(opts(<<>>)),
+    Set = fun(V) -> chappe_sip_msg:validate(chappe_sip_msg:set(<<"CSeq">>, V, M)) end,
+    ?assertEqual(ok, Set(<<"1 OPTIONS">>)),
+    ?assertEqual(ok, Set(<<"4294967295\tOPTIONS">>)),
+    [?assertEqual({error, bad_cseq}, Set(V))
+     || V <- [<<"2147483648 INVITE">>, <<"1 options">>, <<"x OPTIONS">>,
+              <<"-1 OPTIONS">>, <<"+1 OPTIONS">>, <<"1OPTIONS">>,
+              <<"4294967296 OPTIONS">>, <<"1">>, <<"1 OPTIONS extra">>]],
+    %% the probe: a REGISTER whose CSeq names INVITE
+    {ok, Reg} = chappe_sip_msg:parse(
+                  <<"REGISTER sip:example.com SIP/2.0\r\nVia: SIP/2.0/UDP h;branch=z9hG4bK1\r\n"
+                    "From: <sip:a@b>;tag=1\r\nTo: <sip:a@b>\r\nCall-ID: c\r\n"
+                    "CSeq: 10 REGISTER\r\n\r\n">>),
+    ?assertEqual({error, bad_cseq},
+                 chappe_sip_msg:validate(
+                   chappe_sip_msg:set(<<"CSeq">>, <<"2147483648 INVITE">>, Reg))),
+    %% a response is not checked against a method
+    {ok, R} = chappe_sip_msg:parse(response_200()),
+    ?assertEqual(ok, chappe_sip_msg:validate(R)).
+
+%% Max-Forwards is not mandatory for a UAS (RFC 2543 peers); a proxy adds
+%% it with 70 when absent (RFC 3261 16.6 step 3) (U8)
+max_forwards_test() ->
+    {ok, M} = chappe_sip_msg:parse(opts(<<>>)),
+    ?assertEqual(undefined, chappe_sip_msg:get(<<"max-forwards">>, M)),
+    ?assertEqual(ok, chappe_sip_msg:validate(M)),
+    {ok, M1} = chappe_sip_msg:decr_max_forwards(M),
+    ?assertEqual(<<"70">>, chappe_sip_msg:get(<<"max-forwards">>, M1)),
+    {ok, M2} = chappe_sip_msg:decr_max_forwards(M1),
+    ?assertEqual(<<"69">>, chappe_sip_msg:get(<<"max-forwards">>, M2)),
+    ?assertEqual({error, loop_detected},
+                 chappe_sip_msg:decr_max_forwards(
+                   chappe_sip_msg:set(<<"Max-Forwards">>, <<"0">>, M))).
+
+%% option tags are tokens, compared case-insensitively (RFC 3261 7.3.1)
+option_tags_test() ->
+    {ok, M} = chappe_sip_msg:parse(opts(<<"Require: 100REL, Timer\r\nRequire: siprec\r\n">>)),
+    ?assertEqual([<<"100rel">>, <<"timer">>, <<"siprec">>],
+                 chappe_sip_msg:option_tags(<<"require">>, M)).

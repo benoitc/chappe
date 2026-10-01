@@ -1,8 +1,7 @@
 # Leaf library contract
 
 This is the shared contract for the chappe stack's leaf protocol clients
-(chappe_esl for FreeSWITCH Event Socket, chappe_rtpengine for the rtpengine NG
-protocol). Read it before starting or reviewing a leaf library so both are built
+(chappe_rtpengine for the rtpengine NG protocol, chappe_mix for RTP mixing). Read it before starting or reviewing a leaf library so both are built
 the same way. A leaf library speaks one wire protocol and depends on nothing
 else in the stack.
 
@@ -19,7 +18,7 @@ else in the stack.
 ## Layout
 
 - Public facade module named `chappe_<thing>`; every internal module prefixed with
-  a short tag (`chappe_esl_`, `chappe_rtpengine_`).
+  a short tag (`chappe_rtpengine_`, `chappe_mix_`).
 - `src/` for code, `test/` for tests (flat), `docs/` for authored markdown,
   `doc/` for generated ex_doc HTML (git-ignored), `interop/` for a live test
   harness.
@@ -37,11 +36,17 @@ else in the stack.
 - One process owns each socket. Incoming bytes accumulate in a buffer and an
   incremental parser peels one complete message at a time, returning unchanged
   state on a partial frame. Never assume one message per packet.
-- The parser is a pure module with no process. It never throws on malformed
+- The parser is a pure module with no process (`chappe_rtpengine_stream` for NG
+  over TCP). It never throws on malformed
   input. It is the highest-risk component and is unit tested by feeding real
   frames split at every byte boundary.
-- gen_statem modules use `callback_mode() -> state_functions`, keep state in a
-  `#data{}` record, and name states after protocol phases.
+- gen_statem modules keep state in a `#data{}` record and name states after
+  protocol phases. Use `callback_mode() -> state_functions` by default. Use
+  `handle_event_function` when most events are handled the same in several
+  states or the reply to a call depends on the state it lands in (an async
+  reply arriving after a stop, for example); `chappe_rtpengine_session` is
+  built this way. The `#data{}` record is why such modules carry an elvis
+  `state_record_and_type` ignore, not the callback mode.
 - Errors are tagged tuples. Bad input from the socket is logged, not thrown.
 
 ## Toolchain

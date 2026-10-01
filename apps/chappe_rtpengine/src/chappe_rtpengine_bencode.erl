@@ -4,12 +4,28 @@
 %% Bencode codec for the rtpengine NG protocol.
 %%
 %% Encoding is canonical: dictionary keys are emitted in ascending raw
-%% byte order, as required by bencode. Decoding is tolerant: unsorted
-%% dictionaries are accepted and wire types are preserved (strings
-%% decode to binaries, dictionaries to maps with binary keys).
+%% byte order, as required by bencode, and a map whose atom and binary
+%% keys collide once converted is an error (duplicate_key). Decoding is
+%% tolerant of unsorted dictionaries and preserves wire types (strings
+%% decode to binaries, dictionaries to maps with binary keys), but
+%% rejects non-canonical numbers: integers and string lengths with
+%% leading zeros, negative zero, or a plus sign. Nesting is bounded to
+%% 64 containers (too_deep), so a hostile peer cannot exhaust the
+%% stack.
 -module(chappe_rtpengine_bencode).
 
--export([encode/1, encode_to_binary/1, decode/1, decode_prefix/1]).
+-export([
+    encode/1,
+    encode_to_binary/1,
+    decode/1,
+    decode_prefix/1,
+    decode_stream/1
+]).
+
+-define(MAX_DEPTH, 64).
+%% A partial value: the reason decode/1 reports, and a lower bound on
+%% the bytes still needed.
+-define(MORE(Reason, Need), throw({incomplete, Reason, Need})).
 
 -type value() ::
     integer()
@@ -29,6 +45,7 @@ encode(A) when is_atom(A) ->
     encode(atom_to_binary(A, utf8));
 encode(M) when is_map(M) ->
     Pairs = lists:keysort(1, [{key_bin(K), V} || {K, V} <- maps:to_list(M)]),
+    ok = no_duplicate_keys(Pairs),
     [$d, [[encode(K), encode(V)] || {K, V} <- Pairs], $e];
 encode(L) when is_list(L) ->
     [$l, [encode(E) || E <- L], $e].
@@ -39,10 +56,11 @@ encode_to_binary(V) ->
 
 -spec decode(binary()) -> {ok, value()} | {error, term()}.
 decode(Bin) when is_binary(Bin) ->
-    try dec(Bin) of
+    try dec(Bin, 0) of
         {Value, <<>>} -> {ok, Value};
         {_Value, Rest} -> {error, {trailing_bytes, byte_size(Rest)}}
     catch
+        throw:{incomplete, Reason, _Need} -> {error, Reason};
         throw:Reason -> {error, Reason}
     end.
 
@@ -51,105 +69,131 @@ decode(Bin) when is_binary(Bin) ->
 %% buffer ends mid-value, or an error for input that can never parse.
 -spec decode_prefix(binary()) ->
     {ok, value(), binary()} | incomplete | {error, term()}.
-decode_prefix(<<>>) ->
-    incomplete;
 decode_prefix(Bin) when is_binary(Bin) ->
-    try dec(Bin) of
+    case decode_stream(Bin) of
+        {more, _Need} -> incomplete;
+        Other -> Other
+    end.
+
+%% Like decode_prefix/1, but a partial value reports a lower bound on
+%% the number of further bytes it needs ({more, N}). A stream reader
+%% waits for at least that many before trying again, which keeps a
+%% large value arriving in many segments linear instead of rescanning
+%% the whole buffer per segment.
+-spec decode_stream(binary()) ->
+    {ok, value(), binary()} | {more, pos_integer()} | {error, term()}.
+decode_stream(Bin) when is_binary(Bin) ->
+    try dec(Bin, 0) of
         {Value, Rest} -> {ok, Value, Rest}
     catch
-        throw:Reason ->
-            case incomplete_reason(Reason) of
-                true -> incomplete;
-                false -> {error, Reason}
-            end
+        throw:{incomplete, _Reason, Need} -> {more, Need};
+        throw:Reason -> {error, Reason}
     end.
 
 %% internal
 
-incomplete_reason(unexpected_end) -> true;
-incomplete_reason(truncated_string) -> true;
-incomplete_reason(unterminated_integer) -> true;
-incomplete_reason(unterminated_list) -> true;
-incomplete_reason(unterminated_dict) -> true;
-incomplete_reason(_) -> false.
-
 key_bin(K) when is_binary(K) -> K;
 key_bin(K) when is_atom(K) -> atom_to_binary(K, utf8).
 
-dec(<<>>) ->
-    throw(unexpected_end);
-dec(<<$i, Rest/binary>>) ->
+no_duplicate_keys([{K, _}, {K, _} | _]) ->
+    erlang:error({duplicate_key, K});
+no_duplicate_keys([_ | T]) ->
+    no_duplicate_keys(T);
+no_duplicate_keys([]) ->
+    ok.
+
+dec(<<>>, _Depth) ->
+    ?MORE(unexpected_end, 1);
+dec(<<$i, Rest/binary>>, _Depth) ->
     dec_int(Rest);
-dec(<<$l, Rest/binary>>) ->
-    dec_list(Rest, []);
-dec(<<$d, Rest/binary>>) ->
-    dec_dict(Rest, #{});
-dec(<<C, _/binary>> = Bin) when C >= $0, C =< $9 ->
+dec(<<$l, Rest/binary>>, Depth) ->
+    nest(Depth),
+    dec_list(Rest, Depth + 1, []);
+dec(<<$d, Rest/binary>>, Depth) ->
+    nest(Depth),
+    dec_dict(Rest, Depth + 1, #{});
+dec(<<C, _/binary>> = Bin, _Depth) when C >= $0, C =< $9 ->
     dec_str(Bin);
-dec(_) ->
+dec(_, _Depth) ->
     throw(invalid).
+
+%% A container opened at depth MAX_DEPTH would hold values one level
+%% deeper than allowed.
+nest(Depth) when Depth >= ?MAX_DEPTH -> throw(too_deep);
+nest(_Depth) -> ok.
 
 dec_int(Bin) ->
     case binary:split(Bin, <<"e">>) of
         [Digits, Rest] ->
-            try binary_to_integer(Digits) of
-                I -> {I, Rest}
-            catch
-                error:badarg -> throw({bad_integer, Digits})
+            case canonical_int(Digits) of
+                true -> {binary_to_integer(Digits), Rest};
+                false -> throw({bad_integer, Digits})
             end;
         [Digits] ->
             %% no terminator yet: only incomplete when what we have
-            %% so far could still become a valid integer
+            %% so far could still become a canonical integer
             case int_prefix(Digits) of
-                true -> throw(unterminated_integer);
+                true -> ?MORE(unterminated_integer, 1);
                 false -> throw({bad_integer, Digits})
             end
     end.
 
-int_prefix(<<"-", Rest/binary>>) -> digits(Rest);
-int_prefix(Rest) -> digits(Rest).
+%% "0", or an optional minus then a non-zero digit and more digits.
+canonical_int(<<"0">>) -> true;
+canonical_int(<<"-", Rest/binary>>) -> canonical_nonzero(Rest);
+canonical_int(Digits) -> canonical_nonzero(Digits).
+
+canonical_nonzero(<<C, Rest/binary>>) when C >= $1, C =< $9 -> digits(Rest);
+canonical_nonzero(_) -> false.
+
+int_prefix(<<>>) -> true;
+int_prefix(<<"-">>) -> true;
+int_prefix(Digits) -> canonical_int(Digits).
 
 dec_str(Bin) ->
     case binary:split(Bin, <<":">>) of
         [Digits, Rest] ->
             Len =
-                try binary_to_integer(Digits) of
-                    N when N >= 0 -> N;
-                    _ -> throw({bad_length, Digits})
-                catch
-                    error:badarg -> throw({bad_length, Digits})
+                case canonical_len(Digits) of
+                    true -> binary_to_integer(Digits);
+                    false -> throw({bad_length, Digits})
                 end,
             case Rest of
-                <<Str:Len/binary, Tail/binary>> -> {Str, Tail};
-                _ -> throw(truncated_string)
+                <<Str:Len/binary, Tail/binary>> ->
+                    {Str, Tail};
+                _ ->
+                    ?MORE(truncated_string, Len - byte_size(Rest))
             end;
         [Digits] ->
-            %% no colon yet: a pure-digit buffer is an unfinished
+            %% no colon yet: a canonical digit run is an unfinished
             %% length prefix, anything else can never parse
-            case digits(Digits) of
-                true -> throw(truncated_string);
+            case canonical_len(Digits) of
+                true -> ?MORE(truncated_string, 1);
                 false -> throw(bad_string)
             end
     end.
+
+canonical_len(<<"0">>) -> true;
+canonical_len(Digits) -> canonical_nonzero(Digits).
 
 digits(<<>>) -> true;
 digits(<<C, Rest/binary>>) when C >= $0, C =< $9 -> digits(Rest);
 digits(_) -> false.
 
-dec_list(<<$e, Rest/binary>>, Acc) ->
+dec_list(<<$e, Rest/binary>>, _Depth, Acc) ->
     {lists:reverse(Acc), Rest};
-dec_list(<<>>, _Acc) ->
-    throw(unterminated_list);
-dec_list(Bin, Acc) ->
-    {V, Rest} = dec(Bin),
-    dec_list(Rest, [V | Acc]).
+dec_list(<<>>, _Depth, _Acc) ->
+    ?MORE(unterminated_list, 1);
+dec_list(Bin, Depth, Acc) ->
+    {V, Rest} = dec(Bin, Depth),
+    dec_list(Rest, Depth, [V | Acc]).
 
-dec_dict(<<$e, Rest/binary>>, Acc) ->
+dec_dict(<<$e, Rest/binary>>, _Depth, Acc) ->
     {Acc, Rest};
-dec_dict(<<>>, _Acc) ->
-    throw(unterminated_dict);
-dec_dict(Bin, Acc) ->
-    {K, Rest0} = dec(Bin),
+dec_dict(<<>>, _Depth, _Acc) ->
+    ?MORE(unterminated_dict, 1);
+dec_dict(Bin, Depth, Acc) ->
+    {K, Rest0} = dec(Bin, Depth),
     is_binary(K) orelse throw({bad_dict_key, K}),
-    {V, Rest1} = dec(Rest0),
-    dec_dict(Rest1, Acc#{K => V}).
+    {V, Rest1} = dec(Rest0, Depth),
+    dec_dict(Rest1, Depth, Acc#{K => V}).

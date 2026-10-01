@@ -1,18 +1,18 @@
 # Media integration (chappe_sip_media)
 
-`chappe_sip_media` is the media control-plane facade. You ask for a capability (anchor
-a call's media, tap it, duck a party, run a conference) and it drives the right
-external engine for you: rtpengine anchors and relays RTP and rewrites SDP;
-FreeSWITCH (over ESL) terminates a media leg for conferencing, IVR, and
-recording. The RTP stays in those daemons; only the control plane runs in the
-BEAM. Reach for this page when you need to put media under a call, fork it to
-another consumer, or add a backend.
+`chappe_sip_media` is the media control-plane facade. You ask for a capability
+(anchor a call's media, tap it, duck a party, put it in a conference) and it
+drives the right engine for you: rtpengine anchors and relays RTP and rewrites
+SDP; chappe_mix, an app of this umbrella, mixes G.711 legs into conference
+rooms. The SIP processes never touch RTP: it stays in rtpengine and in the
+chappe_mix conference processes. Reach for this page when you need to put
+media under a call, fork it to another consumer, or run a conference.
 
 ## Configure a backend
 
-Media is off by default. Turn it on by passing a `media` map to `chappe_sip:start/1`
-(or by setting the `media` application env). List the nodes for each backend you
-use:
+Media is off by default. Turn it on with a `media` map, either as the option to
+`chappe_sip:start/1` or as the `media` application env of `chappe_sip`. The
+option wins when both are set. Configure each backend you use:
 
 ```erlang
 chappe_sip:start(#{
@@ -20,26 +20,34 @@ chappe_sip:start(#{
     media => #{
         rtpengine => #{nodes => [#{name => rtpe1, host => "127.0.0.1",
                                    port => 22222}]},
-        freeswitch => #{nodes => [#{name => fs1, host => "127.0.0.1",
-                                    port => 8021, password => <<"ClueCon">>}]}
+        mix => #{ip => {10, 0, 0, 5}}
     }
 }).
 ```
 
-Configuring a backend starts its library and registers the nodes. Omit a backend
-and its library stays dormant (nothing in it runs).
+The same in `sys.config`:
+
+```
+{chappe_sip, [
+    {media, #{rtpengine => #{nodes => [#{name => rtpe1, host => "127.0.0.1",
+                                         port => 22222}]},
+              mix => #{ip => {10, 0, 0, 5}}}}
+]}
+```
+
+Configuring a backend starts its library. Omit a backend and its library stays
+dormant (nothing in it runs).
+
+The `mix` keys:
+
+| Key | Default | What it does |
+|---|---|---|
+| `ip` | `{127, 0, 0, 1}` | Address the mixer legs bind to. |
+| `advertise` | `ip` | Address written in the leg SDP; set it when `ip` is `{0, 0, 0, 0}`. |
+| `law` | `ulaw` | Codec of a leg the mixer offers (`ulaw` is PCMU, `alaw` PCMA). |
+| `depth` | chappe_mix default | Jitter buffer depth in frames. |
 
 ## Which backend does what
-
-The two engines do different shapes of media work, so each capability has a
-natural home:
-
-- **rtpengine anchors packets.** It takes SDP in, gives SDP out, and relays or
-  rewrites the RTP with no SIP leg of its own. Reach for it to put media under a
-  call, hide topology, fork a stream, or duck a party.
-- **FreeSWITCH terminates a leg.** You originate a SIP leg into it and drive the
-  channel over ESL, so it can mix, prompt, and run menus. Reach for it when you
-  need a conference or an IVR, not just anchoring.
 
 | Capability | Backend | What you get |
 |---|---|---|
@@ -47,21 +55,14 @@ natural home:
 | `transcode` | rtpengine | codec transcoding (needs a transcoding-enabled rtpengine) |
 | `subscribe` | rtpengine | fork a party's media to another consumer (a tap) |
 | `duck` | rtpengine | block or silence a party while a prompt plays |
-| `conference` | FreeSWITCH | multi-party mixing in a room |
-| `ivr` | FreeSWITCH | menus and prompts on a channel |
-| `play`, `record`, `dtmf` | either (rtpengine by default) | play a file, record, send DTMF; both engines implement these |
+| `play`, `record`, `dtmf` | rtpengine | play a file, record, send DTMF |
+| `conference` | chappe_mix | a mixer leg in a named room (`conference`/`leave`/`mute`/`unmute`) |
 
-- **rtpengine only:** `offer`/`answer`/`publish`, `relay`, `transcode`,
-  `subscribe`, `duck`. On FreeSWITCH these return `{error, unsupported}` or
-  `{error, {unsupported, _}}` (subscribe/duck): that backend has no SDP for you
-  to rewrite and no anchored RTP to tap.
-- **FreeSWITCH only:** `conference` and `ivr`, which need a mixing bridge
-  rtpengine does not provide.
-- **Either engine:** `play`, `record`, `dtmf`. The default routes them to
-  rtpengine; pass `backend => freeswitch` on a session to run them on a
-  FreeSWITCH channel instead.
+An operation the session's backend does not have returns
+`{error, {unsupported, Op}}`: a conference session has no `offer`, `play` or
+`subscribe`, an rtpengine session has no `conference` or `mute`.
 
-The rest of this page shows each capability in use, grouped by backend.
+The rest of this page shows each capability in use.
 
 ## Anchor a call's media (rtpengine)
 
@@ -195,67 +196,149 @@ ok = chappe_sip_media:unduck(S, #{party => caller}).
 rtpengine stored when you ran offer/answer, so duck after you have anchored the
 call.
 
-## Run a conference (FreeSWITCH)
 
-FreeSWITCH terminates a media leg over SIP, so media does not flow through
-chappe_sip here. Originate a UAC leg to FreeSWITCH, bridge your inbound
-dialog to it, and drive the resulting channel over ESL. A session pairs a
-FreeSWITCH node with that channel's UUID (the leg you originated toward
-FreeSWITCH), so pass both:
+## Run a conference (chappe_mix)
+
+A room is one chappe_mix conference. Each call that joins gets its own mixer
+leg (a UDP socket in that conference) and hears every other unmuted leg, never
+itself. Start a conference session, then join it to a room with the call's
+offer; the mixer answers it, and that answer goes in your 200 OK:
 
 ```erlang
-{ok, S} = chappe_sip_media:session(
-            #{call_id => chappe_sip_req:call_id(Req)},
-            #{capability => conference, node => fs1, uuid => ChannelUuid}),
-ok = chappe_sip_media:conference(S, <<"room-42">>, #{}),
-ok = chappe_sip_media:play(S, #{file => <<"/var/prompts/joined.wav">>}).
+chappe_sip:invite(fun(Req, Res) ->
+    {ok, S} = chappe_sip_media:session(
+                #{call_id => chappe_sip_req:call_id(Req)},
+                #{capability => conference}),
+    {ok, Answer} = chappe_sip_media:conference(
+                     S, <<"room-42">>, #{sdp => chappe_sip_req:body(Req)}),
+    {ok, _Dialog} = chappe_sip:create_uas(Req, Res, #{local_sdp => Answer})
+end).
 ```
 
-On this backend `offer/2` and `answer/2` return `{error, unsupported}`: the SDP
-rides the real SIP leg, so there is nothing for you to rewrite. `subscribe`,
-`duck`, and their variants return `{error, {unsupported, _}}` too (they operate
-on anchored RTP, which is an rtpengine job).
+The answer carries one G.711 codec (the first PCMU or PCMA in the offer),
+`a=ptime:20` and `a=sendrecv`. It keeps `a=rtcp-mux` when the offer has it;
+without it, RTCP goes on the next port up. Other m-lines (video) are rejected
+with port 0.
+
+When you place the call yourself, join without `sdp`: the mixer offers (one
+codec, `law` from the config or the `law` option, RTCP muxed). Feed the
+callee's answer back so the leg knows where to send:
+
+```erlang
+{ok, S} = chappe_sip_media:session(#{call_id => CallId},
+                                   #{capability => conference}),
+{ok, Offer} = chappe_sip_media:conference(S, <<"room-42">>, #{}),
+{ok, Dialog} = chappe_sip:create_uac(<<"sip:bob@example.com">>,
+                                     #{local_sdp => Offer}),
+ok = chappe_sip_media:set_remote(S, chappe_sip_dialog:remote_sdp(Dialog)).
+```
+
+`set_remote/2` also takes `{Ip, Port}` when you know the address another way.
+
+Act on the leg while the call lasts:
+
+```erlang
+ok = chappe_sip_media:mute(S),    %% hears the room, is not mixed into it
+ok = chappe_sip_media:unmute(S),
+ok = chappe_sip_media:leave(S).   %% out of the room; the room stops with its last leg
+```
+
+`chappe_sip_media:info/1` reports the room, the leg, its codec, its local
+address and whether it is muted.
+
+Join options:
+
+| Option | What it does |
+|---|---|
+| `room` | Room name (in the map for `conference/2`, apart for `conference/3`). |
+| `sdp` | The call's offer. The mixer answers it; without it the mixer offers. |
+| `owner` | Owner of the room, when this join creates it. Default: the joining call's process. |
+| `law` | `ulaw` or `alaw` for a leg the mixer offers. |
+| `mute` | Join muted. |
+| `name` | SDES NAME the other legs see for this leg's source. |
+
+## Put rtpengine in front of the mixer
+
+The mixer speaks G.711 over plain RTP/AVP only. A WebRTC caller (DTLS-SRTP,
+opus) or any call with another codec reaches it through rtpengine: rtpengine
+answers the caller and offers toward the mixer leg, transcoding to G.711 and
+terminating SRTP/DTLS on the way.
+
+```erlang
+chappe_sip:invite(fun(Req, Res) ->
+    CallId = chappe_sip_req:call_id(Req),
+    {ok, Anchor} = chappe_sip_media:session(
+                     #{call_id => CallId,
+                       from_tag => chappe_sip_req:from_tag(Req)},
+                     #{capability => anchor}),
+    %% rtpengine's offer toward the mixer leg: plain RTP, PCMU added
+    {ok, ToMixer} = chappe_sip_media:offer(
+                      Anchor, chappe_sip_req:body(Req),
+                      #{params => #{codec => #{transcode => ['PCMU']},
+                                    transport_protocol => <<"RTP/AVP">>,
+                                    ice => remove}}),
+    {ok, Conf} = chappe_sip_media:session(#{call_id => CallId},
+                                          #{capability => conference}),
+    {ok, MixAnswer} = chappe_sip_media:conference(
+                        Conf, <<"room-42">>, #{sdp => ToMixer}),
+    %% rtpengine's answer toward the caller goes in the 200 OK
+    {ok, ToCaller} = chappe_sip_media:answer(
+                       Anchor, MixAnswer, #{to_tag => <<"mixer">>}),
+    {ok, _Dialog} = chappe_sip:create_uas(Req, Res, #{local_sdp => ToCaller})
+end).
+```
+
+Both sessions are bound to the call process, so a BYE (or the process exiting)
+tears down the rtpengine call and takes the leg out of the room.
+
+## Conference limits
+
+- G.711 only (PCMU, PCMA), 8 kHz in 20 ms frames. A 10 ms or 30 ms sender is
+  padded or cut to 20 ms; put rtpengine in front for anything else.
+- One codec per leg, fixed when the leg opens. An answer in another law is
+  refused with `{error, {law_mismatch, Law}}`.
+- Every leg is `a=sendrecv`; a hold (`sendonly`/`inactive`) in the offer is
+  not mirrored.
+- One leg per session; a second join returns `{error, already_joined}`.
+- A room lives on one node.
 
 ## Session lifetime
 
-A session is bound to the process that created it (your call handler). When that
-process exits, the backend session is torn down for you: an rtpengine session is
-owned directly by the caller and deleted on its exit; the ESL control
-connections are pooled per node under `chappe_sip_media_sup` and reconnect on failure.
-You do not clean up on the normal BYE path, but you can tear a session down early
-with `chappe_sip_media:stop/1`.
+A session is bound to the process that created it (your call handler). When
+that process exits, the backend session is torn down for you: an rtpengine
+session is deleted, a conference leg leaves its room. A room stops when its
+last leg leaves or when its owner exits. You do not clean up on the normal BYE
+path, but you can tear a session down early with `chappe_sip_media:stop/1`.
 
 ## Override the default routing
 
-Each capability has a default backend (see Which backend does what). Override the
-choice for one session with `backend => rtpengine | freeswitch` in the session
-options, or change the default map globally with a
+Each capability has a default backend (see Which backend does what). Override
+it for one session with `backend => rtpengine | mix` in the session options,
+or change the default map globally with a
 `capabilities => #{Capability => Backend}` entry in the media config.
 
-To add a backend, write an adapter module exposing the operation set (`start/2`,
-`offer/4`, `answer/4`, `publish/4`, `play/2`, `record/2`, `stop_record/1`, `dtmf/2`,
-`conference/3`, `subscribe/3`, `subscribe_answer/2`, `unsubscribe/2`, `duck/2`,
-`unduck/2`, `stop/1`, `info/1`, `configure/1`) and dispatch to it from
-`chappe_sip_media`. Return `{error, {unsupported, Capability}}` for anything the
-backend does not provide.
+## Dialog handles and tags
+
+`session/2` takes a dialog handle as well as an identity map. It reads the
+Call-ID and the tags and maps them by role, the way rtpengine expects: the
+dialog's From tag becomes `from_tag`. On a UAS dialog that is the peer's tag,
+on a UAC dialog it is ours. The role comes from the dialog index; pass
+`role => uas | uac` in the options for a dialog that is not confirmed yet (it
+is taken as UAS otherwise).
 
 ## Why this lives in chappe_sip
 
-The two engines are driven by SIP-free leaf libraries kept as dependencies:
-`chappe_rtpengine` speaks the rtpengine NG protocol, `chappe_esl` speaks the
-FreeSWITCH Event Socket. Neither touches SIP. `chappe_sip_media` does the opposite: it
-binds media to SIP, reading dialog identity, originating legs, and tying session
-lifetime to the call process. That coupling is why it belongs here rather than in
-a third leaf library. No non-SIP consumer drives media today, so there is no
-`signaling` behaviour and no separate media app: the media facade is the in-repo
-`chappe_sip_media` module. Because the facade is a
-clean module boundary, extracting it later (behind a `signaling` behaviour that
-chappe_sip implements) stays cheap if one ever appears.
+The engines are driven by SIP-free leaf apps: `chappe_rtpengine` speaks the
+rtpengine NG protocol, `chappe_mix` mixes RTP. Neither touches SIP.
+`chappe_sip_media` does the opposite: it binds media to SIP, reading dialog
+identity, writing the SDP for the call and tying session lifetime to the call
+process. That coupling is why it belongs here rather than in a leaf app.
 
 ## Testing
 
-The fast run drives the facade against in-suite fakes that speak each wire
-protocol (`test/chappe_sip_media_SUITE` for rtpengine, `test/chappe_sip_media_fs_SUITE` for
-ESL). Live coverage runs against real engines: rtpengine over the
-`chappe_rtpengine` interop harness, and FreeSWITCH under the INTEROP-gated
-`chappe_sip_media_fs_e2e_SUITE` (see `interop/README.md`).
+`test/chappe_sip_media_SUITE` drives the rtpengine path against an in-suite
+fake that speaks the NG wire protocol, and the conference path against real
+chappe_mix rooms on loopback, with G.711 RTP sent and checked over UDP. Its
+`rtpengine_live` group runs a conference leg behind a real rtpengine when
+`RTPENGINE_HOST` and `RTPENGINE_MEDIA_IP` are set (the stack in
+`apps/chappe_rtpengine/interop`).

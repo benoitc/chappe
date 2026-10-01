@@ -6,8 +6,8 @@
 %% init/2 runs inside the session start, so rejecting the negotiated
 %% subprotocol here makes ws:connect/2 fail synchronously: a server
 %% that does not grant ng.rtpengine.com never becomes connected.
-%% Each inbound binary frame is one complete "Cookie SP bencode"
-%% message and is forwarded to the owning client as
+%% Each inbound binary or text frame is one complete "Cookie SP
+%% bencode" message and is forwarded to the owning client as
 %% {chappe_rtpengine_ws_frame, SessionPid, Frame}.
 -module(chappe_rtpengine_ws_handler).
 -behaviour(ws_handler).
@@ -24,6 +24,10 @@ init(Req, #{owner := _Owner} = State) ->
     end.
 
 handle_in({binary, Frame}, #{owner := Owner} = State) ->
+    Owner ! {chappe_rtpengine_ws_frame, self(), Frame},
+    {ok, State};
+handle_in({text, Frame}, #{owner := Owner} = State) ->
+    %% NG is bencode either way; some servers answer in text frames
     Owner ! {chappe_rtpengine_ws_frame, self(), Frame},
     {ok, State};
 handle_in(_Other, State) ->

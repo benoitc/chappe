@@ -14,12 +14,13 @@
 -export([all/0, init_per_suite/1, end_per_suite/1, end_per_testcase/2]).
 -export([uac_180_200_bye/1, uac_486/1, uac_cancel/1, uac_digest_407/1,
          options_request/1, uac_cap_enforced/1, uac_engine_restart/1,
-         uac_redirect_strips_auth/1, uac_raw_body/1]).
+         uac_redirect_strips_auth/1, uac_raw_body/1, uac_contact_params/1,
+         uac_bye_on_ack/1]).
 
 all() ->
     [uac_180_200_bye, uac_486, uac_cancel, uac_digest_407, options_request,
      uac_cap_enforced, uac_engine_restart, uac_redirect_strips_auth,
-     uac_raw_body].
+     uac_raw_body, uac_contact_params, uac_bye_on_ack].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -157,6 +158,56 @@ uac_raw_body(_Config) ->
     ?assertEqual(sdp(), chappe_sip_dialog:remote_sdp(Dialog)),
     ok = chappe_sip_dialog:destroy(Dialog).
 
+%% contact_params ride after the Contact's angle brackets (a conference
+%% focus sends `;isfocus', RFC 4579), and the dialog repeats that Contact
+%% on the in-dialog requests that need one (NOTIFY, REFER: RFC 6665 4.1.2.2
+%% and RFC 3515), so the peer keeps seeing the same target.
+uac_contact_params(_Config) ->
+    {EnginePort, UasPort} = setup(),
+    Test = self(),
+    uas(UasPort, fun(Uas) ->
+        {Inv, Src} = uas_recv(Uas, <<"INVITE">>),
+        Test ! {contact, invite, header(Inv, <<"contact">>)},
+        ToTag = tag(),
+        uas_send(Uas, Src, resp(Inv, 200, <<"OK">>, ToTag,
+                                [{<<"Contact">>, contact(UasPort)}], sdp())),
+        {_Ack, _} = uas_recv(Uas, <<"ACK">>),
+        [begin
+             {Req, RSrc} = uas_recv(Uas, M),
+             Test ! {contact, M, header(Req, <<"contact">>)},
+             uas_send(Uas, RSrc, resp(Req, 200, <<"OK">>, ToTag, [], <<>>))
+         end || M <- [<<"NOTIFY">>, <<"REFER">>, <<"BYE">>]]
+    end),
+    Uri = <<"sip:conf@127.0.0.1:", (integer_to_binary(UasPort))/binary>>,
+    Expected = <<"<", (contact(EnginePort))/binary, ">;isfocus">>,
+    {ok, Dialog} = chappe_sip:create_uac(Uri, #{
+        contact => contact(EnginePort),
+        contact_params => <<";isfocus">>,
+        local_sdp => sdp()
+    }),
+    ?assertEqual(Expected, recv_contact(invite)),
+    {ok, _} = chappe_sip_dialog:request(Dialog, #{
+        method => <<"NOTIFY">>,
+        headers => [{<<"Event">>, <<"refer">>},
+                    {<<"Subscription-State">>, <<"active">>}]
+    }),
+    ?assertEqual(Expected, recv_contact(<<"NOTIFY">>)),
+    {ok, _} = chappe_sip_dialog:request(Dialog, #{
+        method => <<"REFER">>,
+        headers => [{<<"Refer-To">>, <<"<sip:x@127.0.0.1>">>}]
+    }),
+    ?assertEqual(Expected, recv_contact(<<"REFER">>)),
+    ok = chappe_sip_dialog:destroy(Dialog),
+    %% BYE is not a target refresh request: no Contact needed
+    _ = recv_contact(<<"BYE">>).
+
+recv_contact(What) ->
+    receive {contact, What, C} -> C after 4000 -> ct:fail({no, What}) end.
+
+header(Bin, Name) ->
+    {ok, Msg} = chappe_sip_msg:parse(Bin),
+    chappe_sip_msg:get(Name, Msg).
+
 %% INVITE -> 486 -> app gets SipError 486
 uac_486(_Config) ->
     {EnginePort, UasPort} = setup(),
@@ -214,6 +265,7 @@ uac_digest_407(_Config) ->
     Uri = <<"sip:secure@127.0.0.1:", (integer_to_binary(UasPort))/binary>>,
     {ok, _Dialog} = chappe_sip:create_uac(Uri,
                                     #{contact => contact(EnginePort),
+                                      local_sdp => sdp(),
                                       auth => #{user => <<"alice">>,
                                                 pass => <<"secret">>}}),
     receive authed -> ok after 5000 -> ct:fail(no_auth_invite) end.
@@ -233,6 +285,32 @@ options_request(_Config) ->
     {ok, Msg} = chappe_sip_uac:await_response(Ref, 4000),
     ?assertEqual(200, chappe_sip_msg:status(Msg)),
     ?assertEqual(<<"INVITE, BYE, OPTIONS">>, chappe_sip_msg:get(<<"Allow">>, Msg)).
+
+%% The callee hangs up the moment the ACK reaches it, which can be before
+%% the UAC dialog has finished setting up its leg. The BYE must still be
+%% answered 200 and the owner told, not dropped.
+%% req: R3261-12.2.2-1
+uac_bye_on_ack(_Config) ->
+    {EnginePort, UasPort} = setup(),
+    Test = self(),
+    chappe_sip_test_ua:peer(UasPort, fun(Sock) ->
+        {Inv, Src} = chappe_sip_test_ua:recv_req(Sock, <<"INVITE">>),
+        Tag = tag(),
+        chappe_sip_test_ua:send(Sock, Src, resp(Inv, 200, <<"OK">>, Tag,
+                                [{<<"Contact">>, contact(UasPort)}], sdp())),
+        {_Ack, _} = chappe_sip_test_ua:recv_req(Sock, <<"ACK">>),
+        D = chappe_sip_test_ua:dialog_from_invite(Sock, Inv, Tag, Src),
+        {Bye, _} = chappe_sip_test_ua:in_dialog(D, <<"BYE">>, [], <<>>),
+        chappe_sip_test_ua:send(Sock, EnginePort, Bye),
+        Test ! {bye_answer, chappe_sip_test_ua:recv_any(Sock, 4000)}
+    end),
+    Uri = <<"sip:callee@127.0.0.1:", (integer_to_binary(UasPort))/binary>>,
+    {ok, Dialog} = chappe_sip:create_uac(Uri, #{contact => contact(EnginePort),
+                                          local_sdp => sdp()}),
+    receive {bye_answer, R} -> ?assertEqual(200, chappe_sip_test_ua:status(R))
+    after 6000 -> ct:fail(no_bye_answer) end,
+    receive {chappe_sip_dialog, Dialog, destroy, _} -> ok
+    after 4000 -> ct:fail(no_destroy) end.
 
 %% ---- helpers ----
 

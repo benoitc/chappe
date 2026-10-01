@@ -19,14 +19,17 @@
 %% time, re-accepting after a close, incremental stream parsing).
 %% TCP handlers may additionally return:
 %%   {reply_split, Map}  send the reply in two chunks with a delay
+%%   {reply_raw, Bin}    send the cookie, a space, then raw bytes
+%%   {raw, Bin}          send raw bytes with no cookie at all
 %%   close               close the connection without replying
 %%
 %% start_ws/1 and start_wss/1 run the fake over NG-WebSocket using
 %% erlang_ws's reference server (ws_h1_tcp_server), granting the
 %% ng.rtpengine.com subprotocol and terminating TLS for wss with an
 %% in-memory throwaway certificate. One binary frame is one message;
-%% handlers may return {reply, _} | {reply_raw, _} | {reply_after, _}
-%% | drop | close, and replies are cached by cookie like the UDP
+%% handlers may return {reply, _} | {reply_text, _} (the reply in a
+%% text frame) | {reply_raw, _} | {reply_after, _} | drop | close, and
+%% replies are cached by cookie like the UDP
 %% fake. start_ws/2 takes #{subprotocols => [binary()] | none} to
 %% model a server granting a different (or no) subprotocol.
 -module(chappe_rtpengine_fake_server).
@@ -34,6 +37,7 @@
 -export([
     start/0,
     start/1,
+    start_at/3,
     start_tcp/0,
     start_tcp/1,
     start_ws/0,
@@ -51,10 +55,17 @@ start() ->
     start(fun default_handler/2).
 
 start(Handler) ->
+    {ok, _, _} = start_at(Handler, {127, 0, 0, 1}, 0).
+
+%% A UDP fake bound to a given address and port (0 picks one), so two
+%% fakes can share a port on different addresses; {error, Reason} when
+%% the address is not available on this host.
+start_at(Handler, IP, Port0) ->
     Parent = self(),
-    Pid = spawn_link(fun() -> init(Parent, Handler) end),
+    Pid = spawn_link(fun() -> init(Parent, Handler, IP, Port0) end),
     receive
-        {Pid, Port} -> {ok, Pid, Port}
+        {Pid, {ok, Port}} -> {ok, Pid, Port};
+        {Pid, {error, _} = Error} -> Error
     after 5000 -> error(fake_server_start_timeout)
     end.
 
@@ -174,13 +185,30 @@ default_handler(_N, _Dict) ->
 
 %% internal
 
-init(Parent, Handler) ->
-    {ok, Socket} = gen_udp:open(0, [
-        binary, {active, true}, {ip, {127, 0, 0, 1}}
-    ]),
-    {ok, Port} = inet:port(Socket),
-    Parent ! {self(), Port},
-    loop(Socket, Handler, 0, [], #{}).
+init(Parent, Handler, IP, Port0) ->
+    Family =
+        case tuple_size(IP) of
+            8 -> inet6;
+            4 -> inet
+        end,
+    case
+        gen_udp:open(Port0, [
+            binary,
+            Family,
+            {active, true},
+            {ip, IP},
+            {recbuf, 262144},
+            {sndbuf, 262144},
+            {buffer, 65536}
+        ])
+    of
+        {ok, Socket} ->
+            {ok, Port} = inet:port(Socket),
+            Parent ! {self(), {ok, Port}},
+            loop(Socket, Handler, 0, [], #{});
+        {error, _} = Error ->
+            Parent ! {self(), Error}
+    end.
 
 %% Like real rtpengine, replies are cached by cookie: a duplicate
 %% request (a retransmit) is served the cached bytes without invoking
@@ -331,6 +359,16 @@ tcp_consume(Socket, Handler, N, Log, Buffer) ->
                             tcp_consume(
                                 Socket, Handler, N + 1, Log1, Remainder
                             );
+                        {reply_raw, Raw} ->
+                            ok = gen_tcp:send(Socket, [Cookie, $\s, Raw]),
+                            tcp_consume(
+                                Socket, Handler, N + 1, Log1, Remainder
+                            );
+                        {raw, Raw} ->
+                            ok = gen_tcp:send(Socket, Raw),
+                            tcp_consume(
+                                Socket, Handler, N + 1, Log1, Remainder
+                            );
                         drop ->
                             tcp_consume(
                                 Socket, Handler, N + 1, Log1, Remainder
@@ -405,6 +443,10 @@ ws_loop(Srv, Handler, N, Log, Cache) ->
 ws_handle_request(Session, Cookie, {reply, Map}, Cache) ->
     Bin = frame(Cookie, Map),
     Session ! {send, Bin},
+    Cache#{Cookie => Bin};
+ws_handle_request(Session, Cookie, {reply_text, Map}, Cache) ->
+    Bin = frame(Cookie, Map),
+    Session ! {send_text, Bin},
     Cache#{Cookie => Bin};
 ws_handle_request(Session, Cookie, {reply_raw, Raw}, Cache) ->
     Bin = iolist_to_binary([Cookie, $\s, Raw]),

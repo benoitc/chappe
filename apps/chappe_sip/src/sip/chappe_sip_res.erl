@@ -13,6 +13,7 @@
     send/2, send/3,
     send_reliable/2,
     await_prack/1, await_prack/2,
+    prack_res/2,
     finished/1,
     mark_final/1,
     req_txn/1,
@@ -81,16 +82,30 @@ send_reliable(Res, Opts) ->
     send(Res, Status, Opts#{reliable => true}).
 
 %% Block until the PRACK for a reliable provisional arrives (or timeout).
--spec await_prack(res()) -> {ok, binary()} | {error, timeout}.
+%% {ok, Raw}: the stack answered it 200. {offer, Raw, PrackRes}: it
+%% carries an offer (RFC 3262 5), answer it with send/3 on PrackRes: a
+%% 2xx whose body is your SDP answer.
+-spec await_prack(res()) ->
+    {ok, binary()} | {offer, binary(), res()} | {error, timeout}.
 await_prack(Res) ->
     await_prack(Res, 8000).
 
--spec await_prack(res(), timeout()) -> {ok, binary()} | {error, timeout}.
-await_prack(#res{txn = TxnH}, Timeout) ->
+-spec await_prack(res(), timeout()) ->
+    {ok, binary()} | {offer, binary(), res()} | {error, timeout}.
+await_prack(#res{txn = TxnH} = Res, Timeout) ->
     receive
-        {chappe_sip_prack, TxnH, Raw} -> {ok, Raw}
+        {chappe_sip_prack, TxnH, Raw} ->
+            {ok, Raw};
+        {chappe_sip_prack, TxnH, Raw, PrackH} ->
+            {offer, Raw, prack_res(Res, PrackH)}
     after Timeout -> {error, timeout}
     end.
+
+%% The response handle of a PRACK that carries an offer, from the handle
+%% of its INVITE.
+-spec prack_res(res(), non_neg_integer()) -> res().
+prack_res(#res{sender = Sender}, PrackH) ->
+    new(PrackH, Sender).
 
 -spec finished(res()) -> boolean().
 finished(#res{final = Final}) ->
