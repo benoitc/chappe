@@ -22,9 +22,11 @@
 -type dtmf() :: #{pt := 0..127, events := [0..255]}.
 %% What a leg needs from the far end's SDP. index is the m-line answered;
 %% ptime the far end's a=ptime (20 when it gives none); dtmf its
-%% telephone-event, if it has one.
+%% telephone-event, if it has one; rtcp where its RTCP goes when a
+%% media-level a=rtcp names it and RTCP is not muxed (RFC 3605).
 -type remote() :: #{
     endpoint := {inet:ip_address(), inet:port_number()},
+    rtcp := {inet:ip_address(), inet:port_number()} | undefined,
     law := law(),
     mux := boolean(),
     ptime := pos_integer(),
@@ -63,14 +65,15 @@ accept_offer(Sdp) ->
 -spec read_answer(iodata(), law()) ->
     {ok, #{
         endpoint := {inet:ip_address(), inet:port_number()},
+        rtcp := {inet:ip_address(), inet:port_number()} | undefined,
         dtmf := dtmf() | undefined
     }}
     | {error, term()}.
 read_answer(Sdp, Law) ->
     {SessAddr, Media} = parse(Sdp),
     case pick(SessAddr, Media) of
-        {ok, #{law := Law, endpoint := Endpoint, dtmf := Dtmf}} ->
-            {ok, #{endpoint => Endpoint, dtmf => Dtmf}};
+        {ok, #{law := Law, endpoint := Endpoint, rtcp := Rtcp, dtmf := Dtmf}} ->
+            {ok, #{endpoint => Endpoint, rtcp => Rtcp, dtmf => Dtmf}};
         {ok, #{law := Other}} ->
             {error, {law_mismatch, Other}};
         {error, _} = Err ->
@@ -183,6 +186,7 @@ pick_stream(I, #{port := Port, fmts := Fmts} = M, SessAddr) ->
                 {ok, Ip} ->
                     {ok, #{
                         endpoint => {Ip, Port},
+                        rtcp => rtcp(M, Ip),
                         law => Law,
                         mux => maps:get(mux, M, false),
                         ptime => maps:get(ptime, M, ?PTIME),
@@ -193,6 +197,27 @@ pick_stream(I, #{port := Port, fmts := Fmts} = M, SessAddr) ->
                     {error, no_connection_address}
             end
     end.
+
+%% The RTCP address of a media-level a=rtcp: its port, and its address
+%% or else the media's. Muxed RTCP stays on the RTP port.
+rtcp(#{mux := true}, _Ip) ->
+    undefined;
+rtcp(#{rtcp := V}, Ip) ->
+    case words(V) of
+        [P] -> rtcp_port(P, {ok, Ip});
+        [P, <<"IN">>, _Family, Addr | _] -> rtcp_port(P, address(Addr));
+        _ -> undefined
+    end;
+rtcp(_M, _Ip) ->
+    undefined.
+
+rtcp_port(P, {ok, Ip}) ->
+    case string:to_integer(P) of
+        {N, <<>>} when is_integer(N), N > 0, N =< 65535 -> {Ip, N};
+        _ -> undefined
+    end;
+rtcp_port(_P, error) ->
+    undefined.
 
 %% The first telephone-event/8000 among the m-line's formats.
 dtmf(#{fmts := Fmts} = M) ->
@@ -293,6 +318,9 @@ line(<<"c=", Rest/binary>>, {Sess, Media}) ->
     end;
 line(<<"a=rtcp-mux", _/binary>>, {Sess, [M | Ms]}) ->
     {Sess, [M#{mux => true} | Ms]};
+line(<<"a=rtcp:", V/binary>>, {Sess, [M | Ms]}) ->
+    %% media level only: RFC 3605 2.1 forbids it at session level
+    {Sess, [M#{rtcp => V} | Ms]};
 line(<<"a=rtpmap:", V/binary>>, {Sess, [M | Ms]}) ->
     {Sess, [put_fmt(rtpmap, V, M) | Ms]};
 line(<<"a=fmtp:", V/binary>>, {Sess, [M | Ms]}) ->

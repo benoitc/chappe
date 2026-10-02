@@ -541,3 +541,22 @@ order held at load 4.8 too):
   mixed as audio, an answer without fmtp, the offer's events list not
   read, the mixer's offer without telephone-event. Three first versions
   did not compile (an unused function or variable) and were rewritten.
+
+## a=rtcp and cascaded CSRCs
+
+- `rtcp_remote` (a leg option, and a key of the map `set_remote/3` now
+  takes) sends a leg's RTCP where a media-level a=rtcp says, on the RTCP
+  socket of a pair or the RTP socket of a muxed leg. A new far end without
+  one drops the old one: an a=rtcp belongs to the SDP it came in.
+- An input packet's CSRC list is kept per leg (from the last audio packet)
+  and a talking leg contributes it in place of its own source's SSRC; the
+  listener's own contributions are left out and the list stays capped at
+  15. The SDES chunks of cascaded CSRCs are not forwarded: only a leg's
+  own source has one.
+- Seen failing first: `cascaded_csrcs` (C's list stayed [A, B]),
+  `rtcp_to_the_given_port` (no RTCP at the given port), and
+  `chappe_sip_media_SUITE:conference_rtcp_port` (no `rtcp_remote`).
+- Mutations, 8, all caught: input CSRCs ignored, input CSRCs not kept,
+  the listener not excluded, the a=rtcp port not used, `set_remote/3` not
+  taking it, a=rtcp read on a muxed m-line, its address ignored, an
+  answer's a=rtcp not passed to the leg.

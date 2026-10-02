@@ -29,7 +29,8 @@
          media_env_config/1]).
 -export([conference_two_legs/1, conference_leave/1, conference_mute/1,
          conference_owner_death/1, conference_leg_owner_death/1,
-         conference_sdp/1, conference_ptime/1, conference_dtmf/1]).
+         conference_sdp/1, conference_ptime/1, conference_dtmf/1,
+         conference_rtcp_port/1]).
 -export([conference_behind_rtpengine/1]).
 
 -define(LIVE_NODE, chappe_sip_media_live).
@@ -44,7 +45,8 @@ all() ->
 groups() ->
     [{mix, [], [conference_two_legs, conference_leave, conference_mute,
                 conference_owner_death, conference_leg_owner_death,
-                conference_sdp, conference_ptime, conference_dtmf]},
+                conference_sdp, conference_ptime, conference_dtmf,
+                conference_rtcp_port]},
      {rtpengine_live, [], [conference_behind_rtpengine]}].
 
 init_per_suite(Config) ->
@@ -521,6 +523,41 @@ conference_dtmf(_Config) ->
                                                    9, 10, 11, 12, 13, 14, 15]},
                  Leg(S3)),
     [ok = chappe_sip_media:leave(S) || S <- [S1, S2, S3]].
+
+%% RFC 3605: a media-level a=rtcp names the RTCP port, and maybe the
+%% address, the leg reports to; a session-level one is not an a=rtcp at
+%% all, and with rtcp-mux RTCP stays on the RTP port.
+conference_rtcp_port(_Config) ->
+    Room = room(),
+    Sdp = fun(Sess, Media) ->
+        <<"v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\n",
+          Sess/binary, "t=0 0\r\nm=audio 4000 RTP/AVP 0\r\n", Media/binary>>
+    end,
+    Leg = fun(S) ->
+        #{conf := Conf, leg := L} = chappe_sip_media:info(S),
+        [Info] = [I || #{id := Id} = I <- chappe_mix:legs(Conf), Id =:= L],
+        Info
+    end,
+    Join = fun(Offer) ->
+        {ok, S} = conf_session(),
+        {ok, _} = chappe_sip_media:conference(S, Room, #{sdp => Offer}),
+        S
+    end,
+    S1 = Join(Sdp(<<>>, <<"a=rtcp:5011\r\n">>)),
+    ?assertMatch(#{rtcp_remote := {{127, 0, 0, 1}, 5011}}, Leg(S1)),
+    S2 = Join(Sdp(<<>>, <<"a=rtcp:5013 IN IP4 10.1.2.3\r\n">>)),
+    ?assertMatch(#{rtcp_remote := {{10, 1, 2, 3}, 5013}}, Leg(S2)),
+    S3 = Join(Sdp(<<"a=rtcp:5015\r\n">>, <<>>)),
+    ?assertMatch(#{rtcp_remote := undefined}, Leg(S3)),
+    S4 = Join(Sdp(<<>>, <<"a=rtcp-mux\r\na=rtcp:4000\r\n">>)),
+    ?assertMatch(#{rtcp_remote := undefined}, Leg(S4)),
+    %% the answer to the mixer's offer can carry one too
+    {ok, S5} = conf_session(),
+    {ok, _} = chappe_sip_media:conference(S5, Room, #{}),
+    ok = chappe_sip_media:set_remote(
+           S5, Sdp(<<>>, <<"a=rtcp:5017 IN IP4 10.1.2.4\r\n">>)),
+    ?assertMatch(#{rtcp_remote := {{10, 1, 2, 4}, 5017}}, Leg(S5)),
+    [ok = chappe_sip_media:leave(S) || S <- [S1, S2, S3, S4, S5]].
 
 %% ---- conference behind rtpengine ----
 

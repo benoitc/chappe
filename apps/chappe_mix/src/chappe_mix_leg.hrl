@@ -38,5 +38,11 @@
     rtcp_sock :: gen_udp:socket() | undefined,
     rtcp_port :: inet:port_number(),
     %% pair: the address RTCP is taken from, latched like source
-    rtcp_source :: {inet:ip_address(), inet:port_number()} | undefined
+    rtcp_source :: {inet:ip_address(), inet:port_number()} | undefined,
+    %% where RTCP goes when signalling named it (RFC 3605 a=rtcp), instead
+    %% of the RTP port or the one after it
+    rtcp_remote :: {inet:ip_address(), inet:port_number()} | undefined,
+    %% the CSRC list of the last audio packet in: the sources an upstream
+    %% mixer put in it (RFC 3550 7.4)
+    in_csrcs = [] :: [0..16#FFFFFFFF]
 }).

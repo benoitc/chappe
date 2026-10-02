@@ -80,7 +80,9 @@
 %% (RFC 3551 4.2). dtmf_pt: the RFC 4733 telephone-event payload type the
 %% far end negotiated; unset, the leg takes no events and gets none.
 %% dtmf_events: the event codes its fmtp lists (default 0 to 15, the
-%% digits); it is sent no others.
+%% digits); it is sent no others. rtcp_remote: where this leg's RTCP goes
+%% when the far end's SDP names it with a=rtcp (RFC 3605), instead of the
+%% RTP port (mux) or the port after it (pair).
 -type leg_opts() :: #{
     remote => endpoint(),
     law => chappe_mix_g711:law(),
@@ -89,15 +91,18 @@
     dtmf_events => [0..255],
     mute => boolean(),
     rtcp => mux | pair,
+    rtcp_remote => endpoint(),
     name => binary()
 }.
 
 %% Where a leg sends, as set_remote/3 takes it: the far end alone, or the
-%% far end with the leg's telephone-event as the answer gave it.
+%% far end with its RTCP address and the leg's telephone-event as the
+%% answer gave them.
 -type remote() ::
     endpoint()
     | #{
         remote := endpoint(),
+        rtcp_remote => endpoint(),
         dtmf_pt => 0..127,
         dtmf_events => [0..255]
     }.
@@ -136,8 +141,9 @@ move_leg(From, Leg, To) ->
     gen_server:call(From, {move_leg, Leg, To}).
 
 %% Send the mix to Remote from now on, and take RTP from the next
-%% address that sends (the source latch is reset). Given as a map, the
-%% telephone-event options there replace the leg's.
+%% address that sends (the source latch is reset). Given as a map, its
+%% rtcp_remote replaces the leg's (none in the map: none any more), and
+%% the telephone-event options there replace the leg's.
 -spec set_remote(conf(), leg(), remote()) -> ok | {error, not_found}.
 set_remote(Conf, Leg, Remote) ->
     gen_server:call(Conf, {set_remote, Leg, Remote}).

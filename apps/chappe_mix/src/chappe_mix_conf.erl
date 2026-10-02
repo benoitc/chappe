@@ -569,9 +569,10 @@ mix(#state{legs = Legs0} = S, Missed) ->
         Popped
     ),
     Mixed = chappe_mix_dsp:mixed(Sum),
-    %% who is in the sum, by leg, for the CSRC lists
+    %% who is in the sum, by leg, for the CSRC lists: a leg's source, or
+    %% the sources an upstream mixer named in what it sent (7.4)
     Talkers = [
-        {Id, Ssrc}
+        {Id, contributors(L, Ssrc)}
      || {#leg{id = Id, mute = false} = L, Codes} <- Popped,
         Codes =/= none,
         Ssrc <- [src_ssrc(L)],
@@ -602,8 +603,17 @@ own(#leg{mute = true}, _Codes) -> none;
 own(_L, none) -> none;
 own(#leg{law = Law}, Codes) -> {Law, Codes}.
 
-%% The sources in this leg's mix: every talker but itself, at most N.
+%% What a talking leg puts in a CSRC list: the CSRCs of an already mixed
+%% input, else its source's SSRC (RFC 3550 7.4).
+contributors(#leg{in_csrcs = []}, Ssrc) -> [Ssrc];
+contributors(#leg{in_csrcs = Csrcs}, _Ssrc) -> Csrcs.
+
+%% The sources in this leg's mix: every talker's but its own, at most N.
 csrcs(_Id, _Talkers, 0) -> [];
 csrcs(_Id, [], _N) -> [];
 csrcs(Id, [{Id, _} | T], N) -> csrcs(Id, T, N);
-csrcs(Id, [{_, Ssrc} | T], N) -> [Ssrc | csrcs(Id, T, N - 1)].
+csrcs(Id, [{_, Cs} | T], N) -> take_csrcs(Cs, Id, T, N).
+
+take_csrcs([], Id, T, N) -> csrcs(Id, T, N);
+take_csrcs(_Cs, _Id, _T, 0) -> [];
+take_csrcs([C | Cs], Id, T, N) -> [C | take_csrcs(Cs, Id, T, N - 1)].

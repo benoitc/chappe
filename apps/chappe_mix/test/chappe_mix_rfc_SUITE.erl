@@ -27,6 +27,8 @@
     sender_10ms/1,
     sender_200ms/1,
     dtmf_forwarded/1,
+    cascaded_csrcs/1,
+    rtcp_to_the_given_port/1,
     empty_rr_first/1,
     jitter_formula/1
 ]).
@@ -47,6 +49,8 @@ all() ->
         sender_10ms,
         sender_200ms,
         dtmf_forwarded,
+        cascaded_csrcs,
+        rtcp_to_the_given_port,
         {group, codec}
     ].
 
@@ -539,6 +543,73 @@ rtp_recorded(Pid) ->
         {Pid, Pkts} -> rtp_in(Pkts)
     after 2000 -> ct:fail(recorded)
     end.
+
+%% ---- cascaded mixers and the RTCP port ----
+
+%% A is another mixer upstream: its packets carry the CSRCs 111 and 222.
+%% B is a plain talker. C, listening, gets packets whose CSRC list names
+%% the sources A mixed (not A itself) and B; B's list names A's sources;
+%% A's names B only (RFC 3550 7.4).
+%% req: R3550-24
+cascaded_csrcs(_Config) ->
+    {ok, Conf} = chappe_mix:start(#{}),
+    {PA, LA} = peer(Conf, 16#A, #{}),
+    ok = chappe_mix_test_peer:set(PA, csrcs, [111, 222]),
+    {PB, LB} = peer(Conf, 16#B, #{}),
+    {PC, LC} = peer(Conf, 16#C, #{}),
+    ok = chappe_mix_test_peer:set(PC, sending, false),
+    Csrcs = fun(Leg) -> lists:sort(maps:get(csrcs, leg(Conf, Leg))) end,
+    wait(
+        fun() ->
+            Csrcs(LC) =:= [16#B, 111, 222] andalso Csrcs(LB) =:= [111, 222] andalso
+                Csrcs(LA) =:= [16#B]
+        end,
+        2000
+    ),
+    %% and on the wire (the datagram may still be on its way to C)
+    OnWire = fun() ->
+        case
+            lists:reverse(
+                chappe_mix_test_peer:rtp(chappe_mix_test_peer:packets(PC))
+            )
+        of
+            [{_, #{csrcs := Cs}} | _] -> lists:sort(Cs);
+            [] -> []
+        end
+    end,
+    wait(fun() -> OnWire() =:= [16#B, 111, 222] end, 1000),
+    [chappe_mix_test_peer:stop(P) || P <- [PA, PB, PC]],
+    ok = chappe_mix:stop(Conf).
+
+%% A media-level a=rtcp gives an RTCP port (and address) other than the
+%% RTP port + 1: the leg's reports go there, for a leg on a port pair
+%% (given when the leg opens) and for a muxed one (given with
+%% set_remote/3), and not to the RTP port or the port after it.
+%% req: R3605-001 R3550-211
+rtcp_to_the_given_port(_Config) ->
+    {ok, Conf} = chappe_mix:start(#{}),
+    {S1, P1} = open(),
+    {R1, Q1} = open(),
+    {S2, P2} = open(),
+    {R2, Q2} = open(),
+    {ok, _, _} = chappe_mix:add_leg(
+        Conf, #{remote => {?LO, P1}, rtcp => pair, rtcp_remote => {?LO, Q1}}
+    ),
+    {ok, L2, _} = chappe_mix:add_leg(Conf, #{}),
+    ok = chappe_mix:set_remote(
+        Conf, L2, #{remote => {?LO, P2}, rtcp_remote => {?LO, Q2}}
+    ),
+    ?assertMatch(#{rtcp_remote := {?LO, Q2}}, leg(Conf, L2)),
+    Deadline = erlang:monotonic_time(millisecond) + 3078 + 1000,
+    G1 = until_rtcp(R1, Deadline, []),
+    G2 = until_rtcp(R2, Deadline, []),
+    ok = chappe_mix:stop(Conf),
+    timer:sleep(50),
+    ?assert(length(rtcp_in(G1)) >= 1),
+    ?assert(length(rtcp_in(G2)) >= 1),
+    %% the BYEs of the stop went there too, and no RTCP to the RTP ports
+    ?assertEqual([], rtcp_in(drain(S1) ++ drain(S2))),
+    [gen_udp:close(S) || S <- [S1, R1, S2, R2]].
 
 %% ---- RTCP on the wire ----
 

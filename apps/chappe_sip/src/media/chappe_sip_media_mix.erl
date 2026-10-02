@@ -209,13 +209,19 @@ join(#{id := Id, owner := Owner}, #{room := Room} = Opts, S) ->
 leg_plan(#{sdp := Offer} = Opts, _S) ->
     case chappe_sip_media_mix_sdp:accept_offer(Offer) of
         {ok, #{
-            endpoint := Ep, law := Law, mux := Mux, ptime := Ptime, dtmf := Dtmf
+            endpoint := Ep,
+            law := Law,
+            mux := Mux,
+            ptime := Ptime,
+            dtmf := Dtmf,
+            rtcp := Rtcp
         }} ->
             {ok, #{
                 law => Law,
                 mux => Mux,
                 ptime => Ptime,
                 dtmf => Dtmf,
+                rtcp_remote => Rtcp,
                 remote => Ep,
                 answer_to => Offer,
                 mute => maps:get(mute, Opts, false)
@@ -265,7 +271,15 @@ add_leg(Id, Owner, Room, #room{conf = Conf} = R, Plan, Opts, S) ->
         put_opt(
             remote,
             maps:get(remote, Plan, undefined),
-            put_opt(ptime, maps:get(ptime, Plan, undefined), LegOpts0)
+            put_opt(
+                ptime,
+                maps:get(ptime, Plan, undefined),
+                put_opt(
+                    rtcp_remote,
+                    maps:get(rtcp_remote, Plan, undefined),
+                    LegOpts0
+                )
+            )
         )
     ),
     LegOpts = put_opt(name, maps:get(name, Opts, undefined), LegOpts1),
@@ -415,8 +429,8 @@ remote_endpoint({Ip, Port} = Ep, _Law) when is_tuple(Ip), is_integer(Port) ->
     {ok, Ep};
 remote_endpoint(Sdp, Law) ->
     case chappe_sip_media_mix_sdp:read_answer(Sdp, Law) of
-        {ok, #{endpoint := Ep, dtmf := Dtmf}} ->
-            {ok, dtmf_opts(Dtmf, #{remote => Ep})};
+        {ok, #{endpoint := Ep, rtcp := Rtcp, dtmf := Dtmf}} ->
+            {ok, dtmf_opts(Dtmf, put_opt(rtcp_remote, Rtcp, #{remote => Ep}))};
         {error, _} = Err ->
             Err
     end.

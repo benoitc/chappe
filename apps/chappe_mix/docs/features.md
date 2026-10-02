@@ -43,7 +43,11 @@ What chappe_mix does today, and what is planned.
   handled as in 8.2, over one SSRC space for the whole conference.
 - RTCP on the RTP port (`rtcp => mux`, the default, for an SDP with
   a=rtcp-mux) or on an even/odd port pair (`rtcp => pair`). RTCP-mux
-  demultiplexing follows RFC 5761 4.
+  demultiplexing follows RFC 5761 4. An RTCP address from signalling
+  (RFC 3605 a=rtcp, the `rtcp_remote` leg option or `set_remote/3` key)
+  takes the place of the RTP port or the one after it.
+- Cascaded mixers: a talker whose packets carry CSRCs (another mixer)
+  contributes those to the CSRC lists, not its own SSRC (RFC 3550 7.4).
 - The RTP timestamp stays on the sampling clock across an overrun; the
   marker bit is always 0 (no silence suppression).
 - The conference stops when its owner exits.
@@ -65,9 +69,7 @@ What chappe_mix does today, and what is planned.
 - Gain control on the sum: the static limiter does not meet the
   distortion threshold in `test/audit/PERF.md` (a room at full scale RMS);
   a per-listener gain measured -37.8 dB in a model (`ATTEMPTS.md`).
-- An RTCP port from signalling that is not RTP + 1 (RFC 3605 a=rtcp).
-- Cascaded mixers: carrying an input packet's CSRCs into the output list
-  (RFC 3550 7.4).
+- The SDES (CNAME, NAME) of the sources behind a cascaded mixer's CSRCs.
 - A decision on the tick timer firing up to 1 ms early, and on the
   jitter-buffer prefill that only grows, once latency is measured on a quiet
   box.

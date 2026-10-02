@@ -49,6 +49,7 @@ open(Id, Opts, #{ip := Ip, law := Law, depth := Depth, ssrc := Ssrc}) ->
                 sess = chappe_mix_session:new(Ssrc, erlang:monotonic_time()),
                 rtcp = Rtcp,
                 rtcp_sock = RtcpSock,
+                rtcp_remote = maps:get(rtcp_remote, Opts, undefined),
                 rtcp_port =
                     case Rtcp of
                         mux -> Port;
@@ -123,7 +124,9 @@ info(#leg{} = L) ->
             events_sent => L#leg.events_sent,
             filtered => L#leg.filtered,
             rtcp => L#leg.rtcp,
-            rtcp_port => L#leg.rtcp_port
+            rtcp_port => L#leg.rtcp_port,
+            rtcp_remote => L#leg.rtcp_remote,
+            in_csrcs => L#leg.in_csrcs
         }
     ).
 
@@ -135,6 +138,8 @@ set_remote(#{remote := Remote} = Opts, L) ->
         remote = Remote,
         source = undefined,
         rtcp_source = undefined,
+        %% a new far end: an RTCP address only if it comes with it
+        rtcp_remote = maps:get(rtcp_remote, Opts, undefined),
         dtmf_pt = maps:get(dtmf_pt, Opts, L#leg.dtmf_pt),
         dtmf_events = maps:get(dtmf_events, Opts, L#leg.dtmf_events)
     }.
@@ -172,14 +177,19 @@ accepts_rtcp(_From, L) ->
 %% source latch to itself), buffer the audio by its timestamp, whatever
 %% its size.
 -spec take(chappe_mix_rtp:packet(), addr(), #leg{}) -> #leg{}.
-take(#{pt := PT, ssrc := Ssrc, seq := Seq, ts := Ts, payload := P}, From, L) ->
+take(
+    #{pt := PT, ssrc := Ssrc, seq := Seq, ts := Ts, payload := P} = Pkt, From, L
+) ->
     L1 = L#leg{
         source = latch_source(L, From),
         remote = latch(L#leg.remote, From)
     },
     case PT =:= law_pt(L#leg.law) of
         true ->
-            L1#leg{jbuf = chappe_mix_jbuf:push(Ssrc, Seq, Ts, P, L1#leg.jbuf)};
+            L1#leg{
+                jbuf = chappe_mix_jbuf:push(Ssrc, Seq, Ts, P, L1#leg.jbuf),
+                in_csrcs = maps:get(csrcs, Pkt, [])
+            };
         false when PT =:= L#leg.dtmf_pt ->
             %% telephone-event: never mixed, the conference forwards it
             L1#leg{events = L1#leg.events + 1};
@@ -307,8 +317,10 @@ rtcp_send(#leg{sess = Sess} = L, Cname, Chunks, Extra) ->
             L#leg{sess = Sess1}
     end.
 
-%% Reports go where the RTP goes, or to the port after it (RFC 3550 11),
-%% not to wherever the far end's RTCP comes from.
+%% Reports go where signalling said (RFC 3605), else where the RTP goes
+%% or to the port after it (RFC 3550 11), not to wherever the far end's
+%% RTCP comes from.
+rtcp_dest(#leg{rtcp_remote = {_, _} = To}) -> To;
 rtcp_dest(#leg{rtcp = mux, remote = Remote}) -> Remote;
 rtcp_dest(#leg{rtcp = pair, remote = {Ip, Port}}) -> {Ip, Port + 1};
 rtcp_dest(#leg{}) -> undefined.

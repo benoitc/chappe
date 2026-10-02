@@ -223,7 +223,9 @@ with `telephone-event/8000` is answered with it on the offer's payload type
 and `a=fmtp:<pt> 0-16`; the leg then forwards RFC 4733 events to and from
 the room, sending the far end only the events its fmtp lists (0 to 15
 without one). The mixer's own offer carries `telephone-event/8000` on 101,
-and an answer that keeps it turns forwarding on for the leg. It keeps `a=rtcp-mux` when the offer has it;
+and an answer that keeps it turns forwarding on for the leg. A media-level
+`a=rtcp:<port> [IN IP4 <addr>]` (RFC 3605) in an offer or an answer sends the
+leg's RTCP there; it is ignored at session level and with `a=rtcp-mux`. It keeps `a=rtcp-mux` when the offer has it;
 without it, RTCP goes on the next port up. Other m-lines (video) are rejected
 with port 0.
 
