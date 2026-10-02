@@ -32,7 +32,9 @@
     invite_answer_advertises_focus/1,
     options_advertises_focus/1,
     privacy_from_the_api/1,
-    every_watcher_gets_each_change/1
+    every_watcher_gets_each_change/1,
+    view_per_subscriber/1,
+    denied_gets_empty_roster/1
 ]).
 
 -define(CI, <<"application/conference-info+xml">>).
@@ -50,7 +52,9 @@ all() ->
         invite_answer_advertises_focus,
         options_advertises_focus,
         privacy_from_the_api,
-        every_watcher_gets_each_change
+        every_watcher_gets_each_change,
+        view_per_subscriber,
+        denied_gets_empty_roster
     ].
 
 init_per_suite(Config) ->
@@ -88,6 +92,7 @@ init_per_testcase(_Case, Config) ->
     [{conf_uri, Uri}, {focus, Focus}, {host_2xx, Resp} | UAs ++ Config].
 
 end_per_testcase(_Case, Config) ->
+    ok = chappe_sip_test_focus:subscribe_policy(undefined),
     _ = chappe_sip_test_focus:stop(),
     [ua_stop(?config(K, Config)) || K <- [host, watcher, p1, p2]],
     ok.
@@ -329,6 +334,60 @@ every_watcher_gets_each_change(Config) ->
          {3, "partial", ["disconnected"]}],
         Seen
     ).
+
+%% Two subscribers with different roles get different documents: the
+%% moderator's view shows the dialog identifiers, the focus's default
+%% policy keeps them from everyone else (RFC 4575 8.2).
+%% req: R4575-57
+view_per_subscriber(Config) ->
+    [Host, W, P1] = [?config(K, Config) || K <- [host, watcher, p1]],
+    Uri = ?config(conf_uri, Config),
+    ok = chappe_sip_test_focus:subscribe_policy(fun(Req) ->
+        case from_user(Req) of
+            <<"host">> -> #{view => fun(Conf) -> Conf end};
+            _ -> #{}
+        end
+    end),
+    {ok, SubH, _} = subscribe(Host, Uri, <<"conference">>, []),
+    {ok, SubW, _} = subscribe(W, Uri, <<"conference">>, []),
+    wait_notifies(Host, SubH, 1),
+    wait_notifies(W, SubW, 1),
+    {ok, _, _} = invite(P1, Uri, []),
+    ok = wait_until(
+        fun() -> mentions(Host, SubH, ua_uri(P1)) andalso mentions(W, SubW, ua_uri(P1)) end,
+        15000
+    ),
+    ?assert(mentions(Host, SubH, <<"<call-info">>)),
+    ?assertNot(mentions(W, SubW, <<"<call-info">>)).
+
+%% A subscriber the policy denies still gets 200 and NOTIFYs that look
+%% right: a well-formed document with nobody in it (RFC 6665 6.2).
+%% req: R6665-30
+denied_gets_empty_roster(Config) ->
+    [Host, W, P1] = [?config(K, Config) || K <- [host, watcher, p1]],
+    Uri = ?config(conf_uri, Config),
+    ok = chappe_sip_test_focus:subscribe_policy(fun(Req) ->
+        case from_user(Req) of
+            <<"watcher">> -> #{view => fun(Conf) -> Conf#{users => []} end};
+            _ -> #{}
+        end
+    end),
+    {ok, SubW, R200} = subscribe(W, Uri, <<"conference">>, []),
+    ?assertEqual(200, chappe_sip_msg:status(R200)),
+    {ok, SubP, _} = subscribe(P1, Uri, <<"conference">>, []),
+    {ok, _, _} = invite(P1, Uri, []),
+    ok = wait_until(fun() -> mentions(P1, SubP, ua_uri(P1)) end, 15000),
+    [First | _] = wait_notifies(W, SubW, 1),
+    ?assertMatch(#{state := "full", version := 1}, info(First)),
+    ?assert(mentions(P1, SubP, ua_uri(Host))),
+    ?assertNot(mentions(W, SubW, ua_uri(Host))),
+    ?assertNot(mentions(W, SubW, ua_uri(P1))),
+    ?assertNot(mentions(W, SubW, <<"<user ">>)).
+
+from_user(Req) ->
+    {ok, #{uri := U}} = chappe_sip_msg:parsed(<<"from">>, chappe_sip_req:msg(Req)),
+    {ok, #{user := User}} = chappe_sip_uri:parse(U),
+    User.
 
 %% ---- helpers ----
 

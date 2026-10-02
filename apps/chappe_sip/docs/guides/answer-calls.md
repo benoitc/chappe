@@ -170,12 +170,15 @@ taking over a leg. `chappe_sip:replaces_response/1` finds the dialog it names
 and applies the RFC 3891 section 3 rules for you:
 
 ```erlang
+Auth = #{realm => <<"example.com">>, secret => fun my_users:password/1},
 ok = chappe_sip:invite(fun(Req, Res) ->
-    case chappe_sip:replaces_response(Req) of
+    case chappe_sip:replaces_response(Req, #{auth => Auth}) of
         no_replaces ->
             {ok, _Dlg} = chappe_sip:create_uas(Req, Res, #{local_sdp => Sdp});
         {reject, Status} ->
             chappe_sip_res:send(Res, Status);
+        {reject, 401, Headers} ->
+            chappe_sip_res:send(Res, 401, #{headers => Headers});
         {accept, Old, _Info} ->
             {ok, _New} = chappe_sip:create_uas(Req, Res, #{local_sdp => Sdp}),
             ok = chappe_sip_dialog:destroy(Old)
@@ -190,10 +193,16 @@ torn down; 486 for a confirmed dialog and the `early-only` flag. On `accept`,
 `destroy/1` sends a BYE for a confirmed dialog and a CANCEL for your own
 ringing call. For the raw match, use `chappe_sip:find_replaced/1`.
 
-RFC 3891 section 3 has you check that the sender may replace the dialog
-before you do. Pass your policy to `replaces_response/2`; it is asked only
-when the match would be accepted, and a `false` gives `{reject, 403}` with the
-old dialog left alone:
+RFC 3891 section 8 accepts a replacement only from a peer that is
+authenticated and authorized, so a match is refused with `{reject, 403}`
+unless you say who may replace. `replaces_response/1` has no policy and
+refuses every match. With `auth => #{realm, secret}` (the registrar's digest
+options), a Replaces with no or wrong credentials gets
+`{reject, 401, Headers}` (the challenge to send), and an authenticated one is
+accepted. Checking the sender may replace that particular dialog is your
+`authorize` policy; it is asked only when the match would be accepted, after
+digest when you use both, and a `false` gives `{reject, 403}` with the old
+dialog left alone:
 
 ```erlang
 Authorize = fun(Old, Req) -> referred_by_peer(Old, Req) end,

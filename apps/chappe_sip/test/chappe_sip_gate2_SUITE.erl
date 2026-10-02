@@ -37,7 +37,9 @@
     answered_without_waiting/1,
     replacement_needs_authorization/1,
     anonymous_from_keeps_a_tag/1,
-    privacy_none_relayed/1
+    privacy_none_relayed/1,
+    privacy_critical_unsupported/1,
+    privacy_strips_user_headers/1
 ]).
 
 -define(UA, chappe_sip_test_conf_ua).
@@ -49,7 +51,9 @@
     answered_without_waiting,
     replacement_needs_authorization,
     anonymous_from_keeps_a_tag,
-    privacy_none_relayed
+    privacy_none_relayed,
+    privacy_critical_unsupported,
+    privacy_strips_user_headers
 ]).
 
 all() ->
@@ -70,7 +74,9 @@ all() ->
         answered_without_waiting,
         replacement_needs_authorization,
         anonymous_from_keeps_a_tag,
-        privacy_none_relayed
+        privacy_none_relayed,
+        privacy_critical_unsupported,
+        privacy_strips_user_headers
     ].
 
 init_per_suite(Config) ->
@@ -234,10 +240,11 @@ conf_uris_unique(Config) ->
     Uris = [text(E, uri) || E <- children(ConfUris, entry)],
     ?assertEqual([binary_to_list(Uri), binary_to_list(Tel)], Uris).
 
-%% RFC 4575 5.3.4, 5.8.2, 5.8.3: media types are SDP media tokens matching
-%% the m= line, and an endpoint's media label is one of the conference's
-%% available-media labels.
-%% req: R4575-35 R4575-49 R4575-50
+%% RFC 4575 5.3.4, 5.8.2, 5.8.3, 5.8.4: media types are SDP media tokens
+%% matching the m= line, an endpoint's media label is one of the
+%% conference's available-media labels, and its src-id is the SSRC the
+%% endpoint's SDP announces.
+%% req: R4575-35 R4575-49 R4575-50 R4575-51
 media_types_and_labels(Config) ->
     [W, P1] = [?config(K, Config) || K <- [watcher, p1]],
     Uri = ?config(conf_uri, Config),
@@ -260,7 +267,9 @@ media_types_and_labels(Config) ->
     [M] = children(Ep, media),
     %% the UA offered m=audio
     ?assertEqual("audio", text(M, type)),
-    ?assert(lists:member(text(M, label), Labels)).
+    ?assert(lists:member(text(M, label), Labels)),
+    %% the UA's a=ssrc
+    ?assertEqual("1234", text(M, 'src-id')).
 
 %% RFC 4575 5.7.2 to 5.7.4: a participant REFERs the focus to someone; the
 %% focus calls it, and the endpoint shows dialing-out, alerting, then
@@ -568,6 +577,78 @@ privacy_none_relayed(Config) ->
     after
         persistent_term:erase({?MODULE, b2b})
     end.
+
+%% RFC 3323 5: a b2bua acting as a privacy service evaluates the Privacy
+%% of the request; with critical and a level it cannot apply (session: it
+%% does not anonymize media) the request fails with 500 naming that level,
+%% before anything reaches B. Critical with levels it applies goes through,
+%% and so does a non-critical level it cannot apply.
+%% req: R3323-09 R3323-11 R3323-12 R3323-13
+privacy_critical_unsupported(Config) ->
+    [P1, P2] = [?config(K, Config) || K <- [p1, p2]],
+    Uri = b2b_app(ua_uri(P2), #{privacy => true}, Config),
+    {error, 500, R} = ?UA:invite(P1, Uri, [{<<"Privacy">>, <<"session;critical">>}]),
+    Reason = chappe_sip_msg:reason(R),
+    ct:log("500 reason: ~s", [Reason]),
+    ?assertNotEqual(nomatch, binary:match(string:lowercase(Reason), <<"privacy">>)),
+    ?assertNotEqual(nomatch, binary:match(Reason, <<"session">>)),
+    ?assertEqual(nomatch, binary:match(Reason, <<"user">>)),
+    %% an extension token it does not know, critical: also refused
+    {error, 500, R2} = ?UA:invite(P1, Uri, [{<<"Privacy">>, <<"user; x-mine; critical">>}]),
+    ?assertNotEqual(nomatch, binary:match(chappe_sip_msg:reason(R2), <<"x-mine">>)),
+    timer:sleep(300),
+    ?assertEqual([], [X || {<<"INVITE">>, _, _} = X <- ?UA:requests(P2)]),
+    %% levels it applies, critical: relayed
+    {ok, C1, _} = ?UA:invite(P1, Uri, [{<<"Privacy">>, <<"user;header;id;critical">>}]),
+    {ok, 200} = ?UA:bye(P1, C1),
+    %% session without critical: best effort, relayed
+    {ok, C2, _} = ?UA:invite(P1, Uri, [{<<"Privacy">>, <<"session">>}]),
+    {ok, 200} = ?UA:bye(P1, C2),
+    ?assertEqual(2, length([X || {<<"INVITE">>, _, _} = X <- ?UA:requests(P2)])).
+
+%% RFC 3323 5.3: under user (or header) privacy the service removes the
+%% informational headers the user agent added, even when every header is
+%% relayed; id removes the asserted identity; none leaves them all.
+%% req: R3323-16 R3323-11 R3323-09
+privacy_strips_user_headers(Config) ->
+    [P1, P2] = [?config(K, Config) || K <- [p1, p2]],
+    Uri = b2b_app(ua_uri(P2), #{privacy => true, proxy_request_headers => all}, Config),
+    Info = [
+        {<<"Subject">>, <<"lunch with p1">>},
+        {<<"Call-Info">>, <<"<http://p1.example.com/me.png>;purpose=icon">>},
+        {<<"Organization">>, <<"P1 Corp">>},
+        {<<"User-Agent">>, <<"p1-phone/1.0">>},
+        {<<"Reply-To">>, <<"<sip:p1-reply@p1.example.com>">>},
+        {<<"In-Reply-To">>, <<"earlier-call@p1.example.com">>},
+        {<<"X-Keep">>, <<"kept">>}
+    ],
+    PAI = {<<"P-Asserted-Identity">>, <<"<sip:+15555550123@carrier.example.net>">>},
+    Seen = fun(Privacy) ->
+        N = length([X || {<<"INVITE">>, _, _} = X <- ?UA:requests(P2)]),
+        {ok, C, _} = ?UA:invite(P1, Uri, [{<<"Privacy">>, Privacy}, PAI | Info]),
+        {<<"INVITE">>, I, _} = lists:nth(N + 1, [X || {<<"INVITE">>, _, _} = X <- ?UA:requests(P2)]),
+        {ok, 200} = ?UA:bye(P1, C),
+        [V || {Name, V} <- [PAI | Info], lists:member(V, chappe_sip_msg:get_all(string:lowercase(Name), I))]
+    end,
+    UserValues = [V || {N, V} <- Info, N =/= <<"X-Keep">>],
+    [
+        ?assertEqual([<<"kept">>], Seen(P) -- [element(2, PAI)], P)
+     || P <- [<<"user">>, <<"header">>, <<"user;critical">>]
+    ],
+    %% id: the asserted identity goes too, the rest is relayed
+    ?assertEqual(UserValues ++ [<<"kept">>], Seen(<<"id">>)),
+    %% none: everything as it came
+    ?assertEqual([element(2, PAI) | UserValues] ++ [<<"kept">>], Seen(<<"none">>)).
+
+%% a b2bua to B with Opts on an app URI of this node
+b2b_app(B, Opts, Config) ->
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        case chappe_sip:create_b2bua(Req, Res, B, Opts) of
+            {ok, Legs} -> chappe_sip_b2b:relay(Legs);
+            _ -> ok
+        end
+    end),
+    <<"sip:app@127.0.0.1:", (port(?config(ep, Config)))/binary>>.
 
 %% ---- helpers: NOTIFYs and documents ----
 

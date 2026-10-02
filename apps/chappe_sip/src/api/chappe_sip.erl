@@ -404,16 +404,61 @@ match_replaces({error, _}) ->
 %%   {reject, 481}  no such dialog, or an early dialog we did not originate
 %%   {reject, 603}  the dialog is terminating (our BYE is in flight)
 %%   {reject, 486}  a confirmed dialog and the early-only flag
+%%   {reject, 403}  a match nobody authorized (see replaces_response/2)
 %%   {accept, Dialog, Info}  answer the new INVITE, then end Dialog:
 %%                  chappe_sip_dialog:destroy/1,2 sends a BYE for a
 %%                  confirmed dialog and a CANCEL for our early one
 %%   no_replaces    the request carries none
-%% Authorizing the replacement (RFC 3891 section 3) stays with the caller.
+%% RFC 3891 section 8 accepts a replacement only from an authenticated and
+%% authorized peer, so with no policy every match is refused with 403:
+%% this is replaces_response(Req, #{}).
 -spec replaces_response(chappe_sip_req:req()) ->
     {accept, chappe_sip_dialog:dialog(), replaced_info()}
-    | {reject, 400 | 481 | 486 | 603}
+    | {reject, 400 | 403 | 481 | 486 | 603}
     | no_replaces.
 replaces_response(Req) ->
+    replaces_response(Req, #{}).
+
+%% replaces_response/1 with the authentication and authorization RFC 3891
+%% sections 3 and 8 require before an active dialog is replaced. Opts:
+%%   authorize => fun((Dialog, Req) -> boolean())
+%%     called only when the match would be accepted; false gives
+%%     {reject, 403} and leaves Dialog alone. A Referred-By naming the
+%%     replaced party, or an authenticated identity equal to it, are the
+%%     RFC's grounds for true.
+%%   auth => #{realm := binary(),
+%%             secret := fun((User) -> {ok, Pass} | {ha1, HA1} | error)}
+%%     digest authentication (chappe_sip_digest:verify/1) of every
+%%     well-formed Replaces before the dialog is looked at: no or wrong
+%%     credentials give {reject, 401, [WWW-Authenticate]} to send as is,
+%%     credentials for another URI {reject, 400}. Authenticated, the match
+%%     is accepted unless authorize says false.
+%% With neither, every match is refused with 403.
+-spec replaces_response(chappe_sip_req:req(), #{
+    authorize => fun(
+        (chappe_sip_dialog:dialog(), chappe_sip_req:req()) -> boolean()
+    ),
+    auth => #{realm := binary(), secret := fun(), _ => _}
+}) ->
+    {accept, chappe_sip_dialog:dialog(), replaced_info()}
+    | {reject, 400 | 403 | 481 | 486 | 603}
+    | {reject, 401, [{binary(), binary()}]}
+    | no_replaces.
+replaces_response(Req, Opts) ->
+    case match_response(Req) of
+        no_replaces ->
+            no_replaces;
+        {reject, 400} = Bad ->
+            Bad;
+        Matched ->
+            case replaces_auth(maps:get(auth, Opts, undefined), Req) of
+                ok -> authorize_replaces(Matched, Opts, true, Req);
+                none -> authorize_replaces(Matched, Opts, false, Req);
+                Reject -> Reject
+            end
+    end.
+
+match_response(Req) ->
     case {find_replaced(Req), chappe_sip_req:get(<<"join">>, Req)} of
         {{error, no_replaces}, _} ->
             no_replaces;
@@ -424,31 +469,41 @@ replaces_response(Req) ->
             replaces_status(Found)
     end.
 
-%% replaces_response/1 with the authorization RFC 3891 section 3 requires
-%% before an active dialog is replaced. Opts: authorize =>
-%% fun((Dialog, Req) -> boolean()), called only when the match would be
-%% accepted; false gives {reject, 403} and leaves Dialog alone. A Referred-By
-%% naming the replaced party, or an authenticated identity equal to it,
-%% are the RFC's grounds for true.
--spec replaces_response(chappe_sip_req:req(), #{
-    authorize => fun(
-        (chappe_sip_dialog:dialog(), chappe_sip_req:req()) -> boolean()
-    )
-}) ->
-    {accept, chappe_sip_dialog:dialog(), replaced_info()}
-    | {reject, 400 | 403 | 481 | 486 | 603}
-    | no_replaces.
-replaces_response(Req, Opts) ->
-    case replaces_response(Req) of
-        {accept, Dialog, _Info} = Accept ->
-            Authorize = maps:get(authorize, Opts, fun(_, _) -> true end),
-            case Authorize(Dialog, Req) of
-                true -> Accept;
-                false -> {reject, 403}
-            end;
-        Other ->
-            Other
+%% a match is accepted when the app's authorize says so, or, without one,
+%% when the peer authenticated
+authorize_replaces({accept, Dialog, _Info} = Accept, Opts, Authed, Req) ->
+    Default = fun(_, _) -> Authed end,
+    case (maps:get(authorize, Opts, Default))(Dialog, Req) of
+        true -> Accept;
+        false -> {reject, 403}
+    end;
+authorize_replaces(Other, _Opts, _Authed, _Req) ->
+    Other.
+
+replaces_auth(undefined, _Req) ->
+    none;
+replaces_auth(#{realm := Realm, secret := PwFun}, Req) ->
+    Args = #{
+        method => chappe_sip_req:method(Req),
+        realm => Realm,
+        secret => PwFun,
+        authorization => chappe_sip_req:get(<<"authorization">>, Req),
+        request_uri => chappe_sip_req:uri(Req)
+    },
+    case chappe_sip_digest:verify(Args) of
+        {ok, _User} ->
+            ok;
+        stale ->
+            {reject, 401, [replaces_challenge(Realm, true)]};
+        {error, uri_mismatch} ->
+            %% RFC 7616 3.4: the digest names another resource
+            {reject, 400};
+        {error, _} ->
+            {reject, 401, [replaces_challenge(Realm, false)]}
     end.
+
+replaces_challenge(Realm, Stale) ->
+    {<<"WWW-Authenticate">>, chappe_sip_digest:challenge(Realm, Stale)}.
 
 replaces_status(Found) ->
     case Found of

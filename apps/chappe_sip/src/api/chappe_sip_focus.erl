@@ -17,7 +17,9 @@
 %%     handle_info/2, and calls stop/1 when the conference ends.
 %%
 %% Each watcher gets the full state at once and on every refresh, then
-%% partial documents; versions count per subscription. Changes are
+%% partial documents; versions count per subscription, and so can the
+%% view: a subscriber given its own view (subscribe/4) sees the conference
+%% through it (RFC 4575 8.2). Changes are
 %% coalesced so one watcher never gets two NOTIFYs closer than
 %% min_interval ms (RFC 4575 3.9, 5 s by default); a change held back is
 %% sent when the interval has passed, so nothing is lost. NOTIFYs go
@@ -47,6 +49,8 @@
     gap :: non_neg_integer(),
     %% whether watchers see the dialog identifiers (RFC 4575 5.7.9)
     call_info :: boolean(),
+    %% the conference as the app gave it; each watcher sees it through its
+    %% view
     model :: chappe_sip_confinfo:conf(),
     %% per subscription dialog id: dialog, notifier, the version and model
     %% last sent, when, a pending flush timer, and whether it is ending
@@ -55,6 +59,7 @@
 
 -type sub() :: #{
     dialog := chappe_sip_dialog:dialog(),
+    view := view() | undefined,
     notifier := pid(),
     version := non_neg_integer(),
     sent := chappe_sip_confinfo:conf() | undefined,
@@ -64,6 +69,10 @@
 }.
 
 -opaque focus() :: #focus{}.
+
+%% What one subscriber may see of the conference.
+-type view() :: fun((chappe_sip_confinfo:conf()) -> chappe_sip_confinfo:conf()).
+-export_type([view/0]).
 
 %% ---- identity and capabilities ----
 
@@ -143,18 +152,50 @@ referred(Refer) ->
 
 %% The <media> of an endpoint from the SDP it negotiated: one per m= line
 %% it did not reject, numbered from 1, with the SDP media type (RFC 4575
-%% 5.8.2), the direction, and the label of the conference's available
-%% media stream of that type when there is one (5.8.3).
+%% 5.8.2), the direction, the label of the conference's available media
+%% stream of that type when there is one (5.8.3), and the SSRC the
+%% endpoint sends, from the stream's first a=ssrc, as src-id (5.8.4).
 -spec media(binary(), [#{label := binary(), type := atom()}]) ->
     [chappe_sip_confinfo:media()].
 media(Sdp, Available) ->
     {Session, Streams} = sdp_streams(Sdp),
     [
-        stream_media(
-            I, Type, direction(Attrs, direction(Session, sendrecv)), Available
+        with_src_id(
+            ssrc(Attrs),
+            stream_media(
+                I,
+                Type,
+                direction(Attrs, direction(Session, sendrecv)),
+                Available
+            )
         )
      || {I, {Type, Port, Attrs}} <- lists:enumerate(Streams), Port =/= <<"0">>
     ].
+
+with_src_id(undefined, M) -> M;
+with_src_id(Ssrc, M) -> M#{src_id => Ssrc}.
+
+%% the first a=ssrc:<id> of a stream (RFC 5576 4.1); attributes are kept
+%% last first
+ssrc(Attrs) ->
+    Ids = [
+        Id
+     || <<"ssrc:", V/binary>> <- lists:reverse(Attrs),
+        Id <- [hd(binary:split(V, <<" ">>))],
+        Id =/= <<>>,
+        is_ssrc(Id)
+    ],
+    case Ids of
+        [Id | _] -> Id;
+        [] -> undefined
+    end.
+
+is_ssrc(Id) ->
+    try binary_to_integer(Id) of
+        N -> N >= 0 andalso N =< 16#FFFFFFFF
+    catch
+        error:badarg -> false
+    end.
 
 %% connected, or on_hold when the peer sends and receives nothing from us:
 %% every stream it keeps is sendonly or inactive (RFC 3264 8.4)
@@ -251,11 +292,23 @@ check_subscribe(Req) ->
 
 %% Answer a SUBSCRIBE to the conference, from the handler process. The
 %% subscription dialog belongs to Owner, the conference process, which
-%% gets {chappe_sip_focus, subscribed, Dialog} and must pass it to
+%% gets {chappe_sip_focus, subscribed, Dialog, Opts} and must pass it to
 %% handle_info/2: the full state goes out from there. A refused SUBSCRIBE
 %% is answered here. Opts: contact (required, see contact/1), expires (the
-%% most granted, default 600), min_expires, headers.
--spec subscribe(chappe_sip_req:req(), chappe_sip_res:res(), pid(), map()) ->
+%% most granted, default 600), min_expires, headers, and view: what this
+%% subscriber sees, a fun from the conference as given to update/2 (the
+%% focus's entity and version set) to the conference it may see, in place
+%% of the focus-wide call_info policy (RFC 4575 8.2: a moderator may see
+%% <call-info>, others not). A subscriber the app does not want to tell
+%% anything still gets 200 and believable documents (RFC 6665 6.2): give
+%% it a view such as fun(C) -> C#{users => []} end.
+-spec subscribe(chappe_sip_req:req(), chappe_sip_res:res(), pid(), #{
+    contact := binary(),
+    expires => non_neg_integer(),
+    min_expires => non_neg_integer(),
+    headers => [{binary(), binary()}],
+    view => view()
+}) ->
     {ok, chappe_sip_dialog:dialog()} | {error, term()}.
 subscribe(Req, Res, Owner, #{contact := Contact} = Opts) ->
     case check_subscribe(Req) of
@@ -268,7 +321,9 @@ subscribe(Req, Res, Owner, #{contact := Contact} = Opts) ->
             },
             case chappe_sip:create_uas(Req, Res, UasOpts) of
                 {ok, Dialog} ->
-                    Owner ! {chappe_sip_focus, subscribed, Dialog},
+                    Owner !
+                        {chappe_sip_focus, subscribed, Dialog,
+                            maps:with([view], Opts)},
                     {ok, Dialog};
                 {error, _} = Err ->
                     Err
@@ -302,10 +357,18 @@ new(#{entity := Entity} = Opts) ->
 %% own; every watcher is told what changed.
 -spec update(chappe_sip_confinfo:conf(), focus()) -> focus().
 update(Conf, #focus{entity = E} = F) ->
-    Model = view(Conf#{entity => E, version => 0}, F),
-    changed(F#focus{model = Model}).
+    changed(F#focus{model = Conf#{entity => E, version => 0}}).
 
-%% the conference as watchers may see it
+%% the conference as this watcher may see it: through its own view, else
+%% the focus's policy. The entity and version stay the focus's.
+sub_view(#{view := View}, #focus{entity = E, model = M}) when
+    is_function(View, 1)
+->
+    (View(M))#{entity => E, version => 0};
+sub_view(_Sub, #focus{model = M} = F) ->
+    view(M, F).
+
+%% the conference as watchers may see it by default
 view(Conf, #focus{call_info = true}) ->
     Conf;
 view(#{users := Users} = Conf, _F) ->
@@ -326,9 +389,12 @@ view(Conf, _F) ->
 %% A message for the focus: {ok, Focus}, or ignore when it is not one.
 -spec handle_info(term(), focus()) -> {ok, focus()} | ignore.
 handle_info({chappe_sip_focus, subscribed, Dialog}, F) ->
+    handle_info({chappe_sip_focus, subscribed, Dialog, #{}}, F);
+handle_info({chappe_sip_focus, subscribed, Dialog, Opts}, F) ->
     Notifier = start_notifier(Dialog),
     Sub = #{
         dialog => Dialog,
+        view => maps:get(view, Opts, undefined),
         notifier => Notifier,
         version => 0,
         sent => undefined,
@@ -420,7 +486,7 @@ changed(#focus{subs = Subs, gap = Gap} = F) ->
 %% the whole document, as the next version of this subscription
 send_full(Id, #{notifier := N, version := V0, timer := T} = Sub, State, F) ->
     cancel(T),
-    Model = F#focus.model,
+    Model = sub_view(Sub, F),
     V = V0 + 1,
     Body = chappe_sip_confinfo:full(Model#{version => V}),
     N ! {notify, spec(State, Body)},
@@ -439,7 +505,7 @@ send_full(Id, #{notifier := N, version := V0, timer := T} = Sub, State, F) ->
 
 %% what changed since this subscription's last document, if anything
 send_partial(Id, #{notifier := N, version := V0, sent := Sent} = Sub, F) ->
-    New = F#focus.model,
+    New = sub_view(Sub, F),
     case Sent =:= New of
         true ->
             put_sub(Id, Sub, F);

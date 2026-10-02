@@ -40,7 +40,9 @@
     uac_early_then_confirmed/1,
     supported_on_uas_2xx/1,
     require_replaces_accepted/1,
-    replaces_non_invite_dialog_481/1
+    replaces_non_invite_dialog_481/1,
+    replaces_needs_authorization/1,
+    replaces_digest_on_the_wire/1
 ]).
 
 -define(TAB, chappe_sip_dialog_index).
@@ -53,7 +55,8 @@ all() ->
      removed_after_engine_restart, response_rules, response_terminated_603,
      response_early_not_ours_481, response_live_481, uac_early_replaceable,
      uac_early_then_confirmed, supported_on_uas_2xx,
-     require_replaces_accepted, replaces_non_invite_dialog_481].
+     require_replaces_accepted, replaces_non_invite_dialog_481,
+     replaces_needs_authorization, replaces_digest_on_the_wire].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -287,7 +290,9 @@ response_rules(_Config) ->
     {EP, Sock} = setup(),
     {Call, FT, TT, Dlg, _Owner} = establish(EP, Sock),
     V = <<Call/binary, ";to-tag=", TT/binary, ";from-tag=", FT/binary>>,
-    R = fun(Method, Hs) -> chappe_sip:replaces_response(req(Method, Hs)) end,
+    R = fun(Method, Hs) ->
+            chappe_sip:replaces_response(req(Method, Hs), allow())
+        end,
     ?assertEqual(no_replaces, R(<<"INVITE">>, [])),
     ?assertMatch({accept, Dlg, #{state := confirmed, role := uas}},
                  R(<<"INVITE">>, [{<<"Replaces">>, V}])),
@@ -429,11 +434,13 @@ uac_early_replaceable(_Config) ->
     V = <<Call/binary, ";to-tag=", LT/binary, ";from-tag=", PT/binary>>,
     ok = wait_found(V, 40),
     {accept, Early, Info} =
-        chappe_sip:replaces_response(req(<<"INVITE">>, [{<<"Replaces">>, V}])),
+        chappe_sip:replaces_response(req(<<"INVITE">>, [{<<"Replaces">>, V}]),
+                                     allow()),
     ?assertEqual(#{state => early, role => uac, early_only => false}, Info),
     ?assertMatch({accept, Early, #{early_only := true}},
                  chappe_sip:replaces_response(
-                   req(<<"INVITE">>, [{<<"Replaces">>, <<V/binary, ";early-only">>}]))),
+                   req(<<"INVITE">>, [{<<"Replaces">>, <<V/binary, ";early-only">>}]),
+                   allow())),
     Reason = <<"SIP;cause=200">>,
     ok = chappe_sip_dialog:destroy(Early, #{headers => [{<<"Reason">>, Reason}]}),
     {Can, CSrc} = recv(Sock, <<"CANCEL">>),
@@ -472,7 +479,8 @@ uac_early_then_confirmed(_Config) ->
     Dlg = receive {uac, {ok, D}} -> D after 5000 -> ct:fail(no_uac) end,
     ?assertEqual({accept, Dlg, #{state => confirmed, role => uac,
                                  early_only => false}},
-                 chappe_sip:replaces_response(req(<<"INVITE">>, [{<<"Replaces">>, V}]))),
+                 chappe_sip:replaces_response(req(<<"INVITE">>, [{<<"Replaces">>, V}]),
+                                              allow())),
     spawn_link(fun() -> Test ! {destroyed, chappe_sip_dialog:destroy(Dlg)} end),
     {Bye, BSrc} = recv(Sock, <<"BYE">>),
     send(Sock, BSrc, resp(Bye, 200, <<"OK">>, PT, [], <<>>)),
@@ -505,6 +513,111 @@ require_replaces_accepted(_Config) ->
     send(Sock, EP, ack(Sock, Call, <<"req">>, TT)),
     Dlg = receive {dialog, D, _} -> D after 5000 -> ct:fail(no_dialog) end,
     hangup(Sock, Dlg, TT).
+
+%% ---- authenticating the replacement (RFC 3891 section 8) ----
+
+%% A match that would be accepted is refused with 403 unless the app
+%% authorizes it, or authenticates the sender by digest: no credentials or
+%% wrong ones get a 401 challenge, valid ones are accepted and a false
+%% authorize still refuses. The old dialog is left alone each time.
+%% req: R3891-17 R3891-07
+replaces_needs_authorization(_Config) ->
+    {EP, Sock} = setup(),
+    {Call, FT, TT, Dlg, _Owner} = establish(EP, Sock),
+    V = <<Call/binary, ";to-tag=", TT/binary, ";from-tag=", FT/binary>>,
+    Hs = [{<<"Replaces">>, V}],
+    %% the default: refused
+    ?assertEqual({reject, 403}, chappe_sip:replaces_response(req(<<"INVITE">>, Hs))),
+    ?assertEqual({reject, 403},
+                 chappe_sip:replaces_response(req(<<"INVITE">>, Hs), #{})),
+    %% the app's policy
+    ?assertMatch({accept, Dlg, _},
+                 chappe_sip:replaces_response(req(<<"INVITE">>, Hs), allow())),
+    ?assertEqual({reject, 403},
+                 chappe_sip:replaces_response(
+                   req(<<"INVITE">>, Hs), #{authorize => fun(_, _) -> false end})),
+    %% digest: challenged first
+    Auth = #{realm => <<"ct">>, secret => fun secret/1},
+    {reject, 401, [{<<"WWW-Authenticate">>, Chal}]} =
+        chappe_sip:replaces_response(req(<<"INVITE">>, Hs), #{auth => Auth}),
+    %% a wrong password is challenged again
+    {ok, Bad} = authorization(Chal, <<"alice">>, <<"nope">>),
+    ?assertMatch({reject, 401, [{<<"WWW-Authenticate">>, _}]},
+                 chappe_sip:replaces_response(
+                   req(<<"INVITE">>, [{<<"Authorization">>, Bad} | Hs]),
+                   #{auth => Auth})),
+    {ok, Good} = authorization(Chal, <<"alice">>, <<"secret">>),
+    ?assertMatch({accept, Dlg, _},
+                 chappe_sip:replaces_response(
+                   req(<<"INVITE">>, [{<<"Authorization">>, Good} | Hs]),
+                   #{auth => Auth})),
+    %% authenticated but not authorized
+    {ok, Good2} = authorization(Chal, <<"alice">>, <<"secret">>, 2),
+    ?assertEqual({reject, 403},
+                 chappe_sip:replaces_response(
+                   req(<<"INVITE">>, [{<<"Authorization">>, Good2} | Hs]),
+                   #{auth => Auth, authorize => fun(_, _) -> false end})),
+    %% the dialog was never touched
+    ?assertEqual({ok, Dlg}, chappe_sip:find_dialog(Call, TT, FT)),
+    hangup(Sock, Dlg, TT).
+
+%% Over the wire: an INVITE with Replaces and no credentials gets 401 with
+%% a challenge and the old dialog carries on; answering the challenge
+%% replaces it (the old dialog gets its BYE).
+%% req: R3891-17
+replaces_digest_on_the_wire(_Config) ->
+    {EP, Sock} = setup(),
+    {Call, FT, TT, Dlg, _Owner} = establish(EP, Sock),
+    Auth = #{realm => <<"ct">>, secret => fun secret/1},
+    Test = self(),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        case chappe_sip:replaces_response(Req, #{auth => Auth}) of
+            {reject, St} ->
+                chappe_sip_res:send(Res, St);
+            {reject, St, Hdrs} ->
+                chappe_sip_res:send(Res, St, #{headers => Hdrs});
+            {accept, Old, _} ->
+                {ok, New} = chappe_sip:create_uas(Req, Res,
+                                                  #{local_sdp => sdp()}),
+                Test ! {replaced_by, New},
+                ok = chappe_sip_dialog:destroy(Old),
+                receive stop -> ok after 30000 -> ok end
+        end
+    end),
+    V = <<Call/binary, ";to-tag=", TT/binary, ";from-tag=", FT/binary>>,
+    send(Sock, EP, invite(Sock, callid(), <<"r1">>, [{<<"Replaces">>, V}])),
+    {ok, R401} = chappe_sip_msg:parse(recv_status(Sock, 401)),
+    Chal = chappe_sip_msg:get(<<"www-authenticate">>, R401),
+    ?assertMatch(<<"Digest ", _/binary>>, Chal),
+    ?assertEqual({ok, Dlg}, chappe_sip:find_dialog(Call, TT, FT)),
+    {ok, Cred} = authorization(Chal, <<"alice">>, <<"secret">>),
+    Call2 = callid(),
+    send(Sock, EP, invite(Sock, Call2, <<"r2">>,
+                          [{<<"Replaces">>, V}, {<<"Authorization">>, Cred}])),
+    {ok, R200} = chappe_sip_msg:parse(recv_status(Sock, 200)),
+    TT2 = chappe_sip_msg:to_tag(R200),
+    send(Sock, EP, ack(Sock, Call2, <<"r2">>, TT2)),
+    New = receive {replaced_by, N} -> N after 5000 -> ct:fail(no_replacement) end,
+    {Bye, BSrc} = recv(Sock, <<"BYE">>),
+    {ok, ByeMsg} = chappe_sip_msg:parse(Bye),
+    ?assertEqual(Call, chappe_sip_msg:call_id(ByeMsg)),
+    send(Sock, BSrc, resp(Bye, 200, <<"OK">>, TT, [], <<>>)),
+    hangup(Sock, New, TT2).
+
+allow() -> #{authorize => fun(_, _) -> true end}.
+
+secret(<<"alice">>) -> {ok, <<"secret">>};
+secret(_) -> error.
+
+authorization(Chal, User, Pass) -> authorization(Chal, User, Pass, 1).
+
+%% Nc: the requests sent with this nonce so far, this one included
+authorization(Chal, User, Pass, Nc) ->
+    {ok, C} = chappe_sip_hdr:auth(Chal),
+    chappe_sip_digest:credentials(#{
+        method => <<"INVITE">>, uri => <<"sip:app@127.0.0.1">>,
+        username => User, password => Pass, challenge => C, nc => Nc
+    }).
 
 %% ---- helpers ----
 

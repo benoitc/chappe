@@ -47,12 +47,32 @@
 %%                            each provisional; on expiry B is CANCELled and
 %%                            A gets 408 (default: the timer_c_ms config,
 %%                            185000). `timeout' is the old name.
+%%   privacy               => true | #{session => boolean()}: act as an
+%%                            RFC 3323 privacy service for A's Privacy
+%%                            header (see chappe_sip_b2b_hdr:privacy/2).
+%%                            A critical level it cannot apply (session,
+%%                            unless session => true says the app
+%%                            anonymizes the media, or an unknown token)
+%%                            gets 500 before B is called, and
+%%                            {error, {privacy, Unsupported}} is returned.
 -spec create_b2bua(chappe_sip_req:req(), chappe_sip_res:res(), binary(), map()) ->
     {ok, #{
         uas := chappe_sip_dialog:dialog(), uac := chappe_sip_dialog:dialog()
     }}
     | {error, term()}.
 create_b2bua(Req, Res, Uri, Opts) ->
+    case chappe_sip_b2b_hdr:privacy_unsupported(Req, Opts) of
+        [] ->
+            start_b2bua(Req, Res, Uri, Opts);
+        Unsupported ->
+            %% RFC 3323 5: fail the request, naming what could not be done
+            _ = chappe_sip_res:send(Res, 500, #{
+                reason => chappe_sip_b2b_hdr:privacy_failure(Unsupported)
+            }),
+            {error, {privacy, Unsupported}}
+    end.
+
+start_b2bua(Req, Res, Uri, Opts) ->
     Worker = self(),
     SdpAOffer = chappe_sip_req:body(Req),
     SdpBOffer = maps:get(local_sdp_b, Opts, SdpAOffer),

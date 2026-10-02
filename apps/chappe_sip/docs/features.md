@@ -85,7 +85,14 @@ tracker; the milestone history is in `docs/plan.md`.
   `chappe_sip_b2b:relay/1,2` carries re-INVITE and UPDATE offers across the
   legs (answer, failure and 491 back to the offerer, an optional SDP rewrite),
   lets each leg answer its own session refreshes, and repeats the `Reason` of
-  a BYE or CANCEL (RFC 3326) on the other leg.
+  a BYE or CANCEL (RFC 3326) on the other leg. With `privacy => true` it acts
+  as an RFC 3323 privacy service: a `critical` Privacy naming a level it
+  cannot apply (`session`, unless you anonymize the media and say so with
+  `privacy => #{session => true}`, or an unknown token) gets 500 with the
+  levels in the reason phrase before B is called; `user` and `header` keep
+  Subject, Call-Info, Organization, User-Agent, Reply-To and In-Reply-To
+  from B, and `id` keeps P-Asserted-Identity, even with
+  `proxy_request_headers => all`.
 - `chappe_sip:proxy_request/3`: a stateful proxy after RFC 3261 section 16.
   Sequential and parallel forking with the Request-URI rewritten to each
   target, a pre-existing Route set honoured (loose and strict next hops,
@@ -162,9 +169,11 @@ tracker; the milestone history is in `docs/plan.md`.
   `chappe_sip_confinfo` renders full and partial conference-info+xml and
   anonymous participants (`Privacy`), with conf-uris, available-media and
   referred, keys kept unique and call-info shown only when the focus's
-  `call_info` policy allows. `departure/1`, `referred/1`, `media/2` and
-  `leg_status/1` derive an endpoint's disconnection-method, referred-by,
-  media and on-hold state from SIP. See the conference focus guide.
+  `call_info` policy allows. A subscriber can have its own `view` (a
+  moderator sees call-info, a denied watcher gets 200 and an empty roster).
+  `departure/1`, `referred/1`, `media/2` and `leg_status/1` derive an
+  endpoint's disconnection-method, referred-by, media (with the `a=ssrc` as
+  src-id) and on-hold state from SIP. See the conference focus guide.
 - `chappe_sip_handler`: an optional behaviour for structured UAS apps.
 - Replaces (RFC 3891): `chappe_sip:find_replaced/1` matches an INVITE's
   `Replaces` to a live dialog and returns its state (`early | confirmed |
@@ -173,9 +182,10 @@ tracker; the milestone history is in `docs/plan.md`.
   ETS index the dialog fsm maintains (cleared on BYE, owner death, fsm crash,
   and engine restart; bounded by `max_dialogs`). `chappe_sip_hdr:replaces/1`,
   `replaces_value/1`, `escape/1` and `refer_to_replaces/1` parse and build the
-  value, including inside a Refer-To URI. `chappe_sip:replaces_response/1`
-  gives the section 3 answer (accept, or reject 400/481/486/603);
-  `replaces_response/2` adds your authorization policy (403). The early
+  value, including inside a Refer-To URI. `chappe_sip:replaces_response/1,2`
+  gives the section 3 answer (accept, or reject 400/481/486/603) and refuses
+  a match with 403 unless your `authorize` fun accepts it or the sender
+  passes digest (`auth`, a 401 challenge first): RFC 3891 section 8. The early
   dialogs of a ringing UAC call are indexed, so it can be replaced (destroy
   sends the CANCEL). `replaces` is in Supported on our INVITE and its 2xx and accepted in
   Require. See the answer-calls guide.
@@ -345,6 +355,20 @@ tracker; the milestone history is in `docs/plan.md`.
   a real JsSIP UA registers over WS, two JsSIP UAs place a WebRTC media call
   through the b2bua, and a Kamailio container OPTIONS-pings chappe_sip both
   directions. Drivers and setup live in `interop/`.
+
+## Breaking changes
+
+- `chappe_sip:replaces_response/1,2` no longer accepts a Replaces by
+  default: a match that would be accepted is `{reject, 403}` unless you
+  pass `authorize => fun((Dialog, Req) -> boolean())` or
+  `auth => #{realm, secret}` (RFC 3891 section 8). With `auth`, it can also
+  return `{reject, 401, Headers}`; send those headers with the 401. To keep
+  the old behaviour on a closed network, pass
+  `#{authorize => fun(_, _) -> true end}`.
+- `chappe_sip_focus:subscribe/4` now sends the conference process
+  `{chappe_sip_focus, subscribed, Dialog, Opts}`. Pass it to
+  `chappe_sip_focus:handle_info/2` as before; the three-element form is still
+  accepted.
 
 ## Planned
 

@@ -16,7 +16,7 @@
 -include_lib("chappe_sip/include/chappe_sip_uac.hrl").
 
 -export([start/1, start/2, stop/0, install/0]).
--export([set_description/1, kick/1, uri/0, set_private/1]).
+-export([set_description/1, kick/1, uri/0, set_private/1, subscribe_policy/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -define(ANSWER,
@@ -70,6 +70,14 @@ set_private(Uri) ->
 %% the focus hangs up the participant whose user entity is Uri
 kick(Uri) ->
     gen_server:call(?MODULE, {kick, Uri}).
+
+%% Policy: fun(Req) -> map(), the extra chappe_sip_focus:subscribe/4
+%% options of each SUBSCRIBE (a per-subscriber view); undefined clears it.
+subscribe_policy(undefined) ->
+    _ = persistent_term:erase({?MODULE, subscribe_policy}),
+    ok;
+subscribe_policy(Policy) ->
+    persistent_term:put({?MODULE, subscribe_policy}, Policy).
 
 %% the SIP entry points, routed to the running conference
 install() ->
@@ -133,7 +141,11 @@ subscribe(Req, Res) ->
             chappe_sip_res:send(Res, 404);
         Conf ->
             Contact = gen_server:call(Conf, contact),
-            chappe_sip_focus:subscribe(Req, Res, Conf, #{contact => Contact})
+            Policy = persistent_term:get(
+                {?MODULE, subscribe_policy}, fun(_) -> #{} end
+            ),
+            Opts = (Policy(Req))#{contact => Contact},
+            chappe_sip_focus:subscribe(Req, Res, Conf, Opts)
     end.
 
 summary(Req) ->
