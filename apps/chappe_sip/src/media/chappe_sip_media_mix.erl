@@ -16,7 +16,8 @@
 %% process that started its media session: when that process exits, the
 %% leg leaves.
 %%
-%% The mixer speaks G.711 over plain RTP/AVP in 20 ms frames. For any
+%% The mixer speaks G.711 over plain RTP/AVP; it takes packets of any
+%% size and sends 20 ms ones. For any
 %% other call (another codec, SRTP, DTLS-SRTP), anchor it on rtpengine and
 %% give the mixer the offer rtpengine sends toward it; rtpengine transcodes
 %% and terminates the crypto. See docs/design/media.md.
@@ -205,10 +206,11 @@ join(#{id := Id, owner := Owner}, #{room := Room} = Opts, S) ->
 %% law, RTCP mux and far end; offering uses the configured law and muxes.
 leg_plan(#{sdp := Offer} = Opts, _S) ->
     case chappe_sip_media_mix_sdp:accept_offer(Offer) of
-        {ok, #{endpoint := Ep, law := Law, mux := Mux}} ->
+        {ok, #{endpoint := Ep, law := Law, mux := Mux, ptime := Ptime}} ->
             {ok, #{
                 law => Law,
                 mux => Mux,
+                ptime => Ptime,
                 remote => Ep,
                 answer_to => Offer,
                 mute => maps:get(mute, Opts, false)
@@ -251,7 +253,11 @@ add_leg(Id, Owner, Room, #room{conf = Conf} = R, Plan, Opts, S) ->
                 false -> pair
             end
     },
-    LegOpts1 = put_opt(remote, maps:get(remote, Plan, undefined), LegOpts0),
+    LegOpts1 = put_opt(
+        remote,
+        maps:get(remote, Plan, undefined),
+        put_opt(ptime, maps:get(ptime, Plan, undefined), LegOpts0)
+    ),
     LegOpts = put_opt(name, maps:get(name, Opts, undefined), LegOpts1),
     case safe(fun() -> chappe_mix:add_leg(Conf, LegOpts) end) of
         {ok, Leg, #{ip := Ip, port := Port}} ->

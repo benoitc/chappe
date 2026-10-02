@@ -23,7 +23,7 @@
 -include_lib("stdlib/include/assert.hrl").
 
 -export([all/0, init_per_suite/1, end_per_suite/1]).
--export([transcoded_n_minus_one/1]).
+-export([transcoded_n_minus_one/1, thirty_ms_n_minus_one/1]).
 
 -define(NODE, chappe_mix_live).
 %% the same judge as the loopback suite: present within 3 dB of the
@@ -32,7 +32,7 @@
 -define(ABSENT, -54.7).
 
 all() ->
-    [transcoded_n_minus_one].
+    [transcoded_n_minus_one, thirty_ms_n_minus_one].
 
 init_per_suite(Config) ->
     case {os:getenv("RTPENGINE_HOST"), os:getenv("RTPENGINE_MEDIA_IP")} of
@@ -62,12 +62,17 @@ end_per_suite(_Config) ->
 %% Each party hears the other two and not itself, whatever codec its leg
 %% negotiated with rtpengine.
 transcoded_n_minus_one(Config) ->
+    n_minus_one(Config, [{pcmu, 440}, {pcma, 1100}, {opus, 1700}]).
+
+%% A party that sends 30 ms PCMU packets, relayed as they are by
+%% rtpengine, is heard by the others and hears them, next to a 20 ms PCMU
+%% and a PCMA party.
+thirty_ms_n_minus_one(Config) ->
+    n_minus_one(Config, [{pcmu, 440}, {pcmu30, 1100}, {pcma, 1700}]).
+
+n_minus_one(Config, Kinds) ->
     {ok, Conf} = chappe_mix:start(#{ip => {0, 0, 0, 0}}),
-    Parties = [
-        party(Config, Conf, pcmu, 440),
-        party(Config, Conf, pcma, 1100),
-        party(Config, Conf, opus, 1700)
-    ],
+    Parties = [party(Config, Conf, Kind, F) || {Kind, F} <- Kinds],
     Freqs = [F || #{freq := F} <- Parties],
     %% rtpengine sets up codec handlers on the first packets; let the
     %% transcoders settle before recording
@@ -83,12 +88,23 @@ transcoded_n_minus_one(Config) ->
      || #{kind := Kind, freq := F, ep := P} <- Parties
     ],
     ct:log("per party: ~p", [Results]),
+    %% a 30 ms party is heard whole in every 20 ms frame: its tone is not
+    %% cut or half missing (allowing one frame in fifty for a stall)
+    Weak = [
+        {Kind, chappe_mix_test_tone:weak_frames(Fs, F30, ?PRESENT), length(Fs)}
+     || #{kind := pcmu30, freq := F30} <- Parties,
+        #{kind := Kind, ep := P} <- Parties,
+        Kind =/= pcmu30,
+        Fs <- [chappe_mix_test_tone:frames(P)]
+    ],
+    ct:log("frames short of the 30 ms party's tone: ~p", [Weak]),
     [cleanup(P) || P <- Parties],
     ok = chappe_mix:stop(Conf),
     [
         ?assertMatch({_, _, {ok, _}}, {Kind, F, R})
      || {Kind, F, R} <- Results
     ],
+    [?assert(W * 50 =< N, {weak, Kind, W, N}) || {Kind, W, N} <- Weak],
     ok.
 
 %% ---- parties ----
@@ -103,8 +119,13 @@ party(Config, Conf, Kind, Freq) ->
             pcma -> alaw;
             _ -> ulaw
         end,
+    Ptime =
+        case Kind of
+            pcmu30 -> 30;
+            _ -> 20
+        end,
     {Ep, EpPort} = chappe_mix_test_tone:endpoint(#{
-        freq => Freq, ip => {0, 0, 0, 0}, law => Law
+        freq => Freq, ip => {0, 0, 0, 0}, law => Law, ptime => Ptime
     }),
     %% the SDP below has no a=rtcp-mux, so RTCP goes on the next port up
     %% (RFC 5761 5.1.1); muxed, rtpengine logs our SRs as RTP with an
@@ -123,6 +144,11 @@ party(Config, Conf, Kind, Freq) ->
         relay => Relay
     }.
 
+anchor(pcmu30, Media, _RtpeIp, EpPort, MixPort) ->
+    {S, ToParty, ToMixer} = call(
+        Media, sdp(Media, EpPort, pcmu, 30), #{}, sdp(Media, MixPort, pcmu)
+    ),
+    {[S], ToParty, ToMixer, undefined};
 anchor(pcmu, Media, _RtpeIp, EpPort, MixPort) ->
     {S, ToParty, ToMixer} = call(
         Media, sdp(Media, EpPort, pcmu), #{}, sdp(Media, MixPort, pcmu)
@@ -225,6 +251,9 @@ relay_loop(S1, S2, {Ip1, Port1} = To1, {Ip2, Port2} = To2) ->
 %% ---- SDP ----
 
 sdp(Ip, Port, Codec) ->
+    sdp(Ip, Port, Codec, 20).
+
+sdp(Ip, Port, Codec, Ptime) ->
     {Pts, Maps} =
         case Codec of
             pcmu -> {<<"0">>, [<<"a=rtpmap:0 PCMU/8000\r\n">>]};
@@ -242,7 +271,9 @@ sdp(Ip, Port, Codec) ->
         Pts,
         <<"\r\n">>,
         Maps,
-        <<"a=ptime:20\r\na=sendrecv\r\n">>
+        <<"a=ptime:">>,
+        integer_to_binary(Ptime),
+        <<"\r\na=sendrecv\r\n">>
     ]).
 
 audio_port(Sdp) ->

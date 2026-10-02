@@ -10,6 +10,9 @@
     endpoint/1,
     stop/1,
     samples/1,
+    frames/1,
+    gaps/2,
+    weak_frames/3,
     clear/1,
     levels/2,
     tone/3,
@@ -18,13 +21,12 @@
 ]).
 
 -define(RATE, 8000).
--define(FRAME, 160).
 
 %% Start an endpoint: a process owning one UDP socket that sends Freq
-%% (or nothing, with freq => none) to Dst every 20 ms and records what it
-%% receives. Opts: #{freq, dst, amp, loss (0.0..1.0), ssrc_switch_after
-%% (frames), ip (bind address, default loopback), law (ulaw | alaw, both
-%% ways, default ulaw)}. Only packets carrying the law's payload type are
+%% (or nothing, with freq => none) to Dst every ptime ms and records what
+%% it receives. Opts: #{freq, dst, amp, loss (0.0..1.0), ssrc_switch_after
+%% (packets), ip (bind address, default loopback), law (ulaw | alaw, both
+%% ways, default ulaw), ptime (ms per packet sent, default 20)}. Only packets carrying the law's payload type are
 %% recorded, so comfort noise or telephone-event from a real peer is not
 %% decoded as audio. Returns {Pid, LocalPort}.
 endpoint(Opts) ->
@@ -47,6 +49,28 @@ samples(Pid) ->
         {Pid, samples, S} -> S
     after 2000 -> error(endpoint_samples)
     end.
+
+%% Decoded samples received so far, one list per packet.
+frames(Pid) ->
+    Pid ! {frames, self()},
+    receive
+        {Pid, frames, F} -> F
+    after 2000 -> error(endpoint_frames)
+    end.
+
+%% How many of Frames hold a run of at least Run samples of silence (0):
+%% a gap the mixer played inside a frame.
+gaps(Frames, Run) ->
+    length([F || F <- Frames, longest_zero_run(F, 0, 0) >= Run]).
+
+longest_zero_run([], Cur, Max) -> max(Cur, Max);
+longest_zero_run([0 | T], Cur, Max) -> longest_zero_run(T, Cur + 1, Max);
+longest_zero_run([_ | T], Cur, Max) -> longest_zero_run(T, 0, max(Cur, Max)).
+
+%% How many of Frames carry Freq below Db dBFS: a 20 ms frame where a
+%% steady tone was cut or half missing.
+weak_frames(Frames, Freq, Db) ->
+    length([F || F <- Frames, level(F, length(F), Freq) < Db]).
 
 clear(Pid) ->
     Pid ! clear,
@@ -77,6 +101,7 @@ init(Parent, Opts) ->
         amp => maps:get(amp, Opts, 6000),
         loss => maps:get(loss, Opts, 0.0),
         law => maps:get(law, Opts, ulaw),
+        ptime => maps:get(ptime, Opts, 20),
         switch => maps:get(ssrc_switch_after, Opts, infinity),
         ssrc => rand:uniform(16#FFFFFFF),
         seq => rand:uniform(60000),
@@ -91,7 +116,7 @@ loop(S) ->
     receive
         tick ->
             S1 = send_frame(S),
-            Next = maps:get(next, S1) + 20,
+            Next = maps:get(next, S1) + maps:get(ptime, S1),
             erlang:send_after(Next, self(), tick, [{abs, true}]),
             loop(S1#{next => Next});
         {udp, _Sock, _Ip, _Port, Pkt} ->
@@ -114,6 +139,14 @@ loop(S) ->
                     ])
                 },
             loop(S);
+        {frames, From} ->
+            Law = maps:get(law, S),
+            From !
+                {self(), frames, [
+                    chappe_mix_g711:decode_frame(Law, F)
+                 || F <- lists:reverse(maps:get(rx, S))
+                ]},
+            loop(S);
         clear ->
             loop(S#{rx => []});
         {dst, Dst} ->
@@ -131,15 +164,16 @@ send_frame(#{n := N, switch := Switch} = S0) ->
             false -> S0
         end,
     #{sock := Sock, dst := {Ip, Port}, freq := F, amp := A, seq := Seq} = S,
+    Frame = maps:get(ptime, S) * ?RATE div 1000,
     Samples = [
         round(A * math:sin(2 * math:pi() * F * I / ?RATE))
-     || I <- lists:seq(N * ?FRAME, N * ?FRAME + ?FRAME - 1)
+     || I <- lists:seq(N * Frame, N * Frame + Frame - 1)
     ],
     Law = maps:get(law, S),
     Pkt = chappe_mix_rtp:build(#{
         pt => law_pt(Law),
         seq => Seq band 16#FFFF,
-        ts => (N * ?FRAME) band 16#FFFFFFFF,
+        ts => (N * Frame) band 16#FFFFFFFF,
         ssrc => maps:get(ssrc, S),
         marker => N =:= 0,
         payload => chappe_mix_g711:encode_frame(Law, Samples)

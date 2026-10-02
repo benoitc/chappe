@@ -12,9 +12,9 @@
 %% The array is mutable and lives only for the tick of the process that
 %% made it: a sum is never shared, sent or kept across ticks.
 %%
-%% A frame shorter than 160 bytes counts as silence past its end, and a
-%% longer one is cut by chappe_mix_leg:pop/1: the same as padding or
-%% cutting the decoded samples.
+%% A frame shorter than 160 bytes counts as silence past its end: the
+%% same as padding the decoded samples. chappe_mix_jbuf never hands out a
+%% longer one.
 -module(chappe_mix_dsp).
 
 -export([new/0, add/3, mixed/1, encode/3]).

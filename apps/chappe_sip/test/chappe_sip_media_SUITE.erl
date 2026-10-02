@@ -29,7 +29,7 @@
          media_env_config/1]).
 -export([conference_two_legs/1, conference_leave/1, conference_mute/1,
          conference_owner_death/1, conference_leg_owner_death/1,
-         conference_sdp/1]).
+         conference_sdp/1, conference_ptime/1]).
 -export([conference_behind_rtpengine/1]).
 
 -define(LIVE_NODE, chappe_sip_media_live).
@@ -44,7 +44,7 @@ all() ->
 groups() ->
     [{mix, [], [conference_two_legs, conference_leave, conference_mute,
                 conference_owner_death, conference_leg_owner_death,
-                conference_sdp]},
+                conference_sdp, conference_ptime]},
      {rtpengine_live, [], [conference_behind_rtpengine]}].
 
 init_per_suite(Config) ->
@@ -450,6 +450,28 @@ conference_sdp(_Config) ->
     %% an answer in another law than the leg's is refused
     ?assertEqual({error, {law_mismatch, ulaw}},
                  chappe_sip_media:set_remote(S, peer_sdp(4000, ulaw, true))),
+    ok = chappe_sip_media:leave(S).
+
+%% The far end's packet time reaches the leg (the mixer takes any size
+%% and always sends 20 ms, so the answer still says 20); a far end that
+%% takes no more than 10 ms per packet cannot be served and is refused.
+conference_ptime(_Config) ->
+    Room = room(),
+    {ok, S} = conf_session(),
+    Sdp = fun(Attrs) ->
+        <<"v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\n"
+          "t=0 0\r\nm=audio 4000 RTP/AVP 0\r\n", Attrs/binary>>
+    end,
+    ?assertEqual({error, {maxptime, 10}},
+                 chappe_sip_media:conference(
+                   S, Room, #{sdp => Sdp(<<"a=maxptime:10\r\n">>)})),
+    {ok, Answer} = chappe_sip_media:conference(
+                     S, Room,
+                     #{sdp => Sdp(<<"a=ptime:30\r\na=maxptime:60\r\n">>)}),
+    ?assertNotEqual(nomatch, binary:match(Answer, <<"a=ptime:20">>)),
+    #{conf := Conf, leg := Leg} = chappe_sip_media:info(S),
+    ?assertMatch([#{ptime := 30}],
+                 [L || #{id := Id} = L <- chappe_mix:legs(Conf), Id =:= Leg]),
     ok = chappe_sip_media:leave(S).
 
 %% ---- conference behind rtpengine ----

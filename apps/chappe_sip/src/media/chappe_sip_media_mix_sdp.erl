@@ -3,9 +3,10 @@
 
 %% @doc SDP for a chappe_mix conference leg.
 %%
-%% The mixer speaks one thing: G.711 (PCMU or PCMA) over plain RTP/AVP in
-%% 20 ms frames. This module reads the remote side of a leg out of an SDP
-%% (where to send, which law, whether RTCP is muxed) and writes the leg's
+%% The mixer speaks one thing: G.711 (PCMU or PCMA) over plain RTP/AVP. It
+%% takes packets of any size and sends 20 ms ones. This module reads the
+%% remote side of a leg out of an SDP (where to send, which law, whether
+%% RTCP is muxed, the far end's packet time) and writes the leg's
 %% own SDP, as an offer or as an answer to an offer (RFC 3264). Anything
 %% else (SRTP, DTLS, other codecs) belongs to rtpengine in front of the
 %% mixer.
@@ -16,11 +17,13 @@
 -export_type([law/0, remote/0, local/0]).
 
 -type law() :: ulaw | alaw.
-%% What a leg needs from the far end's SDP. index is the m-line answered.
+%% What a leg needs from the far end's SDP. index is the m-line answered;
+%% ptime the far end's a=ptime (20 when it gives none).
 -type remote() :: #{
     endpoint := {inet:ip_address(), inet:port_number()},
     law := law(),
     mux := boolean(),
+    ptime := pos_integer(),
     index := non_neg_integer()
 }.
 %% The leg as advertised: address, RTP port, law and RTCP mux.
@@ -32,10 +35,13 @@
 }.
 
 -define(PROTO, <<"RTP/AVP">>).
+%% what the mixer puts in a packet, ms
+-define(PTIME, 20).
 
 %% Pick the leg's codec and far end out of an offer: the first audio
 %% m-line on RTP/AVP with a live port and a G.711 payload type, the law in
-%% the offer's order of preference.
+%% the offer's order of preference. An a=maxptime under 20 ms is refused:
+%% the mixer only sends 20 ms packets (RFC 4566 6).
 -spec accept_offer(iodata()) -> {ok, remote()} | {error, term()}.
 accept_offer(Sdp) ->
     {SessAddr, Media} = parse(Sdp),
@@ -93,7 +99,7 @@ audio(#{port := Port, law := Law, mux := Mux}) ->
         [<<"m=audio ">>, integer_to_binary(Port), <<" ">>, ?PROTO, <<" ">>],
         [Pt, crlf()],
         [<<"a=rtpmap:">>, Pt, <<" ">>, encoding(Law), <<"/8000\r\n">>],
-        <<"a=ptime:20\r\n">>,
+        [<<"a=ptime:">>, integer_to_binary(?PTIME), crlf()],
         <<"a=sendrecv\r\n">>,
         case Mux of
             true -> <<"a=rtcp-mux\r\n">>;
@@ -134,6 +140,8 @@ pick(SessAddr, Media) ->
 
 pick_stream(_I, #{proto := Proto}, _SessAddr) when Proto =/= ?PROTO ->
     {error, {unsupported_proto, Proto}};
+pick_stream(_I, #{maxptime := Max}, _SessAddr) when Max < ?PTIME ->
+    {error, {maxptime, Max}};
 pick_stream(I, #{port := Port, fmts := Fmts} = M, SessAddr) ->
     case [L || F <- Fmts, L <- [law(F)], L =/= undefined] of
         [] ->
@@ -145,6 +153,7 @@ pick_stream(I, #{port := Port, fmts := Fmts} = M, SessAddr) ->
                         endpoint => {Ip, Port},
                         law => Law,
                         mux => maps:get(mux, M, false),
+                        ptime => maps:get(ptime, M, ?PTIME),
                         index => I
                     }};
                 error ->
@@ -194,8 +203,24 @@ line(<<"c=", Rest/binary>>, {Sess, Media}) ->
     end;
 line(<<"a=rtcp-mux", _/binary>>, {Sess, [M | Ms]}) ->
     {Sess, [M#{mux => true} | Ms]};
+line(<<"a=ptime:", V/binary>>, {Sess, [M | Ms]}) ->
+    {Sess, [put_ms(ptime, V, M) | Ms]};
+line(<<"a=maxptime:", V/binary>>, {Sess, [M | Ms]}) ->
+    {Sess, [put_ms(maxptime, V, M) | Ms]};
 line(_Other, Acc) ->
     Acc.
+
+%% A packet time in ms; RFC 4566 allows a fraction, the mixer rounds it.
+put_ms(Key, V, M) ->
+    case string:to_float(V) of
+        {F, _} when is_float(F), F > 0 ->
+            M#{Key => max(1, round(F))};
+        _ ->
+            case string:to_integer(V) of
+                {N, _} when is_integer(N), N > 0 -> M#{Key => N};
+                _ -> M
+            end
+    end.
 
 conn_addr(Rest) ->
     case words(Rest) of

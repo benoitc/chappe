@@ -23,6 +23,9 @@
     conflicts_rtp_and_rtcp_apart/1,
     interval_bounds/1,
     sends_to_configured_remote/1,
+    sender_30ms/1,
+    sender_10ms/1,
+    sender_200ms/1,
     empty_rr_first/1,
     jitter_formula/1
 ]).
@@ -39,6 +42,9 @@ all() ->
         new_ssrc_not_seen,
         conflicts_rtp_and_rtcp_apart,
         sends_to_configured_remote,
+        sender_30ms,
+        sender_10ms,
+        sender_200ms,
         {group, codec}
     ].
 
@@ -268,6 +274,77 @@ until_rtcp(Sock, Deadline, Acc) ->
             end
     after max(0, Left) -> ct:fail({no_rtcp, length(Acc)})
     end.
+
+%% ---- packet sizes other than 20 ms ----
+
+%% A sender of 30 ms packets (240 octets) is heard whole: the mixer
+%% plays its samples on its own 20 ms clock, so each listener hears the
+%% tone in every judging window, and no 20 ms frame it gets has a run of
+%% 10 ms of silence in it (the mixer would play one if it cut a packet to
+%% 20 ms or played a frame it only had half of). Nothing is trimmed.
+%% req: R3551-029
+sender_30ms(_Config) ->
+    framing(30).
+
+%% The same for 10 ms packets (80 octets): two make a frame.
+%% req: R3551-029
+sender_10ms(_Config) ->
+    framing(10).
+
+%% A 200 ms packet (1600 octets, the most RFC 3551 4.2 asks a receiver
+%% to take) is accepted whole: none is dropped or trimmed, and its audio
+%% is heard over the next ten ticks.
+%% req: R3551-032
+sender_200ms(_Config) ->
+    {Verdicts, Gaps, Leg} = framing_run(200, 3000),
+    ct:log("200 ms: ~p, gaps ~p, leg ~p", [Verdicts, Gaps, Leg]),
+    [?assertMatch({ok, _}, V) || V <- Verdicts],
+    ?assertMatch(#{dropped := 0, late := 0}, Leg),
+    ?assert(maps:get(received, Leg) >= 10, Leg).
+
+framing(Ptime) ->
+    {Verdicts, Gaps, Leg} = framing_run(Ptime, 2000),
+    ct:log("~p ms: gaps ~w of ~w frames, leg ~p", [
+        Ptime, [G || {G, _} <- Gaps], [N || {_, N} <- Gaps], Leg
+    ]),
+    [?assertMatch({ok, _}, V) || V <- Verdicts],
+    %% a loaded box can stall the sender into an underrun, a silent frame:
+    %% allow one in fifty, where a cut or a half frame gaps a third or all
+    [?assert(G * 50 =< N, {gaps, G, N}) || {G, N} <- Gaps],
+    ?assertMatch(#{dropped := 0}, Leg).
+
+%% A tone at 1100 Hz from a sender of Ptime ms packets, two silent
+%% listeners; each listener's verdict (70% of windows hold the tone), its
+%% frames with 80 or more silent samples, and the sender's leg.
+framing_run(Ptime, ListenMs) ->
+    {ok, Conf} = chappe_mix:start(#{}),
+    Listeners = [
+        begin
+            {Ep, Port} = chappe_mix_test_tone:endpoint(#{freq => none}),
+            {ok, _, _} = chappe_mix:add_leg(Conf, #{remote => {?LO, Port}}),
+            Ep
+        end
+     || _ <- [1, 2]
+    ],
+    {ok, LS, #{port := MS}} = chappe_mix:add_leg(Conf, #{ptime => Ptime}),
+    {Sender, _} = chappe_mix_test_tone:endpoint(#{
+        freq => 1100, ptime => Ptime, dst => {?LO, MS}
+    }),
+    timer:sleep(1000),
+    [chappe_mix_test_tone:clear(L) || L <- Listeners],
+    timer:sleep(ListenMs),
+    Verdicts = [
+        chappe_mix_test_tone:hears(L, {-18.0, -54.7}, {[1100], []})
+     || L <- Listeners
+    ],
+    Gaps = [
+        {chappe_mix_test_tone:gaps(Fs, 80), length(Fs)}
+     || L <- Listeners, Fs <- [chappe_mix_test_tone:frames(L)]
+    ],
+    Leg = leg(Conf, LS),
+    [chappe_mix_test_tone:stop(P) || P <- [Sender | Listeners]],
+    ok = chappe_mix:stop(Conf),
+    {Verdicts, Gaps, Leg}.
 
 %% ---- RTCP on the wire ----
 

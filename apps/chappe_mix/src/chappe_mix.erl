@@ -4,9 +4,10 @@
 %% chappe_mix: an RTP audio conference mixer.
 %%
 %% A conference is a process that owns one UDP socket per leg. Every 20 ms
-%% it takes one frame from each leg's jitter buffer, sums the unmuted
-%% ones, and sends each leg the sum minus its own contribution (N-1), so
-%% nobody hears themselves. G.711 only: put rtpengine in front for SRTP,
+%% it takes one frame from each leg's jitter buffer (legs may send
+%% packets of 10, 30 or any other number of ms), sums the unmuted ones,
+%% and sends each leg the sum minus its own contribution (N-1), so nobody
+%% hears themselves. G.711 only: put rtpengine in front for SRTP,
 %% DTLS and every other codec.
 %%
 %% Each leg is an RTP session of its own and the mixer behaves on it as
@@ -73,10 +74,14 @@
 %% port, so the SDP for this leg must carry a=rtcp-mux (RFC 5761);
 %% `pair' opens an even RTP port and RTCP on the next one, which is what
 %% an SDP without a=rtcp-mux means. name: the SDES NAME the other legs
-%% see for this leg's source.
+%% see for this leg's source. ptime: the packet time the far end sends
+%% in ms (its a=ptime), reported by legs/1; packets of any size up to
+%% 200 ms are taken whatever it says, and the mixer always sends 20 ms
+%% (RFC 3551 4.2).
 -type leg_opts() :: #{
     remote => endpoint(),
     law => chappe_mix_g711:law(),
+    ptime => pos_integer(),
     mute => boolean(),
     rtcp => mux | pair,
     name => binary()

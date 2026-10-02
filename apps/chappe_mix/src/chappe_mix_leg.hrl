@@ -13,6 +13,9 @@
     %% the address RTP is taken from, latched on the first packet
     source :: {inet:ip_address(), inet:port_number()} | undefined,
     law :: chappe_mix_g711:law(),
+    %% the packet time the far end sends, in ms (informational: the
+    %% jitter buffer takes any size, and the mix always goes out in 20 ms)
+    ptime = 20 :: pos_integer(),
     mute = false :: boolean(),
     name :: binary() | undefined,
     jbuf :: chappe_mix_jbuf:jbuf(),

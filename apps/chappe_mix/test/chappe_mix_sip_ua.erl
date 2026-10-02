@@ -21,8 +21,8 @@
 
 %% Opts: host (inet:ip_address()), port, user (binary, the request-URI
 %% user, e.g. <<"conf-x">>), advertise (binary, an IPv4 address),
-%% rtp_port, timeout (ms for the whole INVITE transaction, default
-%% 30000). Returns the call process and the far end's media address as
+%% rtp_port, ptime (the a=ptime of the offer, default 20), timeout (ms
+%% for the whole INVITE transaction, default 30000). Returns the call process and the far end's media address as
 %% written in its SDP.
 call(Opts) ->
     Parent = self(),
@@ -62,6 +62,7 @@ init(Parent, Opts) ->
         adv => maps:get(advertise, Opts),
         sip_port => SipPort,
         rtp_port => maps:get(rtp_port, Opts),
+        ptime => maps:get(ptime, Opts, 20),
         call_id => <<(hex(8))/binary, "@chappe-mix-test">>,
         from_tag => Tag,
         to_tag => undefined,
@@ -262,7 +263,7 @@ ruri(#{user := U, host := H, port := P}) ->
 contact(#{adv := Adv, sip_port := SP}) ->
     [<<"<sip:mixtest@">>, Adv, <<":">>, integer_to_binary(SP), <<">">>].
 
-sdp(#{adv := Adv, rtp_port := RP}) ->
+sdp(#{adv := Adv, rtp_port := RP, ptime := Ptime}) ->
     iolist_to_binary([
         <<"v=0\r\no=- 1 1 IN IP4 ">>,
         Adv,
@@ -270,7 +271,9 @@ sdp(#{adv := Adv, rtp_port := RP}) ->
         Adv,
         <<"\r\nt=0 0\r\nm=audio ">>,
         integer_to_binary(RP),
-        <<" RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\na=ptime:20\r\na=sendrecv\r\n">>
+        <<" RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\na=ptime:">>,
+        integer_to_binary(Ptime),
+        <<"\r\na=sendrecv\r\n">>
     ]).
 
 %% ---- parsing ----

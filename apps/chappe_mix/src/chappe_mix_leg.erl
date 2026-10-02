@@ -34,9 +34,12 @@ open(Id, Opts, #{ip := Ip, law := Law, depth := Depth, ssrc := Ssrc}) ->
                 port = Port,
                 remote = maps:get(remote, Opts, undefined),
                 law = maps:get(law, Opts, Law),
+                ptime = maps:get(ptime, Opts, 20),
                 mute = maps:get(mute, Opts, false),
                 name = maps:get(name, Opts, undefined),
-                jbuf = chappe_mix_jbuf:new(Depth),
+                jbuf = chappe_mix_jbuf:new(
+                    Depth, silence_code(maps:get(law, Opts, Law))
+                ),
                 sess = chappe_mix_session:new(Ssrc, erlang:monotonic_time()),
                 rtcp = Rtcp,
                 rtcp_sock = RtcpSock,
@@ -103,6 +106,7 @@ info(#leg{} = L) ->
             remote => L#leg.remote,
             source => L#leg.source,
             law => L#leg.law,
+            ptime => L#leg.ptime,
             mute => L#leg.mute,
             tx => L#leg.tx,
             bad => L#leg.bad,
@@ -143,16 +147,17 @@ accepts_rtcp(_From, L) ->
     {false, L#leg{filtered = L#leg.filtered + 1}}.
 
 %% A packet the session took: latch the addresses (the far end moves the
-%% source latch to itself), buffer the audio.
+%% source latch to itself), buffer the audio by its timestamp, whatever
+%% its size.
 -spec take(chappe_mix_rtp:packet(), addr(), #leg{}) -> #leg{}.
-take(#{pt := PT, ssrc := Ssrc, seq := Seq, payload := P}, From, L) ->
+take(#{pt := PT, ssrc := Ssrc, seq := Seq, ts := Ts, payload := P}, From, L) ->
     L1 = L#leg{
         source = latch_source(L, From),
         remote = latch(L#leg.remote, From)
     },
     case PT =:= law_pt(L#leg.law) of
         true ->
-            L1#leg{jbuf = chappe_mix_jbuf:push(Ssrc, Seq, P, L1#leg.jbuf)};
+            L1#leg{jbuf = chappe_mix_jbuf:push(Ssrc, Seq, Ts, P, L1#leg.jbuf)};
         false ->
             %% telephone-event, comfort noise, anything we do not mix
             L1#leg{other_pt = L1#leg.other_pt + 1}
@@ -169,18 +174,13 @@ law_pt(alaw) -> 8.
 
 %% ---- out ----
 
-%% This tick's frame from the jitter buffer, as code words, or none. A
-%% frame of another size (another ptime) is cut to 20 ms here; a short
-%% one is silence past its end (see chappe_mix_dsp).
+%% This tick's 20 ms frame from the jitter buffer, as code words, or
+%% none. The buffer makes 20 ms frames out of packets of any size.
 -spec pop(#leg{}) -> {#leg{}, binary() | none}.
 pop(#leg{jbuf = J0} = L) ->
     case chappe_mix_jbuf:pop(J0) of
-        {silence, J} ->
-            {L#leg{jbuf = J}, none};
-        {Payload, J} when byte_size(Payload) > ?FRAME ->
-            {L#leg{jbuf = J}, binary:part(Payload, 0, ?FRAME)};
-        {Payload, J} ->
-            {L#leg{jbuf = J}, Payload}
+        {silence, J} -> {L#leg{jbuf = J}, none};
+        {Payload, J} -> {L#leg{jbuf = J}, Payload}
     end.
 
 %% Send a mixed frame, already encoded in the leg's law (none: silence),
@@ -213,8 +213,10 @@ send(#leg{remote = {Ip, Port}, law = Law, sess = Sess} = L, Mixed, Csrcs) ->
 advance(#leg{sess = Sess} = L, Step) ->
     L#leg{sess = chappe_mix_session:advance(Sess, Step)}.
 
-silence(ulaw) -> binary:copy(<<16#FF>>, ?FRAME);
-silence(alaw) -> binary:copy(<<16#D5>>, ?FRAME).
+silence(Law) -> binary:copy(<<(silence_code(Law))>>, ?FRAME).
+
+silence_code(ulaw) -> 16#FF;
+silence_code(alaw) -> 16#D5.
 
 %% Send the leg's compound packet (see chappe_mix_session:report/5),
 %% Extra last, if it has somewhere to go.

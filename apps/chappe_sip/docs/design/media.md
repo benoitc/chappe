@@ -216,7 +216,9 @@ end).
 ```
 
 The answer carries one G.711 codec (the first PCMU or PCMA in the offer),
-`a=ptime:20` and `a=sendrecv`. It keeps `a=rtcp-mux` when the offer has it;
+`a=ptime:20` and `a=sendrecv`. The offer's `a=ptime` reaches the leg (the
+mixer takes packets of any size up to 200 ms); an `a=maxptime` under 20 is
+refused with `{error, {maxptime, Ms}}`, since the mixer sends 20 ms. It keeps `a=rtcp-mux` when the offer has it;
 without it, RTCP goes on the next port up. Other m-lines (video) are rejected
 with port 0.
 
@@ -293,8 +295,9 @@ tears down the rtpengine call and takes the leg out of the room.
 
 ## Conference limits
 
-- G.711 only (PCMU, PCMA), 8 kHz in 20 ms frames. A 10 ms or 30 ms sender is
-  padded or cut to 20 ms; put rtpengine in front for anything else.
+- G.711 only (PCMU, PCMA), 8 kHz. The mixer takes packets of 10, 30 or any
+  other number of ms up to 200 and sends 20 ms ones; put rtpengine in front
+  for anything else.
 - One codec per leg, fixed when the leg opens. An answer in another law is
   refused with `{error, {law_mismatch, Law}}`.
 - Every leg is `a=sendrecv`; a hold (`sendonly`/`inactive`) in the offer is

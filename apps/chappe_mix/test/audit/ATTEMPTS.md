@@ -425,3 +425,50 @@ order held at load 4.8 too):
 - `chappe_mix_dsp_tests` against three mutations of the new code: high
   clip at 30000 (11 failures), own frame added (11), one sample skipped
   past a short frame (10).
+
+## Packets of any size: a jitter buffer keyed by timestamp
+
+- The buffer counted packets, so a 30 ms sender underran every third tick
+  (a whole silent frame, and the leg cut each packet to 20 ms on top) and
+  a 10 ms sender played half-silent frames and overflowed the depth. It now
+  keeps packets by extended RTP timestamp and pops 160 samples, whatever
+  the packet size. A 20 ms packet right at the playout point is returned
+  as it came, so 20 ms input takes the same path and the eleven existing
+  `chappe_mix_jbuf_tests` pass unchanged (push/4 stays, placing a one
+  frame packet by its sequence number).
+- First version played what it had when the buffer ran out inside a frame,
+  padded with silence. Against a 30 ms sender that is a 10 ms gap in every
+  other frame, and the 30 ms packet that comes next then starts behind the
+  playout point. Kept instead: a frame the buffer cannot fill is an
+  underrun (silence, the prefill grows), and the part already there waits
+  for the rest (`half_frame_waits_test`).
+- A timestamp gap is loss or a silence-suppression pause, and only the
+  sequence numbers tell which: playing a pause out as silence would add its
+  whole length to the latency once the talker is back. The playout point
+  jumps to the next packet less the time of the packets missing before it
+  (`suppression_test`, `loss_after_pause_test`).
+- The depth bound in samples first trimmed a 200 ms sender: the next
+  packet arrives while a frame of the last is still to play, the two hold
+  1760 samples against a bound of 480, and the older one went with its
+  last 20 ms. Found by the mutation run (the suite case passed by phase).
+  The bound is now the depth plus what the newest packet holds over a
+  frame, which is the depth for 20 ms packets
+  (`two_hundred_ms_back_to_back_test`).
+- An `underruns` counter is new: empty ticks once the stream has played.
+- Seen failing first: 9 new `chappe_mix_jbuf_tests` (undef), the three
+  `chappe_mix_rfc_SUITE` sender cases (30 ms: 33 frames of 100 with a
+  10 ms run of silence; 10 and 200 ms: the tone missing in every window),
+  `chappe_sip_media_SUITE:conference_ptime` (a maxptime of 10 answered),
+  `chappe_mix_live_SUITE:thirty_ms_n_minus_one` (1100 Hz missing in 4 of
+  10 windows behind rtpengine) and `chappe_mix_ref_SUITE:
+  thirty_ms_same_detection` (1100 Hz missing at both receivers, 34 of 100
+  frames short of it, against 0 through `mod_conference`).
+- Mutations, 12, all caught in the end: resume ignoring the missing
+  packets (3 failures), never jumping a pause (2), a half frame played
+  (1), the trim bound without the packet size (1), a single packet trimmed
+  (7, and `sender_200ms`), the leg keying by sequence number (three suite
+  cases), the backward timestamp wrap not extended (1), loss filled with
+  code 0 (1), maxptime not checked and ptime not passed to the leg
+  (`conference_ptime`). An underrun counted before the first frame
+  survived the first run and got `no_underrun_before_start_test`; a first
+  mutation of the timestamp extension did not compile and was rewritten.
