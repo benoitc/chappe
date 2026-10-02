@@ -412,3 +412,16 @@ order held at load 4.8 too):
   together project to about 450 on one scheduler. Reaching 500 needs a
   change in shape (fewer packets or system calls per tick), or the
   threshold read per core over several schedulers.
+
+## element/2 for every per-sample lookup: kept
+
+- `binary:at/2` on the 64 KiB encode table and `atomics:get/2` per sample
+  per leg were the two biggest calls left in the mix. A 65536-tuple encode
+  table and the sum read out once into a 160-tuple make both `element/2`.
+  The clip is inlined and each output is built by binary append. Compute
+  -30% at 4 legs and -45% at 64 against the atomics-only version (scratch
+  harness, load 4, void; see `PERF.md`).
+- Cost: 512 KiB per law of `persistent_term`, built once at start.
+- `chappe_mix_dsp_tests` against three mutations of the new code: high
+  clip at 30000 (11 failures), own frame added (11), one sample skipped
+  past a short frame (10).

@@ -63,8 +63,9 @@ dsp(Legs) ->
         chappe_mix_dsp:new(),
         Cut
     ),
+    Mixed = chappe_mix_dsp:mixed(Sum),
     [
-        chappe_mix_dsp:encode(Sum, Law, own(Law, Codes, Muted))
+        chappe_mix_dsp:encode(Mixed, Law, own(Law, Codes, Muted))
      || {Law, Codes, Muted} <- Cut
     ].
 

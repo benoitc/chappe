@@ -398,14 +398,17 @@ mix_cost(N, Load) ->
      || K <- lists:seq(1, N)
     ],
     Iter = max(50, 20000 div N),
+    _ = code:ensure_loaded(chappe_mix_dsp),
     Tick =
         case
-            erlang:function_exported(chappe_mix_dsp, new, 0) orelse
-                (code:ensure_loaded(chappe_mix_dsp) =:=
-                    {module, chappe_mix_dsp})
+            {
+                erlang:function_exported(chappe_mix_dsp, mixed, 1),
+                erlang:function_exported(chappe_mix_dsp, new, 0)
+            }
         of
-            true -> fun mix_tick/1;
-            false -> fun mix_tick_lists/1
+            {true, _} -> fun mix_tick/1;
+            {false, true} -> fun mix_tick_dsp0/1;
+            {false, false} -> fun mix_tick_lists/1
         end,
     Rounds = [
         begin
@@ -430,6 +433,29 @@ mix_loop(Tick, Frames, K) ->
     mix_loop(Tick, Frames, K - 1).
 
 mix_tick(Frames) ->
+    Sum = lists:foldl(
+        fun(F, Acc) -> chappe_mix_dsp:add(Acc, ulaw, F) end,
+        chappe_mix_dsp:new(),
+        Frames
+    ),
+    Mixed = chappe_mix_dsp:mixed(Sum),
+    Ids = lists:seq(1, length(Frames)),
+    [
+        chappe_mix_rtp:build(#{
+            pt => 0,
+            seq => 1,
+            ts => 160,
+            ssrc => 42,
+            marker => false,
+            csrcs => lists:sublist(Ids -- [K], 15),
+            payload => chappe_mix_dsp:encode(Mixed, ulaw, {ulaw, F})
+        })
+     || {K, F} <- lists:zip(Ids, Frames)
+    ].
+
+%% chappe_mix_dsp before mixed/1 (0ea59d9 to 0cd3bb2): encode read the
+%% atomics sum directly.
+mix_tick_dsp0(Frames) ->
     Sum = lists:foldl(
         fun(F, Acc) -> chappe_mix_dsp:add(Acc, ulaw, F) end,
         chappe_mix_dsp:new(),

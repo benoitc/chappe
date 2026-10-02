@@ -472,3 +472,24 @@ late except where noted, every packet sent and received.
 Only E1 helps, by about 15%. None of them reaches the 500 threshold,
 which stays missed. E3 has two launches only: the box stayed above the
 limit for over 40 minutes after them and the session was stopped.
+
+### 2026-10-02: the sum read out once, element/2 throughout (void so far)
+
+`chappe_mix_dsp` now reads the atomics sum out into a tuple once per tick
+(`mixed/1`) and encodes through a 65536-tuple per law (`chappe_mix_g711:
+encoder/1`, 512 KiB each in `persistent_term`), appending to a binary:
+every per-sample lookup is `element/2`. Output unchanged:
+`chappe_mix_dsp_tests` passes and catches the same three mutations.
+
+Scratch harness, compute only (decode, sum, subtract, encode; no RTP
+build), best of 5, `+S 1`, load 3.97 to 4.17, so **void**, kept for the
+order:
+
+| legs | atomics sum (`0cd3bb2`) | + `element/2` encode | + sum read out once |
+| ---: | ---: | ---: | ---: |
+| 4 | 20.3 us | 14.3 us | 13.8 us |
+| 16 | 83.2 us | 56.9 us | 46.4 us |
+| 64 | 326.1 us | 227.1 us | 180.4 us |
+
+The interleaved `mix_cost` and fixed-200 comparison against `0cd3bb2` is
+queued for a quiet box; no threshold changes status on these numbers.

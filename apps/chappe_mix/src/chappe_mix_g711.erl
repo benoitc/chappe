@@ -16,7 +16,15 @@
 %% building lazily from inside a running conference costs a mix tick.
 -module(chappe_mix_g711).
 
--export([init/0, decode/2, encode/2, decode_frame/2, encode_frame/2, tables/1]).
+-export([
+    init/0,
+    decode/2,
+    encode/2,
+    decode_frame/2,
+    encode_frame/2,
+    tables/1,
+    encoder/1
+]).
 
 -export_type([law/0]).
 
@@ -30,6 +38,8 @@
 init() ->
     _ = tables(ulaw),
     _ = tables(alaw),
+    _ = encoder(ulaw),
+    _ = encoder(alaw),
     ok.
 
 %% Decode one code word to a linear sample.
@@ -125,6 +135,21 @@ tables(Law) ->
             Tabs;
         Tabs ->
             Tabs
+    end.
+
+%% The encode table as a 65536-tuple, by sample + 32769: element/2 is the
+%% cheapest lookup there is, at 512 KiB per law. Built by init/0.
+-spec encoder(law()) -> tuple().
+encoder(Law) ->
+    Key = {?MODULE, encoder, Law},
+    case persistent_term:get(Key, undefined) of
+        undefined ->
+            {_Dec, Enc} = tables(Law),
+            T = list_to_tuple(binary_to_list(Enc)),
+            persistent_term:put(Key, T),
+            T;
+        T ->
+            T
     end.
 
 build_tables(Law) ->

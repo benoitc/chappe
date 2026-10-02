@@ -510,6 +510,7 @@ mix(#state{legs = Legs0} = S, Missed) ->
         chappe_mix_dsp:new(),
         Popped
     ),
+    Mixed = chappe_mix_dsp:mixed(Sum),
     %% who is in the sum, by leg, for the CSRC lists
     Talkers = [
         {Id, Ssrc}
@@ -526,7 +527,7 @@ mix(#state{legs = Legs0} = S, Missed) ->
             chappe_mix_leg:advance(
                 chappe_mix_leg:send(
                     L,
-                    chappe_mix_dsp:encode(Sum, L#leg.law, own(L, Codes)),
+                    chappe_mix_dsp:encode(Mixed, L#leg.law, own(L, Codes)),
                     csrcs(L#leg.id, Talkers, ?MAX_CSRC)
                 ),
                 Step
