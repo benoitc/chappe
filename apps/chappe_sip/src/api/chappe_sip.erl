@@ -185,11 +185,17 @@ create_uac(Uri, Opts) ->
 
 %% Send an out-of-dialog, non-dialog-forming request (OPTIONS, REGISTER,
 %% MESSAGE, ...). Returns a ref; responses arrive as events, or use
-%% chappe_sip_uac:await_response/2.
+%% chappe_sip_uac:await_response/2. Without a `method' option the URI's
+%% method parameter names it (RFC 3261 19.1.5), else OPTIONS.
 -spec request(binary(), map()) ->
     {ok, chappe_sip_uac:uac_ref()} | {error, term()}.
 request(Uri, Opts) ->
-    chappe_sip_uac:start(Uri, maps:merge(#{method => <<"OPTIONS">>}, Opts)).
+    Default =
+        case chappe_sip_uri:take_param(Uri, <<"method">>) of
+            {M, _} when is_binary(M), M =/= <<>> -> M;
+            _ -> <<"OPTIONS">>
+        end,
+    chappe_sip_uac:start(Uri, maps:merge(#{method => Default}, Opts)).
 
 %% Bridge an incoming INVITE (A/UAS) to a new INVITE toward Uri (B/UAC).
 %% Returns both dialogs; use chappe_sip_b2b:relay/1 to link their lifecycles.

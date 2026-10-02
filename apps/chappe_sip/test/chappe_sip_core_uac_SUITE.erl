@@ -41,6 +41,8 @@
          prack_follows_route_set/1, rseq_without_require/1,
          redirect_q_order_fallback/1, delayed_ack_3pcc/1,
          create_uac_timeout_cancels/1]).
+-export([preloaded_route_set/1, method_param_in_uri/1,
+         redirect_drops_method_param/1, use_proxy_305/1]).
 -export([early_update_from_callee/1, early_bye_from_callee/1,
          early_update_from_caller/1, early_forks_ended/1,
          early_ended_by_final/1]).
@@ -71,6 +73,8 @@ groups() ->
                  prack_follows_route_set, rseq_without_require,
                  redirect_q_order_fallback, delayed_ack_3pcc,
                  create_uac_timeout_cancels,
+                 preloaded_route_set, method_param_in_uri,
+                 redirect_drops_method_param, use_proxy_305,
                  early_update_from_callee, early_bye_from_callee,
                  early_update_from_caller, early_forks_ended,
                  early_ended_by_final, large_request_over_tcp,
@@ -1092,6 +1096,53 @@ rseq_without_require(Config) ->
     D = answer(Sock, EP, Inv, Ref, ToTag),
     hang_up(Sock, EP, D).
 
+%% ---- preloaded route set and the method parameter (8.1.1.1, 19.1.5) ----
+
+%% A route set given outside a dialog shapes the request as in a dialog
+%% (12.2.1.1): a loose first route keeps the target in the Request-URI and
+%% lists the routes; a strict one takes the Request-URI and the target goes
+%% last in Route. Either way the request goes to the first route.
+%% req: R3261-004
+preloaded_route_set(Config) ->
+    {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
+    LP = integer_to_binary(port(Sock)),
+    Target = <<"sip:far@far.invalid">>,
+    Loose = <<"<sip:127.0.0.1:", LP/binary, ";lr>">>,
+    Next = <<"<sip:next.invalid;lr>">>,
+    {ok, _} = chappe_sip:request(Target, #{route_set => [Loose, Next]}),
+    {R1, _} = recv(Sock, {method, <<"OPTIONS">>}, 3000),
+    send(Sock, EP, response(R1, 200, #{to_tag => tag()})),
+    ?assertEqual(Target, uri(R1)),
+    ?assertEqual([Loose, Next], route_values(R1)),
+    Strict = <<"sip:127.0.0.1:", LP/binary, ";x-a=1">>,
+    {ok, _} = chappe_sip:request(Target,
+                                 #{route_set => [<<"<", Strict/binary, ">">>,
+                                                 Next]}),
+    {R2, _} = recv(Sock, {method, <<"OPTIONS">>}, 3000),
+    send(Sock, EP, response(R2, 200, #{to_tag => tag()})),
+    ?assertEqual(Strict, uri(R2)),
+    ?assertEqual([Next, <<"<", Target/binary, ">">>], route_values(R2)).
+
+%% A URI with a method parameter makes that request when the caller names
+%% no method, and the parameter is not in the Request-URI (19.1.5).
+%% req: R3261-399 R3261-400
+method_param_in_uri(Config) ->
+    {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
+    LP = integer_to_binary(port(Sock)),
+    Bare = <<"sip:b@127.0.0.1:", LP/binary>>,
+    {ok, _} = chappe_sip:request(<<Bare/binary, ";method=REFER">>,
+                                 #{headers => [{<<"Refer-To">>, Bare}]}),
+    {R1, _} = recv(Sock, {method, <<"REFER">>}, 3000),
+    send(Sock, EP, response(R1, 202, #{to_tag => tag()})),
+    ?assertEqual(Bare, uri(R1)),
+    ?assertEqual(Bare, addr_uri(hdr(<<"to">>, R1))),
+    %% an explicit method wins; the parameter still leaves the URI
+    {ok, _} = chappe_sip:request(<<Bare/binary, ";Method=MESSAGE;x=1">>,
+                                 #{method => <<"OPTIONS">>}),
+    {R2, _} = recv(Sock, {method, <<"OPTIONS">>}, 3000),
+    send(Sock, EP, response(R2, 200, #{to_tag => tag()})),
+    ?assertEqual(<<Bare/binary, ";x=1">>, uri(R2)).
+
 %% ---- redirection (8.1.3.4) ----
 
 %% A 302 with three Contacts: the sip ones are tried best q first (a tel
@@ -1121,6 +1172,50 @@ redirect_q_order_fallback(Config) ->
     ?assertEqual(Low, uri(Inv3)),
     D = answer(Sock, EP, Inv3, Ref),
     hang_up(Sock, EP, D).
+
+%% A 302 Contact with a method parameter and a ?headers part: the next
+%% INVITE takes the whole URI as Request-URI minus both (8.1.3.4).
+%% req: R3261-055
+redirect_drops_method_param(Config) ->
+    {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
+    LP = integer_to_binary(port(Sock)),
+    Next = <<"sip:x@127.0.0.1:", LP/binary, ";x-k=1">>,
+    {ok, Ref} = chappe_sip_uac:start(callee(Sock), #{local_sdp => sdp(),
+                                                     follow_redirects => true,
+                                                     notify => self()}),
+    {Inv1, _} = recv(Sock, {method, <<"INVITE">>}, 3000),
+    send(Sock, EP, response(Inv1, 302, #{
+        to_tag => tag(),
+        headers => [{<<"Contact">>, <<"<sip:x@127.0.0.1:", LP/binary,
+                                      ";method=REFER;x-k=1?Subject=a>">>}]})),
+    {Inv2, _} = recv(Sock, {method, <<"INVITE">>}, 3000),
+    ?assertEqual(Next, uri(Inv2)),
+    ?assertEqual(<<"INVITE">>, method(Inv2)),
+    ?assertEqual(undefined, hdr(<<"subject">>, Inv2)),
+    D = answer(Sock, EP, Inv2, Ref),
+    hang_up(Sock, EP, D).
+
+%% A 305 names the proxy to reach the resource through: the next INVITE
+%% keeps the Request-URI and goes to the Contact of the 305 (21.3.6).
+%% req: R3261-480
+use_proxy_305(Config) ->
+    {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
+    Proxy = open(),
+    PP = integer_to_binary(port(Proxy)),
+    Uri = callee(Sock),
+    {ok, Ref} = chappe_sip_uac:start(Uri, #{local_sdp => sdp(),
+                                            follow_redirects => true,
+                                            notify => self()}),
+    {Inv1, _} = recv(Sock, {method, <<"INVITE">>}, 3000),
+    send(Sock, EP, response(Inv1, 305, #{
+        to_tag => tag(),
+        headers => [{<<"Contact">>, <<"<sip:127.0.0.1:", PP/binary, ">">>}]})),
+    {Inv2, _} = recv(Proxy, {method, <<"INVITE">>}, 3000),
+    ?assertEqual(Uri, uri(Inv2)),
+    recv_none(Sock, {method, <<"INVITE">>}, 300),
+    D = answer(Proxy, EP, Inv2, Ref),
+    hang_up(Proxy, EP, D),
+    chappe_sip_core_peer:close(Proxy).
 
 %% ---- third party call control and give-up (RFC 3725, 9.1) ----
 

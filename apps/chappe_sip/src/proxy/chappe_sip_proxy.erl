@@ -435,8 +435,9 @@ launch(#px{msg = Msg} = P, Dest) ->
             {RRSips, M2} = record_route(P, Dest, M1),
             {Route, M3} = next_hop(Dest, Via, M2),
             send_branch(P, #br{dest = Dest, rr_sips = RRSips}, Route, M3);
-        {error, sips_required} ->
-            %% RFC 5630 5.3: a SIPS request never goes to a SIP target
+        {error, _} ->
+            %% RFC 5630 5.3: a SIPS request never goes to a SIP target;
+            %% RFC 3261 19.1.1: nor to a SIPS target naming UDP
             {error, P#px{
                 finals = [{480, undefined} | P#px.finals],
                 responses = [480 | P#px.responses]

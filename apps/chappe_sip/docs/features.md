@@ -66,7 +66,13 @@ tracker; the milestone history is in `docs/plan.md`.
   (one credential per realm, so a 407 then a 401 works; `stale=true` retried
   with the new nonce; SHA-256 preferred over MD5; nonce counts per nonce),
   3xx redirects (Contacts best `q` first, the next one on a 4xx/5xx, sip/sips
-  only, `?headers` dropped), and 3PCC (`no_ack`, then
+  only, `?headers` and `method` dropped; a 305 keeps the Request-URI and
+  goes through the Contact as proxy), a preloaded `route_set` (loose or
+  strict first route, RFC 3261 8.1.1.1), a URI `method` parameter used as
+  the method when none is given and left out of the Request-URI, a sips
+  Contact when the Request-URI, `proxy` or first route is SIPS (also on the
+  dialog's target refreshes), a sip: next hop reached as sips: for a SIPS
+  Request-URI, a `sips:...;transport=udp` target refused, and 3PCC (`no_ack`, then
   `chappe_sip_dialog:ack/2` sends the ACK with the answer). A
   `create_uac/2` timeout CANCELs the INVITE and BYEs a 2xx that crosses it.
   The 2xx ACK carries the INVITE's credentials. The body is `local_sdp`
@@ -283,7 +289,9 @@ tracker; the milestone history is in `docs/plan.md`.
   Max-Forwards is not required of a received request (a proxy adds 70).
 - URIs: a user part may carry `;` (`sip:alice;day=tuesday@example.com`), the
   scheme is case-insensitive, and `chappe_sip_uri:equal/2` compares by RFC
-  3261 19.1.4.
+  3261 19.1.4. `chappe_sip_uri:format/1` percent-escapes what each component
+  (user, tel subscriber, password, parameters, headers) may not carry raw,
+  keeps existing escapes, and writes a repeated parameter once.
 - Handling MUSTs: an out-of-dialog method with no handler gets 405 with
   `Allow` (21.4.5), or 501 when unknown (21.5.2), and OPTIONS 200 with our
   capabilities (11); a non-100 response
