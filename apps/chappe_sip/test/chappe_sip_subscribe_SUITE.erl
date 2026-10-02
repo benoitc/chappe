@@ -29,7 +29,9 @@
     refer_package_403/1,
     owner_down_terminates/1,
     notify_in_invite_dialog/1,
-    ws_subscription/1
+    ws_subscription/1,
+    event_id_echoed/1,
+    cancel_pending_subscribe/1
 ]).
 
 all() ->
@@ -49,7 +51,9 @@ all() ->
         refer_package_403,
         owner_down_terminates,
         notify_in_invite_dialog,
-        ws_subscription
+        ws_subscription,
+        event_id_echoed,
+        cancel_pending_subscribe
     ].
 
 init_per_suite(Config) ->
@@ -97,6 +101,86 @@ subscribe_initial_notify(_Config) ->
     reply(S, Notify, NSrc, 200),
     {ok, Msg} = ran(),
     ?assertEqual(200, chappe_sip_msg:status(Msg)).
+
+%% A SUBSCRIBE whose Event carries an id: every NOTIFY of the
+%% subscription carries the same id (RFC 6665 8.2.1).
+%% req: R6665-18
+event_id_echoed(_Config) ->
+    EP = setup(#{expires => 600}),
+    S = sub(EP, <<"t18">>),
+    _R200 = send_subscribe(S, 1, 300, undefined, 200, <<"conference;id=7">>),
+    {_Dlg, H} = dialog(),
+    [begin
+         run_async(H, fun(D) -> chappe_sip_dialog:notify(D, #{state => State}) end),
+         {Notify, NSrc} = recv_req(S, <<"NOTIFY">>),
+         ?assertEqual(<<"conference;id=7">>, hdr(Notify, <<"event">>)),
+         reply(S, Notify, NSrc, 200),
+         {ok, _} = ran()
+     end || State <- [active, {terminated, noresource}]].
+
+%% A CANCEL for a SUBSCRIBE the app has not answered yet gets 200 and is
+%% otherwise ignored: the SUBSCRIBE still gets its 200 and the NOTIFY
+%% follows (RFC 6665 4.2.1, 4.2.2).
+%% req: R6665-19
+cancel_pending_subscribe(_Config) ->
+    EP = pick(),
+    ok = chappe_sip:start(#{contact => ctc_engine(EP)}),
+    Test = self(),
+    ok = chappe_sip:subscribe(fun(Req, Res) ->
+        Test ! {held, self()},
+        receive go -> ok after 5000 -> ok end,
+        {ok, Dlg} = chappe_sip:create_uas(Req, Res, #{expires => 600}),
+        Test ! {dialog, Dlg, self()},
+        relay(Test, Dlg)
+    end),
+    #{sock := Sock, ft := FT, call := Call} = S = sub(EP, <<"t19">>),
+    P = integer_to_binary(lport(Sock)),
+    Via = <<"SIP/2.0/UDP 127.0.0.1:", P/binary, ";rport;branch=",
+            (branch())/binary>>,
+    Common = <<"Max-Forwards: 70\r\n"
+               "From: <sip:sub@127.0.0.1:", P/binary, ">;tag=", FT/binary, "\r\n"
+               "To: <sip:conf@127.0.0.1>\r\n"
+               "Call-ID: ", Call/binary, "\r\n">>,
+    Sub = <<"SUBSCRIBE sip:conf@127.0.0.1 SIP/2.0\r\nVia: ", Via/binary, "\r\n",
+            Common/binary,
+            "Contact: <sip:sub@127.0.0.1:", P/binary, ">\r\n"
+            "CSeq: 1 SUBSCRIBE\r\nEvent: conference\r\nExpires: 600\r\n"
+            "Content-Length: 0\r\n\r\n">>,
+    Cancel = <<"CANCEL sip:conf@127.0.0.1 SIP/2.0\r\nVia: ", Via/binary, "\r\n",
+               Common/binary, "CSeq: 1 CANCEL\r\nContent-Length: 0\r\n\r\n">>,
+    ok = gen_udp:send(Sock, {127, 0, 0, 1}, EP, Sub),
+    H = receive {held, H0} -> H0 after 4000 -> ct:fail(no_handler) end,
+    ok = gen_udp:send(Sock, {127, 0, 0, 1}, EP, Cancel),
+    C200 = recv_cseq(Sock, <<"1 CANCEL">>),
+    ct:log("CANCEL answer: ~s", [C200]),
+    ?assertMatch(<<"SIP/2.0 200 ", _/binary>>, C200),
+    H ! go,
+    R = recv_cseq(Sock, <<"1 SUBSCRIBE">>),
+    ct:log("SUBSCRIBE answer: ~s", [R]),
+    ?assertMatch(<<"SIP/2.0 200 ", _/binary>>, R),
+    {_Dlg, H2} = dialog(),
+    run_async(H2, fun(D) -> chappe_sip_dialog:notify(D, #{state => active}) end),
+    {Notify, NSrc} = recv_req(S, <<"NOTIFY">>),
+    ?assertMatch({<<"active">>, _}, sub_state(Notify)),
+    reply(S, Notify, NSrc, 200),
+    {ok, _} = ran().
+
+%% the next final response whose CSeq is CSeq; other responses are logged
+%% and dropped
+recv_cseq(Sock, CSeq) ->
+    receive
+        {udp, Sock, _, _, <<"SIP/2.0 1", _/binary>>} ->
+            recv_cseq(Sock, CSeq);
+        {udp, Sock, _, _, <<"SIP/2.0 ", _/binary>> = Bin} ->
+            case hdr(Bin, <<"cseq">>) of
+                CSeq ->
+                    Bin;
+                _ ->
+                    ct:log("dropped: ~s", [Bin]),
+                    recv_cseq(Sock, CSeq)
+            end
+    after 6000 -> ct:fail({no_response, CSeq})
+    end.
 
 %% the granted Expires is the app's cap when the subscriber asks for more
 expires_capped(_Config) ->

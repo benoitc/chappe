@@ -12,6 +12,7 @@
 -export([parse/1, hdr/2, hdrs/2, status/1, method/1, uri/1, cseq/1,
          to_tag/1, from_tag/1, body/1, top_via/1, via_branch/1]).
 -export([branch/0, tag/0, call_id/0, sdp/0, sdp/1, contact/1]).
+-export([tcp_listen/1, tcp_recv/2, repeated_uri_params/1]).
 
 -define(LO, {127, 0, 0, 1}).
 
@@ -118,6 +119,42 @@ cseq_method(Bin) ->
     end.
 
 now_ms() -> erlang:monotonic_time(millisecond).
+
+%% ---- TCP ----
+
+%% A passive TCP listener on loopback at Port (0 for any).
+tcp_listen(Port) ->
+    {ok, L} = gen_tcp:listen(Port, [binary, {active, false}, {ip, ?LO},
+                                    {reuseaddr, true}]),
+    L.
+
+%% One SIP message off a passive TCP socket, framed by its Content-Length
+%% (none means the head alone). Returns the message or {error, Reason}.
+tcp_recv(Sock, Timeout) ->
+    tcp_recv(Sock, <<>>, now_ms() + Timeout).
+
+tcp_recv(Sock, Buf, Deadline) ->
+    case binary:split(Buf, <<"\r\n\r\n">>) of
+        [Head, Tail] ->
+            Len = case re:run(Head, "\r\n(Content-Length|l)[ \t]*:[ \t]*([0-9]+)",
+                              [caseless, {capture, [2], binary}]) of
+                      {match, [L]} -> binary_to_integer(L);
+                      nomatch -> 0
+                  end,
+            case Tail of
+                <<Body:Len/binary, _/binary>> ->
+                    <<Head/binary, "\r\n\r\n", Body/binary>>;
+                _ -> tcp_more(Sock, Buf, Deadline)
+            end;
+        _ ->
+            tcp_more(Sock, Buf, Deadline)
+    end.
+
+tcp_more(Sock, Buf, Deadline) ->
+    case gen_tcp:recv(Sock, 0, max(0, Deadline - now_ms())) of
+        {ok, D} -> tcp_recv(Sock, <<Buf/binary, D/binary>>, Deadline);
+        {error, _} = E -> E
+    end.
 
 %% ---- building ----
 
@@ -274,6 +311,13 @@ via_branch(Via) ->
         {match, [B]} -> B;
         nomatch -> undefined
     end.
+
+%% the uri-parameter names that appear more than once in Uri
+repeated_uri_params(Uri) ->
+    [NoHeaders | _] = binary:split(Uri, <<"?">>),
+    [_ | Params] = binary:split(NoHeaders, <<";">>, [global]),
+    Names = [string:lowercase(hd(binary:split(P, <<"=">>))) || P <- Params],
+    lists:usort(Names -- lists:usort(Names)).
 
 %% ---- values ----
 

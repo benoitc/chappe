@@ -187,8 +187,9 @@ message_syntax(_Config) ->
 
 %% RFC 3261 19.1.4 on its own examples: escaped and case variants match,
 %% a header component, a port, a transport, a maddr or a different
-%% security param do not.
-%% req: R3261-U-10 R3261-397
+%% security param do not. An escaped character in the host is not its
+%% unescaped form (19.1.4).
+%% req: R3261-U-10 R3261-397 R3261-396
 uri_comparison(_Config) ->
     Eq = fun chappe_sip_uri:equal/2,
     ?assert(Eq(<<"sip:%61lice@atlanta.com;transport=TCP">>,
@@ -203,7 +204,8 @@ uri_comparison(_Config) ->
     ?assertNot(Eq(<<"SIP:ALICE@AtLanTa.CoM;Transport=udp">>,
                   <<"sip:alice@AtLanTa.CoM;Transport=UDP">>)),
     ?assertNot(Eq(<<"sip:carol@chicago.com;security=on">>,
-                  <<"sip:carol@chicago.com;security=off">>)).
+                  <<"sip:carol@chicago.com;security=off">>)),
+    ?assertNot(Eq(<<"sip:carol@chicago.com">>, <<"sip:carol@chicag%6F.com">>)).
 
 %% ---- the corpus through the running stack ----
 

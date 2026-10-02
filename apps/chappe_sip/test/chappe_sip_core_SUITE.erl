@@ -49,9 +49,12 @@
          uas_ignores_proxy_require/1, proxy_route_checks_proxy_require/1,
          siprec_require/1, indialog_require_420/1,
          ack_cancel_require_ignored/1]).
+-export([tcp_no_content_length/1, via_maddr_response/1,
+         unknown_encoding_415/1, na_request_headers_ignored/1,
+         provisional_every_minute/1]).
 
 all() ->
-    [{group, wire}, {group, timers}].
+    [{group, wire}, {group, timers}, {group, minute}].
 
 groups() ->
     [{wire, [], [invite_dialog_forming, indialog_requests_follow_dialog,
@@ -72,11 +75,15 @@ groups() ->
      merged_request_482, contact_reachable, reliable_provisional_require,
      unsupported_body_415, cseq_method_mismatch_400, no_max_forwards_served,
      uas_ignores_proxy_require, proxy_route_checks_proxy_require,
-     siprec_require, indialog_require_420, ack_cancel_require_ignored]},
+     siprec_require, indialog_require_420, ack_cancel_require_ignored,
+     tcp_no_content_length, via_maddr_response, unknown_encoding_415,
+     na_request_headers_ignored]},
      %% each waits 64*T1 (32 s)
      {timers, [],
       [no_ack_ends_session, error_response_timer_h, non_invite_timer_j,
-       indialog_timeout_ends_dialog, bye_timeout_ends_dialog]}].
+       indialog_timeout_ends_dialog, bye_timeout_ends_dialog]},
+     %% waits for the 180 resent after a minute (66 s)
+     {minute, [], [provisional_every_minute]}].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -706,6 +713,51 @@ unsupported_body_415(Config) ->
                                    <<"render;handling=optional">>}],
                                  <<"application/x-foo">>))).
 
+%% An INVITE whose SDP carries a Content-Encoding we do not apply (br; nta
+%% itself decodes gzip and deflate) gets 415 with Accept-Encoding listing
+%% what we take, and never reaches the app (8.2.3).
+%% req: R3261-090
+unknown_encoding_415(Config) ->
+    {Port, Sock} = {?config(port, Config), ?config(sock, Config)},
+    Test = self(),
+    ok = chappe_sip:invite(fun(_Req, Res) ->
+        Test ! handler,
+        chappe_sip_res:send(Res, 486)
+    end),
+    Inv = request(<<"INVITE">>, <<"sip:app@127.0.0.1">>,
+                  #{port => port(Sock), body => sdp(),
+                    headers => [{<<"Content-Encoding">>, <<"br">>}]}),
+    send(Sock, Port, Inv),
+    {R, _} = recv(Sock, final, 3000),
+    send(Sock, Port, ack_non2xx(Inv, R)),
+    ?assertEqual(415, status(R)),
+    ?assertEqual(<<"identity">>, hdr(<<"accept-encoding">>, R)),
+    receive handler -> ct:fail(handler_ran) after 300 -> ok end.
+
+%% Header fields not applicable to an INVITE (WWW-Authenticate,
+%% Min-Expires, Server, Retry-After, Unsupported: response or other-method
+%% headers, RFC 3261 20 tables 2 and 3) are ignored: the call is answered
+%% as usual.
+%% req: R3261-418
+na_request_headers_ignored(Config) ->
+    {Port, Sock} = {?config(port, Config), ?config(sock, Config)},
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        {ok, _} = chappe_sip:create_uas(Req, Res, #{local_sdp => sdp()})
+    end),
+    LP = port(Sock),
+    send(Sock, Port, request(<<"INVITE">>, <<"sip:app@127.0.0.1">>,
+                             #{port => LP, body => sdp(),
+                               headers => [{<<"WWW-Authenticate">>,
+                                            <<"Digest realm=\"x\", nonce=\"y\"">>},
+                                           {<<"Min-Expires">>, <<"3600">>},
+                                           {<<"Server">>, <<"misplaced/1.0">>},
+                                           {<<"Retry-After">>, <<"120">>},
+                                           {<<"Unsupported">>, <<"100rel">>}]})),
+    {R, _} = recv(Sock, final, 3000),
+    ?assertEqual(200, status(R)),
+    ?assertMatch(<<"v=0", _/binary>>, body(R)),
+    send(Sock, Port, chappe_sip_core_peer:ack_for(R, #{port => LP})).
+
 %% ---- ACK of our 2xx (13.3.1.4, 15) ----
 
 %% The app hangs up before the caller ACKs its 200: the 200 keeps being
@@ -838,6 +890,32 @@ error_response_timer_h(Config) ->
     Last = lists:last(Busy) - T0,
     ?assert(Last >= 27000),
     ?assert(Last =< 32000 + 1500).
+
+%% The app leaves an INVITE ringing with a 180: the 180 goes out again
+%% every minute so a proxy does not cancel the call (13.3.1.1). nta
+%% resends the last provisional each 60 s (NTATAG_PROGRESS default).
+%% req: R3261-213
+provisional_every_minute(Config) ->
+    {Port, Sock} = {?config(port, Config), ?config(sock, Config)},
+    Test = self(),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        {ok, D} = chappe_sip:create_uas(Req, Res, #{status => 180,
+                                                    owner => Test}),
+        Test ! {dialog, D}
+    end),
+    Inv = request(<<"INVITE">>, <<"sip:app@127.0.0.1">>,
+                  #{port => port(Sock), body => sdp()}),
+    send(Sock, Port, Inv),
+    D = receive {dialog, D0} -> D0 after 3000 -> ct:fail(no_dialog) end,
+    Seen = [{T, B} || {T, B} <- collect(Sock, any, 66000), status(B) =:= 180],
+    ct:log("180 at ~p", [[T - element(1, hd(Seen)) || {T, _} <- Seen]]),
+    ?assert(length(Seen) >= 2),
+    [?assert(I >= 59000 andalso I =< 63000, {interval, I})
+     || I <- intervals([T || {T, _} <- Seen])],
+    Bye = async(fun() -> chappe_sip_dialog:destroy(D) end),
+    {Final, _} = recv(Sock, final, 3000),
+    ok = await(Bye),
+    send(Sock, Port, ack_non2xx(Inv, Final)).
 
 %% ---- non-INVITE server transaction (17.2.2) ----
 
@@ -1016,8 +1094,11 @@ response_to_sent_by(Config) ->
     ?assertEqual(200, status(R)),
     chappe_sip_core_peer:close(Other).
 
-%% chappe listens on TCP on the same port as UDP.
-%% req: R3261-336
+%% chappe listens on TCP on the same port and interface as UDP. The Via
+%% sent-by names the client's own port, where nobody listens: the response
+%% comes back on the connection that carried the request, with a
+%% Content-Length.
+%% req: R3261-336 R3261-358 R3261-363 R3261-374 R3261-440
 tcp_listener(Config) ->
     Port = ?config(port, Config),
     ok = chappe_sip:options(fun(_Req, Res) -> chappe_sip_res:send(Res, 200) end),
@@ -1027,9 +1108,80 @@ tcp_listener(Config) ->
     Via = <<"SIP/2.0/TCP 127.0.0.1:", P/binary, ";branch=", (branch())/binary>>,
     ok = gen_tcp:send(T, request(<<"OPTIONS">>, <<"sip:app@127.0.0.1">>,
                                  #{port => LP, via => Via})),
-    {ok, R} = gen_tcp:recv(T, 0, 3000),
+    R = chappe_sip_core_peer:tcp_recv(T, 3000),
     ?assertEqual(200, status(R)),
+    ?assertEqual(integer_to_binary(byte_size(body(R))),
+                 hdr(<<"content-length">>, R)),
     gen_tcp:close(T).
+
+%% An OPTIONS over TCP without Content-Length cannot be framed: it never
+%% gets a 200 and never reaches the app; the same request with
+%% Content-Length on the next connection is answered.
+%% req: R3261-374
+tcp_no_content_length(Config) ->
+    Port = ?config(port, Config),
+    Test = self(),
+    ok = chappe_sip:options(fun(_Req, Res) ->
+        Test ! handler,
+        chappe_sip_res:send(Res, 200)
+    end),
+    {T1, Got} = tcp_options(Port, true),
+    ct:log("without Content-Length: ~p", [Got]),
+    case Got of
+        {ok, Bin} -> ?assertNotEqual(200, status(Bin));
+        {error, _} -> ok
+    end,
+    receive handler -> ct:fail(handler_ran) after 0 -> ok end,
+    gen_tcp:close(T1),
+    {T2, {ok, R}} = tcp_options(Port, false),
+    ?assertEqual(200, status(R)),
+    gen_tcp:close(T2).
+
+%% an OPTIONS over a new TCP connection, Content-Length stripped or not;
+%% {Socket, what the first read gives within 2 s}
+tcp_options(Port, Strip) ->
+    {ok, T} = gen_tcp:connect({127, 0, 0, 1}, Port, [binary, {active, false}]),
+    {ok, LP} = inet:port(T),
+    Via = <<"SIP/2.0/TCP 127.0.0.1:", (integer_to_binary(LP))/binary,
+            ";branch=", (branch())/binary>>,
+    Req0 = request(<<"OPTIONS">>, <<"sip:app@127.0.0.1">>,
+                   #{port => LP, via => Via}),
+    Req = case Strip of
+              true -> binary:replace(Req0, <<"Content-Length: 0\r\n">>, <<>>);
+              false -> Req0
+          end,
+    ok = gen_tcp:send(T, Req),
+    {T, gen_tcp:recv(T, 0, 2000)}.
+
+%% A Via with maddr: the response goes to the maddr address at the sent-by
+%% port, not to the source of the request (18.2.2). The maddr is a
+%% non-loopback address of this host.
+%% req: R3261-366
+via_maddr_response(Config) ->
+    {Port, Sock} = {?config(port, Config), ?config(sock, Config)},
+    case local_ipv4() of
+        undefined ->
+            {skip, "no non-loopback IPv4 address"};
+        Ip ->
+            ok = chappe_sip:options(fun(_Req, Res) ->
+                chappe_sip_res:send(Res, 200)
+            end),
+            {ok, Far} = gen_udp:open(0, [binary, {active, true}, {ip, Ip}]),
+            {ok, FP} = inet:port(Far),
+            Addr = list_to_binary(inet:ntoa(Ip)),
+            Via = <<"SIP/2.0/UDP 127.0.0.1:", (integer_to_binary(FP))/binary,
+                    ";maddr=", Addr/binary, ";branch=", (branch())/binary>>,
+            send(Sock, Port, request(<<"OPTIONS">>, <<"sip:app@127.0.0.1">>,
+                                     #{port => port(Sock), via => Via})),
+            Got = receive {udp, Far, _, _, B} -> B
+                  after 3000 ->
+                      ct:log("~p", [collect(Sock, any, 200)]),
+                      ct:fail(nothing_at_maddr)
+                  end,
+            ?assertEqual(200, status(Got)),
+            recv_none(Sock, any, 300),
+            gen_udp:close(Far)
+    end.
 
 %% A UDP request close to the largest datagram is parsed and answered.
 %% req: R3261-341
@@ -1252,6 +1404,16 @@ bye_timeout_ends_dialog(Config) ->
 
 
 %% ---- helpers ----
+
+%% a non-loopback, non-link-local IPv4 address of this host, or undefined
+local_ipv4() ->
+    {ok, Ifs} = inet:getifaddrs(),
+    Addrs = [A || {_, Opts} <- Ifs, {addr, {N, M, _, _} = A} <- Opts,
+                  N =/= 127, {N, M} =/= {169, 254}],
+    case Addrs of
+        [A | _] -> A;
+        [] -> undefined
+    end.
 
 %% the m= lines of an SDP body
 mlines(Sdp) ->

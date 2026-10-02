@@ -30,7 +30,9 @@
     unknown_package/1,
     conference_end_terminates/1,
     invite_answer_advertises_focus/1,
-    options_advertises_focus/1
+    options_advertises_focus/1,
+    privacy_from_the_api/1,
+    every_watcher_gets_each_change/1
 ]).
 
 -define(CI, <<"application/conference-info+xml">>).
@@ -46,7 +48,9 @@ all() ->
         unknown_package,
         conference_end_terminates,
         invite_answer_advertises_focus,
-        options_advertises_focus
+        options_advertises_focus,
+        privacy_from_the_api,
+        every_watcher_gets_each_change
     ].
 
 init_per_suite(Config) ->
@@ -268,6 +272,64 @@ options_advertises_focus(Config) ->
     ?assertNotEqual(nomatch, binary:match(hdr(R, contact), <<"isfocus">>)),
     ?assert(lists:member(<<"conference">>, tokens(hdr(R, 'allow-events')))).
 
+%% A participant the app marks private through its own API (no Privacy
+%% header: privacy signalled outside SIP) is shown as AnonymousN at
+%% anonymous.invalid; when it REFERs the focus to someone, the focus dials
+%% out under the conference's identity and the INVITE names it nowhere.
+%% req: R4579-26
+privacy_from_the_api(Config) ->
+    [W, P1, P2] = [?config(K, Config) || K <- [watcher, p1, p2]],
+    Uri = ?config(conf_uri, Config),
+    P1Uri = ua_uri(P1),
+    ok = chappe_sip_test_focus:set_private(P1Uri),
+    {ok, Sub, _} = subscribe(W, Uri, <<"conference">>, []),
+    wait_notifies(W, Sub, 1),
+    {ok, Call, _} = invite(P1, Uri, []),
+    ok = wait_until(
+        fun() -> mentions(W, Sub, <<"@anonymous.invalid">>) end, 15000
+    ),
+    ?assert(mentions(W, Sub, <<"Anonymous">>)),
+    ?assertNot(mentions(W, Sub, P1Uri)),
+    ?assertNot(mentions(W, Sub, <<"p1@">>)),
+    ?assertNot(mentions(W, Sub, <<"P1 Phone">>)),
+    {ok, 200} = ua_call(P1, {refer, Call, <<"<", (ua_uri(P2))/binary, ">">>}),
+    Invites = fun() -> [M || {<<"INVITE">>, M, _} <- ua_call(P2, requests)] end,
+    ok = wait_until(fun() -> Invites() =/= [] end, 15000),
+    [Inv | _] = Invites(),
+    Wire = iolist_to_binary(chappe_sip_msg:encode(Inv)),
+    ct:log("dial-out INVITE:~n~s", [Wire]),
+    {ok, #{uri := FromUri}} = chappe_sip_hdr:name_addr(hdr(Inv, from)),
+    ?assertEqual(Uri, FromUri),
+    ?assertEqual(nomatch, binary:match(Wire, <<"p1@">>)),
+    ?assertEqual(nomatch, binary:match(Wire, <<"P1 Phone">>)).
+
+%% Two watchers with the same view: each change (a join, then the leave)
+%% reaches both, as the same versions with the same users.
+%% req: R4575-30
+every_watcher_gets_each_change(Config) ->
+    [W, Host, P1] = [?config(K, Config) || K <- [watcher, host, p1]],
+    Uri = ?config(conf_uri, Config),
+    {ok, SubW, _} = subscribe(W, Uri, <<"conference">>, []),
+    {ok, SubH, _} = subscribe(Host, Uri, <<"conference">>, []),
+    wait_notifies(W, SubW, 1),
+    wait_notifies(Host, SubH, 1),
+    {ok, C1, _} = invite(P1, Uri, []),
+    P1Uri = ua_uri(P1),
+    [wait_notifies(UA, S, 2) || {UA, S} <- [{W, SubW}, {Host, SubH}]],
+    {ok, 200} = bye(P1, C1),
+    Docs = [wait_notifies(UA, S, 3) || {UA, S} <- [{W, SubW}, {Host, SubH}]],
+    [Seen, Seen] = [
+        [{maps:get(version, info(N)), maps:get(state, info(N)),
+          users_status(N, P1Uri)} || N <- Ns]
+     || Ns <- Docs
+    ],
+    ct:log("each watcher saw ~p", [Seen]),
+    ?assertMatch(
+        [{1, "full", _}, {2, "partial", ["connected"]},
+         {3, "partial", ["disconnected"]}],
+        Seen
+    ).
+
 %% ---- helpers ----
 
 got_bye(UA, Call) ->
@@ -276,6 +338,17 @@ got_bye(UA, Call) ->
      || {<<"BYE">>, M, _} <- ua_call(UA, requests),
         chappe_sip_msg:call_id(M) =:= Call
     ] =/= [].
+
+%% the endpoint statuses of user Uri in a NOTIFY body
+users_status(M, Uri) ->
+    Body = chappe_sip_msg:body(M),
+    case binary:split(Body, <<"entity=\"", Uri/binary, "\"">>) of
+        [_, After] ->
+            Re = "<status>([a-z-]+)</status>",
+            [St || {match, [St]} <- [re:run(After, Re, [{capture, [1], list}])]];
+        [_] ->
+            []
+    end.
 
 notifies(UA, Sub) ->
     [M || {M, _} <- timed_notifies(UA, Sub)].
@@ -449,6 +522,8 @@ ua_handle({subscribe, Uri, Event, Hdrs}, S) ->
     end;
 ua_handle({refresh, Call, Expires}, S) ->
     in_dialog(<<"SUBSCRIBE">>, Call, [{<<"Expires">>, integer_to_binary(Expires)}], S);
+ua_handle({refer, Call, Target}, S) ->
+    in_dialog(<<"REFER">>, Call, [{<<"Refer-To">>, Target}], S);
 ua_handle({bye, Call}, S) ->
     in_dialog(<<"BYE">>, Call, [], S);
 ua_handle({options, Uri}, S) ->

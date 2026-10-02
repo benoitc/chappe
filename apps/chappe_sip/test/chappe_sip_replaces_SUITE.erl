@@ -39,7 +39,8 @@
     uac_early_replaceable/1,
     uac_early_then_confirmed/1,
     supported_on_uas_2xx/1,
-    require_replaces_accepted/1
+    require_replaces_accepted/1,
+    replaces_non_invite_dialog_481/1
 ]).
 
 -define(TAB, chappe_sip_dialog_index).
@@ -52,7 +53,7 @@ all() ->
      removed_after_engine_restart, response_rules, response_terminated_603,
      response_early_not_ours_481, response_live_481, uac_early_replaceable,
      uac_early_then_confirmed, supported_on_uas_2xx,
-     require_replaces_accepted].
+     require_replaces_accepted, replaces_non_invite_dialog_481].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -356,6 +357,56 @@ response_live_481(_Config) ->
     send(Sock, EP, invite(Sock, callid(), <<"lv">>,
                           [{<<"Replaces">>, <<"gone@ct;to-tag=a;from-tag=b">>}])),
     _ = recv_status(Sock, 481).
+
+%% a Replaces naming a dialog a SUBSCRIBE formed, or the subscription an
+%% out-of-dialog REFER formed, names no INVITE dialog: 481 on the wire
+%% req: R3891-05
+replaces_non_invite_dialog_481(_Config) ->
+    {EP, Sock} = setup(),
+    Test = self(),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        Verdict = chappe_sip:replaces_response(Req),
+        Test ! {verdict, Verdict},
+        {reject, Status} = Verdict,
+        chappe_sip_res:send(Res, Status)
+    end),
+    ok = chappe_sip:subscribe(fun(Req, Res) ->
+        {ok, D} = chappe_sip:create_uas(Req, Res, #{expires => 600}),
+        Test ! {subscription, D},
+        receive stop -> ok after 10000 -> ok end
+    end),
+    ok = chappe_sip:refer(fun(Req, Res) ->
+        {ok, Refer} = chappe_sip_refer:accept(Req, Res, #{owner => Test}),
+        Test ! {refer, Refer},
+        receive stop -> ok after 10000 -> ok end
+    end),
+    LP = lport(Sock),
+    Ask = fun(Method, Hdrs) ->
+        Call = callid(),
+        FT = <<"nd", (binary:encode_hex(crypto:strong_rand_bytes(3)))/binary>>,
+        send(Sock, EP, chappe_sip_core_peer:request(
+                         Method, <<"sip:app@127.0.0.1">>,
+                         #{port => LP, call_id => Call, from_tag => FT,
+                           headers => Hdrs})),
+        R200 = recv_status(Sock, 200),
+        {ok, M} = chappe_sip_msg:parse(R200),
+        <<Call/binary, ";to-tag=", (chappe_sip_msg:to_tag(M))/binary,
+          ";from-tag=", FT/binary>>
+    end,
+    Sub = Ask(<<"SUBSCRIBE">>, [{<<"Event">>, <<"conference">>},
+                                {<<"Expires">>, <<"600">>}]),
+    receive {subscription, _} -> ok after 5000 -> ct:fail(no_subscription) end,
+    Ref = Ask(<<"REFER">>, [{<<"Refer-To">>, <<"<sip:carol@127.0.0.1>">>}]),
+    receive {refer, _} -> ok after 5000 -> ct:fail(no_refer) end,
+    {Notify, NSrc} = recv(Sock, <<"NOTIFY">>),
+    send(Sock, NSrc, resp(Notify, 200, <<"OK">>, <<"x">>, [], <<>>)),
+    [begin
+         send(Sock, EP, invite(Sock, callid(), <<"nd">>, [{<<"Replaces">>, V}])),
+         receive {verdict, Verdict} -> ?assertEqual({reject, 481}, Verdict)
+         after 5000 -> ct:fail(no_verdict)
+         end,
+         _ = recv_status(Sock, 481)
+     end || V <- [Sub, Ref]].
 
 %% our own early (ringing) dialog is indexed and replaceable, early-only or
 %% not; destroying it sends a CANCEL carrying the given headers

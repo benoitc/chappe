@@ -32,7 +32,8 @@
     out_of_dialog_refresh_and_expiry/1,
     send_in_dialog/1,
     send_out_of_dialog/1,
-    send_refer_sub_false_and_reject/1
+    send_refer_sub_false_and_reject/1,
+    tel_refer_sip_status_lines/1
 ]).
 
 all() ->
@@ -54,7 +55,8 @@ all() ->
         out_of_dialog_refresh_and_expiry,
         send_in_dialog,
         send_out_of_dialog,
-        send_refer_sub_false_and_reject
+        send_refer_sub_false_and_reject,
+        tel_refer_sip_status_lines
     ].
 
 init_per_suite(Config) ->
@@ -193,6 +195,23 @@ refer_to_scheme_416(_Config) ->
     ?assertEqual(200, status(R200)),
     ?assertMatch(#{scheme := <<"tel">>}, chappe_sip_refer:target(Refer)),
     {_, _} = notify_ok(S),
+    hangup(S, D).
+
+%% A REFER to a tel: URI still reports in SIP status lines: the first
+%% NOTIFY's sipfrag is SIP/2.0 100 Trying, the final one SIP/2.0 200 OK.
+%% req: R3515-21
+tel_refer_sip_status_lines(_Config) ->
+    {S, D} = call(),
+    {R200, {ok, Refer}} =
+        refer_in(S, D, 2, [{<<"Refer-To">>, <<"<tel:+15551234>">>}]),
+    ?assertEqual(200, status(R200)),
+    ?assertMatch(#{scheme := <<"tel">>}, chappe_sip_refer:target(Refer)),
+    {N1, _} = notify_ok(S),
+    ?assertEqual(?FRAG_CT, hdr(N1, <<"content-type">>)),
+    ?assertMatch(<<"SIP/2.0 100 ", _/binary>>, body(N1)),
+    ok = chappe_sip_refer:final(Refer, 200),
+    {N2, _} = notify_ok(S),
+    ?assertEqual(<<"SIP/2.0 200 OK\r\n">>, body(N2)),
     hangup(S, D).
 
 %% a REFER carries at most one Referred-By; the one it carries is kept for

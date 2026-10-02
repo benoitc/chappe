@@ -44,6 +44,10 @@
 -export([early_update_from_callee/1, early_bye_from_callee/1,
          early_update_from_caller/1, early_forks_ended/1,
          early_ended_by_final/1]).
+-export([large_request_over_tcp/1, tcp_response_paths/1,
+         request_uri_params_kept/1, invalid_uri_not_sent/1,
+         uac_ignores_na_headers/1, redirect_not_cached/1,
+         service_unavailable_no_retry/1, session_privacy_sdp_clear/1]).
 
 all() ->
     [{group, wire}, {group, timers}].
@@ -69,7 +73,11 @@ groups() ->
                  create_uac_timeout_cancels,
                  early_update_from_callee, early_bye_from_callee,
                  early_update_from_caller, early_forks_ended,
-                 early_ended_by_final]},
+                 early_ended_by_final, large_request_over_tcp,
+                 tcp_response_paths, request_uri_params_kept,
+                 invalid_uri_not_sent, uac_ignores_na_headers,
+                 redirect_not_cached, service_unavailable_no_retry,
+                 session_privacy_sdp_clear]},
      %% each waits 64*T1 (32 s)
      {timers, [], [invite_timeout, uac_timer_d, uac_timer_f_proceeding]}].
 
@@ -110,7 +118,7 @@ end_per_testcase(_Case, Config) ->
 %% req: R3261-022 R3261-023 R3261-461 R3261-024 R3261-025 R3261-138
 %% req: R3261-179 R3261-180 R3261-181 R3261-027 R3261-028 R3261-031
 %% req: R3261-457 R3261-409 R3261-186 R3261-032 R3261-344 R3261-263
-%% req: R3261-297 R3261-006 R3261-392 R3261-421 R3261-411
+%% req: R3261-297 R3261-006 R3261-392 R3261-421 R3261-411 R3261-384
 request_construction(Config) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
     Uri = callee(Sock),
@@ -145,6 +153,12 @@ request_construction(Config) ->
          [?assertMatch(<<"<", _/binary>>, hdr(H, R))
           || H <- [<<"from">>, <<"to">>, <<"contact">>], hdr(H, R) =/= undefined]
      end || R <- Sent],
+    %% no uri-parameter name twice in any URI we generated (19.1.1)
+    [?assertEqual([], chappe_sip_core_peer:repeated_uri_params(U), U)
+     || R <- Sent,
+        U <- [uri(R) | [addr_uri(hdr(H, R))
+                        || H <- [<<"from">>, <<"to">>, <<"contact">>],
+                           hdr(H, R) =/= undefined]]],
     ?assertEqual(3, length(lists:usort([from_tag(R) || R <- Sent]))),
     [?assert(byte_size(from_tag(R)) >= 8) || R <- Sent],
     ?assertEqual(3, length(lists:usort([via_branch(top_via(R)) || R <- Sent]))),
@@ -565,7 +579,7 @@ non_invite_retransmits(Config) ->
 %% (18.1.1, 18.1.2, 20). A response whose Content-Length runs past the
 %% datagram is taken by nta (RFC 3261 18.3 wants it dropped): not
 %% checked here, see the report.
-%% req: R3261-354 R3261-416 R3261-349
+%% req: R3261-354 R3261-416 R3261-349 R3261-350
 response_matching(Config) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
     {ok, Ref} = chappe_sip:request(callee(Sock), #{method => <<"OPTIONS">>,
@@ -789,12 +803,16 @@ reinvite_provisional_then_2xx(Config) ->
 
 %% A 200 whose first Record-Route lacks lr (a strict router): our ACK and
 %% BYE put that route in the Request-URI, the rest of the route set in
-%% Route and the remote target last (12.2.1.1).
-%% req: R3261-163 R3261-164 R3261-165
+%% Route and the remote target last (12.2.1.1). The strict router listens
+%% on its own socket: the ACK and the BYE are sent to it, the address the
+%% Request-URI resolves to (8.1.2), and never to the remote target.
+%% req: R3261-163 R3261-164 R3261-165 R3261-034
 strict_route_set(Config) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
+    Router = open(),
     LP = integer_to_binary(port(Sock)),
-    Strict = <<"sip:127.0.0.1:", LP/binary, ";x-a=1">>,
+    RP = integer_to_binary(port(Router)),
+    Strict = <<"sip:127.0.0.1:", RP/binary, ";x-a=1">>,
     Loose = <<"<sip:127.0.0.1:", LP/binary, ";lr;x-b=2>">>,
     Target = <<"sip:callee@127.0.0.1:", LP/binary, ";x-c=1">>,
     {ok, Ref} = chappe_sip_uac:start(callee(Sock), #{local_sdp => sdp(),
@@ -806,11 +824,14 @@ strict_route_set(Config) ->
                     {<<"Record-Route">>, <<"<", Strict/binary, ">">>},
                     {<<"Contact">>, <<"<", Target/binary, ">">>}]})),
     {ok, D} = chappe_sip_uac:await(Ref, 3000),
-    {Ack, _} = recv(Sock, {method, <<"ACK">>}, 3000),
+    {Ack, _} = recv(Router, {method, <<"ACK">>}, 3000),
     Bye = async(fun() -> chappe_sip_dialog:destroy(D) end),
-    {ByeReq, _} = recv(Sock, {method, <<"BYE">>}, 3000),
-    send(Sock, EP, response(ByeReq, 200, #{})),
+    {ByeReq, _} = recv(Router, {method, <<"BYE">>}, 3000),
+    send(Router, EP, response(ByeReq, 200, #{})),
     ok = await(Bye),
+    recv_none(Sock, fun(B) -> lists:member(method(B), [<<"ACK">>, <<"BYE">>])
+                    end, 300),
+    chappe_sip_core_peer:close(Router),
     [begin
          ?assertEqual(Strict, uri(R)),
          ?assertEqual([Loose, <<"<", Target/binary, ">">>],
@@ -869,7 +890,7 @@ uac_digest_401(Config) ->
 
 %% The ACK of the 2xx to an authenticated INVITE carries the INVITE's
 %% credentials (13.2.2.4).
-%% req: R3261-202
+%% req: R3261-202 R3261-486
 ack_carries_credentials(Config) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
     {ok, Ref} = chappe_sip_uac:start(callee(Sock), auth_opts(#{})),
@@ -888,7 +909,7 @@ ack_carries_credentials(Config) ->
 %% A proxy challenges (407), then the callee (401): the third INVITE
 %% answers both, a Proxy-Authorization for the proxy realm and an
 %% Authorization for the callee realm (22.3).
-%% req: R3261-22.3-1 R3261-22.3-2 R3261-22.3-3
+%% req: R3261-22.3-1 R3261-22.3-2 R3261-22.3-3 R3261-486
 auth_407_then_401(Config) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
     {ok, Ref} = chappe_sip_uac:start(callee(Sock), auth_opts(#{})),
@@ -979,8 +1000,9 @@ auth_nonce_count(Config) ->
     hang_up(Sock, EP, D).
 
 %% A 401 naming two realms: one Authorization per realm, each with the
-%% credentials configured for it (RFC 8760 2.4, RFC 3261 22.3).
-%% req: R8760-04 R3261-22.3-2 R3261-22.3-3
+%% credentials configured for it (RFC 8760 2.4, RFC 3261 22.3), each on its
+%% own header line, never joined with a comma (20.7).
+%% req: R8760-04 R3261-22.3-2 R3261-22.3-3 R3261-429
 auth_two_realms(Config) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
     Auth = [#{realm => <<"a">>, user => <<"alice">>, pass => <<"secret">>},
@@ -997,6 +1019,11 @@ auth_two_realms(Config) ->
     {Inv2, _} = recv(Sock, {method, <<"INVITE">>}, 3000),
     Creds = hdrs(<<"authorization">>, Inv2),
     ?assertEqual(2, length(Creds)),
+    Lines = [L || L <- binary:split(Inv2, <<"\r\n">>, [global]),
+                  re:run(L, "^Authorization\\s*:", [caseless]) =/= nomatch],
+    ct:log("Authorization lines:~n~p", [Lines]),
+    ?assertEqual(2, length(Lines)),
+    [?assertEqual(1, length(binary:matches(L, <<"Digest ">>))) || L <- Lines],
     [ok = check_value(V, Chal, User, Pass)
      || {V, {Chal, User, Pass}} <- lists:zip(
             Creds, [{ChalA, <<"alice">>, <<"secret">>},
@@ -1325,6 +1352,187 @@ early_ended_by_final(Config) ->
                                   #{body => sdp()})),
     {R, _} = recv(Sock, {status, 481, <<"UPDATE">>}, 3000),
     ?assertEqual(481, status(R)).
+
+%% ---- transport choice and response paths (18.1.1, 18.1.2, 18.3) ----
+
+%% A request over 1300 bytes to a peer listening on UDP and TCP at the
+%% same port (path MTU unknown) goes over TCP, never as a datagram, with
+%% SIP/2.0/TCP in its top Via and a Content-Length; the 200 the peer sends
+%% back on that connection completes it.
+%% req: R3261-338 R3261-339 R3261-340 R3261-346 R3261-374 R3261-440
+large_request_over_tcp(Config) ->
+    Sock = ?config(sock, Config),
+    L = chappe_sip_core_peer:tcp_listen(port(Sock)),
+    Pad = binary:copy(<<"p">>, 1400),
+    {ok, Ref} = chappe_sip:request(callee(Sock), #{
+        method => <<"OPTIONS">>, notify => self(),
+        headers => [{<<"X-Pad">>, Pad}]}),
+    {ok, C} = gen_tcp:accept(L, 3000),
+    Req = chappe_sip_core_peer:tcp_recv(C, 3000),
+    ct:log("over TCP (~p bytes):~n~s", [byte_size(Req), Req]),
+    ?assert(byte_size(Req) > 1300),
+    ?assertEqual(<<"OPTIONS">>, method(Req)),
+    ?assertMatch(<<"SIP/2.0/TCP ", _/binary>>, top_via(Req)),
+    ?assertEqual(Pad, hdr(<<"x-pad">>, Req)),
+    ?assertEqual(integer_to_binary(byte_size(body(Req))),
+                 hdr(<<"content-length">>, Req)),
+    ok = gen_tcp:send(C, response(Req, 200, #{to_tag => tag()})),
+    {ok, Resp} = chappe_sip_uac:await_response(Ref, 3000),
+    ?assertEqual(200, chappe_sip_msg:status(Resp)),
+    recv_none(Sock, {method, <<"OPTIONS">>}, 500),
+    gen_tcp:close(C),
+    gen_tcp:close(L).
+
+%% Over transport=tcp the peer answers on the connection that carried the
+%% request; for a second request it closes that connection, connects to
+%% the Via sent-by (our TCP listener at the UDP port, the RFC 3263 server
+%% address of our Contact) and answers there: both reach their
+%% transaction. Each request carries Content-Length.
+%% req: R3261-346 R3261-347 R3261-348 R3261-374 R3261-440
+tcp_response_paths(Config) ->
+    {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
+    L = chappe_sip_core_peer:tcp_listen(0),
+    {ok, TP} = inet:port(L),
+    Uri = <<"sip:callee@127.0.0.1:", (integer_to_binary(TP))/binary,
+            ";transport=tcp">>,
+    {ok, Ref1} = chappe_sip:request(Uri, #{method => <<"OPTIONS">>,
+                                           notify => self()}),
+    {ok, C} = gen_tcp:accept(L, 3000),
+    Req1 = chappe_sip_core_peer:tcp_recv(C, 3000),
+    ?assertMatch(<<"SIP/2.0/TCP ", _/binary>>, top_via(Req1)),
+    ?assertEqual(<<"0">>, hdr(<<"content-length">>, Req1)),
+    ok = gen_tcp:send(C, response(Req1, 200, #{to_tag => tag()})),
+    {ok, R1} = chappe_sip_uac:await_response(Ref1, 3000),
+    ?assertEqual(200, chappe_sip_msg:status(R1)),
+    {ok, Ref2} = chappe_sip:request(Uri, #{method => <<"OPTIONS">>,
+                                           notify => self()}),
+    Req2 = chappe_sip_core_peer:tcp_recv(C, 3000),
+    ok = gen_tcp:close(C),
+    Via = top_via(Req2),
+    ct:log("second request Via: ~s", [Via]),
+    {match, [Host, SentBy]} =
+        re:run(Via, "^SIP/2.0/TCP ([^:;]+):([0-9]+)",
+               [{capture, all_but_first, list}]),
+    ?assertEqual(EP, list_to_integer(SentBy)),
+    {ok, C2} = gen_tcp:connect(Host, list_to_integer(SentBy),
+                               [binary, {active, false}], 3000),
+    ok = gen_tcp:send(C2, response(Req2, 200, #{to_tag => tag()})),
+    {ok, R2} = chappe_sip_uac:await_response(Ref2, 3000),
+    ?assertEqual(200, chappe_sip_msg:status(R2)),
+    gen_tcp:close(C2),
+    gen_tcp:close(L),
+    _ = Sock.
+
+%% ---- Request-URI construction (8.1.1.1, 19.1.1) ----
+
+%% The transport, maddr, ttl and user parameters of the target URI, and an
+%% unknown one, are all in the Request-URI as given.
+%% req: R3261-398 R3261-401
+request_uri_params_kept(Config) ->
+    {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
+    Uri = <<"sip:b@127.0.0.1:", (integer_to_binary(port(Sock)))/binary,
+            ";transport=udp;maddr=127.0.0.1;ttl=1;user=phone;x-foo=bar">>,
+    {ok, Ref} = chappe_sip:request(Uri, #{method => <<"OPTIONS">>,
+                                          notify => self()}),
+    {Opt, _} = recv(Sock, {method, <<"OPTIONS">>}, 3000),
+    [Line | _] = binary:split(Opt, <<"\r\n">>),
+    ?assertEqual(<<"OPTIONS ", Uri/binary, " SIP/2.0">>, Line),
+    send(Sock, EP, response(Opt, 200, #{to_tag => tag()})),
+    {ok, _} = chappe_sip_uac:await_response(Ref, 3000).
+
+%% A target that cannot make a valid Request-URI (no host) is refused
+%% locally: an error for the app, nothing on the wire.
+%% req: R3261-407
+invalid_uri_not_sent(Config) ->
+    Sock = ?config(sock, Config),
+    R = chappe_sip:request(<<"sip:b@">>, #{method => <<"OPTIONS">>,
+                                           notify => self()}),
+    ct:log("~p", [R]),
+    Result = case R of
+                 {error, _} -> R;
+                 {ok, Ref} -> chappe_sip_uac:await_response(Ref, 3000)
+             end,
+    ct:log("result: ~p", [Result]),
+    ?assertMatch({error, _}, Result),
+    recv_none(Sock, any, 1000).
+
+%% ---- not-applicable headers, redirects, 503 (8.1.3, 20, 21.5.4) ----
+
+%% A 200 carrying Route, Max-Forwards and Proxy-Require (not applicable
+%% to a response) still sets up the call: the UAC ignores them. This is the
+%% UAC half of R3261-419, a deviation row: nta puts Record-Route in its
+%% stateless 400s.
+uac_ignores_na_headers(Config) ->
+    {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
+    {ok, Ref} = chappe_sip_uac:start(callee(Sock), #{local_sdp => sdp(),
+                                                     notify => self()}),
+    {Inv, _} = recv(Sock, {method, <<"INVITE">>}, 3000),
+    send(Sock, EP, response(Inv, 200, #{
+        to_tag => tag(), body => sdp(),
+        headers => [{<<"Route">>, <<"<sip:nowhere.invalid;lr>">>},
+                    {<<"Max-Forwards">>, <<"0">>},
+                    {<<"Proxy-Require">>, <<"x-unknown">>},
+                    {<<"Contact">>, <<"<", (callee(Sock))/binary, ">">>}]})),
+    {ok, D} = chappe_sip_uac:await(Ref, 3000),
+    {Ack, _} = recv(Sock, {method, <<"ACK">>}, 3000),
+    ?assertEqual([], hdrs(<<"route">>, Ack)),
+    hang_up(Sock, EP, D).
+
+%% A 302 Contact without an expiration is used for that call only: the
+%% next call to the original URI goes to it, not to the old Contact.
+%% req: R3261-478
+redirect_not_cached(Config) ->
+    {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
+    Moved = <<"sip:moved@127.0.0.1:", (integer_to_binary(port(Sock)))/binary>>,
+    Opts = #{local_sdp => sdp(), follow_redirects => true, notify => self()},
+    {ok, Ref1} = chappe_sip_uac:start(callee(Sock), Opts),
+    {Inv1, _} = recv(Sock, {method, <<"INVITE">>}, 3000),
+    send(Sock, EP, response(Inv1, 302, #{
+        to_tag => tag(),
+        headers => [{<<"Contact">>, <<"<", Moved/binary, ">">>}]})),
+    {Inv2, _} = recv(Sock, {method, <<"INVITE">>}, 3000),
+    ?assertEqual(Moved, uri(Inv2)),
+    D1 = answer(Sock, EP, Inv2, Ref1),
+    hang_up(Sock, EP, D1),
+    {ok, Ref2} = chappe_sip_uac:start(callee(Sock), Opts),
+    {Inv3, _} = recv(Sock, {method, <<"INVITE">>}, 3000),
+    ?assertEqual(callee(Sock), uri(Inv3)),
+    D2 = answer(Sock, EP, Inv3, Ref2),
+    hang_up(Sock, EP, D2).
+
+%% A 503 without Retry-After is a failure like a 500: the app gets the
+%% 503 and the request is not sent again.
+%% req: R3261-509
+service_unavailable_no_retry(Config) ->
+    {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
+    {ok, Ref} = chappe_sip_uac:start(callee(Sock), #{local_sdp => sdp(),
+                                                     notify => self()}),
+    {Inv, _} = recv(Sock, {method, <<"INVITE">>}, 3000),
+    send(Sock, EP, response(Inv, 503, #{to_tag => tag()})),
+    ?assertMatch({error, #chappe_sip_error{status = 503}},
+                 chappe_sip_uac:await(Ref, 3000)),
+    {_, _} = recv(Sock, {method, <<"ACK">>}, 3000),
+    recv_none(Sock, {method, <<"INVITE">>}, 2000).
+
+%% A call asking for session privacy (Privacy: session) still carries its
+%% SDP in the clear: application/sdp, a body that starts v=0 (RFC 3323
+%% 4.2).
+%% req: R3323-06
+session_privacy_sdp_clear(Config) ->
+    {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
+    Call = async(fun() ->
+        chappe_sip:create_uac(callee(Sock), #{
+            local_sdp => sdp(), timeout => 5000,
+            headers => [{<<"Privacy">>, <<"session">>}]})
+    end),
+    {Inv, _} = recv(Sock, {method, <<"INVITE">>}, 3000),
+    ?assertEqual(<<"session">>, hdr(<<"privacy">>, Inv)),
+    ?assertEqual(<<"application/sdp">>, hdr(<<"content-type">>, Inv)),
+    ?assertEqual(undefined, hdr(<<"content-encoding">>, Inv)),
+    ?assertEqual(sdp(), body(Inv)),
+    ?assertMatch(<<"v=0\r\n", _/binary>>, body(Inv)),
+    send(Sock, EP, response(Inv, 486, #{to_tag => tag()})),
+    ?assertMatch({error, #chappe_sip_error{status = 486}}, await(Call)).
 
 %% the early dialog handle the next tagged provisional formed
 early_dialog(Ref) ->
