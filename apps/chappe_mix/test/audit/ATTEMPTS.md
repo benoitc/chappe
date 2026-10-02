@@ -390,3 +390,25 @@ order held at load 4.8 too):
   address on every packet. Next to try, each against `capacity`
   interleaved: a connected socket per leg (`gen_udp:connect/3`, then
   `send/2`), and the `socket` module's `sendto` instead of the inet driver.
+
+## The send path: connected sockets, the socket backend
+
+- E1, connect each leg's socket to its far end on the first send and send
+  with `gen_udp:send/2`: the scheduler 15% less busy at 200 conferences.
+  Not kept: a connected UDP socket makes the kernel drop packets from any
+  other address, so the leg could no longer move its latch to a far end
+  that changes address (`far_end_wins_the_latch`, RFC 4961). Keeping it
+  would need a reconnect when the source moves, and a way to see a packet
+  from the new address in the first place.
+- E2, `{inet_backend, socket}` on the leg sockets: no change (0.68 to 0.73
+  against 0.68 to 0.71). E3, the same plus `socket:sendto/3` on the socket
+  under it, skipping the `gen_udp` wrapper: no better (0.69, 0.77). The
+  `socket` NIF costs what the inet driver costs here.
+- Capacity ramps were dropped for this comparison: on a box whose load
+  spikes, one late tick ends a ramp at any step. Holding a fixed number of
+  conferences and reading the scheduler gave launches within 0.03 of each
+  other.
+- Where that leaves the 500 threshold: no mix and the best send path
+  together project to about 450 on one scheduler. Reaching 500 needs a
+  change in shape (fewer packets or system calls per tick), or the
+  threshold read per core over several schedulers.

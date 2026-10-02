@@ -450,3 +450,25 @@ processes of the no-math build over 5 s (`jitter capacity 300 20`, load
 | receiving: RTP parse, latch, jitter buffer, RTCP statistics | about 15%, spread |
 
 The next lever is the send path, not the mix.
+
+### 2026-10-02: the send path
+
+Three changes to how a leg sends, each a scratch build of `0cd3bb2` with
+that one change, against the current mixer and the no-math build above.
+A ramp proved too fragile on this box (one load spike ends it early: a
+connected-socket ramp stopped at 10 conferences), so every build was held
+at 200 conferences for 10 s and the mixer's scheduler read (`capacity 200
+10 200`, host, `+S 1`). Every launch below: load 2.22 to 3.20, no tick
+late except where noted, every packet sent and received.
+
+| build | launches | scheduler busy at 200 | ceiling if it scales |
+| --- | ---: | --- | ---: |
+| current mixer, `gen_udp:send/4` | 6 | 0.68 to 0.71 | about 290 |
+| E1: socket connected to the far end, `gen_udp:send/2` | 6 | 0.58 to 0.60 | about 340 |
+| E2: `gen_udp` with `{inet_backend, socket}` | 5 | 0.68 to 0.73 | about 280 |
+| E3: E2, sending with `socket:sendto/3` directly | 2 | 0.69, 0.77 (2 late ticks, load 3.1) | about 270 |
+| no mixing math (from the section above) | 4 | 0.44 to 0.51 | about 420 |
+
+Only E1 helps, by about 15%. None of them reaches the 500 threshold,
+which stays missed. E3 has two launches only: the box stayed above the
+limit for over 40 minutes after them and the session was stopped.
