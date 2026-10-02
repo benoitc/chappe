@@ -39,6 +39,7 @@
     mute/3,
     direction/3,
     relate/4,
+    events/2,
     legs/1,
     stats/1
 ]).
@@ -66,6 +67,11 @@
 %% base64 (RFC 7022). ssrc_draw: a fun that draws a candidate SSRC,
 %% default a cryptographic random; a candidate already in use in the
 %% conference is drawn again. Set it in tests to script the draws.
+%% events: a process that gets `{chappe_mix, Conf, {talking, Leg, true |
+%% false}}' when a leg starts or stops talking (off by default, and then
+%% the levels are not computed at all); talk_threshold (dBFS RMS over a
+%% frame, default -40), talk_start_ms (default 60) and talk_stop_ms
+%% (default 300) set the detection.
 %% tick_ceiling (arm the tick at the millisecond at or after it is due,
 %% so it never fires early) and prefill_shrink (take back a jitter-buffer
 %% prefill that grew, after 10 s without an underrun) are off by default
@@ -75,6 +81,10 @@
     tick_ceiling => boolean(),
     prefill_shrink => boolean(),
     trace => pid(),
+    events => pid(),
+    talk_threshold => number(),
+    talk_start_ms => pos_integer(),
+    talk_stop_ms => pos_integer(),
     ip => inet:ip_address(),
     law => chappe_mix_g711:law(),
     depth => pos_integer(),
@@ -182,6 +192,11 @@ direction(Conf, Leg, Dir) when
     Dir =:= sendrecv; Dir =:= sendonly; Dir =:= recvonly; Dir =:= inactive
 ->
     gen_server:call(Conf, {direction, Leg, Dir}).
+
+%% Send talker events to Pid from now on (see conf_opts()), or to nobody.
+-spec events(conf(), pid() | undefined) -> ok.
+events(Conf, Pid) when is_pid(Pid); Pid =:= undefined ->
+    gen_server:call(Conf, {events, Pid}).
 
 %% Whether Listener hears Speaker. nohear takes Speaker's audio out of
 %% what Listener hears, its SSRC out of Listener's CSRC lists and its

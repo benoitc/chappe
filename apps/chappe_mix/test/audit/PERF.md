@@ -18,16 +18,16 @@ missed here, never redefined after the numbers arrive.
 | Mix compute per tick, 4 / 64 legs (`mix_cost`), set 2026-10-02 | <= 10 us / <= 200 us | n/a | 19.8 / 331.9 us | missed |
 | Capacity as above, set 2026-10-02 | >= 500 conferences (2000 legs) | n/a | 275 | missed |
 | Mixed output after a change to the mix | byte for byte the same as before it for the same input | n/a | the same, 500 seeded rooms of 1 to 64 legs | met |
-| Framing, 30 ms sender, set 2026-10-03 | its tone present in every 200 ms judging window at each listener, and no run of 80 or more silent samples (10 ms) inside any 20 ms frame heard once the room has settled | n/a | not measured yet | open |
-| Framing, 10 ms sender, set 2026-10-03 | the same as the 30 ms row, and no jitter-buffer trim (`dropped` 0) on its leg over 60 s | n/a | not measured yet | open |
+| Framing, 30 ms sender, set 2026-10-03 | its tone present in every 200 ms judging window at each listener, and no run of 80 or more silent samples (10 ms) inside any 20 ms frame heard once the room has settled | n/a | 1 frame of 3004 (and of 3008) with a 10 ms run, every window held; one launch, load 3.2 to 4.2 | missed |
+| Framing, 10 ms sender, set 2026-10-03 | the same as the 30 ms row, and no jitter-buffer trim (`dropped` 0) on its leg over 60 s | n/a | not measured on a quiet box (60 s) | open |
 | Limiter, distortion, set 2026-10-03 | 8 talkers at -6 dBFS each (distinct tones): THD+N at a receiver <= -26 dB (5%); the hard clip it replaces is measured first, as the baseline | n/a | -10.67 dB (hard clip -10.19 dB) | missed |
-| Limiter, cost, set 2026-10-03 | `mix_cost` at 4 and 64 legs rises by no more than 10% | n/a | not measured yet | open |
-| Tick timer, set 2026-10-03 | ticks that fire more than 100 us early: none at p99 (under 1% of traced ticks), in the `jitter idle` and `jitter capacity` arms, with p99 lateness inside the tick jitter row | n/a | not measured yet | open |
-| Prefill, set 2026-10-03 | `latency` arm: p99 within one frame (20 ms) of p50 in 5 of 5 launches; `loss` arm: the underrun count does not rise | n/a | not measured yet | open |
-| DTMF forwarding (RFC 4733), set 2026-10-03 | a forwarded event keeps its event code, duration and E bit, and leaves within one tick (20 ms) of arriving | n/a | not measured yet | open |
-| Per-pair relations, cost, set 2026-10-03 | `mix_cost` at 4 and 64 legs with no relation set rises by no more than 5%; the cost of each exclusion is measured and recorded | n/a | not measured yet | open |
-| Talker events, latency, set 2026-10-03 | `{talking, Leg, true}` within 100 ms of the first loud frame entering the mix (60 ms hysteresis plus up to two ticks), `false` within 340 ms of the last one (300 ms plus two ticks), at the defaults | n/a | not measured yet | open |
-| Talker events, cost, set 2026-10-03 | `mix_cost` at 4 and 64 legs with a subscriber set rises by no more than 5% | n/a | not measured yet | open |
+| Limiter, cost, set 2026-10-03 | `mix_cost` at 4 and 64 legs rises by no more than 10% | n/a | not measured on a quiet box | open |
+| Tick timer, set 2026-10-03 | ticks that fire more than 100 us early: none at p99 (under 1% of traced ticks), in the `jitter idle` and `jitter capacity` arms, with p99 lateness inside the tick jitter row | n/a | not measured on a quiet box; the ceiling is opt-in (`tick_ceiling`) | open |
+| Prefill, set 2026-10-03 | `latency` arm: p99 within one frame (20 ms) of p50 in 5 of 5 launches; `loss` arm: the underrun count does not rise | n/a | not measured on a quiet box; the shrink is opt-in (`prefill_shrink`) | open |
+| DTMF forwarding (RFC 4733), set 2026-10-03 | a forwarded event keeps its event code, duration and E bit, and leaves within one tick (20 ms) of arriving | n/a | not measured on a quiet box (0.52 ms at most at load 30, void) | open |
+| Per-pair relations, cost, set 2026-10-03 | `mix_cost` at 4 and 64 legs with no relation set rises by no more than 5%; the cost of each exclusion is measured and recorded | n/a | not measured on a quiet box | open |
+| Talker events, latency, set 2026-10-03 | `{talking, Leg, true}` within 100 ms of the first loud frame entering the mix (60 ms hysteresis plus up to two ticks), `false` within 340 ms of the last one (300 ms plus two ticks), at the defaults | n/a | not measured on a quiet box (58 / 299 ms at load 6, void) | open |
+| Talker events, cost, set 2026-10-03 | `mix_cost` at 4 and 64 legs with a subscriber set rises by no more than 5% | n/a | not measured on a quiet box | open |
 
 The numbers in the table are the quiet-box ones from "2026-10-01: native
 reference" below, minimum of the runs unless that section says otherwise.
@@ -547,3 +547,51 @@ source) needs media the mixer injects. With input-only legs (Part B) the
 room carries media of its own, so the row stays `platform` and is planned
 there. The new RFC 4733 and RFC 3605 rows are `platform`: the demo flows
 do not exercise them.
+
+### 2026-10-03: Step 3, what a loaded box let through
+
+The box stayed above the 3.5 limit for most of the session (load 4 to 30
+from other work; the arms refuse above it and none was forced), from
+00:13 to 03:50. One arm launch got through. The A/B runs for the timer
+and the prefill (`jitter idle`, `jitter capacity` against the ceiling;
+`latency`, `loss` against the shrink, 5 interleaved launches each), the
+`mix_cost` and `capacity` runs for the limiter, relations and talker
+events, and the 10 ms framing run were queued and never started. Their
+rows stay open, never redefined. The builds and the scripts that queue
+them are noted in `ATTEMPTS.md`.
+
+Framing, 30 ms sender (a scratch run of the `chappe_mix_rfc_SUITE` room
+for 60 s: a 1100 Hz sender of 240-octet packets, two silent listeners;
+load 3.16 at the start, 4.15 at the end, so the end is over the limit):
+
+| listener | windows with the tone | frames | frames with a 10 ms run of silence | weakest window |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 300 of 300 | 3004 | 1 | -15.67 dBFS |
+| 2 | 300 of 300 | 3008 | 1 | -15.67 dBFS |
+
+The sender's leg counted one underrun (its prefill grew to 2), no drop,
+no loss, nothing late. The one frame is that underrun; the row asks for
+none, so it is missed on this launch.
+
+Limiter distortion (deterministic, so the load does not matter: 50
+frames of the dsp, 8 tones at -6 dBFS, mu-law, THD+N at the ninth leg):
+hard clip -10.19 dB, the limiter -10.67 dB, against -26 dB. Missed; see
+`ATTEMPTS.md` for why no static curve reaches it and what does in a
+model.
+
+Numbers from the suites on the loaded box, void as measurements and
+kept for their order:
+
+- DTMF: 12 event packets forwarded 0.20 to 0.52 ms after they were sent
+  (`dtmf_forwarded`, load about 30).
+- Talker events: talking 58 ms after the tone started, stopped 299 ms
+  after it ended (`talker_events`, load about 6).
+- Timer: with `tick_ceiling`, 0 of 50 traced ticks early
+  (`tick_never_early`, load 5 to 10); truncated, the same case saw every
+  tick early, by 45 to 454 us.
+
+The timer ceiling and the prefill shrink were to be kept only on their
+A/B. Without it they are in the mixer, off by default (`tick_ceiling`,
+`prefill_shrink` conference options), so the queued A/B can run as soon
+as the box is quiet and the decision is a default to flip.
+

@@ -237,7 +237,10 @@ dtmf(_S, _Params) ->
 %% G.711 SDP to send toward the call. Opts: room (required), sdp (the
 %% call's offer: the mixer answers it; without it the mixer offers and you
 %% pass the answer to set_remote/2), owner (owner of a room this join
-%% creates), law (ulaw | alaw, for an offer), mute, name.
+%% creates), law (ulaw | alaw, for an offer), mute, name, direction
+%% (sendrecv | sendonly | recvonly | inactive, seen from the room),
+%% talk_events (true: the caller gets {chappe_sip_media, {talking, Room,
+%% true | false}}).
 -spec conference(session(), #{room := binary(), _ => _}) ->
     {ok, binary()} | {error, term()}.
 conference(#media_session{backend = mix, ref = R, identity = I}, Opts) ->

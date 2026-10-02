@@ -61,7 +61,7 @@ today means anything.
 | `loss` | `[Bursts] [LossyLegs]` (100, 2) | the `latency` arm while the other legs carry a tone with 5% random loss: the probe's latency, tick lateness, and each leg's counted losses (the PERF.md loss row) |
 | `jitter` | `idle [Secs]` or `capacity [Confs] [Secs]` (30; 100, 30) | tick lateness: the mixer's histogram over the window, plus exact values from the trace of one conference |
 | `capacity` | `[Step] [StepSecs] [Max]` (10, 5, 1000) | adds 4-party conferences `Step` at a time until a tick misses its budget; conferences, legs, scheduler utilisation and memory per conference at the last step in budget |
-| `mix_cost` | `[N ...]` (2 4 8 16 32 64), or `nohear K [N ...]` (4 64) | CPU of the compute in one tick for N legs, no sockets; with `nohear K`, every listener also kept from hearing K other legs |
+| `mix_cost` | `[N ...]` (2 4 8 16 32 64), `nohear K [N ...]` or `talk [N ...]` (4 64) | CPU of the compute in one tick for N legs, no sockets; with `nohear K`, every listener also kept from hearing K other legs; with `talk`, every leg's energy taken for talker events |
 | `ref_latency` | `[Rounds] [Bursts]` (5, 50) | chappe_mix and FreeSWITCH `mod_conference` side by side: what each party hears, then interleaved latency rounds |
 | `ref_capacity` | `fs\|chappe [Step] [Bursts] [Max]` (10, 25, 1000) | adds 4-party rooms to one mixer `Step` at a time, judged from outside by a probe room, until the probe or the mixer's CPU says it broke |
 

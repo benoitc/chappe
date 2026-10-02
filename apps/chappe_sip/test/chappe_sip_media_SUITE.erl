@@ -31,7 +31,7 @@
          conference_owner_death/1, conference_leg_owner_death/1,
          conference_sdp/1, conference_ptime/1, conference_dtmf/1,
          conference_rtcp_port/1, conference_directions/1,
-         conference_deaf_relate/1]).
+         conference_deaf_relate/1, conference_talking/1]).
 -export([conference_behind_rtpengine/1]).
 
 -define(LIVE_NODE, chappe_sip_media_live).
@@ -48,7 +48,7 @@ groups() ->
                 conference_owner_death, conference_leg_owner_death,
                 conference_sdp, conference_ptime, conference_dtmf,
                 conference_rtcp_port, conference_directions,
-                conference_deaf_relate]},
+                conference_deaf_relate, conference_talking]},
      {rtpengine_live, [], [conference_behind_rtpengine]}].
 
 init_per_suite(Config) ->
@@ -641,6 +641,49 @@ conference_deaf_relate(_Config) ->
     {ok, _} = chappe_sip_media:conference(S3, room(), #{}),
     ?assertEqual({error, not_same_room}, chappe_sip_media:relate(S1, S3, nohear)),
     [ok = chappe_sip_media:leave(S) || S <- [S1, S2, S3]].
+
+%% A join that asks for talk events gets {talking, Room, true} when its
+%% party starts talking and false once it stops; a join that did not ask
+%% gets nothing.
+conference_talking(_Config) ->
+    Room = room(),
+    Self = self(),
+    Call = spawn_link(fun() ->
+        {P, Port} = peer_start(ulaw),
+        {ok, S} = conf_session(),
+        {ok, Answer} = chappe_sip_media:conference(
+                         S, Room, #{sdp => peer_sdp(Port, ulaw, true),
+                                    talk_events => true}),
+        peer_dst(P, audio_port(Answer)),
+        Self ! {joined, self(), P},
+        talking_relay(Self)
+    end),
+    P = receive {joined, Call, Peer} -> Peer after 2000 -> ct:fail(join) end,
+    {Q, SQ} = joined_peer(Room),
+    peer_talk(Q, true),
+    peer_talk(P, true),
+    ?assertEqual({talking, Room, true}, relayed(Call, 2000)),
+    peer_talk(P, false),
+    ?assertEqual({talking, Room, false}, relayed(Call, 2000)),
+    %% Q talked all along and asked for nothing
+    receive {chappe_sip_media, _} = M -> ct:fail({not_asked, M})
+    after 0 -> ok
+    end,
+    unlink(Call),
+    exit(Call, kill),
+    ok = chappe_sip_media:leave(SQ),
+    peer_stop(Q).
+
+talking_relay(To) ->
+    receive
+        {chappe_sip_media, Event} -> To ! {relayed, self(), Event}
+    end,
+    talking_relay(To).
+
+relayed(Call, Ms) ->
+    receive {relayed, Call, Event} -> Event
+    after Ms -> none
+    end.
 
 %% ---- conference behind rtpengine ----
 

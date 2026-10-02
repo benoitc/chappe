@@ -315,6 +315,9 @@ tears down the rtpengine call and takes the leg out of the room.
   too. `mute/1` and `deaf/1` (with `unmute/1`, `undeaf/1`) take the
   mixing and the sending away on top of that without new SDP, and
   `relate/3` keeps one leg from hearing another of the same room.
+- A join with `talk_events => true` makes the calling process get
+  `{chappe_sip_media, {talking, Room, true | false}}` when its party starts
+  (60 ms over -40 dBFS) or stops (300 ms under it) talking.
 - One leg per session; a second join returns `{error, already_joined}`.
 - A room lives on one node.
 

@@ -28,6 +28,7 @@
     mute_is_a_direction/1,
     relate_pairs/1,
     injected_media/1,
+    talker_events/1,
     probe_calibration/1,
     rtcp_sender_reports/1,
     rtcp_port_pair/1,
@@ -68,6 +69,7 @@ all() ->
         mute_is_a_direction,
         relate_pairs,
         injected_media,
+        talker_events,
         probe_calibration,
         rtcp_sender_reports,
         rtcp_port_pair,
@@ -1011,6 +1013,62 @@ injected_media(_Config) ->
     ?assertEqual(lists:sort([SA, MineB]), lists:sort(CB)),
     ?assertNot(lists:member(SP, CA ++ CB)),
     close(Conf, Eps ++ [P]).
+
+%% Talker events: a subscriber hears {talking, Leg, true} once a leg has
+%% been above the threshold for 60 ms, and false once it has been below
+%% it for 300 ms. A leg that sends only silence never talks; a removed
+%% leg that was talking stops. A conference without a subscriber sends
+%% nothing.
+talker_events(_Config) ->
+    {ok, Quiet} = chappe_mix:start(#{}),
+    {ok, Conf} = chappe_mix:start(#{events => self()}),
+    {Peer, PPort} = chappe_mix_test_peer:start(#{}),
+    {ok, LS, #{port := MS}} = chappe_mix:add_leg(Conf, #{remote => {?LO, PPort}}),
+    ok = chappe_mix_test_peer:set(Peer, dst, {?LO, MS}),
+    {ok, LA, #{port := MA}} = chappe_mix:add_leg(Conf, #{}),
+    {ok, _, #{port := MQ}} = chappe_mix:add_leg(Quiet, #{}),
+    T0 = erlang:monotonic_time(millisecond),
+    {A, _} = chappe_mix_test_tone:endpoint(#{freq => 1100, dst => {?LO, MA}}),
+    {Q, _} = chappe_mix_test_tone:endpoint(#{freq => 1100, dst => {?LO, MQ}}),
+    On = talk_event(Conf, 2000),
+    T1 = erlang:monotonic_time(millisecond),
+    ?assertEqual({LA, true}, On),
+    %% the tone keeps going: no event while it does
+    ?assertEqual(none, talk_event(Conf, 500)),
+    chappe_mix_test_tone:stop(A),
+    T2 = erlang:monotonic_time(millisecond),
+    Off = talk_event(Conf, 2000),
+    T3 = erlang:monotonic_time(millisecond),
+    ?assertEqual({LA, false}, Off),
+    ct:log("talking after ~p ms, stopped ~p ms after the tone", [T1 - T0, T3 - T2]),
+    %% 60 ms of tone (three frames) and at most 100 ms, give or take the
+    %% frame the jitter buffer holds; 300 ms of none and at most 340
+    ?assert(T1 - T0 >= 40 andalso T1 - T0 =< 100 + 40, {start, T1 - T0}),
+    ?assert(T3 - T2 >= 260 andalso T3 - T2 =< 340 + 40, {stop, T3 - T2}),
+    %% talking again (another sender, so the leg is pointed at it), then
+    %% the leg goes
+    {A2, P2} = chappe_mix_test_tone:endpoint(#{freq => 1100, dst => {?LO, MA}}),
+    ok = chappe_mix:set_remote(Conf, LA, {?LO, P2}),
+    ?assertEqual({LA, true}, talk_event(Conf, 2000)),
+    ok = chappe_mix:remove_leg(Conf, LA),
+    ?assertEqual({LA, false}, talk_event(Conf, 500)),
+    %% the silent peer never talked
+    ?assertEqual(none, talk_event(Conf, 300)),
+    _ = LS,
+    [chappe_mix_test_tone:stop(P) || P <- [A2, Q]],
+    chappe_mix_test_peer:stop(Peer),
+    ok = chappe_mix:stop(Conf),
+    receive
+        {chappe_mix, Quiet, _} = M -> ct:fail({unsubscribed, M})
+    after 0 -> ok
+    end,
+    ok = chappe_mix:stop(Quiet).
+
+talk_event(Conf, Ms) ->
+    receive
+        {chappe_mix, Conf, {talking, Leg, T}} -> {Leg, T}
+    after Ms -> none
+    end.
 
 %% ---- helpers ----
 

@@ -32,6 +32,10 @@ What chappe_mix does today, and what is planned.
   (`relate/4`: a listener kept from hearing one speaker, in audio, CSRC
   lists and events). A leg marked `injected` is the room's own media: its
   listeners see the mixer's SSRC for it in their CSRC lists.
+- Talker events, opt-in (`events => Pid`, `chappe_mix:events/2`):
+  `{chappe_mix, Conf, {talking, Leg, true | false}}` after 60 ms over
+  -40 dBFS and 300 ms under it (configurable); the levels are only
+  computed when someone listens.
 - Join, leave and mute at any time. Comfort noise, unknown payload types
   and malformed packets are counted and dropped.
 - RFC 4733 telephone-event forwarding (`dtmf_pt`, `dtmf_events` leg
@@ -76,6 +80,7 @@ What chappe_mix does today, and what is planned.
   distortion threshold in `test/audit/PERF.md` (a room at full scale RMS);
   a per-listener gain measured -37.8 dB in a model (`ATTEMPTS.md`).
 - The SDES (CNAME, NAME) of the sources behind a cascaded mixer's CSRCs.
-- A decision on the tick timer firing up to 1 ms early, and on the
-  jitter-buffer prefill that only grows, once latency is measured on a quiet
-  box.
+- A decision on the tick timer firing up to 1 ms early and on the
+  jitter-buffer prefill that only grows: both fixes are built and off by
+  default (`tick_ceiling`, `prefill_shrink`) until their A/B runs on a
+  quiet box.

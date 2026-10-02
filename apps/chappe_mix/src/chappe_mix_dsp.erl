@@ -20,7 +20,7 @@
 %% longer one.
 -module(chappe_mix_dsp).
 
--export([new/0, add/3, mixed/1, encode/3]).
+-export([new/0, add/3, add_level/3, mixed/1, encode/3]).
 
 -export_type([sum/0, mixed/0, frame/0]).
 
@@ -43,6 +43,15 @@ add({A, N}, Law, Codes) ->
     {Dec, _Enc} = chappe_mix_g711:tables(Law),
     add_codes(A, Dec, Codes, 1),
     {A, N + 1}.
+
+%% add/3, and the frame's energy (the sum of its squared samples) for
+%% telling a talker from a silent leg. Only called when someone listens
+%% for talker events: add/3 costs nothing more.
+-spec add_level(sum(), chappe_mix_g711:law(), binary()) ->
+    {sum(), non_neg_integer()}.
+add_level({A, N}, Law, Codes) ->
+    {Dec, _Enc} = chappe_mix_g711:tables(Law),
+    {{A, N + 1}, add_codes_level(A, Dec, Codes, 1, 0)}.
 
 %% The sum read out once every talker is in, for encode/3.
 -spec mixed(sum()) -> mixed().
@@ -82,6 +91,13 @@ add_codes(_A, _Dec, <<>>, _I) ->
 add_codes(A, Dec, <<B, Rest/binary>>, I) ->
     atomics:add(A, I, element(B + 1, Dec)),
     add_codes(A, Dec, Rest, I + 1).
+
+add_codes_level(_A, _Dec, <<>>, _I, E) ->
+    E;
+add_codes_level(A, Dec, <<B, Rest/binary>>, I, E) ->
+    X = element(B + 1, Dec),
+    atomics:add(A, I, X),
+    add_codes_level(A, Dec, Rest, I + 1, E + X * X).
 
 enc_own(Sum, _Dec, Enc, <<>>, I, Acc) ->
     enc_sum(Sum, Enc, I, Acc);

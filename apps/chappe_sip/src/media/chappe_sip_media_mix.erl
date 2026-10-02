@@ -71,6 +71,9 @@
     mon :: reference(),
     muted = false :: boolean(),
     deaf = false :: boolean(),
+    %% the call process, and whether it asked for talker events
+    owner :: pid(),
+    talk = false :: boolean(),
     %% the direction negotiated in SDP, before mute and deaf
     dir = sendrecv :: chappe_sip_media_mix_sdp:direction()
 }).
@@ -124,7 +127,10 @@ start(_Id, _Opts) ->
 %% Opts: room (required), sdp (the call's offer; answered when present,
 %% otherwise the mixer offers), owner (the room's owner if this join
 %% creates it), law (codec of an offer, ignored when answering), mute,
-%% name (SDES NAME the other legs see).
+%% name (SDES NAME the other legs see), direction (what the room may do
+%% with the leg, default sendrecv), talk_events (true: the calling
+%% process gets {chappe_sip_media, {talking, Room, true | false}} when its
+%% party starts or stops talking).
 -spec conference(ref(), map(), map()) -> {ok, binary()} | {error, term()}.
 conference(_Ref, _Id, Opts) when not is_map_key(room, Opts) ->
     {error, {missing, room}};
@@ -207,6 +213,9 @@ handle_cast(_Msg, S) ->
 -spec handle_info(term(), state()) -> {noreply, state()}.
 handle_info({'DOWN', Mon, process, _Pid, _Reason}, S) ->
     {noreply, down(Mon, S)};
+handle_info({chappe_mix, Conf, {talking, Leg, Talking}}, S) ->
+    talking(Conf, Leg, Talking, S),
+    {noreply, S};
 handle_info(_Info, S) ->
     {noreply, S}.
 
@@ -311,9 +320,16 @@ add_leg(Id, Owner, Room, #room{conf = Conf} = R, Plan, Opts, S) ->
                 law = maps:get(law, Plan),
                 local = {Ip, Port},
                 mon = monitor(process, Owner),
+                owner = Owner,
+                talk =
+                    is_map_key(talk_events, Opts) andalso
+                        maps:get(talk_events, Opts),
                 muted = maps:get(mute, Plan),
                 dir = maps:get(dir, Plan)
             },
+            _ =
+                L#leg.talk andalso
+                    safe(fun() -> chappe_mix:events(Conf, self()) end),
             R1 = R#room{legs = (R#room.legs)#{Id => Leg}},
             S1 = S#state{
                 rooms = (S#state.rooms)#{Room => R1},
@@ -419,6 +435,21 @@ down(Mon, S) ->
                 [] -> S
             end
     end.
+
+%% A leg of a room started or stopped talking: its call hears of it, if
+%% it asked.
+talking(Conf, Leg, Talking, S) ->
+    [
+        Owner ! {chappe_sip_media, {talking, Room, Talking}}
+     || {Room, #room{conf = C}} <- maps:to_list(S#state.rooms),
+        C =:= Conf,
+        #leg{room = R, leg = L, talk = true, owner = Owner} <- maps:values(
+            S#state.legs
+        ),
+        R =:= Room,
+        L =:= Leg
+    ],
+    ok.
 
 %% ---- leg operations ----
 

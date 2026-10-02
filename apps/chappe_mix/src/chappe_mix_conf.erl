@@ -35,6 +35,7 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -define(PTIME, 20).
+-define(FRAME_SAMPLES, 160).
 -define(ACTIVE, 64).
 %% tick lateness histogram bounds, microseconds
 -define(BUCKETS, [500, 1000, 2000, 5000, 10000, 20000]).
@@ -47,6 +48,11 @@
     owner :: pid(),
     %% receives one message per tick when set (see chappe_mix:conf_opts())
     trace :: pid() | undefined,
+    %% gets talker events, and the detection they come from
+    events :: pid() | undefined,
+    talk_params :: #{
+        threshold := number(), start := pos_integer(), stop := pos_integer()
+    },
     ip :: inet:ip_address(),
     law :: chappe_mix_g711:law(),
     depth :: pos_integer(),
@@ -92,6 +98,8 @@ init(#{owner := Owner} = Opts) ->
     {ok, #state{
         owner = Owner,
         trace = maps:get(trace, Opts, undefined),
+        events = maps:get(events, Opts, undefined),
+        talk_params = talk_params(Opts),
         ip = maps:get(ip, Opts, {127, 0, 0, 1}),
         law = maps:get(law, Opts, ulaw),
         depth = maps:get(depth, Opts, 3),
@@ -152,6 +160,8 @@ handle_call({relate, Id, Speaker, Rel}, _From, S) ->
     end;
 handle_call(legs, _From, S) ->
     {reply, [chappe_mix_leg:info(L) || L <- maps:values(S#state.legs)], S};
+handle_call({events, Pid}, _From, S) ->
+    {reply, ok, S#state{events = Pid}};
 handle_call(stats, _From, S) ->
     {reply, stats(S), S};
 handle_call(_Req, _From, S) ->
@@ -189,6 +199,10 @@ insert(#leg{id = Id} = L, S) ->
 
 remove(Leg, Legs, S) ->
     chappe_mix_leg:close(Leg),
+    %% a leg that goes while talking stops talking
+    _ =
+        Leg#leg.talking andalso S#state.events =/= undefined andalso
+            talking(S#state.events, Leg#leg.id, false),
     left(Leg, S#state{
         legs = forget(Leg#leg.id, Legs),
         socks = maps:without(chappe_mix_leg:socks(Leg), S#state.socks),
@@ -547,5 +561,27 @@ bucket(_Us, []) -> infinity.
 
 %% ---- mixing ----
 
-mix(#state{legs = Legs} = S, Missed) ->
-    S#state{legs = chappe_mix_room:mix(Legs, Missed)}.
+mix(#state{legs = Legs, events = Pid} = S, Missed) ->
+    Talk =
+        case Pid of
+            undefined -> undefined;
+            _ -> S#state.talk_params
+        end,
+    {Legs1, Events} = chappe_mix_room:mix(Legs, Missed, Talk),
+    [talking(Pid, Id, T) || {Id, T} <- Events],
+    S#state{legs = Legs1}.
+
+talking(Pid, Id, T) ->
+    Pid ! {chappe_mix, self(), {talking, Id, T}}.
+
+%% Talker detection: a frame counts as talk over Db dBFS RMS (default
+%% -40), talk starts after StartMs of it and stops after StopMs without
+%% (defaults 60 and 300), each rounded to whole frames.
+talk_params(Opts) ->
+    Db = maps:get(talk_threshold, Opts, -40),
+    Rms = 32768 * math:pow(10, Db / 20),
+    #{
+        threshold => ?FRAME_SAMPLES * Rms * Rms,
+        start => max(1, maps:get(talk_start_ms, Opts, 60) div ?PTIME),
+        stop => max(1, maps:get(talk_stop_ms, Opts, 300) div ?PTIME)
+    }.

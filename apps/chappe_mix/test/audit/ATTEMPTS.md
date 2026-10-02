@@ -596,3 +596,57 @@ order held at load 4.8 too):
   `chappe_mix_leg:send/3` refused a recvonly leg as well, a second guard
   that hid the first; it was removed.
 
+## Talker events
+
+- Opt-in: a conference started with `events => Pid` (or given one with
+  `chappe_mix:events/2`) takes each frame's energy while it sums it,
+  `chappe_mix_dsp:add_level/3`, and runs a hysteresis per leg: talking
+  after 60 ms over -40 dBFS RMS, not talking after 300 ms under it, both
+  configurable. Without a subscriber the sum goes through `add/3` as
+  before and no level is computed. A leg removed while talking is
+  reported as stopped. The facade subscribes a room when a join asks for
+  `talk_events` and sends that call `{chappe_sip_media, {talking, Room,
+  true | false}}`.
+- Seen failing first: `chappe_mix_SUITE:talker_events` (no event) and
+  `chappe_sip_media_SUITE:conference_talking` (none relayed). The suite
+  case first asked only for an upper bound on detection; a mutation that
+  started talk on the first frame passed it, so it also asks for at least
+  40 ms (three frames, less the one the jitter buffer holds) and at least
+  260 ms to stop.
+- Mutations, 7, all caught: talk starting on the first frame, stopping
+  after 100 ms, the threshold inverted, the energy not summed, no stop
+  when a talking leg goes, events sent to calls that did not ask, the
+  room not subscribed.
+- `cascaded_csrcs` failed once in a full run: it read the last datagram
+  at C right after the leg's counters showed it sent. It now waits for
+  the datagram.
+
+## The tick timer and the prefill: built, not decided
+
+- Timer: arming at the millisecond ceiling (`-convert_time_unit(-At)`)
+  instead of truncating. `tick_never_early` saw every traced tick early
+  with truncation (45 to 454 us) and none of 50 with the ceiling. Whether
+  the ceiling keeps p99 lateness inside the tick jitter row needs the
+  `jitter idle` and `jitter capacity` A/B, which never ran (box over the
+  load limit, see `PERF.md`).
+- Prefill: after 500 frames (10 s) without an underrun, a prefill that
+  grew is taken back by one and the frame of slack it held is skipped,
+  so the latency comes back down a frame. Tests: `prefill_shrinks_test`,
+  `prefill_floor_test`, `prefill_stays_by_default_test`. Whether `latency`
+  p99 improves without more underruns in `loss` needs the A/B, which
+  never ran.
+- The plan keeps each only on its A/B, so both are in the mixer behind
+  conference options, off by default (`tick_ceiling`, `prefill_shrink`).
+  The A/B builds (the mixer at the commit before, with only the ceiling,
+  with only the shrink) and the interleaving script are in the session
+  scratchpad; `bench/README.md` has the procedure.
+- Seen failing first: `tick_never_early` (every tick early) and
+  `prefill_shrinks_test` (the prefill stayed at 2). A first lint run
+  refused a duplicated frame assembly between the skip and the playout;
+  both now go through `next_frame/1`.
+- Mutations, 8, all caught: the timer truncated again, the prefill never
+  shrinking, the shrink without the skip (a first version did not
+  compile and was rewritten), the prefill shrinking to 0, an underrun
+  not resetting the count, the shrink on by default, `tick_ceiling`
+  ignored.
+

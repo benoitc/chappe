@@ -14,15 +14,20 @@
 
 -include("chappe_mix_leg.hrl").
 
--export([mix/2, forward_event/3]).
+-export([mix/3, forward_event/3]).
 
--export_type([legs/0]).
+-export_type([legs/0, talk/0]).
 
 -define(FRAME, 160).
 %% at most this many CSRCs fit in the RTP header
 -define(MAX_CSRC, 15).
 
 -type legs() :: #{pos_integer() => #leg{}}.
+%% Talker detection, when someone listens: the energy over a frame that
+%% counts as talk, and how many frames in a row start and stop it.
+-type talk() ::
+    undefined
+    | #{threshold := number(), start := pos_integer(), stop := pos_integer()}.
 
 %% An RFC 4733 event from one leg goes to every other leg that
 %% negotiated telephone-event and lists its codes, never into the mix. On
@@ -84,11 +89,14 @@ event_offset(Id, Ts, #leg{sess = Sess}, Offs) ->
 %% ---- mixing ----
 
 %% One tick: pop a frame per leg, sum what the room takes, and send each
-%% leg what it hears. Missed: ticks skipped, for the timestamp.
--spec mix(legs(), non_neg_integer()) -> legs().
-mix(Legs, _Missed) when map_size(Legs) =:= 0 ->
-    Legs;
-mix(Legs0, Missed) ->
+%% leg what it hears. Missed: ticks skipped, for the timestamp. With
+%% Talk, the legs that start or stop talking this tick, as {Leg, true |
+%% false}.
+-spec mix(legs(), non_neg_integer(), talk()) ->
+    {legs(), [{pos_integer(), boolean()}]}.
+mix(Legs, _Missed, _Talk) when map_size(Legs) =:= 0 ->
+    {Legs, []};
+mix(Legs0, Missed, Talk) ->
     Popped = [chappe_mix_leg:pop(L) || L <- maps:values(Legs0)],
     %% the frames in the sum, by leg: what the room takes from a leg that
     %% had something to play
@@ -96,11 +104,7 @@ mix(Legs0, Missed) ->
         {L#leg.id, {L#leg.law, Codes}}
      || {L, Codes} <- Popped, Codes =/= none, chappe_mix_leg:speaks(L)
     ]),
-    Sum = maps:fold(
-        fun(_, {Law, Codes}, Acc) -> chappe_mix_dsp:add(Acc, Law, Codes) end,
-        chappe_mix_dsp:new(),
-        Frames
-    ),
+    {Sum, Levels} = sum(Frames, Talk),
     Mixed = chappe_mix_dsp:mixed(Sum),
     %% who is in the sum, by leg, for the CSRC lists: a leg's source, the
     %% sources an upstream mixer named in what it sent (7.4), or the
@@ -124,7 +128,57 @@ mix(Legs0, Missed) ->
         }
      || {L, _Codes} <- Popped
     ]),
-    Legs.
+    talk(Legs, Levels, Talk).
+
+%% The sum of the frames, and their energies when Talk asks for them.
+sum(Frames, undefined) ->
+    {
+        maps:fold(
+            fun(_, {Law, Codes}, Acc) ->
+                chappe_mix_dsp:add(Acc, Law, Codes)
+            end,
+            chappe_mix_dsp:new(),
+            Frames
+        ),
+        #{}
+    };
+sum(Frames, _Talk) ->
+    maps:fold(
+        fun(Id, {Law, Codes}, {Acc, Ls}) ->
+            {Acc1, E} = chappe_mix_dsp:add_level(Acc, Law, Codes),
+            {Acc1, Ls#{Id => E}}
+        end,
+        {chappe_mix_dsp:new(), #{}},
+        Frames
+    ).
+
+%% Hysteresis on each leg's energy: it starts talking after Start frames
+%% in a row over the threshold, and stops after Stop frames under it (no
+%% frame in the sum counts as under).
+talk(Legs, _Levels, undefined) ->
+    {Legs, []};
+talk(Legs, Levels, #{threshold := Thr, start := Start, stop := Stop}) ->
+    maps:fold(
+        fun(Id, #leg{talking = T, talk_run = Run} = L, {Acc, Ev}) ->
+            Above = maps:get(Id, Levels, 0) > Thr,
+            Need =
+                case T of
+                    true -> Stop;
+                    false -> Start
+                end,
+            case {Above =:= T, Run + 1 >= Need} of
+                {true, _} ->
+                    {Acc#{Id => L#leg{talk_run = 0}}, Ev};
+                {false, true} ->
+                    L1 = L#leg{talking = Above, talk_run = 0},
+                    {Acc#{Id => L1}, [{Id, Above} | Ev]};
+                {false, false} ->
+                    {Acc#{Id => L#leg{talk_run = Run + 1}}, Ev}
+            end
+        end,
+        {Legs, []},
+        Legs
+    ).
 
 %% What leg L hears this tick, sent: the sum less its own frame and those
 %% of the legs it does not hear (the frames in the sum only), naming the

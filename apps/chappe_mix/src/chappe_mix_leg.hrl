@@ -25,6 +25,10 @@
     injected = false :: boolean(),
     %% legs this one does not hear, besides itself
     nohear = [] :: [pos_integer()],
+    %% talker detection: whether the leg talks, and for how many frames
+    %% in a row it has looked otherwise
+    talking = false :: boolean(),
+    talk_run = 0 :: non_neg_integer(),
     %% RFC 4733 telephone-event: the payload type this leg negotiated
     %% (undefined: none) and the event codes it takes
     dtmf_pt :: 0..127 | undefined,
