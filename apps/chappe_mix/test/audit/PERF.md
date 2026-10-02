@@ -491,5 +491,16 @@ order:
 | 16 | 83.2 us | 56.9 us | 46.4 us |
 | 64 | 326.1 us | 227.1 us | 180.4 us |
 
-The interleaved `mix_cost` and fixed-200 comparison against `0cd3bb2` is
-queued for a quiet box; no threshold changes status on these numbers.
+Interleaved against `0cd3bb2` in the mixer, one round got through before
+the load went back above the limit (load 2.94 to 3.19, host, `+S 1`):
+
+| | `0cd3bb2` | `eba11e7` |
+| --- | ---: | ---: |
+| `mix_cost`, 4 legs | 21.29 us | 14.81 us |
+| `mix_cost`, 64 legs | 362.8 us | 214.3 us |
+| scheduler busy, 200 conferences held 10 s | 0.70 | 0.66 |
+
+One launch each, so no minimum of five: no threshold changes status. The
+compute thresholds (10 and 200 us) stay missed; 64 legs is within 8%. The
+whole mixer gains less than the compute (6% at 200 conferences): the send
+path is the larger share now.
