@@ -22,10 +22,11 @@
 
 -define(CI, <<"application/conference-info+xml">>).
 
-%% An audio offer or answer with the given direction.
+%% An audio offer or answer with the given direction, sending SSRC 1234.
 sdp(Dir) ->
     <<"v=0\r\no=ua 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\n"
-    "t=0 0\r\nm=audio 40010 RTP/AVP 0\r\na=", Dir/binary, "\r\n">>.
+    "t=0 0\r\nm=audio 40010 RTP/AVP 0\r\na=", Dir/binary, "\r\n"
+    "a=ssrc:1234 cname:ua\r\n">>.
 
 start(Name, EP) ->
     Parent = self(),

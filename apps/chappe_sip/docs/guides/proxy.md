@@ -129,6 +129,8 @@ is not relayed.
 - A SIPS request is only forwarded to a SIPS target (480 otherwise); a SIP
   request for a SIPS target keeps a `sip:` Request-URI and goes over TLS (RFC
   5630).
+- A `sips:` target with `transport=udp` is not tried: the branch counts as a
+  480 and nothing is sent (RFC 3261 19.1.1).
 
 ## Notes
 

@@ -19,13 +19,14 @@
          malformed_startline_rejected/1, wellformed_fields/1,
          mandatory_headers_validated/1, deep_parse_defects/1,
          stack_udp_responses/1, semiuri_user/1, message_syntax/1,
-         uri_comparison/1]).
+         uri_comparison/1, uri_format_escaping/1]).
 
 all() ->
     [corpus_present, parse_never_crashes, wellformed_accepted,
      malformed_startline_rejected, wellformed_fields,
      mandatory_headers_validated, deep_parse_defects,
-     stack_udp_responses, semiuri_user, message_syntax, uri_comparison].
+     stack_udp_responses, semiuri_user, message_syntax, uri_comparison,
+     uri_format_escaping].
 
 init_per_suite(Config) ->
     [{corpus, filename:join(?config(data_dir, Config), "rfc4475")} | Config].
@@ -187,8 +188,9 @@ message_syntax(_Config) ->
 
 %% RFC 3261 19.1.4 on its own examples: escaped and case variants match,
 %% a header component, a port, a transport, a maddr or a different
-%% security param do not.
-%% req: R3261-U-10 R3261-397
+%% security param do not. An escaped character in the host is not its
+%% unescaped form (19.1.4).
+%% req: R3261-U-10 R3261-397 R3261-396
 uri_comparison(_Config) ->
     Eq = fun chappe_sip_uri:equal/2,
     ?assert(Eq(<<"sip:%61lice@atlanta.com;transport=TCP">>,
@@ -203,7 +205,8 @@ uri_comparison(_Config) ->
     ?assertNot(Eq(<<"SIP:ALICE@AtLanTa.CoM;Transport=udp">>,
                   <<"sip:alice@AtLanTa.CoM;Transport=UDP">>)),
     ?assertNot(Eq(<<"sip:carol@chicago.com;security=on">>,
-                  <<"sip:carol@chicago.com;security=off">>)).
+                  <<"sip:carol@chicago.com;security=off">>)),
+    ?assertNot(Eq(<<"sip:carol@chicago.com">>, <<"sip:carol@chicag%6F.com">>)).
 
 %% ---- the corpus through the running stack ----
 
@@ -396,3 +399,59 @@ options_probe(Port) ->
       "CSeq: 1 OPTIONS\r\n",
       "Max-Forwards: 70\r\n",
       "Content-Length: 0\r\n\r\n">>.
+
+%% A URI built from raw components is written with every character outside
+%% each component's set (RFC 3261 25.1: user, password, paramchar,
+%% hnv-unreserved) percent-escaped and existing escapes kept; a URI that
+%% parses is written back as it came, and a parameter named twice is
+%% written once.
+%% req: R3261-393 R3261-394 R3261-395
+uri_format_escaping(_Config) ->
+    F = fun chappe_sip_uri:format/1,
+    Sip = fun(M) -> maps:merge(#{scheme => sip, host => <<"h">>,
+                                 params => #{}}, M) end,
+    ?assertEqual(<<"sip:a%20b%40c%3A@h">>, F(Sip(#{user => <<"a b@c:">>}))),
+    ?assertEqual(<<"sip:a&=+$,;/x-_.!~*'()@h">>,
+                 F(Sip(#{user => <<"a&=+$,;/x-_.!~*'()">>}))),
+    ?assertEqual(<<"sip:a%20b%3F100%25@h">>, F(Sip(#{user => <<"a%20b?100%">>}))),
+    ?assertEqual(<<"sip:u:p%40ss%3Aw&=+$,@h">>,
+                 F(Sip(#{user => <<"u">>, password => <<"p@ss:w&=+$,">>}))),
+    ?assertEqual(<<"sip:h;x=a%20b%3Bc%3Dd;f%3Fg;y=[::1]/a:b&c+$">>,
+                 F(Sip(#{params => #{<<"x">> => <<"a b;c=d">>,
+                                     <<"f?g">> => true,
+                                     <<"y">> => <<"[::1]/a:b&c+$">>},
+                         '_porder' => [<<"x">>, <<"f?g">>, <<"y">>]}))),
+    ?assertEqual(<<"sip:h?Subject=hi%20there%26%3D&Route=%3Csip:x%3E&e=&n">>,
+                 F(Sip(#{headers => <<"Subject=hi there%26%3D&Route=<sip:x>&e=&n">>}))),
+    ?assertEqual(<<"sip:h?a%3Bb=%40[]/?:+$">>,
+                 F(Sip(#{headers => <<"a;b=@[]/?:+$">>}))),
+    ?assertEqual(<<"tel:+1%20555-0100%3C">>,
+                 F(#{scheme => tel, host => <<>>, user => <<"+1 555-0100<">>,
+                     params => #{}})),
+    %% what parses is written back byte for byte, and parses the same
+    [begin
+         {ok, U} = chappe_sip_uri:parse(B),
+         ?assertEqual(B, F(U)),
+         ?assertEqual({ok, U}, chappe_sip_uri:parse(F(U)))
+     end || B <- [<<"sip:user;par=u%40example.net@example.com">>,
+                  <<"sip:user@example.com?Route=%3Csip:example.com%3E">>,
+                  <<"sips:alice:se%23cret@[::1]:5061;transport=tcp;lr"
+                    "?Subject=a%20b&h=">>,
+                  <<"sip:%61lice@atlanta.com;maddr=239.255.255.1;ttl=15">>,
+                  <<"tel:+358-555-1234567;postd=pp22">>]],
+    %% raw components: the escaped form parses, and is a fixed point
+    [begin
+         Out = F(U),
+         {ok, P} = chappe_sip_uri:parse(Out),
+         ?assertEqual(Out, F(P)),
+         ?assertEqual({ok, P}, chappe_sip_uri:parse(F(P)))
+     end || U <- [Sip(#{user => <<"a b@c">>, password => <<"x:y">>}),
+                  Sip(#{params => #{<<"k">> => <<"v;w">>}}),
+                  Sip(#{headers => <<"S=a b">>})]],
+    %% a repeated parameter is written once
+    {ok, Dup} = chappe_sip_uri:parse(<<"sip:h;a=1;b;a=2">>),
+    ?assertEqual([<<"a">>, <<"b">>], maps:get('_porder', Dup)),
+    ?assertEqual(<<"sip:h;a=2;b">>, F(Dup)),
+    ?assertEqual(<<"sip:h;a=1">>,
+                 F(Sip(#{params => #{<<"a">> => <<"1">>},
+                         '_porder' => [<<"a">>, <<"a">>]}))).

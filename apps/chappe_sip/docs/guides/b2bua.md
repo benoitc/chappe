@@ -42,7 +42,8 @@ chappe_sip:create_b2bua(Req, Res, Callee, #{
     pass_failure           => true,                  %% relay a B failure to A
     session_expires        => 1800,                  %% a session timer per leg
     timer_c                => 60000,                 %% how long B may ring (ms)
-    flow                   => Flow                   %% originate B over a WS flow
+    flow                   => Flow,                  %% originate B over a WS flow
+    privacy                => true                   %% act as a privacy service
 }).
 ```
 
@@ -52,6 +53,32 @@ chappe_sip:create_b2bua(Req, Res, Callee, #{
 `Allow` and `RSeq`: those belong to one leg. A `Privacy: none` from A always
 reaches B unchanged, whatever you copy (RFC 3323 4.2). Set `flow` (from
 `chappe_sip:location_flow/1`) to send the B leg to a registered WebSocket UA.
+
+## Act as a privacy service
+
+Set `privacy => true` when your b2bua is the privacy service of RFC 3323 for
+its callers. It reads the `Privacy` header of A's INVITE:
+
+- `none`: nothing is removed, and the header reaches B unchanged.
+- `user` or `header`: Subject, Call-Info, Organization, User-Agent, Reply-To
+  and In-Reply-To stay off the B leg, even with
+  `proxy_request_headers => all`. The b2bua already gives B its own From,
+  Contact, Via and Call-ID.
+- `id`: P-Asserted-Identity and P-Preferred-Identity stay off the B leg.
+- `session`: the b2bua cannot anonymize media on its own. If you do it (for
+  example through rtpengine and `local_sdp_b`), say so with
+  `privacy => #{session => true}`.
+- `critical` with a level it cannot apply (`session` without that flag, or a
+  token it does not know): A gets a 500 whose reason phrase names the levels,
+  such as `Privacy Failure: session not supported`, B is never called, and
+  `create_b2bua/4` returns `{error, {privacy, [<<"session">>]}}`.
+
+```erlang
+case chappe_sip:create_b2bua(Req, Res, Callee, #{privacy => true}) of
+    {ok, Legs} -> chappe_sip_b2b:relay(Legs);
+    {error, _} -> ok
+end.
+```
 
 ## How long B may ring
 

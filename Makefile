@@ -78,7 +78,8 @@ compliance:
 	        $(if $(GATE),--gate $(GATE)); \
 	done
 
-# chappe_sip against SIPp and pjsua in docker, one flow per RFC clause
+# chappe_sip against SIPp and pjsua in docker, one flow per RFC clause,
+# with a dnsmasq server for the RFC 3263 cases
 # (apps/chappe_sip/interop/conformance). Known gaps are listed in
 # apps/chappe_sip/interop/conformance/expected-fail.
 interop-conformance:

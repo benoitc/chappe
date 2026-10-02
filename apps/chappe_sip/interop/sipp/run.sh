@@ -17,6 +17,12 @@
 #                 two twin instances (SIPp 3PCC mode): CASE-a.xml holds
 #                 the first dialog, CASE-b.xml sends the INVITE with
 #                 Replaces built from the tags CASE-a.xml hands it
+#   dns_*         a second listener plays the destination the lab's DNS
+#                 records name (lab.sh runs this container at their
+#                 address), and CASE.xml asks the node to dial it. For
+#                 dns_srv it is SIPp on UDP 5080 (dns_srv-target.xml); for
+#                 dns_sips_failover socat takes TLS on 5061 and
+#                 tls_target.sh answers. Both sides must succeed.
 set -u
 
 CASE="$1"
@@ -67,6 +73,35 @@ case "$CASE" in
         sipp $COMMON -sf "$SCEN/$CASE-a.xml" -p 5060 \
             -3pcc 127.0.0.1:5678 "$NODE:5060" > "$OUT/a.out" 2>&1 || rc=$?
         wait "$B" || rc=$((rc + $?))
+        ;;
+    dns_sips_failover)
+        # SIPp's TLS listener drops its answers (wolfssl), so socat takes
+        # TLS on 5061 and tls_target.sh answers the one request
+        LISTEN="OPENSSL-LISTEN:5061,reuseaddr,verify=0"
+        LISTEN="$LISTEN,cert=/certs/sipp.pem,key=/certs/sipp.key"
+        socat -T 15 "$LISTEN" EXEC:"/bin/sh /scenarios/tls_target.sh" \
+            > "$OUT/target.out" 2>&1 &
+        TARGET=$!
+        sleep 1
+        # shellcheck disable=SC2086
+        sipp $COMMON -sf "$SCEN/$CASE.xml" -p 5060 "$NODE:5060" \
+            > "$OUT/main.out" 2>&1 || rc=$?
+        kill "$TARGET" 2>/dev/null
+        wait "$TARGET" 2>/dev/null
+        echo "===== tls_target.sh"
+        cat "$OUT/target.out"
+        grep -q "^answered 200" "$OUT/target.out" || rc=$((rc + 1))
+        ;;
+    dns_*)
+        # shellcheck disable=SC2086
+        sipp $COMMON -t u1 -p 5080 -sf "$SCEN/$CASE-target.xml" \
+            > "$OUT/target.out" 2>&1 &
+        TARGET=$!
+        sleep 1
+        # shellcheck disable=SC2086
+        sipp $COMMON -sf "$SCEN/$CASE.xml" -p 5060 "$NODE:5060" \
+            > "$OUT/main.out" 2>&1 || rc=$?
+        wait "$TARGET" || rc=$((rc + $?))
         ;;
     *)
         # shellcheck disable=SC2086

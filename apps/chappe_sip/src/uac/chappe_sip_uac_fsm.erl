@@ -51,6 +51,8 @@
     local_tag :: binary(),
     cseq :: pos_integer(),
     proxy :: binary() | undefined,
+    %% a preloaded route set (RFC 3261 8.1.1.1), Route header values
+    route_set = [] :: [binary()],
     % when set, originate over this WS flow
     flow :: chappe_sip_engine:flow() | undefined,
     txn :: non_neg_integer() | undefined,
@@ -101,18 +103,35 @@ start_link(Args) ->
 
 callback_mode() -> state_functions.
 
-init(#{
-    uri := Uri,
-    opts := Opts,
-    ref := Ref,
-    notify := Notify,
-    owner := Owner
-}) ->
-    Method = maps:get(method, Opts, <<"INVITE">>),
-    Contact = default_contact(Opts),
-    From = build_from(Opts, Contact),
-    LocalTag = extract_tag(From),
-    Data = #data{
+init(#{uri := Uri0, opts := Opts} = Args) ->
+    %% RFC 3261 19.1.5: a method parameter names the method when the caller
+    %% gives none, and never goes in the Request-URI
+    {UriMethod, Uri} = chappe_sip_uri:take_param(Uri0, <<"method">>),
+    case chappe_sip_uri:is_sips_unreliable(Uri) of
+        true ->
+            %% 19.1.1: a SIPS URI names a reliable transport; nothing is sent
+            {stop, {bad_uri, sips_unreliable_transport}};
+        false ->
+            Method =
+                case {maps:find(method, Opts), UriMethod} of
+                    {{ok, M}, _} -> M;
+                    {error, M} when is_binary(M), M =/= <<>> -> M;
+                    {error, _} -> <<"INVITE">>
+                end,
+            start_request(Args#{uri := Uri}, Method)
+    end.
+
+start_request(
+    #{
+        uri := Uri,
+        opts := Opts,
+        ref := Ref,
+        notify := Notify,
+        owner := Owner
+    },
+    Method
+) ->
+    Data0 = #data{
         uri = Uri,
         method = Method,
         opts = Opts,
@@ -120,15 +139,24 @@ init(#{
         notify = Notify,
         owner = Owner,
         call_id = gen_call_id(),
-        from = From,
+        %% set below, once the contact is known
+        from = <<>>,
+        contact = <<>>,
+        local_tag = <<>>,
         to = maps:get(to, Opts, <<"<", Uri/binary, ">">>),
-        contact = Contact,
-        local_tag = LocalTag,
         cseq = 1,
         seq = atomics:new(1, []),
         proxy = maps:get(proxy, Opts, undefined),
+        route_set = maps:get(route_set, Opts, []),
         flow = maps:get(flow, Opts, undefined),
         tried = [Uri]
+    },
+    Contact = default_contact(Data0),
+    From = build_from(Opts, Contact),
+    Data = Data0#data{
+        from = From,
+        contact = Contact,
+        local_tag = extract_tag(From)
     },
     case send_request(Data) of
         {ok, Data1} ->
@@ -375,11 +403,11 @@ handle_response(Status, Raw, #data{opts = Opts, redirects = R} = D) when
     {ok, Msg} = chappe_sip_msg:parse(Raw),
     case maps:get(follow_redirects, Opts, false) andalso R < 5 of
         true ->
-            case redirect(Msg, D) of
+            case redirect(Status, Msg, D) of
                 {ok, D2} ->
                     {next_state, trying, D2};
                 {error, _} ->
-                    %% redirect/2 released the transaction
+                    %% redirect/3 released the transaction
                     notify(D, {error, sip_error(Status, Msg)}),
                     {stop, normal, D}
             end;
@@ -695,7 +723,8 @@ prack_done(PTxn, D) ->
 send_request(#data{seq = Seq, cseq = CSeq} = D0) ->
     %% a new INVITE (a retry) sets the counter the next PRACK takes from
     atomics:put(Seq, 1, CSeq),
-    D = with_credentials(D0),
+    %% a redirect or a 305 may move to a SIPS target or proxy
+    D = with_credentials(D0#data{contact = default_contact(D0)}),
     Raw = build_request(D),
     case chappe_sip_engine:send_request(route(D), Raw, self()) of
         {ok, TxnH} -> {ok, D#data{txn = TxnH}};
@@ -703,11 +732,23 @@ send_request(#data{seq = Seq, cseq = CSeq} = D0) ->
     end.
 
 %% originate over the WS flow when targeting a registered browser, else the
-%% proxy URL (or undefined, letting sofia route by the Request-URI)
+%% proxy URL, else the first preloaded route (or undefined, letting sofia
+%% route by the Request-URI); a sip: hop is reached as sips: when the
+%% Request-URI is SIPS (RFC 3261 8.1.2)
 route(#data{flow = Flow}) when Flow =/= undefined ->
     chappe_sip_route:flow_route(Flow);
-route(#data{proxy = Proxy}) ->
-    Proxy.
+route(#data{uri = Uri} = D) ->
+    chappe_sip_route:secure_hop(Uri, next_hop(D)).
+
+next_hop(#data{proxy = Proxy}) when Proxy =/= undefined ->
+    Proxy;
+next_hop(#data{route_set = [First | _]}) ->
+    case chappe_sip_hdr:name_addr(First) of
+        {ok, #{uri := U}} -> U;
+        _ -> undefined
+    end;
+next_hop(#data{}) ->
+    undefined.
 
 build_request(#data{
     method = Method,
@@ -719,9 +760,14 @@ build_request(#data{
     contact = Contact,
     opts = Opts,
     min_se_422 = MinSE,
-    auth_hdrs = AuthHeaders
+    auth_hdrs = AuthHeaders,
+    route_set = RouteSet0
 }) ->
     Seq = integer_to_binary(CSeq),
+    %% RFC 3261 8.1.1.1: a preloaded route set shapes the Request-URI and
+    %% Route as in a dialog (12.2.1.1), the target as remote target
+    {RURI, RouteSet} = chappe_sip_route:request_target(Uri, RouteSet0),
+    Routes = <<<<"Route: ", R/binary, "\r\n">> || R <- RouteSet>>,
     ExtraHeaders0 = maps:get(headers, Opts, []),
     %% advertise 100rel so the UAS may send reliable provisionals, and the
     %% option tags we support on an INVITE (RFC 3891 6.2)
@@ -745,11 +791,11 @@ build_request(#data{
     HdrBin = chappe_sip_hdr_io:join(
         ExtraHeaders ++ StHeaders ++ AuthHeaders ++ CT
     ),
-    <<Method/binary, " ", Uri/binary, " SIP/2.0\r\n", "From: ", From/binary,
-        "\r\n", "To: ", To/binary, "\r\n", "Call-ID: ", CallId/binary, "\r\n",
-        "CSeq: ", Seq/binary, " ", Method/binary, "\r\n", "Contact: ",
-        (contact_value(Contact, Opts))/binary, "\r\n", "Max-Forwards: 70\r\n",
-        HdrBin/binary, "Content-Length: ",
+    <<Method/binary, " ", RURI/binary, " SIP/2.0\r\n", Routes/binary, "From: ",
+        From/binary, "\r\n", "To: ", To/binary, "\r\n", "Call-ID: ",
+        CallId/binary, "\r\n", "CSeq: ", Seq/binary, " ", Method/binary, "\r\n",
+        "Contact: ", (contact_value(Contact, Opts))/binary, "\r\n",
+        "Max-Forwards: 70\r\n", HdrBin/binary, "Content-Length: ",
         (integer_to_binary(byte_size(Body)))/binary, "\r\n\r\n", Body/binary>>.
 
 supported(<<"INVITE">>, supported) -> <<"100rel, ", ?SUPPORTED/binary>>;
@@ -860,8 +906,10 @@ ack_route(Msg, _D) ->
     case route_set(Msg) of
         [First | _] ->
             case chappe_sip_hdr:name_addr(First) of
-                {ok, #{uri := Uri}} -> Uri;
-                _ -> undefined
+                {ok, #{uri := Uri}} ->
+                    chappe_sip_route:secure_hop(target_uri(Msg), Uri);
+                _ ->
+                    undefined
             end;
         [] ->
             undefined
@@ -933,7 +981,7 @@ dialog_args(
         route_set => route_set(Msg),
         remote_sdp => remote_sdp(Msg, D),
         %% repeated on in-dialog target refresh requests
-        local_contact => contact_value(default_contact(Opts), Opts),
+        local_contact => contact_value(D#data.contact, Opts),
         session_timer => St
     },
     %% our session is the answer a PRACK carried, else the opts' offer
@@ -1083,9 +1131,29 @@ with_credentials(#data{challenges = Cs, opts = Opts} = D) ->
     ),
     D#data{auth_hdrs = Hdrs, nonce_count = NC}.
 
+%% RFC 3261 21.3.6: a 305 keeps the Request-URI and sends the request
+%% again through the proxy its Contact names; the credentials of the old
+%% next hop are forgotten
+redirect(305, Msg, #data{redirects = R, cseq = CSeq} = D) ->
+    chappe_sip_engine:finish_txn(D#data.txn),
+    case redirect_targets(Msg, D#data{tried = []}) of
+        [Proxy | _] ->
+            send_request(D#data{
+                proxy = Proxy,
+                cseq = CSeq + 1,
+                redirects = R + 1,
+                rseq = #{},
+                first_sdp = <<>>,
+                challenges = [],
+                nonce_count = #{},
+                auth_hdrs = []
+            });
+        [] ->
+            {error, no_target}
+    end;
 %% RFC 3261 8.1.3.4: the Contacts of a 3xx are new targets, tried best q
 %% first; each failure moves to the next one
-redirect(Msg, #data{redirects = R} = D) ->
+redirect(_Status, Msg, #data{redirects = R} = D) ->
     New = redirect_targets(Msg, D),
     Targets = New ++ (D#data.targets -- New),
     chappe_sip_engine:finish_txn(D#data.txn),
@@ -1110,7 +1178,9 @@ next_target(#data{targets = [T | Rest], uri = OldUri, cseq = CSeq} = D) ->
 
 %% sip/sips Contacts not tried yet, by q (1.0 when absent), header order
 %% on a tie. A URI's ?headers part is dropped: we do not let a redirect
-%% add headers to our request (RFC 3261 19.1.5 makes them optional).
+%% add headers to our request (RFC 3261 19.1.5 makes them optional); its
+%% method parameter is dropped too (8.1.3.4). A SIPS URI naming UDP is no
+%% target (19.1.1).
 redirect_targets(Msg, #data{tried = Tried}) ->
     Contacts = lists:append([
         L
@@ -1130,12 +1200,17 @@ dedup([H | T]) -> [H | dedup([X || X <- T, X =/= H])].
 
 supported_target(Uri) ->
     case chappe_sip_uri:parse(Uri) of
-        {ok, #{scheme := S}} -> S =:= sip orelse S =:= sips;
-        _ -> false
+        {ok, #{scheme := S}} when S =:= sip; S =:= sips ->
+            not chappe_sip_uri:is_sips_unreliable(Uri);
+        _ ->
+            false
     end.
 
 without_headers(Uri) ->
-    hd(binary:split(Uri, <<"?">>)).
+    {_, U} = chappe_sip_uri:take_param(
+        hd(binary:split(Uri, <<"?">>)), <<"method">>
+    ),
+    U.
 
 q_value(#{<<"q">> := Q}) when is_binary(Q) ->
     try
@@ -1236,16 +1311,36 @@ sip_error(Status, Msg) ->
 default_or(undefined) -> <<>>;
 default_or(R) -> R.
 
-default_contact(Opts) ->
-    case maps:get(contact, Opts, undefined) of
-        undefined ->
-            case chappe_sip_engine:contact() of
-                undefined -> <<"sip:anonymous@localhost">>;
-                C -> contact_uri(C)
-            end;
-        C ->
-            C
+%% The app's contact, else ours: the TLS listener's sips URI when the
+%% Request-URI, the outbound proxy or the first preloaded route is SIPS
+%% (RFC 3261 8.1.1.8), so a dialog it forms is secure (12.2.1.1).
+default_contact(#data{opts = #{contact := C}}) ->
+    C;
+default_contact(#data{} = D) ->
+    Plain =
+        case chappe_sip_engine:contact() of
+            undefined -> <<"sip:anonymous@localhost">>;
+            C -> contact_uri(C)
+        end,
+    case secure(D) andalso chappe_sip_engine:tls_contact() of
+        Tls when is_binary(Tls) -> Tls;
+        _ -> Plain
     end.
+
+secure(#data{flow = Flow}) when Flow =/= undefined ->
+    false;
+secure(#data{uri = Uri, proxy = Proxy, route_set = Routes}) ->
+    Top =
+        case Routes of
+            [First | _] -> contact_uri(First);
+            [] -> undefined
+        end,
+    lists:any(fun is_sips/1, [Uri, Proxy, Top]).
+
+is_sips(<<S, I, P, S2, ":", _/binary>>) ->
+    string:lowercase(<<S, I, P, S2>>) =:= <<"sips">>;
+is_sips(_) ->
+    false.
 
 %% The Contact header value: our URI in angle brackets, then any
 %% contact_params (`;isfocus' for a conference focus, RFC 4579).

@@ -18,7 +18,7 @@
 -export([subprotocol_required/1, binary_frame_in/1, binary_frame_out/1,
          missing_header_400/1, content_length_checked/1,
          record_route_mirrored/1, received_rport/1,
-         retransmission_matches/1, cancel_answers_487/1,
+         retransmission_matches/1, cancel_answers_487/1, progress_resent/1,
          reaper_answers/1, worker_cap_503/1, deadline_500/1,
          ws_only_node_sheds/1, timer_b/1, timer_c_cancels_and_acks/1,
          cancel_held_until_provisional/1, unacked_2xx_byes/1,
@@ -28,7 +28,8 @@
 
 -define(ENV, [max_request_workers, non_invite_deadline_ms, handler_deadline_ms,
               ws_server_txn_timeout_ms, ws_client_txn_timeout_ms,
-              ws_timer_c_ms, ws_ack_timeout_ms, ws_idle_timeout_ms,
+              ws_timer_c_ms, ws_ack_timeout_ms, ws_progress_ms,
+              ws_idle_timeout_ms,
               ws_ping_interval_ms, ws_transport_max_mailbox,
               max_message_size]).
 
@@ -36,6 +37,7 @@ all() ->
     [subprotocol_required, binary_frame_in, binary_frame_out,
      missing_header_400, content_length_checked, record_route_mirrored,
      received_rport, retransmission_matches, cancel_answers_487,
+     progress_resent,
      reaper_answers, worker_cap_503, deadline_500, ws_only_node_sheds,
      timer_b, timer_c_cancels_and_acks, cancel_held_until_provisional,
      unacked_2xx_byes, prack_over_ws, crlf_keepalive_ws, crlf_keepalive_tcp,
@@ -296,6 +298,40 @@ cancel_answers_487(_Config) ->
     after 500 -> ok
     end,
     ws:send(C, {text, ack_non2xx(<<"can@ct">>, Br, TT)}),
+    ws:close(C, 1000).
+
+%% RFC 3261 13.3.1.1: an INVITE left ringing sends its last non-100
+%% provisional again every ws_progress_ms (60 s by default, as nta does on
+%% UDP, TCP and TLS), with the same To-tag, and stops at the final.
+%% req: R3261-213
+progress_resent(_Config) ->
+    {_EP, WP} = start(),
+    application:set_env(chappe_sip, ws_progress_ms, 300),
+    Test = self(),
+    ok = chappe_sip:invite(fun(_Req, Res) ->
+        ok = chappe_sip_res:send(Res, 180, #{}),
+        Test ! {inv, self()},
+        receive go -> chappe_sip_res:send(Res, 486, #{}) after 5000 -> ok end
+    end),
+    C = connect(WP),
+    Br = <<"z9hG4bKprog1">>,
+    ws:send(C, {text, invite_req(<<"prog@ct">>, Br, <<>>, <<>>)}),
+    W = receive {inv, P} -> P after 5000 -> ct:fail(no_invite) end,
+    TT = to_tag(recv_ws(180)),
+    T0 = erlang:monotonic_time(millisecond),
+    ?assertEqual(TT, to_tag(recv_ws(180))),
+    ?assertEqual(TT, to_tag(recv_ws(180))),
+    ?assert(erlang:monotonic_time(millisecond) - T0 >= 500),
+    W ! go,
+    %% a resend may still precede the final; none may follow it
+    R486 = until_final(),
+    ?assertEqual(486, binary_to_integer(binary:part(R486, 8, 3))),
+    ?assertEqual(TT, to_tag(R486)),
+    receive
+        {ws_in, <<"SIP/2.0 1", _/binary>>} -> ct:fail(provisional_after_final)
+    after 1000 -> ok
+    end,
+    ws:send(C, {text, ack_non2xx(<<"prog@ct">>, Br, TT)}),
     ws:close(C, 1000).
 
 %% A server transaction the app never answers is reaped with 408 (INVITE)
@@ -609,6 +645,14 @@ recv_ws(Code) ->
     receive
         {ws_in, <<"SIP/2.0 ", C:3/binary, _/binary>> = Bin} when C =:= CB -> Bin
     after 6000 -> ct:fail({no_ws_status, Code})
+    end.
+
+%% the next final response, skipping the provisionals before it
+until_final() ->
+    receive
+        {ws_in, <<"SIP/2.0 1", _/binary>>} -> until_final();
+        {ws_in, <<"SIP/2.0 ", _/binary>> = Bin} -> Bin
+    after 6000 -> ct:fail(no_final)
     end.
 
 recv_ws_call(Code, CallId) ->

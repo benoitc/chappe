@@ -26,6 +26,10 @@ fi
 # sofia is vendored, not a submodule: HEAD would be the umbrella's commit and
 # rebuild sofia on every commit, so key on the hash of its tree instead
 SOFIA_SHA=$(git -C "$SOFIA" rev-parse HEAD:./ 2>/dev/null || echo unknown)
+# bump SOFIA_CONF when the configure options change, so a tree built with
+# the old ones is reconfigured
+SOFIA_CONF=nozlib
+SOFIA_KEY="$SOFIA_SHA-$SOFIA_CONF"
 
 # The NIF stamp must change when anything that affects the built object does:
 # the shim source, this script, the sanitizer, the target arch/OS, and the
@@ -38,7 +42,7 @@ NIF_SUM="$NIF_SUM-$(printf '%s' "$NIF_ENV" | cksum | awk '{print $1}')"
 
 # --- stage 1: sofia-sip static build ---
 SOFIA_STAMP="$BUILD/.sofia.stamp"
-if [ ! -f "$DIST/lib/libsofia-sip-ua.a" ] || [ "$(cat "$SOFIA_STAMP" 2>/dev/null)" != "$SOFIA_SHA" ]; then
+if [ ! -f "$DIST/lib/libsofia-sip-ua.a" ] || [ "$(cat "$SOFIA_STAMP" 2>/dev/null)" != "$SOFIA_KEY" ]; then
     echo "==> building sofia-sip ($SOFIA_SHA)"
     mkdir -p "$BUILD/sofia"
 
@@ -77,10 +81,15 @@ if [ ! -f "$DIST/lib/libsofia-sip-ua.a" ] || [ "$(cat "$SOFIA_STAMP" 2>/dev/null
     # so relax them back to warnings. Harmless on older compilers.
     RELAX="-Wno-error=implicit-function-declaration -Wno-error=implicit-int"
     RELAX="$RELAX -Wno-error=int-conversion"
+    # No zlib: with it nta inflates gzip and deflate bodies with uncompress()
+    # (which only reads zlib framing), rewrites Content-Encoding to deflate,
+    # and deflates responses to compressed requests whatever their
+    # Accept-Encoding. chappe applies no content coding; the request worker
+    # answers 415 to an encoded INVITE body instead.
     ( cd "$BUILD/sofia" && \
       "$SOFIA/configure" --prefix="$DIST" \
           --disable-shared --enable-static --with-pic \
-          --disable-glib $SSL_OPT \
+          --disable-glib $SSL_OPT ac_cv_lib_z_compress=no \
           CFLAGS="-O2 -g -DNDEBUG $RELAX" LDFLAGS="$DARWIN_FRAMEWORKS" ) \
         >"$BUILD/sofia-configure.log" 2>&1 || {
         echo "error: sofia configure failed:" >&2
@@ -94,7 +103,7 @@ if [ ! -f "$DIST/lib/libsofia-sip-ua.a" ] || [ "$(cat "$SOFIA_STAMP" 2>/dev/null
         tail -n 40 "$BUILD/sofia-make.log" >&2
         exit 1
     }
-    echo "$SOFIA_SHA" > "$SOFIA_STAMP"
+    echo "$SOFIA_KEY" > "$SOFIA_STAMP"
 fi
 
 # --- stage 2: NIF shim ---

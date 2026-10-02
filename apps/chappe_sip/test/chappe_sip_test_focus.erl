@@ -16,7 +16,7 @@
 -include_lib("chappe_sip/include/chappe_sip_uac.hrl").
 
 -export([start/1, start/2, stop/0, install/0]).
--export([set_description/1, kick/1, uri/0]).
+-export([set_description/1, kick/1, uri/0, set_private/1, subscribe_policy/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -define(ANSWER,
@@ -35,7 +35,10 @@
     %% leg key => #{uri, display, private, n, ep, dialog, refer}
     legs = #{} :: map(),
     host :: term(),
-    seq = 0 :: non_neg_integer()
+    seq = 0 :: non_neg_integer(),
+    %% users the app was told are private outside SIP (a portal, an
+    %% operator setting): shown anonymous whatever their INVITE says
+    private = [] :: [binary()]
 }).
 
 %% Uri: the conference URI; one conference at a time, registered locally.
@@ -59,9 +62,22 @@ uri() ->
 set_description(D) ->
     gen_server:call(?MODULE, {description, D}).
 
+%% the user Uri asked for privacy through another channel than SIP (RFC
+%% 4579 6): it joins anonymous even without a Privacy header
+set_private(Uri) ->
+    gen_server:call(?MODULE, {private, Uri}).
+
 %% the focus hangs up the participant whose user entity is Uri
 kick(Uri) ->
     gen_server:call(?MODULE, {kick, Uri}).
+
+%% Policy: fun(Req) -> map(), the extra chappe_sip_focus:subscribe/4
+%% options of each SUBSCRIBE (a per-subscriber view); undefined clears it.
+subscribe_policy(undefined) ->
+    _ = persistent_term:erase({?MODULE, subscribe_policy}),
+    ok;
+subscribe_policy(Policy) ->
+    persistent_term:put({?MODULE, subscribe_policy}, Policy).
 
 %% the SIP entry points, routed to the running conference
 install() ->
@@ -125,7 +141,11 @@ subscribe(Req, Res) ->
             chappe_sip_res:send(Res, 404);
         Conf ->
             Contact = gen_server:call(Conf, contact),
-            chappe_sip_focus:subscribe(Req, Res, Conf, #{contact => Contact})
+            Policy = persistent_term:get(
+                {?MODULE, subscribe_policy}, fun(_) -> #{} end
+            ),
+            Opts = (Policy(Req))#{contact => Contact},
+            chappe_sip_focus:subscribe(Req, Res, Conf, Opts)
     end.
 
 summary(Req) ->
@@ -165,6 +185,8 @@ handle_call(contact, _From, S) ->
     {reply, S#state.contact, S};
 handle_call(uri, _From, S) ->
     {reply, S#state.uri, S};
+handle_call({private, Uri}, _From, S) ->
+    {reply, ok, S#state{private = [Uri | S#state.private]}};
 handle_call({description, D}, _From, S) ->
     {reply, ok, changed(S#state{description = maps:merge(S#state.description, D)})};
 handle_call({kick, Uri}, _From, S) ->
@@ -189,7 +211,9 @@ handle_cast({joined, D, Summary}, S) ->
         call_info => call_info(D, uas),
         media => chappe_sip_focus:media(Sdp, ?AVAILABLE)
     },
-    Leg = maps:with([uri, display, private], Summary),
+    #{uri := Uri, private := Asked} = Summary,
+    Private = Asked orelse lists:member(Uri, S#state.private),
+    Leg = (maps:with([uri, display], Summary))#{private => Private},
     {noreply, changed(add_leg(chappe_sip_dialog:id(D), Leg#{dialog => D, ep => Ep}, S))}.
 
 add_leg(Key, Leg, S) ->

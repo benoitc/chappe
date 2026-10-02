@@ -200,7 +200,8 @@ uri_of(Value) ->
 %% and parameters of the Request-URI and replaces its host and port. RFC
 %% 5630 5.3: a SIPS request is only forwarded to a SIPS target, and a SIP
 %% request to a SIPS target keeps a SIP Request-URI but goes over TLS (the
-%% third element is that TLS next hop, or undefined).
+%% third element is that TLS next hop, or undefined). A SIPS target whose
+%% transport parameter names UDP is refused (RFC 3261 19.1.1).
 retarget({ws, _}, Msg) ->
     {ok, Msg, undefined};
 retarget({flow, Uri, _Flow}, Msg) ->
@@ -212,9 +213,18 @@ retarget(<<"sip:", _/binary>> = Uri, Msg) ->
         false -> {ok, chappe_sip_msg:set_uri(Uri, Msg), undefined}
     end;
 retarget(<<"sips:", Rest/binary>> = Uri, Msg) ->
-    case is_sips(chappe_sip_msg:uri(Msg)) of
-        true -> {ok, chappe_sip_msg:set_uri(Uri, Msg), undefined};
-        false -> {ok, chappe_sip_msg:set_uri(<<"sip:", Rest/binary>>, Msg), Uri}
+    case
+        {
+            chappe_sip_uri:is_sips_unreliable(Uri),
+            is_sips(chappe_sip_msg:uri(Msg))
+        }
+    of
+        {true, _} ->
+            {error, sips_unreliable_transport};
+        {false, true} ->
+            {ok, chappe_sip_msg:set_uri(Uri, Msg), undefined};
+        {false, false} ->
+            {ok, chappe_sip_msg:set_uri(<<"sip:", Rest/binary>>, Msg), Uri}
     end;
 retarget(HostPort, Msg) ->
     {ok, retarget_host(HostPort, Msg), undefined}.

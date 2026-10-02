@@ -40,3 +40,17 @@ Notes:
   file with `<Reference variables="chk"/>`.
 - A scenario for a feature chappe lacks stays strict: list the case in
   `../conformance/expected-fail` instead of loosening it.
+
+## DNS cases
+
+The `dns_*` cases test RFC 3263 resolution. `lab.sh sipp` runs their
+container at `10.253.7.30`, the address the lab's DNS records
+(`../conformance/dns/dnsmasq.conf`) point at, so it can play the
+destination. `CASE.xml` sends a MESSAGE to `sip:dial@<node>` whose body is
+the URI to dial; the node sends an OPTIONS there and answers the MESSAGE
+with the status it got.
+
+- `dns_srv`: SIPp listens on UDP 5080 (`dns_srv-target.xml`), the SRV port.
+- `dns_sips_failover`: socat takes TLS on 5061 with the lab's `svcs.lab`
+  certificate and `tls_target.sh` answers, because SIPp's own TLS listener
+  fails to send its answers.

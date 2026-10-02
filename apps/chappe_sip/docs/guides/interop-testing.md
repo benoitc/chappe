@@ -54,19 +54,20 @@ unaffected.
 The conformance lab checks chappe_sip against two independent SIP stacks,
 one RFC flow per case: SIPp scenarios that fail on any header the RFC
 requires and does not see, and pjsua for transfers and session timers. You
-need it when you change dialog, REFER, Replaces, session timer or
-subscription behaviour, and before a release.
+need it when you change dialog, REFER, Replaces, session timer,
+subscription or DNS resolution behaviour, and before a release. CI runs it
+in the conformance job.
 
 Everything runs in docker on one network (`10.253.7.0/24`): a chappe node
-(`interop/conformance/node/chappe_conf_node.erl`, on the public API), SIPp
-and pjsua. Docker Desktop on macOS cannot send UDP from the host to a
-container, so the node runs in a container too.
+(`interop/conformance/node/chappe_conf_node.erl`, on the public API), SIPp,
+pjsua and a dnsmasq server. Docker Desktop on macOS cannot send UDP from
+the host to a container, so the node runs in a container too.
 
 ```bash
 make interop-conformance
 ```
 
-The first run builds three images and compiles the tree into a volume;
+The first run builds four images and compiles the tree into a volume;
 later runs recompile only what changed. To run one case, or to keep the lab
 up and drive it by hand:
 
@@ -90,5 +91,17 @@ Notes:
   scenario to make it pass.
 - Without `CONFORMANCE=1`, or without docker, the suite skips.
 - `CONFORMANCE_NOBUILD=1` skips the image and compile steps.
+- The node resolves through dnsmasq at `10.253.7.53` (its `/etc/resolv.conf`
+  is `interop/conformance/dns/resolv.conf`; sofia reads it). The records are
+  in `interop/conformance/dns/dnsmasq.conf`: `svc.lab` has a NAPTR to a UDP
+  SRV on port 5080, `svcs.lab` a NAPTR to a TLS SRV whose first target
+  refuses connections. The `dns_*` cases run SIPp at `10.253.7.30`, the
+  address the records name, and ask the node to dial: a MESSAGE to
+  `sip:dial@10.253.7.10` whose body is the URI. The node sends an OPTIONS
+  there and answers with the status it got.
+- `lab.sh build` also makes throwaway TLS certificates (a CA, the node's
+  `agent.pem`, and a `svcs.lab` certificate for the TLS target) in the
+  `chappe_conf_certs` volume; the node listens for TLS on 5061 with them.
+- `lab.sh logs dns` prints the queries dnsmasq answered.
 - `LAB_PROXY=http://host.docker.internal:8888` sends the build container's
   hex fetches through an HTTP proxy on your machine.

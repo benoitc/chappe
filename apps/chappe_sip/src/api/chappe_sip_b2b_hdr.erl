@@ -3,8 +3,9 @@
 
 %% The headers a B2BUA carries from one leg to the other: the Reason of a
 %% BYE or CANCEL (RFC 3326), the request headers copied from A to B with
-%% Privacy: none always kept (RFC 3323), and the headers of B's 2xx copied
-%% to A's. Split out of chappe_sip_b2b, which owns the call flow.
+%% Privacy: none always kept and, as a privacy service, the identifying
+%% ones removed (RFC 3323), and the headers of B's 2xx copied to A's.
+%% Split out of chappe_sip_b2b, which owns the call flow.
 -module(chappe_sip_b2b_hdr).
 
 -export([
@@ -12,6 +13,20 @@
     proxy_request_headers/2,
     proxy_response_headers/2
 ]).
+-export([privacy/2, privacy_unsupported/2, privacy_failure/1]).
+
+%% RFC 3323 5.3: the informational headers a user agent adds that a
+%% privacy service removes under user (and header) privacy
+-define(USER_INFO_HEADERS, [
+    <<"subject">>,
+    <<"call-info">>,
+    <<"organization">>,
+    <<"user-agent">>,
+    <<"reply-to">>,
+    <<"in-reply-to">>
+]).
+%% RFC 3325 9.3: what id privacy removes
+-define(ID_HEADERS, [<<"p-asserted-identity">>, <<"p-preferred-identity">>]).
 
 %% RFC 3326: the Reason headers of a BYE or CANCEL, to repeat on the other
 %% leg (nothing for a teardown that had no request). Section 2: one value
@@ -78,7 +93,103 @@ excluded_response() ->
 proxy_request_headers(Req, Opts) ->
     Msg = chappe_sip_req:msg(Req),
     Hdrs = copy(Msg, maps:get(proxy_request_headers, Opts, []), []),
-    Hdrs ++ privacy_none(Msg, Hdrs).
+    Private = private_headers(privacy(Req, Opts)),
+    [
+        {N, V}
+     || {N, V} <- Hdrs, not lists:member(string:lowercase(N), Private)
+    ] ++ privacy_none(Msg, Hdrs).
+
+%% ---- the privacy service (RFC 3323 5) ----
+
+%% The priv-values of the request's Privacy header the b2bua applies, as a
+%% privacy service (Opts privacy => true | #{session => boolean()}): none,
+%% header, user, id, critical, and session when the app anonymizes the
+%% media. [] when the b2bua is no privacy service.
+-spec privacy(chappe_sip_req:req(), map()) -> [binary()].
+privacy(Req, Opts) ->
+    case service(Opts) of
+        off ->
+            [];
+        Supported ->
+            [T || T <- privacy_tokens(Req), lists:member(T, Supported)]
+    end.
+
+%% RFC 3323 5: with critical, the priv-values the service cannot apply
+%% (the request then fails with 500); [] when it can apply them all, when
+%% critical is absent, or when the b2bua is no privacy service.
+-spec privacy_unsupported(chappe_sip_req:req(), map()) -> [binary()].
+privacy_unsupported(Req, Opts) ->
+    case service(Opts) of
+        off ->
+            [];
+        Supported ->
+            Tokens = privacy_tokens(Req),
+            case lists:member(<<"critical">>, Tokens) of
+                true -> [T || T <- Tokens, not lists:member(T, Supported)];
+                false -> []
+            end
+    end.
+
+%% RFC 3323 5: the reason phrase of that 500 says privacy failed and names
+%% the priv-values not supported
+-spec privacy_failure([binary()]) -> binary().
+privacy_failure(Unsupported) ->
+    iolist_to_binary([
+        <<"Privacy Failure: ">>,
+        lists:join(<<", ">>, Unsupported),
+        <<" not supported">>
+    ]).
+
+service(Opts) ->
+    Base = [
+        <<"none">>, <<"header">>, <<"user">>, <<"id">>, <<"critical">>
+    ],
+    case maps:get(privacy, Opts, false) of
+        true -> Base;
+        #{session := true} -> Base ++ [<<"session">>];
+        #{} -> Base;
+        _ -> off
+    end.
+
+%% the lowercase priv-values of every Privacy header, in order, once each
+privacy_tokens(Req) ->
+    Values = chappe_sip_msg:get_all(<<"privacy">>, chappe_sip_req:msg(Req)),
+    Tokens = [
+        string:lowercase(string:trim(T))
+     || V <- Values, T <- binary:split(V, [<<";">>, <<",">>], [global])
+    ],
+    dedup([T || T <- Tokens, T =/= <<>>], []).
+
+dedup([], Acc) ->
+    lists:reverse(Acc);
+dedup([T | Rest], Acc) ->
+    case lists:member(T, Acc) of
+        true -> dedup(Rest, Acc);
+        false -> dedup(Rest, [T | Acc])
+    end.
+
+%% the headers of A the applied levels keep from B; none asks for nothing
+%% (RFC 3323 5: no privacy function at all)
+private_headers(Levels) ->
+    case lists:member(<<"none">>, Levels) of
+        true ->
+            [];
+        false ->
+            User =
+                case
+                    lists:member(<<"user">>, Levels) orelse
+                        lists:member(<<"header">>, Levels)
+                of
+                    true -> ?USER_INFO_HEADERS;
+                    false -> []
+                end,
+            Id =
+                case lists:member(<<"id">>, Levels) of
+                    true -> ?ID_HEADERS;
+                    false -> []
+                end,
+            User ++ Id
+    end.
 
 %% RFC 3323 4.2, 5: Privacy: none goes to B as it came, whatever else is
 %% copied; an intermediary must not drop or change it

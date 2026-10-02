@@ -26,11 +26,14 @@
 -opaque uac_ref() :: #uac_ref{}.
 -export_type([uac_ref/0]).
 
-%% Opts: #{method => binary() (default INVITE),
+%% Opts: #{method => binary() (default: the URI's method parameter, else
+%%           INVITE; the parameter never goes in the Request-URI),
 %%         from => binary(), to => binary(), contact => binary(),
 %%         local_sdp => iodata(), headers => [{binary(), iodata()}],
 %%         body => iodata(), content_type => binary(),
-%%         proxy => binary(),
+%%         proxy => binary() (the next hop, no Route header),
+%%         route_set => [binary()] (Route values, a preloaded route set:
+%%           RFC 3261 8.1.1.1, loose or strict first route),
 %%         auth => #{user := binary(), pass := binary(), realm => binary()}
 %%           or a list of them (a realm-less entry answers any realm),
 %%         follow_redirects => boolean() (3xx Contacts tried best q first),

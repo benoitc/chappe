@@ -13,11 +13,11 @@
          init_per_testcase/2, end_per_testcase/2]).
 -export([trying_within_200ms/1, no_trying_for_non_invite/1,
          rport_filled_in/1, response_to_source_port/1,
-         rport_on_our_requests/1]).
+         rport_on_our_requests/1, timestamp_delay_seconds/1]).
 
 all() ->
     [trying_within_200ms, no_trying_for_non_invite, rport_filled_in,
-     response_to_source_port, rport_on_our_requests].
+     response_to_source_port, rport_on_our_requests, timestamp_delay_seconds].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -68,8 +68,11 @@ trying_within_200ms(Config) ->
     {ok, M} = chappe_sip_msg:parse(First),
     ?assertEqual(<<"1 INVITE">>, chappe_sip_msg:get(<<"cseq">>, M)),
     ?assertEqual(undefined, chappe_sip_msg:to_tag(M)),
-    %% copied, with the delay value 8.2.6.1 lets the UAS append
-    ?assertMatch(<<"54", _/binary>>, chappe_sip_msg:get(<<"timestamp">>, M)),
+    %% copied, with the delay value 8.2.6.1 lets the UAS append: the 100
+    %% left at once, so well under 0.2 s
+    TS = chappe_sip_msg:get(<<"timestamp">>, M),
+    ?assertMatch(<<"54", _/binary>>, TS),
+    ?assert(timestamp_delay(TS) < 0.2, {delay, TS}),
     ?assertNotEqual(nomatch,
                     binary:match(chappe_sip_msg:get(<<"via">>, M), Branch)).
 
@@ -85,6 +88,28 @@ no_trying_for_non_invite(Config) ->
     {ok, LP} = inet:port(Sock),
     ok = gen_udp:send(Sock, {127, 0, 0, 1}, Port, options(LP, branch())),
     ?assertMatch(<<"SIP/2.0 200 ", _/binary>>, recv(Sock, 2000)).
+
+%% The app answers an OPTIONS carrying a Timestamp after 600 ms: the
+%% response copies the Timestamp with a delay, in seconds, between the
+%% request's arrival and the response (8.2.6.1).
+%% req: R3261-103
+timestamp_delay_seconds(Config) ->
+    {Port, Sock} = {?config(port, Config), ?config(sock, Config)},
+    ok = chappe_sip:options(fun(_Req, Res) ->
+        timer:sleep(600),
+        chappe_sip_res:send(Res, 200)
+    end),
+    {ok, LP} = inet:port(Sock),
+    Opt = binary:replace(options(LP, branch()), <<"CSeq: 1 OPTIONS\r\n">>,
+                         <<"CSeq: 1 OPTIONS\r\nTimestamp: 54.25\r\n">>),
+    ok = gen_udp:send(Sock, {127, 0, 0, 1}, Port, Opt),
+    {ok, M} = chappe_sip_msg:parse(recv(Sock, 3000)),
+    ?assertEqual(200, chappe_sip_msg:status(M)),
+    TS = chappe_sip_msg:get(<<"timestamp">>, M),
+    ct:log("Timestamp: ~s", [TS]),
+    ?assertMatch(<<"54.25 ", _/binary>>, TS),
+    Delay = timestamp_delay(TS),
+    ?assert(Delay >= 0.5 andalso Delay =< 1.0, {delay, Delay}).
 
 %% A request whose Via carries an empty rport gets it filled with the
 %% source port in the response (RFC 3581 4).
@@ -134,6 +159,11 @@ rport_on_our_requests(Config) ->
     ?assertEqual(200, chappe_sip_msg:status(Resp)).
 
 %% ---- helpers ----
+
+%% the delay of a Timestamp value ("54 0.000120"), in seconds
+timestamp_delay(TS) ->
+    [_, D] = binary:split(string:trim(TS), <<" ">>),
+    binary_to_float(string:trim(D)).
 
 ok_to(M) ->
     H = fun(N) -> chappe_sip_msg:get(N, M) end,

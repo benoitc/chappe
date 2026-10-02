@@ -32,7 +32,9 @@ tracker; the milestone history is in `docs/plan.md`.
   INVITE's branch. A CANCEL of an unanswered INVITE gets the 487, a 2xx
   never ACKed within 64*T1 is BYEd, reliable provisionals (100rel) carry
   RSeq and are matched to their PRACK, and dialog-forming responses carry
-  the request's Record-Route.
+  the request's Record-Route. An INVITE left ringing sends its last non-100
+  provisional again every `ws_progress_ms` (60 s) until the final, as nta
+  does on UDP, TCP and TLS (RFC 3261 13.3.1.1).
 - Via `received` is stamped when the sent-by is not the client address (a
   WS client's `.invalid` host always is); `rport` is filled in only when the
   client asked with a bare `rport` (RFC 3581).
@@ -66,7 +68,13 @@ tracker; the milestone history is in `docs/plan.md`.
   (one credential per realm, so a 407 then a 401 works; `stale=true` retried
   with the new nonce; SHA-256 preferred over MD5; nonce counts per nonce),
   3xx redirects (Contacts best `q` first, the next one on a 4xx/5xx, sip/sips
-  only, `?headers` dropped), and 3PCC (`no_ack`, then
+  only, `?headers` and `method` dropped; a 305 keeps the Request-URI and
+  goes through the Contact as proxy), a preloaded `route_set` (loose or
+  strict first route, RFC 3261 8.1.1.1), a URI `method` parameter used as
+  the method when none is given and left out of the Request-URI, a sips
+  Contact when the Request-URI, `proxy` or first route is SIPS (also on the
+  dialog's target refreshes), a sip: next hop reached as sips: for a SIPS
+  Request-URI, a `sips:...;transport=udp` target refused, and 3PCC (`no_ack`, then
   `chappe_sip_dialog:ack/2` sends the ACK with the answer). A
   `create_uac/2` timeout CANCELs the INVITE and BYEs a 2xx that crosses it.
   The 2xx ACK carries the INVITE's credentials. The body is `local_sdp`
@@ -79,7 +87,14 @@ tracker; the milestone history is in `docs/plan.md`.
   `chappe_sip_b2b:relay/1,2` carries re-INVITE and UPDATE offers across the
   legs (answer, failure and 491 back to the offerer, an optional SDP rewrite),
   lets each leg answer its own session refreshes, and repeats the `Reason` of
-  a BYE or CANCEL (RFC 3326) on the other leg.
+  a BYE or CANCEL (RFC 3326) on the other leg. With `privacy => true` it acts
+  as an RFC 3323 privacy service: a `critical` Privacy naming a level it
+  cannot apply (`session`, unless you anonymize the media and say so with
+  `privacy => #{session => true}`, or an unknown token) gets 500 with the
+  levels in the reason phrase before B is called; `user` and `header` keep
+  Subject, Call-Info, Organization, User-Agent, Reply-To and In-Reply-To
+  from B, and `id` keeps P-Asserted-Identity, even with
+  `proxy_request_headers => all`.
 - `chappe_sip:proxy_request/3`: a stateful proxy after RFC 3261 section 16.
   Sequential and parallel forking with the Request-URI rewritten to each
   target, a pre-existing Route set honoured (loose and strict next hops,
@@ -156,9 +171,11 @@ tracker; the milestone history is in `docs/plan.md`.
   `chappe_sip_confinfo` renders full and partial conference-info+xml and
   anonymous participants (`Privacy`), with conf-uris, available-media and
   referred, keys kept unique and call-info shown only when the focus's
-  `call_info` policy allows. `departure/1`, `referred/1`, `media/2` and
-  `leg_status/1` derive an endpoint's disconnection-method, referred-by,
-  media and on-hold state from SIP. See the conference focus guide.
+  `call_info` policy allows. A subscriber can have its own `view` (a
+  moderator sees call-info, a denied watcher gets 200 and an empty roster).
+  `departure/1`, `referred/1`, `media/2` and `leg_status/1` derive an
+  endpoint's disconnection-method, referred-by, media (with the `a=ssrc` as
+  src-id) and on-hold state from SIP. See the conference focus guide.
 - `chappe_sip_handler`: an optional behaviour for structured UAS apps.
 - Replaces (RFC 3891): `chappe_sip:find_replaced/1` matches an INVITE's
   `Replaces` to a live dialog and returns its state (`early | confirmed |
@@ -167,9 +184,10 @@ tracker; the milestone history is in `docs/plan.md`.
   ETS index the dialog fsm maintains (cleared on BYE, owner death, fsm crash,
   and engine restart; bounded by `max_dialogs`). `chappe_sip_hdr:replaces/1`,
   `replaces_value/1`, `escape/1` and `refer_to_replaces/1` parse and build the
-  value, including inside a Refer-To URI. `chappe_sip:replaces_response/1`
-  gives the section 3 answer (accept, or reject 400/481/486/603);
-  `replaces_response/2` adds your authorization policy (403). The early
+  value, including inside a Refer-To URI. `chappe_sip:replaces_response/1,2`
+  gives the section 3 answer (accept, or reject 400/481/486/603) and refuses
+  a match with 403 unless your `authorize` fun accepts it or the sender
+  passes digest (`auth`, a 401 challenge first): RFC 3891 section 8. The early
   dialogs of a ringing UAC call are indexed, so it can be replaced (destroy
   sends the CANCEL). `replaces` is in Supported on our INVITE and its 2xx and accepted in
   Require. See the answer-calls guide.
@@ -283,7 +301,9 @@ tracker; the milestone history is in `docs/plan.md`.
   Max-Forwards is not required of a received request (a proxy adds 70).
 - URIs: a user part may carry `;` (`sip:alice;day=tuesday@example.com`), the
   scheme is case-insensitive, and `chappe_sip_uri:equal/2` compares by RFC
-  3261 19.1.4.
+  3261 19.1.4. `chappe_sip_uri:format/1` percent-escapes what each component
+  (user, tel subscriber, password, parameters, headers) may not carry raw,
+  keeps existing escapes, and writes a repeated parameter once.
 - Handling MUSTs: an out-of-dialog method with no handler gets 405 with
   `Allow` (21.4.5), or 501 when unknown (21.5.2), and OPTIONS 200 with our
   capabilities (11); a non-100 response
@@ -296,6 +316,14 @@ tracker; the milestone history is in `docs/plan.md`.
   UAS and check `Proxy-Require` (16.3). A too-brief REGISTER gets a 423 with
   `Min-Expires` (10.3), INVITE gets a 100 Trying, and merged requests get a
   482 (8.2.2.2).
+- No content coding: sofia's zlib support is turned off at build time
+  (`c_src/build.sh`), so nta neither inflates a request body nor deflates a
+  response. An INVITE whose body has a Content-Encoding other than identity
+  gets 415 with `Accept-Encoding: identity`; any other request reaches the
+  app with its body and Content-Encoding as sent (RFC 3261 20.12).
+- Requests to a domain are resolved per RFC 3263 by nta (NAPTR, SRV, A,
+  with failover to the next SRV target, over TLS for a `sips:` URI); the
+  conformance lab checks both against a dnsmasq server.
 - Dialogs build a route set from Record-Route and route in-dialog
   requests through it (12.1.1/12.2.1.1): loose routing, or behind a strict
   router the first route as the Request-URI and the remote target last in
@@ -337,6 +365,23 @@ tracker; the milestone history is in `docs/plan.md`.
   a real JsSIP UA registers over WS, two JsSIP UAs place a WebRTC media call
   through the b2bua, and a Kamailio container OPTIONS-pings chappe_sip both
   directions. Drivers and setup live in `interop/`.
+- Conformance lab (`make interop-conformance`, also in CI): SIPp, pjsua and
+  a dnsmasq server against a chappe node in docker, one RFC flow per case
+  (`interop/conformance`, `docs/guides/interop-testing.md`).
+
+## Breaking changes
+
+- `chappe_sip:replaces_response/1,2` no longer accepts a Replaces by
+  default: a match that would be accepted is `{reject, 403}` unless you
+  pass `authorize => fun((Dialog, Req) -> boolean())` or
+  `auth => #{realm, secret}` (RFC 3891 section 8). With `auth`, it can also
+  return `{reject, 401, Headers}`; send those headers with the 401. To keep
+  the old behaviour on a closed network, pass
+  `#{authorize => fun(_, _) -> true end}`.
+- `chappe_sip_focus:subscribe/4` now sends the conference process
+  `{chappe_sip_focus, subscribed, Dialog, Opts}`. Pass it to
+  `chappe_sip_focus:handle_info/2` as before; the three-element form is still
+  accepted.
 
 ## Planned
 

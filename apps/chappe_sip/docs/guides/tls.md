@@ -63,6 +63,13 @@ ok = chappe_sip:start(#{
 
 - A 2xx to a dialog formed over TLS, or with a `sips:` Request-URI, top
   Record-Route or Contact, carries our `sips:` Contact (RFC 3261 12.1.1).
+- A request we originate to a `sips:` Request-URI, `proxy` or first
+  `route_set` entry carries our `sips:` Contact, and so do the target
+  refreshes of the dialog it forms (8.1.1.8, 12.2.1.1). A `sips:`
+  Request-URI goes over TLS even through a `sip:` proxy or route (8.1.2).
+  See [Originate calls](originate-calls.md).
+- A `sips:` URI with `transport=udp` is refused, as a request target and as
+  a proxy target (19.1.1).
 - The proxy record-routes with its `sips:` address when the forwarded
   request is SIPS, forwards a SIPS request only to a SIPS target, and sends a
   SIP request for a SIPS target over TLS (RFC 5630). See [Proxy](proxy.md).

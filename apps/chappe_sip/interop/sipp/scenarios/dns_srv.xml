@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!-- Copyright 2026 Benoit Chesneau
+     SPDX-License-Identifier: Apache-2.0
+
+     RFC 3261 8.1.2 and RFC 3263 4: the node sends an OPTIONS to
+     sip:uas@svc.lab. svc.lab has a NAPTR (SIP+D2U) to _sip._udp.svc.lab,
+     whose SRV names uas.svc.lab port 5080; dns_srv-target.xml listens
+     there and checks the request. This side asks the node to dial (a
+     MESSAGE to dial, the URI in the body) and wants the 200 the target
+     gave. -->
+<scenario name="dns_srv">
+  <send retrans="500">
+    <![CDATA[
+      MESSAGE sip:dial@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:sipp@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:dial@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 MESSAGE
+      Max-Forwards: 70
+      Content-Type: text/plain
+      Content-Length: [len]
+
+      sip:uas@svc.lab
+    ]]>
+  </send>
+  <recv response="100" optional="true"/>
+  <recv response="200"/>
+</scenario>

@@ -46,6 +46,7 @@ tune its safety limits.
 | `ws_timer_c_ms` | `180000` | Timer C: a WS client INVITE with a provisional but no final is CANCELed after this; each provisional restarts it. |
 | `ws_ack_timeout_ms` | `32000` | Timer H: how long a WS INVITE final waits for its ACK; an unACKed 2xx is then BYEd. |
 | `ws_server_txn_timeout_ms` | `180000` | A WS request the app never answers gets 408 (INVITE) or 500 after this. |
+| `ws_progress_ms` | `60000` | A ringing WS INVITE sends its last non-100 provisional again this often until the final (RFC 3261 13.3.1.1); `infinity`: never. |
 | `max_ws_connections` | `10000` | Concurrent WS connections; a further connect is refused and closed. |
 | `ws_transport_max_mailbox` | `10000` | Inbound WS frames are dropped while the transport mailbox is this deep. |
 | `ws_allowed_origins` | `[]` | Allowed browser Origins for the WS upgrade. Empty allows any; a non-empty list of binaries rejects everything else with 403. |

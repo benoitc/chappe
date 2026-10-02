@@ -20,6 +20,8 @@
     rtcp_on_the_wire/1,
     no_bye_from_a_leg_that_never_sent/1,
     new_ssrc_not_seen/1,
+    conflicts_rtp_and_rtcp_apart/1,
+    interval_bounds/1,
     sends_to_configured_remote/1,
     empty_rr_first/1,
     jitter_formula/1
@@ -35,12 +37,13 @@ all() ->
         rtcp_on_the_wire,
         no_bye_from_a_leg_that_never_sent,
         new_ssrc_not_seen,
+        conflicts_rtp_and_rtcp_apart,
         sends_to_configured_remote,
         {group, codec}
     ].
 
 groups() ->
-    [{codec, [], [empty_rr_first, jitter_formula]}].
+    [{codec, [], [empty_rr_first, jitter_formula, interval_bounds]}].
 
 init_per_suite(Config) ->
     {ok, _} = application:ensure_all_started(chappe_mix),
@@ -57,8 +60,10 @@ end_per_suite(_Config) ->
 %% mu-law negative zero, 0x7F, comes back as 0xFF) or silence. A wrong
 %% payload offset past the extension, a codec table with a wrong sign or
 %% a sample that is not one octet all change the bytes. Every packet is
-%% 160 octets of payload for 20 ms.
-%% req: R3551-060 R3551-061 R3551-062 R3550-001
+%% 160 octets of payload for 20 ms. The extension A sent is not carried
+%% over: every packet the mixer sends has X=0 and its payload right after
+%% the CSRC list.
+%% req: R3551-060 R3551-061 R3551-062 R3550-001 R3550-022
 g711_octets_through_the_mix(_Config) ->
     [octets_through(Law) || Law <- [ulaw, alaw]],
     %% one octet is one sample, and the sign is the MSB: mu-law 1 and
@@ -103,7 +108,15 @@ octets_through(Law) ->
     stream(SA, {?LO, MA}, Pkts),
     timer:sleep(100),
     ok = chappe_mix:stop(Conf),
-    Heard = [P || {_, #{payload := P}} <- rtp_in(drain(SB))],
+    Raw = drain(SB),
+    Heard = [P || {_, #{payload := P}} <- rtp_in(Raw)],
+    Mixed = [B || {_, B} <- Raw, not is_rtcp(B)],
+    ?assertNotEqual([], Mixed),
+    [?assertMatch(<<2:2, _:1, 0:1, _/bits>>, B) || B <- Mixed],
+    [
+        ?assertEqual(12 + 4 * CC + 160, byte_size(B))
+     || <<_:4, CC:4, _/binary>> = B <- Mixed
+    ],
     Expect = expected(Law, Frame),
     Silence = binary:copy(silence(Law), 160),
     ct:log("~p: ~p packets, ~p the frame", [
@@ -265,8 +278,9 @@ until_rtcp(Sock, Deadline, Acc) ->
 %% up to the datagram in 32-bit words; SDES items end in a null and each
 %% chunk is null padded to 32 bits; a BYE reason is null padded. The
 %% item lengths are picked so the chunks need different paddings, our
-%% own CNAME a whole word of nulls.
-%% req: R3550-028 R3550-097 R3550-109 R3550-110 R3550-136
+%% own CNAME a whole word of nulls. Each datagram, BYEs included, starts
+%% with an SR or an RR.
+%% req: R3550-028 R3550-097 R3550-109 R3550-110 R3550-136 R3550-046
 rtcp_on_the_wire(_Config) ->
     %% 4 + 2 + 10 = 16: a whole word of nulls
     {ok, Conf} = chappe_mix:start(#{cname => <<"0123456789">>}),
@@ -288,6 +302,11 @@ rtcp_on_the_wire(_Config) ->
     All = mixer_rtcp(PA) ++ mixer_rtcp(PB),
     ct:log("~p datagrams", [length(All)]),
     Walked = [walk(B) || B <- All],
+    Firsts = lists:usort([PT || [{PT, _, _} | _] <- Walked]),
+    ct:log("first packet types: ~p", [Firsts]),
+    ?assertEqual([], Firsts -- [200, 201]),
+    ?assertEqual(length(All), length([W || [{PT, _, _} | _] = W <- Walked,
+                                           PT =:= 200 orelse PT =:= 201])),
     Sdes = [P || Ps <- Walked, {202, _, _} = P <- Ps],
     Pads = lists:usort(lists:append([chunk_pads(Body, N) || {202, N, Body} <- Sdes])),
     ct:log("SDES chunk padding seen: ~p", [Pads]),
@@ -409,7 +428,86 @@ new_ssrc_not_seen(_Config) ->
     [chappe_mix_test_peer:stop(P) || P <- [PA, PB]],
     ok = chappe_mix:stop(Conf).
 
+%% With rtcp-mux one address sends both RTP and RTCP, and the conflict
+%% list keeps the two apart (8.2): RTP under the mixer's SSRC from that
+%% address is a collision (the SSRC changes); an SR under the new SSRC
+%% from the same address is a collision too, not a loop, since only its
+%% RTP was seen colliding; RTP under the third SSRC from there again is
+%% then a loop, and so is RTCP.
+%% req: R3550-182
+conflicts_rtp_and_rtcp_apart(_Config) ->
+    {ok, Conf} = chappe_mix:start(#{}),
+    {S, P} = open(),
+    {ok, L, #{port := M, rtcp_port := M}} =
+        chappe_mix:add_leg(Conf, #{remote => {?LO, P}}),
+    Rtp = fun(Ssrc, N) ->
+        ok = gen_udp:send(S, ?LO, M, rtp(#{pt => 0, seq => N, ts => N * 160,
+                                           ssrc => Ssrc,
+                                           payload => frame(ulaw)}))
+    end,
+    Sr = fun(Ssrc) ->
+        ok = gen_udp:send(S, ?LO, M, chappe_mix_rtcp:build([
+            #{type => sr, ssrc => Ssrc, ntp => 0, ts => 0, packets => 1,
+              octets => 160, blocks => []}
+        ]))
+    end,
+    Counts = fun() ->
+        #{collisions := C, loops := Lo, ssrc := Ss} = leg(Conf, L),
+        {C, Lo, Ss}
+    end,
+    {0, 0, S1} = Counts(),
+    Rtp(S1, 1),
+    wait(fun() -> element(1, Counts()) =:= 1 end, 1000),
+    {1, 0, S2} = Counts(),
+    ?assertNotEqual(S1, S2),
+    Sr(S2),
+    wait(fun() -> element(1, Counts()) =:= 2 end, 1000),
+    {2, 0, S3} = Counts(),
+    ?assertNotEqual(S2, S3),
+    Rtp(S3, 2),
+    wait(fun() -> element(2, Counts()) =:= 1 end, 1000),
+    Sr(S3),
+    wait(fun() -> element(2, Counts()) =:= 2 end, 1000),
+    ?assertEqual({2, 2, S3}, Counts()),
+    ok = chappe_mix:stop(Conf),
+    gen_udp:close(S).
+
 %% ---- codec: states and formulas ----
+
+%% The report interval of 6.2 / A.7 at its bounds: the 5 s minimum (2.5 s
+%% before the first report), the RTCP bandwidth split a quarter to the
+%% senders and three quarters to the receivers when senders are a quarter
+%% of the members or fewer, and the random factor 0.5 to 1.5 over e - 3/2.
+%% req: R3550-077
+interval_bounds(_Config) ->
+    Comp = 2.71828 - 1.5,
+    Near = fun(Want, Got) ->
+        ?assert(abs(Want - Got) =< 1.0e-6 * Want, {Want, Got})
+    end,
+    Low = 0.0,
+    High = 1.0 - 1.0e-9,
+    I = fun chappe_mix_rtcp:interval/6,
+    %% small conference: the minimum governs
+    Near(5.0 * 0.5 / Comp, I(2, 2, true, 100.0, false, Low)),
+    Near(5.0 * 1.5 / Comp, I(2, 2, true, 100.0, false, High)),
+    Near(2.5 * 0.5 / Comp, I(2, 2, true, 100.0, true, Low)),
+    Near(2.5 * 1.5 / Comp, I(2, 2, true, 100.0, true, High)),
+    %% 100 members, 2 senders: a sender shares 25% of 500 B/s with one
+    %% other sender, a receiver 75% with 97 others
+    Near(1000.0 * 2 / 125.0 * 0.5 / Comp, I(100, 2, true, 1000.0, false, Low)),
+    Near(1000.0 * 98 / 375.0 * 1.5 / Comp, I(100, 2, false, 1000.0, false, High)),
+    %% senders above a quarter: everyone shares the whole bandwidth
+    Near(1000.0 * 100 / 500.0 * 0.5 / Comp, I(100, 50, true, 1000.0, false, Low)),
+    %% the drawn factor spreads over the whole range
+    Draws = [
+        chappe_mix_rtcp:interval(2, 2, true, 100.0, false)
+     || _ <- lists:seq(1, 2000)
+    ],
+    {Min, Max} = {lists:min(Draws), lists:max(Draws)},
+    ct:log("2000 draws in [~.3f, ~.3f]", [Min, Max]),
+    ?assert(Min >= 5.0 * 0.5 / Comp - 1.0e-9),
+    ?assert(Max =< 5.0 * 1.5 / Comp + 1.0e-9),
+    ?assert(Min < 5.0 * 0.6 / Comp andalso Max > 5.0 * 1.4 / Comp, {Min, Max}).
 
 %% A session that has sent nothing starts its compound with an empty RR
 %% (RC 0), then SDES; a BYE compound from it starts the same way and ends

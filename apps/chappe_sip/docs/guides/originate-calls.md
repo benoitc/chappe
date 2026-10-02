@@ -106,6 +106,45 @@ ok = chappe_sip_uac:cancel(Ref, #{headers => [{<<"Reason">>, <<"SIP;cause=200">>
 200 = chappe_sip_msg:status(Resp).
 ```
 
+Without `method`, a `method` parameter of the URI names it (RFC 3261
+19.1.5), else OPTIONS; the parameter never goes in the Request-URI. This
+sends `REFER sip:bob@10.0.0.2`:
+
+```erlang
+{ok, Ref} = chappe_sip:request(<<"sip:bob@10.0.0.2;method=REFER">>, #{
+    headers => [{<<"Refer-To">>, <<"sip:carol@10.0.0.3">>}]
+}).
+```
+
+## Send through a route set
+
+Pass `route_set` (Route header values, first hop first) to send through
+proxies you already know, such as a service route (RFC 3261 8.1.1.1). The
+request is built as in a dialog: with `;lr` on the first route the target
+stays in the Request-URI and every route goes in Route; without it (a
+strict router) the first route becomes the Request-URI and the target goes
+last in Route. The request goes to the first route.
+
+```erlang
+{ok, Dialog} = chappe_sip:create_uac(<<"sip:bob@example.com">>, #{
+    local_sdp => Offer,
+    route_set => [<<"<sip:edge.example.com;lr>">>, <<"<sip:core.example.com;lr>">>]
+}).
+```
+
+`proxy => Uri` instead names an outbound proxy as the next hop without any
+Route header.
+
+## Call a SIPS target
+
+With a TLS listener (see [TLS](tls.md)), a request whose Request-URI,
+`proxy` or first route is `sips:` carries our `sips:` Contact, and so does
+every target refresh of the dialog it forms (RFC 3261 8.1.1.8, 12.2.1.1).
+A `sips:` Request-URI is sent over TLS even through a `sip:` proxy or route,
+which is reached as `sips:` (8.1.2). A `sips:` URI with `transport=udp` is
+refused: `{error, {bad_uri, sips_unreliable_transport}}`, nothing is sent
+(19.1.1).
+
 ## Follow redirects
 
 Pass `follow_redirects => true` to act on a 3xx yourself rather than get it
@@ -121,8 +160,12 @@ The Contacts of the 3xx are tried best `q` first (1.0 when absent). A
 target that fails with a 4xx or 5xx, or cannot be sent to, moves on to the
 next one; a 6xx ends the search. Only `sip:` and `sips:` Contacts are tried,
 each URI once, and at most five 3xx are followed. A Contact's `?headers`
-part is dropped: a redirect does not add headers to your request.
-Credentials stay with their scheme, host and port.
+part and `method` parameter are dropped: a redirect does not add headers to
+your request nor change its method (RFC 3261 8.1.3.4). Credentials stay
+with their scheme, host and port.
+
+A 305 (Use Proxy) does not retarget: the request keeps its Request-URI and
+goes again through the proxy the 305's Contact names (21.3.6).
 
 ## 3PCC (answer with no ACK)
 

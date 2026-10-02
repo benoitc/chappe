@@ -2,7 +2,8 @@
 %% SPDX-License-Identifier: Apache-2.0
 
 %% Conformance against independent SIP stacks. A chappe node, SIPp and
-%% pjsua run on one docker network (interop/conformance/lab.sh); each case
+%% pjsua run on one docker network with a dnsmasq server the node resolves
+%% through (interop/conformance/lab.sh); each case
 %% plays one flow and asserts the exact headers the RFCs require. The SIPp
 %% scenarios are interop/sipp/scenarios/<case>.xml: a regexp action with
 %% check_it fails the call on any mismatch, so a case passes only when the
@@ -30,6 +31,7 @@
          refer_notify/1, refer_event_id/1, refer_norefersub/1,
          st_negotiate/1, st_422/1, st_refresh_uac/1, st_refresh_uas/1,
          st_expiry/1, subscribe/1, subscribe_489/1,
+         dns_srv/1, dns_sips_failover/1,
          pjsua_refer_blind/1, pjsua_refer_attended/1,
          pjsua_session_timer/1]).
 
@@ -48,7 +50,8 @@ groups() ->
                  replaces_nomatch, replaces_confirmed, replaces_early,
                  refer_notify, refer_event_id, refer_norefersub,
                  st_negotiate, st_422, st_refresh_uac, st_refresh_uas,
-                 st_expiry, subscribe, subscribe_489]},
+                 st_expiry, subscribe, subscribe_489,
+                 dns_srv, dns_sips_failover]},
      {pjsua, [], [pjsua_refer_blind, pjsua_refer_attended,
                   pjsua_session_timer]}].
 
@@ -198,6 +201,19 @@ subscribe(Config) -> sipp(?FUNCTION_NAME, Config).
 %% RFC 6665 4.2.1.1: 489 for a package not served, with Allow-Events.
 %% req: R6665-07 R6665-16
 subscribe_489(Config) -> sipp(?FUNCTION_NAME, Config).
+
+%% ---- DNS (RFC 3263) ----
+
+%% RFC 3261 8.1.2: a request to sip:uas@svc.lab goes where DNS says. The
+%% lab's NAPTR for svc.lab points at _sip._udp.svc.lab, whose SRV names
+%% uas.svc.lab port 5080; the OPTIONS must arrive there, over UDP.
+%% req: R3261-033
+dns_srv(Config) -> sipp(?FUNCTION_NAME, Config).
+
+%% RFC 3261 8.1.2: for sips:uas@svcs.lab the first SRV target refuses the
+%% connection; the node moves on to the second, and still uses TLS.
+%% req: R3261-033 R3261-037
+dns_sips_failover(Config) -> sipp(?FUNCTION_NAME, Config).
 
 %% ---- pjsua ----
 

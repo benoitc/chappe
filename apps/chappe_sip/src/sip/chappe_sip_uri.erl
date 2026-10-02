@@ -17,8 +17,14 @@
 -module(chappe_sip_uri).
 
 -export([parse/1, format/1, same_authority/2, equal/2, aor/1]).
+-export([take_param/2, is_sips_unreliable/1]).
 
 -type uri() :: map().
+
+-define(IS_HEX(C),
+    ((C >= $0 andalso C =< $9) orelse (C >= $a andalso C =< $f) orelse
+        (C >= $A andalso C =< $F))
+).
 -export_type([uri/0]).
 
 %% The scheme is case-insensitive (RFC 3261 19.1.4: SIP:ALICE@... is a sip
@@ -141,10 +147,14 @@ split_params(Bin) ->
                         (<<>>, Acc) ->
                             Acc;
                         (Part, {Acc, Ord}) ->
-                            case binary:split(Part, <<"=">>) of
-                                [K, V] -> {Acc#{K => V}, [K | Ord]};
-                                [K] -> {Acc#{K => true}, [K | Ord]}
-                            end
+                            %% a repeated name keeps its first place and
+                            %% its last value, so format/1 writes it once
+                            {K, V} =
+                                case binary:split(Part, <<"=">>) of
+                                    [K0, V0] -> {K0, V0};
+                                    [K0] -> {K0, true}
+                                end,
+                            {Acc#{K => V}, add_once(K, Ord)}
                     end,
                     {#{}, []},
                     Parts
@@ -152,8 +162,53 @@ split_params(Bin) ->
             {Main, Params, lists:reverse(Order)}
     end.
 
+add_once(K, Ord) ->
+    case lists:member(K, Ord) of
+        true -> Ord;
+        false -> [K | Ord]
+    end.
+
 maybe_put(_K, undefined, M) -> M;
 maybe_put(K, V, M) -> M#{K => V}.
+
+%% Take the parameter Name (case-insensitive) out of a sip or sips URI:
+%% its value (true for a flag) and the URI without it. A URI without it,
+%% or that does not parse, comes back untouched with undefined.
+-spec take_param(binary(), binary()) -> {binary() | true | undefined, binary()}.
+take_param(Uri, Name) ->
+    case parse(Uri) of
+        {ok, #{scheme := S, params := P} = U} when S =:= sip; S =:= sips ->
+            case [K || K := _ <- P, lower(K) =:= Name] of
+                [] ->
+                    {undefined, Uri};
+                Keys ->
+                    V = maps:get(hd(Keys), P),
+                    U1 = U#{
+                        params := maps:without(Keys, P),
+                        '_porder' => maps:get('_porder', U, []) -- Keys
+                    },
+                    {V, format(U1)}
+            end;
+        _ ->
+            {undefined, Uri}
+    end.
+
+%% A SIPS URI whose transport parameter names an unreliable transport (RFC
+%% 3261 19.1.1: it MUST name a reliable one).
+-spec is_sips_unreliable(binary()) -> boolean().
+is_sips_unreliable(Uri) ->
+    case parse(Uri) of
+        {ok, #{scheme := sips, params := P}} ->
+            lists:any(
+                fun({K, V}) ->
+                    lower(K) =:= <<"transport">> andalso is_binary(V) andalso
+                        lower(V) =:= <<"udp">>
+                end,
+                maps:to_list(P)
+            );
+        _ ->
+            false
+    end.
 
 %% Do two URIs name the same authority: scheme, host (case-insensitive)
 %% and port? false when either does not parse, so a caller guarding
@@ -317,16 +372,22 @@ lower(B) -> <<<<(lower_byte(C))>> || <<C>> <= B>>.
 lower_byte(C) when C >= $A, C =< $Z -> C + 32;
 lower_byte(C) -> C.
 
+%% Characters outside each component's set (RFC 3261 25.1) are
+%% percent-escaped on the way out; an escape already there (%XX) is kept,
+%% a lone % becomes %25. A URI that parsed is written back as it came.
 -spec format(uri()) -> binary().
 format(#{scheme := tel, user := Num} = U) ->
-    iolist_to_binary([<<"tel:">>, Num, format_params(U)]);
+    iolist_to_binary([<<"tel:">>, escape(Num, user), format_params(U)]);
 format(#{scheme := Scheme, host := Host} = U) ->
     SchemeBin = atom_to_binary(Scheme),
     UserPart =
         case U of
-            #{user := User, password := Pass} -> [User, $:, Pass, $@];
-            #{user := User} -> [User, $@];
-            _ -> []
+            #{user := User, password := Pass} ->
+                [escape(User, user), $:, escape(Pass, password), $@];
+            #{user := User} ->
+                [escape(User, user), $@];
+            _ ->
+                []
         end,
     PortPart =
         case U of
@@ -335,7 +396,7 @@ format(#{scheme := Scheme, host := Host} = U) ->
         end,
     HeadersPart =
         case U of
-            #{headers := H} -> [$?, H];
+            #{headers := H} -> [$?, format_headers(H)];
             _ -> []
         end,
     iolist_to_binary([
@@ -349,12 +410,56 @@ format(#{scheme := Scheme, host := Host} = U) ->
     ]).
 
 format_params(#{params := Params} = U) ->
-    Order = maps:get('_porder', U, lists:sort(maps:keys(Params))),
+    Order = lists:uniq(maps:get('_porder', U, lists:sort(maps:keys(Params)))),
     [
         case maps:get(K, Params, undefined) of
             undefined -> [];
-            true -> [$;, K];
-            V -> [$;, K, $=, V]
+            true -> [$;, escape(K, param)];
+            V -> [$;, escape(K, param), $=, escape(V, param)]
         end
      || K <- Order
     ].
+
+%% hname=hvalue pairs joined by &, each name and value escaped on its own
+format_headers(H) ->
+    lists:join($&, [
+        case binary:split(Part, <<"=">>) of
+            [N, V] -> [escape(N, header), $=, escape(V, header)];
+            [N] -> escape(N, header)
+        end
+     || Part <- binary:split(H, <<"&">>, [global])
+    ]).
+
+escape(Bin, Set) ->
+    escape(Bin, Set, <<>>).
+
+escape(<<"%", H, L, Rest/binary>>, Set, Acc) when
+    ?IS_HEX(H), ?IS_HEX(L)
+->
+    escape(Rest, Set, <<Acc/binary, "%", H, L>>);
+escape(<<C, Rest/binary>>, Set, Acc) ->
+    case allowed(C, Set) of
+        true ->
+            escape(Rest, Set, <<Acc/binary, C>>);
+        false ->
+            escape(
+                Rest,
+                Set,
+                <<Acc/binary, "%", (hexdigit(C bsr 4)), (hexdigit(C band 15))>>
+            )
+    end;
+escape(<<>>, _Set, Acc) ->
+    Acc.
+
+%% unreserved = alphanum / mark, plus the characters each rule adds:
+%% user-unreserved ("?" escaped too, as it would start the headers),
+%% the password's, param-unreserved and hnv-unreserved
+allowed(C, _Set) when C >= $a, C =< $z; C >= $A, C =< $Z; C >= $0, C =< $9 ->
+    true;
+allowed(C, Set) ->
+    lists:member(C, "-_.!~*'()") orelse lists:member(C, extra(Set)).
+
+extra(user) -> "&=+$,;/";
+extra(password) -> "&=+$,";
+extra(param) -> "[]/:&+$";
+extra(header) -> "[]/?:+$".

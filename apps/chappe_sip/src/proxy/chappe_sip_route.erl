@@ -27,7 +27,7 @@
 -export([record_route/3, is_self/3, pop_self/1, strip_via/1]).
 -export([ensure_secret/0, check_secret/1]).
 -export([routes/1, set_routes/2, uri_is_self/2, recover_strict/1]).
--export([next_flow/2, request_target/2, flow_route/1]).
+-export([next_flow/2, request_target/2, flow_route/1, secure_hop/2]).
 
 -export_type([flows/0]).
 
@@ -75,6 +75,39 @@ request_target(Target, [First | Rest] = RouteSet) ->
             {uri_of(First), Rest ++ [<<"<", Target/binary, ">">>]};
         error ->
             {Target, RouteSet}
+    end.
+
+%% The next hop of a request for Target: a sip: hop becomes sips: (and
+%% loses a transport=udp) when Target is a SIPS URI, since nta picks the
+%% transport from the hop's scheme and RFC 3261 8.1.2 resolves a SIPS
+%% Request-URI as SIPS whatever URI it resolves.
+-spec secure_hop(binary() | undefined, Hop) -> Hop when
+    Hop :: chappe_sip_engine:route().
+secure_hop(Target, Hop) when is_binary(Target), is_binary(Hop) ->
+    case {scheme(Target), binary:split(Hop, <<":">>)} of
+        {<<"sips">>, [S, Rest]} when byte_size(S) =:= 3 ->
+            case string:lowercase(S) of
+                <<"sip">> -> without_udp(<<"sips:", Rest/binary>>);
+                _ -> Hop
+            end;
+        _ ->
+            Hop
+    end;
+secure_hop(_Target, Hop) ->
+    Hop.
+
+scheme(Uri) ->
+    string:lowercase(hd(binary:split(Uri, <<":">>))).
+
+without_udp(Hop) ->
+    case chappe_sip_uri:take_param(Hop, <<"transport">>) of
+        {V, Without} when is_binary(V) ->
+            case string:lowercase(V) of
+                <<"udp">> -> Without;
+                _ -> Hop
+            end;
+        _ ->
+            Hop
     end.
 
 flow_param(Name, Flow) when is_integer(Flow) ->

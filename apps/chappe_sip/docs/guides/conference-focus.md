@@ -92,7 +92,8 @@ left(Endpoint, Why) ->
   `sendonly` or `inactive`, `connected` otherwise; call it again on each
   re-INVITE.
 - `media/2` gives one `<media>` per accepted m= line, with its SDP type and
-  direction, labelled with the `available_media` entry of the same type.
+  direction, labelled with the `available_media` entry of the same type, and
+  the stream's first `a=ssrc` as its `src-id` (RFC 4575 5.8.4).
 - `referred/1` takes the REFER that made you call the endpoint: `by` is its
   Referred-By.
 - `departure/1` takes the reason of the dialog's `destroy` message or the
@@ -142,9 +143,38 @@ end).
 `subscribe/4` answers 489 with `Allow-Events: conference` to any other
 package and 406 with `Accept` when the SUBSCRIBE's Accept leaves out
 `application/conference-info+xml`. Otherwise the subscription dialog belongs
-to `Conf`, which gets `{chappe_sip_focus, subscribed, Dialog}`; passed to
-`handle_info/2`, it sends the full state as version 1. A refresh gets the full
-state again, an unsubscribe gets it in a terminated NOTIFY.
+to `Conf`, which gets `{chappe_sip_focus, subscribed, Dialog, Opts}`; passed
+to `handle_info/2`, it sends the full state as version 1. A refresh gets the
+full state again, an unsubscribe gets it in a terminated NOTIFY.
+
+## Give a subscriber its own view
+
+RFC 4575 8.2 has the focus send different documents to subscribers with
+different roles. Pass `view` to `subscribe/4`: a fun from the conference as
+you gave it to `update/2` to what this subscriber may see. It replaces the
+focus-wide `call_info` policy for that subscriber.
+
+```erlang
+View = case is_moderator(Req) of
+    true -> fun(Conf) -> Conf end;                %% call-info included
+    false -> fun(Conf) -> hide_call_info(Conf) end
+end,
+chappe_sip_focus:subscribe(Req, Res, Conf, #{contact => Contact, view => View}).
+```
+
+A subscriber your policy denies should still get 200 and documents that look
+real (RFC 6665 6.2), so it cannot tell it was refused. Give it an empty
+roster:
+
+```erlang
+chappe_sip_focus:subscribe(Req, Res, Conf, #{
+    contact => Contact,
+    view => fun(C) -> C#{users => []} end
+}).
+```
+
+The focus keeps the entity and the per-subscription versions whatever the
+view returns.
 
 ## Show a participant anonymously
 
