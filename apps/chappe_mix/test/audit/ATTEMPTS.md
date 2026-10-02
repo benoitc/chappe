@@ -377,3 +377,16 @@ order held at load 4.8 too):
   of a short frame (10). A first clip mutation (32767 to 32766) survived
   and is equivalent: both samples encode to the same code word in both
   laws.
+
+## A NIF for the mix: not written
+
+- The best a NIF could do is a mix that costs nothing. A scratch build with
+  `chappe_mix_dsp` returning a fixed frame ran out of scheduler at about
+  410 conferences, short of the 500 threshold it was meant to reach
+  (`PERF.md`). Not written: the C, its crash radius and its build would
+  buy at most 310 to 410.
+- Where the time goes then is the UDP send: `port_command` is a third of
+  the conferences' time under `tprof`, and `gen_udp:send/4` resolves the
+  address on every packet. Next to try, each against `capacity`
+  interleaved: a connected socket per leg (`gen_udp:connect/3`, then
+  `send/2`), and the `socket` module's `sendto` instead of the inet driver.

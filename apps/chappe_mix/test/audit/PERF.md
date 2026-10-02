@@ -417,3 +417,36 @@ about 60% of a tick once the frames are in, before the receive path, so a
 `chappe_mix_SUITE`, `chappe_mix_rfc_SUITE`, `chappe_mix_ref_SUITE` (against
 `mod_conference`) and `chappe_mix_live_SUITE` (behind rtpengine, PCMA and
 opus legs) pass on the new mix.
+
+### 2026-10-02: what a faster mix could reach (the NIF question)
+
+Before writing a NIF for the mix, its best case was measured: a scratch
+build of `0ea59d9` whose `chappe_mix_dsp` adds nothing and returns a fixed
+frame, so the mixing math costs nothing (`mix_cost` 0.91 us at 4 legs,
+30.7 us at 64) while receiving, the jitter buffer, RTCP and sending are
+unchanged. `capacity 10 5 600`, three rounds of the three builds,
+interleaved, host, `+S 1`, load 2.21 to 3.18:
+
+| build | in budget, scheduler busy at that step |
+| --- | --- |
+| list mix (`1244d99`) | 120 (0.53), 240 (0.94), 250 (0.97) |
+| atomics mix (`0ea59d9`) | 240 (0.84), 310 (0.98), 180 (0.62) |
+| no mixing math | 410 (0.93), 260 (0.58), 230 (0.58) |
+
+A ramp that stops with the scheduler well under 0.9 stopped on a late
+tick the box caused, not on the mixer; the runs that ran the scheduler
+out place the ceilings at about 245, 310 and 410. A mix that costs
+nothing reaches about 410 conferences: no NIF for the mix meets the 500
+threshold, so none was written.
+
+Where the rest goes, from `tprof` call time on the 300 conference
+processes of the no-math build over 5 s (`jitter capacity 300 20`, load
+6.2, void as numbers, kept for the shares):
+
+| | share of the conferences' time |
+| --- | ---: |
+| `erts_internal:port_command/3` (the UDP send into the inet driver) | 33.7% |
+| the rest of `gen_udp:send` (`do_sendto`, `getaddr` per packet, `port_get_data`, option encoding) | about 8% |
+| receiving: RTP parse, latch, jitter buffer, RTCP statistics | about 15%, spread |
+
+The next lever is the send path, not the mix.
