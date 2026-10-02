@@ -370,18 +370,24 @@ one_conf_memory(Conf) ->
     ]),
     {M + PortMem, Kernel}.
 
+%% The average over the normal schedulers. Not `total': that also averages
+%% in the dirty CPU schedulers, one per normal scheduler by default and
+%% idle here, so with +S 1 a saturated scheduler reads 0.5 in it.
 sched_util(Secs) ->
-    case lists:keyfind(total, 1, scheduler:utilization(Secs)) of
-        {total, F, _} -> round2(F);
-        false -> undefined
+    Normal = [U || {normal, _Id, U, _} <- scheduler:utilization(Secs)],
+    case Normal of
+        [] -> undefined;
+        _ -> round2(lists:sum(Normal) / length(Normal))
     end.
 
 %% ---- mix cost ----
 
-%% Mirrors the compute in chappe_mix_conf:mix/2 as of this commit:
-%% decode every leg, sum once, and for each leg subtract its own frame,
-%% encode and build the RTP packet with the CSRC list of the others (at
-%% most 15). Keep it in step with the mixer.
+%% The compute in chappe_mix_conf:mix/2: decode every leg into the sum,
+%% and for each leg encode the sum less its own frame and build the RTP
+%% packet with the CSRC list of the others (at most 15). It calls
+%% chappe_mix_dsp, the mixer's own code, when that module exists; on an
+%% older commit it runs the list version the mixer had then, so the arm
+%% still compares two commits.
 mix_cost(N, Load) ->
     chappe_mix_g711:init(),
     Frames = [
@@ -392,9 +398,21 @@ mix_cost(N, Load) ->
      || K <- lists:seq(1, N)
     ],
     Iter = max(50, 20000 div N),
+    _ = code:ensure_loaded(chappe_mix_dsp),
+    Tick =
+        case
+            {
+                erlang:function_exported(chappe_mix_dsp, mixed, 1),
+                erlang:function_exported(chappe_mix_dsp, new, 0)
+            }
+        of
+            {true, _} -> fun mix_tick/1;
+            {false, true} -> fun mix_tick_dsp0/1;
+            {false, false} -> fun mix_tick_lists/1
+        end,
     Rounds = [
         begin
-            {Us, ok} = timer:tc(fun() -> mix_loop(Frames, Iter) end),
+            {Us, ok} = timer:tc(fun() -> mix_loop(Tick, Frames, Iter) end),
             Us / Iter
         end
      || _ <- lists:seq(1, 5)
@@ -408,13 +426,57 @@ mix_cost(N, Load) ->
         {budget_pct_one_sched, round2(Min / 200)}
     ]).
 
-mix_loop(_Frames, 0) ->
+mix_loop(_Tick, _Frames, 0) ->
     ok;
-mix_loop(Frames, K) ->
-    _ = mix_tick(Frames),
-    mix_loop(Frames, K - 1).
+mix_loop(Tick, Frames, K) ->
+    _ = Tick(Frames),
+    mix_loop(Tick, Frames, K - 1).
 
 mix_tick(Frames) ->
+    Sum = lists:foldl(
+        fun(F, Acc) -> chappe_mix_dsp:add(Acc, ulaw, F) end,
+        chappe_mix_dsp:new(),
+        Frames
+    ),
+    Mixed = chappe_mix_dsp:mixed(Sum),
+    Ids = lists:seq(1, length(Frames)),
+    [
+        chappe_mix_rtp:build(#{
+            pt => 0,
+            seq => 1,
+            ts => 160,
+            ssrc => 42,
+            marker => false,
+            csrcs => lists:sublist(Ids -- [K], 15),
+            payload => chappe_mix_dsp:encode(Mixed, ulaw, {ulaw, F})
+        })
+     || {K, F} <- lists:zip(Ids, Frames)
+    ].
+
+%% chappe_mix_dsp before mixed/1 (0ea59d9 to 0cd3bb2): encode read the
+%% atomics sum directly.
+mix_tick_dsp0(Frames) ->
+    Sum = lists:foldl(
+        fun(F, Acc) -> chappe_mix_dsp:add(Acc, ulaw, F) end,
+        chappe_mix_dsp:new(),
+        Frames
+    ),
+    Ids = lists:seq(1, length(Frames)),
+    [
+        chappe_mix_rtp:build(#{
+            pt => 0,
+            seq => 1,
+            ts => 160,
+            ssrc => 42,
+            marker => false,
+            csrcs => lists:sublist(Ids -- [K], 15),
+            payload => chappe_mix_dsp:encode(Sum, ulaw, {ulaw, F})
+        })
+     || {K, F} <- lists:zip(Ids, Frames)
+    ].
+
+%% The mix before chappe_mix_dsp: decoded frames as lists.
+mix_tick_lists(Frames) ->
     Pcms = [chappe_mix_g711:decode_frame(ulaw, F) || F <- Frames],
     Sum = lists:foldl(
         fun(A, B) -> lists:zipwith(fun(X, Y) -> X + Y end, A, B) end,

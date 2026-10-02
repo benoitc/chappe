@@ -12,9 +12,12 @@ missed here, never redefined after the numbers arrive.
 | Mixer latency added, RTP in to mixed RTP out, p50 / p99 | <= 25 ms / <= 45 ms, and <= reference + 10 ms | 41.1 / 45.9 ms | 9.3 / 10.6 ms (every one of 5 reruns <= 11.3 / 31.0 ms); 16.3 / 22.9 ms beside the reference | met |
 | Tick jitter at 20 ms ptime, p99 | <= 2 ms idle, <= 5 ms at capacity | n/a | 0.06 ms idle, < 0.5 ms at 100 conferences | met |
 | Capacity, 4-party PCMU conferences, one scheduler, every tick in budget | >= 100 conferences (400 legs), and >= reference per core | 75 rooms on one CPU | 275 conferences; 300 rooms by the reference's judge | met |
-| Memory per 4-party conference | <= 256 KiB | 2.9 to 3.0 MiB per room | 101 KiB (153 KiB of VM growth) | met |
+| Memory per 4-party conference | <= 256 KiB | 2.9 to 3.0 MiB per room | 65 to 80 KiB (137 to 148 KiB of VM growth) | met |
 | Mix correctness: each receiver detects every other tone, own tone >= 40 dB down | same detection result as the reference | every tone, own <= -54.7 dBFS | the same, to 0.01 dB | met |
 | 5% random loss on one leg | no crash, other legs keep their thresholds | n/a | no crash; probe 9.5 / 9.6 ms, every one of 5 reruns <= 12.9 ms p99 | met |
+| Mix compute per tick, 4 / 64 legs (`mix_cost`), set 2026-10-02 | <= 10 us / <= 200 us | n/a | 19.8 / 331.9 us | missed |
+| Capacity as above, set 2026-10-02 | >= 500 conferences (2000 legs) | n/a | 275 | missed |
+| Mixed output after a change to the mix | byte for byte the same as before it for the same input | n/a | the same, 500 seeded rooms of 1 to 64 legs | met |
 
 The numbers in the table are the quiet-box ones from "2026-10-01: native
 reference" below, minimum of the runs unless that section says otherwise.
@@ -329,3 +332,175 @@ Comparison, the shared-conditions numbers (vm unless noted):
 Not measured: tick jitter has no reference counterpart (mod_conference
 exposes no tick timing), and the loss row was not run against the
 reference.
+
+### 2026-10-02: where a tick goes (before `chappe_mix_dsp`)
+
+The compute and capacity thresholds dated 2026-10-02 in the table were set
+before this section and before any code, to decide whether denser mixing is
+worth a NIF. Host, `+S 1`, OTP 29, mixer code at `1244d99`.
+
+One tick split by part (a scratch module mirroring `chappe_mix_conf:mix/2`
+and `chappe_mix_leg:pop/send` part by part, best of 5, sends to loopback
+from one socket per leg; 3 runs at load 2.58 to 2.68, within 1% of each
+other):
+
+| part | 4 legs | share | 64 legs | share |
+| --- | ---: | ---: | ---: | ---: |
+| decode (code words to a list) | 6.2 us | 12% | 109 us | 12% |
+| sum | 6.3 us | 12% | 152 us | 16% |
+| subtract own | 8.7 us | 17% | 167 us | 18% |
+| encode | 9.5 us | 19% | 170 us | 18% |
+| RTP build | 0.8 us | 2% | 25 us | 3% |
+| `gen_udp:send` | 19.5 us | 38% | 314 us | 34% |
+| total | 51.0 us | | 936 us | |
+
+The compute (decode to encode) is about 60% of what the tick does once it
+has its frames, and the sends on macOS loopback are most of the rest. The
+receive path (packets in, RTP parse, jitter buffer) is not in this split.
+
+The capacity ceiling is the CPU. The `capacity` arm reported
+`scheduler:utilization/1`'s `total`, which with `+S 1` averages the one
+normal scheduler with the one idle dirty CPU scheduler: a process spinning
+flat out reads 0.5 in it (checked: `normal` 100%, `total` 50.0%). Every
+`sched_util` in the sections above is that total, so the 0.48 at 275
+conferences was a scheduler about 96% busy, not half idle. The arm now
+reports the normal schedulers' average; on the code before `chappe_mix_dsp`
+it read 0.96 at its last step in budget (250 conferences, load 2.94).
+
+How the scheduler sleeps does not move it: `capacity 25 5 1000` on the same
+code, twice each, interleaved (load 2.58 to 3.16):
+
+| flags | conferences in budget |
+| --- | --- |
+| default | 225, 225 |
+| `+sbwt none` | 225, 250 |
+| `+sbwt very_long` | 200, 250 |
+
+### 2026-10-02: the mix on an atomics sum (`chappe_mix_dsp`)
+
+The tick now decodes every talking leg straight into one sum, an atomics
+array of 160 signed slots, and encodes each leg's output from the sum less
+its own frame, decoded again from the code words it came in. No decoded
+frame is kept as a list. Chosen from six representations measured side by
+side (see `ATTEMPTS.md`). The mixed output is the same, byte for byte:
+`chappe_mix_dsp_tests` checks it against the list mix it replaces.
+
+Interleaved against `1244d99` (the mixer as `26d5536` has it; the same
+arms copied into both trees, `+S 1`, host). `mix_cost 4 64`, 5 launches each, load 2.75 to 3.20:
+
+| legs | before, us per tick | after, us per tick | change |
+| ---: | ---: | ---: | ---: |
+| 4 | 28.71 (28.71 to 30.84) | 19.79 (19.79 to 21.52) | -31% |
+| 64 | 607.3 (607.3 to 661.0) | 331.9 (331.9 to 365.2) | -45% |
+
+Minimum of 5, range in brackets. Both miss the compute thresholds (10 and
+200 us).
+
+`capacity 25 5 1000`, 5 launches each, interleaved, load 2.61 to 3.20:
+
+| | before | after |
+| --- | --- | --- |
+| conferences in budget | 250, 175, 225, 275, 250 | 275, 275, 275, 275, 250 |
+| VM bytes per conference | 88 to 99 KiB | 65 to 80 KiB |
+| VM growth per conference | 149 to 177 KiB | 137 to 148 KiB |
+
+The best launch of each is 275: at a 25-conference step the gain does not
+show in the best run, only in the spread (median 250 before, 275 after;
+one of 5 below 275 after, against 4 of 5 before). Three pairs at a 10
+conference step were planned to resolve it; one before-launch read 250, one
+after-launch stopped at 30 when the load rose to 14 during it, and the
+other four gave up after 30 minutes above the load limit (load 9 to 27 from
+09:53 to 11:00). The capacity threshold (500) is missed. The compute is
+about 60% of a tick once the frames are in, before the receive path, so a
+31% cut in it was never going to double the ceiling.
+
+`chappe_mix_SUITE`, `chappe_mix_rfc_SUITE`, `chappe_mix_ref_SUITE` (against
+`mod_conference`) and `chappe_mix_live_SUITE` (behind rtpengine, PCMA and
+opus legs) pass on the new mix.
+
+### 2026-10-02: what a faster mix could reach (the NIF question)
+
+Before writing a NIF for the mix, its best case was measured: a scratch
+build of `0ea59d9` whose `chappe_mix_dsp` adds nothing and returns a fixed
+frame, so the mixing math costs nothing (`mix_cost` 0.91 us at 4 legs,
+30.7 us at 64) while receiving, the jitter buffer, RTCP and sending are
+unchanged. `capacity 10 5 600`, three rounds of the three builds,
+interleaved, host, `+S 1`, load 2.21 to 3.18:
+
+| build | in budget, scheduler busy at that step |
+| --- | --- |
+| list mix (`1244d99`) | 120 (0.53), 240 (0.94), 250 (0.97) |
+| atomics mix (`0ea59d9`) | 240 (0.84), 310 (0.98), 180 (0.62) |
+| no mixing math | 410 (0.93), 260 (0.58), 230 (0.58) |
+
+A ramp that stops with the scheduler well under 0.9 stopped on a late
+tick the box caused, not on the mixer; the runs that ran the scheduler
+out place the ceilings at about 245, 310 and 410. A mix that costs
+nothing reaches about 410 conferences: no NIF for the mix meets the 500
+threshold, so none was written.
+
+Where the rest goes, from `tprof` call time on the 300 conference
+processes of the no-math build over 5 s (`jitter capacity 300 20`, load
+6.2, void as numbers, kept for the shares):
+
+| | share of the conferences' time |
+| --- | ---: |
+| `erts_internal:port_command/3` (the UDP send into the inet driver) | 33.7% |
+| the rest of `gen_udp:send` (`do_sendto`, `getaddr` per packet, `port_get_data`, option encoding) | about 8% |
+| receiving: RTP parse, latch, jitter buffer, RTCP statistics | about 15%, spread |
+
+The next lever is the send path, not the mix.
+
+### 2026-10-02: the send path
+
+Three changes to how a leg sends, each a scratch build of `0cd3bb2` with
+that one change, against the current mixer and the no-math build above.
+A ramp proved too fragile on this box (one load spike ends it early: a
+connected-socket ramp stopped at 10 conferences), so every build was held
+at 200 conferences for 10 s and the mixer's scheduler read (`capacity 200
+10 200`, host, `+S 1`). Every launch below: load 2.22 to 3.20, no tick
+late except where noted, every packet sent and received.
+
+| build | launches | scheduler busy at 200 | ceiling if it scales |
+| --- | ---: | --- | ---: |
+| current mixer, `gen_udp:send/4` | 6 | 0.68 to 0.71 | about 290 |
+| E1: socket connected to the far end, `gen_udp:send/2` | 6 | 0.58 to 0.60 | about 340 |
+| E2: `gen_udp` with `{inet_backend, socket}` | 5 | 0.68 to 0.73 | about 280 |
+| E3: E2, sending with `socket:sendto/3` directly | 2 | 0.69, 0.77 (2 late ticks, load 3.1) | about 270 |
+| no mixing math (from the section above) | 4 | 0.44 to 0.51 | about 420 |
+
+Only E1 helps, by about 15%. None of them reaches the 500 threshold,
+which stays missed. E3 has two launches only: the box stayed above the
+limit for over 40 minutes after them and the session was stopped.
+
+### 2026-10-02: the sum read out once, element/2 throughout (void so far)
+
+`chappe_mix_dsp` now reads the atomics sum out into a tuple once per tick
+(`mixed/1`) and encodes through a 65536-tuple per law (`chappe_mix_g711:
+encoder/1`, 512 KiB each in `persistent_term`), appending to a binary:
+every per-sample lookup is `element/2`. Output unchanged:
+`chappe_mix_dsp_tests` passes and catches the same three mutations.
+
+Scratch harness, compute only (decode, sum, subtract, encode; no RTP
+build), best of 5, `+S 1`, load 3.97 to 4.17, so **void**, kept for the
+order:
+
+| legs | atomics sum (`0cd3bb2`) | + `element/2` encode | + sum read out once |
+| ---: | ---: | ---: | ---: |
+| 4 | 20.3 us | 14.3 us | 13.8 us |
+| 16 | 83.2 us | 56.9 us | 46.4 us |
+| 64 | 326.1 us | 227.1 us | 180.4 us |
+
+Interleaved against `0cd3bb2` in the mixer, one round got through before
+the load went back above the limit (load 2.94 to 3.19, host, `+S 1`):
+
+| | `0cd3bb2` | `eba11e7` |
+| --- | ---: | ---: |
+| `mix_cost`, 4 legs | 21.29 us | 14.81 us |
+| `mix_cost`, 64 legs | 362.8 us | 214.3 us |
+| scheduler busy, 200 conferences held 10 s | 0.70 | 0.66 |
+
+One launch each, so no minimum of five: no threshold changes status. The
+compute thresholds (10 and 200 us) stay missed; 64 legs is within 8%. The
+whole mixer gains less than the compute (6% at 200 conferences): the send
+path is the larger share now.

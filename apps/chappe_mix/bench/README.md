@@ -93,7 +93,10 @@ the conference's whole life, setup included, not just the window.
 ### capacity
 
 The ramp stops at the first step with an overrun or with the p99 bucket above
-5 ms, and reports the step before it. Memory per conference is the process
+5 ms, and reports the step before it. `sched_util` is the busy share of the
+normal schedulers (with `+S 1`, the mixer's one scheduler). Before
+2026-10-02 the arm reported `scheduler:utilization/1`'s `total`, which also
+averages in the idle dirty CPU scheduler: double those older numbers. Memory per conference is the process
 plus its sockets' port memory (`erl_bytes_per_conf`, what the VM holds), and
 separately the kernel buffer sizes the sockets are allowed
 (`kernel_buf_ceiling_per_conf`, a ceiling, not memory in use).
@@ -110,9 +113,11 @@ them to wander by a few percent on short steps.
 
 ### mix_cost
 
-It mirrors the compute in `chappe_mix_conf:mix/1`: decode every leg, sum
-once, and for each leg subtract its own frame, encode and build the packet.
-If you change the mix, change `mix_tick/1` in `chappe_mix_bench.erl` with it.
+It runs the compute of one tick with the mixer's own code,
+`chappe_mix_dsp`: every leg decoded into the sum, then for each leg the sum
+less its own frame encoded and built into an RTP packet. On a commit from
+before `chappe_mix_dsp` it runs the list mix that commit had, so the arm
+still compares two commits.
 
 ### ref_latency
 

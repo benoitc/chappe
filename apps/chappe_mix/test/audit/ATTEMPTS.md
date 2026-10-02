@@ -337,3 +337,91 @@ once in any listen.
   `none_in_budget` at the first step. On the other side, the unmutated
   `mod_conference` broke the judge by itself at 100 rooms (p99 73 to 80 ms
   above p50 at 92 to 95% of its CPU).
+
+## Where the capacity ceiling comes from
+
+- Read first as timing: the `capacity` ramps stopped at a reported
+  scheduler utilisation of 0.46 to 0.50, so the scheduler looked half idle
+  while ticks ran tens of ms late. It was the arm: `total` in
+  `scheduler:utilization/1` averages the normal scheduler with the idle
+  dirty CPU scheduler that `+S 1` also starts. The arm now reports the
+  normal schedulers; the ceiling is CPU.
+- Scheduler busy wait (`+sbwt none`, `+sbwt very_long`) against the
+  default: 200 to 250 conferences each way. Not a lever.
+
+## The mix on lists, binaries or atomics: atomics kept
+
+The whole compute of a tick (decode, sum, take out each leg's own frame,
+encode) in six representations, same input, all checked to give the same
+bytes. Scratch harness, best of 5, `+S 1`, load 4.4 (void as numbers, the
+order held at load 4.8 too):
+
+| representation | 4 legs | 16 legs | 64 legs |
+| --- | ---: | ---: | ---: |
+| lists, as the mixer had it | 30.7 us | 144.5 us | 629.7 us |
+| lists, subtract and encode in one pass | 23.3 us | 114.2 us | 473.5 us |
+| binaries of decoded samples | 28.8 us | 108.5 us | 418.6 us |
+| binaries, code words kept, decode on the fly | 27.3 us | 104.0 us | 423.2 us |
+| atomics sum, decoded lists kept | 23.4 us | 111.7 us | 477.5 us |
+| atomics sum, code words kept, decode on the fly | 19.9 us | 82.3 us | 335.2 us |
+
+- Kept: the last, as `chappe_mix_dsp`. A binary comprehension builds a new
+  sum binary per leg; `atomics:add/3` adds in place, and keeping each
+  leg's code words instead of a decoded copy saves the allocation twice.
+- Interleaved in the mixer (`PERF.md`): `mix_cost` -31% at 4 legs and -45%
+  at 64; capacity in budget 275 in 4 of 5 launches against 1 of 5 before,
+  275 in the best launch of both. Both new thresholds missed.
+- `chappe_mix_dsp_tests` failed 13 of 13 with no `chappe_mix_dsp`. Three
+  mutations, all caught: the high clip at 30000 (11 failures), the own
+  frame added instead of taken out (11), one sample skipped past the end
+  of a short frame (10). A first clip mutation (32767 to 32766) survived
+  and is equivalent: both samples encode to the same code word in both
+  laws.
+
+## A NIF for the mix: not written
+
+- The best a NIF could do is a mix that costs nothing. A scratch build with
+  `chappe_mix_dsp` returning a fixed frame ran out of scheduler at about
+  410 conferences, short of the 500 threshold it was meant to reach
+  (`PERF.md`). Not written: the C, its crash radius and its build would
+  buy at most 310 to 410.
+- Where the time goes then is the UDP send: `port_command` is a third of
+  the conferences' time under `tprof`, and `gen_udp:send/4` resolves the
+  address on every packet. Next to try, each against `capacity`
+  interleaved: a connected socket per leg (`gen_udp:connect/3`, then
+  `send/2`), and the `socket` module's `sendto` instead of the inet driver.
+
+## The send path: connected sockets, the socket backend
+
+- E1, connect each leg's socket to its far end on the first send and send
+  with `gen_udp:send/2`: the scheduler 15% less busy at 200 conferences.
+  Not kept: a connected UDP socket makes the kernel drop packets from any
+  other address, so the leg could no longer move its latch to a far end
+  that changes address (`far_end_wins_the_latch`, RFC 4961). Keeping it
+  would need a reconnect when the source moves, and a way to see a packet
+  from the new address in the first place.
+- E2, `{inet_backend, socket}` on the leg sockets: no change (0.68 to 0.73
+  against 0.68 to 0.71). E3, the same plus `socket:sendto/3` on the socket
+  under it, skipping the `gen_udp` wrapper: no better (0.69, 0.77). The
+  `socket` NIF costs what the inet driver costs here.
+- Capacity ramps were dropped for this comparison: on a box whose load
+  spikes, one late tick ends a ramp at any step. Holding a fixed number of
+  conferences and reading the scheduler gave launches within 0.03 of each
+  other.
+- Where that leaves the 500 threshold: no mix and the best send path
+  together project to about 450 on one scheduler. Reaching 500 needs a
+  change in shape (fewer packets or system calls per tick), or the
+  threshold read per core over several schedulers.
+
+## element/2 for every per-sample lookup: kept
+
+- `binary:at/2` on the 64 KiB encode table and `atomics:get/2` per sample
+  per leg were the two biggest calls left in the mix. A 65536-tuple encode
+  table and the sum read out once into a 160-tuple make both `element/2`.
+  The clip is inlined and each output is built by binary append. Compute
+  -30% at 4 legs and -45% at 64 against the atomics-only version (scratch
+  harness, load 4, void; see `PERF.md`).
+- Cost: 512 KiB per law of `persistent_term`, built once at start.
+- `chappe_mix_dsp_tests` against three mutations of the new code: high
+  clip at 30000 (11 failures), own frame added (11), one sample skipped
+  past a short frame (10).

@@ -169,30 +169,30 @@ law_pt(alaw) -> 8.
 
 %% ---- out ----
 
-%% This tick's frame from the jitter buffer, decoded, or none.
--spec pop(#leg{}) -> {#leg{}, [integer()] | none}.
-pop(#leg{jbuf = J0, law = Law} = L) ->
+%% This tick's frame from the jitter buffer, as code words, or none. A
+%% frame of another size (another ptime) is cut to 20 ms here; a short
+%% one is silence past its end (see chappe_mix_dsp).
+-spec pop(#leg{}) -> {#leg{}, binary() | none}.
+pop(#leg{jbuf = J0} = L) ->
     case chappe_mix_jbuf:pop(J0) of
         {silence, J} ->
             {L#leg{jbuf = J}, none};
+        {Payload, J} when byte_size(Payload) > ?FRAME ->
+            {L#leg{jbuf = J}, binary:part(Payload, 0, ?FRAME)};
         {Payload, J} ->
-            {L#leg{jbuf = J}, fit(chappe_mix_g711:decode_frame(Law, Payload))}
+            {L#leg{jbuf = J}, Payload}
     end.
 
-%% A frame of another size (another ptime) is cut or padded to 20 ms.
-fit(Pcm) when length(Pcm) =:= ?FRAME -> Pcm;
-fit(Pcm) when length(Pcm) > ?FRAME -> lists:sublist(Pcm, ?FRAME);
-fit(Pcm) -> Pcm ++ lists:duplicate(?FRAME - length(Pcm), 0).
-
-%% Send Pcm (none: silence), naming Csrcs, if the far end is known.
--spec send(#leg{}, [integer()] | none, [non_neg_integer()]) -> #leg{}.
-send(#leg{remote = undefined} = L, _Pcm, _Csrcs) ->
+%% Send a mixed frame, already encoded in the leg's law (none: silence),
+%% naming Csrcs, if the far end is known.
+-spec send(#leg{}, binary() | none, [non_neg_integer()]) -> #leg{}.
+send(#leg{remote = undefined} = L, _Mixed, _Csrcs) ->
     L;
-send(#leg{remote = {Ip, Port}, law = Law, sess = Sess} = L, Pcm, Csrcs) ->
+send(#leg{remote = {Ip, Port}, law = Law, sess = Sess} = L, Mixed, Csrcs) ->
     Payload =
-        case Pcm of
+        case Mixed of
             none -> silence(Law);
-            _ -> chappe_mix_g711:encode_frame(Law, Pcm)
+            _ -> Mixed
         end,
     Hdr = chappe_mix_session:header(Sess),
     Pkt = chappe_mix_rtp:build(Hdr#{
