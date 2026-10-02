@@ -23,7 +23,8 @@
     decode_frame/2,
     encode_frame/2,
     tables/1,
-    encoder/1
+    encoder/1,
+    limit/1
 ]).
 
 -export_type([law/0]).
@@ -32,6 +33,10 @@
 
 -define(BIAS, 16#84).
 -define(CLIP, 32635).
+%% the soft limiter: identity up to the knee (-6 dBFS), then bent toward
+%% full scale instead of clipped
+-define(KNEE, 16384).
+-define(FULL, 32767).
 
 %% Build the frame tables. Idempotent; call it before the first call.
 -spec init() -> ok.
@@ -137,20 +142,41 @@ tables(Law) ->
             Tabs
     end.
 
-%% The encode table as a 65536-tuple, by sample + 32769: element/2 is the
-%% cheapest lookup there is, at 512 KiB per law. Built by init/0.
+%% The mixer's encode table, with the soft limiter folded in: a tuple
+%% whose element sample + 32769 is the code word of limit(sample), for
+%% every 16-bit sample (element/2 is the cheapest lookup there is, at
+%% 512 KiB per law), then the law itself as element 65537 for the samples
+%% past 16 bits. Built by init/0.
 -spec encoder(law()) -> tuple().
 encoder(Law) ->
     Key = {?MODULE, encoder, Law},
     case persistent_term:get(Key, undefined) of
         undefined ->
             {_Dec, Enc} = tables(Law),
-            T = list_to_tuple(binary_to_list(Enc)),
+            Codes = [
+                binary:at(Enc, limit(S) + 32768)
+             || S <- lists:seq(-32768, 32767)
+            ],
+            T = list_to_tuple(Codes ++ [Law]),
             persistent_term:put(Key, T),
             T;
         T ->
             T
     end.
+
+%% The soft limiter, a static curve on what a listener hears (the sum of
+%% the others): a sample up to the knee in magnitude is left as it is,
+%% and above it the excess is bent by tanh toward full scale, so a loud
+%% room is compressed where it would be clipped. Symmetric, monotonic,
+%% continuous at the knee, never past 32767 in magnitude.
+-spec limit(integer()) -> -32767..32767.
+limit(S) when S > ?KNEE ->
+    Room = ?FULL - ?KNEE,
+    ?KNEE + round(Room * math:tanh((S - ?KNEE) / Room));
+limit(S) when S < -?KNEE ->
+    -limit(-S);
+limit(S) ->
+    S.
 
 build_tables(Law) ->
     Dec = list_to_tuple([decode(Law, B) || B <- lists:seq(0, 255)]),

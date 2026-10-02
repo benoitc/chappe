@@ -92,3 +92,29 @@ frame_test_() ->
         ),
         ?_assertEqual(<<>>, chappe_mix_g711:encode_frame(ulaw, []))
     ].
+
+%% ---- the soft limiter ----
+
+%% Up to the knee (-6 dBFS) a sample is left as it is.
+limit_identity_under_knee_test() ->
+    [?assertEqual(S, chappe_mix_g711:limit(S)) || S <- lists:seq(-16384, 16384)].
+
+%% Above the knee it bends at once, keeps rising, and never reaches past
+%% full scale however loud the sum.
+limit_bends_and_rises_test() ->
+    ?assert(chappe_mix_g711:limit(20000) < 20000),
+    Ls = [chappe_mix_g711:limit(S) || S <- lists:seq(16384, 60000)],
+    ?assertEqual(Ls, lists:sort(Ls)),
+    ?assert(chappe_mix_g711:limit(60000) > chappe_mix_g711:limit(40000)),
+    ?assert(chappe_mix_g711:limit(16385) - 16384 =< 1),
+    [
+        ?assert(chappe_mix_g711:limit(S) =< 32767)
+     || S <- [32767, 65536, 131072, 2097152, 1 bsl 40]
+    ].
+
+%% Symmetric about zero.
+limit_symmetric_test() ->
+    [
+        ?assertEqual(-chappe_mix_g711:limit(S), chappe_mix_g711:limit(-S))
+     || S <- [0, 1, 16384, 16385, 20000, 32767, 32768, 100000]
+    ].

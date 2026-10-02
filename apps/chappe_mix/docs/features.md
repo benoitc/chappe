@@ -11,6 +11,9 @@ What chappe_mix does today, and what is planned.
   than bursting them.
 - G.711 mu-law and A-law, per leg, with frame tables built at application
   start.
+- A soft limiter on what each leg hears: samples up to -6 dBFS are encoded
+  as they are, louder ones are bent toward full scale instead of clipped.
+  A static curve, folded into the encode table.
 - Per-leg jitter buffer keyed by RTP timestamp: packets of any size from
   0 to 200 ms (10, 20, 30 ms...) play out as 20 ms frames, every sample once
   (RFC 3551 4.2). Reorder repair, loss played as silence for the missing
@@ -54,7 +57,9 @@ What chappe_mix does today, and what is planned.
 ## Planned
 
 - Wideband: 16 kHz mixing with G.722 and Opus through a NIF.
-- Gain control on the sum (today it saturates).
+- Gain control on the sum: the static limiter does not meet the
+  distortion threshold in `test/audit/PERF.md` (a room at full scale RMS);
+  a per-listener gain measured -37.8 dB in a model (`ATTEMPTS.md`).
 - RFC 4733 telephone-event forwarding.
 - An RTCP port from signalling that is not RTP + 1 (RFC 3605 a=rtcp).
 - Cascaded mixers: carrying an input packet's CSRCs into the output list

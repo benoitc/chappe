@@ -472,3 +472,42 @@ order held at load 4.8 too):
   (`conference_ptime`). An underrun counted before the first frame
   survived the first run and got `no_underrun_before_start_test`; a first
   mutation of the timestamp extension did not compile and was rewritten.
+
+## A soft limiter: a static curve cannot meet the distortion row
+
+- Kept, as planned: a static soft knee on what each listener hears,
+  identity up to -6 dBFS and tanh toward full scale above, folded into the
+  65536-entry encode table. A sum past 16 bits (a clipping room) takes a
+  slower path: the curve computed, then the plain encoder, with the law
+  read from a 65537th element of the table. The common path is the same
+  `element/2` as before.
+- Measured before the code, in a Python model of the dsp on 8 tones at
+  -6 dBFS (300 to 2300 Hz, whole cycles in 1 s, mu-law): the sum is at
+  full scale RMS and peaks near 2.7 times full scale. THD+N with the hard
+  clip -10.4 dB; tanh knee at -12, -6, -3 dBFS -11.6, -11.0, -10.5 dB; a
+  rational knee -10.6 to -10.9 dB. No static curve gets near -26 dB: with
+  the signal at full scale RMS, any memoryless compression into 16 bits
+  distorts most samples. The -6 dBFS knee was taken as the middle way
+  between leaving normal rooms alone and bending a loud one.
+- In the same model, a per-listener gain set from each frame's peak
+  (instant attack, release over 25 frames) gives -37.8 dB: the tones are
+  scaled, not bent. That is not a static curve (it needs a peak per
+  listener per tick and a gain per sample), so it is not in this change;
+  it is the measured way to the threshold if the row is to be met.
+- In the mixer (`chappe_mix_dsp_tests:limiter_distortion_test`, 50 frames
+  of the same room through the real dsp): hard clip -10.19 dB, limiter
+  -10.67 dB. The distortion row is missed.
+- A lone talker louder than -6 dBFS now comes back through the curve, so
+  `chappe_mix_rfc_SUITE:g711_octets_through_the_mix` and
+  `silence_suppression_resume` (their test frame spans every code word)
+  expect the limited frame: decode, `limit/1`, encode.
+- The equivalence test keeps the byte match against the old list mix for
+  every sample under the knee, the hard clip included, and checks the
+  rest against the reference put through `limit/1`, plus sign, no louder
+  than the hard clip and no quieter than the knee. Seen failing first:
+  `limit/1` undefined, and the distortion case equal to the hard clip
+  (-10.19 dB both).
+- Mutations, 6, all caught: knee at -12 dBFS (11 failures) and at -3 dBFS
+  (2), samples past 16 bits hard clipped (10), the table without the curve
+  (11), the negative side clipped (2), the curve overshooting full scale
+  (12).

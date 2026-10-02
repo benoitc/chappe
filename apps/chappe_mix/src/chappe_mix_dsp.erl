@@ -5,7 +5,10 @@
 %% straight into one sum, an atomics array of 160 signed slots. Once every
 %% talker is in, mixed/1 reads the sum out into a tuple, and each leg's
 %% output is encoded from it less its own frame, decoded again from the
-%% code words it came in. No decoded frame is ever kept as a list, and
+%% code words it came in. The encode goes through the soft limiter
+%% (chappe_mix_g711:limit/1), folded into the encode table: under -6 dBFS
+%% a sample encodes as it always did, above it the room is compressed
+%% toward full scale instead of clipped. No decoded frame is ever kept as a list, and
 %% every per-sample lookup is element/2 (test/audit/ATTEMPTS.md has the
 %% comparison).
 %%
@@ -80,7 +83,10 @@ enc_sum(_Sum, _Enc, I, Acc) when I > ?FRAME ->
 enc_sum(Sum, Enc, I, Acc) ->
     enc_sum(Sum, Enc, I + 1, <<Acc/binary, (code(Enc, element(I, Sum)))>>).
 
+%% A sum past 16 bits is rare (a room clipping): limit it, then encode
+%% it with the law the table carries last.
 -compile({inline, [code/2]}).
-code(Enc, S) when S > 32767 -> element(65536, Enc);
-code(Enc, S) when S < -32768 -> element(1, Enc);
-code(Enc, S) -> element(S + 32769, Enc).
+code(Enc, S) when S > 32767; S < -32768 ->
+    chappe_mix_g711:encode(element(65537, Enc), chappe_mix_g711:limit(S));
+code(Enc, S) ->
+    element(S + 32769, Enc).
