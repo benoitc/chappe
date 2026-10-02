@@ -500,12 +500,21 @@ mix(#state{legs = Legs} = S, _Missed) when map_size(Legs) =:= 0 ->
     S;
 mix(#state{legs = Legs0} = S, Missed) ->
     Popped = [chappe_mix_leg:pop(L) || L <- maps:values(Legs0)],
-    Sum = sum([Pcm || {#leg{mute = false}, Pcm} <- Popped, Pcm =/= none]),
+    Sum = lists:foldl(
+        fun
+            ({#leg{mute = false, law = Law}, Codes}, Acc) when Codes =/= none ->
+                chappe_mix_dsp:add(Acc, Law, Codes);
+            (_, Acc) ->
+                Acc
+        end,
+        chappe_mix_dsp:new(),
+        Popped
+    ),
     %% who is in the sum, by leg, for the CSRC lists
     Talkers = [
         {Id, Ssrc}
-     || {#leg{id = Id, mute = false} = L, Pcm} <- Popped,
-        Pcm =/= none,
+     || {#leg{id = Id, mute = false} = L, Codes} <- Popped,
+        Codes =/= none,
         Ssrc <- [src_ssrc(L)],
         Ssrc =/= undefined
     ],
@@ -516,27 +525,23 @@ mix(#state{legs = Legs0} = S, Missed) ->
             L#leg.id,
             chappe_mix_leg:advance(
                 chappe_mix_leg:send(
-                    L, own(Sum, Pcm, L), csrcs(L#leg.id, Talkers, ?MAX_CSRC)
+                    L,
+                    chappe_mix_dsp:encode(Sum, L#leg.law, own(L, Codes)),
+                    csrcs(L#leg.id, Talkers, ?MAX_CSRC)
                 ),
                 Step
             )
         }
-     || {L, Pcm} <- Popped
+     || {L, Codes} <- Popped
     ]),
     S#state{legs = Legs}.
 
-sum([]) -> none;
-sum([P]) -> P;
-sum([P | Ps]) -> lists:foldl(fun add/2, P, Ps).
-
-add(A, B) -> lists:zipwith(fun(X, Y) -> X + Y end, A, B).
-
-%% What this leg hears: the sum without its own frame. A muted leg's
-%% frame is not in the sum, so there is nothing to take out.
-own(none, _Pcm, _L) -> none;
-own(Sum, none, _L) -> Sum;
-own(Sum, _Pcm, #leg{mute = true}) -> Sum;
-own(Sum, Pcm, _L) -> lists:zipwith(fun(X, Y) -> X - Y end, Sum, Pcm).
+%% This leg's own frame, to take out of what it hears, if it is in the
+%% sum: a muted leg's frame is not, and neither is a leg with nothing to
+%% play this tick.
+own(#leg{mute = true}, _Codes) -> none;
+own(_L, none) -> none;
+own(#leg{law = Law}, Codes) -> {Law, Codes}.
 
 %% The sources in this leg's mix: every talker but itself, at most N.
 csrcs(_Id, _Talkers, 0) -> [];

@@ -16,7 +16,7 @@
 %% building lazily from inside a running conference costs a mix tick.
 -module(chappe_mix_g711).
 
--export([init/0, decode/2, encode/2, decode_frame/2, encode_frame/2]).
+-export([init/0, decode/2, encode/2, decode_frame/2, encode_frame/2, tables/1]).
 
 -export_type([law/0]).
 
@@ -113,6 +113,9 @@ alaw_segment(_V, _End, 8) -> 8;
 alaw_segment(V, End, Seg) when V =< End -> Seg;
 alaw_segment(V, End, Seg) -> alaw_segment(V, (End bsl 1) bor 1, Seg + 1).
 
+%% The law's decode table (a 256-tuple of samples, by code word + 1) and
+%% encode table (a 64 KiB binary of code words, by sample + 32768).
+-spec tables(law()) -> {tuple(), binary()}.
 tables(Law) ->
     Key = {?MODULE, Law},
     case persistent_term:get(Key, undefined) of

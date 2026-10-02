@@ -12,12 +12,12 @@ missed here, never redefined after the numbers arrive.
 | Mixer latency added, RTP in to mixed RTP out, p50 / p99 | <= 25 ms / <= 45 ms, and <= reference + 10 ms | 41.1 / 45.9 ms | 9.3 / 10.6 ms (every one of 5 reruns <= 11.3 / 31.0 ms); 16.3 / 22.9 ms beside the reference | met |
 | Tick jitter at 20 ms ptime, p99 | <= 2 ms idle, <= 5 ms at capacity | n/a | 0.06 ms idle, < 0.5 ms at 100 conferences | met |
 | Capacity, 4-party PCMU conferences, one scheduler, every tick in budget | >= 100 conferences (400 legs), and >= reference per core | 75 rooms on one CPU | 275 conferences; 300 rooms by the reference's judge | met |
-| Memory per 4-party conference | <= 256 KiB | 2.9 to 3.0 MiB per room | 101 KiB (153 KiB of VM growth) | met |
+| Memory per 4-party conference | <= 256 KiB | 2.9 to 3.0 MiB per room | 65 to 80 KiB (137 to 148 KiB of VM growth) | met |
 | Mix correctness: each receiver detects every other tone, own tone >= 40 dB down | same detection result as the reference | every tone, own <= -54.7 dBFS | the same, to 0.01 dB | met |
 | 5% random loss on one leg | no crash, other legs keep their thresholds | n/a | no crash; probe 9.5 / 9.6 ms, every one of 5 reruns <= 12.9 ms p99 | met |
-| Mix compute per tick, 4 / 64 legs (`mix_cost`), set 2026-10-02 | <= 10 us / <= 200 us | n/a | 27.8 / 604.7 us | open |
-| Capacity as above, set 2026-10-02 | >= 500 conferences (2000 legs) | n/a | 275 | open |
-| Mixed output after a change to the mix | byte for byte the same as before it for the same input | n/a | n/a | open |
+| Mix compute per tick, 4 / 64 legs (`mix_cost`), set 2026-10-02 | <= 10 us / <= 200 us | n/a | 19.8 / 331.9 us | missed |
+| Capacity as above, set 2026-10-02 | >= 500 conferences (2000 legs) | n/a | 275 | missed |
+| Mixed output after a change to the mix | byte for byte the same as before it for the same input | n/a | the same, 500 seeded rooms of 1 to 64 legs | met |
 
 The numbers in the table are the quiet-box ones from "2026-10-01: native
 reference" below, minimum of the runs unless that section says otherwise.
@@ -337,7 +337,7 @@ reference.
 
 The compute and capacity thresholds dated 2026-10-02 in the table were set
 before this section and before any code, to decide whether denser mixing is
-worth a NIF. Host, `+S 1`, OTP 29, code at `3e0eba4`.
+worth a NIF. Host, `+S 1`, OTP 29, mixer code at `1244d99`.
 
 One tick split by part (a scratch module mirroring `chappe_mix_conf:mix/2`
 and `chappe_mix_leg:pop/send` part by part, best of 5, sends to loopback
@@ -375,3 +375,45 @@ code, twice each, interleaved (load 2.58 to 3.16):
 | default | 225, 225 |
 | `+sbwt none` | 225, 250 |
 | `+sbwt very_long` | 200, 250 |
+
+### 2026-10-02: the mix on an atomics sum (`chappe_mix_dsp`)
+
+The tick now decodes every talking leg straight into one sum, an atomics
+array of 160 signed slots, and encodes each leg's output from the sum less
+its own frame, decoded again from the code words it came in. No decoded
+frame is kept as a list. Chosen from six representations measured side by
+side (see `ATTEMPTS.md`). The mixed output is the same, byte for byte:
+`chappe_mix_dsp_tests` checks it against the list mix it replaces.
+
+Interleaved against `1244d99` (the mixer as `26d5536` has it; the same
+arms copied into both trees, `+S 1`, host). `mix_cost 4 64`, 5 launches each, load 2.75 to 3.20:
+
+| legs | before, us per tick | after, us per tick | change |
+| ---: | ---: | ---: | ---: |
+| 4 | 28.71 (28.71 to 30.84) | 19.79 (19.79 to 21.52) | -31% |
+| 64 | 607.3 (607.3 to 661.0) | 331.9 (331.9 to 365.2) | -45% |
+
+Minimum of 5, range in brackets. Both miss the compute thresholds (10 and
+200 us).
+
+`capacity 25 5 1000`, 5 launches each, interleaved, load 2.61 to 3.20:
+
+| | before | after |
+| --- | --- | --- |
+| conferences in budget | 250, 175, 225, 275, 250 | 275, 275, 275, 275, 250 |
+| VM bytes per conference | 88 to 99 KiB | 65 to 80 KiB |
+| VM growth per conference | 149 to 177 KiB | 137 to 148 KiB |
+
+The best launch of each is 275: at a 25-conference step the gain does not
+show in the best run, only in the spread (median 250 before, 275 after;
+one of 5 below 275 after, against 4 of 5 before). Three pairs at a 10
+conference step were planned to resolve it; one before-launch read 250, one
+after-launch stopped at 30 when the load rose to 14 during it, and the
+other four gave up after 30 minutes above the load limit (load 9 to 27 from
+09:53 to 11:00). The capacity threshold (500) is missed. The compute is
+about 60% of a tick once the frames are in, before the receive path, so a
+31% cut in it was never going to double the ceiling.
+
+`chappe_mix_SUITE`, `chappe_mix_rfc_SUITE`, `chappe_mix_ref_SUITE` (against
+`mod_conference`) and `chappe_mix_live_SUITE` (behind rtpengine, PCMA and
+opus legs) pass on the new mix.

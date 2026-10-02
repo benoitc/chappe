@@ -113,9 +113,11 @@ them to wander by a few percent on short steps.
 
 ### mix_cost
 
-It mirrors the compute in `chappe_mix_conf:mix/1`: decode every leg, sum
-once, and for each leg subtract its own frame, encode and build the packet.
-If you change the mix, change `mix_tick/1` in `chappe_mix_bench.erl` with it.
+It runs the compute of one tick with the mixer's own code,
+`chappe_mix_dsp`: every leg decoded into the sum, then for each leg the sum
+less its own frame encoded and built into an RTP packet. On a commit from
+before `chappe_mix_dsp` it runs the list mix that commit had, so the arm
+still compares two commits.
 
 ### ref_latency
 
