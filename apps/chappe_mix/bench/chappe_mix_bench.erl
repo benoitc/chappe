@@ -84,6 +84,17 @@ arm("capacity", Args, Load) ->
     capacity(
         int_arg(Args, 1, 10), int_arg(Args, 2, 5), int_arg(Args, 3, 1000), Load
     );
+%% Compute of one mix tick for N legs, no sockets, each listener kept
+%% from hearing K other legs besides itself (chappe_mix:relate/4).
+%% Args: nohear K [N...].
+arm("mix_cost", ["nohear", K | Args], Load) ->
+    Ns =
+        case Args of
+            [] -> [4, 64];
+            _ -> [list_to_integer(A) || A <- Args]
+        end,
+    [mix_cost(N, list_to_integer(K), Load) || N <- Ns],
+    ok;
 %% Compute of one mix tick for N legs, no sockets. Args: [N...].
 arm("mix_cost", Args, Load) ->
     Ns =
@@ -389,13 +400,16 @@ sched_util(Secs) ->
 %% older commit it runs the list version the mixer had then, so the arm
 %% still compares two commits.
 mix_cost(N, Load) ->
+    mix_cost(N, 0, Load).
+
+mix_cost(N, K, Load) ->
     chappe_mix_g711:init(),
     Frames = [
         chappe_mix_g711:encode_frame(ulaw, [
-            round(6000 * math:sin(2 * math:pi() * (300 + 100 * K) * I / 8000))
+            round(6000 * math:sin(2 * math:pi() * (300 + 100 * T) * I / 8000))
          || I <- lists:seq(0, ?FRAME - 1)
         ])
-     || K <- lists:seq(1, N)
+     || T <- lists:seq(1, N)
     ],
     Iter = max(50, 20000 div N),
     _ = code:ensure_loaded(chappe_mix_dsp),
@@ -406,6 +420,7 @@ mix_cost(N, Load) ->
                 erlang:function_exported(chappe_mix_dsp, new, 0)
             }
         of
+            {true, _} when K > 0 -> fun(Fs) -> mix_tick_nohear(Fs, K) end;
             {true, _} -> fun mix_tick/1;
             {false, true} -> fun mix_tick_dsp0/1;
             {false, false} -> fun mix_tick_lists/1
@@ -420,6 +435,7 @@ mix_cost(N, Load) ->
     Min = lists:min(Rounds),
     report(mix_cost, Load, [
         {legs, N},
+        {nohear, K},
         {tick_us_min, round2(Min)},
         {tick_us_max, round2(lists:max(Rounds))},
         {per_leg_us, round2(Min / N)},
@@ -451,6 +467,36 @@ mix_tick(Frames) ->
             payload => chappe_mix_dsp:encode(Mixed, ulaw, {ulaw, F})
         })
      || {K, F} <- lists:zip(Ids, Frames)
+    ].
+
+%% As mix_tick/1, each listener also kept from hearing the K legs after
+%% it: their frames are taken out of its sum, and out of its CSRC list.
+mix_tick_nohear(Frames, K) ->
+    Sum = lists:foldl(
+        fun(F, Acc) -> chappe_mix_dsp:add(Acc, ulaw, F) end,
+        chappe_mix_dsp:new(),
+        Frames
+    ),
+    Mixed = chappe_mix_dsp:mixed(Sum),
+    N = length(Frames),
+    Ids = lists:seq(1, N),
+    Tuple = list_to_tuple(Frames),
+    [
+        begin
+            Skip = [((I - 1 + J) rem N) + 1 || J <- lists:seq(0, K)],
+            chappe_mix_rtp:build(#{
+                pt => 0,
+                seq => 1,
+                ts => 160,
+                ssrc => 42,
+                marker => false,
+                csrcs => lists:sublist(Ids -- Skip, 15),
+                payload => chappe_mix_dsp:encode(
+                    Mixed, ulaw, [{ulaw, element(J, Tuple)} || J <- Skip]
+                )
+            })
+        end
+     || I <- Ids
     ].
 
 %% chappe_mix_dsp before mixed/1 (0ea59d9 to 0cd3bb2): encode read the

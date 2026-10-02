@@ -16,7 +16,15 @@
     %% the packet time the far end sends, in ms (informational: the
     %% jitter buffer takes any size, and the mix always goes out in 20 ms)
     ptime = 20 :: pos_integer(),
-    mute = false :: boolean(),
+    %% what the room does with this leg, from the room's side: sendrecv
+    %% (mixed, hears the room), sendonly (hears the room, mixed into
+    %% nothing), recvonly (mixed, sent nothing), inactive
+    direction = sendrecv :: sendrecv | sendonly | recvonly | inactive,
+    %% the leg carries media the room itself injects (a prompt): in CSRC
+    %% lists it is the mixer's own SSRC
+    injected = false :: boolean(),
+    %% legs this one does not hear, besides itself
+    nohear = [] :: [pos_integer()],
     %% RFC 4733 telephone-event: the payload type this leg negotiated
     %% (undefined: none) and the event codes it takes
     dtmf_pt :: 0..127 | undefined,

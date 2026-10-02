@@ -13,6 +13,7 @@
 -export([accepts_rtp/2, accepts_rtcp/2, take/3, pop/1, send/3, advance/2]).
 -export([is_event/2, event_codes/1, takes_events/2, send_event/5]).
 -export([set_remote/2]).
+-export([speaks/1, hears/1, mute_direction/2, hears_from/2]).
 -export([rtcp_send/4]).
 
 -export_type([addr/0]).
@@ -37,7 +38,8 @@ open(Id, Opts, #{ip := Ip, law := Law, depth := Depth, ssrc := Ssrc} = Dfl) ->
                 remote = maps:get(remote, Opts, undefined),
                 law = maps:get(law, Opts, Law),
                 ptime = maps:get(ptime, Opts, 20),
-                mute = maps:get(mute, Opts, false),
+                direction = initial_direction(Opts),
+                injected = maps:get(injected, Opts, false),
                 dtmf_pt = maps:get(dtmf_pt, Opts, undefined),
                 %% no events list from the far end: the DTMF digits only
                 %% (RFC 4733 2.5.1.1)
@@ -116,7 +118,10 @@ info(#leg{} = L) ->
             source => L#leg.source,
             law => L#leg.law,
             ptime => L#leg.ptime,
-            mute => L#leg.mute,
+            mute => not speaks(L),
+            direction => L#leg.direction,
+            injected => L#leg.injected,
+            nohear => L#leg.nohear,
             tx => L#leg.tx,
             bad => L#leg.bad,
             other_pt => L#leg.other_pt,
@@ -145,6 +150,38 @@ set_remote(#{remote := Remote} = Opts, L) ->
         dtmf_pt = maps:get(dtmf_pt, Opts, L#leg.dtmf_pt),
         dtmf_events = maps:get(dtmf_events, Opts, L#leg.dtmf_events)
     }.
+
+%% Whether the room takes this leg's audio into the mix.
+-spec speaks(#leg{}) -> boolean().
+speaks(#leg{direction = D}) -> D =:= sendrecv orelse D =:= recvonly.
+
+%% Whether the room sends this leg anything.
+-spec hears(#leg{}) -> boolean().
+hears(#leg{direction = D}) -> D =:= sendrecv orelse D =:= sendonly.
+
+%% Whether this leg hears leg Id: it hears the room, Id is not itself and
+%% it was not told not to.
+-spec hears_from(pos_integer(), #leg{}) -> boolean().
+hears_from(Id, #leg{id = Mine, nohear = No} = L) ->
+    Id =/= Mine andalso hears(L) andalso not lists:member(Id, No).
+
+%% The direction a leg opens with: mute => true mutes it on top.
+initial_direction(Opts) ->
+    D = maps:get(direction, Opts, sendrecv),
+    case maps:get(mute, Opts, false) of
+        true -> mute_direction(D, true);
+        false -> D
+    end.
+
+%% Muting is the room no longer taking from the leg; unmuting gives that
+%% back. What the room sends the leg does not change.
+-spec mute_direction(sendrecv | sendonly | recvonly | inactive, boolean()) ->
+    sendrecv | sendonly | recvonly | inactive.
+mute_direction(sendrecv, true) -> sendonly;
+mute_direction(recvonly, true) -> inactive;
+mute_direction(sendonly, false) -> sendrecv;
+mute_direction(inactive, false) -> recvonly;
+mute_direction(D, _) -> D.
 
 %% ---- in ----
 
@@ -242,7 +279,8 @@ pop(#leg{jbuf = J0} = L) ->
     end.
 
 %% Send a mixed frame, already encoded in the leg's law (none: silence),
-%% naming Csrcs, if the far end is known.
+%% naming Csrcs, if the far end is known. The conference does not call it
+%% for a leg the room sends nothing (see hears/1).
 -spec send(#leg{}, binary() | none, [non_neg_integer()]) -> #leg{}.
 send(#leg{remote = undefined} = L, _Mixed, _Csrcs) ->
     L;

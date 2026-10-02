@@ -30,7 +30,8 @@
 -export([conference_two_legs/1, conference_leave/1, conference_mute/1,
          conference_owner_death/1, conference_leg_owner_death/1,
          conference_sdp/1, conference_ptime/1, conference_dtmf/1,
-         conference_rtcp_port/1]).
+         conference_rtcp_port/1, conference_directions/1,
+         conference_deaf_relate/1]).
 -export([conference_behind_rtpengine/1]).
 
 -define(LIVE_NODE, chappe_sip_media_live).
@@ -46,7 +47,8 @@ groups() ->
     [{mix, [], [conference_two_legs, conference_leave, conference_mute,
                 conference_owner_death, conference_leg_owner_death,
                 conference_sdp, conference_ptime, conference_dtmf,
-                conference_rtcp_port]},
+                conference_rtcp_port, conference_directions,
+                conference_deaf_relate]},
      {rtpengine_live, [], [conference_behind_rtpengine]}].
 
 init_per_suite(Config) ->
@@ -558,6 +560,87 @@ conference_rtcp_port(_Config) ->
            S5, Sdp(<<>>, <<"a=rtcp:5017 IN IP4 10.1.2.4\r\n">>)),
     ?assertMatch(#{rtcp_remote := {{10, 1, 2, 4}, 5017}}, Leg(S5)),
     [ok = chappe_sip_media:leave(S) || S <- [S1, S2, S3, S4, S5]].
+
+%% SDP directions: the leg does what the far end asked, seen from the
+%% room (an offer that only sends gets a leg the room only takes from,
+%% and a=recvonly back), at media or session level; the mixer's own offer
+%% says the direction the join asked for.
+conference_directions(_Config) ->
+    Room = room(),
+    Sdp = fun(Sess, Media) ->
+        <<"v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\n",
+          Sess/binary, "t=0 0\r\nm=audio 4000 RTP/AVP 0\r\n", Media/binary>>
+    end,
+    Dir = fun(S) ->
+        #{conf := Conf, leg := L} = chappe_sip_media:info(S),
+        [D] = [D || #{id := Id, direction := D} <- chappe_mix:legs(Conf),
+                    Id =:= L],
+        D
+    end,
+    Join = fun(Opts) ->
+        {ok, S} = conf_session(),
+        {ok, Sdp1} = chappe_sip_media:conference(S, Room, Opts),
+        {S, Sdp1}
+    end,
+    Cases = [
+        {Sdp(<<>>, <<"a=sendonly\r\n">>), recvonly, <<"a=recvonly">>},
+        {Sdp(<<>>, <<"a=recvonly\r\n">>), sendonly, <<"a=sendonly">>},
+        {Sdp(<<>>, <<"a=inactive\r\n">>), inactive, <<"a=inactive">>},
+        {Sdp(<<"a=sendonly\r\n">>, <<>>), recvonly, <<"a=recvonly">>},
+        {Sdp(<<"a=sendonly\r\n">>, <<"a=sendrecv\r\n">>), sendrecv,
+         <<"a=sendrecv">>}
+    ],
+    Ss = [
+        begin
+            {S, Answer} = Join(#{sdp => Offer}),
+            ?assertNotEqual(nomatch, binary:match(Answer, Attr), {Offer, Answer}),
+            ?assertEqual(Want, Dir(S)),
+            S
+        end
+     || {Offer, Want, Attr} <- Cases
+    ],
+    {S6, Offer6} = Join(#{direction => recvonly}),
+    ?assertNotEqual(nomatch, binary:match(Offer6, <<"a=recvonly">>)),
+    ?assertEqual(recvonly, Dir(S6)),
+    %% the answer to the mixer's offer can narrow it
+    {S7, _} = Join(#{}),
+    ok = chappe_sip_media:set_remote(S7, Sdp(<<>>, <<"a=recvonly\r\n">>)),
+    ?assertEqual(sendonly, Dir(S7)),
+    [ok = chappe_sip_media:leave(S) || S <- Ss ++ [S6, S7]].
+
+%% deaf: the leg keeps talking to the room and hears nothing of it (the
+%% room sends it nothing); undeaf gives it back. relate/3: one leg stops
+%% hearing another, then hears it again.
+conference_deaf_relate(_Config) ->
+    Room = room(),
+    {ok, S1} = conf_session(),
+    {ok, S2} = conf_session(),
+    {ok, _} = chappe_sip_media:conference(S1, Room, #{}),
+    {ok, _} = chappe_sip_media:conference(S2, Room, #{}),
+    #{conf := Conf, leg := L1} = chappe_sip_media:info(S1),
+    #{leg := L2} = chappe_sip_media:info(S2),
+    Leg = fun(L) ->
+        [I] = [I || #{id := Id} = I <- chappe_mix:legs(Conf), Id =:= L],
+        I
+    end,
+    ok = chappe_sip_media:deaf(S1),
+    ?assertMatch(#{direction := recvonly}, Leg(L1)),
+    ?assertMatch(#{deaf := true}, chappe_sip_media:info(S1)),
+    ok = chappe_sip_media:mute(S1),
+    ?assertMatch(#{direction := inactive}, Leg(L1)),
+    ok = chappe_sip_media:undeaf(S1),
+    ?assertMatch(#{direction := sendonly}, Leg(L1)),
+    ok = chappe_sip_media:unmute(S1),
+    ?assertMatch(#{direction := sendrecv}, Leg(L1)),
+    ok = chappe_sip_media:relate(S1, S2, nohear),
+    ?assertMatch(#{nohear := [L2]}, Leg(L1)),
+    ok = chappe_sip_media:relate(S1, S2, hear),
+    ?assertMatch(#{nohear := []}, Leg(L1)),
+    %% legs of two rooms have no relation
+    {ok, S3} = conf_session(),
+    {ok, _} = chappe_sip_media:conference(S3, room(), #{}),
+    ?assertEqual({error, not_same_room}, chappe_sip_media:relate(S1, S3, nohear)),
+    [ok = chappe_sip_media:leave(S) || S <- [S1, S2, S3]].
 
 %% ---- conference behind rtpengine ----
 

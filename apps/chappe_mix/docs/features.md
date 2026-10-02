@@ -26,6 +26,12 @@ What chappe_mix does today, and what is planned.
   Once latched, RTP from any other address is dropped and counted, except
   from the far end itself, which moves the latch to it; `set_remote/3`
   resets the latch.
+- Leg directions from the room's side (`direction`: sendrecv, sendonly
+  for a recorder, recvonly for a prompt player or a deaf party, inactive),
+  `mute/3` as a direction change, and per-pair relations
+  (`relate/4`: a listener kept from hearing one speaker, in audio, CSRC
+  lists and events). A leg marked `injected` is the room's own media: its
+  listeners see the mixer's SSRC for it in their CSRC lists.
 - Join, leave and mute at any time. Comfort noise, unknown payload types
   and malformed packets are counted and dropped.
 - RFC 4733 telephone-event forwarding (`dtmf_pt`, `dtmf_events` leg

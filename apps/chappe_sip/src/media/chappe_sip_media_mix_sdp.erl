@@ -14,12 +14,17 @@
 
 -export([accept_offer/1, read_answer/2, answer/2, offer/1]).
 
--export_type([law/0, remote/0, local/0, dtmf/0]).
+-export_type([law/0, remote/0, local/0, dtmf/0, direction/0]).
+
+-export([combine/2]).
 
 -type law() :: ulaw | alaw.
 %% RFC 4733 telephone-event: the payload type and the event codes listed
 %% in its fmtp (the DTMF digits 0 to 15 when it has none).
 -type dtmf() :: #{pt := 0..127, events := [0..255]}.
+%% A leg's direction seen from the room, as chappe_mix takes it, which is
+%% also what the mixer's own SDP says.
+-type direction() :: sendrecv | sendonly | recvonly | inactive.
 %% What a leg needs from the far end's SDP. index is the m-line answered;
 %% ptime the far end's a=ptime (20 when it gives none); dtmf its
 %% telephone-event, if it has one; rtcp where its RTCP goes when a
@@ -31,6 +36,7 @@
     mux := boolean(),
     ptime := pos_integer(),
     dtmf := dtmf() | undefined,
+    direction := direction(),
     index := non_neg_integer()
 }.
 %% The leg as advertised: address, RTP port, law, RTCP mux, and the
@@ -40,7 +46,8 @@
     port := inet:port_number(),
     law := law(),
     mux := boolean(),
-    dtmf_pt => 0..127
+    dtmf_pt => 0..127,
+    direction => direction()
 }.
 
 -define(PROTO, <<"RTP/AVP">>).
@@ -66,14 +73,15 @@ accept_offer(Sdp) ->
     {ok, #{
         endpoint := {inet:ip_address(), inet:port_number()},
         rtcp := {inet:ip_address(), inet:port_number()} | undefined,
-        dtmf := dtmf() | undefined
+        dtmf := dtmf() | undefined,
+        direction := direction()
     }}
     | {error, term()}.
 read_answer(Sdp, Law) ->
     {SessAddr, Media} = parse(Sdp),
     case pick(SessAddr, Media) of
-        {ok, #{law := Law, endpoint := Endpoint, rtcp := Rtcp, dtmf := Dtmf}} ->
-            {ok, #{endpoint => Endpoint, rtcp => Rtcp, dtmf => Dtmf}};
+        {ok, #{law := Law} = R} ->
+            {ok, maps:with([endpoint, rtcp, dtmf, direction], R)};
         {ok, #{law := Other}} ->
             {error, {law_mismatch, Other}};
         {error, _} = Err ->
@@ -135,7 +143,11 @@ audio(#{port := Port, law := Law, mux := Mux} = Local) ->
         [<<"a=rtpmap:">>, Pt, <<" ">>, encoding(Law), <<"/8000\r\n">>],
         Dtmf,
         [<<"a=ptime:">>, integer_to_binary(?PTIME), crlf()],
-        <<"a=sendrecv\r\n">>,
+        [
+            <<"a=">>,
+            atom_to_binary(maps:get(direction, Local, sendrecv)),
+            crlf()
+        ],
         case Mux of
             true -> <<"a=rtcp-mux\r\n">>;
             false -> <<>>
@@ -191,12 +203,33 @@ pick_stream(I, #{port := Port, fmts := Fmts} = M, SessAddr) ->
                         mux => maps:get(mux, M, false),
                         ptime => maps:get(ptime, M, ?PTIME),
                         dtmf => dtmf(M),
+                        direction => room_side(maps:get(dir, M, sendrecv)),
                         index => I
                     }};
                 error ->
                     {error, no_connection_address}
             end
     end.
+
+%% The far end's direction seen from the room: what it only sends, the
+%% room only takes.
+room_side(sendonly) -> recvonly;
+room_side(recvonly) -> sendonly;
+room_side(Dir) -> Dir.
+
+%% What both sides allow: the room sends only when both say it may, and
+%% takes only when both say it may.
+-spec combine(direction(), direction()) -> direction().
+combine(A, B) ->
+    direction(sends(A) andalso sends(B), takes(A) andalso takes(B)).
+
+sends(D) -> D =:= sendrecv orelse D =:= sendonly.
+takes(D) -> D =:= sendrecv orelse D =:= recvonly.
+
+direction(true, true) -> sendrecv;
+direction(true, false) -> sendonly;
+direction(false, true) -> recvonly;
+direction(false, false) -> inactive.
 
 %% The RTCP address of a media-level a=rtcp: its port, and its address
 %% or else the media's. Muxed RTCP stays on the RTP port.
@@ -295,7 +328,25 @@ parse(Sdp) ->
         global, trim_all
     ]),
     {Sess, Rev} = lists:foldl(fun line/2, {undefined, []}, Lines),
-    {Sess, lists:reverse(Rev)}.
+    %% a session-level direction holds for the m-lines without their own
+    SessDir = session_dir(Lines),
+    {Sess, [maps:merge(#{dir => SessDir}, M) || M <- lists:reverse(Rev)]}.
+
+session_dir([<<"m=", _/binary>> | _]) ->
+    sendrecv;
+session_dir([L | Ls]) ->
+    case dir_attr(L) of
+        undefined -> session_dir(Ls);
+        Dir -> Dir
+    end;
+session_dir([]) ->
+    sendrecv.
+
+dir_attr(<<"a=sendrecv">>) -> sendrecv;
+dir_attr(<<"a=sendonly">>) -> sendonly;
+dir_attr(<<"a=recvonly">>) -> recvonly;
+dir_attr(<<"a=inactive">>) -> inactive;
+dir_attr(_) -> undefined.
 
 line(<<"m=", Rest/binary>>, {Sess, Media}) ->
     case words(Rest) of
@@ -318,6 +369,13 @@ line(<<"c=", Rest/binary>>, {Sess, Media}) ->
     end;
 line(<<"a=rtcp-mux", _/binary>>, {Sess, [M | Ms]}) ->
     {Sess, [M#{mux => true} | Ms]};
+line(<<"a=", _/binary>> = L, {Sess, [M | Ms]}) when
+    L =:= <<"a=sendrecv">>;
+    L =:= <<"a=sendonly">>;
+    L =:= <<"a=recvonly">>;
+    L =:= <<"a=inactive">>
+->
+    {Sess, [M#{dir => dir_attr(L)} | Ms]};
 line(<<"a=rtcp:", V/binary>>, {Sess, [M | Ms]}) ->
     %% media level only: RFC 3605 2.1 forbids it at session level
     {Sess, [M#{rtcp => V} | Ms]};

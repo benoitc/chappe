@@ -560,3 +560,39 @@ order held at load 4.8 too):
   the listener not excluded, the a=rtcp port not used, `set_remote/3` not
   taking it, a=rtcp read on a muxed m-line, its address ignored, an
   answer's a=rtcp not passed to the leg.
+
+## Leg directions and per-pair relations
+
+- A leg's `direction`, from the room's side, replaces the mute flag:
+  sendrecv, sendonly (hears, is not mixed: a recorder), recvonly (is
+  mixed, is sent nothing: a prompt player, or a deaf party), inactive.
+  `mute/3` is kept and moves the direction (sendrecv to sendonly, recvonly
+  to inactive, and back). A leg the room sends nothing gets no RTP at all,
+  as an SDP recvonly asks; its RTCP still flows.
+- `relate/4` keeps one leg from hearing another: `chappe_mix_dsp:encode/3`
+  takes a list of frames to take out of the sum (their own sum, taken out
+  sample by sample); one frame keeps the path it had. The CSRC list and
+  event forwarding follow the same relations, and a sendonly or inactive
+  leg's events are not forwarded.
+- `injected => true` marks a leg whose media the room itself plays: the
+  listeners' CSRC lists name the mixer's own SSRC for it (R3550-21).
+- First version opened a leg given `direction => sendonly` as sendrecv:
+  the mute flag was applied as "unmute" when it was false. `directions`
+  failed with the recorder's tone leaking; `mute_is_a_direction` had not
+  opened a sendonly leg. Mute is now applied at open only when set.
+- `chappe_mix_conf` passed 500 lines; the mix and the event forwarding
+  moved to `chappe_mix_room`, plain functions over the legs map.
+- Seen failing first: the four `chappe_mix_SUITE` cases (`directions`
+  leaked the sendonly leg's tone, the others undef or no `direction`),
+  `several_left_out_test`, and the two facade cases
+  (`conference_directions`, `conference_deaf_relate`).
+- Mutations, 13, all caught in the end: a leg the room sends nothing
+  still sent, a sendonly leg mixed, nohear frames not taken out, nohear
+  sources left in the CSRC list, injected media named by its own SSRC,
+  muting a recvonly leg doing nothing, several frames added back instead
+  of taken out, events past a relation, a muted leg's events forwarded,
+  the peer's direction not turned round, the session-level direction
+  ignored, deaf not applied, a relation across rooms. The first survived:
+  `chappe_mix_leg:send/3` refused a recvonly leg as well, a second guard
+  that hid the first; it was removed.
+

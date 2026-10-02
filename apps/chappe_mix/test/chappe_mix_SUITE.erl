@@ -24,6 +24,10 @@
     stop_closes/1,
     tick_trace/1,
     tick_never_early/1,
+    directions/1,
+    mute_is_a_direction/1,
+    relate_pairs/1,
+    injected_media/1,
     probe_calibration/1,
     rtcp_sender_reports/1,
     rtcp_port_pair/1,
@@ -60,6 +64,10 @@ all() ->
         stop_closes,
         tick_trace,
         tick_never_early,
+        directions,
+        mute_is_a_direction,
+        relate_pairs,
+        injected_media,
         probe_calibration,
         rtcp_sender_reports,
         rtcp_port_pair,
@@ -903,6 +911,107 @@ wait_until(Fun, Deadline, Ms) ->
             end
     end.
 
+%% Directions, from the room's side. A (sendrecv) is mixed and hears
+%% the room; B (sendonly: the room only sends to it) hears the room and
+%% is mixed into nothing, like a recorder; C (recvonly: the room only
+%% takes from it) is heard by everyone and is sent nothing, like a prompt
+%% player; D (inactive) neither.
+directions(_Config) ->
+    {ok, Conf} = chappe_mix:start(#{}),
+    A = join(Conf, 440),
+    B = join(Conf, 1100, #{}, #{direction => sendonly}),
+    C = join(Conf, 1700, #{}, #{direction => recvonly}),
+    D = join(Conf, 2300, #{}, #{direction => inactive}),
+    Checks = [
+        {element(1, A), [1700], [440, 1100, 2300]},
+        {element(1, B), [440, 1700], [1100, 2300]}
+    ],
+    Waited = steady(Checks, erlang:monotonic_time(millisecond) + 5000),
+    ct:log("steady after ~p ms", [Waited]),
+    judge(Conf, Checks, 1000, 3),
+    ?assertEqual(
+        [sendrecv, sendonly, recvonly, inactive],
+        [maps:get(direction, leg_stats(Conf, leg(E))) || E <- [A, B, C, D]]
+    ),
+    %% the room sends C and D nothing at all
+    ?assertEqual({[], []}, {
+        chappe_mix_test_tone:samples(element(1, C)),
+        chappe_mix_test_tone:samples(element(1, D))
+    }),
+    close(Conf, [A, B, C, D]).
+
+%% mute/3 is a direction change: a muted leg is one the room only sends
+%% to (or, if the room was only taking from it, one it neither sends to
+%% nor takes from), and unmuting takes it back.
+mute_is_a_direction(_Config) ->
+    {ok, Conf} = chappe_mix:start(#{}),
+    {ok, L1, _} = chappe_mix:add_leg(Conf, #{}),
+    {ok, L2, _} = chappe_mix:add_leg(Conf, #{direction => recvonly}),
+    {ok, L3, _} = chappe_mix:add_leg(Conf, #{mute => true}),
+    Dir = fun(L) -> maps:get(direction, leg_stats(Conf, L)) end,
+    ?assertEqual([sendrecv, recvonly, sendonly], [Dir(L) || L <- [L1, L2, L3]]),
+    [ok = chappe_mix:mute(Conf, L, true) || L <- [L1, L2]],
+    ?assertEqual([sendonly, inactive], [Dir(L) || L <- [L1, L2]]),
+    ?assertMatch(#{mute := true}, leg_stats(Conf, L1)),
+    [ok = chappe_mix:mute(Conf, L, false) || L <- [L1, L2, L3]],
+    ?assertEqual([sendrecv, recvonly, sendrecv], [Dir(L) || L <- [L1, L2, L3]]),
+    ?assertMatch(#{mute := false}, leg_stats(Conf, L1)),
+    ok = chappe_mix:direction(Conf, L1, inactive),
+    ?assertEqual(inactive, Dir(L1)),
+    ?assertEqual({error, not_found}, chappe_mix:direction(Conf, 99, inactive)),
+    ok = chappe_mix:stop(Conf).
+
+%% Per-pair relations: A stops hearing B (B still hears A, C hears both);
+%% B leaves A's CSRC list with its audio. Hearing again restores it.
+relate_pairs(_Config) ->
+    {Conf, [A, B, C] = Eps} = conference([440, 1100, 1700]),
+    ok = chappe_mix:relate(Conf, leg(A), leg(B), nohear),
+    Checks = [
+        {element(1, A), [1700], [440, 1100]},
+        {element(1, B), [440, 1700], [1100]},
+        {element(1, C), [440, 1100], [1700]}
+    ],
+    steady(Checks, erlang:monotonic_time(millisecond) + 5000),
+    judge(Conf, Checks, 1000, 3),
+    #{source_ssrc := SB} = leg_stats(Conf, leg(B)),
+    #{source_ssrc := SC} = leg_stats(Conf, leg(C)),
+    ?assertEqual([SC], maps:get(csrcs, leg_stats(Conf, leg(A)))),
+    ok = chappe_mix:relate(Conf, leg(A), leg(B), hear),
+    Back = [{element(1, A), [1100, 1700], [440]}],
+    steady(Back, erlang:monotonic_time(millisecond) + 5000),
+    judge(Conf, Back, 1000, 3),
+    ?assertEqual(
+        lists:sort([SB, SC]), lists:sort(maps:get(csrcs, leg_stats(Conf, leg(A))))
+    ),
+    ?assertEqual(
+        {error, not_found}, chappe_mix:relate(Conf, leg(A), 99, nohear)
+    ),
+    close(Conf, Eps).
+
+%% Media the room injects (a prompt on an input-only leg opened with
+%% `injected => true') makes the mixer itself a contributing source: on
+%% every leg that hears it, the CSRC list names the mixer's own SSRC on
+%% that leg, not the prompt leg's source (RFC 3550 7.1).
+%% req: R3550-21
+injected_media(_Config) ->
+    {Conf, [A, B] = Eps} = conference([440, 1100]),
+    P = join(Conf, 1700, #{}, #{direction => recvonly, injected => true}),
+    Checks = [
+        {element(1, A), [1100, 1700], [440]},
+        {element(1, B), [440, 1700], [1100]}
+    ],
+    steady(Checks, erlang:monotonic_time(millisecond) + 5000),
+    judge(Conf, Checks, 1000, 3),
+    #{source_ssrc := SA} = leg_stats(Conf, leg(A)),
+    #{source_ssrc := SB} = leg_stats(Conf, leg(B)),
+    #{source_ssrc := SP} = leg_stats(Conf, leg(P)),
+    #{ssrc := MineA, csrcs := CA} = leg_stats(Conf, leg(A)),
+    #{ssrc := MineB, csrcs := CB} = leg_stats(Conf, leg(B)),
+    ?assertEqual(lists:sort([SB, MineA]), lists:sort(CA)),
+    ?assertEqual(lists:sort([SA, MineB]), lists:sort(CB)),
+    ?assertNot(lists:member(SP, CA ++ CB)),
+    close(Conf, Eps ++ [P]).
+
 %% ---- helpers ----
 
 %% A conference with one endpoint per frequency. Endpoints are
@@ -915,7 +1024,10 @@ join(Conf, Freq) ->
     join(Conf, Freq, #{}).
 
 join(Conf, Freq, Opts) ->
-    {ok, Leg, #{port := MixPort}} = chappe_mix:add_leg(Conf, #{}),
+    join(Conf, Freq, Opts, #{}).
+
+join(Conf, Freq, Opts, LegOpts) ->
+    {ok, Leg, #{port := MixPort}} = chappe_mix:add_leg(Conf, LegOpts),
     {Pid, _} = chappe_mix_test_tone:endpoint(
         Opts#{freq => Freq, dst => {{127, 0, 0, 1}, MixPort}}
     ),

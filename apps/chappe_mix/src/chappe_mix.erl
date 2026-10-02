@@ -37,15 +37,24 @@
     move_leg/3,
     set_remote/3,
     mute/3,
+    direction/3,
+    relate/4,
     legs/1,
     stats/1
 ]).
 
--export_type([conf/0, leg/0, endpoint/0, conf_opts/0, leg_opts/0, remote/0]).
+-export_type([
+    conf/0, leg/0, endpoint/0, conf_opts/0, leg_opts/0, remote/0, direction/0
+]).
 
 -type conf() :: pid().
 -type leg() :: pos_integer().
 -type endpoint() :: {inet:ip_address(), inet:port_number()}.
+%% What the room does with a leg, from the room's side: sendrecv (mixed,
+%% hears the room), sendonly (hears the room, mixed into nothing: a
+%% recorder), recvonly (heard by all, sent nothing: a prompt player, or a
+%% deaf party), inactive. The mixer's SDP for the leg says the same.
+-type direction() :: sendrecv | sendonly | recvonly | inactive.
 
 %% ip: the address legs bind to and advertise (default 127.0.0.1, so
 %% nothing is exposed unless you say so). law: the conference default
@@ -88,7 +97,11 @@
 %% dtmf_events: the event codes its fmtp lists (default 0 to 15, the
 %% digits); it is sent no others. rtcp_remote: where this leg's RTCP goes
 %% when the far end's SDP names it with a=rtcp (RFC 3605), instead of the
-%% RTP port (mux) or the port after it (pair).
+%% RTP port (mux) or the port after it (pair). direction: see
+%% direction(), default sendrecv; mute => true on top of it is what
+%% mute/3 does. injected: the leg carries media the room itself plays (a
+%% prompt, music), so listeners see the mixer's SSRC for it in their CSRC
+%% lists (RFC 3550 7.1).
 -type leg_opts() :: #{
     remote => endpoint(),
     law => chappe_mix_g711:law(),
@@ -96,6 +109,8 @@
     dtmf_pt => 0..127,
     dtmf_events => [0..255],
     mute => boolean(),
+    direction => direction(),
+    injected => boolean(),
     rtcp => mux | pair,
     rtcp_remote => endpoint(),
     name => binary()
@@ -154,10 +169,26 @@ move_leg(From, Leg, To) ->
 set_remote(Conf, Leg, Remote) ->
     gen_server:call(Conf, {set_remote, Leg, Remote}).
 
-%% A muted leg still hears the conference but is not mixed into it.
+%% A muted leg still hears the conference but is not mixed into it: the
+%% room stops taking from it (sendrecv becomes sendonly, recvonly
+%% inactive); unmuting gives that back.
 -spec mute(conf(), leg(), boolean()) -> ok | {error, not_found}.
 mute(Conf, Leg, Mute) when is_boolean(Mute) ->
     gen_server:call(Conf, {mute, Leg, Mute}).
+
+%% Set what the room does with a leg (see direction()).
+-spec direction(conf(), leg(), direction()) -> ok | {error, not_found}.
+direction(Conf, Leg, Dir) when
+    Dir =:= sendrecv; Dir =:= sendonly; Dir =:= recvonly; Dir =:= inactive
+->
+    gen_server:call(Conf, {direction, Leg, Dir}).
+
+%% Whether Listener hears Speaker. nohear takes Speaker's audio out of
+%% what Listener hears, its SSRC out of Listener's CSRC lists and its
+%% events out of what Listener is sent; everyone else is unchanged.
+-spec relate(conf(), leg(), leg(), hear | nohear) -> ok | {error, not_found}.
+relate(Conf, Listener, Speaker, Rel) when Rel =:= hear; Rel =:= nohear ->
+    gen_server:call(Conf, {relate, Listener, Speaker, Rel}).
 
 %% Per-leg state and counters, among them: ssrc (ours on that leg),
 %% source_ssrc, csrcs (of the last packet), filtered (RTP or RTCP from

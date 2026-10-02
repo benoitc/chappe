@@ -135,6 +135,33 @@ clips_like_reference_test() ->
     check(Loud),
     check([{ulaw, binary:copy(<<16#80>>, ?FRAME), false} || _ <- lists:seq(1, 64)]).
 
+%% A listener can be kept from hearing more than itself: encode/3 takes a
+%% list of frames to take out of the sum, which is the reference mix with
+%% each of them left out.
+several_left_out_test() ->
+    setup(),
+    rand:seed(exsss, {3, 5, 7}),
+    [
+        begin
+            Legs = [{Law, rand:bytes(?FRAME), false} || Law <- Laws],
+            Sum = lists:foldl(
+                fun({Law, Codes, _}, Acc) -> chappe_mix_dsp:add(Acc, Law, Codes) end,
+                chappe_mix_dsp:new(),
+                Legs
+            ),
+            Mixed = chappe_mix_dsp:mixed(Sum),
+            Out = [{Law, Codes} || {Law, Codes, _} <- lists:sublist(Legs, K)],
+            Kept = lists:nthtail(K, Legs),
+            ?assertEqual(
+                hd(limited([{ulaw, none, false} | Kept])),
+                chappe_mix_dsp:encode(Mixed, ulaw, Out)
+            )
+        end
+     || Laws <- [[ulaw, alaw, ulaw, alaw, ulaw], [alaw, alaw, ulaw]],
+        K <- lists:seq(0, length(Laws) - 1)
+    ],
+    ok.
+
 %% Nobody talks: every leg gets none (its law's silence).
 nobody_talks_test() ->
     setup(),

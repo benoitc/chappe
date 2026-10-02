@@ -51,18 +51,29 @@ mixed({_A, 0}) ->
 mixed({A, _}) ->
     list_to_tuple([atomics:get(A, I) || I <- lists:seq(1, ?FRAME)]).
 
-%% What a leg of law OutLaw hears: the sum less Own, its own frame if it
-%% is in the sum (none if it is not: muted, or nothing to play), encoded.
-%% none when nobody talks: the leg sends its law's silence.
--spec encode(mixed(), chappe_mix_g711:law(), frame() | none) ->
+%% What a leg of law OutLaw hears: the sum less Out, the frames in the sum
+%% it must not hear (its own, and those of the legs it is kept from
+%% hearing), encoded: none, one frame or a list. none when nobody talks:
+%% the leg sends its law's silence.
+-spec encode(mixed(), chappe_mix_g711:law(), frame() | none | [frame()]) ->
     binary() | none.
-encode(none, _OutLaw, _Own) ->
+encode(none, _OutLaw, _Out) ->
     none;
-encode(Sum, OutLaw, none) ->
+encode(Sum, OutLaw, Out) when Out =:= none; Out =:= [] ->
     enc_sum(Sum, chappe_mix_g711:encoder(OutLaw), 1, <<>>);
+encode(Sum, OutLaw, [Frame]) ->
+    encode(Sum, OutLaw, Frame);
 encode(Sum, OutLaw, {Law, Codes}) ->
     {Dec, _} = chappe_mix_g711:tables(Law),
-    enc_own(Sum, Dec, chappe_mix_g711:encoder(OutLaw), Codes, 1, <<>>).
+    enc_own(Sum, Dec, chappe_mix_g711:encoder(OutLaw), Codes, 1, <<>>);
+encode(Sum, OutLaw, Frames) ->
+    %% several left out: their own sum, taken out sample by sample
+    Less = mixed(
+        lists:foldl(
+            fun({Law, Codes}, Acc) -> add(Acc, Law, Codes) end, new(), Frames
+        )
+    ),
+    enc_less(Sum, Less, chappe_mix_g711:encoder(OutLaw), 1, <<>>).
 
 %% ---- internal ----
 
@@ -77,6 +88,12 @@ enc_own(Sum, _Dec, Enc, <<>>, I, Acc) ->
 enc_own(Sum, Dec, Enc, <<B, Rest/binary>>, I, Acc) ->
     S = element(I, Sum) - element(B + 1, Dec),
     enc_own(Sum, Dec, Enc, Rest, I + 1, <<Acc/binary, (code(Enc, S))>>).
+
+enc_less(_Sum, _Less, _Enc, I, Acc) when I > ?FRAME ->
+    Acc;
+enc_less(Sum, Less, Enc, I, Acc) ->
+    S = element(I, Sum) - element(I, Less),
+    enc_less(Sum, Less, Enc, I + 1, <<Acc/binary, (code(Enc, S))>>).
 
 enc_sum(_Sum, _Enc, I, Acc) when I > ?FRAME ->
     Acc;

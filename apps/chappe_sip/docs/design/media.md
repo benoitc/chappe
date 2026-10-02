@@ -307,8 +307,14 @@ tears down the rtpengine call and takes the leg out of the room.
   for anything else.
 - One codec per leg, fixed when the leg opens. An answer in another law is
   refused with `{error, {law_mismatch, Law}}`.
-- Every leg is `a=sendrecv`; a hold (`sendonly`/`inactive`) in the offer is
-  not mirrored.
+- A leg's direction follows SDP: an offer that only sends (`a=sendonly`, at
+  media or session level) gets `a=recvonly` back and a leg the room only
+  takes from; `a=recvonly` gets `a=sendonly`; `a=inactive` gets
+  `a=inactive`. The `direction` join option narrows it (or sets the
+  mixer's own offer), and an answer to the mixer's offer can narrow it
+  too. `mute/1` and `deaf/1` (with `unmute/1`, `undeaf/1`) take the
+  mixing and the sending away on top of that without new SDP, and
+  `relate/3` keeps one leg from hearing another of the same room.
 - One leg per session; a second join returns `{error, already_joined}`.
 - A room lives on one node.
 

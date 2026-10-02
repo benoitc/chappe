@@ -13,9 +13,10 @@
 %% skipped, so it stays the sampling clock (RFC 3550 5.1).
 %%
 %% Each tick pops one frame per leg (chappe_mix_jbuf), decodes it, sums
-%% the unmuted frames once, and sends every leg with a known far end the
-%% sum minus its own frame. A leg with nothing to hear gets silence, so
-%% the media path towards rtpengine never goes quiet. Sockets run in
+%% the frames the room takes once, and sends every leg the room sends to
+%% the sum minus its own frame (chappe_mix_room). A leg with nothing to
+%% hear gets silence, so the media path towards rtpengine never goes
+%% quiet. Sockets run in
 %% {active, N} mode; nothing a peer sends becomes an atom.
 %%
 %% Each leg (chappe_mix_leg) is its own RTP session towards its far end
@@ -34,12 +35,9 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -define(PTIME, 20).
--define(FRAME, 160).
 -define(ACTIVE, 64).
 %% tick lateness histogram bounds, microseconds
 -define(BUCKETS, [500, 1000, 2000, 5000, 10000, 20000]).
-%% at most this many CSRCs fit in the RTP header
--define(MAX_CSRC, 15).
 %% the counters stats/1 totals over legs
 -define(TOTALS, [
     filtered, collisions, loops, rtcp_sent, rtcp_received, rtcp_invalid
@@ -138,7 +136,20 @@ handle_call({set_remote, Id, #{remote := _} = Opts}, _From, S) ->
 handle_call({set_remote, Id, Remote}, From, S) ->
     handle_call({set_remote, Id, #{remote => Remote}}, From, S);
 handle_call({mute, Id, Mute}, _From, S) ->
-    update_leg(Id, fun(L) -> L#leg{mute = Mute} end, S);
+    update_leg(
+        Id,
+        fun(#leg{direction = D} = L) ->
+            L#leg{direction = chappe_mix_leg:mute_direction(D, Mute)}
+        end,
+        S
+    );
+handle_call({direction, Id, Dir}, _From, S) ->
+    update_leg(Id, fun(L) -> L#leg{direction = Dir} end, S);
+handle_call({relate, Id, Speaker, Rel}, _From, S) ->
+    case maps:is_key(Speaker, S#state.legs) of
+        true -> update_leg(Id, fun(L) -> relate(L, Speaker, Rel) end, S);
+        false -> {reply, {error, not_found}, S}
+    end;
 handle_call(legs, _From, S) ->
     {reply, [chappe_mix_leg:info(L) || L <- maps:values(S#state.legs)], S};
 handle_call(stats, _From, S) ->
@@ -179,7 +190,7 @@ insert(#leg{id = Id} = L, S) ->
 remove(Leg, Legs, S) ->
     chappe_mix_leg:close(Leg),
     left(Leg, S#state{
-        legs = Legs,
+        legs = forget(Leg#leg.id, Legs),
         socks = maps:without(chappe_mix_leg:socks(Leg), S#state.socks),
         retired = add_totals(chappe_mix_leg:info(Leg), S#state.retired)
     }).
@@ -188,8 +199,28 @@ move(Leg, Legs, To, S) ->
     Socks = chappe_mix_leg:socks(Leg),
     [ok = gen_udp:controlling_process(Sock, To) || Sock <- Socks],
     [forward_pending(Sock, To) || Sock <- Socks],
-    S1 = S#state{legs = Legs, socks = maps:without(Socks, S#state.socks)},
-    {reply, gen_server:call(To, {adopt_leg, Leg}), left(Leg, S1)}.
+    S1 = S#state{
+        legs = forget(Leg#leg.id, Legs),
+        socks = maps:without(Socks, S#state.socks)
+    },
+    %% the relations were with this conference's legs
+    Moved = Leg#leg{nohear = []},
+    {reply, gen_server:call(To, {adopt_leg, Moved}), left(Leg, S1)}.
+
+%% Leg Id is gone: nobody is kept from hearing it any more.
+forget(Id, Legs) ->
+    maps:map(
+        fun(_, #leg{nohear = No} = L) ->
+            L#leg{nohear = lists:delete(Id, No)}
+        end,
+        Legs
+    ).
+
+%% Leg L hears Speaker or not.
+relate(#leg{nohear = No} = L, Speaker, nohear) ->
+    L#leg{nohear = [Speaker | lists:delete(Speaker, No)]};
+relate(#leg{nohear = No} = L, Speaker, hear) ->
+    L#leg{nohear = lists:delete(Speaker, No)}.
 
 put_leg(#leg{id = Id} = L, S) ->
     S#state{legs = maps:put(Id, L, S#state.legs)}.
@@ -387,61 +418,9 @@ forward_byes(Gone, FromId, S) ->
         S#state.legs
     ).
 
-%% An RFC 4733 event from one leg goes to every other leg that
-%% negotiated telephone-event and lists its codes, never into the mix. On
-%% each, it keeps one timestamp for the whole event: the event start is
-%% mapped onto that leg's output clock when it comes (M set, or the first
-%% packet seen), and every later packet of the event, segments and end
-%% retransmissions included, keeps that offset. A muted leg's events are
-%% not heard either.
-forward_event(_P, FromId, S) when not is_map_key(FromId, S#state.legs) ->
-    S;
+%% An RFC 4733 event: chappe_mix_room forwards it.
 forward_event(P, FromId, S) ->
-    case maps:get(FromId, S#state.legs) of
-        #leg{mute = true} ->
-            S;
-        From ->
-            #{ts := Ts, marker := M, payload := Payload, ssrc := Src} = P,
-            Codes = chappe_mix_leg:event_codes(Payload),
-            Offs0 =
-                case M of
-                    true -> #{};
-                    false -> From#leg.dtmf_off
-                end,
-            {Offs, S1} = maps:fold(
-                fun(Id, T, {OAcc, SAcc} = Acc) ->
-                    case
-                        Id =/= FromId andalso
-                            chappe_mix_leg:takes_events(Codes, T)
-                    of
-                        true ->
-                            Off = event_offset(Id, Ts, T, OAcc),
-                            T1 = chappe_mix_leg:send_event(
-                                T, (Ts + Off) band 16#FFFFFFFF, M, Payload, [
-                                    Src
-                                ]
-                            ),
-                            {OAcc#{Id => Off}, put_leg(T1, SAcc)};
-                        false ->
-                            Acc
-                    end
-                end,
-                {Offs0, S},
-                S#state.legs
-            ),
-            put_leg(From#leg{dtmf_off = Offs}, S1)
-    end.
-
-%% The offset from the event's timestamps to leg Id's clock: kept from
-%% the event start, or taken now (the timestamp of its next packet).
-event_offset(Id, Ts, #leg{sess = Sess}, Offs) ->
-    case maps:find(Id, Offs) of
-        {ok, Off} ->
-            Off;
-        error ->
-            #{ts := Now} = chappe_mix_session:header(Sess),
-            Now - Ts
-    end.
+    S#state{legs = chappe_mix_room:forward_event(P, FromId, S#state.legs)}.
 
 %% ---- RTCP out ----
 
@@ -568,66 +547,5 @@ bucket(_Us, []) -> infinity.
 
 %% ---- mixing ----
 
-mix(#state{legs = Legs} = S, _Missed) when map_size(Legs) =:= 0 ->
-    S;
-mix(#state{legs = Legs0} = S, Missed) ->
-    Popped = [chappe_mix_leg:pop(L) || L <- maps:values(Legs0)],
-    Sum = lists:foldl(
-        fun
-            ({#leg{mute = false, law = Law}, Codes}, Acc) when Codes =/= none ->
-                chappe_mix_dsp:add(Acc, Law, Codes);
-            (_, Acc) ->
-                Acc
-        end,
-        chappe_mix_dsp:new(),
-        Popped
-    ),
-    Mixed = chappe_mix_dsp:mixed(Sum),
-    %% who is in the sum, by leg, for the CSRC lists: a leg's source, or
-    %% the sources an upstream mixer named in what it sent (7.4)
-    Talkers = [
-        {Id, contributors(L, Ssrc)}
-     || {#leg{id = Id, mute = false} = L, Codes} <- Popped,
-        Codes =/= none,
-        Ssrc <- [src_ssrc(L)],
-        Ssrc =/= undefined
-    ],
-    %% the timestamp moves with the sampling clock, skipped ticks included
-    Step = ?FRAME * (1 + Missed),
-    Legs = maps:from_list([
-        {
-            L#leg.id,
-            chappe_mix_leg:advance(
-                chappe_mix_leg:send(
-                    L,
-                    chappe_mix_dsp:encode(Mixed, L#leg.law, own(L, Codes)),
-                    csrcs(L#leg.id, Talkers, ?MAX_CSRC)
-                ),
-                Step
-            )
-        }
-     || {L, Codes} <- Popped
-    ]),
-    S#state{legs = Legs}.
-
-%% This leg's own frame, to take out of what it hears, if it is in the
-%% sum: a muted leg's frame is not, and neither is a leg with nothing to
-%% play this tick.
-own(#leg{mute = true}, _Codes) -> none;
-own(_L, none) -> none;
-own(#leg{law = Law}, Codes) -> {Law, Codes}.
-
-%% What a talking leg puts in a CSRC list: the CSRCs of an already mixed
-%% input, else its source's SSRC (RFC 3550 7.4).
-contributors(#leg{in_csrcs = []}, Ssrc) -> [Ssrc];
-contributors(#leg{in_csrcs = Csrcs}, _Ssrc) -> Csrcs.
-
-%% The sources in this leg's mix: every talker's but its own, at most N.
-csrcs(_Id, _Talkers, 0) -> [];
-csrcs(_Id, [], _N) -> [];
-csrcs(Id, [{Id, _} | T], N) -> csrcs(Id, T, N);
-csrcs(Id, [{_, Cs} | T], N) -> take_csrcs(Cs, Id, T, N).
-
-take_csrcs([], Id, T, N) -> csrcs(Id, T, N);
-take_csrcs(_Cs, _Id, _T, 0) -> [];
-take_csrcs([C | Cs], Id, T, N) -> [C | take_csrcs(Cs, Id, T, N - 1)].
+mix(#state{legs = Legs} = S, Missed) ->
+    S#state{legs = chappe_mix_room:mix(Legs, Missed)}.

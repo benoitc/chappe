@@ -27,6 +27,7 @@
     sender_10ms/1,
     sender_200ms/1,
     dtmf_forwarded/1,
+    dtmf_follows_relations/1,
     cascaded_csrcs/1,
     rtcp_to_the_given_port/1,
     empty_rr_first/1,
@@ -49,6 +50,7 @@ all() ->
         sender_10ms,
         sender_200ms,
         dtmf_forwarded,
+        dtmf_follows_relations,
         cascaded_csrcs,
         rtcp_to_the_given_port,
         {group, codec}
@@ -498,6 +500,50 @@ dtmf_forwarded(_Config) ->
      || X <- [B, C, D]
     ],
     ?assert(length([x || {_, #{pt := 0, payload := Pl}} <- B, Pl =:= Expect]) >= 20).
+
+%% Events go where audio goes: B, kept from hearing A, gets none of A's
+%% events; C, which the room sends nothing (recvonly), gets none; D gets
+%% them. Once A is muted, nobody gets its events.
+dtmf_follows_relations(_Config) ->
+    {ok, Conf} = chappe_mix:start(#{}),
+    {SA, PA} = open(),
+    {ok, LA, #{port := MA}} = chappe_mix:add_leg(
+        Conf, #{remote => {?LO, PA}, dtmf_pt => 101}
+    ),
+    Recs = [
+        begin
+            {R, P} = recorder(),
+            {ok, L, _} = chappe_mix:add_leg(
+                Conf, Opts#{remote => {?LO, P}, dtmf_pt => 96}
+            ),
+            {R, L}
+        end
+     || Opts <- [#{}, #{direction => recvonly}, #{}]
+    ],
+    [{RB, LB}, {RC, _}, {RD, _}] = Recs,
+    ok = chappe_mix:relate(Conf, LB, LA, nohear),
+    Ev = fun(Seq, M, E) ->
+        rtp(#{
+            pt => 101,
+            seq => Seq,
+            ts => 1600,
+            ssrc => 16#A,
+            marker => M,
+            payload => <<3, E:1, 0:1, 10:6, 320:16>>
+        })
+    end,
+    Send = fun(Pkts) -> [ok = gen_udp:send(SA, ?LO, MA, P) || P <- Pkts] end,
+    Send([Ev(1, true, 0), Ev(2, false, 1)]),
+    timer:sleep(100),
+    ok = chappe_mix:mute(Conf, LA, true),
+    Send([Ev(3, true, 0), Ev(4, false, 1)]),
+    timer:sleep(100),
+    ok = chappe_mix:stop(Conf),
+    gen_udp:close(SA),
+    Events = fun(R) -> [S || {_, #{pt := 96, seq := S}} <- rtp_recorded(R)] end,
+    [B, C, D] = [Events(R) || R <- [RB, RC, RD]],
+    ct:log("events at B ~p, C ~p, D ~p", [B, C, D]),
+    ?assertEqual({0, 0, 2}, {length(B), length(C), length(D)}).
 
 %% Sent at one item every 20 ms; the send time of each, microseconds.
 stream_timed(Sock, {Ip, Port}, Plan) ->

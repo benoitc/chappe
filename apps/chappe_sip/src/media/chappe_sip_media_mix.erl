@@ -30,6 +30,8 @@
     conference/3,
     leave/1,
     mute/2,
+    deaf/2,
+    relate/3,
     set_remote/2,
     stop/1,
     info/1
@@ -67,7 +69,10 @@
     law :: ulaw | alaw,
     local :: {inet:ip_address(), inet:port_number()},
     mon :: reference(),
-    muted = false :: boolean()
+    muted = false :: boolean(),
+    deaf = false :: boolean(),
+    %% the direction negotiated in SDP, before mute and deaf
+    dir = sendrecv :: chappe_sip_media_mix_sdp:direction()
 }).
 
 -record(state, {
@@ -134,6 +139,16 @@ leave(#{id := Id}) ->
 mute(#{id := Id}, Mute) ->
     call({mute, Id, Mute}).
 
+%% A deaf leg is still heard by the room but the room sends it nothing.
+-spec deaf(ref(), boolean()) -> ok | {error, term()}.
+deaf(#{id := Id}, Deaf) ->
+    call({deaf, Id, Deaf}).
+
+%% Whether Listener's leg hears Speaker's; both in one room.
+-spec relate(ref(), ref(), hear | nohear) -> ok | {error, term()}.
+relate(#{id := Listener}, #{id := Speaker}, Rel) ->
+    call({relate, Listener, Speaker, Rel}).
+
 %% Point the leg at the far end: the SDP that answers the mixer's offer,
 %% or an explicit {Ip, Port}.
 -spec set_remote(
@@ -173,9 +188,13 @@ handle_call({join, #{id := Id} = Ref, Opts}, _From, S) ->
 handle_call({leave, Id}, _From, S) ->
     with_leg(Id, S, fun(_L) -> {reply, ok, drop_leg(Id, S)} end);
 handle_call({mute, Id, Mute}, _From, S) ->
-    with_leg(Id, S, fun(L) -> do_mute(Id, L, Mute, S) end);
+    with_leg(Id, S, fun(L) -> apply_dir(Id, L#leg{muted = Mute}, S) end);
+handle_call({deaf, Id, Deaf}, _From, S) ->
+    with_leg(Id, S, fun(L) -> apply_dir(Id, L#leg{deaf = Deaf}, S) end);
+handle_call({relate, Id, Other, Rel}, _From, S) ->
+    with_leg(Id, S, fun(L) -> do_relate(L, Other, Rel, S) end);
 handle_call({set_remote, Id, Remote}, _From, S) ->
-    with_leg(Id, S, fun(L) -> do_set_remote(L, Remote, S) end);
+    with_leg(Id, S, fun(L) -> do_set_remote(Id, L, Remote, S) end);
 handle_call({info, Id}, _From, S) ->
     with_leg(Id, S, fun(L) -> {reply, leg_info(L, S), S} end);
 handle_call(_Req, _From, S) ->
@@ -214,7 +233,8 @@ leg_plan(#{sdp := Offer} = Opts, _S) ->
             mux := Mux,
             ptime := Ptime,
             dtmf := Dtmf,
-            rtcp := Rtcp
+            rtcp := Rtcp,
+            direction := Dir
         }} ->
             {ok, #{
                 law => Law,
@@ -224,7 +244,11 @@ leg_plan(#{sdp := Offer} = Opts, _S) ->
                 rtcp_remote => Rtcp,
                 remote => Ep,
                 answer_to => Offer,
-                mute => maps:get(mute, Opts, false)
+                mute => maps:get(mute, Opts, false),
+                %% what the offer allows and the join asks, both
+                dir => chappe_sip_media_mix_sdp:combine(
+                    maps:get(direction, Opts, sendrecv), Dir
+                )
             }};
         {error, _} = Err ->
             Err
@@ -235,7 +259,8 @@ leg_plan(Opts, S) ->
         mux => true,
         %% offered; the leg takes it when the answer does
         dtmf_offer => ?DTMF_PT,
-        mute => maps:get(mute, Opts, false)
+        mute => maps:get(mute, Opts, false),
+        dir => maps:get(direction, Opts, sendrecv)
     }}.
 
 ensure_room(Room, Owner, #state{rooms = Rooms} = S) ->
@@ -259,30 +284,25 @@ ensure_room(Room, Owner, #state{rooms = Rooms} = S) ->
 add_leg(Id, Owner, Room, #room{conf = Conf} = R, Plan, Opts, S) ->
     LegOpts0 = #{
         law => maps:get(law, Plan),
-        mute => maps:get(mute, Plan),
+        direction => effective(
+            maps:get(dir, Plan), maps:get(mute, Plan), false
+        ),
         rtcp =>
             case maps:get(mux, Plan) of
                 true -> mux;
                 false -> pair
             end
     },
-    LegOpts1 = dtmf_opts(
-        maps:get(dtmf, Plan, undefined),
-        put_opt(
-            remote,
-            maps:get(remote, Plan, undefined),
-            put_opt(
-                ptime,
-                maps:get(ptime, Plan, undefined),
-                put_opt(
-                    rtcp_remote,
-                    maps:get(rtcp_remote, Plan, undefined),
-                    LegOpts0
-                )
-            )
-        )
+    LegOpts = lists:foldl(
+        fun({K, V}, M) -> put_opt(K, V, M) end,
+        dtmf_opts(maps:get(dtmf, Plan, undefined), LegOpts0),
+        [
+            {remote, maps:get(remote, Plan, undefined)},
+            {ptime, maps:get(ptime, Plan, undefined)},
+            {rtcp_remote, maps:get(rtcp_remote, Plan, undefined)},
+            {name, maps:get(name, Opts, undefined)}
+        ]
     ),
-    LegOpts = put_opt(name, maps:get(name, Opts, undefined), LegOpts1),
     case safe(fun() -> chappe_mix:add_leg(Conf, LegOpts) end) of
         {ok, Leg, #{ip := Ip, port := Port}} ->
             L = #leg{
@@ -291,7 +311,8 @@ add_leg(Id, Owner, Room, #room{conf = Conf} = R, Plan, Opts, S) ->
                 law = maps:get(law, Plan),
                 local = {Ip, Port},
                 mon = monitor(process, Owner),
-                muted = maps:get(mute, Plan)
+                muted = maps:get(mute, Plan),
+                dir = maps:get(dir, Plan)
             },
             R1 = R#room{legs = (R#room.legs)#{Id => Leg}},
             S1 = S#state{
@@ -308,7 +329,8 @@ sdp(Plan, Ip, Port, S) ->
         addr => advertised(Ip, S),
         port => Port,
         law => maps:get(law, Plan),
-        mux => maps:get(mux, Plan)
+        mux => maps:get(mux, Plan),
+        direction => maps:get(dir, Plan)
     },
     Local =
         case Plan of
@@ -406,31 +428,65 @@ with_leg(Id, S, Fun) ->
         error -> {reply, {error, not_joined}, S}
     end.
 
-do_mute(Id, #leg{room = Room, leg = Leg} = L, Mute, S) ->
+%% The leg's direction in the mixer: what SDP negotiated, less what mute
+%% (the room takes nothing) and deaf (the room sends nothing) take away.
+apply_dir(Id, #leg{room = Room, leg = Leg} = L, S) ->
     #room{conf = Conf} = maps:get(Room, S#state.rooms),
-    case safe(fun() -> chappe_mix:mute(Conf, Leg, Mute) end) of
-        ok ->
-            Legs = (S#state.legs)#{Id => L#leg{muted = Mute}},
-            {reply, ok, S#state{legs = Legs}};
-        {error, _} = Err ->
-            {reply, Err, S}
+    case safe(fun() -> chappe_mix:direction(Conf, Leg, effective(L)) end) of
+        ok -> {reply, ok, S#state{legs = (S#state.legs)#{Id => L}}};
+        {error, _} = Err -> {reply, Err, S}
     end.
 
-do_set_remote(#leg{room = Room, leg = Leg, law = Law}, Remote, S) ->
+effective(#leg{dir = D, muted = M, deaf = Deaf}) ->
+    effective(D, M, Deaf).
+
+effective(D, M, Deaf) ->
+    chappe_sip_media_mix_sdp:combine(
+        D,
+        case {M, Deaf} of
+            {false, false} -> sendrecv;
+            {true, false} -> sendonly;
+            {false, true} -> recvonly;
+            {true, true} -> inactive
+        end
+    ).
+
+do_relate(#leg{room = Room, leg = Leg}, Other, Rel, S) ->
+    case maps:find(Other, S#state.legs) of
+        {ok, #leg{room = Room, leg = OtherLeg}} ->
+            #room{conf = Conf} = maps:get(Room, S#state.rooms),
+            {reply,
+                safe(fun() -> chappe_mix:relate(Conf, Leg, OtherLeg, Rel) end),
+                S};
+        {ok, _} ->
+            {reply, {error, not_same_room}, S};
+        error ->
+            {reply, {error, not_joined}, S}
+    end.
+
+do_set_remote(Id, #leg{room = Room, leg = Leg, law = Law} = L, Remote, S) ->
     #room{conf = Conf} = maps:get(Room, S#state.rooms),
     case remote_endpoint(Remote, Law) of
-        {ok, To} ->
-            {reply, safe(fun() -> chappe_mix:set_remote(Conf, Leg, To) end), S};
+        {ok, To, Dir} ->
+            case safe(fun() -> chappe_mix:set_remote(Conf, Leg, To) end) of
+                ok ->
+                    %% the answer can narrow what the offer said
+                    D = chappe_sip_media_mix_sdp:combine(L#leg.dir, Dir),
+                    apply_dir(Id, L#leg{dir = D}, S);
+                {error, _} = Err ->
+                    {reply, Err, S}
+            end;
         {error, _} = Err ->
             {reply, Err, S}
     end.
 
 remote_endpoint({Ip, Port} = Ep, _Law) when is_tuple(Ip), is_integer(Port) ->
-    {ok, Ep};
+    {ok, Ep, sendrecv};
 remote_endpoint(Sdp, Law) ->
     case chappe_sip_media_mix_sdp:read_answer(Sdp, Law) of
-        {ok, #{endpoint := Ep, rtcp := Rtcp, dtmf := Dtmf}} ->
-            {ok, dtmf_opts(Dtmf, put_opt(rtcp_remote, Rtcp, #{remote => Ep}))};
+        {ok, #{endpoint := Ep, rtcp := Rtcp, dtmf := Dtmf, direction := Dir}} ->
+            {ok, dtmf_opts(Dtmf, put_opt(rtcp_remote, Rtcp, #{remote => Ep})),
+                Dir};
         {error, _} = Err ->
             Err
     end.
@@ -441,7 +497,7 @@ dtmf_opts(undefined, Opts) ->
 dtmf_opts(#{pt := Pt, events := Events}, Opts) ->
     Opts#{dtmf_pt => Pt, dtmf_events => Events}.
 
-leg_info(#leg{room = Room, leg = Leg, law = Law, local = Local, muted = M}, S) ->
+leg_info(#leg{room = Room, leg = Leg, law = Law, local = Local} = L, S) ->
     #room{conf = Conf} = maps:get(Room, S#state.rooms),
     #{
         backend => mix,
@@ -450,7 +506,9 @@ leg_info(#leg{room = Room, leg = Leg, law = Law, local = Local, muted = M}, S) -
         leg => Leg,
         law => Law,
         local => Local,
-        muted => M
+        muted => L#leg.muted,
+        deaf => L#leg.deaf,
+        direction => L#leg.dir
     }.
 
 %% ---- config ----
