@@ -9,15 +9,17 @@ missed here, never redefined after the numbers arrive.
 
 | Measure | Threshold | Reference (mod_conference) | chappe_mix | Status |
 | --- | --- | ---: | ---: | --- |
-| Mixer latency added, RTP in to mixed RTP out, p50 / p99 | <= 25 ms / <= 45 ms, and <= reference + 10 ms | void only | void only | open |
-| Tick jitter at 20 ms ptime, p99 | <= 2 ms idle, <= 5 ms at capacity | n/a | void only | open |
-| Capacity, 4-party PCMU conferences, one scheduler, every tick in budget | >= 100 conferences (400 legs), and >= reference per core | not measured | void only | open |
-| Memory per 4-party conference | <= 256 KiB | not measured | void only | open |
-| Mix correctness: each receiver detects every other tone, own tone >= 40 dB down | same detection result as the reference | emulated, see below | see below | open |
-| 5% random loss on one leg | no crash, other legs keep their thresholds | n/a | void only | open |
+| Mixer latency added, RTP in to mixed RTP out, p50 / p99 | <= 25 ms / <= 45 ms, and <= reference + 10 ms | 41.1 / 45.9 ms | 9.3 / 10.6 ms; 16.3 / 22.9 ms beside the reference | met |
+| Tick jitter at 20 ms ptime, p99 | <= 2 ms idle, <= 5 ms at capacity | n/a | 0.06 ms idle, < 0.5 ms at 100 conferences | met |
+| Capacity, 4-party PCMU conferences, one scheduler, every tick in budget | >= 100 conferences (400 legs), and >= reference per core | 75 rooms on one CPU | 275 conferences; 300 rooms by the reference's judge | met |
+| Memory per 4-party conference | <= 256 KiB | 2.9 to 3.0 MiB per room | 101 KiB (153 KiB of VM growth) | met |
+| Mix correctness: each receiver detects every other tone, own tone >= 40 dB down | same detection result as the reference | every tone, own <= -54.7 dBFS | the same, to 0.01 dB | met |
+| 5% random loss on one leg | no crash, other legs keep their thresholds | n/a | no crash; probe 12.3 / 13.6 ms | met |
 
-"Void only" means the arm ran end to end on a loaded box: the number below
-exists, and it cannot pass or fail a threshold.
+The numbers in the table are the quiet-box ones from "2026-10-01: native
+reference" below, minimum of the runs unless that section says otherwise.
+"Void only", in older sections, means the arm ran end to end on a loaded
+box: the number exists, and it cannot pass or fail a threshold.
 
 ## How to measure
 
@@ -162,3 +164,148 @@ void), minimum of the five:
 About 4% more at 64 legs, where every listener's list is capped at 15; no
 threshold is claimed from it. The latency, jitter and capacity arms were not
 rerun on this change.
+
+### 2026-10-01: native reference, quiet box
+
+FreeSWITCH 1.10.10 `mod_conference` native on arm64 (`interop/freeswitch`,
+`drachtio/drachtio-freeswitch-mrf`, one CPU), on the same 14-CPU box as
+chappe_mix, OrbStack's Linux VM. Arms ran from 23:50 to 02:49 under
+`ref.sh`, interleaved round by round, each refusing above a 1-minute load of
+3.5; the 5- and 15-minute averages were higher (4 to 14) because the box
+went quiet between bursts of unrelated work. From 03:07 the load stayed
+between 8 and 39 for over an hour, so round 5 and a second set of
+`ref_capacity` runs were not taken.
+
+Where each side ran:
+
+- `host`: the arm on macOS with `+S 1`; FreeSWITCH reached through its
+  published ports, so its packets also cross the host-to-VM hop.
+- `vm`: the arm in an `erlang:29` container on FreeSWITCH's docker network,
+  `+S 1`. Both mixers in the same VM; chappe_mix on loopback, FreeSWITCH
+  over the docker bridge. The arm checks the VM's load (0.0 to 0.7 for
+  every vm run) and `ref.sh` checks the host's (given below).
+
+Only `vm` numbers compare the two mixers under shared conditions. The
+chappe_mix-only arms ran on the host.
+
+Box noise, `null` (host, 4 runs, load 2.53 to 3.10): bare 20 ms timers
+late by 59 to 267 us p50, 124 to 1047 us p99. The quietest (load 2.53):
+59 / 124 / 376 us p50 / p99 / max.
+
+Compute, `mix_cost` (host, 4 runs, load 2.33 to 3.03), minimum: 27.79 us
+per tick for 4 legs (0.14% of a tick), 604.67 us for 64 legs (3.0%). The
+four runs stay within 2%.
+
+Reference latency, `ref_latency 5 50` (5 interleaved rounds of 50 bursts
+per launch, every burst heard in every round):
+
+| run | load (host / VM) | chappe_mix p50 / p99, min | mod_conference p50 / p99, min |
+| --- | --- | ---: | ---: |
+| host, 23:50 | 2.84 / | 19.4 / 19.8 ms | 39.5 / 45.2 ms |
+| vm, 23:58 | 2.90 / 0.19 | 16.3 / 22.9 ms | 41.1 / 45.9 ms |
+| host, 02:06 | 2.65 / | 18.5 / 18.9 ms | 40.8 / 46.7 ms |
+
+In `ref_latency` the probe shares the node with chappe_mix. mod_conference's
+p50 sat at 39 to 43 ms in most rounds and near 60 ms in two (one more
+frame), its p99 at 45 to 86 ms. The host-to-VM hop does not show: the host
+and vm reference numbers are within 2 ms.
+
+What each party hears, `ref_tones` (3 runs): both mixers gave every
+receiver the other two tones at -14.7 dBFS and its own at -54.7 (1100 Hz),
+-64.5 (1700 Hz) and -100.9 dBFS (2300 Hz), the same to 0.01 dB in every
+run. The own-tone floor is the Goertzel judge's leakage, not the mix.
+`chappe_mix_ref_SUITE` passed 5 times against this reference (load 2.8 to
+10.9; correctness only, no timing asserted).
+
+chappe_mix latency, `latency 100` (host, probe in a peer node, 4 legs):
+
+| load | p50 | p99 | max | tick-to-send p99 | max prefill |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 2.94 | 16.6 ms | 17.2 ms | 17.6 ms | 1.3 ms | 1 |
+| 2.22 | 32.0 ms | 33.2 ms | 34.8 ms | 1.7 ms | 2 |
+| 2.71 | 16.0 ms | 18.1 ms | 20.9 ms | 2.5 ms | 1 |
+| 2.94 | 9.3 ms | 10.6 ms | 11.3 ms | 1.5 ms | 1 |
+
+Minimum 9.3 / 10.6 ms. The p50 moves by whole frames between launches,
+with the phase of the tick against the probe's sends and the prefill: the
+run whose prefill had grown to 2 is the 32 ms one. Every launch is inside
+25 / 45 ms.
+
+Tick jitter (host):
+
+| run | load | ticks | overruns | p99 bucket | traced p99 | traced max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| idle, 30 s | 3.02 | 1500 | 0 | < 0.5 ms | 62 us | 3517 us |
+| idle, 30 s | 3.05 | 1500 | 0 | < 0.5 ms | -764 us | 3804 us |
+| idle, 30 s | 2.65 | 1500 | 0 | < 2 ms | 1113 us | 6195 us |
+| idle, 30 s | 2.06 | 1499 | 1 | < 2 ms | 1286 us | 30039 us |
+| 100 conferences, 30 s | 2.82 | 150011 | 0 | < 0.5 ms | -348 us | 695 us |
+| 100 conferences, 30 s | 2.63 | 150011 | 0 | < 0.5 ms | -769 us | -727 us |
+
+Every run is inside 2 ms idle and 5 ms at capacity at p99; the one overrun
+is a tick 30 ms late, in the run at load 2.06. Two
+capacity runs only: the other launches waited out their 20 minutes for the
+load.
+
+Capacity, `capacity 25 5 1000` (host, `+S 1`):
+
+| load | in budget | sched util | VM bytes per conf | VM growth per conf |
+| ---: | ---: | ---: | ---: | ---: |
+| 2.85 | 275 | 0.48 | 100.6 KiB | 152.8 KiB |
+| 3.16 | 275 | 0.48 | 101.9 KiB | 149.1 KiB |
+| 3.13 | 200 | 0.40 | 87.7 KiB | 150.2 KiB |
+| 2.70 | 275 | 0.48 | 101.0 KiB | 154.2 KiB |
+
+The kernel buffer ceiling stays 3.0 MiB per conference (allowed, not used).
+
+Capacity against the reference, `ref_capacity 25 20 1000` (vm, rooms of 4
+PCMU legs fed a tone, a fresh probe room of 20 bursts at each step;
+mod_conference limited to one CPU, chappe_mix on one scheduler). The first
+run of each used an earlier judge (see `ATTEMPTS.md`); its step lines are
+re-judged here with the one in the arm now:
+
+| mixer | load (host) | in budget | CPU at that step | p50 / p99 there | memory per room | first step out |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| chappe_mix | 3.04 | 300 | 74% | 17.6 / 19.3 ms | 125 KiB | 325: p99 20.7 ms over p50, B got 97% |
+| chappe_mix | 2.81 | 275 | 72% | 17.4 / 21.5 ms | 125 KiB | 300: one burst 20.6 ms over p50 |
+| chappe_mix | 2.48 | 25 | 28% | 18.8 / 20.7 ms | 151 KiB | 50: one burst 24 ms over p50, at 33% CPU |
+| mod_conference | 3.00 | 25 | 59% | 25.9 / 29.5 ms | 3.0 MiB | 50: one burst 22 ms over p50 |
+| mod_conference | 3.00 | 75 | 88% | 39.9 / 42.7 ms | (1.0 MiB, reused container) | 100: p99 165 ms, 92% CPU |
+| mod_conference | 2.97 | 75 | 87% | 77.6 / 81.7 ms | 2.9 MiB | 100: p99 159 ms, 95% CPU |
+
+A single late burst out of 20 ends a ramp, so a run that stops early at a
+low CPU share says more about the box than the mixer; the best run of each
+is 300 rooms against 75, four times the reference on one core. Where both
+reached the step, chappe_mix used 49 to 50% of a core at 100 rooms and
+mod_conference 87 to 95%. Memory per room is the container's growth
+(`docker stats`) for mod_conference and `erlang:memory(total)` growth for
+chappe_mix; the middle mod_conference run reused a container that had held
+earlier runs' calls, so its figure is low.
+
+Loss, `loss 100 2` (host, two of four legs with 5% random loss), every
+burst heard, no crash in 4 runs:
+
+| load | p50 | p99 | lost | trimmed |
+| ---: | ---: | ---: | ---: | ---: |
+| 3.14 | 12.3 ms | 13.6 ms | 172 | 0 |
+| 2.57 | 12.4 ms | 53.0 ms | 210 | 5 |
+| 2.72 | 23.3 ms | 25.4 ms | 212 | 2 |
+| 3.09 | 47.4 ms | 50.2 ms | 187 | 1 |
+
+The minimum (12.3 / 13.6 ms) keeps the latency thresholds; two of the four
+runs do not (p99 53.0 and 50.2 ms). As with `latency`, the p50 moves by
+whole frames between launches; the loss itself is counted, not hidden.
+
+Comparison, the shared-conditions numbers (vm unless noted):
+
+| | chappe_mix | mod_conference |
+| --- | ---: | ---: |
+| latency p50 / p99, min of 5 rounds | 16.3 / 22.9 ms | 41.1 / 45.9 ms |
+| rooms of 4 in budget on one core, best run | 300 | 75 |
+| CPU at 100 rooms | 49 to 50% | 87 to 95% |
+| memory per room | 125 KiB | 2.9 to 3.0 MiB |
+| what each party hears | other tones -14.7 dBFS, own gone | the same, to 0.01 dB |
+
+Not measured: tick jitter has no reference counterpart (mod_conference
+exposes no tick timing), and the loss row was not run against the
+reference.

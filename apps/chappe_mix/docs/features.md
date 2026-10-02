@@ -39,10 +39,11 @@ What chappe_mix does today, and what is planned.
   (ticks, overruns, tick lateness histogram, and the leg counters summed).
 - An optional tick trace (`trace => Pid`): one message per tick with when it
   was due, when it fired and when its last packet went out. Off by default.
-- Bench arms in `bench/` (null, latency, jitter, capacity, mix_cost,
-  ref_latency), a reference suite against FreeSWITCH `mod_conference`, and a
-  live suite behind a real rtpengine with PCMA and opus legs
-  (`make interop-mix`).
+- Bench arms in `bench/` (null, latency, loss, jitter, capacity, mix_cost,
+  ref_latency, ref_capacity), a reference suite against FreeSWITCH
+  `mod_conference` running natively in docker (`make interop-ref`,
+  `make bench-ref`), and a live suite behind a real rtpengine with PCMA and
+  opus legs (`make interop-mix`).
 
 ## Planned
 
@@ -55,11 +56,6 @@ What chappe_mix does today, and what is planned.
 - An RTCP port from signalling that is not RTP + 1 (RFC 3605 a=rtcp).
 - Cascaded mixers: carrying an input packet's CSRCs into the output list
   (RFC 3550 7.4).
-- Numbers from a quiet box for every threshold in `test/audit/PERF.md`. The
-  arms run; everything measured so far was taken at a load average of 18 or
-  more and is void.
-- Reference numbers from an amd64 host: the FreeSWITCH image is amd64 only
-  and runs emulated on arm64.
 - A decision on the tick timer firing up to 1 ms early, and on the
   jitter-buffer prefill that only grows, once latency is measured on a quiet
   box.

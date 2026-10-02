@@ -4,8 +4,8 @@
 # chappe umbrella convenience targets over rebar3.
 
 .PHONY: all compile test test-static check eunit ct lint xref dialyzer \
-        fmt fmt-check asan interop interop-mix interop-conformance \
-        compliance cover clean
+        fmt fmt-check asan interop interop-mix interop-ref bench-ref \
+        interop-conformance compliance cover clean
 
 all: compile
 
@@ -53,6 +53,16 @@ interop:
 # The mixer behind a real rtpengine (transcoded legs, N-1 by Goertzel).
 interop-mix:
 	apps/chappe_mix/test/interop.sh
+
+# The mixer against FreeSWITCH mod_conference (same tones, same judge).
+interop-ref:
+	apps/chappe_mix/test/ref.sh suite
+
+# A bench arm against mod_conference. REF picks where and what, e.g.
+# REF="vm ref_capacity fs" (see apps/chappe_mix/bench/README.md).
+REF ?= host ref_latency
+bench-ref:
+	apps/chappe_mix/test/ref.sh $(REF)
 
 # Each app's compliance matrix from its requirements, the `%% req:'
 # annotations and the latest CT results. GATE=demo fails on any hard
