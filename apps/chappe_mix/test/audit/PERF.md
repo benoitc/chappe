@@ -15,6 +15,9 @@ missed here, never redefined after the numbers arrive.
 | Memory per 4-party conference | <= 256 KiB | 2.9 to 3.0 MiB per room | 101 KiB (153 KiB of VM growth) | met |
 | Mix correctness: each receiver detects every other tone, own tone >= 40 dB down | same detection result as the reference | every tone, own <= -54.7 dBFS | the same, to 0.01 dB | met |
 | 5% random loss on one leg | no crash, other legs keep their thresholds | n/a | no crash; probe 9.5 / 9.6 ms, every one of 5 reruns <= 12.9 ms p99 | met |
+| Mix compute per tick, 4 / 64 legs (`mix_cost`), set 2026-10-02 | <= 10 us / <= 200 us | n/a | 27.8 / 604.7 us | open |
+| Capacity as above, set 2026-10-02 | >= 500 conferences (2000 legs) | n/a | 275 | open |
+| Mixed output after a change to the mix | byte for byte the same as before it for the same input | n/a | n/a | open |
 
 The numbers in the table are the quiet-box ones from "2026-10-01: native
 reference" below, minimum of the runs unless that section says otherwise.
@@ -329,3 +332,46 @@ Comparison, the shared-conditions numbers (vm unless noted):
 Not measured: tick jitter has no reference counterpart (mod_conference
 exposes no tick timing), and the loss row was not run against the
 reference.
+
+### 2026-10-02: where a tick goes (before `chappe_mix_dsp`)
+
+The compute and capacity thresholds dated 2026-10-02 in the table were set
+before this section and before any code, to decide whether denser mixing is
+worth a NIF. Host, `+S 1`, OTP 29, code at `3e0eba4`.
+
+One tick split by part (a scratch module mirroring `chappe_mix_conf:mix/2`
+and `chappe_mix_leg:pop/send` part by part, best of 5, sends to loopback
+from one socket per leg; 3 runs at load 2.58 to 2.68, within 1% of each
+other):
+
+| part | 4 legs | share | 64 legs | share |
+| --- | ---: | ---: | ---: | ---: |
+| decode (code words to a list) | 6.2 us | 12% | 109 us | 12% |
+| sum | 6.3 us | 12% | 152 us | 16% |
+| subtract own | 8.7 us | 17% | 167 us | 18% |
+| encode | 9.5 us | 19% | 170 us | 18% |
+| RTP build | 0.8 us | 2% | 25 us | 3% |
+| `gen_udp:send` | 19.5 us | 38% | 314 us | 34% |
+| total | 51.0 us | | 936 us | |
+
+The compute (decode to encode) is about 60% of what the tick does once it
+has its frames, and the sends on macOS loopback are most of the rest. The
+receive path (packets in, RTP parse, jitter buffer) is not in this split.
+
+The capacity ceiling is the CPU. The `capacity` arm reported
+`scheduler:utilization/1`'s `total`, which with `+S 1` averages the one
+normal scheduler with the one idle dirty CPU scheduler: a process spinning
+flat out reads 0.5 in it (checked: `normal` 100%, `total` 50.0%). Every
+`sched_util` in the sections above is that total, so the 0.48 at 275
+conferences was a scheduler about 96% busy, not half idle. The arm now
+reports the normal schedulers' average; on the code before `chappe_mix_dsp`
+it read 0.96 at its last step in budget (250 conferences, load 2.94).
+
+How the scheduler sleeps does not move it: `capacity 25 5 1000` on the same
+code, twice each, interleaved (load 2.58 to 3.16):
+
+| flags | conferences in budget |
+| --- | --- |
+| default | 225, 225 |
+| `+sbwt none` | 225, 250 |
+| `+sbwt very_long` | 200, 250 |

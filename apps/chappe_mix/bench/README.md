@@ -93,7 +93,10 @@ the conference's whole life, setup included, not just the window.
 ### capacity
 
 The ramp stops at the first step with an overrun or with the p99 bucket above
-5 ms, and reports the step before it. Memory per conference is the process
+5 ms, and reports the step before it. `sched_util` is the busy share of the
+normal schedulers (with `+S 1`, the mixer's one scheduler). Before
+2026-10-02 the arm reported `scheduler:utilization/1`'s `total`, which also
+averages in the idle dirty CPU scheduler: double those older numbers. Memory per conference is the process
 plus its sockets' port memory (`erl_bytes_per_conf`, what the VM holds), and
 separately the kernel buffer sizes the sockets are allowed
 (`kernel_buf_ceiling_per_conf`, a ceiling, not memory in use).

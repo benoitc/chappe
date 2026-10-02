@@ -337,3 +337,14 @@ once in any listen.
   `none_in_budget` at the first step. On the other side, the unmutated
   `mod_conference` broke the judge by itself at 100 rooms (p99 73 to 80 ms
   above p50 at 92 to 95% of its CPU).
+
+## Where the capacity ceiling comes from
+
+- Read first as timing: the `capacity` ramps stopped at a reported
+  scheduler utilisation of 0.46 to 0.50, so the scheduler looked half idle
+  while ticks ran tens of ms late. It was the arm: `total` in
+  `scheduler:utilization/1` averages the normal scheduler with the idle
+  dirty CPU scheduler that `+S 1` also starts. The arm now reports the
+  normal schedulers; the ceiling is CPU.
+- Scheduler busy wait (`+sbwt none`, `+sbwt very_long`) against the
+  default: 200 to 250 conferences each way. Not a lever.

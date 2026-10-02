@@ -370,10 +370,14 @@ one_conf_memory(Conf) ->
     ]),
     {M + PortMem, Kernel}.
 
+%% The average over the normal schedulers. Not `total': that also averages
+%% in the dirty CPU schedulers, one per normal scheduler by default and
+%% idle here, so with +S 1 a saturated scheduler reads 0.5 in it.
 sched_util(Secs) ->
-    case lists:keyfind(total, 1, scheduler:utilization(Secs)) of
-        {total, F, _} -> round2(F);
-        false -> undefined
+    Normal = [U || {normal, _Id, U, _} <- scheduler:utilization(Secs)],
+    case Normal of
+        [] -> undefined;
+        _ -> round2(lists:sum(Normal) / length(Normal))
     end.
 
 %% ---- mix cost ----
