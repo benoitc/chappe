@@ -57,8 +57,14 @@
 %% base64 (RFC 7022). ssrc_draw: a fun that draws a candidate SSRC,
 %% default a cryptographic random; a candidate already in use in the
 %% conference is drawn again. Set it in tests to script the draws.
+%% tick_ceiling (arm the tick at the millisecond at or after it is due,
+%% so it never fires early) and prefill_shrink (take back a jitter-buffer
+%% prefill that grew, after 10 s without an underrun) are off by default
+%% until their A/B on a quiet box (test/audit/PERF.md).
 -type conf_opts() :: #{
     owner => pid(),
+    tick_ceiling => boolean(),
+    prefill_shrink => boolean(),
     trace => pid(),
     ip => inet:ip_address(),
     law => chappe_mix_g711:law(),

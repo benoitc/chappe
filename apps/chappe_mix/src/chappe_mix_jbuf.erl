@@ -27,7 +27,9 @@
 %%
 %% Playout starts once `prefill' frames' worth of samples are buffered,
 %% and again after an underrun. The prefill starts at one frame and grows
-%% by one at each underrun, up to depth - 1. Without that, a sender whose
+%% by one at each underrun, up to depth - 1, and, when the buffer is made
+%% with new/3 asking for it, shrinks by one, skipping a frame, after 10 s
+%% without one. Without that, a sender whose
 %% 20 ms clock is in phase with the mixer's races the tick on every packet
 %% and half its frames play as silence: holding the playout point alone
 %% gives no slack, because the late frame is consumed by the very next
@@ -41,12 +43,14 @@
 %% stream.
 -module(chappe_mix_jbuf).
 
--export([new/1, new/2, push/4, push/5, pop/1, stats/1]).
+-export([new/1, new/2, new/3, push/4, push/5, pop/1, stats/1]).
 
 -export_type([jbuf/0]).
 
 -define(FRAME, 160).
 -define(RESYNC, 3000).
+%% frames played without an underrun before a grown prefill shrinks: 10 s
+-define(SHRINK, 500).
 
 -record(jbuf, {
     depth :: pos_integer(),
@@ -73,7 +77,12 @@
     lost = 0 :: non_neg_integer(),
     late = 0 :: non_neg_integer(),
     dropped = 0 :: non_neg_integer(),
-    underruns = 0 :: non_neg_integer()
+    underruns = 0 :: non_neg_integer(),
+    %% frames played since the last underrun, and prefill shrinks
+    steady = 0 :: non_neg_integer(),
+    shrunk = 0 :: non_neg_integer(),
+    %% whether a grown prefill shrinks (opt-in until measured)
+    shrink = false :: boolean()
 }).
 
 -opaque jbuf() :: #jbuf{}.
@@ -85,8 +94,14 @@ new(Depth) ->
 
 %% A buffer of Depth frames that plays Fill for lost samples.
 -spec new(pos_integer(), byte()) -> jbuf().
-new(Depth, Fill) when is_integer(Depth), Depth > 0 ->
-    #jbuf{depth = Depth, fill = Fill}.
+new(Depth, Fill) ->
+    new(Depth, Fill, false).
+
+%% Shrink: whether a prefill that grew is taken back after 10 s without
+%% an underrun.
+-spec new(pos_integer(), byte(), boolean()) -> jbuf().
+new(Depth, Fill, Shrink) when is_integer(Depth), Depth > 0 ->
+    #jbuf{depth = Depth, fill = Fill, shrink = Shrink}.
 
 %% A packet of one 20 ms frame, placed by its sequence number alone (its
 %% timestamp taken as Seq x 160).
@@ -120,10 +135,10 @@ pop(#jbuf{next = undefined} = J) ->
 pop(#jbuf{playing = false, prefill = Prefill} = J) ->
     case buffered(J) < Prefill * ?FRAME of
         true -> {silence, underrun_tick(J)};
-        false -> play(J)
+        false -> steady(play(J))
     end;
 pop(J) ->
-    play(J).
+    steady(play(J)).
 
 -spec stats(jbuf()) -> #{atom() => non_neg_integer()}.
 stats(#jbuf{} = J) ->
@@ -133,11 +148,33 @@ stats(#jbuf{} = J) ->
         late => J#jbuf.late,
         dropped => J#jbuf.dropped,
         underruns => J#jbuf.underruns,
+        prefill_shrunk => J#jbuf.shrunk,
         buffered => map_size(J#jbuf.chunks),
         prefill => J#jbuf.prefill
     }.
 
 %% ---- playing ----
+
+%% A tick that played (not an underrun) counts toward shrinking a prefill
+%% that grew: after 10 s without an underrun it is taken back by one, and
+%% the frame of slack it held is skipped, so a burst long gone stops
+%% costing a frame of latency for the rest of the call.
+steady({_, #jbuf{playing = false}} = Underrun) ->
+    Underrun;
+steady({Frame, #jbuf{steady = N, prefill = P, shrink = true} = J}) when
+    N + 1 >= ?SHRINK, P > 1
+->
+    {Frame,
+        skip(J#jbuf{steady = 0, prefill = P - 1, shrunk = J#jbuf.shrunk + 1})};
+steady({Frame, #jbuf{steady = N} = J}) ->
+    {Frame, J#jbuf{steady = N + 1}}.
+
+%% Drop the next frame's worth of samples, if a whole one is buffered.
+skip(#jbuf{chunks = Chunks} = J) ->
+    case buffered(J) >= ?FRAME andalso next_frame(J) of
+        {done, _, Pos, Prev1, _, _} -> played(Pos, Prev1, Chunks, J);
+        _ -> J
+    end.
 
 %% A 20 ms packet right at the playout point is the frame as it came.
 play(#jbuf{next = Next, chunks = Chunks} = J) ->
@@ -151,9 +188,13 @@ play(#jbuf{next = Next, chunks = Chunks} = J) ->
             assemble(J)
     end.
 
-assemble(#jbuf{next = Next, chunks = Chunks, prev = Prev} = J) ->
+%% The next frame's samples from the playout point (see frame/8).
+next_frame(#jbuf{next = Next, chunks = Chunks, prev = Prev, fill = Fill}) ->
     Sorted = lists:keysort(1, maps:to_list(Chunks)),
-    case frame(Sorted, Next, ?FRAME, Prev, J#jbuf.fill, [], false, false) of
+    frame(Sorted, Next, ?FRAME, Prev, Fill, [], false, false).
+
+assemble(#jbuf{chunks = Chunks} = J) ->
+    case next_frame(J) of
         {done, _Acc, Pos, Prev1, false, true} ->
             %% nothing of the stream in this frame: lost
             {silence, (played(Pos, Prev1, Chunks, J))#jbuf{
@@ -242,7 +283,7 @@ played(Pos, Prev, Chunks, J) ->
 
 underrun(#jbuf{} = J) ->
     Prefill = min(J#jbuf.prefill + 1, max(1, J#jbuf.depth - 1)),
-    underrun_tick(J#jbuf{playing = false, prefill = Prefill}).
+    underrun_tick(J#jbuf{playing = false, prefill = Prefill, steady = 0}).
 
 %% An empty tick counts once the stream has played.
 underrun_tick(#jbuf{started = true} = J) ->

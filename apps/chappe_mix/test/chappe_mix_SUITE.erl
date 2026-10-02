@@ -23,6 +23,7 @@
     owner_death_closes/1,
     stop_closes/1,
     tick_trace/1,
+    tick_never_early/1,
     probe_calibration/1,
     rtcp_sender_reports/1,
     rtcp_port_pair/1,
@@ -58,6 +59,7 @@ all() ->
         owner_death_closes,
         stop_closes,
         tick_trace,
+        tick_never_early,
         probe_calibration,
         rtcp_sender_reports,
         rtcp_port_pair,
@@ -298,6 +300,24 @@ reflect(S, PB, Delay) ->
             ok = gen_udp:send(S, {127, 0, 0, 1}, PB, Pkt),
             reflect(S, PB, Delay)
     end.
+
+%% With tick_ceiling the tick is armed at the millisecond at or after it
+%% is due, so it never fires before it: 50 traced ticks, none early (an
+%% armed time truncated to the millisecond, the default, fires up to 1 ms
+%% early, most ticks do).
+tick_never_early(_Config) ->
+    {ok, Conf} = chappe_mix:start(#{trace => self(), tick_ceiling => true}),
+    {ok, _, _} = chappe_mix:add_leg(Conf, #{remote => {{127, 0, 0, 1}, 9}}),
+    flush_ticks(),
+    Ticks = [next_tick(Conf) || _ <- lists:seq(1, 50)],
+    ok = chappe_mix:stop(Conf),
+    flush_ticks(),
+    Early = [
+        erlang:convert_time_unit(D - St, native, microsecond)
+     || #{due := D, start := St} <- Ticks, St < D
+    ],
+    ct:log("early ticks (us before due): ~w", [Early]),
+    ?assertEqual([], Early).
 
 next_tick(Conf) ->
     receive

@@ -209,6 +209,58 @@ no_underrun_before_start_test() ->
     {[silence, silence], J1} = pops(J, 2),
     ?assertMatch(#{underruns := 0}, chappe_mix_jbuf:stats(J1)).
 
+%% After 10 s (500 frames) without an underrun, a prefill that grew is
+%% taken back by one, and the frame of slack it was holding is skipped,
+%% so a burst long gone stops costing a frame of latency.
+prefill_shrinks_test() ->
+    P = fun(J, N) -> chappe_mix_jbuf:push(1, N, <<N:16>>, J) end,
+    %% an underrun: the prefill grows to 2
+    J0 = P(chappe_mix_jbuf:new(3, 16#FF, true), 1),
+    {[<<1:16>>, silence], J1} = pops(J0, 2),
+    ?assertMatch(#{prefill := 2}, chappe_mix_jbuf:stats(J1)),
+    %% a steady sender two frames ahead: one in, one out, 500 times
+    J2 = P(P(J1, 2), 3),
+    {J3, Out} = lists:foldl(
+        fun(N, {J, Acc}) ->
+            {F, J4} = chappe_mix_jbuf:pop(P(J, N)),
+            {J4, [F | Acc]}
+        end,
+        {J2, []},
+        lists:seq(4, 503)
+    ),
+    Played = lists:reverse(Out),
+    ?assertMatch(#{prefill := 1, underruns := 1}, chappe_mix_jbuf:stats(J3)),
+    %% every frame once, in order, two behind the sender; the 500th tick
+    %% shrinks the prefill and skips the next frame, 502
+    ?assertEqual([<<N:16>> || N <- lists:seq(2, 501)], Played),
+    %% one frame less behind: the next tick plays 503, not 502
+    {F, _} = chappe_mix_jbuf:pop(P(J3, 504)),
+    ?assertEqual(<<503:16>>, F).
+
+%% Unless asked for, a grown prefill stays.
+prefill_stays_by_default_test() ->
+    P = fun(J, N) -> chappe_mix_jbuf:push(1, N, <<N:16>>, J) end,
+    {[<<1:16>>, silence], J1} = pops(P(chappe_mix_jbuf:new(3), 1), 2),
+    J2 = lists:foldl(
+        fun(N, J) -> element(2, chappe_mix_jbuf:pop(P(J, N))) end,
+        P(P(J1, 2), 3),
+        lists:seq(4, 603)
+    ),
+    ?assertMatch(#{prefill := 2, prefill_shrunk := 0}, chappe_mix_jbuf:stats(J2)).
+
+%% A prefill of 1 does not shrink, and nothing is skipped.
+prefill_floor_test() ->
+    {J, Out} = lists:foldl(
+        fun(N, {J0, Acc}) ->
+            {F, J1} = chappe_mix_jbuf:pop(chappe_mix_jbuf:push(1, N, <<N:16>>, J0)),
+            {J1, [F | Acc]}
+        end,
+        {chappe_mix_jbuf:new(3), []},
+        lists:seq(1, 600)
+    ),
+    ?assertEqual([<<N:16>> || N <- lists:seq(1, 600)], lists:reverse(Out)),
+    ?assertMatch(#{prefill := 1}, chappe_mix_jbuf:stats(J)).
+
 %% Empty ticks once playout has started are counted as underruns.
 underrun_count_test() ->
     J = push(chappe_mix_jbuf:new(3), [10]),

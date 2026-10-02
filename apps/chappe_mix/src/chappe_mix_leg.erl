@@ -25,7 +25,7 @@
 %% A leg with id Id. Defaults: ip, law and depth of the conference, and
 %% the SSRC it starts under.
 -spec open(pos_integer(), map(), map()) -> {ok, #leg{}} | {error, term()}.
-open(Id, Opts, #{ip := Ip, law := Law, depth := Depth, ssrc := Ssrc}) ->
+open(Id, Opts, #{ip := Ip, law := Law, depth := Depth, ssrc := Ssrc} = Dfl) ->
     Rtcp = maps:get(rtcp, Opts, mux),
     case open_socks(Rtcp, Ip) of
         {ok, Sock, RtcpSock} ->
@@ -44,7 +44,9 @@ open(Id, Opts, #{ip := Ip, law := Law, depth := Depth, ssrc := Ssrc}) ->
                 dtmf_events = maps:get(dtmf_events, Opts, lists:seq(0, 15)),
                 name = maps:get(name, Opts, undefined),
                 jbuf = chappe_mix_jbuf:new(
-                    Depth, silence_code(maps:get(law, Opts, Law))
+                    Depth,
+                    silence_code(maps:get(law, Opts, Law)),
+                    maps:get(prefill_shrink, Dfl, false)
                 ),
                 sess = chappe_mix_session:new(Ssrc, erlang:monotonic_time()),
                 rtcp = Rtcp,

@@ -977,6 +977,9 @@ report_legs(Arm, Load, Conf) ->
         {lost, Sum(lost)},
         {late, Sum(late)},
         {dropped, Sum(dropped)},
+        {underruns, Sum(underruns)},
+        {prefill_shrunk,
+            lists:sum([maps:get(prefill_shrunk, L, 0) || L <- Legs])},
         {max_prefill, lists:max([maps:get(prefill, L) || L <- Legs])}
     ]).
 

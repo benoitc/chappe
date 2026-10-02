@@ -52,6 +52,10 @@
     ip :: inet:ip_address(),
     law :: chappe_mix_g711:law(),
     depth :: pos_integer(),
+    %% opt-in until measured (test/audit/PERF.md): the tick armed at the
+    %% millisecond ceiling, and a grown prefill shrinking
+    tick_ceiling :: boolean(),
+    prefill_shrink :: boolean(),
     cname :: binary(),
     %% draws a candidate SSRC (see chappe_mix:conf_opts())
     draw :: fun(() -> 0..16#FFFFFFFF),
@@ -86,13 +90,15 @@ init(#{owner := Owner} = Opts) ->
     monitor(process, Owner),
     Period = erlang:convert_time_unit(?PTIME, millisecond, native),
     Next = erlang:monotonic_time() + Period,
-    arm(Next),
+    arm(Next, maps:get(tick_ceiling, Opts, false)),
     {ok, #state{
         owner = Owner,
         trace = maps:get(trace, Opts, undefined),
         ip = maps:get(ip, Opts, {127, 0, 0, 1}),
         law = maps:get(law, Opts, ulaw),
         depth = maps:get(depth, Opts, 3),
+        tick_ceiling = maps:get(tick_ceiling, Opts, false),
+        prefill_shrink = maps:get(prefill_shrink, Opts, false),
         cname = maps:get(cname, Opts, chappe_mix_rtcp:cname()),
         draw = maps:get(ssrc_draw, Opts, fun random32/0),
         next_tick = Next,
@@ -104,6 +110,7 @@ handle_call({add_leg, Opts}, _From, #state{next_id = Id} = S) ->
         ip => S#state.ip,
         law => S#state.law,
         depth => S#state.depth,
+        prefill_shrink => S#state.prefill_shrink,
         ssrc => new_ssrc(S)
     },
     case chappe_mix_leg:open(Id, Opts, Defaults) of
@@ -506,8 +513,15 @@ csrc_chunks(Csrcs, Names, S) ->
 
 %% ---- clock ----
 
-arm(At) ->
+%% The timer takes milliseconds. Truncated, the due time fires most ticks
+%% up to 1 ms early; with tick_ceiling it is armed at the millisecond at
+%% or after it, so a tick never fires early. Which is better for the
+%% lateness is not measured yet, so truncation stays the default.
+arm(At, false) ->
     Ms = erlang:convert_time_unit(At, native, millisecond),
+    erlang:start_timer(Ms, self(), tick, [{abs, true}]);
+arm(At, true) ->
+    Ms = -erlang:convert_time_unit(-At, native, millisecond),
     erlang:start_timer(Ms, self(), tick, [{abs, true}]).
 
 tick(#state{next_tick = Due, period = Period} = S0) ->
@@ -521,7 +535,7 @@ tick(#state{next_tick = Due, period = Period} = S0) ->
     trace(S1#state.trace, Due, Now, map_size(S1#state.legs)),
     S2 = reports(S1, Now),
     Next = Due + (Missed + 1) * Period,
-    arm(Next),
+    arm(Next, S2#state.tick_ceiling),
     S2#state{
         next_tick = Next,
         ticks = S2#state.ticks + 1,
