@@ -17,7 +17,10 @@
 %% fires {ack_timeout, LegH} so the dialog sends a BYE. A CANCEL of an INVITE
 %% still proceeding answers the INVITE 487, as nta does. Reliable
 %% provisionals (RFC 3262) carry RSeq and are matched to their PRACK; they
-%% are never retransmitted, the transport being reliable.
+%% are never retransmitted, the transport being reliable. An INVITE left
+%% ringing still sends its last non-100 provisional again every
+%% ws_progress_ms (60 s) until the final, so a proxy on the path does not
+%% cancel it (RFC 3261 13.3.1.1), as nta does on its own transports.
 %%
 %% Client side: Timer B/F bound the wait for a response; a provisional to an
 %% INVITE stops Timer B and starts Timer C (refreshed by each provisional),
@@ -319,6 +322,15 @@ handle_info({timeout, TRef, {stxn, TxnH}}, S) ->
         #{TxnH := #{timer := TRef}} ->
             %% Timer H: the ACK of our non-2xx final never came
             {noreply, drop_stxn(TxnH, S)};
+        _ ->
+            {noreply, S}
+    end;
+handle_info({timeout, TRef, {progress, TxnH}}, S) ->
+    case S#s.stxn of
+        #{TxnH := #{progress := TRef, state := proceeding, flow := Flow} = T} ->
+            %% RFC 3261 13.3.1.1: the last non-100 provisional, once more
+            _ = send(Flow, maps:get(last, T), S),
+            {noreply, put_stxn(TxnH, arm_progress(TxnH, T), S)};
         _ ->
             {noreply, S}
     end;
@@ -819,19 +831,39 @@ peer_100rel(Msg) ->
 %% ACK (Timer H, 64*T1); a 2xx ends the INVITE transaction (RFC 3261
 %% 17.2.1) and, for our own 2xx (AckWait), the dialog waits for the ACK
 %% (13.3.1.4). A final to anything else ends it (Timer J is zero).
+sent(TxnH, #{method := <<"INVITE">>} = T, Status, Raw, _AckWait, S) when
+    Status > 100, Status < 200
+->
+    put_stxn(TxnH, arm_progress(TxnH, T#{last => Raw}), S);
 sent(TxnH, T, Status, Raw, _AckWait, S) when Status < 200 ->
-    S#s{stxn = (S#s.stxn)#{TxnH => T#{last => Raw}}};
+    put_stxn(TxnH, T#{last => Raw}, S);
 sent(TxnH, #{method := <<"INVITE">>} = T, Status, Raw, _AckWait, S) when
     Status >= 300
 ->
     cancel_timer(maps:get(timer, T)),
+    cancel_timer(maps:get(progress, T, undefined)),
     TRef = start_timer(ws_ack_timeout_ms, {stxn, TxnH}),
-    T1 = T#{state => completed, last => Raw, timer => TRef},
-    S#s{stxn = (S#s.stxn)#{TxnH => T1}};
+    T1 = maps:remove(progress, T#{
+        state => completed, last => Raw, timer => TRef
+    }),
+    put_stxn(TxnH, T1, S);
 sent(TxnH, #{method := <<"INVITE">>, msg := Msg} = T, _Status, _Raw, true, S) ->
     arm_ack_wait(Msg, maps:get(tag, T, undefined), drop_stxn(TxnH, S));
 sent(TxnH, _T, _Status, _Raw, _AckWait, S) ->
     drop_stxn(TxnH, S).
+
+%% (Re)start the 13.3.1.1 resend of the last provisional.
+arm_progress(TxnH, T) ->
+    cancel_timer(maps:get(progress, T, undefined)),
+    case chappe_sip_config:get(ws_progress_ms) of
+        infinity ->
+            maps:remove(progress, T);
+        Ms ->
+            T#{progress => erlang:start_timer(Ms, self(), {progress, TxnH})}
+    end.
+
+put_stxn(TxnH, T, S) ->
+    S#s{stxn = (S#s.stxn)#{TxnH => T}}.
 
 arm_ack_wait(Msg, Tag, S) ->
     LTag =
@@ -1068,6 +1100,7 @@ drop_stxn(TxnH, S) ->
     case S#s.stxn of
         #{TxnH := #{flow := Flow, branch := Br, method := M} = T} ->
             cancel_timer(maps:get(timer, T, undefined)),
+            cancel_timer(maps:get(progress, T, undefined)),
             S#s{
                 stxn = maps:remove(TxnH, S#s.stxn),
                 branch_ix = drop_ix({Flow, Br, M}, TxnH, S#s.branch_ix)
@@ -1112,8 +1145,9 @@ drop_flow(Flow, S) ->
     chappe_sip_registry:remove_flow(Flow),
     %% cancel the transaction timers of everything on this flow
     _ = [
-        cancel_timer(maps:get(timer, T, undefined))
+        cancel_timer(maps:get(K, T, undefined))
      || T <- maps:values(S#s.stxn) ++ maps:values(S#s.ctxn),
+        K <- [timer, progress],
         maps:get(flow, T, undefined) =:= Flow
     ],
     STxn = maps:filter(fun(_, #{flow := F}) -> F =/= Flow end, S#s.stxn),

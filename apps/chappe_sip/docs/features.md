@@ -32,7 +32,9 @@ tracker; the milestone history is in `docs/plan.md`.
   INVITE's branch. A CANCEL of an unanswered INVITE gets the 487, a 2xx
   never ACKed within 64*T1 is BYEd, reliable provisionals (100rel) carry
   RSeq and are matched to their PRACK, and dialog-forming responses carry
-  the request's Record-Route.
+  the request's Record-Route. An INVITE left ringing sends its last non-100
+  provisional again every `ws_progress_ms` (60 s) until the final, as nta
+  does on UDP, TCP and TLS (RFC 3261 13.3.1.1).
 - Via `received` is stamped when the sent-by is not the client address (a
   WS client's `.invalid` host always is); `rport` is filled in only when the
   client asked with a bare `rport` (RFC 3581).
@@ -314,6 +316,14 @@ tracker; the milestone history is in `docs/plan.md`.
   UAS and check `Proxy-Require` (16.3). A too-brief REGISTER gets a 423 with
   `Min-Expires` (10.3), INVITE gets a 100 Trying, and merged requests get a
   482 (8.2.2.2).
+- No content coding: sofia's zlib support is turned off at build time
+  (`c_src/build.sh`), so nta neither inflates a request body nor deflates a
+  response. An INVITE whose body has a Content-Encoding other than identity
+  gets 415 with `Accept-Encoding: identity`; any other request reaches the
+  app with its body and Content-Encoding as sent (RFC 3261 20.12).
+- Requests to a domain are resolved per RFC 3263 by nta (NAPTR, SRV, A,
+  with failover to the next SRV target, over TLS for a `sips:` URI); the
+  conformance lab checks both against a dnsmasq server.
 - Dialogs build a route set from Record-Route and route in-dialog
   requests through it (12.1.1/12.2.1.1): loose routing, or behind a strict
   router the first route as the Request-URI and the remote target last in
@@ -355,6 +365,9 @@ tracker; the milestone history is in `docs/plan.md`.
   a real JsSIP UA registers over WS, two JsSIP UAs place a WebRTC media call
   through the b2bua, and a Kamailio container OPTIONS-pings chappe_sip both
   directions. Drivers and setup live in `interop/`.
+- Conformance lab (`make interop-conformance`, also in CI): SIPp, pjsua and
+  a dnsmasq server against a chappe node in docker, one RFC flow per case
+  (`interop/conformance`, `docs/guides/interop-testing.md`).
 
 ## Breaking changes
 

@@ -193,7 +193,8 @@ jobs:
           name: interop-ct-logs
           path: apps/chappe_rtpengine/_build/test/logs
 
-  # chappe_sip against SIPp and pjsua (one flow per RFC clause), then every
+  # chappe_sip against SIPp, pjsua and a dnsmasq server (one flow per RFC
+  # clause, RFC 3263 resolution included), then every
   # app's requirement matrix; the demo tier must have no failing hard row.
   conformance:
     name: Conformance lab + compliance gate

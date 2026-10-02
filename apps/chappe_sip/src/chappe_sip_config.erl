@@ -52,6 +52,10 @@ default(ws_ack_timeout_ms) -> 32000;
 %% A WS server transaction the app never answers is answered 408 (INVITE)
 %% or 500 after this.
 default(ws_server_txn_timeout_ms) -> 180000;
+%% RFC 3261 13.3.1.1: a WS INVITE server transaction sends its last non-100
+%% provisional again this often until the final, as nta does on UDP, TCP
+%% and TLS (its sa_progress). infinity turns it off.
+default(ws_progress_ms) -> 60000;
 %% Max concurrent WS connections; a further connect is refused and closed.
 default(max_ws_connections) -> 10000;
 %% Allowed browser Origins for the WS upgrade (CSRF protection). Empty allows

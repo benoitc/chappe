@@ -20,6 +20,13 @@
 %% An INVITE with Replaces goes through chappe_sip:find_replaced/1 with the
 %% response rules of the answer-calls guide. SUBSCRIBE serves the
 %% `conference' package (RFC 6665); any other package gets 489.
+%%
+%% A MESSAGE to `dial' sends an OPTIONS to the URI in its body and answers
+%% with the status that OPTIONS got (480 when it got none): the dns_* cases
+%% use it to make the node resolve a domain through the lab's DNS server
+%% (RFC 3263). With the lab's certificates in /certs the node also listens
+%% for TLS on 5061, so it can reach a sips: URI.
+%%
 %% Every event is printed on stdout, which the suite collects.
 -module(chappe_conf_node).
 
@@ -32,12 +39,13 @@ start(Ip) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif),
     {ok, _} = application:ensure_all_started(chappe_sip),
     Contact = iolist_to_binary(["sip:", Ip, ":5060"]),
-    ok = chappe_sip:start(#{contact => Contact}),
+    ok = chappe_sip:start(maps:merge(#{contact => Contact}, tls(Ip))),
     IpBin = list_to_binary(Ip),
     persistent_term:put({?MODULE, ip}, IpBin),
     ok = chappe_sip:invite(fun(Req, Res) -> invite(IpBin, Req, Res) end),
     %% no OPTIONS handler: the stack's own answer is what the scenario checks
     ok = subscribe_handler(),
+    ok = chappe_sip:message(fun message/2),
     log("chappe_conf_node up on ~s", [Contact]),
     ok.
 
@@ -170,6 +178,44 @@ transfer(Refer) ->
         {error, Why} ->
             log("transfer failed: ~p", [Why]),
             ok = chappe_sip_refer:final(Refer, 503)
+    end.
+
+%% ---- MESSAGE ----
+
+message(Req, Res) ->
+    case user(Req) of
+        <<"dial">> ->
+            Target = string:trim(chappe_sip_req:body(Req)),
+            log("dial ~s", [Target]),
+            Status = dial(Target),
+            log("dial ~s: ~p", [Target, Status]),
+            chappe_sip_res:send(Res, Status);
+        _ ->
+            chappe_sip_res:send(Res, 200)
+    end.
+
+dial(Target) ->
+    case chappe_sip:request(Target, #{method => <<"OPTIONS">>}) of
+        {ok, Ref} ->
+            case chappe_sip_uac:await_response(Ref, 8000) of
+                {ok, Resp} ->
+                    chappe_sip_msg:status(Resp);
+                {error, Why} ->
+                    log("dial ~s failed: ~p", [Target, Why]),
+                    480
+            end;
+        {error, Why} ->
+            log("dial ~s refused: ~p", [Target, Why]),
+            480
+    end.
+
+tls(Ip) ->
+    case filelib:is_regular("/certs/agent.pem") of
+        true ->
+            #{tls => #{contact => iolist_to_binary(["sips:", Ip, ":5061;transport=tls"]),
+                       cert_dir => <<"/certs">>}};
+        false ->
+            #{}
     end.
 
 %% ---- SUBSCRIBE ----

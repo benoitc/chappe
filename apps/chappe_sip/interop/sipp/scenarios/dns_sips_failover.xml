@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!-- Copyright 2026 Benoit Chesneau
+     SPDX-License-Identifier: Apache-2.0
+
+     RFC 3261 8.1.2 and RFC 3263 4.3: the node sends an OPTIONS to
+     sips:uas@svcs.lab. The _sips._tcp.svcs.lab SRV lists dead.svcs.lab
+     first (nothing listens there) and tls.svcs.lab second, where
+     dns_sips_failover-target.xml takes TLS on 5061. The node must move on
+     to the second target, still over TLS. This side asks the node to dial
+     and wants the 200 the second target gave. -->
+<scenario name="dns_sips_failover">
+  <send retrans="500">
+    <![CDATA[
+      MESSAGE sip:dial@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:sipp@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:dial@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 MESSAGE
+      Max-Forwards: 70
+      Content-Type: text/plain
+      Content-Length: [len]
+
+      sips:uas@svcs.lab
+    ]]>
+  </send>
+  <recv response="100" optional="true"/>
+  <recv response="200"/>
+</scenario>

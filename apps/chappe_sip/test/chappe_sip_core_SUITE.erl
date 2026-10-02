@@ -45,6 +45,7 @@
          offerless_invite/1, offerless_reinvite/1, reoffer_bumps_version/1,
          tagless_from_accepted/1, merged_request_482/1, contact_reachable/1,
          reliable_provisional_require/1, unsupported_body_415/1,
+         content_encoding_415/1, response_not_encoded/1,
          cseq_method_mismatch_400/1, no_max_forwards_served/1,
          uas_ignores_proxy_require/1, proxy_route_checks_proxy_require/1,
          siprec_require/1, indialog_require_420/1,
@@ -73,7 +74,8 @@ groups() ->
      indialog_481_ends_dialog, session_over_at_bye, offerless_invite,
      offerless_reinvite, reoffer_bumps_version, tagless_from_accepted,
      merged_request_482, contact_reachable, reliable_provisional_require,
-     unsupported_body_415, cseq_method_mismatch_400, no_max_forwards_served,
+     unsupported_body_415, content_encoding_415, response_not_encoded,
+     cseq_method_mismatch_400, no_max_forwards_served,
      uas_ignores_proxy_require, proxy_route_checks_proxy_require,
      siprec_require, indialog_require_420, ack_cancel_require_ignored,
      tcp_no_content_length, via_maddr_response, unknown_encoding_415,
@@ -713,8 +715,8 @@ unsupported_body_415(Config) ->
                                    <<"render;handling=optional">>}],
                                  <<"application/x-foo">>))).
 
-%% An INVITE whose SDP carries a Content-Encoding we do not apply (br; nta
-%% itself decodes gzip and deflate) gets 415 with Accept-Encoding listing
+%% An INVITE whose SDP carries a Content-Encoding we do not apply (br)
+%% gets 415 with Accept-Encoding listing
 %% what we take, and never reaches the app (8.2.3).
 %% req: R3261-090
 unknown_encoding_415(Config) ->
@@ -757,6 +759,73 @@ na_request_headers_ignored(Config) ->
     ?assertEqual(200, status(R)),
     ?assertMatch(<<"v=0", _/binary>>, body(R)),
     send(Sock, Port, chappe_sip_core_peer:ack_for(R, #{port => LP})).
+
+%% chappe applies no content coding: an INVITE with a gzip body gets 415
+%% with Accept-Encoding: identity and never reaches the app, and the body of
+%% a request it does not read (MESSAGE) reaches the app as sent, with its
+%% Content-Encoding (20.12).
+%% req: R3261-434
+content_encoding_415(Config) ->
+    {Port, Sock} = {?config(port, Config), ?config(sock, Config)},
+    Test = self(),
+    ok = chappe_sip:invite(fun(_Req, Res) ->
+        Test ! invite_handler,
+        chappe_sip_res:send(Res, 486)
+    end),
+    ok = chappe_sip:message(fun(Req, Res) ->
+        Test ! {message, chappe_sip_req:get(<<"content-encoding">>, Req),
+                chappe_sip_req:body(Req)},
+        chappe_sip_res:send(Res, 200)
+    end),
+    Gz = zlib:gzip(sdp()),
+    Inv = request(<<"INVITE">>, <<"sip:app@127.0.0.1">>,
+                  #{port => port(Sock), body => Gz,
+                    content_type => <<"application/sdp">>,
+                    headers => [{<<"Content-Encoding">>, <<"gzip">>}]}),
+    send(Sock, Port, Inv),
+    {R, _} = recv(Sock, final, 3000),
+    send(Sock, Port, ack_non2xx(Inv, R)),
+    ?assertEqual(415, status(R)),
+    ?assertEqual(<<"identity">>, hdr(<<"accept-encoding">>, R)),
+    receive invite_handler -> ct:fail(handler_ran) after 300 -> ok end,
+    Text = zlib:gzip(<<"hello, compressed">>),
+    send(Sock, Port, request(<<"MESSAGE">>, <<"sip:app@127.0.0.1">>,
+                             #{port => port(Sock), body => Text,
+                               content_type => <<"text/plain">>,
+                               headers => [{<<"Content-Encoding">>,
+                                            <<"gzip">>}]})),
+    {R200, _} = recv(Sock, final, 3000),
+    ?assertEqual(200, status(R200)),
+    receive
+        {message, Enc, Body} ->
+            ?assertEqual(<<"gzip">>, Enc),
+            ?assertEqual(Text, Body)
+    after 1000 -> ct:fail(no_message)
+    end.
+
+%% A request with a deflate body and no Accept-Encoding: the response body
+%% goes out as the app wrote it, with no Content-Encoding, since the server
+%% may only use encodings the request lists (20.12).
+%% req: R3261-438
+response_not_encoded(Config) ->
+    {Port, Sock} = {?config(port, Config), ?config(sock, Config)},
+    Reply = <<"a plain reply body">>,
+    ok = chappe_sip:message(fun(_Req, Res) ->
+        chappe_sip_res:send(Res, 200, #{
+            body => Reply,
+            headers => [{<<"Content-Type">>, <<"text/plain">>}]
+        })
+    end),
+    send(Sock, Port, request(<<"MESSAGE">>, <<"sip:app@127.0.0.1">>,
+                             #{port => port(Sock),
+                               body => zlib:compress(<<"hello, deflated">>),
+                               content_type => <<"text/plain">>,
+                               headers => [{<<"Content-Encoding">>,
+                                            <<"deflate">>}]})),
+    {R, _} = recv(Sock, final, 3000),
+    ?assertEqual(200, status(R)),
+    ?assertEqual(undefined, hdr(<<"content-encoding">>, R)),
+    ?assertEqual(Reply, body(R)).
 
 %% ---- ACK of our 2xx (13.3.1.4, 15) ----
 

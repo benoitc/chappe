@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!-- Copyright 2026 Benoit Chesneau
+     SPDX-License-Identifier: Apache-2.0
+
+     The SRV target of dns_srv, at uas.svc.lab (10.253.7.30) port 5080 over
+     UDP: the OPTIONS must arrive here, over UDP, with the Request-URI the
+     node was given (RFC 3263 resolves the destination, it does not rewrite
+     the request). -->
+<scenario name="dns_srv-target">
+  <recv request="OPTIONS" timeout="15000">
+    <action>
+      <ereg regexp="^OPTIONS sip:uas@svc\.lab SIP/2\.0" search_in="msg"
+            check_it="true" assign_to="chk"/>
+      <ereg regexp="
+Via[ 	]*:[ 	]*SIP/2\.0/UDP " search_in="msg" check_it="true"
+            assign_to="chk"/>
+    </action>
+  </recv>
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=[pid]T[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <Reference variables="chk"/>
+</scenario>
