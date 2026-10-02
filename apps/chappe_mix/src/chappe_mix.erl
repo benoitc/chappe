@@ -41,7 +41,7 @@
     stats/1
 ]).
 
--export_type([conf/0, leg/0, endpoint/0, conf_opts/0, leg_opts/0]).
+-export_type([conf/0, leg/0, endpoint/0, conf_opts/0, leg_opts/0, remote/0]).
 
 -type conf() :: pid().
 -type leg() :: pos_integer().
@@ -77,15 +77,30 @@
 %% see for this leg's source. ptime: the packet time the far end sends
 %% in ms (its a=ptime), reported by legs/1; packets of any size up to
 %% 200 ms are taken whatever it says, and the mixer always sends 20 ms
-%% (RFC 3551 4.2).
+%% (RFC 3551 4.2). dtmf_pt: the RFC 4733 telephone-event payload type the
+%% far end negotiated; unset, the leg takes no events and gets none.
+%% dtmf_events: the event codes its fmtp lists (default 0 to 15, the
+%% digits); it is sent no others.
 -type leg_opts() :: #{
     remote => endpoint(),
     law => chappe_mix_g711:law(),
     ptime => pos_integer(),
+    dtmf_pt => 0..127,
+    dtmf_events => [0..255],
     mute => boolean(),
     rtcp => mux | pair,
     name => binary()
 }.
+
+%% Where a leg sends, as set_remote/3 takes it: the far end alone, or the
+%% far end with the leg's telephone-event as the answer gave it.
+-type remote() ::
+    endpoint()
+    | #{
+        remote := endpoint(),
+        dtmf_pt => 0..127,
+        dtmf_events => [0..255]
+    }.
 
 -spec start(conf_opts()) -> {ok, conf()} | {error, term()}.
 start(Opts) ->
@@ -121,8 +136,9 @@ move_leg(From, Leg, To) ->
     gen_server:call(From, {move_leg, Leg, To}).
 
 %% Send the mix to Remote from now on, and take RTP from the next
-%% address that sends (the source latch is reset).
--spec set_remote(conf(), leg(), endpoint()) -> ok | {error, not_found}.
+%% address that sends (the source latch is reset). Given as a map, the
+%% telephone-event options there replace the leg's.
+-spec set_remote(conf(), leg(), remote()) -> ok | {error, not_found}.
 set_remote(Conf, Leg, Remote) ->
     gen_server:call(Conf, {set_remote, Leg, Remote}).
 

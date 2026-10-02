@@ -14,29 +14,40 @@
 
 -export([accept_offer/1, read_answer/2, answer/2, offer/1]).
 
--export_type([law/0, remote/0, local/0]).
+-export_type([law/0, remote/0, local/0, dtmf/0]).
 
 -type law() :: ulaw | alaw.
+%% RFC 4733 telephone-event: the payload type and the event codes listed
+%% in its fmtp (the DTMF digits 0 to 15 when it has none).
+-type dtmf() :: #{pt := 0..127, events := [0..255]}.
 %% What a leg needs from the far end's SDP. index is the m-line answered;
-%% ptime the far end's a=ptime (20 when it gives none).
+%% ptime the far end's a=ptime (20 when it gives none); dtmf its
+%% telephone-event, if it has one.
 -type remote() :: #{
     endpoint := {inet:ip_address(), inet:port_number()},
     law := law(),
     mux := boolean(),
     ptime := pos_integer(),
+    dtmf := dtmf() | undefined,
     index := non_neg_integer()
 }.
-%% The leg as advertised: address, RTP port, law and RTCP mux.
+%% The leg as advertised: address, RTP port, law, RTCP mux, and the
+%% telephone-event payload type to offer or answer on, if any.
 -type local() :: #{
     addr := inet:ip_address(),
     port := inet:port_number(),
     law := law(),
-    mux := boolean()
+    mux := boolean(),
+    dtmf_pt => 0..127
 }.
 
 -define(PROTO, <<"RTP/AVP">>).
 %% what the mixer puts in a packet, ms
 -define(PTIME, 20).
+%% the telephone-event payload type the mixer offers, and the events it
+%% takes (the DTMF digits and flash)
+-define(DTMF_PT, 101).
+-define(DTMF_EVENTS, <<"0-16">>).
 
 %% Pick the leg's codec and far end out of an offer: the first audio
 %% m-line on RTP/AVP with a live port and a G.711 payload type, the law in
@@ -47,15 +58,23 @@ accept_offer(Sdp) ->
     {SessAddr, Media} = parse(Sdp),
     pick(SessAddr, Media).
 
-%% Read the far end out of the answer to an offer made with Law.
+%% Read the far end out of the answer to an offer made with Law: where
+%% to send, and the telephone-event it took, if any.
 -spec read_answer(iodata(), law()) ->
-    {ok, {inet:ip_address(), inet:port_number()}} | {error, term()}.
+    {ok, #{
+        endpoint := {inet:ip_address(), inet:port_number()},
+        dtmf := dtmf() | undefined
+    }}
+    | {error, term()}.
 read_answer(Sdp, Law) ->
     {SessAddr, Media} = parse(Sdp),
     case pick(SessAddr, Media) of
-        {ok, #{law := Law, endpoint := Endpoint}} -> {ok, Endpoint};
-        {ok, #{law := Other}} -> {error, {law_mismatch, Other}};
-        {error, _} = Err -> Err
+        {ok, #{law := Law, endpoint := Endpoint, dtmf := Dtmf}} ->
+            {ok, #{endpoint => Endpoint, dtmf => Dtmf}};
+        {ok, #{law := Other}} ->
+            {error, {law_mismatch, Other}};
+        {error, _} = Err ->
+            Err
     end.
 
 %% Answer Offer for Local: the chosen m-line carries the leg, every other
@@ -76,7 +95,8 @@ answer(Offer, #{addr := Addr} = Local) ->
     iolist_to_binary([session(Addr), Lines]).
 
 %% A one-codec offer for Local: the mixer cannot change a leg's law once
-%% it is open, so it offers the law it opened the leg with.
+%% it is open, so it offers the law it opened the leg with, and
+%% telephone-event when Local has a dtmf_pt.
 -spec offer(local()) -> binary().
 offer(#{addr := Addr} = Local) ->
     iolist_to_binary([session(Addr), audio(Local)]).
@@ -93,12 +113,24 @@ session(Addr) ->
         <<"t=0 0\r\n">>
     ].
 
-audio(#{port := Port, law := Law, mux := Mux}) ->
+audio(#{port := Port, law := Law, mux := Mux} = Local) ->
     Pt = integer_to_binary(pt(Law)),
+    {Fmts, Dtmf} =
+        case maps:find(dtmf_pt, Local) of
+            {ok, D} ->
+                Te = integer_to_binary(D),
+                {[Pt, <<" ">>, Te], [
+                    [<<"a=rtpmap:">>, Te, <<" telephone-event/8000\r\n">>],
+                    [<<"a=fmtp:">>, Te, <<" ">>, ?DTMF_EVENTS, crlf()]
+                ]};
+            error ->
+                {Pt, []}
+        end,
     [
         [<<"m=audio ">>, integer_to_binary(Port), <<" ">>, ?PROTO, <<" ">>],
-        [Pt, crlf()],
+        [Fmts, crlf()],
         [<<"a=rtpmap:">>, Pt, <<" ">>, encoding(Law), <<"/8000\r\n">>],
+        Dtmf,
         [<<"a=ptime:">>, integer_to_binary(?PTIME), crlf()],
         <<"a=sendrecv\r\n">>,
         case Mux of
@@ -154,11 +186,69 @@ pick_stream(I, #{port := Port, fmts := Fmts} = M, SessAddr) ->
                         law => Law,
                         mux => maps:get(mux, M, false),
                         ptime => maps:get(ptime, M, ?PTIME),
+                        dtmf => dtmf(M),
                         index => I
                     }};
                 error ->
                     {error, no_connection_address}
             end
+    end.
+
+%% The first telephone-event/8000 among the m-line's formats.
+dtmf(#{fmts := Fmts} = M) ->
+    Maps = maps:get(rtpmap, M, #{}),
+    case
+        [
+            F
+         || F <- Fmts,
+            string:lowercase(maps:get(F, Maps, <<>>)) =:=
+                <<"telephone-event/8000">>
+        ]
+    of
+        [F | _] ->
+            case string:to_integer(F) of
+                {Pt, <<>>} when is_integer(Pt), Pt >= 0, Pt =< 127 ->
+                    #{
+                        pt => Pt,
+                        events => events(maps:find(F, maps:get(fmtp, M, #{})))
+                    };
+                _ ->
+                    undefined
+            end;
+        [] ->
+            undefined
+    end.
+
+%% An events list, e.g. "0-15,32,36-37" (RFC 4733 7.1.1); no fmtp means
+%% the DTMF digits 0 to 15 (2.5.1.1). Codes outside 0..255 and anything
+%% that does not parse are left out.
+events(error) ->
+    lists:seq(0, 15);
+events({ok, V}) ->
+    lists:usort(
+        lists:append([
+            range(binary:split(string:trim(Item), <<"-">>))
+         || Item <- binary:split(V, <<",">>, [global, trim_all])
+        ])
+    ).
+
+range([A, B]) ->
+    case {code(A), code(B)} of
+        {X, Y} when is_integer(X), is_integer(Y), X =< Y -> lists:seq(X, Y);
+        _ -> []
+    end;
+range([A]) ->
+    case code(A) of
+        X when is_integer(X) -> [X];
+        _ -> []
+    end;
+range(_) ->
+    [].
+
+code(Bin) ->
+    case string:to_integer(string:trim(Bin)) of
+        {N, <<>>} when is_integer(N), N >= 0, N =< 255 -> N;
+        _ -> undefined
     end.
 
 law(<<"0">>) -> ulaw;
@@ -203,12 +293,25 @@ line(<<"c=", Rest/binary>>, {Sess, Media}) ->
     end;
 line(<<"a=rtcp-mux", _/binary>>, {Sess, [M | Ms]}) ->
     {Sess, [M#{mux => true} | Ms]};
+line(<<"a=rtpmap:", V/binary>>, {Sess, [M | Ms]}) ->
+    {Sess, [put_fmt(rtpmap, V, M) | Ms]};
+line(<<"a=fmtp:", V/binary>>, {Sess, [M | Ms]}) ->
+    {Sess, [put_fmt(fmtp, V, M) | Ms]};
 line(<<"a=ptime:", V/binary>>, {Sess, [M | Ms]}) ->
     {Sess, [put_ms(ptime, V, M) | Ms]};
 line(<<"a=maxptime:", V/binary>>, {Sess, [M | Ms]}) ->
     {Sess, [put_ms(maxptime, V, M) | Ms]};
 line(_Other, Acc) ->
     Acc.
+
+%% a=rtpmap:<fmt> <rest> and a=fmtp:<fmt> <rest>, kept by format.
+put_fmt(Key, V, M) ->
+    case binary:split(V, <<" ">>) of
+        [Fmt, Rest] ->
+            M#{Key => maps:put(Fmt, string:trim(Rest), maps:get(Key, M, #{}))};
+        _ ->
+            M
+    end.
 
 %% A packet time in ms; RFC 4566 allows a fraction, the mixer rounds it.
 put_ms(Key, V, M) ->

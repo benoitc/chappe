@@ -26,8 +26,13 @@ What chappe_mix does today, and what is planned.
   Once latched, RTP from any other address is dropped and counted, except
   from the far end itself, which moves the latch to it; `set_remote/3`
   resets the latch.
-- Join, leave and mute at any time. Telephone-event, comfort noise and
-  malformed packets are counted and dropped.
+- Join, leave and mute at any time. Comfort noise, unknown payload types
+  and malformed packets are counted and dropped.
+- RFC 4733 telephone-event forwarding (`dtmf_pt`, `dtmf_events` leg
+  options): an event from one leg goes, never mixed, to every other leg
+  that negotiated telephone-event and lists its code, payload byte for
+  byte, M bit kept, one timestamp per event on the listener's clock, the
+  listener's own sequence numbers, the source as CSRC.
 - RFC 3550 mixer behaviour on every leg. Mixed packets carry the SSRCs in
   that leg's mix as CSRCs (up to 15). Each leg gets compound SR (RR before
   it sent anything) with a report block for its source, and SDES CNAME,
@@ -60,7 +65,6 @@ What chappe_mix does today, and what is planned.
 - Gain control on the sum: the static limiter does not meet the
   distortion threshold in `test/audit/PERF.md` (a room at full scale RMS);
   a per-listener gain measured -37.8 dB in a model (`ATTEMPTS.md`).
-- RFC 4733 telephone-event forwarding.
 - An RTCP port from signalling that is not RTP + 1 (RFC 3605 a=rtcp).
 - Cascaded mixers: carrying an input packet's CSRCs into the output list
   (RFC 3550 7.4).

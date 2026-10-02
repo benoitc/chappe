@@ -17,6 +17,15 @@
     %% jitter buffer takes any size, and the mix always goes out in 20 ms)
     ptime = 20 :: pos_integer(),
     mute = false :: boolean(),
+    %% RFC 4733 telephone-event: the payload type this leg negotiated
+    %% (undefined: none) and the event codes it takes
+    dtmf_pt :: 0..127 | undefined,
+    dtmf_events = [] :: [0..255],
+    %% per listening leg, the offset from this leg's event timestamps to
+    %% that leg's output clock, set at an event start
+    dtmf_off = #{} :: #{pos_integer() => integer()},
+    events = 0 :: non_neg_integer(),
+    events_sent = 0 :: non_neg_integer(),
     name :: binary() | undefined,
     jbuf :: chappe_mix_jbuf:jbuf(),
     sess :: chappe_mix_session:session(),

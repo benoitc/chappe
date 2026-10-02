@@ -125,15 +125,11 @@ handle_call({move_leg, Id, To}, _From, S) ->
     end;
 handle_call({adopt_leg, Leg}, _From, #state{next_id = Id} = S) ->
     {reply, {ok, Id}, insert(Leg#leg{id = Id}, S)};
-handle_call({set_remote, Id, Remote}, _From, S) ->
+handle_call({set_remote, Id, #{remote := _} = Opts}, _From, S) ->
     %% a new far end: unlatch, so its first packet is taken
-    update_leg(
-        Id,
-        fun(L) ->
-            L#leg{remote = Remote, source = undefined, rtcp_source = undefined}
-        end,
-        S
-    );
+    update_leg(Id, fun(L) -> chappe_mix_leg:set_remote(Opts, L) end, S);
+handle_call({set_remote, Id, Remote}, From, S) ->
+    handle_call({set_remote, Id, #{remote => Remote}}, From, S);
 handle_call({mute, Id, Mute}, _From, S) ->
     update_leg(Id, fun(L) -> L#leg{mute = Mute} end, S);
 handle_call(legs, _From, S) ->
@@ -303,7 +299,13 @@ rtp_in(P, From, L0, S) ->
                     rtp_in(P, From, L1, put_leg(L1, S));
                 {ok, Sess, New} ->
                     L1 = chappe_mix_leg:take(P, From, L#leg{sess = Sess}),
-                    reclaim(New, maps:get(ssrc, P), L1#leg.id, put_leg(L1, S))
+                    S1 = reclaim(
+                        New, maps:get(ssrc, P), L1#leg.id, put_leg(L1, S)
+                    ),
+                    case chappe_mix_leg:is_event(P, L1) of
+                        true -> forward_event(P, L1#leg.id, S1);
+                        false -> S1
+                    end
             end
     end.
 
@@ -377,6 +379,62 @@ forward_byes(Gone, FromId, S) ->
         S,
         S#state.legs
     ).
+
+%% An RFC 4733 event from one leg goes to every other leg that
+%% negotiated telephone-event and lists its codes, never into the mix. On
+%% each, it keeps one timestamp for the whole event: the event start is
+%% mapped onto that leg's output clock when it comes (M set, or the first
+%% packet seen), and every later packet of the event, segments and end
+%% retransmissions included, keeps that offset. A muted leg's events are
+%% not heard either.
+forward_event(_P, FromId, S) when not is_map_key(FromId, S#state.legs) ->
+    S;
+forward_event(P, FromId, S) ->
+    case maps:get(FromId, S#state.legs) of
+        #leg{mute = true} ->
+            S;
+        From ->
+            #{ts := Ts, marker := M, payload := Payload, ssrc := Src} = P,
+            Codes = chappe_mix_leg:event_codes(Payload),
+            Offs0 =
+                case M of
+                    true -> #{};
+                    false -> From#leg.dtmf_off
+                end,
+            {Offs, S1} = maps:fold(
+                fun(Id, T, {OAcc, SAcc} = Acc) ->
+                    case
+                        Id =/= FromId andalso
+                            chappe_mix_leg:takes_events(Codes, T)
+                    of
+                        true ->
+                            Off = event_offset(Id, Ts, T, OAcc),
+                            T1 = chappe_mix_leg:send_event(
+                                T, (Ts + Off) band 16#FFFFFFFF, M, Payload, [
+                                    Src
+                                ]
+                            ),
+                            {OAcc#{Id => Off}, put_leg(T1, SAcc)};
+                        false ->
+                            Acc
+                    end
+                end,
+                {Offs0, S},
+                S#state.legs
+            ),
+            put_leg(From#leg{dtmf_off = Offs}, S1)
+    end.
+
+%% The offset from the event's timestamps to leg Id's clock: kept from
+%% the event start, or taken now (the timestamp of its next packet).
+event_offset(Id, Ts, #leg{sess = Sess}, Offs) ->
+    case maps:find(Id, Offs) of
+        {ok, Off} ->
+            Off;
+        error ->
+            #{ts := Now} = chappe_mix_session:header(Sess),
+            Now - Ts
+    end.
 
 %% ---- RTCP out ----
 

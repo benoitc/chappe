@@ -9,7 +9,7 @@
 -module(chappe_mix_session).
 
 -export([new/2, ssrc/1, src_ssrc/1, csrcs/1, info/1]).
--export([header/1, sent/3, advance/2]).
+-export([header/1, sent/3, sent_event/2, advance/2]).
 -export([rtp_in/4, renew/2, rtcp_in/5, rtcp_invalid/1, csrc_items/3]).
 -export([due/2, timeout/2, report/5, reported/2, sent_any/1]).
 
@@ -110,6 +110,17 @@ sent(#sess{} = S, Csrcs, Octets) ->
         seq = (S#sess.seq + 1) band 16#FFFF,
         last_ts = S#sess.ts,
         csrcs = Csrcs,
+        pkts = S#sess.pkts + 1,
+        octets = S#sess.octets + Octets
+    }.
+
+%% A telephone-event packet went out between two mixed ones, with Octets
+%% of payload: it takes the next sequence number (RFC 4733 2.5.1.6) and
+%% counts in the SR, but leaves the CSRC list and the SR timestamp alone.
+-spec sent_event(session(), non_neg_integer()) -> session().
+sent_event(#sess{} = S, Octets) ->
+    S#sess{
+        seq = (S#sess.seq + 1) band 16#FFFF,
         pkts = S#sess.pkts + 1,
         octets = S#sess.octets + Octets
     }.

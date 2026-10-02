@@ -11,6 +11,8 @@
 
 -export([open/3, socks/1, close/1, info/1]).
 -export([accepts_rtp/2, accepts_rtcp/2, take/3, pop/1, send/3, advance/2]).
+-export([is_event/2, event_codes/1, takes_events/2, send_event/5]).
+-export([set_remote/2]).
 -export([rtcp_send/4]).
 
 -export_type([addr/0]).
@@ -36,6 +38,10 @@ open(Id, Opts, #{ip := Ip, law := Law, depth := Depth, ssrc := Ssrc}) ->
                 law = maps:get(law, Opts, Law),
                 ptime = maps:get(ptime, Opts, 20),
                 mute = maps:get(mute, Opts, false),
+                dtmf_pt = maps:get(dtmf_pt, Opts, undefined),
+                %% no events list from the far end: the DTMF digits only
+                %% (RFC 4733 2.5.1.1)
+                dtmf_events = maps:get(dtmf_events, Opts, lists:seq(0, 15)),
                 name = maps:get(name, Opts, undefined),
                 jbuf = chappe_mix_jbuf:new(
                     Depth, silence_code(maps:get(law, Opts, Law))
@@ -111,11 +117,27 @@ info(#leg{} = L) ->
             tx => L#leg.tx,
             bad => L#leg.bad,
             other_pt => L#leg.other_pt,
+            dtmf_pt => L#leg.dtmf_pt,
+            dtmf_events => L#leg.dtmf_events,
+            events => L#leg.events,
+            events_sent => L#leg.events_sent,
             filtered => L#leg.filtered,
             rtcp => L#leg.rtcp,
             rtcp_port => L#leg.rtcp_port
         }
     ).
+
+%% A new far end (and the leg options that come with it): the source
+%% latches are reset, so its first packet is taken.
+-spec set_remote(map(), #leg{}) -> #leg{}.
+set_remote(#{remote := Remote} = Opts, L) ->
+    L#leg{
+        remote = Remote,
+        source = undefined,
+        rtcp_source = undefined,
+        dtmf_pt = maps:get(dtmf_pt, Opts, L#leg.dtmf_pt),
+        dtmf_events = maps:get(dtmf_events, Opts, L#leg.dtmf_events)
+    }.
 
 %% ---- in ----
 
@@ -158,10 +180,34 @@ take(#{pt := PT, ssrc := Ssrc, seq := Seq, ts := Ts, payload := P}, From, L) ->
     case PT =:= law_pt(L#leg.law) of
         true ->
             L1#leg{jbuf = chappe_mix_jbuf:push(Ssrc, Seq, Ts, P, L1#leg.jbuf)};
+        false when PT =:= L#leg.dtmf_pt ->
+            %% telephone-event: never mixed, the conference forwards it
+            L1#leg{events = L1#leg.events + 1};
         false ->
-            %% telephone-event, comfort noise, anything we do not mix
+            %% comfort noise, anything else we do not mix
             L1#leg{other_pt = L1#leg.other_pt + 1}
     end.
+
+%% A telephone-event packet of this leg's (RFC 4733).
+-spec is_event(chappe_mix_rtp:packet(), #leg{}) -> boolean().
+is_event(#{pt := PT}, #leg{dtmf_pt = PT}) -> PT =/= undefined;
+is_event(_P, _L) -> false.
+
+%% The event codes in an event payload: one per 4-octet report.
+-spec event_codes(binary()) -> [0..255].
+event_codes(<<E, _:3/binary, Rest/binary>>) -> [E | event_codes(Rest)];
+event_codes(_) -> [].
+
+%% Whether this leg takes events with these codes: it negotiated the
+%% payload, lists every code, and has a far end.
+-spec takes_events([0..255], #leg{}) -> boolean().
+takes_events(_Codes, #leg{dtmf_pt = undefined}) ->
+    false;
+takes_events(_Codes, #leg{remote = undefined}) ->
+    false;
+takes_events(Codes, #leg{dtmf_events = Events}) ->
+    Codes =/= [] andalso
+        lists:all(fun(C) -> lists:member(C, Events) end, Codes).
 
 latch(undefined, From) -> From;
 latch(Addr, _From) -> Addr.
@@ -207,6 +253,29 @@ send(#leg{remote = {Ip, Port}, law = Law, sess = Sess} = L, Mixed, Csrcs) ->
     L#leg{
         tx = L#leg.tx + 1,
         sess = chappe_mix_session:sent(Sess, Csrcs, byte_size(Payload))
+    }.
+
+%% Forward one telephone-event packet on this leg: its payload as it
+%% came, on this leg's payload type, timestamp Ts on this leg's clock,
+%% the next sequence number of this leg's stream (RFC 4733 2.1).
+-spec send_event(#leg{}, 0..16#FFFFFFFF, boolean(), binary(), [
+    non_neg_integer()
+]) -> #leg{}.
+send_event(
+    #leg{remote = {Ip, Port}, sess = Sess} = L, Ts, Marker, Payload, Csrcs
+) ->
+    Hdr = chappe_mix_session:header(Sess),
+    Pkt = chappe_mix_rtp:build(Hdr#{
+        ts => Ts,
+        pt => L#leg.dtmf_pt,
+        marker => Marker,
+        csrcs => Csrcs,
+        payload => Payload
+    }),
+    _ = gen_udp:send(L#leg.sock, Ip, Port, Pkt),
+    L#leg{
+        events_sent = L#leg.events_sent + 1,
+        sess = chappe_mix_session:sent_event(Sess, byte_size(Payload))
     }.
 
 -spec advance(#leg{}, non_neg_integer()) -> #leg{}.

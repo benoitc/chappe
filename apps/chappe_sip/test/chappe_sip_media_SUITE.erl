@@ -29,7 +29,7 @@
          media_env_config/1]).
 -export([conference_two_legs/1, conference_leave/1, conference_mute/1,
          conference_owner_death/1, conference_leg_owner_death/1,
-         conference_sdp/1, conference_ptime/1]).
+         conference_sdp/1, conference_ptime/1, conference_dtmf/1]).
 -export([conference_behind_rtpengine/1]).
 
 -define(LIVE_NODE, chappe_sip_media_live).
@@ -44,7 +44,7 @@ all() ->
 groups() ->
     [{mix, [], [conference_two_legs, conference_leave, conference_mute,
                 conference_owner_death, conference_leg_owner_death,
-                conference_sdp, conference_ptime]},
+                conference_sdp, conference_ptime, conference_dtmf]},
      {rtpengine_live, [], [conference_behind_rtpengine]}].
 
 init_per_suite(Config) ->
@@ -473,6 +473,54 @@ conference_ptime(_Config) ->
     ?assertMatch([#{ptime := 30}],
                  [L || #{id := Id} = L <- chappe_mix:legs(Conf), Id =:= Leg]),
     ok = chappe_sip_media:leave(S).
+
+%% RFC 4733 events: an offer with telephone-event is answered with it,
+%% on the offer's payload type, listing events 0 to 16; the leg sends
+%% the far end only the events its fmtp lists. An offer without it gets
+%% none. The mixer's own offer carries telephone-event, and an answer
+%% that takes it gives the leg its payload type.
+conference_dtmf(_Config) ->
+    Room = room(),
+    Sdp = fun(Fmts, Attrs) ->
+        <<"v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\n"
+          "t=0 0\r\nm=audio 4000 RTP/AVP ", Fmts/binary, "\r\n",
+          Attrs/binary>>
+    end,
+    Leg = fun(S) ->
+        #{conf := Conf, leg := L} = chappe_sip_media:info(S),
+        [Info] = [I || #{id := Id} = I <- chappe_mix:legs(Conf), Id =:= L],
+        Info
+    end,
+    {ok, S1} = conf_session(),
+    {ok, A1} = chappe_sip_media:conference(
+                 S1, Room,
+                 #{sdp => Sdp(<<"0 101">>,
+                              <<"a=rtpmap:101 telephone-event/8000\r\n"
+                                "a=fmtp:101 0-11\r\n">>)}),
+    ?assertNotEqual(nomatch, binary:match(A1, <<" RTP/AVP 0 101\r\n">>)),
+    ?assertNotEqual(nomatch,
+                    binary:match(A1, <<"a=rtpmap:101 telephone-event/8000">>)),
+    ?assertNotEqual(nomatch, binary:match(A1, <<"a=fmtp:101 0-16">>)),
+    ?assertMatch(#{dtmf_pt := 101, dtmf_events := [0, 1, 2, 3, 4, 5, 6, 7, 8,
+                                                   9, 10, 11]}, Leg(S1)),
+    {ok, S2} = conf_session(),
+    {ok, A2} = chappe_sip_media:conference(
+                 S2, Room, #{sdp => Sdp(<<"0">>, <<>>)}),
+    ?assertEqual(nomatch, binary:match(A2, <<"telephone-event">>)),
+    ?assertMatch(#{dtmf_pt := undefined}, Leg(S2)),
+    {ok, S3} = conf_session(),
+    {ok, O3} = chappe_sip_media:conference(S3, Room, #{}),
+    ?assertNotEqual(nomatch,
+                    binary:match(O3, <<"a=rtpmap:101 telephone-event/8000">>)),
+    ?assertNotEqual(nomatch, binary:match(O3, <<"a=fmtp:101 0-16">>)),
+    ?assertMatch(#{dtmf_pt := undefined}, Leg(S3)),
+    ok = chappe_sip_media:set_remote(
+           S3, Sdp(<<"0 100">>, <<"a=rtpmap:100 telephone-event/8000\r\n">>)),
+    %% no fmtp: the DTMF digits only (RFC 4733 2.5.1.1)
+    ?assertMatch(#{dtmf_pt := 100, dtmf_events := [0, 1, 2, 3, 4, 5, 6, 7, 8,
+                                                   9, 10, 11, 12, 13, 14, 15]},
+                 Leg(S3)),
+    [ok = chappe_sip_media:leave(S) || S <- [S1, S2, S3]].
 
 %% ---- conference behind rtpengine ----
 

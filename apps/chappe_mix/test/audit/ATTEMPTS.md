@@ -511,3 +511,33 @@ order held at load 4.8 too):
   (2), samples past 16 bits hard clipped (10), the table without the curve
   (11), the negative side clipped (2), the curve overshooting full scale
   (12).
+
+## RFC 4733 events: forwarded on arrival, one timestamp per event
+
+- Event packets are forwarded when they arrive, not on the tick: the
+  conference sends each one on every other leg that negotiated
+  telephone-event and lists its codes, under that leg's SSRC and next
+  sequence number, with the source's SSRC as the CSRC. The payload is
+  passed byte for byte; nothing in it is rewritten.
+- The timestamp: at an event start (M set, or the first packet seen) the
+  offset from the source's timestamps to each listener's output clock
+  (the timestamp of its next mixed packet) is taken and kept, so every
+  packet of the event, long-event segments and end retransmissions
+  included, has one timestamp on each leg. Taking the offset on every
+  packet would move the timestamp within an event; keeping one offset for
+  the whole call would carry a sender's timestamp jump (a pause) onto the
+  listener's clock. The suite case makes A's timestamps jump by a second
+  between the two digits, which tells the two apart.
+- A muted leg's events are not forwarded, as its audio is not heard. No
+  case covers it.
+- Seen failing first: `dtmf_forwarded` (no event counter, and no event
+  forwarded), `conference_dtmf` (no telephone-event in the answer),
+  `dtmf_through_rtpengine` (B got none of the 6 event packets).
+- Forwarding delay on loopback, 12 packets at a load of 30 (void as a
+  number): at most 521 us.
+- Mutations, 11, all caught: events not forwarded, the M bit dropped, the
+  offset taken on every packet, the offset not reset at a new event, the
+  events list ignored, no CSRC, an event taking no sequence number, events
+  mixed as audio, an answer without fmtp, the offer's events list not
+  read, the mixer's offer without telephone-event. Three first versions
+  did not compile (an unused function or variable) and were rewritten.

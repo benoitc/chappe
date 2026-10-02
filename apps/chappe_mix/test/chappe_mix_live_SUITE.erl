@@ -23,7 +23,9 @@
 -include_lib("stdlib/include/assert.hrl").
 
 -export([all/0, init_per_suite/1, end_per_suite/1]).
--export([transcoded_n_minus_one/1, thirty_ms_n_minus_one/1]).
+-export([
+    transcoded_n_minus_one/1, thirty_ms_n_minus_one/1, dtmf_through_rtpengine/1
+]).
 
 -define(NODE, chappe_mix_live).
 %% the same judge as the loopback suite: present within 3 dB of the
@@ -32,7 +34,7 @@
 -define(ABSENT, -54.7).
 
 all() ->
-    [transcoded_n_minus_one, thirty_ms_n_minus_one].
+    [transcoded_n_minus_one, thirty_ms_n_minus_one, dtmf_through_rtpengine].
 
 init_per_suite(Config) ->
     case {os:getenv("RTPENGINE_HOST"), os:getenv("RTPENGINE_MEDIA_IP")} of
@@ -106,6 +108,112 @@ n_minus_one(Config, Kinds) ->
     ],
     [?assert(W * 50 =< N, {weak, Kind, W, N}) || {Kind, W, N} <- Weak],
     ok.
+
+%% RFC 4733 events through rtpengine: both parties negotiate PCMU and
+%% telephone-event 101 with rtpengine on both sides of it, A sends a
+%% digit (start with M, updates, three end packets with E) in place of
+%% audio packets, and B gets each event packet through the mixer and
+%% rtpengine, payload as sent, the M bit on the first only, one timestamp
+%% for the whole event.
+dtmf_through_rtpengine(Config) ->
+    Media = ?config(media_ip, Config),
+    RtpeIp = ?config(rtpe_ip, Config),
+    {ok, Conf} = chappe_mix:start(#{ip => {0, 0, 0, 0}}),
+    Open = fun() ->
+        {ok, S} = gen_udp:open(0, [binary, {ip, {0, 0, 0, 0}}, {active, true}]),
+        {ok, P} = inet:port(S),
+        {S, P}
+    end,
+    Party = fun({Sock, Port}) ->
+        {ok, Leg, #{port := MixPort}} = chappe_mix:add_leg(
+            Conf, #{rtcp => pair, dtmf_pt => 101}
+        ),
+        {Sess, ToParty, ToMixer} = call(
+            Media,
+            sdp(Media, Port, pcmu_dtmf),
+            #{},
+            sdp(Media, MixPort, pcmu_dtmf)
+        ),
+        ok = chappe_mix:set_remote(Conf, Leg, {RtpeIp, ToMixer}),
+        {Sock, {RtpeIp, ToParty}, Sess}
+    end,
+    {SA, ToA, SessA} = Party(Open()),
+    {SB, ToB, SessB} = Party(Open()),
+    Silence = binary:copy(<<16#FF>>, 160),
+    Audio = fun(N) ->
+        chappe_mix_rtp:build(#{
+            pt => 0,
+            seq => N,
+            ts => N * 160,
+            ssrc => 16#A,
+            marker => false,
+            payload => Silence
+        })
+    end,
+    Ev = fun(N, M, E, Dur) ->
+        chappe_mix_rtp:build(#{
+            pt => 101,
+            seq => N,
+            ts => 100 * 160,
+            ssrc => 16#A,
+            marker => M,
+            payload => <<5, E:1, 0:1, 10:6, Dur:16>>
+        })
+    end,
+    Digit = [
+        Ev(100, true, 0, 160),
+        Ev(101, false, 0, 320),
+        Ev(102, false, 0, 480),
+        Ev(103, false, 1, 640),
+        Ev(104, false, 1, 640),
+        Ev(105, false, 1, 640)
+    ],
+    Plan = [Audio(N) || N <- lists:seq(1, 99)] ++ Digit ++
+        [Audio(N) || N <- lists:seq(106, 130)],
+    %% B sends silence too, so rtpengine has both sides flowing
+    BPlan = [Audio(N) || N <- lists:seq(1, 130)],
+    T0 = erlang:monotonic_time(millisecond),
+    lists:foldl(
+        fun({PA, PB}, K) ->
+            wait_ms(T0 + 20 * K),
+            {IpA, PortA} = ToA,
+            {IpB, PortB} = ToB,
+            ok = gen_udp:send(SA, IpA, PortA, PA),
+            ok = gen_udp:send(SB, IpB, PortB, PB),
+            K + 1
+        end,
+        0,
+        lists:zip(Plan, BPlan)
+    ),
+    timer:sleep(500),
+    ct:log("mixer legs: ~p", [chappe_mix:legs(Conf)]),
+    Got = [
+        P
+     || {ok, #{pt := 101} = P} <- [chappe_mix_rtp:parse(B) || B <- udp_all(SB)]
+    ],
+    ct:log("B got ~p event packets: ~p", [length(Got), Got]),
+    [chappe_rtpengine_session:stop(S) || S <- [SessA, SessB]],
+    [gen_udp:close(S) || S <- [SA, SB]],
+    ok = chappe_mix:stop(Conf),
+    Sent = [maps:get(payload, P) || {ok, P} <- [chappe_mix_rtp:parse(D) || D <- Digit]],
+    ?assertEqual(Sent, [maps:get(payload, P) || P <- Got]),
+    ?assertEqual(
+        [true, false, false, false, false, false],
+        [maps:get(marker, P) || P <- Got]
+    ),
+    ?assertMatch([_], lists:usort([maps:get(ts, P) || P <- Got])).
+
+wait_ms(T) ->
+    case T - erlang:monotonic_time(millisecond) of
+        W when W > 0 -> timer:sleep(W);
+        _ -> ok
+    end.
+
+udp_all(Sock) ->
+    receive
+        {udp, Sock, _, _, B} -> [B | udp_all(Sock)]
+    after 0 -> []
+    end.
 
 %% ---- parties ----
 
@@ -258,7 +366,13 @@ sdp(Ip, Port, Codec, Ptime) ->
         case Codec of
             pcmu -> {<<"0">>, [<<"a=rtpmap:0 PCMU/8000\r\n">>]};
             pcma -> {<<"8">>, [<<"a=rtpmap:8 PCMA/8000\r\n">>]};
-            opus -> {<<"96">>, [<<"a=rtpmap:96 opus/48000/2\r\n">>]}
+            opus -> {<<"96">>, [<<"a=rtpmap:96 opus/48000/2\r\n">>]};
+            pcmu_dtmf ->
+                {<<"0 101">>, [
+                    <<"a=rtpmap:0 PCMU/8000\r\n">>,
+                    <<"a=rtpmap:101 telephone-event/8000\r\n">>,
+                    <<"a=fmtp:101 0-16\r\n">>
+                ]}
         end,
     iolist_to_binary([
         <<"v=0\r\no=- 1 1 IN IP4 ">>,

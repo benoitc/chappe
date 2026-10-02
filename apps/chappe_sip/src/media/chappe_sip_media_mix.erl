@@ -80,6 +80,8 @@
 -type state() :: #state{}.
 
 -define(SERVER, ?MODULE).
+%% the telephone-event payload type the mixer offers
+-define(DTMF_PT, 101).
 
 %% ---- backend API ----
 
@@ -206,11 +208,14 @@ join(#{id := Id, owner := Owner}, #{room := Room} = Opts, S) ->
 %% law, RTCP mux and far end; offering uses the configured law and muxes.
 leg_plan(#{sdp := Offer} = Opts, _S) ->
     case chappe_sip_media_mix_sdp:accept_offer(Offer) of
-        {ok, #{endpoint := Ep, law := Law, mux := Mux, ptime := Ptime}} ->
+        {ok, #{
+            endpoint := Ep, law := Law, mux := Mux, ptime := Ptime, dtmf := Dtmf
+        }} ->
             {ok, #{
                 law => Law,
                 mux => Mux,
                 ptime => Ptime,
+                dtmf => Dtmf,
                 remote => Ep,
                 answer_to => Offer,
                 mute => maps:get(mute, Opts, false)
@@ -222,6 +227,8 @@ leg_plan(Opts, S) ->
     {ok, #{
         law => maps:get(law, Opts, S#state.law),
         mux => true,
+        %% offered; the leg takes it when the answer does
+        dtmf_offer => ?DTMF_PT,
         mute => maps:get(mute, Opts, false)
     }}.
 
@@ -253,10 +260,13 @@ add_leg(Id, Owner, Room, #room{conf = Conf} = R, Plan, Opts, S) ->
                 false -> pair
             end
     },
-    LegOpts1 = put_opt(
-        remote,
-        maps:get(remote, Plan, undefined),
-        put_opt(ptime, maps:get(ptime, Plan, undefined), LegOpts0)
+    LegOpts1 = dtmf_opts(
+        maps:get(dtmf, Plan, undefined),
+        put_opt(
+            remote,
+            maps:get(remote, Plan, undefined),
+            put_opt(ptime, maps:get(ptime, Plan, undefined), LegOpts0)
+        )
     ),
     LegOpts = put_opt(name, maps:get(name, Opts, undefined), LegOpts1),
     case safe(fun() -> chappe_mix:add_leg(Conf, LegOpts) end) of
@@ -280,12 +290,18 @@ add_leg(Id, Owner, Room, #room{conf = Conf} = R, Plan, Opts, S) ->
     end.
 
 sdp(Plan, Ip, Port, S) ->
-    Local = #{
+    Local0 = #{
         addr => advertised(Ip, S),
         port => Port,
         law => maps:get(law, Plan),
         mux => maps:get(mux, Plan)
     },
+    Local =
+        case Plan of
+            #{dtmf := #{pt := Pt}} -> Local0#{dtmf_pt => Pt};
+            #{dtmf_offer := Pt} -> Local0#{dtmf_pt => Pt};
+            _ -> Local0
+        end,
     case maps:find(answer_to, Plan) of
         {ok, Offer} -> chappe_sip_media_mix_sdp:answer(Offer, Local);
         error -> chappe_sip_media_mix_sdp:offer(Local)
@@ -389,8 +405,8 @@ do_mute(Id, #leg{room = Room, leg = Leg} = L, Mute, S) ->
 do_set_remote(#leg{room = Room, leg = Leg, law = Law}, Remote, S) ->
     #room{conf = Conf} = maps:get(Room, S#state.rooms),
     case remote_endpoint(Remote, Law) of
-        {ok, Ep} ->
-            {reply, safe(fun() -> chappe_mix:set_remote(Conf, Leg, Ep) end), S};
+        {ok, To} ->
+            {reply, safe(fun() -> chappe_mix:set_remote(Conf, Leg, To) end), S};
         {error, _} = Err ->
             {reply, Err, S}
     end.
@@ -398,7 +414,18 @@ do_set_remote(#leg{room = Room, leg = Leg, law = Law}, Remote, S) ->
 remote_endpoint({Ip, Port} = Ep, _Law) when is_tuple(Ip), is_integer(Port) ->
     {ok, Ep};
 remote_endpoint(Sdp, Law) ->
-    chappe_sip_media_mix_sdp:read_answer(Sdp, Law).
+    case chappe_sip_media_mix_sdp:read_answer(Sdp, Law) of
+        {ok, #{endpoint := Ep, dtmf := Dtmf}} ->
+            {ok, dtmf_opts(Dtmf, #{remote => Ep})};
+        {error, _} = Err ->
+            Err
+    end.
+
+%% The telephone-event of the far end as chappe_mix leg options.
+dtmf_opts(undefined, Opts) ->
+    Opts;
+dtmf_opts(#{pt := Pt, events := Events}, Opts) ->
+    Opts#{dtmf_pt => Pt, dtmf_events => Events}.
 
 leg_info(#leg{room = Room, leg = Leg, law = Law, local = Local, muted = M}, S) ->
     #room{conf = Conf} = maps:get(Room, S#state.rooms),

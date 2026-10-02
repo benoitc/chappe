@@ -218,7 +218,12 @@ end).
 The answer carries one G.711 codec (the first PCMU or PCMA in the offer),
 `a=ptime:20` and `a=sendrecv`. The offer's `a=ptime` reaches the leg (the
 mixer takes packets of any size up to 200 ms); an `a=maxptime` under 20 is
-refused with `{error, {maxptime, Ms}}`, since the mixer sends 20 ms. It keeps `a=rtcp-mux` when the offer has it;
+refused with `{error, {maxptime, Ms}}`, since the mixer sends 20 ms. An offer
+with `telephone-event/8000` is answered with it on the offer's payload type
+and `a=fmtp:<pt> 0-16`; the leg then forwards RFC 4733 events to and from
+the room, sending the far end only the events its fmtp lists (0 to 15
+without one). The mixer's own offer carries `telephone-event/8000` on 101,
+and an answer that keeps it turns forwarding on for the leg. It keeps `a=rtcp-mux` when the offer has it;
 without it, RTCP goes on the next port up. Other m-lines (video) are rejected
 with port 0.
 
