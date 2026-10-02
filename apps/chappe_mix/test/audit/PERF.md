@@ -18,6 +18,16 @@ missed here, never redefined after the numbers arrive.
 | Mix compute per tick, 4 / 64 legs (`mix_cost`), set 2026-10-02 | <= 10 us / <= 200 us | n/a | 19.8 / 331.9 us | missed |
 | Capacity as above, set 2026-10-02 | >= 500 conferences (2000 legs) | n/a | 275 | missed |
 | Mixed output after a change to the mix | byte for byte the same as before it for the same input | n/a | the same, 500 seeded rooms of 1 to 64 legs | met |
+| Framing, 30 ms sender, set 2026-10-03 | its tone present in every 200 ms judging window at each listener, and no run of 80 or more silent samples (10 ms) inside any 20 ms frame heard once the room has settled | n/a | not measured yet | open |
+| Framing, 10 ms sender, set 2026-10-03 | the same as the 30 ms row, and no jitter-buffer trim (`dropped` 0) on its leg over 60 s | n/a | not measured yet | open |
+| Limiter, distortion, set 2026-10-03 | 8 talkers at -6 dBFS each (distinct tones): THD+N at a receiver <= -26 dB (5%); the hard clip it replaces is measured first, as the baseline | n/a | not measured yet | open |
+| Limiter, cost, set 2026-10-03 | `mix_cost` at 4 and 64 legs rises by no more than 10% | n/a | not measured yet | open |
+| Tick timer, set 2026-10-03 | ticks that fire more than 100 us early: none at p99 (under 1% of traced ticks), in the `jitter idle` and `jitter capacity` arms, with p99 lateness inside the tick jitter row | n/a | not measured yet | open |
+| Prefill, set 2026-10-03 | `latency` arm: p99 within one frame (20 ms) of p50 in 5 of 5 launches; `loss` arm: the underrun count does not rise | n/a | not measured yet | open |
+| DTMF forwarding (RFC 4733), set 2026-10-03 | a forwarded event keeps its event code, duration and E bit, and leaves within one tick (20 ms) of arriving | n/a | not measured yet | open |
+| Per-pair relations, cost, set 2026-10-03 | `mix_cost` at 4 and 64 legs with no relation set rises by no more than 5%; the cost of each exclusion is measured and recorded | n/a | not measured yet | open |
+| Talker events, latency, set 2026-10-03 | `{talking, Leg, true}` within 100 ms of the first loud frame entering the mix (60 ms hysteresis plus up to two ticks), `false` within 340 ms of the last one (300 ms plus two ticks), at the defaults | n/a | not measured yet | open |
+| Talker events, cost, set 2026-10-03 | `mix_cost` at 4 and 64 legs with a subscriber set rises by no more than 5% | n/a | not measured yet | open |
 
 The numbers in the table are the quiet-box ones from "2026-10-01: native
 reference" below, minimum of the runs unless that section says otherwise.
@@ -504,3 +514,36 @@ One launch each, so no minimum of five: no threshold changes status. The
 compute thresholds (10 and 200 us) stay missed; 64 legs is within 8%. The
 whole mixer gains less than the compute (6% at 200 conferences): the send
 path is the larger share now.
+
+### 2026-10-03: Step 3 thresholds (no code yet)
+
+The rows dated 2026-10-03 in the table were written before any of the code
+they judge: 10 and 30 ms framing, the soft limiter, the tick timer and the
+prefill, RFC 4733 event forwarding, per-pair relations and talker events.
+How each is measured:
+
+- Framing: a tone endpoint sending 30 ms (240 octets) or 10 ms (80 octets)
+  packets into a room with two 20 ms parties. Every 200 ms window at the
+  other parties carries its tone (`chappe_mix_test_tone:hears/3`), and each
+  160-sample frame they receive is scanned for a run of 80 or more samples
+  at the law's silence value. The 10 ms row also reads the sender leg's
+  `dropped` after 60 s.
+- Limiter: THD+N at one receiver of a room of 9, eight talkers on distinct
+  tones at -6 dBFS each: the power left after removing the eight tone bins,
+  over the power of the eight tones, on 1 s of received audio. The hard
+  clip is measured on the commit before the limiter.
+- Timer: the traced conference of the `jitter` arms reports `early_ticks`
+  and `late_p50_us`; the row reads the share of traced ticks earlier than
+  -100 us.
+- Prefill: the `latency` and `loss` arms, 5 interleaved launches each, both
+  ways; the underrun count is a new leg counter, `underruns`.
+- DTMF: a suite case timestamps each event packet sent into a leg and each
+  forward read at another leg, on loopback.
+- Talker events: a suite case timestamps the first loud frame it sends and
+  the event the subscriber gets.
+
+R3550-21 (the mixer's own SSRC in the CSRC list when it is itself a
+source) needs media the mixer injects. With input-only legs (Part B) the
+room carries media of its own, so the row stays `platform` and is planned
+there. The new RFC 4733 and RFC 3605 rows are `platform`: the demo flows
+do not exercise them.
