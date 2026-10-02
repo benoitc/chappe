@@ -1,0 +1,58 @@
+# Copyright 2026 Benoit Chesneau
+# SPDX-License-Identifier: Apache-2.0
+#
+# The reference mixer for chappe_mix: FreeSWITCH 1.10.10 mod_conference,
+# native on arm64 and amd64. Test-only (see conf/freeswitch.xml).
+#
+# Driven by apps/chappe_mix/test/ref.sh (make interop-ref, make bench-ref).
+# SIP is published on 15060/udp and the default RTP range 1:1, so the host
+# reaches both on 127.0.0.1. The `bench` service runs an arm inside the
+# same docker network, reaching FreeSWITCH by its container address; it
+# only starts with `--profile bench`.
+name: chappe-mix-ref
+
+services:
+  freeswitch:
+    image: drachtio/drachtio-freeswitch-mrf:latest
+    container_name: chappe-mix-fs
+    # the image's /entrypoint.sh edits its stock tree; this config
+    # replaces that tree, so start FreeSWITCH directly
+    entrypoint: ["/usr/local/freeswitch/bin/freeswitch"]
+    command:
+      [
+        "-nonat", "-c",
+        "-conf", "/chappe/conf",
+        "-log", "/tmp", "-db", "/tmp", "-run", "/tmp"
+      ]
+    stdin_open: true
+    tty: true
+    # one CPU, to compare with chappe_mix on one scheduler (+S 1)
+    cpus: ${FS_CPUS:-1}
+    environment:
+      FS_RTP_START: "16384"
+      FS_RTP_END: "${FS_RTP_END:-16583}"
+    ports:
+      - "15060:15060/udp"
+      - "16384-16583:16384-16583/udp"
+    volumes:
+      - ./conf:/chappe/conf:ro
+    healthcheck:
+      test: ["CMD", "/usr/local/freeswitch/bin/fs_cli", "-x", "sofia status"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  # An Erlang node next to FreeSWITCH, in the same VM on macOS, for the
+  # bench arms that must not pay the host-to-VM hop. The umbrella is
+  # mounted read-only; the arms run from its _build.
+  bench:
+    image: erlang:29
+    container_name: chappe-mix-bench
+    profiles: ["bench"]
+    working_dir: /src
+    command: ["sleep", "infinity"]
+    environment:
+      DOCKER_SOCK: /var/run/docker.sock
+    volumes:
+      - ../../../..:/src:ro
+      - /var/run/docker.sock:/var/run/docker.sock

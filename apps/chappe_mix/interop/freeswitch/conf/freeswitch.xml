@@ -1,0 +1,126 @@
+<?xml version="1.0"?>
+<!-- Copyright 2026 Benoit Chesneau
+     SPDX-License-Identifier: Apache-2.0
+
+     TEST-ONLY, INSECURE. The whole configuration of the reference mixer
+     for chappe_mix: one unauthenticated SIP profile on 15060/udp, and a
+     dialplan that answers conf-<name> and joins conference <name>@default.
+     It replaces the image's stock tree (FreeSWITCH is started with -conf
+     pointing here). Never ship an unauthenticated profile.
+
+     The RTP range comes from the environment (FS_RTP_START, FS_RTP_END,
+     set by docker-compose.yml) so the capacity run can widen it. -->
+<document type="freeswitch/xml">
+  <X-PRE-PROCESS cmd="exec-set" data="rtp_start=printenv FS_RTP_START"/>
+  <X-PRE-PROCESS cmd="exec-set" data="rtp_end=printenv FS_RTP_END"/>
+  <X-PRE-PROCESS cmd="set" data="domain=chappe-mix-ref"/>
+
+  <section name="configuration" description="Various Configuration">
+    <configuration name="switch.conf" description="Core Configuration">
+      <settings>
+        <param name="colorize-console" value="false"/>
+        <param name="loglevel" value="notice"/>
+        <param name="max-sessions" value="4000"/>
+        <param name="sessions-per-second" value="1000"/>
+        <param name="rtp-start-port" value="$${rtp_start}"/>
+        <param name="rtp-end-port" value="$${rtp_end}"/>
+        <param name="dump-cores" value="no"/>
+      </settings>
+    </configuration>
+
+    <configuration name="modules.conf" description="Modules">
+      <modules>
+        <load module="mod_console"/>
+        <load module="mod_event_socket"/>
+        <load module="mod_sofia"/>
+        <load module="mod_commands"/>
+        <load module="mod_conference"/>
+        <load module="mod_dptools"/>
+        <load module="mod_dialplan_xml"/>
+      </modules>
+    </configuration>
+
+    <configuration name="console.conf" description="Console Logger">
+      <mappings>
+        <map name="all" value="console,debug,info,notice,warning,err,crit,alert"/>
+      </mappings>
+      <settings>
+        <param name="colorize" value="false"/>
+        <param name="loglevel" value="notice"/>
+      </settings>
+    </configuration>
+
+    <!-- fs_cli inside the container (the healthcheck) and the bench's
+         reads of `status`; the port is not published. -->
+    <configuration name="event_socket.conf" description="Socket Client">
+      <settings>
+        <param name="listen-ip" value="0.0.0.0"/>
+        <param name="listen-port" value="8021"/>
+        <param name="password" value="ClueCon"/>
+      </settings>
+    </configuration>
+
+    <configuration name="sofia.conf" description="sofia Endpoint">
+      <global_settings>
+        <param name="log-level" value="0"/>
+      </global_settings>
+      <profiles>
+        <profile name="mixref">
+          <settings>
+            <param name="context" value="default"/>
+            <param name="dialplan" value="XML"/>
+            <param name="sip-ip" value="$${local_ip_v4}"/>
+            <param name="rtp-ip" value="$${local_ip_v4}"/>
+            <param name="sip-port" value="15060"/>
+            <param name="auth-calls" value="false"/>
+            <param name="inbound-codec-prefs" value="PCMU,PCMA"/>
+            <param name="outbound-codec-prefs" value="PCMU,PCMA"/>
+            <param name="inbound-codec-negotiation" value="generous"/>
+            <param name="rtp-timer-name" value="soft"/>
+            <param name="apply-nat-acl" value="none"/>
+            <param name="manage-presence" value="false"/>
+            <param name="enable-timer" value="false"/>
+            <param name="tls" value="false"/>
+          </settings>
+        </profile>
+      </profiles>
+    </configuration>
+
+    <!-- The stock default profile (8 kHz, 20 ms) minus everything that
+         plays into the room: no enter or exit tone, no comfort noise.
+         energy-level 0 mixes every member all the time, as chappe_mix
+         does; the stock 100 would skip quiet members. -->
+    <configuration name="conference.conf" description="Audio Conference">
+      <caller-controls>
+        <group name="none"/>
+      </caller-controls>
+      <profiles>
+        <profile name="default">
+          <param name="domain" value="$${domain}"/>
+          <param name="rate" value="8000"/>
+          <param name="interval" value="20"/>
+          <param name="energy-level" value="0"/>
+          <param name="caller-controls" value="none"/>
+          <param name="comfort-noise" value="false"/>
+        </profile>
+      </profiles>
+    </configuration>
+  </section>
+
+  <section name="dialplan" description="Regex/XML Dialplan">
+    <context name="default">
+      <extension name="conference">
+        <condition field="destination_number"
+                   expression="^conf-([A-Za-z0-9_.-]+)$">
+          <action application="answer"/>
+          <action application="conference" data="$1@default"/>
+        </condition>
+      </extension>
+      <extension name="reject">
+        <condition field="destination_number" expression="^.*$">
+          <action application="respond" data="404"/>
+        </condition>
+      </extension>
+    </context>
+  </section>
+</document>

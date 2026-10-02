@@ -63,6 +63,7 @@ today means anything.
 | `capacity` | `[Step] [StepSecs] [Max]` (10, 5, 1000) | adds 4-party conferences `Step` at a time until a tick misses its budget; conferences, legs, scheduler utilisation and memory per conference at the last step in budget |
 | `mix_cost` | `[N ...]` (2 4 8 16 32 64) | CPU of the compute in one tick for N legs, no sockets |
 | `ref_latency` | `[Rounds] [Bursts]` (5, 50) | chappe_mix and FreeSWITCH `mod_conference` side by side: what each party hears, then interleaved latency rounds |
+| `ref_capacity` | `fs\|chappe [Step] [Bursts] [Max]` (10, 25, 1000) | adds 4-party rooms to one mixer `Step` at a time, judged from outside by a probe room, until the probe or the mixer's CPU says it broke |
 
 ### latency
 
@@ -116,28 +117,74 @@ If you change the mix, change `mix_tick/1` in `chappe_mix_bench.erl` with it.
 ### ref_latency
 
 Needs a FreeSWITCH that joins a call to `conf-<name>` into
-`conference <name>@default`. The i3_bridge interop stack has one:
+`conference <name>@default`. `apps/chappe_mix/interop/freeswitch/` has one:
+FreeSWITCH 1.10.10 from `drachtio/drachtio-freeswitch-mrf`, native on arm64
+and amd64, with a test-only config that plays no enter or exit tone, adds no
+comfort noise and mixes every member (`energy-level` 0), and limited to one
+CPU to compare with the mixer on one scheduler. `ref.sh` brings it up, waits
+for its SIP profile, exports the environment and tears it down:
 
 ```sh
-docker compose -f ../i3_bridge/interop/docker-compose.yml up -d --wait freeswitch
-FREESWITCH_HOST=127.0.0.1 FREESWITCH_MEDIA_IP=0.250.250.254 \
-    erl -noshell +S 1 -pa _build/default/lib/chappe_mix/ebin -pa _build/bench \
-    -run chappe_mix_bench main ref_latency
-docker compose -f ../i3_bridge/interop/docker-compose.yml down
+apps/chappe_mix/test/ref.sh host ref_latency 5 50   # or: make bench-ref
+apps/chappe_mix/test/ref.sh vm ref_latency 5 50     # make bench-ref REF="vm ref_latency 5 50"
 ```
 
-`FREESWITCH_MEDIA_IP` is the address the container reaches this machine at:
+`host` runs the arm on this machine. FreeSWITCH publishes SIP on 15060/udp
+and RTP on 16384-16583/udp; the calls are raw SIP over UDP from
+`chappe_mix_sip_ua`, FreeSWITCH's SDP names its container address, so media
+goes to `FREESWITCH_HOST` on the port from the SDP, and
+`FREESWITCH_MEDIA_IP` is the address the container reaches this machine at
+(`ref.sh` resolves `host.docker.internal` inside the container).
+
+On macOS docker runs a Linux VM, so in `host` mode every FreeSWITCH packet
+crosses the host-to-VM hop and chappe_mix's do not. `vm` runs the same arm in
+an `erlang:29` container on FreeSWITCH's network (the umbrella mounted
+read-only), so both mixers run in the same VM; chappe_mix is still reached on
+loopback there and FreeSWITCH over the docker bridge. Compare latency in `vm`
+mode. The arm checks the load in the VM, which on macOS leaves out the host,
+so `ref.sh vm` checks the host's load first with the same limit.
+
+`KEEP=1` leaves FreeSWITCH up between launches when you interleave several.
+
+### ref_capacity
+
+The `capacity` arm reads chappe_mix's own tick statistics, which
+`mod_conference` does not have. This arm judges either mixer from outside,
+so the two ramps compare:
 
 ```sh
-docker run --rm --entrypoint getent ubuntu:24.04 hosts host.docker.internal
+apps/chappe_mix/test/ref.sh vm ref_capacity fs 25 20 1000
+apps/chappe_mix/test/ref.sh vm ref_capacity chappe 25 20 1000
 ```
 
-The calls are raw SIP over UDP from `chappe_mix_sip_ua`. FreeSWITCH's SDP
-names its container address, so media goes to `FREESWITCH_HOST` on the port
-from the SDP (the RTP range is published 1:1).
+Each room is four calls (`fs`) or four legs (`chappe`) fed a 500 Hz PCMU
+tone by one sender group in a peer node, as in `capacity`. At each step a
+fresh probe room, probe legs A and B plus two silent legs, runs `Bursts`
+probe bursts and reports, per step:
 
-That image is amd64 only. On an arm64 host it runs emulated and its timing is
-not a fair reference: record reference numbers from an amd64 host.
+- `p50_us`, `p99_us`, `missed`: burst latency A to B, as in `latency`
+- `b_rx_per_frame`, `b_gap_max_us`, `b_gap_dev_p50_us`, `b_gap_dev_p99_us`,
+  `b_gap_hist`: packets B received per frame the probe sent, and the gaps
+  between them (deviation from 20 ms, 5 ms buckets)
+- `cpu_pct_one_core`: the mixer's CPU over the probe window, in percent of
+  one core. For `fs` it is the container's cgroup CPU time from the docker
+  API (`DOCKER_SOCK`, default `/var/run/docker.sock`, mounted into the bench
+  container); for `chappe` it is the VM's `statistics(runtime)`, every
+  thread of the node that runs the mixer and nothing else
+- `mem_per_room_bytes`: growth since the start, per room: the container's
+  memory less its inactive page cache (what `docker stats` shows), or the
+  VM's `erlang:memory(total)`
+
+A step is in budget when every burst is heard with a p99 at most 20 ms (one
+frame) above the same room's p50, B gets at least 98% of a packet per frame
+with no gap over 60 ms, and the mixer uses under 95% of one core. Latency is
+judged within the room: each step's probe room is new, and `mod_conference`'s
+latency moves by whole frames from room to room with the phase of its timers.
+The gap spread is reported, not judged: `mod_conference` paces its output
+with a p99 spread near 5 ms even with a few rooms. The ramp stops at the first step out of budget and
+reports the step before it. The `fs` ramp needs more RTP ports than the
+published range, so `ref.sh` widens FreeSWITCH's range to 16384-32767 for it;
+run it in `vm` mode.
 
 ## Compare two commits
 
@@ -170,7 +217,8 @@ trace lines are simply absent.
 ## The suites that go with it
 
 - `chappe_mix_ref_SUITE` feeds the same tones to both mixers and requires the
-  same detection result (skips without `FREESWITCH_HOST`).
+  same detection result (skips without `FREESWITCH_HOST`). `make interop-ref`
+  brings FreeSWITCH up, runs it, and tears it down.
 - `chappe_mix_live_SUITE` puts every leg behind a real rtpengine, one of them
   PCMA and one through an opus leg, and checks N-1 at each party (skips without
   `RTPENGINE_HOST`). `make interop-mix` brings rtpengine up, runs it, and tears

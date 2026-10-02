@@ -39,7 +39,11 @@ stop(Pid) ->
 %% Opts: a_dst, b_dst ({Ip, Port} each side sends to), bursts (count),
 %% gap (frames between bursts, default 20 = 400 ms), settle (frames of
 %% silence before the first burst, default 25), burst_frames (default 1).
-%% Returns #{latencies_us := [integer()], missed := integer()}.
+%% Returns #{latencies_us := [integer()], missed := integer(),
+%% frames := integer(), b_gaps_us := [integer()]}: besides the bursts, the
+%% frames each side sent and the gap between consecutive packets arriving
+%% on B, every packet of the run, so a caller can judge the mixer's
+%% output timing as a receiver sees it.
 run(Pid, Opts) ->
     Pid ! {run, self(), Opts},
     Bursts = maps:get(bursts, Opts),
@@ -101,6 +105,8 @@ idle(S) ->
                 pending => undefined,
                 lat => [],
                 missed => 0,
+                b_last => undefined,
+                b_gaps => [],
                 next => erlang:monotonic_time(millisecond)
             },
             self() ! tick,
@@ -114,8 +120,17 @@ loop(S) ->
         tick ->
             tick(S);
         {udp, Sock, _, _, Pkt} ->
-            loop(received(Sock, Pkt, erlang:monotonic_time(microsecond), S))
+            Now = erlang:monotonic_time(microsecond),
+            loop(received(Sock, Pkt, Now, arrival(Sock, Now, S)))
     end.
+
+arrival(Sock, Now, #{b := Sock, b_last := Last, b_gaps := Gaps} = S) ->
+    case Last of
+        undefined -> S#{b_last => Now};
+        _ -> S#{b_last => Now, b_gaps => [Now - Last | Gaps]}
+    end;
+arrival(_Sock, _Now, S) ->
+    S.
 
 tick(#{left := 0, pending := undefined} = S) ->
     finish(S);
@@ -210,7 +225,12 @@ received(_Sock, _Pkt, _Now, S) ->
 %% Report and go back to idle, ready for another run on the same ports.
 finish(#{from := From, lat := Lat, missed := Missed} = S) ->
     From !
-        {self(), result, #{latencies_us => lists:reverse(Lat), missed => Missed}},
+        {self(), result, #{
+            latencies_us => lists:reverse(Lat),
+            missed => Missed,
+            frames => maps:get(n, S),
+            b_gaps_us => lists:reverse(maps:get(b_gaps, S))
+        }},
     idle(maps:with([a, b, law], S)).
 
 loud(Samples) ->

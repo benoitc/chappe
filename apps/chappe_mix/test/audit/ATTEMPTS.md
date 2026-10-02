@@ -299,3 +299,41 @@ once in any listen.
   first sender). Mutations, 3, all caught: far end accepted but latch not
   moved, latch moved but far end still filtered, no source filter.
 - After: Linux 30 runs, 30 passed; macOS 3 runs, 3 passed.
+
+## A native reference (`interop/freeswitch`, `ref_capacity`)
+
+- The i3_bridge FreeSWITCH image was amd64 only and ran emulated on arm64.
+  `drachtio/drachtio-freeswitch-mrf` (FreeSWITCH 1.10.10) is multi-arch;
+  its `/entrypoint.sh` edits the stock tree with sed, so the harness skips
+  it and starts FreeSWITCH with `-conf` on one mounted `freeswitch.xml`.
+- `energy-level` 0 and no comfort noise, so `mod_conference` mixes every
+  member all the time as chappe_mix does. With that config both mixers gave
+  the same Goertzel levels for every receiver and tone to 0.01 dB in all
+  three `ref_tones` runs: the two N-1 mixes are sample for sample alike.
+- `ref_capacity` first judged a step by the probe's packet gaps (p99 within
+  5 ms of 20 ms, the bound `capacity` puts on tick lateness).
+  `mod_conference` missed it with 5 rooms at 16% of its CPU (7.2 ms): it
+  paces output with that spread at any load. Dropped as a criterion; the
+  spread is reported.
+- It then judged latency against the first step's p99 + 20 ms. Each step's
+  probe room is new, and `mod_conference`'s latency moves by whole frames
+  with the phase of its timers (p50 25.9 ms at 25 rooms, 60.3 ms at 100,
+  with p99 within 2 ms of p50 in both): the ramp stopped on a phase, not
+  on load. Replaced by p99 within one frame of the same room's p50. The
+  first two `ref_capacity` runs of each mixer used the earlier judge; their
+  step lines are re-judged in `PERF.md`.
+- The docker API answers an HTTP/1.0 stats request with a chunked body, and
+  a one-shot stats call can take long enough to skew a window timed around
+  it: the CPU share is taken from the stats' own `read` time, and the
+  senders' rate from timestamps around the `sent` reads.
+- The arm's load check reads the VM's load when it runs in the bench
+  container, which on macOS leaves out the host; `ref.sh vm` checks the
+  host's load first. After a `ref_capacity chappe` ramp the VM's own load
+  sat above 3.5 for a minute (the peer's senders), so an `fs` run straight
+  after it was refused three times.
+- Mutation of the `ref_capacity` judge: chappe_mix sending each leg
+  silence instead of the N-1 mix (`own/3` returning zeros). The probe heard
+  0 of 10 bursts, B still got a packet per frame, and the ramp reported
+  `none_in_budget` at the first step. On the other side, the unmutated
+  `mod_conference` broke the judge by itself at 100 rooms (p99 73 to 80 ms
+  above p50 at 92 to 95% of its CPU).

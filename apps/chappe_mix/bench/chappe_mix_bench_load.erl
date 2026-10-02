@@ -13,7 +13,9 @@
 %% time sending, not decoding what comes back.
 -module(chappe_mix_bench_load).
 
--export([init/0, start_group/2, sent/1, latency/1]).
+-export([
+    init/0, start_group/2, open_group/2, feed/2, stop_group/1, sent/1, latency/1
+]).
 
 -define(FRAME, 160).
 
@@ -26,12 +28,29 @@ init() ->
 %% before it is sent). The process is not linked to the caller; it lives
 %% until the node goes.
 start_group(Dsts, Kind) ->
+    {Pid, _Port} = open_group(Kind, {127, 0, 0, 1}),
+    ok = feed(Pid, Dsts),
+    Pid.
+
+%% A group whose socket is bound to Ip and that sends nothing until feed/2
+%% names its legs: a SIP peer needs the port for its SDP before it knows
+%% where to send. Returns {Pid, Port}.
+open_group(Kind, Ip) ->
     Parent = self(),
-    Pid = spawn(fun() -> group(Parent, Dsts, Kind) end),
+    Pid = spawn(fun() -> group(Parent, Kind, Ip) end),
     receive
-        {Pid, ready} -> Pid
+        {Pid, ready, Port} -> {Pid, Port}
     after 5000 -> error(group_start)
     end.
+
+%% Start the group sending to Dsts ([{Ip, Port}]).
+feed(Pid, Dsts) ->
+    Pid ! {feed, Dsts},
+    ok.
+
+stop_group(Pid) ->
+    exit(Pid, kill),
+    ok.
 
 %% Packets the groups have handed to their sockets so far, summed. Read
 %% before and after a step, it says whether the traffic the step asked
@@ -56,10 +75,16 @@ latency(Opts) ->
 
 %% ---- group ----
 
-group(Parent, Dsts, Kind) ->
+group(Parent, Kind, Bind) ->
     {ok, Sock} = gen_udp:open(0, [
-        binary, {ip, {127, 0, 0, 1}}, {active, false}, {recbuf, 4096}
+        binary, {ip, Bind}, {active, false}, {recbuf, 4096}
     ]),
+    {ok, Own} = inet:port(Sock),
+    Parent ! {self(), ready, Own},
+    Dsts =
+        receive
+            {feed, D} -> D
+        end,
     Frames = list_to_tuple(frames(Kind)),
     Loss =
         case Kind of
@@ -71,7 +96,6 @@ group(Parent, Dsts, Kind) ->
         {Ip, Port, rand:uniform(16#FFFFFFF), rand:uniform(30000)}
      || {Ip, Port} <- Dsts
     ],
-    Parent ! {self(), ready},
     loop(Sock, Frames, Legs, 0, 0, erlang:monotonic_time(millisecond)).
 
 %% Sent counts the sends the socket accepted, not the ones attempted.

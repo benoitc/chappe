@@ -3,12 +3,13 @@
 %%
 %% chappe_mix against the reference, FreeSWITCH mod_conference, fed the
 %% same tones and judged by the same Goertzel code. Skipped unless
-%% FREESWITCH_HOST is set; see chappe_mix_ref for the environment and
-%% apps/chappe_mix/bench/README.md for bringing FreeSWITCH up.
+%% FREESWITCH_HOST is set; see chappe_mix_ref for the environment.
+%% `make interop-ref' (apps/chappe_mix/test/ref.sh suite) brings
+%% FreeSWITCH up from apps/chappe_mix/interop/freeswitch, runs this suite
+%% and tears it down.
 %%
-%% Timing is logged, never asserted here: the FreeSWITCH image is amd64
-%% only and runs emulated on an arm64 host, and a loaded box voids any
-%% latency. The bench arm ref_latency is where latency is compared.
+%% Timing is logged, never asserted here: a loaded box voids any latency.
+%% The bench arm ref_latency is where latency is compared.
 -module(chappe_mix_ref_SUITE).
 
 -include_lib("common_test/include/ct.hrl").
@@ -21,9 +22,9 @@
     burst_latency_logged/1
 ]).
 
-%% Clear of mod_conference's enter tone (500, 600 and 700 Hz): FreeSWITCH
-%% emulated under load delivers it late, and a 500 Hz burst reads about
-%% -50 dBFS in a 440 Hz Goertzel bin, which is a leak by this judge.
+%% Clear of mod_conference's stock enter tone (500, 600 and 700 Hz), in
+%% case a FreeSWITCH other than the harness's plays it: a 500 Hz burst
+%% reads about -50 dBFS in a 440 Hz Goertzel bin, a leak by this judge.
 -define(F, [1100, 1700, 2300]).
 -define(PRESENT, -18.0).
 -define(ABSENT, -54.7).
@@ -98,8 +99,8 @@ burst_latency_logged(Config) ->
 detect(Mixer, Env) ->
     H = chappe_mix_ref:parties(Mixer, Env, ?F),
     Eps = eps(H),
-    %% joining plays enter tones on mod_conference, and the emulated
-    %% reference can take seconds to start mixing. Wait
+    %% a stock mod_conference plays enter tones, and a loaded one can
+    %% take seconds to start mixing. Wait
     %% for the steady state, two polls in a row where every receiver's
     %% last 200 ms shows the contract, before recording. A mixer that
     %% leaks for good never gets there and is judged after 15 s anyway.

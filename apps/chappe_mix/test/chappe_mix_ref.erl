@@ -5,7 +5,8 @@
 %% reference) and chappe_mix. Used by chappe_mix_ref_SUITE and by the
 %% ref_latency bench arm, so both judge the two mixers with the same code.
 %%
-%% FreeSWITCH is reached through the i3_bridge interop stack: a call to
+%% FreeSWITCH comes from apps/chappe_mix/interop/freeswitch (native on
+%% arm64 and amd64; apps/chappe_mix/test/ref.sh brings it up): a call to
 %% conf-<name> on its SIP port joins conference <name>@default. It reads:
 %%
 %%   FREESWITCH_HOST       where its SIP and RTP ports are published
@@ -62,7 +63,7 @@ latency(fs, Env, Opts) ->
     User = conf_user(),
     {ok, CA, #{port := FA}} = fs_call(Env, User, PA),
     {ok, CB, #{port := FB}} = fs_call(Env, User, PB),
-    %% the enter tones are 200 ms each; start well after them
+    %% the harness plays no enter tone; the settle still covers one
     R = chappe_mix_probe:run(Probe, #{
         a_dst => {Host, FA},
         b_dst => {Host, FB},

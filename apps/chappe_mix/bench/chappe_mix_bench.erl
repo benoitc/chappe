@@ -5,7 +5,8 @@
 %%
 %%   erl -noshell +S 1 -pa <ebins> -run chappe_mix_bench main <arm> [args]
 %%
-%% Arms: null, latency, loss, jitter, capacity, mix_cost, ref_latency. See
+%% Arms: null, latency, loss, jitter, capacity, mix_cost, ref_latency,
+%% ref_capacity. See
 %% README.md next to this file for what each measures and how to compare
 %% two commits. Every result line starts with the arm name and ends with
 %% the load average; a line ending in VOID was taken above the load limit
@@ -31,7 +32,8 @@ main([Arm | Args]) ->
 main([]) ->
     io:format(
         "usage: -run chappe_mix_bench main "
-        "null|latency|loss|jitter|capacity|mix_cost|ref_latency [args]~n"
+        "null|latency|loss|jitter|capacity|mix_cost|ref_latency|"
+        "ref_capacity [args]~n"
     ),
     halt(2).
 
@@ -95,6 +97,18 @@ arm("mix_cost", Args, Load) ->
 %% latency rounds. Args: [Rounds] [BurstsPerRound].
 arm("ref_latency", Args, Load) ->
     ref_latency(int_arg(Args, 1, 5), int_arg(Args, 2, 50), Load);
+%% Ramp 4-party rooms on fs or chappe, judged from outside the mixer by a
+%% probe room at each step. Args: fs|chappe [Step] [Bursts] [MaxRooms].
+arm("ref_capacity", [Mixer | Args], Load) when
+    Mixer =:= "fs"; Mixer =:= "chappe"
+->
+    ref_capacity(
+        list_to_atom(Mixer),
+        int_arg(Args, 1, 10),
+        int_arg(Args, 2, 25),
+        int_arg(Args, 3, 1000),
+        Load
+    );
 arm(Other, _Args, _Load) ->
     io:format("unknown arm ~s~n", [Other]),
     halt(2).
@@ -426,18 +440,7 @@ mix_tick(Frames) ->
 %% ---- reference ----
 
 ref_latency(Rounds, Bursts, Load) ->
-    Env =
-        case chappe_mix_ref:env() of
-            {ok, E} ->
-                E;
-            {skip, Why} ->
-                io:format("ref_latency skipped: ~s~n", [Why]),
-                halt(3)
-        end,
-    report(ref_latency, Load, [
-        {caveat,
-            "FreeSWITCH image is amd64 only; emulated on arm64 its timing is not a fair reference"}
-    ]),
+    Env = ref_env(ref_latency),
     [ref_tones(Mixer, Env, Load) || Mixer <- [chappe, fs]],
     Res = [
         [
@@ -500,6 +503,368 @@ ref_tones(Mixer, Env, Load) ->
      || {P, _, F} <- Eps
     ],
     chappe_mix_ref:close(H).
+
+ref_env(Arm) ->
+    case chappe_mix_ref:env() of
+        {ok, E} ->
+            E;
+        {skip, Why} ->
+            io:format("~s skipped: ~s~n", [Arm, Why]),
+            halt(3)
+    end.
+
+%% ---- reference capacity ----
+
+%% Rooms of four legs, each fed a tone by a sender group in the peer node,
+%% added Step at a time. At each step a fresh probe room (probe legs A and
+%% B plus two silent legs, the latency arm's shape) is judged from outside
+%% the mixer, which is all FreeSWITCH allows: burst latency, the gaps
+%% between packets arriving on B, the packets B got per frame sent, and
+%% the mixer's CPU over the window. The same judge runs on chappe_mix
+%% (in this node, +S 1) so the two ramps compare.
+ref_capacity(Mixer, Step, Bursts, Max, Load) ->
+    Env =
+        case Mixer of
+            fs -> ref_env(ref_capacity);
+            chappe -> #{}
+        end,
+    Peer = start_peer(),
+    Bind =
+        case Mixer of
+            fs -> {0, 0, 0, 0};
+            chappe -> {127, 0, 0, 1}
+        end,
+    Ctx = #{mixer => Mixer, env => Env, peer => Peer, bind => Bind},
+    Mem0 = mixer_mem(Mixer),
+    report(ref_capacity, Load, [
+        {mixer, Mixer},
+        {step, Step},
+        {bursts, Bursts},
+        {schedulers_online, erlang:system_info(schedulers_online)},
+        {fs_cpus, fs_cpus(Mixer)},
+        {mem0_bytes, Mem0}
+    ]),
+    {Rooms, Last} = ref_ramp(Ctx, Step, Bursts, Max, Mem0, [], undefined, Load),
+    case Last of
+        undefined ->
+            report(ref_capacity, Load, [
+                {mixer, Mixer}, {result, none_in_budget}
+            ]);
+        Fields ->
+            report(ref_capacity, Load, [
+                {mixer, Mixer}, {result, in_budget} | Fields
+            ])
+    end,
+    [close_room(Ctx, R) || R <- Rooms],
+    peer:stop(Peer).
+
+ref_ramp(_Ctx, _Step, _Bursts, Max, _Mem0, Rooms, Last, _Load) when
+    length(Rooms) >= Max
+->
+    {Rooms, Last};
+ref_ramp(Ctx, Step, Bursts, Max, Mem0, Rooms0, Last, Load) ->
+    #{mixer := Mixer} = Ctx,
+    case add_rooms(Ctx, Step, Rooms0) of
+        {error, Reason, Rooms} ->
+            report(ref_capacity, Load, [
+                {mixer, Mixer}, {rooms, length(Rooms)}, {stop, Reason}
+            ]),
+            {Rooms, Last};
+        {ok, Rooms} ->
+            Fields = ref_step(Ctx, Rooms, Bursts, Mem0),
+            report(ref_capacity, Load, [{mixer, Mixer} | Fields]),
+            case in_budget(Fields) of
+                true ->
+                    ref_ramp(Ctx, Step, Bursts, Max, Mem0, Rooms, Fields, Load);
+                false ->
+                    {Rooms, Last}
+            end
+    end.
+
+%% A step is in budget when every probe burst is heard with a p99 no more
+%% than 20 ms (one frame) above the p50 of the same room, B gets at least
+%% 98% of a packet per frame with no gap over 60 ms (three frames,
+%% audible), and the mixer uses under 95% of one core. Latency is judged
+%% within the room because each step's probe room is new, and
+%% mod_conference's latency moves by whole frames from room to room with
+%% the phase of its timers. The gaps' spread is reported, not judged:
+%% mod_conference paces its output with a p99 spread near 5 ms even with
+%% a few rooms.
+in_budget(Fields) ->
+    #{
+        missed := Missed,
+        p50_us := P50,
+        p99_us := P99,
+        b_gap_max_us := GapMax,
+        b_rx_per_frame := Rx,
+        cpu_pct_one_core := Cpu
+    } = maps:from_list(Fields),
+    Missed =:= 0 andalso is_integer(P50) andalso is_integer(P99) andalso
+        P99 - P50 =< 20000 andalso
+        is_integer(GapMax) andalso GapMax =< 60000 andalso
+        is_float(Rx) andalso Rx >= 0.98 andalso
+        (Cpu =:= undefined orelse Cpu < 95.0).
+
+ref_step(#{mixer := Mixer, peer := Peer} = Ctx, Rooms, Bursts, Mem0) ->
+    timer:sleep(1000),
+    Groups = [G || {_, _, G} <- Rooms],
+    N = length(Rooms),
+    {Sent0, S0} = {sent(Peer, Groups), erlang:monotonic_time()},
+    Cpu0 = mixer_cpu(Mixer),
+    R = probe_room(Ctx, Bursts),
+    Cpu1 = mixer_cpu(Mixer),
+    {Sent1, S1} = {sent(Peer, Groups), erlang:monotonic_time()},
+    Mem = mixer_mem(Mixer),
+    SentSecs = erlang:convert_time_unit(S1 - S0, native, microsecond) / 1.0e6,
+    #{
+        latencies_us := L,
+        missed := Missed,
+        frames := Frames,
+        b_gaps_us := Gaps
+    } = R,
+    [
+        {rooms, N},
+        {legs, 4 * N},
+        {cpu_pct_one_core, cpu_pct(Cpu0, Cpu1)},
+        {heard, length(L)},
+        {missed, Missed},
+        {p50_us, pct(L, 50)},
+        {p99_us, pct(L, 99)},
+        {b_gap_dev_p50_us, pct([abs(G - 20000) || G <- Gaps], 50)},
+        {b_gap_dev_p99_us, pct([abs(G - 20000) || G <- Gaps], 99)},
+        {b_gap_hist, gap_hist(Gaps)},
+        {b_gap_max_us, max_or_undef(Gaps)},
+        {b_rx_per_frame, ratio(length(Gaps) + 1, Frames)},
+        {sent_per_expected, ratio(Sent1 - Sent0, round(4 * N * 50 * SentSecs))},
+        {mem_per_room_bytes, mem_per_room(Mem0, Mem, N)}
+    ].
+
+add_rooms(_Ctx, 0, Rooms) ->
+    {ok, Rooms};
+add_rooms(Ctx, K, Rooms) ->
+    try new_room(Ctx, tone, 4) of
+        Room -> add_rooms(Ctx, K - 1, [Room | Rooms])
+    catch
+        error:Reason -> {error, Reason, Rooms}
+    end.
+
+%% A room of Legs legs fed by one sender group of Kind in the peer.
+%% Returns {Mixer, Handle, Group}.
+new_room(#{mixer := chappe, peer := Peer}, Kind, Legs) ->
+    {ok, Conf} = chappe_mix:start(#{}),
+    Dsts = [
+        {{127, 0, 0, 1}, P}
+     || _ <- lists:seq(1, Legs),
+        {ok, _, #{port := P}} <- [chappe_mix:add_leg(Conf, #{})]
+    ],
+    G = peer_call(Peer, chappe_mix_bench_load, start_group, [Dsts, Kind]),
+    {chappe, Conf, G};
+new_room(#{mixer := fs, peer := Peer, bind := Bind, env := Env}, Kind, Legs) ->
+    {G, GPort} = peer_call(Peer, chappe_mix_bench_load, open_group, [
+        Kind, Bind
+    ]),
+    User = fs_room_user(),
+    Calls = [fs_leg(Env, User, GPort) || _ <- lists:seq(1, Legs)],
+    #{host := Host} = Env,
+    ok = peer_call(Peer, chappe_mix_bench_load, feed, [
+        G, [{Host, P} || {_, P} <- Calls]
+    ]),
+    {fs, [C || {C, _} <- Calls], G}.
+
+fs_leg(Env, User, RtpPort) ->
+    #{host := Host, sip_port := SipPort, advertise := Adv} = Env,
+    case
+        chappe_mix_sip_ua:call(#{
+            host => Host,
+            port => SipPort,
+            user => User,
+            advertise => Adv,
+            rtp_port => RtpPort,
+            timeout => 10000
+        })
+    of
+        {ok, Call, #{port := P}} when is_integer(P) -> {Call, P};
+        {ok, _, Media} -> error({no_media_in_answer, Media});
+        {error, Reason} -> error({freeswitch_call_failed, Reason})
+    end.
+
+fs_room_user() ->
+    N = binary:encode_hex(crypto:strong_rand_bytes(4), lowercase),
+    <<"conf-refcap", N/binary>>.
+
+close_room(#{peer := Peer}, {chappe, Conf, G}) ->
+    ok = peer_call(Peer, chappe_mix_bench_load, stop_group, [G]),
+    chappe_mix:stop(Conf);
+close_room(#{peer := Peer}, {fs, Calls, G}) ->
+    ok = peer_call(Peer, chappe_mix_bench_load, stop_group, [G]),
+    Pids = [spawn(fun() -> chappe_mix_sip_ua:hangup(C) end) || C <- Calls],
+    Refs = [monitor(process, P) || P <- Pids],
+    [
+        receive
+            {'DOWN', Ref, process, _, _} -> ok
+        after 15000 -> ok
+        end
+     || Ref <- Refs
+    ],
+    ok.
+
+%% The probe room for one step: probe legs A and B, two silent legs.
+probe_room(#{peer := Peer, bind := Bind} = Ctx, Bursts) ->
+    {Probe, PA, PB} = peer_call(Peer, chappe_mix_probe, start, [
+        #{ip => Bind}
+    ]),
+    {Room, ADst, BDst} = probe_legs(Ctx, PA, PB),
+    R = peer_call(Peer, chappe_mix_probe, run, [
+        Probe, #{a_dst => ADst, b_dst => BDst, bursts => Bursts, settle => 50}
+    ]),
+    peer_call(Peer, chappe_mix_probe, stop, [Probe]),
+    close_room(Ctx, Room),
+    R.
+
+probe_legs(#{mixer := chappe, peer := Peer}, _PA, _PB) ->
+    {ok, Conf} = chappe_mix:start(#{}),
+    {ok, _, #{port := MA}} = chappe_mix:add_leg(Conf, #{}),
+    {ok, _, #{port := MB}} = chappe_mix:add_leg(Conf, #{}),
+    Sil = [
+        {{127, 0, 0, 1}, P}
+     || _ <- [1, 2],
+        {ok, _, #{port := P}} <- [chappe_mix:add_leg(Conf, #{})]
+    ],
+    G = peer_call(Peer, chappe_mix_bench_load, start_group, [Sil, silence]),
+    {{chappe, Conf, G}, {{127, 0, 0, 1}, MA}, {{127, 0, 0, 1}, MB}};
+probe_legs(#{mixer := fs, peer := Peer, bind := Bind, env := Env}, PA, PB) ->
+    #{host := Host} = Env,
+    User = fs_room_user(),
+    {CA, FA} = fs_leg(Env, User, PA),
+    {CB, FB} = fs_leg(Env, User, PB),
+    {G, GPort} = peer_call(Peer, chappe_mix_bench_load, open_group, [
+        silence, Bind
+    ]),
+    Sil = [fs_leg(Env, User, GPort) || _ <- [1, 2]],
+    ok = peer_call(Peer, chappe_mix_bench_load, feed, [
+        G, [{Host, P} || {_, P} <- Sil]
+    ]),
+    {{fs, [CA, CB | [C || {C, _} <- Sil]], G}, {Host, FA}, {Host, FB}}.
+
+%% {CpuNs, WallNs} of the mixer: the FreeSWITCH container's cgroup CPU
+%% time at the instant docker read it, or this VM's own threads
+%% (statistics(runtime) covers every thread).
+mixer_cpu(fs) ->
+    case docker_get("/stats?stream=false&one-shot=true") of
+        {ok, #{
+            <<"read">> := Read,
+            <<"cpu_stats">> := #{<<"cpu_usage">> := #{<<"total_usage">> := U}}
+        }} ->
+            {U,
+                calendar:rfc3339_to_system_time(binary_to_list(Read), [
+                    {unit, nanosecond}
+                ])};
+        _ ->
+            undefined
+    end;
+mixer_cpu(chappe) ->
+    {Ms, _} = statistics(runtime),
+    {Ms * 1000000, erlang:monotonic_time(nanosecond)}.
+
+cpu_pct({C0, W0}, {C1, W1}) when W1 > W0 ->
+    round2((C1 - C0) / (W1 - W0) * 100);
+cpu_pct(_, _) ->
+    undefined.
+
+sent(Peer, Groups) ->
+    peer_call(Peer, chappe_mix_bench_load, sent, [Groups]).
+
+%% Gaps between packets on B in 5 ms buckets: [{UpperMs, Count}].
+gap_hist(Gaps) ->
+    H = lists:foldl(
+        fun(G, Acc) ->
+            maps:update_with(
+                min(60, (G div 5000 + 1) * 5), fun(X) -> X + 1 end, 1, Acc
+            )
+        end,
+        #{},
+        Gaps
+    ),
+    lists:sort(maps:to_list(H)).
+
+%% Memory of the mixer: the container's usage less its inactive page
+%% cache, as `docker stats' shows it, or this VM's total.
+mixer_mem(fs) ->
+    case docker_get("/stats?stream=false&one-shot=true") of
+        {ok, #{<<"memory_stats">> := #{<<"usage">> := U} = M}} ->
+            Stats = maps:get(<<"stats">>, M, #{}),
+            U - maps:get(<<"inactive_file">>, Stats, 0);
+        _ ->
+            undefined
+    end;
+mixer_mem(chappe) ->
+    erlang:memory(total).
+
+mem_per_room(M0, M1, N) when is_integer(M0), is_integer(M1) ->
+    (M1 - M0) div max(1, N);
+mem_per_room(_, _, _) ->
+    undefined.
+
+fs_cpus(chappe) ->
+    undefined;
+fs_cpus(fs) ->
+    case docker_get("/json") of
+        {ok, #{<<"HostConfig">> := #{<<"NanoCpus">> := C}}} -> C / 1.0e9;
+        _ -> undefined
+    end.
+
+%% GET /containers/<FREESWITCH_CONTAINER><Path> from the docker API over
+%% its unix socket (DOCKER_SOCK). error when either is unreachable.
+docker_get(Path) ->
+    Name = env_or("FREESWITCH_CONTAINER", "chappe-mix-fs"),
+    Sock = env_or("DOCKER_SOCK", "/var/run/docker.sock"),
+    Opts = [binary, {active, false}, {packet, raw}],
+    case gen_tcp:connect({local, Sock}, 0, Opts, 2000) of
+        {ok, S} ->
+            Req = [
+                "GET /containers/",
+                Name,
+                Path,
+                " HTTP/1.0\r\nHost: docker\r\n\r\n"
+            ],
+            ok = gen_tcp:send(S, Req),
+            Resp = recv_all(S, []),
+            gen_tcp:close(S),
+            case binary:split(Resp, <<"\r\n\r\n">>) of
+                [<<"HTTP/1.", _:1/binary, " 200", _/binary>> = Head, Body] ->
+                    case binary:match(Head, <<"chunked">>) of
+                        nomatch -> {ok, json:decode(Body)};
+                        _ -> {ok, json:decode(dechunk(Body, []))}
+                    end;
+                _ ->
+                    error
+            end;
+        {error, _} ->
+            error
+    end.
+
+%% The docker API answers HTTP/1.0 with a chunked body all the same.
+dechunk(Bin, Acc) ->
+    [SizeLine, Rest] = binary:split(Bin, <<"\r\n">>),
+    case binary_to_integer(SizeLine, 16) of
+        0 ->
+            iolist_to_binary(lists:reverse(Acc));
+        Size ->
+            <<Chunk:Size/binary, "\r\n", Next/binary>> = Rest,
+            dechunk(Next, [Chunk | Acc])
+    end.
+
+recv_all(S, Acc) ->
+    case gen_tcp:recv(S, 0, 5000) of
+        {ok, B} -> recv_all(S, [B | Acc]);
+        {error, _} -> iolist_to_binary(lists:reverse(Acc))
+    end.
+
+env_or(Name, Default) ->
+    case os:getenv(Name) of
+        V when is_list(V), V =/= "" -> V;
+        _ -> Default
+    end.
 
 %% ---- tick trace collection ----
 
