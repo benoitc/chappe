@@ -137,7 +137,7 @@ versions_per_subscription(Config) ->
     ).
 
 %% A refreshing SUBSCRIBE gets the full state again, as the next version.
-%% req: R4575-03 R4575-25 R6665-09
+%% req: R4575-03 R6665-09
 refresh_gets_full_state(Config) ->
     W = ?config(watcher, Config),
     {ok, Sub, _} = subscribe(W, ?config(conf_uri, Config), <<"conference">>, []),

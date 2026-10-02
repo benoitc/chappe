@@ -52,7 +52,10 @@ cannot cover anything.
 
 - `demo`: a duty the demo flows exercise; `GATE=demo` fails on these.
 - `platform`: a chappe duty the demo does not exercise (WebSocket, TLS, TCP).
-- `n/a`: a role chappe does not play (a redirect server).
+- `n/a`: a role chappe does not play (a redirect server, a conference-package
+  subscriber, a multicast sender), or a rule that holds by construction and
+  that no test can observe on the wire. The notes start with the reason, and
+  "holds by construction:" names the code that makes it so.
 - The proxy rules of RFC 3261 16 are `platform`: `chappe_sip:proxy_request/3`.
 - The registrar rows (RFC 3261 10.3, RFC 3327, RFC 5626 6) are `platform`:
   `chappe_sip:registrar/1` plays that role.
