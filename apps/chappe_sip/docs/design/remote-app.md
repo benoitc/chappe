@@ -501,12 +501,27 @@ node, swap phases 1 and 3.
 Each phase ships with requirement rows, failing tests first, a benchmark
 against the in-node path, and its own design update here.
 
+## Decisions
+
+Recorded on 2026-10-03 after review:
+
+- The phases ship in the order of the Recommendation: Phase 0 (in-node
+  groundwork), then Phase 1 (control socket, apps connect in), then Phase 2
+  (outbound connect), then Phase 3 (Erlang distribution client). This answers
+  open question 1.
+- Remote clients are separate hex packages, not modules of `chappe_sip`: the
+  reference socket client and the Erlang distribution client each get their
+  own package. This answers open question 2.
+
+The remaining open questions are settled in the plan of the phase they
+belong to.
+
 ## Open questions
 
-1. Is the first remote consumer an Erlang product or a non-Erlang one (the
+1. (Decided: phases in order.) Is the first remote consumer an Erlang product or a non-Erlang one (the
    AI voice product)? That decides whether Phase 1 is the socket or
    distribution.
-2. Should `chappe_sip_client` (Model A) and the reference socket client be
+2. (Decided: separate hex packages.) Should `chappe_sip_client` (Model A) and the reference socket client be
    separate hex packages, or modules inside `chappe_sip`?
 3. Orphaned dialogs: answer a re-INVITE with 491 or with 500 plus
    Retry-After? And should the default `owner_grace_ms` be 0 (today's
