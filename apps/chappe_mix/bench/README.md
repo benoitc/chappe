@@ -116,9 +116,11 @@ per tick, compute and I/O together; `mix_cost` is the compute alone.
 ### jitter
 
 `late_histogram_us` counts how late each tick fired. The mixer clamps early
-ticks to zero, and the timer is armed at millisecond resolution, truncated,
-so most ticks fire up to 1 ms early; the traced conference reports those as
-`early_ticks` and negative `late_p50_us`. `late_max_since_start_us` covers
+ticks to zero. The timer is armed at millisecond resolution, at the
+millisecond at or after the tick is due by default; with
+`tick_ceiling=false` it is truncated and most ticks fire up to 1 ms early,
+which the traced conference reports as `early_ticks` and a negative
+`late_p50_us`. `late_max_since_start_us` covers
 the conference's whole life, setup included, not just the window.
 
 ### capacity

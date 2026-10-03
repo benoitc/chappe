@@ -688,3 +688,29 @@ order held at load 4.8 too):
   no scaled sample reaches past full scale, so the net is unreachable
   by construction and kept as a guard.
 
+
+## The tick timer and the prefill: decided on GitHub runners
+
+- The macOS box never went quiet (load 50 to 180), so the A/B ran on
+  GitHub's 2 vCPU `ubuntu-24.04` runners (`.github/workflows/bench.yml`,
+  `make bench-pass`), each option set per conference through
+  `CHAPPE_MIX_BENCH_CONF` on one build instead of two trees, the sides
+  swapped every round, 5 launches each. Numbers in `PERF.md`.
+- `tick_ceiling`: 0 early ticks in 10 of 10 launches against 345 to
+  1500 of 1500 truncated, p99 lateness at most 1.0 ms idle and 1.2 ms at
+  100 conferences. Kept, and on by default.
+- `prefill_shrink`: nothing to win in the `latency` arm on that box (the
+  prefill never grew without it); in the `loss` arm, where it grows, the
+  shrink gave the frame back and the underruns rose from 26 to 58 over
+  5 launches. Reverted to what it was: built, off by default, not used.
+- `tick_never_early` now checks the default instead of passing the
+  option. Seen failing first with the old default (an early tick, at a
+  load of 180). Mutation: the state's `tick_ceiling` defaulting to false
+  while the first arm used true (every tick after the first armed
+  truncated) failed with 50 early ticks.
+- The limiter cost row is missed at 64 legs (+157%), not because a room
+  that fits pays anything (`mix_cost fit`, a new variant: within 1.3% of
+  the base at 4 and 64 legs), but because the arm's 64-leg room clips and
+  the arm puts each listener's gain back to unity every tick, so every
+  tick takes the attack and the scaled encode. The row is recorded as
+  missed; the arm is unchanged.

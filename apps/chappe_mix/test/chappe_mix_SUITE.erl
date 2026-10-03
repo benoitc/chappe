@@ -313,12 +313,12 @@ reflect(S, PB, Delay) ->
             reflect(S, PB, Delay)
     end.
 
-%% With tick_ceiling the tick is armed at the millisecond at or after it
-%% is due, so it never fires before it: 50 traced ticks, none early (an
-%% armed time truncated to the millisecond, the default, fires up to 1 ms
-%% early, most ticks do).
+%% By default (tick_ceiling) the tick is armed at the millisecond at or
+%% after it is due, so it never fires before it: 50 traced ticks, none
+%% early (an armed time truncated to the millisecond, tick_ceiling =>
+%% false, fires up to 1 ms early, most ticks do).
 tick_never_early(_Config) ->
-    {ok, Conf} = chappe_mix:start(#{trace => self(), tick_ceiling => true}),
+    {ok, Conf} = chappe_mix:start(#{trace => self()}),
     {ok, _, _} = chappe_mix:add_leg(Conf, #{remote => {{127, 0, 0, 1}, 9}}),
     flush_ticks(),
     Ticks = [next_tick(Conf) || _ <- lists:seq(1, 50)],

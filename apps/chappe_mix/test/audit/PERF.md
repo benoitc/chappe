@@ -9,28 +9,32 @@ missed here, never redefined after the numbers arrive.
 
 | Measure | Threshold | Reference (mod_conference) | chappe_mix | Status |
 | --- | --- | ---: | ---: | --- |
-| Mixer latency added, RTP in to mixed RTP out, p50 / p99 | <= 25 ms / <= 45 ms, and <= reference + 10 ms | 41.1 / 45.9 ms | 9.3 / 10.6 ms (every one of 5 reruns <= 11.3 / 31.0 ms); 16.3 / 22.9 ms beside the reference | met |
-| Tick jitter at 20 ms ptime, p99 | <= 2 ms idle, <= 5 ms at capacity | n/a | 0.06 ms idle, < 0.5 ms at 100 conferences | met |
-| Capacity, 4-party PCMU conferences, one scheduler, every tick in budget | >= 100 conferences (400 legs), and >= reference per core | 75 rooms on one CPU | 275 conferences; 300 rooms by the reference's judge | met |
-| Memory per 4-party conference | <= 256 KiB | 2.9 to 3.0 MiB per room | 65 to 80 KiB (137 to 148 KiB of VM growth) | met |
-| Mix correctness: each receiver detects every other tone, own tone >= 40 dB down | same detection result as the reference | every tone, own <= -54.7 dBFS | the same, to 0.01 dB | met |
-| 5% random loss on one leg | no crash, other legs keep their thresholds | n/a | no crash; probe 9.5 / 9.6 ms, every one of 5 reruns <= 12.9 ms p99 | met |
-| Mix compute per tick, 4 / 64 legs (`mix_cost`), set 2026-10-02 | <= 10 us / <= 200 us | n/a | 19.8 / 331.9 us | missed |
-| Capacity as above, set 2026-10-02 | >= 500 conferences (2000 legs) | n/a | 275 | missed |
+| Mixer latency added, RTP in to mixed RTP out, p50 / p99 | <= 25 ms / <= 45 ms, and <= reference + 10 ms | 41.1 / 45.9 ms | 9.3 / 10.6 ms (every one of 5 reruns <= 11.3 / 31.0 ms); 16.3 / 22.9 ms beside the reference; runner: 5.0 / 5.1 ms, every one of 10 launches (latency and loss) <= 6.0 / 6.1 ms; 18.2 / 18.2 ms beside the reference's 20.5 / 20.8 ms | met |
+| Tick jitter at 20 ms ptime, p99 | <= 2 ms idle, <= 5 ms at capacity | n/a | 0.06 ms idle, < 0.5 ms at 100 conferences; runner: p99 <= 1.0 ms idle and <= 1.2 ms at 100 conferences with the timer at the ceiling (traced), the histogram's p99 under 2 ms in all 10 launches | met |
+| Capacity, 4-party PCMU conferences, one scheduler, every tick in budget | >= 100 conferences (400 legs), and >= reference per core | 75 rooms on one CPU | 275 conferences; 300 rooms by the reference's judge; runner: 175 to 250 conferences; 50 to 75 rooms by the reference's judge against its 50, at half its CPU per room | met |
+| Memory per 4-party conference | <= 256 KiB | 2.9 to 3.0 MiB per room | 65 to 80 KiB (137 to 148 KiB of VM growth); runner: 65 to 81 KiB | met |
+| Mix correctness: each receiver detects every other tone, own tone >= 40 dB down | same detection result as the reference | every tone, own <= -54.7 dBFS | the same, to 0.01 dB; runner: the same, to 0.01 dB | met |
+| 5% random loss on one leg | no crash, other legs keep their thresholds | n/a | no crash; probe 9.5 / 9.6 ms, every one of 5 reruns <= 12.9 ms p99; runner: no crash; probe 5.0 / 5.1 ms, every one of 5 launches <= 6.0 / 6.1 ms | met |
+| Mix compute per tick, 4 / 64 legs (`mix_cost`), set 2026-10-02 | <= 10 us / <= 200 us | n/a | 19.8 / 331.9 us; runner: 28.8 / 995.5 us (a room that fits, `mix_cost fit`: 28.9 / 397.4 us) | missed |
+| Capacity as above, set 2026-10-02 | >= 500 conferences (2000 legs) | n/a | 275; runner: 250 | missed |
 | Mixed output after a change to the mix | byte for byte the same as before it for the same input | n/a | the same, 500 seeded rooms of 1 to 64 legs | met |
-| Framing, 30 ms sender, set 2026-10-03 | its tone present in every 200 ms judging window at each listener, and no run of 80 or more silent samples (10 ms) inside any 20 ms frame heard once the room has settled | n/a | 1 frame of 3004 (and of 3008) with a 10 ms run, every window held; one launch, load 3.2 to 4.2 | missed |
-| Framing, 10 ms sender, set 2026-10-03 | the same as the 30 ms row, and no jitter-buffer trim (`dropped` 0) on its leg over 60 s | n/a | not measured on a quiet box (60 s) | open |
+| Framing, 30 ms sender, set 2026-10-03 | its tone present in every 200 ms judging window at each listener, and no run of 80 or more silent samples (10 ms) inside any 20 ms frame heard once the room has settled | n/a | 1 frame of 3004 (and of 3008) with a 10 ms run, every window held; one launch, load 3.2 to 4.2 (macOS); runner: 0 frames with a 10 ms run in 5 of 5 launches, 300 of 300 windows, no underrun | met |
+| Framing, 10 ms sender, set 2026-10-03 | the same as the 30 ms row, and no jitter-buffer trim (`dropped` 0) on its leg over 60 s | n/a | runner: 0 frames with a 10 ms run, 300 of 300 windows and `dropped` 0 over 60 s in 5 of 5 launches | met |
 | Limiter, distortion, set 2026-10-03 | 8 talkers at -6 dBFS each (distinct tones): THD+N at a receiver <= -26 dB (5%); the hard clip it replaces is measured first, as the baseline | n/a | -29.22 dB with the per-listener gain control (hard clip -10.04 dB; the static curve it replaced, -10.67 dB) | met |
-| Limiter, cost, set 2026-10-03 | `mix_cost` at 4 and 64 legs rises by no more than 10% | n/a | not measured on a quiet box (the gain control costs nothing on a frame that fits at unity: one guard per sample, as before) | open |
-| Tick timer, set 2026-10-03 | ticks that fire more than 100 us early: none at p99 (under 1% of traced ticks), in the `jitter idle` and `jitter capacity` arms, with p99 lateness inside the tick jitter row | n/a | not measured on a quiet box; the ceiling is opt-in (`tick_ceiling`) | open |
-| Prefill, set 2026-10-03 | `latency` arm: p99 within one frame (20 ms) of p50 in 5 of 5 launches; `loss` arm: the underrun count does not rise | n/a | not measured on a quiet box; the shrink is opt-in (`prefill_shrink`) | open |
-| DTMF forwarding (RFC 4733), set 2026-10-03 | a forwarded event keeps its event code, duration and E bit, and leaves within one tick (20 ms) of arriving | n/a | not measured on a quiet box (0.52 ms at most at load 30, void) | open |
-| Per-pair relations, cost, set 2026-10-03 | `mix_cost` at 4 and 64 legs with no relation set rises by no more than 5%; the cost of each exclusion is measured and recorded | n/a | not measured on a quiet box | open |
-| Talker events, latency, set 2026-10-03 | `{talking, Leg, true}` within 100 ms of the first loud frame entering the mix (60 ms hysteresis plus up to two ticks), `false` within 340 ms of the last one (300 ms plus two ticks), at the defaults | n/a | not measured on a quiet box (58 / 299 ms at load 6, void) | open |
-| Talker events, cost, set 2026-10-03 | `mix_cost` at 4 and 64 legs with a subscriber set rises by no more than 5% | n/a | not measured on a quiet box | open |
+| Limiter, cost, set 2026-10-03 | `mix_cost` at 4 and 64 legs rises by no more than 10% | n/a | runner, against `c9f377d`: -1.1% at 4 legs, +157% at 64 legs (the arm's 64-leg room clips, so every listener takes the scaled encode); a room that fits: +0.2% / -1.3% | missed |
+| Tick timer, set 2026-10-03 | ticks that fire more than 100 us early: none at p99 (under 1% of traced ticks), in the `jitter idle` and `jitter capacity` arms, with p99 lateness inside the tick jitter row | n/a | runner: with `tick_ceiling`, 0 early ticks in 10 of 10 launches (truncated: 345 to 1500 of 1500), p99 lateness <= 1.0 ms idle, <= 1.2 ms at 100 conferences; now the default | met |
+| Prefill, set 2026-10-03 | `latency` arm: p99 within one frame (20 ms) of p50 in 5 of 5 launches; `loss` arm: the underrun count does not rise | n/a | runner: p99 within 0.13 ms of p50 in 5 of 5 launches either way; with the shrink the `loss` arm's underruns rose from 26 to 58 over 5 launches; stays off | missed |
+| DTMF forwarding (RFC 4733), set 2026-10-03 | a forwarded event keeps its event code, duration and E bit, and leaves within one tick (20 ms) of arriving | n/a | runner: 600 event packets, none changed, forwarded within 147 us | met |
+| Per-pair relations, cost, set 2026-10-03 | `mix_cost` at 4 and 64 legs with no relation set rises by no more than 5%; the cost of each exclusion is measured and recorded | n/a | runner, against `c9f377d`: -1.1% at 4 legs; at 64 legs the arm rises +157%, the gain control's (a room that fits: -1.3%); each listener kept from one leg: 71.9 / 2307 us (+43 / +1312 us), from four: 104.8 / 3214 us | met |
+| Talker events, latency, set 2026-10-03 | `{talking, Leg, true}` within 100 ms of the first loud frame entering the mix (60 ms hysteresis plus up to two ticks), `false` within 340 ms of the last one (300 ms plus two ticks), at the defaults | n/a | runner: true after 59 ms and false after 299 ms of the tone, in all 100 rounds | met |
+| Talker events, cost, set 2026-10-03 | `mix_cost` at 4 and 64 legs with a subscriber set rises by no more than 5% | n/a | runner: +3.5% / +2.1% (29.8 / 1016.1 us) | met |
 
 The numbers in the table are the quiet-box ones from "2026-10-01: native
 reference" below, minimum of the runs unless that section says otherwise.
+Numbers marked "runner" are from "2026-10-03: GitHub Actions runner"
+below: a different host (2 vCPU x86 Linux VMs against the 14-CPU arm64
+macOS box), so they compare with each other and with the thresholds, not
+with the macOS numbers.
 "Void only", in older sections, means the arm ran end to end on a loaded
 box: the number exists, and it cannot pass or fail a threshold.
 
@@ -639,3 +643,155 @@ The cost row stays open: the box was over the load limit. On a frame
 that fits, the gain control adds nothing to the path (the out-of-range
 guard was already there); a frame that clips takes a list pass for its
 peak and its scaled encode.
+
+### 2026-10-03: GitHub Actions runner (AMD EPYC 7763 / 9V74 / 9V45, Intel Xeon Platinum 8573C, 2 vCPU)
+
+The macOS box stayed at a load of 50 to 180 from other users, so the open
+rows ran on GitHub's `ubuntu-24.04` runners: `make bench-pass` from
+`.github/workflows/bench.yml`, one runner per group, mixer code at
+`7646bdc` (run `37110557326`, 08:43 to 09:03 UTC). Every runner is a
+2 vCPU Linux VM, so the arms' limit is 1.0 (a quarter of the CPUs, never
+below 1.0). Each launch waited for the 1-minute load to fall under it and
+the arm checked again; nothing was forced. Each A/B ran on one runner,
+both sides interleaved and swapped every round, 5 launches each; the
+groups ran on different VMs, so compare within a group.
+
+These are different hosts from the macOS numbers above: an x86 VM with
+2 vCPU, Linux loopback, the mixer node and the traffic peer sharing two
+CPUs. Read them against the thresholds and against each other.
+
+| group | CPU | launches | load at launch | refused by the arm |
+| --- | --- | ---: | --- | ---: |
+| cost (`null`, `mix_cost`) | Intel Xeon Platinum 8573C | 40 | 0.81 to 0.99 | 0 |
+| timer (`jitter`) | AMD EPYC 9V74 | 20 | 0.10 to 1.00 | 0 |
+| prefill (`latency`, `loss`) | AMD EPYC 7763 | 20 | 0.00 to 0.80 | 0 |
+| events (`framing`, `dtmf`, `talk`) | AMD EPYC 7763 | 20 | 0.00 to 0.80 | 0 |
+| capacity | AMD EPYC 9V45 | 5 | 0.79 to 0.97 | 0 |
+| ref (`ref_latency`, `ref_capacity`, vm) | AMD EPYC 7763 | 11 | 0.07 to 0.99 | 3, each run on its retry |
+
+Every arm ran with the defaults of `7646bdc` (timer truncated, prefill
+that only grows) except where the A/B sets an option.
+
+Box noise, `null` (5 launches): bare 20 ms timers late by 45 to 63 us p50,
+100 to 143 us p99, 121 to 258 us max.
+
+**Tick timer A/B** (`jitter idle 30`, `jitter capacity 100 30`,
+`tick_ceiling` false against true; traced conference, 1500 ticks):
+
+| launch | idle, truncated: early / p99 | idle, ceiling: early / p99 | 100 confs, truncated: early / p99 | 100 confs, ceiling: early / p99 |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 1500 / -695 us | 0 / 1024 us | 1499 / -91 us | 0 / 155 us |
+| 2 | 0 / 52 us | 0 / 535 us | 1500 / -730 us | 0 / 210 us |
+| 3 | 1500 / -350 us | 0 / 302 us | 345 / 123 us | 0 / 1170 us |
+| 4 | 1498 / -44 us | 0 / 850 us | 1495 / -352 us | 0 / 763 us |
+| 5 | 1500 / -544 us | 0 / 886 us | 1495 / -30 us | 0 / 900 us |
+
+No overrun in any launch. The mixer's own histogram put p99 under 0.5 ms
+truncated (it clamps early ticks to zero) and under 2 ms with the
+ceiling, at idle and at 100 conferences; the largest traced lateness with
+the ceiling was 1.2 ms idle and 1.4 ms at 100 conferences. Truncated, the
+tick fires early in almost every launch, by up to 0.8 ms at p50; how early
+depends on the phase of the clock against the millisecond, which is why
+launch 2 idle had none. With the ceiling it never fires early and is late
+by that same phase instead, under the tick jitter row's 2 / 5 ms.
+
+**Decision:** early ticks drop to 0 (none of about 15000 traced) and p99 lateness
+stays inside the tick jitter row, so `tick_ceiling` is now on by default.
+
+**Prefill A/B** (`latency 100`, `loss 100 2`, `prefill_shrink` false
+against true):
+
+| launch | latency off: p50 / p99, underruns | latency on: p50 / p99, underruns | loss off: p99, underruns, dropped | loss on: p99, underruns, dropped, shrunk |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 5.04 / 5.09 ms, 0 | 1.66 / 1.76 ms, 2 | 6.07 ms, 4, 0 | 4.99 ms, 14, 5, 4 |
+| 2 | 5.44 / 5.49 ms, 0 | 5.11 / 5.15 ms, 0 | 5.54 ms, 6, 1 | 5.41 ms, 9, 2, 4 |
+| 3 | 5.06 / 5.09 ms, 0 | 5.26 / 5.30 ms, 0 | 5.14 ms, 6, 1 | 4.02 ms, 15, 5, 4 |
+| 4 | 5.21 / 5.24 ms, 0 | 5.64 / 5.77 ms, 0 | 5.13 ms, 6, 2 | 5.45 ms, 10, 3, 2 |
+| 5 | 5.68 / 5.73 ms, 0 | 4.91 / 5.01 ms, 0 | 5.62 ms, 4, 0 | 5.41 ms, 10, 3, 3 |
+
+Every burst was heard in every launch. On this box the prefill never grew
+in the `latency` arm without the shrink (max prefill 1), so there was
+nothing for it to take back: p99 sat within 0.13 ms of p50 either way,
+and the 1.66 ms launch is a tick phase, not the shrink (it shrank
+nothing). In the `loss` arm, where the prefill does grow, the shrink took
+it back 2 to 4 times a launch and the underruns rose from 4 to 6 a launch
+to 9 to 15 (26 to 58 in all), with more frames trimmed: each frame of slack
+given back was soon needed again.
+
+**Decision:** underruns rise, so `prefill_shrink` stays off.
+
+**Latency and loss rows**, from the same launches with the shrink off:
+`latency` 5.04 / 5.09 ms minimum, every launch inside 5.7 / 5.8 ms; `loss`
+5.02 / 5.13 ms minimum, every launch inside 6.0 / 6.1 ms, 175 to 204 frames
+counted lost, no crash. Against mod_conference (`ref_latency 5 50`, vm,
+both in docker on the same runner, every burst heard): chappe_mix 18.2 /
+18.2 ms, mod_conference 20.5 / 20.8 ms, minimum of 5 rounds; both mixers
+gave every receiver the other tones at -14.7 dBFS and its own at -54.7,
+-64.5 and -100.9 dBFS, the same to 0.01 dB as on macOS.
+
+**Framing** (`framing 10 60`, `framing 30 60`, 5 launches each): at both
+listeners 300 of 300 windows held the tone (weakest -14.75 dBFS) and no
+frame of 3008 and 3016 had a 10 ms run of silence; the sender's leg had
+no drop, underrun, loss or late packet (prefill 1 at 10 ms, 2 at 30 ms).
+Both framing rows are met. The 30 ms row's earlier miss was one launch
+on the loaded macOS box.
+
+**DTMF** (`dtmf 20`, 5 launches of 120 event packets): none lost, none
+changed (event, E bit, volume, duration); forwarded 79 to 89 us p50,
+101 to 136 us p99, 147 us at most.
+
+**Talker events** (`talk 20`, 5 launches, 100 rooms): `true` 59 ms after
+the first loud frame was sent and `false` 299 ms after the tone stopped,
+in every round. Both times include the frame the jitter buffer holds, so
+the time from the frame entering the mix is no longer.
+
+**Compute** (`mix_cost`, 5 launches each, minimum; head is `7646bdc`,
+base `c9f377d`, the commit before the gain control, relations and talker
+events; `fit` is the same room with each tone at 32000 / N, so no mix
+clips):
+
+| | 4 legs | 64 legs |
+| --- | ---: | ---: |
+| base | 29.12 us | 387.73 us |
+| head | 28.81 us | 995.54 us |
+| base, `fit` | 28.82 us | 402.49 us |
+| head, `fit` | 28.87 us | 397.43 us |
+| head, `talk` | 29.82 us | 1016.10 us |
+| head, `nohear 1` | 71.90 us | 2307.42 us |
+| head, `nohear 4` | 104.76 us | 3213.89 us |
+
+The arm's 64-leg room is 64 tones at amplitude 6000, so every listener's
+mix clips: on the base it is hard clipped sample by sample, on head every
+listener's frame takes the gain control's scaled encode, and the arm puts
+the gain back to unity each tick, so each tick pays the attack as well.
+That is the +157% at 64 legs, and the limiter cost row is missed. On a
+room that fits, head and base are within 1.3% at both sizes, so the
+relations and the talker code add nothing measurable when unused, and a
+subscriber adds 3.5% at 4 legs and 2.1% at 64. Keeping a listener from
+one leg costs 43 us a tick at 4 legs (about 11 us a listener) and
+1312 us at 64 (about 20 us a listener): a list of frames to take out is a
+slower path than the one own frame. The compute rows stay missed: 28.8 /
+995.5 us against 10 / 200 us.
+
+**Capacity** (`capacity 25 5 1000`, 5 launches): 250, 175, 175, 200 and
+175 conferences in budget (scheduler 0.95 at 250; the shorter ramps
+stopped on a late tick with the scheduler at 0.73 to 0.89); 65 to 81 KiB
+per conference in the VM. The 100 row is met and the 500 row missed.
+
+Against mod_conference (`ref_capacity 25 20 1000`, vm, 5 launches each,
+interleaved; mod_conference limited to one CPU, both sharing the
+runner's two CPUs with the senders and the probe):
+
+| mixer | rooms in budget | CPU at 50 rooms | memory per room |
+| --- | --- | ---: | ---: |
+| chappe_mix | 50, 75, 50, 75, 50 | 27 to 32% | 95 to 148 KiB |
+| mod_conference | 50, 50, 50, 50, none (a 30 ms p99 at 25 rooms) | 61 to 66% | 0.75 to 3.2 MiB (3.2 MiB in a fresh container; the later launches reused it) |
+
+mod_conference stopped at 75 rooms with its CPU at 88 to 97%; chappe_mix
+stopped at 75 or 100 with its scheduler at 33 to 61%, on a late probe
+burst the shared two CPUs caused. At half the CPU per room it holds at
+least as many rooms, so the reference half of the capacity row holds
+here too; the ramp itself says more about two vCPUs than the mixer.
+
+Not measured on the runner: the limiter distortion row (deterministic,
+measured before) and the byte-for-byte row (a suite, not a timing).
