@@ -439,4 +439,5 @@ route_uri(RouteValue) ->
 -spec flow_route(chappe_sip_engine:flow()) -> chappe_sip_engine:route().
 flow_route(Flow) when is_integer(Flow) -> {ws, Flow};
 flow_route({conn, _} = Flow) -> Flow;
-flow_route({udp, _, _} = Flow) -> Flow.
+flow_route({udp, _, _} = Flow) -> Flow;
+flow_route({udp, _, _, _} = Flow) -> Flow.

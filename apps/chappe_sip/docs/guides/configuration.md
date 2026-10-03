@@ -70,4 +70,7 @@ tune its safety limits.
 
 - `handler_deadline_ms` bounds only a handler that has not yet created a dialog
   or forked. Long calls are not affected.
+- Listen addresses are not settings: they are the `contact` (one URI or a
+  list) and TLS `contact` of `chappe_sip:start/1`. See
+  [Deployment](deployment.md) for several addresses.
 - Set `engine_mod` to `chappe_sip_engine_fake` for pure-Erlang tests (no NIF).

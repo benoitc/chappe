@@ -16,7 +16,10 @@
 %% Event is one of
 %%   {request, TxnH, LegH | undefined, Meta, RawSip}  inbound request
 %%                                                    (Meta conn: its TCP/TLS
-%%                                                    connection's flow id)
+%%                                                    connection's flow id;
+%%                                                    local_ip, local_port,
+%%                                                    local: the listen
+%%                                                    address and its ident)
 %%   {response, TxnH, Meta, RawSip}                   response to our request
 %%   {ack, LegH | TxnH, RawSip}                       2xx ACK on a dialog leg,
 %%                                                    or on the INVITE server
@@ -39,8 +42,10 @@
     reliable_respond/7,
     request/3,
     request/4,
+    request/5,
     proxy_mark/2,
     send/3,
+    send/4,
     send_response/2,
     relay/4,
     cancel/2,
@@ -57,8 +62,10 @@
     reliable_respond/7,
     request/3,
     request/4,
+    request/5,
     proxy_mark/2,
     send/3,
+    send/4,
     send_response/2,
     relay/4,
     cancel/2,
@@ -92,7 +99,12 @@ init() ->
 %%         tls => #{contact := binary(), cert_dir => binary(),
 %%                  passphrase => binary(), verify => none | peer,
 %%                  verify_clients => boolean()},
+%%         ident => binary(), contacts => [{binary(), binary()}],
 %%         capture => binary()}
+%% contacts are the listen addresses after contact, each with its ident (the
+%% address a send names with request/5 or send/4); ident is contact's. The
+%% tls map takes ident and contacts the same way. With more than one
+%% address every one needs an ident.
 %% capture is a HEP capture URL (udp:Host:Port;hep=3;capture_id=N): sofia
 %% sends a copy of every message to it.
 %% verify (default peer) checks the server certificate of outbound TLS
@@ -157,6 +169,13 @@ request(_Engine, _Route, _Raw) ->
 request(_Engine, _Route, _Raw, _Branch) ->
     erlang:nif_error(engine_nif_not_loaded).
 
+%% The same, sent from the listen address with this ident (<<>>: any); Branch
+%% may be <<>> (nta picks one).
+-spec request(engine(), route(), binary(), binary(), binary()) ->
+    {ok, handle()} | {error, not_ready | too_large | badarg}.
+request(_Engine, _Route, _Raw, _Branch, _Ident) ->
+    erlang:nif_error(engine_nif_not_loaded).
+
 %% A proxy owns this INVITE server transaction: a CANCEL of it is reported
 %% but not answered 487 by the engine (RFC 3261 16.10).
 -spec proxy_mark(engine(), handle()) -> ok | {error, not_ready}.
@@ -168,6 +187,12 @@ proxy_mark(_Engine, _TxnH) ->
 -spec send(engine(), route(), binary()) ->
     {ok, handle()} | {error, not_ready | too_large | badarg}.
 send(_Engine, _Route, _Raw) ->
+    erlang:nif_error(engine_nif_not_loaded).
+
+%% The same, sent from the listen address with this ident (<<>>: any).
+-spec send(engine(), route(), binary(), binary()) ->
+    {ok, handle()} | {error, not_ready | too_large | badarg}.
+send(_Engine, _Route, _Raw, _Ident) ->
     erlang:nif_error(engine_nif_not_loaded).
 
 %% Statelessly forward a complete response upstream (a forked second 2xx

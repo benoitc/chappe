@@ -51,8 +51,8 @@
     early_only := boolean()
 }.
 
-%% Opts: #{contact := binary(), max_message_size => pos_integer(),
-%%         tls => #{contact := binary(), cert_dir => binary(),
+%% Opts: #{contact := binary() | [binary()], max_message_size => pos_integer(),
+%%         tls => #{contact := binary() | [binary()], cert_dir => binary(),
 %%                  passphrase => binary(), verify => peer | none,
 %%                  verify_clients => boolean(), allow_insecure => boolean()},
 %%         ws => #{port := inet:port_number()},
@@ -68,10 +68,12 @@
 %% cafile.pem. verify (default peer) checks outbound server certificates;
 %% none is accepted only with allow_insecure => true. wss serves SIP over
 %% secure WebSocket with the agent.pem of its cert_dir (or certfile/keyfile).
+%% contact (and tls contact) may list several URIs, one per listen address:
+%% a request is answered, and record-routed, with the address it came to.
 %% max_message_size defaults to the application setting. hep (or the
 %% `hep' application setting) sends a HEPv3 copy of every SIP message sent
 %% and received to a capture server (Homer); capture_id defaults to 200.
--spec start(#{contact := binary(), _ => _}) ->
+-spec start(#{contact := binary() | [binary()], _ => _}) ->
     ok | {error, already_started | term()}.
 start(Opts) ->
     case start_hep(maps:get(hep, Opts, chappe_sip_config:get(hep))) of
@@ -413,7 +415,8 @@ bindings(AorOrUri) ->
 
 %% Resolve an AOR to its first binding's contact URI and transport flow.
 %% A registered WS UA has a flow', and so has an RFC 5626 outbound binding
-%% registered directly over TCP/TLS ({conn, Id}) or UDP ({udp, Ip, Port});
+%% registered directly over TCP/TLS ({conn, Id}) or UDP ({udp, Ip, Port}, or
+%% {udp, Ip, Port, Local} on a node listening on several addresses);
 %% pass it to proxy_request/3 as {flow, Uri, Flow}', or to create_uac/
 %% create_b2bua as #{flow => Flow}', to reach the UA over that flow.
 -spec location_flow(binary()) ->

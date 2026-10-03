@@ -759,10 +759,27 @@ send_request(#data{seq = Seq, cseq = CSeq} = D0) ->
     %% a redirect or a 305 may move to a SIPS target or proxy
     D = with_credentials(D0#data{contact = default_contact(D0)}),
     Raw = build_request(D),
-    case chappe_sip_engine:send_request(route(D), Raw, self()) of
+    case chappe_sip_engine:send_request(route(D), Raw, self(), send_opts(D)) of
         {ok, TxnH} -> {ok, D#data{txn = TxnH}};
         {error, _} = Err -> Err
     end.
+
+%% With several listen addresses: the one we send from (the local option,
+%% else the first of the target's family); the engine keeps it for our
+%% later requests and for the dialog we form.
+send_opts(D) ->
+    case local(D) of
+        undefined -> #{};
+        L -> #{local => L}
+    end.
+
+local(#data{opts = Opts, uri = Uri, proxy = Proxy}) ->
+    Target =
+        case Proxy of
+            P when is_binary(P) -> P;
+            _ -> Uri
+        end,
+    chappe_sip_binds:pick_local(maps:get(local, Opts, undefined), Target).
 
 %% originate over the WS flow when targeting a registered browser, else the
 %% proxy URL, else the first preloaded route (or undefined, letting sofia
@@ -1352,6 +1369,23 @@ default_or(R) -> R.
 default_contact(#data{opts = #{contact := C}}) ->
     C;
 default_contact(#data{} = D) ->
+    %% with several listen addresses, the one we send from
+    case local(D) of
+        undefined ->
+            any_contact(D);
+        L ->
+            case secure(D) andalso chappe_sip_binds:tls_contact_at(L) of
+                Tls when is_binary(Tls) ->
+                    Tls;
+                _ ->
+                    case chappe_sip_binds:contact_at(L) of
+                        undefined -> any_contact(D);
+                        C -> C
+                    end
+            end
+    end.
+
+any_contact(#data{} = D) ->
     Plain =
         case chappe_sip_engine:contact() of
             undefined -> <<"sip:anonymous@localhost">>;

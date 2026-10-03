@@ -166,7 +166,11 @@ new_branch(Hash) ->
 own_addresses() ->
     [
         A
-     || C <- [chappe_sip_engine:contact(), chappe_sip_engine:tls_contact()],
+     || C <- [
+            chappe_sip_engine:contact(),
+            chappe_sip_engine:tls_contact()
+            | chappe_sip_binds:contacts()
+        ],
         {ok, A} <- [hostport(C)]
     ].
 

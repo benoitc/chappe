@@ -55,6 +55,26 @@ Call-ID and tags for every method and needs no such step.
   to that branch's handle, the proxy still being in the Accepted state;
   anything else is dropped as before.
 
+## Several listen addresses
+
+`contact` and the TLS `contact` take a list (`chappe_sip_binds:options/1`
+turns it into the NIF's `contact`, `ident` and `contacts`). The first
+address goes to `nta_agent_create`, every other one to
+`nta_agent_add_tport`, each with `TPTAG_IDENT(Ident)`, the address's host
+in canonical form; addresses on one host (UDP, TCP and TLS) share an ident.
+tport compares a requested ident with every primary's using `strcmp` and no
+NULL check, so the shim sets an ident on every transport and accepts more
+than one address only with idents throughout.
+
+- Receiving: the request meta carries `local_ip` and `local_port` (the
+  bound address of the primary transport, the parent of a connection) and
+  `local` (its `tport_ident`).
+- Sending: `request/5` and `send/4` pass an ident as `TPTAG_IDENT` to
+  `nta_outgoing_mcreate`; nta then picks the primary with that ident and the
+  request's protocol and family, and the Via is that primary's. The engine
+  keeps the ident per sending process (a dialog, a UAC), so a dialog's
+  in-dialog requests and ACKs leave from the address it was formed on.
+
 ## HEP capture
 
 A `capture` start option (built by `chappe_sip_engine` from the `hep`

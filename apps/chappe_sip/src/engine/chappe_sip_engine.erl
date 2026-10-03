@@ -89,11 +89,13 @@
 
 %% An RFC 5626 flow a request can be sent back over: a WebSocket connection
 %% (an integer), a TCP/TLS connection of the native stack ({conn, Id}), or
-%% the address a UDP request came from ({udp, Ip, Port}).
+%% the address a UDP request came from ({udp, Ip, Port}, with the ident of
+%% the listen address it reached when there are several).
 -type flow() ::
     integer()
     | {conn, pos_integer()}
-    | {udp, binary(), inet:port_number()}.
+    | {udp, binary(), inet:port_number()}
+    | {udp, binary(), inet:port_number(), binary()}.
 %% Where a request goes: a URI (the next hop), a flow, or undefined (by the
 %% Request-URI).
 -type route() ::
@@ -101,6 +103,7 @@
     | {ws, integer()}
     | {conn, pos_integer()}
     | {udp, binary(), inet:port_number()}
+    | {udp, binary(), inet:port_number(), binary()}
     | undefined.
 -export([validate_tls/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
@@ -134,7 +137,10 @@
     merge = #{} :: #{tuple() => {binary(), non_neg_integer(), pid()}},
     %% INVITE server transactions with an early UAS dialog (a 1xx from
     %% create_uas): a CANCEL ends that dialog too
-    early_uas = #{} :: #{non_neg_integer() => pid()}
+    early_uas = #{} :: #{non_neg_integer() => pid()},
+    %% with several listen addresses: the ident a process (a dialog, a UAC)
+    %% sends from, so its requests leave from the address its Contact names
+    locals = #{} :: #{pid() => binary()}
 }).
 
 start_link() ->
@@ -347,6 +353,7 @@ handle_call({start, Opts}, _From, #state{mod = Mod} = S) ->
             of
                 {ok, Engine} ->
                     cfg_put(opts, NOpts),
+                    chappe_sip_binds:publish(NOpts),
                     {reply, ok, S#state{
                         engine = Engine,
                         engine_opts = NOpts,
@@ -399,6 +406,7 @@ handle_call(stop, _From, #state{mod = Mod, engine = Engine} = S) ->
     Result = Mod:stop(Engine),
     %% a clean stop must not auto-reestablish on a later process crash
     cfg_del(opts),
+    chappe_sip_binds:publish(#{}),
     {reply, Result, stack_down(S)};
 handle_call({use, Method, Fun}, _From, #state{middlewares = MW} = S) ->
     MW1 = MW ++ [{Method, Fun}],
@@ -463,18 +471,18 @@ handle_call(
         S};
 handle_call({create_uas, Req, Opts}, {WorkerPid, _}, S) ->
     do_create_uas(Req, Opts, WorkerPid, S);
-handle_call({create_dialog, DialogArgs}, _From, S) ->
+handle_call({create_dialog, DialogArgs}, {Caller, _}, S) ->
     %% WS-only nodes have engine = undefined; a WS-flow dialog still creates
     %% its leg on the transport. dialog_leg_create/5 returns not_started for
     %% a non-WS dialog with no native engine.
-    do_create_dialog(DialogArgs, S);
+    do_create_dialog(DialogArgs, Caller, S);
 handle_call({send_stateless, {ws, Flow}, Raw, _Pid}, _From, S) ->
     _ = chappe_sip_ws_transport:send_stateless(Flow, Raw),
     {reply, {ok, ws_ack}, S};
 handle_call({send_stateless, _, _, _}, _From, #state{engine = undefined} = S) ->
     {reply, {error, not_started}, S};
 handle_call(
-    {send_stateless, Route, Raw, _Pid},
+    {send_stateless, Route, Raw, Pid},
     _From,
     #state{mod = Mod, engine = Engine} = S
 ) when
@@ -482,7 +490,16 @@ handle_call(
 ->
     %% fire-and-forget (a 2xx ACK / stateless BYE): no response is expected, so
     %% do not retain a handle route (it would linger until the owner exits)
-    {reply, Mod:send(Engine, native_route(Route), Raw), S};
+    case
+        chappe_sip_binds:send_ident(
+            Route, maps:get(Pid, S#state.locals, undefined)
+        )
+    of
+        undefined ->
+            {reply, Mod:send(Engine, native_route(Route), Raw), S};
+        Ident ->
+            {reply, Mod:send(Engine, native_route(Route), Raw, Ident), S}
+    end;
 handle_call({cancel_txn, TxnH, Hdrs}, _From, S) when ?IS_WS(TxnH) ->
     _ = chappe_sip_ws_transport:cancel(TxnH, chappe_sip_hdr_io:join(Hdrs)),
     {reply, ok, S};
@@ -628,16 +645,32 @@ handle_call(
     Engine =/= undefined
 ->
     NRoute = native_route(Route),
+    %% a local option sets the address Pid sends from from now on
+    Locals =
+        case maps:get(local, Opts, undefined) of
+            undefined -> S#state.locals;
+            L -> (S#state.locals)#{Pid => L}
+        end,
+    Ident = chappe_sip_binds:send_ident(
+        Route, maps:get(Pid, Locals, undefined)
+    ),
     Sent =
-        case maps:get(branch, Opts, undefined) of
-            undefined -> Mod:request(Engine, NRoute, Raw);
-            Branch -> Mod:request(Engine, NRoute, Raw, Branch)
+        case {maps:get(branch, Opts, undefined), Ident} of
+            {undefined, undefined} ->
+                Mod:request(Engine, NRoute, Raw);
+            {Branch, undefined} ->
+                Mod:request(Engine, NRoute, Raw, Branch);
+            {undefined, _} ->
+                Mod:request(Engine, NRoute, Raw, <<>>, Ident);
+            {Branch, _} ->
+                Mod:request(Engine, NRoute, Raw, Branch, Ident)
         end,
     case Sent of
         {ok, TxnH} ->
             S1 = ensure_monitored(Pid, disarm_deadline(Pid, S)),
             {reply, {ok, TxnH}, S1#state{
-                handles = (S1#state.handles)#{TxnH => Pid}
+                handles = (S1#state.handles)#{TxnH => Pid},
+                locals = Locals
             }};
         Err ->
             {reply, Err, S}
@@ -710,6 +743,7 @@ handle_info(
                 "chappe_sip_engine: re-established the SIP stack after a "
                 "restart"
             ),
+            chappe_sip_binds:publish(Opts),
             {noreply, S#state{
                 engine = Engine,
                 tref = schedule_health(Engine),
@@ -772,7 +806,9 @@ handle_info(
             destroy_owned_handles(Pid, S),
             {noreply,
                 forget_txns(Pid, S#state{
-                    workers = W1, handles = drop_pid(Pid, HM)
+                    workers = W1,
+                    handles = drop_pid(Pid, HM),
+                    locals = maps:remove(Pid, S#state.locals)
                 })};
         error ->
             %% a dialog fsm / UAC fsm / other handle owner exited (possibly a
@@ -784,7 +820,8 @@ handle_info(
                     handles = drop_pid(Pid, HM),
                     dialogs = maps:remove(Pid, S#state.dialogs),
                     monitored = maps:remove(Pid, S#state.monitored),
-                    early_uas = drop_pid(Pid, S#state.early_uas)
+                    early_uas = drop_pid(Pid, S#state.early_uas),
+                    locals = maps:remove(Pid, S#state.locals)
                 })}
     end;
 handle_info(_Info, S) ->
@@ -862,8 +899,13 @@ start_engine(Mod, Opts, Retries, Backoff) ->
 %% restricted, the size cap and the HEP capture URL added.
 start_opts(Opts) ->
     case validate_tls(maps:get(tls, Opts, undefined)) of
-        ok -> with_capture(with_max_size(normalize_contact(Opts)));
-        {error, _} = Err -> Err
+        ok ->
+            case chappe_sip_binds:options(Opts) of
+                {ok, Opts1} -> with_capture(with_max_size(Opts1));
+                {error, _} = Err -> Err
+            end;
+        {error, _} = Err ->
+            Err
     end.
 
 %% HEP capture of the native transports: sofia takes a capture URL
@@ -880,17 +922,6 @@ with_capture(Opts) ->
                     Err
             end
     end.
-
-%% An unrestricted sofia bind (transport=*) also opens a ws listener on
-%% the TCP port and collides with the tcp transport (freeswitch fork
-%% behavior). Default to udp,tcp unless the caller chose transports.
-normalize_contact(#{contact := C} = Opts) ->
-    case binary:match(C, <<";transport=">>) of
-        nomatch -> Opts#{contact := <<C/binary, ";transport=udp,tcp">>};
-        _ -> Opts
-    end;
-normalize_contact(Opts) ->
-    Opts.
 
 %% TLS verifies the server certificate of every outbound connection by
 %% default (verify => peer, with the RFC 5922 subject check against the
@@ -1026,7 +1057,8 @@ stack_down(#state{tref = TRef, workers = W} = S) ->
         health_waiters = [],
         proxied = #{},
         merge = #{},
-        early_uas = #{}
+        early_uas = #{},
+        locals = #{}
     }.
 
 schedule_health(Engine) ->
@@ -1042,6 +1074,8 @@ schedule_health(Engine) ->
 %% address it came from (RFC 5626 5.3: the request goes back over it)
 native_route({conn, Id}) ->
     Id;
+native_route({udp, Ip, Port, _Local}) ->
+    native_route({udp, Ip, Port});
 native_route({udp, Ip, Port}) ->
     Host =
         case binary:match(Ip, <<":">>) of
@@ -1284,10 +1318,17 @@ do_create_uas_1(Req, Opts, WorkerPid, S) ->
                             true -> HM0#{TxnH => Pid};
                             false -> HM0
                         end,
+                    %% the dialog sends from the address the request came to
+                    Locals =
+                        case chappe_sip_binds:local(chappe_sip_req:meta(Req)) of
+                            undefined -> S1#state.locals;
+                            L -> (S1#state.locals)#{Pid => L}
+                        end,
                     {reply, {ok, Pid}, S1#state{
                         handles = HM1#{LegH => Pid},
                         dialogs = (S1#state.dialogs)#{Pid => true},
-                        early_uas = early_uas(Msg, Opts, TxnH, Pid, S1)
+                        early_uas = early_uas(Msg, Opts, TxnH, Pid, S1),
+                        locals = Locals
                     }};
                 {error, Reason} ->
                     _ = leg_destroy(TxnH, LegH, S),
@@ -1456,8 +1497,18 @@ uas_contact(Req, S) ->
             lists:any(fun is_sips/1, [
                 chappe_sip_msg:uri(Msg) | sips_candidates(Msg)
             ]),
-    case {Secure, tls_uri(S)} of
-        {true, Tls} when is_binary(Tls) -> <<"<", Tls/binary, ">">>;
+    Local = chappe_sip_binds:local(chappe_sip_req:meta(Req)),
+    case
+        {
+            Secure,
+            chappe_sip_binds:tls_contact_at(Local),
+            chappe_sip_binds:contact_at(Local),
+            tls_uri(S)
+        }
+    of
+        {true, Tls, _, _} when is_binary(Tls) -> <<"<", Tls/binary, ">">>;
+        {true, _, _, Tls} when is_binary(Tls) -> <<"<", Tls/binary, ">">>;
+        {false, _, C, _} when is_binary(C) -> <<"<", C/binary, ">">>;
         _ -> local_contact(S)
     end.
 
@@ -1515,13 +1566,13 @@ uri_of(NameAddr) ->
 
 %% Create a dialog (UAC path): allocate the leg and start the fsm already
 %% established. Returns {ok, DialogPid, LegH}.
-do_create_dialog(DialogArgs, S) ->
+do_create_dialog(DialogArgs, Caller, S) ->
     case at_dialog_cap(S) of
         true -> {reply, {error, max_dialogs}, S};
-        false -> do_create_dialog_1(DialogArgs, S)
+        false -> do_create_dialog_1(DialogArgs, Caller, S)
     end.
 
-do_create_dialog_1(DialogArgs, #state{handles = HM} = S) ->
+do_create_dialog_1(DialogArgs, Caller, #state{handles = HM} = S) ->
     #{
         call_id := CallId,
         local_addr := LocalAddr,
@@ -1535,9 +1586,13 @@ do_create_dialog_1(DialogArgs, #state{handles = HM} = S) ->
             case chappe_sip_dialog_sup:start_dialog(DialogArgs#{leg => LegH}) of
                 {ok, Pid} ->
                     _ = erlang:monitor(process, Pid),
+                    %% the dialog a UAC forms sends from the UAC's address
                     {reply, {ok, Pid, LegH}, S#state{
                         handles = HM#{LegH => Pid},
-                        dialogs = (S#state.dialogs)#{Pid => true}
+                        dialogs = (S#state.dialogs)#{Pid => true},
+                        locals = chappe_sip_binds:inherit(
+                            Caller, Pid, S#state.locals
+                        )
                     }};
                 {error, Reason} ->
                     _ = dialog_leg_destroy(LegH, S),

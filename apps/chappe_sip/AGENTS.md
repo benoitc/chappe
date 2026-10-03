@@ -63,7 +63,8 @@ builds the shim with ASan (see `test/asan/`).
 - **Engine** (`engine/`): `chappe_sip_engine` (the singleton gen_server that owns the
   NIF and dispatches every op to the sofia backend or the WS transport by
   handle), `chappe_sip_nif` (NIF stubs), `chappe_sip_hep` (HEPv3 capture of
-  the WS transport; sofia captures the native ones).
+  the WS transport; sofia captures the native ones), `chappe_sip_binds`
+  (the listen addresses, when there are several).
 - **Dialog** (`dialog/`): `chappe_sip_dialog` (handle + API), `chappe_sip_dialog_fsm`
   (gen_statem: `setup` -> `confirmed` -> `in_transaction` / `terminating`),
   `chappe_sip_dialog_sup`.

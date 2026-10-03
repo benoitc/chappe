@@ -58,6 +58,15 @@ tracker; the milestone history is in `docs/plan.md`.
   dialogs down with `engine_restart`, keeps routes, restarts the NIF.
 - Health check that round-trips through the sofia event loop, with a
   halt-the-node hang policy.
+- Several listen addresses per transport: `contact` and the TLS `contact`
+  take a list of URIs (127.0.0.1 and ::1, a public and a private address).
+  A request is answered (the 2xx Contact) and record-routed with the address
+  it came to, and the dialog it forms sends from there; the request meta
+  carries `local_ip`, `local_port` and `local`. A request we originate
+  leaves from the address its `local` option names, else the first of the
+  target's address family, and a UDP registration flow keeps the address it
+  reached (`{udp, Ip, Port, Local}`). One contact behaves as before. See
+  `docs/guides/deployment.md`.
 - SIP capture to Homer (`hep => #{host, port, capture_id}` in
   `chappe_sip:start/1`, or the `hep` setting): a HEPv3 copy of every message
   sent and received. sofia captures UDP, TCP and TLS (`TPTAG_CAPT`, so
@@ -454,8 +463,6 @@ Gaps relative to drachtio, in rough order of impact.
   so one server fronts many apps, one app fronts many servers, and an app
   restarts without dropping the stack. We embed the stack in the node, so a
   remote-app split and outbound cloud-scaling are not available yet.
-- **Multi-homed contacts**: one contact per transport today; binding several
-  listen addresses on the same transport is not supported.
 
 ## Non-goals
 
