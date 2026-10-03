@@ -4,7 +4,7 @@
 # chappe umbrella convenience targets over rebar3.
 
 .PHONY: all compile test test-static check eunit ct lint xref dialyzer \
-        fmt fmt-check asan interop interop-mix interop-ref bench-ref \
+        fmt fmt-check asan interop interop-mix interop-ref bench-ref bench-pass \
         interop-conformance compliance cover clean
 
 all: compile
@@ -63,6 +63,13 @@ interop-ref:
 REF ?= host ref_latency
 bench-ref:
 	apps/chappe_mix/test/ref.sh $(REF)
+
+# The measuring pass over the mixer's arms (the PERF.md rows), interleaved,
+# five launches each. PASS picks the group (cost, timer, prefill, events,
+# capacity, ref, all); see apps/chappe_mix/bench/pass.sh.
+PASS ?= all
+bench-pass:
+	apps/chappe_mix/bench/pass.sh $(PASS)
 
 # Each app's compliance matrix from its requirements, the `%% req:'
 # annotations and the latest CT results. GATE=demo fails on any hard

@@ -5,8 +5,8 @@
 %%
 %%   erl -noshell +S 1 -pa <ebins> -run chappe_mix_bench main <arm> [args]
 %%
-%% Arms: null, latency, loss, jitter, capacity, mix_cost, ref_latency,
-%% ref_capacity. See
+%% Arms: null, latency, loss, jitter, capacity, mix_cost, framing, dtmf,
+%% talk, ref_latency, ref_capacity. See
 %% README.md next to this file for what each measures and how to compare
 %% two commits. Every result line starts with the arm name and ends with
 %% the load average; a line ending in VOID was taken above the load limit
@@ -22,6 +22,7 @@ main([Arm | Args]) ->
     Load = load_check(),
     {ok, _} = application:ensure_all_started(chappe_mix),
     try
+        io:format("conf_opts=~0p~n", [bench_conf()]),
         arm(Arm, Args, Load),
         halt(0)
     catch
@@ -32,8 +33,8 @@ main([Arm | Args]) ->
 main([]) ->
     io:format(
         "usage: -run chappe_mix_bench main "
-        "null|latency|loss|jitter|capacity|mix_cost|ref_latency|"
-        "ref_capacity [args]~n"
+        "null|latency|loss|jitter|capacity|mix_cost|framing|dtmf|talk|"
+        "ref_latency|ref_capacity [args]~n"
     ),
     halt(2).
 
@@ -131,6 +132,20 @@ arm("ref_capacity", [Mixer | Args], Load) when
         int_arg(Args, 3, 1000),
         Load
     );
+%% A sender of PtimeMs packets (a 1100 Hz tone) and two silent 20 ms
+%% listeners in one room, listened to for Secs after a 1 s settle (the
+%% PERF.md framing rows). Args: [PtimeMs] [Secs].
+arm("framing", Args, Load) ->
+    framing(int_arg(Args, 1, 10), int_arg(Args, 2, 60), Load);
+%% RFC 4733 events from leg A forwarded to leg B: the delay of each event
+%% packet, and whether its payload came through unchanged. Args: [Digits].
+arm("dtmf", Args, Load) ->
+    dtmf(int_arg(Args, 1, 20), Load);
+%% Talker events: from the first loud frame sent to {talking, Leg, true},
+%% and from the last one to false, one fresh room per round.
+%% Args: [Rounds].
+arm("talk", Args, Load) ->
+    talk(int_arg(Args, 1, 20), Load);
 arm(Other, _Args, _Load) ->
     io:format("unknown arm ~s~n", [Other]),
     halt(2).
@@ -142,7 +157,7 @@ arm(Other, _Args, _Load) ->
 latency(Arm, Bursts, Extra, Kind, Load) ->
     Peer = start_peer(),
     Collector = collector(),
-    {ok, Conf} = chappe_mix:start(#{trace => Collector}),
+    {ok, Conf} = chappe_mix:start(conf_opts(#{trace => Collector})),
     {ok, _, #{port := PA}} = chappe_mix:add_leg(Conf, #{}),
     {ok, _, #{port := PB}} = chappe_mix:add_leg(Conf, #{}),
     ExtraDsts = [
@@ -289,7 +304,7 @@ new_conf(Peer, Trace) ->
             false -> #{};
             Pid -> #{trace => Pid}
         end,
-    {ok, Conf} = chappe_mix:start(Opts),
+    {ok, Conf} = chappe_mix:start(conf_opts(Opts)),
     Dsts = [
         {{127, 0, 0, 1}, P}
      || _ <- lists:seq(1, 4),
@@ -588,6 +603,233 @@ mix_tick_lists(Frames) ->
      || {K, P} <- lists:zip(Ids, Pcms)
     ].
 
+%% ---- framing ----
+
+framing(Ptime, Secs, Load) ->
+    Lo = {127, 0, 0, 1},
+    {ok, Conf} = chappe_mix:start(conf_opts(#{})),
+    Ls = [
+        begin
+            {Ep, Port} = chappe_mix_test_tone:endpoint(#{freq => none}),
+            {ok, _, _} = chappe_mix:add_leg(Conf, #{remote => {Lo, Port}}),
+            Ep
+        end
+     || _ <- [1, 2]
+    ],
+    {ok, LS, #{port := MS}} = chappe_mix:add_leg(Conf, #{ptime => Ptime}),
+    {S, _} = chappe_mix_test_tone:endpoint(#{
+        freq => 1100, ptime => Ptime, dst => {Lo, MS}
+    }),
+    timer:sleep(1000),
+    [chappe_mix_test_tone:clear(X) || X <- Ls],
+    #{dropped := D0, underruns := U0} = leg(Conf, LS),
+    timer:sleep(Secs * 1000),
+    Leg = leg(Conf, LS),
+    [
+        begin
+            Ws = [
+                chappe_mix_test_tone:levels(W, [1100])
+             || W <- chappe_mix_test_tone:windows(
+                    chappe_mix_test_tone:samples(X), 1600
+                )
+            ],
+            Fs = chappe_mix_test_tone:frames(X),
+            report(framing, Load, [
+                {ptime_ms, Ptime},
+                {secs, Secs},
+                {listener, I},
+                {windows, length(Ws)},
+                {present, length([ok || [{_, Lv}] <- Ws, Lv > -18.0])},
+                {frames, length(Fs)},
+                {gap_frames, chappe_mix_test_tone:gaps(Fs, 80)},
+                {min_window_dbfs, min_defined([Lv || [{_, Lv}] <- Ws])}
+            ])
+        end
+     || {I, X} <- lists:enumerate(Ls)
+    ],
+    report(framing, Load, [
+        {ptime_ms, Ptime},
+        {sender_dropped, maps:get(dropped, Leg) - D0},
+        {sender_underruns, maps:get(underruns, Leg) - U0},
+        {lost, maps:get(lost, Leg)},
+        {late, maps:get(late, Leg)},
+        {received, maps:get(received, Leg)},
+        {prefill, maps:get(prefill, Leg)}
+    ]),
+    [chappe_mix_test_tone:stop(X) || X <- [S | Ls]],
+    chappe_mix:stop(Conf).
+
+leg(Conf, Id) ->
+    [L] = [L || #{id := I} = L <- chappe_mix:legs(Conf), I =:= Id],
+    L.
+
+%% ---- dtmf ----
+
+%% A sends silence every 20 ms on payload type 0; after a 1 s settle,
+%% every 300 ms one digit as RFC 4733 events on payload type 101 (a start
+%% packet with M set, two updates, three end packets with E set, one per
+%% tick in place of the audio). B negotiated the events on 96. Each
+%% event packet is timed when it is handed to A's socket and when it
+%% arrives at B, by two processes of this node on one clock.
+dtmf(Digits, Load) ->
+    Lo = {127, 0, 0, 1},
+    {ok, Conf} = chappe_mix:start(conf_opts(#{})),
+    {ok, SA} = gen_udp:open(0, [binary, {ip, Lo}, {active, false}]),
+    {Rx, RxPort} = dtmf_rx(),
+    {ok, _, #{port := MA}} = chappe_mix:add_leg(Conf, #{dtmf_pt => 101}),
+    {ok, _, _} = chappe_mix:add_leg(
+        Conf, #{remote => {Lo, RxPort}, dtmf_pt => 96}
+    ),
+    Plan =
+        [audio || _ <- lists:seq(1, 50)] ++
+            lists:append([
+                [{event, D rem 16, I} || I <- lists:seq(0, 5)] ++
+                    [audio || _ <- lists:seq(1, 9)]
+             || D <- lists:seq(1, Digits)
+            ]),
+    T0 = erlang:monotonic_time(millisecond) + 20,
+    Sent = dtmf_send(SA, {Lo, MA}, Plan, T0, 0, []),
+    timer:sleep(200),
+    Got = dtmf_rx_get(Rx),
+    ok = chappe_mix:stop(Conf),
+    gen_udp:close(SA),
+    Pairs = lists:zip(
+        lists:sublist(Sent, length(Got)), lists:sublist(Got, length(Sent))
+    ),
+    Delays = [us(TB - TA) || {{TA, _}, {TB, _}} <- Pairs],
+    report(dtmf, Load, [
+        {digits, Digits},
+        {events_sent, length(Sent)},
+        {forwarded, length(Got)},
+        {payload_changed, length([ok || {{_, P}, {_, Q}} <- Pairs, P =/= Q])},
+        {delay_p50_us, pct(Delays, 50)},
+        {delay_p99_us, pct(Delays, 99)},
+        {delay_max_us, max_or_undef(Delays)}
+    ]).
+
+dtmf_send(_Sock, _Dst, [], _Next, _N, Acc) ->
+    lists:reverse(Acc);
+dtmf_send(Sock, {Ip, Port} = Dst, [Item | Plan], Next, N, Acc) ->
+    erlang:send_after(Next, self(), dtmf_tick, [{abs, true}]),
+    receive
+        dtmf_tick -> ok
+    end,
+    {Pkt, Payload} = dtmf_packet(Item, N),
+    T = erlang:monotonic_time(),
+    ok = gen_udp:send(Sock, Ip, Port, Pkt),
+    Acc1 =
+        case Payload of
+            none -> Acc;
+            _ -> [{T, Payload} | Acc]
+        end,
+    dtmf_send(Sock, Dst, Plan, Next + 20, N + 1, Acc1).
+
+%% Packet N of A's stream; an event's timestamp is that of its start
+%% packet, its duration grows by a frame per packet and stays on the
+%% three end packets.
+dtmf_packet(audio, N) ->
+    Pkt = chappe_mix_rtp:build(#{
+        pt => 0,
+        seq => N band 16#FFFF,
+        ts => (N * ?FRAME) band 16#FFFFFFFF,
+        ssrc => 16#A,
+        marker => false,
+        payload => binary:copy(<<16#FF>>, ?FRAME)
+    }),
+    {Pkt, none};
+dtmf_packet({event, Code, I}, N) ->
+    E = min(1, max(0, I - 2)),
+    Dur = ?FRAME * min(I + 1, 4),
+    Payload = <<Code, E:1, 0:1, 10:6, Dur:16>>,
+    Pkt = chappe_mix_rtp:build(#{
+        pt => 101,
+        seq => N band 16#FFFF,
+        ts => ((N - I) * ?FRAME) band 16#FFFFFFFF,
+        ssrc => 16#A,
+        marker => I =:= 0,
+        payload => Payload
+    }),
+    {Pkt, Payload}.
+
+%% A process owning B's socket that timestamps every event packet (payload
+%% type 96) as it arrives. Returns {Pid, Port}.
+dtmf_rx() ->
+    Parent = self(),
+    Pid = spawn_link(fun() ->
+        {ok, S} = gen_udp:open(0, [
+            binary, {ip, {127, 0, 0, 1}}, {active, true}
+        ]),
+        {ok, P} = inet:port(S),
+        Parent ! {self(), port, P},
+        dtmf_rx_loop([])
+    end),
+    receive
+        {Pid, port, Port} -> {Pid, Port}
+    end.
+
+dtmf_rx_loop(Acc) ->
+    receive
+        {udp, _, _, _, Pkt} ->
+            T = erlang:monotonic_time(),
+            case chappe_mix_rtp:parse(Pkt) of
+                {ok, #{pt := 96, payload := P}} -> dtmf_rx_loop([{T, P} | Acc]);
+                _ -> dtmf_rx_loop(Acc)
+            end;
+        {get, From} ->
+            From ! {self(), lists:reverse(Acc)}
+    end.
+
+dtmf_rx_get(Pid) ->
+    Pid ! {get, self()},
+    receive
+        {Pid, Got} -> Got
+    after 5000 -> []
+    end.
+
+%% ---- talk ----
+
+%% One room per round: a silent listener and leg A. A tone endpoint
+%% starts sending to A (its first frame leaves at once) and is stopped
+%% once A talks and has talked for 500 ms. Times are from this process.
+talk(Rounds, Load) ->
+    Res = [talk_round() || _ <- lists:seq(1, Rounds)],
+    On = [S || {S, _} <- Res, is_integer(S)],
+    Off = [S || {_, S} <- Res, is_integer(S)],
+    report(talk, Load, [
+        {rounds, Rounds},
+        {started, length(On)},
+        {stopped, length(Off)},
+        {start_p50_ms, pct(On, 50)},
+        {start_p99_ms, pct(On, 99)},
+        {start_max_ms, max_or_undef(On)},
+        {stop_p50_ms, pct(Off, 50)},
+        {stop_p99_ms, pct(Off, 99)},
+        {stop_max_ms, max_or_undef(Off)}
+    ]).
+
+talk_round() ->
+    Lo = {127, 0, 0, 1},
+    {ok, Conf} = chappe_mix:start(conf_opts(#{events => self()})),
+    {ok, _, _} = chappe_mix:add_leg(Conf, #{remote => {Lo, 9}}),
+    {ok, LA, #{port := MA}} = chappe_mix:add_leg(Conf, #{}),
+    timer:sleep(200),
+    T0 = erlang:monotonic_time(millisecond),
+    {A, _} = chappe_mix_test_tone:endpoint(#{freq => 1100, dst => {Lo, MA}}),
+    Start = talk_wait(Conf, LA, true, T0),
+    timer:sleep(500),
+    T2 = erlang:monotonic_time(millisecond),
+    chappe_mix_test_tone:stop(A),
+    Stop = talk_wait(Conf, LA, false, T2),
+    ok = chappe_mix:stop(Conf),
+    {Start, Stop}.
+
+talk_wait(Conf, Leg, State, T0) ->
+    receive
+        {chappe_mix, Conf, {talking, Leg, State}} ->
+            erlang:monotonic_time(millisecond) - T0
+    after 2000 -> timeout
+    end.
+
 %% ---- reference ----
 
 ref_latency(Rounds, Bursts, Load) ->
@@ -802,7 +1044,7 @@ add_rooms(Ctx, K, Rooms) ->
 %% A room of Legs legs fed by one sender group of Kind in the peer.
 %% Returns {Mixer, Handle, Group}.
 new_room(#{mixer := chappe, peer := Peer}, Kind, Legs) ->
-    {ok, Conf} = chappe_mix:start(#{}),
+    {ok, Conf} = chappe_mix:start(conf_opts(#{})),
     Dsts = [
         {{127, 0, 0, 1}, P}
      || _ <- lists:seq(1, Legs),
@@ -873,7 +1115,7 @@ probe_room(#{peer := Peer, bind := Bind} = Ctx, Bursts) ->
     R.
 
 probe_legs(#{mixer := chappe, peer := Peer}, _PA, _PB) ->
-    {ok, Conf} = chappe_mix:start(#{}),
+    {ok, Conf} = chappe_mix:start(conf_opts(#{})),
     {ok, _, #{port := MA}} = chappe_mix:add_leg(Conf, #{}),
     {ok, _, #{port := MB}} = chappe_mix:add_leg(Conf, #{}),
     Sil = [
@@ -1092,6 +1334,42 @@ start_peer() ->
 
 peer_call(Peer, M, F, A) ->
     peer:call(Peer, M, F, A, 600000).
+
+%% ---- conference options ----
+
+%% Conference options from CHAPPE_MIX_BENCH_CONF, a comma-separated list
+%% such as "tick_ceiling=true,prefill_shrink=false" (a bare name means
+%% true): the A/B of an option on one build. Only these two are taken.
+conf_opts(Base) ->
+    maps:merge(Base, bench_conf()).
+
+bench_conf() ->
+    case os:getenv("CHAPPE_MIX_BENCH_CONF") of
+        false ->
+            #{};
+        S ->
+            maps:from_list([
+                conf_opt(string:split(Kv, "="))
+             || Kv <- string:lexemes(S, ", ")
+            ])
+    end.
+
+conf_opt([K]) ->
+    conf_opt([K, "true"]);
+conf_opt([K, V]) ->
+    Key =
+        case K of
+            "tick_ceiling" -> tick_ceiling;
+            "prefill_shrink" -> prefill_shrink;
+            _ -> error({unknown_conf_option, K})
+        end,
+    Val =
+        case V of
+            "true" -> true;
+            "false" -> false;
+            _ -> error({bad_conf_value, K, V})
+        end,
+    {Key, Val}.
 
 %% ---- load check and output ----
 
