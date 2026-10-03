@@ -193,9 +193,12 @@ heard(#leg{law = Law, id = Id, nohear = No} = L, Mixed, Frames, Talkers) ->
              || K <- [Id | No], is_map_key(K, Frames)
             ],
             Ssrc = chappe_mix_session:ssrc(L#leg.sess),
+            {Payload, Gain} = chappe_mix_dsp:encode(
+                Mixed, Law, Out, L#leg.gain
+            ),
             chappe_mix_leg:send(
-                L,
-                chappe_mix_dsp:encode(Mixed, Law, Out),
+                L#leg{gain = Gain},
+                Payload,
                 csrcs([Id | No], Ssrc, Talkers, ?MAX_CSRC)
             )
     end.

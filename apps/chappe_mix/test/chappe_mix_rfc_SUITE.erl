@@ -71,8 +71,7 @@ end_per_suite(_Config) ->
 %% Leg A sends one fixed frame of 160 G.711 octets covering both signs,
 %% behind two CSRCs and a header extension; leg B, the only listener,
 %% hears A alone, so every mixed packet it gets is that frame (the one
-%% mu-law negative zero, 0x7F, comes back as 0xFF, and the samples louder
-%% than -6 dBFS come back through the soft limiter) or silence. A wrong
+%% mu-law negative zero, 0x7F, comes back as 0xFF) or silence. A wrong
 %% payload offset past the extension, a codec table with a wrong sign or
 %% a sample that is not one octet all change the bytes. Every packet is
 %% 160 octets of payload for 20 ms. The extension A sent is not carried
@@ -146,17 +145,11 @@ octets_through(Law) ->
 frame(ulaw) -> list_to_binary(lists:seq(0, 159));
 frame(alaw) -> list_to_binary(lists:seq(96, 255)).
 
-%% What a lone talker's frame comes back as: each sample decoded, through
-%% the limiter (a no-op under -6 dBFS), encoded again. Under the knee
-%% that is the code word itself, but for mu-law 0x7F (negative zero),
-%% which comes back as 0xFF.
-expected(Law, F) ->
-    <<
-        <<(chappe_mix_g711:encode(
-            Law, chappe_mix_g711:limit(chappe_mix_g711:decode(Law, C))
-        ))>>
-     || <<C>> <= F
-    >>.
+expected(ulaw, F) -> <<<<(norm(C))>> || <<C>> <= F>>;
+expected(alaw, F) -> F.
+
+norm(16#7F) -> 16#FF;
+norm(C) -> C.
 
 silence(ulaw) -> <<16#FF>>;
 silence(alaw) -> <<16#D5>>.

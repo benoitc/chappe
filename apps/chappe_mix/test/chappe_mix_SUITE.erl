@@ -29,6 +29,7 @@
     relate_pairs/1,
     injected_media/1,
     talker_events/1,
+    loud_room_gain/1,
     probe_calibration/1,
     rtcp_sender_reports/1,
     rtcp_port_pair/1,
@@ -70,6 +71,7 @@ all() ->
         relate_pairs,
         injected_media,
         talker_events,
+        loud_room_gain,
         probe_calibration,
         rtcp_sender_reports,
         rtcp_port_pair,
@@ -1063,6 +1065,33 @@ talker_events(_Config) ->
     after 0 -> ok
     end,
     ok = chappe_mix:stop(Quiet).
+
+%% Eight talkers at -6 dBFS each: what a silent listener hears would clip,
+%% so its gain control comes down and stays down, carried from tick to
+%% tick; once they stop, it is back at unity within two seconds.
+loud_room_gain(_Config) ->
+    {ok, Conf} = chappe_mix:start(#{}),
+    {ok, LL, _} = chappe_mix:add_leg(Conf, #{remote => {?LO, 9}}),
+    Talkers = [
+        begin
+            {ok, _, #{port := P}} = chappe_mix:add_leg(Conf, #{}),
+            element(
+                1,
+                chappe_mix_test_tone:endpoint(#{
+                    freq => F, amp => 16384, dst => {?LO, P}
+                })
+            )
+        end
+     || F <- [310, 470, 660, 830, 1090, 1370, 1710, 2290]
+    ],
+    Gain = fun() -> maps:get(gain, leg_stats(Conf, LL)) end,
+    timer:sleep(1000),
+    Down = [Gain() || _ <- lists:seq(1, 10), ok =:= timer:sleep(50)],
+    ct:log("listener gain while loud: ~p", [Down]),
+    ?assert(lists:max(Down) < 0.7, Down),
+    [chappe_mix_test_tone:stop(T) || T <- Talkers],
+    wait_until(fun() -> Gain() =:= 1.0 end, 2000),
+    ok = chappe_mix:stop(Conf).
 
 talk_event(Conf, Ms) ->
     receive

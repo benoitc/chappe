@@ -473,7 +473,7 @@ order held at load 4.8 too):
   survived the first run and got `no_underrun_before_start_test`; a first
   mutation of the timestamp extension did not compile and was rewritten.
 
-## A soft limiter: a static curve cannot meet the distortion row
+## A soft limiter: a static curve cannot meet the distortion row (replaced)
 
 - Kept, as planned: a static soft knee on what each listener hears,
   identity up to -6 dBFS and tanh toward full scale above, folded into the
@@ -649,4 +649,42 @@ order held at load 4.8 too):
   compile and was rewritten), the prefill shrinking to 0, an underrun
   not resetting the count, the shrink on by default, `tick_ceiling`
   ignored.
+
+## A gain per listener in place of the static curve: kept
+
+- The static knee (`981adc4`) missed the -26 dB row at -10.67 dB and is
+  removed, `chappe_mix_g711:limit/1` and its tests with it: the encode
+  table is the plain one again. In its place a gain per listener, kept in
+  the leg across ticks: unity until a frame would clip, then at once the
+  gain that puts the frame's peak at full scale, then back by a release
+  step per frame, never above unity. `chappe_mix_dsp:encode/4` takes the
+  gain and returns the next one; at unity the encode is the old path,
+  which fails with `clip` at the first sample past 16 bits, and only then
+  is the frame scaled. The hard clip stays behind it.
+- Tried in the dsp, on the loud room (see `PERF.md` for the table):
+  release 0.4 dB a frame stepped at the frame start -27.60 dB; spread
+  across the frame -28.42 dB; 0.2 dB a frame spread -29.22 dB (kept: a
+  9 dB cut still undone in under a second); the attack spread too, with
+  each sample capped at full scale so the frame start cannot clip,
+  -18.85 dB (the cap is a per-sample clip again; reverted).
+- `elvis` refuses `throw/1`; the clip escape is `error(clip)`, caught in
+  `encode/4`. Only frames that clip pay for it.
+- The equivalence test: every leg whose signal fits in 16 bits gets the
+  old mix's bytes; a leg that would clip gets, byte for byte, its signal
+  scaled by full scale over its peak (a fresh leg). The lone-talker
+  frames of `chappe_mix_rfc_SUITE` never clip and expect the plain
+  frame again.
+- The first loud room used 300 to 2300 Hz, which repeat every 20 ms:
+  every frame had the same peak and the gain never moved, so the
+  stability case could not fail. The room now uses tones that make
+  whole cycles in 1 s and not in 20 ms.
+- Seen failing first: `encode/4` undefined (every dsp case), and
+  `loud_room_gain` (no `gain` in the leg).
+- Mutations, 9: gain above unity allowed, no release, attack disabled,
+  release twice as fast, the gain not kept across ticks, the release not
+  spread across the frame (survived the first run; the recovery case now
+  checks each released frame byte for byte), the attack spread from the
+  old gain: all caught. Removing the hard clip survived: with the gain,
+  no scaled sample reaches past full scale, so the net is unreachable
+  by construction and kept as a guard.
 

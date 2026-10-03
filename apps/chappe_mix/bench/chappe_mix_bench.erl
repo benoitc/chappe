@@ -476,7 +476,7 @@ mix_tick(Frames) ->
             ssrc => 42,
             marker => false,
             csrcs => lists:sublist(Ids -- [K], 15),
-            payload => chappe_mix_dsp:encode(Mixed, ulaw, {ulaw, F})
+            payload => enc(Mixed, {ulaw, F})
         })
      || {K, F} <- lists:zip(Ids, Frames)
     ].
@@ -501,7 +501,7 @@ mix_tick_talk(Frames) ->
             ssrc => 42,
             marker => false,
             csrcs => lists:sublist(Ids -- [K], 15),
-            payload => chappe_mix_dsp:encode(Mixed, ulaw, {ulaw, F})
+            payload => enc(Mixed, {ulaw, F})
         })
      || {K, F} <- lists:zip(Ids, Frames)
     ].
@@ -528,13 +528,19 @@ mix_tick_nohear(Frames, K) ->
                 ssrc => 42,
                 marker => false,
                 csrcs => lists:sublist(Ids -- Skip, 15),
-                payload => chappe_mix_dsp:encode(
-                    Mixed, ulaw, [{ulaw, element(J, Tuple)} || J <- Skip]
-                )
+                payload => enc(Mixed, [{ulaw, element(J, Tuple)} || J <- Skip])
             })
         end
      || I <- Ids
     ].
+
+%% One listener's payload: encode/4 with the gain at unity, or encode/3
+%% on a commit from before the gain control.
+enc(Mixed, Out) ->
+    case erlang:function_exported(chappe_mix_dsp, encode, 4) of
+        true -> element(1, chappe_mix_dsp:encode(Mixed, ulaw, Out, 1.0));
+        false -> chappe_mix_dsp:encode(Mixed, ulaw, Out)
+    end.
 
 %% chappe_mix_dsp before mixed/1 (0ea59d9 to 0cd3bb2): encode read the
 %% atomics sum directly.

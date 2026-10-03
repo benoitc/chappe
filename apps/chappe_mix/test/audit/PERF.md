@@ -20,8 +20,8 @@ missed here, never redefined after the numbers arrive.
 | Mixed output after a change to the mix | byte for byte the same as before it for the same input | n/a | the same, 500 seeded rooms of 1 to 64 legs | met |
 | Framing, 30 ms sender, set 2026-10-03 | its tone present in every 200 ms judging window at each listener, and no run of 80 or more silent samples (10 ms) inside any 20 ms frame heard once the room has settled | n/a | 1 frame of 3004 (and of 3008) with a 10 ms run, every window held; one launch, load 3.2 to 4.2 | missed |
 | Framing, 10 ms sender, set 2026-10-03 | the same as the 30 ms row, and no jitter-buffer trim (`dropped` 0) on its leg over 60 s | n/a | not measured on a quiet box (60 s) | open |
-| Limiter, distortion, set 2026-10-03 | 8 talkers at -6 dBFS each (distinct tones): THD+N at a receiver <= -26 dB (5%); the hard clip it replaces is measured first, as the baseline | n/a | -10.67 dB (hard clip -10.19 dB) | missed |
-| Limiter, cost, set 2026-10-03 | `mix_cost` at 4 and 64 legs rises by no more than 10% | n/a | not measured on a quiet box | open |
+| Limiter, distortion, set 2026-10-03 | 8 talkers at -6 dBFS each (distinct tones): THD+N at a receiver <= -26 dB (5%); the hard clip it replaces is measured first, as the baseline | n/a | -29.22 dB with the per-listener gain control (hard clip -10.04 dB; the static curve it replaced, -10.67 dB) | met |
+| Limiter, cost, set 2026-10-03 | `mix_cost` at 4 and 64 legs rises by no more than 10% | n/a | not measured on a quiet box (the gain control costs nothing on a frame that fits at unity: one guard per sample, as before) | open |
 | Tick timer, set 2026-10-03 | ticks that fire more than 100 us early: none at p99 (under 1% of traced ticks), in the `jitter idle` and `jitter capacity` arms, with p99 lateness inside the tick jitter row | n/a | not measured on a quiet box; the ceiling is opt-in (`tick_ceiling`) | open |
 | Prefill, set 2026-10-03 | `latency` arm: p99 within one frame (20 ms) of p50 in 5 of 5 launches; `loss` arm: the underrun count does not rise | n/a | not measured on a quiet box; the shrink is opt-in (`prefill_shrink`) | open |
 | DTMF forwarding (RFC 4733), set 2026-10-03 | a forwarded event keeps its event code, duration and E bit, and leaves within one tick (20 ms) of arriving | n/a | not measured on a quiet box (0.52 ms at most at load 30, void) | open |
@@ -595,3 +595,47 @@ A/B. Without it they are in the mixer, off by default (`tick_ceiling`,
 `prefill_shrink` conference options), so the queued A/B can run as soon
 as the box is quiet and the decision is a default to flip.
 
+### 2026-10-03: the gain control replaces the static curve
+
+The static soft knee missed the distortion row (-10.67 dB). It is
+replaced by a gain per listener on what that listener hears, carried
+from tick to tick in the leg:
+
+- At unity a frame that fits in 16 bits is encoded as it always was:
+  the N-1 mix of a room that does not clip is byte for byte the plain
+  mix (`chappe_mix_dsp_tests`, 500 seeded rooms).
+- Attack: when a frame would clip, the gain drops at once to what puts
+  its peak at full scale. The frame is whole before it is encoded, so no
+  look-ahead is needed and nothing clips.
+- Release: back toward unity by 0.2 dB a frame (10 dB a second), spread
+  across the frame sample by sample, never above unity. A 9 dB cut is
+  undone in under a second; 0.4 dB a frame measured 0.8 dB worse on
+  THD+N (the gain swings more between the room's peaks).
+- A hard clip stays as the last safety net.
+
+The distortion row, deterministic (50 frames of the dsp, 8 tones at
+-6 dBFS on 310 to 2290 Hz, chosen to make whole cycles in 1 s and not in
+20 ms so the frames differ; mu-law; THD+N at the ninth leg, which says
+nothing):
+
+| | THD+N |
+| --- | ---: |
+| hard clip (the mix before step 3) | -10.04 dB |
+| static soft knee at -6 dBFS (`981adc4`) | -10.67 dB |
+| gain control, release 0.4 dB a frame, stepped | -27.60 dB |
+| gain control, release 0.4 dB a frame, ramped | -28.42 dB |
+| gain control, release 0.2 dB a frame, ramped (kept) | -29.22 dB |
+| gain control, attack ramped too, each sample capped at full scale | -18.85 dB |
+
+(The static curve figure of -10.19 dB in the section above was on 300 to
+2300 Hz, which repeat every 20 ms; the loud room now uses tones that do
+not, so the gain moves from frame to frame.) In that room the gain
+settles between -9.3 and -8.1 dB and moves by at most 1.0 dB down and
+0.2 dB up a frame. In a real conference (`loud_room_gain`, eight tone
+endpoints) the listener's gain sat at 0.33 to 0.34 and came back to
+unity once they stopped.
+
+The cost row stays open: the box was over the load limit. On a frame
+that fits, the gain control adds nothing to the path (the out-of-range
+guard was already there); a frame that clips takes a list pass for its
+peak and its scaled encode.

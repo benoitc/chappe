@@ -11,9 +11,11 @@ What chappe_mix does today, and what is planned.
   than bursting them.
 - G.711 mu-law and A-law, per leg, with frame tables built at application
   start.
-- A soft limiter on what each leg hears: samples up to -6 dBFS are encoded
-  as they are, louder ones are bent toward full scale instead of clipped.
-  A static curve, folded into the encode table.
+- Gain control on what each leg hears: a room that does not clip is
+  mixed byte for byte as before; when a listener's frame would clip, its
+  gain drops at once to fit the frame's peak, then comes back by 0.2 dB a
+  frame (10 dB a second) to unity. A hard clip stays as the safety net.
+  8 talkers at -6 dBFS measure -29 dB THD+N against -10 dB clipped.
 - Per-leg jitter buffer keyed by RTP timestamp: packets of any size from
   0 to 200 ms (10, 20, 30 ms...) play out as 20 ms frames, every sample once
   (RFC 3551 4.2). Reorder repair, loss played as silence for the missing
@@ -76,9 +78,6 @@ What chappe_mix does today, and what is planned.
 ## Planned
 
 - Wideband: 16 kHz mixing with G.722 and Opus through a NIF.
-- Gain control on the sum: the static limiter does not meet the
-  distortion threshold in `test/audit/PERF.md` (a room at full scale RMS);
-  a per-listener gain measured -37.8 dB in a model (`ATTEMPTS.md`).
 - The SDES (CNAME, NAME) of the sources behind a cascaded mixer's CSRCs.
 - A decision on the tick timer firing up to 1 ms early and on the
   jitter-buffer prefill that only grows: both fixes are built and off by

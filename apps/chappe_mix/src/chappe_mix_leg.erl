@@ -120,6 +120,7 @@ info(#leg{} = L) ->
             ptime => L#leg.ptime,
             mute => not speaks(L),
             direction => L#leg.direction,
+            gain => L#leg.gain,
             injected => L#leg.injected,
             nohear => L#leg.nohear,
             tx => L#leg.tx,
