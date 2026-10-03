@@ -39,6 +39,7 @@ for the NIF and thread model.
 chappe_sip_sup (one_for_one)
 |-- chappe_sip_registry_keeper         location-store ETS owner
 |-- chappe_sip_registry                location store
+|-- chappe_sip_hep                     HEP capture of WS traffic
 |-- chappe_sip_ws_sup                  WS transport
 |-- chappe_sip_media_sup               media control plane
 |   `-- chappe_sip_media_mix           conference rooms (when `mix` is configured)

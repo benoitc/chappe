@@ -99,6 +99,46 @@ add `-heart` to `config/vm.args.src`. The release start script sets
 under systemd (both would try to restart); use it with the daemonized
 `bin/chappe_sip start` instead.
 
+## Listen on several addresses
+
+A host with a public and a private address, or with IPv4 and IPv6, can
+take SIP on each. Give `contact` (and the TLS `contact`) a list:
+
+```erlang
+ok = chappe_sip:start(#{
+    contact => [<<"sip:203.0.113.10:5060">>, <<"sip:10.0.0.10:5060">>,
+                <<"sip:[2001:db8::10]:5060">>],
+    tls => #{contact => [<<"sips:203.0.113.10:5061;transport=tls">>,
+                         <<"sips:10.0.0.10:5061;transport=tls">>],
+             cert_dir => <<"/etc/chappe/certs">>}
+}).
+```
+
+- A request is answered and record-routed with the address it came to, and
+  the dialog it forms sends from there.
+- A request you originate leaves from the address you name, else from the
+  first one of the target's address family:
+
+```erlang
+{ok, Ref} = chappe_sip:request(<<"sip:trunk@10.0.0.50">>,
+                               #{method => <<"OPTIONS">>,
+                                 local => <<"10.0.0.10">>}).
+```
+
+- List addresses, not `0.0.0.0`: a wildcard listener cannot say which
+  address a request reached.
+- A UDP binding learned on one address is reached from that address
+  (`{udp, Ip, Port, Local}` in its flow).
+
+## Capture to Homer
+
+To see the node's calls in Homer, point it at your heplify-server in
+`config/sys.config`; see [SIP capture](capture.md):
+
+```erlang
+[{chappe_sip, [{hep, #{host => <<"10.0.0.5">>, port => 9060}}]}].
+```
+
 ## Notes
 
 - Binding 5060/5061 needs `CAP_NET_BIND_SERVICE` (in the unit) or a high port.

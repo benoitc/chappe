@@ -11,7 +11,8 @@
 %%     every dialog it forms and on its OPTIONS 200, and contact_params/0
 %%     on the INVITEs it sends;
 %%   - hands each SUBSCRIBE for the conference to subscribe/4, from the
-%%     handler process, naming itself as the owner;
+%%     handler of the conference package (chappe_sip:event_package/2),
+%%     naming itself as the owner;
 %%   - calls update/2 with the conference as a chappe_sip_confinfo:conf()
 %%     whenever it changes, passes every message it does not know to
 %%     handle_info/2, and calls stop/1 when the conference ends.

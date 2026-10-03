@@ -60,9 +60,14 @@
     up_flow :: integer() | undefined,
     %% the request came over TLS
     in_tls = false :: boolean(),
+    %% the listen address it came to, with several (our Record-Route)
+    local :: binary() | undefined,
     timer_c :: pos_integer(),
     %% no new branch: upstream CANCEL or a 6xx (16.7 step 5, 16.10)
-    closed = false :: boolean()
+    closed = false :: boolean(),
+    %% upstream CANCELled; the INVITE's call record (chappe_sip_cdr)
+    cancelled = false :: boolean(),
+    cdr :: binary() | undefined
 }).
 
 -spec proxy_request(chappe_sip_req:req(), dest() | [dest()], map()) ->
@@ -116,7 +121,9 @@ forward(Req, Msg, Dests, Opts) ->
                 in_tls =
                     maps:get(transport, chappe_sip_req:meta(Req), undefined) =:=
                         <<"tls">>,
-                timer_c = timer_c(Opts)
+                timer_c = timer_c(Opts),
+                cdr = chappe_sip_cdr:relabel(Req, proxy),
+                local = chappe_sip_binds:local(chappe_sip_req:meta(Req))
             },
             start(P, Dests);
         {error, {media, _} = MErr} ->
@@ -209,7 +216,7 @@ loop(#px{server = ServerTxn} = P) ->
             %% 16.10: CANCEL every pending branch, start no new one, and
             %% relay what they answer (487)
             cancel_all(P),
-            loop(P#px{closed = true, remaining = []})
+            loop(P#px{closed = true, remaining = [], cancelled = true})
     after next_timeout(P) ->
         loop_or_finish(timer_c_fired(P))
     end.
@@ -281,6 +288,7 @@ on_response(#px{server = ServerTxn} = P, TxnH, Status, Raw) when
     },
     cancel_all(P1),
     accepted(P1, TxnH, Raw),
+    chappe_sip_cdr:proxy_answered(P1#px.cdr, P1#px.opts, Raw),
     {ok, #{
         final_status => Status,
         final_response => Raw,
@@ -402,6 +410,7 @@ finish(#px{finals = [], server = ServerTxn} = P) ->
     }};
 finish(#px{finals = Finals, server = ServerTxn} = P) ->
     {Status, Raw} = chappe_sip_proxy_rules:best_response(lists:reverse(Finals)),
+    chappe_sip_cdr:proxy_final(P#px.cdr, P#px.cancelled, Status),
     _ =
         case Raw of
             undefined ->
@@ -468,11 +477,9 @@ send_branch(P, #br{dest = Dest} = B0, Route, Msg) ->
     end.
 
 record_route(#px{opts = Opts} = P, Dest, Msg) ->
-    case
-        maps:get(record_route, Opts, maps:get(remain_in_dialog, Opts, false))
-    of
+    case chappe_sip_proxy_rules:record_routes(Opts) of
         true ->
-            Contact = rr_contact(Msg),
+            Contact = rr_contact(Msg, P#px.local),
             %% the flow tokens name the WS legs (the inbound one and this
             %% branch's) so in-dialog requests route back over those
             %% connections; the marker MAC binds them with the Call-ID
@@ -497,16 +504,14 @@ record_route(#px{opts = Opts} = P, Dest, Msg) ->
 %% for the upstream side, signed for that address, so each side routes
 %% back to us over its own transport.
 upstream_rr(
-    #px{in_tls = InTls, up_flow = Up}, #br{rr_sips = Sips} = B, Raw
+    #px{in_tls = InTls, up_flow = Up, local = Local},
+    #br{rr_sips = Sips} = B,
+    Raw
 ) when
     is_boolean(Sips), Sips =/= InTls
 ->
     Down = down_flow(B#br.dest),
-    Contact =
-        case InTls of
-            true -> chappe_sip_engine:tls_contact();
-            false -> chappe_sip_engine:contact()
-        end,
+    Contact = chappe_sip_binds:contact_or_primary(Local, InTls),
     case {Contact, chappe_sip_msg:parse(Raw)} of
         {C, {ok, M}} when is_binary(C) ->
             CallId = chappe_sip_msg:call_id(M),
@@ -585,7 +590,7 @@ up_flow(Req) ->
 %% 16.6 step 4 (and RFC 5630): the Record-Route is a SIPS URI, our TLS
 %% address, when the forwarded request's Request-URI or top Route is a SIPS
 %% URI, and a SIP URI otherwise, also for a request that came over TLS
-rr_contact(Msg) ->
+rr_contact(Msg, Local) ->
     Top =
         case chappe_sip_route:routes(Msg) of
             [R | _] -> chappe_sip_proxy_rules:uri_of(R);
@@ -594,9 +599,9 @@ rr_contact(Msg) ->
     Secure =
         chappe_sip_proxy_rules:is_sips(chappe_sip_msg:uri(Msg)) orelse
             chappe_sip_proxy_rules:is_sips(Top),
-    case {Secure, chappe_sip_engine:tls_contact()} of
-        {true, Tls} when is_binary(Tls) -> Tls;
-        _ -> chappe_sip_engine:contact()
+    case Secure andalso chappe_sip_binds:contact_or_primary(Local, true) of
+        Tls when is_binary(Tls) -> Tls;
+        _ -> chappe_sip_binds:contact_or_primary(Local, false)
     end.
 
 %% ---- in-dialog forwarding: chappe_sip_proxy_dialog ----

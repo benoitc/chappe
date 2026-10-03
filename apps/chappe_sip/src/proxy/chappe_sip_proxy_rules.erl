@@ -9,6 +9,7 @@
 
 -export([best_response/1, loop_hash/1, looped/1, new_branch/1]).
 -export([retarget/2, is_own_address/1, is_loose/1, is_sips/1, uri_of/1]).
+-export([record_routes/1]).
 
 %% the reasons 4xx preferred by 16.7 step 6: they let the client retry
 -define(RETRY_4XX, [401, 407, 415, 420, 484]).
@@ -165,7 +166,11 @@ new_branch(Hash) ->
 own_addresses() ->
     [
         A
-     || C <- [chappe_sip_engine:contact(), chappe_sip_engine:tls_contact()],
+     || C <- [
+            chappe_sip_engine:contact(),
+            chappe_sip_engine:tls_contact()
+            | chappe_sip_binds:contacts()
+        ],
         {ok, A} <- [hostport(C)]
     ].
 
@@ -253,6 +258,12 @@ is_loose(Uri) ->
         {ok, #{params := #{<<"lr">> := _}}} -> true;
         _ -> false
     end.
+
+%% proxy_request/3 asked to stay in the path (record_route, or the old
+%% remain_in_dialog)
+-spec record_routes(map()) -> boolean().
+record_routes(Opts) ->
+    maps:get(record_route, Opts, maps:get(remain_in_dialog, Opts, false)).
 
 is_sips(<<"sips:", _/binary>>) -> true;
 is_sips(<<"SIPS:", _/binary>>) -> true;

@@ -94,8 +94,11 @@ start_b2bua(Req, Res, Uri, Opts) ->
         end,
     %% flow' lets the B-leg originate over a registered flow (a WS or an
     %% RFC 5626 TCP/TLS/UDP one)
+    %% the call records of the two legs name each other
+    ACdr = chappe_sip_cdr:relabel(Req, b2b_a),
     BOpts = maps:merge(
-        BOpts1, maps:with([proxy, auth, flow | st_opts()], Opts)
+        BOpts1#{cdr => #{role => b2b_b, link => ACdr}},
+        maps:with([proxy, auth, flow | st_opts()], Opts)
     ),
     %% pre-choose the A-leg dialog tag so relayed provisionals and the
     %% final 2xx share one To-tag (otherwise nta auto-tags the first

@@ -24,9 +24,14 @@
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <ctype.h>
+#include <dirent.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
 
 #include <erl_nif.h>
 
@@ -51,6 +56,10 @@
 #define ENGINE_STOP_WAIT_MS 5000
 #define POLL_STEP_MS 50
 #define MAX_CONTACT 512
+/* listen addresses per kind (plain, TLS) after the first; an ident names
+ * the address a transport is bound to (TPTAG_IDENT) */
+#define MAX_BINDS 8
+#define MAX_IDENT 64
 #define DEFAULT_MAX_MSG_SIZE 262144
 /* handle table buckets (power of two) */
 #define HBUCKETS 4096
@@ -137,9 +146,22 @@ typedef struct engine {
     ErlNifMonitor owner_mon;
     char contact[MAX_CONTACT];
     unsigned max_msg_size;
+    /* more listen addresses (nta_agent_add_tport each) and the ident of
+     * every one; idents are set for all transports or for none, since tport
+     * compares a requested ident with each primary's (strcmp, no NULL
+     * check). has_idents: a send may then name one. */
+    char ident[MAX_IDENT];
+    char xcontact[MAX_BINDS][MAX_CONTACT];
+    char xident[MAX_BINDS][MAX_IDENT];
+    int nx;
+    int has_idents;
 
     /* optional TLS transport, bound on its own port after the agent */
     char tls_contact[MAX_CONTACT];
+    char tls_ident[MAX_IDENT];
+    char tls_xcontact[MAX_BINDS][MAX_CONTACT];
+    char tls_xident[MAX_BINDS][MAX_IDENT];
+    int ntlsx;
     char tls_cert_dir[512];
     char tls_passphrase[128];
     char tls_ciphers[256];
@@ -147,6 +169,12 @@ typedef struct engine {
      * RFC 5922 subject check), and the client certificate of inbound ones */
     int tls_verify_peer;
     int tls_verify_clients;
+
+    /* HEP capture URL for sofia's tport (TPTAG_CAPT), "" when off, and the
+     * capture socket sofia opened for it (-1: none). tport never closes
+     * that socket, so the shim closes it after the agent is destroyed. */
+    char capture[MAX_CONTACT];
+    int capt_fd;
 
     /* stack-thread-only state */
     su_root_t *root;
@@ -181,7 +209,8 @@ static ERL_NIF_TERM am_ok, am_error, am_undefined, am_chappe_sip_engine, am_requ
     am_ack, am_cancel, am_status, am_tls, am_cert_dir, am_passphrase, am_verify,
     am_peer, am_ciphers, am_prack, am_source_ip, am_source_port,
     am_ack_timeout, am_transport, am_verify_clients, am_true, am_conn,
-    am_flow_closed;
+    am_flow_closed, am_capture, am_ident, am_contacts, am_local,
+    am_local_ip, am_local_port;
 
 /* operations enqueued to the stack thread */
 enum { OP_RESPOND = 1, OP_HEALTH, OP_STOP, OP_REQUEST, OP_LEG_CREATE,
@@ -209,6 +238,9 @@ typedef struct op {
     char *route;
     /* OP_REQUEST / OP_SEND: send over this RFC 5626 flow (0: none) */
     uint64_t flow;
+    /* OP_REQUEST / OP_SEND: send from the listen address with this ident
+     * ("" lets tport pick one by protocol and address family) */
+    char ident[MAX_IDENT];
 } op_t;
 
 /* ---------- small helpers ---------- */
@@ -470,6 +502,9 @@ struct req_ev {
     int src_port;
     char transport[16]; /* "udp", "tcp", "tls"... ("" if unknown) */
     uint64_t flow; /* the TCP/TLS connection's flow id (0: none) */
+    char local_ip[64]; /* the listen address it arrived on ("" if unknown) */
+    int local_port;
+    char local[MAX_IDENT]; /* that address's ident ("" if none) */
 };
 
 static ERL_NIF_TERM mk_request_ev(ErlNifEnv *env, engine_t *e, void *arg) {
@@ -489,6 +524,15 @@ static ERL_NIF_TERM mk_request_ev(ErlNifEnv *env, engine_t *e, void *arg) {
     if (r->flow)
         enif_make_map_put(env, meta, am_conn, enif_make_uint64(env, r->flow),
                           &meta);
+    if (r->local_ip[0]) {
+        enif_make_map_put(env, meta, am_local_ip,
+                          mkbin(env, r->local_ip, strlen(r->local_ip)), &meta);
+        enif_make_map_put(env, meta, am_local_port,
+                          enif_make_int(env, r->local_port), &meta);
+    }
+    if (r->local[0])
+        enif_make_map_put(env, meta, am_local,
+                          mkbin(env, r->local, strlen(r->local)), &meta);
     ERL_NIF_TERM raw = r->raw ? mkbin(env, r->raw, r->raw_len)
                               : mkbin(env, "", 0);
     ERL_NIF_TERM leg = r->leg ? enif_make_uint64(env, r->leg) : am_undefined;
@@ -830,8 +874,23 @@ static int deliver_request(engine_t *e, uint64_t leg_h, nta_incoming_t *irq,
      * answered with our sips contact (RFC 5630) */
     char transport[16] = {0};
     uint64_t flow = 0;
+    char local_ip[64] = {0};
+    int local_port = 0;
+    char local[MAX_IDENT] = {0};
     {
         tport_t *tp = nta_incoming_transport(e->agent, irq, NULL);
+        /* the listen address it arrived on: the bound address of the
+         * primary transport (a connection's parent), and its ident */
+        tport_t *pri = tp ? tport_parent(tp) : NULL;
+        su_addrinfo_t const *la = pri ? tport_get_address(pri) : NULL;
+        if (la && la->ai_addr) {
+            su_sockaddr_t const *su = (su_sockaddr_t const *)la->ai_addr;
+            su_inet_ntop(su->su_family, SU_ADDR(su), local_ip,
+                         sizeof local_ip);
+            local_port = ntohs(su->su_port);
+        }
+        char const *id = tp ? tport_ident(tp) : NULL;
+        if (id) snprintf(local, sizeof local, "%s", id);
         /* the connection it came over, as an RFC 5626 flow a later
          * request can be sent back on */
         flow = flow_of(e, tp);
@@ -857,6 +916,9 @@ static int deliver_request(engine_t *e, uint64_t leg_h, nta_incoming_t *irq,
     };
     snprintf(r.src_ip, sizeof(r.src_ip), "%s", src_ip);
     snprintf(r.transport, sizeof(r.transport), "%s", transport);
+    snprintf(r.local_ip, sizeof(r.local_ip), "%s", local_ip);
+    r.local_port = local_port;
+    snprintf(r.local, sizeof(r.local), "%s", local);
     send_event(e, mk_request_ev, &r);
     if (raw) su_free(e->home, raw);
     return 0; /* we own irq now; reply comes via OP_RESPOND */
@@ -1102,7 +1164,9 @@ static void op_cb(su_root_magic_t *magic, su_msg_r msg, su_msg_arg_t *arg) {
         nta_outgoing_t *orq = nta_outgoing_mcreate(
             e->agent, outgoing_response_cb, (nta_outgoing_magic_t *)ctx,
             route, m, TAG_IF(op->branch[0], NTATAG_BRANCH_KEY(op->branch)),
-            TAG_IF(ftp, NTATAG_TPORT(ftp)), TAG_END());
+            TAG_IF(ftp, NTATAG_TPORT(ftp)),
+            TAG_IF(op->ident[0] && e->has_idents, TPTAG_IDENT(op->ident)),
+            TAG_END());
         if (proxy_inv) nta_agent_set_params(e->agent, NTATAG_UA(1), TAG_END());
         if (!orq) {
             /* nta owns/destroys msg only on success */
@@ -1187,7 +1251,9 @@ static void op_cb(su_root_magic_t *magic, su_msg_r msg, su_msg_arg_t *arg) {
         }
         nta_outgoing_t *orq = nta_outgoing_mcreate(
             e->agent, NULL, NULL, route, m,
-            TAG_IF(f, NTATAG_TPORT(f ? f->tp : NULL)), TAG_END());
+            TAG_IF(f, NTATAG_TPORT(f ? f->tp : NULL)),
+            TAG_IF(op->ident[0] && e->has_idents, TPTAG_IDENT(op->ident)),
+            TAG_END());
         if (!orq) {
             msg_destroy(m);
             send_op_failed(e, op->h, "nta_outgoing_mcreate (send) failed");
@@ -1319,6 +1385,96 @@ static void set_failed(engine_t *e, const char *why) {
  * the whole thread lifetime means engine_dtor - which runs only at refcount 0
  * - cannot free e while the thread is still alive; that removes the stop-hung
  * use-after-free (F1) without ever blocking a scheduler in the destructor. */
+/* ---------- HEP capture socket (stack thread only) ---------- */
+
+/* The open file descriptors of the process, sorted ascending, into a new
+ * array; *n is its length. NULL when /dev/fd cannot be read. The listing's
+ * own descriptor is left out: it is closed on return, and the next socket
+ * may well reuse it. */
+static int fd_cmp(const void *a, const void *b) {
+    int x = *(const int *)a, y = *(const int *)b;
+    return (x > y) - (x < y);
+}
+
+static int *open_fds(size_t *n) {
+    *n = 0;
+    DIR *d = opendir("/dev/fd");
+    if (!d) return NULL;
+    size_t cap = 64;
+    int *fds = enif_alloc(cap * sizeof *fds);
+    int self = dirfd(d);
+    struct dirent *de;
+    while (fds && (de = readdir(d)) != NULL) {
+        if (de->d_name[0] < '0' || de->d_name[0] > '9') continue;
+        if (atoi(de->d_name) == self) continue;
+        if (*n == cap) {
+            int *more = enif_realloc(fds, 2 * cap * sizeof *fds);
+            if (!more) {
+                enif_free(fds);
+                fds = NULL;
+                break;
+            }
+            fds = more;
+            cap *= 2;
+        }
+        fds[(*n)++] = atoi(de->d_name);
+    }
+    closedir(d);
+    if (fds) qsort(fds, *n, sizeof *fds, fd_cmp);
+    return fds;
+}
+
+/* the port of a capture URL, "udp:host:port;params" */
+static int capture_port(const char *url) {
+    char buf[MAX_CONTACT];
+    snprintf(buf, sizeof buf, "%s", url);
+    char *semi = strchr(buf, ';');
+    if (semi) *semi = 0;
+    char *colon = strrchr(buf, ':');
+    return colon ? atoi(colon + 1) : 0;
+}
+
+/* tport opens the capture socket while the agent is created and never
+ * closes it (tport_destroy leaves mr_capt_sock open). It is the datagram
+ * socket that appeared during the create, connected to the collector's
+ * port: find it so teardown can close it. -1 when there is none. */
+static int capture_fd(const int *before, size_t nbefore, int port) {
+    size_t n;
+    int *after = open_fds(&n);
+    int found = -1;
+    for (size_t i = 0; after && i < n && found < 0; i++) {
+        int fd = after[i];
+        if (before && bsearch(&fd, before, nbefore, sizeof fd, fd_cmp))
+            continue;
+        int type = 0;
+        socklen_t tl = sizeof type;
+        struct sockaddr_storage ss;
+        socklen_t sl = sizeof ss;
+        if (getsockopt(fd, SOL_SOCKET, SO_TYPE, &type, &tl) != 0 ||
+            type != SOCK_DGRAM ||
+            getpeername(fd, (struct sockaddr *)&ss, &sl) != 0)
+            continue;
+        int peer = ss.ss_family == AF_INET6
+            ? ntohs(((struct sockaddr_in6 *)&ss)->sin6_port)
+            : ntohs(((struct sockaddr_in *)&ss)->sin_port);
+        if (peer == port) found = fd;
+    }
+    if (after) enif_free(after);
+    return found;
+}
+
+/* the agent is gone: so is the capture, close its socket */
+static void agent_destroy(engine_t *e) {
+    if (e->agent) {
+        nta_agent_destroy(e->agent);
+        e->agent = NULL;
+    }
+    if (e->capt_fd >= 0) {
+        close(e->capt_fd);
+        e->capt_fd = -1;
+    }
+}
+
 static void *thread_exit(engine_t *e) {
     enif_release_resource(e);
     return NULL;
@@ -1330,7 +1486,7 @@ static void teardown_sofia(engine_t *e) {
     atomic_store(&g_log_engine, NULL);
     tab_drain(e);
     if (e->dleg) { nta_leg_destroy(e->dleg); e->dleg = NULL; }
-    if (e->agent) { nta_agent_destroy(e->agent); e->agent = NULL; }
+    agent_destroy(e);
     orphans_sweep(e, 1);
     enif_rwlock_rwlock(e->root_lock);
     if (e->root) { su_root_destroy(e->root); e->root = NULL; }
@@ -1366,19 +1522,28 @@ static void *stack_main(void *arg) {
      * answer a CRLFCRLF keepalive ping on a TCP/TLS connection with a CRLF
      * pong (RFC 5626 4.4.1); tport passes it on to the transports.
      * stray_cb gets the responses that match no client transaction: a
-     * second 2xx of a proxy branch on TCP/TLS (RFC 6026). */
+     * second 2xx of a proxy branch on TCP/TLS (RFC 6026). TPTAG_CAPT: tport
+     * sends a HEP copy of every message it sends and receives to the
+     * capture server. */
+    size_t nbefore = 0;
+    int *before = e->capture[0] ? open_fds(&nbefore) : NULL;
     e->agent = nta_agent_create(
         e->root, URL_STRING_MAKE(e->contact), stray_cb, (nta_agent_magic_t *)e,
         NTATAG_MAXSIZE(e->max_msg_size), NTATAG_UA(1), NTATAG_EXTRA_100(1),
         NTATAG_MERGE_482(0), NTATAG_CANCEL_487(0), NTATAG_RPORT(1),
-        TPTAG_PONG2PING(1),
+        TPTAG_PONG2PING(1), TAG_IF(e->capture[0], TPTAG_CAPT(e->capture)),
+        TAG_IF(e->ident[0], TPTAG_IDENT(e->ident)),
         NTATAG_BAD_REQ_MASK(~(sip_mask_response | sip_mask_proxy |
                               sip_mask_registrar | sip_mask_pref |
                               sip_mask_privacy | sip_mask_events |
                               sip_mask_publish)),
         TAG_END());
+    if (before)
+        e->capt_fd = capture_fd(before, nbefore, capture_port(e->capture));
+    if (before) enif_free(before);
     if (!e->agent) {
         set_failed(e, "nta_agent_create failed (bad or busy contact?)");
+        agent_destroy(e);
         su_root_destroy(e->root);
         e->root = NULL;
         su_home_deinit(e->home);
@@ -1389,19 +1554,28 @@ static void *stack_main(void *arg) {
                               NTATAG_NO_DIALOG(1), TAG_END());
     if (!e->dleg) {
         set_failed(e, "nta_leg_tcreate failed");
-        nta_agent_destroy(e->agent);
-        e->agent = NULL;
+        agent_destroy(e);
         su_root_destroy(e->root);
         e->root = NULL;
         su_home_deinit(e->home);
         return thread_exit(e);
     }
 
-    /* optional TLS listener on its own port. Comma-listed transports share
-     * one port, so a secure transport needs a separate bind. Certificates
-     * live in the cert dir (agent.pem cert+key, cafile.pem). TPTAG_TLS_VERSION
-     * must be set explicitly: the default disables modern TLS. */
-    if (e->tls_contact[0]) {
+    /* the other listen addresses, each with the ident a send names it by */
+    const char *bind_err = NULL;
+    for (int i = 0; i < e->nx && !bind_err; i++) {
+        if (nta_agent_add_tport(e->agent, URL_STRING_MAKE(e->xcontact[i]),
+                                TPTAG_IDENT(e->xident[i]), TPTAG_PONG2PING(1),
+                                TAG_END()) < 0)
+            bind_err = "nta_agent_add_tport failed (bad or busy contact?)";
+    }
+
+    /* optional TLS listeners, each on its own port. Comma-listed
+     * transports share one port, so a secure transport needs a separate
+     * bind. Certificates live in the cert dir (agent.pem cert+key,
+     * cafile.pem). TPTAG_TLS_VERSION must be set explicitly: the default
+     * disables modern TLS. */
+    if (e->tls_contact[0] && !bind_err) {
         /* TLS 1.2 floor: 1.0/1.1 are deprecated (sofia has no 1.3 constant,
          * so 1.3 is left to the OpenSSL context default). */
         unsigned ver = TPTLS_VERSION_TLSv1_2;
@@ -1417,26 +1591,32 @@ static void *stack_main(void *arg) {
         const char *ciphers = e->tls_ciphers[0]
             ? e->tls_ciphers
             : "HIGH:!aNULL:!eNULL:!EXPORT:!DES:!RC4:!MD5:!PSK";
-        int rc = nta_agent_add_tport(
-            e->agent, URL_STRING_MAKE(e->tls_contact),
-            TAG_IF(e->tls_cert_dir[0], TPTAG_CERTIFICATE(e->tls_cert_dir)),
-            TPTAG_TLS_VERSION(ver),
-            TPTAG_TLS_CIPHERS(ciphers),
-            TPTAG_TLS_VERIFY_POLICY(policy),
-            TPTAG_PONG2PING(1),
-            TAG_IF(e->tls_passphrase[0], TPTAG_TLS_PASSPHRASE(e->tls_passphrase)),
-            TAG_END());
-        if (rc < 0) {
-            set_failed(e, "nta_agent_add_tport (tls) failed (certs?)");
-            nta_leg_destroy(e->dleg);
-            e->dleg = NULL;
-            nta_agent_destroy(e->agent);
-            e->agent = NULL;
-            su_root_destroy(e->root);
-            e->root = NULL;
-            su_home_deinit(e->home);
-            return thread_exit(e);
+        for (int i = -1; i < e->ntlsx && !bind_err; i++) {
+            const char *url = i < 0 ? e->tls_contact : e->tls_xcontact[i];
+            const char *id = i < 0 ? e->tls_ident : e->tls_xident[i];
+            int rc = nta_agent_add_tport(
+                e->agent, URL_STRING_MAKE(url),
+                TAG_IF(e->tls_cert_dir[0], TPTAG_CERTIFICATE(e->tls_cert_dir)),
+                TPTAG_TLS_VERSION(ver),
+                TPTAG_TLS_CIPHERS(ciphers),
+                TPTAG_TLS_VERIFY_POLICY(policy),
+                TPTAG_PONG2PING(1),
+                TAG_IF(id[0], TPTAG_IDENT(id)),
+                TAG_IF(e->tls_passphrase[0],
+                       TPTAG_TLS_PASSPHRASE(e->tls_passphrase)),
+                TAG_END());
+            if (rc < 0) bind_err = "nta_agent_add_tport (tls) failed (certs?)";
         }
+    }
+    if (bind_err) {
+        set_failed(e, bind_err);
+        nta_leg_destroy(e->dleg);
+        e->dleg = NULL;
+        agent_destroy(e);
+        su_root_destroy(e->root);
+        e->root = NULL;
+        su_home_deinit(e->home);
+        return thread_exit(e);
     }
 
     /* init done: publish READY, unless nif_start abandoned us. The CAS makes
@@ -1564,6 +1744,33 @@ static int get_opt_bin(ErlNifEnv *env, ERL_NIF_TERM map, ERL_NIF_TERM key,
     return 1;
 }
 
+/* contacts => [{Uri, Ident}]: the listen addresses after the first, into
+ * urls/idents; their count in *n. 0 on a malformed or too long list. */
+static int get_binds(ErlNifEnv *env, ERL_NIF_TERM map,
+                     char urls[][MAX_CONTACT], char idents[][MAX_IDENT],
+                     int *n) {
+    ERL_NIF_TERM list, head;
+    *n = 0;
+    if (!enif_get_map_value(env, map, am_contacts, &list)) return 1;
+    while (enif_get_list_cell(env, list, &head, &list)) {
+        int arity;
+        const ERL_NIF_TERM *t;
+        ErlNifBinary u, id;
+        if (*n >= MAX_BINDS || !enif_get_tuple(env, head, &arity, &t) ||
+            arity != 2 || !enif_inspect_binary(env, t[0], &u) ||
+            !enif_inspect_binary(env, t[1], &id) || u.size == 0 ||
+            u.size >= MAX_CONTACT || id.size == 0 || id.size >= MAX_IDENT ||
+            memchr(u.data, 0, u.size) || memchr(id.data, 0, id.size))
+            return 0;
+        memcpy(urls[*n], u.data, u.size);
+        urls[*n][u.size] = 0;
+        memcpy(idents[*n], id.data, id.size);
+        idents[*n][id.size] = 0;
+        (*n)++;
+    }
+    return enif_is_empty_list(env, list);
+}
+
 static ERL_NIF_TERM nif_start(ErlNifEnv *env, int argc,
                               const ERL_NIF_TERM argv[]) {
     if (argc != 2 || !enif_is_map(env, argv[0]))
@@ -1588,6 +1795,7 @@ static ERL_NIF_TERM nif_start(ErlNifEnv *env, int argc,
     memset(e, 0, sizeof *e);
     e->owner = owner;
     e->max_msg_size = DEFAULT_MAX_MSG_SIZE;
+    e->capt_fd = -1;
     atomic_init(&e->state, ST_INIT);
 
     e->root_lock = enif_rwlock_create("chappe_sip_root");
@@ -1597,11 +1805,15 @@ static ERL_NIF_TERM nif_start(ErlNifEnv *env, int argc,
         return enif_make_tuple2(env, am_error, am_badarg);
     }
 
-    if (!get_opt_bin(env, argv[0], am_contact, e->contact, sizeof e->contact)) {
+    if (!get_opt_bin(env, argv[0], am_contact, e->contact, sizeof e->contact) ||
+        !get_binds(env, argv[0], e->xcontact, e->xident, &e->nx)) {
         atomic_store(&g_engine_state, G_NONE);
         enif_release_resource(e);
         return enif_make_tuple2(env, am_error, am_badarg);
     }
+    get_opt_bin(env, argv[0], am_ident, e->ident, sizeof e->ident);
+    /* optional HEP capture: capture => <<"udp:host:port;hep=3;...">> */
+    get_opt_bin(env, argv[0], am_capture, e->capture, sizeof e->capture);
     {
         ERL_NIF_TERM v;
         unsigned long sz;
@@ -1618,6 +1830,14 @@ static ERL_NIF_TERM nif_start(ErlNifEnv *env, int argc,
             enif_is_map(env, tls)) {
             get_opt_bin(env, tls, am_contact, e->tls_contact,
                         sizeof e->tls_contact);
+            get_opt_bin(env, tls, am_ident, e->tls_ident,
+                        sizeof e->tls_ident);
+            if (!get_binds(env, tls, e->tls_xcontact, e->tls_xident,
+                           &e->ntlsx)) {
+                atomic_store(&g_engine_state, G_NONE);
+                enif_release_resource(e);
+                return enif_make_tuple2(env, am_error, am_badarg);
+            }
             get_opt_bin(env, tls, am_cert_dir, e->tls_cert_dir,
                         sizeof e->tls_cert_dir);
             get_opt_bin(env, tls, am_passphrase, e->tls_passphrase,
@@ -1633,6 +1853,16 @@ static ERL_NIF_TERM nif_start(ErlNifEnv *env, int argc,
             if (enif_get_map_value(env, tls, am_verify_clients, &vv))
                 e->tls_verify_clients = enif_is_identical(vv, am_true);
         }
+    }
+
+    /* a send may name an ident only when every transport has one: tport
+     * compares it with each primary's ident without a NULL check. More
+     * than one address needs idents throughout. */
+    e->has_idents = e->ident[0] && (!e->tls_contact[0] || e->tls_ident[0]);
+    if ((e->nx > 0 || e->ntlsx > 0) && !e->has_idents) {
+        atomic_store(&g_engine_state, G_NONE);
+        enif_release_resource(e);
+        return enif_make_tuple2(env, am_error, am_badarg);
     }
 
     /* the stack thread holds its own resource ref for its whole life (released
@@ -1787,15 +2017,21 @@ static uint64_t reserve_id(void) {
 static ERL_NIF_TERM nif_request(ErlNifEnv *env, int argc,
                                 const ERL_NIF_TERM argv[]) {
     engine_t *e;
-    ErlNifBinary route, raw, branch = {0};
+    ErlNifBinary route, raw, branch = {0}, ident = {0};
     int have_route;
-    if ((argc != 3 && argc != 4) ||
+    if ((argc < 3 || argc > 5) ||
         !enif_get_resource(env, argv[0], ENGINE_RT, (void **)&e))
         return enif_make_badarg(env);
-    /* request/4: the Via branch, without NULs, shorter than op.branch */
-    if (argc == 4 && (!enif_inspect_binary(env, argv[3], &branch) ||
-                      branch.size == 0 || branch.size >= 96 ||
+    /* request/4: the Via branch, without NULs, shorter than op.branch;
+     * request/5 takes <<>> for none */
+    if (argc >= 4 && (!enif_inspect_binary(env, argv[3], &branch) ||
+                      (branch.size == 0 && argc == 4) || branch.size >= 96 ||
                       memchr(branch.data, 0, branch.size)))
+        return enif_make_badarg(env);
+    /* request/5: the ident of the listen address to send from (<<>>: any) */
+    if (argc == 5 && (!enif_inspect_binary(env, argv[4], &ident) ||
+                      ident.size >= MAX_IDENT ||
+                      memchr(ident.data, 0, ident.size)))
         return enif_make_badarg(env);
     /* the route: a URI, undefined, or an RFC 5626 flow id */
     ErlNifUInt64 flow = 0;
@@ -1814,6 +2050,10 @@ static ERL_NIF_TERM nif_request(ErlNifEnv *env, int argc,
     if (branch.size) {
         memcpy(op.branch, branch.data, branch.size);
         op.branch[branch.size] = 0;
+    }
+    if (ident.size) {
+        memcpy(op.ident, ident.data, ident.size);
+        op.ident[ident.size] = 0;
     }
     op.raw = enif_alloc(raw.size);
     if (!op.raw) return enif_make_tuple2(env, am_error, am_badarg);
@@ -1887,9 +2127,15 @@ static ERL_NIF_TERM nif_reliable_respond(ErlNifEnv *env, int argc,
 static ERL_NIF_TERM nif_send(ErlNifEnv *env, int argc,
                              const ERL_NIF_TERM argv[]) {
     engine_t *e;
-    ErlNifBinary route, raw;
+    ErlNifBinary route, raw, ident = {0};
     int have_route;
-    if (argc != 3 || !enif_get_resource(env, argv[0], ENGINE_RT, (void **)&e))
+    if ((argc != 3 && argc != 4) ||
+        !enif_get_resource(env, argv[0], ENGINE_RT, (void **)&e))
+        return enif_make_badarg(env);
+    /* send/4: the ident of the listen address to send from (<<>>: any) */
+    if (argc == 4 && (!enif_inspect_binary(env, argv[3], &ident) ||
+                      ident.size >= MAX_IDENT ||
+                      memchr(ident.data, 0, ident.size)))
         return enif_make_badarg(env);
     ErlNifUInt64 flow = 0;
     have_route = enif_inspect_binary(env, argv[1], &route);
@@ -1904,6 +2150,10 @@ static ERL_NIF_TERM nif_send(ErlNifEnv *env, int argc,
         return enif_make_tuple2(env, am_error, enif_make_atom(env, "too_large"));
 
     op_t op = {.kind = OP_SEND, .h = reserve_id(), .flow = flow};
+    if (ident.size) {
+        memcpy(op.ident, ident.data, ident.size);
+        op.ident[ident.size] = 0;
+    }
     op.raw = enif_alloc(raw.size);
     if (!op.raw) return enif_make_tuple2(env, am_error, am_badarg);
     memcpy(op.raw, raw.data, raw.size);
@@ -2162,6 +2412,12 @@ static int load(ErlNifEnv *env, void **priv, ERL_NIF_TERM info) {
     am_true = enif_make_atom(env, "true");
     am_conn = enif_make_atom(env, "conn");
     am_flow_closed = enif_make_atom(env, "flow_closed");
+    am_capture = enif_make_atom(env, "capture");
+    am_ident = enif_make_atom(env, "ident");
+    am_contacts = enif_make_atom(env, "contacts");
+    am_local = enif_make_atom(env, "local");
+    am_local_ip = enif_make_atom(env, "local_ip");
+    am_local_port = enif_make_atom(env, "local_port");
     return 0;
 }
 
@@ -2190,8 +2446,10 @@ static ErlNifFunc nif_funcs[] = {
     {"reliable_respond", 7, nif_reliable_respond, 0},
     {"request", 3, nif_request, 0},
     {"request", 4, nif_request, 0},
+    {"request", 5, nif_request, 0},
     {"proxy_mark", 2, nif_proxy_mark, 0},
     {"send", 3, nif_send, 0},
+    {"send", 4, nif_send, 0},
     {"send_response", 2, nif_send_response, 0},
     {"relay", 4, nif_relay, 0},
     {"cancel", 2, nif_cancel, 0},

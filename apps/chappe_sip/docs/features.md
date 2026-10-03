@@ -58,6 +58,22 @@ tracker; the milestone history is in `docs/plan.md`.
   dialogs down with `engine_restart`, keeps routes, restarts the NIF.
 - Health check that round-trips through the sofia event loop, with a
   halt-the-node hang policy.
+- Several listen addresses per transport: `contact` and the TLS `contact`
+  take a list of URIs (127.0.0.1 and ::1, a public and a private address).
+  A request is answered (the 2xx Contact) and record-routed with the address
+  it came to, and the dialog it forms sends from there; the request meta
+  carries `local_ip`, `local_port` and `local`. A request we originate
+  leaves from the address its `local` option names, else the first of the
+  target's address family, and a UDP registration flow keeps the address it
+  reached (`{udp, Ip, Port, Local}`). One contact behaves as before. See
+  `docs/guides/deployment.md`.
+- SIP capture to Homer (`hep => #{host, port, capture_id}` in
+  `chappe_sip:start/1`, or the `hep` setting): a HEPv3 copy of every message
+  sent and received. sofia captures UDP, TCP and TLS (`TPTAG_CAPT`, so
+  retransmissions and the stack's own responses are in it); `chappe_sip_hep`
+  captures WebSocket, with the Call-ID in the correlation chunk, from its own
+  process so a slow collector never blocks SIP. Off by default; checked
+  against heplify-server in the conformance lab. See `docs/guides/capture.md`.
 
 ### Application API (srf-style)
 - Request handlers by method: `chappe_sip:invite/1`, `chappe_sip:register/1`,
@@ -149,6 +165,37 @@ tracker; the milestone history is in `docs/plan.md`.
   for packages you do not serve. `notify/2` also sends the implicit REFER subscription's NOTIFYs
   inside an INVITE dialog. Works over UDP/TCP and WS. See the subscriptions
   guide.
+- Event package routing: `chappe_sip:event_package/2` gives each package
+  its own SUBSCRIBE handler, `subscribe/1,2` staying the catch-all;
+  Allow-Events (OPTIONS 200, the 489) lists the registered packages.
+- Subscriber side (RFC 6665): `chappe_sip:subscribe_to/3` starts a process
+  that sends the SUBSCRIBE through the UAC (digest, proxy, flow), forms the
+  dialog from the 2xx or the first NOTIFY, starts a subscription of its own
+  for each forked NOTIFY, refreshes before expiry (a NOTIFY's `expires`
+  wins), runs Timer N, ends on the refresh failures of 4.1.2.2, and acts on
+  the terminated reasons (re-subscribe at once, after `retry-after`, or
+  stop). `chappe_sip:unsubscribe/1` sends `Expires: 0`. NOTIFYs outside a
+  dialog go through one router: our subscriptions, then REFERs we sent,
+  then your `notify/1` handler, else 481. `chappe_sip_hdr:subscription_state/1`
+  parses the header.
+- Publication (RFC 3903): `chappe_sip:publish/1` with a map is an event
+  state compositor (SIP-ETag per 2xx, SIP-If-Match refresh, modify and
+  remove, 412, 423 with Min-Expires, 489, 415, 404 by a `resources` fun,
+  digest `auth`, expiry); `chappe_sip:publish_state/4` is the client side
+  (refresh before expiry, modify, remove, a full republish after 412, the
+  423 retry, one PUBLISH at a time).
+- Presence (RFC 3856, PIDF of RFC 3863): `chappe_sip_presence:serve/1` (or
+  the `presence` start option) serves the presence package from the
+  published state: authentication, an `authorize` hook (allow, polite
+  blocking, pending with a note, deny), 406 for an Accept without PIDF, the
+  full composed state on subscribe, refresh and every change, at most one
+  NOTIFY per `min_interval` (5 s). `chappe_sip_pidf` renders, parses (xmerl,
+  no DOCTYPE) and composes PIDF; a presence subscription parses each NOTIFY
+  into `doc` and keeps one dialog per SUBSCRIBE.
+- Message waiting (RFC 3842): `chappe_sip_mwi:serve/1` and `update/2` notify
+  every `message-summary` subscriber of an account (at most once a second
+  each); `chappe_sip_mwi` renders and parses simple-message-summary. See the
+  presence guide.
 - REFER (RFC 3515 as updated by RFC 7647), both sides, in `chappe_sip_refer`
   (facade: `chappe_sip:accept_refer/3,4`, `send_refer/3`). Recipient: 400 for
   zero or several Refer-To, 416 for a non sip/sips/tel target, an `authorize`
@@ -177,6 +224,15 @@ tracker; the milestone history is in `docs/plan.md`.
   endpoint's disconnection-method, referred-by, media (with the `a=ssrc` as
   src-id) and on-hold state from SIP. See the conference focus guide.
 - `chappe_sip_handler`: an optional behaviour for structured UAS apps.
+- Call records: `chappe_sip_cdr:subscribe/1` sends `attempt`, `start` and
+  `stop` for each INVITE call attempt and role (`uas`, `uac`, `b2b_a` and
+  `b2b_b` linked to each other, `proxy`), with the tags, the transport and
+  source, the ring, answer and end times, the final status and a
+  normalized reason (`{bye, local | remote}`, `cancel`, `{final, Status}`,
+  `owner_down`, `flow_lost`, ...). Exactly one stop per attempt: one
+  process owns the open records and monitors what drives each call, so a
+  killed or shut down fsm still ends its record (`{process_down, Why}`).
+  No subscriber, no record. See the call records guide.
 - Replaces (RFC 3891): `chappe_sip:find_replaced/1` matches an INVITE's
   `Replaces` to a live dialog and returns its state (`early | confirmed |
   terminated`), role, and `early-only` flag so you can answer 400/481/486/603;
@@ -378,6 +434,21 @@ tracker; the milestone history is in `docs/plan.md`.
   return `{reject, 401, Headers}`; send those headers with the 401. To keep
   the old behaviour on a closed network, pass
   `#{authorize => fun(_, _) -> true end}`.
+- A CANCEL of an INVITE you answered 1xx with `create_uas/3` now ends that
+  early dialog: its owner gets `{chappe_sip_dialog, D, destroy, cancel}`.
+- `chappe_sip:stop/0` and an engine degrade now tear the dialogs down as
+  `restart_engine/0` does: owners get `destroy` with reason
+  `engine_restart`, and a UAC still ringing gets `{error, engine_restart}`.
+- A closed WebSocket connection now ends the dialogs bound to it: owners get
+  `destroy` with reason `flow_lost`.
+- Every NOTIFY outside a dialog now goes through the built-in router: your
+  `chappe_sip:notify/1` handler sees only the NOTIFYs no subscription of
+  ours and no REFER we sent claims, and without a handler a NOTIFY gets 481
+  instead of 405. NOTIFY is always in Allow.
+- A UAC INVITE now watches its owner (`owner`, else `notify`, else the
+  caller of `chappe_sip_uac:start/2`): when that process exits while the
+  INVITE rings, the INVITE is CANCELled and a 2xx that still comes is ACKed
+  and BYEd. Start the call from the process that keeps it, or pass `owner`.
 - `chappe_sip_focus:subscribe/4` now sends the conference process
   `{chappe_sip_focus, subscribed, Dialog, Opts}`. Pass it to
   `chappe_sip_focus:handle_info/2` as before; the three-element form is still
@@ -392,15 +463,6 @@ Gaps relative to drachtio, in rough order of impact.
   so one server fronts many apps, one app fronts many servers, and an app
   restarts without dropping the stack. We embed the stack in the node, so a
   remote-app split and outbound cloud-scaling are not available yet.
-- **CDR events**: no call-accounting event stream. drachtio emits
-  `cdr:attempt` / `cdr:start` / `cdr:stop`; we would surface the equivalent as
-  process events or telemetry for billing and observability.
-- **Event packages on top of subscriptions**: besides `conference`, no
-  presence (PUBLISH/PIDF) or MWI package; PUBLISH only routes as a method. The subscriber side (sending
-  SUBSCRIBE and keeping it refreshed) is not implemented either.
-- **Multi-homed contacts**: one contact per transport today; binding several
-  listen addresses on the same transport is not supported.
-- **SIP capture (HEP/Homer)**: no native trace export to a capture agent.
 
 ## Non-goals
 

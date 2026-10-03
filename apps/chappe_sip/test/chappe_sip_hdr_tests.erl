@@ -281,6 +281,25 @@ event_test() ->
     ?assertEqual({error, malformed}, chappe_sip_hdr:event(<<>>)),
     ?assertEqual({error, malformed}, chappe_sip_hdr:event(undefined)).
 
+%% RFC 6665 8.2.3: Subscription-State, its expires, reason and
+%% retry-after; another value is kept as written, lowercased
+subscription_state_test() ->
+    ?assertEqual({ok, #{state => active, expires => 300, reason => undefined,
+                        retry_after => undefined}},
+                 chappe_sip_hdr:subscription_state(<<"active;expires=300">>)),
+    ?assertEqual({ok, #{state => pending, expires => undefined,
+                        reason => undefined, retry_after => undefined}},
+                 chappe_sip_hdr:subscription_state(<<" Pending ">>)),
+    ?assertEqual({ok, #{state => terminated, expires => undefined,
+                        reason => <<"probation">>, retry_after => 30}},
+                 chappe_sip_hdr:subscription_state(
+                   <<"terminated ; reason=Probation; retry-after=30">>)),
+    ?assertMatch({ok, #{state := <<"waiting">>, expires := undefined}},
+                 chappe_sip_hdr:subscription_state(<<"waiting;expires=x">>)),
+    ?assertEqual({error, malformed}, chappe_sip_hdr:subscription_state(<<>>)),
+    ?assertEqual({error, malformed},
+                 chappe_sip_hdr:subscription_state(undefined)).
+
 %% Refer-To (RFC 3515 2.1): the target URI, its method param (RFC 3261
 %% 19.1.1) and its escaped headers, among them a Replaces (RFC 3891 6.1)
 %% or a nested Refer-To (RFC 4579 5.7)

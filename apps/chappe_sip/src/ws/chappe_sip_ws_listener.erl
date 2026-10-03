@@ -15,7 +15,7 @@
 -module(chappe_sip_ws_listener).
 -behaviour(gen_server).
 
--export([start_link/1, ws_route/1, wss_route/1]).
+-export([start_link/1, ws_route/1, wss_route/1, port/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 start_link(Opts) ->
@@ -83,6 +83,7 @@ init(Opts) ->
     end.
 
 start_plain(#{port := Port}) ->
+    remember(ws, Port),
     service(Port, #{}, fun ?MODULE:ws_route/1);
 start_plain(_Opts) ->
     {ok, undefined}.
@@ -90,6 +91,7 @@ start_plain(_Opts) ->
 start_tls(#{tls := #{port := Port} = Tls}) ->
     case cert_files(Tls) of
         {ok, Cert, Key} ->
+            remember(wss, Port),
             service(
                 Port,
                 #{
@@ -116,6 +118,17 @@ cert_files(#{cert_dir := Dir}) ->
     {ok, Pem, Pem};
 cert_files(_Tls) ->
     {error, {wss, missing_certificate}}.
+
+%% The port a listener was started on (HEP capture names it as our end).
+-spec port(ws | wss) -> inet:port_number().
+port(Proto) ->
+    persistent_term:get({?MODULE, Proto}, 0).
+
+remember(Proto, Port) ->
+    case port(Proto) of
+        Port -> ok;
+        _ -> persistent_term:put({?MODULE, Proto}, Port)
+    end.
 
 service(Port, ListenOpts, Route) ->
     Router = livery_router:compile([{<<"GET">>, <<"/ws">>, Route}]),

@@ -40,6 +40,7 @@
     find_dialog/3, find_replaced/1, replaces_response/1, replaces_response/2
 ]).
 -export([accept_refer/3, accept_refer/4, send_refer/3]).
+-export([event_package/2, subscribe_to/3, unsubscribe/1, publish_state/4]).
 
 -export_type([replaced_info/0]).
 
@@ -50,21 +51,47 @@
     early_only := boolean()
 }.
 
-%% Opts: #{contact := binary(), max_message_size => pos_integer(),
-%%         tls => #{contact := binary(), cert_dir => binary(),
+%% Opts: #{contact := binary() | [binary()], max_message_size => pos_integer(),
+%%         tls => #{contact := binary() | [binary()], cert_dir => binary(),
 %%                  passphrase => binary(), verify => peer | none,
 %%                  verify_clients => boolean(), allow_insecure => boolean()},
 %%         ws => #{port := inet:port_number()},
-%%         wss => #{port := inet:port_number(), cert_dir => binary()}}
+%%         wss => #{port := inet:port_number(), cert_dir => binary()},
+%%         presence => map(),
+%%         hep => #{host := inet:ip_address() | string() | binary(),
+%%                  port := 1024..65535, version => 3,
+%%                  capture_id => pos_integer()}}
+%% presence serves the presence package once the stack is up
+%% (chappe_sip_presence:serve/1 takes the map).
 %% The tls contact binds a TLS listener on its own port (e.g.
 %% <<"sips:0.0.0.0:5061;transport=tls">>); cert_dir holds agent.pem and
 %% cafile.pem. verify (default peer) checks outbound server certificates;
 %% none is accepted only with allow_insecure => true. wss serves SIP over
 %% secure WebSocket with the agent.pem of its cert_dir (or certfile/keyfile).
-%% max_message_size defaults to the application setting.
--spec start(#{contact := binary(), _ => _}) ->
+%% contact (and tls contact) may list several URIs, one per listen address:
+%% a request is answered, and record-routed, with the address it came to.
+%% max_message_size defaults to the application setting. hep (or the
+%% `hep' application setting) sends a HEPv3 copy of every SIP message sent
+%% and received to a capture server (Homer); capture_id defaults to 200.
+-spec start(#{contact := binary() | [binary()], _ => _}) ->
     ok | {error, already_started | term()}.
 start(Opts) ->
+    case start_hep(maps:get(hep, Opts, chappe_sip_config:get(hep))) of
+        ok -> start_listeners(Opts);
+        {error, _} = Err -> Err
+    end.
+
+%% WS capture is Erlang (chappe_sip_hep); the native transports are
+%% captured by the engine from the same option
+start_hep(undefined) ->
+    chappe_sip_hep:configure(undefined);
+start_hep(Hep) ->
+    case chappe_sip_hep:validate(Hep) of
+        {ok, Cfg} -> chappe_sip_hep:configure(Cfg);
+        {error, _} = Err -> Err
+    end.
+
+start_listeners(Opts) ->
     %% an optional WS listener runs independently of the sofia engine; a bind
     %% failure must surface, not be swallowed
     case
@@ -83,8 +110,11 @@ start_media(MediaOpts, Opts) ->
         ok ->
             case maps:is_key(contact, Opts) of
                 true ->
-                    chappe_sip_engine:start(
-                        maps:without([ws, wss, media], Opts)
+                    start_presence(
+                        chappe_sip_engine:start(
+                            maps:without([ws, wss, media, presence], Opts)
+                        ),
+                        Opts
                     );
                 false ->
                     ok
@@ -92,6 +122,10 @@ start_media(MediaOpts, Opts) ->
         {error, Reason} ->
             {error, {media, Reason}}
     end.
+
+%% presence => Opts serves the presence package (chappe_sip_presence:serve/1)
+start_presence(ok, #{presence := Opts}) -> chappe_sip_presence:serve(Opts);
+start_presence(Result, _Opts) -> Result.
 
 start_ws(undefined, undefined) -> ok;
 start_ws(undefined, Wss) -> ws_listen(#{tls => Wss});
@@ -111,6 +145,7 @@ ws_listen(Opts) ->
 -spec stop() -> ok | {error, not_started | hung}.
 stop() ->
     _ = chappe_sip_ws_sup:stop_listener(),
+    _ = chappe_sip_hep:configure(undefined),
     chappe_sip_engine:stop().
 
 -spec use(chappe_sip_middleware:mw()) -> ok.
@@ -236,6 +271,8 @@ message(F) -> handle(<<"MESSAGE">>, F).
 -spec info(fun()) -> ok.
 info(F) -> handle(<<"INFO">>, F).
 
+%% The NOTIFYs no subscription of ours (subscribe_to/3) and no REFER we
+%% sent (send_refer/3) claims; without a handler they get 481.
 -spec notify(fun()) -> ok.
 notify(F) -> handle(<<"NOTIFY">>, F).
 
@@ -254,8 +291,51 @@ subscribe(Events, F) ->
         events => [string:lowercase(E) || E <- Events]
     }).
 
--spec publish(fun()) -> ok.
-publish(F) -> handle(<<"PUBLISH">>, F).
+%% The SUBSCRIBE handler of one event package (RFC 6665): a SUBSCRIBE
+%% whose Event names Package (case-insensitively) runs Handler, whatever
+%% subscribe/1,2 registered, which stays the catch-all. The packages you
+%% register are in Allow-Events (OPTIONS 200, the 489 to a package nobody
+%% serves). chappe_sip_focus serves `conference' this way.
+-spec event_package(binary(), fun(
+    (chappe_sip_req:req(), chappe_sip_res:res()) -> any()
+)) -> ok.
+event_package(Package, Handler) ->
+    chappe_sip_engine:handle(<<"SUBSCRIBE">>, Handler, #{package => Package}).
+
+%% Subscribe to Event at Uri (RFC 6665 subscriber side): a process holds
+%% the subscription, refreshes it, re-subscribes when the notifier asks,
+%% and sends the owner (default the caller) {chappe_sip_subscription, Sub,
+%% Event} for each NOTIFY and its end. See chappe_sip_subscriber.
+-spec subscribe_to(binary(), binary(), map()) ->
+    {ok, chappe_sip_subscriber:subscription()} | {error, term()}.
+subscribe_to(Uri, Event, Opts) ->
+    chappe_sip_subscriber:start(Uri, Event, Opts#{
+        owner => maps:get(owner, Opts, self())
+    }).
+
+%% End a subscription subscribe_to/3 started (SUBSCRIBE with Expires: 0).
+-spec unsubscribe(chappe_sip_subscriber:subscription()) -> ok.
+unsubscribe(Sub) ->
+    chappe_sip_subscriber:unsubscribe(Sub).
+
+%% The PUBLISH handler: a fun, or the options of the event state
+%% compositor (RFC 3903, see chappe_sip_esc:handler/1), which keeps the
+%% state the PUBLISHes set.
+-spec publish(fun() | map()) -> ok.
+publish(F) when is_function(F, 2) -> handle(<<"PUBLISH">>, F);
+publish(Opts) when is_map(Opts) ->
+    handle(<<"PUBLISH">>, chappe_sip_esc:handler(Opts)).
+
+%% Publish event state at Uri (RFC 3903, the client side): a process
+%% sends the PUBLISH, keeps it refreshed, and republishes it in full if the
+%% compositor forgot it (412). Body is the state (a PIDF for presence,
+%% chappe_sip_pidf:render/1). See chappe_sip_publisher.
+-spec publish_state(binary(), binary(), iodata(), map()) ->
+    {ok, chappe_sip_publisher:publication()} | {error, term()}.
+publish_state(Uri, Event, Body, Opts) ->
+    chappe_sip_publisher:start(Uri, Event, Body, Opts#{
+        owner => maps:get(owner, Opts, self())
+    }).
 
 -spec refer(fun()) -> ok.
 refer(F) -> handle(<<"REFER">>, F).
@@ -335,7 +415,8 @@ bindings(AorOrUri) ->
 
 %% Resolve an AOR to its first binding's contact URI and transport flow.
 %% A registered WS UA has a flow', and so has an RFC 5626 outbound binding
-%% registered directly over TCP/TLS ({conn, Id}) or UDP ({udp, Ip, Port});
+%% registered directly over TCP/TLS ({conn, Id}) or UDP ({udp, Ip, Port}, or
+%% {udp, Ip, Port, Local} on a node listening on several addresses);
 %% pass it to proxy_request/3 as {flow, Uri, Flow}', or to create_uac/
 %% create_b2bua as #{flow => Flow}', to reach the UA over that flow.
 -spec location_flow(binary()) ->

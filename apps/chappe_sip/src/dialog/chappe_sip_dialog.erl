@@ -17,6 +17,13 @@
 %% {chappe_sip_dialog, Dialog, unsubscribed, Req}, and the destroy reason is
 %% terminated | expired | {notify_failed, Status}.
 %%
+%% An INVITE dialog's destroy event carries the peer's BYE, or a reason:
+%% byed (your BYE was answered), cancel (the caller CANCELled the INVITE of
+%% an early dialog you answered 1xx), no_ack, session_expired,
+%% {refresh_failed, S}, {request_failed, S}, engine_restart (the SIP stack
+%% went away: restart, stop or degrade) or flow_lost (its WebSocket
+%% connection closed).
+%%
 %% An early dialog of an INVITE you send ({early_dialog, Dialog} from
 %% chappe_sip_uac) takes request/2 (UPDATE, INFO) and destroy/1,2 (a CANCEL
 %% of the INVITE); modify/2,3 returns {error, early}. The 2xx with its To

@@ -119,13 +119,20 @@ do_register(Opts0, Req, Res) ->
     end.
 
 %% the flow a request arrived on: its TCP/TLS connection, or the address
-%% and port a UDP request came from (RFC 5626 3.3)
+%% and port a UDP request came from (RFC 5626 3.3), with the listen address
+%% it reached when there are several, so a request to the binding leaves
+%% from that same socket
 direct_flow(#{conn := Id}) when is_integer(Id) ->
     {conn, Id};
-direct_flow(#{transport := <<"udp">>, source_ip := Ip, source_port := Port}) when
+direct_flow(
+    #{transport := <<"udp">>, source_ip := Ip, source_port := Port} = Meta
+) when
     Ip =/= <<>>, Port > 0
 ->
-    {udp, Ip, Port};
+    case chappe_sip_binds:local(Meta) of
+        undefined -> {udp, Ip, Port};
+        Local -> {udp, Ip, Port, Local}
+    end;
 direct_flow(_Meta) ->
     undefined.
 

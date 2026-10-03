@@ -25,17 +25,24 @@ Start here.
 - [Reliable provisionals (PRACK)](guides/reliable-provisionals.md): 100rel on
   the UAS and the UAC.
 - [Subscriptions (SUBSCRIBE/NOTIFY)](guides/subscriptions.md): accept a
-  SUBSCRIBE, send NOTIFYs, and handle refresh, unsubscribe, and expiry.
+  SUBSCRIBE, send NOTIFYs, and handle refresh, unsubscribe, and expiry;
+  route SUBSCRIBEs by event package; subscribe to another node's state.
 - [Session timers](guides/session-timers.md): RFC 4028 refresh and expiry
   on the calls you answer and place.
 - [REFER (call transfer)](guides/refer.md): accept a REFER and report the
   transfer, or send one and follow its progress.
 - [Conference focus](guides/conference-focus.md): the `isfocus` Contact and
   RFC 4575 conference state for a conference you run.
+- [Call records (CDR)](guides/call-records.md): one attempt, start and stop
+  per INVITE call, with a normalized end reason.
+- [Presence and message waiting](guides/presence.md): PUBLISH, a presence
+  agent, a message-waiting notifier, and the client side of each.
 - [Configuration and limits](guides/configuration.md): the tunables in
   `chappe_sip_config`.
 - [Deployment](guides/deployment.md): build the release and run it under
   systemd with the engine hang policy.
+- [SIP capture (HEP)](guides/capture.md): send a copy of every message to
+  Homer.
 - [Interop testing](guides/interop-testing.md): the opt-in JsSIP and Kamailio
   interop track.
 

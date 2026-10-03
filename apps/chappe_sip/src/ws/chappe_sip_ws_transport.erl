@@ -382,6 +382,7 @@ ingest(_Flow, <<"\r\n">>, S) ->
     %% a keepalive pong
     S;
 ingest(Flow, Raw, S) ->
+    capture(in, Flow, Raw, S),
     try
         case chappe_sip_msg:parse(Raw) of
             {ok, Msg} -> check_in(Flow, Msg, Raw, S);
@@ -1069,16 +1070,25 @@ alloc(#s{counter = C} = S) ->
 %% max_message_size: the peer would refuse it, and it should not leave.
 send(Flow, Raw, S) ->
     case S#s.conns of
-        #{Flow := {Conn, _Peer, _Proto}} ->
+        #{Flow := {Conn, Peer, Proto}} ->
             case byte_size(Raw) > chappe_sip_config:get(max_message_size) of
                 true ->
                     {error, too_large};
                 false ->
                     ws:send(Conn, frame(Raw)),
-                    ok
+                    chappe_sip_hep:capture(out, Proto, Peer, Raw)
             end;
         _ ->
             {error, no_flow}
+    end.
+
+%% HEP capture of a message received on Flow (a no-op while capture is off)
+capture(Dir, Flow, Raw, S) ->
+    case S#s.conns of
+        #{Flow := {_Conn, Peer, Proto}} ->
+            chappe_sip_hep:capture(Dir, Proto, Peer, Raw);
+        _ ->
+            ok
     end.
 
 peer_of(Flow, S) ->
@@ -1154,6 +1164,12 @@ drop_flow(Flow, S) ->
     CTxn = maps:filter(fun(_, #{flow := F}) -> F =/= Flow end, S#s.ctxn),
     KeptCBranches = [B || #{branch := B} <- maps:values(CTxn)],
     Legs = maps:filter(fun(_, #{flow := F}) -> F =/= Flow end, S#s.legs),
+    %% the dialogs of these legs can no longer reach their peer
+    _ =
+        case maps:keys(S#s.legs) -- maps:keys(Legs) of
+            [] -> ok;
+            Lost -> engine_event({flow_lost, Lost})
+        end,
     LegKeys = [
         {C, L, R}
      || #{call_id := C, ltag := L, rtag := R} <-

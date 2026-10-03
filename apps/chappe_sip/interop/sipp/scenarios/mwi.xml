@@ -1,0 +1,132 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!-- Copyright 2026 Benoit Chesneau
+     SPDX-License-Identifier: Apache-2.0
+
+     Message waiting (RFC 3842). A SUBSCRIBE to message-summary with no
+     Accept gets a 200 and at once a NOTIFY with the current summary as
+     application/simple-message-summary (3.5, 3.8), naming the account
+     without angle brackets. A MESSAGE to the node's `mwi' user changes the
+     account's counts: a NOTIFY with the new summary follows (3.8), and
+     Expires: 0 ends the subscription with a terminated NOTIFY. -->
+<scenario name="mwi">
+  <send retrans="500">
+    <![CDATA[
+      SUBSCRIBE sip:sippmwi@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:sipp@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:sippmwi@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 SUBSCRIBE
+      Contact: <sip:sipp@[local_ip]:[local_port]>
+      Max-Forwards: 70
+      Event: message-summary
+      Expires: 600
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv response="200">
+    <action>
+      <ereg regexp="
+To[ 	]*:[^
+]*;tag=([-A-Za-z0-9.!%*_+`'~]+)" search_in="msg" check_it="true" assign_to="chk,peer_tag"/>
+      <ereg regexp="
+Contact[ 	]*:[^
+]*&lt;([^&gt;
+]+)&gt;" search_in="msg" check_it="true" assign_to="chk,peer_contact"/>
+    </action>
+  </recv>
+  <recv request="NOTIFY">
+    <action>
+      <ereg regexp="
+Event[ 	]*:[ 	]*message-summary" search_in="msg" check_it="true" assign_to="chk"/>
+      <ereg regexp="
+Content-Type[ 	]*:[ 	]*application/simple-message-summary" search_in="msg" check_it="true" assign_to="chk"/>
+      <ereg regexp="Messages-Waiting: no" search_in="body" check_it="true" assign_to="chk"/>
+      <ereg regexp="Message-Account: sip:sippmwi@" search_in="body" check_it="true" assign_to="chk"/>
+    </action>
+  </recv>
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <send retrans="500">
+    <![CDATA[
+      MESSAGE sip:mwi@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:sipp@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:mwi@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 2 MESSAGE
+      Max-Forwards: 70
+      Content-Type: text/plain
+      Content-Length: [len]
+
+      sip:sippmwi@[remote_ip]:[remote_port] 2 1
+    ]]>
+  </send>
+  <recv response="200"/>
+  <recv request="NOTIFY">
+    <action>
+      <ereg regexp="Messages-Waiting: yes" search_in="body" check_it="true" assign_to="chk"/>
+      <ereg regexp="Voice-Message: 2/1" search_in="body" check_it="true" assign_to="chk"/>
+    </action>
+  </recv>
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <send retrans="500">
+    <![CDATA[
+      SUBSCRIBE [$peer_contact] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:sipp@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:sippmwi@[remote_ip]:[remote_port]>;tag=[$peer_tag]
+      Call-ID: [call_id]
+      CSeq: 3 SUBSCRIBE
+      Contact: <sip:sipp@[local_ip]:[local_port]>
+      Max-Forwards: 70
+      Event: message-summary
+      Expires: 0
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv response="200"/>
+  <recv request="NOTIFY">
+    <action>
+      <ereg regexp="
+Subscription-State[ 	]*:[ 	]*terminated" search_in="msg" check_it="true" assign_to="chk"/>
+    </action>
+  </recv>
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <Reference variables="chk"/>
+</scenario>

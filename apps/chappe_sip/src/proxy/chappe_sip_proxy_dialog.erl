@@ -30,6 +30,10 @@ forward_indialog(Req, Res) ->
     Route = indialog_route(Arrived, NextHop, Flows),
     IsInvite = chappe_sip_msg:method(Msg1) =:= <<"INVITE">>,
     IsInvite andalso chappe_sip_engine:mark_proxied(ServerTxn),
+    %% the BYE of a call we record-routed ends its call record
+    _ =
+        chappe_sip_msg:method(Msg1) =:= <<"BYE">> andalso
+            chappe_sip_cdr:proxy_bye(chappe_sip_msg:call_id(Msg1)),
     %% Anchor is `none' unless media is configured and this call is pinned, so a
     %% plain proxy (or an unanchored call) runs the original path untouched.
     Anchor = indialog_anchor(Msg1),

@@ -83,7 +83,7 @@ subscribe_policy(Policy) ->
 install() ->
     ok = chappe_sip:invite(fun invite/2),
     ok = chappe_sip:options(fun options/2),
-    ok = chappe_sip:subscribe(fun subscribe/2),
+    ok = chappe_sip:event_package(<<"conference">>, fun subscribe/2),
     ok.
 
 invite(Req, Res) ->
