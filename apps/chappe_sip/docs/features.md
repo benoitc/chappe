@@ -177,6 +177,15 @@ tracker; the milestone history is in `docs/plan.md`.
   endpoint's disconnection-method, referred-by, media (with the `a=ssrc` as
   src-id) and on-hold state from SIP. See the conference focus guide.
 - `chappe_sip_handler`: an optional behaviour for structured UAS apps.
+- Call records: `chappe_sip_cdr:subscribe/1` sends `attempt`, `start` and
+  `stop` for each INVITE call attempt and role (`uas`, `uac`, `b2b_a` and
+  `b2b_b` linked to each other, `proxy`), with the tags, the transport and
+  source, the ring, answer and end times, the final status and a
+  normalized reason (`{bye, local | remote}`, `cancel`, `{final, Status}`,
+  `owner_down`, `flow_lost`, ...). Exactly one stop per attempt: one
+  process owns the open records and monitors what drives each call, so a
+  killed or shut down fsm still ends its record (`{process_down, Why}`).
+  No subscriber, no record. See the call records guide.
 - Replaces (RFC 3891): `chappe_sip:find_replaced/1` matches an INVITE's
   `Replaces` to a live dialog and returns its state (`early | confirmed |
   terminated`), role, and `early-only` flag so you can answer 400/481/486/603;
@@ -378,6 +387,17 @@ tracker; the milestone history is in `docs/plan.md`.
   return `{reject, 401, Headers}`; send those headers with the 401. To keep
   the old behaviour on a closed network, pass
   `#{authorize => fun(_, _) -> true end}`.
+- A CANCEL of an INVITE you answered 1xx with `create_uas/3` now ends that
+  early dialog: its owner gets `{chappe_sip_dialog, D, destroy, cancel}`.
+- `chappe_sip:stop/0` and an engine degrade now tear the dialogs down as
+  `restart_engine/0` does: owners get `destroy` with reason
+  `engine_restart`, and a UAC still ringing gets `{error, engine_restart}`.
+- A closed WebSocket connection now ends the dialogs bound to it: owners get
+  `destroy` with reason `flow_lost`.
+- A UAC INVITE now watches its owner (`owner`, else `notify`, else the
+  caller of `chappe_sip_uac:start/2`): when that process exits while the
+  INVITE rings, the INVITE is CANCELled and a 2xx that still comes is ACKed
+  and BYEd. Start the call from the process that keeps it, or pass `owner`.
 - `chappe_sip_focus:subscribe/4` now sends the conference process
   `{chappe_sip_focus, subscribed, Dialog, Opts}`. Pass it to
   `chappe_sip_focus:handle_info/2` as before; the three-element form is still
@@ -392,9 +412,6 @@ Gaps relative to drachtio, in rough order of impact.
   so one server fronts many apps, one app fronts many servers, and an app
   restarts without dropping the stack. We embed the stack in the node, so a
   remote-app split and outbound cloud-scaling are not available yet.
-- **CDR events**: no call-accounting event stream. drachtio emits
-  `cdr:attempt` / `cdr:start` / `cdr:stop`; we would surface the equivalent as
-  process events or telemetry for billing and observability.
 - **Event packages on top of subscriptions**: besides `conference`, no
   presence (PUBLISH/PIDF) or MWI package; PUBLISH only routes as a method. The subscriber side (sending
   SUBSCRIBE and keeping it refreshed) is not implemented either.

@@ -131,7 +131,10 @@
     proxied = #{} :: #{non_neg_integer() => pid()},
     %% RFC 3261 8.2.2.2 merge index for out-of-dialog requests with no
     %% To-tag: {From-tag, Call-ID, CSeq} => {top Via branch, TxnH, worker}
-    merge = #{} :: #{tuple() => {binary(), non_neg_integer(), pid()}}
+    merge = #{} :: #{tuple() => {binary(), non_neg_integer(), pid()}},
+    %% INVITE server transactions with an early UAS dialog (a 1xx from
+    %% create_uas): a CANCEL ends that dialog too
+    early_uas = #{} :: #{non_neg_integer() => pid()}
 }).
 
 start_link() ->
@@ -371,14 +374,7 @@ handle_call(
     %% tell dialogs and UAC fsms their SIP state is going away, so an in-flight
     %% transaction fails cleanly instead of waiting for a reply that the new
     %% native stack will never deliver
-    maps:foreach(
-        fun(Pid, _) -> Pid ! {chappe_sip_engine_restart, undefined} end,
-        Dialogs
-    ),
-    maps:foreach(
-        fun(Pid, _) -> Pid ! {chappe_sip_engine_restart, undefined} end,
-        Monitored
-    ),
+    stack_gone(S#state{dialogs = Dialogs, monitored = Monitored}),
     _ = Mod:stop(Engine),
     S1 = stack_down(S),
     case
@@ -397,6 +393,8 @@ handle_call(
 handle_call(stop, _From, #state{engine = undefined} = S) ->
     {reply, {error, not_started}, S};
 handle_call(stop, _From, #state{mod = Mod, engine = Engine} = S) ->
+    %% the dialogs and UAC fsms lose their SIP state, as on a restart
+    stack_gone(S),
     Result = Mod:stop(Engine),
     %% a clean stop must not auto-reestablish on a later process crash
     cfg_del(opts),
@@ -426,11 +424,16 @@ handle_call(reset_routes, _From, #state{routes = R} = S) ->
     {reply, ok, S#state{routes = #{}, middlewares = []}};
 handle_call({respond, TxnH, Status, Reason}, _From, S) when ?IS_WS(TxnH) ->
     {reply,
-        ws_call(fun() ->
-            chappe_sip_ws_transport:respond(
-                TxnH, Status, Reason, <<>>, <<>>, <<>>
-            )
-        end), S};
+        sent(
+            TxnH,
+            Status,
+            ws_call(fun() ->
+                chappe_sip_ws_transport:respond(
+                    TxnH, Status, Reason, <<>>, <<>>, <<>>
+                )
+            end)
+        ),
+        S};
 handle_call({respond, _, _, _}, _From, #state{engine = undefined} = S) ->
     {reply, {error, not_started}, S};
 handle_call(
@@ -438,7 +441,13 @@ handle_call(
     _From,
     #state{mod = Mod, engine = Engine} = S
 ) ->
-    {reply, Mod:respond(Engine, TxnH, Status, Reason, <<>>, <<>>, <<>>), S};
+    {reply,
+        sent(
+            TxnH,
+            Status,
+            Mod:respond(Engine, TxnH, Status, Reason, <<>>, <<>>, <<>>)
+        ),
+        S};
 handle_call({create_uas, Req, Opts}, {WorkerPid, _}, S) ->
     do_create_uas(Req, Opts, WorkerPid, S);
 handle_call({create_dialog, DialogArgs}, _From, S) ->
@@ -481,9 +490,13 @@ handle_call(
     _From,
     #state{handles = HM} = S
 ) when ?IS_WS(ServerTxnH) ->
-    R = ws_call(fun() ->
-        chappe_sip_ws_transport:relay(ServerTxnH, Status, Raw)
-    end),
+    R = sent(
+        ServerTxnH,
+        Status,
+        ws_call(fun() ->
+            chappe_sip_ws_transport:relay(ServerTxnH, Status, Raw)
+        end)
+    ),
     HM1 =
         case Status >= 200 of
             true -> maps:remove(ServerTxnH, HM);
@@ -497,7 +510,7 @@ handle_call(
 ) when
     Engine =/= undefined
 ->
-    R = Mod:relay(Engine, ServerTxnH, Status, Raw),
+    R = sent(ServerTxnH, Status, Mod:relay(Engine, ServerTxnH, Status, Raw)),
     HM1 =
         case Status >= 200 of
             true -> maps:remove(ServerTxnH, HM);
@@ -545,11 +558,16 @@ handle_call(
     S
 ) when ?IS_WS(TxnH) ->
     {reply,
-        ws_call(fun() ->
-            chappe_sip_ws_transport:respond(
-                TxnH, Status, Reason, Headers, Body, ToTag
-            )
-        end), S};
+        sent(
+            TxnH,
+            Status,
+            ws_call(fun() ->
+                chappe_sip_ws_transport:respond(
+                    TxnH, Status, Reason, Headers, Body, ToTag
+                )
+            end)
+        ),
+        S};
 handle_call(
     {dialog_respond, TxnH, Status, Reason, Headers, Body, ToTag},
     _From,
@@ -557,7 +575,13 @@ handle_call(
 ) when
     Engine =/= undefined
 ->
-    {reply, Mod:respond(Engine, TxnH, Status, Reason, Headers, Body, ToTag), S};
+    {reply,
+        sent(
+            TxnH,
+            Status,
+            Mod:respond(Engine, TxnH, Status, Reason, Headers, Body, ToTag)
+        ),
+        S};
 handle_call(
     {dialog_respond, _, _, _, _, _, _}, _From, #state{engine = undefined} = S
 ) ->
@@ -746,7 +770,8 @@ handle_info(
                 forget_txns(Pid, S#state{
                     handles = drop_pid(Pid, HM),
                     dialogs = maps:remove(Pid, S#state.dialogs),
-                    monitored = maps:remove(Pid, S#state.monitored)
+                    monitored = maps:remove(Pid, S#state.monitored),
+                    early_uas = drop_pid(Pid, S#state.early_uas)
                 })}
     end;
 handle_info(_Info, S) ->
@@ -913,8 +938,22 @@ engine_failed(#state{mod = Mod, engine = Engine} = S) ->
             erlang:halt(1);
         degrade ->
             logger:critical("chappe_sip_engine: degraded, SIP stack is down"),
+            stack_gone(S),
             {noreply, stack_down(S)}
     end.
+
+%% tell dialogs and UAC fsms their SIP state is going away (a restart, a
+%% stop, a degrade), so an in-flight transaction fails cleanly instead of
+%% waiting for a reply that will never come
+stack_gone(#state{dialogs = Dialogs, monitored = Monitored}) ->
+    maps:foreach(
+        fun(Pid, _) -> Pid ! {chappe_sip_engine_restart, undefined} end,
+        Dialogs
+    ),
+    maps:foreach(
+        fun(Pid, _) -> Pid ! {chappe_sip_engine_restart, undefined} end,
+        Monitored
+    ).
 
 stack_down(#state{tref = TRef, workers = W} = S) ->
     _ =
@@ -950,7 +989,8 @@ stack_down(#state{tref = TRef, workers = W} = S) ->
         monitored = #{},
         health_waiters = [],
         proxied = #{},
-        merge = #{}
+        merge = #{},
+        early_uas = #{}
     }.
 
 schedule_health(Engine) ->
@@ -1062,10 +1102,19 @@ handle_event({cancel, TxnH}, S) ->
     handle_event({cancel, TxnH, <<>>}, S);
 handle_event({cancel, TxnH, Raw}, #state{handles = HM} = S) ->
     %% the CANCEL request goes along so the app sees its Reason (RFC 3326)
+    Req = cancel_req(Raw),
     case HM of
-        #{TxnH := Pid} -> Pid ! {chappe_sip_cancel, TxnH, cancel_req(Raw)};
+        #{TxnH := Pid} -> Pid ! {chappe_sip_cancel, TxnH, Req};
         _ -> ok
     end,
+    cancelled(TxnH, Req, S),
+    S;
+handle_event({flow_lost, Legs}, #state{handles = HM} = S) ->
+    %% a WS connection closed: the dialogs bound to it are gone
+    _ = [
+        Pid ! {chappe_sip_flow_lost, L}
+     || L <- Legs, {ok, Pid} <- [maps:find(L, HM)]
+    ],
     S;
 handle_event({prack, TxnH, Raw}, #state{handles = HM} = S) ->
     %% PRACK for a reliable provisional: route to the INVITE's owner
@@ -1105,6 +1154,20 @@ handle_event({op_failed, H, Reason}, #state{handles = HM} = S) ->
 handle_event(Event, S) ->
     logger:debug("chappe_sip_engine: unhandled event ~p", [Event]),
     S.
+
+%% the stack answered the INVITE 487 (a proxy relays its branches' final
+%% instead): an early dialog it formed ends, and so does its call record
+cancelled(TxnH, Req, #state{proxied = Px, early_uas = Early}) ->
+    case maps:is_key(TxnH, Px) of
+        true ->
+            ok;
+        false ->
+            chappe_sip_cdr:txn_cancel(TxnH),
+            case Early of
+                #{TxnH := DPid} -> DPid ! {chappe_sip_cancel, TxnH, Req};
+                _ -> ok
+            end
+    end.
 
 cancel_req(Raw) ->
     case chappe_sip_msg:parse(Raw) of
@@ -1165,7 +1228,9 @@ do_create_uas_1(Req, Opts, WorkerPid, S) ->
                 call_id => CallId,
                 %% RFC 3261 12.1.1: the remote CSeq starts at the request's
                 remote_cseq => req_cseq(Msg),
-                ack_wait => AckWait
+                ack_wait => AckWait,
+                %% the call record this INVITE opened, now the dialog's
+                cdr => maps:get(cdr, chappe_sip_req:meta(Req), undefined)
             },
             case chappe_sip_dialog_sup:start_dialog(FsmArgs) of
                 {ok, Pid} ->
@@ -1185,7 +1250,8 @@ do_create_uas_1(Req, Opts, WorkerPid, S) ->
                         end,
                     {reply, {ok, Pid}, S1#state{
                         handles = HM1#{LegH => Pid},
-                        dialogs = (S1#state.dialogs)#{Pid => true}
+                        dialogs = (S1#state.dialogs)#{Pid => true},
+                        early_uas = early_uas(Msg, Opts, TxnH, Pid, S1)
                     }};
                 {error, Reason} ->
                     _ = leg_destroy(TxnH, LegH, S),
@@ -1196,6 +1262,13 @@ do_create_uas_1(Req, Opts, WorkerPid, S) ->
     end.
 
 is_2xx(Status) -> is_integer(Status) andalso Status >= 200 andalso Status < 300.
+
+%% a 1xx from create_uas forms an early dialog of the INVITE
+early_uas(Msg, Opts, TxnH, Pid, #state{early_uas = E}) ->
+    case {chappe_sip_msg:method(Msg), maps:get(status, Opts, 200)} of
+        {<<"INVITE">>, St} when is_integer(St), St < 200 -> E#{TxnH => Pid};
+        _ -> E
+    end.
 
 req_cseq(Msg) ->
     case chappe_sip_msg:cseq(Msg) of
@@ -1257,10 +1330,22 @@ send_uas_response(TxnH, LocalTag, Opts, Contact, S) ->
                     iolist_to_binary(Sdp)
                 }
         end,
-    case ?IS_WS(TxnH) of
-        true ->
-            ws_call(fun() ->
-                chappe_sip_ws_transport:respond(
+    Sent =
+        case ?IS_WS(TxnH) of
+            true ->
+                ws_call(fun() ->
+                    chappe_sip_ws_transport:respond(
+                        TxnH,
+                        Status,
+                        Reason,
+                        Headers,
+                        Body,
+                        LocalTag
+                    )
+                end);
+            false ->
+                (S#state.mod):respond(
+                    S#state.engine,
                     TxnH,
                     Status,
                     Reason,
@@ -1268,18 +1353,8 @@ send_uas_response(TxnH, LocalTag, Opts, Contact, S) ->
                     Body,
                     LocalTag
                 )
-            end);
-        false ->
-            (S#state.mod):respond(
-                S#state.engine,
-                TxnH,
-                Status,
-                Reason,
-                Headers,
-                Body,
-                LocalTag
-            )
-    end.
+        end,
+    sent(TxnH, Status, Sent).
 
 %% A dialog-forming 2xx MUST carry a Contact (RFC 3261 12.1.1) so the peer
 %% can build the dialog and target in-dialog requests. Add our own unless the
@@ -1862,48 +1937,61 @@ handler_deadline(_Meta) ->
 %% enqueue-only and safe from any process
 make_sender(Mod, Engine) ->
     fun(TxnH, Status, Opts) ->
-        Reason = maps:get(reason, Opts, <<>>),
-        Headers = chappe_sip_hdr_io:join(maps:get(headers, Opts, [])),
-        Body = iolist_to_binary(maps:get(body, Opts, <<>>)),
-        ToTag = maps:get(to_tag, Opts, <<>>),
-        case chappe_sip_ws:is_ws(TxnH) of
-            true ->
-                %% WS is reliable: a reliable 1xx carries RSeq and is
-                %% matched to its PRACK, but is never retransmitted
-                Reliable = maps:get(reliable, Opts, false),
-                ws_call(fun() ->
-                    ws_respond(
-                        Reliable, TxnH, Status, Reason, Headers, Body, ToTag
-                    )
-                end);
-            false ->
-                case
-                    maps:get(reliable, Opts, false) andalso
-                        Status > 100 andalso Status < 200
-                of
-                    true ->
-                        Mod:reliable_respond(
-                            Engine,
-                            TxnH,
-                            Status,
-                            Reason,
-                            Headers,
-                            Body,
-                            ToTag
-                        );
-                    false ->
-                        Mod:respond(
-                            Engine,
-                            TxnH,
-                            Status,
-                            Reason,
-                            Headers,
-                            Body,
-                            ToTag
-                        )
-                end
-        end
+        sent(TxnH, Status, sender_send(Mod, Engine, TxnH, Status, Opts))
     end.
+
+sender_send(Mod, Engine, TxnH, Status, Opts) ->
+    Reason = maps:get(reason, Opts, <<>>),
+    Headers = chappe_sip_hdr_io:join(maps:get(headers, Opts, [])),
+    Body = iolist_to_binary(maps:get(body, Opts, <<>>)),
+    ToTag = maps:get(to_tag, Opts, <<>>),
+    case chappe_sip_ws:is_ws(TxnH) of
+        true ->
+            %% WS is reliable: a reliable 1xx carries RSeq and is
+            %% matched to its PRACK, but is never retransmitted
+            Reliable = maps:get(reliable, Opts, false),
+            ws_call(fun() ->
+                ws_respond(
+                    Reliable, TxnH, Status, Reason, Headers, Body, ToTag
+                )
+            end);
+        false ->
+            case
+                maps:get(reliable, Opts, false) andalso
+                    Status > 100 andalso Status < 200
+            of
+                true ->
+                    Mod:reliable_respond(
+                        Engine,
+                        TxnH,
+                        Status,
+                        Reason,
+                        Headers,
+                        Body,
+                        ToTag
+                    );
+                false ->
+                    Mod:respond(
+                        Engine,
+                        TxnH,
+                        Status,
+                        Reason,
+                        Headers,
+                        Body,
+                        ToTag
+                    )
+            end
+    end.
+
+%% a response went out on a server transaction: its call record, if any,
+%% rings, answers or ends
+sent(TxnH, Status, Result) ->
+    _ =
+        case Result of
+            {error, _} -> ok;
+            _ -> chappe_sip_cdr:txn_response(TxnH, Status)
+        end,
+    Result.
 
 ws_respond(true, TxnH, Status, Reason, Headers, Body, ToTag) ->
     chappe_sip_ws_transport:reliable_respond(
@@ -1924,16 +2012,24 @@ respond_txn(TxnH, Status, Reason, S) ->
     respond_txn(TxnH, Status, Reason, <<>>, S).
 
 respond_txn(TxnH, Status, Reason, Headers, _S) when ?IS_WS(TxnH) ->
-    _ = ws_call(fun() ->
-        chappe_sip_ws_transport:respond(
-            TxnH, Status, Reason, Headers, <<>>, <<>>
-        )
-    end),
+    _ = sent(
+        TxnH,
+        Status,
+        ws_call(fun() ->
+            chappe_sip_ws_transport:respond(
+                TxnH, Status, Reason, Headers, <<>>, <<>>
+            )
+        end)
+    ),
     ok;
 respond_txn(TxnH, Status, Reason, Headers, #state{mod = Mod, engine = Engine}) when
     Engine =/= undefined
 ->
-    _ = Mod:respond(Engine, TxnH, Status, Reason, Headers, <<>>, <<>>),
+    _ = sent(
+        TxnH,
+        Status,
+        Mod:respond(Engine, TxnH, Status, Reason, Headers, <<>>, <<>>)
+    ),
     ok;
 respond_txn(_TxnH, _Status, _Reason, _Headers, _S) ->
     ok.

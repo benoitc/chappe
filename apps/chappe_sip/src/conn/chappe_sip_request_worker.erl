@@ -44,7 +44,9 @@ init(
     },
     case parse_valid(Raw) of
         {ok, Msg} ->
-            run(Msg, TxnH, Meta, Res, Middlewares, Handler);
+            run(
+                Msg, TxnH, open_cdr(Msg, TxnH, Meta), Res, Middlewares, Handler
+            );
         {error, Why} ->
             %% unparseable or missing a mandatory header (RFC 3261 8.1.1)
             logger:warning("chappe_sip: bad request (~p)", [Why]),
@@ -141,6 +143,48 @@ dispatch(Msg, TxnH, Meta, Res, Middlewares, Handler) ->
             _ = chappe_sip_res:send(Res, 500),
             exit({handler_crashed, {Class, Reason}})
     end.
+
+%% An INVITE starting a call opens its call record, driven by this worker
+%% until a dialog takes it over; its id rides on the request (meta cdr).
+open_cdr(Msg, TxnH, Meta) ->
+    case
+        chappe_sip_msg:method(Msg) =:= <<"INVITE">> andalso
+            chappe_sip_msg:to_tag(Msg) =:= undefined andalso
+            chappe_sip_cdr:active()
+    of
+        true ->
+            Role =
+                case maps:get(role, Meta, uas) of
+                    proxy -> proxy;
+                    _ -> uas
+                end,
+            Id = chappe_sip_cdr:open(
+                Role,
+                #{
+                    txn => TxnH,
+                    call_id => chappe_sip_msg:call_id(Msg),
+                    from => chappe_sip_msg:get(<<"from">>, Msg),
+                    to => chappe_sip_msg:get(<<"to">>, Msg),
+                    request_uri => chappe_sip_msg:uri(Msg),
+                    remote_tag => chappe_sip_msg:from_tag(Msg),
+                    transport => maps:get(transport, Meta, undefined),
+                    source => source(Meta)
+                },
+                self()
+            ),
+            Meta#{cdr => Id};
+        false ->
+            Meta
+    end.
+
+source(#{source_ip := Ip, source_port := Port}) when
+    is_binary(Ip), is_integer(Port)
+->
+    <<Ip/binary, ":", (integer_to_binary(Port))/binary>>;
+source(#{source_ip := Ip}) when is_binary(Ip) ->
+    Ip;
+source(_Meta) ->
+    undefined.
 
 %% The body of an INVITE sets up the session: an SDP offer, possibly in a
 %% multipart with other parts (SIPREC metadata, a PIDF-LO location). Any

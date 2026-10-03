@@ -95,7 +95,15 @@
     byed = [] :: [binary()],
     %% the first SDP a response brought: the answer to our offer (RFC 3261
     %% 13.2.1), whatever a later response carries
-    first_sdp = <<>> :: binary()
+    first_sdp = <<>> :: binary(),
+    %% an INVITE watches its owner: the owner gone, the call is abandoned
+    owner_mon :: reference() | undefined,
+    %% we CANCELled the INVITE
+    cancelled = false :: boolean(),
+    %% the INVITE's call record (chappe_sip_cdr), and why it ends when the
+    %% final response does not say it (timeout, owner_down)
+    cdr :: binary() | undefined,
+    cdr_why :: chappe_sip_cdr:reason() | undefined
 }).
 
 start_link(Args) ->
@@ -159,11 +167,16 @@ start_request(
         local_tag = extract_tag(From)
     },
     case send_request(Data) of
-        {ok, Data1} ->
+        {ok, Data1} when Method =:= <<"INVITE">> ->
             %% the owner waits on this INVITE for as long as it rings (a
             %% b2bua A leg, a handler originating a call): its handler
             %% deadline no longer applies
-            _ = Method =:= <<"INVITE">> andalso chappe_sip_engine:disarm(Owner),
+            _ = chappe_sip_engine:disarm(Owner),
+            {ok, trying, Data1#data{
+                owner_mon = erlang:monitor(process, Owner),
+                cdr = open_cdr(Data1)
+            }};
+        {ok, Data1} ->
             {ok, trying, Data1};
         {error, Reason} ->
             %% surfaced to the caller as start/2 -> {error, Reason}
@@ -204,12 +217,18 @@ trying(cast, cancel, D) ->
     trying(cast, {cancel, []}, D);
 trying(cast, {cancel, Hdrs}, #data{txn = TxnH} = D) when TxnH =/= undefined ->
     _ = chappe_sip_engine:cancel_txn(TxnH, Hdrs),
-    {keep_state, D};
+    {keep_state, D#data{cancelled = true}};
 trying(cast, {cancel, _}, D) ->
     {keep_state, D};
-trying(cast, abandon, #data{txn = TxnH} = D) ->
-    _ = TxnH =/= undefined andalso chappe_sip_engine:cancel_txn(TxnH, []),
-    {keep_state, D#data{abandoned = true}};
+trying(cast, abandon, D) ->
+    %% create_uac's timeout passed
+    abandon(D, timeout);
+trying(cast, {abandon, Why}, D) ->
+    %% the owner of an early dialog of ours is gone
+    abandon(D, Why);
+trying(info, {'DOWN', MRef, process, _, _}, #data{owner_mon = MRef} = D) ->
+    %% nobody will take the call: CANCEL it, and BYE a 2xx that still comes
+    abandon(D#data{owner_mon = undefined}, owner_down);
 trying({call, From}, destroy, D) ->
     trying({call, From}, {destroy, #{}}, D);
 trying({call, From}, {destroy, Opts}, #data{txn = TxnH} = D) when
@@ -217,7 +236,7 @@ trying({call, From}, {destroy, Opts}, #data{txn = TxnH} = D) when
 ->
     %% an early dialog of ours named by a Replaces: CANCEL the INVITE
     _ = chappe_sip_engine:cancel_txn(TxnH, maps:get(headers, Opts, [])),
-    {keep_state, D, [{reply, From, ok}]};
+    {keep_state, D#data{cancelled = true}, [{reply, From, ok}]};
 trying({call, From}, _Req, D) ->
     %% only destroy applies to an early dialog handle
     {keep_state, D, [{reply, From, {error, early}}]};
@@ -272,6 +291,9 @@ established(cast, abandon, #data{dialog = Dialog} = D) when
     {keep_state, D#data{dialog = undefined}};
 established(cast, abandon, D) ->
     {keep_state, D};
+established(cast, {abandon, _}, D) ->
+    %% the dialog fsm watches the owner itself now
+    {keep_state, D};
 established(state_timeout, linger_done, #data{txn = TxnH} = D) ->
     chappe_sip_engine:finish_txn(TxnH),
     {stop, normal, D};
@@ -302,6 +324,7 @@ handle_response(Status, Raw, D) when Status >= 100, Status < 200 ->
                     unreliable ->
                         D1
                 end,
+            chappe_sip_cdr:progress(D#data.cdr, Status, #{}),
             notify(D, {provisional, Msg}),
             {keep_state, first_sdp(Msg, D2)}
     end;
@@ -319,6 +342,8 @@ handle_response(
         end,
     _ = send_ack(Msg, AckBody, D),
     _ = send_bye(Msg, D),
+    cdr_answered(Status, Msg, D),
+    chappe_sip_cdr:stop(D#data.cdr, D#data.cdr_why),
     chappe_sip_engine:finish_txn(D#data.txn),
     {stop, normal, end_early(Status, D)};
 handle_response(Status, Raw, #data{method = <<"INVITE">>} = D0) when
@@ -335,6 +360,8 @@ handle_response(Status, Raw, #data{method = <<"INVITE">>} = D0) when
             %% so the call it would set up ends here (RFC 3261 13.2.2.4)
             _ = maybe_ack(Msg, AckBody, D),
             _ = send_bye(Msg, D),
+            cdr_answered(Status, Msg, D),
+            chappe_sip_cdr:stop(D#data.cdr, {bye, remote}),
             notify(D, {error, early_dialog_terminated}),
             chappe_sip_engine:finish_txn(D#data.txn),
             {stop, normal, end_early(Status, D)};
@@ -342,6 +369,8 @@ handle_response(Status, Raw, #data{method = <<"INVITE">>} = D0) when
             %% RFC 3261 13.2.2.4: a valid answer in the ACK, then a BYE
             _ = maybe_ack(Msg, reject_answer(chappe_sip_msg:body(Msg)), D),
             _ = send_bye(Msg, D),
+            cdr_answered(Status, Msg, D),
+            chappe_sip_cdr:stop(D#data.cdr, {bye, local}),
             notify(D, {error, offer_not_acceptable}),
             chappe_sip_engine:finish_txn(D#data.txn),
             {stop, normal, end_early(Status, D)}
@@ -441,6 +470,8 @@ answered(Msg, AckBody, D) ->
     ToTag = chappe_sip_msg:to_tag(Msg),
     case maybe_ack(Msg, AckBody, D) of
         ok ->
+            %% the record is answered before the dialog binds it
+            cdr_answered(chappe_sip_msg:status(Msg), Msg, D),
             %% the early dialog of this To tag is confirmed; the others end
             {Mine, D1} = take_early(ToTag, D),
             case establish_dialog(Mine, Msg, D1) of
@@ -590,7 +621,9 @@ start_early(Tag, Msg, D) ->
         early_uac => self(),
         cseq_ref => D#data.seq,
         remote_sdp => chappe_sip_msg:body(Msg),
-        pending_ack => undefined
+        pending_ack => undefined,
+        %% an early dialog gets the record only if its 2xx confirms it
+        cdr => undefined
     },
     case create_dialog(Args) of
         {ok, Dialog} ->
@@ -982,7 +1015,9 @@ dialog_args(
         remote_sdp => remote_sdp(Msg, D),
         %% repeated on in-dialog target refresh requests
         local_contact => contact_value(D#data.contact, Opts),
-        session_timer => St
+        session_timer => St,
+        %% the dialog drives the call record once answered
+        cdr => D#data.cdr
     },
     %% our session is the answer a PRACK carried, else the opts' offer
     DialogArgs1 =
@@ -1385,9 +1420,67 @@ gen_call_id() ->
         "@chappe"
     >>.
 
-notify(#data{abandoned = true}, _Event) ->
+notify(D, {error, Err} = Event) ->
+    cdr_failed(Err, D),
+    notify_1(D, Event);
+notify(D, Event) ->
+    notify_1(D, Event).
+
+notify_1(#data{abandoned = true}, _Event) ->
     %% the caller stopped listening
     ok;
-notify(#data{notify = Pid, ref = Ref}, Event) ->
+notify_1(#data{notify = Pid, ref = Ref}, Event) ->
     Pid ! {chappe_sip_uac, #uac_ref{pid = self(), ref = Ref}, Event},
     ok.
+
+%% ---- call records (chappe_sip_cdr) ----
+
+%% Opts cdr => #{role => b2b_b, link => Id}: a b2bua's B leg
+open_cdr(#data{opts = Opts} = D) ->
+    Cdr = maps:get(cdr, Opts, #{}),
+    chappe_sip_cdr:open(
+        maps:get(role, Cdr, uac),
+        #{
+            link => maps:get(link, Cdr, undefined),
+            call_id => D#data.call_id,
+            from => D#data.from,
+            to => D#data.to,
+            request_uri => D#data.uri,
+            local_tag => D#data.local_tag,
+            transport => uri_transport(D#data.uri)
+        },
+        self()
+    ).
+
+uri_transport(Uri) ->
+    case chappe_sip_uri:take_param(Uri, <<"transport">>) of
+        {T, _} when is_binary(T) -> T;
+        _ -> undefined
+    end.
+
+cdr_answered(Status, Msg, D) ->
+    chappe_sip_cdr:progress(D#data.cdr, Status, #{
+        remote_tag => chappe_sip_msg:to_tag(Msg)
+    }).
+
+%% the INVITE failed: the reason we gave up, else what the final says
+cdr_failed(_Err, #data{cdr = undefined}) ->
+    ok;
+cdr_failed(_Err, #data{cdr = Id, cdr_why = Why}) when Why =/= undefined ->
+    chappe_sip_cdr:stop(Id, Why);
+cdr_failed(#chappe_sip_error{status = 487}, #data{cdr = Id, cancelled = true}) ->
+    chappe_sip_cdr:cancelled(Id);
+cdr_failed(#chappe_sip_error{status = Status}, #data{cdr = Id}) ->
+    chappe_sip_cdr:progress(Id, Status, #{});
+cdr_failed(engine_restart, #data{cdr = Id}) ->
+    chappe_sip_cdr:stop(Id, engine_restart);
+cdr_failed(Other, #data{cdr = Id}) ->
+    chappe_sip_cdr:stop(Id, {process_down, Other}).
+
+%% CANCEL the INVITE nobody waits for; a 2xx that still comes is ACKed and
+%% BYEd (handle_response/3)
+abandon(#data{abandoned = true} = D, _Why) ->
+    {keep_state, D};
+abandon(#data{txn = TxnH} = D, Why) ->
+    _ = TxnH =/= undefined andalso chappe_sip_engine:cancel_txn(TxnH, []),
+    {keep_state, D#data{abandoned = true, cdr_why = Why}}.

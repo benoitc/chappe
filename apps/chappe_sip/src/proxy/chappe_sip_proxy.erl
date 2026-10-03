@@ -62,7 +62,10 @@
     in_tls = false :: boolean(),
     timer_c :: pos_integer(),
     %% no new branch: upstream CANCEL or a 6xx (16.7 step 5, 16.10)
-    closed = false :: boolean()
+    closed = false :: boolean(),
+    %% upstream CANCELled; the INVITE's call record (chappe_sip_cdr)
+    cancelled = false :: boolean(),
+    cdr :: binary() | undefined
 }).
 
 -spec proxy_request(chappe_sip_req:req(), dest() | [dest()], map()) ->
@@ -116,7 +119,8 @@ forward(Req, Msg, Dests, Opts) ->
                 in_tls =
                     maps:get(transport, chappe_sip_req:meta(Req), undefined) =:=
                         <<"tls">>,
-                timer_c = timer_c(Opts)
+                timer_c = timer_c(Opts),
+                cdr = chappe_sip_cdr:relabel(Req, proxy)
             },
             start(P, Dests);
         {error, {media, _} = MErr} ->
@@ -209,7 +213,7 @@ loop(#px{server = ServerTxn} = P) ->
             %% 16.10: CANCEL every pending branch, start no new one, and
             %% relay what they answer (487)
             cancel_all(P),
-            loop(P#px{closed = true, remaining = []})
+            loop(P#px{closed = true, remaining = [], cancelled = true})
     after next_timeout(P) ->
         loop_or_finish(timer_c_fired(P))
     end.
@@ -281,6 +285,7 @@ on_response(#px{server = ServerTxn} = P, TxnH, Status, Raw) when
     },
     cancel_all(P1),
     accepted(P1, TxnH, Raw),
+    chappe_sip_cdr:proxy_answered(P1#px.cdr, P1#px.opts, Raw),
     {ok, #{
         final_status => Status,
         final_response => Raw,
@@ -402,6 +407,7 @@ finish(#px{finals = [], server = ServerTxn} = P) ->
     }};
 finish(#px{finals = Finals, server = ServerTxn} = P) ->
     {Status, Raw} = chappe_sip_proxy_rules:best_response(lists:reverse(Finals)),
+    chappe_sip_cdr:proxy_final(P#px.cdr, P#px.cancelled, Status),
     _ =
         case Raw of
             undefined ->
@@ -468,9 +474,7 @@ send_branch(P, #br{dest = Dest} = B0, Route, Msg) ->
     end.
 
 record_route(#px{opts = Opts} = P, Dest, Msg) ->
-    case
-        maps:get(record_route, Opts, maps:get(remain_in_dialog, Opts, false))
-    of
+    case chappe_sip_proxy_rules:record_routes(Opts) of
         true ->
             Contact = rr_contact(Msg),
             %% the flow tokens name the WS legs (the inbound one and this

@@ -32,6 +32,8 @@ Start here.
   transfer, or send one and follow its progress.
 - [Conference focus](guides/conference-focus.md): the `isfocus` Contact and
   RFC 4575 conference state for a conference you run.
+- [Call records (CDR)](guides/call-records.md): one attempt, start and stop
+  per INVITE call, with a normalized end reason.
 - [Configuration and limits](guides/configuration.md): the tunables in
   `chappe_sip_config`.
 - [Deployment](guides/deployment.md): build the release and run it under

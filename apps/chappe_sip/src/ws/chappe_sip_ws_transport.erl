@@ -1154,6 +1154,12 @@ drop_flow(Flow, S) ->
     CTxn = maps:filter(fun(_, #{flow := F}) -> F =/= Flow end, S#s.ctxn),
     KeptCBranches = [B || #{branch := B} <- maps:values(CTxn)],
     Legs = maps:filter(fun(_, #{flow := F}) -> F =/= Flow end, S#s.legs),
+    %% the dialogs of these legs can no longer reach their peer
+    _ =
+        case maps:keys(S#s.legs) -- maps:keys(Legs) of
+            [] -> ok;
+            Lost -> engine_event({flow_lost, Lost})
+        end,
     LegKeys = [
         {C, L, R}
      || #{call_id := C, ltag := L, rtag := R} <-

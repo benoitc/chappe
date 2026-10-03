@@ -142,7 +142,11 @@
     %% an early dialog of an INVITE we send: the UAC fsm, and the CSeq
     %% counter it shares with us until the dialog is confirmed
     uac :: pid() | undefined,
-    cseq_ref :: atomics:atomics_ref() | undefined
+    cseq_ref :: atomics:atomics_ref() | undefined,
+    %% the call record of an INVITE dialog (chappe_sip_cdr), and why the
+    %% call ends when the destroy reason the owner sees does not say it
+    cdr :: binary() | undefined,
+    cdr_why :: chappe_sip_cdr:reason() | undefined
 }).
 
 %% event: the SUBSCRIBE's Event value (with any id param), reused on every
@@ -229,9 +233,11 @@ init(
         st_cfg = chappe_sip_session_timer:config(Opts),
         option_tags = maps:get(option_tags, Opts, []),
         uac = maps:get(early_uac, Args, undefined),
-        cseq_ref = maps:get(cseq_ref, Args, undefined)
+        cseq_ref = maps:get(cseq_ref, Args, undefined),
+        cdr = maps:get(cdr, Args, undefined)
     },
     Data1 = Data#data{ack_answer = answer_in_ack(Data)},
+    cdr_bind(Data1),
     %% Any dialog-forming response (UAS) is sent by chappe_sip_engine (sending
     %% it from here would re-enter chappe_sip_engine during our own start and
     %% deadlock). A UAC dialog has already been answered (2xx) before we
@@ -276,7 +282,7 @@ setup(
 ) ->
     %% owner died before the dialog was confirmed; drop the half-formed leg
     reply_await(D, {error, owner_down}),
-    {stop, normal, D};
+    {stop, normal, D#data{cdr_why = owner_down}};
 setup(
     info,
     {'DOWN', MRef, process, _, _},
@@ -285,7 +291,10 @@ setup(
     {keep_state, D};
 setup(info, {chappe_sip_engine_restart, _}, D) ->
     reply_await(D, {error, engine_restart}),
-    {stop, normal, D};
+    {stop, normal, D#data{cdr_why = engine_restart}};
+setup(info, {chappe_sip_flow_lost, LegH}, #data{leg = LegH} = D) ->
+    reply_await(D, {error, flow_lost}),
+    {stop, normal, D#data{cdr_why = flow_lost}};
 setup(state_timeout, setup_timeout, D) ->
     reply_await(D, {error, setup_timeout}),
     {stop, normal, D};
@@ -297,6 +306,8 @@ setup(info, {chappe_sip_indialog, LegH, _, _, _}, #data{leg = LegH} = D) ->
     %% result is in: handle it once confirmed rather than drop it
     {keep_state, D, [postpone]};
 setup(info, {chappe_sip_ack, LegH, _}, #data{leg = LegH} = D) ->
+    {keep_state, D, [postpone]};
+setup(info, {chappe_sip_cancel, TxnH, _}, #data{txn = TxnH} = D) ->
     {keep_state, D, [postpone]};
 setup(info, _Other, D) ->
     {keep_state, D};
@@ -320,6 +331,15 @@ confirmed(
     info, {chappe_sip_indialog, LegH, TxnH, Meta, Raw}, #data{leg = LegH} = D
 ) ->
     handle_indialog(TxnH, Meta, Raw, D);
+confirmed(
+    info,
+    {chappe_sip_cancel, TxnH, _Req},
+    #data{role = uas, index_state = early, txn = TxnH} = D
+) ->
+    %% the caller CANCELled the INVITE of this early dialog: the stack
+    %% answered it 487, so the early dialog is over (RFC 3261 9.2)
+    notify_terminal(D, cancel),
+    {stop, normal, D};
 confirmed(info, {chappe_sip_cancel, _TxnH, _Req}, D) ->
     %% late CANCEL after the dialog was established; ignore
     {keep_state, D};
@@ -403,6 +423,9 @@ confirmed({call, From}, Query, D) when ?IS_QUERY(Query) ->
 confirmed(info, {chappe_sip_engine_restart, _}, D) ->
     notify_terminal(D, engine_restart),
     {stop, normal, D};
+confirmed(info, {chappe_sip_flow_lost, LegH}, #data{leg = LegH} = D) ->
+    notify_terminal(D, flow_lost),
+    {stop, normal, D};
 confirmed(
     info,
     {'DOWN', MRef, process, _, _},
@@ -414,13 +437,15 @@ confirmed(
     {'DOWN', MRef, process, _, _},
     #data{owner_mon = MRef, on_owner_exit = destroy, ack_wait = true} = D
 ) ->
-    {keep_state, D#data{bye_after_ack = {undefined, []}}};
+    {keep_state, D#data{
+        bye_after_ack = {undefined, []}, cdr_why = owner_down
+    }};
 confirmed(
     info,
     {'DOWN', MRef, process, _, _},
     #data{owner_mon = MRef, on_owner_exit = destroy} = D
 ) ->
-    start_teardown(undefined, [], D);
+    start_teardown(undefined, [], D#data{cdr_why = owner_down});
 confirmed(
     info,
     {'DOWN', MRef, process, _, _},
@@ -497,6 +522,10 @@ in_transaction(info, {chappe_sip_engine_restart, _}, D) ->
     reply(txning_from(D), {error, engine_restart}),
     notify_terminal(D, engine_restart),
     {stop, normal, D};
+in_transaction(info, {chappe_sip_flow_lost, LegH}, #data{leg = LegH} = D) ->
+    reply(txning_from(D), {error, flow_lost}),
+    notify_terminal(D, flow_lost),
+    {stop, normal, D};
 in_transaction(
     info,
     {'DOWN', MRef, process, _, _},
@@ -510,7 +539,9 @@ in_transaction(
 ) ->
     %% owner died mid-transaction: abandon the in-flight txn and BYE
     reply(txning_from(D), {error, owner_down}),
-    start_teardown(undefined, [], D#data{txning = undefined});
+    start_teardown(undefined, [], D#data{
+        txning = undefined, cdr_why = owner_down
+    });
 in_transaction(
     info,
     {'DOWN', MRef, process, _, _},
@@ -711,6 +742,12 @@ terminating(
 terminating(info, {chappe_sip_engine_restart, _}, D) ->
     notify_terminal(D, engine_restart),
     {stop, normal, D};
+terminating(info, {chappe_sip_flow_lost, LegH}, #data{leg = LegH} = D) ->
+    %% our BYE can no longer be answered
+    unindex(D),
+    reply(pending_from(D), ok),
+    notify_terminal(D, term_reason(D)),
+    {stop, normal, D};
 terminating(info, _Other, D) ->
     {keep_state, D};
 terminating({timeout, glare_retry}, _, #data{glare_wait = {From, _}} = D) ->
@@ -907,8 +944,10 @@ early_confirm(From, Args, #data{cseq_ref = Ref} = D) when Ref =/= undefined ->
         st = maps:get(session_timer, Args, undefined),
         index_state = confirmed,
         uac = undefined,
-        cseq_ref = undefined
+        cseq_ref = undefined,
+        cdr = maps:get(cdr, Args, D#data.cdr)
     },
+    cdr_bind(D1),
     set_index_state(D1, confirmed),
     {keep_state, D1, [{reply, From, ok} | st_timers(D1#data.st)]};
 early_confirm(From, _Args, D) ->
@@ -924,7 +963,7 @@ early_sdp(_Sdp, D) -> D.
 %% the owner is gone before the INVITE completed: the UAC fsm CANCELs it
 %% and ends the call should a 2xx still come
 early_owner_down(#data{uac = Uac} = D) ->
-    gen_statem:cast(Uac, abandon),
+    gen_statem:cast(Uac, {abandon, owner_down}),
     {keep_state, D}.
 
 %% the CSeq of our next request: an early dialog shares the INVITE's
@@ -1245,8 +1284,13 @@ start_teardown(
         Txn, 480, <<"Temporarily Unavailable">>, hdrs(Hdrs), <<>>, <<>>
     ),
     reply(From, ok),
-    notify_terminal(D, byed),
-    {stop, normal, D};
+    D1 =
+        case D#data.cdr_why of
+            undefined -> D#data{cdr_why = {final, 480}};
+            _ -> D
+        end,
+    notify_terminal(D1, byed),
+    {stop, normal, D1};
 start_teardown(From, Hdrs, #data{sub = undefined} = D) ->
     start_bye(From, Hdrs, D);
 start_teardown(From, _Hdrs, D) ->
@@ -1833,13 +1877,36 @@ notify4(#data{owner = Owner} = D, Event, Req) ->
 %% the dialog again
 notify_terminal_req(#data{owner = Owner} = D, Req) ->
     unindex(D),
+    chappe_sip_cdr:stop(D#data.cdr, {bye, remote}),
     Owner ! {chappe_sip_dialog, dialog(D), destroy, Req},
     ok.
 
 notify_terminal(#data{owner = Owner} = D, Reason) ->
     unindex(D),
+    chappe_sip_cdr:stop(D#data.cdr, cdr_reason(Reason, D)),
     Owner ! {chappe_sip_dialog, dialog(D), destroy, Reason},
     ok.
+
+%% ---- call records (chappe_sip_cdr) ----
+
+%% the dialog drives its call record from now on
+cdr_bind(#data{cdr = undefined}) ->
+    ok;
+cdr_bind(#data{cdr = Id, local_tag = L, remote_addr = RA}) ->
+    chappe_sip_cdr:bind(Id, self(), #{
+        local_tag => L, remote_tag => addr_tag(RA)
+    }).
+
+%% the destroy reason the owner gets, as the record's normalized reason
+cdr_reason(byed, #data{cdr_why = undefined}) -> {bye, local};
+cdr_reason(byed, #data{cdr_why = Why}) -> Why;
+cdr_reason({request_failed, 408}, _D) -> timeout;
+cdr_reason({request_failed, Status}, _D) -> {final, Status};
+cdr_reason({early_ended, Status}, _D) -> {final, Status};
+cdr_reason(Reason, _D) -> Reason.
+
+pending_from(#data{pending = {From, _}}) -> From;
+pending_from(_) -> undefined.
 
 %% ---- session timers (RFC 4028) ----
 
@@ -2032,8 +2099,17 @@ reply_await(#data{await_from = From}, Msg) -> gen_statem:reply(From, Msg).
 reply(undefined, _) -> ok;
 reply(From, Msg) -> gen_statem:reply(From, Msg).
 
-terminate(_Reason, _State, #data{leg = LegH} = D) ->
+terminate(Reason, _State, #data{leg = LegH} = D) ->
     unindex(D),
+    %% a record not stopped on the way (a send failure, a setup that never
+    %% completed) stops here; a killed fsm leaves it to chappe_sip_cdr
+    chappe_sip_cdr:stop(
+        D#data.cdr,
+        case D#data.cdr_why of
+            undefined -> {process_down, Reason};
+            Why -> Why
+        end
+    ),
     %% a re-INVITE waiting out its 491 retry timer will not happen
     _ =
         case D#data.glare_wait of
