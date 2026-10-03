@@ -92,7 +92,7 @@ first, and in-node, keeps A and B thin.
 1. **A route table keyed by method plus match rules.** Replace
    `#{Method => Fun}` with ordered entries:
 
-   ```erlang
+   ```text
    #{id => RouteId,
      method => <<"INVITE">>,
      match => #{ruri_user => {prefix, <<"+1">>},
@@ -135,7 +135,7 @@ first, and in-node, keeps A and B thin.
    whose owner dies enters an *orphaned* state for `owner_grace_ms`
    instead of keeping a dead owner forever:
 
-   ```erlang
+   ```text
    {ok, Dialog, Snapshot} = chappe_sip_dialog:attach(DialogId, #{}),
    %% Snapshot: #{call_id, local_tag, remote_tag, state, role,
    %%             local_sdp, remote_sdp, app_data, missed => [Event]}
@@ -197,7 +197,7 @@ engine's registered name on another node.
 
 All messages are Erlang terms; the app library hides them.
 
-```erlang
+```text
 %% app -> SIP node (to the registered chappe_sip_app_endpoint_sup)
 {register, AppName, #{max_inflight => 200, owner_grace_ms => 30000}}
     -> {ok, EndpointPid}
