@@ -466,16 +466,19 @@ handle_response(Status, Raw, D) ->
     chappe_sip_engine:finish_txn(D#data.txn),
     {stop, normal, D}.
 
+%% The dialog (its leg) exists before the ACK goes out: the callee may send
+%% a request in it the moment it has the ACK, and one reaching the engine
+%% before the leg is a request for no dialog of ours (481).
 answered(Msg, AckBody, D) ->
     ToTag = chappe_sip_msg:to_tag(Msg),
-    case maybe_ack(Msg, AckBody, D) of
-        ok ->
-            %% the record is answered before the dialog binds it
-            cdr_answered(chappe_sip_msg:status(Msg), Msg, D),
-            %% the early dialog of this To tag is confirmed; the others end
-            {Mine, D1} = take_early(ToTag, D),
-            case establish_dialog(Mine, Msg, D1) of
-                {ok, Dialog} ->
+    %% the record is answered before the dialog binds it
+    cdr_answered(chappe_sip_msg:status(Msg), Msg, D),
+    %% the early dialog of this To tag is confirmed; the others end
+    {Mine, D1} = take_early(ToTag, D),
+    case establish_dialog(Mine, Msg, D1) of
+        {ok, Dialog} ->
+            case maybe_ack(Msg, AckBody, D) of
+                ok ->
                     %% a b2bua copies headers from the 2xx it bridges
                     _ =
                         maps:get(report_answer, D#data.opts, false) andalso
@@ -486,15 +489,28 @@ answered(Msg, AckBody, D) ->
                             {state_timeout, 4000, linger_done}
                         ]};
                 {error, Reason} ->
+                    _ = drop_dialog(Dialog),
                     notify(D, {error, Reason}),
                     chappe_sip_engine:finish_txn(D#data.txn),
                     {stop, normal, D}
             end;
         {error, Reason} ->
+            _ = maybe_ack(Msg, AckBody, D),
             notify(D, {error, Reason}),
             chappe_sip_engine:finish_txn(D#data.txn),
             {stop, normal, D}
     end.
+
+%% a dialog whose 2xx we could not ACK is not handed to the app; its BYE
+%% may wait for Timer F, so not here
+drop_dialog(Dialog) ->
+    spawn(fun() ->
+        try
+            chappe_sip_dialog:destroy(Dialog)
+        catch
+            exit:_ -> ok
+        end
+    end).
 
 %% ---- offer/answer (RFC 3261 13.2.1) ----
 

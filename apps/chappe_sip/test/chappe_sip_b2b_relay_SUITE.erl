@@ -21,7 +21,8 @@
          early_media_relayed/1, reliable_1xx_each_leg/1,
          reliable_1xx_prack_after_2xx/1, require_100rel_forces_reliable/1, proxy_response_headers_named/1,
          proxy_response_headers_all/1, bye_reason_a_to_b/1,
-         bye_reason_b_to_a/1, cancel_reason_relayed/1]).
+         bye_reason_b_to_a/1, cancel_reason_relayed/1,
+         reinvite_b_right_after_ack/1, bye_b_right_after_ack/1]).
 
 all() ->
     [reinvite_a_to_b, reinvite_b_to_a, update_relayed,
@@ -31,7 +32,8 @@ all() ->
      reliable_1xx_prack_after_2xx, require_100rel_forces_reliable,
      proxy_response_headers_named,
      proxy_response_headers_all, bye_reason_a_to_b, bye_reason_b_to_a,
-     cancel_reason_relayed].
+     cancel_reason_relayed, reinvite_b_right_after_ack,
+     bye_b_right_after_ack].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -45,6 +47,7 @@ end_per_suite(_Config) ->
     ok.
 
 end_per_testcase(_Case, _Config) ->
+    _ = sys:remove(chappe_sip_engine, b2b_hold),
     _ = chappe_sip:stop(),
     _ = chappe_sip_engine:reset_routes(),
     ok.
@@ -497,6 +500,53 @@ cancel_reason_relayed(_Config) ->
     end),
     ?assertEqual([Reason], ?UA:hdrs(got(b_cancel), <<"reason">>)).
 
+%% ---- B in-dialog right after its ACK ----
+
+%% B's re-INVITE goes out the moment B has our ACK, while the B-leg UAC is
+%% held right after sending it: the B dialog exists already, so the
+%% re-INVITE is relayed to A rather than answered 481.
+%% req: R3261-238 R3261-14.2-1
+reinvite_b_right_after_ack(_Config) ->
+    {EP, CP} = setup(#{}),
+    hold_uac_after_ack(500),
+    callee(CP, fun(Sock, D) ->
+        {Re, _} = ?UA:in_dialog(D, <<"INVITE">>, [], ?UA:sdp(<<"callee">>, <<"1">>)),
+        ?UA:send(Sock, EP, Re),
+        R = ?UA:recv_any(Sock, 6000),
+        ?UA:ack(D#{invite_cseq := maps:get(seq, ?UA:cseq(Re))}, EP),
+        tell({b_final, R})
+    end),
+    caller(EP, #{}, fun(Sock, _D) ->
+        {Re, S} = ?UA:recv_req(Sock, <<"INVITE">>),
+        tell({a_reinvite, Re}),
+        ?UA:send(Sock, S, ?UA:resp(Re, 200, <<"OK">>, <<>>, [contact(Sock)],
+                                   ?UA:sdp(<<"caller">>, <<"1">>)))
+    end),
+    ok = ?UA:expect(uac_released),
+    ?assertEqual(200, ?UA:status(got(b_final))),
+    ?assertEqual(?UA:sdp(<<"callee">>, <<"1">>), ?UA:body(got(a_reinvite))).
+
+%% The same for B's BYE: A gets it with B's Reason.
+%% req: R3326-01 R3326-2-1
+bye_b_right_after_ack(_Config) ->
+    {EP, CP} = setup(#{}),
+    hold_uac_after_ack(500),
+    Reason = <<"SIP;cause=480;text=\"Temporarily Unavailable\"">>,
+    callee(CP, fun(Sock, D) ->
+        {Bye, _} = ?UA:in_dialog(D, <<"BYE">>, [{<<"Reason">>, Reason}], <<>>),
+        ?UA:send(Sock, EP, Bye),
+        tell({b_final, ?UA:recv_any(Sock, 6000)})
+    end),
+    caller(EP, #{}, fun(Sock, _D) ->
+        {Bye, S} = ?UA:recv_req(Sock, <<"BYE">>),
+        ?UA:send(Sock, S, ?UA:resp(Bye, 200, <<"OK">>, <<>>, [], <<>>)),
+        tell({a_bye, Bye})
+    end),
+    ok = ?UA:expect(uac_released),
+    ?assertEqual(200, ?UA:status(got(b_final))),
+    ?assertEqual([Reason], ?UA:hdrs(got(a_bye), <<"reason">>)),
+    ok = ?UA:expect({relay_done, {done, b_bye}}).
+
 %% ---- helpers ----
 
 setup(Opts) ->
@@ -523,6 +573,32 @@ setup_raw(Opts) ->
     {EP, CP}.
 
 tell(Msg) -> b2b_relay_test ! Msg.
+
+%% Widen the window a slow runner opens after the B-leg UAC sends its 2xx
+%% ACK: the engine suspends the UAC fsm as it handles that send, and a
+%% holder resumes it Ms later (then tells uac_released).
+hold_uac_after_ack(Ms) ->
+    Test = self(),
+    Holder = spawn(fun() ->
+        receive
+            {hold, Pid, From, Ref} ->
+                true = erlang:suspend_process(Pid),
+                From ! {Ref, held},
+                timer:sleep(Ms),
+                true = erlang:resume_process(Pid),
+                Test ! uac_released
+        end
+    end),
+    Hold = fun
+        (_, {in, {'$gen_call', {Pid, _},
+                  {send_stateless, _, <<"ACK ", _/binary>>, _}}}, _) ->
+            Ref = make_ref(),
+            Holder ! {hold, Pid, self(), Ref},
+            receive {Ref, held} -> done after 1000 -> done end;
+        (St, _, _) ->
+            St
+    end,
+    ok = sys:install(chappe_sip_engine, {b2b_hold, Hold, armed}).
 
 got(Tag) ->
     receive {Tag, V} -> V after 10000 -> ct:fail({missing, Tag}) end.
