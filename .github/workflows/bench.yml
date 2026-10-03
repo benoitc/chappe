@@ -9,6 +9,13 @@ on:
   push:
     branches: [perf-pass]
   workflow_dispatch:
+    inputs:
+      groups:
+        description: 'JSON list of pass.sh groups'
+        default: '["cost", "timer", "prefill", "events", "capacity", "ref"]'
+      rounds:
+        description: 'launches of each arm'
+        default: '5'
 
 env:
   OTP: '29'
@@ -23,12 +30,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [cost, timer, prefill, events, capacity, ref]
+        group: ${{ fromJSON(inputs.groups || '["cost", "timer", "prefill", "events", "capacity", "ref"]') }}
     env:
       SKIP_ENGINE_BUILD: '1'
       # the commit before the gain control, the relations and the talker
       # events, for the cost rows
       BASE: c9f377d
+      ROUNDS: ${{ inputs.rounds || '5' }}
     steps:
       - uses: actions/checkout@v5
         with:
