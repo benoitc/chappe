@@ -335,9 +335,8 @@ init([]) ->
 handle_call({start, _}, _From, #state{engine = E} = S) when E =/= undefined ->
     {reply, {error, already_started}, S};
 handle_call({start, Opts}, _From, #state{mod = Mod} = S) ->
-    case validate_tls(maps:get(tls, Opts, undefined)) of
-        ok ->
-            NOpts = with_max_size(normalize_contact(Opts)),
+    case start_opts(Opts) of
+        {ok, NOpts} ->
             case
                 start_engine(
                     Mod,
@@ -857,6 +856,29 @@ start_engine(Mod, Opts, Retries, Backoff) ->
             start_engine(Mod, Opts, Retries - 1, min(Backoff * 2, 5000));
         {error, Reason} ->
             {error, Reason}
+    end.
+
+%% The options the engine backend starts with: TLS checked, the contact
+%% restricted, the size cap and the HEP capture URL added.
+start_opts(Opts) ->
+    case validate_tls(maps:get(tls, Opts, undefined)) of
+        ok -> with_capture(with_max_size(normalize_contact(Opts)));
+        {error, _} = Err -> Err
+    end.
+
+%% HEP capture of the native transports: sofia takes a capture URL
+%% (TPTAG_CAPT), from the hep option or the application setting
+with_capture(Opts) ->
+    case maps:get(hep, Opts, chappe_sip_config:get(hep)) of
+        undefined ->
+            {ok, maps:remove(capture, Opts)};
+        Hep ->
+            case chappe_sip_hep:validate(Hep) of
+                {ok, Cfg} ->
+                    {ok, Opts#{capture => chappe_sip_hep:native_url(Cfg)}};
+                {error, _} = Err ->
+                    Err
+            end
     end.
 
 %% An unrestricted sofia bind (transport=*) also opens a ws listener on

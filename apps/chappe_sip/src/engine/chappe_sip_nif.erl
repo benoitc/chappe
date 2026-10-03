@@ -91,7 +91,10 @@ init() ->
 %% Opts: #{contact := binary(), max_message_size => pos_integer(),
 %%         tls => #{contact := binary(), cert_dir => binary(),
 %%                  passphrase => binary(), verify => none | peer,
-%%                  verify_clients => boolean()}}
+%%                  verify_clients => boolean()},
+%%         capture => binary()}
+%% capture is a HEP capture URL (udp:Host:Port;hep=3;capture_id=N): sofia
+%% sends a copy of every message to it.
 %% verify (default peer) checks the server certificate of outbound TLS
 %% connections against cafile.pem and the target host (RFC 5922);
 %% verify_clients asks inbound clients for a certificate.

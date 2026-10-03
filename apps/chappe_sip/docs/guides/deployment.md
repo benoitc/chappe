@@ -99,6 +99,15 @@ add `-heart` to `config/vm.args.src`. The release start script sets
 under systemd (both would try to restart); use it with the daemonized
 `bin/chappe_sip start` instead.
 
+## Capture to Homer
+
+To see the node's calls in Homer, point it at your heplify-server in
+`config/sys.config`; see [SIP capture](capture.md):
+
+```erlang
+[{chappe_sip, [{hep, #{host => <<"10.0.0.5">>, port => 9060}}]}].
+```
+
 ## Notes
 
 - Binding 5060/5061 needs `CAP_NET_BIND_SERVICE` (in the unit) or a high port.

@@ -58,6 +58,13 @@ tracker; the milestone history is in `docs/plan.md`.
   dialogs down with `engine_restart`, keeps routes, restarts the NIF.
 - Health check that round-trips through the sofia event loop, with a
   halt-the-node hang policy.
+- SIP capture to Homer (`hep => #{host, port, capture_id}` in
+  `chappe_sip:start/1`, or the `hep` setting): a HEPv3 copy of every message
+  sent and received. sofia captures UDP, TCP and TLS (`TPTAG_CAPT`, so
+  retransmissions and the stack's own responses are in it); `chappe_sip_hep`
+  captures WebSocket, with the Call-ID in the correlation chunk, from its own
+  process so a slow collector never blocks SIP. Off by default; checked
+  against heplify-server in the conformance lab. See `docs/guides/capture.md`.
 
 ### Application API (srf-style)
 - Request handlers by method: `chappe_sip:invite/1`, `chappe_sip:register/1`,
@@ -449,7 +456,6 @@ Gaps relative to drachtio, in rough order of impact.
   remote-app split and outbound cloud-scaling are not available yet.
 - **Multi-homed contacts**: one contact per transport today; binding several
   listen addresses on the same transport is not supported.
-- **SIP capture (HEP/Homer)**: no native trace export to a capture agent.
 
 ## Non-goals
 

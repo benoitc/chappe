@@ -57,7 +57,10 @@
 %%                  verify_clients => boolean(), allow_insecure => boolean()},
 %%         ws => #{port := inet:port_number()},
 %%         wss => #{port := inet:port_number(), cert_dir => binary()},
-%%         presence => map()}
+%%         presence => map(),
+%%         hep => #{host := inet:ip_address() | string() | binary(),
+%%                  port := 1024..65535, version => 3,
+%%                  capture_id => pos_integer()}}
 %% presence serves the presence package once the stack is up
 %% (chappe_sip_presence:serve/1 takes the map).
 %% The tls contact binds a TLS listener on its own port (e.g.
@@ -65,10 +68,28 @@
 %% cafile.pem. verify (default peer) checks outbound server certificates;
 %% none is accepted only with allow_insecure => true. wss serves SIP over
 %% secure WebSocket with the agent.pem of its cert_dir (or certfile/keyfile).
-%% max_message_size defaults to the application setting.
+%% max_message_size defaults to the application setting. hep (or the
+%% `hep' application setting) sends a HEPv3 copy of every SIP message sent
+%% and received to a capture server (Homer); capture_id defaults to 200.
 -spec start(#{contact := binary(), _ => _}) ->
     ok | {error, already_started | term()}.
 start(Opts) ->
+    case start_hep(maps:get(hep, Opts, chappe_sip_config:get(hep))) of
+        ok -> start_listeners(Opts);
+        {error, _} = Err -> Err
+    end.
+
+%% WS capture is Erlang (chappe_sip_hep); the native transports are
+%% captured by the engine from the same option
+start_hep(undefined) ->
+    chappe_sip_hep:configure(undefined);
+start_hep(Hep) ->
+    case chappe_sip_hep:validate(Hep) of
+        {ok, Cfg} -> chappe_sip_hep:configure(Cfg);
+        {error, _} = Err -> Err
+    end.
+
+start_listeners(Opts) ->
     %% an optional WS listener runs independently of the sofia engine; a bind
     %% failure must surface, not be swallowed
     case
@@ -122,6 +143,7 @@ ws_listen(Opts) ->
 -spec stop() -> ok | {error, not_started | hung}.
 stop() ->
     _ = chappe_sip_ws_sup:stop_listener(),
+    _ = chappe_sip_hep:configure(undefined),
     chappe_sip_engine:stop().
 
 -spec use(chappe_sip_middleware:mw()) -> ok.

@@ -44,6 +44,7 @@ init([]) ->
         worker(chappe_sip_dialog_index),
         worker(chappe_sip_digest_nc),
         worker(chappe_sip_cdr),
+        worker(chappe_sip_hep),
         sup(chappe_sip_refer_sup),
         sup(chappe_sip_subscriber_sup),
         sup(chappe_sip_events_sup),

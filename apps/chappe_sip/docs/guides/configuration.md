@@ -63,6 +63,7 @@ tune its safety limits.
 | `registrar_max_bindings_per_aor` | `10` | Contacts bound to one AOR; a REGISTER exceeding this is rejected 403. |
 | `media` | `#{}` | Media backends for `chappe_sip_media`, used when `chappe_sip:start/1` gets no `media` option: `rtpengine => #{nodes => [...]}` and `mix => #{ip => _, advertise => _}`. Empty starts nothing. See `docs/design/media.md`. |
 | `flow_token_secret` | (random) | Secret keying the Record-Route marker/flow-token HMAC. Unset generates a per-node random secret at boot; set a stable shared value only if record-routed dialogs must survive a restart or span a cluster. A configured value shorter than 16 bytes stops the application from starting. |
+| `hep` | `undefined` | HEPv3 capture server used when `chappe_sip:start/1` gets no `hep` option: `#{host => _, port => _, capture_id => _}`. See [SIP capture](capture.md). |
 | `record_route_ttl_s` | `86400` | Lifetime of a Record-Route marker, signed into it. A dialog record-routed through the proxy must end within it; a marker past it is refused. |
 
 ## Notes

@@ -7,7 +7,8 @@
 # Docker Desktop on macOS cannot send UDP from the host to container
 # addresses. The node resolves through dnsmasq (10.253.7.53, records in
 # dns/dnsmasq.conf), and SIPp runs the dns_* cases at 10.253.7.30, the
-# address those records point at.
+# address those records point at. The hep case adds heplify-server and
+# its PostgreSQL.
 #
 #   lab.sh images         build the node, SIPp, pjsua and DNS images
 #   lab.sh build          compile this chappe tree into the node volume and
@@ -20,6 +21,14 @@
 #   lab.sh cmd NAME KEYS  type console keys into a pjsua agent
 #   lab.sh logs [NAME]    print the node's (or an agent's) output
 #   lab.sh alive          exit 0 if the node is still running
+#   lab.sh hep up         start heplify-server (10.253.7.40, HEP on UDP
+#                         9060) and its PostgreSQL; then CHAPPE_HEP=
+#                         10.253.7.40:9060 lab.sh up captures to it
+#   lab.sh hep calls      one call to the node over UDP, TCP, TLS and WS
+#                         from a second node container (10.253.7.31)
+#   lab.sh hep stored ID  print `sent received' for Call-ID ID: the
+#                         messages heplify-server stored from the node and
+#                         to it
 #   lab.sh down           remove every container and the network
 #
 # chappe_sip_conformance_SUITE drives it; you can too, by hand.
@@ -37,6 +46,12 @@ CERTS=chappe_conf_certs
 DNS=chappe-conf-dns
 DNS_IP=10.253.7.53
 DNS_CASE_IP=10.253.7.30
+HEP=chappe-conf-hep
+HEP_IP=10.253.7.40
+HEPDB=chappe-conf-hepdb
+HEP_IMAGE=ghcr.io/sipcapture/heplify-server:1.60.3
+HEPDB_IMAGE=postgres:11-alpine
+CALLER_IP=10.253.7.31
 
 net() {
     docker network inspect "$NET" >/dev/null 2>&1 \
@@ -49,6 +64,44 @@ dns() {
     docker rm -f "$DNS" >/dev/null 2>&1 || true
     docker run -d --name "$DNS" --network "$NET" --ip "$DNS_IP" \
         chappe-conf-dns >/dev/null
+}
+
+# heplify-server stores what it decodes in PostgreSQL (the Homer 7
+# schema); the case reads it back from there
+hep_up() {
+    net
+    docker rm -f "$HEP" "$HEPDB" >/dev/null 2>&1 || true
+    docker run -d --name "$HEPDB" --network "$NET" \
+        -e POSTGRES_USER=homer -e POSTGRES_PASSWORD=homer \
+        "$HEPDB_IMAGE" >/dev/null
+    i=0
+    until docker exec "$HEPDB" pg_isready -h 127.0.0.1 -U homer >/dev/null 2>&1; do
+        i=$((i + 1))
+        [ "$i" -gt 120 ] && { docker logs "$HEPDB" >&2; exit 1; }
+        sleep 0.5
+    done
+    # heplify-server makes its tables, not its databases
+    docker exec "$HEPDB" createdb -h 127.0.0.1 -U homer homer_data
+    docker exec "$HEPDB" createdb -h 127.0.0.1 -U homer homer_config
+    docker run -d --name "$HEP" --network "$NET" --ip "$HEP_IP" \
+        -e HEPLIFYSERVER_HEPADDR=0.0.0.0:9060 \
+        -e HEPLIFYSERVER_DBSHEMA=homer7 \
+        -e HEPLIFYSERVER_DBDRIVER=postgres \
+        -e HEPLIFYSERVER_DBADDR="$HEPDB:5432" \
+        -e HEPLIFYSERVER_DBUSER=homer -e HEPLIFYSERVER_DBPASS=homer \
+        -e HEPLIFYSERVER_DBDATATABLE=homer_data \
+        -e HEPLIFYSERVER_DBCONFTABLE=homer_config \
+        -e HEPLIFYSERVER_DBROTATE=true -e HEPLIFYSERVER_DBTIMER=1 \
+        -e HEPLIFYSERVER_LOGLVL=info -e HEPLIFYSERVER_LOGSTD=true \
+        "$HEP_IMAGE" >/dev/null
+    # it creates the databases and the day's tables before it stores
+    i=0
+    until docker logs "$HEP" 2>&1 | grep -q "postgres connection established"
+    do
+        i=$((i + 1))
+        [ "$i" -gt 240 ] && { docker logs "$HEP" >&2; exit 1; }
+        sleep 0.5
+    done
 }
 
 case "${1:-}" in
@@ -75,7 +128,11 @@ case "${1:-}" in
         net
         dns
         docker rm -f "$NODE" >/dev/null 2>&1 || true
+        # shellcheck disable=SC2046
         docker run -d --name "$NODE" --network "$NET" --ip "$NODE_IP" \
+            $(if [ -n "${CHAPPE_HEP:-}" ]; then
+                echo "-e CHAPPE_HEP=$CHAPPE_HEP"
+            fi) \
             -v "$HERE/dns/resolv.conf":/etc/resolv.conf:ro \
             -v "$CERTS":/certs:ro \
             -v "$VOL":/work chappe-conf-node run "$NODE_IP" >/dev/null
@@ -114,6 +171,34 @@ case "${1:-}" in
     cmd)
         docker exec "chappe-conf-$2" sh -c "printf '$3' > /tmp/cmd"
         ;;
+    hep)
+        case "${2:-}" in
+            up)
+                hep_up
+                ;;
+            calls)
+                docker rm -f chappe-conf-caller >/dev/null 2>&1 || true
+                docker run --rm --name chappe-conf-caller --network "$NET" \
+                    --ip "$CALLER_IP" -v "$VOL":/work \
+                    chappe-conf-node hepcalls "$NODE_IP"
+                ;;
+            stored)
+                # the node's ports: 5060 UDP/TCP, 5061 TLS, 5066 WS
+                PORTS="('5060','5061','5066')"
+                docker exec "$HEPDB" psql -U homer -d homer_data -tA -F ' ' \
+                    -c "SELECT
+                          count(*) FILTER (WHERE
+                            protocol_header->>'srcPort' IN $PORTS),
+                          count(*) FILTER (WHERE
+                            protocol_header->>'dstPort' IN $PORTS)
+                        FROM hep_proto_1_call WHERE sid = '$3'"
+                ;;
+            *)
+                sed -n '5,34p' "$0" >&2
+                exit 2
+                ;;
+        esac
+        ;;
     logs)
         docker logs "${2:+chappe-conf-}${2:-$NODE}" 2>&1
         ;;
@@ -128,7 +213,7 @@ case "${1:-}" in
         docker network rm "$NET" >/dev/null 2>&1 || true
         ;;
     *)
-        sed -n '5,25p' "$0" >&2
+        sed -n '5,34p' "$0" >&2
         exit 2
         ;;
 esac

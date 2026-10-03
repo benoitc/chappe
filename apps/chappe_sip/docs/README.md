@@ -41,6 +41,8 @@ Start here.
   `chappe_sip_config`.
 - [Deployment](guides/deployment.md): build the release and run it under
   systemd with the engine hang policy.
+- [SIP capture (HEP)](guides/capture.md): send a copy of every message to
+  Homer.
 - [Interop testing](guides/interop-testing.md): the opt-in JsSIP and Kamailio
   interop track.
 

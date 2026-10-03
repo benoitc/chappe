@@ -103,5 +103,11 @@ Notes:
   `agent.pem`, and a `svcs.lab` certificate for the TLS target) in the
   `chappe_conf_certs` volume; the node listens for TLS on 5061 with them.
 - `lab.sh logs dns` prints the queries dnsmasq answered.
+- The `hep_capture` case starts heplify-server (`10.253.7.40`, HEP on UDP
+  9060) with its PostgreSQL, restarts the node with `CHAPPE_HEP` set so it
+  captures to it, makes one call over each of UDP, TCP, TLS and WebSocket
+  from a second node container (`lab.sh hep calls`), and reads back from
+  the Homer tables that each Call-ID has messages sent by the node and
+  messages it received (`lab.sh hep stored ID`).
 - `LAB_PROXY=http://host.docker.internal:8888` sends the build container's
   hex fetches through an HTTP proxy on your machine.

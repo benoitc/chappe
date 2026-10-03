@@ -7,7 +7,8 @@
 %% plays one flow and asserts the exact headers the RFCs require. The SIPp
 %% scenarios are interop/sipp/scenarios/<case>.xml: a regexp action with
 %% check_it fails the call on any mismatch, so a case passes only when the
-%% whole flow went as the RFC says.
+%% whole flow went as the RFC says. The hep group checks the node's HEP
+%% capture against heplify-server, the Homer capture server.
 %%
 %% Opt-in: runs only with CONFORMANCE=1 (make interop-conformance) and
 %% skips when docker is absent. A case listed in
@@ -33,14 +34,14 @@
          st_expiry/1, subscribe/1, subscribe_489/1, presence/1, mwi/1,
          dns_srv/1, dns_sips_failover/1,
          pjsua_refer_blind/1, pjsua_refer_attended/1,
-         pjsua_session_timer/1]).
+         pjsua_session_timer/1, hep_capture/1]).
 
 suite() -> [{timetrap, {minutes, 5}}].
 
 all() ->
     case os:getenv("CONFORMANCE") of
         false -> {skip, "conformance suite disabled; set CONFORMANCE=1"};
-        _ -> [{group, sipp}, {group, pjsua}]
+        _ -> [{group, sipp}, {group, pjsua}, {group, hep}]
     end.
 
 groups() ->
@@ -53,7 +54,8 @@ groups() ->
                  st_expiry, subscribe, subscribe_489, presence, mwi,
                  dns_srv, dns_sips_failover]},
      {pjsua, [], [pjsua_refer_blind, pjsua_refer_attended,
-                  pjsua_session_timer]}].
+                  pjsua_session_timer]},
+     {hep, [], [hep_capture]}].
 
 init_per_suite(Config) ->
     case docker_ready() of
@@ -251,6 +253,54 @@ pjsua_refer_attended(Config) -> pjsua(refer_attended, Config).
 %% req: R4028-31 R4028-34 R4028-37
 pjsua_session_timer(Config) -> pjsua(session_timer, Config).
 
+%% ---- HEP ----
+
+%% heplify-server, the Homer capture server, stores a call made to the
+%% node over each of UDP, TCP, TLS and WebSocket: for every Call-ID it
+%% decoded messages the node sent and messages it received. sofia captures
+%% the native transports, chappe_sip_hep the WebSocket one.
+hep_capture(Config) ->
+    {0, _} = lab(Config, ["hep", "up"], 300000),
+    {0, _} = lab(Config, ["up"], 60000, [{"CHAPPE_HEP", "10.253.7.40:9060"}]),
+    {Status, Out} = lab(Config, ["hep", "calls"], 120000),
+    ct:log("hep calls exit ~p:~n~s", [Status, Out]),
+    Calls = [
+        {binary_to_atom(P), Id}
+     || [P, Id] <- matches(Out, "hep call (udp|tcp|tls|ws) (hep-\\S+)")
+    ],
+    Stored = [{P, Id, stored(Config, Id, 30)} || {P, Id} <- Calls],
+    ct:log("stored (sent, received) per call: ~p", [Stored]),
+    Missing = [udp, tcp, tls, ws] -- [P || {P, _, {S, R}} <- Stored,
+                                          S >= 2, R >= 2],
+    verdict(?FUNCTION_NAME, Missing =:= [], {missing, Missing, Stored},
+            Config).
+
+%% (sent, received) rows heplify-server stored for CallId; it writes in
+%% batches, so ask again until both are there
+stored(Config, CallId, 0) ->
+    sent_received(Config, CallId);
+stored(Config, CallId, N) ->
+    case sent_received(Config, CallId) of
+        {S, R} when S >= 2, R >= 2 ->
+            {S, R};
+        _ ->
+            timer:sleep(1000),
+            stored(Config, CallId, N - 1)
+    end.
+
+sent_received(Config, CallId) ->
+    {_, Out} = lab(Config, ["hep", "stored", binary_to_list(CallId)], 30000),
+    case matches(Out, "^([0-9]+) ([0-9]+)") of
+        [[S, R] | _] -> {binary_to_integer(S), binary_to_integer(R)};
+        [] -> {0, 0}
+    end.
+
+matches(Out, Re) ->
+    case re:run(Out, Re, [global, multiline, {capture, all_but_first, binary}]) of
+        {match, Ms} -> Ms;
+        nomatch -> []
+    end.
+
 %% ---- SIPp ----
 
 sipp(Case, Config) ->
@@ -309,13 +359,19 @@ run_logged(Lab, Args, Timeout) ->
     R.
 
 lab(Config, Args, Timeout) ->
-    cmd(?config(lab, Config), Args, Timeout).
+    lab(Config, Args, Timeout, []).
+
+lab(Config, Args, Timeout, Env) ->
+    cmd(?config(lab, Config), Args, Timeout, Env).
 
 %% Run a script, return its exit status and output.
 cmd(Script, Args, Timeout) ->
+    cmd(Script, Args, Timeout, []).
+
+cmd(Script, Args, Timeout, Env) ->
     Port = open_port({spawn_executable, "/bin/sh"},
-                     [{args, [Script | Args]}, exit_status, binary,
-                      stderr_to_stdout, use_stdio]),
+                     [{args, [Script | Args]}, {env, Env}, exit_status,
+                      binary, stderr_to_stdout, use_stdio]),
     collect(Port, [], erlang:monotonic_time(millisecond) + Timeout).
 
 collect(Port, Acc, Deadline) ->

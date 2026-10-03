@@ -62,7 +62,8 @@ builds the shim with ASan (see `test/asan/`).
   (structured UAS behaviour), `chappe_sip_middleware`.
 - **Engine** (`engine/`): `chappe_sip_engine` (the singleton gen_server that owns the
   NIF and dispatches every op to the sofia backend or the WS transport by
-  handle), `chappe_sip_nif` (NIF stubs).
+  handle), `chappe_sip_nif` (NIF stubs), `chappe_sip_hep` (HEPv3 capture of
+  the WS transport; sofia captures the native ones).
 - **Dialog** (`dialog/`): `chappe_sip_dialog` (handle + API), `chappe_sip_dialog_fsm`
   (gen_statem: `setup` -> `confirmed` -> `in_transaction` / `terminating`),
   `chappe_sip_dialog_sup`.

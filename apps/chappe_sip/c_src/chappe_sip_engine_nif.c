@@ -24,9 +24,14 @@
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <ctype.h>
+#include <dirent.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
 
 #include <erl_nif.h>
 
@@ -148,6 +153,12 @@ typedef struct engine {
     int tls_verify_peer;
     int tls_verify_clients;
 
+    /* HEP capture URL for sofia's tport (TPTAG_CAPT), "" when off, and the
+     * capture socket sofia opened for it (-1: none). tport never closes
+     * that socket, so the shim closes it after the agent is destroyed. */
+    char capture[MAX_CONTACT];
+    int capt_fd;
+
     /* stack-thread-only state */
     su_root_t *root;
     nta_agent_t *agent;
@@ -181,7 +192,7 @@ static ERL_NIF_TERM am_ok, am_error, am_undefined, am_chappe_sip_engine, am_requ
     am_ack, am_cancel, am_status, am_tls, am_cert_dir, am_passphrase, am_verify,
     am_peer, am_ciphers, am_prack, am_source_ip, am_source_port,
     am_ack_timeout, am_transport, am_verify_clients, am_true, am_conn,
-    am_flow_closed;
+    am_flow_closed, am_capture;
 
 /* operations enqueued to the stack thread */
 enum { OP_RESPOND = 1, OP_HEALTH, OP_STOP, OP_REQUEST, OP_LEG_CREATE,
@@ -1319,6 +1330,96 @@ static void set_failed(engine_t *e, const char *why) {
  * the whole thread lifetime means engine_dtor - which runs only at refcount 0
  * - cannot free e while the thread is still alive; that removes the stop-hung
  * use-after-free (F1) without ever blocking a scheduler in the destructor. */
+/* ---------- HEP capture socket (stack thread only) ---------- */
+
+/* The open file descriptors of the process, sorted ascending, into a new
+ * array; *n is its length. NULL when /dev/fd cannot be read. The listing's
+ * own descriptor is left out: it is closed on return, and the next socket
+ * may well reuse it. */
+static int fd_cmp(const void *a, const void *b) {
+    int x = *(const int *)a, y = *(const int *)b;
+    return (x > y) - (x < y);
+}
+
+static int *open_fds(size_t *n) {
+    *n = 0;
+    DIR *d = opendir("/dev/fd");
+    if (!d) return NULL;
+    size_t cap = 64;
+    int *fds = enif_alloc(cap * sizeof *fds);
+    int self = dirfd(d);
+    struct dirent *de;
+    while (fds && (de = readdir(d)) != NULL) {
+        if (de->d_name[0] < '0' || de->d_name[0] > '9') continue;
+        if (atoi(de->d_name) == self) continue;
+        if (*n == cap) {
+            int *more = enif_realloc(fds, 2 * cap * sizeof *fds);
+            if (!more) {
+                enif_free(fds);
+                fds = NULL;
+                break;
+            }
+            fds = more;
+            cap *= 2;
+        }
+        fds[(*n)++] = atoi(de->d_name);
+    }
+    closedir(d);
+    if (fds) qsort(fds, *n, sizeof *fds, fd_cmp);
+    return fds;
+}
+
+/* the port of a capture URL, "udp:host:port;params" */
+static int capture_port(const char *url) {
+    char buf[MAX_CONTACT];
+    snprintf(buf, sizeof buf, "%s", url);
+    char *semi = strchr(buf, ';');
+    if (semi) *semi = 0;
+    char *colon = strrchr(buf, ':');
+    return colon ? atoi(colon + 1) : 0;
+}
+
+/* tport opens the capture socket while the agent is created and never
+ * closes it (tport_destroy leaves mr_capt_sock open). It is the datagram
+ * socket that appeared during the create, connected to the collector's
+ * port: find it so teardown can close it. -1 when there is none. */
+static int capture_fd(const int *before, size_t nbefore, int port) {
+    size_t n;
+    int *after = open_fds(&n);
+    int found = -1;
+    for (size_t i = 0; after && i < n && found < 0; i++) {
+        int fd = after[i];
+        if (before && bsearch(&fd, before, nbefore, sizeof fd, fd_cmp))
+            continue;
+        int type = 0;
+        socklen_t tl = sizeof type;
+        struct sockaddr_storage ss;
+        socklen_t sl = sizeof ss;
+        if (getsockopt(fd, SOL_SOCKET, SO_TYPE, &type, &tl) != 0 ||
+            type != SOCK_DGRAM ||
+            getpeername(fd, (struct sockaddr *)&ss, &sl) != 0)
+            continue;
+        int peer = ss.ss_family == AF_INET6
+            ? ntohs(((struct sockaddr_in6 *)&ss)->sin6_port)
+            : ntohs(((struct sockaddr_in *)&ss)->sin_port);
+        if (peer == port) found = fd;
+    }
+    if (after) enif_free(after);
+    return found;
+}
+
+/* the agent is gone: so is the capture, close its socket */
+static void agent_destroy(engine_t *e) {
+    if (e->agent) {
+        nta_agent_destroy(e->agent);
+        e->agent = NULL;
+    }
+    if (e->capt_fd >= 0) {
+        close(e->capt_fd);
+        e->capt_fd = -1;
+    }
+}
+
 static void *thread_exit(engine_t *e) {
     enif_release_resource(e);
     return NULL;
@@ -1330,7 +1431,7 @@ static void teardown_sofia(engine_t *e) {
     atomic_store(&g_log_engine, NULL);
     tab_drain(e);
     if (e->dleg) { nta_leg_destroy(e->dleg); e->dleg = NULL; }
-    if (e->agent) { nta_agent_destroy(e->agent); e->agent = NULL; }
+    agent_destroy(e);
     orphans_sweep(e, 1);
     enif_rwlock_rwlock(e->root_lock);
     if (e->root) { su_root_destroy(e->root); e->root = NULL; }
@@ -1366,19 +1467,27 @@ static void *stack_main(void *arg) {
      * answer a CRLFCRLF keepalive ping on a TCP/TLS connection with a CRLF
      * pong (RFC 5626 4.4.1); tport passes it on to the transports.
      * stray_cb gets the responses that match no client transaction: a
-     * second 2xx of a proxy branch on TCP/TLS (RFC 6026). */
+     * second 2xx of a proxy branch on TCP/TLS (RFC 6026). TPTAG_CAPT: tport
+     * sends a HEP copy of every message it sends and receives to the
+     * capture server. */
+    size_t nbefore = 0;
+    int *before = e->capture[0] ? open_fds(&nbefore) : NULL;
     e->agent = nta_agent_create(
         e->root, URL_STRING_MAKE(e->contact), stray_cb, (nta_agent_magic_t *)e,
         NTATAG_MAXSIZE(e->max_msg_size), NTATAG_UA(1), NTATAG_EXTRA_100(1),
         NTATAG_MERGE_482(0), NTATAG_CANCEL_487(0), NTATAG_RPORT(1),
-        TPTAG_PONG2PING(1),
+        TPTAG_PONG2PING(1), TAG_IF(e->capture[0], TPTAG_CAPT(e->capture)),
         NTATAG_BAD_REQ_MASK(~(sip_mask_response | sip_mask_proxy |
                               sip_mask_registrar | sip_mask_pref |
                               sip_mask_privacy | sip_mask_events |
                               sip_mask_publish)),
         TAG_END());
+    if (before)
+        e->capt_fd = capture_fd(before, nbefore, capture_port(e->capture));
+    if (before) enif_free(before);
     if (!e->agent) {
         set_failed(e, "nta_agent_create failed (bad or busy contact?)");
+        agent_destroy(e);
         su_root_destroy(e->root);
         e->root = NULL;
         su_home_deinit(e->home);
@@ -1389,8 +1498,7 @@ static void *stack_main(void *arg) {
                               NTATAG_NO_DIALOG(1), TAG_END());
     if (!e->dleg) {
         set_failed(e, "nta_leg_tcreate failed");
-        nta_agent_destroy(e->agent);
-        e->agent = NULL;
+        agent_destroy(e);
         su_root_destroy(e->root);
         e->root = NULL;
         su_home_deinit(e->home);
@@ -1430,8 +1538,7 @@ static void *stack_main(void *arg) {
             set_failed(e, "nta_agent_add_tport (tls) failed (certs?)");
             nta_leg_destroy(e->dleg);
             e->dleg = NULL;
-            nta_agent_destroy(e->agent);
-            e->agent = NULL;
+            agent_destroy(e);
             su_root_destroy(e->root);
             e->root = NULL;
             su_home_deinit(e->home);
@@ -1588,6 +1695,7 @@ static ERL_NIF_TERM nif_start(ErlNifEnv *env, int argc,
     memset(e, 0, sizeof *e);
     e->owner = owner;
     e->max_msg_size = DEFAULT_MAX_MSG_SIZE;
+    e->capt_fd = -1;
     atomic_init(&e->state, ST_INIT);
 
     e->root_lock = enif_rwlock_create("chappe_sip_root");
@@ -1602,6 +1710,8 @@ static ERL_NIF_TERM nif_start(ErlNifEnv *env, int argc,
         enif_release_resource(e);
         return enif_make_tuple2(env, am_error, am_badarg);
     }
+    /* optional HEP capture: capture => <<"udp:host:port;hep=3;...">> */
+    get_opt_bin(env, argv[0], am_capture, e->capture, sizeof e->capture);
     {
         ERL_NIF_TERM v;
         unsigned long sz;
@@ -2162,6 +2272,7 @@ static int load(ErlNifEnv *env, void **priv, ERL_NIF_TERM info) {
     am_true = enif_make_atom(env, "true");
     am_conn = enif_make_atom(env, "conn");
     am_flow_closed = enif_make_atom(env, "flow_closed");
+    am_capture = enif_make_atom(env, "capture");
     return 0;
 }
 

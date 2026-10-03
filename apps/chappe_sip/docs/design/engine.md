@@ -55,6 +55,19 @@ Call-ID and tags for every method and needs no such step.
   to that branch's handle, the proxy still being in the Accepted state;
   anything else is dropped as before.
 
+## HEP capture
+
+A `capture` start option (built by `chappe_sip_engine` from the `hep`
+option) is passed to `nta_agent_create` as `TPTAG_CAPT`: tport then sends a
+HEPv3 copy of every message it sends and receives over a UDP socket of its
+own. tport never closes that socket (`tport_destroy` leaves `mr_capt_sock`
+open), so the stack thread finds it right after the agent is created (the
+datagram socket, new since the create, connected to the collector's port,
+from a `/dev/fd` listing before and after) and closes it after the agent is
+destroyed. Without that, every engine restart with capture on would leak a
+descriptor. The WebSocket transport is Erlang and is captured by
+`chappe_sip_hep`.
+
 ## Flows (RFC 5626)
 
 A request that arrives over a TCP or TLS connection (a secondary, reliable

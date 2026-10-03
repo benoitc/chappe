@@ -31,10 +31,18 @@
 %% (RFC 3263). With the lab's certificates in /certs the node also listens
 %% for TLS on 5061, so it can reach a sips: URI.
 %%
+%% With CHAPPE_HEP=Ip:Port in its environment the node sends a HEPv3 copy
+%% of every message to that capture server (heplify-server in the lab) and
+%% also listens for SIP over WebSocket on 5066. hep_calls/1 is the other
+%% side of that case: run in a second container, it makes one call to the
+%% node over each of UDP, TCP, TLS and WebSocket.
+%%
 %% Every event is printed on stdout, which the suite collects.
 -module(chappe_conf_node).
 
--export([start/1]).
+-export([start/1, hep_calls/1]).
+%% the WebSocket client of hep_calls/1
+-export([init/2, handle_in/2, handle_info/2, terminate/2]).
 
 -define(PACKAGES, [<<"conference">>]).
 
@@ -43,7 +51,8 @@ start(Ip) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif),
     {ok, _} = application:ensure_all_started(chappe_sip),
     Contact = iolist_to_binary(["sip:", Ip, ":5060"]),
-    ok = chappe_sip:start(maps:merge(#{contact => Contact}, tls(Ip))),
+    ok = chappe_sip:start(maps:merge(#{contact => Contact},
+                                     maps:merge(tls(Ip), hep()))),
     IpBin = list_to_binary(Ip),
     persistent_term:put({?MODULE, ip}, IpBin),
     ok = chappe_sip:invite(fun(Req, Res) -> invite(IpBin, Req, Res) end),
@@ -223,6 +232,18 @@ dial(Target) ->
             480
     end.
 
+%% CHAPPE_HEP=Ip:Port: capture to it, and serve WebSocket for the WS call
+hep() ->
+    case os:getenv("CHAPPE_HEP") of
+        false ->
+            #{};
+        HostPort ->
+            [Host, Port] = string:split(HostPort, ":", trailing),
+            #{hep => #{host => Host, port => list_to_integer(Port),
+                       capture_id => 2001},
+              ws => #{port => 5066}}
+    end.
+
 tls(Ip) ->
     case filelib:is_regular("/certs/agent.pem") of
         true ->
@@ -314,6 +335,163 @@ package(undefined) ->
 package(Event) ->
     [P | _] = binary:split(Event, <<";">>),
     string:lowercase(string:trim(P)).
+
+%% ---- HEP calls (the caller side) ----
+
+%% One call (INVITE, 200, ACK, BYE, 200) to the node over each transport;
+%% prints `hep call PROTO CALL-ID' for each one that completed.
+-spec hep_calls(string()) -> ok.
+hep_calls(Node) ->
+    {ok, _} = application:ensure_all_started(ssl),
+    {ok, _} = application:ensure_all_started(ws),
+    {ok, Ip} = inet:parse_address(Node),
+    lists:foreach(
+        fun(Proto) ->
+            try hep_call(Proto, Ip, Node) of
+                CallId -> log("hep call ~s ~s", [Proto, CallId])
+            catch
+                C:R:St -> log("hep call ~s failed: ~p:~p ~p", [Proto, C, R, St])
+            end
+        end,
+        [udp, tcp, tls, ws]
+    ).
+
+hep_call(udp, Ip, _Node) ->
+    {ok, S} = gen_udp:open(0, [binary, {active, false}]),
+    {ok, LP} = inet:port(S),
+    call({udp, S, Ip}, <<"UDP">>, LP);
+hep_call(tcp, Ip, _Node) ->
+    {ok, S} = gen_tcp:connect(Ip, 5060, [binary, {active, false}], 5000),
+    {ok, LP} = inet:port(S),
+    call({tcp, S}, <<"TCP">>, LP);
+hep_call(tls, Ip, _Node) ->
+    %% the lab's own certificates; the call is what is checked, not TLS
+    {ok, S} = ssl:connect(Ip, 5061, [binary, {active, false},
+                                     {verify, verify_none}], 5000),
+    {ok, {_, LP}} = ssl:sockname(S),
+    call({tls, S}, <<"TLS">>, LP);
+hep_call(ws, _Ip, Node) ->
+    Url = iolist_to_binary(["ws://", Node, ":5066/ws"]),
+    {ok, C} = ws:connect(Url, #{handler => ?MODULE,
+                                handler_opts => #{notify => self()},
+                                subprotocols => [<<"sip">>]}),
+    call({ws, C}, <<"WS">>, 0).
+
+call(Conn, Via, LP) ->
+    CallId = iolist_to_binary(["hep-", Via, "-",
+                               integer_to_list(erlang:unique_integer([positive])),
+                               "@lab"]),
+    FT = integer_to_binary(erlang:unique_integer([positive])),
+    Ip = local_ip_of(Conn),
+    ok = csend(Conn, req(<<"INVITE">>, Via, Ip, LP, CallId, FT, undefined, 1,
+                         sdp(Ip))),
+    Ok = await(Conn, <<"200">>, <<"INVITE">>, <<>>),
+    {match, [TT]} = re:run(Ok, "\r\nTo:[^\r]*;tag=([^;\r>]+)",
+                           [caseless, {capture, all_but_first, binary}]),
+    ok = csend(Conn, req(<<"ACK">>, Via, Ip, LP, CallId, FT, TT, 1, <<>>)),
+    timer:sleep(200),
+    ok = csend(Conn, req(<<"BYE">>, Via, Ip, LP, CallId, FT, TT, 2, <<>>)),
+    _ = await(Conn, <<"200">>, <<"BYE">>, <<>>),
+    CallId.
+
+local_ip_of(_Conn) ->
+    {ok, Addrs} = inet:getifaddrs(),
+    hd([list_to_binary(inet:ntoa(A))
+        || {_, Opts} <- Addrs, {addr, {10, 253, 7, _} = A} <- Opts] ++
+       [<<"127.0.0.1">>]).
+
+req(Method, Via, Ip, LP, CallId, FT, TT, CSeq, Body) ->
+    To = case TT of
+        undefined -> <<"<sip:uas@chappe>">>;
+        _ -> <<"<sip:uas@chappe>;tag=", TT/binary>>
+    end,
+    iolist_to_binary([
+        Method, " sip:uas@chappe SIP/2.0\r\n",
+        "Via: SIP/2.0/", Via, " ", Ip, ":", integer_to_binary(LP),
+        ";branch=z9hG4bK", integer_to_binary(erlang:unique_integer([positive])),
+        ";rport\r\n",
+        "Max-Forwards: 70\r\n",
+        "From: <sip:caller@lab>;tag=", FT, "\r\n",
+        "To: ", To, "\r\n",
+        "Call-ID: ", CallId, "\r\n",
+        "CSeq: ", integer_to_binary(CSeq), " ", Method, "\r\n",
+        "Contact: <sip:caller@", Ip, ":", integer_to_binary(LP),
+        ";transport=", string:lowercase(Via), ">\r\n",
+        case Body of
+            <<>> -> [];
+            _ -> "Content-Type: application/sdp\r\n"
+        end,
+        "Content-Length: ", integer_to_binary(byte_size(Body)), "\r\n\r\n",
+        Body
+    ]).
+
+csend({udp, S, Ip}, Bin) -> gen_udp:send(S, Ip, 5060, Bin);
+csend({tcp, S}, Bin) -> gen_tcp:send(S, Bin);
+csend({tls, S}, Bin) -> ssl:send(S, Bin);
+csend({ws, C}, Bin) -> ws:send(C, {text, Bin}), ok.
+
+%% the next response with this status and CSeq method
+await(Conn, Status, Method, Buf) ->
+    case next_msg(Buf) of
+        {ok, Msg, Rest} ->
+            case is_resp(Msg, Status, Method) of
+                true -> Msg;
+                false -> await(Conn, Status, Method, Rest)
+            end;
+        more ->
+            {ok, Data} = crecv(Conn),
+            await(Conn, Status, Method, <<Buf/binary, Data/binary>>)
+    end.
+
+crecv({udp, S, _}) ->
+    {ok, {_, _, D}} = gen_udp:recv(S, 0, 10000),
+    {ok, D};
+crecv({tcp, S}) -> gen_tcp:recv(S, 0, 10000);
+crecv({tls, S}) -> ssl:recv(S, 0, 10000);
+crecv({ws, _}) ->
+    receive
+        {ws_in, D} -> {ok, D}
+    after 10000 -> {error, timeout}
+    end.
+
+is_resp(Msg, Status, Method) ->
+    case Msg of
+        <<"SIP/2.0 ", Status:3/binary, _/binary>> ->
+            re:run(Msg, ["\\r\\nCSeq:[ \\t]*[0-9]+ ", Method],
+                   [caseless]) =/= nomatch;
+        _ ->
+            false
+    end.
+
+%% one message off a byte stream, by its Content-Length
+next_msg(Buf) ->
+    case binary:match(Buf, <<"\r\n\r\n">>) of
+        nomatch ->
+            more;
+        {Pos, 4} ->
+            Len = case re:run(binary:part(Buf, 0, Pos),
+                              "\\r\\n(?:content-length|l)[ \\t]*:[ \\t]*([0-9]+)",
+                              [caseless, {capture, all_but_first, binary}]) of
+                {match, [L]} -> binary_to_integer(L);
+                nomatch -> 0
+            end,
+            Total = Pos + 4 + Len,
+            case byte_size(Buf) >= Total of
+                true ->
+                    <<Msg:Total/binary, Rest/binary>> = Buf,
+                    {ok, Msg, Rest};
+                false ->
+                    more
+            end
+    end.
+
+%% ws_handler: every message to the caller
+init(_Req, #{notify := Pid}) -> {ok, Pid}.
+handle_in({text, D}, Pid) -> Pid ! {ws_in, D}, {ok, Pid};
+handle_in({binary, D}, Pid) -> Pid ! {ws_in, D}, {ok, Pid};
+handle_in(_Frame, Pid) -> {ok, Pid}.
+handle_info(_Msg, Pid) -> {ok, Pid}.
+terminate(_Reason, _Pid) -> ok.
 
 %% ---- helpers ----
 

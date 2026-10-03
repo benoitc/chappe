@@ -5,6 +5,8 @@
 # chappe-conf build   copy /host (the chappe tree, read-only) into /work
 #                     and compile it with the conformance node module
 # chappe-conf run IP  start the node on IP:5060 in the foreground
+# chappe-conf hepcalls IP
+#                     call the node at IP once over UDP, TCP, TLS and WS
 set -eu
 
 case "${1:-}" in
@@ -26,8 +28,14 @@ case "${1:-}" in
         exec erl -noshell -pa _build/default/lib/*/ebin /work/conf_ebin \
             -eval "ok = chappe_conf_node:start(\"$IP\")."
         ;;
+    hepcalls)
+        IP="${2:?usage: chappe-conf hepcalls IP}"
+        cd /work/src
+        exec erl -noshell -pa _build/default/lib/*/ebin /work/conf_ebin \
+            -eval "ok = chappe_conf_node:hep_calls(\"$IP\"), halt()."
+        ;;
     *)
-        echo "usage: chappe-conf build | run IP" >&2
+        echo "usage: chappe-conf build | run IP | hepcalls IP" >&2
         exit 2
         ;;
 esac
