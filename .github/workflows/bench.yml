@@ -6,8 +6,6 @@ name: Bench
 # apps/chappe_mix/test/audit/PERF.md by hand.
 
 on:
-  push:
-    branches: [perf-pass]
   workflow_dispatch:
     inputs:
       groups:

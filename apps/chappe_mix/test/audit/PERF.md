@@ -793,5 +793,25 @@ burst the shared two CPUs caused. At half the CPU per room it holds at
 least as many rooms, so the reference half of the capacity row holds
 here too; the ramp itself says more about two vCPUs than the mixer.
 
+**Rerun at the new default** (run `37112059518`, `620332f`, the timer at
+the ceiling by default; 09:10 to 09:24 UTC, load 0.00 to 0.99 at launch,
+nothing refused):
+
+- Timer A/B again, on an AMD EPYC 7763: with the ceiling 0 early ticks in
+  10 of 10 launches, traced p99 at most 0.70 ms idle and 1.23 ms at 100
+  conferences, no overrun; truncated, 864 to 1501 early ticks a launch,
+  and two of the five 100-conference launches had overruns (101 and 87
+  ticks, the largest 43 ms late) where the ceiling had none.
+- Prefill A/B again (AMD EPYC 9V74): `latency` 4.66 / 4.73 ms minimum,
+  every launch inside 6.6 / 6.7 ms either way, no underrun; `loss`
+  underruns 24 over 5 launches without the shrink, 54 with it. The same
+  answer.
+- `capacity` on an AMD EPYC 7763: 125, 100, 125, 100 and 75 conferences
+  (the first run's 175 to 250 were on an EPYC 9V45). The truncated timer
+  on the same CPU model held 100 in the one-round check before the pass,
+  so the CPU, not the timer, is the difference.
+- `framing` 10 and 30 ms: 5 of 5 launches each with no frame holding a
+  10 ms run, no drop, no underrun.
+
 Not measured on the runner: the limiter distortion row (deterministic,
 measured before) and the byte-for-byte row (a suite, not a timing).
