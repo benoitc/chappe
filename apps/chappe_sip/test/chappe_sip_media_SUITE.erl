@@ -29,7 +29,9 @@
          media_env_config/1]).
 -export([conference_two_legs/1, conference_leave/1, conference_mute/1,
          conference_owner_death/1, conference_leg_owner_death/1,
-         conference_sdp/1]).
+         conference_sdp/1, conference_ptime/1, conference_dtmf/1,
+         conference_rtcp_port/1, conference_directions/1,
+         conference_deaf_relate/1, conference_talking/1]).
 -export([conference_behind_rtpengine/1]).
 
 -define(LIVE_NODE, chappe_sip_media_live).
@@ -44,7 +46,9 @@ all() ->
 groups() ->
     [{mix, [], [conference_two_legs, conference_leave, conference_mute,
                 conference_owner_death, conference_leg_owner_death,
-                conference_sdp]},
+                conference_sdp, conference_ptime, conference_dtmf,
+                conference_rtcp_port, conference_directions,
+                conference_deaf_relate, conference_talking]},
      {rtpengine_live, [], [conference_behind_rtpengine]}].
 
 init_per_suite(Config) ->
@@ -451,6 +455,235 @@ conference_sdp(_Config) ->
     ?assertEqual({error, {law_mismatch, ulaw}},
                  chappe_sip_media:set_remote(S, peer_sdp(4000, ulaw, true))),
     ok = chappe_sip_media:leave(S).
+
+%% The far end's packet time reaches the leg (the mixer takes any size
+%% and always sends 20 ms, so the answer still says 20); a far end that
+%% takes no more than 10 ms per packet cannot be served and is refused.
+conference_ptime(_Config) ->
+    Room = room(),
+    {ok, S} = conf_session(),
+    Sdp = fun(Attrs) ->
+        <<"v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\n"
+          "t=0 0\r\nm=audio 4000 RTP/AVP 0\r\n", Attrs/binary>>
+    end,
+    ?assertEqual({error, {maxptime, 10}},
+                 chappe_sip_media:conference(
+                   S, Room, #{sdp => Sdp(<<"a=maxptime:10\r\n">>)})),
+    {ok, Answer} = chappe_sip_media:conference(
+                     S, Room,
+                     #{sdp => Sdp(<<"a=ptime:30\r\na=maxptime:60\r\n">>)}),
+    ?assertNotEqual(nomatch, binary:match(Answer, <<"a=ptime:20">>)),
+    #{conf := Conf, leg := Leg} = chappe_sip_media:info(S),
+    ?assertMatch([#{ptime := 30}],
+                 [L || #{id := Id} = L <- chappe_mix:legs(Conf), Id =:= Leg]),
+    ok = chappe_sip_media:leave(S).
+
+%% RFC 4733 events: an offer with telephone-event is answered with it,
+%% on the offer's payload type, listing events 0 to 16; the leg sends
+%% the far end only the events its fmtp lists. An offer without it gets
+%% none. The mixer's own offer carries telephone-event, and an answer
+%% that takes it gives the leg its payload type.
+conference_dtmf(_Config) ->
+    Room = room(),
+    Sdp = fun(Fmts, Attrs) ->
+        <<"v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\n"
+          "t=0 0\r\nm=audio 4000 RTP/AVP ", Fmts/binary, "\r\n",
+          Attrs/binary>>
+    end,
+    Leg = fun(S) ->
+        #{conf := Conf, leg := L} = chappe_sip_media:info(S),
+        [Info] = [I || #{id := Id} = I <- chappe_mix:legs(Conf), Id =:= L],
+        Info
+    end,
+    {ok, S1} = conf_session(),
+    {ok, A1} = chappe_sip_media:conference(
+                 S1, Room,
+                 #{sdp => Sdp(<<"0 101">>,
+                              <<"a=rtpmap:101 telephone-event/8000\r\n"
+                                "a=fmtp:101 0-11\r\n">>)}),
+    ?assertNotEqual(nomatch, binary:match(A1, <<" RTP/AVP 0 101\r\n">>)),
+    ?assertNotEqual(nomatch,
+                    binary:match(A1, <<"a=rtpmap:101 telephone-event/8000">>)),
+    ?assertNotEqual(nomatch, binary:match(A1, <<"a=fmtp:101 0-16">>)),
+    ?assertMatch(#{dtmf_pt := 101, dtmf_events := [0, 1, 2, 3, 4, 5, 6, 7, 8,
+                                                   9, 10, 11]}, Leg(S1)),
+    {ok, S2} = conf_session(),
+    {ok, A2} = chappe_sip_media:conference(
+                 S2, Room, #{sdp => Sdp(<<"0">>, <<>>)}),
+    ?assertEqual(nomatch, binary:match(A2, <<"telephone-event">>)),
+    ?assertMatch(#{dtmf_pt := undefined}, Leg(S2)),
+    {ok, S3} = conf_session(),
+    {ok, O3} = chappe_sip_media:conference(S3, Room, #{}),
+    ?assertNotEqual(nomatch,
+                    binary:match(O3, <<"a=rtpmap:101 telephone-event/8000">>)),
+    ?assertNotEqual(nomatch, binary:match(O3, <<"a=fmtp:101 0-16">>)),
+    ?assertMatch(#{dtmf_pt := undefined}, Leg(S3)),
+    ok = chappe_sip_media:set_remote(
+           S3, Sdp(<<"0 100">>, <<"a=rtpmap:100 telephone-event/8000\r\n">>)),
+    %% no fmtp: the DTMF digits only (RFC 4733 2.5.1.1)
+    ?assertMatch(#{dtmf_pt := 100, dtmf_events := [0, 1, 2, 3, 4, 5, 6, 7, 8,
+                                                   9, 10, 11, 12, 13, 14, 15]},
+                 Leg(S3)),
+    [ok = chappe_sip_media:leave(S) || S <- [S1, S2, S3]].
+
+%% RFC 3605: a media-level a=rtcp names the RTCP port, and maybe the
+%% address, the leg reports to; a session-level one is not an a=rtcp at
+%% all, and with rtcp-mux RTCP stays on the RTP port.
+conference_rtcp_port(_Config) ->
+    Room = room(),
+    Sdp = fun(Sess, Media) ->
+        <<"v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\n",
+          Sess/binary, "t=0 0\r\nm=audio 4000 RTP/AVP 0\r\n", Media/binary>>
+    end,
+    Leg = fun(S) ->
+        #{conf := Conf, leg := L} = chappe_sip_media:info(S),
+        [Info] = [I || #{id := Id} = I <- chappe_mix:legs(Conf), Id =:= L],
+        Info
+    end,
+    Join = fun(Offer) ->
+        {ok, S} = conf_session(),
+        {ok, _} = chappe_sip_media:conference(S, Room, #{sdp => Offer}),
+        S
+    end,
+    S1 = Join(Sdp(<<>>, <<"a=rtcp:5011\r\n">>)),
+    ?assertMatch(#{rtcp_remote := {{127, 0, 0, 1}, 5011}}, Leg(S1)),
+    S2 = Join(Sdp(<<>>, <<"a=rtcp:5013 IN IP4 10.1.2.3\r\n">>)),
+    ?assertMatch(#{rtcp_remote := {{10, 1, 2, 3}, 5013}}, Leg(S2)),
+    S3 = Join(Sdp(<<"a=rtcp:5015\r\n">>, <<>>)),
+    ?assertMatch(#{rtcp_remote := undefined}, Leg(S3)),
+    S4 = Join(Sdp(<<>>, <<"a=rtcp-mux\r\na=rtcp:4000\r\n">>)),
+    ?assertMatch(#{rtcp_remote := undefined}, Leg(S4)),
+    %% the answer to the mixer's offer can carry one too
+    {ok, S5} = conf_session(),
+    {ok, _} = chappe_sip_media:conference(S5, Room, #{}),
+    ok = chappe_sip_media:set_remote(
+           S5, Sdp(<<>>, <<"a=rtcp:5017 IN IP4 10.1.2.4\r\n">>)),
+    ?assertMatch(#{rtcp_remote := {{10, 1, 2, 4}, 5017}}, Leg(S5)),
+    [ok = chappe_sip_media:leave(S) || S <- [S1, S2, S3, S4, S5]].
+
+%% SDP directions: the leg does what the far end asked, seen from the
+%% room (an offer that only sends gets a leg the room only takes from,
+%% and a=recvonly back), at media or session level; the mixer's own offer
+%% says the direction the join asked for.
+conference_directions(_Config) ->
+    Room = room(),
+    Sdp = fun(Sess, Media) ->
+        <<"v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\n",
+          Sess/binary, "t=0 0\r\nm=audio 4000 RTP/AVP 0\r\n", Media/binary>>
+    end,
+    Dir = fun(S) ->
+        #{conf := Conf, leg := L} = chappe_sip_media:info(S),
+        [D] = [D || #{id := Id, direction := D} <- chappe_mix:legs(Conf),
+                    Id =:= L],
+        D
+    end,
+    Join = fun(Opts) ->
+        {ok, S} = conf_session(),
+        {ok, Sdp1} = chappe_sip_media:conference(S, Room, Opts),
+        {S, Sdp1}
+    end,
+    Cases = [
+        {Sdp(<<>>, <<"a=sendonly\r\n">>), recvonly, <<"a=recvonly">>},
+        {Sdp(<<>>, <<"a=recvonly\r\n">>), sendonly, <<"a=sendonly">>},
+        {Sdp(<<>>, <<"a=inactive\r\n">>), inactive, <<"a=inactive">>},
+        {Sdp(<<"a=sendonly\r\n">>, <<>>), recvonly, <<"a=recvonly">>},
+        {Sdp(<<"a=sendonly\r\n">>, <<"a=sendrecv\r\n">>), sendrecv,
+         <<"a=sendrecv">>}
+    ],
+    Ss = [
+        begin
+            {S, Answer} = Join(#{sdp => Offer}),
+            ?assertNotEqual(nomatch, binary:match(Answer, Attr), {Offer, Answer}),
+            ?assertEqual(Want, Dir(S)),
+            S
+        end
+     || {Offer, Want, Attr} <- Cases
+    ],
+    {S6, Offer6} = Join(#{direction => recvonly}),
+    ?assertNotEqual(nomatch, binary:match(Offer6, <<"a=recvonly">>)),
+    ?assertEqual(recvonly, Dir(S6)),
+    %% the answer to the mixer's offer can narrow it
+    {S7, _} = Join(#{}),
+    ok = chappe_sip_media:set_remote(S7, Sdp(<<>>, <<"a=recvonly\r\n">>)),
+    ?assertEqual(sendonly, Dir(S7)),
+    [ok = chappe_sip_media:leave(S) || S <- Ss ++ [S6, S7]].
+
+%% deaf: the leg keeps talking to the room and hears nothing of it (the
+%% room sends it nothing); undeaf gives it back. relate/3: one leg stops
+%% hearing another, then hears it again.
+conference_deaf_relate(_Config) ->
+    Room = room(),
+    {ok, S1} = conf_session(),
+    {ok, S2} = conf_session(),
+    {ok, _} = chappe_sip_media:conference(S1, Room, #{}),
+    {ok, _} = chappe_sip_media:conference(S2, Room, #{}),
+    #{conf := Conf, leg := L1} = chappe_sip_media:info(S1),
+    #{leg := L2} = chappe_sip_media:info(S2),
+    Leg = fun(L) ->
+        [I] = [I || #{id := Id} = I <- chappe_mix:legs(Conf), Id =:= L],
+        I
+    end,
+    ok = chappe_sip_media:deaf(S1),
+    ?assertMatch(#{direction := recvonly}, Leg(L1)),
+    ?assertMatch(#{deaf := true}, chappe_sip_media:info(S1)),
+    ok = chappe_sip_media:mute(S1),
+    ?assertMatch(#{direction := inactive}, Leg(L1)),
+    ok = chappe_sip_media:undeaf(S1),
+    ?assertMatch(#{direction := sendonly}, Leg(L1)),
+    ok = chappe_sip_media:unmute(S1),
+    ?assertMatch(#{direction := sendrecv}, Leg(L1)),
+    ok = chappe_sip_media:relate(S1, S2, nohear),
+    ?assertMatch(#{nohear := [L2]}, Leg(L1)),
+    ok = chappe_sip_media:relate(S1, S2, hear),
+    ?assertMatch(#{nohear := []}, Leg(L1)),
+    %% legs of two rooms have no relation
+    {ok, S3} = conf_session(),
+    {ok, _} = chappe_sip_media:conference(S3, room(), #{}),
+    ?assertEqual({error, not_same_room}, chappe_sip_media:relate(S1, S3, nohear)),
+    [ok = chappe_sip_media:leave(S) || S <- [S1, S2, S3]].
+
+%% A join that asks for talk events gets {talking, Room, true} when its
+%% party starts talking and false once it stops; a join that did not ask
+%% gets nothing.
+conference_talking(_Config) ->
+    Room = room(),
+    Self = self(),
+    Call = spawn_link(fun() ->
+        {P, Port} = peer_start(ulaw),
+        {ok, S} = conf_session(),
+        {ok, Answer} = chappe_sip_media:conference(
+                         S, Room, #{sdp => peer_sdp(Port, ulaw, true),
+                                    talk_events => true}),
+        peer_dst(P, audio_port(Answer)),
+        Self ! {joined, self(), P},
+        talking_relay(Self)
+    end),
+    P = receive {joined, Call, Peer} -> Peer after 2000 -> ct:fail(join) end,
+    {Q, SQ} = joined_peer(Room),
+    peer_talk(Q, true),
+    peer_talk(P, true),
+    ?assertEqual({talking, Room, true}, relayed(Call, 2000)),
+    peer_talk(P, false),
+    ?assertEqual({talking, Room, false}, relayed(Call, 2000)),
+    %% Q talked all along and asked for nothing
+    receive {chappe_sip_media, _} = M -> ct:fail({not_asked, M})
+    after 0 -> ok
+    end,
+    unlink(Call),
+    exit(Call, kill),
+    ok = chappe_sip_media:leave(SQ),
+    peer_stop(Q).
+
+talking_relay(To) ->
+    receive
+        {chappe_sip_media, Event} -> To ! {relayed, self(), Event}
+    end,
+    talking_relay(To).
+
+relayed(Call, Ms) ->
+    receive {relayed, Call, Event} -> Event
+    after Ms -> none
+    end.
 
 %% ---- conference behind rtpengine ----
 

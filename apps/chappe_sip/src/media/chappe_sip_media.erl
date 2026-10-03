@@ -42,6 +42,9 @@
     leave/1,
     mute/1,
     unmute/1,
+    deaf/1,
+    undeaf/1,
+    relate/3,
     set_remote/2,
     subscribe/2,
     subscribe_answer/2,
@@ -234,7 +237,10 @@ dtmf(_S, _Params) ->
 %% G.711 SDP to send toward the call. Opts: room (required), sdp (the
 %% call's offer: the mixer answers it; without it the mixer offers and you
 %% pass the answer to set_remote/2), owner (owner of a room this join
-%% creates), law (ulaw | alaw, for an offer), mute, name.
+%% creates), law (ulaw | alaw, for an offer), mute, name, direction
+%% (sendrecv | sendonly | recvonly | inactive, seen from the room),
+%% talk_events (true: the caller gets {chappe_sip_media, {talking, Room,
+%% true | false}}).
 -spec conference(session(), #{room := binary(), _ => _}) ->
     {ok, binary()} | {error, term()}.
 conference(#media_session{backend = mix, ref = R, identity = I}, Opts) ->
@@ -267,6 +273,32 @@ mute(_S) ->
 unmute(#media_session{backend = mix, ref = R}) ->
     chappe_sip_media_mix:mute(R, false);
 unmute(_S) ->
+    {error, {unsupported, conference}}.
+
+%% A deaf leg is still heard by the room, and the room sends it nothing.
+-spec deaf(session()) -> ok | {error, term()}.
+deaf(#media_session{backend = mix, ref = R}) ->
+    chappe_sip_media_mix:deaf(R, true);
+deaf(_S) ->
+    {error, {unsupported, conference}}.
+
+-spec undeaf(session()) -> ok | {error, term()}.
+undeaf(#media_session{backend = mix, ref = R}) ->
+    chappe_sip_media_mix:deaf(R, false);
+undeaf(_S) ->
+    {error, {unsupported, conference}}.
+
+%% Whether Listener's leg hears Speaker's (both in one room): nohear
+%% takes Speaker out of what Listener hears, its CSRC lists and the
+%% events it is sent.
+-spec relate(session(), session(), hear | nohear) -> ok | {error, term()}.
+relate(
+    #media_session{backend = mix, ref = L},
+    #media_session{backend = mix, ref = Sp},
+    Rel
+) when Rel =:= hear; Rel =:= nohear ->
+    chappe_sip_media_mix:relate(L, Sp, Rel);
+relate(_L, _S, _Rel) ->
     {error, {unsupported, conference}}.
 
 %% Tell the leg where the far end is once you know it: the SDP answering

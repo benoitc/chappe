@@ -37,7 +37,9 @@ env() ->
     end.
 
 %% One tone endpoint per frequency, joined to a fresh conference on
-%% Mixer (fs | chappe). Returns a handle; endpoints are {Pid, Id, Freq}.
+%% Mixer (fs | chappe). A frequency given as {Freq, Ptime} sends Ptime ms
+%% packets (and says so in its SDP); the others send 20 ms. Returns a
+%% handle; endpoints are {Pid, Id, Freq}.
 parties(fs, Env, Freqs) ->
     User = conf_user(),
     Eps = [fs_party(Env, User, F) || F <- Freqs],
@@ -91,23 +93,34 @@ latency(chappe, _Env, Opts) ->
 
 %% ---- internal ----
 
-fs_party(#{host := Host} = Env, User, Freq) ->
+fs_party(Env, User, {Freq, Ptime}) ->
+    fs_party(Env, User, Freq, Ptime);
+fs_party(Env, User, Freq) ->
+    fs_party(Env, User, Freq, 20).
+
+fs_party(#{host := Host} = Env, User, Freq, Ptime) ->
     {Pid, Port} = chappe_mix_test_tone:endpoint(#{
-        freq => Freq, ip => {0, 0, 0, 0}
+        freq => Freq, ip => {0, 0, 0, 0}, ptime => Ptime
     }),
-    {ok, Call, #{port := FsPort}} = fs_call(Env, User, Port),
+    {ok, Call, #{port := FsPort}} = fs_call(Env, User, Port, Ptime),
     %% the SDP names the container address; the port is published 1:1
     Pid ! {dst, {Host, FsPort}},
     {Pid, Call, Freq}.
 
-fs_call(#{host := Host, sip_port := SipPort, advertise := Adv}, User, RtpPort) ->
+fs_call(Env, User, RtpPort) ->
+    fs_call(Env, User, RtpPort, 20).
+
+fs_call(
+    #{host := Host, sip_port := SipPort, advertise := Adv}, User, RtpPort, Ptime
+) ->
     case
         chappe_mix_sip_ua:call(#{
             host => Host,
             port => SipPort,
             user => User,
             advertise => Adv,
-            rtp_port => RtpPort
+            rtp_port => RtpPort,
+            ptime => Ptime
         })
     of
         {ok, _, #{port := P}} = Ok when is_integer(P) -> Ok;
@@ -115,10 +128,15 @@ fs_call(#{host := Host, sip_port := SipPort, advertise := Adv}, User, RtpPort) -
         {error, Reason} -> error({freeswitch_call_failed, Reason})
     end.
 
+chappe_party(Conf, {Freq, Ptime}) ->
+    chappe_party(Conf, Freq, Ptime);
 chappe_party(Conf, Freq) ->
-    {ok, Leg, #{port := MixPort}} = chappe_mix:add_leg(Conf, #{}),
+    chappe_party(Conf, Freq, 20).
+
+chappe_party(Conf, Freq, Ptime) ->
+    {ok, Leg, #{port := MixPort}} = chappe_mix:add_leg(Conf, #{ptime => Ptime}),
     {Pid, _} = chappe_mix_test_tone:endpoint(#{
-        freq => Freq, dst => {{127, 0, 0, 1}, MixPort}
+        freq => Freq, dst => {{127, 0, 0, 1}, MixPort}, ptime => Ptime
     }),
     {Pid, Leg, Freq}.
 

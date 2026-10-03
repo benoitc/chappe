@@ -23,6 +23,13 @@
     conflicts_rtp_and_rtcp_apart/1,
     interval_bounds/1,
     sends_to_configured_remote/1,
+    sender_30ms/1,
+    sender_10ms/1,
+    sender_200ms/1,
+    dtmf_forwarded/1,
+    dtmf_follows_relations/1,
+    cascaded_csrcs/1,
+    rtcp_to_the_given_port/1,
     empty_rr_first/1,
     jitter_formula/1
 ]).
@@ -39,6 +46,13 @@ all() ->
         new_ssrc_not_seen,
         conflicts_rtp_and_rtcp_apart,
         sends_to_configured_remote,
+        sender_30ms,
+        sender_10ms,
+        sender_200ms,
+        dtmf_forwarded,
+        dtmf_follows_relations,
+        cascaded_csrcs,
+        rtcp_to_the_given_port,
         {group, codec}
     ].
 
@@ -268,6 +282,373 @@ until_rtcp(Sock, Deadline, Acc) ->
             end
     after max(0, Left) -> ct:fail({no_rtcp, length(Acc)})
     end.
+
+%% ---- packet sizes other than 20 ms ----
+
+%% A sender of 30 ms packets (240 octets) is heard whole: the mixer
+%% plays its samples on its own 20 ms clock, so each listener hears the
+%% tone in every judging window, and no 20 ms frame it gets has a run of
+%% 10 ms of silence in it (the mixer would play one if it cut a packet to
+%% 20 ms or played a frame it only had half of). Nothing is trimmed.
+%% req: R3551-029
+sender_30ms(_Config) ->
+    framing(30).
+
+%% The same for 10 ms packets (80 octets): two make a frame.
+%% req: R3551-029
+sender_10ms(_Config) ->
+    framing(10).
+
+%% A 200 ms packet (1600 octets, the most RFC 3551 4.2 asks a receiver
+%% to take) is accepted whole: none is dropped or trimmed, and its audio
+%% is heard over the next ten ticks.
+%% req: R3551-032
+sender_200ms(_Config) ->
+    {Verdicts, Gaps, Leg} = framing_run(200, 3000),
+    ct:log("200 ms: ~p, gaps ~p, leg ~p", [Verdicts, Gaps, Leg]),
+    [?assertMatch({ok, _}, V) || V <- Verdicts],
+    ?assertMatch(#{dropped := 0, late := 0}, Leg),
+    ?assert(maps:get(received, Leg) >= 10, Leg).
+
+framing(Ptime) ->
+    {Verdicts, Gaps, Leg} = framing_run(Ptime, 2000),
+    ct:log("~p ms: gaps ~w of ~w frames, leg ~p", [
+        Ptime, [G || {G, _} <- Gaps], [N || {_, N} <- Gaps], Leg
+    ]),
+    [?assertMatch({ok, _}, V) || V <- Verdicts],
+    %% a loaded box can stall the sender into an underrun, a silent frame:
+    %% allow one in fifty, where a cut or a half frame gaps a third or all
+    [?assert(G * 50 =< N, {gaps, G, N}) || {G, N} <- Gaps],
+    ?assertMatch(#{dropped := 0}, Leg).
+
+%% A tone at 1100 Hz from a sender of Ptime ms packets, two silent
+%% listeners; each listener's verdict (70% of windows hold the tone), its
+%% frames with 80 or more silent samples, and the sender's leg.
+framing_run(Ptime, ListenMs) ->
+    {ok, Conf} = chappe_mix:start(#{}),
+    Listeners = [
+        begin
+            {Ep, Port} = chappe_mix_test_tone:endpoint(#{freq => none}),
+            {ok, _, _} = chappe_mix:add_leg(Conf, #{remote => {?LO, Port}}),
+            Ep
+        end
+     || _ <- [1, 2]
+    ],
+    {ok, LS, #{port := MS}} = chappe_mix:add_leg(Conf, #{ptime => Ptime}),
+    {Sender, _} = chappe_mix_test_tone:endpoint(#{
+        freq => 1100, ptime => Ptime, dst => {?LO, MS}
+    }),
+    timer:sleep(1000),
+    [chappe_mix_test_tone:clear(L) || L <- Listeners],
+    timer:sleep(ListenMs),
+    Verdicts = [
+        chappe_mix_test_tone:hears(L, {-18.0, -54.7}, {[1100], []})
+     || L <- Listeners
+    ],
+    Gaps = [
+        {chappe_mix_test_tone:gaps(Fs, 80), length(Fs)}
+     || L <- Listeners, Fs <- [chappe_mix_test_tone:frames(L)]
+    ],
+    Leg = leg(Conf, LS),
+    [chappe_mix_test_tone:stop(P) || P <- [Sender | Listeners]],
+    ok = chappe_mix:stop(Conf),
+    {Verdicts, Gaps, Leg}.
+
+%% ---- RFC 4733 telephone-event forwarding ----
+
+%% A sends audio (a fixed frame) and two digits as RFC 4733 events on
+%% payload type 101, in place of audio packets as a phone does: '1'
+%% (event 1) as a start packet with M set, two updates, and three end
+%% packets with E set; then '#' (event 11) the same way. B negotiated the
+%% events on payload type 96, C did not negotiate them, and D lists only
+%% events 0 to 9.
+%%
+%% B gets every event packet of both digits, on its own payload type,
+%% payload byte for byte (event, E bit, volume, duration), with the M bit
+%% it came with, one timestamp for all the packets of an event and, for
+%% the next event, the mixer's clock at its start (A's timestamps jump by
+%% a second in between, as after a pause), under the mixer's SSRC with A's as the CSRC,
+%% within a tick of A sending it. Its sequence numbers step by one across
+%% audio and events. C gets no event, D gets '1' and not '#'. The events
+%% are not mixed: every audio packet B and C get is A's frame or silence.
+%% A payload type nobody negotiated (97) is still dropped.
+%% req: R4733-001 R4733-002 R4733-003 R4733-004 R4733-005 R4733-006
+%% req: R4733-007 R4733-008 R4733-009 R3550-006
+dtmf_forwarded(_Config) ->
+    {ok, Conf} = chappe_mix:start(#{}),
+    {SA, PA} = open(),
+    {RB, PB} = recorder(),
+    {RC, PC} = recorder(),
+    {RD, PD} = recorder(),
+    {ok, LA, #{port := MA}} = chappe_mix:add_leg(
+        Conf, #{remote => {?LO, PA}, dtmf_pt => 101}
+    ),
+    {ok, LB, _} = chappe_mix:add_leg(
+        Conf, #{remote => {?LO, PB}, dtmf_pt => 96}
+    ),
+    {ok, _, _} = chappe_mix:add_leg(Conf, #{remote => {?LO, PC}}),
+    {ok, _, _} = chappe_mix:add_leg(
+        Conf,
+        #{remote => {?LO, PD}, dtmf_pt => 101, dtmf_events => lists:seq(0, 9)}
+    ),
+    Frame = frame(ulaw),
+    %% from packet 41 on, A's timestamps jump by a second, as after a
+    %% pause in a sender that suppresses silence
+    Clock = fun
+        (N) when N >= 41 -> N * 160 + 8000;
+        (N) -> N * 160
+    end,
+    Audio = fun(N) ->
+        {audio,
+            rtp(#{
+                pt => 0, seq => N, ts => Clock(N), ssrc => 16#A, payload => Frame
+            })}
+    end,
+    Ev = fun(Seq, Event, M, E, Dur, Ts) ->
+        {event,
+            rtp(#{
+                pt => 101,
+                seq => Seq,
+                ts => Ts,
+                ssrc => 16#A,
+                marker => M,
+                payload => <<Event, E:1, 0:1, 10:6, Dur:16>>
+            })}
+    end,
+    Digit = fun(Seq0, Event) ->
+        Ts = Clock(Seq0),
+        [
+            Ev(Seq0, Event, true, 0, 160, Ts),
+            Ev(Seq0 + 1, Event, false, 0, 320, Ts),
+            Ev(Seq0 + 2, Event, false, 0, 480, Ts),
+            Ev(Seq0 + 3, Event, false, 1, 640, Ts),
+            Ev(Seq0 + 4, Event, false, 1, 640, Ts),
+            Ev(Seq0 + 5, Event, false, 1, 640, Ts)
+        ]
+    end,
+    Odd = {audio,
+        rtp(#{pt => 97, seq => 47, ts => 47 * 160, ssrc => 16#A, payload => Frame})},
+    Plan =
+        [Audio(N) || N <- lists:seq(1, 20)] ++ Digit(21, 1) ++
+            [Audio(N) || N <- lists:seq(27, 40)] ++ Digit(41, 11) ++
+            [Odd] ++ [Audio(N) || N <- lists:seq(48, 60)],
+    Sent = stream_timed(SA, {?LO, MA}, Plan),
+    timer:sleep(100),
+    #{ssrc := Mine} = leg(Conf, LB),
+    #{events := EventsIn, other_pt := OtherIn} = leg(Conf, LA),
+    ok = chappe_mix:stop(Conf),
+    B = rtp_recorded(RB),
+    C = rtp_recorded(RC),
+    D = rtp_recorded(RD),
+    gen_udp:close(SA),
+    BEv = [{T, P} || {T, #{pt := 96} = P} <- B],
+    ct:log("B: ~p packets, ~p events; A counted ~p events, ~p other", [
+        length(B), length(BEv), EventsIn, OtherIn
+    ]),
+    ?assertEqual({12, 1}, {EventsIn, OtherIn}),
+    SentEv = [{T, P} || {T, {event, Bin}} <- Sent, {ok, P} <- [chappe_mix_rtp:parse(Bin)]],
+    %% every event packet, payload for payload, in order
+    ?assertEqual(
+        [Pl || {_, #{payload := Pl}} <- SentEv], [Pl || {_, #{payload := Pl}} <- BEv]
+    ),
+    %% M on the first packet of each event only
+    ?assertEqual(
+        [M || {_, #{marker := M}} <- SentEv], [M || {_, #{marker := M}} <- BEv]
+    ),
+    %% one timestamp per event, a later one for the next
+    {E1, E2} = lists:split(6, BEv),
+    [Ts1] = lists:usort([Ts || {_, #{ts := Ts}} <- E1]),
+    [Ts2] = lists:usort([Ts || {_, #{ts := Ts}} <- E2]),
+    Step = (Ts2 - Ts1) band 16#FFFFFFFF,
+    ct:log("event timestamps on B: ~p then ~p (+~p)", [Ts1, Ts2, Step]),
+    %% the second event starts 20 packets (3200 samples) after the
+    %% first on the mixer's clock, whatever A's timestamps did
+    ?assert(abs(Step - 3200) =< 480, {Ts1, Ts2}),
+    %% the mixer's SSRC, A's as the CSRC
+    ?assertEqual([Mine], lists:usort([S || {_, #{ssrc := S}} <- B])),
+    ?assertEqual([[16#A]], lists:usort([Cs || {_, #{csrcs := Cs}} <- BEv])),
+    %% one sequence across audio and events
+    Seqs = [S || {_, #{seq := S}} <- B],
+    ?assertEqual(
+        [(hd(Seqs) + I) band 16#FFFF || I <- lists:seq(0, length(Seqs) - 1)],
+        Seqs
+    ),
+    %% within a tick of being sent
+    Delays = [TB - TA || {{TA, _}, {TB, _}} <- lists:zip(SentEv, BEv)],
+    ct:log("forwarding delay (us): max ~p, all ~w", [lists:max(Delays), Delays]),
+    ?assert(lists:max(Delays) =< 20000, Delays),
+    %% C negotiated no events; D only 0 to 9
+    ?assertEqual([0], lists:usort([PT || {_, #{pt := PT}} <- C])),
+    ?assertEqual(
+        [1], lists:usort([E || {_, #{pt := 101, payload := <<E, _/binary>>}} <- D])
+    ),
+    ?assertEqual(6, length([x || {_, #{pt := 101}} <- D])),
+    %% never mixed: the audio is A's frame or silence
+    Expect = expected(ulaw, Frame),
+    Silent = binary:copy(<<16#FF>>, 160),
+    [
+        ?assertEqual(
+            [], [Pl || {_, #{pt := 0, payload := Pl}} <- X, Pl =/= Expect, Pl =/= Silent]
+        )
+     || X <- [B, C, D]
+    ],
+    ?assert(length([x || {_, #{pt := 0, payload := Pl}} <- B, Pl =:= Expect]) >= 20).
+
+%% Events go where audio goes: B, kept from hearing A, gets none of A's
+%% events; C, which the room sends nothing (recvonly), gets none; D gets
+%% them. Once A is muted, nobody gets its events.
+dtmf_follows_relations(_Config) ->
+    {ok, Conf} = chappe_mix:start(#{}),
+    {SA, PA} = open(),
+    {ok, LA, #{port := MA}} = chappe_mix:add_leg(
+        Conf, #{remote => {?LO, PA}, dtmf_pt => 101}
+    ),
+    Recs = [
+        begin
+            {R, P} = recorder(),
+            {ok, L, _} = chappe_mix:add_leg(
+                Conf, Opts#{remote => {?LO, P}, dtmf_pt => 96}
+            ),
+            {R, L}
+        end
+     || Opts <- [#{}, #{direction => recvonly}, #{}]
+    ],
+    [{RB, LB}, {RC, _}, {RD, _}] = Recs,
+    ok = chappe_mix:relate(Conf, LB, LA, nohear),
+    Ev = fun(Seq, M, E) ->
+        rtp(#{
+            pt => 101,
+            seq => Seq,
+            ts => 1600,
+            ssrc => 16#A,
+            marker => M,
+            payload => <<3, E:1, 0:1, 10:6, 320:16>>
+        })
+    end,
+    Send = fun(Pkts) -> [ok = gen_udp:send(SA, ?LO, MA, P) || P <- Pkts] end,
+    Send([Ev(1, true, 0), Ev(2, false, 1)]),
+    timer:sleep(100),
+    ok = chappe_mix:mute(Conf, LA, true),
+    Send([Ev(3, true, 0), Ev(4, false, 1)]),
+    timer:sleep(100),
+    ok = chappe_mix:stop(Conf),
+    gen_udp:close(SA),
+    Events = fun(R) -> [S || {_, #{pt := 96, seq := S}} <- rtp_recorded(R)] end,
+    [B, C, D] = [Events(R) || R <- [RB, RC, RD]],
+    ct:log("events at B ~p, C ~p, D ~p", [B, C, D]),
+    ?assertEqual({0, 0, 2}, {length(B), length(C), length(D)}).
+
+%% Sent at one item every 20 ms; the send time of each, microseconds.
+stream_timed(Sock, {Ip, Port}, Plan) ->
+    T0 = erlang:monotonic_time(millisecond),
+    {Sent, _} = lists:mapfoldl(
+        fun({_, Bin} = Item, K) ->
+            wait_until(T0 + 20 * K),
+            T = erlang:monotonic_time(microsecond),
+            ok = gen_udp:send(Sock, Ip, Port, Bin),
+            {{T, Item}, K + 1}
+        end,
+        0,
+        Plan
+    ),
+    Sent.
+
+%% A socket owned by a process that stamps each datagram on arrival.
+recorder() ->
+    Self = self(),
+    Pid = spawn_link(fun() ->
+        {S, P} = open(),
+        Self ! {self(), P},
+        record(S, [])
+    end),
+    receive
+        {Pid, P} -> {Pid, P}
+    after 2000 -> ct:fail(recorder)
+    end.
+
+record(S, Acc) ->
+    receive
+        {udp, S, _, _, B} ->
+            record(S, [{erlang:monotonic_time(microsecond), B} | Acc]);
+        {get, From} ->
+            From ! {self(), lists:reverse(Acc)},
+            gen_udp:close(S)
+    end.
+
+%% The RTP a recorder got, parsed, with arrival times.
+rtp_recorded(Pid) ->
+    Pid ! {get, self()},
+    receive
+        {Pid, Pkts} -> rtp_in(Pkts)
+    after 2000 -> ct:fail(recorded)
+    end.
+
+%% ---- cascaded mixers and the RTCP port ----
+
+%% A is another mixer upstream: its packets carry the CSRCs 111 and 222.
+%% B is a plain talker. C, listening, gets packets whose CSRC list names
+%% the sources A mixed (not A itself) and B; B's list names A's sources;
+%% A's names B only (RFC 3550 7.4).
+%% req: R3550-24
+cascaded_csrcs(_Config) ->
+    {ok, Conf} = chappe_mix:start(#{}),
+    {PA, LA} = peer(Conf, 16#A, #{}),
+    ok = chappe_mix_test_peer:set(PA, csrcs, [111, 222]),
+    {PB, LB} = peer(Conf, 16#B, #{}),
+    {PC, LC} = peer(Conf, 16#C, #{}),
+    ok = chappe_mix_test_peer:set(PC, sending, false),
+    Csrcs = fun(Leg) -> lists:sort(maps:get(csrcs, leg(Conf, Leg))) end,
+    wait(
+        fun() ->
+            Csrcs(LC) =:= [16#B, 111, 222] andalso Csrcs(LB) =:= [111, 222] andalso
+                Csrcs(LA) =:= [16#B]
+        end,
+        2000
+    ),
+    %% and on the wire (the datagram may still be on its way to C)
+    OnWire = fun() ->
+        case
+            lists:reverse(
+                chappe_mix_test_peer:rtp(chappe_mix_test_peer:packets(PC))
+            )
+        of
+            [{_, #{csrcs := Cs}} | _] -> lists:sort(Cs);
+            [] -> []
+        end
+    end,
+    wait(fun() -> OnWire() =:= [16#B, 111, 222] end, 1000),
+    [chappe_mix_test_peer:stop(P) || P <- [PA, PB, PC]],
+    ok = chappe_mix:stop(Conf).
+
+%% A media-level a=rtcp gives an RTCP port (and address) other than the
+%% RTP port + 1: the leg's reports go there, for a leg on a port pair
+%% (given when the leg opens) and for a muxed one (given with
+%% set_remote/3), and not to the RTP port or the port after it.
+%% req: R3605-001 R3550-211
+rtcp_to_the_given_port(_Config) ->
+    {ok, Conf} = chappe_mix:start(#{}),
+    {S1, P1} = open(),
+    {R1, Q1} = open(),
+    {S2, P2} = open(),
+    {R2, Q2} = open(),
+    {ok, _, _} = chappe_mix:add_leg(
+        Conf, #{remote => {?LO, P1}, rtcp => pair, rtcp_remote => {?LO, Q1}}
+    ),
+    {ok, L2, _} = chappe_mix:add_leg(Conf, #{}),
+    ok = chappe_mix:set_remote(
+        Conf, L2, #{remote => {?LO, P2}, rtcp_remote => {?LO, Q2}}
+    ),
+    ?assertMatch(#{rtcp_remote := {?LO, Q2}}, leg(Conf, L2)),
+    Deadline = erlang:monotonic_time(millisecond) + 3078 + 1000,
+    G1 = until_rtcp(R1, Deadline, []),
+    G2 = until_rtcp(R2, Deadline, []),
+    ok = chappe_mix:stop(Conf),
+    timer:sleep(50),
+    ?assert(length(rtcp_in(G1)) >= 1),
+    ?assert(length(rtcp_in(G2)) >= 1),
+    %% the BYEs of the stop went there too, and no RTCP to the RTP ports
+    ?assertEqual([], rtcp_in(drain(S1) ++ drain(S2))),
+    [gen_udp:close(S) || S <- [S1, R1, S2, R2]].
 
 %% ---- RTCP on the wire ----
 
@@ -620,7 +1001,8 @@ rtp_in(Pkts) ->
 
 rtcp_in(Pkts) -> [B || {_, B} <- Pkts, is_rtcp(B)].
 
-%% RTP by hand: X=1 adds a two-word extension after the CSRCs.
+%% RTP by hand: X=1 adds a two-word extension after the CSRCs; marker
+%% sets M.
 rtp(#{pt := PT, seq := Seq, ts := Ts, ssrc := Ssrc, payload := P} = M) ->
     Csrcs = maps:get(csrcs, M, []),
     {X, Ext} =
@@ -629,7 +1011,12 @@ rtp(#{pt := PT, seq := Seq, ts := Ts, ssrc := Ssrc, payload := P} = M) ->
             false -> {0, <<>>}
         end,
     Csrc = <<<<C:32>> || C <- Csrcs>>,
-    <<2:2, 0:1, X:1, (length(Csrcs)):4, 0:1, PT:7, (Seq band 16#FFFF):16,
+    Mk =
+        case maps:get(marker, M, false) of
+            true -> 1;
+            false -> 0
+        end,
+    <<2:2, 0:1, X:1, (length(Csrcs)):4, Mk:1, PT:7, (Seq band 16#FFFF):16,
         (Ts band 16#FFFFFFFF):32, Ssrc:32, Csrc/binary, Ext/binary, P/binary>>.
 
 peer(Conf, Ssrc, LegOpts) ->

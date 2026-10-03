@@ -216,7 +216,16 @@ end).
 ```
 
 The answer carries one G.711 codec (the first PCMU or PCMA in the offer),
-`a=ptime:20` and `a=sendrecv`. It keeps `a=rtcp-mux` when the offer has it;
+`a=ptime:20` and `a=sendrecv`. The offer's `a=ptime` reaches the leg (the
+mixer takes packets of any size up to 200 ms); an `a=maxptime` under 20 is
+refused with `{error, {maxptime, Ms}}`, since the mixer sends 20 ms. An offer
+with `telephone-event/8000` is answered with it on the offer's payload type
+and `a=fmtp:<pt> 0-16`; the leg then forwards RFC 4733 events to and from
+the room, sending the far end only the events its fmtp lists (0 to 15
+without one). The mixer's own offer carries `telephone-event/8000` on 101,
+and an answer that keeps it turns forwarding on for the leg. A media-level
+`a=rtcp:<port> [IN IP4 <addr>]` (RFC 3605) in an offer or an answer sends the
+leg's RTCP there; it is ignored at session level and with `a=rtcp-mux`. It keeps `a=rtcp-mux` when the offer has it;
 without it, RTCP goes on the next port up. Other m-lines (video) are rejected
 with port 0.
 
@@ -293,12 +302,22 @@ tears down the rtpengine call and takes the leg out of the room.
 
 ## Conference limits
 
-- G.711 only (PCMU, PCMA), 8 kHz in 20 ms frames. A 10 ms or 30 ms sender is
-  padded or cut to 20 ms; put rtpengine in front for anything else.
+- G.711 only (PCMU, PCMA), 8 kHz. The mixer takes packets of 10, 30 or any
+  other number of ms up to 200 and sends 20 ms ones; put rtpengine in front
+  for anything else.
 - One codec per leg, fixed when the leg opens. An answer in another law is
   refused with `{error, {law_mismatch, Law}}`.
-- Every leg is `a=sendrecv`; a hold (`sendonly`/`inactive`) in the offer is
-  not mirrored.
+- A leg's direction follows SDP: an offer that only sends (`a=sendonly`, at
+  media or session level) gets `a=recvonly` back and a leg the room only
+  takes from; `a=recvonly` gets `a=sendonly`; `a=inactive` gets
+  `a=inactive`. The `direction` join option narrows it (or sets the
+  mixer's own offer), and an answer to the mixer's offer can narrow it
+  too. `mute/1` and `deaf/1` (with `unmute/1`, `undeaf/1`) take the
+  mixing and the sending away on top of that without new SDP, and
+  `relate/3` keeps one leg from hearing another of the same room.
+- A join with `talk_events => true` makes the calling process get
+  `{chappe_sip_media, {talking, Room, true | false}}` when its party starts
+  (60 ms over -40 dBFS) or stops (300 ms under it) talking.
 - One leg per session; a second join returns `{error, already_joined}`.
 - A room lives on one node.
 

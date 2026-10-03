@@ -18,6 +18,16 @@ missed here, never redefined after the numbers arrive.
 | Mix compute per tick, 4 / 64 legs (`mix_cost`), set 2026-10-02 | <= 10 us / <= 200 us | n/a | 19.8 / 331.9 us | missed |
 | Capacity as above, set 2026-10-02 | >= 500 conferences (2000 legs) | n/a | 275 | missed |
 | Mixed output after a change to the mix | byte for byte the same as before it for the same input | n/a | the same, 500 seeded rooms of 1 to 64 legs | met |
+| Framing, 30 ms sender, set 2026-10-03 | its tone present in every 200 ms judging window at each listener, and no run of 80 or more silent samples (10 ms) inside any 20 ms frame heard once the room has settled | n/a | 1 frame of 3004 (and of 3008) with a 10 ms run, every window held; one launch, load 3.2 to 4.2 | missed |
+| Framing, 10 ms sender, set 2026-10-03 | the same as the 30 ms row, and no jitter-buffer trim (`dropped` 0) on its leg over 60 s | n/a | not measured on a quiet box (60 s) | open |
+| Limiter, distortion, set 2026-10-03 | 8 talkers at -6 dBFS each (distinct tones): THD+N at a receiver <= -26 dB (5%); the hard clip it replaces is measured first, as the baseline | n/a | -29.22 dB with the per-listener gain control (hard clip -10.04 dB; the static curve it replaced, -10.67 dB) | met |
+| Limiter, cost, set 2026-10-03 | `mix_cost` at 4 and 64 legs rises by no more than 10% | n/a | not measured on a quiet box (the gain control costs nothing on a frame that fits at unity: one guard per sample, as before) | open |
+| Tick timer, set 2026-10-03 | ticks that fire more than 100 us early: none at p99 (under 1% of traced ticks), in the `jitter idle` and `jitter capacity` arms, with p99 lateness inside the tick jitter row | n/a | not measured on a quiet box; the ceiling is opt-in (`tick_ceiling`) | open |
+| Prefill, set 2026-10-03 | `latency` arm: p99 within one frame (20 ms) of p50 in 5 of 5 launches; `loss` arm: the underrun count does not rise | n/a | not measured on a quiet box; the shrink is opt-in (`prefill_shrink`) | open |
+| DTMF forwarding (RFC 4733), set 2026-10-03 | a forwarded event keeps its event code, duration and E bit, and leaves within one tick (20 ms) of arriving | n/a | not measured on a quiet box (0.52 ms at most at load 30, void) | open |
+| Per-pair relations, cost, set 2026-10-03 | `mix_cost` at 4 and 64 legs with no relation set rises by no more than 5%; the cost of each exclusion is measured and recorded | n/a | not measured on a quiet box | open |
+| Talker events, latency, set 2026-10-03 | `{talking, Leg, true}` within 100 ms of the first loud frame entering the mix (60 ms hysteresis plus up to two ticks), `false` within 340 ms of the last one (300 ms plus two ticks), at the defaults | n/a | not measured on a quiet box (58 / 299 ms at load 6, void) | open |
+| Talker events, cost, set 2026-10-03 | `mix_cost` at 4 and 64 legs with a subscriber set rises by no more than 5% | n/a | not measured on a quiet box | open |
 
 The numbers in the table are the quiet-box ones from "2026-10-01: native
 reference" below, minimum of the runs unless that section says otherwise.
@@ -504,3 +514,128 @@ One launch each, so no minimum of five: no threshold changes status. The
 compute thresholds (10 and 200 us) stay missed; 64 legs is within 8%. The
 whole mixer gains less than the compute (6% at 200 conferences): the send
 path is the larger share now.
+
+### 2026-10-03: Step 3 thresholds (no code yet)
+
+The rows dated 2026-10-03 in the table were written before any of the code
+they judge: 10 and 30 ms framing, the soft limiter, the tick timer and the
+prefill, RFC 4733 event forwarding, per-pair relations and talker events.
+How each is measured:
+
+- Framing: a tone endpoint sending 30 ms (240 octets) or 10 ms (80 octets)
+  packets into a room with two 20 ms parties. Every 200 ms window at the
+  other parties carries its tone (`chappe_mix_test_tone:hears/3`), and each
+  160-sample frame they receive is scanned for a run of 80 or more samples
+  at the law's silence value. The 10 ms row also reads the sender leg's
+  `dropped` after 60 s.
+- Limiter: THD+N at one receiver of a room of 9, eight talkers on distinct
+  tones at -6 dBFS each: the power left after removing the eight tone bins,
+  over the power of the eight tones, on 1 s of received audio. The hard
+  clip is measured on the commit before the limiter.
+- Timer: the traced conference of the `jitter` arms reports `early_ticks`
+  and `late_p50_us`; the row reads the share of traced ticks earlier than
+  -100 us.
+- Prefill: the `latency` and `loss` arms, 5 interleaved launches each, both
+  ways; the underrun count is a new leg counter, `underruns`.
+- DTMF: a suite case timestamps each event packet sent into a leg and each
+  forward read at another leg, on loopback.
+- Talker events: a suite case timestamps the first loud frame it sends and
+  the event the subscriber gets.
+
+R3550-21 (the mixer's own SSRC in the CSRC list when it is itself a
+source) needs media the mixer injects. With input-only legs (Part B) the
+room carries media of its own, so the row stays `platform` and is planned
+there. The new RFC 4733 and RFC 3605 rows are `platform`: the demo flows
+do not exercise them.
+
+### 2026-10-03: Step 3, what a loaded box let through
+
+The box stayed above the 3.5 limit for most of the session (load 4 to 30
+from other work; the arms refuse above it and none was forced), from
+00:13 to 03:50. One arm launch got through. The A/B runs for the timer
+and the prefill (`jitter idle`, `jitter capacity` against the ceiling;
+`latency`, `loss` against the shrink, 5 interleaved launches each), the
+`mix_cost` and `capacity` runs for the limiter, relations and talker
+events, and the 10 ms framing run were queued and never started. Their
+rows stay open, never redefined. The builds and the scripts that queue
+them are noted in `ATTEMPTS.md`.
+
+Framing, 30 ms sender (a scratch run of the `chappe_mix_rfc_SUITE` room
+for 60 s: a 1100 Hz sender of 240-octet packets, two silent listeners;
+load 3.16 at the start, 4.15 at the end, so the end is over the limit):
+
+| listener | windows with the tone | frames | frames with a 10 ms run of silence | weakest window |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 300 of 300 | 3004 | 1 | -15.67 dBFS |
+| 2 | 300 of 300 | 3008 | 1 | -15.67 dBFS |
+
+The sender's leg counted one underrun (its prefill grew to 2), no drop,
+no loss, nothing late. The one frame is that underrun; the row asks for
+none, so it is missed on this launch.
+
+Limiter distortion (deterministic, so the load does not matter: 50
+frames of the dsp, 8 tones at -6 dBFS, mu-law, THD+N at the ninth leg):
+hard clip -10.19 dB, the limiter -10.67 dB, against -26 dB. Missed; see
+`ATTEMPTS.md` for why no static curve reaches it and what does in a
+model.
+
+Numbers from the suites on the loaded box, void as measurements and
+kept for their order:
+
+- DTMF: 12 event packets forwarded 0.20 to 0.52 ms after they were sent
+  (`dtmf_forwarded`, load about 30).
+- Talker events: talking 58 ms after the tone started, stopped 299 ms
+  after it ended (`talker_events`, load about 6).
+- Timer: with `tick_ceiling`, 0 of 50 traced ticks early
+  (`tick_never_early`, load 5 to 10); truncated, the same case saw every
+  tick early, by 45 to 454 us.
+
+The timer ceiling and the prefill shrink were to be kept only on their
+A/B. Without it they are in the mixer, off by default (`tick_ceiling`,
+`prefill_shrink` conference options), so the queued A/B can run as soon
+as the box is quiet and the decision is a default to flip.
+
+### 2026-10-03: the gain control replaces the static curve
+
+The static soft knee missed the distortion row (-10.67 dB). It is
+replaced by a gain per listener on what that listener hears, carried
+from tick to tick in the leg:
+
+- At unity a frame that fits in 16 bits is encoded as it always was:
+  the N-1 mix of a room that does not clip is byte for byte the plain
+  mix (`chappe_mix_dsp_tests`, 500 seeded rooms).
+- Attack: when a frame would clip, the gain drops at once to what puts
+  its peak at full scale. The frame is whole before it is encoded, so no
+  look-ahead is needed and nothing clips.
+- Release: back toward unity by 0.2 dB a frame (10 dB a second), spread
+  across the frame sample by sample, never above unity. A 9 dB cut is
+  undone in under a second; 0.4 dB a frame measured 0.8 dB worse on
+  THD+N (the gain swings more between the room's peaks).
+- A hard clip stays as the last safety net.
+
+The distortion row, deterministic (50 frames of the dsp, 8 tones at
+-6 dBFS on 310 to 2290 Hz, chosen to make whole cycles in 1 s and not in
+20 ms so the frames differ; mu-law; THD+N at the ninth leg, which says
+nothing):
+
+| | THD+N |
+| --- | ---: |
+| hard clip (the mix before step 3) | -10.04 dB |
+| static soft knee at -6 dBFS (`981adc4`) | -10.67 dB |
+| gain control, release 0.4 dB a frame, stepped | -27.60 dB |
+| gain control, release 0.4 dB a frame, ramped | -28.42 dB |
+| gain control, release 0.2 dB a frame, ramped (kept) | -29.22 dB |
+| gain control, attack ramped too, each sample capped at full scale | -18.85 dB |
+
+(The static curve figure of -10.19 dB in the section above was on 300 to
+2300 Hz, which repeat every 20 ms; the loud room now uses tones that do
+not, so the gain moves from frame to frame.) In that room the gain
+settles between -9.3 and -8.1 dB and moves by at most 1.0 dB down and
+0.2 dB up a frame. In a real conference (`loud_room_gain`, eight tone
+endpoints) the listener's gain sat at 0.33 to 0.34 and came back to
+unity once they stopped.
+
+The cost row stays open: the box was over the load limit. On a frame
+that fits, the gain control adds nothing to the path (the out-of-range
+guard was already there); a frame that clips takes a list pass for its
+peak and its scaled encode.

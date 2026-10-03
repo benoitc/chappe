@@ -19,6 +19,7 @@
 -export([
     reference_n_minus_one/1,
     same_detection_as_reference/1,
+    thirty_ms_same_detection/1,
     burst_latency_logged/1
 ]).
 
@@ -30,7 +31,12 @@
 -define(ABSENT, -54.7).
 
 all() ->
-    [reference_n_minus_one, same_detection_as_reference, burst_latency_logged].
+    [
+        reference_n_minus_one,
+        same_detection_as_reference,
+        thirty_ms_same_detection,
+        burst_latency_logged
+    ].
 
 init_per_suite(Config) ->
     case chappe_mix_ref:env() of
@@ -65,6 +71,26 @@ same_detection_as_reference(Config) ->
     ?assertEqual(verdicts(Ref), verdicts(Mix)),
     ?assertEqual(expected(), verdicts(Mix)).
 
+%% The 1100 Hz party sends 30 ms packets to both mixers. Each receiver
+%% detects the same tones through chappe_mix as through mod_conference,
+%% and the 30 ms party's tone is in its 20 ms frames as often as the
+%% reference keeps it there (or misses it in at most one frame in fifty).
+thirty_ms_same_detection(Config) ->
+    Env = ?config(env, Config),
+    Spec = [{1100, 30}, 1700, 2300],
+    {Mix, MixWeak} = detect(chappe, Env, Spec),
+    {Ref, RefWeak} = detect(fs, Env, Spec),
+    ct:log("chappe_mix: ~p~nmod_conference: ~p", [Mix, Ref]),
+    ct:log("frames short of 1100 Hz: chappe_mix ~p, reference ~p", [
+        MixWeak, RefWeak
+    ]),
+    ?assertEqual(verdicts(Ref), verdicts(Mix)),
+    ?assertEqual(expected(), verdicts(Mix)),
+    [
+        ?assert(W =< max(RW, N div 50), {weak, F, W, RW, N})
+     || {{F, W, N}, {F, RW, _}} <- lists:zip(MixWeak, RefWeak)
+    ].
+
 %% Tone bursts from A reach B through both mixers. The numbers go to the
 %% log for the record; only that most bursts arrive is asserted.
 burst_latency_logged(Config) ->
@@ -97,7 +123,14 @@ burst_latency_logged(Config) ->
 
 %% For each receiver: its frequency, the judge's verdict, and the levels.
 detect(Mixer, Env) ->
-    H = chappe_mix_ref:parties(Mixer, Env, ?F),
+    {Res, _} = detect(Mixer, Env, ?F),
+    Res.
+
+%% The same with some parties sending another packet time, given as
+%% {Freq, Ptime}; also, for every other receiver, how many of its frames
+%% are short of the first such party's tone.
+detect(Mixer, Env, Spec) ->
+    H = chappe_mix_ref:parties(Mixer, Env, Spec),
     Eps = eps(H),
     %% a stock mod_conference plays enter tones, and a loaded one can
     %% take seconds to start mixing. Wait
@@ -115,6 +148,13 @@ detect(Mixer, Env) ->
             )}
      || {P, _, F} <- Eps
     ],
+    Weak = [
+        {F, chappe_mix_test_tone:weak_frames(Fs, Odd, ?PRESENT), length(Fs)}
+     || {Odd, _} <- lists:sublist([S || {_, _} = S <- Spec], 1),
+        {P, _, F} <- Eps,
+        F =/= Odd,
+        Fs <- [chappe_mix_test_tone:frames(P)]
+    ],
     case H of
         {chappe, Conf, _} ->
             ct:log("chappe_mix legs: ~p", [chappe_mix:legs(Conf)]);
@@ -122,7 +162,7 @@ detect(Mixer, Env) ->
             ok
     end,
     chappe_mix_ref:close(H),
-    Res.
+    {Res, Weak}.
 
 steady(Eps, Deadline) ->
     Start = erlang:monotonic_time(millisecond),

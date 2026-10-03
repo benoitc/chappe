@@ -23,6 +23,13 @@
     owner_death_closes/1,
     stop_closes/1,
     tick_trace/1,
+    tick_never_early/1,
+    directions/1,
+    mute_is_a_direction/1,
+    relate_pairs/1,
+    injected_media/1,
+    talker_events/1,
+    loud_room_gain/1,
     probe_calibration/1,
     rtcp_sender_reports/1,
     rtcp_port_pair/1,
@@ -58,6 +65,13 @@ all() ->
         owner_death_closes,
         stop_closes,
         tick_trace,
+        tick_never_early,
+        directions,
+        mute_is_a_direction,
+        relate_pairs,
+        injected_media,
+        talker_events,
+        loud_room_gain,
         probe_calibration,
         rtcp_sender_reports,
         rtcp_port_pair,
@@ -298,6 +312,24 @@ reflect(S, PB, Delay) ->
             ok = gen_udp:send(S, {127, 0, 0, 1}, PB, Pkt),
             reflect(S, PB, Delay)
     end.
+
+%% With tick_ceiling the tick is armed at the millisecond at or after it
+%% is due, so it never fires before it: 50 traced ticks, none early (an
+%% armed time truncated to the millisecond, the default, fires up to 1 ms
+%% early, most ticks do).
+tick_never_early(_Config) ->
+    {ok, Conf} = chappe_mix:start(#{trace => self(), tick_ceiling => true}),
+    {ok, _, _} = chappe_mix:add_leg(Conf, #{remote => {{127, 0, 0, 1}, 9}}),
+    flush_ticks(),
+    Ticks = [next_tick(Conf) || _ <- lists:seq(1, 50)],
+    ok = chappe_mix:stop(Conf),
+    flush_ticks(),
+    Early = [
+        erlang:convert_time_unit(D - St, native, microsecond)
+     || #{due := D, start := St} <- Ticks, St < D
+    ],
+    ct:log("early ticks (us before due): ~w", [Early]),
+    ?assertEqual([], Early).
 
 next_tick(Conf) ->
     receive
@@ -883,6 +915,190 @@ wait_until(Fun, Deadline, Ms) ->
             end
     end.
 
+%% Directions, from the room's side. A (sendrecv) is mixed and hears
+%% the room; B (sendonly: the room only sends to it) hears the room and
+%% is mixed into nothing, like a recorder; C (recvonly: the room only
+%% takes from it) is heard by everyone and is sent nothing, like a prompt
+%% player; D (inactive) neither.
+directions(_Config) ->
+    {ok, Conf} = chappe_mix:start(#{}),
+    A = join(Conf, 440),
+    B = join(Conf, 1100, #{}, #{direction => sendonly}),
+    C = join(Conf, 1700, #{}, #{direction => recvonly}),
+    D = join(Conf, 2300, #{}, #{direction => inactive}),
+    Checks = [
+        {element(1, A), [1700], [440, 1100, 2300]},
+        {element(1, B), [440, 1700], [1100, 2300]}
+    ],
+    Waited = steady(Checks, erlang:monotonic_time(millisecond) + 5000),
+    ct:log("steady after ~p ms", [Waited]),
+    judge(Conf, Checks, 1000, 3),
+    ?assertEqual(
+        [sendrecv, sendonly, recvonly, inactive],
+        [maps:get(direction, leg_stats(Conf, leg(E))) || E <- [A, B, C, D]]
+    ),
+    %% the room sends C and D nothing at all
+    ?assertEqual({[], []}, {
+        chappe_mix_test_tone:samples(element(1, C)),
+        chappe_mix_test_tone:samples(element(1, D))
+    }),
+    close(Conf, [A, B, C, D]).
+
+%% mute/3 is a direction change: a muted leg is one the room only sends
+%% to (or, if the room was only taking from it, one it neither sends to
+%% nor takes from), and unmuting takes it back.
+mute_is_a_direction(_Config) ->
+    {ok, Conf} = chappe_mix:start(#{}),
+    {ok, L1, _} = chappe_mix:add_leg(Conf, #{}),
+    {ok, L2, _} = chappe_mix:add_leg(Conf, #{direction => recvonly}),
+    {ok, L3, _} = chappe_mix:add_leg(Conf, #{mute => true}),
+    Dir = fun(L) -> maps:get(direction, leg_stats(Conf, L)) end,
+    ?assertEqual([sendrecv, recvonly, sendonly], [Dir(L) || L <- [L1, L2, L3]]),
+    [ok = chappe_mix:mute(Conf, L, true) || L <- [L1, L2]],
+    ?assertEqual([sendonly, inactive], [Dir(L) || L <- [L1, L2]]),
+    ?assertMatch(#{mute := true}, leg_stats(Conf, L1)),
+    [ok = chappe_mix:mute(Conf, L, false) || L <- [L1, L2, L3]],
+    ?assertEqual([sendrecv, recvonly, sendrecv], [Dir(L) || L <- [L1, L2, L3]]),
+    ?assertMatch(#{mute := false}, leg_stats(Conf, L1)),
+    ok = chappe_mix:direction(Conf, L1, inactive),
+    ?assertEqual(inactive, Dir(L1)),
+    ?assertEqual({error, not_found}, chappe_mix:direction(Conf, 99, inactive)),
+    ok = chappe_mix:stop(Conf).
+
+%% Per-pair relations: A stops hearing B (B still hears A, C hears both);
+%% B leaves A's CSRC list with its audio. Hearing again restores it.
+relate_pairs(_Config) ->
+    {Conf, [A, B, C] = Eps} = conference([440, 1100, 1700]),
+    ok = chappe_mix:relate(Conf, leg(A), leg(B), nohear),
+    Checks = [
+        {element(1, A), [1700], [440, 1100]},
+        {element(1, B), [440, 1700], [1100]},
+        {element(1, C), [440, 1100], [1700]}
+    ],
+    steady(Checks, erlang:monotonic_time(millisecond) + 5000),
+    judge(Conf, Checks, 1000, 3),
+    #{source_ssrc := SB} = leg_stats(Conf, leg(B)),
+    #{source_ssrc := SC} = leg_stats(Conf, leg(C)),
+    ?assertEqual([SC], maps:get(csrcs, leg_stats(Conf, leg(A)))),
+    ok = chappe_mix:relate(Conf, leg(A), leg(B), hear),
+    Back = [{element(1, A), [1100, 1700], [440]}],
+    steady(Back, erlang:monotonic_time(millisecond) + 5000),
+    judge(Conf, Back, 1000, 3),
+    ?assertEqual(
+        lists:sort([SB, SC]), lists:sort(maps:get(csrcs, leg_stats(Conf, leg(A))))
+    ),
+    ?assertEqual(
+        {error, not_found}, chappe_mix:relate(Conf, leg(A), 99, nohear)
+    ),
+    close(Conf, Eps).
+
+%% Media the room injects (a prompt on an input-only leg opened with
+%% `injected => true') makes the mixer itself a contributing source: on
+%% every leg that hears it, the CSRC list names the mixer's own SSRC on
+%% that leg, not the prompt leg's source (RFC 3550 7.1).
+%% req: R3550-21
+injected_media(_Config) ->
+    {Conf, [A, B] = Eps} = conference([440, 1100]),
+    P = join(Conf, 1700, #{}, #{direction => recvonly, injected => true}),
+    Checks = [
+        {element(1, A), [1100, 1700], [440]},
+        {element(1, B), [440, 1700], [1100]}
+    ],
+    steady(Checks, erlang:monotonic_time(millisecond) + 5000),
+    judge(Conf, Checks, 1000, 3),
+    #{source_ssrc := SA} = leg_stats(Conf, leg(A)),
+    #{source_ssrc := SB} = leg_stats(Conf, leg(B)),
+    #{source_ssrc := SP} = leg_stats(Conf, leg(P)),
+    #{ssrc := MineA, csrcs := CA} = leg_stats(Conf, leg(A)),
+    #{ssrc := MineB, csrcs := CB} = leg_stats(Conf, leg(B)),
+    ?assertEqual(lists:sort([SB, MineA]), lists:sort(CA)),
+    ?assertEqual(lists:sort([SA, MineB]), lists:sort(CB)),
+    ?assertNot(lists:member(SP, CA ++ CB)),
+    close(Conf, Eps ++ [P]).
+
+%% Talker events: a subscriber hears {talking, Leg, true} once a leg has
+%% been above the threshold for 60 ms, and false once it has been below
+%% it for 300 ms. A leg that sends only silence never talks; a removed
+%% leg that was talking stops. A conference without a subscriber sends
+%% nothing.
+talker_events(_Config) ->
+    {ok, Quiet} = chappe_mix:start(#{}),
+    {ok, Conf} = chappe_mix:start(#{events => self()}),
+    {Peer, PPort} = chappe_mix_test_peer:start(#{}),
+    {ok, LS, #{port := MS}} = chappe_mix:add_leg(Conf, #{remote => {?LO, PPort}}),
+    ok = chappe_mix_test_peer:set(Peer, dst, {?LO, MS}),
+    {ok, LA, #{port := MA}} = chappe_mix:add_leg(Conf, #{}),
+    {ok, _, #{port := MQ}} = chappe_mix:add_leg(Quiet, #{}),
+    T0 = erlang:monotonic_time(millisecond),
+    {A, _} = chappe_mix_test_tone:endpoint(#{freq => 1100, dst => {?LO, MA}}),
+    {Q, _} = chappe_mix_test_tone:endpoint(#{freq => 1100, dst => {?LO, MQ}}),
+    On = talk_event(Conf, 2000),
+    T1 = erlang:monotonic_time(millisecond),
+    ?assertEqual({LA, true}, On),
+    %% the tone keeps going: no event while it does
+    ?assertEqual(none, talk_event(Conf, 500)),
+    chappe_mix_test_tone:stop(A),
+    T2 = erlang:monotonic_time(millisecond),
+    Off = talk_event(Conf, 2000),
+    T3 = erlang:monotonic_time(millisecond),
+    ?assertEqual({LA, false}, Off),
+    ct:log("talking after ~p ms, stopped ~p ms after the tone", [T1 - T0, T3 - T2]),
+    %% 60 ms of tone (three frames) and at most 100 ms, give or take the
+    %% frame the jitter buffer holds; 300 ms of none and at most 340
+    ?assert(T1 - T0 >= 40 andalso T1 - T0 =< 100 + 40, {start, T1 - T0}),
+    ?assert(T3 - T2 >= 260 andalso T3 - T2 =< 340 + 40, {stop, T3 - T2}),
+    %% talking again (another sender, so the leg is pointed at it), then
+    %% the leg goes
+    {A2, P2} = chappe_mix_test_tone:endpoint(#{freq => 1100, dst => {?LO, MA}}),
+    ok = chappe_mix:set_remote(Conf, LA, {?LO, P2}),
+    ?assertEqual({LA, true}, talk_event(Conf, 2000)),
+    ok = chappe_mix:remove_leg(Conf, LA),
+    ?assertEqual({LA, false}, talk_event(Conf, 500)),
+    %% the silent peer never talked
+    ?assertEqual(none, talk_event(Conf, 300)),
+    _ = LS,
+    [chappe_mix_test_tone:stop(P) || P <- [A2, Q]],
+    chappe_mix_test_peer:stop(Peer),
+    ok = chappe_mix:stop(Conf),
+    receive
+        {chappe_mix, Quiet, _} = M -> ct:fail({unsubscribed, M})
+    after 0 -> ok
+    end,
+    ok = chappe_mix:stop(Quiet).
+
+%% Eight talkers at -6 dBFS each: what a silent listener hears would clip,
+%% so its gain control comes down and stays down, carried from tick to
+%% tick; once they stop, it is back at unity within two seconds.
+loud_room_gain(_Config) ->
+    {ok, Conf} = chappe_mix:start(#{}),
+    {ok, LL, _} = chappe_mix:add_leg(Conf, #{remote => {?LO, 9}}),
+    Talkers = [
+        begin
+            {ok, _, #{port := P}} = chappe_mix:add_leg(Conf, #{}),
+            element(
+                1,
+                chappe_mix_test_tone:endpoint(#{
+                    freq => F, amp => 16384, dst => {?LO, P}
+                })
+            )
+        end
+     || F <- [310, 470, 660, 830, 1090, 1370, 1710, 2290]
+    ],
+    Gain = fun() -> maps:get(gain, leg_stats(Conf, LL)) end,
+    timer:sleep(1000),
+    Down = [Gain() || _ <- lists:seq(1, 10), ok =:= timer:sleep(50)],
+    ct:log("listener gain while loud: ~p", [Down]),
+    ?assert(lists:max(Down) < 0.7, Down),
+    [chappe_mix_test_tone:stop(T) || T <- Talkers],
+    wait_until(fun() -> Gain() =:= 1.0 end, 2000),
+    ok = chappe_mix:stop(Conf).
+
+talk_event(Conf, Ms) ->
+    receive
+        {chappe_mix, Conf, {talking, Leg, T}} -> {Leg, T}
+    after Ms -> none
+    end.
+
 %% ---- helpers ----
 
 %% A conference with one endpoint per frequency. Endpoints are
@@ -895,7 +1111,10 @@ join(Conf, Freq) ->
     join(Conf, Freq, #{}).
 
 join(Conf, Freq, Opts) ->
-    {ok, Leg, #{port := MixPort}} = chappe_mix:add_leg(Conf, #{}),
+    join(Conf, Freq, Opts, #{}).
+
+join(Conf, Freq, Opts, LegOpts) ->
+    {ok, Leg, #{port := MixPort}} = chappe_mix:add_leg(Conf, LegOpts),
     {Pid, _} = chappe_mix_test_tone:endpoint(
         Opts#{freq => Freq, dst => {{127, 0, 0, 1}, MixPort}}
     ),

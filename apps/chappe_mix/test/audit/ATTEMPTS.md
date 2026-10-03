@@ -425,3 +425,266 @@ order held at load 4.8 too):
 - `chappe_mix_dsp_tests` against three mutations of the new code: high
   clip at 30000 (11 failures), own frame added (11), one sample skipped
   past a short frame (10).
+
+## Packets of any size: a jitter buffer keyed by timestamp
+
+- The buffer counted packets, so a 30 ms sender underran every third tick
+  (a whole silent frame, and the leg cut each packet to 20 ms on top) and
+  a 10 ms sender played half-silent frames and overflowed the depth. It now
+  keeps packets by extended RTP timestamp and pops 160 samples, whatever
+  the packet size. A 20 ms packet right at the playout point is returned
+  as it came, so 20 ms input takes the same path and the eleven existing
+  `chappe_mix_jbuf_tests` pass unchanged (push/4 stays, placing a one
+  frame packet by its sequence number).
+- First version played what it had when the buffer ran out inside a frame,
+  padded with silence. Against a 30 ms sender that is a 10 ms gap in every
+  other frame, and the 30 ms packet that comes next then starts behind the
+  playout point. Kept instead: a frame the buffer cannot fill is an
+  underrun (silence, the prefill grows), and the part already there waits
+  for the rest (`half_frame_waits_test`).
+- A timestamp gap is loss or a silence-suppression pause, and only the
+  sequence numbers tell which: playing a pause out as silence would add its
+  whole length to the latency once the talker is back. The playout point
+  jumps to the next packet less the time of the packets missing before it
+  (`suppression_test`, `loss_after_pause_test`).
+- The depth bound in samples first trimmed a 200 ms sender: the next
+  packet arrives while a frame of the last is still to play, the two hold
+  1760 samples against a bound of 480, and the older one went with its
+  last 20 ms. Found by the mutation run (the suite case passed by phase).
+  The bound is now the depth plus what the newest packet holds over a
+  frame, which is the depth for 20 ms packets
+  (`two_hundred_ms_back_to_back_test`).
+- An `underruns` counter is new: empty ticks once the stream has played.
+- Seen failing first: 9 new `chappe_mix_jbuf_tests` (undef), the three
+  `chappe_mix_rfc_SUITE` sender cases (30 ms: 33 frames of 100 with a
+  10 ms run of silence; 10 and 200 ms: the tone missing in every window),
+  `chappe_sip_media_SUITE:conference_ptime` (a maxptime of 10 answered),
+  `chappe_mix_live_SUITE:thirty_ms_n_minus_one` (1100 Hz missing in 4 of
+  10 windows behind rtpengine) and `chappe_mix_ref_SUITE:
+  thirty_ms_same_detection` (1100 Hz missing at both receivers, 34 of 100
+  frames short of it, against 0 through `mod_conference`).
+- Mutations, 12, all caught in the end: resume ignoring the missing
+  packets (3 failures), never jumping a pause (2), a half frame played
+  (1), the trim bound without the packet size (1), a single packet trimmed
+  (7, and `sender_200ms`), the leg keying by sequence number (three suite
+  cases), the backward timestamp wrap not extended (1), loss filled with
+  code 0 (1), maxptime not checked and ptime not passed to the leg
+  (`conference_ptime`). An underrun counted before the first frame
+  survived the first run and got `no_underrun_before_start_test`; a first
+  mutation of the timestamp extension did not compile and was rewritten.
+
+## A soft limiter: a static curve cannot meet the distortion row (replaced)
+
+- Kept, as planned: a static soft knee on what each listener hears,
+  identity up to -6 dBFS and tanh toward full scale above, folded into the
+  65536-entry encode table. A sum past 16 bits (a clipping room) takes a
+  slower path: the curve computed, then the plain encoder, with the law
+  read from a 65537th element of the table. The common path is the same
+  `element/2` as before.
+- Measured before the code, in a Python model of the dsp on 8 tones at
+  -6 dBFS (300 to 2300 Hz, whole cycles in 1 s, mu-law): the sum is at
+  full scale RMS and peaks near 2.7 times full scale. THD+N with the hard
+  clip -10.4 dB; tanh knee at -12, -6, -3 dBFS -11.6, -11.0, -10.5 dB; a
+  rational knee -10.6 to -10.9 dB. No static curve gets near -26 dB: with
+  the signal at full scale RMS, any memoryless compression into 16 bits
+  distorts most samples. The -6 dBFS knee was taken as the middle way
+  between leaving normal rooms alone and bending a loud one.
+- In the same model, a per-listener gain set from each frame's peak
+  (instant attack, release over 25 frames) gives -37.8 dB: the tones are
+  scaled, not bent. That is not a static curve (it needs a peak per
+  listener per tick and a gain per sample), so it is not in this change;
+  it is the measured way to the threshold if the row is to be met.
+- In the mixer (`chappe_mix_dsp_tests:limiter_distortion_test`, 50 frames
+  of the same room through the real dsp): hard clip -10.19 dB, limiter
+  -10.67 dB. The distortion row is missed.
+- A lone talker louder than -6 dBFS now comes back through the curve, so
+  `chappe_mix_rfc_SUITE:g711_octets_through_the_mix` and
+  `silence_suppression_resume` (their test frame spans every code word)
+  expect the limited frame: decode, `limit/1`, encode.
+- The equivalence test keeps the byte match against the old list mix for
+  every sample under the knee, the hard clip included, and checks the
+  rest against the reference put through `limit/1`, plus sign, no louder
+  than the hard clip and no quieter than the knee. Seen failing first:
+  `limit/1` undefined, and the distortion case equal to the hard clip
+  (-10.19 dB both).
+- Mutations, 6, all caught: knee at -12 dBFS (11 failures) and at -3 dBFS
+  (2), samples past 16 bits hard clipped (10), the table without the curve
+  (11), the negative side clipped (2), the curve overshooting full scale
+  (12).
+
+## RFC 4733 events: forwarded on arrival, one timestamp per event
+
+- Event packets are forwarded when they arrive, not on the tick: the
+  conference sends each one on every other leg that negotiated
+  telephone-event and lists its codes, under that leg's SSRC and next
+  sequence number, with the source's SSRC as the CSRC. The payload is
+  passed byte for byte; nothing in it is rewritten.
+- The timestamp: at an event start (M set, or the first packet seen) the
+  offset from the source's timestamps to each listener's output clock
+  (the timestamp of its next mixed packet) is taken and kept, so every
+  packet of the event, long-event segments and end retransmissions
+  included, has one timestamp on each leg. Taking the offset on every
+  packet would move the timestamp within an event; keeping one offset for
+  the whole call would carry a sender's timestamp jump (a pause) onto the
+  listener's clock. The suite case makes A's timestamps jump by a second
+  between the two digits, which tells the two apart.
+- A muted leg's events are not forwarded, as its audio is not heard. No
+  case covers it.
+- Seen failing first: `dtmf_forwarded` (no event counter, and no event
+  forwarded), `conference_dtmf` (no telephone-event in the answer),
+  `dtmf_through_rtpengine` (B got none of the 6 event packets).
+- Forwarding delay on loopback, 12 packets at a load of 30 (void as a
+  number): at most 521 us.
+- Mutations, 11, all caught: events not forwarded, the M bit dropped, the
+  offset taken on every packet, the offset not reset at a new event, the
+  events list ignored, no CSRC, an event taking no sequence number, events
+  mixed as audio, an answer without fmtp, the offer's events list not
+  read, the mixer's offer without telephone-event. Three first versions
+  did not compile (an unused function or variable) and were rewritten.
+
+## a=rtcp and cascaded CSRCs
+
+- `rtcp_remote` (a leg option, and a key of the map `set_remote/3` now
+  takes) sends a leg's RTCP where a media-level a=rtcp says, on the RTCP
+  socket of a pair or the RTP socket of a muxed leg. A new far end without
+  one drops the old one: an a=rtcp belongs to the SDP it came in.
+- An input packet's CSRC list is kept per leg (from the last audio packet)
+  and a talking leg contributes it in place of its own source's SSRC; the
+  listener's own contributions are left out and the list stays capped at
+  15. The SDES chunks of cascaded CSRCs are not forwarded: only a leg's
+  own source has one.
+- Seen failing first: `cascaded_csrcs` (C's list stayed [A, B]),
+  `rtcp_to_the_given_port` (no RTCP at the given port), and
+  `chappe_sip_media_SUITE:conference_rtcp_port` (no `rtcp_remote`).
+- Mutations, 8, all caught: input CSRCs ignored, input CSRCs not kept,
+  the listener not excluded, the a=rtcp port not used, `set_remote/3` not
+  taking it, a=rtcp read on a muxed m-line, its address ignored, an
+  answer's a=rtcp not passed to the leg.
+
+## Leg directions and per-pair relations
+
+- A leg's `direction`, from the room's side, replaces the mute flag:
+  sendrecv, sendonly (hears, is not mixed: a recorder), recvonly (is
+  mixed, is sent nothing: a prompt player, or a deaf party), inactive.
+  `mute/3` is kept and moves the direction (sendrecv to sendonly, recvonly
+  to inactive, and back). A leg the room sends nothing gets no RTP at all,
+  as an SDP recvonly asks; its RTCP still flows.
+- `relate/4` keeps one leg from hearing another: `chappe_mix_dsp:encode/3`
+  takes a list of frames to take out of the sum (their own sum, taken out
+  sample by sample); one frame keeps the path it had. The CSRC list and
+  event forwarding follow the same relations, and a sendonly or inactive
+  leg's events are not forwarded.
+- `injected => true` marks a leg whose media the room itself plays: the
+  listeners' CSRC lists name the mixer's own SSRC for it (R3550-21).
+- First version opened a leg given `direction => sendonly` as sendrecv:
+  the mute flag was applied as "unmute" when it was false. `directions`
+  failed with the recorder's tone leaking; `mute_is_a_direction` had not
+  opened a sendonly leg. Mute is now applied at open only when set.
+- `chappe_mix_conf` passed 500 lines; the mix and the event forwarding
+  moved to `chappe_mix_room`, plain functions over the legs map.
+- Seen failing first: the four `chappe_mix_SUITE` cases (`directions`
+  leaked the sendonly leg's tone, the others undef or no `direction`),
+  `several_left_out_test`, and the two facade cases
+  (`conference_directions`, `conference_deaf_relate`).
+- Mutations, 13, all caught in the end: a leg the room sends nothing
+  still sent, a sendonly leg mixed, nohear frames not taken out, nohear
+  sources left in the CSRC list, injected media named by its own SSRC,
+  muting a recvonly leg doing nothing, several frames added back instead
+  of taken out, events past a relation, a muted leg's events forwarded,
+  the peer's direction not turned round, the session-level direction
+  ignored, deaf not applied, a relation across rooms. The first survived:
+  `chappe_mix_leg:send/3` refused a recvonly leg as well, a second guard
+  that hid the first; it was removed.
+
+## Talker events
+
+- Opt-in: a conference started with `events => Pid` (or given one with
+  `chappe_mix:events/2`) takes each frame's energy while it sums it,
+  `chappe_mix_dsp:add_level/3`, and runs a hysteresis per leg: talking
+  after 60 ms over -40 dBFS RMS, not talking after 300 ms under it, both
+  configurable. Without a subscriber the sum goes through `add/3` as
+  before and no level is computed. A leg removed while talking is
+  reported as stopped. The facade subscribes a room when a join asks for
+  `talk_events` and sends that call `{chappe_sip_media, {talking, Room,
+  true | false}}`.
+- Seen failing first: `chappe_mix_SUITE:talker_events` (no event) and
+  `chappe_sip_media_SUITE:conference_talking` (none relayed). The suite
+  case first asked only for an upper bound on detection; a mutation that
+  started talk on the first frame passed it, so it also asks for at least
+  40 ms (three frames, less the one the jitter buffer holds) and at least
+  260 ms to stop.
+- Mutations, 7, all caught: talk starting on the first frame, stopping
+  after 100 ms, the threshold inverted, the energy not summed, no stop
+  when a talking leg goes, events sent to calls that did not ask, the
+  room not subscribed.
+- `cascaded_csrcs` failed once in a full run: it read the last datagram
+  at C right after the leg's counters showed it sent. It now waits for
+  the datagram.
+
+## The tick timer and the prefill: built, not decided
+
+- Timer: arming at the millisecond ceiling (`-convert_time_unit(-At)`)
+  instead of truncating. `tick_never_early` saw every traced tick early
+  with truncation (45 to 454 us) and none of 50 with the ceiling. Whether
+  the ceiling keeps p99 lateness inside the tick jitter row needs the
+  `jitter idle` and `jitter capacity` A/B, which never ran (box over the
+  load limit, see `PERF.md`).
+- Prefill: after 500 frames (10 s) without an underrun, a prefill that
+  grew is taken back by one and the frame of slack it held is skipped,
+  so the latency comes back down a frame. Tests: `prefill_shrinks_test`,
+  `prefill_floor_test`, `prefill_stays_by_default_test`. Whether `latency`
+  p99 improves without more underruns in `loss` needs the A/B, which
+  never ran.
+- The plan keeps each only on its A/B, so both are in the mixer behind
+  conference options, off by default (`tick_ceiling`, `prefill_shrink`).
+  The A/B builds (the mixer at the commit before, with only the ceiling,
+  with only the shrink) and the interleaving script are in the session
+  scratchpad; `bench/README.md` has the procedure.
+- Seen failing first: `tick_never_early` (every tick early) and
+  `prefill_shrinks_test` (the prefill stayed at 2). A first lint run
+  refused a duplicated frame assembly between the skip and the playout;
+  both now go through `next_frame/1`.
+- Mutations, 8, all caught: the timer truncated again, the prefill never
+  shrinking, the shrink without the skip (a first version did not
+  compile and was rewritten), the prefill shrinking to 0, an underrun
+  not resetting the count, the shrink on by default, `tick_ceiling`
+  ignored.
+
+## A gain per listener in place of the static curve: kept
+
+- The static knee (`981adc4`) missed the -26 dB row at -10.67 dB and is
+  removed, `chappe_mix_g711:limit/1` and its tests with it: the encode
+  table is the plain one again. In its place a gain per listener, kept in
+  the leg across ticks: unity until a frame would clip, then at once the
+  gain that puts the frame's peak at full scale, then back by a release
+  step per frame, never above unity. `chappe_mix_dsp:encode/4` takes the
+  gain and returns the next one; at unity the encode is the old path,
+  which fails with `clip` at the first sample past 16 bits, and only then
+  is the frame scaled. The hard clip stays behind it.
+- Tried in the dsp, on the loud room (see `PERF.md` for the table):
+  release 0.4 dB a frame stepped at the frame start -27.60 dB; spread
+  across the frame -28.42 dB; 0.2 dB a frame spread -29.22 dB (kept: a
+  9 dB cut still undone in under a second); the attack spread too, with
+  each sample capped at full scale so the frame start cannot clip,
+  -18.85 dB (the cap is a per-sample clip again; reverted).
+- `elvis` refuses `throw/1`; the clip escape is `error(clip)`, caught in
+  `encode/4`. Only frames that clip pay for it.
+- The equivalence test: every leg whose signal fits in 16 bits gets the
+  old mix's bytes; a leg that would clip gets, byte for byte, its signal
+  scaled by full scale over its peak (a fresh leg). The lone-talker
+  frames of `chappe_mix_rfc_SUITE` never clip and expect the plain
+  frame again.
+- The first loud room used 300 to 2300 Hz, which repeat every 20 ms:
+  every frame had the same peak and the gain never moved, so the
+  stability case could not fail. The room now uses tones that make
+  whole cycles in 1 s and not in 20 ms.
+- Seen failing first: `encode/4` undefined (every dsp case), and
+  `loud_room_gain` (no `gain` in the leg).
+- Mutations, 9: gain above unity allowed, no release, attack disabled,
+  release twice as fast, the gain not kept across ticks, the release not
+  spread across the frame (survived the first run; the recovery case now
+  checks each released frame byte for byte), the attack spread from the
+  old gain: all caught. Removing the hard clip survived: with the gain,
+  no scaled sample reaches past full scale, so the net is unreachable
+  by construction and kept as a guard.
+
