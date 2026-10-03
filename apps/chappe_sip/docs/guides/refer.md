@@ -141,11 +141,9 @@ URI, or a map for `chappe_sip_hdr:refer_to_value/1` (`method`, `headers`,
 ## Send a REFER outside any dialog
 
 Give a URI instead of a dialog, and name the dialog you transfer with
-`target_dialog`. The NOTIFYs come back outside any dialog, so register the
-NOTIFY handler:
+`target_dialog`:
 
 ```erlang
-ok = chappe_sip:notify(chappe_sip_refer:notify_handler()),
 {ok, Id, _} = chappe_sip:send_refer(TransfereeUri, TargetUri, #{
     target_dialog => Call,
     replaces => Replaces
@@ -153,9 +151,11 @@ ok = chappe_sip:notify(chappe_sip_refer:notify_handler()),
 ```
 
 The Target-Dialog carries the tags as the recipient sees them, with
-`Require: tdialog`. If you serve other event packages, call
-`chappe_sip_refer:handle_notify/2` from your own NOTIFY handler: it returns
-`pass` for a NOTIFY that is not a REFER's.
+`Require: tdialog`. The NOTIFYs come back outside any dialog; the stack's
+NOTIFY router hands them to `chappe_sip_refer` before your own
+`chappe_sip:notify/1` handler, so you need none for them.
+`chappe_sip_refer:notify_handler/0` and `handle_notify/2` still work in a
+handler of yours.
 
 ## Notes
 

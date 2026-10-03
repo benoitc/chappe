@@ -44,6 +44,9 @@
 %%         owner => pid(), notify => pid(),
 %%         contact_params => binary() (after the Contact's `>', e.g. `;isfocus'),
 %%         report_answer => boolean() (send the 2xx as {answer, Msg}),
+%%         call_id => binary(), cseq => pos_integer() (a request of a
+%%           dialog you keep yourself, such as a subscription refresh: its
+%%           Call-ID and CSeq number; `to' then carries the remote tag),
 %%         session_expires, min_se, session_refresher (RFC 4028, see
 %%         chappe_sip_session_timer)}
 -spec start(binary(), map()) -> {ok, uac_ref()} | {error, term()}.

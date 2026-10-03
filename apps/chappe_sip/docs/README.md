@@ -25,7 +25,8 @@ Start here.
 - [Reliable provisionals (PRACK)](guides/reliable-provisionals.md): 100rel on
   the UAS and the UAC.
 - [Subscriptions (SUBSCRIBE/NOTIFY)](guides/subscriptions.md): accept a
-  SUBSCRIBE, send NOTIFYs, and handle refresh, unsubscribe, and expiry.
+  SUBSCRIBE, send NOTIFYs, and handle refresh, unsubscribe, and expiry;
+  route SUBSCRIBEs by event package; subscribe to another node's state.
 - [Session timers](guides/session-timers.md): RFC 4028 refresh and expiry
   on the calls you answer and place.
 - [REFER (call transfer)](guides/refer.md): accept a REFER and report the

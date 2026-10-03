@@ -164,7 +164,9 @@ use(Method, Fun) when is_function(Fun, 3) ->
 %% Register the handler for a SIP method: fun(Req, Res). Opts:
 %% option_tags (accepted in Require on top of supported_option_tags),
 %% proxy (the handler proxies: Proxy-Require is checked, not Require),
-%% events (SUBSCRIBE only, see chappe_sip:subscribe/2).
+%% events (SUBSCRIBE only, see chappe_sip:subscribe/2), package (SUBSCRIBE
+%% only: the handler of that one event package, see
+%% chappe_sip:event_package/2).
 -spec handle(binary(), fun(), map()) -> ok.
 handle(Method, Fun, Opts) when is_binary(Method), is_function(Fun, 2) ->
     gen_server:call(?MODULE, {handle, Method, Fun, Opts}).
@@ -403,6 +405,13 @@ handle_call({use, Method, Fun}, _From, #state{middlewares = MW} = S) ->
     MW1 = MW ++ [{Method, Fun}],
     cfg_put(middlewares, MW1),
     {reply, ok, S#state{middlewares = MW1}};
+handle_call(
+    {handle, <<"SUBSCRIBE">>, Fun, #{package := Pkg0} = Opts}, _From, S
+) ->
+    Pkg = string:lowercase(Pkg0),
+    cfg_put(packages, (cfg_get(packages, #{}))#{Pkg => Fun}),
+    cfg_put({route_opts, {package, Pkg}}, route_opts(Opts)),
+    {reply, ok, S};
 handle_call({handle, Method, Fun, Opts}, _From, #state{routes = R} = S) ->
     R1 = R#{Method => Fun},
     cfg_put(routes, R1),
@@ -414,12 +423,17 @@ handle_call({unhandle, Method}, _From, #state{routes = R} = S) ->
     R1 = maps:remove(Method, R),
     cfg_put(routes, R1),
     cfg_del({route_opts, Method}),
-    Method =:= <<"SUBSCRIBE">> andalso cfg_put(events, any),
+    Method =:= <<"SUBSCRIBE">> andalso cfg_del(events),
     {reply, ok, S#state{routes = R1}};
 handle_call(reset_routes, _From, #state{routes = R} = S) ->
     _ = [cfg_del({route_opts, M}) || M <- maps:keys(R)],
+    _ = [
+        cfg_del({route_opts, {package, P}})
+     || P <- maps:keys(cfg_get(packages, #{}))
+    ],
     cfg_put(routes, #{}),
-    cfg_put(events, any),
+    cfg_del(events),
+    cfg_del(packages),
     cfg_put(middlewares, []),
     {reply, ok, S#state{routes = #{}, middlewares = []}};
 handle_call({respond, TxnH, Status, Reason}, _From, S) when ?IS_WS(TxnH) ->
@@ -1591,61 +1605,95 @@ stray_in_dialog(_Method, Raw) ->
     end.
 
 dispatch_route(
+    TxnH, #{method := Method} = Meta, Raw, #state{routes = Routes} = S
+) ->
+    case route_for(Method, Raw, Routes) of
+        {bad_event, Events} ->
+            reject_event(TxnH, Events, S);
+        {Handler, Key} ->
+            dispatch_handler(TxnH, Meta, Raw, Handler, Key, S);
+        none ->
+            unrouted(TxnH, Method, Routes, S)
+    end.
+
+%% The handler of a request: its method's, the built-in NOTIFY router
+%% (subscriptions of ours, REFERs we sent, then yours), or for a SUBSCRIBE
+%% the one of its event package. Key names the route options.
+route_for(<<"NOTIFY">> = M, _Raw, Routes) ->
+    {chappe_sip_subscriber:notify_handler(maps:get(M, Routes, undefined)), M};
+route_for(<<"SUBSCRIBE">> = M, Raw, Routes) ->
+    Pkgs = cfg_get(packages, #{}),
+    Pkg = event_package(Raw),
+    case {Pkgs, Routes} of
+        {#{Pkg := Fun}, _} when Pkg =/= <<"refer">> ->
+            {Fun, {package, Pkg}};
+        {_, #{M := Handler}} ->
+            {Handler, M};
+        _ when map_size(Pkgs) > 0 ->
+            {bad_event, allow_events()};
+        _ ->
+            none
+    end;
+route_for(Method, _Raw, Routes) ->
+    case Routes of
+        #{Method := Handler} -> {Handler, Method};
+        _ -> none
+    end.
+
+dispatch_handler(
     TxnH,
     #{method := Method} = Meta,
     Raw,
-    #state{routes = Routes, middlewares = MW, workers = W} = S
+    Handler,
+    RouteKey,
+    #state{middlewares = MW, workers = W} = S
 ) ->
-    case Routes of
-        #{Method := Handler} ->
-            Max = chappe_sip_config:get(max_request_workers),
-            case bad_event(Method, Raw) of
-                {true, Events} ->
-                    reject_event(TxnH, Events, S);
-                refer ->
-                    respond_txn(TxnH, 403, <<"Forbidden">>, <<>>, S),
-                    S;
-                false when map_size(W) >= Max ->
-                    shed(TxnH, 503, <<"Service Unavailable">>, S),
-                    S;
-                false ->
-                    case merge_check(TxnH, Method, Raw, S) of
-                        merged ->
-                            respond_txn(TxnH, 482, <<"Loop Detected">>, S),
-                            S;
-                        Key ->
-                            index_merge(
-                                Key,
-                                TxnH,
-                                spawn_worker(
-                                    TxnH,
-                                    Meta,
-                                    Raw,
-                                    Handler,
-                                    MW,
-                                    cfg_get({route_opts, Method}, #{}),
-                                    S
-                                )
-                            )
-                    end
-            end;
-        _ when Method =:= <<"ACK">> ->
-            %% ACK never needs an answer
+    Max = chappe_sip_config:get(max_request_workers),
+    case bad_event(Method, Raw) of
+        {true, Events} ->
+            reject_event(TxnH, Events, S);
+        refer ->
+            respond_txn(TxnH, 403, <<"Forbidden">>, <<>>, S),
             S;
-        _ when Method =:= <<"CANCEL">> ->
-            %% nta answers a CANCEL matching one of our transactions; this
-            %% one matches none (RFC 3261 9.2)
-            respond_txn(TxnH, 481, <<"Call/Transaction Does Not Exist">>, S),
+        false when map_size(W) >= Max ->
+            shed(TxnH, 503, <<"Service Unavailable">>, S),
             S;
-        _ ->
-            %% respond_txn handles a WS or native transaction (a bare shed
-            %% would send a WS txn to nta)
-            {Status, Reason, Hdrs} = unhandled(Method, Routes),
-            respond_txn(
-                TxnH, Status, Reason, chappe_sip_hdr_io:join(Hdrs), S
-            ),
-            S
+        false ->
+            case merge_check(TxnH, Method, Raw, S) of
+                merged ->
+                    respond_txn(TxnH, 482, <<"Loop Detected">>, S),
+                    S;
+                Key ->
+                    index_merge(
+                        Key,
+                        TxnH,
+                        spawn_worker(
+                            TxnH,
+                            Meta,
+                            Raw,
+                            Handler,
+                            MW,
+                            cfg_get({route_opts, RouteKey}, #{}),
+                            S
+                        )
+                    )
+            end
     end.
+
+unrouted(_TxnH, <<"ACK">>, _Routes, S) ->
+    %% ACK never needs an answer
+    S;
+unrouted(TxnH, <<"CANCEL">>, _Routes, S) ->
+    %% nta answers a CANCEL matching one of our transactions; this one
+    %% matches none (RFC 3261 9.2)
+    respond_txn(TxnH, 481, <<"Call/Transaction Does Not Exist">>, S),
+    S;
+unrouted(TxnH, Method, Routes, S) ->
+    %% respond_txn handles a WS or native transaction (a bare shed would
+    %% send a WS txn to nta)
+    {Status, Reason, Hdrs} = unhandled(Method, Routes),
+    respond_txn(TxnH, Status, Reason, chappe_sip_hdr_io:join(Hdrs), S),
+    S.
 
 %% No handler for the method. OPTIONS is answered 200 with what we take,
 %% as every UA must (RFC 3261 11); a method we know gets 405 and one we do
@@ -1704,11 +1752,18 @@ reject_event(TxnH, Events, S) ->
     respond_txn(TxnH, 489, <<"Bad Event">>, Hdr, S),
     S.
 
-%% The event packages the SUBSCRIBE handler serves (chappe_sip:subscribe/2),
-%% or `any' when it was registered without a list.
+%% The event packages we serve: those registered with handle_package/3 and
+%% those the SUBSCRIBE handler serves (chappe_sip:subscribe/2), or `any'
+%% when that handler was registered without a list (or none serves any).
 -spec allow_events() -> any | [binary()].
 allow_events() ->
-    cfg_get(events, any).
+    Pkgs = lists:sort(maps:keys(cfg_get(packages, #{}))),
+    case {cfg_get(events, undefined), Pkgs} of
+        {any, _} -> any;
+        {undefined, []} -> any;
+        {undefined, _} -> Pkgs;
+        {Events, _} -> lists:usort(Events ++ Pkgs)
+    end.
 
 event_package(Raw) ->
     case chappe_sip_msg:parse(Raw) of
@@ -1808,9 +1863,10 @@ forget_txns(Pid, #state{merge = Idx, proxied = Px} = S) ->
 %% the methods we take out of dialog: those with a handler, plus the ones
 %% the stack answers itself (ACK, CANCEL, BYE in a dialog, OPTIONS)
 allow_value(Routes) ->
+    Packages = [<<"SUBSCRIBE">> || map_size(cfg_get(packages, #{})) > 0],
     Methods = lists:usort(
-        maps:keys(Routes) ++
-            [<<"ACK">>, <<"BYE">>, <<"CANCEL">>, <<"OPTIONS">>]
+        maps:keys(Routes) ++ Packages ++
+            [<<"ACK">>, <<"BYE">>, <<"CANCEL">>, <<"OPTIONS">>, <<"NOTIFY">>]
     ),
     iolist_to_binary(lists:join(<<", ">>, Methods)).
 

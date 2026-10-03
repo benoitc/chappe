@@ -149,6 +149,19 @@ tracker; the milestone history is in `docs/plan.md`.
   for packages you do not serve. `notify/2` also sends the implicit REFER subscription's NOTIFYs
   inside an INVITE dialog. Works over UDP/TCP and WS. See the subscriptions
   guide.
+- Event package routing: `chappe_sip:event_package/2` gives each package
+  its own SUBSCRIBE handler, `subscribe/1,2` staying the catch-all;
+  Allow-Events (OPTIONS 200, the 489) lists the registered packages.
+- Subscriber side (RFC 6665): `chappe_sip:subscribe_to/3` starts a process
+  that sends the SUBSCRIBE through the UAC (digest, proxy, flow), forms the
+  dialog from the 2xx or the first NOTIFY, starts a subscription of its own
+  for each forked NOTIFY, refreshes before expiry (a NOTIFY's `expires`
+  wins), runs Timer N, ends on the refresh failures of 4.1.2.2, and acts on
+  the terminated reasons (re-subscribe at once, after `retry-after`, or
+  stop). `chappe_sip:unsubscribe/1` sends `Expires: 0`. NOTIFYs outside a
+  dialog go through one router: our subscriptions, then REFERs we sent,
+  then your `notify/1` handler, else 481. `chappe_sip_hdr:subscription_state/1`
+  parses the header.
 - REFER (RFC 3515 as updated by RFC 7647), both sides, in `chappe_sip_refer`
   (facade: `chappe_sip:accept_refer/3,4`, `send_refer/3`). Recipient: 400 for
   zero or several Refer-To, 416 for a non sip/sips/tel target, an `authorize`
@@ -394,6 +407,10 @@ tracker; the milestone history is in `docs/plan.md`.
   `engine_restart`, and a UAC still ringing gets `{error, engine_restart}`.
 - A closed WebSocket connection now ends the dialogs bound to it: owners get
   `destroy` with reason `flow_lost`.
+- Every NOTIFY outside a dialog now goes through the built-in router: your
+  `chappe_sip:notify/1` handler sees only the NOTIFYs no subscription of
+  ours and no REFER we sent claims, and without a handler a NOTIFY gets 481
+  instead of 405. NOTIFY is always in Allow.
 - A UAC INVITE now watches its owner (`owner`, else `notify`, else the
   caller of `chappe_sip_uac:start/2`): when that process exits while the
   INVITE rings, the INVITE is CANCELled and a 2xx that still comes is ACKed
@@ -413,8 +430,7 @@ Gaps relative to drachtio, in rough order of impact.
   restarts without dropping the stack. We embed the stack in the node, so a
   remote-app split and outbound cloud-scaling are not available yet.
 - **Event packages on top of subscriptions**: besides `conference`, no
-  presence (PUBLISH/PIDF) or MWI package; PUBLISH only routes as a method. The subscriber side (sending
-  SUBSCRIBE and keeping it refreshed) is not implemented either.
+  presence (PUBLISH/PIDF) or MWI package; PUBLISH only routes as a method.
 - **Multi-homed contacts**: one contact per transport today; binding several
   listen addresses on the same transport is not supported.
 - **SIP capture (HEP/Homer)**: no native trace export to a capture agent.

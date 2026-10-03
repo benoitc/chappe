@@ -131,7 +131,7 @@ as the UAC `contact_params`.
 ## Serve subscriptions
 
 ```erlang
-ok = chappe_sip:subscribe(fun(Req, Res) ->
+ok = chappe_sip:event_package(<<"conference">>, fun(Req, Res) ->
     Conf = my_conference(Req),
     chappe_sip_focus:subscribe(Req, Res, Conf, #{
         contact => my_conf:contact(Conf),
@@ -140,8 +140,12 @@ ok = chappe_sip:subscribe(fun(Req, Res) ->
 end).
 ```
 
-`subscribe/4` answers 489 with `Allow-Events: conference` to any other
-package and 406 with `Accept` when the SUBSCRIBE's Accept leaves out
+Registered as the `conference` package, the handler gets only the
+SUBSCRIBEs for it: another package gets 489 with an Allow-Events listing
+the packages you serve, and your other packages (presence, a
+`chappe_sip:subscribe/1` catch-all) keep their own handlers.
+`subscribe/4` itself answers 489 with `Allow-Events: conference` to any
+other package and 406 with `Accept` when the SUBSCRIBE's Accept leaves out
 `application/conference-info+xml`. Otherwise the subscription dialog belongs
 to `Conf`, which gets `{chappe_sip_focus, subscribed, Dialog, Opts}`; passed
 to `handle_info/2`, it sends the full state as version 1. A refresh gets the

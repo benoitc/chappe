@@ -1,13 +1,16 @@
 # Subscriptions (SUBSCRIBE/NOTIFY)
 
 A subscription (RFC 6665) is a dialog formed by a SUBSCRIBE: the subscriber
-asks for an event package (`conference`, `dialog`, ...), you answer, and you
-send NOTIFYs with the current state until the subscription ends. chappe_sip
-runs the notifier side: you accept the SUBSCRIBE with `chappe_sip:create_uas/3`
-and send NOTIFYs with `chappe_sip_dialog:notify/2`; the dialog process handles
-refreshes, unsubscribes, and expiry. Read this when you serve an event
-package, such as RFC 4575 conference state, or when you report the progress
-of a REFER.
+asks for an event package (`conference`, `presence`, ...), the notifier
+answers and sends NOTIFYs with the current state until the subscription ends.
+chappe_sip runs both sides. As the notifier you accept the SUBSCRIBE with
+`chappe_sip:create_uas/3` and send NOTIFYs with `chappe_sip_dialog:notify/2`;
+the dialog process handles refreshes, unsubscribes, and expiry. As the
+subscriber, `chappe_sip:subscribe_to/3` starts a process that sends the
+SUBSCRIBE, answers the NOTIFYs, refreshes and re-subscribes, and hands you
+each NOTIFY. Read this when you serve an event package, such as RFC 4575
+conference state, when you watch one (a buddy's presence, a mailbox), or
+when you report the progress of a REFER.
 
 ## When to use it
 
@@ -15,6 +18,8 @@ of a REFER.
   state, a custom package).
 - You accepted a REFER and must report the transfer with NOTIFYs in the
   INVITE dialog (the implicit subscription of RFC 3515).
+- You want another node's state: presence, message waiting, a dialog
+  package.
 
 ## Accept a SUBSCRIBE
 
@@ -48,6 +53,19 @@ ok = chappe_sip:subscribe([<<"conference">>], fun(Req, Res) ->
     ...
 end).
 ```
+
+## Give each package its own handler
+
+```erlang
+ok = chappe_sip:event_package(<<"presence">>, fun my_presence:subscribe/2),
+ok = chappe_sip:event_package(<<"conference">>, fun my_conf:subscribe/2).
+```
+
+A SUBSCRIBE whose `Event` names a registered package (compared without
+case) runs that package's handler; `chappe_sip:subscribe/1,2` stays the
+catch-all for the others. With packages only, any other package gets 489.
+`Allow-Events` on the 489 and on the OPTIONS 200 lists every package you
+registered (plus the catch-all's list).
 
 ## Send NOTIFYs
 
@@ -142,10 +160,82 @@ only when you pass it. A terminated NOTIFY leaves the call up. Any package
 other than `refer` gets `{error, no_subscription}` there: a subscription
 starts with a SUBSCRIBE (RFC 6665 4.2.1).
 
+## Subscribe to someone else's state
+
+```erlang
+start() ->
+    {ok, Sub} = chappe_sip:subscribe_to(
+        <<"sip:bob@example.com">>, <<"presence">>,
+        #{expires => 3600,
+          accept => [<<"application/pidf+xml">>],
+          auth => #{user => <<"alice">>, pass => <<"secret">>}}),
+    watch(Sub).
+
+watch(Sub) ->
+    receive
+        {chappe_sip_subscription, Sub, {notify, #{state := _, body := Body}}} ->
+            show(Body),
+            watch(Sub);
+        {chappe_sip_subscription, Sub, {forked, Sub2}} ->
+            watch(Sub2);
+        {chappe_sip_subscription, Sub, {retrying, _Reason, _Secs}} ->
+            watch(Sub);
+        {chappe_sip_subscription, Sub, {terminated, Reason}} ->
+            {ended, Reason}
+    end.
+```
+
+`subscribe_to/3` returns at once; the SUBSCRIBE goes through the UAC, so
+`auth`, `proxy`, `route_set`, `from`, `contact` and `flow` work as for
+`chappe_sip:request/2`. The owner (the caller, or `owner`) gets:
+
+| Event | When |
+| --- | --- |
+| `{notify, Info}` | each NOTIFY, after it was answered 200. `Info` has `state` (`active`, `pending`, `terminated`), `expires`, `reason`, `retry_after`, `content_type`, `body` and `req` |
+| `{forked, Sub2}` | a NOTIFY came from another fork: `Sub2` is a subscription of its own, with its own events |
+| `{retrying, Reason, Secs}` | the subscription ended and a new SUBSCRIBE (new Call-ID and From tag) goes out in `Secs` |
+| `{terminated, Reason}` | it is over; the process has stopped |
+
+What the process does for you:
+
+- The dialog is formed by the 2xx or by the first NOTIFY, whichever comes
+  first: a NOTIFY may beat the 2xx.
+- It refreshes in the dialog before the subscription expires, a NOTIFY's
+  `expires` taking over from the 2xx's `Expires`.
+- Timer N (`timer_n`, 32 s): with no NOTIFY after a SUBSCRIBE the
+  subscription ends with `{terminated, timer_n}`.
+- A refresh answered 404, 405, 410, 416, 480 to 485, 489, 501 or 604 ends it
+  with `{refresh_failed, Status}`; another error leaves it until it expires.
+- A terminated NOTIFY: `deactivated` and `timeout` re-subscribe at once;
+  `probation` and `giveup` after their `retry-after` (`probation_retry`, 60 s,
+  when probation has none); `rejected`, `noresource` and `invariant` end it
+  (`{terminated, Reason}`); another reason re-subscribes only after a
+  `retry-after`.
+- A SUBSCRIBE refused gives `{terminated, {subscribe_failed, Status}}`.
+
+## Unsubscribe
+
+```erlang
+ok = chappe_sip:unsubscribe(Sub).
+```
+
+A SUBSCRIBE with `Expires: 0` goes out in the dialog; you get the final
+NOTIFY as `{notify, ...}`, then `{terminated, unsubscribed}`. The same
+happens when the owner exits.
+
+## Where NOTIFYs go
+
+Every NOTIFY outside a dialog of the stack goes through one router: a
+subscription of yours first, then a REFER you sent outside a dialog
+(`chappe_sip_refer`), then your `chappe_sip:notify/1` handler. With none of
+them it gets 481 (RFC 6665 4.1.3). A NOTIFY handler of yours therefore sees
+only the NOTIFYs nothing else claimed.
+
 ## Notes
 
 - Subscriptions work over UDP, TCP, TLS, and WebSocket alike.
 - A subscription dialog is not in the Replaces index: `chappe_sip:find_replaced/1`
   only finds INVITE dialogs.
-- Only the notifier side is implemented; chappe_sip does not send or refresh
-  SUBSCRIBEs itself.
+- chappe_sip does not challenge NOTIFYs itself; put a
+  `chappe_sip:use(<<"NOTIFY">>, Mw)` middleware in front if your peers
+  authenticate them (RFC 6665 4.1.3).

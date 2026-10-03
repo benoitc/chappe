@@ -40,6 +40,7 @@
     find_dialog/3, find_replaced/1, replaces_response/1, replaces_response/2
 ]).
 -export([accept_refer/3, accept_refer/4, send_refer/3]).
+-export([event_package/2, subscribe_to/3, unsubscribe/1]).
 
 -export_type([replaced_info/0]).
 
@@ -236,6 +237,8 @@ message(F) -> handle(<<"MESSAGE">>, F).
 -spec info(fun()) -> ok.
 info(F) -> handle(<<"INFO">>, F).
 
+%% The NOTIFYs no subscription of ours (subscribe_to/3) and no REFER we
+%% sent (send_refer/3) claims; without a handler they get 481.
 -spec notify(fun()) -> ok.
 notify(F) -> handle(<<"NOTIFY">>, F).
 
@@ -253,6 +256,33 @@ subscribe(Events, F) ->
     chappe_sip_engine:handle(<<"SUBSCRIBE">>, F, #{
         events => [string:lowercase(E) || E <- Events]
     }).
+
+%% The SUBSCRIBE handler of one event package (RFC 6665): a SUBSCRIBE
+%% whose Event names Package (case-insensitively) runs Handler, whatever
+%% subscribe/1,2 registered, which stays the catch-all. The packages you
+%% register are in Allow-Events (OPTIONS 200, the 489 to a package nobody
+%% serves). chappe_sip_focus serves `conference' this way.
+-spec event_package(binary(), fun(
+    (chappe_sip_req:req(), chappe_sip_res:res()) -> any()
+)) -> ok.
+event_package(Package, Handler) ->
+    chappe_sip_engine:handle(<<"SUBSCRIBE">>, Handler, #{package => Package}).
+
+%% Subscribe to Event at Uri (RFC 6665 subscriber side): a process holds
+%% the subscription, refreshes it, re-subscribes when the notifier asks,
+%% and sends the owner (default the caller) {chappe_sip_subscription, Sub,
+%% Event} for each NOTIFY and its end. See chappe_sip_subscriber.
+-spec subscribe_to(binary(), binary(), map()) ->
+    {ok, chappe_sip_subscriber:subscription()} | {error, term()}.
+subscribe_to(Uri, Event, Opts) ->
+    chappe_sip_subscriber:start(Uri, Event, Opts#{
+        owner => maps:get(owner, Opts, self())
+    }).
+
+%% End a subscription subscribe_to/3 started (SUBSCRIBE with Expires: 0).
+-spec unsubscribe(chappe_sip_subscriber:subscription()) -> ok.
+unsubscribe(Sub) ->
+    chappe_sip_subscriber:unsubscribe(Sub).
 
 -spec publish(fun()) -> ok.
 publish(F) -> handle(<<"PUBLISH">>, F).

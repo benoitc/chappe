@@ -32,10 +32,20 @@
     referred_by_value/1,
     target_dialog/1,
     target_dialog_value/1,
-    event/1
+    event/1,
+    subscription_state/1
 ]).
 
--export_type([replaces/0, refer_to/0, target_dialog/0]).
+-export_type([replaces/0, refer_to/0, target_dialog/0, sub_state/0]).
+
+%% A parsed Subscription-State (RFC 6665 8.2.3): the state, lowercased (an
+%% atom for the three RFC 6665 defines), and the parameters it names.
+-type sub_state() :: #{
+    state := active | pending | terminated | binary(),
+    expires := non_neg_integer() | undefined,
+    reason := binary() | undefined,
+    retry_after := non_neg_integer() | undefined
+}.
 
 %% A parsed Refer-To (RFC 3515 2.1). uri is the URI as written; target is
 %% it without the method param and the headers part; method is the method
@@ -514,6 +524,47 @@ event(Bin) when is_binary(Bin) ->
     end;
 event(_) ->
     {error, malformed}.
+
+%% Subscription-State (RFC 6665 8.2.3): active / pending / terminated with
+%% expires, reason (lowercased) and retry-after. A parameter that is not a
+%% number where one is due is left undefined.
+-spec subscription_state(term()) -> {ok, sub_state()} | {error, malformed}.
+subscription_state(Bin) when is_binary(Bin) ->
+    {Main, Params, _} = split_semi_params(Bin),
+    case lower(trim(Main)) of
+        <<>> ->
+            {error, malformed};
+        Value ->
+            {ok, #{
+                state => sub_state_value(Value),
+                expires => seconds(maps:get(<<"expires">>, Params, undefined)),
+                reason =>
+                    case maps:get(<<"reason">>, Params, undefined) of
+                        R when is_binary(R) -> lower(R);
+                        _ -> undefined
+                    end,
+                retry_after => seconds(
+                    maps:get(<<"retry-after">>, Params, undefined)
+                )
+            }}
+    end;
+subscription_state(_) ->
+    {error, malformed}.
+
+sub_state_value(<<"active">>) -> active;
+sub_state_value(<<"pending">>) -> pending;
+sub_state_value(<<"terminated">>) -> terminated;
+sub_state_value(Other) -> Other.
+
+seconds(V) when is_binary(V) ->
+    try binary_to_integer(V) of
+        N when N >= 0 -> N;
+        _ -> undefined
+    catch
+        error:badarg -> undefined
+    end;
+seconds(_) ->
+    undefined.
 
 %% internal
 
