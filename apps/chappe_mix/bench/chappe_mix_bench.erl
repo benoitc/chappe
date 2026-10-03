@@ -96,6 +96,17 @@ arm("mix_cost", ["talk" | Args], Load) ->
         end,
     [mix_cost(N, talk, Load) || N <- Ns],
     ok;
+%% Compute of one mix tick for N legs, no sockets, every tone at 32000 / N
+%% so that no listener's mix can clip: the path a room that fits takes,
+%% without the gain control's scaling. Args: fit [N...].
+arm("mix_cost", ["fit" | Args], Load) ->
+    Ns =
+        case Args of
+            [] -> [4, 64];
+            _ -> [list_to_integer(A) || A <- Args]
+        end,
+    [mix_cost(N, fit, Load) || N <- Ns],
+    ok;
 %% Compute of one mix tick for N legs, no sockets, each listener kept
 %% from hearing K other legs besides itself (chappe_mix:relate/4).
 %% Args: nohear K [N...].
@@ -430,9 +441,14 @@ mix_cost(N, Load) ->
 
 mix_cost(N, K, Load) ->
     chappe_mix_g711:init(),
+    Amp =
+        case K of
+            fit -> min(6000, 32000 div N);
+            _ -> 6000
+        end,
     Frames = [
         chappe_mix_g711:encode_frame(ulaw, [
-            round(6000 * math:sin(2 * math:pi() * (300 + 100 * T) * I / 8000))
+            round(Amp * math:sin(2 * math:pi() * (300 + 100 * T) * I / 8000))
          || I <- lists:seq(0, ?FRAME - 1)
         ])
      || T <- lists:seq(1, N)
@@ -447,10 +463,14 @@ mix_cost(N, K, Load) ->
             }
         of
             {true, _} when K =:= talk -> fun mix_tick_talk/1;
-            {true, _} when K > 0 -> fun(Fs) -> mix_tick_nohear(Fs, K) end;
-            {true, _} -> fun mix_tick/1;
-            {false, true} -> fun mix_tick_dsp0/1;
-            {false, false} -> fun mix_tick_lists/1
+            {true, _} when is_integer(K), K > 0 ->
+                fun(Fs) -> mix_tick_nohear(Fs, K) end;
+            {true, _} ->
+                fun mix_tick/1;
+            {false, true} ->
+                fun mix_tick_dsp0/1;
+            {false, false} ->
+                fun mix_tick_lists/1
         end,
     Rounds = [
         begin
@@ -463,6 +483,7 @@ mix_cost(N, K, Load) ->
     report(mix_cost, Load, [
         {legs, N},
         {nohear, K},
+        {amp, Amp},
         {tick_us_min, round2(Min)},
         {tick_us_max, round2(lists:max(Rounds))},
         {per_leg_us, round2(Min / N)},

@@ -8,8 +8,8 @@
 #
 # Usage: pass.sh GROUP [OUT]
 #
-#   cost      null; mix_cost 4 64 on this tree and on BASE; mix_cost talk
-#             and nohear 1 / nohear 4
+#   cost      null; mix_cost 4 64 and mix_cost fit 4 64 on this tree and
+#             on BASE; mix_cost talk and nohear 1 / nohear 4
 #   timer     jitter idle 30 and jitter capacity 100 30, tick_ceiling
 #             false against true
 #   prefill   latency 100 and loss 100 2, prefill_shrink false against true
@@ -170,6 +170,10 @@ group_cost() {
         arm "mix_cost head round $r" "$CUR" "" mix_cost 4 64
         [ -n "$BASE" ] &&
             arm "mix_cost base $BASE round $r" "$BASEDIR/ebin" "" mix_cost 4 64
+        arm "mix_cost fit head round $r" "$CUR" "" mix_cost fit 4 64
+        [ -n "$BASE" ] &&
+            arm "mix_cost fit base $BASE round $r" "$BASEDIR/ebin" "" \
+                mix_cost fit 4 64
         arm "mix_cost talk round $r" "$CUR" "" mix_cost talk 4 64
         arm "mix_cost nohear 1 round $r" "$CUR" "" mix_cost nohear 1 4 64
         arm "mix_cost nohear 4 round $r" "$CUR" "" mix_cost nohear 4 4 64
@@ -223,6 +227,8 @@ group_capacity() {
 group_ref() {
     local r
     export KEEP=1
+    docker compose -f apps/chappe_mix/interop/freeswitch/docker-compose.yml \
+        --profile bench pull -q
     run "ref_latency" apps/chappe_mix/test/ref.sh vm ref_latency 5 50
     r=1
     while [ "$r" -le "$ROUNDS" ]; do

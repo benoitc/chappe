@@ -61,7 +61,7 @@ today means anything.
 | `loss` | `[Bursts] [LossyLegs]` (100, 2) | the `latency` arm while the other legs carry a tone with 5% random loss: the probe's latency, tick lateness, and each leg's counted losses (the PERF.md loss row) |
 | `jitter` | `idle [Secs]` or `capacity [Confs] [Secs]` (30; 100, 30) | tick lateness: the mixer's histogram over the window, plus exact values from the trace of one conference |
 | `capacity` | `[Step] [StepSecs] [Max]` (10, 5, 1000) | adds 4-party conferences `Step` at a time until a tick misses its budget; conferences, legs, scheduler utilisation and memory per conference at the last step in budget |
-| `mix_cost` | `[N ...]` (2 4 8 16 32 64), `nohear K [N ...]` or `talk [N ...]` (4 64) | CPU of the compute in one tick for N legs, no sockets; with `nohear K`, every listener also kept from hearing K other legs; with `talk`, every leg's energy taken for talker events |
+| `mix_cost` | `[N ...]` (2 4 8 16 32 64), `nohear K [N ...]`, `talk [N ...]` or `fit [N ...]` (4 64) | CPU of the compute in one tick for N legs, no sockets; with `nohear K`, every listener also kept from hearing K other legs; with `talk`, every leg's energy taken for talker events; with `fit`, each tone at 32000 / N so no mix clips |
 | `framing` | `[PtimeMs] [Secs]` (10, 60) | a sender of PtimeMs packets and two 20 ms listeners: windows with its tone, frames with a 10 ms run of silence, and the sender leg's drops and underruns (the PERF.md framing rows) |
 | `dtmf` | `[Digits]` (20) | RFC 4733 events from one leg to another: forwarding delay p50/p99/max, and payloads that changed on the way |
 | `talk` | `[Rounds]` (20) | talker events, one fresh room per round: time from the first loud frame sent to `talking true`, and from the last one to `false` |
