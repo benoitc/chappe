@@ -72,10 +72,11 @@
 %% the levels are not computed at all); talk_threshold (dBFS RMS over a
 %% frame, default -40), talk_start_ms (default 60) and talk_stop_ms
 %% (default 300) set the detection.
-%% tick_ceiling (arm the tick at the millisecond at or after it is due,
-%% so it never fires early) and prefill_shrink (take back a jitter-buffer
-%% prefill that grew, after 10 s without an underrun) are off by default
-%% until their A/B on a quiet box (test/audit/PERF.md).
+%% tick_ceiling (default true) arms the tick at the millisecond at or
+%% after it is due, so it never fires early; false truncates, and most
+%% ticks fire up to 1 ms early. prefill_shrink (default false) takes back
+%% a jitter-buffer prefill that grew, after 10 s without an underrun; its
+%% A/B showed more underruns, so it stays off (test/audit/PERF.md).
 -type conf_opts() :: #{
     owner => pid(),
     tick_ceiling => boolean(),

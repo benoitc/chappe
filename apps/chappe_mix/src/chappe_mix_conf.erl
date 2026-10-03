@@ -94,7 +94,7 @@ init(#{owner := Owner} = Opts) ->
     monitor(process, Owner),
     Period = erlang:convert_time_unit(?PTIME, millisecond, native),
     Next = erlang:monotonic_time() + Period,
-    arm(Next, maps:get(tick_ceiling, Opts, false)),
+    arm(Next, maps:get(tick_ceiling, Opts, true)),
     {ok, #state{
         owner = Owner,
         trace = maps:get(trace, Opts, undefined),
@@ -103,7 +103,7 @@ init(#{owner := Owner} = Opts) ->
         ip = maps:get(ip, Opts, {127, 0, 0, 1}),
         law = maps:get(law, Opts, ulaw),
         depth = maps:get(depth, Opts, 3),
-        tick_ceiling = maps:get(tick_ceiling, Opts, false),
+        tick_ceiling = maps:get(tick_ceiling, Opts, true),
         prefill_shrink = maps:get(prefill_shrink, Opts, false),
         cname = maps:get(cname, Opts, chappe_mix_rtcp:cname()),
         draw = maps:get(ssrc_draw, Opts, fun random32/0),
@@ -506,10 +506,10 @@ csrc_chunks(Csrcs, Names, S) ->
 
 %% ---- clock ----
 
-%% The timer takes milliseconds. Truncated, the due time fires most ticks
-%% up to 1 ms early; with tick_ceiling it is armed at the millisecond at
-%% or after it, so a tick never fires early. Which is better for the
-%% lateness is not measured yet, so truncation stays the default.
+%% The timer takes milliseconds. Truncated (tick_ceiling => false), the
+%% due time fires most ticks up to 1 ms early; with tick_ceiling, the
+%% default since its A/B (test/audit/PERF.md), it is armed at the
+%% millisecond at or after it, so a tick never fires early.
 arm(At, false) ->
     Ms = erlang:convert_time_unit(At, native, millisecond),
     erlang:start_timer(Ms, self(), tick, [{abs, true}]);

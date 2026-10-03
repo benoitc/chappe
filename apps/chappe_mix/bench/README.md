@@ -61,9 +61,40 @@ today means anything.
 | `loss` | `[Bursts] [LossyLegs]` (100, 2) | the `latency` arm while the other legs carry a tone with 5% random loss: the probe's latency, tick lateness, and each leg's counted losses (the PERF.md loss row) |
 | `jitter` | `idle [Secs]` or `capacity [Confs] [Secs]` (30; 100, 30) | tick lateness: the mixer's histogram over the window, plus exact values from the trace of one conference |
 | `capacity` | `[Step] [StepSecs] [Max]` (10, 5, 1000) | adds 4-party conferences `Step` at a time until a tick misses its budget; conferences, legs, scheduler utilisation and memory per conference at the last step in budget |
-| `mix_cost` | `[N ...]` (2 4 8 16 32 64), `nohear K [N ...]` or `talk [N ...]` (4 64) | CPU of the compute in one tick for N legs, no sockets; with `nohear K`, every listener also kept from hearing K other legs; with `talk`, every leg's energy taken for talker events |
+| `mix_cost` | `[N ...]` (2 4 8 16 32 64), `nohear K [N ...]`, `talk [N ...]` or `fit [N ...]` (4 64) | CPU of the compute in one tick for N legs, no sockets; with `nohear K`, every listener also kept from hearing K other legs; with `talk`, every leg's energy taken for talker events; with `fit`, each tone at 32000 / N so no mix clips |
+| `framing` | `[PtimeMs] [Secs]` (10, 60) | a sender of PtimeMs packets and two 20 ms listeners: windows with its tone, frames with a 10 ms run of silence, and the sender leg's drops and underruns (the PERF.md framing rows) |
+| `dtmf` | `[Digits]` (20) | RFC 4733 events from one leg to another: forwarding delay p50/p99/max, and payloads that changed on the way |
+| `talk` | `[Rounds]` (20) | talker events, one fresh room per round: time from the first loud frame sent to `talking true`, and from the last one to `false` |
 | `ref_latency` | `[Rounds] [Bursts]` (5, 50) | chappe_mix and FreeSWITCH `mod_conference` side by side: what each party hears, then interleaved latency rounds |
 | `ref_capacity` | `fs\|chappe [Step] [Bursts] [Max]` (10, 25, 1000) | adds 4-party rooms to one mixer `Step` at a time, judged from outside by a probe room, until the probe or the mixer's CPU says it broke |
+
+### Conference options
+
+`CHAPPE_MIX_BENCH_CONF` sets conference options on every conference an arm
+starts, so you can A/B an option on one build instead of two trees:
+
+```sh
+CHAPPE_MIX_BENCH_CONF=tick_ceiling=false erl ... main jitter idle 30
+CHAPPE_MIX_BENCH_CONF=tick_ceiling=true erl ... main jitter idle 30
+```
+
+It takes `tick_ceiling` and `prefill_shrink`, comma-separated, each
+`=true` or `=false` (a bare name means true). Each arm prints the options
+it ran with on its `conf_opts=` line.
+
+### The whole pass
+
+`pass.sh` runs the arms behind the open PERF.md rows, five launches each,
+A/B sides swapped every round, each launch waiting for the load first
+(`make bench-pass PASS=<group>`; groups `cost`, `timer`, `prefill`,
+`events`, `capacity`, `ref`, `all`). The log lands in
+`_build/bench-pass/<group>.log`. `.github/workflows/bench.yml` runs each
+group on its own GitHub runner (`workflow_dispatch`) and uploads the logs:
+
+```sh
+gh workflow run bench.yml --ref <branch>
+gh run download <run-id>
+```
 
 ### latency
 
@@ -85,9 +116,11 @@ per tick, compute and I/O together; `mix_cost` is the compute alone.
 ### jitter
 
 `late_histogram_us` counts how late each tick fired. The mixer clamps early
-ticks to zero, and the timer is armed at millisecond resolution, truncated,
-so most ticks fire up to 1 ms early; the traced conference reports those as
-`early_ticks` and negative `late_p50_us`. `late_max_since_start_us` covers
+ticks to zero. The timer is armed at millisecond resolution, at the
+millisecond at or after the tick is due by default; with
+`tick_ceiling=false` it is truncated and most ticks fire up to 1 ms early,
+which the traced conference reports as `early_ticks` and a negative
+`late_p50_us`. `late_max_since_start_us` covers
 the conference's whole life, setup included, not just the window.
 
 ### capacity

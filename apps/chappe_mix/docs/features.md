@@ -8,7 +8,10 @@ What chappe_mix does today, and what is planned.
   address you choose (loopback by default).
 - N-1 mix on an absolute 20 ms clock: every leg hears the sum of the other
   unmuted legs, never itself. A late tick skips the frames it missed rather
-  than bursting them.
+  than bursting them. The tick timer is armed at the millisecond at or
+  after the tick is due, so a tick never fires early (`tick_ceiling`,
+  default on; `false` truncates, and most ticks then fire up to 1 ms
+  early).
 - G.711 mu-law and A-law, per leg, with frame tables built at application
   start.
 - Gain control on what each leg hears: a room that does not clip is
@@ -79,7 +82,7 @@ What chappe_mix does today, and what is planned.
 
 - Wideband: 16 kHz mixing with G.722 and Opus through a NIF.
 - The SDES (CNAME, NAME) of the sources behind a cascaded mixer's CSRCs.
-- A decision on the tick timer firing up to 1 ms early and on the
-  jitter-buffer prefill that only grows: both fixes are built and off by
-  default (`tick_ceiling`, `prefill_shrink`) until their A/B runs on a
-  quiet box.
+- A prefill that shrinks back after a burst without costing underruns.
+  `prefill_shrink` (off by default) takes a grown prefill back after 10 s
+  without an underrun; its A/B showed more underruns under loss, so it
+  stays off.

@@ -1,0 +1,60 @@
+name: Bench
+
+# The chappe_mix measuring pass (apps/chappe_mix/bench/pass.sh) on a
+# GitHub runner, one runner per group. Each A/B is interleaved inside its
+# group, so both sides of it share one host. The results go into
+# apps/chappe_mix/test/audit/PERF.md by hand.
+
+on:
+  workflow_dispatch:
+    inputs:
+      groups:
+        description: 'JSON list of pass.sh groups'
+        default: '["cost", "timer", "prefill", "events", "capacity", "ref"]'
+      rounds:
+        description: 'launches of each arm'
+        default: '5'
+
+env:
+  OTP: '29'
+  REBAR3: '3.25.0'
+
+jobs:
+  pass:
+    name: bench ${{ matrix.group }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    continue-on-error: ${{ matrix.group == 'ref' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        group: ${{ fromJSON(inputs.groups || '["cost", "timer", "prefill", "events", "capacity", "ref"]') }}
+    env:
+      SKIP_ENGINE_BUILD: '1'
+      # the commit before the gain control, the relations and the talker
+      # events, for the cost rows
+      BASE: c9f377d
+      ROUNDS: ${{ inputs.rounds || '5' }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ env.OTP }}
+          rebar3-version: ${{ env.REBAR3 }}
+      - name: System deps (instrument NIF)
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential
+      - name: Host
+        run: |
+          uptime
+          nproc
+          lscpu | sed -n 's/^Model name: *//p'
+      - name: Pass
+        run: make bench-pass PASS=${{ matrix.group }}
+      - name: Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-${{ matrix.group }}
+          path: _build/bench-pass
