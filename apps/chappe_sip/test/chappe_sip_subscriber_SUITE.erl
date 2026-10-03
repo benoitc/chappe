@@ -173,7 +173,7 @@ ends(Config, Reason) ->
     recv_none(Sock, {method, <<"SUBSCRIBE">>}, 2000).
 
 %% deactivated: a new SUBSCRIBE at once, a new Call-ID and From tag.
-%% req: R6665-46
+%% req: R6665-46 R3842-11
 deactivated_resubscribes(Config) ->
     resubscribes(Config, <<"deactivated">>, 0).
 
@@ -182,7 +182,7 @@ timeout_resubscribes(Config) ->
     resubscribes(Config, <<"timeout">>, 0).
 
 %% probation and giveup wait their retry-after.
-%% req: R6665-47 R6665-48
+%% req: R6665-47 R6665-48 R3842-10
 probation_waits(Config) ->
     resubscribes(Config, <<"probation;retry-after=1">>, 1000).
 
@@ -252,7 +252,7 @@ timer_n_then_481(Config) ->
 
 %% A NOTIFY from a tag other than the 200's is a subscription of its own
 %% (a fork, RFC 6665 4.1.4): 200, and the owner gets {forked, Sub2}.
-%% req: R6665-54
+%% req: R6665-54 R3842-19
 forked_notify(Config) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
     {Sub, S1} = active_sub(Sock, EP),
@@ -339,7 +339,7 @@ notifier(Sock) ->
 
 %% a subscription the notifier accepted and notified once (tag na)
 active_sub(Sock, EP) ->
-    {ok, Sub} = chappe_sip:subscribe_to(notifier(Sock), <<"presence">>, #{}),
+    {ok, Sub} = chappe_sip:subscribe_to(notifier(Sock), <<"dialog">>, #{}),
     {S1, _} = recv(Sock, {method, <<"SUBSCRIBE">>}, 3000),
     send(Sock, EP, ok_2xx(Sock, S1, <<"na">>, 600)),
     send(Sock, EP, notify(Sock, S1, <<"na">>, 1, <<"active;expires=600">>,

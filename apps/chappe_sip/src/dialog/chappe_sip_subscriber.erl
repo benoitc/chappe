@@ -25,14 +25,14 @@
 %%                              (new Call-ID and From tag) goes out in Secs
 %%   {terminated, Reason}       it is over and the process stops
 %% NOTIFYs reach us out of any dialog of the engine: the NOTIFY router
-%% (notify_handler/1) finds the subscription by Call-ID, our tag and the
-%% peer's, and the Event.
+%% (chappe_sip_notify_router) finds the subscription by Call-ID, our tag
+%% and the peer's, and we check the Event.
 -module(chappe_sip_subscriber).
 -behaviour(gen_statem).
 
 -include("chappe_sip.hrl").
 
--export([start/3, unsubscribe/1, notify_handler/1, route_notify/2]).
+-export([start/3, unsubscribe/1]).
 -export([start_link/1]).
 -export([init/1, callback_mode/0, handle_event/4, terminate/3]).
 -export_type([subscription/0, reason/0]).
@@ -76,6 +76,12 @@
 %%   timer_n          ms to wait for a NOTIFY after a SUBSCRIBE (32000)
 %%   probation_retry  s before re-subscribing after probation with no
 %%                    retry-after (default 60)
+%%   forks            take a NOTIFY of another fork as a subscription of
+%%                    its own (default true, false for presence: RFC 3856
+%%                    6.9 keeps one dialog, the other fork gets 481)
+%% A presence or message-summary subscription asks for its body type
+%% (Accept) unless accept says otherwise, and its NOTIFY Info carries the
+%% body parsed as doc (chappe_sip_pidf, chappe_sip_mwi).
 -spec start(binary(), binary(), map()) ->
     {ok, subscription()} | {error, term()}.
 start(Uri, Event, Opts) ->
@@ -90,68 +96,6 @@ start(Uri, Event, Opts) ->
 -spec unsubscribe(subscription()) -> ok.
 unsubscribe(Sub) ->
     gen_statem:cast(Sub, unsubscribe).
-
-%% The NOTIFY handler the engine runs for every NOTIFY outside a dialog of
-%% its own: a subscription of ours, then a REFER we sent
-%% (chappe_sip_refer:handle_notify/2), then App (your chappe_sip:notify/1
-%% handler); with none of them, 481 (RFC 6665 4.1.3).
--spec notify_handler(fun() | undefined) ->
-    fun((chappe_sip_req:req(), chappe_sip_res:res()) -> term()).
-notify_handler(App) ->
-    fun(Req, Res) ->
-        case route_notify(Req, Res) of
-            handled ->
-                ok;
-            pass ->
-                case chappe_sip_refer:handle_notify(Req, Res) of
-                    handled ->
-                        ok;
-                    pass when is_function(App, 2) ->
-                        App(Req, Res);
-                    pass ->
-                        chappe_sip_res:send(Res, 481, #{
-                            reason => <<"Subscription Does Not Exist">>
-                        })
-                end
-        end
-    end.
-
-%% Answer a NOTIFY belonging to a subscription of ours; pass otherwise.
--spec route_notify(chappe_sip_req:req(), chappe_sip_res:res()) ->
-    handled | pass.
-route_notify(Req, Res) ->
-    Msg = chappe_sip_req:msg(Req),
-    CallId = chappe_sip_msg:call_id(Msg),
-    Local = chappe_sip_msg:to_tag(Msg),
-    Remote = chappe_sip_msg:from_tag(Msg),
-    case find([{CallId, Local, Remote}, {CallId, Local, any}]) of
-        {ok, Pid} ->
-            try
-                gen_statem:call(Pid, {notify, Req, Res}, 10000)
-            catch
-                exit:_ -> pass
-            end;
-        error ->
-            pass
-    end.
-
-find([]) ->
-    error;
-find([Key | Rest]) ->
-    try ets:lookup(?TAB, Key) of
-        [{Key, Pid}] ->
-            case is_process_alive(Pid) of
-                true ->
-                    {ok, Pid};
-                false ->
-                    _ = ets:delete(?TAB, Key),
-                    find(Rest)
-            end;
-        [] ->
-            find(Rest)
-    catch
-        error:badarg -> error
-    end.
 
 start_link(Args) ->
     gen_statem:start_link(?MODULE, Args, []).
@@ -264,8 +208,20 @@ on_notify(From, Req, Res, D) ->
     Remote = chappe_sip_msg:from_tag(Msg),
     case D of
         #{dialog := #{remote_tag := Tag}} when Tag =/= Remote ->
-            %% another fork answered: a subscription of its own (4.1.4)
-            fork(From, Req, Res, D);
+            case forks(D) of
+                true ->
+                    %% another fork answered: a subscription of its own
+                    %% (4.1.4)
+                    fork(From, Req, Res, D);
+                false ->
+                    %% one dialog per SUBSCRIBE for this package (RFC 3856
+                    %% 6.9): the other fork's NOTIFY matches nothing
+                    _ = chappe_sip_res:send(Res, 481, #{
+                        reason => <<"Subscription Does Not Exist">>
+                    }),
+                    reply(From, handled),
+                    keep_state_and_data
+            end;
         _ ->
             notified(From, Req, Res, form_from_notify(Msg, D))
     end.
@@ -393,11 +349,27 @@ form(_Msg, _Peer, _Tag, _RouteSet, D) ->
     D.
 
 notify_info(SS, Req) ->
-    SS#{
-        content_type => chappe_sip_req:get(<<"content-type">>, Req),
-        body => chappe_sip_req:body(Req),
-        req => Req
-    }.
+    CT = chappe_sip_req:get(<<"content-type">>, Req),
+    Body = chappe_sip_req:body(Req),
+    Info = SS#{content_type => CT, body => Body, req => Req},
+    case doc(base_type(CT), Body) of
+        {ok, Doc} -> Info#{doc => Doc};
+        _ -> Info
+    end.
+
+%% the bodies of the packages chappe knows, parsed: a PIDF (RFC 3863), a
+%% message summary (RFC 3842)
+doc(_CT, <<>>) ->
+    none;
+doc(<<"application/pidf+xml">>, Body) ->
+    chappe_sip_pidf:parse(Body);
+doc(<<"application/simple-message-summary">>, Body) ->
+    chappe_sip_mwi:parse(Body);
+doc(_CT, _Body) ->
+    none.
+
+base_type(undefined) -> undefined;
+base_type(CT) -> string:lowercase(string:trim(hd(binary:split(CT, <<";">>)))).
 
 %% ---- SUBSCRIBE transactions ----
 
@@ -496,7 +468,7 @@ send_subscribe(Kind, Expires, D) ->
 subscribe_headers(Expires, D) ->
     Opts = maps:get(opts, D),
     Accept =
-        case maps:get(accept, Opts, []) of
+        case maps:get(accept, Opts, default_accept(D)) of
             [] ->
                 [];
             Types ->
@@ -566,6 +538,25 @@ my_keys() ->
     end.
 
 %% ---- helpers ----
+
+%% RFC 3856 6.5: a presence Accept names application/pidf+xml
+default_accept(D) ->
+    case package(D) of
+        <<"presence">> -> [chappe_sip_pidf:content_type()];
+        <<"message-summary">> -> [chappe_sip_mwi:content_type()];
+        _ -> []
+    end.
+
+%% RFC 3856 6.9: presence makes one dialog per SUBSCRIBE; other packages
+%% take every fork (option forks)
+forks(#{opts := #{forks := F}}) -> F;
+forks(D) -> package(D) =/= <<"presence">>.
+
+package(D) ->
+    case chappe_sip_hdr:event(maps:get(event, D)) of
+        {ok, #{type := T}} -> T;
+        _ -> undefined
+    end.
 
 %% RFC 6665 8.2.1: the NOTIFY names our package and our id
 same_event(Req, D) ->

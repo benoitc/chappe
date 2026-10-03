@@ -191,8 +191,8 @@ watch(Sub) ->
 
 | Event | When |
 | --- | --- |
-| `{notify, Info}` | each NOTIFY, after it was answered 200. `Info` has `state` (`active`, `pending`, `terminated`), `expires`, `reason`, `retry_after`, `content_type`, `body` and `req` |
-| `{forked, Sub2}` | a NOTIFY came from another fork: `Sub2` is a subscription of its own, with its own events |
+| `{notify, Info}` | each NOTIFY, after it was answered 200. `Info` has `state` (`active`, `pending`, `terminated`), `expires`, `reason`, `retry_after`, `content_type`, `body`, `req`, and `doc` for a PIDF or a message summary, parsed (see the [presence guide](presence.md)) |
+| `{forked, Sub2}` | a NOTIFY came from another fork: `Sub2` is a subscription of its own, with its own events (not for presence, which keeps one dialog: `forks => true` to take them) |
 | `{retrying, Reason, Secs}` | the subscription ended and a new SUBSCRIBE (new Call-ID and From tag) goes out in `Secs` |
 | `{terminated, Reason}` | it is over; the process has stopped |
 

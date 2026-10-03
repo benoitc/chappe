@@ -162,6 +162,24 @@ tracker; the milestone history is in `docs/plan.md`.
   dialog go through one router: our subscriptions, then REFERs we sent,
   then your `notify/1` handler, else 481. `chappe_sip_hdr:subscription_state/1`
   parses the header.
+- Publication (RFC 3903): `chappe_sip:publish/1` with a map is an event
+  state compositor (SIP-ETag per 2xx, SIP-If-Match refresh, modify and
+  remove, 412, 423 with Min-Expires, 489, 415, 404 by a `resources` fun,
+  digest `auth`, expiry); `chappe_sip:publish_state/4` is the client side
+  (refresh before expiry, modify, remove, a full republish after 412, the
+  423 retry, one PUBLISH at a time).
+- Presence (RFC 3856, PIDF of RFC 3863): `chappe_sip_presence:serve/1` (or
+  the `presence` start option) serves the presence package from the
+  published state: authentication, an `authorize` hook (allow, polite
+  blocking, pending with a note, deny), 406 for an Accept without PIDF, the
+  full composed state on subscribe, refresh and every change, at most one
+  NOTIFY per `min_interval` (5 s). `chappe_sip_pidf` renders, parses (xmerl,
+  no DOCTYPE) and composes PIDF; a presence subscription parses each NOTIFY
+  into `doc` and keeps one dialog per SUBSCRIBE.
+- Message waiting (RFC 3842): `chappe_sip_mwi:serve/1` and `update/2` notify
+  every `message-summary` subscriber of an account (at most once a second
+  each); `chappe_sip_mwi` renders and parses simple-message-summary. See the
+  presence guide.
 - REFER (RFC 3515 as updated by RFC 7647), both sides, in `chappe_sip_refer`
   (facade: `chappe_sip:accept_refer/3,4`, `send_refer/3`). Recipient: 400 for
   zero or several Refer-To, 416 for a non sip/sips/tel target, an `authorize`
@@ -429,8 +447,6 @@ Gaps relative to drachtio, in rough order of impact.
   so one server fronts many apps, one app fronts many servers, and an app
   restarts without dropping the stack. We embed the stack in the node, so a
   remote-app split and outbound cloud-scaling are not available yet.
-- **Event packages on top of subscriptions**: besides `conference`, no
-  presence (PUBLISH/PIDF) or MWI package; PUBLISH only routes as a method.
 - **Multi-homed contacts**: one contact per transport today; binding several
   listen addresses on the same transport is not supported.
 - **SIP capture (HEP/Homer)**: no native trace export to a capture agent.

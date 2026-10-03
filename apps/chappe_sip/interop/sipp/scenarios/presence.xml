@@ -1,0 +1,204 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!-- Copyright 2026 Benoit Chesneau
+     SPDX-License-Identifier: Apache-2.0
+
+     Presence publication and subscription (RFC 3903, RFC 3856, RFC 3863).
+     SIPp is both the EPA and the watcher of one presentity. The initial
+     PUBLISH gets a 200 with Expires and a SIP-ETag (RFC 3903 6 step 6); a
+     refresh with SIP-If-Match and no body gets a new SIP-ETag. A SUBSCRIBE
+     to the presentity gets a 200 and a NOTIFY carrying the published tuple
+     as application/pidf+xml (RFC 3856 6.5, 6.7); a modify brings a NOTIFY
+     with the new state. The replaced entity-tag then gets 412 (RFC 3903 6
+     step 3), and Expires: 0 ends the subscription with a terminated
+     NOTIFY. -->
+<scenario name="presence">
+  <send retrans="500">
+    <![CDATA[
+      PUBLISH sip:sippres@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:sippres@[remote_ip]:[remote_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:sippres@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 PUBLISH
+      Max-Forwards: 70
+      Event: presence
+      Expires: 600
+      Content-Type: application/pidf+xml
+      Content-Length: [len]
+
+      <?xml version="1.0" encoding="UTF-8"?>
+      <presence xmlns="urn:ietf:params:xml:ns:pidf" entity="sip:sippres@[remote_ip]"><tuple id="sipp1"><status><basic>open</basic></status><contact>sip:sipp@[local_ip]</contact></tuple></presence>
+    ]]>
+  </send>
+  <recv response="200">
+    <action>
+      <ereg regexp="
+SIP-ETag[ 	]*:[ 	]*([-A-Za-z0-9.!%*_+`'~]+)" search_in="msg" check_it="true" assign_to="chk,etag1"/>
+      <ereg regexp="
+Expires[ 	]*:[ 	]*600" search_in="msg" check_it="true" assign_to="chk"/>
+    </action>
+  </recv>
+  <send retrans="500">
+    <![CDATA[
+      PUBLISH sip:sippres@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:sippres@[remote_ip]:[remote_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:sippres@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 2 PUBLISH
+      Max-Forwards: 70
+      Event: presence
+      Expires: 600
+      SIP-If-Match: [$etag1]
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv response="200">
+    <action>
+      <ereg regexp="
+SIP-ETag[ 	]*:[ 	]*([-A-Za-z0-9.!%*_+`'~]+)" search_in="msg" check_it="true" assign_to="chk,etag2"/>
+    </action>
+  </recv>
+  <send retrans="500">
+    <![CDATA[
+      SUBSCRIBE sip:sippres@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:sippres@[remote_ip]:[remote_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:sippres@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 3 SUBSCRIBE
+      Contact: <sip:sipp@[local_ip]:[local_port]>
+      Max-Forwards: 70
+      Event: presence
+      Accept: application/pidf+xml
+      Expires: 600
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv response="200">
+    <action>
+      <ereg regexp="
+To[ 	]*:[^
+]*;tag=([-A-Za-z0-9.!%*_+`'~]+)" search_in="msg" check_it="true" assign_to="chk,peer_tag"/>
+      <ereg regexp="
+Contact[ 	]*:[^
+]*&lt;([^&gt;
+]+)&gt;" search_in="msg" check_it="true" assign_to="chk,peer_contact"/>
+    </action>
+  </recv>
+  <recv request="NOTIFY">
+    <action>
+      <ereg regexp="
+Event[ 	]*:[ 	]*presence" search_in="msg" check_it="true" assign_to="chk"/>
+      <ereg regexp="
+Subscription-State[ 	]*:[ 	]*active" search_in="msg" check_it="true" assign_to="chk"/>
+      <ereg regexp="
+Content-Type[ 	]*:[ 	]*application/pidf\+xml" search_in="msg" check_it="true" assign_to="chk"/>
+      <ereg regexp="id=.sipp1.[^@]*&lt;basic&gt;open&lt;" search_in="body" check_it="true" assign_to="chk"/>
+    </action>
+  </recv>
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <send retrans="500">
+    <![CDATA[
+      PUBLISH sip:sippres@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:sippres@[remote_ip]:[remote_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:sippres@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 4 PUBLISH
+      Max-Forwards: 70
+      Event: presence
+      Expires: 600
+      SIP-If-Match: [$etag2]
+      Content-Type: application/pidf+xml
+      Content-Length: [len]
+
+      <?xml version="1.0" encoding="UTF-8"?>
+      <presence xmlns="urn:ietf:params:xml:ns:pidf" entity="sip:sippres@[remote_ip]"><tuple id="sipp1"><status><basic>closed</basic></status></tuple></presence>
+    ]]>
+  </send>
+  <recv response="200"/>
+  <recv request="NOTIFY">
+    <action>
+      <ereg regexp="id=.sipp1.[^@]*&lt;basic&gt;closed&lt;" search_in="body" check_it="true" assign_to="chk"/>
+    </action>
+  </recv>
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <send retrans="500">
+    <![CDATA[
+      PUBLISH sip:sippres@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:sippres@[remote_ip]:[remote_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:sippres@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 5 PUBLISH
+      Max-Forwards: 70
+      Event: presence
+      SIP-If-Match: [$etag1]
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv response="412"/>
+  <send retrans="500">
+    <![CDATA[
+      SUBSCRIBE [$peer_contact] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:sippres@[remote_ip]:[remote_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:sippres@[remote_ip]:[remote_port]>;tag=[$peer_tag]
+      Call-ID: [call_id]
+      CSeq: 6 SUBSCRIBE
+      Contact: <sip:sipp@[local_ip]:[local_port]>
+      Max-Forwards: 70
+      Event: presence
+      Expires: 0
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv response="200"/>
+  <recv request="NOTIFY">
+    <action>
+      <ereg regexp="
+Subscription-State[ 	]*:[ 	]*terminated" search_in="msg" check_it="true" assign_to="chk"/>
+    </action>
+  </recv>
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <Reference variables="chk"/>
+</scenario>

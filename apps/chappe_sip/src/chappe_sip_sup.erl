@@ -19,6 +19,8 @@
 %%    subscription watches its dialog, so it too sits above the stack.
 %% 3d. chappe_sip_subscriber_sup: the subscriptions we hold and the table
 %%    their NOTIFYs are routed by; a subscriber outlives an engine restart.
+%% 3e. chappe_sip_events_sup: the ESC, the presence and message-summary
+%%    notifiers and the publication agents (event packages we serve).
 %% 4. chappe_sip_ws_sup / chappe_sip_media_sup: optional subsystems (WS transport, media
 %%    control plane). They sit above the stack so their state (and the media
 %%    backend connections) survive SIP engine restarts; both are populated
@@ -44,6 +46,7 @@ init([]) ->
         worker(chappe_sip_cdr),
         sup(chappe_sip_refer_sup),
         sup(chappe_sip_subscriber_sup),
+        sup(chappe_sip_events_sup),
         sup(chappe_sip_ws_sup),
         sup(chappe_sip_media_sup),
         sup(chappe_sip_stack_sup)

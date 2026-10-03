@@ -30,7 +30,7 @@
          replaces_nomatch/1, replaces_confirmed/1, replaces_early/1,
          refer_notify/1, refer_event_id/1, refer_norefersub/1,
          st_negotiate/1, st_422/1, st_refresh_uac/1, st_refresh_uas/1,
-         st_expiry/1, subscribe/1, subscribe_489/1,
+         st_expiry/1, subscribe/1, subscribe_489/1, presence/1, mwi/1,
          dns_srv/1, dns_sips_failover/1,
          pjsua_refer_blind/1, pjsua_refer_attended/1,
          pjsua_session_timer/1]).
@@ -50,7 +50,7 @@ groups() ->
                  replaces_nomatch, replaces_confirmed, replaces_early,
                  refer_notify, refer_event_id, refer_norefersub,
                  st_negotiate, st_422, st_refresh_uac, st_refresh_uas,
-                 st_expiry, subscribe, subscribe_489,
+                 st_expiry, subscribe, subscribe_489, presence, mwi,
                  dns_srv, dns_sips_failover]},
      {pjsua, [], [pjsua_refer_blind, pjsua_refer_attended,
                   pjsua_session_timer]}].
@@ -201,6 +201,23 @@ subscribe(Config) -> sipp(?FUNCTION_NAME, Config).
 %% RFC 6665 4.2.1.1: 489 for a package not served, with Allow-Events.
 %% req: R6665-07 R6665-16
 subscribe_489(Config) -> sipp(?FUNCTION_NAME, Config).
+
+%% ---- PUBLISH, presence, message waiting ----
+
+%% RFC 3903 and RFC 3856: SIPp publishes a tuple (200 with Expires and a
+%% SIP-ETag), refreshes it (a new SIP-ETag), subscribes to the presentity
+%% (a NOTIFY with the tuple as application/pidf+xml), modifies it (a NOTIFY
+%% with the new state), gets 412 for the replaced entity-tag, and
+%% unsubscribes.
+%% req: R3903-29 R3903-31 R3903-40 R3903-41 R3903-42 R3856-03 R3856-10
+%% req: R3856-12
+presence(Config) -> sipp(?FUNCTION_NAME, Config).
+
+%% RFC 3842: a message-summary SUBSCRIBE without Accept gets the summary
+%% at once as application/simple-message-summary with the account, and a
+%% new one when the account's counts change.
+%% req: R3842-01 R3842-03 R3842-15 R3842-17 R3842-18
+mwi(Config) -> sipp(?FUNCTION_NAME, Config).
 
 %% ---- DNS (RFC 3263) ----
 

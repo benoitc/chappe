@@ -18,8 +18,9 @@
 %% A NOTIFY for a REFER we do not know is answered 481 (RFC 6665 4.1.3).
 %%
 %% Inside a dialog the dialog fsm hands the package's SUBSCRIBEs and
-%% NOTIFYs to route/3. Outside one, register notify_handler/0 (or call
-%% handle_notify/2 from your own NOTIFY handler).
+%% NOTIFYs to route/3. Outside one, the stack's NOTIFY router
+%% (chappe_sip_notify_router) calls handle_notify/2 before your own NOTIFY
+%% handler; notify_handler/0 is still there for a handler of yours.
 -module(chappe_sip_refer).
 
 -include("chappe_sip.hrl").

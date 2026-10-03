@@ -40,7 +40,7 @@
     find_dialog/3, find_replaced/1, replaces_response/1, replaces_response/2
 ]).
 -export([accept_refer/3, accept_refer/4, send_refer/3]).
--export([event_package/2, subscribe_to/3, unsubscribe/1]).
+-export([event_package/2, subscribe_to/3, unsubscribe/1, publish_state/4]).
 
 -export_type([replaced_info/0]).
 
@@ -56,7 +56,10 @@
 %%                  passphrase => binary(), verify => peer | none,
 %%                  verify_clients => boolean(), allow_insecure => boolean()},
 %%         ws => #{port := inet:port_number()},
-%%         wss => #{port := inet:port_number(), cert_dir => binary()}}
+%%         wss => #{port := inet:port_number(), cert_dir => binary()},
+%%         presence => map()}
+%% presence serves the presence package once the stack is up
+%% (chappe_sip_presence:serve/1 takes the map).
 %% The tls contact binds a TLS listener on its own port (e.g.
 %% <<"sips:0.0.0.0:5061;transport=tls">>); cert_dir holds agent.pem and
 %% cafile.pem. verify (default peer) checks outbound server certificates;
@@ -84,8 +87,11 @@ start_media(MediaOpts, Opts) ->
         ok ->
             case maps:is_key(contact, Opts) of
                 true ->
-                    chappe_sip_engine:start(
-                        maps:without([ws, wss, media], Opts)
+                    start_presence(
+                        chappe_sip_engine:start(
+                            maps:without([ws, wss, media, presence], Opts)
+                        ),
+                        Opts
                     );
                 false ->
                     ok
@@ -93,6 +99,10 @@ start_media(MediaOpts, Opts) ->
         {error, Reason} ->
             {error, {media, Reason}}
     end.
+
+%% presence => Opts serves the presence package (chappe_sip_presence:serve/1)
+start_presence(ok, #{presence := Opts}) -> chappe_sip_presence:serve(Opts);
+start_presence(Result, _Opts) -> Result.
 
 start_ws(undefined, undefined) -> ok;
 start_ws(undefined, Wss) -> ws_listen(#{tls => Wss});
@@ -284,8 +294,24 @@ subscribe_to(Uri, Event, Opts) ->
 unsubscribe(Sub) ->
     chappe_sip_subscriber:unsubscribe(Sub).
 
--spec publish(fun()) -> ok.
-publish(F) -> handle(<<"PUBLISH">>, F).
+%% The PUBLISH handler: a fun, or the options of the event state
+%% compositor (RFC 3903, see chappe_sip_esc:handler/1), which keeps the
+%% state the PUBLISHes set.
+-spec publish(fun() | map()) -> ok.
+publish(F) when is_function(F, 2) -> handle(<<"PUBLISH">>, F);
+publish(Opts) when is_map(Opts) ->
+    handle(<<"PUBLISH">>, chappe_sip_esc:handler(Opts)).
+
+%% Publish event state at Uri (RFC 3903, the client side): a process
+%% sends the PUBLISH, keeps it refreshed, and republishes it in full if the
+%% compositor forgot it (412). Body is the state (a PIDF for presence,
+%% chappe_sip_pidf:render/1). See chappe_sip_publisher.
+-spec publish_state(binary(), binary(), iodata(), map()) ->
+    {ok, chappe_sip_publisher:publication()} | {error, term()}.
+publish_state(Uri, Event, Body, Opts) ->
+    chappe_sip_publisher:start(Uri, Event, Body, Opts#{
+        owner => maps:get(owner, Opts, self())
+    }).
 
 -spec refer(fun()) -> ok.
 refer(F) -> handle(<<"REFER">>, F).

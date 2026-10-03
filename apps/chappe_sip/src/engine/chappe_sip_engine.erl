@@ -1620,7 +1620,7 @@ dispatch_route(
 %% (subscriptions of ours, REFERs we sent, then yours), or for a SUBSCRIBE
 %% the one of its event package. Key names the route options.
 route_for(<<"NOTIFY">> = M, _Raw, Routes) ->
-    {chappe_sip_subscriber:notify_handler(maps:get(M, Routes, undefined)), M};
+    {chappe_sip_notify_router:handler(maps:get(M, Routes, undefined)), M};
 route_for(<<"SUBSCRIBE">> = M, Raw, Routes) ->
     Pkgs = cfg_get(packages, #{}),
     Pkg = event_package(Raw),

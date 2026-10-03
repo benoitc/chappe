@@ -19,7 +19,11 @@
 %%
 %% An INVITE with Replaces goes through chappe_sip:find_replaced/1 with the
 %% response rules of the answer-calls guide. SUBSCRIBE serves the
-%% `conference' package (RFC 6665); any other package gets 489.
+%% `conference' package (RFC 6665), and, on a stack that has them,
+%% `presence' (RFC 3856, with the PUBLISHes of RFC 3903 as its state) and
+%% `message-summary' (RFC 3842); any other package gets 489. A MESSAGE to
+%% `mwi' whose body is `Account New Old' sets that account's voice
+%% messages.
 %%
 %% A MESSAGE to `dial' sends an OPTIONS to the URI in its body and answers
 %% with the status that OPTIONS got (480 when it got none): the dns_* cases
@@ -45,6 +49,7 @@ start(Ip) ->
     ok = chappe_sip:invite(fun(Req, Res) -> invite(IpBin, Req, Res) end),
     %% no OPTIONS handler: the stack's own answer is what the scenario checks
     ok = subscribe_handler(),
+    ok = events(),
     ok = chappe_sip:message(fun message/2),
     log("chappe_conf_node up on ~s", [Contact]),
     ok.
@@ -184,6 +189,15 @@ transfer(Refer) ->
 
 message(Req, Res) ->
     case user(Req) of
+        <<"mwi">> ->
+            [Account, New, Old] = binary:split(
+                string:trim(chappe_sip_req:body(Req)), <<" ">>, [global, trim_all]
+            ),
+            log("mwi ~s ~s/~s", [Account, New, Old]),
+            ok = chappe_sip_mwi:update(Account, #{
+                messages => #{voice => {binary_to_integer(New), binary_to_integer(Old)}}
+            }),
+            chappe_sip_res:send(Res, 200);
         <<"dial">> ->
             Target = string:trim(chappe_sip_req:body(Req)),
             log("dial ~s", [Target]),
@@ -216,6 +230,23 @@ tls(Ip) ->
                        cert_dir => <<"/certs">>}};
         false ->
             #{}
+    end.
+
+%% ---- presence and message waiting ----
+
+%% every watcher allowed; one NOTIFY a second at most, so a scenario does
+%% not wait the 5 s of RFC 3856 6.10
+events() ->
+    {module, _} = code:ensure_loaded(chappe_sip_presence),
+    case erlang:function_exported(chappe_sip_presence, serve, 1) of
+        true ->
+            ok = chappe_sip_presence:serve(#{
+                authorize => fun(_Watcher, _Presentity, _Req) -> allow end,
+                min_interval => 1000
+            }),
+            chappe_sip_mwi:serve(#{summary => fun(_Account) -> #{} end});
+        false ->
+            ok
     end.
 
 %% ---- SUBSCRIBE ----
