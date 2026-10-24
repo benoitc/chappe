@@ -67,6 +67,7 @@
 %% dialog/uac support
 -export([
     create_uas/2,
+    early_leg/2,
     create_dialog/1,
     reg_handle/2,
     unreg_handle/1,
@@ -191,6 +192,16 @@ reset_routes() ->
 -spec respond(non_neg_integer(), 100..699, binary()) -> ok | {error, term()}.
 respond(TxnH, Status, Reason) ->
     gen_server:call(?MODULE, {respond, TxnH, Status, Reason}).
+
+%% The dialog leg of an INVITE's early dialog, before its dialog fsm: a
+%% B2BUA relaying provisionals under LocalTag takes the requests of that
+%% early dialog (an UPDATE, RFC 3311) on the leg, as
+%% {chappe_sip_indialog, LegH, TxnH, Meta, Raw}. Pass it to create_uas
+%% (leg => LegH) for the final answer; the leg goes with the caller.
+-spec early_leg(chappe_sip_req:req(), binary()) ->
+    {ok, non_neg_integer()} | {error, term()}.
+early_leg(Req, LocalTag) ->
+    gen_server:call(?MODULE, {early_leg, Req, LocalTag}).
 
 %% Create a UAS dialog for an incoming dialog-forming request. Called by
 %% chappe_sip_dialog from the request worker. Returns the started dialog fsm.
@@ -471,6 +482,27 @@ handle_call(
         S};
 handle_call({create_uas, Req, Opts}, {WorkerPid, _}, S) ->
     do_create_uas(Req, Opts, WorkerPid, S);
+handle_call({early_leg, Req, LocalTag}, {Pid, _}, S) ->
+    Msg = chappe_sip_req:msg(Req),
+    ToVal = chappe_sip_msg:get(<<"to">>, Msg),
+    LocalAddr = <<ToVal/binary, ";tag=", LocalTag/binary>>,
+    case
+        leg_create(
+            chappe_sip_req:txn(Req),
+            Req,
+            chappe_sip_msg:call_id(Msg),
+            LocalAddr,
+            chappe_sip_msg:get(<<"from">>, Msg),
+            S
+        )
+    of
+        {ok, LegH} ->
+            {reply, {ok, LegH}, S#state{
+                handles = (S#state.handles)#{LegH => Pid}
+            }};
+        Err ->
+            {reply, Err, S}
+    end;
 handle_call({create_dialog, DialogArgs}, {Caller, _}, S) ->
     %% WS-only nodes have engine = undefined; a WS-flow dialog still creates
     %% its leg on the transport. dialog_leg_create/5 returns not_started for
@@ -1272,7 +1304,13 @@ do_create_uas_1(Req, Opts, WorkerPid, S) ->
     AckWait =
         chappe_sip_msg:method(Msg) =:= <<"INVITE">> andalso
             is_2xx(maps:get(status, Opts, 200)),
-    case leg_create(TxnH, Req, CallId, LocalAddr, FromVal, S) of
+    %% a B2BUA's early leg (early_leg/2) becomes the dialog's
+    Leg =
+        case maps:get(leg, Opts, undefined) of
+            undefined -> leg_create(TxnH, Req, CallId, LocalAddr, FromVal, S);
+            EarlyLeg -> {ok, EarlyLeg}
+        end,
+    case Leg of
         {ok, LegH} ->
             Owner = maps:get(owner, Opts, WorkerPid),
             FsmArgs = #{
@@ -1298,6 +1336,9 @@ do_create_uas_1(Req, Opts, WorkerPid, S) ->
                 call_id => CallId,
                 %% RFC 3261 12.1.1: the remote CSeq starts at the request's
                 remote_cseq => req_cseq(Msg),
+                %% the requests a B2BUA sent in the early dialog count
+                cseq => maps:get(cseq, Opts, 1),
+                leg_ready => maps:is_key(leg, Opts),
                 ack_wait => AckWait,
                 %% the call record this INVITE opened, now the dialog's
                 cdr => maps:get(cdr, chappe_sip_req:meta(Req), undefined)

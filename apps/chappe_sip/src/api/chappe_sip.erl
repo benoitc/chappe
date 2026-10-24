@@ -240,13 +240,15 @@ request(Uri, Opts) ->
         end,
     chappe_sip_uac:start(Uri, maps:merge(#{method => Default}, Opts)).
 
-%% Bridge an incoming INVITE (A/UAS) to a new INVITE toward Uri (B/UAC).
-%% Returns both dialogs; use chappe_sip_b2b:relay/1 to link their lifecycles.
--spec create_b2bua(chappe_sip_req:req(), chappe_sip_res:res(), binary(), map()) ->
-    {ok, #{
-        uas := chappe_sip_dialog:dialog(), uac := chappe_sip_dialog:dialog()
-    }}
-    | {error, term()}.
+%% Bridge an incoming INVITE (A/UAS) to a new INVITE toward Uri (B/UAC),
+%% or toward the up peers of a group ({peer_group, G}, failing over on
+%% 408, 503 or a transport error). Returns both dialogs; use
+%% chappe_sip_b2b:relay/1 to link their lifecycles. See chappe_sip_b2b for
+%% the options (media anchoring, the SDP hook).
+-spec create_b2bua(
+    chappe_sip_req:req(), chappe_sip_res:res(), chappe_sip_b2b:target(), map()
+) ->
+    {ok, chappe_sip_b2b:legs()} | {error, term()}.
 create_b2bua(Req, Res, Uri, Opts) ->
     chappe_sip_b2b:create_b2bua(Req, Res, Uri, Opts).
 

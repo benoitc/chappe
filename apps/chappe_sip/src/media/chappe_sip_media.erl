@@ -56,8 +56,20 @@
 ]).
 -export([anchor_offer/3, anchor_answer/3, anchor_release/1]).
 -export([anchor_active/0, anchor_pinned/1]).
+-export([bypass/2]).
 
--export_type([session/0, capability/0, backend/0]).
+-export_type([session/0, capability/0, backend/0, side/0]).
+
+%% One side of a call for bypass/2: its SDP, its address, or both with the
+%% address its signalling came from (source).
+-type side() ::
+    iodata()
+    | inet:ip_address()
+    | #{
+        sdp => iodata(),
+        addr => inet:ip_address() | binary(),
+        source => inet:ip_address() | binary()
+    }.
 
 -type backend() :: rtpengine | mix.
 -type capability() ::
@@ -416,6 +428,141 @@ anchor_active() ->
 -spec anchor_pinned(binary()) -> boolean().
 anchor_pinned(CallId) ->
     chappe_sip_media_rtpengine:anchor_pinned(CallId).
+
+%% ---- topology ----
+
+%% Whether a call's media can flow directly between its two sides or must
+%% go through rtpengine. It anchors when:
+%%   - either side is WebRTC (a SAVPF profile or ICE): rtpengine bridges
+%%     DTLS-SRTP and ICE to plain RTP;
+%%   - a side's address is unknown, or the two are of different families;
+%%   - a side's SDP c= address is not the address its signalling came from
+%%     (source): the endpoint is behind a NAT;
+%%   - an address is private and no configured network holds both.
+%% Otherwise (two public addresses, or two in one of the networks) it is
+%% direct. Opts: #{networks => [Cidr]}, each Cidr a binary such as
+%% <<"10.1.0.0/16">>. A pure function: use it in the media fun of
+%% chappe_sip_b2b.
+-spec bypass(#{a := side(), b := side()}, #{networks => [binary()]}) ->
+    direct | anchor.
+bypass(#{a := A, b := B}, Opts) ->
+    SA = side(A),
+    SB = side(B),
+    Nets = [N || C <- maps:get(networks, Opts, []), {ok, N} <- [cidr(C)]],
+    case
+        webrtc_side(SA) orelse webrtc_side(SB) orelse natted(SA) orelse
+            natted(SB)
+    of
+        true -> anchor;
+        false -> bypass_addrs(maps:get(addr, SA), maps:get(addr, SB), Nets)
+    end.
+
+bypass_addrs(undefined, _B, _Nets) ->
+    anchor;
+bypass_addrs(_A, undefined, _Nets) ->
+    anchor;
+bypass_addrs(A, B, _Nets) when tuple_size(A) =/= tuple_size(B) ->
+    anchor;
+bypass_addrs(A, B, Nets) ->
+    case private(A) orelse private(B) of
+        false ->
+            direct;
+        true ->
+            case
+                lists:any(fun(N) -> in_net(A, N) andalso in_net(B, N) end, Nets)
+            of
+                true -> direct;
+                false -> anchor
+            end
+    end.
+
+side(#{} = M) ->
+    Sdp = maps:get(sdp, M, undefined),
+    SdpAddr =
+        case Sdp of
+            undefined -> undefined;
+            _ -> chappe_sip_sdp:connection(Sdp)
+        end,
+    Given = ip(maps:get(addr, M, undefined)),
+    #{
+        sdp => Sdp,
+        addr =>
+            case SdpAddr of
+                undefined -> Given;
+                _ -> SdpAddr
+            end,
+        source => ip(maps:get(source, M, undefined))
+    };
+side(Ip) when is_tuple(Ip) ->
+    side(#{addr => Ip});
+side(Sdp) ->
+    side(#{sdp => Sdp}).
+
+webrtc_side(#{sdp := undefined}) -> false;
+webrtc_side(#{sdp := Sdp}) -> chappe_sip_sdp:webrtc(Sdp).
+
+%% the media address an SDP gives is not where its signalling came from
+natted(#{sdp := Sdp, addr := Addr, source := Src}) when
+    Sdp =/= undefined, Addr =/= undefined, Src =/= undefined
+->
+    Addr =/= Src;
+natted(_Side) ->
+    false.
+
+ip(undefined) ->
+    undefined;
+ip(Ip) when is_tuple(Ip) ->
+    Ip;
+ip(Bin) when is_binary(Bin) ->
+    case chappe_sip_sdp:address(Bin) of
+        {ok, Ip} -> Ip;
+        error -> undefined
+    end.
+
+%% RFC 1918, RFC 6598 (shared), loopback and link-local, and their IPv6
+%% counterparts (RFC 4193 unique local, link-local, loopback)
+private({10, _, _, _}) -> true;
+private({172, B, _, _}) when B >= 16 andalso B =< 31 -> true;
+private({192, 168, _, _}) -> true;
+private({100, B, _, _}) when B >= 64 andalso B =< 127 -> true;
+private({127, _, _, _}) -> true;
+private({169, 254, _, _}) -> true;
+private({A, _, _, _, _, _, _, _}) when A band 16#fe00 =:= 16#fc00 -> true;
+private({A, _, _, _, _, _, _, _}) when A band 16#ffc0 =:= 16#fe80 -> true;
+private({0, 0, 0, 0, 0, 0, 0, 1}) -> true;
+private(_) -> false.
+
+cidr(Bin) when is_binary(Bin) ->
+    case binary:split(Bin, <<"/">>) of
+        [Addr, Bits] ->
+            case {ip(Addr), string:to_integer(Bits)} of
+                {undefined, _} ->
+                    error;
+                {Ip, {N, <<>>}} when
+                    is_integer(N) andalso N >= 0 andalso
+                        (N =< 32 orelse (tuple_size(Ip) =:= 8 andalso N =< 128))
+                ->
+                    {ok, {Ip, N}};
+                _ ->
+                    error
+            end;
+        _ ->
+            error
+    end;
+cidr(_) ->
+    error.
+
+in_net(Ip, {Net, Bits}) when tuple_size(Ip) =:= tuple_size(Net) ->
+    <<P:Bits/bitstring, _/bitstring>> = ip_bits(Ip),
+    <<Q:Bits/bitstring, _/bitstring>> = ip_bits(Net),
+    P =:= Q;
+in_net(_Ip, _Net) ->
+    false.
+
+ip_bits(Ip) when tuple_size(Ip) =:= 4 ->
+    <<<<O:8>> || O <- tuple_to_list(Ip)>>;
+ip_bits(Ip) ->
+    <<<<H:16>> || H <- tuple_to_list(Ip)>>.
 
 %% internal
 

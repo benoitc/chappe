@@ -55,6 +55,7 @@
 -export([start_link/1]).
 -export([requested_expires/2]).
 -export([init/1, callback_mode/0, terminate/3]).
+-export([indialog_request/4]).
 -export([setup/3, confirmed/3, in_transaction/3, terminating/3]).
 
 -record(data, {
@@ -118,6 +119,9 @@
     ack_answer = false :: boolean(),
     %% hold state our in-flight re-INVITE sets once it succeeds
     pending_hold = false :: boolean(),
+    %% our in-flight re-INVITE leaves its 2xx unACKed for the owner to ACK
+    %% (ack/2) with the answer to the offer that 2xx carries
+    reinvite_ack = auto :: auto | manual,
     %% re-INVITE to try once more after a 491 (RFC 3261 14.1): set while
     %% the first attempt is in flight, then while its retry timer runs
     glare_retry :: {retry, term()} | undefined,
@@ -199,6 +203,8 @@ init(
     Data = #data{
         leg = LegH,
         txn = maps:get(txn, Args, undefined),
+        %% a leg created ahead (a B2BUA's early leg) is ready already
+        ready = maps:get(leg_ready, Args, false),
         local_tag = LocalTag,
         local_addr = LocalAddr,
         remote_addr = RemoteAddr,
@@ -413,7 +419,9 @@ confirmed({call, From}, {modify, SdpSpec, Opts}, D) ->
             start_reinvite(From, SdpSpec, Opts, D#data{modify_wait = undefined})
     end;
 confirmed({timeout, glare_retry}, retry, #data{glare_wait = {From, Spec}} = D) ->
-    start_reinvite(From, Spec, #{}, D#data{glare_wait = undefined});
+    start_reinvite(From, Spec, #{ack => D#data.reinvite_ack}, D#data{
+        glare_wait = undefined
+    });
 confirmed({call, From}, {request, ReqSpec}, D) ->
     start_request(From, ReqSpec, D);
 confirmed({call, From}, {ack, Opts}, D) ->
@@ -589,16 +597,27 @@ finish_txn_response(From, {reinvite, NewSdp}, Status, Raw, D0) when
 ->
     {ok, Msg} = chappe_sip_msg:parse(Raw),
     D = new_target(Msg, D0),
-    _ = send_ack_indialog(D),
     RemoteSdp = chappe_sip_msg:body(Msg),
     reply(From, {ok, RemoteSdp}),
-    {next_state, confirmed, D#data{
+    D1 = D#data{
         txning = undefined,
-        local_sdp = NewSdp,
         remote_sdp = RemoteSdp,
         on_hold = D#data.pending_hold,
         glare_retry = undefined
-    }};
+    },
+    case D#data.reinvite_ack of
+        manual ->
+            %% the owner ACKs with ack/2, carrying the answer when this 2xx
+            %% holds the offer of our offerless re-INVITE (RFC 3261 14.1)
+            Pending = #{cseq => D#data.local_cseq, headers => []},
+            {next_state, confirmed, D1#data{
+                pending_ack = Pending,
+                local_sdp = keep_sdp(NewSdp, D#data.local_sdp)
+            }};
+        auto ->
+            _ = send_ack_indialog(D),
+            {next_state, confirmed, D1#data{local_sdp = NewSdp}}
+    end;
 finish_txn_response(
     From,
     {reinvite, _},
@@ -1428,9 +1447,19 @@ start_bye(From, _Hdrs, D) ->
 
 %% ---- re-INVITE / in-dialog request ----
 
-%% Opts: retry_on_glare => true retries once after a 491 (RFC 3261 14.1).
-%% The hold state and local SDP change only once the re-INVITE succeeds.
-start_reinvite(
+%% Opts: retry_on_glare => true retries once after a 491 (RFC 3261 14.1);
+%% ack => manual leaves the 2xx for the owner to ACK (ack/2). An offerless
+%% re-INVITE (none) needs ack => manual: its 2xx carries the peer's offer
+%% and only the owner has the answer. The hold state and local SDP change
+%% only once the re-INVITE succeeds.
+start_reinvite(From, none, #{ack := manual} = Opts, D) ->
+    start_reinvite_1(From, none, Opts, D);
+start_reinvite(From, none, _Opts, D) ->
+    {keep_state, D, [{reply, From, {error, manual_ack_required}}]};
+start_reinvite(From, SdpSpec, Opts, D) ->
+    start_reinvite_1(From, SdpSpec, Opts, D).
+
+start_reinvite_1(
     From, SdpSpec, Opts, #data{local_sdp = CurSdp, on_hold = Hold} = D
 ) ->
     {NewSdp, NewHold} = resolve_sdp(SdpSpec, CurSdp, Hold),
@@ -1443,7 +1472,7 @@ start_reinvite(
     % ACK must reuse this CSeq
     D1 = D#data{local_cseq = Seq},
     Headers =
-        [{<<"Content-Type">>, <<"application/sdp">>}] ++
+        [{<<"Content-Type">>, <<"application/sdp">>} || NewSdp =/= <<>>] ++
             chappe_sip_session_timer:refresh_headers(D#data.st),
     Raw = build_indialog(D1, <<"INVITE">>, Seq, Headers, NewSdp),
     case chappe_sip_engine:send_request(route(D), Raw, self()) of
@@ -1451,6 +1480,7 @@ start_reinvite(
             {next_state, in_transaction, D1#data{
                 pending_hold = NewHold,
                 glare_retry = Retry,
+                reinvite_ack = maps:get(ack, Opts, auto),
                 txning = {From, TxnH, {reinvite, NewSdp}}
             }};
         {error, Reason} ->
@@ -1494,6 +1524,8 @@ resolve_sdp(hold, CurSdp, _Hold) ->
     {next_version(chappe_sip_sdp_hold(CurSdp, true)), true};
 resolve_sdp(unhold, CurSdp, _Hold) ->
     {next_version(chappe_sip_sdp_hold(CurSdp, false)), false};
+resolve_sdp(none, _CurSdp, Hold) ->
+    {<<>>, Hold};
 resolve_sdp(Sdp, _CurSdp, Hold) when is_binary(Sdp); is_list(Sdp) ->
     {iolist_to_binary(Sdp), Hold};
 resolve_sdp(undefined, CurSdp, Hold) ->
@@ -1609,6 +1641,41 @@ set_direction(Lines, Dir) ->
         false ->
             Lines ++ [Attr]
     end.
+
+%% An in-dialog request of a dialog that has no fsm yet (a B2BUA's early
+%% leg): Dlg names its parts, the result is the raw request and where to
+%% send it.
+-spec indialog_request(
+    #{
+        remote_target := binary(),
+        local_addr := binary(),
+        remote_addr := binary(),
+        call_id := binary(),
+        route_set := [binary()],
+        local_contact := binary() | undefined,
+        cseq := pos_integer()
+    },
+    binary(),
+    [{binary(), iodata()}],
+    binary()
+) -> {binary(), term()}.
+indialog_request(Dlg, Method, Headers, Body) ->
+    %% the fields a request does not read hold placeholders
+    D = #data{
+        leg = 0,
+        local_tag = <<>>,
+        owner = self(),
+        owner_mon = make_ref(),
+        on_owner_exit = continue,
+        handled = [],
+        remote_target = maps:get(remote_target, Dlg),
+        local_addr = maps:get(local_addr, Dlg),
+        remote_addr = maps:get(remote_addr, Dlg),
+        call_id = maps:get(call_id, Dlg),
+        route_set = maps:get(route_set, Dlg),
+        local_contact = maps:get(local_contact, Dlg)
+    },
+    {build_indialog(D, Method, maps:get(cseq, Dlg), Headers, Body), route(D)}.
 
 %% Build an in-dialog request (From=local, To=remote). RFC 3261 12.2.1.1:
 %% behind a loose router (;lr) the Request-URI is the remote target and the

@@ -1,8 +1,9 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 
-%% Peers kept alive with OPTIONS (chappe_sip_peers) and the registrar's
-%% keepalive of UDP contacts (qualify), over real SIP on loopback. Each peer is a gen_udp
+%% Peers kept alive with OPTIONS (chappe_sip_peers), failover of a B2BUA
+%% call across a peer group, and the registrar's keepalive of UDP
+%% contacts (qualify), over real SIP on loopback. Each peer is a gen_udp
 %% process answering OPTIONS as the case tells it: a status, or nothing.
 -module(chappe_sip_peers_SUITE).
 
@@ -13,13 +14,15 @@
          end_per_testcase/2]).
 -export([up_then_down_then_up/1, unavailable_is_down/1, alive_codes/1,
          select_policies/1, add_remove/1, env_peers/1,
+         b2bua_peer_group_failover/1, b2bua_peer_group_none_up/1,
          registrar_qualify_drops_binding/1]).
 
 -define(UA, chappe_sip_test_ua).
 
 all() ->
     [up_then_down_then_up, unavailable_is_down, alive_codes, select_policies,
-     add_remove, env_peers, registrar_qualify_drops_binding].
+     add_remove, env_peers, b2bua_peer_group_failover,
+     b2bua_peer_group_none_up, registrar_qualify_drops_binding].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -121,6 +124,39 @@ env_peers(_Config) ->
         application:unset_env(chappe_sip, peers)
     end.
 
+%% A call to a peer group goes to the best up peer; its 503 moves the
+%% call to the next one.
+%% req: R3263-4.3-1
+b2bua_peer_group_failover(Config) ->
+    EP = ?config(ep, Config),
+    {P1, _} = responder(200, #{invite => 503}),
+    {P2, _} = responder(200, #{invite => 200}),
+    ok = chappe_sip:peer_add(fs1, opts(P1, #{group => fs, priority => 1})),
+    ok = chappe_sip:peer_add(fs2, opts(P2, #{group => fs, priority => 2})),
+    ok = ?UA:expect({chappe_sip_peer, fs1, up}, 3000),
+    ok = ?UA:expect({chappe_sip_peer, fs2, up}, 3000),
+    Test = self(),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        Test ! {b2b, chappe_sip:create_b2bua(Req, Res, {peer_group, fs}, #{})}
+    end),
+    R = call(EP),
+    ?assertEqual(200, ?UA:status(R)),
+    ok = ?UA:expect({invited, P1}),
+    ok = ?UA:expect({invited, P2}),
+    receive {b2b, {ok, _}} -> ok after 5000 -> ct:fail(no_b2b) end.
+
+%% No peer of the group is up: 503 before anything is sent.
+b2bua_peer_group_none_up(Config) ->
+    EP = ?config(ep, Config),
+    Test = self(),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        Test ! {b2b, chappe_sip:create_b2bua(Req, Res, {peer_group, empty}, #{})}
+    end),
+    ?assertEqual(503, ?UA:status(call(EP))),
+    receive {b2b, R} -> ?assertEqual({error, none_up}, R)
+    after 5000 -> ct:fail(no_b2b)
+    end.
+
 %% qualify_interval_ms: a contact registered over UDP gets OPTIONS; once it
 %% stops answering, its binding goes and the subscribers hear of it.
 %% req: R3261-11-1
@@ -181,6 +217,22 @@ respond_loop(Sock, Port, Mode, How, Test) ->
         {udp, Sock, _, _, _} ->
             respond_loop(Sock, Port, Mode, How, Test)
     end.
+
+%% INVITE the stack from a fresh caller; the first final response
+call(EP) ->
+    Test = self(),
+    ?UA:peer(0, fun(Sock) ->
+        Inv = ?UA:invite(Sock, EP, #{call_id => ?UA:callid(), from_tag => ?UA:tag()}),
+        ?UA:send(Sock, EP, Inv),
+        R = ?UA:recv_any(Sock, 8000),
+        _ = case ?UA:status(R) of
+                200 -> ?UA:ack(?UA:dialog_from_2xx(Sock, Inv, R), EP);
+                _ -> ok
+            end,
+        Test ! {final, R},
+        timer:sleep(infinity)
+    end),
+    receive {final, R} -> R after 10000 -> ct:fail(no_final) end.
 
 register_contact(EP, Contact) ->
     Test = self(),
