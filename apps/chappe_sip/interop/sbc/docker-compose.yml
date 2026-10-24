@@ -1,0 +1,97 @@
+# Copyright 2026 Benoit Chesneau
+# SPDX-License-Identifier: Apache-2.0
+#
+# The SBC interop lab: a chappe SBC node (10.253.9.10) in front of two
+# FreeSWITCH SIP peers (fs1 .31, fs2 .32, answering any number with a
+# tone), rtpengine (.20) for the anchored calls, and Kamailio (.40), which
+# pings the SBC with OPTIONS while the SBC pings it back. SIPp runs per
+# case on the same network (lab.sh sipp). Everything is in containers:
+# Docker Desktop on macOS cannot send UDP from the host to container
+# addresses. Driven by lab.sh and chappe_sip_sbc_interop_SUITE.
+#
+# The project name defaults to chappe-sbc; set COMPOSE_PROJECT_NAME (or
+# SBC_LAB for lab.sh) to run a second copy side by side.
+name: chappe-sbc
+
+networks:
+  lab:
+    ipam:
+      config:
+        - subnet: 10.253.9.0/24
+          # SIPp gets an address from here; the services keep theirs below
+          ip_range: 10.253.9.128/25
+
+# the compiled chappe tree; lab.sh build creates and fills it
+volumes:
+  work:
+    name: ${SBC_VOLUME:-chappe-sbc-work}
+    external: true
+
+x-freeswitch: &freeswitch
+  image: drachtio/drachtio-freeswitch-mrf:latest
+  # the image's entrypoint edits its stock tree; this config replaces
+  # that tree, so start FreeSWITCH directly
+  entrypoint: ["/usr/local/freeswitch/bin/freeswitch"]
+  command: ["-nonat", "-c", "-conf", "/chappe/conf",
+            "-log", "/tmp", "-db", "/tmp", "-run", "/tmp"]
+  stdin_open: true
+  tty: true
+  volumes:
+    - ./freeswitch:/chappe/conf:ro
+  healthcheck:
+    test: ["CMD", "/usr/local/freeswitch/bin/fs_cli", "-x", "sofia status"]
+    interval: 2s
+    timeout: 5s
+    retries: 30
+
+services:
+  rtpengine:
+    build: ../../../chappe_rtpengine/interop
+    image: chappe-rtpengine-interop
+    networks:
+      lab:
+        ipv4_address: 10.253.9.20
+    command: >
+      rtpengine --interface=10.253.9.20
+      --listen-ng=10.253.9.20:2223
+      --port-min=30000 --port-max=30200
+      --delete-delay=0
+      --foreground --log-stderr
+
+  fs1:
+    <<: *freeswitch
+    networks:
+      lab:
+        ipv4_address: 10.253.9.31
+
+  fs2:
+    <<: *freeswitch
+    networks:
+      lab:
+        ipv4_address: 10.253.9.32
+
+  kamailio:
+    image: ghcr.io/kamailio/kamailio-ci:5.8
+    networks:
+      lab:
+        ipv4_address: 10.253.9.40
+    volumes:
+      - ../kamailio/kamailio.cfg:/etc/kamailio/kamailio.cfg:ro
+      - ./dispatcher.list:/etc/kamailio/dispatcher.list:ro
+
+  # the chappe tree is compiled into the work volume by `lab.sh build`
+  sbc:
+    build: ../conformance/node
+    image: chappe-conf-node
+    entrypoint: ["/bin/sh", "/sbc/entry.sh"]
+    command: ["run", "10.253.9.10"]
+    networks:
+      lab:
+        ipv4_address: 10.253.9.10
+    volumes:
+      - work:/work
+      - ./node:/sbc:ro
+    depends_on:
+      - rtpengine
+      - fs1
+      - fs2

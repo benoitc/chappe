@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!-- Copyright 2026 Benoit Chesneau
+     SPDX-License-Identifier: Apache-2.0
+
+     bob for run-sipp.sh, first half: registers with the demo SBC (digest).
+     bob_answer.xml then takes the call on the same port. -->
+<scenario name="demo bob register">
+  <send retrans="500">
+    <![CDATA[
+      REGISTER sip:[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:bob@chappe.demo>;tag=[pid]reg[call_number]
+      To: <sip:bob@chappe.demo>
+      Call-ID: [call_id]
+      CSeq: 1 REGISTER
+      Contact: <sip:bob@[local_ip]:[local_port]>
+      Expires: 300
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv response="401" auth="true"/>
+  <send retrans="500">
+    <![CDATA[
+      REGISTER sip:[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:bob@chappe.demo>;tag=[pid]reg[call_number]
+      To: <sip:bob@chappe.demo>
+      Call-ID: [call_id]
+      CSeq: 2 REGISTER
+      Contact: <sip:bob@[local_ip]:[local_port]>
+      [authentication username=bob password=bob-demo]
+      Expires: 300
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv response="200"/>
+</scenario>

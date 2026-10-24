@@ -111,3 +111,32 @@ Notes:
   messages it received (`lab.sh hep stored ID`).
 - `LAB_PROXY=http://host.docker.internal:8888` sends the build container's
   hex fetches through an HTTP proxy on your machine.
+
+## SBC lab (FreeSWITCH, rtpengine, Kamailio)
+
+The SBC lab runs real calls through the B2BUA: SIPp calls a chappe node
+(`interop/sbc/node/chappe_sbc_node.erl`), which sends them to two FreeSWITCH
+peers kept alive with OPTIONS, with rtpengine anchoring the calls that ask
+for it and Kamailio pinging the node both ways. Run it when you change the
+B2BUA, the media anchor or the peers.
+
+```sh
+make interop-sbc
+```
+
+It builds the images, compiles this tree into the node's volume, starts the
+lab on 10.253.9.0/24 and runs `chappe_sip_sbc_interop_SUITE`: direct and
+anchored calls (the c= SIPp gets, rtpengine's packet count), hold from SIPp
+and from FreeSWITCH (`uuid_hold`), an offerless re-INVITE, UPDATE, glare,
+`set_media` both ways, a session timer refresh, failover when fs1 stops, and
+the Kamailio pings. To drive the lab by hand:
+
+```sh
+apps/chappe_sip/interop/sbc/lab.sh up
+apps/chappe_sip/interop/sbc/lab.sh sipp sbc_call anchor 5000 my-call@lab
+apps/chappe_sip/interop/sbc/lab.sh ctl calls
+apps/chappe_sip/interop/sbc/lab.sh down
+```
+
+Set `SBC_LAB` to give the compose project another name, and `SBC_KEEP=1` to
+leave the lab up after the suite.

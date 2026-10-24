@@ -41,6 +41,14 @@
 ]).
 -export([accept_refer/3, accept_refer/4, send_refer/3]).
 -export([event_package/2, subscribe_to/3, unsubscribe/1, publish_state/4]).
+-export([
+    peer_add/2,
+    peer_remove/1,
+    peers/0,
+    peer_status/1,
+    peer_select/2,
+    peer_subscribe/1
+]).
 
 -export_type([replaced_info/0]).
 
@@ -232,13 +240,15 @@ request(Uri, Opts) ->
         end,
     chappe_sip_uac:start(Uri, maps:merge(#{method => Default}, Opts)).
 
-%% Bridge an incoming INVITE (A/UAS) to a new INVITE toward Uri (B/UAC).
-%% Returns both dialogs; use chappe_sip_b2b:relay/1 to link their lifecycles.
--spec create_b2bua(chappe_sip_req:req(), chappe_sip_res:res(), binary(), map()) ->
-    {ok, #{
-        uas := chappe_sip_dialog:dialog(), uac := chappe_sip_dialog:dialog()
-    }}
-    | {error, term()}.
+%% Bridge an incoming INVITE (A/UAS) to a new INVITE toward Uri (B/UAC),
+%% or toward the up peers of a group ({peer_group, G}, failing over on
+%% 408, 503 or a transport error). Returns both dialogs; use
+%% chappe_sip_b2b:relay/1 to link their lifecycles. See chappe_sip_b2b for
+%% the options (media anchoring, the SDP hook).
+-spec create_b2bua(
+    chappe_sip_req:req(), chappe_sip_res:res(), chappe_sip_b2b:target(), map()
+) ->
+    {ok, chappe_sip_b2b:legs()} | {error, term()}.
 create_b2bua(Req, Res, Uri, Opts) ->
     chappe_sip_b2b:create_b2bua(Req, Res, Uri, Opts).
 
@@ -408,7 +418,8 @@ location(AorOrUri) ->
 %% The live bindings of an AOR, the highest q first, as maps with contact,
 %% expires, q, flow, path (the RFC 3327 route set toward the contact: send
 %% the request with one Route header per element, in order), instance and
-%% reg_id (RFC 5626), callid and cseq.
+%% reg_id (RFC 5626), callid and cseq, and received: the flow the REGISTER
+%% came on (RFC 3581).
 -spec bindings(binary()) -> [map()].
 bindings(AorOrUri) ->
     chappe_sip_registry:bindings(AorOrUri).
@@ -418,13 +429,25 @@ bindings(AorOrUri) ->
 %% registered directly over TCP/TLS ({conn, Id}) or UDP ({udp, Ip, Port}, or
 %% {udp, Ip, Port, Local} on a node listening on several addresses);
 %% pass it to proxy_request/3 as {flow, Uri, Flow}', or to create_uac/
-%% create_b2bua as #{flow => Flow}', to reach the UA over that flow.
+%% create_b2bua as #{flow => Flow}', to reach the UA over that flow. A UDP
+%% binding whose Contact is not the address its REGISTER came from (the UA
+%% is behind a NAT) has that address as its flow, {udp, Ip, Port}, so the
+%% call and every request of its dialog go where the UA is reachable.
 -spec location_flow(binary()) ->
     {ok, binary(), chappe_sip_engine:flow() | undefined} | {error, not_found}.
 location_flow(AorOrUri) ->
     case chappe_sip_registry:bindings(AorOrUri) of
-        [B | _] -> {ok, maps:get(contact, B), maps:get(flow, B, undefined)};
+        [B | _] -> {ok, maps:get(contact, B), binding_flow(B)};
         [] -> {error, not_found}
+    end.
+
+binding_flow(#{flow := Flow}) when Flow =/= undefined ->
+    Flow;
+binding_flow(#{contact := Contact} = B) ->
+    Received = maps:get(received, B, undefined),
+    case chappe_sip_route:nated(Contact, Received) of
+        true -> Received;
+        false -> undefined
     end.
 
 %% The live dialog with this identity, from our side: LocalTag is the tag we
@@ -601,3 +624,43 @@ replaces_status(Found) ->
         {ok, Dialog, Info} ->
             {accept, Dialog, Info}
     end.
+
+%% ---- peers (OPTIONS keepalive) ----
+
+%% Monitor a SIP peer with OPTIONS. Opts: #{uri := binary(), group,
+%% priority (lower wins, default 10), weight (default 1), interval_ms
+%% (default 10000), timeout_ms (default 2000), up_after (default 1),
+%% down_after (default 2), alive_codes (the statuses that count as an
+%% answer; default any final but 408 and 503)}. See chappe_sip_peers.
+-spec peer_add(chappe_sip_peers:name(), chappe_sip_peers:opts()) ->
+    ok | {error, term()}.
+peer_add(Name, Opts) ->
+    chappe_sip_peers:add(Name, Opts).
+
+-spec peer_remove(chappe_sip_peers:name()) -> ok | {error, not_found}.
+peer_remove(Name) ->
+    chappe_sip_peers:remove(Name).
+
+%% Every peer with its state (unknown | up | down), last status and RTT.
+-spec peers() -> [{chappe_sip_peers:name(), chappe_sip_peers:info()}].
+peers() ->
+    chappe_sip_peers:peers().
+
+-spec peer_status(chappe_sip_peers:name()) ->
+    {ok, chappe_sip_peers:info()} | {error, not_found}.
+peer_status(Name) ->
+    chappe_sip_peers:status(Name).
+
+%% An up peer of Group: the best priority, the next in turn, or one at
+%% random by weight.
+-spec peer_select(term(), chappe_sip_peers:policy()) ->
+    {ok, binary()} | {error, none_up}.
+peer_select(Group, Policy) ->
+    chappe_sip_peers:select(Group, Policy).
+
+%% Pid gets {chappe_sip_peer, Name, up | down} on each change, and
+%% {chappe_sip_qualify, Aor, Contact, unreachable} when the registrar's
+%% keepalive drops a binding.
+-spec peer_subscribe(pid()) -> ok.
+peer_subscribe(Pid) ->
+    chappe_sip_peers:subscribe(Pid).

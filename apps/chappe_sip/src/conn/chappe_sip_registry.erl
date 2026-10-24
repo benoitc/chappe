@@ -28,6 +28,8 @@
     lookup/1,
     bindings/1,
     remove/1,
+    remove_contact/2,
+    aors/0,
     remove_flow/1,
     remove_conn_flows/0,
     clear/0
@@ -58,7 +60,10 @@
     instance :: binary() | undefined,
     reg_id :: binary() | undefined,
     % every Contact header parameter as received (RFC 5626 6)
-    params = #{} :: map()
+    params = #{} :: map(),
+    % the flow the REGISTER came on (RFC 3581): where a UA behind a NAT
+    % is reached when its Contact is not
+    received :: term()
 }).
 
 %% a Contact of the REGISTER: its URI, requested expiry and identity
@@ -128,6 +133,17 @@ bindings(AorOrUri) ->
 remove(AorOrUri) ->
     gen_server:call(?MODULE, {remove, aor_key(AorOrUri)}).
 
+%% Drop one binding of an AOR (its contact URI, compared by RFC 3261
+%% 19.1.4), the AOR with it when it was the last one.
+-spec remove_contact(binary(), binary()) -> ok.
+remove_contact(AorOrUri, Contact) ->
+    gen_server:call(?MODULE, {remove_contact, aor_key(AorOrUri), Contact}).
+
+%% Every AOR with a binding, live or not yet swept.
+-spec aors() -> [binary()].
+aors() ->
+    [Aor || {Aor, _} <- ets:tab2list(?TAB)].
+
 %% Drop every binding learned on a transport flow, whatever its AOR. A WS UA
 %% is reachable only over its flow (RFC 5626 7), so when the flow drops the
 %% binding is dead; the WS transport calls this on disconnect. An outbound
@@ -181,6 +197,22 @@ handle_call({register, Req, Opts, Deadline}, {Caller, _}, S) ->
     end;
 handle_call({remove, Aor}, _From, S) ->
     ets:delete(?TAB, Aor),
+    {reply, ok, S};
+handle_call({remove_contact, Aor, Contact}, _From, S) ->
+    case ets:lookup(?TAB, Aor) of
+        [{Aor, Bs}] ->
+            Keep = fun(#binding{contact = C}) ->
+                not chappe_sip_uri:equal(C, Contact)
+            end,
+            apply_changes(
+                case lists:filter(Keep, Bs) of
+                    [] -> [{delete, Aor}];
+                    Kept -> [{update, Aor, Kept}]
+                end
+            );
+        [] ->
+            ok
+    end,
     {reply, ok, S};
 handle_call(clear, _From, S) ->
     ets:delete_all_objects(?TAB),
@@ -468,7 +500,8 @@ apply_contacts(Aor, Contacts, Msg, Opts, Info) ->
                 callid = CallId,
                 cseq = CSeq,
                 flow = maps:get(flow, Opts, undefined),
-                path = maps:get(path, Info)
+                path = maps:get(path, Info),
+                received = maps:get(received, Opts, undefined)
             },
             Max = chappe_sip_config:get(registrar_max_expires),
             %% RFC 5626 6: a UA with a direct flow to us has its outbound
@@ -718,7 +751,8 @@ to_map(
         path = P,
         instance = I,
         reg_id = R,
-        params = Ps
+        params = Ps,
+        received = Rcv
     },
     Now
 ) ->
@@ -729,6 +763,7 @@ to_map(
         cseq => Cs,
         q => Q,
         flow => F,
+        received => Rcv,
         path => P,
         instance => I,
         reg_id => R,

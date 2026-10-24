@@ -64,7 +64,7 @@
 %% the mixer only sends 20 ms packets (RFC 4566 6).
 -spec accept_offer(iodata()) -> {ok, remote()} | {error, term()}.
 accept_offer(Sdp) ->
-    {SessAddr, Media} = parse(Sdp),
+    {SessAddr, Media} = chappe_sip_sdp:parse(Sdp),
     pick(SessAddr, Media).
 
 %% Read the far end out of the answer to an offer made with Law: where
@@ -78,7 +78,7 @@ accept_offer(Sdp) ->
     }}
     | {error, term()}.
 read_answer(Sdp, Law) ->
-    {SessAddr, Media} = parse(Sdp),
+    {SessAddr, Media} = chappe_sip_sdp:parse(Sdp),
     case pick(SessAddr, Media) of
         {ok, #{law := Law} = R} ->
             {ok, maps:with([endpoint, rtcp, dtmf, direction], R)};
@@ -92,7 +92,7 @@ read_answer(Sdp, Law) ->
 %% m-line is rejected with port 0, as RFC 3264 6 asks.
 -spec answer(iodata(), local()) -> binary().
 answer(Offer, #{addr := Addr} = Local) ->
-    {_, Media} = parse(Offer),
+    {_, Media} = chappe_sip_sdp:parse(Offer),
     {ok, #{index := Chosen}} = accept_offer(Offer),
     Lines = lists:map(
         fun
@@ -194,7 +194,7 @@ pick_stream(I, #{port := Port, fmts := Fmts} = M, SessAddr) ->
         [] ->
             {error, no_common_codec};
         [Law | _] ->
-            case address(maps:get(addr, M, SessAddr)) of
+            case chappe_sip_sdp:address(maps:get(addr, M, SessAddr)) of
                 {ok, Ip} ->
                     {ok, #{
                         endpoint => {Ip, Port},
@@ -236,10 +236,13 @@ direction(false, false) -> inactive.
 rtcp(#{mux := true}, _Ip) ->
     undefined;
 rtcp(#{rtcp := V}, Ip) ->
-    case words(V) of
-        [P] -> rtcp_port(P, {ok, Ip});
-        [P, <<"IN">>, _Family, Addr | _] -> rtcp_port(P, address(Addr));
-        _ -> undefined
+    case chappe_sip_sdp:words(V) of
+        [P] ->
+            rtcp_port(P, {ok, Ip});
+        [P, <<"IN">>, _Family, Addr | _] ->
+            rtcp_port(P, chappe_sip_sdp:address(Addr));
+        _ ->
+            undefined
     end;
 rtcp(_M, _Ip) ->
     undefined.
@@ -312,120 +315,3 @@ code(Bin) ->
 law(<<"0">>) -> ulaw;
 law(<<"8">>) -> alaw;
 law(_) -> undefined.
-
-address(undefined) ->
-    error;
-address(Bin) ->
-    case inet:parse_strict_address(binary_to_list(Bin)) of
-        {ok, Ip} -> {ok, Ip};
-        {error, _} -> error
-    end.
-
-%% {SessionAddress, [Media]} where each media is #{media, port, proto,
-%% fmts, addr (when it has its own c=), mux}.
-parse(Sdp) ->
-    Lines = binary:split(iolist_to_binary(Sdp), [<<"\r\n">>, <<"\n">>], [
-        global, trim_all
-    ]),
-    {Sess, Rev} = lists:foldl(fun line/2, {undefined, []}, Lines),
-    %% a session-level direction holds for the m-lines without their own
-    SessDir = session_dir(Lines),
-    {Sess, [maps:merge(#{dir => SessDir}, M) || M <- lists:reverse(Rev)]}.
-
-session_dir([<<"m=", _/binary>> | _]) ->
-    sendrecv;
-session_dir([L | Ls]) ->
-    case dir_attr(L) of
-        undefined -> session_dir(Ls);
-        Dir -> Dir
-    end;
-session_dir([]) ->
-    sendrecv.
-
-dir_attr(<<"a=sendrecv">>) -> sendrecv;
-dir_attr(<<"a=sendonly">>) -> sendonly;
-dir_attr(<<"a=recvonly">>) -> recvonly;
-dir_attr(<<"a=inactive">>) -> inactive;
-dir_attr(_) -> undefined.
-
-line(<<"m=", Rest/binary>>, {Sess, Media}) ->
-    case words(Rest) of
-        [Kind, Port, Proto | Fmts] ->
-            M = #{
-                media => Kind,
-                port => port(Port),
-                proto => Proto,
-                fmts => Fmts
-            },
-            {Sess, [M | Media]};
-        _ ->
-            {Sess, Media}
-    end;
-line(<<"c=", Rest/binary>>, {Sess, Media}) ->
-    case {conn_addr(Rest), Media} of
-        {undefined, _} -> {Sess, Media};
-        {Addr, []} -> {Addr, Media};
-        {Addr, [M | Ms]} -> {Sess, [M#{addr => Addr} | Ms]}
-    end;
-line(<<"a=rtcp-mux", _/binary>>, {Sess, [M | Ms]}) ->
-    {Sess, [M#{mux => true} | Ms]};
-line(<<"a=", _/binary>> = L, {Sess, [M | Ms]}) when
-    L =:= <<"a=sendrecv">>;
-    L =:= <<"a=sendonly">>;
-    L =:= <<"a=recvonly">>;
-    L =:= <<"a=inactive">>
-->
-    {Sess, [M#{dir => dir_attr(L)} | Ms]};
-line(<<"a=rtcp:", V/binary>>, {Sess, [M | Ms]}) ->
-    %% media level only: RFC 3605 2.1 forbids it at session level
-    {Sess, [M#{rtcp => V} | Ms]};
-line(<<"a=rtpmap:", V/binary>>, {Sess, [M | Ms]}) ->
-    {Sess, [put_fmt(rtpmap, V, M) | Ms]};
-line(<<"a=fmtp:", V/binary>>, {Sess, [M | Ms]}) ->
-    {Sess, [put_fmt(fmtp, V, M) | Ms]};
-line(<<"a=ptime:", V/binary>>, {Sess, [M | Ms]}) ->
-    {Sess, [put_ms(ptime, V, M) | Ms]};
-line(<<"a=maxptime:", V/binary>>, {Sess, [M | Ms]}) ->
-    {Sess, [put_ms(maxptime, V, M) | Ms]};
-line(_Other, Acc) ->
-    Acc.
-
-%% a=rtpmap:<fmt> <rest> and a=fmtp:<fmt> <rest>, kept by format.
-put_fmt(Key, V, M) ->
-    case binary:split(V, <<" ">>) of
-        [Fmt, Rest] ->
-            M#{Key => maps:put(Fmt, string:trim(Rest), maps:get(Key, M, #{}))};
-        _ ->
-            M
-    end.
-
-%% A packet time in ms; RFC 4566 allows a fraction, the mixer rounds it.
-put_ms(Key, V, M) ->
-    case string:to_float(V) of
-        {F, _} when is_float(F), F > 0 ->
-            M#{Key => max(1, round(F))};
-        _ ->
-            case string:to_integer(V) of
-                {N, _} when is_integer(N), N > 0 -> M#{Key => N};
-                _ -> M
-            end
-    end.
-
-conn_addr(Rest) ->
-    case words(Rest) of
-        [<<"IN">>, _Family, Addr | _] ->
-            %% a multicast c= may carry /ttl; unicast is what a leg uses
-            hd(binary:split(Addr, <<"/">>));
-        _ ->
-            undefined
-    end.
-
-words(Bin) ->
-    binary:split(Bin, <<" ">>, [global, trim_all]).
-
-port(Bin) ->
-    %% m=<media> <port>/<count>: only the base port matters for one leg
-    case string:to_integer(Bin) of
-        {N, _} when is_integer(N), N >= 0, N =< 65535 -> N;
-        _ -> 0
-    end.

@@ -32,6 +32,9 @@
 %%   domains => any | [binary()]  the domains bindings are kept for
 %%     (default: the registrar_domains setting); another one gets 404.
 %%   default_expires => pos_integer()
+%%   qualify_interval_ms => pos_integer()  send an OPTIONS to each contact
+%%     registered over UDP this often (NAT keepalive); qualify_down_after
+%%     (default 2) unanswered in a row drop the binding (chappe_sip_qualify)
 -spec handler(map()) ->
     fun((chappe_sip_req:req(), chappe_sip_res:res()) -> ok).
 handler(#{auth := _} = Opts0) ->
@@ -42,11 +45,16 @@ handler(_Opts) ->
     erlang:error({registrar, auth_required}).
 
 registrar_fun(Opts0) ->
+    ok = qualify(Opts0),
     fun(Req, Res) ->
         case registrar_auth(maps:get(auth, Opts0, undefined), Req) of
             ok ->
                 do_register(
-                    maps:without([auth, allow_unauthenticated], Opts0), Req, Res
+                    maps:without(
+                        [auth, allow_unauthenticated | qualify_keys()], Opts0
+                    ),
+                    Req,
+                    Res
                 );
             {reject, Status} ->
                 _ = chappe_sip_res:send(Res, no_6xx(Status)),
@@ -59,6 +67,18 @@ registrar_fun(Opts0) ->
         end
     end.
 
+qualify(#{qualify_interval_ms := Ms} = Opts) when is_integer(Ms), Ms > 0 ->
+    chappe_sip_qualify:configure(#{
+        interval_ms => Ms,
+        down_after => maps:get(qualify_down_after, Opts, 2),
+        timeout_ms => maps:get(qualify_timeout_ms, Opts, 2000)
+    });
+qualify(_Opts) ->
+    ok.
+
+qualify_keys() ->
+    [qualify_interval_ms, qualify_down_after, qualify_timeout_ms].
+
 %% RFC 3261 10.3: a registrar never answers 6xx; a policy that declines
 %% with one gets 403 on the wire
 no_6xx(Status) when Status >= 600 -> 403;
@@ -69,10 +89,13 @@ do_register(Opts0, Req, Res) ->
     %% TCP/TLS and UDP the flow it came on is kept for outbound bindings
     %% (RFC 5626 6)
     Meta = chappe_sip_req:meta(Req),
+    Received = chappe_sip_route:received_flow(Meta),
     Opts =
         case maps:get(flow, Meta, undefined) of
-            undefined -> with_direct_flow(direct_flow(Meta), Opts0);
-            Flow -> Opts0#{flow => Flow}
+            undefined ->
+                with_direct_flow(Received, Opts0#{received => Received});
+            Flow ->
+                Opts0#{flow => Flow}
         end,
     case chappe_sip_registry:register_request(Req, Opts) of
         {ok, Bindings, Info} ->
@@ -117,24 +140,6 @@ do_register(Opts0, Req, Res) ->
             _ = chappe_sip_res:send(Res, Status),
             ok
     end.
-
-%% the flow a request arrived on: its TCP/TLS connection, or the address
-%% and port a UDP request came from (RFC 5626 3.3), with the listen address
-%% it reached when there are several, so a request to the binding leaves
-%% from that same socket
-direct_flow(#{conn := Id}) when is_integer(Id) ->
-    {conn, Id};
-direct_flow(
-    #{transport := <<"udp">>, source_ip := Ip, source_port := Port} = Meta
-) when
-    Ip =/= <<>>, Port > 0
-->
-    case chappe_sip_binds:local(Meta) of
-        undefined -> {udp, Ip, Port};
-        Local -> {udp, Ip, Port, Local}
-    end;
-direct_flow(_Meta) ->
-    undefined.
 
 with_direct_flow(undefined, Opts) -> Opts;
 with_direct_flow(Flow, Opts) -> Opts#{outbound_flow => Flow}.

@@ -199,7 +199,15 @@ modify(#dialog{pid = Pid}, SdpSpec) ->
 %% re-INVITEd at once) try once more after the RFC 3261 14.1 wait, 2.1 to
 %% 4 s when we own the Call-ID, 0 to 2 s otherwise. A second 491, or a 491
 %% without the option, returns {error, #chappe_sip_error{status = 491}}.
--spec modify(dialog(), iodata() | hold | unhold, #{retry_on_glare => boolean()}) ->
+%% ack => manual: the 2xx is not ACKed; send the ACK with ack/2. SdpSpec
+%% none sends a re-INVITE without an offer (RFC 3261 14.1): it needs
+%% ack => manual, the result is the peer's offer from its 2xx, and the
+%% answer goes in ack(D, #{local_sdp => Answer}).
+-spec modify(
+    dialog(),
+    iodata() | hold | unhold | none,
+    #{retry_on_glare => boolean(), ack => auto | manual}
+) ->
     {ok, binary()} | {error, term()}.
 modify(#dialog{pid = Pid}, SdpSpec, Opts) ->
     gen_statem:call(Pid, {modify, SdpSpec, Opts}, ?MODIFY_TIMEOUT).
@@ -226,8 +234,9 @@ notify(#dialog{pid = Pid}, Spec) ->
     gen_statem:call(Pid, {notify, Spec}, ?REQUEST_TIMEOUT).
 
 %% Send the ACK of the 2xx of an INVITE started with no_ack => true (third
-%% party call control, RFC 3725): the 2xx is held unacknowledged until you
-%% have the answer, then this ACK carries it. Opts:
+%% party call control, RFC 3725), or of a re-INVITE sent with modify/3 and
+%% ack => manual: the 2xx is held unacknowledged until you have the
+%% answer, then this ACK carries it. Opts:
 %%   #{local_sdp => iodata()}    the answer, when the 2xx carried an offer
 %% The ACK reuses the INVITE's CSeq number and credentials. Returns
 %% {error, no_pending_ack} on a dialog with no unacknowledged 2xx (or one
