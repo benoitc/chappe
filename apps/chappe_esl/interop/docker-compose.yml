@@ -1,0 +1,31 @@
+# Copyright 2026 Benoit Chesneau
+# SPDX-License-Identifier: Apache-2.0
+
+# FreeSWITCH with mod_event_socket for the live interop suite.
+#
+#   docker compose -f interop/docker-compose.yml up -d
+#   FS_HOST=127.0.0.1 FS_PORT=8021 FS_PASSWORD=ClueCon \
+#     rebar3 ct --suite test/chappe_esl_live_SUITE
+#   docker compose -f interop/docker-compose.yml down
+#
+# The mounted event_socket.conf.xml listens on 0.0.0.0 and applies the
+# allow-all ACL from the mounted acl.conf.xml, so the host reaches the
+# published port (the source is the bridge gateway on Linux). Test-only and
+# insecure: never ship an allow-all ESL ACL. See interop/README.md.
+
+services:
+  freeswitch:
+    image: safarov/freeswitch:latest
+    container_name: chappe_esl_fs
+    ports:
+      - "127.0.0.1:8021:8021"
+    volumes:
+      - ./conf/event_socket.conf.xml:/etc/freeswitch/autoload_configs/event_socket.conf.xml:ro
+      - ./conf/acl.conf.xml:/etc/freeswitch/autoload_configs/acl.conf.xml:ro
+    environment:
+      - EVENT_SOCKET_PASSWORD=ClueCon
+    healthcheck:
+      test: ["CMD", "fs_cli", "-x", "status"]
+      interval: 5s
+      timeout: 3s
+      retries: 10

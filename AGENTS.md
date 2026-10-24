@@ -16,6 +16,8 @@ apps/chappe_sip/         SIP application server: UAS/UAC/B2BUA/proxy/registrar
                          Public API module: `chappe_sip`. c_src/ vendors sofia-sip.
 apps/chappe_rtpengine/   rtpengine NG control client (media relay/anchoring,
                          subscribe/duck). SIP-free. Facade module: chappe_rtpengine.
+apps/chappe_esl/         FreeSWITCH Event Socket (ESL) client. SIP-free.
+                         Facade module: chappe_esl.
 apps/chappe_mix/         RTP audio conference mixer (G.711, N-1 mix, one
                          process per conference). SIP-free; rtpengine in
                          front handles SRTP and transcoding. Facade module:
@@ -25,7 +27,7 @@ apps/chappe_mix/         RTP audio conference mixer (G.711, N-1 mix, one
 Inside the umbrella the apps reference each other by name (no fetched cross
 deps). External deps (`livery`, `ws`) are git/hex. Each app is published to hex
 independently. Module prefixes are `chappe_sip_*` / `chappe_rtpengine_*` /
-`chappe_mix_*`; only the app-named facade modules carry the
+`chappe_esl_*` / `chappe_mix_*`; only the app-named facade modules carry the
 `chappe_` brand.
 
 sofia-sip is vendored in `apps/chappe_sip/c_src/sofia-sip` (no git submodule), so
@@ -43,7 +45,7 @@ rebar3 lint         # Elvis linter (config: elvis.config)
 rebar3 xref         # cross-reference analysis
 rebar3 dialyzer     # type checking
 rebar3 eunit        # unit + property tests
-rebar3 ct           # Common Test suites (chappe_sip_*_SUITE, chappe_rtpengine_*_SUITE, chappe_mix_*_SUITE)
+rebar3 ct           # Common Test suites (chappe_sip_*_SUITE, chappe_rtpengine_*_SUITE, chappe_esl_*_SUITE)
 ```
 
 `make check` runs all of them. CI (`.github/workflows/ci.yml`) runs
@@ -52,7 +54,7 @@ rebar3 ct           # Common Test suites (chappe_sip_*_SUITE, chappe_rtpengine_*
 the `MIN_COVERAGE` floor set in the workflow (raise it, never lower it). The
 docker jobs run the conformance lab and the compliance gate
 (`make interop-conformance`, `make compliance GATE=demo`), the JsSIP/Kamailio
-suite, `make interop`, `make interop-mix`, and the C NIF
+suite, `make interop`, `make interop-mix`, `make interop-esl`, and the C NIF
 under AddressSanitizer (`make asan`; see `apps/chappe_sip/test/asan/`).
 
 ## Build & Development Commands
@@ -80,7 +82,7 @@ in `apps/chappe_sip/docs/design/engine.md`.
 - Never use the em-dash character in code, docs, or messages.
 - Never use the word "comprehensive" in tickets, comments, PRs, or MRs.
 - OTP 29 only. sofia pin: freeswitch/sofia-sip v1.13.17-55 (vendored).
-- Keep the leaf apps (chappe_rtpengine, chappe_mix) SIP-free;
+- Keep the leaf apps (chappe_rtpengine, chappe_esl, chappe_mix) SIP-free;
   SIP-coupled logic belongs in chappe_sip or a consuming product.
 - Measure before you claim: chappe_mix keeps its thresholds and results in
   `apps/chappe_mix/test/audit/PERF.md` and what was tried and reverted in

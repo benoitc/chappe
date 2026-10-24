@@ -1,0 +1,16 @@
+%% Copyright 2026 Benoit Chesneau
+%% SPDX-License-Identifier: Apache-2.0
+
+{application, chappe_esl, [
+    {description, "FreeSWITCH Event Socket (ESL) client for Erlang/OTP"},
+    {vsn, "0.1.0"},
+    {registered, [
+        chappe_esl_sup,
+        chappe_esl_outbound_sup
+    ]},
+    {mod, {chappe_esl_app, []}},
+    {applications, [kernel, stdlib]},
+    {env, []},
+    {licenses, ["Apache-2.0"]},
+    {links, []}
+]}.

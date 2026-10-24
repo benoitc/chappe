@@ -1,0 +1,7 @@
+Content-Length: 67
+Content-Type: text/event-plain
+
+Event-Name: CHANNEL_ANSWER
+Unique-ID: 111
+variable_foo: bar%20baz
+
