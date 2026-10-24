@@ -1,0 +1,45 @@
+# Copyright 2026 Benoit Chesneau
+# SPDX-License-Identifier: Apache-2.0
+#
+# Two FreeSWITCH nodes (1.10.10, native on arm64 and amd64) for the
+# chappe_esl live suite and the node registry example. Test-only (see
+# conf/freeswitch.xml: allow-all ESL ACL, unauthenticated SIP profile).
+#
+# ESL is published on 127.0.0.1:${FS1_ESL_PORT:-18021} (fs1) and
+# 127.0.0.1:${FS2_ESL_PORT:-18022} (fs2). SIP (5080) stays inside the
+# compose network: fs1 reaches fs2 as sip:park@fs2:5080 and back.
+# Driven by apps/chappe_esl/test/e2e.sh (make interop-esl) and
+# apps/chappe_esl/examples/nodes.sh (make demo-esl).
+
+x-freeswitch: &freeswitch
+  image: drachtio/drachtio-freeswitch-mrf:latest
+  # the image's /entrypoint.sh edits its stock tree; this config replaces
+  # that tree, so start FreeSWITCH directly
+  entrypoint: ["/usr/local/freeswitch/bin/freeswitch"]
+  command:
+    [
+      "-nonat", "-c",
+      "-conf", "/chappe/conf",
+      "-log", "/tmp", "-db", "/tmp", "-run", "/tmp"
+    ]
+  stdin_open: true
+  tty: true
+  volumes:
+    - ./conf:/chappe/conf:ro
+  healthcheck:
+    test: ["CMD", "/usr/local/freeswitch/bin/fs_cli", "-x", "sofia status"]
+    interval: 2s
+    timeout: 5s
+    retries: 30
+
+services:
+  fs1:
+    <<: *freeswitch
+    hostname: fs1
+    ports:
+      - "127.0.0.1:${FS1_ESL_PORT:-18021}:8021"
+  fs2:
+    <<: *freeswitch
+    hostname: fs2
+    ports:
+      - "127.0.0.1:${FS2_ESL_PORT:-18022}:8021"

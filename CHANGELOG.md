@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- `chappe_esl` is back in the umbrella. It can now register several
+  FreeSWITCH nodes, keep each one connected (reconnecting with a growing
+  delay), watch its health with heartbeats and periodic checks, report its
+  load, and pick a node for a new call by fewest sessions, most idle CPU or
+  weight, skipping nodes that are down, drained or full. You can drain a
+  node, run commands on it, and be told when it goes up or down.
+- `chappe_esl`: commands to receive only one channel's events, to drop event
+  subscriptions, and to send a message or an event with a body.
+- `chappe_esl`: a command on a connection that is already closed now returns
+  an error instead of crashing the caller, and a refused connection no longer
+  takes the caller down with it.
+- CI: an `esl-interop` job runs the ESL suite against two real FreeSWITCH
+  nodes, including a node stopped and started during the run.
+
 - `chappe_rtpengine`: `publish` on sessions and nodes, the one-sided anchor for
   a call with no second leg (a recording server, a publisher). rtpengine writes
   the answer and the session goes straight to established.
