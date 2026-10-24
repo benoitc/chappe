@@ -21,6 +21,8 @@
 %%    their NOTIFYs are routed by; a subscriber outlives an engine restart.
 %% 3e. chappe_sip_events_sup: the ESC, the presence and message-summary
 %%    notifiers and the publication agents (event packages we serve).
+%% 3f. chappe_sip_peers_sup: the OPTIONS-monitored peers and the
+%%    registrar's keepalive; their state outlives an engine restart.
 %% 4. chappe_sip_ws_sup / chappe_sip_media_sup: optional subsystems (WS transport, media
 %%    control plane). They sit above the stack so their state (and the media
 %%    backend connections) survive SIP engine restarts; both are populated
@@ -48,6 +50,7 @@ init([]) ->
         sup(chappe_sip_refer_sup),
         sup(chappe_sip_subscriber_sup),
         sup(chappe_sip_events_sup),
+        sup(chappe_sip_peers_sup),
         sup(chappe_sip_ws_sup),
         sup(chappe_sip_media_sup),
         sup(chappe_sip_stack_sup)

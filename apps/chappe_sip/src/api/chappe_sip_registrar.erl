@@ -32,6 +32,9 @@
 %%   domains => any | [binary()]  the domains bindings are kept for
 %%     (default: the registrar_domains setting); another one gets 404.
 %%   default_expires => pos_integer()
+%%   qualify_interval_ms => pos_integer()  send an OPTIONS to each contact
+%%     registered over UDP this often (NAT keepalive); qualify_down_after
+%%     (default 2) unanswered in a row drop the binding (chappe_sip_qualify)
 -spec handler(map()) ->
     fun((chappe_sip_req:req(), chappe_sip_res:res()) -> ok).
 handler(#{auth := _} = Opts0) ->
@@ -42,11 +45,16 @@ handler(_Opts) ->
     erlang:error({registrar, auth_required}).
 
 registrar_fun(Opts0) ->
+    ok = qualify(Opts0),
     fun(Req, Res) ->
         case registrar_auth(maps:get(auth, Opts0, undefined), Req) of
             ok ->
                 do_register(
-                    maps:without([auth, allow_unauthenticated], Opts0), Req, Res
+                    maps:without(
+                        [auth, allow_unauthenticated | qualify_keys()], Opts0
+                    ),
+                    Req,
+                    Res
                 );
             {reject, Status} ->
                 _ = chappe_sip_res:send(Res, no_6xx(Status)),
@@ -58,6 +66,18 @@ registrar_fun(Opts0) ->
                 ok
         end
     end.
+
+qualify(#{qualify_interval_ms := Ms} = Opts) when is_integer(Ms), Ms > 0 ->
+    chappe_sip_qualify:configure(#{
+        interval_ms => Ms,
+        down_after => maps:get(qualify_down_after, Opts, 2),
+        timeout_ms => maps:get(qualify_timeout_ms, Opts, 2000)
+    });
+qualify(_Opts) ->
+    ok.
+
+qualify_keys() ->
+    [qualify_interval_ms, qualify_down_after, qualify_timeout_ms].
 
 %% RFC 3261 10.3: a registrar never answers 6xx; a policy that declines
 %% with one gets 403 on the wire

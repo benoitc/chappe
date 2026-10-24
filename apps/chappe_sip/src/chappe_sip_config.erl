@@ -109,6 +109,9 @@ default(proxy_accepted_ms) -> 32000;
 %%     mix => #{ip => inet:ip_address(), advertise => inet:ip_address(),
 %%              law => ulaw | alaw, depth => pos_integer()}}
 default(media) -> #{};
+%% OPTIONS-monitored peers (chappe_sip_peers) added at start: a list of
+%% {Name, Opts}, or a map Name => Opts.
+default(peers) -> [];
 %% Session timers (RFC 4028). session_expires: the interval (s) a UAC asks
 %% for and a UAS asks for when the caller supports timers; undefined never
 %% asks (a peer's request is still honored). session_min_se: the smallest

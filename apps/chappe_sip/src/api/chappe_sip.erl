@@ -41,6 +41,14 @@
 ]).
 -export([accept_refer/3, accept_refer/4, send_refer/3]).
 -export([event_package/2, subscribe_to/3, unsubscribe/1, publish_state/4]).
+-export([
+    peer_add/2,
+    peer_remove/1,
+    peers/0,
+    peer_status/1,
+    peer_select/2,
+    peer_subscribe/1
+]).
 
 -export_type([replaced_info/0]).
 
@@ -601,3 +609,43 @@ replaces_status(Found) ->
         {ok, Dialog, Info} ->
             {accept, Dialog, Info}
     end.
+
+%% ---- peers (OPTIONS keepalive) ----
+
+%% Monitor a SIP peer with OPTIONS. Opts: #{uri := binary(), group,
+%% priority (lower wins, default 10), weight (default 1), interval_ms
+%% (default 10000), timeout_ms (default 2000), up_after (default 1),
+%% down_after (default 2), alive_codes (the statuses that count as an
+%% answer; default any final but 408 and 503)}. See chappe_sip_peers.
+-spec peer_add(chappe_sip_peers:name(), chappe_sip_peers:opts()) ->
+    ok | {error, term()}.
+peer_add(Name, Opts) ->
+    chappe_sip_peers:add(Name, Opts).
+
+-spec peer_remove(chappe_sip_peers:name()) -> ok | {error, not_found}.
+peer_remove(Name) ->
+    chappe_sip_peers:remove(Name).
+
+%% Every peer with its state (unknown | up | down), last status and RTT.
+-spec peers() -> [{chappe_sip_peers:name(), chappe_sip_peers:info()}].
+peers() ->
+    chappe_sip_peers:peers().
+
+-spec peer_status(chappe_sip_peers:name()) ->
+    {ok, chappe_sip_peers:info()} | {error, not_found}.
+peer_status(Name) ->
+    chappe_sip_peers:status(Name).
+
+%% An up peer of Group: the best priority, the next in turn, or one at
+%% random by weight.
+-spec peer_select(term(), chappe_sip_peers:policy()) ->
+    {ok, binary()} | {error, none_up}.
+peer_select(Group, Policy) ->
+    chappe_sip_peers:select(Group, Policy).
+
+%% Pid gets {chappe_sip_peer, Name, up | down} on each change, and
+%% {chappe_sip_qualify, Aor, Contact, unreachable} when the registrar's
+%% keepalive drops a binding.
+-spec peer_subscribe(pid()) -> ok.
+peer_subscribe(Pid) ->
+    chappe_sip_peers:subscribe(Pid).
