@@ -25,6 +25,23 @@ JSON is decoded with the OTP `json` module.
 - `chappe_esl_outbound_sup`, `chappe_esl_listener`, and `chappe_esl_handler` implement the outbound
   listener and its per-channel handler contract.
 - `chappe_esl_app` and `chappe_esl_sup` are the OTP application and root supervisor.
+- `chappe_esl_nodes` is the node registry: a supervisor, started only when
+  nodes exist, that owns the node ETS table and the pg scope for notices.
+  `chappe_esl_node` is one gen_statem per FreeSWITCH node; it is the
+  controlling process of the node's `chappe_esl_conn`.
+
+## Node states
+
+`chappe_esl_node` runs `connecting`, `up` and `down`, and shows `draining`
+for an up node that was drained. A node is up after login, the event
+subscription and one passing round of probes. It goes down on a closed
+socket, a failed probe, or no HEARTBEAT for twice the heartbeat interval; it
+closes the connection and retries after an exponential backoff with jitter.
+Probes run in a separate process so a slow node never blocks the node
+process. Every change is written to the node's ETS row before the notice is
+sent, so a subscriber that reads `node_status/1` on a notice sees the new
+state. Readers (`node_status`, `node_select`, `node_api`) read ETS and never
+call the node process.
 
 ## Connection states
 
@@ -58,3 +75,7 @@ connect with `{protocol_error, Reason}`. A request that times out returns
 `{error, timeout}` and keeps its FIFO slot, so its late reply is dropped.
 Inbound connections link to the controlling process (the link follows
 `set_controlling_process/2`); outbound handlers link to their connection.
+A connection that cannot reach FreeSWITCH returns
+`{error, {connect_failed, Reason}}` from `connect/1` without killing the
+caller, and a command on a connection that is gone returns
+`{error, closed}`.

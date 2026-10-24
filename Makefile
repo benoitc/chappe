@@ -5,7 +5,7 @@
 
 .PHONY: all compile test test-static check eunit ct lint xref dialyzer \
         fmt fmt-check asan interop interop-mix interop-ref bench-ref bench-pass \
-        interop-conformance interop-esl compliance cover clean
+        interop-conformance interop-esl demo-esl compliance cover clean
 
 all: compile
 
@@ -53,6 +53,11 @@ interop:
 # The ESL client against a real FreeSWITCH in docker.
 interop-esl:
 	apps/chappe_esl/test/e2e.sh
+
+# Two FreeSWITCH nodes and a shell with chappe_esl monitoring them
+# (apps/chappe_esl/examples/README.md).
+demo-esl:
+	apps/chappe_esl/examples/nodes.sh
 
 # The mixer behind a real rtpengine (transcoded legs, N-1 by Goertzel).
 interop-mix:

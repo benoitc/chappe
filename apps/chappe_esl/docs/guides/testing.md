@@ -20,7 +20,8 @@ rebar3 eunit
 
 ## Integration tests
 
-Common Test drives the connection and outbound listener against an in-process
+Common Test drives the connection, the outbound listener and the node
+registry against an in-process
 fake FreeSWITCH (`test/chappe_esl_fake_server.erl`), so no external server is needed.
 
 ```sh
@@ -31,16 +32,14 @@ The live suite (`test/chappe_esl_live_SUITE.erl`) skips unless `FS_HOST` is set.
 
 ## Live interop
 
-Bring up a FreeSWITCH and point the suite at it:
+From the umbrella root, bring up two FreeSWITCH nodes, run the live suite and
+tear them down:
 
 ```sh
-docker compose -f interop/docker-compose.yml up -d
-FS_HOST=127.0.0.1 FS_PORT=8021 FS_PASSWORD=ClueCon \
-  rebar3 ct --suite test/chappe_esl_live_SUITE
-docker compose -f interop/docker-compose.yml down
+make interop-esl
 ```
 
-See `interop/README.md` for details.
+See `interop/README.md` for running it by hand.
 
 ## Static checks
 

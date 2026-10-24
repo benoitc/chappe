@@ -13,6 +13,8 @@ media concepts.
   await helper, event subscriptions, and `execute` with event-lock.
 - Outbound listener: accept dialplan socket connections and run a handler per
   channel.
+- A node registry: register several FreeSWITCH nodes, keep them connected,
+  watch their health and load, and pick one per call.
 - A streaming frame parser that tolerates arbitrary TCP chunking.
 - Event decoding for command/reply, api/response, event-plain, event-json,
   event-xml (raw), disconnect-notice, log/data, and rude-rejection.
@@ -76,6 +78,20 @@ handle_channel(Conn, Channel, _Args) ->
 {ok, _Ref} = chappe_esl:start_listener(8084, my_handler, []).
 ```
 
+## Nodes
+
+Register FreeSWITCH nodes, then pick one per call:
+
+```erlang
+ok = chappe_esl:node_add(fs1, #{host => "10.0.0.11", tags => [conference]}),
+ok = chappe_esl:node_add(fs2, #{host => "10.0.0.12", tags => [conference]}),
+{ok, Name} = chappe_esl:node_select(#{policy => least_sessions}),
+{ok, _} = chappe_esl:node_api(Name, "status").
+```
+
+See `docs/guides/nodes.md`, `docs/guides/select-node.md`, and
+`examples/README.md` (`make demo-esl`) to try it against two FreeSWITCH nodes.
+
 ## Events
 
 The controlling process receives:
@@ -100,10 +116,11 @@ Guides live in `docs/`. Build the HTML with `rebar3 ex_doc` and open
 
 ```sh
 rebar3 eunit    # parser and event decoders, split at every byte boundary
-rebar3 ct       # connection and outbound suites against an in-process fake
+rebar3 ct       # connection, outbound and node suites against an in-process fake
 ```
 
-Live interop against a real FreeSWITCH is opt-in; see `interop/README.md`.
+Live interop against two real FreeSWITCH nodes is opt-in (`make interop-esl`
+from the umbrella root); see `interop/README.md`.
 
 ## License
 

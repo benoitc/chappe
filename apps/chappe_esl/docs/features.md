@@ -36,6 +36,17 @@ capability exists before you reach for it.
 - Event decoding: command/reply, api/response, text/event-plain (URL-decoded),
   text/event-json, text/event-xml (raw body), text/disconnect-notice, log/data,
   text/rude-rejection.
+- Node registry (`node_add/2`, `node_remove/1`, `nodes/0`, `node_status/1`):
+  one supervised connection per FreeSWITCH node, reconnect with exponential
+  backoff and jitter, load from HEARTBEAT and channel events, health probes
+  (`status`, `show calls count`, `sofia status`), heartbeat timeout. Nodes
+  also load from the `nodes` app env.
+- Node selection (`node_select/1`) by fewest sessions, most idle CPU or
+  weight, skipping nodes that are down, drained (`node_drain/1`) or full,
+  filtered by tags.
+- `node_api/2` and `node_bgapi/2` on a node's connection; up, down, draining
+  and load notices (`node_subscribe/1`) and the node's events
+  (`node_events/1`).
 - Requirement catalogue in `docs/compliance/requirements.tsv`.
 
 ## Roadmap
@@ -48,4 +59,5 @@ capability exists before you reach for it.
   send a caller-chosen `Job-UUID`.
 - TLS event socket connections.
 - Structured decoding of event-xml (currently kept raw).
-- Automatic reconnect for inbound connections.
+- Automatic reconnect for connections opened with `connect/1` (the node
+  registry reconnects its own).
