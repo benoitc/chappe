@@ -32,7 +32,8 @@
     event_scope/1,
     sendmsg_body/1,
     sendevent_body/1,
-    dead_conn/1
+    dead_conn/1,
+    connect_refused/1
 ]).
 
 all() ->
@@ -62,7 +63,8 @@ all() ->
         event_scope,
         sendmsg_body,
         sendevent_body,
-        dead_conn
+        dead_conn,
+        connect_refused
     ].
 
 fake_opts() ->
@@ -77,7 +79,10 @@ fake_opts() ->
 
 %% Cases that exercise the handshake start their own fake.
 init_per_testcase(Case, Config) when
-    Case =:= auth_failure; Case =:= rude_rejection; Case =:= frame_too_large
+    Case =:= auth_failure;
+    Case =:= rude_rejection;
+    Case =:= frame_too_large;
+    Case =:= connect_refused
 ->
     Config;
 init_per_testcase(_Case, Config) ->
@@ -486,3 +491,18 @@ dead_conn(Config) ->
     Conn = ?config(conn, Config),
     ok = chappe_esl:close(Conn),
     ?assertEqual({error, closed}, chappe_esl:api(Conn, "uptime")).
+
+%% Nothing listens: connect returns the reason and the caller is not taken
+%% down with the connection process.
+connect_refused(_Config) ->
+    {ok, L} = gen_tcp:listen(0, []),
+    {ok, Port} = inet:port(L),
+    ok = gen_tcp:close(L),
+    ?assertEqual(
+        {error, {connect_failed, econnrefused}},
+        chappe_esl:connect(#{host => {127, 0, 0, 1}, port => Port})
+    ),
+    receive
+        {'EXIT', _, _} = Exit -> ct:fail({exit, Exit})
+    after 100 -> ok
+    end.

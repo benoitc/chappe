@@ -128,7 +128,9 @@ init(#{mode := inbound} = Opts) ->
             },
             {ok, authenticating, Data};
         {error, Reason} ->
-            {stop, {connect_failed, Reason}}
+            %% {error, _}: start_link returns the error, the process exits
+            %% normal (no crash report, the linked caller lives on)
+            {error, {connect_failed, Reason}}
     end;
 init(#{mode := outbound} = Opts) ->
     process_flag(trap_exit, true),

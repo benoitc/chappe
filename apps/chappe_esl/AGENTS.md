@@ -13,7 +13,10 @@ Layers: `chappe_esl_parser` (streaming Content-Length frame parser), `chappe_esl
 gen_statem per connection: inbound auth + outbound accept, FIFO command/reply
 correlation, event delivery to an owner), `chappe_esl_inbound` (connect helper),
 `chappe_esl_listener` / `chappe_esl_outbound_sup` (outbound dialplan sockets),
-`chappe_esl_handler` (the outbound channel behaviour).
+`chappe_esl_handler` (the outbound channel behaviour), `chappe_esl_nodes` (the
+FreeSWITCH node registry: a supervisor owning the node ETS table and pg scope,
+started only when nodes exist) and `chappe_esl_node` (one gen_statem per node:
+connection, backoff, HEARTBEAT load, probes, drain).
 
 ## Required Checks
 
@@ -35,7 +38,9 @@ socket); the live suite is gated on a real FreeSWITCH.
 ## Conventions
 
 - Keep this lib SIP-free.
-- Run `rebar3 fmt`; elvis must pass (`chappe_esl_conn` keeps `#data{}` state and calls a
-  pluggable handler module; ignores are in the umbrella `elvis.config`).
+- Run `rebar3 fmt`; elvis must pass (`chappe_esl_conn` and `chappe_esl_node`
+  keep `#data{}` state, `chappe_esl_conn` calls a pluggable handler module, and
+  the `chappe_esl` facade is over the function limit; ignores are in the
+  umbrella `elvis.config`).
 - OTP 29. No em-dash in code/docs/messages; never the word "comprehensive".
 - No generated/co-authored commit trailers; one imperative subject line.

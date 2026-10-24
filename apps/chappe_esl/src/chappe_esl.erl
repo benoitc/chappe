@@ -29,6 +29,11 @@
 -export([stats/1]).
 %% Outbound listener.
 -export([start_listener/3, start_listener/4, stop_listener/1]).
+%% Node registry.
+-export([node_add/2, node_remove/1, nodes/0, node_status/1]).
+-export([node_drain/1, node_resume/1, node_select/1]).
+-export([node_api/2, node_bgapi/2]).
+-export([node_subscribe/1, node_events/1, node_unsubscribe/1]).
 
 -export_type([conn/0, listener_opts/0, api_error/0]).
 
@@ -242,6 +247,76 @@ start_listener(Port, Handler, HandlerArgs, ListenerOpts) ->
 -spec stop_listener(term()) -> ok | {error, term()}.
 stop_listener(Ref) ->
     chappe_esl_sup:stop_listener(Ref).
+
+%% Node registry
+
+%% Register a FreeSWITCH node and start monitoring it. Opts: host (required),
+%% port (8021), password (<<"ClueCon">>), tags ([]), weight (1),
+%% max_sessions (infinity), sip_uri (undefined, kept for the caller),
+%% events (extra event names), probes (api commands run as health checks),
+%% heartbeat_interval_ms (20000, match the node's event-heartbeat-interval),
+%% probe_interval_ms (5000), probe_timeout_ms (2000), connect_timeout_ms
+%% (2000), backoff_min_ms (500), backoff_max_ms (30000).
+-spec node_add(chappe_esl_nodes:name(), map()) -> ok | {error, term()}.
+node_add(Name, Opts) ->
+    chappe_esl_nodes:add(Name, Opts).
+
+-spec node_remove(chappe_esl_nodes:name()) -> ok | {error, not_found}.
+node_remove(Name) ->
+    chappe_esl_nodes:remove(Name).
+
+%% Every registered node and its state: connecting, up, draining or down.
+-spec nodes() -> [{chappe_esl_nodes:name(), chappe_esl_node:state()}].
+nodes() ->
+    chappe_esl_nodes:list().
+
+%% A node's state, settings and load (sessions, max_sessions,
+%% sessions_per_sec, idle_cpu, uptime_ms, calls, heartbeat_at, probe_at).
+-spec node_status(chappe_esl_nodes:name()) -> {ok, map()} | {error, not_found}.
+node_status(Name) ->
+    chappe_esl_nodes:status(Name).
+
+%% Keep a node connected and monitored but stop selecting it.
+-spec node_drain(chappe_esl_nodes:name()) -> ok | {error, not_found}.
+node_drain(Name) ->
+    chappe_esl_nodes:drain(Name).
+
+-spec node_resume(chappe_esl_nodes:name()) -> ok | {error, not_found}.
+node_resume(Name) ->
+    chappe_esl_nodes:resume(Name).
+
+%% Pick an up node: #{policy => least_sessions | idle_cpu | weighted,
+%% tags => [Tag]}.
+-spec node_select(chappe_esl_nodes:select_opts()) ->
+    {ok, chappe_esl_nodes:name()} | {error, none_up}.
+node_select(Opts) ->
+    chappe_esl_nodes:select(Opts).
+
+%% api and bgapi on a node's connection; {error, down} when it is not up.
+-spec node_api(chappe_esl_nodes:name(), iodata()) ->
+    {ok, binary()} | {error, term()}.
+node_api(Name, Cmd) ->
+    chappe_esl_nodes:api(Name, Cmd).
+
+-spec node_bgapi(chappe_esl_nodes:name(), iodata()) ->
+    {ok, binary()} | {error, term()}.
+node_bgapi(Name, Cmd) ->
+    chappe_esl_nodes:bgapi(Name, Cmd).
+
+%% Receive {chappe_esl_node, Name, up | down | draining | {load, Load}} for
+%% one node, or every node with `all'.
+-spec node_subscribe(chappe_esl_nodes:name() | all) -> ok.
+node_subscribe(Name) ->
+    chappe_esl_nodes:subscribe(Name).
+
+%% Receive {chappe_esl_node, Name, {event, Event}} for the node's events.
+-spec node_events(chappe_esl_nodes:name() | all) -> ok.
+node_events(Name) ->
+    chappe_esl_nodes:events(Name).
+
+-spec node_unsubscribe(chappe_esl_nodes:name() | all) -> ok.
+node_unsubscribe(Name) ->
+    chappe_esl_nodes:unsubscribe(Name).
 
 %% internal
 

@@ -299,7 +299,7 @@ default_load() ->
     #{
         <<"Session-Count">> => <<"0">>,
         <<"Max-Sessions">> => <<"1000">>,
-        <<"Session-Per-Sec">> => <<"0">>,
+        <<"Session-Per-Sec-Last">> => <<"0">>,
         <<"Idle-CPU">> => <<"99.000000">>,
         <<"Uptime-msec">> => <<"1000">>
     }.

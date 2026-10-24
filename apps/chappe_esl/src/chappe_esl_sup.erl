@@ -5,6 +5,8 @@
 %% accepted outbound connections). Outbound listeners are added as dynamic
 %% children by chappe_esl:start_listener/3. Inbound connections are not
 %% supervised here: chappe_esl:connect/1 links a fresh chappe_esl_conn to the caller.
+%% The node registry (chappe_esl_nodes) starts here when the `nodes' app env
+%% lists nodes, otherwise on the first chappe_esl:node_add/2.
 -module(chappe_esl_sup).
 -behaviour(supervisor).
 
@@ -47,4 +49,14 @@ init([]) ->
             shutdown => infinity
         }
     ],
-    {ok, {SupFlags, Children}}.
+    {ok, {SupFlags, Children ++ registry(env_nodes())}}.
+
+registry([]) -> [];
+registry(Nodes) -> [chappe_esl_nodes:child_spec(Nodes)].
+
+%% `nodes' is a list of {Name, Opts} or a Name => Opts map.
+env_nodes() ->
+    case application:get_env(chappe_esl, nodes, []) of
+        Nodes when is_map(Nodes) -> lists:sort(maps:to_list(Nodes));
+        Nodes when is_list(Nodes) -> Nodes
+    end.
