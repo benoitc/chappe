@@ -14,6 +14,10 @@ Start here.
 - [Originate calls (UAC)](guides/originate-calls.md): place calls and send
   out-of-dialog requests with `chappe_sip:create_uac` / `chappe_sip:request`.
 - [B2BUA](guides/b2bua.md): bridge an inbound call to a new one.
+- [Handle re-INVITE in a B2BUA](guides/b2bua-reinvite.md): what the relay does
+  with each offer, the SDP hook, anchoring and hold events.
+- [Run an SBC](guides/sbc.md): OPTIONS-monitored peers, peer groups with
+  failover, direct or anchored media per call.
 - [Proxy](guides/proxy.md): forking, first-2xx-wins, and record-routed
   in-dialog forwarding.
 - [Registrar](guides/registrar.md): the AOR-to-contact location store.

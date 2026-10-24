@@ -1,0 +1,207 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!-- Copyright 2026 Benoit Chesneau
+     SPDX-License-Identifier: Apache-2.0
+
+     alice for run-sipp.sh: calls [service] through the demo SBC, puts the
+     call on hold and takes it off, takes up to two media switches from the
+     demo shell, then hangs up. -->
+<scenario name="demo alice">
+  <send retrans="500">
+    <![CDATA[
+      INVITE sip:[service]@chappe.demo SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:alice@chappe.demo>;tag=[pid]alice[call_number]
+      To: <sip:[service]@chappe.demo>
+      Call-ID: [call_id]
+      CSeq: 1 INVITE
+      Contact: <sip:alice@[local_ip]:[local_port]>
+      Max-Forwards: 70
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=alice 1 1 IN IP[local_ip_type] [local_ip]
+      s=-
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0
+      a=rtpmap:0 PCMU/8000
+
+    ]]>
+  </send>
+  <recv response="100" optional="true"/>
+  <recv response="180" optional="true"/>
+  <recv response="183" optional="true"/>
+  <recv response="200">
+    <action>
+      <ereg regexp="
+To[ 	]*:[^
+]*;tag=([-A-Za-z0-9.!%*_+`'~]+)" search_in="msg" check_it="true" assign_to="chk,peer_tag"/>
+      <ereg regexp="
+Contact[ 	]*:[^
+]*&lt;([^&gt;
+]+)&gt;" search_in="msg" check_it="true" assign_to="chk,peer_contact"/>
+    </action>
+  </recv>
+  <send>
+    <![CDATA[
+      ACK [$peer_contact] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:alice@chappe.demo>;tag=[pid]alice[call_number]
+      To: <sip:[service]@chappe.demo>;tag=[$peer_tag]
+      Call-ID: [call_id]
+      CSeq: 1 ACK
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <pause milliseconds="2000"/>
+  <send retrans="500">
+    <![CDATA[
+      INVITE [$peer_contact] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:alice@chappe.demo>;tag=[pid]alice[call_number]
+      To: <sip:[service]@chappe.demo>;tag=[$peer_tag]
+      Call-ID: [call_id]
+      CSeq: 2 INVITE
+      Contact: <sip:alice@[local_ip]:[local_port]>
+      Max-Forwards: 70
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=alice 1 2 IN IP[local_ip_type] [local_ip]
+      s=-
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0
+      a=rtpmap:0 PCMU/8000
+      a=sendonly
+
+    ]]>
+  </send>
+  <recv response="100" optional="true"/>
+  <recv response="200"/>
+  <send>
+    <![CDATA[
+      ACK [$peer_contact] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:alice@chappe.demo>;tag=[pid]alice[call_number]
+      To: <sip:[service]@chappe.demo>;tag=[$peer_tag]
+      Call-ID: [call_id]
+      CSeq: 2 ACK
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <pause milliseconds="2000"/>
+  <send retrans="500">
+    <![CDATA[
+      INVITE [$peer_contact] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:alice@chappe.demo>;tag=[pid]alice[call_number]
+      To: <sip:[service]@chappe.demo>;tag=[$peer_tag]
+      Call-ID: [call_id]
+      CSeq: 3 INVITE
+      Contact: <sip:alice@[local_ip]:[local_port]>
+      Max-Forwards: 70
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=alice 1 3 IN IP[local_ip_type] [local_ip]
+      s=-
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0
+      a=rtpmap:0 PCMU/8000
+      a=sendrecv
+
+    ]]>
+  </send>
+  <recv response="100" optional="true"/>
+  <recv response="200"/>
+  <send>
+    <![CDATA[
+      ACK [$peer_contact] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:alice@chappe.demo>;tag=[pid]alice[call_number]
+      To: <sip:[service]@chappe.demo>;tag=[$peer_tag]
+      Call-ID: [call_id]
+      CSeq: 3 ACK
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <!-- up to two media switches from the demo shell: an offerless
+       re-INVITE each, answered with alice's offer; the call ends 20 s after
+       the last one -->
+  <recv request="INVITE" timeout="20000" ontimeout="bye"/>
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:alice@[local_ip]:[local_port]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=alice 1 4 IN IP[local_ip_type] [local_ip]
+      s=-
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0
+      a=rtpmap:0 PCMU/8000
+
+    ]]>
+  </send>
+  <recv request="ACK"/>
+  <recv request="INVITE" timeout="20000" ontimeout="bye"/>
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:alice@[local_ip]:[local_port]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=alice 1 5 IN IP[local_ip_type] [local_ip]
+      s=-
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0
+      a=rtpmap:0 PCMU/8000
+
+    ]]>
+  </send>
+  <recv request="ACK"/>
+  <label id="bye"/>
+  <send retrans="500">
+    <![CDATA[
+      BYE [$peer_contact] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:alice@chappe.demo>;tag=[pid]alice[call_number]
+      To: <sip:[service]@chappe.demo>;tag=[$peer_tag]
+      Call-ID: [call_id]
+      CSeq: 4 BYE
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv response="200"/>
+
+  <Reference variables="chk"/>
+</scenario>

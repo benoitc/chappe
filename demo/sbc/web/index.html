@@ -1,0 +1,108 @@
+<!doctype html>
+<!-- Copyright 2026 Benoit Chesneau
+     SPDX-License-Identifier: Apache-2.0
+
+     A browser softphone for the chappe demo SBC (JsSIP over WebSocket).
+     Open it on http://localhost so the browser lets it use the microphone. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>chappe demo phone</title>
+<style>
+  :root { --bg: #f7f7f5; --fg: #1d1d1b; --muted: #6b6b66; --line: #d8d8d2; --accent: #2f5d8a; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #18181a; --fg: #ececea; --muted: #9a9a95; --line: #333336; --accent: #7aa7d6; }
+  }
+  body { background: var(--bg); color: var(--fg); font: 15px/1.4 system-ui, sans-serif;
+         max-width: 34rem; margin: 2rem auto; padding: 0 16px; }
+  h1 { font-size: 1.2rem; }
+  fieldset { border: 1px solid var(--line); border-radius: 6px; margin: 0 0 1rem; }
+  label { display: block; margin: .4rem 0; color: var(--muted); }
+  input { width: 100%; box-sizing: border-box; padding: .4rem; background: transparent;
+          color: var(--fg); border: 1px solid var(--line); border-radius: 4px; }
+  button { margin: .3rem .3rem 0 0; padding: .45rem .9rem; border-radius: 4px;
+           border: 1px solid var(--accent); background: transparent; color: var(--accent); }
+  button:disabled { opacity: .4; }
+  #log { font: 12px/1.4 ui-monospace, monospace; white-space: pre-wrap; color: var(--muted);
+         border-top: 1px solid var(--line); padding-top: .5rem; }
+</style>
+</head>
+<body>
+<h1>chappe demo phone</h1>
+<fieldset>
+  <label>User <input id="user" value="alice"></label>
+  <label>Password <input id="pass" type="password" value="alice-demo"></label>
+  <label>Domain <input id="domain" value="chappe.demo"></label>
+  <label>WebSocket <input id="ws"></label>
+  <button id="register">Register</button>
+</fieldset>
+<fieldset>
+  <label>Call <input id="target" value="bob"></label>
+  <button id="call" disabled>Call</button>
+  <button id="hangup" disabled>Hang up</button>
+  <button id="hold" disabled>Hold</button>
+  <button id="unhold" disabled>Unhold</button>
+</fieldset>
+<audio id="remote" autoplay></audio>
+<div id="log"></div>
+<script src="https://cdn.jsdelivr.net/npm/jssip@3.10.1/dist/jssip.min.js"></script>
+<script>
+  const $ = (id) => document.getElementById(id);
+  $("ws").value = "ws://" + location.hostname + ":5066/ws";
+  const log = (m) => { $("log").textContent = new Date().toLocaleTimeString() + " " + m + "\n" + $("log").textContent; };
+  let ua = null, session = null;
+
+  function attach(s) {
+    session = s;
+    ["hangup", "hold", "unhold"].forEach((b) => $(b).disabled = false);
+    s.on("peerconnection", (e) => e.peerconnection.addEventListener("track", (t) => {
+      $("remote").srcObject = t.streams[0];
+    }));
+    s.on("confirmed", () => log("call up"));
+    s.on("hold", (e) => log("on hold (" + e.originator + ")"));
+    s.on("unhold", (e) => log("off hold (" + e.originator + ")"));
+    s.on("ended", (e) => { log("call ended: " + e.cause); done(); });
+    s.on("failed", (e) => { log("call failed: " + e.cause); done(); });
+    if (s.connection) {
+      s.connection.addEventListener("track", (t) => { $("remote").srcObject = t.streams[0]; });
+    }
+  }
+  function done() {
+    session = null;
+    ["hangup", "hold", "unhold"].forEach((b) => $(b).disabled = true);
+  }
+
+  $("register").onclick = () => {
+    if (ua) ua.stop();
+    const socket = new JsSIP.WebSocketInterface($("ws").value);
+    ua = new JsSIP.UA({
+      sockets: [socket],
+      uri: "sip:" + $("user").value + "@" + $("domain").value,
+      password: $("pass").value,
+      register: true
+    });
+    ua.on("registered", () => { log("registered as " + $("user").value); $("call").disabled = false; });
+    ua.on("registrationFailed", (e) => log("registration failed: " + e.cause));
+    ua.on("newRTCSession", (e) => {
+      if (e.originator === "remote") {
+        log("incoming call from " + e.request.from.uri.user);
+        attach(e.session);
+        e.session.answer({ mediaConstraints: { audio: true, video: false } });
+      }
+    });
+    ua.start();
+  };
+
+  $("call").onclick = () => {
+    const s = ua.call("sip:" + $("target").value + "@" + $("domain").value,
+                      { mediaConstraints: { audio: true, video: false } });
+    log("calling " + $("target").value);
+    attach(s);
+  };
+  $("hangup").onclick = () => session && session.terminate();
+  $("hold").onclick = () => session && session.hold();
+  $("unhold").onclick = () => session && session.unhold();
+</script>
+</body>
+</html>

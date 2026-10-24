@@ -1,0 +1,96 @@
+<?xml version="1.0"?>
+<!-- Copyright 2026 Benoit Chesneau
+     SPDX-License-Identifier: Apache-2.0
+
+     TEST-ONLY, INSECURE. A FreeSWITCH SIP peer for the SBC interop lab:
+     one unauthenticated SIP profile on 5080/udp, and a dialplan that
+     answers any number and plays a tone until the caller hangs up, so
+     rtpengine has packets to count. It replaces the image's stock tree
+     (FreeSWITCH is started with -conf pointing here). Never ship an
+     unauthenticated profile. -->
+<document type="freeswitch/xml">
+  <X-PRE-PROCESS cmd="set" data="domain=chappe-sbc-lab"/>
+
+  <section name="configuration" description="Various Configuration">
+    <configuration name="switch.conf" description="Core Configuration">
+      <settings>
+        <param name="colorize-console" value="false"/>
+        <param name="loglevel" value="notice"/>
+        <param name="max-sessions" value="200"/>
+        <param name="sessions-per-second" value="100"/>
+        <param name="rtp-start-port" value="16384"/>
+        <param name="rtp-end-port" value="16583"/>
+        <param name="dump-cores" value="no"/>
+      </settings>
+    </configuration>
+
+    <configuration name="modules.conf" description="Modules">
+      <modules>
+        <load module="mod_console"/>
+        <load module="mod_event_socket"/>
+        <load module="mod_sofia"/>
+        <load module="mod_commands"/>
+        <load module="mod_dptools"/>
+        <load module="mod_dialplan_xml"/>
+        <load module="mod_tone_stream"/>
+      </modules>
+    </configuration>
+
+    <configuration name="console.conf" description="Console Logger">
+      <mappings>
+        <map name="all" value="console,debug,info,notice,warning,err,crit,alert"/>
+      </mappings>
+      <settings>
+        <param name="colorize" value="false"/>
+        <param name="loglevel" value="notice"/>
+      </settings>
+    </configuration>
+
+    <!-- fs_cli inside the container: the healthcheck and the suite's
+         uuid_hold; the port is not published. -->
+    <configuration name="event_socket.conf" description="Socket Client">
+      <settings>
+        <param name="listen-ip" value="127.0.0.1"/>
+        <param name="listen-port" value="8021"/>
+        <param name="password" value="ClueCon"/>
+      </settings>
+    </configuration>
+
+    <configuration name="sofia.conf" description="sofia Endpoint">
+      <global_settings>
+        <param name="log-level" value="0"/>
+      </global_settings>
+      <profiles>
+        <profile name="sbcpeer">
+          <settings>
+            <param name="context" value="default"/>
+            <param name="dialplan" value="XML"/>
+            <param name="sip-ip" value="$${local_ip_v4}"/>
+            <param name="rtp-ip" value="$${local_ip_v4}"/>
+            <param name="sip-port" value="5080"/>
+            <param name="auth-calls" value="false"/>
+            <param name="inbound-codec-prefs" value="PCMU,PCMA"/>
+            <param name="outbound-codec-prefs" value="PCMU,PCMA"/>
+            <param name="inbound-codec-negotiation" value="generous"/>
+            <param name="rtp-timer-name" value="soft"/>
+            <param name="apply-nat-acl" value="none"/>
+            <param name="manage-presence" value="false"/>
+            <param name="enable-timer" value="false"/>
+            <param name="tls" value="false"/>
+          </settings>
+        </profile>
+      </profiles>
+    </configuration>
+  </section>
+
+  <section name="dialplan" description="Regex/XML Dialplan">
+    <context name="default">
+      <extension name="tone">
+        <condition field="destination_number" expression="^.*$">
+          <action application="answer"/>
+          <action application="playback" data="tone_stream://%(1000,0,440);loops=-1"/>
+        </condition>
+      </extension>
+    </context>
+  </section>
+</document>

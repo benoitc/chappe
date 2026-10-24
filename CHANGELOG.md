@@ -15,6 +15,31 @@
   takes the caller down with it.
 - CI: an `esl-interop` job runs the ESL suite against two real FreeSWITCH
   nodes, including a node stopped and started during the run.
+- B2BUA: the SDP hook now tells an offer from an answer, so an app can rewrite
+  or refuse each one; the older two-argument hook keeps working.
+- B2BUA: calls can be anchored in rtpengine with one option, for the whole
+  call: every re-offer from either side goes through it, and a refused
+  re-offer no longer leaves rtpengine stuck. A new helper decides direct or
+  anchored per call (WebRTC, NAT, private networks), and a live call can move
+  between the two.
+- B2BUA: a re-INVITE without an offer now reaches the other side, and the
+  answer in the ACK follows it; before, the leg answered it alone with a
+  stale SDP. UPDATE now crosses while the callee rings. Hold and unhold reach
+  the app as events.
+- Peers: SIP peers can be watched with OPTIONS, picked by priority, in turn
+  or by weight, and a B2BUA call to a group moves to the next live peer on
+  408, 503 or a transport error. The registrar can keep UDP contacts open
+  with OPTIONS and drops the ones that stop answering.
+- B2BUA: an INVITE without an offer now works, the answer in the caller's
+  ACK reaching the callee; anchored calls take it through rtpengine too.
+- NAT: a UA whose Contact is a private address is now reached where its
+  requests come from: calls to it, the requests of its calls, and the
+  registrar's keepalive. Before, those went to the private address and were
+  lost.
+- An SBC interop lab runs real calls through the B2BUA to two FreeSWITCH
+  nodes, with rtpengine and Kamailio, in CI and with `make interop-sbc`.
+- `make demo` starts a small SBC to try by hand: a registrar for two users,
+  a WebRTC page, and calls between them, direct or anchored.
 
 - `chappe_rtpengine`: `publish` on sessions and nodes, the one-sided anchor for
   a call with no second leg (a recording server, a publisher). rtpengine writes

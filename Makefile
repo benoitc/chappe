@@ -5,7 +5,8 @@
 
 .PHONY: all compile test test-static check eunit ct lint xref dialyzer \
         fmt fmt-check asan interop interop-mix interop-ref bench-ref bench-pass \
-        interop-conformance interop-esl demo-esl compliance cover clean
+        interop-conformance interop-esl demo-esl interop-sbc compliance cover clean \
+        demo demo-shell demo-down
 
 all: compile
 
@@ -101,6 +102,34 @@ compliance:
 interop-conformance:
 	CONFORMANCE=1 rebar3 ct \
 	    --suite apps/chappe_sip/test/chappe_sip_conformance_SUITE
+
+# The B2BUA as an SBC: SIPp calls through a chappe node to two FreeSWITCH
+# peers, with rtpengine and Kamailio, all in docker
+# (apps/chappe_sip/interop/sbc). SBC_LAB names the compose project.
+interop-sbc:
+	INTEROP=1 rebar3 ct --suite apps/chappe_sip/test/chappe_sip_sbc_interop_SUITE
+
+# A small SBC to try by hand (demo/sbc/README.md): rtpengine and Kamailio in
+# docker, the chappe node in the foreground on this machine. make demo-shell
+# attaches a shell to it; make demo-down stops the containers.
+DEMO_NODE ?= demo
+DEMO_COMPOSE = docker compose -f demo/sbc/docker-compose.yml
+
+demo:
+	rebar3 compile
+	$(DEMO_COMPOSE) up -d --build
+	mkdir -p _build/demo
+	erlc -o _build/demo demo/sbc/src/demo_sbc.erl
+	erl -noshell -sname $(DEMO_NODE)@localhost -setcookie chappe-demo \
+	    -pa _build/default/lib/*/ebin _build/demo \
+	    -eval 'ok = demo_sbc:start("demo/sbc/demo.config").'
+
+demo-shell:
+	erl -sname demo-shell-$$$$@localhost -setcookie chappe-demo \
+	    -remsh $(DEMO_NODE)@localhost
+
+demo-down:
+	$(DEMO_COMPOSE) down
 
 # eunit + ct line coverage over every app; fails under MIN_COVERAGE percent.
 # Raise MIN_COVERAGE as coverage grows, never lower it.

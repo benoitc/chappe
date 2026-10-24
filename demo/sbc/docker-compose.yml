@@ -1,0 +1,87 @@
+# Copyright 2026 Benoit Chesneau
+# SPDX-License-Identifier: Apache-2.0
+#
+# The services of the demo SBC: rtpengine and Kamailio. The chappe node
+# itself runs on your machine (make demo), next to the softphones, so the
+# SIP address it advertises is one they reach; Docker Desktop on macOS
+# cannot make a container's address reachable from the host.
+#
+# rtpengine's NG port is published on 22223/udp and its RTP ports
+# 31000-31100/udp 1:1; it advertises DEMO_IP (default 127.0.0.1) in the
+# SDP it writes and learns where each endpoint really sends from.
+# Kamailio's SIP port is published on 15070/udp; its dispatcher pings the
+# node at host.docker.internal.
+#
+# fs1 and fs2 are the FreeSWITCH pool (1000 echo, 1001 tone, 1002
+# conference): SIP on 15081 and 15082/udp, advertised as DEMO_IP, ESL on
+# 127.0.0.1:18031 and 18032. Their media goes to rtpengine inside this
+# compose network: rtpengine has a `host' interface (advertised as
+# DEMO_IP, for the softphones) and a `docker' one (its own address, for
+# FreeSWITCH), and the demo picks the pair per call.
+name: chappe-demo
+
+x-freeswitch: &freeswitch
+  image: drachtio/drachtio-freeswitch-mrf:latest
+  # the image's entrypoint edits its stock tree; this config replaces
+  # that tree, so start FreeSWITCH directly
+  entrypoint: ["/usr/local/freeswitch/bin/freeswitch"]
+  command: ["-nonat", "-c", "-conf", "/chappe/conf",
+            "-log", "/tmp", "-db", "/tmp", "-run", "/tmp"]
+  stdin_open: true
+  tty: true
+  volumes:
+    - ./freeswitch:/chappe/conf:ro
+  healthcheck:
+    test: ["CMD", "/usr/local/freeswitch/bin/fs_cli", "-x", "sofia status"]
+    interval: 2s
+    timeout: 5s
+    retries: 30
+
+services:
+  rtpengine:
+    build: ../../apps/chappe_rtpengine/interop
+    image: chappe-rtpengine-interop
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "22223:22223/udp"
+      - "31000-31100:31000-31100/udp"
+    command: >
+      sh -c "IP=$$(grep -oE '^([0-9]{1,3}[.]){3}[0-9]{1,3}' /etc/hosts | tail -1)
+      && rtpengine
+      --interface=host/$$IP!${DEMO_IP:-127.0.0.1}
+      --interface=docker/$$IP
+      --listen-ng=0.0.0.0:22223
+      --port-min=31000 --port-max=31100
+      --delete-delay=0
+      --foreground --log-stderr"
+
+  kamailio:
+    image: ghcr.io/kamailio/kamailio-ci:5.8
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "15070:5060/udp"
+    volumes:
+      - ../../apps/chappe_sip/interop/kamailio/kamailio.cfg:/etc/kamailio/kamailio.cfg:ro
+      - ./kamailio.list:/etc/kamailio/dispatcher.list:ro
+
+  fs1:
+    <<: *freeswitch
+    hostname: fs1
+    environment:
+      FS_SIP_PORT: "15081"
+      FS_EXT_IP: "${DEMO_IP:-127.0.0.1}"
+    ports:
+      - "15081:15081/udp"
+      - "127.0.0.1:18031:8021"
+
+  fs2:
+    <<: *freeswitch
+    hostname: fs2
+    environment:
+      FS_SIP_PORT: "15082"
+      FS_EXT_IP: "${DEMO_IP:-127.0.0.1}"
+    ports:
+      - "15082:15082/udp"
+      - "127.0.0.1:18032:8021"

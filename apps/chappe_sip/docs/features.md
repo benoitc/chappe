@@ -96,13 +96,37 @@ tracker; the milestone history is in `docs/plan.md`.
   The 2xx ACK carries the INVITE's credentials. The body is `local_sdp`
   (application/sdp) or `body` plus `content_type` for anything else, such as a
   SIPREC `multipart/mixed` of SDP and rs-metadata.
+- B2BUA SDP and media: `rewrite_sdp => fun(Leg, offer | answer, Sdp)` sees
+  each SDP with its leg and kind and may refuse it (`{reject, Code}`); the
+  2-arity form still works. `media => direct | anchor | fun(CallInfo)` puts
+  the call's offers and answers, re-offers included, through an rtpengine
+  session; a refused anchored re-offer gives rtpengine the last good answer
+  back. `chappe_sip_media:bypass/2` decides direct or anchored from the two
+  sides (WebRTC, address family, NAT, private networks), and
+  `chappe_sip_b2b:set_media/2` switches a live call. See
+  `docs/guides/b2bua-reinvite.md` and `docs/guides/sbc.md`.
+- Peers (`chappe_sip:peer_add/2` and friends): SIP peers kept alive with
+  OPTIONS, up/down by thresholds, state in ETS, selection by priority, round
+  robin or weight, and a `{peer_group, G}` B2BUA target that fails over on
+  408, 503 or a transport error. The registrar's `qualify_interval_ms` sends
+  OPTIONS to UDP contacts and drops the ones that stop answering.
+- `chappe_sip_dialog:modify(D, none, #{ack => manual})`: a re-INVITE without
+  an offer; `ack/2` sends the answer in the ACK.
+- B2BUA late offer: an INVITE without SDP is bridged with B's offer in the
+  2xx and A's answer in the ACK, both anchored when `media => anchor`.
+- NAT: bindings keep the address their REGISTER came from (`received`);
+  `location_flow/1` returns it when the Contact is not that address, the
+  registrar's keepalive OPTIONS go there, and a B2BUA caller with such a
+  Contact gets its dialog's requests at its source (RFC 3581).
 - `chappe_sip:create_b2bua/4`: bridge an incoming INVITE to a new one, with
   header proxy rules both ways, CANCEL relay, failure passthrough, and
   provisionals relayed with their body (early media) and 100rel on each leg,
   and Timer C on the B leg (restarted by each provisional, 408 on expiry).
   `chappe_sip_b2b:relay/1,2` carries re-INVITE and UPDATE offers across the
-  legs (answer, failure and 491 back to the offerer, an optional SDP rewrite),
-  lets each leg answer its own session refreshes, and repeats the `Reason` of
+  legs (answer, failure and 491 back to the offerer), relays an offerless
+  re-INVITE with its answer in the ACK, relays UPDATE between the early
+  dialogs while B rings, lets each leg answer its own session refreshes,
+  reports hold and unhold to a `notify` process, and repeats the `Reason` of
   a BYE or CANCEL (RFC 3326) on the other leg. With `privacy => true` it acts
   as an RFC 3323 privacy service: a `critical` Privacy naming a level it
   cannot apply (`session`, unless you anonymize the media and say so with
@@ -421,6 +445,11 @@ tracker; the milestone history is in `docs/plan.md`.
   a real JsSIP UA registers over WS, two JsSIP UAs place a WebRTC media call
   through the b2bua, and a Kamailio container OPTIONS-pings chappe_sip both
   directions. Drivers and setup live in `interop/`.
+- SBC lab (`make interop-sbc`, also in CI): SIPp calls through a chappe SBC
+  node to two FreeSWITCH peers, direct and anchored in rtpengine, with hold
+  from either side, offerless re-INVITE, UPDATE, glare, `set_media` both
+  ways, a session timer refresh, OPTIONS failover when a FreeSWITCH stops,
+  and Kamailio and chappe pinging each other (`interop/sbc`).
 - Conformance lab (`make interop-conformance`, also in CI): SIPp, pjsua and
   a dnsmasq server against a chappe node in docker, one RFC flow per case
   (`interop/conformance`, `docs/guides/interop-testing.md`).
