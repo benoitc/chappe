@@ -28,6 +28,7 @@
 -export([ensure_secret/0, check_secret/1]).
 -export([routes/1, set_routes/2, uri_is_self/2, recover_strict/1]).
 -export([next_flow/2, request_target/2, flow_route/1, secure_hop/2]).
+-export([received_flow/1, nated/2]).
 
 -export_type([flows/0]).
 
@@ -437,6 +438,57 @@ route_uri(RouteValue) ->
 %% The engine route that sends over Flow: a WS connection, a TCP/TLS
 %% connection of the native stack, or a UDP source address (RFC 5626 5.3).
 -spec flow_route(chappe_sip_engine:flow()) -> chappe_sip_engine:route().
+%% The flow a request arrived on, from its meta: its TCP/TLS connection,
+%% or the address and port a UDP request came from (RFC 3581 received and
+%% rport, RFC 5626 3.3), with the listen address it reached when there are
+%% several, so what goes back leaves from that same socket.
+-spec received_flow(map()) -> chappe_sip_engine:flow() | undefined.
+received_flow(#{conn := Id}) when is_integer(Id) ->
+    {conn, Id};
+received_flow(
+    #{transport := <<"udp">>, source_ip := Ip, source_port := Port} = Meta
+) when
+    Ip =/= <<>>, Port > 0
+->
+    case chappe_sip_binds:local(Meta) of
+        undefined -> {udp, Ip, Port};
+        Local -> {udp, Ip, Port, Local}
+    end;
+received_flow(_Meta) ->
+    undefined.
+
+%% A UDP Contact the UA cannot be reached at: its host and port are not the
+%% address its request came from (a NAT in between, as Kamailio's
+%% fix_nated_contact sees it). Requests to it go to that address instead.
+-spec nated(binary() | undefined, term()) -> boolean().
+nated(Contact, {udp, Ip, Port}) when is_binary(Contact) ->
+    case chappe_sip_hdr:name_addr(Contact) of
+        {ok, #{uri := Uri}} -> nated_uri(Uri, Ip, Port);
+        _ -> nated_uri(Contact, Ip, Port)
+    end;
+nated(Contact, {udp, Ip, Port, _Local}) ->
+    nated(Contact, {udp, Ip, Port});
+nated(_Contact, _Flow) ->
+    false.
+
+nated_uri(Uri, Ip, Port) ->
+    case chappe_sip_uri:parse(Uri) of
+        {ok, #{scheme := sip, host := Host} = U} ->
+            Transport = maps:get(
+                <<"transport">>, maps:get(params, U, #{}), <<"udp">>
+            ),
+            is_binary(Transport) andalso
+                string:lowercase(Transport) =:= <<"udp">> andalso
+                {strip_brackets(Host), maps:get(port, U, 5060)} =/= {Ip, Port};
+        _ ->
+            false
+    end.
+
+strip_brackets(<<"[", Rest/binary>>) ->
+    binary:part(Rest, 0, byte_size(Rest) - 1);
+strip_brackets(Host) ->
+    Host.
+
 flow_route(Flow) when is_integer(Flow) -> {ws, Flow};
 flow_route({conn, _} = Flow) -> Flow;
 flow_route({udp, _, _} = Flow) -> Flow;

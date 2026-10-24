@@ -60,7 +60,10 @@
     instance :: binary() | undefined,
     reg_id :: binary() | undefined,
     % every Contact header parameter as received (RFC 5626 6)
-    params = #{} :: map()
+    params = #{} :: map(),
+    % the flow the REGISTER came on (RFC 3581): where a UA behind a NAT
+    % is reached when its Contact is not
+    received :: term()
 }).
 
 %% a Contact of the REGISTER: its URI, requested expiry and identity
@@ -497,7 +500,8 @@ apply_contacts(Aor, Contacts, Msg, Opts, Info) ->
                 callid = CallId,
                 cseq = CSeq,
                 flow = maps:get(flow, Opts, undefined),
-                path = maps:get(path, Info)
+                path = maps:get(path, Info),
+                received = maps:get(received, Opts, undefined)
             },
             Max = chappe_sip_config:get(registrar_max_expires),
             %% RFC 5626 6: a UA with a direct flow to us has its outbound
@@ -747,7 +751,8 @@ to_map(
         path = P,
         instance = I,
         reg_id = R,
-        params = Ps
+        params = Ps,
+        received = Rcv
     },
     Now
 ) ->
@@ -758,6 +763,7 @@ to_map(
         cseq => Cs,
         q => Q,
         flow => F,
+        received => Rcv,
         path => P,
         instance => I,
         reg_id => R,

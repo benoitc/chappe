@@ -89,10 +89,13 @@ do_register(Opts0, Req, Res) ->
     %% TCP/TLS and UDP the flow it came on is kept for outbound bindings
     %% (RFC 5626 6)
     Meta = chappe_sip_req:meta(Req),
+    Received = chappe_sip_route:received_flow(Meta),
     Opts =
         case maps:get(flow, Meta, undefined) of
-            undefined -> with_direct_flow(direct_flow(Meta), Opts0);
-            Flow -> Opts0#{flow => Flow}
+            undefined ->
+                with_direct_flow(Received, Opts0#{received => Received});
+            Flow ->
+                Opts0#{flow => Flow}
         end,
     case chappe_sip_registry:register_request(Req, Opts) of
         {ok, Bindings, Info} ->
@@ -137,24 +140,6 @@ do_register(Opts0, Req, Res) ->
             _ = chappe_sip_res:send(Res, Status),
             ok
     end.
-
-%% the flow a request arrived on: its TCP/TLS connection, or the address
-%% and port a UDP request came from (RFC 5626 3.3), with the listen address
-%% it reached when there are several, so a request to the binding leaves
-%% from that same socket
-direct_flow(#{conn := Id}) when is_integer(Id) ->
-    {conn, Id};
-direct_flow(
-    #{transport := <<"udp">>, source_ip := Ip, source_port := Port} = Meta
-) when
-    Ip =/= <<>>, Port > 0
-->
-    case chappe_sip_binds:local(Meta) of
-        undefined -> {udp, Ip, Port};
-        Local -> {udp, Ip, Port, Local}
-    end;
-direct_flow(_Meta) ->
-    undefined.
 
 with_direct_flow(undefined, Opts) -> Opts;
 with_direct_flow(Flow, Opts) -> Opts#{outbound_flow => Flow}.

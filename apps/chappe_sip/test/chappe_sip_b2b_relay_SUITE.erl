@@ -28,7 +28,8 @@
          anchor_rejected_reoffer_restores/1, hold_events/1,
          offerless_reinvite_a/1, offerless_reinvite_b/1,
          set_media_anchor_and_back/1, set_media_busy/1,
-         early_update_a_to_b/1, early_update_b_to_a/1]).
+         early_update_a_to_b/1, early_update_b_to_a/1,
+         anchor_late_offer/1, nated_caller_reached_at_source/1]).
 
 all() ->
     [reinvite_a_to_b, reinvite_b_to_a, update_relayed,
@@ -43,7 +44,8 @@ all() ->
      rewrite_sdp_offer_answer, rewrite_sdp_two_arity, rewrite_sdp_reject,
      anchor_call_and_reoffers, anchor_rejected_reoffer_restores, hold_events,
      offerless_reinvite_a, offerless_reinvite_b, set_media_anchor_and_back,
-     set_media_busy, early_update_a_to_b, early_update_b_to_a].
+     set_media_busy, early_update_a_to_b, early_update_b_to_a,
+     anchor_late_offer, nated_caller_reached_at_source].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -928,6 +930,64 @@ early_update_b_to_a(_Config) ->
     ?assertEqual(?UA:sdp(<<"caller">>, <<"1">>), ?UA:body(got(b_update_200))),
     Re = got(a_reinvite),
     ?assert(maps:get(seq, ?UA:cseq(Re)) > maps:get(seq, ?UA:cseq(U))).
+
+%% ---- late offer and NAT ----
+
+%% An INVITE without an offer, anchored: B's offer in its 2xx goes through
+%% rtpengine to A, and A's answer in its ACK goes through it to B's ACK.
+%% req: R3264-8-1 R3261-14.2-2
+anchor_late_offer(_Config) ->
+    rtpe(),
+    {EP, CP} = setup(#{media => anchor}),
+    ?UA:peer(CP, fun(Sock) ->
+        {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
+        tell({b_invite, Inv}),
+        ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, <<"btag">>, [contact(Sock)],
+                                     ?UA:sdp(<<"callee">>))),
+        {Ack, _} = ?UA:recv_req(Sock, <<"ACK">>),
+        tell({b_ack, Ack}),
+        timer:sleep(infinity)
+    end),
+    ?UA:peer(0, fun(Sock) ->
+        Inv = ?UA:invite(Sock, EP, #{call_id => ?UA:callid(), from_tag => <<"atag">>,
+                                     body => <<>>}),
+        ?UA:send(Sock, EP, Inv),
+        R = ?UA:recv_status(Sock, 200),
+        tell({a_200, R}),
+        D = ?UA:dialog_from_2xx(Sock, Inv, R),
+        ?UA:send(Sock, EP, ack_with(D, ?UA:sdp(<<"caller">>))),
+        timer:sleep(infinity)
+    end),
+    ?assertEqual(<<>>, ?UA:body(got(b_invite))),
+    ?assert(has(?UA:body(got(a_200)), <<"a=rtpe-offer:btag">>)),
+    ?assert(has(?UA:body(got(b_ack)), <<"a=rtpe-answer:atag">>)).
+
+%% A caller whose Contact is a private address it cannot be reached at
+%% (behind a NAT) gets the requests of its dialog where its INVITE came
+%% from: B's BYE reaches it.
+%% req: R3261-12.2.2-1
+nated_caller_reached_at_source(_Config) ->
+    {EP, CP} = setup(#{}),
+    callee(CP, fun(Sock, D) ->
+        {Bye, _} = ?UA:in_dialog(D, <<"BYE">>, [], <<>>),
+        ?UA:send(Sock, EP, Bye),
+        _ = ?UA:recv_status(Sock, 200)
+    end),
+    ?UA:peer(0, fun(Sock) ->
+        P = integer_to_binary(?UA:lport(Sock)),
+        Inv0 = ?UA:invite(Sock, EP, #{call_id => ?UA:callid(), from_tag => ?UA:tag()}),
+        Inv = binary:replace(Inv0, <<"Contact: <sip:caller@127.0.0.1:", P/binary, ">">>,
+                             <<"Contact: <sip:caller@10.99.99.99:5999>">>),
+        ?UA:send(Sock, EP, Inv),
+        R = ?UA:recv_status(Sock, 200),
+        ?UA:ack(?UA:dialog_from_2xx(Sock, Inv, R), EP),
+        {Bye, S} = ?UA:recv_req(Sock, <<"BYE">>),
+        ?UA:send(Sock, S, ?UA:resp(Bye, 200, <<"OK">>, <<>>, [], <<>>)),
+        tell({a_bye, Bye}),
+        timer:sleep(infinity)
+    end),
+    _ = got(a_bye),
+    ok = ?UA:expect({relay_done, {done, b_bye}}).
 
 %% ---- helpers ----
 

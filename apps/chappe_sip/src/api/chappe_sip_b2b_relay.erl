@@ -39,7 +39,12 @@ run(#{uas := A, uac := B} = Legs, Opts) ->
         refs => {RefA, RefB},
         ref => maps:get(ref, M0),
         media => with_opts(Opts, M0),
-        pending => undefined
+        %% a late offer: B's 2xx waits for the answer in A's ACK
+        pending =>
+            case Legs of
+                #{late := true} -> #{step => {ack, a}};
+                _ -> undefined
+            end
     }).
 
 new_media(A) ->

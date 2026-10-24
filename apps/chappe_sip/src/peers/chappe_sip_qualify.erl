@@ -5,7 +5,8 @@
 %%
 %% With the registrar's qualify_interval_ms set, every registered contact
 %% reached over UDP (its RFC 5626 UDP flow, or a contact URI with no
-%% transport or transport=udp, and no Path) gets an OPTIONS each interval.
+%% transport or transport=udp, and no Path) gets an OPTIONS each interval,
+%% sent to the address its REGISTER came from (RFC 3581), not its Contact.
 %% The answers keep the NAT binding in front of the UA open. A contact
 %% that leaves down_after OPTIONS in a row unanswered (a timeout, 408 or
 %% 503) is dropped from the location store, and the subscribers of
@@ -94,10 +95,13 @@ probe_all(S) ->
 
 probe(Aor, #{contact := Contact} = B, #state{inflight = In} = S) ->
     Opts0 = #{method => <<"OPTIONS">>, notify => self(), owner => self()},
+    %% the address the REGISTER came from (RFC 3581): the NAT binding to
+    %% keep open is that one, not the Contact's
     Opts =
-        case maps:get(flow, B, undefined) of
-            undefined -> Opts0;
-            Flow -> Opts0#{flow => Flow}
+        case {maps:get(flow, B, undefined), maps:get(received, B, undefined)} of
+            {undefined, undefined} -> Opts0;
+            {undefined, Received} -> Opts0#{flow => Received};
+            {Flow, _} -> Opts0#{flow => Flow}
         end,
     case chappe_sip:request(Contact, Opts) of
         {ok, Ref} ->

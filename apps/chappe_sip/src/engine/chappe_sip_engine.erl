@@ -1329,7 +1329,11 @@ do_create_uas_1(Req, Opts, WorkerPid, S) ->
                 remote_sdp => chappe_sip_req:body(Req),
                 %% a WS-originated request carries its flow so the
                 %% dialog can send in-dialog requests back over it
-                flow => maps:get(flow, chappe_sip_req:meta(Req), undefined),
+                flow => maps:get(
+                    flow,
+                    Opts,
+                    maps:get(flow, chappe_sip_req:meta(Req), undefined)
+                ),
                 %% the Contact the 2xx carries; a subscription repeats it on
                 %% a refresh 2xx (SUBSCRIBE is a target refresh request)
                 local_contact => dialog_contact(Opts, Contact),

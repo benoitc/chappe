@@ -46,10 +46,10 @@
     b2b => b2b(),
     media => chappe_sip_b2b_media:state()
 }.
-%% Where leg B goes: a URI, or a group of OPTIONS-monitored peers
-%% (chappe_sip_peers), tried in turn while one fails with 408, 503 or a
-%% transport error.
--type target() :: binary() | {peer_group, term()}.
+%% Where leg B goes: a URI, a list of URIs, or a group of OPTIONS-monitored
+%% peers (chappe_sip_peers); a list or a group is tried in turn while one
+%% fails with 408, 503 or a transport error.
+-type target() :: binary() | [binary()] | {peer_group, term()}.
 
 %% in-dialog events relay/2 answers
 -define(RELAYED, [modify, update]).
@@ -58,6 +58,8 @@
 %%   local_sdp_b   => offer sent to B (default: A's INVITE body)
 %%   local_sdp_a   => answer sent to A: value | fun(SdpB) (default: SdpB);
 %%                    also applied to early media SDP
+%%   b_headers   => [{Name, Value}] added to the INVITE to B (a correlation
+%%                  header for the far end, say)
 %%   proxy_request_headers  => [Name] | all | {all, [ExcludeName]}
 %%   proxy_response_headers => [Name] | all | {all, [ExcludeName]}
 %%                    (copied from B's 2xx to A's)
@@ -75,7 +77,9 @@
 %%                            puts rtpengine in the media path. CallInfo:
 %%                            #{req, uri, sdp, source} (source: the
 %%                            caller's signalling address). An offerless
-%%                            INVITE is always direct.
+%%                            INVITE (late offer) is anchored as well: B's
+%%                            offer in its 2xx and A's answer in its ACK
+%%                            go through rtpengine.
 %%   anchor_params         => #{a | b => map()} rtpengine flags for the SDP
 %%                            sent to that leg, over the defaults (ICE and
 %%                            DTLS-SRTP for a WebRTC leg, plain RTP else)
@@ -134,7 +138,9 @@ start_b2bua(Req, Res, Target, Opts) ->
 targets({peer_group, Group}, Opts) ->
     chappe_sip_peers:candidates(Group, maps:get(peer_policy, Opts, priority));
 targets(Uri, _Opts) when is_binary(Uri) ->
-    [Uri].
+    [Uri];
+targets(Uris, _Opts) when is_list(Uris) ->
+    Uris.
 
 media_init(Req, Uri, Ref, Opts) ->
     Sdp = chappe_sip_req:body(Req),
@@ -145,10 +151,9 @@ media_init(Req, Uri, Ref, Opts) ->
         source => chappe_sip_req:source_ip(Req)
     },
     Mode =
-        case {Sdp, maps:get(media, Opts, direct)} of
-            {<<>>, _} -> direct;
-            {_, F} when is_function(F, 1) -> F(Info);
-            {_, Mode0} -> Mode0
+        case maps:get(media, Opts, direct) of
+            F when is_function(F, 1) -> F(Info);
+            Mode0 -> Mode0
         end,
     #{
         mode => Mode,
@@ -184,16 +189,21 @@ offer_b(Req, Res, Uris, Opts, M) ->
 
 start_b(Req, Res, Uris, Opts, SdpBOffer, M) ->
     Worker = self(),
-    ReqHeaders = chappe_sip_b2b_hdr:proxy_request_headers(Req, Opts),
+    ReqHeaders =
+        chappe_sip_b2b_hdr:proxy_request_headers(Req, Opts) ++
+            maps:get(b_headers, Opts, []),
     ARel = rel100(Req),
-    BOpts0 = #{
+    %% a late offer: B's 2xx carries the offer, and its ACK must wait for
+    %% A's answer (in A's ACK, see chappe_sip_b2b_relay)
+    Late = [{no_ack, true} || SdpBOffer =:= <<>>],
+    BOpts0 = maps:merge(maps:from_list(Late), #{
         local_sdp => SdpBOffer,
         headers => ReqHeaders,
         notify => Worker,
         owner => Worker,
         handled_events => ?RELAYED,
         report_answer => true
-    },
+    }),
     %% B may send reliable 1xx only if A can take them on its own leg
     BOpts1 =
         case ARel of
@@ -357,7 +367,7 @@ answer_a(#{opts := Opts, media := M0} = W, BDialog) ->
             Sdp -> Sdp
         end,
     M = chappe_sip_b2b_media:set_tag(b, remote_tag(BDialog), M0),
-    case chappe_sip_b2b_media:answer(b, SdpBAnswer, M) of
+    case b_sdp_to_a(late(W), SdpBAnswer, M) of
         {ok, Out, M1} ->
             create_a(W#{media := M1}, BDialog, compute_sdp_a(Opts, Out));
         {reject, Code} ->
@@ -366,6 +376,14 @@ answer_a(#{opts := Opts, media := M0} = W, BDialog) ->
             _ = chappe_sip_res:send(maps:get(res, W), Code, #{}),
             {error, {rejected, Code}}
     end.
+
+%% B's SDP in its 2xx: the answer to A's offer, or, for a late offer, B's
+%% own offer
+b_sdp_to_a(true, Sdp, M) -> chappe_sip_b2b_media:offer(b, Sdp, M);
+b_sdp_to_a(false, Sdp, M) -> chappe_sip_b2b_media:answer(b, Sdp, M).
+
+late(#{bopts := #{no_ack := true}}) -> true;
+late(_W) -> false.
 
 create_a(
     #{req := Req, res := Res, opts := Opts, atag := ATag, media := M} = W,
@@ -383,26 +401,38 @@ create_a(
         handled_events => ?RELAYED
     }),
     %% A's early leg becomes its dialog, past the CSeq numbers it used
-    UasOpts =
+    UasOpts1 =
         case W of
             #{aleg := Leg, acseq := N} when is_integer(Leg) ->
                 UasOpts0#{leg => Leg, cseq => max(1, N)};
             _ ->
                 UasOpts0
         end,
+    UasOpts = nat_flow(Req, UasOpts1),
     case chappe_sip:create_uas(Req, Res, UasOpts) of
         {ok, ADialog} ->
-            {ok, #{
+            Legs = #{
                 uas => ADialog,
                 uac => BDialog,
                 b2b => {self(), maps:get(ref, M)},
                 media => M
-            }};
+            },
+            {ok, maps:merge(Legs, maps:from_list([{late, true} || late(W)]))};
         {error, Reason} ->
             %% B may be gone already
             _ = destroy_quietly(BDialog),
             _ = chappe_sip_b2b_media:stop(M),
             {error, Reason}
+    end.
+
+%% A caller behind a NAT sends a Contact it cannot be reached at: the
+%% requests of its dialog (our re-INVITE, BYE) go to where its INVITE came
+%% from instead (RFC 3581, Kamailio's fix_nated_contact)
+nat_flow(Req, Opts) ->
+    Flow = chappe_sip_route:received_flow(chappe_sip_req:meta(Req)),
+    case chappe_sip_route:nated(chappe_sip_req:get(<<"contact">>, Req), Flow) of
+        true -> Opts#{flow => Flow};
+        false -> Opts
     end.
 
 destroy_quietly(Dialog) ->

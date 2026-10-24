@@ -418,7 +418,8 @@ location(AorOrUri) ->
 %% The live bindings of an AOR, the highest q first, as maps with contact,
 %% expires, q, flow, path (the RFC 3327 route set toward the contact: send
 %% the request with one Route header per element, in order), instance and
-%% reg_id (RFC 5626), callid and cseq.
+%% reg_id (RFC 5626), callid and cseq, and received: the flow the REGISTER
+%% came on (RFC 3581).
 -spec bindings(binary()) -> [map()].
 bindings(AorOrUri) ->
     chappe_sip_registry:bindings(AorOrUri).
@@ -428,13 +429,25 @@ bindings(AorOrUri) ->
 %% registered directly over TCP/TLS ({conn, Id}) or UDP ({udp, Ip, Port}, or
 %% {udp, Ip, Port, Local} on a node listening on several addresses);
 %% pass it to proxy_request/3 as {flow, Uri, Flow}', or to create_uac/
-%% create_b2bua as #{flow => Flow}', to reach the UA over that flow.
+%% create_b2bua as #{flow => Flow}', to reach the UA over that flow. A UDP
+%% binding whose Contact is not the address its REGISTER came from (the UA
+%% is behind a NAT) has that address as its flow, {udp, Ip, Port}, so the
+%% call and every request of its dialog go where the UA is reachable.
 -spec location_flow(binary()) ->
     {ok, binary(), chappe_sip_engine:flow() | undefined} | {error, not_found}.
 location_flow(AorOrUri) ->
     case chappe_sip_registry:bindings(AorOrUri) of
-        [B | _] -> {ok, maps:get(contact, B), maps:get(flow, B, undefined)};
+        [B | _] -> {ok, maps:get(contact, B), binding_flow(B)};
         [] -> {error, not_found}
+    end.
+
+binding_flow(#{flow := Flow}) when Flow =/= undefined ->
+    Flow;
+binding_flow(#{contact := Contact} = B) ->
+    Received = maps:get(received, B, undefined),
+    case chappe_sip_route:nated(Contact, Received) of
+        true -> Received;
+        false -> undefined
     end.
 
 %% The live dialog with this identity, from our side: LocalTag is the tag we

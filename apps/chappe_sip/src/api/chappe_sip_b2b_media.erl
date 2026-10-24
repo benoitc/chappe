@@ -37,7 +37,8 @@
     params := #{leg() => map()},
     notify := pid() | undefined,
     ref := reference(),
-    last := {leg(), binary(), binary()} | undefined
+    last := {leg(), binary(), binary()} | undefined,
+    origin := leg() | undefined
 }.
 
 %% Init: #{mode, call_id, a_tag, b_webrtc, a_webrtc, ref} plus the
@@ -58,7 +59,8 @@ new(Init, Opts) ->
         params => maps:get(anchor_params, Opts, #{}),
         notify => maps:get(notify, Opts, undefined),
         ref => maps:get(ref, Init),
-        last => undefined
+        last => undefined,
+        origin => undefined
     }.
 
 %% The rewrite_sdp hook as a 3-arity fun: fun(Leg, offer | answer, Sdp),
@@ -78,8 +80,10 @@ start(#{mode := anchor, session := undefined} = M) ->
     #{call_id := CallId, tags := #{a := ATag}} = M,
     Id = #{call_id => CallId, from_tag => ATag},
     case chappe_sip_media:session(Id, #{capability => anchor}) of
-        {ok, S} -> {ok, M#{session := S, last := undefined}};
-        {error, _} = Err -> Err
+        {ok, S} ->
+            {ok, M#{session := S, last := undefined, origin := undefined}};
+        {error, _} = Err ->
+            Err
     end;
 start(M) ->
     {ok, M}.
@@ -94,7 +98,7 @@ stop(#{session := S} = M) ->
     catch
         exit:_ -> ok
     end,
-    M#{session := undefined, last := undefined}.
+    M#{session := undefined, last := undefined, origin := undefined}.
 
 -spec mode(state()) -> mode().
 mode(#{mode := Mode}) -> Mode.
@@ -158,7 +162,14 @@ anchor_offer(_X, Sdp, #{mode := direct} = M) ->
     {ok, Sdp, M};
 anchor_offer(_X, <<>>, M) ->
     {ok, <<>>, M};
-anchor_offer(X, Sdp, #{session := S} = M) ->
+anchor_offer(X, Sdp, #{session := S} = M0) ->
+    %% the leg of the session's first offer is rtpengine's caller (B for a
+    %% late offer)
+    M =
+        case M0 of
+            #{origin := undefined} -> M0#{origin := X};
+            _ -> M0
+        end,
     case chappe_sip_media:offer(S, Sdp, offer_opts(X, M)) of
         {ok, Out} ->
             {ok, Out, M#{last := undefined}};
@@ -183,17 +194,25 @@ anchor_answer(Y, Sdp, #{session := S} = M) ->
             {reject, 500}
     end.
 
-%% rtpengine's from-tag is the offering party's; an offer from B is the
-%% callee's, which swaps the stored tags
-offer_opts(a, #{tags := #{a := ATag}} = M) ->
-    #{from_tag => ATag, params => toward(b, M)};
-offer_opts(b, #{tags := #{b := BTag}} = M) ->
-    #{from_tag => BTag, params => (toward(a, M))#{initiator => callee}}.
+%% rtpengine's from-tag is the offering party's; an offer from the leg
+%% that did not make the session's first offer is the callee's, which
+%% swaps the stored tags
+offer_opts(X, #{tags := Tags, origin := Origin} = M) ->
+    Params = toward(other(X), M),
+    #{
+        from_tag => maps:get(X, Tags),
+        params =>
+            case X of
+                Origin -> Params;
+                _ -> Params#{initiator => callee}
+            end
+    }.
 
-answer_opts(b, #{tags := #{b := BTag}} = M) ->
-    #{to_tag => BTag, params => toward(a, M)};
-answer_opts(a, #{tags := #{a := ATag}} = M) ->
-    #{to_tag => ATag, params => toward(b, M)}.
+answer_opts(Y, #{tags := Tags} = M) ->
+    #{to_tag => maps:get(Y, Tags), params => toward(other(Y), M)}.
+
+other(a) -> b;
+other(b) -> a.
 
 %% what rtpengine writes for the leg the SDP goes to: DTLS-SRTP with ICE
 %% for a WebRTC leg, plain RTP without ICE otherwise; the app's
