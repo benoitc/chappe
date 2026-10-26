@@ -11,7 +11,8 @@
 -export([
     reason_headers/1,
     proxy_request_headers/2,
-    proxy_response_headers/2
+    proxy_response_headers/2,
+    b_from/2
 ]).
 -export([privacy/2, privacy_unsupported/2, privacy_failure/1]).
 
@@ -61,6 +62,36 @@ one_per_protocol([V | Rest], Seen, Acc) ->
     case lists:member(P, Seen) of
         true -> one_per_protocol(Rest, Seen, Acc);
         false -> one_per_protocol(Rest, [P | Seen], [V | Acc])
+    end.
+
+%% B's From: the `from' option, else A's display name and URI without A's
+%% tag (the B leg adds its own), anonymous under user or header privacy
+%% (RFC 3323 4.1.1.3).
+-spec b_from(chappe_sip_req:req(), map()) -> binary().
+b_from(Req, Opts) ->
+    case maps:find(from, Opts) of
+        {ok, From} ->
+            From;
+        error ->
+            Levels = privacy(Req, Opts),
+            case
+                not lists:member(<<"none">>, Levels) andalso
+                    user_privacy(Levels)
+            of
+                true -> <<"\"Anonymous\" <sip:anonymous@anonymous.invalid>">>;
+                false -> caller(chappe_sip_req:get(<<"from">>, Req))
+            end
+    end.
+
+caller(From) ->
+    case chappe_sip_hdr:name_addr(From) of
+        {ok, #{display := D, uri := U}} when D =/= <<>> ->
+            %% name_addr/1 keeps a quoted name's escapes as they are
+            <<"\"", D/binary, "\" <", U/binary, ">">>;
+        {ok, #{uri := U}} ->
+            <<"<", U/binary, ">">>;
+        {error, _} ->
+            <<"\"Anonymous\" <sip:anonymous@anonymous.invalid>">>
     end.
 
 %% default headers never copied verbatim between legs
@@ -168,6 +199,10 @@ dedup([T | Rest], Acc) ->
         false -> dedup(Rest, [T | Acc])
     end.
 
+%% user privacy, or header privacy which implies it (RFC 3323 4.2)
+user_privacy(Levels) ->
+    lists:member(<<"user">>, Levels) orelse lists:member(<<"header">>, Levels).
+
 %% the headers of A the applied levels keep from B; none asks for nothing
 %% (RFC 3323 5: no privacy function at all)
 private_headers(Levels) ->
@@ -176,10 +211,7 @@ private_headers(Levels) ->
             [];
         false ->
             User =
-                case
-                    lists:member(<<"user">>, Levels) orelse
-                        lists:member(<<"header">>, Levels)
-                of
+                case user_privacy(Levels) of
                     true -> ?USER_INFO_HEADERS;
                     false -> []
                 end,

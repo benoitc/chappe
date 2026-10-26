@@ -44,7 +44,12 @@
   <button id="hold" disabled>Hold</button>
   <button id="unhold" disabled>Unhold</button>
 </fieldset>
-<audio id="remote" autoplay></audio>
+<fieldset id="incoming" hidden>
+  <p id="ringing"></p>
+  <button id="answer">Answer</button>
+  <button id="decline">Decline</button>
+</fieldset>
+<audio id="remote" autoplay controls></audio>
 <div id="log"></div>
 <script type="module">
   // The npm package ships no browser build; esm.sh bundles it as one module.
@@ -54,23 +59,29 @@
   const log = (m) => { $("log").textContent = new Date().toLocaleTimeString() + " " + m + "\n" + $("log").textContent; };
   let ua = null, session = null;
 
+  // Browsers only start audio after a click on the page, which is why an
+  // incoming call waits for Answer instead of being picked up at once.
+  function play(stream) {
+    $("remote").srcObject = stream;
+    $("remote").play().then(() => log("hearing the other side"),
+                            (e) => log("audio blocked by the browser: " + e.message));
+  }
   function attach(s) {
     session = s;
     ["hangup", "hold", "unhold"].forEach((b) => $(b).disabled = false);
-    s.on("peerconnection", (e) => e.peerconnection.addEventListener("track", (t) => {
-      $("remote").srcObject = t.streams[0];
-    }));
+    s.on("peerconnection", (e) => e.peerconnection.addEventListener("track", (t) => play(t.streams[0])));
     s.on("confirmed", () => log("call up"));
     s.on("hold", (e) => log("on hold (" + e.originator + ")"));
     s.on("unhold", (e) => log("off hold (" + e.originator + ")"));
     s.on("ended", (e) => { log("call ended: " + e.cause); done(); });
     s.on("failed", (e) => { log("call failed: " + e.cause); done(); });
     if (s.connection) {
-      s.connection.addEventListener("track", (t) => { $("remote").srcObject = t.streams[0]; });
+      s.connection.addEventListener("track", (t) => play(t.streams[0]));
     }
   }
   function done() {
     session = null;
+    $("incoming").hidden = true;
     ["hangup", "hold", "unhold"].forEach((b) => $(b).disabled = true);
   }
 
@@ -110,9 +121,12 @@
     on("registrationFailed", (e) => log("registration failed: " + e.cause));
     me.on("newRTCSession", (e) => {
       if (e.originator === "remote") {
-        log("incoming call from " + e.request.from.uri.user);
+        const id = e.session.remote_identity;
+        const who = id.display_name || id.uri.user || id.uri.toString();
+        log("incoming call from " + who);
+        $("ringing").textContent = who + " is calling";
+        $("incoming").hidden = false;
         attach(e.session);
-        e.session.answer({ mediaConstraints: { audio: true, video: false } });
       }
     });
     ua.start();
@@ -124,6 +138,11 @@
     log("calling " + $("target").value);
     attach(s);
   };
+  $("answer").onclick = () => {
+    $("incoming").hidden = true;
+    session && session.answer({ mediaConstraints: { audio: true, video: false } });
+  };
+  $("decline").onclick = () => session && session.terminate({ status_code: 486 });
   $("hangup").onclick = () => session && session.terminate();
   $("hold").onclick = () => session && session.hold();
   $("unhold").onclick = () => session && session.unhold();

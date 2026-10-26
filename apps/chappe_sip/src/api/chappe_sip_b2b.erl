@@ -60,6 +60,8 @@
 %%                    also applied to early media SDP
 %%   b_headers   => [{Name, Value}] added to the INVITE to B (a correlation
 %%                  header for the far end, say)
+%%   from        => the From of the INVITE to B (default: A's display name
+%%                  and URI, anonymous under user or header privacy)
 %%   proxy_request_headers  => [Name] | all | {all, [ExcludeName]}
 %%   proxy_response_headers => [Name] | all | {all, [ExcludeName]}
 %%                    (copied from B's 2xx to A's)
@@ -197,6 +199,7 @@ start_b(Req, Res, Uris, Opts, SdpBOffer, M) ->
     %% A's answer (in A's ACK, see chappe_sip_b2b_relay)
     Late = [{no_ack, true} || SdpBOffer =:= <<>>],
     BOpts0 = maps:merge(maps:from_list(Late), #{
+        from => chappe_sip_b2b_hdr:b_from(Req, Opts),
         local_sdp => SdpBOffer,
         headers => ReqHeaders,
         notify => Worker,
