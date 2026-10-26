@@ -75,19 +75,40 @@
   }
 
   $("register").onclick = () => {
+    // Stopping the previous phone unregisters it and closes its socket a
+    // moment later; its events must not be reported as the new phone's.
     if (ua) ua.stop();
-    const socket = new JsSIP.WebSocketInterface($("ws").value);
-    ua = new JsSIP.UA({
-      sockets: [socket],
-      uri: "sip:" + $("user").value + "@" + $("domain").value,
+    const ws = $("ws").value, user = $("user").value;
+    const me = new JsSIP.UA({
+      sockets: [new JsSIP.WebSocketInterface(ws)],
+      uri: "sip:" + user + "@" + $("domain").value,
       password: $("pass").value,
-      register: true
+      register: true,
+      // Keepalive: the REGISTER is refreshed before these 120 s run out,
+      // the server pings the WebSocket every 30 s (the browser answers),
+      // and a dropped socket is reopened after 2 to 30 s, then registered
+      // again.
+      register_expires: 120,
+      connection_recovery_min_interval: 2,
+      connection_recovery_max_interval: 30
     });
-    ua.on("connected", () => log("connected to " + $("ws").value));
-    ua.on("disconnected", () => log("cannot reach " + $("ws").value));
-    ua.on("registered", () => { log("registered as " + $("user").value); $("call").disabled = false; });
-    ua.on("registrationFailed", (e) => log("registration failed: " + e.cause));
-    ua.on("newRTCSession", (e) => {
+    ua = me;
+    const on = (ev, f) => me.on(ev, (e) => { if (ua === me) f(e); });
+    let registered = false;
+    on("connected", () => log("connected to " + ws));
+    on("disconnected", (e) => {
+      registered = false;
+      $("call").disabled = true;
+      log((e && e.error ? "cannot reach " : "connection closed, reconnecting to ") + ws);
+    });
+    on("registered", () => {
+      log(registered ? "registration refreshed" : "registered as " + user);
+      registered = true;
+      $("call").disabled = false;
+    });
+    on("unregistered", () => { registered = false; log("unregistered"); });
+    on("registrationFailed", (e) => log("registration failed: " + e.cause));
+    me.on("newRTCSession", (e) => {
       if (e.originator === "remote") {
         log("incoming call from " + e.request.from.uri.user);
         attach(e.session);
