@@ -46,8 +46,9 @@
 </fieldset>
 <audio id="remote" autoplay></audio>
 <div id="log"></div>
-<script src="https://cdn.jsdelivr.net/npm/jssip@3.10.1/dist/jssip.min.js"></script>
-<script>
+<script type="module">
+  // The npm package ships no browser build; jsDelivr bundles it as a module.
+  import JsSIP from "https://cdn.jsdelivr.net/npm/jssip@3.10.1/+esm";
   const $ = (id) => document.getElementById(id);
   $("ws").value = "ws://" + location.hostname + ":5066/ws";
   const log = (m) => { $("log").textContent = new Date().toLocaleTimeString() + " " + m + "\n" + $("log").textContent; };
@@ -82,6 +83,8 @@
       password: $("pass").value,
       register: true
     });
+    ua.on("connected", () => log("connected to " + $("ws").value));
+    ua.on("disconnected", () => log("cannot reach " + $("ws").value));
     ua.on("registered", () => { log("registered as " + $("user").value); $("call").disabled = false; });
     ua.on("registrationFailed", (e) => log("registration failed: " + e.cause));
     ua.on("newRTCSession", (e) => {
