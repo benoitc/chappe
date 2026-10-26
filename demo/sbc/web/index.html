@@ -47,8 +47,8 @@
 <audio id="remote" autoplay></audio>
 <div id="log"></div>
 <script type="module">
-  // The npm package ships no browser build; jsDelivr bundles it as a module.
-  import JsSIP from "https://cdn.jsdelivr.net/npm/jssip@3.10.1/+esm";
+  // The npm package ships no browser build; esm.sh bundles it as one module.
+  import JsSIP from "https://esm.sh/jssip@3.10.1?bundle";
   const $ = (id) => document.getElementById(id);
   $("ws").value = "ws://" + location.hostname + ":5066/ws";
   const log = (m) => { $("log").textContent = new Date().toLocaleTimeString() + " " + m + "\n" + $("log").textContent; };
