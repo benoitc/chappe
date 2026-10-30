@@ -53,7 +53,9 @@ init([]) ->
         sup(chappe_sip_peers_sup),
         sup(chappe_sip_ws_sup),
         sup(chappe_sip_media_sup),
-        sup(chappe_sip_stack_sup)
+        sup(chappe_sip_stack_sup),
+        %% after the stack: stopped first, while a REGISTER can still go out
+        sup(chappe_sip_regc_sup)
     ],
     {ok, {SupFlags, Children}}.
 

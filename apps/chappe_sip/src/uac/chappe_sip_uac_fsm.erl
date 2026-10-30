@@ -141,7 +141,12 @@ start_request(
     },
     Method
 ) ->
+    %% auth_state: the challenges a previous request of the caller answered
+    %% (a registration refresh), so this one carries credentials at once
+    {Challenges, NonceCount} = maps:get(auth_state, Opts, {[], #{}}),
     Data0 = #data{
+        challenges = Challenges,
+        nonce_count = NonceCount,
         uri = Uri,
         method = Method,
         opts = Opts,
@@ -402,6 +407,7 @@ handle_response(422, Raw, #data{method = <<"INVITE">>} = D) ->
 handle_response(Status, Raw, D) when Status >= 200, Status < 300 ->
     %% non-INVITE success
     {ok, Msg} = chappe_sip_msg:parse(Raw),
+    ok = report_auth(D),
     notify(D, {response, Msg}),
     chappe_sip_engine:finish_txn(D#data.txn),
     {stop, normal, D};
@@ -1189,6 +1195,13 @@ credentials_for(Realm, List) when is_list(List) ->
         [#{user := U, pass := P} | _] -> {U, P};
         _ -> none
     end.
+
+%% report_auth => true: the challenges answered and their nonce counts, for
+%% the caller's next request (auth_state)
+report_auth(#data{opts = #{report_auth := true}, challenges = [_ | _]} = D) ->
+    notify(D, {auth_state, {D#data.challenges, D#data.nonce_count}});
+report_auth(_D) ->
+    ok.
 
 %% the Authorization / Proxy-Authorization headers of the next request:
 %% one per challenge, each nonce counting its requests (RFC 7616 3.4)

@@ -14,6 +14,8 @@
 %%   {chappe_sip_uac, Ref, {answer, Msg}}              the 2xx, just before ok,
 %%                                                    with report_answer => true
 %%   {chappe_sip_uac, Ref, {ok, Dialog}}               INVITE answered (2xx)
+%%   {chappe_sip_uac, Ref, {auth_state, State}}        just before a non-INVITE
+%%                                                    2xx, with report_auth
 %%   {chappe_sip_uac, Ref, {response, Res}}             non-INVITE final response
 %%   {chappe_sip_uac, Ref, {error, SipError | term()}} failure
 %% cancel/1 works from any process (it holds the fsm pid), so a caller
@@ -37,6 +39,11 @@
 %%           RFC 3261 8.1.1.1, loose or strict first route),
 %%         auth => #{user := binary(), pass := binary(), realm => binary()}
 %%           or a list of them (a realm-less entry answers any realm),
+%%         report_auth => boolean() (a non-INVITE 2xx is preceded by
+%%           {auth_state, State} when credentials were sent),
+%%         auth_state => State (from report_auth: the request carries
+%%           credentials for those challenges at once, the next nonce
+%%           count each; a stale nonce is answered again as usual),
 %%         follow_redirects => boolean() (3xx Contacts tried best q first),
 %%         no_ack => boolean() (3PCC: chappe_sip_dialog:ack/2 sends the ACK),
 %%         answer => fun((Offer :: binary()) -> {ok, iodata()} | reject)
