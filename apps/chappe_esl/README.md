@@ -78,6 +78,23 @@ handle_channel(Conn, Channel, _Args) ->
 {ok, _Ref} = chappe_esl:start_listener(8084, my_handler, []).
 ```
 
+## Call control
+
+Run applications and wait for each to finish, collect digits, and get DTMF
+and hangup messages with a call process:
+
+```erlang
+handle_channel(Conn, _Channel, _Args) ->
+    {ok, Call} = chappe_esl_call:start(Conn, #{}),
+    ok = chappe_esl_call:answer(Call),
+    {ok, Pin} = chappe_esl_call:play_and_get_digits(Call, #{
+        file => <<"/sounds/enter-pin.wav">>, min => 4, max => 4
+    }),
+    ok = chappe_esl_call:hangup(Call).
+```
+
+See `docs/guides/call-control.md`.
+
 ## Nodes
 
 Register FreeSWITCH nodes, then pick one per call:

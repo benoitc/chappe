@@ -56,6 +56,11 @@ handle_channel(Conn, _Channel, _Args) ->
     end.
 ```
 
+## Hand the channel to a call process
+
+To play, collect digits and record with each application awaited, start a
+`chappe_esl_call` in the handler. See [Control a call](call-control.md).
+
 ## Linger after hangup
 
 Each connection sends `linger` right after `connect`, so FreeSWITCH keeps the

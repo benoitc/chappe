@@ -13,8 +13,11 @@ Layers: `chappe_esl_parser` (streaming Content-Length frame parser), `chappe_esl
 gen_statem per connection: inbound auth + outbound accept, FIFO command/reply
 correlation, event delivery to an owner), `chappe_esl_inbound` (connect helper),
 `chappe_esl_listener` / `chappe_esl_outbound_sup` (outbound dialplan sockets),
-`chappe_esl_handler` (the outbound channel behaviour), `chappe_esl_nodes` (the
-FreeSWITCH node registry: a supervisor owning the node ETS table and pg scope,
+`chappe_esl_handler` (the outbound channel behaviour), `chappe_esl_call` (one
+gen_server per controlled channel: typed helpers, completion correlation,
+owner-death cleanup), `chappe_esl_exec` (the sendmsg execute with an
+Event-UUID, the raw wait for its completion, uuid_break, argument quoting),
+`chappe_esl_nodes` (the FreeSWITCH node registry: a supervisor owning the node ETS table and pg scope,
 started only when nodes exist) and `chappe_esl_node` (one gen_statem per node:
 connection, backoff, HEARTBEAT load, probes, drain).
 

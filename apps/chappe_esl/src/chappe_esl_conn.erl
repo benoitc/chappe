@@ -250,8 +250,12 @@ ready(info, {tcp_error, S, _Reason}, #data{socket = S} = Data) ->
     {stop, normal, Data};
 ready(info, {'DOWN', Mon, process, _Pid, _R}, #data{owner_mon = Mon} = Data) ->
     {stop, normal, Data};
-ready(info, {'EXIT', Pid, _R}, #data{handler_pid = Pid} = Data) ->
+%% The handler ends the channel unless it handed the connection to another
+%% process (set_owner/2): the new owner then decides, through its monitor.
+ready(info, {'EXIT', Pid, _R}, #data{handler_pid = Pid, owner = Pid} = Data) ->
     {stop, normal, Data};
+ready(info, {'EXIT', Pid, _R}, #data{handler_pid = Pid} = Data) ->
+    {keep_state, Data#data{handler_pid = undefined}};
 ready(internal, {frame, Frame}, Data) ->
     {keep_state, handle_ready_frame(chappe_esl_event:decode(Frame), Data)};
 ready(internal, {protocol_error, _Reason}, Data) ->
