@@ -88,3 +88,10 @@ ok = chappe_sip:start(#{
   `ciphers => <<"...">>` and set `passphrase` if the key is encrypted.
 - Comma-listed transports share one port, so TLS binds on its own port
   (typically 5061), separate from the UDP/TCP `contact`.
+
+## Where it lives
+
+- Modules: the TLS options of the NIF (`nif_start`), `chappe_sip_engine`
+  (`validate_tls/1`), `chappe_sip_route` (sips Record-Route).
+- Tests: `chappe_sip_tls_SUITE`.
+- Lab: `make interop-conformance`.

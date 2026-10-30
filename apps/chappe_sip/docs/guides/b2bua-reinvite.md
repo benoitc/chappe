@@ -84,6 +84,18 @@ ok = chappe_sip_dialog:ack(Dialog, #{local_sdp => answer_to(Offer)}).
 `ack => manual` also works with an SDP offer, when you want to send the ACK
 yourself.
 
+## SDP hooks and anchoring in detail
+
+- B2BUA SDP and media: `rewrite_sdp => fun(Leg, offer | answer, Sdp)` sees
+  each SDP with its leg and kind and may refuse it (`{reject, Code}`); the
+  2-arity form still works. `media => direct | anchor | fun(CallInfo)` puts
+  the call's offers and answers, re-offers included, through an rtpengine
+  session; a refused anchored re-offer gives rtpengine the last good answer
+  back. `chappe_sip_media:bypass/2` decides direct or anchored from the two
+  sides (WebRTC, address family, NAT, private networks), and
+  `chappe_sip_b2b:set_media/2` switches a live call. See
+  `docs/guides/b2bua-reinvite.md` and `docs/guides/sbc.md`.
+
 ## Notes
 
 - `relay/2` takes `rewrite_sdp`, `notify` and `anchor_params` too, over the
@@ -91,3 +103,10 @@ yourself.
 - Both legs run their own session timer; refreshes stay on their leg.
 - `chappe_sip_b2b:set_media/2` uses the offerless re-INVITE to switch a live
   call between direct and anchored media (see [Run an SBC](sbc.md)).
+
+## Where it lives
+
+- Modules: `chappe_sip_b2b_relay`, `chappe_sip_b2b_media`,
+  `chappe_sip_b2b_early`, `chappe_sip_dialog` (`modify/3`, `ack/2`).
+- Tests: `chappe_sip_b2b_relay_SUITE`.
+- Lab: `make interop-sbc` (`apps/chappe_sip/interop/sbc`).

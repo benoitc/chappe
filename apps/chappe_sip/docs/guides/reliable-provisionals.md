@@ -86,3 +86,10 @@ answer your `answer` fun returns, and the ACK then has no body:
 
 - The ACK keeps the INVITE CSeq; PRACKs use their own CSeq sequence.
 - `await_prack/1` uses the default timeout; `await_prack/2` takes an explicit one.
+
+## Where it lives
+
+- Modules: `chappe_sip_res` (`send_reliable/2`, `await_prack/1,2`),
+  `chappe_sip_uac_fsm` (auto-PRACK), the PRACK path of the NIF (`prack_cb`).
+- Tests: `chappe_sip_prack_SUITE`, `chappe_sip_prack_conf_SUITE`.
+- Lab: `make interop-conformance`.

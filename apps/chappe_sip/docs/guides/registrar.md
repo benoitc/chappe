@@ -140,6 +140,32 @@ chappe_sip:proxy_request(Req, {flow, Uri, Flow}, #{}).
 When that TCP/TLS connection closes, its bindings go (RFC 5626 7). A
 re-registration over another connection moves the binding to it.
 
+## Registrar behaviour in detail
+
+- Registrar (RFC 3261 10.3): `chappe_sip:registrar/1` is a ready REGISTER
+  handler backed by a persistent AOR to contact store. The AOR is the
+  canonical To URI (host case-insensitive, parameters dropped, escapes
+  undone); comma-joined Contacts each take their own `expires`; a Contact
+  matches its binding by the 19.1.4 URI rules; the CSeq check is per binding
+  and a failing REGISTER writes nothing (one the store could not apply in
+  time gets 500 and is never applied); `expires=0` removal, `Contact: *`
+  clear, 423 with `Min-Expires` below `registrar_min_expires` (60), 404
+  outside `registrar_domains`, never a 6xx (an auth policy's 6xx goes out
+  as 403); the 200 lists every binding with `expires` and `q`, and a
+  `Date`. A UA registering directly gets its keep-alives answered: STUN
+  Binding on UDP, CRLF pong on TCP, TLS and WS (RFC 5626 5.4). `chappe_sip:location/1` resolves an AOR the highest q
+  first and `chappe_sip:bindings/1` gives each binding with its Path. Path
+  (RFC 3327) is stored and echoed (420 without `Supported: path`). Outbound
+  (RFC 5626): one binding per (instance, reg-id) flow, `Require: outbound` and
+  `Flow-Timer` in the 200, 439 past a first hop without an `ob` Path. A WS
+  binding is purged when its connection drops (the flow is the only path to
+  the UA), so a browser that disconnects is deregistered; only that flow's
+  binding goes. An outbound binding registered directly over TCP/TLS is tied
+  to its connection (`{conn, Id}`, from the request meta `conn`) and purged
+  when it closes; over UDP to its source address and port. A request reaches
+  it over that flow (`proxy_request/3` with `{flow, Uri, Flow}`, or the
+  `flow` option of a UAC or b2bua).
+
 ## Notes
 
 - A WebSocket UA is reachable only over its flow; use `location_flow/1` and pass
@@ -159,3 +185,11 @@ re-registration over another connection moves the binding to it.
 - A plain binding (no reg-id) over TCP or TLS is not tied to its
   connection: it stays until its `Expires`. A UDP flow has no failure
   detection (no STUN keepalive), so it also lasts until `Expires`.
+
+## Where it lives
+
+- Modules: `chappe_sip_registrar`, `chappe_sip_registry`,
+  `chappe_sip_registry_keeper`, `chappe_sip_qualify`, `chappe_sip_route`
+  (flows).
+- Tests: `chappe_sip_registrar_SUITE`, `chappe_sip_digest_SUITE`.
+- Lab: `make interop-conformance`.

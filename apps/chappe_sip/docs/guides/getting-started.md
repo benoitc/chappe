@@ -14,11 +14,16 @@ the stack up and answer your first call.
 
 ## Build
 
-The default build compiles the C engine (sofia-sip static + the NIF). It needs
-a C toolchain, autotools, pkg-config, and OpenSSL.
+chappe_sip is an app of the chappe umbrella. Build from the umbrella root.
+The default build compiles the C engine (the vendored sofia-sip, static, and
+the NIF). It needs a C toolchain, autotools, pkg-config, and OpenSSL; no
+network access is needed for sofia-sip.
 
 ```bash
+git clone https://github.com/benoitc/chappe.git
+cd chappe
 rebar3 compile
+rebar3 shell
 ```
 
 Pure-Erlang work (no engine) runs against the fake backend:
@@ -75,3 +80,10 @@ end).
 - Handlers block for the life of the call ("a call is a process"). Do the work
   in the handler; it does not need to return until the call ends.
 - Exiting a handler without a final response makes the engine answer 500.
+
+## Where it lives
+
+- Modules: `chappe_sip` (the facade), `chappe_sip_res`, `chappe_sip_req`;
+  `examples/chappe_sip_demo.erl`.
+- Tests: `chappe_sip_core_SUITE`.
+- Lab: `make demo` (`demo/sbc`).

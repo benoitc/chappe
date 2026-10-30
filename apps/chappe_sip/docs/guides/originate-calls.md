@@ -187,6 +187,33 @@ the callee retransmits its 2xx until the ACK and gives up after 32 s.
 `ack/2` returns `{error, no_pending_ack}` on a dialog with nothing left to
 ACK.
 
+## What the UAC does for you
+
+- `chappe_sip:create_uac/2` and `chappe_sip:request/2`: originate INVITE and
+  out-of-dialog requests, with provisional delivery, digest 401/407 retry
+  (one credential per realm, so a 407 then a 401 works; `stale=true` retried
+  with the new nonce; SHA-256 preferred over MD5; nonce counts per nonce),
+  3xx redirects (Contacts best `q` first, the next one on a 4xx/5xx, sip/sips
+  only, `?headers` and `method` dropped; a 305 keeps the Request-URI and
+  goes through the Contact as proxy), a preloaded `route_set` (loose or
+  strict first route, RFC 3261 8.1.1.1), a URI `method` parameter used as
+  the method when none is given and left out of the Request-URI, a sips
+  Contact when the Request-URI, `proxy` or first route is SIPS (also on the
+  dialog's target refreshes), a sip: next hop reached as sips: for a SIPS
+  Request-URI, a `sips:...;transport=udp` target refused, and 3PCC (`no_ack`, then
+  `chappe_sip_dialog:ack/2` sends the ACK with the answer). A
+  `create_uac/2` timeout CANCELs the INVITE and BYEs a 2xx that crosses it.
+  The 2xx ACK carries the INVITE's credentials. The body is `local_sdp`
+  (application/sdp) or `body` plus `content_type` for anything else, such as a
+  SIPREC `multipart/mixed` of SDP and rs-metadata.
+
+## Behaviour changes
+
+- A UAC INVITE watches its owner (`owner`, else `notify`, else the caller
+  of `chappe_sip_uac:start/2`): when that process exits while the INVITE
+  rings, the INVITE is CANCELled and a 2xx that still comes is ACKed and
+  BYEd. Start the call from the process that keeps it, or pass `owner`.
+
 ## Notes
 
 - Digest auth: pass `auth => #{user => U, pass => P}` and chappe_sip retries on
@@ -200,3 +227,11 @@ ACK.
 - `timeout` bounds the whole attempt (default 32000 ms).
 - To bridge an inbound call to an originated one, use the
   [B2BUA](b2bua.md) helper instead of wiring two dialogs by hand.
+
+## Where it lives
+
+- Modules: `chappe_sip` (`create_uac/2`, `request/2`), `chappe_sip_uac`,
+  `chappe_sip_uac_fsm`, `chappe_sip_dialog`.
+- Tests: `chappe_sip_core_uac_SUITE`, `chappe_sip_uac_SUITE`,
+  `chappe_sip_forked_2xx_SUITE`.
+- Lab: `make interop-conformance`.
