@@ -327,6 +327,7 @@ b2b_caller_cancel(_Config) ->
 %% Two callees ring at once; the second answers. A sees one To-tag on the
 %% 180 and the 200, the first callee gets a CANCEL with an RFC 3326
 %% Reason, and the call runs with the second.
+%% req: R3261-P-031
 fork_one_answers(_Config) ->
     {EnginePort, C1} = setup(),
     C2 = pick(),

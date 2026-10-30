@@ -55,6 +55,7 @@
 -export([
     offer/2, answer/2, publish/2, reoffer_rejected/1, query/1, stop/1, info/1
 ]).
+-export([set_owner/2]).
 -export([
     cmd/3,
     play_media/2,
@@ -161,6 +162,12 @@ stop(Session) ->
 -spec info(pid()) -> map() | {error, term()}.
 info(Session) ->
     safe_call(Session, info).
+
+%% Hand the session to another process: it gets the events from now on,
+%% and its death deletes the session instead of the old owner's.
+-spec set_owner(pid(), pid()) -> ok | {error, term()}.
+set_owner(Session, Owner) when is_pid(Owner) ->
+    safe_call(Session, {set_owner, Owner}).
 
 %% Any other NG command against this session (call_id and from_tag
 %% injected). Allowed once an offer is in flight.
@@ -440,6 +447,12 @@ handle_event({call, From}, stop, _State, Data) ->
             %% best-effort delete attempt
             {stop_and_reply, normal, [{reply, From, {error, Reason}}]}
     end;
+%% owner
+
+handle_event({call, From}, {set_owner, Owner}, _State, Data) ->
+    demonitor(Data#data.owner_mon, [flush]),
+    Data1 = Data#data{owner = Owner, owner_mon = monitor(process, Owner)},
+    {keep_state, Data1, [{reply, From, ok}]};
 %% info
 
 handle_event({call, From}, info, State, Data) ->

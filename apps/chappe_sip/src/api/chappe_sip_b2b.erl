@@ -49,7 +49,7 @@
 -include("chappe_sip.hrl").
 -include("chappe_sip_uac.hrl").
 
--export([create_b2bua/4, relay/1, relay/2, set_media/2, info/1]).
+-export([create_b2bua/4, relay/1, relay/2, relay_async/2, set_media/2, info/1]).
 -export([hangup/2, replace_b/3]).
 -export([call/2, call/3, contact/0]).
 %% helpers of the chappe_sip_b2b_* modules
@@ -684,6 +684,17 @@ relay(Legs) ->
 relay(Legs, Opts) ->
     chappe_sip_b2b_relay:run(Legs, Opts).
 
+%% Carry the call in a process of its own, so the caller is free (to
+%% drive a media server on the call, say): relay/2 runs there with Opts,
+%% both dialogs and the call's rtpengine session move to it, and its
+%% handle comes back. The notify process (Opts' notify, else the one
+%% given to create_b2bua/4) gets {chappe_sip_b2b, Ref, {done, Result}},
+%% Result as relay/2 returns it, when the call ends. Call it from the
+%% process create_b2bua/4 ran in.
+-spec relay_async(legs(), map()) -> {ok, b2b()}.
+relay_async(Legs, Opts) ->
+    chappe_sip_b2b_async:run(Legs, Opts).
+
 %% Switch a live call between direct and anchored media. It re-INVITEs A
 %% without an offer, sends A's new offer to B (through rtpengine when it
 %% now anchors), and ACKs A with B's answer. {error, busy} while another
@@ -719,6 +730,10 @@ hangup(B2b, Opts) ->
 %%   proxy, auth, flow, session_expires, min_se, session_refresher => as
 %%               for create_b2bua/4
 %%   timer_c  => how long the new B may ring, in ms (default: timer_c_ms)
+%%   anchor_params => #{a | b => map()}: rtpengine flags for that leg from
+%%               now on, over the call's (the new B on another network,
+%%               a media server behind another rtpengine interface, say);
+%%               on a failure the call keeps the ones it had
 %% {error, not_anchored} when the call's media is direct, {error, busy}
 %% while another offer of the call is pending. The notify process gets
 %% {chappe_sip_b2b, Ref, {replaced, b}}. The ACK of a re-INVITE needs no

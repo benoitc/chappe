@@ -52,7 +52,8 @@
     duck/2,
     unduck/2,
     stop/1,
-    info/1
+    info/1,
+    set_owner/2
 ]).
 -export([anchor_offer/3, anchor_answer/3, anchor_release/1]).
 -export([anchor_active/0, anchor_pinned/1]).
@@ -249,10 +250,12 @@ dtmf(_S, _Params) ->
 %% G.711 SDP to send toward the call. Opts: room (required), sdp (the
 %% call's offer: the mixer answers it; without it the mixer offers and you
 %% pass the answer to set_remote/2), owner (owner of a room this join
-%% creates), law (ulaw | alaw, for an offer), mute, name, direction
+%% creates), persist (true: that room stays up with no leg, until its
+%% owner exits), law (ulaw | alaw, for an offer), mute, name, direction
 %% (sendrecv | sendonly | recvonly | inactive, seen from the room),
 %% talk_events (true: the caller gets {chappe_sip_media, {talking, Room,
-%% true | false}}).
+%% true | false}}), talk_tag (the event is then {chappe_sip_media,
+%% {talking, Room, Tag, true | false}}).
 -spec conference(session(), #{room := binary(), _ => _}) ->
     {ok, binary()} | {error, term()}.
 conference(#media_session{backend = mix, ref = R, identity = I}, Opts) ->
@@ -385,6 +388,15 @@ stop(#media_session{backend = rtpengine, ref = R}) ->
     chappe_sip_media_rtpengine:stop(R);
 stop(#media_session{backend = mix, ref = R}) ->
     chappe_sip_media_mix:stop(R).
+
+%% Hand an rtpengine session to another process: its death ends the
+%% session from now on (a call carried on by another process than the
+%% one that set it up).
+-spec set_owner(session(), pid()) -> ok | {error, term()}.
+set_owner(#media_session{backend = rtpengine, ref = R}, Owner) ->
+    chappe_sip_media_rtpengine:set_owner(R, Owner);
+set_owner(_S, _Owner) ->
+    {error, {unsupported, set_owner}}.
 
 -spec info(session()) -> map() | {error, term()}.
 info(#media_session{backend = rtpengine, ref = R}) ->

@@ -63,6 +63,7 @@ end_per_testcase(_Case, Config) ->
 %% A 401 is answered with credentials on the same Call-ID and the next
 %% CSeq; the 2xx's expires for our Contact is kept, and the binding is
 %% refreshed before it runs out, without a second registered event.
+%% req: R3261-RC-01 R3261-RC-02 R3261-RC-05 R3261-RC-06
 digest_and_refresh(Config) ->
     Sock = ?config(sock, Config),
     ok = chappe_sip:register_client(trunk, #{
@@ -76,7 +77,7 @@ digest_and_refresh(Config) ->
     R2 = register(Sock),
     {ok, <<"alice">>} = verify(R2),
     ?assertEqual(hdr(<<"call-id">>, R1), hdr(<<"call-id">>, R2)),
-    ?assert(seq(R2) > seq(R1)),
+    ?assertEqual(seq(R1) + 1, seq(R2)),
     ok(Sock, R2, 3),
     registered = event(trunk),
     {ok, #{status := registered, granted := 3}} =
@@ -85,7 +86,7 @@ digest_and_refresh(Config) ->
     %% challenge at once: same nonce, the next nc, a new cnonce
     R3 = register(Sock),
     ?assertEqual(hdr(<<"call-id">>, R1), hdr(<<"call-id">>, R3)),
-    ?assert(seq(R3) > seq(R2)),
+    ?assertEqual(seq(R2) + 1, seq(R3)),
     #{<<"nonce">> := N, <<"nc">> := <<"00000001">>, <<"cnonce">> := C2} =
         auth_params(R2),
     #{<<"nonce">> := N, <<"nc">> := <<"00000002">>, <<"cnonce">> := C3} =
@@ -130,6 +131,7 @@ digest_reuse_refused(Config) ->
     no_event(tre, 300).
 
 %% A 423 is retried with the Min-Expires it names.
+%% req: R3261-RC-08
 min_expires_423(Config) ->
     Sock = ?config(sock, Config),
     ok = chappe_sip:register_client(t423, #{
@@ -143,6 +145,7 @@ min_expires_423(Config) ->
 
 %% A failure is reported once and retried with a doubling backoff, after
 %% the Retry-After of a 503.
+%% req: R3261-RC-07
 failure_backoff(Config) ->
     Sock = ?config(sock, Config),
     ok = chappe_sip:register_client(tfail, #{
@@ -187,6 +190,7 @@ expiry(Config) ->
 
 %% unregister_client sends Expires: 0 for the same Contact and returns
 %% once the registrar answers; the registration is then gone.
+%% req: R3261-RC-04
 unregister(Config) ->
     Sock = ?config(sock, Config),
     ok = chappe_sip:register_client(tun, #{
@@ -225,6 +229,7 @@ not_found(_Config) ->
 
 %% A registration stopped by its supervisor removes its binding on the
 %% way out.
+%% req: R3261-RC-04
 stop_unregisters(Config) ->
     Sock = ?config(sock, Config),
     ok = chappe_sip:register_client(tstop, #{
