@@ -2,7 +2,8 @@
 %% SPDX-License-Identifier: Apache-2.0
 %%
 %% Guards the documentation snippets against API drift. It scans every fenced
-%% ```erlang code block in the umbrella's guides, design docs, and READMEs,
+%% ```erlang code block in the umbrella's guides, design docs, READMEs,
+%% the umbrella docs/ tree and CONTRIBUTING.md,
 %% parses each block, and asserts that every `chappe_*' module:function/arity it
 %% calls actually exists and is exported. It does not execute the snippets: most
 %% are fragments with free variables (Req, Res, Dialog, ...) or need a live SIP /
@@ -66,6 +67,8 @@ doc_files(Root) ->
     lists:usort(
         filelib:wildcard(filename:join(Root, "apps/*/docs/**/*.md")) ++
             filelib:wildcard(filename:join(Root, "apps/*/README.md")) ++
+            filelib:wildcard(filename:join(Root, "docs/**/*.md")) ++
+            filelib:wildcard(filename:join(Root, "CONTRIBUTING.md")) ++
             filelib:wildcard(filename:join(Root, "README.md"))
     ).
 
