@@ -156,12 +156,16 @@ cover:
 # skipped. Each app is built on its own from its directory, as it is
 # published, because its ex_doc paths are relative to it; the C engine is
 # not needed for docs.
+# Each app builds its docs from its own directory (ex_doc extras are
+# relative to the app); the umbrella is compiled first and put on the code
+# path so an app that depends on its siblings (chappe_mrf) finds them.
 docs:
+	@SKIP_ENGINE_BUILD=1 rebar3 compile >/dev/null
 	@failed=; for dir in apps/*/; do \
 	    app=$$(basename $$dir); \
 	    if grep -q '^{ex_doc,' $$dir/rebar.config 2>/dev/null; then \
 	        echo "$$app:"; \
-	        (cd $$dir && SKIP_ENGINE_BUILD=1 \
+	        (cd $$dir && ERL_LIBS=$(CURDIR)/_build/default/lib SKIP_ENGINE_BUILD=1 \
 	            REBAR_BASE_DIR=$(CURDIR)/_build/docs/$$app rebar3 ex_doc) \
 	            || failed="$$failed $$app"; \
 	    else \

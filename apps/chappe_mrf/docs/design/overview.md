@@ -83,7 +83,7 @@ The INVITE to FreeSWITCH carries `X-Chappe-Call: <id>`. FreeSWITCH exposes
 it on the channel as `variable_sip_h_X-Chappe-Call`, which the outbound
 socket's channel data includes. That is the only link between the SIP leg
 and the ESL connection. A channel with no id, or an id nobody waits for, is
-hung up with `UNALLOCATED_NUMBER` (`chappe_mrf_esl:refuse/1`).
+hung up with `UNALLOCATED_NUMBER` (see `refuse/1` in `chappe_mrf_esl`).
 
 With several candidate nodes, `chappe_mrf_endpoint` finds which one the
 INVITE landed on by matching `variable_sip_req_host` and `_port` against

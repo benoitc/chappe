@@ -17,7 +17,7 @@ traffic, so something must play nta's role for them: match retransmissions,
 run the RFC 3261 timers, match responses to client transactions, and match
 in-dialog requests to legs. Doing that in Erlang keeps the C surface small.
 The reasoning and its cost are recorded in
-[decision 0007](../../../../docs/decisions/0007-websocket-transaction-layer.md).
+[decision 0007](../../../../docs/decisions/0007-ws-transaction-layer.md).
 
 ## Shape
 

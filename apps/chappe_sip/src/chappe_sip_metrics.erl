@@ -18,8 +18,10 @@
 %%
 %% Serve them on an HTTP route with handler/0, which refreshes the gauges
 %% and renders the registry (livery_metrics):
+%% ```
 %%   R1 = livery_router:add('GET', <<"/metrics">>,
 %%                          chappe_sip_metrics:handler(), #{}, R0).
+%% '''
 %% Set the `metrics' application setting to false to record nothing.
 -module(chappe_sip_metrics).
 

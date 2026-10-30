@@ -17,7 +17,7 @@ The three statements:
 
 | Where | Says | Date |
 |---|---|---|
-| [`apps/chappe_sip/docs/plan.md`](../../apps/chappe_sip/docs/plan.md), M15 | "Dropped: the original external control-protocol M15 (re-adds the process boundary the design removed)." | closed 2026-07-15 |
+| [`apps/chappe_sip/docs/history/plan.md`](../../apps/chappe_sip/docs/history/plan.md), M15 | "Dropped: the original external control-protocol M15 (re-adds the process boundary the design removed)." | closed 2026-07-15 |
 | [`apps/chappe_sip/docs/design/remote-app.md`](../../apps/chappe_sip/docs/design/remote-app.md) | Titled "(draft)", "No code exists for it yet". Its "Decisions" section, "Recorded on 2026-10-03 after review", says the phases ship in order (Phase 0 in-node groundwork, then a control socket, outbound connect, an Erlang distribution client) and that remote clients are separate hex packages. Seven open questions remain. | 2026-10-03 |
 | [`apps/chappe_sip/docs/features.md`](../../apps/chappe_sip/docs/features.md), "Planned" | "Multi-app / outbound connection model ... We embed the stack in the node, so a remote-app split and outbound cloud-scaling are not available yet." | undated |
 

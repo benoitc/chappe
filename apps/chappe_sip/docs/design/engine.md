@@ -25,7 +25,7 @@ Call-ID and tags for every method and needs no such step.
 ## Why a NIF
 
 The decision and its alternatives are recorded in
-[decision 0001](../../../../docs/decisions/0001-sip-transactions-in-nta.md).
+[decision 0001](../../../../docs/decisions/0001-sofia-nta-nif.md).
 What the repository itself shows:
 
 - sofia-sip's nta already implements the RFC 3261 transaction layer, RFC
