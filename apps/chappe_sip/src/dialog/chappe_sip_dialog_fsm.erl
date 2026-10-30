@@ -311,7 +311,11 @@ setup(info, {chappe_sip_indialog, LegH, _, _, _}, #data{leg = LegH} = D) ->
     %% the peer may send a request (a BYE on our ACK) before the leg op
     %% result is in: handle it once confirmed rather than drop it
     {keep_state, D, [postpone]};
-setup(info, {chappe_sip_ack, LegH, _}, #data{leg = LegH} = D) ->
+setup(info, {chappe_sip_ack, H, _}, D) when ?IS_OURS(H, D) ->
+    %% the 2xx ACK of a dialog-forming INVITE names its server transaction,
+    %% and a fast peer sends it before the owner has waited for the leg
+    {keep_state, D, [postpone]};
+setup(info, {chappe_sip_ack_timeout, H}, D) when ?IS_OURS(H, D) ->
     {keep_state, D, [postpone]};
 setup(info, {chappe_sip_cancel, TxnH, _}, #data{txn = TxnH} = D) ->
     {keep_state, D, [postpone]};

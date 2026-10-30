@@ -49,6 +49,43 @@ bye_in_setup_test() ->
     exit(Engine, kill),
     flush().
 
+%% The ACK of our 2xx, named by the INVITE's server transaction, can reach
+%% the dialog before it leaves setup (the peer answers fast, the owner has
+%% not yet waited for the leg). It is kept and handed to the owner once the
+%% dialog is up, not dropped: a dropped ACK leaves the dialog waiting for
+%% it, so a destroy hangs until Timer H.
+ack_on_txn_in_setup_test() ->
+    Engine = mock_engine(self()),
+    {ok, Fsm} = chappe_sip_dialog_fsm:start_link(#{
+        leg => 1,
+        txn => 5,
+        ack_wait => true,
+        call_id => <<"setup-ack">>,
+        local_addr => <<"<sip:a@example.com>;tag=a">>,
+        remote_addr => <<"<sip:b@example.com>;tag=b">>,
+        remote_target => <<"sip:b@example.com">>,
+        local_tag => <<"a">>,
+        owner => self(),
+        role => uas,
+        opts => #{}
+    }),
+    Ack = <<"ACK sip:a@example.com SIP/2.0\r\n"
+            "Via: SIP/2.0/UDP 127.0.0.1:5070;branch=z9hG4bKsetupack\r\n"
+            "From: <sip:b@example.com>;tag=b\r\n"
+            "To: <sip:a@example.com>;tag=a\r\n"
+            "Call-ID: setup-ack\r\nCSeq: 1 ACK\r\nContent-Length: 0\r\n\r\n">>,
+    Fsm ! {chappe_sip_ack, 5, Ack},
+    Fsm ! {chappe_sip_op, 1, ok},
+    ?assertEqual({ok, 1}, gen_statem:call(Fsm, await_ready)),
+    receive
+        {chappe_sip_dialog, _, ack, _, _} -> ok
+    after 2000 -> ?assert(false)
+    end,
+    unlink(Fsm),
+    exit(Fsm, kill),
+    exit(Engine, kill),
+    flush().
+
 mock_engine(Test) ->
     Pid = spawn(fun() -> engine_loop(Test) end),
     true = register(chappe_sip_engine, Pid),
