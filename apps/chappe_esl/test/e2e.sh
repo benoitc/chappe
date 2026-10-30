@@ -11,6 +11,9 @@
 #
 # ESL_PROJECT (compose project, default chappe-esl), FS1_ESL_PORT (18021)
 # and FS2_ESL_PORT (18022) move the stack out of the way of another one.
+# ESL_SOCKET_PORT (18084) is the outbound listener the socket extension
+# connects back to; ESL_MEDIA_DIR (_build/esl-media) is shared with both
+# nodes as /media for prompts and recordings.
 #
 # Usage: apps/chappe_esl/test/e2e.sh   (or: make interop-esl)
 set -u
@@ -18,7 +21,11 @@ set -u
 cd "$(dirname "$0")/../../.."
 FS1_ESL_PORT=${FS1_ESL_PORT:-18021}
 FS2_ESL_PORT=${FS2_ESL_PORT:-18022}
-export FS1_ESL_PORT FS2_ESL_PORT
+ESL_SOCKET_PORT=${ESL_SOCKET_PORT:-18084}
+# created here, before docker would create it owned by root
+ESL_MEDIA_DIR=${ESL_MEDIA_DIR:-$(pwd)/_build/esl-media}
+mkdir -p "$ESL_MEDIA_DIR"
+export FS1_ESL_PORT FS2_ESL_PORT ESL_SOCKET_PORT ESL_MEDIA_DIR
 # absolute: the suite runs it from the CT log directory
 COMPOSE="docker compose -p ${ESL_PROJECT:-chappe-esl} -f $(pwd)/apps/chappe_esl/interop/docker-compose.yml"
 
