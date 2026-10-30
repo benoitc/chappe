@@ -88,6 +88,55 @@ end).
   ways.
 - B2BUA: two dialogs; handles WS-to-WS cleanly (a browser-to-browser call).
 
+## How the WebSocket transport behaves
+
+- SIP-over-WebSocket (RFC 7118) via livery (`ws => #{port}` in
+  `chappe_sip:start/1`, and `wss => #{port, cert_dir}` for secure WebSocket
+  with the `agent.pem` of the SIP TLS cert dir): an Erlang WS transport
+  bridges frames to the shared transaction-user logic, so UAS/registrar/etc.
+  work over WS. The engine multiplexes each operation to the sofia NIF or the
+  WS transport by handle. The `sip` subprotocol is required (a client that
+  does not offer it is refused); text and binary frames are accepted, and a
+  message that is not valid UTF-8 goes out in a binary frame. Requests over
+  WSS carry a `WSS` Via. livery starts lazily, only when a WS listener is
+  configured. To terminate TLS at a load balancer instead, point it at the
+  plain `ws` port.
+- WS transactions follow the RFC 3261 rules for a reliable transport: no
+  retransmissions, a retransmitted request gets the last response again, a
+  non-2xx INVITE final waits for its ACK (Timer H), Timer B/F bound a client
+  transaction, Timer C (180 s) CANCELs an INVITE stuck after a provisional,
+  a CANCEL waits for a provisional, and a non-2xx final is ACKed with the
+  INVITE's branch. A CANCEL of an unanswered INVITE gets the 487, a 2xx
+  never ACKed within 64*T1 is BYEd, reliable provisionals (100rel) carry
+  RSeq and are matched to their PRACK, and dialog-forming responses carry
+  the request's Record-Route. An INVITE left ringing sends its last non-100
+  provisional again every `ws_progress_ms` (60 s) until the final, as nta
+  does on UDP, TCP and TLS (RFC 3261 13.3.1.1).
+- Via `received` is stamped when the sent-by is not the client address (a
+  WS client's `.invalid` host always is); `rport` is filled in only when the
+  client asked with a bare `rport` (RFC 3581).
+- Keepalive: a CRLFCRLF ping gets a CRLF pong on WS and, through sofia, on
+  TCP/TLS (RFC 5626 4.4.1). The server pings each WS connection every
+  `ws_ping_interval_ms` (30 s); a connection with no inbound traffic for
+  `ws_idle_timeout_ms` (600 s) is closed, so only a client that stopped
+  answering is reaped.
+- WebRTC gateway: bridge a browser (WS) and a UDP/TCP peer in both
+  directions, as a proxy (`chappe_sip:proxy_request` to a `{ws, Flow}` target,
+  Record-Route with a flow token so in-dialog ACK/BYE/re-INVITE traverse) or
+  a B2BUA (`chappe_sip:create_b2bua` with a `flow` opt). Resolve a registered
+  browser with `chappe_sip:location_flow/1`. A real JsSIP-to-JsSIP WebRTC call
+  completes through the b2bua over WS (verified in the interop track). A
+  WS-to-WS proxied dialog carries a flow token per leg, so both directions
+  route; the tokens are trusted-gateway scoped.
+- Dialog-forming 2xx responses carry a Contact (RFC 3261 12.1.1), and a
+  UAC-built request over WS (e.g. a 2xx ACK) gets a Via from the transport, so
+  strict clients (JsSIP) build the dialog and accept in-dialog requests.
+
+## Behaviour changes
+
+- A closed WebSocket connection ends the dialogs bound to it: owners get
+  `destroy` with reason `flow_lost`.
+
 ## Notes
 
 - Restrict browser origins with `ws_allowed_origins` (a list of binary
@@ -117,3 +166,12 @@ end).
   the WebRTC SDP unchanged.
 - Verified against real JsSIP (register and a WebRTC call). See
   [Interop testing](interop-testing.md).
+
+## Where it lives
+
+- Modules: `chappe_sip_ws_listener`, `chappe_sip_ws_conn`,
+  `chappe_sip_ws_transport`, `chappe_sip_ws`; design in
+  [ws-transport](../design/ws-transport.md).
+- Tests: `chappe_sip_websocket_SUITE`, `chappe_sip_ws_conf_SUITE`,
+  `chappe_sip_webrtc_gateway_SUITE`.
+- Lab: `make interop` (JsSIP, `apps/chappe_sip/interop`).

@@ -34,6 +34,26 @@ support gets 420 (RFC 3261 16.3). Without it the route acts as a UAS and
 answers 420 to an unknown `Require` before your handler runs. A proxy route
 that also answers some requests itself checks their `Require` on its own.
 
+## Anchor the media in rtpengine
+
+Add a `media` map to anchor the SDP through rtpengine while the Call-ID is
+kept: the offer on the forwarded request, the answer on its 1xx and 2xx, and
+the release on the in-dialog BYE. It needs a configured rtpengine backend
+(see [Media](media.md)) and `record_route => true`, so the in-dialog
+requests come back through the proxy.
+
+```erlang
+chappe_sip:proxy_request(Req, <<"sip:bob@10.0.0.2">>,
+                         #{record_route => true,
+                           media => #{offer_params => #{},
+                                      answer_params => #{}}}).
+```
+
+`offer_params` and `answer_params` are rtpengine flags for each side. A
+failed offer fails the request instead of forwarding it unanchored; a failed
+answer relays the response unchanged. Without `media` the proxy forwards
+the SDP untouched.
+
 ## Fork
 
 ```erlang
@@ -132,6 +152,21 @@ is not relayed.
 - A `sips:` target with `transport=udp` is not tried: the branch counts as a
   480 and nothing is sent (RFC 3261 19.1.1).
 
+## What the proxy does, in detail
+
+- `chappe_sip:proxy_request/3`: a stateful proxy after RFC 3261 section 16.
+  Sequential and parallel forking with the Request-URI rewritten to each
+  target, a pre-existing Route set honoured (loose and strict next hops,
+  strict-router recovery), Timer C per INVITE branch, CANCEL relayed to the
+  branches (the downstream 487 or a crossing 2xx goes upstream), loop
+  detection (482) that lets spirals through, and the 16.7 best response (6xx
+  first, lowest class, retry-able 4xx preferred, challenges and 3xx Contacts
+  merged, 503 sent as 500). Every 2xx is forwarded for 64*T1 after the first
+  (RFC 6026), also over TCP/TLS, where nta ends the client transaction at
+  the first 2xx: the shim's agent callback catches the later ones. Record-Route insertion (sips when the forwarded request is
+  SIPS, rewritten in responses across TLS/non-TLS) and in-dialog forwarding
+  through it, CANCEL of a transit re-INVITE included.
+
 ## Notes
 
 - One Record-Route per forward (single interface per transport).
@@ -140,3 +175,13 @@ is not relayed.
   the stack.
 - A record-routed dialog must end within `record_route_ttl_s` (24 h by
   default), after which its route marker is refused.
+
+## Where it lives
+
+- Modules: `chappe_sip_proxy`, `chappe_sip_proxy_rules`,
+  `chappe_sip_proxy_dialog`, `chappe_sip_route`, the stray 2xx path of the
+  NIF (`stray_cb`).
+- Tests: `chappe_sip_proxy_conf_SUITE`, `chappe_sip_proxy_forking_SUITE`,
+  `chappe_sip_proxy_record_route_SUITE`, `chappe_sip_proxy_media_SUITE`,
+  `chappe_sip_route_tests`.
+- Lab: `make interop-conformance`.

@@ -157,6 +157,22 @@ NOTIFY router hands them to `chappe_sip_refer` before your own
 `chappe_sip_refer:notify_handler/0` and `handle_notify/2` still work in a
 handler of yours.
 
+## REFER behaviour in detail
+
+- REFER (RFC 3515 as updated by RFC 7647), both sides, in `chappe_sip_refer`
+  (facade: `chappe_sip:accept_refer/3,4`, `send_refer/3`). Recipient: 400 for
+  zero or several Refer-To, 416 for a non sip/sips/tel target, an `authorize`
+  hook (required for `method=BYE`, RFC 4579 5.11), 200 never 202, the implicit
+  subscription with message/sipfrag NOTIFYs, `Event: refer;id=<CSeq>` from
+  the second REFER in a dialog, refresh/unsubscribe by SUBSCRIBE (403 for an
+  unknown id), expiry, at most one NOTIFY a second with the final one never
+  dropped, `Refer-Sub: false` with `norefersub` (RFC 4488), Target-Dialog
+  lookups (RFC 4538) for out-of-dialog REFERs, Replaces and nested Refer-To
+  in the target. Sender: in or out of dialog, Referred-By (RFC 3892), Replaces,
+  Refer-Sub, Target-Dialog; NOTIFYs become `{refer_progress, Id, Code}` and
+  `{refer_done, Id, Code}`, unknown ones get 481. `chappe_sip_sipfrag` builds
+  and parses message/sipfrag (RFC 3420). See the REFER guide.
+
 ## Notes
 
 - `chappe_sip_sipfrag` builds and parses the message/sipfrag bodies
@@ -166,3 +182,11 @@ handler of yours.
 - Inside a dialog, the REFER package's SUBSCRIBEs and NOTIFYs only reach
   `chappe_sip_refer` once it has accepted or sent a REFER in that dialog;
   before that they go to the owner as usual.
+
+## Where it lives
+
+- Modules: `chappe_sip_refer`, `chappe_sip_refer_sub`,
+  `chappe_sip_refer_registry`, `chappe_sip_sipfrag`,
+  `chappe_sip_notify_router`.
+- Tests: `chappe_sip_refer_SUITE`, `chappe_sip_sipfrag_tests`.
+- Lab: none.

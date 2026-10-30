@@ -92,3 +92,10 @@ Billable duration is `ended_at - answered_at`.
 - `chappe_sip_cdr:open_records/0` lists the calls not ended yet.
 - Events are plain messages; ship them to your billing store from your
   subscriber, not from a SIP handler.
+
+## Where it lives
+
+- Modules: `chappe_sip_cdr` (fed by the dialog and UAC fsms, the B2BUA and
+  the proxy).
+- Tests: `chappe_sip_cdr_SUITE`.
+- Lab: none.

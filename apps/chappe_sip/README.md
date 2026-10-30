@@ -1,90 +1,86 @@
 # chappe_sip
 
-A SIP application server for Erlang/OTP. It is a port of the drachtio
-model to the BEAM: sofia-sip provides the SIP transaction layer through a
-thin NIF, and everything above it (dialogs, UAC/UAS orchestration, B2BUA,
-proxy, digest auth, middleware) is Erlang. You write SIP applications
-against an srf-like API in your own Erlang code; there is no external
-signaling daemon and no control protocol.
+chappe_sip is the SIP core of the chappe umbrella: a SIP application server
+you embed in an Erlang release. sofia-sip's transaction layer runs inside the
+VM behind a thin C NIF, and everything above it (dialogs, UAS and UAC, the
+B2BUA, the proxy, the registrar, digest, middleware, events) is Erlang that
+your code calls directly. There is no separate signalling daemon and no
+control protocol. Media stays outside: chappe_sip drives rtpengine and
+chappe_mix through its media facade, and chappe_mrf builds on it to drive
+FreeSWITCH. How the apps fit together is in the
+[umbrella documentation](../../docs/README.md) and the vocabulary in
+[concepts](../../docs/concepts.md).
 
-## What you get
+## Public modules
 
-- An embedded SIP engine (sofia-sip nta) started and supervised by your
-  Erlang application.
-- An application API modeled on drachtio-srf: request handlers by SIP
-  method, `create_uas`, `create_uac`, `create_b2bua`, `proxy_request`,
-  dialogs as processes with an events contract.
-- One OTP app, one process image. A dialog is a process.
+| Module | Use it to |
+|---|---|
+| `chappe_sip` | start the stack, register handlers and middleware, answer, place, bridge and proxy calls, run a registrar, register to a carrier, manage peers, serve event packages |
+| `chappe_sip_req`, `chappe_sip_res` | read an inbound request, answer it |
+| `chappe_sip_dialog` | drive a dialog: re-INVITE, hold, BYE, in-dialog requests, NOTIFY |
+| `chappe_sip_uac` | place a request and follow its responses |
+| `chappe_sip_b2b` | relay, hang up, replace leg B, switch media on a bridged call |
+| `chappe_sip_handler`, `chappe_sip_middleware`, `chappe_sip_guard` | structure a UAS, chain middleware, turn unwanted traffic away |
+| `chappe_sip_media` | anchor, tap, duck, conference: media on rtpengine and chappe_mix |
+| `chappe_sip_refer`, `chappe_sip_subscriber`, `chappe_sip_presence`, `chappe_sip_mwi`, `chappe_sip_focus` | transfer, events, presence, message waiting, conference state |
+| `chappe_sip_cdr`, `chappe_sip_metrics` | call records, Prometheus metrics |
+| `chappe_sip_msg`, `chappe_sip_hdr`, `chappe_sip_uri`, `chappe_sip_sdp`, `chappe_sip_digest` | parse and build SIP |
 
-## Status
-
-Working: UAS, UAC, B2BUA, forking proxy, in-dialog operations, and a
-controlled engine restart. Start with `docs/README.md` for the guides;
-`docs/features.md` is the feature list and `docs/plan.md` the milestone history.
-
-## Requirements
-
-- Erlang/OTP 29
-- A C toolchain, autoconf, automake, libtool, pkg-config (to build the
-  bundled sofia-sip and the NIF shim). On macOS: `brew install boost
-  autoconf automake libtool pkg-config` (openssl@3 too if missing).
+The full list, and which modules are internal, is in the
+[design overview](docs/design/overview.md#public-and-internal-modules).
 
 ## Quickstart
 
-```sh
-git clone --recursive https://github.com/benoitc/chappe_sip.git
-cd chappe_sip
-rebar3 compile        # builds sofia-sip + the NIF on first run
-rebar3 shell
-```
+You need Erlang/OTP 29, a C toolchain, autoconf, automake, libtool and
+pkg-config (on macOS: `brew install boost autoconf automake libtool pkg-config`,
+and `openssl@3` if missing). sofia-sip is vendored, so the build needs no
+network for it.
 
-Answer every INVITE, echoing the caller's SDP:
+1. Build from the umbrella root (the first compile builds sofia-sip and the
+   NIF):
 
-```erlang
-ok = chappe_sip:start(#{contact => <<"sip:0.0.0.0:5060">>}),
-ok = chappe_sip:invite(fun(Req, Res) ->
-    {ok, Dlg} = chappe_sip:create_uas(Req, Res, #{local_sdp => chappe_sip_req:body(Req)}),
-    chappe_sip_dialog:wait(Dlg)
-end).
-```
+   ```sh
+   git clone https://github.com/benoitc/chappe.git
+   cd chappe
+   rebar3 compile
+   rebar3 shell
+   ```
 
-Bridge every INVITE to another endpoint (B2BUA):
+2. Start the stack and answer every INVITE, echoing the caller's SDP:
 
-```erlang
-ok = chappe_sip:invite(fun(Req, Res) ->
-    {ok, Legs} = chappe_sip:create_b2bua(Req, Res, <<"sip:bob@10.0.0.2">>, #{}),
-    chappe_sip_b2b:relay(Legs)
-end).
-```
+   ```erlang
+   ok = chappe_sip:start(#{contact => <<"sip:0.0.0.0:5060">>}),
+   ok = chappe_sip:invite(fun(Req, Res) ->
+       {ok, Dlg} = chappe_sip:create_uas(Req, Res,
+                                         #{local_sdp => chappe_sip_req:body(Req)}),
+       chappe_sip_dialog:wait(Dlg)
+   end).
+   ```
 
-Fork a call to two destinations, first 2xx wins:
+3. Or bridge every INVITE to another endpoint (a B2BUA):
 
-```erlang
-ok = chappe_sip:invite(fun(Req, _Res) ->
-    chappe_sip:proxy_request(Req, [<<"10.0.0.2">>, <<"10.0.0.3">>],
-                       #{forking => parallel})
-end).
-```
+   ```erlang
+   ok = chappe_sip:invite(fun(Req, Res) ->
+       {ok, Legs} = chappe_sip:create_b2bua(Req, Res, <<"sip:bob@10.0.0.2">>, #{}),
+       chappe_sip_b2b:relay(Legs)
+   end).
+   ```
 
-More in `examples/chappe_sip_demo.erl` (echo UAS, B2BUA, registrar) and the
-API surface in `docs/design/overview.md`.
+`SKIP_ENGINE_BUILD=1 rebar3 compile` skips the C build for pure-Erlang work.
+For a release, `rebar3 as prod release`, and run it under heart or systemd:
+a crash in the C engine takes the node down by design (see
+[deployment](docs/guides/deployment.md)). A runnable SBC built on chappe_sip
+is in `demo/sbc` (`make demo` from the umbrella root).
 
-## Building the engine
+## Documentation
 
-`rebar3 compile` runs `c_src/build.sh`, which builds sofia-sip as a static
-library and links the NIF into `priv/lib/`. It is stamped, so later
-compiles are instant. `SKIP_ENGINE_BUILD=1 rebar3 compile` skips the C
-build entirely for pure-Erlang work (tests then use the fake engine).
-
-For a production release:
-
-```sh
-rebar3 as prod release
-```
-
-Run the node under `heart` or `systemd Restart=always`: a crash in the C
-engine takes the BEAM down by design (see `docs/design/engine.md`), and the
-supervisor restarts the node.
+- [Documentation index](docs/README.md): every guide and design page.
+- [Getting started](docs/guides/getting-started.md).
+- [Features](docs/features.md): what chappe_sip does today.
+- [Design overview](docs/design/overview.md): supervision, layers, entry
+  points, tests.
+- [Concepts](../../docs/concepts.md): the words used across chappe.
+- [CHANGELOG](../../CHANGELOG.md).
 
 ## License
 

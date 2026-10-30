@@ -151,3 +151,13 @@ chappe_sip:create_b2bua(Req, Res, Uri, #{flow => Flow}).
   stays on it.
 - Kamailio's dispatcher (`ds_ping_method OPTIONS`) and chappe_sip ping each
   other the same way; the SBC interop lab (`make interop-sbc`) runs both.
+
+## Where it lives
+
+- Modules: `chappe_sip_peers`, `chappe_sip_peer`, `chappe_sip_qualify`,
+  `chappe_sip_b2b` (`{peer_group, G}`, `set_media/2`), `chappe_sip_media`
+  (`bypass/2`).
+- Tests: `chappe_sip_peers_SUITE`, `chappe_sip_b2b_relay_SUITE`,
+  `chappe_sip_sbc_interop_SUITE`.
+- Lab: `make interop-sbc` (`apps/chappe_sip/interop/sbc`); the end-to-end
+  demo in `demo/sbc`.

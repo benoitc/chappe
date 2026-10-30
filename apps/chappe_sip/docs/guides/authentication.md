@@ -140,3 +140,11 @@ the same nonce (RFC 8760); put each in its own header. Pass
   must be the user and its host one of `domain` (the realm when you give no
   `domain`), else the REGISTER is refused 403. A digest `uri` that is not the
   Request-URI gets 400.
+
+## Where it lives
+
+- Modules: `chappe_sip_digest`, `chappe_sip_digest_nc`, `chappe_sip_uac_fsm`
+  (the 401/407 retry), `chappe_sip_registrar`.
+- Tests: `chappe_sip_digest_SUITE`, `chappe_sip_digest_tests`,
+  `chappe_sip_registrar_SUITE`.
+- Lab: `make interop-conformance`.

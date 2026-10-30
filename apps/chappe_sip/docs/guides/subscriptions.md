@@ -231,6 +231,41 @@ subscription of yours first, then a REFER you sent outside a dialog
 them it gets 481 (RFC 6665 4.1.3). A NOTIFY handler of yours therefore sees
 only the NOTIFYs nothing else claimed.
 
+## Subscription behaviour in detail
+
+- SUBSCRIBE/NOTIFY subscription dialogs (RFC 6665, notifier side):
+  `chappe_sip:create_uas/3` on a SUBSCRIBE answers 200 with the granted
+  `Expires` (capped by `expires`, 423 below `min_expires`) and confirms the
+  dialog at once. `chappe_sip_dialog:notify/2` sends NOTIFY with Event and
+  `Subscription-State` (`active`/`pending` carry the seconds left). In-dialog
+  refreshes and `Expires: 0` unsubscribes are answered by the dialog and
+  reported to the owner; expiry, `destroy/1` and owner death send a final
+  `terminated` NOTIFY instead of a BYE; a NOTIFY failure of RFC 6665 4.2.2 ends
+  the subscription; `chappe_sip:subscribe/2` answers 489 with Allow-Events
+  for packages you do not serve. `notify/2` also sends the implicit REFER subscription's NOTIFYs
+  inside an INVITE dialog. Works over UDP/TCP and WS. See the subscriptions
+  guide.
+- Event package routing: `chappe_sip:event_package/2` gives each package
+  its own SUBSCRIBE handler, `subscribe/1,2` staying the catch-all;
+  Allow-Events (OPTIONS 200, the 489) lists the registered packages.
+- Subscriber side (RFC 6665): `chappe_sip:subscribe_to/3` starts a process
+  that sends the SUBSCRIBE through the UAC (digest, proxy, flow), forms the
+  dialog from the 2xx or the first NOTIFY, starts a subscription of its own
+  for each forked NOTIFY, refreshes before expiry (a NOTIFY's `expires`
+  wins), runs Timer N, ends on the refresh failures of 4.1.2.2, and acts on
+  the terminated reasons (re-subscribe at once, after `retry-after`, or
+  stop). `chappe_sip:unsubscribe/1` sends `Expires: 0`. NOTIFYs outside a
+  dialog go through one router: our subscriptions, then REFERs we sent,
+  then your `notify/1` handler, else 481. `chappe_sip_hdr:subscription_state/1`
+  parses the header.
+
+## Behaviour changes
+
+- Every NOTIFY outside a dialog goes through the built-in router: your
+  `chappe_sip:notify/1` handler sees only the NOTIFYs no subscription of
+  ours and no REFER we sent claims, and without a handler a NOTIFY gets 481
+  instead of 405. NOTIFY is always in Allow.
+
 ## Notes
 
 - Subscriptions work over UDP, TCP, TLS, and WebSocket alike.
@@ -239,3 +274,12 @@ only the NOTIFYs nothing else claimed.
 - chappe_sip does not challenge NOTIFYs itself; put a
   `chappe_sip:use(<<"NOTIFY">>, Mw)` middleware in front if your peers
   authenticate them (RFC 6665 4.1.3).
+
+## Where it lives
+
+- Modules: `chappe_sip` (`subscribe/1,2`, `event_package/2`,
+  `subscribe_to/3`, `unsubscribe/1`), `chappe_sip_dialog` (`notify/2`),
+  `chappe_sip_subscriber`, `chappe_sip_notify_router`, `chappe_sip_hdr`
+  (`subscription_state/1`).
+- Tests: `chappe_sip_subscribe_SUITE`, `chappe_sip_subscriber_SUITE`.
+- Lab: none.

@@ -117,3 +117,11 @@ the SDP through a media anchor such as rtpengine before the other leg sees it.
   [Session timers](session-timers.md).
 - A crash of either dialog fsm tears the call down (the relay monitors both).
 - Server-initiated BYE reaches a WebSocket B leg over its flow automatically.
+
+## Where it lives
+
+- Modules: `chappe_sip_b2b`, `chappe_sip_b2b_relay`, `chappe_sip_b2b_hdr`
+  (headers, privacy), `chappe_sip_b2b_fork`.
+- Tests: `chappe_sip_b2bua_SUITE`, `chappe_sip_b2b_relay_SUITE`,
+  `chappe_sip_webrtc_gateway_SUITE`.
+- Lab: `make interop-sbc`.

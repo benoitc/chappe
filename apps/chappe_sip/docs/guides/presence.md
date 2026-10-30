@@ -143,3 +143,11 @@ parsed summary.
 - chappe_sip does not sign or encrypt the documents (no S/MIME); use TLS.
 - The rows these packages answer to are in the compliance catalogue under
   RFC 3903, 3856, 3863 and 3842.
+
+## Where it lives
+
+- Modules: `chappe_sip_presence`, `chappe_sip_pidf`, `chappe_sip_mwi`,
+  `chappe_sip_esc`, `chappe_sip_notifier`, `chappe_sip_publisher`,
+  `chappe_sip_events_sup`.
+- Tests: `chappe_sip_presence_SUITE`.
+- Lab: none.

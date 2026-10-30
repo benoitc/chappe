@@ -84,3 +84,10 @@ Call opts (`session_expires`, `min_se`, `session_refresher`) override these.
 - 1800 s is the interval RFC 4028 recommends.
 - A B2BUA runs a timer on each leg on its own: see the [B2BUA](b2bua.md)
   guide.
+
+## Where it lives
+
+- Modules: `chappe_sip_session_timer` (negotiation), `chappe_sip_dialog_fsm`
+  (refresh and expiry).
+- Tests: `chappe_sip_session_timer_SUITE`.
+- Lab: `make interop-sbc` (a refresh through the SBC).
