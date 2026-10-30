@@ -12,6 +12,7 @@
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("eunit/include/eunit.hrl").
+-include("chappe_sip.hrl").
 
 -export([all/0, init_per_suite/1, end_per_suite/1, end_per_testcase/2]).
 -export([reinvite_a_to_b/1, reinvite_b_to_a/1, update_relayed/1,
@@ -30,6 +31,11 @@
          set_media_anchor_and_back/1, set_media_busy/1,
          early_update_a_to_b/1, early_update_b_to_a/1,
          anchor_late_offer/1, nated_caller_reached_at_source/1]).
+-export([hangup_reason_both_legs/1, requests_surfaced/1,
+         requests_default_answers/1, relay_info_forwarded/1,
+         replace_b_anchored/1, replace_b_failure_keeps_b/1,
+         replace_b_not_anchored/1, fork_anchored_per_branch/1,
+         replace_b_aborted_when_call_ends/1, replace_b_dialog/1]).
 
 all() ->
     [reinvite_a_to_b, reinvite_b_to_a, update_relayed,
@@ -45,7 +51,11 @@ all() ->
      anchor_call_and_reoffers, anchor_rejected_reoffer_restores, hold_events,
      offerless_reinvite_a, offerless_reinvite_b, set_media_anchor_and_back,
      set_media_busy, early_update_a_to_b, early_update_b_to_a,
-     anchor_late_offer, nated_caller_reached_at_source].
+     anchor_late_offer, nated_caller_reached_at_source,
+     hangup_reason_both_legs, requests_surfaced, requests_default_answers,
+     relay_info_forwarded, replace_b_anchored, replace_b_failure_keeps_b,
+     replace_b_not_anchored, fork_anchored_per_branch,
+     replace_b_aborted_when_call_ends, replace_b_dialog].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -988,6 +998,373 @@ nated_caller_reached_at_source(_Config) ->
     end),
     _ = got(a_bye),
     ok = ?UA:expect({relay_done, {done, b_bye}}).
+
+%% ---- hangup/2 ----
+
+%% hangup/2 ends both legs, each BYE carrying the Reason and the headers.
+%% req: R3326-01
+hangup_reason_both_legs(_Config) ->
+    {EP, CP} = setup(#{}),
+    Bye = fun(Tag) ->
+        fun(Sock, _D) ->
+            {B, S} = ?UA:recv_req(Sock, <<"BYE">>),
+            ?UA:send(Sock, S, ?UA:resp(B, 200, <<"OK">>, <<>>, [], <<>>)),
+            tell({Tag, B})
+        end
+    end,
+    callee(CP, Bye(b_bye)),
+    caller(EP, #{}, Bye(a_bye)),
+    #{b2b := B2b} = got(legs),
+    Reason = <<"Q.850;cause=16">>,
+    ok = chappe_sip_b2b:hangup(B2b, #{reason => Reason,
+                                      headers => [{<<"X-Why">>, <<"done">>}]}),
+    lists:foreach(fun(Tag) ->
+        B = got(Tag),
+        ?assertEqual([Reason], ?UA:hdrs(B, <<"reason">>)),
+        ?assertEqual([<<"done">>], ?UA:hdrs(B, <<"x-why">>))
+    end, [a_bye, b_bye]),
+    ok = ?UA:expect({relay_done, {done, hangup}}).
+
+%% ---- in-dialog requests (requests, relay_info) ----
+
+%% REFER from A and MESSAGE from B reach the notify process, which answers
+%% them; an INFO the call does not claim still gets the dialog's 200.
+requests_surfaced(_Config) ->
+    {EP, CP} = setup(#{requests => [refer, message], notify => self()}),
+    callee(CP, fun(Sock, D) ->
+        receive after 300 -> ok end,
+        {M, _} = ?UA:in_dialog(D, <<"MESSAGE">>, [], <<"hello">>),
+        ?UA:send(Sock, EP, M),
+        tell({b_final, ?UA:recv_any(Sock, 6000)})
+    end),
+    caller(EP, #{}, fun(Sock, D) ->
+        {R, D1} = ?UA:in_dialog(D, <<"REFER">>,
+                                [{<<"Refer-To">>, <<"<sip:carol@127.0.0.1>">>}], <<>>),
+        ?UA:send(Sock, EP, R),
+        tell({a_refer_final, ?UA:recv_any(Sock, 6000)}),
+        {I, _} = ?UA:in_dialog(D1, <<"INFO">>, [], <<"x">>),
+        ?UA:send(Sock, EP, I),
+        tell({a_info_final, ?UA:recv_any(Sock, 6000)})
+    end),
+    #{b2b := {_, Ref}} = got(legs),
+    {a, refer, _, RRes} = b2b_request(Ref),
+    _ = chappe_sip_res:send(RRes, 202, #{reason => <<"Accepted">>}),
+    ?assertEqual(202, ?UA:status(got(a_refer_final))),
+    ?assertEqual(200, ?UA:status(got(a_info_final))),
+    {b, message, MReq, MRes} = b2b_request(Ref),
+    ?assertEqual(<<"hello">>, chappe_sip_req:body(MReq)),
+    _ = chappe_sip_res:send(MRes, 200, #{reason => <<"OK">>}),
+    ?assertEqual(200, ?UA:status(got(b_final))),
+    receive
+        {chappe_sip_b2b, Ref, {request, _, _, _, _} = Extra} ->
+            ct:fail({unexpected, Extra})
+    after 300 -> ok
+    end.
+
+%% Without a notify process the claimed requests get what a dialog
+%% answers: REFER 603.
+requests_default_answers(_Config) ->
+    {EP, _CP} = setup_callee(#{requests => [refer]}),
+    caller(EP, #{}, fun(Sock, D) ->
+        {R, _} = ?UA:in_dialog(D, <<"REFER">>,
+                               [{<<"Refer-To">>, <<"<sip:carol@127.0.0.1>">>}], <<>>),
+        ?UA:send(Sock, EP, R),
+        tell({a_refer_final, ?UA:recv_any(Sock, 6000)})
+    end),
+    ?assertEqual(603, ?UA:status(got(a_refer_final))).
+
+%% relay_info: A's INFO reaches B with its body and Info-Package, and B's
+%% final comes back to A.
+relay_info_forwarded(_Config) ->
+    {EP, CP} = setup(#{relay_info => true}),
+    Body = <<"Signal=5\r\nDuration=160\r\n">>,
+    callee(CP, fun(Sock, _D) ->
+        {I, S} = ?UA:recv_req(Sock, <<"INFO">>),
+        tell({b_info, I}),
+        ?UA:send(Sock, S, ?UA:resp(I, 202, <<"Accepted">>, <<>>, [], <<>>))
+    end),
+    caller(EP, #{}, fun(Sock, D) ->
+        {I, _} = ?UA:in_dialog(D, <<"INFO">>,
+                               [{<<"Info-Package">>, <<"dtmf">>}], Body),
+        ?UA:send(Sock, EP, I),
+        tell({a_final, ?UA:recv_any(Sock, 6000)})
+    end),
+    I = got(b_info),
+    ?assertEqual(Body, ?UA:body(I)),
+    ?assertEqual([<<"dtmf">>], ?UA:hdrs(I, <<"info-package">>)),
+    ?assertEqual(202, ?UA:status(got(a_final))).
+
+%% ---- replace_b/3 ----
+
+%% An anchored call gets a new B: its INVITE carries rtpengine's offer for
+%% A's side, the old B gets a BYE, A sees no re-INVITE, and the call then
+%% runs with the new B (A's BYE reaches it).
+replace_b_anchored(_Config) ->
+    rtpe(),
+    {EP, CP} = setup(#{media => anchor, notify => self()}),
+    NP = ?UA:pick(),
+    callee(CP, fun(Sock, _D) ->
+        {B, S} = ?UA:recv_req(Sock, <<"BYE">>),
+        ?UA:send(Sock, S, ?UA:resp(B, 200, <<"OK">>, <<>>, [], <<>>)),
+        tell({old_b_bye, B})
+    end),
+    ?UA:peer(NP, fun(Sock) ->
+        {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
+        tell({new_b_invite, Inv}),
+        ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, <<"newtag">>,
+                                     [contact(Sock)], ?UA:sdp(<<"newcallee">>))),
+        {_, _} = ?UA:recv_req(Sock, <<"ACK">>),
+        {B, S} = ?UA:recv_req(Sock, <<"BYE">>),
+        ?UA:send(Sock, S, ?UA:resp(B, 200, <<"OK">>, <<>>, [], <<>>)),
+        tell({new_b_bye, B}),
+        timer:sleep(infinity)
+    end),
+    caller(EP, #{}, fun(Sock, D) ->
+        register(b2b_test_caller, self()),
+        receive go -> ok end,
+        ok = ?UA:no_req(Sock, <<"INVITE">>, 1000),
+        {B, _} = ?UA:in_dialog(D, <<"BYE">>, [], <<>>),
+        ?UA:send(Sock, EP, B),
+        tell({a_bye_final, ?UA:recv_any(Sock, 6000)})
+    end),
+    #{b2b := {_, Ref} = B2b} = got(legs),
+    _ = drain(),
+    NewUri = <<"sip:new@127.0.0.1:", (integer_to_binary(NP))/binary>>,
+    ok = chappe_sip_b2b:replace_b(B2b, NewUri, #{}),
+    receive {chappe_sip_b2b, Ref, {replaced, b}} -> ok
+    after 5000 -> ct:fail(no_replaced_event)
+    end,
+    ?assert(has(?UA:body(got(new_b_invite)), <<"a=rtpe-offer:">>)),
+    _ = got(old_b_bye),
+    Answers = [C || {rtpe_cmd, #{<<"command">> := <<"answer">>} = C} <- drain()],
+    ?assertMatch([#{<<"to-tag">> := <<"newtag">>}], Answers),
+    caller_go(),
+    ?assertEqual(200, ?UA:status(got(a_bye_final))),
+    _ = got(new_b_bye),
+    ok = ?UA:expect({relay_done, {done, a_bye}}).
+
+%% The new B refuses: replace_b/3 fails with its status, rtpengine gets
+%% the old B's SDP back, and the old B keeps the call.
+replace_b_failure_keeps_b(_Config) ->
+    rtpe(),
+    {EP, CP} = setup(#{media => anchor}),
+    NP = ?UA:pick(),
+    callee(CP, fun(Sock, _D) ->
+        {B, S} = ?UA:recv_req(Sock, <<"BYE">>),
+        ?UA:send(Sock, S, ?UA:resp(B, 200, <<"OK">>, <<>>, [], <<>>)),
+        tell(old_b_bye)
+    end),
+    ?UA:peer(NP, fun(Sock) ->
+        {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
+        ?UA:send(Sock, Src, ?UA:resp(Inv, 486, <<"Busy Here">>, ?UA:tag(), [], <<>>)),
+        timer:sleep(infinity)
+    end),
+    caller(EP, #{}, fun(Sock, D) ->
+        register(b2b_test_caller, self()),
+        receive go -> ok end,
+        {B, _} = ?UA:in_dialog(D, <<"BYE">>, [], <<>>),
+        ?UA:send(Sock, EP, B),
+        tell({a_bye_final, ?UA:recv_any(Sock, 6000)})
+    end),
+    #{b2b := B2b, uac := OldB} = got(legs),
+    _ = drain(),
+    NewUri = <<"sip:new@127.0.0.1:", (integer_to_binary(NP))/binary>>,
+    ?assertMatch({error, #chappe_sip_error{status = 486}},
+                 chappe_sip_b2b:replace_b(B2b, NewUri, #{})),
+    Cmds = [C || {rtpe_cmd, C} <- drain(), maps:is_key(<<"sdp">>, C)],
+    ?assertMatch([#{<<"command">> := <<"offer">>},
+                  #{<<"command">> := <<"answer">>}], Cmds),
+    [_, Restore] = Cmds,
+    ?assertEqual(chappe_sip_dialog:remote_tag(OldB), maps:get(<<"to-tag">>, Restore)),
+    caller_go(),
+    ?assertEqual(200, ?UA:status(got(a_bye_final))),
+    ok = ?UA:expect(old_b_bye),
+    ok = ?UA:expect({relay_done, {done, a_bye}}).
+
+%% A direct call has no anchor to re-offer from.
+replace_b_not_anchored(_Config) ->
+    {EP, _CP} = setup_callee(#{}),
+    caller(EP, #{}, fun(_Sock, _D) -> ok end),
+    #{b2b := B2b} = got(legs),
+    ?assertEqual({error, not_anchored},
+                 chappe_sip_b2b:replace_b(B2b, <<"sip:x@127.0.0.1">>, #{})).
+
+%% An anchored fork: each branch gets the same rtpengine offer, and each
+%% branch's answer goes to rtpengine under that branch's To-tag.
+fork_anchored_per_branch(_Config) ->
+    rtpe(),
+    EP = ?UA:pick(),
+    C1 = ?UA:pick(),
+    C2 = ?UA:pick(),
+    ok = chappe_sip:start(#{contact => <<"sip:127.0.0.1:", (integer_to_binary(EP))/binary>>}),
+    Test = self(),
+    register(b2b_relay_test, Test),
+    Uris = [<<"sip:c@127.0.0.1:", (integer_to_binary(P))/binary>> || P <- [C1, C2]],
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        {ok, Legs} = chappe_sip:create_b2bua(Req, Res, {parallel, Uris},
+                                             #{media => anchor}),
+        Test ! b2b_up,
+        Test ! {relay_done, chappe_sip_b2b:relay(Legs)}
+    end),
+    ?UA:peer(C1, fun(Sock) ->
+        {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
+        tell({c1_invite, Inv}),
+        ?UA:send(Sock, Src, ?UA:resp(Inv, 183, <<"Session Progress">>, <<"c1tag">>,
+                                     [contact(Sock)], ?UA:sdp(<<"early1">>))),
+        {C, CS} = ?UA:recv_req(Sock, <<"CANCEL">>),
+        ?UA:send(Sock, CS, ?UA:resp(C, 200, <<"OK">>, <<"c1tag">>, [], <<>>)),
+        ?UA:send(Sock, Src, ?UA:resp(Inv, 487, <<"Request Terminated">>,
+                                     <<"c1tag">>, [], <<>>)),
+        timer:sleep(infinity)
+    end),
+    ?UA:peer(C2, fun(Sock) ->
+        {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
+        tell({c2_invite, Inv}),
+        timer:sleep(300),
+        ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, <<"c2tag">>,
+                                     [contact(Sock)], ?UA:sdp(<<"callee2">>))),
+        {_, _} = ?UA:recv_req(Sock, <<"ACK">>),
+        timer:sleep(infinity)
+    end),
+    ?UA:peer(0, fun(Sock) ->
+        Inv = ?UA:invite(Sock, EP, #{call_id => ?UA:callid(), from_tag => <<"atag">>}),
+        ?UA:send(Sock, EP, Inv),
+        R = ?UA:recv_status(Sock, 200),
+        ?UA:ack(?UA:dialog_from_2xx(Sock, Inv, R), EP),
+        tell({a_200, R}),
+        timer:sleep(infinity)
+    end),
+    ?assert(has(?UA:body(got(c1_invite)), <<"a=rtpe-offer:atag">>)),
+    ?assert(has(?UA:body(got(c2_invite)), <<"a=rtpe-offer:atag">>)),
+    ?assert(has(?UA:body(got(a_200)), <<"a=rtpe-answer:c2tag">>)),
+    Cmds = drain(),
+    Offers = [C || {rtpe_cmd, #{<<"command">> := <<"offer">>} = C} <- Cmds],
+    ?assertMatch([_], Offers),
+    %% the losing branch's early media session is deleted by its to-tag
+    Deletes = [maps:get(<<"to-tag">>, C, undefined)
+               || {rtpe_cmd, #{<<"command">> := <<"delete">>} = C} <- Cmds],
+    ?assertEqual([<<"c1tag">>], Deletes).
+
+%% A hangs up while the new B of replace_b/3 still rings: that INVITE is
+%% CANCELled at once (the app's process lives on), and replace_b/3 says
+%% the call ended.
+replace_b_aborted_when_call_ends(_Config) ->
+    rtpe(),
+    EP = ?UA:pick(),
+    CP = ?UA:pick(),
+    NP = ?UA:pick(),
+    ok = chappe_sip:start(#{contact => <<"sip:127.0.0.1:", (integer_to_binary(EP))/binary>>}),
+    Test = self(),
+    register(b2b_relay_test, Test),
+    Callee = <<"sip:callee@127.0.0.1:", (integer_to_binary(CP))/binary>>,
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        {ok, Legs} = chappe_sip:create_b2bua(Req, Res, Callee, #{media => anchor}),
+        Test ! {legs, Legs},
+        Test ! b2b_up,
+        Test ! {relay_done, chappe_sip_b2b:relay(Legs)},
+        %% the app goes on after the call
+        timer:sleep(6000)
+    end),
+    callee(CP, fun(Sock, _D) ->
+        {B, S} = ?UA:recv_req(Sock, <<"BYE">>),
+        ?UA:send(Sock, S, ?UA:resp(B, 200, <<"OK">>, <<>>, [], <<>>))
+    end),
+    ?UA:peer(NP, fun(Sock) ->
+        {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
+        ?UA:send(Sock, Src, ?UA:resp(Inv, 180, <<"Ringing">>, <<"ntag">>, [], <<>>)),
+        tell(new_b_ringing),
+        {C, CS} = ?UA:recv_req(Sock, <<"CANCEL">>),
+        tell(new_b_cancel),
+        ?UA:send(Sock, CS, ?UA:resp(C, 200, <<"OK">>, <<"ntag">>, [], <<>>)),
+        ?UA:send(Sock, Src, ?UA:resp(Inv, 487, <<"Request Terminated">>,
+                                     <<"ntag">>, [], <<>>)),
+        timer:sleep(infinity)
+    end),
+    caller(EP, #{}, fun(Sock, D) ->
+        register(b2b_test_caller, self()),
+        receive go -> ok end,
+        {B, _} = ?UA:in_dialog(D, <<"BYE">>, [], <<>>),
+        ?UA:send(Sock, EP, B),
+        _ = ?UA:recv_any(Sock, 6000)
+    end),
+    #{b2b := B2b} = got(legs),
+    NewUri = <<"sip:new@127.0.0.1:", (integer_to_binary(NP))/binary>>,
+    spawn_link(fun() -> Test ! {replace_result, chappe_sip_b2b:replace_b(B2b, NewUri, #{})} end),
+    ok = ?UA:expect(new_b_ringing),
+    T0 = now_ms(),
+    caller_go(),
+    ok = ?UA:expect(new_b_cancel),
+    ?assert(now_ms() - T0 < 3000),
+    ?assertEqual({error, call_ended}, got(replace_result)),
+    ok = ?UA:expect({relay_done, {done, a_bye}}).
+
+%% replace_b/3 with a dialog the app made: the relay takes it over, so a
+%% re-INVITE from the new B is relayed to A.
+replace_b_dialog(_Config) ->
+    rtpe(),
+    {EP, CP} = setup(#{media => anchor}),
+    NP = ?UA:pick(),
+    callee(CP, fun(Sock, _D) ->
+        {B, S} = ?UA:recv_req(Sock, <<"BYE">>),
+        ?UA:send(Sock, S, ?UA:resp(B, 200, <<"OK">>, <<>>, [], <<>>)),
+        tell(old_b_bye)
+    end),
+    EpPeer = ?UA:peer(NP, fun(Sock) ->
+        {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
+        Tag = <<"dtag">>,
+        ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, Tag, [contact(Sock)],
+                                     ?UA:sdp(<<"endpoint">>))),
+        {_, _} = ?UA:recv_req(Sock, <<"ACK">>),
+        {Re, S} = ?UA:recv_req(Sock, <<"INVITE">>),
+        tell({reinvite, Re}),
+        ?UA:send(Sock, S, ?UA:resp(Re, 200, <<"OK">>, <<>>, [contact(Sock)],
+                                   ?UA:sdp(<<"endpoint">>, <<"1">>))),
+        {_, _} = ?UA:recv_req(Sock, <<"ACK">>),
+        receive go -> ok end,
+        D = ?UA:dialog_from_invite(Sock, Inv, Tag, Src),
+        {Re2, D1} = ?UA:in_dialog(D, <<"INVITE">>, [], ?UA:sdp(<<"endpoint">>, <<"2">>)),
+        ?UA:send(Sock, EP, Re2),
+        tell({ep_final, ?UA:recv_any(Sock, 6000)}),
+        ?UA:ack(D1, EP),
+        timer:sleep(infinity)
+    end),
+    caller(EP, #{}, fun(Sock, _D) ->
+        {Re, S} = ?UA:recv_req(Sock, <<"INVITE">>),
+        tell({a_reinvite, Re}),
+        ?UA:send(Sock, S, ?UA:resp(Re, 200, <<"OK">>, <<>>, [contact(Sock)],
+                                   ?UA:sdp(<<"caller">>, <<"1">>))),
+        timer:sleep(infinity)
+    end),
+    #{b2b := B2b} = got(legs),
+    %% the app's own dialog with the endpoint, owned by this process
+    NewUri = <<"sip:ep@127.0.0.1:", (integer_to_binary(NP))/binary>>,
+    {ok, URef} = chappe_sip_uac:start(NewUri, #{local_sdp => ?UA:sdp(<<"app">>)}),
+    {ok, D} = chappe_sip_uac:await(URef, 5000),
+    ok = chappe_sip_b2b:replace_b(B2b, {dialog, D}, #{}),
+    ?assert(has(?UA:body(got(reinvite)), <<"a=rtpe-offer:">>)),
+    ok = ?UA:expect(old_b_bye),
+    EpPeer ! go,
+    ?assert(has(?UA:body(got(a_reinvite)), <<"endpoint">>)),
+    ?assertEqual(200, ?UA:status(got(ep_final))).
+
+
+b2b_request(Ref) ->
+    receive
+        {chappe_sip_b2b, Ref, {request, Leg, Method, Req, Res}} ->
+            {Leg, Method, Req, Res}
+    after 6000 -> ct:fail(no_b2b_request)
+    end.
+
+%% the caller peers wait for go before they hang up
+caller_go() ->
+    b2b_test_caller ! go,
+    ok.
+
+%% a callee that answers and then just stays in the call
+setup_callee(Opts) ->
+    {EP, CP} = setup(Opts),
+    callee(CP, fun(_Sock, _D) -> ok end),
+    {EP, CP}.
 
 %% ---- helpers ----
 

@@ -21,6 +21,7 @@
 -module(chappe_sip_uac).
 
 -export([start/2, await/2, await_response/2, cancel/1, cancel/2, abandon/1]).
+-export([abandon/2]).
 
 -include("chappe_sip_uac.hrl").
 -opaque uac_ref() :: #uac_ref{}.
@@ -136,3 +137,16 @@ cancel(#uac_ref{pid = Pid}, Opts) ->
 -spec abandon(uac_ref()) -> ok.
 abandon(#uac_ref{pid = Pid}) ->
     gen_statem:cast(Pid, abandon).
+
+%% abandon/1 with Opts: headers => [{binary(), iodata()}] go on the CANCEL
+%% and, should a 2xx win the race, on its BYE (a Reason, RFC 3326, say);
+%% why => chappe_sip_cdr:reason() is what the call record says ended the
+%% call (default cancel).
+-spec abandon(uac_ref(), #{
+    headers => [{binary(), iodata()}], why => chappe_sip_cdr:reason()
+}) -> ok.
+abandon(#uac_ref{pid = Pid}, Opts) ->
+    gen_statem:cast(
+        Pid,
+        {abandon, maps:get(why, Opts, cancel), maps:get(headers, Opts, [])}
+    ).

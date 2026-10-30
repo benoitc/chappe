@@ -18,13 +18,19 @@
 %% 14.2, RFC 3311 5.2). Each SDP goes through chappe_sip_b2b_media (the
 %% app's hook, then the anchor); when the far leg refuses an anchored
 %% offer, rtpengine gets that leg's last good SDP back as the answer.
+%%
+%% The requests the call claims (create_b2bua's requests option) go to the
+%% notify process as {chappe_sip_b2b, Ref, {request, a | b, Method, Req,
+%% Res}}, and with relay_info an INFO goes on to the other leg. hangup/2
+%% ends both legs, replace_b/3 swaps leg B (see chappe_sip_b2b).
 -module(chappe_sip_b2b_relay).
 
 -include("chappe_sip.hrl").
 
 -export([run/2]).
 
--spec run(chappe_sip_b2b:legs(), map()) -> {done, a_bye | b_bye | term()}.
+-spec run(chappe_sip_b2b:legs(), map()) ->
+    {done, a_bye | b_bye | hangup | term()}.
 run(#{uas := A, uac := B} = Legs, Opts) ->
     RefA = chappe_sip_dialog:monitor(A),
     RefB = chappe_sip_dialog:monitor(B),
@@ -33,11 +39,21 @@ run(#{uas := A, uac := B} = Legs, Opts) ->
             #{media := M} -> M;
             _ -> new_media(A)
         end,
+    Requests = maps:get(requests, Opts, maps:get(requests, Legs, [])),
+    RelayInfo = maps:get(relay_info, Opts, maps:get(relay_info, Legs, false)),
+    Handled = chappe_sip_b2b_requests:handled(Requests, RelayInfo),
+    _ =
+        case maps:is_key(requests, Opts) orelse maps:is_key(relay_info, Opts) of
+            true -> [set_handled(D, Handled) || D <- [A, B]];
+            false -> ok
+        end,
     loop(#{
         a => A,
         b => B,
         refs => {RefA, RefB},
         ref => maps:get(ref, M0),
+        requests => Requests,
+        relay_info => RelayInfo,
         media => with_opts(Opts, M0),
         %% a late offer: B's 2xx waits for the answer in A's ACK
         pending =>
@@ -46,6 +62,13 @@ run(#{uas := A, uac := B} = Legs, Opts) ->
                 _ -> undefined
             end
     }).
+
+set_handled(D, Handled) ->
+    try
+        chappe_sip_dialog:set_handled(D, Handled)
+    catch
+        exit:_ -> ok
+    end.
 
 new_media(A) ->
     chappe_sip_b2b_media:new(
@@ -94,10 +117,26 @@ loop(#{a := A, b := B, refs := {RefA, RefB}, ref := Ref} = S) ->
             loop(offer(leg(X, S), Event, Req, Res, S));
         {chappe_sip_dialog, X, ack, Ack, _} when X =:= A orelse X =:= B ->
             loop(acked(leg(X, S), chappe_sip_req:body(Ack), S));
+        {chappe_sip_dialog, X, Event, Req, Res} when
+            (X =:= A orelse X =:= B) andalso
+                (Event =:= refer orelse Event =:= info orelse
+                    Event =:= message orelse Event =:= notify orelse
+                    Event =:= options)
+        ->
+            ok = chappe_sip_b2b_requests:request(leg(X, S), Event, Req, Res, S),
+            loop(S);
         {relay_result, PRef, Result} ->
             loop(relayed(PRef, Result, S));
+        {chappe_sip_b2b, Ref, {call, From, {hangup, Opts}}} ->
+            hangup(From, Opts, S);
         {chappe_sip_b2b, Ref, {call, From, Req}} ->
             loop(handle_call(From, Req, S));
+        {chappe_sip_uac, _, {ok, Late}} ->
+            %% a fork's branch answered after another won: end it
+            _ = spawn(fun() -> chappe_sip_b2b:destroy_quietly(Late, []) end),
+            loop(S);
+        {chappe_sip_uac, _, _} ->
+            loop(S);
         {chappe_sip_dialog, _, _, _} ->
             loop(S);
         {chappe_sip_dialog, _, _, _, _} ->
@@ -111,16 +150,47 @@ other(a) -> b;
 other(b) -> a.
 
 done(#{pending := P, media := M}, Peer, Why, Tag) ->
-    _ =
-        case P of
-            #{pid := Pid} -> exit(Pid, kill);
-            _ -> ok
-        end,
+    stop_pending(P),
     _ = chappe_sip_b2b_media:stop(M),
     _ = chappe_sip_dialog:destroy(Peer, #{
         headers => chappe_sip_b2b_hdr:reason_headers(Why)
     }),
     {done, Tag}.
+
+stop_pending(#{pid := Pid, ref := Ref, step := {replace, From}}) ->
+    chappe_sip_b2b_replace:abort(Pid, Ref, From);
+stop_pending(#{pid := Pid}) ->
+    exit(Pid, kill),
+    ok;
+stop_pending(_P) ->
+    ok.
+
+%% hangup/2: a BYE on each leg with the reason and headers of Opts, both
+%% sent before the loop ends (the dialogs would otherwise see their owner
+%% go first)
+hangup(From, Opts, #{a := A, b := B, pending := P, media := M}) ->
+    Hdrs =
+        [
+            {<<"Reason">>, R}
+         || R <- [maps:get(reason, Opts, undefined)], R =/= undefined
+        ] ++
+            maps:get(headers, Opts, []),
+    stop_pending(P),
+    _ = chappe_sip_b2b_media:stop(M),
+    Pids = [
+        spawn_monitor(fun() -> chappe_sip_b2b:destroy_quietly(D, Hdrs) end)
+     || D <- [A, B]
+    ],
+    lists:foreach(
+        fun({_Pid, MRef}) ->
+            receive
+                {'DOWN', MRef, process, _, _} -> ok
+            end
+        end,
+        Pids
+    ),
+    reply(From, ok),
+    {done, hangup}.
 
 %% ---- offers from a leg ----
 
@@ -242,7 +312,9 @@ step({switch_answer, From, Old}, {ok, BAnswer}, #{media := M} = S) ->
             switch_back(From, Old, {rejected, Code}, S)
     end;
 step({switch_answer, From, Old}, Error, S) ->
-    switch_back(From, Old, Error, S).
+    switch_back(From, Old, Error, S);
+step({replace, From}, Result, S) ->
+    replaced(From, Result, S).
 
 %% the switch failed after A's offer: B kept its session, and A gets its
 %% previous answer back in the ACK
@@ -314,9 +386,59 @@ handle_call(From, {set_media, Mode}, #{media := M, a := A} = S) ->
             reply(From, {error, {media, Why}}),
             S
     end;
+handle_call(From, {replace_b, Target, Opts}, S) ->
+    replace_b(From, Target, Opts, S);
 handle_call(From, _Req, S) ->
     reply(From, {error, badarg}),
     S.
+
+%% ---- replace_b/3 (see chappe_sip_b2b_replace) ----
+
+replace_b(From, _Target, _Opts, #{media := #{mode := direct}} = S) ->
+    reply(From, {error, not_anchored}),
+    S;
+replace_b(From, _Target, _Opts, #{pending := P} = S) when
+    P =/= undefined
+->
+    reply(From, {error, busy}),
+    S;
+replace_b(From, Target, Opts, #{media := M, a := A} = S) ->
+    %% rtpengine's offer for A's side: A keeps the addresses it sends to,
+    %% the new B gets the ones it should send to
+    case chappe_sip_b2b_media:offer(a, remote_sdp(A), M) of
+        {ok, Sdp, M1} ->
+            Handled = chappe_sip_b2b_requests:handled(
+                maps:get(requests, S), maps:get(relay_info, S)
+            ),
+            Relay = self(),
+            spawn_step(
+                {replace, From},
+                fun() ->
+                    chappe_sip_b2b_replace:call(
+                        Target, Sdp, Opts#{handled => Handled}, Relay
+                    )
+                end,
+                S#{media := M1}
+            );
+        {reject, Code} ->
+            reply(From, {error, {rejected, Code}}),
+            S
+    end.
+
+%% the new B answered and carries the call, or the old B keeps it and
+%% rtpengine gets the old B's SDP back as the answer
+replaced(From, {ok, NewB, Answer}, S) ->
+    case chappe_sip_b2b_replace:swap(NewB, Answer, S) of
+        {ok, S1} ->
+            reply(From, ok),
+            S1;
+        Error ->
+            reply(From, Error),
+            restore(b, S)
+    end;
+replaced(From, Error, S) ->
+    reply(From, failure(Error)),
+    restore(b, S).
 
 %% the call went direct: its rtpengine session is released
 switched(#{session := Old}, #{media := #{mode := direct} = M} = S) when

@@ -15,11 +15,16 @@
 -export([b2b_success_bye/1, b2b_callee_busy/1, b2b_caller_cancel/1,
          b2b_survives_deadline/1, b2b_rings_past_deadline/1,
          b2b_timer_c_408/1, b2b_timer_c_restarted/1]).
+-export([fork_one_answers/1, fork_busy_then_answer/1, fork_all_fail_best/1,
+         fork_timer_c/1, fork_late_2xx/1, pass_failure_timer_c/1,
+         start_failure_answered/1, start_failure_not_passed/1]).
 
 all() ->
     [b2b_success_bye, b2b_callee_busy, b2b_caller_cancel,
      b2b_survives_deadline, b2b_rings_past_deadline, b2b_timer_c_408,
-     b2b_timer_c_restarted].
+     b2b_timer_c_restarted, fork_one_answers, fork_busy_then_answer,
+     fork_all_fail_best, fork_timer_c, fork_late_2xx, pass_failure_timer_c,
+     start_failure_answered, start_failure_not_passed].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -317,6 +322,318 @@ b2b_caller_cancel(_Config) ->
     after 5000 -> ct:fail(no_cancel_result)
     end.
 
+%% ---- parallel forking ----
+
+%% Two callees ring at once; the second answers. A sees one To-tag on the
+%% 180 and the 200, the first callee gets a CANCEL with an RFC 3326
+%% Reason, and the call runs with the second.
+fork_one_answers(_Config) ->
+    {EnginePort, C1} = setup(),
+    C2 = pick(),
+    Test = self(),
+    ok = fork_app(Test, [uri(C1), uri(C2)], #{}),
+    callee(C1, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        send(Sock, Src, resp(Inv, 180, <<"Ringing">>, tag(), [], <<>>)),
+        {Cancel, CSrc} = recv(Sock, <<"CANCEL">>),
+        Test ! {c1_cancel, Cancel},
+        send(Sock, CSrc, resp(Cancel, 200, <<"OK">>, tag(), [], <<>>)),
+        send(Sock, Src, resp(Inv, 487, <<"Request Terminated">>, tag(), [], <<>>))
+    end),
+    callee(C2, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        send(Sock, Src, resp(Inv, 180, <<"Ringing">>, tag(), [], <<>>)),
+        timer:sleep(300),
+        ToTag = tag(),
+        send(Sock, Src, resp(Inv, 200, <<"OK">>, ToTag,
+                             [{<<"Contact">>, ctc(C2)}], sdp(<<"callee2">>))),
+        {_Ack, _} = recv(Sock, <<"ACK">>),
+        Test ! c2_acked,
+        {Bye, BSrc} = recv(Sock, <<"BYE">>),
+        send(Sock, BSrc, resp(Bye, 200, <<"OK">>, ToTag, [], <<>>)),
+        Test ! c2_byed
+    end),
+    caller(fun(Sock) ->
+        Call = callid(),
+        FT = <<"fk1">>,
+        send(Sock, EnginePort, invite(Sock, EnginePort, Call, FT)),
+        R180 = recv_status(Sock, 180),
+        R200 = recv_status(Sock, 200),
+        Test ! {caller_tags, to_tag(R180), to_tag(R200), R200},
+        TT = to_tag(R200),
+        send(Sock, EnginePort, ack(Sock, EnginePort, Call, FT, TT)),
+        timer:sleep(200),
+        send(Sock, EnginePort, bye(Sock, EnginePort, Call, FT, TT)),
+        _ = recv_status(Sock, 200)
+    end),
+    receive
+        {caller_tags, T180, T200, R200} ->
+            ?assertEqual(T180, T200),
+            ?assertNotEqual(nomatch, binary:match(R200, <<"callee2">>))
+    after 6000 -> ct:fail(no_caller_tags)
+    end,
+    receive
+        {c1_cancel, Cancel} ->
+            ?assertNotEqual(nomatch,
+                            binary:match(Cancel, <<"Call completed elsewhere">>))
+    after 6000 -> ct:fail(no_cancel)
+    end,
+    ok = expect(c2_acked),
+    ok = expect(c2_byed),
+    ok = expect({relay_done, a_bye}).
+
+%% One callee is busy, the other answers: the busy one is not the end.
+fork_busy_then_answer(_Config) ->
+    {EnginePort, C1} = setup(),
+    C2 = pick(),
+    Test = self(),
+    ok = fork_app(Test, [uri(C1), uri(C2)], #{}),
+    callee(C1, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        send(Sock, Src, resp(Inv, 486, <<"Busy Here">>, tag(), [], <<>>))
+    end),
+    callee(C2, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        timer:sleep(300),
+        ToTag = tag(),
+        send(Sock, Src, resp(Inv, 200, <<"OK">>, ToTag,
+                             [{<<"Contact">>, ctc(C2)}], sdp(<<"callee2">>))),
+        {_Ack, _} = recv(Sock, <<"ACK">>),
+        {Bye, BSrc} = recv(Sock, <<"BYE">>),
+        send(Sock, BSrc, resp(Bye, 200, <<"OK">>, ToTag, [], <<>>))
+    end),
+    caller(fun(Sock) ->
+        Call = callid(),
+        FT = <<"fk2">>,
+        send(Sock, EnginePort, invite(Sock, EnginePort, Call, FT)),
+        R = recv_final(Sock),
+        Test ! {caller_final, status_of(R)},
+        TT = to_tag(R),
+        send(Sock, EnginePort, ack(Sock, EnginePort, Call, FT, TT)),
+        send(Sock, EnginePort, bye(Sock, EnginePort, Call, FT, TT)),
+        _ = recv_status(Sock, 200)
+    end),
+    ok = expect({caller_final, 200}),
+    ok = expect({relay_done, a_bye}).
+
+%% Every branch fails: A gets the best final (RFC 3261 16.7 step 6), the
+%% lowest class, so a 486 beats a 503 that came after it.
+%% req: R3261-P-020
+fork_all_fail_best(_Config) ->
+    {EnginePort, C1} = setup(),
+    C2 = pick(),
+    Test = self(),
+    ok = fork_app(Test, [uri(C1), uri(C2)], #{}),
+    callee(C1, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        send(Sock, Src, resp(Inv, 486, <<"Busy Here">>, tag(), [], <<>>))
+    end),
+    callee(C2, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        timer:sleep(300),
+        send(Sock, Src, resp(Inv, 503, <<"Service Unavailable">>, tag(), [], <<>>))
+    end),
+    caller(fun(Sock) ->
+        Call = callid(),
+        send(Sock, EnginePort, invite(Sock, EnginePort, Call, <<"fk3">>)),
+        R = recv_final(Sock),
+        send(Sock, EnginePort, ack_status(Sock, EnginePort, Call, <<"fk3">>, R)),
+        Test ! {caller_final, status_of(R)}
+    end),
+    ok = expect({caller_final, 486}),
+    receive
+        {fork_result, {error, #chappe_sip_error{status = 486}}} -> ok
+    after 5000 -> ct:fail(no_fork_failure)
+    end.
+
+%% Timer C covers the whole fork: both branches ring, neither answers; both
+%% are CANCELled and A gets a 408.
+%% req: R3261-P-019
+fork_timer_c(_Config) ->
+    {EnginePort, C1} = setup(),
+    C2 = pick(),
+    Test = self(),
+    ok = fork_app(Test, [uri(C1), uri(C2)], #{timer_c => 500}),
+    Ring = fun(Name) ->
+        fun(Sock) ->
+            {Inv, Src} = recv(Sock, <<"INVITE">>),
+            send(Sock, Src, resp(Inv, 180, <<"Ringing">>, tag(), [], <<>>)),
+            {Cancel, CSrc} = recv(Sock, <<"CANCEL">>),
+            send(Sock, CSrc, resp(Cancel, 200, <<"OK">>, tag(), [], <<>>)),
+            send(Sock, Src, resp(Inv, 487, <<"Request Terminated">>, tag(), [], <<>>)),
+            Test ! {cancelled, Name}
+        end
+    end,
+    callee(C1, Ring(c1)),
+    callee(C2, Ring(c2)),
+    caller(fun(Sock) ->
+        Call = callid(),
+        send(Sock, EnginePort, invite(Sock, EnginePort, Call, <<"fk4">>)),
+        R = recv_final(Sock),
+        send(Sock, EnginePort, ack_status(Sock, EnginePort, Call, <<"fk4">>, R)),
+        Test ! {caller_final, status_of(R)}
+    end),
+    ok = expect({cancelled, c1}),
+    ok = expect({cancelled, c2}),
+    ok = expect({caller_final, 408}),
+    receive {fork_result, {error, timeout}} -> ok
+    after 5000 -> ct:fail(no_fork_timeout)
+    end.
+
+%% A 2xx from a branch that lost the race (it answered as our CANCEL went
+%% out) is ACKed and BYEd, with the Reason of the CANCEL.
+fork_late_2xx(_Config) ->
+    {EnginePort, C1} = setup(),
+    C2 = pick(),
+    Test = self(),
+    ok = fork_app(Test, [uri(C1), uri(C2)], #{}),
+    callee(C1, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        send(Sock, Src, resp(Inv, 180, <<"Ringing">>, tag(), [], <<>>)),
+        timer:sleep(200),
+        ToTag = tag(),
+        send(Sock, Src, resp(Inv, 200, <<"OK">>, ToTag,
+                             [{<<"Contact">>, ctc(C1)}], sdp(<<"callee1">>))),
+        {_Ack, _} = recv(Sock, <<"ACK">>),
+        {Bye, BSrc} = recv(Sock, <<"BYE">>),
+        send(Sock, BSrc, resp(Bye, 200, <<"OK">>, ToTag, [], <<>>))
+    end),
+    callee(C2, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        send(Sock, Src, resp(Inv, 180, <<"Ringing">>, tag(), [], <<>>)),
+        {Cancel, CSrc} = recv(Sock, <<"CANCEL">>),
+        %% answered before the CANCEL arrived
+        ToTag = tag(),
+        send(Sock, Src, resp(Inv, 200, <<"OK">>, ToTag,
+                             [{<<"Contact">>, ctc(C2)}], sdp(<<"callee2">>))),
+        send(Sock, CSrc, resp(Cancel, 200, <<"OK">>, ToTag, [], <<>>)),
+        {_Ack, _} = recv(Sock, <<"ACK">>),
+        Test ! c2_acked,
+        {Bye, BSrc} = recv(Sock, <<"BYE">>),
+        send(Sock, BSrc, resp(Bye, 200, <<"OK">>, ToTag, [], <<>>)),
+        Test ! {c2_bye, Bye}
+    end),
+    caller(fun(Sock) ->
+        Call = callid(),
+        FT = <<"fk5">>,
+        send(Sock, EnginePort, invite(Sock, EnginePort, Call, FT)),
+        R = recv_final(Sock),
+        Test ! {caller_final, status_of(R), R},
+        TT = to_tag(R),
+        send(Sock, EnginePort, ack(Sock, EnginePort, Call, FT, TT)),
+        timer:sleep(500),
+        send(Sock, EnginePort, bye(Sock, EnginePort, Call, FT, TT)),
+        _ = recv_status(Sock, 200)
+    end),
+    receive
+        {caller_final, 200, R} ->
+            ?assertNotEqual(nomatch, binary:match(R, <<"callee1">>))
+    after 6000 -> ct:fail(no_caller_final)
+    end,
+    ok = expect(c2_acked),
+    receive
+        {c2_bye, Bye} ->
+            ?assertNotEqual(nomatch,
+                            binary:match(Bye, <<"Call completed elsewhere">>))
+    after 6000 -> ct:fail(no_late_bye)
+    end,
+    ok = expect({relay_done, a_bye}).
+
+%% ---- pass_failure => false ----
+
+%% Timer C with pass_failure => false: B is CANCELled, A is not answered,
+%% and the app answers A itself.
+%% req: R3261-P-019
+pass_failure_timer_c(_Config) ->
+    {EnginePort, CalleePort} = setup(),
+    Test = self(),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        R = chappe_sip:create_b2bua(Req, Res, uri(CalleePort),
+                                    #{timer_c => 500, pass_failure => false}),
+        Test ! {b2b_result, R},
+        _ = chappe_sip_res:send(Res, 480, #{reason => <<"Temporarily Unavailable">>})
+    end),
+    callee(CalleePort, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        send(Sock, Src, resp(Inv, 180, <<"Ringing">>, tag(), [], <<>>)),
+        {Cancel, CSrc} = recv(Sock, <<"CANCEL">>),
+        send(Sock, CSrc, resp(Cancel, 200, <<"OK">>, tag(), [], <<>>)),
+        send(Sock, Src, resp(Inv, 487, <<"Request Terminated">>, tag(), [], <<>>))
+    end),
+    caller(fun(Sock) ->
+        Call = callid(),
+        send(Sock, EnginePort, invite(Sock, EnginePort, Call, <<"pf1">>)),
+        R = recv_final(Sock),
+        send(Sock, EnginePort, ack_status(Sock, EnginePort, Call, <<"pf1">>, R)),
+        Test ! {caller_final, status_of(R)}
+    end),
+    ok = expect({caller_final, 480}),
+    receive {b2b_result, {error, timeout}} -> ok
+    after 5000 -> ct:fail(no_b2b_timeout)
+    end.
+
+%% The last target cannot be called at all: A gets its 500 right away,
+%% while the handler still runs.
+start_failure_answered(_Config) ->
+    {EnginePort, _} = setup(),
+    Test = self(),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        R = chappe_sip:create_b2bua(Req, Res, bad_uri(), #{}),
+        Test ! {b2b_result, R},
+        timer:sleep(3000)
+    end),
+    caller(fun(Sock) ->
+        Call = callid(),
+        send(Sock, EnginePort, invite(Sock, EnginePort, Call, <<"sf1">>)),
+        R = recv_final(Sock, 1500),
+        send(Sock, EnginePort, ack_status(Sock, EnginePort, Call, <<"sf1">>, R)),
+        Test ! {caller_final, status_of(R)}
+    end),
+    ok = expect({caller_final, 500}),
+    receive {b2b_result, {error, _}} -> ok
+    after 5000 -> ct:fail(no_b2b_error)
+    end.
+
+%% The same with pass_failure => false: A is left to the app.
+start_failure_not_passed(_Config) ->
+    {EnginePort, _} = setup(),
+    Test = self(),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        R = chappe_sip:create_b2bua(Req, Res, bad_uri(), #{pass_failure => false}),
+        Test ! {b2b_result, R},
+        _ = chappe_sip_res:send(Res, 404, #{reason => <<"Not Found">>})
+    end),
+    caller(fun(Sock) ->
+        Call = callid(),
+        send(Sock, EnginePort, invite(Sock, EnginePort, Call, <<"sf2">>)),
+        R = recv_final(Sock),
+        send(Sock, EnginePort, ack_status(Sock, EnginePort, Call, <<"sf2">>, R)),
+        Test ! {caller_final, status_of(R)}
+    end),
+    ok = expect({caller_final, 404}),
+    receive {b2b_result, {error, _}} -> ok
+    after 5000 -> ct:fail(no_b2b_error)
+    end.
+
+%% the app forks every INVITE to Uris and relays the call
+fork_app(Test, Uris, Opts) ->
+    chappe_sip:invite(fun(Req, Res) ->
+        case chappe_sip:create_b2bua(Req, Res, {parallel, Uris}, Opts) of
+            {ok, Legs} ->
+                {done, Why} = chappe_sip_b2b:relay(Legs),
+                Test ! {relay_done, Why};
+            Err ->
+                Test ! {fork_result, Err}
+        end
+    end).
+
+uri(Port) ->
+    <<"sip:callee@127.0.0.1:", (integer_to_binary(Port))/binary>>.
+
+%% a SIPS URI over UDP: the UAC refuses to send it (RFC 3261 19.1.1)
+bad_uri() ->
+    <<"sips:callee@127.0.0.1;transport=udp">>.
+
 %% ---- peers ----
 
 setup() ->
@@ -388,11 +705,14 @@ to_tag(Resp) ->
 
 %% the first final response
 recv_final(Sock) ->
+    recv_final(Sock, 6000).
+
+recv_final(Sock, Timeout) ->
     receive
-        {udp, Sock, _, _, <<"SIP/2.0 1", _/binary>>} -> recv_final(Sock);
+        {udp, Sock, _, _, <<"SIP/2.0 1", _/binary>>} -> recv_final(Sock, Timeout);
         {udp, Sock, _, _, <<"SIP/2.0 ", _/binary>> = Bin} -> Bin;
-        {udp, Sock, _, _, _} -> recv_final(Sock)
-    after 6000 -> ct:fail(no_final)
+        {udp, Sock, _, _, _} -> recv_final(Sock, Timeout)
+    after Timeout -> ct:fail(no_final)
     end.
 
 status_of(<<"SIP/2.0 ", C:3/binary, _/binary>>) -> binary_to_integer(C).
