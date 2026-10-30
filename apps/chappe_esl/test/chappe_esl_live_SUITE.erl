@@ -12,8 +12,12 @@
 %% `make interop-esl' does all of it. The `conn' group drives one connection
 %% to fs1. The `nodes' group registers both nodes; it needs FS2_PORT, and its
 %% stop/start case needs FS_COMPOSE (the compose command line) to stop and
-%% start fs1.
+%% start fs1. The `call' group drives a channel with chappe_esl_call: fs1
+%% calls fs2's socket-<port> extension, which connects back to a listener
+%% here (ESL_SOCKET_PORT, 18084); it needs ESL_MEDIA_DIR, the directory both
+%% nodes mount as /media, for its prompt and recordings.
 -module(chappe_esl_live_SUITE).
+-behaviour(chappe_esl_handler).
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
@@ -23,13 +27,31 @@
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([status/1, reloadxml/1, originate_and_events/1, conference/1]).
 -export([nodes_up_with_load/1, sessions_rise/1, stop_and_restart/1]).
+-export([
+    call_playback/1, call_digits/1, call_dtmf_event/1, call_record/1,
+    call_owner_death/1, call_timeout_breaks/1, call_paths_with_spaces/1,
+    call_audio_fork/1
+]).
+-export([handle_channel/3]).
+
+-define(CALL_CASES, [
+    call_playback,
+    call_digits,
+    call_dtmf_event,
+    call_record,
+    call_owner_death,
+    call_timeout_breaks,
+    call_paths_with_spaces,
+    call_audio_fork
+]).
 
 all() ->
-    [{group, conn}, {group, nodes}].
+    [{group, conn}, {group, call}, {group, nodes}].
 
 groups() ->
     [
         {conn, [], [status, reloadxml, originate_and_events, conference]},
+        {call, [], ?CALL_CASES},
         {nodes, [sequence], [nodes_up_with_load, sessions_rise, stop_and_restart]}
     ].
 
@@ -59,6 +81,16 @@ init_per_group(nodes, Config) ->
             ok = chappe_esl:node_add(fs2, node_opts(Fs2, [b])),
             Config
     end;
+init_per_group(call, Config) ->
+    case os:getenv("ESL_MEDIA_DIR") of
+        false ->
+            {skip, "ESL_MEDIA_DIR not set; call control interop disabled"};
+        Dir ->
+            ok = write_wav(filename:join(Dir, "prompt.wav"), 1),
+            ok = write_wav(filename:join(Dir, "prompt two.wav"), 1),
+            Port = list_to_integer(os:getenv("ESL_SOCKET_PORT", "18084")),
+            [{media_dir, Dir}, {socket_port, Port} | Config]
+    end;
 init_per_group(_Group, Config) ->
     Config.
 
@@ -77,7 +109,18 @@ init_per_testcase(Case, Config) when
 ->
     ok = chappe_esl:node_subscribe(all),
     Config;
-init_per_testcase(_Case, Config) ->
+init_per_testcase(Case, Config0) ->
+    case connect_case(Config0) of
+        {skip, _} = Skip ->
+            Skip;
+        Config ->
+            case lists:member(Case, ?CALL_CASES) of
+                true -> start_socket(Config);
+                false -> Config
+            end
+    end.
+
+connect_case(Config) ->
     case chappe_esl:connect(?config(fs, Config)) of
         {ok, Conn} ->
             [{conn, Conn} | Config];
@@ -90,7 +133,16 @@ init_per_testcase(_Case, Config) ->
             end
     end.
 
-end_per_testcase(_Case, Config) ->
+end_per_testcase(Case, Config) ->
+    case lists:member(Case, ?CALL_CASES) of
+        true ->
+            _ = chappe_esl:stop_listener(?config(socket_port, Config)),
+            _ = chappe_esl:api(
+                ?config(conn, Config), ["uuid_kill ", ?config(a_uuid, Config)]
+            );
+        false ->
+            ok
+    end,
     case ?config(conn, Config) of
         undefined ->
             ok;
@@ -138,6 +190,180 @@ conference(Config) ->
     {ok, List} = chappe_esl:api(Conn, "conference esltest list"),
     ?assert(is_binary(List)),
     {ok, _} = chappe_esl:api(Conn, "conference esltest hup all").
+
+%% call group
+
+%% The outbound handler gives the connection to the case, which starts the
+%% call process, then returns.
+handle_channel(Conn, _Channel, TestPid) ->
+    TestPid ! {live_conn, Conn, self()},
+    receive
+        started -> ok
+    after 15000 -> ok
+    end.
+
+%% req: ESL-34 ESL-35
+call_playback(Config) ->
+    Call = live_call(Config, self()),
+    ok = chappe_esl_call:answer(Call),
+    {ok, Ev} = chappe_esl_call:playback(Call, "/media/prompt.wav"),
+    ?assertEqual(
+        <<"FILE PLAYED">>,
+        chappe_esl_event:header(<<"Application-Response">>, Ev)
+    ),
+    {ok, Missing} = chappe_esl_call:playback(Call, "/media/missing.wav"),
+    ?assertNotEqual(
+        <<"FILE PLAYED">>,
+        chappe_esl_event:header(<<"Application-Response">>, Missing)
+    ),
+    ok = chappe_esl_call:hangup(Call),
+    ?assertMatch({hangup, _}, call_msg(Call, hangup)).
+
+%% fs1 sends RFC 2833 digits on its leg while fs2 runs play_and_get_digits.
+%% req: ESL-37
+call_digits(Config) ->
+    Call = live_call(Config, self()),
+    ok = chappe_esl_call:answer(Call),
+    send_dtmf_later(Config, "12#", 1500),
+    ?assertEqual(
+        {ok, <<"12">>},
+        chappe_esl_call:play_and_get_digits(Call, #{
+            file => <<"/media/prompt.wav">>, max => 4, timeout => 8000
+        })
+    ).
+
+%% req: ESL-38
+call_dtmf_event(Config) ->
+    Call = live_call(Config, self()),
+    ok = chappe_esl_call:answer(Call),
+    send_dtmf_later(Config, "5", 500),
+    ?assertEqual({dtmf, <<"5">>}, call_msg(Call, dtmf)).
+
+%% req: ESL-37
+call_record(Config) ->
+    Call = live_call(Config, self()),
+    ok = chappe_esl_call:answer(Call),
+    Name = "rec-" ++ integer_to_list(erlang:unique_integer([positive])),
+    {ok, _} = chappe_esl_call:record(Call, "/media/" ++ Name ++ ".wav", #{
+        max_secs => 2
+    }),
+    ok = chappe_esl_call:record_session(Call, "/media/" ++ Name ++ "-s.wav"),
+    {ok, _} = chappe_esl_call:playback(Call, "/media/prompt.wav"),
+    ok = chappe_esl_call:record_session_stop(
+        Call, "/media/" ++ Name ++ "-s.wav"
+    ),
+    Dir = ?config(media_dir, Config),
+    lists:foreach(
+        fun(F) ->
+            Path = filename:join(Dir, Name ++ F),
+            ok = wait(fun() -> filelib:file_size(Path) > 44 end, 100)
+        end,
+        [".wav", "-s.wav"]
+    ).
+
+%% The owner dies: the call kills the channel, and fs1's leg hangs up.
+%% req: ESL-39
+call_owner_death(Config) ->
+    Owner = spawn(fun() -> receive after infinity -> ok end end),
+    Call = live_call(Config, Owner),
+    ok = chappe_esl_call:answer(Call),
+    ok = chappe_esl_call:record_session(Call, "/media/owner-death.wav"),
+    Conn = ?config(conn, Config),
+    ok = chappe_esl:subscribe(Conn, ['CHANNEL_HANGUP']),
+    Mon = monitor(process, Call),
+    exit(Owner, kill),
+    receive
+        {'DOWN', Mon, process, Call, _} -> ok
+    after 10000 -> ct:fail(call_not_stopped)
+    end,
+    ok = expect_event(Conn, <<"CHANNEL_HANGUP">>, 15000).
+
+%% A timed out playback is broken: the next one plays at once, and the late
+%% completion does not reach the owner.
+%% req: ESL-35
+call_timeout_breaks(Config) ->
+    Call = live_call(Config, self()),
+    ok = chappe_esl_call:answer(Call),
+    ?assertEqual(
+        {error, timeout},
+        chappe_esl_call:playback(
+            Call, "tone_stream://%(20000,0,440)", #{timeout => 500}
+        )
+    ),
+    T0 = erlang:monotonic_time(millisecond),
+    {ok, Ev} = chappe_esl_call:playback(Call, "/media/prompt.wav"),
+    ?assertEqual(
+        <<"FILE PLAYED">>,
+        chappe_esl_event:header(<<"Application-Response">>, Ev)
+    ),
+    ?assert(erlang:monotonic_time(millisecond) - T0 < 5000),
+    receive
+        {chappe_esl_call, Call, {complete, _, _} = Leak} ->
+            ct:fail({leaked, Leak})
+    after 500 ->
+        ok
+    end.
+
+%% Paths with a space play, record and prompt digit collection.
+%% req: ESL-37
+call_paths_with_spaces(Config) ->
+    Call = live_call(Config, self()),
+    ok = chappe_esl_call:answer(Call),
+    {ok, Ev} = chappe_esl_call:playback(Call, "/media/prompt two.wav"),
+    ?assertEqual(
+        <<"FILE PLAYED">>,
+        chappe_esl_event:header(<<"Application-Response">>, Ev)
+    ),
+    send_dtmf_later(Config, "7#", 1500),
+    ?assertEqual(
+        {ok, <<"7">>},
+        chappe_esl_call:play_and_get_digits(Call, #{
+            file => <<"/media/prompt two.wav">>, max => 2, timeout => 8000
+        })
+    ),
+    Name = "rec " ++ integer_to_list(erlang:unique_integer([positive])),
+    {ok, _} = chappe_esl_call:record(Call, "/media/" ++ Name ++ ".wav", #{
+        max_secs => 1
+    }),
+    ok = chappe_esl_call:record_session(Call, "/media/" ++ Name ++ " s.wav"),
+    {ok, _} = chappe_esl_call:playback(Call, "/media/prompt.wav"),
+    ok = chappe_esl_call:record_session_stop(
+        Call, "/media/" ++ Name ++ " s.wav"
+    ),
+    Dir = ?config(media_dir, Config),
+    lists:foreach(
+        fun(F) ->
+            Path = filename:join(Dir, Name ++ F),
+            ok = wait(fun() -> filelib:file_size(Path) > 44 end, 100)
+        end,
+        [".wav", " s.wav"]
+    ).
+
+%% mod_audio_fork streams the channel to a websocket here: the metadata
+%% arrives first as text, then binary audio, and the stop closes it.
+%% req: ESL-37
+call_audio_fork(Config) ->
+    WsPort = ?config(socket_port, Config) + 1,
+    Sink = ws_sink(WsPort, self()),
+    try
+        Call = live_call(Config, self()),
+        ok = chappe_esl_call:answer(Call),
+        Url = "ws://host.docker.internal:" ++ integer_to_list(WsPort),
+        Meta = <<"{\"call\": \"lab one\"}">>,
+        ok = chappe_esl_call:audio_fork_start(Call, Url, #{
+            mix => mono, rate => 8000, metadata => Meta
+        }),
+        ?assertMatch({ws, connected, _}, ws_msg()),
+        ?assertEqual({ws, text, Meta}, ws_msg()),
+        ?assertEqual({ws, binary}, ws_msg()),
+        timer:sleep(500),
+        ok = chappe_esl_call:audio_fork_stop(Call),
+        {ws, closed, Frames} = ws_msg(),
+        ct:pal("fork sent ~p binary frames", [Frames]),
+        ?assert(Frames > 1)
+    after
+        exit(Sink, kill)
+    end.
 
 %% nodes group
 
@@ -207,6 +433,194 @@ stop_and_restart(_Config) ->
     end.
 
 %% helpers
+
+start_socket(Config) ->
+    Port = ?config(socket_port, Config),
+    {ok, _} = chappe_esl:start_listener(Port, ?MODULE, self()),
+    Config ++ [{a_uuid, new_uuid()}].
+
+%% fs1 calls fs2's socket extension and keeps playing a tone (so its RTP
+%% carries the DTMF it is asked to send); fs2's channel connects here.
+live_call(Config, Owner) ->
+    Conn = ?config(conn, Config),
+    AUuid = ?config(a_uuid, Config),
+    Port = integer_to_list(?config(socket_port, Config)),
+    {ok, _} = chappe_esl:bgapi(Conn, [
+        "originate {origination_uuid=",
+        AUuid,
+        "}sofia/esl/sip:socket-",
+        Port,
+        "@fs2:5080 &endless_playback(tone_stream://%(1000,0,440))"
+    ]),
+    receive
+        {live_conn, OConn, Handler} ->
+            {ok, Call} = chappe_esl_call:start(OConn, #{owner => Owner}),
+            Handler ! started,
+            Call
+    after 15000 ->
+        ct:fail(no_socket_connection)
+    end.
+
+send_dtmf_later(Config, Digits, Ms) ->
+    Conn = ?config(conn, Config),
+    AUuid = ?config(a_uuid, Config),
+    spawn(fun() ->
+        timer:sleep(Ms),
+        {ok, _} = chappe_esl:api(Conn, ["uuid_send_dtmf ", AUuid, " ", Digits])
+    end).
+
+%% The next call message of the given kind, skipping the others.
+call_msg(Call, Kind) ->
+    receive
+        {chappe_esl_call, Call, Msg} when element(1, Msg) =:= Kind -> Msg
+    after 15000 ->
+        ct:fail({no_call_msg, Kind})
+    end.
+
+new_uuid() ->
+    <<A:32, B:16, C:16, D:16, E:48>> = rand:bytes(16),
+    iolist_to_binary(
+        io_lib:format(
+            "~8.16.0b-~4.16.0b-~4.16.0b-~4.16.0b-~12.16.0b", [A, B, C, D, E]
+        )
+    ).
+
+%% A minimal websocket server for mod_audio_fork: it accepts one client
+%% (echoing the audio.drachtio.org subprotocol), then reports
+%% {ws, connected, Request}, {ws, text, Payload}, {ws, binary} for the first
+%% binary frame, and {ws, closed, BinaryFrames} on a close frame or the end
+%% of the connection.
+ws_sink(Port, TestPid) ->
+    {ok, L} = gen_tcp:listen(Port, [
+        binary, {packet, raw}, {active, false}, {reuseaddr, true}
+    ]),
+    Pid = spawn(fun() ->
+        receive
+            go -> ws_accept(L, TestPid)
+        end
+    end),
+    ok = gen_tcp:controlling_process(L, Pid),
+    Pid ! go,
+    Pid.
+
+ws_accept(L, TestPid) ->
+    {ok, S} = gen_tcp:accept(L, 30000),
+    Req = ws_request(S, <<>>),
+    Key = ws_header(<<"sec-websocket-key">>, Req),
+    Accept = base64:encode(
+        crypto:hash(sha, <<Key/binary, "258EAFA5-E914-47DA-95CA-C5AB0DC85B11">>)
+    ),
+    Proto =
+        case ws_header(<<"sec-websocket-protocol">>, Req) of
+            <<>> ->
+                [];
+            P ->
+                First = string:trim(hd(binary:split(P, <<",">>))),
+                [<<"Sec-WebSocket-Protocol: ">>, First, <<"\r\n">>]
+        end,
+    ok = gen_tcp:send(S, [
+        <<"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n">>,
+        <<"Connection: Upgrade\r\nSec-WebSocket-Accept: ">>,
+        Accept,
+        <<"\r\n">>,
+        Proto,
+        <<"\r\n">>
+    ]),
+    TestPid ! {ws, connected, Req},
+    ws_loop(S, TestPid, <<>>, 0).
+
+ws_request(S, Acc) ->
+    case binary:split(Acc, <<"\r\n\r\n">>) of
+        [Head, _] ->
+            Head;
+        [_] ->
+            {ok, Data} = gen_tcp:recv(S, 0, 10000),
+            ws_request(S, <<Acc/binary, Data/binary>>)
+    end.
+
+ws_header(Name, Req) ->
+    Lines = binary:split(Req, <<"\r\n">>, [global]),
+    Values = [
+        string:trim(V)
+     || Line <- Lines,
+        [K, V] <- [binary:split(Line, <<":">>)],
+        string:lowercase(K) =:= Name
+    ],
+    case Values of
+        [V1 | _] -> V1;
+        [] -> <<>>
+    end.
+
+ws_loop(S, TestPid, Buf, N) ->
+    case ws_frame(Buf) of
+        {1, Payload, Rest} ->
+            TestPid ! {ws, text, Payload},
+            ws_loop(S, TestPid, Rest, N);
+        {2, _Payload, Rest} when N =:= 0 ->
+            TestPid ! {ws, binary},
+            ws_loop(S, TestPid, Rest, 1);
+        {2, _Payload, Rest} ->
+            ws_loop(S, TestPid, Rest, N + 1);
+        {8, _Payload, _Rest} ->
+            _ = gen_tcp:send(S, <<1:1, 0:3, 8:4, 0:1, 0:7>>),
+            TestPid ! {ws, closed, N},
+            gen_tcp:close(S);
+        {_Op, _Payload, Rest} ->
+            ws_loop(S, TestPid, Rest, N);
+        more ->
+            case gen_tcp:recv(S, 0, 30000) of
+                {ok, Data} ->
+                    ws_loop(S, TestPid, <<Buf/binary, Data/binary>>, N);
+                {error, _} ->
+                    TestPid ! {ws, closed, N}
+            end
+    end.
+
+%% One client frame (always masked), unmasked.
+ws_frame(<<_Fin:1, _:3, Op:4, 1:1, Len0:7, Rest0/binary>>) ->
+    case {Len0, Rest0} of
+        {126, <<Len:16, R/binary>>} -> ws_payload(Op, Len, R);
+        {127, <<Len:64, R/binary>>} -> ws_payload(Op, Len, R);
+        {Len, R} when Len < 126 -> ws_payload(Op, Len, R);
+        _ -> more
+    end;
+ws_frame(_) ->
+    more.
+
+ws_payload(Op, Len, Bin) ->
+    case Bin of
+        <<Mask:4/binary, Masked:Len/binary, Rest/binary>> ->
+            {Op, unmask(Masked, Mask), Rest};
+        _ ->
+            more
+    end.
+
+unmask(Data, Mask) ->
+    Size = byte_size(Data),
+    <<Key:Size/binary, _/binary>> = binary:copy(Mask, Size div 4 + 1),
+    crypto:exor(Data, Key).
+
+ws_msg() ->
+    receive
+        {ws, _, _} = Msg -> Msg;
+        {ws, _} = Msg -> Msg
+    after 15000 ->
+        ct:fail(no_ws_message)
+    end.
+
+%% A Secs long 440 Hz tone, 8 kHz 16-bit mono.
+write_wav(Path, Secs) ->
+    Rate = 8000,
+    Samples = <<
+        <<(round(8000 * math:sin(2 * math:pi() * 440 * I / Rate))):16/little-signed>>
+     || I <- lists:seq(0, Rate * Secs - 1)
+    >>,
+    Size = byte_size(Samples),
+    Header =
+        <<"RIFF", (36 + Size):32/little, "WAVE", "fmt ", 16:32/little,
+            1:16/little, 1:16/little, Rate:32/little, (Rate * 2):32/little,
+            2:16/little, 16:16/little, "data", Size:32/little>>,
+    file:write_file(Path, [Header, Samples]).
 
 node_opts(#{host := Host, port := Port, password := Password}, Tags) ->
     #{

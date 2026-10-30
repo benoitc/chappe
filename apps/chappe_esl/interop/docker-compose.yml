@@ -26,6 +26,12 @@ x-freeswitch: &freeswitch
   tty: true
   volumes:
     - ./conf:/chappe/conf:ro
+    # prompts written by the live suite, recordings read back by it
+    - ${ESL_MEDIA_DIR:-/tmp/chappe-esl-media}:/media
+  # the socket extension connects back to the test host (Linux needs the
+  # mapping; Docker Desktop provides it)
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
   healthcheck:
     test: ["CMD", "/usr/local/freeswitch/bin/fs_cli", "-x", "sofia status"]
     interval: 2s
