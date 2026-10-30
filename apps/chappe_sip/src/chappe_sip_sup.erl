@@ -39,6 +39,8 @@ start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
 init([]) ->
+    %% the rate buckets of chappe_sip_guard live as long as the application
+    ok = chappe_sip_guard:init_table(),
     SupFlags = #{strategy => one_for_one, intensity => 10, period => 10},
     Children = [
         worker(chappe_sip_registry_keeper),

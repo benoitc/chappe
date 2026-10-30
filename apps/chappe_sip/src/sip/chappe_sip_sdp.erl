@@ -80,13 +80,8 @@ connection(Sdp) ->
 
 %% An IP literal out of SDP text.
 -spec address(binary() | undefined) -> {ok, inet:ip_address()} | error.
-address(undefined) ->
-    error;
 address(Bin) ->
-    case inet:parse_strict_address(binary_to_list(Bin)) of
-        {ok, Ip} -> {ok, Ip};
-        {error, _} -> error
-    end.
+    chappe_sip_net:address(Bin).
 
 %% {SessionAddress, [Media]} where each media is #{media, port, proto,
 %% fmts, dir, addr (when it has its own c=), mux, rtcp, rtpmap, fmtp,

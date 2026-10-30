@@ -19,8 +19,11 @@ start(_Type, _Args) ->
             %% request worker can mint or validate a route marker; a
             %% configured secret that is too short stops the boot
             case chappe_sip_route:ensure_secret() of
-                ok -> chappe_sip_sup:start_link();
-                {error, _} = Err -> Err
+                ok ->
+                    ok = chappe_sip_metrics:setup(),
+                    chappe_sip_sup:start_link();
+                {error, _} = Err ->
+                    Err
             end
     end.
 

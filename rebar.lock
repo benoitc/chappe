@@ -5,7 +5,7 @@
  {<<"h2">>,{pkg,<<"h2">>,<<"0.12.3">>},1},
  {<<"hackney">>,{pkg,<<"hackney">>,<<"4.7.4">>},1},
  {<<"idna">>,{pkg,<<"idna">>,<<"7.1.0">>},2},
- {<<"instrument">>,{pkg,<<"instrument">>,<<"1.1.5">>},1},
+ {<<"instrument">>,{pkg,<<"instrument">>,<<"1.1.5">>},0},
  {<<"livery">>,
   {git,"https://github.com/benoitc/livery.git",
        {ref,"e008944740c03d187883ea902c77b7f175ade8a6"}},

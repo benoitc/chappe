@@ -511,6 +511,9 @@ live_register(_Config) ->
     {_, _} = binary:match(R1, <<"expires=">>),
     %% the binding is now resolvable
     ?assertMatch([_], chappe_sip:location(<<"sip:alice@127.0.0.1">>)),
+    %% and records the transport its REGISTER came over
+    [B1] = chappe_sip:bindings(<<"sip:alice@127.0.0.1">>),
+    ?assertEqual(<<"udp">>, maps:get(transport, B1)),
     %% a refresh with a higher CSeq is accepted
     send(Sock, EP, register_req(LP, 7200, 2, [{<<"Contact">>, <<"<sip:bob@127.0.0.1:9>;q=0.5">>}])),
     R2 = recv_status(Sock, 200),
@@ -787,6 +790,7 @@ live_tcp_plain_binding(_Config) ->
     ?assertEqual(200, chappe_sip_msg:status(R)),
     [B] = chappe_sip:bindings(<<"sip:alice@127.0.0.1">>),
     ?assertEqual(undefined, maps:get(flow, B)),
+    ?assertEqual(<<"tcp">>, maps:get(transport, B)),
     ok = gen_tcp:close(T),
     timer:sleep(500),
     ?assertMatch([_], chappe_sip:bindings(<<"sip:alice@127.0.0.1">>)).

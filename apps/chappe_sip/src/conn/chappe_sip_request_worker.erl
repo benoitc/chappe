@@ -135,14 +135,31 @@ dispatch(Msg, TxnH, Meta, Res, Middlewares, Handler) ->
     try
         chappe_sip_middleware:run(Chain, Handler, Req, Res)
     catch
+        exit:Reason when
+            Reason =:= normal orelse
+                (is_tuple(Reason) andalso tuple_size(Reason) =:= 2 andalso
+                    element(1, Reason) =:= shutdown)
+        ->
+            %% a handler done with the request may end its process; after
+            %% a final response that is no crash. Without one the engine
+            %% still answers 500 when the worker is gone.
+            case chappe_sip_res:finished(Res) of
+                true -> exit(Reason);
+                false -> crashed(exit, Reason, [], Res)
+            end;
         Class:Reason:Stack ->
-            logger:error(
-                "chappe_sip request handler crashed: ~p:~p~n~p",
-                [Class, Reason, Stack]
-            ),
-            _ = chappe_sip_res:send(Res, 500),
-            exit({handler_crashed, {Class, Reason}})
+            crashed(Class, Reason, Stack, Res)
     end.
+
+-spec crashed(error | exit | throw, term(), list(), chappe_sip_res:res()) ->
+    no_return().
+crashed(Class, Reason, Stack, Res) ->
+    logger:error(
+        "chappe_sip request handler crashed: ~p:~p~n~p",
+        [Class, Reason, Stack]
+    ),
+    _ = chappe_sip_res:send(Res, 500),
+    exit({handler_crashed, {Class, Reason}}).
 
 %% An INVITE starting a call opens its call record, driven by this worker
 %% until a dialog takes it over; its id rides on the request (meta cdr).
