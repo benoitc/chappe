@@ -1,0 +1,992 @@
+%% Copyright 2026 Benoit Chesneau
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% chappe_mrf end to end on loopback: the real SIP engine, chappe_mix
+%% for native rooms, and fakes for FreeSWITCH (SIP plus its outbound
+%% event socket), rtpengine and the callers (chappe_mrf_fake). The same
+%% flows run against real FreeSWITCH and rtpengine in
+%% chappe_mrf_live_SUITE.
+-module(chappe_mrf_SUITE).
+
+-include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
+
+-export([all/0, init_per_suite/1, end_per_suite/1]).
+-export([init_per_testcase/2, end_per_testcase/2]).
+-export([
+    connect_caller_ivr/1,
+    caller_hangup/1,
+    unknown_channel_refused/1,
+    owner_death_kills_channel/1,
+    no_node/1,
+    create_endpoint_bridge/1,
+    bridge_to_uri/1,
+    endpoint_commands/1,
+    node_down/1,
+    native_conference/1,
+    native_room_outlives_caller/1,
+    native_talking/1,
+    fs_conference_pin/1,
+    fs_conference_bad_pin/1,
+    conference_focus/1,
+    attach_timeout/1,
+    failover/1,
+    connect_failure/1,
+    endpoint_errors/1,
+    endpoint_socket/1,
+    endpoint_socket_errors/1,
+    endpoint_dialog_ends/1,
+    setup_edges/1,
+    registry_edges/1,
+    sip_edges/1,
+    conf_edges/1,
+    native_endpoint/1,
+    fs_conference_edges/1
+]).
+
+-define(F, chappe_mrf_fake).
+
+all() ->
+    [
+        connect_caller_ivr,
+        caller_hangup,
+        unknown_channel_refused,
+        owner_death_kills_channel,
+        no_node,
+        create_endpoint_bridge,
+        bridge_to_uri,
+        endpoint_commands,
+        node_down,
+        native_conference,
+        native_room_outlives_caller,
+        native_talking,
+        fs_conference_pin,
+        fs_conference_bad_pin,
+        conference_focus,
+        attach_timeout,
+        failover,
+        connect_failure,
+        endpoint_errors,
+        endpoint_socket,
+        endpoint_socket_errors,
+        endpoint_dialog_ends,
+        setup_edges,
+        registry_edges,
+        sip_edges,
+        conf_edges,
+        native_endpoint,
+        fs_conference_edges
+    ].
+
+init_per_suite(Config) ->
+    application:set_env(chappe_sip, engine_mod, chappe_sip_nif, [{persistent, true}]),
+    {ok, _} = application:ensure_all_started(chappe_mrf),
+    Config.
+
+end_per_suite(_Config) ->
+    _ = application:stop(chappe_mrf),
+    _ = application:stop(chappe_esl),
+    ok = application:stop(chappe_sip),
+    application:unset_env(chappe_sip, engine_mod, [{persistent, true}]),
+    ok.
+
+init_per_testcase(_Case, Config) ->
+    EP = ?F:pick(),
+    ok = chappe_sip:start(#{contact => <<"sip:127.0.0.1:", (integer_to_binary(EP))/binary>>}),
+    LP = ?F:pick(),
+    ok = chappe_mrf:start(#{esl_port => LP}),
+    Rtpe = ?F:rtpe_start(self()),
+    Fs = ?F:fs_start(<<"fs1">>, #{esl_port => LP}),
+    [{ep, EP}, {lp, LP}, {rtpe, Rtpe}, {fs, Fs} | Config].
+
+end_per_testcase(_Case, Config) ->
+    _ = [chappe_mrf_conf:stop(C) || {_, C} <- chappe_mrf:conferences()],
+    ?F:fs_stop(?config(fs, Config)),
+    ?F:rtpe_stop(?config(rtpe, Config)),
+    _ = chappe_mrf:stop_listener(),
+    _ = [chappe_esl:node_remove(N) || {N, _} <- chappe_esl:nodes()],
+    _ = chappe_sip:stop(),
+    _ = chappe_sip_engine:reset_routes(),
+    ok.
+
+%% ---- helpers ----
+
+fs_uri(Config) ->
+    <<"sip:127.0.0.1:", (integer_to_binary(?F:fs_port(?config(fs, Config))))/binary>>.
+
+%% Every INVITE goes to connect_caller/3 on the fake node; the handler
+%% hands {Ep, B2b} to the test and stays the endpoint's owner until told.
+ivr(Config) ->
+    ivr(Config, #{}).
+
+ivr(Config, Extra) ->
+    Test = self(),
+    Targets = [{fs1, fs_uri(Config)}],
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        Opts = maps:merge(#{targets => Targets, notify => Test}, Extra),
+        case chappe_mrf:connect_caller(Req, Res, Opts) of
+            {ok, Ep, B2b} ->
+                Test ! {connected, Ep, B2b, self()},
+                owner_loop(Test);
+            Err ->
+                Test ! {connect_failed, Err}
+        end
+    end).
+
+owner_loop(Test) ->
+    receive
+        {chappe_mrf, _, _} = M ->
+            Test ! {owner, M},
+            owner_loop(Test);
+        {run, From, Fun} ->
+            From ! {ran, Fun()},
+            owner_loop(Test);
+        stop ->
+            ok
+    end.
+
+%% run Fun in the endpoint's owner (the handler)
+in_owner(Owner, Fun) ->
+    Owner ! {run, self(), Fun},
+    receive
+        {ran, R} -> R
+    after 10000 -> ct:fail(owner_run)
+    end.
+
+call_in(Config) ->
+    Ua = ?F:ua_call(?config(ep, Config), #{}),
+    {Ep, B2b, Owner} =
+        receive
+            {connected, E, B, O} -> {E, B, O}
+        after 10000 -> ct:fail(no_connect)
+        end,
+    {ok, 200} = ua_final(Ua),
+    {Ua, Ep, B2b, Owner}.
+
+ua_final(Ua) ->
+    receive
+        {ua, Ua, {final, S, _}} -> {ok, S}
+    after 10000 -> ct:fail(no_final)
+    end.
+
+ua_event(Ua, What) ->
+    receive
+        {ua, Ua, {What, Bin}} -> Bin
+    after 10000 -> ct:fail({no_ua_event, What})
+    end.
+
+no_ua_event(Ua, What, Ms) ->
+    receive
+        {ua, Ua, {What, Bin}} -> ct:fail({unexpected, What, Bin})
+    after Ms -> ok
+    end.
+
+fs_cmd(Pattern) ->
+    fs_cmd(Pattern, 5000).
+
+fs_cmd(Pattern, Ms) ->
+    receive
+        {fake_fs, _, _, {cmd, Block}} = M ->
+            case binary:match(Block, Pattern) of
+                nomatch -> fs_cmd(Pattern, Ms);
+                _ -> M
+            end
+    after Ms -> ct:fail({no_fs_cmd, Pattern})
+    end.
+
+fs_what(What) ->
+    receive
+        {fake_fs, _, _, {What, Bin}} -> Bin
+    after 5000 -> ct:fail({no_fs, What})
+    end.
+
+owner_msg(Pattern) ->
+    receive
+        {owner, {chappe_mrf, _, Pattern} = M} -> M
+    after 5000 -> ct:fail({no_owner_msg, Pattern})
+    end.
+
+has(Bin, Part) -> binary:match(Bin, Part) =/= nomatch.
+
+%% ---- cases ----
+
+%% A caller reaches the IVR: the node gets the INVITE with X-Chappe-Call,
+%% the outbound socket comes back and is answered, the caller gets the
+%% 200; play, play_collect and DTMF events work on the endpoint.
+%% req: MRF-01 MRF-03
+connect_caller_ivr(Config) ->
+    ivr(Config),
+    {Ua, Ep, {_, _}, Owner} = call_in(Config),
+    {ok, Uuid} = chappe_mrf:uuid(Ep),
+    ?assertMatch(<<"uuid-", _/binary>>, Uuid),
+    ?assertEqual({ok, fs1}, chappe_mrf:node(Ep)),
+    ok = in_owner(Owner, fun() -> chappe_mrf:play(Ep, <<"/media/menu.wav">>) end),
+    {fake_fs, _, _, {cmd, Play}} = fs_cmd(<<"execute-app-name: playback">>),
+    ?assert(has(Play, <<"/media/menu.wav">>)),
+    ?assertEqual(
+        {ok, <<"1">>},
+        in_owner(Owner, fun() ->
+            chappe_mrf:play_collect(Ep, #{file => <<"/media/menu.wav">>, max => 1})
+        end)
+    ),
+    ok = ?F:fs_dtmf(?config(fs, Config), <<"5">>),
+    _ = owner_msg({dtmf, <<"5">>}),
+    ?F:ua_bye(Ua),
+    _ = owner_msg({hangup, <<"NORMAL_CLEARING">>}),
+    Owner ! stop.
+
+%% The caller hangs up: the channel gets a BYE, the owner the hangup, and
+%% the call's notify process how the call ended.
+caller_hangup(Config) ->
+    ivr(Config),
+    {Ua, _Ep, {_, Ref}, Owner} = call_in(Config),
+    ?F:ua_bye(Ua),
+    _ = fs_what(bye),
+    _ = owner_msg({hangup, <<"NORMAL_CLEARING">>}),
+    receive
+        {chappe_sip_b2b, Ref, {done, {done, a_bye}}} -> ok
+    after 5000 -> ct:fail(no_done)
+    end,
+    Owner ! stop.
+
+%% A channel whose X-Chappe-Call nobody waits for is hung up.
+%% req: MRF-02
+unknown_channel_refused(Config) ->
+    {ok, Tcp} = gen_tcp:connect({127, 0, 0, 1}, ?config(lp, Config), [binary, {active, false}]),
+    ok = gen_tcp:send(Tcp, <<>>),
+    {ok, <<"connect\n\n">>} = gen_tcp:recv(Tcp, 0, 5000),
+    ok = gen_tcp:send(
+        Tcp,
+        <<"Content-Type: command/reply\nReply-Text: +OK\nUnique-ID: u1\n"
+            "variable_sip_h_X-Chappe-Call: nobody\n\n">>
+    ),
+    {ok, Next} = recv_until(Tcp, <<"hangup">>, <<>>),
+    ?assert(has(Next, <<"execute-app-name: hangup">>)),
+    gen_tcp:close(Tcp).
+
+recv_until(Tcp, Part, Acc) ->
+    case binary:match(Acc, Part) of
+        nomatch ->
+            case gen_tcp:recv(Tcp, 0, 5000) of
+                {ok, B} -> recv_until(Tcp, Part, <<Acc/binary, B/binary>>);
+                Err -> Err
+            end;
+        _ ->
+            {ok, Acc}
+    end.
+
+%% The endpoint's owner dies: the channel is killed (uuid_kill), and the
+%% caller gets a BYE.
+%% req: MRF-04
+owner_death_kills_channel(Config) ->
+    ivr(Config),
+    {Ua, Ep, _B2b, Owner} = call_in(Config),
+    {ok, Uuid} = chappe_mrf:uuid(Ep),
+    ok = in_owner(Owner, fun() -> chappe_mrf:fork_audio_start(Ep, <<"ws://127.0.0.1:1/x">>, #{}) end),
+    exit(Owner, kill),
+    _ = fs_cmd(<<"uuid_audio_fork ", Uuid/binary, " stop">>),
+    _ = fs_cmd(<<"uuid_kill ", Uuid/binary>>),
+    _ = ua_event(Ua, bye).
+
+%% No node to send the caller to: 503.
+no_node(Config) ->
+    Test = self(),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        Test ! {result, chappe_mrf:connect_caller(Req, Res, #{})}
+    end),
+    Ua = ?F:ua_call(?config(ep, Config), #{}),
+    {ok, 503} = ua_final(Ua),
+    receive
+        {result, {error, no_node}} -> ok
+    after 5000 -> ct:fail(no_result)
+    end,
+    ?assertEqual({error, no_node}, chappe_mrf:create_endpoint(#{})).
+
+%% create_endpoint/1, then bridge/2 moves the caller onto it: the new
+%% channel's dialog gets rtpengine's offer for the caller, the old
+%% channel a BYE, and the caller no re-INVITE.
+%% req: MRF-01 MRF-05
+create_endpoint_bridge(Config) ->
+    ivr(Config),
+    {Ua, Ep1, B2b, Owner} = call_in(Config),
+    {ok, Ep2} = chappe_mrf:create_endpoint(#{targets => [{fs1, fs_uri(Config)}]}),
+    ?assertNotEqual(chappe_mrf:uuid(Ep1), chappe_mrf:uuid(Ep2)),
+    ok = chappe_mrf:bridge(B2b, Ep2),
+    ReInvite = fs_what(reinvite),
+    ?assert(has(ReInvite, <<"a=rtpe-offer:">>)),
+    _ = fs_what(bye),
+    _ = owner_msg({hangup, <<"NORMAL_CLEARING">>}),
+    no_ua_event(Ua, reinvite, 500),
+    ?assertEqual({error, already_bridged}, chappe_mrf:bridge(B2b, Ep2)),
+    ?assertMatch(#{bridged := true}, chappe_mrf:info(Ep2)),
+    ?F:ua_bye(Ua),
+    receive
+        {chappe_mrf, Ep2, {hangup, _}} -> ok
+    after 5000 -> ct:fail(ep2_no_hangup)
+    end,
+    Owner ! stop.
+
+%% bridge/2 to a SIP URI: the callee gets the INVITE, the endpoint's
+%% channel a BYE.
+%% req: MRF-05
+bridge_to_uri(Config) ->
+    ivr(Config),
+    {Ua, _Ep, B2b, Owner} = call_in(Config),
+    {_Callee, CP} = ?F:callee_start(<<"calleetag">>),
+    ok = chappe_mrf:bridge(B2b, <<"sip:bob@127.0.0.1:", (integer_to_binary(CP))/binary>>),
+    receive
+        {callee, invite, _} -> ok
+    after 5000 -> ct:fail(no_callee)
+    end,
+    _ = fs_what(bye),
+    no_ua_event(Ua, reinvite, 300),
+    ?F:ua_bye(Ua),
+    receive
+        {callee, bye, _} -> ok
+    after 5000 -> ct:fail(no_callee_bye)
+    end,
+    Owner ! stop.
+
+%% The other endpoint commands reach the channel as their application.
+endpoint_commands(Config) ->
+    {ok, Ep} = chappe_mrf:create_endpoint(#{targets => [{fs1, fs_uri(Config)}]}),
+    ok = chappe_mrf:record(Ep, <<"/media/rec.wav">>, #{max_secs => 3}),
+    _ = fs_cmd(<<"execute-app-name: record">>),
+    ok = chappe_mrf:record_session(Ep, <<"/media/s.wav">>),
+    _ = fs_cmd(<<"execute-app-name: record_session">>),
+    ok = chappe_mrf:record_session_stop(Ep, <<"/media/s.wav">>),
+    _ = fs_cmd(<<"execute-app-name: stop_record_session">>),
+    ok = chappe_mrf:send_dtmf(Ep, <<"12">>),
+    _ = fs_cmd(<<"execute-app-name: send_dtmf">>),
+    ok = chappe_mrf:set(Ep, <<"x">>, <<"1">>),
+    _ = fs_cmd(<<"execute-app-arg: x=1">>),
+    {ok, _} = chappe_mrf:execute(Ep, <<"echo">>, <<>>),
+    {ok, <<"+OK">>} = chappe_mrf:api(Ep, <<"status">>),
+    ok = chappe_mrf:play(Ep, [<<"/a.wav">>, <<"/b.wav">>]),
+    _ = fs_cmd(<<"/b.wav">>),
+    ok = chappe_mrf:modify(Ep, hold),
+    _ = fs_cmd(<<"uuid_hold ">>),
+    ok = chappe_mrf:modify(Ep, unhold),
+    _ = fs_cmd(<<"uuid_hold off">>),
+    {ok, Answer} = chappe_mrf:modify(Ep, chappe_mrf:inactive_sdp()),
+    ?assert(has(Answer, <<"m=audio">>)),
+    _ = fs_what(reinvite),
+    ok = chappe_mrf:fork_audio_stop(Ep),
+    {ok, Uuid} = chappe_mrf:uuid(Ep),
+    ok = chappe_mrf:destroy(Ep),
+    _ = fs_cmd(<<"uuid_kill ", Uuid/binary>>),
+    ?assertEqual({error, gone}, chappe_mrf:play(Ep, <<"/a.wav">>)).
+
+%% The node of a live endpoint goes down: its owner hears node_down.
+%% req: MRF-03
+node_down(Config) ->
+    {Esl, Port} = ?F:esl_start(),
+    ok = chappe_esl:node_add(fs1, #{
+        host => "127.0.0.1",
+        port => Port,
+        sip_uri => fs_uri(Config),
+        heartbeat_interval_ms => 60000,
+        probe_interval_ms => 60000
+    }),
+    ok = chappe_esl:node_subscribe(fs1),
+    receive
+        {chappe_esl_node, fs1, up} -> ok
+    after 5000 -> ct:fail(node_not_up)
+    end,
+    {ok, Ep} = chappe_mrf:create_endpoint(#{}),
+    ?assertEqual({ok, fs1}, chappe_mrf:node(Ep)),
+    ?F:esl_stop({Esl, Port}),
+    receive
+        {chappe_mrf, Ep, {node_down, fs1}} -> ok
+    after 10000 -> ct:fail(no_node_down)
+    end,
+    chappe_mrf:destroy(Ep).
+
+%% Three callers in a native room: each joins through a loopback INVITE
+%% to the mixer (the caller sees no re-INVITE, its FreeSWITCH channel a
+%% BYE), mute and kick work, and the events reach the notify process.
+%% req: MRF-08 MRF-09
+native_conference(Config) ->
+    ivr(Config),
+    {ok, Conf} = chappe_mrf:conference(<<"room1">>, #{backend => native}),
+    ?assertEqual({ok, Conf}, chappe_mrf:conference(<<"room1">>, #{})),
+    Calls = [call_in(Config) || _ <- [1, 2, 3]],
+    Members = [
+        begin
+            {ok, M} = chappe_mrf_conf:join(Conf, B2b, #{name => <<"p">>, deaf => true}),
+            _ = fs_what(bye),
+            no_ua_event(Ua, reinvite, 100),
+            M
+        end
+     || {Ua, _Ep, B2b, _Owner} <- Calls
+    ],
+    [M1, M2, M3] = Members,
+    [receive
+         {chappe_mrf_conf, Conf, {joined, M, #{name := <<"p">>}}} -> ok
+     after 2000 -> ct:fail({no_joined, M})
+     end
+     || M <- Members],
+    ?assertEqual(3, length(chappe_mrf_conf:members(Conf))),
+    ok = chappe_mrf_conf:mute(Conf, M2),
+    ok = chappe_mrf_conf:deaf(Conf, M2),
+    ok = chappe_mrf_conf:undeaf(Conf, M2),
+    ok = chappe_mrf_conf:unmute(Conf, M2),
+    ok = chappe_mrf_conf:relate(Conf, M1, M3, nohear),
+    ok = chappe_mrf_conf:play(Conf, <<"/media/beep.wav">>),
+    receive
+        {rtpe_cmd, #{<<"command">> := <<"play media">>}} -> ok
+    after 2000 -> ct:fail(no_play_media)
+    end,
+    ok = chappe_mrf_conf:kick(Conf, M3),
+    {Ua3, _, _, _} = lists:nth(3, Calls),
+    _ = ua_event(Ua3, bye),
+    receive
+        {chappe_mrf_conf, Conf, {left, M3, kicked}} -> ok
+    after 2000 -> ct:fail(no_left)
+    end,
+    ok = chappe_mrf_conf:lock(Conf),
+    {Ua4, _, B2b4, _} = call_in(Config),
+    ?assertEqual({error, locked}, chappe_mrf_conf:join(Conf, B2b4, #{})),
+    ok = chappe_mrf_conf:unlock(Conf),
+    ?F:ua_bye(Ua4),
+    ?assertEqual({error, not_member}, chappe_mrf_conf:mute(Conf, <<"nobody">>)),
+    ok = chappe_mrf_conf:stop(Conf).
+
+%% The room belongs to the conference, not to its first caller: the
+%% first caller leaves, the room (its chappe_mix conference) stays, and
+%% the next caller lands in the same one.
+%% req: MRF-07
+native_room_outlives_caller(Config) ->
+    ivr(Config),
+    {ok, Conf} = chappe_mrf:conference(<<"room2">>, #{}),
+    {Ua1, _, B1, _} = call_in(Config),
+    {ok, M1} = chappe_mrf_conf:join(Conf, B1, #{}),
+    Mix1 = mix_conf(Conf, M1),
+    MRef = monitor(process, Mix1),
+    ?F:ua_bye(Ua1),
+    receive
+        {chappe_mrf_conf, Conf, {left, M1, departed}} -> ok
+    after 5000 -> ct:fail(no_left)
+    end,
+    receive
+        {'DOWN', MRef, process, _, _} -> ct:fail(room_closed)
+    after 300 -> ok
+    end,
+    {_Ua2, _, B2, _} = call_in(Config),
+    {ok, M2} = chappe_mrf_conf:join(Conf, B2, #{}),
+    ?assertEqual(Mix1, mix_conf(Conf, M2)),
+    ok = chappe_mrf_conf:stop(Conf),
+    receive
+        {'DOWN', MRef, process, _, _} -> ok
+    after 5000 -> ct:fail(room_not_closed)
+    end.
+
+mix_local(Conf, Member) ->
+    Members = element(9, sys:get_state(Conf)),
+    #{session := S} = maps:get(Member, Members),
+    #{local := Local} = chappe_sip_media:info(S),
+    Local.
+
+mix_conf(Conf, Member) ->
+    Members = element(9, sys:get_state(Conf)),
+    #{session := S} = maps:get(Member, Members),
+    #{conf := Mix} = chappe_sip_media:info(S),
+    Mix.
+
+%% A member talking reaches the notify process (the mixer's talker
+%% detection, the caller's RTP straight to the mixer leg here).
+native_talking(Config) ->
+    ivr(Config),
+    {ok, Conf} = chappe_mrf:conference(<<"room3">>, #{}),
+    {Ua1, _, B1, _} = call_in(Config),
+    {ok, M1} = chappe_mrf_conf:join(Conf, B1, #{}),
+    {_Ua2, _, B2, _} = call_in(Config),
+    {ok, _M2} = chappe_mrf_conf:join(Conf, B2, #{}),
+    %% the fake rtpengine leaves the caller's media where it was: send
+    %% to the mixer leg itself
+    ?F:ua_rtp(Ua1, mix_local(Conf, M1), 1500),
+    receive
+        {chappe_mrf_conf, Conf, {talking, M1, true}} -> ok
+    after 5000 -> ct:fail(no_talking)
+    end.
+
+%% An fs room: the endpoint enters the PIN (play_collect), runs the
+%% conference application, and its member id comes from add-member; mute
+%% and kick are conference api commands.
+%% req: MRF-08 MRF-09 MRF-10
+fs_conference_pin(Config) ->
+    {ok, Conf} = chappe_mrf:conference(<<"fsroom">>, #{backend => fs, node => fs1}),
+    {ok, Ep} = chappe_mrf:create_endpoint(#{targets => [{fs1, fs_uri(Config)}]}),
+    fs_set_digits(Config, <<"1234">>),
+    {ok, Id} = chappe_mrf_conf:join(Conf, Ep, #{pin => <<"1234">>, moderator => true}),
+    ?assert(is_binary(Id)),
+    _ = fs_cmd(<<"execute-app-name: play_and_get_digits">>),
+    {fake_fs, _, _, {cmd, Join}} = fs_cmd(<<"execute-app-name: conference">>),
+    ?assert(has(Join, <<"fsroom@default+flags{moderator}">>)),
+    ok = chappe_mrf_conf:mute(Conf, Id),
+    _ = fs_cmd(<<"api conference fsroom mute ", Id/binary>>),
+    ok = chappe_mrf_conf:lock(Conf),
+    _ = fs_cmd(<<"api conference fsroom lock">>),
+    ?assertEqual({error, locked}, chappe_mrf_conf:join(Conf, Ep, #{})),
+    ok = chappe_mrf_conf:play(Conf, <<"/media/beep.wav">>),
+    _ = fs_cmd(<<"api conference fsroom play /media/beep.wav">>),
+    ok = chappe_mrf_conf:kick(Conf, Id),
+    _ = fs_cmd(<<"api conference fsroom kick ", Id/binary>>),
+    receive
+        {chappe_mrf_conf, Conf, {left, Id, kicked}} -> ok
+    after 2000 -> ct:fail(no_left)
+    end,
+    ?assertMatch({error, {unsupported, fs}}, chappe_mrf_conf:relate(Conf, Id, Id, hear)),
+    chappe_mrf:destroy(Ep).
+
+%% A caller joined from its call: an endpoint is made on the room's node
+%% and the caller bridged into it; a wrong PIN keeps it out.
+%% req: MRF-10
+fs_conference_bad_pin(Config) ->
+    ivr(Config),
+    {ok, Conf} = chappe_mrf:conference(<<"fsroom2">>, #{backend => fs, node => fs1}),
+    {Ua, _Ep, B2b, _Owner} = call_in(Config),
+    fs_set_digits(Config, <<"0000">>),
+    meck_targets(Config),
+    ?assertEqual(
+        {error, bad_pin},
+        chappe_mrf_conf:join(Conf, B2b, #{pin => <<"1234">>, pin_tries => 2})
+    ),
+    _ = ua_event(Ua, bye).
+
+%% create_endpoint(#{node => fs1}) needs fs1's sip_uri: give the node
+%% registry a fake fs1
+meck_targets(Config) ->
+    {_Esl, Port} = ?F:esl_start(),
+    ok = chappe_esl:node_add(fs1, #{
+        host => "127.0.0.1",
+        port => Port,
+        sip_uri => fs_uri(Config),
+        heartbeat_interval_ms => 60000,
+        probe_interval_ms => 60000
+    }).
+
+fs_set_digits(Config, Digits) ->
+    {Pid, _} = ?config(fs, Config),
+    Pid ! {set_digits, Digits}.
+
+%% focus => true: a SUBSCRIBE to the conference gets its state.
+conference_focus(Config) ->
+    ok = chappe_sip:event_package(<<"conference">>, fun chappe_mrf:focus_subscribe/2),
+    {ok, Conf} = chappe_mrf:conference(<<"focusroom">>, #{focus => true}),
+    #{entity := Entity} = chappe_mrf_conf:info(Conf),
+    ?assert(has(Entity, <<"focusroom@">>)),
+    {ok, Sock} = gen_udp:open(0, [binary, {active, true}, {ip, {127, 0, 0, 1}}]),
+    {ok, P} = inet:port(Sock),
+    Pb = integer_to_binary(P),
+    Sub = iolist_to_binary([
+        <<"SUBSCRIBE ">>, Entity, <<" SIP/2.0\r\n">>,
+        <<"Via: SIP/2.0/UDP 127.0.0.1:", Pb/binary, ";rport;branch=z9hG4bKsub1\r\n">>,
+        <<"Max-Forwards: 70\r\nFrom: <sip:w@127.0.0.1>;tag=w1\r\n">>,
+        <<"To: <", Entity/binary, ">\r\nCall-ID: sub-1\r\nCSeq: 1 SUBSCRIBE\r\n">>,
+        <<"Contact: <sip:w@127.0.0.1:", Pb/binary, ">\r\nEvent: conference\r\n">>,
+        <<"Accept: application/conference-info+xml\r\nExpires: 60\r\n">>,
+        <<"Content-Length: 0\r\n\r\n">>
+    ]),
+    ok = gen_udp:send(Sock, {127, 0, 0, 1}, ?config(ep, Config), Sub),
+    ?assert(wait_udp(Sock, <<"SIP/2.0 200">>)),
+    ?assert(wait_udp(Sock, <<"conference-info">>)),
+    gen_udp:close(Sock).
+
+wait_udp(Sock, Part) ->
+    receive
+        {udp, Sock, _, Src, Bin} ->
+            _ =
+                case Bin of
+                    <<"NOTIFY ", _/binary>> ->
+                        gen_udp:send(Sock, {127, 0, 0, 1}, Src, ok_for(Bin));
+                    _ ->
+                        ok
+                end,
+            has(Bin, Part) orelse wait_udp(Sock, Part)
+    after 5000 -> false
+    end.
+
+ok_for(Req) ->
+    {ok, M} = chappe_sip_msg:parse(Req),
+    iolist_to_binary([
+        <<"SIP/2.0 200 OK\r\n">>,
+        [[<<"Via: ">>, V, <<"\r\n">>] || V <- chappe_sip_msg:get_all(<<"via">>, M)],
+        <<"From: ">>, chappe_sip_msg:get(<<"from">>, M), <<"\r\n">>,
+        <<"To: ">>, chappe_sip_msg:get(<<"to">>, M), <<"\r\n">>,
+        <<"Call-ID: ">>, chappe_sip_msg:call_id(M), <<"\r\n">>,
+        <<"CSeq: ">>, chappe_sip_msg:get(<<"cseq">>, M), <<"\r\n">>,
+        <<"Content-Length: 0\r\n\r\n">>
+    ]).
+
+%% ---- edges ----
+
+uri_of(Port) ->
+    <<"sip:127.0.0.1:", (integer_to_binary(Port))/binary>>.
+
+%% A node whose dialplan never hands the call to the socket: the caller
+%% is hung up and connect_caller/3 says why; create_endpoint/1 the same.
+attach_timeout(Config) ->
+    Silent = ?F:fs_start(<<"silent">>, #{esl_port => ?config(lp, Config), no_socket => true}),
+    Test = self(),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        Test ! {result, chappe_mrf:connect_caller(Req, Res, #{
+            targets => [{silent, uri_of(?F:fs_port(Silent))}], attach_timeout => 500
+        })}
+    end),
+    Ua = ?F:ua_call(?config(ep, Config), #{}),
+    {ok, 200} = ua_final(Ua),
+    receive
+        {result, {error, timeout}} -> ok
+    after 5000 -> ct:fail(no_result)
+    end,
+    _ = ua_event(Ua, bye),
+    ?assertEqual(
+        {error, timeout},
+        chappe_mrf:create_endpoint(#{
+            targets => [{silent, uri_of(?F:fs_port(Silent))}], attach_timeout => 500
+        })
+    ),
+    ?F:fs_stop(Silent).
+
+%% The first node does not answer: the call and create_endpoint/1 move
+%% to the next one, and the endpoint knows which node took it.
+failover(Config) ->
+    {_, DeadPort} = ?F:refuser_start(503),
+    Dead = uri_of(DeadPort),
+    Targets = [{dead, Dead}, {fs1, fs_uri(Config)}],
+    ivr(Config, #{targets => Targets}),
+    {Ua, Ep, _, Owner} = call_in(Config),
+    ?assertEqual({ok, fs1}, chappe_mrf:node(Ep)),
+    {ok, Ep2} = chappe_mrf:create_endpoint(#{targets => Targets, timeout => 2000}),
+    ?assertEqual({ok, fs1}, chappe_mrf:node(Ep2)),
+    ?assertMatch({error, _}, chappe_mrf:create_endpoint(#{targets => [{dead, Dead}], timeout => 1000})),
+    chappe_mrf:destroy(Ep2),
+    ?F:ua_bye(Ua),
+    Owner ! stop.
+
+%% The callee fails: connect_caller/3 returns the error, the endpoint goes.
+connect_failure(Config) ->
+    Test = self(),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        Test ! {result, chappe_mrf:connect_caller(Req, Res, #{
+            targets => [{dead, uri_of(element(2, ?F:refuser_start(486)))}]
+        })}
+    end),
+    Ua = ?F:ua_call(?config(ep, Config), #{}),
+    {ok, 486} = ua_final(Ua),
+    receive
+        {result, {error, _}} -> ok
+    after 10000 -> ct:fail(no_result)
+    end.
+
+%% Errors of the endpoint commands: a bridge on a direct call keeps the
+%% endpoint's dialog, an endpoint of connect_caller has no dialog of its
+%% own, and a destroyed endpoint answers gone.
+%% req: MRF-06
+endpoint_errors(Config) ->
+    ivr(Config, #{media => direct}),
+    {Ua, Ep1, B2b, Owner} = call_in(Config),
+    {ok, Ep2} = chappe_mrf:create_endpoint(#{targets => [{fs1, fs_uri(Config)}]}),
+    ?assertEqual({error, not_anchored}, chappe_mrf:bridge(B2b, Ep2)),
+    ?assertMatch(#{bridged := false, dialog := D} when D =/= undefined, chappe_mrf:info(Ep2)),
+    ?assertEqual({error, no_dialog}, chappe_mrf:modify(Ep1, chappe_mrf:inactive_sdp())),
+    ?assertEqual({error, no_dialog}, chappe_mrf:bridge(B2b, Ep1)),
+    chappe_mrf:destroy(Ep2),
+    ?assertEqual({error, gone}, chappe_mrf:uuid(Ep2)),
+    ?assertEqual({error, gone}, chappe_mrf:node(Ep2)),
+    ?assertEqual({error, gone}, chappe_mrf:modify(Ep2, <<"v=0">>)),
+    ?assertEqual({error, gone}, chappe_mrf:play(Ep2, [<<"/a.wav">>, <<"/b.wav">>])),
+    ?F:ua_bye(Ua),
+    Owner ! stop.
+
+%% The endpoint process on a bare socket: answer off, events to watchers,
+%% a second attach refused, the hangup, then the linger.
+endpoint_socket(Config) ->
+    Id = <<"sock-1">>,
+    {ok, Ep} = chappe_mrf_endpoint:start(#{id => Id, answer => false, linger => 200}),
+    ?assertMatch({error, {already_registered, _}}, chappe_mrf_endpoint:start(#{id => Id})),
+    ?assertEqual({error, timeout}, chappe_mrf_endpoint:await(Ep, 100)),
+    Sock = ?F:socket_start(?config(lp, Config), [{<<"variable_sip_h_X-Chappe-Call">>, Id}], ok),
+    {ok, <<"sock-uuid">>} = chappe_mrf_endpoint:await(Ep, 5000),
+    ?assertMatch(#{node := undefined, state := ready}, chappe_mrf:info(Ep)),
+    Watcher = spawn(fun() -> receive stop -> ok end end),
+    ok = chappe_mrf_endpoint:watch(Ep, self()),
+    ok = chappe_mrf_endpoint:watch(Ep, self()),
+    ok = chappe_mrf_endpoint:watch(Ep, Watcher),
+    exit(Watcher, kill),
+    ?assertEqual({error, attached}, chappe_mrf_endpoint:attach(Ep, self(), #{headers => #{}})),
+    ?assertEqual({error, no_dialog}, chappe_mrf_endpoint:handed(Ep)),
+    ok = ?F:socket_event(Sock, <<"CUSTOM">>, [{<<"Event-Subclass">>, <<"x::y">>}]),
+    receive
+        {chappe_mrf_endpoint, Ep, {event, _}} -> ok
+    after 2000 -> ct:fail(no_event)
+    end,
+    ok = ?F:socket_event(Sock, <<"CHANNEL_EXECUTE_COMPLETE">>, [
+        {<<"Application">>, <<"playback">>}, {<<"Application-UUID">>, <<"nobody">>}
+    ]),
+    receive
+        {chappe_mrf_endpoint, Ep, {complete, <<"playback">>, _}} -> ok
+    after 2000 -> ct:fail(no_complete)
+    end,
+    ok = ?F:socket_event(Sock, <<"HEARTBEAT">>, []),
+    ok = ?F:socket_event(Sock, <<"CHANNEL_HANGUP">>, [{<<"Hangup-Cause">>, <<"USER_BUSY">>}]),
+    receive
+        {chappe_mrf, Ep, {hangup, <<"USER_BUSY">>}} -> ok
+    after 2000 -> ct:fail(no_hangup)
+    end,
+    ?assertEqual({error, hangup}, chappe_mrf_endpoint:await(Ep, 1000)),
+    ?assertEqual({error, hangup}, chappe_mrf:play(Ep, <<"/a.wav">>)),
+    MRef = monitor(process, Ep),
+    receive
+        {'DOWN', MRef, process, Ep, _} -> ok
+    after 3000 -> ct:fail(no_linger_end)
+    end,
+    ?F:socket_stop(Sock).
+
+%% The socket closes under a live endpoint; a channel without the header
+%% is refused; an answer refused by the node ends the endpoint.
+%% req: MRF-02
+endpoint_socket_errors(Config) ->
+    {ok, Ep} = chappe_mrf_endpoint:start(#{id => <<"sock-2">>, answer => false}),
+    Sock = ?F:socket_start(?config(lp, Config), [{<<"variable_sip_h_X-Chappe-Call">>, <<"sock-2">>}], ok),
+    {ok, _} = chappe_mrf_endpoint:await(Ep, 5000),
+    ?F:socket_stop(Sock),
+    receive
+        {chappe_mrf, Ep, {hangup, <<"CONNECTION_CLOSED">>}} -> ok
+    after 3000 -> ct:fail(no_closed)
+    end,
+    ok = chappe_mrf:destroy(Ep),
+    {ok, Ep3} = chappe_mrf_endpoint:start(#{id => <<"sock-3">>}),
+    Sock3 = ?F:socket_start(?config(lp, Config), [{<<"variable_sip_h_X-Chappe-Call">>, <<"sock-3">>}], err),
+    receive
+        {chappe_mrf, Ep3, {hangup, _}} -> ok
+    after 3000 -> ct:fail(no_answer_error)
+    end,
+    ?F:socket_stop(Sock3),
+    Anon = ?F:socket_start(?config(lp, Config), [], ok),
+    timer:sleep(300),
+    ?F:socket_stop(Anon),
+    %% the owner dies before any socket
+    Owner = spawn(fun() -> receive stop -> ok end end),
+    {ok, Ep4} = chappe_mrf_endpoint:start(#{id => <<"sock-4">>, owner => Owner}),
+    M4 = monitor(process, Ep4),
+    exit(Owner, kill),
+    receive
+        {'DOWN', M4, process, Ep4, _} -> ok
+    after 3000 -> ct:fail(no_owner_stop)
+    end.
+
+%% The endpoint's own dialog ends from our side: the node gets the BYE
+%% and the endpoint forgets the dialog.
+endpoint_dialog_ends(Config) ->
+    {ok, Ep} = chappe_mrf:create_endpoint(#{targets => [{fs1, fs_uri(Config)}]}),
+    #{dialog := D} = chappe_mrf:info(Ep),
+    ok = chappe_mrf_lib:destroy_dialog(D),
+    _ = fs_what(bye),
+    receive
+        {chappe_mrf, Ep, {hangup, _}} -> ok
+    after 3000 -> ct:fail(no_hangup)
+    end,
+    ?assertMatch(#{dialog := undefined}, chappe_mrf:info(Ep)),
+    ok = chappe_mrf_lib:destroy_dialog(D).
+
+%% Setup edges: start/1 without a listener, the listener twice, and the
+%% app taking esl_port from its env.
+setup_edges(Config) ->
+    ok = chappe_mrf:start(#{}),
+    ok = chappe_mrf:listen(?config(lp, Config)),
+    ok = chappe_mrf:stop_listener(),
+    ok = chappe_mrf:stop_listener(),
+    Port = ?F:pick(),
+    ok = application:stop(chappe_mrf),
+    ok = application:set_env(chappe_mrf, esl_port, Port),
+    ok = application:start(chappe_mrf),
+    {ok, T} = gen_tcp:connect({127, 0, 0, 1}, Port, []),
+    gen_tcp:close(T),
+    ok = application:unset_env(chappe_mrf, esl_port),
+    ok = application:stop(chappe_mrf),
+    ok = application:start(chappe_mrf),
+    ok = chappe_mrf:start(#{esl_port => ?config(lp, Config)}).
+
+%% The registry refuses a live key, and ignores what it does not know.
+registry_edges(_Config) ->
+    Key = {test, make_ref()},
+    ok = chappe_mrf_registry:put(Key, self()),
+    ?assertEqual({error, exists}, chappe_mrf_registry:put(Key, self())),
+    ok = chappe_mrf_registry:delete(Key),
+    ?assertEqual(error, chappe_mrf_registry:lookup(Key)),
+    ?assertEqual({error, unknown_call}, gen_server:call(chappe_mrf_registry, junk)),
+    gen_server:cast(chappe_mrf_registry, junk),
+    chappe_mrf_registry ! junk,
+    chappe_mrf_registry ! {'DOWN', make_ref(), process, self(), x},
+    ?assert(is_process_alive(whereis(chappe_mrf_registry))).
+
+%% SIP edges: a loopback INVITE nobody waits for gets 404, one whose
+%% join is unknown 488; a SUBSCRIBE for an unknown room 404, for a room
+%% without focus 489.
+sip_edges(Config) ->
+    %% the middleware runs in front of the app's INVITE handler
+    ok = chappe_sip:invite(fun(_Req, Res) -> chappe_sip_res:send(Res, 480) end),
+    Ua = ?F:ua_call(?config(ep, Config), #{ruri => <<"sip:mrf-mix-nobody@127.0.0.1">>}),
+    {ok, 404} = ua_final(Ua),
+    {ok, Conf} = chappe_mrf:conference(<<"edges">>, #{}),
+    ok = chappe_mrf_registry:put({loop, <<"stale">>}, Conf),
+    Ua2 = ?F:ua_call(?config(ep, Config), #{ruri => <<"sip:mrf-mix-stale@127.0.0.1">>}),
+    {ok, 488} = ua_final(Ua2),
+    ok = chappe_sip:event_package(<<"conference">>, fun chappe_mrf:focus_subscribe/2),
+    ?assertEqual(404, subscribe_status(Config, <<"sip:nowhere@127.0.0.1">>)),
+    ?assertEqual(489, subscribe_status(Config, <<"sip:edges@127.0.0.1">>)).
+
+subscribe_status(Config, Uri) ->
+    {ok, Sock} = gen_udp:open(0, [binary, {active, true}, {ip, {127, 0, 0, 1}}]),
+    {ok, P} = inet:port(Sock),
+    Pb = integer_to_binary(P),
+    Sub = iolist_to_binary([
+        <<"SUBSCRIBE ">>, Uri, <<" SIP/2.0\r\n">>,
+        <<"Via: SIP/2.0/UDP 127.0.0.1:", Pb/binary, ";rport;branch=z9hG4bK", (integer_to_binary(P))/binary, "\r\n">>,
+        <<"Max-Forwards: 70\r\nFrom: <sip:w@127.0.0.1>;tag=w1\r\n">>,
+        <<"To: <", Uri/binary, ">\r\nCall-ID: sub-", Pb/binary, "\r\nCSeq: 1 SUBSCRIBE\r\n">>,
+        <<"Contact: <sip:w@127.0.0.1:", Pb/binary, ">\r\nEvent: conference\r\n">>,
+        <<"Content-Length: 0\r\n\r\n">>
+    ]),
+    ok = gen_udp:send(Sock, {127, 0, 0, 1}, ?config(ep, Config), Sub),
+    Status = sub_final(Sock),
+    gen_udp:close(Sock),
+    Status.
+
+sub_final(Sock) ->
+    receive
+        {udp, Sock, _, _, <<"SIP/2.0 1", _/binary>>} -> sub_final(Sock);
+        {udp, Sock, _, _, <<"SIP/2.0 ", C:3/binary, _/binary>>} -> binary_to_integer(C)
+    after 5000 -> timeout
+    end.
+
+%% Conference edges: the same name twice, the owner going, a listener
+%% added and gone, unknown requests, a join that cannot replace the leg,
+%% leave/2, a member prompt, and an fs room with no node.
+conf_edges(Config) ->
+    ivr(Config, #{media => direct}),
+    Owner = spawn(fun() -> receive stop -> ok end end),
+    {ok, Conf} = chappe_mrf:conference(<<"edges2">>, #{owner => Owner, entity => <<"sip:edges2@x">>, focus => true}),
+    ?assertMatch(#{entity := <<"sip:edges2@x">>}, chappe_mrf_conf:info(Conf)),
+    Listener = spawn(fun() -> receive stop -> ok end end),
+    ok = chappe_mrf_conf:events(Conf, Listener),
+    ok = chappe_mrf_conf:events(Conf, Listener),
+    exit(Listener, kill),
+    ?assertEqual({error, unknown_call}, gen_server:call(Conf, junk)),
+    gen_server:cast(Conf, junk),
+    Conf ! junk,
+    {Ua, _Ep, B2b, IvrOwner} = call_in(Config),
+    ?assertEqual({error, not_anchored}, chappe_mrf_conf:join(Conf, B2b, #{})),
+    ?assertEqual({error, not_member}, chappe_mrf_conf:play(Conf, <<"x">>, <<"/a.wav">>)),
+    ?assertEqual({error, not_member}, chappe_mrf_conf:leave(Conf, <<"x">>)),
+    MRef = monitor(process, Conf),
+    exit(Owner, kill),
+    receive
+        {'DOWN', MRef, process, Conf, _} -> ok
+    after 3000 -> ct:fail(conf_not_stopped)
+    end,
+    ?assertEqual({error, noproc}, chappe_mrf_conf:info(Conf)),
+    ?assertMatch({error, _}, chappe_mrf:conference(<<"nonode">>, #{backend => fs})),
+    ?F:ua_bye(Ua),
+    IvrOwner ! stop.
+
+%% An endpoint in a native room: re-INVITEd to the mixer through
+%% rtpengine, muted and played to, and gone from the room when it hangs
+%% up; one with no dialog of its own is refused.
+native_endpoint(Config) ->
+    ivr(Config),
+    {ok, Conf} = chappe_mrf:conference(<<"nep">>, #{focus => true}),
+    {ok, Ep} = chappe_mrf:create_endpoint(#{targets => [{fs1, fs_uri(Config)}]}),
+    {ok, M} = chappe_mrf_conf:join(Conf, Ep, #{name => <<"ep">>, deaf => true}),
+    ReInvite = fs_what(reinvite),
+    ?assert(has(ReInvite, <<"a=rtpe-offer:mix-">>)),
+    ok = chappe_mrf_conf:mute(Conf, M),
+    ok = chappe_mrf_conf:play(Conf, M, <<"/media/beep.wav">>),
+    _ = fs_cmd(<<"/media/beep.wav">>),
+    ok = chappe_mrf_conf:kick(Conf, M),
+    receive
+        {chappe_mrf_conf, Conf, {left, M, kicked}} -> ok
+    after 2000 -> ct:fail(no_left)
+    end,
+    {ok, M2} = chappe_mrf_conf:join(Conf, Ep, #{}),
+    chappe_mrf:destroy(Ep),
+    receive
+        {chappe_mrf_conf, Conf, {left, M2, hangup}} -> ok
+    after 3000 -> ct:fail(no_hangup_left)
+    end,
+    %% a node that refuses the re-INVITE, and an endpoint already gone
+    Picky = ?F:fs_start(<<"picky">>, #{esl_port => ?config(lp, Config), reject_reinvite => true}),
+    {ok, EpP} = chappe_mrf:create_endpoint(#{targets => [{picky, uri_of(?F:fs_port(Picky))}]}),
+    ?assertMatch({error, _}, chappe_mrf_conf:join(Conf, EpP, #{})),
+    chappe_mrf:destroy(EpP),
+    ?assertEqual({error, gone}, chappe_mrf_conf:join(Conf, EpP, #{})),
+    ?F:fs_stop(Picky),
+    {Ua, Ep1, _B2b, Owner} = call_in(Config),
+    ?assertEqual({error, no_dialog}, chappe_mrf_conf:join(Conf, Ep1, #{})),
+    ok = chappe_mrf_conf:lock(Conf),
+    ?assertEqual({error, locked}, chappe_mrf_conf:join(Conf, Ep1, #{})),
+    ?F:ua_bye(Ua),
+    Owner ! stop.
+
+%% fs room edges: flags, talker events, an endpoint on another node, a
+%% member that never shows up, one that hangs up first, unmute and
+%% undeaf, unlock, and a member that hangs up in the room.
+fs_conference_edges(Config) ->
+    {ok, Conf} = chappe_mrf:conference(<<"fse">>, #{backend => fs, node => fs1, join_timeout => 500}),
+    {ok, Ep} = chappe_mrf:create_endpoint(#{targets => [{fs1, fs_uri(Config)}]}),
+    {ok, Id} = chappe_mrf_conf:join(Conf, Ep, #{mute => true, deaf => true, flags => [nomoh]}),
+    {fake_fs, _, _, {cmd, Join}} = fs_cmd(<<"execute-app-name: conference">>),
+    ?assert(has(Join, <<"+flags{mute|deaf|nomoh}">>)),
+    Ev = fun(Action, Room) ->
+        ?F:fs_event(?config(fs, Config), <<"CUSTOM">>, [
+            {<<"Event-Subclass">>, <<"conference::maintenance">>},
+            {<<"Action">>, Action}, {<<"Conference-Name">>, Room}, {<<"Member-ID">>, Id}
+        ])
+    end,
+    Ev(<<"start-talking">>, <<"fse">>),
+    receive
+        {chappe_mrf_conf, Conf, {talking, Id, true}} -> ok
+    after 2000 -> ct:fail(no_talking)
+    end,
+    Ev(<<"stop-talking">>, <<"fse">>),
+    Ev(<<"volume-level">>, <<"fse">>),
+    Ev(<<"start-talking">>, <<"other">>),
+    ok = chappe_mrf_conf:unmute(Conf, Id),
+    _ = fs_cmd(<<"api conference fse unmute ", Id/binary>>),
+    ok = chappe_mrf_conf:undeaf(Conf, Id),
+    ok = chappe_mrf_conf:deaf(Conf, Id),
+    ok = chappe_mrf_conf:unlock(Conf),
+    _ = fs_cmd(<<"api conference fse unlock">>),
+    ok = chappe_mrf_conf:play(Conf, Id, <<"/media/x.wav">>),
+    _ = fs_cmd(<<"api conference fse play /media/x.wav ", Id/binary>>),
+    ok = chappe_mrf_conf:leave(Conf, Id),
+    receive
+        {chappe_mrf_conf, Conf, {left, Id, departed}} -> ok
+    after 2000 -> ct:fail(no_left)
+    end,
+    {ok, Id2} = chappe_mrf_conf:join(Conf, Ep, #{}),
+    ?F:fs_hangup(?config(fs, Config), <<"NORMAL_CLEARING">>),
+    receive
+        {chappe_mrf_conf, Conf, {left, Id2, hangup}} -> ok
+    after 3000 -> ct:fail(no_hangup_left)
+    end,
+    %% an endpoint on another node
+    {ok, EpX} = chappe_mrf:create_endpoint(#{targets => [{fs9, fs_uri(Config)}]}),
+    ?assertEqual({error, {wrong_node, fs9}}, chappe_mrf_conf:join(Conf, EpX, #{})),
+    chappe_mrf:destroy(EpX),
+    %% a room that never adds the member, and one whose member hangs up first
+    Silent = ?F:fs_start(<<"fs2">>, #{esl_port => ?config(lp, Config), silent_conference => true}),
+    {ok, Conf2} = chappe_mrf:conference(<<"fse2">>, #{backend => fs, node => fs2, join_timeout => 500}),
+    {ok, Ep2} = chappe_mrf:create_endpoint(#{targets => [{fs2, uri_of(?F:fs_port(Silent))}]}),
+    ?assertEqual({error, timeout}, chappe_mrf_conf:join(Conf2, Ep2, #{})),
+    Self = self(),
+    _ = spawn(fun() -> Self ! {joined, chappe_mrf_conf:join(Conf2, Ep2, #{})} end),
+    timer:sleep(200),
+    ?F:fs_hangup(Silent, <<"NORMAL_CLEARING">>),
+    receive
+        {joined, {error, hangup}} -> ok
+    after 3000 -> ct:fail(no_join_hangup)
+    end,
+    ?F:fs_stop(Silent).

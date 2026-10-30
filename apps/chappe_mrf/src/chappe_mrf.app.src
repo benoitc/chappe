@@ -1,0 +1,22 @@
+%% Copyright 2026 Benoit Chesneau
+%% SPDX-License-Identifier: Apache-2.0
+
+{application, chappe_mrf, [
+    {description,
+        "Media resource function: IVR, bridging and conferences on "
+        "FreeSWITCH, rtpengine and chappe_mix"},
+    {vsn, "0.1.0"},
+    {registered, [
+        chappe_mrf_sup,
+        chappe_mrf_registry,
+        chappe_mrf_ep_sup,
+        chappe_mrf_conf_sup
+    ]},
+    {mod, {chappe_mrf_app, []}},
+    {applications, [kernel, stdlib, chappe_sip, chappe_esl]},
+    %% esl_port: the port of the listener the FreeSWITCH dialplan `socket'
+    %% application connects back to (started with the app when set)
+    {env, []},
+    {licenses, ["Apache-2.0"]},
+    {links, []}
+]}.
