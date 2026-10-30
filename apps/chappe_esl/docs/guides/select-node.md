@@ -80,3 +80,9 @@ Uuid])` and the other `uuid_*` commands.
 - A node is full at the lower of its `max_sessions` option and the
   Max-Sessions it reports.
 - Ties go to the first node name in Erlang term order.
+
+## Where it lives
+
+- Modules: `chappe_esl` (`node_select/1`), `chappe_esl_nodes` (the selection over the ETS rows)
+- Tests: `apps/chappe_esl/test/chappe_esl_nodes_SUITE.erl`
+- Lab: `make interop-esl`; chappe_mrf picks nodes this way in `make interop-mrf`

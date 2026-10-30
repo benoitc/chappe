@@ -88,3 +88,10 @@ The library never re-offers on its own; the decision and the new SDP belong to s
 - Owner death triggers the same delete, also with a request in flight.
 - Any other exit path (crash, supervisor shutdown) makes a best-effort synchronous delete in `terminate/3`.
 - The node pin is always released.
+
+## Where it lives
+
+- Modules: `chappe_rtpengine_session` (the per-call FSM), `chappe_rtpengine_pool` (pinning)
+- Tests: `apps/chappe_rtpengine/test/chappe_rtpengine_session_SUITE.erl`
+- Lab: `make interop` (`chappe_rtpengine_e2e_SUITE`)
+- Design: [state machine](../design/overview.md#media-session-state-machine)

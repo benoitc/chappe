@@ -10,21 +10,30 @@ project, open your first connection, and run a command.
 - You do not want SIP or media logic in the client. chappe_esl is the wire client
   only.
 
-## Add the dependency
+## Get the code
+
+chappe_esl is an app of the chappe umbrella. To work on it or try it, clone
+the umbrella and open a shell with every app loaded:
+
+```sh
+git clone https://github.com/benoitc/chappe.git
+cd chappe
+rebar3 shell
+```
+
+To use it from your own project, depend on the umbrella repository and
+list `chappe_esl` in your application's `applications`:
 
 ```erlang
 {deps, [
-    {chappe_esl, {git, "https://github.com/benoitc/chappe_esl.git", {branch, "main"}}}
+    {chappe_esl, {git_subdir, "https://github.com/benoitc/chappe.git",
+                  {branch, "main"}, "apps/chappe_esl"}}
 ]}.
 ```
 
 ## Connect and run a command
 
-Start a shell and open an inbound connection:
-
-```sh
-rebar3 shell
-```
+In the shell, open an inbound connection:
 
 ```erlang
 {ok, Conn} = chappe_esl:connect(#{host => {127,0,0,1}, port => 8021,
@@ -57,3 +66,10 @@ ok = chappe_esl:close(Conn).
 - [Inbound connections](inbound.md)
 - [Outbound connections](outbound.md)
 - [Events](events.md)
+- [Configuration](../configuration.md): app env and node options
+
+## Where it lives
+
+- Modules: `chappe_esl` (API), `chappe_esl_inbound`, `chappe_esl_conn`
+- Tests: `apps/chappe_esl/test/chappe_esl_conn_SUITE.erl`
+- Lab: `make interop-esl` (FreeSWITCH in docker, `apps/chappe_esl/interop/`)

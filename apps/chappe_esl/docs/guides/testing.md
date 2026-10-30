@@ -46,3 +46,9 @@ See `interop/README.md` for running it by hand.
 ```sh
 make test-static   # lint, xref, dialyzer, fmt -c
 ```
+
+## Where it lives
+
+- Fake: `apps/chappe_esl/test/chappe_esl_fake_server.erl`, frames in `test/fixtures/`
+- Lab: `apps/chappe_esl/interop/` (docker compose), run by `apps/chappe_esl/test/e2e.sh` through `make interop-esl`
+- Requirements: `apps/chappe_esl/docs/compliance/requirements.tsv` ([how claims work](../compliance/README.md))

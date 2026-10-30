@@ -84,3 +84,9 @@ sends nothing.
 ```erlang
 ok = chappe_esl:stop_listener(8084).
 ```
+
+## Where it lives
+
+- Modules: `chappe_esl_listener` (accepts sockets), `chappe_esl_outbound_sup` (handler pool), `chappe_esl_handler` (the behaviour you implement), `chappe_esl_conn` (`accepting` state)
+- Tests: `apps/chappe_esl/test/chappe_esl_outbound_SUITE.erl`
+- Lab: `make interop-esl`

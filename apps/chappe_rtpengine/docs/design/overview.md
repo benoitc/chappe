@@ -4,18 +4,22 @@ This document describes the architecture of chappe_rtpengine. It is the referenc
 
 ## Scope
 
-chappe_rtpengine controls rtpengine media proxies over the NG protocol (UDP datagram: `cookie SP bencoded-dictionary`). It serves a SIP B2BUA. The split is strict: SIP signalling and SDP interpretation live in the SIP server; this library treats SDP bodies as opaque binaries and knows nothing about dialogs or transactions. Pure Erlang, no NIFs, no external services, one dependency (erlang_ws, see below).
+chappe_rtpengine controls rtpengine media proxies over the NG protocol: one `cookie SP bencoded-dictionary` message per request, over UDP (the default), TCP, or WebSocket (ws/wss). It serves a SIP B2BUA. The split is strict: SIP signalling and SDP interpretation live in the SIP server, and this library knows nothing about dialogs or transactions. The client and the session pass SDP bodies through as opaque binaries; the one opt-in exception is `chappe_rtpengine_sdp`, which reads and builds the media sections of a subscription answer (see below). Pure Erlang, no NIFs, no external services, one dependency (erlang_ws, see below).
 
 ## Supervision tree and modules
 
 ```
 chappe_rtpengine_sup (rest_for_one)
 |-- chappe_rtpengine_pool          (node registry, health, selection, pinning)
+|-- chappe_rtpengine_dtmf          (DTMF event listener, idle until opened)
 |-- chappe_rtpengine_client_sup    (simple_one_for_one)
 |   `-- chappe_rtpengine_client    (gen_server, one per rtpengine node)
 `-- chappe_rtpengine_session_sup   (simple_one_for_one)
     `-- chappe_rtpengine_session   (gen_statem, one per call)
 ```
+
+`rest_for_one`: when the pool restarts, the clients and sessions started
+after it restart too, so no client runs unknown to the registry.
 
 | Module | Role |
 |---|---|
@@ -27,6 +31,10 @@ chappe_rtpengine_sup (rest_for_one)
 | `chappe_rtpengine_client_sup` | Runtime-added clients, transient restarts |
 | `chappe_rtpengine_pool` | ETS registry read directly by callers, gen_server serializes writes and health transitions |
 | `chappe_rtpengine_session` | Per-call FSM owning call-id, tags, and the pinned node |
+| `chappe_rtpengine_sdp` | Opt-in SDP helpers for subscriptions: the offer's m-lines and labels (`streams/1`), and an answer that routes chosen streams to a receiver (`fork_answer/2,3`) |
+| `chappe_rtpengine_dtmf` | Listener for rtpengine's `--dtmf-log-dest` JSON datagrams; dispatches digits to subscribers by call-id |
+| `chappe_rtpengine_resolve` | Host resolution for the client (IPv4 first, then IPv6), through inet or a resolver fun, in a monitored helper process so the client never blocks on DNS |
+| `chappe_rtpengine_ws_handler` | `ws_handler` bridging a WebSocket session to its client; refuses a session that did not grant `ng.rtpengine.com` |
 
 ## The client
 
@@ -74,11 +82,102 @@ Design points:
 - Cleanup: the FSM monitors its owner. Owner death or an explicit stop moves to `deleting`, sends delete with retries, and terminates whatever the outcome. A reply for a request still in flight that lands in `deleting` answers its caller with `{error, stopped}` and leaves the FSM in `deleting`; callers still pending when the delete completes get the same answer.
 - Callback mode is `handle_event_function`: most events are handled alike across states, and a reply's meaning depends on the state it arrives in.
 
+### State x reply
+
+`handle_event/4` is long (plan finding M10) because what a client reply
+means depends on the request it answers and the state it lands in. Each
+request in flight is kept in `pending` by reference with its kind; the
+reply goes through `handle_reply/5` and then `reply/5`. Read it as a table:
+
+| Request, state | `{ok, Reply}` | error |
+|---|---|---|
+| offer, `offering` | `offered` | `idle` |
+| re-offer, `reoffering` | `offered` (re-offer flagged) | `established` |
+| publish, `publishing` | `established` | `idle` |
+| answer, `answering` | settle the branch, `established` | `offered`, previous to-tag restored |
+| answer, `established` (a later branch) | settle the branch | no change |
+| query or auxiliary command | answer the caller, no change | the same |
+| any, `deleting` | the caller gets `{error, stopped}` | the same |
+
+Before that, any reply in an active state that says "unknown call-id" tells
+the owner `{node_restarted, Node}`, once (`note_media_lost/4`).
+
+The auxiliary commands (`play_media/2`, `silence_media/2`,
+`subscribe_request/2`, ...) are thin wrappers that inject the call-id, the
+tags and the pinned node, then go through the same reply path.
+
+### SDP helpers
+
+`chappe_rtpengine_sdp` exists because rtpengine has no request-side selector
+for one media stream of a subscription. The offer describes every stream of
+the tapped participants in m-line order, with each stream's `a=label`; the
+consumer's answer decides which ones it receives (a port routes the stream,
+port 0 rejects it). `fork_answer/2,3` builds that aligned answer. Callers
+that write their own SDP can ignore the module.
+
 ## Node pool
 
-- ETS registry with `read_concurrency`, read directly by callers; the pool gen_server only serializes writes and health transitions. In-flight and pinned-session counters via `ets:update_counter` are the primary load metric. The NG `statistics` command reports session totals but is seconds-stale, so it serves periodic sanity checks, not per-call selection.
-- Health: K consecutive timeouts mark a node down; a periodic ping recovers it.
-- Node restart detection: rtpengine loses all sessions on restart, and a health ping cannot tell. Each node carries a generation counter bumped on every down-to-up transition; sessions record the generation they were pinned under. On recovery, sessions holding an older generation are told the node restarted, and an "Unknown call-ID" error on an established session triggers the same notification. The owner decides between re-offer elsewhere and teardown; the library never re-offers on its own, because a new offer needs SDP that only signalling can produce.
+### Concurrency model
+
+The pool is read far more often than it is written: every command looks up
+its node, every session start selects one. So reads never go through the
+pool process.
+
+- `chappe_rtpengine_pool_nodes` (protected, `read_concurrency`) holds one
+  `{Name, Status, Generation}` row per node. Only the pool gen_server
+  writes it. `select/0`, `list_nodes/0`, `node_info/1` and `is_managed/1`
+  read it in the calling process.
+- `chappe_rtpengine_pool_counters` (public, `write_concurrency`) holds
+  `{Name, InFlight, Pinned}`. The calling process bumps it with
+  `ets:update_counter/3`: the facade around each command
+  (`track_start/1`, `track_end/1`), and `pin/1`, `pin_to/2`, `unpin/1`.
+- `chappe_rtpengine_pool_pins` (public) maps a call-id to
+  `{Node, Generation}`, written by the session that pins.
+- The gen_server serializes the rest: `add_node/2`, `remove_node/1`, health
+  pings, the `report/2` casts the facade sends after each command (`ok` or
+  `timeout`), up and down transitions, and notices to subscribers.
+
+A reader can see a node a moment before or after a transition. That is
+accepted: a command sent to a node just marked down times out like any
+other and feeds the same health count.
+
+### Selection and pinning
+
+`select/0` takes the up node with the least in-flight requests plus pinned
+calls. The NG `statistics` command reports session totals but is
+seconds-stale, so it serves periodic sanity checks, not per-call selection.
+A session pins its call to the node at start (`pin/1`, or `pin_to/2` when
+you name the node) and every later command of that call goes there, because
+rtpengine keeps the call's state on one node.
+
+### Health
+
+A periodic ping per node (`health_interval`, 5000 ms) plus the facade's
+reports. `down_after` (2) consecutive failures mark a node down: it is left
+out of selection and subscribers get `{node_down, Name}`. A successful ping
+or command brings it back up.
+
+### Generation counter
+
+rtpengine loses all sessions on restart, and a health ping cannot tell.
+Each node carries a generation counter bumped on every down-to-up
+transition; sessions record the generation they were pinned under. On
+recovery, subscribers get `{node_up, Name, Generation}` and sessions holding
+an older generation tell their owner `{node_restarted, Node}`. An "Unknown
+call-ID" error on an established session triggers the same notice. The
+owner decides between re-offer elsewhere and teardown; the library never
+re-offers on its own, because a new offer needs SDP that only signalling
+can produce.
+
+## DTMF listener
+
+rtpengine reports detected digits as one JSON datagram per event to
+`--dtmf-log-dest`. `chappe_rtpengine_dtmf` owns that socket (opened by the
+`dtmf_listen` app env or `open/1,2`), drops datagrams from sources not in
+`allowed_sources`, and sends `{chappe_rtpengine_dtmf, CallId, Event}` to the
+processes subscribed to that call-id. A session started with `dtmf => true`
+subscribes itself and forwards the digits to its owner. See
+[Configuration](../configuration.md).
 
 ## Failure summary
 
@@ -98,3 +197,20 @@ Design points:
 | Node | Restart while pinned | Generation mismatch notifies affected sessions |
 | Session | Owner death | Best-effort delete, then terminate |
 | Session | Stop or owner death with a request in flight | That caller gets `{error, stopped}`; delete proceeds |
+
+## Why it takes no SIP dependency
+
+chappe_rtpengine is a leaf app: it depends on nothing else in the umbrella
+and is published on its own. The rule and its reasons are recorded in
+[decision 0003](../../../../docs/decisions/0003-leaf-apps.md).
+
+## Where it lives
+
+- Code: `apps/chappe_rtpengine/src/`
+- Tests: eunit for `bencode`, `ng`, `stream`, `sdp`; suites
+  `chappe_rtpengine_client_SUITE`, `_pool_SUITE`, `_session_SUITE`,
+  `_dtmf_SUITE` against an in-process fake
+  (`chappe_rtpengine_fake_server`)
+- Lab: `make interop` (`chappe_rtpengine_e2e_SUITE`, `_live_SUITE` and
+  `_siprec_SUITE` against rtpengine in docker,
+  `apps/chappe_rtpengine/interop/`)
