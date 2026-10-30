@@ -118,6 +118,31 @@ tracker; the milestone history is in `docs/plan.md`.
   `location_flow/1` returns it when the Contact is not that address, the
   registrar's keepalive OPTIONS go there, and a B2BUA caller with such a
   Contact gets its dialog's requests at its source (RFC 3581).
+- B2BUA forking and leg control: a `{parallel, [Uri]}` target rings every
+  device at once under one To-tag toward A (first 2xx wins, the rest are
+  CANCELled, a late 2xx is ACKed and BYEd, the best final follows RFC 3261
+  16.7, Timer C covers the fork, losing branches are pruned in rtpengine).
+  `pass_failure => false` hands every failure back to the app (Timer C,
+  transport, a target that cannot be called) without answering A, so the app
+  can hunt. `chappe_sip_b2b:hangup/2` ends both legs with a Reason, and
+  `chappe_sip_uac:abandon/2` puts headers on its CANCEL. `requests =>
+  [refer, info, message, notify, options]` hands those in-dialog requests to
+  the owner (`{chappe_sip_b2b, Ref, {request, Leg, Method, Req, Res}}`), and
+  `relay_info => true` forwards INFO to the other leg.
+  `chappe_sip_b2b:replace_b/3` moves an anchored call to a new B (a URI or an
+  existing dialog, taken over with `chappe_sip_dialog:set_owner/2`) without a
+  re-INVITE to A, and cancels it if the call ends while it rings.
+- Outbound registration: `chappe_sip:register_client/2` keeps an AOR
+  registered with a registrar or carrier (digest, refresh before expiry with
+  the cached challenge, 423 handling, backoff honouring Retry-After,
+  unregister on stop), with `register_status/1` and `register_subscribe/1`;
+  registrations also load from the `registrations` setting.
+- `chappe_sip_guard`: a middleware that refuses requests by User-Agent, by
+  source network or by rate per source, with 403, 503 or `drop`; a dropped
+  source is discarded in the engine before a transaction exists.
+- Metrics: request, response and guard counters, plus dialog, binding,
+  registration and peer gauges, exported through `instrument`;
+  `chappe_sip_metrics:handler/0` serves them for Prometheus.
 - `chappe_sip:create_b2bua/4`: bridge an incoming INVITE to a new one, with
   header proxy rules both ways, CANCEL relay, failure passthrough, and
   provisionals relayed with their body (early media) and 100rel on each leg,
