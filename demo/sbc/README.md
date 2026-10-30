@@ -8,7 +8,9 @@ each other with OPTIONS. Use it to see the SBC features work end to end
 before you build your own.
 
 It also fronts a pool of two FreeSWITCH nodes: `1000` echoes, `1001` plays
-a tone and `1002` joins a conference.
+a tone and `1002` joins a conference. `2000` is an IVR built on chappe_mrf:
+a menu that calls bob, echoes, or puts you in a conference on chappe_mix or
+on FreeSWITCH, and records a message.
 
 The node runs in the foreground of `make demo` on your machine; rtpengine,
 Kamailio and the FreeSWITCH nodes fs1 and fs2 run in docker
@@ -41,7 +43,17 @@ To listen on another address (to call from your phone on the LAN), set
 DEMO_IP=192.168.1.10 make demo
 ```
 
-`DEMO_SIP_PORT`, `DEMO_WS_PORT` and `DEMO_HTTP_PORT` move the other ports.
+`DEMO_SIP_PORT`, `DEMO_WS_PORT` and `DEMO_HTTP_PORT` move the node's
+ports, and `DEMO_MRF_PORT` the IVR's event socket listener (18084). If
+another SIP app already holds 5060 on your machine, the node fails with
+`nta_agent_create failed`; move it:
+
+```sh
+DEMO_SIP_PORT=5080 make demo
+```
+
+The containers keep their ports (rtpengine 22223 and 31000-31100/udp,
+Kamailio 15070/udp, fs1 and fs2 15081, 15082/udp and 18031, 18032/tcp).
 Stop the node with Ctrl-C, then the containers with `make demo-down`.
 
 ## Register two phones
@@ -119,6 +131,55 @@ demo_sbc:drain(fs2).
 demo_sbc:resume(fs2).
 ```
 
+## Call the IVR
+
+Dial `2000` from any phone. chappe_mrf bridges the call, anchored in
+rtpengine, to a FreeSWITCH node; the node's `mrf` extension hands the
+channel back to the demo over its event socket, and the demo plays the menu
+and waits for a digit:
+
+| digit | what happens |
+|-------|--------------|
+| 1 | bob's phone rings; once he answers, the IVR's channel goes and you talk to bob |
+| 2 | you move to a new FreeSWITCH endpoint that echoes you |
+| 3 | you join `demo-native`, a conference on chappe_mix behind rtpengine |
+| 4 | you enter the PIN `1234` and join `demo-fs`, a mod_conference room |
+| 9 | you record a message after the prompt; it plays back, then the menu again |
+
+The prompts are spoken by macOS `say` when it is there (a tone each
+otherwise), written to `_build/demo-media`, which is `/media` in the
+FreeSWITCH nodes. The log follows the call:
+
+```
+demo: call 5c1f...@... in the IVR on fs1
+demo: call 5c1f...@...: member 492ae7ba344e194ee9d5 of demo-native
+demo: call 5c1f...@... ended {done,a_bye}
+```
+
+Your phone never sees a re-INVITE: each move (to bob, to the echo, into a
+conference) swaps the leg behind rtpengine.
+
+Call `2000` from two or three phones and press 3 (or 4, then `1234`) on
+each: you hear each other. From `make demo-shell`:
+
+```erlang
+demo_sbc:confs().
+%% [{<<"demo-native">>, native, 2}]
+demo_sbc:members(<<"demo-native">>).
+%% [#{id => <<"492ae7...">>, name => <<"5c1f...">>, mute => false,
+%%    deaf => false, moderator => false, talking => true}, ...]
+demo_sbc:kick(<<"demo-native">>, <<"492ae7...">>).
+%% ok, and that phone gets a BYE
+```
+
+When the last member leaves, `demo-native` stays: `confs()` shows it with
+0 members, and the next caller joins the same room. Stop fs1 while a call
+is in the IVR (`docker compose -f demo/sbc/docker-compose.yml stop fs1`):
+that call ends, and the next `2000` lands on fs2.
+
+A browser can call `2000` too. Option 1 calls bob wherever he registered
+(a browser bob gets WebRTC media from rtpengine).
+
 ## Put the call on hold
 
 Press hold on either phone. The log shows the event the B2BUA sends:
@@ -194,3 +255,8 @@ log shows the call, `{hold,a}` and `{unhold,a}`.
   a registered user, a number of the FreeSWITCH pool (`extensions` in
   `demo.config`), or one of `routes`.
 - `run-sipp.sh 1000` calls the pool with SIPp.
+- The IVR listens for the FreeSWITCH event sockets on 18084
+  (`DEMO_MRF_PORT`, `mrf_port` in `demo.config`); `make demo` passes the
+  same port to the containers.
+- Text to speech is out of scope: the menu is a wav file. See
+  `apps/chappe_mrf/docs` to build your own IVR.

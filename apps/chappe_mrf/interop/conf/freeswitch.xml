@@ -1,0 +1,153 @@
+<?xml version="1.0"?>
+<!-- Copyright 2026 Benoit Chesneau
+     SPDX-License-Identifier: Apache-2.0
+
+     TEST-ONLY, INSECURE. The FreeSWITCH nodes of the chappe_mrf lab (the
+     media servers chappe_mrf drives): the event socket on 8021 open to any
+     source, one unauthenticated SIP profile on FS_SIP_PORT that advertises
+     FS_EXT_IP (the chappe node runs on the host), and a dialplan that hands
+     `mrf' to the chappe_mrf listener at MRF_SOCKET (host:port) with the
+     dialplan socket application. wav playback and recording (mod_sndfile),
+     tones, mod_conference and mod_audio_fork are loaded; prompts and
+     recordings live in /media, shared with the host and rtpengine. The
+     chappe node is behind Docker's NAT as FreeSWITCH sees it, so its
+     requests go back where they came from (apply-nat-acl). Never ship an
+     allow-all ESL ACL or an unauthenticated profile. -->
+<document type="freeswitch/xml">
+  <X-PRE-PROCESS cmd="set" data="domain=chappe-mrf"/>
+  <X-PRE-PROCESS cmd="exec-set" data="sip_port=printenv FS_SIP_PORT"/>
+  <X-PRE-PROCESS cmd="exec-set" data="ext_ip=printenv FS_EXT_IP"/>
+  <X-PRE-PROCESS cmd="exec-set" data="mrf_socket=printenv MRF_SOCKET"/>
+
+  <section name="configuration" description="Various Configuration">
+    <configuration name="switch.conf" description="Core Configuration">
+      <settings>
+        <param name="colorize-console" value="false"/>
+        <param name="loglevel" value="notice"/>
+        <param name="max-sessions" value="200"/>
+        <param name="sessions-per-second" value="50"/>
+        <param name="event-heartbeat-interval" value="1"/>
+        <param name="rtp-start-port" value="20000"/>
+        <param name="rtp-end-port" value="20199"/>
+        <param name="dump-cores" value="no"/>
+      </settings>
+    </configuration>
+
+    <configuration name="modules.conf" description="Modules">
+      <modules>
+        <load module="mod_console"/>
+        <load module="mod_event_socket"/>
+        <load module="mod_sofia"/>
+        <load module="mod_commands"/>
+        <load module="mod_conference"/>
+        <load module="mod_dptools"/>
+        <load module="mod_dialplan_xml"/>
+        <load module="mod_tone_stream"/>
+        <load module="mod_sndfile"/>
+        <load module="mod_audio_fork"/>
+      </modules>
+    </configuration>
+
+    <configuration name="console.conf" description="Console Logger">
+      <mappings>
+        <map name="all" value="console,debug,info,notice,warning,err,crit,alert"/>
+      </mappings>
+      <settings>
+        <param name="colorize" value="false"/>
+        <param name="loglevel" value="notice"/>
+      </settings>
+    </configuration>
+
+    <!-- The published port is seen from loopback on Docker Desktop and from
+         the bridge gateway on Linux; chappe_any admits both. -->
+    <configuration name="acl.conf" description="Network Lists">
+      <network-lists>
+        <list name="chappe_any" default="deny">
+          <node type="allow" cidr="0.0.0.0/0"/>
+        </list>
+        <!-- a contact in these networks that is not where the request came
+             from is behind NAT: the chappe node advertises 127.0.0.1, and
+             its requests reach FreeSWITCH through Docker's NAT, so the
+             BYE of a FreeSWITCH hangup goes back where the INVITE came
+             from -->
+        <list name="chappe_nat" default="deny">
+          <node type="allow" cidr="127.0.0.0/8"/>
+          <node type="allow" cidr="10.0.0.0/8"/>
+          <node type="allow" cidr="172.16.0.0/12"/>
+          <node type="allow" cidr="192.168.0.0/16"/>
+        </list>
+      </network-lists>
+    </configuration>
+
+    <configuration name="event_socket.conf" description="Socket Client">
+      <settings>
+        <param name="nat-map" value="false"/>
+        <param name="listen-ip" value="0.0.0.0"/>
+        <param name="listen-port" value="8021"/>
+        <param name="password" value="ClueCon"/>
+        <param name="apply-inbound-acl" value="chappe_any"/>
+      </settings>
+    </configuration>
+
+    <configuration name="sofia.conf" description="sofia Endpoint">
+      <global_settings>
+        <param name="log-level" value="0"/>
+      </global_settings>
+      <profiles>
+        <profile name="mrf">
+          <settings>
+            <param name="context" value="default"/>
+            <param name="dialplan" value="XML"/>
+            <param name="sip-ip" value="$${local_ip_v4}"/>
+            <param name="rtp-ip" value="$${local_ip_v4}"/>
+            <param name="sip-port" value="$${sip_port}"/>
+            <param name="ext-sip-ip" value="$${ext_ip}"/>
+            <!-- pace media on a clock: prompts play in real time and
+                 record reaches its time limit -->
+            <param name="rtp-timer-name" value="soft"/>
+            <param name="auth-calls" value="false"/>
+            <param name="inbound-codec-prefs" value="PCMU,PCMA"/>
+            <param name="outbound-codec-prefs" value="PCMU,PCMA"/>
+            <param name="dtmf-type" value="rfc2833"/>
+            <param name="apply-nat-acl" value="chappe_nat"/>
+            <param name="aggressive-nat-detection" value="true"/>
+            <param name="manage-presence" value="false"/>
+            <param name="tls" value="false"/>
+          </settings>
+        </profile>
+      </profiles>
+    </configuration>
+
+    <configuration name="conference.conf" description="Audio Conference">
+      <caller-controls>
+        <group name="none"/>
+      </caller-controls>
+      <profiles>
+        <profile name="default">
+          <param name="domain" value="$${domain}"/>
+          <param name="rate" value="8000"/>
+          <param name="interval" value="20"/>
+          <param name="energy-level" value="100"/>
+          <param name="caller-controls" value="none"/>
+        </profile>
+      </profiles>
+    </configuration>
+  </section>
+
+  <section name="dialplan" description="Regex/XML Dialplan">
+    <context name="default">
+      <!-- mrf: chappe_mrf takes the channel over its outbound socket
+           (connect_caller/3, create_endpoint/1) -->
+      <extension name="mrf">
+        <condition field="destination_number" expression="^mrf$">
+          <action application="socket" data="$${mrf_socket} async full"/>
+        </condition>
+      </extension>
+      <extension name="reject">
+        <condition field="destination_number" expression="^.*$">
+          <action application="respond" data="404"/>
+        </condition>
+      </extension>
+    </context>
+  </section>
+</document>

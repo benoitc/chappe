@@ -23,6 +23,14 @@
 %%   demo_sbc:nodes()        the FreeSWITCH nodes, their state and load
 %%   demo_sbc:drain(fs1)     stop sending calls to a node (resume/1 undoes)
 %%
+%% 2000 is an IVR on chappe_mrf: the caller lands on a FreeSWITCH endpoint
+%% that plays a menu and collects a digit: 1 calls bob, 2 is an echo
+%% endpoint, 3 joins a conference on chappe_mix (native), 4 one on
+%% FreeSWITCH (PIN 1234), 9 records a message and plays it back.
+%%   demo_sbc:confs()          the conferences and their member count
+%%   demo_sbc:members(Name)    a conference's members
+%%   demo_sbc:kick(Name, Id)   drop a member
+%%
 %% route/1 maps a dialled user to where the call goes. It is the one place
 %% to add targets: a FreeSWITCH pool, for one, is a {peer_group, G} there.
 -module(demo_sbc).
@@ -30,6 +38,7 @@
 -export([start/1]).
 -export([calls/0, anchor/1, direct/1, peers/0, nodes/0, drain/1, resume/1]).
 -export([route/1]).
+-export([confs/0, members/1, kick/2]).
 
 -define(CALLS, demo_sbc_calls).
 %% call id => {FreeSWITCH node, channel uuid}
@@ -45,14 +54,24 @@ start(File) ->
     ok = application:load(chappe_esl),
     ok = application:set_env(chappe_esl, nodes, maps:get(fs_nodes, Cfg, [])),
     {ok, _} = application:ensure_all_started(chappe_esl),
+    {ok, _} = application:ensure_all_started(chappe_mrf),
     Keeper = keeper(),
     Ip = env("DEMO_IP", maps:get(ip, Cfg)),
     SipPort = env("DEMO_SIP_PORT", maps:get(sip_port, Cfg)),
     ok = chappe_sip:start(#{
         contact => iolist_to_binary(["sip:", Ip, ":", SipPort]),
         ws => #{port => list_to_integer(env("DEMO_WS_PORT", maps:get(ws_port, Cfg)))},
-        media => #{rtpengine => #{nodes => [maps:get(rtpengine, Cfg)]}}
+        media => #{
+            rtpengine => #{nodes => [maps:get(rtpengine, Cfg)]},
+            %% conference rooms on this host; rtpengine reaches them at
+            %% DEMO_MEDIA_IP (make demo finds it)
+            mix => #{ip => {0, 0, 0, 0}, advertise => env("DEMO_MEDIA_IP", "127.0.0.1")}
+        }
     }),
+    ok = chappe_mrf:start(#{
+        esl_port => list_to_integer(env("DEMO_MRF_PORT", maps:get(mrf_port, Cfg, 18084)))
+    }),
+    ok = prompts(env("DEMO_MEDIA_DIR", "_build/demo-media")),
     ok = chappe_sip:peer_subscribe(Keeper),
     _ = [chappe_sip:peer_add(Name, Opts) || {Name, Opts} <- maps:get(peers, Cfg, [])],
     Users = maps:get(users, Cfg),
@@ -178,7 +197,10 @@ extra_route(User, Cfg) ->
 invite(Keeper, Req, Res) ->
     CallId = chappe_sip_req:call_id(Req),
     Called = user(chappe_sip_req:uri(Req)),
-    case route(Called) of
+    Ivr = maps:get(ivr, persistent_term:get({?MODULE, cfg}), <<"2000">>),
+    case Called =:= Ivr orelse route(Called) of
+        true ->
+            ivr(Req, Res);
         {ok, Target, Opts0} ->
             {BSide, Opts1} = take(b_side, Opts0),
             Opts = Opts1#{
@@ -244,6 +266,170 @@ user(Value) ->
     case chappe_sip_uri:parse(Uri) of
         {ok, #{user := User}} -> User;
         _ -> undefined
+    end.
+
+%% ---- the 2000 IVR ----
+
+%% rtpengine's interfaces: FreeSWITCH is on the docker network, phones and
+%% the conference mixer on the host
+to_fs() ->
+    #{a => #{direction => [docker, host]}, b => #{direction => [host, docker]}}.
+
+to_host(BSide) ->
+    Webrtc =
+        case BSide of
+            ws -> #{ice => force, transport_protocol => <<"UDP/TLS/RTP/SAVPF">>,
+                    rtcp_mux => [offer, require]};
+            _ -> #{}
+        end,
+    #{b => Webrtc#{direction => [host, host]}}.
+
+prompt(Name) ->
+    <<"/media/", (atom_to_binary(Name))/binary, ".wav">>.
+
+ivr(Req, Res) ->
+    CallId = chappe_sip_req:call_id(Req),
+    case chappe_mrf:connect_caller(Req, Res, #{anchor_params => to_fs()}) of
+        {ok, Ep, B2b} ->
+            {ok, Node} = chappe_mrf:node(Ep),
+            log("call ~s in the IVR on ~p", [CallId, Node]),
+            menu(Ep, B2b, CallId, 3);
+        {error, Why} ->
+            log("IVR call ~s failed: ~p", [CallId, Why])
+    end.
+
+menu(_Ep, B2b, CallId, 0) ->
+    log("call ~s: no choice, bye", [CallId]),
+    chappe_sip_b2b:hangup(B2b, #{});
+menu(Ep, B2b, CallId, Tries) ->
+    case chappe_mrf:play_collect(Ep, #{file => prompt(menu), max => 1, timeout => 8000}) of
+        {ok, <<"1">>} -> to_bob(Ep, B2b, CallId);
+        {ok, <<"2">>} -> echo(B2b, CallId);
+        {ok, <<"3">>} -> native_conf(B2b, CallId);
+        {ok, <<"4">>} -> fs_conf(B2b, CallId);
+        {ok, <<"9">>} -> record(Ep, CallId), menu(Ep, B2b, CallId, 3);
+        {ok, _} -> menu(Ep, B2b, CallId, Tries - 1);
+        {error, Why} -> log("call ~s left the IVR: ~p", [CallId, Why])
+    end.
+
+%% 1: bob takes the call; the IVR's channel goes, the caller sees no
+%% re-INVITE
+to_bob(Ep, B2b, CallId) ->
+    case route(<<"bob">>) of
+        {ok, Uri, Opts} ->
+            Side = maps:get(b_side, Opts, undefined),
+            BOpts = (maps:with([flow], Opts))#{anchor_params => to_host(Side)},
+            case chappe_mrf:bridge(B2b, Uri, BOpts) of
+                ok ->
+                    log("call ~s: bridged to bob", [CallId]),
+                    wait_end(B2b, CallId);
+                {error, Why} ->
+                    log("call ~s: bob did not answer: ~p", [CallId, Why]),
+                    _ = chappe_mrf:play(Ep, prompt(sorry)),
+                    menu(Ep, B2b, CallId, 3)
+            end;
+        {error, _} ->
+            _ = chappe_mrf:play(Ep, prompt(sorry)),
+            menu(Ep, B2b, CallId, 3)
+    end.
+
+%% 2: a new endpoint that echoes; the caller moves onto it
+echo(B2b, CallId) ->
+    {ok, Echo} = chappe_mrf:create_endpoint(#{}),
+    ok = chappe_mrf:bridge(B2b, Echo, #{anchor_params => to_fs()}),
+    log("call ~s: on an echo endpoint", [CallId]),
+    _ = spawn(fun() -> chappe_mrf:execute(Echo, <<"echo">>, <<>>) end),
+    wait_end(B2b, CallId).
+
+%% 3: the room on chappe_mix (it outlives every caller)
+native_conf(B2b, CallId) ->
+    {ok, Conf} = chappe_mrf:conference(<<"demo-native">>, #{anchor_params => to_host(undefined)}),
+    {ok, Member} = chappe_mrf_conf:join(Conf, B2b, #{name => CallId}),
+    log("call ~s: member ~s of demo-native", [CallId, Member]),
+    wait_end(B2b, CallId).
+
+%% 4: the room on FreeSWITCH, PIN 1234
+fs_conf(B2b, CallId) ->
+    {ok, Conf} = chappe_mrf:conference(<<"demo-fs">>, #{
+        backend => fs, bridge => #{anchor_params => to_fs()}
+    }),
+    Opts = #{pin => <<"1234">>, pin_prompt => prompt(pin), name => CallId},
+    case chappe_mrf_conf:join(Conf, B2b, Opts) of
+        {ok, Member} ->
+            log("call ~s: member ~s of demo-fs", [CallId, Member]),
+            wait_end(B2b, CallId);
+        {error, Why} ->
+            log("call ~s: not in demo-fs: ~p", [CallId, Why]),
+            chappe_sip_b2b:hangup(B2b, #{})
+    end.
+
+%% 9: record up to 10 s (or until silence), then play it back
+record(Ep, CallId) ->
+    Id = binary:encode_hex(crypto:hash(md5, CallId), lowercase),
+    File = <<"/media/msg-", Id/binary, ".wav">>,
+    _ = chappe_mrf:play(Ep, prompt(record)),
+    _ = chappe_mrf:record(Ep, File, #{max_secs => 10, silence_thresh => 200, silence_hits => 3}),
+    log("call ~s: recorded ~s", [CallId, File]),
+    _ = chappe_mrf:play(Ep, File).
+
+%% the call runs in its own process; this one waits for its end
+wait_end({_, Ref}, CallId) ->
+    receive
+        {chappe_sip_b2b, Ref, {done, Why}} -> log("call ~s ended ~p", [CallId, Why])
+    end.
+
+%% The IVR's prompts, in /media of the FreeSWITCH nodes: spoken by macOS
+%% `say' when it is there, else a tone each.
+prompts(Dir) ->
+    ok = filelib:ensure_path(Dir),
+    Texts = [
+        {menu, 440, "Press 1 for bob, 2 for an echo, 3 for the chappe conference, "
+                    "4 for the FreeSWITCH conference, or 9 to record a message."},
+        {pin, 520, "Enter the conference PIN."},
+        {record, 700, "Record your message after the beep. Stop talking to hear it back."},
+        {sorry, 300, "Bob is not available."}
+    ],
+    lists:foreach(fun({Name, Freq, Text}) -> prompt_file(Dir, Name, Freq, Text) end, Texts).
+
+prompt_file(Dir, Name, Freq, Text) ->
+    Path = filename:join(Dir, atom_to_list(Name) ++ ".wav"),
+    _ =
+        case os:find_executable("say") of
+            false ->
+                tone_wav(Path, Freq);
+            Say ->
+                _ = os:cmd(Say ++ " -o '" ++ Path ++ "' --data-format=LEI16@8000 '" ++ Text ++ "'"),
+                filelib:is_regular(Path) orelse tone_wav(Path, Freq)
+        end,
+    _ = file:change_mode(Path, 8#644),
+    ok.
+
+tone_wav(Path, Freq) ->
+    Data = <<<<(round(8000 * math:sin(2 * math:pi() * Freq * I / 8000))):16/little-signed>>
+             || I <- lists:seq(0, 7999)>>,
+    Size = byte_size(Data),
+    file:write_file(Path, <<"RIFF", (36 + Size):32/little, "WAVE", "fmt ", 16:32/little,
+                            1:16/little, 1:16/little, 8000:32/little, 16000:32/little,
+                            2:16/little, 16:16/little, "data", Size:32/little, Data/binary>>).
+
+%% The conferences running: name, backend, member count.
+-spec confs() -> [{binary(), atom(), non_neg_integer()}].
+confs() ->
+    [{Name, maps:get(backend, I), maps:get(members, I)}
+     || {Name, C} <- chappe_mrf:conferences(), I <- [chappe_mrf_conf:info(C)], is_map(I)].
+
+-spec members(binary() | string()) -> [map()] | {error, term()}.
+members(Name) ->
+    with_conf(Name, fun chappe_mrf_conf:members/1).
+
+-spec kick(binary() | string(), binary() | string()) -> ok | {error, term()}.
+kick(Name, Member) ->
+    with_conf(Name, fun(C) -> chappe_mrf_conf:kick(C, iolist_to_binary(Member)) end).
+
+with_conf(Name, Fun) ->
+    case lists:keyfind(iolist_to_binary(Name), 1, chappe_mrf:conferences()) of
+        {_, C} -> Fun(C);
+        false -> {error, no_conference}
     end.
 
 %% ---- the shell ----

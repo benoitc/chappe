@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- New: `chappe_mrf`, a media resource function in the drachtio-fsmrf style.
+  A caller can be answered by a FreeSWITCH endpoint you drive from Erlang
+  (play a menu, collect digits, record, stream the audio), moved to a phone
+  or another endpoint without noticing, and put in a conference that runs
+  on chappe_mix or on FreeSWITCH, with mute, kick, lock, PIN and talker
+  events. The channel is hung up when the process that owns it dies.
+- B2BUA: a call can run in a process of its own, so the process that set it
+  up can drive a media server meanwhile.
+- B2BUA: moving a call to a new callee now works with a real rtpengine:
+  before, the caller stopped hearing the new callee (rtpengine had moved
+  the caller to ports it never learned), and the new callee could be sent
+  to ports rtpengine was not listening on. The new callee can also sit on
+  another network than the old one.
+- Conferences on chappe_mix can now outlive their first caller: a room
+  owned by a conference process stays up between callers.
+- Demo: dial 2000 for an IVR that calls bob, echoes you, puts you in a
+  conference (on chappe_mix, or on FreeSWITCH with a PIN) or records a
+  message and plays it back. FreeSWITCH hang-ups now reach the caller in the
+  demo.
+- CI: an `mrf-interop` job runs chappe_mrf against rtpengine and two real
+  FreeSWITCH nodes, including a node stopped mid-call.
 - B2BUA: a call can ring all of a user's devices at once; the first to answer
   takes the call and the others stop ringing.
 - B2BUA: an app can now take over every failure itself, including a callee
