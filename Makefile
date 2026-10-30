@@ -6,7 +6,7 @@
 .PHONY: all compile test test-static check eunit ct lint xref dialyzer \
         fmt fmt-check asan interop interop-mix interop-ref bench-ref bench-pass \
         interop-conformance interop-esl demo-esl interop-sbc interop-mrf compliance \
-        cover clean \
+        cover docs clean \
         demo demo-shell demo-down
 
 all: compile
@@ -150,6 +150,25 @@ cover:
 	rebar3 eunit --cover
 	rebar3 ct --cover
 	rebar3 cover --verbose --min_coverage=$(MIN_COVERAGE)
+
+# ex_doc HTML for each app that configures it (an `{ex_doc, ...}' entry in
+# its rebar.config), written to apps/<app>/doc; apps without one are
+# skipped. Each app is built on its own from its directory, as it is
+# published, because its ex_doc paths are relative to it; the C engine is
+# not needed for docs.
+docs:
+	@failed=; for dir in apps/*/; do \
+	    app=$$(basename $$dir); \
+	    if grep -q '^{ex_doc,' $$dir/rebar.config 2>/dev/null; then \
+	        echo "$$app:"; \
+	        (cd $$dir && SKIP_ENGINE_BUILD=1 \
+	            REBAR_BASE_DIR=$(CURDIR)/_build/docs/$$app rebar3 ex_doc) \
+	            || failed="$$failed $$app"; \
+	    else \
+	        echo "$$app: no ex_doc config, skipped"; \
+	    fi; \
+	done; \
+	if [ -n "$$failed" ]; then echo "docs failed for:$$failed"; exit 1; fi
 
 clean:
 	rebar3 clean
