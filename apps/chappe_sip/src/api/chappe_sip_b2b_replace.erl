@@ -7,8 +7,9 @@
 %% from A's tag, with A's SDP), so A keeps the addresses it sends to and
 %% sees no re-INVITE. call/4 then brings the new B in, off the relay
 %% loop: a fresh INVITE to a URI, or a re-INVITE of a dialog the app made.
-%% On its 2xx, swap/3 gives rtpengine the new B's answer under the new
-%% B's To-tag and moves the relay onto the new dialog; the old B gets a
+%% On its 2xx, swap/3 gives rtpengine the new B's answer under leg B's
+%% tag (rtpengine's own name for the leg, which keeps its ports) and
+%% moves the relay onto the new dialog; the old B gets a
 %% BYE. On a failure the relay hands rtpengine the old B's SDP back.
 -module(chappe_sip_b2b_replace).
 
@@ -104,8 +105,10 @@ abort(Pid, Ref, {Caller, Tag}) ->
 %% answer (the new B is then torn down).
 -spec swap(chappe_sip_dialog:dialog(), binary(), map()) ->
     {ok, map()} | {error, term()}.
-swap(NewB, Answer, #{media := M0, b := OldB, refs := {RefA, RefB}} = S) ->
-    M = chappe_sip_b2b_media:set_tag(b, chappe_sip_b2b:remote_tag(NewB), M0),
+swap(NewB, Answer, #{media := M, b := OldB, refs := {RefA, RefB}} = S) ->
+    %% rtpengine keeps leg B under the tag it has: the offer just made
+    %% opened B's media there, and a new to-tag would be a new branch with
+    %% other ports than the ones the new B was given
     case chappe_sip_b2b_media:answer(b, Answer, M) of
         {ok, _ForA, M1} ->
             erlang:demonitor(RefB, [flush]),

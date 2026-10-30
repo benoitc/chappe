@@ -7,14 +7,18 @@
      the event socket on 8021 open to any source, one unauthenticated SIP
      profile on FS_SIP_PORT that advertises FS_EXT_IP (the demo node, on the
      host, reaches it there), and a dialplan with 1000 (echo), 1001 (a
-     tone) and 1002 (a conference). The demo node is behind Docker's NAT
-     as FreeSWITCH sees it, so its requests go back where they came from
-     (apply-nat-acl). Never ship an allow-all ESL ACL or an unauthenticated
+     tone), 1002 (a conference) and mrf (handed to the demo node's
+     chappe_mrf listener at MRF_SOCKET, for the 2000 IVR). Prompts and
+     recordings live in /media, shared with the host. The demo node is
+     behind Docker's NAT as FreeSWITCH sees it (it advertises 127.0.0.1),
+     so its requests go back where they came from (apply-nat-acl,
+     aggressive-nat-detection). Never ship an allow-all ESL ACL or an unauthenticated
      profile. -->
 <document type="freeswitch/xml">
   <X-PRE-PROCESS cmd="set" data="domain=chappe-demo"/>
   <X-PRE-PROCESS cmd="exec-set" data="sip_port=printenv FS_SIP_PORT"/>
   <X-PRE-PROCESS cmd="exec-set" data="ext_ip=printenv FS_EXT_IP"/>
+  <X-PRE-PROCESS cmd="exec-set" data="mrf_socket=printenv MRF_SOCKET"/>
 
   <section name="configuration" description="Various Configuration">
     <configuration name="switch.conf" description="Core Configuration">
@@ -40,6 +44,8 @@
         <load module="mod_dptools"/>
         <load module="mod_dialplan_xml"/>
         <load module="mod_tone_stream"/>
+        <load module="mod_sndfile"/>
+        <load module="mod_audio_fork"/>
       </modules>
     </configuration>
 
@@ -59,6 +65,12 @@
       <network-lists>
         <list name="chappe_any" default="deny">
           <node type="allow" cidr="0.0.0.0/0"/>
+        </list>
+        <list name="chappe_nat" default="deny">
+          <node type="allow" cidr="127.0.0.0/8"/>
+          <node type="allow" cidr="10.0.0.0/8"/>
+          <node type="allow" cidr="172.16.0.0/12"/>
+          <node type="allow" cidr="192.168.0.0/16"/>
         </list>
       </network-lists>
     </configuration>
@@ -89,7 +101,10 @@
             <param name="auth-calls" value="false"/>
             <param name="inbound-codec-prefs" value="PCMU,PCMA"/>
             <param name="outbound-codec-prefs" value="PCMU,PCMA"/>
-            <param name="apply-nat-acl" value="rfc1918.auto"/>
+            <param name="rtp-timer-name" value="soft"/>
+            <param name="dtmf-type" value="rfc2833"/>
+            <param name="apply-nat-acl" value="chappe_nat"/>
+            <param name="aggressive-nat-detection" value="true"/>
             <param name="manage-presence" value="false"/>
             <param name="tls" value="false"/>
           </settings>
@@ -130,6 +145,11 @@
         <condition field="destination_number" expression="^1002$">
           <action application="answer"/>
           <action application="conference" data="demo@default"/>
+        </condition>
+      </extension>
+      <extension name="mrf">
+        <condition field="destination_number" expression="^mrf$">
+          <action application="socket" data="$${mrf_socket} async full"/>
         </condition>
       </extension>
       <extension name="reject">

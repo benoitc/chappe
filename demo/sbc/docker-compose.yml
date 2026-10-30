@@ -13,9 +13,12 @@
 # node at host.docker.internal.
 #
 # fs1 and fs2 are the FreeSWITCH pool (1000 echo, 1001 tone, 1002
-# conference): SIP on 15081 and 15082/udp, advertised as DEMO_IP, ESL on
-# 127.0.0.1:18031 and 18032. Their media goes to rtpengine inside this
-# compose network: rtpengine has a `host' interface (advertised as
+# conference, and `mrf', which the 2000 IVR uses: the dialplan hands it to
+# the node's chappe_mrf listener at host.docker.internal:DEMO_MRF_PORT,
+# default 18084): SIP on 15081 and 15082/udp, advertised as DEMO_IP, ESL on
+# 127.0.0.1:18031 and 18032. _build/demo-media is /media in both and in
+# rtpengine: the IVR's prompts and recordings. Their media goes to
+# rtpengine inside this compose network: rtpengine has a `host' interface (advertised as
 # DEMO_IP, for the softphones) and a `docker' one (its own address, for
 # FreeSWITCH), and the demo picks the pair per call.
 name: chappe-demo
@@ -31,6 +34,9 @@ x-freeswitch: &freeswitch
   tty: true
   volumes:
     - ./freeswitch:/chappe/conf:ro
+    - ../../_build/demo-media:/media
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
   healthcheck:
     test: ["CMD", "/usr/local/freeswitch/bin/fs_cli", "-x", "sofia status"]
     interval: 2s
@@ -46,6 +52,8 @@ services:
     ports:
       - "22223:22223/udp"
       - "31000-31100:31000-31100/udp"
+    volumes:
+      - ../../_build/demo-media:/media
     command: >
       sh -c "IP=$$(grep -oE '^([0-9]{1,3}[.]){3}[0-9]{1,3}' /etc/hosts | tail -1)
       && rtpengine
@@ -72,6 +80,7 @@ services:
     environment:
       FS_SIP_PORT: "15081"
       FS_EXT_IP: "${DEMO_IP:-127.0.0.1}"
+      MRF_SOCKET: "host.docker.internal:${DEMO_MRF_PORT:-18084}"
     ports:
       - "15081:15081/udp"
       - "127.0.0.1:18031:8021"
@@ -82,6 +91,7 @@ services:
     environment:
       FS_SIP_PORT: "15082"
       FS_EXT_IP: "${DEMO_IP:-127.0.0.1}"
+      MRF_SOCKET: "host.docker.internal:${DEMO_MRF_PORT:-18084}"
     ports:
       - "15082:15082/udp"
       - "127.0.0.1:18032:8021"

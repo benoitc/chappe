@@ -157,7 +157,7 @@ done(#{pending := P, media := M}, Peer, Why, Tag) ->
     }),
     {done, Tag}.
 
-stop_pending(#{pid := Pid, ref := Ref, step := {replace, From}}) ->
+stop_pending(#{pid := Pid, ref := Ref, step := {replace, From, _}}) ->
     chappe_sip_b2b_replace:abort(Pid, Ref, From);
 stop_pending(#{pid := Pid}) ->
     exit(Pid, kill),
@@ -313,8 +313,8 @@ step({switch_answer, From, Old}, {ok, BAnswer}, #{media := M} = S) ->
     end;
 step({switch_answer, From, Old}, Error, S) ->
     switch_back(From, Old, Error, S);
-step({replace, From}, Result, S) ->
-    replaced(From, Result, S).
+step({replace, From, Params}, Result, S) ->
+    replaced(From, Params, Result, S).
 
 %% the switch failed after A's offer: B kept its session, and A gets its
 %% previous answer back in the ACK
@@ -402,7 +402,18 @@ replace_b(From, _Target, _Opts, #{pending := P} = S) when
 ->
     reply(From, {error, busy}),
     S;
-replace_b(From, Target, Opts, #{media := M, a := A} = S) ->
+replace_b(From, Target, Opts, #{media := M0, a := A} = S) ->
+    %% the new B may sit on another network than the old one (a media
+    %% server): its anchor_params replace the call's for each leg named.
+    %% A never hears of the new offer, so the answers toward A ask
+    %% rtpengine to keep A's ports (port latching): an answer to a
+    %% re-offer otherwise moves A to new local ports
+    Params = latched(maps:get(params, M0)),
+    M = M0#{
+        params := latched(
+            maps:merge(Params, maps:get(anchor_params, Opts, #{}))
+        )
+    },
     %% rtpengine's offer for A's side: A keeps the addresses it sends to,
     %% the new B gets the ones it should send to
     case chappe_sip_b2b_media:offer(a, remote_sdp(A), M) of
@@ -412,7 +423,7 @@ replace_b(From, Target, Opts, #{media := M, a := A} = S) ->
             ),
             Relay = self(),
             spawn_step(
-                {replace, From},
+                {replace, From, Params},
                 fun() ->
                     chappe_sip_b2b_replace:call(
                         Target, Sdp, Opts#{handled => Handled}, Relay
@@ -427,18 +438,31 @@ replace_b(From, Target, Opts, #{media := M, a := A} = S) ->
 
 %% the new B answered and carries the call, or the old B keeps it and
 %% rtpengine gets the old B's SDP back as the answer
-replaced(From, {ok, NewB, Answer}, S) ->
+replaced(From, Params, {ok, NewB, Answer}, S) ->
     case chappe_sip_b2b_replace:swap(NewB, Answer, S) of
         {ok, S1} ->
             reply(From, ok),
             S1;
         Error ->
             reply(From, Error),
-            restore(b, S)
+            restore(b, old_params(Params, S))
     end;
-replaced(From, Error, S) ->
+replaced(From, Params, Error, S) ->
     reply(From, failure(Error)),
-    restore(b, S).
+    restore(b, old_params(Params, S)).
+
+%% the parameters toward A (those of the answers to A's offers) latch
+latched(Params) ->
+    A = maps:get(a, Params, #{}),
+    Flags = maps:get(flags, A, []),
+    case lists:member(port_latching, Flags) of
+        true -> Params;
+        false -> Params#{a => A#{flags => [port_latching | Flags]}}
+    end.
+
+%% the old B keeps the call, and the anchor_params it had
+old_params(Params, #{media := M} = S) ->
+    S#{media := M#{params := Params}}.
 
 %% the call went direct: its rtpengine session is released
 switched(#{session := Old}, #{media := #{mode := direct} = M} = S) when

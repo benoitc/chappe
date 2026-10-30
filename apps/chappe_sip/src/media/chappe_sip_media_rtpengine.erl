@@ -31,6 +31,7 @@
     info/1
 ]).
 -export([anchor_offer/3, anchor_answer/3, anchor_release/1, anchor_pinned/1]).
+-export([set_owner/2]).
 
 -export_type([identity/0]).
 
@@ -145,6 +146,10 @@ stop(Pid) ->
 -spec info(pid()) -> map() | {error, term()}.
 info(Pid) ->
     chappe_rtpengine_session:info(Pid).
+
+-spec set_owner(pid(), pid()) -> ok | {error, term()}.
+set_owner(Pid, Owner) ->
+    chappe_rtpengine_session:set_owner(Pid, Owner).
 
 %% ---- stateless anchor (proxy media) ----
 %%

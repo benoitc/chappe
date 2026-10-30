@@ -1,0 +1,89 @@
+# Copyright 2026 Benoit Chesneau
+# SPDX-License-Identifier: Apache-2.0
+#
+# The chappe_mrf lab: rtpengine and two FreeSWITCH media servers. The
+# chappe node (the suite, or the demo) runs on the host. Test-only (see
+# conf/freeswitch.xml: allow-all ESL ACL, unauthenticated SIP profile).
+#
+# rtpengine: NG on ${MRF_NG_PORT:-17222}/udp, RTP on
+# ${MRF_RTP_MIN:-31200}-${MRF_RTP_MAX:-31299}/udp published 1:1. Its
+# `host' interface is advertised as 127.0.0.1 (callers and chappe_mix on
+# the host), its `docker' one as its own address (FreeSWITCH); the call
+# picks the pair with anchor_params.
+#
+# fs1 and fs2: SIP on ${MRF_FS1_SIP:-17081} and ${MRF_FS2_SIP:-17082}/udp,
+# ESL on 127.0.0.1:${MRF_FS1_ESL:-17031} and ${MRF_FS2_ESL:-17032}. Their
+# dialplan hands `mrf' to the chappe_mrf listener at
+# host.docker.internal:${MRF_SOCKET_PORT:-17084}.
+#
+# The ports stay below 32768, out of Linux's ephemeral range, so a CI
+# runner never hands one of them out first. On Linux host.docker.internal
+# is the host-gateway mapping (extra_hosts); the published UDP ports reach
+# the containers through docker's proxy, which relays replies back.
+#
+# ${MRF_MEDIA_DIR} is /media in all three: the prompts the suite writes,
+# the recordings FreeSWITCH makes, the files rtpengine plays.
+# Driven by apps/chappe_mrf/test/e2e.sh (make interop-mrf).
+
+x-freeswitch: &freeswitch
+  image: drachtio/drachtio-freeswitch-mrf:latest
+  # the image's entrypoint edits its stock tree; this config replaces
+  # that tree, so start FreeSWITCH directly
+  entrypoint: ["/usr/local/freeswitch/bin/freeswitch"]
+  command: ["-nonat", "-c", "-conf", "/chappe/conf",
+            "-log", "/tmp", "-db", "/tmp", "-run", "/tmp"]
+  stdin_open: true
+  tty: true
+  volumes:
+    - ./conf:/chappe/conf:ro
+    - ${MRF_MEDIA_DIR:-/tmp/chappe-mrf-media}:/media
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  healthcheck:
+    test: ["CMD", "/usr/local/freeswitch/bin/fs_cli", "-x", "sofia status"]
+    interval: 2s
+    timeout: 5s
+    retries: 30
+
+services:
+  rtpengine:
+    build: ../../chappe_rtpengine/interop
+    image: chappe-rtpengine-interop
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${MRF_NG_PORT:-17222}:${MRF_NG_PORT:-17222}/udp"
+      - "${MRF_RTP_MIN:-31200}-${MRF_RTP_MAX:-31299}:${MRF_RTP_MIN:-31200}-${MRF_RTP_MAX:-31299}/udp"
+    volumes:
+      - ${MRF_MEDIA_DIR:-/tmp/chappe-mrf-media}:/media
+    command: >
+      sh -c "IP=$$(grep -oE '^([0-9]{1,3}[.]){3}[0-9]{1,3}' /etc/hosts | tail -1)
+      && rtpengine
+      --interface=host/$$IP!127.0.0.1
+      --interface=docker/$$IP
+      --listen-ng=0.0.0.0:${MRF_NG_PORT:-17222}
+      --port-min=${MRF_RTP_MIN:-31200} --port-max=${MRF_RTP_MAX:-31299}
+      --delete-delay=0
+      --foreground --log-stderr"
+
+  fs1:
+    <<: *freeswitch
+    hostname: fs1
+    environment:
+      FS_SIP_PORT: "${MRF_FS1_SIP:-17081}"
+      FS_EXT_IP: "127.0.0.1"
+      MRF_SOCKET: "host.docker.internal:${MRF_SOCKET_PORT:-17084}"
+    ports:
+      - "${MRF_FS1_SIP:-17081}:${MRF_FS1_SIP:-17081}/udp"
+      - "127.0.0.1:${MRF_FS1_ESL:-17031}:8021"
+
+  fs2:
+    <<: *freeswitch
+    hostname: fs2
+    environment:
+      FS_SIP_PORT: "${MRF_FS2_SIP:-17082}"
+      FS_EXT_IP: "127.0.0.1"
+      MRF_SOCKET: "host.docker.internal:${MRF_SOCKET_PORT:-17084}"
+    ports:
+      - "${MRF_FS2_SIP:-17082}:${MRF_FS2_SIP:-17082}/udp"
+      - "127.0.0.1:${MRF_FS2_ESL:-17032}:8021"

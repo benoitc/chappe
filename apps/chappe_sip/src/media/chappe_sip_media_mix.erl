@@ -12,7 +12,9 @@
 %% Rooms are made on first join and found by name after that. A room is
 %% bound to an owner (the `owner' option of the join that created it,
 %% default the creating call's process) and to its legs: it stops when the
-%% owner exits or when its last leg leaves. Each leg is bound to the
+%% owner exits or when its last leg leaves. A room created with persist
+%% stays up with no leg at all, until its owner exits: a conference
+%% process that owns its room keeps it across callers. Each leg is bound to the
 %% process that started its media session: when that process exits, the
 %% leg leaves.
 %%
@@ -60,6 +62,8 @@
     conf :: pid(),
     conf_mon :: reference(),
     owner_mon :: reference(),
+    %% up until the owner exits, even with no leg
+    persist = false :: boolean(),
     legs = #{} :: #{reference() => chappe_mix:leg()}
 }).
 
@@ -74,6 +78,8 @@
     %% the call process, and whether it asked for talker events
     owner :: pid(),
     talk = false :: boolean(),
+    %% names the leg in its talker events, when set
+    talk_tag :: term(),
     %% the direction negotiated in SDP, before mute and deaf
     dir = sendrecv :: chappe_sip_media_mix_sdp:direction()
 }).
@@ -126,11 +132,14 @@ start(_Id, _Opts) ->
 %% Join the session to a room and return the SDP to send toward the call.
 %% Opts: room (required), sdp (the call's offer; answered when present,
 %% otherwise the mixer offers), owner (the room's owner if this join
-%% creates it), law (codec of an offer, ignored when answering), mute,
-%% name (SDES NAME the other legs see), direction (what the room may do
-%% with the leg, default sendrecv), talk_events (true: the calling
-%% process gets {chappe_sip_media, {talking, Room, true | false}} when its
-%% party starts or stops talking).
+%% creates it), persist (true: a room this join creates stays up with no
+%% leg, until its owner exits), law (codec of an offer, ignored when
+%% answering), mute, name (SDES NAME the other legs see), direction (what
+%% the room may do with the leg, default sendrecv), talk_events (true: the
+%% calling process gets {chappe_sip_media, {talking, Room, true | false}}
+%% when its party starts or stops talking), talk_tag (with talk_events:
+%% the event is {chappe_sip_media, {talking, Room, Tag, true | false}}, so
+%% one process holding several legs tells them apart).
 -spec conference(ref(), map(), map()) -> {ok, binary()} | {error, term()}.
 conference(_Ref, _Id, Opts) when not is_map_key(room, Opts) ->
     {error, {missing, room}};
@@ -224,7 +233,9 @@ handle_info(_Info, S) ->
 join(#{id := Id, owner := Owner}, #{room := Room} = Opts, S) ->
     case leg_plan(Opts, S) of
         {ok, Plan} ->
-            case ensure_room(Room, maps:get(owner, Opts, Owner), S) of
+            RoomOwner = maps:get(owner, Opts, Owner),
+            Persist = maps:get(persist, Opts, false),
+            case ensure_room(Room, RoomOwner, Persist, S) of
                 {ok, R, S1} -> add_leg(Id, Owner, Room, R, Plan, Opts, S1);
                 {error, _} = Err -> {reply, Err, S}
             end;
@@ -272,7 +283,7 @@ leg_plan(Opts, S) ->
         dir => maps:get(direction, Opts, sendrecv)
     }}.
 
-ensure_room(Room, Owner, #state{rooms = Rooms} = S) ->
+ensure_room(Room, Owner, Persist, #state{rooms = Rooms} = S) ->
     case maps:find(Room, Rooms) of
         {ok, R} ->
             {ok, R, S};
@@ -282,7 +293,8 @@ ensure_room(Room, Owner, #state{rooms = Rooms} = S) ->
                     R = #room{
                         conf = Conf,
                         conf_mon = monitor(process, Conf),
-                        owner_mon = monitor(process, Owner)
+                        owner_mon = monitor(process, Owner),
+                        persist = Persist
                     },
                     {ok, R, S#state{rooms = Rooms#{Room => R}}};
                 {error, _} = Err ->
@@ -324,6 +336,7 @@ add_leg(Id, Owner, Room, #room{conf = Conf} = R, Plan, Opts, S) ->
                 talk =
                     is_map_key(talk_events, Opts) andalso
                         maps:get(talk_events, Opts),
+                talk_tag = maps:get(talk_tag, Opts, undefined),
                 muted = maps:get(mute, Plan),
                 dir = maps:get(dir, Plan)
             },
@@ -384,7 +397,7 @@ drop_leg(Id, #state{legs = Legs} = S) ->
 
 maybe_close_room(Room, S) ->
     case maps:find(Room, S#state.rooms) of
-        {ok, #room{legs = Legs}} when map_size(Legs) =:= 0 ->
+        {ok, #room{legs = Legs, persist = false}} when map_size(Legs) =:= 0 ->
             close_room(Room, S);
         _ ->
             S
@@ -440,16 +453,18 @@ down(Mon, S) ->
 %% it asked.
 talking(Conf, Leg, Talking, S) ->
     [
-        Owner ! {chappe_sip_media, {talking, Room, Talking}}
+        Owner ! {chappe_sip_media, talk_event(Room, Tag, Talking)}
      || {Room, #room{conf = C}} <- maps:to_list(S#state.rooms),
         C =:= Conf,
-        #leg{room = R, leg = L, talk = true, owner = Owner} <- maps:values(
-            S#state.legs
-        ),
+        #leg{room = R, leg = L, talk = true, owner = Owner, talk_tag = Tag} <-
+            maps:values(S#state.legs),
         R =:= Room,
         L =:= Leg
     ],
     ok.
+
+talk_event(Room, undefined, Talking) -> {talking, Room, Talking};
+talk_event(Room, Tag, Talking) -> {talking, Room, Tag, Talking}.
 
 %% ---- leg operations ----
 

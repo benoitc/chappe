@@ -31,7 +31,8 @@
          conference_owner_death/1, conference_leg_owner_death/1,
          conference_sdp/1, conference_ptime/1, conference_dtmf/1,
          conference_rtcp_port/1, conference_directions/1,
-         conference_deaf_relate/1, conference_talking/1]).
+         conference_deaf_relate/1, conference_talking/1,
+         conference_persist/1, conference_talk_tag/1]).
 -export([conference_behind_rtpengine/1]).
 
 -define(LIVE_NODE, chappe_sip_media_live).
@@ -48,7 +49,8 @@ groups() ->
                 conference_owner_death, conference_leg_owner_death,
                 conference_sdp, conference_ptime, conference_dtmf,
                 conference_rtcp_port, conference_directions,
-                conference_deaf_relate, conference_talking]},
+                conference_deaf_relate, conference_talking,
+                conference_persist, conference_talk_tag]},
      {rtpengine_live, [], [conference_behind_rtpengine]}].
 
 init_per_suite(Config) ->
@@ -406,6 +408,51 @@ conference_owner_death(_Config) ->
     end,
     ?assertEqual({error, not_joined}, chappe_sip_media:info(SA)),
     ?assertEqual({error, not_joined}, chappe_sip_media:info(SB)).
+
+%% A room joined with persist outlives its legs: the last one leaving
+%% keeps it up, the next join finds the same conference, and the room
+%% stops only when its owner exits.
+conference_persist(_Config) ->
+    Room = room(),
+    Owner = spawn(fun() -> receive stop -> ok end end),
+    {ok, SA} = conf_session(),
+    {ok, _} = chappe_sip_media:conference(SA, Room, #{owner => Owner,
+                                                      persist => true}),
+    #{conf := Conf} = chappe_sip_media:info(SA),
+    MRef = monitor(process, Conf),
+    ok = chappe_sip_media:leave(SA),
+    receive {'DOWN', MRef, process, Conf, _} -> ct:fail(room_stopped)
+    after 300 -> ok
+    end,
+    {ok, SB} = conf_session(),
+    {ok, _} = chappe_sip_media:conference(SB, Room, #{}),
+    ?assertMatch(#{conf := Conf}, chappe_sip_media:info(SB)),
+    ok = chappe_sip_media:leave(SB),
+    exit(Owner, kill),
+    receive {'DOWN', MRef, process, Conf, _} -> ok
+    after 2000 -> ct:fail(room_not_stopped)
+    end.
+
+%% One process holding several legs tells their talker events apart by
+%% the tag each join gave.
+conference_talk_tag(_Config) ->
+    Room = room(),
+    {P, Port} = peer_start(ulaw),
+    {ok, S} = conf_session(),
+    {ok, Answer} = chappe_sip_media:conference(
+                     S, Room, #{sdp => peer_sdp(Port, ulaw, true),
+                                talk_events => true, talk_tag => member_1}),
+    peer_dst(P, audio_port(Answer)),
+    {Q, SQ} = joined_peer(Room),
+    peer_talk(Q, true),
+    peer_talk(P, true),
+    receive {chappe_sip_media, {talking, Room, member_1, true}} -> ok
+    after 2000 -> ct:fail(no_tagged_event)
+    end,
+    ok = chappe_sip_media:leave(S),
+    ok = chappe_sip_media:leave(SQ),
+    peer_stop(P),
+    peer_stop(Q).
 
 %% A call process going away takes its leg out of the room.
 conference_leg_owner_death(_Config) ->

@@ -131,7 +131,17 @@ tracker; the milestone history is in `docs/plan.md`.
   `relay_info => true` forwards INFO to the other leg.
   `chappe_sip_b2b:replace_b/3` moves an anchored call to a new B (a URI or an
   existing dialog, taken over with `chappe_sip_dialog:set_owner/2`) without a
-  re-INVITE to A, and cancels it if the call ends while it rings.
+  re-INVITE to A, and cancels it if the call ends while it rings. Its
+  `anchor_params` put the new B on another rtpengine interface (a media
+  server), and rtpengine keeps leg B's tag and A's ports across the swap.
+- `chappe_sip_b2b:relay_async/2` carries a call in a process of its own
+  (both dialogs and the rtpengine session move to it), so the process that
+  set the call up is free to drive a media server; the notify process gets
+  `{chappe_sip_b2b, Ref, {done, Why}}` at the end.
+- Conference rooms that outlive their callers: a chappe_mix room joined with
+  `persist => true` stays up with no leg until its owner exits, and
+  `talk_tag` names a leg in its talker events, so one process can own a room
+  and all its legs (chappe_mrf's native conferences).
 - Outbound registration: `chappe_sip:register_client/2` keeps an AOR
   registered with a registrar or carrier (digest, refresh before expiry with
   the cached challenge, 423 handling, backoff honouring Retry-After,

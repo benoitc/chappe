@@ -35,7 +35,9 @@
          requests_default_answers/1, relay_info_forwarded/1,
          replace_b_anchored/1, replace_b_failure_keeps_b/1,
          replace_b_not_anchored/1, fork_anchored_per_branch/1,
-         replace_b_aborted_when_call_ends/1, replace_b_dialog/1]).
+         replace_b_aborted_when_call_ends/1, replace_b_dialog/1,
+         replace_b_anchor_params/1, relay_async_outlives_handler/1,
+         replace_b_keeps_a_ports/1]).
 
 all() ->
     [reinvite_a_to_b, reinvite_b_to_a, update_relayed,
@@ -55,7 +57,9 @@ all() ->
      hangup_reason_both_legs, requests_surfaced, requests_default_answers,
      relay_info_forwarded, replace_b_anchored, replace_b_failure_keeps_b,
      replace_b_not_anchored, fork_anchored_per_branch,
-     replace_b_aborted_when_call_ends, replace_b_dialog].
+     replace_b_aborted_when_call_ends, replace_b_dialog,
+     replace_b_anchor_params, relay_async_outlives_handler,
+     replace_b_keeps_a_ports].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -1097,8 +1101,9 @@ relay_info_forwarded(_Config) ->
 %% ---- replace_b/3 ----
 
 %% An anchored call gets a new B: its INVITE carries rtpengine's offer for
-%% A's side, the old B gets a BYE, A sees no re-INVITE, and the call then
-%% runs with the new B (A's BYE reaches it).
+%% A's side, rtpengine takes its answer under leg B's tag, the old B gets
+%% a BYE, A sees no re-INVITE, and the call then runs with the new B (A's
+%% BYE reaches it).
 replace_b_anchored(_Config) ->
     rtpe(),
     {EP, CP} = setup(#{media => anchor, notify => self()}),
@@ -1127,7 +1132,8 @@ replace_b_anchored(_Config) ->
         ?UA:send(Sock, EP, B),
         tell({a_bye_final, ?UA:recv_any(Sock, 6000)})
     end),
-    #{b2b := {_, Ref} = B2b} = got(legs),
+    #{b2b := {_, Ref} = B2b, uac := OldB} = got(legs),
+    OldTag = chappe_sip_dialog:remote_tag(OldB),
     _ = drain(),
     NewUri = <<"sip:new@127.0.0.1:", (integer_to_binary(NP))/binary>>,
     ok = chappe_sip_b2b:replace_b(B2b, NewUri, #{}),
@@ -1137,11 +1143,113 @@ replace_b_anchored(_Config) ->
     ?assert(has(?UA:body(got(new_b_invite)), <<"a=rtpe-offer:">>)),
     _ = got(old_b_bye),
     Answers = [C || {rtpe_cmd, #{<<"command">> := <<"answer">>} = C} <- drain()],
-    ?assertMatch([#{<<"to-tag">> := <<"newtag">>}], Answers),
+    %% rtpengine keeps leg B under its first tag: a new to-tag would be a
+    %% new branch, with ports the new B was never given
+    ?assertMatch([#{<<"to-tag">> := OldTag}], Answers),
     caller_go(),
     ?assertEqual(200, ?UA:status(got(a_bye_final))),
     _ = got(new_b_bye),
     ok = ?UA:expect({relay_done, {done, a_bye}}).
+
+%% A new B on another network: the anchor_params of replace_b/3 go with
+%% rtpengine's offer for it, and the call keeps them afterwards.
+replace_b_anchor_params(_Config) ->
+    rtpe(),
+    {EP, CP} = setup(#{media => anchor,
+                       anchor_params => #{b => #{direction => [<<"host">>, <<"docker">>]}}}),
+    NP = ?UA:pick(),
+    callee(CP, fun(Sock, _D) ->
+        {B, S} = ?UA:recv_req(Sock, <<"BYE">>),
+        ?UA:send(Sock, S, ?UA:resp(B, 200, <<"OK">>, <<>>, [], <<>>))
+    end),
+    ?UA:peer(NP, fun(Sock) ->
+        {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
+        ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, <<"newtag">>,
+                                     [contact(Sock)], ?UA:sdp(<<"mixer">>))),
+        {_, _} = ?UA:recv_req(Sock, <<"ACK">>),
+        timer:sleep(infinity)
+    end),
+    caller(EP, #{}, fun(_Sock, _D) -> timer:sleep(infinity) end),
+    #{b2b := B2b} = got(legs),
+    _ = drain(),
+    NewUri = <<"sip:new@127.0.0.1:", (integer_to_binary(NP))/binary>>,
+    Host = #{direction => [<<"host">>, <<"host">>]},
+    ok = chappe_sip_b2b:replace_b(B2b, NewUri, #{anchor_params => #{b => Host}}),
+    [Offer] = [C || {rtpe_cmd, #{<<"command">> := <<"offer">>} = C} <- drain()],
+    ?assertEqual([<<"host">>, <<"host">>], maps:get(<<"direction">>, Offer)).
+
+%% A never sees the offer of replace_b/3: the answer asks rtpengine to
+%% keep A's ports (an answer to a re-offer moves them otherwise), while
+%% the offer lets the new B's side move.
+replace_b_keeps_a_ports(_Config) ->
+    rtpe(),
+    {EP, CP} = setup(#{media => anchor}),
+    NP = ?UA:pick(),
+    callee(CP, fun(Sock, _D) ->
+        {B, S} = ?UA:recv_req(Sock, <<"BYE">>),
+        ?UA:send(Sock, S, ?UA:resp(B, 200, <<"OK">>, <<>>, [], <<>>))
+    end),
+    ?UA:peer(NP, fun(Sock) ->
+        {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
+        ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, <<"newtag">>,
+                                     [contact(Sock)], ?UA:sdp(<<"new">>))),
+        {_, _} = ?UA:recv_req(Sock, <<"ACK">>),
+        timer:sleep(infinity)
+    end),
+    caller(EP, #{}, fun(_Sock, _D) -> timer:sleep(infinity) end),
+    #{b2b := B2b} = got(legs),
+    _ = drain(),
+    NewUri = <<"sip:new@127.0.0.1:", (integer_to_binary(NP))/binary>>,
+    ok = chappe_sip_b2b:replace_b(B2b, NewUri, #{}),
+    Cmds = [C || {rtpe_cmd, C} <- drain(), maps:is_key(<<"sdp">>, C)],
+    ?assertMatch([#{<<"command">> := <<"offer">>}, #{<<"command">> := <<"answer">>}], Cmds),
+    [Offer, Answer] = Cmds,
+    ?assertNot(lists:member(<<"port-latching">>, maps:get(<<"flags">>, Offer, []))),
+    ?assert(lists:member(<<"port-latching">>, maps:get(<<"flags">>, Answer))).
+
+%% relay_async/2 carries an anchored call in its own process: the handler
+%% returns at once, the call (and its rtpengine session) lives on, the
+%% handle still drives it, and the notify process hears how it ended.
+relay_async_outlives_handler(_Config) ->
+    rtpe(),
+    EP = ?UA:pick(),
+    CP = ?UA:pick(),
+    ok = chappe_sip:start(#{contact => <<"sip:127.0.0.1:", (integer_to_binary(EP))/binary>>}),
+    Test = self(),
+    register(b2b_relay_test, Test),
+    Callee = <<"sip:callee@127.0.0.1:", (integer_to_binary(CP))/binary>>,
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        {ok, Legs} = chappe_sip:create_b2bua(Req, Res, Callee, #{media => anchor}),
+        Test ! b2b_up,
+        Test ! {async, chappe_sip_b2b:relay_async(Legs, #{notify => Test}), self()}
+    end),
+    callee(CP, fun(Sock, _D) ->
+        {B, S} = ?UA:recv_req(Sock, <<"BYE">>, 20000),
+        ?UA:send(Sock, S, ?UA:resp(B, 200, <<"OK">>, <<>>, [], <<>>)),
+        tell({b_bye, B})
+    end),
+    caller(EP, #{}, fun(Sock, D) ->
+        register(b2b_test_caller, self()),
+        receive go -> ok end,
+        {B, _} = ?UA:in_dialog(D, <<"BYE">>, [], <<>>),
+        ?UA:send(Sock, EP, B),
+        tell({a_bye_final, ?UA:recv_any(Sock, 6000)})
+    end),
+    {{ok, {Relay, Ref} = B2b}, Worker} = got2(async),
+    WRef = monitor(process, Worker),
+    receive {'DOWN', WRef, process, Worker, _} -> ok
+    after 5000 -> ct:fail(handler_still_running)
+    end,
+    ?assertNotEqual(Worker, Relay),
+    timer:sleep(200),
+    ?assertMatch(#{media := anchor}, chappe_sip_b2b:info(B2b)),
+    ?assertEqual([], [C || {rtpe_cmd, #{<<"command">> := <<"delete">>} = C} <- drain()]),
+    caller_go(),
+    ?assertEqual(200, ?UA:status(got(a_bye_final))),
+    _ = got(b_bye),
+    receive {chappe_sip_b2b, Ref, {done, {done, a_bye}}} -> ok
+    after 5000 -> ct:fail(no_done)
+    end.
 
 %% The new B refuses: replace_b/3 fails with its status, rtpengine gets
 %% the old B's SDP back, and the old B keeps the call.

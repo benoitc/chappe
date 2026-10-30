@@ -5,7 +5,8 @@
 
 .PHONY: all compile test test-static check eunit ct lint xref dialyzer \
         fmt fmt-check asan interop interop-mix interop-ref bench-ref bench-pass \
-        interop-conformance interop-esl demo-esl interop-sbc compliance cover clean \
+        interop-conformance interop-esl demo-esl interop-sbc interop-mrf compliance \
+        cover clean \
         demo demo-shell demo-down
 
 all: compile
@@ -55,6 +56,12 @@ interop:
 interop-esl:
 	apps/chappe_esl/test/e2e.sh
 
+# chappe_mrf against rtpengine and two FreeSWITCH media servers in docker
+# (IVR, bridging, recording, native and FreeSWITCH conferences, a node
+# stopped mid-call; apps/chappe_mrf/interop).
+interop-mrf:
+	apps/chappe_mrf/test/e2e.sh
+
 # Two FreeSWITCH nodes and a shell with chappe_esl monitoring them
 # (apps/chappe_esl/examples/README.md).
 demo-esl:
@@ -84,7 +91,7 @@ bench-pass:
 # Each app's compliance matrix from its requirements, the `%% req:'
 # annotations and the latest CT results. GATE=demo fails on any hard
 # requirement of the demo tier that is not passing.
-COMPLIANCE_APPS = chappe_sip chappe_mix chappe_rtpengine chappe_esl
+COMPLIANCE_APPS = chappe_sip chappe_mix chappe_rtpengine chappe_esl chappe_mrf
 
 compliance:
 	rebar3 as test compile
@@ -117,9 +124,12 @@ DEMO_COMPOSE = docker compose -f demo/sbc/docker-compose.yml
 
 demo:
 	rebar3 compile
+	mkdir -p _build/demo _build/demo-media
+	chmod 777 _build/demo-media
 	$(DEMO_COMPOSE) up -d --build
-	mkdir -p _build/demo
 	erlc -o _build/demo demo/sbc/src/demo_sbc.erl
+	DEMO_MEDIA_IP=$$($(DEMO_COMPOSE) exec -T rtpengine getent hosts \
+	    host.docker.internal | awk '{print $$1}') \
 	erl -noshell -sname $(DEMO_NODE)@localhost -setcookie chappe-demo \
 	    -pa _build/default/lib/*/ebin _build/demo \
 	    -eval 'ok = demo_sbc:start("demo/sbc/demo.config").'
