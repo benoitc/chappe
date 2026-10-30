@@ -89,3 +89,13 @@ end) go to the `notify` option, the handler by default.
   node has the modules.
 - A command blocks the process that calls it, not the endpoint: digits
   keep reaching the owner during a long playback.
+
+## Where it lives
+
+- Modules: `chappe_mrf` (API), `chappe_mrf_endpoint` (one per channel),
+  `chappe_mrf_esl` (the outbound socket handler); commands run on
+  `chappe_esl_call`
+- Tests: `apps/chappe_mrf/test/chappe_mrf_SUITE.erl` (fakes),
+  `chappe_mrf_live_SUITE.erl`
+- Lab: `make interop-mrf` (`apps/chappe_mrf/interop/`); the demo SBC has an
+  IVR on `2000` (`make demo`)

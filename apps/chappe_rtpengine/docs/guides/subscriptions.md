@@ -102,7 +102,7 @@ SubTag = maps:get(<<"to-tag">>, Sub),
 }).
 ```
 
-The receiver then gets clean 20 ms PCMU frames for the caller's speech, one subscription per party. The library keeps SDP opaque: the receiver's answer SDP comes from your media receiver, not from here.
+The receiver then gets clean 20 ms PCMU frames for the caller's speech, one subscription per party. The session does not write SDP: the receiver's answer comes from your media receiver (or from `chappe_rtpengine_sdp:fork_answer/2,3` when you route streams as shown above).
 
 ## Conference graphs
 
@@ -112,4 +112,10 @@ Notes:
 
 - No from-tag is injected automatically on subscription commands. On every other session command the stored from-tag identifies the call; here it selects which participant to tap, so the default is yours to choose.
 - Without a session, the same commands work on a node: `chappe_rtpengine:cmd(Node, subscribe_request, #{call_id => CallId, flags => [all]})`.
-- rtpengine has no built-in audio mixer for live conferencing. For large mixed conferences, put a dedicated media server behind the B2BUA as a SIP endpoint.
+- rtpengine has no built-in audio mixer for live conferencing. For mixed conferences, put a mixer behind it: chappe_mix in the umbrella (see its [conference guide](../../../chappe_mix/docs/guides/conference.md)), or a media server such as FreeSWITCH.
+
+## Where it lives
+
+- Modules: `chappe_rtpengine_session` (`subscribe_request/2`, `subscribe_answer/2`, `unsubscribe/2`), `chappe_rtpengine_sdp` (fork answers)
+- Tests: `apps/chappe_rtpengine/test/chappe_rtpengine_sdp_tests.erl`, `chappe_rtpengine_session_SUITE.erl`
+- Lab: `make interop` (`chappe_rtpengine_siprec_SUITE`, `chappe_rtpengine_live_SUITE`)

@@ -49,6 +49,17 @@ listener, with one dialplan extension:
 - [Run a conference (native or FreeSWITCH)](docs/guides/conference.md)
 - [drachtio to chappe](docs/drachtio-mapping.md)
 
+## Reference
+
+- [Documentation index](docs/README.md)
+- [Configuration](docs/configuration.md)
+- [Design overview](docs/design/overview.md)
+- [Features](docs/features.md)
+
+The public modules are `chappe_mrf` (calls and endpoints) and
+`chappe_mrf_conf` (conferences). Render the guides and the API reference
+with `rebar3 ex_doc` from this directory.
+
 ## Test it
 
 ```sh

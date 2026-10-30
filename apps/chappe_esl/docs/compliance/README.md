@@ -1,11 +1,13 @@
 # Compliance catalogue
 
 `requirements.tsv` lists the event socket protocol behaviours chappe_esl
-implements, one row each, in the same ten-column format as the chappe_sip
-catalogue. You need it when you change the parser, the connection state
-machine or a command, and want to know which test proves a behaviour.
+implements, one row each. How rows are written, claimed in a test with a
+`%% req:` line and turned into the generated [matrix](../compliance.md) is
+the same for every app: see the shared
+[compliance page](../../../../docs/contributing/compliance.md). This page
+only keeps what is specific to chappe_esl.
 
-## What differs from an RFC catalogue
+## What is specific here
 
 There is no RFC for the FreeSWITCH event socket, so:
 
@@ -17,16 +19,5 @@ There is no RFC for the FreeSWITCH event socket, so:
   rules.
 - every row is tier `platform`.
 
-## Claim a row in a test
-
-Put the ids on a `%% req:` line directly above the Common Test case:
-
-```text
-%% A -ERR answer to the password fails connect with the reply text.
-%% req: ESL-14
-auth_failure(_Config) ->
-    ...
-```
-
 Only `*_SUITE.erl` cases count toward the matrix. eunit tests may carry the
-same line as a pointer, but they do not prove a row on their own.
+same `%% req:` line as a pointer, but they do not prove a row on their own.

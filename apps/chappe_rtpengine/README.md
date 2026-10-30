@@ -1,6 +1,6 @@
 # chappe_rtpengine
 
-An Erlang/OTP client for controlling [rtpengine](https://github.com/sipwise/rtpengine) media proxies over the NG protocol. You use it from a SIP application (a B2BUA such as chappe_sip) to anchor media: send it your SDP offers and answers, and it returns the rewritten SDP pointing at rtpengine. Pure Erlang, no NIFs, one dependency ([erlang_ws](https://github.com/benoitc/erlang_ws), for the WebSocket transport). SIP signalling and SDP interpretation stay outside this library; SDP bodies are opaque binaries.
+An Erlang/OTP client for controlling [rtpengine](https://github.com/sipwise/rtpengine) media proxies over the NG protocol. You use it from a SIP application (a B2BUA such as chappe_sip) to anchor media: send it your SDP offers and answers, and it returns the rewritten SDP pointing at rtpengine. Pure Erlang, no NIFs, one dependency ([erlang_ws](https://github.com/benoitc/erlang_ws), for the WebSocket transport). SIP signalling stays outside this library. The client and the sessions pass SDP bodies through untouched; the only SDP it reads is in the opt-in `chappe_rtpengine_sdp` helpers, which build subscription answers that route chosen streams.
 
 ## Requirements
 
@@ -117,13 +117,23 @@ Task-oriented guides live in `docs/guides/`:
 - [Media subscriptions](docs/guides/subscriptions.md)
 - [Testing](docs/guides/testing.md)
 
-Render them with the API reference into `doc/` with `rebar3 ex_doc`. Design notes are in `docs/design/overview.md`, the feature list and roadmap in `docs/features.md`.
+Reference pages:
+
+- [Documentation index](docs/README.md)
+- [Configuration](docs/configuration.md): app env and node options
+- [Design overview](docs/design/overview.md)
+- [Features](docs/features.md)
+
+Render them with the API reference into `doc/` with `rebar3 ex_doc`.
 
 ## Tests
 
+From the umbrella root:
+
 ```sh
-make test     # eunit + ct against the in-process fake, no rtpengine needed
-make check    # compile + tests + lint + xref + dialyzer + fmt-check
+rebar3 eunit --app chappe_rtpengine        # codecs and SDP helpers
+rebar3 ct --dir apps/chappe_rtpengine/test # suites against the in-process fake
+make check                                 # every gate, all apps
 ```
 
 For the end-to-end suites against a real dockerized rtpengine (offer/answer rewriting, SRTP and DTLS negotiation, RTP relayed both ways, NG over TCP and WebSocket, the interpreter primitives):
