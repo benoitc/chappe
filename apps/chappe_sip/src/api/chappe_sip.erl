@@ -37,6 +37,12 @@
 ]).
 -export([registrar/1, location/1, location_flow/1, bindings/1]).
 -export([
+    register_client/2,
+    unregister_client/1,
+    register_status/1,
+    register_subscribe/1
+]).
+-export([
     find_dialog/3, find_replaced/1, replaces_response/1, replaces_response/2
 ]).
 -export([accept_refer/3, accept_refer/4, send_refer/3]).
@@ -131,9 +137,17 @@ start_media(MediaOpts, Opts) ->
             {error, {media, Reason}}
     end.
 
-%% presence => Opts serves the presence package (chappe_sip_presence:serve/1)
-start_presence(ok, #{presence := Opts}) -> chappe_sip_presence:serve(Opts);
-start_presence(Result, _Opts) -> Result.
+%% presence => Opts serves the presence package (chappe_sip_presence:serve/1);
+%% then the registrations of the `registrations' setting go out
+start_presence(ok, Opts) ->
+    ok =
+        case maps:find(presence, Opts) of
+            {ok, P} -> chappe_sip_presence:serve(P);
+            error -> ok
+        end,
+    chappe_sip_regc:load_env();
+start_presence(Result, _Opts) ->
+    Result.
 
 start_ws(undefined, undefined) -> ok;
 start_ws(undefined, Wss) -> ws_listen(#{tls => Wss});
@@ -409,6 +423,42 @@ register(F) -> handle(<<"REGISTER">>, F).
 registrar(Opts) ->
     chappe_sip_registrar:handler(Opts).
 
+%% ---- outbound registration (REGISTER client) ----
+
+%% Register at a registrar and keep the binding refreshed (RFC 3261 10.2):
+%% a trunk, or an account at an upstream PBX. Name is any term you then
+%% use to look the registration up. Opts: #{aor := binary(),
+%% registrar => binary() (the Request-URI, default the AOR's domain),
+%% auth => #{user, pass, realm => binary()} (a digest challenge is
+%% answered), expires => pos_integer() (default 3600), contact =>
+%% binary() (default our contact with the AOR's user), proxy, route_set,
+%% headers, retry_min_ms (1000), retry_max_ms (300000)}. A 423 is
+%% retried with its Min-Expires; a failure with an exponential backoff.
+%% The `registrations' application setting (Name => Opts) is started by
+%% start/1. See chappe_sip_regc.
+-spec register_client(chappe_sip_regc:name(), chappe_sip_regc:opts()) ->
+    ok | {error, already_started | bad_aor | term()}.
+register_client(Name, Opts) ->
+    chappe_sip_regc:start(Name, Opts).
+
+%% Remove the binding (REGISTER with Expires: 0) and stop refreshing it.
+-spec unregister_client(chappe_sip_regc:name()) -> ok | {error, not_found}.
+unregister_client(Name) ->
+    chappe_sip_regc:unregister(Name).
+
+%% #{status := registering | registered | failed | expired, granted,
+%% expires_in, last_status, failures, aor, registrar, contact}.
+-spec register_status(chappe_sip_regc:name()) ->
+    {ok, map()} | {error, not_found}.
+register_status(Name) ->
+    chappe_sip_regc:status(Name).
+
+%% Pid gets {chappe_sip_regc, Name, registered | failed | expired} on each
+%% change of any registration.
+-spec register_subscribe(pid()) -> ok.
+register_subscribe(Pid) ->
+    chappe_sip_regc:subscribe(Pid).
+
 %% Live contact URIs for an AOR (a To/Contact value or a bare URI), the
 %% highest q first.
 -spec location(binary()) -> [binary()].
@@ -418,8 +468,9 @@ location(AorOrUri) ->
 %% The live bindings of an AOR, the highest q first, as maps with contact,
 %% expires, q, flow, path (the RFC 3327 route set toward the contact: send
 %% the request with one Route header per element, in order), instance and
-%% reg_id (RFC 5626), callid and cseq, and received: the flow the REGISTER
-%% came on (RFC 3581).
+%% reg_id (RFC 5626), callid and cseq, received: the flow the REGISTER
+%% came on (RFC 3581), and transport: the one it came over (<<"udp">>,
+%% <<"tcp">>, <<"tls">>; undefined over WebSocket).
 -spec bindings(binary()) -> [map()].
 bindings(AorOrUri) ->
     chappe_sip_registry:bindings(AorOrUri).

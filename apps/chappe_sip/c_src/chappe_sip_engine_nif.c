@@ -179,7 +179,6 @@ typedef struct engine {
     /* stack-thread-only state */
     su_root_t *root;
     nta_agent_t *agent;
-    nta_leg_t *dleg;
     su_home_t home[1];
     /* handle table: chained hash buckets keyed by handle id */
     hent_t *handles[HBUCKETS];
@@ -215,7 +214,7 @@ static ERL_NIF_TERM am_ok, am_error, am_undefined, am_chappe_sip_engine, am_requ
 /* operations enqueued to the stack thread */
 enum { OP_RESPOND = 1, OP_HEALTH, OP_STOP, OP_REQUEST, OP_LEG_CREATE,
        OP_LEG_DESTROY, OP_SEND, OP_CANCEL, OP_TXN_DONE, OP_RELAY,
-       OP_MSG_TSEND, OP_RELIABLE_1XX, OP_PROXY_MARK };
+       OP_MSG_TSEND, OP_RELIABLE_1XX, OP_PROXY_MARK, OP_DISCARD };
 
 typedef struct op {
     int kind;
@@ -278,10 +277,16 @@ static unsigned tab_slot(uint64_t id) {
     return (unsigned)((id * 0x9E3779B97F4A7C15ULL) >> 52) & (HBUCKETS - 1);
 }
 
+/* The server transactions we hold (H_INCOMING handles), and the requests
+ * the source blocklist discarded: stats/0 reads them. */
+static _Atomic uint64_t g_incoming = 0;
+static _Atomic uint64_t g_blk_drops = 0;
+
 static int tab_put_id(engine_t *e, uint64_t id, int kind, void *ptr,
                       void *ctx) {
     hent_t *h = enif_alloc(sizeof(hent_t));
     if (!h) return -1;
+    if (kind == H_INCOMING) atomic_fetch_add(&g_incoming, 1);
     unsigned slot = tab_slot(id);
     h->id = id;
     h->kind = kind;
@@ -317,6 +322,79 @@ static uint64_t now_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
+}
+
+/* ---------- source blocklist ----------
+ *
+ * The addresses chappe_sip_guard drops (block/2), each until a deadline.
+ * request_in discards a request from one before nta creates a server
+ * transaction for it, so a flood from it costs no transaction. The policy
+ * is Erlang's; this only enforces it. Open addressing over a fixed table:
+ * an address probes BLK_PROBE slots, and when they are all live the one
+ * expiring first gives way. Process-wide (the engine is a singleton), so
+ * it outlives an engine restart. */
+#define BLK_SLOTS 4096
+#define BLK_PROBE 8
+#define BLK_ADDR 64
+
+typedef struct {
+    char addr[BLK_ADDR];
+    uint64_t until_ms;
+} blk_ent_t;
+
+static blk_ent_t g_blk[BLK_SLOTS];
+static ErlNifMutex *g_blk_lock = NULL;
+
+static unsigned blk_hash(const char *a) {
+    uint32_t h = 2166136261u;
+    for (; *a; a++) h = (h ^ (unsigned char)*a) * 16777619u;
+    return h & (BLK_SLOTS - 1);
+}
+
+/* ttl_ms 0 lifts the block */
+static void blk_put(const char *addr, uint64_t ttl_ms) {
+    uint64_t now = now_ms();
+    unsigned base = blk_hash(addr);
+    enif_mutex_lock(g_blk_lock);
+    blk_ent_t *same = NULL, *pick = NULL;
+    for (unsigned i = 0; i < BLK_PROBE && !same; i++) {
+        blk_ent_t *b = &g_blk[(base + i) & (BLK_SLOTS - 1)];
+        if (b->until_ms > now && strcmp(b->addr, addr) == 0)
+            same = b;
+        else if (!pick || b->until_ms < pick->until_ms)
+            pick = b;
+    }
+    if (ttl_ms == 0) {
+        if (same) same->until_ms = 0;
+    } else {
+        blk_ent_t *b = same ? same : pick;
+        snprintf(b->addr, sizeof b->addr, "%s", addr);
+        b->until_ms = now + ttl_ms;
+    }
+    enif_mutex_unlock(g_blk_lock);
+}
+
+static int blk_has(const char *addr) {
+    uint64_t now = now_ms();
+    unsigned base = blk_hash(addr);
+    int hit = 0;
+    enif_mutex_lock(g_blk_lock);
+    for (unsigned i = 0; i < BLK_PROBE && !hit; i++) {
+        blk_ent_t *b = &g_blk[(base + i) & (BLK_SLOTS - 1)];
+        hit = b->until_ms > now && strcmp(b->addr, addr) == 0;
+    }
+    enif_mutex_unlock(g_blk_lock);
+    return hit;
+}
+
+/* the message comes from a blocked address */
+static int blk_msg(msg_t *msg) {
+    char ip[BLK_ADDR] = {0};
+    su_addrinfo_t *ai = msg_addrinfo(msg);
+    if (!ai || !ai->ai_addr || !ai->ai_addrlen) return 0;
+    su_sockaddr_t *su = (su_sockaddr_t *)ai->ai_addr;
+    if (!su_inet_ntop(su->su_family, SU_ADDR(su), ip, sizeof ip)) return 0;
+    return blk_has(ip);
 }
 
 /* Free the orphans nta can no longer call back (all of them once the agent
@@ -365,6 +443,7 @@ static void tab_del(engine_t *e, uint64_t id) {
         if ((*p)->id == id) {
             hent_t *dead = *p;
             *p = dead->next;
+            if (dead->kind == H_INCOMING) atomic_fetch_sub(&g_incoming, 1);
             ctx_release(e, dead->kind, dead->ctx);
             enif_free(dead);
             return;
@@ -472,6 +551,7 @@ static void tab_drain(engine_t *e) {
             switch (h->kind) {
             case H_INCOMING:
                 nta_incoming_destroy((nta_incoming_t *)h->ptr);
+                atomic_fetch_sub(&g_incoming, 1);
                 break;
             case H_LEG:
                 nta_leg_destroy((nta_leg_t *)h->ptr);
@@ -956,6 +1036,37 @@ static int leg_request_cb(nta_leg_magic_t *magic, nta_leg_t *leg,
     return deliver_request(ctx->e, ctx->h, irq, sip);
 }
 
+/* A request no dialog leg took: out-of-dialog, or for a dialog we do not
+ * know. With no default leg nta hands it to the agent callback before any
+ * server transaction exists, so a request from a blocked address is
+ * discarded for nothing. Any other gets its transaction here and goes the
+ * way nta's leg_recv takes a request to a default leg. */
+static int request_in(engine_t *e, nta_agent_t *agent, msg_t *msg,
+                      sip_t *sip) {
+    if (blk_msg(msg)) {
+        atomic_fetch_add(&g_blk_drops, 1);
+        nta_msg_discard(agent, msg);
+        return 0;
+    }
+    sip_method_t method = sip->sip_request->rq_method;
+    if (method == sip_method_prack) {
+        /* RFC 3262 3: a PRACK matching no reliable response */
+        nta_msg_treply(agent, msg, 481, "No such response", TAG_END());
+        return 0;
+    }
+    nta_incoming_t *irq = nta_incoming_create(agent, NULL, msg, sip, TAG_END());
+    if (!irq) return 0; /* nta took msg */
+    int status = request_cb((nta_leg_magic_t *)e, NULL, irq, sip);
+    if (status == 0) return 0;
+    if (status < 100 || status > 699 ||
+        (method == sip_method_invite && status >= 200 && status < 300))
+        status = 500;
+    if (nta_incoming_status(irq) < 200)
+        nta_incoming_treply(irq, status, NULL, TAG_END());
+    if (status >= 200) nta_incoming_destroy(irq);
+    return 0;
+}
+
 /* responses to app-originated requests (nta_outgoing_mcreate) */
 static int outgoing_response_cb(nta_outgoing_magic_t *magic,
                                 nta_outgoing_t *orq, sip_t const *sip) {
@@ -995,7 +1106,7 @@ static int outgoing_response_cb(nta_outgoing_magic_t *magic,
 static int stray_cb(nta_agent_magic_t *magic, nta_agent_t *agent,
                     msg_t *msg, sip_t *sip) {
     engine_t *e = (engine_t *)magic;
-    (void)agent;
+    if (sip && sip->sip_request) return request_in(e, agent, msg, sip);
     if (atomic_load(&e->state) == ST_READY && sip && sip->sip_status &&
         sip->sip_status->st_status >= 200 &&
         sip->sip_status->st_status < 300 && sip->sip_cseq &&
@@ -1275,6 +1386,13 @@ static void op_cb(su_root_magic_t *magic, su_msg_r msg, su_msg_arg_t *arg) {
         }
         break;
     }
+    case OP_DISCARD: {
+        /* a request the guard drops: no 100 Trying for its retransmissions
+         * while it waits for the silent 408 that ends it */
+        nta_incoming_t *irq = tab_get(e, op->h, H_INCOMING);
+        if (irq) nta_incoming_set_params(irq, NTATAG_EXTRA_100(0), TAG_END());
+        break;
+    }
     case OP_TXN_DONE: {
         nta_outgoing_t *orq = tab_get(e, op->h, H_OUTGOING);
         if (orq) {
@@ -1485,7 +1603,6 @@ static void *thread_exit(engine_t *e) {
 static void teardown_sofia(engine_t *e) {
     atomic_store(&g_log_engine, NULL);
     tab_drain(e);
-    if (e->dleg) { nta_leg_destroy(e->dleg); e->dleg = NULL; }
     agent_destroy(e);
     orphans_sweep(e, 1);
     enif_rwlock_rwlock(e->root_lock);
@@ -1550,16 +1667,8 @@ static void *stack_main(void *arg) {
         return thread_exit(e);
     }
 
-    e->dleg = nta_leg_tcreate(e->agent, request_cb, (nta_leg_magic_t *)e,
-                              NTATAG_NO_DIALOG(1), TAG_END());
-    if (!e->dleg) {
-        set_failed(e, "nta_leg_tcreate failed");
-        agent_destroy(e);
-        su_root_destroy(e->root);
-        e->root = NULL;
-        su_home_deinit(e->home);
-        return thread_exit(e);
-    }
+    /* no default leg: a request no dialog leg takes reaches stray_cb
+     * before nta makes a transaction of it (request_in) */
 
     /* the other listen addresses, each with the ident a send names it by */
     const char *bind_err = NULL;
@@ -1610,8 +1719,6 @@ static void *stack_main(void *arg) {
     }
     if (bind_err) {
         set_failed(e, bind_err);
-        nta_leg_destroy(e->dleg);
-        e->dleg = NULL;
         agent_destroy(e);
         su_root_destroy(e->root);
         e->root = NULL;
@@ -2295,6 +2402,50 @@ static ERL_NIF_TERM nif_txn_done(ErlNifEnv *env, int argc,
     return am_ok;
 }
 
+/* discard(Engine, TxnH) -> ok  (a request the guard drops) */
+static ERL_NIF_TERM nif_discard(ErlNifEnv *env, int argc,
+                                const ERL_NIF_TERM argv[]) {
+    engine_t *e;
+    ErlNifUInt64 h;
+    if (argc != 2 || !enif_get_resource(env, argv[0], ENGINE_RT, (void **)&e) ||
+        !enif_get_uint64(env, argv[1], &h))
+        return enif_make_badarg(env);
+    if (atomic_load(&e->state) != ST_READY)
+        return enif_make_tuple2(env, am_error, am_not_ready);
+    op_t op = {.kind = OP_DISCARD, .h = h};
+    if (enqueue(e, &op) != 0)
+        return enif_make_tuple2(env, am_error, am_not_ready);
+    return am_ok;
+}
+
+/* block(Addr, TtlMs) -> ok: discard requests from Addr (an IP literal as
+ * the engine reports source_ip) for TtlMs; 0 lifts the block */
+static ERL_NIF_TERM nif_block(ErlNifEnv *env, int argc,
+                              const ERL_NIF_TERM argv[]) {
+    ErlNifBinary addr;
+    ErlNifUInt64 ttl;
+    char a[BLK_ADDR];
+    if (argc != 2 || !enif_inspect_binary(env, argv[0], &addr) ||
+        addr.size == 0 || addr.size >= sizeof a ||
+        !enif_get_uint64(env, argv[1], &ttl))
+        return enif_make_badarg(env);
+    memcpy(a, addr.data, addr.size);
+    a[addr.size] = 0;
+    blk_put(a, ttl);
+    return am_ok;
+}
+
+/* stats() -> {Incoming, Discarded}: the server transactions held, and the
+ * requests the blocklist discarded */
+static ERL_NIF_TERM nif_stats(ErlNifEnv *env, int argc,
+                              const ERL_NIF_TERM argv[]) {
+    (void)argc;
+    (void)argv;
+    return enif_make_tuple2(env,
+                            enif_make_uint64(env, atomic_load(&g_incoming)),
+                            enif_make_uint64(env, atomic_load(&g_blk_drops)));
+}
+
 /* leg_create(Engine, CallId, LocalAddr, RemoteAddr) -> {ok, LegH} */
 static ERL_NIF_TERM nif_leg_create(ErlNifEnv *env, int argc,
                                    const ERL_NIF_TERM argv[]) {
@@ -2363,6 +2514,8 @@ static int load(ErlNifEnv *env, void **priv, ERL_NIF_TERM info) {
     ENGINE_RT = enif_open_resource_type_x(env, "chappe_sip_engine", &init,
                                           ERL_NIF_RT_CREATE, NULL);
     if (!ENGINE_RT) return -1;
+    if (!g_blk_lock) g_blk_lock = enif_mutex_create("chappe_sip_blocklist");
+    if (!g_blk_lock) return -1;
 
     /* su_init() installs SIG_IGN for SIGPIPE process-wide; save BEAM's
      * disposition and restore it so the VM's signal handling is
@@ -2458,6 +2611,9 @@ static ErlNifFunc nif_funcs[] = {
     {"leg_create", 4, nif_leg_create, 0},
     {"leg_destroy", 2, nif_leg_destroy, 0},
     {"health", 1, nif_health, 0},
+    {"discard", 2, nif_discard, 0},
+    {"block", 2, nif_block, 0},
+    {"stats", 0, nif_stats, 0},
 };
 
 ERL_NIF_INIT(chappe_sip_nif, nif_funcs, load, NULL, upgrade, unload)

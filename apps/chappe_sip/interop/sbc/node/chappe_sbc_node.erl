@@ -16,12 +16,12 @@
 %%
 %% Kamailio pings the node (its dispatcher) and the node pings Kamailio
 %% (a peer of group kam). chappe_sbc_interop_SUITE drives the node with
-%% erl_call: calls/0, set_media/2, query/1, events/1, peers/0. Every event
-%% is printed on stdout.
+%% erl_call: calls/0, set_media/2, replace_b/2, query/1, events/1,
+%% peers/0. Every event is printed on stdout.
 -module(chappe_sbc_node).
 
 -export([start/1]).
--export([calls/0, set_media/2, query/1, events/1, peers/0]).
+-export([calls/0, set_media/2, replace_b/2, query/1, events/1, peers/0]).
 
 -define(RTPE, "10.253.9.20").
 -define(FS1, <<"sip:10.253.9.31:5080">>).
@@ -142,6 +142,23 @@ set_media(CallId, Mode) ->
     case ets:lookup(sbc_calls, bin(CallId)) of
         [{_, B2b, _}] -> chappe_sip_b2b:set_media(B2b, Mode);
         [] -> {error, no_call}
+    end.
+
+%% Move the call's B leg to another FreeSWITCH (fs1 | fs2).
+-spec replace_b(binary() | string(), fs1 | fs2) -> ok | {error, term()}.
+replace_b(CallId, Fs) ->
+    Uri =
+        case Fs of
+            fs1 -> ?FS1;
+            fs2 -> ?FS2
+        end,
+    case ets:lookup(sbc_calls, bin(CallId)) of
+        [{_, B2b, _}] ->
+            R = chappe_sip_b2b:replace_b(B2b, Uri, #{}),
+            log("call ~s replace_b ~p ~p", [CallId, Fs, R]),
+            R;
+        [] ->
+            {error, no_call}
     end.
 
 %% RTP packets rtpengine relayed for the call (all its streams).

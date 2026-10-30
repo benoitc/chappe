@@ -20,14 +20,15 @@
 -export([direct_call/1, anchored_call/1, hold_from_sipp/1, hold_from_fs/1,
          offerless_reinvite/1, update_offer/1, glare/1,
          set_media_both_ways/1, session_timer_refresh/1,
-         options_failover/1, kamailio_pings/1]).
+         options_failover/1, kamailio_pings/1, replace_b/1]).
 
 all() ->
     case os:getenv("INTEROP") of
         "1" ->
             [kamailio_pings, direct_call, anchored_call, hold_from_sipp,
              hold_from_fs, offerless_reinvite, update_offer, glare,
-             set_media_both_ways, session_timer_refresh, options_failover];
+             set_media_both_ways, session_timer_refresh, replace_b,
+             options_failover];
         _ ->
             {skip, "set INTEROP=1 (needs docker) to run the SBC lab"}
     end.
@@ -150,6 +151,24 @@ session_timer_refresh(Config) ->
     _ = done(sipp(?config(lab, Config), "st_refresh_uac", "uas", 1000,
                   "st-1@lab"), 150000).
 
+%% An anchored call on fs1 moves to fs2 (replace_b/3): SIPp sees no
+%% re-INVITE (its scenario takes none), fs2 gets the call and fs1 its BYE,
+%% rtpengine keeps relaying, and SIPp's BYE ends the call on fs2.
+replace_b(Config) ->
+    Lab = ?config(lab, Config),
+    Cid = "replace-1@lab",
+    Pid = sipp(Lab, "sbc_call", "anchor", 8000, Cid),
+    ok = until(fun() -> mode(Lab, Cid) =:= anchor end, 20),
+    ok = until(fun() -> channels(Lab, "1") =:= 1 end, 10),
+    ?assertEqual(ok, ctl(Lab, "replace_b", "[\"" ++ Cid ++ "\", fs2]")),
+    ?assert(lists:member({replaced, b}, events(Lab, Cid))),
+    ok = until(fun() -> channels(Lab, "2") =:= 1 end, 10),
+    ok = until(fun() -> channels(Lab, "1") =:= 0 end, 10),
+    Before = packets(Lab, Cid),
+    ok = until(fun() -> packets(Lab, Cid) > Before end, 10),
+    _ = done(Pid),
+    ok = until(fun() -> channels(Lab, "2") =:= 0 end, 10).
+
 %% fs1 stops: its peer goes down, and the next call lands on fs2; fs1
 %% comes back up.
 options_failover(Config) ->
@@ -214,6 +233,14 @@ events(Lab, Cid) ->
     case ctl(Lab, "events", "[\"" ++ Cid ++ "\"]") of
         L when is_list(L) -> L;
         _ -> []
+    end.
+
+%% how many channels fsN has (fs_cli's "N total.")
+channels(Lab, N) ->
+    Out = lists:flatten(cmd(Lab, "fs " ++ N ++ " 'show channels count'")),
+    case re:run(Out, "([0-9]+) total", [{capture, all_but_first, list}]) of
+        {match, [C]} -> list_to_integer(C);
+        nomatch -> -1
     end.
 
 %% the FreeSWITCH node with a channel, and that channel's uuid

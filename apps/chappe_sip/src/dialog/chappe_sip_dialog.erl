@@ -48,6 +48,7 @@
     local_sdp/1,
     local_contact/1,
     set_handled/2,
+    set_owner/2,
     wait/1,
     monitor/1
 ]).
@@ -289,6 +290,12 @@ local_contact(#dialog{pid = Pid}) ->
 -spec set_handled(dialog(), [atom()] | all) -> ok.
 set_handled(#dialog{pid = Pid}, Events) ->
     gen_statem:call(Pid, {set_handled, Events}).
+
+%% Hand the dialog to another process: from now on Pid gets its events
+%% and the dialog watches Pid instead (on_owner_exit applies to it).
+-spec set_owner(dialog(), pid()) -> ok.
+set_owner(#dialog{pid = Pid}, Owner) when is_pid(Owner) ->
+    gen_statem:call(Pid, {set_owner, Owner}).
 
 %% Block until the dialog terminates (convenience for simple handlers).
 -spec wait(dialog()) -> {destroyed, term()}.

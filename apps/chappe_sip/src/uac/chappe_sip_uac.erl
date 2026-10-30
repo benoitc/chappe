@@ -14,6 +14,8 @@
 %%   {chappe_sip_uac, Ref, {answer, Msg}}              the 2xx, just before ok,
 %%                                                    with report_answer => true
 %%   {chappe_sip_uac, Ref, {ok, Dialog}}               INVITE answered (2xx)
+%%   {chappe_sip_uac, Ref, {auth_state, State}}        just before a non-INVITE
+%%                                                    2xx, with report_auth
 %%   {chappe_sip_uac, Ref, {response, Res}}             non-INVITE final response
 %%   {chappe_sip_uac, Ref, {error, SipError | term()}} failure
 %% cancel/1 works from any process (it holds the fsm pid), so a caller
@@ -21,6 +23,7 @@
 -module(chappe_sip_uac).
 
 -export([start/2, await/2, await_response/2, cancel/1, cancel/2, abandon/1]).
+-export([abandon/2]).
 
 -include("chappe_sip_uac.hrl").
 -opaque uac_ref() :: #uac_ref{}.
@@ -36,6 +39,11 @@
 %%           RFC 3261 8.1.1.1, loose or strict first route),
 %%         auth => #{user := binary(), pass := binary(), realm => binary()}
 %%           or a list of them (a realm-less entry answers any realm),
+%%         report_auth => boolean() (a non-INVITE 2xx is preceded by
+%%           {auth_state, State} when credentials were sent),
+%%         auth_state => State (from report_auth: the request carries
+%%           credentials for those challenges at once, the next nonce
+%%           count each; a stale nonce is answered again as usual),
 %%         follow_redirects => boolean() (3xx Contacts tried best q first),
 %%         no_ack => boolean() (3PCC: chappe_sip_dialog:ack/2 sends the ACK),
 %%         answer => fun((Offer :: binary()) -> {ok, iodata()} | reject)
@@ -136,3 +144,16 @@ cancel(#uac_ref{pid = Pid}, Opts) ->
 -spec abandon(uac_ref()) -> ok.
 abandon(#uac_ref{pid = Pid}) ->
     gen_statem:cast(Pid, abandon).
+
+%% abandon/1 with Opts: headers => [{binary(), iodata()}] go on the CANCEL
+%% and, should a 2xx win the race, on its BYE (a Reason, RFC 3326, say);
+%% why => chappe_sip_cdr:reason() is what the call record says ended the
+%% call (default cancel).
+-spec abandon(uac_ref(), #{
+    headers => [{binary(), iodata()}], why => chappe_sip_cdr:reason()
+}) -> ok.
+abandon(#uac_ref{pid = Pid}, Opts) ->
+    gen_statem:cast(
+        Pid,
+        {abandon, maps:get(why, Opts, cancel), maps:get(headers, Opts, [])}
+    ).

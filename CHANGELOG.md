@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- B2BUA: a call can ring all of a user's devices at once; the first to answer
+  takes the call and the others stop ringing.
+- B2BUA: an app can now take over every failure itself, including a callee
+  that never answers, and try the next target without the caller noticing.
+- B2BUA: an app can end a call with a reason, receive transfers, INFO and
+  MESSAGE requests from either side, and forward INFO (DTMF) to the other
+  side.
+- B2BUA: an anchored call can be moved to another callee, or to a media
+  server, without the caller seeing anything.
+- New: chappe can register to a carrier or registrar and keep the
+  registration alive, without being challenged again on every refresh.
+- New: a guard that refuses SIP scanners, unwanted networks and floods. A
+  dropped source costs no memory, even under a flood.
+- New: Prometheus metrics for requests, responses, dialogs, registrations and
+  peers.
+- Registrar: each registration now records its transport.
+- A request handler that ends normally after answering is no longer logged as
+  a crash.
 - `chappe_esl`: you can now drive a FreeSWITCH call step by step. Each
   command waits until FreeSWITCH has finished it, so you can play a prompt,
   collect digits, record, or stream the call's audio to a WebSocket, and you

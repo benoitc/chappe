@@ -53,7 +53,10 @@
     txn_done/2,
     leg_create/4,
     leg_destroy/2,
-    health/1
+    health/1,
+    discard/2,
+    block/2,
+    stats/0
 ]).
 -nifs([
     start/2,
@@ -73,7 +76,10 @@
     txn_done/2,
     leg_create/4,
     leg_destroy/2,
-    health/1
+    health/1,
+    discard/2,
+    block/2,
+    stats/0
 ]).
 -on_load(init/0).
 
@@ -246,4 +252,22 @@ leg_destroy(_Engine, _LegH) ->
 %% from inside the loop, proving the stack thread is servicing events.
 -spec health(engine()) -> ok | {error, not_ready}.
 health(_Engine) ->
+    erlang:nif_error(engine_nif_not_loaded).
+
+%% A request the guard drops: its retransmissions get no 100 Trying while
+%% it waits for the 408 that ends it (never sent for a non-INVITE, RFC 4320).
+-spec discard(engine(), handle()) -> ok | {error, not_ready}.
+discard(_Engine, _TxnH) ->
+    erlang:nif_error(engine_nif_not_loaded).
+
+%% Discard every request from Addr (an IP literal, as source_ip) for TtlMs,
+%% before a transaction is made of it; 0 lifts the block.
+-spec block(binary(), non_neg_integer()) -> ok.
+block(_Addr, _TtlMs) ->
+    erlang:nif_error(engine_nif_not_loaded).
+
+%% {Incoming, Discarded}: the server transactions held, and the requests the
+%% blocklist discarded.
+-spec stats() -> {non_neg_integer(), non_neg_integer()}.
+stats() ->
     erlang:nif_error(engine_nif_not_loaded).

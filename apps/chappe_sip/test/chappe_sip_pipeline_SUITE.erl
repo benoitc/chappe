@@ -15,7 +15,8 @@
          init_per_testcase/2, end_per_testcase/2]).
 -export([dispatch_to_handler/1, no_route_405/1, middleware_stops_chain/1,
          worker_cap_503/1, deadline_500/1, crash_500/1, duplicate_final/1,
-         fake_health/1, unsupported_require_420/1]).
+         fake_health/1, unsupported_require_420/1, exit_after_final/1]).
+-export([log/2]).
 -export([live_options_headers/1, live_message_dispatch/1]).
 
 all() ->
@@ -25,7 +26,7 @@ groups() ->
     [{fake, [sequence],
       [dispatch_to_handler, no_route_405, middleware_stops_chain,
        worker_cap_503, deadline_500, crash_500, duplicate_final,
-       fake_health, unsupported_require_420]},
+       fake_health, unsupported_require_420, exit_after_final]},
      {live, [sequence],
       [live_options_headers, live_message_dispatch]}].
 
@@ -168,6 +169,39 @@ crash_500(_Config) ->
     end),
     ok = chappe_sip_engine_fake:inject_request(107, message_raw(<<"x">>)),
     {ok, #{status := 500}} = chappe_sip_engine_fake:await_response(107).
+
+%% A handler that ends its process (normal, {shutdown, _}) once it has
+%% sent a final response is not a crash: nothing is logged and no second
+%% response goes out.
+exit_after_final(_Config) ->
+    ok = logger:add_handler(exit_after_final, ?MODULE,
+                            #{level => error, config => #{pid => self()}}),
+    try
+        lists:foreach(
+          fun({TxnH, Reason}) ->
+                  ok = chappe_sip:message(fun(_Req, Res) ->
+                      ok = chappe_sip_res:send(Res, 200, #{}),
+                      exit(Reason)
+                  end),
+                  ok = chappe_sip_engine_fake:inject_request(
+                         TxnH, message_raw(<<"x">>)),
+                  {ok, #{status := 200}} =
+                      chappe_sip_engine_fake:await_response(TxnH),
+                  timeout = chappe_sip_engine_fake:await_response(TxnH, 300)
+          end,
+          [{120, normal}, {121, {shutdown, done}}]),
+        receive
+            {logged, Msg} -> ct:fail({logged, Msg})
+        after 200 -> ok
+        end
+    after
+        logger:remove_handler(exit_after_final)
+    end.
+
+%% logger handler of exit_after_final
+log(#{msg := Msg}, #{config := #{pid := Pid}}) ->
+    Pid ! {logged, Msg},
+    ok.
 
 duplicate_final(_Config) ->
     Test = self(),

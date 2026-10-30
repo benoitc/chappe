@@ -90,12 +90,13 @@ do_register(Opts0, Req, Res) ->
     %% (RFC 5626 6)
     Meta = chappe_sip_req:meta(Req),
     Received = chappe_sip_route:received_flow(Meta),
+    Opts1 = Opts0#{transport => maps:get(transport, Meta, undefined)},
     Opts =
         case maps:get(flow, Meta, undefined) of
             undefined ->
-                with_direct_flow(Received, Opts0#{received => Received});
+                with_direct_flow(Received, Opts1#{received => Received});
             Flow ->
-                Opts0#{flow => Flow}
+                Opts1#{flow => Flow}
         end,
     case chappe_sip_registry:register_request(Req, Opts) of
         {ok, Bindings, Info} ->

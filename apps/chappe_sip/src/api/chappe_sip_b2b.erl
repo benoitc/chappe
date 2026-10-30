@@ -27,13 +27,33 @@
 %% Media is direct (the SDP passes through, RTP flows between the
 %% endpoints) or anchored in rtpengine through a chappe_sip_media session
 %% (see chappe_sip_b2b_media); set_media/2 switches a live call.
+%%
+%% A {parallel, Uris} target rings every URI at once, one UAC per branch,
+%% under one To-tag toward A: the first 2xx wins, the other branches are
+%% CANCELled (a 2xx of theirs that still comes is ACKed and BYEd), and when
+%% every branch fails A gets the best final (RFC 3261 16.7, shared with
+%% chappe_sip_proxy). Timer C covers the whole fork. Anchored, each branch
+%% answers the same rtpengine offer under its own To-tag.
+%%
+%% On a live call, hangup/2 ends both legs with a Reason, and replace_b/3
+%% swaps leg B for a new callee behind rtpengine without A seeing a
+%% re-INVITE.
+%%
+%% While a fork rings, every branch's provisionals reach A under its one
+%% To-tag, so A plays the early media of whichever branch sent the last
+%% 1xx with SDP, and an UPDATE from A goes to the last early dialog a
+%% branch formed. Once a branch answers, rtpengine drops the other
+%% branches' early media sessions.
 -module(chappe_sip_b2b).
 
 -include("chappe_sip.hrl").
 -include("chappe_sip_uac.hrl").
 
 -export([create_b2bua/4, relay/1, relay/2, set_media/2, info/1]).
--export([call/2, contact/0]).
+-export([hangup/2, replace_b/3]).
+-export([call/2, call/3, contact/0]).
+%% helpers of the chappe_sip_b2b_* modules
+-export([timer_c/1, remote_tag/1, destroy_quietly/2]).
 
 -export_type([b2b/0, legs/0, target/0]).
 
@@ -44,12 +64,20 @@
     uas := chappe_sip_dialog:dialog(),
     uac := chappe_sip_dialog:dialog(),
     b2b => b2b(),
-    media => chappe_sip_b2b_media:state()
+    media => chappe_sip_b2b_media:state(),
+    late => true,
+    requests => [request()],
+    relay_info => boolean()
 }.
 %% Where leg B goes: a URI, a list of URIs, or a group of OPTIONS-monitored
 %% peers (chappe_sip_peers); a list or a group is tried in turn while one
-%% fails with 408, 503 or a transport error.
--type target() :: binary() | [binary()] | {peer_group, term()}.
+%% fails with 408, 503 or a transport error. {parallel, Uris} rings them
+%% all at once.
+-type target() ::
+    binary() | [binary()] | {peer_group, term()} | {parallel, [binary()]}.
+%% in-dialog requests the requests option hands to the notify process
+-type request() :: refer | info | message | notify | options.
+-export_type([request/0]).
 
 %% in-dialog events relay/2 answers
 -define(RELAYED, [modify, update]).
@@ -65,15 +93,30 @@
 %%   proxy_request_headers  => [Name] | all | {all, [ExcludeName]}
 %%   proxy_response_headers => [Name] | all | {all, [ExcludeName]}
 %%                    (copied from B's 2xx to A's)
-%%   pass_failure          => boolean (default true)
+%%   pass_failure          => boolean (default true). false: when B fails
+%%                            (its final, Timer C, a transport error, a
+%%                            target that cannot be called) A is not
+%%                            answered and {error, _} comes back, so the
+%%                            app can try elsewhere with the same Req, Res
+%%   requests              => [refer | info | message | notify | options]:
+%%                            these in-dialog requests, from either leg,
+%%                            go to the notify process as {chappe_sip_b2b,
+%%                            Ref, {request, a | b, Method, Req, Res}};
+%%                            answer them with chappe_sip_res:send/3.
+%%                            Without a notify process the relay answers
+%%                            them as a dialog does: REFER 603, others 200
+%%   relay_info            => boolean (default false): an INFO from one
+%%                            leg (DTMF, RFC 6086) goes to the other, and
+%%                            its final comes back
 %%   pass_provisional_responses => boolean (default true)
 %%   proxy, auth           => passed to the B-leg UAC
 %%   session_expires, min_se, session_refresher => each leg's session timer
 %%   timer_c               => Timer C on the B leg in ms (RFC 3261 16.6
 %%                            step 11): how long B may ring, restarted by
-%%                            each provisional; on expiry B is CANCELled and
-%%                            A gets 408 (default: the timer_c_ms config,
-%%                            185000). `timeout' is the old name.
+%%                            each provisional (of any branch of a fork);
+%%                            on expiry B is CANCELled and A gets 408
+%%                            (default: the timer_c_ms config, 185000).
+%%                            `timeout' is the old name.
 %%   media                 => direct | anchor | fun((CallInfo) -> direct | anchor)
 %%                            direct (default) passes SDP through; anchor
 %%                            puts rtpengine in the media path. CallInfo:
@@ -117,18 +160,18 @@ create_b2bua(Req, Res, Uri, Opts) ->
     end.
 
 start_b2bua(Req, Res, Target, Opts) ->
-    case targets(Target, Opts) of
-        [] ->
+    case chappe_sip_b2b_fork:targets(Target, Opts) of
+        {_Fork, []} ->
             _ = chappe_sip_res:send(Res, 503, #{
                 reason => <<"Service Unavailable">>
             }),
             {error, none_up};
-        [Uri | _] = Uris ->
+        {Fork, [Uri | _] = Uris} ->
             Ref = make_ref(),
             M = chappe_sip_b2b_media:new(media_init(Req, Uri, Ref, Opts), Opts),
             case chappe_sip_b2b_media:start(M) of
                 {ok, M1} ->
-                    offer_b(Req, Res, Uris, Opts, M1);
+                    offer_b(Req, Res, {Fork, Uris}, Opts, M1);
                 {error, Why} ->
                     _ = chappe_sip_res:send(Res, 500, #{
                         reason => <<"Server Internal Error">>
@@ -136,13 +179,6 @@ start_b2bua(Req, Res, Target, Opts) ->
                     {error, {media, Why}}
             end
     end.
-
-targets({peer_group, Group}, Opts) ->
-    chappe_sip_peers:candidates(Group, maps:get(peer_policy, Opts, priority));
-targets(Uri, _Opts) when is_binary(Uri) ->
-    [Uri];
-targets(Uris, _Opts) when is_list(Uris) ->
-    Uris.
 
 media_init(Req, Uri, Ref, Opts) ->
     Sdp = chappe_sip_req:body(Req),
@@ -189,7 +225,7 @@ offer_b(Req, Res, Uris, Opts, M) ->
             {error, {rejected, Code}}
     end.
 
-start_b(Req, Res, Uris, Opts, SdpBOffer, M) ->
+start_b(Req, Res, {Fork, Uris}, Opts, SdpBOffer, M) ->
     Worker = self(),
     ReqHeaders =
         chappe_sip_b2b_hdr:proxy_request_headers(Req, Opts) ++
@@ -204,7 +240,7 @@ start_b(Req, Res, Uris, Opts, SdpBOffer, M) ->
         headers => ReqHeaders,
         notify => Worker,
         owner => Worker,
-        handled_events => ?RELAYED,
+        handled_events => handled(Opts),
         report_answer => true
     }),
     %% B may send reliable 1xx only if A can take them on its own leg
@@ -225,7 +261,8 @@ start_b(Req, Res, Uris, Opts, SdpBOffer, M) ->
     %% final 2xx share one To-tag (otherwise nta auto-tags the first
     %% provisional and the leg tag never matches)
     ATag = chappe_sip_dialog:gen_tag(),
-    attempt(Uris, #{
+    W = #{
+        fork => Fork,
         timer_c => timer_c(Opts),
         req => Req,
         res => Res,
@@ -238,33 +275,53 @@ start_b(Req, Res, Uris, Opts, SdpBOffer, M) ->
         queue => [],
         media => M,
         %% an UPDATE relayed in the early dialogs, waiting for its answer
-        early_up => undefined
-    }).
+        early_up => undefined,
+        %% the finals of the branches that failed, in arrival order
+        finals => []
+    },
+    case Fork of
+        serial ->
+            attempt(Uris, W);
+        parallel ->
+            fork_next(
+                chappe_sip_b2b_fork:start(
+                    Uris, BOpts, chappe_sip_b2b_fork:ringing(W)
+                )
+            )
+    end.
 
 %% Call the next target. Timer C: B may ring as long as it keeps sending
 %% provisionals, each one restarting the timer.
-attempt([Uri | Rest], #{bopts := BOpts, timer_c := TimerC} = W) ->
+attempt([Uri | Rest], #{bopts := BOpts} = W) ->
     case chappe_sip_uac:start(Uri, BOpts) of
         {ok, BRef} ->
-            b2b_wait(W#{
+            b2b_wait((chappe_sip_b2b_fork:ringing(W))#{
                 bref => BRef,
-                rest => Rest,
-                deadline => erlang:monotonic_time(millisecond) + TimerC,
-                answer => undefined,
-                %% the first SDP B answered with (a 183's or the 2xx's)
-                b_sdp => <<>>,
-                ready => undefined,
-                bearly => undefined
+                branches => #{BRef => chappe_sip_b2b_fork:branch()},
+                rest => Rest
             });
         {error, _} when Rest =/= [] ->
             attempt(Rest, W);
         {error, Reason} ->
-            _ = chappe_sip_b2b_media:stop(maps:get(media, W)),
-            {error, Reason}
+            %% the last target could not even be called: A gets its answer
+            %% now (unless pass_failure is false), not the engine's 500
+            chappe_sip_b2b_fork:fail(Reason, W)
     end.
+
+%% a fork goes on while a branch rings (see chappe_sip_b2b_fork)
+fork_next({wait, W}) -> b2b_wait(W);
+fork_next({failed, Error, W}) -> chappe_sip_b2b_fork:fail(Error, W).
+
+%% the in-dialog events each leg leaves to its owner (the relay)
+handled(Opts) ->
+    chappe_sip_b2b_requests:handled(
+        maps:get(requests, Opts, []), maps:get(relay_info, Opts, false)
+    ).
 
 st_opts() -> [session_expires, min_se, session_refresher].
 
+%% Timer C of Opts (timer_c, or its old name timeout), in ms.
+-spec timer_c(map()) -> pos_integer().
 timer_c(Opts) ->
     case maps:get(timer_c, Opts, maps:get(timeout, Opts, undefined)) of
         T when is_integer(T), T > 0 -> T;
@@ -280,19 +337,17 @@ restart_timer_c(BMsg, #{timer_c := TimerC} = W) ->
             W#{deadline := erlang:monotonic_time(millisecond) + TimerC}
     end.
 
-b2b_wait(#{res := Res, bref := BRef, deadline := Deadline} = W) ->
+b2b_wait(#{res := Res, branches := Branches, deadline := Deadline} = W) ->
     ATxn = chappe_sip_res:req_txn(Res),
     ALeg = maps:get(aleg, W, none),
-    BEarly = maps:get(bearly, W),
     receive
-        {chappe_sip_uac, BRef, {request_sent, _}} ->
-            b2b_wait(W);
-        {chappe_sip_uac, BRef, {early_dialog, D}} ->
-            %% an UPDATE in it goes to A's early dialog (RFC 3311); the 2xx
-            %% hands over the same dialog
-            b2b_wait(W#{bearly := D});
+        {chappe_sip_uac, BRef, Event} when is_map_key(BRef, Branches) ->
+            b_event(BRef, Event, W);
         {chappe_sip_dialog, BEarly, update, UReq, URes} ->
-            b2b_wait(chappe_sip_b2b_early:b_update(UReq, URes, W));
+            %% an UPDATE in an early dialog of B (of a branch, when forking)
+            b2b_wait(
+                chappe_sip_b2b_early:b_update(UReq, URes, W#{bearly := BEarly})
+            );
         {chappe_sip_indialog, ALeg, TxnH, _Meta, Raw} ->
             b2b_wait(chappe_sip_b2b_early:a_request(TxnH, Raw, W));
         {chappe_sip_op, ALeg, _} ->
@@ -303,14 +358,6 @@ b2b_wait(#{res := Res, bref := BRef, deadline := Deadline} = W) ->
             map_get(early_up, W) =/= undefined
         ->
             b2b_wait(chappe_sip_b2b_early:a_response(TxnH, St, Raw, W));
-        {chappe_sip_uac, BRef, {provisional, BMsg}} ->
-            b2b_wait(provisional(BMsg, b_sdp(BMsg, restart_timer_c(BMsg, W))));
-        {chappe_sip_uac, BRef, {answer, BMsg}} ->
-            b2b_wait(b_sdp(BMsg, W#{answer := BMsg}));
-        {chappe_sip_uac, BRef, {ok, BDialog}} ->
-            answered(W#{ready := BDialog});
-        {chappe_sip_uac, BRef, {error, SipError}} ->
-            b_failed(SipError, W);
         {chappe_sip_prack, ATxn, _Raw} ->
             %% A acknowledged our reliable 1xx: the next one may go, or the
             %% 2xx that waited for it
@@ -328,20 +375,53 @@ b2b_wait(#{res := Res, bref := BRef, deadline := Deadline} = W) ->
             _ = chappe_sip_res:send(Res, 487, #{
                 reason => <<"Request Terminated">>
             }),
+            _ = chappe_sip_b2b_media:stop(maps:get(media, W)),
             {error, cancelled}
     after max(0, Deadline - erlang:monotonic_time(millisecond)) ->
-        %% Timer C fired (RFC 3261 16.8): CANCEL B, A gets a 408
+        %% Timer C fired (RFC 3261 16.8): CANCEL B (every branch), A gets a
+        %% 408 unless pass_failure is false
         cancel_b(W, []),
-        _ = chappe_sip_res:send(Res, 408, #{reason => <<"Request Timeout">>}),
+        _ =
+            maps:get(pass_failure, maps:get(opts, W), true) andalso
+                chappe_sip_res:send(Res, 408, #{reason => <<"Request Timeout">>}),
+        _ = chappe_sip_b2b_media:stop(maps:get(media, W)),
         {error, timeout}
     end.
+
+%% an event of the UAC of a branch
+b_event(_BRef, {request_sent, _}, W) ->
+    b2b_wait(W);
+b_event(_BRef, {early_dialog, D}, W) ->
+    %% an UPDATE in it goes to A's early dialog (RFC 3311); the 2xx hands
+    %% over the same dialog
+    b2b_wait(W#{bearly := D});
+b_event(BRef, {provisional, BMsg}, W) ->
+    b2b_wait(
+        provisional(
+            BMsg, chappe_sip_b2b_fork:sdp(BRef, BMsg, restart_timer_c(BMsg, W))
+        )
+    );
+b_event(BRef, {answer, BMsg}, W) ->
+    b2b_wait(
+        chappe_sip_b2b_fork:answer(
+            BRef, BMsg, chappe_sip_b2b_fork:sdp(BRef, BMsg, W)
+        )
+    );
+b_event(BRef, {ok, BDialog}, W) ->
+    answered(chappe_sip_b2b_fork:won(BRef, BDialog, W));
+b_event(BRef, {error, SipError}, W) ->
+    b_failed(BRef, SipError, W);
+b_event(_BRef, _Other, W) ->
+    b2b_wait(W).
 
 %% B answered after all: its dialog is torn down, not cancelled
 cancel_b(#{ready := BDialog}, Hdrs) when BDialog =/= undefined ->
     _ = chappe_sip_dialog:destroy(BDialog, #{headers => Hdrs}),
     ok;
-cancel_b(#{bref := BRef}, Hdrs) ->
-    chappe_sip_uac:cancel(BRef, #{headers => Hdrs}).
+cancel_b(#{fork := serial, bref := BRef}, Hdrs) ->
+    chappe_sip_uac:cancel(BRef, #{headers => Hdrs});
+cancel_b(W, Hdrs) ->
+    chappe_sip_b2b_fork:cancel(W, Hdrs).
 
 %% RFC 3262 3: a 2xx waits for the PRACK of a reliable 1xx carrying SDP
 answered(#{prack_wait := {true, true}} = W) ->
@@ -356,11 +436,6 @@ pracked(#{ready := undefined} = W) ->
 pracked(W) ->
     answered(W).
 
-b_sdp(BMsg, #{b_sdp := <<>>} = W) ->
-    W#{b_sdp := chappe_sip_msg:body(BMsg)};
-b_sdp(_BMsg, W) ->
-    W.
-
 %% B may hang up the moment it has our ACK, before A is answered: A still
 %% gets the 2xx, and relay/2 then passes B's BYE (and its Reason) on
 answer_a(#{opts := Opts, media := M0} = W, BDialog) ->
@@ -370,11 +445,11 @@ answer_a(#{opts := Opts, media := M0} = W, BDialog) ->
             Sdp -> Sdp
         end,
     M = chappe_sip_b2b_media:set_tag(b, remote_tag(BDialog), M0),
-    case b_sdp_to_a(late(W), SdpBAnswer, M) of
+    case b_sdp_to_a(W, SdpBAnswer, M) of
         {ok, Out, M1} ->
             create_a(W#{media := M1}, BDialog, compute_sdp_a(Opts, Out));
         {reject, Code} ->
-            _ = destroy_quietly(BDialog),
+            _ = destroy_quietly(BDialog, []),
             _ = chappe_sip_b2b_media:stop(M),
             _ = chappe_sip_res:send(maps:get(res, W), Code, #{}),
             {error, {rejected, Code}}
@@ -382,8 +457,12 @@ answer_a(#{opts := Opts, media := M0} = W, BDialog) ->
 
 %% B's SDP in its 2xx: the answer to A's offer, or, for a late offer, B's
 %% own offer
-b_sdp_to_a(true, Sdp, M) -> chappe_sip_b2b_media:offer(b, Sdp, M);
-b_sdp_to_a(false, Sdp, M) -> chappe_sip_b2b_media:answer(b, Sdp, M).
+b_sdp_to_a(#{bopts := #{no_ack := true}}, Sdp, M) ->
+    chappe_sip_b2b_media:offer(b, Sdp, M);
+b_sdp_to_a(#{fork := parallel}, Sdp, M) ->
+    chappe_sip_b2b_media:final_answer(b, Sdp, M);
+b_sdp_to_a(_W, Sdp, M) ->
+    chappe_sip_b2b_media:answer(b, Sdp, M).
 
 late(#{bopts := #{no_ack := true}}) -> true;
 late(_W) -> false.
@@ -401,7 +480,7 @@ create_a(
         headers => RespHeaders,
         local_tag => ATag,
         owner => self(),
-        handled_events => ?RELAYED
+        handled_events => handled(Opts)
     }),
     %% A's early leg becomes its dialog, past the CSeq numbers it used
     UasOpts1 =
@@ -418,12 +497,14 @@ create_a(
                 uas => ADialog,
                 uac => BDialog,
                 b2b => {self(), maps:get(ref, M)},
-                media => M
+                media => M,
+                requests => maps:get(requests, Opts, []),
+                relay_info => maps:get(relay_info, Opts, false)
             },
             {ok, maps:merge(Legs, maps:from_list([{late, true} || late(W)]))};
         {error, Reason} ->
             %% B may be gone already
-            _ = destroy_quietly(BDialog),
+            _ = destroy_quietly(BDialog, []),
             _ = chappe_sip_b2b_media:stop(M),
             {error, Reason}
     end.
@@ -438,43 +519,30 @@ nat_flow(Req, Opts) ->
         false -> Opts
     end.
 
-destroy_quietly(Dialog) ->
-    try chappe_sip_dialog:destroy(Dialog) of
+%% Tear a leg down (with Hdrs on its BYE), whether or not it is still
+%% there.
+-spec destroy_quietly(chappe_sip_dialog:dialog(), [{binary(), iodata()}]) ->
+    ok | {error, term()}.
+destroy_quietly(Dialog, Hdrs) ->
+    try chappe_sip_dialog:destroy(Dialog, #{headers => Hdrs}) of
         R -> R
     catch
         exit:_ -> ok
     end.
 
-%% A peer group moves on to its next up peer on 408, 503 or a failure
-%% below SIP (RFC 3263 4.3 treats a 503 the same way)
-b_failed(SipError, #{rest := [_ | _] = Rest} = W) ->
-    case failover(SipError) of
+%% A list or a peer group moves on to its next target on 408, 503 or a
+%% failure below SIP (RFC 3263 4.3 treats a 503 the same way). A fork
+%% waits for its last branch, or a 6xx (RFC 3261 16.7 step 5), then
+%% answers A with the best final (16.7 step 6).
+b_failed(_BRef, SipError, #{fork := serial, rest := [_ | _] = Rest} = W) ->
+    case chappe_sip_b2b_fork:failover(SipError) of
         true -> attempt(Rest, W);
-        false -> b_failed(SipError, W#{rest := []})
+        false -> chappe_sip_b2b_fork:fail(SipError, W)
     end;
-b_failed(SipError, #{res := Res, opts := Opts, media := M}) ->
-    _ = chappe_sip_b2b_media:stop(M),
-    handle_b_failure(Res, SipError, Opts).
-
-failover(#chappe_sip_error{status = St}) -> St =:= 408 orelse St =:= 503;
-failover(_Other) -> true.
-
-handle_b_failure(
-    Res,
-    #chappe_sip_error{status = Status, reason = Reason},
-    Opts
-) ->
-    case maps:get(pass_failure, Opts, true) of
-        true ->
-            _ = chappe_sip_res:send(Res, Status, #{reason => Reason}),
-            {error, #chappe_sip_error{status = Status, reason = Reason}};
-        false ->
-            {error, #chappe_sip_error{status = Status, reason = Reason}}
-    end;
-handle_b_failure(Res, Other, _Opts) ->
-    %% the B leg failed below the SIP layer (a bad target, engine down, ...)
-    _ = chappe_sip_res:send(Res, 500, #{reason => <<"Server Internal Error">>}),
-    {error, Other}.
+b_failed(_BRef, SipError, #{fork := serial} = W) ->
+    chappe_sip_b2b_fork:fail(SipError, W);
+b_failed(BRef, SipError, W) ->
+    fork_next(chappe_sip_b2b_fork:failed(BRef, SipError, W)).
 
 %% ---- provisionals ----
 
@@ -610,7 +678,9 @@ relay(Legs) ->
 %%   notify      => pid(): gets {chappe_sip_b2b, Ref, {hold | unhold, Leg}}
 %%                  when Leg's offer puts the call on hold or takes it off
 %%   anchor_params => as for create_b2bua/4
--spec relay(legs(), map()) -> {done, a_bye | b_bye | term()}.
+%%   requests, relay_info => as for create_b2bua/4 (the default: the ones
+%%                  given to it)
+-spec relay(legs(), map()) -> {done, a_bye | b_bye | hangup | term()}.
 relay(Legs, Opts) ->
     chappe_sip_b2b_relay:run(Legs, Opts).
 
@@ -629,12 +699,45 @@ set_media(B2b, Mode) when Mode =:= direct; Mode =:= anchor ->
 info(B2b) ->
     call(B2b, info).
 
+%% End the call: both legs get a BYE carrying Opts' headers, and reason
+%% (a Reason header value, RFC 3326, such as <<"Q.850;cause=16">>) as a
+%% Reason header. relay/1,2 returns {done, hangup}. Opts:
+%%   #{headers => [{binary(), iodata()}], reason => binary()}
+-spec hangup(b2b(), #{headers => [{binary(), iodata()}], reason => binary()}) ->
+    ok | {error, term()}.
+hangup(B2b, Opts) ->
+    call(B2b, {hangup, Opts}).
+
+%% Replace leg B of an anchored call. Target is a URI, called with a fresh
+%% INVITE, or {dialog, D}, a confirmed dialog of yours that gets a
+%% re-INVITE (create it with owner => the B2b pid, so its events reach the
+%% relay). Either way the offer is rtpengine's for A's side of the
+%% session, so A keeps its media addresses and sees no re-INVITE. On a 2xx
+%% the relay carries the call with the new B and the old B gets a BYE; on
+%% a failure the call keeps the old B. Opts:
+%%   headers  => [{binary(), iodata()}] on the INVITE to a URI
+%%   proxy, auth, flow, session_expires, min_se, session_refresher => as
+%%               for create_b2bua/4
+%%   timer_c  => how long the new B may ring, in ms (default: timer_c_ms)
+%% {error, not_anchored} when the call's media is direct, {error, busy}
+%% while another offer of the call is pending. The notify process gets
+%% {chappe_sip_b2b, Ref, {replaced, b}}. The ACK of a re-INVITE needs no
+%% hook here: a dialog's owner gets {chappe_sip_dialog, D, ack, AckReq, _}.
+-spec replace_b(b2b(), binary() | {dialog, chappe_sip_dialog:dialog()}, map()) ->
+    ok | {error, term()}.
+replace_b(B2b, Target, Opts) ->
+    call(B2b, {replace_b, Target, Opts}, timer_c(Opts) + 10000).
+
 %% A request to the relay loop of a call.
 -spec call(b2b(), term()) -> term().
-call({Pid, _Ref}, _Req) when Pid =:= self() ->
+call(B2b, Req) ->
+    call(B2b, Req, 80000).
+
+-spec call(b2b(), term(), timeout()) -> term().
+call({Pid, _Ref}, _Req, _Timeout) when Pid =:= self() ->
     %% the relay loop runs in this process: it cannot answer itself
     {error, relay_process};
-call({Pid, Ref}, Req) ->
+call({Pid, Ref}, Req, Timeout) ->
     MRef = erlang:monitor(process, Pid),
     Pid ! {chappe_sip_b2b, Ref, {call, {self(), MRef}, Req}},
     receive
@@ -643,7 +746,7 @@ call({Pid, Ref}, Req) ->
             Reply;
         {'DOWN', MRef, process, _, _} ->
             {error, noproc}
-    after 80000 ->
+    after Timeout ->
         erlang:demonitor(MRef, [flush]),
         {error, timeout}
     end.
@@ -655,6 +758,7 @@ remote_sdp(Dlg) ->
         exit:_ -> <<>>
     end.
 
+-spec remote_tag(chappe_sip_dialog:dialog()) -> binary() | undefined.
 remote_tag(Dlg) ->
     try chappe_sip_dialog:remote_tag(Dlg) of
         Tag -> Tag

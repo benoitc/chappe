@@ -15,7 +15,7 @@
 -export([start/2, stop/1, respond/7, reliable_respond/7, request/3, request/4,
          proxy_mark/2, send/3,
          send_response/2, relay/4, cancel/2, cancel/3, txn_done/2, leg_create/4,
-         leg_destroy/2, health/1]).
+         leg_destroy/2, health/1, discard/2, block/2, stats/0]).
 %% test driver API
 -export([boot/0, shutdown/0, inject_request/2, inject_indialog/3, set_health/1,
          await_response/1, await_response/2]).
@@ -70,6 +70,15 @@ leg_destroy(_Ref, LegH) ->
 
 health(_Ref) ->
     gen_server:call(?MODULE, nif_health).
+
+discard(_Ref, _TxnH) ->
+    ok.
+
+block(_Addr, _Ms) ->
+    ok.
+
+stats() ->
+    {0, 0}.
 
 %% test API
 

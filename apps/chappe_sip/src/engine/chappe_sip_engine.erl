@@ -50,6 +50,8 @@
 %% ETS table owned by chappe_sip_registry_keeper so a restarted engine process can
 %% re-establish the native stack instead of leaving SIP down (F6).
 -define(CFG_TAB, chappe_sip_engine_cfg).
+%% a dropped request waits this long (64*T1) for the 408 that ends it
+-define(DISCARD_MS, 32000).
 
 -export([start_link/0]).
 -export([
@@ -64,6 +66,8 @@
     respond/3,
     check_health/1
 ]).
+%% the guard's drop (chappe_sip_guard)
+-export([discard/1, block_source/2, stats/0]).
 %% dialog/uac support
 -export([
     create_uas/2,
@@ -296,6 +300,29 @@ cancel_txn(TxnH) ->
     ok | {error, term()}.
 cancel_txn(TxnH, Headers) ->
     gen_server:call(?MODULE, {cancel_txn, TxnH, Headers}).
+
+%% End a request without answering it (the guard's drop). Over WebSocket
+%% the transaction goes now. On the native transports nta has no silent
+%% discard, so its retransmissions are absorbed without a 100 Trying and,
+%% once the client has given up (64*T1), a 408 ends it: never sent for a
+%% non-INVITE (RFC 4320), and too late to matter for an INVITE.
+-spec discard(non_neg_integer()) -> ok.
+discard(TxnH) ->
+    gen_server:cast(?MODULE, {discard, TxnH}).
+
+%% Discard every request from Addr (a source_ip) for Ms before the stack
+%% makes a transaction of it: a source the guard drops costs nothing more.
+%% 0 lifts the block. Over WebSocket nothing is blocked.
+-spec block_source(binary(), non_neg_integer()) -> ok.
+block_source(Addr, Ms) ->
+    gen_server:call(?MODULE, {block_source, Addr, Ms}).
+
+%% #{incoming => server transactions held, discarded => requests the
+%% source blocklist discarded}
+-spec stats() ->
+    #{incoming := non_neg_integer(), discarded := non_neg_integer()}.
+stats() ->
+    gen_server:call(?MODULE, stats).
 
 %% Release a client transaction handle and stop routing for it.
 -spec finish_txn(non_neg_integer()) -> ok.
@@ -592,6 +619,11 @@ handle_call(
     #state{mod = Mod, engine = Engine} = S
 ) when Engine =/= undefined ->
     {reply, Mod:send_response(Engine, Raw), S};
+handle_call({block_source, Addr, Ms}, _From, #state{mod = Mod} = S) ->
+    {reply, Mod:block(Addr, Ms), S};
+handle_call(stats, _From, #state{mod = Mod} = S) ->
+    {Incoming, Discarded} = Mod:stats(),
+    {reply, #{incoming => Incoming, discarded => Discarded}, S};
 handle_call(contact, _From, #state{contact = C} = S) ->
     {reply, C, S};
 handle_call(tls_contact, _From, S) ->
@@ -658,6 +690,7 @@ handle_call({send_request, {ws, Flow}, Raw, Pid, _Opts}, _From, S) ->
             %% a worker that originates a request (proxy fork / UAC) is a
             %% long-lived owner; disarm its deadline and monitor a UAC fsm so
             %% its crash sweeps this handle
+            ok = chappe_sip_metrics:request(out, raw_method(Raw)),
             S1 = ensure_monitored(Pid, disarm_deadline(Pid, S)),
             {reply, {ok, TxnH}, S1#state{
                 handles = (S1#state.handles)#{TxnH => Pid}
@@ -699,6 +732,7 @@ handle_call(
         end,
     case Sent of
         {ok, TxnH} ->
+            ok = chappe_sip_metrics:request(out, raw_method(Raw)),
             S1 = ensure_monitored(Pid, disarm_deadline(Pid, S)),
             {reply, {ok, TxnH}, S1#state{
                 handles = (S1#state.handles)#{TxnH => Pid},
@@ -751,6 +785,15 @@ handle_cast(
 ->
     _ = Mod:txn_done(Engine, TxnH),
     {noreply, S#state{handles = maps:remove(TxnH, HM)}};
+handle_cast({discard, TxnH}, S) when ?IS_WS(TxnH) ->
+    _ = chappe_sip_ws_transport:finish_txn(TxnH),
+    {noreply, S};
+handle_cast({discard, TxnH}, #state{mod = Mod, engine = Engine} = S) when
+    Engine =/= undefined
+->
+    _ = Mod:discard(Engine, TxnH),
+    _ = erlang:send_after(?DISCARD_MS, self(), {discard_end, Engine, TxnH}),
+    {noreply, S};
 handle_cast(_Msg, S) ->
     {noreply, S}.
 
@@ -856,6 +899,13 @@ handle_info(
                     locals = maps:remove(Pid, S#state.locals)
                 })}
     end;
+handle_info(
+    {discard_end, Engine, TxnH}, #state{mod = Mod, engine = Engine} = S
+) ->
+    _ = Mod:respond(
+        Engine, TxnH, 408, <<"Request Timeout">>, <<>>, <<>>, <<>>
+    ),
+    {noreply, S};
 handle_info(_Info, S) ->
     {noreply, S}.
 
@@ -1134,9 +1184,11 @@ handle_event({started, Contact}, S) ->
     S#state{contact = Contact};
 handle_event({request, TxnH, undefined, Meta, Raw}, S) ->
     %% out-of-dialog request
+    ok = chappe_sip_metrics:request(in, maps:get(method, Meta, undefined)),
     dispatch(TxnH, Meta, Raw, S);
 handle_event({request, TxnH, LegH, Meta, Raw}, #state{handles = HM} = S) ->
     %% in-dialog request: route to the owning dialog fsm
+    ok = chappe_sip_metrics:request(in, maps:get(method, Meta, undefined)),
     case HM of
         #{LegH := Pid} ->
             Pid ! {chappe_sip_indialog, LegH, TxnH, Meta, Raw},
@@ -1236,6 +1288,7 @@ handle_event({prack, TxnH, Raw, PrackH}, #state{handles = HM} = S) ->
     end,
     S;
 handle_event({response, TxnH, Meta, Raw}, #state{handles = HM} = S) ->
+    ok = chappe_sip_metrics:response(in, maps:get(status, Meta, undefined)),
     case HM of
         #{TxnH := Pid} -> Pid ! {chappe_sip_response, TxnH, Meta, Raw};
         _ -> ok
@@ -2166,10 +2219,20 @@ sender_send(Mod, Engine, TxnH, Status, Opts) ->
 sent(TxnH, Status, Result) ->
     _ =
         case Result of
-            {error, _} -> ok;
-            _ -> chappe_sip_cdr:txn_response(TxnH, Status)
+            {error, _} ->
+                ok;
+            _ ->
+                ok = chappe_sip_metrics:response(out, Status),
+                chappe_sip_cdr:txn_response(TxnH, Status)
         end,
     Result.
+
+%% the method of a request we send, its first token
+raw_method(Raw) ->
+    case binary:match(Raw, <<" ">>) of
+        {N, _} when N > 0, N =< 32 -> binary:part(Raw, 0, N);
+        _ -> undefined
+    end.
 
 ws_respond(true, TxnH, Status, Reason, Headers, Body, ToTag) ->
     chappe_sip_ws_transport:reliable_respond(

@@ -18,7 +18,7 @@
 -module(chappe_sip_b2b_media).
 
 -export([new/2, start/1, stop/1, mode/1, set_mode/2, session/1]).
--export([set_tag/3, offer/3, answer/3, rejected/3, hook/1]).
+-export([set_tag/3, offer/3, answer/3, final_answer/3, rejected/3, hook/1]).
 
 -export_type([state/0, mode/0, leg/0]).
 
@@ -129,12 +129,23 @@ offer(X, Sdp, M0) ->
 %% Leg Y's answer to the other leg's offer.
 -spec answer(leg(), binary(), state()) ->
     {ok, binary(), state()} | {reject, 300..699}.
-answer(Y, Sdp, M0) ->
+answer(Y, Sdp, M) ->
+    answer(Y, Sdp, M, #{}).
+
+answer(Y, Sdp, M0, Extra) ->
     M = seen(Y, Sdp, M0),
     case run_hook(Y, answer, Sdp, M) of
         {reject, _} = Rej -> Rej;
-        Out -> anchor_answer(Y, Out, M)
+        Out -> anchor_answer(Y, Out, M, Extra)
     end.
+
+%% The answer of the winning branch of a fork: anchored, rtpengine takes
+%% it as the final one and deletes the other branches' to-tags (their
+%% early media answers).
+-spec final_answer(leg(), binary(), state()) ->
+    {ok, binary(), state()} | {reject, 300..699}.
+final_answer(Y, Sdp, M) ->
+    answer(Y, Sdp, M, #{final => true}).
 
 %% Leg Y refused the offer relayed to it: rtpengine already took that
 %% offer, so give it back Y's last good SDP as the answer. Without it the
@@ -178,15 +189,21 @@ anchor_offer(X, Sdp, #{session := S} = M0) ->
             {reject, 500}
     end.
 
-anchor_answer(_Y, Sdp, #{mode := direct} = M) ->
+%% Extra: rtpengine params on top (final => true prunes fork branches)
+anchor_answer(_Y, Sdp, #{mode := direct} = M, _Extra) ->
     {ok, Sdp, M};
-anchor_answer(_Y, <<>>, M) ->
+anchor_answer(_Y, <<>>, M, _Extra) ->
     {ok, <<>>, M};
-anchor_answer(Y, Sdp, #{last := {Y, Sdp, Out}} = M) ->
+anchor_answer(Y, Sdp, #{last := {Y, Sdp, Out}} = M, Extra) when
+    map_size(Extra) =:= 0
+->
     %% the same answer again (a 183's SDP repeated in the 2xx)
     {ok, Out, M};
-anchor_answer(Y, Sdp, #{session := S} = M) ->
-    case chappe_sip_media:answer(S, Sdp, answer_opts(Y, M)) of
+anchor_answer(Y, Sdp, #{session := S} = M, Extra) ->
+    #{params := P} = Opts = answer_opts(Y, M),
+    case
+        chappe_sip_media:answer(S, Sdp, Opts#{params := maps:merge(P, Extra)})
+    of
         {ok, Out} ->
             {ok, Out, M#{last := {Y, Sdp, Out}}};
         {error, Why} ->

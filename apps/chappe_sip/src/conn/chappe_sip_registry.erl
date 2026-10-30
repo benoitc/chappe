@@ -63,7 +63,9 @@
     params = #{} :: map(),
     % the flow the REGISTER came on (RFC 3581): where a UA behind a NAT
     % is reached when its Contact is not
-    received :: term()
+    received :: term(),
+    % the transport the REGISTER came over (udp, tcp, tls), when known
+    transport :: binary() | undefined
 }).
 
 %% a Contact of the REGISTER: its URI, requested expiry and identity
@@ -115,8 +117,9 @@ lookup(AorOrUri) ->
     [maps:get(contact, B) || B <- bindings(AorOrUri)].
 
 %% Live bindings for an AOR as maps #{contact, expires, callid, cseq, q,
-%% flow, path, instance, reg_id, params}, the highest q first (a binding without q
-%% counts as 1.0; equal q keep their registration order).
+%% flow, received, transport, path, instance, reg_id, params}, the
+%% highest q first (a binding without q counts as 1.0; equal q keep their
+%% registration order).
 -spec bindings(binary()) -> [map()].
 bindings(AorOrUri) ->
     Aor = aor_key(AorOrUri),
@@ -501,7 +504,8 @@ apply_contacts(Aor, Contacts, Msg, Opts, Info) ->
                 cseq = CSeq,
                 flow = maps:get(flow, Opts, undefined),
                 path = maps:get(path, Info),
-                received = maps:get(received, Opts, undefined)
+                received = maps:get(received, Opts, undefined),
+                transport = maps:get(transport, Opts, undefined)
             },
             Max = chappe_sip_config:get(registrar_max_expires),
             %% RFC 5626 6: a UA with a direct flow to us has its outbound
@@ -752,7 +756,8 @@ to_map(
         instance = I,
         reg_id = R,
         params = Ps,
-        received = Rcv
+        received = Rcv,
+        transport = Tr
     },
     Now
 ) ->
@@ -764,6 +769,7 @@ to_map(
         q => Q,
         flow => F,
         received => Rcv,
+        transport => Tr,
         path => P,
         instance => I,
         reg_id => R,

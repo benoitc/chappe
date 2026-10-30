@@ -49,7 +49,7 @@
     (Q =:= local_tag orelse Q =:= remote_tag orelse Q =:= call_id orelse
         Q =:= remote_sdp orelse Q =:= local_sdp orelse Q =:= local_contact orelse
         (is_tuple(Q) andalso tuple_size(Q) =:= 2 andalso
-            element(1, Q) =:= set_handled))
+            (element(1, Q) =:= set_handled orelse element(1, Q) =:= set_owner)))
 ).
 
 -export([start_link/1]).
@@ -311,7 +311,11 @@ setup(info, {chappe_sip_indialog, LegH, _, _, _}, #data{leg = LegH} = D) ->
     %% the peer may send a request (a BYE on our ACK) before the leg op
     %% result is in: handle it once confirmed rather than drop it
     {keep_state, D, [postpone]};
-setup(info, {chappe_sip_ack, LegH, _}, #data{leg = LegH} = D) ->
+setup(info, {chappe_sip_ack, H, _}, D) when ?IS_OURS(H, D) ->
+    %% the 2xx ACK of a dialog-forming INVITE names its server transaction,
+    %% and a fast peer sends it before the owner has waited for the leg
+    {keep_state, D, [postpone]};
+setup(info, {chappe_sip_ack_timeout, H}, D) when ?IS_OURS(H, D) ->
     {keep_state, D, [postpone]};
 setup(info, {chappe_sip_cancel, TxnH, _}, #data{txn = TxnH} = D) ->
     {keep_state, D, [postpone]};
@@ -794,7 +798,11 @@ query(From, local_sdp, #data{local_sdp = S} = D) ->
 query(From, local_contact, #data{local_contact = C} = D) ->
     {keep_state, D, [{reply, From, C}]};
 query(From, {set_handled, Events}, D) ->
-    {keep_state, D#data{handled = Events}, [{reply, From, ok}]}.
+    {keep_state, D#data{handled = Events}, [{reply, From, ok}]};
+query(From, {set_owner, Owner}, #data{owner_mon = Old} = D) ->
+    erlang:demonitor(Old, [flush]),
+    MRef = erlang:monitor(process, Owner),
+    {keep_state, D#data{owner = Owner, owner_mon = MRef}, [{reply, From, ok}]}.
 
 %% ---- in-dialog request handling ----
 

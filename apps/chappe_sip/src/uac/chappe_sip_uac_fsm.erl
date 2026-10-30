@@ -71,6 +71,8 @@
     tried = [] :: [binary()],
     %% the caller gave up (create_uac timeout): CANCEL, and BYE a 2xx
     abandoned = false :: boolean(),
+    %% headers for the CANCEL and the BYE of an abandoned INVITE
+    abandon_hdrs = [] :: [{binary(), iodata()}],
     %% the dialog the 2xx formed, while forked 2xx linger
     dialog :: chappe_sip_dialog:dialog() | undefined,
     %% retried once without the option tags a 420 named
@@ -139,7 +141,12 @@ start_request(
     },
     Method
 ) ->
+    %% auth_state: the challenges a previous request of the caller answered
+    %% (a registration refresh), so this one carries credentials at once
+    {Challenges, NonceCount} = maps:get(auth_state, Opts, {[], #{}}),
     Data0 = #data{
+        challenges = Challenges,
+        nonce_count = NonceCount,
         uri = Uri,
         method = Method,
         opts = Opts,
@@ -226,6 +233,9 @@ trying(cast, abandon, D) ->
 trying(cast, {abandon, Why}, D) ->
     %% the owner of an early dialog of ours is gone
     abandon(D, Why);
+trying(cast, {abandon, Why, Hdrs}, D) ->
+    %% chappe_sip_uac:abandon/2, a fork's losing branch say
+    abandon(D#data{abandon_hdrs = Hdrs}, Why);
 trying(info, {'DOWN', MRef, process, _, _}, #data{owner_mon = MRef} = D) ->
     %% nobody will take the call: CANCEL it, and BYE a 2xx that still comes
     abandon(D#data{owner_mon = undefined}, owner_down);
@@ -291,6 +301,15 @@ established(cast, abandon, #data{dialog = Dialog} = D) when
     {keep_state, D#data{dialog = undefined}};
 established(cast, abandon, D) ->
     {keep_state, D};
+established(cast, {abandon, _Why, Hdrs}, #data{dialog = Dialog} = D) when
+    Dialog =/= undefined
+->
+    _ = spawn(fun() ->
+        chappe_sip_dialog:destroy(Dialog, #{headers => Hdrs})
+    end),
+    {keep_state, D#data{dialog = undefined}};
+established(cast, {abandon, _, _}, D) ->
+    {keep_state, D};
 established(cast, {abandon, _}, D) ->
     %% the dialog fsm watches the owner itself now
     {keep_state, D};
@@ -341,7 +360,7 @@ handle_response(
             reject -> reject_answer(chappe_sip_msg:body(Msg))
         end,
     _ = send_ack(Msg, AckBody, D),
-    _ = send_bye(Msg, D),
+    _ = send_bye(Msg, D#data.abandon_hdrs, D),
     cdr_answered(Status, Msg, D),
     chappe_sip_cdr:stop(D#data.cdr, D#data.cdr_why),
     chappe_sip_engine:finish_txn(D#data.txn),
@@ -388,6 +407,7 @@ handle_response(422, Raw, #data{method = <<"INVITE">>} = D) ->
 handle_response(Status, Raw, D) when Status >= 200, Status < 300 ->
     %% non-INVITE success
     {ok, Msg} = chappe_sip_msg:parse(Raw),
+    ok = report_auth(D),
     notify(D, {response, Msg}),
     chappe_sip_engine:finish_txn(D#data.txn),
     {stop, normal, D};
@@ -941,8 +961,13 @@ send_ack(Msg, Body, #data{cseq = CSeq} = D) ->
     end.
 
 %% Tear down a forked extra dialog, or one whose offer we refused.
-send_bye(Msg, #data{cseq = CSeq} = D) ->
-    Raw = dialog_request(<<"BYE">>, CSeq + 1, <<>>, <<>>, Msg, D),
+send_bye(Msg, D) ->
+    send_bye(Msg, [], D).
+
+send_bye(Msg, Hdrs, #data{cseq = CSeq} = D) ->
+    Raw = dialog_request(
+        <<"BYE">>, CSeq + 1, chappe_sip_hdr_io:join(Hdrs), <<>>, Msg, D
+    ),
     chappe_sip_engine:send_stateless(ack_route(Msg, D), Raw, self()).
 
 %% RFC 3261 12.2.1.1: a strict router (no ;lr) takes the Request-URI
@@ -1170,6 +1195,13 @@ credentials_for(Realm, List) when is_list(List) ->
         [#{user := U, pass := P} | _] -> {U, P};
         _ -> none
     end.
+
+%% report_auth => true: the challenges answered and their nonce counts, for
+%% the caller's next request (auth_state)
+report_auth(#data{opts = #{report_auth := true}, challenges = [_ | _]} = D) ->
+    notify(D, {auth_state, {D#data.challenges, D#data.nonce_count}});
+report_auth(_D) ->
+    ok.
 
 %% the Authorization / Proxy-Authorization headers of the next request:
 %% one per challenge, each nonce counting its requests (RFC 7616 3.4)
@@ -1531,6 +1563,6 @@ cdr_failed(Other, #data{cdr = Id}) ->
 %% BYEd (handle_response/3)
 abandon(#data{abandoned = true} = D, _Why) ->
     {keep_state, D};
-abandon(#data{txn = TxnH} = D, Why) ->
-    _ = TxnH =/= undefined andalso chappe_sip_engine:cancel_txn(TxnH, []),
+abandon(#data{txn = TxnH, abandon_hdrs = Hdrs} = D, Why) ->
+    _ = TxnH =/= undefined andalso chappe_sip_engine:cancel_txn(TxnH, Hdrs),
     {keep_state, D#data{abandoned = true, cdr_why = Why}}.

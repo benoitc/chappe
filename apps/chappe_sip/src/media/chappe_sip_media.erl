@@ -448,7 +448,10 @@ anchor_pinned(CallId) ->
 bypass(#{a := A, b := B}, Opts) ->
     SA = side(A),
     SB = side(B),
-    Nets = [N || C <- maps:get(networks, Opts, []), {ok, N} <- [cidr(C)]],
+    Nets = [
+        N
+     || C <- maps:get(networks, Opts, []), {ok, N} <- [chappe_sip_net:cidr(C)]
+    ],
     case
         webrtc_side(SA) orelse webrtc_side(SB) orelse natted(SA) orelse
             natted(SB)
@@ -469,7 +472,13 @@ bypass_addrs(A, B, Nets) ->
             direct;
         true ->
             case
-                lists:any(fun(N) -> in_net(A, N) andalso in_net(B, N) end, Nets)
+                lists:any(
+                    fun(N) ->
+                        chappe_sip_net:in_net(A, N) andalso
+                            chappe_sip_net:in_net(B, N)
+                    end,
+                    Nets
+                )
             of
                 true -> direct;
                 false -> anchor
@@ -531,38 +540,6 @@ private({A, _, _, _, _, _, _, _}) when A band 16#fe00 =:= 16#fc00 -> true;
 private({A, _, _, _, _, _, _, _}) when A band 16#ffc0 =:= 16#fe80 -> true;
 private({0, 0, 0, 0, 0, 0, 0, 1}) -> true;
 private(_) -> false.
-
-cidr(Bin) when is_binary(Bin) ->
-    case binary:split(Bin, <<"/">>) of
-        [Addr, Bits] ->
-            case {ip(Addr), string:to_integer(Bits)} of
-                {undefined, _} ->
-                    error;
-                {Ip, {N, <<>>}} when
-                    is_integer(N) andalso N >= 0 andalso
-                        (N =< 32 orelse (tuple_size(Ip) =:= 8 andalso N =< 128))
-                ->
-                    {ok, {Ip, N}};
-                _ ->
-                    error
-            end;
-        _ ->
-            error
-    end;
-cidr(_) ->
-    error.
-
-in_net(Ip, {Net, Bits}) when tuple_size(Ip) =:= tuple_size(Net) ->
-    <<P:Bits/bitstring, _/bitstring>> = ip_bits(Ip),
-    <<Q:Bits/bitstring, _/bitstring>> = ip_bits(Net),
-    P =:= Q;
-in_net(_Ip, _Net) ->
-    false.
-
-ip_bits(Ip) when tuple_size(Ip) =:= 4 ->
-    <<<<O:8>> || O <- tuple_to_list(Ip)>>;
-ip_bits(Ip) ->
-    <<<<H:16>> || H <- tuple_to_list(Ip)>>.
 
 %% internal
 
