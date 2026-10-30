@@ -55,6 +55,12 @@ b2b_success_bye(_Config) ->
     callee(CalleePort, fun(Sock) ->
         {Inv, Src} = recv(Sock, <<"INVITE">>),
         {_, _} = binary:match(Inv, <<"v=0">>),         % offer relayed
+        %% B sees the caller's name and address, under B's own From tag
+        {ok, InvMsg} = chappe_sip_msg:parse(Inv),
+        {ok, #{display := <<"Caller">>, uri := <<"sip:caller@", _/binary>>,
+               params := #{<<"tag">> := BTag}}} =
+            chappe_sip_hdr:name_addr(chappe_sip_msg:get(<<"from">>, InvMsg)),
+        true = BTag =/= <<"cft">>,
         send(Sock, Src, resp(Inv, 180, <<"Ringing">>, tag(), [], <<>>)),
         ToTag = tag(),
         send(Sock, Src, resp(Inv, 200, <<"OK">>, ToTag,
