@@ -21,6 +21,21 @@
 %%   subscribed to HEARTBEAT, in the subscribed format, with the headers of
 %%   `load' (a map, changed with set_load/2) over FreeSWITCH-like defaults.
 %%
+%% A fake that has a channel (`channel => Uuid', or the outbound-client mode)
+%% plays it too: a sendmsg execute is answered +OK and followed by
+%% CHANNEL_EXECUTE and CHANNEL_EXECUTE_COMPLETE carrying the request's
+%% Event-UUID as Application-UUID, and the channel's Unique-ID. `apps' maps
+%% an application name to how it completes: `silent' (never), or a map with
+%% `execute_delay' (ms before CHANNEL_EXECUTE, as if queued), `delay' (ms
+%% before the completion, or `silent'), `response' (Application-Response) and `vars' (extra headers
+%% of the completion, such as variable_chappe_digits). dtmf/2 and hangup/2
+%% push DTMF and CHANNEL_HANGUP / CHANNEL_HANGUP_COMPLETE events.
+%%
+%% start_outbound/2 runs the fake as FreeSWITCH running the dialplan socket
+%% application: it connects to a listener, answers `connect' with the
+%% channel data and `linger' with +OK, then behaves as above. It stops when
+%% the client closes the socket.
+%%
 %% Every command block received is reported to the process that started the
 %% fake as {fake_server, Server, Block} (a body, when the block carries a
 %% Content-Length, is appended after a blank line), and every accepted client
@@ -28,6 +43,7 @@
 -module(chappe_esl_fake_server).
 
 -export([start/0, start/1, stop/1, inject/2, drop/1]).
+-export([start_outbound/2, dtmf/2, hangup/2]).
 -export([set_api/3, set_load/2]).
 -export([plain_event/2, json_event/2]).
 
@@ -55,6 +71,32 @@ stop(Server) ->
     after 5000 ->
         error(fake_server_stop_timeout)
     end.
+
+%% Connect to an outbound listener on Port as the channel `channel' (default
+%% <<"fake-uuid-1">>). Returns {ok, Server}.
+-spec start_outbound(inet:port_number(), map()) -> {ok, pid()}.
+start_outbound(Port, Opts) ->
+    Parent = self(),
+    Pid = spawn(fun() -> init_outbound(Parent, Port, Opts) end),
+    receive
+        {Pid, connected} -> {ok, Pid}
+    after 5000 ->
+        error(fake_server_connect_timeout)
+    end.
+
+%% Push a DTMF event for the channel.
+-spec dtmf(pid(), binary()) -> ok.
+dtmf(Server, Digit) ->
+    Server ! {channel_event, <<"DTMF">>, [{<<"DTMF-Digit">>, Digit}]},
+    ok.
+
+%% Push CHANNEL_HANGUP then CHANNEL_HANGUP_COMPLETE for the channel.
+-spec hangup(pid(), binary()) -> ok.
+hangup(Server, Cause) ->
+    H = [{<<"Hangup-Cause">>, Cause}],
+    Server ! {channel_event, <<"CHANNEL_HANGUP">>, H},
+    Server ! {channel_event, <<"CHANNEL_HANGUP_COMPLETE">>, H},
+    ok.
 
 %% Push raw bytes (for example an event frame) to the connected client.
 -spec inject(pid(), iodata()) -> ok.
@@ -116,6 +158,23 @@ init(Parent, Opts) ->
         hb_format => undefined
     }).
 
+init_outbound(Parent, Port, Opts0) ->
+    Opts = Opts0#{channel => maps:get(channel, Opts0, <<"fake-uuid-1">>)},
+    {ok, Sock} = gen_tcp:connect(
+        {127, 0, 0, 1}, Port, [binary, {packet, raw}, {active, true}], 5000
+    ),
+    Parent ! {self(), connected},
+    loop(#{
+        listen => undefined,
+        sock => Sock,
+        buf => <<>>,
+        opts => Opts#{reaccept => false},
+        parent => Parent,
+        api => maps:get(api, Opts, #{}),
+        load => #{},
+        hb_format => undefined
+    }).
+
 %% Wait for a client, still answering control messages.
 accept(#{listen := Listen} = State) ->
     receive
@@ -171,6 +230,9 @@ loop(#{sock := Sock} = State) ->
             loop(State);
         heartbeat ->
             loop(send_heartbeat(State));
+        {channel_event, Name, Headers} ->
+            _ = gen_tcp:send(Sock, channel_event(Name, Headers, State)),
+            loop(State);
         drop ->
             gone(State);
         stop ->
@@ -190,7 +252,7 @@ control({set_load, Load}, #{load := Old} = State) ->
 
 shutdown(#{sock := Sock, listen := Listen}) ->
     _ = Sock =/= undefined andalso gen_tcp:close(Sock),
-    _ = gen_tcp:close(Listen),
+    _ = Listen =/= undefined andalso gen_tcp:close(Listen),
     ok.
 
 process(State) ->
@@ -261,6 +323,13 @@ handle_command(Block, #{sock := Sock, opts := Opts} = State) ->
             State;
         <<"sendmsg", _/binary>> ->
             send(Sock, command_reply(<<"+OK">>)),
+            maybe_execute(Block, State),
+            State;
+        <<"connect", _/binary>> ->
+            send(Sock, channel_data(State)),
+            State;
+        <<"linger", _/binary>> ->
+            send(Sock, command_reply(<<"+OK will linger">>)),
             State;
         <<"exit", _/binary>> ->
             send(Sock, command_reply(<<"+OK bye">>)),
@@ -270,6 +339,76 @@ handle_command(Block, #{sock := Sock, opts := Opts} = State) ->
             send(Sock, command_reply(<<"-ERR unknown command">>)),
             State
     end.
+
+%% A sendmsg execute on a fake with a channel: report the execution, then
+%% complete it as `apps' says.
+maybe_execute(Block, #{opts := #{channel := _} = Opts}) ->
+    H = block_headers(Block),
+    case maps:get(<<"call-command">>, H, undefined) of
+        <<"execute">> ->
+            App = maps:get(<<"execute-app-name">>, H),
+            Arg = maps:get(<<"execute-app-arg">>, H, block_body(Block)),
+            Common = [
+                {<<"Application">>, App},
+                {<<"Application-Data">>, Arg},
+                {<<"Application-UUID">>, maps:get(<<"event-uuid">>, H)}
+            ],
+            Spec = maps:get(App, maps:get(apps, Opts, #{}), #{}),
+            Started = {channel_event, <<"CHANNEL_EXECUTE">>, Common},
+            _ =
+                case execute_delay(Spec) of
+                    0 -> self() ! Started;
+                    Ms -> erlang:send_after(Ms, self(), Started)
+                end,
+            complete(Spec, Common);
+        _ ->
+            ok
+    end;
+maybe_execute(_Block, _State) ->
+    ok.
+
+execute_delay(#{execute_delay := Ms}) -> Ms;
+execute_delay(_Spec) -> 0.
+
+complete(silent, _Common) ->
+    ok;
+complete(#{delay := silent}, _Common) ->
+    ok;
+complete(Spec, Common) ->
+    Response = maps:get(response, Spec, <<"_none_">>),
+    Headers =
+        Common ++
+            [{<<"Application-Response">>, Response}] ++
+            maps:get(vars, Spec, []),
+    Msg = {channel_event, <<"CHANNEL_EXECUTE_COMPLETE">>, Headers},
+    erlang:send_after(maps:get(delay, Spec, 0), self(), Msg),
+    ok.
+
+%% Header names of a command block, lowercased.
+block_headers(Block) ->
+    [Head | _] = binary:split(Block, <<"\n\n">>),
+    [_First | Lines] = binary:split(Head, <<"\n">>, [global]),
+    maps:from_list([
+        {string:lowercase(K), V}
+     || Line <- Lines, [K, V] <- [binary:split(Line, <<": ">>)]
+    ]).
+
+block_body(Block) ->
+    case binary:split(Block, <<"\n\n">>) of
+        [_, Body] -> Body;
+        [_] -> <<>>
+    end.
+
+channel_event(Name, Headers, #{opts := Opts}) ->
+    Uuid = maps:get(channel, Opts, <<"fake-uuid-1">>),
+    plain_event(Name, [{<<"Unique-ID">>, Uuid} | Headers]).
+
+channel_data(#{opts := Opts}) ->
+    Uuid = maps:get(channel, Opts, <<"fake-uuid-1">>),
+    <<"Content-Type: command/reply\nReply-Text: +OK\n"
+        "Unique-ID: ", Uuid/binary, "\nChannel-Unique-ID: ", Uuid/binary,
+        "\nChannel-Name: sofia/internal/1000\n"
+        "Caller-Caller-ID-Number: 1000\n\n">>.
 
 %% "event json HEARTBEAT ..." starts the heartbeat when one is configured.
 subscribed(Spec, #{opts := Opts} = State) ->

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `chappe_esl`: you can now drive a FreeSWITCH call step by step. Each
+  command waits until FreeSWITCH has finished it, so you can play a prompt,
+  collect digits, record, or stream the call's audio to a WebSocket, and you
+  are told about digits and hang-ups. A command that takes too long is
+  stopped instead of finishing later, file paths with spaces work, and a call
+  whose controlling process dies is cleaned up and hung up.
 - `chappe_esl` is back in the umbrella. It can now register several
   FreeSWITCH nodes, keep each one connected (reconnecting with a growing
   delay), watch its health with heartbeats and periodic checks, report its

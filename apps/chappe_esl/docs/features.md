@@ -47,6 +47,21 @@ capability exists before you reach for it.
 - `node_api/2` and `node_bgapi/2` on a node's connection; up, down, draining
   and load notices (`node_subscribe/1`) and the node's events
   (`node_events/1`).
+- Typed call control (`chappe_esl_call`): `exec/5` sends a sendmsg execute
+  with an Event-UUID and waits for the CHANNEL_EXECUTE_COMPLETE carrying it
+  as Application-UUID, with a timeout; a timed out application is stopped
+  with uuid_break. A call process per channel (outbound,
+  or inbound given a uuid) subscribes to the channel's events, matches
+  completions to requests and sends its owner DTMF, hangup, unclaimed
+  completions and other events. Helpers: answer, playback,
+  play_and_get_digits, record, record_session and its stop, send_dtmf, set,
+  export, hangup, conference, audio_fork_start and audio_fork_stop; paths
+  with spaces are quoted. When the
+  owner dies first, forks and session recordings stop and the channel is
+  killed.
+- An outbound connection handed to another process with
+  `set_controlling_process/2` stays open after the handler returns, and ends
+  with its new owner.
 - Requirement catalogue in `docs/compliance/requirements.tsv`.
 
 ## Roadmap

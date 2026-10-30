@@ -6,7 +6,8 @@
      nodes of the chappe_esl live suite: the event socket on 8021 open to
      any source (allow-all ACL), one unauthenticated SIP profile on 5080
      reachable only inside the compose network, and a dialplan that answers
-     and parks `park', and joins `conf-<name>' to a conference. HEARTBEAT
+     and parks `park', joins `conf-<name>' to a conference, and hands
+     `socket-<port>' to the test host's outbound listener on that port. HEARTBEAT
      every second (event-heartbeat-interval), so the suite sees load fast.
      It replaces the image's stock tree (FreeSWITCH is started with -conf
      pointing here). Never ship an allow-all ESL ACL or an unauthenticated
@@ -38,6 +39,8 @@
         <load module="mod_dptools"/>
         <load module="mod_dialplan_xml"/>
         <load module="mod_tone_stream"/>
+        <load module="mod_sndfile"/>
+        <load module="mod_audio_fork"/>
       </modules>
     </configuration>
 
@@ -83,6 +86,10 @@
             <param name="sip-ip" value="$${local_ip_v4}"/>
             <param name="rtp-ip" value="$${local_ip_v4}"/>
             <param name="sip-port" value="5080"/>
+            <!-- pace media on a clock; without it RTP runs unpaced (a
+                 1 s prompt plays in 0.1 s) and record never reaches its
+                 time limit -->
+            <param name="rtp-timer-name" value="soft"/>
             <param name="auth-calls" value="false"/>
             <param name="inbound-codec-prefs" value="PCMU,PCMA"/>
             <param name="outbound-codec-prefs" value="PCMU,PCMA"/>
@@ -115,6 +122,14 @@
         <condition field="destination_number" expression="^park$">
           <action application="answer"/>
           <action application="park"/>
+        </condition>
+      </extension>
+      <!-- socket-<port>: hand the channel to the chappe_esl listener of
+           the test host (the dialplan socket application, outbound). -->
+      <extension name="socket">
+        <condition field="destination_number" expression="^socket-([0-9]+)$">
+          <action application="socket"
+                  data="host.docker.internal:$1 async full"/>
         </condition>
       </extension>
       <extension name="conference">

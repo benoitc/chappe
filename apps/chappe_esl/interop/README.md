@@ -27,6 +27,8 @@ tears them down. The suite stops and starts fs1 itself.
 ## Run by hand
 
 ```sh
+mkdir -p _build/esl-media
+export ESL_MEDIA_DIR=$PWD/_build/esl-media
 docker compose -p chappe-esl -f apps/chappe_esl/interop/docker-compose.yml up -d --wait
 FS_HOST=127.0.0.1 FS_PORT=18021 FS2_PORT=18022 FS_PASSWORD=ClueCon \
   FS_COMPOSE="docker compose -p chappe-esl -f $PWD/apps/chappe_esl/interop/docker-compose.yml" \
@@ -43,9 +45,18 @@ node registry group.
   arm64 and amd64) with `conf/freeswitch.xml` as their whole configuration:
   HEARTBEAT every second, ESL on 8021 with an allow-all ACL, one
   unauthenticated SIP profile on 5080 inside the compose network, and a
-  dialplan with `park` and `conf-<name>`. Test-only; never ship that ACL or
+  dialplan with `park`, `conf-<name>` and `socket-<port>`, mod_sndfile
+  for wav prompts and recordings, and mod_audio_fork (the image ships it) for
+  the fork case, which streams to a websocket sink the suite opens on
+  `ESL_SOCKET_PORT` + 1. Test-only; never ship that ACL or
   profile.
 - ESL is published on 127.0.0.1:18021 (fs1) and 18022 (fs2). Override with
   `FS1_ESL_PORT` / `FS2_ESL_PORT`, and the compose project with `ESL_PROJECT`.
 - Calls go from fs1 to `sip:park@fs2:5080`, so no endpoint module beyond
   mod_sofia is needed.
+- The `call` group of the suite has fs1 call `sip:socket-<port>@fs2:5080`;
+  fs2's dialplan runs `socket host.docker.internal:<port> async full`, which
+  connects back to a chappe_esl listener on this machine (`ESL_SOCKET_PORT`,
+  default 18084). Both nodes mount `ESL_MEDIA_DIR` (default
+  `_build/esl-media`) as `/media`: the suite writes its prompt there and
+  checks the recordings. The group is skipped without `ESL_MEDIA_DIR`.
