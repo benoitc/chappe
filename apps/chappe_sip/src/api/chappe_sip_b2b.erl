@@ -28,12 +28,16 @@
 %% endpoints) or anchored in rtpengine through a chappe_sip_media session
 %% (see chappe_sip_b2b_media); set_media/2 switches a live call.
 %%
-%% A {parallel, Uris} target rings every URI at once, one UAC per branch,
-%% under one To-tag toward A: the first 2xx wins, the other branches are
-%% CANCELled (a 2xx of theirs that still comes is ACKed and BYEd), and when
-%% every branch fails A gets the best final (RFC 3261 16.7, shared with
-%% chappe_sip_proxy). Timer C covers the whole fork. Anchored, each branch
-%% answers the same rtpengine offer under its own To-tag.
+%% A {parallel, Dests} target rings every destination at once, one UAC per
+%% branch, under one To-tag toward A: the first 2xx wins, the other
+%% branches are CANCELled (a 2xx of theirs that still comes is ACKed and
+%% BYEd), and when every branch fails A gets the best final (RFC 3261 16.7,
+%% shared with chappe_sip_proxy). Timer C covers the whole fork. A
+%% destination may carry its own flow, headers and anchor_params. Anchored,
+%% each branch answers the rtpengine offer of its flags under its own
+%% To-tag: one offer when every branch takes the same flags, else one per
+%% distinct set, each under a via-branch of its own. The result names the
+%% destination that answered (winner).
 %%
 %% On a live call, hangup/2 ends both legs with a Reason, and replace_b/3
 %% swaps leg B for a new callee behind rtpengine without A seeing a
@@ -55,7 +59,7 @@
 %% helpers of the chappe_sip_b2b_* modules
 -export([timer_c/1, remote_tag/1, destroy_quietly/2]).
 
--export_type([b2b/0, legs/0, target/0]).
+-export_type([b2b/0, legs/0, target/0, dest/0, branch_opts/0, winner/0]).
 
 %% A running call, for set_media/2 and info/1: the process that runs
 %% relay/1,2 and the reference its events carry.
@@ -67,14 +71,34 @@
     media => chappe_sip_b2b_media:state(),
     late => true,
     requests => [request()],
-    relay_info => boolean()
+    relay_info => boolean(),
+    winner => winner()
 }.
-%% Where leg B goes: a URI, a list of URIs, or a group of OPTIONS-monitored
-%% peers (chappe_sip_peers); a list or a group is tried in turn while one
-%% fails with 408, 503 or a transport error. {parallel, Uris} rings them
-%% all at once.
+%% Where leg B goes: a destination, a list of them, or a group of
+%% OPTIONS-monitored peers (chappe_sip_peers); a list or a group is tried
+%% in turn while one fails with 408, 503 or a transport error.
+%% {parallel, Dests} rings them all at once.
 -type target() ::
-    binary() | [binary()] | {peer_group, term()} | {parallel, [binary()]}.
+    dest() | [dest()] | {peer_group, term()} | {parallel, [dest()]}.
+%% A destination: a URI, or a URI with options of its own.
+-type dest() :: binary() | {binary(), branch_opts()}.
+%% What one destination changes over the call's options:
+%%   flow          the registered flow its INVITE goes over (the call's
+%%                 flow option otherwise)
+%%   headers       added to its INVITE after the call's b_headers
+%%   anchor_params #{a | b => map()}, merged flag by flag over the call's
+%%                 anchor_params for that leg
+-type branch_opts() :: #{
+    flow => chappe_sip_engine:flow(),
+    headers => [{binary(), iodata()}],
+    anchor_params => #{a | b => map()}
+}.
+%% The destination that answered: its URI, its branch options (#{} for a
+%% bare URI) and its place in the target, from 1 (for a peer group, in the
+%% candidates of the call).
+-type winner() :: #{
+    uri := binary(), index := pos_integer(), opts := branch_opts()
+}.
 %% in-dialog requests the requests option hands to the notify process
 -type request() :: refer | info | message | notify | options.
 -export_type([request/0]).
@@ -87,7 +111,8 @@
 %%   local_sdp_a   => answer sent to A: value | fun(SdpB) (default: SdpB);
 %%                    also applied to early media SDP
 %%   b_headers   => [{Name, Value}] added to the INVITE to B (a correlation
-%%                  header for the far end, say)
+%%                  header for the far end, say); a destination's own
+%%                  headers come after them
 %%   from        => the From of the INVITE to B (default: A's display name
 %%                  and URI, anonymous under user or header privacy)
 %%   proxy_request_headers  => [Name] | all | {all, [ExcludeName]}
@@ -144,7 +169,9 @@
 %%                            gets 500 before B is called, and
 %%                            {error, {privacy, Unsupported}} is returned.
 %% The result also carries b2b (the handle of set_media/2 and info/1, the
-%% reference in its events) and the media state relay/1,2 continues with.
+%% reference in its events), the media state relay/1,2 continues with,
+%% and winner, the destination that answered (winner()). The media fun's
+%% CallInfo uri is the first destination's.
 -spec create_b2bua(chappe_sip_req:req(), chappe_sip_res:res(), target(), map()) ->
     {ok, legs()} | {error, term()}.
 create_b2bua(Req, Res, Uri, Opts) ->
@@ -166,12 +193,14 @@ start_b2bua(Req, Res, Target, Opts) ->
                 reason => <<"Service Unavailable">>
             }),
             {error, none_up};
-        {Fork, [Uri | _] = Uris} ->
+        {Fork, [First | _] = Dests} ->
             Ref = make_ref(),
-            M = chappe_sip_b2b_media:new(media_init(Req, Uri, Ref, Opts), Opts),
+            M = chappe_sip_b2b_media:new(
+                media_init(Req, First, Ref, Opts), Opts
+            ),
             case chappe_sip_b2b_media:start(M) of
                 {ok, M1} ->
-                    offer_b(Req, Res, {Fork, Uris}, Opts, M1);
+                    offer_b(Req, Res, {Fork, Dests}, Opts, M1);
                 {error, Why} ->
                     _ = chappe_sip_res:send(Res, 500, #{
                         reason => <<"Server Internal Error">>
@@ -180,7 +209,7 @@ start_b2bua(Req, Res, Target, Opts) ->
             end
     end.
 
-media_init(Req, Uri, Ref, Opts) ->
+media_init(Req, #{uri := Uri} = First, Ref, Opts) ->
     Sdp = chappe_sip_req:body(Req),
     Info = #{
         req => Req,
@@ -198,11 +227,30 @@ media_init(Req, Uri, Ref, Opts) ->
         call_id => chappe_sip_req:call_id(Req),
         a_tag => chappe_sip_req:from_tag(Req),
         a_webrtc => Sdp =/= <<>> andalso chappe_sip_sdp:webrtc(Sdp),
-        b_webrtc => ws_uri(Uri),
+        b_webrtc => webrtc(First, Opts),
         ref => Ref
     }.
 
-%% a WS target is a browser: WebRTC media
+%% a destination over a WebSocket (its URI or its flow) is a browser:
+%% WebRTC media
+webrtc(#{uri := Uri, opts := BranchOpts}, Opts) ->
+    ws_uri(Uri) orelse
+        is_integer(maps:get(flow, BranchOpts, maps:get(flow, Opts, undefined))).
+
+%% the media side of a destination: its WebRTC flag and its anchor params
+%% merged flag by flag over the call's
+profile(#{opts := BranchOpts} = Dest, Opts) ->
+    Params = maps:fold(
+        fun(Leg, P, Acc) ->
+            Acc#{Leg => maps:merge(maps:get(Leg, Acc, #{}), P)}
+        end,
+        maps:get(anchor_params, Opts, #{}),
+        maps:get(anchor_params, BranchOpts, #{})
+    ),
+    #{webrtc => webrtc(Dest, Opts), params => Params}.
+
+ws_uri(Uri) when not is_binary(Uri) ->
+    false;
 ws_uri(Uri) ->
     case chappe_sip_uri:parse(Uri) of
         {ok, #{params := #{<<"transport">> := T}}} when is_binary(T) ->
@@ -211,21 +259,28 @@ ws_uri(Uri) ->
             false
     end.
 
-%% the offer to B: A's (or local_sdp_b) through the hook and the anchor
-offer_b(Req, Res, Uris, Opts, M) ->
+%% the offer to B: A's (or local_sdp_b) through the hook and the anchor,
+%% one per media profile of the destinations
+offer_b(Req, Res, {Fork, Dests}, Opts, M) ->
     Offer = iolist_to_binary(
         maps:get(local_sdp_b, Opts, chappe_sip_req:body(Req))
     ),
-    case chappe_sip_b2b_media:offer(a, Offer, M) of
-        {ok, SdpBOffer, M1} ->
-            start_b(Req, Res, Uris, Opts, SdpBOffer, M1);
+    Profiles = [profile(D, Opts) || D <- Dests],
+    case chappe_sip_b2b_media:fork_offer(Offer, Profiles, M) of
+        {ok, Offers, M1} ->
+            Dests1 = lists:zipwith(
+                fun(D, {P, Sdp}) -> D#{profile => P, sdp => Sdp} end,
+                Dests,
+                Offers
+            ),
+            start_b(Req, Res, {Fork, Dests1}, Opts, Offer =:= <<>>, M1);
         {reject, Code} ->
             _ = chappe_sip_b2b_media:stop(M),
             _ = chappe_sip_res:send(Res, Code, #{}),
             {error, {rejected, Code}}
     end.
 
-start_b(Req, Res, {Fork, Uris}, Opts, SdpBOffer, M) ->
+start_b(Req, Res, {Fork, Dests}, Opts, LateOffer, M) ->
     Worker = self(),
     ReqHeaders =
         chappe_sip_b2b_hdr:proxy_request_headers(Req, Opts) ++
@@ -233,10 +288,9 @@ start_b(Req, Res, {Fork, Uris}, Opts, SdpBOffer, M) ->
     ARel = rel100(Req),
     %% a late offer: B's 2xx carries the offer, and its ACK must wait for
     %% A's answer (in A's ACK, see chappe_sip_b2b_relay)
-    Late = [{no_ack, true} || SdpBOffer =:= <<>>],
+    Late = [{no_ack, true} || LateOffer],
     BOpts0 = maps:merge(maps:from_list(Late), #{
         from => chappe_sip_b2b_hdr:b_from(Req, Opts),
-        local_sdp => SdpBOffer,
         headers => ReqHeaders,
         notify => Worker,
         owner => Worker,
@@ -279,25 +333,38 @@ start_b(Req, Res, {Fork, Uris}, Opts, SdpBOffer, M) ->
         %% the finals of the branches that failed, in arrival order
         finals => []
     },
+    Dests1 = [D#{bopts => dest_bopts(D, BOpts)} || D <- Dests],
     case Fork of
         serial ->
-            attempt(Uris, W);
+            attempt(Dests1, W);
         parallel ->
             fork_next(
                 chappe_sip_b2b_fork:start(
-                    Uris, BOpts, chappe_sip_b2b_fork:ringing(W)
+                    Dests1, chappe_sip_b2b_fork:ringing(W)
                 )
             )
     end.
 
+%% the UAC options of a destination: its offer, its flow, and its headers
+%% after the call's
+dest_bopts(#{opts := BranchOpts, sdp := Sdp}, #{headers := Hdrs} = BOpts) ->
+    B1 = BOpts#{
+        local_sdp => Sdp,
+        headers := Hdrs ++ maps:get(headers, BranchOpts, [])
+    },
+    case BranchOpts of
+        #{flow := Flow} -> B1#{flow => Flow};
+        _ -> B1
+    end.
+
 %% Call the next target. Timer C: B may ring as long as it keeps sending
 %% provisionals, each one restarting the timer.
-attempt([Uri | Rest], #{bopts := BOpts} = W) ->
+attempt([#{uri := Uri, bopts := BOpts} = Dest | Rest], W) ->
     case chappe_sip_uac:start(Uri, BOpts) of
         {ok, BRef} ->
             b2b_wait((chappe_sip_b2b_fork:ringing(W))#{
                 bref => BRef,
-                branches => #{BRef => chappe_sip_b2b_fork:branch()},
+                branches => #{BRef => chappe_sip_b2b_fork:branch(Dest)},
                 rest => Rest
             });
         {error, _} when Rest =/= [] ->
@@ -398,7 +465,9 @@ b_event(_BRef, {early_dialog, D}, W) ->
 b_event(BRef, {provisional, BMsg}, W) ->
     b2b_wait(
         provisional(
-            BMsg, chappe_sip_b2b_fork:sdp(BRef, BMsg, restart_timer_c(BMsg, W))
+            BRef,
+            BMsg,
+            chappe_sip_b2b_fork:sdp(BRef, BMsg, restart_timer_c(BMsg, W))
         )
     );
 b_event(BRef, {answer, BMsg}, W) ->
@@ -429,8 +498,12 @@ answered(#{prack_wait := {true, true}} = W) ->
 answered(#{ready := BDialog} = W) ->
     answer_a(W, BDialog).
 
-pracked(#{queue := [Next | Rest]} = W) ->
-    b2b_wait(send_provisional(Next, W#{queue := Rest}));
+pracked(#{queue := [{BRef, Next} | Rest]} = W) ->
+    b2b_wait(
+        send_provisional(
+            Next, chappe_sip_b2b_fork:media(BRef, W#{queue := Rest})
+        )
+    );
 pracked(#{ready := undefined} = W) ->
     b2b_wait(W);
 pracked(W) ->
@@ -438,7 +511,10 @@ pracked(W) ->
 
 %% B may hang up the moment it has our ACK, before A is answered: A still
 %% gets the 2xx, and relay/2 then passes B's BYE (and its Reason) on
-answer_a(#{opts := Opts, media := M0} = W, BDialog) ->
+answer_a(W0, BDialog) ->
+    %% the call goes on with the flags of the branch that answered
+    #{opts := Opts, media := M0} =
+        W = chappe_sip_b2b_fork:media(maps:get(bref, W0), W0),
     SdpBAnswer =
         case remote_sdp(BDialog) of
             <<>> -> maps:get(b_sdp, W);
@@ -491,6 +567,7 @@ create_a(
                 UasOpts0
         end,
     UasOpts = nat_flow(Req, UasOpts1),
+    Winner = chappe_sip_b2b_fork:winner(W),
     case chappe_sip:create_uas(Req, Res, UasOpts) of
         {ok, ADialog} ->
             Legs = #{
@@ -499,7 +576,8 @@ create_a(
                 b2b => {self(), maps:get(ref, M)},
                 media => M,
                 requests => maps:get(requests, Opts, []),
-                relay_info => maps:get(relay_info, Opts, false)
+                relay_info => maps:get(relay_info, Opts, false),
+                winner => Winner
             },
             {ok, maps:merge(Legs, maps:from_list([{late, true} || late(W)]))};
         {error, Reason} ->
@@ -546,7 +624,7 @@ b_failed(BRef, SipError, W) ->
 
 %% ---- provisionals ----
 
-provisional(BMsg, #{opts := Opts} = W) ->
+provisional(BRef, BMsg, #{opts := Opts} = W) ->
     case
         maps:get(pass_provisional_responses, Opts, true) andalso
             chappe_sip_msg:status(BMsg) =/= 100
@@ -558,9 +636,9 @@ provisional(BMsg, #{opts := Opts} = W) ->
             case {reliable(BMsg, W), maps:get(prack_wait, W)} of
                 {true, {true, _}} ->
                     %% RFC 3262 3: one unacknowledged reliable 1xx at a time
-                    W#{queue := maps:get(queue, W) ++ [BMsg]};
+                    W#{queue := maps:get(queue, W) ++ [{BRef, BMsg}]};
                 _ ->
-                    send_provisional(BMsg, W)
+                    send_provisional(BMsg, chappe_sip_b2b_fork:media(BRef, W))
             end
     end.
 
@@ -705,7 +783,9 @@ set_media(B2b, Mode) when Mode =:= direct; Mode =:= anchor ->
 
 %% What the call is doing: #{media := direct | anchor, hold := #{a, b},
 %% call_id := binary(), session := chappe_sip_media:session() | undefined,
-%% pending := boolean()}.
+%% pending := boolean(), winner := winner() | undefined}. winner is the
+%% destination that answered create_b2bua/4 (undefined for legs made
+%% another way).
 -spec info(b2b()) -> map() | {error, term()}.
 info(B2b) ->
     call(B2b, info).

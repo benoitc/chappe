@@ -54,6 +54,7 @@ run(#{uas := A, uac := B} = Legs, Opts) ->
         ref => maps:get(ref, M0),
         requests => Requests,
         relay_info => RelayInfo,
+        winner => maps:get(winner, Legs, undefined),
         media => with_opts(Opts, M0),
         %% a late offer: B's 2xx waits for the answer in A's ACK
         pending =>
@@ -362,7 +363,8 @@ handle_call(From, info, #{media := M, pending := P} = S) ->
         hold => maps:get(hold, M),
         call_id => maps:get(call_id, M),
         session => chappe_sip_b2b_media:session(M),
-        pending => P =/= undefined
+        pending => P =/= undefined,
+        winner => maps:get(winner, S)
     }),
     S;
 handle_call(From, {set_media, Mode}, #{media := #{mode := Mode}} = S) ->

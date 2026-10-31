@@ -181,7 +181,10 @@ backend_start(Other, _Id, _Opts) ->
     {error, {unknown_backend, Other}}.
 
 %% Offer the caller's SDP into the session; returns the rewritten SDP to send
-%% onward. rtpengine only.
+%% onward. rtpengine only. Opts: from_tag, params (rtpengine flags), and
+%% branch => true for one more offer of the same party while the first
+%% waits for its answer (a fork branch with other flags, named by a
+%% via_branch in params).
 -spec offer(session(), iodata()) -> {ok, binary()} | {error, term()}.
 offer(S, Sdp) ->
     offer(S, Sdp, #{}).

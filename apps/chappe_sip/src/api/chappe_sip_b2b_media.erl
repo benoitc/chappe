@@ -15,12 +15,18 @@
 %%
 %% rtpengine names the parties by tag: the caller is leg A's From tag, the
 %% callee leg B's To tag, and an offer from B is a callee-initiated one.
+%%
+%% The branches of a fork may need different flags toward B (a browser
+%% and a desk phone). fork_offer/3 then sends one rtpengine offer per
+%% distinct set of flags, each under its own via-branch, and branch/2
+%% points the state at a branch's flags before its answer goes through.
 -module(chappe_sip_b2b_media).
 
 -export([new/2, start/1, stop/1, mode/1, set_mode/2, session/1]).
 -export([set_tag/3, offer/3, answer/3, final_answer/3, rejected/3, hook/1]).
+-export([fork_offer/3, branch/2]).
 
--export_type([state/0, mode/0, leg/0]).
+-export_type([state/0, mode/0, leg/0, profile/0]).
 
 -type mode() :: direct | anchor.
 -type leg() :: a | b.
@@ -37,8 +43,17 @@
     params := #{leg() => map()},
     notify := pid() | undefined,
     ref := reference(),
-    last := {leg(), binary(), binary()} | undefined,
-    origin := leg() | undefined
+    last := {leg(), binary() | undefined, binary(), binary()} | undefined,
+    origin := leg() | undefined,
+    via := binary() | undefined
+}.
+%% The media side of a fork branch: whether B is a WebRTC endpoint, the
+%% anchor params of the call with the branch's over them, and the
+%% via-branch of its rtpengine offer when the fork needed several.
+-type profile() :: #{
+    webrtc := boolean(),
+    params := #{leg() => map()},
+    via => binary() | undefined
 }.
 
 %% Init: #{mode, call_id, a_tag, b_webrtc, a_webrtc, ref} plus the
@@ -60,7 +75,8 @@ new(Init, Opts) ->
         notify => maps:get(notify, Opts, undefined),
         ref => maps:get(ref, Init),
         last => undefined,
-        origin => undefined
+        origin => undefined,
+        via => undefined
     }.
 
 %% The rewrite_sdp hook as a 3-arity fun: fun(Leg, offer | answer, Sdp),
@@ -141,11 +157,48 @@ answer(Y, Sdp, M0, Extra) ->
 
 %% The answer of the winning branch of a fork: anchored, rtpengine takes
 %% it as the final one and deletes the other branches' to-tags (their
-%% early media answers).
+%% early media answers). The call's later answers carry no via-branch.
 -spec final_answer(leg(), binary(), state()) ->
     {ok, binary(), state()} | {reject, 300..699}.
 final_answer(Y, Sdp, M) ->
-    answer(Y, Sdp, M, #{final => true}).
+    case answer(Y, Sdp, M, #{final => true}) of
+        {ok, Out, M1} -> {ok, Out, M1#{via := undefined}};
+        Rej -> Rej
+    end.
+
+%% Point the state at a fork branch's profile: its answers go through
+%% with its flags (and its via-branch), and once it wins the call keeps
+%% them.
+-spec branch(profile(), state()) -> state().
+branch(P, #{webrtc := W} = M) ->
+    M#{
+        webrtc := W#{b := maps:get(webrtc, P)},
+        params := maps:get(params, P),
+        via := maps:get(via, P, undefined)
+    }.
+
+%% A's offer to the branches of a fork, one profile per branch. The hook
+%% runs once; anchored, rtpengine gets one offer per distinct set of
+%% flags toward B, under a via-branch of its own when there are several.
+%% Returns, in the order of Profiles, each profile (with its via-branch)
+%% and the SDP its branch gets.
+-spec fork_offer(binary(), [profile(), ...], state()) ->
+    {ok, [{profile(), binary()}], state()} | {reject, 300..699}.
+fork_offer(Sdp, [P0 | _] = Ps, M0) ->
+    Keys = [toward(b, branch(P, M0)) || P <- Ps],
+    case distinct(Keys) of
+        [_, _ | _] = Distinct when map_get(mode, M0) =:= anchor, Sdp =/= <<>> ->
+            M = seen(a, Sdp, hold(a, Sdp, M0)),
+            case run_hook(a, offer, Sdp, M) of
+                {reject, _} = Rej -> Rej;
+                Out -> profile_offers(Out, Ps, Keys, Distinct, M)
+            end;
+        _ ->
+            case offer(a, Sdp, branch(P0, M0)) of
+                {ok, Out, M1} -> {ok, [{P, Out} || P <- Ps], M1};
+                Rej -> Rej
+            end
+    end.
 
 %% Leg Y refused the offer relayed to it: rtpengine already took that
 %% offer, so give it back Y's last good SDP as the answer. Without it the
@@ -160,6 +213,50 @@ rejected(Y, LastSdp, #{session := S} = M) ->
     M#{last := undefined}.
 
 %% ---- internal ----
+
+%% one rtpengine offer per distinct Key, the first one opening the
+%% session's offer/answer exchange
+profile_offers(Sdp, Ps, Keys, Distinct, #{session := S} = M0) ->
+    M = M0#{origin := a},
+    Indexed = lists:zip(Distinct, lists:seq(1, length(Distinct))),
+    Sent = lists:map(
+        fun({Key, N}) ->
+            Via = <<"chappe-", (integer_to_binary(N))/binary>>,
+            Opts = (offer_opts(a, M))#{
+                params => Key#{via_branch => Via}, branch => N > 1
+            },
+            {Key, Via, chappe_sip_media:offer(S, Sdp, Opts)}
+        end,
+        Indexed
+    ),
+    case [Why || {_, _, {error, Why}} <- Sent] of
+        [] ->
+            ByKey = #{Key => {Via, Out} || {Key, Via, {ok, Out}} <- Sent},
+            {ok,
+                [
+                    {P#{via => Via}, Out}
+                 || {P, Key} <- lists:zip(Ps, Keys),
+                    {Via, Out} <- [maps:get(Key, ByKey)]
+                ],
+                M#{last := undefined}};
+        [Why | _] ->
+            logger:warning("chappe_sip_b2b: rtpengine offer failed: ~p", [Why]),
+            {reject, 500}
+    end.
+
+distinct(Keys) ->
+    lists:reverse(
+        lists:foldl(
+            fun(K, Acc) ->
+                case lists:member(K, Acc) of
+                    true -> Acc;
+                    false -> [K | Acc]
+                end
+            end,
+            [],
+            Keys
+        )
+    ).
 
 run_hook(Leg, Kind, Sdp, #{rewrite := Rw}) ->
     case Rw(Leg, Kind, Sdp) of
@@ -194,7 +291,7 @@ anchor_answer(_Y, Sdp, #{mode := direct} = M, _Extra) ->
     {ok, Sdp, M};
 anchor_answer(_Y, <<>>, M, _Extra) ->
     {ok, <<>>, M};
-anchor_answer(Y, Sdp, #{last := {Y, Sdp, Out}} = M, Extra) when
+anchor_answer(Y, Sdp, #{last := {Y, Via, Sdp, Out}, via := Via} = M, Extra) when
     map_size(Extra) =:= 0
 ->
     %% the same answer again (a 183's SDP repeated in the 2xx)
@@ -205,7 +302,7 @@ anchor_answer(Y, Sdp, #{session := S} = M, Extra) ->
         chappe_sip_media:answer(S, Sdp, Opts#{params := maps:merge(P, Extra)})
     of
         {ok, Out} ->
-            {ok, Out, M#{last := {Y, Sdp, Out}}};
+            {ok, Out, M#{last := {Y, maps:get(via, M), Sdp, Out}}};
         {error, Why} ->
             logger:warning("chappe_sip_b2b: rtpengine answer failed: ~p", [Why]),
             {reject, 500}
@@ -225,8 +322,17 @@ offer_opts(X, #{tags := Tags, origin := Origin} = M) ->
             end
     }.
 
-answer_opts(Y, #{tags := Tags} = M) ->
-    #{to_tag => maps:get(Y, Tags), params => toward(other(Y), M)}.
+%% a fork branch's answer names the via-branch of its offer
+answer_opts(Y, #{tags := Tags, via := Via} = M) ->
+    Params = toward(other(Y), M),
+    #{
+        to_tag => maps:get(Y, Tags),
+        params =>
+            case Via of
+                undefined -> Params;
+                _ -> Params#{via_branch => Via}
+            end
+    }.
 
 other(a) -> b;
 other(b) -> a.

@@ -16,11 +16,13 @@
          proxy_browser_to_udp/1, proxy_udp_to_browser/1,
          proxy_callee_bye/1, b2b_server_bye_to_browser/1,
          b2b_browser_bye_over_ws/1, proxy_ws_to_ws/1]).
+-export([fork_ws_udp_browser_wins/1, fork_ws_udp_phone_wins/1]).
 
 all() ->
     [ws_received, b2b_browser_to_udp, b2b_udp_to_browser,
      proxy_browser_to_udp, proxy_udp_to_browser, proxy_callee_bye,
-     b2b_server_bye_to_browser, b2b_browser_bye_over_ws, proxy_ws_to_ws].
+     b2b_server_bye_to_browser, b2b_browser_bye_over_ws, proxy_ws_to_ws,
+     fork_ws_udp_browser_wins, fork_ws_udp_phone_wins].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -34,6 +36,12 @@ end_per_suite(_Config) ->
     ok.
 
 end_per_testcase(_Case, _Config) ->
+    _ = case whereis(webrtc_test_rtpe) of
+            undefined -> ok;
+            Rtpe ->
+                unregister(webrtc_test_rtpe),
+                chappe_sip_test_rtpe:stop(Rtpe)
+        end,
     _ = chappe_sip:stop(),
     _ = chappe_sip_engine:reset_routes(),
     _ = chappe_sip_registry:clear(),
@@ -208,6 +216,120 @@ b2b_browser_bye_over_ws(_Config) ->
     ok = expect(caller_got_bye),
     ok = expect({relay_done, b_bye}),
     ws:close(C, 1000).
+
+%% An anchored fork to a browser over its WS flow and a desk phone over
+%% UDP: each branch gets its own rtpengine offer (WebRTC flags toward the
+%% browser, plain RTP plus its anchor_params toward the phone), told apart
+%% by via-branch, and the winner's answer goes under its to-tag and its
+%% via-branch. The result names the winner.
+fork_ws_udp_browser_wins(_Config) ->
+    fork_ws_udp(browser).
+
+fork_ws_udp_phone_wins(_Config) ->
+    fork_ws_udp(phone).
+
+fork_ws_udp(Winner) ->
+    {EP, WP} = start(),
+    register(webrtc_test_rtpe, chappe_sip_test_rtpe:start(self())),
+    PhoneP = pick(),
+    Phone = uctc(PhoneP),
+    Test = self(),
+    ok = chappe_sip:register(chappe_sip:registrar(#{allow_unauthenticated => true})),
+    PhoneOpts = #{anchor_params => #{b => #{<<"x-leg">> => <<"phone">>}}},
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        {ok, Uri, Flow} = chappe_sip:location_flow(<<"sip:bob@127.0.0.1">>),
+        Dests = [{Uri, #{flow => Flow}}, {Phone, PhoneOpts}],
+        case chappe_sip:create_b2bua(Req, Res, {parallel, Dests},
+                                     #{media => anchor}) of
+            {ok, Legs} ->
+                #{winner := #{index := I}} = Legs,
+                Test ! {winner, I},
+                chappe_sip_b2b:relay(Legs);
+            {error, R} -> Test ! {b2b_err, R}
+        end
+    end),
+    C = connect(WP),
+    ws:send(C, {text, register_bob()}),
+    _ = recv_ws(200),
+    udp_peer(PhoneP, fun(Sock) ->
+        {Inv, Src} = urecv(Sock, <<"INVITE">>),
+        Test ! {phone_invite, Inv},
+        case Winner of
+            phone ->
+                timer:sleep(200),
+                usend(Sock, Src, uresp(Inv, 200, <<"OK">>, <<"phonetag">>,
+                                       [{<<"Contact">>, Phone}], sdp())),
+                {_, _} = urecv(Sock, <<"ACK">>);
+            browser ->
+                {Cancel, CSrc} = urecv(Sock, <<"CANCEL">>),
+                usend(Sock, CSrc, uresp(Cancel, 200, <<"OK">>, <<"phonetag">>,
+                                        [], <<>>)),
+                usend(Sock, Src, uresp(Inv, 487, <<"Request Terminated">>,
+                                       <<"phonetag">>, [], <<>>))
+        end,
+        timer:sleep(infinity)
+    end),
+    udp_peer(0, fun(Sock) ->
+        usend(Sock, EP, uinvite(Sock, <<"udpA">>)),
+        R200 = urecv_status(Sock, 200),
+        usend(Sock, EP, uack(Sock, <<"udpA">>, to_tag(R200))),
+        Test ! {a_200, R200},
+        timer:sleep(infinity)
+    end),
+    Inv = recv_ws_method(<<"INVITE">>),
+    case Winner of
+        browser ->
+            timer:sleep(200),
+            ws:send(C, {text, ws_ok200(Inv, top_via(Inv), <<"bobtag">>)}),
+            _ = recv_ws_method(<<"ACK">>);
+        phone ->
+            %% a WS client transaction CANCELs once it got a provisional
+            ws:send(C, {text, uresp(Inv, 180, <<"Ringing">>, <<"bobtag">>,
+                                    [], <<>>)}),
+            Cancel = recv_ws_method(<<"CANCEL">>),
+            ws:send(C, {text, ws_200(Cancel)}),
+            ws:send(C, {text, uresp(Inv, 487, <<"Request Terminated">>,
+                                    <<"bobtag">>, [], <<>>)})
+    end,
+    PhoneInv = got(phone_invite),
+    A200 = got(a_200),
+    {WinTag, WinIndex} =
+        case Winner of
+            browser -> {<<"bobtag">>, 1};
+            phone -> {<<"phonetag">>, 2}
+        end,
+    ?assertEqual(WinIndex, got(winner)),
+    Cmds = drain_rtpe(),
+    Offers = [Cmd || #{<<"command">> := <<"offer">>} = Cmd <- Cmds],
+    [BrowserOffer] = [O || O <- Offers,
+                           maps:get(<<"transport-protocol">>, O, <<>>)
+                               =:= <<"UDP/TLS/RTP/SAVPF">>],
+    [PhoneOffer] = [O || O <- Offers,
+                         maps:get(<<"transport-protocol">>, O, <<>>)
+                             =:= <<"RTP/AVP">>],
+    ?assertEqual(2, length(Offers)),
+    ?assertEqual(<<"phone">>, maps:get(<<"x-leg">>, PhoneOffer)),
+    ?assertNot(maps:is_key(<<"x-leg">>, BrowserOffer)),
+    BVia = maps:get(<<"via-branch">>, BrowserOffer),
+    PVia = maps:get(<<"via-branch">>, PhoneOffer),
+    ?assertNotEqual(BVia, PVia),
+    %% each branch got the SDP of its own offer
+    ?assert(has(Inv, <<"a=rtpe-via:", BVia/binary>>)),
+    ?assert(has(PhoneInv, <<"a=rtpe-via:", PVia/binary>>)),
+    WinVia = case Winner of browser -> BVia; phone -> PVia end,
+    [Answer] = [Cmd || #{<<"command">> := <<"answer">>} = Cmd <- Cmds],
+    ?assertEqual(WinTag, maps:get(<<"to-tag">>, Answer)),
+    ?assertEqual(WinVia, maps:get(<<"via-branch">>, Answer)),
+    ?assert(has(A200, <<"a=rtpe-answer:", WinTag/binary>>)),
+    ws:close(C, 1000).
+
+drain_rtpe() ->
+    receive {rtpe_cmd, Cmd} -> [Cmd | drain_rtpe()] after 300 -> [] end.
+
+got(Tag) ->
+    receive {Tag, V} -> V after 6000 -> ct:fail({missing, Tag}) end.
+
+has(Bin, Part) -> binary:match(Bin, Part) =/= nomatch.
 
 %% proxy browser(WS) -> UDP: full call. Record-Route so the browser's ACK
 %% and BYE traverse the proxy to the UDP callee. (WS -> UDP in-dialog.)
