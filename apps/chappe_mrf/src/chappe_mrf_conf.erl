@@ -106,8 +106,9 @@ events(Conf, Pid) ->
 %% incoming call not answered yet ({call, Req, Res}, native only: run it
 %% in the INVITE's request worker; the caller is answered straight into
 %% the room through rtpengine and the call is carried by
-%% chappe_sip_b2b:relay_async/2), or an endpoint. On native, the endpoint must be one of create_endpoint/1 not
-%% bridged: its dialog is re-INVITEd to the mixer through rtpengine. On
+%% chappe_sip_b2b:relay_async/2), or an endpoint. On native, the
+%% endpoint must be one of create_endpoint/1 not bridged: its dialog is
+%% re-INVITEd to the mixer through rtpengine. On
 %% fs, it must be on the conference's node. Opts: name, mute,
 %% deaf, moderator; fs also pin (the PIN to enter first), pin_prompt
 %% (the file asking for it), pin_tries (3), flags (more mod_conference
@@ -324,30 +325,16 @@ handle_call({events, Pid}, _From, #state{listeners = L} = S) ->
             _ -> L#{Pid => monitor(process, Pid)}
         end,
     {reply, ok, S#state{listeners = L1}};
-handle_call({join, _B2b, _Opts}, _From, #state{locked = true} = S) ->
-    {reply, {error, locked}, S};
-handle_call({join_ep, _Ep, _Opts}, _From, #state{locked = true} = S) ->
-    {reply, {error, locked}, S};
-handle_call({join_ep, Ep, Opts}, _From, S) ->
-    chappe_mrf_conf_native:join_endpoint(Ep, Opts, S);
-handle_call({join, B2b, Opts}, From, S) ->
-    chappe_mrf_conf_native:join(B2b, Opts, From, S);
-handle_call({join_call, _Opts}, _From, #state{locked = true} = S) ->
-    {reply, {error, locked}, S};
-handle_call({join_call, Opts}, _From, S) ->
-    chappe_mrf_conf_native:prepare_call(Opts, S);
-handle_call({join_call_done, Token, Result}, From, #state{pending = P} = S) ->
-    case P of
-        #{Token := J} ->
-            {noreply,
-                chappe_mrf_conf_native:call_done(Token, J, Result, From, S)};
-        _ ->
-            {reply, {error, join_failed}, S}
-    end;
+handle_call(Req, From, S) when
+    element(1, Req) =:= join;
+    element(1, Req) =:= join_ep;
+    element(1, Req) =:= join_call;
+    element(1, Req) =:= join_call_done;
+    element(1, Req) =:= fs_join
+->
+    join_req(Req, From, S);
 handle_call({loop_offer, Token, Offer}, _From, S) ->
     chappe_mrf_conf_native:offer(Token, Offer, S);
-handle_call({fs_join, _Ep, _Owned, _Opts}, _From, #state{locked = true} = S) ->
-    {reply, {error, locked}, S};
 handle_call({fs_join, Ep, Owned, Opts}, From, S) ->
     chappe_mrf_conf_fs:start_join(Ep, Owned, Opts, From, S);
 handle_call(members, _From, #state{members = M} = S) ->
@@ -374,6 +361,29 @@ handle_call({play, Who, File}, _From, S) ->
     {reply, play_to(Who, File, S), S};
 handle_call(_Req, _From, S) ->
     {reply, {error, unknown_call}, S}.
+
+%% Every way in for a member. A locked room takes no new member, whatever
+%% the way in; a join already under way still completes.
+join_req(Req, _From, #state{locked = true} = S) when
+    element(1, Req) =/= join_call_done
+->
+    {reply, {error, locked}, S};
+join_req({join_ep, Ep, Opts}, _From, S) ->
+    chappe_mrf_conf_native:join_endpoint(Ep, Opts, S);
+join_req({join, B2b, Opts}, From, S) ->
+    chappe_mrf_conf_native:join(B2b, Opts, From, S);
+join_req({join_call, Opts}, _From, S) ->
+    chappe_mrf_conf_native:prepare_call(Opts, S);
+join_req({join_call_done, Token, Result}, From, #state{pending = P} = S) ->
+    case P of
+        #{Token := J} ->
+            {noreply,
+                chappe_mrf_conf_native:call_done(Token, J, Result, From, S)};
+        _ ->
+            {reply, {error, join_failed}, S}
+    end;
+join_req({fs_join, Ep, Owned, Opts}, From, S) ->
+    chappe_mrf_conf_fs:start_join(Ep, Owned, Opts, From, S).
 
 handle_cast({loop_dialog, Token, D}, #state{pending = P} = S) ->
     case P of
