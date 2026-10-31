@@ -37,7 +37,10 @@ the `presence` package's SUBSCRIBE handler. Or pass `presence => Opts` to
   note). Settle a pending watcher later with
   `chappe_sip_presence:decide(Presentity, allow | polite | deny)`.
 - With `auth`, SUBSCRIBEs and PUBLISHes without valid digest credentials
-  get 401.
+  get 401, and an authenticated user may publish only its own presence
+  (see [Control who publishes](#control-who-publishes)).
+- Without `auth`, every PUBLISH gets 403 unless you pass
+  `esc => #{allow_unauthenticated => true}`.
 - Every NOTIFY carries the full state: the tuples of the presentity's live
   publications, one per tuple id, the most recently published winning.
   A change reaches each watcher at most once per `min_interval` (5000 ms).
@@ -51,6 +54,7 @@ the `presence` package's SUBSCRIBE handler. Or pass `presence => Opts` to
 ok = chappe_sip:publish(#{
     packages => #{<<"presence">> => [<<"application/pidf+xml">>],
                   <<"dialog">> => [<<"application/dialog-info+xml">>]},
+    auth => #{realm => <<"example.com">>, secret => fun my_users:password/1},
     resources => fun(Aor) -> my_users:exists(Aor) end,
     min_expires => 60,
     max_expires => 3600
@@ -62,8 +66,44 @@ The ESC answers each PUBLISH with the granted `Expires` and a new
 (`Expires: 0`) the publication it names, and gets 412 when it names none.
 Other answers: 404 for a resource `resources` refuses, 489 for a package
 not served, 423 with `Min-Expires` below `min_expires`, 415 for a body type
-the package does not take, 400 for no body and no entity-tag. Read the
-state back with `chappe_sip_esc:publications(Aor, Package)`, newest first.
+the package does not take, 400 for no body and no entity-tag, 403 for a
+publisher not allowed to set that state, 413 for a body over
+`esc_max_body_size`, and 503 with `Retry-After` (your `min_expires`) when
+a new publication would go past `esc_max_publications` or
+`esc_max_publications_per_resource` (see the
+[configuration reference](../configuration.md)). Read the state back with
+`chappe_sip_esc:publications(Aor, Package)`, newest first.
+
+## Control who publishes
+
+By default an authenticated user may publish only to its own
+address-of-record: the user part of the Request-URI is the digest user
+and its host is one of the auth domains (`domain` in the `auth` map, one
+binary or a list, else the realm). This is the rule the registrar applies
+to REGISTER. Anything else gets 403.
+
+To set your own policy, pass `authorize`. It replaces the own-AOR rule and
+sees the identity and the resource together:
+
+```erlang
+ok = chappe_sip:publish(#{
+    auth => #{realm => <<"example.com">>, secret => fun my_users:password/1},
+    authorize => fun(#{user := User, resource := Aor, event := Package}) ->
+        my_acl:may_publish(User, Aor, Package)
+    end
+}).
+```
+
+The map also carries `realm` (or `undefined`) and `req`. `user` is
+`undefined` when you run without `auth`. Return `true` to accept, `false`
+for 403. The `resources` allow list still runs first (404).
+
+Without `auth` and without `authorize`, every PUBLISH gets 403. On a closed
+network where you trust every sender, opt in:
+
+```erlang
+ok = chappe_sip:publish(#{allow_unauthenticated => true}).
+```
 
 ## Publish your own state
 

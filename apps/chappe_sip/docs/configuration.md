@@ -69,6 +69,14 @@ list) and the TLS `contact` of `chappe_sip:start/1`.
 | `registrar_max_aors` | `100000` | Distinct AORs the location store holds; a new AOR past this is rejected 503. |
 | `registrar_max_bindings_per_aor` | `10` | Contacts bound to one AOR; a REGISTER exceeding this is rejected 403. |
 
+## Event state compositor (PUBLISH)
+
+| Key | Default | What it does |
+| --- | --- | --- |
+| `esc_max_publications` | `100000` | Live publications the ESC holds in all; a new one past this is rejected 503 with `Retry-After`. Refreshes and modifies of a live publication are still taken. |
+| `esc_max_publications_per_resource` | `16` | Live publications for one resource, across its packages; a new one past this is rejected 503 with `Retry-After`. |
+| `esc_max_body_size` | `65536` | Bytes of one PUBLISH body; a larger one is rejected 413 and nothing is stored. |
+
 ## Session timers
 
 | Key | Default | What it does |
