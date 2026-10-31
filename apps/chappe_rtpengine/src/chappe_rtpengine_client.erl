@@ -133,6 +133,7 @@
         timeouts => 0,
         bad_replies => 0,
         unknown_cookies => 0,
+        bad_sources => 0,
         reconnects => 0,
         address_changes => 0
     } :: #{atom() => non_neg_integer()}
@@ -253,8 +254,19 @@ handle_call(_Request, _From, State) ->
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
-handle_info({udp, Socket, _IP, _Port, Packet}, #state{socket = Socket} = State) ->
+%% Only rtpengine's own address and port can answer: a datagram from
+%% anywhere else, even with a live cookie, is dropped (and counted).
+handle_info(
+    {udp, Socket, IP, Port, Packet},
+    #state{socket = Socket, ip = IP, port = Port} = State
+) ->
     {noreply, handle_packet(Packet, State)};
+handle_info({udp, Socket, IP, Port, _Packet}, #state{socket = Socket} = State) ->
+    ?LOG_WARNING(
+        "chappe_rtpengine_client ~p: reply from ~s:~b dropped, not the node",
+        [State#state.name, inet:ntoa(IP), Port]
+    ),
+    {noreply, bump(bad_sources, State)};
 handle_info({udp_passive, Socket}, #state{socket = Socket} = State) ->
     ok = inet:setopts(Socket, [{active, ?ACTIVE_N}]),
     {noreply, State};
@@ -672,8 +684,10 @@ take_pending(Cookie, State) ->
 bump(Key, #state{stats = Stats} = State) ->
     State#state{stats = maps:update_with(Key, fun(N) -> N + 1 end, Stats)}.
 
+%% The cookie is the only thing tying a reply to its request, so it must
+%% not be guessable: 128 bits from the crypto RNG.
 make_cookie() ->
-    Rand = integer_to_binary(rand:uniform(1 bsl 64), 16),
+    Rand = binary:encode_hex(crypto:strong_rand_bytes(16), lowercase),
     Uniq = integer_to_binary(erlang:unique_integer([positive, monotonic])),
     <<Rand/binary, "-", Uniq/binary>>.
 

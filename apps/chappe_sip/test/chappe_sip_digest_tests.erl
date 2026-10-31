@@ -211,6 +211,18 @@ server_uri_mismatch_test() ->
     ?assertEqual({ok, <<"alice">>},
                  chappe_sip_digest:verify(Args#{request_uri => <<"sip:R">>})).
 
+%% the digest uri names the whole Request-URI: parameters or headers added
+%% to it after signing (a maddr, a transport, any routing hint) are a
+%% different request
+server_uri_parameters_test() ->
+    Auth = client_auth(<<"testrealm">>, <<"alice">>, <<"secret">>),
+    Args = verify_args(Auth),
+    [?assertEqual({error, uri_mismatch},
+                  chappe_sip_digest:verify(Args#{request_uri => U}))
+     || U <- [<<"sip:r;maddr=192.0.2.9">>, <<"sip:r;transport=tcp">>,
+              <<"sip:r;lr">>, <<"sip:r;x-route=evil">>,
+              <<"sip:r?Route=%3Csip:evil%3E">>]].
+
 %% we offered qop=auth: a response without qop, or with auth-int, is
 %% refused instead of checked with the RFC 2069 hash
 server_qop_checks_test() ->
