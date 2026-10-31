@@ -92,3 +92,9 @@ ok = chappe_esl:sendevent(Conn, "NOTIFY", [
 ```erlang
 ok = chappe_esl:close(Conn).
 ```
+
+## Where it lives
+
+- Modules: `chappe_esl` (API), `chappe_esl_inbound` (connect helper), `chappe_esl_conn` (the connection FSM), `chappe_esl_parser`
+- Tests: `apps/chappe_esl/test/chappe_esl_conn_SUITE.erl`, `chappe_esl_parser_tests.erl`
+- Lab: `make interop-esl`

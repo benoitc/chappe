@@ -1,7 +1,10 @@
 # The engine: sofia-sip inside the VM
 
-This document describes how the SIP engine is embedded and what keeps the
-VM safe. Read it before touching `c_src/chappe_sip_engine_nif.c`.
+This document describes how the SIP engine is embedded, what crosses the
+boundary between C and Erlang, and what keeps the VM safe. Read it before
+you touch `c_src/chappe_sip_engine_nif.c`, `src/engine/chappe_sip_nif.erl`
+or `src/engine/chappe_sip_engine.erl`. The layers above the engine are in
+the [overview](overview.md).
 
 ## Shape
 
@@ -18,6 +21,80 @@ default-leg callback looks a To-tagged SUBSCRIBE up with
 `nta_leg_by_dialog` and delivers it on that dialog's leg. That is what lets
 a subscription dialog see its refreshes; the WS transport matches legs by
 Call-ID and tags for every method and needs no such step.
+
+## Why a NIF
+
+The decision and its alternatives are recorded in
+[decision 0001](../../../../docs/decisions/0001-sofia-nta-nif.md).
+What the repository itself shows:
+
+- sofia-sip's nta already implements the RFC 3261 transaction layer, RFC
+  3263 resolution (NAPTR, SRV, A, checked against dnsmasq in the
+  conformance lab), RFC 5626 flows on TCP and TLS, TLS with RFC 5922
+  verification, and the RFC 4475 parser edge cases; chappe_sip reuses it
+  unmodified (`c_src/sofia-sip`, vendored, LGPL-2.1).
+- The shim is about 2600 lines of C and carries no SIP logic: raw messages
+  cross as binaries, and dialogs, proxying and offer/answer are Erlang.
+- The cost is that a crash in sofia or the shim takes the node down. The
+  mitigations are below: the small surface, AddressSanitizer and
+  LeakSanitizer in CI (`make asan`), the lifecycle stress suite, and running
+  the release under heart or systemd.
+- WebSocket does not go through the NIF; see
+  [the WebSocket transport](ws-transport.md).
+
+## The event contract
+
+The NIF talks to one owner process, `chappe_sip_engine`. Every function of
+`chappe_sip_nif` except `start/2` and `stop/1` (dirty IO NIFs) is
+enqueue-only: it allocates an operation, hands it to the stack thread and
+returns. A creating operation (`request/3,4,5`, `leg_create/4`) returns a
+handle at once, but the nta object is built later on the stack thread; its
+success or failure arrives as an event. Enqueue success is not operation
+success.
+
+Events arrive as `{chappe_sip_engine, EngineRef, Event}`:
+
+| Event | Meaning |
+|---|---|
+| `{request, TxnH, LegH \| undefined, Meta, RawSip}` | An inbound request; `LegH` when it is in a dialog leg. `Meta` carries the method, `source_ip`, `source_port`, the transport, `conn` (the TCP/TLS flow id), and `local_ip`, `local_port`, `local` (the listen address and its ident). |
+| `{response, TxnH, Meta, RawSip}` | A response to one of our requests. |
+| `{ack, LegH \| TxnH, RawSip}` | The ACK of a 2xx, on a dialog leg or on the INVITE server transaction. |
+| `{ack_timeout, LegH \| TxnH}` | That 2xx was never ACKed. |
+| `{cancel, TxnH}` | A CANCEL of our server transaction. |
+| `{op_ok, H}`, `{op_failed, H, Reason}` | The result of a deferred operation. |
+| `{flow_closed, FlowId}` | A TCP/TLS connection we hold a flow on closed. |
+| `{health_ok, Seq}` | The answer to `health/1`, from inside the event loop. |
+| `{started, Contact}` | The stack is READY. |
+| `{log, Level, Text}` | sofia's log, bridged to `logger`. |
+
+The WebSocket transport emits the same events as
+`{chappe_sip_engine, ws, Event}`, so the engine treats both alike. The
+authoritative list is the header of `src/engine/chappe_sip_nif.erl`; change
+both together.
+
+## chappe_sip_engine: what it is responsible for
+
+`chappe_sip_engine` is the one process that talks to the NIF. It has grown
+to eight responsibilities (finding M1 of the
+[documentation plan](../../../../docs/plans/documentation-and-maintainability.md)).
+Before you add to it, find the part you are changing:
+
+| Responsibility | Where (functions) |
+|---|---|
+| NIF lifecycle and health | `start/1`, `stop/0`, `restart_engine/0`, `start_engine`, `engine_failed`, `stack_gone`, `stack_down`, `check_health/1`, `schedule_health` |
+| Config snapshot (survives an engine crash) | `cfg_put`, `cfg_get`, `cfg_del` over the `chappe_sip_engine_cfg` ETS table owned by `chappe_sip_registry_keeper` |
+| Route registry | `use/2`, `handle/3`, `unhandle/1`, `reset_routes/0`, `route_opts`, `allow_events/0` |
+| Inbound dispatch policy | `handle_event`, `dispatch`, `dispatch_local`, `stray_in_dialog`, `dispatch_route`, `route_for`, `dispatch_handler`, `unrouted`, `unhandled`, `merge_check` (RFC 3261 8.2.2.2), `is_own_route`, `cancelled` |
+| Worker pool | `spawn_worker`, `handler_deadline`, `disarm/1`, `at_dialog_cap`, `shed` (503 past `max_request_workers`) |
+| Handle table | `reg_handle/2`, `unreg_handle/1`, `ensure_monitored`, `drop_pid`, `destroy_owned_handles`, `destroy_handle` |
+| UAS response building | `respond/3`, `dialog_respond/6`, `do_create_uas`, `send_uas_response`, `with_contact`, `with_supported`, `with_allow`, `uas_contact`, `local_contact` |
+| sofia / WS multiplexing | `?IS_WS(H)`, `ws_call/1`, `ws_respond`, `leg_create`, `leg_destroy`, `dialog_leg_create`, `make_sender`, `sender_send` |
+
+The guard support (`discard/1`, `block_source/2`, `stats/0`) and the proxy
+support (`mark_proxied/1`, `relay_response/3`, `forward_response/1`) sit on
+top of these. Tests reach the engine only through its exported API, so the
+stateless parts (UAS response building, dispatch policy) can move out
+without touching the suites.
 
 ## Threads
 
@@ -151,22 +228,22 @@ and applies `engine_failure_action`:
 - `degrade`: leave SIP dead and the node up, for operators with external
   watchdogs.
 
-## Abort audit (M0, sofia @ 7333682, freeswitch fork)
+## Risky regions
 
-- `exit()`/`abort()` call sites in the modules we link (su, msg, url,
-  sip, nta, tport) exist only in standalone utility and test programs
-  (`addrinfo.c`, `localinfo.c`, `su_perf.c`, `su_proxy.c`, `test_*.c`).
-  They are separate binaries and are not part of `libsofia-sip-ua.a`
-  code paths reachable from the shim.
-- Library `assert()` calls (su_alloc.c and friends) are compiled out:
-  the build passes `-DNDEBUG` (see `c_src/build.sh`).
-- `su_log` output is redirected into the shim; before the engine is
-  READY it goes to stderr, afterwards it becomes `{log, Level, Text}`
-  events bridged to `logger`.
-- A crash in sofia or the shim still kills the node. That is the
-  accepted trade-off of the NIF design; the mitigations are the small C
-  surface, the ASan/UBSan and valgrind procedure below, and running the
-  release under heart.
+These are the places in the C shim where a change can corrupt memory, leak,
+or deadlock. Read the comment above each function before you edit it, and
+run `make asan` after.
+
+| Region | Functions | What can go wrong |
+|---|---|---|
+| State CAS | `nif_start`, `stack_main`, `set_failed`, `request_stop` | `INIT -> READY` (stack thread), `INIT -> STOPPING` (a start that gave up) and `INIT -> FAILED` must stay mutually exclusive; a plain store lets an abandoned thread run orphaned. |
+| Root rwlock in enqueue | `enqueue`, `enqueue_locked`, `request_stop`, `teardown_sofia` | Foreign threads post under the read lock after re-checking READY; `request_stop` flips to STOPPING and posts OP_STOP under the write lock, so no op lands behind OP_STOP (it would leak its payload and a kept engine ref); the root is destroyed under the write lock. |
+| Engine destructor and owner down | `engine_dtor`, `engine_down`, `thread_exit` | The stack thread holds a resource ref until its last act, so the destructor runs after it exited; never self-join (`enif_equal_tids`); release the singleton only by CAS from `G_STOPPING`, or a successor engine is clobbered. |
+| Handle table drain, orphans, proxy branch list | `tab_drain`, `tab_del`, `ctx_release`, `orphans_sweep`, `px_unlink` | Teardown destroys every nta object before the agent; an incoming ctx a PRACK callback may still use goes on the orphan list instead of being freed; an outgoing ctx must leave the `px_head` list `stray_cb` walks before it is freed. |
+| Flows | `flow_of`, `flow_free`, `flow_closed`, `flows_sweep`, `flow_err_cb` | A flow holds a `tport_ref` and a pending entry; both are released once, and the H_FLOW handle is removed by the caller. |
+| Stray 2xx | `stray_cb`, `outgoing_response_cb` | A later 2xx of a proxy INVITE branch over TCP/TLS matches no transaction; it is sent to the branch handle only while that branch is in `px_head` (RFC 6026 Accepted state), else dropped. The outgoing callback never destroys the transaction: Erlang does with `txn_done`. |
+| Request intake and discard | `request_in`, `blk_msg`, `blk_put`, `blk_has`, the `OP_DISCARD` case of `op_cb` | A blocked source is discarded before a server transaction exists; the blocklist is process-wide under `g_blk_lock` and outlives an engine; a discarded transaction gets no 100 Trying and ends with nta's silent 408. |
+| The op dispatcher | `op_cb` (about 300 lines, 14 ops) | Every op must look its handle up with the right kind (`tab_get`), answer `op_failed` for an unknown one, and free its payload on every path. |
 
 ## Memory-safety checks
 
@@ -175,17 +252,17 @@ shim with the sanitizer. Loading a sanitized `.so` into the BEAM requires
 preloading the sanitizer runtime:
 
 ```sh
-# Linux
+# Linux, from the umbrella root
 ENGINE_SANITIZE=address rebar3 compile
-LD_PRELOAD=$(cc -print-file-name=libasan.so) rebar3 ct --suite=test/chappe_sip_handler_SUITE
+LD_PRELOAD=$(cc -print-file-name=libasan.so) rebar3 ct --suite=apps/chappe_sip/test/chappe_sip_handler_SUITE
 
 # macOS
 ENGINE_SANITIZE=address rebar3 compile
 DYLD_INSERT_LIBRARIES=$(cc -print-file-name=libclang_rt.asan_osx_dynamic.dylib) \
-  rebar3 ct --suite=test/chappe_sip_handler_SUITE
+  rebar3 ct --suite=apps/chappe_sip/test/chappe_sip_handler_SUITE
 ```
 
-`test/asan/run.sh` runs the lifecycle suites (`chappe_sip_engine_smoke`, `chappe_sip_dialog_ops`,
+`make asan` (`apps/chappe_sip/test/asan/run.sh`) runs the lifecycle suites (`chappe_sip_engine_smoke`, `chappe_sip_dialog_ops`,
 `chappe_sip_engine_lifecycle`) under ASan in a Linux container; macOS strips ASan
 interceptors for a dlopen'd NIF, so use the container.
 LeakSanitizer is on: a leak allocated on a NIF call path (sofia or the shim)
@@ -242,3 +319,20 @@ chappe_sip:start(#{
 - An unrestricted contact (`transport=*`) makes the freeswitch fork bind
   ws on the same TCP port and fail with "address already in use";
   chappe_sip_engine defaults contacts to `;transport=udp,tcp`.
+
+## Appendix: abort audit (M0, sofia @ 7333682, freeswitch fork)
+
+- `exit()`/`abort()` call sites in the modules we link (su, msg, url,
+  sip, nta, tport) exist only in standalone utility and test programs
+  (`addrinfo.c`, `localinfo.c`, `su_perf.c`, `su_proxy.c`, `test_*.c`).
+  They are separate binaries and are not part of `libsofia-sip-ua.a`
+  code paths reachable from the shim.
+- Library `assert()` calls (su_alloc.c and friends) are compiled out:
+  the build passes `-DNDEBUG` (see `c_src/build.sh`).
+- `su_log` output is redirected into the shim; before the engine is
+  READY it goes to stderr, afterwards it becomes `{log, Level, Text}`
+  events bridged to `logger`.
+- A crash in sofia or the shim still kills the node. That is the
+  accepted trade-off of the NIF design; the mitigations are the small C
+  surface, the ASan/UBSan and valgrind procedure below, and running the
+  release under heart.

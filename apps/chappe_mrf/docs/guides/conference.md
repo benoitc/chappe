@@ -117,3 +117,12 @@ already on that node joins as it is: `chappe_mrf_conf:join(Conf, Ep, #{})`.
   you gave `conference/2`.
 - `play/2` on an fs room plays into the room (`conference <name> play`).
 - `relate/4` is native only: `{error, {unsupported, fs}}` on fs.
+
+## Where it lives
+
+- Modules: `chappe_mrf_conf` (API and process), `chappe_mrf_conf_native`,
+  `chappe_mrf_conf_fs`; the loopback middleware is in `chappe_mrf`
+- Tests: `apps/chappe_mrf/test/chappe_mrf_SUITE.erl`,
+  `chappe_mrf_live_SUITE.erl`
+- Lab: `make interop-mrf` (native and FreeSWITCH rooms)
+- Design: [overview](../design/overview.md#native-conferences-and-the-loopback-middleware)

@@ -140,3 +140,11 @@ apps/chappe_sip/interop/sbc/lab.sh down
 
 Set `SBC_LAB` to give the compose project another name, and `SBC_KEEP=1` to
 leave the lab up after the suite.
+
+## Where it lives
+
+- Modules: `apps/chappe_sip/interop/` (JsSIP drivers, Kamailio, SIPp, pjsua,
+  the SBC and conformance labs).
+- Tests: `chappe_sip_interop_SUITE`, `chappe_sip_conformance_SUITE`,
+  `chappe_sip_sbc_interop_SUITE`.
+- Lab: `make interop`, `make interop-conformance`, `make interop-sbc`.

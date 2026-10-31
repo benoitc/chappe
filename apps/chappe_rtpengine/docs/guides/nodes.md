@@ -124,3 +124,11 @@ Use `transport => ws` for a plain `--listen-http` listener; `path` defaults to `
     chappe_rtpengine:stats(rtpe1),
 #{status := up, generation := 1} = chappe_rtpengine_pool:node_info(rtpe1).
 ```
+
+All node options and their defaults are in [Configuration](../configuration.md).
+
+## Where it lives
+
+- Modules: `chappe_rtpengine_pool` (registry, health, selection), `chappe_rtpengine_client` (transport), `chappe_rtpengine_resolve` (host lookup), `chappe_rtpengine_ws_handler` (WebSocket)
+- Tests: `apps/chappe_rtpengine/test/chappe_rtpengine_pool_SUITE.erl`, `chappe_rtpengine_client_SUITE.erl`
+- Lab: `make interop` (UDP, TCP and WebSocket against rtpengine in docker)

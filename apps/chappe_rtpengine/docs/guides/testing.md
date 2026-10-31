@@ -62,3 +62,9 @@ Notes:
 
 - rtpengine builds without transcoding (including the default `drachtio/rtpengine` docker image) compile out publish/subscribe and playback; the media subscription case skips itself on such builds with an explanatory message.
 - Use `--delete-delay=0` on test instances, otherwise deleted sessions hold their ports for 30 seconds and small port ranges run out.
+
+## Where it lives
+
+- Fakes: `apps/chappe_rtpengine/test/chappe_rtpengine_fake_server.erl`, `chappe_rtpengine_fake_ws_handler.erl`
+- Lab: `apps/chappe_rtpengine/interop/` (docker compose), run by `apps/chappe_rtpengine/test/e2e.sh` through `make interop`
+- Requirements: `apps/chappe_rtpengine/docs/compliance/requirements.tsv` ([how claims work](../compliance/README.md))

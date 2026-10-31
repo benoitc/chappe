@@ -181,3 +181,9 @@ Other messages that arrive meanwhile stay in your mailbox.
   pass the argument string as FreeSWITCH reads it.
 - `audio_fork_start/3` needs mod_audio_fork on the node. The fork uses its
   default bug name, `audio_fork`, so a channel has one fork at a time.
+
+## Where it lives
+
+- Modules: `chappe_esl_call` (the call process and typed helpers), `chappe_esl_exec` (the execute and its completion wait); why there are two is in the [design overview](../design/overview.md#call-control-why-two-modules)
+- Tests: `apps/chappe_esl/test/chappe_esl_call_SUITE.erl`
+- Lab: `make interop-esl` (`chappe_esl_live_SUITE`); chappe_mrf drives it in `make interop-mrf`

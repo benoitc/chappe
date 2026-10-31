@@ -52,3 +52,12 @@ ok = chappe_mrf:bridge(B2b, <<"sip:bob@192.168.1.30">>,
   `{error, not_anchored}` otherwise.
 - rtpengine keeps the caller's ports across the swap (port latching on the
   answer), since the caller never hears of the new offer.
+
+## Where it lives
+
+- Modules: `chappe_mrf` (`bridge/2,3`, `create_endpoint/1`),
+  `chappe_mrf_endpoint` (`handed/1`); the swap is
+  `chappe_sip_b2b:replace_b/3` in chappe_sip
+- Tests: `apps/chappe_mrf/test/chappe_mrf_SUITE.erl`,
+  `chappe_mrf_live_SUITE.erl`
+- Lab: `make interop-mrf`

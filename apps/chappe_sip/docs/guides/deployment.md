@@ -139,8 +139,70 @@ To see the node's calls in Homer, point it at your heplify-server in
 [{chappe_sip, [{hep, #{host => <<"10.0.0.5">>, port => 9060}}]}].
 ```
 
+## What survives a crash
+
+- A call is not bounded by the handler deadline: once a worker owns a dialog
+  (or forks as a proxy) its deadline is disarmed, so long calls are not torn
+  down. The deadline still catches a handler that never responds.
+- WS state survives an engine restart: the transport tolerates a briefly-absent
+  engine. If the WS transport process itself restarts, its connections close
+  and their bindings are dropped; the UAs reconnect and register again.
+- Registrations survive a registry-process crash (the ETS is held by a separate
+  keeper), and a WS binding is dropped when its connection closes (RFC 5626).
+- Handle and C-object cleanup on crash paths (UAC/dialog/proxy), WS transaction
+  timers (no sofia timers over WS; a server transaction the app never answers
+  gets 408 or 500), and Timer C on proxy and b2bua INVITE branches bound
+  resource use. A worker that sends an INVITE (a b2bua B leg) owns the call, so
+  a callee ringing past the handler deadline is not cut. The C engine
+  start/stop/restart lifecycle is use-after-free-free
+  (an RWLock guards the sofia root, CAS transitions guard start/abandon, and the
+  stack thread holds its own resource ref so the destructor never frees under
+  it) validated under AddressSanitizer via the `chappe_sip_engine_lifecycle` stress
+  suite in `test/asan/`, with LeakSanitizer reporting any leak on a NIF call
+  path (`test/asan/lsan.supp` covers only stacks without a NIF frame).
+- A crash of the engine process re-establishes the native stack and its
+  handlers from a config snapshot (held in the keeper's ETS), so SIP recovers
+  without a manual restart; a controlled restart also fails in-flight UAC/dialog
+  work cleanly.
+
+## Security defaults
+
+- The Record-Route marker and WS flow tokens are HMAC-authenticated (per-node
+  secret, at least 16 bytes when configured) and carry a signed expiry, so a
+  crafted or replayed Route cannot turn the proxy into an open relay or target
+  another WS leg. The registrar requires a digest/callback auth hook; running
+  without one takes an explicit `allow_unauthenticated => true`.
+- Resource ceilings: dialogs, UAC transactions, WS connections, the WS transport
+  mailbox, and registrar AORs/bindings are all bounded.
+- Refuses the default distribution cookie at boot; distribution and epmd bind
+  to loopback. TLS floors at 1.2, verifies outbound peers by default, and
+  rejects an invalid verify value; `verify => none` needs `allow_insecure`. The WS
+  upgrade honours an optional Origin allowlist.
+- Digest (RFC 2617, RFC 7616, RFC 8760: MD5, MD5-sess, SHA-256,
+  SHA-256-sess) does not replay credentials across a redirect to another
+  scheme, host or port, and refuses an unsupported qop instead of
+  downgrading. The server side refuses a replayed nonce count (stale), an
+  answer without the qop it offered, and a digest uri that is not the
+  Request-URI; `chappe_sip_digest:challenges/2` offers SHA-256 and MD5. The
+  registrar checks the AOR's user and domain against the credentials.
+
+## Behaviour changes
+
+- `chappe_sip:stop/0` and an engine degrade tear the dialogs down as
+  `restart_engine/0` does: owners get `destroy` with reason
+  `engine_restart`, and a UAC still ringing gets `{error, engine_restart}`.
+
 ## Notes
 
 - Binding 5060/5061 needs `CAP_NET_BIND_SERVICE` (in the unit) or a high port.
 - `LimitNOFILE` should be high; each UDP/TCP/WS peer costs descriptors.
 - Roll config changes with `systemctl restart chappe_sip`.
+
+## Where it lives
+
+- Modules: `chappe_sip_app` (cookie check), `chappe_sip_engine` (health,
+  restart, hang policy), `chappe_sip_binds` (several addresses), `config/`
+  and `deploy/`.
+- Tests: `chappe_sip_engine_lifecycle_SUITE`,
+  `chappe_sip_engine_smoke_SUITE`, `chappe_sip_multihome_SUITE`.
+- Lab: `make asan`.

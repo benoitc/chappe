@@ -60,3 +60,9 @@ ok = chappe_esl:set_controlling_process(Conn, Pid).
 From then on `Pid` receives the event messages. On an inbound connection the
 link moves too: the old controlling process is unlinked and `Pid` is linked,
 so the connection closes when `Pid` exits.
+
+## Where it lives
+
+- Modules: `chappe_esl_event` (decoding and field access), `chappe_esl_conn` (delivery to the controlling process)
+- Tests: `apps/chappe_esl/test/chappe_esl_event_tests.erl`, `chappe_esl_conn_SUITE.erl`
+- Lab: `make interop-esl`

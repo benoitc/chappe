@@ -179,7 +179,7 @@ every receiver.
   the routing is right but nothing is mixed. The mix is a plain sum with no
   gain control.
 - Verdict: a usable fallback only if we ship rtpengine 26.x ourselves.
-  Script: `/private/tmp/claude-501/rtpe-spike/mixspike.escript` (scratch).
+  Script: a scratch escript, not kept.
 
 ## move_leg
 
@@ -188,7 +188,7 @@ existed, and catches the mutation that skips
 `gen_udp:controlling_process/2` in the hand-off (1100 Hz heard in 0 of 3
 windows: the socket died with the first conference). Passed 3 of 3 at a
 load average of 89.
-- The same stale beam reached across repos: i3_bridge builds chappe_mix
+- The same stale beam reached across repos: a product repo builds chappe_mix
   through `_checkouts`, and a build made during a mutation run here kept
   the mutant. After mutating anything in this tree, remove
   `_build/*/checkouts/chappe_mix` in any repo that checks it out.
@@ -302,7 +302,7 @@ once in any listen.
 
 ## A native reference (`interop/freeswitch`, `ref_capacity`)
 
-- The i3_bridge FreeSWITCH image was amd64 only and ran emulated on arm64.
+- The product repo's FreeSWITCH image was amd64 only and ran emulated on arm64.
   `drachtio/drachtio-freeswitch-mrf` (FreeSWITCH 1.10.10) is multi-arch;
   its `/entrypoint.sh` edits the stock tree with sed, so the harness skips
   it and starts FreeSWITCH with `-conf` on one mounted `freeswitch.xml`.

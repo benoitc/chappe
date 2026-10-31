@@ -1,5 +1,10 @@
 # Changelog
 
+All notable changes to the chappe umbrella and its apps, newest first. Each
+app is published on its own; an entry names the app it concerns when it is
+not chappe_sip. The history of chappe_sip before the umbrella (as
+`enki_sipserver`) is at the end.
+
 ## Unreleased
 
 - New: `chappe_mrf`, a media resource function in the drachtio-fsmrf style.
@@ -124,3 +129,45 @@ Notable in this move:
 - Internal module prefixes (`chappe_sip_*`, `chappe_rtpengine_*`, `chappe_esl_*`) and the public `chappe_sip`
   facade now carry the `chappe_` brand, matching their app names (they were
   `esip`/`esip_*`, `rtpe_*`, and `esl_*`).
+
+## chappe_sip before the umbrella
+
+These releases of chappe_sip predate the umbrella; they were merged here
+from `apps/chappe_sip/CHANGELOG.md`. Their content is part of the [0.1.0]
+umbrella release above, and the chappe_sip app still carries version 0.2.0.
+
+### chappe_sip [0.2.0]
+
+#### Added
+- Media control plane (`chappe_sip_media`): a capability-based facade over the
+  external media engines. rtpengine (via `chappe_rtpengine`) anchors/relays media
+  with `offer/2`, `answer/2`, plus `play`, `record`, `dtmf`, `subscribe` (tap a
+  party's media to an external consumer), and `duck` (block/silence a party
+  while a prompt plays). FreeSWITCH (via `chappe_esl`) drives a channel over ESL
+  for `conference`. The media libraries are dormant unless a `media` config is
+  passed to `chappe_sip:start/1`.
+- Media-anchoring proxy: `chappe_sip:proxy_request/3` gains an opt-in `media` option
+  that anchors SDP through rtpengine (offer on the forwarded request, answer on
+  1xx/2xx replies, release on the in-dialog BYE) while preserving the Call-ID.
+  Additive: a plain proxy without the option is byte-identical to before.
+- Request source address surfaced to handlers: `chappe_sip_req:source_ip/1` and
+  `source_port/1`, taken from the transport peer via the NIF (the trust anchor
+  for a source-IP ACL; the Via sent-by is spoofable).
+
+#### Changed
+- `test/asan/run.sh` seeds the private media deps from the host so the offline
+  AddressSanitizer container does not try to re-fetch them.
+
+#### Notes
+- Consuming chappe_sip as a git dependency does not build its C NIF (rebar3
+  does not fetch the `sofia-sip` submodule and no prebuilt binary is shipped);
+  use rebar3 `_checkouts` or a vendored build until this is resolved.
+  Resolved in the umbrella [0.1.0]: sofia-sip is vendored. The FreeSWITCH
+  `conference` backend was later replaced by chappe_mix.
+
+### chappe_sip [0.1.0]
+
+- Baseline: RFC 3261 UAS/UAC/B2BUA/proxy/registrar over sofia-sip's `nta` via a
+  plain-C NIF; SIP-over-WebSocket (RFC 7118); TLS listener; PRACK/100rel;
+  RFC 3261/4475 compliance work (total parser, handling MUSTs, dialog route set,
+  in-dialog CSeq).

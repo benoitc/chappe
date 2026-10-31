@@ -192,6 +192,13 @@ URI, display name, endpoint URIs and dialog identifiers are replaced or
 dropped. Pick an `N` that stays the same while the participant is in, such as
 its join order.
 
+## Behaviour changes
+
+- `chappe_sip_focus:subscribe/4` sends the conference process
+  `{chappe_sip_focus, subscribed, Dialog, Opts}`. Pass it to
+  `chappe_sip_focus:handle_info/2` as before; the three-element form is
+  still accepted.
+
 ## Notes
 
 - NOTIFYs go out through one process per watcher, so a slow watcher never
@@ -200,3 +207,9 @@ its join order.
   example to publish the same document elsewhere.
 - The focus does not authenticate watchers; do that in middleware before
   `subscribe/4`.
+
+## Where it lives
+
+- Modules: `chappe_sip_focus`, `chappe_sip_confinfo`.
+- Tests: `chappe_sip_focus_SUITE`, `chappe_sip_confinfo_tests`.
+- Lab: none.

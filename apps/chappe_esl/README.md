@@ -126,8 +126,12 @@ Read event fields with `chappe_esl_event:name/1`, `chappe_esl_event:header/2`, a
 
 ## Documentation
 
-Guides live in `docs/`. Build the HTML with `rebar3 ex_doc` and open
-`doc/index.html`.
+- [Documentation index](docs/README.md): every guide
+- [Configuration](docs/configuration.md): app env and node options
+- [Design overview](docs/design/overview.md)
+- [Features](docs/features.md)
+
+Build the HTML with `rebar3 ex_doc` and open `doc/index.html`.
 
 ## Tests
 

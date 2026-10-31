@@ -1,4 +1,9 @@
-# chappe_sip plan
+# chappe_sip plan (history)
+
+Status: historical. This is the milestone log of the original port (M0 to
+M16); it is no longer updated. For what chappe_sip does today see the
+[feature tracker](../features.md); for the design see the
+[overview](../design/overview.md).
 
 Port of drachtio (server + srf) to Erlang/OTP 29 in one application.
 Architecture: sofia-sip nta wrapped by a thin plain-C NIF shim; all

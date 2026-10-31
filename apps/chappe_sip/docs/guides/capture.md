@@ -66,3 +66,10 @@ Then search the Call-ID of a test call in Homer.
 - Native captures of IPv6 traffic carry wrong addresses: the encoder in the
   vendored sofia-sip copies 4 bytes of an IPv6 address. Capture IPv4 traffic,
   or use the WebSocket transport, for correct IPv6 addresses.
+
+## Where it lives
+
+- Modules: `chappe_sip_hep` (WebSocket), the `capture` option of the NIF
+  (`TPTAG_CAPT`, see the [engine design](../design/engine.md#hep-capture)).
+- Tests: `chappe_sip_hep_SUITE`, `chappe_sip_hep_tests`.
+- Lab: `make interop-conformance` (heplify-server).

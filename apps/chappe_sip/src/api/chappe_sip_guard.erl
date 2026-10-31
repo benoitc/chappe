@@ -5,12 +5,14 @@
 %% runs: scanners by User-Agent, sources outside an allow list or inside a
 %% deny list, and sources sending faster than a rate.
 %%
+%% ```
 %%   ok = chappe_sip:use(chappe_sip_guard:new(#{
 %%       user_agents => [<<"friendly-scanner">>, <<"^sipvicious">>],
 %%       deny => [<<"192.0.2.0/24">>],
 %%       rate => #{rate => 20, burst => 40},
 %%       action => 403
 %%   })).
+%% '''
 %%
 %% Opts:
 %%   user_agents => [Regex]  a User-Agent matching one (caseless) is

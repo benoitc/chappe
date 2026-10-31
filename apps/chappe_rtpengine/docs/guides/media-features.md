@@ -91,3 +91,9 @@ Notes:
 
 - An IVR is a receive loop: `play_media` a prompt, react to `{dtmf, ...}` messages, play the next prompt.
 - Any NG command not wrapped by a helper is reachable with `chappe_rtpengine_session:cmd(Sess, Command, Params)` or `chappe_rtpengine:cmd(Node, Command, Params)`.
+
+## Where it lives
+
+- Modules: `chappe_rtpengine_session` (the media commands), `chappe_rtpengine_dtmf` (the DTMF listener)
+- Tests: `apps/chappe_rtpengine/test/chappe_rtpengine_session_SUITE.erl`, `chappe_rtpengine_dtmf_SUITE.erl`
+- Lab: `make interop` (`chappe_rtpengine_live_SUITE`, playback and ducking on a real rtpengine)

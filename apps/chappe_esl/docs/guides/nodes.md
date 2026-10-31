@@ -122,3 +122,10 @@ ok = chappe_esl:node_remove(fs1).  % closes the connection
   (30000), doubling each time, with jitter.
 - Without nodes the registry runs no process.
 - `all` is reserved for subscriptions; do not name a node `all`.
+- Every node option and its default is in [Configuration](../configuration.md).
+
+## Where it lives
+
+- Modules: `chappe_esl_nodes` (registry and notices), `chappe_esl_node` (one per node: connection, backoff, probes, load)
+- Tests: `apps/chappe_esl/test/chappe_esl_nodes_SUITE.erl`
+- Lab: `make interop-esl` (two FreeSWITCH nodes); `make demo-esl` to watch them from a shell

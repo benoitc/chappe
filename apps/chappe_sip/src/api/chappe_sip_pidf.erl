@@ -9,7 +9,7 @@
 %%     notes => [binary() | {Lang, binary()}]}
 %% and a tuple
 %%   #{id := binary(),
-%%     basic => open | closed,              the <basic> status
+%%     basic => open | closed,              the `<basic>' status
 %%     contact => binary(),
 %%     priority => float(),                 0..1, at most 3 decimals
 %%     notes => [binary() | {Lang, binary()}],

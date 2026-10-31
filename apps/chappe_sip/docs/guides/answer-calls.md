@@ -261,9 +261,66 @@ The dialog the route creates takes the same tags in its in-dialog requests.
 Any method takes the same option, and adding the tag to
 `supported_option_tags` accepts it on every route.
 
+## Dialog behaviour in detail
+
+- Dialogs as processes: `chappe_sip_dialog:destroy/1,2` (headers such as a
+  Reason on the BYE), `modify/2,3` (re-INVITE, including `hold`/`unhold`, with
+  an optional RFC 3261 14.1 retry after 491), `request/2` (INFO/REFER/UPDATE).
+  `hold` marks each live stream sendonly (inactive when it was recvonly) and
+  `unhold` reverses it, stream by stream, with the next o= version. A
+  provisional to our re-INVITE keeps its transaction open until the final.
+  An early dialog our 18x formed (`create_uas/3` with a 1xx `status`) takes
+  UPDATE both ways, and the caller's BYE in it gets 200 and its INVITE 487.
+  Each early dialog of an INVITE we send (a 101..199 with a new To tag) is a
+  dialog handle too, reported as `{early_dialog, Dialog}` just before its
+  provisional: the callee's UPDATE and INFO in it are delivered or answered
+  as in a confirmed dialog, its BYE gets 200 and ends that dialog (the
+  INVITE still completes with its final), and `request/2` sends UPDATE or
+  INFO in it, sharing the INVITE's CSeq counter with the PRACKs. `destroy/1`
+  on it CANCELs the INVITE, `modify/2` returns `{error, early}`. The 2xx
+  with its To tag confirms the same handle (route set and remote target
+  taken again from the 2xx, RFC 3261 13.2.2.4); the other early dialogs end
+  on the INVITE's final, their owner getting `destroy` with reason
+  `{early_ended, Status}`.
+  Unclaimed in-dialog requests are answered by the dialog: offers in re-INVITE
+  and UPDATE with the current local SDP (488 without one), an offerless
+  re-INVITE with our SDP as the offer (answer taken from the ACK), REFER 603,
+  unknown methods 501 and REGISTER/PUBLISH 405 (both with Allow), OPTIONS 200
+  with Allow/Accept/Supported. `remote_sdp/1` and `local_sdp/1` track re-INVITE, UPDATE and ACK.
+  Glare gets 491 and overlapping INVITE/UPDATE 500 with Retry-After (RFC 3261
+  14.2, RFC 3311 5.2).
+- Reason (RFC 3326): on the BYE via `chappe_sip_dialog:destroy/2`, on a
+  CANCEL via `chappe_sip_uac:cancel/2`; a received CANCEL reaches the INVITE
+  handler as `{chappe_sip_cancel, TxnH, CancelReq}` and a received BYE as the
+  `destroy` event's request.
+
+## Behaviour changes
+
+- `chappe_sip:replaces_response/1,2` no longer accepts a Replaces by
+  default: a match that would be accepted is `{reject, 403}` unless you
+  pass `authorize => fun((Dialog, Req) -> boolean())` or
+  `auth => #{realm, secret}` (RFC 3891 section 8). With `auth`, it can also
+  return `{reject, 401, Headers}`; send those headers with the 401. To keep
+  the old behaviour on a closed network, pass
+  `#{authorize => fun(_, _) -> true end}`.
+- A CANCEL of an INVITE you answered 1xx with `create_uas/3` ends that
+  early dialog: its owner gets `{chappe_sip_dialog, D, destroy, cancel}`.
+
 ## Notes
 
 - The dialog fsm monitors its owner; if your handler crashes, the dialog is torn
   down (BYE) by default (`on_owner_exit => destroy`).
 - A long call is fine: the worker is not bounded by the handler deadline once it
   owns a dialog. See [Configuration](configuration.md).
+
+## Where it lives
+
+- Modules: `chappe_sip` (`create_uas/3`, `find_replaced/1`,
+  `replaces_response/1,2`), `chappe_sip_dialog`, `chappe_sip_dialog_fsm`,
+  `chappe_sip_handler`, `chappe_sip_request_worker`, `chappe_sip_res`,
+  `chappe_sip_req`, `chappe_sip_dialog_index`.
+- Tests: `chappe_sip_core_SUITE`, `chappe_sip_uas_SUITE`,
+  `chappe_sip_indialog_SUITE`, `chappe_sip_dialog_ops_SUITE`,
+  `chappe_sip_handler_SUITE`, `chappe_sip_replaces_SUITE`,
+  `chappe_sip_dialog_fsm_tests`.
+- Lab: `make interop-conformance` (`apps/chappe_sip/interop/conformance`).
