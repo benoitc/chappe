@@ -16,7 +16,7 @@
 %% param list kept alongside the map.
 -module(chappe_sip_uri).
 
--export([parse/1, format/1, same_authority/2, equal/2, aor/1]).
+-export([parse/1, format/1, same_authority/2, equal/2, equal_strict/2, aor/1]).
 -export([take_param/2, is_sips_unreliable/1]).
 
 -type uri() :: map().
@@ -253,6 +253,26 @@ equal(#{scheme := S} = A, #{scheme := S} = B) when S =:= sip; S =:= sips ->
         norm_headers(A) =:= norm_headers(B);
 equal(#{} = A, #{} = B) ->
     format(A) =:= format(B).
+
+%% equal/2, and also the same parameter names and the same headers on both
+%% sides: a parameter one URI carries and the other does not is a
+%% difference here, where RFC 3261 19.1.4 ignores most of them. Use it where
+%% a URI is checked against a signed copy of itself (the digest uri), since
+%% any added parameter or header can change how the request is routed.
+-spec equal_strict(binary() | uri(), binary() | uri()) -> boolean().
+equal_strict(A, B) ->
+    case {as_uri(A), as_uri(B)} of
+        {{ok, #{scheme := S} = UA}, {ok, #{scheme := S} = UB}} when
+            S =:= sip; S =:= sips
+        ->
+            equal(UA, UB) andalso
+                maps:keys(norm_params(UA)) =:= maps:keys(norm_params(UB));
+        _ ->
+            equal(A, B)
+    end.
+
+as_uri(U) when is_binary(U) -> parse(U);
+as_uri(#{} = U) -> {ok, U}.
 
 userinfo(U) ->
     {

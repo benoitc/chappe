@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Security: digest authentication now refuses a request whose Request-URI
+  was changed after it was signed, for example with a parameter or header
+  added that could reroute it. Before, only the user, host and port were
+  compared.
+- Security: chappe_rtpengine only accepts a UDP reply from the rtpengine
+  node it asked, and its request cookies are now unguessable. Before, a
+  forged reply from any address carrying a live cookie was accepted. UDP to
+  rtpengine still belongs on a trusted network.
 - New: `chappe_mrf`, a media resource function in the drachtio-fsmrf style.
   A caller can be answered by a FreeSWITCH endpoint you drive from Erlang
   (play a menu, collect digits, record, stream the audio), moved to a phone
