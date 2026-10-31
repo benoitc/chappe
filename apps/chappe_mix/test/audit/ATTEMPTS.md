@@ -188,6 +188,11 @@ existed, and catches the mutation that skips
 `gen_udp:controlling_process/2` in the hand-off (1100 Hz heard in 0 of 3
 windows: the socket died with the first conference). Passed 3 of 3 at a
 load average of 89.
+- The source conference used to call the destination synchronously.
+  `move_crossing` (two rooms swapping a leg at once), `move_to_self` and
+  `move_to_dead` failed on that code: the crossing calls timed out, the
+  self-call failed, and a dead destination crashed the source on
+  `controlling_process`. The move now runs in a process of its own.
 - The same stale beam reached across repos: a product repo builds chappe_mix
   through `_checkouts`, and a build made during a mutation run here kept
   the mutant. After mutating anything in this tree, remove

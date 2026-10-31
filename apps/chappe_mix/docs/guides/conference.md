@@ -79,6 +79,13 @@ tune the detection (see [Configuration](../configuration.md)).
 The socket, its port and the far end move with the leg, so the participant
 needs no new SDP. The leg's relations are dropped.
 
+- Moving a leg to the room it is in returns `{ok, Alice}` and changes
+  nothing.
+- If `Room2` is gone you get `{error, destination_down}` and the leg stays
+  in `Conf` under its id. `{error, not_found}` means `Conf` has no such leg.
+- Moves between the same two rooms can run at the same time, in either
+  direction: the rooms never wait on each other.
+
 ## Inspect and stop
 
 ```erlang

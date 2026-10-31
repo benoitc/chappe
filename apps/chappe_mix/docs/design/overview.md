@@ -151,11 +151,27 @@ counted (`filtered`), except from the far end itself, which moves the
 latch. `set_remote/3` resets the latch.
 
 `chappe_mix:move_leg/3` hands a leg to another conference without new
-signalling: the source conference transfers the sockets with
-`gen_udp:controlling_process/2`, forwards the packets already in its
-mailbox, and the destination adopts the leg under a new id. The port and the
-far end stay the same, so the peer keeps sending to the same address. The
-leg's relations are dropped, because they named legs of the first room.
+signalling. No conference ever calls another: the move runs in a
+short-lived process started by the caller.
+
+1. The source detaches the leg, transfers its sockets to the mover with
+   `gen_udp:controlling_process/2` and forwards the packets already in its
+   mailbox.
+2. The destination adopts the leg under a new id.
+3. The mover then transfers the sockets to the destination, with the
+   packets that reached it meanwhile, so the destination only receives
+   packets for a leg it knows.
+
+Two rooms swapping legs at the same moment therefore cannot wait on each
+other. If the destination is gone (`{error, destination_down}`) or refuses
+the leg (`{error, refused}`), the leg goes back to the source under its id;
+if the source has gone too, the sockets close with the mover. A move to the
+conference the leg is already in returns `{ok, Leg}` and changes nothing.
+
+The port and the far end stay the same, so the peer keeps sending to the
+same address. The leg's RTP session and RTCP state move with it. Its
+relations are dropped, because they named legs of the first room, also when
+it returns to the source.
 
 ## Relations, directions and mute
 

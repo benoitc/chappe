@@ -167,10 +167,25 @@ remove_leg(Conf, Leg) ->
 %% Hand a leg to another conference. The socket, its port and the far end
 %% move with it, so the peer keeps sending to the same address and needs
 %% no re-negotiation: it leaves the first mix and joins the second. Returns
-%% the leg's id in the destination conference.
--spec move_leg(conf(), leg(), conf()) -> {ok, leg()} | {error, not_found}.
+%% the leg's id in the destination conference; a move to the conference the
+%% leg is in returns its id and changes nothing.
+%%
+%% The move runs in a short-lived process, so neither conference waits on
+%% the other. When the destination is gone (destination_down) or refuses
+%% the leg (refused), the leg stays in the source under its id.
+-spec move_leg(conf(), leg(), conf()) ->
+    {ok, leg()}
+    | {error, not_found | source_down | destination_down | refused}.
+move_leg(Conf, Leg, Conf) ->
+    gen_server:call(Conf, {has_leg, Leg});
 move_leg(From, Leg, To) ->
-    gen_server:call(From, {move_leg, Leg, To}).
+    {Pid, Ref} = spawn_monitor(fun() ->
+        exit({moved, chappe_mix_conf:move_leg(From, Leg, To)})
+    end),
+    receive
+        {'DOWN', Ref, process, Pid, {moved, Result}} -> Result;
+        {'DOWN', Ref, process, Pid, Reason} -> exit(Reason)
+    end.
 
 %% Send the mix to Remote from now on, and take RTP from the next
 %% address that sends (the source latch is reset). Given as a map, its
