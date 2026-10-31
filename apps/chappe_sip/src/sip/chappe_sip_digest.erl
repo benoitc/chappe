@@ -320,30 +320,16 @@ check_qop(Args, P) ->
         {_, _} -> {error, unsupported_qop}
     end.
 
-%% RFC 2617 3.2.2.5: the digest-uri names the Request-URI
+%% RFC 2617 3.2.2.5, RFC 8760: the digest-uri names the Request-URI. It is
+%% compared strictly (chappe_sip_uri:equal_strict/2): a parameter or header
+%% added to the Request-URI after it was signed is a different request.
 check_uri(#{request_uri := RUri}, P) ->
-    case same_uri(maps:get(<<"uri">>, P, <<>>), RUri) of
+    case chappe_sip_uri:equal_strict(maps:get(<<"uri">>, P, <<>>), RUri) of
         true -> ok;
         false -> {error, uri_mismatch}
     end;
 check_uri(_Args, _P) ->
     ok.
-
-same_uri(A, A) ->
-    true;
-same_uri(A, B) ->
-    case {chappe_sip_uri:parse(A), chappe_sip_uri:parse(B)} of
-        {{ok, UA}, {ok, UB}} -> uri_key(UA) =:= uri_key(UB);
-        _ -> false
-    end.
-
-uri_key(U) ->
-    {
-        maps:get(scheme, U),
-        maps:get(user, U, undefined),
-        string:lowercase(maps:get(host, U, <<>>)),
-        maps:get(port, U, undefined)
-    }.
 
 verify_response(#{method := Method, secret := PwFun} = Args, P) ->
     User = maps:get(<<"username">>, P, <<>>),

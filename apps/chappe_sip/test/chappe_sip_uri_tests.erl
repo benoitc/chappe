@@ -127,7 +127,20 @@ uri_equal_test() ->
     [?assert(chappe_sip_uri:equal(A, B)) || {A, B} <- Same],
     [?assert(chappe_sip_uri:equal(B, A)) || {A, B} <- Same],
     [?assertNot(chappe_sip_uri:equal(A, B)) || {A, B} <- Different],
-    [?assertNot(chappe_sip_uri:equal(B, A)) || {A, B} <- Different].
+    [?assertNot(chappe_sip_uri:equal(B, A)) || {A, B} <- Different],
+    %% the strict form also refuses a parameter only one side carries
+    [?assertNot(chappe_sip_uri:equal_strict(A, B)) || {A, B} <- Different],
+    ?assert(chappe_sip_uri:equal_strict(
+              <<"sip:%61lice@atlanta.com;transport=TCP">>,
+              <<"sip:alice@AtLanTa.CoM;Transport=tcp">>)),
+    ?assert(chappe_sip_uri:equal_strict(
+              <<"sip:biloxi.com;transport=tcp;method=REGISTER?to=sip:bob%40biloxi.com">>,
+              <<"sip:biloxi.com;method=REGISTER;transport=tcp?to=sip:bob%40biloxi.com">>)),
+    ?assertNot(chappe_sip_uri:equal_strict(
+                 <<"sip:carol@chicago.com">>,
+                 <<"sip:carol@chicago.com;newparam=5">>)),
+    ?assertNot(chappe_sip_uri:equal_strict(
+                 <<"sip:carol@chicago.com;lr">>, <<"sip:carol@chicago.com">>)).
 
 %% the registrar's canonical AOR (RFC 3261 10.3 step 5)
 aor_test() ->
