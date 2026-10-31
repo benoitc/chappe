@@ -7,6 +7,21 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 
 ## Unreleased
 
+- Security: a presence publisher can no longer change another user's state.
+  An authenticated user may publish only its own address unless your app
+  decides otherwise, and a server set up without authentication now refuses
+  every PUBLISH unless you say it may take them unauthenticated. Stored
+  publications are capped in number, per address and in size, so a flood of
+  publications cannot fill memory.
+- Conferences: moving a participant between two rooms can no longer freeze
+  or crash them, even when two moves cross, the target room is gone, or the
+  source and target are the same room.
+- rtpengine over TCP: a reply arriving in many small pieces no longer burns
+  CPU out of proportion to its size, so a slow or hostile node cannot stall
+  the other requests on that connection.
+- rtpengine nodes: removing and adding a node again no longer leaves extra
+  health checks running, and a check started for the old node can no longer
+  mark the new one down.
 - New: `chappe_mrf`, a media resource function in the drachtio-fsmrf style.
   A caller can be answered by a FreeSWITCH endpoint you drive from Erlang
   (play a menu, collect digits, record, stream the audio), moved to a phone

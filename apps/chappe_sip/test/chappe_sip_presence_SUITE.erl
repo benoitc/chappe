@@ -231,6 +231,7 @@ presence_start_option(Config) ->
 
 %% Bob, authenticated, publishing Alice's state: 403. Before the fix the
 %% ESC dropped the authenticated user and took it.
+%% req: R3903-51
 esc_cross_user_403(Config) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
     ok = chappe_sip:publish(#{auth => local_auth()}),
