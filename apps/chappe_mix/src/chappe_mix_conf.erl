@@ -31,7 +31,7 @@
 
 -include("chappe_mix_leg.hrl").
 
--export([start_link/1, stop/1, move_leg/3]).
+-export([start_link/1, stop/1, give/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -define(PTIME, 20).
@@ -132,10 +132,7 @@ handle_call({remove_leg, Id}, _From, S) ->
         error -> {reply, {error, not_found}, S}
     end;
 handle_call({has_leg, Id}, _From, S) ->
-    case maps:is_key(Id, S#state.legs) of
-        true -> {reply, {ok, Id}, S};
-        false -> {reply, {error, not_found}, S}
-    end;
+    {reply, has_leg(Id, S), S};
 handle_call({detach_leg, Id, To}, _From, S) ->
     case maps:take(Id, S#state.legs) of
         {Leg, Legs} -> detach(Leg, Legs, To, S);
@@ -217,7 +214,7 @@ remove(Leg, Legs, S) ->
     }).
 
 %% The leg leaves this conference: its sockets go to the process that
-%% drives the move (move_leg/3), with the packets already queued here.
+%% drives the move (chappe_mix_move), with the packets already queued here.
 detach(Leg, Legs, To, S) ->
     Socks = chappe_mix_leg:socks(Leg),
     case give(Socks, To) of
@@ -233,47 +230,10 @@ detach(Leg, Legs, To, S) ->
             {reply, {error, not_found}, S}
     end.
 
-%% Move leg Id from conference From to conference To. Runs in a process of
-%% its own (see chappe_mix:move_leg/3), so no conference ever calls
-%% another and two rooms swapping legs cannot wait on each other.
-%%
-%% The source detaches the leg and hands this process its sockets. The
-%% destination then adopts the leg first and gets the sockets second, so
-%% every packet it receives is for a leg it knows. If the destination is
-%% gone or refuses, the leg goes back to the source under its id; if the
-%% source has gone too, the sockets close when this process exits.
--spec move_leg(pid(), pos_integer(), pid()) ->
-    {ok, pos_integer()}
-    | {error, not_found | source_down | destination_down | refused}.
-move_leg(From, Id, To) ->
-    case call(From, {detach_leg, Id, self()}) of
-        {ok, Leg} -> adopt(Leg, From, To);
-        {error, down} -> {error, source_down};
-        {error, not_found} -> {error, not_found}
-    end.
-
-adopt(Leg, From, To) ->
-    case call(To, {adopt_leg, Leg}) of
-        {ok, NewId} ->
-            _ = give(chappe_mix_leg:socks(Leg), To),
-            {ok, NewId};
-        Refused ->
-            _ =
-                call(From, {return_leg, Leg}) =:= {ok, Leg#leg.id} andalso
-                    give(chappe_mix_leg:socks(Leg), From),
-            case Refused of
-                {error, down} -> {error, destination_down};
-                _ -> {error, refused}
-            end
-    end.
-
-%% A conference only does local work in a call, so waiting on one has no
-%% timeout; it ends when the conference answers or dies.
-call(Conf, Req) ->
-    try
-        gen_server:call(Conf, Req, infinity)
-    catch
-        exit:_ -> {error, down}
+has_leg(Id, S) ->
+    case maps:is_key(Id, S#state.legs) of
+        true -> {ok, Id};
+        false -> {error, not_found}
     end.
 
 %% Hand sockets to process To, with the packets for them already queued

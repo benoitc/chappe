@@ -199,34 +199,8 @@ public_table(Name) ->
 
 handle_call({add_node, Name, Opts}, _From, State) ->
     case maps:is_key(Name, State#state.nodes) of
-        true ->
-            {reply, {error, already_added}, State};
-        false ->
-            {PoolOpts, ClientOpts} = split_opts(Opts),
-            case
-                supervisor:start_child(chappe_rtpengine_client_sup, [
-                    Name, ClientOpts
-                ])
-            of
-                {ok, _Pid} ->
-                    Node = schedule_health(#node{
-                        name = Name,
-                        health_interval =
-                            maps:get(health_interval, PoolOpts),
-                        down_after = maps:get(down_after, PoolOpts),
-                        incarnation = erlang:unique_integer([
-                            positive, monotonic
-                        ])
-                    }),
-                    ets:insert(?NODES, {Name, up, Node#node.generation}),
-                    ets:insert(?COUNTERS, {Name, 0, 0}),
-                    Nodes = maps:put(Name, Node, State#state.nodes),
-                    {reply, ok, State#state{nodes = Nodes}};
-                {error, {already_started, _}} ->
-                    {reply, {error, already_added}, State};
-                {error, Reason} ->
-                    {reply, {error, Reason}, State}
-            end
+        true -> {reply, {error, already_added}, State};
+        false -> start_node(Name, split_opts(Opts), State)
     end;
 handle_call({remove_node, Name}, _From, State) ->
     case maps:take(Name, State#state.nodes) of
@@ -258,6 +232,29 @@ handle_call({unsubscribe, Pid}, _From, State) ->
     {reply, ok, drop_subscriber(Pid, State)};
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown_call}, State}.
+
+%% Start Name's client and its health checks, under a fresh incarnation so
+%% timers and pings of an earlier node of the same name are told apart.
+start_node(Name, {PoolOpts, ClientOpts}, State) ->
+    case
+        supervisor:start_child(chappe_rtpengine_client_sup, [Name, ClientOpts])
+    of
+        {ok, _Pid} ->
+            Node = schedule_health(#node{
+                name = Name,
+                health_interval = maps:get(health_interval, PoolOpts),
+                down_after = maps:get(down_after, PoolOpts),
+                incarnation = erlang:unique_integer([positive, monotonic])
+            }),
+            ets:insert(?NODES, {Name, up, Node#node.generation}),
+            ets:insert(?COUNTERS, {Name, 0, 0}),
+            Nodes = maps:put(Name, Node, State#state.nodes),
+            {reply, ok, State#state{nodes = Nodes}};
+        {error, {already_started, _}} ->
+            {reply, {error, already_added}, State};
+        {error, Reason} ->
+            {reply, {error, Reason}, State}
+    end.
 
 handle_cast({report, Name, ok}, State) ->
     {noreply, note_success(Name, State)};

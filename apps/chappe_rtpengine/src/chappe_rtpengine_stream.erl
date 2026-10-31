@@ -198,15 +198,21 @@ done(Rest, Base, [list | _] = Stack) ->
     scan(Rest, Base, none, Stack).
 
 %% One byte of an integer or a string length, canonical forms only.
-token($-, int_start) -> {next, int_minus};
-token($0, int_start) -> {next, int_zero};
+token($-, int_start) ->
+    {next, int_minus};
+token($0, int_start) ->
+    {next, int_zero};
 token(C, int_start) when C >= $1, C =< $9 -> {next, int_digits};
 token(C, int_minus) when C >= $1, C =< $9 -> {next, int_digits};
-token($e, int_zero) -> value;
-token($e, int_digits) -> value;
+token($e, int_zero) ->
+    value;
+token($e, int_digits) ->
+    value;
 token(C, int_digits) when ?IS_DIGIT(C) -> {next, int_digits};
-token($:, len_zero) -> {colon, 0};
-token($:, {len, Len}) -> {colon, Len};
+token($:, len_zero) ->
+    {colon, 0};
+token($:, {len, Len}) ->
+    {colon, Len};
 token(C, {len, Len}) when ?IS_DIGIT(C) ->
     case Len * 10 + C - $0 of
         Len1 when Len1 > ?MAX_STREAM_BYTES -> {error, {too_large, Len1}};

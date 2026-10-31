@@ -179,13 +179,7 @@ remove_leg(Conf, Leg) ->
 move_leg(Conf, Leg, Conf) ->
     gen_server:call(Conf, {has_leg, Leg});
 move_leg(From, Leg, To) ->
-    {Pid, Ref} = spawn_monitor(fun() ->
-        exit({moved, chappe_mix_conf:move_leg(From, Leg, To)})
-    end),
-    receive
-        {'DOWN', Ref, process, Pid, {moved, Result}} -> Result;
-        {'DOWN', Ref, process, Pid, Reason} -> exit(Reason)
-    end.
+    chappe_mix_move:run(From, Leg, To).
 
 %% Send the mix to Remote from now on, and take RTP from the next
 %% address that sends (the source latch is reset). Given as a map, its
