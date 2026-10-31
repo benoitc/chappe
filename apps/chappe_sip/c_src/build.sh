@@ -55,13 +55,20 @@ if [ ! -f "$DIST/lib/libsofia-sip-ua.a" ] || [ "$(cat "$SOFIA_STAMP" 2>/dev/null
         }
     fi
 
-    # We vendor the autoreconf output (configure, Makefile.in, etc.). A fresh
-    # git checkout gives every file the same mtime, so autotools' maintainer
-    # rules may think the .ac/.am sources are newer and try to regenerate
-    # configure/Makefile.in -- which fails when autoconf/automake are absent.
-    # Touch the generated files last so make treats them as up to date.
+    # We vendor the autoreconf output (configure, Makefile.in, etc.). A git
+    # checkout gives the files arbitrary mtimes in nanosecond order, so the
+    # autotools rebuild rules may see an input (configure.ac, Makefile.am,
+    # m4/*.m4) or one generated file as newer than another and try to rerun
+    # aclocal/automake, which the build hosts do not have. Pin the inputs to
+    # an old date and give every generated file one identical mtime: make
+    # never rebuilds a target that is as new as its prerequisites.
+    find "$SOFIA" \( -name configure.ac -o -name Makefile.am \
+       -o -path "*/m4/*.m4" -o -name acinclude.m4 \) \
+       -exec touch -t 200001010000 {} +
+    MTIME_REF="$BUILD/.autotools-mtime"
+    touch "$MTIME_REF"
     find "$SOFIA" \( -name configure -o -name aclocal.m4 -o -name config.h.in \
-       -o -name "Makefile.in" -o -path "*/m4/*.m4" \) -exec touch {} +
+       -o -name "Makefile.in" \) -exec touch -r "$MTIME_REF" {} +
 
     # OpenSSL via pkg-config (homebrew on macOS); disable TLS if absent.
     SSL_OPT=""
