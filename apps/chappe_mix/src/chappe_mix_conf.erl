@@ -31,7 +31,7 @@
 
 -include("chappe_mix_leg.hrl").
 
--export([start_link/1, stop/1]).
+-export([start_link/1, stop/1, give/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -define(PTIME, 20).
@@ -131,13 +131,17 @@ handle_call({remove_leg, Id}, _From, S) ->
         {Leg, Legs} -> {reply, ok, remove(bye(Leg, S), Legs, S)};
         error -> {reply, {error, not_found}, S}
     end;
-handle_call({move_leg, Id, To}, _From, S) ->
+handle_call({has_leg, Id}, _From, S) ->
+    {reply, has_leg(Id, S), S};
+handle_call({detach_leg, Id, To}, _From, S) ->
     case maps:take(Id, S#state.legs) of
-        {Leg, Legs} -> move(Leg, Legs, To, S);
+        {Leg, Legs} -> detach(Leg, Legs, To, S);
         error -> {reply, {error, not_found}, S}
     end;
 handle_call({adopt_leg, Leg}, _From, #state{next_id = Id} = S) ->
     {reply, {ok, Id}, insert(Leg#leg{id = Id}, S)};
+handle_call({return_leg, #leg{id = Id} = Leg}, _From, S) ->
+    {reply, {ok, Id}, insert(Leg, S)};
 handle_call({set_remote, Id, #{remote := _} = Opts}, _From, S) ->
     %% a new far end: unlatch, so its first packet is taken
     update_leg(Id, fun(L) -> chappe_mix_leg:set_remote(Opts, L) end, S);
@@ -195,7 +199,7 @@ insert(#leg{id = Id} = L, S) ->
         S#state.socks,
         chappe_mix_leg:socks(L)
     ),
-    put_leg(L, S#state{socks = Socks, next_id = Id + 1}).
+    put_leg(L, S#state{socks = Socks, next_id = max(Id + 1, S#state.next_id)}).
 
 remove(Leg, Legs, S) ->
     chappe_mix_leg:close(Leg),
@@ -209,17 +213,44 @@ remove(Leg, Legs, S) ->
         retired = add_totals(chappe_mix_leg:info(Leg), S#state.retired)
     }).
 
-move(Leg, Legs, To, S) ->
+%% The leg leaves this conference: its sockets go to the process that
+%% drives the move (chappe_mix_move), with the packets already queued here.
+detach(Leg, Legs, To, S) ->
     Socks = chappe_mix_leg:socks(Leg),
-    [ok = gen_udp:controlling_process(Sock, To) || Sock <- Socks],
-    [forward_pending(Sock, To) || Sock <- Socks],
-    S1 = S#state{
-        legs = forget(Leg#leg.id, Legs),
-        socks = maps:without(Socks, S#state.socks)
-    },
-    %% the relations were with this conference's legs
-    Moved = Leg#leg{nohear = []},
-    {reply, gen_server:call(To, {adopt_leg, Moved}), left(Leg, S1)}.
+    case give(Socks, To) of
+        ok ->
+            S1 = S#state{
+                legs = forget(Leg#leg.id, Legs),
+                socks = maps:without(Socks, S#state.socks)
+            },
+            %% the relations were with this conference's legs
+            {reply, {ok, Leg#leg{nohear = []}}, left(Leg, S1)};
+        error ->
+            %% the mover is gone: the leg stays
+            {reply, {error, not_found}, S}
+    end.
+
+has_leg(Id, S) ->
+    case maps:is_key(Id, S#state.legs) of
+        true -> {ok, Id};
+        false -> {error, not_found}
+    end.
+
+%% Hand sockets to process To, with the packets for them already queued
+%% here. error when To is gone.
+give(Socks, To) ->
+    case
+        lists:all(
+            fun(Sock) -> gen_udp:controlling_process(Sock, To) =:= ok end,
+            Socks
+        )
+    of
+        true ->
+            [forward_pending(Sock, To) || Sock <- Socks],
+            ok;
+        false ->
+            error
+    end.
 
 %% Leg Id is gone: nobody is kept from hearing it any more.
 forget(Id, Legs) ->

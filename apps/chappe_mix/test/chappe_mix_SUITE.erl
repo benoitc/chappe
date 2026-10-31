@@ -20,6 +20,9 @@
     ssrc_change/1,
     garbage_is_dropped/1,
     move_keeps_the_port/1,
+    move_crossing/1,
+    move_to_self/1,
+    move_to_dead/1,
     owner_death_closes/1,
     stop_closes/1,
     tick_trace/1,
@@ -62,6 +65,9 @@ all() ->
         ssrc_change,
         garbage_is_dropped,
         move_keeps_the_port,
+        move_crossing,
+        move_to_self,
+        move_to_dead,
         owner_death_closes,
         stop_closes,
         tick_trace,
@@ -194,6 +200,78 @@ move_keeps_the_port(_Config) ->
     assert_hears(C, [1100], [1700]),
     [chappe_mix_test_tone:stop(P) || {P, _, _} <- Eps1],
     close(Conf2, Eps2).
+
+%% Two rooms swap a leg at the same moment. Neither conference waits on
+%% the other, so both moves complete, both rooms live on and the legs that
+%% stayed are still mixed.
+move_crossing(_Config) ->
+    {Conf1, [A, B] = Eps1} = conference([440, 1100]),
+    {Conf2, [C, D] = Eps2} = conference([1700, 2300]),
+    Self = self(),
+    Mover = fun(From, Leg, To) ->
+        spawn(fun() ->
+            receive
+                go -> Self ! {moved, self(), chappe_mix:move_leg(From, Leg, To)}
+            end
+        end)
+    end,
+    M1 = Mover(Conf1, leg(B), Conf2),
+    M2 = Mover(Conf2, leg(D), Conf1),
+    M1 ! go,
+    M2 ! go,
+    R1 = moved(M1),
+    R2 = moved(M2),
+    ?assertMatch({ok, _}, R1),
+    ?assertMatch({ok, _}, R2),
+    ?assert(is_process_alive(Conf1)),
+    ?assert(is_process_alive(Conf2)),
+    ?assertEqual(2, length(chappe_mix:legs(Conf1))),
+    ?assertEqual(2, length(chappe_mix:legs(Conf2))),
+    listen([A, C], 1000),
+    assert_hears(A, [2300], [440, 1100, 1700]),
+    assert_hears(C, [1100], [440, 1700, 2300]),
+    [chappe_mix_test_tone:stop(P) || {P, _, _} <- Eps1 ++ Eps2],
+    ok = chappe_mix:stop(Conf1),
+    ok = chappe_mix:stop(Conf2).
+
+moved(Pid) ->
+    receive
+        {moved, Pid, R} -> R
+    after 15000 -> timeout
+    end.
+
+%% A move to the room the leg is already in leaves it where it is.
+move_to_self(_Config) ->
+    {Conf, [A, B] = Eps} = conference([440, 1100]),
+    Port = local_port(Conf, leg(B)),
+    ?assertEqual({ok, leg(B)}, chappe_mix:move_leg(Conf, leg(B), Conf)),
+    ?assertEqual({error, not_found}, chappe_mix:move_leg(Conf, 999, Conf)),
+    ?assertEqual(Port, local_port(Conf, leg(B))),
+    listen(Eps, 1000),
+    assert_hears(A, [1100], [440]),
+    close(Conf, Eps).
+
+%% A move to a conference that is gone fails cleanly: the source lives
+%% on, and the leg is back in it under its id, its port and mix intact.
+move_to_dead(_Config) ->
+    {Conf, [A, B] = Eps} = conference([440, 1100]),
+    {ok, Dead} = chappe_mix:start(#{}),
+    ok = chappe_mix:stop(Dead),
+    Port = local_port(Conf, leg(B)),
+    ?assertEqual(
+        {error, destination_down},
+        try
+            chappe_mix:move_leg(Conf, leg(B), Dead)
+        catch
+            exit:Reason -> {exit, Reason}
+        end
+    ),
+    ?assert(is_process_alive(Conf)),
+    ?assertEqual(Port, local_port(Conf, leg(B))),
+    listen(Eps, 1000),
+    assert_hears(A, [1100], [440]),
+    assert_hears(B, [440], [1100]),
+    close(Conf, Eps).
 
 %% The conference belongs to its owner: when the owner dies the
 %% conference stops and its ports are free again.

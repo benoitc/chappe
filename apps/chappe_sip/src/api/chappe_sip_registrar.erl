@@ -11,7 +11,7 @@
 %% 403, 404, 420 with Unsupported: path, 423 with Min-Expires, 439, 503).
 -module(chappe_sip_registrar).
 
--export([handler/1]).
+-export([handler/1, aor_owned/3]).
 
 %% A ready-made REGISTER handler backed by the location store: it records
 %% the request's contacts and answers 200 echoing the live bindings (with
@@ -160,7 +160,8 @@ registrar_auth(#{realm := Realm, secret := PwFun} = Auth, Req) ->
     },
     case chappe_sip_digest:verify(Args) of
         {ok, User} ->
-            case aor_owned(User, auth_domains(Auth), Req) of
+            To = aor_uri(chappe_sip_req:get(<<"to">>, Req)),
+            case aor_owned(User, Auth, To) of
                 % identity and domain match the AOR
                 true -> ok;
                 % authenticated as someone else, or for another domain
@@ -184,11 +185,16 @@ auth_domains(#{domain := D}) when is_binary(D) -> [ascii_lower(D)];
 auth_domains(#{domain := Ds}) when is_list(Ds) -> [ascii_lower(D) || D <- Ds];
 auth_domains(#{realm := Realm}) -> [ascii_lower(Realm)].
 
-%% the To AOR being registered is User's, in one of Domains
-aor_owned(User, Domains, Req) ->
-    case chappe_sip_uri:parse(aor_uri(chappe_sip_req:get(<<"to">>, Req))) of
+%% The address-of-record Uri is User's under the digest map Auth: its
+%% user part is User and its host one of the auth domains (the auth map's
+%% domain, one or a list, else the realm). The registrar checks the To of
+%% a REGISTER with it; the ESC the Request-URI of a PUBLISH.
+-spec aor_owned(binary(), #{realm := binary(), _ => _}, binary()) ->
+    boolean().
+aor_owned(User, Auth, Uri) ->
+    case chappe_sip_uri:parse(Uri) of
         {ok, #{user := User, host := Host}} ->
-            lists:member(ascii_lower(Host), Domains);
+            lists:member(ascii_lower(Host), auth_domains(Auth));
         _ ->
             false
     end.

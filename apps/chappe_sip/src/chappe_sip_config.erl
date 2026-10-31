@@ -87,6 +87,12 @@ default(registrar_flow_timer) -> 120;
 %% memory): distinct AORs, and contacts bound to one AOR.
 default(registrar_max_aors) -> 100000;
 default(registrar_max_bindings_per_aor) -> 10;
+%% Bounds on the event state compositor (chappe_sip_esc): live publications
+%% in all, and for one resource across its packages (a new one past either
+%% gets 503 with Retry-After); the bytes of one PUBLISH body (413 above).
+default(esc_max_publications) -> 100000;
+default(esc_max_publications_per_resource) -> 16;
+default(esc_max_body_size) -> 65536;
 %% Record-Route / flow-token authentication secret. When unset a per-node
 %% random secret is generated at boot; set a stable shared value only if
 %% record-routed dialogs must survive a restart or span a cluster.

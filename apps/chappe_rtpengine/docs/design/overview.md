@@ -42,7 +42,7 @@ One process per rtpengine node, one UDP socket per process.
 
 - Socket options: `{active, N}` with re-arm on `udp_passive` for flow control, `sndbuf` and `recbuf` of 256 KiB, and a 64 KiB user `buffer`. Large SDP bodies (ICE candidate lists, several m-lines) exceed default buffers: the kernel refuses datagrams beyond sndbuf (9216 bytes by default on macOS), and gen_udp silently truncates datagrams beyond its buffer.
 - Outgoing datagrams are checked against `max_datagram` (default 65507, the IPv4 payload limit) before the send; an oversized request, or one the kernel rejects with `emsgsize`, returns `{error, too_large}` and is not retried.
-- NG over TCP is parsed by `chappe_rtpengine_stream`: the cookie is split off once, and a partial bencode value reports a lower bound on the bytes it still needs (`chappe_rtpengine_bencode:decode_stream/1`), so chunks are collected until then and parsed once. A 1 MB reply in many segments costs one decode, not one per segment. A stream that is corrupt or exceeds the caps drops the connection.
+- NG over TCP is parsed by `chappe_rtpengine_stream`, whose work is linear in the stream size however the bytes are fragmented. A resumable scanner walks each byte once to find where the value ends, keeping across feeds the cookie phase, the open containers, and the token in progress (an integer, a string length, or the string bytes left to skip; string bodies are skipped, not read). The message's bytes stay in the chunks they arrived in, are joined once its end is found, and are decoded once. The scanner also rejects what can never parse as it arrives: a bad type byte, a non-canonical integer or length, a non-string dictionary key, nesting deeper than 64, or a string announcing more than the 4 MiB cap. A list of 4000 small dictionaries fed 4 bytes at a time costs about 0.4M reductions (the earlier framer, which re-parsed the partial value per fragment, cost 736M). A stream that is corrupt or exceeds the caps drops the connection.
 - The TCP transport resolves the host on every connect attempt (the WebSocket client resolves the URL host itself); UDP resolves once at start. A name that does not resolve is retried like a refused connection.
 - The calling process builds and bencodes the command through `chappe_rtpengine_ng:encode_command/2`; the client only prepends the cookie and sends. This keeps SDP-sized encoding work out of the serialized gen_server. If per-node throughput ever becomes a limit, the next step is a small socket pool per node picked by `erlang:phash2(CallId, N)`, which keeps one call's commands ordered on one socket.
 - Cookies are `RandomHex-UniqueInteger`. The random component is a correctness requirement, not a nicety: rtpengine caches replies by cookie for about 30 seconds, and a restarted client reusing cookies would be served stale replies for different commands.
@@ -156,6 +156,13 @@ A periodic ping per node (`health_interval`, 5000 ms) plus the facade's
 reports. `down_after` (2) consecutive failures mark a node down: it is left
 out of selection and subscribers get `{node_down, Name}`. A successful ping
 or command brings it back up.
+
+Each `add_node/2` gives the node a fresh incarnation, separate from the
+generation below. The health timer message and every ping result carry it,
+and `remove_node/1` cancels the timer. A timer or ping result whose
+incarnation is not the current node's is dropped, so when you remove a name
+and add it again, one timer chain runs and a ping started for the old node
+never counts against the new one.
 
 ### Generation counter
 
