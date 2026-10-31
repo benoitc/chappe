@@ -28,7 +28,7 @@
          live_path_outbound/1, live_require_path/1,
          live_record_route_ignored/1, live_never_6xx/1,
          live_failure_writes_nothing/1, live_keepalives/1, live_tcp_flow/1,
-         live_tcp_plain_binding/1, live_udp_flow/1]).
+         live_tcp_plain_binding/1, live_udp_flow/1, live_send_flow_per_binding/1]).
 
 all() ->
     [{group, fake}, {group, live}].
@@ -49,7 +49,7 @@ groups() ->
                  live_path_outbound, live_require_path,
                  live_record_route_ignored, live_never_6xx,
                  live_failure_writes_nothing, live_keepalives, live_tcp_flow,
-                 live_tcp_plain_binding, live_udp_flow]}].
+                 live_tcp_plain_binding, live_udp_flow, live_send_flow_per_binding]}].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -824,6 +824,29 @@ live_udp_flow(_Config) ->
     ?assertEqual(<<"sip:alice@192.0.2.9:5070;ob">>, chappe_sip_msg:uri(M)),
     gen_udp:close(U),
     gen_udp:close(Sock).
+
+%% Each binding of an AOR says where to send to it (send_flow), the way
+%% location_flow/1 does for the first one: a device behind a NAT (its
+%% Contact is not where its REGISTER came from) is reached at that source,
+%% a direct one by its Contact.
+live_send_flow_per_binding(_Config) ->
+    EP = start(),
+    ok = chappe_sip:register(chappe_sip:registrar(#{allow_unauthenticated => true})),
+    {ok, Direct} = gen_udp:open(0, [binary, {active, true}, {ip, {127,0,0,1}}]),
+    send(Direct, EP, register_req(lport(Direct), 3600, 1)),
+    _ = recv_status(Direct, 200),
+    {ok, Nated} = gen_udp:open(0, [binary, {active, true}, {ip, {127,0,0,1}}]),
+    NatCt = {<<"Contact">>, <<"<sip:alice@192.0.2.50:5060>">>},
+    send(Nated, EP, register_req(lport(Nated), 3600, 1, [NatCt])),
+    _ = recv_status(Nated, 200),
+    Bs = chappe_sip:bindings(<<"sip:alice@127.0.0.1">>),
+    ?assertEqual(2, length(Bs)),
+    [NB] = [B || #{contact := <<"sip:alice@192.0.2.50:5060">>} = B <- Bs],
+    [DB] = [B || #{contact := C} = B <- Bs, C =/= <<"sip:alice@192.0.2.50:5060">>],
+    ?assertEqual({udp, <<"127.0.0.1">>, lport(Nated)}, maps:get(send_flow, NB)),
+    ?assertEqual(undefined, maps:get(send_flow, DB)),
+    gen_udp:close(Direct),
+    gen_udp:close(Nated).
 
 %% ---- helpers ----
 

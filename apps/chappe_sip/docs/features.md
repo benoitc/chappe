@@ -27,7 +27,7 @@ coverage, row by row, is in the [compliance matrix](compliance.md).
 |---|---|
 | B2BUA: bridge, header rules, privacy service, Timer C, early media | [B2BUA](guides/b2bua.md) |
 | B2BUA re-INVITE and UPDATE relay, SDP hook, late offer, hold events | [Handle re-INVITE in a B2BUA](guides/b2bua-reinvite.md) |
-| B2BUA parallel forking, serial targets, per-branch flow, headers and anchor flags, the answering branch, `pass_failure` hunting | [Fork and hunt](guides/b2bua-forking.md) |
+| B2BUA parallel forking, serial targets, per-branch flow, headers and anchor flags, the answering branch, `pass_failure` hunting under one To-tag | [Fork and hunt](guides/b2bua-forking.md) |
 | B2BUA hangup, in-dialog requests, INFO relay, `replace_b`, `relay_async`, `set_owner` | [Call control](guides/b2bua-call-control.md) |
 | Peers monitored by OPTIONS, peer groups with failover, direct or anchored media per call | [Run an SBC](guides/sbc.md) |
 | Stateful forking proxy (RFC 3261 16), Record-Route, in-dialog forwarding | [Proxy](guides/proxy.md) |
@@ -37,7 +37,7 @@ coverage, row by row, is in the [compliance matrix](compliance.md).
 
 | Capability | Guide |
 |---|---|
-| Registrar and location store, Path, outbound flows (RFC 5626), NAT | [Registrar](guides/registrar.md) |
+| Registrar and location store, Path, outbound flows (RFC 5626), NAT, the flow of each binding | [Registrar](guides/registrar.md) |
 | Outbound registration to a carrier or PBX | [Register to a carrier](guides/register-to-a-carrier.md) |
 
 ## Events and transfer

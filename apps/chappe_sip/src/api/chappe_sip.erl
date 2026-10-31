@@ -470,10 +470,16 @@ location(AorOrUri) ->
 %% the request with one Route header per element, in order), instance and
 %% reg_id (RFC 5626), callid and cseq, received: the flow the REGISTER
 %% came on (RFC 3581), and transport: the one it came over (<<"udp">>,
-%% <<"tcp">>, <<"tls">>; undefined over WebSocket).
+%% <<"tcp">>, <<"tls">>; undefined over WebSocket). send_flow is the flow
+%% to reach that binding over, as location_flow/1 gives it for the first
+%% one (undefined: send to the contact): pass it as the flow of a branch
+%% to fork to every device of a user.
 -spec bindings(binary()) -> [map()].
 bindings(AorOrUri) ->
-    chappe_sip_registry:bindings(AorOrUri).
+    [
+        B#{send_flow => binding_flow(B)}
+     || B <- chappe_sip_registry:bindings(AorOrUri)
+    ].
 
 %% Resolve an AOR to its first binding's contact URI and transport flow.
 %% A registered WS UA has a flow', and so has an RFC 5626 outbound binding

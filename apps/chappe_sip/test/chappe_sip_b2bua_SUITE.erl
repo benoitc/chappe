@@ -18,7 +18,7 @@
 -export([fork_one_answers/1, fork_busy_then_answer/1, fork_all_fail_best/1,
          fork_timer_c/1, fork_late_2xx/1, pass_failure_timer_c/1,
          start_failure_answered/1, start_failure_not_passed/1]).
--export([fork_branch_opts/1, serial_branch_opts/1]).
+-export([fork_branch_opts/1, serial_branch_opts/1, hunt_keeps_a_tag/1]).
 
 all() ->
     [b2b_success_bye, b2b_callee_busy, b2b_caller_cancel,
@@ -26,7 +26,7 @@ all() ->
      b2b_timer_c_restarted, fork_one_answers, fork_busy_then_answer,
      fork_all_fail_best, fork_timer_c, fork_late_2xx, pass_failure_timer_c,
      start_failure_answered, start_failure_not_passed, fork_branch_opts,
-     serial_branch_opts].
+     serial_branch_opts, hunt_keeps_a_tag].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -727,6 +727,57 @@ serial_branch_opts(_Config) ->
     ?assertMatch(#{uri := _, index := 2,
                    opts := #{headers := [{<<"X-Step">>, <<"two">>}]}},
                  got(winner)),
+    ok = expect({relay_done, a_bye}).
+
+%% An app hunting with pass_failure => false: the first target rings (A
+%% gets its 180) and times out, the second answers. A's 200 carries the
+%% To-tag of the 180, so its dialog is the one the B2BUA made, and its
+%% BYE is answered.
+hunt_keeps_a_tag(_Config) ->
+    {EnginePort, C1} = setup(),
+    C2 = pick(),
+    Test = self(),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        {error, timeout} = chappe_sip:create_b2bua(
+            Req, Res, uri(C1), #{pass_failure => false, timer_c => 500}),
+        {ok, Legs} = chappe_sip:create_b2bua(Req, Res, uri(C2),
+                                             #{pass_failure => false}),
+        {done, Why} = chappe_sip_b2b:relay(Legs),
+        Test ! {relay_done, Why}
+    end),
+    callee(C1, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        send(Sock, Src, resp(Inv, 180, <<"Ringing">>, <<"c1t">>, [], <<>>)),
+        {Cancel, CSrc} = recv(Sock, <<"CANCEL">>),
+        send(Sock, CSrc, resp(Cancel, 200, <<"OK">>, <<"c1t">>, [], <<>>)),
+        send(Sock, Src, resp(Inv, 487, <<"Request Terminated">>, <<"c1t">>, [], <<>>))
+    end),
+    callee(C2, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        send(Sock, Src, resp(Inv, 200, <<"OK">>, <<"c2t">>,
+                             [{<<"Contact">>, ctc(C2)}], sdp(<<"callee2">>))),
+        {_Ack, _} = recv(Sock, <<"ACK">>),
+        {Bye, BSrc} = recv(Sock, <<"BYE">>),
+        send(Sock, BSrc, resp(Bye, 200, <<"OK">>, <<"c2t">>, [], <<>>))
+    end),
+    caller(fun(Sock) ->
+        Call = callid(),
+        FT = <<"hk1">>,
+        send(Sock, EnginePort, invite(Sock, EnginePort, Call, FT)),
+        R180 = recv_status(Sock, 180),
+        R200 = recv_status(Sock, 200),
+        Test ! {tags, to_tag(R180), to_tag(R200)},
+        TT = to_tag(R200),
+        send(Sock, EnginePort, ack(Sock, EnginePort, Call, FT, TT)),
+        send(Sock, EnginePort, bye(Sock, EnginePort, Call, FT, TT)),
+        _ = recv_status(Sock, 200),
+        Test ! bye_answered
+    end),
+    receive
+        {tags, T180, T200} -> ?assertEqual(T180, T200)
+    after 10000 -> ct:fail(no_tags)
+    end,
+    ok = expect(bye_answered),
     ok = expect({relay_done, a_bye}).
 
 got(Tag) ->

@@ -84,12 +84,12 @@
 -type dest() :: binary() | {binary(), branch_opts()}.
 %% What one destination changes over the call's options:
 %%   flow          the registered flow its INVITE goes over (the call's
-%%                 flow option otherwise)
+%%                 flow option when absent or undefined)
 %%   headers       added to its INVITE after the call's b_headers
 %%   anchor_params #{a | b => map()}, merged flag by flag over the call's
 %%                 anchor_params for that leg
 -type branch_opts() :: #{
-    flow => chappe_sip_engine:flow(),
+    flow => chappe_sip_engine:flow() | undefined,
     headers => [{binary(), iodata()}],
     anchor_params => #{a | b => map()}
 }.
@@ -234,8 +234,12 @@ media_init(Req, #{uri := Uri} = First, Ref, Opts) ->
 %% a destination over a WebSocket (its URI or its flow) is a browser:
 %% WebRTC media
 webrtc(#{uri := Uri, opts := BranchOpts}, Opts) ->
-    ws_uri(Uri) orelse
-        is_integer(maps:get(flow, BranchOpts, maps:get(flow, Opts, undefined))).
+    Flow =
+        case BranchOpts of
+            #{flow := F} when F =/= undefined -> F;
+            _ -> maps:get(flow, Opts, undefined)
+        end,
+    ws_uri(Uri) orelse is_integer(Flow).
 
 %% the media side of a destination: its WebRTC flag and its anchor params
 %% merged flag by flag over the call's
@@ -313,9 +317,11 @@ start_b(Req, Res, {Fork, Dests}, Opts, LateOffer, M) ->
     ),
     %% pre-choose the A-leg dialog tag so relayed provisionals and the
     %% final 2xx share one To-tag (otherwise nta auto-tags the first
-    %% provisional and the leg tag never matches)
-    ATag = chappe_sip_dialog:gen_tag(),
-    W = #{
+    %% provisional and the leg tag never matches); an earlier attempt on
+    %% this request (a hunt) chose it already
+    A = a_side(Res),
+    ATag = maps:get(atag, A, chappe_sip_dialog:gen_tag()),
+    W0 = #{
         fork => Fork,
         timer_c => timer_c(Opts),
         req => Req,
@@ -333,6 +339,7 @@ start_b(Req, Res, {Fork, Dests}, Opts, LateOffer, M) ->
         %% the finals of the branches that failed, in arrival order
         finals => []
     },
+    W = maps:merge(W0, maps:with([aleg, acseq], A)),
     Dests1 = [D#{bopts => dest_bopts(D, BOpts)} || D <- Dests],
     case Fork of
         serial ->
@@ -353,7 +360,7 @@ dest_bopts(#{opts := BranchOpts, sdp := Sdp}, #{headers := Hdrs} = BOpts) ->
         headers := Hdrs ++ maps:get(headers, BranchOpts, [])
     },
     case BranchOpts of
-        #{flow := Flow} -> B1#{flow => Flow};
+        #{flow := Flow} when Flow =/= undefined -> B1#{flow => Flow};
         _ -> B1
     end.
 
@@ -405,6 +412,7 @@ restart_timer_c(BMsg, #{timer_c := TimerC} = W) ->
     end.
 
 b2b_wait(#{res := Res, branches := Branches, deadline := Deadline} = W) ->
+    keep_a_side(W),
     ATxn = chappe_sip_res:req_txn(Res),
     ALeg = maps:get(aleg, W, none),
     receive
@@ -570,6 +578,7 @@ create_a(
     Winner = chappe_sip_b2b_fork:winner(W),
     case chappe_sip:create_uas(Req, Res, UasOpts) of
         {ok, ADialog} ->
+            _ = erase(a_side_key(Res)),
             Legs = #{
                 uas => ADialog,
                 uac => BDialog,
@@ -586,6 +595,22 @@ create_a(
             _ = chappe_sip_b2b_media:stop(M),
             {error, Reason}
     end.
+
+%% A's To-tag and early leg, kept in the request worker across the
+%% create_b2bua/4 calls of a hunt (pass_failure => false), so the 1xx a
+%% first target made A see and the 2xx of a later one share a dialog.
+a_side_key(Res) ->
+    {?MODULE, a_side, chappe_sip_res:req_txn(Res)}.
+
+a_side(Res) ->
+    case get(a_side_key(Res)) of
+        undefined -> #{};
+        A -> A
+    end.
+
+keep_a_side(#{res := Res} = W) ->
+    _ = put(a_side_key(Res), maps:with([atag, aleg, acseq], W)),
+    ok.
 
 %% A caller behind a NAT sends a Contact it cannot be reached at: the
 %% requests of its dialog (our re-INVITE, BYE) go to where its INVITE came

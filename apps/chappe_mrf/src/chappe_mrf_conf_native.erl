@@ -8,7 +8,7 @@
 -include("chappe_mrf_conf.hrl").
 
 -export([join/4, offer/3, result/4, complete/3, play_leg/2]).
--export([join_endpoint/3]).
+-export([join_endpoint/3, join_call/4, prepare_call/2, call_done/5]).
 
 %% ---- native ----
 
@@ -23,6 +23,41 @@ join(B2b, Opts, From, #state{anchor_params = AP} = S) ->
     end),
     J = #{from => From, b2b => B2b, opts => Opts},
     {noreply, S#state{pending = (S#state.pending)#{Token => J}}}.
+
+%% An incoming call not answered yet, in its request worker: A is
+%% answered by a B2BUA call to the loopback (the mixer behind rtpengine),
+%% which then runs in a process of its own.
+join_call(Conf, Req, Res, Opts) ->
+    case chappe_mrf_conf:call(Conf, {join_call, Opts}, 5000) of
+        {ok, Token, Uri, AP} ->
+            B2bOpts = #{media => anchor, anchor_params => AP},
+            Result =
+                case chappe_sip:create_b2bua(Req, Res, Uri, B2bOpts) of
+                    {ok, Legs} -> chappe_sip_b2b:relay_async(Legs, #{});
+                    {error, _} = Err -> Err
+                end,
+            chappe_mrf_conf:call(
+                Conf, {join_call_done, Token, Result}, ?MRF_JOIN_TIMEOUT + 5000
+            );
+        Err ->
+            Err
+    end.
+
+%% the loopback a joining call is sent to, and the flags toward the mixer
+prepare_call(Opts, #state{anchor_params = AP} = S) ->
+    Token = chappe_mrf_lib:new_id(),
+    ok = chappe_mrf_registry:put({loop, Token}, self()),
+    J = #{opts => Opts},
+    Uri = iolist_to_binary(chappe_mrf:loop_target(Token)),
+    {reply, {ok, Token, Uri, AP}, S#state{
+        pending = (S#state.pending)#{Token => J}
+    }}.
+
+%% the B2BUA call of join_call/4 is up (or failed)
+call_done(Token, J, {ok, B2b}, From, S) ->
+    complete(Token, J#{from => From, b2b => B2b, result => ok}, S);
+call_done(Token, J, Error, From, S) ->
+    result(Token, J#{from => From}, Error, S).
 
 %% the mixer answers the loopback INVITE's offer (rtpengine's)
 offer(Token, Offer, #state{pending = P, room = Room, name = Name} = S) ->

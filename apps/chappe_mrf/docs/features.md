@@ -19,8 +19,8 @@ that shows you how to use it.
   [Bridge guide](guides/bridge.md)
 - **Bridge without a re-INVITE** to the caller (`bridge/2,3`): to another
   endpoint or to a SIP URI. [Bridge guide](guides/bridge.md)
-- **Native conferences** on chappe_mix behind rtpengine: join a call or an
-  endpoint, mute, deaf, kick, lock, per-pair relations (whisper, listen
+- **Native conferences** on chappe_mix behind rtpengine: join a call, a
+  caller not answered yet, or an endpoint, mute, deaf, kick, lock, per-pair relations (whisper, listen
   only), talker events, prompts on each caller's leg.
   [Conference guide](guides/conference.md)
 - **FreeSWITCH conferences** on mod_conference: join, mute, deaf, kick,

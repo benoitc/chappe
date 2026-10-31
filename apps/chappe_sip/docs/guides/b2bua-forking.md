@@ -72,7 +72,10 @@ end).
 | `headers` | added to its INVITE, after the call's `b_headers` |
 | `anchor_params` | `#{a \| b => map()}`, merged flag by flag over the call's `anchor_params` |
 
-The same `{Uri, BranchOpts}` form works in a list tried in turn.
+The same `{Uri, BranchOpts}` form works in a list tried in turn. To ring
+every registered device of a user, build the destinations from
+`chappe_sip:bindings/1` and each binding's `send_flow` (see
+[Registrar](registrar.md)).
 
 ## Know which branch answered
 
@@ -142,6 +145,11 @@ hunt(Req, Res, [Target | Rest]) ->
     end.
 ```
 
+The caller sees one dialog across the whole hunt: the To-tag of the 180 a
+first target relayed is the one the 200 of a later target carries, so
+ringback can play while you move from target to target and the caller's BYE
+reaches the call.
+
 Every failure comes back: a final response from B
 (`#chappe_sip_error{status, reason}`), Timer C (`timeout`), a transport
 error, or a target that cannot be called. `{error, cancelled}` means the
@@ -162,8 +170,9 @@ caller hung up while B rang; stop hunting then.
   winner, best final, `pass_failure`), `chappe_sip_proxy_rules` (the 16.7
   choice shared with the proxy).
 - Tests: `chappe_sip_b2bua_SUITE` (`fork_*`, `serial_branch_opts`,
-  `pass_failure_timer_c`), `chappe_sip_b2b_relay_SUITE`
+  `hunt_keeps_a_tag`, `pass_failure_timer_c`), `chappe_sip_b2b_relay_SUITE`
   (`fork_anchored_per_branch`), `chappe_sip_webrtc_gateway_SUITE`
-  (`fork_ws_udp_*`).
+  (`fork_ws_udp_*`), `chappe_sip_sbc_interop_SUITE`
+  (`fork_webrtc_and_plain`, against the real rtpengine).
 - Design: [B2BUA design](../design/b2bua.md).
 - Lab: `make interop-sbc` (`apps/chappe_sip/interop/sbc`).

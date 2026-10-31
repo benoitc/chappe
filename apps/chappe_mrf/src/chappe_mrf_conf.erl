@@ -102,15 +102,33 @@ info(Conf) ->
 events(Conf, Pid) ->
     call(Conf, {events, Pid}).
 
-%% Bring a member in: a call (chappe_sip_b2b:b2b(), anchored) or an
-%% endpoint. On native, the endpoint must be one of create_endpoint/1 not
+%% Bring a member in: a call (chappe_sip_b2b:b2b(), anchored), an
+%% incoming call not answered yet ({call, Req, Res}, native only: run it
+%% in the INVITE's request worker; the caller is answered straight into
+%% the room through rtpengine and the call is carried by
+%% chappe_sip_b2b:relay_async/2), or an endpoint. On native, the endpoint must be one of create_endpoint/1 not
 %% bridged: its dialog is re-INVITEd to the mixer through rtpengine. On
 %% fs, it must be on the conference's node. Opts: name, mute,
 %% deaf, moderator; fs also pin (the PIN to enter first), pin_prompt
 %% (the file asking for it), pin_tries (3), flags (more mod_conference
 %% member flags). {ok, Member} once the member is in.
--spec join(conf(), chappe_sip_b2b:b2b() | chappe_mrf:endpoint(), map()) ->
+-spec join(
+    conf(),
+    chappe_sip_b2b:b2b()
+    | {call, chappe_sip_req:req(), chappe_sip_res:res()}
+    | chappe_mrf:endpoint(),
+    map()
+) ->
     {ok, member()} | {error, term()}.
+join(Conf, {call, Req, Res}, Opts) ->
+    case info(Conf) of
+        #{backend := native} ->
+            chappe_mrf_conf_native:join_call(Conf, Req, Res, Opts);
+        #{backend := fs} ->
+            {error, {unsupported, fs}};
+        Err ->
+            Err
+    end;
 join(Conf, Target, Opts) ->
     case info(Conf) of
         #{backend := native} when is_tuple(Target) ->
@@ -314,6 +332,18 @@ handle_call({join_ep, Ep, Opts}, _From, S) ->
     chappe_mrf_conf_native:join_endpoint(Ep, Opts, S);
 handle_call({join, B2b, Opts}, From, S) ->
     chappe_mrf_conf_native:join(B2b, Opts, From, S);
+handle_call({join_call, _Opts}, _From, #state{locked = true} = S) ->
+    {reply, {error, locked}, S};
+handle_call({join_call, Opts}, _From, S) ->
+    chappe_mrf_conf_native:prepare_call(Opts, S);
+handle_call({join_call_done, Token, Result}, From, #state{pending = P} = S) ->
+    case P of
+        #{Token := J} ->
+            {noreply,
+                chappe_mrf_conf_native:call_done(Token, J, Result, From, S)};
+        _ ->
+            {reply, {error, join_failed}, S}
+    end;
 handle_call({loop_offer, Token, Offer}, _From, S) ->
     chappe_mrf_conf_native:offer(Token, Offer, S);
 handle_call({fs_join, _Ep, _Owned, _Opts}, _From, #state{locked = true} = S) ->

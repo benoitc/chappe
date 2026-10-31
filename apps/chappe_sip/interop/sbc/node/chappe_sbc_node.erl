@@ -11,6 +11,10 @@
 %%   direct...   the SDP passes through
 %%   glare       direct, then set_media(anchor) right after the ACK: the
 %%               caller's own re-INVITE crosses ours (RFC 3261 14.2)
+%%   fork...     anchored, forked to a WebRTC-flagged branch (an address
+%%               nobody answers on) and to the group's first FreeSWITCH:
+%%               rtpengine gets one offer per branch, under its own
+%%               via-branch; the winner is logged as {winner, Index}
 %%   any other   chappe_sip_media:bypass/2 decides (the lab's network is
 %%               one private network, so direct)
 %%
@@ -27,6 +31,12 @@
 -define(FS1, <<"sip:10.253.9.31:5080">>).
 -define(FS2, <<"sip:10.253.9.32:5080">>).
 -define(KAM, <<"sip:10.253.9.40:5060">>).
+-define(NOBODY, <<"sip:browser@10.253.9.99:5080">>).
+-define(WEBRTC, #{
+    ice => force,
+    transport_protocol => <<"UDP/TLS/RTP/SAVPF">>,
+    rtcp_mux => [offer, require]
+}).
 -define(NETWORKS, [<<"10.253.9.0/24">>]).
 
 -spec start(string()) -> ok.
@@ -86,9 +96,12 @@ invite(Keeper, Req, Res) ->
     User = user(Req),
     Media = media(User),
     Opts = #{media => Media, notify => Keeper},
-    case chappe_sip:create_b2bua(Req, Res, {peer_group, fs}, Opts) of
-        {ok, #{b2b := B2b, uac := B, media := M} = Legs} ->
+    case chappe_sip:create_b2bua(Req, Res, target(User), Opts) of
+        {ok, #{b2b := B2b, uac := B, media := M, winner := W} = Legs} ->
             true = ets:insert(sbc_calls, {CallId, B2b, User}),
+            _ =
+                is_tuple(target(User)) andalso
+                    ets:insert(sbc_events, {CallId, {winner, maps:get(index, W)}}),
             log("call ~s up media ~p to ~s", [
                 CallId, chappe_sip_b2b_media:mode(M), chappe_sip_dialog:call_id(B)
             ]),
@@ -100,6 +113,12 @@ invite(Keeper, Req, Res) ->
             log("call ~s failed ~p", [CallId, Why])
     end.
 
+target(<<"fork", _/binary>>) ->
+    {parallel, [{?NOBODY, #{anchor_params => #{b => ?WEBRTC}}}, ?FS1]};
+target(_User) ->
+    {peer_group, fs}.
+
+media(<<"fork", _/binary>>) -> anchor;
 media(<<"anchor", _/binary>>) -> anchor;
 media(<<"direct", _/binary>>) -> direct;
 media(<<"glare">>) -> direct;

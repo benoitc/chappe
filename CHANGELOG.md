@@ -11,6 +11,14 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
   flow, extra headers and rtpengine flags, so a call to a user can ring a
   browser and a desk phone together with the right media for each. The call
   result also tells you which destination answered.
+- B2BUA hunting: when your app tries targets one after another and an early
+  one already made the caller ring, the target that answers now keeps the
+  same dialog. Before, the caller's hang-up got no answer.
+- Registrar: every binding of a user now says which flow reaches it, NAT
+  included, so a call can ring all of a user's devices, not only the first.
+- Conferences (chappe_mrf): a caller you have not answered yet can join a
+  native room directly; you no longer need to answer it with a placeholder
+  call first.
 - Security: a presence publisher can no longer change another user's state.
   An authenticated user may publish only its own address unless your app
   decides otherwise, and a server set up without authentication now refuses
