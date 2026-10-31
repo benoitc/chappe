@@ -12,7 +12,7 @@
         chappe_rtpengine_session_sup
     ]},
     {mod, {chappe_rtpengine_app, []}},
-    {applications, [kernel, stdlib, ws]},
+    {applications, [kernel, stdlib, crypto, ws]},
     {env, []},
     {licenses, ["Apache-2.0"]},
     {links, []}

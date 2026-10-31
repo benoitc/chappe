@@ -17,6 +17,7 @@
     end_per_testcase/2
 ]).
 -export([
+    forged_source_ignored/1,
     ping_pong/1,
     offer_answer_query_delete/1,
     node_error_reply/1,
@@ -52,6 +53,7 @@
 
 all() ->
     [
+        forged_source_ignored,
         ping_pong,
         offer_answer_query_delete,
         node_error_reply,
@@ -124,6 +126,15 @@ init_per_testcase(Case, Config) when
             chappe_rtpengine_fake_server:stop(A),
             {skip, no_second_loopback_address}
     end;
+init_per_testcase(forged_source_ignored, Config) ->
+    %% the test plays rtpengine itself on a socket it owns
+    {ok, Sock} = gen_udp:open(0, [binary, {active, false}, {ip, {127, 0, 0, 1}}]),
+    {ok, Port} = inet:port(Sock),
+    Node = chappe_rtpengine_test_forged_source_ignored,
+    ok = chappe_rtpengine:add_node(Node, #{
+        host => {127, 0, 0, 1}, port => Port, timeout => 2000, attempts => 1
+    }),
+    [{node, Node}, {sock, Sock} | Config];
 init_per_testcase(Case, Config) ->
     {ok, Server, Port} = start_fake(Case),
     Node = list_to_atom("chappe_rtpengine_test_" ++ atom_to_list(Case)),
@@ -186,6 +197,9 @@ end_per_testcase(Case, Config) when
     chappe_rtpengine_fake_server:stop(?config(server_b, Config)),
     _ = persistent_term:erase({?MODULE, addr}),
     end_per_testcase(default, Config);
+end_per_testcase(forged_source_ignored, Config) ->
+    _ = chappe_rtpengine:remove_node(?config(node, Config)),
+    gen_udp:close(?config(sock, Config));
 end_per_testcase(_Case, Config) ->
     _ = chappe_rtpengine:remove_node(?config(node, Config)),
     chappe_rtpengine_fake_server:stop(?config(server, Config)),
@@ -393,6 +407,29 @@ request_timeout(Config) ->
 malformed_reply(Config) ->
     Node = ?config(node, Config),
     {error, {bad_reply, <<"not bencode">>}} = chappe_rtpengine:ping(Node),
+    ok.
+
+%% a reply with the right cookie from any other address or port is not
+%% rtpengine's: it is dropped, and the real reply still wins
+forged_source_ignored(Config) ->
+    Node = ?config(node, Config),
+    Sock = ?config(sock, Config),
+    Self = self(),
+    spawn_link(fun() -> Self ! {pinged, chappe_rtpengine:ping(Node)} end),
+    {ok, {IP, CPort, Req}} = gen_udp:recv(Sock, 0, 2000),
+    [Cookie, _] = binary:split(Req, <<" ">>),
+    {ok, Forger} = gen_udp:open(0, [binary, {ip, {127, 0, 0, 1}}]),
+    Forged = <<Cookie/binary, " d6:result5:error12:error-reason6:forgede">>,
+    ok = gen_udp:send(Forger, IP, CPort, Forged),
+    wait_until(fun() ->
+        maps:get(bad_sources, chappe_rtpengine:stats(Node), 0) =:= 1
+    end),
+    ok = gen_udp:send(Sock, IP, CPort, <<Cookie/binary, " d6:result4:ponge">>),
+    receive
+        {pinged, Result} -> {ok, _} = Result
+    after 3000 -> error(no_reply)
+    end,
+    gen_udp:close(Forger),
     ok.
 
 %% req: RNG-04
