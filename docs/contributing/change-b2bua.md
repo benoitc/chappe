@@ -24,7 +24,7 @@ All in `apps/chappe_sip/src/api/`:
 | `chappe_sip_b2b` | the API: `create_b2bua/4`, `relay/1,2`, `relay_async/2`, `set_media/2`, `info/1`, `hangup/2`, `replace_b/3`; call setup while B rings, Timer C |
 | `chappe_sip_b2b_relay` | the relay loop once both legs are up: re-INVITE, UPDATE, glare, BYE |
 | `chappe_sip_b2b_async` | `relay_async/2`: the relay loop in a process of its own |
-| `chappe_sip_b2b_fork` | the B branches of a `{parallel, Uris}` target |
+| `chappe_sip_b2b_fork` | the B branches of a `{parallel, Dests}` target |
 | `chappe_sip_b2b_early` | UPDATE in early dialogs (RFC 3311 5.1) |
 | `chappe_sip_b2b_media` | the SDP path: the app's `rewrite_sdp` hook, then rtpengine when anchored |
 | `chappe_sip_b2b_replace` | `replace_b/3`: a new B behind rtpengine, A sees no re-INVITE |

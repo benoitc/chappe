@@ -7,6 +7,10 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 
 ## Unreleased
 
+- B2BUA forking: each destination of a fork or a list can now carry its own
+  flow, extra headers and rtpengine flags, so a call to a user can ring a
+  browser and a desk phone together with the right media for each. The call
+  result also tells you which destination answered.
 - Security: a presence publisher can no longer change another user's state.
   An authenticated user may publish only its own address unless your app
   decides otherwise, and a server set up without authentication now refuses
