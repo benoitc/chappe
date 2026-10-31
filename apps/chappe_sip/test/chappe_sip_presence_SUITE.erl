@@ -25,6 +25,9 @@
 -export([esc_lifecycle/1, esc_default_expires/1, esc_423/1, esc_489/1,
          esc_two_etags_400/1, esc_no_body_400/1, esc_415/1, esc_404/1,
          esc_digest/1, esc_options/1, presence_start_option/1]).
+-export([esc_cross_user_403/1, esc_unauthenticated_403/1, esc_own_aor/1,
+         esc_resources_with_auth/1, esc_authorize_hook/1, esc_max_total/1,
+         esc_max_per_resource/1, esc_body_413/1, esc_watch_once/1]).
 -export([pa_full_state/1, pa_rate/1, pa_accept_406/1, pa_deny_403/1,
          pa_pending/1, pa_polite/1, pa_digest/1, pa_fetch/1]).
 -export([mwi_initial_and_update/1, mwi_rate/1, mwi_auth/1]).
@@ -44,7 +47,10 @@ all() ->
 groups() ->
     [{esc, [], [esc_lifecycle, esc_default_expires, esc_423, esc_489,
                 esc_two_etags_400, esc_no_body_400, esc_415, esc_404,
-                esc_digest, esc_options, presence_start_option]},
+                esc_digest, esc_options, presence_start_option,
+                esc_cross_user_403, esc_unauthenticated_403, esc_own_aor,
+                esc_resources_with_auth, esc_authorize_hook, esc_max_total,
+                esc_max_per_resource, esc_body_413, esc_watch_once]},
      {pa, [], [pa_full_state, pa_rate, pa_accept_406, pa_deny_403,
                pa_pending, pa_polite, pa_digest, pa_fetch]},
      {mwi, [], [mwi_initial_and_update, mwi_rate, mwi_auth]},
@@ -72,6 +78,7 @@ init_per_testcase(Case, Config) ->
     [{ep, EP}, {sock, open()}, {user, User} | Config].
 
 end_per_testcase(_Case, Config) ->
+    [application:unset_env(chappe_sip, K) || K <- esc_limit_keys()],
     chappe_sip_core_peer:close(?config(sock, Config)),
     _ = chappe_sip:stop(),
     _ = chappe_sip_engine:reset_routes(),
@@ -87,7 +94,7 @@ end_per_testcase(_Case, Config) ->
 esc_lifecycle(Config) ->
     {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
                         ?config(user, Config)},
-    ok = chappe_sip:publish(#{}),
+    ok = chappe_sip:publish(open_esc()),
     Uri = res(User),
     R1 = pub(Sock, EP, Uri, #{expires => 120, body => pidf(Uri, <<"t1">>),
                               headers => [{<<"Record-Route">>,
@@ -118,7 +125,7 @@ esc_lifecycle(Config) ->
 esc_default_expires(Config) ->
     {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
                         ?config(user, Config)},
-    ok = chappe_sip:publish(#{default_expires => 1800}),
+    ok = chappe_sip:publish((open_esc())#{default_expires => 1800}),
     Uri = res(User),
     R = pub(Sock, EP, Uri, #{body => pidf(Uri, <<"t1">>)}),
     ?assertEqual(<<"1800">>, hdr(<<"expires">>, R)).
@@ -128,7 +135,7 @@ esc_default_expires(Config) ->
 esc_423(Config) ->
     {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
                         ?config(user, Config)},
-    ok = chappe_sip:publish(#{min_expires => 60}),
+    ok = chappe_sip:publish((open_esc())#{min_expires => 60}),
     Uri = res(User),
     R = pub(Sock, EP, Uri, #{expires => 10, body => pidf(Uri, <<"t1">>)}),
     ?assertEqual(423, status(R)),
@@ -139,7 +146,7 @@ esc_423(Config) ->
 esc_489(Config) ->
     {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
                         ?config(user, Config)},
-    ok = chappe_sip:publish(#{}),
+    ok = chappe_sip:publish(open_esc()),
     Uri = res(User),
     R1 = pub(Sock, EP, Uri, #{event => <<"dialog">>,
                               body => pidf(Uri, <<"t1">>)}),
@@ -153,7 +160,7 @@ esc_489(Config) ->
 esc_two_etags_400(Config) ->
     {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
                         ?config(user, Config)},
-    ok = chappe_sip:publish(#{}),
+    ok = chappe_sip:publish(open_esc()),
     Uri = res(User),
     ?assertEqual(400, status(pub(Sock, EP, Uri, #{if_match => <<"a, b">>}))).
 
@@ -162,7 +169,7 @@ esc_two_etags_400(Config) ->
 esc_no_body_400(Config) ->
     {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
                         ?config(user, Config)},
-    ok = chappe_sip:publish(#{}),
+    ok = chappe_sip:publish(open_esc()),
     ?assertEqual(400, status(pub(Sock, EP, res(User), #{}))).
 
 %% A body the package does not take: 415 with Accept.
@@ -170,7 +177,7 @@ esc_no_body_400(Config) ->
 esc_415(Config) ->
     {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
                         ?config(user, Config)},
-    ok = chappe_sip:publish(#{}),
+    ok = chappe_sip:publish(open_esc()),
     R = pub(Sock, EP, res(User), #{body => <<"online">>,
                                     content_type => <<"text/plain">>}),
     ?assertEqual(415, status(R)),
@@ -181,7 +188,7 @@ esc_415(Config) ->
 esc_404(Config) ->
     {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
                         ?config(user, Config)},
-    ok = chappe_sip:publish(#{resources => fun(_Aor) -> false end}),
+    ok = chappe_sip:publish((open_esc())#{resources => fun(_Aor) -> false end}),
     Uri = res(User),
     ?assertEqual(404, status(pub(Sock, EP, Uri,
                                  #{body => pidf(Uri, <<"t1">>)}))).
@@ -189,10 +196,9 @@ esc_404(Config) ->
 %% Digest: 401 with a challenge, 200 once the PUBLISH answers it.
 %% req: R3903-52
 esc_digest(Config) ->
-    {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
-                        ?config(user, Config)},
-    ok = chappe_sip:publish(#{auth => auth()}),
-    Uri = res(User),
+    {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
+    ok = chappe_sip:publish(#{auth => local_auth()}),
+    Uri = res(<<"bob">>),
     R1 = pub(Sock, EP, Uri, #{body => pidf(Uri, <<"t1">>)}),
     ?assertEqual(401, status(R1)),
     Creds = credentials(<<"PUBLISH">>, Uri, hdr(<<"www-authenticate">>, R1)),
@@ -223,6 +229,133 @@ presence_start_option(Config) ->
     ?assert(lists:member(<<"PUBLISH">>, tokens(hdr(<<"allow">>, R)))),
     ?assertEqual([<<"presence">>], tokens(hdr(<<"allow-events">>, R))).
 
+%% Bob, authenticated, publishing Alice's state: 403. Before the fix the
+%% ESC dropped the authenticated user and took it.
+esc_cross_user_403(Config) ->
+    {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
+    ok = chappe_sip:publish(#{auth => local_auth()}),
+    Alice = res(<<"alice">>),
+    ?assertEqual(403, status(auth_pub(Sock, EP, Alice,
+                                      #{body => pidf(Alice, <<"t1">>)}))),
+    ?assertEqual([], chappe_sip_esc:publications(Alice, <<"presence">>)).
+
+%% No auth and no opt-in: every PUBLISH gets 403; with
+%% allow_unauthenticated => true it is taken.
+esc_unauthenticated_403(Config) ->
+    {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
+                        ?config(user, Config)},
+    Uri = res(User),
+    ok = chappe_sip:publish(#{}),
+    ?assertEqual(403, status(pub(Sock, EP, Uri,
+                                 #{body => pidf(Uri, <<"t1">>)}))),
+    ok = chappe_sip:publish(open_esc()),
+    ?assertEqual(200, status(pub(Sock, EP, Uri,
+                                 #{body => pidf(Uri, <<"t1">>)}))).
+
+%% Bob publishing his own AOR, in the auth domain: 200. Another domain
+%% for the same user: 403.
+esc_own_aor(Config) ->
+    {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
+    ok = chappe_sip:publish(#{auth => local_auth()}),
+    Bob = res(<<"bob">>),
+    ?assertEqual(200, status(auth_pub(Sock, EP, Bob,
+                                      #{body => pidf(Bob, <<"t1">>)}))),
+    Other = <<"sip:bob@elsewhere.example">>,
+    ?assertEqual(403, status(auth_pub(Sock, EP, Other,
+                                      #{body => pidf(Other, <<"t1">>)}))).
+
+%% The resource allow list still applies to an authenticated owner.
+esc_resources_with_auth(Config) ->
+    {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
+    ok = chappe_sip:publish(#{auth => local_auth(),
+                              resources => fun(_Aor) -> false end}),
+    Bob = res(<<"bob">>),
+    ?assertEqual(404, status(auth_pub(Sock, EP, Bob,
+                                      #{body => pidf(Bob, <<"t1">>)}))).
+
+%% An authorize hook replaces the own-AOR rule: it sees the user, the
+%% realm, the resource and the package, and false is 403.
+esc_authorize_hook(Config) ->
+    {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
+    Self = self(),
+    Alice = res(<<"alice">>),
+    Authorize = fun(#{user := U, realm := R, resource := A, event := E,
+                      req := _}) ->
+                        Self ! {authorize, U, R, A, E},
+                        A =:= Alice
+                end,
+    ok = chappe_sip:publish(#{auth => local_auth(), authorize => Authorize}),
+    ?assertEqual(200, status(auth_pub(Sock, EP, Alice,
+                                      #{body => pidf(Alice, <<"t1">>)}))),
+    receive {authorize, <<"bob">>, <<"lab">>, Alice, <<"presence">>} -> ok
+    after 1000 -> ct:fail(no_authorize_call)
+    end,
+    Bob = res(<<"bob">>),
+    ?assertEqual(403, status(auth_pub(Sock, EP, Bob,
+                                      #{body => pidf(Bob, <<"t1">>)}))).
+
+%% esc_max_publications: a new publication past it gets 503 with
+%% Retry-After; a refresh of a live one is still taken.
+esc_max_total(Config) ->
+    {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
+    ok = fresh_esc(),
+    application:set_env(chappe_sip, esc_max_publications, 1),
+    ok = chappe_sip:publish(open_esc()),
+    A = res(<<"a">>),
+    B = res(<<"b">>),
+    R1 = pub(Sock, EP, A, #{body => pidf(A, <<"t1">>)}),
+    ?assertEqual(200, status(R1)),
+    R2 = pub(Sock, EP, B, #{body => pidf(B, <<"t1">>)}),
+    ?assertEqual(503, status(R2)),
+    ?assertNotEqual(undefined, hdr(<<"retry-after">>, R2)),
+    ?assertEqual(200, status(pub(Sock, EP, A,
+                                 #{if_match => hdr(<<"sip-etag">>, R1)}))).
+
+%% esc_max_publications_per_resource: a third publication for one resource
+%% gets 503; another resource is still taken.
+esc_max_per_resource(Config) ->
+    {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
+                        ?config(user, Config)},
+    ok = fresh_esc(),
+    application:set_env(chappe_sip, esc_max_publications_per_resource, 2),
+    ok = chappe_sip:publish(open_esc()),
+    Uri = res(User),
+    [?assertEqual(200, status(pub(Sock, EP, Uri, #{body => pidf(Uri, T)})))
+     || T <- [<<"t1">>, <<"t2">>]],
+    R = pub(Sock, EP, Uri, #{body => pidf(Uri, <<"t3">>)}),
+    ?assertEqual(503, status(R)),
+    ?assertNotEqual(undefined, hdr(<<"retry-after">>, R)),
+    ?assertEqual(2, length(chappe_sip_esc:publications(Uri, <<"presence">>))),
+    Other = res(<<User/binary, "_other">>),
+    ?assertEqual(200, status(pub(Sock, EP, Other,
+                                 #{body => pidf(Other, <<"t1">>)}))).
+
+%% A body over esc_max_body_size: 413, nothing stored.
+esc_body_413(Config) ->
+    {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
+                        ?config(user, Config)},
+    application:set_env(chappe_sip, esc_max_body_size, 64),
+    ok = chappe_sip:publish(open_esc()),
+    Uri = res(User),
+    ?assertEqual(413, status(pub(Sock, EP, Uri,
+                                 #{body => pidf(Uri, <<"t1">>)}))),
+    ?assertEqual([], chappe_sip_esc:publications(Uri, <<"presence">>)).
+
+%% watch/2 twice for one pid: one monitor, removed when the pid exits.
+esc_watch_once(_Config) ->
+    Pid = spawn(fun() -> receive stop -> ok end end),
+    ok = chappe_sip_esc:watch(<<"presence">>, Pid),
+    ok = chappe_sip_esc:watch(<<"presence">>, Pid),
+    ok = chappe_sip_esc:watch(<<"dialog">>, Pid),
+    ?assertEqual(1, length(esc_monitors(Pid))),
+    Pid ! stop,
+    timer:sleep(100),
+    ?assertEqual([], esc_monitors(Pid)).
+
+esc_monitors(Pid) ->
+    {monitors, Ms} = erlang:process_info(whereis(chappe_sip_esc), monitors),
+    [P || {process, P} <- Ms, P =:= Pid].
+
 %% ---- presence agent (RFC 3856) ----
 
 %% Two publications for a presentity: a watcher gets one PIDF document
@@ -232,7 +365,7 @@ presence_start_option(Config) ->
 pa_full_state(Config) ->
     {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
                         ?config(user, Config)},
-    ok = chappe_sip_presence:serve(#{authorize => fun allow/3}),
+    ok = chappe_sip_presence:serve(#{esc => open_esc(), authorize => fun allow/3}),
     Uri = res(User),
     200 = status(pub(Sock, EP, Uri, #{body => pidf(Uri, [{<<"a">>, open},
                                                          {<<"b">>, open}])})),
@@ -256,7 +389,7 @@ pa_full_state(Config) ->
 pa_rate(Config) ->
     {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
                         ?config(user, Config)},
-    ok = chappe_sip_presence:serve(#{authorize => fun allow/3,
+    ok = chappe_sip_presence:serve(#{esc => open_esc(), authorize => fun allow/3,
                                      min_interval => 1000}),
     Uri = res(User),
     R = pub(Sock, EP, Uri, #{body => pidf(Uri, [{<<"a">>, open}])}),
@@ -280,7 +413,7 @@ pa_rate(Config) ->
 pa_accept_406(Config) ->
     {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
                         ?config(user, Config)},
-    ok = chappe_sip_presence:serve(#{authorize => fun allow/3}),
+    ok = chappe_sip_presence:serve(#{esc => open_esc(), authorize => fun allow/3}),
     send(Sock, EP, subscribe(Sock, res(User), <<"presence">>,
                              [{<<"Accept">>, <<"application/xpidf+xml">>}])),
     {R, _} = recv(Sock, final, 3000),
@@ -302,7 +435,8 @@ pa_deny_403(Config) ->
 pa_pending(Config) ->
     {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
                         ?config(user, Config)},
-    ok = chappe_sip_presence:serve(#{authorize => fun(_, _, _) -> pending end,
+    ok = chappe_sip_presence:serve(#{esc => open_esc(),
+                                     authorize => fun(_, _, _) -> pending end,
                                      min_interval => 0}),
     Uri = res(User),
     200 = status(pub(Sock, EP, Uri, #{body => pidf(Uri, [{<<"a">>, open}])})),
@@ -320,7 +454,8 @@ pa_pending(Config) ->
 pa_polite(Config) ->
     {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
                         ?config(user, Config)},
-    ok = chappe_sip_presence:serve(#{authorize => fun(_, _, _) -> polite end}),
+    ok = chappe_sip_presence:serve(#{esc => open_esc(),
+                                     authorize => fun(_, _, _) -> polite end}),
     Uri = res(User),
     200 = status(pub(Sock, EP, Uri, #{body => pidf(Uri, [{<<"a">>, open}])})),
     {_Sub, N} = watch(Sock, EP, Uri, #{}),
@@ -346,7 +481,7 @@ pa_digest(Config) ->
 pa_fetch(Config) ->
     {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
                         ?config(user, Config)},
-    ok = chappe_sip_presence:serve(#{authorize => fun allow/3}),
+    ok = chappe_sip_presence:serve(#{esc => open_esc(), authorize => fun allow/3}),
     Uri = res(User),
     200 = status(pub(Sock, EP, Uri, #{body => pidf(Uri, [{<<"a">>, open}])})),
     send(Sock, EP, subscribe(Sock, Uri, <<"presence">>,
@@ -664,6 +799,39 @@ mwi_codec(_Config) ->
 %% ---- helpers ----
 
 allow(_, _, _) -> allow.
+
+%% the ESC options of a closed test network: no auth
+open_esc() -> #{allow_unauthenticated => true}.
+
+%% bob's credentials, for AORs at 127.0.0.1
+local_auth() -> (auth())#{domain => <<"127.0.0.1">>}.
+
+%% a PUBLISH answered with bob's credentials after the 401
+auth_pub(Sock, EP, Uri, Opts) ->
+    R1 = pub(Sock, EP, Uri, Opts),
+    401 = status(R1),
+    Creds = credentials(<<"PUBLISH">>, Uri, hdr(<<"www-authenticate">>, R1)),
+    pub(Sock, EP, Uri, Opts#{headers => [{<<"Authorization">>, Creds}]}).
+
+esc_limit_keys() ->
+    [esc_max_publications, esc_max_publications_per_resource,
+     esc_max_body_size].
+
+%% a new ESC with no publications (and the notifiers after it, rest_for_one)
+fresh_esc() ->
+    Old = whereis(chappe_sip_esc),
+    OldN = whereis(chappe_sip_presence_notifier),
+    exit(Old, kill),
+    ok = wait_new(chappe_sip_esc, Old, 50),
+    wait_new(chappe_sip_presence_notifier, OldN, 50).
+
+wait_new(Name, _Old, 0) ->
+    ct:fail({not_restarted, Name});
+wait_new(Name, Old, N) ->
+    case whereis(Name) of
+        P when is_pid(P), P =/= Old -> ok;
+        _ -> timer:sleep(20), wait_new(Name, Old, N - 1)
+    end.
 
 auth() ->
     #{realm => <<"lab">>,

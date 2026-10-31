@@ -255,14 +255,16 @@ tls(Ip) ->
 
 %% ---- presence and message waiting ----
 
-%% every watcher allowed; one NOTIFY a second at most, so a scenario does
-%% not wait the 5 s of RFC 3856 6.10
+%% every watcher allowed, and PUBLISH without credentials (a closed lab);
+%% one NOTIFY a second at most, so a scenario does not wait the 5 s of
+%% RFC 3856 6.10
 events() ->
     {module, _} = code:ensure_loaded(chappe_sip_presence),
     case erlang:function_exported(chappe_sip_presence, serve, 1) of
         true ->
             ok = chappe_sip_presence:serve(#{
                 authorize => fun(_Watcher, _Presentity, _Req) -> allow end,
+                esc => #{allow_unauthenticated => true},
                 min_interval => 1000
             }),
             chappe_sip_mwi:serve(#{summary => fun(_Account) -> #{} end});
