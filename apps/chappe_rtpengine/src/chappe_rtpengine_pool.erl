@@ -16,6 +16,12 @@
 %% happened, so a generation mismatch is how sessions pinned before
 %% the flap learn their media is gone. The pool never re-offers on
 %% its own; subscribers decide what to do with the notification.
+%%
+%% Each add_node/2 also gets a fresh incarnation, separate from the
+%% generation. The health timer and every ping result carry it, and
+%% remove_node/1 cancels the timer, so after a name is removed and
+%% added again only the new node's timer chain runs, and a ping
+%% started for the old node never counts against the new one.
 -module(chappe_rtpengine_pool).
 -behaviour(gen_server).
 
@@ -45,7 +51,10 @@
     down_after :: pos_integer(),
     status = up :: up | down,
     generation = 1 :: pos_integer(),
-    consec_failures = 0 :: non_neg_integer()
+    consec_failures = 0 :: non_neg_integer(),
+    %% unique per add_node/2; tags health timers and ping results
+    incarnation :: pos_integer(),
+    health_timer :: reference() | undefined
 }).
 
 -record(state, {
@@ -200,15 +209,17 @@ handle_call({add_node, Name, Opts}, _From, State) ->
                 ])
             of
                 {ok, _Pid} ->
-                    Node = #node{
+                    Node = schedule_health(#node{
                         name = Name,
                         health_interval =
                             maps:get(health_interval, PoolOpts),
-                        down_after = maps:get(down_after, PoolOpts)
-                    },
+                        down_after = maps:get(down_after, PoolOpts),
+                        incarnation = erlang:unique_integer([
+                            positive, monotonic
+                        ])
+                    }),
                     ets:insert(?NODES, {Name, up, Node#node.generation}),
                     ets:insert(?COUNTERS, {Name, 0, 0}),
-                    schedule_health(Node),
                     Nodes = maps:put(Name, Node, State#state.nodes),
                     {reply, ok, State#state{nodes = Nodes}};
                 {error, {already_started, _}} ->
@@ -219,7 +230,8 @@ handle_call({add_node, Name, Opts}, _From, State) ->
     end;
 handle_call({remove_node, Name}, _From, State) ->
     case maps:take(Name, State#state.nodes) of
-        {_Node, Nodes} ->
+        {Node, Nodes} ->
+            cancel_health(Node),
             case whereis(Name) of
                 undefined ->
                     ok;
@@ -251,22 +263,26 @@ handle_cast({report, Name, ok}, State) ->
     {noreply, note_success(Name, State)};
 handle_cast({report, Name, timeout}, State) ->
     {noreply, note_failure(Name, State)};
-handle_cast({ping_result, Name, ok}, State) ->
-    {noreply, note_success(Name, State)};
-handle_cast({ping_result, Name, failure}, State) ->
-    {noreply, note_failure(Name, State)};
+handle_cast({ping_result, Name, Incarnation, Result}, State) ->
+    case current(Name, Incarnation, State) of
+        {ok, _Node} when Result =:= ok ->
+            {noreply, note_success(Name, State)};
+        {ok, _Node} ->
+            {noreply, note_failure(Name, State)};
+        stale ->
+            {noreply, State}
+    end;
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
-handle_info({health, Name}, State) ->
-    case maps:find(Name, State#state.nodes) of
+handle_info({health, Name, Incarnation}, State) ->
+    case current(Name, Incarnation, State) of
         {ok, Node} ->
-            spawn_health_ping(Name),
-            schedule_health(Node);
-        error ->
-            ok
-    end,
-    {noreply, State};
+            spawn_health_ping(Name, Incarnation),
+            {noreply, update_node(schedule_health(Node), State)};
+        stale ->
+            {noreply, State}
+    end;
 handle_info({'DOWN', _Mon, process, Pid, _Reason}, State) ->
     {noreply, drop_subscriber(Pid, State)};
 handle_info(_Info, State) ->
@@ -283,11 +299,28 @@ split_opts(Opts) ->
     ClientOpts = maps:without(maps:keys(Defaults), Opts),
     {PoolOpts, ClientOpts}.
 
-schedule_health(#node{name = Name, health_interval = Interval}) ->
-    _ = erlang:send_after(Interval, self(), {health, Name}),
+schedule_health(#node{name = Name, incarnation = Inc} = Node) ->
+    TRef = erlang:send_after(
+        Node#node.health_interval, self(), {health, Name, Inc}
+    ),
+    Node#node{health_timer = TRef}.
+
+%% A timer message already queued is dropped by its stale incarnation.
+cancel_health(#node{health_timer = undefined}) ->
+    ok;
+cancel_health(#node{health_timer = TRef}) ->
+    _ = erlang:cancel_timer(TRef, [{async, true}, {info, false}]),
     ok.
 
-spawn_health_ping(Name) ->
+%% The node a health message is for, unless the name was removed or
+%% added again since.
+current(Name, Incarnation, State) ->
+    case maps:find(Name, State#state.nodes) of
+        {ok, #node{incarnation = Incarnation} = Node} -> {ok, Node};
+        _ -> stale
+    end.
+
+spawn_health_ping(Name, Incarnation) ->
     Pool = self(),
     _ = spawn(fun() ->
         Result =
@@ -297,7 +330,7 @@ spawn_health_ping(Name) ->
             catch
                 exit:_ -> failure
             end,
-        gen_server:cast(Pool, {ping_result, Name, Result})
+        gen_server:cast(Pool, {ping_result, Name, Incarnation, Result})
     end),
     ok.
 

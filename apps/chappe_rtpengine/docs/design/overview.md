@@ -157,6 +157,13 @@ reports. `down_after` (2) consecutive failures mark a node down: it is left
 out of selection and subscribers get `{node_down, Name}`. A successful ping
 or command brings it back up.
 
+Each `add_node/2` gives the node a fresh incarnation, separate from the
+generation below. The health timer message and every ping result carry it,
+and `remove_node/1` cancels the timer. A timer or ping result whose
+incarnation is not the current node's is dropped, so when you remove a name
+and add it again, one timer chain runs and a ping started for the old node
+never counts against the new one.
+
 ### Generation counter
 
 rtpengine loses all sessions on restart, and a health ping cannot tell.

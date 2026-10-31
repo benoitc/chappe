@@ -14,7 +14,9 @@
     pin_and_unpin_track_counters/1,
     timeout_reports_mark_node_down/1,
     health_ping_recovers_and_bumps_generation/1,
-    select_with_no_nodes/1
+    select_with_no_nodes/1,
+    readd_keeps_one_health_chain/1,
+    stale_ping_ignored_after_readd/1
 ]).
 
 all() ->
@@ -23,7 +25,9 @@ all() ->
         pin_and_unpin_track_counters,
         timeout_reports_mark_node_down,
         health_ping_recovers_and_bumps_generation,
-        select_with_no_nodes
+        select_with_no_nodes,
+        readd_keeps_one_health_chain,
+        stale_ping_ignored_after_readd
     ].
 
 init_per_suite(Config) ->
@@ -150,3 +154,86 @@ select_with_no_nodes(_Config) ->
     {error, no_nodes} = chappe_rtpengine_pool:select(),
     {error, no_nodes} = chappe_rtpengine_pool:pin(<<"call-none">>),
     ok.
+
+%% Removing a node cancels its health timer: after the same name is
+%% removed and re-added many times, one ping chain is left.
+readd_keeps_one_health_chain(_Config) ->
+    {ok, Server, Port} = chappe_rtpengine_fake_server:start(
+        fun chappe_rtpengine_fake_server:default_handler/2
+    ),
+    Opts = #{host => {127, 0, 0, 1}, port => Port, health_interval => 100},
+    ok = chappe_rtpengine:add_node(pool_readd, Opts),
+    lists:foreach(
+        fun(_) ->
+            ok = chappe_rtpengine:remove_node(pool_readd),
+            ok = chappe_rtpengine:add_node(pool_readd, Opts)
+        end,
+        lists:seq(1, 10)
+    ),
+    timer:sleep(250),
+    Before = length(chappe_rtpengine_fake_server:received(Server)),
+    timer:sleep(1000),
+    After = length(chappe_rtpengine_fake_server:received(Server)),
+    ct:pal("pings in 1 s after 10 re-adds: ~p", [After - Before]),
+    %% one chain pings about 10 times a second; eleven would ping 110
+    ?assert(After - Before =< 14, {pings, After - Before}),
+    ok.
+
+%% A ping started for a removed node reports after the same name is
+%% added again: its result must not count against the new node.
+stale_ping_ignored_after_readd(_Config) ->
+    Drop = fun(_N, _Cmd) -> drop end,
+    {ok, _Server, Port} = chappe_rtpengine_fake_server:start(Drop),
+    Base = #{
+        host => {127, 0, 0, 1},
+        port => Port,
+        timeout => 5000,
+        attempts => 1,
+        down_after => 1
+    },
+    ok = chappe_rtpengine:add_node(
+        pool_stale, Base#{health_interval => 50}
+    ),
+    Pinger = wait_pinger(50),
+    true = erlang:suspend_process(Pinger),
+    ok = chappe_rtpengine:remove_node(pool_stale),
+    ok = chappe_rtpengine:add_node(
+        pool_stale, Base#{health_interval => 60000}
+    ),
+    ok = chappe_rtpengine_pool:subscribe(),
+    true = erlang:resume_process(Pinger),
+    receive
+        {chappe_rtpengine_pool, {node_down, pool_stale}} ->
+            ct:fail(stale_ping_marked_new_node_down)
+    after 300 -> ok
+    end,
+    #{status := up} = chappe_rtpengine_pool:node_info(pool_stale),
+    ok.
+
+%% A health-ping process blocked on its request.
+wait_pinger(0) ->
+    error(no_pinger);
+wait_pinger(N) ->
+    case [P || P <- erlang:processes(), is_pinger(P)] of
+        [P | _] ->
+            P;
+        [] ->
+            timer:sleep(20),
+            wait_pinger(N - 1)
+    end.
+
+is_pinger(P) ->
+    case erlang:process_info(P, current_stacktrace) of
+        {current_stacktrace, Stack} ->
+            lists:any(
+                fun
+                    ({chappe_rtpengine_pool, F, _, _}) ->
+                        lists:prefix("-spawn_health_ping", atom_to_list(F));
+                    (_) ->
+                        false
+                end,
+                Stack
+            );
+        undefined ->
+            false
+    end.
