@@ -7,6 +7,11 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 
 ## Unreleased
 
+- chappe_esl call control: an audio fork can now go through
+  mod_audio_stream as well as mod_audio_fork. The call remembers which one
+  started the fork, so stopping it, or the cleanup when your process dies,
+  sends the right stop. Before, only mod_audio_fork was spoken and a
+  mod_audio_stream fork kept running after the owner died.
 - chappe_esl outbound listener: you can now choose the address it listens
   on, IPv4 or IPv6, and the length of its pending connection queue. Before,
   it always listened on every interface and the queue length you passed was

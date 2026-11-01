@@ -2,7 +2,7 @@
 
 This page lists what you can set in chappe_esl: the application environment,
 the options of a node in the registry, and the options of a single
-connection or listener. Read it when you write a `sys.config` or add a node
+connection, listener or audio fork. Read it when you write a `sys.config` or add a node
 and need a default.
 
 ## Application environment
@@ -70,6 +70,17 @@ module, its arguments and, with `/4`, a map of options:
 
 A bad value returns `{error, {bad_option, Key}}` and nothing listens.
 
+## Audio fork options
+
+`chappe_esl_call:audio_fork_start/3` takes a map:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `module` | `audio_fork` | `audio_fork` for mod_audio_fork, `audio_stream` for mod_audio_stream. Another value returns `{error, {bad_option, module}}`. |
+| `mix` | `mono` | `mono`, `mixed` or `stereo`. |
+| `rate` | `16000` | Sample rate in Hz (`8k` and `16k` on the mod_audio_stream command line). |
+| `metadata` | none | First text frame sent to the server. |
+
 ## Where it lives
 
 - App env: `chappe_esl_sup` (`nodes`), `chappe_esl_parser:new/0`
@@ -77,3 +88,4 @@ A bad value returns `{error, {bad_option, Key}}` and nothing listens.
 - Node options and defaults: `chappe_esl_node:validate/1`
 - Connection options: `chappe_esl_conn`, `chappe_esl_inbound`
 - Listener options: `chappe_esl_listener`
+- Audio fork options: `chappe_esl_call`

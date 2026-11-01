@@ -25,8 +25,8 @@
 %%   closed                    the connection is gone; the process stops
 %%
 %% When the owner dies before the channel hangs up, the call process stops
-%% the audio forks and session recordings it started, kills the channel with
-%% uuid_kill, and closes the connection.
+%% the audio forks (each with its module's stop) and session recordings it
+%% started, kills the channel with uuid_kill, and closes the connection.
 -module(chappe_esl_call).
 -behaviour(gen_server).
 
@@ -43,7 +43,7 @@
 %% gen_server.
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
--export_type([call/0, exec_opts/0, start_opts/0, msg/0]).
+-export_type([call/0, exec_opts/0, start_opts/0, msg/0, fork_module/0]).
 
 -define(EXEC_TIMEOUT, 60000).
 -define(CLEANUP_TIMEOUT, 2000).
@@ -67,6 +67,9 @@
 %% cleanup: on owner death, stop forks and recordings and kill the channel
 %% (true).
 -type start_opts() :: #{owner => pid(), uuid => binary(), cleanup => boolean()}.
+%% audio_fork: mod_audio_fork (uuid_audio_fork); audio_stream:
+%% mod_audio_stream (uuid_audio_stream).
+-type fork_module() :: audio_fork | audio_stream.
 -type msg() ::
     {dtmf, binary()}
     | {hangup, binary()}
@@ -82,7 +85,8 @@
     owner_mon :: reference(),
     cleanup :: boolean(),
     hungup = false :: boolean(),
-    fork = false :: boolean(),
+    %% the fork modules started, oldest first
+    forks = [] :: [fork_module()],
     recordings = [] :: [binary()],
     %% the application running now (its Application-UUID), and the timed
     %% out ones: broken when they run, their completion dropped
@@ -288,13 +292,20 @@ conference(Call, Room, Opts) ->
         exec_opts(maps:merge(#{wait => false}, Opts))
     ).
 
-%% Fork the channel audio to a websocket with mod_audio_fork. Opts: mix
+%% Fork the channel audio to a websocket. Opts: module (audio_fork, the
+%% default, for mod_audio_fork, or audio_stream for mod_audio_stream), mix
 %% (mono | mixed | stereo, default mono), rate (16000), metadata (sent to the
-%% server as the first text frame).
+%% server as the first text frame). An unknown module returns
+%% {error, {bad_option, module}}.
 -spec audio_fork_start(call(), iodata(), map()) -> ok | {error, term()}.
 audio_fork_start(Call, Url, Opts) ->
-    call(Call, {fork_start, Url, Opts}).
+    case fork_module(Opts) of
+        {ok, Module} -> call(Call, {fork_start, Module, Url, Opts});
+        error -> {error, {bad_option, module}}
+    end.
 
+%% Stop the forks this call started, each with its module's command
+%% (uuid_audio_fork stop when none was started).
 -spec audio_fork_stop(call()) -> ok | {error, term()}.
 audio_fork_stop(Call) ->
     call(Call, fork_stop).
@@ -342,17 +353,23 @@ handle_call(
 ) ->
     State1 = State#state{recordings = lists:delete(Path, Recs)},
     sync_exec(<<"stop_record_session">>, Path, From, State1);
-handle_call(
-    {fork_start, Url, Opts}, _From, #state{conn = Conn, uuid = Uuid} = State
-) ->
-    case ok(chappe_esl:api(Conn, fork_start_cmd(Uuid, Url, Opts))) of
-        ok -> {reply, ok, State#state{fork = true}};
-        Error -> {reply, Error, State}
+handle_call({fork_start, Module, Url, Opts}, _From, State) ->
+    #state{conn = Conn, uuid = Uuid, forks = Forks} = State,
+    case ok(chappe_esl:api(Conn, fork_start_cmd(Module, Uuid, Url, Opts))) of
+        ok ->
+            {reply, ok, State#state{
+                forks = lists:delete(Module, Forks) ++ [Module]
+            }};
+        Error ->
+            {reply, Error, State}
     end;
-handle_call(fork_stop, _From, #state{conn = Conn, uuid = Uuid} = State) ->
-    {reply, ok(chappe_esl:api(Conn, fork_stop_cmd(Uuid))), State#state{
-        fork = false
-    }};
+handle_call(fork_stop, _From, #state{forks = Forks} = State) ->
+    #state{conn = Conn, uuid = Uuid} = State,
+    Replies = [
+        ok(chappe_esl:api(Conn, fork_stop_cmd(M, Uuid)))
+     || M <- stop_modules(Forks)
+    ],
+    {reply, first_error(Replies), State#state{forks = []}};
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown_call}, State}.
 
@@ -506,9 +523,9 @@ cleanup(#state{cleanup = false}) ->
     ok;
 cleanup(#state{hungup = true}) ->
     ok;
-cleanup(#state{conn = Conn, uuid = Uuid, fork = Fork, recordings = Recs}) ->
+cleanup(#state{conn = Conn, uuid = Uuid, forks = Forks, recordings = Recs}) ->
     Cmds =
-        [fork_stop_cmd(Uuid) || Fork] ++
+        [fork_stop_cmd(M, Uuid) || M <- Forks] ++
             [
                 [
                     <<"uuid_record ">>,
@@ -546,17 +563,23 @@ subscribe(inbound, Conn, Uuid) ->
         Error -> Error
     end.
 
-fork_start_cmd(Uuid, Url, Opts) ->
+fork_module(#{module := audio_fork}) -> {ok, audio_fork};
+fork_module(#{module := audio_stream}) -> {ok, audio_stream};
+fork_module(#{module := _}) -> error;
+fork_module(#{}) -> {ok, audio_fork}.
+
+%% uuid_<api> <uuid> start <url> <mix> <rate> [metadata]
+fork_start_cmd(Module, Uuid, Url, Opts) ->
     Mix = atom_to_binary(maps:get(mix, Opts, mono)),
-    Rate = int(maps:get(rate, Opts, 16000)),
+    Rate = fork_rate(Module, maps:get(rate, Opts, 16000)),
     Meta =
         case maps:get(metadata, Opts, undefined) of
             undefined -> [];
-            %% metadata follows the bug name (mod_audio_fork's default)
-            M -> [<<" audio_fork ">>, chappe_esl_exec:arg(M)]
+            M -> [<<" ">>, fork_metadata(Module, chappe_esl_exec:arg(M))]
         end,
     [
-        <<"uuid_audio_fork ">>,
+        fork_api(Module),
+        <<" ">>,
         Uuid,
         <<" start ">>,
         Url,
@@ -567,8 +590,32 @@ fork_start_cmd(Uuid, Url, Opts) ->
         Meta
     ].
 
-fork_stop_cmd(Uuid) ->
-    [<<"uuid_audio_fork ">>, Uuid, <<" stop">>].
+fork_stop_cmd(Module, Uuid) ->
+    [fork_api(Module), <<" ">>, Uuid, <<" stop">>].
+
+fork_api(audio_fork) -> <<"uuid_audio_fork">>;
+fork_api(audio_stream) -> <<"uuid_audio_stream">>.
+
+%% mod_audio_stream names its two classic rates 8k and 16k (the only forms
+%% its first releases parse); other rates and mod_audio_fork take the number.
+fork_rate(audio_stream, 8000) -> <<"8k">>;
+fork_rate(audio_stream, 16000) -> <<"16k">>;
+fork_rate(_Module, Rate) -> int(Rate).
+
+%% mod_audio_fork reads the metadata after the bug name (its default,
+%% audio_fork); mod_audio_stream reads it right after the rate.
+fork_metadata(audio_fork, Meta) -> [<<"audio_fork ">>, Meta];
+fork_metadata(audio_stream, Meta) -> Meta.
+
+%% Nothing tracked: send the mod_audio_fork stop, as before modules existed.
+stop_modules([]) -> [audio_fork];
+stop_modules(Forks) -> Forks.
+
+first_error(Replies) ->
+    case [E || E <- Replies, E =/= ok] of
+        [] -> ok;
+        [Error | _] -> Error
+    end.
 
 exec_opts(Opts) ->
     maps:with([timeout, wait, lock, loops], Opts).

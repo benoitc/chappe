@@ -127,6 +127,34 @@ ok = chappe_esl_call:hangup(Call, "USER_BUSY").
 `conference/3` returns once FreeSWITCH accepted the command; its completion
 arrives when the member leaves.
 
+## Fork the audio to a websocket
+
+`audio_fork_start/3` sends the channel audio to a websocket server, for
+example a speech recognizer. It speaks mod_audio_fork by default. If your
+node runs mod_audio_stream instead, pass `module => audio_stream`:
+
+```erlang
+ok = chappe_esl_call:audio_fork_start(Call, "wss://asr.example/ws", #{
+    module => audio_stream,
+    mix => mono,
+    rate => 16000,
+    metadata => <<"{\"call\": \"42\"}">>
+}),
+%% ...
+ok = chappe_esl_call:audio_fork_stop(Call).
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `module` | `audio_fork` | `audio_fork` sends `uuid_audio_fork`, `audio_stream` sends `uuid_audio_stream`. |
+| `mix` | `mono` | `mono` (caller only), `mixed` (both in one channel) or `stereo` (one channel each). |
+| `rate` | `16000` | Sample rate in Hz. For mod_audio_stream, 8000 and 16000 are sent as `8k` and `16k`. |
+| `metadata` | none | Text sent to the server as the first frame. |
+
+The call remembers which module started the fork: `audio_fork_stop/1` and
+the cleanup when the owner dies send that module's stop. Any other `module`
+returns `{error, {bad_option, module}}`.
+
 ## Receive the call's messages
 
 The owner receives:
@@ -169,7 +197,8 @@ Other messages that arrive meanwhile stay in your mailbox.
 - Requests in flight end with `{error, hangup}` at the hangup and
   `{error, closed}` when the connection goes. Later requests return
   `{error, hangup}`.
-- When the owner exits before the hangup, the call stops the audio forks and
+- When the owner exits before the hangup, the call stops the audio forks
+  (with `uuid_audio_fork` or `uuid_audio_stream`, as they were started) and
   session recordings it started, sends `uuid_kill`, and closes the
   connection. Start it with `cleanup => false` to skip this. `stop/1` closes
   the connection and leaves the channel alone.
@@ -179,8 +208,10 @@ Other messages that arrive meanwhile stay in your mailbox.
   escape them where FreeSWITCH splits arguments (record, record_session,
   play_and_get_digits, uuid_record, the fork metadata). With `exec/3,4` you
   pass the argument string as FreeSWITCH reads it.
-- `audio_fork_start/3` needs mod_audio_fork on the node. The fork uses its
-  default bug name, `audio_fork`, so a channel has one fork at a time.
+- `audio_fork_start/3` needs mod_audio_fork, or mod_audio_stream with
+  `module => audio_stream`, on the node. Each module allows one fork per
+  channel (mod_audio_fork through its default bug name, `audio_fork`).
+- A fork you start with `api/2` instead is not tracked: stop it yourself.
 
 ## Where it lives
 
