@@ -160,7 +160,9 @@ registrar_auth(#{realm := Realm, secret := PwFun} = Auth, Req) ->
     },
     case chappe_sip_digest:verify(Args) of
         {ok, User} ->
-            To = aor_uri(chappe_sip_req:get(<<"to">>, Req)),
+            To = chappe_sip_hdr:name_addr_uri(
+                chappe_sip_req:get(<<"to">>, Req)
+            ),
             case aor_owned(User, Auth, To) of
                 % identity and domain match the AOR
                 true -> ok;
@@ -181,9 +183,11 @@ www_authenticate(Realm, Stale) ->
 
 %% the domains the credentials of this realm register in: the auth map's
 %% domain (one or a list), else the realm itself
-auth_domains(#{domain := D}) when is_binary(D) -> [ascii_lower(D)];
-auth_domains(#{domain := Ds}) when is_list(Ds) -> [ascii_lower(D) || D <- Ds];
-auth_domains(#{realm := Realm}) -> [ascii_lower(Realm)].
+auth_domains(#{domain := D}) when is_binary(D) -> [chappe_sip_lib:lower(D)];
+auth_domains(#{domain := Ds}) when is_list(Ds) ->
+    [chappe_sip_lib:lower(D) || D <- Ds];
+auth_domains(#{realm := Realm}) ->
+    [chappe_sip_lib:lower(Realm)].
 
 %% The address-of-record Uri is User's under the digest map Auth: its
 %% user part is User and its host one of the auth domains (the auth map's
@@ -194,26 +198,9 @@ auth_domains(#{realm := Realm}) -> [ascii_lower(Realm)].
 aor_owned(User, Auth, Uri) ->
     case chappe_sip_uri:parse(Uri) of
         {ok, #{user := User, host := Host}} ->
-            lists:member(ascii_lower(Host), auth_domains(Auth));
+            lists:member(chappe_sip_lib:lower(Host), auth_domains(Auth));
         _ ->
             false
-    end.
-
-ascii_lower(Bin) ->
-    <<
-        <<
-            (case C of
-                _ when C >= $A, C =< $Z -> C + 32;
-                _ -> C
-            end)
-        >>
-     || <<C>> <= Bin
-    >>.
-
-aor_uri(NameAddr) ->
-    case chappe_sip_hdr:name_addr(NameAddr) of
-        {ok, #{uri := Uri}} -> Uri;
-        _ -> NameAddr
     end.
 
 %% RFC 3261 10.3 step 8: every binding with its expires (and q), and a

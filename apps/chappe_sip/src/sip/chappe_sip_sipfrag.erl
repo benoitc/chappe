@@ -102,11 +102,11 @@ with_headers(Lines, Acc) ->
 
 header(Line) ->
     case binary:split(Line, <<":">>) of
-        [N, V] when N =/= <<>> -> {trim(N), trim(V)};
-        _ -> error
+        [N, V] when N =/= <<>> ->
+            {chappe_sip_lib:trim(N), chappe_sip_lib:trim(V)};
+        _ ->
+            error
     end.
-
-trim(B) -> string:trim(B, both, " \t").
 
 %% RFC 3261 21 reason phrases for the codes a referenced request reports
 -spec reason(100..699) -> binary().

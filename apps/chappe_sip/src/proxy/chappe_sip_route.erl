@@ -73,7 +73,10 @@ request_target(Target, [First | Rest] = RouteSet) ->
         {ok, #{params := #{<<"lr">> := _}}} ->
             {Target, RouteSet};
         {ok, _} ->
-            {uri_of(First), Rest ++ [<<"<", Target/binary, ">">>]};
+            {
+                chappe_sip_hdr:name_addr_uri(First),
+                Rest ++ [<<"<", Target/binary, ">">>]
+            };
         error ->
             {Target, RouteSet}
     end.
@@ -241,7 +244,7 @@ recover_strict(Msg) ->
     case uri_is_self(Uri, chappe_sip_msg:call_id(Msg)) andalso routes(Msg) of
         [_ | _] = Routes ->
             {ok, U} = chappe_sip_uri:parse(Uri),
-            Target = uri_of(lists:last(Routes)),
+            Target = chappe_sip_hdr:name_addr_uri(lists:last(Routes)),
             Rest = lists:droplast(Routes),
             Msg1 = set_routes(Rest, chappe_sip_msg:set_uri(Target, Msg)),
             {ok, next_hop(Rest), flows(maps:get(params, U, #{})), Msg1};
@@ -250,13 +253,7 @@ recover_strict(Msg) ->
     end.
 
 next_hop([]) -> undefined;
-next_hop([Next | _]) -> uri_of(Next).
-
-uri_of(Value) ->
-    case chappe_sip_hdr:name_addr(Value) of
-        {ok, #{uri := Uri}} -> Uri;
-        _ -> Value
-    end.
+next_hop([Next | _]) -> chappe_sip_hdr:name_addr_uri(Next).
 
 %% Where an in-dialog request goes: Arrived is the WS flow it came in on
 %% (undefined over UDP/TCP/TLS). From one WS leg it goes to the other one,
@@ -416,7 +413,7 @@ contact_hostport(Contact) ->
 
 %% scheme/host/port of a contact given as a name-addr or bare URI.
 self_uri(Bin) ->
-    case chappe_sip_uri:parse(uri_of(Bin)) of
+    case chappe_sip_uri:parse(chappe_sip_hdr:name_addr_uri(Bin)) of
         {ok, #{scheme := Scheme, host := Host} = M} ->
             {ok, Scheme, Host, maps:get(port, M, undefined)};
         _ ->

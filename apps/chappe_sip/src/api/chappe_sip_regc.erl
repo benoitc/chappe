@@ -443,11 +443,9 @@ retry_after(Msg) ->
 int(undefined, Default) ->
     Default;
 int(V, Default) when is_binary(V) ->
-    try binary_to_integer(string:trim(V)) of
-        N when N > 0 -> N;
+    case chappe_sip_lib:to_int(V, Default) of
+        N when is_integer(N), N > 0 -> N;
         _ -> Default
-    catch
-        error:badarg -> Default
     end;
 int(_V, Default) ->
     Default.

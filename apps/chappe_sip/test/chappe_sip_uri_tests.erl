@@ -150,3 +150,13 @@ aor_test() ->
                  chappe_sip_uri:aor(<<"SIP:alice@Example.COM:5070;transport=tcp">>)),
     ?assertEqual({ok, <<"sips:example.com">>}, chappe_sip_uri:aor(<<"sips:EXAMPLE.com">>)),
     ?assertEqual(error, chappe_sip_uri:aor(<<"mailto:a@b">>)).
+
+%% the scheme is case-insensitive (RFC 3261 19.1.4)
+is_sips_test() ->
+    ?assert(chappe_sip_uri:is_sips(<<"sips:alice@example.com">>)),
+    ?assert(chappe_sip_uri:is_sips(<<"SIPS:alice@example.com">>)),
+    ?assert(chappe_sip_uri:is_sips(<<"SiPs:alice@example.com">>)),
+    ?assertNot(chappe_sip_uri:is_sips(<<"sip:alice@example.com">>)),
+    ?assertNot(chappe_sip_uri:is_sips(<<"<sips:alice@example.com>">>)),
+    ?assertNot(chappe_sip_uri:is_sips(<<"sips">>)),
+    ?assertNot(chappe_sip_uri:is_sips(<<>>)).

@@ -156,7 +156,7 @@ drop_self_route(Msg) ->
         [Top | Rest] ->
             case
                 chappe_sip_proxy_rules:is_own_address(
-                    chappe_sip_proxy_rules:uri_of(Top)
+                    chappe_sip_hdr:name_addr_uri(Top)
                 )
             of
                 true -> chappe_sip_route:set_routes(Rest, Msg);
@@ -490,8 +490,8 @@ record_route(#px{opts = Opts} = P, Dest, Msg) ->
                 chappe_sip_msg:call_id(Msg)
             ),
             {
-                chappe_sip_proxy_rules:is_sips(
-                    chappe_sip_proxy_rules:uri_of(Contact)
+                chappe_sip_uri:is_sips(
+                    chappe_sip_hdr:name_addr_uri(Contact)
                 ),
                 chappe_sip_msg:prepend(<<"Record-Route">>, RR, Msg)
             };
@@ -556,7 +556,7 @@ next_hop(_Dest, Via, Msg) ->
         [] ->
             {chappe_sip_msg:uri(Msg), Msg};
         [Top | Rest] ->
-            TopUri = chappe_sip_proxy_rules:uri_of(Top),
+            TopUri = chappe_sip_hdr:name_addr_uri(Top),
             case chappe_sip_proxy_rules:is_loose(TopUri) of
                 true ->
                     {TopUri, Msg};
@@ -593,12 +593,12 @@ up_flow(Req) ->
 rr_contact(Msg, Local) ->
     Top =
         case chappe_sip_route:routes(Msg) of
-            [R | _] -> chappe_sip_proxy_rules:uri_of(R);
+            [R | _] -> chappe_sip_hdr:name_addr_uri(R);
             [] -> undefined
         end,
     Secure =
-        chappe_sip_proxy_rules:is_sips(chappe_sip_msg:uri(Msg)) orelse
-            chappe_sip_proxy_rules:is_sips(Top),
+        chappe_sip_uri:is_sips(chappe_sip_msg:uri(Msg)) orelse
+            chappe_sip_uri:is_sips(Top),
     case Secure andalso chappe_sip_binds:contact_or_primary(Local, true) of
         Tls when is_binary(Tls) -> Tls;
         _ -> chappe_sip_binds:contact_or_primary(Local, false)

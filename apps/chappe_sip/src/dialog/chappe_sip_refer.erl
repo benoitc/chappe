@@ -232,7 +232,13 @@ no_subscription(Req) ->
     RS = chappe_sip_req:get(<<"refer-sub">>, Req),
     is_binary(RS) andalso
         string:lowercase(first_token(RS)) =:= <<"false">> andalso
-        lists:member(<<"norefersub">>, option_tags(Req)).
+        lists:member(
+            <<"norefersub">>,
+            chappe_sip_hdr:option_tags(
+                chappe_sip_req:get_all(<<"supported">>, Req) ++
+                    chappe_sip_req:get_all(<<"require">>, Req)
+            )
+        ).
 
 %% a Refer-Sub the REFER carried and we did not honour is answered true
 refer_sub(Req) ->
@@ -240,15 +246,6 @@ refer_sub(Req) ->
         undefined -> [];
         _ -> [{<<"Refer-Sub">>, <<"true">>}]
     end.
-
-option_tags(Req) ->
-    Values =
-        chappe_sip_req:get_all(<<"supported">>, Req) ++
-            chappe_sip_req:get_all(<<"require">>, Req),
-    [
-        string:lowercase(string:trim(T))
-     || V <- Values, T <- binary:split(V, <<",">>, [global])
-    ].
 
 first_token(V) ->
     string:trim(hd(binary:split(V, <<";">>))).

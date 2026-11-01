@@ -70,39 +70,7 @@ compact(<<"y">>) -> <<"identity">>;
 compact(Name) -> Name.
 
 norm(Name) ->
-    compact(ascii_lower(Name)).
-
-%% Byte-wise ASCII lowercase. Header names are ASCII tokens (RFC 3261 25.1),
-%% so this is correct, and unlike string:lowercase/1 it never raises on
-%% non-UTF-8 bytes - the whole point of keeping parse/1 total.
-ascii_lower(Bin) ->
-    <<<<(lower_byte(B))>> || <<B>> <= Bin>>.
-
-lower_byte(B) when B >= $A, B =< $Z -> B + 32;
-lower_byte(B) -> B.
-
-%% Byte-wise trim of SP/HT (a torture message may put space before the colon,
-%% e.g. "TO :"). Also non-UTF-8 safe.
-trim_ows(Bin) ->
-    trim_trailing_ows(trim_leading_ows(Bin)).
-
-trim_leading_ows(<<C, R/binary>>) when C =:= $\s; C =:= $\t ->
-    trim_leading_ows(R);
-trim_leading_ows(B) ->
-    B.
-
-trim_trailing_ows(B) ->
-    case byte_size(B) of
-        0 ->
-            B;
-        N ->
-            case binary:at(B, N - 1) of
-                C when C =:= $\s; C =:= $\t ->
-                    trim_trailing_ows(binary:part(B, 0, N - 1));
-                _ ->
-                    B
-            end
-    end.
+    compact(chappe_sip_lib:lower(Name)).
 
 %% ---- parse ----
 
@@ -151,7 +119,7 @@ split_cseq(Value) ->
         {<<>>, _} ->
             error;
         {Digits, <<C, _/binary>> = Rest} when C =:= $\s; C =:= $\t ->
-            Method = trim_ows(Rest),
+            Method = chappe_sip_lib:trim(Rest),
             case is_token(Method) of
                 true -> {binary_to_integer(Digits), Method};
                 false -> error
@@ -202,7 +170,7 @@ parse_head(Head, Body) ->
 %% The SIP-Version is case-insensitive (RFC 3261 7.1): a status line may
 %% start "sip/2.0".
 parse_start(<<V:7/binary, " ", Rest/binary>> = Line) ->
-    case ascii_lower(V) of
+    case chappe_sip_lib:lower(V) of
         <<"sip/2.0">> -> parse_status(Rest);
         _ -> parse_request(Line)
     end;
@@ -235,7 +203,7 @@ parse_status(Rest) ->
 parse_request(Line) ->
     case binary:split(Line, <<" ">>, [global]) of
         [Method, Uri, Version] ->
-            case is_token(Method) andalso ascii_lower(Version) of
+            case is_token(Method) andalso chappe_sip_lib:lower(Version) of
                 <<"sip/2.0">> ->
                     {ok, #sip_msg{type = request, method = Method, uri = Uri}};
                 _ ->
@@ -258,7 +226,7 @@ parse_headers(Block) ->
     end.
 
 valid_name({_, _, no_colon}) -> true;
-valid_name({_, RawName, _}) -> is_token(trim_ows(RawName)).
+valid_name({_, RawName, _}) -> is_token(chappe_sip_lib:trim(RawName)).
 
 fold_lines([], Acc) ->
     Acc;
@@ -280,7 +248,8 @@ fold_lines([Line | Rest], Acc) ->
             case binary:split(Line, <<":">>) of
                 [RawName, RawValue] ->
                     fold_lines(Rest, [
-                        {norm(trim_ows(RawName)), RawName, RawValue} | Acc
+                        {norm(chappe_sip_lib:trim(RawName)), RawName, RawValue}
+                        | Acc
                     ]);
                 _ ->
                     %% garbage line; keep it opaque to stay byte-faithful
@@ -473,17 +442,10 @@ parsed(Name, M) ->
     end.
 
 %% The option tags listed in every Name header (Require, Proxy-Require,
-%% Supported...), lowercased: option tags compare case-insensitively
-%% (RFC 3261 19.2).
+%% Supported...), lowercased (see chappe_sip_hdr:option_tags/1).
 -spec option_tags(binary(), msg()) -> [binary()].
 option_tags(Name, M) ->
-    [
-        T1
-     || V <- get_all(Name, M),
-        T <- binary:split(V, <<",">>, [global]),
-        T1 <- [ascii_lower(trim_ows(T))],
-        T1 =/= <<>>
-    ].
+    chappe_sip_hdr:option_tags(get_all(Name, M)).
 
 %% ---- conveniences ----
 
@@ -551,7 +513,7 @@ clean(RV) ->
         <<" ">>,
         [global]
     ),
-    trim_ows(Unfolded).
+    chappe_sip_lib:trim(Unfolded).
 
 %% Preserve the caller's spelling for added headers.
 canonical_name(Name) ->

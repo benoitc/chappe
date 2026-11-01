@@ -113,8 +113,10 @@ file only summarises what an agent needs to act.
   app (`grep -rn '^name(' apps/<app>/src`). When a second module needs a
   helper, export it from the module that owns the concept (`chappe_sip_hdr`
   for header grammar, `chappe_sip_uri` for URIs, `chappe_sip_dialog` for
-  tags) instead of copying it. Helpers are not shared across apps: each app
-  is published on its own and the leaf apps take no umbrella deps.
+  tags, `chappe_sip_lib` for ASCII and byte helpers) instead of copying it;
+  copies that drift apart are bugs. Helpers are not shared across apps: each
+  app is published on its own and the leaf apps take no umbrella deps. A
+  one-line wrapper over a single BIF may stay local.
 - Dispatch messages by pattern, never by guard. A `handle_call`,
   `handle_cast`, `handle_info` or `receive` clause matches the message
   shape (`{join, Req}`, `{set, Id, Flag, Value}`); do not catch a variable

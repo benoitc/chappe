@@ -15,6 +15,8 @@
     name_addr/1,
     name_addr_list/1,
     split_list/1,
+    name_addr_uri/1,
+    option_tags/1,
     auth/1,
     params/1
 ]).
@@ -85,12 +87,14 @@
 %%      params := #{binary() => binary() | true}}
 -spec via(binary()) -> {ok, map()} | {error, term()}.
 via(Bin0) ->
-    Bin = trim(Bin0),
+    Bin = chappe_sip_lib:trim(Bin0),
     case Bin of
         <<"SIP/2.0/", Rest/binary>> ->
             case binary:split(Rest, <<" ">>) of
                 [Proto, HostPart0] ->
-                    {HostPart, Params, _} = split_semi_params(trim(HostPart0)),
+                    {HostPart, Params, _} = split_semi_params(
+                        chappe_sip_lib:trim(HostPart0)
+                    ),
                     case parse_hostport(HostPart) of
                         {error, _} = E ->
                             E;
@@ -112,12 +116,12 @@ via(Bin0) ->
 %% CSeq: 314159 INVITE -> #{seq := integer(), method := binary()}
 -spec cseq(binary()) -> {ok, map()} | {error, term()}.
 cseq(Bin) ->
-    case binary:split(trim(Bin), [<<" ">>, <<"\t">>]) of
+    case binary:split(chappe_sip_lib:trim(Bin), [<<" ">>, <<"\t">>]) of
         [SeqBin, Method] ->
             case all_digits(SeqBin) andalso binary_to_integer(SeqBin) of
                 %% RFC 3261 20.16: a 32-bit unsigned integer, 1*DIGIT
                 Seq when is_integer(Seq), Seq < (1 bsl 32) ->
-                    {ok, #{seq => Seq, method => trim(Method)}};
+                    {ok, #{seq => Seq, method => chappe_sip_lib:trim(Method)}};
                 _ ->
                     {error, bad_cseq}
             end;
@@ -137,14 +141,14 @@ all_digits(Bin) ->
 %% not the URI (RFC 3261 20.10 ambiguity resolved as drachtio does).
 -spec name_addr(binary()) -> {ok, map()} | {error, term()}.
 name_addr(Bin0) ->
-    Bin = trim(Bin0),
+    Bin = chappe_sip_lib:trim(Bin0),
     case Bin of
         <<"\"", Rest/binary>> ->
             %% quoted display name: close at the first UNescaped quote so a
             %% quoted-pair (\" \\) inside the name is not mistaken for the end
             case split_quoted(Rest) of
                 {Display, After} ->
-                    with_angle(trim(After), #{display => Display});
+                    with_angle(chappe_sip_lib:trim(After), #{display => Display});
                 error ->
                     {error, bad_name_addr}
             end;
@@ -154,7 +158,7 @@ name_addr(Bin0) ->
             case binary:match(Bin, <<"<">>) of
                 {Pos, _} ->
                     %% unquoted display name up to <
-                    Display = trim(binary:part(Bin, 0, Pos)),
+                    Display = chappe_sip_lib:trim(binary:part(Bin, 0, Pos)),
                     Rest = binary:part(Bin, Pos, byte_size(Bin) - Pos),
                     with_angle(Rest, #{display => Display});
                 nomatch ->
@@ -167,7 +171,7 @@ name_addr(Bin0) ->
 with_angle(<<"<", Rest/binary>>, Acc) ->
     case binary:split(Rest, <<">">>) of
         [Uri, After] ->
-            {_, Params, _} = split_semi_params(trim(After)),
+            {_, Params, _} = split_semi_params(chappe_sip_lib:trim(After)),
             {ok, Acc#{uri => Uri, params => Params}};
         _ ->
             {error, bad_name_addr}
@@ -180,7 +184,7 @@ with_angle(_, _) ->
 -spec name_addr_list(binary()) -> {ok, [map()]} | {error, term()}.
 name_addr_list(Bin) ->
     Parts = split_commas(Bin),
-    Res = [name_addr(P) || P <- Parts, trim(P) =/= <<>>],
+    Res = [name_addr(P) || P <- Parts, chappe_sip_lib:trim(P) =/= <<>>],
     case [E || {error, _} = E <- Res] of
         [] -> {ok, [M || {ok, M} <- Res]};
         [E | _] -> E
@@ -190,7 +194,29 @@ name_addr_list(Bin) ->
 %% Contact...), split outside quotes and angle brackets and trimmed.
 -spec split_list(binary()) -> [binary()].
 split_list(Bin) ->
-    [T || P <- split_commas(Bin), T <- [trim(P)], T =/= <<>>].
+    [T || P <- split_commas(Bin), T <- [chappe_sip_lib:trim(P)], T =/= <<>>].
+
+%% The URI of a name-addr or addr-spec header value, the value itself when
+%% it does not parse.
+-spec name_addr_uri(binary()) -> binary().
+name_addr_uri(Value) ->
+    case name_addr(Value) of
+        {ok, #{uri := Uri}} -> Uri;
+        _ -> Value
+    end.
+
+%% The option tags in a list of header values (Require, Supported,
+%% Unsupported...), OWS trimmed and lowercased: option tags compare
+%% case-insensitively (RFC 3261 19.2).
+-spec option_tags([binary()]) -> [binary()].
+option_tags(Values) ->
+    [
+        T1
+     || V <- Values,
+        T <- binary:split(V, <<",">>, [global]),
+        T1 <- [chappe_sip_lib:lower(chappe_sip_lib:trim(T))],
+        T1 =/= <<>>
+    ].
 
 %% Digest challenge/credentials:
 %%   Digest realm="r", nonce="n", qop="auth", algorithm=MD5
@@ -198,16 +224,22 @@ split_list(Bin) ->
 %% Quoted values are unquoted.
 -spec auth(binary()) -> {ok, map()} | {error, term()}.
 auth(Bin0) ->
-    Bin = trim(Bin0),
+    Bin = chappe_sip_lib:trim(Bin0),
     case binary:split(Bin, <<" ">>) of
         [Scheme, Rest] ->
             Pairs = split_commas(Rest),
             Params =
                 lists:foldl(
                     fun(Pair, Acc) ->
-                        case binary:split(trim(Pair), <<"=">>) of
-                            [K, V] -> Acc#{lower(trim(K)) => unquote(trim(V))};
-                            _ -> Acc
+                        case binary:split(chappe_sip_lib:trim(Pair), <<"=">>) of
+                            [K, V] ->
+                                Acc#{
+                                    chappe_sip_lib:lower(
+                                        chappe_sip_lib:trim(K)
+                                    ) => unquote(chappe_sip_lib:trim(V))
+                                };
+                            _ ->
+                                Acc
                         end
                     end,
                     #{},
@@ -313,7 +345,7 @@ refer_to_uri(Uri, NA) ->
                         #{
                             uri => Uri,
                             target => Target,
-                            scheme => lower(Scheme),
+                            scheme => chappe_sip_lib:lower(Scheme),
                             method => Method,
                             headers => Headers,
                             params => maps:get(params, NA)
@@ -338,7 +370,7 @@ uri_method(Main) ->
         fun(P, {Acc, M}) ->
             case binary:split(P, <<"=">>) of
                 [K, V] ->
-                    case lower(K) of
+                    case chappe_sip_lib:lower(K) of
                         <<"method">> -> {Acc, upper(V)};
                         _ -> {[P | Acc], M}
                     end;
@@ -372,7 +404,7 @@ uri_headers(Hdrs) ->
 
 with_replaces(Headers, RT, NA) ->
     RT1 = maps:merge(RT, maps:with([display], NA)),
-    case [V || {N, V} <- Headers, lower(N) =:= <<"replaces">>] of
+    case [V || {N, V} <- Headers, chappe_sip_lib:lower(N) =:= <<"replaces">>] of
         [] ->
             {ok, RT1#{replaces => undefined}};
         [V] ->
@@ -488,7 +520,7 @@ referred_by_value(#{uri := Uri} = RB) ->
 -spec target_dialog(term()) -> {ok, target_dialog()} | {error, malformed}.
 target_dialog(Bin) when is_binary(Bin) ->
     [CallId0 | _] = binary:split(Bin, <<";">>),
-    CallId = trim(CallId0),
+    CallId = chappe_sip_lib:trim(CallId0),
     P = params(Bin),
     case {is_callid(CallId), P} of
         {true, #{<<"local-tag">> := L, <<"remote-tag">> := R}} when
@@ -511,7 +543,7 @@ target_dialog_value(#{call_id := C, local_tag := L, remote_tag := R}) ->
     {ok, #{type := binary(), id := binary() | undefined}} | {error, malformed}.
 event(Bin) when is_binary(Bin) ->
     [Type0 | _] = binary:split(Bin, <<";">>),
-    case trim(Type0) of
+    case chappe_sip_lib:trim(Type0) of
         <<>> ->
             {error, malformed};
         Type ->
@@ -531,7 +563,7 @@ event(_) ->
 -spec subscription_state(term()) -> {ok, sub_state()} | {error, malformed}.
 subscription_state(Bin) when is_binary(Bin) ->
     {Main, Params, _} = split_semi_params(Bin),
-    case lower(trim(Main)) of
+    case chappe_sip_lib:lower(chappe_sip_lib:trim(Main)) of
         <<>> ->
             {error, malformed};
         Value ->
@@ -540,7 +572,7 @@ subscription_state(Bin) when is_binary(Bin) ->
                 expires => seconds(maps:get(<<"expires">>, Params, undefined)),
                 reason =>
                     case maps:get(<<"reason">>, Params, undefined) of
-                        R when is_binary(R) -> lower(R);
+                        R when is_binary(R) -> chappe_sip_lib:lower(R);
                         _ -> undefined
                     end,
                 retry_after => seconds(
@@ -570,7 +602,7 @@ seconds(_) ->
 
 parse_replaces(Bin) ->
     [CallId0 | Params] = binary:split(Bin, <<";">>, [global]),
-    CallId = trim(CallId0),
+    CallId = chappe_sip_lib:trim(CallId0),
     case is_callid(CallId) of
         true ->
             replaces_params(Params, #{call_id => CallId, early_only => false});
@@ -583,7 +615,7 @@ replaces_params([], #{to_tag := _, from_tag := _} = R) ->
 replaces_params([], _R) ->
     {error, malformed};
 replaces_params([P | Rest], R) ->
-    case replaces_param(trim(P)) of
+    case replaces_param(chappe_sip_lib:trim(P)) of
         skip ->
             replaces_params(Rest, R);
         early_only ->
@@ -599,9 +631,12 @@ replaces_param(<<>>) ->
 replaces_param(P) ->
     case binary:split(P, <<"=">>) of
         [K] ->
-            flag_param(lower(trim(K)));
+            flag_param(chappe_sip_lib:lower(chappe_sip_lib:trim(K)));
         [K, V] ->
-            valued_param(lower(trim(K)), trim(V))
+            valued_param(
+                chappe_sip_lib:lower(chappe_sip_lib:trim(K)),
+                chappe_sip_lib:trim(V)
+            )
     end.
 
 flag_param(<<"early-only">>) -> early_only;
@@ -665,7 +700,7 @@ find_replaces([]) ->
 find_replaces([H | Rest]) ->
     case binary:split(H, <<"=">>) of
         [Name, Val] ->
-            case lower(Name) of
+            case chappe_sip_lib:lower(Name) of
                 <<"replaces">> -> escaped_replaces(Val);
                 _ -> find_replaces(Rest)
             end;
@@ -682,7 +717,7 @@ escaped_replaces(Val) ->
 unescape(<<>>, Acc) ->
     {ok, Acc};
 unescape(<<"%", H, L, Rest/binary>>, Acc) ->
-    case {hex(H), hex(L)} of
+    case {chappe_sip_lib:unhex(H), chappe_sip_lib:unhex(L)} of
         {Hi, Lo} when is_integer(Hi), is_integer(Lo) ->
             unescape(Rest, <<Acc/binary, (Hi * 16 + Lo)>>);
         _ ->
@@ -692,11 +727,6 @@ unescape(<<"%", _/binary>>, _Acc) ->
     {error, malformed};
 unescape(<<C, Rest/binary>>, Acc) ->
     unescape(Rest, <<Acc/binary, C>>).
-
-hex(C) when C >= $0, C =< $9 -> C - $0;
-hex(C) when C >= $a, C =< $f -> C - $a + 10;
-hex(C) when C >= $A, C =< $F -> C - $A + 10;
-hex(_) -> error.
 
 %% RFC 3261 hvalue: unreserved (alphanum, mark) and hnv-unreserved pass
 escape_byte(C) when C >= $a, C =< $z -> <<C>>;
@@ -722,9 +752,23 @@ split_semi_params(Bin) ->
                         (Part, {Acc, Ord}) ->
                             case binary:split(Part, <<"=">>) of
                                 [K, V] ->
-                                    {Acc#{lower(trim(K)) => trim(V)}, [K | Ord]};
+                                    {
+                                        Acc#{
+                                            chappe_sip_lib:lower(
+                                                chappe_sip_lib:trim(K)
+                                            ) => chappe_sip_lib:trim(V)
+                                        },
+                                        [K | Ord]
+                                    };
                                 [K] ->
-                                    {Acc#{lower(trim(K)) => true}, [K | Ord]}
+                                    {
+                                        Acc#{
+                                            chappe_sip_lib:lower(
+                                                chappe_sip_lib:trim(K)
+                                            ) => true
+                                        },
+                                        [K | Ord]
+                                    }
                             end
                     end,
                     {#{}, []},
@@ -763,7 +807,7 @@ parse_hostport(HostPort) ->
         [Host] ->
             {Host, undefined};
         [Host, P] ->
-            case port(trim(P)) of
+            case port(chappe_sip_lib:trim(P)) of
                 {ok, Port} -> {Host, Port};
                 error -> {error, bad_port}
             end
@@ -808,27 +852,6 @@ split_angle(<<$>, Rest/binary>>, Cur, Acc, Start, I) ->
     split_commas(Rest, Start, I + 1, false, [$> | Cur], Acc);
 split_angle(<<C, Rest/binary>>, Cur, Acc, Start, I) ->
     split_angle(Rest, [C | Cur], Acc, Start, I).
-
-%% byte-wise, so a header value that is not UTF-8 cannot raise
-trim(B) -> trim_trailing(trim_leading(B)).
-
-trim_leading(<<C, R/binary>>) when C =:= $\s; C =:= $\t -> trim_leading(R);
-trim_leading(B) -> B.
-
-trim_trailing(<<>>) ->
-    <<>>;
-trim_trailing(B) ->
-    case binary:last(B) of
-        C when C =:= $\s; C =:= $\t ->
-            trim_trailing(binary:part(B, 0, byte_size(B) - 1));
-        _ ->
-            B
-    end.
-
-lower(B) -> <<<<(lower_byte(C))>> || <<C>> <= B>>.
-
-lower_byte(C) when C >= $A, C =< $Z -> C + 32;
-lower_byte(C) -> C.
 
 upper(B) -> <<<<(upper_byte(C))>> || <<C>> <= B>>.
 
