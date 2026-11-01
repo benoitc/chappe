@@ -17,7 +17,7 @@
 -module(chappe_sip_uri).
 
 -export([parse/1, format/1, same_authority/2, equal/2, aor/1]).
--export([take_param/2, is_sips_unreliable/1]).
+-export([take_param/2, is_sips/1, is_sips_unreliable/1]).
 
 -type uri() :: map().
 
@@ -39,7 +39,7 @@ parse(<<"<", Rest/binary>>) ->
 parse(Bin) when is_binary(Bin) ->
     case binary:split(Bin, <<":">>) of
         [Scheme, Rest] ->
-            case lower(Scheme) of
+            case chappe_sip_lib:lower(Scheme) of
                 <<"sip">> -> parse_sip(sip, Rest);
                 <<"sips">> -> parse_sip(sips, Rest);
                 <<"tel">> -> parse_tel(Rest);
@@ -178,7 +178,7 @@ maybe_put(K, V, M) -> M#{K => V}.
 take_param(Uri, Name) ->
     case parse(Uri) of
         {ok, #{scheme := S, params := P} = U} when S =:= sip; S =:= sips ->
-            case [K || K := _ <- P, lower(K) =:= Name] of
+            case [K || K := _ <- P, chappe_sip_lib:lower(K) =:= Name] of
                 [] ->
                     {undefined, Uri};
                 Keys ->
@@ -193,6 +193,14 @@ take_param(Uri, Name) ->
             {undefined, Uri}
     end.
 
+%% A URI with the sips scheme, checked on the raw bytes without a parse. The
+%% scheme is case-insensitive (RFC 3261 19.1.4), so SIPS: and SiPs: count.
+-spec is_sips(binary()) -> boolean().
+is_sips(<<Scheme:4/binary, ":", _/binary>>) ->
+    chappe_sip_lib:lower(Scheme) =:= <<"sips">>;
+is_sips(_) ->
+    false.
+
 %% A SIPS URI whose transport parameter names an unreliable transport (RFC
 %% 3261 19.1.1: it MUST name a reliable one).
 -spec is_sips_unreliable(binary()) -> boolean().
@@ -201,8 +209,9 @@ is_sips_unreliable(Uri) ->
         {ok, #{scheme := sips, params := P}} ->
             lists:any(
                 fun({K, V}) ->
-                    lower(K) =:= <<"transport">> andalso is_binary(V) andalso
-                        lower(V) =:= <<"udp">>
+                    chappe_sip_lib:lower(K) =:= <<"transport">> andalso
+                        is_binary(V) andalso
+                        chappe_sip_lib:lower(V) =:= <<"udp">>
                 end,
                 maps:to_list(P)
             );
@@ -223,7 +232,7 @@ same_authority(A, B) ->
 authority(U) ->
     {
         maps:get(scheme, U),
-        lower(maps:get(host, U, <<>>)),
+        chappe_sip_lib:lower(maps:get(host, U, <<>>)),
         maps:get(port, U, undefined)
     }.
 
@@ -247,7 +256,8 @@ equal(A, B) when is_binary(B) ->
     end;
 equal(#{scheme := S} = A, #{scheme := S} = B) when S =:= sip; S =:= sips ->
     userinfo(A) =:= userinfo(B) andalso
-        lower(maps:get(host, A)) =:= lower(maps:get(host, B)) andalso
+        chappe_sip_lib:lower(maps:get(host, A)) =:=
+            chappe_sip_lib:lower(maps:get(host, B)) andalso
         maps:get(port, A, undefined) =:= maps:get(port, B, undefined) andalso
         params_equal(norm_params(A), norm_params(B)) andalso
         norm_headers(A) =:= norm_headers(B);
@@ -261,10 +271,10 @@ userinfo(U) ->
     }.
 
 norm_params(#{params := P}) ->
-    maps:from_list([{lower(K), norm_value(V)} || K := V <- P]).
+    maps:from_list([{chappe_sip_lib:lower(K), norm_value(V)} || K := V <- P]).
 
 norm_value(true) -> true;
-norm_value(V) -> lower(unesc(V)).
+norm_value(V) -> chappe_sip_lib:lower(unesc(V)).
 
 %% a user, ttl, method or maddr parameter in one URI only never matches;
 %% transport is in the same set (19.1.4 names it with the default-value
@@ -294,8 +304,8 @@ norm_headers(U) ->
         H ->
             lists:sort([
                 case binary:split(Part, <<"=">>) of
-                    [N, V] -> {lower(unesc(N)), unesc(V)};
-                    [N] -> {lower(unesc(N)), <<>>}
+                    [N, V] -> {chappe_sip_lib:lower(unesc(N)), unesc(V)};
+                    [N] -> {chappe_sip_lib:lower(unesc(N)), <<>>}
                 end
              || Part <- binary:split(H, <<"&">>, [global]),
                 Part =/= <<>>
@@ -310,7 +320,7 @@ unesc(Bin) ->
     unesc(Bin, <<>>).
 
 unesc(<<"%", H, L, Rest/binary>>, Acc) ->
-    case {hex(H), hex(L)} of
+    case {chappe_sip_lib:unhex(H), chappe_sip_lib:unhex(L)} of
         {Hi, Lo} when is_integer(Hi), is_integer(Lo) ->
             C = Hi * 16 + Lo,
             case lists:member(C, ";/?:@&=+$,") of
@@ -329,11 +339,6 @@ unesc(<<C, Rest/binary>>, Acc) ->
     unesc(Rest, <<Acc/binary, C>>);
 unesc(<<>>, Acc) ->
     Acc.
-
-hex(C) when C >= $0, C =< $9 -> C - $0;
-hex(C) when C >= $a, C =< $f -> C - $a + 10;
-hex(C) when C >= $A, C =< $F -> C - $A + 10;
-hex(_) -> error.
 
 hexdigit(N) when N < 10 -> $0 + N;
 hexdigit(N) -> $A + N - 10.
@@ -361,16 +366,15 @@ aor(Uri) ->
                 end,
             {ok,
                 iolist_to_binary([
-                    atom_to_binary(Scheme), ":", UserPart, lower(Host), PortPart
+                    atom_to_binary(Scheme),
+                    ":",
+                    UserPart,
+                    chappe_sip_lib:lower(Host),
+                    PortPart
                 ])};
         _ ->
             error
     end.
-
-lower(B) -> <<<<(lower_byte(C))>> || <<C>> <= B>>.
-
-lower_byte(C) when C >= $A, C =< $Z -> C + 32;
-lower_byte(C) -> C.
 
 %% Characters outside each component's set (RFC 3261 25.1) are
 %% percent-escaped on the way out; an escape already there (%XX) is kept,

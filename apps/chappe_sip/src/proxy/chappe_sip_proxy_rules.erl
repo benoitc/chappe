@@ -8,7 +8,7 @@
 -module(chappe_sip_proxy_rules).
 
 -export([best_response/1, loop_hash/1, looped/1, new_branch/1]).
--export([retarget/2, is_own_address/1, is_loose/1, is_sips/1, uri_of/1]).
+-export([retarget/2, is_own_address/1, is_loose/1]).
 -export([record_routes/1]).
 
 %% the reasons 4xx preferred by 16.7 step 6: they let the client retry
@@ -183,7 +183,7 @@ is_own_address(Uri) ->
 hostport(undefined) ->
     error;
 hostport(Bin) ->
-    case chappe_sip_uri:parse(uri_of(Bin)) of
+    case chappe_sip_uri:parse(chappe_sip_hdr:name_addr_uri(Bin)) of
         {ok, #{host := H} = U} ->
             Default =
                 case maps:get(scheme, U, sip) of
@@ -193,12 +193,6 @@ hostport(Bin) ->
             {ok, {H, maps:get(port, U, Default)}};
         _ ->
             error
-    end.
-
-uri_of(Value) ->
-    case chappe_sip_hdr:name_addr(Value) of
-        {ok, #{uri := Uri}} -> Uri;
-        _ -> Value
     end.
 
 %% A full URI is the new Request-URI; a bare host[:port] keeps the user
@@ -213,7 +207,7 @@ retarget({flow, Uri, _Flow}, Msg) ->
     %% a binding reached over its flow: the Request-URI is its contact
     retarget(Uri, Msg);
 retarget(<<"sip:", _/binary>> = Uri, Msg) ->
-    case is_sips(chappe_sip_msg:uri(Msg)) of
+    case chappe_sip_uri:is_sips(chappe_sip_msg:uri(Msg)) of
         true -> {error, sips_required};
         false -> {ok, chappe_sip_msg:set_uri(Uri, Msg), undefined}
     end;
@@ -221,7 +215,7 @@ retarget(<<"sips:", Rest/binary>> = Uri, Msg) ->
     case
         {
             chappe_sip_uri:is_sips_unreliable(Uri),
-            is_sips(chappe_sip_msg:uri(Msg))
+            chappe_sip_uri:is_sips(chappe_sip_msg:uri(Msg))
         }
     of
         {true, _} ->
@@ -264,7 +258,3 @@ is_loose(Uri) ->
 -spec record_routes(map()) -> boolean().
 record_routes(Opts) ->
     maps:get(record_route, Opts, maps:get(remain_in_dialog, Opts, false)).
-
-is_sips(<<"sips:", _/binary>>) -> true;
-is_sips(<<"SIPS:", _/binary>>) -> true;
-is_sips(_) -> false.

@@ -399,7 +399,7 @@ granted(Msg, D) ->
     Secs =
         case chappe_sip_msg:get(<<"expires">>, Msg) of
             undefined -> expires(D);
-            V -> to_int(V, expires(D))
+            V -> chappe_sip_lib:delta_seconds(V, expires(D))
         end,
     D1 = D#{expires_at => now_ms() + Secs * 1000},
     {keep_state, D1, expiry_timers(D1)}.
@@ -591,10 +591,7 @@ contact_uri(Msg, Fallback) ->
             undefined -> chappe_sip_msg:get(Fallback, Msg);
             C -> C
         end,
-    case chappe_sip_hdr:name_addr(Hdr) of
-        {ok, #{uri := Uri}} -> Uri;
-        _ -> Hdr
-    end.
+    chappe_sip_hdr:name_addr_uri(Hdr).
 
 from_base(#{opts := #{from := From}}) ->
     hd(binary:split(From, <<";tag=">>));
@@ -604,19 +601,8 @@ from_base(_D) ->
             undefined ->
                 <<"sip:anonymous.invalid">>;
             C ->
-                case chappe_sip_hdr:name_addr(C) of
-                    {ok, #{uri := U}} -> U;
-                    _ -> C
-                end
+                chappe_sip_hdr:name_addr_uri(C)
         end,
     <<"<", (hd(binary:split(Uri, <<";">>)))/binary, ">">>.
-
-to_int(V, Default) ->
-    try binary_to_integer(string:trim(V)) of
-        N when N >= 0 -> N;
-        _ -> Default
-    catch
-        error:badarg -> Default
-    end.
 
 now_ms() -> erlang:monotonic_time(millisecond).

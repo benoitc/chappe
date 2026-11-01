@@ -289,7 +289,10 @@ served(any, _Uri) ->
 served(Domains, Uri) ->
     case chappe_sip_uri:parse(Uri) of
         {ok, #{host := Host}} ->
-            lists:member(lower(Host), [lower(D) || D <- Domains]);
+            lists:member(chappe_sip_lib:lower(Host), [
+                chappe_sip_lib:lower(D)
+             || D <- Domains
+            ]);
         _ ->
             false
     end.
@@ -310,7 +313,7 @@ first_hop(Msg) ->
         V
      || Line <- chappe_sip_msg:get_all(<<"via">>, Msg),
         V <- binary:split(Line, <<",">>, [global]),
-        trim(V) =/= <<>>
+        chappe_sip_lib:trim(V) =/= <<>>
     ],
     case Vias of
         [_] -> true;
@@ -367,7 +370,7 @@ star(_Aor, _Values, _Msg, _Info) ->
 raw_expires(Msg) ->
     case chappe_sip_msg:get(<<"expires">>, Msg) of
         undefined -> undefined;
-        V -> to_int(V, undefined)
+        V -> chappe_sip_lib:to_int(V, undefined)
     end.
 
 callid_cseq(Msg) ->
@@ -670,20 +673,13 @@ header_expires(Msg, Opts) ->
     ),
     case chappe_sip_msg:get(<<"expires">>, Msg) of
         undefined -> Default;
-        V -> to_int(V, Default)
+        V -> chappe_sip_lib:to_int(V, Default)
     end.
 
 contact_expires(Params, HdrExpires) ->
     case maps:get(<<"expires">>, Params, undefined) of
-        V when is_binary(V) -> to_int(V, HdrExpires);
+        V when is_binary(V) -> chappe_sip_lib:to_int(V, HdrExpires);
         _ -> HdrExpires
-    end.
-
-to_int(V, Default) ->
-    try
-        binary_to_integer(trim(V))
-    catch
-        _:_ -> Default
     end.
 
 clamp(N, _Max) when N =< 0 -> 0;
@@ -748,27 +744,6 @@ aor_key(Value) ->
     case chappe_sip_uri:aor(Uri) of
         {ok, Aor} -> Aor;
         error -> Uri
-    end.
-
-lower(B) -> <<<<(lower_byte(C))>> || <<C>> <= B>>.
-
-lower_byte(C) when C >= $A, C =< $Z -> C + 32;
-lower_byte(C) -> C.
-
-%% byte-wise, so a value that is not UTF-8 cannot raise
-trim(B) -> trim_trailing(trim_leading(B)).
-
-trim_leading(<<C, R/binary>>) when C =:= $\s; C =:= $\t -> trim_leading(R);
-trim_leading(B) -> B.
-
-trim_trailing(<<>>) ->
-    <<>>;
-trim_trailing(B) ->
-    case binary:last(B) of
-        C when C =:= $\s; C =:= $\t ->
-            trim_trailing(binary:part(B, 0, byte_size(B) - 1));
-        _ ->
-            B
     end.
 
 now_s() ->

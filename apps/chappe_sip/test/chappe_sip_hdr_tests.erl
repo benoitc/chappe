@@ -373,3 +373,21 @@ cseq_lws_test() ->
     ?assertMatch({ok, #{seq := 7, method := <<"INVITE">>}}, chappe_sip_hdr:cseq(<<"7\tINVITE">>)),
     ?assertMatch({ok, #{seq := 4294967295}}, chappe_sip_hdr:cseq(<<"4294967295 INVITE">>)),
     ?assertEqual({error, bad_cseq}, chappe_sip_hdr:cseq(<<"+7 INVITE">>)).
+
+name_addr_uri_test() ->
+    ?assertEqual(<<"sip:alice@example.com">>,
+                 chappe_sip_hdr:name_addr_uri(<<"\"Alice\" <sip:alice@example.com>;tag=1">>)),
+    %% URI parameters inside the brackets belong to the URI
+    ?assertEqual(<<"sip:bob@example.com;lr">>,
+                 chappe_sip_hdr:name_addr_uri(<<"<sip:bob@example.com;lr>">>)),
+    ?assertEqual(<<"sip:carol@example.com">>,
+                 chappe_sip_hdr:name_addr_uri(<<"sip:carol@example.com">>)),
+    ?assertEqual(<<"<unterminated">>, chappe_sip_hdr:name_addr_uri(<<"<unterminated">>)).
+
+%% option tags compare case-insensitively (RFC 3261 19.2); empty list
+%% entries and OWS around a tag are dropped
+option_tags_test() ->
+    ?assertEqual([<<"100rel">>, <<"timer">>, <<"replaces">>],
+                 chappe_sip_hdr:option_tags([<<"100REL, Timer">>, <<",\treplaces ,">>])),
+    ?assertEqual([], chappe_sip_hdr:option_tags([])),
+    ?assertEqual([], chappe_sip_hdr:option_tags([<<" , ">>])).

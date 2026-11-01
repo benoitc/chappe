@@ -174,29 +174,20 @@ www_authenticate(Realm, Stale) ->
 
 %% the domains the credentials of this realm register in: the auth map's
 %% domain (one or a list), else the realm itself
-auth_domains(#{domain := D}) when is_binary(D) -> [ascii_lower(D)];
-auth_domains(#{domain := Ds}) when is_list(Ds) -> [ascii_lower(D) || D <- Ds];
-auth_domains(#{realm := Realm}) -> [ascii_lower(Realm)].
+auth_domains(#{domain := D}) when is_binary(D) -> [chappe_sip_lib:lower(D)];
+auth_domains(#{domain := Ds}) when is_list(Ds) ->
+    [chappe_sip_lib:lower(D) || D <- Ds];
+auth_domains(#{realm := Realm}) ->
+    [chappe_sip_lib:lower(Realm)].
 
 %% the To AOR being registered is User's, in one of Domains
 aor_owned(User, Domains, Req) ->
     case chappe_sip_uri:parse(aor_uri(chappe_sip_req:get(<<"to">>, Req))) of
         {ok, #{user := User, host := Host}} ->
-            lists:member(ascii_lower(Host), Domains);
+            lists:member(chappe_sip_lib:lower(Host), Domains);
         _ ->
             false
     end.
-
-ascii_lower(Bin) ->
-    <<
-        <<
-            (case C of
-                _ when C >= $A, C =< $Z -> C + 32;
-                _ -> C
-            end)
-        >>
-     || <<C>> <= Bin
-    >>.
 
 aor_uri(NameAddr) ->
     case chappe_sip_hdr:name_addr(NameAddr) of

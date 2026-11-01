@@ -803,7 +803,7 @@ handle_indialog(TxnH, _Meta, Raw, D) ->
 %% here (and must be exempt).
 require_check(TxnH, Req, D) ->
     Supported = [
-        lower(T)
+        chappe_sip_lib:lower(T)
      || T <- chappe_sip_config:get(supported_option_tags) ++ D#data.option_tags
     ],
     Msg = chappe_sip_req:msg(Req),
@@ -825,11 +825,6 @@ require_check(TxnH, Req, D) ->
             ),
             {keep_state, D}
     end.
-
-lower(B) -> <<<<(lower_byte(C))>> || <<C>> <= B>>.
-
-lower_byte(C) when C >= $A, C =< $Z -> C + 32;
-lower_byte(C) -> C.
 
 %% track the remote CSeq; a strictly lower number than the highest seen is out
 %% of order (retransmits are absorbed at the transaction layer, so an equal
@@ -1198,12 +1193,7 @@ requested_expires(Req, Default) ->
         undefined ->
             Default;
         V ->
-            try binary_to_integer(string:trim(V)) of
-                N when N >= 0 -> N;
-                _ -> Default
-            catch
-                error:badarg -> Default
-            end
+            chappe_sip_lib:delta_seconds(V, Default)
     end.
 
 %% an in-dialog SUBSCRIBE refreshes this subscription only when its Event

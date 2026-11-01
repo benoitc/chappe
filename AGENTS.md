@@ -80,6 +80,14 @@ in `apps/chappe_sip/docs/design/engine.md`.
 - Never use the em-dash character in code, docs, or messages.
 - Never use the word "comprehensive" in tickets, comments, PRs, or MRs.
 - OTP 29 only. sofia pin: freeswitch/sofia-sip v1.13.17-55 (vendored).
+- Share code, do not copy it. Before writing a helper, look for one in the
+  app (`grep -rn '^name(' apps/<app>/src`). When a second module needs a
+  helper, export it from the module that owns the concept (`chappe_sip_hdr`
+  for header grammar, `chappe_sip_uri` for URIs, `chappe_sip_dialog` for
+  tags, `chappe_sip_lib` for ASCII and byte helpers) instead of copying it;
+  copies that drift apart are bugs. Helpers are not shared across apps: each
+  app is published on its own and the leaf apps take no umbrella deps. A
+  one-line wrapper over a single BIF may stay local.
 - Keep the leaf apps (chappe_rtpengine, chappe_mix) SIP-free;
   SIP-coupled logic belongs in chappe_sip or a consuming product.
 - Measure before you claim: chappe_mix keeps its thresholds and results in

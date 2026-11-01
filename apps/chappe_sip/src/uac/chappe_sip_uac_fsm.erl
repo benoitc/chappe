@@ -405,7 +405,9 @@ handle_response(420, Raw, #data{ext_retried = false} = D) ->
     %% RFC 3261 8.1.3.5: retry without the extensions the UAS does not
     %% support, as a new transaction of the same call
     {ok, Msg} = chappe_sip_msg:parse(Raw),
-    Unsupported = option_tags(chappe_sip_msg:get_all(<<"unsupported">>, Msg)),
+    Unsupported = chappe_sip_hdr:option_tags(
+        chappe_sip_msg:get_all(<<"unsupported">>, Msg)
+    ),
     case without_tags(Unsupported, D#data.opts) of
         {ok, Opts2} ->
             chappe_sip_engine:finish_txn(D#data.txn),
@@ -679,7 +681,8 @@ terminate(_Reason, _State, D) ->
 %% higher one is out of order: both are dropped without a PRACK.
 reliable(Status, Msg, #data{rseq = Seen}) when Status > 100 ->
     Required = lists:member(
-        <<"100rel">>, option_tags(chappe_sip_msg:get_all(<<"require">>, Msg))
+        <<"100rel">>,
+        chappe_sip_hdr:option_tags(chappe_sip_msg:get_all(<<"require">>, Msg))
     ),
     case Required andalso rseq(Msg) of
         false ->
@@ -702,11 +705,9 @@ rseq(Msg) ->
         undefined ->
             undefined;
         V ->
-            try binary_to_integer(string:trim(V)) of
-                N when N >= 1, N =< 16#FFFFFFFF -> N;
+            case chappe_sip_lib:to_int(V, undefined) of
+                N when is_integer(N), N >= 1, N =< 16#FFFFFFFF -> N;
                 _ -> undefined
-            catch
-                error:badarg -> undefined
             end
     end.
 
@@ -1320,7 +1321,7 @@ without_tags(Tags, Opts) ->
 drop_required({N, V}, Tags) ->
     case string:lowercase(N) of
         <<"require">> ->
-            case option_tags([iolist_to_binary(V)]) -- Tags of
+            case chappe_sip_hdr:option_tags([iolist_to_binary(V)]) -- Tags of
                 [] ->
                     false;
                 Left ->
@@ -1329,14 +1330,6 @@ drop_required({N, V}, Tags) ->
         _ ->
             true
     end.
-
-option_tags(Values) ->
-    [
-        string:lowercase(string:trim(T))
-     || V <- Values,
-        T <- binary:split(V, <<",">>, [global]),
-        string:trim(T) =/= <<>>
-    ].
 
 %% Forget the challenges (and so the credentials) of the old target when a
 %% redirect leaves its scheme, host or port, or when either URI does not
@@ -1405,7 +1398,7 @@ any_contact(#data{} = D) ->
     Plain =
         case chappe_sip_engine:contact() of
             undefined -> <<"sip:anonymous@localhost">>;
-            C -> contact_uri(C)
+            C -> chappe_sip_hdr:name_addr_uri(C)
         end,
     case secure(D) andalso chappe_sip_engine:tls_contact() of
         Tls when is_binary(Tls) -> Tls;
@@ -1417,29 +1410,18 @@ secure(#data{flow = Flow}) when Flow =/= undefined ->
 secure(#data{uri = Uri, proxy = Proxy, route_set = Routes}) ->
     Top =
         case Routes of
-            [First | _] -> contact_uri(First);
+            [First | _] -> chappe_sip_hdr:name_addr_uri(First);
             [] -> undefined
         end,
-    lists:any(fun is_sips/1, [Uri, Proxy, Top]).
-
-is_sips(<<S, I, P, S2, ":", _/binary>>) ->
-    string:lowercase(<<S, I, P, S2>>) =:= <<"sips">>;
-is_sips(_) ->
-    false.
+    lists:any(fun chappe_sip_uri:is_sips/1, [Uri, Proxy, Top]).
 
 %% The Contact header value: our URI in angle brackets, then any
 %% contact_params (`;isfocus' for a conference focus, RFC 4579).
 contact_value(Contact, Opts) ->
     <<"<", Contact/binary, ">", (maps:get(contact_params, Opts, <<>>))/binary>>.
 
-contact_uri(C) ->
-    case chappe_sip_hdr:name_addr(C) of
-        {ok, #{uri := Uri}} -> Uri;
-        _ -> C
-    end.
-
 build_from(Opts, ContactUri) ->
-    Tag = gen_tag(),
+    Tag = chappe_sip_dialog:gen_tag(),
     case maps:get(from, Opts, undefined) of
         undefined ->
             <<"<", ContactUri/binary, ">;tag=", Tag/binary>>;
@@ -1458,11 +1440,8 @@ extract_tag(From) ->
                 [Tag] -> Tag
             end;
         _ ->
-            gen_tag()
+            chappe_sip_dialog:gen_tag()
     end.
-
-gen_tag() ->
-    binary:encode_hex(crypto:strong_rand_bytes(6), lowercase).
 
 gen_call_id() ->
     <<

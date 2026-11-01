@@ -283,7 +283,7 @@ parse_se(undefined) ->
     undefined;
 parse_se(Value) ->
     [Delta | Params] = binary:split(Value, <<";">>, [global]),
-    case to_int(Delta) of
+    case chappe_sip_lib:to_int(Delta, undefined) of
         N when is_integer(N), N > 0 -> {N, refresher_param(Params)};
         _ -> undefined
     end.
@@ -304,11 +304,11 @@ refresher_param([P | Rest]) ->
 
 -spec supports_timer(chappe_sip_msg:msg()) -> boolean().
 supports_timer(Msg) ->
-    lists:member(<<"timer">>, tokens(<<"supported">>, Msg)).
+    lists:member(<<"timer">>, chappe_sip_msg:option_tags(<<"supported">>, Msg)).
 
 -spec allows_update(chappe_sip_msg:msg()) -> boolean().
 allows_update(Msg) ->
-    lists:member(<<"update">>, tokens(<<"allow">>, Msg)).
+    lists:member(<<"update">>, chappe_sip_msg:option_tags(<<"allow">>, Msg)).
 
 %% the Min-SE of a request or 422, 0 when absent
 -spec min_se(chappe_sip_msg:msg()) -> non_neg_integer().
@@ -318,20 +318,8 @@ min_se(Msg) ->
             0;
         V ->
             [Delta | _] = binary:split(V, <<";">>),
-            case to_int(Delta) of
-                N when is_integer(N), N >= 0 -> N;
-                _ -> 0
-            end
+            chappe_sip_lib:delta_seconds(Delta, 0)
     end.
-
-tokens(Name, Msg) ->
-    [
-        lower(T1)
-     || V <- chappe_sip_msg:get_all(Name, Msg),
-        T <- binary:split(V, <<",">>, [global]),
-        T1 <- [string:trim(T)],
-        T1 =/= <<>>
-    ].
 
 min_se_header(0) -> [];
 min_se_header(M) -> [{<<"Min-SE">>, integer_to_binary(M)}].
@@ -352,11 +340,4 @@ role_param(remote, uas) -> uac.
 from_param(Us, Us) -> local;
 from_param(_, _) -> remote.
 
-to_int(B) ->
-    try
-        binary_to_integer(string:trim(B))
-    catch
-        error:badarg -> undefined
-    end.
-
-lower(B) -> string:lowercase(string:trim(B)).
+lower(B) -> chappe_sip_lib:lower(chappe_sip_lib:trim(B)).
