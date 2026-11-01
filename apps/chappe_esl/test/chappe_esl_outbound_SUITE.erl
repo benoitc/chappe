@@ -12,7 +12,10 @@
     execute_on_channel/1,
     linger_disabled/1,
     linger_seconds/1,
-    linger_then_disconnect/1
+    linger_then_disconnect/1,
+    listen_ip/1,
+    listen_ipv6/1,
+    bad_listener_options/1
 ]).
 %% chappe_esl_handler callback.
 -export([handle_channel/3]).
@@ -23,7 +26,10 @@ all() ->
         execute_on_channel,
         linger_disabled,
         linger_seconds,
-        linger_then_disconnect
+        linger_then_disconnect,
+        listen_ip,
+        listen_ipv6,
+        bad_listener_options
     ].
 
 init_per_suite(Config) ->
@@ -170,7 +176,85 @@ linger_then_disconnect(_Config) ->
         chappe_esl:stop_listener(Port)
     end.
 
+%% Bound to 127.0.0.1, the listener takes a connection there and refuses
+%% one on another local address.
+listen_ip(_Config) ->
+    case other_local_address() of
+        undefined ->
+            {skip, no_other_local_address};
+        Other ->
+            Port = pick_port(),
+            {ok, _Ref} = chappe_esl:start_listener(Port, ?MODULE, self(), #{
+                ip => {127, 0, 0, 1}, backlog => 16
+            }),
+            try
+                S = fs_connect(Port),
+                ?assertEqual(<<"connect">>, recv_block(S)),
+                ?assertEqual(
+                    {error, econnrefused},
+                    gen_tcp:connect(Other, Port, [binary], 5000)
+                )
+            after
+                chappe_esl:stop_listener(Port)
+            end
+    end.
+
+%% An IPv6 address listens on IPv6.
+listen_ipv6(_Config) ->
+    Port = pick_port(),
+    Loopback = {0, 0, 0, 0, 0, 0, 0, 1},
+    case chappe_esl:start_listener(Port, ?MODULE, self(), #{ip => Loopback}) of
+        {ok, _Ref} ->
+            try
+                {ok, S} = gen_tcp:connect(
+                    Loopback, Port, [binary, {active, false}], 5000
+                ),
+                ?assertEqual(<<"connect">>, recv_block(S))
+            after
+                chappe_esl:stop_listener(Port)
+            end;
+        {error, Reason} ->
+            {skip, {no_ipv6_loopback, Reason}}
+    end.
+
+%% A bad ip, backlog or linger is refused before anything listens.
+bad_listener_options(_Config) ->
+    Bad = [
+        {ip, "127.0.0.1"},
+        {ip, {300, 0, 0, 1}},
+        {ip, localhost},
+        {backlog, 0},
+        {backlog, many},
+        {linger, -1}
+    ],
+    lists:foreach(
+        fun({Key, Value}) ->
+            ?assertEqual(
+                {error, {bad_option, Key}},
+                chappe_esl:start_listener(pick_port(), ?MODULE, self(), #{
+                    Key => Value
+                })
+            )
+        end,
+        Bad
+    ).
+
 %% helpers
+
+%% An IPv4 address of this host other than loopback, undefined when there
+%% is none.
+other_local_address() ->
+    {ok, Ifs} = inet:getifaddrs(),
+    Addrs = [
+        A
+     || {_Name, Props} <- Ifs,
+        {addr, {_, _, _, _} = A} <- Props,
+        element(1, A) =/= 127
+    ],
+    case Addrs of
+        [A | _] -> A;
+        [] -> undefined
+    end.
 
 relayed() ->
     receive

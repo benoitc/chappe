@@ -27,7 +27,9 @@ capability exists before you reach for it.
 - Per-connection counters via `stats/1`.
 - Outbound listener with a per-channel `chappe_esl_handler` behaviour and channel
   data on connect. `linger` is sent after `connect` by default
-  (`start_listener/4` with `#{linger => false | Seconds}` to change it). A
+  (`start_listener/4` with `#{linger => false | Seconds}` to change it).
+  The listener binds every IPv4 interface or the `ip` you give (IPv4 or
+  IPv6), with a configurable `backlog`; a bad value is refused. A
   disconnect notice with Content-Disposition `linger` is delivered as
   `{chappe_esl_linger, Conn}`, any other as `{chappe_esl_disconnect, Conn}`.
 - Streaming frame parser tolerant of arbitrary TCP chunking. A Content-Length
@@ -55,10 +57,10 @@ capability exists before you reach for it.
   completions to requests and sends its owner DTMF, hangup, unclaimed
   completions and other events. Helpers: answer, playback,
   play_and_get_digits, record, record_session and its stop, send_dtmf, set,
-  export, hangup, conference, audio_fork_start and audio_fork_stop; paths
-  with spaces are quoted. When the
-  owner dies first, forks and session recordings stop and the channel is
-  killed.
+  export, hangup, conference, audio_fork_start and audio_fork_stop (over
+  mod_audio_fork, or mod_audio_stream with `module => audio_stream`); paths
+  with spaces are quoted. When the owner dies first, forks (each with its
+  module's stop) and session recordings stop and the channel is killed.
 - An outbound connection handed to another process with
   `set_controlling_process/2` stays open after the handler returns, and ends
   with its new owner.

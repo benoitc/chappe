@@ -25,8 +25,10 @@
     play_and_get_digits/1,
     dtmf_and_hangup/1,
     helpers/1,
+    audio_stream_commands/1,
     owner_death_cleanup/1,
     owner_death_after_hangup/1,
+    owner_death_audio_stream/1,
     connection_closed/1,
     stop_leaves_channel/1
 ]).
@@ -49,8 +51,10 @@ all() ->
         play_and_get_digits,
         dtmf_and_hangup,
         helpers,
+        audio_stream_commands,
         owner_death_cleanup,
         owner_death_after_hangup,
+        owner_death_audio_stream,
         connection_closed,
         stop_leaves_channel
     ].
@@ -372,6 +376,51 @@ helpers(_Config) ->
     ok = chappe_esl_call:hangup(Call, "USER_BUSY"),
     expect_app(<<"hangup">>, <<"USER_BUSY">>).
 
+%% module => audio_stream speaks mod_audio_stream: 8000 and 16000 as 8k and
+%% 16k, metadata right after the rate, and its own stop. module =>
+%% audio_fork is the default grammar; another module is refused.
+%% req: ESL-37
+audio_stream_commands(_Config) ->
+    {Call, _Fake} = outbound(#{}),
+    ok = chappe_esl_call:audio_fork_start(Call, "ws://x/y", #{
+        module => audio_stream, mix => stereo, rate => 8000, metadata => <<"{}">>
+    }),
+    ?assertEqual(
+        <<"api uuid_audio_stream fake-uuid-1 start ws://x/y stereo 8k {}">>,
+        block_with(<<"uuid_audio_stream">>)
+    ),
+    ok = chappe_esl_call:audio_fork_stop(Call),
+    ?assertEqual(
+        <<"api uuid_audio_stream fake-uuid-1 stop">>,
+        block_with(<<"uuid_audio_stream">>)
+    ),
+    ok = chappe_esl_call:audio_fork_start(Call, "wss://a", #{
+        module => audio_stream, metadata => <<"{\"a\": 1}">>
+    }),
+    ?assertEqual(
+        <<"api uuid_audio_stream fake-uuid-1 start wss://a mono 16k ",
+            "'{\"a\": 1}'">>,
+        block_with(<<"uuid_audio_stream">>)
+    ),
+    ok = chappe_esl_call:audio_fork_start(Call, "wss://b", #{
+        module => audio_stream, rate => 24000
+    }),
+    ?assertEqual(
+        <<"api uuid_audio_stream fake-uuid-1 start wss://b mono 24000">>,
+        block_with(<<"uuid_audio_stream">>)
+    ),
+    ok = chappe_esl_call:audio_fork_start(Call, "ws://c", #{
+        module => audio_fork
+    }),
+    ?assertEqual(
+        <<"api uuid_audio_fork fake-uuid-1 start ws://c mono 16000">>,
+        block_with(<<"uuid_audio_fork">>)
+    ),
+    ?assertEqual(
+        {error, {bad_option, module}},
+        chappe_esl_call:audio_fork_start(Call, "ws://d", #{module => fork})
+    ).
+
 %% The owner dies: the fork and the session recording stop, then the
 %% channel is killed, and the call process and connection end.
 %% req: ESL-39
@@ -398,6 +447,24 @@ owner_death_cleanup(_Config) ->
     after 5000 ->
         ct:fail(call_not_stopped)
     end.
+
+%% A mod_audio_stream fork is stopped with its own command before the kill.
+%% req: ESL-39
+owner_death_audio_stream(_Config) ->
+    Owner = spawn(fun() -> receive after infinity -> ok end end),
+    {Call, _Fake} = outbound(#{}, Owner),
+    ok = chappe_esl_call:audio_fork_start(Call, "ws://x", #{
+        module => audio_stream
+    }),
+    flush_blocks(),
+    exit(Owner, kill),
+    ?assertEqual(
+        [
+            <<"api uuid_audio_stream fake-uuid-1 stop">>,
+            <<"api uuid_kill fake-uuid-1">>
+        ],
+        [next_block() || _ <- lists:seq(1, 2)]
+    ).
 
 %% After the hangup there is nothing left to kill.
 %% req: ESL-39

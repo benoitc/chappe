@@ -79,6 +79,24 @@ Change it per listener with `start_listener/4`:
 `true` (default) sends `linger`, an integer sends `linger <Seconds>`, `false`
 sends nothing.
 
+## Listen on one address
+
+By default the listener accepts on every IPv4 interface. To take dialplan
+sockets only on one address, for example the interface FreeSWITCH reaches
+you on, pass `ip`:
+
+```erlang
+{ok, _} = chappe_esl:start_listener(8084, my_handler, [], #{
+    ip => {10, 0, 0, 5},
+    backlog => 256
+}).
+```
+
+An IPv6 address (an 8-tuple) listens on IPv6. `backlog` is the length of the
+queue of connections not yet accepted (128 by default); raise it when many
+calls arrive at once. A value that is not an IP address tuple or a positive
+integer returns `{error, {bad_option, ip | backlog}}` and nothing listens.
+
 ## Stop the listener
 
 ```erlang

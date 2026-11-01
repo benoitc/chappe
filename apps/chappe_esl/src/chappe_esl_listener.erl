@@ -46,6 +46,7 @@ init(Opts) ->
         {active, false},
         {reuseaddr, true},
         {backlog, maps:get(backlog, Opts, 128)}
+        | ip_opts(Opts)
     ],
     case gen_tcp:listen(Port, ListenOpts) of
         {ok, Listen} ->
@@ -80,6 +81,11 @@ terminate(_Reason, #state{listen = Listen}) ->
     ok.
 
 %% internal
+
+%% Every IPv4 interface unless an address is given; an IPv6 one needs inet6.
+ip_opts(#{ip := {_, _, _, _} = Ip}) -> [{ip, Ip}];
+ip_opts(#{ip := Ip}) -> [inet6, {ip, Ip}];
+ip_opts(#{}) -> [].
 
 accept_loop(Owner, Listen, Handler, Args, ConnOpts) ->
     case gen_tcp:accept(Listen) of

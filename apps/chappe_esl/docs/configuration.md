@@ -2,7 +2,7 @@
 
 This page lists what you can set in chappe_esl: the application environment,
 the options of a node in the registry, and the options of a single
-connection or listener. Read it when you write a `sys.config` or add a node
+connection, listener or audio fork. Read it when you write a `sys.config` or add a node
 and need a default.
 
 ## Application environment
@@ -60,9 +60,26 @@ yourself.
 ## Listener options
 
 `chappe_esl:start_listener/3,4` takes a port, a `chappe_esl_handler`
-module, its arguments and, with `/4`, a map with one key, `linger`:
-`true` (default) sends `linger` after `connect`, so events after the hangup
-still arrive; an integer sends `linger <Seconds>`; `false` sends nothing.
+module, its arguments and, with `/4`, a map of options:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `linger` | `true` | `true` sends `linger` after `connect`, so events after the hangup still arrive; an integer sends `linger <Seconds>`; `false` sends nothing. |
+| `ip` | every IPv4 interface | `inet:ip_address()` to listen on; an IPv6 address listens on IPv6. |
+| `backlog` | `128` | Length of the queue of connections not yet accepted. |
+
+A bad value returns `{error, {bad_option, Key}}` and nothing listens.
+
+## Audio fork options
+
+`chappe_esl_call:audio_fork_start/3` takes a map:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `module` | `audio_fork` | `audio_fork` for mod_audio_fork, `audio_stream` for mod_audio_stream. Another value returns `{error, {bad_option, module}}`. |
+| `mix` | `mono` | `mono`, `mixed` or `stereo`. |
+| `rate` | `16000` | Sample rate in Hz (`8k` and `16k` on the mod_audio_stream command line). |
+| `metadata` | none | First text frame sent to the server. |
 
 ## Where it lives
 
@@ -71,3 +88,4 @@ still arrive; an integer sends `linger <Seconds>`; `false` sends nothing.
 - Node options and defaults: `chappe_esl_node:validate/1`
 - Connection options: `chappe_esl_conn`, `chappe_esl_inbound`
 - Listener options: `chappe_esl_listener`
+- Audio fork options: `chappe_esl_call`
