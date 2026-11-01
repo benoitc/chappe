@@ -35,7 +35,8 @@
     invalid_start_options/1,
     stats_shape/1,
     events_dropped_counted/1,
-    refused_starts_keep_the_vm/1
+    refused_starts_keep_the_vm/1,
+    stop_with_internal_reply_queued/1
 ]).
 
 %% the shim's bounds on max_message_size
@@ -50,7 +51,8 @@ all() ->
         invalid_start_options,
         stats_shape,
         events_dropped_counted,
-        refused_starts_keep_the_vm
+        refused_starts_keep_the_vm,
+        stop_with_internal_reply_queued
     ].
 
 %% the cases that need a running engine, one per case
@@ -303,3 +305,34 @@ flush() ->
         {chappe_sip_engine, _, _} -> flush()
     after 0 -> ok
     end.
+
+%% A request nta cannot send is answered by nta itself, through a message it
+%% posts to its own root. With the stop right behind, that message was still
+%% queued when the root went away, and it and the root leaked. The leak shows
+%% at VM exit under LeakSanitizer (test/asan/run.sh).
+stop_with_internal_reply_queued(_Config) ->
+    lists:foreach(
+        fun(_) ->
+            Port = chappe_sip_test_port:pick(),
+            Contact = <<"sip:127.0.0.1:", (integer_to_binary(Port))/binary>>,
+            {ok, E} = chappe_sip_nif:start(#{contact => Contact}, self()),
+            Route = <<"sip:127.0.0.1:5999;transport=sctp">>,
+            [
+                chappe_sip_nif:request(E, Route, unsendable_request(N))
+             || N <- lists:seq(1, 20)
+            ],
+            ok = chappe_sip_nif:stop(E)
+        end,
+        lists:seq(1, 20)
+    ).
+
+unsendable_request(N) ->
+    Id = integer_to_binary(N),
+    <<"OPTIONS sip:uas@127.0.0.1 SIP/2.0\r\n"
+      "Via: SIP/2.0/UDP 127.0.0.1:5999;rport;branch=z9hG4bK", Id/binary, "\r\n"
+      "Max-Forwards: 70\r\n"
+      "From: <sip:a@127.0.0.1>;tag=f1\r\n"
+      "To: <sip:uas@127.0.0.1>\r\n"
+      "Call-ID: ", Id/binary, "@127.0.0.1\r\n"
+      "CSeq: 1 OPTIONS\r\n"
+      "Content-Length: 0\r\n\r\n">>.

@@ -1,0 +1,13 @@
+--- a/libsofia-sip-ua/msg/msg_date.c	2026-11-01 22:21:06
++++ b/libsofia-sip-ua/msg/msg_date.c	2026-11-01 22:21:06
+@@ -102,7 +102,9 @@
+   if (!s[0] || !s[1] || !s[2])
+     return -1;
+ 
+-  #define MONTH_V(s) (uc | (((s[0]) << 16) + ((s[1]) << 8) + ((s[2]))))
++  #define MONTH_V(s) (uc | (((unsigned)(unsigned char)(s[0]) << 16) + \
++                            ((unsigned)(unsigned char)(s[1]) << 8) + \
++                            ((unsigned)(unsigned char)(s[2]))))
+   m = MONTH_V(s);
+ 
+   #define MONTH_D(n) \

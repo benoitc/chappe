@@ -29,6 +29,9 @@ SAN="-fsanitize=address,undefined -fno-sanitize-recover=undefined"
 CFLAGS_SOFIA="-O1 -g -DNDEBUG -fno-omit-frame-pointer"
 CFLAGS_SOFIA="$CFLAGS_SOFIA -fsanitize=address,undefined"
 CFLAGS_SOFIA="$CFLAGS_SOFIA -fsanitize=fuzzer-no-link"
+# char is signed on x86 and unsigned on arm64: the signed-char bugs must show
+# on both
+CFLAGS_SOFIA="$CFLAGS_SOFIA -fsigned-char"
 # sofia calls every header decoder and encoder through a generic function
 # pointer type (msg_parser.c); clang's -fsanitize=function
 # (part of undefined since clang 17) reports each call. It is how sofia is

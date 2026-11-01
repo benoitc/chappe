@@ -1843,6 +1843,11 @@ static void teardown_sofia(engine_t *e) {
     tab_drain(e);
     agent_destroy(e);
     orphans_sweep(e, 1);
+    /* A request nta could not send is answered through a message nta posts to
+     * its own root, which can still be queued when OP_STOP breaks the loop.
+     * It holds a reference on the root's port, so the root would never be
+     * freed. Deliver it: the transaction is gone, so it only frees itself. */
+    if (e->root) (void)su_root_step(e->root, 0);
     enif_rwlock_rwlock(e->root_lock);
     if (e->root) { su_root_destroy(e->root); e->root = NULL; }
     enif_rwlock_rwunlock(e->root_lock);

@@ -25,6 +25,7 @@ changes.
 | `0001-url-shifts.patch` | undefined shifts in `url.c` (`IS_SYN33`, `IS_EXCLUDED`); a high byte could skip the URL exclusion check | [`tickets/0001-url-shifts.md`](tickets/0001-url-shifts.md), not filed yet |
 | `0002-msg-serialize-null-separator.patch` | member access through a NULL separator in `msg_serialize()` | [`tickets/0002-msg-serialize-null-separator.md`](tickets/0002-msg-serialize-null-separator.md), not filed yet |
 | `0003-url-param-past-end.patch` | `url_param()` read past the end of the parameter string when the last parameter starts with the name looked up but has no `=` | [`tickets/0003-url-param-past-end.md`](tickets/0003-url-param-past-end.md), not filed yet |
+| `0004-msg-date-signed-shift.patch` | undefined shift of a signed `char` in `msg_date.c` when a month name has a high byte | [`tickets/0004-msg-date-signed-shift.md`](tickets/0004-msg-date-signed-shift.md), not filed yet |
 
 0001 and 0002 were found by the libFuzzer targets in `../fuzz` under
 UBSan, 0003 by the NIF fuzz suite (`chappe_sip_nif_fuzz_SUITE`) under ASan.
