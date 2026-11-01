@@ -964,7 +964,7 @@ static void log_cb(void *stream, char const *fmt, va_list ap) {
         return;
     }
     /* strip trailing newline */
-    if ((size_t)n < sizeof buf && n > 0 && buf[n - 1] == '\n') buf[n - 1] = 0;
+    if ((size_t)n < sizeof buf && buf[n - 1] == '\n') buf[n - 1] = 0;
     struct log_ev l = {6 /* info */, buf};
     send_event(e, mk_log_ev, &l);
 }
@@ -1344,6 +1344,128 @@ static void op_tag(engine_t *e, nta_incoming_t *irq, const op_t *op) {
                   (unsigned long long)op->h);
 }
 
+static void op_reliable_1xx(engine_t *e, const op_t *op) {
+    /* send a reliable provisional (100rel). nta owns RSeq/RAck,
+     * retransmit and PRACK matching; prack_cb fires when the PRACK
+     * arrives. The incoming handle must survive to the final. */
+    nta_incoming_t *irq = tab_get(e, op->h, H_INCOMING);
+    obj_ctx_t *ctx = tab_get_ctx(e, op->h, H_INCOMING);
+    if (!irq || !ctx) {
+        send_op_failed(e, op->h, "unknown transaction");
+        return;
+    }
+    op_tag(e, irq, op);
+    if (!peer_rel100(irq)) {
+        /* RFC 3261 8.2.4: the caller did not offer 100rel, so the
+         * provisional goes out on baseline SIP, unreliably */
+        if (nta_incoming_treply(
+                irq, op->status, op->reason[0] ? op->reason : NULL,
+                TAG_IF(op->headers, SIPTAG_HEADER_STR(op->headers)),
+                TAG_IF(op->body, SIPTAG_PAYLOAD_STR(op->body)),
+                TAG_END()) < 0)
+            send_op_failed(e, op->h, "treply failed");
+        return;
+    }
+    int has_body = op->body && op->body[0];
+    int offerless = ctx->rel_offer == 0 && !request_has_body(irq);
+    if (offerless && !has_body) {
+        /* RFC 3262 5: the first reliable 1xx to an INVITE without an
+         * offer carries one */
+        send_op_failed(e, op->h, "reliable 1xx needs the offer");
+        return;
+    }
+    nta_reliable_t *rel = nta_reliable_treply(
+        irq, prack_cb, (nta_reliable_magic_t *)ctx,
+        op->status, op->reason[0] ? op->reason : NULL,
+        TAG_IF(op->headers, SIPTAG_HEADER_STR(op->headers)),
+        TAG_IF(op->body, SIPTAG_PAYLOAD_STR(op->body)), TAG_END());
+    if (!rel) {
+        send_op_failed(e, op->h, "nta_reliable_treply failed");
+    } else {
+        ctx->rel = 1;
+        if (offerless) ctx->rel_offer = 1;
+    }
+}
+
+static void op_request(engine_t *e, const op_t *op) {
+    msg_t *m = op_msg(op);
+    if (!m) {
+        send_op_failed(e, op->h, "unparseable request");
+        return;
+    }
+    obj_ctx_t *ctx = enif_alloc(sizeof *ctx);
+    if (!ctx) {
+        msg_destroy(m);
+        send_op_failed(e, op->h, "alloc failed");
+        return;
+    }
+    memset(ctx, 0, sizeof *ctx);
+    ctx->e = e;
+    ctx->h = op->h;
+    url_string_t *route =
+        op->route ? URL_STRING_MAKE(op->route) : NULL;
+    /* RFC 5626 5.3: a request for a flow goes over that connection */
+    tport_t *ftp = NULL;
+    if (op->flow) {
+        flow_t *f = tab_get(e, op->flow, H_FLOW);
+        if (!f) {
+            msg_destroy(m);
+            enif_free(ctx);
+            send_op_failed(e, op->h, "unknown flow");
+            return;
+        }
+        ftp = f->tp;
+    }
+    /* A proxy branch (one with our loop-detection branch) of an INVITE
+     * is created outside UA mode: a UA client transaction ACKs and BYEs
+     * a second 2xx with another To-tag itself, while a proxy forwards
+     * every 2xx upstream (RFC 3261 16.7 step 10, RFC 6026). The agent
+     * flag is read once, at creation, and only this thread touches it. */
+    sip_t const *rsip = sip_object(m);
+    int proxy_inv = op->branch[0] && rsip && rsip->sip_request &&
+                    rsip->sip_request->rq_method == sip_method_invite;
+    if (proxy_inv &&
+        nta_agent_set_params(e->agent, NTATAG_UA(0), TAG_END()) < 0)
+        shim_warn(e, "nta_agent_set_params(UA 0) failed");
+    nta_outgoing_t *orq = nta_outgoing_mcreate(
+        e->agent, outgoing_response_cb, (nta_outgoing_magic_t *)ctx,
+        route, m, TAG_IF(op->branch[0], NTATAG_BRANCH_KEY(op->branch)),
+        TAG_IF(ftp, NTATAG_TPORT(ftp)),
+        TAG_IF(op->ident[0] && e->has_idents, TPTAG_IDENT(op->ident)),
+        TAG_END());
+    if (proxy_inv &&
+        nta_agent_set_params(e->agent, NTATAG_UA(1), TAG_END()) < 0)
+        shim_warn(e, "nta_agent_set_params(UA 1) failed");
+    if (!orq) {
+        /* nta owns/destroys msg only on success */
+        msg_destroy(m);
+        enif_free(ctx);
+        send_op_failed(e, op->h, "nta_outgoing_mcreate failed");
+        return;
+    }
+    if (tab_put_id(e, op->h, H_OUTGOING, orq, ctx) != 0) {
+        nta_outgoing_destroy(orq);
+        enif_free(ctx);
+        send_op_failed(e, op->h, "alloc failed");
+        return;
+    }
+    const char *br = proxy_inv ? nta_outgoing_branch(orq) : NULL;
+    size_t brl = br ? strlen(br) : 0;
+    if (br && brl >= sizeof ctx->px_branch)
+        shim_warn(e, "proxy branch of %llu too long to track",
+                  (unsigned long long)op->h);
+    if (br && brl < sizeof ctx->px_branch) {
+        /* a proxy INVITE branch: a later 2xx of it may match no
+         * transaction (stray_cb) */
+        memcpy(ctx->px_branch, br, brl + 1);
+        ctx->px = 1;
+        ctx->px_next = e->px_head;
+        if (e->px_head) e->px_head->px_prev = ctx;
+        e->px_head = ctx;
+    }
+    send_op_ok(e, op->h);
+}
+
 static void op_cb(su_root_magic_t *magic, su_msg_r msg, su_msg_arg_t *arg) {
     (void)magic;
     (void)msg;
@@ -1384,128 +1506,12 @@ static void op_cb(su_root_magic_t *magic, su_msg_r msg, su_msg_arg_t *arg) {
         }
         break;
     }
-    case OP_RELIABLE_1XX: {
-        /* send a reliable provisional (100rel). nta owns RSeq/RAck,
-         * retransmit and PRACK matching; prack_cb fires when the PRACK
-         * arrives. The incoming handle must survive to the final. */
-        nta_incoming_t *irq = tab_get(e, op->h, H_INCOMING);
-        obj_ctx_t *ctx = tab_get_ctx(e, op->h, H_INCOMING);
-        if (!irq || !ctx) {
-            send_op_failed(e, op->h, "unknown transaction");
-            break;
-        }
-        op_tag(e, irq, op);
-        if (!peer_rel100(irq)) {
-            /* RFC 3261 8.2.4: the caller did not offer 100rel, so the
-             * provisional goes out on baseline SIP, unreliably */
-            if (nta_incoming_treply(
-                    irq, op->status, op->reason[0] ? op->reason : NULL,
-                    TAG_IF(op->headers, SIPTAG_HEADER_STR(op->headers)),
-                    TAG_IF(op->body, SIPTAG_PAYLOAD_STR(op->body)),
-                    TAG_END()) < 0)
-                send_op_failed(e, op->h, "treply failed");
-            break;
-        }
-        int has_body = op->body && op->body[0];
-        int offerless = ctx->rel_offer == 0 && !request_has_body(irq);
-        if (offerless && !has_body) {
-            /* RFC 3262 5: the first reliable 1xx to an INVITE without an
-             * offer carries one */
-            send_op_failed(e, op->h, "reliable 1xx needs the offer");
-            break;
-        }
-        nta_reliable_t *rel = nta_reliable_treply(
-            irq, prack_cb, (nta_reliable_magic_t *)ctx,
-            op->status, op->reason[0] ? op->reason : NULL,
-            TAG_IF(op->headers, SIPTAG_HEADER_STR(op->headers)),
-            TAG_IF(op->body, SIPTAG_PAYLOAD_STR(op->body)), TAG_END());
-        if (!rel) {
-            send_op_failed(e, op->h, "nta_reliable_treply failed");
-        } else {
-            ctx->rel = 1;
-            if (offerless) ctx->rel_offer = 1;
-        }
+    case OP_RELIABLE_1XX:
+        op_reliable_1xx(e, op);
         break;
-    }
-    case OP_REQUEST: {
-        msg_t *m = op_msg(op);
-        if (!m) {
-            send_op_failed(e, op->h, "unparseable request");
-            break;
-        }
-        obj_ctx_t *ctx = enif_alloc(sizeof *ctx);
-        if (!ctx) {
-            msg_destroy(m);
-            send_op_failed(e, op->h, "alloc failed");
-            break;
-        }
-        memset(ctx, 0, sizeof *ctx);
-        ctx->e = e;
-        ctx->h = op->h;
-        url_string_t *route =
-            op->route ? URL_STRING_MAKE(op->route) : NULL;
-        /* RFC 5626 5.3: a request for a flow goes over that connection */
-        tport_t *ftp = NULL;
-        if (op->flow) {
-            flow_t *f = tab_get(e, op->flow, H_FLOW);
-            if (!f) {
-                msg_destroy(m);
-                enif_free(ctx);
-                send_op_failed(e, op->h, "unknown flow");
-                break;
-            }
-            ftp = f->tp;
-        }
-        /* A proxy branch (one with our loop-detection branch) of an INVITE
-         * is created outside UA mode: a UA client transaction ACKs and BYEs
-         * a second 2xx with another To-tag itself, while a proxy forwards
-         * every 2xx upstream (RFC 3261 16.7 step 10, RFC 6026). The agent
-         * flag is read once, at creation, and only this thread touches it. */
-        sip_t const *rsip = sip_object(m);
-        int proxy_inv = op->branch[0] && rsip && rsip->sip_request &&
-                        rsip->sip_request->rq_method == sip_method_invite;
-        if (proxy_inv &&
-            nta_agent_set_params(e->agent, NTATAG_UA(0), TAG_END()) < 0)
-            shim_warn(e, "nta_agent_set_params(UA 0) failed");
-        nta_outgoing_t *orq = nta_outgoing_mcreate(
-            e->agent, outgoing_response_cb, (nta_outgoing_magic_t *)ctx,
-            route, m, TAG_IF(op->branch[0], NTATAG_BRANCH_KEY(op->branch)),
-            TAG_IF(ftp, NTATAG_TPORT(ftp)),
-            TAG_IF(op->ident[0] && e->has_idents, TPTAG_IDENT(op->ident)),
-            TAG_END());
-        if (proxy_inv &&
-            nta_agent_set_params(e->agent, NTATAG_UA(1), TAG_END()) < 0)
-            shim_warn(e, "nta_agent_set_params(UA 1) failed");
-        if (!orq) {
-            /* nta owns/destroys msg only on success */
-            msg_destroy(m);
-            enif_free(ctx);
-            send_op_failed(e, op->h, "nta_outgoing_mcreate failed");
-            break;
-        }
-        if (tab_put_id(e, op->h, H_OUTGOING, orq, ctx) != 0) {
-            nta_outgoing_destroy(orq);
-            enif_free(ctx);
-            send_op_failed(e, op->h, "alloc failed");
-            break;
-        }
-        const char *br = proxy_inv ? nta_outgoing_branch(orq) : NULL;
-        size_t brl = br ? strlen(br) : 0;
-        if (br && brl >= sizeof ctx->px_branch)
-            shim_warn(e, "proxy branch of %llu too long to track",
-                      (unsigned long long)op->h);
-        if (br && brl < sizeof ctx->px_branch) {
-            /* a proxy INVITE branch: a later 2xx of it may match no
-             * transaction (stray_cb) */
-            memcpy(ctx->px_branch, br, brl + 1);
-            ctx->px = 1;
-            ctx->px_next = e->px_head;
-            if (e->px_head) e->px_head->px_prev = ctx;
-            e->px_head = ctx;
-        }
-        send_op_ok(e, op->h);
+    case OP_REQUEST:
+        op_request(e, op);
         break;
-    }
     case OP_LEG_CREATE: {
         obj_ctx_t *ctx = enif_alloc(sizeof *ctx);
         if (!ctx) {

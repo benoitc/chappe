@@ -60,8 +60,11 @@ jobs:
           path: codeql-results
       - name: Fail on any finding
         run: |
+          # build/dist/include: the installed sofia headers, not ours
           jq -r '.runs[].results[] |
-            "\(.locations[0].physicalLocation.artifactLocation.uri):\(.locations[0].physicalLocation.region.startLine) \(.level // "warning") \(.ruleId) \(.message.text)"' \
+            (.locations[0].physicalLocation.artifactLocation.uri) as $uri |
+            select($uri | contains("c_src/build/") | not) |
+            "\($uri):\(.locations[0].physicalLocation.region.startLine) \(.level // "warning") \(.ruleId) \(.message.text | gsub("\n"; " "))"' \
             codeql-results/*.sarif | tee codeql-findings.txt
           echo "$(wc -l < codeql-findings.txt) finding(s)"
           test ! -s codeql-findings.txt
