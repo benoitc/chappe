@@ -148,7 +148,9 @@ relay_to_a(Offer, Res, #{media := M} = W) ->
 send_to_a(Sdp, Res, #{req := Req, atag := ATag, acseq := N} = W) ->
     Msg = chappe_sip_req:msg(Req),
     Dlg = #{
-        remote_target => contact_uri(Msg),
+        remote_target => chappe_sip_hdr:name_addr_uri(
+            chappe_sip_msg:get(<<"contact">>, Msg)
+        ),
         local_addr => <<
             (chappe_sip_msg:get(<<"to">>, Msg))/binary, ";tag=", ATag/binary
         >>,
@@ -238,13 +240,6 @@ sdp_reply(Sdp) ->
         headers => [{<<"Content-Type">>, <<"application/sdp">>}],
         body => Sdp
     }.
-
-contact_uri(Msg) ->
-    Contact = chappe_sip_msg:get(<<"contact">>, Msg),
-    case chappe_sip_hdr:name_addr(Contact) of
-        {ok, #{uri := Uri}} -> Uri;
-        _ -> Contact
-    end.
 
 contact() ->
     chappe_sip_b2b:contact().

@@ -769,7 +769,7 @@ respond_txn(TxnH, T, {Status, Reason, Hdrs, Body, ToTag0, Rel}, S) ->
 local_tag(<<>>, Status, T) ->
     case maps:get(tag, T, undefined) of
         undefined when Status > 100 ->
-            Tag = gen_tag(),
+            Tag = chappe_sip_dialog:gen_tag(),
             {Tag, T#{tag => Tag}};
         undefined ->
             {<<>>, T};
@@ -993,7 +993,7 @@ build_response(ReqMsg, Status, Reason, Headers, Body, ToTag, Peer) ->
             undefined when Status > 100, is_binary(To0) ->
                 Tag =
                     case ToTag of
-                        <<>> -> gen_tag();
+                        <<>> -> chappe_sip_dialog:gen_tag();
                         _ -> ToTag
                     end,
                 <<To0/binary, ";tag=", Tag/binary>>;
@@ -1333,10 +1333,6 @@ hex(N) ->
 
 new_branch() ->
     <<"z9hG4bK", (hex(6))/binary>>.
-
-%% a fresh To-tag for a response we mint a tag for (RFC 3261 8.2.6.2)
-gen_tag() ->
-    hex(6).
 
 %% Add a Via with a fresh branch after the request line, unless one is
 %% already present. Used for UAC-built stateless requests (e.g. a 2xx ACK).

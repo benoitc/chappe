@@ -149,7 +149,7 @@ normalize_one(C) ->
 
 %% the ident of a contact: its host, an address in its canonical form
 ident_of(Contact) ->
-    case chappe_sip_uri:parse(strip_angle(Contact)) of
+    case chappe_sip_uri:parse(chappe_sip_hdr:name_addr_uri(Contact)) of
         {ok, #{host := H}} -> ident(H);
         _ -> <<"?">>
     end.
@@ -202,7 +202,7 @@ bind(Uri, Ident, Tls) ->
     #{uri => bare_uri(Uri), ident => Ident, tls => Tls}.
 
 bare_uri(Uri) ->
-    Bare = strip_angle(Uri),
+    Bare = chappe_sip_hdr:name_addr_uri(Uri),
     case binary:split(Bare, <<";">>) of
         [B | _] -> B;
         _ -> Bare
@@ -249,7 +249,7 @@ at(Local, Tls) ->
 target_host(undefined) ->
     undefined;
 target_host(Target) ->
-    case chappe_sip_uri:parse(strip_angle(Target)) of
+    case chappe_sip_uri:parse(chappe_sip_hdr:name_addr_uri(Target)) of
         {ok, #{host := H}} -> ident(H);
         _ -> undefined
     end.
@@ -277,10 +277,4 @@ inherit(Caller, Pid, Locals) ->
     case Locals of
         #{Caller := L} -> Locals#{Pid => L};
         _ -> Locals
-    end.
-
-strip_angle(C) ->
-    case chappe_sip_hdr:name_addr(C) of
-        {ok, #{uri := U}} -> U;
-        _ -> C
     end.

@@ -1043,7 +1043,7 @@ with_max_size(Opts) ->
 
 %% the TLS listener URI, a wildcard host replaced by the primary one
 tls_uri(#state{engine_opts = #{tls := #{contact := C}}} = S) ->
-    case chappe_sip_uri:parse(strip_angle(C)) of
+    case chappe_sip_uri:parse(chappe_sip_hdr:name_addr_uri(C)) of
         {ok, #{host := H} = U} ->
             Host =
                 case lists:member(H, [<<"0.0.0.0">>, <<"[::]">>, <<"*">>]) of
@@ -1063,18 +1063,12 @@ tls_uri(_S) ->
     undefined.
 
 primary_host(#state{contact = C}, Default) when is_binary(C) ->
-    case chappe_sip_uri:parse(strip_angle(C)) of
+    case chappe_sip_uri:parse(chappe_sip_hdr:name_addr_uri(C)) of
         {ok, #{host := H}} -> H;
         _ -> Default
     end;
 primary_host(_S, Default) ->
     Default.
-
-strip_angle(C) ->
-    case chappe_sip_hdr:name_addr(C) of
-        {ok, #{uri := U}} -> U;
-        _ -> C
-    end.
 
 engine_failed(#state{mod = Mod, engine = Engine} = S) ->
     logger:critical(
@@ -1592,7 +1586,7 @@ uas_contact(Req, S) ->
     Msg = chappe_sip_req:msg(Req),
     Secure =
         maps:get(transport, chappe_sip_req:meta(Req), undefined) =:= <<"tls">> orelse
-            lists:any(fun is_sips/1, [
+            lists:any(fun chappe_sip_uri:is_sips/1, [
                 chappe_sip_msg:uri(Msg) | sips_candidates(Msg)
             ]),
     Local = chappe_sip_binds:local(chappe_sip_req:meta(Req)),
@@ -1622,22 +1616,15 @@ sips_candidates(Msg) ->
             [];
         V ->
             case chappe_sip_hdr:split_list(V) of
-                [Top | _] -> [strip_angle(Top)];
+                [Top | _] -> [chappe_sip_hdr:name_addr_uri(Top)];
                 [] -> []
             end
     end.
 
-is_sips(<<"sips:", _/binary>>) -> true;
-is_sips(_) -> false.
-
 %% The bound contact may arrive as a name-addr (<uri;params>); extract the
 %% bare URI and drop params so the Contact is a single well-formed name-addr.
 local_contact(#state{contact = C}) when is_binary(C) ->
-    Uri =
-        case chappe_sip_hdr:name_addr(C) of
-            {ok, #{uri := U}} -> U;
-            _ -> C
-        end,
+    Uri = chappe_sip_hdr:name_addr_uri(C),
     Base =
         case binary:split(Uri, <<";">>) of
             [B | _] -> B;
@@ -1649,17 +1636,11 @@ local_contact(_) ->
 
 %% peer Contact URI (in-dialog request target), else the remote addr URI
 contact_uri(undefined, RemoteAddr) ->
-    uri_of(RemoteAddr);
+    chappe_sip_hdr:name_addr_uri(RemoteAddr);
 contact_uri(Contact, RemoteAddr) ->
     case chappe_sip_hdr:name_addr(Contact) of
         {ok, #{uri := Uri}} -> Uri;
-        _ -> uri_of(RemoteAddr)
-    end.
-
-uri_of(NameAddr) ->
-    case chappe_sip_hdr:name_addr(NameAddr) of
-        {ok, #{uri := Uri}} -> Uri;
-        _ -> NameAddr
+        _ -> chappe_sip_hdr:name_addr_uri(RemoteAddr)
     end.
 
 %% Create a dialog (UAC path): allocate the leg and start the fsm already

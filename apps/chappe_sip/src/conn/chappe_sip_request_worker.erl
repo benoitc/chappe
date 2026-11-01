@@ -78,7 +78,7 @@ run(Msg, TxnH, Meta, Res, Middlewares, Handler) ->
 request_uri(Uri) ->
     case binary:split(Uri, <<":">>) of
         [Scheme, Rest] ->
-            case ascii_lower(Scheme) of
+            case chappe_sip_lib:lower(Scheme) of
                 S when S =:= <<"sip">>; S =:= <<"sips">> -> sip_user(Rest);
                 S when S =:= <<"tel">>; S =:= <<"urn">> -> ok;
                 _ -> {416, <<"Unsupported URI Scheme">>}
@@ -223,15 +223,17 @@ optional(Disposition) ->
     re:run(Disposition, ";\\s*handling\\s*=\\s*optional", [caseless]) =/=
         nomatch.
 
-identity(undefined) -> true;
-identity(Enc) -> ascii_lower(trim(Enc)) =:= <<"identity">>.
+identity(undefined) ->
+    true;
+identity(Enc) ->
+    chappe_sip_lib:lower(chappe_sip_lib:trim(Enc)) =:= <<"identity">>.
 
 known_type(undefined) ->
     %% no Content-Type on a body: RFC 3261 20.15 requires one
     false;
 known_type(CT) ->
     [Type | _] = binary:split(CT, <<";">>),
-    lists:member(ascii_lower(trim(Type)), [
+    lists:member(chappe_sip_lib:lower(chappe_sip_lib:trim(Type)), [
         <<"application/sdp">>,
         <<"multipart/mixed">>,
         <<"multipart/alternative">>
@@ -261,27 +263,4 @@ unsupported_extensions(Msg, Meta) ->
     end.
 
 lower_all(Tags) ->
-    [ascii_lower(T) || T <- Tags].
-
-%% byte-wise, so a request that is not UTF-8 cannot crash the worker
-ascii_lower(B) ->
-    <<<<(lower_byte(C))>> || <<C>> <= B>>.
-
-lower_byte(C) when C >= $A, C =< $Z -> C + 32;
-lower_byte(C) -> C.
-
-trim(B) ->
-    trim_trailing(trim_leading(B)).
-
-trim_leading(<<C, R/binary>>) when C =:= $\s; C =:= $\t -> trim_leading(R);
-trim_leading(B) -> B.
-
-trim_trailing(<<>>) ->
-    <<>>;
-trim_trailing(B) ->
-    case binary:last(B) of
-        C when C =:= $\s; C =:= $\t ->
-            trim_trailing(binary:part(B, 0, byte_size(B) - 1));
-        _ ->
-            B
-    end.
+    [chappe_sip_lib:lower(T) || T <- Tags].
