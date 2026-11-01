@@ -18,12 +18,14 @@ does not reproduce.
 
 ## Services
 
-Both nodes run `drachtio/drachtio-freeswitch-mrf` (FreeSWITCH 1.10.10, arm64
-and amd64) with `conf/freeswitch.xml` as their whole configuration: HEARTBEAT
+Both nodes run `chappe-esl-fs:lab`, built from `freeswitch/Dockerfile`:
+`drachtio/drachtio-freeswitch-mrf` (FreeSWITCH 1.10.10, arm64 and amd64) plus
+mod_audio_stream, which is AGPL-3.0, built for this lab only and never shipped
+with chappe. They use `conf/freeswitch.xml` as their whole configuration: HEARTBEAT
 every second, ESL on 8021 with an allow-all ACL, one unauthenticated SIP
 profile on 5080 inside the compose network, a dialplan with `park`,
 `conf-<name>` and `socket-<port>`, mod_sndfile for wav prompts and recordings,
-and mod_audio_fork.
+and both fork modules, mod_audio_fork and mod_audio_stream.
 
 | Node | ESL on the host | Variable |
 |---|---|---|
@@ -84,8 +86,8 @@ and `ESL_SOCKET_PORT` it moves a second copy out of the way.
 
 ## Troubleshooting
 
-- "FreeSWITCH did not become healthy": `e2e.sh` prints the compose logs. Pull
-  the image once with `docker pull drachtio/drachtio-freeswitch-mrf:latest`.
+- "FreeSWITCH did not become healthy": `e2e.sh` prints the compose logs. The
+  first run builds the image and needs network access to GitHub and Debian.
 - `call` cases time out: fs2 reaches your machine at `host.docker.internal`;
   check that `ESL_SOCKET_PORT` is free.
 - The ACL and SIP profile are test-only; never ship them.
