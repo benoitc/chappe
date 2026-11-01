@@ -41,6 +41,7 @@
         <load module="mod_tone_stream"/>
         <load module="mod_sndfile"/>
         <load module="mod_audio_fork"/>
+        <load module="mod_audio_stream"/>
       </modules>
     </configuration>
 

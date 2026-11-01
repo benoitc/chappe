@@ -12,7 +12,9 @@
 # apps/chappe_esl/examples/nodes.sh (make demo-esl).
 
 x-freeswitch: &freeswitch
-  image: drachtio/drachtio-freeswitch-mrf:latest
+  # drachtio's mrf image plus mod_audio_stream, see freeswitch/Dockerfile
+  image: chappe-esl-fs:lab
+  build: ./freeswitch
   # the image's /entrypoint.sh edits its stock tree; this config replaces
   # that tree, so start FreeSWITCH directly
   entrypoint: ["/usr/local/freeswitch/bin/freeswitch"]

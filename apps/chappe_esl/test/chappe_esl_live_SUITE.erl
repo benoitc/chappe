@@ -30,7 +30,7 @@
 -export([
     call_playback/1, call_digits/1, call_dtmf_event/1, call_record/1,
     call_owner_death/1, call_timeout_breaks/1, call_paths_with_spaces/1,
-    call_audio_fork/1
+    call_audio_fork/1, call_audio_stream/1
 ]).
 -export([handle_channel/3]).
 
@@ -42,7 +42,8 @@
     call_owner_death,
     call_timeout_breaks,
     call_paths_with_spaces,
-    call_audio_fork
+    call_audio_fork,
+    call_audio_stream
 ]).
 
 all() ->
@@ -343,6 +344,14 @@ call_paths_with_spaces(Config) ->
 %% arrives first as text, then binary audio, and the stop closes it.
 %% req: ESL-37
 call_audio_fork(Config) ->
+    fork_to_sink(Config, #{}).
+
+%% The same through mod_audio_stream, selected with the module option.
+%% req: ESL-37
+call_audio_stream(Config) ->
+    fork_to_sink(Config, #{module => audio_stream}).
+
+fork_to_sink(Config, Opts) ->
     WsPort = ?config(socket_port, Config) + 1,
     Sink = ws_sink(WsPort, self()),
     try
@@ -350,7 +359,7 @@ call_audio_fork(Config) ->
         ok = chappe_esl_call:answer(Call),
         Url = "ws://host.docker.internal:" ++ integer_to_list(WsPort),
         Meta = <<"{\"call\": \"lab one\"}">>,
-        ok = chappe_esl_call:audio_fork_start(Call, Url, #{
+        ok = chappe_esl_call:audio_fork_start(Call, Url, Opts#{
             mix => mono, rate => 8000, metadata => Meta
         }),
         ?assertMatch({ws, connected, _}, ws_msg()),
@@ -485,7 +494,7 @@ new_uuid() ->
         )
     ).
 
-%% A minimal websocket server for mod_audio_fork: it accepts one client
+%% A minimal websocket server for the fork modules: it accepts one client
 %% (echoing the audio.drachtio.org subprotocol), then reports
 %% {ws, connected, Request}, {ws, text, Payload}, {ws, binary} for the first
 %% binary frame, and {ws, closed, BinaryFrames} on a close frame or the end
