@@ -7,6 +7,10 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 
 ## Unreleased
 
+- chappe_esl outbound listener: you can now choose the address it listens
+  on, IPv4 or IPv6, and the length of its pending connection queue. Before,
+  it always listened on every interface and the queue length you passed was
+  ignored. A bad address or length is refused when you start the listener.
 - B2BUA forking: each destination of a fork or a list can now carry its own
   flow, extra headers and rtpengine flags, so a call to a user can ring a
   browser and a desk phone together with the right media for each. The call

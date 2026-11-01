@@ -39,8 +39,14 @@
 
 -type conn() :: pid().
 %% linger: true (default) sends `linger', a positive integer sends
-%% `linger <Seconds>', false sends nothing.
--type listener_opts() :: #{linger => boolean() | pos_integer()}.
+%% `linger <Seconds>', false sends nothing. ip: the address to listen on
+%% (every IPv4 interface by default; an IPv6 address listens on IPv6).
+%% backlog: the length of the pending connection queue (128).
+-type listener_opts() :: #{
+    linger => boolean() | pos_integer(),
+    ip => inet:ip_address(),
+    backlog => pos_integer()
+}.
 -type api_error() ::
     timeout | closed | binary() | {unexpected_reply, term()} | inet:posix().
 
@@ -227,9 +233,10 @@ start_listener(Port, Handler, HandlerArgs) ->
 -spec start_listener(inet:port_number(), module(), term(), listener_opts()) ->
     {ok, term()} | {error, term()}.
 start_listener(Port, Handler, HandlerArgs, ListenerOpts) ->
-    case valid_linger(maps:get(linger, ListenerOpts, true)) of
-        true ->
-            Opts = (maps:with([linger], ListenerOpts))#{
+    Keys = [linger, ip, backlog],
+    case [K || K <- Keys, not valid_listener_opt(K, ListenerOpts)] of
+        [] ->
+            Opts = (maps:with(Keys, ListenerOpts))#{
                 ref => Port,
                 port => Port,
                 handler => Handler,
@@ -240,8 +247,8 @@ start_listener(Port, Handler, HandlerArgs, ListenerOpts) ->
                 {error, {already_started, _}} -> {error, already_started};
                 {error, Reason} -> {error, Reason}
             end;
-        false ->
-            {error, {bad_option, linger}}
+        [Bad | _] ->
+            {error, {bad_option, Bad}}
     end.
 
 -spec stop_listener(term()) -> ok | {error, term()}.
@@ -320,9 +327,17 @@ node_unsubscribe(Name) ->
 
 %% internal
 
-valid_linger(L) when is_boolean(L) -> true;
-valid_linger(L) when is_integer(L), L > 0 -> true;
-valid_linger(_) -> false.
+%% An option left out takes its default, which is valid.
+valid_listener_opt(Key, Opts) ->
+    case Opts of
+        #{Key := Value} -> valid_listener_value(Key, Value);
+        #{} -> true
+    end.
+
+valid_listener_value(linger, L) when is_boolean(L) -> true;
+valid_listener_value(linger, L) -> is_integer(L) andalso L > 0;
+valid_listener_value(ip, Ip) -> inet:is_ip_address(Ip);
+valid_listener_value(backlog, N) -> is_integer(N) andalso N > 0.
 
 header_lines(Headers) ->
     [[K, <<": ">>, V, <<"\n">>] || {K, V} <- Headers].

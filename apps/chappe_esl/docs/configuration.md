@@ -60,9 +60,15 @@ yourself.
 ## Listener options
 
 `chappe_esl:start_listener/3,4` takes a port, a `chappe_esl_handler`
-module, its arguments and, with `/4`, a map with one key, `linger`:
-`true` (default) sends `linger` after `connect`, so events after the hangup
-still arrive; an integer sends `linger <Seconds>`; `false` sends nothing.
+module, its arguments and, with `/4`, a map of options:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `linger` | `true` | `true` sends `linger` after `connect`, so events after the hangup still arrive; an integer sends `linger <Seconds>`; `false` sends nothing. |
+| `ip` | every IPv4 interface | `inet:ip_address()` to listen on; an IPv6 address listens on IPv6. |
+| `backlog` | `128` | Length of the queue of connections not yet accepted. |
+
+A bad value returns `{error, {bad_option, Key}}` and nothing listens.
 
 ## Where it lives
 
