@@ -11,6 +11,9 @@ env:
   # line coverage floor for `make cover`; raise it as coverage grows
   MIN_COVERAGE: '80'
   REBAR3: '3.25.0'
+  # the NIF shim's warnings are errors in CI (c_src/build.sh); local builds
+  # only warn
+  ENGINE_WERROR: '1'
 
 jobs:
   # ---- Static checks: fail fast ------------------------------------------
@@ -370,11 +373,51 @@ jobs:
           name: mrf-interop-ct-logs
           path: _build/test/logs
 
-  # The C NIF under AddressSanitizer (Linux container).
+  # The C NIF under ASan + UBSan (Linux container), then a short fuzz run:
+  # 30 s per libFuzzer target and the NIF boundary fuzz suite.
   asan:
-    name: NIF under ASan
+    name: NIF under ASan + UBSan, fuzz
     needs: [build]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - run: make asan
+      - run: make fuzz FUZZ_TIME=30
+        env:
+          FUZZ_ITERS: '15000'
+      - name: Sanitizer and fuzz reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nif-asan-fuzz
+          path: apps/chappe_sip/_build/nif-check
+
+  # The lifecycle stress and smoke suites with the NIF under ThreadSanitizer
+  # (clang runtime, Linux container); any race report fails.
+  tsan:
+    name: NIF under TSan
+    needs: [build]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - run: make tsan
+      - name: TSan reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nif-tsan
+          path: apps/chappe_sip/_build/nif-check/tsan
+
+  # clang-tidy and gcc -fanalyzer on the NIF shim; any finding fails.
+  lint-c:
+    name: C static analysis (clang-tidy, -fanalyzer)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - run: make lint-c
+      - name: Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lint-c
+          path: apps/chappe_sip/_build/nif-check/lint-c

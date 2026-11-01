@@ -1,0 +1,30 @@
+# Copyright 2026 Benoit Chesneau
+# SPDX-License-Identifier: Apache-2.0
+#
+# clang-tidy for the NIF shim (make lint-c). Only chappe_sip_engine_nif.c is
+# checked; the vendored sofia-sip and the ERTS headers are not ours.
+#
+# Disabled, each for a reason:
+#   bugprone-easily-swappable-parameters: every NIF and sofia callback takes
+#     several pointers or ints of one type by contract; the check flags the
+#     signatures, not a call that swaps them.
+#   clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling:
+#     asks for C11 Annex K (memcpy_s, snprintf_s), which glibc does not ship;
+#     every memcpy in the shim is checked against its buffer instead.
+#   misc-include-cleaner: wants a direct include for every symbol, including
+#     those sofia's umbrella headers (sofia-sip/sip.h) define on purpose.
+#
+# cert-err33-c stays on: a bounded snprintf whose truncation is intended
+# says so with a (void) cast.
+Checks: >
+  -*,
+  bugprone-*,
+  cert-*,
+  clang-analyzer-*,
+  misc-*,
+  -bugprone-easily-swappable-parameters,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,
+  -misc-include-cleaner
+WarningsAsErrors: '*'
+HeaderFilterRegex: 'chappe_sip_engine_nif'
+FormatStyle: none

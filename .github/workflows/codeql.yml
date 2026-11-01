@@ -1,0 +1,49 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  OTP: '29'
+  REBAR3: '3.25.0'
+
+permissions:
+  contents: read
+
+jobs:
+  # CodeQL over the C NIF shim. sofia-sip is vendored and not ours: it is
+  # built before CodeQL starts tracing, so only the shim's compile is
+  # extracted.
+  analyze:
+    name: CodeQL (c-cpp, NIF shim)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ env.OTP }}
+          rebar3-version: ${{ env.REBAR3 }}
+      - name: System deps (sofia)
+        run: |
+          sudo apt-get update && sudo apt-get install -y \
+            pkg-config libssl-dev build-essential
+      - name: Build sofia-sip (not traced)
+        run: |
+          apps/chappe_sip/c_src/build.sh
+          rm -f apps/chappe_sip/c_src/build/.nif.stamp
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: c-cpp
+          build-mode: manual
+          queries: security-and-quality
+      - name: Build the NIF shim (traced)
+        run: apps/chappe_sip/c_src/build.sh
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:c-cpp

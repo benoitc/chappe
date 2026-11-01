@@ -1,0 +1,43 @@
+name: Fuzz
+
+# The long fuzz run of the C NIF: each libFuzzer target for FUZZ_TIME
+# seconds and the NIF boundary fuzz suite with more iterations, under ASan
+# + UBSan. Pull requests get a short run in the CI asan job.
+on:
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      fuzz_time:
+        description: seconds per libFuzzer target
+        default: '600'
+      fuzz_iters:
+        description: NIF fuzz suite iterations per case
+        default: '20000'
+      fuzz_seed:
+        description: NIF fuzz suite seed (empty for random)
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: NIF fuzz (libFuzzer, boundary suite)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+      - run: make fuzz FUZZ_TIME="${FUZZ_TIME_IN:-600}"
+        env:
+          FUZZ_TIME_IN: ${{ inputs.fuzz_time }}
+          FUZZ_ITERS: ${{ inputs.fuzz_iters || '20000' }}
+          FUZZ_SEED: ${{ inputs.fuzz_seed }}
+      # crash inputs become regression seeds under
+      # apps/chappe_sip/c_src/fuzz/corpus/<target>/ once fixed
+      - name: Crash inputs and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nif-fuzz
+          path: apps/chappe_sip/_build/nif-check/fuzz

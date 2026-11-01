@@ -1,0 +1,7 @@
+# ThreadSanitizer suppressions for test/asan/run.sh tsan.
+#
+# Only the NIF shim is built with -fsanitize=thread (ENGINE_SANITIZE=thread);
+# sofia and the BEAM are not, so TSan sees their memory accesses only
+# through the libc and pthread calls it intercepts.
+# Nothing here may match a frame of chappe_sip_engine_nif.c or sofia-sip:
+# a race on a NIF call path is always reported.
