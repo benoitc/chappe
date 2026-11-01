@@ -23,7 +23,7 @@ jobs:
     permissions:
       actions: read
       contents: read
-      security-events: write
+      security-events: read
     steps:
       - uses: actions/checkout@v5
       - uses: erlef/setup-beam@v1
@@ -45,6 +45,23 @@ jobs:
           queries: security-and-quality
       - name: Build the NIF shim (traced)
         run: apps/chappe_sip/c_src/build.sh
+      # code scanning does not exist for a private repository on a personal
+      # account, so the results stay in the job: an artifact and the check
+      # below. Once the repository is public, drop upload: never.
       - uses: github/codeql-action/analyze@v3
         with:
           category: /language:c-cpp
+          upload: never
+          output: codeql-results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: codeql-sarif
+          path: codeql-results
+      - name: Fail on any finding
+        run: |
+          jq -r '.runs[].results[] |
+            "\(.locations[0].physicalLocation.artifactLocation.uri):\(.locations[0].physicalLocation.region.startLine) \(.level // "warning") \(.ruleId) \(.message.text)"' \
+            codeql-results/*.sarif | tee codeql-findings.txt
+          echo "$(wc -l < codeql-findings.txt) finding(s)"
+          test ! -s codeql-findings.txt
