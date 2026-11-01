@@ -102,21 +102,40 @@ info(Conf) ->
 events(Conf, Pid) ->
     call(Conf, {events, Pid}).
 
-%% Bring a member in: a call (chappe_sip_b2b:b2b(), anchored) or an
-%% endpoint. On native, the endpoint must be one of create_endpoint/1 not
-%% bridged: its dialog is re-INVITEd to the mixer through rtpengine. On
+%% Bring a member in: a call (chappe_sip_b2b:b2b(), anchored), an
+%% incoming call not answered yet ({call, Req, Res}, native only: run it
+%% in the INVITE's request worker; the caller is answered straight into
+%% the room through rtpengine and the call is carried by
+%% chappe_sip_b2b:relay_async/2), or an endpoint. On native, the
+%% endpoint must be one of create_endpoint/1 not bridged: its dialog is
+%% re-INVITEd to the mixer through rtpengine. On
 %% fs, it must be on the conference's node. Opts: name, mute,
 %% deaf, moderator; fs also pin (the PIN to enter first), pin_prompt
 %% (the file asking for it), pin_tries (3), flags (more mod_conference
 %% member flags). {ok, Member} once the member is in.
--spec join(conf(), chappe_sip_b2b:b2b() | chappe_mrf:endpoint(), map()) ->
+-spec join(
+    conf(),
+    chappe_sip_b2b:b2b()
+    | {call, chappe_sip_req:req(), chappe_sip_res:res()}
+    | chappe_mrf:endpoint(),
+    map()
+) ->
     {ok, member()} | {error, term()}.
+join(Conf, {call, Req, Res}, Opts) ->
+    case info(Conf) of
+        #{backend := native} ->
+            chappe_mrf_conf_native:join_call(Conf, Req, Res, Opts);
+        #{backend := fs} ->
+            {error, {unsupported, fs}};
+        Err ->
+            Err
+    end;
 join(Conf, Target, Opts) ->
     case info(Conf) of
         #{backend := native} when is_tuple(Target) ->
-            call(Conf, {join, Target, Opts}, ?MRF_JOIN_TIMEOUT + 80000);
+            call(Conf, {join, {b2b, Target, Opts}}, ?MRF_JOIN_TIMEOUT + 80000);
         #{backend := native} ->
-            call(Conf, {join_ep, Target, Opts}, ?MRF_JOIN_TIMEOUT + 80000);
+            call(Conf, {join, {ep, Target, Opts}}, ?MRF_JOIN_TIMEOUT + 80000);
         #{backend := fs, locked := true} ->
             {error, locked};
         #{backend := fs, node := Node, bridge := Bridge} ->
@@ -306,20 +325,10 @@ handle_call({events, Pid}, _From, #state{listeners = L} = S) ->
             _ -> L#{Pid => monitor(process, Pid)}
         end,
     {reply, ok, S#state{listeners = L1}};
-handle_call({join, _B2b, _Opts}, _From, #state{locked = true} = S) ->
-    {reply, {error, locked}, S};
-handle_call({join_ep, _Ep, _Opts}, _From, #state{locked = true} = S) ->
-    {reply, {error, locked}, S};
-handle_call({join_ep, Ep, Opts}, _From, S) ->
-    chappe_mrf_conf_native:join_endpoint(Ep, Opts, S);
-handle_call({join, B2b, Opts}, From, S) ->
-    chappe_mrf_conf_native:join(B2b, Opts, From, S);
+handle_call({join, Req}, From, S) ->
+    join_req(Req, From, S);
 handle_call({loop_offer, Token, Offer}, _From, S) ->
     chappe_mrf_conf_native:offer(Token, Offer, S);
-handle_call({fs_join, _Ep, _Owned, _Opts}, _From, #state{locked = true} = S) ->
-    {reply, {error, locked}, S};
-handle_call({fs_join, Ep, Owned, Opts}, From, S) ->
-    chappe_mrf_conf_fs:start_join(Ep, Owned, Opts, From, S);
 handle_call(members, _From, #state{members = M} = S) ->
     {reply, [public(Id, Mb) || {Id, Mb} <- lists:sort(maps:to_list(M))], S};
 handle_call({lock, Lock}, _From, S) ->
@@ -344,6 +353,28 @@ handle_call({play, Who, File}, _From, S) ->
     {reply, play_to(Who, File, S), S};
 handle_call(_Req, _From, S) ->
     {reply, {error, unknown_call}, S}.
+
+%% Every way in for a member, sent as {join, Req}. A join already under
+%% way still completes; a locked room takes no new member, whatever the
+%% way in.
+join_req({call_done, Token, Result}, From, #state{pending = P} = S) ->
+    case P of
+        #{Token := J} ->
+            {noreply,
+                chappe_mrf_conf_native:call_done(Token, J, Result, From, S)};
+        _ ->
+            {reply, {error, join_failed}, S}
+    end;
+join_req(_Req, _From, #state{locked = true} = S) ->
+    {reply, {error, locked}, S};
+join_req({ep, Ep, Opts}, _From, S) ->
+    chappe_mrf_conf_native:join_endpoint(Ep, Opts, S);
+join_req({b2b, B2b, Opts}, From, S) ->
+    chappe_mrf_conf_native:join(B2b, Opts, From, S);
+join_req({call, Opts}, _From, S) ->
+    chappe_mrf_conf_native:prepare_call(Opts, S);
+join_req({fs, Ep, Owned, Opts}, From, S) ->
+    chappe_mrf_conf_fs:start_join(Ep, Owned, Opts, From, S).
 
 handle_cast({loop_dialog, Token, D}, #state{pending = P} = S) ->
     case P of

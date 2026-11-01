@@ -20,7 +20,7 @@ join(Conf, Node, Bridge, Target, Opts) ->
                 ok ->
                     chappe_mrf_conf:call(
                         Conf,
-                        {fs_join, Ep, Owned, Opts},
+                        {join, {fs, Ep, Owned, Opts}},
                         ?MRF_JOIN_TIMEOUT + 5000
                     );
                 {error, _} = Err ->

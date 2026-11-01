@@ -18,7 +18,7 @@ All live in `src/api/` today (see finding M5 of the
 |---|---|
 | `chappe_sip_b2b` | The API: `create_b2bua/4` (set-up while B rings), `relay/1,2`, `relay_async/2`, `set_media/2`, `info/1`, `hangup/2`, `replace_b/3`, and `call/2,3`, the request channel to a running relay. |
 | `chappe_sip_b2b_relay` | The relay loop: one offer at a time between the legs, in-dialog requests, hangup, replace, set_media. |
-| `chappe_sip_b2b_fork` | The B-leg branches while B rings: serial and `{parallel, Uris}`, the winner, the best final (RFC 3261 16.7), `pass_failure`, failover on 408/503. |
+| `chappe_sip_b2b_fork` | The B-leg branches while B rings: serial and `{parallel, Dests}` (a URI or `{Uri, BranchOpts}`), the winner and the `winner` the result reports, the best final (RFC 3261 16.7), `pass_failure`, failover on 408/503. |
 | `chappe_sip_b2b_early` | UPDATE between the early dialogs while B rings (RFC 3311 5.1). |
 | `chappe_sip_b2b_media` | The SDP path: the app's `rewrite_sdp` hook, then the rtpengine anchor, hold detection. |
 | `chappe_sip_b2b_replace` | `replace_b/3`: the new B, the swap in rtpengine, the abort. |
@@ -39,7 +39,7 @@ can see A's CANCEL while B rings.
 1. Privacy check: a `critical` Privacy level that cannot be applied gets 500
    before anything is sent (`chappe_sip_b2b_hdr:privacy_unsupported/2`).
 2. Targets: `chappe_sip_b2b_fork:targets/2` turns a URI, a list, a peer
-   group or `{parallel, Uris}` into branches. No target up: 503.
+   group or `{parallel, Dests}` into branches, each with its own UAC options and media profile. No target up: 503.
 3. Media: `chappe_sip_b2b_media:new/2` and `start/1` decide direct or
    anchored (`media` may be a fun of the call) and open the rtpengine
    session when anchored.

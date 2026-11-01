@@ -18,13 +18,15 @@
 -export([fork_one_answers/1, fork_busy_then_answer/1, fork_all_fail_best/1,
          fork_timer_c/1, fork_late_2xx/1, pass_failure_timer_c/1,
          start_failure_answered/1, start_failure_not_passed/1]).
+-export([fork_branch_opts/1, serial_branch_opts/1, hunt_keeps_a_tag/1]).
 
 all() ->
     [b2b_success_bye, b2b_callee_busy, b2b_caller_cancel,
      b2b_survives_deadline, b2b_rings_past_deadline, b2b_timer_c_408,
      b2b_timer_c_restarted, fork_one_answers, fork_busy_then_answer,
      fork_all_fail_best, fork_timer_c, fork_late_2xx, pass_failure_timer_c,
-     start_failure_answered, start_failure_not_passed].
+     start_failure_answered, start_failure_not_passed, fork_branch_opts,
+     serial_branch_opts, hunt_keeps_a_tag].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -615,6 +617,175 @@ start_failure_not_passed(_Config) ->
     receive {b2b_result, {error, _}} -> ok
     after 5000 -> ct:fail(no_b2b_error)
     end.
+
+%% Each branch of a fork takes its own options: its headers reach only
+%% its INVITE (after the call-wide b_headers), its flow says where that
+%% INVITE goes, and the result names the branch that answered.
+fork_branch_opts(_Config) ->
+    {EnginePort, C1} = setup(),
+    C2 = pick(),
+    Unused = pick(),
+    Test = self(),
+    B2Opts = #{headers => [{<<"X-Branch">>, <<"two">>}],
+               flow => {udp, <<"127.0.0.1">>, C2}},
+    Dests = [{uri(C1), #{headers => [{<<"X-Branch">>, <<"one">>}]}},
+             {uri(Unused), B2Opts}],
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        {ok, Legs} = chappe_sip:create_b2bua(
+            Req, Res, {parallel, Dests},
+            #{b_headers => [{<<"X-Call">>, <<"all">>}]}),
+        Test ! {winner, maps:get(winner, Legs)},
+        #{b2b := B2b} = Legs,
+        spawn(fun() -> Test ! {info, chappe_sip_b2b:info(B2b)} end),
+        {done, Why} = chappe_sip_b2b:relay(Legs),
+        Test ! {relay_done, Why}
+    end),
+    callee(C1, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        Test ! {c1_invite, Inv},
+        send(Sock, Src, resp(Inv, 180, <<"Ringing">>, tag(), [], <<>>)),
+        {Cancel, CSrc} = recv(Sock, <<"CANCEL">>),
+        send(Sock, CSrc, resp(Cancel, 200, <<"OK">>, tag(), [], <<>>)),
+        send(Sock, Src, resp(Inv, 487, <<"Request Terminated">>, tag(), [], <<>>))
+    end),
+    %% the second branch's Request-URI names a port nobody listens on: its
+    %% flow takes the INVITE to C2
+    callee(C2, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        Test ! {c2_invite, Inv},
+        timer:sleep(300),
+        ToTag = tag(),
+        send(Sock, Src, resp(Inv, 200, <<"OK">>, ToTag,
+                             [{<<"Contact">>, ctc(C2)}], sdp(<<"callee2">>))),
+        {_Ack, _} = recv(Sock, <<"ACK">>),
+        {Bye, BSrc} = recv(Sock, <<"BYE">>),
+        send(Sock, BSrc, resp(Bye, 200, <<"OK">>, ToTag, [], <<>>))
+    end),
+    caller(fun(Sock) ->
+        Call = callid(),
+        FT = <<"fb1">>,
+        send(Sock, EnginePort, invite(Sock, EnginePort, Call, FT)),
+        R200 = recv_status(Sock, 200),
+        TT = to_tag(R200),
+        send(Sock, EnginePort, ack(Sock, EnginePort, Call, FT, TT)),
+        timer:sleep(200),
+        send(Sock, EnginePort, bye(Sock, EnginePort, Call, FT, TT)),
+        _ = recv_status(Sock, 200)
+    end),
+    Inv1 = got(c1_invite),
+    Inv2 = got(c2_invite),
+    ?assertEqual([<<"one">>], header_values(<<"x-branch">>, Inv1)),
+    ?assertEqual([<<"two">>], header_values(<<"x-branch">>, Inv2)),
+    ?assertEqual([<<"all">>], header_values(<<"x-call">>, Inv1)),
+    ?assertEqual([<<"all">>], header_values(<<"x-call">>, Inv2)),
+    Winner = #{uri => uri(Unused), index => 2, opts => B2Opts},
+    ?assertEqual(Winner, got(winner)),
+    ?assertMatch(#{winner := Winner}, got(info)),
+    ok = expect({relay_done, a_bye}).
+
+%% A list of targets takes {Uri, Opts} entries too: the second target
+%% gets its own headers once the first fails with 503, and wins.
+serial_branch_opts(_Config) ->
+    {EnginePort, C1} = setup(),
+    C2 = pick(),
+    Test = self(),
+    Dests = [{uri(C1), #{headers => [{<<"X-Step">>, <<"one">>}]}},
+             {uri(C2), #{headers => [{<<"X-Step">>, <<"two">>}]}}],
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        {ok, Legs} = chappe_sip:create_b2bua(Req, Res, Dests, #{}),
+        Test ! {winner, maps:get(winner, Legs)},
+        {done, Why} = chappe_sip_b2b:relay(Legs),
+        Test ! {relay_done, Why}
+    end),
+    callee(C1, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        Test ! {c1_invite, Inv},
+        send(Sock, Src, resp(Inv, 503, <<"Service Unavailable">>, tag(), [], <<>>))
+    end),
+    callee(C2, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        Test ! {c2_invite, Inv},
+        ToTag = tag(),
+        send(Sock, Src, resp(Inv, 200, <<"OK">>, ToTag,
+                             [{<<"Contact">>, ctc(C2)}], sdp(<<"callee2">>))),
+        {_Ack, _} = recv(Sock, <<"ACK">>),
+        {Bye, BSrc} = recv(Sock, <<"BYE">>),
+        send(Sock, BSrc, resp(Bye, 200, <<"OK">>, ToTag, [], <<>>))
+    end),
+    caller(fun(Sock) ->
+        Call = callid(),
+        FT = <<"sb1">>,
+        send(Sock, EnginePort, invite(Sock, EnginePort, Call, FT)),
+        R200 = recv_status(Sock, 200),
+        TT = to_tag(R200),
+        send(Sock, EnginePort, ack(Sock, EnginePort, Call, FT, TT)),
+        send(Sock, EnginePort, bye(Sock, EnginePort, Call, FT, TT)),
+        _ = recv_status(Sock, 200)
+    end),
+    ?assertEqual([<<"one">>], header_values(<<"x-step">>, got(c1_invite))),
+    ?assertEqual([<<"two">>], header_values(<<"x-step">>, got(c2_invite))),
+    ?assertMatch(#{uri := _, index := 2,
+                   opts := #{headers := [{<<"X-Step">>, <<"two">>}]}},
+                 got(winner)),
+    ok = expect({relay_done, a_bye}).
+
+%% An app hunting with pass_failure => false: the first target rings (A
+%% gets its 180) and times out, the second answers. A's 200 carries the
+%% To-tag of the 180, so its dialog is the one the B2BUA made, and its
+%% BYE is answered.
+hunt_keeps_a_tag(_Config) ->
+    {EnginePort, C1} = setup(),
+    C2 = pick(),
+    Test = self(),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        {error, timeout} = chappe_sip:create_b2bua(
+            Req, Res, uri(C1), #{pass_failure => false, timer_c => 500}),
+        {ok, Legs} = chappe_sip:create_b2bua(Req, Res, uri(C2),
+                                             #{pass_failure => false}),
+        {done, Why} = chappe_sip_b2b:relay(Legs),
+        Test ! {relay_done, Why}
+    end),
+    callee(C1, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        send(Sock, Src, resp(Inv, 180, <<"Ringing">>, <<"c1t">>, [], <<>>)),
+        {Cancel, CSrc} = recv(Sock, <<"CANCEL">>),
+        send(Sock, CSrc, resp(Cancel, 200, <<"OK">>, <<"c1t">>, [], <<>>)),
+        send(Sock, Src, resp(Inv, 487, <<"Request Terminated">>, <<"c1t">>, [], <<>>))
+    end),
+    callee(C2, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        send(Sock, Src, resp(Inv, 200, <<"OK">>, <<"c2t">>,
+                             [{<<"Contact">>, ctc(C2)}], sdp(<<"callee2">>))),
+        {_Ack, _} = recv(Sock, <<"ACK">>),
+        {Bye, BSrc} = recv(Sock, <<"BYE">>),
+        send(Sock, BSrc, resp(Bye, 200, <<"OK">>, <<"c2t">>, [], <<>>))
+    end),
+    caller(fun(Sock) ->
+        Call = callid(),
+        FT = <<"hk1">>,
+        send(Sock, EnginePort, invite(Sock, EnginePort, Call, FT)),
+        R180 = recv_status(Sock, 180),
+        R200 = recv_status(Sock, 200),
+        Test ! {tags, to_tag(R180), to_tag(R200)},
+        TT = to_tag(R200),
+        send(Sock, EnginePort, ack(Sock, EnginePort, Call, FT, TT)),
+        send(Sock, EnginePort, bye(Sock, EnginePort, Call, FT, TT)),
+        _ = recv_status(Sock, 200),
+        Test ! bye_answered
+    end),
+    receive
+        {tags, T180, T200} -> ?assertEqual(T180, T200)
+    after 10000 -> ct:fail(no_tags)
+    end,
+    ok = expect(bye_answered),
+    ok = expect({relay_done, a_bye}).
+
+got(Tag) ->
+    receive {Tag, V} -> V after 6000 -> ct:fail({missing, Tag}) end.
+
+header_values(Name, Bin) ->
+    {ok, M} = chappe_sip_msg:parse(Bin),
+    chappe_sip_msg:get_all(Name, M).
 
 %% the app forks every INVITE to Uris and relays the call
 fork_app(Test, Uris, Opts) ->

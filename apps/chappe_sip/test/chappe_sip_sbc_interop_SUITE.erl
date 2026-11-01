@@ -20,7 +20,8 @@
 -export([direct_call/1, anchored_call/1, hold_from_sipp/1, hold_from_fs/1,
          offerless_reinvite/1, update_offer/1, glare/1,
          set_media_both_ways/1, session_timer_refresh/1,
-         options_failover/1, kamailio_pings/1, replace_b/1]).
+         options_failover/1, kamailio_pings/1, replace_b/1,
+         fork_webrtc_and_plain/1]).
 
 all() ->
     case os:getenv("INTEROP") of
@@ -28,6 +29,7 @@ all() ->
             [kamailio_pings, direct_call, anchored_call, hold_from_sipp,
              hold_from_fs, offerless_reinvite, update_offer, glare,
              set_media_both_ways, session_timer_refresh, replace_b,
+             fork_webrtc_and_plain,
              options_failover];
         _ ->
             {skip, "set INTEROP=1 (needs docker) to run the SBC lab"}
@@ -168,6 +170,20 @@ replace_b(Config) ->
     ok = until(fun() -> packets(Lab, Cid) > Before end, 10),
     _ = done(Pid),
     ok = until(fun() -> channels(Lab, "2") =:= 0 end, 10).
+
+%% An anchored fork with a WebRTC-flagged branch and a plain one against
+%% the real rtpengine: each branch has its own offer (via-branch), the
+%% plain branch (FreeSWITCH) answers under its via-branch, SIPp gets
+%% rtpengine's address and rtpengine relays the tone.
+fork_webrtc_and_plain(Config) ->
+    Lab = ?config(lab, Config),
+    Cid = "fork-1@lab",
+    Pid = sipp(Lab, "sbc_call", "fork", 4000, Cid),
+    ok = until(fun() -> mode(Lab, Cid) =:= anchor end, 20),
+    ?assert(lists:member({winner, 2}, events(Lab, Cid))),
+    ok = until(fun() -> packets(Lab, Cid) > 0 end, 10),
+    Out = done(Pid),
+    ?assert(has(answer(Out), "c=IN IP4 10.253.9.20")).
 
 %% fs1 stops: its peer goes down, and the next call lands on fs2; fs1
 %% comes back up.

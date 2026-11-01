@@ -5,6 +5,8 @@
 %% offer and answer with the SDP it got plus a marker line naming the
 %% command and the tag rtpengine would key it by:
 %%   a=rtpe-offer:<from-tag>    a=rtpe-answer:<to-tag>
+%% and, for a command with a via-branch (one offer per fork profile),
+%%   a=rtpe-via:<via-branch>
 %% so a case sees which SDP went through the anchor, and every command
 %% reaches the collector as {rtpe_cmd, Dict}.
 -module(chappe_sip_test_rtpe).
@@ -56,11 +58,14 @@ loop(Sock, Collector) ->
     end.
 
 reply(#{<<"command">> := <<"offer">>, <<"sdp">> := Sdp} = Cmd) ->
-    ok(Sdp, <<"offer">>, maps:get(<<"from-tag">>, Cmd, <<>>));
+    ok(via(Sdp, Cmd), <<"offer">>, maps:get(<<"from-tag">>, Cmd, <<>>));
 reply(#{<<"command">> := <<"answer">>, <<"sdp">> := Sdp} = Cmd) ->
-    ok(Sdp, <<"answer">>, maps:get(<<"to-tag">>, Cmd, <<>>));
+    ok(via(Sdp, Cmd), <<"answer">>, maps:get(<<"to-tag">>, Cmd, <<>>));
 reply(_Cmd) ->
     #{<<"result">> => <<"ok">>}.
+
+via(Sdp, #{<<"via-branch">> := V}) -> <<Sdp/binary, "a=rtpe-via:", V/binary, "\r\n">>;
+via(Sdp, _Cmd) -> Sdp.
 
 ok(Sdp, What, Tag) ->
     #{<<"result">> => <<"ok">>,

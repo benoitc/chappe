@@ -3,8 +3,10 @@
 
 %% @doc The B-leg branches of a B2BUA call while B rings.
 %%
-%% A serial attempt has one branch; a {parallel, Uris} target has one per
-%% URI, each its own UAC, all relayed to A under one To-tag. This module
+%% A serial attempt has one branch; a {parallel, Dests} target has one per
+%% destination, each its own UAC, all relayed to A under one To-tag. A
+%% destination is a URI or {Uri, BranchOpts}; targets/2 numbers them and
+%% the caller gives each its UAC options (bopts) and media profile. This module
 %% keeps what each branch sent (its first SDP and its 2xx), picks the
 %% winner (the first 2xx: the other branches are CANCELled, and a 2xx of
 %% theirs that still comes is ACKed and BYEd by their UAC), and when every
@@ -18,26 +20,40 @@
 
 -include("chappe_sip.hrl").
 
--export([start/3, branch/0, sdp/3, answer/3, won/3, cancel/2, failed/3]).
--export([targets/2, ringing/1, failover/1, fail/2]).
+-export([start/2, branch/1, sdp/3, answer/3, won/3, cancel/2, failed/3]).
+-export([targets/2, ringing/1, failover/1, fail/2, winner/1, media/2]).
+
+-export_type([dest/0]).
+
+%% A destination of the call: its URI, its branch options and its place
+%% (1-based) in the target, plus what the B2BUA adds before calling it
+%% (profile, its media side, sdp, its offer, and bopts, its UAC options).
+-type dest() :: #{
+    uri := binary(),
+    opts := map(),
+    index := pos_integer(),
+    bopts => map(),
+    sdp => binary(),
+    profile => chappe_sip_b2b_media:profile()
+}.
 
 %% RFC 3326 Reason on the CANCEL of a fork's other branches
 -define(ELSEWHERE, <<"SIP;cause=200;text=\"Call completed elsewhere\"">>).
 
-%% Ring every URI with BOpts. {wait, W} while a branch rings, {failed,
-%% Error, W} when none could be called.
--spec start([binary()], map(), map()) ->
+%% Ring every destination with its bopts. {wait, W} while a branch
+%% rings, {failed, Error, W} when none could be called.
+-spec start([dest()], map()) ->
     {wait, map()} | {failed, term(), map()}.
-start(Uris, BOpts, W0) ->
+start(Dests, W0) ->
     {Branches, Finals} = lists:foldl(
-        fun(Uri, {Bs, Fs}) ->
+        fun(#{uri := Uri, bopts := BOpts} = Dest, {Bs, Fs}) ->
             case chappe_sip_uac:start(Uri, BOpts) of
-                {ok, BRef} -> {Bs#{BRef => branch()}, Fs};
+                {ok, BRef} -> {Bs#{BRef => branch(Dest)}, Fs};
                 {error, Why} -> {Bs, [Why | Fs]}
             end
         end,
         {#{}, []},
-        Uris
+        Dests
     ),
     W = W0#{
         bref => undefined,
@@ -50,9 +66,27 @@ start(Uris, BOpts, W0) ->
         _ -> {wait, W}
     end.
 
-%% what each branch keeps: the first SDP it sent and its 2xx
--spec branch() -> map().
-branch() -> #{b_sdp => <<>>, answer => undefined}.
+%% what each branch keeps: its destination, the first SDP it sent and
+%% its 2xx
+-spec branch(dest()) -> map().
+branch(Dest) -> #{dest => Dest, b_sdp => <<>>, answer => undefined}.
+
+%% The destination that answered: #{uri, index, opts}.
+-spec winner(map()) -> chappe_sip_b2b:winner().
+winner(#{bref := BRef, branches := Bs}) ->
+    #{dest := Dest} = maps:get(BRef, Bs),
+    maps:with([uri, index, opts], Dest).
+
+%% The call's media state set to branch BRef's profile, before an SDP of
+%% that branch goes through it.
+-spec media(term(), map()) -> map().
+media(BRef, #{branches := Bs, media := M} = W) ->
+    case Bs of
+        #{BRef := #{dest := #{profile := P}}} ->
+            W#{media := chappe_sip_b2b_media:branch(P, M)};
+        _ ->
+            W
+    end.
 
 %% The first SDP of the call (any branch) and of the branch.
 -spec sdp(term(), chappe_sip_msg:msg(), map()) -> map().
@@ -112,20 +146,31 @@ failed(BRef, Error, #{branches := Bs0, finals := Fs} = W0) ->
             {wait, W}
     end.
 
-%% Where B goes: {serial, Uris} tried in turn, or {parallel, Uris}.
+%% Where B goes: {serial, Dests} tried in turn, or {parallel, Dests}.
 -spec targets(chappe_sip_b2b:target(), map()) ->
-    {serial | parallel, [binary()]}.
+    {serial | parallel, [dest()]}.
 targets({peer_group, Group}, Opts) ->
     {serial,
-        chappe_sip_peers:candidates(
-            Group, maps:get(peer_policy, Opts, priority)
+        dests(
+            chappe_sip_peers:candidates(
+                Group, maps:get(peer_policy, Opts, priority)
+            )
         )};
-targets({parallel, Uris}, _Opts) when is_list(Uris) ->
-    {parallel, Uris};
-targets(Uri, _Opts) when is_binary(Uri) ->
-    {serial, [Uri]};
+targets({parallel, Dests}, _Opts) when is_list(Dests) ->
+    {parallel, dests(Dests)};
 targets(Uris, _Opts) when is_list(Uris) ->
-    {serial, Uris}.
+    {serial, dests(Uris)};
+targets(Dest, _Opts) ->
+    {serial, dests([Dest])}.
+
+dests(List) ->
+    [dest(D, I) || {D, I} <- lists:zip(List, lists:seq(1, length(List)))].
+
+%% a URI, or {Uri, BranchOpts}; anything else is left to the UAC to refuse
+dest({Uri, BranchOpts}, I) when is_binary(Uri), is_map(BranchOpts) ->
+    #{uri => Uri, opts => BranchOpts, index => I};
+dest(Uri, I) ->
+    #{uri => Uri, opts => #{}, index => I}.
 
 %% The state of a new ringing attempt.
 -spec ringing(map()) -> map().

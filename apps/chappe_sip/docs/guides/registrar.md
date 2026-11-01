@@ -89,7 +89,19 @@ The `registrar_domains` setting does the same for every registrar.
 
 `location/1` lists the contacts the highest `q` first (no `q` counts as 1.0).
 `bindings/1` gives each binding as a map: `contact`, `expires`, `q`, `flow`,
-`path`, `instance`, `reg_id`, `params`, `callid` and `cseq`.
+`path`, `instance`, `reg_id`, `params`, `callid`, `cseq`, `received`,
+`transport` and `send_flow`. `send_flow` is the flow to reach that binding
+over, worked out the way `location_flow/1` does it for the first binding (its
+RFC 5626 flow, or the address its REGISTER came from when the device is
+behind a NAT; `undefined` means send to the contact). Use it to fork a call to
+every device of a user:
+
+```erlang
+Dests = [{Contact, #{flow => Flow}}
+         || #{contact := Contact, send_flow := Flow}
+                <- chappe_sip:bindings(<<"sip:alice@example.com">>)],
+{ok, Legs} = chappe_sip:create_b2bua(Req, Res, {parallel, Dests}, #{}).
+```
 
 Use the contact as a proxy destination, or route to it in a b2bua:
 

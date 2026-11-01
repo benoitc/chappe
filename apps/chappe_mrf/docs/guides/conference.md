@@ -21,7 +21,8 @@ the rest of your FreeSWITCH media.
 ```
 
 `B2b` is the handle `connect_caller/3` returned; an endpoint joins the
-same way (see below). A second call to
+same way (see below). On a native room, a caller you have not answered yet
+joins from its INVITE handler (see [Answer a caller into the room](#answer-a-caller-into-the-room)). A second call to
 `conference/2` with the same name returns the same process. The process
 that started the room gets its events:
 
@@ -74,6 +75,24 @@ between the mixer and the node when they differ:
 {ok, Ep} = chappe_mrf:create_endpoint(#{}),
 {ok, Member} = chappe_mrf_conf:join(Conf, Ep, #{}).
 ```
+
+### Answer a caller into the room
+
+A caller whose INVITE you have not answered joins straight from its handler:
+the room's mixer answers it through rtpengine, with no placeholder leg first.
+
+```erlang
+ok = chappe_sip:invite(fun(Req, Res) ->
+    {ok, Conf} = chappe_mrf:conference(<<"ops">>, #{}),
+    {ok, _Member} = chappe_mrf_conf:join(Conf, {call, Req, Res}, #{name => <<"bob">>})
+end).
+```
+
+- Call it in the INVITE's request worker; it returns once the caller is in.
+- The call then runs in a process of its own (`chappe_sip_b2b:relay_async/2`),
+  so the handler may return. The caller hanging up is a `left` event.
+- On an fs room it returns `{error, {unsupported, fs}}`: answer the call and
+  join its `B2b` instead.
 
 Kicking an endpoint takes it out of the room; its channel stays yours.
 An endpoint of `connect_caller/3` already carries a call: join the call

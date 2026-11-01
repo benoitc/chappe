@@ -56,12 +56,18 @@ start(#{call_id := CallId}, Opts) ->
     chappe_rtpengine:start_session(SessOpts).
 
 %% The offerer's SDP in, the rewritten SDP out. from_tag is the offering
-%% party's dialog tag (identity, overridable via Opts).
+%% party's dialog tag (identity, overridable via Opts). branch => true
+%% sends one more offer of the same party while the first still waits
+%% for its answer: another fork branch, told apart by the via_branch in
+%% its params.
 -spec offer(pid(), identity(), iodata(), map()) ->
     {ok, binary()} | {error, term()}.
 offer(Pid, Id, Sdp, Opts) ->
     Params = tag_param(from_tag, Id, Opts, #{sdp => Sdp}),
-    reply_sdp(chappe_rtpengine_session:offer(Pid, Params)).
+    case maps:get(branch, Opts, false) of
+        true -> reply_sdp(chappe_rtpengine_session:cmd(Pid, offer, Params));
+        false -> reply_sdp(chappe_rtpengine_session:offer(Pid, Params))
+    end.
 
 %% The answerer's SDP in, the rewritten SDP out. to_tag is the answering
 %% party's dialog tag.

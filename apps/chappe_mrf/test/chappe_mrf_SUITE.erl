@@ -25,6 +25,7 @@
     node_down/1,
     native_conference/1,
     native_room_outlives_caller/1,
+    native_join_unanswered/1,
     native_talking/1,
     fs_conference_pin/1,
     fs_conference_bad_pin/1,
@@ -59,6 +60,7 @@ all() ->
         node_down,
         native_conference,
         native_room_outlives_caller,
+        native_join_unanswered,
         native_talking,
         fs_conference_pin,
         fs_conference_bad_pin,
@@ -480,6 +482,33 @@ native_room_outlives_caller(Config) ->
         {'DOWN', MRef, process, _, _} -> ok
     after 5000 -> ct:fail(room_not_closed)
     end.
+
+%% A caller not answered yet joins straight into the room: its INVITE
+%% gets the 200 from the mixer through rtpengine, with no loopback B leg
+%% first, and it leaves when it hangs up.
+native_join_unanswered(Config) ->
+    {ok, Conf} = chappe_mrf:conference(<<"room4">>, #{}),
+    Test = self(),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        Test ! {join, chappe_mrf_conf:join(Conf, {call, Req, Res}, #{name => <<"u">>})}
+    end),
+    Ua = ?F:ua_call(?config(ep, Config), #{}),
+    {ok, 200} = ua_final(Ua),
+    {ok, M} = receive {join, R} -> R after 10000 -> ct:fail(no_join) end,
+    receive
+        {chappe_mrf_conf, Conf, {joined, M, #{name := <<"u">>}}} -> ok
+    after 2000 -> ct:fail(no_joined)
+    end,
+    ?assertEqual(1, length(chappe_mrf_conf:members(Conf))),
+    ?F:ua_bye(Ua),
+    receive
+        {chappe_mrf_conf, Conf, {left, M, departed}} -> ok
+    after 5000 -> ct:fail(no_left)
+    end,
+    {ok, Fs} = chappe_mrf:conference(<<"room5">>, #{backend => fs, node => fs1}),
+    ?assertEqual({error, {unsupported, fs}},
+                 chappe_mrf_conf:join(Fs, {call, req, res}, #{})),
+    ok = chappe_mrf_conf:stop(Conf).
 
 mix_local(Conf, Member) ->
     Members = element(9, sys:get_state(Conf)),
