@@ -105,7 +105,7 @@ Tiers:
 
 - **chappe_sip.** The catalogue covers the RFCs it implements. The proxy rules
   of RFC 3261 16 and the registrar rows (RFC 3261 10.3, RFC 3327, RFC 5626 6)
-  are `platform`. sofia is vendored unmodified, so where nta deviates the row
+  are `platform`. sofia is vendored as upstream ships it, so where nta deviates the row
   is a `deviation` with the reason (nta adds `received` only when the source
   differs from the Via host, against RFC 3581 4). Many rows are claimed by
   `chappe_sip_conformance_SUITE`, so they pass only after

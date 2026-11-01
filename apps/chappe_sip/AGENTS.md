@@ -15,8 +15,10 @@ transaction-user logic (dialogs, UAC, B2BUA, proxy, registrar, digest,
 middleware, events) is Erlang. Module prefix: `chappe_sip_`. The drachtio
 repos are design references only.
 
-sofia-sip is vendored unmodified in `c_src/sofia-sip` (not a submodule;
-LGPL-2.1, see `NOTICE`). Keep it unmodified and linked, not forked.
+sofia-sip is vendored in `c_src/sofia-sip` (not a submodule; LGPL-2.1, see
+`NOTICE`), linked, not forked. The vendored tree stays as upstream ships it;
+fixes we need go as patches in `c_src/sofia-patches`, each with an upstream
+ticket and a repro, applied at build time (see its README).
 
 ## Required checks
 
@@ -53,8 +55,10 @@ make compliance GATE=demo                         # the requirement matrix
 ```
 
 `c_src/build.sh` is stamp-gated: sofia-sip rebuilds only when its vendored
-tree or its configure flags change, the NIF only when the shim changes.
-`ENGINE_SANITIZE=address` builds the shim with ASan.
+tree, its patches or its configure flags change (from a patched copy made by
+`c_src/prepare_sofia.sh`), the NIF only when the shim or its build
+environment changes. `ENGINE_SANITIZE=address` builds the shim with ASan;
+`ENGINE_WERROR=1` makes its warnings errors, as CI does.
 
 ## Architecture
 
@@ -93,7 +97,8 @@ out-of-dialog request runs the middleware and the handler and owns the call.
 
 ## Rules for this app
 
-- Do not edit `c_src/sofia-sip`. Changes to `c_src/chappe_sip_engine_nif.c`
+- Do not edit `c_src/sofia-sip` in place; a fix to sofia is a patch in
+  `c_src/sofia-patches`. Changes to `c_src/chappe_sip_engine_nif.c`
   need `make asan` and a read of the risky regions in `engine.md`.
 - A new tunable goes in `chappe_sip_config` with a default and in
   `docs/configuration.md`.
