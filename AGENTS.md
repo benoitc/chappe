@@ -115,6 +115,14 @@ file only summarises what an agent needs to act.
   for header grammar, `chappe_sip_uri` for URIs, `chappe_sip_dialog` for
   tags) instead of copying it. Helpers are not shared across apps: each app
   is published on its own and the leaf apps take no umbrella deps.
+- Dispatch messages by pattern, never by guard. A `handle_call`,
+  `handle_cast`, `handle_info` or `receive` clause matches the message
+  shape (`{join, Req}`, `{set, Id, Flag, Value}`); do not catch a variable
+  and test it with `element/2`, `is_tuple/1` or a list of atoms. When
+  several requests share a policy (a lock, a check), group them under one
+  envelope tag and dispatch inside a helper that matches each shape. Pattern
+  clauses compile to a jump table on arity and tag, keep the exact message
+  shapes visible to readers and dialyzer, and fail at the right place.
 - Keep the leaf apps (chappe_rtpengine, chappe_esl, chappe_mix) SIP-free;
   SIP-coupled logic belongs in chappe_sip, an orchestration app or a
   consuming product.

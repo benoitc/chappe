@@ -58,6 +58,14 @@ uses the fake engine.
   apart are bugs. Helpers are not shared across apps: each app is
   published on its own. A one-line wrapper over a single BIF may stay
   local.
+- **Dispatch messages by pattern, never by guard.** Each `handle_call`,
+  `handle_cast`, `handle_info` or `receive` clause matches the message
+  shape. Do not catch a variable and test it with `element/2`,
+  `is_tuple/1` or a list of atoms: a variable clause breaks the compiler's
+  jump table on arity and tag for the clauses around it, hides the message
+  shapes from readers and dialyzer, and lets a malformed message fail far
+  from where it arrived. When several requests share a policy, send them
+  under one envelope tag (`{join, Req}`) and match each shape in a helper.
 - **Keep the leaf apps SIP-free.** chappe_rtpengine, chappe_mix and
   chappe_esl depend on no other chappe app. SIP-coupled logic belongs in
   chappe_sip, an orchestration app such as chappe_mrf, or a product. See

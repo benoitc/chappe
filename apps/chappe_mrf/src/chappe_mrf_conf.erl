@@ -133,9 +133,9 @@ join(Conf, {call, Req, Res}, Opts) ->
 join(Conf, Target, Opts) ->
     case info(Conf) of
         #{backend := native} when is_tuple(Target) ->
-            call(Conf, {join, Target, Opts}, ?MRF_JOIN_TIMEOUT + 80000);
+            call(Conf, {join, {b2b, Target, Opts}}, ?MRF_JOIN_TIMEOUT + 80000);
         #{backend := native} ->
-            call(Conf, {join_ep, Target, Opts}, ?MRF_JOIN_TIMEOUT + 80000);
+            call(Conf, {join, {ep, Target, Opts}}, ?MRF_JOIN_TIMEOUT + 80000);
         #{backend := fs, locked := true} ->
             {error, locked};
         #{backend := fs, node := Node, bridge := Bridge} ->
@@ -325,18 +325,10 @@ handle_call({events, Pid}, _From, #state{listeners = L} = S) ->
             _ -> L#{Pid => monitor(process, Pid)}
         end,
     {reply, ok, S#state{listeners = L1}};
-handle_call(Req, From, S) when
-    element(1, Req) =:= join;
-    element(1, Req) =:= join_ep;
-    element(1, Req) =:= join_call;
-    element(1, Req) =:= join_call_done;
-    element(1, Req) =:= fs_join
-->
+handle_call({join, Req}, From, S) ->
     join_req(Req, From, S);
 handle_call({loop_offer, Token, Offer}, _From, S) ->
     chappe_mrf_conf_native:offer(Token, Offer, S);
-handle_call({fs_join, Ep, Owned, Opts}, From, S) ->
-    chappe_mrf_conf_fs:start_join(Ep, Owned, Opts, From, S);
 handle_call(members, _From, #state{members = M} = S) ->
     {reply, [public(Id, Mb) || {Id, Mb} <- lists:sort(maps:to_list(M))], S};
 handle_call({lock, Lock}, _From, S) ->
@@ -362,19 +354,10 @@ handle_call({play, Who, File}, _From, S) ->
 handle_call(_Req, _From, S) ->
     {reply, {error, unknown_call}, S}.
 
-%% Every way in for a member. A locked room takes no new member, whatever
-%% the way in; a join already under way still completes.
-join_req(Req, _From, #state{locked = true} = S) when
-    element(1, Req) =/= join_call_done
-->
-    {reply, {error, locked}, S};
-join_req({join_ep, Ep, Opts}, _From, S) ->
-    chappe_mrf_conf_native:join_endpoint(Ep, Opts, S);
-join_req({join, B2b, Opts}, From, S) ->
-    chappe_mrf_conf_native:join(B2b, Opts, From, S);
-join_req({join_call, Opts}, _From, S) ->
-    chappe_mrf_conf_native:prepare_call(Opts, S);
-join_req({join_call_done, Token, Result}, From, #state{pending = P} = S) ->
+%% Every way in for a member, sent as {join, Req}. A join already under
+%% way still completes; a locked room takes no new member, whatever the
+%% way in.
+join_req({call_done, Token, Result}, From, #state{pending = P} = S) ->
     case P of
         #{Token := J} ->
             {noreply,
@@ -382,7 +365,15 @@ join_req({join_call_done, Token, Result}, From, #state{pending = P} = S) ->
         _ ->
             {reply, {error, join_failed}, S}
     end;
-join_req({fs_join, Ep, Owned, Opts}, From, S) ->
+join_req(_Req, _From, #state{locked = true} = S) ->
+    {reply, {error, locked}, S};
+join_req({ep, Ep, Opts}, _From, S) ->
+    chappe_mrf_conf_native:join_endpoint(Ep, Opts, S);
+join_req({b2b, B2b, Opts}, From, S) ->
+    chappe_mrf_conf_native:join(B2b, Opts, From, S);
+join_req({call, Opts}, _From, S) ->
+    chappe_mrf_conf_native:prepare_call(Opts, S);
+join_req({fs, Ep, Owned, Opts}, From, S) ->
     chappe_mrf_conf_fs:start_join(Ep, Owned, Opts, From, S).
 
 handle_cast({loop_dialog, Token, D}, #state{pending = P} = S) ->

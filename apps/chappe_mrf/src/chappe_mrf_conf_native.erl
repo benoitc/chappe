@@ -28,7 +28,7 @@ join(B2b, Opts, From, #state{anchor_params = AP} = S) ->
 %% answered by a B2BUA call to the loopback (the mixer behind rtpengine),
 %% which then runs in a process of its own.
 join_call(Conf, Req, Res, Opts) ->
-    case chappe_mrf_conf:call(Conf, {join_call, Opts}, 5000) of
+    case chappe_mrf_conf:call(Conf, {join, {call, Opts}}, 5000) of
         {ok, Token, Uri, AP} ->
             B2bOpts = #{media => anchor, anchor_params => AP},
             Result =
@@ -37,7 +37,9 @@ join_call(Conf, Req, Res, Opts) ->
                     {error, _} = Err -> Err
                 end,
             chappe_mrf_conf:call(
-                Conf, {join_call_done, Token, Result}, ?MRF_JOIN_TIMEOUT + 5000
+                Conf,
+                {join, {call_done, Token, Result}},
+                ?MRF_JOIN_TIMEOUT + 5000
             );
         Err ->
             Err
