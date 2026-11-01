@@ -4,7 +4,7 @@
 # chappe umbrella convenience targets over rebar3.
 
 .PHONY: all compile test test-static check eunit ct lint xref dialyzer \
-        fmt fmt-check asan interop interop-mix interop-ref bench-ref bench-pass \
+        fmt fmt-check asan tsan lint-c fuzz interop interop-mix interop-ref bench-ref bench-pass \
         interop-conformance interop-esl demo-esl interop-sbc interop-mrf compliance \
         cover docs clean \
         demo demo-shell demo-down
@@ -44,9 +44,27 @@ test-static: lint xref dialyzer fmt-check
 
 check: compile test test-static
 
-# The C NIF under AddressSanitizer in a Linux container.
+# The C NIF in a Linux container (apps/chappe_sip/test/asan/run.sh).
+# asan: the engine suites under ASan + UBSan; SUITES replaces the list,
+# EXTRA_SUITES adds to it.
 asan:
-	apps/chappe_sip/test/asan/run.sh
+	apps/chappe_sip/test/asan/run.sh asan
+
+# The lifecycle stress and smoke suites under ThreadSanitizer.
+tsan:
+	apps/chappe_sip/test/asan/run.sh tsan
+
+# clang-tidy (apps/chappe_sip/c_src/.clang-tidy) and gcc -fanalyzer on the
+# shim; any finding fails.
+lint-c:
+	apps/chappe_sip/test/asan/run.sh lint-c
+
+# The libFuzzer targets (apps/chappe_sip/c_src/fuzz) for FUZZ_TIME seconds
+# each, then the NIF boundary fuzz suite (FUZZ_ITERS, FUZZ_SEED), all under
+# ASan + UBSan.
+FUZZ_TIME ?= 60
+fuzz:
+	FUZZ_TIME=$(FUZZ_TIME) apps/chappe_sip/test/asan/run.sh fuzz
 
 # The gated rtpengine suites against a real daemon in docker.
 interop:

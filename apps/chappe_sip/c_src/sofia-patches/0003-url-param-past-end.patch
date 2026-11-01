@@ -1,0 +1,14 @@
+--- a/libsofia-sip-ua/url/url.c
++++ b/libsofia-sip-ua/url/url.c
+@@ -1331,8 +1331,9 @@
+ 	  value[0] = '\0';
+ 	return 1;
+       }
+-      if (p[tlen] != '=')
+-	continue;
++      if (p[tlen] != '=') {
++	if (p[n]) continue; else break;
++      }
+       flen = n - tlen - 1;
+       if (flen >= (size_t)vlen)
+ 	return flen + 1;

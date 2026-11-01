@@ -12,11 +12,11 @@
 
 -export([all/0, init_per_suite/1, end_per_suite/1, end_per_testcase/2]).
 -export([options_200/1, start_twice/1, bind_failure/1, start_stop_cycles/1,
-         health_roundtrip/1]).
+         health_roundtrip/1, stats_events_dropped/1]).
 
 all() ->
     [options_200, start_twice, bind_failure, start_stop_cycles,
-     health_roundtrip].
+     health_roundtrip, stats_events_dropped].
 
 init_per_suite(Config) ->
     {ok, _} = application:ensure_all_started(chappe_sip),
@@ -88,6 +88,15 @@ start_stop_cycles(_Config) ->
 health_roundtrip(_Config) ->
     ok = chappe_sip_engine:start(#{contact => contact(pick_port())}),
     ok = chappe_sip_engine:check_health(2000),
+    ok = chappe_sip_engine:stop().
+
+%% the engine stats carry the count of events the shim could not deliver
+stats_events_dropped(_Config) ->
+    ok = chappe_sip_engine:start(#{contact => contact(pick_port())}),
+    #{incoming := _, discarded := _, events_dropped := D,
+      alloc_failed := A} = chappe_sip_engine:stats(),
+    true = is_integer(D) andalso D >= 0,
+    true = is_integer(A) andalso A >= 0,
     ok = chappe_sip_engine:stop().
 
 %% helpers

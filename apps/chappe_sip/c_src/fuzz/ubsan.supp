@@ -1,0 +1,9 @@
+# UBSan suppressions for the fuzz targets (c_src/fuzz/run.sh). Only
+# undefined behaviour found in the bundled sofia-sip may be listed, and only
+# until the patch that fixes it lands in c_src/sofia-patches; the harness
+# and the NIF shim are never suppressed. Each entry names the check and the
+# narrowest file or function the report allows, with the reason and the
+# patch it waits for, so any other report halts the run.
+#
+# None today: the url.c shifts and the msg_serialize null pointer the fuzz
+# targets found are fixed by sofia-patches 0001 and 0002.

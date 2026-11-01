@@ -209,7 +209,7 @@ from the repository, it is a question, not an invented answer.
 
 | # | Decision | What the repository shows | Question for the maintainer |
 |---|---|---|---|
-| 0001 | SIP transactions in sofia nta through a NIF | `engine.md` explains the mechanism only | Why not a pure-Erlang transaction layer: maturity, RFC coverage, performance? |
+| 0001 | SIP transactions in sofia nta through a NIF | `engine.md` explains the mechanism only | Answered, record accepted: an Erlang layer is possible and performance is not the obstacle; nta is kept for its transports, RFC 3263 resolution and interop maturity, and the NIF is held to the safety rules in `engine.md`. |
 | 0002 | One process per call | Asserted in `overview.md:32` | Confirm the reasons: isolation, crash containment, a simple owner model? |
 | 0003 | Leaf apps take no SIP dependency | A rule in `AGENTS.md` | Is publishing each app on its own the main reason? Should chappe_mix count as a media leaf, given that the contract says "no media concept"? |
 | 0004 | rtpengine stays an external daemon | Implicit | Confirm: SRTP/DTLS/ICE and transcoding are out of scope for Erlang? |

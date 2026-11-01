@@ -6,7 +6,7 @@ before you touch `apps/chappe_sip/c_src/` or propose to replace the engine.
 
 ## Status
 
-Proposed, to confirm by the maintainer.
+Accepted.
 
 ## Context
 
@@ -21,11 +21,14 @@ What the repository shows:
   "drachtio's model on the BEAM"
   (`apps/chappe_sip/docs/design/overview.md`). drachtio-server is built on
   sofia-sip.
-- sofia-sip is vendored at a pinned version, kept unmodified and linked
-  (`AGENTS.md`, `NOTICE`).
+- sofia-sip is vendored at a pinned version, as upstream ships it, and
+  linked (`AGENTS.md`, `NOTICE`).
 - Several nta settings are changed so that Erlang owns merge detection,
   CANCEL handling for proxied INVITEs and stray 2xx routing (`engine.md`,
   "nta settings that differ from a plain UA").
+- A full transaction layer in Erlang is possible: the WebSocket transport
+  already runs one ([0007](0007-ws-transaction-layer.md)), and performance
+  is not what rules it out.
 
 ## Decision
 
@@ -34,20 +37,38 @@ are sofia-sip's nta, run on one engine thread inside the VM. Everything
 above the transaction layer is Erlang. One process, `chappe_sip_engine`,
 talks to the NIF.
 
+nta is kept for what it brings without a rewrite:
+
+- the transports: UDP, TCP and TLS connection handling, and RFC 5626
+  keepalives and flows;
+- RFC 3263 server resolution, with failover between the targets it finds;
+- two decades of interop maturity with real SIP equipment.
+
 ## Consequences
 
-- A crash in C takes the VM down. The NIF is kept small, checked under
-  AddressSanitizer (`make asan`), and every call into it is enqueue-only
-  except `start/2` and `stop/1`, which are dirty IO NIFs.
+- A crash in C takes the VM down. That is the cost of the decision, so the
+  NIF is held to the safety rules and the tooling in
+  [engine.md](../../apps/chappe_sip/docs/design/engine.md) ("Safety rules",
+  "How to check"): checked sizes, no silent failure, every argument checked
+  at the boundary, a hardened build, and the sanitizers. Every call into it
+  is enqueue-only except `start/2` and `stop/1`, which are dirty IO NIFs.
 - Building chappe_sip needs a C toolchain, autotools and OpenSSL. Pure
   Erlang work uses the fake engine (`SKIP_ENGINE_BUILD=1`,
   `chappe_sip_engine_fake`).
-- The LGPL-2.1 of sofia-sip applies to the vendored copy.
+- We build our own sofia. The vendored tree stays as upstream ships it;
+  the fixes we need go as patches in `apps/chappe_sip/c_src/sofia-patches`,
+  each with an upstream ticket and a repro, applied to a copy of the tree at
+  build time (see its README). A patch is dropped once upstream takes the
+  fix.
+- The LGPL-2.1 of sofia-sip applies to the vendored copy and to the patches;
+  the library we link is a modified sofia-sip, which the LGPL permits
+  (`NOTICE`).
 - WebSocket is not carried by nta, so a second transaction layer exists in
   Erlang and must stay in step with it
   ([0007](0007-ws-transaction-layer.md)).
+- Moving sofia into a separate OS process stays in reserve, if the in-VM
+  boundary ever proves impossible to make safe.
 
 ## Open questions
 
-- Why not a pure-Erlang transaction layer: maturity, RFC coverage,
-  performance?
+None.

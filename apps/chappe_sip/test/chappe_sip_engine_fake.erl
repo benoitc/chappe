@@ -78,7 +78,7 @@ block(_Addr, _Ms) ->
     ok.
 
 stats() ->
-    {0, 0}.
+    #{incoming => 0, discarded => 0, events_dropped => 0, alloc_failed => 0}.
 
 %% test API
 

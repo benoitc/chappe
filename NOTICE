@@ -5,9 +5,12 @@ This product is licensed under the Apache License, Version 2.0 (see LICENSE).
 
 This product bundles sofia-sip (apps/chappe_sip/c_src/sofia-sip), which is
 licensed under the GNU Lesser General Public License, version 2.1 (see that
-directory's COPYING). sofia-sip is used unmodified as a library linked by the
-chappe_sip NIF; its source is included here to satisfy the LGPL and to allow
-relinking. sofia-sip is Copyright the Nokia Corporation and contributors.
+directory's COPYING). sofia-sip is used as a library linked by the chappe_sip
+NIF. The vendored tree is the upstream source as shipped; the build applies
+the patches in apps/chappe_sip/c_src/sofia-patches to a copy of it, so the
+library we link is a modified sofia-sip, as the LGPL permits. Both the source
+and the patches are included here to satisfy the LGPL and to allow relinking.
+sofia-sip is Copyright the Nokia Corporation and contributors.
 
 This product depends on additional third-party components fetched at build time;
 see each app's THIRD_PARTY_LICENSES.md.

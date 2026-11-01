@@ -10,10 +10,13 @@
 #   make interop    real-stack interop (needs node + docker)
 #   make interop-conformance
 #                   SIPp and pjsua against a chappe node (needs docker)
-#   make asan       run the C NIF under AddressSanitizer (Linux container)
+#   make asan       run the C NIF under ASan + UBSan (Linux container)
+#   make tsan       the same under ThreadSanitizer
+#   make lint-c     clang-tidy and gcc -fanalyzer on the shim
+#   make fuzz       libFuzzer and the NIF fuzz suite (FUZZ_TIME seconds)
 
 .PHONY: all compile test test-static check eunit ct lint xref dialyzer \
-        fmt fmt-check docs interop interop-conformance asan \
+        fmt fmt-check docs interop interop-conformance asan tsan lint-c fuzz \
         clean
 
 all: compile
@@ -60,7 +63,17 @@ interop-conformance:
 	$(MAKE) -C ../.. interop-conformance
 
 asan:
-	test/asan/run.sh
+	test/asan/run.sh asan
+
+tsan:
+	test/asan/run.sh tsan
+
+lint-c:
+	test/asan/run.sh lint-c
+
+FUZZ_TIME ?= 60
+fuzz:
+	FUZZ_TIME=$(FUZZ_TIME) test/asan/run.sh fuzz
 
 clean:
 	rebar3 clean

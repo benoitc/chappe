@@ -78,8 +78,10 @@ uses the fake engine.
   `apps/chappe_mix/test/audit/PERF.md` and what was tried and reverted in
   `ATTEMPTS.md`. Check the load average before timing anything.
 - **TLS:** `verify_none` and permissive TLS are test-only; never in `src/`.
-- **OTP 29 only.** sofia-sip is vendored at a pinned version; keep it
-  unmodified.
+- **OTP 29 only.** sofia-sip is vendored at a pinned version. The vendored
+  tree stays as upstream ships it; fixes we need go as patches in
+  `apps/chappe_sip/c_src/sofia-patches`, each with an upstream ticket and a
+  repro, applied at build time (see its README).
 
 ## Commits
 

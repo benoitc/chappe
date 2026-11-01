@@ -43,8 +43,10 @@ independently. Module prefixes are `chappe_sip_*` / `chappe_rtpengine_*` /
 `chappe_` brand.
 
 sofia-sip is vendored in `apps/chappe_sip/c_src/sofia-sip` (no git submodule), so
-the NIF builds from a clean clone with no network. It is LGPL-2.1 (see NOTICE);
-keep it unmodified and linked, not forked.
+the NIF builds from a clean clone with no network. It is LGPL-2.1 (see NOTICE)
+and linked, not forked. The vendored tree stays as upstream ships it; fixes we
+need go as patches in `apps/chappe_sip/c_src/sofia-patches`, each with an
+upstream ticket and a repro, applied at build time (see its README).
 
 ## Required Checks
 

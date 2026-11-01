@@ -21,7 +21,7 @@ when you need to keep a lab up to look at it by hand.
 | Lab scripts | `apps/chappe_rtpengine/test/e2e.sh`, `apps/chappe_esl/test/e2e.sh`, `apps/chappe_mrf/test/e2e.sh`, `apps/chappe_mix/test/interop.sh`, `apps/chappe_mix/test/ref.sh` |
 | Lab definitions | `apps/*/interop/` (compose files, configs, lab READMEs) |
 | SIP labs driven from a suite | `apps/chappe_sip/interop/conformance/lab.sh`, `apps/chappe_sip/interop/sbc/lab.sh` |
-| ASan | `apps/chappe_sip/test/asan/run.sh` |
+| The C engine checks | `apps/chappe_sip/test/asan/` (ASan, UBSan, TSan), `apps/chappe_sip/c_src/fuzz/`, `.clang-tidy` |
 
 ## The checks
 
@@ -56,7 +56,10 @@ plain `rebar3 ct` stays green with no docker.
 | `make interop-conformance` | `chappe_sip_conformance_SUITE`: SIPp, pjsua, dnsmasq, heplify-server | one RFC flow per case, exact headers, RFC 3263, HEP | `CONFORMANCE=1` | none: drive `lab.sh` by hand, see [the lab README](../../apps/chappe_sip/interop/conformance/README.md) |
 | `make interop-sbc` | `chappe_sip_sbc_interop_SUITE`: SIPp, FreeSWITCH, rtpengine, Kamailio | the B2BUA as an SBC: direct and anchored calls, hold, glare, `set_media`, `replace_b`, failover | `INTEROP=1` | `SBC_KEEP=1` |
 | (no target) | `chappe_sip_interop_SUITE`: JsSIP and Kamailio | WS registration, a WebRTC call through the B2BUA, OPTIONS both ways | `INTEROP=1` | none |
-| `make asan` | the engine lifecycle suites under AddressSanitizer | memory errors and leaks in the C NIF | none | the build volume persists; `ASAN_VOLUME` names it |
+| `make asan` | the lifecycle, smoke, dialog_ops, NIF boundary and core suites with the NIF under AddressSanitizer and UndefinedBehaviorSanitizer, in a Linux container | memory errors, leaks and undefined behaviour in the C NIF | none | the build volume persists; `ASAN_VOLUME` names it |
+| `make tsan` | the lifecycle stress and smoke suites with the NIF under ThreadSanitizer | data races between the stack thread and the NIF callers | none | n/a |
+| `make lint-c` | clang-tidy and `gcc -fanalyzer` over the shim | static findings in `chappe_sip_engine_nif.c` | none | n/a |
+| `make fuzz` | the libFuzzer target on sofia's message parser and the NIF boundary fuzz suite, `FUZZ_TIME` seconds | no crash on random bytes or random NIF arguments | none | crashes are kept as regression seeds |
 | `make compliance GATE=demo` | the requirement matrices | no hard `demo` row is failing | none | n/a |
 
 Run the JsSIP and Kamailio suite like CI does:

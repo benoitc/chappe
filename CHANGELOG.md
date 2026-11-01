@@ -16,6 +16,17 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
   on, IPv4 or IPv6, and the length of its pending connection queue. Before,
   it always listened on every interface and the queue length you passed was
   ignored. A bad address or length is refused when you start the listener.
+- SIP engine safety: the C part of the SIP stack now checks everything it is
+  handed. A header, body, route or option holding a NUL byte is refused
+  instead of being cut short, an invalid start option fails the start
+  instead of being ignored, and the message size limit must be between
+  1 KiB and 64 MiB. A message the engine has no memory for is refused with
+  an error instead of going out with fields missing, events it could not
+  deliver are counted in the engine stats, and a refused start no longer
+  crashes the node. Three bugs in the bundled sofia-sip are fixed by small
+  patches applied at build time: a URL byte that could skip the escaping
+  check, a null pointer read while writing out a message, and a read past
+  the end of a URL whose last parameter has a known name but no value.
 - B2BUA forking: each destination of a fork or a list can now carry its own
   flow, extra headers and rtpengine flags, so a call to a user can ring a
   browser and a desk phone together with the right media for each. The call

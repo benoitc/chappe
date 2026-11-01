@@ -2,8 +2,10 @@
 # Copyright 2026 Benoit Chesneau
 # SPDX-License-Identifier: Apache-2.0
 # Builds sofia-sip (static) and links priv/lib/chappe_sip_engine_nif.so.
-# Two-stage stamps: sofia rebuilds only when its vendored tree changes,
-# the NIF recompiles only when the shim or this script changes.
+# Two-stage stamps: sofia rebuilds only when its vendored tree or its
+# patches (sofia-patches/) change, from a patched copy under build/sofia-src
+# (the vendored tree is never written to); the NIF recompiles only when the
+# shim, this script or its build environment change.
 # SKIP_ENGINE_BUILD=1 skips everything (pure Erlang work).
 set -e
 
@@ -23,52 +25,40 @@ if [ ! -f "$SOFIA/configure.ac" ]; then
     exit 1
 fi
 
-# sofia is vendored, not a submodule: HEAD would be the umbrella's commit and
-# rebuild sofia on every commit, so key on the hash of its tree instead
-SOFIA_SHA=$(git -C "$SOFIA" rev-parse HEAD:./ 2>/dev/null || echo unknown)
+# sofia is built from a patched copy of the vendored tree (prepare_sofia.sh):
+# its key is the vendored tree's hash and the patches' checksum, so a new
+# patch rebuilds sofia.
+SOFIA_SRC_KEY=$(sh "$CSRC/prepare_sofia.sh" --key)
 # bump SOFIA_CONF when the configure options change, so a tree built with
 # the old ones is reconfigured
 SOFIA_CONF=nozlib
-SOFIA_KEY="$SOFIA_SHA-$SOFIA_CONF"
+SOFIA_KEY="$SOFIA_SRC_KEY-$SOFIA_CONF"
+SOFIA_COPY="$BUILD/sofia-src"
 
 # The NIF stamp must change when anything that affects the built object does:
 # the shim source, this script, the sanitizer, the target arch/OS, and the
 # ERTS version (a .so built against a different erl_nif.h can crash the VM).
 ERTS_VSN=$(erl -noshell -eval \
     'io:format("~ts", [erlang:system_info(version)]), halt().' 2>/dev/null || echo unknown)
-NIF_ENV="san=${ENGINE_SANITIZE:-none};plat=$(uname -sm);erts=${ERTS_VSN}"
+# CC picks the compiler and ENGINE_EXTRA_CFLAGS adds flags to the shim (a
+# sanitizer option, a tool's instrumentation); both are in the stamp.
+CC="${CC:-cc}"
+NIF_ENV="san=${ENGINE_SANITIZE:-none};werror=${ENGINE_WERROR:-0};cc=${CC}"
+NIF_ENV="$NIF_ENV;extra=${ENGINE_EXTRA_CFLAGS:-};plat=$(uname -sm);erts=${ERTS_VSN}"
+# the shim links sofia statically: a rebuilt sofia relinks it
+NIF_ENV="$NIF_ENV;sofia=$SOFIA_KEY"
 NIF_SUM=$(cksum "$NIF_SRC" "$0" | cksum | awk '{print $1}')
 NIF_SUM="$NIF_SUM-$(printf '%s' "$NIF_ENV" | cksum | awk '{print $1}')"
 
 # --- stage 1: sofia-sip static build ---
 SOFIA_STAMP="$BUILD/.sofia.stamp"
 if [ ! -f "$DIST/lib/libsofia-sip-ua.a" ] || [ "$(cat "$SOFIA_STAMP" 2>/dev/null)" != "$SOFIA_KEY" ]; then
-    echo "==> building sofia-sip ($SOFIA_SHA)"
+    echo "==> building sofia-sip ($SOFIA_KEY)"
+    # the patched copy, and a clean build directory: objects from another
+    # source tree or other patches must not survive
+    sh "$CSRC/prepare_sofia.sh" "$SOFIA_COPY"
+    rm -rf "$BUILD/sofia"
     mkdir -p "$BUILD/sofia"
-
-    if [ ! -x "$SOFIA/configure" ]; then
-        ( cd "$SOFIA" && \
-          LIBTOOLIZE=$(command -v glibtoolize || command -v libtoolize) \
-          autoreconf -fiv ) >"$BUILD/sofia-autoreconf.log" 2>&1 || {
-            echo "error: autoreconf failed, see $BUILD/sofia-autoreconf.log" >&2
-            exit 1
-        }
-    fi
-
-    # We vendor the autoreconf output (configure, Makefile.in, etc.). A git
-    # checkout gives the files arbitrary mtimes in nanosecond order, so the
-    # autotools rebuild rules may see an input (configure.ac, Makefile.am,
-    # m4/*.m4) or one generated file as newer than another and try to rerun
-    # aclocal/automake, which the build hosts do not have. Pin the inputs to
-    # an old date and give every generated file one identical mtime: make
-    # never rebuilds a target that is as new as its prerequisites.
-    find "$SOFIA" \( -name configure.ac -o -name Makefile.am \
-       -o -path "*/m4/*.m4" -o -name acinclude.m4 \) \
-       -exec touch -t 200001010000 {} +
-    MTIME_REF="$BUILD/.autotools-mtime"
-    touch "$MTIME_REF"
-    find "$SOFIA" \( -name configure -o -name aclocal.m4 -o -name config.h.in \
-       -o -name "Makefile.in" \) -exec touch -r "$MTIME_REF" {} +
 
     # OpenSSL via pkg-config (homebrew on macOS); disable TLS if absent.
     SSL_OPT=""
@@ -94,7 +84,7 @@ if [ ! -f "$DIST/lib/libsofia-sip-ua.a" ] || [ "$(cat "$SOFIA_STAMP" 2>/dev/null
     # Accept-Encoding. chappe applies no content coding; the request worker
     # answers 415 to an encoded INVITE body instead.
     ( cd "$BUILD/sofia" && \
-      "$SOFIA/configure" --prefix="$DIST" \
+      "$SOFIA_COPY/configure" --prefix="$DIST" \
           --disable-shared --enable-static --with-pic \
           --disable-glib $SSL_OPT ac_cv_lib_z_compress=no \
           CFLAGS="-O2 -g -DNDEBUG $RELAX" LDFLAGS="$DARWIN_FRAMEWORKS" ) \
@@ -143,8 +133,57 @@ esac
 SAN=""
 [ -n "$ENGINE_SANITIZE" ] && SAN="-fsanitize=$ENGINE_SANITIZE -fno-omit-frame-pointer"
 
-cc -O2 -g -Wall -Wextra -fPIC $SAN \
-    -I"$ERTS_INCLUDE" -I"$SOFIA_INCLUDE" \
-    $SO_LDFLAGS -o "$NIF_SO" "$NIF_SRC" $SOFIA_LIBS
+# Hardening flags for the shim only (sofia keeps its own). Each one is kept
+# only when this compiler takes it without a diagnostic, so older and newer
+# gcc and clang all build. ENGINE_WERROR=1 (set by CI) turns the shim's
+# warnings into errors; a local build on a newer compiler only warns.
+PROBE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/chappe_nif_probe.XXXXXX")
+trap 'rm -rf "$PROBE_DIR"' EXIT
+printf 'int chappe_probe(void);\nint chappe_probe(void) { return 0; }\n' \
+    > "$PROBE_DIR/p.c"
+
+# cflag_ok FLAGS: the compiler takes FLAGS without a diagnostic
+cflag_ok() {
+    "$CC" -Werror $1 -c -o "$PROBE_DIR/p.o" "$PROBE_DIR/p.c" >/dev/null 2>&1
+}
+# ldflag_ok FLAGS: a shared object links with FLAGS
+ldflag_ok() {
+    "$CC" -Werror -fPIC $SO_LDFLAGS $1 -o "$PROBE_DIR/p.so" "$PROBE_DIR/p.c" \
+        >/dev/null 2>&1
+}
+
+HARDEN=""
+for f in -std=gnu17 \
+         -Wall -Wextra -Wformat=2 -Wconversion -Wsign-conversion -Wshadow \
+         -Wnull-dereference -Wimplicit-fallthrough \
+         -fstack-protector-strong -fstack-clash-protection \
+         -ftrivial-auto-var-init=zero; do
+    cflag_ok "$f" && HARDEN="$HARDEN $f"
+done
+# FORTIFY needs the optimizer and gets in the way of the sanitizers'
+# interceptors; some toolchains predefine it, so undefine it first
+FORTIFY="-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3"
+if [ -z "$ENGINE_SANITIZE" ] && cflag_ok "-O2 $FORTIFY"; then
+    HARDEN="$HARDEN $FORTIFY"
+fi
+case "$(uname -m)" in
+    x86_64|amd64)
+        cflag_ok -fcf-protection && HARDEN="$HARDEN -fcf-protection" ;;
+    arm64|aarch64)
+        cflag_ok -mbranch-protection=standard &&
+            HARDEN="$HARDEN -mbranch-protection=standard" ;;
+esac
+HARDEN_LD=""
+RELRO="-Wl,-z,relro,-z,now,-z,noexecstack"
+if [ "$(uname -s)" = "Linux" ] && ldflag_ok "$RELRO"; then
+    HARDEN_LD="$RELRO"
+fi
+[ "$ENGINE_WERROR" = "1" ] && HARDEN="$HARDEN -Werror"
+echo "==> shim flags:$HARDEN $HARDEN_LD"
+
+# erts and sofia headers are -isystem: their warnings are not the shim's
+"$CC" -O2 -g -fPIC $HARDEN $SAN ${ENGINE_EXTRA_CFLAGS:-} \
+    -isystem "$ERTS_INCLUDE" -isystem "$SOFIA_INCLUDE" \
+    $SO_LDFLAGS $HARDEN_LD -o "$NIF_SO" "$NIF_SRC" $SOFIA_LIBS
 
 echo "$NIF_SUM" > "$NIF_STAMP"

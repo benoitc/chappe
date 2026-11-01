@@ -75,8 +75,10 @@ method or RFC rule in chappe_sip.
 
 ## Notes
 
-- sofia is vendored unmodified. Where nta deviates from an RFC, record the row
-  as a `deviation` with the reason instead of patching sofia.
+- sofia is vendored as upstream ships it. Where nta deviates from an RFC,
+  record the row as a `deviation` with the reason. A patch in
+  `apps/chappe_sip/c_src/sofia-patches` is for a bug in sofia (with an
+  upstream ticket and a repro), not for a behaviour you can handle in Erlang.
 - Header names are case-insensitive; `chappe_sip_msg` lowercases them, so
   match on lowercase binaries.
 

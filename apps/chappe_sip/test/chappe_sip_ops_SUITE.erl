@@ -14,13 +14,14 @@
 
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
 -export([health_degrade/1, health_halt/1, max_dialogs/1,
-         max_message_size_from_config/1]).
+         max_message_size_from_config/1, max_message_size_out_of_range/1]).
 
 -define(ENV, [engine_mod, engine_failure_action, health_interval_ms,
               health_miss_limit, max_dialogs, max_message_size]).
 
 all() ->
-    [health_degrade, health_halt, max_dialogs, max_message_size_from_config].
+    [health_degrade, health_halt, max_dialogs, max_message_size_from_config,
+     max_message_size_out_of_range].
 
 init_per_testcase(health_halt, Config) ->
     Config;
@@ -37,6 +38,10 @@ init_per_testcase(max_dialogs, Config) ->
     Config;
 init_per_testcase(max_message_size_from_config, Config) ->
     set_env([{engine_mod, chappe_sip_nif}, {max_message_size, 1500}]),
+    {ok, _} = application:ensure_all_started(chappe_sip),
+    Config;
+init_per_testcase(max_message_size_out_of_range, Config) ->
+    set_env([{engine_mod, chappe_sip_nif}]),
     {ok, _} = application:ensure_all_started(chappe_sip),
     Config.
 
@@ -132,6 +137,19 @@ max_message_size_from_config(_Config) ->
     after 5000 -> ct:fail(no_200)
     end,
     gen_udp:close(Sock).
+
+%% A size cap the engine cannot honour (under 1 KiB, over 64 MiB) fails
+%% the start instead of being ignored or truncated.
+max_message_size_out_of_range(_Config) ->
+    Contact = fun() ->
+        <<"sip:127.0.0.1:",
+          (integer_to_binary(chappe_sip_test_port:pick()))/binary>>
+    end,
+    [?assertEqual({error, badarg},
+                  chappe_sip:start(#{contact => Contact(),
+                                     max_message_size => Size}))
+     || Size <- [0, 512, 64 * 1024 * 1024 + 1]],
+    ok = chappe_sip:start(#{contact => Contact(), max_message_size => 1024}).
 
 %% ---- helpers ----
 

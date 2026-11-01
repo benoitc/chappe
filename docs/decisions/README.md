@@ -11,7 +11,7 @@ question for the maintainer.
 
 | # | Decision | Status |
 |---|---|---|
-| [0001](0001-sofia-nta-nif.md) | SIP transactions in sofia-sip nta through a NIF | Proposed, to confirm by the maintainer |
+| [0001](0001-sofia-nta-nif.md) | SIP transactions in sofia-sip nta through a NIF | Accepted |
 | [0002](0002-one-process-per-call.md) | One process per call | Proposed, to confirm by the maintainer |
 | [0003](0003-leaf-apps.md) | Leaf apps take no SIP dependency | Accepted as a rule (`AGENTS.md`); reason to confirm by the maintainer |
 | [0004](0004-rtpengine-external.md) | rtpengine stays an external daemon | Proposed, to confirm by the maintainer |

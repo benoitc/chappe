@@ -1,0 +1,70 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  OTP: '29'
+  REBAR3: '3.25.0'
+
+permissions:
+  contents: read
+
+jobs:
+  # CodeQL over the C NIF shim. sofia-sip is vendored and not ours: it is
+  # built before CodeQL starts tracing, so only the shim's compile is
+  # extracted.
+  analyze:
+    name: CodeQL (c-cpp, NIF shim)
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+      security-events: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ env.OTP }}
+          rebar3-version: ${{ env.REBAR3 }}
+      - name: System deps (sofia)
+        run: |
+          sudo apt-get update && sudo apt-get install -y \
+            pkg-config libssl-dev build-essential
+      - name: Build sofia-sip (not traced)
+        run: |
+          apps/chappe_sip/c_src/build.sh
+          rm -f apps/chappe_sip/c_src/build/.nif.stamp
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: c-cpp
+          build-mode: manual
+          queries: security-and-quality
+      - name: Build the NIF shim (traced)
+        run: apps/chappe_sip/c_src/build.sh
+      # code scanning does not exist for a private repository on a personal
+      # account, so the results stay in the job: an artifact and the check
+      # below. Once the repository is public, drop upload: never.
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:c-cpp
+          upload: never
+          output: codeql-results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: codeql-sarif
+          path: codeql-results
+      - name: Fail on any finding
+        run: |
+          # build/dist/include: the installed sofia headers, not ours
+          jq -r '.runs[].results[] |
+            (.locations[0].physicalLocation.artifactLocation.uri) as $uri |
+            select($uri | contains("c_src/build/") | not) |
+            "\($uri):\(.locations[0].physicalLocation.region.startLine) \(.level // "warning") \(.ruleId) \(.message.text | gsub("\n"; " "))"' \
+            codeql-results/*.sarif | tee codeql-findings.txt
+          echo "$(wc -l < codeql-findings.txt) finding(s)"
+          test ! -s codeql-findings.txt

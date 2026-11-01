@@ -318,9 +318,9 @@ block_source(Addr, Ms) ->
     gen_server:call(?MODULE, {block_source, Addr, Ms}).
 
 %% #{incoming => server transactions held, discarded => requests the
-%% source blocklist discarded}
--spec stats() ->
-    #{incoming := non_neg_integer(), discarded := non_neg_integer()}.
+%% source blocklist discarded, events_dropped => events the shim could not
+%% deliver, alloc_failed => event binaries it could not allocate}
+-spec stats() -> chappe_sip_nif:stats().
 stats() ->
     gen_server:call(?MODULE, stats).
 
@@ -622,8 +622,7 @@ handle_call(
 handle_call({block_source, Addr, Ms}, _From, #state{mod = Mod} = S) ->
     {reply, Mod:block(Addr, Ms), S};
 handle_call(stats, _From, #state{mod = Mod} = S) ->
-    {Incoming, Discarded} = Mod:stats(),
-    {reply, #{incoming => Incoming, discarded => Discarded}, S};
+    {reply, Mod:stats(), S};
 handle_call(contact, _From, #state{contact = C} = S) ->
     {reply, C, S};
 handle_call(tls_contact, _From, S) ->
