@@ -33,6 +33,13 @@
 %%   {log, Level, Text}
 %% start/2 and stop/1 are dirty IO NIFs (they wait on the stack thread's
 %% readiness/exit handshakes).
+%%
+%% The shim checks its arguments before it copies them: a header, body,
+%% route, reason, to-tag, leg field or start option holding a NUL byte is
+%% badarg (sofia reads them as C strings), as is a leg field of 8 KiB or
+%% more. A start option that is present but invalid fails start/2 with
+%% {error, badarg}, and max_message_size must be 1 KiB to 64 MiB. A call
+%% the shim has no memory for returns {error, enomem} and sends nothing.
 -module(chappe_sip_nif).
 
 -export([
@@ -88,7 +95,13 @@
 %% an outbound proxy URL, the id of an RFC 5626 TCP/TLS flow (the conn of a
 %% request's meta) to send over, or undefined (by the Request-URI)
 -type route() :: binary() | pos_integer() | undefined.
--export_type([engine/0, handle/0, route/0]).
+-type stats() :: #{
+    incoming := non_neg_integer(),
+    discarded := non_neg_integer(),
+    events_dropped := non_neg_integer(),
+    alloc_failed := non_neg_integer()
+}.
+-export_type([engine/0, handle/0, route/0, stats/0]).
 
 init() ->
     Priv =
@@ -139,7 +152,7 @@ stop(_Engine) ->
     binary(),
     binary(),
     binary()
-) -> ok | {error, not_ready | too_large | badarg}.
+) -> ok | {error, not_ready | too_large | enomem}.
 respond(_Engine, _TxnH, _Status, _Reason, _Headers, _Body, _ToTag) ->
     erlang:nif_error(engine_nif_not_loaded).
 
@@ -155,7 +168,7 @@ respond(_Engine, _TxnH, _Status, _Reason, _Headers, _Body, _ToTag) ->
     binary(),
     binary()
 ) ->
-    ok | {error, not_ready | too_large | badarg}.
+    ok | {error, not_ready | too_large | enomem}.
 reliable_respond(_Engine, _TxnH, _Status, _Reason, _Headers, _Body, _ToTag) ->
     erlang:nif_error(engine_nif_not_loaded).
 
@@ -165,20 +178,20 @@ reliable_respond(_Engine, _TxnH, _Status, _Reason, _Headers, _Body, _ToTag) ->
 %% {op_failed, TxnH, Reason} follows. Responses arrive as
 %% {response, TxnH, Meta, RawSip}.
 -spec request(engine(), route(), binary()) ->
-    {ok, handle()} | {error, not_ready | too_large | badarg}.
+    {ok, handle()} | {error, not_ready | too_large | enomem}.
 request(_Engine, _Route, _Raw) ->
     erlang:nif_error(engine_nif_not_loaded).
 
 %% The same with the Via branch to use (a proxy's loop-detection branch).
 -spec request(engine(), route(), binary(), binary()) ->
-    {ok, handle()} | {error, not_ready | too_large | badarg}.
+    {ok, handle()} | {error, not_ready | too_large | enomem}.
 request(_Engine, _Route, _Raw, _Branch) ->
     erlang:nif_error(engine_nif_not_loaded).
 
 %% The same, sent from the listen address with this ident (<<>>: any); Branch
 %% may be <<>> (nta picks one).
 -spec request(engine(), route(), binary(), binary(), binary()) ->
-    {ok, handle()} | {error, not_ready | too_large | badarg}.
+    {ok, handle()} | {error, not_ready | too_large | enomem}.
 request(_Engine, _Route, _Raw, _Branch, _Ident) ->
     erlang:nif_error(engine_nif_not_loaded).
 
@@ -191,13 +204,13 @@ proxy_mark(_Engine, _TxnH) ->
 %% Fire-and-forget send (ACK to a 2xx). Returns {ok, OpH}; {op_ok, OpH} or
 %% {op_failed, OpH, Reason} follows. No response is delivered.
 -spec send(engine(), route(), binary()) ->
-    {ok, handle()} | {error, not_ready | too_large | badarg}.
+    {ok, handle()} | {error, not_ready | too_large | enomem}.
 send(_Engine, _Route, _Raw) ->
     erlang:nif_error(engine_nif_not_loaded).
 
 %% The same, sent from the listen address with this ident (<<>>: any).
 -spec send(engine(), route(), binary(), binary()) ->
-    {ok, handle()} | {error, not_ready | too_large | badarg}.
+    {ok, handle()} | {error, not_ready | too_large | enomem}.
 send(_Engine, _Route, _Raw, _Ident) ->
     erlang:nif_error(engine_nif_not_loaded).
 
@@ -206,14 +219,14 @@ send(_Engine, _Route, _Raw, _Ident) ->
 %% MUST still carry the proxy's own top Via; the engine strips it and routes
 %% by the next Via. Fire-and-forget.
 -spec send_response(engine(), binary()) ->
-    ok | {error, not_ready | too_large | badarg}.
+    ok | {error, not_ready | too_large | enomem}.
 send_response(_Engine, _Raw) ->
     erlang:nif_error(engine_nif_not_loaded).
 
 %% Proxy: relay a complete downstream response upstream on a server
 %% transaction (top Via already stripped). Status >= 200 releases it.
 -spec relay(engine(), handle(), 100..699, binary()) ->
-    ok | {error, not_ready | too_large | badarg}.
+    ok | {error, not_ready | too_large | enomem}.
 relay(_Engine, _TxnH, _Status, _Raw) ->
     erlang:nif_error(engine_nif_not_loaded).
 
@@ -224,7 +237,7 @@ cancel(_Engine, _TxnH) ->
 
 %% CANCEL with extra headers (CRLF-joined), e.g. a Reason (RFC 3326).
 -spec cancel(engine(), handle(), binary()) ->
-    ok | {error, not_ready | too_large}.
+    ok | {error, not_ready | too_large | enomem}.
 cancel(_Engine, _TxnH, _Headers) ->
     erlang:nif_error(engine_nif_not_loaded).
 
@@ -240,7 +253,7 @@ txn_done(_Engine, _TxnH) ->
 %% follows. In-dialog requests arrive as {request, TxnH, LegH, ...} and
 %% 2xx ACKs as {ack, LegH, RawSip}.
 -spec leg_create(engine(), binary(), binary(), binary()) ->
-    {ok, handle()} | {error, not_ready}.
+    {ok, handle()} | {error, not_ready | enomem}.
 leg_create(_Engine, _CallId, _LocalAddr, _RemoteAddr) ->
     erlang:nif_error(engine_nif_not_loaded).
 
@@ -266,8 +279,10 @@ discard(_Engine, _TxnH) ->
 block(_Addr, _TtlMs) ->
     erlang:nif_error(engine_nif_not_loaded).
 
-%% {Incoming, Discarded}: the server transactions held, and the requests the
-%% blocklist discarded.
--spec stats() -> {non_neg_integer(), non_neg_integer()}.
+%% The server transactions held, the requests the blocklist discarded, the
+%% events that never reached the owner (it was dead, or the shim had no
+%% memory for the message), and the event binaries the shim could not
+%% allocate.
+-spec stats() -> stats().
 stats() ->
     erlang:nif_error(engine_nif_not_loaded).

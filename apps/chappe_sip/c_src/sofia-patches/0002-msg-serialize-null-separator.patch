@@ -1,0 +1,11 @@
+--- a/libsofia-sip-ua/msg/msg_parser.c
++++ b/libsofia-sip-ua/msg/msg_parser.c
+@@ -1964,7 +1964,7 @@
+   *ptail = tail;
+ 
+   /* Payload comes after separator but before multipart */
+-  if (ptail != &(*separator)->sh_prev)
++  if (!*separator || ptail != &(*separator)->sh_prev)
+     ;
+   else if (*payload && !msg_header_is_removed(*payload))
+     ptail = &(*payload)->sh_prev;
