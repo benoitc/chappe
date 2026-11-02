@@ -22,7 +22,18 @@
 %%                             started with wait => false, or the dialplan's;
 %%                             a timed out request's completion is dropped)
 %%   {event, Event}            any other event of the channel
+%%   linger                    the channel hung up; the final events still
+%%                             follow and the socket stays open
+%%   disconnect                FreeSWITCH sends nothing more on this connection
 %%   closed                    the connection is gone; the process stops
+%%
+%% The call process never waits on the connection while the call runs: each
+%% command that does (api, a fork command, the sendmsg of an exec, uuid_break)
+%% runs in a helper process that exits with its result, and the caller is
+%% answered when the helper ends. Timers, other callers and owner death are
+%% handled meanwhile. FreeSWITCH itself runs a synchronous api on the thread
+%% that sends this connection's events, so a slow api still holds them back on
+%% the node: slow commands belong in bgapi.
 %%
 %% When the owner dies before the channel hangs up, the call process stops
 %% the audio forks (each with its module's stop) and session recordings it
@@ -75,6 +86,8 @@
     | {hangup, binary()}
     | {complete, binary(), event()}
     | {event, event()}
+    | linger
+    | disconnect
     | closed.
 
 -record(state, {
@@ -92,12 +105,25 @@
     %% out ones: broken when they run, their completion dropped
     running :: binary() | undefined,
     cancelled = #{} :: #{binary() => true},
-    pending = #{} :: #{binary() => {waiter(), reference()}}
+    pending = #{} :: #{binary() => {waiter(), reference()}},
+    %% the helpers running, by monitor
+    jobs = #{} :: #{reference() => job()}
 }).
 
 -type state() :: #state{}.
 %% {sync, From}: a helper that answers ok instead of the event.
 -type waiter() :: gen_server:from() | {sync, gen_server:from()}.
+%% What to do with a helper's result.
+%% reply: hand it to the caller.
+%% fork_start: also settle the fork; the boolean says one was already running.
+%% exec_sent: the waiter is in `pending', only a failure concerns it.
+%% exec_accepted: wait => false, the caller gets the uuid once accepted.
+-type job() ::
+    {reply, gen_server:from()}
+    | {fork_start, gen_server:from(), fork_module(), boolean()}
+    | {exec_sent, binary()}
+    | {exec_accepted, gen_server:from(), binary()}
+    | ignore.
 
 %% Raw execute
 
@@ -342,8 +368,9 @@ handle_call({exec, _App, _Args, _Opts}, _From, #state{hungup = true} = State) ->
     {reply, {error, hangup}, State};
 handle_call({exec, App, Args, Opts}, From, State) ->
     start_exec(App, Args, Opts, From, State);
-handle_call({api, Cmd}, _From, #state{conn = Conn} = State) ->
-    {reply, chappe_esl:api(Conn, Cmd), State};
+handle_call({api, Cmd}, From, #state{conn = Conn} = State) ->
+    {noreply,
+        job(fun() -> chappe_esl:api(Conn, Cmd) end, {reply, From}, State)};
 handle_call({record_session, Path}, From, #state{recordings = Recs} = State) ->
     %% tracked before it starts, so an owner dying meanwhile still stops it
     State1 = State#state{recordings = [Path | lists:delete(Path, Recs)]},
@@ -353,23 +380,20 @@ handle_call(
 ) ->
     State1 = State#state{recordings = lists:delete(Path, Recs)},
     sync_exec(<<"stop_record_session">>, Path, From, State1);
-handle_call({fork_start, Module, Url, Opts}, _From, State) ->
+handle_call({fork_start, Module, Url, Opts}, From, State) ->
     #state{conn = Conn, uuid = Uuid, forks = Forks} = State,
-    case ok(chappe_esl:api(Conn, fork_start_cmd(Module, Uuid, Url, Opts))) of
-        ok ->
-            {reply, ok, State#state{
-                forks = lists:delete(Module, Forks) ++ [Module]
-            }};
-        Error ->
-            {reply, Error, State}
-    end;
-handle_call(fork_stop, _From, #state{forks = Forks} = State) ->
+    Cmd = chappe_esl_exec:fork_start_cmd(Module, Uuid, Url, Opts),
+    Job = {fork_start, From, Module, lists:member(Module, Forks)},
+    %% tracked before it starts, so an owner dying meanwhile still stops it
+    State1 = State#state{forks = track_fork(Module, Forks)},
+    {noreply, job(fun() -> ok(chappe_esl:api(Conn, Cmd)) end, Job, State1)};
+handle_call(fork_stop, From, #state{forks = Forks} = State) ->
     #state{conn = Conn, uuid = Uuid} = State,
-    Replies = [
-        ok(chappe_esl:api(Conn, fork_stop_cmd(M, Uuid)))
-     || M <- stop_modules(Forks)
-    ],
-    {reply, first_error(Replies), State#state{forks = []}};
+    Cmds = [chappe_esl_exec:fork_stop_cmd(M, Uuid) || M <- stop_modules(Forks)],
+    Stop = fun() ->
+        first_error([ok(chappe_esl:api(Conn, Cmd)) || Cmd <- Cmds])
+    end,
+    {noreply, job(Stop, {reply, From}, State#state{forks = []})};
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown_call}, State}.
 
@@ -393,12 +417,26 @@ handle_info({'DOWN', Mon, process, _, _}, #state{owner_mon = Mon} = State) ->
     {stop, normal, State};
 handle_info({'DOWN', Mon, process, _, _}, #state{conn_mon = Mon} = State) ->
     closed(State);
+handle_info({'DOWN', Mon, process, _, Exit}, #state{jobs = Jobs} = State) ->
+    case maps:take(Mon, Jobs) of
+        {Job, Jobs1} ->
+            State1 = State#state{jobs = Jobs1},
+            {noreply, job_done(Job, job_result(Exit), State1)};
+        error ->
+            {noreply, State}
+    end;
+handle_info({chappe_esl_linger, Conn}, #state{conn = Conn} = State) ->
+    {noreply, notify(State, linger)};
+handle_info({chappe_esl_disconnect, Conn}, #state{conn = Conn} = State) ->
+    {noreply, notify(State, disconnect)};
 handle_info({chappe_esl_closed, Conn}, #state{conn = Conn} = State) ->
     closed(State);
 handle_info(_Info, State) ->
     {noreply, State}.
 
-terminate(_Reason, #state{conn = Conn, pending = P}) ->
+terminate(_Reason, #state{conn = Conn, jobs = Jobs} = State) ->
+    Done = fun(_Mon, Job, Acc) -> job_done(Job, {error, closed}, Acc) end,
+    #state{pending = P} = maps:fold(Done, State, Jobs),
     fail_pending(P, {error, closed}),
     try
         chappe_esl:close(Conn)
@@ -415,20 +453,73 @@ call(Call, Request) ->
         exit:{_Reason, {gen_server, call, _}} -> {error, closed}
     end.
 
+%% The helper's reply can come after the application's first events, so the
+%% waiter is registered before the send.
 start_exec(App, Args, Opts, From, #state{conn = Conn, uuid = Uuid} = State) ->
     AppUuid = chappe_esl_exec:app_uuid(),
-    case chappe_esl_exec:send(Conn, Uuid, AppUuid, App, Args, Opts) of
-        ok ->
-            case maps:get(wait, Opts, true) of
-                true ->
-                    Timeout = maps:get(timeout, Opts, ?EXEC_TIMEOUT),
-                    {noreply, add_pending(AppUuid, From, Timeout, State)};
-                false ->
-                    {reply, {ok, AppUuid}, State}
-            end;
-        Error ->
-            {reply, Error, State}
+    Send = fun() ->
+        chappe_esl_exec:send(Conn, Uuid, AppUuid, App, Args, Opts)
+    end,
+    case maps:get(wait, Opts, true) of
+        true ->
+            Timeout = maps:get(timeout, Opts, ?EXEC_TIMEOUT),
+            State1 = add_pending(AppUuid, From, Timeout, State),
+            {noreply, job(Send, {exec_sent, AppUuid}, State1)};
+        false ->
+            {noreply, job(Send, {exec_accepted, From, AppUuid}, State)}
     end.
+
+%% Run Fun in a helper. Its exit carries the result: exit/1 is not a crash,
+%% nothing gets logged.
+-dialyzer({nowarn_function, job/3}).
+job(Fun, Job, #state{jobs = Jobs} = State) ->
+    {_Pid, Mon} = spawn_monitor(fun() -> exit({?MODULE, Fun()}) end),
+    State#state{jobs = Jobs#{Mon => Job}}.
+
+job_result({?MODULE, Result}) -> Result;
+job_result(_Abnormal) -> {error, closed}.
+
+job_done({reply, From}, Result, State) ->
+    gen_server:reply(From, Result),
+    State;
+job_done({fork_start, From, Module, Running}, Result, State) ->
+    gen_server:reply(From, Result),
+    fork_settled(Result, Module, Running, State);
+job_done({exec_sent, _AppUuid}, ok, State) ->
+    State;
+job_done({exec_sent, _AppUuid}, {error, timeout}, State) ->
+    %% the sendmsg is still queued behind a slow command and may run: the
+    %% exec's own timeout rules, not the limit on this reply
+    State;
+job_done({exec_sent, AppUuid}, Error, #state{pending = P} = State) ->
+    case maps:take(AppUuid, P) of
+        {{Waiter, TRef}, P1} ->
+            _ = erlang:cancel_timer(TRef),
+            reply(Waiter, Error),
+            State#state{pending = P1};
+        error ->
+            %% its timeout or the hangup already answered it
+            State
+    end;
+job_done({exec_accepted, From, AppUuid}, ok, State) ->
+    gen_server:reply(From, {ok, AppUuid}),
+    State;
+job_done({exec_accepted, From, _AppUuid}, Error, State) ->
+    gen_server:reply(From, Error),
+    State;
+job_done(ignore, _Result, State) ->
+    State.
+
+%% A failed start only takes back the fork it added itself.
+fork_settled(ok, Module, _Running, #state{forks = Forks} = State) ->
+    State#state{forks = track_fork(Module, Forks)};
+fork_settled(_Error, _Module, true, State) ->
+    State;
+fork_settled(_Error, Module, false, #state{forks = Forks} = State) ->
+    State#state{forks = lists:delete(Module, Forks)}.
+
+track_fork(Module, Forks) ->
+    lists:delete(Module, Forks) ++ [Module].
 
 %% A helper whose own completion only says done or not.
 sync_exec(_App, _Args, _From, #state{hungup = true} = State) ->
@@ -488,8 +579,7 @@ break_if_running(AppUuid, #state{running = AppUuid, cancelled = C} = State) when
     is_map_key(AppUuid, C)
 ->
     #state{conn = Conn, uuid = Uuid} = State,
-    ok = chappe_esl_exec:break(Conn, Uuid, current),
-    State;
+    job(fun() -> chappe_esl_exec:break(Conn, Uuid, current) end, ignore, State);
 break_if_running(_AppUuid, State) ->
     State.
 
@@ -518,14 +608,16 @@ closed(#state{pending = P} = State) ->
     _ = notify(State, closed),
     {stop, normal, State#state{pending = #{}}}.
 
-%% The owner is gone: stop what this process started, then the channel.
+%% The owner is gone: stop what this process started, then the channel. These
+%% commands go out here, in order, behind what the helpers already sent; a
+%% withheld reply costs each of them its CLEANUP_TIMEOUT at most.
 cleanup(#state{cleanup = false}) ->
     ok;
 cleanup(#state{hungup = true}) ->
     ok;
 cleanup(#state{conn = Conn, uuid = Uuid, forks = Forks, recordings = Recs}) ->
     Cmds =
-        [fork_stop_cmd(M, Uuid) || M <- Forks] ++
+        [chappe_esl_exec:fork_stop_cmd(M, Uuid) || M <- Forks] ++
             [
                 [
                     <<"uuid_record ">>,
@@ -567,45 +659,6 @@ fork_module(#{module := audio_fork}) -> {ok, audio_fork};
 fork_module(#{module := audio_stream}) -> {ok, audio_stream};
 fork_module(#{module := _}) -> error;
 fork_module(#{}) -> {ok, audio_fork}.
-
-%% uuid_<api> <uuid> start <url> <mix> <rate> [metadata]
-fork_start_cmd(Module, Uuid, Url, Opts) ->
-    Mix = atom_to_binary(maps:get(mix, Opts, mono)),
-    Rate = fork_rate(Module, maps:get(rate, Opts, 16000)),
-    Meta =
-        case maps:get(metadata, Opts, undefined) of
-            undefined -> [];
-            M -> [<<" ">>, fork_metadata(Module, chappe_esl_exec:arg(M))]
-        end,
-    [
-        fork_api(Module),
-        <<" ">>,
-        Uuid,
-        <<" start ">>,
-        Url,
-        <<" ">>,
-        Mix,
-        <<" ">>,
-        Rate,
-        Meta
-    ].
-
-fork_stop_cmd(Module, Uuid) ->
-    [fork_api(Module), <<" ">>, Uuid, <<" stop">>].
-
-fork_api(audio_fork) -> <<"uuid_audio_fork">>;
-fork_api(audio_stream) -> <<"uuid_audio_stream">>.
-
-%% mod_audio_stream names its two classic rates 8k and 16k (the only forms
-%% its first releases parse); other rates and mod_audio_fork take the number.
-fork_rate(audio_stream, 8000) -> <<"8k">>;
-fork_rate(audio_stream, 16000) -> <<"16k">>;
-fork_rate(_Module, Rate) -> int(Rate).
-
-%% mod_audio_fork reads the metadata after the bug name (its default,
-%% audio_fork); mod_audio_stream reads it right after the rate.
-fork_metadata(audio_fork, Meta) -> [<<"audio_fork ">>, Meta];
-fork_metadata(audio_stream, Meta) -> Meta.
 
 %% Nothing tracked: send the mod_audio_fork stop, as before modules existed.
 stop_modules([]) -> [audio_fork];

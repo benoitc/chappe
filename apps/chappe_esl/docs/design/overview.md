@@ -34,7 +34,8 @@ JSON is decoded with the OTP `json` module.
   and turns the channel's events into messages for its owner.
 - `chappe_esl_exec` is the wire side of `chappe_esl_call`: the `sendmsg`
   execute with an `Event-UUID`, the wait for its completion, `uuid_break`,
-  and the quoting of arguments FreeSWITCH splits on spaces.
+  the audio fork commands, and the quoting of arguments FreeSWITCH splits on
+  spaces.
 
 ## Supervision
 
@@ -76,7 +77,17 @@ split is by size and by caller, not by concept (plan finding M14):
   the connection, subscribes to the channel's events (`myevents` outbound,
   a `Unique-ID` filter inbound), keeps the requests waiting on completions,
   and sends its owner `{chappe_esl_call, Call, Msg}`: `{dtmf, Digit}`,
-  `{hangup, Cause}`, `{complete, App, Event}`, `{event, Event}`, `closed`.
+  `{hangup, Cause}`, `{complete, App, Event}`, `{event, Event}`, `linger`,
+  `disconnect`, `closed`.
+
+Replies on a connection come in order, so a slow `api` delays every command
+behind it. The call process does not wait for them: each command runs in a
+helper (`spawn_monitor`) that exits with its result, and a `'DOWN'` clause
+answers the caller. Its cleanup at owner death alone runs in the process, each
+command bounded by 2 s, since nothing else is left to handle. This keeps the
+process responsive, not the node: FreeSWITCH sends this connection's queued
+events from the thread running a synchronous `api`, so during a slow one they
+wait on its side. Slow commands belong in `bgapi`.
 
 When the owner dies before the channel hangs up, the call process stops the
 audio forks and session recordings it started, kills the channel with

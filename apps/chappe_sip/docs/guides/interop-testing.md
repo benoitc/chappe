@@ -148,3 +148,17 @@ leave the lab up after the suite.
 - Tests: `chappe_sip_interop_SUITE`, `chappe_sip_conformance_SUITE`,
   `chappe_sip_sbc_interop_SUITE`.
 - Lab: `make interop`, `make interop-conformance`, `make interop-sbc`.
+
+## Running suites on a Mac
+
+After SIP over TCP, a new engine on the same port can fail to start on macOS
+with `nta_agent_create failed (bad or busy contact?)`. sofia sets `SO_REUSEADDR`
+after `bind` on anything but Linux, on purpose, so a port with a connection in
+TIME_WAIT stays busy until it clears. That took 30 s on the Mac where we
+measured it. Pick a fresh port for each engine instead of waiting. On Linux
+sofia sets the option before `bind`: the same stop and restart rebinds at once,
+with the old connection still in TIME_WAIT, so production is not affected.
+
+macOS also refuses `chappe_sip_nif:start/2` with a contact that has no
+transport, because `;transport=udp,tcp` is only added on the engine path
+(`chappe_sip_binds`). A suite using the NIF directly must pass a transport.
