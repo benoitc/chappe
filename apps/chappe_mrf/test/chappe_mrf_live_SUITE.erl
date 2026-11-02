@@ -376,14 +376,24 @@ fork_failed_then_bridge(Config, Target) ->
             #{anchor_params => to_host()}
         )
     ),
-    _ = spawn(fun() -> chappe_mrf:play(Ep, <<"/media/two.wav">>) end),
+    Test = self(),
+    _ = spawn(fun() ->
+        Test ! {played, chappe_mrf:play(Ep, <<"/media/two.wav">>)}
+    end),
     ?UA:clear(Ua),
     ?assert(?UA:hears(Ua, ?TWO, 6000)),
-    %% the other way as well: the endpoint hears the caller
-    Name = <<"rec-fail-", (integer_to_binary(erlang:unique_integer([positive])))/binary, ".wav">>,
+    %% the other way as well: the endpoint hears the caller. Once the prompt
+    %% is over: a record/3 queued behind it returns when the prompt ends
+    receive
+        {played, ok} -> ok
+    after 10000 -> ct:fail(no_played)
+    end,
+    Name =<<"rec-fail-", (integer_to_binary(erlang:unique_integer([positive])))/binary, ".wav">>,
     ok = chappe_mrf:record(Ep, <<"/media/", Name/binary>>, #{max_secs => 2}),
     Level = ?UA:wav_level(media(Config, binary_to_list(Name)), 600),
-    ct:log("the endpoint recorded the caller at ~.1f dBFS", [Level]),
+    ct:log("the endpoint recorded the caller at ~.1f dBFS, ~p bytes", [
+        Level, filelib:file_size(media(Config, binary_to_list(Name)))
+    ]),
     ?assert(Level > -40.0),
     Callees =[?UA:callee(#{freq => F, answer => {after_ms, 200}}) || F <- [900, 1300]],
     ?assertMatch(
