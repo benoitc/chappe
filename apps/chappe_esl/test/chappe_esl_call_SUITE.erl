@@ -35,6 +35,7 @@
     api_held_dtmf/1,
     api_held_exec_timeout/1,
     api_held_exec_sent/1,
+    api_held_past_send_limit/1,
     api_held_owner_death/1,
     api_held_fork_stop_owner_death/1,
     api_held_replies_in_order/1,
@@ -76,6 +77,7 @@ all() ->
         api_held_dtmf,
         api_held_exec_timeout,
         api_held_exec_sent,
+        api_held_past_send_limit,
         api_held_owner_death,
         api_held_fork_stop_owner_death,
         api_held_replies_in_order,
@@ -611,6 +613,48 @@ api_held_exec_sent(_Config) ->
     ok = chappe_esl_fake_server:release_api(Fake),
     ?assertEqual({ok, <<"+OK">>}, api_result()),
     no_completion(Call, 200).
+
+%% A slow api holds two sendmsg past their 10 s reply limit. They are still
+%% queued and will run, so each exec's own timeout rules: the one without a
+%% timeout keeps waiting and gets its completion, the one that timed out is
+%% broken when it starts and its completion is dropped.
+%% req: ESL-35
+api_held_past_send_limit(_Config) ->
+    {Call, Fake} = outbound(#{api => #{<<"slow">> => {hold, <<"+OK">>}}}),
+    held_api(Call, <<"slow">>),
+    Self = self(),
+    spawn(fun() ->
+        Opts = #{timeout => infinity},
+        Self ! {long, chappe_esl_call:exec(Call, "playback", "a.wav", Opts)}
+    end),
+    _ = block_with(<<"execute-app-name: playback">>),
+    spawn(fun() ->
+        Opts = #{timeout => 11000},
+        Self ! {timed, chappe_esl_call:exec(Call, "record", "b.wav", Opts)}
+    end),
+    _ = block_with(<<"execute-app-name: record">>),
+    receive
+        {long, Early} -> ct:fail({failed_at_send_limit, Early})
+    after 10500 ->
+        ok
+    end,
+    responsive(Call),
+    receive
+        {timed, Timed} -> ?assertEqual({error, timeout}, Timed)
+    after 2000 ->
+        ct:fail(exec_timeout_not_handled)
+    end,
+    ok = chappe_esl_fake_server:release_api(Fake),
+    ?assertEqual(
+        <<"api uuid_break fake-uuid-1">>, block_with(<<"uuid_break">>)
+    ),
+    receive
+        {long, {ok, Ev}} ->
+            ?assertEqual(<<"playback">>, hdr(<<"Application">>, Ev))
+    after 2000 ->
+        ct:fail(no_completion_for_long_exec)
+    end,
+    no_completion(Call, 300).
 
 %% The owner dies with a fork start unanswered: the fork is stopped, the
 %% channel killed, the waiting caller released, and the process is gone

@@ -78,7 +78,9 @@ connection per call.
 ```
 
 With `wait => false` the completion arrives later as
-`{chappe_esl_call, Call, {complete, <<"playback">>, Event}}`.
+`{chappe_esl_call, Call, {complete, <<"playback">>, Event}}`. When the caller
+and the owner are different processes, it can reach the owner before the caller
+gets its `{ok, AppUuid}`.
 
 ## Collect digits
 

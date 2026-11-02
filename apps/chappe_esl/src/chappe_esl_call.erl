@@ -487,6 +487,10 @@ job_done({fork_start, From, Module, Running}, Result, State) ->
     fork_settled(Result, Module, Running, State);
 job_done({exec_sent, _AppUuid}, ok, State) ->
     State;
+job_done({exec_sent, _AppUuid}, {error, timeout}, State) ->
+    %% the sendmsg is still queued behind a slow command and may run: the
+    %% exec's own timeout rules, not the limit on this reply
+    State;
 job_done({exec_sent, AppUuid}, Error, #state{pending = P} = State) ->
     case maps:take(AppUuid, P) of
         {{Waiter, TRef}, P1} ->
