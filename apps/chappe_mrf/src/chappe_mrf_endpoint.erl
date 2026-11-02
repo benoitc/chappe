@@ -245,6 +245,10 @@ call_msg({dtmf, Digit}, Data) ->
     keep_state_and_data;
 call_msg({hangup, Cause}, Data) ->
     hungup(Cause, Data);
+call_msg(linger, _Data) ->
+    keep_state_and_data;
+call_msg(disconnect, _Data) ->
+    keep_state_and_data;
 call_msg(closed, Data) ->
     hungup(<<"CONNECTION_CLOSED">>, Data#state{call = undefined});
 call_msg({event, Ev}, Data) ->

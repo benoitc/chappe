@@ -22,6 +22,9 @@
 %%                             started with wait => false, or the dialplan's;
 %%                             a timed out request's completion is dropped)
 %%   {event, Event}            any other event of the channel
+%%   linger                    the channel hung up; the final events still
+%%                             follow and the socket stays open
+%%   disconnect                FreeSWITCH sends nothing more on this connection
 %%   closed                    the connection is gone; the process stops
 %%
 %% The call process never waits on the connection while the call runs: each
@@ -83,6 +86,8 @@
     | {hangup, binary()}
     | {complete, binary(), event()}
     | {event, event()}
+    | linger
+    | disconnect
     | closed.
 
 -record(state, {
@@ -420,6 +425,10 @@ handle_info({'DOWN', Mon, process, _, Exit}, #state{jobs = Jobs} = State) ->
         error ->
             {noreply, State}
     end;
+handle_info({chappe_esl_linger, Conn}, #state{conn = Conn} = State) ->
+    {noreply, notify(State, linger)};
+handle_info({chappe_esl_disconnect, Conn}, #state{conn = Conn} = State) ->
+    {noreply, notify(State, disconnect)};
 handle_info({chappe_esl_closed, Conn}, #state{conn = Conn} = State) ->
     closed(State);
 handle_info(_Info, State) ->

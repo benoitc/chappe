@@ -42,7 +42,9 @@
     api_helper_killed/1,
     api_helper_quiet/1,
     fork_start_failed/1,
-    fork_start_failed_while_running/1
+    fork_start_failed_while_running/1,
+    call_linger_then_disconnect/1,
+    call_disconnect_only/1
 ]).
 -export([handle_channel/3]).
 -export([log/2]).
@@ -81,7 +83,9 @@ all() ->
         api_helper_killed,
         api_helper_quiet,
         fork_start_failed,
-        fork_start_failed_while_running
+        fork_start_failed_while_running,
+        call_linger_then_disconnect,
+        call_disconnect_only
     ].
 
 init_per_suite(Config) ->
@@ -783,7 +787,70 @@ fork_start_failed_while_running(_Config) ->
     ?assertEqual(<<"api uuid_audio_fork fake-uuid-1 stop">>, next_block()),
     ?assertEqual(<<"api uuid_kill fake-uuid-1">>, next_block()).
 
+%% The channel hung up with the socket lingering: the owner hears linger,
+%% the final events still follow, then disconnect, and closed only when the
+%% socket goes.
+%% req: ESL-38
+call_linger_then_disconnect(_Config) ->
+    {Call, Fake} = outbound(#{}),
+    Mon = monitor(process, Call),
+    ok = chappe_esl_fake_server:hangup(Fake, <<"NORMAL_CLEARING">>),
+    ?assertEqual({hangup, <<"NORMAL_CLEARING">>}, owner_msg_soon(Call)),
+    ok = chappe_esl_fake_server:inject(Fake, notice(<<"linger">>)),
+    ?assertEqual(linger, owner_msg_soon(Call)),
+    ok = chappe_esl_fake_server:inject(
+        Fake, chappe_esl_fake_server:plain_event(<<"CUSTOM">>, [])
+    ),
+    {event, Ev} = owner_msg(Call),
+    ?assertEqual(<<"CUSTOM">>, chappe_esl_event:name(Ev)),
+    ok = chappe_esl_fake_server:inject(Fake, notice(<<"disconnect">>)),
+    ?assertEqual(disconnect, owner_msg(Call)),
+    responsive(Call),
+    ok = chappe_esl_fake_server:drop(Fake),
+    ?assertEqual(closed, owner_msg(Call)),
+    receive
+        {'DOWN', Mon, process, Call, normal} -> ok
+    after 2000 ->
+        ct:fail(call_not_stopped)
+    end.
+
+%% Without a lingering socket the notice comes alone, and does not fail the
+%% requests in flight: closed does.
+%% req: ESL-38
+call_disconnect_only(_Config) ->
+    {Call, Fake} = outbound(#{apps => #{<<"park">> => silent}}),
+    Self = self(),
+    spawn(fun() -> Self ! {park, chappe_esl_call:exec(Call, "park", "")} end),
+    _ = block_with(<<"execute-app-name: park">>),
+    ok = chappe_esl_fake_server:inject(Fake, notice(<<"disconnect">>)),
+    ?assertEqual(disconnect, owner_msg_soon(Call)),
+    receive
+        {park, Early} -> ct:fail({released_early, Early})
+    after 100 ->
+        ok
+    end,
+    ok = chappe_esl_fake_server:drop(Fake),
+    ?assertEqual(closed, owner_msg_soon(Call)),
+    receive
+        {park, Result} -> ?assertEqual({error, closed}, Result)
+    after 2000 ->
+        ct:fail(park_not_released)
+    end.
+
 %% helpers
+
+%% A text/disconnect-notice as FreeSWITCH sends it, with its
+%% Content-Disposition.
+notice(Disposition) ->
+    Body = <<"Disconnected, goodbye.\n">>,
+    [
+        <<"Content-Type: text/disconnect-notice\nContent-Disposition: ">>,
+        Disposition,
+        <<"\nContent-Length: ">>,
+        integer_to_binary(byte_size(Body)),
+        <<"\n\n">>,
+        Body
+    ].
 
 %% Send Cmd from another process, and return once the fake got it. The
 %% result comes back through api_result/0.
