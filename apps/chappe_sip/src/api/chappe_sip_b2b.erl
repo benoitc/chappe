@@ -273,10 +273,15 @@ offer_b(Req, Res, {Fork, Dests}, Opts, M) ->
         {ok, Dests1, M1} ->
             start_b(Req, Res, {Fork, Dests1}, Opts, Offer =:= <<>>, M1);
         {reject, Code} ->
-            _ = chappe_sip_b2b_media:stop(M),
-            _ = chappe_sip_res:send(Res, Code, #{}),
-            {error, {rejected, Code}}
+            offer_rejected(Res, Code, M);
+        {reject, Code, offered} ->
+            offer_rejected(Res, Code, M)
     end.
+
+offer_rejected(Res, Code, M) ->
+    _ = chappe_sip_b2b_media:stop(M),
+    _ = chappe_sip_res:send(Res, Code, #{}),
+    {error, {rejected, Code}}.
 
 %% Each destination with its media side (profile) and the SDP it gets
 %% from rtpengine's offer of Offer (sdp).
@@ -287,7 +292,8 @@ offer_b(Req, Res, {Fork, Dests}, Opts, M) ->
     chappe_sip_b2b_media:state()
 ) ->
     {ok, [chappe_sip_b2b_fork:dest()], chappe_sip_b2b_media:state()}
-    | {reject, 300..699}.
+    | {reject, 300..699}
+    | {reject, 300..699, offered}.
 offers(Offer, Dests, Opts, M) ->
     Profiles = [profile(D, Opts) || D <- Dests],
     case chappe_sip_b2b_media:fork_offer(Offer, Profiles, M) of
@@ -299,7 +305,7 @@ offers(Offer, Dests, Opts, M) ->
                     Offers
                 ),
                 M1};
-        {reject, _} = Rej ->
+        Rej ->
             Rej
     end.
 
@@ -829,8 +835,9 @@ set_media(B2b, Mode) when Mode =:= direct; Mode =:= anchor ->
 %% What the call is doing: #{media := direct | anchor, hold := #{a, b},
 %% call_id := binary(), session := chappe_sip_media:session() | undefined,
 %% pending := boolean(), winner := winner() | undefined}. winner is the
-%% destination that answered create_b2bua/4 (undefined for legs made
-%% another way).
+%% destination leg B is now: the one that answered create_b2bua/4 or a
+%% replace_b/3 fork (undefined for legs made another way, or after
+%% replace_b/3 to a URI or a dialog).
 -spec info(b2b()) -> map() | {error, term()}.
 info(B2b) ->
     call(B2b, info).
@@ -874,6 +881,8 @@ hangup(B2b, Opts) ->
 %% none_up} for an empty list. Destinations with different flags need one
 %% rtpengine offer each; on a call whose first offer came from B (a late
 %% offer) that gives {error, {rejected, 488}}.
+%%
+%% {error, badarg} for a malformed Target or Opts, and the call goes on.
 -spec replace_b(
     b2b(),
     binary() | {dialog, chappe_sip_dialog:dialog()} | {parallel, [dest()]},
@@ -881,7 +890,10 @@ hangup(B2b, Opts) ->
 ) ->
     ok | {ok, #{winner := winner()}} | {error, term()}.
 replace_b(B2b, Target, Opts) ->
-    call(B2b, {replace_b, Target, Opts}, timer_c(Opts) + 10000).
+    case chappe_sip_b2b_replace:valid(Target, Opts) of
+        true -> call(B2b, {replace_b, Target, Opts}, timer_c(Opts) + 10000);
+        false -> {error, badarg}
+    end.
 
 %% A request to the relay loop of a call.
 -spec call(b2b(), term()) -> term().

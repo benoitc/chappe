@@ -23,7 +23,7 @@
 %% a via-branch other than the first reaches nobody.
 -module(chappe_sip_b2b_replace).
 
--export([offer/4, call/4, swap/4, abort/3, latched/1]).
+-export([valid/2, offer/4, call/4, swap/4, abort/3, latched/1]).
 
 -export_type([won/0]).
 
@@ -39,11 +39,55 @@
     proxy, auth, flow, session_expires, min_se, session_refresher
 ]).
 
+%% Whether replace_b/3's arguments can go to the relay, checked in the
+%% caller: what the relay chokes on would end a live call.
+-spec valid(term(), term()) -> boolean().
+valid(Target, Opts) when is_map(Opts) ->
+    valid_target(Target) andalso valid_opts(Opts);
+valid(_Target, _Opts) ->
+    false.
+
+valid_target(Uri) when is_binary(Uri) -> true;
+valid_target({dialog, _}) -> true;
+valid_target({parallel, Dests}) -> all(fun valid_dest/1, Dests);
+valid_target(_Other) -> false.
+
+valid_dest(Uri) when is_binary(Uri) -> true;
+valid_dest({Uri, Opts}) when is_binary(Uri), is_map(Opts) -> valid_opts(Opts);
+valid_dest(_Other) -> false.
+
+valid_opts(Opts) ->
+    all(fun valid_header/1, maps:get(headers, Opts, [])) andalso
+        valid_params(maps:get(anchor_params, Opts, #{})).
+
+valid_header({Name, _Value}) -> is_binary(Name);
+valid_header(_Other) -> false.
+
+valid_params(Params) when is_map(Params) ->
+    all(fun valid_leg/1, maps:to_list(Params));
+valid_params(_Other) ->
+    false.
+
+valid_leg({a, Params}) -> valid_leg_params(Params);
+valid_leg({b, Params}) -> valid_leg_params(Params);
+valid_leg(_Other) -> false.
+
+valid_leg_params(Params) when is_map(Params) ->
+    all(fun(_Flag) -> true end, maps:get(flags, Params, []));
+valid_leg_params(_Other) ->
+    false.
+
+%% false as well for anything but a proper list
+all(_Pred, []) -> true;
+all(Pred, [H | T]) -> Pred(H) andalso all(Pred, T);
+all(_Pred, _Other) -> false.
+
 %% rtpengine's offer for A's side, from A's SDP ASdp. {ok, Target1, Sdp, M}
 %% hands call/4 what it calls: a fork's destinations carry their own offer.
 -spec offer(term(), binary(), map(), chappe_sip_b2b_media:state()) ->
     {ok, term(), binary(), chappe_sip_b2b_media:state()}
-    | {reject, 300..699}.
+    | {reject, 300..699}
+    | {reject, 300..699, offered}.
 offer({parallel, Dests0}, ASdp, Opts, #{params := Params} = M) ->
     {parallel, Dests} = chappe_sip_b2b_fork:targets({parallel, Dests0}, Opts),
     case
@@ -52,7 +96,7 @@ offer({parallel, Dests0}, ASdp, Opts, #{params := Params} = M) ->
         )
     of
         {ok, Offered, M1} -> {ok, {parallel, Offered}, <<>>, M1};
-        {reject, _} = Rej -> Rej
+        Rej -> Rej
     end;
 offer(Target, ASdp, _Opts, M) ->
     case chappe_sip_b2b_media:offer(a, ASdp, M) of
@@ -112,7 +156,7 @@ uac_opts(#{handled := Handled} = Opts, Relay) ->
 ring(URef, Deadline) ->
     receive
         {chappe_sip_uac, URef, {ok, D}} ->
-            {ok, D, chappe_sip_dialog:remote_sdp(D), undefined};
+            answered(D, undefined);
         {chappe_sip_uac, URef, {error, _} = Err} ->
             Err;
         {chappe_sip_uac, URef, _} ->
@@ -147,14 +191,22 @@ fork_ring(#{branches := Branches, deadline := Deadline} = W) ->
 fork_event(BRef, {ok, D}, #{branches := Branches} = W) ->
     #{BRef := #{dest := #{profile := Profile}}} = Branches,
     Won = chappe_sip_b2b_fork:won(BRef, D, W),
-    {ok, D, chappe_sip_dialog:remote_sdp(D), #{
+    answered(D, #{
         winner => chappe_sip_b2b_fork:winner(Won),
         profile => Profile
-    }};
+    });
 fork_event(BRef, {error, Why}, W) ->
     fork_next(chappe_sip_b2b_fork:failed(BRef, Why, W));
 fork_event(_BRef, _Other, W) ->
     fork_ring(W).
+
+%% the new B's answer; a dialog already gone leaves the call with the old B
+answered(D, Won) ->
+    try chappe_sip_dialog:remote_sdp(D) of
+        Sdp -> {ok, D, Sdp, Won}
+    catch
+        exit:Why -> {error, {new_b_down, Why}}
+    end.
 
 %% The call ended while the helper Pid (its result tagged Ref) brings a
 %% new B in: the new INVITE is CANCELled at once, a new B that answered
@@ -195,12 +247,17 @@ swap(NewB, Answer, Won, #{media := M0, b := OldB, refs := {RefA, RefB}} = S) ->
             {ok, S#{
                 b := NewB,
                 refs := {RefA, RefB1},
-                media := M1#{via := undefined}
+                winner := won_winner(Won),
+                %% the old B took its hold with it
+                media := chappe_sip_b2b_media:unhold(b, M1#{via := undefined})
             }};
         {reject, Code} ->
             _ = spawn(fun() -> chappe_sip_b2b:destroy_quietly(NewB, []) end),
             {error, {rejected, Code}}
     end.
+
+won_winner(undefined) -> undefined;
+won_winner(#{winner := Winner}) -> Winner.
 
 %% a fork: the call goes on with the flags of the branch that answered;
 %% under a via-branch, with its To-tag too (see above)

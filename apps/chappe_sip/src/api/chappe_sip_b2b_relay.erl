@@ -100,8 +100,11 @@ with_opts(Opts, M) ->
         error -> M2
     end.
 
-loop(#{a := A, b := B, refs := {RefA, RefB}, ref := Ref} = S) ->
+loop(#{a := A, b := B, refs := {RefA, RefB}, ref := Ref, pending := P} = S) ->
+    HelperMon = helper_mon(P),
     receive
+        {'DOWN', HelperMon, process, _, Why} ->
+            loop(helper_down(Why, S));
         {chappe_sip_dialog, A, destroy, Why} ->
             done(S, B, Why, a_bye);
         {chappe_sip_dialog, B, destroy, Why} ->
@@ -158,9 +161,13 @@ done(#{pending := P, media := M}, Peer, Why, Tag) ->
     }),
     {done, Tag}.
 
-stop_pending(#{pid := Pid, ref := Ref, step := {replace, From, _}}) ->
+stop_pending(#{
+    pid := Pid, ref := Ref, mon := Mon, step := {replace, From, _}
+}) ->
+    erlang:demonitor(Mon, [flush]),
     chappe_sip_b2b_replace:abort(Pid, Ref, From);
-stop_pending(#{pid := Pid}) ->
+stop_pending(#{pid := Pid, mon := Mon}) ->
+    erlang:demonitor(Mon, [flush]),
     exit(Pid, kill),
     ok;
 stop_pending(_P) ->
@@ -254,7 +261,10 @@ forward(X, Event, Offer, Res, #{media := M} = S) ->
 
 %% ---- the other leg's result ----
 
-relayed(Ref, Result, #{pending := #{ref := Ref, step := Step}} = S0) ->
+relayed(
+    Ref, Result, #{pending := #{ref := Ref, mon := Mon, step := Step}} = S0
+) ->
+    erlang:demonitor(Mon, [flush]),
     step(Step, Result, S0#{pending := undefined});
 relayed(_Ref, _Result, S) ->
     S.
@@ -436,8 +446,12 @@ replace_b(From, Target, Opts, #{media := M0, a := A} = S) ->
                 S#{media := M1}
             );
         {reject, Code} ->
+            %% nothing reached rtpengine
             reply(From, {error, {rejected, Code}}),
-            %% the fork's first offers may have gone through
+            S;
+        {reject, Code, offered} ->
+            %% some of the fork's offers went through
+            reply(From, {error, {rejected, Code}}),
             restore(b, old_params(Old, S#{media := M}))
     end.
 
@@ -494,12 +508,24 @@ reply({Pid, Tag}, Reply) ->
 %% ---- helpers run off the loop ----
 
 %% Run Fun in a helper so the loop keeps answering both legs meanwhile;
-%% its result comes back as relay_result and runs Step.
+%% its result comes back as relay_result and runs Step. A helper that dies
+%% runs Step with an error (helper_down/3), so the call is not left with
+%% its offer pending for good.
 spawn_step(Step, Fun, S) ->
     Parent = self(),
     Ref = make_ref(),
-    Pid = spawn(fun() -> Parent ! {relay_result, Ref, Fun()} end),
-    S#{pending := #{ref => Ref, pid => Pid, step => Step}}.
+    {Pid, Mon} = spawn_monitor(fun() ->
+        Parent ! {relay_result, Ref, Fun()}
+    end),
+    S#{pending := #{ref => Ref, pid => Pid, mon => Mon, step => Step}}.
+
+%% the monitor of the helper at work, to match its 'DOWN' and no other
+helper_mon(#{mon := Mon}) -> Mon;
+helper_mon(_P) -> undefined.
+
+helper_down(Why, #{pending := #{step := Step}} = S) ->
+    logger:warning("chappe_sip_b2b: relay helper died: ~p", [Why]),
+    step(Step, {error, {helper_down, Why}}, S#{pending := undefined}).
 
 %% the ACK of a 2xx we left unACKed carries Sdp; off the loop, since the
 %% leg may be busy with its own session refresh

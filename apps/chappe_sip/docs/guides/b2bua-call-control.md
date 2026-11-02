@@ -147,6 +147,11 @@ old B, and you can call `replace_b/3` again.
 | `{error, timeout}` | `timer_c` passed; it covers the whole fork, and a 180 does not restart it |
 | `{error, call_ended}` | the caller hung up; every branch got a CANCEL |
 | `{error, none_up}` | `Dests` is empty |
+| `{error, badarg}` | a malformed target or options; the call goes on |
+
+`info/1` follows the call: its `winner` is the destination that answered, and
+`undefined` after a replace to a URI or a dialog. If the old B had the call on
+hold, the notify process gets `{unhold, b}` when it goes.
 
 Notes on a fork:
 

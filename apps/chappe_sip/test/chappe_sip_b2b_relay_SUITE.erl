@@ -42,7 +42,11 @@
          fork_replace_timer_c/1, fork_replace_caller_hangs_up/1,
          fork_replace_failed_then_replace/1, fork_replace_own_flags/1,
          fork_replace_own_flags_fail/1, fork_replace_late_offer/1,
-         fork_replace_empty/1]).
+         fork_replace_empty/1, fork_replace_offer_refused/1,
+         fork_replace_offer_half_refused/1, fork_replace_hook_rejects/1,
+         fork_replace_helper_dies/1, reinvite_helper_dies/1,
+         replace_b_new_b_dies/1, info_follows_replace/1,
+         replace_clears_hold/1, replace_b_bad_arguments/1]).
 
 all() ->
     [reinvite_a_to_b, reinvite_b_to_a, update_relayed,
@@ -69,7 +73,10 @@ all() ->
      fork_replace_timer_c, fork_replace_caller_hangs_up,
      fork_replace_failed_then_replace, fork_replace_own_flags,
      fork_replace_own_flags_fail, fork_replace_late_offer,
-     fork_replace_empty].
+     fork_replace_empty, fork_replace_offer_refused,
+     fork_replace_offer_half_refused, fork_replace_hook_rejects,
+     fork_replace_helper_dies, reinvite_helper_dies, replace_b_new_b_dies,
+     info_follows_replace, replace_clears_hold, replace_b_bad_arguments].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -1775,16 +1782,234 @@ fork_replace_late_offer(_Config) ->
     end),
     #{b2b := B2b} = got(legs),
     timer:sleep(300),
+    _ = drain(),
     Own = #{anchor_params => #{b => #{<<"x-leg">> => <<"two">>}}},
     ?assertEqual({error, {rejected, 488}},
                  chappe_sip_b2b:replace_b(
                      B2b, {parallel, [<<"sip:x@127.0.0.1">>,
                                       {<<"sip:y@127.0.0.1">>, Own}]}, #{})),
     ?assertMatch(#{pending := false}, chappe_sip_b2b:info(B2b)),
+    %% no offer went out, so rtpengine gets nothing at all
+    ?assertEqual([], drain()),
     Uris = [fork_dest(one, busy()),
             fork_dest(two, answers(two, <<"twotag">>, 100))],
     ?assertMatch({ok, #{winner := #{index := 2}}},
                  chappe_sip_b2b:replace_b(B2b, {parallel, Uris}, #{})),
+    ok = ?UA:expect(old_b_bye).
+
+%% rtpengine refuses every offer: nothing to take back, so no answer.
+fork_replace_offer_refused(_Config) ->
+    {B2b, _OldTag} = fork_call(),
+    Fail = #{anchor_params => #{b => #{<<"x-fail">> => <<"1">>}}},
+    Dests = [{<<"sip:x@127.0.0.1">>, Fail}, {<<"sip:y@127.0.0.1">>, Fail}],
+    ?assertEqual({error, {rejected, 500}},
+                 chappe_sip_b2b:replace_b(B2b, {parallel, Dests}, #{})),
+    ?assertMatch([#{<<"command">> := <<"offer">>}], sdp_cmds()),
+    hang_up(),
+    ok = ?UA:expect(old_b_bye).
+
+%% rtpengine takes the first offer and refuses the second: it gets the
+%% old B's SDP back for the one it took.
+fork_replace_offer_half_refused(_Config) ->
+    {B2b, OldTag} = fork_call(),
+    Fail = #{anchor_params => #{b => #{<<"x-fail">> => <<"1">>}}},
+    Dests = [<<"sip:x@127.0.0.1">>, {<<"sip:y@127.0.0.1">>, Fail}],
+    ?assertEqual({error, {rejected, 500}},
+                 chappe_sip_b2b:replace_b(B2b, {parallel, Dests}, #{})),
+    Restore = lists:last(sdp_cmds()),
+    ?assertMatch(#{<<"command">> := <<"answer">>, <<"to-tag">> := OldTag},
+                 Restore),
+    ?assertNot(maps:is_key(<<"via-branch">>, Restore)),
+    hang_up(),
+    ok = ?UA:expect(old_b_bye).
+
+%% The app's hook refuses A's SDP: rtpengine hears nothing.
+fork_replace_hook_rejects(_Config) ->
+    rtpe(),
+    Hook = fun(_Leg, _Kind, Sdp) -> hook_answer(Sdp) end,
+    {EP, CP} = setup(#{media => anchor, rewrite_sdp => Hook}),
+    callee(CP, fun(_Sock, _D) -> ok end),
+    caller(EP, #{}, fun(_Sock, _D) -> ok end),
+    #{b2b := B2b} = got(legs),
+    _ = drain(),
+    persistent_term:put(b2b_hook_reject, true),
+    R = chappe_sip_b2b:replace_b(B2b, {parallel, [<<"sip:x@127.0.0.1">>]}, #{}),
+    persistent_term:erase(b2b_hook_reject),
+    ?assertEqual({error, {rejected, 488}}, R),
+    ?assertEqual([], drain()).
+
+hook_answer(Sdp) ->
+    case persistent_term:get(b2b_hook_reject, false) of
+        true -> {reject, 488};
+        false -> Sdp
+    end.
+
+%% the process that keeps the replace_b/3 going: what the relay monitors
+%% beyond its two dialogs
+helper(Relay, #{uas := A, uac := B}) ->
+    Dialogs = [element(2, D) || D <- [A, B]],
+    {monitors, Ms} = process_info(Relay, monitors),
+    [Helper] = [P || {process, P} <- Ms, not lists:member(P, Dialogs)],
+    Helper.
+
+%% A helper that dies leaves no offer pending: replace_b/3 gets an error,
+%% rtpengine the old B's SDP, and the next replace works.
+fork_replace_helper_dies(_Config) ->
+    rtpe(),
+    {EP, CP} = setup(#{media => anchor, notify => self()}),
+    callee(CP, fun(Sock, _D) ->
+        {B, S} = ?UA:recv_req(Sock, <<"BYE">>, 20000),
+        ?UA:send(Sock, S, ?UA:resp(B, 200, <<"OK">>, <<>>, [], <<>>)),
+        tell(old_b_bye)
+    end),
+    caller(EP, #{}, fun(_Sock, _D) -> ok end),
+    #{b2b := {Relay, _} = B2b, uac := OldB} = Legs = got(legs),
+    OldTag = chappe_sip_dialog:remote_tag(OldB),
+    _ = drain(),
+    Test = self(),
+    Ringing = fork_dest(one, rings(one)),
+    spawn_link(fun() ->
+        Test ! {replace_result,
+                chappe_sip_b2b:replace_b(B2b, {parallel, [Ringing]}, #{})}
+    end),
+    ok = ?UA:expect({ringing, one}),
+    exit(helper(Relay, Legs), kill),
+    ?assertMatch({error, {helper_down, killed}}, got(replace_result)),
+    ?assertMatch(#{pending := false}, chappe_sip_b2b:info(B2b)),
+    ?assertMatch(#{<<"command">> := <<"answer">>, <<"to-tag">> := OldTag},
+                 lists:last(sdp_cmds())),
+    Uri = fork_dest(two, answers(two, <<"twotag">>, 0)),
+    ?assertEqual(ok, chappe_sip_b2b:replace_b(B2b, Uri, #{})),
+    ok = ?UA:expect(old_b_bye).
+
+%% The same for a helper relaying A's re-INVITE: A gets a 500 and no offer
+%% stays pending.
+reinvite_helper_dies(_Config) ->
+    {EP, CP} = setup(#{}),
+    callee(CP, fun(Sock, _D) ->
+        {Re, _} = ?UA:recv_req(Sock, <<"INVITE">>),
+        tell({b_reinvite, Re})
+    end),
+    caller(EP, #{}, fun(Sock, D) ->
+        {Re, _} = ?UA:in_dialog(D, <<"INVITE">>, [], ?UA:sdp(<<"caller">>, <<"1">>)),
+        ?UA:send(Sock, EP, Re),
+        tell({a_refused, ?UA:recv_status(Sock, 500)})
+    end),
+    #{b2b := {Relay, _} = B2b} = Legs = got(legs),
+    _ = got(b_reinvite),
+    exit(helper(Relay, Legs), kill),
+    _ = got(a_refused),
+    ?assertMatch(#{pending := false}, chappe_sip_b2b:info(B2b)).
+
+%% The dialog of the new B dies right after its 2xx: the call keeps the
+%% old B. The helper is held so the 2xx is in its mailbox when it dies.
+replace_b_new_b_dies(_Config) ->
+    rtpe(),
+    {EP, CP} = setup(#{media => anchor}),
+    callee(CP, fun(_Sock, _D) -> ok end),
+    caller(EP, #{}, fun(_Sock, _D) -> ok end),
+    #{b2b := {Relay, _} = B2b, uac := OldB} = Legs = got(legs),
+    OldTag = chappe_sip_dialog:remote_tag(OldB),
+    _ = drain(),
+    Test = self(),
+    Uri = fork_dest(one, answers(one, <<"onetag">>, 300)),
+    spawn_link(fun() ->
+        Test ! {replace_result,
+                chappe_sip_b2b:replace_b(B2b, {parallel, [Uri]}, #{})}
+    end),
+    _ = got(one),
+    Helper = helper(Relay, Legs),
+    true = erlang:suspend_process(Helper),
+    D = new_b_dialog(Helper, 50),
+    exit(element(2, D), kill),
+    timer:sleep(50),
+    true = erlang:resume_process(Helper),
+    ?assertMatch({error, {new_b_down, _}}, got(replace_result)),
+    ?assertMatch(#{pending := false}, chappe_sip_b2b:info(B2b)),
+    ?assertMatch(#{<<"command">> := <<"answer">>, <<"to-tag">> := OldTag},
+                 lists:last(sdp_cmds())).
+
+new_b_dialog(_Helper, 0) ->
+    ct:fail(no_new_b_dialog);
+new_b_dialog(Helper, N) ->
+    {messages, Ms} = process_info(Helper, messages),
+    case [D || {chappe_sip_uac, _, {ok, D}} <- Ms] of
+        [D] ->
+            D;
+        [] ->
+            timer:sleep(100),
+            new_b_dialog(Helper, N - 1)
+    end.
+
+%% info/1 follows leg B: after a fork its winner, after a URI none.
+info_follows_replace(_Config) ->
+    {B2b, _OldTag} = fork_call(),
+    Uris = [fork_dest(one, busy()), fork_dest(two, answers(two, <<"twotag">>, 0))],
+    {ok, #{winner := Winner}} = chappe_sip_b2b:replace_b(B2b, {parallel, Uris}, #{}),
+    ?assertMatch(#{index := 2}, Winner),
+    ?assertMatch(#{winner := Winner}, chappe_sip_b2b:info(B2b)),
+    Uri = fork_dest(three, answers(three, <<"threetag">>, 0)),
+    ok = chappe_sip_b2b:replace_b(B2b, Uri, #{}),
+    ?assertMatch(#{winner := undefined}, chappe_sip_b2b:info(B2b)),
+    hang_up(),
+    ok = ?UA:expect({bye_of, three}).
+
+%% The old B had the call on hold: with the new B it is not, and the
+%% notify process hears of it.
+replace_clears_hold(_Config) ->
+    rtpe(),
+    {EP, CP} = setup(#{media => anchor, notify => self()}),
+    callee(CP, fun(Sock, D) ->
+        {Re, _} = ?UA:in_dialog(D, <<"INVITE">>, [],
+                                sdp_dir(<<"callee">>, <<"1">>, <<"sendonly">>)),
+        ?UA:send(Sock, EP, Re),
+        tell({b_hold, ?UA:recv_status(Sock, 200)})
+    end),
+    caller(EP, #{}, fun(Sock, _D) ->
+        {Re, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
+        ?UA:send(Sock, Src, ?UA:resp(Re, 200, <<"OK">>, <<>>, [contact(Sock)],
+                                     ?UA:sdp(<<"caller">>, <<"1">>)))
+    end),
+    #{b2b := {_, Ref} = B2b} = got(legs),
+    receive {chappe_sip_b2b, Ref, {hold, b}} -> ok
+    after 6000 -> ct:fail(no_hold)
+    end,
+    _ = got(b_hold),
+    ?assertMatch(#{hold := #{b := true}}, chappe_sip_b2b:info(B2b)),
+    Uris = [fork_dest(one, answers(one, <<"onetag">>, 0))],
+    {ok, _} = chappe_sip_b2b:replace_b(B2b, {parallel, Uris}, #{}),
+    ?assertMatch(#{hold := #{b := false}}, chappe_sip_b2b:info(B2b)),
+    receive {chappe_sip_b2b, Ref, {unhold, b}} -> ok
+    after 2000 -> ct:fail(no_unhold)
+    end.
+
+%% A malformed target or options get badarg in the caller: the relay never
+%% sees them and the call goes on.
+replace_b_bad_arguments(_Config) ->
+    {{Relay, _} = B2b, _OldTag} = fork_call(),
+    Bad = [
+        {{parallel, notalist}, #{}},
+        {{parallel, [a | b]}, #{}},
+        {{parallel, [123]}, #{}},
+        {{parallel, [{<<"sip:x@h">>, notamap}]}, #{}},
+        {{parallel, [{notabinary, #{}}]}, #{}},
+        {{parallel, [{<<"sip:x@h">>, #{headers => nolist}}]}, #{}},
+        {{parallel, [{<<"sip:x@h">>, #{headers => [nottuple]}}]}, #{}},
+        {{parallel, [{<<"sip:x@h">>, #{anchor_params => nomap}}]}, #{}},
+        {{parallel, [{<<"sip:x@h">>, #{anchor_params => #{c => #{}}}}]}, #{}},
+        {{parallel, [{<<"sip:x@h">>, #{anchor_params => #{a => #{flags => x}}}}]}, #{}},
+        {notatarget, #{}},
+        {<<"sip:x@h">>, notamap},
+        {<<"sip:x@h">>, #{anchor_params => nomap}},
+        {<<"sip:x@h">>, #{headers => nolist}},
+        {<<"sip:x@h">>, #{anchor_params => #{a => #{flags => x}}}}
+    ],
+    [?assertEqual({error, badarg}, chappe_sip_b2b:replace_b(B2b, T, O))
+     || {T, O} <- Bad],
+    ?assert(is_process_alive(Relay)),
+    ?assertMatch(#{pending := false}, chappe_sip_b2b:info(B2b)),
+    ?assertEqual([], sdp_cmds()),
+    hang_up(),
     ok = ?UA:expect(old_b_bye).
 
 %% No destination at all.
