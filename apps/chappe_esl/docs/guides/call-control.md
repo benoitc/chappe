@@ -211,6 +211,9 @@ Other messages that arrive meanwhile stay in your mailbox.
 - `audio_fork_start/3` needs mod_audio_fork, or mod_audio_stream with
   `module => audio_stream`, on the node. Each module allows one fork per
   channel (mod_audio_fork through its default bug name, `audio_fork`).
+- Use mod_audio_stream v1.1.0 or newer: earlier versions compare the
+  websocket upgrade response headers case-sensitively, so a server sending
+  lowercase names fails with "WebSocket upgrade failed" and gets no audio.
 - A fork you start with `api/2` instead is not tracked: stop it yourself.
 
 ## Where it lives

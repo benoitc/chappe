@@ -543,11 +543,13 @@ ws_accept(L, TestPid) ->
                 [];
             P ->
                 First = string:trim(hd(binary:split(P, <<",">>))),
-                [<<"Sec-WebSocket-Protocol: ">>, First, <<"\r\n">>]
+                [<<"sec-websocket-protocol: ">>, First, <<"\r\n">>]
         end,
     ok = gen_tcp:send(S, [
-        <<"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n">>,
-        <<"Connection: Upgrade\r\nSec-WebSocket-Accept: ">>,
+        %% lowercase names, as livery sends them: mod_audio_stream before
+        %% v1.1.0 fails the upgrade on them
+        <<"HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\n">>,
+        <<"connection: Upgrade\r\nsec-websocket-accept: ">>,
         Accept,
         <<"\r\n">>,
         Proto,
