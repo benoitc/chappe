@@ -22,6 +22,7 @@
     create_endpoint_bridge/1,
     bridge_to_uri/1,
     endpoint_commands/1,
+    endpoint_call_notices/1,
     node_down/1,
     native_conference/1,
     native_room_outlives_caller/1,
@@ -57,6 +58,7 @@ all() ->
         create_endpoint_bridge,
         bridge_to_uri,
         endpoint_commands,
+        endpoint_call_notices,
         node_down,
         native_conference,
         native_room_outlives_caller,
@@ -378,6 +380,16 @@ endpoint_commands(Config) ->
     ok = chappe_mrf:destroy(Ep),
     _ = fs_cmd(<<"uuid_kill ", Uuid/binary>>),
     ?assertEqual({error, gone}, chappe_mrf:play(Ep, <<"/a.wav">>)).
+
+%% The call's linger and disconnect notices leave a live endpoint as it is:
+%% closed and the hangup are what end it.
+endpoint_call_notices(Config) ->
+    {ok, Ep} = chappe_mrf:create_endpoint(#{targets => [{fs1, fs_uri(Config)}]}),
+    {ok, Call} = chappe_mrf_endpoint:call(Ep),
+    Ep ! {chappe_esl_call, Call, linger},
+    Ep ! {chappe_esl_call, Call, disconnect},
+    ?assertMatch({ok, _}, chappe_mrf:uuid(Ep)),
+    ok = chappe_mrf:destroy(Ep).
 
 %% The node of a live endpoint goes down: its owner hears node_down.
 %% req: MRF-03

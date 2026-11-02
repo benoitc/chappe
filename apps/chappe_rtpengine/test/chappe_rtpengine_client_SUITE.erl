@@ -32,6 +32,7 @@
     tcp_split_reply_reassembled/1,
     tcp_close_fails_pending_then_reconnects/1,
     ws_commands/1,
+    ws_frame_with_upgrade_response/1,
     ws_subprotocol_rejection_fails_connect/1,
     ws_peer_close_fails_pending_then_reconnects/1,
     ws_deadline_timeout_no_retransmit/1,
@@ -68,6 +69,7 @@ all() ->
         tcp_split_reply_reassembled,
         tcp_close_fails_pending_then_reconnects,
         ws_commands,
+        ws_frame_with_upgrade_response,
         ws_subprotocol_rejection_fails_connect,
         ws_peer_close_fails_pending_then_reconnects,
         ws_deadline_timeout_no_retransmit,
@@ -135,6 +137,18 @@ init_per_testcase(forged_source_ignored, Config) ->
         host => {127, 0, 0, 1}, port => Port, timeout => 2000, attempts => 1
     }),
     [{node, Node}, {sock, Sock} | Config];
+init_per_testcase(ws_frame_with_upgrade_response, Config) ->
+    %% the test plays the server itself: the fake cannot glue a frame to
+    %% its 101
+    {ok, Listen} = gen_tcp:listen(0, [binary, {active, false}, {packet, raw}]),
+    {ok, Port} = inet:port(Listen),
+    Self = self(),
+    spawn_link(fun() -> upgrade_with_frame(Listen, Self) end),
+    Node = chappe_rtpengine_test_ws_frame_with_upgrade_response,
+    ok = chappe_rtpengine:add_node(Node, #{
+        host => {127, 0, 0, 1}, port => Port, transport => ws
+    }),
+    [{node, Node}, {listen, Listen} | Config];
 init_per_testcase(Case, Config) ->
     {ok, Server, Port} = start_fake(Case),
     Node = list_to_atom("chappe_rtpengine_test_" ++ atom_to_list(Case)),
@@ -200,6 +214,9 @@ end_per_testcase(Case, Config) when
 end_per_testcase(forged_source_ignored, Config) ->
     _ = chappe_rtpengine:remove_node(?config(node, Config)),
     gen_udp:close(?config(sock, Config));
+end_per_testcase(ws_frame_with_upgrade_response, Config) ->
+    _ = chappe_rtpengine:remove_node(?config(node, Config)),
+    gen_tcp:close(?config(listen, Config));
 end_per_testcase(_Case, Config) ->
     _ = chappe_rtpengine:remove_node(?config(node, Config)),
     chappe_rtpengine_fake_server:stop(?config(server, Config)),
@@ -565,6 +582,44 @@ tcp_close_fails_pending_then_reconnects(Config) ->
     #{reconnects := Reconnects} = chappe_rtpengine:stats(Node),
     ?assert(Reconnects >= 1),
     ok.
+
+%% A frame the server sends in the same write as its 101 still reaches the
+%% client: erlang_ws before 0.5.0 lost it. Its cookie is unknown, so the
+%% stats show it arrived.
+ws_frame_with_upgrade_response(Config) ->
+    Node = ?config(node, Config),
+    wait_until(
+        fun() ->
+            #{unknown_cookies := N} = chappe_rtpengine:stats(Node),
+            N =:= 1
+        end,
+        100
+    ).
+
+upgrade_with_frame(Listen, Parent) ->
+    {ok, Sock} = gen_tcp:accept(Listen),
+    {ok, Req} = gen_tcp:recv(Sock, 0, 5000),
+    {match, [Key]} = re:run(
+        Req,
+        "sec-websocket-key: *([^\\r]+)",
+        [caseless, {capture, all_but_first, binary}]
+    ),
+    Accept = base64:encode(
+        crypto:hash(sha, <<Key/binary, "258EAFA5-E914-47DA-95CA-C5AB0DC85B11">>)
+    ),
+    Reply = <<"stale d6:result4:ponge">>,
+    ok = gen_tcp:send(Sock, [
+        <<"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n">>,
+        <<"Connection: Upgrade\r\nSec-WebSocket-Accept: ">>,
+        Accept,
+        <<"\r\nSec-WebSocket-Protocol: ng.rtpengine.com\r\n\r\n">>,
+        <<1:1, 0:3, 2:4, 0:1, (byte_size(Reply)):7>>,
+        Reply
+    ]),
+    Mon = monitor(process, Parent),
+    receive
+        {'DOWN', Mon, process, Parent, _} -> gen_tcp:close(Sock)
+    end.
 
 %% req: RNG-01
 ws_commands(Config) ->

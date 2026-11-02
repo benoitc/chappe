@@ -20,8 +20,8 @@ does not reproduce.
 
 Both nodes run `chappe-esl-fs:lab`, built from `freeswitch/Dockerfile`:
 `drachtio/drachtio-freeswitch-mrf` (FreeSWITCH 1.10.10, arm64 and amd64) plus
-mod_audio_stream, which is AGPL-3.0, built for this lab only and never shipped
-with chappe. They use `conf/freeswitch.xml` as their whole configuration: HEARTBEAT
+mod_audio_stream, which is AGPL-3.0 with the FreeSWITCH linking exception, built
+for this lab only and never shipped with chappe. They use `conf/freeswitch.xml` as their whole configuration: HEARTBEAT
 every second, ESL on 8021 with an allow-all ACL, one unauthenticated SIP
 profile on 5080 inside the compose network, a dialplan with `park`,
 `conf-<name>` and `socket-<port>`, mod_sndfile for wav prompts and recordings,

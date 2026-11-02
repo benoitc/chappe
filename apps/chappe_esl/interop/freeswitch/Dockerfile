@@ -6,14 +6,15 @@
 # backends of chappe_esl_call:audio_fork_start/3. Test-only.
 #
 # mod_audio_stream (https://github.com/amigniter/mod_audio_stream) is
-# AGPL-3.0. It is built here for the lab and never shipped with chappe.
+# AGPL-3.0 with the FreeSWITCH linking exception. It is built here for the lab
+# and never shipped with chappe.
 # Pinned to a release tag and its commit, cloned with its libwsc submodule.
 
 ARG FS_IMAGE=drachtio/drachtio-freeswitch-mrf:latest
 
 FROM ${FS_IMAGE} AS build
-ARG AUDIO_STREAM_TAG=v1.0.3
-ARG AUDIO_STREAM_SHA=b13ccbb6d7e9f316153cf3f07b306a77a01b9473
+ARG AUDIO_STREAM_TAG=v1.1.0
+ARG AUDIO_STREAM_SHA=fe3af21d3058753e024a43ef7ca54af2077634a0
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       build-essential cmake git pkg-config ca-certificates \

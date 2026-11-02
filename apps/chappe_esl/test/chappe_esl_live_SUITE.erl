@@ -30,7 +30,7 @@
 -export([
     call_playback/1, call_digits/1, call_dtmf_event/1, call_record/1,
     call_owner_death/1, call_timeout_breaks/1, call_paths_with_spaces/1,
-    call_audio_fork/1, call_audio_stream/1
+    call_audio_fork/1, call_audio_stream/1, call_linger_notice/1
 ]).
 -export([handle_channel/3]).
 
@@ -43,7 +43,8 @@
     call_timeout_breaks,
     call_paths_with_spaces,
     call_audio_fork,
-    call_audio_stream
+    call_audio_stream,
+    call_linger_notice
 ]).
 
 all() ->
@@ -374,6 +375,23 @@ fork_to_sink(Config, Opts) ->
         exit(Sink, kill)
     end.
 
+%% After the hangup a real node tells the owner the socket lingers.
+%% req: ESL-38
+call_linger_notice(Config) ->
+    Call = live_call(Config, self()),
+    ok = chappe_esl_call:answer(Call),
+    ok = chappe_esl_call:hangup(Call),
+    ok = expect_linger(Call),
+    ok = chappe_esl_call:stop(Call).
+
+expect_linger(Call) ->
+    receive
+        {chappe_esl_call, Call, linger} -> ok;
+        {chappe_esl_call, Call, closed} -> ct:fail(closed_before_linger)
+    after 10000 ->
+        ct:fail(no_linger)
+    end.
+
 %% nodes group
 
 %% Both nodes come up and report their load from HEARTBEAT and the probes.
@@ -525,11 +543,13 @@ ws_accept(L, TestPid) ->
                 [];
             P ->
                 First = string:trim(hd(binary:split(P, <<",">>))),
-                [<<"Sec-WebSocket-Protocol: ">>, First, <<"\r\n">>]
+                [<<"sec-websocket-protocol: ">>, First, <<"\r\n">>]
         end,
     ok = gen_tcp:send(S, [
-        <<"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n">>,
-        <<"Connection: Upgrade\r\nSec-WebSocket-Accept: ">>,
+        %% lowercase names, as livery sends them: mod_audio_stream before
+        %% v1.1.0 fails the upgrade on them
+        <<"HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\n">>,
+        <<"connection: Upgrade\r\nsec-websocket-accept: ">>,
         Accept,
         <<"\r\n">>,
         Proto,

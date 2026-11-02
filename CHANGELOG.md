@@ -7,6 +7,23 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 
 ## Unreleased
 
+- chappe_esl call control: a slow api or audio fork command no longer stalls
+  the call. While it waits, exec timeouts fire, other callers get answers, and
+  if your process dies the fork stops and the channel is killed. Before, all of
+  that waited up to 10 seconds. FreeSWITCH itself still holds back a connection's
+  events during a slow api, so send slow commands with bgapi if you need a hangup
+  or a digit meanwhile.
+- chappe_esl call control: your process now hears `linger` when the channel hung
+  up and its final events are still coming, and `disconnect` when FreeSWITCH has
+  nothing more to send. Before, these notices were dropped and you only learned
+  when the socket closed. A process that handles call messages with a closed set
+  of cases must accept the two new ones.
+- chappe_rtpengine: moved to erlang_ws 0.5.0. A reply the server sent together
+  with its websocket upgrade response used to be lost; it now arrives. The
+  websocket transport of chappe_sip moves to the same version.
+- chappe_esl lab: mod_audio_stream is now v1.1.0. Earlier versions fail against a
+  websocket server sending lowercase header names, so use v1.1.0 or newer on your
+  nodes.
 - B2BUA and chappe_mrf: moving a call to a new callee can now ring several
   destinations at once, so a caller coming out of an IVR reaches a user's
   desk phone and browser together. The first to answer takes the call and you
