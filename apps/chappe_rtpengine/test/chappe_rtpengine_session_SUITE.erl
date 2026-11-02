@@ -22,6 +22,7 @@
     reinvite_glare_rejected/1,
     stop_in_idle_sends_no_delete/1,
     callee_reinvite_swaps_tags/1,
+    reoffer_with_via_branch/1,
     final_answer_deletes_losing_branches/1,
     media_commands/1,
     node_restart_notifies_owner/1,
@@ -46,6 +47,7 @@ all() ->
         reinvite_glare_rejected,
         stop_in_idle_sends_no_delete,
         callee_reinvite_swaps_tags,
+        reoffer_with_via_branch,
         final_answer_deletes_losing_branches,
         media_commands,
         node_restart_notifies_owner,
@@ -297,6 +299,28 @@ callee_reinvite_swaps_tags(Config) ->
     {ok, _} = chappe_rtpengine_session:offer(Sess, #{sdp => sdp()}),
     {_, Reoffer2} = lists:last(chappe_rtpengine_fake_server:received(Server)),
     ?assertEqual(<<"ft-c">>, maps:get(<<"from-tag">>, Reoffer2)),
+    ok = chappe_rtpengine_session:stop(Sess),
+    wait_dead(Sess),
+    ok.
+
+%% A re-offer naming a via-branch opens a branch: no to-tag goes with it,
+%% and the answer's to-tag becomes the session's.
+reoffer_with_via_branch(Config) ->
+    Server = ?config(server, Config),
+    Sess = establish(<<"sess-via">>, <<"ft-v">>, <<"tt-v">>),
+    {ok, _} = chappe_rtpengine_session:offer(Sess, #{
+        sdp => sdp(), via_branch => <<"v1">>
+    }),
+    {_, Offer} = lists:last(chappe_rtpengine_fake_server:received(Server)),
+    ?assertEqual(<<"v1">>, maps:get(<<"via-branch">>, Offer)),
+    ?assertEqual(<<"ft-v">>, maps:get(<<"from-tag">>, Offer)),
+    ?assertNot(maps:is_key(<<"to-tag">>, Offer)),
+    {ok, _} = chappe_rtpengine_session:answer(Sess, #{
+        sdp => sdp(), to_tag => <<"tt-new">>, via_branch => <<"v1">>
+    }),
+    {ok, _} = chappe_rtpengine_session:offer(Sess, #{sdp => sdp()}),
+    {_, Later} = lists:last(chappe_rtpengine_fake_server:received(Server)),
+    ?assertEqual(<<"tt-new">>, maps:get(<<"to-tag">>, Later)),
     ok = chappe_rtpengine_session:stop(Sess),
     wait_dead(Sess),
     ok.
