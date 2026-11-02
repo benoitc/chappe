@@ -16,13 +16,14 @@
          proxy_browser_to_udp/1, proxy_udp_to_browser/1,
          proxy_callee_bye/1, b2b_server_bye_to_browser/1,
          b2b_browser_bye_over_ws/1, proxy_ws_to_ws/1]).
--export([fork_ws_udp_browser_wins/1, fork_ws_udp_phone_wins/1]).
+-export([fork_ws_udp_browser_wins/1, fork_ws_udp_phone_wins/1,
+         replace_b_fork_ws_udp/1]).
 
 all() ->
     [ws_received, b2b_browser_to_udp, b2b_udp_to_browser,
      proxy_browser_to_udp, proxy_udp_to_browser, proxy_callee_bye,
      b2b_server_bye_to_browser, b2b_browser_bye_over_ws, proxy_ws_to_ws,
-     fork_ws_udp_browser_wins, fork_ws_udp_phone_wins].
+     fork_ws_udp_browser_wins, fork_ws_udp_phone_wins, replace_b_fork_ws_udp].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -321,6 +322,83 @@ fork_ws_udp(Winner) ->
     ?assertEqual(WinTag, maps:get(<<"to-tag">>, Answer)),
     ?assertEqual(WinVia, maps:get(<<"via-branch">>, Answer)),
     ?assert(has(A200, <<"a=rtpe-answer:", WinTag/binary>>)),
+    ws:close(C, 1000).
+
+%% After a call is up, chappe_sip_b2b:replace_b/3 forks to a browser over
+%% its WS flow and a desk phone over UDP: each branch has its own offer,
+%% with its own flags, and the browser's answer goes under its To-tag and
+%% its via-branch.
+replace_b_fork_ws_udp(_Config) ->
+    {EP, WP} = start(),
+    register(webrtc_test_rtpe, chappe_sip_test_rtpe:start(self())),
+    OldP = pick(),
+    PhoneP = pick(),
+    Old = uctc(OldP),
+    Phone = uctc(PhoneP),
+    Test = self(),
+    ok = chappe_sip:register(chappe_sip:registrar(#{allow_unauthenticated => true})),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        {ok, #{b2b := B2b} = Legs} =
+            chappe_sip:create_b2bua(Req, Res, Old, #{media => anchor}),
+        Test ! {b2b, B2b},
+        chappe_sip_b2b:relay(Legs)
+    end),
+    C = connect(WP),
+    ws:send(C, {text, register_bob()}),
+    _ = recv_ws(200),
+    udp_peer(OldP, fun(Sock) ->
+        {Inv, Src} = urecv(Sock, <<"INVITE">>),
+        usend(Sock, Src, uresp(Inv, 200, <<"OK">>, <<"oldtag">>,
+                               [{<<"Contact">>, Old}], sdp())),
+        {_, _} = urecv(Sock, <<"ACK">>),
+        {Bye, BS} = urecv(Sock, <<"BYE">>),
+        usend(Sock, BS, uresp(Bye, 200, <<"OK">>, <<"oldtag">>, [], <<>>)),
+        Test ! {old_bye, true},
+        timer:sleep(infinity)
+    end),
+    udp_peer(PhoneP, fun(Sock) ->
+        {Inv, Src} = urecv(Sock, <<"INVITE">>),
+        Test ! {phone_invite, Inv},
+        {Cancel, CSrc} = urecv(Sock, <<"CANCEL">>),
+        usend(Sock, CSrc, uresp(Cancel, 200, <<"OK">>, <<"phonetag">>, [], <<>>)),
+        usend(Sock, Src, uresp(Inv, 487, <<"Request Terminated">>,
+                               <<"phonetag">>, [], <<>>)),
+        timer:sleep(infinity)
+    end),
+    udp_peer(0, fun(Sock) ->
+        usend(Sock, EP, uinvite(Sock, <<"udpA">>)),
+        R200 = urecv_status(Sock, 200),
+        usend(Sock, EP, uack(Sock, <<"udpA">>, to_tag(R200))),
+        timer:sleep(infinity)
+    end),
+    B2b = got(b2b),
+    _ = drain_rtpe(),
+    {ok, Uri, Flow} = chappe_sip:location_flow(<<"sip:bob@127.0.0.1">>),
+    PhoneOpts = #{anchor_params => #{b => #{<<"x-leg">> => <<"phone">>}}},
+    Dests = [{Uri, #{flow => Flow}}, {Phone, PhoneOpts}],
+    spawn_link(fun() ->
+        Test ! {replaced, chappe_sip_b2b:replace_b(B2b, {parallel, Dests}, #{})}
+    end),
+    Inv = recv_ws_method(<<"INVITE">>),
+    PhoneInv = got(phone_invite),
+    timer:sleep(200),
+    ws:send(C, {text, ws_ok200(Inv, top_via(Inv), <<"bobtag">>)}),
+    _ = recv_ws_method(<<"ACK">>),
+    ?assertMatch({ok, #{winner := #{index := 1, uri := Uri}}}, got(replaced)),
+    true = got(old_bye),
+    Cmds = drain_rtpe(),
+    [Offer1, Offer2] = [Cmd || #{<<"command">> := <<"offer">>} = Cmd <- Cmds],
+    ?assertMatch(#{<<"transport-protocol">> := <<"UDP/TLS/RTP/SAVPF">>,
+                   <<"via-branch">> := <<"chappe-1">>}, Offer1),
+    ?assertMatch(#{<<"transport-protocol">> := <<"RTP/AVP">>,
+                   <<"via-branch">> := <<"chappe-2">>,
+                   <<"x-leg">> := <<"phone">>}, Offer2),
+    ?assertNot(maps:is_key(<<"x-leg">>, Offer1)),
+    ?assert(has(Inv, <<"a=rtpe-via:chappe-1">>)),
+    ?assert(has(PhoneInv, <<"a=rtpe-via:chappe-2">>)),
+    [Answer] = [Cmd || #{<<"command">> := <<"answer">>} = Cmd <- Cmds],
+    ?assertEqual(<<"bobtag">>, maps:get(<<"to-tag">>, Answer)),
+    ?assertEqual(<<"chappe-1">>, maps:get(<<"via-branch">>, Answer)),
     ws:close(C, 1000).
 
 drain_rtpe() ->

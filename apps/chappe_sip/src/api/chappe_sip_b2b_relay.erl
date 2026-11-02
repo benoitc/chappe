@@ -100,8 +100,11 @@ with_opts(Opts, M) ->
         error -> M2
     end.
 
-loop(#{a := A, b := B, refs := {RefA, RefB}, ref := Ref} = S) ->
+loop(#{a := A, b := B, refs := {RefA, RefB}, ref := Ref, pending := P} = S) ->
+    HelperMon = helper_mon(P),
     receive
+        {'DOWN', HelperMon, process, _, Why} ->
+            loop(helper_down(Why, S));
         {chappe_sip_dialog, A, destroy, Why} ->
             done(S, B, Why, a_bye);
         {chappe_sip_dialog, B, destroy, Why} ->
@@ -158,9 +161,13 @@ done(#{pending := P, media := M}, Peer, Why, Tag) ->
     }),
     {done, Tag}.
 
-stop_pending(#{pid := Pid, ref := Ref, step := {replace, From, _}}) ->
+stop_pending(#{
+    pid := Pid, ref := Ref, mon := Mon, step := {replace, From, _}
+}) ->
+    erlang:demonitor(Mon, [flush]),
     chappe_sip_b2b_replace:abort(Pid, Ref, From);
-stop_pending(#{pid := Pid}) ->
+stop_pending(#{pid := Pid, mon := Mon}) ->
+    erlang:demonitor(Mon, [flush]),
     exit(Pid, kill),
     ok;
 stop_pending(_P) ->
@@ -254,7 +261,10 @@ forward(X, Event, Offer, Res, #{media := M} = S) ->
 
 %% ---- the other leg's result ----
 
-relayed(Ref, Result, #{pending := #{ref := Ref, step := Step}} = S0) ->
+relayed(
+    Ref, Result, #{pending := #{ref := Ref, mon := Mon, step := Step}} = S0
+) ->
+    erlang:demonitor(Mon, [flush]),
     step(Step, Result, S0#{pending := undefined});
 relayed(_Ref, _Result, S) ->
     S.
@@ -404,67 +414,78 @@ replace_b(From, _Target, _Opts, #{pending := P} = S) when
 ->
     reply(From, {error, busy}),
     S;
+replace_b(From, {parallel, []}, _Opts, S) ->
+    reply(From, {error, none_up}),
+    S;
 replace_b(From, Target, Opts, #{media := M0, a := A} = S) ->
     %% the new B may sit on another network than the old one (a media
-    %% server): its anchor_params replace the call's for each leg named.
-    %% A never hears of the new offer, so the answers toward A ask
-    %% rtpengine to keep A's ports (port latching): an answer to a
-    %% re-offer otherwise moves A to new local ports
-    Params = latched(maps:get(params, M0)),
+    %% server): its anchor_params replace the call's for each leg named
+    Params = chappe_sip_b2b_replace:latched(maps:get(params, M0)),
     M = M0#{
-        params := latched(
+        params := chappe_sip_b2b_replace:latched(
             maps:merge(Params, maps:get(anchor_params, Opts, #{}))
         )
     },
+    %% what the old B goes back to on a failure
+    Old = #{params => Params, webrtc => maps:get(webrtc, M0)},
     %% rtpengine's offer for A's side: A keeps the addresses it sends to,
     %% the new B gets the ones it should send to
-    case chappe_sip_b2b_media:offer(a, remote_sdp(A), M) of
-        {ok, Sdp, M1} ->
+    case chappe_sip_b2b_replace:offer(Target, remote_sdp(A), Opts, M) of
+        {ok, Target1, Sdp, M1} ->
             Handled = chappe_sip_b2b_requests:handled(
                 maps:get(requests, S), maps:get(relay_info, S)
             ),
             Relay = self(),
+            Moved = chappe_sip_b2b_replace:moved(Target1, M0, M1),
             spawn_step(
-                {replace, From, Params},
+                {replace, From, {Old, Moved}},
                 fun() ->
                     chappe_sip_b2b_replace:call(
-                        Target, Sdp, Opts#{handled => Handled}, Relay
+                        Target1, Sdp, Opts#{handled => Handled}, Relay
                     )
                 end,
                 S#{media := M1}
             );
         {reject, Code} ->
+            %% nothing reached rtpengine
             reply(From, {error, {rejected, Code}}),
-            S
+            S;
+        {reject, Code, offered} ->
+            %% some of the fork's offers went through
+            reply(From, {error, {rejected, Code}}),
+            keep_old_b({Old, true}, S#{media := M})
     end.
 
 %% the new B answered and carries the call, or the old B keeps it and
 %% rtpengine gets the old B's SDP back as the answer
-replaced(From, Params, {ok, NewB, Answer}, S) ->
-    case chappe_sip_b2b_replace:swap(NewB, Answer, S) of
+replaced(From, Old, {ok, NewB, Answer, Won}, S) ->
+    case chappe_sip_b2b_replace:swap(NewB, Answer, Won, S) of
         {ok, S1} ->
-            reply(From, ok),
+            reply(From, chappe_sip_b2b_replace:result(Won)),
             S1;
         Error ->
             reply(From, Error),
-            restore(b, old_params(Params, S))
+            keep_old_b(Old, S)
     end;
-replaced(From, Params, Error, S) ->
+replaced(From, Old, Error, S) ->
     reply(From, failure(Error)),
-    restore(b, old_params(Params, S)).
+    keep_old_b(Old, S).
 
-%% the parameters toward A (those of the answers to A's offers) latch
-latched(Params) ->
-    A = maps:get(a, Params, #{}),
-    Flags = maps:get(flags, A, []),
-    case lists:member(port_latching, Flags) of
-        true -> Params;
-        false -> Params#{a => A#{flags => [port_latching | Flags]}}
-    end.
+%% rtpengine gets the old B's SDP back; an offer that took other flags
+%% toward B moved the old B's media with them (another interface, say),
+%% which the answer does not undo, so one more exchange takes them back
+keep_old_b({Old, true}, S) ->
+    reopen(restore(b, old_params(Old, S)));
+keep_old_b({Old, false}, S) ->
+    restore(b, old_params(Old, S)).
 
-%% the old B keeps the call, and the anchor_params it had
-old_params(Params, #{media := M} = S) ->
-    S#{media := M#{params := Params}}.
+reopen(#{media := M, a := A, b := B} = S) ->
+    ASdp = remote_sdp(A),
+    S#{media := chappe_sip_b2b_replace:reopen(ASdp, remote_sdp(B), M)}.
+
+%% the old B keeps the call, and the anchor_params and flags it had
+old_params(Old, #{media := M} = S) ->
+    S#{media := maps:merge(M, Old)}.
 
 %% the call went direct: its rtpengine session is released
 switched(#{session := Old}, #{media := #{mode := direct} = M} = S) when
@@ -497,12 +518,24 @@ reply({Pid, Tag}, Reply) ->
 %% ---- helpers run off the loop ----
 
 %% Run Fun in a helper so the loop keeps answering both legs meanwhile;
-%% its result comes back as relay_result and runs Step.
+%% its result comes back as relay_result and runs Step. A helper that dies
+%% runs Step with an error (helper_down/3), so the call is not left with
+%% its offer pending for good.
 spawn_step(Step, Fun, S) ->
     Parent = self(),
     Ref = make_ref(),
-    Pid = spawn(fun() -> Parent ! {relay_result, Ref, Fun()} end),
-    S#{pending := #{ref => Ref, pid => Pid, step => Step}}.
+    {Pid, Mon} = spawn_monitor(fun() ->
+        Parent ! {relay_result, Ref, Fun()}
+    end),
+    S#{pending := #{ref => Ref, pid => Pid, mon => Mon, step => Step}}.
+
+%% the monitor of the helper at work, to match its 'DOWN' and no other
+helper_mon(#{mon := Mon}) -> Mon;
+helper_mon(_P) -> undefined.
+
+helper_down(Why, #{pending := #{step := Step}} = S) ->
+    logger:warning("chappe_sip_b2b: relay helper died: ~p", [Why]),
+    step(Step, {error, {helper_down, Why}}, S#{pending := undefined}).
 
 %% the ACK of a 2xx we left unACKed carries Sdp; off the loop, since the
 %% leg may be busy with its own session refresh

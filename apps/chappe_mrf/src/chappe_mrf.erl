@@ -258,17 +258,29 @@ inactive_sdp() ->
         "a=inactive\r\n"
     >>.
 
--spec bridge(chappe_sip_b2b:b2b(), endpoint() | binary()) ->
-    ok | {error, term()}.
+-spec bridge(
+    chappe_sip_b2b:b2b(),
+    endpoint() | binary() | {parallel, [chappe_sip_b2b:dest()]}
+) ->
+    ok | {ok, #{winner := chappe_sip_b2b:winner()}} | {error, term()}.
 bridge(B2b, Target) ->
     bridge(B2b, Target, #{}).
 
 %% Move the caller of B2b (an anchored call) to Target: an endpoint of
-%% create_endpoint/1, or a SIP URI. The caller sees no re-INVITE; the
-%% leg it had (an endpoint's channel, a callee) gets a BYE. Opts are
-%% chappe_sip_b2b:replace_b/3's (anchor_params, headers, timer_c, ...).
--spec bridge(chappe_sip_b2b:b2b(), endpoint() | binary(), map()) ->
-    ok | {error, term()}.
+%% create_endpoint/1, a SIP URI, or {parallel, Dests} to ring several
+%% destinations at once. The caller sees no re-INVITE; the leg it had (an
+%% endpoint's channel, a callee) gets a BYE. On a failure the caller stays
+%% where it was. A fork returns {ok, #{winner := Winner}}, the destination
+%% that answered. Opts are chappe_sip_b2b:replace_b/3's (anchor_params,
+%% headers, timer_c, ...).
+-spec bridge(
+    chappe_sip_b2b:b2b(),
+    endpoint() | binary() | {parallel, [chappe_sip_b2b:dest()]},
+    map()
+) ->
+    ok | {ok, #{winner := chappe_sip_b2b:winner()}} | {error, term()}.
+bridge(B2b, {parallel, _} = Fork, Opts) ->
+    chappe_sip_b2b:replace_b(B2b, Fork, Opts);
 bridge(B2b, Uri, Opts) when is_binary(Uri) ->
     chappe_sip_b2b:replace_b(B2b, Uri, Opts);
 bridge(B2b, Ep, Opts) when is_pid(Ep) ->

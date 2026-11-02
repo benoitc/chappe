@@ -343,7 +343,9 @@ handle_event({call, From}, {offer, Params0}, established, Data) ->
         ok when Initiator =:= callee, Data#data.to_tag =:= undefined ->
             {keep_state_and_data, [{reply, From, {error, no_to_tag}}]};
         ok ->
-            Params = maps:merge(reoffer_tags(Initiator, Data), Params1),
+            Params = maps:merge(
+                reoffer_tags(Initiator, Params1, Data), Params1
+            ),
             case send_async(offer, Params, Data) of
                 {ok, Ref, Data1} ->
                     Data2 = Data1#data{reoffer_initiator = Initiator},
@@ -595,13 +597,18 @@ do_answer(From, Params0, StateKind, Data) ->
             {keep_state_and_data, [{reply, From, Error}]}
     end.
 
-reoffer_tags(caller, Data) ->
+%% A re-offer naming a via_branch opens a branch: rtpengine only tells
+%% branches apart when it carries no to-tag, a to-tag there makes every
+%% via-branch the established leg.
+reoffer_tags(caller, #{via_branch := _}, Data) ->
+    #{from_tag => Data#data.from_tag};
+reoffer_tags(caller, _Params, Data) ->
     Base = #{from_tag => Data#data.from_tag},
     case Data#data.to_tag of
         undefined -> Base;
         ToTag -> Base#{to_tag => ToTag}
     end;
-reoffer_tags(callee, Data) ->
+reoffer_tags(callee, _Params, Data) ->
     #{from_tag => Data#data.to_tag, to_tag => Data#data.from_tag}.
 
 answer_tags(_Params, #data{reoffer_initiator = callee} = Data) ->

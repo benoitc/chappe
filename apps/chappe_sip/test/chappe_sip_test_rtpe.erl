@@ -8,7 +8,8 @@
 %% and, for a command with a via-branch (one offer per fork profile),
 %%   a=rtpe-via:<via-branch>
 %% so a case sees which SDP went through the anchor, and every command
-%% reaches the collector as {rtpe_cmd, Dict}.
+%% reaches the collector as {rtpe_cmd, Dict}. A command carrying x-fail
+%% gets an error.
 -module(chappe_sip_test_rtpe).
 
 -export([start/1, stop/1, configure/1, marked/2]).
@@ -57,6 +58,8 @@ loop(Sock, Collector) ->
             gen_udp:close(Sock)
     end.
 
+reply(#{<<"x-fail">> := _}) ->
+    #{<<"result">> => <<"error">>, <<"error-reason">> => <<"x-fail">>};
 reply(#{<<"command">> := <<"offer">>, <<"sdp">> := Sdp} = Cmd) ->
     ok(via(Sdp, Cmd), <<"offer">>, maps:get(<<"from-tag">>, Cmd, <<>>));
 reply(#{<<"command">> := <<"answer">>, <<"sdp">> := Sdp} = Cmd) ->

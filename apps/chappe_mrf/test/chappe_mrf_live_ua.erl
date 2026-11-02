@@ -8,12 +8,14 @@
 %% through. The tone detection is chappe_mix's test helper, copied (the
 %% apps share no code).
 %%
-%% call/2 calls the engine; callee/1 answers one INVITE. The test gets
-%% {ua, Ua, Event}: {final, Status}, reinvite, bye.
+%% call/2 calls the engine; callee/1 takes one INVITE and answers it as its
+%% answer option says: now (the default), {after_ms, Ms} (180, then 200),
+%% ring (180, until a CANCEL) or {status, St}. The test gets {ua, Ua,
+%% Event}: {final, Status}, invite, cancel, reinvite, bye.
 -module(chappe_mrf_live_ua).
 
 -export([call/2, callee/1, port/1, stop/1]).
--export([tone/2, dtmf/2, bye/1, clear/1, hears/3, silent/3, level/2]).
+-export([tone/2, dtmf/2, bye/1, reinvite/1, clear/1, hears/3, silent/3, level/2]).
 -export([write_wav/3, write_wav/4, wav_level/2]).
 
 -define(RATE, 8000).
@@ -42,6 +44,7 @@ stop(Ua) -> exit(Ua, kill), ok.
 tone(Ua, Freq) -> Ua ! {tone, Freq}, ok.
 dtmf(Ua, Digits) -> Ua ! {dtmf, Digits}, ok.
 bye(Ua) -> Ua ! bye, ok.
+reinvite(Ua) -> Ua ! reinvite, ok.
 clear(Ua) -> Ua ! clear, ok.
 
 %% Whether Freq comes through within Ms (a 200 ms window at -40 dBFS).
@@ -93,6 +96,7 @@ init(Parent, #{mode := Mode, opts := Opts}) ->
         sip_port => element(2, inet:port(Sip)),
         rtp_port => element(2, inet:port(Rtp)),
         freq => maps:get(freq, Opts, none),
+        answer => maps:get(answer, Opts, now),
         remote => undefined,
         seq => 1,
         ts => 0,
@@ -142,6 +146,10 @@ loop(#{sip := Sip, rtp := Rtp, parent := Parent} = S) ->
             loop(S#{rx := []});
         bye ->
             loop(send_bye(S));
+        reinvite ->
+            loop(send_reinvite(S));
+        {answer, I, Src, Tag} ->
+            loop(answer(I, Src, Tag, S));
         {port, From} ->
             From ! {self(), port, maps:get(sip_port, S)},
             loop(S);
@@ -175,26 +183,42 @@ sip(<<"SIP/2.0 ", Code:3/binary, _/binary>> = R, _Src, #{dialog := undefined, in
             ok = gen_udp:send(Sip, {127, 0, 0, 1}, EP, ack_failure(Inv, R)),
             S
     end;
+sip(<<"SIP/2.0 2", _/binary>> = R, _Src, #{reinviting := N, dialog := D, sip := Sip} = S) ->
+    %% the 2xx of our re-INVITE: its answer is where to send from now on
+    #{dst := {Ip, Port}} = D,
+    ok = gen_udp:send(Sip, Ip, Port, req(<<"ACK">>, N, S, D)),
+    tell(S, reinvited),
+    maps:remove(reinviting, S#{remote := remote(body(R))});
 sip(<<"SIP/2.0 ", _/binary>>, _Src, S) ->
     S;
-sip(<<"INVITE ", _/binary>> = I, Src, #{dialog := undefined} = S) ->
-    %% the callee: answer the INVITE
-    Tag = tag(),
-    #{sip := Sip, sip_port := P, rtp_port := RP} = S,
-    C = {<<"Contact">>, <<"<sip:callee@127.0.0.1:", (integer_to_binary(P))/binary, ">">>},
-    ok = gen_udp:send(Sip, {127, 0, 0, 1}, Src, resp(I, 200, <<"OK">>, Tag, [C], sdp(RP))),
-    D = #{
-        to => hdr(I, <<"from">>),
-        from => <<(hdr(I, <<"to">>))/binary, ";tag=", Tag/binary>>,
-        call_id => hdr(I, <<"call-id">>),
-        target => contact_uri(I),
-        dst => {{127, 0, 0, 1}, Src}
-    },
+sip(<<"INVITE ", _/binary>> = I, Src, #{dialog := undefined, answer := Answer} = S) ->
+    %% the callee: answer the INVITE as the test asked
     tell(S, invite),
-    S#{dialog := D, remote := remote(body(I))};
-sip(<<"INVITE ", _/binary>> = I, Src, #{sip := Sip, rtp_port := RP} = S) ->
+    Tag = tag(),
+    #{sip := Sip} = S,
+    case Answer of
+        now ->
+            answer(I, Src, Tag, S);
+        {status, St} ->
+            ok = gen_udp:send(Sip, {127, 0, 0, 1}, Src, resp(I, St, <<"Refused">>, Tag, [], <<>>)),
+            S;
+        ring ->
+            ok = gen_udp:send(Sip, {127, 0, 0, 1}, Src, resp(I, 180, <<"Ringing">>, Tag, [], <<>>)),
+            S#{ringing => {I, Src, Tag}};
+        {after_ms, Ms} ->
+            ok = gen_udp:send(Sip, {127, 0, 0, 1}, Src, resp(I, 180, <<"Ringing">>, Tag, [], <<>>)),
+            erlang:send_after(Ms, self(), {answer, I, Src, Tag}),
+            S
+    end;
+sip(<<"CANCEL ", _/binary>> = C, Src, #{sip := Sip, ringing := {I, ISrc, Tag}} = S) ->
+    ok = gen_udp:send(Sip, {127, 0, 0, 1}, Src, resp(C, 200, <<"OK">>, Tag, [], <<>>)),
+    ok = gen_udp:send(Sip, {127, 0, 0, 1}, ISrc, resp(I, 487, <<"Request Terminated">>, Tag, [], <<>>)),
+    tell(S, cancel),
+    S;
+sip(<<"INVITE ", _/binary>> = I, Src, #{sip := Sip, sip_port := P, rtp_port := RP} = S) ->
     tell(S, reinvite),
-    ok = gen_udp:send(Sip, {127, 0, 0, 1}, Src, resp(I, 200, <<"OK">>, <<>>, [], sdp(RP))),
+    C = {<<"Contact">>, <<"<sip:ua@127.0.0.1:", (integer_to_binary(P))/binary, ">">>},
+    ok = gen_udp:send(Sip, {127, 0, 0, 1}, Src, resp(I, 200, <<"OK">>, <<>>, [C], sdp(RP))),
     S#{remote := remote(body(I))};
 sip(<<"BYE ", _/binary>> = B, Src, #{sip := Sip} = S) ->
     ok = gen_udp:send(Sip, {127, 0, 0, 1}, Src, resp(B, 200, <<"OK">>, <<>>, [], <<>>)),
@@ -205,6 +229,25 @@ sip(<<"ACK ", _/binary>>, _Src, S) ->
 sip(Req, Src, #{sip := Sip} = S) ->
     _ = gen_udp:send(Sip, {127, 0, 0, 1}, Src, resp(Req, 200, <<"OK">>, <<>>, [], <<>>)),
     S.
+
+answer(I, Src, Tag, #{sip := Sip, sip_port := P, rtp_port := RP} = S) ->
+    C = {<<"Contact">>, <<"<sip:callee@127.0.0.1:", (integer_to_binary(P))/binary, ">">>},
+    ok = gen_udp:send(Sip, {127, 0, 0, 1}, Src, resp(I, 200, <<"OK">>, Tag, [C], sdp(RP))),
+    D = #{
+        to => hdr(I, <<"from">>),
+        from => <<(hdr(I, <<"to">>))/binary, ";tag=", Tag/binary>>,
+        call_id => hdr(I, <<"call-id">>),
+        target => contact_uri(I),
+        dst => {{127, 0, 0, 1}, Src}
+    },
+    S#{dialog := D, remote := remote(body(I))}.
+
+%% a new offer, with a new o= version so it is not taken for a refresh
+send_reinvite(#{dialog := #{dst := {Ip, Port}} = D, sip := Sip, cseq := Cseq, rtp_port := RP} = S) ->
+    N = Cseq + 1,
+    Body = sdp(RP, N + 1),
+    ok = gen_udp:send(Sip, Ip, Port, req(<<"INVITE">>, N, S, D, Body)),
+    S#{cseq := N, reinviting => N}.
 
 send_bye(#{dialog := undefined} = S) ->
     S;
@@ -355,8 +398,12 @@ write_wav(Path, Freq, Ms, Amp) ->
 %% ---- SIP text ----
 
 sdp(Port) ->
+    sdp(Port, 1).
+
+sdp(Port, Version) ->
     P = integer_to_binary(Port),
-    <<"v=0\r\no=live 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\n"
+    V = integer_to_binary(Version),
+    <<"v=0\r\no=live 1 ", V/binary, " IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\n"
       "m=audio ", P/binary, " RTP/AVP 0 101\r\na=rtpmap:0 PCMU/8000\r\n"
       "a=rtpmap:101 telephone-event/8000\r\na=fmtp:101 0-16\r\na=ptime:20\r\na=sendrecv\r\n">>.
 
@@ -372,8 +419,21 @@ remote(Sdp) ->
             undefined
     end.
 
-req(Method, N, #{sip_port := P0}, #{to := To, from := From, call_id := CallId, target := T}) ->
+req(Method, N, S, D) ->
+    req(Method, N, S, D, <<>>).
+
+req(Method, N, #{sip_port := P0}, #{to := To, from := From, call_id := CallId, target := T}, Body) ->
     P = integer_to_binary(P0),
+    Offer =
+        case Body of
+            <<>> ->
+                [];
+            _ ->
+                [
+                    {<<"Contact">>, <<"<sip:ua@127.0.0.1:", P/binary, ">">>},
+                    {<<"Content-Type">>, <<"application/sdp">>}
+                ]
+        end,
     build(Method, T, [
         {<<"Via">>, <<"SIP/2.0/UDP 127.0.0.1:", P/binary, ";rport;branch=", (branch())/binary>>},
         {<<"Max-Forwards">>, <<"70">>},
@@ -381,7 +441,7 @@ req(Method, N, #{sip_port := P0}, #{to := To, from := From, call_id := CallId, t
         {<<"To">>, To},
         {<<"Call-ID">>, CallId},
         {<<"CSeq">>, <<(integer_to_binary(N))/binary, " ", Method/binary>>}
-    ], <<>>).
+    ] ++ Offer, Body).
 
 ack_failure(Inv, R) ->
     [_, Ruri | _] = binary:split(Inv, <<" ">>, [global]),

@@ -24,7 +24,7 @@
 
 -export([new/2, start/1, stop/1, mode/1, set_mode/2, session/1]).
 -export([set_tag/3, offer/3, answer/3, final_answer/3, rejected/3, hook/1]).
--export([fork_offer/3, branch/2]).
+-export([fork_offer/3, branch/2, unhold/2, b_flags/1]).
 
 -export_type([state/0, mode/0, leg/0, profile/0]).
 
@@ -181,9 +181,12 @@ branch(P, #{webrtc := W} = M) ->
 %% runs once; anchored, rtpengine gets one offer per distinct set of
 %% flags toward B, under a via-branch of its own when there are several.
 %% Returns, in the order of Profiles, each profile (with its via-branch)
-%% and the SDP its branch gets.
+%% and the SDP its branch gets. {reject, Code} when rtpengine took no offer,
+%% {reject, Code, offered} when it took some of them before one failed.
 -spec fork_offer(binary(), [profile(), ...], state()) ->
-    {ok, [{profile(), binary()}], state()} | {reject, 300..699}.
+    {ok, [{profile(), binary()}], state()}
+    | {reject, 300..699}
+    | {reject, 300..699, offered}.
 fork_offer(Sdp, [P0 | _] = Ps, M0) ->
     Keys = [toward(b, branch(P, M0)) || P <- Ps],
     case distinct(Keys) of
@@ -198,6 +201,21 @@ fork_offer(Sdp, [P0 | _] = Ps, M0) ->
                 {ok, Out, M1} -> {ok, [{P, Out} || P <- Ps], M1};
                 Rej -> Rej
             end
+    end.
+
+%% The flags rtpengine writes the SDP toward B with.
+-spec b_flags(state()) -> map().
+b_flags(M) -> toward(b, M).
+
+%% Leg now has another party behind it, which is not on hold.
+-spec unhold(leg(), state()) -> state().
+unhold(Leg, #{hold := H} = M) ->
+    case maps:get(Leg, H) of
+        true ->
+            event({unhold, Leg}, M),
+            M#{hold := H#{Leg => false}};
+        false ->
+            M
     end.
 
 %% Leg Y refused the offer relayed to it: rtpengine already took that
@@ -215,7 +233,11 @@ rejected(Y, LastSdp, #{session := S} = M) ->
 %% ---- internal ----
 
 %% one rtpengine offer per distinct Key, the first one opening the
-%% session's offer/answer exchange
+%% session's offer/answer exchange. Not on a call whose first offer was
+%% B's (replace_b/3 after a late offer): rtpengine's caller is B there,
+%% so A's offers are callee-initiated and have no via-branch form.
+profile_offers(_Sdp, _Ps, _Keys, _Distinct, #{origin := b}) ->
+    {reject, 488};
 profile_offers(Sdp, Ps, Keys, Distinct, #{session := S} = M0) ->
     M = M0#{origin := a},
     Indexed = lists:zip(Distinct, lists:seq(1, length(Distinct))),
@@ -229,8 +251,10 @@ profile_offers(Sdp, Ps, Keys, Distinct, #{session := S} = M0) ->
         end,
         Indexed
     ),
-    case [Why || {_, _, {error, Why}} <- Sent] of
-        [] ->
+    case
+        {[Why || {_, _, {error, Why}} <- Sent], [ok || {_, _, {ok, _}} <- Sent]}
+    of
+        {[], _} ->
             ByKey = #{Key => {Via, Out} || {Key, Via, {ok, Out}} <- Sent},
             {ok,
                 [
@@ -239,9 +263,12 @@ profile_offers(Sdp, Ps, Keys, Distinct, #{session := S} = M0) ->
                     {Via, Out} <- [maps:get(Key, ByKey)]
                 ],
                 M#{last := undefined}};
-        [Why | _] ->
+        {[Why | _], []} ->
             logger:warning("chappe_sip_b2b: rtpengine offer failed: ~p", [Why]),
-            {reject, 500}
+            {reject, 500};
+        {[Why | _], _} ->
+            logger:warning("chappe_sip_b2b: rtpengine offer failed: ~p", [Why]),
+            {reject, 500, offered}
     end.
 
 distinct(Keys) ->
