@@ -114,7 +114,10 @@
 %%                  header for the far end, say); a destination's own
 %%                  headers come after them
 %%   from        => the From of the INVITE to B (default: A's display name
-%%                  and URI, anonymous under user or header privacy)
+%%                  and URI, anonymous under user or header privacy). A
+%%                  malformed one (chappe_sip_hdr:valid_name_addr/1) reaches
+%%                  no leg: {error, badarg}, and A gets a 500 unless
+%%                  pass_failure is false
 %%   proxy_request_headers  => [Name] | all | {all, [ExcludeName]}
 %%   proxy_response_headers => [Name] | all | {all, [ExcludeName]}
 %%                    (copied from B's 2xx to A's)
@@ -175,6 +178,12 @@
 -spec create_b2bua(chappe_sip_req:req(), chappe_sip_res:res(), target(), map()) ->
     {ok, legs()} | {error, term()}.
 create_b2bua(Req, Res, Uri, Opts) ->
+    case chappe_sip_b2b_hdr:valid_from(Opts) of
+        true -> check_privacy(Req, Res, Uri, Opts);
+        false -> chappe_sip_b2b_fork:refuse(Res, badarg, Opts)
+    end.
+
+check_privacy(Req, Res, Uri, Opts) ->
     case chappe_sip_b2b_hdr:privacy_unsupported(Req, Opts) of
         [] ->
             start_b2bua(Req, Res, Uri, Opts);
@@ -859,6 +868,12 @@ hangup(B2b, Opts) ->
 %% the relay carries the call with the new B and the old B gets a BYE; on
 %% a failure the call keeps the old B. Opts:
 %%   headers  => [{binary(), iodata()}] on the INVITE to a URI
+%%   from     => the From of the INVITE to a URI or to every destination of
+%%               a fork, as for create_b2bua/4, with no default from A: the
+%%               INVITE otherwise names this node. A re-INVITE stays in its
+%%               dialog and keeps its identity (RFC 3261 12.2.1.1), so
+%%               {dialog, D} ignores it, like the other options of a new
+%%               INVITE. A malformed one is refused for every target
 %%   proxy, auth, flow, session_expires, min_se, session_refresher => as
 %%               for create_b2bua/4
 %%   timer_c  => how long the new B may ring, in ms (default: timer_c_ms)

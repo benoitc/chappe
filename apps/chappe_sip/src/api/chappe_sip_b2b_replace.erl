@@ -37,14 +37,15 @@
 
 %% options of create_b2bua/4 that also apply to the INVITE of a new B
 -define(UAC_OPTS, [
-    proxy, auth, flow, session_expires, min_se, session_refresher
+    from, proxy, auth, flow, session_expires, min_se, session_refresher
 ]).
 
 %% Whether replace_b/3's arguments can go to the relay, checked in the
 %% caller: what the relay chokes on would end a live call.
 -spec valid(term(), term()) -> boolean().
 valid(Target, Opts) when is_map(Opts) ->
-    valid_target(Target) andalso valid_opts(Opts);
+    valid_target(Target) andalso valid_opts(Opts) andalso
+        chappe_sip_b2b_hdr:valid_from(Opts);
 valid(_Target, _Opts) ->
     false.
 

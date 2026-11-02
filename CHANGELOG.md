@@ -7,6 +7,16 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 
 ## Unreleased
 
+- B2BUA and chappe_mrf: when you move a call to a new callee, you can now say
+  who that callee sees as calling. Before, a phone rung after an IVR menu
+  showed the PBX instead of the real caller. A malformed value is refused and
+  the call goes on.
+- B2BUA security: the caller identity you set when starting a call was sent
+  unchecked, so an application building it from untrusted text, such as a
+  caller's display name, could let that text add SIP headers to the outgoing
+  call. It is now checked first: a bad value is never sent, the caller hears a
+  500 and you get an error back. An application that chose to answer failures
+  itself still does so here.
 - chappe_esl call control: a slow api or audio fork command no longer stalls
   the call. While it waits, exec timeouts fire, other callers get answers, and
   if your process dies the fork stops and the channel is killed. Before, all of

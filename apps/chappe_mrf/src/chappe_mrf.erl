@@ -272,7 +272,8 @@ bridge(B2b, Target) ->
 %% endpoint's channel, a callee) gets a BYE. On a failure the caller stays
 %% where it was. A fork returns {ok, #{winner := Winner}}, the destination
 %% that answered. Opts are chappe_sip_b2b:replace_b/3's (anchor_params,
-%% headers, timer_c, ...).
+%% headers, from, timer_c, ...); from sets who the callee sees as calling,
+%% and an endpoint's re-INVITE ignores it, keeping its dialog's identity.
 -spec bridge(
     chappe_sip_b2b:b2b(),
     endpoint() | binary() | {parallel, [chappe_sip_b2b:dest()]},

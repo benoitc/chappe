@@ -12,7 +12,8 @@
     reason_headers/1,
     proxy_request_headers/2,
     proxy_response_headers/2,
-    b_from/2
+    b_from/2,
+    valid_from/1
 ]).
 -export([privacy/2, privacy_unsupported/2, privacy_failure/1]).
 
@@ -82,6 +83,13 @@ b_from(Req, Opts) ->
                 false -> caller(chappe_sip_req:get(<<"from">>, Req))
             end
     end.
+
+%% Whether the `from' option, if any, can go on the wire: it goes out raw,
+%% so one CRLF in it would add headers to the INVITE. Checked before any
+%% leg or transport is chosen.
+-spec valid_from(map()) -> boolean().
+valid_from(#{from := From}) -> chappe_sip_hdr:valid_name_addr(From);
+valid_from(_Opts) -> true.
 
 caller(From) ->
     case chappe_sip_hdr:name_addr(From) of

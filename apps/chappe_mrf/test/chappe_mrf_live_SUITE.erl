@@ -18,6 +18,7 @@
 -export([
     ivr_menu/1,
     bridge_sip_target/1,
+    bridge_shows_caller/1,
     fork_same_flags_second_answers/1,
     fork_own_flags_second_answers/1,
     fork_own_flags_first_answers/1,
@@ -52,6 +53,7 @@ all() ->
     [
         ivr_menu,
         bridge_sip_target,
+        bridge_shows_caller,
         fork_same_flags_second_answers,
         fork_own_flags_second_answers,
         fork_own_flags_first_answers,
@@ -281,6 +283,38 @@ bridge_sip_target(Config) ->
     ?assert(?UA:hears(Callee, 600, 6000)),
     no_reinvite(Ua),
     ?assertMatch({error, _}, chappe_mrf:play(Ep, <<"/media/one.wav">>)),
+    ?UA:bye(Ua),
+    ua_got(Callee, bye, 5000),
+    Owner ! stop.
+
+%% A softphone rung after the menu sees the caller, not this node.
+bridge_shows_caller(Config) ->
+    Test = self(),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        Test ! {caller, chappe_sip_b2b_hdr:b_from(Req, #{})},
+        {ok, Ep, B2b} = chappe_mrf:connect_caller(
+            Req, Res, #{anchor_params => to_fs(), notify => Test}
+        ),
+        Test ! {connected, Ep, B2b, self()},
+        park_loop()
+    end),
+    {Ua, _Ep, B2b, Owner} = call_in(Config, 600),
+    Caller =
+        receive
+            {caller, C} -> C
+        after 0 -> ct:fail(no_caller)
+        end,
+    Callee = ?UA:callee(#{freq => 900}),
+    ok = chappe_mrf:bridge(B2b, callee_uri(Callee), #{
+        from => Caller, anchor_params => to_host()
+    }),
+    From =
+        receive
+            {ua, Callee, {invite_from, F}} -> F
+        after 5000 -> ct:fail(no_invite_from)
+        end,
+    [Sent, _Tag] = binary:split(From, <<";tag=">>),
+    ?assertEqual(Caller, Sent),
     ?UA:bye(Ua),
     ua_got(Callee, bye, 5000),
     Owner ! stop.

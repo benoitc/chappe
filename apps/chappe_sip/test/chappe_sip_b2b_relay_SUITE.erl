@@ -47,7 +47,9 @@
          fork_replace_helper_dies/1, reinvite_helper_dies/1,
          replace_b_new_b_dies/1, info_follows_replace/1,
          replace_clears_hold/1, replace_b_bad_arguments/1,
-         replace_b_failure_other_flags/1]).
+         replace_b_failure_other_flags/1, replace_b_from/1,
+         fork_replace_from/1, replace_b_dialog_keeps_from/1,
+         replace_b_bad_from/1, replace_b_from_refused/1]).
 
 all() ->
     [reinvite_a_to_b, reinvite_b_to_a, update_relayed,
@@ -78,7 +80,9 @@ all() ->
      fork_replace_offer_half_refused, fork_replace_hook_rejects,
      fork_replace_helper_dies, reinvite_helper_dies, replace_b_new_b_dies,
      info_follows_replace, replace_clears_hold, replace_b_bad_arguments,
-     replace_b_failure_other_flags].
+     replace_b_failure_other_flags, replace_b_from, fork_replace_from,
+     replace_b_dialog_keeps_from, replace_b_bad_from,
+     replace_b_from_refused].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -101,6 +105,7 @@ end_per_testcase(_Case, _Config) ->
     _ = chappe_sip_engine:reset_routes(),
     ok.
 
+-define(NEW_FROM, <<"\"Alice\" <sip:alice@example.com>">>).
 -define(UA, chappe_sip_test_ua).
 
 %% ---- in-dialog relay ----
@@ -1428,6 +1433,18 @@ replace_b_aborted_when_call_ends(_Config) ->
 %% replace_b/3 with a dialog the app made: the relay takes it over, so a
 %% re-INVITE from the new B is relayed to A.
 replace_b_dialog(_Config) ->
+    _ = dialog_replace(#{}),
+    ok.
+
+%% A re-INVITE stays in the dialog, so it keeps the dialog's From (RFC
+%% 3261 12.2.1.1) and from does not apply to it.
+replace_b_dialog_keeps_from(_Config) ->
+    Re = dialog_replace(#{from => ?NEW_FROM}),
+    ?assertNot(has(?UA:hdr(Re, <<"from">>), <<"Alice">>)),
+    ?assertEqual(from_tag(?UA:hdr(got(first_invite), <<"from">>)),
+                 from_tag(?UA:hdr(Re, <<"from">>))).
+
+dialog_replace(Opts) ->
     rtpe(),
     {EP, CP} = setup(#{media => anchor}),
     NP = ?UA:pick(),
@@ -1438,6 +1455,7 @@ replace_b_dialog(_Config) ->
     end),
     EpPeer = ?UA:peer(NP, fun(Sock) ->
         {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
+        tell({first_invite, Inv}),
         Tag = <<"dtag">>,
         ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, Tag, [contact(Sock)],
                                      ?UA:sdp(<<"endpoint">>))),
@@ -1467,12 +1485,14 @@ replace_b_dialog(_Config) ->
     NewUri = <<"sip:ep@127.0.0.1:", (integer_to_binary(NP))/binary>>,
     {ok, URef} = chappe_sip_uac:start(NewUri, #{local_sdp => ?UA:sdp(<<"app">>)}),
     {ok, D} = chappe_sip_uac:await(URef, 5000),
-    ok = chappe_sip_b2b:replace_b(B2b, {dialog, D}, #{}),
-    ?assert(has(?UA:body(got(reinvite)), <<"a=rtpe-offer:">>)),
+    ok = chappe_sip_b2b:replace_b(B2b, {dialog, D}, Opts),
+    Re = got(reinvite),
+    ?assert(has(?UA:body(Re), <<"a=rtpe-offer:">>)),
     ok = ?UA:expect(old_b_bye),
     EpPeer ! go,
     ?assert(has(?UA:body(got(a_reinvite)), <<"endpoint">>)),
-    ?assertEqual(200, ?UA:status(got(ep_final))).
+    ?assertEqual(200, ?UA:status(got(ep_final))),
+    Re.
 
 
 b2b_request(Ref) ->
@@ -2037,6 +2057,94 @@ replace_b_bad_arguments(_Config) ->
     ?assertEqual([], sdp_cmds()),
     hang_up(),
     ok = ?UA:expect(old_b_bye).
+
+%% ---- from on replace_b/3 ----
+
+%% The INVITE to a new B carries the From the app gives, under a tag of
+%% its own, where it would otherwise name this node.
+replace_b_from(_Config) ->
+    {B2b, _OldTag} = fork_call(),
+    Uri = fork_dest(one, answers(one, <<"onetag">>, 0)),
+    ok = chappe_sip_b2b:replace_b(B2b, Uri, #{from => ?NEW_FROM}),
+    assert_new_from(?UA:hdr(got(one), <<"from">>)),
+    ok = ?UA:expect(old_b_bye),
+    hang_up(),
+    ok = ?UA:expect({bye_of, one}).
+
+%% Every branch of a fork carries it, each under its own tag.
+fork_replace_from(_Config) ->
+    {B2b, _OldTag} = fork_call(),
+    U1 = fork_dest(one, rings(one)),
+    U2 = fork_dest(two, fun(S, I, Src) ->
+        receive after 300 -> ok end,
+        (answers(two, <<"twotag">>, 0))(S, I, Src)
+    end),
+    {ok, #{winner := #{index := 2}}} =
+        chappe_sip_b2b:replace_b(B2b, {parallel, [U1, U2]},
+                                 #{from => ?NEW_FROM}),
+    F1 = ?UA:hdr(got(one), <<"from">>),
+    F2 = ?UA:hdr(got(two), <<"from">>),
+    assert_new_from(F1),
+    assert_new_from(F2),
+    ?assertNotEqual(from_tag(F1), from_tag(F2)),
+    ok = ?UA:expect(old_b_bye),
+    hang_up(),
+    ok = ?UA:expect({bye_of, two}).
+
+%% A From that cannot go on the wire is refused in the caller, whatever
+%% the target: no offer, no INVITE, and the call goes on. A CRLF would
+%% otherwise add headers to the INVITE.
+replace_b_bad_from(_Config) ->
+    {{Relay, _} = B2b, _OldTag} = fork_call(),
+    Bad = [
+        123,
+        undefined,
+        "sip:alice@example.com",
+        <<>>,
+        <<"not a uri">>,
+        <<"http://example.com/">>,
+        <<"<sip:alice@example.com">>,
+        <<"\"Alice <sip:alice@example.com>">>,
+        <<"<sip:alice@example.com> junk">>,
+        <<"sip:alice@example.com junk">>,
+        <<"al@ice <sip:alice@example.com>">>,
+        <<"<sip:alice@example.com>\r\nX-Injected: 1">>
+    ],
+    Fork = {parallel, [<<"sip:x@127.0.0.1:9">>]},
+    Targets = [<<"sip:x@127.0.0.1:9">>, Fork, {dialog, app_dialog}],
+    [?assertEqual({error, badarg},
+                  chappe_sip_b2b:replace_b(B2b, T, #{from => F, timer_c => 500}))
+     || F <- Bad, T <- Targets],
+    ?assert(is_process_alive(Relay)),
+    ?assertMatch(#{pending := false}, chappe_sip_b2b:info(B2b)),
+    ?assertEqual([], sdp_cmds()),
+    hang_up(),
+    ok = ?UA:expect(old_b_bye).
+
+%% What reads well here but the stack refuses to send is an error too, with
+%% the old B still carrying the call.
+replace_b_from_refused(_Config) ->
+    {{Relay, _} = B2b, _OldTag} = fork_call(),
+    Uri = fork_dest(one, busy()),
+    ?assertMatch({error, _},
+                 chappe_sip_b2b:replace_b(B2b, Uri, #{from => <<"<sip:a@b>;=">>})),
+    receive {one, _} -> ct:fail(invite_sent)
+    after 200 -> ok
+    end,
+    ?assert(is_process_alive(Relay)),
+    ?assertMatch(#{pending := false}, chappe_sip_b2b:info(B2b)),
+    hang_up(),
+    ok = ?UA:expect(old_b_bye).
+
+assert_new_from(From) ->
+    ?assertMatch({ok, #{display := <<"Alice">>,
+                        uri := <<"sip:alice@example.com">>,
+                        params := #{<<"tag">> := _}}},
+                 chappe_sip_hdr:name_addr(From)).
+
+from_tag(From) ->
+    {ok, #{params := #{<<"tag">> := Tag}}} = chappe_sip_hdr:name_addr(From),
+    Tag.
 
 %% No destination at all.
 fork_replace_empty(_Config) ->

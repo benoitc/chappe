@@ -391,3 +391,41 @@ option_tags_test() ->
                  chappe_sip_hdr:option_tags([<<"100REL, Timer">>, <<",\treplaces ,">>])),
     ?assertEqual([], chappe_sip_hdr:option_tags([])),
     ?assertEqual([], chappe_sip_hdr:option_tags([<<" , ">>])).
+
+%% what goes on the wire as a From must read back, and a control character
+%% would end the header line
+valid_name_addr_test() ->
+    [?assert(chappe_sip_hdr:valid_name_addr(V))
+     || V <- [
+         <<"sip:alice@example.com">>,
+         <<"<sip:alice@example.com>">>,
+         <<"<sips:alice@example.com;user=phone>">>,
+         <<"<tel:+33123456789>">>,
+         <<"Alice <sip:alice@example.com>">>,
+         <<"Alice O'Neil-Smith <sip:alice@example.com>">>,
+         <<"\"al@ice\" <sip:alice@example.com>">>,
+         <<"\"Alice \\\"A\\\" B\" <sip:alice@example.com>">>,
+         <<"\"Alice\" <sip:alice@example.com>;tag=abc">>,
+         <<"\"Anonymous\" <sip:anonymous@anonymous.invalid>">>
+     ]],
+    [?assertNot(chappe_sip_hdr:valid_name_addr(V))
+     || V <- [
+         123,
+         undefined,
+         "sip:alice@example.com",
+         <<>>,
+         <<"not a uri">>,
+         <<"http://example.com/">>,
+         <<"<sip:alice@example.com">>,
+         <<"\"Alice <sip:alice@example.com>">>,
+         <<"<sip:alice@example.com> junk">>,
+         <<"sip:alice@example.com junk">>,
+         <<"<sip:ali ce@example.com>">>,
+         <<"al@ice <sip:alice@example.com>">>,
+         <<"foo\"bar <sip:alice@example.com>">>,
+         <<"<sip:>">>,
+         <<"tel:">>,
+         <<"<sip:alice@example.com>\r\nX-Injected: 1">>,
+         <<"\"Al\nice\" <sip:alice@example.com>">>,
+         <<"<sip:alice@example.com>", 0>>
+     ]].

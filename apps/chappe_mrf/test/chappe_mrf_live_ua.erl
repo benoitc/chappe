@@ -194,6 +194,7 @@ sip(<<"SIP/2.0 ", _/binary>>, _Src, S) ->
 sip(<<"INVITE ", _/binary>> = I, Src, #{dialog := undefined, answer := Answer} = S) ->
     %% the callee: answer the INVITE as the test asked
     tell(S, invite),
+    tell(S, {invite_from, hdr(I, <<"from">>)}),
     Tag = tag(),
     #{sip := Sip} = S,
     case Answer of

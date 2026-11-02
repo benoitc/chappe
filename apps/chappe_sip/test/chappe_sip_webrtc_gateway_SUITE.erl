@@ -11,19 +11,23 @@
 -include_lib("common_test/include/ct.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
+-define(INJECTING_FROM, <<"<sip:a@example.com>\r\nX-Injected: 1">>).
+
 -export([all/0, init_per_suite/1, end_per_suite/1, end_per_testcase/2]).
 -export([ws_received/1, b2b_browser_to_udp/1, b2b_udp_to_browser/1,
          proxy_browser_to_udp/1, proxy_udp_to_browser/1,
          proxy_callee_bye/1, b2b_server_bye_to_browser/1,
          b2b_browser_bye_over_ws/1, proxy_ws_to_ws/1]).
 -export([fork_ws_udp_browser_wins/1, fork_ws_udp_phone_wins/1,
-         replace_b_fork_ws_udp/1]).
+         replace_b_fork_ws_udp/1, bad_from_to_browser/1,
+         bad_from_from_browser/1]).
 
 all() ->
     [ws_received, b2b_browser_to_udp, b2b_udp_to_browser,
      proxy_browser_to_udp, proxy_udp_to_browser, proxy_callee_bye,
      b2b_server_bye_to_browser, b2b_browser_bye_over_ws, proxy_ws_to_ws,
-     fork_ws_udp_browser_wins, fork_ws_udp_phone_wins, replace_b_fork_ws_udp].
+     fork_ws_udp_browser_wins, fork_ws_udp_phone_wins, replace_b_fork_ws_udp,
+     bad_from_to_browser, bad_from_from_browser].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -128,6 +132,58 @@ b2b_udp_to_browser(_Config) ->
     ws:send(C, {text, ws_ok200(Inv, ViaB, BTT)}),
     _ = recv_ws_method(<<"ACK">>),          % ACK from the B2BUA over WS
     ok = expect(caller_acked),
+    ws:close(C, 1000).
+
+%% A from that would add a header never reaches a WS leg: the browser gets
+%% no INVITE and the UDP caller a 500.
+bad_from_to_browser(_Config) ->
+    {EP, WP} = start(),
+    Test = self(),
+    ok = chappe_sip:register(chappe_sip:registrar(#{allow_unauthenticated => true})),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        {ok, Uri, Flow} = chappe_sip:location_flow(<<"sip:bob@127.0.0.1">>),
+        R = chappe_sip:create_b2bua(Req, Res, Uri, #{
+            flow => Flow, from => ?INJECTING_FROM, timer_c => 500
+        }),
+        Test ! {b2b_result, R}
+    end),
+    C = connect(WP),
+    ws:send(C, {text, register_bob()}),
+    _ = recv_ws(200),
+    udp_peer(0, fun(Sock) ->
+        usend(Sock, EP, uinvite(Sock, <<"udpA">>)),
+        _ = urecv_status(Sock, 500),
+        Test ! caller_refused
+    end),
+    ok = expect(caller_refused),
+    ok = expect({b2b_result, {error, badarg}}),
+    receive {ws_in, <<"INVITE", _/binary>> = Inv} -> ct:fail({invite_sent, Inv})
+    after 200 -> ok
+    end,
+    ws:close(C, 1000).
+
+%% The same with the caller on WS: the browser hears the 500 on its flow.
+bad_from_from_browser(_Config) ->
+    {_EP, WP} = start(),
+    CalleeP = pick(),
+    Test = self(),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        R = chappe_sip:create_b2bua(Req, Res, uctc(CalleeP),
+                                    #{from => ?INJECTING_FROM, timer_c => 500}),
+        Test ! {b2b_result, R}
+    end),
+    udp_peer(CalleeP, fun(Sock) ->
+        {Inv, _} = urecv(Sock, <<"INVITE">>),
+        Test ! {callee_invite, Inv}
+    end),
+    C = connect(WP),
+    ws:send(C, {text, invite_req(<<"wsBad">>)}),
+    R500 = recv_ws(500),
+    ws:send(C, {text, ack_req(<<"wsBad">>, to_tag(R500))}),
+    ok = expect({b2b_result, {error, badarg}}),
+    receive {callee_invite, Inv} -> ct:fail({invite_sent, Inv})
+    after 200 -> ok
+    end,
     ws:close(C, 1000).
 
 %% M9: a server-initiated in-dialog request reaches a WS UA over its flow.
