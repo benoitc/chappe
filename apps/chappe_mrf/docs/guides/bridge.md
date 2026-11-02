@@ -21,6 +21,26 @@ ok = chappe_mrf:bridge(B2b, <<"sip:alice@10.0.0.20">>, #{}).
 On a failure (busy, no answer) you get `{error, _}` and the caller stays
 where it was, so you can play a prompt and go back to the menu.
 
+## Ring several destinations
+
+A user with a desk phone and a browser rings on both. The caller goes to
+the first that answers:
+
+```erlang
+Dests = [<<"sip:alice-desk@10.0.0.20">>,
+         {<<"sip:alice-web@10.0.0.21;transport=ws">>, #{flow => Flow}}],
+case chappe_mrf:bridge(B2b, {parallel, Dests},
+                       #{timer_c => 30000, anchor_params => AnchorParams}) of
+    {ok, #{winner := #{index := I}}} -> {answered, I};
+    {error, Why} -> {still_on_endpoint, Why}
+end.
+```
+
+While they ring the caller stays on the endpoint, so play a ring tone there.
+On a failure (all busy, no answer) you get `{error, _}` and the caller stays
+on it: play a prompt, or bridge again. A destination takes the same options as
+in `chappe_sip_b2b:replace_b/3`.
+
 ## Bridge to a new endpoint
 
 `create_endpoint/1` calls a node with an inactive SDP and takes the channel

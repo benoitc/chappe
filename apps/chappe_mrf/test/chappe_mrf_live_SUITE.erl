@@ -18,6 +18,11 @@
 -export([
     ivr_menu/1,
     bridge_sip_target/1,
+    fork_same_flags_second_answers/1,
+    fork_own_flags_second_answers/1,
+    fork_own_flags_first_answers/1,
+    fork_same_flags_failed_then_bridge/1,
+    fork_own_flags_failed_then_bridge/1,
     endpoint_bridge/1,
     record_playback/1,
     native_conference/1,
@@ -40,6 +45,11 @@ all() ->
     [
         ivr_menu,
         bridge_sip_target,
+        fork_same_flags_second_answers,
+        fork_own_flags_second_answers,
+        fork_own_flags_first_answers,
+        fork_same_flags_failed_then_bridge,
+        fork_own_flags_failed_then_bridge,
         endpoint_bridge,
         record_playback,
         native_conference,
@@ -260,6 +270,127 @@ bridge_sip_target(Config) ->
     ?UA:bye(Ua),
     ua_got(Callee, bye, 5000),
     Owner ! stop.
+
+%% ---- bridge/3 with {parallel, Dests} ----
+
+callee_uri(Ua) ->
+    <<"sip:bob@127.0.0.1:", (integer_to_binary(?UA:port(Ua)))/binary>>.
+
+%% the same call for every destination: one offer, leg B's tag
+same_flags(Uris) -> {parallel, Uris}.
+
+%% flags of their own: one offer each, each under its via-branch
+own_flags([First | Rest]) ->
+    {parallel, [First | [{U, #{anchor_params => #{b => #{ptime => 20}}}} || U <- Rest]]}.
+
+%% After a menu, the caller rings two softphones at once. It keeps hearing
+%% the endpoint while they ring, Winner answers: audio goes through both
+%% ways, the other gets a CANCEL and no audio, and the caller sees no
+%% re-INVITE.
+fork_after_menu(Config, Target, Winner) ->
+    Test = self(),
+    ivr(fun(Ep, _B2b) ->
+        {ok, D} = chappe_mrf:play_collect(Ep, #{
+            file => <<"/media/menu.wav">>, max => 1, timeout => 10000
+        }),
+        Test ! {digits, D},
+        park_loop()
+    end),
+    {Ua, Ep, B2b, Owner} = call_in(Config, 600),
+    ?assert(?UA:hears(Ua, ?MENU, 6000)),
+    ?UA:dtmf(Ua, <<"1">>),
+    receive
+        {digits, <<"1">>} -> ok
+    after 10000 -> ct:fail(no_digits)
+    end,
+    Answering = #{freq => 900, answer => {after_ms, 2500}},
+    Ringing = #{freq => 1300, answer => ring},
+    {U1, U2, WinnerUa, Loser} =
+        case Winner of
+            1 ->
+                W = ?UA:callee(Answering),
+                L = ?UA:callee(Ringing),
+                {W, L, W, L};
+            2 ->
+                L = ?UA:callee(Ringing),
+                W = ?UA:callee(Answering),
+                {L, W, W, L}
+        end,
+    _ = spawn(fun() -> chappe_mrf:play(Ep, <<"/media/one.wav">>) end),
+    Self = self(),
+    _ = spawn(fun() ->
+        Self ! {forked, chappe_mrf:bridge(
+            B2b, Target([callee_uri(U1), callee_uri(U2)]),
+            #{anchor_params => to_host()}
+        )}
+    end),
+    ua_got(U1, invite, 5000),
+    ua_got(U2, invite, 5000),
+    ?UA:clear(Ua),
+    ?assert(?UA:hears(Ua, ?ONE, 2000)),
+    receive
+        {forked, {ok, #{winner := #{index := Winner}}}} -> ok;
+        {forked, Other} -> ct:fail({fork, Other})
+    after 15000 -> ct:fail(no_fork_result)
+    end,
+    ua_got(Loser, cancel, 5000),
+    ?UA:clear(Ua),
+    ?assert(?UA:hears(Ua, 900, 6000)),
+    ?assert(?UA:hears(WinnerUa, 600, 6000)),
+    ?assert(?UA:silent(Ua, 1300, 500)),
+    ?assert(?UA:silent(Loser, 600, 500)),
+    no_reinvite(Ua),
+    ?assertMatch({error, _}, chappe_mrf:play(Ep, <<"/media/one.wav">>)),
+    ?UA:bye(Ua),
+    ua_got(WinnerUa, bye, 5000),
+    Owner ! stop,
+    ?UA:stop(Loser).
+
+fork_same_flags_second_answers(Config) ->
+    fork_after_menu(Config, fun same_flags/1, 2).
+
+fork_own_flags_second_answers(Config) ->
+    fork_after_menu(Config, fun own_flags/1, 2).
+
+fork_own_flags_first_answers(Config) ->
+    fork_after_menu(Config, fun own_flags/1, 1).
+
+%% Every branch is busy: the caller stays on the endpoint and hears it.
+%% The next bridge works, and it hears the new callee.
+fork_failed_then_bridge(Config, Target) ->
+    ivr(fun park/2),
+    {Ua, Ep, B2b, Owner} = call_in(Config, 600),
+    Busy = [?UA:callee(#{answer => {status, 486}}) || _ <- [1, 2]],
+    ?assertMatch(
+        {error, _},
+        chappe_mrf:bridge(
+            B2b, Target([callee_uri(U) || U <- Busy]),
+            #{anchor_params => to_host()}
+        )
+    ),
+    _ = spawn(fun() -> chappe_mrf:play(Ep, <<"/media/two.wav">>) end),
+    ?UA:clear(Ua),
+    ?assert(?UA:hears(Ua, ?TWO, 6000)),
+    Callees = [?UA:callee(#{freq => F, answer => {after_ms, 200}}) || F <- [900, 1300]],
+    ?assertMatch(
+        {ok, #{winner := _}},
+        chappe_mrf:bridge(
+            B2b, Target([callee_uri(U) || U <- Callees]),
+            #{anchor_params => to_host()}
+        )
+    ),
+    ?UA:clear(Ua),
+    ?assert(?UA:hears(Ua, 900, 6000) orelse ?UA:hears(Ua, 1300, 1000)),
+    no_reinvite(Ua),
+    ?UA:bye(Ua),
+    Owner ! stop,
+    [?UA:stop(U) || U <- Busy ++ Callees].
+
+fork_same_flags_failed_then_bridge(Config) ->
+    fork_failed_then_bridge(Config, fun same_flags/1).
+
+fork_own_flags_failed_then_bridge(Config) ->
+    fork_failed_then_bridge(Config, fun own_flags/1).
 
 %% create_endpoint/1, then bridge/3 moves the caller onto it: what the
 %% new endpoint plays reaches the caller.

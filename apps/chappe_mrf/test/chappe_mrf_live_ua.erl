@@ -8,8 +8,10 @@
 %% through. The tone detection is chappe_mix's test helper, copied (the
 %% apps share no code).
 %%
-%% call/2 calls the engine; callee/1 answers one INVITE. The test gets
-%% {ua, Ua, Event}: {final, Status}, reinvite, bye.
+%% call/2 calls the engine; callee/1 takes one INVITE and answers it as its
+%% answer option says: now (the default), {after_ms, Ms} (180, then 200),
+%% ring (180, until a CANCEL) or {status, St}. The test gets {ua, Ua,
+%% Event}: {final, Status}, invite, cancel, reinvite, bye.
 -module(chappe_mrf_live_ua).
 
 -export([call/2, callee/1, port/1, stop/1]).
@@ -93,6 +95,7 @@ init(Parent, #{mode := Mode, opts := Opts}) ->
         sip_port => element(2, inet:port(Sip)),
         rtp_port => element(2, inet:port(Rtp)),
         freq => maps:get(freq, Opts, none),
+        answer => maps:get(answer, Opts, now),
         remote => undefined,
         seq => 1,
         ts => 0,
@@ -142,6 +145,8 @@ loop(#{sip := Sip, rtp := Rtp, parent := Parent} = S) ->
             loop(S#{rx := []});
         bye ->
             loop(send_bye(S));
+        {answer, I, Src, Tag} ->
+            loop(answer(I, Src, Tag, S));
         {port, From} ->
             From ! {self(), port, maps:get(sip_port, S)},
             loop(S);
@@ -177,21 +182,30 @@ sip(<<"SIP/2.0 ", Code:3/binary, _/binary>> = R, _Src, #{dialog := undefined, in
     end;
 sip(<<"SIP/2.0 ", _/binary>>, _Src, S) ->
     S;
-sip(<<"INVITE ", _/binary>> = I, Src, #{dialog := undefined} = S) ->
-    %% the callee: answer the INVITE
-    Tag = tag(),
-    #{sip := Sip, sip_port := P, rtp_port := RP} = S,
-    C = {<<"Contact">>, <<"<sip:callee@127.0.0.1:", (integer_to_binary(P))/binary, ">">>},
-    ok = gen_udp:send(Sip, {127, 0, 0, 1}, Src, resp(I, 200, <<"OK">>, Tag, [C], sdp(RP))),
-    D = #{
-        to => hdr(I, <<"from">>),
-        from => <<(hdr(I, <<"to">>))/binary, ";tag=", Tag/binary>>,
-        call_id => hdr(I, <<"call-id">>),
-        target => contact_uri(I),
-        dst => {{127, 0, 0, 1}, Src}
-    },
+sip(<<"INVITE ", _/binary>> = I, Src, #{dialog := undefined, answer := Answer} = S) ->
+    %% the callee: answer the INVITE as the test asked
     tell(S, invite),
-    S#{dialog := D, remote := remote(body(I))};
+    Tag = tag(),
+    #{sip := Sip} = S,
+    case Answer of
+        now ->
+            answer(I, Src, Tag, S);
+        {status, St} ->
+            ok = gen_udp:send(Sip, {127, 0, 0, 1}, Src, resp(I, St, <<"Refused">>, Tag, [], <<>>)),
+            S;
+        ring ->
+            ok = gen_udp:send(Sip, {127, 0, 0, 1}, Src, resp(I, 180, <<"Ringing">>, Tag, [], <<>>)),
+            S#{ringing => {I, Src, Tag}};
+        {after_ms, Ms} ->
+            ok = gen_udp:send(Sip, {127, 0, 0, 1}, Src, resp(I, 180, <<"Ringing">>, Tag, [], <<>>)),
+            erlang:send_after(Ms, self(), {answer, I, Src, Tag}),
+            S
+    end;
+sip(<<"CANCEL ", _/binary>> = C, Src, #{sip := Sip, ringing := {I, ISrc, Tag}} = S) ->
+    ok = gen_udp:send(Sip, {127, 0, 0, 1}, Src, resp(C, 200, <<"OK">>, Tag, [], <<>>)),
+    ok = gen_udp:send(Sip, {127, 0, 0, 1}, ISrc, resp(I, 487, <<"Request Terminated">>, Tag, [], <<>>)),
+    tell(S, cancel),
+    S;
 sip(<<"INVITE ", _/binary>> = I, Src, #{sip := Sip, rtp_port := RP} = S) ->
     tell(S, reinvite),
     ok = gen_udp:send(Sip, {127, 0, 0, 1}, Src, resp(I, 200, <<"OK">>, <<>>, [], sdp(RP))),
@@ -205,6 +219,18 @@ sip(<<"ACK ", _/binary>>, _Src, S) ->
 sip(Req, Src, #{sip := Sip} = S) ->
     _ = gen_udp:send(Sip, {127, 0, 0, 1}, Src, resp(Req, 200, <<"OK">>, <<>>, [], <<>>)),
     S.
+
+answer(I, Src, Tag, #{sip := Sip, sip_port := P, rtp_port := RP} = S) ->
+    C = {<<"Contact">>, <<"<sip:callee@127.0.0.1:", (integer_to_binary(P))/binary, ">">>},
+    ok = gen_udp:send(Sip, {127, 0, 0, 1}, Src, resp(I, 200, <<"OK">>, Tag, [C], sdp(RP))),
+    D = #{
+        to => hdr(I, <<"from">>),
+        from => <<(hdr(I, <<"to">>))/binary, ";tag=", Tag/binary>>,
+        call_id => hdr(I, <<"call-id">>),
+        target => contact_uri(I),
+        dst => {{127, 0, 0, 1}, Src}
+    },
+    S#{dialog := D, remote := remote(body(I))}.
 
 send_bye(#{dialog := undefined} = S) ->
     S;

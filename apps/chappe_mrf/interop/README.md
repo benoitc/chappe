@@ -16,6 +16,9 @@ prompt played by the tone it hears.
 |---|---|
 | `ivr_menu` | the menu plays, the caller presses 2 (RFC 2833 through rtpengine), `play_collect` returns it, the branch's prompt plays |
 | `bridge_sip_target` | `bridge/3` to a SIP callee: audio both ways, no re-INVITE to the caller, the endpoint's channel goes |
+| `fork_same_flags_second_answers` | after a menu, `bridge/3` with `{parallel, Dests}` to two softphones: the caller hears the endpoint while they ring, the second answers, audio both ways, the first gets a CANCEL, no re-INVITE to the caller |
+| `fork_own_flags_second_answers`, `fork_own_flags_first_answers` | the same with flags of their own, so one rtpengine offer per via-branch, each branch winning in turn |
+| `fork_same_flags_failed_then_bridge`, `fork_own_flags_failed_then_bridge` | every branch busy: the caller stays on the endpoint and hears it, and the next fork works |
 | `endpoint_bridge` | `create_endpoint/1`, then `bridge/3` moves the caller onto it |
 | `record_playback` | `record/3` writes the caller's audio; playing it back returns the caller's tone |
 | `native_conference` | three callers in a chappe_mix room behind rtpengine: audio, a room prompt, mute, kick, talker events, the room outlives its first caller |
