@@ -62,6 +62,8 @@ decode(#{headers := H, body := B}) ->
 
 %% Build a channel-data event from an outbound connect reply. The reply frame
 %% carries the channel variables as header lines with URL-encoded values.
+%% FreeSWITCH sends them as headers of a command/reply with no body (the connect
+%% branch of mod_event_socket), so the body is kept as is, not merged.
 -spec channel(chappe_esl_parser:frame()) -> event().
 channel(#{headers := H, body := B}) ->
     #{headers => maps:map(fun(_K, V) -> url_decode(V) end, H), body => B}.
