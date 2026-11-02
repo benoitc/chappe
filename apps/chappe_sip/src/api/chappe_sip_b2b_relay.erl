@@ -461,7 +461,7 @@ replace_b(From, Target, Opts, #{media := M0, a := A} = S) ->
 replaced(From, Old, {ok, NewB, Answer, Won}, S) ->
     case chappe_sip_b2b_replace:swap(NewB, Answer, Won, S) of
         {ok, S1} ->
-            reply(From, replaced_reply(Won)),
+            reply(From, chappe_sip_b2b_replace:result(Won)),
             S1;
         Error ->
             reply(From, Error),
@@ -480,18 +480,8 @@ keep_old_b({Old, false}, S) ->
     restore(b, old_params(Old, S)).
 
 reopen(#{media := M, a := A, b := B} = S) ->
-    case chappe_sip_b2b_media:offer(a, remote_sdp(A), M) of
-        {ok, _ForB, M1} ->
-            case chappe_sip_b2b_media:answer(b, remote_sdp(B), M1) of
-                {ok, _ForA, M2} -> S#{media := M2};
-                {reject, _} -> S
-            end;
-        {reject, _} ->
-            S
-    end.
-
-replaced_reply(undefined) -> ok;
-replaced_reply(#{winner := Winner}) -> {ok, #{winner => Winner}}.
+    ASdp = remote_sdp(A),
+    S#{media := chappe_sip_b2b_replace:reopen(ASdp, remote_sdp(B), M)}.
 
 %% the old B keeps the call, and the anchor_params and flags it had
 old_params(Old, #{media := M} = S) ->

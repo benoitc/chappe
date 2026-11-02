@@ -23,7 +23,8 @@
 %% a via-branch other than the first reaches nobody.
 -module(chappe_sip_b2b_replace).
 
--export([valid/2, offer/4, moved/3, call/4, swap/4, abort/3, latched/1]).
+-export([valid/2, offer/4, moved/3, reopen/3, result/1]).
+-export([call/4, swap/4, abort/3, latched/1]).
 
 -export_type([won/0]).
 
@@ -120,6 +121,27 @@ moved({parallel, Dests}, M0, _M1) ->
     );
 moved(_Target, M0, M1) ->
     chappe_sip_b2b_media:b_flags(M0) =/= chappe_sip_b2b_media:b_flags(M1).
+
+%% One more offer and answer with the old B's own SDP and M's flags, which
+%% brings its media back from where other flags moved it.
+-spec reopen(binary(), binary(), chappe_sip_b2b_media:state()) ->
+    chappe_sip_b2b_media:state().
+reopen(ASdp, BSdp, M) ->
+    case chappe_sip_b2b_media:offer(a, ASdp, M) of
+        {ok, _ForB, M1} ->
+            case chappe_sip_b2b_media:answer(b, BSdp, M1) of
+                {ok, _ForA, M2} -> M2;
+                {reject, _} -> M
+            end;
+        {reject, _} ->
+            M
+    end.
+
+%% What replace_b/3 returns once the new B carries the call.
+-spec result(won() | undefined) ->
+    ok | {ok, #{winner := chappe_sip_b2b:winner()}}.
+result(undefined) -> ok;
+result(#{winner := Winner}) -> {ok, #{winner => Winner}}.
 
 %% The new B answers Sdp (rtpengine's offer): {ok, Dialog, Answer, Won} or
 %% {error, _}; Won is undefined but for a fork. Relay owns the new dialog;
