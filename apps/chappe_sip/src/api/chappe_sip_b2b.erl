@@ -859,6 +859,12 @@ hangup(B2b, Opts) ->
 %% the relay carries the call with the new B and the old B gets a BYE; on
 %% a failure the call keeps the old B. Opts:
 %%   headers  => [{binary(), iodata()}] on the INVITE to a URI
+%%   from     => the From of the INVITE to a URI or to every destination of
+%%               a fork, as for create_b2bua/4, with no default from A: the
+%%               INVITE otherwise names this node. A re-INVITE stays in its
+%%               dialog and keeps its identity (RFC 3261 12.2.1.1), so
+%%               {dialog, D} ignores it, like the other options of a new
+%%               INVITE. A malformed one is refused for every target
 %%   proxy, auth, flow, session_expires, min_se, session_refresher => as
 %%               for create_b2bua/4
 %%   timer_c  => how long the new B may ring, in ms (default: timer_c_ms)

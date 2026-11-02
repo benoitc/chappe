@@ -41,6 +41,19 @@ On a failure (all busy, no answer) you get `{error, _}` and the caller stays
 on it: play a prompt, or bridge again. A destination takes the same options as
 in `chappe_sip_b2b:replace_b/3`.
 
+## Show the caller
+
+Without `from`, the phone you ring shows your node, not the person calling.
+Pass the caller's identity on a SIP target or a fork:
+
+```erlang
+ok = chappe_mrf:bridge(B2b, <<"sip:alice@10.0.0.20">>,
+                       #{from => <<"\"Bob\" <sip:bob@example.com>">>}).
+```
+
+A malformed value returns `{error, badarg}` and the caller stays where it was.
+An endpoint ignores `from`: its re-INVITE keeps the identity of its dialog.
+
 ## Bridge to a new endpoint
 
 `create_endpoint/1` calls a node with an inactive SDP and takes the channel

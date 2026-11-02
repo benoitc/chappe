@@ -7,6 +7,10 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 
 ## Unreleased
 
+- B2BUA and chappe_mrf: when you move a call to a new callee, you can now say
+  who that callee sees as calling. Before, a phone rung after an IVR menu
+  showed the PBX instead of the real caller. A malformed value is refused and
+  the call goes on.
 - B2BUA and chappe_mrf: moving a call to a new callee can now ring several
   destinations at once, so a caller coming out of an IVR reaches a user's
   desk phone and browser together. The first to answer takes the call and you

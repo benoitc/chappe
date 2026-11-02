@@ -121,6 +121,26 @@ ok = chappe_sip_b2b:replace_b(B2b, {dialog, D}, #{}).
 `anchor_params => #{b => Flags}` puts the new B on another rtpengine
 interface, for example a media server on a private network.
 
+### Show the caller to the new B
+
+Without `from`, the INVITE to the new B names your node, so a phone rung after
+a menu shows the PBX. Pass the caller's identity, as for `create_b2bua/4`:
+
+```erlang
+ok = chappe_sip_b2b:replace_b(B2b, <<"sip:agent7@10.0.0.40">>,
+                              #{from => <<"\"Alice\" <sip:alice@example.com>">>}).
+```
+
+- It applies to a URI and to every destination of `{parallel, Dests}`; a
+  destination has no `from` of its own.
+- Leave out the tag: each INVITE adds its own.
+- `create_b2bua/4` falls back to A's name and URI, anonymous under user or
+  header privacy. `replace_b/3` has no such default, and what you pass goes
+  out as it is, so apply the caller's privacy before you set it.
+- `{dialog, D}` ignores it: a re-INVITE keeps the identity of its dialog.
+- A malformed value returns `{error, badarg}` for any target, and the call
+  goes on.
+
 ### Ring several destinations
 
 After an IVR, a user with a desk phone and a browser rings on both. Pass

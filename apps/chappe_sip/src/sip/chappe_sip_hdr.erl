@@ -13,6 +13,7 @@
     via/1,
     cseq/1,
     name_addr/1,
+    valid_name_addr/1,
     name_addr_list/1,
     split_list/1,
     name_addr_uri/1,
@@ -178,6 +179,56 @@ with_angle(<<"<", Rest/binary>>, Acc) ->
     end;
 with_angle(_, _) ->
     {error, bad_name_addr}.
+
+%% Whether V can go out as a From: a name-addr or addr-spec around a URI
+%% that reads, only parameters after it, and no control character (a CRLF
+%% would start another header). name_addr/1 stays lenient for what comes in.
+-spec valid_name_addr(term()) -> boolean().
+valid_name_addr(V) when is_binary(V) ->
+    no_control(V) andalso
+        case name_addr(V) of
+            {ok, #{uri := Uri} = Addr} ->
+                display_reads(V, Addr) andalso
+                    binary:match(Uri, <<" ">>) =:= nomatch andalso
+                    uri_names_someone(chappe_sip_uri:parse(Uri)) andalso
+                    only_params_after(Uri, V);
+            {error, _} ->
+                false
+        end;
+valid_name_addr(_) ->
+    false.
+
+%% a display name out of quotes is tokens (RFC 3261 25.1)
+display_reads(<<"\"", _/binary>>, _Addr) ->
+    true;
+display_reads(_V, #{display := Display}) ->
+    lists:all(fun display_char/1, binary_to_list(Display));
+display_reads(_V, _Addr) ->
+    true.
+
+display_char(C) when C >= $a, C =< $z; C >= $A, C =< $Z; C >= $0, C =< $9 ->
+    true;
+display_char(C) ->
+    lists:member(C, " -.!%*_+`'~").
+
+uri_names_someone({ok, #{scheme := tel, user := User}}) -> User =/= <<>>;
+uri_names_someone({ok, #{host := Host}}) -> Host =/= <<>>;
+uri_names_someone({error, _}) -> false.
+
+no_control(V) ->
+    not lists:any(fun(C) -> C < 32 orelse C =:= 127 end, binary_to_list(V)).
+
+only_params_after(Uri, V) ->
+    case binary:split(V, <<Uri/binary, ">">>) of
+        [_, After] ->
+            case chappe_sip_lib:trim(After) of
+                <<>> -> true;
+                <<";", _/binary>> -> true;
+                _ -> false
+            end;
+        [_] ->
+            true
+    end.
 
 %% Comma-separated name-addr list (Contact, Route, Record-Route).
 %% Commas inside quoted strings and inside <> are not separators.
