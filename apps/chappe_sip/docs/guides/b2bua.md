@@ -54,6 +54,11 @@ chappe_sip:create_b2bua(Req, Res, Callee, #{
 reaches B unchanged, whatever you copy (RFC 3323 4.2). Set `flow` (from
 `chappe_sip:location_flow/1`) to send the B leg to a registered WebSocket UA.
 
+`from` sets the `From` of the INVITE to B, for example from a caller's display
+name. A malformed value, such as one holding a line break, never reaches B on
+any transport: you get `{error, badarg}` and A hears a 500, or nothing with
+`pass_failure => false`, where you answer A yourself.
+
 ## Act as a privacy service
 
 Set `privacy => true` when your b2bua is the privacy service of RFC 3323 for

@@ -11,6 +11,12 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
   who that callee sees as calling. Before, a phone rung after an IVR menu
   showed the PBX instead of the real caller. A malformed value is refused and
   the call goes on.
+- B2BUA security: the caller identity you set when starting a call was sent
+  unchecked, so an application building it from untrusted text, such as a
+  caller's display name, could let that text add SIP headers to the outgoing
+  call. It is now checked first: a bad value is never sent, the caller hears a
+  500 and you get an error back. An application that chose to answer failures
+  itself still does so here.
 - B2BUA and chappe_mrf: moving a call to a new callee can now ring several
   destinations at once, so a caller coming out of an IVR reaches a user's
   desk phone and browser together. The first to answer takes the call and you

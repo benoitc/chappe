@@ -44,7 +44,8 @@
 %% caller: what the relay chokes on would end a live call.
 -spec valid(term(), term()) -> boolean().
 valid(Target, Opts) when is_map(Opts) ->
-    valid_target(Target) andalso valid_opts(Opts) andalso valid_from(Opts);
+    valid_target(Target) andalso valid_opts(Opts) andalso
+        chappe_sip_b2b_hdr:valid_from(Opts);
 valid(_Target, _Opts) ->
     false.
 
@@ -60,10 +61,6 @@ valid_dest(_Other) -> false.
 valid_opts(Opts) ->
     all(fun valid_header/1, maps:get(headers, Opts, [])) andalso
         valid_params(maps:get(anchor_params, Opts, #{})).
-
-%% one From for the whole target: a destination has none of its own
-valid_from(#{from := From}) -> chappe_sip_hdr:valid_name_addr(From);
-valid_from(_Opts) -> true.
 
 valid_header({Name, _Value}) -> is_binary(Name);
 valid_header(_Other) -> false.

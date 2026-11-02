@@ -21,7 +21,8 @@
 -include("chappe_sip.hrl").
 
 -export([start/2, branch/1, sdp/3, answer/3, won/3, cancel/2, failed/3]).
--export([targets/2, ringing/1, failover/1, fail/2, winner/1, media/2]).
+-export([targets/2, ringing/1, failover/1, fail/2, refuse/3]).
+-export([winner/1, media/2]).
 
 -export_type([dest/0]).
 
@@ -195,6 +196,12 @@ failover(_Other) -> true.
 -spec fail(term(), map()) -> {error, term()}.
 fail(Error, #{res := Res, opts := Opts, media := M}) ->
     _ = chappe_sip_b2b_media:stop(M),
+    handle_b_failure(Res, Error, Opts).
+
+%% The call cannot start, before any media or leg exists: A is answered as
+%% for a target that cannot be called.
+-spec refuse(chappe_sip_res:res(), term(), map()) -> {error, term()}.
+refuse(Res, Error, Opts) ->
     handle_b_failure(Res, Error, Opts).
 
 %% pass_failure => false: A is not answered, the app may try elsewhere

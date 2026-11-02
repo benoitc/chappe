@@ -11,6 +11,8 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("chappe_sip.hrl").
 
+-define(INJECTING_FROM, <<"<sip:a@example.com>\r\nX-Injected: 1">>).
+
 -export([all/0, init_per_suite/1, end_per_suite/1, end_per_testcase/2]).
 -export([b2b_success_bye/1, b2b_callee_busy/1, b2b_caller_cancel/1,
          b2b_survives_deadline/1, b2b_rings_past_deadline/1,
@@ -19,6 +21,8 @@
          fork_timer_c/1, fork_late_2xx/1, pass_failure_timer_c/1,
          start_failure_answered/1, start_failure_not_passed/1]).
 -export([fork_branch_opts/1, serial_branch_opts/1, hunt_keeps_a_tag/1]).
+-export([bad_from_refused/1, bad_from_fork_refused/1,
+         bad_from_not_passed/1]).
 
 all() ->
     [b2b_success_bye, b2b_callee_busy, b2b_caller_cancel,
@@ -26,7 +30,8 @@ all() ->
      b2b_timer_c_restarted, fork_one_answers, fork_busy_then_answer,
      fork_all_fail_best, fork_timer_c, fork_late_2xx, pass_failure_timer_c,
      start_failure_answered, start_failure_not_passed, fork_branch_opts,
-     serial_branch_opts, hunt_keeps_a_tag].
+     serial_branch_opts, hunt_keeps_a_tag, bad_from_refused,
+     bad_from_fork_refused, bad_from_not_passed].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -616,6 +621,69 @@ start_failure_not_passed(_Config) ->
     ok = expect({caller_final, 404}),
     receive {b2b_result, {error, _}} -> ok
     after 5000 -> ct:fail(no_b2b_error)
+    end.
+
+%% A from that would add a header to the INVITE never reaches the wire: A
+%% hears a 500, as for a target that cannot be called, and the handler gets
+%% the error back.
+bad_from_refused(_Config) ->
+    bad_from(fun uri/1).
+
+bad_from_fork_refused(_Config) ->
+    bad_from(fun(P) -> {parallel, [uri(P)]} end).
+
+bad_from(Target) ->
+    {EnginePort, CalleePort} = setup(),
+    Test = self(),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        R = chappe_sip:create_b2bua(Req, Res, Target(CalleePort),
+                                    #{from => ?INJECTING_FROM, timer_c => 500}),
+        Test ! {b2b_result, R}
+    end),
+    callee(CalleePort, fun(Sock) ->
+        {Inv, _Src} = recv(Sock, <<"INVITE">>),
+        Test ! {callee_invite, Inv}
+    end),
+    caller(fun(Sock) ->
+        Call = callid(),
+        send(Sock, EnginePort, invite(Sock, EnginePort, Call, <<"bf1">>)),
+        R = recv_final(Sock),
+        send(Sock, EnginePort, ack_status(Sock, EnginePort, Call, <<"bf1">>, R)),
+        Test ! {caller_final, status_of(R)}
+    end),
+    ok = expect({caller_final, 500}),
+    ok = expect({b2b_result, {error, badarg}}),
+    no_callee_invite().
+
+%% With pass_failure => false A is left to the app, as for a bad target.
+bad_from_not_passed(_Config) ->
+    {EnginePort, CalleePort} = setup(),
+    Test = self(),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        R = chappe_sip:create_b2bua(Req, Res, uri(CalleePort), #{
+            from => ?INJECTING_FROM, pass_failure => false, timer_c => 500
+        }),
+        Test ! {b2b_result, R},
+        _ = chappe_sip_res:send(Res, 404, #{reason => <<"Not Found">>})
+    end),
+    callee(CalleePort, fun(Sock) ->
+        {Inv, _Src} = recv(Sock, <<"INVITE">>),
+        Test ! {callee_invite, Inv}
+    end),
+    caller(fun(Sock) ->
+        Call = callid(),
+        send(Sock, EnginePort, invite(Sock, EnginePort, Call, <<"bf2">>)),
+        R = recv_final(Sock),
+        send(Sock, EnginePort, ack_status(Sock, EnginePort, Call, <<"bf2">>, R)),
+        Test ! {caller_final, status_of(R)}
+    end),
+    ok = expect({caller_final, 404}),
+    ok = expect({b2b_result, {error, badarg}}),
+    no_callee_invite().
+
+no_callee_invite() ->
+    receive {callee_invite, Inv} -> ct:fail({invite_sent, Inv})
+    after 200 -> ok
     end.
 
 %% Each branch of a fork takes its own options: its headers reach only
