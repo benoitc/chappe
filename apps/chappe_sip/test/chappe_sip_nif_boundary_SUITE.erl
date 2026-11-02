@@ -313,9 +313,7 @@ flush() ->
 stop_with_internal_reply_queued(_Config) ->
     lists:foreach(
         fun(_) ->
-            Port = chappe_sip_test_port:pick(),
-            Contact = <<"sip:127.0.0.1:", (integer_to_binary(Port))/binary>>,
-            {ok, E} = chappe_sip_nif:start(#{contact => Contact}, self()),
+            {ok, E} = chappe_sip_nif:start(#{contact => contact()}, self()),
             Route = <<"sip:127.0.0.1:5999;transport=sctp">>,
             [
                 chappe_sip_nif:request(E, Route, unsendable_request(N))
