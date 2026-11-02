@@ -40,8 +40,8 @@
 %% destination that answered (winner).
 %%
 %% On a live call, hangup/2 ends both legs with a Reason, and replace_b/3
-%% swaps leg B for a new callee behind rtpengine without A seeing a
-%% re-INVITE.
+%% swaps leg B for a new callee, or the first of a fork to answer, behind
+%% rtpengine without A seeing a re-INVITE.
 %%
 %% While a fork rings, every branch's provisionals reach A under its one
 %% To-tag, so A plays the early media of whichever branch sent the last
@@ -57,7 +57,7 @@
 -export([hangup/2, replace_b/3]).
 -export([call/2, call/3, contact/0]).
 %% helpers of the chappe_sip_b2b_* modules
--export([timer_c/1, remote_tag/1, destroy_quietly/2]).
+-export([timer_c/1, remote_tag/1, destroy_quietly/2, offers/4, dest_bopts/2]).
 
 -export_type([b2b/0, legs/0, target/0, dest/0, branch_opts/0, winner/0]).
 
@@ -269,19 +269,38 @@ offer_b(Req, Res, {Fork, Dests}, Opts, M) ->
     Offer = iolist_to_binary(
         maps:get(local_sdp_b, Opts, chappe_sip_req:body(Req))
     ),
-    Profiles = [profile(D, Opts) || D <- Dests],
-    case chappe_sip_b2b_media:fork_offer(Offer, Profiles, M) of
-        {ok, Offers, M1} ->
-            Dests1 = lists:zipwith(
-                fun(D, {P, Sdp}) -> D#{profile => P, sdp => Sdp} end,
-                Dests,
-                Offers
-            ),
+    case offers(Offer, Dests, Opts, M) of
+        {ok, Dests1, M1} ->
             start_b(Req, Res, {Fork, Dests1}, Opts, Offer =:= <<>>, M1);
         {reject, Code} ->
             _ = chappe_sip_b2b_media:stop(M),
             _ = chappe_sip_res:send(Res, Code, #{}),
             {error, {rejected, Code}}
+    end.
+
+%% Each destination with its media side (profile) and the SDP it gets
+%% from rtpengine's offer of Offer (sdp).
+-spec offers(
+    binary(),
+    [chappe_sip_b2b_fork:dest()],
+    map(),
+    chappe_sip_b2b_media:state()
+) ->
+    {ok, [chappe_sip_b2b_fork:dest()], chappe_sip_b2b_media:state()}
+    | {reject, 300..699}.
+offers(Offer, Dests, Opts, M) ->
+    Profiles = [profile(D, Opts) || D <- Dests],
+    case chappe_sip_b2b_media:fork_offer(Offer, Profiles, M) of
+        {ok, Offers, M1} ->
+            {ok,
+                lists:zipwith(
+                    fun(D, {P, Sdp}) -> D#{profile => P, sdp => Sdp} end,
+                    Dests,
+                    Offers
+                ),
+                M1};
+        {reject, _} = Rej ->
+            Rej
     end.
 
 start_b(Req, Res, {Fork, Dests}, Opts, LateOffer, M) ->
@@ -352,8 +371,9 @@ start_b(Req, Res, {Fork, Dests}, Opts, LateOffer, M) ->
             )
     end.
 
-%% the UAC options of a destination: its offer, its flow, and its headers
-%% after the call's
+%% The UAC options of a destination: its offer, its flow, and its headers
+%% after the call's.
+-spec dest_bopts(chappe_sip_b2b_fork:dest(), map()) -> map().
 dest_bopts(#{opts := BranchOpts, sdp := Sdp}, #{headers := Hdrs} = BOpts) ->
     B1 = BOpts#{
         local_sdp => Sdp,
@@ -843,8 +863,23 @@ hangup(B2b, Opts) ->
 %% while another offer of the call is pending. The notify process gets
 %% {chappe_sip_b2b, Ref, {replaced, b}}. The ACK of a re-INVITE needs no
 %% hook here: a dialog's owner gets {chappe_sip_dialog, D, ack, AckReq, _}.
--spec replace_b(b2b(), binary() | {dialog, chappe_sip_dialog:dialog()}, map()) ->
-    ok | {error, term()}.
+%%
+%% {parallel, Dests} rings every destination at once (dest(), as for
+%% create_b2bua/4, each with its own flow, headers and anchor_params): the
+%% first 2xx wins and {ok, #{winner := winner()}} comes back, the other
+%% branches are CANCELled (a 2xx of theirs that still comes gets a BYE).
+%% When every branch fails the call keeps the old B and {error, _} carries
+%% the best final (a 486 when all are busy), {error, timeout} on Timer C,
+%% which covers the whole fork and no provisional restarts. {error,
+%% none_up} for an empty list. Destinations with different flags need one
+%% rtpengine offer each; on a call whose first offer came from B (a late
+%% offer) that gives {error, {rejected, 488}}.
+-spec replace_b(
+    b2b(),
+    binary() | {dialog, chappe_sip_dialog:dialog()} | {parallel, [dest()]},
+    map()
+) ->
+    ok | {ok, #{winner := winner()}} | {error, term()}.
 replace_b(B2b, Target, Opts) ->
     call(B2b, {replace_b, Target, Opts}, timer_c(Opts) + 10000).
 

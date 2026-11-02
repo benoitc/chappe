@@ -121,6 +121,44 @@ ok = chappe_sip_b2b:replace_b(B2b, {dialog, D}, #{}).
 `anchor_params => #{b => Flags}` puts the new B on another rtpengine
 interface, for example a media server on a private network.
 
+### Ring several destinations
+
+After an IVR, a user with a desk phone and a browser rings on both. Pass
+`{parallel, Dests}`, with the same destinations as `create_b2bua/4`: a URI,
+or `{Uri, #{flow, headers, anchor_params}}`.
+
+```erlang
+{ok, Uri, Flow} = chappe_sip:location_flow(<<"sip:bob@example.com">>),
+Dests = [{Uri, #{flow => Flow}}, <<"sip:bob-desk@10.0.0.40">>],
+case chappe_sip_b2b:replace_b(B2b, {parallel, Dests}, #{timer_c => 30000}) of
+    {ok, #{winner := #{index := I}}} -> {answered, I};
+    {error, Why} -> {still_on_old_b, Why}
+end.
+```
+
+The first 2xx wins. The other branches get a CANCEL, or a BYE if their 2xx
+still comes. When every branch fails or `timer_c` passes, the call keeps the
+old B, and you can call `replace_b/3` again.
+
+| Result | Meaning |
+|---|---|
+| `{ok, #{winner := Winner}}` | `Winner` answered: its `uri`, `opts` and `index`, from 1 |
+| `{error, #chappe_sip_error{status = 486}}` | the best final of the branches: busy when all are busy |
+| `{error, timeout}` | `timer_c` passed; it covers the whole fork, and a 180 does not restart it |
+| `{error, call_ended}` | the caller hung up; every branch got a CANCEL |
+| `{error, none_up}` | `Dests` is empty |
+
+Notes on a fork:
+
+- The caller's old B keeps playing to the caller while the branches ring, so
+  a media server can play a ring tone.
+- A destination over a WebSocket (its URI or its flow) gets WebRTC flags.
+  Destinations with different flags need one rtpengine offer each, under its
+  own via-branch: the old B then stops hearing the caller while they ring,
+  and rtpengine keeps the ports of those offers until the call ends.
+- Those separate offers cannot be made on a call whose INVITE had no SDP: you
+  get `{error, {rejected, 488}}` and the call goes on.
+
 ## Hand a dialog to another process
 
 A dialog sends its events to its owner and watches it. `set_owner/2` moves
@@ -148,6 +186,8 @@ ok = chappe_sip_dialog:set_owner(D, Pid).
   `chappe_sip_b2b_async` (`relay_async/2`), `chappe_sip_dialog`
   (`set_owner/2`).
 - Tests: `chappe_sip_b2b_relay_SUITE` (`hangup_*`, `requests_*`,
-  `relay_info_forwarded`, `replace_b_*`, `relay_async_outlives_handler`).
+  `relay_info_forwarded`, `replace_b_*`, `fork_replace_*`,
+  `relay_async_outlives_handler`), `chappe_sip_webrtc_gateway_SUITE`
+  (`replace_b_fork_ws_udp`).
 - Design: [B2BUA design](../design/b2bua.md).
 - Lab: `make interop-sbc` (`apps/chappe_sip/interop/sbc`).

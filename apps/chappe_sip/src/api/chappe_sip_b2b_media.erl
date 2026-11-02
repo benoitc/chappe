@@ -215,7 +215,11 @@ rejected(Y, LastSdp, #{session := S} = M) ->
 %% ---- internal ----
 
 %% one rtpengine offer per distinct Key, the first one opening the
-%% session's offer/answer exchange
+%% session's offer/answer exchange. Not on a call whose first offer was
+%% B's (replace_b/3 after a late offer): rtpengine's caller is B there,
+%% so A's offers are callee-initiated and have no via-branch form.
+profile_offers(_Sdp, _Ps, _Keys, _Distinct, #{origin := b}) ->
+    {reject, 488};
 profile_offers(Sdp, Ps, Keys, Distinct, #{session := S} = M0) ->
     M = M0#{origin := a},
     Indexed = lists:zip(Distinct, lists:seq(1, length(Distinct))),
