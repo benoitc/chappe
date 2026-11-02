@@ -18,7 +18,10 @@ prompt played by the tone it hears.
 | `bridge_sip_target` | `bridge/3` to a SIP callee: audio both ways, no re-INVITE to the caller, the endpoint's channel goes |
 | `fork_same_flags_second_answers` | after a menu, `bridge/3` with `{parallel, Dests}` to two softphones: the caller hears the endpoint while they ring, the second answers, audio both ways, the first gets a CANCEL, no re-INVITE to the caller |
 | `fork_own_flags_second_answers`, `fork_own_flags_first_answers` | the same with flags of their own, so one rtpengine offer per via-branch, each branch winning in turn |
-| `fork_same_flags_failed_then_bridge`, `fork_own_flags_failed_then_bridge` | every branch busy: the caller stays on the endpoint and hears it, and the next fork works |
+| `fork_same_flags_failed_then_bridge`, `fork_own_flags_failed_then_bridge` | every branch busy: the caller stays on the endpoint, audio both ways, and the next fork works |
+| `fork_again_after_win`, `fork_fails_after_win` | own-flags fork after own-flags fork on one call, each reusing the via-branches of the last: the winner has audio both ways, also when the next fork fails |
+| `reinvite_after_win` | after a win, a re-INVITE from either side goes through with audio both ways |
+| `fork_after_create_b2bua_fork` | a call begun as an own-flags fork of `create_b2bua/4` forks again |
 | `endpoint_bridge` | `create_endpoint/1`, then `bridge/3` moves the caller onto it |
 | `record_playback` | `record/3` writes the caller's audio; playing it back returns the caller's tone |
 | `native_conference` | three callers in a chappe_mix room behind rtpengine: audio, a room prompt, mute, kick, talker events, the room outlives its first caller |

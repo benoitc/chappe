@@ -23,6 +23,10 @@
     fork_own_flags_first_answers/1,
     fork_same_flags_failed_then_bridge/1,
     fork_own_flags_failed_then_bridge/1,
+    fork_again_after_win/1,
+    fork_fails_after_win/1,
+    reinvite_after_win/1,
+    fork_after_create_b2bua_fork/1,
     endpoint_bridge/1,
     record_playback/1,
     native_conference/1,
@@ -50,6 +54,10 @@ all() ->
         fork_own_flags_first_answers,
         fork_same_flags_failed_then_bridge,
         fork_own_flags_failed_then_bridge,
+        fork_again_after_win,
+        fork_fails_after_win,
+        reinvite_after_win,
+        fork_after_create_b2bua_fork,
         endpoint_bridge,
         record_playback,
         native_conference,
@@ -371,7 +379,13 @@ fork_failed_then_bridge(Config, Target) ->
     _ = spawn(fun() -> chappe_mrf:play(Ep, <<"/media/two.wav">>) end),
     ?UA:clear(Ua),
     ?assert(?UA:hears(Ua, ?TWO, 6000)),
-    Callees = [?UA:callee(#{freq => F, answer => {after_ms, 200}}) || F <- [900, 1300]],
+    %% the other way as well: the endpoint hears the caller
+    Name = <<"rec-fail-", (integer_to_binary(erlang:unique_integer([positive])))/binary, ".wav">>,
+    ok = chappe_mrf:record(Ep, <<"/media/", Name/binary>>, #{max_secs => 2}),
+    Level = ?UA:wav_level(media(Config, binary_to_list(Name)), 600),
+    ct:log("the endpoint recorded the caller at ~.1f dBFS", [Level]),
+    ?assert(Level > -40.0),
+    Callees =[?UA:callee(#{freq => F, answer => {after_ms, 200}}) || F <- [900, 1300]],
     ?assertMatch(
         {ok, #{winner := _}},
         chappe_mrf:bridge(
@@ -391,6 +405,134 @@ fork_same_flags_failed_then_bridge(Config) ->
 
 fork_own_flags_failed_then_bridge(Config) ->
     fork_failed_then_bridge(Config, fun own_flags/1).
+
+%% One fork of a running call: two softphones with flags of their own,
+%% Win answers (its tone WinFreq), the other gets a CANCEL. Audio goes
+%% both ways, and the winner's softphone comes back.
+fork_round(B2b, Ua, Win, WinFreq) ->
+    Answering = ?UA:callee(#{freq => WinFreq, answer => {after_ms, 300}}),
+    Ringing = ?UA:callee(#{answer => ring}),
+    Ordered =
+        case Win of
+            1 -> [Answering, Ringing];
+            2 -> [Ringing, Answering]
+        end,
+    ?assertMatch(
+        {ok, #{winner := #{index := Win}}},
+        chappe_mrf:bridge(
+            B2b, own_flags([callee_uri(U) || U <- Ordered]),
+            #{anchor_params => to_host()}
+        )
+    ),
+    ua_got(Ringing, cancel, 5000),
+    both_ways(Ua, 600, Answering, WinFreq),
+    ?UA:stop(Ringing),
+    Answering.
+
+both_ways(Ua, UaFreq, Other, OtherFreq) ->
+    ?UA:clear(Ua),
+    ?UA:clear(Other),
+    ?assert(?UA:hears(Ua, OtherFreq, 6000)),
+    ?assert(?UA:hears(Other, UaFreq, 6000)).
+
+%% Fork after fork on one call, the via-branches of each landing on what
+%% the one before left: each winner has audio both ways, the one before
+%% gets a BYE, and the caller sees no re-INVITE.
+fork_again_after_win(Config) ->
+    ivr(fun park/2),
+    {Ua, _Ep, B2b, Owner} = call_in(Config, 600),
+    W1 = fork_round(B2b, Ua, 2, 900),
+    W2 = fork_round(B2b, Ua, 2, 1300),
+    ua_got(W1, bye, 5000),
+    W3 = fork_round(B2b, Ua, 1, 1700),
+    ua_got(W2, bye, 5000),
+    W4 = fork_round(B2b, Ua, 1, 2100),
+    ua_got(W3, bye, 5000),
+    no_reinvite(Ua),
+    ?UA:bye(Ua),
+    ua_got(W4, bye, 5000),
+    Owner ! stop.
+
+%% A fork that fails after a win leaves the winner its audio, both ways,
+%% and the next fork works.
+fork_fails_after_win(Config) ->
+    ivr(fun park/2),
+    {Ua, _Ep, B2b, Owner} = call_in(Config, 600),
+    lists:foreach(
+        fun({Win, Freq}) ->
+            W = fork_round(B2b, Ua, Win, Freq),
+            Busy = [?UA:callee(#{answer => {status, 486}}) || _ <- [1, 2]],
+            ?assertMatch(
+                {error, _},
+                chappe_mrf:bridge(
+                    B2b, own_flags([callee_uri(U) || U <- Busy]),
+                    #{anchor_params => to_host()}
+                )
+            ),
+            both_ways(Ua, 600, W, Freq),
+            [?UA:stop(U) || U <- Busy]
+        end,
+        [{1, 900}, {2, 1300}]
+    ),
+    no_reinvite(Ua),
+    ?UA:bye(Ua),
+    Owner ! stop.
+
+%% After a win, a re-INVITE from either side reaches the other and leaves
+%% audio both ways.
+reinvite_after_win(Config) ->
+    ivr(fun park/2),
+    {Ua, _Ep, B2b, Owner} = call_in(Config, 600),
+    lists:foreach(
+        fun({Win, Freq}) ->
+            W = fork_round(B2b, Ua, Win, Freq),
+            ?UA:reinvite(Ua),
+            ua_got(W, reinvite, 5000),
+            ua_got(Ua, reinvited, 5000),
+            both_ways(Ua, 600, W, Freq),
+            ?UA:reinvite(W),
+            ua_got(Ua, reinvite, 5000),
+            ua_got(W, reinvited, 5000),
+            both_ways(Ua, 600, W, Freq)
+        end,
+        [{2, 900}, {1, 1300}]
+    ),
+    ?UA:bye(Ua),
+    Owner ! stop.
+
+%% A call that began as an own-flags fork of create_b2bua/4: bridge/3 forks
+%% again on it, under the same via-branch names.
+fork_after_create_b2bua_fork(Config) ->
+    Test = self(),
+    Host = #{a => #{direction => [<<"host">>, <<"host">>]},
+             b => #{direction => [<<"host">>, <<"host">>]}},
+    First = ?UA:callee(#{freq => 900, answer => {after_ms, 300}}),
+    Other = ?UA:callee(#{answer => ring}),
+    Target = own_flags([callee_uri(Other), callee_uri(First)]),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        {ok, Legs} = chappe_sip:create_b2bua(
+            Req, Res, Target, #{media => anchor, anchor_params => Host}
+        ),
+        {ok, B2b} = chappe_sip_b2b:relay_async(Legs, #{notify => Test}),
+        Test ! {up, B2b}
+    end),
+    Ua = ?UA:call(?config(sip_port, Config), #{freq => 600}),
+    B2b =
+        receive
+            {up, H} -> H
+        after 10000 -> ct:fail(no_call)
+        end,
+    ua_got(Ua, {final, 200}, 5000),
+    ua_got(Other, cancel, 5000),
+    both_ways(Ua, 600, First, 900),
+    W1 = fork_round(B2b, Ua, 1, 1300),
+    ua_got(First, bye, 5000),
+    W2 = fork_round(B2b, Ua, 2, 1700),
+    ua_got(W1, bye, 5000),
+    no_reinvite(Ua),
+    ?UA:bye(Ua),
+    ua_got(W2, bye, 5000),
+    [?UA:stop(U) || U <- [Other]].
 
 %% create_endpoint/1, then bridge/3 moves the caller onto it: what the
 %% new endpoint plays reaches the caller.
