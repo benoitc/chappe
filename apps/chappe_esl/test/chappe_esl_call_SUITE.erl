@@ -30,9 +30,22 @@
     owner_death_after_hangup/1,
     owner_death_audio_stream/1,
     connection_closed/1,
-    stop_leaves_channel/1
+    stop_leaves_channel/1,
+    api_held_hangup/1,
+    api_held_dtmf/1,
+    api_held_exec_timeout/1,
+    api_held_exec_sent/1,
+    api_held_owner_death/1,
+    api_held_fork_stop_owner_death/1,
+    api_held_replies_in_order/1,
+    api_held_connection_closed/1,
+    api_helper_killed/1,
+    api_helper_quiet/1,
+    fork_start_failed/1,
+    fork_start_failed_while_running/1
 ]).
 -export([handle_channel/3]).
+-export([log/2]).
 
 -define(UUID, <<"fake-uuid-1">>).
 
@@ -56,7 +69,19 @@ all() ->
         owner_death_after_hangup,
         owner_death_audio_stream,
         connection_closed,
-        stop_leaves_channel
+        stop_leaves_channel,
+        api_held_hangup,
+        api_held_dtmf,
+        api_held_exec_timeout,
+        api_held_exec_sent,
+        api_held_owner_death,
+        api_held_fork_stop_owner_death,
+        api_held_replies_in_order,
+        api_held_connection_closed,
+        api_helper_killed,
+        api_helper_quiet,
+        fork_start_failed,
+        fork_start_failed_while_running
     ].
 
 init_per_suite(Config) ->
@@ -516,7 +541,276 @@ stop_leaves_channel(_Config) ->
         ok
     end.
 
+%% While an api reply is withheld the call process still handles events:
+%% this is about the process, the fake sends events a real node would hold
+%% back during a synchronous api.
+%% req: ESL-38
+api_held_hangup(_Config) ->
+    {Call, Fake} = outbound(#{api => #{<<"slow">> => {hold, <<"+OK late">>}}}),
+    held_api(Call, <<"slow">>),
+    ok = chappe_esl_fake_server:hangup(Fake, <<"NORMAL_CLEARING">>),
+    ?assertEqual({hangup, <<"NORMAL_CLEARING">>}, owner_msg_soon(Call)),
+    responsive(Call),
+    ok = chappe_esl_fake_server:release_api(Fake),
+    ?assertEqual({ok, <<"+OK late">>}, api_result()).
+
+%% req: ESL-38
+api_held_dtmf(_Config) ->
+    {Call, Fake} = outbound(#{api => #{<<"slow">> => {hold, <<"+OK">>}}}),
+    held_api(Call, <<"slow">>),
+    ok = chappe_esl_fake_server:dtmf(Fake, <<"7">>),
+    ?assertEqual({dtmf, <<"7">>}, owner_msg_soon(Call)).
+
+%% The exec timer fires, and its uuid_break, queued behind the withheld
+%% reply, does not stop the process either.
+%% req: ESL-35
+api_held_exec_timeout(_Config) ->
+    {Call, _Fake} = outbound(#{
+        apps => #{<<"park">> => silent},
+        api => #{<<"slow">> => {hold, <<"+OK">>}}
+    }),
+    Self = self(),
+    spawn(fun() ->
+        Self ! {park, chappe_esl_call:exec(Call, "park", "", #{timeout => 300})}
+    end),
+    _ = block_with(<<"execute-app-name: park">>),
+    held_api(Call, <<"slow">>),
+    receive
+        {park, Result} -> ?assertEqual({error, timeout}, Result)
+    after 2000 ->
+        ct:fail(exec_timeout_not_handled)
+    end,
+    ?assertEqual(
+        <<"api uuid_break fake-uuid-1">>, block_with(<<"uuid_break">>)
+    ),
+    responsive(Call).
+
+%% An exec sent behind the withheld reply waits for its own sendmsg reply
+%% outside the process, and still times out.
+%% req: ESL-35
+api_held_exec_sent(_Config) ->
+    {Call, Fake} = outbound(#{api => #{<<"slow">> => {hold, <<"+OK">>}}}),
+    held_api(Call, <<"slow">>),
+    Self = self(),
+    spawn(fun() ->
+        Self !
+            {answer,
+                chappe_esl_call:exec(Call, "answer", "", #{timeout => 300})}
+    end),
+    _ = block_with(<<"execute-app-name: answer">>),
+    responsive(Call),
+    receive
+        {answer, Result} -> ?assertEqual({error, timeout}, Result)
+    after 2000 ->
+        ct:fail(exec_timeout_not_handled)
+    end,
+    ok = chappe_esl_fake_server:release_api(Fake),
+    ?assertEqual({ok, <<"+OK">>}, api_result()),
+    no_completion(Call, 200).
+
+%% The owner dies with a fork start unanswered: the fork is stopped, the
+%% channel killed, the waiting caller released, and the process is gone
+%% within the cleanup bound of each command (2 s).
+%% req: ESL-39
+api_held_owner_death(_Config) ->
+    Start = <<"uuid_audio_fork fake-uuid-1 start ws://x mono 16000">>,
+    Owner = spawn(fun() -> receive after infinity -> ok end end),
+    {Call, _Fake} = outbound(#{api => #{Start => {hold, <<"+OK">>}}}, Owner),
+    Self = self(),
+    spawn(fun() ->
+        Self ! {api, chappe_esl_call:audio_fork_start(Call, "ws://x", #{})}
+    end),
+    _ = block_with(<<"api ", Start/binary>>),
+    Mon = monitor(process, Call),
+    T0 = erlang:monotonic_time(millisecond),
+    exit(Owner, kill),
+    ?assertEqual(
+        [
+            <<"api uuid_audio_fork fake-uuid-1 stop">>,
+            <<"api uuid_kill fake-uuid-1">>
+        ],
+        [next_block() || _ <- lists:seq(1, 2)]
+    ),
+    receive
+        {'DOWN', Mon, process, Call, normal} -> ok
+    after 6000 ->
+        ct:fail(call_not_stopped)
+    end,
+    ?assert(erlang:monotonic_time(millisecond) - T0 < 5000),
+    ?assertEqual({error, closed}, api_result()).
+
+%% The owner dies during a withheld fork stop: its stop went out once, and
+%% the kill follows.
+%% req: ESL-39
+api_held_fork_stop_owner_death(_Config) ->
+    Stop = <<"uuid_audio_fork fake-uuid-1 stop">>,
+    Owner = spawn(fun() -> receive after infinity -> ok end end),
+    {Call, _Fake} = outbound(#{api => #{Stop => {hold, <<"+OK">>}}}, Owner),
+    ok = chappe_esl_call:audio_fork_start(Call, "ws://x", #{}),
+    flush_blocks(),
+    Self = self(),
+    spawn(fun() -> Self ! {api, chappe_esl_call:audio_fork_stop(Call)} end),
+    ?assertEqual(<<"api ", Stop/binary>>, next_block()),
+    exit(Owner, kill),
+    ?assertEqual(<<"api uuid_kill fake-uuid-1">>, next_block()),
+    ?assertEqual({error, closed}, api_result()).
+
+%% Requests behind the withheld reply stay unanswered until it comes, and
+%% each caller gets its own reply.
+%% req: ESL-37
+api_held_replies_in_order(_Config) ->
+    {Call, Fake} = outbound(#{
+        api => #{
+            <<"first">> => {hold, <<"+OK first">>},
+            <<"second">> => <<"+OK second">>
+        }
+    }),
+    Self = self(),
+    Run = fun(Tag, Fun) -> spawn(fun() -> Self ! {Tag, Fun()} end) end,
+    Run(first, fun() -> chappe_esl_call:api(Call, <<"first">>) end),
+    _ = block_with(<<"api first">>),
+    Run(second, fun() -> chappe_esl_call:api(Call, <<"second">>) end),
+    _ = block_with(<<"api second">>),
+    Run(nowait, fun() ->
+        chappe_esl_call:exec(Call, "set", "a=1", #{wait => false})
+    end),
+    _ = block_with(<<"execute-app-name: set">>),
+    responsive(Call),
+    receive
+        {Tag, Early} when Tag =:= first; Tag =:= second; Tag =:= nowait ->
+            ct:fail({answered_early, Tag, Early})
+    after 200 ->
+        ok
+    end,
+    ok = chappe_esl_fake_server:release_api(Fake),
+    receive
+        {first, First} -> ?assertEqual({ok, <<"+OK first">>}, First)
+    after 2000 ->
+        ct:fail(no_first_reply)
+    end,
+    receive
+        {second, Second} -> ?assertEqual({ok, <<"+OK second">>}, Second)
+    after 2000 ->
+        ct:fail(no_second_reply)
+    end,
+    receive
+        {nowait, Nowait} -> ?assertMatch({ok, <<_:36/binary>>}, Nowait)
+    after 2000 ->
+        ct:fail(no_nowait_reply)
+    end.
+
+%% req: ESL-38
+api_held_connection_closed(_Config) ->
+    {Call, Fake} = outbound(#{api => #{<<"slow">> => {hold, <<"+OK">>}}}),
+    held_api(Call, <<"slow">>),
+    ok = chappe_esl_fake_server:drop(Fake),
+    ?assertEqual(closed, owner_msg_soon(Call)),
+    ?assertEqual({error, closed}, api_result()).
+
+%% A helper that dies abnormally answers its caller {error, closed}, and
+%% the call goes on.
+api_helper_killed(_Config) ->
+    {Call, _Fake} = outbound(#{api => #{<<"slow">> => {hold, <<"+OK">>}}}),
+    held_api(Call, <<"slow">>),
+    {monitors, Mons} = process_info(Call, monitors),
+    [Helper] = [
+        P
+     || {process, P} <- Mons,
+        P =/= self(),
+        process_info(P, initial_call) =:= {initial_call, {erlang, apply, 2}}
+    ],
+    exit(Helper, kill),
+    ?assertEqual({error, closed}, api_result()),
+    responsive(Call).
+
+%% A helper exits with its result: that is no crash, nothing gets logged. A
+%% crash at the end shows the capture works.
+api_helper_quiet(_Config) ->
+    ok = logger:add_handler(?MODULE, ?MODULE, #{
+        level => warning, config => self()
+    }),
+    try
+        {Call, _Fake} = outbound(#{api => #{<<"bad">> => <<"-ERR bad">>}}),
+        ?assertEqual({ok, <<"+OK">>}, chappe_esl_call:api(Call, "status")),
+        ?assertMatch({error, _}, chappe_esl_call:api(Call, "bad")),
+        ok = chappe_esl_call:audio_fork_start(Call, "ws://x", #{}),
+        ok = chappe_esl_call:audio_fork_stop(Call),
+        ok = chappe_esl_call:answer(Call),
+        receive
+            {logged, Logged} -> ct:fail({logged, Logged})
+        after 300 ->
+            ok
+        end,
+        spawn(fun() -> error(control_crash) end),
+        receive
+            {logged, _} -> ok
+        after 2000 ->
+            ct:fail(capture_sees_nothing)
+        end
+    after
+        ok = logger:remove_handler(?MODULE)
+    end.
+
+log(#{msg := Msg}, #{config := Pid}) ->
+    Pid ! {logged, Msg},
+    ok.
+
+%% A fork that failed to start is not stopped at the owner's death.
+%% req: ESL-39
+fork_start_failed(_Config) ->
+    Start = <<"uuid_audio_fork fake-uuid-1 start ws://x mono 16000">>,
+    Owner = spawn(fun() -> receive after infinity -> ok end end),
+    {Call, _Fake} = outbound(#{api => #{Start => <<"-ERR no">>}}, Owner),
+    ?assertMatch(
+        {error, _}, chappe_esl_call:audio_fork_start(Call, "ws://x", #{})
+    ),
+    flush_blocks(),
+    exit(Owner, kill),
+    ?assertEqual(<<"api uuid_kill fake-uuid-1">>, next_block()).
+
+%% A second start refused while the first fork runs does not forget it.
+%% req: ESL-39
+fork_start_failed_while_running(_Config) ->
+    Second = <<"uuid_audio_fork fake-uuid-1 start ws://y mono 16000">>,
+    Owner = spawn(fun() -> receive after infinity -> ok end end),
+    {Call, _Fake} = outbound(#{api => #{Second => <<"-ERR busy">>}}, Owner),
+    ok = chappe_esl_call:audio_fork_start(Call, "ws://x", #{}),
+    ?assertMatch(
+        {error, _}, chappe_esl_call:audio_fork_start(Call, "ws://y", #{})
+    ),
+    flush_blocks(),
+    exit(Owner, kill),
+    ?assertEqual(<<"api uuid_audio_fork fake-uuid-1 stop">>, next_block()),
+    ?assertEqual(<<"api uuid_kill fake-uuid-1">>, next_block()).
+
 %% helpers
+
+%% Send Cmd from another process, and return once the fake got it. The
+%% result comes back through api_result/0.
+held_api(Call, Cmd) ->
+    Self = self(),
+    spawn(fun() -> Self ! {api, chappe_esl_call:api(Call, Cmd)} end),
+    _ = block_with(<<"api ", Cmd/binary>>),
+    ok.
+
+api_result() ->
+    receive
+        {api, Result} -> Result
+    after 5000 ->
+        ct:fail(no_api_result)
+    end.
+
+%% The call process answers now, whatever the connection is waiting for.
+responsive(Call) ->
+    ?assertEqual(?UUID, gen_server:call(Call, uuid, 500)).
+
+owner_msg_soon(Call) ->
+    receive
+        {chappe_esl_call, Call, {event, _}} -> owner_msg_soon(Call);
+        {chappe_esl_call, Call, Msg} -> Msg
+    after 2000 ->
+        ct:fail(no_owner_msg)
+    end.
 
 outbound(FakeOpts) ->
     outbound(FakeOpts, self()).

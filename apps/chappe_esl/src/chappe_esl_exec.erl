@@ -3,11 +3,12 @@
 %%
 %% The wire side of chappe_esl_call: the sendmsg execute carrying an
 %% Event-UUID, the wait for its CHANNEL_EXECUTE_COMPLETE from the controlling
-%% process (chappe_esl_call:exec/5), uuid_break, and the quoting of the
-%% arguments FreeSWITCH splits on spaces.
+%% process (chappe_esl_call:exec/5), uuid_break, the audio fork commands, and
+%% the quoting of the arguments FreeSWITCH splits on spaces.
 -module(chappe_esl_exec).
 
 -export([exec/5, send/6, break/3, app_uuid/0, arg/1, channel_uuid/1]).
+-export([fork_start_cmd/4, fork_stop_cmd/2]).
 
 -define(EXEC_TIMEOUT, 60000).
 -define(BREAK_TIMEOUT, 2000).
@@ -184,6 +185,50 @@ arg(Arg0) ->
         true -> <<"'", Escaped/binary, "'">>;
         false -> Escaped
     end.
+
+%% uuid_<api> <uuid> start <url> <mix> <rate> [metadata]
+-spec fork_start_cmd(
+    chappe_esl_call:fork_module(), binary(), iodata(), map()
+) -> iodata().
+fork_start_cmd(Module, Uuid, Url, Opts) ->
+    Mix = atom_to_binary(maps:get(mix, Opts, mono)),
+    Rate = fork_rate(Module, maps:get(rate, Opts, 16000)),
+    Meta =
+        case maps:get(metadata, Opts, undefined) of
+            undefined -> [];
+            M -> [<<" ">>, fork_metadata(Module, arg(M))]
+        end,
+    [
+        fork_api(Module),
+        <<" ">>,
+        Uuid,
+        <<" start ">>,
+        Url,
+        <<" ">>,
+        Mix,
+        <<" ">>,
+        Rate,
+        Meta
+    ].
+
+-spec fork_stop_cmd(chappe_esl_call:fork_module(), binary()) -> iodata().
+fork_stop_cmd(Module, Uuid) ->
+    [fork_api(Module), <<" ">>, Uuid, <<" stop">>].
+
+fork_api(audio_fork) -> <<"uuid_audio_fork">>;
+fork_api(audio_stream) -> <<"uuid_audio_stream">>.
+
+%% mod_audio_stream names its two classic rates 8k and 16k (the only forms
+%% its first releases parse); other rates and mod_audio_fork take the number.
+fork_rate(audio_stream, 8000) -> <<"8k">>;
+fork_rate(audio_stream, 16000) -> <<"16k">>;
+fork_rate(_Module, Rate) when is_integer(Rate) -> integer_to_binary(Rate);
+fork_rate(_Module, Rate) -> Rate.
+
+%% mod_audio_fork reads the metadata after the bug name (its default,
+%% audio_fork); mod_audio_stream reads it right after the rate.
+fork_metadata(audio_fork, Meta) -> [<<"audio_fork ">>, Meta];
+fork_metadata(audio_stream, Meta) -> Meta.
 
 %% The uuid of an outbound connection's channel data.
 -spec channel_uuid(chappe_esl_event:event()) -> binary() | undefined.

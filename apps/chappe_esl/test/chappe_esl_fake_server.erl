@@ -7,8 +7,10 @@
 %% test push arbitrary frames with inject/2. bgapi answers with a Job-UUID and
 %% then pushes the matching BACKGROUND_JOB event. api bodies are configured
 %% with the `api' option (a command => body map, where a body may be
-%% {delay, Ms, Body} to answer late, or `silent' to never answer); everything
-%% else defaults to +OK. set_api/3 changes one body at runtime.
+%% {delay, Ms, Body} to answer late, `silent' to never answer, or {hold, Body}
+%% to withhold the reply until release_api/1, answering the commands received
+%% meanwhile after it, in order, as FreeSWITCH does; events still go out);
+%% everything else defaults to +OK. set_api/3 changes one body at runtime.
 %%
 %% Options:
 %% - `auth => reject' answers the password with -ERR;
@@ -44,7 +46,7 @@
 
 -export([start/0, start/1, stop/1, inject/2, drop/1]).
 -export([start_outbound/2, dtmf/2, hangup/2]).
--export([set_api/3, set_load/2]).
+-export([set_api/3, release_api/1, set_load/2]).
 -export([plain_event/2, json_event/2]).
 
 %% Start the fake on an ephemeral port. Returns {ok, Server, Port}.
@@ -111,10 +113,20 @@ drop(Server) ->
     ok.
 
 %% Change the body answered to `api Cmd'.
--spec set_api(pid(), binary(), binary() | silent | {delay, timeout(), binary()}) ->
+-spec set_api(
+    pid(),
+    binary(),
+    binary() | silent | {delay, timeout(), binary()} | {hold, binary()}
+) ->
     ok.
 set_api(Server, Cmd, Body) ->
     Server ! {set_api, Cmd, Body},
+    ok.
+
+%% Answer the withheld api, then the commands received behind it.
+-spec release_api(pid()) -> ok.
+release_api(Server) ->
+    Server ! release_api,
     ok.
 
 %% Change the HEARTBEAT headers (merged over the defaults).
@@ -241,6 +253,8 @@ loop(#{sock := Sock} = State) ->
             loop(control(Msg, State));
         {set_load, _} = Msg ->
             loop(control(Msg, State));
+        release_api ->
+            loop(release_api_reply(State));
         _Other ->
             loop(State)
     end.
@@ -290,16 +304,27 @@ body_length(Block) ->
         tl(Lines)
     ).
 
-handle_command(Block, #{sock := Sock, opts := Opts} = State) ->
+handle_command(Block, State) ->
     maps:get(parent, State) ! {fake_server, self(), Block},
+    run_command(Block, State).
+
+%% Behind a withheld api reply, commands wait their turn.
+run_command(Block, #{held := {Body, Blocks}} = State) ->
+    State#{held := {Body, Blocks ++ [Block]}};
+run_command(Block, #{sock := Sock, opts := Opts} = State) ->
     [First | _] = binary:split(Block, <<"\n">>),
     case First of
         <<"auth ", _/binary>> ->
             send(Sock, auth_reply(maps:get(auth, Opts, accept))),
             State;
         <<"api ", Cmd/binary>> ->
-            send_api(Sock, api_reply(Cmd, State)),
-            State;
+            case api_reply(Cmd, State) of
+                {hold, Body} ->
+                    State#{held => {Body, []}};
+                Reply ->
+                    send_api(Sock, Reply),
+                    State
+            end;
         <<"bgapi ", Cmd/binary>> ->
             handle_bgapi(Sock, Cmd, State),
             State;
@@ -339,6 +364,12 @@ handle_command(Block, #{sock := Sock, opts := Opts} = State) ->
             send(Sock, command_reply(<<"-ERR unknown command">>)),
             State
     end.
+
+release_api_reply(#{held := {Body, Blocks}, sock := Sock} = State) ->
+    send_api(Sock, Body),
+    lists:foldl(fun run_command/2, maps:remove(held, State), Blocks);
+release_api_reply(State) ->
+    State.
 
 %% A sendmsg execute on a fake with a channel: report the execution, then
 %% complete it as `apps' says.
@@ -449,6 +480,7 @@ handle_bgapi(Sock, Cmd, State) ->
     case api_reply(Cmd, State) of
         silent -> ok;
         {delay, _, Result} -> send(Sock, background_job(Uuid, Result));
+        {hold, Result} -> send(Sock, background_job(Uuid, Result));
         Result -> send(Sock, background_job(Uuid, Result))
     end.
 
