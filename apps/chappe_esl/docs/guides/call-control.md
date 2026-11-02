@@ -165,9 +165,36 @@ receive
     {chappe_esl_call, Call, {hangup, Cause}} -> Cause;
     {chappe_esl_call, Call, {complete, App, Event}} -> {App, Event};
     {chappe_esl_call, Call, {event, Event}} -> chappe_esl_event:name(Event);
+    {chappe_esl_call, Call, linger} -> final_events_follow;
+    {chappe_esl_call, Call, disconnect} -> nothing_more_coming;
     {chappe_esl_call, Call, closed} -> closed
 end.
 ```
+
+`linger` means the channel hung up, the final events still follow and the
+socket stays open. `disconnect` means FreeSWITCH sends nothing more on this
+connection. Neither ends a request in flight or the call process: `closed`
+does, and it is the only message that says the process stopped. Ignore the
+first two if you have no use for them, but do not crash on them.
+
+## Run a slow command
+
+`api/2` returns when FreeSWITCH answers, 10 seconds at most. The call process
+does not wait with you: your exec timeouts fire, other callers get answers, and
+if your process dies the forks stop and the channel is killed.
+
+FreeSWITCH still runs a synchronous `api` on the thread that sends this
+connection's events, so a slow one holds back the hangup, DTMF and completions
+on the node until it returns. If you need them during a slow command, send it
+with `bgapi`, on the connection you gave `start/2`:
+
+```erlang
+{ok, _JobUuid} = chappe_esl:bgapi(Conn, ["uuid_broadcast ", Uuid, " /sounds/hold.wav aleg"]).
+```
+
+It returns once FreeSWITCH took the command, without its result. If you need the
+result, run the command on another connection: `chappe_esl:node_api/2`, or
+`chappe_esl:bgapi_await/2` on a connection of your own.
 
 ## Without a call process
 
@@ -215,6 +242,11 @@ Other messages that arrive meanwhile stay in your mailbox.
   websocket upgrade response headers case-sensitively, so a server sending
   lowercase names fails with "WebSocket upgrade failed" and gets no audio.
 - A fork you start with `api/2` instead is not tracked: stop it yourself.
+- A fork counts as started as soon as you ask, so an owner dying before
+  FreeSWITCH answers still stops it. A refused start takes it back, unless a
+  fork of that module was already running.
+- Requests from one process run in the order you make them. Requests made at
+  the same time from several processes have no set order on the wire.
 
 ## Where it lives
 
