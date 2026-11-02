@@ -23,6 +23,9 @@
     fork_own_flags_first_answers/1,
     fork_same_flags_failed_then_bridge/1,
     fork_own_flags_failed_then_bridge/1,
+    fork_same_flags_failed_keeps_callee/1,
+    fork_own_flags_failed_keeps_callee/1,
+    failed_bridge_other_interface/1,
     fork_again_after_win/1,
     fork_fails_after_win/1,
     reinvite_after_win/1,
@@ -54,6 +57,9 @@ all() ->
         fork_own_flags_first_answers,
         fork_same_flags_failed_then_bridge,
         fork_own_flags_failed_then_bridge,
+        fork_same_flags_failed_keeps_callee,
+        fork_own_flags_failed_keeps_callee,
+        failed_bridge_other_interface,
         fork_again_after_win,
         fork_fails_after_win,
         reinvite_after_win,
@@ -382,20 +388,18 @@ fork_failed_then_bridge(Config, Target) ->
     end),
     ?UA:clear(Ua),
     ?assert(?UA:hears(Ua, ?TWO, 6000)),
-    %% the other way as well: the endpoint hears the caller. Once the prompt
-    %% is over: a record/3 queued behind it returns when the prompt ends
+    %% the other way as well, once the prompt is over: the endpoint hears
+    %% the caller
     receive
         {played, ok} -> ok
     after 10000 -> ct:fail(no_played)
     end,
-    Name =<<"rec-fail-", (integer_to_binary(erlang:unique_integer([positive])))/binary, ".wav">>,
+    Name = <<"rec-fail-", (integer_to_binary(erlang:unique_integer([positive])))/binary, ".wav">>,
     ok = chappe_mrf:record(Ep, <<"/media/", Name/binary>>, #{max_secs => 2}),
     Level = ?UA:wav_level(media(Config, binary_to_list(Name)), 600),
-    ct:log("the endpoint recorded the caller at ~.1f dBFS, ~p bytes", [
-        Level, filelib:file_size(media(Config, binary_to_list(Name)))
-    ]),
+    ct:log("the endpoint recorded the caller at ~.1f dBFS", [Level]),
     ?assert(Level > -40.0),
-    Callees =[?UA:callee(#{freq => F, answer => {after_ms, 200}}) || F <- [900, 1300]],
+    Callees = [?UA:callee(#{freq => F, answer => {after_ms, 200}}) || F <- [900, 1300]],
     ?assertMatch(
         {ok, #{winner := _}},
         chappe_mrf:bridge(
@@ -409,6 +413,53 @@ fork_failed_then_bridge(Config, Target) ->
     ?UA:bye(Ua),
     Owner ! stop,
     [?UA:stop(U) || U <- Busy ++ Callees].
+
+%% The old B is a softphone: after a failed fork it hears the caller, and
+%% the caller it.
+fork_failed_keeps_callee(Config, Target) ->
+    ivr(fun park/2),
+    {Ua, _Ep, B2b, Owner} = call_in(Config, 600),
+    Old = ?UA:callee(#{freq => 900}),
+    ok = chappe_mrf:bridge(B2b, callee_uri(Old), #{anchor_params => to_host()}),
+    both_ways(Ua, 600, Old, 900),
+    Busy = [?UA:callee(#{answer => {status, 486}}) || _ <- [1, 2]],
+    ?assertMatch(
+        {error, _},
+        chappe_mrf:bridge(
+            B2b, Target([callee_uri(U) || U <- Busy]),
+            #{anchor_params => to_host()}
+        )
+    ),
+    both_ways(Ua, 600, Old, 900),
+    no_reinvite(Ua),
+    ?UA:bye(Ua),
+    ua_got(Old, bye, 5000),
+    Owner ! stop,
+    [?UA:stop(U) || U <- Busy].
+
+fork_same_flags_failed_keeps_callee(Config) ->
+    fork_failed_keeps_callee(Config, fun same_flags/1).
+
+fork_own_flags_failed_keeps_callee(Config) ->
+    fork_failed_keeps_callee(Config, fun own_flags/1).
+
+%% A bridge to another rtpengine interface fails: the offer moved the
+%% endpoint's media to it, and without taking it back the endpoint stops
+%% hearing the caller, one run in three.
+failed_bridge_other_interface(Config) ->
+    ivr(fun park/2),
+    {Ua, Ep, B2b, Owner} = call_in(Config, 600),
+    Busy = ?UA:callee(#{answer => {status, 486}}),
+    {error, _} = chappe_mrf:bridge(B2b, callee_uri(Busy), #{anchor_params => to_host()}),
+    ok = chappe_mrf:play(Ep, <<"/media/two.wav">>),
+    Name = <<"rec-iface-", (integer_to_binary(erlang:unique_integer([positive])))/binary, ".wav">>,
+    ok = chappe_mrf:record(Ep, <<"/media/", Name/binary>>, #{max_secs => 2}),
+    Level = ?UA:wav_level(media(Config, binary_to_list(Name)), 600),
+    ct:log("the endpoint recorded the caller at ~.1f dBFS", [Level]),
+    ?assert(Level > -40.0),
+    ?UA:bye(Ua),
+    Owner ! stop,
+    ?UA:stop(Busy).
 
 fork_same_flags_failed_then_bridge(Config) ->
     fork_failed_then_bridge(Config, fun same_flags/1).

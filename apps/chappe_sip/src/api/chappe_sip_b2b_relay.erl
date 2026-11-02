@@ -436,8 +436,9 @@ replace_b(From, Target, Opts, #{media := M0, a := A} = S) ->
                 maps:get(requests, S), maps:get(relay_info, S)
             ),
             Relay = self(),
+            Moved = chappe_sip_b2b_replace:moved(Target1, M0, M1),
             spawn_step(
-                {replace, From, Old},
+                {replace, From, {Old, Moved}},
                 fun() ->
                     chappe_sip_b2b_replace:call(
                         Target1, Sdp, Opts#{handled => Handled}, Relay
@@ -452,7 +453,7 @@ replace_b(From, Target, Opts, #{media := M0, a := A} = S) ->
         {reject, Code, offered} ->
             %% some of the fork's offers went through
             reply(From, {error, {rejected, Code}}),
-            restore(b, old_params(Old, S#{media := M}))
+            keep_old_b({Old, true}, S#{media := M})
     end.
 
 %% the new B answered and carries the call, or the old B keeps it and
@@ -464,11 +465,30 @@ replaced(From, Old, {ok, NewB, Answer, Won}, S) ->
             S1;
         Error ->
             reply(From, Error),
-            restore(b, old_params(Old, S))
+            keep_old_b(Old, S)
     end;
 replaced(From, Old, Error, S) ->
     reply(From, failure(Error)),
+    keep_old_b(Old, S).
+
+%% rtpengine gets the old B's SDP back; an offer that took other flags
+%% toward B moved the old B's media with them (another interface, say),
+%% which the answer does not undo, so one more exchange takes them back
+keep_old_b({Old, true}, S) ->
+    reopen(restore(b, old_params(Old, S)));
+keep_old_b({Old, false}, S) ->
     restore(b, old_params(Old, S)).
+
+reopen(#{media := M, a := A, b := B} = S) ->
+    case chappe_sip_b2b_media:offer(a, remote_sdp(A), M) of
+        {ok, _ForB, M1} ->
+            case chappe_sip_b2b_media:answer(b, remote_sdp(B), M1) of
+                {ok, _ForA, M2} -> S#{media := M2};
+                {reject, _} -> S
+            end;
+        {reject, _} ->
+            S
+    end.
 
 replaced_reply(undefined) -> ok;
 replaced_reply(#{winner := Winner}) -> {ok, #{winner => Winner}}.

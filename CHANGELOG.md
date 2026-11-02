@@ -12,6 +12,8 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
   desk phone and browser together. The first to answer takes the call and you
   learn which one it was. When nobody answers, the caller stays where it was
   and you can try again. Before, a call could only move to one destination.
+  A failed move to a destination on another network no longer risks leaving
+  the party the caller stays with unable to hear the caller.
 - chappe_esl call control: an audio fork can now go through
   mod_audio_stream as well as mod_audio_fork. The call remembers which one
   started the fork, so stopping it, or the cleanup when your process dies,

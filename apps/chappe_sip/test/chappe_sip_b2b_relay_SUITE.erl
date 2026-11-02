@@ -46,7 +46,8 @@
          fork_replace_offer_half_refused/1, fork_replace_hook_rejects/1,
          fork_replace_helper_dies/1, reinvite_helper_dies/1,
          replace_b_new_b_dies/1, info_follows_replace/1,
-         replace_clears_hold/1, replace_b_bad_arguments/1]).
+         replace_clears_hold/1, replace_b_bad_arguments/1,
+         replace_b_failure_other_flags/1]).
 
 all() ->
     [reinvite_a_to_b, reinvite_b_to_a, update_relayed,
@@ -76,7 +77,8 @@ all() ->
      fork_replace_empty, fork_replace_offer_refused,
      fork_replace_offer_half_refused, fork_replace_hook_rejects,
      fork_replace_helper_dies, reinvite_helper_dies, replace_b_new_b_dies,
-     info_follows_replace, replace_clears_hold, replace_b_bad_arguments].
+     info_follows_replace, replace_clears_hold, replace_b_bad_arguments,
+     replace_b_failure_other_flags].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -1740,13 +1742,17 @@ fork_replace_own_flags_fail(_Config) ->
     Dests = [fork_dest(one, busy()), {fork_dest(two, busy()), Own}],
     {error, #chappe_sip_error{status = 486}} =
         chappe_sip_b2b:replace_b(B2b, {parallel, Dests}, #{}),
-    Cmds = sdp_cmds(),
-    Restore = lists:last(Cmds),
-    ?assertEqual(3, length(Cmds)),
+    [_Offer1, _Offer2, Restore, Reopen, Reanswer] = sdp_cmds(),
     ?assertMatch(#{<<"command">> := <<"answer">>, <<"to-tag">> := OldTag},
                  Restore),
-    ?assertNot(maps:is_key(<<"via-branch">>, Restore)),
-    ?assertNot(maps:is_key(<<"x-leg">>, Restore)),
+    %% the first offer took the old B's media: one more exchange gives it
+    %% its flags back
+    ?assertMatch(#{<<"command">> := <<"offer">>, <<"to-tag">> := OldTag}, Reopen),
+    ?assertMatch(#{<<"command">> := <<"answer">>, <<"to-tag">> := OldTag}, Reanswer),
+    [begin
+         ?assertNot(maps:is_key(<<"via-branch">>, C)),
+         ?assertNot(maps:is_key(<<"x-leg">>, C))
+     end || C <- [Restore, Reopen, Reanswer]],
     Uri = fork_dest(three, answers(three, <<"threetag">>, 0)),
     ?assertEqual(ok, chappe_sip_b2b:replace_b(B2b, Uri, #{})),
     ?assertMatch([#{<<"command">> := <<"offer">>, <<"to-tag">> := OldTag},
@@ -1795,6 +1801,26 @@ fork_replace_late_offer(_Config) ->
             fork_dest(two, answers(two, <<"twotag">>, 100))],
     ?assertMatch({ok, #{winner := #{index := 2}}},
                  chappe_sip_b2b:replace_b(B2b, {parallel, Uris}, #{})),
+    ok = ?UA:expect(old_b_bye).
+
+%% A failed replace to another interface: rtpengine gets the old B's
+%% answer, then an exchange with the old flags, which brings the old B's
+%% media back from that interface. Without other flags there is none (see
+%% replace_b_failure_keeps_b).
+replace_b_failure_other_flags(_Config) ->
+    {B2b, OldTag} = fork_call(),
+    Uri = fork_dest(one, busy()),
+    Other = #{anchor_params => #{b => #{<<"x-leg">> => <<"other">>}}},
+    ?assertMatch({error, #chappe_sip_error{status = 486}},
+                 chappe_sip_b2b:replace_b(B2b, Uri, Other)),
+    [Offer, Restore, Reopen, Reanswer] = sdp_cmds(),
+    ?assertMatch(#{<<"x-leg">> := <<"other">>}, Offer),
+    ?assertMatch(#{<<"command">> := <<"answer">>, <<"to-tag">> := OldTag}, Restore),
+    ?assertMatch(#{<<"command">> := <<"offer">>, <<"to-tag">> := OldTag}, Reopen),
+    ?assertNot(maps:is_key(<<"x-leg">>, Reopen)),
+    ?assertMatch(#{<<"command">> := <<"answer">>, <<"to-tag">> := OldTag}, Reanswer),
+    ?assertMatch(#{pending := false}, chappe_sip_b2b:info(B2b)),
+    hang_up(),
     ok = ?UA:expect(old_b_bye).
 
 %% rtpengine refuses every offer: nothing to take back, so no answer.

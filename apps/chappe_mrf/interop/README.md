@@ -19,6 +19,8 @@ prompt played by the tone it hears.
 | `fork_same_flags_second_answers` | after a menu, `bridge/3` with `{parallel, Dests}` to two softphones: the caller hears the endpoint while they ring, the second answers, audio both ways, the first gets a CANCEL, no re-INVITE to the caller |
 | `fork_own_flags_second_answers`, `fork_own_flags_first_answers` | the same with flags of their own, so one rtpengine offer per via-branch, each branch winning in turn |
 | `fork_same_flags_failed_then_bridge`, `fork_own_flags_failed_then_bridge` | every branch busy: the caller stays on the endpoint, audio both ways, and the next fork works |
+| `fork_same_flags_failed_keeps_callee`, `fork_own_flags_failed_keeps_callee` | the old B is a softphone: after a failed fork, audio both ways |
+| `failed_bridge_other_interface` | a failed bridge naming another rtpengine interface: the endpoint still hears the caller |
 | `fork_again_after_win`, `fork_fails_after_win` | own-flags fork after own-flags fork on one call, each reusing the via-branches of the last: the winner has audio both ways, also when the next fork fails |
 | `reinvite_after_win` | after a win, a re-INVITE from either side goes through with audio both ways |
 | `fork_after_create_b2bua_fork` | a call begun as an own-flags fork of `create_b2bua/4` forks again |

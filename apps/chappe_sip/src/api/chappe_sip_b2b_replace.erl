@@ -23,7 +23,7 @@
 %% a via-branch other than the first reaches nobody.
 -module(chappe_sip_b2b_replace).
 
--export([valid/2, offer/4, call/4, swap/4, abort/3, latched/1]).
+-export([valid/2, offer/4, moved/3, call/4, swap/4, abort/3, latched/1]).
 
 -export_type([won/0]).
 
@@ -103,6 +103,23 @@ offer(Target, ASdp, _Opts, M) ->
         {ok, Sdp, M1} -> {ok, Target, Sdp, M1};
         {reject, _} = Rej -> Rej
     end.
+
+%% Whether the offers of Target took other flags toward B than the old B's
+%% (M0, the media before them; M1, after them).
+-spec moved(
+    term(), chappe_sip_b2b_media:state(), chappe_sip_b2b_media:state()
+) -> boolean().
+moved({parallel, Dests}, M0, _M1) ->
+    Old = chappe_sip_b2b_media:b_flags(M0),
+    lists:any(
+        fun(#{profile := P}) ->
+            chappe_sip_b2b_media:b_flags(chappe_sip_b2b_media:branch(P, M0)) =/=
+                Old
+        end,
+        Dests
+    );
+moved(_Target, M0, M1) ->
+    chappe_sip_b2b_media:b_flags(M0) =/= chappe_sip_b2b_media:b_flags(M1).
 
 %% The new B answers Sdp (rtpengine's offer): {ok, Dialog, Answer, Won} or
 %% {error, _}; Won is undefined but for a fork. Relay owns the new dialog;

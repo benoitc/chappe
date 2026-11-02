@@ -24,7 +24,7 @@
 
 -export([new/2, start/1, stop/1, mode/1, set_mode/2, session/1]).
 -export([set_tag/3, offer/3, answer/3, final_answer/3, rejected/3, hook/1]).
--export([fork_offer/3, branch/2, unhold/2]).
+-export([fork_offer/3, branch/2, unhold/2, b_flags/1]).
 
 -export_type([state/0, mode/0, leg/0, profile/0]).
 
@@ -202,6 +202,10 @@ fork_offer(Sdp, [P0 | _] = Ps, M0) ->
                 Rej -> Rej
             end
     end.
+
+%% The flags rtpengine writes the SDP toward B with.
+-spec b_flags(state()) -> map().
+b_flags(M) -> toward(b, M).
 
 %% Leg now has another party behind it, which is not on hold.
 -spec unhold(leg(), state()) -> state().
