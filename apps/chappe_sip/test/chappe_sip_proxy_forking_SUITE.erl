@@ -17,13 +17,15 @@
          redirect_bounded/1, redirect_policy_and_seen/1, redirect_depth/1,
          redirect_parallel/1, provisional_timeout/1, final_timeout/1,
          bad_proxy_options/1]).
+-export([accepted_supervised/1, accepted_crash/1, accepted_forks_bounded/1]).
 
 all() ->
     [proxy_single_200, proxy_serial_failover, proxy_parallel_first_wins,
      proxy_parallel_6xx_cancels, redirect_followed,
      redirect_not_followed_by_default, redirect_bounded,
      redirect_policy_and_seen, redirect_depth, redirect_parallel,
-     provisional_timeout, final_timeout, bad_proxy_options].
+     provisional_timeout, final_timeout, bad_proxy_options,
+     accepted_supervised, accepted_crash, accepted_forks_bounded].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -37,6 +39,7 @@ end_per_suite(_Config) ->
     ok.
 
 end_per_testcase(_Case, _Config) ->
+    application:unset_env(chappe_sip, proxy_accepted_ms),
     _ = chappe_sip:stop(),
     _ = chappe_sip_engine:reset_routes(),
     ok.
@@ -328,6 +331,89 @@ bad_proxy_options(_Config) ->
     after 6000 -> ct:fail(no_results)
     end,
     receive {invited, D1, _} -> ct:fail(sent) after 300 -> ok end.
+
+%% ---- the RFC 6026 Accepted state ----
+
+%% After the 2xx the Accepted state runs as a child of
+%% chappe_sip_proxy_sup, and ends when its window closes.
+accepted_supervised(_Config) ->
+    application:set_env(chappe_sip, proxy_accepted_ms, 800),
+    {EP, [D1]} = setup(1),
+    Before = accepted(),
+    proxy([dest(D1)], #{}),
+    answer(D1, 200),
+    call(EP, 200),
+    ok = expect_done(200),
+    [Pid] = accepted() -- Before,
+    ok = wait_gone(Pid, 30).
+
+%% The Accepted process crashing leaves the answered call and the engine
+%% alone, and is not restarted.
+accepted_crash(_Config) ->
+    {EP, [D1]} = setup(1),
+    Before = accepted(),
+    proxy([dest(D1)], #{}),
+    answer(D1, 200),
+    call(EP, 200),
+    ok = expect_done(200),
+    [Pid] = accepted() -- Before,
+    Engine = whereis(chappe_sip_engine),
+    exit(Pid, kill),
+    ok = wait_gone(Pid, 20),
+    ?assertEqual(Before, accepted()),
+    ?assertEqual(Engine, whereis(chappe_sip_engine)),
+    ?assertEqual(ok, chappe_sip_engine:check_health(2000)).
+
+%% req: RFC6026-8.4 a proxy core will always forward the 2xx response
+%% upstream
+%% A target sending 2xx after 2xx with new To-tags gets each one through,
+%% while the Accepted state remembers at most 64 tags.
+accepted_forks_bounded(_Config) ->
+    {EP, [D1]} = setup(1),
+    Before = accepted(),
+    proxy([dest(D1)], #{}),
+    uas(D1, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        [send(Sock, Src, resp(Inv, 200, <<"OK">>, tag(),
+                              [{<<"Contact">>, ctc(D1)}], sdp()))
+         || _ <- lists:seq(1, 80)],
+        timer:sleep(3000)
+    end),
+    Test = self(),
+    caller(fun(Sock) ->
+        send(Sock, EP, invite(Sock, callid(), tag())),
+        Test ! {oks, length(lists:usort(tags_200(Sock, [])))}
+    end),
+    receive
+        {oks, N} -> ?assertEqual(80, N)
+    after 10000 -> ct:fail(no_count)
+    end,
+    [Pid] = accepted() -- Before,
+    {state, _Txns, Seen} = sys:get_state(Pid),
+    ?assertEqual(64, length(Seen)).
+
+%% the To-tags of the 2xx the caller got (the first one is retransmitted
+%% until an ACK that never comes)
+tags_200(Sock, Acc) ->
+    receive
+        {udp, Sock, _, _, <<"SIP/2.0 200", _/binary>> = Bin} ->
+            {ok, M} = chappe_sip_msg:parse(Bin),
+            tags_200(Sock, [chappe_sip_msg:to_tag(M) | Acc]);
+        {udp, Sock, _, _, _} ->
+            tags_200(Sock, Acc)
+    after 1500 -> Acc
+    end.
+
+accepted() ->
+    [P || {_, P, _, _} <- supervisor:which_children(chappe_sip_proxy_sup)].
+
+wait_gone(Pid, 0) ->
+    ct:fail({still_running, Pid});
+wait_gone(Pid, Tries) ->
+    case lists:member(Pid, accepted()) of
+        false -> ok;
+        true -> timer:sleep(100), wait_gone(Pid, Tries - 1)
+    end.
 
 proxy(Dests, Opts) ->
     Test = self(),
