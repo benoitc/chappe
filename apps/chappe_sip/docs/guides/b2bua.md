@@ -178,6 +178,11 @@ the SDP through a media anchor such as rtpengine before the other leg sees it.
 - Each leg negotiates and refreshes its own session timer (RFC 4028): see
   [Session timers](session-timers.md).
 - A crash of either dialog fsm tears the call down (the relay monitors both).
+- With `media => anchor`, each leg is answered in the RTP profile it used
+  itself: an SRTP caller (`RTP/SAVP`, `RTP/SAVPF`) stays SRTP, with a key of
+  rtpengine's, a plain one plain. The first offer toward B is plain RTP, or
+  DTLS-SRTP with ICE for a WebRTC B. `anchor_params => #{a | b => #{
+  transport_protocol => ...}}` overrides it.
 - Server-initiated BYE reaches a WebSocket B leg over its flow automatically.
 
 ## Where it lives

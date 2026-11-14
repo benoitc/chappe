@@ -37,6 +37,8 @@
     call_id := binary(),
     tags := #{leg() => binary() | undefined},
     webrtc := #{leg() => boolean()},
+    %% the RTP profile each leg's last SDP used, undefined before one
+    proto := #{leg() => binary() | undefined},
     hold := #{leg() => boolean()},
     rewrite := fun(
         (leg(), offer | answer, binary()) -> iodata() | {reject, 300..699}
@@ -72,6 +74,7 @@ new(Init, Opts) ->
             a => maps:get(a_webrtc, Init, false),
             b => maps:get(b_webrtc, Init, false)
         },
+        proto => #{a => undefined, b => undefined},
         hold => #{a => false, b => false},
         rewrite => hook(maps:get(rewrite_sdp, Opts, undefined)),
         params => maps:get(anchor_params, Opts, #{}),
@@ -198,9 +201,11 @@ final_answer(Y, Sdp, M) ->
 %% with its flags (and its via-branch), and once it wins the call keeps
 %% them.
 -spec branch(profile(), state()) -> state().
-branch(P, #{webrtc := W} = M) ->
+branch(P, #{webrtc := W, proto := Protos} = M) ->
     M#{
         webrtc := W#{b := maps:get(webrtc, P)},
+        %% a new B has used no profile yet: the old B's says nothing of it
+        proto := Protos#{b := undefined},
         params := maps:get(params, P),
         via := maps:get(via, P, undefined)
     }.
@@ -396,10 +401,12 @@ answer_opts(Y, #{tags := Tags, via := Via} = M) ->
 other(a) -> b;
 other(b) -> a.
 
-%% what rtpengine writes for the leg the SDP goes to: DTLS-SRTP with ICE
-%% for a WebRTC leg, plain RTP without ICE otherwise; the app's
-%% anchor_params for that leg go on top
-toward(Leg, #{webrtc := W, params := P}) ->
+%% what rtpengine writes for the leg the SDP goes to: the profile that leg
+%% used itself (an SRTP leg stays SRTP, RTP/SAVP or RTP/SAVPF, a plain one
+%% plain: never a downgrade), else DTLS-SRTP for a WebRTC leg and plain
+%% RTP for another; ICE for a WebRTC leg only; the app's anchor_params for
+%% that leg go on top
+toward(Leg, #{webrtc := W, params := P} = M) ->
     Base =
         case maps:get(Leg, W) of
             true ->
@@ -415,12 +422,45 @@ toward(Leg, #{webrtc := W, params := P}) ->
                     rtcp_mux => [demux]
                 }
         end,
-    maps:merge(Base, maps:get(Leg, P, #{})).
+    maps:merge(own_profile(Leg, M, Base), maps:get(Leg, P, #{})).
+
+own_profile(Leg, #{proto := Protos}, Base) ->
+    case maps:get(Leg, Protos) of
+        P when
+            P =:= <<"RTP/AVP">>;
+            P =:= <<"RTP/AVPF">>;
+            P =:= <<"RTP/SAVP">>;
+            P =:= <<"RTP/SAVPF">>;
+            P =:= <<"UDP/TLS/RTP/SAVP">>;
+            P =:= <<"UDP/TLS/RTP/SAVPF">>
+        ->
+            Base#{transport_protocol => P};
+        _ ->
+            Base
+    end.
 
 seen(_Leg, <<>>, M) ->
     M;
-seen(Leg, Sdp, #{webrtc := W} = M) ->
-    M#{webrtc := W#{Leg => chappe_sip_sdp:webrtc(Sdp)}}.
+seen(Leg, Sdp, #{webrtc := W, proto := Protos} = M) ->
+    M#{
+        webrtc := W#{Leg => chappe_sip_sdp:webrtc(Sdp)},
+        proto := Protos#{Leg => proto(Sdp)}
+    }.
+
+%% the profile of an SDP's first live m-line
+proto(Sdp) ->
+    case
+        [
+            P
+         || #{port := Port, proto := P} <- element(
+                2, chappe_sip_sdp:parse(Sdp)
+            ),
+            Port =/= 0
+        ]
+    of
+        [P | _] -> P;
+        [] -> undefined
+    end.
 
 hold(_X, <<>>, M) ->
     M;

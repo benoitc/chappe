@@ -159,7 +159,9 @@ call. You get that by default:
 
 - A call with an SRTP leg has every tap offered as `RTP/SAVP`, with keys
   rtpengine makes for the recording (not the call's). A recording server
-  without SRTP refuses the streams and the recording stops.
+  without SRTP refuses the streams and the recording stops. So does
+  chappe's own recording server when the keys reach it over plain SIP:
+  record SRTP calls to a `sips:` SRS.
 
 When the recording server sits on a network you trust, lift both with
 `allow_downgrade => true`.
@@ -167,9 +169,66 @@ When the recording server sits on a network you trust, lift both with
 As the recording server, each stream takes RTP only from the address the
 client's SDP gives for it, latched to the first source there; give
 `rtp_source => learn` for a client behind a NAT that writes its private
-address. The receivers hold no SRTP keys: an `RTP/SAVP` stream is answered
-with port 0, and an offer with nothing else is refused 488. To record an
-SRTP client, put an rtpengine in front that decrypts it.
+address.
+
+### Take SRTP as the recording server
+
+`serve/3` takes `RTP/SAVP` and `RTP/SAVPF` streams keyed with SDES
+(RFC 7866 12.2), and decrypts them itself: no rtpengine is needed on the
+receive side. You need nothing in your handler, but the keys must come over
+TLS: RFC 4568 8.3 requires the SDP that carries them to be encrypted, so an
+SRTP stream offered over UDP or TCP (and not to a `sips:` URI) is rejected
+with port 0, and the offer gets 488 when no stream is left. Point your
+recording client at a `sips:` URI. On a network you trust, take keys over
+plain SIP with `keys_over_tls => false`:
+
+```erlang
+{ok, Srs} = chappe_sip_siprec_srs:serve(Req, Res, #{
+    store => default,
+    keys_over_tls => false
+}),
+chappe_sip_siprec_srs:run(Srs).
+```
+
+For each secure stream the server takes the first `a=crypto` line it
+supports, answers it with a line of its own (the same tag and suite, a key
+of its own it never uses, since it only receives), and authenticates,
+checks for replay and decrypts each packet before it is decoded. A
+re-INVITE with a new key gives the stream the new key.
+
+- Taken: `AES_CM_128_HMAC_SHA1_80` and `AES_CM_128_HMAC_SHA1_32`, the
+  `inline` key, one master key with or without a lifetime and an MKI,
+  `WSH`, `KDR=0`.
+- Refused (the stream gets port 0, and the offer 488 when nothing is
+  left): F8, AES-256 and AEAD suites, several master keys, a key
+  derivation rate, `UNENCRYPTED_SRTP`, `UNENCRYPTED_SRTCP`,
+  `UNAUTHENTICATED_SRTP`, `FEC_KEY`, DTLS-SRTP (`UDP/TLS/RTP/SAVP`).
+- Dropped and counted, never decoded: a forged packet, a replayed one, one
+  past the key's lifetime, a packet of a fifth SSRC. The stream latches to
+  its source only once a packet authenticates. The first drop is logged,
+  then one line per 10 s; read the counters with
+  `chappe_sip_siprec_rtp:stats/1`:
+
+```erlang
+#{streams := [#{pid := Stream} | _]} = Srs,
+#{packets := _, failed := _, replayed := _} =
+    chappe_sip_siprec_rtp:stats(Stream).
+```
+
+### What is encrypted where
+
+| Path | Protected by | Notes |
+|---|---|---|
+| The call's signalling | TLS on each leg that uses it | the recording needs a `sips:` SRS when a leg is TLS |
+| The call's media | SRTP, in rtpengine | chappe never touches it |
+| The RS signalling, client to server | TLS when the SRS URI is `sips:` | it carries the metadata and, with SRTP, the keys |
+| The RS media | SRTP, encrypted by rtpengine with keys of the recording, decrypted by chappe's SRS | a different key from the call's (RFC 7866 12.2) |
+| The recording at rest | nothing in chappe | the store module decides |
+
+TLS keeps the SDES keys secret on the way, which is why the server takes
+them only over TLS unless you say otherwise. SRTP keeps the audio secret
+and authentic between rtpengine and the SRS: a packet nobody keyed is
+dropped.
 
 ## Run it from another node
 
@@ -203,7 +262,11 @@ called from any node with the call's `b2b` handle (from
 
 - Modules: `chappe_sip_siprec` (the client), `chappe_sip_siprec_meta`
   (metadata), `chappe_sip_siprec_srs` and `chappe_sip_siprec_rtp` (the
-  server side), `chappe_sip_multipart`.
+  server side), `chappe_sip_srtp` (SRTP decryption), `chappe_sip_sdes`
+  (`a=crypto` lines), `chappe_sip_multipart`.
 - Tests: `chappe_sip_siprec_SUITE`, `chappe_sip_siprec_meta_tests`,
+  `chappe_sip_srtp_tests`, `chappe_sip_sdes_tests`,
   `chappe_sip_siprec_live_SUITE` (`make interop`).
-- Specs: RFC 7866 (updated by RFC 9806), RFC 7865, RFC 6341.
+- Specs: RFC 7866 (updated by RFC 9806), RFC 7865, RFC 6341, RFC 3711,
+  RFC 4568. Why chappe decrypts SRTP itself here:
+  [decision 0009](../../../../docs/decisions/0009-srtp-in-erlang.md).
