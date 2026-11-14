@@ -5,7 +5,7 @@
 %% tokens.
 -module(chappe_audio_lib).
 
--export([send/3, token/0, token_hash/1, token_ok/2]).
+-export([send/3, limit/3, token/0, token_hash/1, token_ok/2]).
 -export([id/0]).
 
 %% Send Msg to Pid unless Pid already has Max messages waiting: a local
@@ -28,6 +28,12 @@ send(Pid, Msg, _Max) ->
         ok -> ok;
         _ -> dropped
     end.
+
+%% The message bound for a message of Size bytes: MaxMsgs, or fewer so
+%% that about MaxBytes wait at most (one at least).
+-spec limit(pos_integer(), pos_integer(), non_neg_integer()) -> pos_integer().
+limit(MaxMsgs, MaxBytes, Size) ->
+    max(1, min(MaxMsgs, MaxBytes div max(1, Size))).
 
 %% A fresh stream token: 32 random bytes, base64url without padding, so
 %% it fits a URL query unescaped.

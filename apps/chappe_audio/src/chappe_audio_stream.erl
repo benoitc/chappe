@@ -24,7 +24,8 @@
 %% the stream sends nothing: there is no one to tell.
 %%
 %% The bound: a frame or a text is dropped, and counted in info/1, when
-%% the owner already has max_queue messages waiting (read directly for a
+%% the owner already has max_queue messages, or about max_queue_bytes,
+%% waiting (read directly for a
 %% local owner; for a remote one, when the distribution buffer is full)
 %% or when the stream itself is max_queue messages behind. Memory stays
 %% flat whatever the fork sends and however slow the owner reads.
@@ -44,6 +45,8 @@
 -define(ATTACH_TIMEOUT, 5000).
 %% how long a closing connection may take before the stream stops anyway
 -define(CLOSE_TIMEOUT, 5000).
+%% the bytes waiting at the owner past which a frame is dropped
+-define(MAX_BYTES, 8388608).
 
 -record(state, {
     id :: binary(),
@@ -53,6 +56,7 @@
     rate :: pos_integer(),
     channels :: 1 | 2,
     max_queue :: pos_integer(),
+    max_bytes :: pos_integer(),
     cfg :: chappe_audio_listener:cfg(),
     phase = waiting :: waiting | claimed | connected | closing,
     timer :: reference() | undefined,
@@ -165,6 +169,7 @@ init({#{id := Id, token_hash := Hash, owner := Owner} = Opts, Cfg}) ->
         rate = maps:get(rate, Format, 8000),
         channels = maps:get(channels, Format, 1),
         max_queue = maps:get(max_queue, Opts, 500),
+        max_bytes = maps:get(max_queue_bytes, Opts, ?MAX_BYTES),
         store = maps:get(store, Opts, none),
         cfg = Cfg,
         timer = Timer
@@ -318,7 +323,11 @@ record(#state{store = default} = S) ->
         source => fork,
         format => #{rate => S#state.rate, channels => S#state.channels}
     },
-    Opts = #{owner => self(), max_queue => S#state.max_queue},
+    Opts = #{
+        owner => self(),
+        max_queue => S#state.max_queue,
+        max_queue_bytes => S#state.max_bytes
+    },
     case chappe_audio_store:open(Meta, Opts) of
         {ok, Rec} ->
             S#state{rec = Rec};
@@ -345,7 +354,8 @@ store(Pcm, #state{rec = Rec} = S) ->
 text(Text, S) ->
     deliver({text, Text}, S#state{texts = S#state.texts + 1, last_in = now_ms()}).
 
-deliver(Event, #state{max_queue = Max} = S) ->
+deliver(Event, #state{max_queue = MaxQ, max_bytes = MaxB} = S) ->
+    Max = chappe_audio_lib:limit(MaxQ, MaxB, event_size(Event)),
     case behind(Max) of
         true ->
             S#state{dropped = S#state.dropped + 1};
@@ -355,6 +365,9 @@ deliver(Event, #state{max_queue = Max} = S) ->
                 dropped -> S#state{dropped = S#state.dropped + 1}
             end
     end.
+
+event_size({frame, Pcm}) -> byte_size(Pcm);
+event_size({text, Text}) -> byte_size(Text).
 
 behind(Max) ->
     {message_queue_len, N} = process_info(self(), message_queue_len),

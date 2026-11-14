@@ -33,6 +33,7 @@ all() ->
         handshake_crash,
         set_owner,
         flood_bound,
+        flood_bytes,
         bad_options,
         tls,
         from_peer_node
@@ -415,6 +416,25 @@ flood_bound(Config) ->
     ?assert(Dropped >= 22000 - 101),
     ?assert(M2 < 2 * M1 + 65536),
     ?assert(O2 < 2 * O1 + 65536),
+    ok = chappe_audio:close(S),
+    exit(Owner, kill).
+
+%% The bound is in bytes too: with large messages, max_queue_bytes waiting
+%% at the owner stops the stream sending long before max_queue messages.
+flood_bytes(Config) ->
+    Owner = spawn(fun() -> receive stop -> ok end end),
+    {ok, S, Url} = chappe_audio:open(?config(listener, Config), #{
+        owner => Owner, max_queue => 1000, max_queue_bytes => 100000
+    }),
+    {ok, C} = chappe_audio_test_ws:connect(Url),
+    wait(fun() -> maps:get(phase, chappe_audio:info(S)) =:= connected end),
+    Frame = binary:copy(<<0>>, 32000),
+    [ok = chappe_audio_test_ws:send(C, {binary, Frame}) || _ <- lists:seq(1, 50)],
+    wait(fun() -> maps:get(frames, chappe_audio:info(S)) =:= 50 end),
+    {message_queue_len, Q} = process_info(Owner, message_queue_len),
+    ct:pal("owner queue ~p", [Q]),
+    ?assert(Q =< 4),
+    ?assertEqual({error, {bad_option, max_queue_bytes}}, chappe_audio:open(?config(listener, Config), #{max_queue_bytes => 0})),
     ok = chappe_audio:close(S),
     exit(Owner, kill).
 

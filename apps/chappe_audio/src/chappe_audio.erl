@@ -77,7 +77,9 @@
 %% owner: the process that gets the events (default the caller), ref:
 %% the app's opaque binary for the call, in every event and the pg
 %% group, format: the rate and channels the fork was started with
-%% (default 8000 and 1), max_queue: the bound on events waiting at the
+%% (default 8000 and 1), max_queue_bytes: the bytes of frames waiting at
+%% the owner past which one is dropped (default 8 MiB), max_queue: the
+%% bound on events waiting at the
 %% owner (default 500, 10 s of 20 ms frames), connect_timeout: ms to
 %% wait for the fork (default 30000), store: default writes the stream to
 %% the recording store (chappe_audio_store) under its ref, or its id when
@@ -88,6 +90,7 @@
     ref => binary(),
     format => #{rate => pos_integer(), channels => 1 | 2},
     max_queue => pos_integer(),
+    max_queue_bytes => pos_integer(),
     connect_timeout => pos_integer(),
     store => default | none
 }.
@@ -237,6 +240,7 @@ open_opt(owner, P) -> is_pid(P);
 open_opt(ref, R) -> is_binary(R);
 open_opt(format, F) -> is_map(F) andalso format_ok(F);
 open_opt(max_queue, N) -> pos(N);
+open_opt(max_queue_bytes, N) -> pos(N);
 open_opt(connect_timeout, N) -> pos(N);
 open_opt(store, S) -> S =:= default orelse S =:= none;
 open_opt(_, _) -> false.

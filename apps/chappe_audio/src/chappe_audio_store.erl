@@ -57,7 +57,7 @@
 
 %% A recording being written: its writer and the bound on writes
 %% waiting at it.
--opaque rec() :: {chappe_audio_rec, pid(), pos_integer()}.
+-opaque rec() :: {chappe_audio_rec, pid(), pos_integer(), pos_integer()}.
 
 %% ---- backend callbacks ----
 
@@ -96,18 +96,22 @@
 %% ---- writing ----
 
 %% Start a writer for one recording on this node, owned by the caller
-%% unless Opts names an `owner'. max_queue (default 500) bounds the
-%% writes waiting at it: past it, write/2 drops and says so. {error,
+%% unless Opts names an `owner'. max_queue (default 500) and
+%% max_queue_bytes (default 8 MiB) bound the writes waiting at it: past
+%% either, write/2 drops and says so. {error,
 %% not_started} when chappe_audio does not run on this node.
--spec open(meta(), #{owner => pid(), max_queue => pos_integer()}) ->
+-spec open(meta(), #{
+    owner => pid(), max_queue => pos_integer(), max_queue_bytes => pos_integer()
+}) ->
     {ok, rec()} | {error, not_started | badarg | term()}.
 open(#{call_ref := Ref} = Meta, Opts) when is_binary(Ref), is_map(Opts) ->
     case meta_ok(Meta) of
         true ->
             Owner = maps:get(owner, Opts, self()),
             Max = maps:get(max_queue, Opts, 500),
+            MaxB = maps:get(max_queue_bytes, Opts, 8388608),
             case start_writer(Meta, Owner) of
-                {ok, Pid} -> {ok, {chappe_audio_rec, Pid, Max}};
+                {ok, Pid} -> {ok, {chappe_audio_rec, Pid, Max, MaxB}};
                 {error, _} = Err -> Err
             end;
         false ->
@@ -127,17 +131,18 @@ start_writer(Meta, Owner) ->
 
 %% Hand the writer audio (16-bit PCM at the recording's format).
 -spec write(rec(), iodata()) -> ok | dropped.
-write({chappe_audio_rec, Pid, Max}, Pcm) ->
-    chappe_audio_lib:send(Pid, {write, Pcm}, Max).
+write({chappe_audio_rec, Pid, Max, MaxB}, Pcm) ->
+    Limit = chappe_audio_lib:limit(Max, MaxB, iolist_size(Pcm)),
+    chappe_audio_lib:send(Pid, {write, Pcm}, Limit).
 
 %% Finish the recording; Extra adds parties to its sidecar.
 -spec close(rec(), map()) -> {ok, binary()} | {error, term()}.
-close({chappe_audio_rec, Pid, _}, Extra) when is_map(Extra) ->
+close({chappe_audio_rec, Pid, _, _}, Extra) when is_map(Extra) ->
     chappe_audio_writer:close(Pid, Extra).
 
 %% The writer process, to monitor.
 -spec writer(rec()) -> pid().
-writer({chappe_audio_rec, Pid, _}) ->
+writer({chappe_audio_rec, Pid, _, _}) ->
     Pid.
 
 %% Take in a finished file at Path, moved into the store (copied when it

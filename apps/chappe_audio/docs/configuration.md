@@ -48,6 +48,7 @@ you wire chappe_audio into a release or tune a listener.
 | `ref` | unset | The call's opaque binary: in every event, the pg group, and the store. |
 | `format` | `#{rate => 8000, channels => 1}` | What the fork sends. |
 | `max_queue` | `500` | Events waiting at the owner past which a frame is dropped. |
+| `max_queue_bytes` | `8388608` | Bytes of frames waiting at the owner past which one is dropped (with large frames this binds before `max_queue`). |
 | `connect_timeout` | `30000` | Milliseconds to wait for the fork. |
 | `store` | `none` | `default` writes the stream to the recording store. |
 
