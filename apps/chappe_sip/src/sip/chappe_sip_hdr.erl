@@ -120,7 +120,10 @@ via(Bin0) ->
 cseq(Bin) ->
     case binary:split(chappe_sip_lib:trim(Bin), [<<" ">>, <<"\t">>]) of
         [SeqBin, Method] ->
-            case all_digits(SeqBin) andalso binary_to_integer(SeqBin) of
+            case
+                chappe_sip_lib:all_digits(SeqBin) andalso
+                    binary_to_integer(SeqBin)
+            of
                 %% RFC 3261 20.16: a 32-bit unsigned integer, 1*DIGIT
                 Seq when is_integer(Seq), Seq < (1 bsl 32) ->
                     {ok, #{seq => Seq, method => chappe_sip_lib:trim(Method)}};
@@ -130,11 +133,6 @@ cseq(Bin) ->
         _ ->
             {error, bad_cseq}
     end.
-
-all_digits(<<>>) ->
-    false;
-all_digits(Bin) ->
-    lists:all(fun(D) -> D >= $0 andalso D =< $9 end, binary_to_list(Bin)).
 
 %% name-addr or addr-spec with header params:
 %%   "Display" <sip:a@b>;tag=x  |  <sip:a@b>;x  |  sip:a@b;tag=x
@@ -434,7 +432,7 @@ uri_method(Main) ->
             case binary:split(P, <<"=">>) of
                 [K, V] ->
                     case chappe_sip_lib:lower(K) of
-                        <<"method">> -> {Acc, upper(V)};
+                        <<"method">> -> {Acc, chappe_sip_lib:upper(V)};
                         _ -> {[P | Acc], M}
                     end;
                 _ ->
@@ -915,11 +913,6 @@ split_angle(<<$>, Rest/binary>>, Cur, Acc, Start, I) ->
     split_commas(Rest, Start, I + 1, false, [$> | Cur], Acc);
 split_angle(<<C, Rest/binary>>, Cur, Acc, Start, I) ->
     split_angle(Rest, [C | Cur], Acc, Start, I).
-
-upper(B) -> <<<<(upper_byte(C))>> || <<C>> <= B>>.
-
-upper_byte(C) when C >= $a, C =< $z -> C - 32;
-upper_byte(C) -> C.
 
 unquote(<<"\"", Rest/binary>>) ->
     case binary:split(Rest, <<"\"">>) of
