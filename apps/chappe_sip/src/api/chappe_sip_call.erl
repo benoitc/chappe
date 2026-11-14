@@ -12,7 +12,8 @@
 %%
 %% A process that serves the call (the B2BUA, a dialog, the rtpengine
 %% session, a SIPREC recording) joins it while it does: the pg group
-%% {chappe_sip_call, Ref} of the `chappe' scope for the cluster, and a
+%% {chappe_sip_call, Ref} of the `chappe_sip' scope for the cluster (started
+%% by chappe_sip_sup, so it lives and stops with this app), and a
 %% node-local table that keeps the handle it serves under (a b2b(), a
 %% dialog(), a media session, a recording's pid). A
 %% process leaves on leave/2 or when it exits. lookup/1 asks the members'
@@ -20,14 +21,14 @@
 -module(chappe_sip_call).
 -behaviour(gen_server).
 
--export([start_scope/0, start_link/0]).
+-export([scope/0, start_link/0]).
 -export([new_ref/0, valid/1, valid_opts/1, header/0]).
 -export([join/3, join/4, leave/2, leave/3, lookup/1, local/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -export_type([call_ref/0, role/0, calls/0]).
 
--define(SCOPE, chappe).
+-define(SCOPE, chappe_sip).
 -define(TAB, chappe_sip_call_members).
 %% the longest call_ref taken from an app
 -define(MAX_REF, 128).
@@ -48,13 +49,9 @@
     siprec := [chappe_sip_siprec:rec()]
 }.
 
-%% The `chappe' pg scope, unless an app of the node started it already.
--spec start_scope() -> {ok, pid()} | ignore | {error, term()}.
-start_scope() ->
-    case pg:start_link(?SCOPE) of
-        {error, {already_started, _}} -> ignore;
-        Other -> Other
-    end.
+%% The pg scope call_ref lookups go through, started by chappe_sip_sup.
+-spec scope() -> atom().
+scope() -> ?SCOPE.
 
 -spec start_link() -> {ok, pid()} | {error, term()}.
 start_link() ->
