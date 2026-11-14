@@ -239,7 +239,10 @@ start_link(Args) ->
 
 init(#{call_ref := CallRef, owner := Owner} = Args) ->
     %% the bound on recordings per call: every recording of a call runs on
-    %% the call's node, so this count is that of the cluster
+    %% the call's node, so this count is that of the cluster. The count and
+    %% the join below are one step: init/1 runs inside the start_child/1
+    %% call of chappe_sip_siprec_sup (simple_one_for_one), which starts
+    %% one child at a time
     case length(local(CallRef)) >= chappe_sip_config:get(siprec_max_per_call) of
         true ->
             {stop, too_many};
@@ -663,20 +666,22 @@ srs_update(Req, Res, St) ->
 
 %% A re-INVITE of the SRS (RFC 7866 7.2: ready to record now, or a stream
 %% it no longer takes): the recorded streams are answered as they are,
-%% sendonly or, paused, inactive; its offer reaches rtpengine.
+%% sendonly or, paused, inactive, and an m-line past them is refused with
+%% port 0, so the answer has as many as the offer (RFC 3264 6); an offer
+%% with fewer than the session has removed a stream (8) and gets 488. Its
+%% offer reaches rtpengine.
 srs_reinvite(Req, Res, St) ->
-    case chappe_sip_req:body(Req) of
-        <<>> ->
-            _ = chappe_sip_res:send(Res, 488),
-            {noreply, St};
-        Offer ->
-            {_CT, Body} = chappe_sip_siprec_body:body(St),
-            Sdp = chappe_sip_siprec_body:sdp_of(Body),
+    Offer = chappe_sip_req:body(Req),
+    case Offer =/= <<>> andalso chappe_sip_siprec_body:reanswer(Offer, St) of
+        {ok, Answer} ->
             _ = chappe_sip_res:send(Res, 200, #{
-                body => chappe_sip_siprec_body:sdp_only(Sdp),
+                body => Answer,
                 headers => [{<<"Content-Type">>, <<"application/sdp">>}]
             }),
             _ = chappe_sip_siprec_tap:answer(Offer, St),
+            {noreply, St};
+        _ ->
+            _ = chappe_sip_res:send(Res, 488),
             {noreply, St}
     end.
 

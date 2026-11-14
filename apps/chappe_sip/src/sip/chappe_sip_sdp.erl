@@ -13,7 +13,7 @@
 
 -export([parse/1, address/1, words/1]).
 -export([origin/1, same_version/2, on_hold/1, webrtc/1, connection/1]).
--export([sections/1, join/2]).
+-export([sections/1, join/2, refused/1]).
 
 -export_type([media/0]).
 
@@ -60,6 +60,17 @@ media_sections([], Acc) ->
 media_sections([M | Rest], Acc) ->
     {Own, Next} = lists:splitwith(fun not_m/1, Rest),
     media_sections(Next, [[M | Own] | Acc]).
+
+%% RFC 3264 6: a media section refused in an answer: its m= line with port
+%% 0, the rest of the line as offered.
+-spec refused([binary()]) -> [binary()].
+refused([<<"m=", Rest/binary>> | _]) ->
+    case words(Rest) of
+        [Kind, _Port | More] ->
+            [iolist_to_binary(["m=", lists:join(" ", [Kind, <<"0">> | More])])];
+        _ ->
+            [<<"m=audio 0 RTP/AVP 0">>]
+    end.
 
 %% The SDP of session lines and media sections, CRLF line ends.
 -spec join([binary()], [[binary()]]) -> binary().

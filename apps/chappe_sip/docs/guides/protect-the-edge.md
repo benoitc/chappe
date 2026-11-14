@@ -27,15 +27,18 @@ ok = chappe_sip:use(chappe_sip_guard:new(#{
 })).
 ```
 
-The checks run in this order: headers (User-Agent first), then source
-address, then rate. The first one that fails turns the request away.
+The checks run cheapest first: source address, then rate, then headers
+(User-Agent first). The first one that fails turns the request away, so a
+denied or flooding source costs no regex. Each pattern runs with a match
+limit: a value that makes it backtrack past the limit is turned away as a
+match.
 `new/1` raises `badarg` for a pattern that does not compile, a network that
 does not parse or an unknown action, so a rule is never skipped.
 
 | Option | Default | What it does |
 |---|---|---|
 | `user_agents` | `[]` | Regexes, matched caseless against the User-Agent. |
-| `headers` | `[]` | `[{Name, Regex \| [Regex]}]`: a request with a `Name` header any value of which matches is turned away. |
+| `headers` | `[]` | `[{Name, Regex \| [Regex]}]`: a request with a `Name` header (long or compact form) any value of which, or any comma-separated item of a value, matches is turned away. |
 | `allow` | none | CIDRs. When set, only these sources pass. |
 | `deny` | `[]` | CIDRs. These sources are turned away. |
 | `rate` | none | `#{rate := PerSecond, burst => N}`: a token bucket per source address. `burst` defaults to twice the rate. |

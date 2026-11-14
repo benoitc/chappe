@@ -32,6 +32,7 @@
          demo_store_writes_wav/1]).
 -export([server_latches_to_client/1, server_refuses_srtp/1,
          srtp_call_tapped_as_srtp/1, tls_call_needs_tls_srs/1]).
+-export([too_many_at_once/1, srs_reinvite_more_streams/1]).
 
 all() ->
     [invite_is_a_recording_session, chappe_as_recording_server,
@@ -46,7 +47,7 @@ all() ->
      server_sink_bound, server_metadata_update, room_recorded, room_not_up,
      room_ends_recording, recording_over_tls, demo_store_writes_wav,
      server_latches_to_client, server_refuses_srtp, srtp_call_tapped_as_srtp,
-     tls_call_needs_tls_srs].
+     tls_call_needs_tls_srs, too_many_at_once, srs_reinvite_more_streams].
 
 -define(UA, chappe_sip_test_ua).
 -define(M, chappe_sip_siprec_meta).
@@ -388,6 +389,50 @@ too_many_per_call(_Config) ->
     {ok, Rec} = chappe_sip_siprec:start(B2b, srs_uri(SP), #{}),
     ?assertEqual({error, too_many}, chappe_sip_siprec:start(B2b, srs_uri(SP), #{})),
     {started, _} = event(Rec),
+    ok = chappe_sip_siprec:stop(Rec).
+
+%% The bound holds for starts at the same time: of twenty started at once
+%% with siprec_max_per_call at 2, two run.
+too_many_at_once(_Config) ->
+    application:set_env(chappe_sip, siprec_max_per_call, 2),
+    #{b2b := B2b} = call(),
+    SP = ?UA:pick(),
+    srs(SP, fun(_Sock, _D, _Src) -> ok end),
+    Test = self(),
+    _ = [spawn(fun() ->
+                   Test ! {start, chappe_sip_siprec:start(B2b, srs_uri(SP),
+                                                          #{owner => Test})}
+               end) || _ <- lists:seq(1, 20)],
+    Rs = [receive {start, R} -> R after 10000 -> ct:fail(no_start) end
+          || _ <- lists:seq(1, 20)],
+    Ok = [Rec || {ok, Rec} <- Rs],
+    ct:log("~p started", [length(Ok)]),
+    ?assertEqual(2, length(Ok)),
+    ?assertEqual(18, length([E || {error, too_many} = E <- Rs])),
+    _ = [chappe_sip_siprec:stop(R) || R <- Ok].
+
+%% RFC 3264 6: the answer to a re-INVITE of the SRS has as many m-lines as
+%% its offer: an m-line past the recorded streams is refused with port 0.
+%% req: R7866-7.2-1
+srs_reinvite_more_streams(_Config) ->
+    #{b2b := B2b} = call(),
+    SP = ?UA:pick(),
+    Test = self(),
+    srs(SP, fun(Sock, D, Src) ->
+        {Re, D1} = ?UA:in_dialog(D, <<"INVITE">>, [], answer_sdp(3, <<"recvonly">>)),
+        ?UA:send(Sock, Src, Re),
+        R = ?UA:recv_status(Sock, 200),
+        ?UA:ack(D1, Src),
+        Test ! {srs_got, R}
+    end),
+    {ok, Rec} = chappe_sip_siprec:start(B2b, srs_uri(SP), #{}),
+    {started, _} = event(Rec),
+    R = got(srs_got),
+    {_, Media} = chappe_sip_sdp:sections(?UA:body(R)),
+    ?assertEqual(3, length(Media)),
+    [M1, M2, M3] = Media,
+    ?assertEqual([<<"1">>, <<"2">>], [label(M1), label(M2)]),
+    ?assertMatch(<<"m=audio 0 RTP/AVP", _/binary>>, hd(M3)),
     ok = chappe_sip_siprec:stop(Rec).
 
 %% Bad arguments fail in the caller; a direct call cannot be recorded;

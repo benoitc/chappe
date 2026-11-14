@@ -17,11 +17,13 @@
 -export([user_agent/1, deny_cidr/1, allow_cidr/1, rate_limit/1, drop/1,
          no_block_without_drop/1, metrics/1, header_rules/1,
          action_per_transport/1, bad_rules/1]).
+-export([cheap_checks_first/1, regex_bounded/1, list_items/1,
+         compact_names/1]).
 
 all() ->
     [user_agent, deny_cidr, allow_cidr, rate_limit, drop,
      no_block_without_drop, metrics, header_rules, action_per_transport,
-     bad_rules].
+     bad_rules, cheap_checks_first, regex_bounded, list_items, compact_names].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -185,6 +187,46 @@ bad_rules(_Config) ->
               #{rate => #{rate => 5, burst => 0}},
               #{block_ms => -1},
               not_a_map]].
+
+%% The deny list and the rate run before the header patterns: a denied
+%% source is turned away as such, its headers never matched.
+cheap_checks_first(Config) ->
+    Source = blocked(<<"source">>),
+    UA = blocked(<<"user_agent">>),
+    ok = chappe_sip:use(chappe_sip_guard:new(#{
+        deny => [<<"127.0.0.0/8">>], user_agents => [<<"x-bot">>]})),
+    ?assertEqual(403, options(Config, [{<<"User-Agent">>, <<"x-bot">>}])),
+    ?assertEqual(Source + 1, blocked(<<"source">>)),
+    ?assertEqual(UA, blocked(<<"user_agent">>)).
+
+%% A pattern that backtracks without end on a crafted value stops at the
+%% match limit, in about a millisecond, and the request is turned away
+%% (a value the guard cannot judge does not pass).
+regex_bounded(Config) ->
+    ok = chappe_sip:use(chappe_sip_guard:new(#{
+        headers => [{<<"X-Probe">>, <<"^(x+x+)+$">>}]})),
+    Evil = <<(binary:copy(<<"x">>, 40))/binary, "!">>,
+    T0 = erlang:monotonic_time(millisecond),
+    ?assertEqual(403, options(Config, [{<<"X-Probe">>, Evil} || _ <- lists:seq(1, 10)])),
+    ct:log("judged in ~p ms", [erlang:monotonic_time(millisecond) - T0]),
+    ?assertEqual(200, options(Config, [{<<"X-Probe">>, <<"y">>}])).
+
+%% A header holding a list is judged item by item: an anchored pattern
+%% matches the second item of one line.
+list_items(Config) ->
+    ok = chappe_sip:use(chappe_sip_guard:new(#{
+        headers => [{<<"X-Tag">>, <<"^evil">>}]})),
+    ?assertEqual(403, options(Config, [{<<"X-Tag">>, <<"good, evil">>}])),
+    ?assertEqual(200, options(Config, [{<<"X-Tag">>, <<"good, not evil">>}])).
+
+%% A rule names a header by its long or its compact form (RFC 3261 7.3.3)
+%% and matches the request's, in either form.
+compact_names(Config) ->
+    ok = chappe_sip:use(chappe_sip_guard:new(#{
+        headers => [{<<"Subject">>, <<"spam">>}, {<<"k">>, <<"evil-ext">>}]})),
+    ?assertEqual(403, options(Config, [{<<"s">>, <<"spam">>}])),
+    ?assertEqual(403, options(Config, [{<<"Supported">>, <<"evil-ext">>}])),
+    ?assertEqual(200, options(Config, [{<<"s">>, <<"hello">>}])).
 
 tcp_options(Config, UA) ->
     EP = ?config(ep, Config),

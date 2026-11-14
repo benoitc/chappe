@@ -426,11 +426,4 @@ m_line(<<"m=", Rest/binary>>) ->
 
 %% RFC 3264 6: a stream refused keeps its m-line, port 0
 rejected(M) ->
-    case m_words(M) of
-        [Kind, _Port | Rest] ->
-            [iolist_to_binary(["m=", lists:join(" ", [Kind, <<"0">> | Rest])])];
-        _ ->
-            [<<"m=audio 0 RTP/AVP 0">>]
-    end.
-
-m_words(<<"m=", Rest/binary>>) -> chappe_sip_sdp:words(Rest).
+    chappe_sip_sdp:refused([M]).

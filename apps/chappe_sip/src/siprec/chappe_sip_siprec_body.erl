@@ -11,7 +11,7 @@
 -module(chappe_sip_siprec_body).
 
 -export([body/1, media/1, identity/3, answers/2, sdp_of/1, sdp_only/1]).
--export([srs/1, valid_opts/1, security/1]).
+-export([srs/1, valid_opts/1, security/1, reanswer/2]).
 
 %% The RS body: the SDP offer, a sendonly (or, paused, inactive) m-line per
 %% stream with its label, and the full metadata snapshot.
@@ -193,6 +193,26 @@ cut([], _Sess, _Media) ->
 cut([#{media := M, tap := Tap} | Rest], Sess, Media) ->
     {Mine, Others} = lists:split(length(M), Media),
     [{Tap, chappe_sip_sdp:join(Sess, Mine)} | cut(Rest, Sess, Others)].
+
+%% The answer to an offer of the recording server: the recorded streams as
+%% they are, and an m-line past them refused with port 0, so it has as many
+%% as the offer (RFC 3264 6). error when the offer has fewer than the
+%% session: it removed a stream (8).
+-spec reanswer(binary(), map()) -> {ok, binary()} | error.
+reanswer(Offer, St) ->
+    {_CT, Body} = body(St),
+    {Sess, Mine} = chappe_sip_sdp:sections(sdp_only(sdp_of(Body))),
+    {_, Theirs} = chappe_sip_sdp:sections(sdp_of(Offer)),
+    case length(Theirs) >= length(Mine) of
+        true ->
+            Extra = lists:nthtail(length(Mine), Theirs),
+            {ok,
+                chappe_sip_sdp:join(
+                    Sess, Mine ++ [chappe_sip_sdp:refused(M) || M <- Extra]
+                )};
+        false ->
+            error
+    end.
 
 %% the SDP of a body that may be a multipart with metadata
 -spec sdp_of(binary()) -> binary().
