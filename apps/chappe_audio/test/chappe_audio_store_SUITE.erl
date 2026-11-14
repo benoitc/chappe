@@ -25,6 +25,7 @@ all() ->
         writer_bound,
         stream_to_store,
         bad_arguments,
+        not_started,
         find_across_nodes
     ].
 
@@ -42,6 +43,19 @@ init_per_testcase(Case, Config) ->
 
 end_per_testcase(_Case, _Config) ->
     ok.
+
+%% open/2 from another app on a node where chappe_audio is stopped: an
+%% error to handle, not an exit in the caller.
+not_started(_Config) ->
+    ok = application:stop(chappe_audio),
+    try
+        ?assertEqual(
+            {error, not_started},
+            chappe_audio_store:open(#{call_ref => <<"c">>}, #{})
+        )
+    after
+        {ok, _} = application:ensure_all_started(chappe_audio)
+    end.
 
 %% A recording is written under a .part name and is not listed until
 %% close/2; then it is <dir>/YYYY/MM/DD/<call_ref>/<id>.wav with its JSON

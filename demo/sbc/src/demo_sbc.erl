@@ -37,10 +37,9 @@
 %%
 %% 3001 calls bob and records the call through SIPREC (chappe_sip_siprec)
 %% to the demo's own recording server, the route sip:srs@ of this node
-%% (chappe_sip_siprec_srs): each party's stream is written as a WAV file
-%% under _build/demo-recordings/<call_ref>/ by this module's store
-%% (open/2, write/2, close/2, the store seam the recording server calls).
-%%   demo_sbc:recordings()     the files written, with their parties
+%% (chappe_sip_siprec_srs, store => default): each party's stream lands in
+%% the same recording store, one WAV file per party, found with
+%% demo_sbc:recordings(Ref).
 %%
 %% route/1 maps a dialled user to where the call goes. It is the one place
 %% to add targets: a FreeSWITCH pool, for one, is a {peer_group, G} there.
@@ -50,8 +49,6 @@
 -export([calls/0, anchor/1, direct/1, peers/0, nodes/0, drain/1, resume/1]).
 -export([route/1]).
 -export([confs/0, members/1, kick/2, recordings/1]).
-%% the recording store the demo's recording server writes to
--export([open/2, write/2, close/2, recordings/0]).
 
 -define(CALLS, demo_sbc_calls).
 %% call id => {FreeSWITCH node, channel uuid}
@@ -343,64 +340,22 @@ record_call(CallId, B2b) ->
     end.
 
 %% the recording server: rtpengine sends the streams to this host
-%% (DEMO_MEDIA_IP), each one written by the store below
+%% (DEMO_MEDIA_IP), each one written to the recording store
 recording_server(Req, Res) ->
     case chappe_sip_siprec_srs:serve(Req, Res, #{
-        store => ?MODULE,
+        store => default,
         ip => {0, 0, 0, 0},
         advertise => list_to_binary(env("DEMO_MEDIA_IP", "127.0.0.1"))
     }) of
         {ok, #{call_ref := Ref, streams := Streams} = Srs} ->
             log("recording ~s: ~b streams", [Ref, length(Streams)]),
             {stopped, _} = chappe_sip_siprec_srs:run(Srs),
-            log("recording ~s ended", [Ref]);
+            %% each stream's writer closes when this handler returns
+            log("recording ~s ended: demo_sbc:recordings(<<\"~s\">>)", [Ref, Ref]);
         {error, not_recording_session} ->
             _ = chappe_sip_res:send(Res, 404);
         {error, Why} ->
             log("recording refused: ~p", [Why])
-    end.
-
-%% The store seam (chappe_audio_store's writing calls): a 16-bit mono WAV
-%% file per stream, its header written again with the sizes on close.
-%% Lane F's chappe_audio_store takes this place once it is merged.
--spec open(map(), map()) -> {ok, {file:io_device(), file:filename(), non_neg_integer()}}.
-open(#{call_ref := Ref} = Meta, _Opts) ->
-    Id = binary:encode_hex(crypto:strong_rand_bytes(4), lowercase),
-    Path = filename:join([env("DEMO_RECORDINGS", "_build/demo-recordings"), Ref,
-                          <<Id/binary, ".wav">>]),
-    ok = filelib:ensure_dir(Path),
-    {ok, F} = file:open(Path, [write, raw, binary]),
-    ok = file:write(F, wav_header(0)),
-    ok = file:write_file(<<(filename:rootname(Path))/binary, ".parties">>,
-                         lists:join(<<"\n">>, maps:get(parties, Meta, []))),
-    {ok, {F, Path, 0}}.
-
--spec write({file:io_device(), file:filename(), non_neg_integer()}, iodata()) -> ok.
-write({F, _Path, _N}, Pcm) ->
-    file:write(F, Pcm).
-
--spec close({file:io_device(), file:filename(), non_neg_integer()}, map()) -> {ok, binary()}.
-close({F, Path, _}, _Extra) ->
-    {ok, Size} = file:position(F, eof),
-    ok = file:pwrite(F, 0, wav_header(Size - 44)),
-    ok = file:close(F),
-    log("recorded ~s (~b bytes of audio)", [Path, Size - 44]),
-    {ok, filename:basename(filename:rootname(Path))}.
-
-wav_header(Data) ->
-    <<"RIFF", (36 + Data):32/little, "WAVE", "fmt ", 16:32/little, 1:16/little,
-      1:16/little, 8000:32/little, 16000:32/little, 2:16/little, 16:16/little,
-      "data", Data:32/little>>.
-
-%% the recordings written, each with the parties the metadata named
-recordings() ->
-    Dir = env("DEMO_RECORDINGS", "_build/demo-recordings"),
-    [{W, parties(W)} || W <- lists:sort(filelib:wildcard(filename:join([Dir, "*", "*.wav"])))].
-
-parties(Wav) ->
-    case file:read_file(filename:rootname(Wav) ++ ".parties") of
-        {ok, B} -> binary:split(B, <<"\n">>, [global, trim_all]);
-        _ -> []
     end.
 
 %% ---- the 2000 IVR ----

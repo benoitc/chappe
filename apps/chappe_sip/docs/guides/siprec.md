@@ -123,7 +123,9 @@ end, #{option_tags => [<<"siprec">>]}).
 Each stream becomes one recording of the store, under the `call_ref` from
 the metadata, with the stream's senders as its parties. `store => default`
 is the `siprec_store` setting, `chappe_audio_store` of the chappe_audio
-app; any module with its `open/2`, `write/2` and `close/2` works. To take
+app, which must run on this node (a stream it cannot open is refused with
+port 0); find the recordings with `chappe_audio_store:find(CallRef)`. Any
+module with its `open/2`, `write/2` and `close/2` works. To take
 the audio yourself, give `sink => Pid` instead: the process gets
 `{chappe_sip_siprec_rtp, Stream, {audio, Pcm}}`, 16-bit PCM at 8 kHz.
 

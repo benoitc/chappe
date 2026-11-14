@@ -11,12 +11,13 @@ how to record, or when you look for a recording.
 
 | Entry point | Where the audio goes |
 |---|---|
-| SIPREC client (chappe_sip, lane E) | the recording server URI you give, per call or as a default: enki_vox, a vendor recorder, or chappe's own server side |
-| chappe's SIPREC server side | `store => default` writes each stream to the store; or your handler takes the streams and the parsed metadata itself (the wiring lands with the SIPREC work, see Notes) |
+| SIPREC client (chappe_sip) | the recording server URI you give, per call or as a default: enki_vox, a vendor recorder, or chappe's own server side |
+| chappe's SIPREC server side | `store => default` on `chappe_sip_siprec_srs:serve/3` writes each stream to the store, source `siprec`; or your handler takes the streams (`sink => Pid`) and the parsed metadata itself |
 | a FreeSWITCH fork into chappe_audio | `store => default` on `chappe_audio:open/2` writes the stream to the store; or the owner takes the frames |
 | a chappe_mix tap | your process gets the PCM; write it with `chappe_audio_store:open/2` |
 | FreeSWITCH `record`, `record_session` | `store => default` on `chappe_mrf:record/3` or `record_session/3`: FreeSWITCH writes into the folder it shares with chappe, and chappe adopts the file when it is done; or you give your own path and keep it |
 | FreeSWITCH room recording | `store => default` on `chappe_mrf_conf:record/3`: adopted when it stops |
+| native room recording | `chappe_mrf_conf:record(Conf, SrsUri, Opts)`: the mix goes through SIPREC to the recording server you name; chappe's own server side with `store => default` writes it to the store |
 | rtpengine recording | rtpengine's spool, set by the operator; with a shared spool, adopt the file with `chappe_audio_store:adopt/3` |
 
 ## Configure the store
@@ -134,7 +135,8 @@ of the file, for playback over HTTP with Range requests.
   `chappe_audio_store` callbacks, set as `backend => my_store`.
 - The SIPREC server side writes to the store through the same API
   (`chappe_audio_store:open/2` with `source => siprec`, one recording per
-  stream). That wiring comes with the SIPREC work in chappe_sip; until then
-  a SIPREC handler can call the API itself.
+  stream). chappe_audio must run on the node that answers the session:
+  without it `open/2` returns `{error, not_started}` and each stream is
+  refused with port 0.
 - Recordings and their sidecars hold personal data. Set `retention_days`,
   and keep `dir` readable only by the node's user.

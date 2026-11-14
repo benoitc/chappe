@@ -89,17 +89,16 @@
 
 %% Start a writer for one recording on this node, owned by the caller
 %% unless Opts names an `owner'. max_queue (default 500) bounds the
-%% writes waiting at it: past it, write/2 drops and says so.
+%% writes waiting at it: past it, write/2 drops and says so. {error,
+%% not_started} when chappe_audio does not run on this node.
 -spec open(meta(), #{owner => pid(), max_queue => pos_integer()}) ->
-    {ok, rec()} | {error, term()}.
+    {ok, rec()} | {error, not_started | badarg | term()}.
 open(#{call_ref := Ref} = Meta, Opts) when is_binary(Ref), is_map(Opts) ->
     case meta_ok(Meta) of
         true ->
             Owner = maps:get(owner, Opts, self()),
             Max = maps:get(max_queue, Opts, 500),
-            case
-                supervisor:start_child(chappe_audio_writer_sup, [Meta, Owner])
-            of
+            case start_writer(Meta, Owner) of
                 {ok, Pid} -> {ok, {chappe_audio_rec, Pid, Max}};
                 {error, _} = Err -> Err
             end;
@@ -108,6 +107,15 @@ open(#{call_ref := Ref} = Meta, Opts) when is_binary(Ref), is_map(Opts) ->
     end;
 open(_Meta, _Opts) ->
     {error, badarg}.
+
+%% A caller of another app (chappe_sip's recording server) gets an error,
+%% not an exit, when chappe_audio is not running on this node.
+start_writer(Meta, Owner) ->
+    try
+        supervisor:start_child(chappe_audio_writer_sup, [Meta, Owner])
+    catch
+        exit:{noproc, _} -> {error, not_started}
+    end.
 
 %% Hand the writer audio (16-bit PCM at the recording's format).
 -spec write(rec(), iodata()) -> ok | dropped.

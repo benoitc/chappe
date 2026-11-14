@@ -214,25 +214,27 @@ Register bob, then dial `3001` from alice. The demo calls bob with the
 media anchored in rtpengine and records the call: it taps each party in
 rtpengine and sends a SIPREC INVITE to its own recording server, the route
 `sip:srs@` of the same node. The recording server writes each party's
-stream as a WAV file, through the store the demo plugs in:
+stream to the recording store, next to the fork and the messages:
 
 ```
 demo: call 7a1e...@... alice -> bob up, media anchor
 demo: call 7a1e...@... recorded to sip:srs@127.0.0.1:5060
 demo: recording 5b0c...: 2 streams
-demo: recorded _build/demo-recordings/5b0c.../9f3a21c0.wav (96000 bytes of audio)
+demo: recording 5b0c... ended: demo_sbc:recordings(<<"5b0c...">>)
 ```
 
-Talk, hang up, and list them from `make demo-shell`:
+Talk, hang up, and list them from `make demo-shell` with the ref the log
+printed:
 
 ```erlang
-demo_sbc:recordings().
-%% [{"_build/demo-recordings/5b0c.../9f3a21c0.wav", [<<"sip:alice@...">>]},
-%%  {"_build/demo-recordings/5b0c.../c41d07aa.wav", [<<"sip:bob@...">>]}]
+demo_sbc:recordings(<<"5b0c...">>).
+%% [#{id => <<"20261114-...">>, source => <<"siprec">>, duration_ms => 6000,
+%%    path => <<"demo/sbc/recordings/2026/11/14/5b0c.../20261114-....wav">>},
+%%  #{id => <<"20261114-...">>, source => <<"siprec">>, ...}]
 ```
 
-Each file is one party (16-bit, 8 kHz, mono; `afplay` plays it), in a
-folder named by the call's `call_ref`.
+Each file is one party (16-bit, 8 kHz, mono; `afplay` plays it), with
+its JSON next to it naming the party.
 
 ## Put the call on hold
 
