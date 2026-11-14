@@ -7,6 +7,19 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 
 ## Unreleased
 
+- B2BUA: an anchored call no longer strips encryption from a caller that
+  offers encrypted media (SRTP with keys in the SDP). Before, the caller was
+  answered with plain media unless your app asked otherwise; now each leg is
+  answered in the media profile it used itself, encrypted or not, and your
+  app can still choose another.
+- SIPREC: chappe's recording server now takes encrypted media (SRTP with
+  keys in the SDP), as the SIPREC standard requires, and decrypts it itself.
+  Before, it refused every encrypted stream, so a recording client that
+  encrypts its media, chappe's own client on an encrypted call included,
+  could not record to it without an rtpengine in front. Forged and replayed
+  packets are dropped and counted. The keys must reach the server over TLS:
+  an encrypted stream offered over plain SIP is refused, unless you tell the
+  server your network is trusted.
 - Call correlation: each call now gets one reference, carried on every leg it
   creates, in every call record and in the capture sent to Homer. You can give
   your own, for example one coming from upstream, and find the processes

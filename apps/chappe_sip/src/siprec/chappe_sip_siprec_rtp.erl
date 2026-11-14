@@ -24,11 +24,33 @@
 %% RFC 4961), and drops every other source from then on. A stream whose SDP
 %% gives no usable address, or started with remote => undefined, latches
 %% to the first source.
+%%
+%% SRTP: started with srtp => Ctx (chappe_sip_srtp:new/1, from the
+%% client's a=crypto line), the stream takes SRTP only (RFC 3711): each
+%% packet is authenticated, checked against the replay window and
+%% decrypted (chappe_sip_srtp:unprotect/2) before it is decoded, and an
+%% SRTCP packet on the same port (RFC 5761) is authenticated and dropped.
+%% It latches to its source only once a packet authenticates there, so a
+%% forged packet cannot take the stream. A packet that fails (forged,
+%% replayed, malformed, past the key's lifetime) is dropped and counted
+%% (stats/1); the first failure is logged, then at most one line per
+%% 10 s window with the count since the last one. rekey/2 gives the stream
+%% the client's new key (a re-INVITE). The keys stay in the context and
+%% format_status/1 leaves them out of every report.
 -module(chappe_sip_siprec_rtp).
 -behaviour(gen_server).
 
--export([start/1, start_link/1, stop/1, port/1]).
--export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
+-export([start/1, start_link/1, stop/1, port/1, stats/1, rekey/2]).
+-export([
+    init/1,
+    handle_call/3,
+    handle_cast/2,
+    handle_info/2,
+    terminate/2,
+    format_status/1
+]).
+
+-include_lib("kernel/include/logger.hrl").
 -export([decode/2]).
 
 -record(state, {
@@ -41,8 +63,17 @@
     %% the client's address as its SDP gave it, and the source latched
     remote :: {inet:ip_address(), inet:port_number()} | undefined,
     latched :: {inet:ip_address(), inet:port_number()} | undefined,
-    packets = 0 :: non_neg_integer()
+    packets = 0 :: non_neg_integer(),
+    %% SRTP (redacted in reports), the packets it dropped, and the
+    %% failures not logged yet with the time of the last log line
+    srtp :: chappe_sip_srtp:ctx() | undefined | redacted,
+    failed = 0 :: non_neg_integer(),
+    replayed = 0 :: non_neg_integer(),
+    unlogged = 0 :: non_neg_integer(),
+    logged_at :: integer() | undefined
 }).
+%% one log line per window of failed SRTP packets, in ms
+-define(LOG_WINDOW, 10000).
 -type state() :: #state{}.
 
 -define(ACTIVE, 50).
@@ -50,7 +81,7 @@
 %% Args: #{owner := pid(), ip := inet:ip_address(), label := binary(),
 %% sink := {store, Module, StoreMeta} | {pid, pid()}, max_queue =>
 %% pos_integer(), remote => {inet:ip_address(), inet:port_number()} |
-%% undefined}.
+%% undefined, srtp => chappe_sip_srtp:ctx() | undefined}.
 -spec start(map()) -> {ok, pid()} | {error, term()}.
 start(Args) ->
     supervisor:start_child(chappe_sip_siprec_rtp_sup, [Args]).
@@ -73,6 +104,24 @@ stop(Pid) ->
 port(Pid) ->
     gen_server:call(Pid, port).
 
+%% The packets taken, and the SRTP packets dropped: failed (forged,
+%% malformed, an unknown MKI, the key's lifetime past, too many SSRCs) and
+%% replayed.
+-spec stats(pid()) ->
+    #{
+        packets := non_neg_integer(),
+        failed := non_neg_integer(),
+        replayed := non_neg_integer()
+    }.
+stats(Pid) ->
+    gen_server:call(Pid, stats).
+
+%% The client's new key for an SRTP stream (RFC 4568 7.1.4), its
+%% rollover counters and replay lists kept; ignored on a plain stream.
+-spec rekey(pid(), chappe_sip_srtp:ctx()) -> ok.
+rekey(Pid, Ctx) ->
+    gen_server:call(Pid, {rekey, Ctx}).
+
 -spec init(map()) -> {ok, state()} | {stop, term()}.
 init(#{owner := Owner, ip := Ip, label := Label, sink := Sink0} = Args) ->
     case gen_udp:open(0, [binary, {ip, Ip}, {active, ?ACTIVE}]) of
@@ -87,7 +136,8 @@ init(#{owner := Owner, ip := Ip, label := Label, sink := Sink0} = Args) ->
                         sink = Sink,
                         max_queue = maps:get(max_queue, Args, 500),
                         label = Label,
-                        remote = maps:get(remote, Args, undefined)
+                        remote = maps:get(remote, Args, undefined),
+                        srtp = maps:get(srtp, Args, undefined)
                     }};
                 {error, Why} ->
                     gen_udp:close(Sock),
@@ -110,6 +160,12 @@ open_sink({pid, Pid}) when is_pid(Pid) ->
 
 handle_call(port, _From, #state{port = P} = S) ->
     {reply, P, S};
+handle_call(stats, _From, #state{packets = P, failed = F, replayed = R} = S) ->
+    {reply, #{packets => P, failed => F, replayed => R}, S};
+handle_call({rekey, _Ctx}, _From, #state{srtp = undefined} = S) ->
+    {reply, ok, S};
+handle_call({rekey, Ctx}, _From, #state{srtp = Old} = S) ->
+    {reply, ok, S#state{srtp = chappe_sip_srtp:rekey(Old, Ctx)}};
 handle_call(stop, _From, S) ->
     {stop, normal, close_sink(S), S#state{sink = {pid, self()}}}.
 
@@ -118,7 +174,7 @@ handle_cast(_Msg, S) ->
 
 handle_info({udp, Sock, Ip, Port, Packet}, #state{sock = Sock} = S) ->
     case source(Ip, Port, S) of
-        {ok, S1} -> {noreply, packet(Packet, S1)};
+        {ok, From} -> {noreply, take(Packet, From, S)};
         drop -> {noreply, S}
     end;
 handle_info({udp_passive, Sock}, #state{sock = Sock} = S) ->
@@ -133,17 +189,67 @@ handle_info(_Msg, S) ->
 terminate(_Why, #state{sock = Sock}) ->
     gen_udp:close(Sock).
 
+%% the SRTP keys never reach a crash report or sys:get_status/1
+format_status(#{state := #state{} = S} = Status) ->
+    Status#{state := S#state{srtp = redacted}};
+format_status(Status) ->
+    Status.
+
 %% the latched source; before it, the first one from the client's address
-source(Ip, Port, #state{latched = {Ip, Port}} = S) ->
-    {ok, S};
+source(Ip, Port, #state{latched = {Ip, Port}}) ->
+    {ok, {Ip, Port}};
 source(_Ip, _Port, #state{latched = {_, _}}) ->
     drop;
-source(Ip, Port, #state{remote = {Ip, _}} = S) ->
-    {ok, S#state{latched = {Ip, Port}}};
-source(Ip, Port, #state{remote = undefined} = S) ->
-    {ok, S#state{latched = {Ip, Port}}};
+source(Ip, Port, #state{remote = {Ip, _}}) ->
+    {ok, {Ip, Port}};
+source(Ip, Port, #state{remote = undefined}) ->
+    {ok, {Ip, Port}};
 source(_Ip, _Port, _S) ->
     drop.
+
+%% A packet from an acceptable source: plain RTP latches to it; SRTP only
+%% once the packet authenticates. Muxed SRTCP (RFC 5761 4) is checked and
+%% dropped: the recording needs none of it.
+take(Packet, From, #state{srtp = undefined} = S) ->
+    packet(Packet, S#state{latched = From});
+take(Packet, From, #state{srtp = Ctx} = S) ->
+    case chappe_sip_srtp:is_rtcp(Packet) of
+        true -> srtcp(chappe_sip_srtp:unprotect_rtcp(Packet, Ctx), From, S);
+        false -> srtp(chappe_sip_srtp:unprotect(Packet, Ctx), From, S)
+    end.
+
+srtp({ok, Rtp, Ctx}, From, S) ->
+    packet(Rtp, S#state{srtp = Ctx, latched = From});
+srtp({error, Why}, _From, S) ->
+    dropped(Why, S).
+
+srtcp({ok, _Rtcp, Ctx}, From, S) ->
+    S#state{srtp = Ctx, latched = From};
+srtcp({error, Why}, _From, S) ->
+    dropped(Why, S).
+
+%% RFC 3711 3.3 step 5: a replayed or forged packet is discarded and the
+%% event SHOULD be logged; once per window, so a flood costs one line
+dropped(replay, #state{replayed = R, unlogged = U} = S) ->
+    log_drops(S#state{replayed = R + 1, unlogged = U + 1});
+dropped(_Why, #state{failed = F, unlogged = U} = S) ->
+    log_drops(S#state{failed = F + 1, unlogged = U + 1}).
+
+log_drops(#state{logged_at = At, unlogged = U} = S) ->
+    Now = erlang:monotonic_time(millisecond),
+    case At =:= undefined orelse Now - At >= ?LOG_WINDOW of
+        true ->
+            ?LOG_WARNING(#{
+                what => siprec_srtp_dropped,
+                label => S#state.label,
+                dropped => U,
+                failed => S#state.failed,
+                replayed => S#state.replayed
+            }),
+            S#state{unlogged = 0, logged_at = Now};
+        false ->
+            S
+    end.
 
 close_sink(#state{sink = {store, Mod, Rec}, packets = N}) ->
     Mod:close(Rec, #{packets => N});

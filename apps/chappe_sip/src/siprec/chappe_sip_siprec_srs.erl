@@ -20,11 +20,24 @@
 %% to the first source wherever it comes from, for a client behind a NAT
 %% that writes its private address.
 %%
-%% The receivers are plain RTP/AVP: they hold no SRTP keys. A stream
-%% offered as RTP/SAVP or RTP/SAVPF is answered with port 0, and an offer
-%% with no stream left that had a secure one is refused 488 with a 302
-%% Warning (RFC 3261 20.43). RFC 7866 12.2 asks an SRS for SRTP; record
-%% such a client through an rtpengine that decrypts it first.
+%% SRTP (RFC 7866 12.2: an SRS MUST support RTP/SAVP and RTP/SAVPF with
+%% SDES keys): a stream offered as RTP/SAVP or RTP/SAVPF with an a=crypto
+%% line it can take (chappe_sip_sdes: AES_CM_128_HMAC_SHA1_80 or _32) is
+%% answered in the same profile with an a=crypto line of its own (RFC 4568
+%% 7.1.2), and its receiver authenticates and decrypts each packet
+%% (chappe_sip_srtp) before it decodes it. A re-INVITE that changes a
+%% stream's key gives its receiver the new one. A secure stream with no
+%% line it can take (another suite, several keys, a key derivation rate,
+%% UNENCRYPTED_SRTP..., DTLS-SRTP's UDP/TLS/RTP/SAVP) is answered with port
+%% 0 (RFC 4568 7.1.2, RFC 3264 6), and an offer left with no stream that
+%% had a secure one is refused 488 with a 302 Warning (RFC 3261 20.43).
+%% The keys travel in the SDP, and RFC 4568 8.3 requires the SDP that
+%% carries an inline key to be encrypted: by default a secure stream offered
+%% over a transport that is not TLS (or WSS), to a Request-URI that is not
+%% sips:, is rejected the same way (port 0, RFC 4568 7.1.2: "its
+%% configured policy prohibits", and 488 when no stream is left).
+%% keys_over_tls => false takes such keys, for a recording client on a
+%% network the app trusts.
 %%
 %% Each stream goes to its sink:
 %%   store => default | module()   a recording of the store, opened with
@@ -48,8 +61,8 @@
 %% Why}}, Why the BYE request or the dialog's reason. Opts also take ip (the
 %% address the receivers bind, default 127.0.0.1), advertise (the address
 %% in the SDP, default ip), max_streams (default 4), max_queue (default
-%% 500), rtp_source (negotiated, the default, or learn) and headers for the
-%% 200.
+%% 500), rtp_source (negotiated, the default, or learn), keys_over_tls
+%% (default true) and headers for the 200.
 %%
 %% {error, not_recording_session} leaves Res unanswered, for the app to
 %% treat as an ordinary call or refuse; {error, _} on a body that does not
@@ -166,7 +179,11 @@ sink(#{sink := Pid}) when is_pid(Pid) ->
 sink(_) ->
     {error, no_sink}.
 
-answer(Req, Res, Sdp, Doc, Sink, Opts) ->
+answer(Req, Res, Sdp, Doc, Sink, Opts0) ->
+    Opts = Opts0#{
+        tls_in => is_tls(Req),
+        keys_over_tls => maps:get(keys_over_tls, Opts0, true)
+    },
     CallRef = call_ref(Req, Doc),
     Ip = maps:get(ip, Opts, {127, 0, 0, 1}),
     Adv = advertise(Opts, Ip),
@@ -186,7 +203,7 @@ answer(Req, Res, Sdp, Doc, Sink, Opts) ->
                 CallRef,
                 Sink,
                 Ip,
-                Opts#{remote => lists:nth(I, Remotes)}
+                Opts#{remote => lists:nth(I, Remotes), index => I}
             )
         end,
         lists:enumerate(Media)
@@ -208,17 +225,22 @@ answer(Req, Res, Sdp, Doc, Sink, Opts) ->
             answer_streams(Req, Res, Adv, Taken, Streams, CallRef, Doc, Opts)
     end.
 
-answer_streams(Req, Res, Adv, Taken, Streams, CallRef, Doc, Opts) ->
-    Answer = chappe_sip_sdp:join(
+%% the SDP of the streams taken, at version Ver of its o= line
+answer_sdp(Adv, Ver, Taken) ->
+    V = integer_to_binary(Ver),
+    chappe_sip_sdp:join(
         [
             <<"v=0">>,
-            <<"o=chappe 1 1 IN IP4 ", Adv/binary>>,
+            <<"o=chappe 1 ", V/binary, " IN IP4 ", Adv/binary>>,
             <<"s=-">>,
             <<"c=IN IP4 ", Adv/binary>>,
             <<"t=0 0">>
         ],
         [Lines || {Lines, _} <- Taken]
-    ),
+    ).
+
+answer_streams(Req, Res, Adv, Taken, Streams, CallRef, Doc, Opts) ->
+    Answer = answer_sdp(Adv, 1, Taken),
     case
         chappe_sip:create_uas(Req, Res, #{
             local_sdp => Answer,
@@ -232,6 +254,9 @@ answer_streams(Req, Res, Adv, Taken, Streams, CallRef, Doc, Opts) ->
             {ok, #{
                 dialog => D,
                 answer => Answer,
+                taken => Taken,
+                advertise => Adv,
+                version => 1,
                 notify => notify(Opts),
                 call_ref => CallRef,
                 metadata => Doc,
@@ -260,13 +285,15 @@ run(#{dialog := D} = Srs) ->
 loop(D, Mon, Srs) ->
     receive
         {chappe_sip_dialog, D, modify, Req, Res} ->
-            %% RFC 7866 7.2: the SRS answers with the streams it takes
+            %% RFC 7866 7.2: the SRS answers with the streams it takes,
+            %% each with the client's key of this offer
             updated(Req, Srs),
+            Srs1 = rekeyed(Req, Srs),
             _ = chappe_sip_res:send(Res, 200, #{
-                body => maps:get(answer, Srs),
+                body => maps:get(answer, Srs1),
                 headers => [{<<"Content-Type">>, <<"application/sdp">>}]
             }),
-            loop(D, Mon, Srs);
+            loop(D, Mon, Srs1);
         {chappe_sip_dialog, D, update, Req, Res} ->
             updated(Req, Srs),
             _ = chappe_sip_res:send(Res, 200),
@@ -277,6 +304,87 @@ loop(D, Mon, Srs) ->
             Why;
         {chappe_sip_dialog, D, _Event, _Req} ->
             loop(D, Mon, Srs)
+    end.
+
+%% RFC 4568 7.1.4: a re-offer may change a stream's key; its receiver
+%% takes the new one, and the answer echoes the new line's tag (a new o=
+%% version, RFC 3264 8). A stream whose re-offer has no line it can take
+%% keeps its key.
+rekeyed(Req, #{taken := Taken} = Srs) ->
+    case read(Req) of
+        {ok, Sdp, _Doc} ->
+            {_Sess, Media} = chappe_sip_sdp:sections(Sdp),
+            Taken1 = [rekey_one(T, Media) || T <- Taken],
+            case Taken1 =:= Taken of
+                true -> Srs;
+                false -> reanswer(Taken1, Srs)
+            end;
+        {error, _} ->
+            Srs
+    end.
+
+reanswer(Taken, #{advertise := Adv, version := V} = Srs) ->
+    Srs#{
+        taken := Taken,
+        version := V + 1,
+        answer := answer_sdp(Adv, V + 1, Taken)
+    }.
+
+rekey_one({Lines, #{index := I, srtp := Hash, pid := Pid} = S} = T, Media) when
+    is_binary(Hash), I =< length(Media)
+->
+    [_M | Rest] = lists:nth(I, Media),
+    case chappe_sip_sdes:select(Rest) of
+        {ok, C} ->
+            case key_hash(C) of
+                Hash ->
+                    T;
+                New ->
+                    case srtp_ctx(C) of
+                        {ok, Ctx} ->
+                            ok = chappe_sip_siprec_rtp:rekey(Pid, Ctx),
+                            {crypto_line(Lines, C), S#{srtp := New}};
+                        error ->
+                            T
+                    end
+            end;
+        {error, _} ->
+            T
+    end;
+rekey_one(T, _Media) ->
+    T.
+
+crypto_line(Lines, C) ->
+    [
+        case L of
+            <<"a=crypto:", _/binary>> -> chappe_sip_sdes:answer(C);
+            _ -> L
+        end
+     || L <- Lines
+    ].
+
+%% what tells a key from another without keeping it
+key_hash(#{key := K, salt := S}) ->
+    crypto:hash(sha256, [K, S]).
+
+srtp_ctx(C) ->
+    case
+        chappe_sip_srtp:new(
+            maps:with([suite, key, salt, mki, lifetime, window], C)
+        )
+    of
+        {ok, Ctx} -> {ok, Ctx};
+        {error, _} -> error
+    end.
+
+%% the RS came over TLS or WSS, or to a sips: Request-URI
+is_tls(Req) ->
+    case maps:get(transport, chappe_sip_req:meta(Req), undefined) of
+        T when is_binary(T) ->
+            lists:member(chappe_sip_lib:lower(T), [<<"tls">>, <<"wss">>]) orelse
+                chappe_sip_uri:is_sips(chappe_sip_req:uri(Req));
+        _ ->
+            chappe_sip_uri:is_sips(chappe_sip_req:uri(Req))
     end.
 
 %% the metadata of a re-INVITE or UPDATE, when it carries some
@@ -344,18 +452,56 @@ secure([M | _]) ->
 stream(Room, [M | Rest], Senders, CallRef, Sink, Ip, Opts) ->
     Label = label(Rest),
     case {Room, m_line(M)} of
-        {true, {<<"audio">>, Port, <<"RTP/AVP">>, Fmts}} when Port =/= 0 ->
-            case [F || F <- Fmts, lists:member(F, ?LAWS)] of
-                [] ->
+        {true, {<<"audio">>, Port, Proto, Fmts}} when Port =/= 0 ->
+            case
+                {profile(Proto, Rest, Opts), [
+                    F
+                 || F <- Fmts, lists:member(F, ?LAWS)
+                ]}
+            of
+                {_, []} ->
                     {rejected(M), undefined};
-                Laws ->
-                    receiver(Label, Laws, Senders, CallRef, Sink, Ip, Opts, M)
+                {error, _} ->
+                    {rejected(M), undefined};
+                {Profile, Laws} ->
+                    receiver(
+                        Label,
+                        Laws,
+                        Senders,
+                        CallRef,
+                        Sink,
+                        Ip,
+                        Opts,
+                        M,
+                        Profile
+                    )
             end;
         _ ->
             {rejected(M), undefined}
     end.
 
-receiver(Label, Laws, Senders, CallRef, Sink0, Ip, Opts, M) ->
+%% RTP/AVP, or RTP/SAVP and RTP/SAVPF with an SDES key it takes (RFC 7866
+%% 12.2, RFC 4568 7.1.2); every other profile is refused
+profile(<<"RTP/AVP">> = P, _Lines, _Opts) ->
+    {P, undefined};
+profile(P, _Lines, #{keys_over_tls := true, tls_in := false}) when
+    P =:= <<"RTP/SAVP">>; P =:= <<"RTP/SAVPF">>
+->
+    error;
+profile(P, Lines, _Opts) when P =:= <<"RTP/SAVP">>; P =:= <<"RTP/SAVPF">> ->
+    case chappe_sip_sdes:select(Lines) of
+        {ok, C} ->
+            case srtp_ctx(C) of
+                {ok, Ctx} -> {P, {C, Ctx}};
+                error -> error
+            end;
+        {error, _} ->
+            error
+    end;
+profile(_P, _Lines, _Opts) ->
+    error.
+
+receiver(Label, Laws, Senders, CallRef, Sink0, Ip, Opts, M, {Proto, Srtp}) ->
     Parties = [
         Aor
      || #{participants := Ps} <- [
@@ -381,25 +527,43 @@ receiver(Label, Laws, Senders, CallRef, Sink0, Ip, Opts, M) ->
         label => label_or(Label),
         sink => Sink,
         max_queue => maps:get(max_queue, Opts, 500),
-        remote => maps:get(remote, Opts)
+        remote => maps:get(remote, Opts),
+        srtp => srtp_of(Srtp)
     },
     case chappe_sip_siprec_rtp:start(Args) of
         {ok, Pid} ->
             Port = chappe_sip_siprec_rtp:port(Pid),
             Lines =
                 [
-                    <<"m=audio ", (integer_to_binary(Port))/binary, " RTP/AVP ",
+                    <<"m=audio ", (integer_to_binary(Port))/binary, " ",
+                        Proto/binary, " ",
                         (iolist_to_binary(lists:join(<<" ">>, Laws)))/binary>>
                 ] ++
                     [rtpmap(L) || L <- Laws] ++
                     [<<"a=recvonly">>] ++
-                    [<<"a=label:", Label/binary>> || Label =/= undefined],
+                    [<<"a=label:", Label/binary>> || Label =/= undefined] ++
+                    crypto_answer(Srtp),
             {Lines, #{
-                label => Label, pid => Pid, port => Port, parties => Parties
+                label => Label,
+                pid => Pid,
+                port => Port,
+                parties => Parties,
+                profile => Proto,
+                index => maps:get(index, Opts),
+                srtp => srtp_hash(Srtp)
             }};
         {error, _} ->
             {rejected(M), undefined}
     end.
+
+srtp_of(undefined) -> undefined;
+srtp_of({_C, Ctx}) -> Ctx.
+
+srtp_hash(undefined) -> undefined;
+srtp_hash({C, _Ctx}) -> key_hash(C).
+
+crypto_answer(undefined) -> [];
+crypto_answer({C, _Ctx}) -> [chappe_sip_sdes:answer(C)].
 
 store_ref(undefined) -> chappe_sip_call:new_ref();
 store_ref(R) -> R.

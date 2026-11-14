@@ -9,7 +9,8 @@
 %% and string:trim/1 these never raise and never touch non-ASCII bytes.
 -module(chappe_sip_lib).
 
--export([lower/1, trim/1, unhex/1, to_int/2, delta_seconds/2, xml_escape/1]).
+-export([lower/1, upper/1, all_digits/1, trim/1, unhex/1, to_int/2]).
+-export([delta_seconds/2, xml_escape/1]).
 
 %% ASCII lowercase.
 -spec lower(binary()) -> binary().
@@ -17,6 +18,20 @@ lower(B) -> <<<<(lower_byte(C))>> || <<C>> <= B>>.
 
 lower_byte(C) when C >= $A, C =< $Z -> C + 32;
 lower_byte(C) -> C.
+
+%% ASCII uppercase.
+-spec upper(binary()) -> binary().
+upper(B) -> <<<<(upper_byte(C))>> || <<C>> <= B>>.
+
+upper_byte(C) when C >= $a, C =< $z -> C - 32;
+upper_byte(C) -> C.
+
+%% One or more ASCII digits, nothing else.
+-spec all_digits(binary()) -> boolean().
+all_digits(<<>>) ->
+    false;
+all_digits(B) ->
+    lists:all(fun(D) -> D >= $0 andalso D =< $9 end, binary_to_list(B)).
 
 %% Strip leading and trailing SP and HTAB (OWS, RFC 3261 25.1).
 -spec trim(binary()) -> binary().
