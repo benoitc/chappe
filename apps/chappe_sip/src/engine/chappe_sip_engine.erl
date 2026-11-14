@@ -997,7 +997,8 @@ start_opts(Opts) ->
 
 %% The agent settings, checked with the NIF's bounds and flattened into
 %% its keys (sip_t1, sip_t2, sip_t4, outbound_proxy, tcp_keepalive_ms,
-%% udp_mtu). aliases stay in Erlang: they are names of this node, known to
+%% udp_mtu; tcp_keepalive_ms pings TCP connections only, not TLS ones).
+%% aliases stay in Erlang: they are names of this node, known to
 %% the proxy's own-address check (chappe_sip_binds:own_uris/0).
 -spec agent_opts(map()) -> {ok, map()} | {error, {atom(), term()}}.
 agent_opts(Opts) ->
