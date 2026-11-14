@@ -26,11 +26,12 @@
 %% start and stop only, so these calls do not go through the engine.
 -module(chappe_sip_binds).
 
--export([options/1, publish/1]).
+-export([options/1, publish/1, aliases/1, own_uris/0]).
 -export([contacts/0, local/1, contact_at/1, tls_contact_at/1, pick_local/2]).
 -export([contact_or_primary/2, send_ident/2, inherit/3, for_peer/2]).
 
 -define(BINDS, {?MODULE, binds}).
+-define(ALIASES, {?MODULE, aliases}).
 
 %% Every listen address, plain then TLS, as bare URIs (no parameters).
 -spec contacts() -> [binary()].
@@ -310,12 +311,80 @@ ident(_) ->
 %% options; #{} once stopped), for the calls above.
 -spec publish(map()) -> ok.
 publish(Opts) ->
-    Binds = binds_of(Opts),
-    case persistent_term:get(?BINDS, []) of
-        Binds -> ok;
-        _ -> persistent_term:put(?BINDS, Binds)
+    put_term(?BINDS, binds_of(Opts)),
+    put_term(?ALIASES, maps:get(aliases, Opts, [])).
+
+put_term(Key, Value) ->
+    case persistent_term:get(Key, []) of
+        Value -> ok;
+        _ -> persistent_term:put(Key, Value)
     end,
     ok.
+
+%% aliases => [Name]: other names of this node (a DNS name, or a sip: or
+%% sips: URI), at most 16, each a host with an optional port. A request
+%% routed to one is routed to us.
+-spec aliases(term()) -> ok | error.
+aliases(L) when is_list(L), length(L) =< 16 ->
+    case lists:all(fun is_alias/1, L) of
+        true -> ok;
+        false -> error
+    end;
+aliases(_) ->
+    error.
+
+is_alias(<<"sip:", _/binary>> = U) -> is_alias_uri(U);
+is_alias(<<"sips:", _/binary>> = U) -> is_alias_uri(U);
+is_alias(H) when is_binary(H) -> is_alias_uri(<<"sip:", H/binary>>);
+is_alias(_) -> false.
+
+is_alias_uri(U) ->
+    case binary:match(U, [<<0>>, <<";">>, <<"@">>, <<"?">>]) of
+        nomatch ->
+            case chappe_sip_uri:parse(U) of
+                {ok, #{host := H}} -> is_host(H);
+                _ -> false
+            end;
+        _ ->
+            false
+    end.
+
+%% Every URI that names this node: the listen addresses (public and
+%% local), and the aliases, an alias with no port on the port of each
+%% listen address.
+-spec own_uris() -> [binary()].
+own_uris() ->
+    Binds = binds(),
+    Uris = lists:append([[U | local_of(B)] || #{uri := U} = B <- Binds]),
+    Ports = lists:usort([port_of(U) || U <- Uris]),
+    Uris ++
+        lists:append([
+            alias_uris(A, Ports)
+         || A <- persistent_term:get(?ALIASES, [])
+        ]).
+
+local_of(#{local_uri := L}) -> [L];
+local_of(_) -> [].
+
+port_of(U) ->
+    case chappe_sip_uri:parse(U) of
+        {ok, #{port := P}} -> integer_to_binary(P);
+        _ -> undefined
+    end.
+
+alias_uris(A, Ports) ->
+    Uri =
+        case A of
+            <<"sip", _/binary>> -> A;
+            _ -> <<"sip:", A/binary>>
+        end,
+    case port_of(Uri) of
+        undefined ->
+            [Uri] ++
+                [<<Uri/binary, ":", P/binary>> || P <- Ports, P =/= undefined];
+        _ ->
+            [Uri]
+    end.
 
 binds_of(#{contact := _} = Opts) ->
     Plain = uris(Opts),

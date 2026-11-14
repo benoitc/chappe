@@ -12,6 +12,31 @@ contact map with `public` and `local_nets` for 1:1 NAT, or a list) and the
 TLS `contact` of `chappe_sip:start/1`. See
 [Deployment](guides/deployment.md#run-behind-11-nat).
 
+## Start options of the native stack
+
+These are options of `chappe_sip:start/1`, not application settings. Each
+is checked before the stack starts: a value out of bounds or of the wrong
+shape fails the start with `{error, {Key, Value}}`.
+
+```erlang
+ok = chappe_sip:start(#{
+    contact => <<"sip:10.0.0.5:5060">>,
+    sip_timers => #{t1 => 500, t2 => 4000, t4 => 5000},
+    outbound_proxy => <<"sip:proxy.example.com;transport=tcp">>,
+    tcp_keepalive_ms => 30000,
+    udp_mtu => 1300,
+    aliases => [<<"sbc.example.com">>]
+}).
+```
+
+| Key | Default | What it does |
+| --- | --- | --- |
+| `sip_timers` | `#{t1 => 500, t2 => 4000, t4 => 5000}` | RFC 3261 timers in ms, for UDP, TCP and TLS transactions (WebSocket ones use the `ws_*` settings below). `t1` 10 to 60000, `t2` 10 to 600000 and never below `t1`, `t4` 10 to 600000. Timers B, F, H and J follow `t1` (64*T1). sofia starts the first UDP retransmission at no less than 1 s whatever `t1`. |
+| `outbound_proxy` | none | A `sip:` or `sips:` URI every request with no route of its own goes to (a UAC request with no `proxy` option, an in-dialog request with no route set). A proxied request keeps its own next hop. |
+| `tcp_keepalive_ms` | off | Sends a CRLFCRLF ping (RFC 5626 4.4.1) on every TCP connection idle this long, 1000 to 3600000. sofia does not ping TLS connections; UDP never gets it. |
+| `udp_mtu` | `1300` | A request larger than this goes over TCP instead of UDP (RFC 3261 18.1.1), 576 to 65535. |
+| `aliases` | `[]` | Up to 16 other names of this node (a DNS name, or a `sip:`/`sips:` URI with an optional port). A Route naming one is ours, as a listen address is; a name with no port matches the port of each listen address. |
+
 ## Engine
 
 | Key | Default | What it does |

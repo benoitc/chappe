@@ -977,17 +977,110 @@ start_engine(Mod, Opts, Retries, Backoff) ->
     end.
 
 %% The options the engine backend starts with: TLS checked, the contact
-%% restricted, the size cap and the HEP capture URL added.
+%% restricted, the agent settings checked, the size cap and the HEP
+%% capture URL added.
 start_opts(Opts) ->
     case validate_tls(maps:get(tls, Opts, undefined)) of
         ok ->
             case chappe_sip_binds:options(Opts) of
-                {ok, Opts1} -> with_capture(with_max_size(Opts1));
-                {error, _} = Err -> Err
+                {ok, Opts1} ->
+                    case agent_opts(Opts1) of
+                        {ok, Opts2} -> with_capture(with_max_size(Opts2));
+                        {error, _} = Err -> Err
+                    end;
+                {error, _} = Err ->
+                    Err
             end;
         {error, _} = Err ->
             Err
     end.
+
+%% The agent settings, checked with the NIF's bounds and flattened into
+%% its keys (sip_t1, sip_t2, sip_t4, outbound_proxy, tcp_keepalive_ms,
+%% udp_mtu). aliases stay in Erlang: they are names of this node, known to
+%% the proxy's own-address check (chappe_sip_binds:own_uris/0).
+-spec agent_opts(map()) -> {ok, map()} | {error, {atom(), term()}}.
+agent_opts(Opts) ->
+    Checks = [
+        {sip_timers, fun sip_timers/1},
+        {outbound_proxy, fun outbound_proxy/1},
+        {tcp_keepalive_ms, in_range(1000, 3600000)},
+        {udp_mtu, in_range(576, 65535)},
+        {aliases, fun chappe_sip_binds:aliases/1}
+    ],
+    lists:foldl(
+        fun
+            ({Key, Check}, {ok, Acc}) ->
+                case maps:find(Key, Acc) of
+                    error ->
+                        {ok, Acc};
+                    {ok, V} ->
+                        case Check(V) of
+                            {ok, Flat} ->
+                                {ok, maps:merge(maps:remove(Key, Acc), Flat)};
+                            error ->
+                                {error, {Key, V}}
+                        end
+                end;
+            (_, Err) ->
+                Err
+        end,
+        {ok, Opts},
+        [{K, flat(K, C)} || {K, C} <- Checks]
+    ).
+
+%% a check of one option, as the NIF keys it sets
+flat(Key, Check) ->
+    fun(V) ->
+        case Check(V) of
+            {ok, M} when is_map(M) -> {ok, M};
+            ok -> {ok, #{Key => V}};
+            error -> error
+        end
+    end.
+
+in_range(Lo, Hi) ->
+    fun
+        (N) when is_integer(N), N >= Lo, N =< Hi -> ok;
+        (_) -> error
+    end.
+
+%% RFC 3261 17.1.1.1: T1 (default 500 ms), T2 (4 s), T4 (5 s); T2 is the
+%% cap on the retransmit interval, so never below T1
+sip_timers(T) when is_map(T) ->
+    Keys = [t1, t2, t4],
+    T1 = maps:get(t1, T, 500),
+    T2 = maps:get(t2, T, 4000),
+    case
+        maps:keys(maps:without(Keys, T)) =:= [] andalso
+            ok =:= (in_range(10, 60000))(T1) andalso
+            ok =:= (in_range(10, 600000))(T2) andalso
+            ok =:= (in_range(10, 600000))(maps:get(t4, T, 5000)) andalso
+            T2 >= T1
+    of
+        true ->
+            {ok, #{nif_timer(K) => V || K := V <- T}};
+        false ->
+            error
+    end;
+sip_timers(_) ->
+    error.
+
+nif_timer(t1) -> sip_t1;
+nif_timer(t2) -> sip_t2;
+nif_timer(t4) -> sip_t4.
+
+%% a sip: or sips: URI with no NUL
+outbound_proxy(P) when is_binary(P) ->
+    case
+        binary:match(P, <<0>>) =:= nomatch andalso
+            byte_size(P) < 512 andalso chappe_sip_uri:parse(P)
+    of
+        {ok, #{scheme := S}} when S =:= sip; S =:= sips -> ok;
+        _ -> error
+    end;
+outbound_proxy(_) ->
+    error.
 
 %% HEP capture of the native transports: sofia takes a capture URL
 %% (TPTAG_CAPT), from the hep option or the application setting

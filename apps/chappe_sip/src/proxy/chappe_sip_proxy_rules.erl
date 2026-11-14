@@ -169,7 +169,7 @@ own_addresses() ->
      || C <- [
             chappe_sip_engine:contact(),
             chappe_sip_engine:tls_contact()
-            | chappe_sip_binds:contacts()
+            | chappe_sip_binds:own_uris()
         ],
         {ok, A} <- [hostport(C)]
     ].
