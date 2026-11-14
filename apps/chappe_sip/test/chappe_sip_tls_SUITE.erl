@@ -24,6 +24,9 @@
          sips_request_sips_contact/1, subscribe_notify_over_tls/1]).
 -export([uac_secure_contact/1, uac_dialog_sips_contact/1,
          sips_ruri_via_sip_proxy/1, sips_transport_udp_refused/1]).
+%% the CA, the TLS listener and the UDP port, for the TLS cases of other
+%% suites (chappe_sip_siprec_SUITE)
+-export([with_ca/3, start_tls/2, engine_port/0]).
 
 all() ->
     [tls_options, udp_still_works, tls_bad_verify, verify_none_needs_insecure,

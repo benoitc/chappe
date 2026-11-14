@@ -27,7 +27,7 @@
          server_sink_and_stream_crash/1, server_refuses_bad_body/1,
          server_answers_on_the_wire/1]).
 -export([room_recorded/1, room_not_up/1, server_sink_bound/1,
-         server_metadata_update/1, room_ends_recording/1]).
+         server_metadata_update/1, room_ends_recording/1, recording_over_tls/1]).
 
 all() ->
     [invite_is_a_recording_session, chappe_as_recording_server,
@@ -39,7 +39,7 @@ all() ->
      server_not_a_recording_session, server_sink_and_stream_crash,
      server_refuses_bad_body, server_answers_on_the_wire,
      server_sink_bound, server_metadata_update, room_recorded, room_not_up,
-     room_ends_recording].
+     room_ends_recording, recording_over_tls].
 
 -define(UA, chappe_sip_test_ua).
 -define(M, chappe_sip_siprec_meta).
@@ -640,6 +640,26 @@ room_ends_recording(_Config) ->
     {stopped, #{reason := room_ended}} = event(Rec),
     _ = got(srs_bye).
 
+%% RFC 7866 12: a sips: recording server URI takes the RS over TLS, the
+%% server's certificate checked against the CA; chappe answers it over
+%% its TLS listener.
+%% req: R7866-12-1
+recording_over_tls(Config) ->
+    chappe_sip_tls_SUITE:with_ca(Config, "siprec", fun(Dir) ->
+        TP = chappe_sip_tls_SUITE:start_tls(Dir, #{}),
+        EP = chappe_sip_tls_SUITE:engine_port(),
+        ok = chappe_sip:handle(<<"INVITE">>, fun handler/2, #{option_tags => [<<"siprec">>]}),
+        persistent_term:put(siprec_test_ep, EP),
+        #{b2b := B2b, call_ref := Ref} = call(),
+        {ok, Rec} = chappe_sip_siprec:start(
+                      B2b, <<"sips:sink@127.0.0.1:", (integer_to_binary(TP))/binary>>, #{}),
+        {started, #{call_ref := Ref}} = event(Rec),
+        ?assertMatch(<<"SIP/2.0/TLS ", _/binary>>, got(srs_transport)),
+        #{streams := [_, _]} = got(srs_served),
+        ok = chappe_sip_siprec:stop(Rec),
+        {stopped, _} = event(Rec)
+    end).
+
 %% A room that is not up is not made by its recording.
 room_not_up(_Config) ->
     ok = chappe_sip_media:configure(#{mix => #{ip => {127, 0, 0, 1}}}),
@@ -767,6 +787,9 @@ handler(Req, Res) ->
             recording_server(Test, Req, Res);
         <<"sip:store@", _/binary>> ->
             served(Test, Req, Res, #{store => default});
+        <<"sips:sink@", _/binary>> ->
+            Test ! {srs_transport, chappe_sip_req:get(<<"via">>, Req)},
+            served(Test, Req, Res, #{sink => Test});
         <<"sip:sink@", _/binary>> ->
             served(Test, Req, Res, #{sink => Test,
                                      max_queue => persistent_term:get(siprec_test_sink_queue, 500)});
