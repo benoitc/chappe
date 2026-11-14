@@ -227,15 +227,22 @@ Opts = #{media => anchor, transfer => auto,
 ```
 
 The fun gets `kind` (`blind` or `attended`), `leg`, `target`, `refer_to`,
-`referrer`, `referred_by`, `call_ref` and `transfers`, and returns `true`,
+`referrer`, `referred_by`, `principal`, `call_ref` and `transfers` (and
+`local` and `replaces_principal` for an attended transfer), and returns `true`,
 `false` (403) or `{reject, Code}`. It runs in the transfer's process, on
 the node that holds the call.
 
 - `referrer` is the REFER's From, the identity its dialog was formed with.
   `referred_by` is only what the REFER claims (RFC 3892 6): never grant on
   it alone.
-- A Replaces naming a local dialog whose party is not the referrer gets
-  403, and that call is left alone (RFC 3891 3).
+- An attended transfer that joins two calls of this node needs proof that
+  the referrer is the party it replaces (RFC 3891 3). Record who your app
+  authenticated on each leg with `create_b2bua/4`'s `principal => #{a | b
+  => Who}`: without a policy fun, the join goes ahead only when the
+  referrer's leg and the leg the Replaces names carry the same principal,
+  and gets 403 otherwise, that call left alone. A policy fun sees them as
+  `principal` and `replaces_principal`. The REFER's From is never enough:
+  nothing authenticated it.
 - A call carries at most `max_transfers` transfers (default 5), one at a
   time: a second REFER while one runs gets 500 with Retry-After.
 - A REFER for another method than INVITE gets 403. A REFER with

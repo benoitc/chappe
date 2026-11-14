@@ -76,6 +76,7 @@
     relay_info => boolean(),
     winner => winner(),
     call_ref => binary(),
+    principal => #{a | b => term()},
     transfer => {chappe_sip_b2b_transfer:mode(), map()}
 }.
 %% Where leg B goes: a destination, a list of them, or a group of
@@ -180,6 +181,17 @@
 %%                            port, Host:Port: that one; default this
 %%                            node's listen addresses). At most
 %%                            max_transfers (5) per call
+%%   principal             => #{a | b => term()}: who your app
+%%                            authenticated on that leg (the digest
+%%                            user of A, the registered user B is, say).
+%%                            An attended transfer that joins two calls
+%%                            of this node needs the same principal on
+%%                            the referrer's leg of both, or a policy
+%%                            that allows it (RFC 3891 3); the policy
+%%                            sees both as principal and
+%%                            replaces_principal. A leg that a transfer
+%%                            or replace_b/3 gives a new party loses its
+%%                            principal
 %%   relay_info            => boolean (default false): an INFO from one
 %%                            leg (DTMF, RFC 6086) goes to the other, and
 %%                            its final comes back
@@ -745,7 +757,8 @@ create_a(
                     maps:get(transfer_opts, Opts, #{})
                 },
                 winner => Winner,
-                call_ref => maps:get(call_ref, Opts)
+                call_ref => maps:get(call_ref, Opts),
+                principal => maps:get(principal, Opts, #{})
             },
             {ok, maps:merge(Legs, maps:from_list([{late, true} || late(W)]))};
         {error, Reason} ->

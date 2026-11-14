@@ -59,6 +59,8 @@ run(#{uas := A, uac := B} = Legs, Opts) ->
         requests => Requests,
         relay_info => RelayInfo,
         winner => maps:get(winner, Legs, undefined),
+        %% who the app authenticated on each leg (create_b2bua/4)
+        principal => maps:get(principal, Legs, #{}),
         transfer => Mode,
         transfer_opts => TOpts,
         %% the transfer at work ({Pid, Monitor}) and how many the call made
@@ -455,6 +457,18 @@ handle_call(From, {set_media, Mode}, #{media := M, a := A} = S) ->
             reply(From, {error, {media, Why}}),
             S
     end;
+handle_call(From, {principal, D}, #{a := A, b := B} = S) ->
+    P = chappe_sip_dialog:pid(D),
+    Principals = maps:get(principal, S),
+    reply(
+        From,
+        case {chappe_sip_dialog:pid(A), chappe_sip_dialog:pid(B)} of
+            {P, _} -> {ok, maps:get(a, Principals, undefined)};
+            {_, P} -> {ok, maps:get(b, Principals, undefined)};
+            _ -> {error, not_found}
+        end
+    ),
+    S;
 handle_call(From, {replace_b, Target, Opts}, S) ->
     replace(From, b, Target, Opts, S);
 handle_call(From, {replace, Leg, Target, Opts}, S) ->
@@ -497,9 +511,10 @@ replace(From, Leg, Target, Opts, S) ->
 %% and rtpengine gets the old party's SDP back as the answer
 replaced(From, {Leg, Old, Moved, Keeper}, {ok, New, Answer, Won}, S) ->
     case chappe_sip_b2b_replace:swap(Leg, New, Answer, Won, Keeper, S) of
-        {ok, S1} ->
+        {ok, #{principal := Ps} = S1} ->
             reply(From, chappe_sip_b2b_replace:result(Won)),
-            S1;
+            %% the new party is not who the app authenticated there
+            S1#{principal := maps:remove(Leg, Ps)};
         Error ->
             reply(From, Error),
             keep_old(Leg, {Old, Moved}, S)

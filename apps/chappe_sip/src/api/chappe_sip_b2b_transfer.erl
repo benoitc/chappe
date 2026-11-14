@@ -50,6 +50,8 @@
     refer_to := chappe_sip_hdr:refer_to(),
     referrer := binary(),
     referred_by := binary() | undefined,
+    principal := term(),
+    replaces_principal => term(),
     call_ref := binary() | undefined,
     transfers := non_neg_integer()
 }.
@@ -66,7 +68,15 @@
 -spec valid(map()) -> boolean().
 valid(Opts) ->
     lists:member(maps:get(transfer, Opts, off), [off, auto, notify]) andalso
-        valid_topts(maps:get(transfer_opts, Opts, #{})).
+        valid_topts(maps:get(transfer_opts, Opts, #{})) andalso
+        valid_principal(maps:get(principal, Opts, #{})).
+
+%% create_b2bua/4's principal: #{a | b => term()}, who the app
+%% authenticated on that leg
+valid_principal(P) when is_map(P) ->
+    lists:all(fun(K) -> K =:= a orelse K =:= b end, maps:keys(P));
+valid_principal(_P) ->
+    false.
 
 valid_topts(T) when is_map(T) ->
     maps:fold(fun(K, V, Acc) -> Acc andalso valid_topt(K, V) end, true, T);
@@ -118,6 +128,7 @@ refer(X, Req, Res, #{media := M, transfers := N} = S) ->
         ref => maps:get(ref, M),
         call_ref => maps:get(call_ref, M),
         opts => maps:get(transfer_opts, S),
+        principal => maps:get(X, maps:get(principal, S), undefined),
         mode => maps:get(transfer, S),
         transfers => N
     },
@@ -197,7 +208,7 @@ classify(#{req := Req, opts := TOpts, transfers := N} = S) ->
             %% a transfer that transfers again, and again: a loop
             {reject, 403, <<"Too Many Transfers">>};
         {ok, #{target := Target, replaces := R} = RT} when R =/= undefined ->
-            attended(R, base(Target, RT, S));
+            attended(R, base(Target, RT, S), S);
         {ok, #{target := Target} = RT} ->
             {ok, base(Target, RT, S)}
     end.
@@ -211,58 +222,58 @@ base(Target, RT, #{req := Req, transfers := N} = S) ->
         referrer => referrer(Req),
         referred_by => chappe_sip_req:get(<<"referred-by">>, Req),
         call_ref => maps:get(call_ref, S, undefined),
+        principal => maps:get(principal, S, undefined),
         transfers => N
     }.
 
 %% ---- attended transfer (RFC 5589 7.3) ----
 
 %% The Replaces names the dialog the referrer has with the target. When
-%% it is a confirmed leg of another call of this node, the two remote
-%% parties are joined through rtpengine; otherwise the target gets an
-%% INVITE with Replaces. Only the referrer may name that dialog (RFC 3891
-%% 3: the replacement must come from a party to it): a Replaces naming
-%% someone else's dialog is refused 403 and leaves that call alone.
-attended(#{call_id := C, to_tag := T, from_tag := F} = R, Info) ->
+%% it is a confirmed leg of another B2BUA call of this node, the two
+%% remote parties are joined through rtpengine; otherwise the target gets
+%% an INVITE with Replaces. Who may name that dialog is the policy's to
+%% decide (RFC 3891 3 and 8: the referrer must be authenticated as the
+%% party being replaced, or authorized to replace it): Info carries the
+%% principal the app recorded for the referrer's leg (create_b2bua/4's
+%% principal option) and replaces_principal, the one of the named leg.
+%% The From of the REFER is never enough: nothing authenticated it.
+attended(#{call_id := C, to_tag := T, from_tag := F} = R, Info, S) ->
     Info1 = Info#{kind := attended, replaces => R},
     case chappe_sip_dialog_index:lookup({C, T, F}) of
         not_found ->
             {ok, Info1#{local => false}};
         {ok, {Pid, Id, confirmed, _Role}} ->
-            local(chappe_sip_dialog:make(Pid, Id), Info1);
+            local(chappe_sip_dialog:make(Pid, Id), Info1, S);
         {ok, _} ->
             {reject, 481, <<"Call/Transaction Does Not Exist">>}
     end.
 
-local(D2, #{referrer := Referrer} = Info) ->
-    try {chappe_sip_dialog:remote_addr(D2), chappe_sip_dialog:call_ref(D2)} of
-        {Party, Ref} ->
-            case same_party(chappe_sip_b2b_hdr:caller(Party), Referrer) of
-                true -> {ok, Info#{local => true, dialog2 => D2, ref2 => Ref}};
-                false -> {reject, 403, <<"Forbidden">>}
-            end
+local(D2, Info, #{b2b := Own}) ->
+    try chappe_sip_dialog:call_ref(D2) of
+        Ref when is_binary(Ref) ->
+            #{b2b := Calls} = chappe_sip_call:lookup(Ref),
+            holder([B || B <- Calls, B =/= Own], D2, Info);
+        _ ->
+            {reject, 403, <<"Forbidden">>}
     catch
         exit:_ -> {reject, 481, <<"Call/Transaction Does Not Exist">>}
     end.
 
-%% the same user at the same host, whatever the port and parameters
-same_party(A, B) ->
-    case {aor(A), aor(B)} of
-        {error, _} -> false;
-        {X, X} -> true;
-        _ -> false
-    end.
-
-aor(NameAddr) ->
-    case chappe_sip_hdr:name_addr(NameAddr) of
-        {ok, #{uri := U}} ->
-            case chappe_sip_uri:parse(U) of
-                {ok, #{host := H} = P} ->
-                    {maps:get(user, P, <<>>), chappe_sip_lib:lower(H)};
-                _ ->
-                    error
-            end;
+%% the B2BUA call that holds D2, and the principal of that leg
+holder([], _D2, _Info) ->
+    %% a dialog of this node no B2BUA call relays: nothing to join
+    {reject, 403, <<"Forbidden">>};
+holder([B | Rest], D2, Info) ->
+    case chappe_sip_b2b:call(B, {principal, D2}, 5000) of
+        {ok, P} ->
+            {ok, Info#{
+                local => true,
+                dialog2 => D2,
+                b2b2 => B,
+                replaces_principal => P
+            }};
         _ ->
-            error
+            holder(Rest, D2, Info)
     end.
 
 %% join: the target's leg leaves its call (the referrer's leg there gets a
@@ -272,7 +283,7 @@ aor(NameAddr) ->
 %% (the target refuses it, this call is busy or gone), the leg goes back
 %% and both calls stay as they were.
 join(#{leg := Leg} = Info, Refer, #{b2b := B2b} = S) ->
-    case lend(Info, B2b) of
+    case lend(Info) of
         {ok, Lender, Target} ->
             case
                 chappe_sip_b2b:replace_leg(B2b, Leg, {dialog, Target}, #{
@@ -291,18 +302,10 @@ join(#{leg := Leg} = Info, Refer, #{b2b := B2b} = S) ->
     end.
 
 %% the call that holds the named dialog lends its other leg
-lend(#{dialog2 := D2, ref2 := Ref}, Own) when is_binary(Ref) ->
-    #{b2b := Calls} = chappe_sip_call:lookup(Ref),
-    first_lent([B || B <- Calls, B =/= Own, node(element(1, B)) =:= node()], D2);
-lend(_Info, _Own) ->
-    error.
-
-first_lent([], _D2) ->
-    error;
-first_lent([B | Rest], D2) ->
+lend(#{dialog2 := D2, b2b2 := B}) ->
     case chappe_sip_b2b:call(B, {detach, D2}) of
         {ok, Target} -> {ok, B, Target};
-        _ -> first_lent(Rest, D2)
+        _ -> error
     end.
 
 %% tell the lender whether its leg was taken (done) or comes back (back)
@@ -424,7 +427,7 @@ decide(Info, #{opts := TOpts, res := Res} = S) ->
 ask(Info, #{notify := Pid, ref := Ref, res := Res, mon := Mon} = S) when
     is_pid(Pid)
 ->
-    Public = maps:without([dialog2, ref2], Info),
+    Public = maps:without([dialog2, b2b2], Info),
     Pid ! {chappe_sip_b2b, Ref, {refer, Public#{transfer => self()}}},
     receive
         {?MODULE, {accept, Opts}} ->
@@ -446,7 +449,9 @@ ask(_Info, #{res := Res}) ->
 
 %% the app's own target: a blind transfer there
 retarget(Info, #{target := T}) when is_binary(T), T =/= <<>> ->
-    (maps:without([replaces, local, dialog2, ref2], Info))#{
+    (maps:without(
+        [replaces, local, dialog2, b2b2, replaces_principal], Info
+    ))#{
         target := T, kind := blind
     };
 retarget(Info, _Opts) ->
@@ -495,9 +500,14 @@ policy(Info, #{policy := F}) ->
         _ ->
             false
     end;
-policy(#{kind := attended, local := true}, _TOpts) ->
-    %% two parties of this node already in calls: nothing new is called
-    true;
+policy(#{kind := attended, local := true} = Info, _TOpts) ->
+    %% two parties of this node already in calls: nothing new is called,
+    %% but the referrer must be the party it replaces, as the app knows
+    %% it (RFC 3891 3)
+    case Info of
+        #{principal := P, replaces_principal := P} -> P =/= undefined;
+        _ -> false
+    end;
 policy(#{target := Target}, TOpts) ->
     Domains =
         case maps:find(domains, TOpts) of

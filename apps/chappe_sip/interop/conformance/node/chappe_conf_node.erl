@@ -99,7 +99,10 @@ b2b(Target, Req, Res) ->
         transfer => auto,
         transfer_opts => #{
             domains => [<<"10.253.7.20">>, <<"10.253.7.21">>, <<"10.253.7.22">>]
-        }
+        },
+        %% the lab authenticates nobody: on its closed network an agent is
+        %% its address, which an attended join checks on both calls
+        principal => #{a => chappe_sip_req:source_ip(Req), b => host(Target)}
     },
     case chappe_sip:create_b2bua(Req, Res, Target, Opts) of
         {ok, Legs} ->
@@ -108,6 +111,10 @@ b2b(Target, Req, Res) ->
         {error, Why} ->
             log("b2b ~s failed: ~p", [Target, Why])
     end.
+
+host(Uri) ->
+    {ok, #{host := H}} = chappe_sip_uri:parse(Uri),
+    H.
 
 %% the call's events, for the logs
 b2b_events() ->

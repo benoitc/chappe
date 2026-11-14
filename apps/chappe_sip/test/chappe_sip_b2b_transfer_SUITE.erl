@@ -17,7 +17,8 @@
 -export([all/0, init_per_suite/1, end_per_suite/1, end_per_testcase/2]).
 -export([notify_accept/1, notify_reject/1, notify_retarget/1,
          notify_from_another_node/1]).
--export([attended_join_fails_keeps_calls/1]).
+-export([attended_join_fails_keeps_calls/1, attended_needs_principal/1,
+         attended_policy_sees_principals/1]).
 -export([maddr_refused/1, own_host_other_port_refused/1, no_user_refused/1,
          domain_port_refused/1, redirect_not_followed/1]).
 -export([attended_local_join/1, attended_remote_replaces/1,
@@ -36,7 +37,8 @@ all() ->
     [blind_from_b, blind_from_a, blind_keeps_identity, blind_keeps_call_ref,
      blind_progress_notified, transferor_bye_keeps_transferee,
      transferor_bye_then_failure_ends_call,
-     blind_target_fails, attended_local_join, attended_join_fails_keeps_calls, attended_remote_replaces,
+     blind_target_fails, attended_local_join, attended_join_fails_keeps_calls,
+     attended_needs_principal, attended_policy_sees_principals, attended_remote_replaces,
      attended_other_party_refused, notify_accept, notify_reject,
      notify_retarget, notify_from_another_node, offnet_refused,
      maddr_refused, own_host_other_port_refused, no_user_refused,
@@ -265,7 +267,7 @@ blind_target_fails(_Config) ->
 %% nothing, and Bob gets the final NOTIFY, then a BYE on his first call.
 %% req: R5589-04 R5589-10
 attended_local_join(_Config) ->
-    {EP, CP} = setup(#{}),
+    {EP, CP} = setup(#{principals => bob()}),
     NP = route_carol(?UA:pick()),
     carol(NP),
     bob_consults(CP, EP, fun(_C2, _BT2, _TT2) -> NP end),
@@ -293,7 +295,7 @@ attended_local_join(_Config) ->
 %% hung up: Bob's final NOTIFY carries the 488, and both calls go on.
 %% req: R5589-05
 attended_join_fails_keeps_calls(_Config) ->
-    {EP, CP} = setup(#{}),
+    {EP, CP} = setup(#{principals => bob()}),
     NP = route_carol(?UA:pick()),
     carol(NP, refuse_reinvite),
     bob_consults(CP, EP, fun(_C2, _BT2, _TT2) -> NP end),
@@ -312,6 +314,46 @@ attended_join_fails_keeps_calls(_Config) ->
     %% the leg is call 2's again: hanging that call up reaches Carol
     ok = chappe_sip_b2b:hangup(B2b2, #{}),
     _ = got(carol_bye).
+
+%% Bob names his own call with Carol, under the same From on both calls,
+%% but the app recorded no principal for him: nothing authenticated that
+%% From, so the join is refused 403 and Carol's call is left alone (RFC
+%% 3891 3).
+%% req: R3891-07
+attended_needs_principal(_Config) ->
+    {EP, CP} = setup(#{}),
+    NP = route_carol(?UA:pick()),
+    carol(NP),
+    bob_consults(CP, EP, fun(_C2, _BT2, _TT2) -> NP end),
+    caller(EP, fun(_Sock, _D) -> ok end),
+    _ = got(legs),
+    #{b2b := B2b2} = got(legs_carol),
+    ?assertEqual(403, ?UA:status(got(refer_answer))),
+    no_message(carol_reinvite, 500),
+    ?assertMatch(#{media := anchor}, chappe_sip_b2b:info(B2b2)).
+
+%% An app policy decides a local join: it sees the principal of the
+%% referrer's leg and the one of the leg the Replaces names.
+attended_policy_sees_principals(_Config) ->
+    Test = self(),
+    Policy = fun(Info) -> Test ! {policy_info, Info}, false end,
+    {EP, CP} = setup(#{principals => {#{b => <<"bob">>}, #{a => <<"eve">>}},
+                       transfer_opts => #{policy => Policy}}),
+    NP = route_carol(?UA:pick()),
+    carol(NP),
+    bob_consults(CP, EP, fun(_C2, _BT2, _TT2) -> NP end),
+    caller(EP, fun(_Sock, _D) -> ok end),
+    _ = got(legs),
+    _ = got(legs_carol),
+    ?assertMatch(#{kind := attended, local := true, principal := <<"bob">>,
+                   replaces_principal := <<"eve">>},
+                 got(policy_info)),
+    ?assertEqual(403, ?UA:status(got(refer_answer))).
+
+%% Bob is the callee of the first call and the caller of his call with
+%% Carol: the app recorded him on both
+bob() ->
+    {#{b => <<"bob">>}, #{a => <<"bob">>}}.
 
 %% The Replaces names no dialog of this node: the target gets an INVITE
 %% carrying it, with Require: replaces, and the Referred-By.
@@ -697,16 +739,17 @@ setup_opts(Opts) ->
     Test = self(),
     register(xfer_test, Test),
     Callee = <<"sip:callee@127.0.0.1:", (integer_to_binary(CP))/binary>>,
+    {Main, Carols} = principals(Opts),
     ok = chappe_sip:invite(fun(Req, Res) ->
         case chappe_sip_uri:parse(chappe_sip_req:uri(Req)) of
             {ok, #{user := <<"carol">>}} ->
                 NP = persistent_term:get(xfer_carol),
                 Carol = <<"sip:carol@127.0.0.1:", (integer_to_binary(NP))/binary>>,
-                {ok, Legs} = chappe_sip:create_b2bua(Req, Res, Carol, Opts),
+                {ok, Legs} = chappe_sip:create_b2bua(Req, Res, Carol, Carols),
                 Test ! {legs_carol, Legs},
                 Test ! {relay_done_carol, chappe_sip_b2b:relay(Legs)};
             _ ->
-                case chappe_sip:create_b2bua(Req, Res, Callee, Opts) of
+                case chappe_sip:create_b2bua(Req, Res, Callee, Main) of
                     {ok, Legs} ->
                         Test ! {legs, Legs},
                         Test ! b2b_up,
@@ -717,6 +760,14 @@ setup_opts(Opts) ->
         end
     end),
     {EP, CP}.
+
+%% the options of the first call and of Carol's: principals =>
+%% {MainPrincipal, CarolsPrincipal} sets the principal of each
+principals(#{principals := {PM, PC}} = Opts0) ->
+    Opts = maps:remove(principals, Opts0),
+    {Opts#{principal => PM}, Opts#{principal => PC}};
+principals(Opts) ->
+    {Opts, Opts}.
 
 rtpe() ->
     register(xfer_test_rtpe, chappe_sip_test_rtpe:start(spawn(fun sink/0))),
