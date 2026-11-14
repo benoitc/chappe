@@ -174,6 +174,48 @@ other mixer through rtpengine, without a re-INVITE. The member leaves the
 first room with reason `transferred`. An endpoint you joined to a native
 room cannot move this way (`{error, {unsupported, endpoint_member}}`).
 
+## Add or remove a party by REFER
+
+A REFER to the room's URI asks it to bring a party in, or, with
+`method=BYE` in the Refer-To, to remove one (RFC 4579 5.5, 5.11). Give the
+room a policy and route REFERs to it:
+
+```erlang
+ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
+{ok, Conf} = chappe_mrf:conference(<<"board">>, #{
+    focus => true,
+    refer_policy => fun(#{action := _, referrer := R}) -> is_moderator(R) end,
+    dial_endpoint => #{select => #{}},
+    dial_profile => <<"carrier">>
+}),
+{ok, M} = chappe_mrf_conf:join(Conf, B2b, #{uri => <<"sip:alice@example.com">>}).
+```
+
+- An added party is dialed into the room: on native an endpoint of the
+  pool joins the mixer and bridges to it, on fs mod_conference dials it
+  into the room. It joins as `{joined, Member, #{uri := Target}}`, and the
+  referrer gets NOTIFY 200 once it answers (408 after `dial_timeout`, or
+  the party's status).
+- `method=BYE` removes the member whose `uri` matches (the join's `uri`,
+  or a dialed party's); 404 when none does.
+- Without `refer_policy` every REFER is refused 403. The policy sees
+  `#{action, target, referrer, referred_by}`; `referred_by` is only
+  claimed, never grant on it alone.
+
+A member's own REFER is a transfer its call carries out
+(`transfer => auto` on `connect_caller/3`): the target takes the member's
+place. Hand the room the call's event from your notify process:
+
+```erlang
+receive
+    {chappe_sip_b2b, _Ref, {transferred, _Leg, _Info}} = Ev ->
+        ok = chappe_mrf_conf:b2b_event(Conf, Ev)
+end.
+```
+
+The room shows `{left, Member, transferred}`, then
+`{joined, Member, #{uri := Target}}`.
+
 ## Notes
 
 - The room ends with `chappe_mrf_conf:stop/1`, or with the `owner` process

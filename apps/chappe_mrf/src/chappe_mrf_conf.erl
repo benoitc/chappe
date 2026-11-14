@@ -25,6 +25,8 @@
 %% {chappe_mrf_conf, Conf, Event}:
 %%   {joined, Member, Info}     Info: #{name, mute, deaf, moderator}
 %%   {left, Member, Reason}     departed | kicked | hangup | transferred
+%%                              (transferred: moved by transfer/3, or its
+%%                              call transferred by REFER, see b2b_event/2)
 %%   {talking, Member, boolean()}
 %%   {muted, Member, boolean()} the member was muted or unmuted
 %%   {dtmf, Member, Digit}      fs: a digit from the member
@@ -45,10 +47,10 @@
 -export([join/3, leave/2, kick/2, mute/2, unmute/2, deaf/2, undeaf/2]).
 -export([lock/1, unlock/1, members/1, relate/4, play/2, play/3]).
 -export([record/2, record/3, stop_record/1, transfer/3]).
--export([loop_invite/4, subscribe/3]).
+-export([loop_invite/4, subscribe/3, refer/3, b2b_event/2]).
 %% for the backends (chappe_mrf_conf_native, chappe_mrf_conf_fs)
 -export([call/3, emit/2, publish/1, gone/2, gone/3, talking/3, public/2]).
--export([member/3]).
+-export([member/3, drop_member/3]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -export_type([conf/0, member/0]).
@@ -74,6 +76,17 @@
 %%                the mixer and an endpoint's node (offer: toward the node)
 %%   focus     => true: serve RFC 4575 conference-info (entity, the
 %%                conference URI, defaults to sip:Name@<this node>)
+%% both:
+%%   refer_policy => fun((Info) -> boolean() | {reject, Code}): decides a
+%%                REFER to the room (refer/3), Info as chappe_sip_focus:
+%%                refer/4 gives it (action add | remove, target, referrer,
+%%                referred_by); without one every REFER is refused 403
+%%   dial      => fun((Target) -> iodata()): the dial string of a party a
+%%                REFER brings in (default sofia/<dial_profile>/<target>)
+%%   dial_profile => the sofia profile of that default (<<"external">>)
+%%   dial_timeout => ms the party has to answer (30000), then 408
+%%   dial_endpoint => native: create_endpoint/1 options (node, select,
+%%                targets) of the endpoint that dials it
 %% fs:
 %%   node      => the chappe_esl node (default chappe_esl:node_select/1
 %%                with select => Opts)
@@ -162,6 +175,12 @@ join(Conf, Target, Opts) ->
             {error, locked};
         #{backend := fs, members := N, max_members := Max} when N >= Max ->
             {error, full};
+        #{backend := fs, node := Node, bridge := Bridge} when
+            is_tuple(Target)
+        ->
+            chappe_mrf_conf_fs:join(Conf, Node, Bridge, Target, Opts#{
+                b2b => Target
+            });
         #{backend := fs, node := Node, bridge := Bridge} ->
             chappe_mrf_conf_fs:join(Conf, Node, Bridge, Target, Opts);
         Err ->
@@ -307,6 +326,29 @@ loop_invite(Conf, Token, Req, Res) ->
             ok
     end.
 
+%% A REFER to the room's URI, out of any dialog (run it in the REFER's
+%% request worker, from a chappe_sip:refer/1 handler, or use
+%% chappe_mrf:focus_refer/2): the room's refer_policy decides, then a
+%% Refer-To party is dialed into the room, or with method=BYE the member
+%% with that URI (join/3's uri option, or a dialed party's) is removed.
+%% The referrer hears the outcome as NOTIFYs. See chappe_mrf_conf_refer.
+-spec refer(conf(), chappe_sip_req:req(), chappe_sip_res:res()) ->
+    ok | {error, term()}.
+refer(Conf, Req, Res) ->
+    chappe_mrf_conf_refer:refer(Conf, Req, Res).
+
+%% Hand the room a B2BUA event of a member's call (the app's notify
+%% process gets them): {chappe_sip_b2b, Ref, {transferred, Leg, Info}}
+%% shows the member as {left, Member, transferred}, then the target as
+%% {joined, Member, Info} in its place. Other events are ignored.
+-spec b2b_event(conf(), term()) -> ok.
+b2b_event(Conf, {chappe_sip_b2b, Ref, {transferred, _Leg, Info}}) when
+    is_reference(Ref), is_map(Info)
+->
+    gen_server:cast(Conf, {transferred, Ref, Info});
+b2b_event(_Conf, _Event) ->
+    ok.
+
 %% A SUBSCRIBE to this conference's state (focus => true).
 -spec subscribe(conf(), chappe_sip_req:req(), chappe_sip_res:res()) ->
     {ok, chappe_sip_dialog:dialog()} | {error, term()}.
@@ -365,7 +407,9 @@ init_backend(Name, Opts, Caller) ->
         room_flags = [
             chappe_mrf_lib:to_bin(F)
          || F <- maps:get(room_flags, Opts, [])
-        ]
+        ],
+        refer_policy = maps:get(refer_policy, Opts, undefined),
+        dial = dial_cfg(Opts)
     },
     case S0#state.backend of
         native ->
@@ -380,6 +424,20 @@ init_backend(Name, Opts, Caller) ->
                     {stop, Err}
             end
     end.
+
+dial_cfg(Opts) ->
+    maps:from_list(
+        [
+            {K, V}
+         || {O, K} <- [
+                {dial, dial},
+                {dial_profile, profile},
+                {dial_timeout, timeout},
+                {dial_endpoint, endpoint}
+            ],
+            {ok, V} <- [maps:find(O, Opts)]
+        ]
+    ).
 
 %% No node registry running (a node given by name only): no room events.
 node_events(Node) ->
@@ -433,6 +491,8 @@ handle_call(info, _From, S) ->
         S};
 handle_call({record, Req}, _From, S) ->
     record_req(Req, S);
+handle_call({refer, Req}, _From, S) ->
+    chappe_mrf_conf_refer:call(Req, S);
 handle_call({transfer, Step, Id}, _From, S) ->
     transfer_step(Step, Id, S);
 handle_call({events, Pid}, _From, #state{listeners = L} = S) ->
@@ -511,6 +571,8 @@ handle_cast({loop_dialog, Token, D}, #state{pending = P} = S) ->
     end;
 handle_cast({loop_failed, Token}, S) ->
     {noreply, S#state{pending = maps:remove(Token, S#state.pending)}};
+handle_cast({transferred, Ref, Info}, S) ->
+    {noreply, chappe_mrf_conf_refer:transferred(Ref, Info, S)};
 handle_cast(_Msg, S) ->
     {noreply, S}.
 
@@ -538,8 +600,15 @@ handle_info({chappe_mrf_endpoint, Ep, {dtmf, Digit}}, S) ->
     {noreply, chappe_mrf_conf_fs:dtmf(Ep, Digit, S)};
 handle_info({chappe_esl_node, Node, {event, Ev}}, #state{node = Node} = S) ->
     {noreply, chappe_mrf_conf_fs:room_event(Ev, S)};
-handle_info({chappe_mrf, Ep, {hangup, _}}, S) when is_pid(Ep) ->
-    {noreply, chappe_mrf_conf_fs:gone_ep(Ep, S)};
+handle_info({chappe_mrf, Ep, {hangup, _} = E}, S) when is_pid(Ep) ->
+    S1 = chappe_mrf_conf_refer:native_event(Ep, E, S),
+    {noreply, chappe_mrf_conf_fs:gone_ep(Ep, S1)};
+handle_info({chappe_mrf, Ep, {channel, _, _} = E}, S) when is_pid(Ep) ->
+    {noreply, chappe_mrf_conf_refer:native_event(Ep, E, S)};
+handle_info({chappe_mrf, Ep, {complete, _, _} = E}, S) when is_pid(Ep) ->
+    {noreply, chappe_mrf_conf_refer:native_event(Ep, E, S)};
+handle_info({timeout, _, {refer_dial, Key}}, S) ->
+    {noreply, chappe_mrf_conf_refer:timeout(Key, S)};
 handle_info({fs_join_timeout, Ep}, #state{pending = P} = S) ->
     case maps:take({ep, Ep}, P) of
         {#{from := From, owned := Owned}, P1} ->
@@ -619,6 +688,11 @@ apply_flag(Id, #{ep := _} = Mb, Flag, Value, S) ->
         end,
     chappe_mrf_lib:api_ok(chappe_mrf_conf_fs:api(Mb, [Cmd, Id], S)).
 
+%% Drop member Id for Reason (leave/2, kick/2, a REFER's method=BYE).
+-spec drop_member(member(), atom(), #state{}) -> {reply, ok, #state{}}.
+drop_member(Id, Reason, #state{members = M} = S) ->
+    drop(Id, maps:get(Id, M), Reason, S).
+
 %% leave/2 and kick/2
 drop(Id, Mb, Reason, S) ->
     _ = hangup_member(Id, Mb, S),
@@ -630,9 +704,17 @@ hangup_member(_Id, #{rtpe := _}, _S) ->
 hangup_member(_Id, #{dialog := D}, _S) ->
     _ = spawn(fun() -> chappe_mrf_lib:destroy_dialog(D) end),
     ok;
-hangup_member(Id, #{ep := Ep, owned := Owned} = Mb, S) ->
+hangup_member(Id, Mb, S) ->
+    %% fs: an endpoint in the room, or a party mod_conference dialed in
+    %% for a REFER (dialed)
     _ = chappe_mrf_conf_fs:api(Mb, [<<"kick">>, Id], S),
-    _ = Owned andalso spawn(fun() -> chappe_mrf:destroy(Ep) end),
+    _ =
+        case Mb of
+            #{ep := Ep, owned := true} ->
+                spawn(fun() -> chappe_mrf:destroy(Ep) end);
+            _ ->
+                ok
+        end,
     ok.
 
 gone(Id, S) ->
@@ -705,7 +787,10 @@ play_to(Id, File, #state{members = M}) ->
 
 %% A member as the conference keeps it: Base (its media) and what the
 %% join asked for.
-member(Opts, Id, Base) ->
+member(Opts, Id, Base0) ->
+    %% uri: who the member is, for a REFER's method=BYE; b2b: its call,
+    %% for a transfer (when the backend's own base has none)
+    Base = maps:merge(maps:with([uri, b2b], Opts), Base0),
     Base#{
         name => chappe_mrf_lib:to_bin(maps:get(name, Opts, Id)),
         mute => maps:get(mute, Opts, false),
@@ -788,7 +873,7 @@ join_opts(Mb) ->
     maps:with([name, mute, deaf, moderator], Mb).
 
 public(Id, Mb) ->
-    (maps:with([name, mute, deaf, moderator, talking], Mb))#{id => Id}.
+    (maps:with([name, mute, deaf, moderator, talking, uri], Mb))#{id => Id}.
 
 emit(Event, #state{listeners = L} = S) ->
     _ = [Pid ! {chappe_mrf_conf, self(), Event} || Pid <- maps:keys(L)],

@@ -86,9 +86,15 @@ Passed to `chappe_mrf:conference/2`.
 | `profile` | fs | `<<"default">>` | mod_conference profile. |
 | `bridge` | fs | `#{}` | `chappe_mrf:bridge/3` options for a caller joined from a call. |
 | `join_timeout` | fs | `15000` | Milliseconds a member may take to appear in the room. |
+| `refer_policy` | both | none | `fun(Info) -> boolean() \| {reject, Code}` for a REFER to the room; unset, REFERs are refused 403. |
+| `dial` | both | `sofia/<dial_profile>/<target>` | `fun(Target) -> iodata()`: the dial string of a party a REFER adds. |
+| `dial_profile` | both | `<<"external">>` | The sofia profile of the default dial string. |
+| `dial_timeout` | both | `30000` | Milliseconds the added party has to answer. |
+| `dial_endpoint` | native | `#{}` | `create_endpoint/1` options (`node`, `select`, `targets`) of the endpoint that dials it. |
 
 Join options (`chappe_mrf_conf:join/3`): `name`, `mute`, `deaf`,
-`moderator`; on fs also `pin`, `pin_prompt` (default
+`moderator`, `uri` (who the member is, for a REFER's `method=BYE`); on fs
+also `pin`, `pin_prompt` (default
 `silence_stream://250`), `pin_tries` (`3`) and `flags`.
 
 ## Where it lives

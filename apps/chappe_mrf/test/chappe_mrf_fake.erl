@@ -474,6 +474,9 @@ app(<<"conference">>, Arg, _Common, #{node := #{opts := Opts}} = C) ->
     Id = integer_to_binary(erlang:unique_integer([positive])),
     _ = maps:get(silent_conference, Opts, false) orelse member_event(C, Room, <<"add-member">>, Id),
     C;
+%% bridge runs as long as the bridged call: no completion until then
+app(<<"bridge">>, _Arg, _Common, C) ->
+    C;
 app(_App, _Arg, Common, C) ->
     complete(C, Common, []),
     C.

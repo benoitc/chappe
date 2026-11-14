@@ -1,0 +1,352 @@
+%% Copyright 2026 Benoit Chesneau
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% REFER and a conference (RFC 4579, on chappe_sip_focus's REFER side):
+%%
+%% - a REFER to the room's URI asks the focus to bring a party in (5.5):
+%%   the room dials it out and the referrer hears the outcome as NOTIFYs;
+%%   with method=BYE in its Refer-To it asks the focus to remove the
+%%   member with that URI (5.11). The room's refer_policy decides both.
+%% - a member's own REFER is a transfer its B2BUA call carries out
+%%   (transfer => auto): the target takes the member's place in the room,
+%%   which shows it as {left, Member, transferred}, then {joined, Member,
+%%   Info} with the target's URI.
+%%
+%% Dialing out: on native, an endpoint of the room's FreeSWITCH pool
+%% (dial_endpoint options, create_endpoint/1's) joins the mixer, then
+%% bridges to the target (the dial option makes the dial string, default
+%% sofia/<dial_profile>/<target>); the referrer gets 200 once the target
+%% answers. On fs, mod_conference dials the target into the room
+%% (conference <room> dial), and the referrer gets 200 when it is in
+%% (add-member, from the node's events: give the node CUSTOM
+%% conference::maintenance, see chappe_mrf_conf:start/2). A target that
+%% does not answer within dial_timeout (30 s) is given up with 408.
+%%
+%% The caller-side functions run in the REFER's request worker; the
+%% others in the conference process, on its state.
+-module(chappe_mrf_conf_refer).
+
+-include("chappe_mrf_conf.hrl").
+
+-export([refer/3, dial_native/4, focus/2, call/2]).
+-export([fs_dial/3, remove/2, native_event/3, fs_added/3, timeout/2]).
+-export([transferred/3, dial_string/2, dialing/4]).
+
+-define(DIAL_TIMEOUT, 30000).
+
+%% ---- in the REFER's request worker ----
+
+%% A REFER to the room's URI (out of any dialog).
+-spec refer(pid(), chappe_sip_req:req(), chappe_sip_res:res()) ->
+    ok | {error, term()}.
+refer(Conf, Req, Res) ->
+    case chappe_mrf_conf:call(Conf, {refer, cfg}, 30000) of
+        #{policy := Policy, backend := Backend} = Cfg ->
+            case
+                chappe_sip_focus:refer(undefined, Req, Res, #{
+                    policy => Policy, owner => Conf
+                })
+            of
+                {remove, Target, Refer} ->
+                    Status =
+                        case
+                            chappe_mrf_conf:call(
+                                Conf, {refer, {remove, Target}}, 30000
+                            )
+                        of
+                            ok -> 200;
+                            _ -> 404
+                        end,
+                    chappe_sip_refer:final(Refer, Status);
+                {add, Target, Refer} when Backend =:= native ->
+                    dial_native(Conf, Target, Refer, Cfg);
+                {add, Target, Refer} ->
+                    case
+                        chappe_mrf_conf:call(
+                            Conf, {refer, {dial, Target, Refer}}, 30000
+                        )
+                    of
+                        ok -> ok;
+                        {error, _} = Err -> fail(Refer, Err)
+                    end;
+                {error, _} = Err ->
+                    Err
+            end;
+        {error, _} = Err ->
+            _ = chappe_sip_res:send(Res, 404),
+            Err
+    end.
+
+%% chappe_mrf:focus_refer/2: the room the Request-URI's user names.
+-spec focus(chappe_sip_req:req(), chappe_sip_res:res()) -> ok.
+focus(Req, Res) ->
+    Name =
+        case chappe_sip_uri:parse(chappe_sip_req:uri(Req)) of
+            {ok, #{user := U}} -> U;
+            _ -> undefined
+        end,
+    case chappe_mrf_registry:lookup({conf, Name}) of
+        {ok, Conf} ->
+            _ = refer(Conf, Req, Res),
+            ok;
+        error ->
+            _ = chappe_sip_res:send(Res, 404),
+            ok
+    end.
+
+%% native: an endpoint joins the mixer, then bridges to the target.
+-spec dial_native(pid(), binary(), chappe_sip_refer:refer(), map()) ->
+    ok | {error, term()}.
+dial_native(Conf, Target, Refer, #{endpoint := EpOpts} = Cfg) ->
+    Ep0 = EpOpts#{owner => Conf, events => [{channel, <<"CHANNEL_BRIDGE">>}]},
+    maybe
+        {ok, Ep} ?= chappe_mrf:create_endpoint(Ep0),
+        {ok, Member} ?=
+            joined(
+                Ep,
+                chappe_mrf_conf:join(Conf, Ep, #{name => Target, uri => Target})
+            ),
+        ok ?=
+            chappe_mrf_conf:call(
+                Conf, {refer, {dialing, Ep, Member, Refer}}, 30000
+            ),
+        ok ?= chappe_mrf:set(Ep, #{<<"hangup_after_bridge">> => <<"true">>}),
+        Dial = dial_string(Cfg, Target),
+        {ok, _} ?= chappe_mrf:execute(Ep, <<"bridge">>, Dial, #{wait => false}),
+        ok
+    else
+        {error, _} = Err -> fail(Refer, Err)
+    end.
+
+joined(_Ep, {ok, _} = Ok) ->
+    Ok;
+joined(Ep, Err) ->
+    _ = chappe_mrf:destroy(Ep),
+    Err.
+
+fail(Refer, Err) ->
+    ok = chappe_sip_refer:final(Refer, 503),
+    Err.
+
+%% The dial string of a target: the room's dial fun, else
+%% sofia/<dial_profile>/<the URI without its scheme>.
+-spec dial_string(map(), binary()) -> iodata().
+dial_string(#{dial := F}, Target) when is_function(F, 1) ->
+    F(Target);
+dial_string(Cfg, Target) ->
+    Profile = maps:get(profile, Cfg, <<"external">>),
+    Bare =
+        case Target of
+            <<"sip:", R/binary>> -> R;
+            <<"sips:", R/binary>> -> R;
+            R -> R
+        end,
+    [<<"sofia/">>, Profile, <<"/">>, Bare].
+
+%% ---- in the conference process ----
+
+%% The room's REFER requests, sent as {refer, Req}.
+-spec call(term(), #state{}) -> {reply, term(), #state{}}.
+call(cfg, S) ->
+    Policy =
+        case S#state.refer_policy of
+            undefined -> fun(_) -> false end;
+            P -> P
+        end,
+    Cfg = maps:merge(#{endpoint => #{}}, S#state.dial),
+    {reply, Cfg#{policy => Policy, backend => S#state.backend}, S};
+call({remove, Target}, S) ->
+    {Reply, S1} = remove(Target, S),
+    {reply, Reply, S1};
+call({dial, Target, Refer}, S) ->
+    {Reply, S1} = fs_dial(Target, Refer, S),
+    {reply, Reply, S1};
+call({dialing, Ep, Id, Refer}, S) ->
+    {reply, ok, dialing(Ep, Id, Refer, S)}.
+
+%% native: the endpoint dialing Member's target, until it answers.
+-spec dialing(pid(), binary(), chappe_sip_refer:refer(), #state{}) -> #state{}.
+dialing(Ep, Id, Refer, #state{dialing = D} = S) ->
+    Timer = erlang:start_timer(timeout_ms(S), self(), {refer_dial, {ep, Ep}}),
+    S#state{
+        dialing = D#{
+            {ep, Ep} => #{refer => Refer, member => Id, timer => Timer}
+        }
+    }.
+
+%% fs: mod_conference dials the target into the room, under a uuid of
+%% ours, so its add-member is ours too.
+-spec fs_dial(binary(), chappe_sip_refer:refer(), #state{}) ->
+    {ok | {error, term()}, #state{}}.
+fs_dial(Target, Refer, #state{dialing = D} = S) ->
+    Uuid = chappe_mrf_lib:new_id(),
+    Dial = [
+        <<"{origination_uuid=">>,
+        Uuid,
+        <<"}">>,
+        dial_string(S#state.dial, Target)
+    ],
+    case
+        chappe_mrf_lib:api_ok(
+            chappe_mrf_conf_fs:api(any, [<<"dial">>, Dial], S)
+        )
+    of
+        ok ->
+            Timer = erlang:start_timer(
+                timeout_ms(S), self(), {refer_dial, {uuid, Uuid}}
+            ),
+            Entry = #{refer => Refer, target => Target, timer => Timer},
+            {ok, S#state{dialing = D#{{uuid, Uuid} => Entry}}};
+        {error, _} = Err ->
+            {Err, S}
+    end.
+
+%% REFER with method=BYE: the member with that URI is removed.
+-spec remove(binary(), #state{}) -> {ok | {error, not_found}, #state{}}.
+remove(Target, #state{members = M} = S) ->
+    case [Id || Id := #{uri := U} <- M, same_uri(U, Target)] of
+        [Id | _] ->
+            {reply, ok, S1} = chappe_mrf_conf:drop_member(Id, kicked, S),
+            {ok, S1};
+        [] ->
+            {{error, not_found}, S}
+    end.
+
+same_uri(A, B) when is_binary(A), is_binary(B) ->
+    case {chappe_sip_uri:parse(A), chappe_sip_uri:parse(B)} of
+        {{ok, UA}, {ok, UB}} ->
+            maps:with([user, host], UA) =:= maps:with([user, host], UB);
+        _ ->
+            A =:= B
+    end;
+same_uri(_, _) ->
+    false.
+
+%% native: the dialed endpoint's news. The target answered (the bridge
+%% is up): 200. The bridge ended before that: the target's status, and the
+%% member goes.
+-spec native_event(pid(), term(), #state{}) -> #state{}.
+native_event(Ep, Event, #state{dialing = D} = S) ->
+    case {maps:take({ep, Ep}, D), Event} of
+        {{#{refer := R, timer := T}, D1}, {channel, <<"CHANNEL_BRIDGE">>, _}} ->
+            _ = erlang:cancel_timer(T),
+            ok = chappe_sip_refer:final(R, 200),
+            S#state{dialing = D1};
+        {
+            {#{refer := R, timer := T, member := Id}, D1},
+            {complete, <<"bridge">>, Ev}
+        } ->
+            _ = erlang:cancel_timer(T),
+            ok = chappe_sip_refer:final(R, status(Ev)),
+            drop_dialed(Id, S#state{dialing = D1});
+        {{#{refer := R, timer := T}, D1}, {hangup, _}} ->
+            _ = erlang:cancel_timer(T),
+            ok = chappe_sip_refer:final(R, 487),
+            S#state{dialing = D1};
+        _ ->
+            S
+    end.
+
+%% fs: the dialed target is in the room.
+-spec fs_added(binary(), binary(), #state{}) -> #state{}.
+fs_added(Uuid, Id, #state{dialing = D, members = M} = S) ->
+    case maps:take({uuid, Uuid}, D) of
+        {#{refer := R, timer := T, target := Target}, D1} ->
+            _ = erlang:cancel_timer(T),
+            ok = chappe_sip_refer:final(R, 200),
+            Mb = chappe_mrf_conf:member(
+                #{name => Target, uri => Target}, Id, #{
+                    dialed => Uuid
+                }
+            ),
+            S1 = S#state{dialing = D1, members = M#{Id => Mb}},
+            chappe_mrf_conf:publish(
+                chappe_mrf_conf:emit(
+                    {joined, Id, chappe_mrf_conf:public(Id, Mb)}, S1
+                )
+            );
+        error ->
+            S
+    end.
+
+%% A dial-out the target never answered.
+-spec timeout(term(), #state{}) -> #state{}.
+timeout(Key, #state{dialing = D} = S) ->
+    case maps:take(Key, D) of
+        {#{refer := R} = E, D1} ->
+            ok = chappe_sip_refer:final(R, 408),
+            S1 = S#state{dialing = D1},
+            case {Key, E} of
+                {{ep, _}, #{member := Id}} ->
+                    drop_dialed(Id, S1);
+                {{uuid, Uuid}, _} ->
+                    _ = chappe_mrf_conf_fs:api_raw(
+                        [<<"uuid_kill ">>, Uuid], S1
+                    ),
+                    S1
+            end;
+        error ->
+            S
+    end.
+
+drop_dialed(Id, S) ->
+    case S#state.members of
+        #{Id := _} ->
+            {reply, ok, S1} = chappe_mrf_conf:drop_member(Id, departed, S),
+            S1;
+        _ ->
+            S
+    end.
+
+timeout_ms(#state{dial = Cfg}) ->
+    maps:get(timeout, Cfg, ?DIAL_TIMEOUT).
+
+%% A member's call was transferred: the target took the member's place on
+%% the room's leg. The room sees the member leave (transferred), then the
+%% target join under the same id.
+-spec transferred(reference(), map(), #state{}) -> #state{}.
+transferred(Ref, Info, #state{members = M} = S) ->
+    case [Id || Id := #{b2b := {_, R}} <- M, R =:= Ref] of
+        [Id | _] ->
+            S1 = chappe_mrf_conf:emit({left, Id, transferred}, S),
+            Target = maps:get(target, Info, undefined),
+            Mb = (maps:get(Id, M))#{name => name(Target, Id), uri => Target},
+            S2 = S1#state{members = M#{Id := Mb}},
+            chappe_mrf_conf:publish(
+                chappe_mrf_conf:emit(
+                    {joined, Id, chappe_mrf_conf:public(Id, Mb)}, S2
+                )
+            );
+        [] ->
+            S
+    end.
+
+name(undefined, Id) -> Id;
+name(Target, _Id) -> Target.
+
+%% The status a failed bridge gives the referrer, from FreeSWITCH's cause.
+status(Ev) ->
+    Cause = chappe_mrf_lib:to_bin(
+        first([
+            chappe_esl_event:header(H, Ev)
+         || H <- [
+                <<"variable_originate_disposition">>,
+                <<"variable_bridge_hangup_cause">>,
+                <<"Hangup-Cause">>
+            ]
+        ])
+    ),
+    cause(Cause).
+
+first([undefined | T]) -> first(T);
+first([V | _]) -> V;
+first([]) -> <<>>.
+
+cause(<<"USER_BUSY">>) -> 486;
+cause(<<"NO_ANSWER">>) -> 480;
+cause(<<"NO_USER_RESPONSE">>) -> 480;
+cause(<<"CALL_REJECTED">>) -> 603;
+cause(<<"UNALLOCATED_NUMBER">>) -> 404;
+cause(<<"NO_ROUTE_DESTINATION">>) -> 404;
+cause(<<"ORIGINATOR_CANCEL">>) -> 487;
+cause(_) -> 503.

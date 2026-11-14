@@ -16,6 +16,10 @@
 -export([
     connect_caller_ivr/1,
     fs_refer_transfers_caller/1,
+    refer_removes_member/1,
+    refer_adds_native/1,
+    refer_adds_fs/1,
+    member_transferred/1,
     caller_hangup/1,
     unknown_channel_refused/1,
     owner_death_kills_channel/1,
@@ -60,6 +64,10 @@ all() ->
     [
         connect_caller_ivr,
         fs_refer_transfers_caller,
+        refer_removes_member,
+        refer_adds_native,
+        refer_adds_fs,
+        member_transferred,
         caller_hangup,
         unknown_channel_refused,
         owner_death_kills_channel,
@@ -281,6 +289,176 @@ fs_refer_transfers_caller(Config) ->
     no_ua_event(Ua, reinvite, 500),
     no_ua_event(Ua, request, 0),
     Owner ! stop.
+
+%% A REFER to the room's URI with method=BYE (RFC 4579 5.11) removes the
+%% member with that URI, when the room's policy lets the referrer: 200,
+%% NOTIFY 100 then 200, the member leaves kicked. Someone the policy does
+%% not let is refused 403 and the member stays; an unknown URI is 404.
+refer_removes_member(Config) ->
+    ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
+    ivr(Config),
+    Policy = fun(#{referrer := R}) -> has(R, <<"boss@">>) end,
+    {ok, Conf} = chappe_mrf:conference(<<"rroom">>, #{focus => true, refer_policy => Policy}),
+    #{entity := Entity} = chappe_mrf_conf:info(Conf),
+    {Ua, _Ep, B2b, _Owner} = call_in(Config),
+    {ok, M} = chappe_mrf_conf:join(Conf, B2b, #{uri => <<"sip:caller@127.0.0.1">>}),
+    {joined, M, _} = joined(Conf),
+    Bye = <<"<sip:caller@127.0.0.1;method=BYE>">>,
+    {Sock, _} = refer(Config, Entity, <<"intruder">>, Bye),
+    ?assertMatch(<<"SIP/2.0 403", _/binary>>, sip_response(Sock)),
+    ?assertMatch([_], chappe_mrf_conf:members(Conf)),
+    {Sock2, _} = refer(Config, Entity, <<"boss">>, Bye),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(Sock2)),
+    ?assertEqual([<<"SIP/2.0 100">>, <<"SIP/2.0 200">>], frags(Sock2, 2)),
+    _ = ua_event(Ua, bye),
+    conf_event(Conf, {left, M, kicked}),
+    {Sock3, _} = refer(Config, Entity, <<"boss">>, <<"<sip:nobody@127.0.0.1;method=BYE>">>),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(Sock3)),
+    ?assertEqual([<<"SIP/2.0 100">>, <<"SIP/2.0 404">>], frags(Sock3, 2)).
+
+%% native: a REFER to the room adds its Refer-To party (5.5). An endpoint
+%% of the pool joins the mixer and bridges to the target; once the
+%% target answers (CHANNEL_BRIDGE) the referrer gets NOTIFY 200, and the
+%% member is the target.
+refer_adds_native(Config) ->
+    ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
+    {ok, Conf} = chappe_mrf:conference(<<"addroom">>, #{
+        focus => true,
+        refer_policy => fun(#{action := add}) -> true end,
+        dial_endpoint => #{targets => [{fs1, fs_uri(Config)}]},
+        dial_profile => <<"carrier">>
+    }),
+    #{entity := Entity} = chappe_mrf_conf:info(Conf),
+    {Sock, _} = refer(Config, Entity, <<"boss">>, <<"<sip:carol@10.0.0.9>">>),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(Sock)),
+    ?assertEqual([<<"SIP/2.0 100">>], frags(Sock, 1)),
+    _ = fs_what(reinvite),
+    {fake_fs, _, _, {cmd, Bridge}} = fs_cmd(<<"execute-app-name: bridge">>),
+    ?assert(has(Bridge, <<"sofia/carrier/carol@10.0.0.9">>)),
+    {joined, M, #{uri := <<"sip:carol@10.0.0.9">>}} = joined(Conf),
+    ok = ?F:fs_event(?config(fs, Config), <<"CHANNEL_BRIDGE">>, []),
+    ?assertEqual(<<"SIP/2.0 200">>, final_frag(Sock)),
+    ?assertMatch([#{id := M, uri := <<"sip:carol@10.0.0.9">>}], chappe_mrf_conf:members(Conf)).
+
+%% fs: mod_conference dials the party into the room under our uuid; its
+%% add-member makes it a member and the referrer gets NOTIFY 200; a
+%% method=BYE then kicks it by its URI.
+refer_adds_fs(Config) ->
+    ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
+    {ok, Conf} = chappe_mrf:conference(<<"fsadd">>, #{
+        backend => fs, node => fs1, refer_policy => fun(_) -> true end
+    }),
+    {ok, Ep} = chappe_mrf:create_endpoint(#{targets => [{fs1, fs_uri(Config)}]}),
+    {ok, First} = chappe_mrf_conf:join(Conf, Ep, #{}),
+    {joined, First, _} = joined(Conf),
+    Entity = <<"sip:fsadd@127.0.0.1:", (integer_to_binary(?config(ep, Config)))/binary>>,
+    {Sock, _} = refer(Config, Entity, <<"boss">>, <<"<sip:dave@10.0.0.8>">>),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(Sock)),
+    {fake_fs, _, _, {cmd, Dial}} = fs_cmd(<<"conference fsadd dial">>),
+    ?assert(has(Dial, <<"sofia/external/dave@10.0.0.8">>)),
+    {match, [Uuid]} = re:run(Dial, <<"origination_uuid=([^}]+)}">>, [{capture, all_but_first, binary}]),
+    ?assertEqual([<<"SIP/2.0 100">>], frags(Sock, 1)),
+    Conf ! {chappe_esl_node, fs1, {event, #{body => <<>>, headers => #{
+        <<"Event-Name">> => <<"CUSTOM">>,
+        <<"Event-Subclass">> => <<"conference::maintenance">>,
+        <<"Conference-Name">> => <<"fsadd">>,
+        <<"Action">> => <<"add-member">>,
+        <<"Member-ID">> => <<"77">>,
+        <<"Unique-ID">> => Uuid}
+    }}},
+    ?assertEqual(<<"SIP/2.0 200">>, final_frag(Sock)),
+    {joined, <<"77">>, #{uri := <<"sip:dave@10.0.0.8">>}} = joined(Conf),
+    {Sock2, _} = refer(Config, Entity, <<"boss">>, <<"<sip:dave@10.0.0.8;method=BYE>">>),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(Sock2)),
+    _ = fs_cmd(<<"conference fsadd kick 77">>),
+    conf_event(Conf, {left, <<"77">>, kicked}),
+    ?assertMatch([#{id := First}], chappe_mrf_conf:members(Conf)),
+    ok = chappe_mrf:destroy(Ep).
+
+%% A member's call is transferred by REFER (its B2BUA carries it out,
+%% transfer => auto): handed the call's transferred event, the room shows
+%% the member leaving (transferred) and the target in its place.
+member_transferred(Config) ->
+    ivr(Config),
+    {ok, Conf} = chappe_mrf:conference(<<"xroom">>, #{}),
+    {_Ua, _Ep, {_, Ref} = B2b, _Owner} = call_in(Config),
+    {ok, M} = chappe_mrf_conf:join(Conf, B2b, #{uri => <<"sip:caller@127.0.0.1">>}),
+    {joined, M, _} = joined(Conf),
+    ok = chappe_mrf_conf:b2b_event(Conf, {chappe_sip_b2b, make_ref(), {transferred, a, #{}}}),
+    ok = chappe_mrf_conf:b2b_event(Conf, {chappe_sip_b2b, Ref, {transferred, a, #{
+        target => <<"sip:erin@10.0.0.7">>, kind => blind
+    }}}),
+    conf_event(Conf, {left, M, transferred}),
+    {joined, M, #{uri := <<"sip:erin@10.0.0.7">>}} = {joined, M, _} = joined(Conf),
+    ?assertMatch([#{id := M, uri := <<"sip:erin@10.0.0.7">>}], chappe_mrf_conf:members(Conf)).
+
+joined(Conf) ->
+    receive
+        {chappe_mrf_conf, Conf, {joined, _, _} = E} -> E
+    after 5000 -> ct:fail(no_joined)
+    end.
+
+%% A REFER out of dialog to Uri from User, Refer-To ReferTo, over UDP.
+refer(Config, Uri, User, ReferTo) ->
+    {ok, Sock} = gen_udp:open(0, [binary, {active, true}, {ip, {127, 0, 0, 1}}]),
+    {ok, P} = inet:port(Sock),
+    Pb = integer_to_binary(P),
+    CallId = <<"refer-", (integer_to_binary(erlang:unique_integer([positive])))/binary>>,
+    Req = iolist_to_binary([
+        <<"REFER ">>, Uri, <<" SIP/2.0\r\n">>,
+        <<"Via: SIP/2.0/UDP 127.0.0.1:", Pb/binary, ";rport;branch=z9hG4bK", CallId/binary, "\r\n">>,
+        <<"Max-Forwards: 70\r\nFrom: <sip:", User/binary, "@127.0.0.1>;tag=r1\r\n">>,
+        <<"To: <", Uri/binary, ">\r\nCall-ID: ", CallId/binary, "\r\nCSeq: 1 REFER\r\n">>,
+        <<"Contact: <sip:", User/binary, "@127.0.0.1:", Pb/binary, ">\r\n">>,
+        <<"Refer-To: ", ReferTo/binary, "\r\nContent-Length: 0\r\n\r\n">>
+    ]),
+    ok = gen_udp:send(Sock, {127, 0, 0, 1}, ?config(ep, Config), Req),
+    {Sock, CallId}.
+
+%% The final response to the REFER (provisionals skipped).
+sip_response(Sock) ->
+    receive
+        {udp, Sock, _, _, <<"SIP/2.0 1", _/binary>>} -> sip_response(Sock);
+        {udp, Sock, _, _, <<"SIP/2.0 ", _/binary>> = R} -> R
+    after 5000 -> ct:fail(no_refer_response)
+    end.
+
+%% The status lines of the next N NOTIFYs' sipfrags, each answered 200
+%% (a retransmission, by its CSeq, is answered and skipped).
+frags(Sock, N) ->
+    frags(Sock, N, get_seen(Sock)).
+
+frags(_Sock, 0, _Seen) ->
+    [];
+frags(Sock, N, Seen) ->
+    receive
+        {udp, Sock, _, Src, <<"NOTIFY ", _/binary>> = Bin} ->
+            _ = gen_udp:send(Sock, {127, 0, 0, 1}, Src, ok_for(Bin)),
+            {ok, Msg} = chappe_sip_msg:parse(Bin),
+            CSeq = chappe_sip_msg:get(<<"cseq">>, Msg),
+            case lists:member(CSeq, Seen) of
+                true ->
+                    frags(Sock, N, Seen);
+                false ->
+                    put({seen, Sock}, [CSeq | Seen]),
+                    <<Line:11/binary, _/binary>> = chappe_sip_msg:body(Msg),
+                    [Line | frags(Sock, N - 1, [CSeq | Seen])]
+            end
+    after 10000 -> ct:fail(no_notify)
+    end.
+
+%% The next final sipfrag status line (progress 1xx skipped).
+final_frag(Sock) ->
+    case frags(Sock, 1) of
+        [<<"SIP/2.0 1", _/binary>>] -> final_frag(Sock);
+        [Line] -> Line
+    end.
+
+get_seen(Sock) ->
+    case get({seen, Sock}) of
+        undefined -> [];
+        L -> L
+    end.
 
 %% The caller hangs up: the channel gets a BYE, the owner the hangup, and
 %% the call's notify process how the call ended.

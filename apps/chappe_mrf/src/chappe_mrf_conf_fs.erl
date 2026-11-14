@@ -9,7 +9,7 @@
 
 -include("chappe_mrf_conf.hrl").
 
--export([join/5, start_join/5, event/3, gone_ep/2, api/3, lock_cmd/1]).
+-export([join/5, start_join/5, event/3, gone_ep/2, api/3, api_raw/2, lock_cmd/1]).
 -export([adopt/6, record/2, stop_record/1, dtmf/3, room_event/2]).
 
 %% ---- fs join, in the caller ----
@@ -198,6 +198,13 @@ room_event(Ev, #state{name = Name} = S) ->
             chappe_mrf_conf:emit(
                 {play_done, chappe_mrf_lib:to_bin(H(<<"File">>))}, S
             );
+        {<<"conference::maintenance">>, Name, <<"add-member">>} ->
+            %% a party the room dialed for a REFER (its uuid is ours)
+            chappe_mrf_conf_refer:fs_added(
+                chappe_mrf_lib:to_bin(H(<<"Unique-ID">>)),
+                chappe_mrf_lib:to_bin(H(<<"Member-ID">>)),
+                S
+            );
         _ ->
             S
     end.
@@ -281,7 +288,16 @@ api(any, Args, #state{members = M, node = Node, name = Name}) ->
         [] -> chappe_esl:node_api(Node, conf_cmd(Name, Args))
     end;
 api(#{ep := Ep}, Args, #state{name = Name}) ->
-    chappe_mrf:api(Ep, conf_cmd(Name, Args)).
+    chappe_mrf:api(Ep, conf_cmd(Name, Args));
+api(#{dialed := _}, Args, S) ->
+    api(any, Args, S).
+
+%% A command of the room's node that is not a conference command.
+api_raw(Cmd, #state{members = M, node = Node}) ->
+    case [Ep || #{ep := Ep} <- maps:values(M)] of
+        [Ep | _] -> chappe_mrf:api(Ep, Cmd);
+        [] -> chappe_esl:node_api(Node, Cmd)
+    end.
 
 conf_cmd(Name, Args) ->
     [<<"conference ">>, Name, <<" ">> | lists:join(<<" ">>, Args)].

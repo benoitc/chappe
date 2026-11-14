@@ -46,7 +46,7 @@
 -export([fork_audio_pause/1, fork_audio_pause/2, fork_audio_resume/1]).
 -export([fork_audio_resume/2, fork_audio_send_text/2, fork_audio_send_text/3]).
 -export([modify/2, destroy/1, uuid/1, node/1, info/1]).
--export([conference/2, conferences/0, focus_subscribe/2]).
+-export([conference/2, conferences/0, focus_subscribe/2, focus_refer/2]).
 -export([inactive_sdp/0, loop_target/1]).
 
 -export_type([endpoint/0]).
@@ -665,6 +665,13 @@ conferences() ->
 %% user of the Request-URI names it): chappe_sip_focus serves it. Register
 %% it with chappe_sip:event_package(<<"conference">>, fun
 %% chappe_mrf:focus_subscribe/2).
+%% A chappe_sip:refer/1 handler for REFERs to a conference's URI: the
+%% room named by the Request-URI's user takes it (chappe_mrf_conf:refer/3),
+%% 404 when there is none.
+-spec focus_refer(chappe_sip_req:req(), chappe_sip_res:res()) -> ok.
+focus_refer(Req, Res) ->
+    chappe_mrf_conf_refer:focus(Req, Res).
+
 -spec focus_subscribe(chappe_sip_req:req(), chappe_sip_res:res()) -> ok.
 focus_subscribe(Req, Res) ->
     Name =

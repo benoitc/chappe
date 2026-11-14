@@ -19,7 +19,8 @@ channel: correlation, answer, events to the owner, cleanup),
 X-Chappe-Call), `chappe_mrf_registry` (the ETS table of who waits for
 what), `chappe_mrf_conf` (one gen_server per conference) with its backends
 `chappe_mrf_conf_native` (chappe_mix behind rtpengine, via a loopback
-INVITE) and `chappe_mrf_conf_fs` (mod_conference), `chappe_mrf_store` (FreeSWITCH
+INVITE) and `chappe_mrf_conf_fs` (mod_conference), `chappe_mrf_conf_refer` (REFER to a room
+and a member's transfer), `chappe_mrf_store` (FreeSWITCH
 recordings adopted into the chappe_audio store), `chappe_mrf_lib`.
 
 ## Required Checks

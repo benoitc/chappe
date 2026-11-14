@@ -32,5 +32,11 @@
     entity :: binary() | undefined,
     %% fs recordings started with store => default, adopted into the
     %% recording store when they stop: {Path, CallRef, Meta}
-    recordings = [] :: [{binary(), binary(), map()}]
+    recordings = [] :: [{binary(), binary(), map()}],
+    %% REFER to the room (chappe_mrf_conf_refer): who decides, how a
+    %% target is dialed (dial fun, profile, timeout, endpoint options), and
+    %% the dial-outs under way
+    refer_policy :: fun((map()) -> boolean() | {reject, 300..699}) | undefined,
+    dial = #{} :: map(),
+    dialing = #{} :: #{term() => map()}
 }).
