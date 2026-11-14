@@ -17,6 +17,7 @@
 -export([all/0, init_per_suite/1, end_per_suite/1, end_per_testcase/2]).
 -export([notify_accept/1, notify_reject/1, notify_retarget/1,
          notify_from_another_node/1]).
+-export([attended_join_fails_keeps_calls/1]).
 -export([attended_local_join/1, attended_remote_replaces/1,
          attended_other_party_refused/1]).
 -export([blind_from_a/1, blind_keeps_identity/1, blind_keeps_call_ref/1,
@@ -33,7 +34,7 @@ all() ->
     [blind_from_b, blind_from_a, blind_keeps_identity, blind_keeps_call_ref,
      blind_progress_notified, transferor_bye_keeps_transferee,
      transferor_bye_then_failure_ends_call,
-     blind_target_fails, attended_local_join, attended_remote_replaces,
+     blind_target_fails, attended_local_join, attended_join_fails_keeps_calls, attended_remote_replaces,
      attended_other_party_refused, notify_accept, notify_reject,
      notify_retarget, notify_from_another_node, offnet_refused, policy_rejects,
      policy_sees_untrusted_referred_by, direct_media_refused, transfer_limit,
@@ -282,6 +283,31 @@ attended_local_join(_Config) ->
     ?assertEqual({error, noproc}, chappe_sip_b2b:info(B2b2)),
     ok = ?UA:expect(caller_no_reinvite, 8000),
     no_message(carol_invite, 200).
+
+%% The local join fails: Carol refuses the re-INVITE that would take her
+%% into Alice's call. Her leg goes back to her call with Bob, so nobody is
+%% hung up: Bob's final NOTIFY carries the 488, and both calls go on.
+%% req: R5589-05
+attended_join_fails_keeps_calls(_Config) ->
+    {EP, CP} = setup(#{}),
+    NP = route_carol(?UA:pick()),
+    carol(NP, refuse_reinvite),
+    bob_consults(CP, EP, fun(_C2, _BT2, _TT2) -> NP end),
+    caller(EP, fun(_Sock, _D) -> ok end),
+    #{b2b := B2b1} = got(legs),
+    #{b2b := B2b2} = got(legs_carol),
+    ?assertEqual(200, ?UA:status(got(refer_answer))),
+    ?assertEqual(<<"SIP/2.0 100 Trying\r\n">>, ?UA:body(got(notify))),
+    _ = got(carol_reinvite),
+    ?assertEqual(<<"SIP/2.0 488 Not Acceptable Here\r\n">>,
+                 ?UA:body(got(notify))),
+    no_message(carol_bye, 1000),
+    no_message(bye, 200),
+    ?assertMatch(#{media := anchor}, chappe_sip_b2b:info(B2b1)),
+    ?assertMatch(#{media := anchor}, chappe_sip_b2b:info(B2b2)),
+    %% the leg is call 2's again: hanging that call up reaches Carol
+    ok = chappe_sip_b2b:hangup(B2b2, #{}),
+    _ = got(carol_bye).
 
 %% The Replaces names no dialog of this node: the target gets an INVITE
 %% carrying it, with Require: replaces, and the Referred-By.
@@ -732,32 +758,42 @@ route_carol(NP) ->
 %% Carol: answers her INVITE, then a re-INVITE (carol_reinvite); a second
 %% INVITE outside her dialog is carol_invite.
 carol(NP) ->
+    carol(NP, accept_reinvite).
+
+carol(NP, How) ->
     ?UA:peer(NP, fun(Sock) ->
         {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
         Tag = ?UA:tag(),
         ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, Tag, [contact(Sock)],
                                      ?UA:sdp(<<"carol">>))),
         {_, _} = ?UA:recv_req(Sock, <<"ACK">>),
-        carol_loop(Sock, Tag)
+        carol_loop(Sock, Tag, How)
     end).
 
-carol_loop(Sock, Tag) ->
+carol_loop(Sock, Tag, How) ->
     receive
         {udp, Sock, _, Src, <<"INVITE ", _/binary>> = Inv} ->
             case ?UA:to_tag(Inv) of
                 undefined -> tell({carol_invite, Inv});
                 _ -> tell({carol_reinvite, Inv})
             end,
-            ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, Tag,
-                                         [contact(Sock)],
-                                         ?UA:sdp(<<"carol">>, <<"1">>))),
-            carol_loop(Sock, Tag);
+            case How of
+                accept_reinvite ->
+                    ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, Tag,
+                                                 [contact(Sock)],
+                                                 ?UA:sdp(<<"carol">>, <<"1">>)));
+                refuse_reinvite ->
+                    ?UA:send(Sock, Src, ?UA:resp(Inv, 488,
+                                                 <<"Not Acceptable Here">>,
+                                                 Tag, [], <<>>))
+            end,
+            carol_loop(Sock, Tag, How);
         {udp, Sock, _, Src, <<"BYE ", _/binary>> = B} ->
             ?UA:send(Sock, Src, ?UA:resp(B, 200, <<"OK">>, Tag, [], <<>>)),
             tell({carol_bye, B}),
-            carol_loop(Sock, Tag);
+            carol_loop(Sock, Tag, How);
         {udp, Sock, _, _, _} ->
-            carol_loop(Sock, Tag)
+            carol_loop(Sock, Tag, How)
     end.
 
 %% Bob: answers Alice's call, calls Carol through the B2BUA under the

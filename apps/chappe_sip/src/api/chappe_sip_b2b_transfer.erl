@@ -31,6 +31,7 @@
 -export([accept/2, reject/2]).
 %% for the relay loop (chappe_sip_b2b_relay)
 -export([options/2, refer/4, monitor/1, down/2, detach/3, transferor/1]).
+-export([handled/3]).
 
 -export_type([mode/0, info/0]).
 
@@ -266,71 +267,132 @@ aor(NameAddr) ->
 
 %% join: the target's leg leaves its call (the referrer's leg there gets a
 %% BYE) and takes the referrer's place in this one with a re-INVITE from
-%% rtpengine; the transferee sees nothing
+%% rtpengine; the transferee sees nothing. The call that holds the target
+%% only lends its leg until this call took it: when the re-INVITE fails
+%% (the target refuses it, this call is busy or gone), the leg goes back
+%% and both calls stay as they were.
 join(#{leg := Leg} = Info, Refer, #{b2b := B2b} = S) ->
-    case detach(Info, B2b) of
-        {ok, Target} ->
+    case lend(Info, B2b) of
+        {ok, Lender, Target} ->
             case
                 chappe_sip_b2b:replace_leg(B2b, Leg, {dialog, Target}, #{
                     keep_old => true
                 })
             of
                 ok ->
+                    ok = settle(Lender, done),
                     done(Info, Refer, S);
                 {error, Why} ->
-                    _ = chappe_sip_b2b:destroy_quietly(Target, []),
+                    ok = settle(Lender, back),
                     failed(Info, Refer, status(Why), S)
             end;
         error ->
             failed(Info, Refer, 481, S)
     end.
 
-%% the call that holds the named dialog hands its other leg over
-detach(#{dialog2 := D2, ref2 := Ref}, Own) when is_binary(Ref) ->
+%% the call that holds the named dialog lends its other leg
+lend(#{dialog2 := D2, ref2 := Ref}, Own) when is_binary(Ref) ->
     #{b2b := Calls} = chappe_sip_call:lookup(Ref),
-    first_detached(
-        [B || B <- Calls, B =/= Own, node(element(1, B)) =:= node()], D2
-    );
-detach(_Info, _Own) ->
+    first_lent([B || B <- Calls, B =/= Own, node(element(1, B)) =:= node()], D2);
+lend(_Info, _Own) ->
     error.
 
-first_detached([], _D2) ->
+first_lent([], _D2) ->
     error;
-first_detached([B | Rest], D2) ->
+first_lent([B | Rest], D2) ->
     case chappe_sip_b2b:call(B, {detach, D2}) of
-        {ok, Target} -> {ok, Target};
-        _ -> first_detached(Rest, D2)
+        {ok, Target} -> {ok, B, Target};
+        _ -> first_lent(Rest, D2)
     end.
 
-%% The relay of the call that holds D, a leg of its, hands the other leg
-%% to the caller (From) and ends: D gets a BYE, the call's rtpengine
-%% session goes. {loop, S} when D is not one of its legs or an offer is
+%% tell the lender whether its leg was taken (done) or comes back (back)
+settle({Pid, Ref}, How) ->
+    Pid ! {chappe_sip_b2b, Ref, {lent, self(), How}},
+    ok.
+
+%% The relay of the call that holds D, a leg of its, lends the other leg
+%% (Keep) to the caller (From), a transfer joining it to its own call,
+%% and waits for the outcome (lent/5): taken, D gets a BYE, the call's
+%% rtpengine session goes and the relay ends; given back, the call goes
+%% on as it was. {loop, S} when D is not one of its legs or an offer is
 %% pending; the caller then gets an error.
 -spec detach({pid(), term()}, chappe_sip_dialog:dialog(), map()) ->
     {done, transferred} | {loop, map()}.
 detach(From, D, #{a := A, b := B, pending := undefined} = S) ->
     P = chappe_sip_dialog:pid(D),
     case {chappe_sip_dialog:pid(A), chappe_sip_dialog:pid(B)} of
-        {P, _} -> hand_over(From, A, B, S);
-        {_, P} -> hand_over(From, B, A, S);
+        {P, _} -> lend_out(From, A, B, S);
+        {_, P} -> lend_out(From, B, A, S);
         _ -> not_mine(From, S)
     end;
 detach(From, _D, S) ->
     not_mine(From, S).
 
-hand_over({Caller, Tag}, D, Keep, #{refs := {RefA, RefB}, media := M}) ->
-    erlang:demonitor(RefA, [flush]),
-    erlang:demonitor(RefB, [flush]),
-    Reply =
-        try chappe_sip_dialog:set_owner(Keep, Caller) of
-            ok -> {ok, Keep}
-        catch
-            exit:_ -> {error, gone}
-        end,
+lend_out({Caller, Tag}, D, Keep, #{refs := {RefA, RefB}} = S) ->
+    try chappe_sip_dialog:set_owner(Keep, Caller) of
+        ok ->
+            erlang:demonitor(RefA, [flush]),
+            erlang:demonitor(RefB, [flush]),
+            Caller ! {Tag, {ok, Keep}},
+            lent(Caller, erlang:monitor(process, Caller), D, Keep, S)
+    catch
+        exit:_ ->
+            Caller ! {Tag, {error, gone}},
+            {loop, S}
+    end.
+
+%% While its leg Keep is lent, the call answers nothing of D but its
+%% ACKs (500 with Retry-After, as for an offer under way) and no call to
+%% its relay (busy). A borrower that dies keeps the leg: whoever owns
+%% Keep then carries it on (or ends it), and this call ends.
+lent(Caller, CMon, D, Keep, #{ref := Ref, media := M} = S) ->
+    receive
+        {chappe_sip_b2b, Ref, {lent, Caller, done}} ->
+            erlang:demonitor(CMon, [flush]),
+            handed_over(D, M);
+        {chappe_sip_b2b, Ref, {lent, Caller, back}} ->
+            erlang:demonitor(CMon, [flush]),
+            {loop, take_back(Keep, S)};
+        {'DOWN', CMon, process, Caller, _} ->
+            handed_over(D, M);
+        {chappe_sip_b2b, Ref, {call, {Pid, Tag}, _Req}} ->
+            Pid ! {Tag, {error, busy}},
+            lent(Caller, CMon, D, Keep, S);
+        {chappe_sip_dialog, D, ack, _, _} ->
+            lent(Caller, CMon, D, Keep, S);
+        {chappe_sip_dialog, D, _Event, _Req, Res} ->
+            ok = chappe_sip_b2b_relay:retry_later(Res),
+            lent(Caller, CMon, D, Keep, S)
+    end.
+
+handed_over(D, M) ->
     _ = chappe_sip_b2b_media:stop(M),
     _ = spawn(fun() -> chappe_sip_b2b:destroy_quietly(D, []) end),
-    Caller ! {Tag, Reply},
     {done, transferred}.
+
+%% Keep comes back: its events come here again, with the requests this
+%% call claims, and both legs are watched again (a leg that ended
+%% meanwhile ends the call at once)
+take_back(Keep, #{a := A, b := B} = S) ->
+    _ =
+        try
+            ok = chappe_sip_dialog:set_owner(Keep, self()),
+            chappe_sip_dialog:set_handled(Keep, handled(S))
+        catch
+            exit:_ -> ok
+        end,
+    S#{refs := {chappe_sip_dialog:monitor(A), chappe_sip_dialog:monitor(B)}}.
+
+handled(#{requests := Requests, relay_info := RelayInfo, transfer := Mode}) ->
+    handled(Requests, RelayInfo, Mode).
+
+%% The handled_events of each leg of a relayed call: its claimed
+%% requests, and REFER when the call carries transfers.
+-spec handled([atom()], boolean(), mode()) -> [atom()].
+handled(Requests, RelayInfo, Mode) ->
+    chappe_sip_b2b_requests:handled(
+        Requests ++ [refer || Mode =/= off], RelayInfo
+    ).
 
 not_mine({Caller, Tag}, S) ->
     Caller ! {Tag, {error, not_found}},

@@ -42,9 +42,7 @@ run(#{uas := A, uac := B} = Legs, Opts) ->
     Requests = maps:get(requests, Opts, maps:get(requests, Legs, [])),
     RelayInfo = maps:get(relay_info, Opts, maps:get(relay_info, Legs, false)),
     {Mode, TOpts} = chappe_sip_b2b_transfer:options(Opts, Legs),
-    Handled = chappe_sip_b2b_requests:handled(
-        Requests ++ [refer || Mode =/= off], RelayInfo
-    ),
+    Handled = chappe_sip_b2b_transfer:handled(Requests, RelayInfo, Mode),
     _ =
         case
             maps:is_key(requests, Opts) orelse maps:is_key(relay_info, Opts) orelse
