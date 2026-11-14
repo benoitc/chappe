@@ -24,7 +24,7 @@
 -export([bad_from_refused/1, bad_from_fork_refused/1,
          bad_from_not_passed/1]).
 -export([b_events_notified/1, app_cancels_b/1]).
--export([a_headers_on_2xx/1, a_headers_on_failure/1]).
+-export([a_headers_on_2xx/1, a_headers_on_failure/1, contact_params_each_leg/1]).
 -export([b_redirect_followed/1, local_sdp_b_fun/1]).
 -export([relayed_1xx_contact_public/1, relayed_1xx_contact_local/1]).
 
@@ -37,6 +37,7 @@ all() ->
      serial_branch_opts, hunt_keeps_a_tag, bad_from_refused,
      bad_from_fork_refused, bad_from_not_passed, b_events_notified,
      app_cancels_b, a_headers_on_2xx, a_headers_on_failure,
+     contact_params_each_leg,
      b_redirect_followed, local_sdp_b_fun, relayed_1xx_contact_public,
      relayed_1xx_contact_local].
 
@@ -466,6 +467,48 @@ local_sdp_b_fun(_Config) ->
         _ = recv_status(Sock, 200)
     end),
     ok = expect({b_offer, true, true}).
+
+%% contact_params go after the Contact of each leg: A's 2xx and B's
+%% INVITE (a conference room marks its member legs with isfocus, RFC
+%% 4579 4.2).
+%% req: R4579-06
+contact_params_each_leg(_Config) ->
+    {EnginePort, CalleePort} = setup(),
+    Test = self(),
+    CalleeUri = <<"sip:callee@127.0.0.1:", (integer_to_binary(CalleePort))/binary>>,
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        {ok, Legs} = chappe_sip:create_b2bua(Req, Res, CalleeUri, #{
+            contact_params => #{a => <<";isfocus">>, b => <<";isfocus">>}
+        }),
+        {done, _} = chappe_sip_b2b:relay(Legs)
+    end),
+    callee(CalleePort, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        {ok, IM} = chappe_sip_msg:parse(Inv),
+        Test ! {b_contact, chappe_sip_msg:get(<<"contact">>, IM)},
+        ToTag = tag(),
+        send(Sock, Src, resp(Inv, 200, <<"OK">>, ToTag,
+                             [{<<"Contact">>, ctc(CalleePort)}], sdp(<<"callee">>))),
+        {_Ack, _} = recv(Sock, <<"ACK">>),
+        {Bye, BSrc} = recv(Sock, <<"BYE">>),
+        send(Sock, BSrc, resp(Bye, 200, <<"OK">>, ToTag, [], <<>>))
+    end),
+    caller(fun(Sock) ->
+        Call = callid(),
+        FT = <<"cfti">>,
+        send(Sock, EnginePort, invite(Sock, EnginePort, Call, FT)),
+        R200 = recv_status(Sock, 200),
+        {ok, M} = chappe_sip_msg:parse(R200),
+        Test ! {a_contact, chappe_sip_msg:get(<<"contact">>, M)},
+        TT = to_tag(R200),
+        send(Sock, EnginePort, ack(Sock, EnginePort, Call, FT, TT)),
+        send(Sock, EnginePort, bye(Sock, EnginePort, Call, FT, TT)),
+        _ = recv_status(Sock, 200)
+    end),
+    [A, B] = [receive {K, V} -> V after 6000 -> ct:fail({no, K}) end
+              || K <- [a_contact, b_contact]],
+    ?assertMatch({_, _}, binary:match(A, <<">;isfocus">>)),
+    ?assertMatch({_, _}, binary:match(B, <<">;isfocus">>)).
 
 %% a_headers go on A's 2xx (drachtio's responseHeaders).
 a_headers_on_2xx(_Config) ->

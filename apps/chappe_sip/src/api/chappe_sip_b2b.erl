@@ -141,6 +141,11 @@
 %%                  malformed one (chappe_sip_hdr:valid_name_addr/1) reaches
 %%                  no leg: {error, badarg}, and A gets a 500 unless
 %%                  pass_failure is false
+%%   contact_params => #{a | b => binary()}: what follows the `>' of our
+%%                  Contact on that leg: A's 2xx (a) and B's INVITE (b),
+%%                  such as <<";isfocus">> for the member legs of a
+%%                  conference (RFC 4579 4.2); a Contact in a_headers
+%%                  replaces A's whole Contact
 %%   a_headers   => [{Name, Value}] added to the final response to A, the
 %%                  2xx or a failure (drachtio's responseHeaders), after
 %%                  the ones proxy_response_headers copies
@@ -462,7 +467,10 @@ start_b(Req, Res, {Fork, Dests}, Opts, LateOffer, M) ->
     ACdr = chappe_sip_cdr:relabel(Req, b2b_a),
     ok = chappe_sip_cdr:update(ACdr, maps:with([call_ref, related], Opts)),
     BOpts = maps:merge(
-        BOpts1#{cdr => #{role => b2b_b, link => ACdr}},
+        BOpts1#{
+            cdr => #{role => b2b_b, link => ACdr},
+            contact_params => leg_contact_params(b, Opts)
+        },
         maps:with(?B_UAC_OPTS, Opts)
     ),
     %% pre-choose the A-leg dialog tag so relayed provisionals and the
@@ -728,6 +736,7 @@ create_a(
         local_sdp => SdpAAnswer,
         headers => RespHeaders ++ maps:get(a_headers, Opts, []),
         local_tag => ATag,
+        contact_params => leg_contact_params(a, Opts),
         owner => self(),
         handled_events => handled(Opts),
         call_ref => maps:get(call_ref, Opts)
@@ -767,6 +776,9 @@ create_a(
             _ = chappe_sip_b2b_media:stop(M),
             {error, Reason}
     end.
+
+leg_contact_params(Leg, Opts) ->
+    maps:get(Leg, maps:get(contact_params, Opts, #{}), <<>>).
 
 %% A's To-tag and early leg, kept in the request worker across the
 %% create_b2bua/4 calls of a hunt (pass_failure => false), so the 1xx a

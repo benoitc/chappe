@@ -140,13 +140,21 @@ is_bye(Why) ->
 %% ---- REFER to the focus (RFC 4579 5.5, 5.11) ----
 
 %% A REFER to the focus, in a participant's dialog D or outside any dialog
-%% (D undefined: a REFER to the conference URI). A Refer-To for an INVITE
-%% (the default method) asks the focus to bring the target in (5.5); one
-%% with method=BYE asks it to remove that participant (5.11). Any other
+%% (D undefined: a REFER to the conference URI). What it means follows
+%% its Request-URI: a REFER to the conference URI, or in a dialog whose
+%% Contact carries isfocus, is a REFER to a focus, and a Refer-To for an
+%% INVITE (the default method) asks it to bring the target in (add, 5.5);
+%% in a dialog of a room that hides it is a focus (no isfocus, 4.2) it is
+%% an RFC 3515 transfer of that member (transfer). A Refer-To with
+%% method=BYE asks the focus to remove that participant (5.11). Any other
 %% method is refused 403: a focus does not fan out requests it does not
-%% understand (RFC 5368 10). The app's policy decides both, with
-%%   #{action := add | remove, target := Uri, referrer := NameAddr,
-%%     referred_by := binary() | undefined}
+%% understand (RFC 5368 10). The app's policy decides all three, with
+%%   #{action := add | remove | transfer, target := Uri,
+%%     replaces := chappe_sip_hdr:replaces() | undefined,
+%%     referrer := NameAddr, referred_by := binary() | undefined}
+%% replaces is the Replaces the Refer-To carries: the focus puts it on
+%% its INVITE to the target, which brings a point-to-point call into the
+%% conference (5.10); chappe_sip_refer:target/1 has it too.
 %% referrer is the REFER's From, the identity its dialog (or its digest,
 %% when the app checked one) vouches for; referred_by is only claimed
 %% (RFC 3892 6). Without a policy everything is refused 403. Once
@@ -160,21 +168,22 @@ is_bye(Why) ->
     chappe_sip_res:res(),
     map()
 ) ->
-    {add | remove, binary(), chappe_sip_refer:refer()}
+    {add | remove | transfer, binary(), chappe_sip_refer:refer()}
     | {error, {rejected, 300..699} | term()}.
 refer(D, Req, Res, Opts) ->
     %% the policy below decides a BYE as well
     case chappe_sip_refer:check(Req, #{authorize => fun(_, _) -> true end}) of
         {reject, Status, Reason} ->
             reject(Res, Status, Reason);
-        {ok, #{method := M, target := Target}} ->
-            case focus_action(M) of
+        {ok, #{method := M, target := Target} = RT} ->
+            case focus_action(M, is_focus(D)) of
                 undefined ->
                     reject(Res, 403, <<"Forbidden">>);
                 Action ->
                     Info = #{
                         action => Action,
                         target => Target,
+                        replaces => maps:get(replaces, RT, undefined),
                         referrer => chappe_sip_b2b_hdr:caller(
                             chappe_sip_req:get(<<"from">>, Req)
                         ),
@@ -186,9 +195,32 @@ refer(D, Req, Res, Opts) ->
             end
     end.
 
-focus_action(<<"INVITE">>) -> add;
-focus_action(<<"BYE">>) -> remove;
-focus_action(_M) -> undefined.
+focus_action(<<"INVITE">>, true) -> add;
+focus_action(<<"INVITE">>, false) -> transfer;
+focus_action(<<"BYE">>, _Focus) -> remove;
+focus_action(_M, _Focus) -> undefined.
+
+%% whether the REFER reached a focus: the conference URI itself, or a
+%% dialog whose Contact (the member's remote target) carries isfocus
+is_focus(undefined) ->
+    true;
+is_focus(D) ->
+    try chappe_sip_dialog:local_contact(D) of
+        C when is_binary(C) ->
+            case chappe_sip_hdr:name_addr(C) of
+                {ok, #{params := Ps}} ->
+                    lists:member(
+                        <<"isfocus">>,
+                        [chappe_sip_lib:lower(K) || K <- maps:keys(Ps)]
+                    );
+                _ ->
+                    false
+            end;
+        _ ->
+            false
+    catch
+        exit:_ -> false
+    end.
 
 allowed(D, Req, Res, #{action := Action, target := Target} = Info, Opts) ->
     Verdict =

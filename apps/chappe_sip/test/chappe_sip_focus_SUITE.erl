@@ -31,6 +31,8 @@
     conference_end_terminates/1,
     refer_bye_removes_participant/1,
     refer_not_allowed/1,
+    refer_keeps_replaces/1,
+    refer_without_isfocus_is_transfer/1,
     invite_answer_advertises_focus/1,
     options_advertises_focus/1,
     privacy_from_the_api/1,
@@ -53,6 +55,8 @@ all() ->
         conference_end_terminates,
         refer_bye_removes_participant,
         refer_not_allowed,
+        refer_keeps_replaces,
+        refer_without_isfocus_is_transfer,
         invite_answer_advertises_focus,
         options_advertises_focus,
         privacy_from_the_api,
@@ -306,6 +310,53 @@ refer_not_allowed(Config) ->
     {ok, 403} = ua_call(P1, {refer, Call1, Target}),
     timer:sleep(500),
     ?assertEqual([], [M || {<<"BYE">>, M, _} <- ua_call(P2, requests)]).
+
+%% p1 brings p2 into the conference from their point-to-point call (RFC
+%% 4579 5.10): its Refer-To carries an escaped Replaces naming that call.
+%% The policy sees it, and the focus's INVITE to p2 carries it.
+%% req: R4579-17
+refer_keeps_replaces(Config) ->
+    [P1, P2] = [?config(K, Config) || K <- [p1, p2]],
+    Test = self(),
+    ok = chappe_sip_test_focus:refer_policy(fun(Info) ->
+        Test ! {refer_info, Info},
+        true
+    end),
+    {ok, Call, _} = invite(P1, ?config(conf_uri, Config), []),
+    R = #{call_id => <<"p2p@ct">>, to_tag => <<"tt">>, from_tag => <<"ft">>},
+    Target = chappe_sip_hdr:refer_to_value(#{uri => ua_uri(P2), replaces => R}),
+    {ok, 200} = ua_call(P1, {refer, Call, Target}),
+    Info = receive {refer_info, I} -> I after 5000 -> ct:fail(no_policy) end,
+    ?assertMatch(#{action := add, replaces := #{call_id := <<"p2p@ct">>,
+                                               to_tag := <<"tt">>,
+                                               from_tag := <<"ft">>}},
+                 Info),
+    Invites = fun() -> [M || {<<"INVITE">>, M, _} <- ua_call(P2, requests)] end,
+    ok = wait_until(fun() -> Invites() =/= [] end, 10000),
+    [Inv | _] = Invites(),
+    ?assertEqual(<<"p2p@ct;to-tag=tt;from-tag=ft">>, hdr(Inv, replaces)).
+
+%% A room that hides that it is a focus (no isfocus on its dialogs, RFC
+%% 4579 4.2) is a plain UA to its members: a REFER from one is an RFC 3515
+%% transfer, not a request to add the target.
+%% req: R4579-06
+refer_without_isfocus_is_transfer(Config) ->
+    [P1, P2] = [?config(K, Config) || K <- [p1, p2]],
+    Test = self(),
+    ok = chappe_sip_test_focus:refer_policy(fun(Info) ->
+        Test ! {refer_info, Info},
+        false
+    end),
+    ok = chappe_sip_test_focus:hide_focus(true),
+    try
+        {ok, Call, Resp} = invite(P1, ?config(conf_uri, Config), []),
+        ?assertEqual(nomatch, binary:match(hdr(Resp, contact), <<"isfocus">>)),
+        {ok, 403} = ua_call(P1, {refer, Call, <<"<", (ua_uri(P2))/binary, ">">>}),
+        ?assertMatch(#{action := transfer},
+                     receive {refer_info, I} -> I after 5000 -> ct:fail(no_policy) end)
+    after
+        chappe_sip_test_focus:hide_focus(false)
+    end.
 
 %% OPTIONS to the conference URI discovers a focus (RFC 4579 4.3).
 %% req: R4579-07 R4579-01

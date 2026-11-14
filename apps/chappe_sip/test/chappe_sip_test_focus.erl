@@ -17,7 +17,7 @@
 
 -export([start/1, start/2, stop/0, install/0]).
 -export([set_description/1, kick/1, uri/0, set_private/1, subscribe_policy/1]).
--export([refer_policy/1]).
+-export([refer_policy/1, hide_focus/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -define(ANSWER,
@@ -80,6 +80,14 @@ subscribe_policy(undefined) ->
 subscribe_policy(Policy) ->
     persistent_term:put({?MODULE, subscribe_policy}, Policy).
 
+%% Hide: whether the conference's dialogs leave isfocus out of their
+%% Contact (RFC 4579 4.2: a focus that wishes to hide it).
+hide_focus(true) ->
+    persistent_term:put({?MODULE, hide_focus}, true);
+hide_focus(false) ->
+    _ = persistent_term:erase({?MODULE, hide_focus}),
+    ok.
+
 %% Policy: fun(Info) -> boolean() | {reject, Code} for the REFERs to the
 %% focus (chappe_sip_focus:refer/4); undefined lets every REFER through.
 refer_policy(undefined) ->
@@ -100,7 +108,11 @@ invite(Req, Res) ->
         undefined ->
             chappe_sip_res:send(Res, 404);
         Conf ->
-            Contact = gen_server:call(Conf, contact),
+            Contact =
+                case persistent_term:get({?MODULE, hide_focus}, false) of
+                    true -> <<"<", (gen_server:call(Conf, uri))/binary, ">">>;
+                    false -> gen_server:call(Conf, contact)
+                end,
             Opts0 = #{
                 owner => Conf,
                 handled_events => [refer],
@@ -251,6 +263,8 @@ leg_info({chappe_sip_dialog, D, refer, Req, Res}, S) ->
     case chappe_sip_focus:refer(D, Req, Res, #{policy => Policy}) of
         {add, Target, Refer} ->
             {noreply, changed(dial(Target, Refer, S))};
+        {transfer, Target, Refer} ->
+            {noreply, changed(dial(Target, Refer, S))};
         {remove, Target, Refer} ->
             {reply, N, S1} = handle_call({kick, Target}, self(), S),
             ok = chappe_sip_refer:final(Refer, case N of 0 -> 404; _ -> 200 end),
@@ -333,6 +347,8 @@ dial(Target, Refer, S) ->
         contact => S#state.uri,
         contact_params => chappe_sip_focus:contact_params(),
         from => <<"<", (S#state.uri)/binary, ">">>,
+        %% RFC 4579 5.10: the Replaces the Refer-To carried
+        headers => replaces(chappe_sip_refer:target(Refer)),
         local_sdp => ?ANSWER,
         notify => self(),
         owner => self()
@@ -352,6 +368,11 @@ dial(Target, Refer, S) ->
         refer => Refer
     },
     add_leg({dial, Ref}, Leg, S).
+
+replaces(#{replaces := R}) when R =/= undefined ->
+    [{<<"Replaces">>, chappe_sip_hdr:replaces_value(R)}];
+replaces(_Target) ->
+    [].
 
 %% the leg stays listed, disconnected, saying how it left
 left(Key, Why, S) ->

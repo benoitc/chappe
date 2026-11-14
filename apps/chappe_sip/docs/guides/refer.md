@@ -280,14 +280,28 @@ ms) the REFER gets 603. Both calls work from any node.
 ```erlang
 case chappe_sip_focus:refer(Dialog, RReq, RRes, #{policy => Policy}) of
     {add, Uri, Refer} -> dial_in(Uri, Refer);
+    {transfer, Uri, Refer} -> replace_member(Uri, Refer);
     {remove, Uri, Refer} -> kick(Uri, Refer);
     {error, _} -> ok
 end.
 ```
 
-`add` is a Refer-To for an INVITE (5.5), `remove` one with `method=BYE`
-(5.11). The policy gets `action`, `target`, `referrer` and `referred_by`;
-without one both are refused 403. Report with `chappe_sip_refer:final/2`.
+What a REFER means follows where it was sent. To the conference URI, or
+in a dialog whose Contact carries `isfocus`, a Refer-To for an INVITE is
+`add` (5.5). In a dialog of a room that hides it is a focus (no
+`isfocus`, 4.2), it is `transfer`: an RFC 3515 transfer of that member.
+`remove` is a Refer-To with `method=BYE` (5.11). The policy gets `action`,
+`target`, `replaces`, `referrer` and `referred_by`; without one all are
+refused 403. Report with `chappe_sip_refer:final/2`.
+
+When `replaces` is set, put it on your INVITE to the target: that brings a
+point-to-point call into the conference (5.10). `chappe_sip_refer:target/1`
+has it too.
+
+A room whose members join through a B2BUA call marks those legs with
+`create_b2bua/4`'s `contact_params => #{a => <<";isfocus">>}`, or sets
+their whole Contact with
+`a_headers => [{<<"Contact">>, chappe_sip_focus:contact(ConfUri)}]`.
 
 ## REFER behaviour in detail
 
