@@ -15,11 +15,13 @@
 -export([all/0, init_per_suite/1, end_per_suite/1,
          init_per_testcase/2, end_per_testcase/2]).
 -export([user_agent/1, deny_cidr/1, allow_cidr/1, rate_limit/1, drop/1,
-         no_block_without_drop/1, metrics/1]).
+         no_block_without_drop/1, metrics/1, header_rules/1,
+         action_per_transport/1, bad_rules/1]).
 
 all() ->
     [user_agent, deny_cidr, allow_cidr, rate_limit, drop,
-     no_block_without_drop, metrics].
+     no_block_without_drop, metrics, header_rules, action_per_transport,
+     bad_rules].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -133,6 +135,75 @@ metrics(Config) ->
     ok = chappe_sip:use(chappe_sip_guard:new(#{user_agents => [<<"x-bot">>]})),
     ?assertEqual(403, options(Config, [{<<"User-Agent">>, <<"x-bot">>}])),
     ?assertEqual(Before + 1, blocked(<<"user_agent">>)).
+
+%% ---- rules on any header, an action per transport ----
+
+%% A rule on any header: a request with a value matching it (caseless,
+%% any of its values) is turned away; a rule on User-Agent counts as one.
+header_rules(Config) ->
+    Before = blocked(<<"header">>),
+    ok = chappe_sip:use(chappe_sip_guard:new(#{
+        headers => [{<<"X-Scan">>, <<"^probe">>},
+                    {<<"Subject">>, [<<"spam">>, <<"ads">>]},
+                    {<<"User-Agent">>, "bad-ua"}]})),
+    ?assertEqual(403, options(Config, [{<<"X-Scan">>, <<"PROBE 1">>}])),
+    ?assertEqual(403, options(Config, [{<<"Subject">>, <<"cheap ads">>}])),
+    ?assertEqual(403, options(Config, [{<<"Subject">>, <<"hello">>},
+                                       {<<"Subject">>, <<"spam">>}])),
+    ?assertEqual(200, options(Config, [{<<"X-Scan">>, <<"not a probe">>}])),
+    ?assertEqual(Before + 3, blocked(<<"header">>)),
+    UA = blocked(<<"user_agent">>),
+    ?assertEqual(403, options(Config, [{<<"User-Agent">>, <<"Bad-UA/1">>}])),
+    ?assertEqual(UA + 1, blocked(<<"user_agent">>)),
+    ?assertEqual(200, options(Config, [])).
+
+%% An action per transport: the same request is answered 403 over UDP
+%% and dropped without a word over TCP.
+action_per_transport(Config) ->
+    ok = chappe_sip:use(chappe_sip_guard:new(#{
+        user_agents => [<<"scanner">>],
+        action => #{udp => 403, tcp => drop, default => 503},
+        block_ms => 0})),
+    ?assertEqual(403, options(Config, [{<<"User-Agent">>, <<"scanner">>}])),
+    ?assertEqual(dropped, tcp_options(Config, <<"scanner">>)),
+    ?assertEqual(200, tcp_options(Config, <<"Linphone/5.2">>)).
+
+%% A rule that cannot work fails new/1 at the call, not later.
+bad_rules(_Config) ->
+    [?assertError(_, chappe_sip_guard:new(O))
+     || O <- [#{user_agents => [<<"(">>]},
+              #{headers => [{<<"X-A">>, <<"[">>}]},
+              #{headers => [<<"X-A">>]},
+              #{headers => [{<<>>, <<"a">>}]},
+              #{deny => [<<"10.0.0.0/33">>]},
+              #{allow => [<<"not-a-net">>]},
+              #{deny => <<"10.0.0.0/8">>},
+              #{action => 404},
+              #{action => #{sctp => drop}},
+              #{action => #{udp => 302}},
+              #{rate => #{rate => 0}},
+              #{rate => #{rate => 5, burst => 0}},
+              #{block_ms => -1},
+              not_a_map]].
+
+tcp_options(Config, UA) ->
+    EP = ?config(ep, Config),
+    {ok, C} = gen_tcp:connect({127, 0, 0, 1}, EP, [binary, {active, true}]),
+    {ok, LP} = inet:port(C),
+    LPB = integer_to_binary(LP),
+    Req = request(<<"OPTIONS">>, <<(ruri(Config))/binary, ";transport=tcp">>,
+                  #{port => LP,
+                    via => <<"SIP/2.0/TCP 127.0.0.1:", LPB/binary,
+                             ";branch=z9hG4bKtcp", LPB/binary>>,
+                    headers => [{<<"User-Agent">>, UA}]}),
+    ok = gen_tcp:send(C, Req),
+    Got = receive
+              {tcp, C, <<"SIP/2.0 ", S:3/binary, _/binary>>} ->
+                  binary_to_integer(S)
+          after 1500 -> dropped
+          end,
+    gen_tcp:close(C),
+    Got.
 
 %% ---- helpers ----
 

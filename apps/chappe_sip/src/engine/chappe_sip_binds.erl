@@ -14,15 +14,24 @@
 %% - a UDP flow a registration is learned on keeps its address.
 %% With one address none of this applies and nothing changes.
 %%
+%% A contact may also be a map, for a host behind 1:1 NAT (a cloud VM
+%% with a private address and a public one):
+%%   #{uri := <<"sip:10.0.0.5:5060">>, public => <<"203.0.113.7">>,
+%%     local_nets => [<<"10.0.0.0/8">>]}
+%% The stack binds the uri's address and advertises the public one in its
+%% Via and Contact. A peer inside one of local_nets gets the local address
+%% in the Contact instead (for_peer/2).
+%%
 %% The addresses of the running stack sit in a persistent term, written at
 %% start and stop only, so these calls do not go through the engine.
 -module(chappe_sip_binds).
 
--export([options/1, publish/1]).
+-export([options/1, publish/1, aliases/1, own_uris/0]).
 -export([contacts/0, local/1, contact_at/1, tls_contact_at/1, pick_local/2]).
--export([contact_or_primary/2, send_ident/2, inherit/3]).
+-export([contact_or_primary/2, send_ident/2, inherit/3, for_peer/2]).
 
 -define(BINDS, {?MODULE, binds}).
+-define(ALIASES, {?MODULE, aliases}).
 
 %% Every listen address, plain then TLS, as bare URIs (no parameters).
 -spec contacts() -> [binary()].
@@ -83,22 +92,27 @@ pick_local_1(Local, _Target) ->
     end.
 
 %% The NIF options for every listen address: contact and tls.contact take
-%% one URI or a list; the first stays `contact', the others go in
-%% `contacts' with their idents (the address, normalized), and every one
-%% gets an ident so a send can name it.
--spec options(map()) -> {ok, map()} | {error, {contact | tls, bad_contact}}.
+%% one URI (or contact map) or a list; the first stays `contact', the
+%% others go in `contacts' with their idents (the address, normalized),
+%% and every one gets an ident so a send can name it. A contact map with
+%% public becomes sofia's maddr form; what for_peer/2 needs goes in `nat'
+%% (the NIF ignores it).
+-spec options(map()) ->
+    {ok, map()}
+    | {error, {contact | tls, bad_contact | bad_public | bad_local_nets}}.
 options(#{contact := C} = Opts) ->
-    case uri_list(C) of
-        {ok, [First | Rest]} ->
-            Plain = [normalize_one(U) || U <- [First | Rest]],
+    case binds_opts(C, fun normalize_one/1) of
+        {ok, First, Rest, Nat} ->
             case with_tls_binds(maps:get(tls, Opts, undefined)) of
-                {ok, Tls} ->
-                    [P1 | PRest] = Plain,
-                    Opts1 = Opts#{
-                        contact := P1,
-                        ident => ident_of(P1),
-                        contacts => [{U, ident_of(U)} || U <- PRest]
-                    },
+                {ok, Tls, TlsNat} ->
+                    Opts1 = with_nat(
+                        Opts#{
+                            contact := First,
+                            ident => ident_of(First, Nat),
+                            contacts => [{U, ident_of(U, Nat)} || U <- Rest]
+                        },
+                        Nat ++ TlsNat
+                    ),
                     {ok,
                         case Tls of
                             undefined -> Opts1;
@@ -107,36 +121,159 @@ options(#{contact := C} = Opts) ->
                 {error, _} = Err ->
                     Err
             end;
-        error ->
-            {error, {contact, bad_contact}}
+        {error, Why} ->
+            {error, {contact, Why}}
     end;
 options(Opts) ->
     {ok, Opts}.
 
 with_tls_binds(#{contact := C} = Tls) ->
-    case uri_list(C) of
-        {ok, [First | Rest]} ->
-            {ok, Tls#{
-                contact := First,
-                ident => ident_of(First),
-                contacts => [{U, ident_of(U)} || U <- Rest]
-            }};
-        error ->
-            {error, {tls, bad_contact}}
+    case binds_opts(C, fun(U) -> U end) of
+        {ok, First, Rest, Nat} ->
+            {ok,
+                Tls#{
+                    contact := First,
+                    ident => ident_of(First, Nat),
+                    contacts => [{U, ident_of(U, Nat)} || U <- Rest]
+                },
+                Nat};
+        {error, Why} ->
+            {error, {tls, Why}}
     end;
 with_tls_binds(Tls) ->
-    {ok, Tls}.
+    {ok, Tls, []}.
+
+with_nat(Opts, []) -> maps:remove(nat, Opts);
+with_nat(Opts, Nat) -> Opts#{nat => Nat}.
+
+%% the bind URIs of a contact option, each normalized, with an entry
+%% {Uri, LocalIdent, LocalUri, Nets} for each contact map with public
+binds_opts(C, Norm) ->
+    case uri_list(C) of
+        {ok, L} ->
+            case
+                lists:foldr(
+                    fun(U, Acc) -> bind_opt(U, Norm, Acc) end, {[], []}, L
+                )
+            of
+                {[First | Rest], Nat} -> {ok, First, Rest, Nat};
+                {error, _} = Err -> Err
+            end;
+        error ->
+            {error, bad_contact}
+    end.
+
+bind_opt(_U, _Norm, {error, _} = Err) ->
+    Err;
+bind_opt(U, Norm, {Us, Nat}) when is_binary(U) ->
+    {[Norm(U) | Us], Nat};
+bind_opt(#{uri := U} = M, Norm, {Us, Nat}) ->
+    case nat_bind(Norm(U), M) of
+        {ok, Uri, undefined} -> {[Uri | Us], Nat};
+        {ok, Uri, Entry} -> {[Uri | Us], [Entry | Nat]};
+        {error, _} = Err -> Err
+    end.
 
 %% one URI or a non-empty list of at most 9 (the NIF binds 8 more)
 uri_list(C) when is_binary(C) ->
     {ok, [C]};
+uri_list(#{uri := U} = C) when is_binary(U) ->
+    {ok, [C]};
 uri_list([_ | _] = L) when length(L) < 10 ->
-    case lists:all(fun is_binary/1, L) of
+    case lists:all(fun is_bind/1, L) of
         true -> {ok, L};
         false -> error
     end;
 uri_list(_) ->
     error.
+
+is_bind(B) when is_binary(B) -> true;
+is_bind(#{uri := U}) when is_binary(U) -> true;
+is_bind(_) -> false.
+
+%% A contact map. With public, the URI sofia binds is the public host with
+%% the local address as maddr: nta_agent_add_tport binds maddr and puts
+%% the host in Via and Contact. local_nets needs public and a concrete
+%% local address to hand out.
+nat_bind(Uri, M) ->
+    Public = maps:get(public, M, undefined),
+    case
+        {Public, chappe_sip_uri:parse(Uri), nets(maps:get(local_nets, M, []))}
+    of
+        {_, _, error} ->
+            {error, bad_local_nets};
+        {undefined, {ok, _}, {ok, []}} ->
+            {ok, Uri, undefined};
+        {_, {ok, #{host := Local, params := Params} = U}, {ok, Nets}} ->
+            Wild = lists:member(ident(Local), [<<"0.0.0.0">>, <<"::">>]),
+            case
+                is_host(Public) andalso
+                    not has_param(<<"maddr">>, Params) andalso
+                    not (Wild andalso Nets =/= [])
+            of
+                true ->
+                    Bound = public_uri(Uri, U, Public, Local),
+                    {ok, Bound, {Bound, ident(Local), bare_uri(Uri), Nets}};
+                false ->
+                    {error, bad_public}
+            end;
+        _ ->
+            {error, bad_contact}
+    end.
+
+%% sip:PUBLIC[:PORT];params;maddr=LOCAL, the parameters kept as written
+%% (chappe_sip_uri:format would escape the comma of transport=udp,tcp)
+public_uri(Uri, #{scheme := Scheme} = U, Public, Local) ->
+    Port =
+        case maps:get(port, U, undefined) of
+            undefined -> <<>>;
+            N -> <<":", (integer_to_binary(N))/binary>>
+        end,
+    Params =
+        case binary:match(Uri, <<";">>) of
+            {At, _} -> binary:part(Uri, At, byte_size(Uri) - At);
+            nomatch -> <<>>
+        end,
+    <<
+        (atom_to_binary(Scheme))/binary,
+        ":",
+        Public/binary,
+        Port/binary,
+        Params/binary,
+        ";maddr=",
+        Local/binary
+    >>.
+
+nets(L) when is_list(L) ->
+    Parsed = [chappe_sip_net:cidr(C) || C <- L],
+    case [N || {ok, N} <- Parsed] of
+        Nets when length(Nets) =:= length(L) -> {ok, Nets};
+        _ -> error
+    end;
+nets(_) ->
+    error.
+
+has_param(Name, Params) ->
+    lists:any(
+        fun(K) -> chappe_sip_lib:lower(K) =:= Name end, maps:keys(Params)
+    ).
+
+%% a host for a SIP URI: an IPv4 address, a bracketed IPv6 one or a name
+is_host(<<"[", _/binary>> = H) when byte_size(H) > 2 ->
+    binary:last(H) =:= $] andalso
+        case chappe_sip_net:address(binary:part(H, 1, byte_size(H) - 2)) of
+            {ok, Ip} -> tuple_size(Ip) =:= 8;
+            error -> false
+        end;
+is_host(H) when is_binary(H), byte_size(H) > 0, byte_size(H) =< 253 ->
+    lists:all(fun is_host_char/1, binary_to_list(H));
+is_host(_) ->
+    false.
+
+is_host_char(C) when C >= $a, C =< $z -> true;
+is_host_char(C) when C >= $A, C =< $Z -> true;
+is_host_char(C) when C >= $0, C =< $9 -> true;
+is_host_char(C) -> C =:= $. orelse C =:= $-.
 
 %% An unrestricted sofia bind (transport=*) also opens a ws listener on
 %% the TCP port and collides with the tcp transport (freeswitch fork
@@ -145,6 +282,14 @@ normalize_one(C) ->
     case binary:match(C, <<";transport=">>) of
         nomatch -> <<C/binary, ";transport=udp,tcp">>;
         _ -> C
+    end.
+
+%% the ident of a bind URI: the local address of a public one, else its
+%% host
+ident_of(Contact, Nat) ->
+    case lists:keyfind(Contact, 1, Nat) of
+        {_, Ident, _, _} -> Ident;
+        false -> ident_of(Contact)
     end.
 
 %% the ident of a contact: its host, an address in its canonical form
@@ -175,12 +320,80 @@ ident(_) ->
 %% options; #{} once stopped), for the calls above.
 -spec publish(map()) -> ok.
 publish(Opts) ->
-    Binds = binds_of(Opts),
-    case persistent_term:get(?BINDS, []) of
-        Binds -> ok;
-        _ -> persistent_term:put(?BINDS, Binds)
+    put_term(?BINDS, binds_of(Opts)),
+    put_term(?ALIASES, maps:get(aliases, Opts, [])).
+
+put_term(Key, Value) ->
+    case persistent_term:get(Key, []) of
+        Value -> ok;
+        _ -> persistent_term:put(Key, Value)
     end,
     ok.
+
+%% aliases => [Name]: other names of this node (a DNS name, or a sip: or
+%% sips: URI), at most 16, each a host with an optional port. A request
+%% routed to one is routed to us.
+-spec aliases(term()) -> ok | error.
+aliases(L) when is_list(L), length(L) =< 16 ->
+    case lists:all(fun is_alias/1, L) of
+        true -> ok;
+        false -> error
+    end;
+aliases(_) ->
+    error.
+
+is_alias(<<"sip:", _/binary>> = U) -> is_alias_uri(U);
+is_alias(<<"sips:", _/binary>> = U) -> is_alias_uri(U);
+is_alias(H) when is_binary(H) -> is_alias_uri(<<"sip:", H/binary>>);
+is_alias(_) -> false.
+
+is_alias_uri(U) ->
+    case binary:match(U, [<<0>>, <<";">>, <<"@">>, <<"?">>]) of
+        nomatch ->
+            case chappe_sip_uri:parse(U) of
+                {ok, #{host := H}} -> is_host(H);
+                _ -> false
+            end;
+        _ ->
+            false
+    end.
+
+%% Every URI that names this node: the listen addresses (public and
+%% local), and the aliases, an alias with no port on the port of each
+%% listen address.
+-spec own_uris() -> [binary()].
+own_uris() ->
+    Binds = binds(),
+    Uris = lists:append([[U | local_of(B)] || #{uri := U} = B <- Binds]),
+    Ports = lists:usort([port_of(U) || U <- Uris]),
+    Uris ++
+        lists:append([
+            alias_uris(A, Ports)
+         || A <- persistent_term:get(?ALIASES, [])
+        ]).
+
+local_of(#{local_uri := L}) -> [L];
+local_of(_) -> [].
+
+port_of(U) ->
+    case chappe_sip_uri:parse(U) of
+        {ok, #{port := P}} -> integer_to_binary(P);
+        _ -> undefined
+    end.
+
+alias_uris(A, Ports) ->
+    Uri =
+        case A of
+            <<"sip", _/binary>> -> A;
+            _ -> <<"sip:", A/binary>>
+        end,
+    case port_of(Uri) of
+        undefined ->
+            [Uri] ++
+                [<<Uri/binary, ":", P/binary>> || P <- Ports, P =/= undefined];
+        _ ->
+            [Uri]
+    end.
 
 binds_of(#{contact := _} = Opts) ->
     Plain = uris(Opts),
@@ -189,8 +402,9 @@ binds_of(#{contact := _} = Opts) ->
             #{contact := _} = TlsOpts -> uris(TlsOpts);
             _ -> []
         end,
-    [bind(U, I, false) || {U, I} <- Plain] ++
-        [bind(U, I, true) || {U, I} <- Tls];
+    Nat = maps:get(nat, Opts, []),
+    [bind(U, I, false, Nat) || {U, I} <- Plain] ++
+        [bind(U, I, true, Nat) || {U, I} <- Tls];
 binds_of(_) ->
     [].
 
@@ -198,8 +412,48 @@ binds_of(_) ->
 uris(#{contact := C} = Opts) ->
     [{C, maps:get(ident, Opts, ident_of(C))} | maps:get(contacts, Opts, [])].
 
-bind(Uri, Ident, Tls) ->
-    #{uri => bare_uri(Uri), ident => Ident, tls => Tls}.
+bind(Uri, Ident, Tls, Nat) ->
+    B = #{uri => bare_uri(Uri), ident => Ident, tls => Tls},
+    case lists:keyfind(Uri, 1, Nat) of
+        {_, _, Local, [_ | _] = Nets} -> B#{local_uri => Local, nets => Nets};
+        _ -> B
+    end.
+
+%% The Contact URI a peer at Peer (an address) gets: a public listen
+%% address becomes its local one for a peer inside its local_nets, so
+%% traffic that never leaves the private network does not hairpin through
+%% the NAT. Anything else comes back as it is.
+-spec for_peer(binary(), binary() | inet:ip_address() | undefined) ->
+    binary().
+for_peer(Uri, Peer) when is_binary(Uri) ->
+    case peer_ip(Peer) of
+        {ok, Ip} ->
+            Bare = bare_uri(Uri),
+            case
+                [
+                    L
+                 || #{uri := U, local_uri := L, nets := Nets} <- binds(),
+                    U =:= Bare,
+                    lists:any(fun(N) -> chappe_sip_net:in_net(Ip, N) end, Nets)
+                ]
+            of
+                [L | _] -> binary:replace(Uri, Bare, L);
+                [] -> Uri
+            end;
+        error ->
+            Uri
+    end;
+for_peer(Uri, _Peer) ->
+    Uri.
+
+peer_ip(Ip) when is_tuple(Ip) ->
+    {ok, Ip};
+peer_ip(<<"[", _/binary>> = H) when byte_size(H) > 2 ->
+    chappe_sip_net:address(binary:part(H, 1, byte_size(H) - 2));
+peer_ip(H) when is_binary(H) ->
+    chappe_sip_net:address(H);
+peer_ip(_) ->
+    error.
 
 bare_uri(Uri) ->
     Bare = chappe_sip_hdr:name_addr_uri(Uri),

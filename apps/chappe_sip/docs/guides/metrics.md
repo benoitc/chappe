@@ -19,7 +19,7 @@ Counters, updated as traffic flows:
 |---|---|---|
 | `chappe_sip_requests_total` | `direction` (`in`, `out`), `method` | requests received and sent; an unknown method is `other` |
 | `chappe_sip_responses_total` | `direction`, `status` | responses received on our requests, and sent |
-| `chappe_sip_guard_blocked_total` | `reason` (`user_agent`, `source`, `rate`) | requests `chappe_sip_guard` turned away |
+| `chappe_sip_guard_blocked_total` | `reason` (`user_agent`, `header`, `source`, `rate`) | requests `chappe_sip_guard` turned away |
 
 Gauges, read when the metrics are scraped:
 
@@ -42,6 +42,30 @@ service:
 R1 = livery_router:add('GET', <<"/metrics">>,
                        chappe_sip_metrics:handler(), #{}, R0).
 ```
+
+## Use the built-in listener
+
+When the node has no HTTP service of its own, let chappe_sip serve
+`GET /metrics` on a port of its own. Set it in `sys.config`:
+
+```erlang
+{chappe_sip, [{metrics, #{port => 9568}}]}
+```
+
+or start it at run time:
+
+```erlang
+ok = chappe_sip_metrics:listen(#{port => 9568, ip => {10, 0, 0, 5}}).
+```
+
+- It listens on 127.0.0.1 unless you give `ip`; put it on a private
+  interface, never a public one.
+- Any other path is not served.
+- A port that cannot be bound fails the application start (from the
+  setting) or returns `{error, Reason}` (from `listen/1`).
+- `chappe_sip_metrics:stop_listening/0` closes it.
+- It runs under `chappe_sip_sup`; if its HTTP service dies it is started
+  again from the setting.
 
 ## Read the gauges without HTTP
 
@@ -70,7 +94,8 @@ Set the `metrics` setting to `false`. Nothing is registered or counted, and
 ## Where it lives
 
 - Modules: `chappe_sip_metrics` (registration, counters, gauges, handler),
+  `chappe_sip_metrics_http` (the built-in listener),
   set up by `chappe_sip_app`, fed by `chappe_sip_engine` and
   `chappe_sip_guard`.
-- Tests: `chappe_sip_metrics_tests`.
+- Tests: `chappe_sip_metrics_tests`, `chappe_sip_metrics_http_SUITE`.
 - Lab: none.

@@ -1345,55 +1345,13 @@ redirect_to(T, #data{uri = OldUri} = D) ->
         uri = T, to = <<"<", T/binary, ">">>
     }).
 
-%% sip/sips Contacts not tried yet, by q (1.0 when absent), header order
-%% on a tie. A URI's ?headers part is dropped: we do not let a redirect
-%% add headers to our request (RFC 3261 19.1.5 makes them optional); its
-%% method parameter is dropped too (8.1.3.4). A SIPS URI naming UDP is no
-%% target (19.1.1).
+%% the 3xx Contacts not tried yet (chappe_sip_route:redirect_targets/1)
 redirect_targets(Msg, #data{tried = Tried}) ->
-    Contacts = lists:append([
-        L
-     || V <- chappe_sip_msg:get_all(<<"contact">>, Msg),
-        {ok, L} <- [chappe_sip_hdr:name_addr_list(V)]
-    ]),
-    Ranked = [
-        {-q_value(maps:get(params, C, #{})), I, without_headers(Uri)}
-     || {I, #{uri := Uri} = C} <- lists:enumerate(Contacts),
-        supported_target(Uri)
-    ],
-    Uris = [U || {_, _, U} <- lists:sort(Ranked)],
-    dedup([U || U <- Uris, not lists:member(U, Tried)]).
-
-dedup([]) -> [];
-dedup([H | T]) -> [H | dedup([X || X <- T, X =/= H])].
-
-supported_target(Uri) ->
-    case chappe_sip_uri:parse(Uri) of
-        {ok, #{scheme := S}} when S =:= sip; S =:= sips ->
-            not chappe_sip_uri:is_sips_unreliable(Uri);
-        _ ->
-            false
-    end.
-
-without_headers(Uri) ->
-    {_, U} = chappe_sip_uri:take_param(
-        hd(binary:split(Uri, <<"?">>)), <<"method">>
-    ),
-    U.
-
-q_value(#{<<"q">> := Q}) when is_binary(Q) ->
-    try
-        binary_to_float(Q)
-    catch
-        error:badarg ->
-            try
-                float(binary_to_integer(Q))
-            catch
-                error:badarg -> 0.0
-            end
-    end;
-q_value(_) ->
-    1.0.
+    [
+        U
+     || {U, _} <- chappe_sip_route:redirect_targets(Msg),
+        not lists:member(U, Tried)
+    ].
 
 %% The request options with the option tags a 420 named taken out of what
 %% we require; error when we required none of them (nothing to retry).
@@ -1477,7 +1435,22 @@ default_or(R) -> R.
 %% (RFC 3261 8.1.1.8), so a dialog it forms is secure (12.2.1.1).
 default_contact(#data{opts = #{contact := C}}) ->
     C;
-default_contact(#data{} = D) ->
+default_contact(#data{uri = Uri, proxy = Proxy} = D) ->
+    %% behind 1:1 NAT, a target on the local network gets the local address
+    chappe_sip_binds:for_peer(bound_contact(D), target_host(Proxy, Uri)).
+
+target_host(Proxy, Uri) ->
+    Target =
+        case Proxy of
+            P when is_binary(P) -> P;
+            _ -> Uri
+        end,
+    case is_binary(Target) andalso chappe_sip_uri:parse(Target) of
+        {ok, #{host := H}} -> H;
+        _ -> undefined
+    end.
+
+bound_contact(#data{} = D) ->
     %% with several listen addresses, the one we send from
     case local(D) of
         undefined ->

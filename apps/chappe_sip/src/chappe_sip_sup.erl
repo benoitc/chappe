@@ -64,6 +64,8 @@ init([]) ->
         sup(chappe_sip_subscriber_sup),
         sup(chappe_sip_events_sup),
         sup(chappe_sip_peers_sup),
+        %% the optional GET /metrics listener (idle unless configured)
+        worker(chappe_sip_metrics_http),
         sup(chappe_sip_ws_sup),
         sup(chappe_sip_media_sup),
         sup(chappe_sip_b2b_sup),

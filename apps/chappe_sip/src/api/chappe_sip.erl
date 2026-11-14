@@ -89,7 +89,7 @@
 %% max_message_size defaults to the application setting. hep (or the
 %% `hep' application setting) sends a HEPv3 copy of every SIP message sent
 %% and received to a capture server (Homer); capture_id defaults to 200.
--spec start(#{contact := binary() | [binary()], _ => _}) ->
+-spec start(#{contact := binary() | map() | [binary() | map()], _ => _}) ->
     ok | {error, already_started | term()}.
 start(Opts) ->
     case start_hep(maps:get(hep, Opts, chappe_sip_config:get(hep))) of
@@ -296,7 +296,10 @@ create_b2bua(Req, Res, Uri, Opts) ->
 %% {flow, Uri, Flow}: the contact Uri reached over the RFC 5626 flow of its
 %% binding (location_flow/1). Opts:
 %%   forking => sequential | parallel, record_route => boolean,
-%%   timer_c => ms (Timer C per INVITE branch, default timer_c_ms).
+%%   timer_c => ms (Timer C per INVITE branch, default timer_c_ms),
+%%   provisional_timeout => ms, final_timeout => ms (per branch),
+%%   follow_redirects => boolean() | #{max_targets, max_depth, allow}.
+%% See chappe_sip_proxy and the proxy guide.
 %% Returns the aggregate result.
 -spec proxy_request(chappe_sip_req:req(), Dest | [Dest], map()) ->
     {ok, map()} | {error, term()}

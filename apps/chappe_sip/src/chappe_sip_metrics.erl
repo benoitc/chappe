@@ -9,7 +9,8 @@
 %%                                                  out: sent
 %%   chappe_sip_responses_total{direction, status}  in: received on our
 %%                                                  requests, out: sent
-%%   chappe_sip_guard_blocked_total{reason}         user_agent, source, rate
+%%   chappe_sip_guard_blocked_total{reason}         user_agent, header, source,
+%%                                                  rate
 %% Gauges, read when the metrics are scraped (refresh/0):
 %%   chappe_sip_dialogs                   dialogs alive
 %%   chappe_sip_registrar_bindings        live bindings in the location store
@@ -22,10 +23,14 @@
 %%   R1 = livery_router:add('GET', <<"/metrics">>,
 %%                          chappe_sip_metrics:handler(), #{}, R0).
 %% '''
-%% Set the `metrics' application setting to false to record nothing.
+%% Set the `metrics' application setting to false to record nothing. Set
+%% it to #{port => Port} (and ip => Ip, 127.0.0.1 by default) to serve
+%% GET /metrics on a listener of its own (chappe_sip_metrics_http), or
+%% start one with listen/1.
 -module(chappe_sip_metrics).
 
 -export([setup/0, enabled/0, refresh/0, handler/0]).
+-export([listen/1, stop_listening/0]).
 -export([request/2, response/2, guard_blocked/1]).
 
 -define(ON, {?MODULE, on}).
@@ -97,6 +102,17 @@ new(Fun) ->
     catch
         error:{badmatch, {error, already_exists}} -> ok
     end.
+
+%% Serve GET /metrics on Port (on Ip, 127.0.0.1 by default), replacing a
+%% listener started before.
+-spec listen(#{port := inet:port_number(), ip => inet:ip_address()}) ->
+    ok | {error, term()}.
+listen(Opts) ->
+    chappe_sip_metrics_http:listen(Opts).
+
+-spec stop_listening() -> ok.
+stop_listening() ->
+    chappe_sip_metrics_http:stop_listening().
 
 -spec enabled() -> boolean().
 enabled() ->

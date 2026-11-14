@@ -18,6 +18,10 @@
 %%   any other   chappe_sip_media:bypass/2 decides (the lab's network is
 %%               one private network, so direct)
 %%
+%% The node also listens on 10.253.10.10 (the nat network) as a host
+%% behind 1:1 NAT: it advertises 203.0.113.10 there, and its local address
+%% to 10.253.10.0/26.
+%%
 %% Kamailio pings the node (its dispatcher) and the node pings Kamailio
 %% (a peer of group kam). chappe_sbc_interop_SUITE drives the node with
 %% erl_call: calls/0, set_media/2, replace_b/2, query/1, events/1,
@@ -38,6 +42,8 @@
     rtcp_mux => [offer, require]
 }).
 -define(NETWORKS, [<<"10.253.9.0/24">>]).
+-define(NAT_LOCAL, <<"10.253.10.10">>).
+-define(NAT_PUBLIC, <<"203.0.113.10">>).
 
 -spec start(string()) -> ok.
 start(Ip) ->
@@ -45,7 +51,16 @@ start(Ip) ->
     {ok, _} = application:ensure_all_started(chappe_sip),
     Keeper = keeper(),
     ok = chappe_sip:start(#{
-        contact => iolist_to_binary(["sip:", Ip, ":5060"]),
+        %% the lab address, and the NAT one: bound on 10.253.10.10,
+        %% advertised as 203.0.113.10 but to its local network
+        contact => [
+            iolist_to_binary(["sip:", Ip, ":5060"]),
+            #{
+                uri => <<"sip:", ?NAT_LOCAL/binary, ":5060">>,
+                public => ?NAT_PUBLIC,
+                local_nets => [<<"10.253.10.0/26">>]
+            }
+        ],
         media => #{rtpengine => #{nodes => [#{name => rtpe, host => ?RTPE, port => 2223}]}}
     }),
     Peer = #{interval_ms => 1000, timeout_ms => 1000, up_after => 1, down_after => 2},
