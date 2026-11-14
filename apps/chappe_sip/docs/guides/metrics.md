@@ -19,7 +19,7 @@ Counters, updated as traffic flows:
 |---|---|---|
 | `chappe_sip_requests_total` | `direction` (`in`, `out`), `method` | requests received and sent; an unknown method is `other` |
 | `chappe_sip_responses_total` | `direction`, `status` | responses received on our requests, and sent |
-| `chappe_sip_guard_blocked_total` | `reason` (`user_agent`, `source`, `rate`) | requests `chappe_sip_guard` turned away |
+| `chappe_sip_guard_blocked_total` | `reason` (`user_agent`, `header`, `source`, `rate`) | requests `chappe_sip_guard` turned away |
 
 Gauges, read when the metrics are scraped:
 

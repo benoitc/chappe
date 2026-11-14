@@ -9,7 +9,8 @@
 %%                                                  out: sent
 %%   chappe_sip_responses_total{direction, status}  in: received on our
 %%                                                  requests, out: sent
-%%   chappe_sip_guard_blocked_total{reason}         user_agent, source, rate
+%%   chappe_sip_guard_blocked_total{reason}         user_agent, header, source,
+%%                                                  rate
 %% Gauges, read when the metrics are scraped (refresh/0):
 %%   chappe_sip_dialogs                   dialogs alive
 %%   chappe_sip_registrar_bindings        live bindings in the location store
