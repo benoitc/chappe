@@ -48,6 +48,7 @@
 -define(IS_QUERY(Q),
     (Q =:= local_tag orelse Q =:= remote_tag orelse Q =:= call_id orelse
         Q =:= remote_sdp orelse Q =:= local_sdp orelse Q =:= local_contact orelse
+        Q =:= remote_addr orelse Q =:= call_ref orelse
         (is_tuple(Q) andalso tuple_size(Q) =:= 2 andalso
             (element(1, Q) =:= set_handled orelse element(1, Q) =:= set_owner)))
 ).
@@ -814,6 +815,10 @@ query(From, local_sdp, #data{local_sdp = S} = D) ->
     {keep_state, D, [{reply, From, S}]};
 query(From, local_contact, #data{local_contact = C} = D) ->
     {keep_state, D, [{reply, From, C}]};
+query(From, remote_addr, #data{remote_addr = RA} = D) ->
+    {keep_state, D, [{reply, From, RA}]};
+query(From, call_ref, #data{call_ref = Ref} = D) ->
+    {keep_state, D, [{reply, From, Ref}]};
 query(From, {set_handled, Events}, D) ->
     {keep_state, D#data{handled = Events}, [{reply, From, ok}]};
 query(From, {set_owner, Owner}, #data{owner_mon = Old} = D) ->

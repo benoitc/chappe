@@ -56,6 +56,8 @@
     remote_sdp/1,
     local_sdp/1,
     local_contact/1,
+    remote_addr/1,
+    call_ref/1,
     set_handled/2,
     set_owner/2,
     wait/1,
@@ -317,6 +319,18 @@ local_sdp(#dialog{pid = Pid}) ->
 -spec local_contact(dialog()) -> binary() | undefined.
 local_contact(#dialog{pid = Pid}) ->
     gen_statem:call(Pid, local_contact).
+
+%% The peer's address in the dialog: its From (a UAS dialog) or To (a UAC
+%% dialog), a name-addr with its tag. The identity the dialog was formed
+%% with, which in-dialog requests must keep (RFC 3261 12.2.1.1).
+-spec remote_addr(dialog()) -> binary().
+remote_addr(#dialog{pid = Pid}) ->
+    gen_statem:call(Pid, remote_addr).
+
+%% The call the dialog serves (chappe_sip_call), undefined if none.
+-spec call_ref(dialog()) -> binary() | undefined.
+call_ref(#dialog{pid = Pid}) ->
+    gen_statem:call(Pid, call_ref).
 
 %% Change the set of in-dialog events the owner will handle itself.
 -spec set_handled(dialog(), [atom()] | all) -> ok.

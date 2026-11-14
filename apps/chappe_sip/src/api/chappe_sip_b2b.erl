@@ -54,7 +54,7 @@
 -include("chappe_sip_uac.hrl").
 
 -export([create_b2bua/4, relay/1, relay/2, relay_async/2, set_media/2, info/1]).
--export([hangup/2, replace_b/3]).
+-export([hangup/2, replace_b/3, replace_leg/4]).
 -export([call/2, call/3, contact/0]).
 %% helpers of the chappe_sip_b2b_* modules
 -export([timer_c/1, remote_tag/1, destroy_quietly/2, offers/4, dest_bopts/2]).
@@ -73,7 +73,8 @@
     requests => [request()],
     relay_info => boolean(),
     winner => winner(),
-    call_ref => binary()
+    call_ref => binary(),
+    transfer => {chappe_sip_b2b_transfer:mode(), map()}
 }.
 %% Where leg B goes: a destination, a list of them, or a group of
 %% OPTIONS-monitored peers (chappe_sip_peers); a list or a group is tried
@@ -155,6 +156,22 @@
 %%                            answer them with chappe_sip_res:send/3.
 %%                            Without a notify process the relay answers
 %%                            them as a dialog does: REFER 603, others 200
+%%   transfer              => off (default) | auto. auto: a REFER from
+%%                            either leg is carried out by the B2BUA
+%%                            itself (chappe_sip_b2b_transfer): the
+%%                            target replaces the leg that sent it, the
+%%                            other leg keeps its media and sees no
+%%                            re-INVITE. Needs anchored media (a REFER on
+%%                            a direct call gets 488). requests' refer is
+%%                            then ignored
+%%   transfer_opts         => #{policy => fun((Info) -> boolean() |
+%%                            {reject, Code}), domains => [Host],
+%%                            max_transfers => N}: policy decides who may
+%%                            transfer where (it runs in the transfer's
+%%                            process, on the call's node); without one a
+%%                            target must be a sip or sips URI on one of
+%%                            domains (default this node's host). At most
+%%                            max_transfers (5) per call
 %%   relay_info            => boolean (default false): an INFO from one
 %%                            leg (DTMF, RFC 6086) goes to the other, and
 %%                            its final comes back
@@ -227,7 +244,8 @@
 create_b2bua(Req, Res, Uri, Opts) ->
     case
         chappe_sip_b2b_hdr:valid_from(Opts) andalso
-            chappe_sip_call:valid_opts(Opts)
+            chappe_sip_call:valid_opts(Opts) andalso
+            chappe_sip_b2b_transfer:valid(Opts)
     of
         true -> check_privacy(Req, Res, Uri, with_call_ref(Req, Opts));
         false -> chappe_sip_b2b_fork:refuse(Res, badarg, Opts)
@@ -503,10 +521,12 @@ attempt([#{uri := Uri, bopts := BOpts} = Dest | Rest], W) ->
 fork_next({wait, W}) -> b2b_wait(W);
 fork_next({failed, Error, W}) -> chappe_sip_b2b_fork:fail(Error, W).
 
-%% the in-dialog events each leg leaves to its owner (the relay)
+%% the in-dialog events each leg leaves to its owner (the relay); a call
+%% that carries transfers takes its REFERs
 handled(Opts) ->
+    Refer = [refer || chappe_sip_b2b_transfer:mode(Opts) =/= off],
     chappe_sip_b2b_requests:handled(
-        maps:get(requests, Opts, []), maps:get(relay_info, Opts, false)
+        maps:get(requests, Opts, []) ++ Refer, maps:get(relay_info, Opts, false)
     ).
 
 st_opts() -> [session_expires, min_se, session_refresher].
@@ -712,6 +732,10 @@ create_a(
                 media => M,
                 requests => maps:get(requests, Opts, []),
                 relay_info => maps:get(relay_info, Opts, false),
+                transfer => {
+                    chappe_sip_b2b_transfer:mode(Opts),
+                    maps:get(transfer_opts, Opts, #{})
+                },
                 winner => Winner,
                 call_ref => maps:get(call_ref, Opts)
             },
@@ -1005,6 +1029,23 @@ hangup(B2b, Opts) ->
 replace_b(B2b, Target, Opts) ->
     case chappe_sip_b2b_replace:valid(Target, Opts) of
         true -> call(B2b, {replace_b, Target, Opts}, timer_c(Opts) + 10000);
+        false -> {error, badarg}
+    end.
+
+%% Replace the party on Leg of an anchored call, as replace_b/3 does for
+%% leg B; a transfer replaces the leg that sent the REFER. Target is a URI
+%% or {dialog, D} (a fork only for leg B). Opts are replace_b/3's, plus
+%% keep_old => true: the old party is not hung up but handed to the
+%% caller (its dialog's owner from then on), which ends it.
+-spec replace_leg(b2b(), a | b, binary() | {dialog, chappe_sip_dialog:dialog()}, map()) ->
+    ok | {ok, #{winner := winner()}} | {error, term()}.
+replace_leg(B2b, b, Target, Opts) ->
+    replace_b(B2b, Target, Opts);
+replace_leg(_B2b, a, {parallel, _}, _Opts) ->
+    {error, badarg};
+replace_leg(B2b, a, Target, Opts) ->
+    case chappe_sip_b2b_replace:valid(Target, Opts) of
+        true -> call(B2b, {replace, a, Target, Opts}, timer_c(Opts) + 10000);
         false -> {error, badarg}
     end.
 

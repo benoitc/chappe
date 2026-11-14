@@ -30,6 +30,8 @@
 %%    control plane). They sit above the stack so their state (and the media
 %%    backend connections) survive SIP engine restarts; both are populated
 %%    lazily and stay empty unless configured.
+%% 4a. chappe_sip_b2b_sup: the transfers B2BUA calls carry out; each one
+%%    watches its call's relay, so it needs nothing of the stack's.
 %% 5. chappe_sip_stack_sup: the SIP engine and per-call state (rest_for_one);
 %%    everything there dies with the engine.
 -module(chappe_sip_sup).
@@ -64,6 +66,7 @@ init([]) ->
         sup(chappe_sip_peers_sup),
         sup(chappe_sip_ws_sup),
         sup(chappe_sip_media_sup),
+        sup(chappe_sip_b2b_sup),
         sup(chappe_sip_stack_sup),
         %% after the stack: stopped first, while a REGISTER can still go out
         sup(chappe_sip_regc_sup)
