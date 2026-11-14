@@ -12,13 +12,15 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -export([all/0, init_per_suite/1, end_per_suite/1, end_per_testcase/2]).
+-export([notify_death_keeps_call/1]).
 -export([supervised/1, owner_death_hangs_up/1, relay_crash_ends_call/1,
          from_another_node/1, offer_flood_bounded/1]).
 
 -define(UA, chappe_sip_test_ua).
 
 all() ->
-    [supervised, owner_death_hangs_up, relay_crash_ends_call,
+    [supervised, owner_death_hangs_up, notify_death_keeps_call,
+     relay_crash_ends_call,
      from_another_node, offer_flood_bounded].
 
 init_per_suite(Config) ->
@@ -76,6 +78,27 @@ owner_death_hangs_up(_Config) ->
     ok = wait_until(fun() ->
         maps:get(b2b, chappe_sip_call:lookup(CallRef)) =:= []
     end).
+
+%% Without an owner option the call has none: the notify process (often
+%% the handler that made the call) may end, and the call goes on.
+notify_death_keeps_call(_Config) ->
+    Notify = spawn(fun() -> receive stop -> ok end end),
+    {EP, CP} = setup(#{notify => Notify}),
+    callee(CP, fun(_Sock) -> ok end),
+    caller(EP, fun(_Sock, _D) -> ok end),
+    {Relay, _} = B2b = got(b2b),
+    exit(Notify, kill),
+    no_bye(1000),
+    ?assert(is_process_alive(Relay)),
+    ?assertMatch(#{media := anchor}, chappe_sip_b2b:info(B2b)),
+    ok = chappe_sip_b2b:hangup(B2b, #{}).
+
+no_bye(Ms) ->
+    receive
+        {callee_bye, B} -> ct:fail({unexpected_bye, B});
+        {caller_bye, B} -> ct:fail({unexpected_bye, B})
+    after Ms -> ok
+    end.
 
 %% The relay itself is killed: its dialogs see their owner go and end
 %% the call, so neither party is left on a dead call.

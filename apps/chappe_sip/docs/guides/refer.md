@@ -187,7 +187,8 @@ What happens on a REFER from either leg:
   `NOTIFY 200`, then a BYE. On a failure it gets the final status and the
   call stays as it was.
 - Attended (RFC 5589 7.3): a Refer-To with Replaces naming a leg of another
-  B2BUA call of this node joins the two remote parties through rtpengine:
+  B2BUA call, on this node or another node of the cluster (found through
+  the `chappe_sip` pg scope), joins the two remote parties through rtpengine:
   the target's leg leaves its call and is re-INVITEd into this one, and no
   new INVITE goes out. A Replaces naming no local dialog goes to the target
   in an INVITE with Replaces and `Require: replaces`.
@@ -205,9 +206,18 @@ The notify process gets `{chappe_sip_b2b, Ref, Event}`:
 
 ### Decide who may transfer where
 
-Without a policy fun, a target must be a sip or sips URI on one of
-`domains` (default this node's host): another host or a `tel:` number gets
-403 before anything is called. Give your own policy to decide:
+Without a policy fun, a target must be a sip or sips URI with a user, on
+one of `domains`, and without `maddr`; anything else gets 403 before
+anything is called:
+
+- A domain given as `<<"pbx.example.com">>` takes any port;
+  `<<"pbx.example.com:5080">>` takes only that one.
+- Without `domains`, the target must be this node at one of its own listen
+  addresses, port included, so your INVITE handler routes it.
+- `maddr` would send the INVITE elsewhere than the host you allowed.
+- The target's 3xx is not followed: the transfer fails with that status.
+
+Give your own policy to decide:
 
 ```erlang
 Policy = fun(#{target := Target, referrer := Who}) ->
@@ -218,15 +228,22 @@ Opts = #{media => anchor, transfer => auto,
 ```
 
 The fun gets `kind` (`blind` or `attended`), `leg`, `target`, `refer_to`,
-`referrer`, `referred_by`, `call_ref` and `transfers`, and returns `true`,
+`referrer`, `referred_by`, `principal`, `call_ref` and `transfers` (and
+`local` and `replaces_principal` for an attended transfer), and returns `true`,
 `false` (403) or `{reject, Code}`. It runs in the transfer's process, on
 the node that holds the call.
 
 - `referrer` is the REFER's From, the identity its dialog was formed with.
   `referred_by` is only what the REFER claims (RFC 3892 6): never grant on
   it alone.
-- A Replaces naming a local dialog whose party is not the referrer gets
-  403, and that call is left alone (RFC 3891 3).
+- An attended transfer that joins two calls of this node needs proof that
+  the referrer is the party it replaces (RFC 3891 3). Record who your app
+  authenticated on each leg with `create_b2bua/4`'s `principal => #{a | b
+  => Who}`: without a policy fun, the join goes ahead only when the
+  referrer's leg and the leg the Replaces names carry the same principal,
+  and gets 403 otherwise, that call left alone. A policy fun sees them as
+  `principal` and `replaces_principal`. The REFER's From is never enough:
+  nothing authenticated it.
 - A call carries at most `max_transfers` transfers (default 5), one at a
   time: a second REFER while one runs gets 500 with Retry-After.
 - A REFER for another method than INVITE gets 403. A REFER with
@@ -263,14 +280,28 @@ ms) the REFER gets 603. Both calls work from any node.
 ```erlang
 case chappe_sip_focus:refer(Dialog, RReq, RRes, #{policy => Policy}) of
     {add, Uri, Refer} -> dial_in(Uri, Refer);
+    {transfer, Uri, Refer} -> replace_member(Uri, Refer);
     {remove, Uri, Refer} -> kick(Uri, Refer);
     {error, _} -> ok
 end.
 ```
 
-`add` is a Refer-To for an INVITE (5.5), `remove` one with `method=BYE`
-(5.11). The policy gets `action`, `target`, `referrer` and `referred_by`;
-without one both are refused 403. Report with `chappe_sip_refer:final/2`.
+What a REFER means follows where it was sent. To the conference URI, or
+in a dialog whose Contact carries `isfocus`, a Refer-To for an INVITE is
+`add` (5.5). In a dialog of a room that hides it is a focus (no
+`isfocus`, 4.2), it is `transfer`: an RFC 3515 transfer of that member.
+`remove` is a Refer-To with `method=BYE` (5.11). The policy gets `action`,
+`target`, `replaces`, `referrer` and `referred_by`; without one all are
+refused 403. Report with `chappe_sip_refer:final/2`.
+
+When `replaces` is set, put it on your INVITE to the target: that brings a
+point-to-point call into the conference (5.10). `chappe_sip_refer:target/1`
+has it too.
+
+A room whose members join through a B2BUA call marks those legs with
+`create_b2bua/4`'s `contact_params => #{a => <<";isfocus">>}`, or sets
+their whole Contact with
+`a_headers => [{<<"Contact">>, chappe_sip_focus:contact(ConfUri)}]`.
 
 ## REFER behaviour in detail
 

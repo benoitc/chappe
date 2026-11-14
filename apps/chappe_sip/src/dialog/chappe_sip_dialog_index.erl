@@ -18,6 +18,11 @@
 %% it re-monitors every pid still in the table. Lookups also skip an entry
 %% whose pid is already dead, which covers the window before the 'DOWN'.
 %%
+%% find/1 looks a dialog up on every node of the cluster: each node's
+%% index server is a member of the group chappe_sip_dialog_index of the
+%% `chappe_sip' pg scope while it runs, so an attended transfer finds the
+%% dialog its Replaces names wherever it lives.
+%%
 %% Size is bounded by max_dialogs: the engine refuses a dialog past that
 %% ceiling, and insert/5 refuses an entry past it as a second guard.
 %%
@@ -33,7 +38,7 @@
 -behaviour(gen_server).
 
 -export([start_link/0]).
--export([insert/5, set_state/2, delete/1, lookup/1]).
+-export([insert/5, set_state/2, delete/1, lookup/1, find/1]).
 -export([subscribe/1, unsubscribe/1, publish/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
@@ -56,6 +61,9 @@
 -define(SUBS, chappe_sip_dialog_events).
 %% a subscriber this far behind misses events
 -define(MAX_QUEUE, 10000).
+%% the pg group of the index servers, and how long find/1 waits for one
+-define(GROUP, chappe_sip_dialog_index).
+-define(FIND_TIMEOUT, 2000).
 
 -type key() :: {
     CallId :: binary(), LocalTag :: binary(), RemoteTag :: binary()
@@ -127,6 +135,33 @@ lookup(Key) ->
         error:badarg -> not_found
     end.
 
+%% lookup/1 on this node, then on the other nodes of the cluster, each
+%% given ?FIND_TIMEOUT ms to answer. The pid may be another node's.
+-spec find(key()) ->
+    {ok, {pid(), non_neg_integer(), dialog_state(), role()}} | not_found.
+find(Key) ->
+    case lookup(Key) of
+        not_found ->
+            Nodes = lists:usort([
+                node(P)
+             || P <- pg:get_members(chappe_sip_call:scope(), ?GROUP),
+                node(P) =/= node()
+            ]),
+            find_at(Nodes, Key);
+        Found ->
+            Found
+    end.
+
+find_at([], _Key) ->
+    not_found;
+find_at([N | Rest], Key) ->
+    try erpc:call(N, ?MODULE, lookup, [Key], ?FIND_TIMEOUT) of
+        {ok, _} = Found -> Found;
+        _ -> find_at(Rest, Key)
+    catch
+        _:_ -> find_at(Rest, Key)
+    end.
+
 %% Send Pid each dialog state change from now on.
 -spec subscribe(pid()) -> ok.
 subscribe(Pid) when is_pid(Pid) ->
@@ -179,6 +214,7 @@ init([]) ->
                 ?TAB
         end,
     _ = ets:new(?SUBS, [named_table, protected, {read_concurrency, true}]),
+    ok = pg:join(chappe_sip_call:scope(), ?GROUP, self()),
     %% re-watch what a previous incarnation was watching
     Watched = lists:foldl(
         fun({Key, Pid}, Acc) -> watch(Pid, Key, Acc) end,
