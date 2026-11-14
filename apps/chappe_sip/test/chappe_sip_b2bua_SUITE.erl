@@ -26,6 +26,7 @@
 -export([b_events_notified/1, app_cancels_b/1]).
 -export([a_headers_on_2xx/1, a_headers_on_failure/1]).
 -export([b_redirect_followed/1, local_sdp_b_fun/1]).
+-export([relayed_1xx_contact_public/1, relayed_1xx_contact_local/1]).
 
 all() ->
     [b2b_success_bye, b2b_callee_busy, b2b_caller_cancel,
@@ -36,7 +37,8 @@ all() ->
      serial_branch_opts, hunt_keeps_a_tag, bad_from_refused,
      bad_from_fork_refused, bad_from_not_passed, b_events_notified,
      app_cancels_b, a_headers_on_2xx, a_headers_on_failure,
-     b_redirect_followed, local_sdp_b_fun].
+     b_redirect_followed, local_sdp_b_fun, relayed_1xx_contact_public,
+     relayed_1xx_contact_local].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -1137,6 +1139,46 @@ peer(Port, Fun) ->
 
 expect(Msg) ->
     receive Msg -> ok after 6000 -> ct:fail({expected, Msg}) end.
+
+%% Behind 1:1 NAT (a contact with public and local_nets), the 1xx the
+%% B2BUA relays to A carries the address A should reach it at: the public
+%% one for a caller outside local_nets, the local one for a caller inside.
+relayed_1xx_contact_public(_Config) ->
+    ?assertEqual(<<"192.0.2.10">>, relayed_1xx_contact_host([<<"10.0.0.0/8">>])).
+
+relayed_1xx_contact_local(_Config) ->
+    ?assertEqual(<<"127.0.0.1">>, relayed_1xx_contact_host([<<"127.0.0.0/8">>])).
+
+relayed_1xx_contact_host(Nets) ->
+    EP = pick(),
+    CP = pick(),
+    ok = chappe_sip:start(#{contact => #{
+        uri => <<"sip:127.0.0.1:", (integer_to_binary(EP))/binary>>,
+        public => <<"192.0.2.10">>,
+        local_nets => Nets
+    }}),
+    Test = self(),
+    CalleeUri = <<"sip:callee@127.0.0.1:", (integer_to_binary(CP))/binary>>,
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        Test ! {b2b, chappe_sip:create_b2bua(Req, Res, CalleeUri, #{})}
+    end),
+    callee(CP, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        send(Sock, Src, resp(Inv, 180, <<"Ringing">>, tag(),
+                             [{<<"Contact">>, ctc(CP)}], <<>>)),
+        timer:sleep(infinity)
+    end),
+    caller(fun(Sock) ->
+        send(Sock, EP, invite(Sock, EP, callid(), tag())),
+        R180 = recv_status(Sock, 180),
+        {ok, M} = chappe_sip_msg:parse(R180),
+        {ok, #{uri := U}} =
+            chappe_sip_hdr:name_addr(chappe_sip_msg:get(<<"contact">>, M)),
+        {ok, #{host := H}} = chappe_sip_uri:parse(U),
+        Test ! {host, H},
+        timer:sleep(infinity)
+    end),
+    receive {host, H} -> H after 6000 -> ct:fail(no_180) end.
 
 %% ---- SIP helpers ----
 

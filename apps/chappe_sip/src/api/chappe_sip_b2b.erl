@@ -55,7 +55,7 @@
 
 -export([create_b2bua/4, relay/1, relay/2, relay_async/2, set_media/2, info/1]).
 -export([hangup/2, replace_b/3, replace_leg/4]).
--export([call/2, call/3, contact/0]).
+-export([call/2, call/3, contact/0, contact/1]).
 %% helpers of the chappe_sip_b2b_* modules
 -export([timer_c/1, remote_tag/1, remote_sdp/1, destroy_quietly/2]).
 -export([offers/4, dest_bopts/2]).
@@ -833,14 +833,14 @@ reliable(_BMsg, _W) ->
     false.
 
 %% relay B's 1xx to A under the pre-chosen tag, with its body (early media)
-send_provisional(BMsg, #{res := Res, atag := ATag} = W0) ->
+send_provisional(BMsg, #{req := Req, res := Res, atag := ATag} = W0) ->
     Status = chappe_sip_msg:status(BMsg),
     Reason = default_reason(chappe_sip_msg:reason(BMsg)),
     {CT, Body, W} = early_body(BMsg, W0),
     Reliable = reliable(BMsg, W),
     %% every relayed 1xx carries A's To-tag, so it establishes an early
     %% dialog and needs our Contact (RFC 3261 12.1.1)
-    Hdrs = CT ++ [{<<"Contact">>, contact()}],
+    Hdrs = CT ++ [{<<"Contact">>, contact(Req)}],
     _ = chappe_sip_res:send(Res, Status, #{
         reason => Reason,
         headers => Hdrs,
@@ -882,7 +882,31 @@ early_body(BMsg, #{opts := Opts, media := M0} = W) ->
             {[{<<"Content-Type">>, CT}], Body, W}
     end.
 
-%% The Contact a B2BUA puts on what it sends A.
+%% The Contact a B2BUA puts on what it sends A for request Req: the
+%% listen address Req came to (several listen addresses), as that peer
+%% should see it: behind 1:1 NAT, the local address for a peer inside
+%% local_nets and the public one for everyone else
+%% (chappe_sip_binds:for_peer/2).
+-spec contact(chappe_sip_req:req()) -> binary().
+contact(Req) ->
+    Local = chappe_sip_binds:local(chappe_sip_req:meta(Req)),
+    case chappe_sip_binds:contact_or_primary(Local, false) of
+        undefined ->
+            contact();
+        C ->
+            Uri = chappe_sip_binds:for_peer(
+                bare(C), chappe_sip_req:source_ip(Req)
+            ),
+            <<"<", Uri/binary, ">">>
+    end.
+
+bare(C) ->
+    case chappe_sip_hdr:name_addr(C) of
+        {ok, #{uri := Uri}} -> Uri;
+        _ -> C
+    end.
+
+%% The Contact a B2BUA puts on what it sends: the stack's own address.
 -spec contact() -> binary().
 contact() ->
     case chappe_sip_engine:contact() of
