@@ -27,11 +27,14 @@ changes.
 | `0003-url-param-past-end.patch` | `url_param()` read past the end of the parameter string when the last parameter starts with the name looked up but has no `=` | [`tickets/0003-url-param-past-end.md`](tickets/0003-url-param-past-end.md), not filed yet |
 | `0004-msg-date-signed-shift.patch` | undefined shift of a signed `char` in `msg_date.c` when a month name has a high byte | [`tickets/0004-msg-date-signed-shift.md`](tickets/0004-msg-date-signed-shift.md), not filed yet |
 | `0005-nta-timer-a-at-t1.patch` | Timer A/E of a UDP client transaction started at no less than 1 s whatever T1, against RFC 3261 17.1.1.2 and 17.1.2.2 | [`tickets/0005-nta-timer-a-at-t1.md`](tickets/0005-nta-timer-a-at-t1.md), not filed yet |
+| `0006-tport-tls-san-leak.patch` | `tls_post_connection_check()` leaked the decoded subjectAltName of the peer's certificate on every outbound TLS connection | [`tickets/0006-tport-tls-san-leak.md`](tickets/0006-tport-tls-san-leak.md), not filed yet |
 
 0001 and 0002 were found by the libFuzzer targets in `../fuzz` under
 UBSan, 0003 by the NIF fuzz suite (`chappe_sip_nif_fuzz_SUITE`) under ASan,
 0005 by `chappe_sip_engine_opts_SUITE` (its repro needs no sanitizer: link
-it with the same command and the system frameworks or `-lpthread`).
+it with the same command and the system frameworks or `-lpthread`), 0006 by
+`chappe_sip_tls_SUITE` once `make asan` ran every suite (its repro is a TLS
+handshake, which the ticket describes; there is no program in `repro/`).
 
 ## Reproduce a bug
 
