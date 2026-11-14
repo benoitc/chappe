@@ -64,10 +64,8 @@ rest stays out.
 
 ## Open questions
 
-- Should the SRS refuse SDES keys that arrive over a transport that is not
-  encrypted (RFC 4568 8.3 requires the SDP carrying an inline key to be
-  encrypted)? Today it takes them unless the app asks for TLS with
-  `keys_over_tls => true`, so chappe's client and server work together on
-  a trusted network.
+- Answered: the SRS refuses SDES keys that arrive over a transport that is
+  not encrypted (RFC 4568 8.3), unless the app passes
+  `keys_over_tls => false` for a network it trusts.
 - DTLS-SRTP at the SRS (a WebRTC recording client) would need DTLS in
   Erlang (OTP `ssl` has DTLS, not the `use_srtp` extension).

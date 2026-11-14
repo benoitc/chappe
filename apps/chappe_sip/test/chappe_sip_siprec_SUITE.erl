@@ -928,7 +928,7 @@ server_takes_srtp(_Config) ->
 %% A secure stream with no line the server takes (F8, several keys, a key
 %% derivation rate, no a=crypto at all) is refused with port 0, and an
 %% offer left with no stream is refused 488 with Warning 302 (RFC 3261
-%% 20.43). keys_over_tls refuses SDES keys offered over UDP (RFC 4568 8.3).
+%% 20.43). By default SDES keys offered over UDP are refused the same way (RFC 4568 8.3, 7.1.2: the stream is rejected; RFC 3261 21.4.26: 488).
 %% req: R4568-5.1.2-2 R4568-6.1-2 R4568-6.3.7-1 R4568-8.3-1
 server_refuses_srtp_it_cannot_take(_Config) ->
     #{ep := EP} = call(),
@@ -1299,9 +1299,11 @@ handler(Req, Res) ->
             Test ! {srs_transport, chappe_sip_req:get(<<"via">>, Req)},
             served(Test, Req, Res, #{sink => Test});
         <<"sip:tlskeys@", _/binary>> ->
-            served(Test, Req, Res, #{sink => Test, keys_over_tls => true});
+            %% the default: SDES keys only over TLS (RFC 4568 8.3)
+            served(Test, Req, Res, #{sink => Test});
         <<"sip:sink@", _/binary>> ->
-            served(Test, Req, Res, #{sink => Test,
+            %% the plain UDP recording client of these cases
+            served(Test, Req, Res, #{sink => Test, keys_over_tls => false,
                                      max_queue => persistent_term:get(siprec_test_sink_queue, 500)});
         _ ->
             Callee = <<"sip:callee@127.0.0.1:", (integer_to_binary(CP))/binary>>,

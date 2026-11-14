@@ -86,7 +86,9 @@ record(Config, Mode) ->
             <<"sip:srs@", _/binary>> ->
                 {ok, #{streams := Streams} = Srs} =
                     chappe_sip_siprec_srs:serve(Req, Res, #{
-                        sink => Test, ip => {0, 0, 0, 0}, advertise => MediaIp
+                        sink => Test, ip => {0, 0, 0, 0}, advertise => MediaIp,
+                        %% the lab sends the RS over plain UDP
+                        keys_over_tls => false
                     }),
                 Test ! {srs_streams, Streams},
                 Test ! {srs_offer, chappe_sip_req:body(Req)},

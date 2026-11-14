@@ -157,7 +157,9 @@ call. You get that by default:
 
 - A call with an SRTP leg has every tap offered as `RTP/SAVP`, with keys
   rtpengine makes for the recording (not the call's). A recording server
-  without SRTP refuses the streams and the recording stops.
+  without SRTP refuses the streams and the recording stops. So does
+  chappe's own recording server when the keys reach it over plain SIP:
+  record SRTP calls to a `sips:` SRS.
 
 When the recording server sits on a network you trust, lift both with
 `allow_downgrade => true`.
@@ -171,13 +173,17 @@ address.
 
 `serve/3` takes `RTP/SAVP` and `RTP/SAVPF` streams keyed with SDES
 (RFC 7866 12.2), and decrypts them itself: no rtpengine is needed on the
-receive side. You need nothing in your handler; to refuse keys that did not
-come over TLS, pass `keys_over_tls => true`:
+receive side. You need nothing in your handler, but the keys must come over
+TLS: RFC 4568 8.3 requires the SDP that carries them to be encrypted, so an
+SRTP stream offered over UDP or TCP (and not to a `sips:` URI) is rejected
+with port 0, and the offer gets 488 when no stream is left. Point your
+recording client at a `sips:` URI. On a network you trust, take keys over
+plain SIP with `keys_over_tls => false`:
 
 ```erlang
 {ok, Srs} = chappe_sip_siprec_srs:serve(Req, Res, #{
     store => default,
-    keys_over_tls => true
+    keys_over_tls => false
 }),
 chappe_sip_siprec_srs:run(Srs).
 ```
@@ -217,9 +223,8 @@ re-INVITE with a new key gives the stream the new key.
 | The RS media | SRTP, encrypted by rtpengine with keys of the recording, decrypted by chappe's SRS | a different key from the call's (RFC 7866 12.2) |
 | The recording at rest | nothing in chappe | the store module decides |
 
-TLS keeps the SDES keys secret on the way: RFC 4568 8.3 requires the SDP
-that carries them to be encrypted, so record SRTP calls to a `sips:` SRS
-when the network between them is not yours. SRTP keeps the audio secret
+TLS keeps the SDES keys secret on the way, which is why the server takes
+them only over TLS unless you say otherwise. SRTP keeps the audio secret
 and authentic between rtpengine and the SRS: a packet nobody keyed is
 dropped.
 

@@ -31,9 +31,13 @@
 %% UNENCRYPTED_SRTP..., DTLS-SRTP's UDP/TLS/RTP/SAVP) is answered with port
 %% 0 (RFC 4568 7.1.2, RFC 3264 6), and an offer left with no stream that
 %% had a secure one is refused 488 with a 302 Warning (RFC 3261 20.43).
-%% The keys travel in the SDP: RFC 4568 8.3 requires the signalling to be
-%% encrypted, so reach the SRS over TLS; keys_over_tls => true refuses
-%% (port 0) a secure stream offered over a transport that is not TLS.
+%% The keys travel in the SDP, and RFC 4568 8.3 requires the SDP that
+%% carries an inline key to be encrypted: by default a secure stream offered
+%% over a transport that is not TLS (or WSS), to a Request-URI that is not
+%% sips:, is rejected the same way (port 0, RFC 4568 7.1.2: "its
+%% configured policy prohibits", and 488 when no stream is left).
+%% keys_over_tls => false takes such keys, for a recording client on a
+%% network the app trusts.
 %%
 %% Each stream goes to its sink:
 %%   store => default | module()   a recording of the store, opened with
@@ -58,7 +62,7 @@
 %% address the receivers bind, default 127.0.0.1), advertise (the address
 %% in the SDP, default ip), max_streams (default 4), max_queue (default
 %% 500), rtp_source (negotiated, the default, or learn), keys_over_tls
-%% (default false) and headers for the 200.
+%% (default true) and headers for the 200.
 %%
 %% {error, not_recording_session} leaves Res unanswered, for the app to
 %% treat as an ordinary call or refuse; {error, _} on a body that does not
@@ -176,7 +180,10 @@ sink(_) ->
     {error, no_sink}.
 
 answer(Req, Res, Sdp, Doc, Sink, Opts0) ->
-    Opts = Opts0#{tls_in => is_tls(Req)},
+    Opts = Opts0#{
+        tls_in => is_tls(Req),
+        keys_over_tls => maps:get(keys_over_tls, Opts0, true)
+    },
     CallRef = call_ref(Req, Doc),
     Ip = maps:get(ip, Opts, {127, 0, 0, 1}),
     Adv = advertise(Opts, Ip),
@@ -370,12 +377,14 @@ srtp_ctx(C) ->
         {error, _} -> error
     end.
 
+%% the RS came over TLS or WSS, or to a sips: Request-URI
 is_tls(Req) ->
     case maps:get(transport, chappe_sip_req:meta(Req), undefined) of
         T when is_binary(T) ->
-            lists:member(chappe_sip_lib:lower(T), [<<"tls">>, <<"wss">>]);
+            lists:member(chappe_sip_lib:lower(T), [<<"tls">>, <<"wss">>]) orelse
+                chappe_sip_uri:is_sips(chappe_sip_req:uri(Req));
         _ ->
-            false
+            chappe_sip_uri:is_sips(chappe_sip_req:uri(Req))
     end.
 
 %% the metadata of a re-INVITE or UPDATE, when it carries some
