@@ -4,7 +4,10 @@
 %% @doc Root supervisor.
 %%
 %% Child order is deliberate:
-%% 1. chappe_sip_registry_keeper: owns the location-store ETS, so the bindings
+%% 0. the `chappe' pg scope (unless an app started it) and chappe_sip_call,
+%%    which owns the table of what serves each call_ref: first, since
+%%    every call process may join it.
+%% 1.chappe_sip_registry_keeper: owns the location-store ETS, so the bindings
 %%    survive a crash of the chappe_sip_registry gen_server (which holds the logic).
 %% 2. chappe_sip_registry: the location store. It sits above the stack supervisor
 %%    so its ETS survives SIP engine restarts.
@@ -43,6 +46,12 @@ init([]) ->
     ok = chappe_sip_guard:init_table(),
     SupFlags = #{strategy => one_for_one, intensity => 10, period => 10},
     Children = [
+        %% the `chappe' pg scope and the call_ref table: calls are found
+        %% by call_ref from any node (chappe_sip_call)
+        (worker(chappe_sip_call))#{
+            id => chappe_pg_scope, start => {chappe_sip_call, start_scope, []}
+        },
+        worker(chappe_sip_call),
         worker(chappe_sip_registry_keeper),
         worker(chappe_sip_registry),
         worker(chappe_sip_dialog_index),

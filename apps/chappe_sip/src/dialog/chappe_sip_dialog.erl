@@ -72,7 +72,10 @@ make(Pid, Id) -> #dialog{pid = Pid, id = Id}.
 %%   #{local_sdp => iodata(), status => 100..699 (default 200),
 %%     reason => binary(), headers => [{binary(), iodata()}],
 %%     handled_events => [atom()] | all, owner => pid(),
-%%     on_owner_exit => destroy | continue}
+%%     on_owner_exit => destroy | continue,
+%%     call_ref => binary() (the call the dialog serves, default the
+%%       request's: chappe_sip_req:call_ref/1; a ref that is not a token
+%%       of 1 to 128 characters is {error, badarg})}
 %% For a SUBSCRIBE also:
 %%   #{expires => non_neg_integer() (the most granted, default 3600),
 %%     min_expires => non_neg_integer() (below it: 423, default 0),
@@ -88,6 +91,15 @@ make(Pid, Id) -> #dialog{pid = Pid, id = Id}.
 -spec create_uas(chappe_sip_req:req(), chappe_sip_res:res(), map()) ->
     {ok, dialog()} | {error, term()}.
 create_uas(Req, Res, Opts) ->
+    case
+        maps:is_key(call_ref, Opts) andalso
+            not chappe_sip_call:valid(maps:get(call_ref, Opts))
+    of
+        true -> {error, badarg};
+        false -> create_uas_0(Req, Res, Opts)
+    end.
+
+create_uas_0(Req, Res, Opts) ->
     case chappe_sip_req:method(Req) of
         <<"SUBSCRIBE">> -> create_subscription(Req, Res, Opts);
         <<"INVITE">> -> create_session(Req, Res, Opts);
@@ -147,8 +159,10 @@ create_subscription(Req, Res, Opts) ->
 
 create_uas_1(Req, Res, Opts0) ->
     Owner = maps:get(owner, Opts0, self()),
-    %% the route's extra option tags stay accepted in Require in the dialog
+    %% the route's extra option tags stay accepted in Require in the dialog,
+    %% and the dialog serves the request's call unless told another
     Opts = Opts0#{
+        call_ref => maps:get(call_ref, Opts0, chappe_sip_req:call_ref(Req)),
         option_tags => maps:get(
             option_tags,
             Opts0,

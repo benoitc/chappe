@@ -56,13 +56,22 @@
 %%           dialog you keep yourself, such as a subscription refresh: its
 %%           Call-ID and CSeq number; `to' then carries the remote tag),
 %%         session_expires, min_se, session_refresher (RFC 4028, see
-%%         chappe_sip_session_timer)}
+%%         chappe_sip_session_timer),
+%%         call_ref => binary() (the call an INVITE serves, chappe_sip_call;
+%%           default a new one), call_ref_header => boolean() (default
+%%           true: the INVITE carries it as X-Chappe-Call, unless headers
+%%           has one already), related => binary() (the call_ref of the
+%%           call a transfer brings this one from, in its call record)}
+%% A call_ref or related that is not a token of 1 to 128 characters is
+%% {error, badarg}.
 -spec start(binary(), map()) -> {ok, uac_ref()} | {error, term()}.
 start(Uri, Opts) ->
-    case at_uac_cap() of
-        true ->
+    case {at_uac_cap(), chappe_sip_call:valid_opts(Opts)} of
+        {_, false} ->
+            {error, badarg};
+        {true, true} ->
             {error, max_uac_transactions};
-        false ->
+        {false, true} ->
             Ref = make_ref(),
             Notify = maps:get(notify, Opts, self()),
             Owner = maps:get(owner, Opts, Notify),

@@ -374,7 +374,9 @@ handle_call(From, info, #{media := M, pending := P} = S) ->
         call_id => maps:get(call_id, M),
         session => chappe_sip_b2b_media:session(M),
         pending => P =/= undefined,
-        winner => maps:get(winner, S)
+        winner => maps:get(winner, S),
+        call_ref => maps:get(call_ref, M),
+        related => maps:get(related, M)
     }),
     S;
 handle_call(From, {set_media, Mode}, #{media := #{mode := Mode}} = S) ->
@@ -437,12 +439,14 @@ replace_b(From, Target, Opts, #{media := M0, a := A} = S) ->
             ),
             Relay = self(),
             Moved = chappe_sip_b2b_replace:moved(Target1, M0, M1),
+            %% the new B serves the call: same call_ref, X-Chappe-Call
+            UacOpts = maps:merge(
+                chappe_sip_b2b_media:call_opts(M0), Opts#{handled => Handled}
+            ),
             spawn_step(
                 {replace, From, {Old, Moved}},
                 fun() ->
-                    chappe_sip_b2b_replace:call(
-                        Target1, Sdp, Opts#{handled => Handled}, Relay
-                    )
+                    chappe_sip_b2b_replace:call(Target1, Sdp, UacOpts, Relay)
                 end,
                 S#{media := M1}
             );

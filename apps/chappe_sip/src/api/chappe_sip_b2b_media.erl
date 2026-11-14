@@ -25,6 +25,7 @@
 -export([new/2, start/1, stop/1, mode/1, set_mode/2, session/1]).
 -export([set_tag/3, offer/3, answer/3, final_answer/3, rejected/3, hook/1]).
 -export([fork_offer/3, branch/2, unhold/2, b_flags/1]).
+-export([serve/1, call_opts/1]).
 
 -export_type([state/0, mode/0, leg/0, profile/0]).
 
@@ -43,6 +44,8 @@
     params := #{leg() => map()},
     notify := pid() | undefined,
     ref := reference(),
+    call_ref := binary() | undefined,
+    related := binary() | undefined,
     last := {leg(), binary() | undefined, binary(), binary()} | undefined,
     origin := leg() | undefined,
     via := binary() | undefined
@@ -56,8 +59,8 @@
     via => binary() | undefined
 }.
 
-%% Init: #{mode, call_id, a_tag, b_webrtc, a_webrtc, ref} plus the
-%% app's Opts (rewrite_sdp, anchor_params, notify).
+%% Init: #{mode, call_id, a_tag, b_webrtc, a_webrtc, ref, call_ref,
+%% related} plus the app's Opts (rewrite_sdp, anchor_params, notify).
 -spec new(map(), map()) -> state().
 new(Init, Opts) ->
     #{
@@ -74,10 +77,25 @@ new(Init, Opts) ->
         params => maps:get(anchor_params, Opts, #{}),
         notify => maps:get(notify, Opts, undefined),
         ref => maps:get(ref, Init),
+        call_ref => maps:get(call_ref, Init, undefined),
+        related => maps:get(related, Init, undefined),
         last => undefined,
         origin => undefined,
         via => undefined
     }.
+
+%% The calling process serves the call of M as its B2BUA, under the
+%% b2b() handle of M's reference (chappe_sip_call).
+-spec serve(state()) -> ok.
+serve(#{call_ref := CallRef, ref := Ref}) ->
+    chappe_sip_call:join(CallRef, b2b, {self(), Ref}).
+
+%% The call_ref and related of M, as options of a new leg's UAC.
+-spec call_opts(state()) -> map().
+call_opts(M) ->
+    maps:filter(
+        fun(_K, V) -> V =/= undefined end, maps:with([call_ref, related], M)
+    ).
 
 %% The rewrite_sdp hook as a 3-arity fun: fun(Leg, offer | answer, Sdp),
 %% the 2-arity fun(Leg, Sdp) of earlier releases, or none.
@@ -97,6 +115,16 @@ start(#{mode := anchor, session := undefined} = M) ->
     Id = #{call_id => CallId, from_tag => ATag},
     case chappe_sip_media:session(Id, #{capability => anchor}) of
         {ok, S} ->
+            %% the session is found by the call's ref while it lives
+            _ =
+                case chappe_sip_media:pid(S) of
+                    Pid when is_pid(Pid) ->
+                        chappe_sip_call:join(
+                            maps:get(call_ref, M), media, S, Pid
+                        );
+                    undefined ->
+                        ok
+                end,
             {ok, M#{session := S, last := undefined, origin := undefined}};
         {error, _} = Err ->
             Err

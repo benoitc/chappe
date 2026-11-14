@@ -19,6 +19,10 @@ run(#{uas := A, uac := B, b2b := {_, Ref}} = Legs, Opts) ->
             {go, Parent} -> ok
         after 10000 -> exit(no_handover)
         end,
+        %% this process serves the call (chappe_sip_call) until it ends
+        ok = chappe_sip_call:join(
+            maps:get(call_ref, Legs, undefined), b2b, {self(), Ref}
+        ),
         Result = chappe_sip_b2b_relay:run(Legs, Opts),
         _ =
             is_pid(Notify) andalso
@@ -34,6 +38,8 @@ run(#{uas := A, uac := B, b2b := {_, Ref}} = Legs, Opts) ->
                 ok
         end,
     forward_stray(A, B, Pid),
+    %% the relay process serves the call from now on, not this one
+    ok = chappe_sip_call:leave(maps:get(call_ref, Legs, undefined), b2b),
     Pid ! {go, Parent},
     {ok, {Pid, Ref}}.
 

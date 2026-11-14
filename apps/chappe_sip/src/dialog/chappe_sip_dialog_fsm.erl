@@ -150,7 +150,10 @@
     %% the call record of an INVITE dialog (chappe_sip_cdr), and why the
     %% call ends when the destroy reason the owner sees does not say it
     cdr :: binary() | undefined,
-    cdr_why :: chappe_sip_cdr:reason() | undefined
+    cdr_why :: chappe_sip_cdr:reason() | undefined,
+    %% the call this dialog serves (chappe_sip_call): its in-dialog
+    %% requests carry it, and the dialog is found by it while it lives
+    call_ref :: binary() | undefined
 }).
 
 %% event: the SUBSCRIBE's Event value (with any id param), reused on every
@@ -240,10 +243,11 @@ init(
         option_tags = maps:get(option_tags, Opts, []),
         uac = maps:get(early_uac, Args, undefined),
         cseq_ref = maps:get(cseq_ref, Args, undefined),
-        cdr = maps:get(cdr, Args, undefined)
+        cdr = maps:get(cdr, Args, undefined),
+        call_ref = maps:get(call_ref, Opts, undefined)
     },
     Data1 = Data#data{ack_answer = answer_in_ack(Data)},
-    cdr_bind(Data1),
+    ok = announce(Data1),
     %% Any dialog-forming response (UAS) is sent by chappe_sip_engine (sending
     %% it from here would re-enter chappe_sip_engine during our own start and
     %% deadlock). A UAC dialog has already been answered (2xx) before we
@@ -252,6 +256,12 @@ init(
     {ok, setup, Data1,
         [{state_timeout, 30000, setup_timeout} | sub_timer(Data#data.sub)] ++
             st_timers(Data#data.st)}.
+
+%% the call record follows the dialog, and the dialog is found by its
+%% call's ref while it lives (chappe_sip_call)
+announce(#data{call_ref = Ref, leg = LegH} = D) ->
+    cdr_bind(D),
+    chappe_sip_call:join(Ref, dialog, chappe_sip_dialog:make(self(), LegH)).
 
 %% a UAS dialog formed by an offerless INVITE: our 2xx carries the offer and
 %% the ACK the answer (RFC 3261 13.2.1)
@@ -807,7 +817,7 @@ query(From, {set_owner, Owner}, #data{owner_mon = Old} = D) ->
 %% ---- in-dialog request handling ----
 
 handle_indialog(TxnH, _Meta, Raw, D) ->
-    Req = parse_req(Raw, TxnH),
+    Req = parse_req(Raw, TxnH, D),
     case in_order(Req, D) of
         {ok, D1} ->
             require_check(TxnH, Req, D1);
@@ -1166,7 +1176,7 @@ answered(Offer, Answer, D) -> D#data{remote_sdp = Offer, local_sdp = Answer}.
 
 %% the ACK completing an INVITE whose 2xx carried our offer holds the answer
 handle_ack(Raw, #data{ack_answer = Pending} = D) ->
-    AckReq = parse_req(Raw, undefined),
+    AckReq = parse_req(Raw, undefined, D),
     notify(D, ack, AckReq, undefined),
     case {Pending, chappe_sip_req:body(AckReq)} of
         {true, Answer} when Answer =/= <<>> ->
@@ -1802,10 +1812,11 @@ chappe_sip_error(Status, Msg) ->
         response = Msg
     }.
 
-parse_req(Raw, TxnH) ->
+%% an in-dialog request carries the dialog's call_ref
+parse_req(Raw, TxnH, #data{call_ref = Ref}) ->
     case chappe_sip_msg:parse(Raw) of
-        {ok, Msg} -> chappe_sip_req:new(Msg, TxnH, #{});
-        {error, _} -> chappe_sip_req:new(empty_msg(), TxnH, #{})
+        {ok, Msg} -> chappe_sip_req:new(Msg, TxnH, #{}, Ref);
+        {error, _} -> chappe_sip_req:new(empty_msg(), TxnH, #{}, Ref)
     end.
 
 empty_msg() ->

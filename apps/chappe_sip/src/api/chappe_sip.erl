@@ -19,7 +19,8 @@
     create_uac/2,
     create_b2bua/4,
     proxy_request/3,
-    request/2
+    request/2,
+    calls/1
 ]).
 -export([
     invite/1,
@@ -239,6 +240,19 @@ create_uac(Uri, Opts) ->
         {error, Reason} ->
             {error, Reason}
     end.
+
+%% Find a call by its call_ref (chappe_sip_req:call_ref/1, the call_ref of
+%% chappe_sip_b2b:info/1, X-Chappe-Call on its legs) on every node of the
+%% cluster: the B2BUA (a chappe_sip_b2b:b2b() for info/1, hangup/2 ...),
+%% the dialogs and the rtpengine sessions serving it. Each process is
+%% listed while it serves the call; a node that does not answer in 5 s is
+%% left out. {error, badarg} for anything but #{call_ref := binary()}.
+-spec calls(#{call_ref := binary()}) ->
+    {ok, chappe_sip_call:calls()} | {error, badarg}.
+calls(#{call_ref := Ref}) when is_binary(Ref) ->
+    {ok, chappe_sip_call:lookup(Ref)};
+calls(_) ->
+    {error, badarg}.
 
 %% Send an out-of-dialog, non-dialog-forming request (OPTIONS, REGISTER,
 %% MESSAGE, ...). Returns a ref; responses arrive as events, or use

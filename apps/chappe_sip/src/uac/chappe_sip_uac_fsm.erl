@@ -134,7 +134,7 @@ init(#{uri := Uri0, opts := Opts} = Args) ->
 start_request(
     #{
         uri := Uri,
-        opts := Opts,
+        opts := Opts0,
         ref := Ref,
         notify := Notify,
         owner := Owner
@@ -143,6 +143,7 @@ start_request(
 ) ->
     %% auth_state: the challenges a previous request of the caller answered
     %% (a registration refresh), so this one carries credentials at once
+    Opts = call_ref(Method, Opts0),
     {Challenges, NonceCount} = maps:get(auth_state, Opts, {[], #{}}),
     Data0 = #data{
         challenges = Challenges,
@@ -189,6 +190,34 @@ start_request(
             %% surfaced to the caller as start/2 -> {error, Reason}
             {stop, Reason}
     end.
+
+%% An INVITE starts a call: it serves the caller's call_ref, else one of
+%% its own (chappe_sip_call); its dialogs serve it too.
+call_ref(<<"INVITE">>, #{call_ref := Ref} = Opts) when is_binary(Ref) ->
+    Opts;
+call_ref(<<"INVITE">>, Opts) ->
+    Opts#{call_ref => chappe_sip_call:new_ref()};
+call_ref(_Method, Opts) ->
+    Opts.
+
+%% the X-Chappe-Call header of an INVITE, unless the caller put one in
+%% its headers or asked for none (call_ref_header => false)
+call_ref_header(<<"INVITE">>, #{call_ref := Ref} = Opts, Hdrs) when
+    is_binary(Ref)
+->
+    Name = chappe_sip_call:header(),
+    Has = lists:any(
+        fun({N, _}) ->
+            chappe_sip_lib:lower(N) =:= chappe_sip_lib:lower(Name)
+        end,
+        Hdrs
+    ),
+    case Has orelse not maps:get(call_ref_header, Opts, true) of
+        true -> [];
+        false -> [{Name, Ref}]
+    end;
+call_ref_header(_Method, _Opts, _Hdrs) ->
+    [].
 
 %% ---- trying / proceeding ----
 
@@ -867,7 +896,8 @@ build_request(#data{
             _ ->
                 ExtraHeaders0
         end ++ supported_header(Supported, ExtraHeaders0) ++
-            allow_header(Method, ExtraHeaders0),
+            allow_header(Method, ExtraHeaders0) ++
+            call_ref_header(Method, Opts, ExtraHeaders0),
     %% RFC 4028 7.1: an INVITE asks for a Session-Expires when configured
     StHeaders =
         case Method of
@@ -1499,10 +1529,14 @@ notify_1(#data{notify = Pid, ref = Ref}, Event) ->
 %% Opts cdr => #{role => b2b_b, link => Id}: a b2bua's B leg
 open_cdr(#data{opts = Opts} = D) ->
     Cdr = maps:get(cdr, Opts, #{}),
+    CallRef = maps:get(call_ref, Opts, undefined),
+    ok = chappe_sip_hep:correlate(D#data.call_id, CallRef, uac),
     chappe_sip_cdr:open(
         maps:get(role, Cdr, uac),
         #{
             link => maps:get(link, Cdr, undefined),
+            call_ref => CallRef,
+            related => maps:get(related, Opts, undefined),
             call_id => D#data.call_id,
             from => D#data.from,
             to => D#data.to,

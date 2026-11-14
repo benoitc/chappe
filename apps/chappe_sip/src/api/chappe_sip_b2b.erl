@@ -72,7 +72,8 @@
     late => true,
     requests => [request()],
     relay_info => boolean(),
-    winner => winner()
+    winner => winner(),
+    call_ref => binary()
 }.
 %% Where leg B goes: a destination, a list of them, or a group of
 %% OPTIONS-monitored peers (chappe_sip_peers); a list or a group is tried
@@ -163,6 +164,19 @@
 %%   notify                => pid(): gets {chappe_sip_b2b, Ref, Event}
 %%   peer_policy           => priority | round_robin | weighted, for a
 %%                            {peer_group, G} target (default priority)
+%%   call_ref              => binary(): the call this B2BUA serves
+%%                            (chappe_sip_call), for a ref an upstream node
+%%                            gave; default the request's
+%%                            (chappe_sip_req:call_ref/1). It goes to B as
+%%                            X-Chappe-Call (unless b_headers carries one,
+%%                            or call_ref_header is false), in both legs'
+%%                            call records and in HEP, and finds the call
+%%                            with chappe_sip:calls/1. A's own
+%%                            X-Chappe-Call is never copied to B. Not a
+%%                            token of 1 to 128 characters: as a bad from
+%%   call_ref_header       => boolean() (default true)
+%%   related               => binary(): the call_ref of the call a transfer
+%%                            brought this one from, in the call records
 %%   privacy               => true | #{session => boolean()}: act as an
 %%                            RFC 3323 privacy service for A's Privacy
 %%                            header (see chappe_sip_b2b_hdr:privacy/2).
@@ -173,14 +187,26 @@
 %%                            {error, {privacy, Unsupported}} is returned.
 %% The result also carries b2b (the handle of set_media/2 and info/1, the
 %% reference in its events), the media state relay/1,2 continues with,
-%% and winner, the destination that answered (winner()). The media fun's
+%% winner, the destination that answered (winner()), and call_ref. The media fun's
 %% CallInfo uri is the first destination's.
 -spec create_b2bua(chappe_sip_req:req(), chappe_sip_res:res(), target(), map()) ->
     {ok, legs()} | {error, term()}.
 create_b2bua(Req, Res, Uri, Opts) ->
-    case chappe_sip_b2b_hdr:valid_from(Opts) of
-        true -> check_privacy(Req, Res, Uri, Opts);
+    case
+        chappe_sip_b2b_hdr:valid_from(Opts) andalso
+            chappe_sip_call:valid_opts(Opts)
+    of
+        true -> check_privacy(Req, Res, Uri, with_call_ref(Req, Opts));
         false -> chappe_sip_b2b_fork:refuse(Res, badarg, Opts)
+    end.
+
+%% the call the B2BUA serves: the app's call_ref, else the request's
+with_call_ref(_Req, #{call_ref := _} = Opts) ->
+    Opts;
+with_call_ref(Req, Opts) ->
+    case chappe_sip_req:call_ref(Req) of
+        undefined -> Opts#{call_ref => chappe_sip_call:new_ref()};
+        Ref -> Opts#{call_ref => Ref}
     end.
 
 check_privacy(Req, Res, Uri, Opts) ->
@@ -204,18 +230,28 @@ start_b2bua(Req, Res, Target, Opts) ->
             {error, none_up};
         {Fork, [First | _] = Dests} ->
             Ref = make_ref(),
+            #{call_ref := CallRef} = Opts,
             M = chappe_sip_b2b_media:new(
                 media_init(Req, First, Ref, Opts), Opts
             ),
-            case chappe_sip_b2b_media:start(M) of
-                {ok, M1} ->
-                    offer_b(Req, Res, {Fork, Dests}, Opts, M1);
-                {error, Why} ->
-                    _ = chappe_sip_res:send(Res, 500, #{
-                        reason => <<"Server Internal Error">>
-                    }),
-                    {error, {media, Why}}
-            end
+            %% the call is found by its call_ref while it rings, and while
+            %% the relay carries it
+            ok = chappe_sip_b2b_media:serve(M),
+            Result =
+                case chappe_sip_b2b_media:start(M) of
+                    {ok, M1} ->
+                        offer_b(Req, Res, {Fork, Dests}, Opts, M1);
+                    {error, Why} ->
+                        _ = chappe_sip_res:send(Res, 500, #{
+                            reason => <<"Server Internal Error">>
+                        }),
+                        {error, {media, Why}}
+                end,
+            case Result of
+                {ok, _} -> ok;
+                {error, _} -> chappe_sip_call:leave(CallRef, b2b)
+            end,
+            Result
     end.
 
 media_init(Req, #{uri := Uri} = First, Ref, Opts) ->
@@ -237,7 +273,9 @@ media_init(Req, #{uri := Uri} = First, Ref, Opts) ->
         a_tag => chappe_sip_req:from_tag(Req),
         a_webrtc => Sdp =/= <<>> andalso chappe_sip_sdp:webrtc(Sdp),
         b_webrtc => webrtc(First, Opts),
-        ref => Ref
+        ref => Ref,
+        call_ref => maps:get(call_ref, Opts),
+        related => maps:get(related, Opts, undefined)
     }.
 
 %% a destination over a WebSocket (its URI or its flow) is a browser:
@@ -320,8 +358,10 @@ offers(Offer, Dests, Opts, M) ->
 
 start_b(Req, Res, {Fork, Dests}, Opts, LateOffer, M) ->
     Worker = self(),
+    %% A's X-Chappe-Call names A's upstream call, not this one: B gets the
+    %% call's own (from the UAC, unless b_headers carries one)
     ReqHeaders =
-        chappe_sip_b2b_hdr:proxy_request_headers(Req, Opts) ++
+        not_call_ref(chappe_sip_b2b_hdr:proxy_request_headers(Req, Opts)) ++
             maps:get(b_headers, Opts, []),
     ARel = rel100(Req),
     %% a late offer: B's 2xx carries the offer, and its ACK must wait for
@@ -345,9 +385,13 @@ start_b(Req, Res, {Fork, Dests}, Opts, LateOffer, M) ->
     %% RFC 5626 TCP/TLS/UDP one)
     %% the call records of the two legs name each other
     ACdr = chappe_sip_cdr:relabel(Req, b2b_a),
+    ok = chappe_sip_cdr:update(ACdr, maps:with([call_ref, related], Opts)),
     BOpts = maps:merge(
         BOpts1#{cdr => #{role => b2b_b, link => ACdr}},
-        maps:with([proxy, auth, flow | st_opts()], Opts)
+        maps:with(
+            [proxy, auth, flow, call_ref, call_ref_header, related | st_opts()],
+            Opts
+        )
     ),
     %% pre-choose the A-leg dialog tag so relayed provisionals and the
     %% final 2xx share one To-tag (otherwise nta auto-tags the first
@@ -385,6 +429,10 @@ start_b(Req, Res, {Fork, Dests}, Opts, LateOffer, M) ->
                 )
             )
     end.
+
+not_call_ref(Hdrs) ->
+    Name = chappe_sip_lib:lower(chappe_sip_call:header()),
+    [{N, V} || {N, V} <- Hdrs, chappe_sip_lib:lower(N) =/= Name].
 
 %% The UAC options of a destination: its offer, its flow, and its headers
 %% after the call's.
@@ -599,7 +647,8 @@ create_a(
         headers => RespHeaders,
         local_tag => ATag,
         owner => self(),
-        handled_events => handled(Opts)
+        handled_events => handled(Opts),
+        call_ref => maps:get(call_ref, Opts)
     }),
     %% A's early leg becomes its dialog, past the CSeq numbers it used
     UasOpts1 =
@@ -621,7 +670,8 @@ create_a(
                 media => M,
                 requests => maps:get(requests, Opts, []),
                 relay_info => maps:get(relay_info, Opts, false),
-                winner => Winner
+                winner => Winner,
+                call_ref => maps:get(call_ref, Opts)
             },
             {ok, maps:merge(Legs, maps:from_list([{late, true} || late(W)]))};
         {error, Reason} ->
@@ -820,7 +870,12 @@ relay(Legs) ->
 %%                  given to it)
 -spec relay(legs(), map()) -> {done, a_bye | b_bye | hangup | term()}.
 relay(Legs, Opts) ->
-    chappe_sip_b2b_relay:run(Legs, Opts).
+    try
+        chappe_sip_b2b_relay:run(Legs, Opts)
+    after
+        %% the call is over: this process no longer serves it
+        chappe_sip_call:leave(maps:get(call_ref, Legs, undefined), b2b)
+    end.
 
 %% Carry the call in a process of its own, so the caller is free (to
 %% drive a media server on the call, say): relay/2 runs there with Opts,
@@ -843,7 +898,8 @@ set_media(B2b, Mode) when Mode =:= direct; Mode =:= anchor ->
 
 %% What the call is doing: #{media := direct | anchor, hold := #{a, b},
 %% call_id := binary(), session := chappe_sip_media:session() | undefined,
-%% pending := boolean(), winner := winner() | undefined}. winner is the
+%% pending := boolean(), winner := winner() | undefined, call_ref :=
+%% binary() | undefined, related := binary() | undefined}. winner is the
 %% destination leg B is now: the one that answered create_b2bua/4 or a
 %% replace_b/3 fork (undefined for legs made another way, or after
 %% replace_b/3 to a URI or a dialog).

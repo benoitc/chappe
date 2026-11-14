@@ -49,6 +49,8 @@ calls that start after it.
 | `final_status` | the INVITE's final status (`200`, `486`, ...) |
 | `reason` | why it ended (stop only) |
 | `link` | for a b2bua leg, the `id` of the other leg |
+| `call_ref` | the call's ref, shared by every record of the call ([follow a call](follow-a-call.md)) |
+| `related` | the `call_ref` of the call a transfer brought this leg from, else `undefined` |
 
 Billable duration is `ended_at - answered_at`.
 

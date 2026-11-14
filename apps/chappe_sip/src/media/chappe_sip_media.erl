@@ -53,7 +53,8 @@
     unduck/2,
     stop/1,
     info/1,
-    set_owner/2
+    set_owner/2,
+    pid/1
 ]).
 -export([anchor_offer/3, anchor_answer/3, anchor_release/1]).
 -export([anchor_active/0, anchor_pinned/1]).
@@ -400,6 +401,12 @@ set_owner(#media_session{backend = rtpengine, ref = R}, Owner) ->
     chappe_sip_media_rtpengine:set_owner(R, Owner);
 set_owner(_S, _Owner) ->
     {error, {unsupported, set_owner}}.
+
+%% The process holding an rtpengine session (undefined for another
+%% backend): what the call's lookup (chappe_sip_call) watches.
+-spec pid(session()) -> pid() | undefined.
+pid(#media_session{backend = rtpengine, ref = R}) when is_pid(R) -> R;
+pid(_S) -> undefined.
 
 -spec info(session()) -> map() | {error, term()}.
 info(#media_session{backend = rtpengine, ref = R}) ->

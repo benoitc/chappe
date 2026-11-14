@@ -8,7 +8,7 @@
 %% surface application handlers see.
 -module(chappe_sip_req).
 
--export([new/3]).
+-export([new/3, new/4]).
 -export([
     msg/1,
     txn/1,
@@ -27,11 +27,14 @@
     calling_name/1,
     called_number/1
 ]).
+-export([call_ref/1, set_call_ref/2]).
 
 -record(req, {
     msg :: chappe_sip_msg:msg(),
     txn :: non_neg_integer() | undefined,
-    meta :: map()
+    meta :: map(),
+    %% the call this request belongs to (chappe_sip_call)
+    call_ref :: binary() | undefined
 }).
 
 -opaque req() :: #req{}.
@@ -40,6 +43,32 @@
 -spec new(chappe_sip_msg:msg(), non_neg_integer() | undefined, map()) -> req().
 new(Msg, TxnH, Meta) ->
     #req{msg = Msg, txn = TxnH, meta = Meta}.
+
+%% new/3 for a request of call CallRef.
+-spec new(
+    chappe_sip_msg:msg(),
+    non_neg_integer() | undefined,
+    map(),
+    binary() | undefined
+) -> req().
+new(Msg, TxnH, Meta, CallRef) ->
+    #req{msg = Msg, txn = TxnH, meta = Meta, call_ref = CallRef}.
+
+%% The call_ref of the call this request belongs to: made when the first
+%% request of a call arrives, the dialog's for an in-dialog request.
+%% undefined for a request built outside the stack.
+-spec call_ref(req()) -> binary() | undefined.
+call_ref(#req{call_ref = R}) -> R.
+
+%% The request with another call_ref: a middleware taking the ref an
+%% upstream node gave (an X-Call-Ref header it trusts). {error, badarg}
+%% unless Ref is a token of 1 to 128 characters (chappe_sip_call:valid/1).
+-spec set_call_ref(req(), binary()) -> req() | {error, badarg}.
+set_call_ref(#req{} = Req, Ref) ->
+    case chappe_sip_call:valid(Ref) of
+        true -> Req#req{call_ref = Ref};
+        false -> {error, badarg}
+    end.
 
 -spec msg(req()) -> chappe_sip_msg:msg().
 msg(#req{msg = M}) -> M.
