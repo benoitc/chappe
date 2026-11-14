@@ -43,6 +43,8 @@
 -export([record_session/2, record_session_stop/2, send_dtmf/2, set/3, set/2]).
 -export([api/2, execute/3, execute/4, fork_audio_start/3, fork_audio_stop/1]).
 -export([export/3, var/2, vars/1, mute/2, unmute/2]).
+-export([fork_audio_pause/1, fork_audio_pause/2, fork_audio_resume/1]).
+-export([fork_audio_resume/2, fork_audio_send_text/2, fork_audio_send_text/3]).
 -export([modify/2, destroy/1, uuid/1, node/1, info/1]).
 -export([conference/2, conferences/0, focus_subscribe/2]).
 -export([inactive_sdp/0, loop_target/1]).
@@ -473,7 +475,10 @@ execute(Ep, App, Args, Opts) ->
     with_call(Ep, fun(C) -> chappe_esl_call:exec(C, App, Args, Opts) end).
 
 %% Stream the channel's audio to a WebSocket (mod_audio_fork). Opts:
-%% mix (mono | mixed | stereo), rate, metadata.
+%% mix (mono | mixed | stereo: stereo puts the caller on the left and
+%% what the node sends on the right), rate, metadata, module
+%% (audio_fork | audio_stream), bugname (mod_audio_fork: a name per fork,
+%% to run several on one channel).
 -spec fork_audio_start(endpoint(), iodata(), map()) -> ok | {error, term()}.
 fork_audio_start(Ep, Url, Opts) ->
     with_call(Ep, fun(C) -> chappe_esl_call:audio_fork_start(C, Url, Opts) end).
@@ -481,6 +486,39 @@ fork_audio_start(Ep, Url, Opts) ->
 -spec fork_audio_stop(endpoint()) -> ok | {error, term()}.
 fork_audio_stop(Ep) ->
     with_call(Ep, fun chappe_esl_call:audio_fork_stop/1).
+
+%% Pause, resume or send text on the endpoint's forks: all of them, or
+%% those Sel names (module, bugname). {error, not_forking} when none runs.
+-spec fork_audio_pause(endpoint()) -> ok | {error, term()}.
+fork_audio_pause(Ep) ->
+    fork_audio_pause(Ep, #{}).
+
+-spec fork_audio_pause(endpoint(), chappe_esl_call:fork_select()) ->
+    ok | {error, term()}.
+fork_audio_pause(Ep, Sel) ->
+    with_call(Ep, fun(C) -> chappe_esl_call:audio_fork_pause(C, Sel) end).
+
+-spec fork_audio_resume(endpoint()) -> ok | {error, term()}.
+fork_audio_resume(Ep) ->
+    fork_audio_resume(Ep, #{}).
+
+-spec fork_audio_resume(endpoint(), chappe_esl_call:fork_select()) ->
+    ok | {error, term()}.
+fork_audio_resume(Ep, Sel) ->
+    with_call(Ep, fun(C) -> chappe_esl_call:audio_fork_resume(C, Sel) end).
+
+%% Text to the fork's server, as a WebSocket text frame.
+-spec fork_audio_send_text(endpoint(), iodata()) -> ok | {error, term()}.
+fork_audio_send_text(Ep, Text) ->
+    fork_audio_send_text(Ep, Text, #{}).
+
+-spec fork_audio_send_text(
+    endpoint(), iodata(), chappe_esl_call:fork_select()
+) -> ok | {error, term()}.
+fork_audio_send_text(Ep, Text, Sel) ->
+    with_call(Ep, fun(C) ->
+        chappe_esl_call:audio_fork_send_text(C, Text, Sel)
+    end).
 
 %% Put the channel on hold or take it off (uuid_hold), or send a new SDP
 %% offer on the endpoint's own dialog (an endpoint of create_endpoint/1

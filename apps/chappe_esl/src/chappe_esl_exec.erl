@@ -8,7 +8,7 @@
 -module(chappe_esl_exec).
 
 -export([exec/5, send/6, break/3, app_uuid/0, arg/1, channel_uuid/1]).
--export([fork_start_cmd/4, fork_stop_cmd/2]).
+-export([fork_start_cmd/4, fork_stop_cmd/2, fork_ctl_cmd/4]).
 
 -define(EXEC_TIMEOUT, 60000).
 -define(BREAK_TIMEOUT, 2000).
@@ -186,17 +186,29 @@ arg(Arg0) ->
         false -> Escaped
     end.
 
-%% uuid_<api> <uuid> start <url> <mix> <rate> [metadata]
+%% uuid_<api> <uuid> start <url> <mix> <rate> [bugname] [metadata]; the
+%% bug name is mod_audio_fork's (mod_audio_stream has one bug per channel).
 -spec fork_start_cmd(
     chappe_esl_call:fork_module(), binary(), iodata(), map()
 ) -> iodata().
 fork_start_cmd(Module, Uuid, Url, Opts) ->
     Mix = atom_to_binary(maps:get(mix, Opts, mono)),
     Rate = fork_rate(Module, maps:get(rate, Opts, 16000)),
+    Bug = maps:get(bugname, Opts, undefined),
     Meta =
-        case maps:get(metadata, Opts, undefined) of
-            undefined -> [];
-            M -> [<<" ">>, fork_metadata(Module, arg(M))]
+        case {Module, Bug, maps:get(metadata, Opts, undefined)} of
+            {audio_fork, undefined, undefined} ->
+                [];
+            {audio_fork, _, undefined} ->
+                [<<" ">>, Bug];
+            {_, _, undefined} ->
+                [];
+            {audio_fork, undefined, M} ->
+                [<<" ">>, fork_metadata(Module, arg(M))];
+            {audio_fork, _, M} ->
+                [<<" ">>, Bug, <<" ">>, arg(M)];
+            {_, _, M} ->
+                [<<" ">>, fork_metadata(Module, arg(M))]
         end,
     [
         fork_api(Module),
@@ -213,7 +225,32 @@ fork_start_cmd(Module, Uuid, Url, Opts) ->
 
 -spec fork_stop_cmd(chappe_esl_call:fork_module(), binary()) -> iodata().
 fork_stop_cmd(Module, Uuid) ->
-    [fork_api(Module), <<" ">>, Uuid, <<" stop">>].
+    fork_ctl_cmd(Module, Uuid, undefined, stop).
+
+%% stop, pause, resume or send_text on one fork: mod_audio_fork takes the
+%% bug name after the verb (and always before the text, which it would
+%% otherwise read as a bug name unless it starts with { or [), and
+%% mod_audio_stream takes none.
+-spec fork_ctl_cmd(
+    chappe_esl_call:fork_module(),
+    binary(),
+    binary() | undefined,
+    stop | pause | resume | {send_text, iodata()}
+) -> iodata().
+fork_ctl_cmd(Module, Uuid, Bug, Verb) ->
+    {Name, Text} =
+        case Verb of
+            {send_text, T} -> {<<"send_text">>, [<<" ">>, arg(T)]};
+            V -> {atom_to_binary(V), []}
+        end,
+    BugArg =
+        case {Module, Bug, Verb} of
+            {audio_fork, undefined, {send_text, _}} -> [<<" audio_fork">>];
+            {audio_fork, undefined, _} -> [];
+            {audio_fork, B, _} -> [<<" ">>, B];
+            {audio_stream, _, _} -> []
+        end,
+    [fork_api(Module), <<" ">>, Uuid, <<" ">>, Name, BugArg, Text].
 
 fork_api(audio_fork) -> <<"uuid_audio_fork">>;
 fork_api(audio_stream) -> <<"uuid_audio_stream">>.

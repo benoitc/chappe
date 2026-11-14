@@ -423,6 +423,15 @@ endpoint_more_commands(Config) ->
     _ = fs_cmd(<<"execute-app-arg: c=3">>),
     {ok, _} = chappe_mrf:var(Ep, <<"a">>),
     _ = fs_cmd(<<"uuid_getvar ", Uuid/binary, " a">>),
+    ?assertEqual({error, not_forking}, chappe_mrf:fork_audio_pause(Ep)),
+    ok = chappe_mrf:fork_audio_start(Ep, <<"ws://x">>, #{bugname => <<"b1">>}),
+    _ = fs_cmd(<<"start ws://x mono 16000 b1">>),
+    ok = chappe_mrf:fork_audio_pause(Ep),
+    _ = fs_cmd(<<"uuid_audio_fork ", Uuid/binary, " pause b1">>),
+    ok = chappe_mrf:fork_audio_resume(Ep, #{bugname => <<"b1">>}),
+    _ = fs_cmd(<<"uuid_audio_fork ", Uuid/binary, " resume b1">>),
+    ok = chappe_mrf:fork_audio_send_text(Ep, <<"{\"x\":1}">>),
+    _ = fs_cmd(<<"send_text b1 {\"x\":1}">>),
     {ok, AppUuid} = chappe_mrf:execute(Ep, <<"echo">>, <<>>, #{wait => false}),
     receive
         {chappe_mrf, Ep, {complete, <<"echo">>, Ev}} ->

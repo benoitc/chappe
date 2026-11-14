@@ -122,7 +122,9 @@ end) go to the `notify` option, the handler by default.
 | `api/2` | run an api command on the endpoint's node |
 | `execute/3` | run any dialplan application and wait for it |
 | `execute/4` | the same with options; `wait => false` returns `{ok, AppUuid}` at once and the owner gets `{chappe_mrf, Ep, {complete, App, Ev}}` |
-| `fork_audio_start/3`, `fork_audio_stop/1` | stream the audio to a WebSocket (mod_audio_fork) |
+| `fork_audio_start/3`, `fork_audio_stop/1` | stream the audio to a WebSocket (mod_audio_fork, or `module => audio_stream`); `bugname` names one of several forks, `mix => stereo` puts the caller left and the node right |
+| `fork_audio_pause/1,2`, `fork_audio_resume/1,2` | stop and restart the audio of the forks (all, or `#{bugname => B}`), the WebSocket stays open |
+| `fork_audio_send_text/2,3` | send a text frame to the fork's server |
 | `modify/2` | `hold`, `unhold`, or a new SDP on an endpoint of `create_endpoint/1` |
 | `destroy/1` | hang up and free the endpoint |
 

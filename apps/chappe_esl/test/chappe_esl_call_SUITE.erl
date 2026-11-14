@@ -27,6 +27,7 @@
     playback_options/1,
     subscribe_events/1,
     variables_and_audio/1,
+    fork_commands/1,
     dtmf_and_hangup/1,
     helpers/1,
     audio_stream_commands/1,
@@ -73,6 +74,7 @@ all() ->
         playback_options,
         subscribe_events,
         variables_and_audio,
+        fork_commands,
         dtmf_and_hangup,
         helpers,
         audio_stream_commands,
@@ -381,6 +383,94 @@ play_and_get_digits_full(_Config) ->
             file => <<"p.wav">>, result => full
         })
     ).
+
+%% Named forks: the bug name goes after the rate (before the metadata) and
+%% after each verb; pause, resume and send_text reach the forks the
+%% selection names, in each module's grammar; a stopped fork is no longer
+%% tracked; the owner's death stops each fork still running by its name.
+%% req: ESL-37 ESL-39
+fork_commands(_Config) ->
+    Owner = spawn(fun() -> receive after infinity -> ok end end),
+    {Call, _Fake} = outbound(#{}, Owner),
+    ok = chappe_esl_call:audio_fork_start(Call, "ws://a", #{
+        bugname => <<"left">>, mix => stereo, rate => 8000
+    }),
+    ?assertEqual(
+        <<"api uuid_audio_fork fake-uuid-1 start ws://a stereo 8000 left">>,
+        block_with(<<"uuid_audio_fork">>)
+    ),
+    ok = chappe_esl_call:audio_fork_start(Call, "ws://b", #{
+        bugname => <<"right">>, metadata => <<"{\"a\": 1}">>
+    }),
+    ?assertEqual(
+        <<"api uuid_audio_fork fake-uuid-1 start ws://b mono 16000 right ",
+            "'{\"a\": 1}'">>,
+        block_with(<<"uuid_audio_fork">>)
+    ),
+    ok = chappe_esl_call:audio_fork_start(Call, "ws://c", #{
+        module => audio_stream
+    }),
+    _ = block_with(<<"uuid_audio_stream">>),
+    ok = chappe_esl_call:audio_fork_pause(Call, #{bugname => <<"left">>}),
+    ?assertEqual(
+        <<"api uuid_audio_fork fake-uuid-1 pause left">>,
+        block_with(<<"pause">>)
+    ),
+    ok = chappe_esl_call:audio_fork_resume(Call, #{module => audio_stream}),
+    ?assertEqual(
+        <<"api uuid_audio_stream fake-uuid-1 resume">>,
+        block_with(<<"resume">>)
+    ),
+    ok = chappe_esl_call:audio_fork_send_text(Call, "hi there", #{}),
+    ?assertEqual(
+        <<"api uuid_audio_fork fake-uuid-1 send_text left 'hi there'">>,
+        block_with(<<"send_text">>)
+    ),
+    ?assertEqual(
+        <<"api uuid_audio_fork fake-uuid-1 send_text right 'hi there'">>,
+        block_with(<<"send_text">>)
+    ),
+    ?assertEqual(
+        <<"api uuid_audio_stream fake-uuid-1 send_text 'hi there'">>,
+        block_with(<<"send_text">>)
+    ),
+    ok = chappe_esl_call:audio_fork_stop(Call, #{bugname => <<"right">>}),
+    ?assertEqual(
+        <<"api uuid_audio_fork fake-uuid-1 stop right">>,
+        block_with(<<"stop">>)
+    ),
+    ?assertEqual(
+        {error, not_forking},
+        chappe_esl_call:audio_fork_pause(Call, #{bugname => <<"right">>})
+    ),
+    [
+        ?assertEqual(Err, chappe_esl_call:audio_fork_start(Call, "ws://d", O))
+     || {Err, O} <- [
+            {{error, {bad_option, bugname}}, #{
+                module => audio_stream, bugname => <<"x">>
+            }},
+            {{error, {bad_option, bugname}}, #{bugname => <<"a b">>}},
+            {{error, {bad_option, bugname}}, #{bugname => <<"a'b">>}}
+        ]
+    ],
+    ?assertEqual(
+        {error, {bad_option, text}},
+        chappe_esl_call:audio_fork_send_text(Call, <<"a\nb">>, #{})
+    ),
+    ?assertEqual(
+        {error, {bad_option, select}},
+        chappe_esl_call:audio_fork_pause(Call, all)
+    ),
+    exit(Owner, kill),
+    ?assertEqual(
+        <<"api uuid_audio_fork fake-uuid-1 stop left">>,
+        block_with(<<"stop">>)
+    ),
+    ?assertEqual(
+        <<"api uuid_audio_stream fake-uuid-1 stop">>,
+        block_with(<<"stop">>)
+    ),
+    ?assertMatch(<<"api uuid_kill fake-uuid-1", _/binary>>, block_with(<<"uuid_kill">>)).
 
 %% multiset picks a delimiter no value contains; getvar and dump read the
 %% channel over api; mute and unmute use uuid_audio. Bad input is refused

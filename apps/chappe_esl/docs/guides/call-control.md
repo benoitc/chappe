@@ -152,10 +152,24 @@ ok = chappe_esl_call:audio_fork_stop(Call).
 | `mix` | `mono` | `mono` (caller only), `mixed` (both in one channel) or `stereo` (one channel each). |
 | `rate` | `16000` | Sample rate in Hz. For mod_audio_stream, 8000 and 16000 are sent as `8k` and `16k`. |
 | `metadata` | none | Text sent to the server as the first frame. |
+| `bugname` | `audio_fork` | mod_audio_fork only: the fork's name, so one channel runs several. mod_audio_stream has one fork per channel and refuses it. |
 
-The call remembers which module started the fork: `audio_fork_stop/1` and
-the cleanup when the owner dies send that module's stop. Any other `module`
-returns `{error, {bad_option, module}}`.
+The call remembers which module and bug name started each fork:
+`audio_fork_stop/1` and the cleanup when the owner dies send each its stop.
+Any other `module` returns `{error, {bad_option, module}}`.
+
+Pause, resume, talk to the server or stop one fork. The last argument
+names the forks (`#{}` for all of them, `#{bugname => B}`, `#{module => M}`):
+
+```erlang
+ok = chappe_esl_call:audio_fork_pause(Call, #{bugname => <<"asr">>}),
+ok = chappe_esl_call:audio_fork_resume(Call, #{}),
+ok = chappe_esl_call:audio_fork_send_text(Call, <<"{\"type\": \"mark\"}">>, #{}),
+ok = chappe_esl_call:audio_fork_stop(Call, #{bugname => <<"asr">>}).
+```
+
+Pause keeps the WebSocket open and stops the audio. With no fork running
+that the selection names, they return `{error, not_forking}`.
 
 ## Receive the call's messages
 

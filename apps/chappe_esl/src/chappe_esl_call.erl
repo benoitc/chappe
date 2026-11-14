@@ -52,11 +52,13 @@
 -export([send_dtmf/2, set/3, export/3, hangup/1, hangup/2]).
 -export([multiset/2, getvar/2, dump/1, mute/2, unmute/2]).
 -export([conference/2, conference/3, audio_fork_start/3, audio_fork_stop/1]).
+-export([audio_fork_stop/2, audio_fork_pause/2, audio_fork_resume/2]).
+-export([audio_fork_send_text/3]).
 %% gen_server.
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -export_type([call/0, exec_opts/0, playback_opts/0, digits/0]).
--export_type([start_opts/0, msg/0, fork_module/0]).
+-export_type([start_opts/0, msg/0, fork_module/0, fork_select/0]).
 
 -define(EXEC_TIMEOUT, 60000).
 -define(CLEANUP_TIMEOUT, 2000).
@@ -96,6 +98,11 @@
 %% audio_fork: mod_audio_fork (uuid_audio_fork); audio_stream:
 %% mod_audio_stream (uuid_audio_stream).
 -type fork_module() :: audio_fork | audio_stream.
+%% A fork this call runs: its module and its bug name (undefined: the
+%% module default).
+-type fork() :: {fork_module(), binary() | undefined}.
+%% Which forks a fork command names: by module, by bug name, or all.
+-type fork_select() :: #{module => fork_module(), bugname => binary()}.
 -type msg() ::
     {dtmf, binary()}
     | {hangup, binary()}
@@ -114,7 +121,7 @@
     cleanup :: boolean(),
     hungup = false :: boolean(),
     %% the fork modules started, oldest first
-    forks = [] :: [fork_module()],
+    forks = [] :: [fork()],
     recordings = [] :: [binary()],
     %% the application running now (its Application-UUID), and the timed
     %% out ones: broken when they run, their completion dropped
@@ -135,7 +142,7 @@
 %% exec_accepted: wait => false, the caller gets the uuid once accepted.
 -type job() ::
     {reply, gen_server:from()}
-    | {fork_start, gen_server:from(), fork_module(), boolean()}
+    | {fork_start, gen_server:from(), fork(), boolean()}
     | {exec_sent, binary()}
     | {exec_accepted, gen_server:from(), binary()}
     | ignore.
@@ -553,13 +560,15 @@ conference(Call, Room, Opts) ->
 %% Fork the channel audio to a websocket. Opts: module (audio_fork, the
 %% default, for mod_audio_fork, or audio_stream for mod_audio_stream), mix
 %% (mono | mixed | stereo, default mono), rate (16000), metadata (sent to the
-%% server as the first text frame). An unknown module returns
-%% {error, {bad_option, module}}.
+%% server as the first text frame), bugname (mod_audio_fork only: the name
+%% of this fork's media bug, so one channel can run several forks; default
+%% audio_fork). An unknown module returns {error, {bad_option, module}}, a
+%% bugname on mod_audio_stream {error, {bad_option, bugname}}.
 -spec audio_fork_start(call(), iodata(), map()) -> ok | {error, term()}.
 audio_fork_start(Call, Url, Opts) ->
-    case fork_module(Opts) of
-        {ok, Module} -> call(Call, {fork_start, Module, Url, Opts});
-        error -> {error, {bad_option, module}}
+    case fork_key(Opts) of
+        {ok, Key} -> call(Call, {fork_start, Key, Url, Opts});
+        {error, _} = Err -> Err
     end.
 
 %% Stop the forks this call started, each with its module's command
@@ -567,6 +576,36 @@ audio_fork_start(Call, Url, Opts) ->
 -spec audio_fork_stop(call()) -> ok | {error, term()}.
 audio_fork_stop(Call) ->
     call(Call, fork_stop).
+
+%% The fork commands on the forks this call started that Sel names
+%% (module, bugname; an empty map names them all). Both modules take stop,
+%% pause, resume and send_text; pause keeps the WebSocket open and stops
+%% the audio, resume sends it again, and send_text sends Text to the
+%% server as a text frame. No fork named: {error, not_forking}.
+-spec audio_fork_stop(call(), fork_select()) -> ok | {error, term()}.
+audio_fork_stop(Call, Sel) ->
+    fork_ctl(Call, Sel, stop).
+
+-spec audio_fork_pause(call(), fork_select()) -> ok | {error, term()}.
+audio_fork_pause(Call, Sel) ->
+    fork_ctl(Call, Sel, pause).
+
+-spec audio_fork_resume(call(), fork_select()) -> ok | {error, term()}.
+audio_fork_resume(Call, Sel) ->
+    fork_ctl(Call, Sel, resume).
+
+-spec audio_fork_send_text(call(), iodata(), fork_select()) ->
+    ok | {error, term()}.
+audio_fork_send_text(Call, Text, Sel) ->
+    case binary:match(to_bin(Text), [<<"\n">>, <<"\r">>]) of
+        nomatch -> fork_ctl(Call, Sel, {send_text, Text});
+        _ -> {error, {bad_option, text}}
+    end.
+
+fork_ctl(Call, Sel, Verb) when is_map(Sel) ->
+    call(Call, {fork_ctl, maps:with([module, bugname], Sel), Verb});
+fork_ctl(_Call, _Sel, _Verb) ->
+    {error, {bad_option, select}}.
 
 %% gen_server
 
@@ -617,20 +656,25 @@ handle_call(
 ) ->
     State1 = State#state{recordings = lists:delete(Path, Recs)},
     sync_exec(<<"stop_record_session">>, Path, From, State1);
-handle_call({fork_start, Module, Url, Opts}, From, State) ->
+handle_call({fork_start, {Module, _} = Key, Url, Opts}, From, State) ->
     #state{conn = Conn, uuid = Uuid, forks = Forks} = State,
     Cmd = chappe_esl_exec:fork_start_cmd(Module, Uuid, Url, Opts),
-    Job = {fork_start, From, Module, lists:member(Module, Forks)},
+    Job = {fork_start, From, Key, lists:member(Key, Forks)},
     %% tracked before it starts, so an owner dying meanwhile still stops it
-    State1 = State#state{forks = track_fork(Module, Forks)},
+    State1 = State#state{forks = track_fork(Key, Forks)},
     {noreply, job(fun() -> ok(chappe_esl:api(Conn, Cmd)) end, Job, State1)};
 handle_call(fork_stop, From, #state{forks = Forks} = State) ->
-    #state{conn = Conn, uuid = Uuid} = State,
-    Cmds = [chappe_esl_exec:fork_stop_cmd(M, Uuid) || M <- stop_modules(Forks)],
-    Stop = fun() ->
-        first_error([ok(chappe_esl:api(Conn, Cmd)) || Cmd <- Cmds])
-    end,
-    {noreply, job(Stop, {reply, From}, State#state{forks = []})};
+    {noreply, fork_cmds(stop_keys(Forks), stop, From, State#state{forks = []})};
+handle_call({fork_ctl, Sel, Verb}, From, #state{forks = Forks} = State) ->
+    case [F || F <- Forks, selected(Sel, F)] of
+        [] ->
+            {reply, {error, not_forking}, State};
+        Targets when Verb =:= stop ->
+            State1 = State#state{forks = Forks -- Targets},
+            {noreply, fork_cmds(Targets, stop, From, State1)};
+        Targets ->
+            {noreply, fork_cmds(Targets, Verb, From, State)}
+    end;
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown_call}, State}.
 
@@ -755,8 +799,20 @@ fork_settled(_Error, _Module, true, State) ->
 fork_settled(_Error, Module, false, #state{forks = Forks} = State) ->
     State#state{forks = lists:delete(Module, Forks)}.
 
-track_fork(Module, Forks) ->
-    lists:delete(Module, Forks) ++ [Module].
+track_fork(Key, Forks) ->
+    lists:delete(Key, Forks) ++ [Key].
+
+%% One api command per fork, in a helper; the first error is the reply.
+fork_cmds(Keys, Verb, From, #state{conn = Conn, uuid = Uuid} = State) ->
+    Cmds = [chappe_esl_exec:fork_ctl_cmd(M, Uuid, B, Verb) || {M, B} <- Keys],
+    Run = fun() ->
+        first_error([ok(chappe_esl:api(Conn, Cmd)) || Cmd <- Cmds])
+    end,
+    job(Run, {reply, From}, State).
+
+selected(Sel, {Module, Bug}) ->
+    maps:get(module, Sel, Module) =:= Module andalso
+        maps:get(bugname, Sel, Bug) =:= Bug.
 
 %% A helper whose own completion only says done or not.
 sync_exec(_App, _Args, _From, #state{hungup = true} = State) ->
@@ -854,7 +910,7 @@ cleanup(#state{hungup = true}) ->
     ok;
 cleanup(#state{conn = Conn, uuid = Uuid, forks = Forks, recordings = Recs}) ->
     Cmds =
-        [chappe_esl_exec:fork_stop_cmd(M, Uuid) || M <- Forks] ++
+        [chappe_esl_exec:fork_ctl_cmd(M, Uuid, B, stop) || {M, B} <- Forks] ++
             [
                 [
                     <<"uuid_record ">>,
@@ -892,14 +948,29 @@ subscribe(inbound, Conn, Uuid) ->
         Error -> Error
     end.
 
+fork_key(Opts) ->
+    case {fork_module(Opts), maps:get(bugname, Opts, undefined)} of
+        {error, _} -> {error, {bad_option, module}};
+        {{ok, M}, undefined} -> {ok, {M, undefined}};
+        {{ok, audio_stream}, _} -> {error, {bad_option, bugname}};
+        {{ok, audio_fork}, Bug} -> fork_bug(to_bin(Bug))
+    end.
+
+%% A bug name is one word FreeSWITCH reads back as is.
+fork_bug(Bug) ->
+    case event_word(Bug) andalso binary:match(Bug, [<<"'">>, <<"\\">>]) of
+        nomatch -> {ok, {audio_fork, Bug}};
+        _ -> {error, {bad_option, bugname}}
+    end.
+
 fork_module(#{module := audio_fork}) -> {ok, audio_fork};
 fork_module(#{module := audio_stream}) -> {ok, audio_stream};
 fork_module(#{module := _}) -> error;
 fork_module(#{}) -> {ok, audio_fork}.
 
 %% Nothing tracked: send the mod_audio_fork stop, as before modules existed.
-stop_modules([]) -> [audio_fork];
-stop_modules(Forks) -> Forks.
+stop_keys([]) -> [{audio_fork, undefined}];
+stop_keys(Forks) -> Forks.
 
 first_error(Replies) ->
     case [E || E <- Replies, E =/= ok] of

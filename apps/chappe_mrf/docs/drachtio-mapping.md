@@ -29,7 +29,8 @@ chappe equivalents. Use it when you port a drachtio app.
 | `ep.playCollect(opts)` | `chappe_mrf:play_collect(Ep, Opts)` |
 | `ep.record(file, opts)` | `chappe_mrf:record(Ep, Path, Opts)` |
 | `ep.recordSession` | `chappe_mrf:record_session/2`, `record_session_stop/2` |
-| `ep.forkAudioStart(opts)` | `chappe_mrf:fork_audio_start(Ep, Url, Opts)` |
+| `ep.forkAudioStart(opts)` | `chappe_mrf:fork_audio_start(Ep, Url, Opts)` (`bugname`, `mix`, `metadata`) |
+| `ep.forkAudioPause`, `forkAudioResume`, `forkAudioSendText` | `chappe_mrf:fork_audio_pause/1,2`, `fork_audio_resume/1,2`, `fork_audio_send_text/2,3` |
 | `ep.set(var, val)`, `ep.set(obj)` | `chappe_mrf:set(Ep, Var, Val)`, `set(Ep, Map)` |
 | `ep.export(var, val)` | `chappe_mrf:export(Ep, Var, Val)` |
 | `ep.getChannelVariables()` | `chappe_mrf:vars(Ep)`, `var(Ep, Name)` |
