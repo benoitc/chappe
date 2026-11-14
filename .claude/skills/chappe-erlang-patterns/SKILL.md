@@ -30,9 +30,12 @@ item when you write the code, when you plan it, and when you review it.
 4. **Distributable.** An app on one node can drive a call on another.
    - Handles are pids, references or opaque terms that carry them, so they work across
      nodes. No API needs the caller to be on the same node.
-   - Cluster-wide lookups go through `pg` in the `chappe` scope. A process joins the
-     group while it serves the thing and leaves when it stops. A node-local ETS index is
-     fine as a cache next to it, never instead of it.
+   - Cluster-wide lookups go through `pg`, in a scope named after the app that owns
+     the lookup (`chappe_sip`, `chappe_audio`, ...) and started by that app's own
+     supervisor. No app starts or restarts another app's scope, and no scope is shared,
+     so each app owns its lookups and stops cleanly. A process joins the group while it
+     serves the thing and leaves when it stops. A node-local ETS index is fine as a
+     cache next to it, never instead of it.
    - Nothing on an API path depends on a locally registered name, a local file another
      node cannot see, or `node()` being the caller's node.
    - A fun given as an option runs on the node that holds the call; say so in the doc.

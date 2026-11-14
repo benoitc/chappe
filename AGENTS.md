@@ -141,8 +141,8 @@ file only summarises what an agent needs to act.
 - Build for fully distributable Erlang apps: every long-lived process is
   supervised, isolated (one per call, stream, session or room), owned (it
   monitors its owner, sends it events, cleans up when it dies), reachable from
-  another node (pids and references as handles, `pg` in the `chappe` scope for
-  lookups), and bounded. No state in the process dictionary. The
+  another node (pids and references as handles, `pg` in a scope named after the
+  app that owns the lookup), and bounded. No state in the process dictionary. The
   `chappe-erlang-patterns` skill has the checklist and the tests it asks for.
 
 ## Skills
