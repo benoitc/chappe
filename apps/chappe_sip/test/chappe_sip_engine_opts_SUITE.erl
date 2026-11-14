@@ -12,15 +12,17 @@
 -include_lib("stdlib/include/assert.hrl").
 
 -export([all/0, init_per_suite/1, end_per_suite/1, end_per_testcase/2]).
--export([t1_sets_retransmissions/1, udp_mtu_moves_to_tcp/1,
+-export([t1_sets_retransmissions/1, timer_a_starts_at_t1/1, udp_mtu_moves_to_tcp/1,
          tcp_keepalive_pings/1, outbound_proxy_takes_requests/1,
+         outbound_route_preloaded/1,
          aliases_are_own/1, bad_options/1]).
 
 -define(LO, {127, 0, 0, 1}).
 
 all() ->
-    [t1_sets_retransmissions, udp_mtu_moves_to_tcp, tcp_keepalive_pings,
-     outbound_proxy_takes_requests, aliases_are_own, bad_options].
+    [t1_sets_retransmissions, timer_a_starts_at_t1, udp_mtu_moves_to_tcp, tcp_keepalive_pings,
+     outbound_proxy_takes_requests, outbound_route_preloaded, aliases_are_own,
+     bad_options].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -38,33 +40,44 @@ end_per_testcase(_Case, _Config) ->
     _ = chappe_sip_engine:reset_routes(),
     ok.
 
-%% req: RFC3261-17.1.2.2 T1 sets the first retransmit interval of a
-%% non-INVITE client transaction, and Timer F is 64*T1
-%% With T1 at 100 ms and T2 at 400 ms, the request times out after
-%% 64*T1 = 6.4 s instead of 32, and the retransmit interval is capped at
-%% T2 (the third copy follows the second within about 400 ms, 2 s with
-%% nta's defaults). nta starts Timer A/E at no less than 1 s, whatever T1
-%% (nta.c outgoing_send), so the first gap does not show T1.
+%% req: R3261-298 R3261-296
+%% With T1 at 100 ms and T2 at 400 ms the first copy is sent again after
+%% about T1 (sofia patch 0005: the fork waited at least 1 s), the
+%% interval is capped at T2, and the request times out after 64*T1 =
+%% 6.4 s instead of 32.
 t1_sets_retransmissions(_Config) ->
     start(#{sip_timers => #{t1 => 100, t2 => 400}}),
     {ok, S} = gen_udp:open(0, [binary, {ip, ?LO}, {active, true}]),
     {ok, Port} = inet:port(S),
     T0 = erlang:monotonic_time(millisecond),
     {ok, Ref} = chappe_sip:request(target(Port), #{method => <<"OPTIONS">>}),
-    _First = recv_udp(S),
+    First = recv_udp(S),
     Second = recv_udp(S),
     Third = recv_udp(S),
-    Gap = Third - Second,
-    ct:log("retransmit gap ~p ms", [Gap]),
-    ?assert(Gap < 900),
+    ct:log("retransmit gaps ~p ms, ~p ms", [Second - First, Third - Second]),
+    ?assert(Second - First < 500),
+    ?assert(Third - Second < 900),
     _ = chappe_sip_uac:await_response(Ref, 12000),
     Took = erlang:monotonic_time(millisecond) - T0,
     ct:log("timed out after ~p ms", [Took]),
     ?assert(Took < 12000),
     gen_udp:close(S).
 
-%% req: RFC3261-18.1.1 a request larger than the path MTU goes over a
-%% congestion-controlled transport
+%% req: R3261-264
+%% An INVITE over UDP is sent again after T1 (100 ms here), not after the
+%% 1 s floor of the unpatched fork (sofia patch 0005).
+timer_a_starts_at_t1(_Config) ->
+    start(#{sip_timers => #{t1 => 100}}),
+    {ok, S} = gen_udp:open(0, [binary, {ip, ?LO}, {active, true}]),
+    {ok, Port} = inet:port(S),
+    {ok, _Ref} = chappe_sip:request(target(Port), #{method => <<"INVITE">>}),
+    First = recv_udp(S, <<"INVITE">>),
+    Second = recv_udp(S, <<"INVITE">>),
+    ct:log("timer A gap ~p ms", [Second - First]),
+    ?assert(Second - First < 500),
+    gen_udp:close(S).
+
+%% req: R3261-339
 %% udp_mtu 576: a request of about 1500 bytes to a peer listening on UDP
 %% and TCP arrives over TCP.
 udp_mtu_moves_to_tcp(_Config) ->
@@ -88,8 +101,7 @@ udp_mtu_moves_to_tcp(_Config) ->
     gen_tcp:close(L),
     gen_udp:close(U).
 
-%% req: RFC5626-4.4.1 the CRLF keep-alive: a double-CRLF ping on a
-%% connection-oriented transport
+%% The CRLF keep-alive of RFC 5626 4.4.1, sent by the stack.
 %% tcp_keepalive_ms: an idle TCP connection to the stack gets a CRLFCRLF
 %% ping.
 tcp_keepalive_pings(_Config) ->
@@ -125,6 +137,37 @@ outbound_proxy_takes_requests(_Config) ->
     end,
     gen_udp:close(S).
 
+%% req: R3261-003 R3261-004 R3261-038
+%% outbound_route: a request with no route of its own carries the proxy as
+%% a preloaded Route (RFC 3261 8.1.2), its Request-URI the target, and goes
+%% to it; one sent with a proxy option of its own does not.
+outbound_route_preloaded(_Config) ->
+    {ok, S} = gen_udp:open(0, [binary, {ip, ?LO}, {active, true}]),
+    {ok, Port} = inet:port(S),
+    PB = integer_to_binary(Port),
+    start(#{outbound_route => <<"sip:127.0.0.1:", PB/binary, ";transport=udp">>}),
+    {ok, _} = chappe_sip:request(<<"sip:far@192.0.2.99:5070">>,
+                                 #{method => <<"OPTIONS">>}),
+    Req = receive
+              {udp, S, _, _, <<"OPTIONS sip:far@192.0.2.99:5070 SIP/2.0", _/binary>> = B} -> B
+          after 5000 -> ct:fail(not_at_proxy)
+          end,
+    {ok, M} = chappe_sip_msg:parse(Req),
+    ?assertEqual(<<"<sip:127.0.0.1:", PB/binary, ";transport=udp;lr>">>,
+                 chappe_sip_msg:get(<<"route">>, M)),
+    {ok, S2} = gen_udp:open(0, [binary, {ip, ?LO}, {active, true}]),
+    {ok, Port2} = inet:port(S2),
+    {ok, _} = chappe_sip:request(target(Port2),
+                                 #{method => <<"OPTIONS">>, proxy => target(Port2)}),
+    receive
+        {udp, S2, _, _, <<"OPTIONS ", _/binary>> = B2} ->
+            {ok, M2} = chappe_sip_msg:parse(B2),
+            ?assertEqual(undefined, chappe_sip_msg:get(<<"route">>, M2))
+    after 5000 -> ct:fail(not_sent)
+    end,
+    gen_udp:close(S),
+    gen_udp:close(S2).
+
 %% aliases: other names of the node, with or without a port, are its own
 %% addresses (a Route naming one is ours to pop).
 aliases_are_own(_Config) ->
@@ -139,7 +182,8 @@ aliases_are_own(_Config) ->
      || U <- [<<"sip:other.example.com:", PB/binary>>,
               <<"sip:edge.example.com:", PB/binary>>]].
 
-%% Out of bounds or of the wrong shape: the start fails with the option.
+%% Out of bounds or of the wrong shape: the start fails with the option;
+%% outbound_route and outbound_proxy together are refused.
 bad_options(_Config) ->
     [?assertEqual({error, {Key, V}},
                   chappe_sip:start(#{contact => contact(), Key => V}))
@@ -157,12 +201,19 @@ bad_options(_Config) ->
             {outbound_proxy, <<"http://proxy">>},
             {outbound_proxy, <<"sip:p", 0, ":5060">>},
             {outbound_proxy, "sip:proxy"},
+            {outbound_route, <<"http://proxy">>},
+            {outbound_route, <<"sip:p", 0, ":5060">>},
+            {outbound_route, 42},
             {aliases, <<"sbc.example.com">>},
             {aliases, [<<"a b">>]},
             {aliases, [<<"sip:u@sbc.example.com">>]},
             {aliases, [<<"sbc.example.com;lr">>]},
             {aliases, lists:duplicate(17, <<"a.example.com">>)}
-        ]].
+        ]],
+    ?assertMatch({error, {outbound_route, {with_outbound_proxy, _}}},
+                 chappe_sip:start(#{contact => contact(),
+                                    outbound_proxy => <<"sip:a">>,
+                                    outbound_route => <<"sip:b">>})).
 
 %% ---- helpers ----
 
@@ -182,10 +233,14 @@ target(Port) ->
       ";transport=udp">>.
 
 recv_udp(S) ->
+    recv_udp(S, <<"OPTIONS">>).
+
+recv_udp(S, Method) ->
+    L = byte_size(Method),
     receive
-        {udp, S, _, _, <<"OPTIONS ", _/binary>>} ->
+        {udp, S, _, _, <<M:L/binary, " ", _/binary>>} when M =:= Method ->
             erlang:monotonic_time(millisecond)
-    after 3000 -> ct:fail(no_request)
+    after 3000 -> ct:fail({no_request, Method})
     end.
 
 options(LPort, P) ->

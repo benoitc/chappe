@@ -176,7 +176,7 @@ the REGISTER came on; a UDP flow is its source address and port.
 
 ## Record-route and in-dialog
 
-With `record_route => true`, chappe_sip inserts one Record-Route carrying flow
+With `record_route => true`, chappe_sip inserts a Record-Route carrying flow
 tokens, so ACK/BYE/re-INVITE come back through the proxy and are forwarded to
 the far end in both directions, whatever their `Require`, including a CANCEL of a re-INVITE in transit.
 The token of each WebSocket leg is in the route, so a browser-to-browser
@@ -187,12 +187,21 @@ expiry, see `flow_token_secret` and `record_route_ttl_s` in
 [Configuration](configuration.md)): a forged or expired route is not ours and
 is not relayed.
 
+When the request arrives on one address and leaves from another (two
+listen addresses, IPv4 in and IPv6 out, TLS in and UDP out, or the two
+sides of a 1:1 NAT), the proxy inserts two Record-Routes (RFC 5658 5): the
+address the caller reached first, then the one the callee reaches on top.
+Each side's route set starts with an address it can reach, and nothing is
+rewritten in the responses. An in-dialog request carrying both of our
+Routes has both removed, so it does not spiral through us.
+
 ## SIPS and TLS
 
 - The Record-Route is a `sips:` URI (the TLS listener) when the forwarded
   request's Request-URI or top Route is SIPS, and a `sip:` URI otherwise. When
-  the two sides differ (TLS in, UDP out), the Record-Route in the responses
-  going back is rewritten for the upstream side (16.7 step 8).
+  the two sides differ (TLS in, UDP out), the request is record-routed twice,
+  `sips:` for the TLS side, instead of rewriting the Record-Route in the
+  responses (RFC 5658 4 and 5).
 - A SIPS request is only forwarded to a SIPS target (480 otherwise); a SIP
   request for a SIPS target keeps a `sip:` Request-URI and goes over TLS (RFC
   5630).
@@ -211,12 +220,11 @@ is not relayed.
   merged, 503 sent as 500). Every 2xx is forwarded for 64*T1 after the first
   (RFC 6026), also over TCP/TLS, where nta ends the client transaction at
   the first 2xx: the shim's agent callback catches the later ones. Record-Route insertion (sips when the forwarded request is
-  SIPS, rewritten in responses across TLS/non-TLS) and in-dialog forwarding
+  SIPS, doubled across addresses or TLS/non-TLS) and in-dialog forwarding
   through it, CANCEL of a transit re-INVITE included.
 
 ## Notes
 
-- One Record-Route per forward (single interface per transport).
 - A 2xx after the first is forwarded over UDP; on TCP or TLS the client
   transaction ends with the first 2xx, so a later fork's 2xx is dropped by
   the stack.

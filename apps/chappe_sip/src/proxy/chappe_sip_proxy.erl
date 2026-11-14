@@ -46,8 +46,8 @@
     provisional = false :: boolean(),
     %% Timer C fired after a provisional: CANCELled, its final is a 408
     expired = false :: boolean(),
-    %% our Record-Route on this branch is a SIPS URI (undefined: none)
-    rr_sips :: boolean() | undefined
+    %% the listen address this branch leaves from, with several
+    local :: binary() | undefined
 }).
 
 -record(px, {
@@ -66,6 +66,8 @@
     up_flow :: integer() | undefined,
     %% the request came over TLS
     in_tls = false :: boolean(),
+    %% the address the request came from (the inbound Record-Route)
+    source :: binary() | undefined,
     %% the listen address it came to, with several (our Record-Route)
     local :: binary() | undefined,
     timer_c :: pos_integer(),
@@ -142,6 +144,7 @@ forward(Req, Msg, Dests, Opts) ->
                 mode = maps:get(forking, Opts, sequential),
                 hash = chappe_sip_proxy_rules:loop_hash(Msg),
                 up_flow = up_flow(Req),
+                source = chappe_sip_req:source_ip(Req),
                 in_tls =
                     maps:get(transport, chappe_sip_req:meta(Req), undefined) =:=
                         <<"tls">>,
@@ -299,7 +302,7 @@ on_response(#px{server = ServerTxn} = P, TxnH, Status, Raw) when
     Status < 200
 ->
     B = maps:get(TxnH, P#px.pending),
-    _ = relay_answered(ServerTxn, P, Status, upstream_rr(P, B, Raw)),
+    _ = relay_answered(ServerTxn, P, Status, Raw),
     B1 = B#br{
         prov_by = undefined,
         provisional = true,
@@ -318,9 +321,7 @@ on_response(#px{server = ServerTxn} = P, TxnH, Status, Raw) when
     %% finds it; any other record stops once the 2xx is relayed
     RR = chappe_sip_proxy_rules:record_routes(P#px.opts),
     _ = RR andalso chappe_sip_cdr:proxy_answered(P#px.cdr, P#px.opts, Raw),
-    _ = relay_answered(
-        ServerTxn, P, Status, upstream_rr(P, maps:get(TxnH, P#px.pending), Raw)
-    ),
+    _ = relay_answered(ServerTxn, P, Status, Raw),
     _ = RR orelse chappe_sip_cdr:proxy_answered(P#px.cdr, P#px.opts, Raw),
     P1 = P#px{
         pending = maps:remove(TxnH, P#px.pending),
@@ -477,8 +478,9 @@ reason(_) -> <<>>.
 launch(#px{msg = Msg} = P, Dest) ->
     case chappe_sip_proxy_rules:retarget(Dest, Msg) of
         {ok, M1, Via} ->
-            {RRSips, M2} = record_route(P, Dest, M1),
-            {Route, M3} = chappe_sip_proxy_rules:next_hop(Dest, Via, M2),
+            {Route, M2} = chappe_sip_proxy_rules:next_hop(Dest, Via, M1),
+            OutLocal = chappe_sip_binds:pick_local(undefined, hop_uri(Route)),
+            M3 = record_route(P, Dest, Route, OutLocal, M2),
             Uri = chappe_sip_msg:uri(M1),
             P1 = P#px{
                 tried = [Uri | lists:delete(Uri, P#px.tried)],
@@ -486,7 +488,7 @@ launch(#px{msg = Msg} = P, Dest) ->
             },
             B = #br{
                 dest = Dest,
-                rr_sips = RRSips,
+                local = OutLocal,
                 depth = maps:get(Dest, P#px.depths, 0)
             },
             send_branch(P1, B, Route, M3);
@@ -499,14 +501,21 @@ launch(#px{msg = Msg} = P, Dest) ->
             }}
     end.
 
-send_branch(P, #br{dest = Dest} = B0, Route, Msg) ->
+send_branch(P, #br{dest = Dest, local = Local} = B0, Route, Msg) ->
     Raw = iolist_to_binary(chappe_sip_msg:encode(Msg)),
-    Opts =
+    Opts0 =
         case down_flow(Dest) of
             undefined ->
                 #{branch => chappe_sip_proxy_rules:new_branch(P#px.hash)};
             _ ->
                 #{}
+        end,
+    %% with several listen addresses, leave from the one the Record-Route
+    %% names for this side
+    Opts =
+        case Local of
+            undefined -> Opts0;
+            _ -> Opts0#{local => Local}
         end,
     case chappe_sip_engine:send_request(Route, Raw, self(), Opts) of
         {ok, TxnH} ->
@@ -528,47 +537,69 @@ send_branch(P, #br{dest = Dest} = B0, Route, Msg) ->
 after_ms(_Now, undefined) -> undefined;
 after_ms(Now, Ms) -> Now + Ms.
 
-record_route(#px{opts = Opts} = P, Dest, Msg) ->
+%% 16.6 step 4 and RFC 5658: our Record-Route names the address each side
+%% reaches us at. When the request came to one address (or transport, or
+%% the local side of a NAT) and leaves from another, two Record-Routes go
+%% in, the inbound one first and the outbound one on top (RFC 5658 5), so
+%% neither side's route set is rewritten in the responses.
+record_route(#px{opts = Opts} = P, Dest, Route, OutLocal, Msg) ->
     case chappe_sip_proxy_rules:record_routes(Opts) of
         true ->
-            Contact = chappe_sip_proxy_rules:rr_contact(Msg, P#px.local),
+            CallId = chappe_sip_msg:call_id(Msg),
             %% the flow tokens name the WS legs (the inbound one and this
             %% branch's) so in-dialog requests route back over those
             %% connections; the marker MAC binds them with the Call-ID
-            Down = down_flow(Dest),
-            RR = chappe_sip_route:record_route(
-                Contact,
-                {P#px.up_flow, Down},
-                chappe_sip_msg:call_id(Msg)
+            Flows = {P#px.up_flow, down_flow(Dest)},
+            Out = chappe_sip_binds:for_peer(
+                chappe_sip_proxy_rules:rr_contact(Msg, OutLocal),
+                hop_host(Route)
             ),
-            {
-                chappe_sip_uri:is_sips(
-                    chappe_sip_hdr:name_addr_uri(Contact)
-                ),
-                chappe_sip_msg:prepend(<<"Record-Route">>, RR, Msg)
-            };
+            In = in_contact(P),
+            RRs =
+                case same_address(In, Out) of
+                    true -> [Out];
+                    false -> [In, Out]
+                end,
+            lists:foldl(
+                fun(C, M) ->
+                    chappe_sip_msg:prepend(
+                        <<"Record-Route">>,
+                        chappe_sip_route:record_route(C, Flows, CallId),
+                        M
+                    )
+                end,
+                Msg,
+                RRs
+            );
         false ->
-            {undefined, Msg}
+            Msg
     end.
 
-%% 16.7 step 8: a request that came over TLS and left on a SIP Record-Route
-%% (or the other way round) has our Record-Route in its 1xx/2xx rewritten
-%% for the upstream side, signed for that address, so each side routes
-%% back to us over its own transport.
-upstream_rr(
-    #px{in_tls = InTls, up_flow = Up, local = Local},
-    #br{rr_sips = Sips, dest = Dest},
-    Raw
-) when
-    is_boolean(Sips), Sips =/= InTls
-->
-    chappe_sip_proxy_rules:rewrite_rr(
-        Raw,
-        chappe_sip_binds:contact_or_primary(Local, InTls),
-        {Up, down_flow(Dest)}
-    );
-upstream_rr(_P, _B, Raw) ->
-    Raw.
+%% the address the request came to, as its sender reaches it
+in_contact(#px{in_tls = InTls, local = Local, source = Source}) ->
+    C =
+        case chappe_sip_binds:contact_or_primary(Local, InTls) of
+            undefined -> chappe_sip_binds:contact_or_primary(Local, false);
+            U -> U
+        end,
+    chappe_sip_binds:for_peer(C, Source).
+
+same_address(A, B) when is_binary(A), is_binary(B) ->
+    chappe_sip_hdr:name_addr_uri(A) =:= chappe_sip_hdr:name_addr_uri(B);
+same_address(_, _) ->
+    true.
+
+%% the next hop as a URI, and its host, when it is one
+hop_uri(Route) when is_binary(Route) -> Route;
+hop_uri(_Route) -> undefined.
+
+hop_host(Route) when is_binary(Route) ->
+    case chappe_sip_uri:parse(chappe_sip_hdr:name_addr_uri(Route)) of
+        {ok, #{host := H}} -> H;
+        _ -> undefined
+    end;
+hop_host(_Route) ->
+    undefined.
 
 cancel_all(#px{pending = Pending}) ->
     maps:foreach(

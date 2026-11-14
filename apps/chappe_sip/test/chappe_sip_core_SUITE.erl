@@ -461,7 +461,11 @@ reinvite_one_at_a_time(Config) ->
                     end, 1500),
     send(Sock, Port, response(First, 200, #{body => sdp()})),
     {ok, _} = await(M1),
-    {Second, _} = recv(Sock, {method, <<"INVITE">>}, 3000),
+    %% the second re-INVITE, not a retransmission of the first
+    {Second, _} = recv(Sock, fun(B) ->
+                                     method(B) =:= <<"INVITE">> andalso
+                                         cseq(B) =/= FirstSeq
+                             end, 3000),
     send(Sock, Port, response(Second, 200, #{body => sdp()})),
     {ok, _} = await(M2).
 

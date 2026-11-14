@@ -225,11 +225,27 @@ pop_self(Msg) ->
     case routes(Msg) of
         [] ->
             {undefined, {undefined, undefined}, Msg};
-        [Top | Rest] ->
+        [Top | Rest0] ->
             Flows =
                 case route_uri(Top) of
                     {ok, #{params := P}} -> flows(P);
                     _ -> {undefined, undefined}
+                end,
+            %% RFC 5658 5: a double Record-Route of ours comes back as two
+            %% Routes; the second is popped too, rather than spiralling
+            Rest =
+                case Rest0 of
+                    [Next | Rest1] ->
+                        case
+                            is_self(
+                                Next, undefined, chappe_sip_msg:call_id(Msg)
+                            )
+                        of
+                            true -> Rest1;
+                            false -> Rest0
+                        end;
+                    [] ->
+                        Rest0
                 end,
             {next_hop(Rest), Flows, set_routes(Rest, Msg)}
     end.
