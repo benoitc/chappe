@@ -11,6 +11,8 @@
 %%   {dtmf, Digit}       a DTMF digit from the channel
 %%   {hangup, Cause}     the channel hung up (or its socket closed)
 %%   {node_down, Node}   the FreeSWITCH node went down
+%%   {tone, Name}        a tone of detect_tones/2 was heard
+%%   {fax, detected}     detect_fax/1,2 heard a fax tone
 %%   {complete, App, Ev} an application nobody waited for ended (one
 %%                       run with wait => false, or the dialplan's)
 %%
@@ -259,6 +261,12 @@ common(_EventType, _Msg, _State, _Data) ->
 
 call_msg({dtmf, Digit}, Data) ->
     notify(Data, {dtmf, Digit}),
+    keep_state_and_data;
+call_msg({tone, Tone}, Data) ->
+    notify(Data, {tone, Tone}),
+    keep_state_and_data;
+call_msg({fax, detected}, Data) ->
+    notify(Data, {fax, detected}),
     keep_state_and_data;
 call_msg({hangup, Cause}, Data) ->
     hungup(Cause, Data);

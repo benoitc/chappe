@@ -40,6 +40,8 @@
 -export([record_session/2, record_session_stop/2, send_dtmf/2, set/3, set/2]).
 -export([api/2, execute/3, execute/4, fork_audio_start/3, fork_audio_stop/1]).
 -export([export/3, var/2, vars/1, mute/2, unmute/2, say/3, speak/3]).
+-export([detect_tones/2, stop_detect_tones/1, detect_fax/1, detect_fax/2]).
+-export([stop_detect_fax/1]).
 -export([fork_audio_pause/1, fork_audio_pause/2, fork_audio_resume/1]).
 -export([fork_audio_resume/2, fork_audio_send_text/2, fork_audio_send_text/3]).
 -export([modify/2, destroy/1, uuid/1, node/1, info/1]).
@@ -426,6 +428,32 @@ say(Ep, Text, Opts) ->
 -spec speak(endpoint(), iodata(), map()) -> ok | {error, term()}.
 speak(Ep, Text, Opts) ->
     with_call(Ep, fun(C) -> chappe_esl_call:speak(C, Text, Opts) end).
+
+%% Listen for the tones of a mod_spandsp descriptor (Name, from the node's
+%% spandsp.conf): the owner gets {chappe_mrf, Ep, {tone, ToneName}} each
+%% time one is heard, until stop_detect_tones/1 or the hangup.
+-spec detect_tones(endpoint(), iodata()) -> ok | {error, term()}.
+detect_tones(Ep, Name) ->
+    with_call(Ep, fun(C) -> chappe_esl_call:detect_tones(C, Name) end).
+
+-spec stop_detect_tones(endpoint()) -> ok | {error, term()}.
+stop_detect_tones(Ep) ->
+    with_call(Ep, fun chappe_esl_call:stop_detect_tones/1).
+
+%% Listen for a fax: the owner gets {chappe_mrf, Ep, {fax, detected}}.
+%% detect_fax/2 takes tone (cng, a calling fax, the default; ced, an
+%% answering one) and timeout (seconds, 0 for none).
+-spec detect_fax(endpoint()) -> ok | {error, term()}.
+detect_fax(Ep) ->
+    detect_fax(Ep, #{}).
+
+-spec detect_fax(endpoint(), map()) -> ok | {error, term()}.
+detect_fax(Ep, Opts) ->
+    with_call(Ep, fun(C) -> chappe_esl_call:detect_fax(C, Opts) end).
+
+-spec stop_detect_fax(endpoint()) -> ok | {error, term()}.
+stop_detect_fax(Ep) ->
+    with_call(Ep, fun chappe_esl_call:stop_detect_fax/1).
 
 -spec send_dtmf(endpoint(), iodata()) -> ok | {error, term()}.
 send_dtmf(Ep, Digits) ->

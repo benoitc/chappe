@@ -21,6 +21,8 @@
 %%   {complete, App, Event}    a completion no request waits for (an app
 %%                             started with wait => false, or the dialplan's;
 %%                             a timed out request's completion is dropped)
+%%   {tone, Name}              a tone of detect_tones/2 was heard
+%%   {fax, detected}           a fax tone of detect_fax/2 was heard
 %%   {event, Event}            any other event of the channel
 %%   linger                    the channel hung up; the final events still
 %%                             follow and the socket stays open
@@ -51,7 +53,8 @@
 -export([record/3, record_session/2, record_session_stop/2]).
 -export([send_dtmf/2, set/3, export/3, hangup/1, hangup/2]).
 -export([multiset/2, getvar/2, dump/1, mute/2, unmute/2]).
--export([say/3, speak/3]).
+-export([say/3, speak/3, detect_tones/2, stop_detect_tones/1]).
+-export([detect_fax/2, stop_detect_fax/1]).
 -export([conference/2, conference/3, audio_fork_start/3, audio_fork_stop/1]).
 -export([audio_fork_stop/2, audio_fork_pause/2, audio_fork_resume/2]).
 -export([audio_fork_send_text/3]).
@@ -130,6 +133,8 @@
     {dtmf, binary()}
     | {hangup, binary()}
     | {complete, binary(), event()}
+    | {tone, binary()}
+    | {fax, detected}
     | {event, event()}
     | linger
     | disconnect
@@ -531,6 +536,70 @@ tts_word(_) ->
 one_line(Text) ->
     binary:match(Text, [<<"\n">>, <<"\r">>]) =:= nomatch.
 
+%% Listen for the tones of a mod_spandsp tone descriptor (Name, from the
+%% node's spandsp.conf): the owner gets {tone, ToneName} each time one is
+%% heard, until stop_detect_tones/1 or the hangup.
+-spec detect_tones(call(), iodata()) -> ok | {error, term()}.
+detect_tones(Call, Name) ->
+    case tts_word(to_bin(Name)) of
+        true ->
+            detector(
+                Call, <<"spandsp_start_tone_detect">>, Name, <<"+OK started">>
+            );
+        false ->
+            {error, {bad_option, name}}
+    end.
+
+-spec stop_detect_tones(call()) -> ok | {error, term()}.
+stop_detect_tones(Call) ->
+    done(exec(Call, <<"spandsp_stop_tone_detect">>, <<>>)).
+
+%% Listen for a fax (mod_spandsp): the owner gets {fax, detected} once.
+%% Opts: tone (cng, the calling fax, default; ced, the answering one),
+%% timeout (seconds to listen, 0 for no limit, the default).
+-spec detect_fax(call(), map()) -> ok | {error, term()}.
+detect_fax(Call, Opts) ->
+    case {maps:get(tone, Opts, cng), maps:get(timeout, Opts, 0)} of
+        {Tone, _} when Tone =/= cng, Tone =/= ced ->
+            {error, {bad_option, tone}};
+        {_, Secs} when not is_integer(Secs); Secs < 0 ->
+            {error, {bad_option, timeout}};
+        {Tone, Secs} ->
+            %% the application runs `set' when it hears the tone, and
+            %% fires the DETECTED_TONE the owner hears
+            Arg = [
+                <<"set chappe_fax_detected=true ">>,
+                integer_to_binary(Secs),
+                <<" ">>,
+                atom_to_binary(Tone)
+            ],
+            detector(Call, <<"spandsp_start_fax_detect">>, Arg, undefined)
+    end.
+
+-spec stop_detect_fax(call()) -> ok | {error, term()}.
+stop_detect_fax(Call) ->
+    done(exec(Call, <<"spandsp_stop_fax_detect">>, <<>>)).
+
+detector(Call, App, Arg, Expect) ->
+    case subscribe(Call, [<<"DETECTED_TONE">>]) of
+        ok ->
+            case {exec(Call, App, Arg), Expect} of
+                {{ok, _}, undefined} ->
+                    ok;
+                {{ok, Ev}, _} ->
+                    case
+                        chappe_esl_event:header(<<"Application-Response">>, Ev)
+                    of
+                        Expect -> ok;
+                        Other -> {error, to_bin(Other)}
+                    end;
+                {Error, _} ->
+                    Error
+            end;
+        Error ->
+            Error
+    end.
+
 %% Set several variables at once (multiset). Names are words without `=';
 %% the values are split on a delimiter none of them contains. At most 256
 %% variables, as multiset takes.
@@ -557,7 +626,7 @@ multiset(_Call, _Vars) ->
 
 valid_var({K, V}) ->
     event_word(K) andalso binary:match(K, <<"=">>) =:= nomatch andalso
-        binary:match(V, [<<"\n">>, <<"\r">>]) =:= nomatch.
+        one_line(V).
 
 delimiter(Pairs) ->
     Used = iolist_to_binary([[K, V] || {K, V} <- Pairs]),
@@ -974,6 +1043,17 @@ event(<<"CHANNEL_EXECUTE_COMPLETE">>, Ev, State0) ->
         {error, error} ->
             App = to_bin(chappe_esl_event:header(<<"Application">>, Ev)),
             notify(State, {complete, App, Ev})
+    end;
+event(<<"DETECTED_TONE">>, Ev, State) ->
+    case
+        {
+            chappe_esl_event:header(<<"Detected-Tone">>, Ev),
+            chappe_esl_event:header(<<"Detected-Fax-Tone">>, Ev)
+        }
+    of
+        {Tone, _} when is_binary(Tone) -> notify(State, {tone, Tone});
+        {_, <<"true">>} -> notify(State, {fax, detected});
+        _ -> notify(State, {event, Ev})
     end;
 event(<<"DTMF">>, Ev, State) ->
     notify(

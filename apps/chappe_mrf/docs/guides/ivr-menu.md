@@ -148,6 +148,24 @@ ok = chappe_mrf:speak(Ep, <<"Your call is important to us">>,
 channel's `sound_prefix`. `speak/3` without `engine` and `voice` uses the
 channel's `tts_engine` and `tts_voice`.
 
+## Detect tones and faxes
+
+mod_spandsp listens on the channel and tells the owner what it heard. Tone
+descriptors (busy, ringback, a beep) live in the node's `spandsp.conf`:
+
+```erlang
+ok = chappe_mrf:detect_tones(Ep, <<"call_progress">>),
+ok = chappe_mrf:detect_fax(Ep),
+receive
+    {chappe_mrf, Ep, {tone, <<"BUSY_TONE">>}} -> busy;
+    {chappe_mrf, Ep, {fax, detected}} -> fax
+end,
+ok = chappe_mrf:stop_detect_tones(Ep).
+```
+
+`detect_fax/2` takes `tone` (`cng`, a calling fax, or `ced`, an answering
+one) and `timeout` in seconds.
+
 ## Notes
 
 - A command blocks the process that calls it, not the endpoint: digits

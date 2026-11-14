@@ -29,6 +29,7 @@
     variables_and_audio/1,
     fork_commands/1,
     say_and_speak/1,
+    detection/1,
     dtmf_and_hangup/1,
     helpers/1,
     audio_stream_commands/1,
@@ -77,6 +78,7 @@ all() ->
         variables_and_audio,
         fork_commands,
         say_and_speak,
+        detection,
         dtmf_and_hangup,
         helpers,
         audio_stream_commands,
@@ -385,6 +387,64 @@ play_and_get_digits_full(_Config) ->
             file => <<"p.wav">>, result => full
         })
     ).
+
+%% Tone and fax detection subscribe to DETECTED_TONE, start mod_spandsp's
+%% detector, and turn its events into {tone, Name} and {fax, detected}; a
+%% detector that does not start is an error.
+%% req: ESL-37 ESL-38
+detection(_Config) ->
+    Apps = #{
+        <<"spandsp_start_tone_detect">> => #{response => <<"+OK started">>}
+    },
+    {Call, Fake} = outbound(#{apps => Apps}),
+    ok = chappe_esl_call:detect_tones(Call, <<"chappe">>),
+    ?assertEqual(<<"event plain DETECTED_TONE">>, block_with(<<"event plain">>)),
+    expect_app(<<"spandsp_start_tone_detect">>, <<"chappe">>),
+    ok = chappe_esl_call:detect_fax(Call, #{tone => ced, timeout => 30}),
+    expect_app(
+        <<"spandsp_start_fax_detect">>, <<"set chappe_fax_detected=true 30 ced">>
+    ),
+    Inject = fun(Headers) ->
+        chappe_esl_fake_server:inject(
+            Fake,
+            chappe_esl_fake_server:plain_event(
+                <<"DETECTED_TONE">>, [{<<"Unique-ID">>, ?UUID} | Headers]
+            )
+        )
+    end,
+    ok = Inject([{<<"Detected-Tone">>, <<"BUSY_TONE">>}]),
+    ?assertEqual({tone, <<"BUSY_TONE">>}, owner_msg_skip_events(Call)),
+    ok = Inject([{<<"Detected-Fax-Tone">>, <<"true">>}]),
+    ?assertEqual({fax, detected}, owner_msg_skip_events(Call)),
+    ok = chappe_esl_call:stop_detect_tones(Call),
+    _ = block_with(<<"execute-app-name: spandsp_stop_tone_detect">>),
+    ok = chappe_esl_call:stop_detect_fax(Call),
+    _ = block_with(<<"execute-app-name: spandsp_stop_fax_detect">>),
+    {Call2, _} = outbound(#{
+        apps => #{
+            <<"spandsp_start_tone_detect">> => #{
+                response => <<"-ERR failed to start tone detector">>
+            }
+        }
+    }),
+    ?assertEqual(
+        {error, <<"-ERR failed to start tone detector">>},
+        chappe_esl_call:detect_tones(Call2, <<"nope">>)
+    ),
+    [
+        ?assertEqual(Err, F())
+     || {Err, F} <- [
+            {{error, {bad_option, name}}, fun() ->
+                chappe_esl_call:detect_tones(Call2, <<"a b">>)
+            end},
+            {{error, {bad_option, tone}}, fun() ->
+                chappe_esl_call:detect_fax(Call2, #{tone => v21})
+            end},
+            {{error, {bad_option, timeout}}, fun() ->
+                chappe_esl_call:detect_fax(Call2, #{timeout => -1})
+            end}
+        ]
+    ].
 
 %% say builds `<lang> <type> <method> [gender] <text>', speak
 %% `[engine|]voice|text'; options that would change how FreeSWITCH splits
