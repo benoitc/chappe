@@ -19,14 +19,16 @@
 -export([answer_on_each_address/1, record_route_per_address/1,
          uac_by_family/1, single_contact/1, bad_contact/1,
          answer_on_second_v4/1, uac_local/1, udp_flow_local/1,
-         public_advertised/1, public_local_nets/1, bad_public/1]).
+         public_advertised/1, public_local_nets/1, bad_public/1,
+         double_record_route/1]).
 
 -define(V4, {127, 0, 0, 1}).
 -define(V4B, {127, 0, 0, 2}).
 -define(V6, {0, 0, 0, 0, 0, 0, 0, 1}).
 
 all() ->
-    [answer_on_each_address, record_route_per_address, uac_by_family,
+    [answer_on_each_address, record_route_per_address, double_record_route,
+     uac_by_family,
      single_contact, bad_contact, public_advertised, public_local_nets,
      bad_public, {group, second_v4}].
 
@@ -69,6 +71,41 @@ end_per_testcase(_Case, _Config) ->
 
 %% ---- 127.0.0.1 and ::1 ----
 
+%% req: R5658-01 R5658-02
+%% A request that comes to the IPv4 address and leaves for an IPv6 peer
+%% is record-routed twice (RFC 5658 5): the IPv6 address on top for the
+%% callee, the IPv4 one below for the caller. The callee's BYE, routed
+%% through both, reaches the caller with neither of our Routes left.
+double_record_route(_Config) ->
+    {P4, P6} = start_v4_v6(),
+    Down = peer(?V6),
+    DownUri = <<"sip:down@[::1]:", (integer_to_binary(port(Down)))/binary>>,
+    ok = chappe_sip:invite(fun(Req, _Res) ->
+        chappe_sip:proxy_request(Req, [DownUri], #{record_route => true})
+    end),
+    Up = peer(?V4),
+    ok = send(Up, ?V4, P4, invite(Up, ?V4, P4)),
+    {Fwd, DSrc} = recv_req(Down, <<"INVITE">>),
+    {ok, M} = chappe_sip_msg:parse(Fwd),
+    RRs = [V || H <- chappe_sip_msg:get_all(<<"record-route">>, M),
+                V <- chappe_sip_hdr:split_list(H)],
+    ct:log("Record-Route: ~p", [RRs]),
+    P6B = integer_to_binary(P6),
+    P4B = integer_to_binary(P4),
+    ?assertMatch([<<"<sip:[::1]:", P6B:(byte_size(P6B))/binary, ";", _/binary>>,
+                  <<"<sip:127.0.0.1:", P4B:(byte_size(P4B))/binary, ";", _/binary>>],
+                 RRs),
+    %% the callee answers, then hangs up through the route set it got
+    {DIp, DPort} = DSrc,
+    ok = send(Down, DIp, DPort, ok200(Fwd, Down, RRs)),
+    {_Ok, _} = recv_resp(Up, 200),
+    ok = send(Down, ?V6, P6, bye(Fwd, Down, RRs)),
+    {Bye, _} = recv_req(Up, <<"BYE">>),
+    {ok, BM} = chappe_sip_msg:parse(Bye),
+    ?assertEqual([], chappe_sip_msg:get_all(<<"route">>, BM)),
+    close(Up),
+    close(Down).
+
 %% An INVITE to each address: the 2xx Contact names that address, the
 %% request meta says where it arrived, and the dialog's BYE leaves from it.
 answer_on_each_address(_Config) ->
@@ -108,7 +145,10 @@ record_route_per_address(_Config) ->
             ok = send(Up, Ip, Port, invite(Up, Ip, Port)),
             {Fwd, _} = recv_req(Down, <<"INVITE">>),
             {ok, M} = chappe_sip_msg:parse(Fwd),
-            RR = chappe_sip_msg:get(<<"record-route">>, M),
+            %% the address it arrived on is in the route set (alone, or
+            %% under the outbound one when it leaves from another)
+            RR = iolist_to_binary(
+                lists:join(<<", ">>, chappe_sip_msg:get_all(<<"record-route">>, M))),
             ct:log("Record-Route via ~p: ~s", [Ip, RR]),
             Want = <<(host(Ip))/binary, ":", (integer_to_binary(Port))/binary>>,
             ?assertNotEqual(nomatch, binary:match(RR, Want)),
@@ -444,6 +484,57 @@ register_req(#{ip := Ip} = Peer, ToPort) ->
         "Expires: 3600\r\n",
         "Content-Length: 0\r\n\r\n"
     ]).
+
+%% the callee's 200 to a forwarded INVITE, echoing its Record-Routes
+ok200(Inv, Peer, RRs) ->
+    {ok, M} = chappe_sip_msg:parse(Inv),
+    iolist_to_binary(
+        ["SIP/2.0 200 OK
+",
+         [["Via: ", V, "
+"] || V <- chappe_sip_msg:get_all(<<"via">>, M)],
+         [["Record-Route: ", R, "
+"] || R <- RRs],
+         "From: ", chappe_sip_msg:get(<<"from">>, M), "
+",
+         "To: ", chappe_sip_msg:get(<<"to">>, M), ";tag=callee
+",
+         "Call-ID: ", chappe_sip_msg:call_id(M), "
+",
+         "CSeq: 1 INVITE
+",
+         "Contact: <sip:down@[::1]:", integer_to_binary(port(Peer)), ">
+",
+         "Content-Length: 0
+
+"]).
+
+%% the callee's BYE through the route set it learned (top first)
+bye(Inv, Peer, RRs) ->
+    {ok, M} = chappe_sip_msg:parse(Inv),
+    {ok, #{uri := Target}} =
+        chappe_sip_hdr:name_addr(chappe_sip_msg:get(<<"contact">>, M)),
+    iolist_to_binary(
+        ["BYE ", Target, " SIP/2.0
+",
+         "Via: SIP/2.0/UDP [::1]:", integer_to_binary(port(Peer)),
+         ";branch=z9hG4bK", hex(6), ";rport
+",
+         "Max-Forwards: 70
+",
+         [["Route: ", R, "
+"] || R <- RRs],
+         "From: ", chappe_sip_msg:get(<<"to">>, M), ";tag=callee
+",
+         "To: ", chappe_sip_msg:get(<<"from">>, M), "
+",
+         "Call-ID: ", chappe_sip_msg:call_id(M), "
+",
+         "CSeq: 2 BYE
+",
+         "Content-Length: 0
+
+"]).
 
 contact_uri(Msg) ->
     {ok, M} = chappe_sip_msg:parse(Msg),

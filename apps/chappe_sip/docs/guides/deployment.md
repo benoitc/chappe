@@ -155,8 +155,9 @@ ok = chappe_sip:start(#{
 - An invalid `public`, `local_nets` or a `uri` that already has `maddr`
   fails the start with `{error, {contact, bad_public}}` or
   `{error, {contact, bad_local_nets}}`.
-- The Record-Route of the proxy names `public`, and so does the Contact a
-  B2BUA puts on what it sends the A leg.
+- A proxy between the two sides record-routes twice (RFC 5658), public for
+  the outside one and local for the inside one.
+- The Contact a B2BUA puts on what it sends the A leg names `public`.
 
 ## Keep connections open through NAT
 

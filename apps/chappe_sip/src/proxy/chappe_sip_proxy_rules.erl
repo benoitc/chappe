@@ -9,7 +9,7 @@
 
 -export([best_response/1, loop_hash/1, looped/1, new_branch/1]).
 -export([retarget/2, is_own_address/1, is_loose/1]).
--export([record_routes/1, rr_contact/2, rewrite_rr/3, next_hop/3]).
+-export([record_routes/1, rr_contact/2, next_hop/3]).
 
 %% the reasons 4xx preferred by 16.7 step 6: they let the client retry
 -define(RETRY_4XX, [401, 407, 415, 420, 484]).
@@ -276,35 +276,6 @@ rr_contact(Msg, Local) ->
     case Secure andalso chappe_sip_binds:contact_or_primary(Local, true) of
         Tls when is_binary(Tls) -> Tls;
         _ -> chappe_sip_binds:contact_or_primary(Local, false)
-    end.
-
-%% 16.7 step 8: our Record-Route in a 1xx/2xx, rewritten for the upstream
-%% side as Contact (signed for that address with these flows), so each
-%% side of a TLS-to-SIP request routes back to us over its own transport
--spec rewrite_rr(binary(), binary() | undefined, chappe_sip_route:flows()) ->
-    binary().
-rewrite_rr(Raw, Contact, Flows) ->
-    case {Contact, chappe_sip_msg:parse(Raw)} of
-        {C, {ok, M}} when is_binary(C) ->
-            CallId = chappe_sip_msg:call_id(M),
-            RRs = [
-                case chappe_sip_route:is_self(V, undefined, CallId) of
-                    true -> chappe_sip_route:record_route(C, Flows, CallId);
-                    false -> V
-                end
-             || H <- chappe_sip_msg:get_all(<<"record-route">>, M),
-                V <- chappe_sip_hdr:split_list(H)
-            ],
-            M1 = lists:foldr(
-                fun(V, Acc) ->
-                    chappe_sip_msg:prepend(<<"Record-Route">>, V, Acc)
-                end,
-                chappe_sip_msg:remove(<<"record-route">>, M),
-                RRs
-            ),
-            iolist_to_binary(chappe_sip_msg:encode(M1));
-        _ ->
-            Raw
     end.
 
 %% a WS target goes over its flow. Otherwise the top Route is the next hop
