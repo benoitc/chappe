@@ -608,10 +608,11 @@ handle_info({chappe_esl_node, Node, {event, Ev}}, #state{node = Node} = S) ->
 handle_info({chappe_mrf, Ep, {hangup, _} = E}, S) when is_pid(Ep) ->
     S1 = chappe_mrf_conf_refer:native_event(Ep, E, S),
     {noreply, chappe_mrf_conf_fs:gone_ep(Ep, S1)};
-handle_info({chappe_mrf, Ep, {channel, _, _} = E}, S) when is_pid(Ep) ->
-    {noreply, chappe_mrf_conf_refer:native_event(Ep, E, S)};
-handle_info({chappe_mrf, Ep, {complete, _, _} = E}, S) when is_pid(Ep) ->
-    {noreply, chappe_mrf_conf_refer:native_event(Ep, E, S)};
+handle_info({chappe_mrf, Ep, Event}, S) when is_pid(Ep) ->
+    %% a dialed endpoint's channel and completion events
+    {noreply, chappe_mrf_conf_refer:native_event(Ep, Event, S)};
+handle_info({refer_bgdial, Uuid, Result}, S) ->
+    {noreply, chappe_mrf_conf_refer:fs_started(Uuid, Result, S)};
 handle_info({timeout, _, {refer_dial, Key}}, S) ->
     {noreply, chappe_mrf_conf_refer:timeout(Key, S)};
 handle_info({fs_join_timeout, Ep}, #state{pending = P} = S) ->

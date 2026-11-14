@@ -17,7 +17,7 @@
 %% bridges to the target (the dial option makes the dial string, default
 %% sofia/<dial_profile>/<target>); the referrer gets 200 once the target
 %% answers. On fs, mod_conference dials the target into the room
-%% (conference <room> dial), and the referrer gets 200 when it is in
+%% (conference <room> bgdial), and the referrer gets 200 when it is in
 %% (add-member, from the node's events: give the node CUSTOM
 %% conference::maintenance, see chappe_mrf_conf:start/2). A target that
 %% does not answer within dial_timeout (30 s) is given up with 408.
@@ -30,6 +30,7 @@
 
 -export([refer/3, dial_native/4, focus/2, call/2]).
 -export([fs_dial/3, remove/2, native_event/3, fs_added/3, timeout/2]).
+-export([fs_result/3, fs_started/3]).
 -export([transferred/3, dial_string/2, dialing/4, dialable/1]).
 
 -define(DIAL_TIMEOUT, 30000).
@@ -219,7 +220,7 @@ fs_dial(Target, Refer, #state{dialing = D} = S) ->
         false -> {{error, not_dialable}, S}
     end.
 
-fs_dial(Target, Refer, D, S) ->
+fs_dial(Target, Refer, D, #state{name = Name} = S) ->
     Uuid = chappe_mrf_lib:new_id(),
     Dial = [
         <<"{origination_uuid=">>,
@@ -227,20 +228,64 @@ fs_dial(Target, Refer, D, S) ->
         <<"}">>,
         dial_string(S#state.dial, Target)
     ],
-    case
-        chappe_mrf_lib:api_ok(
-            chappe_mrf_conf_fs:api(any, [<<"dial">>, Dial], S)
-        )
-    of
-        ok ->
-            Timer = erlang:start_timer(
-                timeout_ms(S), self(), {refer_dial, {uuid, Uuid}}
-            ),
-            Entry = #{refer => Refer, target => Target, timer => Timer},
-            {ok, S#state{dialing = D#{{uuid, Uuid} => Entry}}};
-        {error, _} = Err ->
-            {Err, S}
+    %% bgdial answers at once (dial would originate first, for as long as
+    %% the target rings); a helper sends it, so the room never waits on a
+    %% socket, and over the node's own connection when the registry has
+    %% it rather than a member's call socket
+    Cmd = iolist_to_binary([<<"conference ">>, Name, <<" bgdial ">>, Dial]),
+    Via = chappe_mrf_conf_fs:api_route(S),
+    Conf = self(),
+    _ = spawn_monitor(fun() -> Conf ! {refer_bgdial, Uuid, bgdial(Via, Cmd)} end),
+    Timer = erlang:start_timer(
+        timeout_ms(S), self(), {refer_dial, {uuid, Uuid}}
+    ),
+    Entry = #{refer => Refer, target => Target, timer => Timer},
+    {ok, S#state{dialing = D#{{uuid, Uuid} => Entry}}}.
+
+bgdial({node, Node, Fallback}, Cmd) ->
+    case catch_api(fun() -> chappe_esl:node_api(Node, Cmd) end) of
+        {ok, _} = Ok -> Ok;
+        _ -> bgdial(Fallback, Cmd)
+    end;
+bgdial({ep, Ep}, Cmd) ->
+    catch_api(fun() -> chappe_mrf:api(Ep, Cmd) end);
+bgdial(none, _Cmd) ->
+    {error, no_connection}.
+
+catch_api(F) ->
+    try F() of
+        R -> chappe_mrf_lib:api_ok(R)
+    catch
+        _:R -> {error, R}
     end.
+
+%% fs: the bgdial job did not start, or its call failed (bgdial-result
+%% with another cause than SUCCESS): the referrer's final status.
+-spec fs_failed(binary(), 300..699, #state{}) -> #state{}.
+fs_failed(Uuid, Status, #state{dialing = D} = S) ->
+    case maps:take({uuid, Uuid}, D) of
+        {#{refer := R, timer := T}, D1} ->
+            _ = erlang:cancel_timer(T),
+            ok = chappe_sip_refer:final(R, Status),
+            S#state{dialing = D1};
+        error ->
+            S
+    end.
+
+%% A bgdial-result for a party we dialed: SUCCESS waits for its
+%% add-member; any other cause fails the REFER.
+-spec fs_result(binary(), binary(), #state{}) -> #state{}.
+fs_result(_Uuid, <<"SUCCESS">>, S) ->
+    S;
+fs_result(Uuid, Cause, S) ->
+    fs_failed(Uuid, cause(Cause), S).
+
+%% The helper's answer: a refused bgdial fails the REFER at once.
+-spec fs_started(binary(), ok | {error, term()}, #state{}) -> #state{}.
+fs_started(_Uuid, ok, S) ->
+    S;
+fs_started(Uuid, {error, _}, S) ->
+    fs_failed(Uuid, 503, S).
 
 %% REFER with method=BYE: the member with that URI is removed.
 -spec remove(binary(), #state{}) -> {ok | {error, not_found}, #state{}}.

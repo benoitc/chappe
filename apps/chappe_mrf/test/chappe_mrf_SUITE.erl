@@ -20,6 +20,7 @@
     refer_adds_native/1,
     refer_adds_fs/1,
     refer_hostile_target/1,
+    refer_bgdial/1,
     member_transferred/1,
     caller_hangup/1,
     unknown_channel_refused/1,
@@ -70,6 +71,7 @@ all() ->
         refer_adds_native,
         refer_adds_fs,
         refer_hostile_target,
+        refer_bgdial,
         member_transferred,
         caller_hangup,
         unknown_channel_refused,
@@ -358,7 +360,7 @@ refer_adds_fs(Config) ->
     Entity = <<"sip:fsadd@127.0.0.1:", (integer_to_binary(?config(ep, Config)))/binary>>,
     {Sock, _} = refer(Config, Entity, <<"boss">>, <<"<sip:dave@10.0.0.8>">>),
     ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(Sock)),
-    {fake_fs, _, _, {cmd, Dial}} = fs_cmd(<<"conference fsadd dial">>),
+    {fake_fs, _, _, {cmd, Dial}} = fs_cmd(<<"conference fsadd bgdial">>),
     ?assert(has(Dial, <<"sofia/external/dave@10.0.0.8">>)),
     {match, [Uuid]} = re:run(Dial, <<"origination_uuid=([^}]+)}">>, [{capture, all_but_first, binary}]),
     ?assertEqual([<<"SIP/2.0 100">>], frags(Sock, 1)),
@@ -421,6 +423,41 @@ refer_hostile_target(Config) ->
         {policy, #{action := add, dial := <<"sofia/external/carol@10.0.0.9">>}} -> ok
     after 2000 -> ct:fail(no_dial_in_policy)
     end.
+
+%% fs: the party is dialed with bgdial, so neither the room nor the
+%% member whose socket carries the command waits for the target to
+%% answer (dial would, for as long as it rings); the job's failure
+%% (bgdial-result) is the referrer's final status.
+refer_bgdial(Config) ->
+    ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
+    Slow = ?F:fs_start(<<"slow">>, #{esl_port => ?config(lp, Config), dial_delay => 4000}),
+    {ok, Conf} = chappe_mrf:conference(<<"bgroom">>, #{
+        backend => fs, node => slow, refer_policy => fun(_) -> true end
+    }),
+    {ok, Ep} = chappe_mrf:create_endpoint(#{targets => [{slow, uri_of(?F:fs_port(Slow))}]}),
+    {ok, _First} = chappe_mrf_conf:join(Conf, Ep, #{}),
+    {joined, _, _} = joined(Conf),
+    Entity = <<"sip:bgroom@127.0.0.1:", (integer_to_binary(?config(ep, Config)))/binary>>,
+    {Sock, _} = refer(Config, Entity, <<"boss">>, <<"<sip:busy@10.0.0.8>">>),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(Sock)),
+    {fake_fs, _, _, {cmd, Dial}} = fs_cmd(<<"conference bgroom bgdial">>),
+    {match, [Uuid]} = re:run(Dial, <<"origination_uuid=([^}]+)}">>, [{capture, all_but_first, binary}]),
+    T0 = erlang:monotonic_time(millisecond),
+    #{members := 1} = chappe_mrf_conf:info(Conf),
+    ?assert(erlang:monotonic_time(millisecond) - T0 < 1000),
+    Conf ! {chappe_esl_node, slow, {event, #{body => <<>>, headers => #{
+        <<"Event-Name">> => <<"CUSTOM">>,
+        <<"Event-Subclass">> => <<"conference::maintenance">>,
+        <<"Conference-Name">> => <<"bgroom">>,
+        <<"Action">> => <<"bgdial-result">>,
+        <<"Result">> => <<"USER_BUSY">>,
+        <<"Job-UUID">> => <<"job-1">>,
+        <<"Peer-UUID">> => Uuid}
+    }}},
+    ?assertEqual(<<"SIP/2.0 486">>, final_frag(Sock)),
+    ?assertMatch(#{members := 1}, chappe_mrf_conf:info(Conf)),
+    ok = chappe_mrf:destroy(Ep),
+    ?F:fs_stop(Slow).
 
 %% A member's call is transferred by REFER (its B2BUA carries it out,
 %% transfer => auto): handed the call's transferred event, the room shows

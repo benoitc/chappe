@@ -52,7 +52,9 @@ pick() ->
 
 %% ---- FreeSWITCH ----
 
-%% Opts: esl_port (the chappe_mrf listener), digits (what
+%% Opts: esl_port (the chappe_mrf listener), dial_delay (ms a
+%% `conference <room> dial' takes before it answers, as the real one
+%% originates first), digits (what
 %% play_and_get_digits collects, default <<"1">>), name.
 fs_start(Name, Opts) ->
     Parent = self(),
@@ -408,8 +410,17 @@ esl_cmd(Block, #{tcp := Tcp} = C) ->
 api(<<"uuid_kill ", _/binary>>, #{tcp := Tcp} = C) ->
     tcp(Tcp, api_resp(<<"+OK">>)),
     end_channel(C, <<"NORMAL_CLEARING">>, true);
-api(<<"conference ", Rest/binary>>, #{tcp := Tcp} = C) ->
-    tcp(Tcp, api_resp(<<"+OK">>)),
+api(<<"conference ", Rest/binary>>, #{tcp := Tcp, node := #{opts := Opts}} = C) ->
+    case binary:split(Rest, <<" ">>, [global]) of
+        [_Room, <<"dial">> | _] ->
+            %% mod_conference's dial originates before it answers
+            timer:sleep(maps:get(dial_delay, Opts, 0)),
+            tcp(Tcp, api_resp(<<"+OK Call Requested: result: [SUCCESS]">>));
+        [_Room, <<"bgdial">> | _] ->
+            tcp(Tcp, api_resp(<<"+OK Job-UUID: job-1">>));
+        _ ->
+            tcp(Tcp, api_resp(<<"+OK">>))
+    end,
     case binary:split(Rest, <<" ">>, [global]) of
         [Room, <<"kick">>, Id] ->
             member_event(C, Room, <<"del-member">>, Id),
