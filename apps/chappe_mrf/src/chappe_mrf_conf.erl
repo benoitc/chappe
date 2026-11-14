@@ -147,10 +147,12 @@ events(Conf, Pid) ->
     call(Conf, {events, Pid}).
 
 %% Bring a member in: a call (chappe_sip_b2b:b2b(), anchored), an
-%% incoming call not answered yet ({call, Req, Res}, native only: run it
-%% in the INVITE's request worker; the caller is answered straight into
-%% the room through rtpengine and the call is carried by
-%% chappe_sip_b2b:relay_async/2), or an endpoint. On native, the
+%% incoming call not answered yet ({call, Req, Res}: run it in the
+%% INVITE's request worker; the room answers the caller, in a focus room
+%% with the conference URI and isfocus as its Contact, and takes the
+%% REFERs in that dialog; native answers it straight into the mixer
+%% through rtpengine, fs bridges it to an endpoint on the room's node),
+%% or an endpoint. On native, the
 %% endpoint must be one of create_endpoint/1 not bridged: its dialog is
 %% re-INVITEd to the mixer through rtpengine. On
 %% fs, it must be on the conference's node. Opts: name, mute,
@@ -165,36 +167,35 @@ events(Conf, Pid) ->
     map()
 ) ->
     {ok, member()} | {error, term()}.
-join(Conf, {call, Req, Res}, Opts) ->
-    case info(Conf) of
-        #{backend := native} ->
-            chappe_mrf_conf_native:join_call(Conf, Req, Res, Opts);
-        #{backend := fs} ->
-            {error, {unsupported, fs}};
-        Err ->
-            Err
-    end;
 join(Conf, Target, Opts) ->
     case info(Conf) of
-        #{backend := native} when is_tuple(Target) ->
-            call(Conf, {join, {b2b, Target, Opts}}, ?MRF_JOIN_TIMEOUT + 80000);
         #{backend := native} ->
-            call(Conf, {join, {ep, Target, Opts}}, ?MRF_JOIN_TIMEOUT + 80000);
+            native_join(Conf, Target, Opts);
         #{backend := fs, locked := true} ->
             {error, locked};
         #{backend := fs, members := N, max_members := Max} when N >= Max ->
             {error, full};
-        #{backend := fs, node := Node, bridge := Bridge} when
-            is_tuple(Target)
-        ->
-            chappe_mrf_conf_fs:join(Conf, Node, Bridge, Target, Opts#{
-                b2b => Target
-            });
-        #{backend := fs, node := Node, bridge := Bridge} ->
-            chappe_mrf_conf_fs:join(Conf, Node, Bridge, Target, Opts);
+        #{backend := fs} = Info ->
+            fs_join(Conf, Info, Target, Opts);
         Err ->
             Err
     end.
+
+native_join(Conf, {call, Req, Res}, Opts) ->
+    chappe_mrf_conf_native:join_call(Conf, Req, Res, Opts);
+native_join(Conf, B2b, Opts) when is_tuple(B2b) ->
+    call(Conf, {join, {b2b, B2b, Opts}}, ?MRF_JOIN_TIMEOUT + 80000);
+native_join(Conf, Ep, Opts) ->
+    call(Conf, {join, {ep, Ep, Opts}}, ?MRF_JOIN_TIMEOUT + 80000).
+
+fs_join(Conf, Info, {call, Req, Res}, Opts) ->
+    chappe_mrf_conf_fs:join_call(Conf, Info, Req, Res, Opts);
+fs_join(Conf, #{node := Node, bridge := Bridge}, B2b, Opts) when
+    is_tuple(B2b)
+->
+    chappe_mrf_conf_fs:join(Conf, Node, Bridge, B2b, Opts#{b2b => B2b});
+fs_join(Conf, #{node := Node, bridge := Bridge}, Ep, Opts) ->
+    chappe_mrf_conf_fs:join(Conf, Node, Bridge, Ep, Opts).
 
 %% The member leaves (its call is hung up).
 -spec leave(conf(), member()) -> ok | {error, term()}.

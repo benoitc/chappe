@@ -36,6 +36,7 @@
 -export([refer/3, dial_native/4, focus/2, call/2]).
 -export([fs_dial/3, remove/2, native_event/3, fs_added/3, timeout/2]).
 -export([fs_result/3, fs_started/3, member_refer/4]).
+-export([member_opts/2, keep_dialog/2, from_uri/1]).
 -export([transferred/3, dial_string/2, dialing/4, dialable/1]).
 
 -define(DIAL_TIMEOUT, 30000).
@@ -343,6 +344,34 @@ var_block(Vars) ->
         lists:join(<<",">>, [[K, <<"=">>, V] || {K, V} <- Vars]),
         <<"}">>
     ].
+
+%% The create_b2bua/4 options of a caller the room answers itself: its
+%% REFERs come to the room (member_refer/4), and a focus room answers
+%% with the conference URI and isfocus as the member's Contact (RFC 4579
+%% 4.2).
+-spec member_opts(pid(), binary() | undefined) -> map().
+member_opts(Conf, undefined) ->
+    #{requests => [refer], notify => Conf};
+member_opts(Conf, Entity) ->
+    Contact = chappe_sip_focus:contact(Entity),
+    (member_opts(Conf, undefined))#{
+        a_headers => chappe_sip_focus:headers(Contact)
+    }.
+
+%% Keep a call's dialog with the caller (leg A) for as long as the call
+%% runs, so a REFER it hands a room can be answered in that dialog.
+-spec keep_dialog(chappe_sip_b2b:b2b(), chappe_sip_b2b:legs()) -> ok.
+keep_dialog({Pid, Ref}, #{uas := Uas}) ->
+    _ = chappe_mrf_registry:put({a_dialog, Ref, Uas}, Pid),
+    ok.
+
+%% Who a caller is, for a REFER's method=BYE: the URI it calls from.
+-spec from_uri(chappe_sip_req:req()) -> binary() | undefined.
+from_uri(Req) ->
+    case chappe_sip_hdr:name_addr(chappe_sip_req:get(<<"from">>, Req)) of
+        {ok, #{uri := U}} -> U;
+        _ -> undefined
+    end.
 
 %% A member's REFER, in its dialog with the room (the room is its call's
 %% notify process): chappe_sip_focus:refer/4 reads add, remove or transfer

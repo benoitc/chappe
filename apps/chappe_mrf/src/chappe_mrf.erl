@@ -158,7 +158,8 @@ own_uri() ->
 %% and any chappe_sip_b2b:create_b2bua/4 option (media defaults to
 %% anchor, b_headers get X-Chappe-Call). Returns the endpoint and the
 %% call's handle; the call runs in its own process (relay_async/2), so
-%% the caller is free to drive the endpoint.
+%% the caller is free to drive the endpoint. A REFER the call hands a
+%% room (chappe_mrf_conf:b2b_event/2) is answered in the caller's dialog.
 -spec connect_caller(chappe_sip_req:req(), chappe_sip_res:res(), map()) ->
     {ok, endpoint(), chappe_sip_b2b:b2b()} | {error, term()}.
 connect_caller(Req, Res, Opts) ->
@@ -169,6 +170,11 @@ connect_caller(Req, Res, Opts) ->
             _ = chappe_sip_res:send(Res, 500),
             Bad
     end.
+
+%% connect_caller/3's own options, the rest go to create_b2bua/4
+-define(MRF_ONLY_OPTS, [
+    owner, node, select, targets, user, attach_timeout, relay, events
+]).
 
 connect(Req, Res, Opts) ->
     Owner = maps:get(owner, Opts, self()),
@@ -191,19 +197,7 @@ connect(Req, Res, Opts) ->
             User = maps:get(user, Opts, <<"mrf">>),
             Uris = [with_user(U, User) || {_, U} <- Cands],
             Notify = maps:get(notify, Opts, Owner),
-            B2bOpts = (maps:without(
-                [
-                    owner,
-                    node,
-                    select,
-                    targets,
-                    user,
-                    attach_timeout,
-                    relay,
-                    events
-                ],
-                Opts
-            ))#{
+            B2bOpts = (maps:without(?MRF_ONLY_OPTS, Opts))#{
                 media => maps:get(media, Opts, anchor),
                 b_headers =>
                     chappe_mrf_esl:headers(Id, CallRef) ++
@@ -218,6 +212,7 @@ connect(Req, Res, Opts) ->
                             #{notify => Notify}, maps:get(relay, Opts, #{})
                         )
                     ),
+                    ok = chappe_mrf_conf_refer:keep_dialog(B2b, Legs),
                     Timeout = maps:get(attach_timeout, Opts, 10000),
                     case chappe_mrf_endpoint:await(Ep, Timeout) of
                         {ok, _Uuid} ->

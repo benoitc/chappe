@@ -95,8 +95,10 @@ with `chappe_audio_store:find(CallRef)`.
 
 ### Answer a caller into the room
 
-A caller whose INVITE you have not answered joins straight from its handler:
-the room's mixer answers it through rtpengine, with no placeholder leg first.
+A caller whose INVITE you have not answered joins straight from its handler.
+On native the room's mixer answers it through rtpengine, with no placeholder
+leg first; on fs chappe answers it and bridges it to an endpoint on the
+room's node.
 
 ```erlang
 ok = chappe_sip:invite(fun(Req, Res) ->
@@ -108,8 +110,8 @@ end).
 - Call it in the INVITE's request worker; it returns once the caller is in.
 - The call then runs in a process of its own (`chappe_sip_b2b:relay_async/2`),
   so the handler may return. The caller hanging up is a `left` event.
-- On an fs room it returns `{error, {unsupported, fs}}`: answer the call and
-  join its `B2b` instead.
+- On fs the join's `pin`, `pin_prompt` and `pin_tries` apply as for a
+  `B2b`.
 
 Kicking an endpoint takes it out of the room; its channel stays yours.
 An endpoint of `connect_caller/3` already carries a call: join the call
@@ -244,7 +246,8 @@ The room's `refer_policy` decides each. A call you answered yourself
 `contact_params => #{a => chappe_sip_focus:contact_params()}` there for a
 focus room, and `requests => [refer]`, then hand the room each
 `{chappe_sip_b2b, Ref, {request, a, refer, Req, Res}}` with `b2b_event/2`.
-Parties dialed in come from FreeSWITCH and carry its Contact.
+Parties dialed in come from FreeSWITCH, with the room's name and
+`isfocus` in its Contact in a focus room.
 
 A member's own REFER on a call with `transfer => auto` is carried out by
 its B2BUA: the target takes the member's place. Hand the room the call's

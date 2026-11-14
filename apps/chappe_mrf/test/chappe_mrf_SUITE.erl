@@ -27,6 +27,7 @@
     member_refer_transfers/1,
     focus_member_refer_removes/1,
     bye_refused_without_focus/1,
+    fs_focus_member_isfocus/1,
     session_recording_waits_for_close/1,
     room_recording_waits_for_close/1,
     caller_hangup/1,
@@ -85,6 +86,7 @@ all() ->
         member_refer_transfers,
         focus_member_refer_removes,
         bye_refused_without_focus,
+        fs_focus_member_isfocus,
         session_recording_waits_for_close,
         room_recording_waits_for_close,
         caller_hangup,
@@ -669,6 +671,35 @@ bye_refused_without_focus(Config) ->
     ?assertMatch(<<"SIP/2.0 403", _/binary>>, sip_response(Sock)),
     no_ua_event(Ua2, bye, 500),
     ?assertEqual(2, length(chappe_mrf_conf:members(Conf))),
+    ok = chappe_mrf_conf:stop(Conf).
+
+%% An fs focus room answers a caller it joins itself (join/3 with {call,
+%% Req, Res}) with the conference URI and isfocus as its Contact (RFC
+%% 4579 4.2), as a native room does, and the member's REFER is to the
+%% focus: its party is dialed into the room (5.5).
+fs_focus_member_isfocus(Config) ->
+    meck_targets(Config),
+    {ok, Conf} = chappe_mrf:conference(<<"fsfocus">>, #{
+        backend => fs, node => fs1, focus => true, refer_policy => fun(_) -> true end
+    }),
+    #{entity := Entity} = chappe_mrf_conf:info(Conf),
+    {Ua, _M} = room_caller(Config, Conf),
+    {ua, Ua, {final, 200, Ok}} = ua_answer(Ua),
+    Contact = ?F:hdr(Ok, <<"contact">>),
+    ?assert(has(Contact, Entity)),
+    ?assert(has(Contact, <<";isfocus">>)),
+    ok = ?F:ua_refer(Ua, <<"<sip:carol@10.0.0.9>">>),
+    {ua, Ua, {response, R}} = ua_msg(Ua, response),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, R),
+    %% over the node's connection, or a member's once that one is down
+    Dial =
+        receive
+            {fake_esl, _, {api, <<"api conference fsfocus bgdial", _/binary>> = D}} -> D;
+            {fake_fs, _, _, {cmd, <<"api conference fsfocus bgdial", _/binary>> = D}} -> D
+        after 5000 -> ct:fail(no_bgdial)
+        end,
+    ?assert(has(Dial, <<"carol@10.0.0.9">>)),
+    ?assert(has(Dial, <<"sip_invite_contact_params=~isfocus">>)),
     ok = chappe_mrf_conf:stop(Conf).
 
 %% A caller answered straight into Conf (join/3 with {call, Req, Res}).
@@ -1257,9 +1288,6 @@ native_join_unanswered(Config) ->
         {chappe_mrf_conf, Conf, {left, M, departed}} -> ok
     after 5000 -> ct:fail(no_left)
     end,
-    {ok, Fs} = chappe_mrf:conference(<<"room5">>, #{backend => fs, node => fs1}),
-    ?assertEqual({error, {unsupported, fs}},
-                 chappe_mrf_conf:join(Fs, {call, req, res}, #{})),
     ok = chappe_mrf_conf:stop(Conf).
 
 mix_local(Conf, Member) ->

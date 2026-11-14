@@ -29,17 +29,15 @@ join(B2b, Opts, From, #state{anchor_params = AP} = S) ->
 %% which then runs in a process of its own.
 join_call(Conf, Req, Res, Opts0) ->
     %% who the member is, for a REFER's method=BYE: the URI it calls from
-    Opts = maps:merge(#{uri => from_uri(Req)}, Opts0),
+    Opts = maps:merge(#{uri => chappe_mrf_conf_refer:from_uri(Req)}, Opts0),
     case chappe_mrf_conf:call(Conf, {join, {call, Opts}}, 5000) of
         {ok, Token, Uri, AP, Entity} ->
             %% the room's REFERs come to the room (chappe_mrf_conf_refer);
             %% a focus room answers with the conference URI and isfocus
             %% as the member's Contact (RFC 4579 4.2)
-            B2bOpts = (focus_opts(Entity))#{
+            B2bOpts = (chappe_mrf_conf_refer:member_opts(Conf, Entity))#{
                 media => anchor,
-                anchor_params => AP,
-                requests => [refer],
-                notify => Conf
+                anchor_params => AP
             },
             Result =
                 case chappe_sip:create_b2bua(Req, Res, Uri, B2bOpts) of
@@ -55,26 +53,15 @@ join_call(Conf, Req, Res, Opts0) ->
             Err
     end.
 
-focus_opts(undefined) ->
-    #{};
-focus_opts(Entity) ->
-    #{a_headers => chappe_sip_focus:headers(chappe_sip_focus:contact(Entity))}.
-
 %% The call runs on its own; its member dialog (leg A) is kept with it so
 %% a REFER the call hands the room can be answered in that dialog.
-relay(#{uas := Uas} = Legs, Conf) ->
+relay(Legs, Conf) ->
     case chappe_sip_b2b:relay_async(Legs, #{notify => Conf}) of
-        {ok, {Pid, Ref}} = Ok ->
-            _ = chappe_mrf_registry:put({a_dialog, Ref, Uas}, Pid),
+        {ok, B2b} = Ok ->
+            ok = chappe_mrf_conf_refer:keep_dialog(B2b, Legs),
             Ok;
         Err ->
             Err
-    end.
-
-from_uri(Req) ->
-    case chappe_sip_hdr:name_addr(chappe_sip_req:get(<<"from">>, Req)) of
-        {ok, #{uri := U}} -> U;
-        _ -> undefined
     end.
 
 %% the loopback a joining call is sent to, and the flags toward the mixer

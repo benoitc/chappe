@@ -571,7 +571,7 @@ esl_start() ->
         {ok, L} = gen_tcp:listen(0, [binary, {active, false}, {reuseaddr, true}, {ip, {127, 0, 0, 1}}]),
         {ok, Port} = inet:port(L),
         Parent ! {esl_ready, self(), Port},
-        esl_accept(L)
+        esl_accept(L, Parent)
     end),
     receive
         {esl_ready, Pid, Port} -> {Pid, Port}
@@ -582,41 +582,45 @@ esl_stop({Pid, _}) ->
     Pid ! stop,
     ok.
 
-esl_accept(L) ->
+esl_accept(L, Parent) ->
     case gen_tcp:accept(L, 100) of
         {ok, S} ->
             ok = inet:setopts(S, [{active, true}]),
             ok = gen_tcp:send(S, <<"Content-Type: auth/request\n\n">>),
-            esl_serve(L, S, <<>>);
+            esl_serve(L, S, <<>>, Parent);
         {error, timeout} ->
             receive
                 stop -> gen_tcp:close(L)
-            after 0 -> esl_accept(L)
+            after 0 -> esl_accept(L, Parent)
             end
     end.
 
-esl_serve(L, S, Buf) ->
+%% the api commands it gets go to Parent as {fake_esl, self(), {api, Block}}
+esl_serve(L, S, Buf, Parent) ->
     receive
         {tcp, S, Data} ->
-            esl_serve(L, S, esl_answer(S, <<Buf/binary, Data/binary>>));
+            esl_serve(L, S, esl_answer(S, <<Buf/binary, Data/binary>>, Parent), Parent);
         {tcp_closed, S} ->
-            esl_accept(L);
+            esl_accept(L, Parent);
         stop ->
             gen_tcp:close(S),
             gen_tcp:close(L)
     end.
 
-esl_answer(S, Buf) ->
+esl_answer(S, Buf, Parent) ->
     case binary:split(Buf, <<"\n\n">>) of
         [_] ->
             Buf;
         [Block, Rest] ->
             _ =
                 case Block of
-                    <<"api ", _/binary>> -> gen_tcp:send(S, api_resp(<<"+OK">>));
-                    _ -> gen_tcp:send(S, reply(<<"+OK">>))
+                    <<"api ", _/binary>> ->
+                        Parent ! {fake_esl, self(), {api, Block}},
+                        gen_tcp:send(S, api_resp(<<"+OK">>));
+                    _ ->
+                        gen_tcp:send(S, reply(<<"+OK">>))
                 end,
-            esl_answer(S, Rest)
+            esl_answer(S, Rest, Parent)
     end.
 
 %% ---- rtpengine ----

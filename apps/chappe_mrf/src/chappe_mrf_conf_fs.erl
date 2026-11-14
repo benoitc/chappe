@@ -11,6 +11,7 @@
 
 -export([
     join/5,
+    join_call/5,
     start_join/5,
     join_timeout/2,
     event/3,
@@ -26,32 +27,51 @@
 
 join(Conf, Node, Bridge, Target, Opts) ->
     case endpoint(Conf, Node, Bridge, Target) of
-        {ok, Ep, Owned} ->
-            case check_pin(Ep, Opts) of
-                ok ->
-                    case
-                        chappe_mrf_conf:call(
-                            Conf,
-                            {join, {fs, Ep, Owned, Opts}},
-                            ?MRF_JOIN_TIMEOUT + 5000
-                        )
-                    of
-                        {ok, _} = Ok ->
-                            Ok;
-                        {error, timeout} = Err ->
-                            %% the conference destroys it on its own timer
-                            Err;
-                        {error, _} = Err ->
-                            %% refused (full, locked meanwhile): the endpoint
-                            %% made for the join goes
-                            _ = Owned andalso chappe_mrf:destroy(Ep),
-                            Err
-                    end;
+        {ok, Ep, Owned} -> enter(Conf, Ep, Owned, Opts);
+        {error, _} = Err -> Err
+    end.
+
+%% An incoming call not answered yet, in its request worker: chappe's
+%% B2BUA answers the caller (chappe_mrf_conf_refer:member_opts/2) and
+%% bridges it to an endpoint on the room's node, which then joins.
+join_call(Conf, #{node := Node, bridge := Bridge} = Info, Req, Res, Opts0) ->
+    Opts = maps:merge(#{uri => chappe_mrf_conf_refer:from_uri(Req)}, Opts0),
+    Member = chappe_mrf_conf_refer:member_opts(
+        Conf, maps:get(entity, Info, undefined)
+    ),
+    CallOpts = maps:merge(maps:with([anchor_params], Bridge), Member#{
+        node => Node, owner => Conf
+    }),
+    case chappe_mrf:connect_caller(Req, Res, CallOpts) of
+        {ok, Ep, B2b} -> enter(Conf, Ep, true, Opts#{b2b => B2b});
+        {error, _} = Err -> Err
+    end.
+
+%% Ep, on the room's node, enters the PIN if the join asks one, then the
+%% room; an endpoint made for the join goes if it does not get in.
+enter(Conf, Ep, Owned, Opts) ->
+    case check_pin(Ep, Opts) of
+        ok ->
+            case
+                chappe_mrf_conf:call(
+                    Conf,
+                    {join, {fs, Ep, Owned, Opts}},
+                    ?MRF_JOIN_TIMEOUT + 5000
+                )
+            of
+                {ok, _} = Ok ->
+                    Ok;
+                {error, timeout} = Err ->
+                    %% the conference destroys it on its own timer
+                    Err;
                 {error, _} = Err ->
+                    %% refused (full, locked meanwhile): the endpoint
+                    %% made for the join goes
                     _ = Owned andalso chappe_mrf:destroy(Ep),
                     Err
             end;
         {error, _} = Err ->
+            _ = Owned andalso chappe_mrf:destroy(Ep),
             Err
     end.
 
