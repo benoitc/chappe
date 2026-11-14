@@ -41,9 +41,8 @@ NET=chappe-conf
 SUBNET=10.253.7.0/24
 NODE_IP=10.253.7.10
 NODE=chappe-conf-node
-# CONF_VOL: another work volume, so lanes sharing a machine keep their
-# own build
-VOL=${CONF_VOL:-chappe_conf_work}
+# CONF_VOLUME names the build volume, so two trees do not share one
+VOL=${CONF_VOLUME:-chappe_conf_work}
 CERTS=chappe_conf_certs
 DNS=chappe-conf-dns
 DNS_IP=10.253.7.53
