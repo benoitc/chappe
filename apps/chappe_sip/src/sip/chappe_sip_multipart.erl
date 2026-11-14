@@ -12,7 +12,7 @@
 %% that is not multipart comes back as its one part.
 -module(chappe_sip_multipart).
 
--export([build/1, parse/2, find/2, boundary/1]).
+-export([build/1, parse/2, find/2, boundary/1, content_type/1]).
 
 -export_type([part/0]).
 
@@ -61,6 +61,20 @@ disposition(_) ->
 boundary_token() ->
     <<"chappe-",
         (binary:encode_hex(crypto:strong_rand_bytes(12), lowercase))/binary>>.
+
+%% The Content-Type of a body we built: a multipart's, read from its
+%% first delimiter line, else application/sdp (what a dialog that keeps
+%% only its last body sends again in a session refresh).
+-spec content_type(binary()) -> binary().
+content_type(<<"--", Rest/binary>>) ->
+    case binary:split(Rest, <<"\r\n">>) of
+        [B, _] when byte_size(B) > 0, byte_size(B) =< 70 ->
+            <<"multipart/mixed;boundary=", B/binary>>;
+        _ ->
+            <<"application/sdp">>
+    end;
+content_type(_) ->
+    <<"application/sdp">>.
 
 %% The parts of Body, given its Content-Type. A body that is not multipart
 %% is one part of that type.

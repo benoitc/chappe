@@ -226,3 +226,11 @@ g711_decode_test() ->
     ?assertEqual(-8, D(alaw, 16#55)),
     ?assertEqual(32256, D(alaw, 16#AA)),
     ?assertEqual(320, byte_size(chappe_sip_siprec_rtp:decode(ulaw, binary:copy(<<0>>, 160)))).
+
+%% a session refresh sends the last body with the type it had
+multipart_content_type_test() ->
+    {CT, Body} = chappe_sip_multipart:build(
+                   [#{content_type => <<"application/sdp">>, body => <<"v=0\r\n">>}]),
+    ?assertEqual(CT, chappe_sip_multipart:content_type(Body)),
+    ?assertEqual(<<"application/sdp">>, chappe_sip_multipart:content_type(<<"v=0\r\n">>)),
+    ?assertEqual(<<"application/sdp">>, chappe_sip_multipart:content_type(<<"--">>)).

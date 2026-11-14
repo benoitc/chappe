@@ -2100,7 +2100,12 @@ with_actions(Stop, _A) ->
 start_st_refresh(#data{st = #{peer_update := true}} = D) ->
     send_st_refresh(<<"UPDATE">>, [], <<>>, D);
 start_st_refresh(#data{local_sdp = Sdp} = D) ->
-    CT = [{<<"Content-Type">>, <<"application/sdp">>} || Sdp =/= <<>>],
+    %% the session as we last offered it: an SDP, or the multipart a SIPREC
+    %% recording session sends (modify/3 content_type)
+    CT = [
+        {<<"Content-Type">>, chappe_sip_multipart:content_type(Sdp)}
+     || Sdp =/= <<>>
+    ],
     send_st_refresh(<<"INVITE">>, CT, Sdp, D).
 
 send_st_refresh(Method, Headers, Body, #data{st = St} = D) ->
