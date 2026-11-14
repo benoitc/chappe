@@ -19,6 +19,7 @@
          bad_proxy_options/1]).
 -export([accepted_supervised/1, accepted_crash/1, accepted_forks_bounded/1,
          accepted_window_follows_t1/1]).
+-export([redirect_off_net_refused/1, redirect_reentry_bounded/1]).
 
 all() ->
     [proxy_single_200, proxy_serial_failover, proxy_parallel_first_wins,
@@ -27,7 +28,8 @@ all() ->
      redirect_policy_and_seen, redirect_depth, redirect_parallel,
      provisional_timeout, final_timeout, bad_proxy_options,
      accepted_supervised, accepted_crash, accepted_forks_bounded,
-     accepted_window_follows_t1].
+     accepted_window_follows_t1, redirect_off_net_refused,
+     redirect_reentry_bounded].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -231,6 +233,42 @@ redirect_policy_and_seen(_Config) ->
     ?assertNotEqual(nomatch, binary:match(R, ctc(D1))),
     ok = expect_done(302),
     receive {invited, D2, _} -> ct:fail(policy_ignored) after 300 -> ok end.
+
+%% follow_redirects => true follows only the proxy's own domains: a callee
+%% that 302s the caller to another network (a premium trunk) is not
+%% followed, and its 302 reaches the caller.
+redirect_off_net_refused(_Config) ->
+    {EP, [D1]} = setup(1),
+    Trunk = <<"sip:+19005550100@192.0.2.7:5060">>,
+    proxy([dest(D1)], #{follow_redirects => true}),
+    redirect_to(D1, [Trunk]),
+    R = call(EP, 302),
+    ?assertNotEqual(nomatch, binary:match(R, Trunk)),
+    ok = expect_done(302).
+
+%% A Contact naming the proxy itself brings the request back in, where
+%% the proxy follows redirects again: each 302 names five new URIs of the
+%% proxy. The request that came back follows none of them, so the target
+%% is asked once by the call and once per Contact of its first 302, not
+%% five times more per hop until Max-Forwards runs out.
+redirect_reentry_bounded(_Config) ->
+    {EP, [D1]} = setup(1),
+    proxy([dest(D1)], #{follow_redirects => true}),
+    Self = fun(N) -> <<"sip:u", (integer_to_binary(N))/binary, "@127.0.0.1:",
+                       (integer_to_binary(EP))/binary>> end,
+    Test = self(),
+    uas(D1, fun(Sock) -> redirect_loop(Sock, Test, Self, 0) end),
+    caller(fun(Sock) ->
+        send(Sock, EP, invite(Sock, callid(), tag())),
+        receive {udp, Sock, _, _, <<"SIP/2.0 302", _/binary>> = F} -> Test ! {final, F}
+        after 20000 -> ok
+        end
+    end),
+    timer:sleep(6000),
+    N = length(collect(redirected)),
+    ct:log("the target got ~p INVITEs", [N]),
+    ?assert(N =< 6),
+    receive {final, _} -> ok after 6000 -> ct:fail(no_final) end.
 
 %% max_depth 1: a target a 302 gave is tried, but a 302 from it is not
 %% followed again.
@@ -461,6 +499,40 @@ redirect(Port, To) ->
                              [{<<"Contact">>, Contacts}], <<>>)),
         _ = recv(Sock, <<"ACK">>)
     end).
+
+%% a target that answers a 302 naming these URIs
+redirect_to(Port, Uris) ->
+    Test = self(),
+    uas(Port, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        Test ! {invited, Port, ruri(Inv)},
+        Contacts = iolist_to_binary(
+            lists:join(<<", ">>, [[<<"<">>, U, <<">">>] || U <- Uris])),
+        send(Sock, Src, resp(Inv, 302, <<"Moved Temporarily">>, tag(),
+                             [{<<"Contact">>, Contacts}], <<>>)),
+        _ = recv(Sock, <<"ACK">>)
+    end).
+
+%% every INVITE answered 302 with five new URIs Self(N) of the proxy
+redirect_loop(Sock, Test, Self, N) ->
+    receive
+        {udp, Sock, _, Src, <<"INVITE ", _/binary>> = Inv} ->
+            Test ! {redirected, N},
+            Contacts = iolist_to_binary(
+                lists:join(<<", ">>, [[<<"<">>, Self(N * 5 + I), <<">">>]
+                                      || I <- lists:seq(1, 5)])),
+            send_to(Sock, Src, resp(Inv, 302, <<"Moved Temporarily">>, tag(),
+                                    [{<<"Contact">>, Contacts}], <<>>)),
+            redirect_loop(Sock, Test, Self, N + 1);
+        {udp, Sock, _, _, _} ->
+            redirect_loop(Sock, Test, Self, N)
+    after 5000 -> ok
+    end.
+
+send_to(Sock, Port, Bin) -> gen_udp:send(Sock, {127,0,0,1}, Port, Bin).
+
+collect(Tag) ->
+    receive {Tag, V} -> [V | collect(Tag)] after 0 -> [] end.
 
 answer(Port, Status) ->
     Test = self(),

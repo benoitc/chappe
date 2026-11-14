@@ -117,11 +117,19 @@ chappe_sip:proxy_request(Req, Dests, #{
   many 3xx deep a target may come from.
 - `allow` is your policy: a fun of the URI, run in the request worker. A
   URI it refuses, one already in the target set, and a SIP URI for a SIPS
-  request are not tried.
+  request are not tried. Without one, only the proxy's own domains are
+  followed: the hosts of its listen addresses, its `aliases` and the
+  `registrar_domains` it serves.
 - The Contacts tried leave the 3xx. A 3xx with Contacts left can still be
   the best final the caller gets; one with none left is not.
-- `follow_redirects => true` takes the defaults and allows every URI. A 3xx
-  can name any number, so on an edge facing customers give it a policy.
+- `follow_redirects => true` takes the defaults, own domains included. A
+  callee could otherwise 302 the caller to any number; to follow other
+  networks, give `allow` your rule, such as
+  `allow => fun(_Uri) -> true end` on a trusted core.
+- A Contact naming the proxy itself brings the request back in. It counts
+  the hops it made through the proxy: its depth starts there, and once back
+  it follows no Contact naming the proxy again, so one request reaches at
+  most `1 + max_targets` targets however its 3xx chain.
 
 ## Route to a registered browser
 
