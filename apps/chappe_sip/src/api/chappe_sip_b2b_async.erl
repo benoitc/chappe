@@ -8,10 +8,11 @@
 %% dialogs and the call's rtpengine session, and the messages the dialogs
 %% sent before they moved; the loop starts once it owns them.
 %%
-%% Its owner (relay_async/2's owner option, default the notify process)
-%% is monitored: when it dies the call is hung up, both legs get a BYE
-%% and the rtpengine session goes. Without an owner the call runs until a
-%% leg ends it.
+%% Its owner (relay_async/2's owner option, none by default) is
+%% monitored: when it dies the call is hung up, both legs get a BYE and
+%% the rtpengine session goes. Without an owner the call runs until a leg
+%% ends it, or hangup/2. The notify process is never the owner unless
+%% named: it is often the handler that made the call, which returns.
 -module(chappe_sip_b2b_async).
 
 -export([run/2, start_link/1, init/1]).
@@ -23,7 +24,7 @@
 run(#{uas := A, uac := B, b2b := {_, Ref}} = Legs, Opts) ->
     M = maps:get(media, Legs, #{}),
     Notify = maps:get(notify, Opts, maps:get(notify, M, undefined)),
-    Owner = maps:get(owner, Opts, Notify),
+    Owner = maps:get(owner, Opts, none),
     Args = #{
         legs => Legs,
         opts => maps:without([owner], Opts),

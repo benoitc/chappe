@@ -995,8 +995,8 @@ relay(Legs, Opts) ->
 %% given to create_b2bua/4) gets {chappe_sip_b2b, Ref, {done, Result}},
 %% Result as relay/2 returns it, when the call ends. Call it from the
 %% process create_b2bua/4 ran in. The process is a child of
-%% chappe_sip_b2b_sup; Opts' owner => pid() | none (default the notify
-%% process) is monitored, and the call is hung up when it dies. If the
+%% chappe_sip_b2b_sup; Opts' owner => pid() | none (default none) is
+%% monitored, and the call is hung up when it dies. If the
 %% relay process itself dies, its dialogs end the call: monitor the b2b()
 %% pid to hear of it.
 -spec relay_async(legs(), map()) -> {ok, b2b()} | {error, term()}.
