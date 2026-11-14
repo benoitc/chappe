@@ -222,7 +222,15 @@ call_ref_header(_Method, _Opts, _Hdrs) ->
 %% ---- trying / proceeding ----
 
 trying(info, {chappe_sip_op, TxnH, ok}, #data{txn = TxnH} = D) ->
-    notify(D, {request_sent, #{call_id => D#data.call_id}}),
+    notify(
+        D,
+        {request_sent, #{
+            call_id => D#data.call_id,
+            uri => D#data.uri,
+            method => D#data.method,
+            cseq => D#data.cseq
+        }}
+    ),
     {keep_state, D};
 trying(info, {chappe_sip_op, TxnH, {error, Reason}}, #data{txn = TxnH} = D) ->
     notify(D, {error, Reason}),

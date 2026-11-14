@@ -23,6 +23,7 @@
 -export([fork_branch_opts/1, serial_branch_opts/1, hunt_keeps_a_tag/1]).
 -export([bad_from_refused/1, bad_from_fork_refused/1,
          bad_from_not_passed/1]).
+-export([b_events_notified/1, app_cancels_b/1]).
 
 all() ->
     [b2b_success_bye, b2b_callee_busy, b2b_caller_cancel,
@@ -31,7 +32,8 @@ all() ->
      fork_all_fail_best, fork_timer_c, fork_late_2xx, pass_failure_timer_c,
      start_failure_answered, start_failure_not_passed, fork_branch_opts,
      serial_branch_opts, hunt_keeps_a_tag, bad_from_refused,
-     bad_from_fork_refused, bad_from_not_passed].
+     bad_from_fork_refused, bad_from_not_passed, b_events_notified,
+     app_cancels_b].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -286,6 +288,100 @@ b2b_callee_busy(_Config) ->
     ok = expect(caller_got_486),
     receive
         {b2b_result, {error, #chappe_sip_error{status = 486}}} -> ok
+    after 5000 -> ct:fail(no_b2b_failure)
+    end.
+
+%% The notify process hears of B's INVITE (with its Call-ID), of B's early
+%% dialog and of each provisional, before the call is up.
+b_events_notified(_Config) ->
+    {EnginePort, CalleePort} = setup(),
+    Test = self(),
+    CalleeUri = <<"sip:callee@127.0.0.1:", (integer_to_binary(CalleePort))/binary>>,
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        {ok, Legs} = chappe_sip:create_b2bua(Req, Res, CalleeUri,
+                                             #{notify => Test}),
+        Test ! b2b_up,
+        {done, _} = chappe_sip_b2b:relay(Legs)
+    end),
+    callee(CalleePort, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        {ok, InvMsg} = chappe_sip_msg:parse(Inv),
+        Test ! {b_call_id, chappe_sip_msg:call_id(InvMsg)},
+        ToTag = tag(),
+        send(Sock, Src, resp(Inv, 180, <<"Ringing">>, ToTag,
+                             [{<<"Contact">>, ctc(CalleePort)}], <<>>)),
+        send(Sock, Src, resp(Inv, 200, <<"OK">>, ToTag,
+                             [{<<"Contact">>, ctc(CalleePort)}], sdp(<<"callee">>))),
+        {_Ack, _} = recv(Sock, <<"ACK">>),
+        {Bye, BSrc} = recv(Sock, <<"BYE">>),
+        send(Sock, BSrc, resp(Bye, 200, <<"OK">>, ToTag, [], <<>>))
+    end),
+    caller(fun(Sock) ->
+        Call = callid(),
+        FT = <<"cfte">>,
+        send(Sock, EnginePort, invite(Sock, EnginePort, Call, FT)),
+        R200 = recv_status(Sock, 200),
+        TT = to_tag(R200),
+        send(Sock, EnginePort, ack(Sock, EnginePort, Call, FT, TT)),
+        timer:sleep(100),
+        send(Sock, EnginePort, bye(Sock, EnginePort, Call, FT, TT)),
+        _ = recv_status(Sock, 200)
+    end),
+    BCallId = receive {b_call_id, C} -> C after 6000 -> ct:fail(no_b) end,
+    receive
+        {chappe_sip_b2b, _, {b_request, #{call_id := BCallId,
+                                          method := <<"INVITE">>,
+                                          uac := _}}} -> ok
+    after 6000 -> ct:fail(no_b_request)
+    end,
+    receive {chappe_sip_b2b, _, {b_early, _Dialog}} -> ok
+    after 6000 -> ct:fail(no_b_early)
+    end,
+    receive
+        {chappe_sip_b2b, _, {b_provisional, Msg}} ->
+            180 = chappe_sip_msg:status(Msg)
+    after 6000 -> ct:fail(no_b_provisional)
+    end,
+    ok = expect(b2b_up).
+
+%% With the uac of {b_request, _} the app CANCELs B before it answers
+%% (drachtio's cbRequest): A gets B's 487.
+app_cancels_b(_Config) ->
+    {EnginePort, CalleePort} = setup(),
+    Test = self(),
+    CalleeUri = <<"sip:callee@127.0.0.1:", (integer_to_binary(CalleePort))/binary>>,
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        Test ! {b2b_result,
+                chappe_sip:create_b2bua(Req, Res, CalleeUri, #{notify => Test})}
+    end),
+    callee(CalleePort, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        ToTag = tag(),
+        send(Sock, Src, resp(Inv, 180, <<"Ringing">>, ToTag, [], <<>>)),
+        {Cancel, CSrc} = recv(Sock, <<"CANCEL">>),
+        send(Sock, CSrc, resp(Cancel, 200, <<"OK">>, ToTag, [], <<>>)),
+        send(Sock, Src, resp(Inv, 487, <<"Request Terminated">>, ToTag, [], <<>>)),
+        Test ! callee_cancelled
+    end),
+    caller(fun(Sock) ->
+        Call = callid(),
+        send(Sock, EnginePort, invite(Sock, EnginePort, Call, <<"cftc">>)),
+        R = recv_status(Sock, 487),
+        send(Sock, EnginePort, ack_status(Sock, EnginePort, Call, <<"cftc">>, R)),
+        Test ! caller_got_487
+    end),
+    receive
+        {chappe_sip_b2b, _, {b_provisional, _}} -> ok
+    after 6000 -> ct:fail(no_b_provisional)
+    end,
+    Uac = receive {chappe_sip_b2b, _, {b_request, #{uac := U}}} -> U
+          after 0 -> ct:fail(no_b_request)
+          end,
+    ok = chappe_sip_uac:cancel(Uac),
+    ok = expect(callee_cancelled),
+    ok = expect(caller_got_487),
+    receive
+        {b2b_result, {error, #chappe_sip_error{status = 487}}} -> ok
     after 5000 -> ct:fail(no_b2b_failure)
     end.
 

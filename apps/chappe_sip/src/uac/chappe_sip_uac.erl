@@ -5,7 +5,10 @@
 %%
 %% start/2 returns immediately with a reference; the caller (or an
 %% explicit notify pid) receives events:
-%%   {chappe_sip_uac, Ref, {request_sent, ReqInfo}}   after nta accepts the send
+%%   {chappe_sip_uac, Ref, {request_sent, ReqInfo}}   after nta accepts the send;
+%%                                                    ReqInfo #{call_id, uri,
+%%                                                    method, cseq}, again for
+%%                                                    each retry (auth, 3xx)
 %%   {chappe_sip_uac, Ref, {early_dialog, Dialog}}     a 101..199 to an INVITE
 %%                                                    formed an early dialog
 %%                                                    (a new To tag), just

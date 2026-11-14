@@ -25,7 +25,7 @@
 -export([new/2, start/1, stop/1, mode/1, set_mode/2, session/1]).
 -export([set_tag/3, offer/3, answer/3, final_answer/3, rejected/3, hook/1]).
 -export([fork_offer/3, branch/2, unhold/2, b_flags/1]).
--export([serve/1, call_opts/1]).
+-export([serve/1, call_opts/1, event/2]).
 
 -export_type([state/0, mode/0, leg/0, profile/0]).
 
@@ -436,6 +436,9 @@ hold(X, Sdp, #{hold := H} = M) ->
             M#{hold := H#{X => New}}
     end.
 
+%% Send Ev to the call's notify process, if any, as {chappe_sip_b2b, Ref,
+%% Ev}.
+-spec event(term(), state()) -> ok.
 event(_Ev, #{notify := undefined}) ->
     ok;
 event(Ev, #{notify := Pid, ref := Ref}) ->

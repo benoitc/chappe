@@ -293,7 +293,7 @@ swap(NewB, Answer, Won, #{media := M0, b := OldB, refs := {RefA, RefB}} = S) ->
             erlang:demonitor(RefB, [flush]),
             RefB1 = chappe_sip_dialog:monitor(NewB),
             _ = spawn(fun() -> chappe_sip_b2b:destroy_quietly(OldB, []) end),
-            event({replaced, b}, M1),
+            chappe_sip_b2b_media:event({replaced, b}, M1),
             {ok, S#{
                 b := NewB,
                 refs := {RefA, RefB1},
@@ -335,9 +335,3 @@ latched(Params) ->
         true -> Params;
         false -> Params#{a => A#{flags => [port_latching | Flags]}}
     end.
-
-event(Ev, #{notify := Pid, ref := Ref}) when is_pid(Pid) ->
-    Pid ! {chappe_sip_b2b, Ref, Ev},
-    ok;
-event(_Ev, _M) ->
-    ok.

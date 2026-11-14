@@ -161,7 +161,15 @@
 %%                            (or the older fun(Leg, Sdp) -> Sdp): every
 %%                            SDP from Leg before it goes on, as the leg
 %%                            sent it; relay/2 takes it over
-%%   notify                => pid(): gets {chappe_sip_b2b, Ref, Event}
+%%   notify                => pid(): gets {chappe_sip_b2b, Ref, Event}.
+%%                            While B rings it also gets, per branch:
+%%                            {b_request, #{call_id, uri, method, cseq,
+%%                            uac}} each time B's INVITE goes out (uac:
+%%                            the chappe_sip_uac:uac_ref() to CANCEL it
+%%                            with chappe_sip_uac:cancel/1,2), {b_early,
+%%                            Dialog} for each early dialog B forms, and
+%%                            {b_provisional, Msg} for each 1xx
+%%                            (chappe_sip_msg:msg())
 %%   peer_policy           => priority | round_robin | weighted, for a
 %%                            {peer_group, G} target (default priority)
 %%   call_ref              => binary(): the call this B2BUA serves
@@ -546,14 +554,19 @@ b2b_wait(#{res := Res, branches := Branches, deadline := Deadline} = W) ->
         {error, timeout}
     end.
 
-%% an event of the UAC of a branch
-b_event(_BRef, {request_sent, _}, W) ->
+%% an event of the UAC of a branch; the notify process hears of B's
+%% INVITE, its early dialogs and its provisionals (drachtio's cbRequest,
+%% cbProvisional and cbFinalizedUac)
+b_event(BRef, {request_sent, Info}, W) ->
+    notify({b_request, Info#{uac => BRef}}, W),
     b2b_wait(W);
 b_event(_BRef, {early_dialog, D}, W) ->
     %% an UPDATE in it goes to A's early dialog (RFC 3311); the 2xx hands
     %% over the same dialog
+    notify({b_early, D}, W),
     b2b_wait(W#{bearly := D});
 b_event(BRef, {provisional, BMsg}, W) ->
+    notify({b_provisional, BMsg}, W),
     b2b_wait(
         provisional(
             BRef,
@@ -573,6 +586,9 @@ b_event(BRef, {error, SipError}, W) ->
     b_failed(BRef, SipError, W);
 b_event(_BRef, _Other, W) ->
     b2b_wait(W).
+
+notify(Ev, #{media := M}) ->
+    chappe_sip_b2b_media:event(Ev, M).
 
 %% B answered after all: its dialog is torn down, not cancelled
 cancel_b(#{ready := BDialog}, Hdrs) when BDialog =/= undefined ->
