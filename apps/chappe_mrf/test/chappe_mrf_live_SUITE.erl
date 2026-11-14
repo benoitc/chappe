@@ -119,7 +119,10 @@ setup(Config) ->
             sip_uri => <<"sip:127.0.0.1:", (integer_to_binary(Sip))/binary>>,
             heartbeat_interval_ms => 1000,
             probe_interval_ms => 2000,
-            backoff_max_ms => 2000
+            backoff_max_ms => 2000,
+            %% a room's own events (stop-recording, bgdial-result) come
+            %% from the node's connection
+            events => [<<"CUSTOM">>, <<"conference::maintenance">>]
         })
      || {N, Esl, Sip} <- Nodes
     ],

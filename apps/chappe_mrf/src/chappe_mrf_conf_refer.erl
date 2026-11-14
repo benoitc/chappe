@@ -244,7 +244,7 @@ fs_dial(Target, Refer, D, #state{name = Name} = S) ->
 
 bgdial({node, Node, Fallback}, Cmd) ->
     case catch_api(fun() -> chappe_esl:node_api(Node, Cmd) end) of
-        {ok, _} = Ok -> Ok;
+        ok -> ok;
         _ -> bgdial(Fallback, Cmd)
     end;
 bgdial({ep, Ep}, Cmd) ->
