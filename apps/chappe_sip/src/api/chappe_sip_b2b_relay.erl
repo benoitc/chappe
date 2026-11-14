@@ -149,6 +149,11 @@ loop(#{a := A, b := B, refs := {RefA, RefB}, ref := Ref, pending := P} = S) ->
             loop(relayed(PRef, Result, S));
         {chappe_sip_b2b, Ref, {call, From, {hangup, Opts}}} ->
             hangup(From, Opts, S);
+        {chappe_sip_b2b, Ref, {call, From, {detach, D}}} ->
+            case chappe_sip_b2b_transfer:detach(From, D, S) of
+                {loop, S1} -> loop(S1);
+                Done -> Done
+            end;
         {chappe_sip_b2b, Ref, {call, From, Req}} ->
             loop(handle_call(From, Req, S));
         {chappe_sip_uac, _, {ok, Late}} ->
@@ -226,7 +231,7 @@ offer(X, Event, Req, Res, S) ->
     Offer = chappe_sip_req:body(Req),
     Refresh =
         (Offer =:= <<>> andalso Event =:= update) orelse
-            (Offer =/= <<>> andalso same_version(Offer, remote_sdp(Dlg))),
+            (Offer =/= <<>> andalso same_version(Offer, chappe_sip_b2b:remote_sdp(Dlg))),
     case Refresh of
         true ->
             answer_locally(Event, Offer, Dlg, Res),
@@ -371,9 +376,8 @@ acked(_X, _Answer, S) ->
 
 %% rtpengine took an offer the far leg Y refused: Y's last good SDP
 restore(Y, #{media := M} = S) ->
-    S#{
-        media := chappe_sip_b2b_media:rejected(Y, remote_sdp(maps:get(Y, S)), M)
-    }.
+    Last = chappe_sip_b2b:remote_sdp(maps:get(Y, S)),
+    S#{media := chappe_sip_b2b_media:rejected(Y, Last, M)}.
 
 send_failure(Res, {error, #chappe_sip_error{status = St, reason = Reason}}) when
     St >= 300
@@ -443,7 +447,7 @@ replace(From, _Leg, {parallel, []}, _Opts, S) ->
     reply(From, {error, none_up}),
     S;
 replace(From, Leg, Target, Opts, S) ->
-    KeepSdp = remote_sdp(maps:get(other(Leg), S)),
+    KeepSdp = chappe_sip_b2b:remote_sdp(maps:get(other(Leg), S)),
     case chappe_sip_b2b_replace:prepare(From, Leg, Target, KeepSdp, Opts, S) of
         {ok, Step, Fun, M1} ->
             spawn_step(Step, Fun, S#{media := M1});
@@ -481,8 +485,8 @@ keep_old(Leg, {Old, false}, S) ->
     restore(Leg, old_params(Old, S)).
 
 reopen(Leg, #{media := M} = S) ->
-    KeepSdp = remote_sdp(maps:get(other(Leg), S)),
-    OldSdp = remote_sdp(maps:get(Leg, S)),
+    KeepSdp = chappe_sip_b2b:remote_sdp(maps:get(other(Leg), S)),
+    OldSdp = chappe_sip_b2b:remote_sdp(maps:get(Leg, S)),
     S#{media := chappe_sip_b2b_replace:reopen(Leg, KeepSdp, OldSdp, M)}.
 
 %% the old party keeps the call, and the anchor_params and flags it had
@@ -591,13 +595,6 @@ sdp_reply(Sdp) ->
         headers => [{<<"Content-Type">>, <<"application/sdp">>}],
         body => Sdp
     }.
-
-remote_sdp(Dlg) ->
-    try chappe_sip_dialog:remote_sdp(Dlg) of
-        Sdp -> Sdp
-    catch
-        exit:_ -> <<>>
-    end.
 
 local_sdp(Dlg) ->
     try chappe_sip_dialog:local_sdp(Dlg) of

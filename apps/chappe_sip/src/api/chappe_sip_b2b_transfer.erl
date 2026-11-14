@@ -27,7 +27,7 @@
 
 -export([valid/1, mode/1, start/1, start_link/1, init/1]).
 %% for the relay loop (chappe_sip_b2b_relay)
--export([options/2, refer/4, monitor/1, down/2]).
+-export([options/2, refer/4, monitor/1, down/2, detach/3]).
 
 -export_type([mode/0, info/0]).
 
@@ -35,8 +35,12 @@
 %% What the policy fun sees of a REFER. referrer is the From of the
 %% REFER, the identity its dialog was formed with; referred_by is what the
 %% REFER claims and is not checked (RFC 3892 6): never grant on it alone.
+%% An attended transfer (a Replaces in the Refer-To) is local when the
+%% dialog it names is a leg of another B2BUA call of this node.
 -type info() :: #{
-    kind := blind,
+    kind := blind | attended,
+    local => boolean(),
+    replaces => chappe_sip_hdr:replaces(),
     leg := a | b,
     target := binary(),
     refer_to := chappe_sip_hdr:refer_to(),
@@ -181,10 +185,14 @@ classify(#{req := Req, opts := TOpts, transfers := N} = S) ->
         {ok, _} when N >= Max ->
             %% a transfer that transfers again, and again: a loop
             {reject, 403, <<"Too Many Transfers">>};
-        {ok, #{replaces := R}} when R =/= undefined ->
-            {reject, 501, <<"Not Implemented">>};
+        {ok, #{target := Target, replaces := R} = RT} when R =/= undefined ->
+            attended(R, base(Target, RT, S));
         {ok, #{target := Target} = RT} ->
-            {ok, #{
+            {ok, base(Target, RT, S)}
+    end.
+
+base(Target, RT, #{req := Req, transfers := N} = S) ->
+    #{
                 kind => blind,
                 leg => maps:get(leg, S),
                 target => Target,
@@ -193,8 +201,128 @@ classify(#{req := Req, opts := TOpts, transfers := N} = S) ->
                 referred_by => chappe_sip_req:get(<<"referred-by">>, Req),
                 call_ref => maps:get(call_ref, S, undefined),
                 transfers => N
-            }}
+    }.
+
+%% ---- attended transfer (RFC 5589 7.3) ----
+
+%% The Replaces names the dialog the referrer has with the target. When
+%% it is a confirmed leg of another call of this node, the two remote
+%% parties are joined through rtpengine; otherwise the target gets an
+%% INVITE with Replaces. Only the referrer may name that dialog (RFC 3891
+%% 3: the replacement must come from a party to it): a Replaces naming
+%% someone else's dialog is refused 403 and leaves that call alone.
+attended(#{call_id := C, to_tag := T, from_tag := F} = R, Info) ->
+    Info1 = Info#{kind := attended, replaces => R},
+    case chappe_sip_dialog_index:lookup({C, T, F}) of
+        not_found ->
+            {ok, Info1#{local => false}};
+        {ok, {Pid, Id, confirmed, _Role}} ->
+            local(chappe_sip_dialog:make(Pid, Id), Info1);
+        {ok, _} ->
+            {reject, 481, <<"Call/Transaction Does Not Exist">>}
     end.
+
+local(D2, #{referrer := Referrer} = Info) ->
+    try {chappe_sip_dialog:remote_addr(D2), chappe_sip_dialog:call_ref(D2)} of
+        {Party, Ref} ->
+            case same_party(chappe_sip_b2b_hdr:caller(Party), Referrer) of
+                true -> {ok, Info#{local => true, dialog2 => D2, ref2 => Ref}};
+                false -> {reject, 403, <<"Forbidden">>}
+            end
+    catch
+        exit:_ -> {reject, 481, <<"Call/Transaction Does Not Exist">>}
+    end.
+
+%% the same user at the same host, whatever the port and parameters
+same_party(A, B) ->
+    case {aor(A), aor(B)} of
+        {error, _} -> false;
+        {X, X} -> true;
+        _ -> false
+    end.
+
+aor(NameAddr) ->
+    case chappe_sip_hdr:name_addr(NameAddr) of
+        {ok, #{uri := U}} ->
+            case chappe_sip_uri:parse(U) of
+                {ok, #{host := H} = P} ->
+                    {maps:get(user, P, <<>>), chappe_sip_lib:lower(H)};
+                _ ->
+                    error
+            end;
+        _ ->
+            error
+    end.
+
+%% join: the target's leg leaves its call (the referrer's leg there gets a
+%% BYE) and takes the referrer's place in this one with a re-INVITE from
+%% rtpengine; the transferee sees nothing
+join(#{leg := Leg} = Info, Refer, #{b2b := B2b} = S) ->
+    case detach(Info, B2b) of
+        {ok, Target} ->
+            case
+                chappe_sip_b2b:replace_leg(B2b, Leg, {dialog, Target}, #{
+                    keep_old => true
+                })
+            of
+                ok ->
+                    done(Info, Refer, S);
+                {error, Why} ->
+                    _ = chappe_sip_b2b:destroy_quietly(Target, []),
+                    failed(Info, Refer, status(Why), S)
+            end;
+        error ->
+            failed(Info, Refer, 481, S)
+    end.
+
+%% the call that holds the named dialog hands its other leg over
+detach(#{dialog2 := D2, ref2 := Ref}, Own) when is_binary(Ref) ->
+    #{b2b := Calls} = chappe_sip_call:lookup(Ref),
+    first_detached([B || B <- Calls, B =/= Own, node(element(1, B)) =:= node()], D2);
+detach(_Info, _Own) ->
+    error.
+
+first_detached([], _D2) ->
+    error;
+first_detached([B | Rest], D2) ->
+    case chappe_sip_b2b:call(B, {detach, D2}) of
+        {ok, Target} -> {ok, Target};
+        _ -> first_detached(Rest, D2)
+    end.
+
+%% The relay of the call that holds D, a leg of its, hands the other leg
+%% to the caller (From) and ends: D gets a BYE, the call's rtpengine
+%% session goes. {loop, S} when D is not one of its legs or an offer is
+%% pending; the caller then gets an error.
+-spec detach({pid(), term()}, chappe_sip_dialog:dialog(), map()) ->
+    {done, transferred} | {loop, map()}.
+detach(From, D, #{a := A, b := B, pending := undefined} = S) ->
+    P = chappe_sip_dialog:pid(D),
+    case {chappe_sip_dialog:pid(A), chappe_sip_dialog:pid(B)} of
+        {P, _} -> hand_over(From, A, B, S);
+        {_, P} -> hand_over(From, B, A, S);
+        _ -> not_mine(From, S)
+    end;
+detach(From, _D, S) ->
+    not_mine(From, S).
+
+hand_over({Caller, Tag}, D, Keep, #{refs := {RefA, RefB}, media := M}) ->
+    erlang:demonitor(RefA, [flush]),
+    erlang:demonitor(RefB, [flush]),
+    Reply =
+        try chappe_sip_dialog:set_owner(Keep, Caller) of
+            ok -> {ok, Keep}
+        catch
+            exit:_ -> {error, gone}
+        end,
+    _ = chappe_sip_b2b_media:stop(M),
+    _ = spawn(fun() -> chappe_sip_b2b:destroy_quietly(D, []) end),
+    Caller ! {Tag, Reply},
+    {done, transferred}.
+
+not_mine({Caller, Tag}, S) ->
+    Caller ! {Tag, {error, not_found}},
+    {loop, S}.
 
 %% the identity the REFER's dialog was formed with: its From, which the
 %% dialog layer matched by tag
@@ -225,6 +353,9 @@ policy(Info, #{policy := F}) ->
         {reject, Code} when is_integer(Code), Code >= 300, Code =< 699 -> {reject, Code};
         _ -> false
     end;
+policy(#{kind := attended, local := true}, _TOpts) ->
+    %% two parties of this node already in calls: nothing new is called
+    true;
 policy(#{target := Target}, TOpts) ->
     on_net(Target, maps:get(domains, TOpts, own_hosts())).
 
@@ -256,11 +387,18 @@ accept(Info, #{dialog := D, req := Req, res := Res} = S) ->
     case chappe_sip_refer:accept(D, Req, Res, Opts) of
         {ok, Refer} ->
             event({transfer, maps:get(leg, Info), public(Info)}, S),
-            blind(Info, Refer, S);
+            carry_out(Info, Refer, S);
         {error, _} ->
             ok
     end.
 
+carry_out(#{kind := attended, local := true} = Info, Refer, S) ->
+    join(Info, Refer, S);
+carry_out(Info, Refer, S) ->
+    blind(Info, Refer, S).
+
+%% a blind transfer, or an attended one whose dialog is elsewhere: the
+%% target gets an INVITE (with the Replaces, then)
 blind(#{leg := Leg, target := Target} = Info, Refer, #{b2b := B2b} = S) ->
     Opts = new_party(Info, S),
     case chappe_sip_b2b:replace_leg(B2b, Leg, Target, Opts) of
@@ -279,7 +417,8 @@ blind(#{leg := Leg, target := Target} = Info, Refer, #{b2b := B2b} = S) ->
 new_party(#{referred_by := RB} = Info, S) ->
     Opts = #{
         keep_old => true,
-        headers => [{<<"Referred-By">>, RB} || RB =/= undefined]
+        headers =>
+            [{<<"Referred-By">>, RB} || RB =/= undefined] ++ replaces(Info)
     },
     Related =
         case maps:get(call_ref, Info) of
@@ -287,6 +426,16 @@ new_party(#{referred_by := RB} = Info, S) ->
             Ref -> #{related => Ref}
         end,
     maps:merge(maps:merge(Opts, Related), transferee_from(S)).
+
+%% RFC 3891 6.1 and RFC 5589 7.3: the Replaces from the Refer-To, with
+%% Require: replaces so a UA that would ignore it fails the INVITE
+replaces(#{replaces := R}) ->
+    [
+        {<<"Replaces">>, chappe_sip_hdr:replaces_value(R)},
+        {<<"Require">>, <<"replaces">>}
+    ];
+replaces(_Info) ->
+    [].
 
 transferee_from(#{dialog := D}) ->
     try chappe_sip_dialog:local_addr(D) of
@@ -333,7 +482,7 @@ status(busy) -> 491;
 status(_) -> 503.
 
 public(Info) ->
-    maps:with([kind, target, referrer, referred_by], Info).
+    maps:with([kind, local, target, referrer, referred_by], Info).
 
 event(Ev, #{notify := Pid, ref := Ref}) when is_pid(Pid) ->
     Pid ! {chappe_sip_b2b, Ref, Ev},

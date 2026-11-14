@@ -15,6 +15,8 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -export([all/0, init_per_suite/1, end_per_suite/1, end_per_testcase/2]).
+-export([attended_local_join/1, attended_remote_replaces/1,
+         attended_other_party_refused/1]).
 -export([blind_from_a/1, blind_keeps_identity/1, blind_keeps_call_ref/1]).
 -export([blind_from_b/1, blind_target_fails/1, offnet_refused/1,
          policy_rejects/1, policy_sees_untrusted_referred_by/1,
@@ -24,7 +26,8 @@
 
 all() ->
     [blind_from_b, blind_from_a, blind_keeps_identity, blind_keeps_call_ref,
-     blind_target_fails, offnet_refused, policy_rejects,
+     blind_target_fails, attended_local_join, attended_remote_replaces,
+     attended_other_party_refused, offnet_refused, policy_rejects,
      policy_sees_untrusted_referred_by, direct_media_refused, transfer_limit,
      bye_method_refused, one_transfer_at_a_time, transfer_crash_call_goes_on,
      call_end_stops_transfer, multiple_refer_unsupported].
@@ -175,6 +178,97 @@ blind_target_fails(_Config) ->
     ok = ?UA:expect(caller_no_reinvite, 6000),
     no_message(bye, 500),
     ?assertMatch(#{media := anchor}, chappe_sip_b2b:info(B2b)).
+
+%% ---- attended transfer (RFC 5589 7.3) ----
+
+%% Alice calls Bob; Bob calls Carol (both through the B2BUA), then REFERs
+%% Alice to Carol with a Replaces naming his call with Carol. That dialog
+%% is a leg of a call of this node: Carol's leg leaves her call with Bob
+%% (Bob's leg there gets a BYE) and takes Bob's place in Alice's call
+%% with a re-INVITE from rtpengine; no new INVITE goes out, Alice sees
+%% nothing, and Bob gets the final NOTIFY, then a BYE on his first call.
+%% req: R5589-04 R5589-10
+attended_local_join(_Config) ->
+    {EP, CP} = setup(#{}),
+    NP = route_carol(?UA:pick()),
+    carol(NP),
+    bob_consults(CP, EP, fun(_C2, _BT2, _TT2) -> NP end),
+    caller(EP, fun(Sock, _D) ->
+        ok = ?UA:no_req(Sock, <<"INVITE">>, 5000),
+        tell(caller_no_reinvite)
+    end),
+    #{b2b := {_, Ref}} = got(legs),
+    #{b2b := B2b2} = got(legs_carol),
+    ?assertEqual(200, ?UA:status(got(refer_answer))),
+    ?assertEqual(<<"SIP/2.0 100 Trying\r\n">>, ?UA:body(got(notify))),
+    ReInv = got(carol_reinvite),
+    ?assert(chappe_sip_test_rtpe:marked(?UA:body(ReInv), offer)),
+    ?assertEqual(<<"SIP/2.0 200 OK\r\n">>, ?UA:body(got(notify))),
+    Byes = lists:sort([?UA:hdr(got(bye), <<"call-id">>) || _ <- [1, 2]]),
+    ?assertEqual(2, length(lists:usort(Byes))),
+    ok = expect_event(Ref, {transferred, b}),
+    ok = ?UA:expect({relay_done_carol, {done, transferred}}),
+    ?assertEqual({error, noproc}, chappe_sip_b2b:info(B2b2)),
+    ok = ?UA:expect(caller_no_reinvite, 8000),
+    no_message(carol_invite, 200).
+
+%% The Replaces names no dialog of this node: the target gets an INVITE
+%% carrying it, with Require: replaces, and the Referred-By.
+%% req: R3891-15 R5589-11
+attended_remote_replaces(_Config) ->
+    {EP, CP} = setup(#{}),
+    NP = ?UA:pick(),
+    RT = chappe_sip_hdr:refer_to_value(#{
+        uri => <<"sip:carol@127.0.0.1:", (integer_to_binary(NP))/binary>>,
+        replaces => #{call_id => <<"elsewhere@h">>, to_tag => <<"t1">>,
+                      from_tag => <<"f1">>}
+    }),
+    callee_refers(CP, EP, RT, []),
+    target(NP, answer),
+    caller(EP, fun(_Sock, _D) -> ok end),
+    _ = got(legs),
+    ?assertEqual(200, ?UA:status(got(refer_answer))),
+    Inv = got(target_invite),
+    ?assertEqual(<<"elsewhere@h;to-tag=t1;from-tag=f1">>,
+                 ?UA:hdr(Inv, <<"replaces">>)),
+    ?assertEqual(<<"replaces">>, ?UA:hdr(Inv, <<"require">>)),
+    _ = got(notify),
+    ?assertEqual(<<"SIP/2.0 200 OK\r\n">>, ?UA:body(got(notify))).
+
+%% Bob names a dialog of this node he is not a party to (Dave's call with
+%% Carol): refused 403, and Dave's call goes on untouched.
+%% req: R3891-07 R5589-12
+attended_other_party_refused(_Config) ->
+    {EP, CP} = setup(#{}),
+    NP = route_carol(?UA:pick()),
+    carol(NP),
+    %% Dave calls Carol
+    Test = self(),
+    ?UA:peer(0, fun(Sock) ->
+        Inv = ?UA:invite(Sock, EP, #{call_id => ?UA:callid(),
+                                     from_tag => ?UA:tag(),
+                                     ruri => <<"sip:carol@127.0.0.1">>}),
+        ?UA:send(Sock, EP, Inv),
+        R = ?UA:recv_status(Sock, 200),
+        D = ?UA:dialog_from_2xx(Sock, Inv, R),
+        ?UA:ack(D, EP),
+        Test ! {dave_call, D, ?UA:to_tag(R)},
+        serve(Sock, <<>>)
+    end),
+    #{b2b := DaveCall} = got(legs_carol),
+    {#{call_id := C2, from := DFrom}, TT2} = got2(dave_call),
+    {ok, #{params := #{<<"tag">> := DTag}}} = chappe_sip_hdr:name_addr(DFrom),
+    RT = chappe_sip_hdr:refer_to_value(#{
+        uri => <<"sip:carol@127.0.0.1:", (integer_to_binary(NP))/binary>>,
+        replaces => #{call_id => C2, to_tag => TT2, from_tag => DTag}
+    }),
+    callee_refers(CP, EP, RT, []),
+    caller(EP, fun(_Sock, _D) -> ok end),
+    _ = got(legs),
+    ?assertEqual(403, ?UA:status(got(refer_answer))),
+    timer:sleep(300),
+    ?assertMatch(#{media := anchor}, chappe_sip_b2b:info(DaveCall)),
+    no_message(bye, 300).
 
 %% ---- policy and safety ----
 
@@ -333,13 +427,22 @@ setup_opts(Opts) ->
     register(xfer_test, Test),
     Callee = <<"sip:callee@127.0.0.1:", (integer_to_binary(CP))/binary>>,
     ok = chappe_sip:invite(fun(Req, Res) ->
-        case chappe_sip:create_b2bua(Req, Res, Callee, Opts) of
-            {ok, Legs} ->
-                Test ! {legs, Legs},
-                Test ! b2b_up,
-                Test ! {relay_done, chappe_sip_b2b:relay(Legs)};
-            Err ->
-                Test ! {b2b_result, Err}
+        case chappe_sip_uri:parse(chappe_sip_req:uri(Req)) of
+            {ok, #{user := <<"carol">>}} ->
+                NP = persistent_term:get(xfer_carol),
+                Carol = <<"sip:carol@127.0.0.1:", (integer_to_binary(NP))/binary>>,
+                {ok, Legs} = chappe_sip:create_b2bua(Req, Res, Carol, Opts),
+                Test ! {legs_carol, Legs},
+                Test ! {relay_done_carol, chappe_sip_b2b:relay(Legs)};
+            _ ->
+                case chappe_sip:create_b2bua(Req, Res, Callee, Opts) of
+                    {ok, Legs} ->
+                        Test ! {legs, Legs},
+                        Test ! b2b_up,
+                        Test ! {relay_done, chappe_sip_b2b:relay(Legs)};
+                    Err ->
+                        Test ! {b2b_result, Err}
+                end
         end
     end),
     {EP, CP}.
@@ -408,6 +511,75 @@ serve(Sock, Tag) ->
             serve(Sock, Tag)
     end.
 
+%% INVITEs to sip:carol@... go to Carol's port, in a call of their own
+route_carol(NP) ->
+    persistent_term:put(xfer_carol, NP),
+    NP.
+
+%% Carol: answers her INVITE, then a re-INVITE (carol_reinvite); a second
+%% INVITE outside her dialog is carol_invite.
+carol(NP) ->
+    ?UA:peer(NP, fun(Sock) ->
+        {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
+        Tag = ?UA:tag(),
+        ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, Tag, [contact(Sock)],
+                                     ?UA:sdp(<<"carol">>))),
+        {_, _} = ?UA:recv_req(Sock, <<"ACK">>),
+        carol_loop(Sock, Tag)
+    end).
+
+carol_loop(Sock, Tag) ->
+    receive
+        {udp, Sock, _, Src, <<"INVITE ", _/binary>> = Inv} ->
+            case ?UA:to_tag(Inv) of
+                undefined -> tell({carol_invite, Inv});
+                _ -> tell({carol_reinvite, Inv})
+            end,
+            ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, Tag,
+                                         [contact(Sock)],
+                                         ?UA:sdp(<<"carol">>, <<"1">>))),
+            carol_loop(Sock, Tag);
+        {udp, Sock, _, Src, <<"BYE ", _/binary>> = B} ->
+            ?UA:send(Sock, Src, ?UA:resp(B, 200, <<"OK">>, Tag, [], <<>>)),
+            tell({carol_bye, B}),
+            carol_loop(Sock, Tag);
+        {udp, Sock, _, _, _} ->
+            carol_loop(Sock, Tag)
+    end.
+
+%% Bob: answers Alice's call, calls Carol through the B2BUA under the
+%% same identity, then REFERs Alice to Carol with a Replaces naming his
+%% call with Carol (Port(CallId2, BobTag2, ToTag2) gives Carol's port).
+bob_consults(CP, EP, Port) ->
+    ?UA:peer(CP, fun(Sock) ->
+        {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
+        Tag = ?UA:tag(),
+        ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, Tag, [contact(Sock)],
+                                     ?UA:sdp(<<"callee">>))),
+        {_Ack, _} = ?UA:recv_req(Sock, <<"ACK">>),
+        D1 = ?UA:dialog_from_invite(Sock, Inv, Tag, Src),
+        C2 = ?UA:callid(),
+        BT2 = ?UA:tag(),
+        Inv2 = binary:replace(
+                 ?UA:invite(Sock, EP, #{call_id => C2, from_tag => BT2,
+                                        ruri => <<"sip:carol@127.0.0.1">>}),
+                 <<"From: <sip:caller@">>, <<"From: <sip:callee@">>),
+        ?UA:send(Sock, EP, Inv2),
+        R2 = ?UA:recv_status(Sock, 200),
+        D2 = ?UA:dialog_from_2xx(Sock, Inv2, R2),
+        ?UA:ack(D2, EP),
+        TT2 = ?UA:to_tag(R2),
+        NP = Port(C2, BT2, TT2),
+        RT = chappe_sip_hdr:refer_to_value(#{
+            uri => <<"sip:carol@127.0.0.1:", (integer_to_binary(NP))/binary>>,
+            replaces => #{call_id => C2, to_tag => TT2, from_tag => BT2}
+        }),
+        {Refer, _} = ?UA:in_dialog(D1, <<"REFER">>,
+                                   [{<<"Refer-To">>, RT}], <<>>),
+        ?UA:send(Sock, EP, Refer),
+        serve(Sock, Tag)
+    end).
+
 %% The callee (Bob) that only answers, then runs Fun(Sock).
 callee(CP, Fun) ->
     ?UA:peer(CP, fun(Sock) ->
@@ -474,6 +646,9 @@ contact(Sock) ->
 
 got(Tag) ->
     receive {Tag, V} -> V after 10000 -> ct:fail({missing, Tag}) end.
+
+got2(Tag) ->
+    receive {Tag, V, W} -> {V, W} after 10000 -> ct:fail({missing, Tag}) end.
 
 no_message(Tag, Ms) ->
     receive {Tag, V} -> ct:fail({unexpected, Tag, V}) after Ms -> ok end.
