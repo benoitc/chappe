@@ -271,7 +271,11 @@ bridge(CallId, Called, Req, Res, Target, Opts) ->
             log("call ~s ~s -> ~s up, media ~p", [
                 CallId, From, Called, chappe_sip_b2b_media:mode(M)
             ]),
-            _ = maps:get(record, Opts, false) andalso record_call(CallId, B2b),
+            %% this process runs the call's relay once bridge/6 returns, so
+            %% the recording starts from another one (it reads the call);
+            %% the keeper owns it, and the call's end stops it
+            _ = maps:get(record, Opts, false) andalso
+                spawn(fun() -> record_call(CallId, B2b, maps:get(notify, Opts)) end),
             Done = chappe_sip_b2b:relay(Legs),
             ets:delete(?CALLS, CallId),
             ets:delete(?FS, CallId),
@@ -330,11 +334,11 @@ recorded_call(Keeper, CallId, Req, Res) ->
             log("call ~s to 3001: ~b", [CallId, Status])
     end.
 
-record_call(CallId, B2b) ->
+record_call(CallId, B2b, Owner) ->
     Cfg = persistent_term:get({?MODULE, cfg}),
     Srs = iolist_to_binary(["sip:srs@", env("DEMO_IP", maps:get(ip, Cfg)), ":",
                             env("DEMO_SIP_PORT", maps:get(sip_port, Cfg))]),
-    case chappe_sip_siprec:start(B2b, Srs, #{}) of
+    case chappe_sip_siprec:start(B2b, Srs, #{owner => Owner}) of
         {ok, _Rec} -> log("call ~s recorded to ~s", [CallId, Srs]);
         {error, Why} -> log("call ~s not recorded: ~p", [CallId, Why])
     end.
@@ -658,6 +662,18 @@ keep() ->
             channel(Name, H);
         {chappe_esl_node, Name, State} when is_atom(State) ->
             log("FreeSWITCH ~p is ~p", [Name, State]);
+        %% the SIPREC recordings of 3001, which the keeper owns
+        {chappe_sip_siprec, _Rec, {started, _}} ->
+            log("recording started", []);
+        {chappe_sip_siprec, _Rec, {stopped, #{reason := Why}}} ->
+            log("recording stopped: ~p", [Why]);
+        %% the B leg rings: the call is not in the table yet
+        {chappe_sip_b2b, _Ref, {b_request, #{call_id := BCallId, uri := Uri}}} ->
+            log("B leg ~s to ~s", [BCallId, Uri]);
+        {chappe_sip_b2b, _Ref, {b_provisional, Msg}} ->
+            log("B leg answered ~b", [chappe_sip_msg:status(Msg)]);
+        {chappe_sip_b2b, _Ref, {b_early, _Dialog}} ->
+            log("B leg early dialog", []);
         {chappe_sip_b2b, Ref, Event} ->
             Calls = [C || {C, {_, R}, _, _} <- ets:tab2list(?CALLS), R =:= Ref],
             log("call ~s: ~p", [Calls, Event]);
