@@ -101,7 +101,10 @@ all(_Pred, _Other) -> false.
 %% hands call/4 what it calls: a fork's destinations carry their own
 %% offer. Only leg B is replaced by a fork.
 -spec offer(
-    chappe_sip_b2b_media:leg(), term(), binary(), map(),
+    chappe_sip_b2b_media:leg(),
+    term(),
+    binary(),
+    map(),
     chappe_sip_b2b_media:state()
 ) ->
     {ok, term(), binary(), chappe_sip_b2b_media:state()}

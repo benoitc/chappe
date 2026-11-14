@@ -43,7 +43,9 @@ run(#{uas := A, uac := B, b2b := {_, Ref}} = Legs, Opts) ->
                 end,
             forward_stray(A, B, Pid),
             %% the relay process serves the call from now on, not this one
-            ok = chappe_sip_call:leave(maps:get(call_ref, Legs, undefined), b2b),
+            ok = chappe_sip_call:leave(
+                maps:get(call_ref, Legs, undefined), b2b
+            ),
             Pid ! {go, self()},
             {ok, {Pid, Ref}};
         {error, _} = Err ->

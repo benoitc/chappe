@@ -196,14 +196,14 @@ classify(#{req := Req, opts := TOpts, transfers := N} = S) ->
 
 base(Target, RT, #{req := Req, transfers := N} = S) ->
     #{
-                kind => blind,
-                leg => maps:get(leg, S),
-                target => Target,
-                refer_to => RT,
-                referrer => referrer(Req),
-                referred_by => chappe_sip_req:get(<<"referred-by">>, Req),
-                call_ref => maps:get(call_ref, S, undefined),
-                transfers => N
+        kind => blind,
+        leg => maps:get(leg, S),
+        target => Target,
+        refer_to => RT,
+        referrer => referrer(Req),
+        referred_by => chappe_sip_req:get(<<"referred-by">>, Req),
+        call_ref => maps:get(call_ref, S, undefined),
+        transfers => N
     }.
 
 %% ---- attended transfer (RFC 5589 7.3) ----
@@ -281,7 +281,9 @@ join(#{leg := Leg} = Info, Refer, #{b2b := B2b} = S) ->
 %% the call that holds the named dialog hands its other leg over
 detach(#{dialog2 := D2, ref2 := Ref}, Own) when is_binary(Ref) ->
     #{b2b := Calls} = chappe_sip_call:lookup(Ref),
-    first_detached([B || B <- Calls, B =/= Own, node(element(1, B)) =:= node()], D2);
+    first_detached(
+        [B || B <- Calls, B =/= Own, node(element(1, B)) =:= node()], D2
+    );
 detach(_Info, _Own) ->
     error.
 
@@ -413,9 +415,12 @@ reject(_Info, _Code) ->
 %% referrer could not make itself (toll fraud).
 policy(Info, #{policy := F}) ->
     case F(Info) of
-        true -> true;
-        {reject, Code} when is_integer(Code), Code >= 300, Code =< 699 -> {reject, Code};
-        _ -> false
+        true ->
+            true;
+        {reject, Code} when is_integer(Code), Code >= 300, Code =< 699 ->
+            {reject, Code};
+        _ ->
+            false
     end;
 policy(#{kind := attended, local := true}, _TOpts) ->
     %% two parties of this node already in calls: nothing new is called
@@ -427,7 +432,10 @@ on_net(Target, Domains) ->
     case chappe_sip_uri:parse(Target) of
         {ok, #{scheme := S, host := Host}} when S =:= sip; S =:= sips ->
             lists:member(
-                chappe_sip_lib:lower(Host), [chappe_sip_lib:lower(D) || D <- Domains]
+                chappe_sip_lib:lower(Host), [
+                    chappe_sip_lib:lower(D)
+                 || D <- Domains
+                ]
             );
         _ ->
             false

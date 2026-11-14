@@ -1070,7 +1070,9 @@ replace_b(B2b, Target, Opts) ->
 %% or {dialog, D} (a fork only for leg B). Opts are replace_b/3's, plus
 %% keep_old => true: the old party is not hung up but handed to the
 %% caller (its dialog's owner from then on), which ends it.
--spec replace_leg(b2b(), a | b, binary() | {dialog, chappe_sip_dialog:dialog()}, map()) ->
+-spec replace_leg(
+    b2b(), a | b, binary() | {dialog, chappe_sip_dialog:dialog()}, map()
+) ->
     ok | {ok, #{winner := winner()}} | {error, term()}.
 replace_leg(B2b, b, Target, Opts) ->
     replace_b(B2b, Target, Opts);

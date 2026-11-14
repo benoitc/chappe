@@ -178,7 +178,9 @@ refer(D, Req, Res, Opts) ->
                         referrer => chappe_sip_b2b_hdr:caller(
                             chappe_sip_req:get(<<"from">>, Req)
                         ),
-                        referred_by => chappe_sip_req:get(<<"referred-by">>, Req)
+                        referred_by => chappe_sip_req:get(
+                            <<"referred-by">>, Req
+                        )
                     },
                     allowed(D, Req, Res, Info, Opts)
             end
