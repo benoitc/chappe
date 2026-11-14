@@ -168,6 +168,10 @@ the SDP through a media anchor such as rtpengine before the other leg sees it.
   its PRACK when that 1xx carried SDP.
 - The `Reason` of a BYE or CANCEL (RFC 3326) goes out on the other leg's BYE
   or CANCEL.
+- A REFER never crosses. With `transfer => auto` or `notify` the B2BUA
+  carries the transfer out itself (see [REFER](refer.md#transfer-a-b2bua-call));
+  otherwise it goes to your notify process when `requests` names it, else
+  it gets 603.
 
 ## Notes
 
