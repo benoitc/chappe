@@ -40,23 +40,24 @@ end_per_testcase(_Case, _Config) ->
 
 %% req: RFC3261-17.1.2.2 T1 sets the first retransmit interval of a
 %% non-INVITE client transaction, and Timer F is 64*T1
-%% With T1 at 100 ms and T2 at 400 ms, the request times out after
-%% 64*T1 = 6.4 s instead of 32, and the retransmit interval is capped at
-%% T2 (the third copy follows the second within about 400 ms, 2 s with
-%% nta's defaults). nta starts Timer A/E at no less than 1 s, whatever T1
-%% (nta.c outgoing_send), so the first gap does not show T1.
+%% req: RFC3261-17.1.2.2 the client transaction MUST set timer E to fire
+%% in T1 seconds
+%% With T1 at 100 ms and T2 at 400 ms the first copy is sent again after
+%% about T1 (sofia patch 0005: the fork waited at least 1 s), the
+%% interval is capped at T2, and the request times out after 64*T1 =
+%% 6.4 s instead of 32.
 t1_sets_retransmissions(_Config) ->
     start(#{sip_timers => #{t1 => 100, t2 => 400}}),
     {ok, S} = gen_udp:open(0, [binary, {ip, ?LO}, {active, true}]),
     {ok, Port} = inet:port(S),
     T0 = erlang:monotonic_time(millisecond),
     {ok, Ref} = chappe_sip:request(target(Port), #{method => <<"OPTIONS">>}),
-    _First = recv_udp(S),
+    First = recv_udp(S),
     Second = recv_udp(S),
     Third = recv_udp(S),
-    Gap = Third - Second,
-    ct:log("retransmit gap ~p ms", [Gap]),
-    ?assert(Gap < 900),
+    ct:log("retransmit gaps ~p ms, ~p ms", [Second - First, Third - Second]),
+    ?assert(Second - First < 500),
+    ?assert(Third - Second < 900),
     _ = chappe_sip_uac:await_response(Ref, 12000),
     Took = erlang:monotonic_time(millisecond) - T0,
     ct:log("timed out after ~p ms", [Took]),
