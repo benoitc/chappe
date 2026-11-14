@@ -23,6 +23,7 @@
     bridge_to_uri/1,
     endpoint_commands/1,
     play_results/1,
+    owner_events/1,
     endpoint_call_notices/1,
     node_down/1,
     native_conference/1,
@@ -60,6 +61,7 @@ all() ->
         bridge_to_uri,
         endpoint_commands,
         play_results,
+        owner_events,
         endpoint_call_notices,
         node_down,
         native_conference,
@@ -402,6 +404,57 @@ play_results(Config) ->
         chappe_mrf:play_collect(Ep, #{file => <<"/p.wav">>, result => full})
     ),
     ok = chappe_mrf:destroy(Ep).
+
+%% The owner asked for playback, CUSTOM and channel events: the endpoint
+%% subscribes to them (CUSTOM last) and hands them over; what it did not
+%% ask for stays away.
+owner_events(Config) ->
+    Events = [
+        playback_start,
+        playback_stop,
+        {custom, <<"chappe::x">>},
+        {channel, <<"CHANNEL_BRIDGE">>}
+    ],
+    {ok, Ep} = chappe_mrf:create_endpoint(#{
+        targets => [{fs1, fs_uri(Config)}], events => Events
+    }),
+    _ = fs_cmd(
+        <<"event plain CHANNEL_BRIDGE PLAYBACK_START PLAYBACK_STOP CUSTOM chappe::x">>
+    ),
+    Fs = ?config(fs, Config),
+    File = [{<<"Playback-File-Path">>, <<"/a.wav">>}],
+    ?F:fs_event(Fs, <<"PLAYBACK_START">>, File),
+    ?F:fs_event(Fs, <<"PLAYBACK_STOP">>, [{<<"Playback-Status">>, <<"break">>} | File]),
+    ?F:fs_event(Fs, <<"CUSTOM">>, [{<<"Event-Subclass">>, <<"other::y">>}]),
+    ?F:fs_event(Fs, <<"CUSTOM">>, [{<<"Event-Subclass">>, <<"chappe::x">>}]),
+    ?F:fs_event(Fs, <<"CHANNEL_PARK">>, []),
+    ?F:fs_event(Fs, <<"CHANNEL_BRIDGE">>, []),
+    ?assertEqual({playback_start, <<"/a.wav">>}, ep_msg(Ep)),
+    ?assertEqual({playback_stop, <<"/a.wav">>, <<"break">>}, ep_msg(Ep)),
+    ?assertMatch({custom, <<"chappe::x">>, _}, ep_msg(Ep)),
+    ?assertMatch({channel, <<"CHANNEL_BRIDGE">>, _}, ep_msg(Ep)),
+    ok = chappe_mrf:destroy(Ep),
+    [
+        ?assertEqual(
+            {error, {bad_option, events}},
+            chappe_mrf:create_endpoint(#{
+                targets => [{fs1, fs_uri(Config)}], events => Bad
+            })
+        )
+     || Bad <- [
+            nope,
+            [speak],
+            [{custom, <<"two words">>}],
+            [{channel, <<"CUSTOM">>}],
+            [{channel, <<"A\nB">>}]
+        ]
+    ].
+
+ep_msg(Ep) ->
+    receive
+        {chappe_mrf, Ep, Msg} -> Msg
+    after 5000 -> ct:fail(no_endpoint_msg)
+    end.
 
 %% The call's linger and disconnect notices leave a live endpoint as it is:
 %% closed and the hangup are what end it.

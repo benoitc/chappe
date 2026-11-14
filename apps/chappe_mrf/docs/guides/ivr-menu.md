@@ -90,6 +90,23 @@ receive
 end.
 ```
 
+Ask for more with `events` when you connect the caller or create the
+endpoint:
+
+```erlang
+{ok, Ep, B2b} = chappe_mrf:connect_caller(Req, Res, #{
+    events => [playback_start, playback_stop,
+               {custom, <<"mod_audio_fork::connect">>},
+               {channel, <<"CHANNEL_BRIDGE">>}]
+}),
+receive
+    {chappe_mrf, Ep, {playback_start, File}} -> File;
+    {chappe_mrf, Ep, {playback_stop, File, <<"done">>}} -> File;
+    {chappe_mrf, Ep, {custom, Subclass, Ev}} -> {Subclass, Ev};
+    {chappe_mrf, Ep, {channel, Name, Ev}} -> {Name, Ev}
+end.
+```
+
 The call's events (`{chappe_sip_b2b, Ref, Event}`, `{done, Why}` at the
 end) go to the `notify` option, the handler by default.
 

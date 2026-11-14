@@ -12,6 +12,14 @@
 %%   {hangup, Cause}     the channel hung up (or its socket closed)
 %%   {node_down, Node}   the FreeSWITCH node went down
 %%
+%% and, when the owner asked with events => [...] at start (the call
+%% subscribes to them on the channel's socket):
+%%
+%%   {playback_start, File}          playback_start
+%%   {playback_stop, File, Status}   playback_stop (Status: done | break)
+%%   {custom, Subclass, Ev}          {custom, Subclass}
+%%   {channel, Name, Ev}             {channel, Name}: any other event
+%%
 %% Commands run in the caller's process on the chappe_esl_call (call/1),
 %% so a long playback blocks the caller, not the endpoint: DTMF keeps
 %% flowing to the owner meanwhile.
@@ -31,7 +39,7 @@
 
 -export([start/1, start_link/1]).
 -export([attach/3, await/2, call/1, info/1, watch/2, set_dialog/2]).
--export([handed/1, destroy/1]).
+-export([handed/1, destroy/1, check_events/1]).
 -export([callback_mode/0, init/1, waiting/3, ready/3, gone/3, terminate/3]).
 
 -export_type([endpoint/0]).
@@ -54,9 +62,15 @@
     dialog :: chappe_sip_dialog:dialog() | undefined,
     handed = false :: boolean(),
     watchers = #{} :: #{pid() => reference()},
-    subscribed = [] :: [term()]
+    subscribed = [] :: [term()],
+    %% the events the owner asked for, beyond dtmf and hangup
+    events = [] :: [event_spec()]
 }).
 -type state() :: #state{}.
+%% What an owner may ask to hear (events => [...] at start).
+-type event_spec() ::
+    playback_start | playback_stop | {custom, binary()} | {channel, binary()}.
+-export_type([event_spec/0]).
 
 %% Args: id (required), owner (default the caller), candidates ([{Node,
 %% SipUri}], the nodes the INVITE may land on), answer (answer the
@@ -138,14 +152,15 @@ init(#{id := Id, owner := Owner} = Args) ->
                 owner_mon = monitor(process, Owner),
                 candidates = maps:get(candidates, Args, []),
                 answer = maps:get(answer, Args, true),
-                linger = maps:get(linger, Args, ?LINGER)
+                linger = maps:get(linger, Args, ?LINGER),
+                events = maps:get(events, Args, [])
             }};
         {error, exists} ->
             {stop, {already_registered, Id}}
     end.
 
 waiting({call, From}, {attach, Conn, Channel}, Data) ->
-    case chappe_esl_call:start(Conn, #{owner => self()}) of
+    case start_call(Conn, Data#state.events) of
         {ok, Call} ->
             ok = chappe_mrf_registry:delete({call, Data#state.id}),
             Node = node_of(Channel, Data#state.candidates),
@@ -252,19 +267,81 @@ call_msg(disconnect, _Data) ->
 call_msg(closed, Data) ->
     hungup(<<"CONNECTION_CLOSED">>, Data#state{call = undefined});
 call_msg({event, Ev}, Data) ->
-    case chappe_esl_event:name(Ev) of
-        <<"CUSTOM">> -> tell(Data, {event, Ev});
-        _ -> ok
-    end,
+    Name = chappe_esl_event:name(Ev),
+    _ = Name =:= <<"CUSTOM">> andalso tell(Data, {event, Ev}),
+    _ = [notify(Data, E) || E <- owner_events(Name, Ev, Data#state.events)],
     keep_state_and_data;
 call_msg({complete, App, Ev}, Data) ->
     tell(Data, {complete, App, Ev}),
     keep_state_and_data.
 
+%% The owner messages a channel event makes, from what the owner asked.
+owner_events(<<"PLAYBACK_START">>, Ev, Wanted) ->
+    [{playback_start, file_of(Ev)} || lists:member(playback_start, Wanted)];
+owner_events(<<"PLAYBACK_STOP">>, Ev, Wanted) ->
+    Status = chappe_mrf_lib:to_bin(
+        chappe_esl_event:header(<<"Playback-Status">>, Ev)
+    ),
+    [
+        {playback_stop, file_of(Ev), Status}
+     || lists:member(playback_stop, Wanted)
+    ];
+owner_events(<<"CUSTOM">>, Ev, Wanted) ->
+    Sub = chappe_esl_event:header(<<"Event-Subclass">>, Ev),
+    [{custom, Sub, Ev} || lists:member({custom, Sub}, Wanted)];
+owner_events(Name, Ev, Wanted) ->
+    [{channel, Name, Ev} || lists:member({channel, Name}, Wanted)].
+
+file_of(Ev) ->
+    chappe_mrf_lib:to_bin(
+        chappe_esl_event:header(<<"Playback-File-Path">>, Ev)
+    ).
+
+%% Checked in the caller's process: {error, {bad_option, events}} there,
+%% never a crash of the endpoint.
+-spec check_events(term()) -> ok | {error, {bad_option, events}}.
+check_events(Events) when is_list(Events) ->
+    case lists:all(fun valid_event/1, Events) of
+        true -> ok;
+        false -> {error, {bad_option, events}}
+    end;
+check_events(_) ->
+    {error, {bad_option, events}}.
+
+valid_event(playback_start) -> true;
+valid_event(playback_stop) -> true;
+valid_event({custom, S}) -> chappe_esl_call:event_word(S);
+valid_event({channel, <<"CUSTOM">>}) -> false;
+valid_event({channel, N}) -> chappe_esl_call:event_word(N);
+valid_event(_) -> false.
+
+%% What the call subscribes to for the owner's events.
+esl_events(Events) ->
+    lists:usort([esl_event(E) || E <- Events]).
+
+esl_event(playback_start) -> <<"PLAYBACK_START">>;
+esl_event(playback_stop) -> <<"PLAYBACK_STOP">>;
+esl_event({custom, S}) -> {custom, S};
+esl_event({channel, N}) -> N.
+
 hungup(Cause, #state{linger = Linger} = Data) ->
     notify(Data, {hangup, Cause}),
     tell(Data, hangup),
     {next_state, gone, Data, [{state_timeout, Linger, linger}]}.
+
+start_call(Conn, Events) ->
+    case chappe_esl_call:start(Conn, #{owner => self()}) of
+        {ok, Call} ->
+            case chappe_esl_call:subscribe(Call, esl_events(Events)) of
+                ok ->
+                    {ok, Call};
+                {error, _} = Err ->
+                    chappe_esl_call:stop(Call),
+                    Err
+            end;
+        Err ->
+            Err
+    end.
 
 ready_value(await, #state{uuid = Uuid}) -> Uuid;
 ready_value(call, #state{call = Call}) -> Call.

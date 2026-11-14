@@ -45,7 +45,7 @@
 -export([exec/5]).
 %% Call process.
 -export([start/1, start/2, stop/1, uuid/1]).
--export([exec/3, exec/4, api/2]).
+-export([exec/3, exec/4, api/2, subscribe/2, event_word/1]).
 %% Typed helpers.
 -export([answer/1, playback/2, playback/3, play_and_get_digits/2]).
 -export([record/3, record_session/2, record_session_stop/2]).
@@ -199,6 +199,46 @@ exec(Call, App, Args, Opts) ->
 -spec api(call(), iodata()) -> {ok, binary()} | {error, term()}.
 api(Call, Cmd) ->
     call(Call, {api, Cmd}).
+
+%% Add events of the channel to what the owner gets as {event, Event}:
+%% event names (<<"PLAYBACK_START">>, 'DETECTED_TONE') and {custom,
+%% Subclass} for a CUSTOM subclass. The call's own subscription (myevents,
+%% or the Unique-ID filter on inbound) still limits them to this channel.
+-spec subscribe(call(), [atom() | binary() | {custom, binary()}]) ->
+    ok | {error, term()}.
+subscribe(Call, Events) ->
+    case event_names(Events, [], []) of
+        {ok, []} -> ok;
+        {ok, Names} -> call(Call, {subscribe, Names});
+        error -> {error, {bad_option, events}}
+    end.
+
+%% FreeSWITCH reads every word after CUSTOM as a subclass: CUSTOM goes last.
+event_names([], Names, []) ->
+    {ok, lists:reverse(Names)};
+event_names([], Names, Subs) ->
+    {ok, lists:reverse(Names) ++ [<<"CUSTOM">> | lists:reverse(Subs)]};
+event_names([{custom, Sub} | T], Names, Subs) ->
+    case event_word(Sub) of
+        true -> event_names(T, Names, [Sub | Subs]);
+        false -> error
+    end;
+event_names([Name | T], Names, Subs) when is_atom(Name) ->
+    event_names([atom_to_binary(Name) | T], Names, Subs);
+event_names([<<"CUSTOM">> | _], _Names, _Subs) ->
+    error;
+event_names([Name | T], Names, Subs) ->
+    case event_word(Name) of
+        true -> event_names(T, [Name | Names], Subs);
+        false -> error
+    end.
+
+%% One word of an event command: no blank, no line break.
+-spec event_word(term()) -> boolean().
+event_word(W) when is_binary(W), W =/= <<>> ->
+    binary:match(W, [<<" ">>, <<"\t">>, <<"\n">>, <<"\r">>]) =:= nomatch;
+event_word(_) ->
+    false.
 
 %% Typed helpers
 
@@ -442,6 +482,11 @@ handle_call({exec, _App, _Args, _Opts}, _From, #state{hungup = true} = State) ->
     {reply, {error, hangup}, State};
 handle_call({exec, App, Args, Opts}, From, State) ->
     start_exec(App, Args, Opts, From, State);
+handle_call({subscribe, Names}, From, #state{conn = Conn} = State) ->
+    {noreply,
+        job(
+            fun() -> chappe_esl:subscribe(Conn, Names) end, {reply, From}, State
+        )};
 handle_call({api, Cmd}, From, #state{conn = Conn} = State) ->
     {noreply,
         job(fun() -> chappe_esl:api(Conn, Cmd) end, {reply, From}, State)};

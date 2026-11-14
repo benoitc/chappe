@@ -23,7 +23,12 @@
 %% which is how the socket finds its endpoint.
 %%
 %% The endpoint's owner gets {chappe_mrf, Ep, Event}: {dtmf, Digit},
-%% {hangup, Cause}, {node_down, Node}. The notify process of a call
+%% {hangup, Cause}, {node_down, Node}, and what it asked for with the
+%% events option of connect_caller/3 and create_endpoint/1:
+%% {playback_start, File}, {playback_stop, File, Status} (done or break),
+%% {custom, Subclass, Ev} (a CUSTOM event of the channel) and
+%% {channel, Name, Ev} (any other event of the channel, by name). The
+%% notify process of a call
 %% (connect_caller's notify option, default the owner) gets the call's
 %% {chappe_sip_b2b, Ref, Event}, and {chappe_sip_b2b, Ref, {done, Why}}
 %% when it ends.
@@ -136,6 +141,9 @@ own_uri() ->
 %%   targets  => [{Node, SipUri}]: the nodes to try, bypassing chappe_esl
 %%   user     => the user of the INVITE to the node (default <<"mrf">>)
 %%   attach_timeout => ms to wait for the outbound socket (10000)
+%%   events   => more events for the owner (see the module doc):
+%%               playback_start, playback_stop, {custom, Subclass},
+%%               {channel, EventName}
 %%   relay    => options of chappe_sip_b2b:relay/2
 %% and any chappe_sip_b2b:create_b2bua/4 option (media defaults to
 %% anchor, b_headers get X-Chappe-Call). Returns the endpoint and the
@@ -144,6 +152,15 @@ own_uri() ->
 -spec connect_caller(chappe_sip_req:req(), chappe_sip_res:res(), map()) ->
     {ok, endpoint(), chappe_sip_b2b:b2b()} | {error, term()}.
 connect_caller(Req, Res, Opts) ->
+    case check_opts(Opts) of
+        ok ->
+            connect(Req, Res, Opts);
+        {error, _} = Bad ->
+            _ = chappe_sip_res:send(Res, 500),
+            Bad
+    end.
+
+connect(Req, Res, Opts) ->
     Owner = maps:get(owner, Opts, self()),
     case candidates(Opts) of
         [] ->
@@ -154,13 +171,25 @@ connect_caller(Req, Res, Opts) ->
         Cands ->
             Id = chappe_mrf_lib:new_id(),
             {ok, Ep} = chappe_mrf_endpoint:start(#{
-                id => Id, owner => Owner, candidates => Cands
+                id => Id,
+                owner => Owner,
+                candidates => Cands,
+                events => maps:get(events, Opts, [])
             }),
             User = maps:get(user, Opts, <<"mrf">>),
             Uris = [with_user(U, User) || {_, U} <- Cands],
             Notify = maps:get(notify, Opts, Owner),
             B2bOpts = (maps:without(
-                [owner, node, select, targets, user, attach_timeout, relay],
+                [
+                    owner,
+                    node,
+                    select,
+                    targets,
+                    user,
+                    attach_timeout,
+                    relay,
+                    events
+                ],
                 Opts
             ))#{
                 media => maps:get(media, Opts, anchor),
@@ -196,15 +225,20 @@ connect_caller(Req, Res, Opts) ->
 %% An endpoint with no caller: an INVITE from this node to a FreeSWITCH
 %% node, its channel handed back over the outbound socket. Its SDP is an
 %% inactive placeholder until bridge/2 brings a caller in. Opts: owner,
-%% node, select, targets, user (as for connect_caller/3), sdp (the offer,
+%% node, select, targets, user, events (as for connect_caller/3), sdp (the offer,
 %% default inactive_sdp/0), headers, timeout (ms for the INVITE, 32000),
 %% attach_timeout.
 -spec create_endpoint(map()) -> {ok, endpoint()} | {error, term()}.
 create_endpoint(Opts) ->
     Owner = maps:get(owner, Opts, self()),
-    case candidates(Opts) of
-        [] -> {error, no_node};
-        Cands -> try_endpoint(Cands, Owner, Opts, {error, no_node})
+    case check_opts(Opts) of
+        ok ->
+            case candidates(Opts) of
+                [] -> {error, no_node};
+                Cands -> try_endpoint(Cands, Owner, Opts, {error, no_node})
+            end;
+        {error, _} = Bad ->
+            Bad
     end.
 
 try_endpoint([], _Owner, _Opts, Last) ->
@@ -212,7 +246,10 @@ try_endpoint([], _Owner, _Opts, Last) ->
 try_endpoint([{Node, Uri} | Rest], Owner, Opts, _Last) ->
     Id = chappe_mrf_lib:new_id(),
     {ok, Ep} = chappe_mrf_endpoint:start(#{
-        id => Id, owner => Owner, candidates => [{Node, Uri}]
+        id => Id,
+        owner => Owner,
+        candidates => [{Node, Uri}],
+        events => maps:get(events, Opts, [])
     }),
     UacOpts = #{
         local_sdp => maps:get(sdp, Opts, inactive_sdp()),
@@ -497,6 +534,10 @@ focus_subscribe(Req, Res) ->
     end.
 
 %% ---- internal ----
+
+%% the options checked before anything starts
+check_opts(Opts) ->
+    chappe_mrf_endpoint:check_events(maps:get(events, Opts, [])).
 
 with_call(Ep, Fun) ->
     case chappe_mrf_endpoint:call(Ep) of

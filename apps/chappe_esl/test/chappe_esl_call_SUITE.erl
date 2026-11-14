@@ -25,6 +25,7 @@
     play_and_get_digits/1,
     play_and_get_digits_full/1,
     playback_options/1,
+    subscribe_events/1,
     dtmf_and_hangup/1,
     helpers/1,
     audio_stream_commands/1,
@@ -69,6 +70,7 @@ all() ->
         play_and_get_digits,
         play_and_get_digits_full,
         playback_options,
+        subscribe_events,
         dtmf_and_hangup,
         helpers,
         audio_stream_commands,
@@ -377,6 +379,26 @@ play_and_get_digits_full(_Config) ->
             file => <<"p.wav">>, result => full
         })
     ).
+
+%% subscribe/2 adds events with CUSTOM and its subclasses last, and
+%% refuses words that would break the command.
+%% req: ESL-34
+subscribe_events(_Config) ->
+    {Call, _Fake} = outbound(#{}),
+    ok = chappe_esl_call:subscribe(Call, [
+        {custom, <<"a::b">>}, 'PLAYBACK_START', <<"DETECTED_TONE">>
+    ]),
+    ?assertEqual(
+        <<"event plain PLAYBACK_START DETECTED_TONE CUSTOM a::b">>,
+        block_with(<<"event plain">>)
+    ),
+    ok = chappe_esl_call:subscribe(Call, []),
+    [
+        ?assertEqual(
+            {error, {bad_option, events}}, chappe_esl_call:subscribe(Call, E)
+        )
+     || E <- [[<<"A B">>], [{custom, <<"x\ny">>}], [<<"CUSTOM">>], [<<>>], [1]]
+    ].
 
 %% offset seeks with File@@Samples; limit_secs sets playback_timeout_sec
 %% around the playback and clears it after; bad values are refused before
