@@ -222,7 +222,10 @@ compile(Opts) ->
             _ ->
                 erlang:error({badarg, rate})
         end,
-    UA = [{<<"user-agent">>, user_agent, patterns(user_agents, list(user_agents, Opts))}],
+    UA = [
+        {<<"user-agent">>, user_agent,
+            patterns(user_agents, list(user_agents, Opts))}
+    ],
     Hdrs = [
         header_rule(H)
      || H <- list(headers, Opts)
@@ -273,7 +276,9 @@ patterns(Key, Ps) ->
 header_denied(#{headers := Rules}, Req) ->
     Hit = fun({Name, _Why, Res}) ->
         lists:any(
-            fun(V) -> lists:any(fun(Re) -> re:run(V, Re) =/= nomatch end, Res) end,
+            fun(V) ->
+                lists:any(fun(Re) -> re:run(V, Re) =/= nomatch end, Res)
+            end,
             chappe_sip_req:get_all(Name, Req)
         )
     end,

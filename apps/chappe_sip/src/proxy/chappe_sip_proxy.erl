@@ -371,7 +371,9 @@ recurse(#px{follow = Follow} = P, Status, Raw, Depth) when
                     tried => P#px.tried,
                     added => P#px.added,
                     closed => P#px.closed,
-                    sips => chappe_sip_uri:is_sips(chappe_sip_msg:uri(P#px.msg)),
+                    sips => chappe_sip_uri:is_sips(
+                        chappe_sip_msg:uri(P#px.msg)
+                    ),
                     depth => Depth
                 },
                 Raw,

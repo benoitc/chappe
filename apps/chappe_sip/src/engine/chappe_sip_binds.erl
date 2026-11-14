@@ -197,7 +197,9 @@ is_bind(_) -> false.
 %% local address to hand out.
 nat_bind(Uri, M) ->
     Public = maps:get(public, M, undefined),
-    case {Public, chappe_sip_uri:parse(Uri), nets(maps:get(local_nets, M, []))} of
+    case
+        {Public, chappe_sip_uri:parse(Uri), nets(maps:get(local_nets, M, []))}
+    of
         {_, _, error} ->
             {error, bad_local_nets};
         {undefined, {ok, _}, {ok, []}} ->
@@ -232,8 +234,15 @@ public_uri(Uri, #{scheme := Scheme} = U, Public, Local) ->
             {At, _} -> binary:part(Uri, At, byte_size(Uri) - At);
             nomatch -> <<>>
         end,
-    <<(atom_to_binary(Scheme))/binary, ":", Public/binary, Port/binary,
-        Params/binary, ";maddr=", Local/binary>>.
+    <<
+        (atom_to_binary(Scheme))/binary,
+        ":",
+        Public/binary,
+        Port/binary,
+        Params/binary,
+        ";maddr=",
+        Local/binary
+    >>.
 
 nets(L) when is_list(L) ->
     Parsed = [chappe_sip_net:cidr(C) || C <- L],
