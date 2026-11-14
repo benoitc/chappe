@@ -163,6 +163,9 @@ record(Config, Mode) ->
     %% and the call itself carries both ways, each party hearing the other
     AAnswer = got(a_answer_sdp),
     ct:log("A's answer:~n~s~nB's offer:~n~s", [AAnswer, BOffer]),
+    %% the caller is answered in its own profile, with a key of rtpengine's
+    ?assertEqual(Mode, profile(AAnswer)),
+    ?assertEqual(Mode =:= srtp, binary:match(AAnswer, <<"a=crypto:">>) =/= nomatch),
     ?assertEqual([LB], heard(MA, receiver(profile(AAnswer), AAnswer)) -- [0]),
     ?assertEqual([LA], heard(MB, receiver(profile(BOffer), BOffer)) -- [0]),
     ok = chappe_sip_siprec:stop(Rec),
@@ -187,13 +190,9 @@ sdp(Ip, Port, srtp, Key) ->
       "a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:",
       (chappe_sip_test_srtp:inline(Key))/binary, "\r\n">>.
 
-%% an SRTP call keeps SRTP on both legs (the anchor writes RTP/AVP toward
-%% a SIP leg unless told otherwise)
-b2b_opts(plain) ->
-    #{media => anchor};
-b2b_opts(srtp) ->
-    Savp = #{transport_protocol => <<"RTP/SAVP">>},
-    #{media => anchor, anchor_params => #{a => Savp, b => Savp}}.
+%% the anchor as it is: an SRTP caller is answered SRTP by itself
+b2b_opts(_Mode) ->
+    #{media => anchor}.
 
 %% plain or srtp, as an SDP's first m-line says
 profile(Sdp) ->

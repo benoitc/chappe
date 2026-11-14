@@ -32,7 +32,7 @@
          demo_store_writes_wav/1]).
 -export([server_latches_to_client/1, server_takes_srtp/1,
          server_refuses_srtp_it_cannot_take/1, server_srtp_rekey/1,
-         server_srtp_flood/1, server_srtp_lifetime/1, log/2,
+         server_srtp_flood/1, server_srtp_lifetime/1, anchor_keeps_srtp_caller/1, log/2,
          srtp_call_tapped_as_srtp/1, tls_call_needs_tls_srs/1]).
 -export([too_many_at_once/1, srs_reinvite_more_streams/1]).
 
@@ -50,6 +50,7 @@ all() ->
      room_ends_recording, recording_over_tls, demo_store_writes_wav,
      server_latches_to_client, server_takes_srtp,
      server_refuses_srtp_it_cannot_take, server_srtp_rekey, server_srtp_flood, server_srtp_lifetime,
+     anchor_keeps_srtp_caller,
      srtp_call_tapped_as_srtp,
      tls_call_needs_tls_srs, too_many_at_once, srs_reinvite_more_streams].
 
@@ -1088,6 +1089,22 @@ crypto_line(TagSuite, Master) ->
 %% how ~p prints the first octets of a binary
 octets(<<A, B, C, D, _/binary>>) ->
     iolist_to_binary(io_lib:format("~b,~b,~b,~b", [A, B, C, D])).
+
+%% The anchor keeps each leg's profile: an SRTP caller (RTP/SAVP) is
+%% answered RTP/SAVP, never downgraded to RTP/AVP, while the offer to a
+%% callee nobody heard from yet stays RTP/AVP; a plain caller stays plain.
+anchor_keeps_srtp_caller(_Config) ->
+    Proto = fun(Cmds, Name) ->
+                [maps:get(<<"transport-protocol">>, C, none)
+                 || {rtpe_cmd, #{<<"command">> := N} = C} <- Cmds, N =:= Name]
+            end,
+    _ = call(#{media => anchor, savp => true}),
+    Cmds = drain(),
+    ?assertEqual([<<"RTP/AVP">>], Proto(Cmds, <<"offer">>)),
+    ?assertEqual([<<"RTP/SAVP">>], Proto(Cmds, <<"answer">>)),
+    _ = call(#{media => anchor}),
+    Plain = drain(),
+    ?assertEqual([<<"RTP/AVP">>], Proto(Plain, <<"answer">>)).
 
 %% RFC 7866 12, 12.2: a call with an SRTP leg is recorded as SRTP: every
 %% tap, the plain party's too, is asked of rtpengine as RTP/SAVP (with its

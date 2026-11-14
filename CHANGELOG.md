@@ -7,6 +7,11 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 
 ## Unreleased
 
+- B2BUA: an anchored call no longer strips encryption from a caller that
+  offers encrypted media (SRTP with keys in the SDP). Before, the caller was
+  answered with plain media unless your app asked otherwise; now each leg is
+  answered in the media profile it used itself, encrypted or not, and your
+  app can still choose another.
 - SIPREC: chappe's recording server now takes encrypted media (SRTP with
   keys in the SDP), as the SIPREC standard requires, and decrypts it itself.
   Before, it refused every encrypted stream, so a recording client that
