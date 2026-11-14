@@ -163,6 +163,46 @@ refused_test() ->
     {ok, _} = ?M:parse(Odd),
     ?assert(erlang:system_info(atom_count) - Before < 50).
 
+%% a billion laughs in UTF-16 with a BOM: the DTD bytes are not ASCII, so a
+%% byte match misses them; the document is refused, fast and unexpanded
+utf16_billion_laughs_test_() ->
+    {timeout, 5, fun() ->
+        %% three levels, the most xmerl's recursion limit lets through,
+        %% each 2000 wide: 8e9 characters from 36 KiB
+        W = 2000,
+        Doc = iolist_to_binary([
+            <<"<?xml version=\"1.0\" encoding=\"UTF-16\"?><!DOCTYPE r [">>,
+            <<"<!ENTITY a \"">>, binary:copy(<<"a">>, W), <<"\">">>,
+            <<"<!ENTITY b \"">>, binary:copy(<<"&a;">>, W), <<"\">">>,
+            <<"<!ENTITY c \"">>, binary:copy(<<"&b;">>, W), <<"\">">>,
+            <<"]><recording xmlns='urn:ietf:params:xml:ns:recording:1'>">>,
+            <<"<datamode>&c;</datamode></recording>">>
+        ]),
+        Be = <<16#FE, 16#FF,
+               (unicode:characters_to_binary(Doc, utf8, {utf16, big}))/binary>>,
+        Le = <<16#FF, 16#FE,
+               (unicode:characters_to_binary(Doc, utf8, {utf16, little}))/binary>>,
+        NoBom = unicode:characters_to_binary(Doc, utf8, {utf16, big}),
+        ?assert(byte_size(Be) < 65536),
+        {T, Rs} = timer:tc(fun() -> [?M:parse(B) || B <- [Be, Le, NoBom]] end),
+        [?assertEqual({error, encoding}, R) || R <- Rs],
+        ?assert(T < 1000000)
+    end}.
+
+%% UTF-8 only (RFC 7865 9 uses it): another encoding is refused, a UTF-8
+%% document with a BOM is read
+encoding_test() ->
+    Xml = <<"<recording xmlns='urn:ietf:params:xml:ns:recording:1'>"
+            "<datamode>partial</datamode></recording>">>,
+    ?assertMatch({ok, #{datamode := partial}},
+                 ?M:parse(<<16#EF, 16#BB, 16#BF, Xml/binary>>)),
+    ?assertEqual({error, encoding}, ?M:parse(<<"<r>", 16#FF, "</r>">>)),
+    ?assertEqual({error, encoding},
+                 ?M:parse(unicode:characters_to_binary(Xml, utf8, {utf16, big}))),
+    ?assertEqual({error, encoding},
+                 ?M:parse(<<"<?xml version='1.0' encoding='ISO-8859-1'?>",
+                            Xml/binary>>)).
+
 %% ---- multipart/mixed (RFC 2046 5.1), the SDP and metadata of RFC 7866 9.1 ----
 
 multipart_round_trip_test() ->
