@@ -8,11 +8,32 @@
 
 -include("chappe_sip.hrl").
 
--export([get/1]).
+-export([get/1, t1/0, set_t1/1, t64/0]).
+
+-define(T1, {?MODULE, t1}).
 
 -spec get(atom()) -> term().
 get(Key) ->
     application:get_env(chappe_sip, Key, default(Key)).
+
+%% T1 (RFC 3261 17.1.1.1, ms) as the stack runs with it: the sip_timers
+%% option of chappe_sip:start/1, else 500. The engine sets it on start.
+-spec t1() -> pos_integer().
+t1() ->
+    persistent_term:get(?T1, 500).
+
+-spec set_t1(pos_integer()) -> ok.
+set_t1(T1) when is_integer(T1), T1 > 0 ->
+    case persistent_term:get(?T1, undefined) of
+        T1 -> ok;
+        _ -> persistent_term:put(?T1, T1)
+    end.
+
+%% 64*T1: Timers B, F, H, J and M of RFC 3261 and RFC 6026 7.2, for the
+%% ones kept in Erlang.
+-spec t64() -> pos_integer().
+t64() ->
+    64 * t1().
 
 %% Engine backend: chappe_sip_nif in production, chappe_sip_engine_fake in tests.
 default(engine_mod) -> chappe_sip_nif;
@@ -46,9 +67,10 @@ default(ws_client_txn_timeout_ms) -> 64000;
 %% Timer C (RFC 3261 16.6): how long a WS client INVITE transaction waits
 %% for a final after a provisional; each provisional restarts it.
 default(ws_timer_c_ms) -> 180000;
-%% Timer H (64*T1): how long a WS INVITE server transaction waits for the
-%% ACK of its final (a 2xx is then BYEd, RFC 3261 13.3.1.4).
-default(ws_ack_timeout_ms) -> 32000;
+%% Timer H (64*T1, of the stack's T1 unless set): how long a WS INVITE
+%% server transaction waits for the ACK of its final (a 2xx is then BYEd,
+%% RFC 3261 13.3.1.4).
+default(ws_ack_timeout_ms) -> t64();
 %% A WS server transaction the app never answers is answered 408 (INVITE)
 %% or 500 after this.
 default(ws_server_txn_timeout_ms) -> 180000;
@@ -105,9 +127,9 @@ default(record_route_ttl_s) -> 86400;
 %% may ring, reset by every provisional. On expiry the branch is cancelled
 %% and counts as a 408. The RFC wants more than 3 minutes; 185 s is nta's.
 default(timer_c_ms) -> 185000;
-%% RFC 6026: after the first 2xx a proxy keeps forwarding new 2xx (other
-%% forks) for 64*T1.
-default(proxy_accepted_ms) -> 32000;
+%% RFC 6026 7.2: after the first 2xx a proxy keeps forwarding new 2xx
+%% (other forks) for Timer M, 64*T1 of the stack's T1 unless set.
+default(proxy_accepted_ms) -> t64();
 %% Media control-plane backends (chappe_sip_media), read when
 %% chappe_sip:start/1 gets no `media' option. Empty disables media entirely;
 %% nothing in chappe_rtpengine/chappe_mix is started. Shape:

@@ -17,6 +17,13 @@
 %% while its queue holds max_queue messages (default 500); the store's
 %% writer has its own bound (its write/2 says dropped). RTP of another
 %% payload type, RTCP and anything that does not parse is dropped.
+%%
+%% Source: RTP is taken from the recording client only. The stream latches
+%% to the first source at the address the client's SDP gave for it (any
+%% port, as a NAT may change it; the client sends from where it receives,
+%% RFC 4961), and drops every other source from then on. A stream whose SDP
+%% gives no usable address, or started with remote => undefined, latches
+%% to the first source.
 -module(chappe_sip_siprec_rtp).
 -behaviour(gen_server).
 
@@ -31,6 +38,9 @@
     sink :: {store, module(), term()} | {pid, pid()},
     max_queue :: pos_integer(),
     label :: binary(),
+    %% the client's address as its SDP gave it, and the source latched
+    remote :: {inet:ip_address(), inet:port_number()} | undefined,
+    latched :: {inet:ip_address(), inet:port_number()} | undefined,
     packets = 0 :: non_neg_integer()
 }).
 -type state() :: #state{}.
@@ -39,7 +49,8 @@
 
 %% Args: #{owner := pid(), ip := inet:ip_address(), label := binary(),
 %% sink := {store, Module, StoreMeta} | {pid, pid()}, max_queue =>
-%% pos_integer()}.
+%% pos_integer(), remote => {inet:ip_address(), inet:port_number()} |
+%% undefined}.
 -spec start(map()) -> {ok, pid()} | {error, term()}.
 start(Args) ->
     supervisor:start_child(chappe_sip_siprec_rtp_sup, [Args]).
@@ -75,7 +86,8 @@ init(#{owner := Owner, ip := Ip, label := Label, sink := Sink0} = Args) ->
                         owner_mon = erlang:monitor(process, Owner),
                         sink = Sink,
                         max_queue = maps:get(max_queue, Args, 500),
-                        label = Label
+                        label = Label,
+                        remote = maps:get(remote, Args, undefined)
                     }};
                 {error, Why} ->
                     gen_udp:close(Sock),
@@ -104,8 +116,11 @@ handle_call(stop, _From, S) ->
 handle_cast(_Msg, S) ->
     {noreply, S}.
 
-handle_info({udp, Sock, _Ip, _Port, Packet}, #state{sock = Sock} = S) ->
-    {noreply, packet(Packet, S)};
+handle_info({udp, Sock, Ip, Port, Packet}, #state{sock = Sock} = S) ->
+    case source(Ip, Port, S) of
+        {ok, S1} -> {noreply, packet(Packet, S1)};
+        drop -> {noreply, S}
+    end;
 handle_info({udp_passive, Sock}, #state{sock = Sock} = S) ->
     ok = inet:setopts(Sock, [{active, ?ACTIVE}]),
     {noreply, S};
@@ -117,6 +132,18 @@ handle_info(_Msg, S) ->
 
 terminate(_Why, #state{sock = Sock}) ->
     gen_udp:close(Sock).
+
+%% the latched source; before it, the first one from the client's address
+source(Ip, Port, #state{latched = {Ip, Port}} = S) ->
+    {ok, S};
+source(_Ip, _Port, #state{latched = {_, _}}) ->
+    drop;
+source(Ip, Port, #state{remote = {Ip, _}} = S) ->
+    {ok, S#state{latched = {Ip, Port}}};
+source(Ip, Port, #state{remote = undefined} = S) ->
+    {ok, S#state{latched = {Ip, Port}}};
+source(_Ip, _Port, _S) ->
+    drop.
 
 close_sink(#state{sink = {store, Mod, Rec}, packets = N}) ->
     Mod:close(Rec, #{packets => N});

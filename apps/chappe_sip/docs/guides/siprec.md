@@ -140,6 +140,35 @@ receive
 end.
 ```
 
+## Keep the recording as secure as the call
+
+RFC 7866 12 asks the recording session to be at least as secure as the
+call. You get that by default:
+
+- A call with a leg over TLS is recorded only to a `sips:` (or
+  `;transport=tls`) recording server. A plain one is refused before any
+  INVITE leaves:
+
+```erlang
+{error, {insecure_srs, tls}} =
+    chappe_sip_siprec:start(B2b, <<"sip:srs@10.0.0.30">>, #{}),
+{ok, Rec} = chappe_sip_siprec:start(B2b, <<"sips:srs@10.0.0.30">>, #{}).
+```
+
+- A call with an SRTP leg has every tap offered as `RTP/SAVP`, with keys
+  rtpengine makes for the recording (not the call's). A recording server
+  without SRTP refuses the streams and the recording stops.
+
+When the recording server sits on a network you trust, lift both with
+`allow_downgrade => true`.
+
+As the recording server, each stream takes RTP only from the address the
+client's SDP gives for it, latched to the first source there; give
+`rtp_source => learn` for a client behind a NAT that writes its private
+address. The receivers hold no SRTP keys: an `RTP/SAVP` stream is answered
+with port 0, and an offer with nothing else is refused 488. To record an
+SRTP client, put an rtpengine in front that decrypts it.
+
 ## Run it from another node
 
 The recording runs on the node that holds the call; `start/3` can be
@@ -160,7 +189,8 @@ called from any node with the call's `b2b` handle (from
 - One call has at most `siprec_max_per_call` recordings (2); one more is
   `{error, too_many}`.
 - A recording that crashes sends no event: monitor `Rec`. Its RS dialog
-  sends the BYE, and the call goes on.
+  sends the BYE, the call's media session removes its rtpengine taps, and
+  the call goes on.
 - RFC 7866 6.1.2 asks the SRC to tell the parties they are recorded.
   chappe sends no `a=record`: play a prompt (chappe_mrf, rtpengine play) or
   rely on an agreement.

@@ -7,7 +7,7 @@
 %% (16.6 step 2, RFC 5630 5.3).
 -module(chappe_sip_proxy_rules).
 
--export([best_response/1, loop_hash/1, looped/1, new_branch/1]).
+-export([best_response/1, loop_hash/1, looped/1, new_branch/1, own_hops/1]).
 -export([retarget/2, is_own_address/1, is_loose/1]).
 -export([record_routes/1, rr_contact/2, next_hop/3]).
 
@@ -149,6 +149,22 @@ looped(Msg) ->
         end,
         vias(Msg)
     ).
+
+%% How many times the request already went through this proxy: the Vias
+%% of ours (our address, our branch) it carries. A spiral or a redirect
+%% to one of our own URIs brings it back with one more.
+-spec own_hops(chappe_sip_msg:msg()) -> non_neg_integer().
+own_hops(Msg) ->
+    Own = own_addresses(),
+    length([
+        V
+     || V <- vias(Msg),
+        {ok, #{host := H, params := #{<<"branch">> := B}} = Via} <- [
+            chappe_sip_hdr:via(V)
+        ],
+        branch_hash(B) =/= undefined,
+        lists:member({H, maps:get(port, Via, 5060)}, Own)
+    ]).
 
 vias(Msg) ->
     lists:append([

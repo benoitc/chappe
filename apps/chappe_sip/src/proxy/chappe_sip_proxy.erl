@@ -85,7 +85,10 @@
     %% 3xx Contacts added so far, and the depth of those not launched yet
     tried = [] :: [binary()],
     added = 0 :: non_neg_integer(),
-    depths = #{} :: #{dest() => pos_integer()}
+    depths = #{} :: #{dest() => pos_integer()},
+    %% the hops the request made through this proxy before (its Vias of
+    %% ours): the depth the app's targets start at
+    hops = 0 :: non_neg_integer()
 }).
 
 -spec proxy_request(chappe_sip_req:req(), dest() | [dest()], map()) ->
@@ -154,7 +157,8 @@ forward(Req, Msg, Dests, Opts) ->
                 prov_timeout = maps:get(provisional_timeout, Opts, undefined),
                 final_timeout = maps:get(final_timeout, Opts, undefined),
                 follow = chappe_sip_proxy_redirect:follow(Opts),
-                tried = [U || U <- Dests, is_binary(U)]
+                tried = [U || U <- Dests, is_binary(U)],
+                hops = chappe_sip_proxy_rules:own_hops(Msg)
             },
             start(P, Dests);
         {error, {media, _} = MErr} ->
@@ -279,7 +283,7 @@ expire_branch(P, TxnH, #br{provisional = true, expired = false} = B, Now) ->
         pending = (P#px.pending)#{
             TxnH => B#br{
                 expired = true,
-                timer_c = Now + 32000,
+                timer_c = Now + chappe_sip_config:t64(),
                 prov_by = undefined,
                 final_by = undefined
             }
@@ -375,7 +379,8 @@ recurse(#px{follow = Follow} = P, Status, Raw, Depth) when
                     sips => chappe_sip_uri:is_sips(
                         chappe_sip_msg:uri(P#px.msg)
                     ),
-                    depth => Depth
+                    depth => Depth,
+                    hops => P#px.hops
                 },
                 Raw,
                 M
@@ -489,7 +494,7 @@ launch(#px{msg = Msg} = P, Dest) ->
             B = #br{
                 dest = Dest,
                 local = OutLocal,
-                depth = maps:get(Dest, P#px.depths, 0)
+                depth = maps:get(Dest, P#px.depths, P#px.hops)
             },
             send_branch(P1, B, Route, M3);
         {error, _} ->

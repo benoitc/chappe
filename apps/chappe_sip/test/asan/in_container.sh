@@ -2,13 +2,15 @@
 # Copyright 2026 Benoit Chesneau
 # SPDX-License-Identifier: Apache-2.0
 #
-# The container side of test/asan/run.sh: runs in /work (a copy of
-# apps/chappe_sip) with MODE, SUITES, DETECT_LEAKS and FUZZ_* set, and writes
-# its reports under /out.
+# The container side of test/asan/run.sh: runs in /work (a copy of the
+# umbrella) with MODE, SUITES, DETECT_LEAKS and FUZZ_* set, and writes its
+# reports under /out. rebar3 runs at the umbrella root, the C tools in
+# apps/chappe_sip.
 set -euo pipefail
 
 cd /work
-supp=/work/test/asan
+app=/work/apps/chappe_sip
+supp=$app/test/asan
 arch=$(uname -m)
 
 # Build both profiles with the NIF sanitized, then keep ct from relinking
@@ -27,13 +29,22 @@ build_nif() {
 # ASan + UBSan, every UBSan check fatal at compile time
 # (-fno-sanitize-recover) and at run time (halt_on_error). gcc links
 # libubsan as a dependency of the NIF; libasan must come first, hence the
-# preload.
+# preload. +Mea min turns the BEAM's own allocators off, so what the NIF
+# takes with enif_alloc comes from malloc and ASan sees a use after
+# enif_free or an overflow of it.
 run_asan_suites() {
     build_nif address,undefined -fno-sanitize-recover=undefined
     export LSAN_OPTIONS=suppressions=$supp/lsan.supp
     export ASAN_OPTIONS=detect_leaks=$DETECT_LEAKS:abort_on_error=1:halt_on_error=1
     export UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
-    LD_PRELOAD=$(gcc -print-file-name=libasan.so) rebar3 ct --suite "$1"
+    local start=$SECONDS rc=0
+    # the suites that start peer nodes need epmd; started here, outside
+    # the preload, as the BEAM would otherwise start it under libasan
+    epmd -daemon
+    ERL_FLAGS="+Mea min" LD_PRELOAD=$(gcc -print-file-name=libasan.so) \
+        rebar3 ct --suite "$1" || rc=$?
+    echo "==> asan: ct exit $rc in $((SECONDS - start)) s"
+    return $rc
 }
 
 # TSan with clang: gcc 14's libtsan crashes any non-instrumented program it
@@ -56,7 +67,7 @@ log_path=/out/tsan exitcode=66"
     # ct_run straight from erl, not rebar3: rebar3 forks git and the like at
     # startup, and the BEAM hangs in that fork under TSan
     local suites
-    suites=$(printf '%s' "$1" | sed -e 's|test/||g')
+    suites=$(printf '%s' "$1" | sed -e 's|apps/chappe_sip/test/||g')
     set +e
     LD_PRELOAD=$(clang-19 -print-file-name="libclang_rt.tsan-$arch.so") \
         setarch "$arch" -R erl -noshell -pa /work/_build/test/lib/*/ebin \
@@ -80,22 +91,23 @@ log_path=/out/tsan exitcode=66"
 
 lint_c() {
     unset ENGINE_SANITIZE
+    cd "$app"
     c_src/build.sh
-    local erts sofia_inc src=/work/c_src/chappe_sip_engine_nif.c
+    local erts sofia_inc src=$app/c_src/chappe_sip_engine_nif.c
     erts=$(erl -noshell -eval \
         'io:format("~ts/erts-~ts/include", [code:root_dir(), erlang:system_info(version)]), halt().')
-    sofia_inc=$(ls -d /work/c_src/build/dist/include/sofia-sip-* | head -1)
+    sofia_inc=$(ls -d "$app"/c_src/build/dist/include/sofia-sip-* | head -1)
     # the shim's own flags (build.sh), as a compilation database
     local flags=(-std=gnu17 -O2 -fPIC -Wall -Wextra "-I$erts" "-I$sofia_inc")
     {
-        printf '[{"directory":"/work/c_src","file":"%s","arguments":["cc"' "$src"
+        printf '[{"directory":"%s/c_src","file":"%s","arguments":["cc"' "$app" "$src"
         for f in "${flags[@]}" -c "$src"; do printf ',"%s"' "$f"; done
         printf ']}]\n'
-    } >/work/c_src/build/compile_commands.json
-    cp /work/c_src/build/compile_commands.json /out/
+    } >"$app"/c_src/build/compile_commands.json
+    cp "$app"/c_src/build/compile_commands.json /out/
     local rc=0
     echo "==> clang-tidy (c_src/.clang-tidy)"
-    clang-tidy-19 -p /work/c_src/build --quiet "$src" \
+    clang-tidy-19 -p "$app"/c_src/build --quiet "$src" \
         >/out/clang-tidy.txt 2>&1 || rc=1
     cat /out/clang-tidy.txt
     echo "==> gcc -fanalyzer"
@@ -112,8 +124,8 @@ lint_c() {
 fuzz() {
     local rc=0
     unset ENGINE_SANITIZE
-    c_src/fuzz/build.sh
-    c_src/fuzz/run.sh "$FUZZ_TIME" /out || rc=1
+    "$app"/c_src/fuzz/build.sh
+    "$app"/c_src/fuzz/run.sh "$FUZZ_TIME" /out || rc=1
     if [ -n "$SUITES" ]; then
         export FUZZ=1
         run_asan_suites "$SUITES" || rc=1
