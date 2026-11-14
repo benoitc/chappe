@@ -410,7 +410,8 @@ remove(Target, #state{members = M} = S) ->
 same_uri(A, B) when is_binary(A), is_binary(B) ->
     case {chappe_sip_uri:parse(A), chappe_sip_uri:parse(B)} of
         {{ok, UA}, {ok, UB}} ->
-            maps:with([user, host, port], UA) =:= maps:with([user, host, port], UB);
+            maps:with([user, host, port], UA) =:=
+                maps:with([user, host, port], UB);
         _ ->
             A =:= B
     end;
