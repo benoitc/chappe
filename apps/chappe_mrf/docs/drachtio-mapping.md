@@ -30,9 +30,12 @@ chappe equivalents. Use it when you port a drachtio app.
 | `ep.record(file, opts)` | `chappe_mrf:record(Ep, Path, Opts)` |
 | `ep.recordSession` | `chappe_mrf:record_session/2`, `record_session_stop/2` |
 | `ep.forkAudioStart(opts)` | `chappe_mrf:fork_audio_start(Ep, Url, Opts)` |
-| `ep.set(var, val)` | `chappe_mrf:set(Ep, Var, Val)` |
+| `ep.set(var, val)`, `ep.set(obj)` | `chappe_mrf:set(Ep, Var, Val)`, `set(Ep, Map)` |
+| `ep.export(var, val)` | `chappe_mrf:export(Ep, Var, Val)` |
+| `ep.getChannelVariables()` | `chappe_mrf:vars(Ep)`, `var(Ep, Name)` |
+| `ep.mute()`, `ep.unmute()` | `chappe_mrf:mute(Ep, read)`, `unmute(Ep, read)` |
 | `ep.api(cmd)` | `chappe_mrf:api(Ep, Cmd)` |
-| `ep.execute(app, args)` | `chappe_mrf:execute(Ep, App, Args)` |
+| `ep.execute(app, args)` | `chappe_mrf:execute(Ep, App, Args)`; `execute/4` with `wait => false` |
 | `ep.modify(sdp)` | `chappe_mrf:modify(Ep, Sdp | hold | unhold)` |
 | `ep.bridge(other)` | `chappe_mrf:bridge(B2b, Ep | Uri)` |
 | `ep.destroy()` | `chappe_mrf:destroy(Ep)` |

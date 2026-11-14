@@ -11,6 +11,8 @@
 %%   {dtmf, Digit}       a DTMF digit from the channel
 %%   {hangup, Cause}     the channel hung up (or its socket closed)
 %%   {node_down, Node}   the FreeSWITCH node went down
+%%   {complete, App, Ev} an application nobody waited for ended (one
+%%                       run with wait => false, or the dialplan's)
 %%
 %% and, when the owner asked with events => [...] at start (the call
 %% subscribes to them on the channel's socket):
@@ -272,6 +274,7 @@ call_msg({event, Ev}, Data) ->
     _ = [notify(Data, E) || E <- owner_events(Name, Ev, Data#state.events)],
     keep_state_and_data;
 call_msg({complete, App, Ev}, Data) ->
+    notify(Data, {complete, App, Ev}),
     tell(Data, {complete, App, Ev}),
     keep_state_and_data.
 

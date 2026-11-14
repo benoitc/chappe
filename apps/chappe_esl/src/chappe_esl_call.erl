@@ -50,6 +50,7 @@
 -export([answer/1, playback/2, playback/3, play_and_get_digits/2]).
 -export([record/3, record_session/2, record_session_stop/2]).
 -export([send_dtmf/2, set/3, export/3, hangup/1, hangup/2]).
+-export([multiset/2, getvar/2, dump/1, mute/2, unmute/2]).
 -export([conference/2, conference/3, audio_fork_start/3, audio_fork_stop/1]).
 %% gen_server.
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
@@ -394,6 +395,123 @@ set(Call, Var, Value) ->
 -spec export(call(), iodata(), iodata()) -> ok | {error, term()}.
 export(Call, Var, Value) ->
     done(exec(Call, <<"export">>, [Var, $=, Value])).
+
+%% Set several variables at once (multiset). Names are words without `=';
+%% the values are split on a delimiter none of them contains. At most 256
+%% variables, as multiset takes.
+-spec multiset(call(), #{iodata() => iodata()}) -> ok | {error, term()}.
+multiset(_Call, Vars) when map_size(Vars) =:= 0 ->
+    ok;
+multiset(Call, Vars) when is_map(Vars), map_size(Vars) =< 256 ->
+    Pairs = [{to_bin(K), to_bin(V)} || K := V <- Vars],
+    case lists:all(fun valid_var/1, Pairs) andalso delimiter(Pairs) of
+        false ->
+            {error, {bad_option, vars}};
+        none ->
+            {error, {bad_option, vars}};
+        Delim ->
+            Arg = [
+                <<"^^">>,
+                Delim,
+                lists:join(Delim, [[K, $=, V] || {K, V} <- lists:sort(Pairs)])
+            ],
+            done(exec(Call, <<"multiset">>, Arg))
+    end;
+multiset(_Call, _Vars) ->
+    {error, {bad_option, vars}}.
+
+valid_var({K, V}) ->
+    event_word(K) andalso binary:match(K, <<"=">>) =:= nomatch andalso
+        binary:match(V, [<<"\n">>, <<"\r">>]) =:= nomatch.
+
+delimiter(Pairs) ->
+    Used = iolist_to_binary([[K, V] || {K, V} <- Pairs]),
+    case
+        [
+            D
+         || D <- [<<"|">>, <<"~">>, <<"^">>, <<";">>, <<"#">>, <<"!">>],
+            binary:match(Used, D) =:= nomatch
+        ]
+    of
+        [D | _] -> D;
+        [] -> none
+    end.
+
+%% A channel variable (uuid_getvar): undefined when it is not set.
+-spec getvar(call(), iodata()) -> {ok, binary() | undefined} | {error, term()}.
+getvar(Call, Var) ->
+    case event_word(to_bin(Var)) of
+        true ->
+            case
+                with_uuid(Call, fun(U) ->
+                    api(Call, [<<"uuid_getvar ">>, U, $\s, Var])
+                end)
+            of
+                {ok, <<"_undef_">>} -> {ok, undefined};
+                {ok, Value} -> {ok, Value};
+                Error -> Error
+            end;
+        false ->
+            {error, {bad_option, var}}
+    end.
+
+%% Every variable of the channel (uuid_dump json), without the variable_
+%% prefix FreeSWITCH puts on them.
+-spec dump(call()) -> {ok, #{binary() => binary()}} | {error, term()}.
+dump(Call) ->
+    case
+        with_uuid(Call, fun(U) ->
+            api(Call, [<<"uuid_dump ">>, U, <<" json">>])
+        end)
+    of
+        {ok, Json} ->
+            try json:decode(Json) of
+                #{} = M ->
+                    {ok,
+                        #{
+                            K => to_bin(V)
+                         || <<"variable_", K/binary>> := V <- M, is_binary(V)
+                        }};
+                _ ->
+                    {error, {bad_reply, Json}}
+            catch
+                error:_ -> {error, {bad_reply, Json}}
+            end;
+        Error ->
+            Error
+    end.
+
+%% Mute what the channel reads (the caller's audio) or writes (what the
+%% caller hears), with uuid_audio; unmute/2 takes it back.
+-spec mute(call(), read | write) -> ok | {error, term()}.
+mute(Call, Dir) ->
+    audio(Call, Dir, <<"1">>).
+
+-spec unmute(call(), read | write) -> ok | {error, term()}.
+unmute(Call, Dir) ->
+    audio(Call, Dir, <<"0">>).
+
+audio(Call, Dir, Level) when Dir =:= read; Dir =:= write ->
+    with_uuid(Call, fun(U) ->
+        ok(
+            api(Call, [
+                <<"uuid_audio ">>,
+                U,
+                <<" start ">>,
+                atom_to_binary(Dir),
+                <<" mute ">>,
+                Level
+            ])
+        )
+    end);
+audio(_Call, _Dir, _Level) ->
+    {error, {bad_option, direction}}.
+
+with_uuid(Call, Fun) ->
+    case call(Call, uuid) of
+        Uuid when is_binary(Uuid) -> Fun(Uuid);
+        Error -> Error
+    end.
 
 -spec hangup(call()) -> ok | {error, term()}.
 hangup(Call) ->

@@ -26,6 +26,7 @@
     play_and_get_digits_full/1,
     playback_options/1,
     subscribe_events/1,
+    variables_and_audio/1,
     dtmf_and_hangup/1,
     helpers/1,
     audio_stream_commands/1,
@@ -71,6 +72,7 @@ all() ->
         play_and_get_digits_full,
         playback_options,
         subscribe_events,
+        variables_and_audio,
         dtmf_and_hangup,
         helpers,
         audio_stream_commands,
@@ -378,6 +380,60 @@ play_and_get_digits_full(_Config) ->
         chappe_esl_call:play_and_get_digits(Call2, #{
             file => <<"p.wav">>, result => full
         })
+    ).
+
+%% multiset picks a delimiter no value contains; getvar and dump read the
+%% channel over api; mute and unmute use uuid_audio. Bad input is refused
+%% before anything is sent.
+%% req: ESL-37
+variables_and_audio(_Config) ->
+    Dump = <<"{\"Unique-ID\": \"fake-uuid-1\", \"variable_a\": \"1\", ",
+        "\"variable_b\": \"x|y\"}">>,
+    {Call, _Fake} = outbound(#{
+        api => #{
+            <<"uuid_getvar fake-uuid-1 a">> => <<"1">>,
+            <<"uuid_getvar fake-uuid-1 nope">> => <<"_undef_">>,
+            <<"uuid_dump fake-uuid-1 json">> => Dump
+        }
+    }),
+    ok = chappe_esl_call:multiset(Call, #{<<"a">> => <<"1">>, "b" => "x y"}),
+    expect_app(<<"multiset">>, <<"^^|a=1|b=x y">>),
+    ok = chappe_esl_call:multiset(Call, #{<<"b">> => <<"x|y">>}),
+    expect_app(<<"multiset">>, <<"^^~b=x|y">>),
+    ok = chappe_esl_call:multiset(Call, #{}),
+    [
+        ?assertEqual(
+            {error, {bad_option, vars}}, chappe_esl_call:multiset(Call, V)
+        )
+     || V <- [
+            #{<<"a=b">> => <<"1">>},
+            #{<<"a b">> => <<"1">>},
+            #{<<"a">> => <<"1\n2">>},
+            #{<<"a">> => <<"|~^;#!">>},
+            nope
+        ]
+    ],
+    ?assertEqual({ok, <<"1">>}, chappe_esl_call:getvar(Call, <<"a">>)),
+    ?assertEqual({ok, undefined}, chappe_esl_call:getvar(Call, "nope")),
+    ?assertEqual(
+        {error, {bad_option, var}}, chappe_esl_call:getvar(Call, <<"a b">>)
+    ),
+    ?assertEqual(
+        {ok, #{<<"a">> => <<"1">>, <<"b">> => <<"x|y">>}},
+        chappe_esl_call:dump(Call)
+    ),
+    ok = chappe_esl_call:mute(Call, read),
+    ?assertEqual(
+        <<"api uuid_audio fake-uuid-1 start read mute 1">>,
+        block_with(<<"uuid_audio">>)
+    ),
+    ok = chappe_esl_call:unmute(Call, write),
+    ?assertEqual(
+        <<"api uuid_audio fake-uuid-1 start write mute 0">>,
+        block_with(<<"uuid_audio">>)
+    ),
+    ?assertEqual(
+        {error, {bad_option, direction}}, chappe_esl_call:mute(Call, both)
     ).
 
 %% subscribe/2 adds events with CUSTOM and its subclasses last, and

@@ -115,9 +115,13 @@ end) go to the `notify` option, the handler by default.
 | function | what it does |
 |----------|--------------|
 | `send_dtmf/2` | send digits to the caller |
-| `set/3` | set a channel variable |
+| `set/3`, `set/2` | set a channel variable, or a map of them (multiset) |
+| `export/3` | set a variable on the channel and the channel it is bridged to |
+| `var/2`, `vars/1` | read one variable (`undefined` when unset), or all of them |
+| `mute/2`, `unmute/2` | mute what the caller says (`read`) or hears (`write`) |
 | `api/2` | run an api command on the endpoint's node |
 | `execute/3` | run any dialplan application and wait for it |
+| `execute/4` | the same with options; `wait => false` returns `{ok, AppUuid}` at once and the owner gets `{chappe_mrf, Ep, {complete, App, Ev}}` |
 | `fork_audio_start/3`, `fork_audio_stop/1` | stream the audio to a WebSocket (mod_audio_fork) |
 | `modify/2` | `hold`, `unhold`, or a new SDP on an endpoint of `create_endpoint/1` |
 | `destroy/1` | hang up and free the endpoint |

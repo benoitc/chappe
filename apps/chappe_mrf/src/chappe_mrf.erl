@@ -40,8 +40,9 @@
 -export([start/1, listen/1, stop_listener/0, install/0]).
 -export([connect_caller/3, create_endpoint/1, bridge/2, bridge/3]).
 -export([play/2, play/3, play_info/3, play_collect/2, record/3]).
--export([record_session/2, record_session_stop/2, send_dtmf/2, set/3]).
--export([api/2, execute/3, fork_audio_start/3, fork_audio_stop/1]).
+-export([record_session/2, record_session_stop/2, send_dtmf/2, set/3, set/2]).
+-export([api/2, execute/3, execute/4, fork_audio_start/3, fork_audio_stop/1]).
+-export([export/3, var/2, vars/1, mute/2, unmute/2]).
 -export([modify/2, destroy/1, uuid/1, node/1, info/1]).
 -export([conference/2, conferences/0, focus_subscribe/2]).
 -export([inactive_sdp/0, loop_target/1]).
@@ -422,6 +423,36 @@ send_dtmf(Ep, Digits) ->
 set(Ep, Var, Value) ->
     with_call(Ep, fun(C) -> chappe_esl_call:set(C, Var, Value) end).
 
+%% Set several channel variables at once (multiset).
+-spec set(endpoint(), #{iodata() => iodata()}) -> ok | {error, term()}.
+set(Ep, Vars) ->
+    with_call(Ep, fun(C) -> chappe_esl_call:multiset(C, Vars) end).
+
+%% Set a variable on the channel and on any channel it gets bridged to.
+-spec export(endpoint(), iodata(), iodata()) -> ok | {error, term()}.
+export(Ep, Var, Value) ->
+    with_call(Ep, fun(C) -> chappe_esl_call:export(C, Var, Value) end).
+
+%% One channel variable (uuid_getvar): undefined when it is not set.
+-spec var(endpoint(), iodata()) -> {ok, binary() | undefined} | {error, term()}.
+var(Ep, Name) ->
+    with_call(Ep, fun(C) -> chappe_esl_call:getvar(C, Name) end).
+
+%% Every channel variable (uuid_dump), by name without variable_.
+-spec vars(endpoint()) -> {ok, #{binary() => binary()}} | {error, term()}.
+vars(Ep) ->
+    with_call(Ep, fun chappe_esl_call:dump/1).
+
+%% Mute the caller toward the node (read) or the node toward the caller
+%% (write), with uuid_audio; unmute/2 undoes it.
+-spec mute(endpoint(), read | write) -> ok | {error, term()}.
+mute(Ep, Dir) ->
+    with_call(Ep, fun(C) -> chappe_esl_call:mute(C, Dir) end).
+
+-spec unmute(endpoint(), read | write) -> ok | {error, term()}.
+unmute(Ep, Dir) ->
+    with_call(Ep, fun(C) -> chappe_esl_call:unmute(C, Dir) end).
+
 %% An api command on the endpoint's node (over its socket).
 -spec api(endpoint(), iodata()) -> {ok, binary()} | {error, term()}.
 api(Ep, Cmd) ->
@@ -431,7 +462,15 @@ api(Ep, Cmd) ->
 -spec execute(endpoint(), iodata(), iodata()) ->
     {ok, chappe_esl_event:event()} | {error, term()}.
 execute(Ep, App, Args) ->
-    with_call(Ep, fun(C) -> chappe_esl_call:exec(C, App, Args) end).
+    execute(Ep, App, Args, #{}).
+
+%% Opts: chappe_esl_call:exec_opts(). With wait => false it returns
+%% {ok, AppUuid} once the node took the command, and the owner gets
+%% {chappe_mrf, Ep, {complete, App, Ev}} when it ends.
+-spec execute(endpoint(), iodata(), iodata(), chappe_esl_call:exec_opts()) ->
+    {ok, chappe_esl_event:event() | binary()} | {error, term()}.
+execute(Ep, App, Args, Opts) ->
+    with_call(Ep, fun(C) -> chappe_esl_call:exec(C, App, Args, Opts) end).
 
 %% Stream the channel's audio to a WebSocket (mod_audio_fork). Opts:
 %% mix (mono | mixed | stereo), rate, metadata.

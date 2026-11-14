@@ -24,6 +24,7 @@
     endpoint_commands/1,
     play_results/1,
     owner_events/1,
+    endpoint_more_commands/1,
     endpoint_call_notices/1,
     node_down/1,
     native_conference/1,
@@ -62,6 +63,7 @@ all() ->
         endpoint_commands,
         play_results,
         owner_events,
+        endpoint_more_commands,
         endpoint_call_notices,
         node_down,
         native_conference,
@@ -403,6 +405,32 @@ play_results(Config) ->
         {ok, #{digits => <<"1">>, terminator => <<>>, invalid => <<>>}},
         chappe_mrf:play_collect(Ep, #{file => <<"/p.wav">>, result => full})
     ),
+    ok = chappe_mrf:destroy(Ep).
+
+%% Variables, mute, export and an application run without waiting: each
+%% reaches the node as the command FreeSWITCH expects, and the
+%% application's end reaches the owner.
+endpoint_more_commands(Config) ->
+    {ok, Ep} = chappe_mrf:create_endpoint(#{targets => [{fs1, fs_uri(Config)}]}),
+    {ok, Uuid} = chappe_mrf:uuid(Ep),
+    ok = chappe_mrf:mute(Ep, read),
+    _ = fs_cmd(<<"uuid_audio ", Uuid/binary, " start read mute 1">>),
+    ok = chappe_mrf:unmute(Ep, read),
+    _ = fs_cmd(<<"uuid_audio ", Uuid/binary, " start read mute 0">>),
+    ok = chappe_mrf:set(Ep, #{<<"a">> => <<"1">>, <<"b">> => <<"2">>}),
+    _ = fs_cmd(<<"execute-app-arg: ^^|a=1|b=2">>),
+    ok = chappe_mrf:export(Ep, <<"c">>, <<"3">>),
+    _ = fs_cmd(<<"execute-app-arg: c=3">>),
+    {ok, _} = chappe_mrf:var(Ep, <<"a">>),
+    _ = fs_cmd(<<"uuid_getvar ", Uuid/binary, " a">>),
+    {ok, AppUuid} = chappe_mrf:execute(Ep, <<"echo">>, <<>>, #{wait => false}),
+    receive
+        {chappe_mrf, Ep, {complete, <<"echo">>, Ev}} ->
+            ?assertEqual(
+                AppUuid, chappe_esl_event:header(<<"Application-UUID">>, Ev)
+            )
+    after 5000 -> ct:fail(no_completion)
+    end,
     ok = chappe_mrf:destroy(Ep).
 
 %% The owner asked for playback, CUSTOM and channel events: the endpoint
