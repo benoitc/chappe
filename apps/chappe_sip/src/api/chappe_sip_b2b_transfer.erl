@@ -12,7 +12,9 @@
 %% and brings the target in on the transferor's side of the call
 %% (chappe_sip_b2b:replace_leg/4): the transferee sees no re-INVITE. On a
 %% 2xx the transferor gets the final NOTIFY, then a BYE; on a failure it
-%% gets the final status and the call stays as it was.
+%% gets the final status and the call stays as it was. The transferor may
+%% hang up once its REFER has its answer (RFC 5589 6): the transferee then
+%% stays for the target, and the call ends if the transfer fails.
 %%
 %% Its owner is the call's relay: it monitors it and stops when the call
 %% ends. The relay monitors it too and frees the call's transfer slot when
@@ -28,7 +30,7 @@
 -export([valid/1, mode/1, start/1, start_link/1, init/1]).
 -export([accept/2, reject/2]).
 %% for the relay loop (chappe_sip_b2b_relay)
--export([options/2, refer/4, monitor/1, down/2, detach/3]).
+-export([options/2, refer/4, monitor/1, down/2, detach/3, transferor/1]).
 
 -export_type([mode/0, info/0]).
 
@@ -96,7 +98,7 @@ options(Opts, Legs) ->
 refer(X, Req, Res, #{transfer := off} = S) ->
     ok = chappe_sip_b2b_requests:request(X, refer, Req, Res, S),
     S;
-refer(_X, _Req, Res, #{transferring := {_, _}} = S) ->
+refer(_X, _Req, Res, #{transferring := {_, _, _}} = S) ->
     %% one transfer at a time
     ok = chappe_sip_b2b_relay:retry_later(Res),
     S;
@@ -121,7 +123,7 @@ refer(X, Req, Res, #{media := M, transfers := N} = S) ->
     case start(Args) of
         {ok, Pid} ->
             S#{
-                transferring := {Pid, erlang:monitor(process, Pid)},
+                transferring := {Pid, erlang:monitor(process, Pid), X},
                 transfers := N + 1
             };
         {error, Why} ->
@@ -135,8 +137,13 @@ refer(X, Req, Res, #{media := M, transfers := N} = S) ->
 %% The monitor of the transfer at work in relay state S, to match its
 %% 'DOWN' and no other.
 -spec monitor(map()) -> reference() | undefined.
-monitor(#{transferring := {_, Mon}}) -> Mon;
+monitor(#{transferring := {_, Mon, _}}) -> Mon;
 monitor(_S) -> undefined.
+
+%% The leg that sent the REFER of the transfer at work, if any.
+-spec transferor(map()) -> a | b | undefined.
+transferor(#{transferring := {_, _, Leg}}) -> Leg;
+transferor(_S) -> undefined.
 
 %% The transfer ended: the call takes a new one. A crash is logged, and
 %% the call goes on.

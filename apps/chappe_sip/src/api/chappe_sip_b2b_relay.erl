@@ -65,6 +65,9 @@ run(#{uas := A, uac := B} = Legs, Opts) ->
         transfer_opts => TOpts,
         %% the transfer at work ({Pid, Monitor}) and how many the call made
         transferring => undefined,
+        %% the transferor's leg, gone while its transfer runs: {Leg,
+        %% Dialog, Why} (see gone/4)
+        left => undefined,
         owner_mon => maps:get(owner_mon, Opts, undefined),
         transfers => 0,
         media => with_opts(Opts, M0),
@@ -123,16 +126,16 @@ loop(#{a := A, b := B, refs := {RefA, RefB}, ref := Ref, pending := P} = S) ->
         {'DOWN', HelperMon, process, _, Why} ->
             loop(helper_down(Why, S));
         {'DOWN', TransferMon, process, _, Why} ->
-            loop(chappe_sip_b2b_transfer:down(Why, S));
+            transfer_down(chappe_sip_b2b_transfer:down(Why, S));
         {chappe_sip_dialog, A, destroy, Why} ->
-            done(S, B, Why, a_bye);
+            gone(a, Why, RefA, S);
         {chappe_sip_dialog, B, destroy, Why} ->
-            done(S, A, Why, b_bye);
+            gone(b, Why, RefB, S);
         %% an abnormal fsm exit emits no destroy message; tear the peer down
         {'DOWN', RefA, process, _, _} ->
-            done(S, B, undefined, a_bye);
+            gone(a, undefined, RefA, S);
         {'DOWN', RefB, process, _, _} ->
-            done(S, A, undefined, b_bye);
+            gone(b, undefined, RefB, S);
         {chappe_sip_dialog, X, Event, Req, Res} when
             (X =:= A orelse X =:= B) andalso
                 (Event =:= modify orelse Event =:= update)
@@ -172,6 +175,34 @@ loop(#{a := A, b := B, refs := {RefA, RefB}, ref := Ref, pending := P} = S) ->
         {chappe_sip_dialog, _, _, _, _} ->
             loop(S)
     end.
+
+%% Leg's dialog ended. The call ends with it, unless Leg sent the REFER
+%% of the transfer at work: the transferor may hang up once its REFER has
+%% its answer (RFC 5589 6), and the transferee stays for the target. If
+%% the transfer then fails, the call ends (transfer_down/1).
+gone(Leg, Why, Mon, #{left := undefined} = S) ->
+    case chappe_sip_b2b_transfer:transferor(S) of
+        Leg ->
+            erlang:demonitor(Mon, [flush]),
+            loop(S#{left := {Leg, maps:get(Leg, S), Why}});
+        _ ->
+            done(S, maps:get(other(Leg), S), Why, bye_tag(Leg))
+    end;
+gone(Leg, Why, _Mon, S) ->
+    done(S, maps:get(other(Leg), S), Why, bye_tag(Leg)).
+
+%% the transfer ended: when its transferor had hung up and nobody took
+%% its place, the transferee is alone and the call ends
+transfer_down(#{left := {Leg, D, Why}} = S) ->
+    case maps:get(Leg, S) of
+        D -> done(S, maps:get(other(Leg), S), Why, bye_tag(Leg));
+        _ -> loop(S#{left := undefined})
+    end;
+transfer_down(S) ->
+    loop(S).
+
+bye_tag(a) -> a_bye;
+bye_tag(b) -> b_bye.
 
 leg(X, #{a := X}) -> a;
 leg(_X, _S) -> b.

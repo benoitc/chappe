@@ -21,6 +21,8 @@
          attended_other_party_refused/1]).
 -export([blind_from_a/1, blind_keeps_identity/1, blind_keeps_call_ref/1,
          blind_progress_notified/1]).
+-export([transferor_bye_keeps_transferee/1,
+         transferor_bye_then_failure_ends_call/1]).
 -export([blind_from_b/1, blind_target_fails/1, offnet_refused/1,
          policy_rejects/1, policy_sees_untrusted_referred_by/1,
          direct_media_refused/1, transfer_limit/1, bye_method_refused/1,
@@ -29,7 +31,8 @@
 
 all() ->
     [blind_from_b, blind_from_a, blind_keeps_identity, blind_keeps_call_ref,
-     blind_progress_notified,
+     blind_progress_notified, transferor_bye_keeps_transferee,
+     transferor_bye_then_failure_ends_call,
      blind_target_fails, attended_local_join, attended_remote_replaces,
      attended_other_party_refused, notify_accept, notify_reject,
      notify_retarget, notify_from_another_node, offnet_refused, policy_rejects,
@@ -182,6 +185,48 @@ blind_progress_notified(_Config) ->
     ?assert(T2 - T1 >= 900),
     ?assert(T1 - T0 >= 0),
     _ = got(bye).
+
+%% Bob hangs up as soon as his REFER has its 200, while Carol still rings
+%% (RFC 5589 6: the transferor may BYE once the REFER transaction
+%% completes). The transfer goes on: Carol is not CANCELled, she takes
+%% Bob's place when she answers, and Alice gets no BYE.
+%% req: R5589-01
+transferor_bye_keeps_transferee(_Config) ->
+    {EP, CP} = setup(#{}),
+    NP = ?UA:pick(),
+    callee_refers_then_bye(CP, EP, refer_to(NP)),
+    target(NP, ring_then_answer),
+    caller(EP, fun(Sock, _D) ->
+        ok = ?UA:no_req(Sock, <<"BYE">>, 5000),
+        tell(caller_kept)
+    end),
+    #{b2b := {_, Ref} = B2b} = got(legs),
+    ?assertEqual(200, ?UA:status(got(refer_answer))),
+    ok = ?UA:expect(bob_hung_up, 10000),
+    ok = expect_event(Ref, {replaced, b}),
+    ok = expect_event(Ref, {transferred, b}),
+    ok = ?UA:expect(caller_kept, 8000),
+    #{parties := #{b := Party}} = chappe_sip_b2b:info(B2b),
+    ?assertMatch(<<"<sip:carol@", _/binary>>, Party).
+
+%% Bob hangs up while Carol rings, and Carol is busy: nobody is left for
+%% Alice, so the call ends cleanly, Alice with a BYE.
+%% req: R5589-05
+transferor_bye_then_failure_ends_call(_Config) ->
+    {EP, CP} = setup(#{}),
+    NP = ?UA:pick(),
+    callee_refers_then_bye(CP, EP, refer_to(NP)),
+    target(NP, ring_then_busy),
+    caller(EP, fun(Sock, _D) ->
+        {Bye, Src} = ?UA:recv_req(Sock, <<"BYE">>, 8000),
+        ?UA:send(Sock, Src, ?UA:resp(Bye, 200, <<"OK">>, <<>>, [], <<>>)),
+        tell(caller_byed)
+    end),
+    #{b2b := {_, Ref}} = got(legs),
+    ok = ?UA:expect(bob_hung_up, 10000),
+    ok = expect_event(Ref, {transfer_failed, b}),
+    ok = ?UA:expect(caller_byed, 8000),
+    ?assertEqual({done, b_bye}, got(relay_done)).
 
 %% Carol is busy: Bob's final NOTIFY carries 486, Bob keeps the call and
 %% gets no BYE, and Alice saw nothing.
@@ -616,6 +661,46 @@ callee_refers(CP, EP, ReferTo, Hdrs, N) ->
         serve(Sock, Tag)
     end).
 
+%% The callee (Bob) REFERs to ReferTo, and sends a BYE as soon as the
+%% REFER has its 200 (bob_hung_up).
+callee_refers_then_bye(CP, EP, ReferTo) ->
+    ?UA:peer(CP, fun(Sock) ->
+        {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
+        Tag = ?UA:tag(),
+        ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, Tag, [contact(Sock)],
+                                     ?UA:sdp(<<"callee">>))),
+        {_Ack, _} = ?UA:recv_req(Sock, <<"ACK">>),
+        D0 = ?UA:dialog_from_invite(Sock, Inv, Tag, Src),
+        {Refer, D1} = ?UA:in_dialog(D0, <<"REFER">>,
+                                    [{<<"Refer-To">>, ReferTo}], <<>>),
+        ?UA:send(Sock, EP, Refer),
+        refer_ok(Sock, Tag),
+        {Bye, _} = ?UA:in_dialog(D1, <<"BYE">>, [], <<>>),
+        ?UA:send(Sock, EP, Bye),
+        tell(bob_hung_up),
+        serve(Sock, Tag)
+    end).
+
+%% wait for the REFER's final, answering NOTIFYs meanwhile
+refer_ok(Sock, Tag) ->
+    receive
+        {udp, Sock, _, _, <<"SIP/2.0 1", _/binary>>} ->
+            refer_ok(Sock, Tag);
+        {udp, Sock, _, _, <<"SIP/2.0 ", _/binary>> = R} ->
+            case maps:get(method, ?UA:cseq(R)) of
+                <<"REFER">> -> tell({refer_answer, R});
+                _ -> refer_ok(Sock, Tag)
+            end;
+        {udp, Sock, _, Src, <<"NOTIFY ", _/binary>> = N} ->
+            ?UA:send(Sock, Src, ?UA:resp(N, 200, <<"OK">>, Tag, [], <<>>)),
+            tell({notify, N}),
+            refer_ok(Sock, Tag);
+        {udp, Sock, _, _, _} ->
+            refer_ok(Sock, Tag)
+    after 10000 ->
+        ok
+    end.
+
 %% answer what the B2BUA sends a peer, and tell the test
 serve(Sock, Tag) ->
     receive
@@ -750,6 +835,13 @@ target(Port, How) ->
             ring ->
                 ?UA:send(Sock, Src, ?UA:resp(Inv, 180, <<"Ringing">>, Tag,
                                              [contact(Sock)], <<>>)),
+                serve(Sock, Tag);
+            ring_then_busy ->
+                ?UA:send(Sock, Src, ?UA:resp(Inv, 180, <<"Ringing">>, Tag,
+                                             [contact(Sock)], <<>>)),
+                timer:sleep(1500),
+                ?UA:send(Sock, Src, ?UA:resp(Inv, 486, <<"Busy Here">>, Tag,
+                                             [], <<>>)),
                 serve(Sock, Tag);
             ring_then_answer ->
                 ?UA:send(Sock, Src, ?UA:resp(Inv, 180, <<"Ringing">>, Tag,
