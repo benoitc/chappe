@@ -58,5 +58,8 @@
     rtcp_remote :: {inet:ip_address(), inet:port_number()} | undefined,
     %% the CSRC list of the last audio packet in: the sources an upstream
     %% mixer put in it (RFC 3550 7.4)
-    in_csrcs = [] :: [0..16#FFFFFFFF]
+    in_csrcs = [] :: [0..16#FFFFFFFF],
+    %% the app's opaque reference for this leg (a call ref), returned in
+    %% its events and legs/1
+    ref :: binary() | undefined
 }).

@@ -176,6 +176,19 @@ ok = chappe_mrf:stop_detect_tones(Ep).
 `detect_fax/2` takes `tone` (`cng`, a calling fax, or `ced`, an answering
 one) and `timeout` in seconds.
 
+## Follow the call
+
+Give the call's ref and the endpoint carries it: the INVITE to the node has
+it as `X-Chappe-Call` (FreeSWITCH logs it as `variable_sip_h_X-Chappe-Call`),
+the endpoint's own id goes as `X-Chappe-Endpoint`, and `info/1` returns it.
+
+```erlang
+{ok, Ep, B2b} = chappe_mrf:connect_caller(Req, Res, #{call_ref => Ref}),
+#{call_ref := Ref} = chappe_mrf:info(Ep).
+```
+
+Without it, `X-Chappe-Call` is the endpoint's random id, as before.
+
 ## Notes
 
 - A command blocks the process that calls it, not the endpoint: digits

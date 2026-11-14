@@ -22,6 +22,7 @@
     raw_exec_interleaved/1,
     raw_exec_long_arg/1,
     inbound_call/1,
+    call_ref/1,
     play_and_get_digits/1,
     play_and_get_digits_full/1,
     playback_options/1,
@@ -71,6 +72,7 @@ all() ->
         raw_exec_interleaved,
         raw_exec_long_arg,
         inbound_call,
+        call_ref,
         play_and_get_digits,
         play_and_get_digits_full,
         playback_options,
@@ -335,6 +337,27 @@ inbound_call(_Config) ->
     ?assertEqual({ok, <<"+OK">>}, chappe_esl_call:api(Call, "status")),
     ok = chappe_esl_call:stop(Call),
     ok = chappe_esl_fake_server:stop(Fake).
+
+%% A call started with a ref returns it from ref/1 and in every owner
+%% message; without one the messages keep their three elements.
+call_ref(_Config) ->
+    {ok, Fake, Port} = chappe_esl_fake_server:start(#{channel => <<"in-2">>}),
+    {ok, Conn} = chappe_esl:connect(#{host => {127, 0, 0, 1}, port => Port}),
+    ?assertEqual(
+        {error, {bad_option, ref}},
+        chappe_esl_call:start(Conn, #{uuid => <<"in-2">>, ref => call})
+    ),
+    {ok, Call} = chappe_esl_call:start(Conn, #{uuid => <<"in-2">>, ref => <<"c-7">>}),
+    ?assertEqual(<<"c-7">>, chappe_esl_call:ref(Call)),
+    ok = chappe_esl_fake_server:dtmf(Fake, <<"3">>),
+    receive
+        {chappe_esl_call, Call, {dtmf, <<"3">>}, <<"c-7">>} -> ok
+    after 5000 -> ct:fail(no_ref_message)
+    end,
+    ok = chappe_esl_call:stop(Call),
+    ok = chappe_esl_fake_server:stop(Fake),
+    {Call2, _} = outbound(#{}),
+    ?assertEqual(undefined, chappe_esl_call:ref(Call2)).
 
 %% req: ESL-37
 play_and_get_digits(_Config) ->

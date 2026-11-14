@@ -96,6 +96,9 @@
     reoffer = false :: boolean(),
     branches = [] :: [binary()],
     media_lost = false :: boolean(),
+    %% the app's opaque reference (a call ref): in every owner event, and
+    %% sent to the daemon as call metadata
+    ref :: binary() | undefined,
     pending = #{} ::
         #{reference() => {gen_statem:from() | undefined, term()}}
 }).
@@ -103,9 +106,14 @@
 %% Opts: call_id (required), node (optional; pool-selected and pinned
 %% when absent), dtmf (optional; true subscribes the session to the
 %% chappe_rtpengine_dtmf listener and forwards events to the owner as
-%% {chappe_rtpengine_session, Pid, {dtmf, Event}}). The calling process becomes
-%% the owner.
+%% {chappe_rtpengine_session, Pid, {dtmf, Event}}), ref (optional; an opaque
+%% binary, such as a call ref: every owner event then carries it as
+%% {chappe_rtpengine_session, Pid, Event, Ref}, info/1 returns it, and each
+%% offer, answer and publish sends it as metadata call_ref:<Ref>, unless
+%% the params set metadata). The calling process becomes the owner.
 -spec start(map()) -> {ok, pid()} | {error, term()}.
+start(#{ref := Ref}) when not is_binary(Ref) ->
+    {error, {bad_option, ref}};
 start(#{call_id := _} = Opts) ->
     supervisor:start_child(chappe_rtpengine_session_sup, [self(), Opts]);
 start(_Opts) ->
@@ -332,7 +340,8 @@ init([Owner, Opts]) ->
                 call_id = CallId,
                 node = Node,
                 generation = Gen,
-                pinned = Pinned
+                pinned = Pinned,
+                ref = maps:get(ref, Opts, undefined)
             }};
         {error, Reason} ->
             {stop, Reason}
@@ -487,7 +496,8 @@ handle_event({call, From}, info, State, Data) ->
         from_tag => Data#data.from_tag,
         to_tag => Data#data.to_tag,
         branches => Data#data.branches,
-        media_lost => Data#data.media_lost
+        media_lost => Data#data.media_lost,
+        ref => Data#data.ref
     },
     {keep_state_and_data, [{reply, From, Info}]};
 %% client replies
@@ -798,7 +808,13 @@ active(State) ->
     ]).
 
 notify_owner(Event, Data) ->
-    Data#data.owner ! {chappe_rtpengine_session, self(), Event},
+    _ =
+        case Data#data.ref of
+            undefined ->
+                Data#data.owner ! {chappe_rtpengine_session, self(), Event};
+            Ref ->
+                Data#data.owner ! {chappe_rtpengine_session, self(), Event, Ref}
+        end,
     ok.
 
 resolve_node(CallId, Opts) ->
@@ -819,8 +835,23 @@ resolve_node(CallId, Opts) ->
 %% when the caller does not override it. Subscription commands get no
 %% from-tag injection: there it selects which participant to tap, and
 %% the default is the caller's choice, not the session's.
+%% The ref goes on every offer, answer and publish as NG metadata, as the
+%% key:value pair rtpengine writes into its recording metadata
+%% (call_ref:<ref>), unless the caller sets metadata itself.
+with_ref(Command, Params, #data{ref = Ref}) when
+    is_binary(Ref) andalso
+        (Command =:= offer orelse Command =:= answer orelse
+            Command =:= publish)
+->
+    case maps:is_key(metadata, Params) of
+        true -> Params;
+        false -> Params#{metadata => <<"call_ref:", Ref/binary>>}
+    end;
+with_ref(_Command, Params, _Data) ->
+    Params.
+
 send_async(Command, Params0, Data) ->
-    Params1 = Params0#{call_id => Data#data.call_id},
+    Params1 = with_ref(Command, Params0#{call_id => Data#data.call_id}, Data),
     Inject =
         inject_from_tag(Command) andalso
             Data#data.from_tag =/= undefined andalso

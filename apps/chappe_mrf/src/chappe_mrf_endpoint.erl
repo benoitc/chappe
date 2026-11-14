@@ -54,6 +54,9 @@
 
 -record(state, {
     id :: binary(),
+    %% the call it serves (call_ref at start): X-Chappe-Call on its INVITE,
+    %% and the ref of its chappe_esl_call
+    call_ref :: binary() | undefined,
     owner :: pid(),
     owner_mon :: reference(),
     candidates = [] :: [{term(), binary()}],
@@ -163,14 +166,15 @@ init(#{id := Id, owner := Owner} = Args) ->
                 candidates = maps:get(candidates, Args, []),
                 answer = maps:get(answer, Args, true),
                 linger = maps:get(linger, Args, ?LINGER),
-                events = maps:get(events, Args, [])
+                events = maps:get(events, Args, []),
+                call_ref = maps:get(call_ref, Args, undefined)
             }};
         {error, exists} ->
             {stop, {already_registered, Id}}
     end.
 
 waiting({call, From}, {attach, Conn, Channel}, Data) ->
-    case start_call(Conn, Data#state.events) of
+    case start_call(Conn, Data#state.events, Data#state.call_ref) of
         {ok, Call} ->
             ok = chappe_mrf_registry:delete({call, Data#state.id}),
             Node = node_of(Channel, Data#state.candidates),
@@ -202,6 +206,8 @@ ready({call, From}, Req, Data) when Req =:= await; Req =:= call ->
     {keep_state_and_data, [{reply, From, {ok, ready_value(Req, Data)}}]};
 ready(info, {chappe_esl_call, Call, Msg}, #state{call = Call} = Data) ->
     call_msg(Msg, Data);
+ready(info, {chappe_esl_call, Call, Msg, _Ref}, #state{call = Call} = Data) ->
+    call_msg(Msg, Data);
 ready(EventType, Msg, Data) ->
     common(EventType, Msg, ready, Data).
 
@@ -210,6 +216,8 @@ gone({call, From}, Req, _Data) when Req =:= await; Req =:= call ->
 gone(state_timeout, linger, _Data) ->
     {stop, normal};
 gone(info, {chappe_esl_call, _, _}, _Data) ->
+    keep_state_and_data;
+gone(info, {chappe_esl_call, _, _, _}, _Data) ->
     keep_state_and_data;
 gone(EventType, Msg, Data) ->
     common(EventType, Msg, gone, Data).
@@ -351,8 +359,13 @@ hungup(Cause, #state{linger = Linger} = Data) ->
     tell(Data, hangup),
     {next_state, gone, Data, [{state_timeout, Linger, linger}]}.
 
-start_call(Conn, Events) ->
-    case chappe_esl_call:start(Conn, #{owner => self()}) of
+start_call(Conn, Events, CallRef) ->
+    Opts =
+        case CallRef of
+            undefined -> #{owner => self()};
+            _ -> #{owner => self(), ref => CallRef}
+        end,
+    case chappe_esl_call:start(Conn, Opts) of
         {ok, Call} ->
             case chappe_esl_call:subscribe(Call, esl_events(Events)) of
                 ok ->
@@ -435,6 +448,7 @@ info_map(State, Data) ->
     #{
         state => State,
         id => Data#state.id,
+        call_ref => Data#state.call_ref,
         node => Data#state.node,
         uuid => Data#state.uuid,
         conn => Data#state.conn,

@@ -46,6 +46,8 @@
 
 -record(state, {
     owner :: pid(),
+    %% the app's opaque reference for the room, in its events
+    ref :: binary() | undefined,
     %% receives one message per tick when set (see chappe_mix:conf_opts())
     trace :: pid() | undefined,
     %% gets talker events, and the detection they come from
@@ -97,6 +99,7 @@ init(#{owner := Owner} = Opts) ->
     arm(Next, maps:get(tick_ceiling, Opts, true)),
     {ok, #state{
         owner = Owner,
+        ref = maps:get(ref, Opts, undefined),
         trace = maps:get(trace, Opts, undefined),
         events = maps:get(events, Opts, undefined),
         talk_params = talk_params(Opts),
@@ -206,7 +209,7 @@ remove(Leg, Legs, S) ->
     %% a leg that goes while talking stops talking
     _ =
         Leg#leg.talking andalso S#state.events =/= undefined andalso
-            talking(S#state.events, Leg#leg.id, false),
+            talking(S#state.events, Leg#leg.id, false, ref(Leg, S)),
     left(Leg, S#state{
         legs = forget(Leg#leg.id, Legs),
         socks = maps:without(chappe_mix_leg:socks(Leg), S#state.socks),
@@ -599,11 +602,20 @@ mix(#state{legs = Legs, events = Pid} = S, Missed) ->
             _ -> S#state.talk_params
         end,
     {Legs1, Events} = chappe_mix_room:mix(Legs, Missed, Talk),
-    [talking(Pid, Id, T) || {Id, T} <- Events],
+    [
+        talking(Pid, Id, T, ref(maps:get(Id, Legs1, undefined), S))
+     || {Id, T} <- Events
+    ],
     S#state{legs = Legs1}.
 
-talking(Pid, Id, T) ->
-    Pid ! {chappe_mix, self(), {talking, Id, T}}.
+%% With a ref (the leg's, else the room's) the event carries it.
+talking(Pid, Id, T, undefined) ->
+    Pid ! {chappe_mix, self(), {talking, Id, T}};
+talking(Pid, Id, T, Ref) ->
+    Pid ! {chappe_mix, self(), {talking, Id, T}, Ref}.
+
+ref(#leg{ref = Ref}, _S) when Ref =/= undefined -> Ref;
+ref(_Leg, #state{ref = Ref}) -> Ref.
 
 %% Talker detection: a frame counts as talk over Db dBFS RMS (default
 %% -40), talk starts after StartMs of it and stops after StopMs without

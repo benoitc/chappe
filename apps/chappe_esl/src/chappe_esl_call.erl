@@ -46,7 +46,7 @@
 %% Raw execute on a connection.
 -export([exec/5]).
 %% Call process.
--export([start/1, start/2, stop/1, uuid/1]).
+-export([start/1, start/2, stop/1, uuid/1, ref/1]).
 -export([exec/3, exec/4, api/2, subscribe/2, event_word/1]).
 %% Typed helpers.
 -export([answer/1, playback/2, playback/3, play_and_get_digits/2]).
@@ -119,8 +119,12 @@
 %% owner: the process that gets the messages and whose death ends the call
 %% (the caller). uuid: the channel, required on an inbound connection.
 %% cleanup: on owner death, stop forks and recordings and kill the channel
-%% (true).
--type start_opts() :: #{owner => pid(), uuid => binary(), cleanup => boolean()}.
+%% (true). ref: an opaque binary (a call ref); every message to the owner
+%% then carries it as {chappe_esl_call, Call, Msg, Ref}, and ref/1 returns
+%% it.
+-type start_opts() :: #{
+    owner => pid(), uuid => binary(), cleanup => boolean(), ref => binary()
+}.
 %% audio_fork: mod_audio_fork (uuid_audio_fork); audio_stream:
 %% mod_audio_stream (uuid_audio_stream).
 -type fork_module() :: audio_fork | audio_stream.
@@ -147,6 +151,7 @@
     owner :: pid(),
     owner_mon :: reference(),
     cleanup :: boolean(),
+    ref :: binary() | undefined,
     hungup = false :: boolean(),
     %% the fork modules started, oldest first
     forks = [] :: [fork()],
@@ -202,9 +207,16 @@ start(Conn) ->
 %% Take over a connection for one channel. On an outbound connection the
 %% channel is the connected one; on an inbound connection pass its uuid.
 -spec start(chappe_esl:conn(), start_opts()) -> {ok, call()} | {error, term()}.
+start(_Conn, #{ref := Ref}) when not is_binary(Ref) ->
+    {error, {bad_option, ref}};
 start(Conn, Opts) ->
     Owner = maps:get(owner, Opts, self()),
     gen_server:start(?MODULE, {Conn, Owner, Opts}, []).
+
+%% The ref given at start, undefined without one.
+-spec ref(call()) -> binary() | undefined | {error, closed}.
+ref(Call) ->
+    call(Call, ref).
 
 %% Stop the call process and close its connection. The channel is left
 %% alone: no cleanup, no uuid_kill.
@@ -821,7 +833,8 @@ init({Conn, Owner, Opts}) ->
                         uuid = Uuid,
                         owner = Owner,
                         owner_mon = monitor(process, Owner),
-                        cleanup = maps:get(cleanup, Opts, true)
+                        cleanup = maps:get(cleanup, Opts, true),
+                        ref = maps:get(ref, Opts, undefined)
                     }};
                 {error, Reason} ->
                     {stop, {subscribe_failed, Reason}}
@@ -830,6 +843,8 @@ init({Conn, Owner, Opts}) ->
             {stop, Reason}
     end.
 
+handle_call(ref, _From, #state{ref = Ref} = State) ->
+    {reply, Ref, State};
 handle_call(uuid, _From, #state{uuid = Uuid} = State) ->
     {reply, Uuid, State};
 handle_call({exec, _App, _Args, _Opts}, _From, #state{hungup = true} = State) ->
@@ -1100,8 +1115,11 @@ fail_pending(P, Reply) ->
         P
     ).
 
-notify(#state{owner = Owner} = State, Msg) ->
+notify(#state{owner = Owner, ref = undefined} = State, Msg) ->
     Owner ! {?MODULE, self(), Msg},
+    State;
+notify(#state{owner = Owner, ref = Ref} = State, Msg) ->
+    Owner ! {?MODULE, self(), Msg, Ref},
     State.
 
 closed(#state{pending = P} = State) ->

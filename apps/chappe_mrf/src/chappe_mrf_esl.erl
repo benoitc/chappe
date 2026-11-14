@@ -9,11 +9,12 @@
 -module(chappe_mrf_esl).
 -behaviour(chappe_esl_handler).
 
--export([handle_channel/3, header/0, var/0]).
+-export([handle_channel/3, header/0, var/0, headers/2]).
 
 -define(HEADER, <<"X-Chappe-Call">>).
+-define(EP_HEADER, <<"X-Chappe-Endpoint">>).
 
-%% The SIP header that carries the correlation id.
+%% The SIP header that carries the call's correlation id.
 -spec header() -> binary().
 header() -> ?HEADER.
 
@@ -21,12 +22,25 @@ header() -> ?HEADER.
 -spec var() -> binary().
 var() -> <<"variable_sip_h_", ?HEADER/binary>>.
 
+%% The headers of an endpoint's INVITE: X-Chappe-Call is the call's ref
+%% when the app gave one (one call, several endpoints), else the
+%% endpoint's own id; X-Chappe-Endpoint then names the endpoint.
+-spec headers(binary(), binary() | undefined) -> [{binary(), binary()}].
+headers(Id, undefined) ->
+    [{?HEADER, Id}];
+headers(Id, CallRef) ->
+    [{?HEADER, CallRef}, {?EP_HEADER, Id}].
+
 -spec handle_channel(pid(), chappe_esl_event:event(), term()) -> ok.
 handle_channel(Conn, Channel, _Args) ->
+    H = fun(Name) ->
+        chappe_esl_event:header(<<"variable_sip_h_", Name/binary>>, Channel)
+    end,
     Found =
-        case chappe_esl_event:header(var(), Channel) of
-            undefined -> error;
-            Id -> chappe_mrf_registry:lookup({call, Id})
+        case {H(?EP_HEADER), H(?HEADER)} of
+            {undefined, undefined} -> error;
+            {undefined, Id} -> chappe_mrf_registry:lookup({call, Id});
+            {Id, _} -> chappe_mrf_registry:lookup({call, Id})
         end,
     case Found of
         {ok, Ep} ->

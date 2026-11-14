@@ -193,6 +193,10 @@ connection. Neither ends a request in flight or the call process: `closed`
 does, and it is the only message that says the process stopped. Ignore the
 first two if you have no use for them, but do not crash on them.
 
+Start the call with `ref => Ref` (an opaque binary, such as your call's
+correlation id) and every message carries it as a fourth element,
+`{chappe_esl_call, Call, Msg, Ref}`; `chappe_esl_call:ref/1` returns it.
+
 ## Run a slow command
 
 `api/2` returns when FreeSWITCH answers, 10 seconds at most. The call process

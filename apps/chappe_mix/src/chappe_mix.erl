@@ -71,7 +71,9 @@
 %% false}}' when a leg starts or stops talking (off by default, and then
 %% the levels are not computed at all); talk_threshold (dBFS RMS over a
 %% frame, default -40), talk_start_ms (default 60) and talk_stop_ms
-%% (default 300) set the detection.
+%% (default 300) set the detection. ref: an opaque binary of the app's
+%% (a call ref); a leg's own ref (leg_opts()) wins over it. An event about
+%% a leg with a ref carries it: `{chappe_mix, Conf, {talking, Leg, T}, Ref}'.
 %% tick_ceiling (default true) arms the tick at the millisecond at or
 %% after it is due, so it never fires early; false truncates, and most
 %% ticks fire up to 1 ms early. prefill_shrink (default false) takes back
@@ -90,7 +92,8 @@
     law => chappe_mix_g711:law(),
     depth => pos_integer(),
     cname => binary(),
-    ssrc_draw => fun(() -> 0..16#FFFFFFFF)
+    ssrc_draw => fun(() -> 0..16#FFFFFFFF),
+    ref => binary()
 }.
 
 %% remote: where to send the mix; unset, it is learnt from the first
@@ -112,7 +115,8 @@
 %% direction(), default sendrecv; mute => true on top of it is what
 %% mute/3 does. injected: the leg carries media the room itself plays (a
 %% prompt, music), so listeners see the mixer's SSRC for it in their CSRC
-%% lists (RFC 3550 7.1).
+%% lists (RFC 3550 7.1). ref: the app's opaque binary for this leg, in its
+%% events and in legs/1; it moves with the leg (move_leg/3).
 -type leg_opts() :: #{
     remote => endpoint(),
     law => chappe_mix_g711:law(),
@@ -124,7 +128,8 @@
     injected => boolean(),
     rtcp => mux | pair,
     rtcp_remote => endpoint(),
-    name => binary()
+    name => binary(),
+    ref => binary()
 }.
 
 %% Where a leg sends, as set_remote/3 takes it: the far end alone, or the
@@ -140,6 +145,8 @@
     }.
 
 -spec start(conf_opts()) -> {ok, conf()} | {error, term()}.
+start(#{ref := Ref}) when not is_binary(Ref) ->
+    {error, {bad_option, ref}};
 start(Opts) ->
     Owner = maps:get(owner, Opts, self()),
     supervisor:start_child(chappe_mix_conf_sup, [Opts#{owner => Owner}]).
@@ -157,6 +164,8 @@ stop(Conf) ->
         rtcp_port := inet:port_number()
     }}
     | {error, term()}.
+add_leg(_Conf, #{ref := Ref}) when not is_binary(Ref) ->
+    {error, {bad_option, ref}};
 add_leg(Conf, Opts) ->
     gen_server:call(Conf, {add_leg, Opts}).
 

@@ -82,6 +82,8 @@ end.
 
 The library never re-offers on its own; the decision and the new SDP belong to signalling.
 
+Start the session with `ref => Ref` (an opaque binary, such as a call's correlation id) and each notification carries it, `{chappe_rtpengine_session, Pid, Event, Ref}`. The daemon gets it too, as `metadata` `call_ref:<Ref>` on each offer, answer and publish, so it lands in rtpengine's recording metadata. Metadata you pass yourself wins.
+
 ## Cleanup guarantees
 
 - `stop/1` deletes the rtpengine session and stops the process. It works with a request in flight: that request's caller gets `{error, stopped}` and `stop/1` still returns `ok` once the delete is answered.

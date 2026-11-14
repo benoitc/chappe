@@ -69,6 +69,11 @@ end.
 Set `talk_threshold`, `talk_start_ms` and `talk_stop_ms` in `start/1` to
 tune the detection (see [Configuration](../configuration.md)).
 
+Give the room or a leg a `ref` (an opaque binary, such as a call's
+correlation id) and the events about that leg carry it:
+`{chappe_mix, Conf, {talking, Leg, true}, Ref}`, the leg's own ref first,
+else the room's. `legs/1` shows each leg's `ref`.
+
 ## Move a leg to another room
 
 ```erlang

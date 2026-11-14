@@ -45,6 +45,7 @@ open(Id, Opts, #{ip := Ip, law := Law, depth := Depth, ssrc := Ssrc} = Dfl) ->
                 %% (RFC 4733 2.5.1.1)
                 dtmf_events = maps:get(dtmf_events, Opts, lists:seq(0, 15)),
                 name = maps:get(name, Opts, undefined),
+                ref = maps:get(ref, Opts, undefined),
                 jbuf = chappe_mix_jbuf:new(
                     Depth,
                     silence_code(maps:get(law, Opts, Law)),
@@ -134,7 +135,8 @@ info(#leg{} = L) ->
             rtcp => L#leg.rtcp,
             rtcp_port => L#leg.rtcp_port,
             rtcp_remote => L#leg.rtcp_remote,
-            in_csrcs => L#leg.in_csrcs
+            in_csrcs => L#leg.in_csrcs,
+            ref => L#leg.ref
         }
     ).
 

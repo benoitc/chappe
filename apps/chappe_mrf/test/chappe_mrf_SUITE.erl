@@ -24,6 +24,7 @@
     endpoint_commands/1,
     play_results/1,
     owner_events/1,
+    call_ref/1,
     endpoint_more_commands/1,
     endpoint_call_notices/1,
     node_down/1,
@@ -66,6 +67,7 @@ all() ->
         endpoint_commands,
         play_results,
         owner_events,
+        call_ref,
         endpoint_more_commands,
         endpoint_call_notices,
         node_down,
@@ -462,6 +464,29 @@ endpoint_more_commands(Config) ->
     after 5000 -> ct:fail(no_completion)
     end,
     ok = chappe_mrf:destroy(Ep).
+
+%% Two endpoints of one call, given its call_ref: each INVITE carries the
+%% ref as X-Chappe-Call and its own id as X-Chappe-Endpoint, each channel
+%% finds its own endpoint, and info/1 returns the ref. A bad ref is
+%% refused before anything is sent.
+call_ref(Config) ->
+    Opts = #{targets => [{fs1, fs_uri(Config)}], call_ref => <<"call-42">>},
+    {ok, Ep1} = chappe_mrf:create_endpoint(Opts),
+    {ok, Ep2} = chappe_mrf:create_endpoint(Opts),
+    #{call_ref := <<"call-42">>, id := Id1, uuid := U1} = chappe_mrf:info(Ep1),
+    #{call_ref := <<"call-42">>, id := Id2, uuid := U2} = chappe_mrf:info(Ep2),
+    ?assertNotEqual(Id1, Id2),
+    ?assertNotEqual(U1, U2),
+    {ok, Plain} = chappe_mrf:create_endpoint(maps:remove(call_ref, Opts)),
+    ?assertMatch(#{call_ref := undefined}, chappe_mrf:info(Plain)),
+    [
+        ?assertEqual(
+            {error, {bad_option, call_ref}},
+            chappe_mrf:create_endpoint(Opts#{call_ref => Bad})
+        )
+     || Bad <- [42, <<>>, <<"a\r\nX-Evil: 1">>]
+    ],
+    [ok = chappe_mrf:destroy(E) || E <- [Ep1, Ep2, Plain]].
 
 %% The owner asked for playback, CUSTOM and channel events: the endpoint
 %% subscribes to them (CUSTOM last) and hands them over; what it did not

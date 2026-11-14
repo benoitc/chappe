@@ -471,11 +471,16 @@ event(#{tcp := Tcp, uuid := Uuid}, Name, Headers) ->
     ]),
     tcp(Tcp, frame(<<"text/event-plain">>, Inner)).
 
-channel_data(#{uuid := Uuid, id := Id, node := #{port := Port}}) ->
-    IdLine =
+channel_data(#{uuid := Uuid, id := Id, invite := Invite, node := #{port := Port}}) ->
+    IdLine0 =
         case Id of
             undefined -> <<>>;
             _ -> <<"variable_sip_h_X-Chappe-Call: ", Id/binary, "\n">>
+        end,
+    IdLine =
+        case hdr(Invite, <<"x-chappe-endpoint">>) of
+            undefined -> IdLine0;
+            EpId -> <<IdLine0/binary, "variable_sip_h_X-Chappe-Endpoint: ", EpId/binary, "\n">>
         end,
     <<"Content-Type: command/reply\nReply-Text: +OK\nUnique-ID: ", Uuid/binary,
         "\nChannel-Unique-ID: ", Uuid/binary, "\n", IdLine/binary,

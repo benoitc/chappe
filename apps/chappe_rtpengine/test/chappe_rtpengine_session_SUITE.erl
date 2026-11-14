@@ -31,6 +31,7 @@
     publish_one_sided/1,
     media_ducking/1,
     forwarding/1,
+    session_ref/1,
     play_media_blob/1,
     stop_while_offer_pending/1,
     owner_dies_while_offering/1,
@@ -57,6 +58,7 @@ all() ->
         publish_one_sided,
         media_ducking,
         forwarding,
+        session_ref,
         play_media_blob,
         stop_while_offer_pending,
         owner_dies_while_offering,
@@ -117,7 +119,7 @@ handler(_Case) ->
 
 opts(offer_timeout_returns_error) ->
     #{timeout => 50, attempts => 2};
-opts(node_restart_notifies_owner) ->
+opts(Case) when Case =:= node_restart_notifies_owner; Case =:= session_ref ->
     #{timeout => 50, attempts => 1, down_after => 2, health_interval => 100};
 opts(_Case) ->
     #{}.
@@ -395,6 +397,45 @@ media_commands(Config) ->
     ?assertEqual(<<"sess-media">>, maps:get(<<"call-id">>, Play)),
     ?assertEqual(<<"ft-m">>, maps:get(<<"from-tag">>, Play)),
     ?assertEqual(<<"/prompts/hello.wav">>, maps:get(<<"file">>, Play)),
+    ok = chappe_rtpengine_session:stop(Sess),
+    wait_dead(Sess),
+    ok.
+
+%% A session's ref goes to the daemon as call metadata on offer and
+%% answer (metadata the caller sets wins), comes back from info/1, and
+%% rides on every owner event.
+session_ref(Config) ->
+    Server = ?config(server, Config),
+    Node = ?config(node, Config),
+    ?assertEqual(
+        {error, {bad_option, ref}},
+        chappe_rtpengine:start_session(#{call_id => <<"r">>, ref => 1})
+    ),
+    {ok, Sess} = chappe_rtpengine:start_session(#{
+        call_id => <<"sess-ref">>, ref => <<"call-9">>
+    }),
+    {ok, _} = chappe_rtpengine_session:offer(Sess, #{
+        from_tag => <<"ft">>, sdp => sdp()
+    }),
+    {ok, _} = chappe_rtpengine_session:answer(Sess, #{
+        to_tag => <<"tt">>, sdp => sdp(), metadata => <<"mine">>
+    }),
+    #{ref := <<"call-9">>} = chappe_rtpengine_session:info(Sess),
+    [Offer, Answer] = [
+        C
+     || {_, #{<<"command">> := N} = C} <- chappe_rtpengine_fake_server:received(Server),
+        N =/= <<"ping">>
+    ],
+    ?assertEqual(<<"call_ref:call-9">>, maps:get(<<"metadata">>, Offer)),
+    ?assertEqual(<<"mine">>, maps:get(<<"metadata">>, Answer)),
+    chappe_rtpengine_fake_server:set_handler(Server, fun(_N, _Cmd) -> drop end),
+    receive
+        {chappe_rtpengine_session, Sess, {node_down, Node}, <<"call-9">>} -> ok
+    after 5000 -> error(no_node_down_with_ref)
+    end,
+    chappe_rtpengine_fake_server:set_handler(
+        Server, fun chappe_rtpengine_fake_server:default_handler/2
+    ),
     ok = chappe_rtpengine_session:stop(Sess),
     wait_dead(Sess),
     ok.

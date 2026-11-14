@@ -143,6 +143,11 @@ own_uri() ->
 %%   targets  => [{Node, SipUri}]: the nodes to try, bypassing chappe_esl
 %%   user     => the user of the INVITE to the node (default <<"mrf">>)
 %%   attach_timeout => ms to wait for the outbound socket (10000)
+%%   call_ref => binary(): the call's correlation ref (opaque). The
+%%               INVITE to the node carries it as X-Chappe-Call (and the
+%%               endpoint's own id as X-Chappe-Endpoint), the endpoint's
+%%               chappe_esl_call gets it as ref, info/1 returns it. Without
+%%               it X-Chappe-Call is the endpoint's random id, as before.
 %%   events   => more events for the owner (see the module doc):
 %%               playback_start, playback_stop, {custom, Subclass},
 %%               {channel, EventName}
@@ -172,11 +177,13 @@ connect(Req, Res, Opts) ->
             {error, no_node};
         Cands ->
             Id = chappe_mrf_lib:new_id(),
+            CallRef = maps:get(call_ref, Opts, undefined),
             {ok, Ep} = chappe_mrf_endpoint:start(#{
                 id => Id,
                 owner => Owner,
                 candidates => Cands,
-                events => maps:get(events, Opts, [])
+                events => maps:get(events, Opts, []),
+                call_ref => CallRef
             }),
             User = maps:get(user, Opts, <<"mrf">>),
             Uris = [with_user(U, User) || {_, U} <- Cands],
@@ -195,10 +202,9 @@ connect(Req, Res, Opts) ->
                 Opts
             ))#{
                 media => maps:get(media, Opts, anchor),
-                b_headers => [
-                    {chappe_mrf_esl:header(), Id}
-                    | maps:get(b_headers, Opts, [])
-                ],
+                b_headers =>
+                    chappe_mrf_esl:headers(Id, CallRef) ++
+                    maps:get(b_headers, Opts, []),
                 notify => Notify
             },
             case chappe_sip_b2b:create_b2bua(Req, Res, Uris, B2bOpts) of
@@ -227,7 +233,8 @@ connect(Req, Res, Opts) ->
 %% An endpoint with no caller: an INVITE from this node to a FreeSWITCH
 %% node, its channel handed back over the outbound socket. Its SDP is an
 %% inactive placeholder until bridge/2 brings a caller in. Opts: owner,
-%% node, select, targets, user, events (as for connect_caller/3), sdp (the offer,
+%% node, select, targets, user, events, call_ref (as for connect_caller/3),
+%% sdp (the offer,
 %% default inactive_sdp/0), headers, timeout (ms for the INVITE, 32000),
 %% attach_timeout.
 -spec create_endpoint(map()) -> {ok, endpoint()} | {error, term()}.
@@ -247,17 +254,18 @@ try_endpoint([], _Owner, _Opts, Last) ->
     Last;
 try_endpoint([{Node, Uri} | Rest], Owner, Opts, _Last) ->
     Id = chappe_mrf_lib:new_id(),
+    CallRef = maps:get(call_ref, Opts, undefined),
     {ok, Ep} = chappe_mrf_endpoint:start(#{
         id => Id,
         owner => Owner,
         candidates => [{Node, Uri}],
-        events => maps:get(events, Opts, [])
+        events => maps:get(events, Opts, []),
+        call_ref => CallRef
     }),
     UacOpts = #{
         local_sdp => maps:get(sdp, Opts, inactive_sdp()),
-        headers => [
-            {chappe_mrf_esl:header(), Id} | maps:get(headers, Opts, [])
-        ],
+        headers =>
+            chappe_mrf_esl:headers(Id, CallRef) ++ maps:get(headers, Opts, []),
         owner => Ep,
         timeout => maps:get(timeout, Opts, 32000)
     },
@@ -651,6 +659,14 @@ focus_subscribe(Req, Res) ->
 %% ---- internal ----
 
 %% the options checked before anything starts
+check_opts(#{call_ref := Ref}) when not is_binary(Ref); Ref =:= <<>> ->
+    {error, {bad_option, call_ref}};
+check_opts(#{call_ref := Ref} = Opts) ->
+    %% it goes in a SIP header value
+    case binary:match(Ref, [<<"\r">>, <<"\n">>, <<"\0">>]) of
+        nomatch -> check_opts(maps:remove(call_ref, Opts));
+        _ -> {error, {bad_option, call_ref}}
+    end;
 check_opts(Opts) ->
     chappe_mrf_endpoint:check_events(maps:get(events, Opts, [])).
 
