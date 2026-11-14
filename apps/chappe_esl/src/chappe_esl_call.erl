@@ -51,6 +51,7 @@
 -export([record/3, record_session/2, record_session_stop/2]).
 -export([send_dtmf/2, set/3, export/3, hangup/1, hangup/2]).
 -export([multiset/2, getvar/2, dump/1, mute/2, unmute/2]).
+-export([say/3, speak/3]).
 -export([conference/2, conference/3, audio_fork_start/3, audio_fork_stop/1]).
 -export([audio_fork_stop/2, audio_fork_pause/2, audio_fork_resume/2]).
 -export([audio_fork_send_text/3]).
@@ -63,6 +64,28 @@
 -define(EXEC_TIMEOUT, 60000).
 -define(CLEANUP_TIMEOUT, 2000).
 -define(DIGITS_VAR, <<"chappe_digits">>).
+%% mod_say's say types (switch_ivr_get_say_type_by_name).
+-define(SAY_TYPES, [
+    number,
+    items,
+    persons,
+    messages,
+    currency,
+    time_measurement,
+    current_date,
+    current_time,
+    current_date_time,
+    short_date_time,
+    telephone_number,
+    telephone_extension,
+    url,
+    ip_address,
+    email_address,
+    postal_address,
+    account_number,
+    name_spelled,
+    name_phonetic
+]).
 
 -type call() :: pid().
 -type event() :: chappe_esl_event:event().
@@ -402,6 +425,111 @@ set(Call, Var, Value) ->
 -spec export(call(), iodata(), iodata()) -> ok | {error, term()}.
 export(Call, Var, Value) ->
     done(exec(Call, <<"export">>, [Var, $=, Value])).
+
+%% Say Text with mod_say: a number, a date, digits, by language. Opts:
+%% language (<<"en">>, the mod_say module that speaks it), type (number:
+%% number | items | persons | messages | currency | time_measurement |
+%% current_date | current_time | current_date_time | short_date_time |
+%% telephone_number | telephone_extension | url | ip_address |
+%% email_address | postal_address | account_number | name_spelled |
+%% name_phonetic), method (pronounced: pronounced | iterated | counted),
+%% gender (masculine | feminine | neuter), plus exec_opts. The module plays
+%% sound files from the channel's sound_prefix; a missing one is skipped.
+-spec say(call(), iodata(), map()) -> ok | {error, term()}.
+say(Call, Text, Opts) ->
+    case say_args(to_bin(Text), Opts) of
+        {ok, Arg} -> done(exec(Call, <<"say">>, Arg, exec_opts(Opts)));
+        {error, _} = Err -> Err
+    end.
+
+say_args(Text, Opts) ->
+    Lang =
+        case maps:get(language, Opts, <<"en">>) of
+            L when is_atom(L) -> atom_to_binary(L);
+            L -> L
+        end,
+    Type = maps:get(type, Opts, number),
+    Method = maps:get(method, Opts, pronounced),
+    Gender = maps:get(gender, Opts, undefined),
+    check_say(Text, Lang, Type, Method, Gender).
+
+check_say(Text, Lang, Type, Method, Gender) ->
+    case
+        {
+            tts_word(Lang),
+            lists:member(Type, ?SAY_TYPES),
+            lists:member(Method, [pronounced, iterated, counted]),
+            lists:member(Gender, [undefined, masculine, feminine, neuter]),
+            Text =/= <<>> andalso one_line(Text)
+        }
+    of
+        {false, _, _, _, _} ->
+            {error, {bad_option, language}};
+        {_, false, _, _, _} ->
+            {error, {bad_option, type}};
+        {_, _, false, _, _} ->
+            {error, {bad_option, method}};
+        {_, _, _, false, _} ->
+            {error, {bad_option, gender}};
+        {_, _, _, _, false} ->
+            {error, {bad_option, text}};
+        _ ->
+            G = [[atom_to_binary(Gender), <<" ">>] || Gender =/= undefined],
+            {ok, [
+                Lang,
+                <<" ">>,
+                atom_to_binary(Type),
+                <<" ">>,
+                atom_to_binary(Method),
+                <<" ">>,
+                G,
+                chappe_esl_exec:arg(Text)
+            ]}
+    end.
+
+%% Speak Text with a text to speech module (the speak application). Opts:
+%% engine (the module, as <<"flite">>) and voice (as <<"kal">>), both
+%% defaulting to the channel's tts_engine and tts_voice, plus exec_opts.
+%% An engine needs a voice. Text with a `|' needs both, which FreeSWITCH
+%% would otherwise read as separators.
+-spec speak(call(), iodata(), map()) -> ok | {error, term()}.
+speak(Call, Text0, Opts) ->
+    Text = to_bin(Text0),
+    Engine = maps:get(engine, Opts, undefined),
+    Voice = maps:get(voice, Opts, undefined),
+    Pipe = binary:match(Text, <<"|">>) =/= nomatch,
+    Valid = fun
+        (undefined) -> true;
+        (W) -> tts_word(W)
+    end,
+    case {Valid(Engine), Valid(Voice), Text =/= <<>> andalso one_line(Text)} of
+        {false, _, _} ->
+            {error, {bad_option, engine}};
+        {_, false, _} ->
+            {error, {bad_option, voice}};
+        {_, _, false} ->
+            {error, {bad_option, text}};
+        _ when Engine =/= undefined, Voice =:= undefined ->
+            {error, {bad_option, voice}};
+        _ when Pipe, Engine =:= undefined ->
+            {error, {bad_option, text}};
+        _ ->
+            Arg =
+                case {Engine, Voice} of
+                    {undefined, undefined} -> Text;
+                    {undefined, V} -> [V, $|, Text];
+                    {E, V} -> [E, $|, V, $|, Text]
+                end,
+            done(exec(Call, <<"speak">>, Arg, exec_opts(Opts)))
+    end.
+
+tts_word(W) when is_binary(W) ->
+    event_word(W) andalso binary:match(W, [<<"|">>, <<"'">>]) =:= nomatch;
+tts_word(_) ->
+    false.
+
+one_line(Text) ->
+    binary:match(Text, [<<"\n">>, <<"\r">>]) =:= nomatch.
 
 %% Set several variables at once (multiset). Names are words without `=';
 %% the values are split on a delimiter none of them contains. At most 256

@@ -32,9 +32,6 @@
 %% (connect_caller's notify option, default the owner) gets the call's
 %% {chappe_sip_b2b, Ref, Event}, and {chappe_sip_b2b, Ref, {done, Why}}
 %% when it ends.
-%%
-%% Out of scope: say and speak (text to speech needs FreeSWITCH modules
-%% the lab does not load; run them with execute/3 where they exist).
 -module(chappe_mrf).
 
 -export([start/1, listen/1, stop_listener/0, install/0]).
@@ -42,7 +39,7 @@
 -export([play/2, play/3, play_info/3, play_collect/2, record/3]).
 -export([record_session/2, record_session_stop/2, send_dtmf/2, set/3, set/2]).
 -export([api/2, execute/3, execute/4, fork_audio_start/3, fork_audio_stop/1]).
--export([export/3, var/2, vars/1, mute/2, unmute/2]).
+-export([export/3, var/2, vars/1, mute/2, unmute/2, say/3, speak/3]).
 -export([fork_audio_pause/1, fork_audio_pause/2, fork_audio_resume/1]).
 -export([fork_audio_resume/2, fork_audio_send_text/2, fork_audio_send_text/3]).
 -export([modify/2, destroy/1, uuid/1, node/1, info/1]).
@@ -416,6 +413,19 @@ record_session(Ep, Path) ->
 -spec record_session_stop(endpoint(), iodata()) -> ok | {error, term()}.
 record_session_stop(Ep, Path) ->
     with_call(Ep, fun(C) -> chappe_esl_call:record_session_stop(C, Path) end).
+
+%% Say a number, a date, digits... in a language, with the node's mod_say
+%% module and its sound files: chappe_esl_call:say/3 for the options
+%% (language, type, method, gender).
+-spec say(endpoint(), iodata(), map()) -> ok | {error, term()}.
+say(Ep, Text, Opts) ->
+    with_call(Ep, fun(C) -> chappe_esl_call:say(C, Text, Opts) end).
+
+%% Speak text with the node's text to speech module. Opts: engine (as
+%% <<"flite">>, or a vendor module) and voice, see chappe_esl_call:speak/3.
+-spec speak(endpoint(), iodata(), map()) -> ok | {error, term()}.
+speak(Ep, Text, Opts) ->
+    with_call(Ep, fun(C) -> chappe_esl_call:speak(C, Text, Opts) end).
 
 -spec send_dtmf(endpoint(), iodata()) -> ok | {error, term()}.
 send_dtmf(Ep, Digits) ->

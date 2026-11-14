@@ -128,10 +128,28 @@ end) go to the `notify` option, the handler by default.
 | `modify/2` | `hold`, `unhold`, or a new SDP on an endpoint of `create_endpoint/1` |
 | `destroy/1` | hang up and free the endpoint |
 
+## Say numbers and speak text
+
+`say/3` reads a number, a date or digits with the node's mod_say module
+(mod_say_en for English) and its sound files. `speak/3` runs a text to
+speech module: mod_flite in the lab, a vendor module in production.
+
+```erlang
+ok = chappe_mrf:say(Ep, <<"42">>, #{type => number}),
+ok = chappe_mrf:say(Ep, integer_to_binary(erlang:system_time(second)),
+                    #{type => current_time}),
+ok = chappe_mrf:say(Ep, <<"1234">>, #{type => number, method => iterated}),
+ok = chappe_mrf:speak(Ep, <<"Your call is important to us">>,
+                      #{engine => <<"flite">>, voice => <<"kal">>}).
+```
+
+`say/3` takes `language` (`<<"en">>`), `type`, `method` (`pronounced`,
+`iterated`, `counted`) and `gender`. The sound files come from the
+channel's `sound_prefix`. `speak/3` without `engine` and `voice` uses the
+channel's `tts_engine` and `tts_voice`.
+
 ## Notes
 
-- `say` and `speak` are not wrapped: run them with `execute/3` where the
-  node has the modules.
 - A command blocks the process that calls it, not the endpoint: digits
   keep reaching the owner during a long playback.
 

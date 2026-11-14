@@ -28,6 +28,7 @@
     subscribe_events/1,
     variables_and_audio/1,
     fork_commands/1,
+    say_and_speak/1,
     dtmf_and_hangup/1,
     helpers/1,
     audio_stream_commands/1,
@@ -75,6 +76,7 @@ all() ->
         subscribe_events,
         variables_and_audio,
         fork_commands,
+        say_and_speak,
         dtmf_and_hangup,
         helpers,
         audio_stream_commands,
@@ -383,6 +385,55 @@ play_and_get_digits_full(_Config) ->
             file => <<"p.wav">>, result => full
         })
     ).
+
+%% say builds `<lang> <type> <method> [gender] <text>', speak
+%% `[engine|]voice|text'; options that would change how FreeSWITCH splits
+%% the argument are refused.
+%% req: ESL-37
+say_and_speak(_Config) ->
+    {Call, _Fake} = outbound(#{}),
+    ok = chappe_esl_call:say(Call, <<"42">>, #{}),
+    expect_app(<<"say">>, <<"en number pronounced 42">>),
+    ok = chappe_esl_call:say(Call, "2026-11-14 10:00", #{
+        language => fr, type => current_date, method => pronounced,
+        gender => feminine
+    }),
+    expect_app(
+        <<"say">>, <<"fr current_date pronounced feminine '2026-11-14 10:00'">>
+    ),
+    ok = chappe_esl_call:speak(Call, <<"hello | world">>, #{
+        engine => <<"flite">>, voice => <<"kal">>
+    }),
+    expect_app(<<"speak">>, <<"flite|kal|hello | world">>),
+    ok = chappe_esl_call:speak(Call, <<"hi">>, #{voice => <<"slt">>}),
+    expect_app(<<"speak">>, <<"slt|hi">>),
+    ok = chappe_esl_call:speak(Call, <<"plain">>, #{}),
+    expect_app(<<"speak">>, <<"plain">>),
+    [
+        ?assertEqual({error, {bad_option, K}}, chappe_esl_call:say(Call, T, O))
+     || {K, T, O} <- [
+            {type, <<"1">>, #{type => date}},
+            {method, <<"1">>, #{method => loud}},
+            {gender, <<"1">>, #{gender => other}},
+            {language, <<"1">>, #{language => <<"en us">>}},
+            {language, <<"1">>, #{language => 42}},
+            {text, <<>>, #{}},
+            {text, <<"1\n2">>, #{}}
+        ]
+    ],
+    [
+        ?assertEqual(
+            {error, {bad_option, K}}, chappe_esl_call:speak(Call, T, O)
+        )
+     || {K, T, O} <- [
+            {text, <<"a|b">>, #{}},
+            {text, <<"a|b">>, #{voice => <<"kal">>}},
+            {voice, <<"a">>, #{engine => <<"flite">>}},
+            {engine, <<"a">>, #{engine => <<"fl|ite">>, voice => <<"k">>}},
+            {voice, <<"a">>, #{voice => <<"k l">>}},
+            {text, <<"a\r\nb">>, #{}}
+        ]
+    ].
 
 %% Named forks: the bug name goes after the rate (before the metadata) and
 %% after each verb; pause, resume and send_text reach the forks the

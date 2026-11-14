@@ -42,7 +42,7 @@ chappe equivalents. Use it when you port a drachtio app.
 | `ep.destroy()` | `chappe_mrf:destroy(Ep)` |
 | `ep.on('dtmf')`, `ep.on('destroy')` | `{chappe_mrf, Ep, {dtmf, D}}`, `{chappe_mrf, Ep, {hangup, Cause}}` |
 | `ep.on('playback-start')`, `ep.addCustomEventListener` | `events => [playback_start, playback_stop, {custom, Sub}, {channel, Name}]` |
-| `ep.say`, `ep.speak` | not wrapped: `execute/3` where the node has the modules |
+| `ep.say`, `ep.speak` | `chappe_mrf:say(Ep, Text, Opts)` (mod_say), `speak(Ep, Text, #{engine, voice})` |
 | `ms.createConference(name, opts)` | `chappe_mrf:conference(Name, #{backend => fs})` |
 | `ep.joinConference(conf)` | `chappe_mrf_conf:join(Conf, Ep | B2b, Opts)` |
 | `conf.mute/kick/lock` | `chappe_mrf_conf:mute/2`, `kick/2`, `lock/1` |
