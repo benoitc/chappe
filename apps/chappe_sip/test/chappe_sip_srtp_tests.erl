@@ -328,3 +328,56 @@ is_rtcp_test() ->
     ?assertNot(?S:is_rtcp(rtp(1, 2, <<>>))),
     ?assertNot(?S:is_rtcp(<<16#80, 224>>)),
     ?assertNot(?S:is_rtcp(<<>>)).
+
+%% ---- fuzz: mutated genuine packets ----
+
+%% Genuine SRTP and SRTCP packets, mutated at random (bytes overwritten,
+%% truncated, extended, a run of bits flipped): unprotect never crashes,
+%% and nothing but the genuine packet authenticates. FUZZ_ITERS sets the
+%% count (default 5000), seeded from the clock and printed.
+mutation_fuzz_test_() ->
+    {timeout, 120, fun() ->
+        Seed = erlang:phash2({erlang:monotonic_time(), self()}),
+        _ = rand:seed(exsss, Seed),
+        Iters = list_to_integer(os:getenv("FUZZ_ITERS", "5000")),
+        ?debugFmt("srtp fuzz seed ~b iters ~b", [Seed, Iters]),
+        Master = ?T:master(),
+        Snd = ?T:sender(Master),
+        C = ctx(#{master => Master}),
+        lists:foreach(fun(_) -> fuzz_one(Snd, C) end, lists:seq(1, Iters))
+    end}.
+
+fuzz_one(Snd, C) ->
+    Ssrc = rand:uniform(16#FFFFFFFF),
+    {Good, Fun} =
+        case rand:uniform(2) of
+            1 ->
+                {?T:protect(random_rtp(rand:uniform(65536) - 1, Ssrc), 0, Snd),
+                 fun ?S:unprotect/2};
+            2 ->
+                Rtcp = <<2:2, 0:6, 200:8, 6:16, Ssrc:32, (rand:bytes(20))/binary>>,
+                {?T:protect_rtcp(Rtcp, rand:uniform(1000), Snd), fun ?S:unprotect_rtcp/2}
+        end,
+    Bad = mutate(Good),
+    case Fun(Bad, C) of
+        {ok, _, _} -> ?assertEqual(Good, Bad);
+        {error, Why} -> ?assert(is_atom(Why))
+    end.
+
+mutate(P) ->
+    N = byte_size(P),
+    case rand:uniform(4) of
+        1 ->
+            I = rand:uniform(N) - 1,
+            <<A:I/binary, _, B/binary>> = P,
+            <<A/binary, (rand:uniform(256) - 1), B/binary>>;
+        2 ->
+            binary:part(P, 0, rand:uniform(N) - 1);
+        3 ->
+            <<P/binary, (rand:bytes(rand:uniform(16)))/binary>>;
+        4 ->
+            Bit = rand:uniform(N * 8) - 1,
+            Len = min(rand:uniform(16), N * 8 - Bit),
+            <<A:Bit/bitstring, X:Len, B/bitstring>> = P,
+            <<A/bitstring, (X bxor ((1 bsl Len) - 1)):Len, B/bitstring>>
+    end.
