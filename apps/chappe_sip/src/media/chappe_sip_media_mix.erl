@@ -133,7 +133,9 @@ start(_Id, _Opts) ->
 %% Opts: room (required), sdp (the call's offer; answered when present,
 %% otherwise the mixer offers), owner (the room's owner if this join
 %% creates it), persist (true: a room this join creates stays up with no
-%% leg, until its owner exits), law (codec of an offer, ignored when
+%% leg, until its owner exits), create (false: join only a room that is
+%% up, else {error, no_room}; a SIPREC recording of the room, say), law
+%% (codec of an offer, ignored when
 %% answering), mute, name (SDES NAME the other legs see), direction (what
 %% the room may do with the leg, default sendrecv), talk_events (true: the
 %% calling process gets {chappe_sip_media, {talking, Room, true | false}}
@@ -235,7 +237,11 @@ join(#{id := Id, owner := Owner}, #{room := Room} = Opts, S) ->
         {ok, Plan} ->
             RoomOwner = maps:get(owner, Opts, Owner),
             Persist = maps:get(persist, Opts, false),
-            case ensure_room(Room, RoomOwner, Persist, S) of
+            case
+                ensure_room(
+                    Room, RoomOwner, Persist, maps:get(create, Opts, true), S
+                )
+            of
                 {ok, R, S1} -> add_leg(Id, Owner, Room, R, Plan, Opts, S1);
                 {error, _} = Err -> {reply, Err, S}
             end;
@@ -283,10 +289,12 @@ leg_plan(Opts, S) ->
         dir => maps:get(direction, Opts, sendrecv)
     }}.
 
-ensure_room(Room, Owner, Persist, #state{rooms = Rooms} = S) ->
+ensure_room(Room, Owner, Persist, Create, #state{rooms = Rooms} = S) ->
     case maps:find(Room, Rooms) of
         {ok, R} ->
             {ok, R, S};
+        error when not Create ->
+            {error, no_room};
         error ->
             case chappe_mix:start(S#state.conf_opts) of
                 {ok, Conf} ->

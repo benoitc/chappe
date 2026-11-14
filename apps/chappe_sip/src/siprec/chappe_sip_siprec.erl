@@ -42,6 +42,16 @@
 %% that crashes sends nothing: monitor Rec to see it go; its RS dialog
 %% then sends the BYE, and the call goes on.
 %%
+%% {room, Room} records a chappe_mix room of this node (a native
+%% conference, chappe_sip_media:conference/3) as one participant: a
+%% sendonly leg of the room hears the whole mix and sends it to the SRS as
+%% one stream. The room must be up ({error, no_room} in stopped
+%% otherwise); the recording runs until stop/1, its owner exits or the
+%% SRS ends it, whoever comes and goes in the room. The room's participant
+%% is sip:Room@chappe.invalid unless participants => #{room => _} names
+%% it, and call_ref => binary() gives the recording the room's call_ref
+%% (default a new one).
+%%
 %% Opts:
 %%   owner          => pid() (default the caller): gets the events; its
 %%                     exit ends the recording
@@ -87,55 +97,21 @@
 
 %% ---- API ----
 
--spec start(chappe_sip_b2b:b2b(), binary() | default, map()) ->
+-spec start(chappe_sip_b2b:b2b() | {room, binary()}, binary() | default, map()) ->
     {ok, rec()} | {error, term()}.
 start(Source, Srs0, Opts) when is_map(Opts) ->
-    case {srs(Srs0), valid_opts(Opts)} of
+    case
+        {
+            chappe_sip_siprec_body:srs(Srs0),
+            chappe_sip_siprec_body:valid_opts(Opts)
+        }
+    of
         {{ok, Srs}, true} -> start_source(Source, Srs, Opts);
         {{error, _} = E, _} -> E;
         {_, false} -> {error, badarg}
     end;
 start(_Source, _Srs, _Opts) ->
     {error, badarg}.
-
-srs(default) ->
-    case chappe_sip_config:get(siprec_srs) of
-        undefined -> {error, no_srs};
-        Uri -> srs(Uri)
-    end;
-srs(<<"sip:", _/binary>> = Uri) ->
-    {ok, Uri};
-srs(<<"sips:", _/binary>> = Uri) ->
-    {ok, Uri};
-srs(_) ->
-    {error, badarg}.
-
-valid_opts(Opts) ->
-    lists:all(fun valid_opt/1, maps:to_list(Opts)).
-
-valid_opt({owner, P}) ->
-    is_pid(P);
-valid_opt({answer_timeout, T}) ->
-    is_integer(T) andalso T > 0;
-valid_opt({participants, M}) ->
-    is_map(M) andalso lists:all(fun valid_party/1, maps:to_list(M));
-valid_opt({metadata, M}) ->
-    is_map(M) andalso lists:all(fun is_boolean/1, maps:values(M));
-valid_opt({legacy_content_type, B}) ->
-    is_boolean(B);
-valid_opt({headers, H}) ->
-    is_list(H);
-valid_opt({codec, C}) ->
-    is_map(C);
-valid_opt({ptime, P}) ->
-    is_integer(P) andalso P > 0;
-valid_opt({K, _}) ->
-    lists:member(K, [from, proxy, auth, flow]).
-
-valid_party({Leg, #{aor := Aor} = P}) when Leg =:= a; Leg =:= b ->
-    is_binary(Aor) andalso is_binary(maps:get(name, P, <<>>));
-valid_party(_) ->
-    false.
 
 %% the call is read in the caller's process, and the recording started on
 %% the call's node
@@ -163,6 +139,24 @@ start_source({Pid, Ref} = B2b, Srs, Opts) when is_pid(Pid), is_reference(Ref) ->
             {error, not_anchored};
         {error, _} = E ->
             E
+    end;
+start_source({room, Room}, Srs, Opts) when is_binary(Room) ->
+    %% a room is recorded where its mixer runs: this node
+    case chappe_sip_call:valid(Room) of
+        true ->
+            chappe_sip_siprec_sup:start_child(#{
+                source => {room, Room},
+                session => undefined,
+                call_ref => maps:get(call_ref, Opts, chappe_sip_call:new_ref()),
+                parties => #{
+                    room => <<"<sip:", Room/binary, "@chappe.invalid>">>
+                },
+                srs => Srs,
+                opts => Opts,
+                owner => maps:get(owner, Opts, self())
+            });
+        false ->
+            {error, badarg}
     end;
 start_source(_Source, _Srs, _Opts) ->
     {error, badarg}.
@@ -279,7 +273,9 @@ monitor_session(S) ->
 
 handle_continue(invite, #{parties0 := Parties} = St0) ->
     St1 = lists:foldl(
-        fun(Leg, Acc) -> join_party(Leg, Parties, Acc) end, St0, [a, b]
+        fun(Leg, Acc) -> join_party(Leg, Parties, Acc) end,
+        St0,
+        lists:sort(maps:keys(Parties))
     ),
     case chappe_sip_siprec_tap:open(St1) of
         {ok, St2} -> send_invite(St2);
@@ -454,6 +450,10 @@ again(St) ->
 
 %% The parties of the call again: a leg whose party changed gets a new
 %% participant (the old one disassociated) and a new tap on its stream.
+party_change(From, #{source := {room, _}} = St) ->
+    %% the room is one participant, whoever is in it
+    reply(From, ok),
+    {noreply, St};
 party_change(From, #{source := {b2b, B2b}} = St) ->
     case chappe_sip_b2b:info(B2b) of
         #{parties := Parties} ->

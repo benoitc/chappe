@@ -6,10 +6,12 @@
 %% the SDP offer (RFC 7866 7.1.1, one m-line per recorded stream with its
 %% a=label) and the full metadata snapshot (RFC 7865); and the SRS's
 %% answer cut back into each tap's part. Pure functions over the
-%% recording's state.
+%% recording's state, and the checks of chappe_sip_siprec:start/3's
+%% arguments, made in the caller.
 -module(chappe_sip_siprec_body).
 
 -export([body/1, media/1, identity/3, answers/2, sdp_of/1, sdp_only/1]).
+-export([srs/1, valid_opts/1]).
 
 %% The RS body: the SDP offer, a sendonly (or, paused, inactive) m-line per
 %% stream with its label, and the full metadata snapshot.
@@ -209,3 +211,49 @@ sdp_only(Sdp) ->
         [S, _] -> <<S/binary, "\r\n">>;
         [S] -> S
     end.
+
+%% The recording server's URI: a sip: or sips: URI, or the siprec_srs
+%% config for default.
+-spec srs(binary() | default) -> {ok, binary()} | {error, no_srs | badarg}.
+srs(default) ->
+    case chappe_sip_config:get(siprec_srs) of
+        undefined -> {error, no_srs};
+        Uri -> srs(Uri)
+    end;
+srs(<<"sip:", _/binary>> = Uri) ->
+    {ok, Uri};
+srs(<<"sips:", _/binary>> = Uri) ->
+    {ok, Uri};
+srs(_) ->
+    {error, badarg}.
+
+%% start/3's options, each of a known key and of its type.
+-spec valid_opts(map()) -> boolean().
+valid_opts(Opts) ->
+    lists:all(fun valid_opt/1, maps:to_list(Opts)).
+
+valid_opt({owner, P}) ->
+    is_pid(P);
+valid_opt({call_ref, R}) ->
+    chappe_sip_call:valid(R);
+valid_opt({answer_timeout, T}) ->
+    is_integer(T) andalso T > 0;
+valid_opt({participants, M}) ->
+    is_map(M) andalso lists:all(fun valid_party/1, maps:to_list(M));
+valid_opt({metadata, M}) ->
+    is_map(M) andalso lists:all(fun is_boolean/1, maps:values(M));
+valid_opt({legacy_content_type, B}) ->
+    is_boolean(B);
+valid_opt({headers, H}) ->
+    is_list(H);
+valid_opt({codec, C}) ->
+    is_map(C);
+valid_opt({ptime, P}) ->
+    is_integer(P) andalso P > 0;
+valid_opt({K, _}) ->
+    lists:member(K, [from, proxy, auth, flow]).
+
+valid_party({Leg, #{aor := Aor} = P}) when Leg =:= a; Leg =:= b; Leg =:= room ->
+    is_binary(Aor) andalso is_binary(maps:get(name, P, <<>>));
+valid_party(_) ->
+    false.

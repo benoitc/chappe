@@ -26,6 +26,7 @@
 -export([server_writes_store/1, server_not_a_recording_session/1,
          server_sink_and_stream_crash/1, server_refuses_bad_body/1,
          server_answers_on_the_wire/1]).
+-export([room_recorded/1, room_not_up/1]).
 
 all() ->
     [invite_is_a_recording_session, chappe_as_recording_server,
@@ -35,7 +36,8 @@ all() ->
      too_many_per_call, bad_arguments, metadata_privacy,
      legacy_content_type, from_another_node, server_writes_store,
      server_not_a_recording_session, server_sink_and_stream_crash,
-     server_refuses_bad_body, server_answers_on_the_wire].
+     server_refuses_bad_body, server_answers_on_the_wire,
+     room_recorded, room_not_up].
 
 -define(UA, chappe_sip_test_ua).
 -define(M, chappe_sip_siprec_meta).
@@ -527,6 +529,58 @@ server_refuses_bad_body(_Config) ->
     end),
     ?assertMatch({error, _}, got(srs_served)),
     ?assertEqual(488, ?UA:status(got(bad))).
+
+%% ---- native conference recording ----
+
+%% A chappe_mix room recorded as one participant: one sendonly stream, the
+%% room's mix, which reaches the recording server's port once it answered.
+%% req: R7866-9.1-1 R7866-7.1.1-1
+room_recorded(_Config) ->
+    ok = chappe_sip_media:configure(#{mix => #{ip => {127, 0, 0, 1}}}),
+    _ = start_app(),
+    %% a party in the room
+    {ok, Party} = chappe_sip_media:session(#{call_id => <<"room-party">>},
+                                           #{capability => conference}),
+    {ok, _Offer} = chappe_sip_media:conference(Party, <<"r1">>, #{}),
+    {ok, Media} = gen_udp:open(0, [binary, {ip, {127, 0, 0, 1}}, {active, true}]),
+    {ok, MPort} = inet:port(Media),
+    SP = ?UA:pick(),
+    Test = self(),
+    ?UA:peer(SP, fun(Sock) ->
+        {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
+        Test ! {srs_invite, Inv},
+        Answer = <<"v=0\r\no=srs 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\n"
+                   "m=audio ", (integer_to_binary(MPort))/binary, " RTP/AVP 0\r\na=recvonly\r\n"
+                   "a=label:1\r\n">>,
+        ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, ?UA:tag(), [contact(Sock)], Answer)),
+        {_, _} = ?UA:recv_req(Sock, <<"ACK">>),
+        srs_bye(Sock, Test)
+    end),
+    {ok, Rec} = chappe_sip_siprec:start({room, <<"r1">>}, srs_uri(SP),
+                                        #{call_ref => <<"room-r1">>}),
+    {Sdp, Doc} = parts(got(srs_invite)),
+    {_, [M]} = chappe_sip_sdp:sections(Sdp),
+    ?assert(lists:member(<<"a=sendonly">>, M)),
+    ?assertEqual(<<"1">>, label(M)),
+    ?assertMatch([#{names := [#{aor := <<"sip:r1@chappe.invalid">>}]}], maps:get(participants, Doc)),
+    ?assertMatch([#{call_ref := <<"room-r1">>}], maps:get(sessions, Doc)),
+    ?assertMatch([#{label := <<"1">>, participants := [_]}], ?M:senders(Doc)),
+    {started, #{call_ref := <<"room-r1">>}} = event(Rec),
+    receive {udp, Media, _, _, <<2:2, _/bits>>} -> ok
+    after 3000 -> ct:fail(no_room_media)
+    end,
+    ok = chappe_sip_siprec:stop(Rec),
+    _ = got(srs_bye),
+    ok = chappe_sip_media:stop(Party),
+    gen_udp:close(Media).
+
+%% A room that is not up is not made by its recording.
+room_not_up(_Config) ->
+    ok = chappe_sip_media:configure(#{mix => #{ip => {127, 0, 0, 1}}}),
+    _ = start_app(),
+    {ok, Rec} = chappe_sip_siprec:start({room, <<"nobody">>}, srs_uri(?UA:pick()), #{}),
+    {stopped, #{reason := {error, no_room}}} = event(Rec),
+    ?assertEqual({error, badarg}, chappe_sip_siprec:start({room, <<"a b">>}, srs_uri(1), #{})).
 
 rtp(PT, Payload) ->
     <<2:2, 0:1, 0:1, 0:4, 0:1, PT:7, 1:16, 160:32, 16#1234:32, Payload/binary>>.

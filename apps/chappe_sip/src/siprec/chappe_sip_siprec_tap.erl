@@ -5,7 +5,9 @@
 %% per party of the call, an rtpengine subscription (chappe_sip_media:
 %% subscribe/2) whose offered m-lines become the party's recorded streams,
 %% answered with that party's part of the recording server's answer, and
-%% removed on pause, on a party change and at the end. The functions take
+%% removed on pause, on a party change and at the end. A chappe_mix room
+%% has one tap: a sendonly leg of the room, which hears the whole mix
+%% (chappe_sip_media:conference/3), pointed at the recording server. The functions take
 %% and return the recording's state.
 -module(chappe_sip_siprec_tap).
 
@@ -35,6 +37,30 @@ open([#{tap := undefined} = S | Rest], St, Acc) ->
 open([S | Rest], St, Acc) ->
     open(Rest, St, [S | Acc]).
 
+tap(#{party := room}, #{source := {room, Room}, call_ref := Ref}) ->
+    %% the room's mix, as a sendonly leg of the room the mixer offers
+    case
+        chappe_sip_media:session(#{call_id => <<"siprec-", Ref/binary>>}, #{
+            capability => conference
+        })
+    of
+        {ok, S} ->
+            case
+                chappe_sip_media:conference(S, Room, #{
+                    direction => sendonly, create => false, name => <<"siprec">>
+                })
+            of
+                {ok, Offer} ->
+                    {Sess, Media} = chappe_sip_sdp:sections(Offer),
+                    Conn = [L || <<"c=", _/binary>> = L <- Sess],
+                    {ok, {mix, S}, [with_conn(M, Conn) || M <- Media]};
+                {error, _} = E ->
+                    chappe_sip_media:stop(S),
+                    E
+            end;
+        {error, _} = E ->
+            E
+    end;
 tap(#{party := Leg}, #{session := S, opts := Opts}) ->
     Sub = maps:merge(
         #{party => party(Leg)},
@@ -102,6 +128,9 @@ close_one(#{tap := {sub, ToTag}} = S, #{session := Sess}) ->
         exit:_ -> ok
     end,
     S#{tap := undefined};
+close_one(#{tap := {mix, M}} = S, _St) ->
+    ok = chappe_sip_media:stop(M),
+    S#{tap := undefined};
 close_one(S, _St) ->
     S.
 
@@ -124,6 +153,8 @@ answer_each([{Tap, Sdp} | Rest], St) ->
 
 answer_tap(undefined, _Sdp, _St) ->
     ok;
+answer_tap({mix, M}, Sdp, _St) ->
+    chappe_sip_media:set_remote(M, Sdp);
 answer_tap({sub, ToTag}, Sdp, #{session := S}) ->
     %% a tap is transcoded (to PCMU unless codec says otherwise), so the
     %% SRS may take fewer codecs than the party sends
