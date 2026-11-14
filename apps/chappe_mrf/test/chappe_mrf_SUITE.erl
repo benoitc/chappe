@@ -19,6 +19,7 @@
     refer_removes_member/1,
     refer_adds_native/1,
     refer_adds_fs/1,
+    refer_hostile_target/1,
     member_transferred/1,
     caller_hangup/1,
     unknown_channel_refused/1,
@@ -68,6 +69,7 @@ all() ->
         refer_removes_member,
         refer_adds_native,
         refer_adds_fs,
+        refer_hostile_target,
         member_transferred,
         caller_hangup,
         unknown_channel_refused,
@@ -376,6 +378,49 @@ refer_adds_fs(Config) ->
     conf_event(Conf, {left, <<"77">>, kicked}),
     ?assertMatch([#{id := First}], chappe_mrf_conf:members(Conf)),
     ok = chappe_mrf:destroy(Ep).
+
+%% Toll fraud: a Refer-To whose URI carries FreeSWITCH dial-string syntax
+%% (a parallel dial through a gateway, per-leg variables, an expansion)
+%% is refused 403 before anything is dialed, and the policy of an allowed
+%% one sees the dial string it would run.
+refer_hostile_target(Config) ->
+    ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
+    Test = self(),
+    {ok, Conf} = chappe_mrf:conference(<<"tollroom">>, #{
+        focus => true,
+        refer_policy => fun(Info) ->
+            Test ! {policy, Info},
+            true
+        end,
+        dial_endpoint => #{targets => [{fs1, fs_uri(Config)}]}
+    }),
+    #{entity := Entity} = chappe_mrf_conf:info(Conf),
+    Hostile = [
+        <<"<sip:a,sofia/gateway/gw/19005551234@h>">>,
+        <<"<sip:a|sofia/gateway/gw/1900@h>">>,
+        <<"<sip:[leg_timeout=1]a@h>">>,
+        <<"<sip:a@h;x=${system(id)}>">>,
+        <<"<sip:a:_:sofia/gateway/gw/1900@h>">>,
+        <<"<sip:{x=1}a@h>">>
+    ],
+    lists:foreach(
+        fun(T) ->
+            {Sock, _} = refer(Config, Entity, <<"boss">>, T),
+            ?assertMatch(<<"SIP/2.0 403", _/binary>>, sip_response(Sock)),
+            gen_udp:close(Sock)
+        end,
+        Hostile
+    ),
+    receive
+        {fake_fs, _, _, {invite, _}} = M -> ct:fail({dialed, M})
+    after 300 -> ok
+    end,
+    {Sock2, _} = refer(Config, Entity, <<"boss">>, <<"<sip:carol@10.0.0.9>">>),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(Sock2)),
+    receive
+        {policy, #{action := add, dial := <<"sofia/external/carol@10.0.0.9">>}} -> ok
+    after 2000 -> ct:fail(no_dial_in_policy)
+    end.
 
 %% A member's call is transferred by REFER (its B2BUA carries it out,
 %% transfer => auto): handed the call's transferred event, the room shows

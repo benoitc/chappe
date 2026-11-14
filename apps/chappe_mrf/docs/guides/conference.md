@@ -216,8 +216,13 @@ ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
 - `method=BYE` removes the member whose `uri` matches (the join's `uri`,
   or a dialed party's); 404 when none does.
 - Without `refer_policy` every REFER is refused 403. The policy sees
-  `#{action, target, referrer, referred_by}`; `referred_by` is only
-  claimed, never grant on it alone.
+  `#{action, target, referrer, referred_by}`, and for an add the dial
+  string it would run as `dial`; `referred_by` is only claimed, never
+  grant on it alone. Decide on where the call goes (`dial`), not only on
+  who asks: that is what a toll-fraud REFER aims at.
+- A target URI with anything FreeSWITCH reads as dial-string syntax
+  (`, | [ ] { } < > ' $ \`, `:_:`, spaces) is refused 403 before the
+  policy runs: only letters, digits and `- . _ ~ ! * + = ; @ : %` pass.
 
 A member's own REFER is a transfer its call carries out
 (`transfer => auto` on `connect_caller/3`): the target takes the member's

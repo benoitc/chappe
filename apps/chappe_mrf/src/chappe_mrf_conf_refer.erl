@@ -30,7 +30,7 @@
 
 -export([refer/3, dial_native/4, focus/2, call/2]).
 -export([fs_dial/3, remove/2, native_event/3, fs_added/3, timeout/2]).
--export([transferred/3, dial_string/2, dialing/4]).
+-export([transferred/3, dial_string/2, dialing/4, dialable/1]).
 
 -define(DIAL_TIMEOUT, 30000).
 
@@ -44,7 +44,7 @@ refer(Conf, Req, Res) ->
         #{policy := Policy, backend := Backend} = Cfg ->
             case
                 chappe_sip_focus:refer(undefined, Req, Res, #{
-                    policy => Policy, owner => Conf
+                    policy => guard(Policy, Cfg), owner => Conf
                 })
             of
                 {remove, Target, Refer} ->
@@ -77,6 +77,40 @@ refer(Conf, Req, Res) ->
             Err
     end.
 
+%% The room's policy behind the dial-string check: a party to add whose
+%% URI FreeSWITCH would read as more than one destination is refused
+%% 403 before the policy runs; otherwise the policy sees the dial string
+%% it would run as `dial'.
+guard(Policy, Cfg) ->
+    fun
+        (#{action := add, target := Target} = Info) ->
+            case dialable(Target) of
+                true ->
+                    Policy(Info#{
+                        dial => iolist_to_binary(dial_string(Cfg, Target))
+                    });
+                false ->
+                    {reject, 403}
+            end;
+        (Info) ->
+            Policy(Info)
+    end.
+
+%% Whether a target URI is safe in a FreeSWITCH dial string. The
+%% originate parser splits on `,' (parallel), `|' (sequential) and `:_:'
+%% (enterprise), reads `[...]', `{...}' and `<...>' as channel variables,
+%% toggles quoting on `''; the application running it expands `${...}'
+%% (and `${api(...)}', on by default) and `\' escapes. Only the
+%% characters of a plain SIP URI pass: letters, digits and - . _ ~ ! * +
+%% = ; @ : %, and never `:_:'.
+-spec dialable(binary()) -> boolean().
+dialable(Target) when is_binary(Target), byte_size(Target) =< 256 ->
+    re:run(Target, <<"^[A-Za-z0-9._~!*+=;@:%-]+$">>, [{capture, none}]) =:=
+        match andalso
+        binary:match(Target, <<":_:">>) =:= nomatch;
+dialable(_) ->
+    false.
+
 %% chappe_mrf:focus_refer/2: the room the Request-URI's user names.
 -spec focus(chappe_sip_req:req(), chappe_sip_res:res()) -> ok.
 focus(Req, Res) ->
@@ -100,6 +134,7 @@ focus(Req, Res) ->
 dial_native(Conf, Target, Refer, #{endpoint := EpOpts} = Cfg) ->
     Ep0 = EpOpts#{owner => Conf, events => [{channel, <<"CHANNEL_BRIDGE">>}]},
     maybe
+        true ?= dialable(Target) orelse {error, not_dialable},
         {ok, Ep} ?= chappe_mrf:create_endpoint(Ep0),
         {ok, Member} ?=
             joined(
@@ -179,6 +214,12 @@ dialing(Ep, Id, Refer, #state{dialing = D} = S) ->
 -spec fs_dial(binary(), chappe_sip_refer:refer(), #state{}) ->
     {ok | {error, term()}, #state{}}.
 fs_dial(Target, Refer, #state{dialing = D} = S) ->
+    case dialable(Target) of
+        true -> fs_dial(Target, Refer, D, S);
+        false -> {{error, not_dialable}, S}
+    end.
+
+fs_dial(Target, Refer, D, S) ->
     Uuid = chappe_mrf_lib:new_id(),
     Dial = [
         <<"{origination_uuid=">>,
