@@ -278,6 +278,9 @@ common({call, From}, {recording, Req}, _State, Data) ->
     {keep_state, Data1, [{reply, From, Reply}]};
 common({call, From}, {attach, _, _}, _State, _Data) ->
     {keep_state_and_data, [{reply, From, {error, attached}}]};
+common(info, {chappe_audio_store, _Job, {adopted, Key, Result}}, _State, Data) ->
+    adopted(Result, Key, Data),
+    keep_state_and_data;
 common(info, {'DOWN', Mon, process, _, _}, _State, #state{owner_mon = Mon}) ->
     %% chappe_esl_call cleans the channel up when it sees us go, and the
     %% dialog fsm tears a dialog still ours down with its owner
@@ -393,24 +396,37 @@ recording({take, Path}, #state{recordings = Recs} = Data) ->
         error -> {error, Data}
     end.
 
-%% The session recordings still tracked end with the channel: each is
-%% adopted into the store, and the owner gets {recorded, Id}. Stop says
+%% The session recordings still tracked end with the channel: each goes
+%% to a job of the store, which tells this endpoint (Notify) the outcome,
+%% and the endpoint tells its owner {recorded, Id} (adopted/2). Stop says
 %% whether the channel is still up and must stop recording first (the
-%% endpoint goes before its hangup).
+%% endpoint goes before its hangup; nobody is then told). The tracked
+%% ones are forgotten here, so a hangup and a terminate adopt once.
 adopt_recordings(#state{recordings = Recs} = Data, Stop) ->
+    Notify =
+        case Stop of
+            true -> undefined;
+            false -> self()
+        end,
     maps:foreach(
         fun(Path, {Ref, Meta}) ->
             _ =
                 Stop andalso is_pid(Data#state.call) andalso
                     chappe_esl_call:record_session_stop(Data#state.call, Path),
-            case chappe_mrf_store:adopt(Path, Ref, Meta) of
-                {ok, Id} -> notify(Data, {recorded, Id});
+            case chappe_mrf_store:adopt_async(Path, Ref, Meta, Notify) of
+                {ok, _Job, _Key} -> ok;
                 {error, Reason} -> notify(Data, {record_failed, Path, Reason})
             end
         end,
         Recs
     ),
     Data#state{recordings = #{}}.
+
+%% A job's outcome: the owner hears of it.
+adopted({ok, Id}, _Key, Data) ->
+    notify(Data, {recorded, Id});
+adopted({error, Reason}, Key, Data) ->
+    notify(Data, {record_failed, Key, Reason}).
 
 start_call(Conn, Events, CallRef) ->
     Opts =

@@ -19,6 +19,7 @@ all() ->
         read_ranges_and_delete,
         adopt_wav,
         adopt_other_and_keep,
+        adopt_in_job,
         retention_and_stale_parts,
         writer_owner_death,
         writer_crash,
@@ -163,7 +164,48 @@ adopt_wav(Config) ->
         R
     ),
     ?assertMatch({ok, _}, file:read_file_info(maps:get(path, R))),
-    ?assertEqual({error, enoent}, chappe_audio_store:adopt(Src, <<"call-fs">>, #{})).
+    %% asked again (a hangup and a terminate may both ask): adopted once,
+    %% the same outcome
+    ?assertEqual({ok, Id}, chappe_audio_store:adopt(Src, <<"call-fs">>, #{})),
+    ?assertEqual(1, length(chappe_audio_store:find(<<"call-fs">>))).
+
+%% adopt/4 runs in a job of the store: it answers at once, the store
+%% stays free while the job waits (settle_ms here, a long copy in real
+%% life), a second ask for the same file joins the job, and each asker
+%% gets the one outcome.
+adopt_in_job(Config) ->
+    Src = filename:join(?config(priv_dir, Config), "job.wav"),
+    ok = file:write_file(Src, chappe_audio_wav:header(8000, 1, 0)),
+    T0 = erlang:monotonic_time(millisecond),
+    {ok, Job} = chappe_audio_store:adopt(Src, <<"call-job">>, #{}, #{
+        notify => self(), settle_ms => 1500
+    }),
+    Me = self(),
+    Other = spawn(fun() ->
+        Me ! {other, chappe_audio_store:adopt(Src, <<"call-job">>, #{}, #{notify => self()}),
+            receive M -> M after 5000 -> none end}
+    end),
+    #{dir := _} = chappe_audio_store:config(),
+    ?assert(erlang:monotonic_time(millisecond) - T0 < 1000),
+    Key = unicode:characters_to_binary(filename:absname(Src)),
+    {ok, Id} =
+        receive
+            {chappe_audio_store, Job, {adopted, Key, R}} -> R
+        after 5000 -> ct:fail(no_outcome)
+        end,
+    receive
+        {other, {ok, Job}, {chappe_audio_store, Job, {adopted, Key, {ok, Id}}}} -> ok
+    after 5000 -> ct:fail(no_other)
+    end,
+    _ = Other,
+    ?assertEqual(1, length(chappe_audio_store:find(<<"call-job">>))),
+    Gone = filename:join(?config(priv_dir, Config), "none.wav"),
+    {ok, J2} = chappe_audio_store:adopt(Gone, <<"x">>, #{}, #{notify => self()}),
+    receive
+        {chappe_audio_store, J2, {adopted, _, {error, enoent}}} -> ok
+    after 5000 -> ct:fail(no_error)
+    end,
+    ?assertEqual({error, badarg}, chappe_audio_store:adopt(Src, <<"x">>, #{}, #{nope => 1})).
 
 %% Another file keeps its extension and the format the caller gives;
 %% keep => true copies and leaves the source.

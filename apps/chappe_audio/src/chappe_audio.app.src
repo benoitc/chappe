@@ -11,6 +11,7 @@
         chappe_audio_registry,
         chappe_audio_store_srv,
         chappe_audio_writer_sup,
+        chappe_audio_adopt_sup,
         chappe_audio_listener_sup,
         chappe_audio_conn_sup,
         chappe_audio_stream_sup,

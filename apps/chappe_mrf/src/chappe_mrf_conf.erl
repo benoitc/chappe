@@ -34,6 +34,9 @@
 %%                              node's events to carry CUSTOM
 %%                              conference::maintenance, see start/2)
 %%   {play_done, Member, File}  fs: play/3 to the member ended
+%%   {recorded, Path, Result}   fs: a recording started with store =>
+%%                              default is in the store: {ok, Id}, or
+%%                              {error, Reason}
 %%
 %% transfer/3 moves a member to another conference of the same backend:
 %% on fs both rooms are on one node and mod_conference moves the channel
@@ -259,8 +262,9 @@ record(Conf, Path, Opts) when is_map(Opts) ->
     end.
 
 %% Stop every recording of the room; those started with store =>
-%% default are then in the store, returned as {ok, Ids}.
--spec stop_record(conf()) -> ok | {ok, [binary()]} | {error, term()}.
+%% default are then adopted into the store, each in a job of the store,
+%% and the room's listeners get {recorded, Path, {ok, Id} | {error, R}}.
+-spec stop_record(conf()) -> ok | {error, term()}.
 stop_record(Conf) ->
     call(Conf, {record, stop}).
 
@@ -611,19 +615,14 @@ handle_info({chappe_mrf, Ep, {hangup, _} = E}, S) when is_pid(Ep) ->
 handle_info({chappe_mrf, Ep, Event}, S) when is_pid(Ep) ->
     %% a dialed endpoint's channel and completion events
     {noreply, chappe_mrf_conf_refer:native_event(Ep, Event, S)};
+handle_info({chappe_audio_store, _Job, {adopted, Key, Result}}, S) ->
+    {noreply, emit({recorded, Key, Result}, S)};
 handle_info({refer_bgdial, Uuid, Result}, S) ->
     {noreply, chappe_mrf_conf_refer:fs_started(Uuid, Result, S)};
 handle_info({timeout, _, {refer_dial, Key}}, S) ->
     {noreply, chappe_mrf_conf_refer:timeout(Key, S)};
-handle_info({fs_join_timeout, Ep}, #state{pending = P} = S) ->
-    case maps:take({ep, Ep}, P) of
-        {#{from := From, owned := Owned}, P1} ->
-            gen_server:reply(From, {error, timeout}),
-            _ = Owned andalso spawn(fun() -> chappe_mrf:destroy(Ep) end),
-            {noreply, S#state{pending = P1}};
-        error ->
-            {noreply, S}
-    end;
+handle_info({fs_join_timeout, Ep}, S) ->
+    {noreply, chappe_mrf_conf_fs:join_timeout(Ep, S)};
 handle_info({chappe_sip_siprec, Rec, Event}, S) ->
     {noreply, siprec_event(Rec, Event, S)};
 handle_info({'DOWN', Mon, process, _, _}, #state{owner_mon = Mon} = S) ->
@@ -649,7 +648,7 @@ terminate(_Reason, #state{members = M, focus = F} = S) ->
     _ =
         S#state.recordings =/= [] andalso
             chappe_mrf_conf_fs:stop_record(S) =:= ok andalso
-            adopt_recordings(S),
+            adopt_recordings(S, undefined),
     maps:foreach(fun(Id, Mb) -> _ = hangup_member(Id, Mb, S) end, M),
     ok.
 
@@ -816,7 +815,8 @@ record_req({start, Path, Opts}, #state{backend = fs} = S) ->
 record_req(stop, #state{backend = fs} = S) ->
     case chappe_mrf_conf_fs:stop_record(S) of
         ok when S#state.recordings =/= [] ->
-            {reply, {ok, adopt_recordings(S)}, S#state{recordings = []}};
+            _ = adopt_recordings(S, self()),
+            {reply, ok, S#state{recordings = []}};
         Reply ->
             {reply, Reply, S}
     end;
@@ -854,13 +854,13 @@ record_stored(Path, Opts, S) ->
         Err -> {reply, Err, S}
     end.
 
-%% The room's stored recordings, stopped, into the store (source room);
-%% the ids of those adopted.
-adopt_recordings(#state{recordings = Recs}) ->
+%% The room's stored recordings, stopped, into the store (source room),
+%% each in a job of the store: Notify (the room) hears the outcome and
+%% its listeners get {recorded, Path, {ok, Id} | {error, Reason}}.
+adopt_recordings(#state{recordings = Recs}, Notify) ->
     [
-        Id
-     || {Path, Ref, Meta} <- lists:reverse(Recs),
-        {ok, Id} <- [chappe_mrf_store:adopt(Path, Ref, Meta#{source => room})]
+        chappe_mrf_store:adopt_async(Path, Ref, Meta#{source => room}, Notify)
+     || {Path, Ref, Meta} <- lists:reverse(Recs)
     ].
 
 %% transfer/3's steps here, sent as {transfer, Step, Member}: out marks the

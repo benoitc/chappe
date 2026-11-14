@@ -12,6 +12,7 @@
 -export([
     join/5,
     start_join/5,
+    join_timeout/2,
     event/3,
     gone_ep/2,
     api/3,
@@ -226,6 +227,18 @@ room_event(Ev, #state{name = Name} = S) ->
                 S
             );
         _ ->
+            S
+    end.
+
+%% A member that never showed up in the room: its join fails, and the
+%% endpoint made for it goes.
+join_timeout(Ep, #state{pending = P} = S) ->
+    case maps:take({ep, Ep}, P) of
+        {#{from := From, owned := Owned}, P1} ->
+            gen_server:reply(From, {error, timeout}),
+            _ = Owned andalso spawn(fun() -> chappe_mrf:destroy(Ep) end),
+            S#state{pending = P1};
+        error ->
             S
     end.
 

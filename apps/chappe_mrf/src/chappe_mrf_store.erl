@@ -12,12 +12,13 @@
 %% host).
 -module(chappe_mrf_store).
 
--export([wanted/1, local_path/1, adopt/3, recorded/3]).
+-export([wanted/1, local_path/1, adopt/3, adopt_async/4, recorded/3]).
 -export([record_session/4, record_session_stop/3]).
 
-%% how long a file may take to stop growing once FreeSWITCH is done
--define(SETTLE_MS, 3000).
--define(POLL_MS, 100).
+%% how long the file must hold its size before it is taken
+-define(SETTLE_MS, 300).
+%% how long adopt/3 waits for its job (a copy of a large file)
+-define(ADOPT_WAIT, 3600000).
 
 %% Whether record options ask for the store.
 -spec wanted(map()) -> boolean().
@@ -44,19 +45,46 @@ local_path(FsPath) ->
     end.
 
 %% Adopt the file FreeSWITCH wrote at FsPath under CallRef, once it has
-%% stopped growing. Meta: source (default freeswitch) and parties.
+%% stopped growing, and wait for it (in the caller: record/3,
+%% record_session_stop/2). Meta: source (default freeswitch) and parties.
 -spec adopt(iodata(), binary(), map()) -> {ok, binary()} | {error, term()}.
 adopt(FsPath, CallRef, Meta) ->
-    case local_path(FsPath) of
-        {ok, Local} ->
-            settle(Local, -1, ?SETTLE_MS div ?POLL_MS),
-            M = maps:merge(
-                #{source => freeswitch}, maps:with([source, parties], Meta)
-            ),
-            chappe_audio_store:adopt(Local, CallRef, M);
+    case adopt_async(FsPath, CallRef, Meta, self()) of
+        {ok, Job, Key} ->
+            receive
+                {chappe_audio_store, Job, {adopted, Key, Result}} -> Result
+            after ?ADOPT_WAIT -> {error, timeout}
+            end;
         {error, _} = Err ->
             Err
     end.
+
+%% The same in a job of the store (chappe_audio_store:adopt/4), so the
+%% endpoint or the room never waits on a copy: Notify (a pid, or
+%% undefined) gets {chappe_audio_store, Job, {adopted, Key, Result}}.
+%% Asking twice for one file adopts it once.
+-spec adopt_async(iodata(), binary(), map(), pid() | undefined) ->
+    {ok, pid(), binary()} | {error, term()}.
+adopt_async(FsPath, CallRef, Meta, Notify) ->
+    case local_path(FsPath) of
+        {ok, Local} ->
+            M = maps:merge(
+                #{source => freeswitch}, maps:with([source, parties], Meta)
+            ),
+            Opts = maps:merge(#{settle_ms => ?SETTLE_MS}, notify(Notify)),
+            case chappe_audio_store:adopt(Local, CallRef, M, Opts) of
+                {ok, Job} ->
+                    {ok, Job,
+                        unicode:characters_to_binary(filename:absname(Local))};
+                {error, _} = Err ->
+                    Err
+            end;
+        {error, _} = Err ->
+            Err
+    end.
+
+notify(undefined) -> #{};
+notify(Pid) -> #{notify => Pid}.
 
 %% chappe_mrf:record/3 finished: with store => default, the file goes to
 %% the store under ref, else the endpoint's call_ref, else its id.
@@ -109,17 +137,4 @@ ref(Ep, _Opts) ->
     case chappe_mrf_endpoint:info(Ep) of
         #{call_ref := Ref} when is_binary(Ref) -> Ref;
         #{id := Id} -> Id
-    end.
-
-%% Wait for the size to hold for one poll (FreeSWITCH writes the header
-%% sizes when it closes the file).
-settle(_Path, _Last, 0) ->
-    ok;
-settle(Path, Last, N) ->
-    case filelib:file_size(Path) of
-        Last when Last > 0 ->
-            ok;
-        Size ->
-            timer:sleep(?POLL_MS),
-            settle(Path, Size, N - 1)
     end.

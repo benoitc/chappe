@@ -36,7 +36,7 @@ FreeSWITCH's own options:
 
 | Key | Default | What it does |
 |---|---|---|
-| `store` | unset | `default` adopts the finished file into the recording store (chappe_audio). `record/3` then returns `{ok, Id}`, `record_session_stop/2` and `stop_record/1` return the ids, and a session recording ended by the hangup sends the owner `{recorded, Id}`. |
+| `store` | unset | `default` adopts the finished file into the recording store (chappe_audio). `record/3` and `record_session_stop/2` then return `{ok, Id}`; a session recording ended by the hangup sends the owner `{recorded, Id}`, and a room's the room's listeners `{recorded, Path, {ok, Id}}`. The file is taken in by a job of the store, never in the endpoint or the room. |
 | `ref` | the endpoint's call_ref (else its id); the room's name | The call_ref the recording is filed under. |
 | `parties` | `[]` | Who is on the call, for the sidecar. |
 

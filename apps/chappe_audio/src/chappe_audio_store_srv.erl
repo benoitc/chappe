@@ -8,17 +8,25 @@
 -module(chappe_audio_store_srv).
 -behaviour(gen_server).
 
--export([start_link/0, backend/0]).
+-export([start_link/0, backend/0, adopted/3]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -define(GROUP, chappe_audio_store).
 %% the default sweep interval: hourly
 -define(SWEEP, 3600000).
 
+%% adoptions remembered once done, so asking again for one adopts nothing
+-define(DONE_MAX, 1024).
+
 -record(state, {
     backend :: module(),
     config :: map(),
-    timer :: reference() | undefined
+    timer :: reference() | undefined,
+    %% adoption jobs by source path: the job, its monitor, who to tell
+    jobs = #{} :: #{binary() => {pid(), reference(), [pid()]}},
+    %% the last outcomes, by source path, oldest first in done_order
+    done = #{} :: #{binary() => {pid(), term()}},
+    done_order = queue:new() :: queue:queue(binary())
 }).
 
 -type state() :: #state{}.
@@ -26,6 +34,14 @@
 -spec start_link() -> {ok, pid()} | {error, term()}.
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
+
+%% A job's outcome (chappe_audio_adopt).
+-spec adopted(pid(), file:filename_all(), term()) -> ok.
+adopted(Job, Path, Result) ->
+    gen_server:call(?MODULE, {adopted, Job, key(Path), Result}).
+
+key(Path) ->
+    unicode:characters_to_binary(filename:absname(Path)).
 
 %% The backend module and its config, for a writer starting.
 -spec backend() -> {module(), map()}.
@@ -55,8 +71,17 @@ handle_call({configure, Config}, _From, S) ->
         {error, _} = Err ->
             {reply, Err, S}
     end;
-handle_call({adopt, Path, Meta}, _From, #state{backend = B, config = C} = S) ->
-    {reply, B:adopt(Path, Meta, C), S};
+handle_call({adopt, Path, Meta, Opts, Notify}, _From, S) ->
+    adopt_job(key(Path), Path, Meta, Opts, Notify, S);
+handle_call({adopted, Job, Key, Result}, _From, #state{jobs = J} = S) ->
+    case maps:take(Key, J) of
+        {{Job, Mon, Waiters}, J1} ->
+            demonitor(Mon, [flush]),
+            tell(Waiters, Job, Key, Result),
+            {reply, ok, remember(Key, {Job, Result}, S#state{jobs = J1})};
+        _ ->
+            {reply, ok, S}
+    end;
 handle_call({find, Ref}, _From, #state{backend = B, config = C} = S) ->
     {reply, {ok, B:find(Ref, C)}, S};
 handle_call({get, Id}, _From, #state{backend = B, config = C} = S) ->
@@ -73,6 +98,17 @@ handle_call(_Req, _From, S) ->
 handle_cast(_Msg, S) ->
     {noreply, S}.
 
+handle_info({'DOWN', Mon, process, Job, Reason}, #state{jobs = J} = S) ->
+    %% a job that died before its outcome
+    case [K || K := {P, M, _} <- J, P =:= Job, M =:= Mon] of
+        [Key] ->
+            {_, _, Waiters} = maps:get(Key, J),
+            Result = {error, {adopt_crashed, Reason}},
+            tell(Waiters, Job, Key, Result),
+            {noreply, S#state{jobs = maps:remove(Key, J)}};
+        [] ->
+            {noreply, S}
+    end;
 handle_info(
     {timeout, T, sweep}, #state{timer = T, backend = B, config = C} = S
 ) ->
@@ -82,6 +118,51 @@ handle_info(_Info, S) ->
     {noreply, S}.
 
 %% ---- internal ----
+
+%% One job per source path: a second ask joins the running one, an ask
+%% for one done gets its outcome again (the file is in the store).
+adopt_job(Key, Path, Meta, Opts, Notify, #state{jobs = J, done = D} = S) ->
+    case {J, D} of
+        {#{Key := {Job, Mon, Waiters}}, _} ->
+            {reply, {ok, Job}, S#state{
+                jobs = J#{Key := {Job, Mon, add(Notify, Waiters)}}
+            }};
+        {_, #{Key := {Job, Result}}} ->
+            tell(add(Notify, []), Job, Key, Result),
+            {reply, {ok, Job}, S};
+        _ ->
+            case
+                supervisor:start_child(chappe_audio_adopt_sup, [
+                    Path, Meta, Opts
+                ])
+            of
+                {ok, Job} ->
+                    Mon = monitor(process, Job),
+                    {reply, {ok, Job}, S#state{
+                        jobs = J#{Key => {Job, Mon, add(Notify, [])}}
+                    }};
+                {error, _} = Err ->
+                    {reply, Err, S}
+            end
+    end.
+
+add(undefined, Ws) -> Ws;
+add(Pid, Ws) -> [Pid | Ws].
+
+tell(Waiters, Job, Key, Result) ->
+    _ = [W ! {chappe_audio_store, Job, {adopted, Key, Result}} || W <- Waiters],
+    ok.
+
+remember(Key, Entry, #state{done = D, done_order = Q} = S) ->
+    Q1 = queue:in(Key, Q),
+    D1 = D#{Key => Entry},
+    case queue:len(Q1) > ?DONE_MAX of
+        true ->
+            {{value, Old}, Q2} = queue:out(Q1),
+            S#state{done = maps:remove(Old, D1), done_order = Q2};
+        false ->
+            S#state{done = D1, done_order = Q1}
+    end.
 
 %% The defaults, a known backend, and its own checks.
 setup(Config0) ->

@@ -83,7 +83,10 @@ A room:
 
 ```erlang
 ok = chappe_mrf_conf:record(Conf, <<"/media/room.wav">>, #{store => default, ref => RoomRef}),
-{ok, [Id]} = chappe_mrf_conf:stop_record(Conf).
+ok = chappe_mrf_conf:stop_record(Conf),
+receive
+    {chappe_mrf_conf, Conf, {recorded, _Path, {ok, Id}}} -> Id
+end.
 ```
 
 ## Write your own audio to the store

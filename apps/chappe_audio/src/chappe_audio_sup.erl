@@ -39,6 +39,7 @@ init(top) ->
                 start => {chappe_audio_store_srv, start_link, []}
             },
             sup(chappe_audio_writer_sup, chappe_audio_writer),
+            sup(chappe_audio_adopt_sup, chappe_audio_adopt),
             sup(chappe_audio_stream_sup, chappe_audio_stream),
             sup(chappe_audio_conn_sup, chappe_audio_conn),
             sup(chappe_audio_listener_sup, chappe_audio_listener)

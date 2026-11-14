@@ -24,7 +24,7 @@
 %% delete/1 go to the node that holds the recording.
 -module(chappe_audio_store).
 
--export([open/2, write/2, close/2, writer/1, adopt/3]).
+-export([open/2, write/2, close/2, writer/1, adopt/3, adopt/4]).
 -export([find/1, get/1, read/2, delete/1, sweep/0, configure/1, config/0]).
 
 -export_type([recording/0, meta/0, rec/0]).
@@ -84,6 +84,8 @@
 -callback sweep(Config :: map()) -> {ok, non_neg_integer()}.
 
 -define(TIMEOUT, 5000).
+%% how long adopt/3 waits for its job (a copy of a large file)
+-define(ADOPT_WAIT, 3600000).
 
 %% ---- writing ----
 
@@ -136,17 +138,55 @@ writer({chappe_audio_rec, Pid, _}) ->
 %% is on another file system, and the source then removed) under
 %% CallRef, with Meta's source and parties. A WAVE file's format and
 %% length are read from it; another file keeps its extension and the
-%% format Meta gives.
+%% format Meta gives. It runs in a job of the store (adopt/4) and waits
+%% for it, however long a copy takes.
 -spec adopt(file:filename_all(), binary(), map()) ->
     {ok, binary()} | {error, term()}.
-adopt(Path, CallRef, Meta) when is_binary(CallRef), is_map(Meta) ->
+adopt(Path, CallRef, Meta) ->
+    case adopt(Path, CallRef, Meta, #{notify => self()}) of
+        {ok, Job} ->
+            %% the store tells the outcome, a crash of the job included
+            Key = unicode:characters_to_binary(filename:absname(Path)),
+            receive
+                {chappe_audio_store, Job, {adopted, Key, Result}} -> Result
+            after ?ADOPT_WAIT -> {error, timeout}
+            end;
+        {error, _} = Err ->
+            Err
+    end.
+
+%% Adopt in the background: a supervised job of the store takes the file
+%% in, and notify (a pid) gets {chappe_audio_store, Job, {adopted, Path,
+%% {ok, Id} | {error, Reason}}} with Path absolute. One job per source
+%% path: asking again while it runs, or after it is done, adopts nothing
+%% more and tells the outcome. Opts: notify, settle_ms (first wait for the
+%% file to stop growing that long), keep (copy, never remove the source).
+-spec adopt(file:filename_all(), binary(), map(), map()) ->
+    {ok, pid()} | {error, term()}.
+adopt(Path, CallRef, Meta, Opts) when
+    is_binary(CallRef), is_map(Meta), is_map(Opts)
+->
     M = Meta#{call_ref => CallRef},
-    case meta_ok(M) of
-        true -> call_local({adopt, Path, M});
-        false -> {error, badarg}
+    case meta_ok(M) andalso adopt_opts_ok(Opts) of
+        true ->
+            Notify = maps:get(notify, Opts, undefined),
+            call_local({adopt, Path, M, maps:without([notify], Opts), Notify});
+        false ->
+            {error, badarg}
     end;
-adopt(_Path, _CallRef, _Meta) ->
+adopt(_Path, _CallRef, _Meta, _Opts) ->
     {error, badarg}.
+
+adopt_opts_ok(Opts) ->
+    lists:all(
+        fun
+            ({notify, P}) -> is_pid(P);
+            ({settle_ms, N}) -> is_integer(N) andalso N >= 0;
+            ({keep, K}) -> is_boolean(K);
+            (_) -> false
+        end,
+        maps:to_list(Opts)
+    ).
 
 %% ---- reading ----
 

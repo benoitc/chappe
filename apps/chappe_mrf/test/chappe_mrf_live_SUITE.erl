@@ -955,7 +955,12 @@ fs_conference_record_transfer(Config) ->
     Stored = <<"/media/stored-", (list_to_binary(Rec))/binary>>,
     ok = chappe_mrf_conf:record(A, Stored, #{store => default, ref => <<"room-a">>}),
     timer:sleep(2000),
-    {ok, [RoomRec]} = chappe_mrf_conf:stop_record(A),
+    ok = chappe_mrf_conf:stop_record(A),
+    RoomRec =
+        receive
+            {chappe_mrf_conf, A, {recorded, _, {ok, RR}}} -> RR
+        after 15000 -> ct:fail(no_room_recorded)
+        end,
     {ok, #{call_ref := <<"room-a">>, source := <<"room">>, duration_ms := RoomMs}} =
         chappe_audio_store:get(RoomRec),
     ?assert(RoomMs > 1000),
