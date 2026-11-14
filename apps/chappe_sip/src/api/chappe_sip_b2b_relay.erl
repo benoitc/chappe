@@ -42,7 +42,7 @@ run(#{uas := A, uac := B} = Legs, Opts) ->
     Requests = maps:get(requests, Opts, maps:get(requests, Legs, [])),
     RelayInfo = maps:get(relay_info, Opts, maps:get(relay_info, Legs, false)),
     {Mode, TOpts} = chappe_sip_b2b_transfer:options(Opts, Legs),
-    Handled = chappe_sip_b2b_transfer:handled(Requests, RelayInfo, Mode),
+    Handled = chappe_sip_b2b_requests:handled(Requests, RelayInfo, Mode),
     _ =
         case
             maps:is_key(requests, Opts) orelse maps:is_key(relay_info, Opts) orelse
@@ -126,16 +126,16 @@ loop(#{a := A, b := B, refs := {RefA, RefB}, ref := Ref, pending := P} = S) ->
         {'DOWN', HelperMon, process, _, Why} ->
             loop(helper_down(Why, S));
         {'DOWN', TransferMon, process, _, Why} ->
-            transfer_down(chappe_sip_b2b_transfer:down(Why, S));
+            next(chappe_sip_b2b_transfer:down(Why, S));
         {chappe_sip_dialog, A, destroy, Why} ->
-            gone(a, Why, RefA, S);
+            next(chappe_sip_b2b_transfer:leg_gone(a, Why, RefA, S));
         {chappe_sip_dialog, B, destroy, Why} ->
-            gone(b, Why, RefB, S);
+            next(chappe_sip_b2b_transfer:leg_gone(b, Why, RefB, S));
         %% an abnormal fsm exit emits no destroy message; tear the peer down
         {'DOWN', RefA, process, _, _} ->
-            gone(a, undefined, RefA, S);
+            next(chappe_sip_b2b_transfer:leg_gone(a, undefined, RefA, S));
         {'DOWN', RefB, process, _, _} ->
-            gone(b, undefined, RefB, S);
+            next(chappe_sip_b2b_transfer:leg_gone(b, undefined, RefB, S));
         {chappe_sip_dialog, X, Event, Req, Res} when
             (X =:= A orelse X =:= B) andalso
                 (Event =:= modify orelse Event =:= update)
@@ -158,7 +158,7 @@ loop(#{a := A, b := B, refs := {RefA, RefB}, ref := Ref, pending := P} = S) ->
         {chappe_sip_b2b, Ref, {call, From, {hangup, Opts}}} ->
             hangup(From, Opts, S);
         {chappe_sip_b2b, Ref, {call, From, {detach, D}}} ->
-            case chappe_sip_b2b_transfer:detach(From, D, S) of
+            case chappe_sip_b2b_join:detach(From, D, S) of
                 {loop, S1} -> loop(S1);
                 Done -> Done
             end;
@@ -176,33 +176,11 @@ loop(#{a := A, b := B, refs := {RefA, RefB}, ref := Ref, pending := P} = S) ->
             loop(S)
     end.
 
-%% Leg's dialog ended. The call ends with it, unless Leg sent the REFER
-%% of the transfer at work: the transferor may hang up once its REFER has
-%% its answer (RFC 5589 6), and the transferee stays for the target. If
-%% the transfer then fails, the call ends (transfer_down/1).
-gone(Leg, Why, Mon, #{left := undefined} = S) ->
-    case chappe_sip_b2b_transfer:transferor(S) of
-        Leg ->
-            erlang:demonitor(Mon, [flush]),
-            loop(S#{left := {Leg, maps:get(Leg, S), Why}});
-        _ ->
-            done(S, maps:get(other(Leg), S), Why, bye_tag(Leg))
-    end;
-gone(Leg, Why, _Mon, S) ->
-    done(S, maps:get(other(Leg), S), Why, bye_tag(Leg)).
-
-%% the transfer ended: when its transferor had hung up and nobody took
-%% its place, the transferee is alone and the call ends
-transfer_down(#{left := {Leg, D, Why}} = S) ->
-    case maps:get(Leg, S) of
-        D -> done(S, maps:get(other(Leg), S), Why, bye_tag(Leg));
-        _ -> loop(S#{left := undefined})
-    end;
-transfer_down(S) ->
-    loop(S).
-
-bye_tag(a) -> a_bye;
-bye_tag(b) -> b_bye.
+%% what the transfer module says of a leg that ended, or of the transfer
+%% that ended: the call goes on, or Leg's peer is alone and gets its BYE
+next({loop, S}) -> loop(S);
+next({ended, a, Why, #{b := B} = S}) -> done(S, B, Why, a_bye);
+next({ended, b, Why, #{a := A} = S}) -> done(S, A, Why, b_bye).
 
 leg(X, #{a := X}) -> a;
 leg(_X, _S) -> b.
@@ -457,17 +435,8 @@ handle_call(From, {set_media, Mode}, #{media := M, a := A} = S) ->
             reply(From, {error, {media, Why}}),
             S
     end;
-handle_call(From, {principal, D}, #{a := A, b := B} = S) ->
-    P = chappe_sip_dialog:pid(D),
-    Principals = maps:get(principal, S),
-    reply(
-        From,
-        case {chappe_sip_dialog:pid(A), chappe_sip_dialog:pid(B)} of
-            {P, _} -> {ok, maps:get(a, Principals, undefined)};
-            {_, P} -> {ok, maps:get(b, Principals, undefined)};
-            _ -> {error, not_found}
-        end
-    ),
+handle_call(From, {principal, D}, S) ->
+    reply(From, chappe_sip_b2b_transfer:principal(D, S)),
     S;
 handle_call(From, {replace_b, Target, Opts}, S) ->
     replace(From, b, Target, Opts, S);

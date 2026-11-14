@@ -175,25 +175,22 @@ refer(D, Req, Res, Opts) ->
     case chappe_sip_refer:check(Req, #{authorize => fun(_, _) -> true end}) of
         {reject, Status, Reason} ->
             reject(Res, Status, Reason);
-        {ok, #{method := M, target := Target} = RT} ->
+        {ok, #{method := M} = RT} ->
             case focus_action(M, is_focus(D)) of
-                undefined ->
-                    reject(Res, 403, <<"Forbidden">>);
-                Action ->
-                    Info = #{
-                        action => Action,
-                        target => Target,
-                        replaces => maps:get(replaces, RT, undefined),
-                        referrer => chappe_sip_b2b_hdr:caller(
-                            chappe_sip_req:get(<<"from">>, Req)
-                        ),
-                        referred_by => chappe_sip_req:get(
-                            <<"referred-by">>, Req
-                        )
-                    },
-                    allowed(D, Req, Res, Info, Opts)
+                undefined -> reject(Res, 403, <<"Forbidden">>);
+                Action -> allowed(D, Req, Res, info(Action, RT, Req), Opts)
             end
     end.
+
+info(Action, #{target := Target} = RT, Req) ->
+    From = chappe_sip_req:get(<<"from">>, Req),
+    #{
+        action => Action,
+        target => Target,
+        replaces => maps:get(replaces, RT, undefined),
+        referrer => chappe_sip_b2b_hdr:caller(From),
+        referred_by => chappe_sip_req:get(<<"referred-by">>, Req)
+    }.
 
 focus_action(<<"INVITE">>, true) -> add;
 focus_action(<<"INVITE">>, false) -> transfer;
@@ -202,22 +199,10 @@ focus_action(_M, _Focus) -> undefined.
 
 %% whether the REFER reached a focus: the conference URI itself, or a
 %% dialog whose Contact (the member's remote target) carries isfocus
-is_focus(undefined) ->
-    true;
+is_focus(undefined) -> true;
 is_focus(D) ->
     try chappe_sip_dialog:local_contact(D) of
-        C when is_binary(C) ->
-            case chappe_sip_hdr:name_addr(C) of
-                {ok, #{params := Ps}} ->
-                    lists:member(
-                        <<"isfocus">>,
-                        [chappe_sip_lib:lower(K) || K <- maps:keys(Ps)]
-                    );
-                _ ->
-                    false
-            end;
-        _ ->
-            false
+        C -> chappe_sip_hdr:has_param(C, <<"isfocus">>)
     catch
         exit:_ -> false
     end.

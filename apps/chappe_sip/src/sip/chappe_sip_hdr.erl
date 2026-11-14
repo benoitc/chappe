@@ -9,6 +9,7 @@
 %% record-route, refer-to), digest auth headers, and RFC 3891 Replaces.
 -module(chappe_sip_hdr).
 
+-export([has_param/2]).
 -export([
     via/1,
     cseq/1,
@@ -365,6 +366,17 @@ unescape(Bin) when is_binary(Bin) ->
     unescape(Bin, <<>>);
 unescape(_) ->
     {error, malformed}.
+
+%% Whether name-addr NameAddr (a Contact, say) carries the header
+%% parameter Name, given lowercase (<<"isfocus">>, <<"+sip.src">>).
+-spec has_param(term(), binary()) -> boolean().
+has_param(NameAddr, Name) when is_binary(NameAddr) ->
+    case name_addr(NameAddr) of
+        {ok, #{params := #{Name := _}}} -> true;
+        _ -> false
+    end;
+has_param(_NameAddr, _Name) ->
+    false.
 
 %% Refer-To value -> refer_to(). A URI with no scheme, a malformed name-addr,
 %% a bad escape, or a malformed Replaces is {error, malformed}; the scheme is
