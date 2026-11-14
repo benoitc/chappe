@@ -119,4 +119,4 @@ ok = chappe_sip:start(#{
 | `media` | `#{}` | Media backends for `chappe_sip_media`, used when `chappe_sip:start/1` gets no `media` option: `rtpengine => #{nodes => [...]}` and `mix => #{ip => _, advertise => _}`. Empty starts nothing. See [Media](guides/media.md). |
 | `peers` | `[]` | OPTIONS-monitored peers added at start: a list of `{Name, Opts}` or a map `Name => Opts`. See [Run an SBC](guides/sbc.md). |
 | `registrations` | `#{}` | Outbound registrations started once `chappe_sip:start/1` has brought the stack up: a map `Name => Opts`, or a list of option maps with a `name`. See [Register to a carrier](guides/register-to-a-carrier.md). |
-| `metrics` | `true` | `false` records no metrics. See [Metrics](guides/metrics.md). |
+| `metrics` | `true` | `false` records no metrics; `#{port => P, ip => Ip}` also serves `GET /metrics` on that port (127.0.0.1 by default). See [Metrics](guides/metrics.md). |
