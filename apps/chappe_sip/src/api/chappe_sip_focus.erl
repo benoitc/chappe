@@ -176,7 +176,7 @@ refer(D, Req, Res, Opts) ->
         {reject, Status, Reason} ->
             reject(Res, Status, Reason);
         {ok, #{method := M} = RT} ->
-            case focus_action(M, is_focus(D)) of
+            case focus_action(M, D =:= undefined orelse is_focus(D)) of
                 undefined -> reject(Res, 403, <<"Forbidden">>);
                 Action -> allowed(D, Req, Res, info(Action, RT, Req), Opts)
             end
@@ -199,7 +199,6 @@ focus_action(_M, _Focus) -> undefined.
 
 %% whether the REFER reached a focus: the conference URI itself, or a
 %% dialog whose Contact (the member's remote target) carries isfocus
-is_focus(undefined) -> true;
 is_focus(D) ->
     try chappe_sip_dialog:local_contact(D) of
         C -> chappe_sip_hdr:has_param(C, <<"isfocus">>)

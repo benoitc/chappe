@@ -494,12 +494,14 @@ has_maddr(Params) ->
 domain(Uri, NoPort) ->
     case chappe_sip_uri:parse(Uri) of
         {ok, #{scheme := S, host := H} = U} ->
-            {chappe_sip_lib:lower(H),
+            {
+                chappe_sip_lib:lower(H),
                 case {maps:find(port, U), NoPort} of
                     {{ok, P}, _} -> P;
                     {error, any} -> any;
                     {error, default} -> port(S, undefined)
-                end};
+                end
+            };
         _ ->
             error
     end.
