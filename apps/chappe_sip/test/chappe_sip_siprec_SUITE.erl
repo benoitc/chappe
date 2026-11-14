@@ -26,7 +26,7 @@
 -export([server_writes_store/1, server_not_a_recording_session/1,
          server_sink_and_stream_crash/1, server_refuses_bad_body/1,
          server_answers_on_the_wire/1]).
--export([room_recorded/1, room_not_up/1]).
+-export([room_recorded/1, room_not_up/1, server_sink_bound/1]).
 
 all() ->
     [invite_is_a_recording_session, chappe_as_recording_server,
@@ -37,7 +37,7 @@ all() ->
      legacy_content_type, from_another_node, server_writes_store,
      server_not_a_recording_session, server_sink_and_stream_crash,
      server_refuses_bad_body, server_answers_on_the_wire,
-     room_recorded, room_not_up].
+     server_sink_bound, room_recorded, room_not_up].
 
 -define(UA, chappe_sip_test_ua).
 -define(M, chappe_sip_siprec_meta).
@@ -510,6 +510,28 @@ server_sink_and_stream_crash(_Config) ->
     ok = chappe_sip_siprec:stop(Rec),
     gen_udp:close(Sock).
 
+%% A sink that does not read is sent at most max_queue frames; the rest
+%% is dropped, and the stream goes on.
+server_sink_bound(_Config) ->
+    #{b2b := B2b, ep := EP} = call(),
+    persistent_term:put(siprec_test_sink_queue, 5),
+    {ok, Rec} = chappe_sip_siprec:start(
+                  B2b, <<"sip:sink@127.0.0.1:", (integer_to_binary(EP))/binary>>, #{}),
+    {started, _} = event(Rec),
+    #{streams := [#{pid := S1, port := P1} | _]} = got(srs_served),
+    {ok, Sock} = gen_udp:open(0, [binary]),
+    _ = [ok = gen_udp:send(Sock, {127, 0, 0, 1}, P1, rtp(0, binary:copy(<<16#FF>>, 160)))
+         || _ <- lists:seq(1, 50)],
+    timer:sleep(500),
+    {messages, Ms} = process_info(self(), messages),
+    N = length([M || {chappe_sip_siprec_rtp, S, {audio, _}} = M <- Ms, S =:= S1]),
+    ct:log("frames queued: ~p", [N]),
+    ?assert(N =< 5 + 1),
+    ?assert(is_process_alive(S1)),
+    ok = chappe_sip_siprec:stop(Rec),
+    persistent_term:erase(siprec_test_sink_queue),
+    gen_udp:close(Sock).
+
 %% A body that does not parse is refused 488.
 server_refuses_bad_body(_Config) ->
     #{ep := EP} = call(),
@@ -702,7 +724,8 @@ handler(Req, Res) ->
         <<"sip:store@", _/binary>> ->
             served(Test, Req, Res, #{store => default});
         <<"sip:sink@", _/binary>> ->
-            served(Test, Req, Res, #{sink => Test});
+            served(Test, Req, Res, #{sink => Test,
+                                     max_queue => persistent_term:get(siprec_test_sink_queue, 500)});
         _ ->
             Callee = <<"sip:callee@127.0.0.1:", (integer_to_binary(CP))/binary>>,
             {ok, Legs} = chappe_sip:create_b2bua(Req, Res, Callee, maps:without([test, cp], Opts)),
