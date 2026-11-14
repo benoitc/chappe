@@ -12,7 +12,7 @@
 -module(chappe_sip_sdp).
 
 -export([parse/1, address/1, words/1]).
--export([origin/1, on_hold/1, webrtc/1, connection/1]).
+-export([origin/1, same_version/2, on_hold/1, webrtc/1, connection/1]).
 
 -export_type([media/0]).
 
@@ -27,6 +27,16 @@
     dir := sendrecv | sendonly | recvonly | inactive,
     _ => _
 }.
+
+%% Whether offer A leaves the session B as it is: the same o= line, so the
+%% same version (RFC 3264 8); an SDP without one only when equal.
+-spec same_version(binary(), binary()) -> boolean().
+same_version(A, B) ->
+    case {origin(A), origin(B)} of
+        {undefined, _} -> A =:= B;
+        {O, O} -> true;
+        _ -> false
+    end.
 
 %% The o= line without its "o=", or undefined.
 -spec origin(iodata()) -> binary() | undefined.

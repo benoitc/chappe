@@ -65,6 +65,7 @@ run(#{uas := A, uac := B} = Legs, Opts) ->
         transfer_opts => TOpts,
         %% the transfer at work ({Pid, Monitor}) and how many the call made
         transferring => undefined,
+        owner_mon => maps:get(owner_mon, Opts, undefined),
         transfers => 0,
         media => with_opts(Opts, M0),
         %% a late offer: B's 2xx waits for the answer in A's ACK
@@ -114,7 +115,11 @@ with_opts(Opts, M) ->
 loop(#{a := A, b := B, refs := {RefA, RefB}, ref := Ref, pending := P} = S) ->
     HelperMon = helper_mon(P),
     TransferMon = chappe_sip_b2b_transfer:monitor(S),
+    OwnerMon = maps:get(owner_mon, S),
     receive
+        {'DOWN', OwnerMon, process, _, _} ->
+            %% relay_async/2's owner is gone: so is the call
+            hangup({self(), owner_down}, #{}, S);
         {'DOWN', HelperMon, process, _, Why} ->
             loop(helper_down(Why, S));
         {'DOWN', TransferMon, process, _, Why} ->
@@ -229,9 +234,10 @@ hangup(From, Opts, #{a := A, b := B, pending := P, media := M}) ->
 offer(X, Event, Req, Res, S) ->
     Dlg = maps:get(X, S),
     Offer = chappe_sip_req:body(Req),
+    Last = chappe_sip_b2b:remote_sdp(Dlg),
     Refresh =
         (Offer =:= <<>> andalso Event =:= update) orelse
-            (Offer =/= <<>> andalso same_version(Offer, chappe_sip_b2b:remote_sdp(Dlg))),
+            (Offer =/= <<>> andalso chappe_sip_sdp:same_version(Offer, Last)),
     case Refresh of
         true ->
             answer_locally(Event, Offer, Dlg, Res),
@@ -601,14 +607,6 @@ local_sdp(Dlg) ->
         Sdp -> Sdp
     catch
         exit:_ -> <<>>
-    end.
-
-%% RFC 3264 8: an unchanged session keeps the o= line (its version)
-same_version(A, B) ->
-    case {chappe_sip_sdp:origin(A), chappe_sip_sdp:origin(B)} of
-        {undefined, _} -> A =:= B;
-        {O, O} -> true;
-        _ -> false
     end.
 
 sip_error(Status, Msg) ->
