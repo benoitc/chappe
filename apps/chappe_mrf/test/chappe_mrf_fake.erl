@@ -385,6 +385,10 @@ api(<<"conference ", Rest/binary>>, #{tcp := Tcp} = C) ->
         [Room, <<"kick">>, Id] ->
             member_event(C, Room, <<"del-member">>, Id),
             C;
+        [Room, <<"transfer">>, To, Id] ->
+            member_event(C, Room, <<"del-member">>, Id),
+            member_event(C, To, <<"add-member">>, integer_to_binary(erlang:unique_integer([positive]))),
+            C;
         _ ->
             C
     end;

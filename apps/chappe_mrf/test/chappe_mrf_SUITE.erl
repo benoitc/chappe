@@ -33,6 +33,9 @@
     native_talking/1,
     fs_conference_pin/1,
     fs_conference_bad_pin/1,
+    fs_conference_room/1,
+    fs_conference_transfer/1,
+    native_conference_transfer/1,
     conference_focus/1,
     attach_timeout/1,
     failover/1,
@@ -72,6 +75,9 @@ all() ->
         native_talking,
         fs_conference_pin,
         fs_conference_bad_pin,
+        fs_conference_room,
+        fs_conference_transfer,
+        native_conference_transfer,
         conference_focus,
         attach_timeout,
         failover,
@@ -706,6 +712,107 @@ fs_conference_pin(Config) ->
     end,
     ?assertMatch({error, {unsupported, fs}}, chappe_mrf_conf:relate(Conf, Id, Id, hear)),
     chappe_mrf:destroy(Ep).
+
+%% Room flags go on the joining channel, max_members refuses the next
+%% join, recording is conference api commands, and the members' mute,
+%% digits and prompts come back as events (room-wide ones from the
+%% node's events).
+fs_conference_room(Config) ->
+    {ok, Conf} = chappe_mrf:conference(<<"fsroom3">>, #{
+        backend => fs, node => fs1, max_members => 1,
+        room_flags => [<<"wait-mod">>, <<"audio-always">>]
+    }),
+    {ok, Ep} = chappe_mrf:create_endpoint(#{targets => [{fs1, fs_uri(Config)}]}),
+    {ok, Id} = chappe_mrf_conf:join(Conf, Ep, #{}),
+    _ = fs_cmd(<<"execute-app-arg: conference_flags=wait-mod|audio-always">>),
+    _ = fs_cmd(<<"execute-app-name: conference">>),
+    {ok, Ep2} = chappe_mrf:create_endpoint(#{targets => [{fs1, fs_uri(Config)}]}),
+    ?assertEqual({error, full}, chappe_mrf_conf:join(Conf, Ep2, #{})),
+    ok = chappe_mrf:destroy(Ep2),
+    ok = chappe_mrf_conf:record(Conf, <<"/media/room 3.wav">>),
+    _ = fs_cmd(<<"api conference fsroom3 recording start '/media/room 3.wav'">>),
+    ok = chappe_mrf_conf:stop_record(Conf),
+    _ = fs_cmd(<<"api conference fsroom3 recording stop all">>),
+    ?assertEqual({error, {bad_option, path}}, chappe_mrf_conf:record(Conf, <<"a\nb">>)),
+    Fs = ?config(fs, Config),
+    Maint = fun(Action, Extra) ->
+        ?F:fs_event(Fs, <<"CUSTOM">>, [
+            {<<"Event-Subclass">>, <<"conference::maintenance">>},
+            {<<"Conference-Name">>, <<"fsroom3">>},
+            {<<"Action">>, Action},
+            {<<"Member-ID">>, Id}
+            | Extra
+        ])
+    end,
+    Maint(<<"mute-member">>, []),
+    conf_event(Conf, {muted, Id, true}),
+    ?assertMatch([#{mute := true}], chappe_mrf_conf:members(Conf)),
+    Maint(<<"play-file-member-done">>, [{<<"File">>, <<"/media/hi.wav">>}]),
+    conf_event(Conf, {play_done, Id, <<"/media/hi.wav">>}),
+    ?F:fs_dtmf(Fs, <<"7">>),
+    conf_event(Conf, {dtmf, Id, <<"7">>}),
+    Conf ! {chappe_esl_node, fs1, {event, #{body => <<>>, headers => #{
+        <<"Event-Name">> => <<"CUSTOM">>,
+        <<"Event-Subclass">> => <<"conference::maintenance">>,
+        <<"Conference-Name">> => <<"fsroom3">>,
+        <<"Action">> => <<"play-file-done">>,
+        <<"File">> => <<"/media/all.wav">>}
+    }}},
+    conf_event(Conf, {play_done, <<"/media/all.wav">>}),
+    {ok, Native} = chappe_mrf:conference(<<"nat3">>, #{}),
+    ?assertEqual({error, {unsupported, native}}, chappe_mrf_conf:record(Native, <<"/x.wav">>)),
+    ?assertEqual({error, {unsupported, native}}, chappe_mrf_conf:stop_record(Native)),
+    ok = chappe_mrf:destroy(Ep).
+
+%% transfer/3 between two fs rooms of one node: mod_conference moves the
+%% channel; the member leaves one with reason transferred and joins the
+%% other under its new id. Mixed backends and unknown members are refused.
+fs_conference_transfer(Config) ->
+    {ok, A} = chappe_mrf:conference(<<"fsa">>, #{backend => fs, node => fs1}),
+    {ok, B} = chappe_mrf:conference(<<"fsb">>, #{backend => fs, node => fs1}),
+    ok = chappe_mrf_conf:events(B, self()),
+    {ok, Ep} = chappe_mrf:create_endpoint(#{targets => [{fs1, fs_uri(Config)}]}),
+    {ok, Id} = chappe_mrf_conf:join(A, Ep, #{name => <<"ann">>}),
+    {ok, NewId} = chappe_mrf_conf:transfer(A, Id, B),
+    _ = fs_cmd(<<"api conference fsa transfer fsb ", Id/binary>>),
+    conf_event(A, {left, Id, transferred}),
+    receive
+        {chappe_mrf_conf, B, {joined, NewId, #{name := <<"ann">>}}} -> ok
+    after 2000 -> ct:fail(no_joined)
+    end,
+    ?assertEqual([], chappe_mrf_conf:members(A)),
+    ?assertMatch([#{id := NewId}], chappe_mrf_conf:members(B)),
+    {ok, N} = chappe_mrf:conference(<<"nat4">>, #{}),
+    ?assertEqual({error, backend_mismatch}, chappe_mrf_conf:transfer(B, NewId, N)),
+    ?assertEqual({error, not_member}, chappe_mrf_conf:transfer(A, <<"nobody">>, B)),
+    ?assertEqual({error, same_conference}, chappe_mrf_conf:transfer(B, NewId, B)),
+    ok = chappe_mrf:destroy(Ep).
+
+%% transfer/3 between two native rooms: the member's call is re-anchored
+%% to the other mixer without a re-INVITE to the caller.
+native_conference_transfer(Config) ->
+    ivr(Config),
+    {ok, A} = chappe_mrf:conference(<<"nata">>, #{}),
+    {ok, B} = chappe_mrf:conference(<<"natb">>, #{}),
+    ok = chappe_mrf_conf:events(B, self()),
+    {Ua, _Ep, B2b, _Owner} = call_in(Config),
+    {ok, Id} = chappe_mrf_conf:join(A, B2b, #{name => <<"bob">>}),
+    {ok, NewId} = chappe_mrf_conf:transfer(A, Id, B),
+    conf_event(A, {left, Id, transferred}),
+    receive
+        {chappe_mrf_conf, B, {joined, NewId, #{name := <<"bob">>}}} -> ok
+    after 2000 -> ct:fail(no_joined)
+    end,
+    no_ua_event(Ua, reinvite, 200),
+    ok = chappe_mrf_conf:mute(B, NewId),
+    conf_event(B, {muted, NewId, true}),
+    ?F:ua_bye(Ua).
+
+conf_event(Conf, Event) ->
+    receive
+        {chappe_mrf_conf, Conf, Event} -> ok
+    after 3000 -> ct:fail({no_conf_event, Event})
+    end.
 
 %% A caller joined from its call: an endpoint is made on the room's node
 %% and the caller bridged into it; a wrong PIN keeps it out.

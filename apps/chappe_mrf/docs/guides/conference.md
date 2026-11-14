@@ -130,6 +130,50 @@ room's node, enters the PIN (`play_collect`, three tries), then runs the
 conference application. Member ids are mod_conference's. An endpoint
 already on that node joins as it is: `chappe_mrf_conf:join(Conf, Ep, #{})`.
 
+Room flags, a size limit and recording:
+
+```erlang
+{ok, Conf} = chappe_mrf:conference(<<"board">>, #{
+    backend => fs, node => fs1, max_members => 10,
+    room_flags => [<<"wait-mod">>, <<"audio-always">>]
+}),
+ok = chappe_mrf_conf:record(Conf, <<"/recordings/board.wav">>),
+%% ...
+ok = chappe_mrf_conf:stop_record(Conf).
+```
+
+`max_members` works on both backends: past it `join/3` returns
+`{error, full}`. The recording is a file the node writes.
+
+## Room events
+
+Besides `joined`, `left` and `talking`, the receivers get:
+
+```erlang
+receive
+    {chappe_mrf_conf, Conf, {muted, Member, true}} -> muted;
+    {chappe_mrf_conf, Conf, {dtmf, Member, Digit}} -> Digit;           %% fs
+    {chappe_mrf_conf, Conf, {play_done, Member, File}} -> File;        %% fs, play/3
+    {chappe_mrf_conf, Conf, {play_done, File}} -> File                 %% fs, play/2
+end.
+```
+
+`{play_done, File}` concerns the whole room, so it comes from the node's
+events: add them when you register the node,
+`chappe_esl:node_add(fs1, #{..., events => [<<"CUSTOM">>, <<"conference::maintenance">>]})`.
+
+## Move a member to another room
+
+```erlang
+{ok, NewId} = chappe_mrf_conf:transfer(Lobby, Member, Board).
+```
+
+Both rooms use the same backend. On fs they are on one node and
+mod_conference moves the channel; on native the member's call moves to the
+other mixer through rtpengine, without a re-INVITE. The member leaves the
+first room with reason `transferred`. An endpoint you joined to a native
+room cannot move this way (`{error, {unsupported, endpoint_member}}`).
+
 ## Notes
 
 - The room ends with `chappe_mrf_conf:stop/1`, or with the `owner` process

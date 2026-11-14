@@ -46,6 +46,9 @@ chappe equivalents. Use it when you port a drachtio app.
 | `ms.createConference(name, opts)` | `chappe_mrf:conference(Name, #{backend => fs})` |
 | `ep.joinConference(conf)` | `chappe_mrf_conf:join(Conf, Ep | B2b, Opts)` |
 | `conf.mute/kick/lock` | `chappe_mrf_conf:mute/2`, `kick/2`, `lock/1` |
+| `conf.startRecording`, `stopRecording` | `chappe_mrf_conf:record/2,3`, `stop_record/1` (fs) |
+| `conf.set('max_members')`, conference flags | `max_members`, `room_flags` options of `conference/2` |
+| `conference transfer` | `chappe_mrf_conf:transfer(From, Member, To)` |
 | (none) | `backend => native`: a room on chappe_mix, with `relate/4` |
 
 ## Differences to know

@@ -24,14 +24,27 @@
 %% The event receivers (the caller of start/2, then events/2) get
 %% {chappe_mrf_conf, Conf, Event}:
 %%   {joined, Member, Info}     Info: #{name, mute, deaf, moderator}
-%%   {left, Member, Reason}     departed | kicked | hangup
+%%   {left, Member, Reason}     departed | kicked | hangup | transferred
 %%   {talking, Member, boolean()}
+%%   {muted, Member, boolean()} the member was muted or unmuted
+%%   {dtmf, Member, Digit}      fs: a digit from the member
+%%   {play_done, File}          fs: play/2 into the room ended (needs the
+%%                              node's events to carry CUSTOM
+%%                              conference::maintenance, see start/2)
+%%   {play_done, Member, File}  fs: play/3 to the member ended
+%%
+%% transfer/3 moves a member to another conference of the same backend:
+%% on fs both rooms are on one node and mod_conference moves the channel
+%% (conference transfer); on native the member's call is re-anchored to
+%% the other room's mixer, the caller seeing no re-INVITE. The member
+%% gets a new id there, and leaves this one with reason transferred.
 -module(chappe_mrf_conf).
 -behaviour(gen_server).
 
 -export([start/2, start_link/1, stop/1, info/1, events/2]).
 -export([join/3, leave/2, kick/2, mute/2, unmute/2, deaf/2, undeaf/2]).
 -export([lock/1, unlock/1, members/1, relate/4, play/2, play/3]).
+-export([record/2, record/3, stop_record/1, transfer/3]).
 -export([loop_invite/4, subscribe/3]).
 %% for the backends (chappe_mrf_conf_native, chappe_mrf_conf_fs)
 -export([call/3, emit/2, publish/1, gone/2, gone/3, talking/3, public/2]).
@@ -52,6 +65,8 @@
 %%   owner     => pid(): the conference stops when it exits (default none:
 %%                it runs until stop/1)
 %%   notify    => pid(): gets its events (default the caller)
+%%   max_members => pos_integer(): join/3 returns {error, full} past it
+%%                (joins under way count)
 %% native:
 %%   anchor_params => #{a | b => map()}: rtpengine flags for a caller
 %%                moved into the mixer (the mixer runs on this host)
@@ -66,6 +81,13 @@
 %%   bridge    => chappe_mrf:bridge/3 options for a caller joined from a
 %%                call (anchor_params toward the node)
 %%   join_timeout => ms a member may take to show up in the room (15000)
+%%   room_flags => mod_conference conference flags for the room (as
+%%                wait-mod or audio-always), set on each joining channel
+%%                as conference_flags; they apply when the room is made
+%% For the room-wide fs events ({play_done, File}) the conference listens
+%% to its node's events (chappe_esl:node_events/1): give the node
+%% events => [<<"CUSTOM">>, <<"conference::maintenance">>] in
+%% chappe_esl:node_add/2. A member's own events come over its channel.
 -spec start(binary(), map()) -> {ok, conf()} | {error, term()}.
 start(Name, Opts) ->
     case chappe_mrf_registry:lookup({conf, Name}) of
@@ -138,6 +160,8 @@ join(Conf, Target, Opts) ->
             call(Conf, {join, {ep, Target, Opts}}, ?MRF_JOIN_TIMEOUT + 80000);
         #{backend := fs, locked := true} ->
             {error, locked};
+        #{backend := fs, members := N, max_members := Max} when N >= Max ->
+            {error, full};
         #{backend := fs, node := Node, bridge := Bridge} ->
             chappe_mrf_conf_fs:join(Conf, Node, Bridge, Target, Opts);
         Err ->
@@ -190,6 +214,73 @@ play(Conf, File) -> call(Conf, {play, all, File}).
 
 -spec play(conf(), member(), binary()) -> ok | {error, term()}.
 play(Conf, Member, File) -> call(Conf, {play, Member, File}).
+
+%% Record the room (fs: conference <name> recording start, a file the
+%% node writes) until stop_record/1 or the room's end. Opts is for the
+%% backend; fs takes none. The native backend records through PR 5's
+%% recorder and returns {error, {unsupported, native}} here.
+-spec record(conf(), iodata()) -> ok | {error, term()}.
+record(Conf, Path) ->
+    record(Conf, Path, #{}).
+
+-spec record(conf(), iodata(), map()) -> ok | {error, term()}.
+record(Conf, Path, Opts) when is_map(Opts) ->
+    P = iolist_to_binary(Path),
+    case P =/= <<>> andalso binary:match(P, [<<"\n">>, <<"\r">>]) of
+        nomatch -> call(Conf, {record, {start, P}});
+        _ -> {error, {bad_option, path}}
+    end.
+
+%% Stop every recording of the room.
+-spec stop_record(conf()) -> ok | {error, term()}.
+stop_record(Conf) ->
+    call(Conf, {record, stop}).
+
+%% Move Member to the conference To (same backend; on fs, the same node).
+%% Returns its id in To once it is in; it leaves this one with reason
+%% transferred. Runs in the caller: each conference only does its part.
+-spec transfer(conf(), member(), conf()) -> {ok, member()} | {error, term()}.
+transfer(Conf, _Member, Conf) ->
+    {error, same_conference};
+transfer(Conf, Member, To) ->
+    case {info(Conf), info(To)} of
+        {#{backend := B} = From, #{backend := B} = Dest} ->
+            transfer_to(Conf, Member, To, From, Dest);
+        {#{backend := _}, #{backend := _}} ->
+            {error, backend_mismatch};
+        {#{backend := _}, Err} ->
+            Err;
+        {Err, _} ->
+            Err
+    end.
+
+transfer_to(_Conf, _Member, _To, #{node := N1}, #{backend := fs, node := N2}) when
+    N1 =/= N2
+->
+    {error, {unsupported, cross_node}};
+transfer_to(Conf, Member, To, #{name := FromName}, _Dest) ->
+    case call(Conf, {transfer, out, Member}) of
+        {ok, {native, B2b, Opts}} ->
+            finish_transfer(Conf, Member, join(To, B2b, Opts));
+        {ok, {fs, Ep, Owned, Opts}} ->
+            finish_transfer(
+                Conf,
+                Member,
+                call(
+                    To,
+                    {join, {adopt, Ep, Owned, Opts, FromName, Member}},
+                    ?MRF_JOIN_TIMEOUT + 5000
+                )
+            );
+        {error, _} = Err ->
+            Err
+    end.
+
+finish_transfer(_Conf, _Member, {ok, _} = Ok) ->
+    Ok;
+finish_transfer(Conf, Member, Error) ->
+    _ = call(Conf, {transfer, cancel, Member}),
+    Error.
 
 %% The loopback INVITE of a native join reached this node: the mixer
 %% answers its offer, and the dialog is the conference's. Runs in the
@@ -265,16 +356,33 @@ init_backend(Name, Opts, Caller) ->
         anchor_params = maps:get(anchor_params, Opts, #{}),
         endpoint_params = maps:get(endpoint_params, Opts, #{}),
         join_timeout = maps:get(join_timeout, Opts, ?MRF_JOIN_TIMEOUT),
-        bridge = maps:get(bridge, Opts, #{})
+        bridge = maps:get(bridge, Opts, #{}),
+        max_members = maps:get(max_members, Opts, infinity),
+        room_flags = [
+            chappe_mrf_lib:to_bin(F)
+         || F <- maps:get(room_flags, Opts, [])
+        ]
     },
     case S0#state.backend of
         native ->
             {ok, focus(Opts, S0)};
         fs ->
             case fs_node(Opts) of
-                {ok, Node} -> {ok, S0#state{node = Node}};
-                {error, _} = Err -> {stop, Err}
+                {ok, Node} ->
+                    %% room-wide events (play-file-done) carry no channel
+                    ok = node_events(Node),
+                    {ok, S0#state{node = Node}};
+                {error, _} = Err ->
+                    {stop, Err}
             end
+    end.
+
+%% No node registry running (a node given by name only): no room events.
+node_events(Node) ->
+    try
+        chappe_esl:node_events(Node)
+    catch
+        exit:_ -> ok
     end.
 
 fs_node(#{node := Node}) ->
@@ -315,9 +423,14 @@ handle_call(info, _From, S) ->
             locked => S#state.locked,
             bridge => S#state.bridge,
             entity => S#state.entity,
-            members => map_size(S#state.members)
+            members => map_size(S#state.members),
+            max_members => S#state.max_members
         },
         S};
+handle_call({record, Req}, _From, S) ->
+    {reply, record_req(Req, S), S};
+handle_call({transfer, Step, Id}, _From, S) ->
+    transfer_step(Step, Id, S);
 handle_call({events, Pid}, _From, #state{listeners = L} = S) ->
     L1 =
         case L of
@@ -367,6 +480,14 @@ join_req({call_done, Token, Result}, From, #state{pending = P} = S) ->
     end;
 join_req(_Req, _From, #state{locked = true} = S) ->
     {reply, {error, locked}, S};
+join_req(
+    _Req, _From, #state{members = M, pending = P, max_members = Max} = S
+) when
+    map_size(M) + map_size(P) >= Max
+->
+    {reply, {error, full}, S};
+join_req({adopt, Ep, Owned, Opts, FromName, FromId}, From, S) ->
+    chappe_mrf_conf_fs:adopt(Ep, Owned, Opts, {FromName, FromId}, From, S);
 join_req({ep, Ep, Opts}, _From, S) ->
     chappe_mrf_conf_native:join_endpoint(Ep, Opts, S);
 join_req({b2b, B2b, Opts}, From, S) ->
@@ -409,6 +530,10 @@ handle_info({chappe_mrf_endpoint, Ep, {event, Ev}}, S) ->
     {noreply, chappe_mrf_conf_fs:event(Ep, Ev, S)};
 handle_info({chappe_mrf_endpoint, Ep, hangup}, S) ->
     {noreply, chappe_mrf_conf_fs:gone_ep(Ep, S)};
+handle_info({chappe_mrf_endpoint, Ep, {dtmf, Digit}}, S) ->
+    {noreply, chappe_mrf_conf_fs:dtmf(Ep, Digit, S)};
+handle_info({chappe_esl_node, Node, {event, Ev}}, #state{node = Node} = S) ->
+    {noreply, chappe_mrf_conf_fs:room_event(Ev, S)};
 handle_info({chappe_mrf, Ep, {hangup, _}}, S) when is_pid(Ep) ->
     {noreply, chappe_mrf_conf_fs:gone_ep(Ep, S)};
 handle_info({fs_join_timeout, Ep}, #state{pending = P} = S) ->
@@ -456,7 +581,13 @@ set_flag(Id, Mb, Flag, Value, S) ->
             S1 = S#state{
                 members = (S#state.members)#{Id => Mb#{Flag => Value}}
             },
-            {reply, ok, publish(S1)};
+            %% fs reports mute-member itself
+            S2 =
+                case {Flag, S#state.backend} of
+                    {mute, native} -> emit({muted, Id, Value}, S1);
+                    _ -> S1
+                end,
+            {reply, ok, publish(S2)};
         {error, _} = Err ->
             {reply, Err, S}
     end.
@@ -500,6 +631,14 @@ gone(Id, S) ->
 
 gone(Id, Reason, #state{members = M} = S) ->
     case maps:take(Id, M) of
+        {#{transfer := true} = Mb, M1} ->
+            %% its call or channel lives on in the other conference
+            _ =
+                case Mb of
+                    #{session := MS} -> chappe_sip_media:leave(MS);
+                    _ -> ok
+                end,
+            publish(emit({left, Id, transferred}, S#state{members = M1}));
         {Mb, M1} ->
             _ =
                 case Mb of
@@ -565,6 +704,49 @@ member(Opts, Id, Base) ->
         moderator => maps:get(moderator, Opts, false),
         talking => false
     }.
+
+%% record/2,3 and stop_record/1, sent as {record, Req}.
+record_req({start, Path}, #state{backend = fs} = S) ->
+    chappe_mrf_conf_fs:record(Path, S);
+record_req(stop, #state{backend = fs} = S) ->
+    chappe_mrf_conf_fs:stop_record(S);
+record_req(_Req, _S) ->
+    {error, {unsupported, native}}.
+
+%% transfer/3's steps here, sent as {transfer, Step, Member}: out marks the
+%% member and hands over what the other conference needs, cancel undoes
+%% the mark after a failed join there.
+transfer_step(out, Id, #state{members = M} = S) ->
+    case M of
+        #{Id := #{transfer := true}} ->
+            {reply, {error, transferring}, S};
+        #{Id := #{b2b := B2b} = Mb} ->
+            {reply, {ok, {native, B2b, join_opts(Mb)}}, mark(Id, Mb, S)};
+        #{Id := #{rtpe := _}} ->
+            %% an endpoint of the app in a native room: its dialog is the
+            %% app's, not a call this room can re-anchor
+            {reply, {error, {unsupported, endpoint_member}}, S};
+        #{Id := #{ep := Ep, owned := Owned} = Mb} ->
+            {reply, {ok, {fs, Ep, Owned, join_opts(Mb)}}, mark(Id, Mb, S)};
+        _ ->
+            {reply, {error, not_member}, S}
+    end;
+transfer_step(cancel, Id, #state{members = M} = S) ->
+    case M of
+        #{Id := Mb} ->
+            {reply, ok, S#state{members = M#{Id := maps:remove(transfer, Mb)}}};
+        _ ->
+            {reply, ok, S}
+    end.
+
+%% A member on its way to another conference: what leaves it here is
+%% the transfer.
+mark(Id, Mb, #state{members = M} = S) ->
+    S#state{members = M#{Id := Mb#{transfer => true}}}.
+
+%% What a member asked for when it joined, for the conference it moves to.
+join_opts(Mb) ->
+    maps:with([name, mute, deaf, moderator], Mb).
 
 public(Id, Mb) ->
     (maps:with([name, mute, deaf, moderator, talking], Mb))#{id => Id}.

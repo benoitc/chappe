@@ -30,7 +30,7 @@
 %%
 %% Watchers (a conference) get {chappe_mrf_endpoint, Ep, Event}: hangup,
 %% {event, Ev} for the channel's CUSTOM events (conference::maintenance),
-%% {complete, App, Ev} for an application nobody waited for.
+%% {complete, App, Ev} for an application nobody waited for, {dtmf, Digit}.
 %%
 %% An endpoint made by create_endpoint also owns the INVITE dialog to
 %% FreeSWITCH until bridge/2 hands it to a call (handed/1).
@@ -43,7 +43,7 @@
 
 -export([start/1, start_link/1]).
 -export([attach/3, await/2, call/1, info/1, watch/2, set_dialog/2]).
--export([handed/1, destroy/1, check_events/1]).
+-export([handed/1, destroy/1, check_events/1, set_owner/2]).
 -export([callback_mode/0, init/1, waiting/3, ready/3, gone/3, terminate/3]).
 
 -export_type([endpoint/0]).
@@ -115,6 +115,12 @@ info(Ep) ->
 -spec watch(endpoint(), pid()) -> ok | {error, term()}.
 watch(Ep, Pid) ->
     safe(Ep, {watch, Pid}, 5000).
+
+%% Hand the endpoint to another owner: it gets the events from now on, and
+%% its exit is what ends the endpoint.
+-spec set_owner(endpoint(), pid()) -> ok | {error, term()}.
+set_owner(Ep, Owner) when is_pid(Owner) ->
+    safe(Ep, {set_owner, Owner}, 5000).
 
 %% The INVITE dialog of an endpoint made by create_endpoint.
 -spec set_dialog(endpoint(), chappe_sip_dialog:dialog()) ->
@@ -219,6 +225,10 @@ common({call, From}, {watch, Pid}, _State, #state{watchers = W} = Data) ->
             _ -> W#{Pid => monitor(process, Pid)}
         end,
     {keep_state, Data#state{watchers = W1}, [{reply, From, ok}]};
+common({call, From}, {set_owner, Owner}, _State, Data) ->
+    demonitor(Data#state.owner_mon, [flush]),
+    Data1 = Data#state{owner = Owner, owner_mon = monitor(process, Owner)},
+    {keep_state, Data1, [{reply, From, ok}]};
 common({call, From}, {set_dialog, D}, _State, Data) ->
     {keep_state, Data#state{dialog = D, handed = false}, [{reply, From, ok}]};
 common({call, From}, handed, _State, #state{dialog = D, handed = H} = Data) ->
@@ -261,6 +271,7 @@ common(_EventType, _Msg, _State, _Data) ->
 
 call_msg({dtmf, Digit}, Data) ->
     notify(Data, {dtmf, Digit}),
+    tell(Data, {dtmf, Digit}),
     keep_state_and_data;
 call_msg({tone, Tone}, Data) ->
     notify(Data, {tone, Tone}),
