@@ -62,7 +62,7 @@ coverage, row by row, is in the [compliance matrix](compliance.md).
 | Capability | Guide |
 |---|---|
 | Media facade: anchor, tap, SIPREC, duck, play, record, DTMF on rtpengine | [Media](guides/media.md) |
-| SIPREC client (RFC 7866) for anchored calls and native rooms, and a recording server | [SIPREC](guides/siprec.md) |
+| SIPREC client (RFC 7866) for anchored calls and native rooms, and a recording server that writes to chappe_audio's store | [SIPREC](guides/siprec.md) |
 | Conferences on chappe_mix, rtpengine in front for WebRTC and transcoding | [Media](guides/media.md#run-a-conference-chappe_mix) |
 | Media-anchoring proxy | [Proxy](guides/proxy.md) |
 

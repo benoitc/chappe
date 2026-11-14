@@ -65,6 +65,12 @@ capability exists before you reach for it.
 - An outbound connection handed to another process with
   `set_controlling_process/2` stays open after the handler returns, and ends
   with its new owner.
+- Playback results (length, response, a missing file as an error), digit
+  collection with its terminator, mute, variables (read, multiset, export),
+  an application run without waiting, named audio forks with pause, resume
+  and text, say, speak, and tone and fax detection, as call commands.
+- A call carries an opaque `ref` (the caller's call reference) and returns
+  it in its events.
 - Requirement catalogue in `docs/compliance/requirements.tsv`.
 
 ## Roadmap

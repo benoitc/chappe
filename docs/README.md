@@ -27,7 +27,7 @@ live here in `docs/`.
 | chappe_rtpengine | [README](../apps/chappe_rtpengine/README.md) | [getting started](../apps/chappe_rtpengine/docs/guides/getting-started.md), [sessions](../apps/chappe_rtpengine/docs/guides/sessions.md), [nodes](../apps/chappe_rtpengine/docs/guides/nodes.md), [media features](../apps/chappe_rtpengine/docs/guides/media-features.md), [subscriptions](../apps/chappe_rtpengine/docs/guides/subscriptions.md), [testing](../apps/chappe_rtpengine/docs/guides/testing.md) |
 | chappe_mix | [README](../apps/chappe_mix/README.md) | [run a conference](../apps/chappe_mix/docs/guides/conference.md) |
 | chappe_esl | [README](../apps/chappe_esl/README.md) | [getting started](../apps/chappe_esl/docs/guides/getting-started.md), [inbound](../apps/chappe_esl/docs/guides/inbound.md), [outbound](../apps/chappe_esl/docs/guides/outbound.md), [events](../apps/chappe_esl/docs/guides/events.md), [call control](../apps/chappe_esl/docs/guides/call-control.md), [nodes](../apps/chappe_esl/docs/guides/nodes.md), [select a node](../apps/chappe_esl/docs/guides/select-node.md), [testing](../apps/chappe_esl/docs/guides/testing.md) |
-| chappe_audio | [README](../apps/chappe_audio/README.md) | [take audio from a fork](../apps/chappe_audio/docs/guides/fork.md), [record a call](../apps/chappe_audio/docs/guides/record.md) |
+| chappe_audio | [README](../apps/chappe_audio/README.md), [features](../apps/chappe_audio/docs/features.md) | [take audio from a fork](../apps/chappe_audio/docs/guides/fork.md), [record a call](../apps/chappe_audio/docs/guides/record.md) |
 | chappe_mrf | [README](../apps/chappe_mrf/README.md), [features](../apps/chappe_mrf/docs/features.md) | [IVR menu](../apps/chappe_mrf/docs/guides/ivr-menu.md), [bridge](../apps/chappe_mrf/docs/guides/bridge.md), [conference](../apps/chappe_mrf/docs/guides/conference.md), [drachtio mapping](../apps/chappe_mrf/docs/drachtio-mapping.md) |
 
 Configuration reference per app:
@@ -43,7 +43,8 @@ What each app can do today: the `docs/features.md` of
 [chappe_rtpengine](../apps/chappe_rtpengine/docs/features.md),
 [chappe_mix](../apps/chappe_mix/docs/features.md),
 [chappe_esl](../apps/chappe_esl/docs/features.md),
-[chappe_mrf](../apps/chappe_mrf/docs/features.md). What changed:
+[chappe_mrf](../apps/chappe_mrf/docs/features.md),
+[chappe_audio](../apps/chappe_audio/docs/features.md). What changed:
 [CHANGELOG](../CHANGELOG.md).
 
 ### You want to understand the system

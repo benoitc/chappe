@@ -25,6 +25,8 @@
 - Media subscriptions on sessions: `subscribe_request` (SDP offer for the tapped streams plus subscription to-tag), `subscribe_answer`, `unsubscribe`; the building blocks for recording taps, listen-in, and conference graphs. Requires an rtpengine built with transcoding support
 - One-sided anchor: `publish` (session and node level) for a call with no second leg, such as a recording server taking N sendonly streams; rtpengine writes the answer and the session goes straight to established
 - Per-stream forking (`chappe_rtpengine_sdp`): a subscription offer's m-line order and labels through `streams/1`, and `fork_answer/2,3` to answer it with one stream (by `a=label` or m-line index) routed to one receiver and the rest rejected, IPv4 or IPv6 receivers, errors for streams the offer rejected and for bad selectors. rtpengine has no request-side stream selector, so the answer carries the selection
+- Typed `list/1,2` (a node's calls) and `statistics/1`, and session `start_forwarding/2` and `stop_forwarding/1`
+- Sessions carry an opaque `ref` (the call's reference), sent as NG `metadata` and returned in their events
 - Test double (`chappe_rtpengine_fake_server`) with drop, duplicate, delayed and raw-reply injection, runtime handler swap
 - Compliance catalogue (`docs/compliance/requirements.tsv`): NG protocol behaviours, each claimed by the tests that prove it with `%% req:` lines
 - Live test suite against a real rtpengine, gated on `RTPENGINE_HOST`, driven by the `interop/` docker compose harness

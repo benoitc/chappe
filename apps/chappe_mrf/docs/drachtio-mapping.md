@@ -27,7 +27,7 @@ chappe equivalents. Use it when you port a drachtio app.
 | `dlg.on('refer')` carrying out the transfer yourself | `transfer => auto` (blind and attended, under a `policy`), or `transfer => notify` and `{refer, Info}` with `accept/2`, `reject/2` |
 | REFER to a conference URI | `chappe_sip_focus:refer/4` |
 | a SIPREC client (jambonz) | `chappe_sip_siprec:start(B2b \| {room, Id}, Srs, Opts)`, `pause/1`, `resume/1`, `stop/1` |
-| a SIPREC server | `chappe_sip_siprec_srs:serve/3` then `run/1`; metadata with `chappe_sip_siprec_meta` |
+| a SIPREC server | `chappe_sip_siprec_srs:serve/3` then `run/1`, `store => default` for chappe_audio's store; metadata with `chappe_sip_siprec_meta` |
 | `srf.proxyRequest(req, dest, {followRedirects, provisionalTimeout, finalTimeout})` | `chappe_sip:proxy_request/3` options `follow_redirects`, `provisional_timeout`, `final_timeout` |
 | `srf.createUAC(uri, opts)` | `chappe_sip:create_uac(Uri, Opts)` |
 | `srf.createUAS(req, res, {localSdp})` | `chappe_sip:create_uas(Req, Res, #{local_sdp => Sdp \| fun(Offer)})` |
@@ -75,10 +75,12 @@ chappe equivalents. Use it when you port a drachtio app.
 | `ms.createConference(name, opts)` | `chappe_mrf:conference(Name, #{backend => fs})` |
 | `ep.joinConference(conf)` | `chappe_mrf_conf:join(Conf, Ep | B2b, Opts)` |
 | `conf.mute/kick/lock` | `chappe_mrf_conf:mute/2`, `kick/2`, `lock/1` |
-| `conf.startRecording`, `stopRecording` | `chappe_mrf_conf:record/2,3`, `stop_record/1` (fs) |
+| `conf.startRecording`, `stopRecording` | `chappe_mrf_conf:record/2,3`, `stop_record/1` (fs: a file the node writes; native: through SIPREC to a recording server) |
 | `conf.set('max_members')`, conference flags | `max_members`, `room_flags` options of `conference/2` |
 | `conference transfer` | `chappe_mrf_conf:transfer(From, Member, To)` |
 | (none) | `backend => native`: a room on chappe_mix, with `relate/4` |
+| a WebSocket server for `forkAudioStart` | `chappe_audio:listen/1`, `open/2` |
+| a member's REFER in a conference | handled by chappe on both backends |
 
 ## Differences to know
 
