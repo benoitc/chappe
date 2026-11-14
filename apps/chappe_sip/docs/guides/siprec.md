@@ -111,7 +111,7 @@ the RS, receives each stream and writes it to the recording store:
 ```erlang
 ok = chappe_sip:handle(<<"INVITE">>, fun(Req, Res) ->
     case chappe_sip_siprec_srs:serve(Req, Res, #{store => default}) of
-        {ok, #{dialog := D}} -> chappe_sip_dialog:wait(D);
+        {ok, Srs} -> chappe_sip_siprec_srs:run(Srs);
         {error, not_recording_session} -> chappe_sip_res:send(Res, 403);
         {error, _} -> ok
     end
@@ -124,6 +124,19 @@ is the `siprec_store` setting, `chappe_audio_store` of the chappe_audio
 app; any module with its `open/2`, `write/2` and `close/2` works. To take
 the audio yourself, give `sink => Pid` instead: the process gets
 `{chappe_sip_siprec_rtp, Stream, {audio, Pcm}}`, 16-bit PCM at 8 kHz.
+
+`run/1` carries the session until the BYE: it answers each re-INVITE and
+UPDATE of the client and hands the metadata each carries (a party change,
+a pause) to the notify process (`notify => Pid`, else the sink):
+
+```erlang
+receive
+    {chappe_sip_siprec_srs, Dialog, {metadata, Doc}} ->
+        chappe_sip_siprec_meta:senders(Doc);
+    {chappe_sip_siprec_srs, Dialog, {stopped, _Why}} ->
+        done
+end.
+```
 
 ## Run it from another node
 

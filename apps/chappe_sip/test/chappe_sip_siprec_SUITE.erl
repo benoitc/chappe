@@ -26,7 +26,8 @@
 -export([server_writes_store/1, server_not_a_recording_session/1,
          server_sink_and_stream_crash/1, server_refuses_bad_body/1,
          server_answers_on_the_wire/1]).
--export([room_recorded/1, room_not_up/1, server_sink_bound/1]).
+-export([room_recorded/1, room_not_up/1, server_sink_bound/1,
+         server_metadata_update/1]).
 
 all() ->
     [invite_is_a_recording_session, chappe_as_recording_server,
@@ -37,7 +38,7 @@ all() ->
      legacy_content_type, from_another_node, server_writes_store,
      server_not_a_recording_session, server_sink_and_stream_crash,
      server_refuses_bad_body, server_answers_on_the_wire,
-     server_sink_bound, room_recorded, room_not_up].
+     server_sink_bound, server_metadata_update, room_recorded, room_not_up].
 
 -define(UA, chappe_sip_test_ua).
 -define(M, chappe_sip_siprec_meta).
@@ -532,6 +533,32 @@ server_sink_bound(_Config) ->
     persistent_term:erase(siprec_test_sink_queue),
     gen_udp:close(Sock).
 
+%% RFC 7866 9.2: the SRS keeps track of the metadata updates. Each
+%% re-INVITE's metadata reaches the server's app as an event, and the
+%% re-INVITE is answered with the streams as they were.
+%% req: R7866-9.2-3
+server_metadata_update(_Config) ->
+    #{b2b := B2b, ep := EP} = call(),
+    {ok, Rec} = chappe_sip_siprec:start(
+                  B2b, <<"sip:sink@127.0.0.1:", (integer_to_binary(EP))/binary>>, #{}),
+    {started, _} = event(Rec),
+    #{dialog := D} = got(srs_served),
+    ok = chappe_sip_siprec:pause(Rec),
+    receive
+        {chappe_sip_siprec_srs, D, {metadata, Doc}} ->
+            ?assertEqual(2, length(maps:get(participants, Doc)))
+    after 5000 ->
+        ct:fail(no_metadata_event)
+    end,
+    ok = chappe_sip_siprec:resume(Rec),
+    receive {chappe_sip_siprec_srs, D, {metadata, _}} -> ok
+    after 5000 -> ct:fail(no_second_metadata_event)
+    end,
+    ok = chappe_sip_siprec:stop(Rec),
+    receive {chappe_sip_siprec_srs, D, {stopped, _}} -> ok
+    after 5000 -> ct:fail(no_stopped_event)
+    end.
+
 %% A body that does not parse is refused 488.
 server_refuses_bad_body(_Config) ->
     #{ep := EP} = call(),
@@ -737,9 +764,9 @@ handler(Req, Res) ->
 %% streams live as long as the session
 served(Test, Req, Res, Opts) ->
     case chappe_sip_siprec_srs:serve(Req, Res, Opts) of
-        {ok, #{dialog := D} = Srs} ->
+        {ok, Srs} ->
             Test ! {srs_served, Srs},
-            chappe_sip_dialog:wait(D);
+            chappe_sip_siprec_srs:run(Srs);
         {error, not_recording_session} = E ->
             Test ! {srs_served, E},
             chappe_sip_res:send(Res, 403);

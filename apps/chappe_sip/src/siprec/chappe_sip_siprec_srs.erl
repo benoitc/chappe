@@ -26,8 +26,14 @@
 %%       16-bit linear PCM at 8 kHz, dropped while it has max_queue
 %%       messages waiting
 %% The streams belong to the calling process: they finish (and close their
-%% store recordings) when it exits, so the handler typically waits on the
-%% dialog (chappe_sip_dialog:wait/1) and returns. Opts also take ip (the
+%% store recordings) when it exits, so the handler then calls run/1, which
+%% carries the session until it ends. run/1 answers each re-INVITE and
+%% UPDATE of the recording client with the streams as they are, and hands
+%% the metadata each carries (RFC 7866 9.2: the SRS keeps track of the
+%% updates) to the notify process (Opts' notify, else the sink pid) as
+%%   {chappe_sip_siprec_srs, Dialog, {metadata, Doc}}
+%% and the end of the session as {chappe_sip_siprec_srs, Dialog, {stopped,
+%% Why}}, Why the BYE request or the dialog's reason. Opts also take ip (the
 %% address the receivers bind, default 127.0.0.1), advertise (the address
 %% in the SDP, default ip), max_streams (default 4), max_queue (default
 %% 500) and headers for the 200.
@@ -37,7 +43,7 @@
 %% parse or a store that is not there answers 488 or 500.
 -module(chappe_sip_siprec_srs).
 
--export([serve/3, is_recording_session/1, store/1]).
+-export([serve/3, run/1, is_recording_session/1, store/1]).
 
 -define(LAWS, [<<"0">>, <<"8">>]).
 
@@ -179,12 +185,16 @@ answer(Req, Res, Sdp, Doc, Sink, Opts) ->
         chappe_sip:create_uas(Req, Res, #{
             local_sdp => Answer,
             contact_params => <<";+sip.srs">>,
-            headers => maps:get(headers, Opts, [])
+            headers => maps:get(headers, Opts, []),
+            %% run/1 answers them, and reads their metadata
+            handled_events => [modify, update]
         })
     of
         {ok, D} ->
             {ok, #{
                 dialog => D,
+                answer => Answer,
+                notify => notify(Opts),
                 call_ref => CallRef,
                 metadata => Doc,
                 streams => Streams
@@ -193,6 +203,69 @@ answer(Req, Res, Sdp, Doc, Sink, Opts) ->
             _ = [chappe_sip_siprec_rtp:stop(P) || #{pid := P} <- Streams],
             E
     end.
+
+notify(#{notify := Pid}) when is_pid(Pid) -> Pid;
+notify(#{sink := Pid}) when is_pid(Pid) -> Pid;
+notify(_Opts) -> undefined.
+
+%% Carry the session in the calling process (the dialog's owner) until it
+%% ends: each re-INVITE or UPDATE of the client is answered, its metadata
+%% told. Returns {stopped, Why}.
+-spec run(map()) -> {stopped, term()}.
+run(#{dialog := D} = Srs) ->
+    Mon = chappe_sip_dialog:monitor(D),
+    Why = loop(D, Mon, Srs),
+    erlang:demonitor(Mon, [flush]),
+    tell({stopped, Why}, Srs),
+    {stopped, Why}.
+
+loop(D, Mon, Srs) ->
+    receive
+        {chappe_sip_dialog, D, modify, Req, Res} ->
+            %% RFC 7866 7.2: the SRS answers with the streams it takes
+            updated(Req, Srs),
+            _ = chappe_sip_res:send(Res, 200, #{
+                body => maps:get(answer, Srs),
+                headers => [{<<"Content-Type">>, <<"application/sdp">>}]
+            }),
+            loop(D, Mon, Srs);
+        {chappe_sip_dialog, D, update, Req, Res} ->
+            updated(Req, Srs),
+            _ = chappe_sip_res:send(Res, 200),
+            loop(D, Mon, Srs);
+        {chappe_sip_dialog, D, destroy, Why} ->
+            Why;
+        {'DOWN', Mon, process, _, Why} ->
+            Why;
+        {chappe_sip_dialog, D, _Event, _Req} ->
+            loop(D, Mon, Srs)
+    end.
+
+%% the metadata of a re-INVITE or UPDATE, when it carries some
+updated(Req, Srs) ->
+    case read(Req) of
+        {ok, _Sdp, #{} = Doc} when map_size(Doc) > 0 ->
+            tell({metadata, Doc}, Srs);
+        _ ->
+            metadata_only(Req, Srs)
+    end.
+
+%% an UPDATE may carry the metadata alone (RFC 7866 9.1)
+metadata_only(Req, Srs) ->
+    CT = chappe_sip_req:get(<<"content-type">>, Req),
+    case
+        CT =/= undefined andalso chappe_sip_siprec_meta:is_content_type(CT) andalso
+            chappe_sip_siprec_meta:parse(chappe_sip_req:body(Req))
+    of
+        {ok, #{} = Doc} -> tell({metadata, Doc}, Srs);
+        _ -> ok
+    end.
+
+tell(_Ev, #{notify := undefined}) ->
+    ok;
+tell(Ev, #{notify := Pid, dialog := D}) ->
+    Pid ! {?MODULE, D, Ev},
+    ok.
 
 advertise(#{advertise := A}, _Ip) when is_binary(A) -> A;
 advertise(_Opts, Ip) -> list_to_binary(inet:ntoa(Ip)).

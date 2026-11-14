@@ -66,12 +66,12 @@ both_parties_recorded(Config) ->
     ok = chappe_sip:handle(<<"INVITE">>, fun(Req, Res) ->
         case chappe_sip_req:uri(Req) of
             <<"sip:srs@", _/binary>> ->
-                {ok, #{dialog := D, streams := Streams}} =
+                {ok, #{streams := Streams} = Srs} =
                     chappe_sip_siprec_srs:serve(Req, Res, #{
                         sink => Test, ip => {0, 0, 0, 0}, advertise => MediaIp
                     }),
                 Test ! {srs_streams, Streams},
-                chappe_sip_dialog:wait(D);
+                chappe_sip_siprec_srs:run(Srs);
             _ ->
                 Callee = <<"sip:callee@127.0.0.1:", (integer_to_binary(CP))/binary>>,
                 {ok, Legs} = chappe_sip:create_b2bua(Req, Res, Callee, #{media => anchor}),
