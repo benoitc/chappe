@@ -42,7 +42,8 @@
          redirect_q_order_fallback/1, delayed_ack_3pcc/1,
          create_uac_timeout_cancels/1]).
 -export([preloaded_route_set/1, method_param_in_uri/1,
-         redirect_drops_method_param/1, use_proxy_305/1]).
+         redirect_drops_method_param/1, use_proxy_305/1,
+         redirect_keep_uri/1]).
 -export([early_update_from_callee/1, early_bye_from_callee/1,
          early_update_from_caller/1, early_forks_ended/1,
          early_ended_by_final/1]).
@@ -74,7 +75,7 @@ groups() ->
                  redirect_q_order_fallback, delayed_ack_3pcc,
                  create_uac_timeout_cancels,
                  preloaded_route_set, method_param_in_uri,
-                 redirect_drops_method_param, use_proxy_305,
+                 redirect_drops_method_param, use_proxy_305, redirect_keep_uri,
                  early_update_from_callee, early_bye_from_callee,
                  early_update_from_caller, early_forks_ended,
                  early_ended_by_final, large_request_over_tcp,
@@ -1216,6 +1217,29 @@ use_proxy_305(Config) ->
     D = answer(Proxy, EP, Inv2, Ref),
     hang_up(Proxy, EP, D),
     chappe_sip_core_peer:close(Proxy).
+
+%% keep_uri_on_redirect (drachtio's keepUriOnRedirect): a 302 Contact is
+%% only the next hop; the Request-URI and the To stay those of the first
+%% INVITE.
+redirect_keep_uri(Config) ->
+    {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
+    Next = open(),
+    NP = integer_to_binary(port(Next)),
+    Uri = callee(Sock),
+    {ok, Ref} = chappe_sip_uac:start(Uri, #{local_sdp => sdp(),
+                                            follow_redirects => true,
+                                            keep_uri_on_redirect => true,
+                                            notify => self()}),
+    {Inv1, _} = recv(Sock, {method, <<"INVITE">>}, 3000),
+    send(Sock, EP, response(Inv1, 302, #{
+        to_tag => tag(),
+        headers => [{<<"Contact">>, <<"<sip:moved@127.0.0.1:", NP/binary, ">">>}]})),
+    {Inv2, _} = recv(Next, {method, <<"INVITE">>}, 3000),
+    ?assertEqual(Uri, uri(Inv2)),
+    ?assertEqual(hdr(<<"to">>, Inv1), hdr(<<"to">>, Inv2)),
+    D = answer(Next, EP, Inv2, Ref),
+    hang_up(Next, EP, D),
+    chappe_sip_core_peer:close(Next).
 
 %% ---- third party call control and give-up (RFC 3725, 9.1) ----
 

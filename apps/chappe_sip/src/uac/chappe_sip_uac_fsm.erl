@@ -1300,10 +1300,8 @@ redirect(_Status, Msg, #data{redirects = R} = D) ->
 
 next_target(#data{targets = []}) ->
     {error, no_target};
-next_target(#data{targets = [T | Rest], uri = OldUri, cseq = CSeq} = D) ->
-    D1 = strip_auth_across_authority(OldUri, T, D#data{
-        uri = T,
-        to = <<"<", T/binary, ">">>,
+next_target(#data{targets = [T | Rest], cseq = CSeq} = D) ->
+    D1 = redirect_to(T, D#data{
         cseq = CSeq + 1,
         targets = Rest,
         tried = [T | D#data.tried],
@@ -1314,6 +1312,22 @@ next_target(#data{targets = [T | Rest], uri = OldUri, cseq = CSeq} = D) ->
         {ok, D2} -> {ok, D2};
         {error, _} -> next_target(D1)
     end.
+
+%% A redirect target T becomes the Request-URI and the To (RFC 3261
+%% 8.1.3.4), or, with keep_uri_on_redirect (drachtio's keepUriOnRedirect),
+%% only the next hop: the Request-URI and To stay, as for a 305. The
+%% credentials stay with the authority they were given to.
+redirect_to(T, #data{opts = #{keep_uri_on_redirect := true}} = D) ->
+    Hop =
+        case D#data.proxy of
+            undefined -> D#data.uri;
+            P -> P
+        end,
+    strip_auth_across_authority(Hop, T, D#data{proxy = T});
+redirect_to(T, #data{uri = OldUri} = D) ->
+    strip_auth_across_authority(OldUri, T, D#data{
+        uri = T, to = <<"<", T/binary, ">">>
+    }).
 
 %% sip/sips Contacts not tried yet, by q (1.0 when absent), header order
 %% on a tie. A URI's ?headers part is dropped: we do not let a redirect

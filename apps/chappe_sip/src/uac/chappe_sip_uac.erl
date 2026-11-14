@@ -48,6 +48,9 @@
 %%           credentials for those challenges at once, the next nonce
 %%           count each; a stale nonce is answered again as usual),
 %%         follow_redirects => boolean() (3xx Contacts tried best q first),
+%%         keep_uri_on_redirect => boolean() (default false: a followed
+%%           3xx Contact becomes the Request-URI and To; true keeps them
+%%           and sends the request to the Contact as its next hop),
 %%         no_ack => boolean() (3PCC: chappe_sip_dialog:ack/2 sends the ACK),
 %%         answer => fun((Offer :: binary()) -> {ok, iodata()} | reject)
 %%           (an INVITE without local_sdp: the answer to the offer in the

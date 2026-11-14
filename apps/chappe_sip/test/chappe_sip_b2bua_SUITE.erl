@@ -25,6 +25,7 @@
          bad_from_not_passed/1]).
 -export([b_events_notified/1, app_cancels_b/1]).
 -export([a_headers_on_2xx/1, a_headers_on_failure/1]).
+-export([b_redirect_followed/1]).
 
 all() ->
     [b2b_success_bye, b2b_callee_busy, b2b_caller_cancel,
@@ -34,7 +35,8 @@ all() ->
      start_failure_answered, start_failure_not_passed, fork_branch_opts,
      serial_branch_opts, hunt_keeps_a_tag, bad_from_refused,
      bad_from_fork_refused, bad_from_not_passed, b_events_notified,
-     app_cancels_b, a_headers_on_2xx, a_headers_on_failure].
+     app_cancels_b, a_headers_on_2xx, a_headers_on_failure,
+     b_redirect_followed].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -385,6 +387,49 @@ app_cancels_b(_Config) ->
         {b2b_result, {error, #chappe_sip_error{status = 487}}} -> ok
     after 5000 -> ct:fail(no_b2b_failure)
     end.
+
+%% follow_redirects goes to the B leg: B's 302 is followed there and A
+%% gets the 2xx of the target it named, never the 302.
+b_redirect_followed(_Config) ->
+    {EnginePort, CalleePort} = setup(),
+    MovedPort = pick(),
+    Test = self(),
+    CalleeUri = <<"sip:callee@127.0.0.1:", (integer_to_binary(CalleePort))/binary>>,
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        {ok, Legs} = chappe_sip:create_b2bua(Req, Res, CalleeUri,
+                                             #{follow_redirects => true}),
+        {done, _} = chappe_sip_b2b:relay(Legs)
+    end),
+    callee(CalleePort, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        send(Sock, Src, resp(Inv, 302, <<"Moved Temporarily">>, tag(),
+                             [{<<"Contact">>, <<"<", (ctc(MovedPort))/binary, ">">>}],
+                             <<>>))
+    end),
+    callee(MovedPort, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        Test ! moved_called,
+        ToTag = tag(),
+        send(Sock, Src, resp(Inv, 200, <<"OK">>, ToTag,
+                             [{<<"Contact">>, ctc(MovedPort)}], sdp(<<"moved">>))),
+        {_Ack, _} = recv(Sock, <<"ACK">>),
+        {Bye, BSrc} = recv(Sock, <<"BYE">>),
+        send(Sock, BSrc, resp(Bye, 200, <<"OK">>, ToTag, [], <<>>))
+    end),
+    caller(fun(Sock) ->
+        Call = callid(),
+        FT = <<"cftr">>,
+        send(Sock, EnginePort, invite(Sock, EnginePort, Call, FT)),
+        R200 = recv_status(Sock, 200),
+        {_, _} = binary:match(R200, <<"moved">>),
+        TT = to_tag(R200),
+        send(Sock, EnginePort, ack(Sock, EnginePort, Call, FT, TT)),
+        send(Sock, EnginePort, bye(Sock, EnginePort, Call, FT, TT)),
+        _ = recv_status(Sock, 200),
+        Test ! caller_done
+    end),
+    ok = expect(moved_called),
+    ok = expect(caller_done).
 
 %% a_headers go on A's 2xx (drachtio's responseHeaders).
 a_headers_on_2xx(_Config) ->

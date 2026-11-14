@@ -46,7 +46,9 @@
     session_refresher,
     call_ref,
     call_ref_header,
-    related
+    related,
+    follow_redirects,
+    keep_uri_on_redirect
 ]).
 
 %% Whether replace_b/3's arguments can go to the relay, checked in the

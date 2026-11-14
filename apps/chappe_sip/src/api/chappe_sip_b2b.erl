@@ -104,6 +104,21 @@
 -type request() :: refer | info | message | notify | options.
 -export_type([request/0]).
 
+%% options of create_b2bua/4 that go to the B leg's UAC as they are
+-define(B_UAC_OPTS, [
+    proxy,
+    auth,
+    flow,
+    call_ref,
+    call_ref_header,
+    related,
+    follow_redirects,
+    keep_uri_on_redirect,
+    session_expires,
+    min_se,
+    session_refresher
+]).
+
 %% in-dialog events relay/2 answers
 -define(RELAYED, [modify, update]).
 
@@ -142,6 +157,9 @@
 %%                            its final comes back
 %%   pass_provisional_responses => boolean (default true)
 %%   proxy, auth           => passed to the B-leg UAC
+%%   follow_redirects, keep_uri_on_redirect => passed to the B-leg UAC
+%%                            (chappe_sip_uac:start/2): B's 3xx is followed
+%%                            there, A never sees it
 %%   session_expires, min_se, session_refresher => each leg's session timer
 %%   timer_c               => Timer C on the B leg in ms (RFC 3261 16.6
 %%                            step 11): how long B may ring, restarted by
@@ -399,10 +417,7 @@ start_b(Req, Res, {Fork, Dests}, Opts, LateOffer, M) ->
     ok = chappe_sip_cdr:update(ACdr, maps:with([call_ref, related], Opts)),
     BOpts = maps:merge(
         BOpts1#{cdr => #{role => b2b_b, link => ACdr}},
-        maps:with(
-            [proxy, auth, flow, call_ref, call_ref_header, related | st_opts()],
-            Opts
-        )
+        maps:with(?B_UAC_OPTS, Opts)
     ),
     %% pre-choose the A-leg dialog tag so relayed provisionals and the
     %% final 2xx share one To-tag (otherwise nta auto-tags the first
