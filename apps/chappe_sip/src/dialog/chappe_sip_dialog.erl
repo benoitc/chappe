@@ -11,6 +11,15 @@
 %% handle for claimed events (undefined otherwise). Unclaimed in-dialog
 %% requests are auto-answered by the fsm and reported as
 %%   {chappe_sip_dialog, Dialog, {auto_answered, Event}, Req}
+%% and a re-INVITE or UPDATE the fsm answered 2xx itself (modify and
+%% update not claimed) is also reported, as what it did to the session:
+%%   {chappe_sip_dialog, Dialog, hold | unhold | refresh, Req}
+%% hold when no live stream of the peer's offer receives (sendonly or
+%% inactive, RFC 3264 8.4), unhold when one receives again, refresh
+%% otherwise (no offer, or no change of hold). Claim publish
+%% (handled_events) to take an in-dialog PUBLISH as {chappe_sip_dialog,
+%% Dialog, publish, Req, Res}; unclaimed it gets 405.
+%% chappe_sip:dialog_events/1 streams every dialog's state.
 %%
 %% A dialog created from a SUBSCRIBE is a subscription (RFC 6665). Its owner
 %% also receives {chappe_sip_dialog, Dialog, {refreshed, Seconds}, Req} and

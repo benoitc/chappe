@@ -83,6 +83,8 @@
     local_sdp = <<>> :: binary(),
     remote_sdp = <<>> :: binary(),
     on_hold = false :: boolean(),
+    %% the peer's last offer put the session on hold (RFC 3264 8.4)
+    remote_hold = false :: boolean(),
     ready = false :: boolean(),
     await_from :: gen_statem:from() | undefined,
     %% in-flight outgoing in-dialog transaction:
@@ -246,7 +248,7 @@ init(
         cdr = maps:get(cdr, Args, undefined),
         call_ref = maps:get(call_ref, Opts, undefined)
     },
-    Data1 = Data#data{ack_answer = answer_in_ack(Data)},
+    Data1 = derived(Data),
     ok = announce(Data1),
     %% Any dialog-forming response (UAS) is sent by chappe_sip_engine (sending
     %% it from here would re-enter chappe_sip_engine during our own start and
@@ -262,6 +264,11 @@ init(
 announce(#data{call_ref = Ref, leg = LegH} = D) ->
     cdr_bind(D),
     chappe_sip_call:join(Ref, dialog, chappe_sip_dialog:make(self(), LegH)).
+
+%% what the dialog's first SDP says: an answer due in the ACK, a peer on
+%% hold
+derived(#data{remote_sdp = Remote} = D) ->
+    D#data{ack_answer = answer_in_ack(D), remote_hold = held(Remote)}.
 
 %% a UAS dialog formed by an offerless INVITE: our 2xx carries the offer and
 %% the ACK the answer (RFC 3261 13.2.1)
@@ -1059,11 +1066,38 @@ dispatch_indialog(TxnH, Method, Req, StHdrs, St, D0) ->
                     _ -> D2
                 end,
             notify4(D3, {auto_answered, Event}, Req),
+            D4 = session_event(Ok, Event, Req, D3),
             case Ok of
-                true -> st_apply(St, D3);
-                false -> {keep_state, D3}
+                true -> st_apply(St, D4);
+                false -> {keep_state, D4}
             end
     end.
+
+%% A re-INVITE or UPDATE the dialog answered itself, as the session moved:
+%% the owner gets {chappe_sip_dialog, D, hold | unhold | refresh, Req}.
+%% hold and unhold follow the peer's offer (chappe_sip_sdp:on_hold/1, RFC
+%% 3264 8.4); an unchanged hold state, or no offer, is a refresh.
+session_event(true, Event, Req, #data{remote_hold = Was} = D) when
+    Event =:= modify; Event =:= update
+->
+    Now =
+        case chappe_sip_req:body(Req) of
+            <<>> -> Was;
+            Offer -> held(Offer)
+        end,
+    Ev =
+        case {Was, Now} of
+            {false, true} -> hold;
+            {true, false} -> unhold;
+            _ -> refresh
+        end,
+    notify4(D, Ev, Req),
+    D#data{remote_hold = Now};
+session_event(_Ok, _Event, _Req, D) ->
+    D.
+
+held(<<>>) -> false;
+held(Sdp) -> chappe_sip_sdp:on_hold(Sdp).
 
 %% ---- offer/answer and request overlap (RFC 3261 14, RFC 3311 5.2) ----
 
@@ -1870,6 +1904,7 @@ method_event(<<"REFER">>) -> refer;
 method_event(<<"MESSAGE">>) -> message;
 method_event(<<"INVITE">>) -> modify;
 method_event(<<"SUBSCRIBE">>) -> subscribe;
+method_event(<<"PUBLISH">>) -> publish;
 method_event(Other) -> {method, Other}.
 
 %% The answer to an in-dialog request nobody claimed:
@@ -1906,9 +1941,10 @@ auto_answer(options, _Req, D) ->
 auto_answer({method, <<"PRACK">>}, _Req, D) ->
     %% no reliable provisional of ours is pending in a confirmed dialog
     {481, <<"Call/Transaction Does Not Exist">>, [], <<>>, D};
-auto_answer({method, M}, _Req, D) when
-    M =:= <<"REGISTER">>; M =:= <<"PUBLISH">>
-->
+auto_answer(publish, _Req, D) ->
+    %% RFC 3261 8.2.1: known, not allowed here unless the owner takes it
+    {405, <<"Method Not Allowed">>, [{<<"Allow">>, ?ALLOW}], <<>>, D};
+auto_answer({method, <<"REGISTER">>}, _Req, D) ->
     %% RFC 3261 8.2.1: known, not allowed here
     {405, <<"Method Not Allowed">>, [{<<"Allow">>, ?ALLOW}], <<>>, D};
 auto_answer({method, _}, _Req, D) ->
@@ -2148,7 +2184,9 @@ index(#data{remote_addr = RA} = D) ->
                 )
             of
                 ok ->
-                    D#data{indexed = Key};
+                    D1 = D#data{indexed = Key},
+                    ok = publish_state(D1, D#data.index_state),
+                    D1;
                 {error, Reason} ->
                     logger:warning(
                         "chappe_sip_dialog_fsm: not indexed ~p: ~p",
@@ -2160,11 +2198,35 @@ index(#data{remote_addr = RA} = D) ->
 
 set_index_state(#data{indexed = undefined}, _State) ->
     ok;
-set_index_state(#data{indexed = Key}, State) ->
-    chappe_sip_dialog_index:set_state(Key, State).
+set_index_state(#data{indexed = Key} = D, State) ->
+    ok = chappe_sip_dialog_index:set_state(Key, State),
+    publish_state(D, State).
 
-unindex(#data{indexed = undefined}) -> ok;
-unindex(#data{indexed = Key}) -> chappe_sip_dialog_index:delete(Key).
+%% leaving the index ends the dialog for the state stream, unless its BYE
+%% did already (or an earlier unindex/1)
+unindex(#data{indexed = undefined}) ->
+    ok;
+unindex(#data{indexed = Key} = D) ->
+    _ =
+        case chappe_sip_dialog_index:lookup(Key) of
+            {ok, {_, _, State, _}} when State =/= terminated ->
+                publish_state(D, terminated);
+            _ ->
+                ok
+        end,
+    chappe_sip_dialog_index:delete(Key).
+
+%% the dialog state stream (chappe_sip:dialog_events/1)
+publish_state(#data{indexed = {CallId, Local, Remote}} = D, State) ->
+    chappe_sip_dialog_index:publish(#{
+        dialog => dialog(D),
+        state => State,
+        call_id => CallId,
+        local_tag => Local,
+        remote_tag => Remote,
+        role => D#data.role,
+        call_ref => D#data.call_ref
+    }).
 
 dialog(#data{leg = LegH}) ->
     chappe_sip_dialog:make(self(), LegH).

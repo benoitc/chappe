@@ -20,7 +20,8 @@
     create_b2bua/4,
     proxy_request/3,
     request/2,
-    calls/1
+    calls/1,
+    dialog_events/1
 ]).
 -export([
     invite/1,
@@ -253,6 +254,16 @@ calls(#{call_ref := Ref}) when is_binary(Ref) ->
     {ok, chappe_sip_call:lookup(Ref)};
 calls(_) ->
     {error, badarg}.
+
+%% Send Pid the state of every INVITE dialog of this node as it changes,
+%% until Pid exits (chappe_sip_dialog_index:unsubscribe/1 stops it
+%% sooner): {chappe_sip_dialog_event, Info} with Info
+%% chappe_sip_dialog_index:event(), state early, confirmed or terminated
+%% (a BYE started, or the dialog ended). A local subscriber with 10000
+%% messages waiting misses events until it catches up.
+-spec dialog_events(pid()) -> ok.
+dialog_events(Pid) when is_pid(Pid) ->
+    chappe_sip_dialog_index:subscribe(Pid).
 
 %% Send an out-of-dialog, non-dialog-forming request (OPTIONS, REGISTER,
 %% MESSAGE, ...). Returns a ref; responses arrive as events, or use

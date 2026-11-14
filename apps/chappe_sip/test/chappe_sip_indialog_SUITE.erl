@@ -43,7 +43,11 @@
     uac_cancel_with_reason/1,
     uas_cancel_reason_received/1,
     early_dialog_update_and_bye/1,
-    local_sdp_fun/1
+    local_sdp_fun/1,
+    session_events/1,
+    publish_claimed/1,
+    dialog_state_stream/1,
+    dialog_state_killed/1
 ]).
 
 -define(P, chappe_sip_raw_peer).
@@ -74,7 +78,11 @@ all() ->
         uac_cancel_with_reason,
         uas_cancel_reason_received,
         early_dialog_update_and_bye,
-        local_sdp_fun
+        local_sdp_fun,
+        session_events,
+        publish_claimed,
+        dialog_state_stream,
+        dialog_state_killed
     ].
 
 init_per_suite(Config) ->
@@ -482,6 +490,86 @@ unsupported_method_405(Config) ->
     assert_allow(R),
     ?assertEqual(nomatch, binary:match(allow(R), <<"PUBLISH">>)),
     hangup(P1, Dlg).
+
+%% A re-INVITE or UPDATE the dialog answers itself tells the owner what it
+%% did to the session: hold when no live stream of the peer's offer
+%% receives (RFC 3264 8.4), unhold when one does again, refresh for the
+%% same hold state or no offer.
+session_events(Config) ->
+    {Peer, Dlg} = establish(Config, #{local_sdp => ?P:sdp(<<"app">>)}),
+    Held = <<(?P:sdp(<<"caller">>))/binary, "a=sendonly\r\n">>,
+    P1 = reinvite(Peer, Held),
+    ok = session_event(Dlg, hold),
+    P2 = reinvite(P1, Held),
+    ok = session_event(Dlg, refresh),
+    P3 = reinvite(P2, ?P:sdp(<<"caller">>)),
+    ok = session_event(Dlg, unhold),
+    {N, P4} = ?P:request(P3, <<"UPDATE">>, [], <<>>),
+    200 = ?P:status(?P:recv_final(P4, N, <<"UPDATE">>)),
+    ok = session_event(Dlg, refresh),
+    hangup(P4, Dlg).
+
+%% RFC 3903 4: a PUBLISH may come in a dialog; claimed, the owner answers
+%% it.
+publish_claimed(Config) ->
+    {Peer, Dlg} = establish(Config, #{
+        local_sdp => ?P:sdp(<<"app">>), handled_events => [publish]
+    }),
+    {N, P1} = ?P:request(Peer, <<"PUBLISH">>, [], <<>>),
+    Res = claimed(Dlg, publish),
+    _ = chappe_sip_res:send(Res, 200, #{}),
+    200 = ?P:status(?P:recv_final(P1, N, <<"PUBLISH">>)),
+    hangup(P1, Dlg).
+
+%% chappe_sip:dialog_events/1: confirmed with the dialog's call_ref when
+%% it is up, terminated once when its BYE goes, nothing after.
+dialog_state_stream(Config) ->
+    ok = chappe_sip:dialog_events(self()),
+    {Peer, Dlg} = establish(Config, #{local_sdp => ?P:sdp(<<"app">>)}),
+    Ref =
+        receive
+            {chappe_sip_dialog_event, #{
+                dialog := Dlg, state := confirmed, role := uas, call_ref := R
+            }} when is_binary(R) -> R
+        after 5000 -> ct:fail(no_confirmed)
+        end,
+    {ok, #{dialogs := [Dlg]}} = chappe_sip:calls(#{call_ref => Ref}),
+    hangup(Peer, Dlg),
+    receive
+        {chappe_sip_dialog_event, #{dialog := Dlg, state := terminated}} -> ok
+    after 5000 -> ct:fail(no_terminated)
+    end,
+    receive
+        {chappe_sip_dialog_event, #{dialog := Dlg}} = E -> ct:fail({again, E})
+    after 300 -> ok
+    end,
+    ok = chappe_sip_dialog_index:unsubscribe(self()).
+
+%% A dialog fsm killed in its prime is terminated for the stream too.
+dialog_state_killed(Config) ->
+    ok = chappe_sip:dialog_events(self()),
+    {Peer, Dlg} = establish(Config, #{local_sdp => ?P:sdp(<<"app">>)}),
+    receive {chappe_sip_dialog_event, #{dialog := Dlg, state := confirmed}} -> ok
+    after 5000 -> ct:fail(no_confirmed)
+    end,
+    exit(chappe_sip_dialog:pid(Dlg), kill),
+    receive
+        {chappe_sip_dialog_event, #{dialog := Dlg, state := terminated}} -> ok
+    after 5000 -> ct:fail(no_terminated)
+    end,
+    ok = chappe_sip_dialog_index:unsubscribe(self()),
+    ?P:close(Peer).
+
+reinvite(Peer, Sdp) ->
+    {N, P1} = ?P:request(Peer, <<"INVITE">>, [], Sdp),
+    200 = ?P:status(?P:recv_final(P1, N, <<"INVITE">>)),
+    ok = ?P:ack(P1, N, <<>>),
+    P1.
+
+session_event(Dlg, Ev) ->
+    receive {chappe_sip_dialog, Dlg, Ev, _Req} -> ok
+    after 5000 -> ct:fail({no_session_event, Ev})
+    end.
 
 %% create_uas/3 local_sdp as a fun of the caller's offer.
 local_sdp_fun(Config) ->
