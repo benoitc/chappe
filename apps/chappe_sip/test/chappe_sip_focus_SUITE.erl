@@ -29,6 +29,8 @@
     accept_must_allow_conference_info/1,
     unknown_package/1,
     conference_end_terminates/1,
+    refer_bye_removes_participant/1,
+    refer_not_allowed/1,
     invite_answer_advertises_focus/1,
     options_advertises_focus/1,
     privacy_from_the_api/1,
@@ -49,6 +51,8 @@ all() ->
         accept_must_allow_conference_info,
         unknown_package,
         conference_end_terminates,
+        refer_bye_removes_participant,
+        refer_not_allowed,
         invite_answer_advertises_focus,
         options_advertises_focus,
         privacy_from_the_api,
@@ -93,6 +97,7 @@ init_per_testcase(_Case, Config) ->
 
 end_per_testcase(_Case, Config) ->
     ok = chappe_sip_test_focus:subscribe_policy(undefined),
+    ok = chappe_sip_test_focus:refer_policy(undefined),
     _ = chappe_sip_test_focus:stop(),
     [ua_stop(?config(K, Config)) || K <- [host, watcher, p1, p2]],
     ok.
@@ -267,6 +272,40 @@ invite_answer_advertises_focus(Config) ->
     ?assert(lists:member(?CI, tokens(hdr(R, accept)))),
     ?assert(lists:member(<<"application/sdp">>, tokens(hdr(R, accept)))),
     ?assert(lists:member(<<"replaces">>, tokens(hdr(R, supported)))).
+
+%% The host REFERs the focus with Refer-To p2;method=BYE: the policy
+%% allows it (it comes from the host), the REFER is accepted, and the
+%% focus sends p2 a BYE (RFC 4579 5.11) through chappe_sip_focus:refer/4.
+%% req: R4579-18
+refer_bye_removes_participant(Config) ->
+    [Host, P2] = [?config(K, Config) || K <- [host, p2]],
+    Uri = ?config(conf_uri, Config),
+    ok = chappe_sip_test_focus:refer_policy(fun
+        (#{action := remove, referrer := R}) -> binary:match(R, <<"host@">>) =/= nomatch;
+        (_) -> true
+    end),
+    {ok, _, _} = invite(P2, Uri, []),
+    Target = <<"<", (ua_uri(P2))/binary, ";method=BYE>">>,
+    {ok, 200} = ua_call(Host, {refer, ?config(focus, Config), Target}),
+    Byes = fun() -> [M || {<<"BYE">>, M, _} <- ua_call(P2, requests)] end,
+    ok = wait_until(fun() -> Byes() =/= [] end, 10000).
+
+%% A participant the policy does not allow to remove anyone gets 403, and
+%% the participant it named stays.
+%% req: R4579-18 R5589-06
+refer_not_allowed(Config) ->
+    [P1, P2] = [?config(K, Config) || K <- [p1, p2]],
+    Uri = ?config(conf_uri, Config),
+    ok = chappe_sip_test_focus:refer_policy(fun
+        (#{action := remove, referrer := R}) -> binary:match(R, <<"host@">>) =/= nomatch;
+        (_) -> true
+    end),
+    {ok, Call1, _} = invite(P1, Uri, []),
+    {ok, _, _} = invite(P2, Uri, []),
+    Target = <<"<", (ua_uri(P2))/binary, ";method=BYE>">>,
+    {ok, 403} = ua_call(P1, {refer, Call1, Target}),
+    timer:sleep(500),
+    ?assertEqual([], [M || {<<"BYE">>, M, _} <- ua_call(P2, requests)]).
 
 %% OPTIONS to the conference URI discovers a focus (RFC 4579 4.3).
 %% req: R4579-07 R4579-01
