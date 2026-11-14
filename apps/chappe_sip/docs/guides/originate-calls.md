@@ -169,8 +169,13 @@ goes again through the proxy the 305's Contact names (21.3.6).
 
 `keep_uri_on_redirect => true` (drachtio's `keepUriOnRedirect`) treats
 every followed 3xx that way: the Contact becomes the next hop, and the
-Request-URI and To stay those of your first INVITE. Use it when a redirect
-server names the next proxy rather than a new target.
+Request-URI and To stay those of your first INVITE. It is off by default
+because it deviates from RFC 3261 8.1.3.4, which says a UAC MUST copy the
+whole Contact URI into the Request-URI of the new request. Turn it on only
+when you know the redirect server answers with the next proxy rather than
+a new target, such as a routing server in front of a carrier that expects
+the dialled number in the Request-URI; a standard redirect server then
+gets its target ignored.
 
 ## 3PCC (answer with no ACK)
 

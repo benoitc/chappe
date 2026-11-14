@@ -20,7 +20,8 @@
          snapshot_request_answered/1, srs_reinvite_answered/1,
          srs_refuses/1, srs_never_answers/1, srs_byes/1,
          call_end_byes_srs/1, owner_death_byes_srs/1,
-         recording_crash_spares_call/1, too_many_per_call/1,
+         recording_crash_spares_call/1, recording_crash_removes_taps/1,
+         too_many_per_call/1,
          bad_arguments/1, metadata_privacy/1, legacy_content_type/1,
          from_another_node/1]).
 -export([server_writes_store/1, server_not_a_recording_session/1,
@@ -29,19 +30,25 @@
 -export([room_recorded/1, room_not_up/1, server_sink_bound/1,
          server_metadata_update/1, room_ends_recording/1, recording_over_tls/1,
          server_writes_audio_store/1, room_recorded_to_store/1]).
+-export([server_latches_to_client/1, server_refuses_srtp/1,
+         srtp_call_tapped_as_srtp/1, tls_call_needs_tls_srs/1]).
+-export([too_many_at_once/1, srs_reinvite_more_streams/1]).
 
 all() ->
     [invite_is_a_recording_session, chappe_as_recording_server,
      pause_and_resume, party_change_reinvites, snapshot_request_answered,
      srs_reinvite_answered, srs_refuses, srs_never_answers, srs_byes,
      call_end_byes_srs, owner_death_byes_srs, recording_crash_spares_call,
+     recording_crash_removes_taps,
      too_many_per_call, bad_arguments, metadata_privacy,
      legacy_content_type, from_another_node, server_writes_store,
      server_not_a_recording_session, server_sink_and_stream_crash,
      server_refuses_bad_body, server_answers_on_the_wire,
      server_sink_bound, server_metadata_update, room_recorded, room_not_up,
      room_ends_recording, recording_over_tls,
-     server_writes_audio_store, room_recorded_to_store].
+     server_writes_audio_store, room_recorded_to_store,
+     server_latches_to_client, server_refuses_srtp, srtp_call_tapped_as_srtp,
+     tls_call_needs_tls_srs, too_many_at_once, srs_reinvite_more_streams].
 
 -define(UA, chappe_sip_test_ua).
 -define(M, chappe_sip_siprec_meta).
@@ -352,6 +359,28 @@ recording_crash_spares_call(_Config) ->
     {started, _} = event(Rec2),
     ok = chappe_sip_siprec:stop(Rec2).
 
+%% A recording killed outright runs no cleanup of its own: the call's
+%% media session holds its taps and removes them, so rtpengine stops
+%% forking the parties' media to the SRS.
+recording_crash_removes_taps(_Config) ->
+    #{b2b := B2b} = call(),
+    SP = ?UA:pick(),
+    srs(SP, fun(_Sock, _D, _Src) -> ok end),
+    {ok, Rec} = chappe_sip_siprec:start(B2b, srs_uri(SP), #{}),
+    {started, _} = event(Rec),
+    Tags = lists:sort(
+             [T || {rtpe_cmd, #{<<"command">> := <<"subscribe answer">>,
+                                <<"to-tag">> := T}} <- drain()]),
+    ?assertEqual(2, length(Tags)),
+    MRef = monitor(process, Rec),
+    exit(Rec, kill),
+    receive {'DOWN', MRef, process, Rec, killed} -> ok after 2000 -> ct:fail(alive) end,
+    Gone = lists:sort(
+             [T || {rtpe_cmd, #{<<"command">> := <<"unsubscribe">>,
+                                <<"to-tag">> := T}} <- drain()]),
+    ?assertEqual(Tags, Gone),
+    ?assertMatch(#{media := anchor}, chappe_sip_b2b:info(B2b)).
+
 %% siprec_max_per_call bounds the recordings of one call.
 too_many_per_call(_Config) ->
     application:set_env(chappe_sip, siprec_max_per_call, 1),
@@ -361,6 +390,50 @@ too_many_per_call(_Config) ->
     {ok, Rec} = chappe_sip_siprec:start(B2b, srs_uri(SP), #{}),
     ?assertEqual({error, too_many}, chappe_sip_siprec:start(B2b, srs_uri(SP), #{})),
     {started, _} = event(Rec),
+    ok = chappe_sip_siprec:stop(Rec).
+
+%% The bound holds for starts at the same time: of twenty started at once
+%% with siprec_max_per_call at 2, two run.
+too_many_at_once(_Config) ->
+    application:set_env(chappe_sip, siprec_max_per_call, 2),
+    #{b2b := B2b} = call(),
+    SP = ?UA:pick(),
+    srs(SP, fun(_Sock, _D, _Src) -> ok end),
+    Test = self(),
+    _ = [spawn(fun() ->
+                   Test ! {start, chappe_sip_siprec:start(B2b, srs_uri(SP),
+                                                          #{owner => Test})}
+               end) || _ <- lists:seq(1, 20)],
+    Rs = [receive {start, R} -> R after 10000 -> ct:fail(no_start) end
+          || _ <- lists:seq(1, 20)],
+    Ok = [Rec || {ok, Rec} <- Rs],
+    ct:log("~p started", [length(Ok)]),
+    ?assertEqual(2, length(Ok)),
+    ?assertEqual(18, length([E || {error, too_many} = E <- Rs])),
+    _ = [chappe_sip_siprec:stop(R) || R <- Ok].
+
+%% RFC 3264 6: the answer to a re-INVITE of the SRS has as many m-lines as
+%% its offer: an m-line past the recorded streams is refused with port 0.
+%% req: R7866-7.2-1
+srs_reinvite_more_streams(_Config) ->
+    #{b2b := B2b} = call(),
+    SP = ?UA:pick(),
+    Test = self(),
+    srs(SP, fun(Sock, D, Src) ->
+        {Re, D1} = ?UA:in_dialog(D, <<"INVITE">>, [], answer_sdp(3, <<"recvonly">>)),
+        ?UA:send(Sock, Src, Re),
+        R = ?UA:recv_status(Sock, 200),
+        ?UA:ack(D1, Src),
+        Test ! {srs_got, R}
+    end),
+    {ok, Rec} = chappe_sip_siprec:start(B2b, srs_uri(SP), #{}),
+    {started, _} = event(Rec),
+    R = got(srs_got),
+    {_, Media} = chappe_sip_sdp:sections(?UA:body(R)),
+    ?assertEqual(3, length(Media)),
+    [M1, M2, M3] = Media,
+    ?assertEqual([<<"1">>, <<"2">>], [label(M1), label(M2)]),
+    ?assertMatch(<<"m=audio 0 RTP/AVP", _/binary>>, hd(M3)),
     ok = chappe_sip_siprec:stop(Rec).
 
 %% Bad arguments fail in the caller; a direct call cannot be recorded;
@@ -793,7 +866,147 @@ server_answers_on_the_wire(_Config) ->
     ?assertMatch(<<"m=audio 0 ", _/binary>>, hd(M2)),
     #{streams := [#{label := <<"1">>}]} = got(srs_served).
 
+%% ---- the security of the recording session (RFC 7866 12) ----
+
+%% A receiver takes RTP from the recording client only: the address its
+%% SDP gave, latched to the first source there; another source, or a
+%% stream whose client is elsewhere, is dropped.
+server_latches_to_client(_Config) ->
+    #{ep := EP} = call(),
+    {ok, Src} = gen_udp:open(0, [binary, {ip, {127, 0, 0, 1}}]),
+    {ok, Other} = gen_udp:open(0, [binary, {ip, {127, 0, 0, 1}}]),
+    SP = integer_to_binary(?UA:lport(Src)),
+    Sdp = <<"v=0\r\no=src 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\n"
+            "m=audio ", SP/binary, " RTP/AVP 0\r\na=sendonly\r\na=label:1\r\n"
+            "m=audio 30002 RTP/AVP 0\r\nc=IN IP4 192.0.2.10\r\na=sendonly\r\na=label:2\r\n">>,
+    R = wire_rs(EP, <<"sip:sink@127.0.0.1">>, Sdp),
+    ?assertEqual(200, ?UA:status(R)),
+    #{streams := [#{pid := S1, port := P1}, #{pid := S2, port := P2}]} = got(srs_served),
+    Frame = rtp(0, binary:copy(<<16#FF>>, 160)),
+    ok = gen_udp:send(Src, {127, 0, 0, 1}, P1, Frame),
+    receive {chappe_sip_siprec_rtp, S1, {audio, _}} -> ok after 2000 -> ct:fail(no_audio) end,
+    ok = gen_udp:send(Other, {127, 0, 0, 1}, P1, Frame),
+    ok = gen_udp:send(Src, {127, 0, 0, 1}, P2, Frame),
+    receive {chappe_sip_siprec_rtp, S, {audio, _}} when S =:= S1; S =:= S2 ->
+        ct:fail({spoofed, S})
+    after 500 -> ok
+    end,
+    ok = gen_udp:send(Src, {127, 0, 0, 1}, P1, Frame),
+    receive {chappe_sip_siprec_rtp, S1, {audio, _}} -> ok after 2000 -> ct:fail(no_audio) end,
+    gen_udp:close(Src),
+    gen_udp:close(Other).
+
+%% The direct receivers hold no SRTP keys: an SRTP stream is refused with
+%% port 0 and its profile kept (RFC 3264 6), and an offer left with no
+%% stream is refused 488 with Warning 302 (RFC 3261 20.43), never
+%% answered as plain RTP.
+server_refuses_srtp(_Config) ->
+    #{ep := EP} = call(),
+    Crypto = <<"a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:WVNfX19zZW1jdGwgKCkgewkyMjA7fQp9CnVubGVz\r\n">>,
+    Only = <<"v=0\r\no=src 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\n"
+             "m=audio 30000 RTP/SAVP 0\r\n", Crypto/binary, "a=sendonly\r\na=label:1\r\n">>,
+    R1 = wire_rs(EP, <<"sip:sink@127.0.0.1">>, Only),
+    ?assertEqual(488, ?UA:status(R1)),
+    ?assertMatch(<<"302 ", _/binary>>, ?UA:hdr(R1, <<"warning">>)),
+    ?assertEqual({error, srtp}, got(srs_served)),
+    Mixed = <<Only/binary, "m=audio 30002 RTP/AVP 0\r\na=sendonly\r\na=label:2\r\n">>,
+    R2 = wire_rs(EP, <<"sip:sink@127.0.0.1">>, Mixed),
+    ?assertEqual(200, ?UA:status(R2)),
+    {_, [M1, M2]} = chappe_sip_sdp:sections(?UA:body(R2)),
+    ?assertMatch(<<"m=audio 0 RTP/SAVP", _/binary>>, hd(M1)),
+    ?assertMatch(<<"m=audio ", _/binary>>, hd(M2)),
+    ?assertNotMatch(<<"m=audio 0 ", _/binary>>, hd(M2)),
+    #{streams := [#{label := <<"2">>}]} = got(srs_served).
+
+%% RFC 7866 12, 12.2: a call with an SRTP leg is recorded as SRTP: every
+%% tap, the plain party's too, is asked of rtpengine as RTP/SAVP (with its
+%% own keys); allow_downgrade => true records it as the parties send.
+%% req: R7866-12-1
+srtp_call_tapped_as_srtp(_Config) ->
+    #{b2b := B2b} = call(#{media => anchor, savp => true}),
+    _ = drain(),
+    SP = ?UA:pick(),
+    srs(SP, fun(_Sock, _D, _Src) -> ok end),
+    {ok, Rec} = chappe_sip_siprec:start(B2b, srs_uri(SP), #{}),
+    {started, _} = event(Rec),
+    Subs = [C || {rtpe_cmd, #{<<"command">> := <<"subscribe request">>} = C} <- drain()],
+    ?assertEqual(2, length(Subs)),
+    ?assert(lists:all(fun(C) -> maps:get(<<"transport-protocol">>, C, none) =:= <<"RTP/SAVP">> end,
+                      Subs)),
+    ok = chappe_sip_siprec:stop(Rec),
+    {stopped, _} = event(Rec),
+    SP2 = ?UA:pick(),
+    srs(SP2, fun(_Sock, _D, _Src) -> ok end),
+    {ok, Rec2} = chappe_sip_siprec:start(B2b, srs_uri(SP2), #{allow_downgrade => true}),
+    {started, _} = event(Rec2),
+    Subs2 = [C || {rtpe_cmd, #{<<"command">> := <<"subscribe request">>} = C} <- drain()],
+    ?assertEqual(2, length(Subs2)),
+    ?assertNot(lists:any(fun(C) -> maps:is_key(<<"transport-protocol">>, C) end, Subs2)),
+    ok = chappe_sip_siprec:stop(Rec2).
+
+%% RFC 7866 12: a call signalled over TLS (its leg A's dialog has our sips
+%% Contact) is not recorded to a plain sip SRS; to a sips one it is, and
+%% allow_downgrade => true lets the app choose the plain one.
+%% req: R7866-12-1
+tls_call_needs_tls_srs(Config) ->
+    chappe_sip_tls_SUITE:with_ca(Config, "siprecsec", fun(Dir) ->
+        TP = chappe_sip_tls_SUITE:start_tls(Dir, #{}),
+        EP = chappe_sip_tls_SUITE:engine_port(),
+        ok = chappe_sip:handle(<<"INVITE">>, fun handler/2, #{option_tags => [<<"siprec">>]}),
+        persistent_term:put(siprec_test_ep, EP),
+        #{b2b := B2b} = call(#{media => anchor, ruri => <<"sips:app@127.0.0.1">>}),
+        Plain = <<"sip:sink@127.0.0.1:", (integer_to_binary(EP))/binary>>,
+        ?assertEqual({error, {insecure_srs, tls}}, chappe_sip_siprec:start(B2b, Plain, #{})),
+        {ok, Rec} = chappe_sip_siprec:start(
+                      B2b, <<"sips:sink@127.0.0.1:", (integer_to_binary(TP))/binary>>, #{}),
+        {started, _} = event(Rec),
+        ok = chappe_sip_siprec:stop(Rec),
+        {stopped, _} = event(Rec),
+        {ok, Rec2} = chappe_sip_siprec:start(B2b, Plain, #{allow_downgrade => true}),
+        {started, _} = event(Rec2),
+        ok = chappe_sip_siprec:stop(Rec2)
+    end).
+
 %% ---- helpers ----
+
+%% the caller's offer as SRTP
+savp(Inv) ->
+    Crypto = <<"a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:WVNfX19zZW1jdGwgKCkgewkyMjA7fQp9CnVubGVz\r\n">>,
+    [Head, Sdp0] = binary:split(Inv, <<"\r\n\r\n">>),
+    Sdp = <<(binary:replace(Sdp0, <<" RTP/AVP ">>, <<" RTP/SAVP ">>))/binary, Crypto/binary>>,
+    Len = integer_to_binary(byte_size(Sdp)),
+    Head1 = re:replace(Head, <<"Content-Length: *[0-9]+">>, <<"Content-Length: ", Len/binary>>,
+                       [{return, binary}, caseless]),
+    <<Head1/binary, "\r\n\r\n", Sdp/binary>>.
+
+%% a recording client on the wire: an RS INVITE of Sdp to Ruri, its final
+%% response (ACKed and left up when a 2xx)
+wire_rs(EP, Ruri, Sdp) ->
+    {CT, Body} = chappe_sip_multipart:build([
+        #{content_type => <<"application/sdp">>, body => Sdp},
+        #{content_type => ?M:content_type(), disposition => ?M:disposition(),
+          body => ?M:build(#{})}
+    ]),
+    ?UA:peer(0, fun(Sock) ->
+        P = integer_to_binary(?UA:lport(Sock)),
+        Inv0 = ?UA:invite(Sock, EP, #{call_id => ?UA:callid(), from_tag => ?UA:tag(),
+                                      ruri => Ruri, body => Body,
+                                      headers => [{<<"Require">>, <<"siprec">>}]}),
+        Inv = binary:replace(
+                binary:replace(Inv0, <<"Content-Type: application/sdp">>,
+                               <<"Content-Type: ", CT/binary>>),
+                <<"Contact: <sip:caller@127.0.0.1:", P/binary, ">">>,
+                <<"Contact: <sip:caller@127.0.0.1:", P/binary, ">;+sip.src">>),
+        ?UA:send(Sock, EP, Inv),
+        R = ?UA:recv_any(Sock, 6000),
+        case ?UA:status(R) of
+            200 -> ?UA:ack(?UA:dialog_from_2xx(Sock, Inv, R), EP);
+            _ -> ok
+        end,
+        b2b_relay_tell({wire_rs, R}),
+        timer:sleep(infinity)
+    end),
+    got(wire_rs).
 
 srs_uri(SP) -> <<"sip:srs@127.0.0.1:", (integer_to_binary(SP))/binary>>.
 
@@ -823,7 +1036,12 @@ call(Opts) ->
         callee_loop(Sock, D)
     end),
     Caller = ?UA:peer(0, fun(Sock) ->
-        Inv = ?UA:invite(Sock, EP, #{call_id => ?UA:callid(), from_tag => <<"atag">>}),
+        Inv0 = ?UA:invite(Sock, EP, #{call_id => ?UA:callid(), from_tag => <<"atag">>,
+                                      ruri => maps:get(ruri, Opts, <<"sip:app@127.0.0.1">>)}),
+        Inv = case Opts of
+                  #{savp := true} -> savp(Inv0);
+                  _ -> Inv0
+              end,
         ?UA:send(Sock, EP, Inv),
         R = ?UA:recv_status(Sock, 200),
         D = ?UA:dialog_from_2xx(Sock, Inv, R),
@@ -872,7 +1090,8 @@ handler(Req, Res) ->
                                      max_queue => persistent_term:get(siprec_test_sink_queue, 500)});
         _ ->
             Callee = <<"sip:callee@127.0.0.1:", (integer_to_binary(CP))/binary>>,
-            {ok, Legs} = chappe_sip:create_b2bua(Req, Res, Callee, maps:without([test, cp], Opts)),
+            {ok, Legs} = chappe_sip:create_b2bua(Req, Res, Callee,
+                                                 maps:without([test, cp, ruri, savp], Opts)),
             Test ! {legs, Legs},
             chappe_sip_b2b:relay(Legs)
     end.

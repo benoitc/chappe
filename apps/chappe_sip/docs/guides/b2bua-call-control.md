@@ -58,7 +58,8 @@ where `Leg` is `a` or `b`. Answer it with `chappe_sip_res:send/3`.
 {ok, _} = chappe_sip_b2b:relay_async(Legs, #{}),
 receive
     {chappe_sip_b2b, Ref, {request, a, refer, ReferReq, ReferRes}} ->
-        _ = chappe_sip_res:send(ReferRes, 202, #{reason => <<"Accepted">>}),
+        %% 200, never 202 (RFC 7647 5)
+        _ = chappe_sip_res:send(ReferRes, 200, #{reason => <<"OK">>}),
         transfer(ReferReq)
 end.
 ```
@@ -91,6 +92,10 @@ receive {chappe_sip_b2b, Ref, {done, Result}} -> Result end.
 ```
 
 `Result` is what `relay/2` would have returned, such as `{done, a_bye}`.
+
+The call has no owner unless you name one: `owner => Pid` hangs it up when
+`Pid` dies. The notify process is never the owner by default, since it is
+often the handler that made the call and returns at once.
 
 ## Replace leg B
 

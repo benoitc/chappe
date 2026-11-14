@@ -50,8 +50,6 @@
 %% ETS table owned by chappe_sip_registry_keeper so a restarted engine process can
 %% re-establish the native stack instead of leaving SIP down (F6).
 -define(CFG_TAB, chappe_sip_engine_cfg).
-%% a dropped request waits this long (64*T1) for the 408 that ends it
--define(DISCARD_MS, 32000).
 
 -export([start_link/0]).
 -export([
@@ -391,7 +389,7 @@ handle_call({start, Opts}, _From, #state{mod = Mod} = S) ->
             of
                 {ok, Engine} ->
                     cfg_put(opts, NOpts),
-                    chappe_sip_binds:publish(NOpts),
+                    publish(NOpts),
                     {reply, ok, S#state{
                         engine = Engine,
                         engine_opts = NOpts,
@@ -444,7 +442,7 @@ handle_call(stop, _From, #state{mod = Mod, engine = Engine} = S) ->
     Result = Mod:stop(Engine),
     %% a clean stop must not auto-reestablish on a later process crash
     cfg_del(opts),
-    chappe_sip_binds:publish(#{}),
+    publish(#{}),
     {reply, Result, stack_down(S)};
 handle_call({use, Method, Fun}, _From, #state{middlewares = MW} = S) ->
     MW1 = MW ++ [{Method, Fun}],
@@ -791,7 +789,10 @@ handle_cast({discard, TxnH}, #state{mod = Mod, engine = Engine} = S) when
     Engine =/= undefined
 ->
     _ = Mod:discard(Engine, TxnH),
-    _ = erlang:send_after(?DISCARD_MS, self(), {discard_end, Engine, TxnH}),
+    %% a dropped request waits 64*T1 for the 408 that ends it
+    _ = erlang:send_after(
+        chappe_sip_config:t64(), self(), {discard_end, Engine, TxnH}
+    ),
     {noreply, S};
 handle_cast(_Msg, S) ->
     {noreply, S}.
@@ -817,7 +818,7 @@ handle_info(
                 "chappe_sip_engine: re-established the SIP stack after a "
                 "restart"
             ),
-            chappe_sip_binds:publish(Opts),
+            publish(Opts),
             {noreply, S#state{
                 engine = Engine,
                 tref = schedule_health(Engine),
@@ -1076,6 +1077,13 @@ sip_timers(T) when is_map(T) ->
     end;
 sip_timers(_) ->
     error.
+
+%% what the Erlang side reads of the running stack's options: its listen
+%% addresses and aliases, and T1, which the 64*T1 timers kept in Erlang
+%% follow (chappe_sip_config:t64/0)
+publish(Opts) ->
+    ok = chappe_sip_config:set_t1(maps:get(sip_t1, Opts, 500)),
+    chappe_sip_binds:publish(Opts).
 
 nif_timer(t1) -> sip_t1;
 nif_timer(t2) -> sip_t2;

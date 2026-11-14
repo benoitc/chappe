@@ -149,7 +149,7 @@ end).
   asked with a bare `rport` (RFC 3581).
 - WS is a reliable transport: nothing is retransmitted. Timer B/F (64 s) and
   Timer C (180 s, `ws_timer_c_ms`) bound requests sent to a browser; a 2xx a
-  browser never ACKs is BYEd after `ws_ack_timeout_ms` (32 s); a request your
+  browser never ACKs is BYEd after `ws_ack_timeout_ms` (64*T1, 32 s); a request your
   app never answers gets 408 (INVITE) or 500 after `ws_server_txn_timeout_ms`.
 - An INVITE your app leaves ringing sends its last non-100 provisional again
   every `ws_progress_ms` (60 s) until you send the final, so a proxy between

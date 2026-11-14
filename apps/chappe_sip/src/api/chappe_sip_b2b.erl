@@ -76,6 +76,7 @@
     relay_info => boolean(),
     winner => winner(),
     call_ref => binary(),
+    principal => #{a | b => term()},
     transfer => {chappe_sip_b2b_transfer:mode(), map()}
 }.
 %% Where leg B goes: a destination, a list of them, or a group of
@@ -140,6 +141,11 @@
 %%                  malformed one (chappe_sip_hdr:valid_name_addr/1) reaches
 %%                  no leg: {error, badarg}, and A gets a 500 unless
 %%                  pass_failure is false
+%%   contact_params => #{a | b => binary()}: what follows the `>' of our
+%%                  Contact on that leg: A's 2xx (a) and B's INVITE (b),
+%%                  such as <<";isfocus">> for the member legs of a
+%%                  conference (RFC 4579 4.2); a Contact in a_headers
+%%                  replaces A's whole Contact
 %%   a_headers   => [{Name, Value}] added to the final response to A, the
 %%                  2xx or a failure (drachtio's responseHeaders), after
 %%                  the ones proxy_response_headers copies
@@ -175,9 +181,22 @@
 %%                            max_transfers => N}: policy decides who may
 %%                            transfer where (it runs in the transfer's
 %%                            process, on the call's node); without one a
-%%                            target must be a sip or sips URI on one of
-%%                            domains (default this node's host). At most
+%%                            target must be a sip or sips URI with a user
+%%                            and no maddr, on one of domains (Host: any
+%%                            port, Host:Port: that one; default this
+%%                            node's listen addresses). At most
 %%                            max_transfers (5) per call
+%%   principal             => #{a | b => term()}: who your app
+%%                            authenticated on that leg (the digest
+%%                            user of A, the registered user B is, say).
+%%                            An attended transfer that joins two calls
+%%                            of this node needs the same principal on
+%%                            the referrer's leg of both, or a policy
+%%                            that allows it (RFC 3891 3); the policy
+%%                            sees both as principal and
+%%                            replaces_principal. A leg that a transfer
+%%                            or replace_b/3 gives a new party loses its
+%%                            principal
 %%   relay_info            => boolean (default false): an INFO from one
 %%                            leg (DTMF, RFC 6086) goes to the other, and
 %%                            its final comes back
@@ -448,7 +467,10 @@ start_b(Req, Res, {Fork, Dests}, Opts, LateOffer, M) ->
     ACdr = chappe_sip_cdr:relabel(Req, b2b_a),
     ok = chappe_sip_cdr:update(ACdr, maps:with([call_ref, related], Opts)),
     BOpts = maps:merge(
-        BOpts1#{cdr => #{role => b2b_b, link => ACdr}},
+        BOpts1#{
+            cdr => #{role => b2b_b, link => ACdr},
+            contact_params => leg_contact_params(b, Opts)
+        },
         maps:with(?B_UAC_OPTS, Opts)
     ),
     %% pre-choose the A-leg dialog tag so relayed provisionals and the
@@ -714,6 +736,7 @@ create_a(
         local_sdp => SdpAAnswer,
         headers => RespHeaders ++ maps:get(a_headers, Opts, []),
         local_tag => ATag,
+        contact_params => leg_contact_params(a, Opts),
         owner => self(),
         handled_events => handled(Opts),
         call_ref => maps:get(call_ref, Opts)
@@ -743,7 +766,8 @@ create_a(
                     maps:get(transfer_opts, Opts, #{})
                 },
                 winner => Winner,
-                call_ref => maps:get(call_ref, Opts)
+                call_ref => maps:get(call_ref, Opts),
+                principal => maps:get(principal, Opts, #{})
             },
             {ok, maps:merge(Legs, maps:from_list([{late, true} || late(W)]))};
         {error, Reason} ->
@@ -752,6 +776,9 @@ create_a(
             _ = chappe_sip_b2b_media:stop(M),
             {error, Reason}
     end.
+
+leg_contact_params(Leg, Opts) ->
+    maps:get(Leg, maps:get(contact_params, Opts, #{}), <<>>).
 
 %% A's To-tag and early leg, kept in the request worker across the
 %% create_b2bua/4 calls of a hunt (pass_failure => false), so the 1xx a
@@ -980,8 +1007,8 @@ relay(Legs, Opts) ->
 %% given to create_b2bua/4) gets {chappe_sip_b2b, Ref, {done, Result}},
 %% Result as relay/2 returns it, when the call ends. Call it from the
 %% process create_b2bua/4 ran in. The process is a child of
-%% chappe_sip_b2b_sup; Opts' owner => pid() | none (default the notify
-%% process) is monitored, and the call is hung up when it dies. If the
+%% chappe_sip_b2b_sup; Opts' owner => pid() | none (default none) is
+%% monitored, and the call is hung up when it dies. If the
 %% relay process itself dies, its dialogs end the call: monitor the b2b()
 %% pid to hear of it.
 -spec relay_async(legs(), map()) -> {ok, b2b()} | {error, term()}.

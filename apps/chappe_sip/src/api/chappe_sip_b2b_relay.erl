@@ -42,9 +42,7 @@ run(#{uas := A, uac := B} = Legs, Opts) ->
     Requests = maps:get(requests, Opts, maps:get(requests, Legs, [])),
     RelayInfo = maps:get(relay_info, Opts, maps:get(relay_info, Legs, false)),
     {Mode, TOpts} = chappe_sip_b2b_transfer:options(Opts, Legs),
-    Handled = chappe_sip_b2b_requests:handled(
-        Requests ++ [refer || Mode =/= off], RelayInfo
-    ),
+    Handled = chappe_sip_b2b_requests:handled(Requests, RelayInfo, Mode),
     _ =
         case
             maps:is_key(requests, Opts) orelse maps:is_key(relay_info, Opts) orelse
@@ -61,10 +59,15 @@ run(#{uas := A, uac := B} = Legs, Opts) ->
         requests => Requests,
         relay_info => RelayInfo,
         winner => maps:get(winner, Legs, undefined),
+        %% who the app authenticated on each leg (create_b2bua/4)
+        principal => maps:get(principal, Legs, #{}),
         transfer => Mode,
         transfer_opts => TOpts,
         %% the transfer at work ({Pid, Monitor}) and how many the call made
         transferring => undefined,
+        %% the transferor's leg, gone while its transfer runs: {Leg,
+        %% Dialog, Why} (see gone/4)
+        left => undefined,
         owner_mon => maps:get(owner_mon, Opts, undefined),
         transfers => 0,
         media => with_opts(Opts, M0),
@@ -123,16 +126,16 @@ loop(#{a := A, b := B, refs := {RefA, RefB}, ref := Ref, pending := P} = S) ->
         {'DOWN', HelperMon, process, _, Why} ->
             loop(helper_down(Why, S));
         {'DOWN', TransferMon, process, _, Why} ->
-            loop(chappe_sip_b2b_transfer:down(Why, S));
+            next(chappe_sip_b2b_transfer:down(Why, S));
         {chappe_sip_dialog, A, destroy, Why} ->
-            done(S, B, Why, a_bye);
+            next(chappe_sip_b2b_transfer:leg_gone(a, Why, RefA, S));
         {chappe_sip_dialog, B, destroy, Why} ->
-            done(S, A, Why, b_bye);
+            next(chappe_sip_b2b_transfer:leg_gone(b, Why, RefB, S));
         %% an abnormal fsm exit emits no destroy message; tear the peer down
         {'DOWN', RefA, process, _, _} ->
-            done(S, B, undefined, a_bye);
+            next(chappe_sip_b2b_transfer:leg_gone(a, undefined, RefA, S));
         {'DOWN', RefB, process, _, _} ->
-            done(S, A, undefined, b_bye);
+            next(chappe_sip_b2b_transfer:leg_gone(b, undefined, RefB, S));
         {chappe_sip_dialog, X, Event, Req, Res} when
             (X =:= A orelse X =:= B) andalso
                 (Event =:= modify orelse Event =:= update)
@@ -155,7 +158,7 @@ loop(#{a := A, b := B, refs := {RefA, RefB}, ref := Ref, pending := P} = S) ->
         {chappe_sip_b2b, Ref, {call, From, {hangup, Opts}}} ->
             hangup(From, Opts, S);
         {chappe_sip_b2b, Ref, {call, From, {detach, D}}} ->
-            case chappe_sip_b2b_transfer:detach(From, D, S) of
+            case chappe_sip_b2b_join:detach(From, D, S) of
                 {loop, S1} -> loop(S1);
                 Done -> Done
             end;
@@ -172,6 +175,12 @@ loop(#{a := A, b := B, refs := {RefA, RefB}, ref := Ref, pending := P} = S) ->
         {chappe_sip_dialog, _, _, _, _} ->
             loop(S)
     end.
+
+%% what the transfer module says of a leg that ended, or of the transfer
+%% that ended: the call goes on, or Leg's peer is alone and gets its BYE
+next({loop, S}) -> loop(S);
+next({ended, a, Why, #{b := B} = S}) -> done(S, B, Why, a_bye);
+next({ended, b, Why, #{a := A} = S}) -> done(S, A, Why, b_bye).
 
 leg(X, #{a := X}) -> a;
 leg(_X, _S) -> b.
@@ -426,6 +435,9 @@ handle_call(From, {set_media, Mode}, #{media := M, a := A} = S) ->
             reply(From, {error, {media, Why}}),
             S
     end;
+handle_call(From, {principal, D}, S) ->
+    reply(From, chappe_sip_b2b_transfer:principal(D, S)),
+    S;
 handle_call(From, {replace_b, Target, Opts}, S) ->
     replace(From, b, Target, Opts, S);
 handle_call(From, {replace, Leg, Target, Opts}, S) ->
@@ -468,9 +480,10 @@ replace(From, Leg, Target, Opts, S) ->
 %% and rtpengine gets the old party's SDP back as the answer
 replaced(From, {Leg, Old, Moved, Keeper}, {ok, New, Answer, Won}, S) ->
     case chappe_sip_b2b_replace:swap(Leg, New, Answer, Won, Keeper, S) of
-        {ok, S1} ->
+        {ok, #{principal := Ps} = S1} ->
             reply(From, chappe_sip_b2b_replace:result(Won)),
-            S1;
+            %% the new party is not who the app authenticated there
+            S1#{principal := maps:remove(Leg, Ps)};
         Error ->
             reply(From, Error),
             keep_old(Leg, {Old, Moved}, S)

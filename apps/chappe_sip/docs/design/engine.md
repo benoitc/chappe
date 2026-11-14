@@ -306,7 +306,7 @@ keeps its own flags.
 
 | Command | What it runs |
 |---|---|
-| `make asan` | the lifecycle, smoke, dialog_ops, NIF boundary and core suites with the NIF under AddressSanitizer, LeakSanitizer and UndefinedBehaviorSanitizer (UBSan halts on the first error), in a Linux container |
+| `make asan` | every chappe_sip suite with the NIF under AddressSanitizer, LeakSanitizer and UndefinedBehaviorSanitizer (UBSan halts on the first error) and the BEAM allocators off (`+Mea min`), in a Linux container |
 | `make tsan` | the lifecycle stress and smoke suites with the NIF under ThreadSanitizer, for the threading of the stack thread and the NIF callers; the shim tells TSan that a destructor happens before ERTS reuses its memory (`TSAN_RELEASE`, `TSAN_ACQUIRE`), since the ERTS allocator is not instrumented |
 | `make lint-c` | clang-tidy (`bugprone-*`, `cert-*`, `clang-analyzer-*`, `misc-*`, configured in `.clang-tidy`) and `gcc -fanalyzer` over the shim only |
 | `make fuzz` | the libFuzzer targets in `c_src/fuzz/` on sofia's message and header parsers (sofia built from the same patched copy as the NIF's), and the NIF boundary fuzz suite; `FUZZ_TIME` sets the run in seconds, crashes are kept as regression seeds |
@@ -329,11 +329,15 @@ DYLD_INSERT_LIBRARIES=$(cc -print-file-name=libclang_rt.asan_osx_dynamic.dylib) 
   rebar3 ct --suite=apps/chappe_sip/test/chappe_sip_handler_SUITE
 ```
 
-`make asan` (`apps/chappe_sip/test/asan/run.sh`) runs `chappe_sip_engine_smoke`,
-`chappe_sip_dialog_ops`, `chappe_sip_engine_lifecycle`,
-`chappe_sip_nif_boundary` and `chappe_sip_core` under ASan and UBSan in a Linux
-container; macOS strips ASan interceptors for a dlopen'd NIF, so use the
-container.
+`make asan` (`apps/chappe_sip/test/asan/run.sh`) runs every chappe_sip suite
+under ASan and UBSan in a Linux container, from the umbrella root so the
+suites that need a sibling app (the SIPREC and media ones) run too; macOS
+strips ASan interceptors for a dlopen'd NIF, so use the container. Every
+suite starts the NIF, and a path only one of them reaches (two listen
+addresses, forking, TLS) is otherwise never under ASan. The BEAM runs with
+`+Mea min`: without it `enif_alloc` comes from the BEAM's own allocators,
+which ASan does not see, so a use after `enif_free` of an op or a payload
+goes unnoticed.
 LeakSanitizer is on: a leak allocated on a NIF call path (sofia or the shim)
 fails the run. `test/asan/lsan.supp` suppresses only stacks that never carry a
 NIF frame: the erts DNS helper, the programs rebar3 runs, and OTP's crypto NIF.

@@ -18,8 +18,10 @@
 %%   user_agents => [Regex]  a User-Agent matching one (caseless) is
 %%                           turned away
 %%   headers => [{Name, Regex | [Regex]}]
-%%                           a request with a Name header any value of
-%%                           which matches one (caseless) is turned away
+%%                           a request with a Name header (long or
+%%                           compact form) any value of which, or any
+%%                           comma-separated item of a value, matches one
+%%                           (caseless) is turned away
 %%   allow => [Cidr]         when set, only these sources pass
 %%   deny => [Cidr]          these sources are turned away
 %%   rate => #{rate := number(), burst => pos_integer()}
@@ -42,6 +44,11 @@
 %% (UDP, TCP and TLS; over WebSocket each request reaches the guard). A
 %% request whose source address is unknown passes the deny list and the
 %% rate limit, and fails a non-empty allow list.
+%%
+%% The checks run cheapest first: the allow and deny lists, the rate, then
+%% the patterns, so a denied or flooding source costs no regex. A pattern
+%% runs with a match limit: a value that makes it backtrack past the limit
+%% is turned away as a match, never passed unjudged.
 %%
 %% new/1 checks its options where it is called: a pattern that does not
 %% compile, a network that does not parse or an unknown action raises
@@ -69,6 +76,10 @@
 %% buckets idle long enough to be full again are swept every this many
 %% checks
 -define(SWEEP_EVERY, 1024).
+%% the work one pattern may do on one value (PCRE match and depth limits;
+%% the defaults allow ten million steps, some 100 ms a value)
+-define(MATCH_LIMIT, 100000).
+-define(DEPTH_LIMIT, 1000).
 
 %% The table of the rate buckets, owned by chappe_sip_sup.
 -spec init_table() -> ok.
@@ -163,17 +174,17 @@ transport(_Meta) ->
 -spec check(map(), chappe_sip_req:req()) -> verdict().
 check(G, Req) ->
     Ip = source(Req),
-    case header_denied(G, Req) of
-        {true, Why} ->
-            {block, Why};
+    case source_denied(G, Ip) of
+        true ->
+            {block, source};
         false ->
-            case source_denied(G, Ip) of
-                true ->
-                    {block, source};
+            case take_token(G, Ip) of
                 false ->
-                    case take_token(G, Ip) of
-                        true -> pass;
-                        false -> {block, rate}
+                    {block, rate};
+                true ->
+                    case header_denied(G, Req) of
+                        {true, Why} -> {block, Why};
+                        false -> pass
                     end
             end
     end.
@@ -272,19 +283,40 @@ patterns(Key, Ps) ->
      || P <- Ps
     ].
 
-%% the first rule a header value of the request matches
+%% the first rule a header value of the request, or an item of one,
+%% matches
 header_denied(#{headers := Rules}, Req) ->
     Hit = fun({Name, _Why, Res}) ->
         lists:any(
-            fun(V) ->
-                lists:any(fun(Re) -> re:run(V, Re) =/= nomatch end, Res)
-            end,
-            chappe_sip_req:get_all(Name, Req)
+            fun(V) -> lists:any(fun(Re) -> hit(V, Re) end, Res) end,
+            lists:append([items(V) || V <- chappe_sip_req:get_all(Name, Req)])
         )
     end,
     case lists:search(Hit, Rules) of
         {value, {_, Why, _}} -> {true, Why};
         false -> false
+    end.
+
+%% a value, and its comma-separated items when it has several
+items(V) ->
+    case chappe_sip_hdr:split_list(V) of
+        [_, _ | _] = Items -> [V | Items];
+        _ -> [V]
+    end.
+
+%% a match, or a value the pattern gave up on at its limit
+hit(V, Re) ->
+    case
+        re:run(V, Re, [
+            {match_limit, ?MATCH_LIMIT},
+            {match_limit_recursion, ?DEPTH_LIMIT},
+            {capture, none},
+            report_errors
+        ])
+    of
+        match -> true;
+        nomatch -> false;
+        {error, _} -> true
     end.
 
 source_denied(#{allow := Allow}, undefined) ->

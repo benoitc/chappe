@@ -110,9 +110,9 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 - Fixed: the proxy's handling of late answers after a call is set up now
   runs supervised and remembers a bounded number of them, so a downstream
   element sending answer after answer can no longer grow its memory.
-- B2BUA: a call relayed in the background now runs supervised and is hung
-  up when the process that owns it dies. Before, it kept running with no
-  owner.
+- B2BUA: a call relayed in the background now runs supervised, and is hung
+  up when the owner you name for it dies. Without one it runs until a party
+  hangs up, as before.
 
 - B2BUA and chappe_mrf: when you move a call to a new callee, you can now say
   who that callee sees as calling. Before, a phone rung after an IVR menu

@@ -40,7 +40,8 @@
 %% server's URI); stopped carries reason: stopped | call_ended | room_ended |
 %% srs_bye | {rejected, Status} | {srs, timeout} | {error, _}. A recording
 %% that crashes sends nothing: monitor Rec to see it go; its RS dialog
-%% then sends the BYE, and the call goes on.
+%% then sends the BYE, the call's media session removes its taps from
+%% rtpengine (they are held for Rec), and the call goes on.
 %%
 %% {room, Room} records a chappe_mix room of this node (a native
 %% conference, chappe_sip_media:conference/3) as one participant: a
@@ -75,6 +76,17 @@
 %%   legacy_content_type => boolean() (default false): label the metadata
 %%                     application/rs-metadata, RFC 7866's name, for a
 %%                     recorder that predates RFC 9806
+%%   allow_downgrade => boolean() (default false): record a secure call to a
+%%                     recording server that is not as secure (below)
+%%
+%% RFC 7866 12: the RS must be at least as secure as the call. A call with
+%% a leg over TLS (a sips: or transport=tls or wss Contact) is recorded
+%% only to a sips: or transport=tls SrsUri (or proxy), else start/3 is
+%% {error, {insecure_srs, tls}}; a call with an SRTP leg (RTP/SAVP,
+%% RTP/SAVPF) has its taps offered to the SRS as RTP/SAVP, keyed by
+%% rtpengine apart from the call's keys (12.2), so a recording server
+%% without SRTP refuses them and the recording stops. allow_downgrade =>
+%% true lifts both, for an SRS on a network the app trusts.
 %% SrsUri is the SRS's URI, or `default' for the siprec_srs config.
 %% start/3 returns once the process runs, before the SRS answers:
 %% {error, badarg} for a bad argument, {error, not_anchored} for a call
@@ -227,14 +239,22 @@ start_link(Args) ->
 
 init(#{call_ref := CallRef, owner := Owner} = Args) ->
     %% the bound on recordings per call: every recording of a call runs on
-    %% the call's node, so this count is that of the cluster
+    %% the call's node, so this count is that of the cluster. The count and
+    %% the join below are one step: init/1 runs inside the start_child/1
+    %% call of chappe_sip_siprec_sup (simple_one_for_one), which starts
+    %% one child at a time
     case length(local(CallRef)) >= chappe_sip_config:get(siprec_max_per_call) of
         true ->
             {stop, too_many};
         false ->
-            ok = chappe_sip_call:join(CallRef, siprec, self()),
-            {ok, new_state(Args, erlang:monitor(process, Owner)),
-                {continue, invite}}
+            case chappe_sip_siprec_body:security(Args) of
+                {ok, Srtp} ->
+                    ok = chappe_sip_call:join(CallRef, siprec, self()),
+                    St = new_state(Args, erlang:monitor(process, Owner)),
+                    {ok, St#{srtp => Srtp}, {continue, invite}};
+                {error, Why} ->
+                    {stop, Why}
+            end
     end.
 
 new_state(
@@ -646,20 +666,22 @@ srs_update(Req, Res, St) ->
 
 %% A re-INVITE of the SRS (RFC 7866 7.2: ready to record now, or a stream
 %% it no longer takes): the recorded streams are answered as they are,
-%% sendonly or, paused, inactive; its offer reaches rtpengine.
+%% sendonly or, paused, inactive, and an m-line past them is refused with
+%% port 0, so the answer has as many as the offer (RFC 3264 6); an offer
+%% with fewer than the session has removed a stream (8) and gets 488. Its
+%% offer reaches rtpengine.
 srs_reinvite(Req, Res, St) ->
-    case chappe_sip_req:body(Req) of
-        <<>> ->
-            _ = chappe_sip_res:send(Res, 488),
-            {noreply, St};
-        Offer ->
-            {_CT, Body} = chappe_sip_siprec_body:body(St),
-            Sdp = chappe_sip_siprec_body:sdp_of(Body),
+    Offer = chappe_sip_req:body(Req),
+    case Offer =/= <<>> andalso chappe_sip_siprec_body:reanswer(Offer, St) of
+        {ok, Answer} ->
             _ = chappe_sip_res:send(Res, 200, #{
-                body => chappe_sip_siprec_body:sdp_only(Sdp),
+                body => Answer,
                 headers => [{<<"Content-Type">>, <<"application/sdp">>}]
             }),
             _ = chappe_sip_siprec_tap:answer(Offer, St),
+            {noreply, St};
+        _ ->
+            _ = chappe_sip_res:send(Res, 488),
             {noreply, St}
     end.
 

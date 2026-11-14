@@ -26,7 +26,7 @@
 %% start and stop only, so these calls do not go through the engine.
 -module(chappe_sip_binds).
 
--export([options/1, publish/1, aliases/1, own_uris/0]).
+-export([options/1, publish/1, aliases/1, own_uris/0, own_hosts/0]).
 -export([outbound_route/0, outbound_route_opt/1]).
 -export([contacts/0, local/1, contact_at/1, tls_contact_at/1, pick_local/2]).
 -export([contact_or_primary/2, send_ident/2, inherit/3, for_peer/2]).
@@ -408,6 +408,16 @@ own_uris() ->
             alias_uris(A, Ports)
          || A <- persistent_term:get(?ALIASES, [])
         ]).
+
+%% The hosts of own_uris/0, lowercased: the names and addresses of this
+%% node.
+-spec own_hosts() -> [binary()].
+own_hosts() ->
+    lists:usort([
+        chappe_sip_lib:lower(H)
+     || U <- own_uris(),
+        {ok, #{host := H}} <- [chappe_sip_uri:parse(U)]
+    ]).
 
 local_of(#{local_uri := L}) -> [L];
 local_of(_) -> [].

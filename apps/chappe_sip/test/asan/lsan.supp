@@ -22,3 +22,17 @@ leak:priv/lib/crypto.so
 # erts: the alternate signal stacks of the VM's scheduler and async threads,
 # still mapped when beam.smp halts (sys/unix/sys_signal_stack.c).
 leak:sys_thread_init_signal_stack
+
+# erts under +Mea min: the BEAM's own memory (binaries, loaded code, its
+# tables) comes from malloc through these two and is still in use when the
+# VM halts. They also carry what the NIF takes with enif_alloc, which the
+# BEAM's allocators hid from LeakSanitizer before +Mea min, so leak checking
+# of the NIF is as it was: sofia's and the shim's own malloc stays checked,
+# and every enif_alloc'd byte is now checked for use after free and
+# overflow.
+leak:erts_sys_alloc
+leak:erts_sys_realloc
+
+# erlexec, the erl launcher of the peer nodes some suites start: exits with
+# its argument copies allocated (erlexec.c, no NIF there).
+leak:erlexec

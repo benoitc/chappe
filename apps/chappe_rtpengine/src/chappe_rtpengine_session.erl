@@ -99,6 +99,9 @@
     %% the app's opaque reference (a call ref): in every owner event, and
     %% sent to the daemon as call metadata
     ref :: binary() | undefined,
+    %% subscriptions held by a process (subscribe_request/2 with
+    %% holder): its monitor to the subscription's to-tag
+    holds = #{} :: #{reference() => binary()},
     pending = #{} ::
         #{reference() => {gen_statem:from() | undefined, term()}}
 }).
@@ -298,6 +301,11 @@ stop_forwarding(Session, Opts) ->
 %% has no request-side selector for one of them: the answer decides,
 %% by giving that m-line a port and rejecting the rest. Build it with
 %% chappe_rtpengine_sdp:fork_answer/3 to send one stream to one receiver.
+%%
+%% holder => pid() makes the subscription that process's: the session
+%% monitors it and unsubscribes when it exits, however it exits, so a
+%% consumer that crashes leaves no fork running. unsubscribe/2 of the
+%% to-tag releases it.
 -spec subscribe_request(pid(), chappe_rtpengine_ng:params()) ->
     chappe_rtpengine_ng:result() | {error, term()}.
 subscribe_request(Session, Params) ->
@@ -453,11 +461,12 @@ handle_event({call, From}, {aux, _Command, _Params}, idle, _Data) ->
 handle_event({call, From}, {aux, _Command, _Params}, deleting, _Data) ->
     {keep_state_and_data, [{reply, From, {error, busy}}]};
 handle_event({call, From}, {aux, Command, Params0}, _State, Data) ->
-    case resolve_party(Command, Params0, Data) of
+    {Kind, Params1} = aux_kind(Command, Params0),
+    case resolve_party(Command, Params1, Data) of
         {ok, Params} ->
-            case send_async(Command, Params, Data) of
+            case send_async(Command, Params, release(Command, Params, Data)) of
                 {ok, Ref, Data1} ->
-                    {keep_state, add_pending(Ref, From, aux, Data1)};
+                    {keep_state, add_pending(Ref, From, Kind, Data1)};
                 {error, Reason} ->
                     {keep_state_and_data, [{reply, From, {error, Reason}}]}
             end;
@@ -551,6 +560,27 @@ handle_event(
 ) ->
     notify_owner({dtmf, Event}, Data),
     keep_state_and_data;
+%% a holder of subscriptions exited: its forks are removed
+
+handle_event(
+    info,
+    {'DOWN', Mon, process, _Pid, _Reason},
+    State,
+    #data{holds = Holds} = Data
+) when is_map_key(Mon, Holds) ->
+    {ToTag, Rest} = maps:take(Mon, Holds),
+    Data1 = Data#data{holds = Rest},
+    case active(State) of
+        true ->
+            case send_async(unsubscribe, #{to_tag => ToTag}, Data1) of
+                {ok, Ref, Data2} ->
+                    {keep_state, add_pending(Ref, undefined, released, Data2)};
+                {error, _} ->
+                    {keep_state, Data1}
+            end;
+        false ->
+            {keep_state, Data1}
+    end;
 %% owner death
 
 handle_event(
@@ -735,6 +765,14 @@ reply(query, From, Result, _State, Data) ->
     {keep_state, Data, [{reply, From, Result}]};
 reply(aux, From, Result, _State, Data) ->
     {keep_state, Data, [{reply, From, Result}]};
+reply({held, Holder}, From, {ok, #{<<"to-tag">> := ToTag}} = Result, _, Data) ->
+    Mon = monitor(process, Holder),
+    Holds = maps:put(Mon, ToTag, Data#data.holds),
+    {keep_state, Data#data{holds = Holds}, [{reply, From, Result}]};
+reply({held, _Holder}, From, Result, _State, Data) ->
+    {keep_state, Data, [{reply, From, Result}]};
+reply(released, undefined, _Result, _State, Data) ->
+    {keep_state, Data};
 reply(branch_delete, undefined, _Result, _State, Data) ->
     {keep_state, Data};
 reply(delete, undefined, _Result, _State, Data) ->
@@ -874,6 +912,23 @@ send_async(Command, Params0, Data) ->
     catch
         exit:_ -> {error, client_down}
     end.
+
+%% a subscription with a holder is answered as any auxiliary command, and
+%% then held (reply/5); the holder is the session's, never rtpengine's
+aux_kind(subscribe_request, #{holder := Holder} = Params) when
+    is_pid(Holder)
+->
+    {{held, Holder}, maps:remove(holder, Params)};
+aux_kind(_Command, Params) ->
+    {aux, maps:remove(holder, Params)}.
+
+%% an unsubscribe of a held subscription releases it
+release(unsubscribe, #{to_tag := ToTag}, #data{holds = Holds} = Data) ->
+    Held = [M || {M, T} <- maps:to_list(Holds), T =:= ToTag],
+    _ = [demonitor(M, [flush]) || M <- Held],
+    Data#data{holds = maps:without(Held, Holds)};
+release(_Command, _Params, Data) ->
+    Data.
 
 inject_from_tag(subscribe_request) -> false;
 inject_from_tag(subscribe_answer) -> false;

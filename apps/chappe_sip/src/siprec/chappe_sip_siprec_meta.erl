@@ -265,26 +265,61 @@ snapshot_request(CT, Body) ->
 
 %% A metadata document (RFC 7865 9): {ok, Doc}, or {ok, {snapshot_request,
 %% Reason}} for a recording server's request (RFC 7865 7). Elements of
-%% other namespaces are skipped, save chappe's call-ref. A document with a
-%% DTD, over 64 KiB, in another namespace (RFC 7865 6.11) or with an
-%% element missing its required id is {error, _}.
+%% other namespaces are skipped, save chappe's call-ref. A document over 64
+%% KiB, not in UTF-8 (the schema's encoding, RFC 7865 9), with a DTD, in
+%% another namespace (RFC 7865 6.11) or with an element missing its
+%% required id is {error, _}.
+%%
+%% The DTD check is a byte match, so it only holds on UTF-8: a document in
+%% UTF-16 hides its declarations from it. Anything else is refused before
+%% xmerl sees it, and xmerl runs with entity declarations and external
+%% entities off, so no document expands past its own size.
 -spec parse(binary()) ->
     {ok, doc() | {snapshot_request, binary() | undefined}} | {error, term()}.
 parse(Bin) when is_binary(Bin), byte_size(Bin) > ?MAX_DOC ->
     {error, too_large};
+parse(<<16#EF, 16#BB, 16#BF, Bin/binary>>) ->
+    parse_utf8(Bin);
 parse(Bin) when is_binary(Bin) ->
-    case binary:match(Bin, [<<"<!DOCTYPE">>, <<"<!ENTITY">>]) of
-        nomatch -> scan(Bin);
-        _ -> {error, doctype}
-    end;
+    parse_utf8(Bin);
 parse(_) ->
     {error, badarg}.
+
+parse_utf8(Bin) ->
+    case
+        utf8(Bin) andalso binary:match(Bin, [<<"<!DOCTYPE">>, <<"<!ENTITY">>])
+    of
+        false -> {error, encoding};
+        nomatch -> scan(Bin);
+        _ -> {error, doctype}
+    end.
+
+%% UTF-8 with no NUL (XML 1.0 2.2 excludes it, and UTF-16 text is full of
+%% them), and no declaration naming another encoding
+utf8(Bin) ->
+    unicode:characters_to_binary(Bin, utf8, utf8) =:= Bin andalso
+        binary:match(Bin, <<0>>) =:= nomatch andalso
+        case
+            re:run(
+                Bin,
+                "^\\s*<\\?xml\\s[^>]*encoding\\s*=\\s*[\"']([^\"']*)",
+                [{capture, all_but_first, binary}]
+            )
+        of
+            {match, [Enc]} -> chappe_sip_lib:lower(Enc) =:= <<"utf-8">>;
+            nomatch -> true
+        end.
 
 scan(Bin) ->
     try
         case
             xmerl_sax_parser:stream(Bin, [
-                {event_fun, fun sax/3}, {event_state, [{root, [], []}]}
+                {encoding, utf8},
+                disallow_entities,
+                {external_entities, none},
+                {fail_undeclared_ref, true},
+                {event_fun, fun sax/3},
+                {event_state, [{root, [], []}]}
             ])
         of
             {ok, [{root, [], [Root]}], _Rest} -> root(Root);

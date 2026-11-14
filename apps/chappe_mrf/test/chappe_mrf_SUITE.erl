@@ -281,7 +281,10 @@ connect_caller_ivr(Config) ->
 %% then a BYE, and the caller sees neither a REFER nor a re-INVITE.
 fs_refer_transfers_caller(Config) ->
     {_Callee, CP} = ?F:callee_start(<<"carol">>),
-    ivr(Config, #{transfer => auto}),
+    %% the target listens on a port of its own on loopback
+    ivr(Config, #{
+        transfer => auto, transfer_opts => #{domains => [<<"127.0.0.1">>]}
+    }),
     {Ua, _Ep, {_, Ref}, Owner} = call_in(Config),
     ReferTo = <<"<sip:carol@127.0.0.1:", (integer_to_binary(CP))/binary, ">">>,
     ok = ?F:fs_refer(?config(fs, Config), ReferTo),

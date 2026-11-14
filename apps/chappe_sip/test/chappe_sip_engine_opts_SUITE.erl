@@ -42,26 +42,42 @@ end_per_testcase(_Case, _Config) ->
 
 %% req: R3261-298 R3261-296
 %% With T1 at 100 ms and T2 at 400 ms the first copy is sent again after
-%% about T1 (sofia patch 0005: the fork waited at least 1 s), the
-%% interval is capped at T2, and the request times out after 64*T1 =
-%% 6.4 s instead of 32.
+%% about T1 (sofia patch 0005: the fork waited at least 1 s), the interval
+%% doubles to T2 and stays there from the fourth gap on (100, 200, 400,
+%% 400, ...), and the request times out after 64*T1 = 6.4 s instead of 32.
+%% The Erlang side's 64*T1 timers (Timer M of the proxy, Timer H over
+%% WebSocket) follow the same T1.
 t1_sets_retransmissions(_Config) ->
     start(#{sip_timers => #{t1 => 100, t2 => 400}}),
     {ok, S} = gen_udp:open(0, [binary, {ip, ?LO}, {active, true}]),
     {ok, Port} = inet:port(S),
     T0 = erlang:monotonic_time(millisecond),
     {ok, Ref} = chappe_sip:request(target(Port), #{method => <<"OPTIONS">>}),
-    First = recv_udp(S),
-    Second = recv_udp(S),
-    Third = recv_udp(S),
-    ct:log("retransmit gaps ~p ms, ~p ms", [Second - First, Third - Second]),
-    ?assert(Second - First < 500),
-    ?assert(Third - Second < 900),
+    Sent = [recv_udp(S) || _ <- lists:seq(1, 7)],
+    Gaps = [B - A || {A, B} <- lists:zip(lists:droplast(Sent), tl(Sent))],
+    ct:log("retransmit gaps ~p ms", [Gaps]),
+    [G1, G2, G3 | Capped] = Gaps,
+    ?assert(G1 >= 80 andalso G1 < 250),
+    ?assert(G2 >= 170 andalso G2 < 350),
+    ?assert(G3 >= 350 andalso G3 < 600),
+    ?assert(lists:all(fun(G) -> G >= 350 andalso G < 600 end, Capped)),
     _ = chappe_sip_uac:await_response(Ref, 12000),
     Took = erlang:monotonic_time(millisecond) - T0,
     ct:log("timed out after ~p ms", [Took]),
-    ?assert(Took < 12000),
-    gen_udp:close(S).
+    ?assert(Took >= 6300 andalso Took < 7500),
+    ?assertEqual(6400, chappe_sip_config:get(proxy_accepted_ms)),
+    ?assertEqual(6400, chappe_sip_config:get(ws_ack_timeout_ms)),
+    gen_udp:close(S),
+    %% a timer the app sets keeps its value; T1's default gives 32 s
+    ok = chappe_sip:stop(),
+    application:set_env(chappe_sip, proxy_accepted_ms, 1234),
+    start(#{sip_timers => #{t1 => 2000}}),
+    ?assertEqual(1234, chappe_sip_config:get(proxy_accepted_ms)),
+    ?assertEqual(128000, chappe_sip_config:get(ws_ack_timeout_ms)),
+    application:unset_env(chappe_sip, proxy_accepted_ms),
+    ok = chappe_sip:stop(),
+    start(#{}),
+    ?assertEqual(32000, chappe_sip_config:get(proxy_accepted_ms)).
 
 %% req: R3261-264
 %% An INVITE over UDP is sent again after T1 (100 ms here), not after the

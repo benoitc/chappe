@@ -8,7 +8,9 @@
 # LD_PRELOAD installs the interceptors.
 #
 # Usage: test/asan/run.sh [MODE] [suite,...]
-#   asan    (default) the engine suites under ASan + UBSan, LeakSanitizer on
+#   asan    (default) every chappe_sip suite (all of them start the NIF
+#           engine) under ASan + UBSan, LeakSanitizer on, with the BEAM's
+#           allocators off (+Mea min) so enif_alloc'd memory is checked too
 #   tsan    the lifecycle stress and smoke suites under ThreadSanitizer
 #   lint-c  clang-tidy and gcc -fanalyzer on the shim
 #   fuzz    the libFuzzer targets (c_src/fuzz) then the NIF fuzz suite
@@ -26,13 +28,16 @@
 #   NIF_VOLUME         build volume (default chappe_nif_<mode>; ASAN_VOLUME
 #                      is still honoured for asan)
 #
-# The source is rsynced into the named volume (excluding the host's macOS
-# build artifacts), so the sofia-sip build is cached across runs. Reports and
-# fuzz crash inputs are copied to _build/nif-check/<mode> on the host.
+# The umbrella is rsynced into the named volume (excluding the host's macOS
+# build artifacts) and the suites run from its root, so the sibling apps a
+# suite needs (chappe_rtpengine for the SIPREC and media suites) are there,
+# and the sofia-sip build is cached across runs. Reports and fuzz crash
+# inputs are copied to apps/chappe_sip/_build/nif-check/<mode> on the host.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
-root=$(cd "$here/../.." && pwd)
+app=$(cd "$here/../.." && pwd)
+root=$(cd "$app/../.." && pwd)
 
 mode=asan
 case "${1:-}" in
@@ -40,11 +45,13 @@ case "${1:-}" in
 esac
 [ $# -gt 0 ] && SUITES=$1
 
-# The asan suites; a suite listed here that does not exist yet is skipped,
-# so a new one only needs adding to the list.
-asan_suites="chappe_sip_engine_smoke_SUITE chappe_sip_dialog_ops_SUITE
-chappe_sip_engine_lifecycle_SUITE chappe_sip_core_SUITE
-chappe_sip_nif_boundary_SUITE"
+# The asan suites: every suite of the app, as each one starts the NIF
+# engine (engine_mod defaults to chappe_sip_nif) and a bug only one of them
+# reaches (two bound addresses, forking, TLS, the SIPREC taps) is otherwise
+# never under ASan. The NIF fuzz suite runs in fuzz mode. A suite listed
+# for tsan or fuzz that does not exist yet is skipped.
+asan_suites=$(cd "$app/test" && ls -- *_SUITE.erl | sed -e 's/\.erl$//' |
+    grep -v '^chappe_sip_nif_fuzz_SUITE$')
 tsan_suites="chappe_sip_engine_lifecycle_SUITE chappe_sip_engine_smoke_SUITE"
 fuzz_suites="chappe_sip_nif_fuzz_SUITE"
 
@@ -52,8 +59,8 @@ suite_list() {
     local out="" s
     extra=${EXTRA_SUITES:-}
     for s in $1 ${extra//,/ }; do
-        [ -f "$root/test/$s.erl" ] || { echo "skip $s (absent)" >&2; continue; }
-        out="${out:+$out,}test/$s"
+        [ -f "$app/test/$s.erl" ] || { echo "skip $s (absent)" >&2; continue; }
+        out="${out:+$out,}apps/chappe_sip/test/$s"
     done
     printf '%s' "$out"
 }
@@ -72,13 +79,13 @@ if [ "$mode" = asan ]; then
 else
     volume=${NIF_VOLUME:-chappe_nif_$mode}
 fi
-out="$root/_build/nif-check/$mode"
+out="$app/_build/nif-check/$mode"
 mkdir -p "$out"
 
 echo "==> building $img image"
 docker build -q -t "$img" "$here" >/dev/null
 
-echo "==> $mode${suites:+: $suites}"
+echo "==> $mode${suites:+: $(printf '%s' "$suites" | tr ',' '\n' | wc -l) suite(s)}"
 # TSan maps its shadow at fixed addresses; ASLR with 32 random mmap bits
 # (recent kernels) breaks that, so tsan runs under setarch -R, which the
 # default seccomp profile refuses.
@@ -96,21 +103,12 @@ docker run --rm "${sec[@]}" \
     -e "FUZZ_SEED=${FUZZ_SEED:-}" \
     "$img" bash -euc '
     # exclude host build outputs (macOS _build, sofia build, and the Mach-O
-    # NIF under priv/lib) so the Linux build is not clobbered
+    # NIF under priv/lib) so the Linux build is not clobbered; the deps are
+    # public and fetch over the network
     rsync -a --delete \
-        --exclude=_build --exclude=c_src/build --exclude=priv/lib \
+        --exclude=.git --exclude=_build --exclude=c_src/build \
+        --exclude=priv/lib \
         /host/ /work/
-    # The media deps are private git repos that cannot be fetched offline in
-    # this container; reuse the host'\''s already-fetched sources so rebar3
-    # does not try to re-fetch them (public deps still fetch over the
-    # network).
-    mkdir -p /work/_build/default/lib
-    for d in chappe_rtpengine chappe_esl; do
-        if [ -d "/host/_build/default/lib/$d" ]; then
-            rsync -a --delete "/host/_build/default/lib/$d/" \
-                "/work/_build/default/lib/$d/"
-        fi
-    done
     cd /work
-    exec test/asan/in_container.sh
+    exec apps/chappe_sip/test/asan/in_container.sh
   '

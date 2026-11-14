@@ -12,7 +12,7 @@
 %% the dialog would have answered: REFER 603, the others 200.
 -module(chappe_sip_b2b_requests).
 
--export([handled/2, request/5]).
+-export([handled/2, handled/3, request/5]).
 
 %% the events every leg of a relayed call leaves to the relay: offers
 -define(RELAYED, [modify, update]).
@@ -26,6 +26,12 @@ handled(Requests, RelayInfo) ->
             [R || R <- Requests, lists:member(R, ?REQUESTS)] ++
                 [info || RelayInfo]
         ).
+
+%% The handled_events of each leg of a call whose transfer mode is Mode:
+%% REFER too when the call carries transfers.
+-spec handled([atom()], boolean(), chappe_sip_b2b_transfer:mode()) -> [atom()].
+handled(Requests, RelayInfo, Mode) ->
+    handled(Requests ++ [refer || Mode =/= off], RelayInfo).
 
 %% A claimed request from leg X. S: the relay state (a, b, requests,
 %% relay_info, media).
