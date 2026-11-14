@@ -93,7 +93,7 @@ chappe_esl_sup (one_for_one)
 `-- chappe_esl_nodes               when the `nodes' app env is set
 
 chappe_audio_sup (rest_for_one)
-|-- pg scope chappe                unless another app runs it
+|-- chappe_audio_pg                its groups in the shared `chappe' pg scope
 |-- chappe_audio_registry          streams waiting for their fork, by id
 |-- chappe_audio_store_srv         the recording store: config, pg, sweep
 |-- chappe_audio_writer_sup        one chappe_audio_writer per recording

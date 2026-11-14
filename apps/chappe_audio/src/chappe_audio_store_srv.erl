@@ -37,7 +37,7 @@ init([]) ->
     Config = application:get_env(chappe_audio, storage, #{}),
     case setup(Config) of
         {ok, S} ->
-            ok = pg:join(chappe_audio_lib:scope(), ?GROUP, self()),
+            ok = chappe_audio_pg:join(?GROUP, self()),
             {ok, arm(S)};
         {error, Reason} ->
             {stop, Reason}

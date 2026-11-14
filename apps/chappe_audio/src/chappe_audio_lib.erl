@@ -1,29 +1,12 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% Helpers shared by the app's processes: the pg scope, bounded sends and
-%% stream tokens.
+%% Helpers shared by the app's processes: bounded sends and stream
+%% tokens.
 -module(chappe_audio_lib).
 
--export([start_scope/0, scope/0, send/3, token/0, token_hash/1, token_ok/2]).
+-export([send/3, token/0, token_hash/1, token_ok/2]).
 -export([id/0]).
-
-%% The cluster-wide scope chappe's lookups use (chappe-erlang-patterns).
--define(SCOPE, chappe).
-
--spec scope() -> atom().
-scope() ->
-    ?SCOPE.
-
-%% Start the `chappe' pg scope unless another app of the node already
-%% runs it (chappe_sip does); chappe_audio then joins that one. ignore
-%% keeps the supervisor going with no child.
--spec start_scope() -> {ok, pid()} | ignore.
-start_scope() ->
-    case pg:start_link(?SCOPE) of
-        {ok, Pid} -> {ok, Pid};
-        {error, {already_started, _}} -> ignore
-    end.
 
 %% Send Msg to Pid unless Pid already has Max messages waiting: a local
 %% pid's queue is read directly; for a remote one the send is dropped

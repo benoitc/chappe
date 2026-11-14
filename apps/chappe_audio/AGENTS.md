@@ -14,6 +14,8 @@ its acceptor), `chappe_audio_conn` (one per opening handshake),
 `chappe_audio_stream` (one per fork: owner, events, the bound),
 `chappe_audio_ws` (the ws_handler relaying a connection to its stream),
 `chappe_audio_registry` (streams waiting for their fork, by id),
+`chappe_audio_pg` (its groups in the `chappe` pg scope it shares with the
+other apps),
 `chappe_audio_pcm` (L16 levels), and the recording store: `chappe_audio_store`
 (the behaviour and the API), `chappe_audio_store_srv` (the node's store: config,
 pg membership, sweep), `chappe_audio_writer` (one per recording being written),

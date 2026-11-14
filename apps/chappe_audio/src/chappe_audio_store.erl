@@ -219,7 +219,7 @@ call_local(Req) ->
     gen_server:call(chappe_audio_store_srv, Req, ?TIMEOUT).
 
 stores() ->
-    pg:get_members(chappe_audio_lib:scope(), chappe_audio_store).
+    chappe_audio_pg:members(chappe_audio_store).
 
 %% Ask every node's store, at most TIMEOUT for all of them.
 multi(Req) ->

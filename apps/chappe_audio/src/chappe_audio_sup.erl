@@ -4,7 +4,8 @@
 %% The supervision tree, rest_for_one so that what depends on a process
 %% restarts with it:
 %%
-%% - the `chappe' pg scope, when nothing on the node runs it yet;
+%% - the keeper of chappe_audio's groups in the `chappe' pg scope, which
+%%   it starts when nothing on the node runs it (chappe_audio_pg);
 %% - the registry, which owns the table of streams waiting for their
 %%   connection;
 %% - the store (its config, its pg membership and its sweep) and the
@@ -27,7 +28,7 @@ init(top) ->
         [
             #{
                 id => chappe_audio_pg,
-                start => {chappe_audio_lib, start_scope, []}
+                start => {chappe_audio_pg, start_link, []}
             },
             #{
                 id => chappe_audio_registry,

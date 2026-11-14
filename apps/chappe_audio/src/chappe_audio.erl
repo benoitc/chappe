@@ -180,7 +180,7 @@ send_text(_Stream, _Text) ->
 %% The streams of a call, on every node.
 -spec streams(binary()) -> [stream()].
 streams(Ref) when is_binary(Ref) ->
-    pg:get_members(chappe_audio_lib:scope(), {chappe_audio, Ref}).
+    chappe_audio_pg:members({chappe_audio, Ref}).
 
 %% The RMS level of each channel of a frame in dBFS, -inf for silence
 %% (as the atom '-inf'): what the demo prints as a caller speaks.

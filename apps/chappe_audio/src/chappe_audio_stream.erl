@@ -152,7 +152,7 @@ init({#{id := Id, token_hash := Hash, owner := Owner} = Opts, Cfg}) ->
     Ref = maps:get(ref, Opts, undefined),
     _ =
         Ref =/= undefined andalso
-            pg:join(chappe_audio_lib:scope(), {chappe_audio, Ref}, self()),
+            chappe_audio_pg:join({chappe_audio, Ref}, self()),
     Format = maps:get(format, Opts, #{}),
     Timer = erlang:start_timer(
         maps:get(connect_timeout, Opts, 30000), self(), connect
