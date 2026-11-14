@@ -21,6 +21,7 @@ all() ->
         adopt_other_and_keep,
         adopt_in_job,
         retention_and_stale_parts,
+        sweep_spares_live_writers,
         writer_owner_death,
         writer_crash,
         writer_bound,
@@ -240,6 +241,28 @@ retention_and_stale_parts(Config) ->
     ?assertEqual({error, not_found}, chappe_audio_store:get(OldId)),
     ?assertMatch({ok, _}, chappe_audio_store:get(NewId)),
     {ok, _} = chappe_audio_store:close(Writer, #{}).
+
+%% A writer that wrote nothing for hours (a paused fork, a held SIPREC
+%% session) keeps its partial file through the sweep; once the writer is
+%% gone, the same old part is an orphan and goes.
+sweep_spares_live_writers(Config) ->
+    Dir = ?config(dir, Config),
+    {ok, Rec} = chappe_audio_store:open(#{call_ref => <<"paused">>}, #{}),
+    ok = chappe_audio_store:write(Rec, <<0, 0>>),
+    W = chappe_audio_store:writer(Rec),
+    _ = sys:get_state(W),
+    [Part] = [filename:join(Dir, P) || P <- filelib:wildcard("*/*/*/paused/*.part", Dir)],
+    Old = calendar:system_time_to_local_time(os:system_time(second) - 7200, second),
+    ok = file:change_time(Part, Old),
+    {ok, 0} = chappe_audio_store:sweep(),
+    ?assert(filelib:is_regular(Part)),
+    Mon = monitor(process, W),
+    exit(W, kill),
+    {'DOWN', Mon, process, W, killed} = recv(),
+    ok = file:change_time(Part, Old),
+    _ = chappe_audio_store:config(),
+    {ok, 0} = chappe_audio_store:sweep(),
+    ?assertNot(filelib:is_regular(Part)).
 
 %% The feeder dies: its writer finishes the recording with what it had,
 %% which is then listed.

@@ -80,8 +80,14 @@
     {ok, binary()} | eof | {error, term()}.
 -callback delete(binary(), Config :: map()) -> ok | {error, not_found}.
 %% Remove what retention_days says is old, and partial files left by
-%% writers that died; returns how many recordings went.
+%% writers that died (Config's `live' holds the parts of the writers
+%% still running); returns how many recordings went.
 -callback sweep(Config :: map()) -> {ok, non_neg_integer()}.
+%% Where a recording being written keeps its partial data, so the sweep
+%% spares it while its writer lives (optional; the sweep gets the live
+%% ones as Config's `live' set).
+-callback part(Handle :: term()) -> file:filename_all() | undefined.
+-optional_callbacks([part/1]).
 
 -define(TIMEOUT, 5000).
 %% how long adopt/3 waits for its job (a copy of a large file)

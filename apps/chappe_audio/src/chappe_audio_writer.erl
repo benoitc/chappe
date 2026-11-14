@@ -44,6 +44,7 @@ init({Meta, Owner}) ->
     {Backend, Config} = chappe_audio_store_srv:backend(),
     case Backend:open(Meta, Config) of
         {ok, Handle} ->
+            ok = writing(Backend, Handle),
             {ok, #state{
                 backend = Backend,
                 handle = Handle,
@@ -51,6 +52,14 @@ init({Meta, Owner}) ->
             }};
         {error, Reason} ->
             {stop, Reason}
+    end.
+
+%% Tell the store which partial file is this live writer's, so its sweep
+%% leaves it, however long the feeder writes nothing.
+writing(Backend, Handle) ->
+    case erlang:function_exported(Backend, part, 1) of
+        true -> chappe_audio_store_srv:writing(self(), Backend:part(Handle));
+        false -> ok
     end.
 
 handle_call({close, Extra}, _From, #state{backend = B, handle = H} = S) ->

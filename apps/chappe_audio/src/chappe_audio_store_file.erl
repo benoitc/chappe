@@ -25,7 +25,7 @@
 -behaviour(chappe_audio_store).
 
 -export([open/2, write/2, close/2, abort/1, adopt/3]).
--export([find/2, get/2, read/3, delete/2, sweep/1]).
+-export([find/2, get/2, read/3, delete/2, sweep/1, part/1]).
 -export([ref_dir/1]).
 
 -include_lib("kernel/include/file.hrl").
@@ -149,15 +149,21 @@ delete(Id, Config) ->
             Err
     end.
 
-%% Partial files older than an hour; with retention_days, every day
-%% folder older than that many days (by the date in its path).
+%% The partial file of a recording being written.
+part(#{tmp := Tmp}) -> Tmp.
+
+%% Partial files of no live writer (Config's `live') older than an hour;
+%% with retention_days, every day folder older than that many days (by
+%% the date in its path).
 sweep(Config) ->
     Dir = dir(Config),
     Now = os:system_time(second),
+    Live = maps:get(live, Config, #{}),
     _ = [
         file:delete(F)
      || P <- filelib:wildcard("*/*/*/*/*.part", Dir),
         F <- [filename:join(Dir, P)],
+        not is_map_key(unicode:characters_to_binary(filename:absname(F)), Live),
         stale(F, Now)
     ],
     {ok, expire(Dir, maps:get(retention_days, Config, undefined), Now)}.

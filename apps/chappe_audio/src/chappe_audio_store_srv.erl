@@ -8,7 +8,7 @@
 -module(chappe_audio_store_srv).
 -behaviour(gen_server).
 
--export([start_link/0, backend/0, adopted/3]).
+-export([start_link/0, backend/0, adopted/3, writing/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -define(GROUP, chappe_audio_store).
@@ -26,7 +26,9 @@
     jobs = #{} :: #{binary() => {pid(), reference(), [pid()]}},
     %% the last outcomes, by source path, oldest first in done_order
     done = #{} :: #{binary() => {pid(), term()}},
-    done_order = queue:new() :: queue:queue(binary())
+    done_order = queue:new() :: queue:queue(binary()),
+    %% the partial files of the live writers, by writer monitor
+    live = #{} :: #{reference() => binary()}
 }).
 
 -type state() :: #state{}.
@@ -34,6 +36,14 @@
 -spec start_link() -> {ok, pid()} | {error, term()}.
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
+
+%% A live writer's partial file (chappe_audio_writer), spared by the
+%% sweep until the writer goes.
+-spec writing(pid(), file:filename_all() | undefined) -> ok.
+writing(_Writer, undefined) ->
+    ok;
+writing(Writer, Part) ->
+    gen_server:call(?MODULE, {writing, Writer, key(Part)}).
 
 %% A job's outcome (chappe_audio_adopt).
 -spec adopted(pid(), file:filename_all(), term()) -> ok.
@@ -90,14 +100,20 @@ handle_call({read, Id, Range}, _From, #state{backend = B, config = C} = S) ->
     {reply, B:read(Id, Range, C), S};
 handle_call({delete, Id}, _From, #state{backend = B, config = C} = S) ->
     {reply, B:delete(Id, C), S};
-handle_call(sweep, _From, #state{backend = B, config = C} = S) ->
-    {reply, B:sweep(C), S};
+handle_call(sweep, _From, #state{backend = B} = S) ->
+    {reply, B:sweep(sweep_config(S)), S};
+handle_call({writing, Writer, Part}, _From, #state{live = L} = S) ->
+    {reply, ok, S#state{live = L#{monitor(process, Writer) => Part}}};
 handle_call(_Req, _From, S) ->
     {reply, {error, unknown_call}, S}.
 
 handle_cast(_Msg, S) ->
     {noreply, S}.
 
+handle_info({'DOWN', Mon, process, _, _}, #state{live = L} = S) when
+    is_map_key(Mon, L)
+->
+    {noreply, S#state{live = maps:remove(Mon, L)}};
 handle_info({'DOWN', Mon, process, Job, Reason}, #state{jobs = J} = S) ->
     %% a job that died before its outcome
     case [K || K := {P, M, _} <- J, P =:= Job, M =:= Mon] of
@@ -110,14 +126,18 @@ handle_info({'DOWN', Mon, process, Job, Reason}, #state{jobs = J} = S) ->
             {noreply, S}
     end;
 handle_info(
-    {timeout, T, sweep}, #state{timer = T, backend = B, config = C} = S
+    {timeout, T, sweep}, #state{timer = T, backend = B} = S
 ) ->
-    _ = B:sweep(C),
+    _ = B:sweep(sweep_config(S)),
     {noreply, arm(S)};
 handle_info(_Info, S) ->
     {noreply, S}.
 
 %% ---- internal ----
+
+%% The backend's config for a sweep, with the live writers' parts.
+sweep_config(#state{config = C, live = L}) ->
+    C#{live => maps:from_keys(maps:values(L), true)}.
 
 %% One job per source path: a second ask joins the running one, an ask
 %% for one done gets its outcome again (the file is in the store).
