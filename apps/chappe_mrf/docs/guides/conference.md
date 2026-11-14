@@ -224,9 +224,27 @@ ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
   (`, | [ ] { } < > ' $ \`, `:_:`, spaces) is refused 403 before the
   policy runs: only letters, digits and `- . _ ~ ! * + = ; @ : %` pass.
 
-A member's own REFER is a transfer its call carries out
-(`transfer => auto` on `connect_caller/3`): the target takes the member's
-place. Hand the room the call's event from your notify process:
+A caller the room answers itself (`join/3` with `{call, Req, Res}`) gets
+the conference URI with `isfocus` as its Contact in a `focus => true` room
+(RFC 4579 4.2), and the room takes the REFERs in its dialog:
+
+- in a focus room a REFER is to the focus: its Refer-To party is dialed
+  in, with the Refer-To's Replaces on that INVITE (5.10), or with
+  `method=BYE` the member it names is removed (5.11);
+- in a room without `focus => true` it is an RFC 3515 transfer: the target
+  takes the member's place on its call, shown as
+  `{left, Member, transferred}` then `{joined, Member, #{uri := Target}}`.
+
+The room's `refer_policy` decides each. A call you answered yourself
+(`connect_caller/3`) carries the Contact you gave it: pass
+`contact_params => #{a => chappe_sip_focus:contact_params()}` there for a
+focus room, and `requests => [refer]`, then hand the room each
+`{chappe_sip_b2b, Ref, {request, a, refer, Req, Res}}` with `b2b_event/2`.
+Parties dialed in come from FreeSWITCH and carry its Contact.
+
+A member's own REFER on a call with `transfer => auto` is carried out by
+its B2BUA: the target takes the member's place. Hand the room the call's
+event from your notify process:
 
 ```erlang
 receive

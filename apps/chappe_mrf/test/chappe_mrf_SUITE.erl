@@ -23,6 +23,9 @@
     refer_bgdial/1,
     dialed_party_leaves/1,
     member_transferred/1,
+    focus_member_refer_adds/1,
+    member_refer_transfers/1,
+    focus_member_refer_removes/1,
     session_recording_waits_for_close/1,
     room_recording_waits_for_close/1,
     caller_hangup/1,
@@ -77,6 +80,9 @@ all() ->
         refer_bgdial,
         dialed_party_leaves,
         member_transferred,
+        focus_member_refer_adds,
+        member_refer_transfers,
+        focus_member_refer_removes,
         session_recording_waits_for_close,
         room_recording_waits_for_close,
         caller_hangup,
@@ -557,6 +563,92 @@ room_recording_waits_for_close(Config) ->
     after 5000 -> ct:fail(no_recorded)
     end,
     ok = chappe_mrf:destroy(Ep).
+
+%% RFC 4579 4.2: a member of a focus room is answered with the conference
+%% URI and isfocus as its Contact. A REFER in that dialog is a REFER to the
+%% focus (5.5): its Refer-To party is dialed into the room, with the
+%% Replaces the Refer-To carries on that INVITE (5.10).
+focus_member_refer_adds(Config) ->
+    {ok, Conf} = chappe_mrf:conference(<<"froom">>, #{
+        focus => true,
+        refer_policy => fun(_) -> true end,
+        dial_endpoint => #{targets => [{fs1, fs_uri(Config)}]}
+    }),
+    #{entity := Entity} = chappe_mrf_conf:info(Conf),
+    {Ua, M} = room_caller(Config, Conf),
+    {ua, Ua, {final, 200, Ok}} = ua_answer(Ua),
+    Contact = ?F:hdr(Ok, <<"contact">>),
+    ?assert(has(Contact, Entity)),
+    ?assert(has(Contact, <<";isfocus">>)),
+    _ = M,
+    ok = ?F:ua_refer(Ua, <<"<sip:carol@10.0.0.9?Replaces=c1%40h%3Bto-tag%3Dt1%3Bfrom-tag%3Df1>">>),
+    {ua, Ua, {response, R}} = ua_msg(Ua, response),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, R),
+    {fake_fs, _, _, {cmd, Bridge}} = fs_cmd(<<"execute-app-name: bridge">>),
+    ?assert(has(Bridge, <<"sofia/external/carol@10.0.0.9">>)),
+    ?assert(has(Bridge, <<"sip_h_Replaces=c1@h;to-tag=t1;from-tag=f1">>)),
+    ok = chappe_mrf_conf:stop(Conf).
+
+%% A room that does not advertise isfocus: a member's REFER is an RFC
+%% 3515 transfer of that member; the target takes its place in the room.
+member_refer_transfers(Config) ->
+    {_Callee, CP} = ?F:callee_start(<<"dave">>),
+    {ok, Conf} = chappe_mrf:conference(<<"xfroom">>, #{refer_policy => fun(_) -> true end}),
+    {Ua, M} = room_caller(Config, Conf),
+    {ua, Ua, {final, 200, Ok}} = ua_answer(Ua),
+    ?assertNot(has(?F:hdr(Ok, <<"contact">>), <<"isfocus">>)),
+    Target = <<"sip:dave@127.0.0.1:", (integer_to_binary(CP))/binary>>,
+    ok = ?F:ua_refer(Ua, <<"<", Target/binary, ">">>),
+    {ua, Ua, {response, R}} = ua_msg(Ua, response),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, R),
+    receive
+        {callee, invite, _} -> ok
+    after 5000 -> ct:fail(no_target_invite)
+    end,
+    conf_event(Conf, {left, M, transferred}),
+    {joined, M, #{uri := Target}} = joined(Conf),
+    ok = chappe_mrf_conf:stop(Conf).
+
+%% In a focus room a member's REFER with method=BYE removes the member it
+%% names (5.11), by the URI it called from.
+focus_member_refer_removes(Config) ->
+    {ok, Conf} = chappe_mrf:conference(<<"rmroom">>, #{
+        focus => true, refer_policy => fun(_) -> true end
+    }),
+    {Ua1, M1} = room_caller(Config, Conf),
+    {ua, Ua1, {final, 200, _}} = ua_answer(Ua1),
+    {Ua2, M2} = room_caller(Config, Conf),
+    {ua, Ua2, {final, 200, _}} = ua_answer(Ua2),
+    [#{uri := U2}] = [Mb || #{id := Id} = Mb <- chappe_mrf_conf:members(Conf), Id =:= M2],
+    ok = ?F:ua_refer(Ua1, <<"<", U2/binary, ";method=BYE>">>),
+    {ua, Ua1, {response, R}} = ua_msg(Ua1, response),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, R),
+    conf_event(Conf, {left, M2, kicked}),
+    ?assertMatch([#{id := M1}], chappe_mrf_conf:members(Conf)),
+    ok = chappe_mrf_conf:stop(Conf).
+
+%% A caller answered straight into Conf (join/3 with {call, Req, Res}).
+room_caller(Config, Conf) ->
+    Test = self(),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        Test ! {join, chappe_mrf_conf:join(Conf, {call, Req, Res}, #{})}
+    end),
+    Ua = ?F:ua_call(?config(ep, Config), #{}),
+    {ok, M} = receive {join, J} -> J after 10000 -> ct:fail(no_join) end,
+    {joined, M, _} = joined(Conf),
+    {Ua, M}.
+
+ua_answer(Ua) ->
+    receive
+        {ua, Ua, {final, _, _}} = F -> F
+    after 10000 -> ct:fail(no_final)
+    end.
+
+ua_msg(Ua, Kind) ->
+    receive
+        {ua, Ua, {Kind, _}} = M -> M
+    after 10000 -> ct:fail({no_ua, Kind})
+    end.
 
 %% A member's call is transferred by REFER (its B2BUA carries it out,
 %% transfer => auto): handed the call's transferred event, the room shows

@@ -31,7 +31,7 @@
 -export([refuser_start/1]).
 -export([esl_start/0, esl_stop/1]).
 -export([rtpe_start/1, rtpe_stop/1]).
--export([ua_call/2, ua_bye/1, ua_rtp/2, ua_rtp/3, callee_start/1]).
+-export([ua_call/2, ua_bye/1, ua_refer/2, ua_rtp/2, ua_rtp/3, callee_start/1]).
 -export([pick/0, sdp/2, hdr/2, body/1]).
 
 -define(RTPE_NODE, chappe_mrf_fake_rtpe).
@@ -705,6 +705,13 @@ ua_bye(Ua) ->
     Ua ! bye,
     ok.
 
+%% a REFER in the call's dialog with ReferTo (a Refer-To value); the
+%% final answer comes back as {ua, Ua, {response, Bin}}, the NOTIFYs as
+%% {ua, Ua, {request, Bin}}
+ua_refer(Ua, ReferTo) ->
+    Ua ! {refer, ReferTo},
+    ok.
+
 %% send G.711 to the far end of the answer for Ms
 ua_rtp(Ua, Ms) ->
     Ua ! {rtp, Ms},
@@ -749,6 +756,11 @@ ua_up(#{sock := Sock, rtp := Rtp, parent := Parent, engine := EP, dialog := D, c
             ok = gen_udp:send(Sock, {127, 0, 0, 1}, Src,
                               resp(I, 200, <<"OK">>, <<>>, [], sdp(<<"caller">>, element(2, inet:port(Rtp))))),
             ua_up(U);
+        {udp, Sock, _, _, <<"SIP/2.0 1", _/binary>>} ->
+            ua_up(U);
+        {udp, Sock, _, _, <<"SIP/2.0 ", _/binary>> = R} ->
+            Parent ! {ua, self(), {response, R}},
+            ua_up(U);
         {udp, Sock, _, Src, <<M, _/binary>> = Req} when M >= $A, M =< $Z ->
             _ = gen_udp:send(Sock, {127, 0, 0, 1}, Src, resp(Req, 200, <<"OK">>, <<>>, [], <<>>)),
             Parent ! {ua, self(), {request, Req}},
@@ -762,6 +774,15 @@ ua_up(#{sock := Sock, rtp := Rtp, parent := Parent, engine := EP, dialog := D, c
             ua_up(U);
         bye ->
             ok = gen_udp:send(Sock, {127, 0, 0, 1}, EP, ua_req(<<"BYE">>, N + 1, U, D)),
+            ua_up(U#{cseq := N + 1});
+        {refer, ReferTo} ->
+            #{port := P} = U,
+            Refer = ua_req(<<"REFER">>, N + 1, U, D),
+            [Head, _] = binary:split(Refer, <<"\r\n\r\n">>),
+            Extra = <<"\r\nRefer-To: ", ReferTo/binary, "\r\nContact: <sip:caller@127.0.0.1:", P/binary, ">">>,
+            Head1 = binary:replace(Head, <<"\r\nContent-Length: 0">>, <<>>),
+            Msg = <<Head1/binary, Extra/binary, "\r\nContent-Length: 0\r\n\r\n">>,
+            ok = gen_udp:send(Sock, {127, 0, 0, 1}, EP, Msg),
             ua_up(U#{cseq := N + 1});
         {rtp, Ms} ->
             send_rtp(Rtp, maps:get(remote, D), Ms),

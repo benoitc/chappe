@@ -352,12 +352,24 @@ refer(Conf, Req, Res) ->
 %% Hand the room a B2BUA event of a member's call (the app's notify
 %% process gets them): {chappe_sip_b2b, Ref, {transferred, Leg, Info}}
 %% shows the member as {left, Member, transferred}, then the target as
-%% {joined, Member, Info} in its place. Other events are ignored.
+%% {joined, Member, Info} in its place; {chappe_sip_b2b, Ref, {request,
+%% Leg, refer, Req, Res}} (requests => [refer]) is a member's REFER, which
+%% the room answers (see chappe_mrf_conf_refer). Other events are
+%% ignored. A caller the room answers itself (join/3 with {call, Req,
+%% Res}) needs none of this: the room is its notify process.
 -spec b2b_event(conf(), term()) -> ok.
 b2b_event(Conf, {chappe_sip_b2b, Ref, {transferred, _Leg, Info}}) when
     is_reference(Ref), is_map(Info)
 ->
     gen_server:cast(Conf, {transferred, Ref, Info});
+b2b_event(
+    Conf, {chappe_sip_b2b, Ref, {request, _Leg, refer, _Req, _Res}} = M
+) when
+    is_reference(Ref)
+->
+    %% a call with requests => [refer] whose notify process is the app's
+    Conf ! M,
+    ok;
 b2b_event(_Conf, _Event) ->
     ok.
 
@@ -623,6 +635,8 @@ handle_info({chappe_mrf, Ep, {hangup, _} = E}, S) when is_pid(Ep) ->
 handle_info({chappe_mrf, Ep, Event}, S) when is_pid(Ep) ->
     %% a dialed endpoint's channel and completion events
     {noreply, chappe_mrf_conf_refer:native_event(Ep, Event, S)};
+handle_info({chappe_sip_b2b, Ref, {request, _Leg, refer, Req, Res}}, S) ->
+    {noreply, chappe_mrf_conf_refer:member_refer(Ref, Req, Res, S)};
 handle_info({chappe_audio_store, _Job, {adopted, Key, Result}}, S) ->
     {noreply, emit({recorded, Key, Result}, S)};
 handle_info({timeout, _, room_recording_close}, #state{stopping = St} = S) ->

@@ -7,9 +7,13 @@
 %%   the room dials it out and the referrer hears the outcome as NOTIFYs;
 %%   with method=BYE in its Refer-To it asks the focus to remove the
 %%   member with that URI (5.11). The room's refer_policy decides both.
-%% - a member's own REFER is a transfer its B2BUA call carries out
-%%   (transfer => auto): the target takes the member's place in the room,
-%%   which shows it as {left, Member, transferred}, then {joined, Member,
+%% - a member's REFER, in its dialog with the room, follows what the room
+%%   told it it is: a room with focus => true answers its members with the
+%%   conference URI and isfocus (RFC 4579 4.2), so its REFER is to a
+%%   focus: add (5.5, with the Replaces the Refer-To carries on the INVITE
+%%   to the party, 5.10) or remove (method=BYE, 5.11); in a room without
+%%   it the REFER is an RFC 3515 transfer: the target takes the member's
+%%   place, shown as {left, Member, transferred}, then {joined, Member,
 %%   Info} with the target's URI.
 %%
 %% Dialing out: on native, an endpoint of the room's FreeSWITCH pool
@@ -30,7 +34,7 @@
 
 -export([refer/3, dial_native/4, focus/2, call/2]).
 -export([fs_dial/3, remove/2, native_event/3, fs_added/3, timeout/2]).
--export([fs_result/3, fs_started/3]).
+-export([fs_result/3, fs_started/3, member_refer/4]).
 -export([transferred/3, dial_string/2, dialing/4, dialable/1]).
 
 -define(DIAL_TIMEOUT, 30000).
@@ -147,7 +151,7 @@ dial_native(Conf, Target, Refer, #{endpoint := EpOpts} = Cfg) ->
                 Conf, {refer, {dialing, Ep, Member, Refer}}, 30000
             ),
         ok ?= chappe_mrf:set(Ep, #{<<"hangup_after_bridge">> => <<"true">>}),
-        Dial = dial_string(Cfg, Target),
+        Dial = [replaces_var(Cfg), dial_string(Cfg, Target)],
         {ok, _} ?= chappe_mrf:execute(Ep, <<"bridge">>, Dial, #{wait => false}),
         ok
     else
@@ -222,9 +226,15 @@ fs_dial(Target, Refer, #state{dialing = D} = S) ->
 
 fs_dial(Target, Refer, D, #state{name = Name} = S) ->
     Uuid = chappe_mrf_lib:new_id(),
+    Rep =
+        case maps:get(replaces, S#state.dial, undefined) of
+            undefined -> <<>>;
+            R -> [<<",sip_h_Replaces=">>, R]
+        end,
     Dial = [
         <<"{origination_uuid=">>,
         Uuid,
+        Rep,
         <<"}">>,
         dial_string(S#state.dial, Target)
     ],
@@ -287,6 +297,105 @@ fs_started(_Uuid, ok, S) ->
 fs_started(Uuid, {error, _}, S) ->
     fs_failed(Uuid, 503, S).
 
+%% The Replaces a REFER to the focus carries goes on the INVITE to its
+%% party as a header (RFC 4579 5.10).
+replaces_var(#{replaces := R}) -> [<<"{sip_h_Replaces=">>, R, <<"}">>];
+replaces_var(_Cfg) -> <<>>.
+
+%% A member's REFER, in its dialog with the room (the room is its call's
+%% notify process): chappe_sip_focus:refer/4 reads add, remove or transfer
+%% from that dialog's Contact (isfocus or not), the room's policy decides,
+%% and the room carries it out. A member the room does not know, or whose
+%% dialog it cannot find, is refused 603.
+-spec member_refer(
+    reference(), chappe_sip_req:req(), chappe_sip_res:res(), #state{}
+) ->
+    #state{}.
+member_refer(Ref, Req, Res, #state{members = M} = S) ->
+    Member = [{Id, Mb} || Id := #{b2b := {_, R}} = Mb <- M, R =:= Ref],
+    case {Member, chappe_mrf_registry:select({a_dialog, Ref, '_'})} of
+        {[{Id, Mb} | _], [{{a_dialog, _, D}, _} | _]} ->
+            {reply, Cfg, _} = call(cfg, S),
+            #{policy := Policy} = Cfg,
+            Opts = #{policy => guard(Policy, Cfg), owner => self()},
+            case chappe_sip_focus:refer(D, Req, Res, Opts) of
+                {error, _} -> S;
+                Verdict -> carry_out(Verdict, Id, Mb, D, Cfg, S)
+            end;
+        _ ->
+            _ = chappe_sip_res:send(Res, 603),
+            S
+    end.
+
+carry_out({remove, Target, Refer}, _Id, _Mb, _D, _Cfg, S) ->
+    {Reply, S1} = remove(Target, S),
+    ok = chappe_sip_refer:final(Refer, removed(Reply)),
+    S1;
+carry_out({add, Target, Refer}, _Id, _Mb, _D, Cfg, S) ->
+    case replaces(Refer) of
+        {error, _} ->
+            ok = chappe_sip_refer:final(Refer, 403),
+            S;
+        Rep ->
+            Cfg1 = maps:merge(Cfg, Rep),
+            add(Target, Refer, Cfg1, S)
+    end;
+carry_out({transfer, Target, Refer}, _Id, #{b2b := B2b}, D, _Cfg, S) ->
+    %% the target takes the member's place on the call's leg A; the old
+    %% member is handed back so the referrer hears the final NOTIFY first
+    Conf = self(),
+    {_, Ref} = B2b,
+    _ = spawn(fun() ->
+        case chappe_sip_b2b:replace_leg(B2b, a, Target, #{keep_old => true}) of
+            {error, _} ->
+                ok = chappe_sip_refer:final(Refer, 503);
+            _ ->
+                ok = chappe_sip_refer:final(Refer, 200),
+                ok = gen_server:cast(
+                    Conf, {transferred, Ref, #{target => Target}}
+                ),
+                chappe_mrf_lib:destroy_dialog(D)
+        end
+    end),
+    S.
+
+removed(ok) -> 200;
+removed(_) -> 404.
+
+%% The Replaces of a REFER's Refer-To, as an INVITE header value, safe in
+%% a FreeSWITCH variable; none, or {error, _} for one that is not.
+replaces(Refer) ->
+    case maps:get(replaces, chappe_sip_refer:target(Refer), undefined) of
+        undefined ->
+            #{};
+        R ->
+            V = chappe_sip_hdr:replaces_value(R),
+            case dialable(V) of
+                true -> #{replaces => V};
+                false -> {error, replaces}
+            end
+    end.
+
+%% Bring Target into the room: native dials it from an endpoint (in a
+%% helper: it waits for the endpoint), fs has mod_conference dial it.
+add(Target, Refer, #{backend := native} = Cfg, S) ->
+    Conf = self(),
+    _ = spawn(fun() -> dial_native(Conf, Target, Refer, Cfg) end),
+    S;
+add(Target, Refer, Cfg, S) ->
+    Dial = S#state.dial,
+    case
+        fs_dial(Target, Refer, S#state{
+            dial = maps:merge(Dial, maps:with([replaces], Cfg))
+        })
+    of
+        {ok, S1} ->
+            S1#state{dial = Dial};
+        {{error, _} = Err, S1} ->
+            _ = fail(Refer, Err),
+            S1#state{dial = Dial}
+    end.
+
 %% REFER with method=BYE: the member with that URI is removed.
 -spec remove(binary(), #state{}) -> {ok | {error, not_found}, #state{}}.
 remove(Target, #state{members = M} = S) ->
@@ -301,7 +410,7 @@ remove(Target, #state{members = M} = S) ->
 same_uri(A, B) when is_binary(A), is_binary(B) ->
     case {chappe_sip_uri:parse(A), chappe_sip_uri:parse(B)} of
         {{ok, UA}, {ok, UB}} ->
-            maps:with([user, host], UA) =:= maps:with([user, host], UB);
+            maps:with([user, host, port], UA) =:= maps:with([user, host, port], UB);
         _ ->
             A =:= B
     end;
