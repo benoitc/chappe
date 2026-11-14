@@ -44,6 +44,16 @@ With no options the whole call is affected (`block_media(Sess)` mutes everything
 
 Recording output is configured on the rtpengine side (`--recording-dir`, `--recording-method`).
 
+Forward the call's PCM to the recording daemon over TCP/TLS, apart from
+recording, for the whole call or one direction:
+
+```erlang
+{ok, _} = chappe_rtpengine_session:start_forwarding(Sess, #{party => caller}),
+{ok, _} = chappe_rtpengine_session:stop_forwarding(Sess).
+```
+
+The options are `block_media/2`'s.
+
 ## Send and block DTMF
 
 ```erlang

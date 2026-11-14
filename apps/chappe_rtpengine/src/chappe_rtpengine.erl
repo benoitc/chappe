@@ -22,6 +22,9 @@
     delete/2,
     query/2,
     cmd/3,
+    list/1,
+    list/2,
+    statistics/1,
     stats/1
 ]).
 
@@ -99,6 +102,35 @@ delete(Node, Params) ->
 query(Node, Params) ->
     ok = required([call_id], Params),
     safe_cmd(Node, query, Params).
+
+%% The call-ids the node runs, 32 at most (the daemon's default).
+-spec list(node_name()) -> {ok, [binary()]} | {error, term()}.
+list(Node) ->
+    list(Node, #{}).
+
+%% Opts: limit (pos_integer()). Over UDP a large limit can exceed the
+%% datagram the reply fits in; use the TCP or WebSocket transport for it.
+-spec list(node_name(), #{limit => pos_integer()}) ->
+    {ok, [binary()]} | {error, term()}.
+list(_Node, #{limit := L}) when not is_integer(L); L =< 0 ->
+    {error, {bad_option, limit}};
+list(Node, Opts) ->
+    case safe_cmd(Node, list, maps:with([limit], Opts)) of
+        {ok, Reply} -> {ok, maps:get(<<"calls">>, Reply, [])};
+        {error, Reason, _Reply} -> {error, Reason};
+        {error, _} = Err -> Err
+    end.
+
+%% The node's statistics, as the `list jsonstats' CLI command gives them
+%% (currentstatistics, totalstatistics, ...).
+-spec statistics(node_name()) -> {ok, map()} | {error, term()}.
+statistics(Node) ->
+    case safe_cmd(Node, statistics, #{}) of
+        {ok, #{<<"statistics">> := Stats}} -> {ok, Stats};
+        {ok, Reply} -> {ok, maps:remove(<<"result">>, Reply)};
+        {error, Reason, _Reply} -> {error, Reason};
+        {error, _} = Err -> Err
+    end.
 
 %% Escape hatch for any NG command (statistics, list, recording, ...).
 -spec cmd(node_name(), atom(), chappe_rtpengine_ng:params()) -> result().

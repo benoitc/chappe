@@ -30,6 +30,7 @@
     media_subscription_flow/1,
     publish_one_sided/1,
     media_ducking/1,
+    forwarding/1,
     play_media_blob/1,
     stop_while_offer_pending/1,
     owner_dies_while_offering/1,
@@ -55,6 +56,7 @@ all() ->
         media_subscription_flow,
         publish_one_sided,
         media_ducking,
+        forwarding,
         play_media_blob,
         stop_while_offer_pending,
         owner_dies_while_offering,
@@ -557,6 +559,29 @@ media_ducking(Config) ->
         chappe_rtpengine_session:silence_media(Sess2, #{party => callee}),
     ok = chappe_rtpengine_session:stop(Sess2),
     wait_dead(Sess2),
+    ok.
+
+%% start and stop forwarding take block media's selection: the whole call
+%% by default, one direction with party.
+forwarding(Config) ->
+    Server = ?config(server, Config),
+    Sess = establish(<<"sess-fwd">>, <<"ft-f">>, <<"tt-f">>),
+    {ok, _} = chappe_rtpengine_session:start_forwarding(Sess, #{}),
+    {ok, _} = chappe_rtpengine_session:start_forwarding(Sess, #{party => callee}),
+    {ok, _} = chappe_rtpengine_session:stop_forwarding(Sess),
+    [_, _, StartAll, StartCallee, StopAll] = [
+        Cmd
+     || {_, Cmd} <- chappe_rtpengine_fake_server:received(Server)
+    ],
+    ?assertEqual(<<"start forwarding">>, maps:get(<<"command">>, StartAll)),
+    ?assertEqual(<<"sess-fwd">>, maps:get(<<"call-id">>, StartAll)),
+    ?assertEqual([<<"all">>], maps:get(<<"flags">>, StartAll)),
+    ?assertEqual(<<"tt-f">>, maps:get(<<"from-tag">>, StartCallee)),
+    ?assertEqual([<<"directional">>], maps:get(<<"flags">>, StartCallee)),
+    ?assertEqual(<<"stop forwarding">>, maps:get(<<"command">>, StopAll)),
+    ?assertEqual([<<"all">>], maps:get(<<"flags">>, StopAll)),
+    ok = chappe_rtpengine_session:stop(Sess),
+    wait_dead(Sess),
     ok.
 
 play_media_blob(Config) ->

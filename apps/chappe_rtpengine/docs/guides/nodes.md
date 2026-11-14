@@ -125,6 +125,17 @@ Use `transport => ws` for a plain `--listen-http` listener; `path` defaults to `
 #{status := up, generation := 1} = chappe_rtpengine_pool:node_info(rtpe1).
 ```
 
+Ask the daemon what it runs:
+
+```erlang
+{ok, CallIds} = chappe_rtpengine:list(rtpe1, #{limit => 100}),
+{ok, #{<<"currentstatistics">> := #{<<"sessionstotal">> := N}}} =
+    chappe_rtpengine:statistics(rtpe1).
+```
+
+`list/1` returns 32 call-ids at most, the daemon's default. Over UDP a large
+`limit` can make a reply too big for one datagram: use TCP or WebSocket.
+
 All node options and their defaults are in [Configuration](../configuration.md).
 
 ## Where it lives

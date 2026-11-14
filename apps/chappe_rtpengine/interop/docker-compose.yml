@@ -9,18 +9,18 @@
 services:
   rtpengine:
     build: .
-    container_name: rtpe-e2e
+    container_name: ${RTPE_NAME:-rtpe-e2e}
     # Docker Desktop provides host.docker.internal; plain Linux (CI) does
     # not, and without it e2e.sh finds no RTPENGINE_MEDIA_IP and every
     # media case skips. host-gateway maps it to the bridge gateway there.
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "12222:12222/udp"
-      - "12223:12223/tcp"
-      - "12224:12224/tcp"
-      - "12225:12225/tcp"
-      - "30000-30100:30000-30100/udp"
+      - "${RTPE_NG_PORT:-12222}:${RTPE_NG_PORT:-12222}/udp"
+      - "${RTPE_TCP_PORT:-12223}:${RTPE_TCP_PORT:-12223}/tcp"
+      - "${RTPE_HTTP_PORT:-12224}:${RTPE_HTTP_PORT:-12224}/tcp"
+      - "${RTPE_HTTPS_PORT:-12225}:${RTPE_HTTPS_PORT:-12225}/tcp"
+      - "${RTPE_RTP_MIN:-30000}-${RTPE_RTP_MAX:-30100}:${RTPE_RTP_MIN:-30000}-${RTPE_RTP_MAX:-30100}/udp"
     command: >
       sh -c "openssl req -x509 -newkey rsa:2048 -nodes -days 1
       -subj /CN=localhost
@@ -28,11 +28,11 @@ services:
       && rtpengine
       --interface=$$(grep -oE '^([0-9]{1,3}[.]){3}[0-9]{1,3}' /etc/hosts
       | tail -1)!127.0.0.1
-      --listen-ng=0.0.0.0:12222
-      --listen-tcp-ng=0.0.0.0:12223
-      --listen-http=0.0.0.0:12224
-      --listen-https=0.0.0.0:12225
+      --listen-ng=0.0.0.0:${RTPE_NG_PORT:-12222}
+      --listen-tcp-ng=0.0.0.0:${RTPE_TCP_PORT:-12223}
+      --listen-http=0.0.0.0:${RTPE_HTTP_PORT:-12224}
+      --listen-https=0.0.0.0:${RTPE_HTTPS_PORT:-12225}
       --https-cert=/tmp/rtpe.crt --https-key=/tmp/rtpe.key
-      --port-min=30000 --port-max=30100
+      --port-min=${RTPE_RTP_MIN:-30000} --port-max=${RTPE_RTP_MAX:-30100}
       --delete-delay=0
       --foreground --log-stderr"

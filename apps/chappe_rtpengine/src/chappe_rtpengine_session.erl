@@ -73,6 +73,9 @@
     unsilence_media/2,
     start_recording/1,
     stop_recording/1,
+    start_forwarding/2,
+    stop_forwarding/1,
+    stop_forwarding/2,
     subscribe_request/2,
     subscribe_answer/2,
     unsubscribe/2
@@ -253,6 +256,24 @@ start_recording(Session) ->
 -spec stop_recording(pid()) -> chappe_rtpengine_ng:result() | {error, term()}.
 stop_recording(Session) ->
     cmd(Session, stop_recording, #{}).
+
+%% Forward the call's PCM to the recording daemon over TCP/TLS, apart from
+%% call recording. With no options the whole call; party => caller |
+%% callee (or the raw selection keys of block_media/2) picks one
+%% direction.
+-spec start_forwarding(pid(), chappe_rtpengine_ng:params()) ->
+    chappe_rtpengine_ng:result() | {error, term()}.
+start_forwarding(Session, Opts) ->
+    cmd(Session, start_forwarding, Opts).
+
+-spec stop_forwarding(pid()) -> chappe_rtpengine_ng:result() | {error, term()}.
+stop_forwarding(Session) ->
+    stop_forwarding(Session, #{}).
+
+-spec stop_forwarding(pid(), chappe_rtpengine_ng:params()) ->
+    chappe_rtpengine_ng:result() | {error, term()}.
+stop_forwarding(Session, Opts) ->
+    cmd(Session, stop_forwarding, Opts).
 
 %% Media subscriptions are how a consumer (a recorder, an STT feed, a
 %% conference mixer leg, a listen-in party) taps this call's media.
@@ -866,6 +887,8 @@ media_control(block_media) -> true;
 media_control(unblock_media) -> true;
 media_control(silence_media) -> true;
 media_control(unsilence_media) -> true;
+media_control(start_forwarding) -> true;
+media_control(stop_forwarding) -> true;
 media_control(_Command) -> false.
 
 targeted(Params) ->

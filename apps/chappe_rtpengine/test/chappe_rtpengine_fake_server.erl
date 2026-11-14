@@ -174,9 +174,24 @@ default_handler(_N, #{<<"command">> := Cmd}) when
     Cmd =:= <<"silence media">>;
     Cmd =:= <<"unsilence media">>;
     Cmd =:= <<"start recording">>;
-    Cmd =:= <<"stop recording">>
+    Cmd =:= <<"stop recording">>;
+    Cmd =:= <<"start forwarding">>;
+    Cmd =:= <<"stop forwarding">>
 ->
     {reply, #{<<"result">> => <<"ok">>}};
+default_handler(_N, #{<<"command">> := <<"list">>} = Dict) ->
+    Calls = [<<"c1">>, <<"c2">>, <<"c3">>],
+    {reply, #{
+        <<"result">> => <<"ok">>,
+        <<"calls">> => lists:sublist(Calls, maps:get(<<"limit">>, Dict, 32))
+    }};
+default_handler(_N, #{<<"command">> := <<"statistics">>}) ->
+    {reply, #{
+        <<"result">> => <<"ok">>,
+        <<"statistics">> => #{
+            <<"currentstatistics">> => #{<<"sessionstotal">> => 3}
+        }
+    }};
 default_handler(_N, _Dict) ->
     {reply, #{
         <<"result">> => <<"error">>,
