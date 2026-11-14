@@ -91,11 +91,17 @@ event_offset(Id, Ts, #leg{sess = Sess}, Offs) ->
 %% One tick: pop a frame per leg, sum what the room takes, and send each
 %% leg what it hears. Missed: ticks skipped, for the timestamp. With
 %% Talk, the legs that start or stop talking this tick, as {Leg, true |
-%% false}.
+%% false}. Also returned, for taps: the frames in the sum by leg, and the
+%% sum.
 -spec mix(legs(), non_neg_integer(), talk()) ->
-    {legs(), [{pos_integer(), boolean()}]}.
+    {
+        legs(),
+        [{pos_integer(), boolean()}],
+        #{pos_integer() => chappe_mix_dsp:frame()},
+        chappe_mix_dsp:mixed()
+    }.
 mix(Legs, _Missed, _Talk) when map_size(Legs) =:= 0 ->
-    {Legs, []};
+    {Legs, [], #{}, chappe_mix_dsp:silence()};
 mix(Legs0, Missed, Talk) ->
     Popped = [chappe_mix_leg:pop(L) || L <- maps:values(Legs0)],
     %% the frames in the sum, by leg: what the room takes from a leg that
@@ -128,7 +134,8 @@ mix(Legs0, Missed, Talk) ->
         }
      || {L, _Codes} <- Popped
     ]),
-    talk(Legs, Levels, Talk).
+    {Legs1, Events} = talk(Legs, Levels, Talk),
+    {Legs1, Events, Frames, Mixed}.
 
 %% The sum of the frames, and their energies when Talk asks for them.
 sum(Frames, undefined) ->

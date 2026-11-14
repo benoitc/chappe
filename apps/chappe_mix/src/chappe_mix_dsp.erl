@@ -19,7 +19,7 @@
 %% longer one.
 -module(chappe_mix_dsp).
 
--export([new/0, add/3, add_level/3, mixed/1, encode/4]).
+-export([new/0, add/3, add_level/3, mixed/1, silence/0, encode/4, pcm/1]).
 
 -export_type([sum/0, mixed/0, frame/0]).
 
@@ -54,6 +54,11 @@ add({A, N}, Law, Codes) ->
 add_level({A, N}, Law, Codes) ->
     {Dec, _Enc} = chappe_mix_g711:tables(Law),
     {{A, N + 1}, add_codes_level(A, Dec, Codes, 1, 0)}.
+
+%% The sum of a tick nobody talks in.
+-spec silence() -> mixed().
+silence() ->
+    none.
 
 %% The sum read out once every talker is in, for encode/4.
 -spec mixed(sum()) -> mixed().
@@ -95,6 +100,17 @@ encode(Sum, OutLaw, Out, 1.0) ->
     end;
 encode(Sum, OutLaw, Out, Gain) ->
     enc_gain(signal(Sum, less(Out)), chappe_mix_g711:encoder(OutLaw), Gain).
+
+%% The whole sum as 16-bit signed little-endian PCM (what a tap of the
+%% room hears: every talker), clipped; silence when nobody talks.
+-spec pcm(mixed()) -> binary().
+pcm(none) ->
+    <<0:(?FRAME * 16)>>;
+pcm(Sum) ->
+    <<
+        <<(max(-32768, min(?FULL, S))):16/little-signed>>
+     || S <- tuple_to_list(Sum)
+    >>.
 
 %% ---- internal ----
 

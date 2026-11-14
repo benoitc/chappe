@@ -40,6 +40,9 @@
     direction/3,
     relate/4,
     events/2,
+    tap/3,
+    untap/2,
+    taps/1,
     legs/1,
     stats/1
 ]).
@@ -53,8 +56,10 @@
 -type endpoint() :: {inet:ip_address(), inet:port_number()}.
 %% What the room does with a leg, from the room's side: sendrecv (mixed,
 %% hears the room), sendonly (hears the room, mixed into nothing: a
-%% recorder), recvonly (heard by all, sent nothing: a prompt player, or a
-%% deaf party), inactive. The mixer's SDP for the leg says the same.
+%% recorder over RTP), recvonly (heard by all, sent nothing: a prompt
+%% player, or a deaf party), inactive. The mixer's SDP for the leg says
+%% the same. A recorder in Erlang takes tap/3 instead: decoded PCM of a
+%% party or of the room, with no RTP leg.
 -type direction() :: sendrecv | sendonly | recvonly | inactive.
 
 %% ip: the address legs bind to and advertise (default 127.0.0.1, so
@@ -223,6 +228,52 @@ events(Conf, Pid) when is_pid(Pid); Pid =:= undefined ->
 -spec relate(conf(), leg(), leg(), hear | nohear) -> ok | {error, not_found}.
 relate(Conf, Listener, Speaker, Rel) when Rel =:= hear; Rel =:= nohear ->
     gen_server:call(Conf, {relate, Listener, Speaker, Rel}).
+
+%% Hand the decoded audio of a party (a leg) or of the room to a
+%% process, every 20 ms: {chappe_mix, Conf, {tap, Tap, Pcm}}, or with a
+%% ref {chappe_mix, Conf, {tap, Tap, Pcm}, Ref}, where Pcm is 320 bytes
+%% of 16-bit signed little-endian PCM at 8 kHz. A party's tap carries
+%% what the room takes from the leg (silence when it sends nothing or is
+%% muted); the room's carries every talker. Opts: to (default the
+%% caller), max_queue (default 500: past that many messages waiting at
+%% `to', a frame is dropped and counted in taps/1), ref (default the
+%% leg's, else the room's). The tap ends when `to' dies, with untap/2, or
+%% with {tap_closed, Tap} when its leg leaves or the room stops. For
+%% calls that never touch FreeSWITCH: a recorder, a transcriber.
+-spec tap(conf(), room | leg(), #{
+    to => pid(), max_queue => pos_integer(), ref => binary()
+}) -> {ok, reference()} | {error, not_found | badarg}.
+tap(Conf, room, Opts) ->
+    add_tap(Conf, room, Opts);
+tap(Conf, Leg, Opts) when is_integer(Leg) ->
+    add_tap(Conf, Leg, Opts);
+tap(_Conf, _Source, _Opts) ->
+    {error, badarg}.
+
+add_tap(Conf, Source, #{} = Opts) ->
+    To = maps:get(to, Opts, self()),
+    Max = maps:get(max_queue, Opts, 500),
+    Ref = maps:get(ref, Opts, undefined),
+    case
+        is_pid(To) andalso pos(Max) andalso
+            (Ref =:= undefined orelse is_binary(Ref))
+    of
+        true -> gen_server:call(Conf, {taps, {add, Source, To, Max, Ref}});
+        false -> {error, badarg}
+    end;
+add_tap(_Conf, _Source, _Opts) ->
+    {error, badarg}.
+
+pos(N) -> is_integer(N) andalso N > 0.
+
+-spec untap(conf(), reference()) -> ok | {error, not_found}.
+untap(Conf, Tap) ->
+    gen_server:call(Conf, {taps, {remove, Tap}}).
+
+%% The taps of a conference: tap, source, to, dropped.
+-spec taps(conf()) -> [map()].
+taps(Conf) ->
+    gen_server:call(Conf, {taps, list}).
 
 %% Per-leg state and counters, among them: ssrc (ours on that leg),
 %% source_ssrc, csrcs (of the last packet), filtered (RTP or RTCP from
