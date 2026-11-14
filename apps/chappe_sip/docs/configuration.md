@@ -74,7 +74,7 @@ client's keep-alives (RFC 5626 4.4.1 makes the UA send them, at the
 | Key | Default | What it does |
 | --- | --- | --- |
 | `timer_c_ms` | `185000` | Timer C of a proxy or b2bua INVITE branch: how long it may ring, restarted by each provisional. On expiry the branch is CANCELled and counts as a 408. The RFC asks for more than 3 minutes. |
-| `proxy_accepted_ms` | `32000` | How long (64*T1) the proxy keeps forwarding new 2xx after the first (RFC 6026). |
+| `proxy_accepted_ms` | 64*T1 (`32000`) | How long (Timer M) the proxy keeps forwarding new 2xx after the first (RFC 6026 7.2). Unset, it follows the T1 of `sip_timers`. |
 | `record_route_ttl_s` | `86400` | Lifetime of a Record-Route marker, signed into it. A dialog record-routed through the proxy must end within it; a marker past it is refused. |
 | `flow_token_secret` | (random) | Secret keying the Record-Route marker/flow-token HMAC. Unset generates a per-node random secret at boot; set a stable shared value only if record-routed dialogs must survive a restart or span a cluster. A configured value shorter than 16 bytes stops the application from starting. |
 | `supported_option_tags` | `[<<"100rel">>, <<"replaces">>, <<"timer">>, <<"tdialog">>, <<"norefersub">>]` | Option tags a request may list in `Require` without a 420. Add `<<"siprec">>` on a recording server; a single route adds its own with `chappe_sip:handle/3`. |
@@ -96,7 +96,7 @@ client's keep-alives (RFC 5626 4.4.1 makes the UA send them, at the
 | `ws_ping_interval_ms` | `30000` | The server pings each WS connection this often (`infinity`: never); the pongs keep a live connection under the idle timeout. |
 | `ws_client_txn_timeout_ms` | `64000` | Timer B/F of a WS client transaction (no sofia timers over WS). |
 | `ws_timer_c_ms` | `180000` | Timer C: a WS client INVITE with a provisional but no final is CANCELed after this; each provisional restarts it. |
-| `ws_ack_timeout_ms` | `32000` | Timer H: how long a WS INVITE final waits for its ACK; an unACKed 2xx is then BYEd. |
+| `ws_ack_timeout_ms` | 64*T1 (`32000`) | Timer H: how long a WS INVITE final waits for its ACK; an unACKed 2xx is then BYEd. Unset, it follows the T1 of `sip_timers`. |
 | `ws_server_txn_timeout_ms` | `180000` | A WS request the app never answers gets 408 (INVITE) or 500 after this. |
 | `ws_progress_ms` | `60000` | A ringing WS INVITE sends its last non-100 provisional again this often until the final (RFC 3261 13.3.1.1); `infinity`: never. |
 | `max_ws_connections` | `10000` | Concurrent WS connections; a further connect is refused and closed. |

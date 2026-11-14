@@ -17,7 +17,8 @@
          redirect_bounded/1, redirect_policy_and_seen/1, redirect_depth/1,
          redirect_parallel/1, provisional_timeout/1, final_timeout/1,
          bad_proxy_options/1]).
--export([accepted_supervised/1, accepted_crash/1, accepted_forks_bounded/1]).
+-export([accepted_supervised/1, accepted_crash/1, accepted_forks_bounded/1,
+         accepted_window_follows_t1/1]).
 
 all() ->
     [proxy_single_200, proxy_serial_failover, proxy_parallel_first_wins,
@@ -25,7 +26,8 @@ all() ->
      redirect_not_followed_by_default, redirect_bounded,
      redirect_policy_and_seen, redirect_depth, redirect_parallel,
      provisional_timeout, final_timeout, bad_proxy_options,
-     accepted_supervised, accepted_crash, accepted_forks_bounded].
+     accepted_supervised, accepted_crash, accepted_forks_bounded,
+     accepted_window_follows_t1].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -344,6 +346,21 @@ accepted_supervised(_Config) ->
     [Pid] = accepted() -- Before,
     ok = wait_gone(Pid, 30).
 
+%% req: R6026-02
+%% RFC 6026 7.2: Timer M is 64*T1 of the T1 the stack runs with: with T1
+%% at 50 ms the Accepted state lasts 3.2 s, not 32.
+accepted_window_follows_t1(_Config) ->
+    {EP, [D1]} = setup(1, #{sip_timers => #{t1 => 50}}),
+    Before = accepted(),
+    proxy([dest(D1)], #{}),
+    answer(D1, 200),
+    call(EP, 200),
+    ok = expect_done(200),
+    [Pid] = accepted() -- Before,
+    timer:sleep(2000),
+    ?assert(lists:member(Pid, accepted())),
+    ok = wait_gone(Pid, 30).
+
 %% The Accepted process crashing leaves the answered call and the engine
 %% alone, and is not restarted.
 accepted_crash(_Config) ->
@@ -476,9 +493,12 @@ ruri(Inv) ->
 %% ---- peers ----
 
 setup(N) ->
+    setup(N, #{}).
+
+setup(N, Opts) ->
     EP = pick(),
-    ok = chappe_sip:start(#{contact => <<"sip:127.0.0.1:",
-                                   (integer_to_binary(EP))/binary>>}),
+    ok = chappe_sip:start(Opts#{contact => <<"sip:127.0.0.1:",
+                                        (integer_to_binary(EP))/binary>>}),
     {EP, [pick() || _ <- lists:seq(1, N)]}.
 
 uas(Port, Fun) -> peer(Port, Fun).

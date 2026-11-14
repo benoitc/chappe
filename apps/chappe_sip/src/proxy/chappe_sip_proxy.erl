@@ -279,7 +279,7 @@ expire_branch(P, TxnH, #br{provisional = true, expired = false} = B, Now) ->
         pending = (P#px.pending)#{
             TxnH => B#br{
                 expired = true,
-                timer_c = Now + 32000,
+                timer_c = Now + chappe_sip_config:t64(),
                 prov_by = undefined,
                 final_by = undefined
             }
