@@ -839,10 +839,21 @@ with_ref(Command, Params, #data{ref = Ref}) when
 ->
     case maps:is_key(metadata, Params) of
         true -> Params;
-        false -> Params#{metadata => <<"call_ref:", Ref/binary>>}
+        false -> Params#{metadata => <<"call_ref:", (meta_value(Ref))/binary>>}
     end;
 with_ref(_Command, Params, _Data) ->
     Params.
+
+%% rtpengine reads metadata as key:value pairs split on `|': the ref's
+%% own `|' (and `%', so the encoding reads back) are percent-encoded, so
+%% a ref cannot add a key.
+meta_value(Ref) ->
+    binary:replace(
+        binary:replace(Ref, <<"%">>, <<"%25">>, [global]),
+        <<"|">>,
+        <<"%7C">>,
+        [global]
+    ).
 
 send_async(Command, Params0, Data) ->
     Params1 = with_ref(Command, Params0#{call_id => Data#data.call_id}, Data),

@@ -428,6 +428,19 @@ session_ref(Config) ->
     ],
     ?assertEqual(<<"call_ref:call-9">>, maps:get(<<"metadata">>, Offer)),
     ?assertEqual(<<"mine">>, maps:get(<<"metadata">>, Answer)),
+    %% rtpengine splits metadata on `|' into key:value pairs: a ref
+    %% holding one cannot add a key of its own
+    {ok, Sess2} = chappe_rtpengine:start_session(#{
+        call_id => <<"sess-ref2">>, ref => <<"a|evil:1%">>
+    }),
+    {ok, _} = chappe_rtpengine_session:offer(Sess2, #{from_tag => <<"f2">>, sdp => sdp()}),
+    [Offer2] = [
+        C
+     || {_, #{<<"command">> := <<"offer">>, <<"call-id">> := <<"sess-ref2">>} = C} <-
+            chappe_rtpengine_fake_server:received(Server)
+    ],
+    ?assertEqual(<<"call_ref:a%7Cevil:1%25">>, maps:get(<<"metadata">>, Offer2)),
+    ok = chappe_rtpengine_session:stop(Sess2),
     chappe_rtpengine_fake_server:set_handler(Server, fun(_N, _Cmd) -> drop end),
     %% one message shape with or without a ref: the ref is read from
     %% the handle
