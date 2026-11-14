@@ -31,6 +31,7 @@ you wire chappe_audio into a release or tune a listener.
 | `prefix` | `<<"/audio">>` | Path the streams live under. |
 | `tls` | unset | `ssl` server options; the listener then speaks wss. |
 | `max_pending` | `64` | Handshakes going at once; past it a new connection is closed at once. |
+| `max_pending_per_ip` | `8` | Handshakes going at once from one address; past it that address's new connection is closed at once. Connected streams do not count. |
 | `handshake_timeout` | `5000` | Milliseconds for the upgrade request. |
 | `max_handshake` | `8192` | Bytes for the upgrade request. |
 | `max_frame` | `262144` | Bytes for one message; past it the connection closes with 1009. |

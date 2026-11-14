@@ -45,6 +45,7 @@
 %% (default ws://ip:port; set it when FreeSWITCH sees another address),
 %% prefix: the path streams live under (default /audio), tls: ssl server
 %% options for wss, max_pending: handshakes going at once (default 64),
+%% max_pending_per_ip: those from one address (default 8),
 %% handshake_timeout: ms for the upgrade request (default 5000),
 %% max_handshake: bytes for it (default 8192), max_frame: bytes for one
 %% message, past which the connection is closed with 1009 (default
@@ -59,6 +60,7 @@
     prefix => binary(),
     tls => [ssl:tls_server_option()],
     max_pending => pos_integer(),
+    max_pending_per_ip => pos_integer(),
     handshake_timeout => pos_integer(),
     max_handshake => pos_integer(),
     max_frame => pos_integer(),
@@ -206,6 +208,8 @@ listen_opt(prefix, B) ->
     is_binary(B);
 listen_opt(tls, L) ->
     is_list(L);
+listen_opt(max_pending_per_ip, N) ->
+    pos(N);
 listen_opt(max_pending, N) ->
     pos(N);
 listen_opt(handshake_timeout, N) ->

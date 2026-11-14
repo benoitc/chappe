@@ -6,10 +6,13 @@
 %%
 %% An acceptor linked to it takes connections one at a time and hands
 %% each to a handshake process (chappe_audio_conn) under
-%% chappe_audio_conn_sup. It keeps at most max_pending handshakes going:
-%% past that, a new connection is closed at once, before a byte is read,
-%% so a flood of idle connections costs one socket each for no longer
-%% than the accept.
+%% chappe_audio_conn_sup. It keeps at most max_pending handshakes going,
+%% and at most max_pending_per_ip from one address: past either, a new
+%% connection is closed at once, before a byte is read, so a flood of idle
+%% connections costs one socket each for no longer than the accept, and
+%% one address cannot take the listener's handshakes from the others.
+%% Connected streams do not count: a FreeSWITCH node is one address with a
+%% fork per call, and each fork passed the token check.
 -module(chappe_audio_listener).
 -behaviour(gen_server).
 
@@ -31,6 +34,7 @@
     prefix := binary(),
     url := binary(),
     max_pending := pos_integer(),
+    max_pending_per_ip := pos_integer(),
     handshake_timeout := pos_integer(),
     max_handshake := pos_integer(),
     max_frame := pos_integer(),
@@ -103,6 +107,7 @@ cfg(Opts, Ip, Port) ->
         prefix => maps:get(prefix, Opts, <<"/audio">>),
         url => maps:get(url, Opts, Url),
         max_pending => maps:get(max_pending, Opts, 64),
+        max_pending_per_ip => maps:get(max_pending_per_ip, Opts, 8),
         handshake_timeout => maps:get(handshake_timeout, Opts, 5000),
         max_handshake => maps:get(max_handshake, Opts, 8192),
         max_frame => maps:get(max_frame, Opts, 262144),
@@ -137,15 +142,21 @@ terminate(_Reason, #state{lsock = LSock}) ->
 %% ---- acceptor ----
 
 %% Take a connection, start its handshake, and track the handshakes
-%% going so their number stays under max_pending.
-accept(Owner, LSock, #{max_pending := Max} = Cfg, Pending0) ->
+%% going (monitor => peer address) so their number stays under
+%% max_pending, and under max_pending_per_ip for each address.
+accept(Owner, LSock, Cfg, Pending0) ->
     Pending = reap(Pending0),
     case gen_tcp:accept(LSock, 1000) of
-        {ok, Sock} when map_size(Pending) >= Max ->
-            _ = gen_tcp:close(Sock),
-            accept(Owner, LSock, Cfg, Pending);
         {ok, Sock} ->
-            accept(Owner, LSock, Cfg, handshake(Sock, Cfg, Pending));
+            case admit(Sock, Pending, Cfg) of
+                {ok, Ip} ->
+                    accept(
+                        Owner, LSock, Cfg, handshake(Sock, Ip, Cfg, Pending)
+                    );
+                full ->
+                    _ = gen_tcp:close(Sock),
+                    accept(Owner, LSock, Cfg, Pending)
+            end;
         {error, timeout} ->
             accept(Owner, LSock, Cfg, Pending);
         {error, closed} ->
@@ -156,13 +167,26 @@ accept(Owner, LSock, #{max_pending := Max} = Cfg, Pending0) ->
             accept(Owner, LSock, Cfg, Pending)
     end.
 
-handshake(Sock, Cfg, Pending) ->
+admit(_Sock, Pending, #{max_pending := Max}) when map_size(Pending) >= Max ->
+    full;
+admit(Sock, Pending, #{max_pending_per_ip := PerIp}) ->
+    case inet:peername(Sock) of
+        {ok, {Ip, _}} ->
+            case length([x || _ := I <- Pending, I =:= Ip]) >= PerIp of
+                true -> full;
+                false -> {ok, Ip}
+            end;
+        {error, _} ->
+            full
+    end.
+
+handshake(Sock, Ip, Cfg, Pending) ->
     case supervisor:start_child(chappe_audio_conn_sup, [Cfg]) of
         {ok, Pid} ->
             case gen_tcp:controlling_process(Sock, Pid) of
                 ok ->
                     chappe_audio_conn:go(Pid, Sock),
-                    Pending#{monitor(process, Pid) => Pid};
+                    Pending#{monitor(process, Pid) => Ip};
                 {error, _} ->
                     _ = gen_tcp:close(Sock),
                     exit(Pid, kill),

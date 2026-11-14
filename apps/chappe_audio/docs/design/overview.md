@@ -24,7 +24,7 @@ monitor.
 
 | Process | Owner | Cleans up | pg | Bound |
 |---|---|---|---|---|
-| listener | its supervisor | its socket, its acceptor (linked) | none | `max_pending` handshakes |
+| listener | its supervisor | its socket, its acceptor (linked) | none | `max_pending` handshakes, `max_pending_per_ip` per address |
 | handshake | the listener's acceptor | its socket, unless handed to a stream | none | `handshake_timeout`, `max_handshake` |
 | stream | the app (monitored) | the connection (1001), its writer | `{chappe_audio, Ref}` | `max_queue` events at the owner, `max_frame` per message |
 | writer | its feeder (monitored) | finishes the file when the feeder goes | none | `max_queue`, applied by the sender |

@@ -21,6 +21,7 @@ all() ->
         second_connection_refused,
         slow_handshake,
         max_pending,
+        max_pending_per_ip,
         oversized_frame,
         server_text,
         close_stream,
@@ -201,6 +202,27 @@ max_pending(_Config) ->
     timer:sleep(200),
     {ok, Extra} = gen_tcp:connect({127, 0, 0, 1}, Port, [binary, {active, false}]),
     ?assertEqual({error, closed}, gen_tcp:recv(Extra, 0, 1500)),
+    [gen_tcp:close(I) || I <- Idle],
+    timer:sleep(1500),
+    {ok, S, Url} = chappe_audio:open(L, #{}),
+    {ok, _} = chappe_audio_test_ws:connect(Url),
+    {chappe_audio, S, {connected, _}} = recv(),
+    chappe_audio:stop_listener(L).
+
+%% One address holds at most max_pending_per_ip handshakes: past it its
+%% next connection is closed at once, though the listener has room, and
+%% once they end it is served again.
+max_pending_per_ip(_Config) ->
+    {ok, L} = chappe_audio:listen(#{max_pending_per_ip => 2, handshake_timeout => 2000}),
+    ?assertEqual({error, {bad_option, max_pending_per_ip}}, chappe_audio:listen(#{max_pending_per_ip => 0})),
+    Port = port(L),
+    Conn = fun() -> element(2, gen_tcp:connect({127, 0, 0, 1}, Port, [binary, {active, false}])) end,
+    Idle = [Conn() || _ <- lists:seq(1, 2)],
+    timer:sleep(200),
+    Extra = Conn(),
+    T0 = erlang:monotonic_time(millisecond),
+    ?assertEqual({error, closed}, gen_tcp:recv(Extra, 0, 1500)),
+    ?assert(erlang:monotonic_time(millisecond) - T0 < 1000),
     [gen_tcp:close(I) || I <- Idle],
     timer:sleep(1500),
     {ok, S, Url} = chappe_audio:open(L, #{}),
