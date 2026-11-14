@@ -21,7 +21,7 @@
 -compile([export_all, nowarn_export_all]).
 
 all() ->
-    [fork_mono, fork_stereo, stream_module, wrong_token].
+    [fork_mono, fork_stereo, stream_module, wrong_token, fork_to_store].
 
 init_per_suite(Config) ->
     case {os:getenv("FS_HOST"), code:ensure_loaded(chappe_esl)} of
@@ -129,6 +129,26 @@ wrong_token(Config) ->
     timer:sleep(2000),
     ?assertMatch(#{phase := waiting, frames := 0}, chappe_audio:info(S)),
     chappe_audio:close(S).
+
+%% store => default: the fork is written to the store under its ref,
+%% found by it once the fork stops.
+fork_to_store(Config) ->
+    Dir = filename:join(?config(priv_dir, Config), "recordings"),
+    ok = chappe_audio_store:configure(#{dir => Dir}),
+    Ref = <<"live-store">>,
+    {ok, S, Url} = chappe_audio:open(?config(listener, Config), #{
+        ref => Ref, store => default
+    }),
+    fork(Config, [Url, " mixed 8000"]),
+    {connected, _} = event(S),
+    _ = frames(S, 50),
+    stop(Config, "uuid_audio_fork"),
+    closed = event_until_closed(S),
+    [#{duration_ms := Ms, path := Path}] = chappe_audio_store:find(Ref),
+    ct:pal("recorded ~p ms at ~s", [Ms, Path]),
+    ?assert(Ms >= 900),
+    {ok, Bin} = file:read_file(Path),
+    {ok, #{rate := 8000, channels := 1}} = chappe_audio_wav:info(Bin).
 
 %% ---- helpers ----
 

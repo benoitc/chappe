@@ -56,7 +56,12 @@
     bytes = 0 :: non_neg_integer(),
     texts = 0 :: non_neg_integer(),
     dropped = 0 :: non_neg_integer(),
-    bad = 0 :: non_neg_integer()
+    bad = 0 :: non_neg_integer(),
+    %% store => default: the recording the frames are written to
+    store = none :: default | none,
+    rec :: chappe_audio_store:rec() | undefined,
+    rec_dropped = 0 :: non_neg_integer(),
+    recording :: binary() | undefined
 }).
 
 -type state() :: #state{}.
@@ -141,6 +146,7 @@ init({#{id := Id, token_hash := Hash, owner := Owner} = Opts, Cfg}) ->
         rate = maps:get(rate, Format, 8000),
         channels = maps:get(channels, Format, 1),
         max_queue = maps:get(max_queue, Opts, 500),
+        store = maps:get(store, Opts, none),
         cfg = Cfg,
         timer = Timer
     }}.
@@ -221,7 +227,9 @@ connect(#{transport := T, handle := H, rest := Rest} = Conn, S) ->
             link(Session),
             _ = Rest =/= <<>> andalso (Session ! raw(T, H, Rest)),
             Info = maps:with([path, peer, subprotocol], Conn),
-            S1 = S#state{phase = connected, session = Session, conn = Info},
+            S1 = record(S#state{
+                phase = connected, session = Session, conn = Info
+            }),
             event(S1, {connected, Info}),
             {noreply, S1};
         {error, _} ->
@@ -239,7 +247,40 @@ frame(Pcm, S) ->
     S1 = S#state{
         frames = S#state.frames + 1, bytes = S#state.bytes + byte_size(Pcm)
     },
-    deliver({frame, Pcm}, S1).
+    deliver({frame, Pcm}, store(Pcm, S1)).
+
+%% store => default: a recording in the store, owned by the stream, under
+%% the stream's ref (its id when it has none). A store that cannot open
+%% one leaves the stream going without it.
+record(#state{store = default} = S) ->
+    Meta = #{
+        call_ref => ref_or_id(S),
+        source => fork,
+        format => #{rate => S#state.rate, channels => S#state.channels}
+    },
+    Opts = #{owner => self(), max_queue => S#state.max_queue},
+    case chappe_audio_store:open(Meta, Opts) of
+        {ok, Rec} ->
+            S#state{rec = Rec};
+        {error, Reason} ->
+            logger:warning("chappe_audio stream ~s: no recording: ~p", [
+                S#state.id, Reason
+            ]),
+            S
+    end;
+record(S) ->
+    S.
+
+ref_or_id(#state{ref = undefined, id = Id}) -> Id;
+ref_or_id(#state{ref = Ref}) -> Ref.
+
+store(_Pcm, #state{rec = undefined} = S) ->
+    S;
+store(Pcm, #state{rec = Rec} = S) ->
+    case chappe_audio_store:write(Rec, Pcm) of
+        ok -> S;
+        dropped -> S#state{rec_dropped = S#state.rec_dropped + 1}
+    end.
 
 text(Text, S) ->
     deliver({text, Text}, S#state{texts = S#state.texts + 1}).
@@ -259,10 +300,17 @@ behind(Max) ->
     {message_queue_len, N} = process_info(self(), message_queue_len),
     N >= Max.
 
-%% The last event; never dropped.
-finish(S) ->
+%% Finish the recording, then the last event, never dropped.
+finish(#state{rec = undefined} = S) ->
     event(S, closed),
-    S.
+    S;
+finish(#state{rec = Rec} = S) ->
+    S1 =
+        case chappe_audio_store:close(Rec, #{}) of
+            {ok, Id} -> S#state{rec = undefined, recording = Id};
+            {error, _} -> S#state{rec = undefined}
+        end,
+    finish(S1).
 
 event(#state{owner = Owner} = S, Event) ->
     Owner ! msg(S, Event),
@@ -282,8 +330,14 @@ info_map(S) ->
         bytes => S#state.bytes,
         texts => S#state.texts,
         dropped => S#state.dropped,
-        bad_frames => S#state.bad
+        bad_frames => S#state.bad,
+        recording => recording(S),
+        recording_dropped => S#state.rec_dropped
     }).
+
+%% the writer while it writes, the id once it is done
+recording(#state{rec = undefined, recording = Id}) -> Id;
+recording(#state{rec = Rec}) -> chappe_audio_store:writer(Rec).
 
 cancel(undefined) ->
     ok;

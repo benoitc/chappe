@@ -71,13 +71,17 @@
 %% group, format: the rate and channels the fork was started with
 %% (default 8000 and 1), max_queue: the bound on events waiting at the
 %% owner (default 500, 10 s of 20 ms frames), connect_timeout: ms to
-%% wait for the fork (default 30000).
+%% wait for the fork (default 30000), store: default writes the stream to
+%% the recording store (chappe_audio_store) under its ref, or its id when
+%% it has none, as well as sending the frames to the owner; none (the
+%% default) leaves the frames to the owner alone.
 -type open_opts() :: #{
     owner => pid(),
     ref => binary(),
     format => #{rate => pos_integer(), channels => 1 | 2},
     max_queue => pos_integer(),
-    connect_timeout => pos_integer()
+    connect_timeout => pos_integer(),
+    store => default | none
 }.
 
 -spec listen(listen_opts()) -> {ok, listener()} | {error, term()}.
@@ -133,8 +137,10 @@ close(Stream) ->
 
 %% The stream's state and counters: id, ref, phase (waiting, claimed,
 %% connected, closing), format, frames, bytes, texts, dropped (past the
-%% bound), bad_frames (not a whole number of samples), and once
-%% connected path, peer and subprotocol.
+%% bound), bad_frames (not a whole number of samples), once connected
+%% path, peer and subprotocol, and with store => default recording (the
+%% writer while it writes) and recording_dropped (writes past the
+%% writer's bound).
 -spec info(stream()) -> map().
 info(Stream) ->
     chappe_audio_stream:info(Stream).
@@ -212,6 +218,7 @@ open_opt(ref, R) -> is_binary(R);
 open_opt(format, F) -> is_map(F) andalso format_ok(F);
 open_opt(max_queue, N) -> pos(N);
 open_opt(connect_timeout, N) -> pos(N);
+open_opt(store, S) -> S =:= default orelse S =:= none;
 open_opt(_, _) -> false.
 
 pos(N) -> is_integer(N) andalso N > 0.

@@ -7,9 +7,12 @@
 %% - the `chappe' pg scope, when nothing on the node runs it yet;
 %% - the registry, which owns the table of streams waiting for their
 %%   connection;
+%% - the store (its config, its pg membership and its sweep) and the
+%%   supervisor of its writers, one per recording being written;
 %% - one simple_one_for_one supervisor per kind of short-lived process:
-%%   streams, handshakes and listeners, every child temporary (a stream or
-%%   a handshake that crashes is not restarted; its owner sees it go);
+%%   writers, streams, handshakes and listeners, every child temporary (a
+%%   stream or a writer that crashes is not restarted; its owner sees it
+%%   go);
 %% - the default listener, when the `listener' env is set.
 -module(chappe_audio_sup).
 -behaviour(supervisor).
@@ -30,6 +33,11 @@ init(top) ->
                 id => chappe_audio_registry,
                 start => {chappe_audio_registry, start_link, []}
             },
+            #{
+                id => chappe_audio_store_srv,
+                start => {chappe_audio_store_srv, start_link, []}
+            },
+            sup(chappe_audio_writer_sup, chappe_audio_writer),
             sup(chappe_audio_stream_sup, chappe_audio_stream),
             sup(chappe_audio_conn_sup, chappe_audio_conn),
             sup(chappe_audio_listener_sup, chappe_audio_listener)
