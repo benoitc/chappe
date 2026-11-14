@@ -19,7 +19,8 @@
          notify_from_another_node/1]).
 -export([attended_local_join/1, attended_remote_replaces/1,
          attended_other_party_refused/1]).
--export([blind_from_a/1, blind_keeps_identity/1, blind_keeps_call_ref/1]).
+-export([blind_from_a/1, blind_keeps_identity/1, blind_keeps_call_ref/1,
+         blind_progress_notified/1]).
 -export([blind_from_b/1, blind_target_fails/1, offnet_refused/1,
          policy_rejects/1, policy_sees_untrusted_referred_by/1,
          direct_media_refused/1, transfer_limit/1, bye_method_refused/1,
@@ -28,6 +29,7 @@
 
 all() ->
     [blind_from_b, blind_from_a, blind_keeps_identity, blind_keeps_call_ref,
+     blind_progress_notified,
      blind_target_fails, attended_local_join, attended_remote_replaces,
      attended_other_party_refused, notify_accept, notify_reject,
      notify_retarget, notify_from_another_node, offnet_refused, policy_rejects,
@@ -159,6 +161,27 @@ blind_keeps_call_ref(_Config) ->
     _ = got(bye),
     ?assertMatch(#{call_ref := CallRef}, chappe_sip_b2b:info(B2b)),
     ?assert(related_record(CallRef, 50)).
+
+%% Carol rings before she answers: Bob hears it, a NOTIFY 180 between
+%% 100 Trying and the final 200 (RFC 3515 2.4.4, RFC 5589 6.1), each one
+%% a second or more after the last (RFC 3515 3.10).
+%% req: R3515-11 R3515-26 R5589-02
+blind_progress_notified(_Config) ->
+    {EP, CP} = setup(#{}),
+    NP = ?UA:pick(),
+    callee_refers(CP, EP, refer_to(NP), []),
+    target(NP, ring_then_answer),
+    caller(EP, fun(_Sock, _D) -> ok end),
+    _ = got(legs),
+    T0 = erlang:monotonic_time(millisecond),
+    ?assertEqual(<<"SIP/2.0 100 Trying\r\n">>, ?UA:body(got(notify))),
+    ?assertEqual(<<"SIP/2.0 180 Ringing\r\n">>, ?UA:body(got(notify))),
+    T1 = erlang:monotonic_time(millisecond),
+    ?assertEqual(<<"SIP/2.0 200 OK\r\n">>, ?UA:body(got(notify))),
+    T2 = erlang:monotonic_time(millisecond),
+    ?assert(T2 - T1 >= 900),
+    ?assert(T1 - T0 >= 0),
+    _ = got(bye).
 
 %% Carol is busy: Bob's final NOTIFY carries 486, Bob keeps the call and
 %% gets no BYE, and Alice saw nothing.
@@ -727,6 +750,15 @@ target(Port, How) ->
             ring ->
                 ?UA:send(Sock, Src, ?UA:resp(Inv, 180, <<"Ringing">>, Tag,
                                              [contact(Sock)], <<>>)),
+                serve(Sock, Tag);
+            ring_then_answer ->
+                ?UA:send(Sock, Src, ?UA:resp(Inv, 180, <<"Ringing">>, Tag,
+                                             [contact(Sock)], <<>>)),
+                timer:sleep(1500),
+                ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, Tag,
+                                             [contact(Sock)],
+                                             ?UA:sdp(<<"carol">>))),
+                {_, _} = ?UA:recv_req(Sock, <<"ACK">>),
                 serve(Sock, Tag)
         end
     end).

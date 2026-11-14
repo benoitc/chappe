@@ -1069,7 +1069,9 @@ replace_b(B2b, Target, Opts) ->
 %% leg B; a transfer replaces the leg that sent the REFER. Target is a URI
 %% or {dialog, D} (a fork only for leg B). Opts are replace_b/3's, plus
 %% keep_old => true: the old party is not hung up but handed to the
-%% caller (its dialog's owner from then on), which ends it.
+%% caller (its dialog's owner from then on), which ends it, and
+%% on_progress => fun(Status): called with each 1xx above 100 the new
+%% party sends (a URI target), in the relay's helper process.
 -spec replace_leg(
     b2b(), a | b, binary() | {dialog, chappe_sip_dialog:dialog()}, map()
 ) ->

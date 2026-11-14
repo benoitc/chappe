@@ -259,7 +259,7 @@ call(Uri, Sdp, Opts, Relay) when is_binary(Uri) ->
             Deadline =
                 erlang:monotonic_time(millisecond) +
                     chappe_sip_b2b:timer_c(Opts),
-            ring(URef, Deadline);
+            ring(URef, Deadline, maps:get(on_progress, Opts, undefined));
         Err ->
             Err
     end.
@@ -272,15 +272,20 @@ uac_opts(#{handled := Handled} = Opts, Relay) ->
         handled_events => Handled
     }).
 
-%% the new B rings until it answers, Timer C, or the relay ends (abort/3)
-ring(URef, Deadline) ->
+%% the new B rings until it answers, Timer C, or the relay ends (abort/3);
+%% OnProgress (replace_leg/4's on_progress, a transfer's NOTIFY) hears of
+%% each 1xx above 100
+ring(URef, Deadline, OnProgress) ->
     receive
         {chappe_sip_uac, URef, {ok, D}} ->
             answered(D, undefined);
         {chappe_sip_uac, URef, {error, _} = Err} ->
             Err;
+        {chappe_sip_uac, URef, {provisional, Msg}} ->
+            ok = progress(OnProgress, chappe_sip_msg:status(Msg)),
+            ring(URef, Deadline, OnProgress);
         {chappe_sip_uac, URef, _} ->
-            ring(URef, Deadline);
+            ring(URef, Deadline, OnProgress);
         abort ->
             %% CANCEL it, BYE a 2xx that still comes
             ok = chappe_sip_uac:abandon(URef, #{}),
@@ -289,6 +294,12 @@ ring(URef, Deadline) ->
         ok = chappe_sip_uac:abandon(URef, #{why => timeout}),
         {error, timeout}
     end.
+
+progress(F, St) when is_function(F, 1), St > 100, St < 200 ->
+    _ = F(St),
+    ok;
+progress(_F, _St) ->
+    ok.
 
 fork_next({wait, W}) -> fork_ring(W);
 fork_next({failed, Best, _W}) -> {error, Best}.

@@ -472,7 +472,10 @@ carry_out(Info, Refer, S) ->
 %% a blind transfer, or an attended one whose dialog is elsewhere: the
 %% target gets an INVITE (with the Replaces, then)
 blind(#{leg := Leg, target := Target} = Info, Refer, #{b2b := B2b} = S) ->
-    Opts = new_party(Info, S),
+    %% the target's 1xx reach the referrer as NOTIFYs (RFC 3515 2.4.4),
+    %% rate-limited by the subscription (3.10)
+    Progress = fun(St) -> chappe_sip_refer:progress(Refer, St) end,
+    Opts = (new_party(Info, S))#{on_progress => Progress},
     case chappe_sip_b2b:replace_leg(B2b, Leg, Target, Opts) of
         ok ->
             done(Info, Refer, S);
