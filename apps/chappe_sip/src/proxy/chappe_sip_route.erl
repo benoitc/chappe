@@ -28,7 +28,7 @@
 -export([ensure_secret/0, check_secret/1]).
 -export([routes/1, set_routes/2, uri_is_self/2, recover_strict/1]).
 -export([next_flow/2, request_target/2, flow_route/1, secure_hop/2]).
--export([received_flow/1, nated/2]).
+-export([received_flow/1, nated/2, redirect_targets/1]).
 
 -export_type([flows/0]).
 
@@ -490,3 +490,55 @@ flow_route(Flow) when is_integer(Flow) -> {ws, Flow};
 flow_route({conn, _} = Flow) -> Flow;
 flow_route({udp, _, _} = Flow) -> Flow;
 flow_route({udp, _, _, _} = Flow) -> Flow.
+
+%% The targets a 3xx names, for a UAC or a proxy that recurses on it: its
+%% sip/sips Contacts by q (1.0 when absent), header order on a tie, each
+%% once, as {Uri, Contact value}. A URI's ?headers part is dropped: a
+%% redirect may not add headers to our request (RFC 3261 19.1.5 makes
+%% them optional); its method parameter is dropped too (8.1.3.4). A SIPS
+%% URI naming UDP is no target (19.1.1).
+-spec redirect_targets(chappe_sip_msg:msg()) -> [{binary(), binary()}].
+redirect_targets(Msg) ->
+    Contacts = [
+        {C, V}
+     || H <- chappe_sip_msg:get_all(<<"contact">>, Msg),
+        V <- chappe_sip_hdr:split_list(H),
+        {ok, C} <- [chappe_sip_hdr:name_addr(V)]
+    ],
+    Ranked = [
+        {-q_value(maps:get(params, C, #{})), I, without_headers(Uri), V}
+     || {I, {#{uri := Uri} = C, V}} <- lists:enumerate(Contacts),
+        supported_target(Uri)
+    ],
+    dedup([{U, V} || {_, _, U, V} <- lists:sort(Ranked)]).
+
+dedup([]) -> [];
+dedup([{U, _} = H | T]) -> [H | dedup([X || {Y, _} = X <- T, Y =/= U])].
+
+supported_target(Uri) ->
+    case chappe_sip_uri:parse(Uri) of
+        {ok, #{scheme := S}} when S =:= sip; S =:= sips ->
+            not chappe_sip_uri:is_sips_unreliable(Uri);
+        _ ->
+            false
+    end.
+
+without_headers(Uri) ->
+    {_, U} = chappe_sip_uri:take_param(
+        hd(binary:split(Uri, <<"?">>)), <<"method">>
+    ),
+    U.
+
+q_value(#{<<"q">> := Q}) when is_binary(Q) ->
+    try
+        binary_to_float(Q)
+    catch
+        error:badarg ->
+            try
+                float(binary_to_integer(Q))
+            catch
+                error:badarg -> 0.0
+            end
+    end;
+q_value(_) ->
+    1.0.
