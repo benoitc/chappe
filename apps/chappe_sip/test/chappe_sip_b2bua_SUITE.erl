@@ -24,6 +24,7 @@
 -export([bad_from_refused/1, bad_from_fork_refused/1,
          bad_from_not_passed/1]).
 -export([b_events_notified/1, app_cancels_b/1]).
+-export([a_headers_on_2xx/1, a_headers_on_failure/1]).
 
 all() ->
     [b2b_success_bye, b2b_callee_busy, b2b_caller_cancel,
@@ -33,7 +34,7 @@ all() ->
      start_failure_answered, start_failure_not_passed, fork_branch_opts,
      serial_branch_opts, hunt_keeps_a_tag, bad_from_refused,
      bad_from_fork_refused, bad_from_not_passed, b_events_notified,
-     app_cancels_b].
+     app_cancels_b, a_headers_on_2xx, a_headers_on_failure].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -382,6 +383,67 @@ app_cancels_b(_Config) ->
     ok = expect(caller_got_487),
     receive
         {b2b_result, {error, #chappe_sip_error{status = 487}}} -> ok
+    after 5000 -> ct:fail(no_b2b_failure)
+    end.
+
+%% a_headers go on A's 2xx (drachtio's responseHeaders).
+a_headers_on_2xx(_Config) ->
+    {EnginePort, CalleePort} = setup(),
+    Test = self(),
+    CalleeUri = <<"sip:callee@127.0.0.1:", (integer_to_binary(CalleePort))/binary>>,
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        {ok, Legs} = chappe_sip:create_b2bua(Req, Res, CalleeUri, #{
+            a_headers => [{<<"X-Billing">>, <<"acct-7">>}]
+        }),
+        {done, _} = chappe_sip_b2b:relay(Legs)
+    end),
+    callee(CalleePort, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        ToTag = tag(),
+        send(Sock, Src, resp(Inv, 200, <<"OK">>, ToTag,
+                             [{<<"Contact">>, ctc(CalleePort)}], sdp(<<"callee">>))),
+        {_Ack, _} = recv(Sock, <<"ACK">>),
+        {Bye, BSrc} = recv(Sock, <<"BYE">>),
+        send(Sock, BSrc, resp(Bye, 200, <<"OK">>, ToTag, [], <<>>))
+    end),
+    caller(fun(Sock) ->
+        Call = callid(),
+        FT = <<"cfth">>,
+        send(Sock, EnginePort, invite(Sock, EnginePort, Call, FT)),
+        R200 = recv_status(Sock, 200),
+        {ok, M} = chappe_sip_msg:parse(R200),
+        Test ! {x_billing, chappe_sip_msg:get(<<"x-billing">>, M)},
+        TT = to_tag(R200),
+        send(Sock, EnginePort, ack(Sock, EnginePort, Call, FT, TT)),
+        send(Sock, EnginePort, bye(Sock, EnginePort, Call, FT, TT)),
+        _ = recv_status(Sock, 200)
+    end),
+    ok = expect({x_billing, <<"acct-7">>}).
+
+%% ... and on the failure A gets when B fails.
+a_headers_on_failure(_Config) ->
+    {EnginePort, CalleePort} = setup(),
+    Test = self(),
+    CalleeUri = <<"sip:callee@127.0.0.1:", (integer_to_binary(CalleePort))/binary>>,
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        Test ! {b2b_result, chappe_sip:create_b2bua(Req, Res, CalleeUri, #{
+            a_headers => [{<<"X-Billing">>, <<"acct-8">>}]
+        })}
+    end),
+    callee(CalleePort, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        send(Sock, Src, resp(Inv, 486, <<"Busy Here">>, tag(), [], <<>>))
+    end),
+    caller(fun(Sock) ->
+        Call = callid(),
+        send(Sock, EnginePort, invite(Sock, EnginePort, Call, <<"cfti">>)),
+        R = recv_status(Sock, 486),
+        {ok, M} = chappe_sip_msg:parse(R),
+        Test ! {x_billing, chappe_sip_msg:get(<<"x-billing">>, M)},
+        send(Sock, EnginePort, ack_status(Sock, EnginePort, Call, <<"cfti">>, R))
+    end),
+    ok = expect({x_billing, <<"acct-8">>}),
+    receive {b2b_result, {error, #chappe_sip_error{status = 486}}} -> ok
     after 5000 -> ct:fail(no_b2b_failure)
     end.
 

@@ -119,6 +119,9 @@
 %%                  malformed one (chappe_sip_hdr:valid_name_addr/1) reaches
 %%                  no leg: {error, badarg}, and A gets a 500 unless
 %%                  pass_failure is false
+%%   a_headers   => [{Name, Value}] added to the final response to A, the
+%%                  2xx or a failure (drachtio's responseHeaders), after
+%%                  the ones proxy_response_headers copies
 %%   proxy_request_headers  => [Name] | all | {all, [ExcludeName]}
 %%   proxy_response_headers => [Name] | all | {all, [ExcludeName]}
 %%                    (copied from B's 2xx to A's)
@@ -660,7 +663,7 @@ create_a(
     ),
     UasOpts0 = maps:merge(maps:with(st_opts(), Opts), #{
         local_sdp => SdpAAnswer,
-        headers => RespHeaders,
+        headers => RespHeaders ++ maps:get(a_headers, Opts, []),
         local_tag => ATag,
         owner => self(),
         handled_events => handled(Opts),
