@@ -40,7 +40,7 @@
 %% REFER, the identity its dialog was formed with; referred_by is what the
 %% REFER claims and is not checked (RFC 3892 6): never grant on it alone.
 %% An attended transfer (a Replaces in the Refer-To) is local when the
-%% dialog it names is a leg of another B2BUA call of this node.
+%% dialog it names is a leg of another B2BUA call of the cluster.
 -type info() :: #{
     kind := blind | attended,
     local => boolean(),
@@ -229,7 +229,8 @@ base(Target, RT, #{req := Req, transfers := N} = S) ->
 %% ---- attended transfer (RFC 5589 7.3) ----
 
 %% The Replaces names the dialog the referrer has with the target. When
-%% it is a confirmed leg of another B2BUA call of this node, the two
+%% it is a confirmed leg of another B2BUA call of the cluster (found
+%% through the dialog index of every node, then its call_ref), the two
 %% remote parties are joined through rtpengine; otherwise the target gets
 %% an INVITE with Replaces. Who may name that dialog is the policy's to
 %% decide (RFC 3891 3 and 8: the referrer must be authenticated as the
@@ -244,7 +245,7 @@ base(Target, RT, #{req := Req, transfers := N} = S) ->
 %% 403 (only confirmed legs are joined).
 attended(#{call_id := C, to_tag := T, from_tag := F} = R, Info, S) ->
     Info1 = Info#{kind := attended, replaces => R},
-    case chappe_sip_dialog_index:lookup({C, T, F}) of
+    case chappe_sip_dialog_index:find({C, T, F}) of
         not_found ->
             {ok, Info1#{local => false}};
         {ok, {Pid, Id, confirmed, _Role}} ->
@@ -269,7 +270,7 @@ local(D2, Info, #{b2b := Own}) ->
 
 %% the B2BUA call that holds D2, and the principal of that leg
 holder([], _D2, _Info) ->
-    %% a dialog of this node no B2BUA call relays: nothing to join
+    %% a dialog no B2BUA call relays: nothing to join
     {reject, 403, <<"Forbidden">>};
 holder([B | Rest], D2, Info) ->
     case chappe_sip_b2b:call(B, {principal, D2}, 5000) of
@@ -509,7 +510,7 @@ policy(Info, #{policy := F}) ->
             false
     end;
 policy(#{kind := attended, local := true} = Info, _TOpts) ->
-    %% two parties of this node already in calls: nothing new is called,
+    %% two parties already in calls: nothing new is called,
     %% but the referrer must be the party it replaces, as the app knows
     %% it (RFC 3891 3)
     case Info of

@@ -187,7 +187,8 @@ What happens on a REFER from either leg:
   `NOTIFY 200`, then a BYE. On a failure it gets the final status and the
   call stays as it was.
 - Attended (RFC 5589 7.3): a Refer-To with Replaces naming a leg of another
-  B2BUA call of this node joins the two remote parties through rtpengine:
+  B2BUA call, on this node or another node of the cluster (found through
+  the `chappe_sip` pg scope), joins the two remote parties through rtpengine:
   the target's leg leaves its call and is re-INVITEd into this one, and no
   new INVITE goes out. A Replaces naming no local dialog goes to the target
   in an INVITE with Replaces and `Require: replaces`.

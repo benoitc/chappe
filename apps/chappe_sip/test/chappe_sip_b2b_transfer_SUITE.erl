@@ -15,9 +15,10 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -export([all/0, init_per_suite/1, end_per_suite/1, end_per_testcase/2]).
+-export([peer_node_calls/2]).
 -export([notify_accept/1, notify_reject/1, notify_retarget/1,
          notify_from_another_node/1]).
--export([attended_ending_dialog_declined/1]).
+-export([attended_ending_dialog_declined/1, attended_join_across_nodes/1]).
 -export([attended_join_fails_keeps_calls/1, attended_needs_principal/1,
          attended_policy_sees_principals/1]).
 -export([maddr_refused/1, own_host_other_port_refused/1, no_user_refused/1,
@@ -40,7 +41,7 @@ all() ->
      transferor_bye_then_failure_ends_call,
      blind_target_fails, attended_local_join, attended_join_fails_keeps_calls,
      attended_needs_principal, attended_policy_sees_principals,
-     attended_ending_dialog_declined, attended_remote_replaces,
+     attended_ending_dialog_declined, attended_join_across_nodes, attended_remote_replaces,
      attended_other_party_refused, notify_accept, notify_reject,
      notify_retarget, notify_from_another_node, offnet_refused,
      maddr_refused, own_host_other_port_refused, no_user_refused,
@@ -548,6 +549,65 @@ notify_from_another_node(_Config) ->
         peer:stop(Peer)
     end.
 
+%% chappe-erlang-patterns: Bob's call with Carol runs on another node
+%% (its own chappe_sip and rtpengine). The transfer finds the dialog the
+%% Replaces names through the `chappe_sip' pg scope and the call_ref
+%% lookup, and the call there lends Carol's leg: she joins Alice's call
+%% with a re-INVITE, and both of Bob's calls end.
+%% req: R5589-10
+attended_join_across_nodes(_Config) ->
+    ok = ensure_distributed(),
+    Paths = lists:append([["-pa", P] || P <- code:get_path()]),
+    {ok, Peer, Node} = peer:start_link(#{name => peer:random_name(),
+                                         args => Paths}),
+    try
+        {EP, CP} = setup(#{principal => #{b => <<"bob">>}}),
+        NP = ?UA:pick(),
+        EP2 = erpc:call(Node, ?MODULE, peer_node_calls, [self(), NP]),
+        carol(NP),
+        bob_consults(CP, EP, EP2, fun(_C2, _BT2, _TT2) -> NP end),
+        caller(EP, fun(Sock, _D) ->
+            ok = ?UA:no_req(Sock, <<"INVITE">>, 5000),
+            tell(caller_no_reinvite)
+        end),
+        #{b2b := {_, Ref}} = got(legs),
+        #{b2b := {Relay2, _}} = got(legs_carol),
+        ?assertEqual(Node, node(Relay2)),
+        ?assertEqual(200, ?UA:status(got(refer_answer))),
+        ?assertEqual(<<"SIP/2.0 100 Trying\r\n">>, ?UA:body(got(notify))),
+        ReInv = got(carol_reinvite),
+        ?assert(chappe_sip_test_rtpe:marked(?UA:body(ReInv), offer)),
+        ?assertEqual(<<"SIP/2.0 200 OK\r\n">>, ?UA:body(got(notify))),
+        Byes = lists:sort([?UA:hdr(got(bye), <<"call-id">>) || _ <- [1, 2]]),
+        ?assertEqual(2, length(lists:usort(Byes))),
+        ok = expect_event(Ref, {transferred, b}),
+        ok = ?UA:expect({relay_done_carol, {done, transferred}}, 8000),
+        ok = ?UA:expect(caller_no_reinvite, 8000)
+    after
+        peer:stop(Peer)
+    end.
+
+%% On the peer node: chappe_sip on a port of its own, behind a fake
+%% rtpengine of its own, bridging every INVITE to Carol (port NP) with
+%% Bob recorded as its caller. Returns its port.
+peer_node_calls(Test, NP) ->
+    application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
+                        [{persistent, true}]),
+    {ok, _} = application:ensure_all_started(chappe_sip),
+    _ = chappe_sip_test_rtpe:start(spawn(fun sink/0)),
+    EP2 = ?UA:pick(),
+    ok = chappe_sip:start(#{contact => <<"sip:127.0.0.1:",
+                                         (integer_to_binary(EP2))/binary>>}),
+    Carol = <<"sip:carol@127.0.0.1:", (integer_to_binary(NP))/binary>>,
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        {ok, Legs} = chappe_sip:create_b2bua(Req, Res, Carol, #{
+            media => anchor, principal => #{a => <<"bob">>}
+        }),
+        Test ! {legs_carol, Legs},
+        Test ! {relay_done_carol, chappe_sip_b2b:relay(Legs)}
+    end),
+    EP2.
+
 %% on the peer node: accept each REFER, pass the call's events on
 remote_app(Test) ->
     receive
@@ -985,6 +1045,10 @@ carol_loop(Sock, Tag, How) ->
 %% same identity, then REFERs Alice to Carol with a Replaces naming his
 %% call with Carol (Port(CallId2, BobTag2, ToTag2) gives Carol's port).
 bob_consults(CP, EP, Port) ->
+    bob_consults(CP, EP, EP, Port).
+
+%% the same, Bob's call with Carol through the node listening on EP2
+bob_consults(CP, EP, EP2, Port) ->
     ?UA:peer(CP, fun(Sock) ->
         {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
         Tag = ?UA:tag(),
@@ -995,13 +1059,13 @@ bob_consults(CP, EP, Port) ->
         C2 = ?UA:callid(),
         BT2 = ?UA:tag(),
         Inv2 = binary:replace(
-                 ?UA:invite(Sock, EP, #{call_id => C2, from_tag => BT2,
-                                        ruri => <<"sip:carol@127.0.0.1">>}),
+                 ?UA:invite(Sock, EP2, #{call_id => C2, from_tag => BT2,
+                                         ruri => <<"sip:carol@127.0.0.1">>}),
                  <<"From: <sip:caller@">>, <<"From: <sip:callee@">>),
-        ?UA:send(Sock, EP, Inv2),
+        ?UA:send(Sock, EP2, Inv2),
         R2 = ?UA:recv_status(Sock, 200),
         D2 = ?UA:dialog_from_2xx(Sock, Inv2, R2),
-        ?UA:ack(D2, EP),
+        ?UA:ack(D2, EP2),
         TT2 = ?UA:to_tag(R2),
         NP = Port(C2, BT2, TT2),
         RT = chappe_sip_hdr:refer_to_value(#{
