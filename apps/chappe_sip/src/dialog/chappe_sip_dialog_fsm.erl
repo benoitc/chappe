@@ -48,6 +48,7 @@
 -define(IS_QUERY(Q),
     (Q =:= local_tag orelse Q =:= remote_tag orelse Q =:= call_id orelse
         Q =:= remote_sdp orelse Q =:= local_sdp orelse Q =:= local_contact orelse
+        Q =:= remote_addr orelse
         (is_tuple(Q) andalso tuple_size(Q) =:= 2 andalso
             (element(1, Q) =:= set_handled orelse element(1, Q) =:= set_owner)))
 ).
@@ -806,6 +807,8 @@ query(From, local_tag, #data{local_tag = T} = D) ->
     {keep_state, D, [{reply, From, T}]};
 query(From, remote_tag, #data{remote_addr = RA} = D) ->
     {keep_state, D, [{reply, From, addr_tag(RA)}]};
+query(From, remote_addr, #data{remote_addr = RA} = D) ->
+    {keep_state, D, [{reply, From, RA}]};
 query(From, call_id, #data{call_id = C} = D) ->
     {keep_state, D, [{reply, From, C}]};
 query(From, remote_sdp, #data{remote_sdp = S} = D) ->
@@ -1513,8 +1516,9 @@ start_reinvite_1(
     Seq = D#data.local_cseq + 1,
     % ACK must reuse this CSeq
     D1 = D#data{local_cseq = Seq},
+    CT = maps:get(content_type, Opts, <<"application/sdp">>),
     Headers =
-        [{<<"Content-Type">>, <<"application/sdp">>} || NewSdp =/= <<>>] ++
+        [{<<"Content-Type">>, CT} || NewSdp =/= <<>>] ++
             chappe_sip_session_timer:refresh_headers(D#data.st),
     Raw = build_indialog(D1, <<"INVITE">>, Seq, Headers, NewSdp),
     case chappe_sip_engine:send_request(route(D), Raw, self()) of

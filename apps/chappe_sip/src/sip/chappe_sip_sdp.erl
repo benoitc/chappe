@@ -13,6 +13,7 @@
 
 -export([parse/1, address/1, words/1]).
 -export([origin/1, on_hold/1, webrtc/1, connection/1]).
+-export([sections/1, join/2]).
 
 -export_type([media/0]).
 
@@ -27,6 +28,33 @@
     dir := sendrecv | sendonly | recvonly | inactive,
     _ => _
 }.
+
+%% The session-level lines of an SDP (before the first m= line) and each
+%% media section's lines, its m= line first, line ends dropped: what a
+%% caller that moves media sections between descriptions works on.
+-spec sections(iodata()) -> {[binary()], [[binary()]]}.
+sections(Sdp) ->
+    {Sess, Rest} = lists:splitwith(fun not_m/1, lines(Sdp)),
+    {Sess, media_sections(Rest, [])}.
+
+not_m(<<"m=", _/binary>>) -> false;
+not_m(_) -> true.
+
+lines(Sdp) ->
+    binary:split(iolist_to_binary(Sdp), [<<"\r\n">>, <<"\n">>], [
+        global, trim_all
+    ]).
+
+media_sections([], Acc) ->
+    lists:reverse(Acc);
+media_sections([M | Rest], Acc) ->
+    {Own, Next} = lists:splitwith(fun not_m/1, Rest),
+    media_sections(Next, [[M | Own] | Acc]).
+
+%% The SDP of session lines and media sections, CRLF line ends.
+-spec join([binary()], [[binary()]]) -> binary().
+join(Sess, Media) ->
+    iolist_to_binary([[L, <<"\r\n">>] || L <- Sess ++ lists:append(Media)]).
 
 %% The o= line without its "o=", or undefined.
 -spec origin(iodata()) -> binary() | undefined.
@@ -88,9 +116,7 @@ address(Bin) ->
 %% ptime, maxptime}.
 -spec parse(iodata()) -> {binary() | undefined, [media()]}.
 parse(Sdp) ->
-    Lines = binary:split(iolist_to_binary(Sdp), [<<"\r\n">>, <<"\n">>], [
-        global, trim_all
-    ]),
+    Lines = lines(Sdp),
     {Sess, Rev} = lists:foldl(fun line/2, {undefined, []}, Lines),
     %% a session-level direction holds for the m-lines without their own
     SessDir = session_dir(Lines),

@@ -52,6 +52,7 @@
     id/1,
     local_tag/1,
     remote_tag/1,
+    remote_addr/1,
     call_id/1,
     remote_sdp/1,
     local_sdp/1,
@@ -235,11 +236,17 @@ modify(#dialog{pid = Pid}, SdpSpec) ->
 %% ack => manual: the 2xx is not ACKed; send the ACK with ack/2. SdpSpec
 %% none sends a re-INVITE without an offer (RFC 3261 14.1): it needs
 %% ack => manual, the result is the peer's offer from its 2xx, and the
-%% answer goes in ack(D, #{local_sdp => Answer}).
+%% answer goes in ack(D, #{local_sdp => Answer}). content_type names a body
+%% that is not a bare SDP (a SIPREC multipart/mixed of SDP and metadata,
+%% RFC 7866 9.1); the default is application/sdp.
 -spec modify(
     dialog(),
     iodata() | hold | unhold | none,
-    #{retry_on_glare => boolean(), ack => auto | manual}
+    #{
+        retry_on_glare => boolean(),
+        ack => auto | manual,
+        content_type => binary()
+    }
 ) ->
     {ok, binary()} | {error, term()}.
 modify(#dialog{pid = Pid}, SdpSpec, Opts) ->
@@ -295,6 +302,12 @@ local_tag(#dialog{pid = Pid}) ->
 -spec remote_tag(dialog()) -> binary() | undefined.
 remote_tag(#dialog{pid = Pid}) ->
     gen_statem:call(Pid, remote_tag).
+
+%% The peer's name-addr with its tag, as the dialog keeps it: the From of
+%% the request for a UAS dialog, the To of the response for a UAC dialog.
+-spec remote_addr(dialog()) -> binary().
+remote_addr(#dialog{pid = Pid}) ->
+    gen_statem:call(Pid, remote_addr).
 
 -spec call_id(dialog()) -> binary().
 call_id(#dialog{pid = Pid}) ->

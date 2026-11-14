@@ -437,10 +437,20 @@ hold(X, Sdp, #{hold := H} = M) ->
     end.
 
 %% Send Ev to the call's notify process, if any, as {chappe_sip_b2b, Ref,
-%% Ev}.
+%% Ev}. A party change ({replaced, Leg}) also goes to the call's SIPREC
+%% recordings, which tell their recording server (chappe_sip_siprec).
 -spec event(term(), state()) -> ok.
-event(_Ev, #{notify := undefined}) ->
+event({replaced, _} = Ev, #{ref := Ref, call_ref := CallRef} = M) ->
+    _ = [
+        Rec ! {chappe_sip_b2b, Ref, Ev}
+     || Rec <- chappe_sip_siprec:local(CallRef)
+    ],
+    notify(Ev, M);
+event(Ev, M) ->
+    notify(Ev, M).
+
+notify(_Ev, #{notify := undefined}) ->
     ok;
-event(Ev, #{notify := Pid, ref := Ref}) ->
+notify(Ev, #{notify := Pid, ref := Ref}) ->
     Pid ! {chappe_sip_b2b, Ref, Ev},
     ok.

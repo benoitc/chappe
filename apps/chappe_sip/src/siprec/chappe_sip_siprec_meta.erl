@@ -34,7 +34,7 @@
 %% the older name, which recorders built on RFC 7866 still send.
 -module(chappe_sip_siprec_meta).
 
--export([build/1, parse/1, snapshot_request/1]).
+-export([build/1, parse/1, snapshot_request/1, snapshot_request/2]).
 -export([new_id/0, now/0, content_type/0, is_content_type/1, disposition/0]).
 -export([ns/0, ext_ns/0, senders/1]).
 
@@ -247,6 +247,19 @@ snapshot_request(Reason) ->
         end,
         <<"</requestsnapshot>\n">>
     ]).
+
+%% Whether a request body is a snapshot request (RFC 7866 9.2): {ok,
+%% Reason} when its Content-Type is the metadata's and it parses as one,
+%% `no' otherwise.
+-spec snapshot_request(binary() | undefined, binary()) ->
+    {ok, binary() | undefined} | no.
+snapshot_request(undefined, _Body) ->
+    no;
+snapshot_request(CT, Body) ->
+    case is_content_type(CT) andalso parse(Body) of
+        {ok, {snapshot_request, Reason}} -> {ok, Reason};
+        _ -> no
+    end.
 
 %% ---- parse ----
 

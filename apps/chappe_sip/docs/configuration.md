@@ -42,6 +42,14 @@ list) and the TLS `contact` of `chappe_sip:start/1`.
 | `flow_token_secret` | (random) | Secret keying the Record-Route marker/flow-token HMAC. Unset generates a per-node random secret at boot; set a stable shared value only if record-routed dialogs must survive a restart or span a cluster. A configured value shorter than 16 bytes stops the application from starting. |
 | `supported_option_tags` | `[<<"100rel">>, <<"replaces">>, <<"timer">>, <<"tdialog">>, <<"norefersub">>]` | Option tags a request may list in `Require` without a 420. Add `<<"siprec">>` on a recording server; a single route adds its own with `chappe_sip:handle/3`. |
 
+## SIPREC client
+
+| Key | Default | What it does |
+| --- | --- | --- |
+| `siprec_srs` | `undefined` | The recording server URI `chappe_sip_siprec:start/3` uses when given `default`. |
+| `siprec_max_per_call` | `2` | Recordings one call may have at once; one more is refused with `{error, too_many}`. |
+| `siprec_answer_timeout_ms` | `10000` | How long a recording server may take to answer the INVITE or a re-INVITE. Past it the INVITE is cancelled, or the session ended with a BYE, and the owner gets `stopped` with reason `{srs, timeout}`. |
+
 ## WebSocket
 
 | Key | Default | What it does |

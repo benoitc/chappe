@@ -127,4 +127,11 @@ default(peers) -> [];
 default(session_expires) -> undefined;
 default(session_min_se) -> 90;
 default(session_refresher) -> uac;
+%% SIPREC client (chappe_sip_siprec): the recording server a recording goes
+%% to when start/3 names none; how many recordings one call may have at
+%% once; how long a recording server may take to answer an INVITE or a
+%% re-INVITE before the recording is given up (ms).
+default(siprec_srs) -> undefined;
+default(siprec_max_per_call) -> 2;
+default(siprec_answer_timeout_ms) -> 10000;
 default(_) -> undefined.
