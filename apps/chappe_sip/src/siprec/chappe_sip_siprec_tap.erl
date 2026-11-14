@@ -65,8 +65,10 @@ tap(#{party := room}, #{source := {room, Room}, call_ref := Ref}) ->
             E
     end;
 tap(#{party := Leg}, #{session := S, opts := Opts}) ->
+    %% the call's media session holds the tap for this process, and
+    %% removes it if the recording dies without closing it
     Sub = maps:merge(
-        #{party => party(Leg)},
+        #{party => party(Leg), holder => self()},
         maps:with([codec, ptime], Opts)
     ),
     case chappe_sip_media:subscribe(S, Sub) of

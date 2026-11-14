@@ -20,7 +20,8 @@
          snapshot_request_answered/1, srs_reinvite_answered/1,
          srs_refuses/1, srs_never_answers/1, srs_byes/1,
          call_end_byes_srs/1, owner_death_byes_srs/1,
-         recording_crash_spares_call/1, too_many_per_call/1,
+         recording_crash_spares_call/1, recording_crash_removes_taps/1,
+         too_many_per_call/1,
          bad_arguments/1, metadata_privacy/1, legacy_content_type/1,
          from_another_node/1]).
 -export([server_writes_store/1, server_not_a_recording_session/1,
@@ -35,6 +36,7 @@ all() ->
      pause_and_resume, party_change_reinvites, snapshot_request_answered,
      srs_reinvite_answered, srs_refuses, srs_never_answers, srs_byes,
      call_end_byes_srs, owner_death_byes_srs, recording_crash_spares_call,
+     recording_crash_removes_taps,
      too_many_per_call, bad_arguments, metadata_privacy,
      legacy_content_type, from_another_node, server_writes_store,
      server_not_a_recording_session, server_sink_and_stream_crash,
@@ -350,6 +352,28 @@ recording_crash_spares_call(_Config) ->
     {ok, Rec2} = chappe_sip_siprec:start(B2b, srs_uri(SP2), #{}),
     {started, _} = event(Rec2),
     ok = chappe_sip_siprec:stop(Rec2).
+
+%% A recording killed outright runs no cleanup of its own: the call's
+%% media session holds its taps and removes them, so rtpengine stops
+%% forking the parties' media to the SRS.
+recording_crash_removes_taps(_Config) ->
+    #{b2b := B2b} = call(),
+    SP = ?UA:pick(),
+    srs(SP, fun(_Sock, _D, _Src) -> ok end),
+    {ok, Rec} = chappe_sip_siprec:start(B2b, srs_uri(SP), #{}),
+    {started, _} = event(Rec),
+    Tags = lists:sort(
+             [T || {rtpe_cmd, #{<<"command">> := <<"subscribe answer">>,
+                                <<"to-tag">> := T}} <- drain()]),
+    ?assertEqual(2, length(Tags)),
+    MRef = monitor(process, Rec),
+    exit(Rec, kill),
+    receive {'DOWN', MRef, process, Rec, killed} -> ok after 2000 -> ct:fail(alive) end,
+    Gone = lists:sort(
+             [T || {rtpe_cmd, #{<<"command">> := <<"unsubscribe">>,
+                                <<"to-tag">> := T}} <- drain()]),
+    ?assertEqual(Tags, Gone),
+    ?assertMatch(#{media := anchor}, chappe_sip_b2b:info(B2b)).
 
 %% siprec_max_per_call bounds the recordings of one call.
 too_many_per_call(_Config) ->

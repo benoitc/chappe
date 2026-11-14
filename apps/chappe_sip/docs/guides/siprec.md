@@ -160,7 +160,8 @@ called from any node with the call's `b2b` handle (from
 - One call has at most `siprec_max_per_call` recordings (2); one more is
   `{error, too_many}`.
 - A recording that crashes sends no event: monitor `Rec`. Its RS dialog
-  sends the BYE, and the call goes on.
+  sends the BYE, the call's media session removes its rtpengine taps, and
+  the call goes on.
 - RFC 7866 6.1.2 asks the SRC to tell the parties they are recorded.
   chappe sends no `a=record`: play a prompt (chappe_mrf, rtpengine play) or
   rely on an agreement.

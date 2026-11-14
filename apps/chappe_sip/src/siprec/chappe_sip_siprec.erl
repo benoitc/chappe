@@ -40,7 +40,8 @@
 %% server's URI); stopped carries reason: stopped | call_ended | room_ended |
 %% srs_bye | {rejected, Status} | {srs, timeout} | {error, _}. A recording
 %% that crashes sends nothing: monitor Rec to see it go; its RS dialog
-%% then sends the BYE, and the call goes on.
+%% then sends the BYE, the call's media session removes its taps from
+%% rtpengine (they are held for Rec), and the call goes on.
 %%
 %% {room, Room} records a chappe_mix room of this node (a native
 %% conference, chappe_sip_media:conference/3) as one participant: a

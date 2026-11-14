@@ -344,6 +344,10 @@ set_remote(_S, _Remote) ->
 %% is keyed on: subscribe once per stream and answer each subscription with
 %% chappe_rtpengine_sdp:fork_answer/3 to route that one stream to its own
 %% receiver.
+%%
+%% `holder => pid()' gives the subscription to that process: the media
+%% session removes it from rtpengine when the process exits, so a consumer
+%% that crashes leaves no fork behind (unsubscribe/2 releases it).
 -spec subscribe(session(), map()) ->
     {ok, #{
         sdp := binary(),
