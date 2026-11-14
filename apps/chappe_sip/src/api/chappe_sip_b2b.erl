@@ -122,8 +122,11 @@
 %% in-dialog events relay/2 answers
 -define(RELAYED, [modify, update]).
 
+%% A fun given as an option runs in the process that runs create_b2bua/4,
+%% on its node (auth runs in the B leg's UAC process, on the same node).
 %% Opts:
-%%   local_sdp_b   => offer sent to B (default: A's INVITE body)
+%%   local_sdp_b   => offer sent to B: value | fun(SdpA) (default: A's
+%%                    INVITE body, the fun's argument)
 %%   local_sdp_a   => answer sent to A: value | fun(SdpB) (default: SdpB);
 %%                    also applied to early media SDP
 %%   b_headers   => [{Name, Value}] added to the INVITE to B (a correlation
@@ -156,7 +159,8 @@
 %%                            leg (DTMF, RFC 6086) goes to the other, and
 %%                            its final comes back
 %%   pass_provisional_responses => boolean (default true)
-%%   proxy, auth           => passed to the B-leg UAC
+%%   proxy, auth           => passed to the B-leg UAC (auth may be a fun
+%%                            of the challenge, chappe_sip_uac:start/2)
 %%   follow_redirects, keep_uri_on_redirect => passed to the B-leg UAC
 %%                            (chappe_sip_uac:start/2): B's 3xx is followed
 %%                            there, A never sees it
@@ -342,8 +346,12 @@ ws_uri(Uri) ->
 %% the offer to B: A's (or local_sdp_b) through the hook and the anchor,
 %% one per media profile of the destinations
 offer_b(Req, Res, {Fork, Dests}, Opts, M) ->
+    SdpA = chappe_sip_req:body(Req),
     Offer = iolist_to_binary(
-        maps:get(local_sdp_b, Opts, chappe_sip_req:body(Req))
+        case maps:get(local_sdp_b, Opts, SdpA) of
+            F when is_function(F, 1) -> F(SdpA);
+            Sdp -> Sdp
+        end
     ),
     case offers(Offer, Dests, Opts, M) of
         {ok, Dests1, M1} ->

@@ -41,7 +41,12 @@
 %%         route_set => [binary()] (Route values, a preloaded route set:
 %%           RFC 3261 8.1.1.1, loose or strict first route),
 %%         auth => #{user := binary(), pass := binary(), realm => binary()}
-%%           or a list of them (a realm-less entry answers any realm),
+%%           or a list of them (a realm-less entry answers any realm), or
+%%           fun((Challenge) -> Auth | none), Challenge the parsed
+%%           challenge #{scheme := binary(), params := #{<<"realm">> ...}}
+%%           (chappe_sip_hdr:auth/1); it runs in the UAC process, on this
+%%           node, once or twice per challenge, and a fun that fails
+%%           answers none,
 %%         report_auth => boolean() (a non-INVITE 2xx is preceded by
 %%           {auth_state, State} when credentials were sent),
 %%         auth_state => State (from report_auth: the request carries

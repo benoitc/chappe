@@ -1166,7 +1166,7 @@ retry_with_auth(Status, Msg, #data{cseq = CSeq} = D) ->
     Usable = [
         C
      || C <- chappe_sip_digest:select(Parsed),
-        credentials_for(challenge_realm(C), Auth) =/= none
+        credentials_for(C, Auth) =/= none
     ],
     case merge_challenges(AuthHdrName, Usable, D#data.challenges) of
         {ok, Cs} when D#data.auth_rounds < ?MAX_AUTH_ROUNDS ->
@@ -1223,11 +1223,27 @@ challenge_nonce(#{params := P}) -> maps:get(<<"nonce">>, P, <<>>).
 
 %% auth is #{user, pass} or a list of them; one naming a realm answers only
 %% that realm's challenges
-credentials_for(_Realm, undefined) ->
+credentials_for(_Chal, undefined) ->
     none;
-credentials_for(Realm, #{} = A) ->
-    credentials_for(Realm, [A]);
-credentials_for(Realm, List) when is_list(List) ->
+credentials_for(Chal, F) when is_function(F, 1) ->
+    %% the app picks the credentials for this challenge
+    try F(Chal) of
+        Auth when is_map(Auth); is_list(Auth) -> credentials(Chal, Auth);
+        _ -> none
+    catch
+        Class:Why ->
+            logger:warning("chappe_sip_uac: auth fun failed: ~p:~p", [
+                Class, Why
+            ]),
+            none
+    end;
+credentials_for(Chal, Auth) ->
+    credentials(Chal, Auth).
+
+credentials(Chal, #{} = A) ->
+    credentials(Chal, [A]);
+credentials(Chal, List) when is_list(List) ->
+    Realm = challenge_realm(Chal),
     Named = [A || #{realm := R} = A <- List, R =:= Realm],
     Any = [A || A <- List, not maps:is_key(realm, A)],
     case Named ++ Any of
@@ -1250,7 +1266,7 @@ with_credentials(#data{challenges = Cs, opts = Opts} = D) ->
         fun({Name, Chal}, {HAcc, NAcc}) ->
             Nonce = challenge_nonce(Chal),
             N = maps:get(Nonce, NAcc, 0) + 1,
-            {User, Pass} = credentials_for(challenge_realm(Chal), Auth),
+            {User, Pass} = credentials_for(Chal, Auth),
             case
                 chappe_sip_digest:credentials(#{
                     method => D#data.method,

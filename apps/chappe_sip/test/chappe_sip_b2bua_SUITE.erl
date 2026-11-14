@@ -25,7 +25,7 @@
          bad_from_not_passed/1]).
 -export([b_events_notified/1, app_cancels_b/1]).
 -export([a_headers_on_2xx/1, a_headers_on_failure/1]).
--export([b_redirect_followed/1]).
+-export([b_redirect_followed/1, local_sdp_b_fun/1]).
 
 all() ->
     [b2b_success_bye, b2b_callee_busy, b2b_caller_cancel,
@@ -36,7 +36,7 @@ all() ->
      serial_branch_opts, hunt_keeps_a_tag, bad_from_refused,
      bad_from_fork_refused, bad_from_not_passed, b_events_notified,
      app_cancels_b, a_headers_on_2xx, a_headers_on_failure,
-     b_redirect_followed].
+     b_redirect_followed, local_sdp_b_fun].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -430,6 +430,40 @@ b_redirect_followed(_Config) ->
     end),
     ok = expect(moved_called),
     ok = expect(caller_done).
+
+%% local_sdp_b as a fun of A's offer: B gets what it returns.
+local_sdp_b_fun(_Config) ->
+    {EnginePort, CalleePort} = setup(),
+    Test = self(),
+    CalleeUri = <<"sip:callee@127.0.0.1:", (integer_to_binary(CalleePort))/binary>>,
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        {ok, Legs} = chappe_sip:create_b2bua(Req, Res, CalleeUri, #{
+            local_sdp_b => fun(SdpA) -> <<SdpA/binary, "a=x-from-fun\r\n">> end
+        }),
+        {done, _} = chappe_sip_b2b:relay(Legs)
+    end),
+    callee(CalleePort, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        Test ! {b_offer, binary:match(Inv, <<"a=x-from-fun">>) =/= nomatch,
+                binary:match(Inv, <<"o=caller">>) =/= nomatch},
+        ToTag = tag(),
+        send(Sock, Src, resp(Inv, 200, <<"OK">>, ToTag,
+                             [{<<"Contact">>, ctc(CalleePort)}], sdp(<<"callee">>))),
+        {_Ack, _} = recv(Sock, <<"ACK">>),
+        {Bye, BSrc} = recv(Sock, <<"BYE">>),
+        send(Sock, BSrc, resp(Bye, 200, <<"OK">>, ToTag, [], <<>>))
+    end),
+    caller(fun(Sock) ->
+        Call = callid(),
+        FT = <<"cftf">>,
+        send(Sock, EnginePort, invite(Sock, EnginePort, Call, FT)),
+        R200 = recv_status(Sock, 200),
+        TT = to_tag(R200),
+        send(Sock, EnginePort, ack(Sock, EnginePort, Call, FT, TT)),
+        send(Sock, EnginePort, bye(Sock, EnginePort, Call, FT, TT)),
+        _ = recv_status(Sock, 200)
+    end),
+    ok = expect({b_offer, true, true}).
 
 %% a_headers go on A's 2xx (drachtio's responseHeaders).
 a_headers_on_2xx(_Config) ->

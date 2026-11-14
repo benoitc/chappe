@@ -69,7 +69,9 @@
 make(Pid, Id) -> #dialog{pid = Pid, id = Id}.
 
 %% Answer an incoming dialog-forming request as a UAS. Opts:
-%%   #{local_sdp => iodata(), status => 100..699 (default 200),
+%%   #{local_sdp => iodata() | fun((RemoteSdp :: binary()) -> iodata())
+%%       (a fun gets the request's body and runs here, in the caller),
+%%     status => 100..699 (default 200),
 %%     reason => binary(), headers => [{binary(), iodata()}],
 %%     handled_events => [atom()] | all, owner => pid(),
 %%     on_owner_exit => destroy | continue,
@@ -157,7 +159,14 @@ create_subscription(Req, Res, Opts) ->
             })
     end.
 
-create_uas_1(Req, Res, Opts0) ->
+create_uas_1(Req, Res, OptsIn) ->
+    Opts0 =
+        case OptsIn of
+            #{local_sdp := F} when is_function(F, 1) ->
+                OptsIn#{local_sdp => F(chappe_sip_req:body(Req))};
+            _ ->
+                OptsIn
+        end,
     Owner = maps:get(owner, Opts0, self()),
     %% the route's extra option tags stay accepted in Require in the dialog,
     %% and the dialog serves the request's call unless told another

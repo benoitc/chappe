@@ -42,7 +42,8 @@
     bye_reason_received/1,
     uac_cancel_with_reason/1,
     uas_cancel_reason_received/1,
-    early_dialog_update_and_bye/1
+    early_dialog_update_and_bye/1,
+    local_sdp_fun/1
 ]).
 
 -define(P, chappe_sip_raw_peer).
@@ -72,7 +73,8 @@ all() ->
         bye_reason_received,
         uac_cancel_with_reason,
         uas_cancel_reason_received,
-        early_dialog_update_and_bye
+        early_dialog_update_and_bye,
+        local_sdp_fun
     ].
 
 init_per_suite(Config) ->
@@ -481,6 +483,21 @@ unsupported_method_405(Config) ->
     ?assertEqual(nomatch, binary:match(allow(R), <<"PUBLISH">>)),
     hangup(P1, Dlg).
 
+%% create_uas/3 local_sdp as a fun of the caller's offer.
+local_sdp_fun(Config) ->
+    {Peer, Dlg} = establish_raw(Config, #{
+        local_sdp => fun(Offer) ->
+            <<(?P:sdp(<<"app">>))/binary,
+              (integer_to_binary(byte_size(Offer)))/binary>>
+        end
+    }),
+    {R, P1} = Peer,
+    Want = <<(?P:sdp(<<"app">>))/binary,
+             (integer_to_binary(byte_size(?P:sdp(<<"caller">>))))/binary>>,
+    ?assertEqual(Want, ?P:body(R)),
+    ?assertEqual(Want, chappe_sip_dialog:local_sdp(Dlg)),
+    hangup(P1, Dlg).
+
 %% RFC 3261 11.2: an in-dialog OPTIONS is answered 200 with Allow, Accept
 %% and Supported (which lists replaces, RFC 3891 6.1).
 %% req: R3261-O-001 R3261-O-007 R3891-16
@@ -663,6 +680,23 @@ establish(Config, Opts) ->
     ok = ?P:ack(Peer, 1, <<>>),
     Dlg = receive {dialog, D} -> D after 5000 -> ct:fail(no_dialog) end,
     {Peer, Dlg}.
+
+%% establish/2, returning the 2xx too: {{R200, Peer}, Dlg}
+establish_raw(Config, Opts) ->
+    EP = ?config(ep, Config),
+    Test = self(),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        {ok, D} = chappe_sip:create_uas(Req, Res, Opts#{owner => Test}),
+        Test ! {dialog, D},
+        receive stop -> ok after 60000 -> ok end
+    end),
+    Peer0 = ?P:invite(?P:open(EP), <<"caller">>, #{}),
+    R = ?P:recv_final(Peer0, 1, <<"INVITE">>),
+    200 = ?P:status(R),
+    Peer = Peer0#{tt => chappe_sip_msg:to_tag(R)},
+    ok = ?P:ack(Peer, 1, <<>>),
+    Dlg = receive {dialog, D} -> D after 5000 -> ct:fail(no_dialog) end,
+    {{R, Peer}, Dlg}.
 
 hangup(Peer, Dlg) ->
     Self = self(),
