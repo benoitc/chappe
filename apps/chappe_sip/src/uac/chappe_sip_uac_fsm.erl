@@ -162,7 +162,7 @@ start_request(
         cseq = maps:get(cseq, Opts, 1),
         seq = atomics:new(1, []),
         proxy = maps:get(proxy, Opts, undefined),
-        route_set = maps:get(route_set, Opts, []),
+        route_set = maps:get(route_set, Opts, preloaded_route(Opts)),
         flow = maps:get(flow, Opts, undefined),
         tried = [Uri]
     },
@@ -826,6 +826,12 @@ route(#data{flow = Flow}) when Flow =/= undefined ->
     chappe_sip_route:flow_route(Flow);
 route(#data{uri = Uri} = D) ->
     chappe_sip_route:secure_hop(Uri, next_hop(D)).
+
+%% RFC 3261 8.1.2: the stack's outbound_route option, as the route set of
+%% a request that names no proxy, flow or route set of its own
+preloaded_route(#{proxy := _}) -> [];
+preloaded_route(#{flow := _}) -> [];
+preloaded_route(_Opts) -> chappe_sip_binds:outbound_route().
 
 next_hop(#data{proxy = Proxy}) when Proxy =/= undefined ->
     Proxy;

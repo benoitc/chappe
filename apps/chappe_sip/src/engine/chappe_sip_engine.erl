@@ -1007,8 +1007,18 @@ agent_opts(Opts) ->
         {outbound_proxy, fun outbound_proxy/1},
         {tcp_keepalive_ms, in_range(1000, 3600000)},
         {udp_mtu, in_range(576, 65535)},
-        {aliases, fun chappe_sip_binds:aliases/1}
+        {aliases, fun chappe_sip_binds:aliases/1},
+        {outbound_route, fun outbound_route/1}
     ],
+    case
+        maps:is_key(outbound_proxy, Opts) andalso
+            maps:find(outbound_route, Opts)
+    of
+        {ok, R} -> {error, {outbound_route, {with_outbound_proxy, R}}};
+        _ -> agent_opts(Opts, Checks)
+    end.
+
+agent_opts(Opts, Checks) ->
     lists:foldl(
         fun
             ({Key, Check}, {ok, Acc}) ->
@@ -1070,6 +1080,13 @@ sip_timers(_) ->
 nif_timer(t1) -> sip_t1;
 nif_timer(t2) -> sip_t2;
 nif_timer(t4) -> sip_t4.
+
+%% outbound_route: kept in Erlang as its Route value (chappe_sip_binds)
+outbound_route(U) ->
+    case chappe_sip_binds:outbound_route_opt(U) of
+        {ok, R} -> {ok, #{outbound_route => R}};
+        error -> error
+    end.
 
 %% a sip: or sips: URI with no NUL
 outbound_proxy(P) when is_binary(P) ->

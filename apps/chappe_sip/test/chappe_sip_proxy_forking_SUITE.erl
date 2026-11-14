@@ -173,8 +173,6 @@ proxy_parallel_6xx_cancels(_Config) ->
 
 %% ---- redirects (RFC 3261 16.7 step 4) and branch timeouts ----
 
-%% req: RFC3261-16.7-4 a proxy that recurses on a 3xx adds its Contacts
-%% to the target set
 %% follow_redirects: a 302 from the first target sends the request to its
 %% Contact, which answers 200; the caller sees the 200, never the 302.
 redirect_followed(_Config) ->
@@ -196,8 +194,7 @@ redirect_not_followed_by_default(_Config) ->
     ok = expect_done(302),
     receive {invited, D2, _} -> ct:fail(followed) after 300 -> ok end.
 
-%% req: RFC3261-16.7-4 the Contacts recursed on are removed from the
-%% response before it joins the response context
+%% req: R3261-P-033
 %% max_targets bounds what one transaction adds: of three Contacts two
 %% are tried (and fail), the third stays in the 302 the caller gets.
 redirect_bounded(_Config) ->
@@ -216,7 +213,7 @@ redirect_bounded(_Config) ->
     ok = expect_done(302),
     receive {invited, D4, _} -> ct:fail(past_max_targets) after 300 -> ok end.
 
-%% req: RFC3261-16.5 a URI is added to the target set once
+%% req: R3261-P-032
 %% The allow policy refuses a target, and a Contact naming a target
 %% already tried (a redirect back to itself) is not tried again; the 302
 %% reaches the caller with both.
@@ -364,8 +361,7 @@ accepted_crash(_Config) ->
     ?assertEqual(Engine, whereis(chappe_sip_engine)),
     ?assertEqual(ok, chappe_sip_engine:check_health(2000)).
 
-%% req: RFC6026-8.4 a proxy core will always forward the 2xx response
-%% upstream
+%% req: R3261-P-024
 %% A target sending 2xx after 2xx with new To-tags gets each one through,
 %% while the Accepted state remembers at most 64 tags.
 accepted_forks_bounded(_Config) ->
