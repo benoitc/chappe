@@ -57,6 +57,7 @@
     local_sdp/1,
     local_contact/1,
     remote_addr/1,
+    local_addr/1,
     call_ref/1,
     set_handled/2,
     set_owner/2,
@@ -326,6 +327,12 @@ local_contact(#dialog{pid = Pid}) ->
 -spec remote_addr(dialog()) -> binary().
 remote_addr(#dialog{pid = Pid}) ->
     gen_statem:call(Pid, remote_addr).
+
+%% Our address in the dialog, as the peer sees it: its To (a UAS dialog)
+%% or our From (a UAC dialog), a name-addr with our tag.
+-spec local_addr(dialog()) -> binary().
+local_addr(#dialog{pid = Pid}) ->
+    gen_statem:call(Pid, local_addr).
 
 %% The call the dialog serves (chappe_sip_call), undefined if none.
 -spec call_ref(dialog()) -> binary() | undefined.

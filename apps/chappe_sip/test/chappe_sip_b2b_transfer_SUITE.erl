@@ -15,6 +15,7 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -export([all/0, init_per_suite/1, end_per_suite/1, end_per_testcase/2]).
+-export([blind_from_a/1, blind_keeps_identity/1, blind_keeps_call_ref/1]).
 -export([blind_from_b/1, blind_target_fails/1, offnet_refused/1,
          policy_rejects/1, policy_sees_untrusted_referred_by/1,
          direct_media_refused/1, transfer_limit/1, bye_method_refused/1,
@@ -22,7 +23,8 @@
          call_end_stops_transfer/1, multiple_refer_unsupported/1]).
 
 all() ->
-    [blind_from_b, blind_target_fails, offnet_refused, policy_rejects,
+    [blind_from_b, blind_from_a, blind_keeps_identity, blind_keeps_call_ref,
+     blind_target_fails, offnet_refused, policy_rejects,
      policy_sees_untrusted_referred_by, direct_media_refused, transfer_limit,
      bye_method_refused, one_transfer_at_a_time, transfer_crash_call_goes_on,
      call_end_stops_transfer, multiple_refer_unsupported].
@@ -88,6 +90,69 @@ blind_from_b(_Config) ->
     ok = expect_event(Ref, {transfer, b}),
     ok = expect_event(Ref, {replaced, b}),
     ok = expect_event(Ref, {transferred, b}).
+
+%% The caller (Alice) transfers the callee (Bob) to Carol: the leg that
+%% sent the REFER is the one replaced, from either side. Bob keeps his
+%% media and sees no re-INVITE; Alice gets the NOTIFYs, then the BYE.
+%% req: R5589-01 R5589-02 R5589-03 R5589-04
+blind_from_a(_Config) ->
+    {EP, CP} = setup(#{}),
+    NP = ?UA:pick(),
+    callee(CP, fun(Sock) ->
+        ok = ?UA:no_req(Sock, <<"INVITE">>, 4000),
+        tell(callee_no_reinvite)
+    end),
+    target(NP, answer),
+    caller(EP, fun(Sock, D) ->
+        {Refer, _} = ?UA:in_dialog(D, <<"REFER">>,
+                                   [{<<"Refer-To">>, refer_to(NP)}], <<>>),
+        ?UA:send(Sock, EP, Refer),
+        serve(Sock, <<>>)
+    end),
+    #{b2b := {_, Ref}} = got(legs),
+    ?assertEqual(200, ?UA:status(got(refer_answer))),
+    ?assertEqual(<<"SIP/2.0 100 Trying\r\n">>, ?UA:body(got(notify))),
+    Inv = got(target_invite),
+    ?assert(chappe_sip_test_rtpe:marked(?UA:body(Inv), offer)),
+    ?assertEqual(<<"SIP/2.0 200 OK\r\n">>, ?UA:body(got(notify))),
+    _ = got(bye),
+    ok = ?UA:expect(callee_no_reinvite, 6000),
+    ok = expect_event(Ref, {replaced, a}),
+    ok = expect_event(Ref, {transferred, a}).
+
+%% Carol's INVITE presents the identity Bob saw on his leg (the From Bob
+%% got: Alice's), and carries Bob's Referred-By unchanged (RFC 3892 2.2).
+%% req: R3892-02 R3892-05
+blind_keeps_identity(_Config) ->
+    {EP, CP} = setup(#{}),
+    NP = ?UA:pick(),
+    RB = <<"\"Bob\" <sip:bob@example.com>;cid=\"x@example.com\"">>,
+    callee_refers(CP, EP, refer_to(NP), [{<<"Referred-By">>, RB}]),
+    target(NP, answer),
+    caller(EP, fun(_Sock, _D) -> ok end),
+    _ = got(legs),
+    Inv = got(target_invite),
+    ?assertEqual(RB, ?UA:hdr(Inv, <<"referred-by">>)),
+    {ok, #{uri := From}} =
+        chappe_sip_hdr:name_addr(?UA:hdr(Inv, <<"from">>)),
+    ?assertMatch(<<"sip:caller@127.0.0.1:", _/binary>>, From).
+
+%% The transferee keeps its call_ref: Carol's leg carries it as
+%% X-Chappe-Call, and its call record names it with related, the call it
+%% came from (the guide's "Follow a call").
+blind_keeps_call_ref(_Config) ->
+    ok = chappe_sip_cdr:subscribe(self()),
+    {EP, CP} = setup(#{}),
+    NP = ?UA:pick(),
+    callee_refers(CP, EP, refer_to(NP), []),
+    target(NP, answer),
+    caller(EP, fun(_Sock, _D) -> ok end),
+    #{b2b := B2b, call_ref := CallRef} = got(legs),
+    Inv = got(target_invite),
+    ?assertEqual(CallRef, ?UA:hdr(Inv, <<"x-chappe-call">>)),
+    _ = got(bye),
+    ?assertMatch(#{call_ref := CallRef}, chappe_sip_b2b:info(B2b)),
+    ?assert(related_record(CallRef, 50)).
 
 %% Carol is busy: Bob's final NOTIFY carries 486, Bob keeps the call and
 %% gets no BYE, and Alice saw nothing.
@@ -341,6 +406,28 @@ serve(Sock, Tag) ->
             serve(Sock, Tag);
         {udp, Sock, _, _, _} ->
             serve(Sock, Tag)
+    end.
+
+%% The callee (Bob) that only answers, then runs Fun(Sock).
+callee(CP, Fun) ->
+    ?UA:peer(CP, fun(Sock) ->
+        {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
+        Tag = ?UA:tag(),
+        ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, Tag, [contact(Sock)],
+                                     ?UA:sdp(<<"callee">>))),
+        {_Ack, _} = ?UA:recv_req(Sock, <<"ACK">>),
+        Fun(Sock),
+        serve(Sock, Tag)
+    end).
+
+%% a call record of the call with related set to it
+related_record(_CallRef, 0) ->
+    false;
+related_record(CallRef, N) ->
+    receive
+        {chappe_sip_cdr, _, #{call_ref := CallRef, related := CallRef}} -> true;
+        {chappe_sip_cdr, _, _} -> related_record(CallRef, N - 1)
+    after 5000 -> false
     end.
 
 %% The transfer target (Carol): answer, busy or ring for ever.

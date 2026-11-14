@@ -262,12 +262,37 @@ accept(Info, #{dialog := D, req := Req, res := Res} = S) ->
     end.
 
 blind(#{leg := Leg, target := Target} = Info, Refer, #{b2b := B2b} = S) ->
-    Opts = #{keep_old => true},
+    Opts = new_party(Info, S),
     case chappe_sip_b2b:replace_leg(B2b, Leg, Target, Opts) of
         ok ->
             done(Info, Refer, S);
         {error, Why} ->
             failed(Info, Refer, status(Why), S)
+    end.
+
+%% The INVITE to the target: it comes from the transferee (RFC 5589 6),
+%% under the identity the referrer saw on its leg (RFC 3892 2.2: the same
+%% identity to the referrer and the target), privacy applied as it was
+%% there. Referred-By goes on as the
+%% REFER had it (RFC 3892 2.2). The new leg keeps the call's call_ref,
+%% with related naming the call it came from.
+new_party(#{referred_by := RB} = Info, S) ->
+    Opts = #{
+        keep_old => true,
+        headers => [{<<"Referred-By">>, RB} || RB =/= undefined]
+    },
+    Related =
+        case maps:get(call_ref, Info) of
+            undefined -> #{};
+            Ref -> #{related => Ref}
+        end,
+    maps:merge(maps:merge(Opts, Related), transferee_from(S)).
+
+transferee_from(#{dialog := D}) ->
+    try chappe_sip_dialog:local_addr(D) of
+        A -> #{from => chappe_sip_b2b_hdr:caller(A)}
+    catch
+        exit:_ -> #{}
     end.
 
 %% the target answered: the transferor hears it, then gets its BYE (RFC
