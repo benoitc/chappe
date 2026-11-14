@@ -194,7 +194,7 @@ frames(S, N) ->
 
 event_until_closed(S) ->
     case event(S) of
-        closed -> closed;
+        {closed, peer_closed} -> closed;
         _ -> event_until_closed(S)
     end.
 

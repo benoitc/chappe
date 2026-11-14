@@ -61,8 +61,8 @@ loop(Stream) ->
         {chappe_audio, Stream, {frame, Pcm}} ->
             [Db] = chappe_audio:levels(Pcm, 1),
             loop(Stream);
-        {chappe_audio, Stream, closed} ->
-            done
+        {chappe_audio, Stream, {closed, Why}} ->
+            {done, Why}
     end.
 ```
 
@@ -73,7 +73,12 @@ with `chappe_audio:ref(Stream)`.
   at the rate you started the fork with, usually 20 ms. In stereo the two
   channels are interleaved, the caller on the left.
 - `{text, Bin}` is the fork's metadata first, then any text it sends.
-- `closed` is always the last event.
+- `{closed, Why}` is always the last event. `Why` is `normal` (you called
+  `close/1`), `peer_closed` (the fork stopped, or the connection ended for
+  a reason the stream cannot tell), `timeout` (no fork connected within
+  `connect_timeout`), `too_large` (a message over `max_frame`), `idle`
+  (nothing for `idle_timeout`) or `{error, Reason}` (the session could not
+  start). When the owner dies, nothing is sent.
 
 Send text back to the fork (both modules take JSON commands this way):
 
@@ -106,7 +111,8 @@ ok = chappe_audio:close(Stream).
   `chappe_audio:info(Stream)` (`dropped`). A slow owner never grows the
   stream's memory.
 - A message over `max_frame` bytes (256 KiB) closes the connection with
-  1009. A message that is not a whole number of samples is dropped and
+  1009 and the stream ends with `too_large`; one over twice that is cut
+  while it is read, and the stream ends with `peer_closed`. A message that is not a whole number of samples is dropped and
   counted (`bad_frames`).
 - The token is in the URL, so it shows in FreeSWITCH's debug log. Each
   stream has its own and accepts one connection.

@@ -23,6 +23,7 @@ all() ->
         max_pending,
         max_pending_per_ip,
         oversized_frame,
+        idle_stream,
         server_text,
         close_stream,
         connect_timeout,
@@ -77,7 +78,7 @@ fork_flow(Config) ->
     ?assertEqual({text, <<"{\"call\": \"one\"}">>}, event(S, Ref)),
     ?assertEqual(Frames, [frame(event(S, Ref)) || _ <- Frames]),
     ok = ws:close(C, 1000, <<>>),
-    ?assertEqual(closed, event(S, Ref)),
+    ?assertEqual({closed, peer_closed}, event(S, Ref)),
     wait_dead(S),
     wait(fun() -> chappe_audio:streams(Ref) =:= [] end),
     ?assertEqual(error, chappe_audio_registry:lookup(id(Url))).
@@ -91,7 +92,7 @@ stream_module_flow(Config) ->
     ok = chappe_audio_test_ws:send(C, {binary, tone(320, 1)}),
     {chappe_audio, S, {frame, _}} = recv(),
     ok = ws:close(C, 1000, <<>>),
-    {chappe_audio, S, closed} = recv().
+    {chappe_audio, S, {closed, peer_closed}} = recv().
 
 %% In stereo a message must hold whole sample pairs: one that does not
 %% is counted and dropped, the next one goes through.
@@ -127,7 +128,7 @@ token_in_header(Config) ->
             {chappe_audio, S, {connected, _}} = recv(),
             ok = chappe_audio:close(S),
             receive
-                {chappe_audio, S, closed} -> ok
+                {chappe_audio, S, {closed, normal}} -> ok
             after 5000 -> ct:fail(not_closed)
             end
         end,
@@ -241,7 +242,20 @@ oversized_frame(_Config) ->
     {chappe_audio, S, {connected, _}} = recv(),
     raw_send(C, {binary, binary:copy(<<0>>, 2048)}),
     ?assertEqual(1009, close_code(C)),
-    {chappe_audio, S, closed} = recv(),
+    {chappe_audio, S, {closed, too_large}} = recv(),
+    chappe_audio:stop_listener(L).
+
+%% A fork silent for idle_timeout is closed with 1001 (going away), and
+%% the owner hears why.
+idle_stream(_Config) ->
+    {ok, L} = chappe_audio:listen(#{idle_timeout => 300}),
+    {ok, S, Url} = chappe_audio:open(L, #{}),
+    C = raw(Url),
+    {chappe_audio, S, {connected, _}} = recv(),
+    raw_send(C, {binary, <<0, 0>>}),
+    {chappe_audio, S, {frame, _}} = recv(),
+    ?assertEqual(1001, close_code(C)),
+    {chappe_audio, S, {closed, idle}} = recv(),
     chappe_audio:stop_listener(L).
 
 %% send_text reaches the fork (the way its JSON commands go).
@@ -261,7 +275,7 @@ close_stream(Config) ->
     {chappe_audio, S, {connected, _}} = recv(),
     ok = chappe_audio:close(S),
     ?assertEqual(1000, close_code(C)),
-    {chappe_audio, S, closed} = recv(),
+    {chappe_audio, S, {closed, normal}} = recv(),
     wait_dead(S),
     ok = chappe_audio:close(S).
 
@@ -270,7 +284,7 @@ connect_timeout(Config) ->
     {ok, S, _Url} = chappe_audio:open(?config(listener, Config), #{
         connect_timeout => 200
     }),
-    {chappe_audio, S, closed} = recv(),
+    {chappe_audio, S, {closed, timeout}} = recv(),
     wait_dead(S).
 
 %% The owner dies: the stream closes the connection with 1001 (going

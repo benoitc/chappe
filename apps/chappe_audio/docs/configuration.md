@@ -34,8 +34,8 @@ you wire chappe_audio into a release or tune a listener.
 | `max_pending_per_ip` | `8` | Handshakes going at once from one address; past it that address's new connection is closed at once. Connected streams do not count. |
 | `handshake_timeout` | `5000` | Milliseconds for the upgrade request. |
 | `max_handshake` | `8192` | Bytes for the upgrade request. |
-| `max_frame` | `262144` | Bytes for one message; past it the connection closes with 1009. |
-| `idle_timeout` | `infinity` | Milliseconds without a message before the connection closes (a paused fork sends nothing). |
+| `max_frame` | `262144` | Bytes for one message; past it the connection closes with 1009 and the stream ends with `{closed, too_large}`. |
+| `idle_timeout` | `infinity` | Milliseconds without a message before the connection closes with 1001 and the stream ends with `{closed, idle}` (a paused fork sends nothing). |
 | `subprotocols` | `[<<"audio.drachtio.org">>]` | Subprotocols the listener accepts (mod_audio_fork offers this one). |
 
 ## Stream options

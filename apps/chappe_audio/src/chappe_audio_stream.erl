@@ -15,7 +15,13 @@
 %% {chappe_audio, Stream, Event}, with or without a ref (ref/1 reads
 %% it). Event is {connected, Info}, {text, Bin} (the metadata a fork
 %% sends first, and any text after it), {frame, Pcm} (one binary
-%% message of L16 audio, interleaved when stereo), and closed, last.
+%% message of L16 audio, interleaved when stereo), and {closed, Why},
+%% last. Why is normal (close/1), peer_closed (the fork closed the
+%% connection, or it ended for a reason the stream cannot tell), timeout
+%% (no fork connected in time), too_large (a message over max_frame,
+%% answered with 1009), idle (nothing for idle_timeout, closed with 1001)
+%% or {error, Reason} (the session could not start). When the owner dies
+%% the stream sends nothing: there is no one to tell.
 %%
 %% The bound: a frame or a text is dropped, and counted in info/1, when
 %% the owner already has max_queue messages waiting (read directly for a
@@ -61,8 +67,17 @@
     store = none :: default | none,
     rec :: chappe_audio_store:rec() | undefined,
     rec_dropped = 0 :: non_neg_integer(),
-    recording :: binary() | undefined
+    recording :: binary() | undefined,
+    %% why the stream ends, once something decided it
+    why :: why() | undefined,
+    %% idle_timeout: when the last message came in, and its timer
+    last_in = 0 :: integer(),
+    idle_timer :: reference() | undefined
 }).
+
+-type why() ::
+    normal | peer_closed | timeout | too_large | idle | {error, term()}.
+-export_type([why/0]).
 
 -type state() :: #state{}.
 
@@ -162,11 +177,9 @@ handle_call(claim, _From, #state{phase = waiting} = S) ->
 handle_call(claim, _From, S) ->
     {reply, {error, taken}, S};
 handle_call(close, _From, #state{session = undefined} = S) ->
-    {stop, normal, ok, finish(S)};
-handle_call(close, _From, #state{phase = connected, session = Session} = S) ->
-    ok = ws:close(Session, 1000, <<>>),
-    Timer = erlang:start_timer(?CLOSE_TIMEOUT, self(), close),
-    {reply, ok, S#state{phase = closing, timer = Timer}};
+    {stop, normal, ok, finish(S, normal)};
+handle_call(close, _From, #state{phase = connected} = S) ->
+    {reply, ok, closing(1000, normal, S)};
 handle_call(close, _From, S) ->
     {reply, ok, S};
 handle_call(info, _From, S) ->
@@ -187,7 +200,7 @@ handle_cast({attach, Conn}, #state{phase = claimed} = S) ->
     cancel(S#state.timer),
     connect(Conn, S#state{timer = undefined});
 handle_cast(attach_failed, S) ->
-    {stop, normal, finish(S)};
+    {stop, normal, finish(S, {error, attach_failed})};
 handle_cast(_Msg, S) ->
     {noreply, S}.
 
@@ -199,12 +212,18 @@ handle_info(
     {chappe_audio_ws, Session, {text, Text}}, #state{session = Session} = S
 ) ->
     {noreply, text(Text, S)};
+handle_info(
+    {chappe_audio_ws, Session, too_large}, #state{session = Session} = S
+) ->
+    {noreply, closing(1009, too_large, S)};
 handle_info({'EXIT', Session, _Reason}, #state{session = Session} = S) ->
-    {stop, normal, finish(S#state{session = undefined})};
+    {stop, normal, finish(S#state{session = undefined}, peer_closed)};
+handle_info({timeout, Timer, idle}, #state{idle_timer = Timer} = S) ->
+    {noreply, idle(S)};
 handle_info({timeout, Timer, _}, #state{timer = Timer} = S) ->
     %% unclaimed, unattached, or a close the peer never completed
     _ = S#state.session =/= undefined andalso exit(S#state.session, kill),
-    {stop, normal, finish(S)};
+    {stop, normal, finish(S, timeout)};
 handle_info({'DOWN', Mon, process, _, _}, #state{owner_mon = Mon} = S) ->
     %% nobody to tell: close the connection and go
     _ =
@@ -224,24 +243,57 @@ terminate(_Reason, _S) ->
 connect(#{transport := T, handle := H, rest := Rest} = Conn, S) ->
     #{max_frame := Max, idle_timeout := Idle} = S#state.cfg,
     Req = maps:with([path, headers, peer], Conn),
+    %% the parser holds up to twice max_frame, so that the handler sees a
+    %% message over it and the stream can say why it closes; past that
+    %% the parser cuts the connection itself (1009, reported peer_closed)
     Accept = #{
-        parser_opts => #{max_frame => Max, max_message => Max},
-        idle_timeout => Idle
+        parser_opts => #{max_frame => 2 * Max, max_message => 2 * Max},
+        idle_timeout => infinity
     },
-    case ws:accept(T, H, Req, chappe_audio_ws, #{stream => self()}, Accept) of
+    Handler = #{stream => self(), max => Max},
+    case ws:accept(T, H, Req, chappe_audio_ws, Handler, Accept) of
         {ok, Session} ->
             link(Session),
             _ = Rest =/= <<>> andalso (Session ! raw(T, H, Rest)),
             Info = maps:with([path, peer, subprotocol], Conn),
             S1 = record(S#state{
-                phase = connected, session = Session, conn = Info
+                phase = connected,
+                session = Session,
+                conn = Info,
+                last_in = now_ms(),
+                idle_timer = idle_timer(Idle)
             }),
             event(S1, {connected, Info}),
             {noreply, S1};
-        {error, _} ->
+        {error, Reason} ->
             _ = T:close(H),
-            {stop, normal, finish(S)}
+            {stop, normal, finish(S, {error, Reason})}
     end.
+
+%% Close the connection with Code, and end with Why once it is closed.
+closing(Code, Why, #state{session = Session} = S) ->
+    ok = ws:close(Session, Code, <<>>),
+    cancel(S#state.timer),
+    Timer = erlang:start_timer(?CLOSE_TIMEOUT, self(), close),
+    S#state{phase = closing, timer = Timer, why = Why}.
+
+%% idle_timeout: the stream's own clock, since the session's would close
+%% without saying why.
+idle_timer(infinity) -> undefined;
+idle_timer(Ms) -> erlang:start_timer(Ms, self(), idle).
+
+idle(#state{phase = connected, cfg = #{idle_timeout := Ms}} = S) ->
+    case now_ms() - S#state.last_in of
+        Quiet when Quiet >= Ms ->
+            closing(1001, idle, S#state{idle_timer = undefined});
+        Quiet ->
+            S#state{idle_timer = erlang:start_timer(Ms - Quiet, self(), idle)}
+    end;
+idle(S) ->
+    S#state{idle_timer = undefined}.
+
+now_ms() ->
+    erlang:monotonic_time(millisecond).
 
 raw(ws_transport_gen_tcp, H, Bin) -> {tcp, H, Bin};
 raw(ws_transport_ssl, H, Bin) -> {ssl, H, Bin}.
@@ -251,7 +303,9 @@ frame(Pcm, #state{channels = Ch} = S) when byte_size(Pcm) rem (2 * Ch) =/= 0 ->
     S#state{bad = S#state.bad + 1};
 frame(Pcm, S) ->
     S1 = S#state{
-        frames = S#state.frames + 1, bytes = S#state.bytes + byte_size(Pcm)
+        frames = S#state.frames + 1,
+        bytes = S#state.bytes + byte_size(Pcm),
+        last_in = now_ms()
     },
     deliver({frame, Pcm}, store(Pcm, S1)).
 
@@ -289,7 +343,7 @@ store(Pcm, #state{rec = Rec} = S) ->
     end.
 
 text(Text, S) ->
-    deliver({text, Text}, S#state{texts = S#state.texts + 1}).
+    deliver({text, Text}, S#state{texts = S#state.texts + 1, last_in = now_ms()}).
 
 deliver(Event, #state{max_queue = Max} = S) ->
     case behind(Max) of
@@ -306,17 +360,20 @@ behind(Max) ->
     {message_queue_len, N} = process_info(self(), message_queue_len),
     N >= Max.
 
-%% Finish the recording, then the last event, never dropped.
-finish(#state{rec = undefined} = S) ->
-    event(S, closed),
+%% Finish the recording, then the last event, never dropped: why it
+%% ends is what decided it first, else Why.
+finish(#state{why = undefined} = S, Why) ->
+    finish(S#state{why = Why}, Why);
+finish(#state{rec = undefined, why = Why} = S, _) ->
+    event(S, {closed, Why}),
     S;
-finish(#state{rec = Rec} = S) ->
+finish(#state{rec = Rec} = S, Why) ->
     S1 =
         case chappe_audio_store:close(Rec, #{}) of
             {ok, Id} -> S#state{rec = undefined, recording = Id};
             {error, _} -> S#state{rec = undefined}
         end,
-    finish(S1).
+    finish(S1, Why).
 
 event(#state{owner = Owner} = S, Event) ->
     Owner ! msg(S, Event),

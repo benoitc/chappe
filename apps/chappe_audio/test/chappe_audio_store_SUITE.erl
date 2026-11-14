@@ -252,7 +252,7 @@ stream_to_store(_Config) ->
     ?assert(is_pid(maps:get(recording, chappe_audio:info(S)))),
     ok = chappe_audio:close(S),
     receive
-        {chappe_audio, S, closed} -> ok
+        {chappe_audio, S, {closed, normal}} -> ok
     after 5000 -> ct:fail(not_closed)
     end,
     [#{source := <<"fork">>, bytes := Bytes, duration_ms := 200}] =

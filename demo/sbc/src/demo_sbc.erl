@@ -429,8 +429,8 @@ levels(CallId, Ref, N, Lv) ->
             levels(CallId, Ref, 0, []);
         {chappe_audio, _, {frame, Pcm}} ->
             levels(CallId, Ref, N + 1, [hd(chappe_audio:levels(Pcm, 1)) | Lv]);
-        {chappe_audio, _, closed} ->
-            log("call ~s: fork closed; recordings: ~p", [CallId, recordings(Ref)])
+        {chappe_audio, _, {closed, Why}} ->
+            log("call ~s: fork closed (~p); recordings: ~p", [CallId, Why, recordings(Ref)])
     end.
 
 db('-inf') -> -90.0;

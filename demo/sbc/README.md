@@ -193,7 +193,7 @@ demo: call 5c1f...@...: fork connected from {{192,168,65,1},53012}
 demo: call 5c1f...@...: fork metadata {"call":"75a5294a0517ae328579"}
 demo: call 5c1f...@...:  -23.4 dBFS ##################
 demo: call 5c1f...@...:  -71.0 dBFS
-demo: call 5c1f...@...: fork closed; recordings: [#{id => ..., source => <<"fork">>, ...}]
+demo: call 5c1f...@...: fork closed (peer_closed); recordings: [#{id => ..., source => <<"fork">>, ...}]
 ```
 
 The fork is also written to the recording store, and the message you

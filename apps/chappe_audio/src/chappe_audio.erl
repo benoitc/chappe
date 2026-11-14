@@ -24,7 +24,10 @@
 %% - {text, Bin}: a text message, the fork's metadata first;
 %% - {frame, Pcm}: one message of 16-bit signed little-endian PCM at the
 %%   stream's format, the two channels interleaved when stereo;
-%% - closed: the stream is gone, always the last event.
+%% - {closed, Why}: the stream is gone, always the last event. Why is
+%%   normal (close/1), peer_closed, timeout (no fork in connect_timeout),
+%%   too_large (a message over max_frame), idle (nothing for
+%%   idle_timeout) or {error, Reason}.
 %%
 %% The stream and the listener are pids: they work from any node. A
 %% stream lives on its listener's node, and streams/1 finds a call's
@@ -49,8 +52,11 @@
 %% handshake_timeout: ms for the upgrade request (default 5000),
 %% max_handshake: bytes for it (default 8192), max_frame: bytes for one
 %% message, past which the connection is closed with 1009 (default
-%% 262144), idle_timeout: ms without a message before the connection is
-%% closed (default infinity: a paused fork sends nothing),
+%% 262144; a message up to twice that is answered with 1009 and the
+%% stream ends with too_large, a larger one is cut by the parser and the
+%% stream ends with peer_closed), idle_timeout: ms without a message
+%% before the connection is closed with 1001 and the stream ends with
+%% idle (default infinity: a paused fork sends nothing),
 %% subprotocols: those the listener accepts (default
 %% [<<"audio.drachtio.org">>], mod_audio_fork's).
 -type listen_opts() :: #{
