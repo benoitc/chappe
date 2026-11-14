@@ -29,5 +29,8 @@
     %% fs: mod_conference room flags, set on each joining channel
     room_flags = [] :: [binary()],
     focus :: chappe_sip_focus:focus() | undefined,
-    entity :: binary() | undefined
+    entity :: binary() | undefined,
+    %% fs recordings started with store => default, adopted into the
+    %% recording store when they stop: {Path, CallRef, Meta}
+    recordings = [] :: [{binary(), binary(), map()}]
 }).

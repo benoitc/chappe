@@ -216,9 +216,12 @@ play(Conf, File) -> call(Conf, {play, all, File}).
 play(Conf, Member, File) -> call(Conf, {play, Member, File}).
 
 %% Record the room (fs: conference <name> recording start, a file the
-%% node writes) until stop_record/1 or the room's end. Opts is for the
-%% backend; fs takes none. The native backend records through PR 5's
-%% recorder and returns {error, {unsupported, native}} here.
+%% node writes) until stop_record/1 or the room's end. Opts: store =>
+%% default adopts the file into the recording store (chappe_audio_store)
+%% when it stops, under ref (default the room's name), with parties for
+%% its sidecar; Path must be in the folder FreeSWITCH shares with this
+%% node (chappe_mrf's shared_dir env). The native backend records through
+%% PR 5's recorder and returns {error, {unsupported, native}} here.
 -spec record(conf(), iodata()) -> ok | {error, term()}.
 record(Conf, Path) ->
     record(Conf, Path, #{}).
@@ -227,12 +230,13 @@ record(Conf, Path) ->
 record(Conf, Path, Opts) when is_map(Opts) ->
     P = iolist_to_binary(Path),
     case P =/= <<>> andalso binary:match(P, [<<"\n">>, <<"\r">>]) of
-        nomatch -> call(Conf, {record, {start, P}});
+        nomatch -> call(Conf, {record, {start, P, Opts}});
         _ -> {error, {bad_option, path}}
     end.
 
-%% Stop every recording of the room.
--spec stop_record(conf()) -> ok | {error, term()}.
+%% Stop every recording of the room; those started with store =>
+%% default are then in the store, returned as {ok, Ids}.
+-spec stop_record(conf()) -> ok | {ok, [binary()]} | {error, term()}.
 stop_record(Conf) ->
     call(Conf, {record, stop}).
 
@@ -428,7 +432,7 @@ handle_call(info, _From, S) ->
         },
         S};
 handle_call({record, Req}, _From, S) ->
-    {reply, record_req(Req, S), S};
+    record_req(Req, S);
 handle_call({transfer, Step, Id}, _From, S) ->
     transfer_step(Step, Id, S);
 handle_call({events, Pid}, _From, #state{listeners = L} = S) ->
@@ -564,6 +568,11 @@ handle_info(_Info, S) ->
 
 terminate(_Reason, #state{members = M, focus = F} = S) ->
     _ = F =/= undefined andalso chappe_sip_focus:stop(F),
+    %% the room's end stops its recordings: the stored ones are adopted
+    _ =
+        S#state.recordings =/= [] andalso
+            chappe_mrf_conf_fs:stop_record(S) =:= ok andalso
+            adopt_recordings(S),
     maps:foreach(fun(Id, Mb) -> _ = hangup_member(Id, Mb, S) end, M),
     ok.
 
@@ -706,12 +715,42 @@ member(Opts, Id, Base) ->
     }.
 
 %% record/2,3 and stop_record/1, sent as {record, Req}.
-record_req({start, Path}, #state{backend = fs} = S) ->
-    chappe_mrf_conf_fs:record(Path, S);
+record_req({start, Path, Opts}, #state{backend = fs} = S) ->
+    case chappe_mrf_store:wanted(Opts) of
+        false -> {reply, chappe_mrf_conf_fs:record(Path, S), S};
+        true -> record_stored(Path, Opts, S)
+    end;
 record_req(stop, #state{backend = fs} = S) ->
-    chappe_mrf_conf_fs:stop_record(S);
-record_req(_Req, _S) ->
-    {error, {unsupported, native}}.
+    case chappe_mrf_conf_fs:stop_record(S) of
+        ok when S#state.recordings =/= [] ->
+            {reply, {ok, adopt_recordings(S)}, S#state{recordings = []}};
+        Reply ->
+            {reply, Reply, S}
+    end;
+record_req(_Req, S) ->
+    {reply, {error, {unsupported, native}}, S}.
+
+%% A recording to adopt when it stops: its path must be shared.
+record_stored(Path, Opts, S) ->
+    maybe
+        {ok, _} ?= chappe_mrf_store:local_path(Path),
+        ok ?= chappe_mrf_conf_fs:record(Path, S),
+        Rec =
+            {Path, maps:get(ref, Opts, S#state.name),
+                maps:with([parties], Opts)},
+        {reply, ok, S#state{recordings = [Rec | S#state.recordings]}}
+    else
+        Err -> {reply, Err, S}
+    end.
+
+%% The room's stored recordings, stopped, into the store (source room);
+%% the ids of those adopted.
+adopt_recordings(#state{recordings = Recs}) ->
+    [
+        Id
+     || {Path, Ref, Meta} <- lists:reverse(Recs),
+        {ok, Id} <- [chappe_mrf_store:adopt(Path, Ref, Meta#{source => room})]
+    ].
 
 %% transfer/3's steps here, sent as {transfer, Step, Member}: out marks the
 %% member and hands over what the other conference needs, cancel undoes

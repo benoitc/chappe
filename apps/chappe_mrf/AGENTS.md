@@ -7,8 +7,9 @@ Instructions for AI coding agents working on this app.
 `chappe_mrf` is a media resource function in the drachtio-fsmrf style, part
 of the `chappe` platform umbrella. It is the controller (MRFC); FreeSWITCH,
 rtpengine and chappe_mix are the media processors (MRFP). It is an
-orchestration app: it depends on `chappe_sip`, `chappe_esl` and, through
-`chappe_sip_media`, on `chappe_rtpengine` and `chappe_mix`. Facade module:
+orchestration app: it depends on `chappe_sip`, `chappe_esl`, `chappe_audio`
+(the recording store) and, through `chappe_sip_media`, on `chappe_rtpengine`
+and `chappe_mix`. Facade module:
 `chappe_mrf`. Internal module prefix: `chappe_mrf_*`.
 
 Modules: `chappe_mrf` (setup, connect_caller, create_endpoint, bridge, the
@@ -18,7 +19,8 @@ channel: correlation, answer, events to the owner, cleanup),
 X-Chappe-Call), `chappe_mrf_registry` (the ETS table of who waits for
 what), `chappe_mrf_conf` (one gen_server per conference) with its backends
 `chappe_mrf_conf_native` (chappe_mix behind rtpengine, via a loopback
-INVITE) and `chappe_mrf_conf_fs` (mod_conference), `chappe_mrf_lib`.
+INVITE) and `chappe_mrf_conf_fs` (mod_conference), `chappe_mrf_store` (FreeSWITCH
+recordings adopted into the chappe_audio store), `chappe_mrf_lib`.
 
 ## Required Checks
 

@@ -33,6 +33,7 @@
     fork_after_create_b2bua_fork/1,
     endpoint_bridge/1,
     record_playback/1,
+    stored_recordings/1,
     native_conference/1,
     native_endpoint/1,
     fs_conference/1,
@@ -71,6 +72,7 @@ all() ->
         fork_after_create_b2bua_fork,
         endpoint_bridge,
         record_playback,
+        stored_recordings,
         native_conference,
         native_endpoint,
         fs_conference,
@@ -122,6 +124,10 @@ setup(Config) ->
      || {N, Esl, Sip} <- Nodes
     ],
     [wait_node(N, up, 20000) || {N, _, _} <- Nodes],
+    %% the nodes record into /media, which is Media here; recordings
+    %% asked with store => default are adopted into the store from there
+    ok = application:set_env(chappe_mrf, shared_dir, #{freeswitch => "/media", local => Media}),
+    ok = chappe_audio_store:configure(#{dir => filename:join(?config(priv_dir, Config), "recordings")}),
     [{sip_port, SipPort}, {media, Media}, {compose, Env("MRF_COMPOSE", "")} | Config].
 
 end_per_suite(_Config) ->
@@ -687,6 +693,52 @@ record_playback(Config) ->
     ?UA:bye(Ua),
     Owner ! stop.
 
+%% store => default: record/3 returns the id of the file adopted into the
+%% store under the endpoint's call_ref; a session recording still going
+%% at the hangup is adopted then, and the owner hears {recorded, Id};
+%% one outside the shared folder is refused before FreeSWITCH sees it.
+stored_recordings(Config) ->
+    Name = fun(P) ->
+        <<"/media/", P/binary, (integer_to_binary(erlang:unique_integer([positive])))/binary,
+            ".wav">>
+    end,
+    Test = self(),
+    ivr(fun(Ep, _B2b) ->
+        %% the endpoint's call_ref, else its id: what the store files under
+        Test ! {ref, store_ref(chappe_mrf_endpoint:info(Ep))},
+        Test ! {recorded, chappe_mrf:record(Ep, Name(<<"store-">>), #{max_secs => 2, store => default})},
+        Test ! {outside, chappe_mrf:record_session(Ep, <<"/tmp/x.wav">>, #{store => default})},
+        Test ! {session, chappe_mrf:record_session(Ep, Name(<<"sess-">>), #{store => default})},
+        fwd_loop(Test)
+    end),
+    {Ua, _Ep, _B2b, _Owner} = call_in(Config, 600),
+    Ref = receive {ref, R} -> R after 10000 -> ct:fail(no_ref) end,
+    {ok, Id} = receive {recorded, Rec} -> Rec after 15000 -> ct:fail(no_record) end,
+    {ok, #{call_ref := Ref, source := <<"freeswitch">>, duration_ms := Ms, path := Path}} =
+        chappe_audio_store:get(Id),
+    ct:log("adopted ~s: ~p ms at ~s", [Id, Ms, Path]),
+    ?assert(Ms > 1000),
+    ?assertNot(filelib:is_regular(media(Config, filename:basename(Path)))),
+    {error, not_shared} = receive {outside, O} -> O after 5000 -> ct:fail(no_outside) end,
+    ok = receive {session, S} -> S after 5000 -> ct:fail(no_session) end,
+    timer:sleep(1500),
+    ?UA:bye(Ua),
+    SessId = receive {fwd, {chappe_mrf, _, {recorded, SId}}} -> SId after 15000 -> ct:fail(no_recorded) end,
+    Found = [I || #{id := I} <- chappe_audio_store:find(Ref)],
+    ?assertEqual(lists:sort([Id, SessId]), lists:sort(Found)).
+
+store_ref(#{call_ref := Ref}) when is_binary(Ref) -> Ref;
+store_ref(#{id := Id}) -> Id.
+
+fwd_loop(Test) ->
+    receive
+        stop ->
+            ok;
+        M ->
+            Test ! {fwd, M},
+            fwd_loop(Test)
+    end.
+
 %% Three callers in a native room (chappe_mix behind rtpengine): one talks
 %% and the others hear it, a room prompt plays, mute and kick work, talker
 %% events arrive, and the room outlives its first caller.
@@ -899,6 +951,14 @@ fs_conference_record_transfer(Config) ->
     timer:sleep(2000),
     ok = chappe_mrf_conf:stop_record(A),
     ok = wait(fun() -> filelib:file_size(media(Config, Rec)) > 8000 end, 100),
+    %% stored: stop_record/1 returns the id in the store, under the ref
+    Stored = <<"/media/stored-", (list_to_binary(Rec))/binary>>,
+    ok = chappe_mrf_conf:record(A, Stored, #{store => default, ref => <<"room-a">>}),
+    timer:sleep(2000),
+    {ok, [RoomRec]} = chappe_mrf_conf:stop_record(A),
+    {ok, #{call_ref := <<"room-a">>, source := <<"room">>, duration_ms := RoomMs}} =
+        chappe_audio_store:get(RoomRec),
+    ?assert(RoomMs > 1000),
     ok = chappe_mrf_conf:mute(A, M1),
     receive
         {chappe_mrf_conf, A, {muted, M1, true}} -> ok

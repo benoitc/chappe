@@ -37,7 +37,8 @@
 -export([start/1, listen/1, stop_listener/0, install/0]).
 -export([connect_caller/3, create_endpoint/1, bridge/2, bridge/3]).
 -export([play/2, play/3, play_info/3, play_collect/2, record/3]).
--export([record_session/2, record_session_stop/2, send_dtmf/2, set/3, set/2]).
+-export([record_session/2, record_session/3, record_session_stop/2]).
+-export([send_dtmf/2, set/3, set/2]).
 -export([api/2, execute/3, execute/4, fork_audio_start/3, fork_audio_stop/1]).
 -export([export/3, var/2, vars/1, mute/2, unmute/2, say/3, speak/3]).
 -export([detect_tones/2, stop_detect_tones/1, detect_fax/1, detect_fax/2]).
@@ -54,6 +55,8 @@
 
 -define(LISTENER, {?MODULE, listener}).
 -define(LOOP_PREFIX, "mrf-mix-").
+%% record options of chappe_mrf's, not FreeSWITCH's
+-define(STORE_OPTS, [store, ref, parties]).
 
 %% ---- setup ----
 
@@ -407,22 +410,44 @@ play_collect(Ep, Opts) ->
     with_call(Ep, fun(C) -> chappe_esl_call:play_and_get_digits(C, Opts) end).
 
 %% Record the caller to Path, a file the node writes. Opts: max_secs,
-%% silence_thresh, silence_hits, timeout.
--spec record(endpoint(), iodata(), map()) -> ok | {error, term()}.
+%% silence_thresh, silence_hits, timeout. store => default adopts the
+%% finished file into the recording store (chappe_audio_store) under the
+%% endpoint's call_ref (ref => Bin to choose another, parties => [...]
+%% for its sidecar) and returns {ok, Id}; Path must then be in the folder
+%% FreeSWITCH shares with this node (the shared_dir env).
+-spec record(endpoint(), iodata(), map()) ->
+    ok | {ok, binary()} | {error, term()}.
 record(Ep, Path, Opts) ->
     with_call(Ep, fun(C) ->
-        chappe_mrf_lib:done(chappe_esl_call:record(C, Path, Opts))
+        Fs = maps:without(?STORE_OPTS, Opts),
+        case chappe_mrf_lib:done(chappe_esl_call:record(C, Path, Fs)) of
+            ok -> chappe_mrf_store:recorded(Ep, Path, Opts);
+            Err -> Err
+        end
     end).
 
 %% Record both directions of the channel to Path until
 %% record_session_stop/2 or the hangup.
 -spec record_session(endpoint(), iodata()) -> ok | {error, term()}.
 record_session(Ep, Path) ->
-    with_call(Ep, fun(C) -> chappe_esl_call:record_session(C, Path) end).
+    record_session(Ep, Path, #{}).
 
--spec record_session_stop(endpoint(), iodata()) -> ok | {error, term()}.
+%% record_session/2 with store => default (and ref, parties) as for
+%% record/3: the file is adopted into the store when the recording ends,
+%% at record_session_stop/2 (which then returns {ok, Id}) or at the
+%% hangup, when the owner gets {recorded, Id}.
+-spec record_session(endpoint(), iodata(), map()) -> ok | {error, term()}.
+record_session(Ep, Path, Opts) ->
+    with_call(Ep, fun(C) ->
+        chappe_mrf_store:record_session(C, Ep, Path, Opts)
+    end).
+
+-spec record_session_stop(endpoint(), iodata()) ->
+    ok | {ok, binary()} | {error, term()}.
 record_session_stop(Ep, Path) ->
-    with_call(Ep, fun(C) -> chappe_esl_call:record_session_stop(C, Path) end).
+    with_call(Ep, fun(C) ->
+        chappe_mrf_store:record_session_stop(C, Ep, Path)
+    end).
 
 %% Say a number, a date, digits... in a language, with the node's mod_say
 %% module and its sound files: chappe_esl_call:say/3 for the options

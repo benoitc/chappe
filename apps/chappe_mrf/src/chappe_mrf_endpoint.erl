@@ -15,6 +15,10 @@
 %%   {fax, detected}     detect_fax/1,2 heard a fax tone
 %%   {complete, App, Ev} an application nobody waited for ended (one
 %%                       run with wait => false, or the dialplan's)
+%%   {recorded, Id}      a session recording started with store =>
+%%                       default ended with the channel and is in the
+%%                       recording store under Id
+%%   {record_failed, Path, Reason}  it could not be adopted
 %%
 %% and, when the owner asked with events => [...] at start (the call
 %% subscribes to them on the channel's socket):
@@ -44,6 +48,7 @@
 -export([start/1, start_link/1]).
 -export([attach/3, await/2, call/1, info/1, watch/2, set_dialog/2]).
 -export([handed/1, destroy/1, check_events/1, set_owner/2]).
+-export([track_recording/4, take_recording/2]).
 -export([callback_mode/0, init/1, waiting/3, ready/3, gone/3, terminate/3]).
 
 -export_type([endpoint/0]).
@@ -71,7 +76,10 @@
     watchers = #{} :: #{pid() => reference()},
     subscribed = [] :: [term()],
     %% the events the owner asked for, beyond dtmf and hangup
-    events = [] :: [event_spec()]
+    events = [] :: [event_spec()],
+    %% session recordings to adopt into the store when they end, by the
+    %% path FreeSWITCH writes: the call_ref and meta to adopt them under
+    recordings = #{} :: #{binary() => {binary(), map()}}
 }).
 -type state() :: #state{}.
 %% What an owner may ask to hear (events => [...] at start).
@@ -113,6 +121,24 @@ call(Ep) ->
 -spec info(endpoint()) -> map() | {error, term()}.
 info(Ep) ->
     safe(Ep, info, 5000).
+
+%% Adopt the session recording FreeSWITCH writes at Path into the store
+%% under Ref when it ends: at take_recording/2 (record_session_stop/2),
+%% else at the hangup (the owner then gets {recorded, Id}) or when the
+%% endpoint goes.
+-spec track_recording(endpoint(), binary(), binary(), map()) ->
+    ok | {error, term()}.
+track_recording(Ep, Path, Ref, Meta) ->
+    safe(Ep, {recording, {track, Path, Ref, Meta}}, 5000).
+
+%% The call_ref and meta a tracked recording was started with, no longer
+%% tracked; error when it was not.
+-spec take_recording(endpoint(), binary()) -> {ok, {binary(), map()}} | error.
+take_recording(Ep, Path) ->
+    case safe(Ep, {recording, {take, Path}}, 5000) of
+        {ok, _} = Ok -> Ok;
+        _ -> error
+    end.
 
 %% Pid gets {chappe_mrf_endpoint, Ep, Event} from now on.
 -spec watch(endpoint(), pid()) -> ok | {error, term()}.
@@ -251,6 +277,9 @@ common({call, From}, handed, _State, #state{dialog = D, handed = H} = Data) ->
 common({call, From}, destroy, _State, Data) ->
     teardown(Data),
     {stop_and_reply, normal, [{reply, From, ok}]};
+common({call, From}, {recording, Req}, _State, Data) ->
+    {Reply, Data1} = recording(Req, Data),
+    {keep_state, Data1, [{reply, From, Reply}]};
 common({call, From}, {attach, _, _}, _State, _Data) ->
     {keep_state_and_data, [{reply, From, {error, attached}}]};
 common(info, {'DOWN', Mon, process, _, _}, _State, #state{owner_mon = Mon}) ->
@@ -357,7 +386,35 @@ esl_event({channel, N}) -> N.
 hungup(Cause, #state{linger = Linger} = Data) ->
     notify(Data, {hangup, Cause}),
     tell(Data, hangup),
-    {next_state, gone, Data, [{state_timeout, Linger, linger}]}.
+    Data1 = adopt_recordings(Data, false),
+    {next_state, gone, Data1, [{state_timeout, Linger, linger}]}.
+
+recording({track, Path, Ref, Meta}, #state{recordings = Recs} = Data) ->
+    {ok, Data#state{recordings = Recs#{Path => {Ref, Meta}}}};
+recording({take, Path}, #state{recordings = Recs} = Data) ->
+    case maps:take(Path, Recs) of
+        {Rec, Recs1} -> {{ok, Rec}, Data#state{recordings = Recs1}};
+        error -> {error, Data}
+    end.
+
+%% The session recordings still tracked end with the channel: each is
+%% adopted into the store, and the owner gets {recorded, Id}. Stop says
+%% whether the channel is still up and must stop recording first (the
+%% endpoint goes before its hangup).
+adopt_recordings(#state{recordings = Recs} = Data, Stop) ->
+    maps:foreach(
+        fun(Path, {Ref, Meta}) ->
+            _ =
+                Stop andalso is_pid(Data#state.call) andalso
+                    chappe_esl_call:record_session_stop(Data#state.call, Path),
+            case chappe_mrf_store:adopt(Path, Ref, Meta) of
+                {ok, Id} -> notify(Data, {recorded, Id});
+                {error, Reason} -> notify(Data, {record_failed, Path, Reason})
+            end
+        end,
+        Recs
+    ),
+    Data#state{recordings = #{}}.
 
 start_call(Conn, Events, CallRef) ->
     Opts =
@@ -401,6 +458,7 @@ kill(Call, Uuid) ->
 terminate(_Reason, gone, _Data) ->
     ok;
 terminate(_Reason, _State, Data) ->
+    _ = adopt_recordings(Data, true),
     tell(Data, hangup).
 
 %% helpers
