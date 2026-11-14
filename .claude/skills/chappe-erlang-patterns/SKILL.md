@@ -41,10 +41,15 @@ item when you write the code, when you plan it, and when you review it.
 5. **Bounded.** A process that receives media, events or requests from outside has a
    bound on what it queues, and documents what happens past it (drop, close, slow the
    sender). `chappe_sip_config:get(ws_transport_max_mailbox)` is the model.
-6. **Dispatch by pattern.** `handle_call`, `handle_cast`, `handle_info` and `receive`
+6. **One message shape per event.** An app's messages keep the same form whatever
+   options were passed: `{App, Handle, Event}`. Context such as the call's `call_ref`
+   is read from the handle (`info/1`, `ref/1`), never added to the message only when an
+   option asks for it, so a `receive` written once matches every message. A new field
+   goes inside `Event` or behind the handle, not as an extra tuple element.
+7. **Dispatch by pattern.** `handle_call`, `handle_cast`, `handle_info` and `receive`
    match message shapes, never a variable tested with `element/2` or a guard on a list of
    atoms (`AGENTS.md`).
-7. **Fail loudly, at the edge.** Validate arguments in the caller's process and return
+8. **Fail loudly, at the edge.** Validate arguments in the caller's process and return
    `{error, badarg}` there, so a bad argument never crashes a live call's process.
    Unexpected messages are logged once, not crashed on.
 
