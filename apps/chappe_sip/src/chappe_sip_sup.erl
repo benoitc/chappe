@@ -4,7 +4,10 @@
 %% @doc Root supervisor.
 %%
 %% Child order is deliberate:
-%% 1. chappe_sip_registry_keeper: owns the location-store ETS, so the bindings
+%% 0. the `chappe' pg scope (unless an app started it) and chappe_sip_call,
+%%    which owns the table of what serves each call_ref: first, since
+%%    every call process may join it.
+%% 1.chappe_sip_registry_keeper: owns the location-store ETS, so the bindings
 %%    survive a crash of the chappe_sip_registry gen_server (which holds the logic).
 %% 2. chappe_sip_registry: the location store. It sits above the stack supervisor
 %%    so its ETS survives SIP engine restarts.
@@ -27,6 +30,8 @@
 %%    control plane). They sit above the stack so their state (and the media
 %%    backend connections) survive SIP engine restarts; both are populated
 %%    lazily and stay empty unless configured.
+%% 4a. chappe_sip_b2b_sup: the transfers B2BUA calls carry out; each one
+%%    watches its call's relay, so it needs nothing of the stack's.
 %% 5. chappe_sip_stack_sup: the SIP engine and per-call state (rest_for_one);
 %%    everything there dies with the engine.
 -module(chappe_sip_sup).
@@ -43,6 +48,12 @@ init([]) ->
     ok = chappe_sip_guard:init_table(),
     SupFlags = #{strategy => one_for_one, intensity => 10, period => 10},
     Children = [
+        %% the `chappe' pg scope and the call_ref table: calls are found
+        %% by call_ref from any node (chappe_sip_call)
+        (worker(chappe_sip_call))#{
+            id => chappe_pg_scope, start => {chappe_sip_call, start_scope, []}
+        },
+        worker(chappe_sip_call),
         worker(chappe_sip_registry_keeper),
         worker(chappe_sip_registry),
         worker(chappe_sip_dialog_index),
@@ -53,8 +64,11 @@ init([]) ->
         sup(chappe_sip_subscriber_sup),
         sup(chappe_sip_events_sup),
         sup(chappe_sip_peers_sup),
+        %% the optional GET /metrics listener (idle unless configured)
+        worker(chappe_sip_metrics_http),
         sup(chappe_sip_ws_sup),
         sup(chappe_sip_media_sup),
+        sup(chappe_sip_b2b_sup),
         sup(chappe_sip_stack_sup),
         %% after the stack: stopped first, while a REGISTER can still go out
         sup(chappe_sip_regc_sup)

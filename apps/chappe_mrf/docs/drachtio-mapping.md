@@ -12,9 +12,20 @@ chappe equivalents. Use it when you port a drachtio app.
 | `createB2BUA` with an array of URIs (serial) | a list target, or `pass_failure => false` and your own loop |
 | simultaneous ringing | `{parallel, [Uri]}` target |
 | `proxyRequestHeaders`, `proxyResponseHeaders` | `proxy_request_headers`, `proxy_response_headers` |
+| `responseHeaders` | `a_headers` |
+| `localSdpB`, `localSdpA` (values or functions) | `local_sdp_b`, `local_sdp_a` (values or funs) |
+| `auth` (object or function) | `auth` (map, list or fun of the challenge) |
+| `followRedirects`, `keepUriOnRedirect` | `follow_redirects`, `keep_uri_on_redirect` (B2BUA and UAC) |
+| `cbRequest`, `cbProvisional`, `cbFinalizedUac` | `notify` events `{b_request, Info}`, `{b_provisional, Msg}`, `{b_early, Dialog}` |
+| `req.locals`, `next()` | `chappe_sip_req:set_local/3`, `local/2,3`; return `{next, Req1}` from a middleware |
+| `dlg.on('hold' / 'unhold' / 'refresh')` | `{chappe_sip_dialog, D, hold \| unhold \| refresh, Req}` |
+| `dlg.on('publish')` | `handled_events => [publish]` |
+| (none) | `chappe_sip:dialog_events/1`: every dialog's state as it changes |
+| (none) | `call_ref`, `chappe_sip:calls/1`: one id per call across legs, records and nodes |
 | `uac.destroy({headers})` | `chappe_sip_b2b:hangup(B2b, #{headers, reason})` |
 | `dlg.on('refer' / 'info' / 'message')` | `requests => [refer, info, message]`, events `{chappe_sip_b2b, Ref, {request, ...}}` |
 | `srf.createUAC(uri, opts)` | `chappe_sip:create_uac(Uri, Opts)` |
+| `srf.createUAS(req, res, {localSdp})` | `chappe_sip:create_uas(Req, Res, #{local_sdp => Sdp \| fun(Offer)})` |
 | `srf.register(...)` client | `chappe_sip:register_client/2` |
 | `srf.use(fn)` middleware | `chappe_sip:use/1,2` |
 

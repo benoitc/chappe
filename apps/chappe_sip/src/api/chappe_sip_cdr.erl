@@ -76,9 +76,14 @@
     | {process_down, term()}.
 %% Timestamps are erlang:system_time(millisecond); a field not known (yet)
 %% is undefined.
+%% call_ref is the call's (chappe_sip_call), shared by every record of
+%% the call (both legs of a b2bua included); related names the call a
+%% transfer brought this leg from.
 -type cdr() :: #{
     id := binary(),
     role := role(),
+    call_ref := binary() | undefined,
+    related := binary() | undefined,
     call_id := binary() | undefined,
     from := binary() | undefined,
     to := binary() | undefined,
@@ -448,6 +453,8 @@ new_record(Id, Role, Fields, At) ->
     Base = #{
         id => Id,
         role => Role,
+        call_ref => undefined,
+        related => undefined,
         call_id => undefined,
         from => undefined,
         to => undefined,
@@ -470,6 +477,8 @@ new_record(Id, Role, Fields, At) ->
 record_keys() ->
     [
         role,
+        call_ref,
+        related,
         call_id,
         from,
         to,

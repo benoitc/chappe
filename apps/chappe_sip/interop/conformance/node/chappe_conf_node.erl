@@ -12,6 +12,14 @@
 %%   slow                  answer after 1 s
 %%   byer                  answer, then hang up after the ACK, with Reason
 %%   glare                 answer, then send a re-INVITE after the ACK
+%%   b2b, b2b-c, b2b-uas   bridge as a B2BUA (create_b2bua/4) to pjsua
+%%                         agent b (10.253.7.21), agent c (10.253.7.22) or
+%%                         this node's uas, media anchored and transfer
+%%                         => auto: a REFER from either leg is carried out
+%%                         by the B2BUA (RFC 5589 flows). The anchor is a
+%%                         stand-in NG server in this node that hands each
+%%                         SDP back as it came: the lab checks signalling,
+%%                         the SBC lab media through a real rtpengine.
 %%
 %% A REFER inside a call is accepted with chappe_sip:accept_refer/4: the
 %% node dials the target (with its Replaces, for an attended transfer) and
@@ -60,6 +68,7 @@ start(Ip) ->
     ok = subscribe_handler(),
     ok = events(),
     ok = chappe_sip:message(fun message/2),
+    ok = fake_rtpengine(),
     log("chappe_conf_node up on ~s", [Contact]),
     ok.
 
@@ -67,11 +76,76 @@ start(Ip) ->
 
 invite(Ip, Req, Res) ->
     log("INVITE ~s ~s", [chappe_sip_req:uri(Req), chappe_sip_req:call_id(Req)]),
-    case chappe_sip:find_replaced(Req) of
-        {error, no_replaces} ->
+    case {chappe_sip:find_replaced(Req), b2b_target(user(Req), Ip)} of
+        {{error, no_replaces}, {ok, Target}} ->
+            b2b(Target, Req, Res);
+        {{error, no_replaces}, none} ->
             answer(user(Req), Ip, Req, Res);
-        Found ->
+        {Found, _} ->
             replaces(Found, Ip, Req, Res)
+    end.
+
+b2b_target(<<"b2b">>, _Ip) -> {ok, <<"sip:b@10.253.7.21:5060">>};
+b2b_target(<<"b2b-c">>, _Ip) -> {ok, <<"sip:c@10.253.7.22:5060">>};
+b2b_target(<<"b2b-uas">>, Ip) -> {ok, <<"sip:uas@", Ip/binary, ":5060">>};
+b2b_target(_User, _Ip) -> none.
+
+%% ---- B2BUA with transfers ----
+
+b2b(Target, Req, Res) ->
+    Opts = #{
+        media => anchor,
+        notify => spawn(fun b2b_events/0),
+        transfer => auto,
+        transfer_opts => #{
+            domains => [<<"10.253.7.20">>, <<"10.253.7.21">>, <<"10.253.7.22">>]
+        }
+    },
+    case chappe_sip:create_b2bua(Req, Res, Target, Opts) of
+        {ok, Legs} ->
+            log("b2b ~s up", [Target]),
+            log("b2b ~s done: ~p", [Target, chappe_sip_b2b:relay(Legs)]);
+        {error, Why} ->
+            log("b2b ~s failed: ~p", [Target, Why])
+    end.
+
+%% the call's events, for the logs
+b2b_events() ->
+    receive
+        {chappe_sip_b2b, _Ref, Ev} ->
+            log("b2b event ~p", [Ev]),
+            b2b_events()
+    after 600000 ->
+        ok
+    end.
+
+%% A stand-in rtpengine (NG over UDP on 127.0.0.1:22222): every offer and
+%% answer gets its SDP back, everything else ok.
+fake_rtpengine() ->
+    Self = self(),
+    _ = spawn(fun() ->
+        {ok, Sock} = gen_udp:open(22222, [binary, {active, true},
+                                          {ip, {127, 0, 0, 1}}]),
+        Self ! rtpe_up,
+        rtpe_loop(Sock)
+    end),
+    receive rtpe_up -> ok after 5000 -> error(rtpe) end,
+    chappe_sip_media:configure(
+      #{rtpengine => #{nodes => [#{name => conf_rtpe, host => "127.0.0.1",
+                                    port => 22222}]}}).
+
+rtpe_loop(Sock) ->
+    receive
+        {udp, Sock, Ip, Port, Packet} ->
+            [Cookie, Body] = binary:split(Packet, <<" ">>),
+            {ok, Cmd} = chappe_rtpengine_bencode:decode(Body),
+            Reply = case Cmd of
+                #{<<"sdp">> := Sdp} -> #{<<"result">> => <<"ok">>, <<"sdp">> => Sdp};
+                _ -> #{<<"result">> => <<"ok">>}
+            end,
+            Out = chappe_rtpengine_bencode:encode_to_binary(Reply),
+            ok = gen_udp:send(Sock, Ip, Port, <<Cookie/binary, " ", Out/binary>>),
+            rtpe_loop(Sock)
     end.
 
 %% RFC 3891 section 3 response rules, as the answer-calls guide shows them

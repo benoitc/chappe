@@ -13,10 +13,17 @@
 -export([all/0, init_per_suite/1, end_per_suite/1, end_per_testcase/2]).
 -export([proxy_parallel_first_wins/1, proxy_serial_failover/1,
          proxy_single_200/1, proxy_parallel_6xx_cancels/1]).
+-export([redirect_followed/1, redirect_not_followed_by_default/1,
+         redirect_bounded/1, redirect_policy_and_seen/1, redirect_depth/1,
+         redirect_parallel/1, provisional_timeout/1, final_timeout/1,
+         bad_proxy_options/1]).
 
 all() ->
     [proxy_single_200, proxy_serial_failover, proxy_parallel_first_wins,
-     proxy_parallel_6xx_cancels].
+     proxy_parallel_6xx_cancels, redirect_followed,
+     redirect_not_followed_by_default, redirect_bounded,
+     redirect_policy_and_seen, redirect_depth, redirect_parallel,
+     provisional_timeout, final_timeout, bad_proxy_options].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -160,6 +167,229 @@ proxy_parallel_6xx_cancels(_Config) ->
     ok = expect(caller_got_603),
     receive {proxy_done, {ok, #{final_status := 603}}} -> ok
     after 6000 -> ct:fail(no_proxy_done) end.
+
+%% ---- redirects (RFC 3261 16.7 step 4) and branch timeouts ----
+
+%% req: RFC3261-16.7-4 a proxy that recurses on a 3xx adds its Contacts
+%% to the target set
+%% follow_redirects: a 302 from the first target sends the request to its
+%% Contact, which answers 200; the caller sees the 200, never the 302.
+redirect_followed(_Config) ->
+    {EP, [D1, D2]} = setup(2),
+    proxy([dest(D1)], #{follow_redirects => true}),
+    redirect(D1, [D2]),
+    answer(D2, 200),
+    call(EP, 200),
+    ok = expect({invited, D2, ctc(D2)}),
+    ok = expect_done(200).
+
+%% Without follow_redirects the 302 goes back to the caller, as before.
+redirect_not_followed_by_default(_Config) ->
+    {EP, [D1, D2]} = setup(2),
+    proxy([dest(D1)], #{}),
+    redirect(D1, [D2]),
+    silent(D2),
+    call(EP, 302),
+    ok = expect_done(302),
+    receive {invited, D2, _} -> ct:fail(followed) after 300 -> ok end.
+
+%% req: RFC3261-16.7-4 the Contacts recursed on are removed from the
+%% response before it joins the response context
+%% max_targets bounds what one transaction adds: of three Contacts two
+%% are tried (and fail), the third stays in the 302 the caller gets.
+redirect_bounded(_Config) ->
+    {EP, [D1, D2, D3, D4]} = setup(4),
+    proxy([dest(D1)], #{follow_redirects => #{max_targets => 2}}),
+    redirect(D1, [D2, D3, D4]),
+    answer(D2, 486),
+    answer(D3, 486),
+    silent(D4),
+    R = call(EP, 302),
+    ok = expect({invited, D2, ctc(D2)}),
+    ok = expect({invited, D3, ctc(D3)}),
+    ?assertNotEqual(nomatch, binary:match(R, ctc(D4))),
+    ?assertEqual(nomatch, binary:match(R, ctc(D2))),
+    ?assertEqual(nomatch, binary:match(R, ctc(D3))),
+    ok = expect_done(302),
+    receive {invited, D4, _} -> ct:fail(past_max_targets) after 300 -> ok end.
+
+%% req: RFC3261-16.5 a URI is added to the target set once
+%% The allow policy refuses a target, and a Contact naming a target
+%% already tried (a redirect back to itself) is not tried again; the 302
+%% reaches the caller with both.
+redirect_policy_and_seen(_Config) ->
+    {EP, [D1, D2]} = setup(2),
+    Refused = ctc(D2),
+    proxy([ctc(D1)], #{follow_redirects =>
+                           #{allow => fun(U) -> U =/= Refused end}}),
+    redirect(D1, [D1, D2]),
+    silent(D2),
+    R = call(EP, 302),
+    ?assertNotEqual(nomatch, binary:match(R, ctc(D2))),
+    ?assertNotEqual(nomatch, binary:match(R, ctc(D1))),
+    ok = expect_done(302),
+    receive {invited, D2, _} -> ct:fail(policy_ignored) after 300 -> ok end.
+
+%% max_depth 1: a target a 302 gave is tried, but a 302 from it is not
+%% followed again.
+redirect_depth(_Config) ->
+    {EP, [D1, D2, D3]} = setup(3),
+    proxy([dest(D1)], #{follow_redirects => #{max_depth => 1}}),
+    redirect(D1, [D2]),
+    redirect(D2, [D3]),
+    silent(D3),
+    R = call(EP, 302),
+    ok = expect({invited, D2, ctc(D2)}),
+    ?assertNotEqual(nomatch, binary:match(R, ctc(D3))),
+    ok = expect_done(302),
+    receive {invited, D3, _} -> ct:fail(past_max_depth) after 300 -> ok end.
+
+%% Parallel forking: the redirect targets are sent at once, next to the
+%% branches still ringing.
+redirect_parallel(_Config) ->
+    {EP, [D1, D2, D3]} = setup(3),
+    proxy([dest(D1), dest(D2)],
+          #{forking => parallel, follow_redirects => true}),
+    redirect(D1, [D3]),
+    answer(D2, 486),
+    answer(D3, 200),
+    call(EP, 200),
+    ok = expect({invited, D3, ctc(D3)}),
+    ok = expect_done(200).
+
+%% provisional_timeout: a target that sends nothing, not even a 100, is
+%% dropped without a CANCEL (RFC 3261 9.1) and the next one is tried well
+%% before Timer C or Timer B.
+provisional_timeout(_Config) ->
+    {EP, [D1, D2]} = setup(2),
+    proxy([dest(D1), dest(D2)], #{provisional_timeout => 300}),
+    Test = self(),
+    uas(D1, fun(Sock) ->
+        {_Inv, _Src} = recv(Sock, <<"INVITE">>),
+        receive
+            {udp, Sock, _, _, <<"CANCEL", _/binary>>} -> Test ! d1_cancelled
+        after 2000 -> ok
+        end
+    end),
+    answer(D2, 200),
+    T0 = erlang:monotonic_time(millisecond),
+    call(EP, 200),
+    ?assert(erlang:monotonic_time(millisecond) - T0 < 1500),
+    ok = expect_done(200),
+    receive d1_cancelled -> ct:fail(cancel_before_provisional)
+    after 500 -> ok
+    end.
+
+%% final_timeout: a ringing target is CANCELled when no final comes in
+%% time, though each 180 would restart Timer C, and the next is tried.
+final_timeout(_Config) ->
+    {EP, [D1, D2]} = setup(2),
+    proxy([dest(D1), dest(D2)], #{final_timeout => 500}),
+    Test = self(),
+    uas(D1, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        send(Sock, Src, resp(Inv, 180, <<"Ringing">>, tag(), [], <<>>)),
+        {Cancel, CSrc} = recv(Sock, <<"CANCEL">>),
+        send(Sock, CSrc, resp(Cancel, 200, <<"OK">>, tag(), [], <<>>)),
+        send(Sock, Src, resp(Inv, 487, <<"Request Terminated">>, tag(), [],
+                             <<>>)),
+        Test ! d1_cancelled
+    end),
+    answer(D2, 200),
+    call(EP, 200),
+    ok = expect(d1_cancelled),
+    ok = expect_done(200).
+
+%% Options of the wrong shape are refused before anything is sent.
+bad_proxy_options(_Config) ->
+    {EP, [D1]} = setup(1),
+    Test = self(),
+    Bad = [#{provisional_timeout => 0}, #{final_timeout => infinity},
+           #{follow_redirects => yes},
+           #{follow_redirects => #{max_targets => 33}},
+           #{follow_redirects => #{max_depth => 0}},
+           #{follow_redirects => #{allow => fun(_, _) -> true end}},
+           #{follow_redirects => #{other => 1}}],
+    ok = chappe_sip:invite(fun(Req, _Res) ->
+        Test ! {results, [chappe_sip:proxy_request(Req, [dest(D1)], O)
+                          || O <- Bad]}
+    end),
+    silent(D1),
+    caller(fun(Sock) ->
+        send(Sock, EP, invite(Sock, callid(), tag())),
+        _ = recv_status(Sock, 500)
+    end),
+    receive
+        {results, Rs} ->
+            ?assertEqual([{error, {badarg, provisional_timeout}},
+                          {error, {badarg, final_timeout}}
+                          | lists:duplicate(5, {error, {badarg, follow_redirects}})],
+                         Rs)
+    after 6000 -> ct:fail(no_results)
+    end,
+    receive {invited, D1, _} -> ct:fail(sent) after 300 -> ok end.
+
+proxy(Dests, Opts) ->
+    Test = self(),
+    ok = chappe_sip:invite(fun(Req, _Res) ->
+        Test ! {proxy_done, chappe_sip:proxy_request(Req, Dests, Opts)}
+    end).
+
+expect_done(Status) ->
+    receive {proxy_done, {ok, #{final_status := Status}}} -> ok
+    after 8000 -> ct:fail({no_proxy_done, Status})
+    end.
+
+%% the caller: an INVITE to the app, and the final it gets (ACKed by the
+%% proxy for a non-2xx; the 2xx ACK does not matter here)
+call(EP, Status) ->
+    Test = self(),
+    caller(fun(Sock) ->
+        send(Sock, EP, invite(Sock, callid(), tag())),
+        Test ! {final, recv_status(Sock, Status)}
+    end),
+    receive {final, R} -> R after 8000 -> ct:fail({no_final, Status}) end.
+
+%% a target that answers a 302 naming the Contacts of these ports
+redirect(Port, To) ->
+    Test = self(),
+    uas(Port, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        Test ! {invited, Port, ruri(Inv)},
+        Contacts = iolist_to_binary(
+            lists:join(<<", ">>, [[<<"<">>, ctc(P), <<">">>] || P <- To])),
+        send(Sock, Src, resp(Inv, 302, <<"Moved Temporarily">>, tag(),
+                             [{<<"Contact">>, Contacts}], <<>>)),
+        _ = recv(Sock, <<"ACK">>)
+    end).
+
+answer(Port, Status) ->
+    Test = self(),
+    uas(Port, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        Test ! {invited, Port, ruri(Inv)},
+        {Hdrs, Body} =
+            case Status of
+                200 -> {[{<<"Contact">>, ctc(Port)}], sdp()};
+                _ -> {[], <<>>}
+            end,
+        send(Sock, Src, resp(Inv, Status, <<"Final">>, tag(), Hdrs, Body)),
+        timer:sleep(500)
+    end).
+
+silent(Port) ->
+    Test = self(),
+    uas(Port, fun(Sock) ->
+        receive
+            {udp, Sock, _, _, <<"INVITE ", _/binary>> = Inv} ->
+                Test ! {invited, Port, ruri(Inv)}
+        after 3000 -> ok
+        end
+    end).
+
+ruri(Inv) ->
+    [_, U | _] = binary:split(Inv, <<" ">>, [global]),
+    U.
 
 %% ---- peers ----
 

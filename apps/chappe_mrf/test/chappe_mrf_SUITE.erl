@@ -15,6 +15,7 @@
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([
     connect_caller_ivr/1,
+    fs_refer_transfers_caller/1,
     caller_hangup/1,
     unknown_channel_refused/1,
     owner_death_kills_channel/1,
@@ -58,6 +59,7 @@
 all() ->
     [
         connect_caller_ivr,
+        fs_refer_transfers_caller,
         caller_hangup,
         unknown_channel_refused,
         owner_death_kills_channel,
@@ -251,6 +253,33 @@ connect_caller_ivr(Config) ->
     _ = owner_msg({dtmf, <<"5">>}),
     ?F:ua_bye(Ua),
     _ = owner_msg({hangup, <<"NORMAL_CLEARING">>}),
+    Owner ! stop.
+
+%% The channel REFERs the caller elsewhere (a deflect) on a call made with
+%% transfer => auto: chappe carries it out. The target is called with the
+%% caller's media through rtpengine, the channel gets the final NOTIFY,
+%% then a BYE, and the caller sees neither a REFER nor a re-INVITE.
+fs_refer_transfers_caller(Config) ->
+    {_Callee, CP} = ?F:callee_start(<<"carol">>),
+    ivr(Config, #{transfer => auto}),
+    {Ua, _Ep, {_, Ref}, Owner} = call_in(Config),
+    ReferTo = <<"<sip:carol@127.0.0.1:", (integer_to_binary(CP))/binary, ">">>,
+    ok = ?F:fs_refer(?config(fs, Config), ReferTo),
+    Answer = fs_what(response),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, Answer),
+    receive
+        {callee, invite, _Inv} -> ok
+    after 5000 -> ct:fail(no_target_invite)
+    end,
+    ?assert(has(fs_what(notify), <<"SIP/2.0 100">>)),
+    ?assert(has(fs_what(notify), <<"SIP/2.0 200">>)),
+    _ = fs_what(bye),
+    receive
+        {chappe_sip_b2b, Ref, {transferred, b, _}} -> ok
+    after 5000 -> ct:fail(no_transferred)
+    end,
+    no_ua_event(Ua, reinvite, 500),
+    no_ua_event(Ua, request, 0),
     Owner ! stop.
 
 %% The caller hangs up: the channel gets a BYE, the owner the hangup, and

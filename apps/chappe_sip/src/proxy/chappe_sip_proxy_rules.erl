@@ -9,7 +9,7 @@
 
 -export([best_response/1, loop_hash/1, looped/1, new_branch/1]).
 -export([retarget/2, is_own_address/1, is_loose/1]).
--export([record_routes/1]).
+-export([record_routes/1, rr_contact/2, rewrite_rr/3, next_hop/3]).
 
 %% the reasons 4xx preferred by 16.7 step 6: they let the client retry
 -define(RETRY_4XX, [401, 407, 415, 420, 484]).
@@ -169,7 +169,7 @@ own_addresses() ->
      || C <- [
             chappe_sip_engine:contact(),
             chappe_sip_engine:tls_contact()
-            | chappe_sip_binds:contacts()
+            | chappe_sip_binds:own_uris()
         ],
         {ok, A} <- [hostport(C)]
     ].
@@ -258,3 +258,84 @@ is_loose(Uri) ->
 -spec record_routes(map()) -> boolean().
 record_routes(Opts) ->
     maps:get(record_route, Opts, maps:get(remain_in_dialog, Opts, false)).
+
+%% 16.6 step 4 (and RFC 5630): the Record-Route is a SIPS URI, our TLS
+%% address, when the forwarded request's Request-URI or top Route is a SIPS
+%% URI, and a SIP URI otherwise, also for a request that came over TLS
+-spec rr_contact(chappe_sip_msg:msg(), binary() | undefined) ->
+    binary() | undefined.
+rr_contact(Msg, Local) ->
+    Top =
+        case chappe_sip_route:routes(Msg) of
+            [R | _] -> chappe_sip_hdr:name_addr_uri(R);
+            [] -> undefined
+        end,
+    Secure =
+        chappe_sip_uri:is_sips(chappe_sip_msg:uri(Msg)) orelse
+            chappe_sip_uri:is_sips(Top),
+    case Secure andalso chappe_sip_binds:contact_or_primary(Local, true) of
+        Tls when is_binary(Tls) -> Tls;
+        _ -> chappe_sip_binds:contact_or_primary(Local, false)
+    end.
+
+%% 16.7 step 8: our Record-Route in a 1xx/2xx, rewritten for the upstream
+%% side as Contact (signed for that address with these flows), so each
+%% side of a TLS-to-SIP request routes back to us over its own transport
+-spec rewrite_rr(binary(), binary() | undefined, chappe_sip_route:flows()) ->
+    binary().
+rewrite_rr(Raw, Contact, Flows) ->
+    case {Contact, chappe_sip_msg:parse(Raw)} of
+        {C, {ok, M}} when is_binary(C) ->
+            CallId = chappe_sip_msg:call_id(M),
+            RRs = [
+                case chappe_sip_route:is_self(V, undefined, CallId) of
+                    true -> chappe_sip_route:record_route(C, Flows, CallId);
+                    false -> V
+                end
+             || H <- chappe_sip_msg:get_all(<<"record-route">>, M),
+                V <- chappe_sip_hdr:split_list(H)
+            ],
+            M1 = lists:foldr(
+                fun(V, Acc) ->
+                    chappe_sip_msg:prepend(<<"Record-Route">>, V, Acc)
+                end,
+                chappe_sip_msg:remove(<<"record-route">>, M),
+                RRs
+            ),
+            iolist_to_binary(chappe_sip_msg:encode(M1));
+        _ ->
+            Raw
+    end.
+
+%% a WS target goes over its flow. Otherwise the top Route is the next hop
+%% when there is one: a loose router (;lr) keeps the Request-URI, a strict
+%% one takes it, the Request-URI going to the end of the Route set (16.6
+%% step 6). With no Route the Request-URI is the next hop, or the SIPS
+%% target a SIP request goes to over TLS.
+-spec next_hop(term(), binary() | undefined, chappe_sip_msg:msg()) ->
+    {term(), chappe_sip_msg:msg()}.
+next_hop({ws, _} = D, _Via, Msg) ->
+    {D, Msg};
+next_hop({flow, _Uri, Flow}, _Via, Msg) ->
+    %% RFC 5626 5.3: a binding's flow is the way to reach it
+    {chappe_sip_route:flow_route(Flow), Msg};
+next_hop(_Dest, Via, Msg) ->
+    case chappe_sip_route:routes(Msg) of
+        [] when is_binary(Via) ->
+            {Via, Msg};
+        [] ->
+            {chappe_sip_msg:uri(Msg), Msg};
+        [Top | Rest] ->
+            TopUri = chappe_sip_hdr:name_addr_uri(Top),
+            case is_loose(TopUri) of
+                true ->
+                    {TopUri, Msg};
+                false ->
+                    RUri = chappe_sip_msg:uri(Msg),
+                    Msg1 = chappe_sip_route:set_routes(
+                        Rest ++ [<<"<", RUri/binary, ">">>],
+                        chappe_sip_msg:set_uri(TopUri, Msg)
+                    ),
+                    {TopUri, Msg1}
+            end
+    end.

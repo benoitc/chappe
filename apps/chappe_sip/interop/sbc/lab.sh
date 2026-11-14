@@ -13,6 +13,10 @@
 #   lab.sh sipp SCEN USER PAUSE_MS CALL_ID
 #                          run one SIPp call: scenarios/SCEN.xml here, or
 #                          ../sipp/scenarios/SCEN.xml, as USER@sbc
+#   lab.sh sipp-nat SCEN USER PAUSE_MS CALL_ID [IP]
+#                          the same call to the node's NAT address
+#                          (10.253.10.10, advertised as 203.0.113.10),
+#                          from IP when given
 #   lab.sh ctl FUN [ARGS]  call chappe_sbc_node:FUN(ARGS) on the node
 #                          (erl_call -a syntax: ARGS is an Erlang list)
 #   lab.sh fs N CMD        run CMD with fs_cli on fsN
@@ -92,6 +96,17 @@ case "${1:-}" in
             --entrypoint /bin/sh chappe-conf-sipp /sipp.sh \
             "$SCEN" "$USER" "$PAUSE" "$CID" 10.253.9.10
         ;;
+    sipp-nat)
+        # the same, on the NAT network, to the node's NAT address; IP
+        # pins SIPp's address (inside 10.253.10.0/26: the local network)
+        SCEN="$2" USER="$3" PAUSE="$4" CID="$5" IP="${6:-}"
+        docker run --rm --network "${PROJECT}_nat" ${IP:+--ip "$IP"} \
+            -v "$INTEROP/sipp/scenarios":/scenarios:ro \
+            -v "$HERE/scenarios":/sbc:ro \
+            -v "$HERE/sipp.sh":/sipp.sh:ro \
+            --entrypoint /bin/sh chappe-conf-sipp /sipp.sh \
+            "$SCEN" "$USER" "$PAUSE" "$CID" 10.253.10.10
+        ;;
     ctl)
         ctl "$2" "${3:-[]}"
         ;;
@@ -115,7 +130,7 @@ case "${1:-}" in
         docker volume rm "$VOLUME" >/dev/null 2>&1 || true
         ;;
     *)
-        sed -n '5,27p' "$0" >&2
+        sed -n '5,30p' "$0" >&2
         exit 2
         ;;
 esac

@@ -76,6 +76,53 @@ and one that never answered is dropped; either way it counts as a 408. The
 default is the `timer_c_ms` setting (185 s; the RFC asks for more than 3
 minutes).
 
+## Move on from a dead or slow branch
+
+Timer C restarts with every provisional, so a target that keeps ringing
+holds the call. Two timeouts per branch end it sooner:
+
+```erlang
+chappe_sip:proxy_request(Req, Dests, #{provisional_timeout => 2000,
+                                       final_timeout => 30000}).
+```
+
+- `provisional_timeout`: a branch that sent nothing, not even a 100, by
+  then is dropped (no CANCEL: RFC 3261 9.1 allows one only after a
+  provisional) and counts as a 408. With sequential forking the next
+  target is tried.
+- `final_timeout`: a branch with no final by then is CANCELled (or dropped
+  if it never sent a provisional) and counts as a 408, whatever its
+  provisionals did to Timer C.
+
+Both are in ms, off by default, and run next to Timer C: the first to fire
+ends the branch.
+
+## Follow redirects
+
+By default a 3xx is a final like any other and may reach the caller. With
+`follow_redirects` the proxy recurses on its Contacts (RFC 3261 16.7 step
+4):
+
+```erlang
+Local = fun(Uri) -> binary:match(Uri, <<"@10.0.0.">>) =/= nomatch end,
+chappe_sip:proxy_request(Req, Dests, #{
+    follow_redirects => #{max_targets => 5, max_depth => 2, allow => Local}
+}).
+```
+
+- The Contacts are tried in q order, next in sequential forking, at once in
+  parallel forking.
+- `max_targets` (default 5, at most 32) caps the targets every 3xx of the
+  transaction adds together; `max_depth` (default 2, at most 8) caps how
+  many 3xx deep a target may come from.
+- `allow` is your policy: a fun of the URI, run in the request worker. A
+  URI it refuses, one already in the target set, and a SIP URI for a SIPS
+  request are not tried.
+- The Contacts tried leave the 3xx. A 3xx with Contacts left can still be
+  the best final the caller gets; one with none left is not.
+- `follow_redirects => true` takes the defaults and allows every URI. A 3xx
+  can name any number, so on an edge facing customers give it a policy.
+
 ## Route to a registered browser
 
 Resolve an AOR to a WebSocket flow and forward over it:
@@ -179,6 +226,8 @@ is not relayed.
 ## Where it lives
 
 - Modules: `chappe_sip_proxy`, `chappe_sip_proxy_rules`,
+  `chappe_sip_proxy_redirect` (follow_redirects, the branch timeouts),
+  `chappe_sip_proxy_accepted` (the RFC 6026 Accepted state),
   `chappe_sip_proxy_dialog`, `chappe_sip_route`, the stray 2xx path of the
   NIF (`stray_cb`).
 - Tests: `chappe_sip_proxy_conf_SUITE`, `chappe_sip_proxy_forking_SUITE`,

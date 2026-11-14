@@ -15,14 +15,25 @@
 %% ?MAX_QUEUE messages waiting (a slow collector, or none at all, only
 %% loses captures). The packets carry the chunks sofia sends, plus the
 %% correlation chunk (type 17) with the Call-ID.
+%%
+%% correlate/3 ties a Call-ID to the call_ref of its call (chappe_sip_call)
+%% for every transport: two log packets (HEP protocol type 100), one whose
+%% correlation chunk is the Call-ID and one whose correlation chunk is the
+%% call_ref, each with the JSON payload
+%% {"call_ref": Ref, "call_id": CallId, "role": uas | uac}. A collector
+%% such as heplify-server stores them by correlation id, so a search by
+%% either one finds the other, and every leg of the call shares the ref.
 -module(chappe_sip_hep).
 -behaviour(gen_server).
 
 -export([start_link/0, configure/1, validate/1, native_url/1, capture/4]).
+-export([correlate/3]).
 -export([encode/1, decode/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 -export_type([config/0, packet/0]).
 
+%% HEP protocol type of a log entry (heplify-server's hep_proto_100)
+-define(LOG_TYPE, 100).
 %% captures waiting past this many are dropped
 -define(MAX_QUEUE, 10000).
 %% capture on/off, read on every WS message without a call
@@ -120,6 +131,27 @@ capture(Dir, Proto, Peer, Raw) ->
         _ ->
             ok
     end.
+
+%% Tie CallId to CallRef at the capture server: one call leg (uas, a call
+%% we answer or bridge; uac, one we send). A no-op while capture is off;
+%% dropped as capture/4 is past ?MAX_QUEUE.
+-spec correlate(binary() | undefined, binary() | undefined, uas | uac) -> ok.
+correlate(CallId, CallRef, Role) when is_binary(CallId), is_binary(CallRef) ->
+    case persistent_term:get(?ON, false) andalso whereis(?MODULE) of
+        Pid when is_pid(Pid) ->
+            case erlang:process_info(Pid, message_queue_len) of
+                {message_queue_len, N} when N < ?MAX_QUEUE ->
+                    gen_server:cast(
+                        Pid, {correlate, CallId, CallRef, Role, now_us()}
+                    );
+                _ ->
+                    ok
+            end;
+        _ ->
+            ok
+    end;
+correlate(_CallId, _CallRef, _Role) ->
+    ok.
 
 %% ---- HEPv3 (chunks of vendor 0) ----
 
@@ -277,6 +309,17 @@ handle_cast({capture, Dir, Proto, Peer, Raw, Us}, #state{sock = Sock} = S) when
         end,
     _ = gen_udp:send(Sock, Ip, Port, encode(P)),
     {noreply, S};
+handle_cast(
+    {correlate, CallId, CallRef, Role, Us}, #state{sock = Sock} = S
+) when
+    Sock =/= undefined
+->
+    #{host := Ip, port := Port, capture_id := Id} = S#state.cfg,
+    _ = [
+        gen_udp:send(Sock, Ip, Port, encode(P))
+     || P <- correlation_packets(CallId, CallRef, Role, Us, Id)
+    ],
+    {noreply, S};
 handle_cast(_Msg, S) ->
     {noreply, S}.
 
@@ -296,6 +339,29 @@ off(#state{sock = Sock} = S) ->
     S#state{sock = undefined, cfg = undefined}.
 
 %% ---- helpers ----
+
+%% The log packets of correlate/3: the same payload under each id.
+-spec correlation_packets(
+    binary(), binary(), uas | uac, integer(), non_neg_integer()
+) -> [packet()].
+correlation_packets(CallId, CallRef, Role, Us, CaptureId) ->
+    Payload = iolist_to_binary(
+        json:encode(#{
+            <<"call_ref">> => CallRef,
+            <<"call_id">> => CallId,
+            <<"role">> => atom_to_binary(Role)
+        })
+    ),
+    Base = #{
+        proto => udp,
+        src => {{0, 0, 0, 0}, 0},
+        dst => {{0, 0, 0, 0}, 0},
+        time => {Us div 1000000, Us rem 1000000},
+        capture_id => CaptureId,
+        payload => Payload,
+        proto_type => ?LOG_TYPE
+    },
+    [Base#{correlation_id => C} || C <- [CallId, CallRef]].
 
 resolve(Host) when is_tuple(Host) ->
     case inet:ntoa(Host) of

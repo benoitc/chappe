@@ -17,6 +17,7 @@
 
 -export([start/1, start/2, stop/0, install/0]).
 -export([set_description/1, kick/1, uri/0, set_private/1, subscribe_policy/1]).
+-export([refer_policy/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -define(ANSWER,
@@ -78,6 +79,14 @@ subscribe_policy(undefined) ->
     ok;
 subscribe_policy(Policy) ->
     persistent_term:put({?MODULE, subscribe_policy}, Policy).
+
+%% Policy: fun(Info) -> boolean() | {reject, Code} for the REFERs to the
+%% focus (chappe_sip_focus:refer/4); undefined lets every REFER through.
+refer_policy(undefined) ->
+    _ = persistent_term:erase({?MODULE, refer_policy}),
+    ok;
+refer_policy(Policy) ->
+    persistent_term:put({?MODULE, refer_policy}, Policy).
 
 %% the SIP entry points, routed to the running conference
 install() ->
@@ -235,12 +244,17 @@ handle_info(Msg, S) ->
         ignore -> leg_info(Msg, S)
     end.
 
-%% a participant asks the focus to call someone (RFC 4579 5.5)
+%% a participant asks the focus to call someone (RFC 4579 5.5) or to
+%% remove a participant (5.11)
 leg_info({chappe_sip_dialog, D, refer, Req, Res}, S) ->
-    case chappe_sip_refer:accept(D, Req, Res, #{}) of
-        {ok, Refer} ->
-            #{target := Target} = chappe_sip_refer:target(Refer),
+    Policy = persistent_term:get({?MODULE, refer_policy}, fun(_) -> true end),
+    case chappe_sip_focus:refer(D, Req, Res, #{policy => Policy}) of
+        {add, Target, Refer} ->
             {noreply, changed(dial(Target, Refer, S))};
+        {remove, Target, Refer} ->
+            {reply, N, S1} = handle_call({kick, Target}, self(), S),
+            ok = chappe_sip_refer:final(Refer, case N of 0 -> 404; _ -> 200 end),
+            {noreply, S1};
         {error, _} ->
             {noreply, S}
     end;

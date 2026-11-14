@@ -12,6 +12,8 @@ participants on request (RFC 4579).
 
 - A peer transfers a call to you or through you (you are the recipient).
 - You transfer a call yourself (you are the sender).
+- A B2BUA call carries a transfer out itself, blind or attended
+  (`transfer => auto`, below).
 - A conference focus handles REFERs to add (`method=INVITE`), remove
   (`method=BYE`) or refer (`method=REFER`) a participant.
 
@@ -157,6 +159,119 @@ NOTIFY router hands them to `chappe_sip_refer` before your own
 `chappe_sip_refer:notify_handler/0` and `handle_notify/2` still work in a
 handler of yours.
 
+## Transfer a B2BUA call
+
+When the call is a B2BUA call (`create_b2bua/4`), let the B2BUA carry the
+REFER out itself. The leg that sends the REFER is the transferor; the other
+leg is the transferee and keeps its media: the target replaces the
+transferor's leg behind rtpengine, so the transferee sees no re-INVITE.
+This needs `media => anchor`.
+
+```erlang
+{ok, Legs} = chappe_sip:create_b2bua(Req, Res, Callee, #{
+    media => anchor,
+    notify => self(),
+    transfer => auto,
+    transfer_opts => #{domains => [<<"pbx.example.com">>]}
+}),
+{done, _} = chappe_sip_b2b:relay(Legs).
+```
+
+What happens on a REFER from either leg:
+
+- The REFER is checked (as above), then the call's policy decides. It is
+  answered 200 and the referrer gets `NOTIFY 100 Trying`.
+- Blind (RFC 5589 6): the B2BUA INVITEs the Refer-To target on the
+  referrer's side, under the identity the referrer saw on its leg, with the
+  REFER's Referred-By unchanged. On a 2xx the referrer gets the final
+  `NOTIFY 200`, then a BYE. On a failure it gets the final status and the
+  call stays as it was.
+- Attended (RFC 5589 7.3): a Refer-To with Replaces naming a leg of another
+  B2BUA call of this node joins the two remote parties through rtpengine:
+  the target's leg leaves its call and is re-INVITEd into this one, and no
+  new INVITE goes out. A Replaces naming no local dialog goes to the target
+  in an INVITE with Replaces and `Require: replaces`.
+- The new leg keeps the call's `call_ref`, and its call record names it with
+  `related`.
+
+The notify process gets `{chappe_sip_b2b, Ref, Event}`:
+
+| Event | When |
+|---|---|
+| `{transfer, Leg, Info}` | the REFER was accepted |
+| `{replaced, Leg}` | the target took the leg over |
+| `{transferred, Leg, Info}` | the referrer heard the result and was hung up |
+| `{transfer_failed, Leg, Info}` | the target failed; `Info` has `status` |
+
+### Decide who may transfer where
+
+Without a policy fun, a target must be a sip or sips URI on one of
+`domains` (default this node's host): another host or a `tel:` number gets
+403 before anything is called. Give your own policy to decide:
+
+```erlang
+Policy = fun(#{target := Target, referrer := Who}) ->
+    allowed(Who, Target)
+end,
+Opts = #{media => anchor, transfer => auto,
+         transfer_opts => #{policy => Policy, max_transfers => 3}}.
+```
+
+The fun gets `kind` (`blind` or `attended`), `leg`, `target`, `refer_to`,
+`referrer`, `referred_by`, `call_ref` and `transfers`, and returns `true`,
+`false` (403) or `{reject, Code}`. It runs in the transfer's process, on
+the node that holds the call.
+
+- `referrer` is the REFER's From, the identity its dialog was formed with.
+  `referred_by` is only what the REFER claims (RFC 3892 6): never grant on
+  it alone.
+- A Replaces naming a local dialog whose party is not the referrer gets
+  403, and that call is left alone (RFC 3891 3).
+- A call carries at most `max_transfers` transfers (default 5), one at a
+  time: a second REFER while one runs gets 500 with Retry-After.
+- A REFER for another method than INVITE gets 403. A REFER with
+  `Require: multiple-refer` (RFC 5368) gets 420 with Unsupported.
+
+### Decide each transfer in your app
+
+With `transfer => notify` your notify process gets each REFER first:
+
+```erlang
+receive
+    {chappe_sip_b2b, Ref, {refer, #{target := Target} = Info}} ->
+        case allowed(Target) of
+            true -> ok = chappe_sip_b2b_transfer:accept(Info, #{});
+            false -> ok = chappe_sip_b2b_transfer:reject(Info, 403)
+        end
+end.
+```
+
+`accept/2` takes `target => Uri` to send the transferee elsewhere (a blind
+transfer then). Without an answer within `transfer_opts` `timeout` (10000
+ms) the REFER gets 603. Both calls work from any node.
+
+### Calls to FreeSWITCH and conferences
+
+- A chappe_mrf call (`chappe_mrf:connect_caller/3` with `transfer => auto`)
+  is a B2BUA call: a REFER from the FreeSWITCH side (a deflect) is carried
+  out by chappe, the channel gets the final NOTIFY and a BYE, and the
+  caller sees neither the REFER nor a re-INVITE.
+- A conference member's REFER on its call is a transfer of that call: the
+  target takes the member's place, on either backend.
+- A REFER to the focus (RFC 4579) goes through `chappe_sip_focus:refer/4`:
+
+```erlang
+case chappe_sip_focus:refer(Dialog, RReq, RRes, #{policy => Policy}) of
+    {add, Uri, Refer} -> dial_in(Uri, Refer);
+    {remove, Uri, Refer} -> kick(Uri, Refer);
+    {error, _} -> ok
+end.
+```
+
+`add` is a Refer-To for an INVITE (5.5), `remove` one with `method=BYE`
+(5.11). The policy gets `action`, `target`, `referrer` and `referred_by`;
+without one both are refused 403. Report with `chappe_sip_refer:final/2`.
+
 ## REFER behaviour in detail
 
 - REFER (RFC 3515 as updated by RFC 7647), both sides, in `chappe_sip_refer`
@@ -187,6 +302,10 @@ handler of yours.
 
 - Modules: `chappe_sip_refer`, `chappe_sip_refer_sub`,
   `chappe_sip_refer_registry`, `chappe_sip_sipfrag`,
-  `chappe_sip_notify_router`.
-- Tests: `chappe_sip_refer_SUITE`, `chappe_sip_sipfrag_tests`.
-- Lab: none.
+  `chappe_sip_notify_router`, `chappe_sip_b2b_transfer`,
+  `chappe_sip_b2b_sup`, `chappe_sip_focus`.
+- Tests: `chappe_sip_refer_SUITE`, `chappe_sip_sipfrag_tests`,
+  `chappe_sip_b2b_transfer_SUITE`, `chappe_sip_focus_SUITE`,
+  `chappe_mrf_SUITE` (`fs_refer_transfers_caller`).
+- Lab: the conformance lab (`make interop-conformance`): `b2b_refer_refused`
+  (SIPp), `pjsua_b2b_refer_blind` and `pjsua_b2b_refer_attended`.

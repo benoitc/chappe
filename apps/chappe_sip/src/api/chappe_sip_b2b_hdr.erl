@@ -13,7 +13,8 @@
     proxy_request_headers/2,
     proxy_response_headers/2,
     b_from/2,
-    valid_from/1
+    valid_from/1,
+    caller/1
 ]).
 -export([privacy/2, privacy_unsupported/2, privacy_failure/1]).
 
@@ -91,6 +92,9 @@ b_from(Req, Opts) ->
 valid_from(#{from := From}) -> chappe_sip_hdr:valid_name_addr(From);
 valid_from(_Opts) -> true.
 
+%% A From or To value as a name-addr with its parameters (the tag) left
+%% out: the identity a new INVITE presents for that party.
+-spec caller(binary() | undefined) -> binary().
 caller(From) ->
     case chappe_sip_hdr:name_addr(From) of
         {ok, #{display := D, uri := U}} when D =/= <<>> ->

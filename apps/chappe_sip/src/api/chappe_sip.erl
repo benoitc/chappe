@@ -19,7 +19,9 @@
     create_uac/2,
     create_b2bua/4,
     proxy_request/3,
-    request/2
+    request/2,
+    calls/1,
+    dialog_events/1
 ]).
 -export([
     invite/1,
@@ -87,7 +89,7 @@
 %% max_message_size defaults to the application setting. hep (or the
 %% `hep' application setting) sends a HEPv3 copy of every SIP message sent
 %% and received to a capture server (Homer); capture_id defaults to 200.
--spec start(#{contact := binary() | [binary()], _ => _}) ->
+-spec start(#{contact := binary() | map() | [binary() | map()], _ => _}) ->
     ok | {error, already_started | term()}.
 start(Opts) ->
     case start_hep(maps:get(hep, Opts, chappe_sip_config:get(hep))) of
@@ -240,6 +242,29 @@ create_uac(Uri, Opts) ->
             {error, Reason}
     end.
 
+%% Find a call by its call_ref (chappe_sip_req:call_ref/1, the call_ref of
+%% chappe_sip_b2b:info/1, X-Chappe-Call on its legs) on every node of the
+%% cluster: the B2BUA (a chappe_sip_b2b:b2b() for info/1, hangup/2 ...),
+%% the dialogs and the rtpengine sessions serving it. Each process is
+%% listed while it serves the call; a node that does not answer in 5 s is
+%% left out. {error, badarg} for anything but #{call_ref := binary()}.
+-spec calls(#{call_ref := binary()}) ->
+    {ok, chappe_sip_call:calls()} | {error, badarg}.
+calls(#{call_ref := Ref}) when is_binary(Ref) ->
+    {ok, chappe_sip_call:lookup(Ref)};
+calls(_) ->
+    {error, badarg}.
+
+%% Send Pid the state of every INVITE dialog of this node as it changes,
+%% until Pid exits (chappe_sip_dialog_index:unsubscribe/1 stops it
+%% sooner): {chappe_sip_dialog_event, Info} with Info
+%% chappe_sip_dialog_index:event(), state early, confirmed or terminated
+%% (a BYE started, or the dialog ended). A local subscriber with 10000
+%% messages waiting misses events until it catches up.
+-spec dialog_events(pid()) -> ok.
+dialog_events(Pid) when is_pid(Pid) ->
+    chappe_sip_dialog_index:subscribe(Pid).
+
 %% Send an out-of-dialog, non-dialog-forming request (OPTIONS, REGISTER,
 %% MESSAGE, ...). Returns a ref; responses arrive as events, or use
 %% chappe_sip_uac:await_response/2. Without a `method' option the URI's
@@ -271,7 +296,10 @@ create_b2bua(Req, Res, Uri, Opts) ->
 %% {flow, Uri, Flow}: the contact Uri reached over the RFC 5626 flow of its
 %% binding (location_flow/1). Opts:
 %%   forking => sequential | parallel, record_route => boolean,
-%%   timer_c => ms (Timer C per INVITE branch, default timer_c_ms).
+%%   timer_c => ms (Timer C per INVITE branch, default timer_c_ms),
+%%   provisional_timeout => ms, final_timeout => ms (per branch),
+%%   follow_redirects => boolean() | #{max_targets, max_depth, allow}.
+%% See chappe_sip_proxy and the proxy guide.
 %% Returns the aggregate result.
 -spec proxy_request(chappe_sip_req:req(), Dest | [Dest], map()) ->
     {ok, map()} | {error, term()}

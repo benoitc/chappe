@@ -1,0 +1,140 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!-- Copyright 2026 Benoit Chesneau
+     SPDX-License-Identifier: Apache-2.0
+
+     A REFER the B2BUA must refuse. SIPp calls the node's b2b-uas user, which
+     bridges it (media anchored, transfer => auto) to the node's own uas
+     user, then REFERs from its leg: an off-net target gets 403 (RFC 5589
+     12: a REFER is authorized before anything is called), a Refer-To with
+     method=BYE gets 403 (RFC 5368 10: no REFER for a method the call does
+     not carry), and Require: multiple-refer gets 420 with Unsupported
+     (RFC 5368 4). The call survives all three and ends with SIPp's BYE. -->
+<scenario name="b2b_refer_refused">
+  <send retrans="500">
+    <![CDATA[
+      INVITE sip:b2b-uas@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:sipp@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:b2b-uas@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 INVITE
+      Contact: <sip:sipp@[local_ip]:[local_port]>
+      Max-Forwards: 70
+      Allow: INVITE, ACK, BYE, CANCEL, OPTIONS, UPDATE, REFER, NOTIFY
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 1 IN IP[local_ip_type] [local_ip]
+      s=-
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0
+      a=rtpmap:0 PCMU/8000
+
+    ]]>
+  </send>
+  <recv response="100" optional="true"/>
+  <recv response="180" optional="true"/>
+  <recv response="183" optional="true"/>
+  <recv response="200">
+    <action>
+      <ereg regexp="
+To[ 	]*:[^
+]*;tag=([-A-Za-z0-9.!%*_+`'~]+)" search_in="msg" check_it="true" assign_to="chk,peer_tag"/>
+      <ereg regexp="
+Contact[ 	]*:[^
+]*&lt;([^&gt;
+]+)&gt;" search_in="msg" check_it="true" assign_to="chk,peer_contact"/>
+    </action>
+  </recv>
+  <send>
+    <![CDATA[
+      ACK [$peer_contact] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:sipp@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:b2b-uas@[remote_ip]:[remote_port]>;tag=[$peer_tag]
+      Call-ID: [call_id]
+      CSeq: 1 ACK
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <send retrans="500">
+    <![CDATA[
+      REFER [$peer_contact] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:sipp@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:b2b-uas@[remote_ip]:[remote_port]>;tag=[$peer_tag]
+      Call-ID: [call_id]
+      CSeq: 2 REFER
+      Max-Forwards: 70
+      Contact: <sip:sipp@[local_ip]:[local_port]>
+      Refer-To: <sip:carol@203.0.113.9>
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv response="403"/>
+  <send retrans="500">
+    <![CDATA[
+      REFER [$peer_contact] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:sipp@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:b2b-uas@[remote_ip]:[remote_port]>;tag=[$peer_tag]
+      Call-ID: [call_id]
+      CSeq: 3 REFER
+      Max-Forwards: 70
+      Contact: <sip:sipp@[local_ip]:[local_port]>
+      Refer-To: <sip:carol@[remote_ip]:[remote_port];method=BYE>
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv response="403"/>
+  <send retrans="500">
+    <![CDATA[
+      REFER [$peer_contact] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:sipp@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:b2b-uas@[remote_ip]:[remote_port]>;tag=[$peer_tag]
+      Call-ID: [call_id]
+      CSeq: 4 REFER
+      Max-Forwards: 70
+      Contact: <sip:sipp@[local_ip]:[local_port]>
+      Refer-To: <cid:list@[local_ip]>
+      Require: multiple-refer
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv response="420">
+    <action>
+      <ereg regexp="
+Unsupported[ 	]*:[ 	]*multiple-refer" search_in="msg" check_it="true" assign_to="chk"/>
+    </action>
+  </recv>
+  <recv request="NOTIFY" timeout="1000" ontimeout="done">
+    <action>
+      <ereg regexp="NO-NOTIFY-EXPECTED" search_in="msg" check_it="true" assign_to="chk"/>
+    </action>
+  </recv>
+  <label id="done"/>
+  <send retrans="500">
+    <![CDATA[
+      BYE [$peer_contact] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:sipp@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:b2b-uas@[remote_ip]:[remote_port]>;tag=[$peer_tag]
+      Call-ID: [call_id]
+      CSeq: 5 BYE
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv response="200"/>
+
+  <Reference variables="chk"/>
+</scenario>
