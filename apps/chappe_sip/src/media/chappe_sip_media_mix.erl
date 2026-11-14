@@ -81,7 +81,9 @@
     %% names the leg in its talker events, when set
     talk_tag :: term(),
     %% the direction negotiated in SDP, before mute and deaf
-    dir = sendrecv :: chappe_sip_media_mix_sdp:direction()
+    dir = sendrecv :: chappe_sip_media_mix_sdp:direction(),
+    %% a leg that does not keep its room up (a recording of it)
+    observer = false :: boolean()
 }).
 
 -record(state, {
@@ -134,7 +136,9 @@ start(_Id, _Opts) ->
 %% otherwise the mixer offers), owner (the room's owner if this join
 %% creates it), persist (true: a room this join creates stays up with no
 %% leg, until its owner exits), create (false: join only a room that is
-%% up, else {error, no_room}; a SIPREC recording of the room, say), law
+%% up, else {error, no_room}; a SIPREC recording of the room, say),
+%% observer (true: the leg does not keep the room up, which ends when its
+%% last other leg leaves), law
 %% (codec of an offer, ignored when
 %% answering), mute, name (SDES NAME the other legs see), direction (what
 %% the room may do with the leg, default sendrecv), talk_events (true: the
@@ -346,7 +350,8 @@ add_leg(Id, Owner, Room, #room{conf = Conf} = R, Plan, Opts, S) ->
                         maps:get(talk_events, Opts),
                 talk_tag = maps:get(talk_tag, Opts, undefined),
                 muted = maps:get(mute, Plan),
-                dir = maps:get(dir, Plan)
+                dir = maps:get(dir, Plan),
+                observer = maps:get(observer, Opts, false)
             },
             _ =
                 L#leg.talk andalso
@@ -403,13 +408,18 @@ drop_leg(Id, #state{legs = Legs} = S) ->
             S
     end.
 
-maybe_close_room(Room, S) ->
+%% a room ends with its last leg; an observer leg does not count
+maybe_close_room(Room, #state{legs = All} = S) ->
     case maps:find(Room, S#state.rooms) of
-        {ok, #room{legs = Legs, persist = false}} when map_size(Legs) =:= 0 ->
-            close_room(Room, S);
+        {ok, #room{legs = Legs, persist = false}} ->
+            Kept = [I || I := _ <- Legs, not (maps:get(I, All))#leg.observer],
+            close_if(Kept =:= [], Room, S);
         _ ->
             S
     end.
+
+close_if(true, Room, S) -> close_room(Room, S);
+close_if(false, _Room, S) -> S.
 
 %% Stop a room and forget every leg in it.
 close_room(Room, #state{rooms = Rooms} = S) ->

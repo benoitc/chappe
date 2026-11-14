@@ -37,7 +37,7 @@
 %%   {chappe_sip_siprec, Rec, {Event, Info}}
 %% with Event one of started, paused, resumed, updated, snapshot, stopped,
 %% and Info a map that always carries call_ref (and srs, the recording
-%% server's URI); stopped carries reason: stopped | call_ended |
+%% server's URI); stopped carries reason: stopped | call_ended | room_ended |
 %% srs_bye | {rejected, Status} | {srs, timeout} | {error, _}. A recording
 %% that crashes sends nothing: monitor Rec to see it go; its RS dialog
 %% then sends the BYE, and the call goes on.
@@ -46,8 +46,10 @@
 %% conference, chappe_sip_media:conference/3) as one participant: a
 %% sendonly leg of the room hears the whole mix and sends it to the SRS as
 %% one stream. The room must be up ({error, no_room} in stopped
-%% otherwise); the recording runs until stop/1, its owner exits or the
-%% SRS ends it, whoever comes and goes in the room. The room's participant
+%% otherwise). Its leg does not keep the room up: when the last party
+%% leaves, or the room's owner exits, the room ends and so does the
+%% recording, with reason room_ended; stop/1, its owner exiting or the SRS
+%% end it sooner. The room's participant
 %% is sip:Room@chappe.invalid unless participants => #{room => _} names
 %% it, and call_ref => binary() gives the recording the room's call_ref
 %% (default a new one).
@@ -278,7 +280,7 @@ handle_continue(invite, #{parties0 := Parties} = St0) ->
         lists:sort(maps:keys(Parties))
     ),
     case chappe_sip_siprec_tap:open(St1) of
-        {ok, St2} -> send_invite(St2);
+        {ok, St2} -> send_invite(watch_room(St2));
         {error, Why} -> {stop, normal, stopped({error, Why}, St1)}
     end.
 
@@ -580,13 +582,24 @@ handle_info({chappe_sip_dialog, _D, _Ev, _Req, Res}, St) ->
     {noreply, St};
 %% the call ended: its rtpengine session is gone
 handle_info({'DOWN', Mon, process, _, _}, #{media_mon := Mon} = St) ->
-    {stop, normal, stopped(call_ended, abandon(St#{media_mon := undefined}))};
+    {stop, normal, stopped(ended(St), abandon(St#{media_mon := undefined}))};
 handle_info({'DOWN', Mon, process, _, _}, #{owner_mon := Mon} = St) ->
     %% the owner is gone: nobody to tell; the BYE goes with the dialog
     {stop, normal, chappe_sip_siprec_tap:close(abandon(St))};
 handle_info(Msg, St) ->
     logger:notice("chappe_sip_siprec: unexpected ~0P", [Msg, 20]),
     {noreply, St}.
+
+%% what ended the recording when its media went: the call, or the room
+ended(#{source := {room, _}}) -> room_ended;
+ended(_St) -> call_ended.
+
+%% a room recording ends with the room: its mixer is watched once the
+%% recording's leg is in it
+watch_room(#{source := {room, _}, media_mon := undefined} = St) ->
+    St#{media_mon := chappe_sip_siprec_tap:watch(St)};
+watch_room(St) ->
+    St.
 
 terminate(_Why, _St) ->
     ok.

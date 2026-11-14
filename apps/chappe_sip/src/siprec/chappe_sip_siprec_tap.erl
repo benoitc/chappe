@@ -11,7 +11,7 @@
 %% and return the recording's state.
 -module(chappe_sip_siprec_tap).
 
--export([open/1, close/1, close_one/2, answer/2]).
+-export([open/1, close/1, close_one/2, answer/2, watch/1]).
 
 %% the subscription flags of a transcoded tap (rtpengine needs them when
 %% the receiver takes fewer codecs than the party sends)
@@ -47,7 +47,10 @@ tap(#{party := room}, #{source := {room, Room}, call_ref := Ref}) ->
         {ok, S} ->
             case
                 chappe_sip_media:conference(S, Room, #{
-                    direction => sendonly, create => false, name => <<"siprec">>
+                    direction => sendonly,
+                    create => false,
+                    observer => true,
+                    name => <<"siprec">>
                 })
             of
                 {ok, Offer} ->
@@ -113,6 +116,14 @@ place(#{media := Old} = S, Sections, #{next_label := N0} = St) ->
         lists:enumerate(Sections)
     ),
     {S#{media := Media}, St#{next_label := N}}.
+
+%% A monitor on the mixer of a room's tap, undefined when there is none.
+-spec watch(map()) -> reference() | undefined.
+watch(#{streams := Ss}) ->
+    case [chappe_sip_media:info(M) || #{tap := {mix, M}} <- Ss] of
+        [#{conf := Conf} | _] -> erlang:monitor(process, Conf);
+        _ -> undefined
+    end.
 
 %% every tap removed
 -spec close(map()) -> map().

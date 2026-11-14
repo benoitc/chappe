@@ -27,7 +27,7 @@
          server_sink_and_stream_crash/1, server_refuses_bad_body/1,
          server_answers_on_the_wire/1]).
 -export([room_recorded/1, room_not_up/1, server_sink_bound/1,
-         server_metadata_update/1]).
+         server_metadata_update/1, room_ends_recording/1]).
 
 all() ->
     [invite_is_a_recording_session, chappe_as_recording_server,
@@ -38,7 +38,8 @@ all() ->
      legacy_content_type, from_another_node, server_writes_store,
      server_not_a_recording_session, server_sink_and_stream_crash,
      server_refuses_bad_body, server_answers_on_the_wire,
-     server_sink_bound, server_metadata_update, room_recorded, room_not_up].
+     server_sink_bound, server_metadata_update, room_recorded, room_not_up,
+     room_ends_recording].
 
 -define(UA, chappe_sip_test_ua).
 -define(M, chappe_sip_siprec_meta).
@@ -622,6 +623,22 @@ room_recorded(_Config) ->
     _ = got(srs_bye),
     ok = chappe_sip_media:stop(Party),
     gen_udp:close(Media).
+
+%% The last party leaves: the room ends although the recording's leg is
+%% still in it, and the recording ends with it (room_ended, a BYE).
+room_ends_recording(_Config) ->
+    ok = chappe_sip_media:configure(#{mix => #{ip => {127, 0, 0, 1}}}),
+    _ = start_app(),
+    {ok, Party} = chappe_sip_media:session(#{call_id => <<"room-party-2">>},
+                                           #{capability => conference}),
+    {ok, _} = chappe_sip_media:conference(Party, <<"r2">>, #{}),
+    SP = ?UA:pick(),
+    srs(SP, fun(_Sock, _D, _Src) -> ok end),
+    {ok, Rec} = chappe_sip_siprec:start({room, <<"r2">>}, srs_uri(SP), #{}),
+    {started, _} = event(Rec),
+    ok = chappe_sip_media:stop(Party),
+    {stopped, #{reason := room_ended}} = event(Rec),
+    _ = got(srs_bye).
 
 %% A room that is not up is not made by its recording.
 room_not_up(_Config) ->

@@ -101,7 +101,9 @@ whole mix:
 ```
 
 The room must be up; the recording joins it as a sendonly leg and never
-creates it.
+creates it, and that leg does not keep the room up. When the last party
+leaves (or the room's owner exits) the room ends, and the recording ends
+with it: a BYE to the SRS and `stopped` with reason `room_ended`.
 
 ## Be the recording server
 
