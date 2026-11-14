@@ -313,16 +313,21 @@ on_response(#px{server = ServerTxn} = P, TxnH, Status, Raw) when
 on_response(#px{server = ServerTxn} = P, TxnH, Status, Raw) when
     Status < 300
 ->
+    %% a record-routed call's record waits for the BYE (chappe_sip_cdr):
+    %% it is held before the 2xx goes out, so a BYE right behind the 2xx
+    %% finds it; any other record stops once the 2xx is relayed
+    RR = chappe_sip_proxy_rules:record_routes(P#px.opts),
+    _ = RR andalso chappe_sip_cdr:proxy_answered(P#px.cdr, P#px.opts, Raw),
     _ = relay_answered(
         ServerTxn, P, Status, upstream_rr(P, maps:get(TxnH, P#px.pending), Raw)
     ),
+    _ = RR orelse chappe_sip_cdr:proxy_answered(P#px.cdr, P#px.opts, Raw),
     P1 = P#px{
         pending = maps:remove(TxnH, P#px.pending),
         responses = [Status | P#px.responses]
     },
     cancel_all(P1),
     accepted(P1, TxnH, Raw),
-    chappe_sip_cdr:proxy_answered(P1#px.cdr, P1#px.opts, Raw),
     {ok, #{
         final_status => Status,
         final_response => Raw,
