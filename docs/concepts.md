@@ -215,6 +215,15 @@ ok = chappe_sip:use(fun(Req, Res, Next) ->
 end).
 ```
 
+A middleware hands data to the ones after it and to the handler in the
+request value itself (request locals), by returning `{next, Req1}`:
+
+```erlang
+ok = chappe_sip:use(fun(Req, _Res, _Next) ->
+    {next, chappe_sip_req:set_local(tenant, <<"acme">>, Req)}
+end).
+```
+
 Where it lives: `chappe_sip_middleware`, `chappe_sip_request_worker`,
 `chappe_sip_handler` (a behaviour for dialog handlers).
 

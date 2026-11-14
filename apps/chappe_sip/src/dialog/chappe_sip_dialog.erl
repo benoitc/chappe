@@ -11,6 +11,15 @@
 %% handle for claimed events (undefined otherwise). Unclaimed in-dialog
 %% requests are auto-answered by the fsm and reported as
 %%   {chappe_sip_dialog, Dialog, {auto_answered, Event}, Req}
+%% and a re-INVITE or UPDATE the fsm answered 2xx itself (modify and
+%% update not claimed) is also reported, as what it did to the session:
+%%   {chappe_sip_dialog, Dialog, hold | unhold | refresh, Req}
+%% hold when no live stream of the peer's offer receives (sendonly or
+%% inactive, RFC 3264 8.4), unhold when one receives again, refresh
+%% otherwise (no offer, or no change of hold). Claim publish
+%% (handled_events) to take an in-dialog PUBLISH as {chappe_sip_dialog,
+%% Dialog, publish, Req, Res}; unclaimed it gets 405.
+%% chappe_sip:dialog_events/1 streams every dialog's state.
 %%
 %% A dialog created from a SUBSCRIBE is a subscription (RFC 6665). Its owner
 %% also receives {chappe_sip_dialog, Dialog, {refreshed, Seconds}, Req} and
@@ -47,6 +56,9 @@
     remote_sdp/1,
     local_sdp/1,
     local_contact/1,
+    remote_addr/1,
+    local_addr/1,
+    call_ref/1,
     set_handled/2,
     set_owner/2,
     wait/1,
@@ -69,10 +81,15 @@
 make(Pid, Id) -> #dialog{pid = Pid, id = Id}.
 
 %% Answer an incoming dialog-forming request as a UAS. Opts:
-%%   #{local_sdp => iodata(), status => 100..699 (default 200),
+%%   #{local_sdp => iodata() | fun((RemoteSdp :: binary()) -> iodata())
+%%       (a fun gets the request's body and runs here, in the caller),
+%%     status => 100..699 (default 200),
 %%     reason => binary(), headers => [{binary(), iodata()}],
 %%     handled_events => [atom()] | all, owner => pid(),
-%%     on_owner_exit => destroy | continue}
+%%     on_owner_exit => destroy | continue,
+%%     call_ref => binary() (the call the dialog serves, default the
+%%       request's: chappe_sip_req:call_ref/1; a ref that is not a token
+%%       of 1 to 128 characters is {error, badarg})}
 %% For a SUBSCRIBE also:
 %%   #{expires => non_neg_integer() (the most granted, default 3600),
 %%     min_expires => non_neg_integer() (below it: 423, default 0),
@@ -88,6 +105,15 @@ make(Pid, Id) -> #dialog{pid = Pid, id = Id}.
 -spec create_uas(chappe_sip_req:req(), chappe_sip_res:res(), map()) ->
     {ok, dialog()} | {error, term()}.
 create_uas(Req, Res, Opts) ->
+    case
+        maps:is_key(call_ref, Opts) andalso
+            not chappe_sip_call:valid(maps:get(call_ref, Opts))
+    of
+        true -> {error, badarg};
+        false -> create_uas_0(Req, Res, Opts)
+    end.
+
+create_uas_0(Req, Res, Opts) ->
     case chappe_sip_req:method(Req) of
         <<"SUBSCRIBE">> -> create_subscription(Req, Res, Opts);
         <<"INVITE">> -> create_session(Req, Res, Opts);
@@ -145,10 +171,19 @@ create_subscription(Req, Res, Opts) ->
             })
     end.
 
-create_uas_1(Req, Res, Opts0) ->
+create_uas_1(Req, Res, OptsIn) ->
+    Opts0 =
+        case OptsIn of
+            #{local_sdp := F} when is_function(F, 1) ->
+                OptsIn#{local_sdp => F(chappe_sip_req:body(Req))};
+            _ ->
+                OptsIn
+        end,
     Owner = maps:get(owner, Opts0, self()),
-    %% the route's extra option tags stay accepted in Require in the dialog
+    %% the route's extra option tags stay accepted in Require in the dialog,
+    %% and the dialog serves the request's call unless told another
     Opts = Opts0#{
+        call_ref => maps:get(call_ref, Opts0, chappe_sip_req:call_ref(Req)),
         option_tags => maps:get(
             option_tags,
             Opts0,
@@ -285,6 +320,24 @@ local_sdp(#dialog{pid = Pid}) ->
 -spec local_contact(dialog()) -> binary() | undefined.
 local_contact(#dialog{pid = Pid}) ->
     gen_statem:call(Pid, local_contact).
+
+%% The peer's address in the dialog: its From (a UAS dialog) or To (a UAC
+%% dialog), a name-addr with its tag. The identity the dialog was formed
+%% with, which in-dialog requests must keep (RFC 3261 12.2.1.1).
+-spec remote_addr(dialog()) -> binary().
+remote_addr(#dialog{pid = Pid}) ->
+    gen_statem:call(Pid, remote_addr).
+
+%% Our address in the dialog, as the peer sees it: its To (a UAS dialog)
+%% or our From (a UAC dialog), a name-addr with our tag.
+-spec local_addr(dialog()) -> binary().
+local_addr(#dialog{pid = Pid}) ->
+    gen_statem:call(Pid, local_addr).
+
+%% The call the dialog serves (chappe_sip_call), undefined if none.
+-spec call_ref(dialog()) -> binary() | undefined.
+call_ref(#dialog{pid = Pid}) ->
+    gen_statem:call(Pid, call_ref).
 
 %% Change the set of in-dialog events the owner will handle itself.
 -spec set_handled(dialog(), [atom()] | all) -> ok.

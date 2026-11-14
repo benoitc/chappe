@@ -167,6 +167,11 @@ with their scheme, host and port.
 A 305 (Use Proxy) does not retarget: the request keeps its Request-URI and
 goes again through the proxy the 305's Contact names (21.3.6).
 
+`keep_uri_on_redirect => true` (drachtio's `keepUriOnRedirect`) treats
+every followed 3xx that way: the Contact becomes the next hop, and the
+Request-URI and To stay those of your first INVITE. Use it when a redirect
+server names the next proxy rather than a new target.
+
 ## 3PCC (answer with no ACK)
 
 Originate a leg without ACKing its 2xx, so you can take its SDP elsewhere
@@ -217,8 +222,12 @@ ACK.
 ## Notes
 
 - Digest auth: pass `auth => #{user => U, pass => P}` and chappe_sip retries on
-  401/407 (several realms, stale nonces, SHA-256). See
+  401/407 (several realms, stale nonces, SHA-256). `auth` may also be a fun
+  of the parsed challenge returning those credentials, or `none`. See
   [Authentication](authentication.md).
+- Each INVITE serves a call: it carries `X-Chappe-Call` with the call's
+  `call_ref` (your `call_ref` option, else a new one). See
+  [Follow a call](follow-a-call.md).
 - A reliable provisional (`Require: 100rel` and an `RSeq`) is PRACKed through
   its route set to its Contact; one lacking either is not PRACKed.
 - In-dialog requests follow the route set; behind a strict router (no `lr`)

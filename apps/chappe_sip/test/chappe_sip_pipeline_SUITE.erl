@@ -15,7 +15,8 @@
          init_per_testcase/2, end_per_testcase/2]).
 -export([dispatch_to_handler/1, no_route_405/1, middleware_stops_chain/1,
          worker_cap_503/1, deadline_500/1, crash_500/1, duplicate_final/1,
-         fake_health/1, unsupported_require_420/1, exit_after_final/1]).
+         fake_health/1, unsupported_require_420/1, exit_after_final/1,
+         middleware_locals/1, middleware_bad_next/1]).
 -export([log/2]).
 -export([live_options_headers/1, live_message_dispatch/1]).
 
@@ -26,7 +27,8 @@ groups() ->
     [{fake, [sequence],
       [dispatch_to_handler, no_route_405, middleware_stops_chain,
        worker_cap_503, deadline_500, crash_500, duplicate_final,
-       fake_health, unsupported_require_420, exit_after_final]},
+       fake_health, unsupported_require_420, exit_after_final,
+       middleware_locals, middleware_bad_next]},
      {live, [sequence],
       [live_options_headers, live_message_dispatch]}].
 
@@ -139,6 +141,44 @@ middleware_stops_chain(_Config) ->
         handler_should_not_run -> ct:fail(chain_did_not_stop)
     after 300 -> ok
     end.
+
+%% A middleware hands a request with locals on by returning {next, Req1};
+%% one calling the old 0-arity Next() passes the request it got, locals
+%% included; the handler reads them, and the call_ref the worker made.
+middleware_locals(_Config) ->
+    Test = self(),
+    ok = chappe_sip:use(fun(Req, _Res, _Next) ->
+        {next, chappe_sip_req:set_local(account, <<"acme">>, Req)}
+    end),
+    ok = chappe_sip:use(fun(Req, _Res, Next) ->
+        Test ! {second_sees, chappe_sip_req:local(account, Req)},
+        Next()
+    end),
+    ok = chappe_sip:message(fun(Req, Res) ->
+        Test ! {handler,
+                chappe_sip_req:local(account, Req),
+                chappe_sip_req:local(missing, Req, none),
+                chappe_sip_req:locals(Req),
+                chappe_sip_req:call_ref(Req)},
+        ok = chappe_sip_res:send(Res, 200, #{})
+    end),
+    ok = chappe_sip_engine_fake:inject_request(120, message_raw(<<"l">>)),
+    {ok, #{status := 200}} = chappe_sip_engine_fake:await_response(120),
+    receive {second_sees, <<"acme">>} -> ok after 2000 -> ct:fail(no_second) end,
+    receive
+        {handler, <<"acme">>, none, #{account := <<"acme">>}, Ref} ->
+            {match, _} = re:run(Ref, "^[0-9a-f]{24}$")
+    after 2000 -> ct:fail(no_handler)
+    end.
+
+%% {next, X} with X no request is the middleware's bug: 500, no handler.
+middleware_bad_next(_Config) ->
+    Test = self(),
+    ok = chappe_sip:use(fun(_Req, _Res, _Next) -> {next, not_a_request} end),
+    ok = chappe_sip:message(fun(_Req, _Res) -> Test ! handler_ran end),
+    ok = chappe_sip_engine_fake:inject_request(121, message_raw(<<"b">>)),
+    {ok, #{status := 500}} = chappe_sip_engine_fake:await_response(121),
+    receive handler_ran -> ct:fail(handler_ran) after 300 -> ok end.
 
 worker_cap_503(_Config) ->
     application:set_env(chappe_sip, max_request_workers, 1),

@@ -18,7 +18,8 @@
          init_per_testcase/2, end_per_testcase/2]).
 -export([answer_on_each_address/1, record_route_per_address/1,
          uac_by_family/1, single_contact/1, bad_contact/1,
-         answer_on_second_v4/1, uac_local/1, udp_flow_local/1]).
+         answer_on_second_v4/1, uac_local/1, udp_flow_local/1,
+         public_advertised/1, public_local_nets/1, bad_public/1]).
 
 -define(V4, {127, 0, 0, 1}).
 -define(V4B, {127, 0, 0, 2}).
@@ -26,7 +27,8 @@
 
 all() ->
     [answer_on_each_address, record_route_per_address, uac_by_family,
-     single_contact, bad_contact, {group, second_v4}].
+     single_contact, bad_contact, public_advertised, public_local_nets,
+     bad_public, {group, second_v4}].
 
 groups() ->
     [{second_v4, [], [answer_on_second_v4, uac_local, udp_flow_local]}].
@@ -158,6 +160,83 @@ bad_contact(_Config) ->
                  chappe_sip:start(#{contact => []})),
     ?assertEqual({error, {contact, bad_contact}},
                  chappe_sip:start(#{contact => [<<"sip:127.0.0.1">>, 5060]})).
+
+%% ---- 1:1 NAT: a public address advertised, a local one bound ----
+
+%% public => Host: the stack binds the local address and advertises the
+%% public one. A peer outside local_nets gets it in the 2xx Contact, and
+%% in the Via (RFC 3261 18.1.1 sent-by) and Contact of what we send.
+public_advertised(_Config) ->
+    P = chappe_sip_test_port:pick(),
+    ok = chappe_sip:start(#{contact => #{uri => uri(?V4, P),
+                                         public => <<"192.0.2.10">>,
+                                         local_nets => [<<"10.0.0.0/8">>]}}),
+    Public = <<"sip:192.0.2.10:", (integer_to_binary(P))/binary>>,
+    ?assertEqual(Public, hd(binary:split(
+        chappe_sip_hdr:name_addr_uri(chappe_sip_engine:contact()), <<";">>))),
+    ok = answer(),
+    Peer = peer(?V4),
+    {Ok, _Meta} = call(Peer, ?V4, P),
+    ?assertEqual(Public, contact_uri(Ok)),
+    hangup(),
+    {Bye, From} = recv_req(Peer, <<"BYE">>),
+    %% sent from the bound address
+    ?assertEqual({?V4, P}, From),
+    ?assertNotEqual(nomatch, binary:match(via(Bye), <<"192.0.2.10:">>)),
+    ok = reply(Peer, From, Bye, 200),
+    {Opt, From2} = uac_options(Peer),
+    ?assertEqual({?V4, P}, From2),
+    ?assertNotEqual(nomatch, binary:match(via(Opt), <<"192.0.2.10:">>)),
+    ?assertEqual(Public, contact_uri(Opt)),
+    close(Peer).
+
+%% A peer inside local_nets gets the local address in the Contact, both
+%% on the 2xx we answer and on a request we send.
+public_local_nets(_Config) ->
+    P = chappe_sip_test_port:pick(),
+    ok = chappe_sip:start(#{contact => #{uri => uri(?V4, P),
+                                         public => <<"192.0.2.10">>,
+                                         local_nets => [<<"127.0.0.0/8">>]}}),
+    ok = answer(),
+    Peer = peer(?V4),
+    {Ok, _Meta} = call(Peer, ?V4, P),
+    ?assertEqual(uri(?V4, P), contact_uri(Ok)),
+    hangup(),
+    {Bye, From} = recv_req(Peer, <<"BYE">>),
+    ok = reply(Peer, From, Bye, 200),
+    {Opt, _} = uac_options(Peer),
+    ?assertEqual(uri(?V4, P), contact_uri(Opt)),
+    close(Peer).
+
+%% A bad public host, a bad network, local_nets without public or on a
+%% wildcard bind, or a contact that already has maddr fails the start.
+bad_public(_Config) ->
+    U = uri(?V4, chappe_sip_test_port:pick()),
+    [?assertEqual({error, {contact, Why}}, chappe_sip:start(#{contact => C}))
+     || {C, Why} <- [
+            {#{uri => U, public => <<"a b">>}, bad_public},
+            {#{uri => U, public => <<"x;maddr=1">>}, bad_public},
+            {#{uri => U, public => <<"1.2.3.4", 0>>}, bad_public},
+            {#{uri => U, public => 42}, bad_public},
+            {#{uri => U, local_nets => [<<"10.0.0.0/8">>]}, bad_public},
+            {#{uri => U, public => <<"192.0.2.1">>, local_nets => [<<"x">>]},
+             bad_local_nets},
+            {#{uri => U, public => <<"192.0.2.1">>, local_nets => nope},
+             bad_local_nets},
+            {#{uri => <<"sip:0.0.0.0:5099">>, public => <<"192.0.2.1">>,
+               local_nets => [<<"10.0.0.0/8">>]}, bad_public},
+            {#{uri => <<U/binary, ";maddr=127.0.0.1">>,
+               public => <<"192.0.2.1">>}, bad_public},
+            {#{uri => <<"nope">>}, bad_contact}
+        ]].
+
+uac_options(Peer) ->
+    Target = <<"sip:peer@127.0.0.1:", (integer_to_binary(port(Peer)))/binary>>,
+    {ok, Ref} = chappe_sip:request(Target, #{method => <<"OPTIONS">>}),
+    {Opt, From} = recv_req(Peer, <<"OPTIONS">>),
+    ok = reply(Peer, From, Opt, 200),
+    {ok, _} = chappe_sip_uac:await_response(Ref, 5000),
+    {Opt, From}.
 
 %% ---- 127.0.0.1 and 127.0.0.2 ----
 

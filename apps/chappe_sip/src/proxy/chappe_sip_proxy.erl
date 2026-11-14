@@ -37,6 +37,12 @@
     dest :: dest(),
     %% Timer C deadline (monotonic ms), set once the branch is sent
     timer_c :: integer() | undefined,
+    %% provisional_timeout: dropped when nothing (not even a 100) came by
+    %% then; final_timeout: CANCELled or dropped when no final came by then
+    prov_by :: integer() | undefined,
+    final_by :: integer() | undefined,
+    %% 3xx deep this target came from (0: one the app gave)
+    depth = 0 :: non_neg_integer(),
     provisional = false :: boolean(),
     %% Timer C fired after a provisional: CANCELled, its final is a 408
     expired = false :: boolean(),
@@ -67,7 +73,17 @@
     closed = false :: boolean(),
     %% upstream CANCELled; the INVITE's call record (chappe_sip_cdr)
     cancelled = false :: boolean(),
-    cdr :: binary() | undefined
+    cdr :: binary() | undefined,
+    %% per branch: no response at all, no final (ms; undefined: none)
+    prov_timeout :: pos_integer() | undefined,
+    final_timeout :: pos_integer() | undefined,
+    %% follow_redirects: undefined, or the bounds and the policy
+    follow :: chappe_sip_proxy_redirect:follow() | undefined,
+    %% the URIs in the target set (16.5: each added once), the targets
+    %% 3xx Contacts added so far, and the depth of those not launched yet
+    tried = [] :: [binary()],
+    added = 0 :: non_neg_integer(),
+    depths = #{} :: #{dest() => pos_integer()}
 }).
 
 -spec proxy_request(chappe_sip_req:req(), dest() | [dest()], map()) ->
@@ -86,6 +102,14 @@ proxy_request(Req, {flow, _, _} = Dest, Opts) ->
 proxy_request(_Req, [], _Opts) ->
     {error, no_destination};
 proxy_request(Req, Dests, Opts) ->
+    %% options checked before anything is sent: a bad one leaves the
+    %% request to the worker, which answers 500
+    case chappe_sip_proxy_redirect:check_opts(Opts) of
+        ok -> proxy_checked(Req, Dests, Opts);
+        {error, _} = Err -> Err
+    end.
+
+proxy_checked(Req, Dests, Opts) ->
     ServerTxn = chappe_sip_req:txn(Req),
     %% the downstream final (a 487 after a CANCEL, a late 2xx) is ours to
     %% relay: the engine must not answer a CANCEL with its own 487
@@ -123,7 +147,11 @@ forward(Req, Msg, Dests, Opts) ->
                         <<"tls">>,
                 timer_c = timer_c(Opts),
                 cdr = chappe_sip_cdr:relabel(Req, proxy),
-                local = chappe_sip_binds:local(chappe_sip_req:meta(Req))
+                local = chappe_sip_binds:local(chappe_sip_req:meta(Req)),
+                prov_timeout = maps:get(provisional_timeout, Opts, undefined),
+                final_timeout = maps:get(final_timeout, Opts, undefined),
+                follow = chappe_sip_proxy_redirect:follow(Opts),
+                tried = [U || U <- Dests, is_binary(U)]
             },
             start(P, Dests);
         {error, {media, _} = MErr} ->
@@ -167,16 +195,7 @@ drop_self_route(Msg) ->
     end.
 
 start(#px{mode = parallel} = P, Dests) ->
-    P1 = lists:foldl(
-        fun(Dest, Acc) ->
-            case launch(Acc, Dest) of
-                {ok, Acc1} -> Acc1;
-                {error, Acc1} -> Acc1
-            end
-        end,
-        P,
-        Dests
-    ),
+    P1 = launch_all(P, Dests),
     case map_size(P1#px.pending) of
         % no branch launched: their failures (16.9) make the best final
         0 -> finish(P1);
@@ -223,32 +242,44 @@ loop(#px{server = ServerTxn} = P) ->
 
 next_timeout(#px{pending = Pending}) ->
     Now = erlang:monotonic_time(millisecond),
-    case [T || #br{timer_c = T} <- maps:values(Pending)] of
+    case [deadline(B) || B <- maps:values(Pending)] of
         [] -> infinity;
         Ts -> max(0, lists:min(Ts) - Now)
     end.
 
+%% the first of a branch's timers: Timer C, the provisional and the final
+%% timeout
+deadline(#br{timer_c = C, prov_by = P, final_by = F}) ->
+    lists:min([T || T <- [C, P, F], is_integer(T)]).
+
 %% 16.8: a branch whose Timer C fired is CANCELled when it had a
 %% provisional, else dropped; either way it counts as a 408. A CANCELled
-%% branch gets 64*T1 to answer the CANCEL before it is dropped too.
+%% branch gets 64*T1 to answer the CANCEL before it is dropped too. The
+%% provisional and final timeouts end a branch the same way.
 timer_c_fired(#px{pending = Pending} = P) ->
     Now = erlang:monotonic_time(millisecond),
     maps:fold(
-        fun
-            (TxnH, #br{timer_c = T} = B, Acc) when T =< Now ->
-                expire_branch(Acc, TxnH, B, Now);
-            (_TxnH, _B, Acc) ->
-                Acc
+        fun(TxnH, B, Acc) ->
+            case deadline(B) =< Now of
+                true -> expire_branch(Acc, TxnH, B, Now);
+                false -> Acc
+            end
         end,
         P,
         Pending
     ).
 
 expire_branch(P, TxnH, #br{provisional = true, expired = false} = B, Now) ->
+    %% RFC 3261 9.1: a CANCEL only once a provisional came
     _ = chappe_sip_engine:cancel_txn(TxnH),
     P#px{
         pending = (P#px.pending)#{
-            TxnH => B#br{expired = true, timer_c = Now + 32000}
+            TxnH => B#br{
+                expired = true,
+                timer_c = Now + 32000,
+                prov_by = undefined,
+                final_by = undefined
+            }
         }
     };
 expire_branch(P, TxnH, _B, _Now) ->
@@ -259,15 +290,18 @@ expire_branch(P, TxnH, _B, _Now) ->
         responses = [408 | P#px.responses]
     }.
 
-on_response(P, _TxnH, 100, _Raw) ->
-    % never relay 100 Trying; it does not reset Timer C either (16.7 step 2)
-    loop(P);
+on_response(P, TxnH, 100, _Raw) ->
+    % never relay 100 Trying; it does not reset Timer C either (16.7 step
+    % 2), but it shows the branch is alive (provisional_timeout)
+    B = maps:get(TxnH, P#px.pending),
+    loop(P#px{pending = (P#px.pending)#{TxnH => B#br{prov_by = undefined}}});
 on_response(#px{server = ServerTxn} = P, TxnH, Status, Raw) when
     Status < 200
 ->
     B = maps:get(TxnH, P#px.pending),
     _ = relay_answered(ServerTxn, P, Status, upstream_rr(P, B, Raw)),
     B1 = B#br{
+        prov_by = undefined,
         provisional = true,
         timer_c =
             case B#br.expired of
@@ -279,16 +313,21 @@ on_response(#px{server = ServerTxn} = P, TxnH, Status, Raw) when
 on_response(#px{server = ServerTxn} = P, TxnH, Status, Raw) when
     Status < 300
 ->
+    %% a record-routed call's record waits for the BYE (chappe_sip_cdr):
+    %% it is held before the 2xx goes out, so a BYE right behind the 2xx
+    %% finds it; any other record stops once the 2xx is relayed
+    RR = chappe_sip_proxy_rules:record_routes(P#px.opts),
+    _ = RR andalso chappe_sip_cdr:proxy_answered(P#px.cdr, P#px.opts, Raw),
     _ = relay_answered(
         ServerTxn, P, Status, upstream_rr(P, maps:get(TxnH, P#px.pending), Raw)
     ),
+    _ = RR orelse chappe_sip_cdr:proxy_answered(P#px.cdr, P#px.opts, Raw),
     P1 = P#px{
         pending = maps:remove(TxnH, P#px.pending),
         responses = [Status | P#px.responses]
     },
     cancel_all(P1),
     accepted(P1, TxnH, Raw),
-    chappe_sip_cdr:proxy_answered(P1#px.cdr, P1#px.opts, Raw),
     {ok, #{
         final_status => Status,
         final_response => Raw,
@@ -296,17 +335,17 @@ on_response(#px{server = ServerTxn} = P, TxnH, Status, Raw) when
     }};
 on_response(P, TxnH, Status, Raw) ->
     _ = chappe_sip_engine:finish_txn(TxnH),
-    #br{expired = Expired} = maps:get(TxnH, P#px.pending),
-    Final =
+    #br{expired = Expired, depth = Depth} = maps:get(TxnH, P#px.pending),
+    {Final, P0} =
         case Expired of
             %% our own CANCEL after Timer C: report the timeout
-            true -> {408, undefined};
-            false -> {Status, Raw}
+            true -> {[{408, undefined}], P};
+            false -> recurse(P, Status, Raw, Depth)
         end,
-    P1 = P#px{
-        pending = maps:remove(TxnH, P#px.pending),
-        finals = [Final | P#px.finals],
-        responses = [Status | P#px.responses]
+    P1 = P0#px{
+        pending = maps:remove(TxnH, P0#px.pending),
+        finals = Final ++ P0#px.finals,
+        responses = [Status | P0#px.responses]
     },
     case Status >= 600 of
         true ->
@@ -317,6 +356,62 @@ on_response(P, TxnH, Status, Raw) ->
         false ->
             loop_or_finish(P1)
     end.
+
+%% RFC 3261 16.7 step 4, with follow_redirects: a 3xx's Contacts join the
+%% target set within the bounds of chappe_sip_proxy_redirect:recurse/3,
+%% and what is left of the 3xx is a candidate final.
+recurse(#px{follow = Follow} = P, Status, Raw, Depth) when
+    Follow =/= undefined, Status >= 300, Status < 400
+->
+    case chappe_sip_msg:parse(Raw) of
+        {ok, M} ->
+            {Targets, Left} = chappe_sip_proxy_redirect:recurse(
+                #{
+                    follow => Follow,
+                    tried => P#px.tried,
+                    added => P#px.added,
+                    closed => P#px.closed,
+                    sips => chappe_sip_uri:is_sips(
+                        chappe_sip_msg:uri(P#px.msg)
+                    ),
+                    depth => Depth
+                },
+                Raw,
+                M
+            ),
+            P1 = P#px{
+                tried = Targets ++ P#px.tried,
+                added = P#px.added + length(Targets),
+                depths = maps:merge(
+                    P#px.depths, #{T => Depth + 1 || T <- Targets}
+                )
+            },
+            {[{Status, R} || R <- Left], add_targets(P1, Targets)};
+        {error, _} ->
+            {[{Status, Raw}], P}
+    end;
+recurse(P, Status, Raw, _Depth) ->
+    {[{Status, Raw}], P}.
+
+%% sequential: the redirect targets are tried next, in q order; parallel:
+%% they are sent at once
+add_targets(#px{mode = sequential} = P, Targets) ->
+    P#px{remaining = Targets ++ P#px.remaining};
+add_targets(#px{mode = parallel} = P, Targets) ->
+    launch_all(P, Targets).
+
+%% launch each target; one that fails to launch leaves its final (16.9)
+launch_all(P, Dests) ->
+    lists:foldl(
+        fun(Dest, Acc) ->
+            case launch(Acc, Dest) of
+                {ok, Acc1} -> Acc1;
+                {error, Acc1} -> Acc1
+            end
+        end,
+        P,
+        Dests
+    ).
 
 loop_or_finish(P) ->
     case after_branch(P) of
@@ -336,68 +431,9 @@ after_branch(#px{mode = sequential, closed = false, remaining = [_ | _]} = P) ->
 after_branch(P) ->
     finish(P).
 
-%% RFC 6026 Accepted state, off the request worker: forward each new 2xx
-%% (a To-tag not seen yet) for 64*T1, absorb retransmissions, drain the
-%% CANCELled branches, then release every client transaction.
+%% RFC 6026 Accepted state, off the request worker
 accepted(#px{pending = Pending}, WinTxn, WinRaw) ->
-    Txns = [WinTxn | maps:keys(Pending)],
-    Seen = [to_tag(WinRaw)],
-    Window = chappe_sip_config:get(proxy_accepted_ms),
-    Pid = spawn(fun() ->
-        receive
-            {chappe_sip_proxy_accepted, go} -> ok
-        after 5000 -> ok
-        end,
-        accepted_loop(
-            Txns, Seen, erlang:monotonic_time(millisecond) + Window
-        )
-    end),
-    lists:foreach(fun(H) -> chappe_sip_engine:reg_handle(H, Pid) end, Txns),
-    %% what reached the worker before the handover goes to the new owner
-    hand_over(Txns, Pid),
-    Pid ! {chappe_sip_proxy_accepted, go},
-    ok.
-
-hand_over(Txns, Pid) ->
-    receive
-        {chappe_sip_response, H, _, _} = M ->
-            case lists:member(H, Txns) of
-                true -> Pid ! M;
-                false -> ok
-            end,
-            hand_over(Txns, Pid)
-    after 0 -> ok
-    end.
-
-accepted_loop(Txns, Seen, Until) ->
-    receive
-        {chappe_sip_response, TxnH, #{status := St}, Raw} when
-            St >= 200, St < 300
-        ->
-            Tag = to_tag(Raw),
-            case lists:member(Tag, Seen) of
-                true ->
-                    accepted_loop(Txns, Seen, Until);
-                false ->
-                    %% a forked 2xx: forward with our top Via intact
-                    _ = chappe_sip_engine:forward_response(Raw),
-                    accepted_loop(
-                        lists:usort([TxnH | Txns]), [Tag | Seen], Until
-                    )
-            end;
-        {chappe_sip_response, _TxnH, _Meta, _Raw} ->
-            accepted_loop(Txns, Seen, Until);
-        {chappe_sip_op, _TxnH, _} ->
-            accepted_loop(Txns, Seen, Until)
-    after max(0, Until - erlang:monotonic_time(millisecond)) ->
-        lists:foreach(fun chappe_sip_engine:finish_txn/1, Txns)
-    end.
-
-to_tag(Raw) ->
-    case chappe_sip_msg:parse(Raw) of
-        {ok, M} -> chappe_sip_msg:to_tag(M);
-        {error, _} -> undefined
-    end.
+    chappe_sip_proxy_accepted:start(WinTxn, WinRaw, maps:keys(Pending)).
 
 %% no 2xx: relay the best final upstream; with no final at all, a 408
 %% (16.7 step 6)
@@ -442,8 +478,18 @@ launch(#px{msg = Msg} = P, Dest) ->
     case chappe_sip_proxy_rules:retarget(Dest, Msg) of
         {ok, M1, Via} ->
             {RRSips, M2} = record_route(P, Dest, M1),
-            {Route, M3} = next_hop(Dest, Via, M2),
-            send_branch(P, #br{dest = Dest, rr_sips = RRSips}, Route, M3);
+            {Route, M3} = chappe_sip_proxy_rules:next_hop(Dest, Via, M2),
+            Uri = chappe_sip_msg:uri(M1),
+            P1 = P#px{
+                tried = [Uri | lists:delete(Uri, P#px.tried)],
+                depths = maps:remove(Dest, P#px.depths)
+            },
+            B = #br{
+                dest = Dest,
+                rr_sips = RRSips,
+                depth = maps:get(Dest, P#px.depths, 0)
+            },
+            send_branch(P1, B, Route, M3);
         {error, _} ->
             %% RFC 5630 5.3: a SIPS request never goes to a SIP target;
             %% RFC 3261 19.1.1: nor to a SIPS target naming UDP
@@ -464,8 +510,11 @@ send_branch(P, #br{dest = Dest} = B0, Route, Msg) ->
         end,
     case chappe_sip_engine:send_request(Route, Raw, self(), Opts) of
         {ok, TxnH} ->
+            Now = erlang:monotonic_time(millisecond),
             B = B0#br{
-                timer_c = erlang:monotonic_time(millisecond) + P#px.timer_c
+                timer_c = Now + P#px.timer_c,
+                prov_by = after_ms(Now, P#px.prov_timeout),
+                final_by = after_ms(Now, P#px.final_timeout)
             },
             {ok, P#px{pending = (P#px.pending)#{TxnH => B}}};
         {error, _} ->
@@ -476,10 +525,13 @@ send_branch(P, #br{dest = Dest} = B0, Route, Msg) ->
             }}
     end.
 
+after_ms(_Now, undefined) -> undefined;
+after_ms(Now, Ms) -> Now + Ms.
+
 record_route(#px{opts = Opts} = P, Dest, Msg) ->
     case chappe_sip_proxy_rules:record_routes(Opts) of
         true ->
-            Contact = rr_contact(Msg, P#px.local),
+            Contact = chappe_sip_proxy_rules:rr_contact(Msg, P#px.local),
             %% the flow tokens name the WS legs (the inbound one and this
             %% branch's) so in-dialog requests route back over those
             %% connections; the marker MAC binds them with the Call-ID
@@ -505,70 +557,18 @@ record_route(#px{opts = Opts} = P, Dest, Msg) ->
 %% back to us over its own transport.
 upstream_rr(
     #px{in_tls = InTls, up_flow = Up, local = Local},
-    #br{rr_sips = Sips} = B,
+    #br{rr_sips = Sips, dest = Dest},
     Raw
 ) when
     is_boolean(Sips), Sips =/= InTls
 ->
-    Down = down_flow(B#br.dest),
-    Contact = chappe_sip_binds:contact_or_primary(Local, InTls),
-    case {Contact, chappe_sip_msg:parse(Raw)} of
-        {C, {ok, M}} when is_binary(C) ->
-            CallId = chappe_sip_msg:call_id(M),
-            RRs = [
-                case chappe_sip_route:is_self(V, undefined, CallId) of
-                    true ->
-                        chappe_sip_route:record_route(C, {Up, Down}, CallId);
-                    false ->
-                        V
-                end
-             || H <- chappe_sip_msg:get_all(<<"record-route">>, M),
-                V <- chappe_sip_hdr:split_list(H)
-            ],
-            M1 = lists:foldr(
-                fun(V, Acc) ->
-                    chappe_sip_msg:prepend(<<"Record-Route">>, V, Acc)
-                end,
-                chappe_sip_msg:remove(<<"record-route">>, M),
-                RRs
-            ),
-            iolist_to_binary(chappe_sip_msg:encode(M1));
-        _ ->
-            Raw
-    end;
+    chappe_sip_proxy_rules:rewrite_rr(
+        Raw,
+        chappe_sip_binds:contact_or_primary(Local, InTls),
+        {Up, down_flow(Dest)}
+    );
 upstream_rr(_P, _B, Raw) ->
     Raw.
-
-%% a WS target goes over its flow. Otherwise the top Route is the next hop
-%% when there is one: a loose router (;lr) keeps the Request-URI, a strict
-%% one takes it, the Request-URI going to the end of the Route set (16.6
-%% step 6). With no Route the Request-URI is the next hop, or the SIPS
-%% target a SIP request goes to over TLS.
-next_hop({ws, _} = D, _Via, Msg) ->
-    {D, Msg};
-next_hop({flow, _Uri, Flow}, _Via, Msg) ->
-    %% RFC 5626 5.3: a binding's flow is the way to reach it
-    {chappe_sip_route:flow_route(Flow), Msg};
-next_hop(_Dest, Via, Msg) ->
-    case chappe_sip_route:routes(Msg) of
-        [] when is_binary(Via) ->
-            {Via, Msg};
-        [] ->
-            {chappe_sip_msg:uri(Msg), Msg};
-        [Top | Rest] ->
-            TopUri = chappe_sip_hdr:name_addr_uri(Top),
-            case chappe_sip_proxy_rules:is_loose(TopUri) of
-                true ->
-                    {TopUri, Msg};
-                false ->
-                    RUri = chappe_sip_msg:uri(Msg),
-                    Msg1 = chappe_sip_route:set_routes(
-                        Rest ++ [<<"<", RUri/binary, ">">>],
-                        chappe_sip_msg:set_uri(TopUri, Msg)
-                    ),
-                    {TopUri, Msg1}
-            end
-    end.
 
 cancel_all(#px{pending = Pending}) ->
     maps:foreach(
@@ -585,23 +585,6 @@ up_flow(Req) ->
     case maps:get(flow, chappe_sip_req:meta(Req), undefined) of
         Flow when is_integer(Flow) -> Flow;
         _ -> undefined
-    end.
-
-%% 16.6 step 4 (and RFC 5630): the Record-Route is a SIPS URI, our TLS
-%% address, when the forwarded request's Request-URI or top Route is a SIPS
-%% URI, and a SIP URI otherwise, also for a request that came over TLS
-rr_contact(Msg, Local) ->
-    Top =
-        case chappe_sip_route:routes(Msg) of
-            [R | _] -> chappe_sip_hdr:name_addr_uri(R);
-            [] -> undefined
-        end,
-    Secure =
-        chappe_sip_uri:is_sips(chappe_sip_msg:uri(Msg)) orelse
-            chappe_sip_uri:is_sips(Top),
-    case Secure andalso chappe_sip_binds:contact_or_primary(Local, true) of
-        Tls when is_binary(Tls) -> Tls;
-        _ -> chappe_sip_binds:contact_or_primary(Local, false)
     end.
 
 %% ---- in-dialog forwarding: chappe_sip_proxy_dialog ----

@@ -119,7 +119,12 @@ init() ->
 %%                  passphrase => binary(), verify => none | peer,
 %%                  verify_clients => boolean()},
 %%         ident => binary(), contacts => [{binary(), binary()}],
-%%         capture => binary()}
+%%         capture => binary(),
+%%         sip_t1 => 10..60000, sip_t2 => 10..600000,
+%%         sip_t4 => 10..600000, udp_mtu => 576..65535,
+%%         tcp_keepalive_ms => 1000..3600000, outbound_proxy => binary()}
+%% sip_t2 must not be below the T1 in effect (500 when sip_t1 is unset);
+%% outbound_proxy is a sip: or sips: URI.
 %% contacts are the listen addresses after contact, each with its ident (the
 %% address a send names with request/5 or send/4); ident is contact's. The
 %% tls map takes ident and contacts the same way. With more than one

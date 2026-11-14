@@ -54,10 +54,11 @@
 -include("chappe_sip_uac.hrl").
 
 -export([create_b2bua/4, relay/1, relay/2, relay_async/2, set_media/2, info/1]).
--export([hangup/2, replace_b/3]).
--export([call/2, call/3, contact/0]).
+-export([hangup/2, replace_b/3, replace_leg/4]).
+-export([call/2, call/3, contact/0, contact/1]).
 %% helpers of the chappe_sip_b2b_* modules
--export([timer_c/1, remote_tag/1, destroy_quietly/2, offers/4, dest_bopts/2]).
+-export([timer_c/1, remote_tag/1, remote_sdp/1, destroy_quietly/2]).
+-export([offers/4, dest_bopts/2]).
 
 -export_type([b2b/0, legs/0, target/0, dest/0, branch_opts/0, winner/0]).
 
@@ -72,7 +73,9 @@
     late => true,
     requests => [request()],
     relay_info => boolean(),
-    winner => winner()
+    winner => winner(),
+    call_ref => binary(),
+    transfer => {chappe_sip_b2b_transfer:mode(), map()}
 }.
 %% Where leg B goes: a destination, a list of them, or a group of
 %% OPTIONS-monitored peers (chappe_sip_peers); a list or a group is tried
@@ -103,11 +106,29 @@
 -type request() :: refer | info | message | notify | options.
 -export_type([request/0]).
 
+%% options of create_b2bua/4 that go to the B leg's UAC as they are
+-define(B_UAC_OPTS, [
+    proxy,
+    auth,
+    flow,
+    call_ref,
+    call_ref_header,
+    related,
+    follow_redirects,
+    keep_uri_on_redirect,
+    session_expires,
+    min_se,
+    session_refresher
+]).
+
 %% in-dialog events relay/2 answers
 -define(RELAYED, [modify, update]).
 
+%% A fun given as an option runs in the process that runs create_b2bua/4,
+%% on its node (auth runs in the B leg's UAC process, on the same node).
 %% Opts:
-%%   local_sdp_b   => offer sent to B (default: A's INVITE body)
+%%   local_sdp_b   => offer sent to B: value | fun(SdpA) (default: A's
+%%                    INVITE body, the fun's argument)
 %%   local_sdp_a   => answer sent to A: value | fun(SdpB) (default: SdpB);
 %%                    also applied to early media SDP
 %%   b_headers   => [{Name, Value}] added to the INVITE to B (a correlation
@@ -118,6 +139,9 @@
 %%                  malformed one (chappe_sip_hdr:valid_name_addr/1) reaches
 %%                  no leg: {error, badarg}, and A gets a 500 unless
 %%                  pass_failure is false
+%%   a_headers   => [{Name, Value}] added to the final response to A, the
+%%                  2xx or a failure (drachtio's responseHeaders), after
+%%                  the ones proxy_response_headers copies
 %%   proxy_request_headers  => [Name] | all | {all, [ExcludeName]}
 %%   proxy_response_headers => [Name] | all | {all, [ExcludeName]}
 %%                    (copied from B's 2xx to A's)
@@ -133,11 +157,35 @@
 %%                            answer them with chappe_sip_res:send/3.
 %%                            Without a notify process the relay answers
 %%                            them as a dialog does: REFER 603, others 200
+%%   transfer              => off (default) | auto | notify. auto: a REFER from
+%%                            either leg is carried out by the B2BUA
+%%                            itself (chappe_sip_b2b_transfer): the
+%%                            target replaces the leg that sent it, the
+%%                            other leg keeps its media and sees no
+%%                            re-INVITE. Needs anchored media (a REFER on
+%%                            a direct call gets 488). requests' refer is
+%%                            then ignored. notify: the notify process
+%%                            gets {chappe_sip_b2b, Ref, {refer, Info}}
+%%                            and decides with chappe_sip_b2b_transfer:
+%%                            accept/2 or reject/2 (603 after
+%%                            transfer_opts timeout, 10000 ms)
+%%   transfer_opts         => #{policy => fun((Info) -> boolean() |
+%%                            {reject, Code}), domains => [Host],
+%%                            max_transfers => N}: policy decides who may
+%%                            transfer where (it runs in the transfer's
+%%                            process, on the call's node); without one a
+%%                            target must be a sip or sips URI on one of
+%%                            domains (default this node's host). At most
+%%                            max_transfers (5) per call
 %%   relay_info            => boolean (default false): an INFO from one
 %%                            leg (DTMF, RFC 6086) goes to the other, and
 %%                            its final comes back
 %%   pass_provisional_responses => boolean (default true)
-%%   proxy, auth           => passed to the B-leg UAC
+%%   proxy, auth           => passed to the B-leg UAC (auth may be a fun
+%%                            of the challenge, chappe_sip_uac:start/2)
+%%   follow_redirects, keep_uri_on_redirect => passed to the B-leg UAC
+%%                            (chappe_sip_uac:start/2): B's 3xx is followed
+%%                            there, A never sees it
 %%   session_expires, min_se, session_refresher => each leg's session timer
 %%   timer_c               => Timer C on the B leg in ms (RFC 3261 16.6
 %%                            step 11): how long B may ring, restarted by
@@ -160,9 +208,30 @@
 %%                            (or the older fun(Leg, Sdp) -> Sdp): every
 %%                            SDP from Leg before it goes on, as the leg
 %%                            sent it; relay/2 takes it over
-%%   notify                => pid(): gets {chappe_sip_b2b, Ref, Event}
+%%   notify                => pid(): gets {chappe_sip_b2b, Ref, Event}.
+%%                            While B rings it also gets, per branch:
+%%                            {b_request, #{call_id, uri, method, cseq,
+%%                            uac}} each time B's INVITE goes out (uac:
+%%                            the chappe_sip_uac:uac_ref() to CANCEL it
+%%                            with chappe_sip_uac:cancel/1,2), {b_early,
+%%                            Dialog} for each early dialog B forms, and
+%%                            {b_provisional, Msg} for each 1xx
+%%                            (chappe_sip_msg:msg())
 %%   peer_policy           => priority | round_robin | weighted, for a
 %%                            {peer_group, G} target (default priority)
+%%   call_ref              => binary(): the call this B2BUA serves
+%%                            (chappe_sip_call), for a ref an upstream node
+%%                            gave; default the request's
+%%                            (chappe_sip_req:call_ref/1). It goes to B as
+%%                            X-Chappe-Call (unless b_headers carries one,
+%%                            or call_ref_header is false), in both legs'
+%%                            call records and in HEP, and finds the call
+%%                            with chappe_sip:calls/1. A's own
+%%                            X-Chappe-Call is never copied to B. Not a
+%%                            token of 1 to 128 characters: as a bad from
+%%   call_ref_header       => boolean() (default true)
+%%   related               => binary(): the call_ref of the call a transfer
+%%                            brought this one from, in the call records
 %%   privacy               => true | #{session => boolean()}: act as an
 %%                            RFC 3323 privacy service for A's Privacy
 %%                            header (see chappe_sip_b2b_hdr:privacy/2).
@@ -173,14 +242,27 @@
 %%                            {error, {privacy, Unsupported}} is returned.
 %% The result also carries b2b (the handle of set_media/2 and info/1, the
 %% reference in its events), the media state relay/1,2 continues with,
-%% and winner, the destination that answered (winner()). The media fun's
+%% winner, the destination that answered (winner()), and call_ref. The media fun's
 %% CallInfo uri is the first destination's.
 -spec create_b2bua(chappe_sip_req:req(), chappe_sip_res:res(), target(), map()) ->
     {ok, legs()} | {error, term()}.
 create_b2bua(Req, Res, Uri, Opts) ->
-    case chappe_sip_b2b_hdr:valid_from(Opts) of
-        true -> check_privacy(Req, Res, Uri, Opts);
+    case
+        chappe_sip_b2b_hdr:valid_from(Opts) andalso
+            chappe_sip_call:valid_opts(Opts) andalso
+            chappe_sip_b2b_transfer:valid(Opts)
+    of
+        true -> check_privacy(Req, Res, Uri, with_call_ref(Req, Opts));
         false -> chappe_sip_b2b_fork:refuse(Res, badarg, Opts)
+    end.
+
+%% the call the B2BUA serves: the app's call_ref, else the request's
+with_call_ref(_Req, #{call_ref := _} = Opts) ->
+    Opts;
+with_call_ref(Req, Opts) ->
+    case chappe_sip_req:call_ref(Req) of
+        undefined -> Opts#{call_ref => chappe_sip_call:new_ref()};
+        Ref -> Opts#{call_ref => Ref}
     end.
 
 check_privacy(Req, Res, Uri, Opts) ->
@@ -204,18 +286,28 @@ start_b2bua(Req, Res, Target, Opts) ->
             {error, none_up};
         {Fork, [First | _] = Dests} ->
             Ref = make_ref(),
+            #{call_ref := CallRef} = Opts,
             M = chappe_sip_b2b_media:new(
                 media_init(Req, First, Ref, Opts), Opts
             ),
-            case chappe_sip_b2b_media:start(M) of
-                {ok, M1} ->
-                    offer_b(Req, Res, {Fork, Dests}, Opts, M1);
-                {error, Why} ->
-                    _ = chappe_sip_res:send(Res, 500, #{
-                        reason => <<"Server Internal Error">>
-                    }),
-                    {error, {media, Why}}
-            end
+            %% the call is found by its call_ref while it rings, and while
+            %% the relay carries it
+            ok = chappe_sip_b2b_media:serve(M),
+            Result =
+                case chappe_sip_b2b_media:start(M) of
+                    {ok, M1} ->
+                        offer_b(Req, Res, {Fork, Dests}, Opts, M1);
+                    {error, Why} ->
+                        _ = chappe_sip_res:send(Res, 500, #{
+                            reason => <<"Server Internal Error">>
+                        }),
+                        {error, {media, Why}}
+                end,
+            case Result of
+                {ok, _} -> ok;
+                {error, _} -> chappe_sip_call:leave(CallRef, b2b)
+            end,
+            Result
     end.
 
 media_init(Req, #{uri := Uri} = First, Ref, Opts) ->
@@ -237,7 +329,9 @@ media_init(Req, #{uri := Uri} = First, Ref, Opts) ->
         a_tag => chappe_sip_req:from_tag(Req),
         a_webrtc => Sdp =/= <<>> andalso chappe_sip_sdp:webrtc(Sdp),
         b_webrtc => webrtc(First, Opts),
-        ref => Ref
+        ref => Ref,
+        call_ref => maps:get(call_ref, Opts),
+        related => maps:get(related, Opts, undefined)
     }.
 
 %% a destination over a WebSocket (its URI or its flow) is a browser:
@@ -275,8 +369,12 @@ ws_uri(Uri) ->
 %% the offer to B: A's (or local_sdp_b) through the hook and the anchor,
 %% one per media profile of the destinations
 offer_b(Req, Res, {Fork, Dests}, Opts, M) ->
+    SdpA = chappe_sip_req:body(Req),
     Offer = iolist_to_binary(
-        maps:get(local_sdp_b, Opts, chappe_sip_req:body(Req))
+        case maps:get(local_sdp_b, Opts, SdpA) of
+            F when is_function(F, 1) -> F(SdpA);
+            Sdp -> Sdp
+        end
     ),
     case offers(Offer, Dests, Opts, M) of
         {ok, Dests1, M1} ->
@@ -320,8 +418,10 @@ offers(Offer, Dests, Opts, M) ->
 
 start_b(Req, Res, {Fork, Dests}, Opts, LateOffer, M) ->
     Worker = self(),
+    %% A's X-Chappe-Call names A's upstream call, not this one: B gets the
+    %% call's own (from the UAC, unless b_headers carries one)
     ReqHeaders =
-        chappe_sip_b2b_hdr:proxy_request_headers(Req, Opts) ++
+        not_call_ref(chappe_sip_b2b_hdr:proxy_request_headers(Req, Opts)) ++
             maps:get(b_headers, Opts, []),
     ARel = rel100(Req),
     %% a late offer: B's 2xx carries the offer, and its ACK must wait for
@@ -345,9 +445,10 @@ start_b(Req, Res, {Fork, Dests}, Opts, LateOffer, M) ->
     %% RFC 5626 TCP/TLS/UDP one)
     %% the call records of the two legs name each other
     ACdr = chappe_sip_cdr:relabel(Req, b2b_a),
+    ok = chappe_sip_cdr:update(ACdr, maps:with([call_ref, related], Opts)),
     BOpts = maps:merge(
         BOpts1#{cdr => #{role => b2b_b, link => ACdr}},
-        maps:with([proxy, auth, flow | st_opts()], Opts)
+        maps:with(?B_UAC_OPTS, Opts)
     ),
     %% pre-choose the A-leg dialog tag so relayed provisionals and the
     %% final 2xx share one To-tag (otherwise nta auto-tags the first
@@ -386,6 +487,10 @@ start_b(Req, Res, {Fork, Dests}, Opts, LateOffer, M) ->
             )
     end.
 
+not_call_ref(Hdrs) ->
+    Name = chappe_sip_lib:lower(chappe_sip_call:header()),
+    [{N, V} || {N, V} <- Hdrs, chappe_sip_lib:lower(N) =/= Name].
+
 %% The UAC options of a destination: its offer, its flow, and its headers
 %% after the call's.
 -spec dest_bopts(chappe_sip_b2b_fork:dest(), map()) -> map().
@@ -421,10 +526,12 @@ attempt([#{uri := Uri, bopts := BOpts} = Dest | Rest], W) ->
 fork_next({wait, W}) -> b2b_wait(W);
 fork_next({failed, Error, W}) -> chappe_sip_b2b_fork:fail(Error, W).
 
-%% the in-dialog events each leg leaves to its owner (the relay)
+%% the in-dialog events each leg leaves to its owner (the relay); a call
+%% that carries transfers takes its REFERs
 handled(Opts) ->
+    Refer = [refer || chappe_sip_b2b_transfer:mode(Opts) =/= off],
     chappe_sip_b2b_requests:handled(
-        maps:get(requests, Opts, []), maps:get(relay_info, Opts, false)
+        maps:get(requests, Opts, []) ++ Refer, maps:get(relay_info, Opts, false)
     ).
 
 st_opts() -> [session_expires, min_se, session_refresher].
@@ -498,14 +605,19 @@ b2b_wait(#{res := Res, branches := Branches, deadline := Deadline} = W) ->
         {error, timeout}
     end.
 
-%% an event of the UAC of a branch
-b_event(_BRef, {request_sent, _}, W) ->
+%% an event of the UAC of a branch; the notify process hears of B's
+%% INVITE, its early dialogs and its provisionals (drachtio's cbRequest,
+%% cbProvisional and cbFinalizedUac)
+b_event(BRef, {request_sent, Info}, W) ->
+    notify({b_request, Info#{uac => BRef}}, W),
     b2b_wait(W);
 b_event(_BRef, {early_dialog, D}, W) ->
     %% an UPDATE in it goes to A's early dialog (RFC 3311); the 2xx hands
     %% over the same dialog
+    notify({b_early, D}, W),
     b2b_wait(W#{bearly := D});
 b_event(BRef, {provisional, BMsg}, W) ->
+    notify({b_provisional, BMsg}, W),
     b2b_wait(
         provisional(
             BRef,
@@ -525,6 +637,9 @@ b_event(BRef, {error, SipError}, W) ->
     b_failed(BRef, SipError, W);
 b_event(_BRef, _Other, W) ->
     b2b_wait(W).
+
+notify(Ev, #{media := M}) ->
+    chappe_sip_b2b_media:event(Ev, M).
 
 %% B answered after all: its dialog is torn down, not cancelled
 cancel_b(#{ready := BDialog}, Hdrs) when BDialog =/= undefined ->
@@ -596,10 +711,11 @@ create_a(
     ),
     UasOpts0 = maps:merge(maps:with(st_opts(), Opts), #{
         local_sdp => SdpAAnswer,
-        headers => RespHeaders,
+        headers => RespHeaders ++ maps:get(a_headers, Opts, []),
         local_tag => ATag,
         owner => self(),
-        handled_events => handled(Opts)
+        handled_events => handled(Opts),
+        call_ref => maps:get(call_ref, Opts)
     }),
     %% A's early leg becomes its dialog, past the CSeq numbers it used
     UasOpts1 =
@@ -621,7 +737,12 @@ create_a(
                 media => M,
                 requests => maps:get(requests, Opts, []),
                 relay_info => maps:get(relay_info, Opts, false),
-                winner => Winner
+                transfer => {
+                    chappe_sip_b2b_transfer:mode(Opts),
+                    maps:get(transfer_opts, Opts, #{})
+                },
+                winner => Winner,
+                call_ref => maps:get(call_ref, Opts)
             },
             {ok, maps:merge(Legs, maps:from_list([{late, true} || late(W)]))};
         {error, Reason} ->
@@ -712,14 +833,14 @@ reliable(_BMsg, _W) ->
     false.
 
 %% relay B's 1xx to A under the pre-chosen tag, with its body (early media)
-send_provisional(BMsg, #{res := Res, atag := ATag} = W0) ->
+send_provisional(BMsg, #{req := Req, res := Res, atag := ATag} = W0) ->
     Status = chappe_sip_msg:status(BMsg),
     Reason = default_reason(chappe_sip_msg:reason(BMsg)),
     {CT, Body, W} = early_body(BMsg, W0),
     Reliable = reliable(BMsg, W),
     %% every relayed 1xx carries A's To-tag, so it establishes an early
     %% dialog and needs our Contact (RFC 3261 12.1.1)
-    Hdrs = CT ++ [{<<"Contact">>, contact()}],
+    Hdrs = CT ++ [{<<"Contact">>, contact(Req)}],
     _ = chappe_sip_res:send(Res, Status, #{
         reason => Reason,
         headers => Hdrs,
@@ -761,7 +882,31 @@ early_body(BMsg, #{opts := Opts, media := M0} = W) ->
             {[{<<"Content-Type">>, CT}], Body, W}
     end.
 
-%% The Contact a B2BUA puts on what it sends A.
+%% The Contact a B2BUA puts on what it sends A for request Req: the
+%% listen address Req came to (several listen addresses), as that peer
+%% should see it: behind 1:1 NAT, the local address for a peer inside
+%% local_nets and the public one for everyone else
+%% (chappe_sip_binds:for_peer/2).
+-spec contact(chappe_sip_req:req()) -> binary().
+contact(Req) ->
+    Local = chappe_sip_binds:local(chappe_sip_req:meta(Req)),
+    case chappe_sip_binds:contact_or_primary(Local, false) of
+        undefined ->
+            contact();
+        C ->
+            Uri = chappe_sip_binds:for_peer(
+                bare(C), chappe_sip_req:source_ip(Req)
+            ),
+            <<"<", Uri/binary, ">">>
+    end.
+
+bare(C) ->
+    case chappe_sip_hdr:name_addr(C) of
+        {ok, #{uri := Uri}} -> Uri;
+        _ -> C
+    end.
+
+%% The Contact a B2BUA puts on what it sends: the stack's own address.
 -spec contact() -> binary().
 contact() ->
     case chappe_sip_engine:contact() of
@@ -820,7 +965,12 @@ relay(Legs) ->
 %%                  given to it)
 -spec relay(legs(), map()) -> {done, a_bye | b_bye | hangup | term()}.
 relay(Legs, Opts) ->
-    chappe_sip_b2b_relay:run(Legs, Opts).
+    try
+        chappe_sip_b2b_relay:run(Legs, Opts)
+    after
+        %% the call is over: this process no longer serves it
+        chappe_sip_call:leave(maps:get(call_ref, Legs, undefined), b2b)
+    end.
 
 %% Carry the call in a process of its own, so the caller is free (to
 %% drive a media server on the call, say): relay/2 runs there with Opts,
@@ -828,8 +978,12 @@ relay(Legs, Opts) ->
 %% handle comes back. The notify process (Opts' notify, else the one
 %% given to create_b2bua/4) gets {chappe_sip_b2b, Ref, {done, Result}},
 %% Result as relay/2 returns it, when the call ends. Call it from the
-%% process create_b2bua/4 ran in.
--spec relay_async(legs(), map()) -> {ok, b2b()}.
+%% process create_b2bua/4 ran in. The process is a child of
+%% chappe_sip_b2b_sup; Opts' owner => pid() | none (default the notify
+%% process) is monitored, and the call is hung up when it dies. If the
+%% relay process itself dies, its dialogs end the call: monitor the b2b()
+%% pid to hear of it.
+-spec relay_async(legs(), map()) -> {ok, b2b()} | {error, term()}.
 relay_async(Legs, Opts) ->
     chappe_sip_b2b_async:run(Legs, Opts).
 
@@ -843,7 +997,8 @@ set_media(B2b, Mode) when Mode =:= direct; Mode =:= anchor ->
 
 %% What the call is doing: #{media := direct | anchor, hold := #{a, b},
 %% call_id := binary(), session := chappe_sip_media:session() | undefined,
-%% pending := boolean(), winner := winner() | undefined}. winner is the
+%% pending := boolean(), winner := winner() | undefined, call_ref :=
+%% binary() | undefined, related := binary() | undefined}. winner is the
 %% destination leg B is now: the one that answered create_b2bua/4 or a
 %% replace_b/3 fork (undefined for legs made another way, or after
 %% replace_b/3 to a URI or a dialog).
@@ -910,6 +1065,27 @@ replace_b(B2b, Target, Opts) ->
         false -> {error, badarg}
     end.
 
+%% Replace the party on Leg of an anchored call, as replace_b/3 does for
+%% leg B; a transfer replaces the leg that sent the REFER. Target is a URI
+%% or {dialog, D} (a fork only for leg B). Opts are replace_b/3's, plus
+%% keep_old => true: the old party is not hung up but handed to the
+%% caller (its dialog's owner from then on), which ends it, and
+%% on_progress => fun(Status): called with each 1xx above 100 the new
+%% party sends (a URI target), in the relay's helper process.
+-spec replace_leg(
+    b2b(), a | b, binary() | {dialog, chappe_sip_dialog:dialog()}, map()
+) ->
+    ok | {ok, #{winner := winner()}} | {error, term()}.
+replace_leg(B2b, b, Target, Opts) ->
+    replace_b(B2b, Target, Opts);
+replace_leg(_B2b, a, {parallel, _}, _Opts) ->
+    {error, badarg};
+replace_leg(B2b, a, Target, Opts) ->
+    case chappe_sip_b2b_replace:valid(Target, Opts) of
+        true -> call(B2b, {replace, a, Target, Opts}, timer_c(Opts) + 10000);
+        false -> {error, badarg}
+    end.
+
 %% A request to the relay loop of a call.
 -spec call(b2b(), term()) -> term().
 call(B2b, Req) ->
@@ -933,6 +1109,8 @@ call({Pid, Ref}, Req, Timeout) ->
         {error, timeout}
     end.
 
+%% A leg's remote SDP, <<>> once it is gone.
+-spec remote_sdp(chappe_sip_dialog:dialog()) -> binary().
 remote_sdp(Dlg) ->
     try chappe_sip_dialog:remote_sdp(Dlg) of
         Sdp -> Sdp

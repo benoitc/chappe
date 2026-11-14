@@ -5,7 +5,10 @@
 %%
 %% start/2 returns immediately with a reference; the caller (or an
 %% explicit notify pid) receives events:
-%%   {chappe_sip_uac, Ref, {request_sent, ReqInfo}}   after nta accepts the send
+%%   {chappe_sip_uac, Ref, {request_sent, ReqInfo}}   after nta accepts the send;
+%%                                                    ReqInfo #{call_id, uri,
+%%                                                    method, cseq}, again for
+%%                                                    each retry (auth, 3xx)
 %%   {chappe_sip_uac, Ref, {early_dialog, Dialog}}     a 101..199 to an INVITE
 %%                                                    formed an early dialog
 %%                                                    (a new To tag), just
@@ -38,13 +41,21 @@
 %%         route_set => [binary()] (Route values, a preloaded route set:
 %%           RFC 3261 8.1.1.1, loose or strict first route),
 %%         auth => #{user := binary(), pass := binary(), realm => binary()}
-%%           or a list of them (a realm-less entry answers any realm),
+%%           or a list of them (a realm-less entry answers any realm), or
+%%           fun((Challenge) -> Auth | none), Challenge the parsed
+%%           challenge #{scheme := binary(), params := #{<<"realm">> ...}}
+%%           (chappe_sip_hdr:auth/1); it runs in the UAC process, on this
+%%           node, once or twice per challenge, and a fun that fails
+%%           answers none,
 %%         report_auth => boolean() (a non-INVITE 2xx is preceded by
 %%           {auth_state, State} when credentials were sent),
 %%         auth_state => State (from report_auth: the request carries
 %%           credentials for those challenges at once, the next nonce
 %%           count each; a stale nonce is answered again as usual),
 %%         follow_redirects => boolean() (3xx Contacts tried best q first),
+%%         keep_uri_on_redirect => boolean() (default false: a followed
+%%           3xx Contact becomes the Request-URI and To; true keeps them
+%%           and sends the request to the Contact as its next hop),
 %%         no_ack => boolean() (3PCC: chappe_sip_dialog:ack/2 sends the ACK),
 %%         answer => fun((Offer :: binary()) -> {ok, iodata()} | reject)
 %%           (an INVITE without local_sdp: the answer to the offer in the
@@ -56,13 +67,22 @@
 %%           dialog you keep yourself, such as a subscription refresh: its
 %%           Call-ID and CSeq number; `to' then carries the remote tag),
 %%         session_expires, min_se, session_refresher (RFC 4028, see
-%%         chappe_sip_session_timer)}
+%%         chappe_sip_session_timer),
+%%         call_ref => binary() (the call an INVITE serves, chappe_sip_call;
+%%           default a new one), call_ref_header => boolean() (default
+%%           true: the INVITE carries it as X-Chappe-Call, unless headers
+%%           has one already), related => binary() (the call_ref of the
+%%           call a transfer brings this one from, in its call record)}
+%% A call_ref or related that is not a token of 1 to 128 characters is
+%% {error, badarg}.
 -spec start(binary(), map()) -> {ok, uac_ref()} | {error, term()}.
 start(Uri, Opts) ->
-    case at_uac_cap() of
-        true ->
+    case {at_uac_cap(), chappe_sip_call:valid_opts(Opts)} of
+        {_, false} ->
+            {error, badarg};
+        {true, true} ->
             {error, max_uac_transactions};
-        false ->
+        {false, true} ->
             Ref = make_ref(),
             Notify = maps:get(notify, Opts, self()),
             Owner = maps:get(owner, Opts, Notify),

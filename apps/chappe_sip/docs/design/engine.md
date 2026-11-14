@@ -273,7 +273,10 @@ change to `chappe_sip_engine_nif.c` keeps these rules:
 - **Checks at the boundary.** NUL bytes are refused in headers, body,
   route, reason, to-tag, the leg Call-ID, local and remote, and every start
   option string. Leg fields are capped at 8 KiB, `max_message_size` must be
-  1 KiB to 64 MiB, a capture port 1 to 65535. A start option that is there
+  1 KiB to 64 MiB, a capture port 1 to 65535, the SIP timers, `udp_mtu` and
+  `tcp_keepalive_ms` within the bounds of `get_agent_opts`, and an outbound
+  proxy a `sip:` or `sips:` URI (nta drops any other without a word, so the
+  shim also checks it took one). A start option that is there
   but invalid is `{error, badarg}`, never ignored.
 - **No silent failure.** A status helper is `NODISCARD` (C23 `[[nodiscard]]`
   or `warn_unused_result`). An allocation that fails in a NIF returns

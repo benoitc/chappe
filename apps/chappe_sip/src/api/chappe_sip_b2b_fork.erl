@@ -208,7 +208,7 @@ refuse(Res, Error, Opts) ->
 handle_b_failure(Res, Error, Opts) ->
     _ =
         maps:get(pass_failure, Opts, true) andalso
-            send_failure(Res, Error),
+            send_failure(Res, Error, maps:get(a_headers, Opts, [])),
     case Error of
         #chappe_sip_error{status = Status, reason = Reason} ->
             {error, #chappe_sip_error{status = Status, reason = Reason}};
@@ -216,11 +216,14 @@ handle_b_failure(Res, Error, Opts) ->
             {error, Other}
     end.
 
-send_failure(Res, #chappe_sip_error{status = Status, reason = Reason}) ->
-    chappe_sip_res:send(Res, Status, #{reason => Reason});
-send_failure(Res, _Other) ->
+%% the app's a_headers go on the failure too
+send_failure(Res, #chappe_sip_error{status = Status, reason = Reason}, Hdrs) ->
+    chappe_sip_res:send(Res, Status, #{reason => Reason, headers => Hdrs});
+send_failure(Res, _Other, Hdrs) ->
     %% the B leg failed below the SIP layer (a bad target, engine down, ...)
-    chappe_sip_res:send(Res, 500, #{reason => <<"Server Internal Error">>}).
+    chappe_sip_res:send(Res, 500, #{
+        reason => <<"Server Internal Error">>, headers => Hdrs
+    }).
 
 %% ---- internal ----
 

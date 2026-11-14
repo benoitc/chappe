@@ -21,7 +21,7 @@
          offerless_reinvite/1, update_offer/1, glare/1,
          set_media_both_ways/1, session_timer_refresh/1,
          options_failover/1, kamailio_pings/1, replace_b/1,
-         fork_webrtc_and_plain/1]).
+         fork_webrtc_and_plain/1, nat_public_call/1, nat_local_call/1]).
 
 all() ->
     case os:getenv("INTEROP") of
@@ -29,7 +29,7 @@ all() ->
             [kamailio_pings, direct_call, anchored_call, hold_from_sipp,
              hold_from_fs, offerless_reinvite, update_offer, glare,
              set_media_both_ways, session_timer_refresh, replace_b,
-             fork_webrtc_and_plain,
+             fork_webrtc_and_plain, nat_public_call, nat_local_call,
              options_failover];
         _ ->
             {skip, "set INTEROP=1 (needs docker) to run the SBC lab"}
@@ -185,6 +185,27 @@ fork_webrtc_and_plain(Config) ->
     Out = done(Pid),
     ?assert(has(answer(Out), "c=IN IP4 10.253.9.20")).
 
+%% 1:1 NAT: the node binds 10.253.10.10 and advertises 203.0.113.10. A
+%% caller outside its local network (SIPp from 10.253.10.128/25) gets the
+%% public address in the 200 Contact; its ACK and BYE name it and still
+%% reach the node (sent to the address, as the NAT would), and the call
+%% goes through to FreeSWITCH and ends.
+nat_public_call(Config) ->
+    Lab = ?config(lab, Config),
+    Out = done(sipp_nat(Lab, "sbc_call", "direct", 1000, "nat-pub-1@lab", "")),
+    A = answer(Out),
+    ?assert(has(A, "Contact: <sip:203.0.113.10")),
+    ?assertNot(has(A, "Contact: <sip:10.253.10.10")).
+
+%% A caller on the local network (10.253.10.0/26) gets the local address.
+nat_local_call(Config) ->
+    Lab = ?config(lab, Config),
+    Out = done(sipp_nat(Lab, "sbc_call", "direct", 1000, "nat-loc-1@lab",
+                        "10.253.10.50")),
+    A = answer(Out),
+    ?assert(has(A, "Contact: <sip:10.253.10.10")),
+    ?assertNot(has(A, "203.0.113.10")).
+
 %% fs1 stops: its peer goes down, and the next call lands on fs2; fs1
 %% comes back up.
 options_failover(Config) ->
@@ -275,6 +296,12 @@ fs_channel(Lab) ->
 sipp(Lab, Scen, User, Pause, Cid) ->
     Self = self(),
     Args = lists:flatten(io_lib:format("sipp ~s ~s ~b ~s", [Scen, User, Pause, Cid])),
+    spawn(fun() -> Self ! {sipp, self(), sh(Lab ++ " " ++ Args)} end).
+
+sipp_nat(Lab, Scen, User, Pause, Cid, Ip) ->
+    Self = self(),
+    Args = lists:flatten(io_lib:format("sipp-nat ~s ~s ~b ~s ~s",
+                                       [Scen, User, Pause, Cid, Ip])),
     spawn(fun() -> Self ! {sipp, self(), sh(Lab ++ " " ++ Args)} end).
 
 done(Pid) -> done(Pid, 90000).
