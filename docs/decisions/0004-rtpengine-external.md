@@ -50,4 +50,6 @@ reimplemented in Erlang.
 
 ## Open questions
 
-- Confirm: SRTP/DTLS/ICE and transcoding are out of scope for Erlang?
+- Confirm: DTLS, ICE and transcoding are out of scope for Erlang? SRTP is
+  answered by [0009](0009-srtp-in-erlang.md): decrypted in Erlang where
+  chappe receives media itself, in rtpengine for media it relays.
