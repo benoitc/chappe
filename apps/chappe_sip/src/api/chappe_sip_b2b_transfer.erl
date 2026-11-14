@@ -237,6 +237,11 @@ base(Target, RT, #{req := Req, transfers := N} = S) ->
 %% principal the app recorded for the referrer's leg (create_b2bua/4's
 %% principal option) and replaces_principal, the one of the named leg.
 %% The From of the REFER is never enough: nothing authenticated it.
+%%
+%% A REFER comes in a dialog, where a 481 would tell the referrer that
+%% dialog is gone (RFC 3261 12.2.1.2): a named dialog that is ending gets
+%% 603 (as an INVITE with that Replaces would, RFC 3891 3), an early one
+%% 403 (only confirmed legs are joined).
 attended(#{call_id := C, to_tag := T, from_tag := F} = R, Info, S) ->
     Info1 = Info#{kind := attended, replaces => R},
     case chappe_sip_dialog_index:lookup({C, T, F}) of
@@ -244,8 +249,10 @@ attended(#{call_id := C, to_tag := T, from_tag := F} = R, Info, S) ->
             {ok, Info1#{local => false}};
         {ok, {Pid, Id, confirmed, _Role}} ->
             local(chappe_sip_dialog:make(Pid, Id), Info1, S);
+        {ok, {_, _, early, _}} ->
+            {reject, 403, <<"Forbidden">>};
         {ok, _} ->
-            {reject, 481, <<"Call/Transaction Does Not Exist">>}
+            {reject, 603, <<"Declined">>}
     end.
 
 local(D2, Info, #{b2b := Own}) ->
@@ -256,7 +263,8 @@ local(D2, Info, #{b2b := Own}) ->
         _ ->
             {reject, 403, <<"Forbidden">>}
     catch
-        exit:_ -> {reject, 481, <<"Call/Transaction Does Not Exist">>}
+        %% it ended meanwhile
+        exit:_ -> {reject, 603, <<"Declined">>}
     end.
 
 %% the B2BUA call that holds D2, and the principal of that leg
@@ -436,8 +444,8 @@ ask(Info, #{notify := Pid, ref := Ref, res := Res, mon := Mon} = S) when
             _ = chappe_sip_res:send(Res, Code, #{}),
             ok;
         {'DOWN', Mon, process, _, _} ->
-            %% the call is over
-            _ = chappe_sip_res:send(Res, 481, #{}),
+            %% the call is over (603, not 481: see attended/3)
+            _ = chappe_sip_res:send(Res, 603, #{reason => <<"Declined">>}),
             ok
     after maps:get(timeout, maps:get(opts, S), 10000) ->
         _ = chappe_sip_res:send(Res, 603, #{reason => <<"Declined">>}),

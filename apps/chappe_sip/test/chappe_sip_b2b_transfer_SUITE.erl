@@ -17,6 +17,7 @@
 -export([all/0, init_per_suite/1, end_per_suite/1, end_per_testcase/2]).
 -export([notify_accept/1, notify_reject/1, notify_retarget/1,
          notify_from_another_node/1]).
+-export([attended_ending_dialog_declined/1]).
 -export([attended_join_fails_keeps_calls/1, attended_needs_principal/1,
          attended_policy_sees_principals/1]).
 -export([maddr_refused/1, own_host_other_port_refused/1, no_user_refused/1,
@@ -38,7 +39,8 @@ all() ->
      blind_progress_notified, transferor_bye_keeps_transferee,
      transferor_bye_then_failure_ends_call,
      blind_target_fails, attended_local_join, attended_join_fails_keeps_calls,
-     attended_needs_principal, attended_policy_sees_principals, attended_remote_replaces,
+     attended_needs_principal, attended_policy_sees_principals,
+     attended_ending_dialog_declined, attended_remote_replaces,
      attended_other_party_refused, notify_accept, notify_reject,
      notify_retarget, notify_from_another_node, offnet_refused,
      maddr_refused, own_host_other_port_refused, no_user_refused,
@@ -331,6 +333,66 @@ attended_needs_principal(_Config) ->
     ?assertEqual(403, ?UA:status(got(refer_answer))),
     no_message(carol_reinvite, 500),
     ?assertMatch(#{media := anchor}, chappe_sip_b2b:info(B2b2)).
+
+%% Bob names his call with Carol while that call ends (its BYE to Bob is
+%% in flight): the REFER gets 603, as an INVITE naming a terminated dialog
+%% does (RFC 3891 3). Not 481: in a dialog a 481 tells Bob his call with
+%% Alice is gone (RFC 3261 12.2.1.2).
+attended_ending_dialog_declined(_Config) ->
+    {EP, CP} = setup(#{principals => bob()}),
+    NP = route_carol(?UA:pick()),
+    carol(NP),
+    Test = self(),
+    ?UA:peer(CP, fun(Sock) ->
+        {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
+        Tag = ?UA:tag(),
+        ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, Tag, [contact(Sock)],
+                                     ?UA:sdp(<<"callee">>))),
+        {_Ack, _} = ?UA:recv_req(Sock, <<"ACK">>),
+        D1 = ?UA:dialog_from_invite(Sock, Inv, Tag, Src),
+        C2 = ?UA:callid(),
+        BT2 = ?UA:tag(),
+        Inv2 = binary:replace(
+                 ?UA:invite(Sock, EP, #{call_id => C2, from_tag => BT2,
+                                        ruri => <<"sip:carol@127.0.0.1">>}),
+                 <<"From: <sip:caller@">>, <<"From: <sip:callee@">>),
+        ?UA:send(Sock, EP, Inv2),
+        R2 = ?UA:recv_status(Sock, 200),
+        ?UA:ack(?UA:dialog_from_2xx(Sock, Inv2, R2), EP),
+        Test ! bob_consulted,
+        %% the BYE of his call with Carol: left unanswered
+        {_Bye, _} = ?UA:recv_req(Sock, <<"BYE">>),
+        RT = chappe_sip_hdr:refer_to_value(#{
+            uri => <<"sip:carol@127.0.0.1:", (integer_to_binary(NP))/binary>>,
+            replaces => #{call_id => C2, to_tag => ?UA:to_tag(R2),
+                          from_tag => BT2}
+        }),
+        {Refer, _} = ?UA:in_dialog(D1, <<"REFER">>,
+                                   [{<<"Refer-To">>, RT}], <<>>),
+        ?UA:send(Sock, EP, Refer),
+        refer_answer(Sock)
+    end),
+    caller(EP, fun(_Sock, _D) -> ok end),
+    _ = got(legs),
+    #{b2b := B2b2} = got(legs_carol),
+    ok = ?UA:expect(bob_consulted, 10000),
+    _ = spawn(fun() -> chappe_sip_b2b:hangup(B2b2, #{}) end),
+    ?assertEqual(603, ?UA:status(got(refer_answer))).
+
+%% tell the test of the REFER's final; nothing else is answered
+refer_answer(Sock) ->
+    receive
+        {udp, Sock, _, _, <<"SIP/2.0 1", _/binary>>} ->
+            refer_answer(Sock);
+        {udp, Sock, _, _, <<"SIP/2.0 ", _/binary>> = R} ->
+            case maps:get(method, ?UA:cseq(R)) of
+                <<"REFER">> -> tell({refer_answer, R});
+                _ -> ok
+            end,
+            refer_answer(Sock);
+        {udp, Sock, _, _, _} ->
+            refer_answer(Sock)
+    end.
 
 %% An app policy decides a local join: it sees the principal of the
 %% referrer's leg and the one of the leg the Replaces names.
