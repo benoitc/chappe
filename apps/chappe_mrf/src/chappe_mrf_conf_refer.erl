@@ -151,7 +151,7 @@ dial_native(Conf, Target, Refer, #{endpoint := EpOpts} = Cfg) ->
                 Conf, {refer, {dialing, Ep, Member, Refer}}, 30000
             ),
         ok ?= chappe_mrf:set(Ep, #{<<"hangup_after_bridge">> => <<"true">>}),
-        Dial = [replaces_var(Cfg), dial_string(Cfg, Target)],
+        Dial = [var_block(dial_vars(Cfg)), dial_string(Cfg, Target)],
         {ok, _} ?= chappe_mrf:execute(Ep, <<"bridge">>, Dial, #{wait => false}),
         ok
     else
@@ -194,7 +194,13 @@ call(cfg, S) ->
             P -> P
         end,
     Cfg = maps:merge(#{endpoint => #{}}, S#state.dial),
-    {reply, Cfg#{policy => Policy, backend => S#state.backend}, S};
+    {reply,
+        Cfg#{
+            policy => Policy,
+            backend => S#state.backend,
+            entity => S#state.entity
+        },
+        S};
 call({remove, Target}, S) ->
     {Reply, S1} = remove(Target, S),
     {reply, Reply, S1};
@@ -226,15 +232,11 @@ fs_dial(Target, Refer, #state{dialing = D} = S) ->
 
 fs_dial(Target, Refer, D, #state{name = Name} = S) ->
     Uuid = chappe_mrf_lib:new_id(),
-    Rep =
-        case maps:get(replaces, S#state.dial, undefined) of
-            undefined -> <<>>;
-            R -> [<<",sip_h_Replaces=">>, R]
-        end,
+    Vars = dial_vars((S#state.dial)#{entity => S#state.entity}),
     Dial = [
         <<"{origination_uuid=">>,
         Uuid,
-        Rep,
+        [[<<",">>, K, <<"=">>, V] || {K, V} <- Vars],
         <<"}">>,
         dial_string(S#state.dial, Target)
     ],
@@ -297,10 +299,44 @@ fs_started(_Uuid, ok, S) ->
 fs_started(Uuid, {error, _}, S) ->
     fs_failed(Uuid, 503, S).
 
-%% The Replaces a REFER to the focus carries goes on the INVITE to its
-%% party as a header (RFC 4579 5.10).
-replaces_var(#{replaces := R}) -> [<<"{sip_h_Replaces=">>, R, <<"}">>];
-replaces_var(_Cfg) -> <<>>.
+%% The channel variables of the INVITE to a party the room dials: the
+%% Replaces a REFER to the focus carries, as a header (RFC 4579 5.10),
+%% and in a focus room the conference's user and isfocus in its Contact
+%% (5.5). In FreeSWITCH's sofia (sofia_glue.c) sip_contact_user is the
+%% Contact's user, and sip_invite_contact_params with a leading `~' adds
+%% header parameters after the URI; the host stays the FreeSWITCH node's,
+%% which holds that dialog.
+-spec dial_vars(map()) -> [{binary(), binary()}].
+dial_vars(Cfg) ->
+    Rep =
+        case Cfg of
+            #{replaces := R} -> [{<<"sip_h_Replaces">>, R}];
+            _ -> []
+        end,
+    Rep ++ focus_vars(maps:get(entity, Cfg, undefined)).
+
+focus_vars(undefined) ->
+    [];
+focus_vars(Entity) ->
+    User =
+        case chappe_sip_uri:parse(Entity) of
+            {ok, #{user := U}} when is_binary(U) -> U;
+            _ -> <<>>
+        end,
+    Params = {<<"sip_invite_contact_params">>, <<"~isfocus">>},
+    case User =/= <<>> andalso dialable(User) of
+        true -> [{<<"sip_contact_user">>, User}, Params];
+        false -> [Params]
+    end.
+
+var_block([]) ->
+    <<>>;
+var_block(Vars) ->
+    [
+        <<"{">>,
+        lists:join(<<",">>, [[K, <<"=">>, V] || {K, V} <- Vars]),
+        <<"}">>
+    ].
 
 %% A member's REFER, in its dialog with the room (the room is its call's
 %% notify process): chappe_sip_focus:refer/4 reads add, remove or transfer

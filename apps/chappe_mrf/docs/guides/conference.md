@@ -210,7 +210,9 @@ ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
 
 - An added party is dialed into the room: on native an endpoint of the
   pool joins the mixer and bridges to it, on fs mod_conference dials it
-  into the room. It joins as `{joined, Member, #{uri := Target}}`, and the
+  into the room. In a `focus => true` room (native or fs) that INVITE
+  carries the room's name as its Contact user and `isfocus` (RFC 4579
+  5.5); the Contact's host is the FreeSWITCH node that holds the call. It joins as `{joined, Member, #{uri := Target}}`, and the
   referrer gets NOTIFY 200 once it answers (408 after `dial_timeout`, or
   the party's status).
 - `method=BYE` removes the member whose `uri` matches (the join's `uri`,

@@ -80,9 +80,11 @@
 %%                moved into the mixer (the mixer runs on this host)
 %%   endpoint_params => #{offer, answer => map()}: rtpengine flags between
 %%                the mixer and an endpoint's node (offer: toward the node)
-%%   focus     => true: serve RFC 4575 conference-info (entity, the
-%%                conference URI, defaults to sip:Name@<this node>)
 %% both:
+%%   focus     => true: serve RFC 4575 conference-info (entity, the
+%%                conference URI, defaults to sip:Name@<this node>); the
+%%                parties a REFER brings in are dialed with isfocus in
+%%                their Contact (RFC 4579 5.5)
 %%   refer_policy => fun((Info) -> boolean() | {reject, Code}): decides a
 %%                REFER to the room (refer/3), Info as chappe_sip_focus:
 %%                refer/4 gives it (action add | remove, target, referrer,
@@ -444,7 +446,7 @@ init_backend(Name, Opts, Caller) ->
                     %% room-wide events (play-file-done) carry no channel;
                     %% only this room's are sent here
                     ok = node_events(Node, Name),
-                    {ok, S0#state{node = Node}};
+                    {ok, focus(Opts, S0#state{node = Node})};
                 {error, _} = Err ->
                     {stop, Err}
             end

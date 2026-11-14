@@ -356,6 +356,8 @@ refer_adds_native(Config) ->
     _ = fs_what(reinvite),
     {fake_fs, _, _, {cmd, Bridge}} = fs_cmd(<<"execute-app-name: bridge">>),
     ?assert(has(Bridge, <<"sofia/carrier/carol@10.0.0.9">>)),
+    ?assert(has(Bridge, <<"sip_contact_user=addroom">>)),
+    ?assert(has(Bridge, <<"sip_invite_contact_params=~isfocus">>)),
     {joined, M, #{uri := <<"sip:carol@10.0.0.9">>}} = joined(Conf),
     ok = ?F:fs_event(?config(fs, Config), <<"CHANNEL_BRIDGE">>, []),
     ?assertEqual(<<"SIP/2.0 200">>, final_frag(Sock)),
@@ -363,11 +365,12 @@ refer_adds_native(Config) ->
 
 %% fs: mod_conference dials the party into the room under our uuid; its
 %% add-member makes it a member and the referrer gets NOTIFY 200; a
-%% method=BYE then kicks it by its URI.
+%% method=BYE then kicks it by its URI. The bgdial INVITE has the
+%% conference's user and isfocus in its Contact (5.5).
 refer_adds_fs(Config) ->
     ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
     {ok, Conf} = chappe_mrf:conference(<<"fsadd">>, #{
-        backend => fs, node => fs1, refer_policy => fun(_) -> true end
+        backend => fs, node => fs1, focus => true, refer_policy => fun(_) -> true end
     }),
     {ok, Ep} = chappe_mrf:create_endpoint(#{targets => [{fs1, fs_uri(Config)}]}),
     {ok, First} = chappe_mrf_conf:join(Conf, Ep, #{}),
@@ -377,7 +380,9 @@ refer_adds_fs(Config) ->
     ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(Sock)),
     {fake_fs, _, _, {cmd, Dial}} = fs_cmd(<<"conference fsadd bgdial">>),
     ?assert(has(Dial, <<"sofia/external/dave@10.0.0.8">>)),
-    {match, [Uuid]} = re:run(Dial, <<"origination_uuid=([^}]+)}">>, [{capture, all_but_first, binary}]),
+    ?assert(has(Dial, <<"sip_contact_user=fsadd">>)),
+    ?assert(has(Dial, <<"sip_invite_contact_params=~isfocus">>)),
+    {match, [Uuid]} = re:run(Dial, <<"origination_uuid=([^,}]+)">>, [{capture, all_but_first, binary}]),
     ?assertEqual([<<"SIP/2.0 100">>], frags(Sock, 1)),
     Conf ! {chappe_esl_node, fs1, {event, #{body => <<>>, headers => #{
         <<"Event-Name">> => <<"CUSTOM">>,
@@ -456,7 +461,9 @@ refer_bgdial(Config) ->
     {Sock, _} = refer(Config, Entity, <<"boss">>, <<"<sip:busy@10.0.0.8>">>),
     ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(Sock)),
     {fake_fs, _, _, {cmd, Dial}} = fs_cmd(<<"conference bgroom bgdial">>),
-    {match, [Uuid]} = re:run(Dial, <<"origination_uuid=([^}]+)}">>, [{capture, all_but_first, binary}]),
+    %% a room without focus => true does not say it is a focus (4.2)
+    ?assertNot(has(Dial, <<"isfocus">>)),
+    {match, [Uuid]} = re:run(Dial, <<"origination_uuid=([^,}]+)">>, [{capture, all_but_first, binary}]),
     T0 = erlang:monotonic_time(millisecond),
     #{members := 1} = chappe_mrf_conf:info(Conf),
     ?assert(erlang:monotonic_time(millisecond) - T0 < 1000),
@@ -489,7 +496,7 @@ dialed_party_leaves(Config) ->
     {Sock, _} = refer(Config, Entity, <<"boss">>, <<"<sip:dave@10.0.0.8>">>),
     ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(Sock)),
     {fake_fs, _, _, {cmd, Dial}} = fs_cmd(<<"conference leaveroom bgdial">>),
-    {match, [Uuid]} = re:run(Dial, <<"origination_uuid=([^}]+)}">>, [{capture, all_but_first, binary}]),
+    {match, [Uuid]} = re:run(Dial, <<"origination_uuid=([^,}]+)">>, [{capture, all_but_first, binary}]),
     Maint = fun(Action) ->
         Conf ! {chappe_esl_node, fs1, {event, #{body => <<>>, headers => #{
             <<"Event-Name">> => <<"CUSTOM">>,
@@ -587,6 +594,10 @@ focus_member_refer_adds(Config) ->
     {fake_fs, _, _, {cmd, Bridge}} = fs_cmd(<<"execute-app-name: bridge">>),
     ?assert(has(Bridge, <<"sofia/external/carol@10.0.0.9">>)),
     ?assert(has(Bridge, <<"sip_h_Replaces=c1@h;to-tag=t1;from-tag=f1">>)),
+    %% 5.5: the INVITE to the party has the conference's user and isfocus
+    %% in its Contact (sofia's sip_contact_user, sip_invite_contact_params)
+    ?assert(has(Bridge, <<"sip_contact_user=froom">>)),
+    ?assert(has(Bridge, <<"sip_invite_contact_params=~isfocus">>)),
     ok = chappe_mrf_conf:stop(Conf).
 
 %% A room with focus => false does not advertise isfocus: a member's REFER
