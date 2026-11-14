@@ -211,3 +211,18 @@ multipart_refused_test() ->
                  chappe_sip_multipart:parse(<<"multipart/mixed;boundary=b">>, Many)),
     ?assertEqual({ok, [#{content_type => <<"application/sdp">>, body => <<"v=0">>}]},
                  chappe_sip_multipart:parse(<<"Application/SDP">>, <<"v=0">>)).
+
+%% G.711 at the recording server (chappe_sip_siprec_rtp): the reference
+%% values of ITU-T G.711, 16-bit little-endian
+g711_decode_test() ->
+    D = fun(Law, B) ->
+        <<S:16/little-signed>> = chappe_sip_siprec_rtp:decode(Law, <<B>>),
+        S
+    end,
+    ?assertEqual(0, D(ulaw, 16#FF)),
+    ?assertEqual(-32124, D(ulaw, 16#00)),
+    ?assertEqual(32124, D(ulaw, 16#80)),
+    ?assertEqual(8, D(alaw, 16#D5)),
+    ?assertEqual(-8, D(alaw, 16#55)),
+    ?assertEqual(32256, D(alaw, 16#AA)),
+    ?assertEqual(320, byte_size(chappe_sip_siprec_rtp:decode(ulaw, binary:copy(<<0>>, 160)))).

@@ -134,4 +134,7 @@ default(session_refresher) -> uac;
 default(siprec_srs) -> undefined;
 default(siprec_max_per_call) -> 2;
 default(siprec_answer_timeout_ms) -> 10000;
+%% SIPREC recording server (chappe_sip_siprec_srs): the store module
+%% `store => default' writes each stream to (open/2, write/2, close/2).
+default(siprec_store) -> chappe_audio_store;
 default(_) -> undefined.

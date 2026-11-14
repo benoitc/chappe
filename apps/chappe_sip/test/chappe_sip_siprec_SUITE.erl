@@ -23,6 +23,9 @@
          recording_crash_spares_call/1, too_many_per_call/1,
          bad_arguments/1, metadata_privacy/1, legacy_content_type/1,
          from_another_node/1]).
+-export([server_writes_store/1, server_not_a_recording_session/1,
+         server_sink_and_stream_crash/1, server_refuses_bad_body/1,
+         server_answers_on_the_wire/1]).
 
 all() ->
     [invite_is_a_recording_session, chappe_as_recording_server,
@@ -30,7 +33,9 @@ all() ->
      srs_reinvite_answered, srs_refuses, srs_never_answers, srs_byes,
      call_end_byes_srs, owner_death_byes_srs, recording_crash_spares_call,
      too_many_per_call, bad_arguments, metadata_privacy,
-     legacy_content_type, from_another_node].
+     legacy_content_type, from_another_node, server_writes_store,
+     server_not_a_recording_session, server_sink_and_stream_crash,
+     server_refuses_bad_body, server_answers_on_the_wire].
 
 -define(UA, chappe_sip_test_ua).
 -define(M, chappe_sip_siprec_meta).
@@ -53,6 +58,7 @@ end_per_testcase(_Case, _Config) ->
         end,
     _ = [exit(P, kill) || {_, P, _, _} <- supervisor:which_children(chappe_sip_siprec_sup)],
     application:unset_env(chappe_sip, siprec_max_per_call),
+    application:unset_env(chappe_sip, siprec_store),
     _ = persistent_term:erase(siprec_test_ep),
     _ = chappe_sip:stop(),
     _ = chappe_sip_engine:reset_routes(),
@@ -431,6 +437,145 @@ from_another_node(_Config) ->
     %% the peer (the owner) is gone: the recording ends with it
     _ = got(srs_bye).
 
+%% ---- the recording server side (chappe_sip_siprec_srs) ----
+
+%% chappe records to chappe: the server takes the RS (RFC 7866 6.2), answers
+%% each stream recvonly with +sip.srs in its Contact, and writes each
+%% stream to the store, under the call's call_ref with the stream's
+%% sender as its party; the BYE finishes the recordings.
+%% req: R7866-6.2-1 R7865-10-2
+server_writes_store(_Config) ->
+    persistent_term:put(chappe_sip_test_store, self()),
+    application:set_env(chappe_sip, siprec_store, chappe_sip_test_store),
+    #{b2b := B2b, call_ref := Ref, ep := EP} = call(),
+    {ok, Rec} = chappe_sip_siprec:start(
+                  B2b, <<"sip:store@127.0.0.1:", (integer_to_binary(EP))/binary>>, #{}),
+    {started, _} = event(Rec),
+    #{streams := [#{port := P1, parties := [A1]}, #{port := P2, parties := [A2]}]} =
+        got(srs_served),
+    ?assertMatch(<<"sip:caller@", _/binary>>, A1),
+    ?assertMatch(<<"sip:callee@", _/binary>>, A2),
+    Opens = [receive {store_open, R, Meta, _} -> {R, Meta} after 2000 -> ct:fail(no_open) end
+             || _ <- [1, 2]],
+    ?assert(lists:all(fun({_, #{call_ref := C, source := siprec}}) -> C =:= Ref end, Opens)),
+    %% only what the store needs of the metadata (RFC 7865 10)
+    [[call_ref, format, parties, source]] = lists:usort([lists:sort(maps:keys(M)) || {_, M} <- Opens]),
+    {ok, Sock} = gen_udp:open(0, [binary]),
+    ok = gen_udp:send(Sock, {127, 0, 0, 1}, P1, rtp(0, binary:copy(<<16#FF>>, 160))),
+    ok = gen_udp:send(Sock, {127, 0, 0, 1}, P2, rtp(8, binary:copy(<<16#D5>>, 160))),
+    ok = gen_udp:send(Sock, {127, 0, 0, 1}, P1, <<"not rtp">>),
+    Writes = [receive {store_write, R, Pcm} -> {R, Pcm} after 2000 -> ct:fail(no_write) end
+              || _ <- [1, 2]],
+    %% 160 samples of 16-bit PCM each: mu-law 0xFF and A-law 0xD5 are the
+    %% smallest positive levels
+    ?assert(lists:all(fun({_, Pcm}) -> byte_size(Pcm) =:= 320 end, Writes)),
+    ok = chappe_sip_siprec:stop(Rec),
+    {stopped, _} = event(Rec),
+    [receive {store_close, R, _} -> ok after 5000 -> ct:fail(no_close) end
+     || {R, _} <- Opens],
+    gen_udp:close(Sock).
+
+%% RFC 7866 6.2: without +sip.src and siprec it is not a recording
+%% session; the app decides (here a 403).
+%% req: R7866-6.2-1
+server_not_a_recording_session(_Config) ->
+    #{ep := EP} = call(),
+    ?UA:peer(0, fun(Sock) ->
+        Inv = ?UA:invite(Sock, EP, #{call_id => ?UA:callid(), from_tag => ?UA:tag(),
+                                     ruri => <<"sip:store@127.0.0.1">>,
+                                     headers => [{<<"Require">>, <<"siprec">>}]}),
+        ?UA:send(Sock, EP, Inv),
+        b2b_relay_tell({plain, ?UA:recv_any(Sock, 6000)})
+    end),
+    ?assertEqual({error, not_recording_session}, got(srs_served)),
+    ?assertEqual(403, ?UA:status(got(plain))).
+
+%% sink => pid(): each stream's audio to a process; a stream that crashes
+%% leaves the session and the other stream going.
+server_sink_and_stream_crash(_Config) ->
+    #{b2b := B2b, ep := EP} = call(),
+    {ok, Rec} = chappe_sip_siprec:start(
+                  B2b, <<"sip:sink@127.0.0.1:", (integer_to_binary(EP))/binary>>, #{}),
+    {started, _} = event(Rec),
+    #{streams := [#{pid := S1}, #{pid := S2, port := P2}]} = got(srs_served),
+    exit(S1, kill),
+    {ok, Sock} = gen_udp:open(0, [binary]),
+    ok = gen_udp:send(Sock, {127, 0, 0, 1}, P2, rtp(0, binary:copy(<<16#FF>>, 160))),
+    receive {chappe_sip_siprec_rtp, S2, {audio, Pcm}} -> 320 = byte_size(Pcm)
+    after 2000 -> ct:fail(no_audio)
+    end,
+    #{state := active} = chappe_sip_siprec:info(Rec),
+    ok = chappe_sip_siprec:stop(Rec),
+    gen_udp:close(Sock).
+
+%% A body that does not parse is refused 488.
+server_refuses_bad_body(_Config) ->
+    #{ep := EP} = call(),
+    ?UA:peer(0, fun(Sock) ->
+        P = integer_to_binary(?UA:lport(Sock)),
+        Inv = ?UA:invite(Sock, EP, #{call_id => ?UA:callid(), from_tag => ?UA:tag(),
+                                     ruri => <<"sip:store@127.0.0.1">>,
+                                     body => <<"--x\r\nbroken">>,
+                                     headers => [{<<"Require">>, <<"siprec">>}]}),
+        Inv1 = binary:replace(
+                 binary:replace(Inv, <<"Content-Type: application/sdp">>,
+                                <<"Content-Type: multipart/mixed;boundary=x">>),
+                 <<"Contact: <sip:caller@127.0.0.1:", P/binary, ">">>,
+                 <<"Contact: <sip:caller@127.0.0.1:", P/binary, ">;+sip.src">>),
+        ?UA:send(Sock, EP, Inv1),
+        b2b_relay_tell({bad, ?UA:recv_any(Sock, 6000)})
+    end),
+    ?assertMatch({error, _}, got(srs_served)),
+    ?assertEqual(488, ?UA:status(got(bad))).
+
+rtp(PT, Payload) ->
+    <<2:2, 0:1, 0:1, 0:4, 0:1, PT:7, 1:16, 160:32, 16#1234:32, Payload/binary>>.
+
+%% A recording client on the wire: the 200 carries +sip.srs (RFC 7866
+%% 6.2) and answers each stream recvonly with its label (7.2); a stream in
+%% a codec the server does not take is refused with port 0 (RFC 3264 6),
+%% and the answer keeps every m-line (RFC 7866 8.3.1).
+%% req: R7866-6.2-2 R7866-7.2-1 R7866-8.3.1-1
+server_answers_on_the_wire(_Config) ->
+    persistent_term:put(chappe_sip_test_store, self()),
+    application:set_env(chappe_sip, siprec_store, chappe_sip_test_store),
+    #{ep := EP} = call(),
+    Sdp = <<"v=0\r\no=src 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\n"
+            "m=audio 30000 RTP/AVP 0\r\na=sendonly\r\na=label:1\r\n"
+            "m=audio 30002 RTP/AVP 18\r\na=sendonly\r\na=label:2\r\n">>,
+    {CT, Body} = chappe_sip_multipart:build([
+        #{content_type => <<"application/sdp">>, body => Sdp},
+        #{content_type => ?M:content_type(), disposition => ?M:disposition(),
+          body => ?M:build(#{streams => [#{id => <<"s1">>, label => <<"1">>}]})}
+    ]),
+    ?UA:peer(0, fun(Sock) ->
+        P = integer_to_binary(?UA:lport(Sock)),
+        Inv0 = ?UA:invite(Sock, EP, #{call_id => ?UA:callid(), from_tag => ?UA:tag(),
+                                      ruri => <<"sip:store@127.0.0.1">>, body => Body,
+                                      headers => [{<<"Require">>, <<"siprec">>}]}),
+        Inv = binary:replace(
+                binary:replace(Inv0, <<"Content-Type: application/sdp">>,
+                               <<"Content-Type: ", CT/binary>>),
+                <<"Contact: <sip:caller@127.0.0.1:", P/binary, ">">>,
+                <<"Contact: <sip:caller@127.0.0.1:", P/binary, ">;+sip.src">>),
+        ?UA:send(Sock, EP, Inv),
+        R = ?UA:recv_status(Sock, 200),
+        D = ?UA:dialog_from_2xx(Sock, Inv, R),
+        ?UA:ack(D, EP),
+        b2b_relay_tell({srs_200, R}),
+        {Bye, _} = ?UA:in_dialog(D, <<"BYE">>, [], <<>>),
+        receive bye -> ?UA:send(Sock, EP, Bye) end,
+        timer:sleep(infinity)
+    end),
+    R = got(srs_200),
+    ?assertMatch({_, _}, binary:match(?UA:hdr(R, <<"contact">>), <<";+sip.srs">>)),
+    {_, [M1, M2]} = chappe_sip_sdp:sections(?UA:body(R)),
+    ?assert(lists:member(<<"a=recvonly">>, M1)),
+    ?assertEqual(<<"1">>, label(M1)),
+    ?assertNotMatch(<<"m=audio 0 ", _/binary>>, hd(M1)),
+    ?assertMatch(<<"m=audio 0 ", _/binary>>, hd(M2)),
+    #{streams := [#{label := <<"1">>}]} = got(srs_served).
+
 %% ---- helpers ----
 
 srs_uri(SP) -> <<"sip:srs@127.0.0.1:", (integer_to_binary(SP))/binary>>.
@@ -500,11 +645,29 @@ handler(Req, Res) ->
     case chappe_sip_req:uri(Req) of
         <<"sip:srs@", _/binary>> ->
             recording_server(Test, Req, Res);
+        <<"sip:store@", _/binary>> ->
+            served(Test, Req, Res, #{store => default});
+        <<"sip:sink@", _/binary>> ->
+            served(Test, Req, Res, #{sink => Test});
         _ ->
             Callee = <<"sip:callee@127.0.0.1:", (integer_to_binary(CP))/binary>>,
             {ok, Legs} = chappe_sip:create_b2bua(Req, Res, Callee, maps:without([test, cp], Opts)),
             Test ! {legs, Legs},
             chappe_sip_b2b:relay(Legs)
+    end.
+
+%% chappe_sip_siprec_srs in the handler: it waits on the dialog, so the
+%% streams live as long as the session
+served(Test, Req, Res, Opts) ->
+    case chappe_sip_siprec_srs:serve(Req, Res, Opts) of
+        {ok, #{dialog := D} = Srs} ->
+            Test ! {srs_served, Srs},
+            chappe_sip_dialog:wait(D);
+        {error, not_recording_session} = E ->
+            Test ! {srs_served, E},
+            chappe_sip_res:send(Res, 403);
+        {error, _} = E ->
+            Test ! {srs_served, E}
     end.
 
 %% chappe as the recording server: a route that takes siprec

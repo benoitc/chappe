@@ -84,6 +84,8 @@ make(Pid, Id) -> #dialog{pid = Pid, id = Id}.
 %%     status => 100..699 (default 200),
 %%     reason => binary(), headers => [{binary(), iodata()}],
 %%     handled_events => [atom()] | all, owner => pid(),
+%%     contact_params => binary() (after our Contact's `>', such as
+%%       <<";+sip.srs">> for a SIPREC recording server, RFC 7866 6.2),
 %%     on_owner_exit => destroy | continue,
 %%     call_ref => binary() (the call the dialog serves, default the
 %%       request's: chappe_sip_req:call_ref/1; a ref that is not a token
