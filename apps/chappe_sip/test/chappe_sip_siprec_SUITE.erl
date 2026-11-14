@@ -27,7 +27,8 @@
          server_sink_and_stream_crash/1, server_refuses_bad_body/1,
          server_answers_on_the_wire/1]).
 -export([room_recorded/1, room_not_up/1, server_sink_bound/1,
-         server_metadata_update/1, room_ends_recording/1, recording_over_tls/1]).
+         server_metadata_update/1, room_ends_recording/1, recording_over_tls/1,
+         demo_store_writes_wav/1]).
 
 all() ->
     [invite_is_a_recording_session, chappe_as_recording_server,
@@ -39,7 +40,7 @@ all() ->
      server_not_a_recording_session, server_sink_and_stream_crash,
      server_refuses_bad_body, server_answers_on_the_wire,
      server_sink_bound, server_metadata_update, room_recorded, room_not_up,
-     room_ends_recording, recording_over_tls].
+     room_ends_recording, recording_over_tls, demo_store_writes_wav].
 
 -define(UA, chappe_sip_test_ua).
 -define(M, chappe_sip_siprec_meta).
@@ -659,6 +660,35 @@ recording_over_tls(Config) ->
         ok = chappe_sip_siprec:stop(Rec),
         {stopped, _} = event(Rec)
     end).
+
+%% The SBC demo records 3001 to its own recording server, which writes
+%% each stream through the store seam to a WAV file the demo's own store
+%% module keeps (demo/sbc/src/demo_sbc.erl): one file per stream under the
+%% call_ref, its sizes right once closed.
+demo_store_writes_wav(Config) ->
+    Src = proplists:get_value(source, ?MODULE:module_info(compile)),
+    Demo = filename:join([filename:dirname(Src), "..", "..", "..", "demo", "sbc", "src",
+                          "demo_sbc.erl"]),
+    Out = ?config(priv_dir, Config),
+    {ok, demo_sbc} = compile:file(Demo, [{outdir, Out}, return_errors]),
+    {module, demo_sbc} = code:load_abs(filename:join(Out, "demo_sbc")),
+    Dir = filename:join(Out, "recordings"),
+    os:putenv("DEMO_RECORDINGS", Dir),
+    {ok, Rec} = demo_sbc:open(#{call_ref => <<"c-1">>, source => siprec,
+                                parties => [<<"sip:alice@chappe.demo">>],
+                                format => #{rate => 8000, channels => 1}},
+                              #{owner => self()}),
+    ok = demo_sbc:write(Rec, binary:copy(<<1, 0>>, 160)),
+    ok = demo_sbc:write(Rec, binary:copy(<<2, 0>>, 160)),
+    {ok, Id} = demo_sbc:close(Rec, #{}),
+    [Wav] = filelib:wildcard(filename:join([Dir, "c-1", "*.wav"])),
+    ?assertMatch({_, _}, binary:match(list_to_binary(Wav), Id)),
+    {ok, <<"RIFF", Riff:32/little, "WAVE", "fmt ", 16:32/little, 1:16/little, 1:16/little,
+           8000:32/little, 16000:32/little, 2:16/little, 16:16/little,
+           "data", 640:32/little, Data/binary>>} = file:read_file(Wav),
+    ?assertEqual(36 + 640, Riff),
+    ?assertEqual(640, byte_size(Data)),
+    os:unsetenv("DEMO_RECORDINGS").
 
 %% A room that is not up is not made by its recording.
 room_not_up(_Config) ->
