@@ -36,6 +36,9 @@
     native_conference/1,
     native_endpoint/1,
     fs_conference/1,
+    endpoint_verbs/1,
+    fs_conference_record_transfer/1,
+    native_conference_transfer/1,
     owner_killed/1,
     node_down_failover/1
 ]).
@@ -71,6 +74,9 @@ all() ->
         native_conference,
         native_endpoint,
         fs_conference,
+        endpoint_verbs,
+        fs_conference_record_transfer,
+        native_conference_transfer,
         owner_killed,
         node_down_failover
     ].
@@ -138,7 +144,15 @@ write_prompts(Dir) ->
     ?UA:write_wav(filename:join(Dir, "menu.wav"), ?MENU, 4000),
     ?UA:write_wav(filename:join(Dir, "one.wav"), ?ONE, 4000),
     ?UA:write_wav(filename:join(Dir, "two.wav"), ?TWO, 4000),
-    ?UA:write_wav(filename:join(Dir, "pin.wav"), ?PIN, 3000).
+    ?UA:write_wav(filename:join(Dir, "pin.wav"), ?PIN, 3000),
+    %% mod_say_en's number files, under the lab's sound_prefix
+    Digits = filename:join([Dir, "sounds", "digits"]),
+    ok = filelib:ensure_path(Digits),
+    [
+        ?UA:write_wav(filename:join(Digits, integer_to_list(N) ++ ".wav"), 300, 500)
+     || N <- lists:seq(0, 19) ++ lists:seq(20, 90, 10)
+    ],
+    ok.
 
 %% ---- helpers ----
 
@@ -789,6 +803,155 @@ fs_conference(Config) ->
     ua_got(U3, bye, 8000),
     [no_reinvite(U) || U <- [U1, U2]],
     [?UA:bye(U) || U <- [U1, U2]].
+
+%% The endpoint verbs on a real node, the caller sending its 700 Hz
+%% marker: a missing file, a playback's length and limit, playback events,
+%% say (by the files it plays), speak, tone detection, variables and mute.
+%% The handler owns the endpoint and relays its events here.
+endpoint_verbs(Config) ->
+    Test = self(),
+    ivr(fun(_Ep, _B2b) -> relay_loop(Test) end, #{
+        events => [playback_start, playback_stop]
+    }),
+    {Ua, Ep, _B2b, Owner} = call_in(Config, ?ONE),
+    ?assertEqual({error, not_found}, chappe_mrf:play(Ep, <<"/media/missing.wav">>)),
+    {ok, #{ms := Ms, response := <<"FILE PLAYED">>}} =
+        chappe_mrf:play_info(Ep, <<"/media/pin.wav">>, #{}),
+    ?assert(Ms > 2500 andalso Ms < 3500),
+    ?assertEqual({playback_start, <<"/media/pin.wav">>}, ep_event()),
+    ?assertEqual({playback_stop, <<"/media/pin.wav">>, <<"done">>}, ep_event()),
+    {ok, #{ms := Limited}} =
+        chappe_mrf:play_info(Ep, <<"/media/menu.wav">>, #{limit_secs => 2}),
+    ct:pal("menu.wav limited to 2 s played ~p ms", [Limited]),
+    ?assert(Limited < 3000),
+    flush_ep_events(),
+    S0 = erlang:monotonic_time(millisecond),
+    ok = chappe_mrf:say(Ep, <<"42">>, #{}),
+    %% mod_say_en picks forty and two and plays both half-second files
+    ?assert(erlang:monotonic_time(millisecond) - S0 > 900),
+    ?assertEqual([<<"file_string://digits/40.wav!digits/2.wav">>], started_files()),
+    ok = chappe_mrf:speak(Ep, <<"Welcome to the chappe lab">>, #{
+        engine => <<"flite">>, voice => <<"slt">>
+    }),
+    ok = chappe_mrf:detect_tones(Ep, <<"chappe_700">>),
+    receive
+        {ep_event, {tone, <<"TONE_700">>}} -> ok
+    after 10000 -> ct:fail(no_tone)
+    end,
+    ok = chappe_mrf:stop_detect_tones(Ep),
+    ok = chappe_mrf:set(Ep, #{<<"chappe_x">> => <<"1">>}),
+    ?assertEqual({ok, <<"1">>}, chappe_mrf:var(Ep, <<"chappe_x">>)),
+    {ok, #{<<"chappe_x">> := <<"1">>}} = chappe_mrf:vars(Ep),
+    ok = chappe_mrf:mute(Ep, read),
+    ok = chappe_mrf:unmute(Ep, read),
+    ?UA:bye(Ua),
+    Owner ! stop.
+
+relay_loop(Test) ->
+    receive
+        {chappe_mrf, _Ep, Event} ->
+            Test ! {ep_event, Event},
+            relay_loop(Test);
+        stop ->
+            ok;
+        _ ->
+            relay_loop(Test)
+    end.
+
+ep_event() ->
+    receive
+        {ep_event, E} -> E
+    after 10000 -> ct:fail(no_ep_event)
+    end.
+
+flush_ep_events() ->
+    receive
+        {ep_event, _} -> flush_ep_events()
+    after 0 -> ok
+    end.
+
+started_files() ->
+    receive
+        {ep_event, {playback_start, F}} -> [F | started_files()];
+        {ep_event, _} -> started_files()
+    after 1500 -> []
+    end.
+
+%% Two FreeSWITCH rooms on fs1: a room is recorded to a file the node
+%% writes, a member is muted (mod_conference's event) and moved to the
+%% other room, where the caller is heard.
+fs_conference_record_transfer(Config) ->
+    ivr(fun park/2),
+    Bridge = #{anchor_params => to_fs()},
+    {ok, A} = chappe_mrf:conference(<<"live-fs-a">>, #{
+        backend => fs, node => fs1, bridge => Bridge
+    }),
+    {ok, B} = chappe_mrf:conference(<<"live-fs-b">>, #{
+        backend => fs, node => fs1, bridge => Bridge, max_members => 2
+    }),
+    ok = chappe_mrf_conf:events(B, self()),
+    {U1, _, B1, _} = call_in(Config, 600),
+    {U2, _, B2, _} = call_in(Config, none),
+    {ok, M1} = chappe_mrf_conf:join(A, B1, #{name => <<"one">>}),
+    {ok, _M2} = chappe_mrf_conf:join(B, B2, #{}),
+    Rec = "conf-" ++ integer_to_list(erlang:unique_integer([positive])) ++ ".wav",
+    ok = chappe_mrf_conf:record(A, <<"/media/", (list_to_binary(Rec))/binary>>),
+    timer:sleep(2000),
+    ok = chappe_mrf_conf:stop_record(A),
+    ok = wait(fun() -> filelib:file_size(media(Config, Rec)) > 8000 end, 100),
+    ok = chappe_mrf_conf:mute(A, M1),
+    receive
+        {chappe_mrf_conf, A, {muted, M1, true}} -> ok
+    after 5000 -> ct:fail(no_muted)
+    end,
+    ok = chappe_mrf_conf:unmute(A, M1),
+    {ok, N1} = chappe_mrf_conf:transfer(A, M1, B),
+    receive
+        {chappe_mrf_conf, A, {left, M1, transferred}} -> ok
+    after 5000 -> ct:fail(no_left_transferred)
+    end,
+    receive
+        {chappe_mrf_conf, B, {joined, N1, #{name := <<"one">>}}} -> ok
+    after 5000 -> ct:fail(no_joined)
+    end,
+    ?UA:clear(U2),
+    ?assert(?UA:hears(U2, 600, 6000)),
+    {U3, _, B3, _} = call_in(Config, none),
+    ?assertEqual({error, full}, chappe_mrf_conf:join(B, B3, #{})),
+    [no_reinvite(U) || U <- [U1, U2]],
+    [?UA:bye(U) || U <- [U1, U2, U3]].
+
+%% Two native rooms: a member moved from one to the other is heard there,
+%% without a re-INVITE.
+native_conference_transfer(Config) ->
+    ivr(fun park/2),
+    {ok, A} = chappe_mrf:conference(<<"live-nat-a">>, #{anchor_params => to_host()}),
+    {ok, B} = chappe_mrf:conference(<<"live-nat-b">>, #{anchor_params => to_host()}),
+    {U1, _, B1, _} = call_in(Config, 500),
+    {U2, _, B2, _} = call_in(Config, none),
+    {ok, M1} = chappe_mrf_conf:join(A, B1, #{}),
+    {ok, _} = chappe_mrf_conf:join(B, B2, #{}),
+    ?assert(?UA:silent(U2, 500, 1500)),
+    {ok, _N1} = chappe_mrf_conf:transfer(A, M1, B),
+    receive
+        {chappe_mrf_conf, A, {left, M1, transferred}} -> ok
+    after 5000 -> ct:fail(no_left_transferred)
+    end,
+    ?UA:clear(U2),
+    ?assert(?UA:hears(U2, 500, 6000)),
+    no_reinvite(U1),
+    [?UA:bye(U) || U <- [U1, U2]].
+
+wait(_Fun, 0) ->
+    ct:fail(wait_timeout);
+wait(Fun, N) ->
+    case Fun() of
+        true ->
+            ok;
+        false ->
+            timer:sleep(100),
+            wait(Fun, N - 1)
+    end.
 
 %% The owner of an endpoint dies with an audio fork running: the fork is
 %% stopped, the channel killed, and the caller gets a BYE.

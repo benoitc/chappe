@@ -26,7 +26,10 @@
 # Driven by apps/chappe_mrf/test/e2e.sh (make interop-mrf).
 
 x-freeswitch: &freeswitch
-  image: drachtio/drachtio-freeswitch-mrf:latest
+  # drachtio's mrf image plus mod_audio_stream and mod_flite, shared with
+  # the chappe_esl lab (apps/chappe_esl/interop/freeswitch/Dockerfile)
+  image: chappe-esl-fs:lab
+  build: ../../chappe_esl/interop/freeswitch
   # the image's entrypoint edits its stock tree; this config replaces
   # that tree, so start FreeSWITCH directly
   entrypoint: ["/usr/local/freeswitch/bin/freeswitch"]

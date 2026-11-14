@@ -30,7 +30,10 @@
 -export([
     call_playback/1, call_digits/1, call_dtmf_event/1, call_record/1,
     call_owner_death/1, call_timeout_breaks/1, call_paths_with_spaces/1,
-    call_audio_fork/1, call_audio_stream/1, call_linger_notice/1
+    call_audio_fork/1, call_audio_stream/1, call_linger_notice/1,
+    call_playback_results/1, call_events_and_variables/1,
+    call_fork_controls/1, call_stream_controls/1, call_say_speak/1,
+    call_detect/1
 ]).
 -export([handle_channel/3]).
 
@@ -44,7 +47,13 @@
     call_paths_with_spaces,
     call_audio_fork,
     call_audio_stream,
-    call_linger_notice
+    call_linger_notice,
+    call_playback_results,
+    call_events_and_variables,
+    call_fork_controls,
+    call_stream_controls,
+    call_say_speak,
+    call_detect
 ]).
 
 all() ->
@@ -90,6 +99,13 @@ init_per_group(call, Config) ->
         Dir ->
             ok = write_wav(filename:join(Dir, "prompt.wav"), 1),
             ok = write_wav(filename:join(Dir, "prompt two.wav"), 1),
+            %% mod_say_en's number files, under the lab's sound_prefix
+            Digits = filename:join([Dir, "sounds", "digits"]),
+            ok = filelib:ensure_path(Digits),
+            [
+                ok = write_wav(filename:join(Digits, integer_to_list(N) ++ ".wav"), 1)
+             || N <- lists:seq(0, 19) ++ lists:seq(20, 90, 10)
+            ],
             Port = list_to_integer(os:getenv("ESL_SOCKET_PORT", "18084")),
             [{media_dir, Dir}, {socket_port, Port} | Config]
     end;
@@ -375,6 +391,239 @@ fork_to_sink(Config, Opts) ->
         exit(Sink, kill)
     end.
 
+%% A playback reports how long it played, an offset and a time limit
+%% shorten it, and digit collection returns the terminator and the entry
+%% the regexp refused.
+%% req: ESL-37
+call_playback_results(Config) ->
+    Call = live_call(Config, self()),
+    ok = chappe_esl_call:answer(Call),
+    {ok, Ev} = chappe_esl_call:playback(Call, "/media/prompt.wav"),
+    Ms = binary_to_integer(
+        chappe_esl_event:header(<<"variable_playback_ms">>, Ev)
+    ),
+    ?assert(Ms > 800 andalso Ms < 1500),
+    {ok, Off} = chappe_esl_call:playback(Call, "/media/prompt.wav", #{
+        offset => 4000
+    }),
+    OffMs = binary_to_integer(
+        chappe_esl_event:header(<<"variable_playback_ms">>, Off)
+    ),
+    ?assert(OffMs < Ms),
+    T0 = erlang:monotonic_time(millisecond),
+    {ok, Lim} = chappe_esl_call:playback(
+        Call, "tone_stream://%(20000,0,350)", #{limit_secs => 2}
+    ),
+    Took = erlang:monotonic_time(millisecond) - T0,
+    ct:pal("limited playback: ~p ms, ~s", [
+        Took, chappe_esl_event:header(<<"Application-Response">>, Lim)
+    ]),
+    ?assert(Took < 5000),
+    send_dtmf_later(Config, "34#", 1000),
+    ?assertEqual(
+        {ok, #{digits => <<>>, terminator => <<"#">>, invalid => <<"34">>}},
+        chappe_esl_call:play_and_get_digits(Call, #{
+            file => <<"silence_stream://250">>,
+            max => 4,
+            timeout => 6000,
+            regexp => <<"^9$">>,
+            result => full
+        })
+    ).
+
+%% A PLAYBACK_START and PLAYBACK_STOP asked for with subscribe/2 reach the
+%% owner; variables are set, read and dumped; uuid_audio mutes and unmutes.
+%% req: ESL-34 ESL-37
+call_events_and_variables(Config) ->
+    Call = live_call(Config, self()),
+    ok = chappe_esl_call:answer(Call),
+    ok = chappe_esl_call:subscribe(Call, [<<"PLAYBACK_START">>, 'PLAYBACK_STOP']),
+    {ok, _} = chappe_esl_call:playback(Call, "/media/prompt.wav"),
+    ?assertEqual(<<"PLAYBACK_START">>, event_named(Call, <<"PLAYBACK_START">>)),
+    ?assertEqual(<<"PLAYBACK_STOP">>, event_named(Call, <<"PLAYBACK_STOP">>)),
+    ok = chappe_esl_call:multiset(Call, #{
+        <<"chappe_a">> => <<"one two">>, <<"chappe_b">> => <<"x|y">>
+    }),
+    ?assertEqual({ok, <<"one two">>}, chappe_esl_call:getvar(Call, <<"chappe_a">>)),
+    ?assertEqual({ok, undefined}, chappe_esl_call:getvar(Call, <<"chappe_none">>)),
+    {ok, Vars} = chappe_esl_call:dump(Call),
+    ?assertMatch(#{<<"chappe_b">> := <<"x|y">>}, Vars),
+    ok = chappe_esl_call:mute(Call, read),
+    ok = chappe_esl_call:unmute(Call, read),
+    ok = chappe_esl_call:hangup(Call).
+
+%% Two named mod_audio_fork forks on one channel, one mono and one stereo:
+%% the stereo one carries twice the bytes; pause stops the audio of one
+%% fork, resume brings it back, send_text reaches its server.
+%% req: ESL-37
+call_fork_controls(Config) ->
+    Base = ?config(socket_port, Config),
+    Mono = ws_sink(Base + 1, self()),
+    Stereo = ws_sink(Base + 2, self()),
+    try
+        Call = live_call(Config, self()),
+        ok = chappe_esl_call:answer(Call),
+        Url = fun(P) -> "ws://host.docker.internal:" ++ integer_to_list(P) end,
+        ok = chappe_esl_call:audio_fork_start(Call, Url(Base + 1), #{
+            bugname => <<"mono">>, mix => mono, rate => 8000
+        }),
+        ok = chappe_esl_call:audio_fork_start(Call, Url(Base + 2), #{
+            bugname => <<"stereo">>, mix => stereo, rate => 8000
+        }),
+        %% the channel writes too while we measure: a stereo bug sends a
+        %% frame when it has both directions
+        {ok, _} = chappe_esl_call:exec(
+            Call, "playback", "tone_stream://%(20000,0,600)", #{wait => false}
+        ),
+        timer:sleep(500),
+        flush_audio(),
+        timer:sleep(2000),
+        Bytes = audio_bytes(),
+        ct:pal("2 s of audio: mono ~p, stereo ~p", [
+            maps:get(Mono, Bytes, 0), maps:get(Stereo, Bytes, 0)
+        ]),
+        Ratio = maps:get(Stereo, Bytes, 0) / max(1, maps:get(Mono, Bytes, 0)),
+        ?assert(Ratio > 1.7 andalso Ratio < 2.3),
+        ok = chappe_esl_call:audio_fork_pause(Call, #{bugname => <<"stereo">>}),
+        timer:sleep(500),
+        flush_audio(),
+        timer:sleep(1500),
+        Paused = audio_bytes(),
+        ct:pal("paused: ~p", [Paused]),
+        ?assertEqual(0, maps:get(Stereo, Paused, 0)),
+        ?assert(maps:get(Mono, Paused, 0) > 0),
+        ok = chappe_esl_call:audio_fork_resume(Call, #{bugname => <<"stereo">>}),
+        timer:sleep(1500),
+        ?assert(maps:get(Stereo, audio_bytes(), 0) > 0),
+        ok = chappe_esl_call:audio_fork_send_text(
+            Call, <<"{\"type\": \"mark\"}">>, #{bugname => <<"mono">>}
+        ),
+        ?assertEqual({ws, text, <<"{\"type\": \"mark\"}">>}, ws_text()),
+        ok = chappe_esl_call:audio_fork_stop(Call)
+    after
+        exit(Mono, kill),
+        exit(Stereo, kill)
+    end.
+
+%% mod_audio_stream takes pause, resume and send_text too.
+%% req: ESL-37
+call_stream_controls(Config) ->
+    Port = ?config(socket_port, Config) + 1,
+    Sink = ws_sink(Port, self()),
+    try
+        Call = live_call(Config, self()),
+        ok = chappe_esl_call:answer(Call),
+        Url = "ws://host.docker.internal:" ++ integer_to_list(Port),
+        ok = chappe_esl_call:audio_fork_start(Call, Url, #{
+            module => audio_stream, mix => mono, rate => 8000
+        }),
+        ?assertMatch({ws, connected, _}, ws_msg()),
+        timer:sleep(1000),
+        ok = chappe_esl_call:audio_fork_pause(Call, #{}),
+        timer:sleep(500),
+        flush_audio(),
+        timer:sleep(1500),
+        ?assertEqual(0, maps:get(Sink, audio_bytes(), 0)),
+        ok = chappe_esl_call:audio_fork_resume(Call, #{}),
+        timer:sleep(1500),
+        ?assert(maps:get(Sink, audio_bytes(), 0) > 0),
+        ok = chappe_esl_call:audio_fork_send_text(Call, <<"hello there">>, #{}),
+        ?assertEqual({ws, text, <<"hello there">>}, ws_text()),
+        ok = chappe_esl_call:audio_fork_stop(Call)
+    after
+        exit(Sink, kill)
+    end.
+
+%% mod_say_en plays the sound files of a number (seen as PLAYBACK_START
+%% events), mod_flite speaks text for as long as it takes to say it.
+%% req: ESL-37
+call_say_speak(Config) ->
+    Call = live_call(Config, self()),
+    ok = chappe_esl_call:answer(Call),
+    ok = chappe_esl_call:subscribe(Call, [<<"PLAYBACK_START">>]),
+    S0 = erlang:monotonic_time(millisecond),
+    ok = chappe_esl_call:say(Call, <<"42">>, #{type => number}),
+    Said = erlang:monotonic_time(millisecond) - S0,
+    Played = played_files(),
+    ct:pal("say 42 played ~p in ~p ms", [Played, Said]),
+    %% mod_say_en picks forty and two, then plays both one-second files
+    ?assertEqual([<<"file_string://digits/40.wav!digits/2.wav">>], Played),
+    ?assert(Said > 1800),
+    {ok, <<"true", _/binary>>} = chappe_esl_call:api(Call, "module_exists mod_flite"),
+    T0 = erlang:monotonic_time(millisecond),
+    ok = chappe_esl_call:speak(Call, <<"Thank you for calling the chappe lab">>, #{
+        engine => <<"flite">>, voice => <<"kal">>
+    }),
+    Took = erlang:monotonic_time(millisecond) - T0,
+    ct:pal("speak took ~p ms", [Took]),
+    ?assert(Took > 1000).
+
+%% mod_spandsp hears fs1's 440 Hz tone with the lab's chappe_440
+%% descriptor, and a CNG fax tone fs1 starts sending.
+%% req: ESL-37 ESL-38
+call_detect(Config) ->
+    Call = live_call(Config, self()),
+    ok = chappe_esl_call:answer(Call),
+    ok = chappe_esl_call:detect_tones(Call, <<"chappe_440">>),
+    ?assertEqual({tone, <<"TONE_440">>}, call_msg(Call, tone)),
+    ok = chappe_esl_call:stop_detect_tones(Call),
+    ok = chappe_esl_call:detect_fax(Call, #{}),
+    Conn = ?config(conn, Config),
+    {ok, _} = chappe_esl:api(Conn, [
+        "uuid_broadcast ", ?config(a_uuid, Config),
+        " tone_stream://%(500,3000,1100);loops=4 aleg"
+    ]),
+    ?assertEqual({fax, detected}, call_msg(Call, fax)),
+    ?assertEqual(
+        {error, <<"-ERR failed to start tone detector">>},
+        chappe_esl_call:detect_tones(Call, <<"no_such_descriptor">>)
+    ).
+
+event_named(Call, Name) ->
+    receive
+        {chappe_esl_call, Call, {event, Ev}} ->
+            case chappe_esl_event:name(Ev) of
+                Name -> Name;
+                _ -> event_named(Call, Name)
+            end
+    after 10000 -> ct:fail({no_event, Name})
+    end.
+
+%% the PLAYBACK_START files until none comes for a second
+played_files() ->
+    receive
+        {chappe_esl_call, _, {event, Ev}} ->
+            case chappe_esl_event:name(Ev) of
+                <<"PLAYBACK_START">> ->
+                    [chappe_esl_event:header(<<"Playback-File-Path">>, Ev) | played_files()];
+                _ ->
+                    played_files()
+            end
+    after 1000 -> []
+    end.
+
+flush_audio() ->
+    receive
+        {ws_audio, _, _} -> flush_audio()
+    after 0 -> ok
+    end.
+
+%% bytes per sink received since the last flush
+audio_bytes() ->
+    audio_bytes(#{}).
+
+audio_bytes(Acc) ->
+    receive
+        {ws_audio, Sink, N} -> audio_bytes(Acc#{Sink => maps:get(Sink, Acc, 0) + N})
+    after 0 -> Acc
+    end.
+
+ws_text() ->
+    receive
+        {ws, text, _} = Msg -> Msg
+    after 10000 -> ct:fail(no_ws_text)
+    end.
+
 %% After the hangup a real node tells the owner the socket lingers.
 %% req: ESL-38
 call_linger_notice(Config) ->
@@ -516,7 +765,7 @@ new_uuid() ->
 %% (echoing the audio.drachtio.org subprotocol), then reports
 %% {ws, connected, Request}, {ws, text, Payload}, {ws, binary} for the first
 %% binary frame, and {ws, closed, BinaryFrames} on a close frame or the end
-%% of the connection.
+%% of the connection. Every binary frame is also {ws_audio, Sink, Bytes}.
 ws_sink(Port, TestPid) ->
     {ok, L} = gen_tcp:listen(Port, [
         binary, {packet, raw}, {active, false}, {reuseaddr, true}
@@ -585,10 +834,12 @@ ws_loop(S, TestPid, Buf, N) ->
         {1, Payload, Rest} ->
             TestPid ! {ws, text, Payload},
             ws_loop(S, TestPid, Rest, N);
-        {2, _Payload, Rest} when N =:= 0 ->
+        {2, Payload, Rest} when N =:= 0 ->
             TestPid ! {ws, binary},
+            TestPid ! {ws_audio, self(), byte_size(Payload)},
             ws_loop(S, TestPid, Rest, 1);
-        {2, _Payload, Rest} ->
+        {2, Payload, Rest} ->
+            TestPid ! {ws_audio, self(), byte_size(Payload)},
             ws_loop(S, TestPid, Rest, N + 1);
         {8, _Payload, _Rest} ->
             _ = gen_tcp:send(S, <<1:1, 0:3, 8:4, 0:1, 0:7>>),

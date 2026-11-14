@@ -144,9 +144,19 @@ ok = chappe_mrf:speak(Ep, <<"Your call is important to us">>,
 ```
 
 `say/3` takes `language` (`<<"en">>`), `type`, `method` (`pronounced`,
-`iterated`, `counted`) and `gender`. The sound files come from the
-channel's `sound_prefix`. `speak/3` without `engine` and `voice` uses the
-channel's `tts_engine` and `tts_voice`.
+`iterated`, `counted`) and `gender`. FreeSWITCH needs the language in its
+configuration, with where its sound files are:
+
+```xml
+<section name="languages">
+  <language name="en" say-module="en" sound-prefix="/usr/share/sounds/en/us/callie">
+    <phrases><macros/></phrases>
+  </language>
+</section>
+```
+
+`speak/3` without `engine` and `voice` uses the channel's `tts_engine` and
+`tts_voice`.
 
 ## Detect tones and faxes
 
