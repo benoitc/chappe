@@ -589,11 +589,14 @@ focus_member_refer_adds(Config) ->
     ?assert(has(Bridge, <<"sip_h_Replaces=c1@h;to-tag=t1;from-tag=f1">>)),
     ok = chappe_mrf_conf:stop(Conf).
 
-%% A room that does not advertise isfocus: a member's REFER is an RFC
-%% 3515 transfer of that member; the target takes its place in the room.
+%% A room with focus => false does not advertise isfocus: a member's REFER
+%% is an RFC 3515 transfer of that member; the target takes its place in
+%% the room.
 member_refer_transfers(Config) ->
     {_Callee, CP} = ?F:callee_start(<<"dave">>),
-    {ok, Conf} = chappe_mrf:conference(<<"xfroom">>, #{refer_policy => fun(_) -> true end}),
+    {ok, Conf} = chappe_mrf:conference(<<"xfroom">>, #{
+        focus => false, refer_policy => fun(_) -> true end
+    }),
     {Ua, M} = room_caller(Config, Conf),
     {ua, Ua, {final, 200, Ok}} = ua_answer(Ua),
     ?assertNot(has(?F:hdr(Ok, <<"contact">>), <<"isfocus">>)),
@@ -624,6 +627,10 @@ focus_member_refer_removes(Config) ->
     {ua, Ua1, {response, R}} = ua_msg(Ua1, response),
     ?assertMatch(<<"SIP/2.0 200", _/binary>>, R),
     conf_event(Conf, {left, M2, kicked}),
+    %% the focus sends the BYE to the member it removes (5.11, F5) and
+    %% tells the referrer the outcome
+    _ = ua_event(Ua2, bye),
+    ?assert(final_notify(Ua1, <<"SIP/2.0 200">>)),
     ?assertMatch([#{id := M1}], chappe_mrf_conf:members(Conf)),
     ok = chappe_mrf_conf:stop(Conf).
 
@@ -642,6 +649,17 @@ ua_answer(Ua) ->
     receive
         {ua, Ua, {final, _, _}} = F -> F
     after 10000 -> ct:fail(no_final)
+    end.
+
+%% whether the REFER's NOTIFYs to Ua end with a sipfrag starting Frag
+final_notify(Ua, Frag) ->
+    receive
+        {ua, Ua, {request, <<"NOTIFY", _/binary>> = N}} ->
+            case has(N, <<"terminated">>) of
+                true -> has(N, Frag);
+                false -> final_notify(Ua, Frag)
+            end
+    after 10000 -> ct:fail(no_final_notify)
     end.
 
 ua_msg(Ua, Kind) ->
