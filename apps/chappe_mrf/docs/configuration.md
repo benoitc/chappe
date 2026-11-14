@@ -15,6 +15,7 @@ the `mrf` dialplan extension shown in the [README](../README.md).
 | Key | Default | What it does |
 |---|---|---|
 | `esl_port` | unset | Port of the outbound socket listener FreeSWITCH connects back to. Set, the listener starts with the application. |
+| `shared_dir` | unset | `#{freeswitch => Dir, local => Dir}`: the folder FreeSWITCH records into, as the node and as this host see it. Recordings asked with `store => default` must be in it; unset, both paths are the same. |
 
 ```erlang
 %% sys.config
@@ -27,6 +28,19 @@ loopback INVITE middleware native rooms need):
 ```erlang
 ok = chappe_mrf:start(#{esl_port => 8084}).
 ```
+
+## Record options
+
+`record/3`, `record_session/3` and `chappe_mrf_conf:record/3` take, beside
+FreeSWITCH's own options:
+
+| Key | Default | What it does |
+|---|---|---|
+| `store` | unset | `default` adopts the finished file into the recording store (chappe_audio). `record/3` then returns `{ok, Id}`, `record_session_stop/2` and `stop_record/1` return the ids, and a session recording ended by the hangup sends the owner `{recorded, Id}`. |
+| `ref` | the endpoint's call_ref (else its id); the room's name | The call_ref the recording is filed under. |
+| `parties` | `[]` | Who is on the call, for the sidecar. |
+
+See [Record a call](../../chappe_audio/docs/guides/record.md).
 
 ## connect_caller/3 options
 

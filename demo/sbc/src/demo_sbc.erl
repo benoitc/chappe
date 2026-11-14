@@ -26,7 +26,11 @@
 %% 2000 is an IVR on chappe_mrf: the caller lands on a FreeSWITCH endpoint
 %% that plays a menu and collects a digit: 1 calls bob, 2 is an echo
 %% endpoint, 3 joins a conference on chappe_mix (native), 4 one on
-%% FreeSWITCH (PIN 1234), 9 records a message and plays it back.
+%% FreeSWITCH (PIN 1234), 8 forks the caller's audio into chappe_audio,
+%% which prints its level as the caller speaks, 9 records a message and
+%% plays it back. The fork and the message land in the recording store
+%% (recordings/ next to this file), under the call's call_ref.
+%%   demo_sbc:recordings(Ref)  a call's recordings, by its call_ref
 %%   demo_sbc:confs()          the conferences and their member count
 %%   demo_sbc:members(Name)    a conference's members
 %%   demo_sbc:kick(Name, Id)   drop a member
@@ -38,7 +42,7 @@
 -export([start/1]).
 -export([calls/0, anchor/1, direct/1, peers/0, nodes/0, drain/1, resume/1]).
 -export([route/1]).
--export([confs/0, members/1, kick/2]).
+-export([confs/0, members/1, kick/2, recordings/1]).
 
 -define(CALLS, demo_sbc_calls).
 %% call id => {FreeSWITCH node, channel uuid}
@@ -55,6 +59,7 @@ start(File) ->
     ok = application:set_env(chappe_esl, nodes, maps:get(fs_nodes, Cfg, [])),
     {ok, _} = application:ensure_all_started(chappe_esl),
     {ok, _} = application:ensure_all_started(chappe_mrf),
+    ok = audio(Cfg),
     Keeper = keeper(),
     Ip = env("DEMO_IP", maps:get(ip, Cfg)),
     SipPort = env("DEMO_SIP_PORT", maps:get(sip_port, Cfg)),
@@ -92,6 +97,29 @@ start(File) ->
         env("DEMO_HTTP_PORT", maps:get(http_port, Cfg))
     ]),
     ok.
+
+%% chappe_audio: the recording store in recordings/ next to this file,
+%% the FreeSWITCH media folder mapped for adoption, and a fork listener
+%% the nodes reach at host.docker.internal.
+audio(Cfg) ->
+    Media = env("DEMO_MEDIA_DIR", "_build/demo-media"),
+    ok = application:set_env(chappe_mrf, shared_dir, #{freeswitch => "/media", local => Media}),
+    {ok, _} = application:ensure_all_started(chappe_audio),
+    Dir = env("DEMO_RECORDINGS", maps:get(recordings, Cfg, "demo/sbc/recordings")),
+    ok = chappe_audio_store:configure(#{dir => Dir}),
+    Port = list_to_integer(env("DEMO_AUDIO_PORT", maps:get(audio_port, Cfg, 18090))),
+    {ok, L} = chappe_audio:listen(#{
+        ip => {0, 0, 0, 0},
+        port => Port,
+        url => iolist_to_binary(["ws://host.docker.internal:", integer_to_list(Port)])
+    }),
+    persistent_term:put({?MODULE, audio}, L),
+    ok.
+
+%% The recordings of a call, wherever they were made, from the store.
+-spec recordings(binary()) -> [map()].
+recordings(Ref) ->
+    [maps:with([id, source, duration_ms, path], R) || R <- chappe_audio_store:find(Ref)].
 
 env(Name, Default) ->
     case os:getenv(Name) of
@@ -307,6 +335,7 @@ menu(Ep, B2b, CallId, Tries) ->
         {ok, <<"2">>} -> echo(B2b, CallId);
         {ok, <<"3">>} -> native_conf(B2b, CallId);
         {ok, <<"4">>} -> fs_conf(B2b, CallId);
+        {ok, <<"8">>} -> fork(Ep, CallId), menu(Ep, B2b, CallId, 3);
         {ok, <<"9">>} -> record(Ep, CallId), menu(Ep, B2b, CallId, 3);
         {ok, _} -> menu(Ep, B2b, CallId, Tries - 1);
         {error, Why} -> log("call ~s left the IVR: ~p", [CallId, Why])
@@ -363,14 +392,71 @@ fs_conf(B2b, CallId) ->
             chappe_sip_b2b:hangup(B2b, #{})
     end.
 
-%% 9: record up to 10 s (or until silence), then play it back
+%% 8: fork the caller's audio into chappe_audio for 10 s: a process
+%% prints its level twice a second, and the stream is written to the store
+fork(Ep, CallId) ->
+    Ref = call_ref(Ep),
+    Printer = spawn(fun() -> levels(CallId, 0, []) end),
+    {ok, Stream, Url} = chappe_audio:open(persistent_term:get({?MODULE, audio}), #{
+        ref => Ref, owner => Printer, store => default
+    }),
+    _ = chappe_mrf:play(Ep, prompt(speak)),
+    Meta = iolist_to_binary(["{\"call\":\"", Ref, "\"}"]),
+    case chappe_mrf:fork_audio_start(Ep, Url, #{mix => mono, rate => 8000, metadata => Meta}) of
+        ok ->
+            log("call ~s: forking to ~s", [CallId, hd(binary:split(Url, <<"?">>))]),
+            timer:sleep(10000),
+            _ = chappe_mrf:fork_audio_stop(Ep);
+        {error, Why} ->
+            log("call ~s: no fork: ~p", [CallId, Why]),
+            chappe_audio:close(Stream)
+    end.
+
+%% The fork's events: a level line every 25 frames (500 ms), the loudest
+%% of them, drawn as a bar.
+levels(CallId, N, Lv) ->
+    receive
+        {chappe_audio, _, {connected, #{peer := Peer}}, _} ->
+            log("call ~s: fork connected from ~p", [CallId, Peer]),
+            levels(CallId, N, Lv);
+        {chappe_audio, _, {text, Meta}, _} ->
+            log("call ~s: fork metadata ~s", [CallId, Meta]),
+            levels(CallId, N, Lv);
+        {chappe_audio, _, {frame, Pcm}, _} when N =:= 24 ->
+            Db = lists:max([db(L) || L <- [hd(chappe_audio:levels(Pcm, 1)) | Lv]]),
+            Bar = lists:duplicate(max(0, round((Db + 60) / 2)), $#),
+            log("call ~s: ~6.1f dBFS ~s", [CallId, Db, Bar]),
+            levels(CallId, 0, []);
+        {chappe_audio, _, {frame, Pcm}, _} ->
+            levels(CallId, N + 1, [hd(chappe_audio:levels(Pcm, 1)) | Lv]);
+        {chappe_audio, _, closed, Ref} ->
+            log("call ~s: fork closed; recordings: ~p", [CallId, recordings(Ref)])
+    end.
+
+db('-inf') -> -90.0;
+db(X) -> max(-90.0, X).
+
+call_ref(Ep) ->
+    case chappe_mrf_endpoint:info(Ep) of
+        #{call_ref := Ref} when is_binary(Ref) -> Ref;
+        #{id := Id} -> Id
+    end.
+
+%% 9: record up to 10 s (or until silence), play it back, then adopt it
+%% into the store under the call's call_ref (record/3 with store =>
+%% default does both at once; the demo plays the file before moving it)
 record(Ep, CallId) ->
     Id = binary:encode_hex(crypto:hash(md5, CallId), lowercase),
     File = <<"/media/msg-", Id/binary, ".wav">>,
     _ = chappe_mrf:play(Ep, prompt(record)),
     _ = chappe_mrf:record(Ep, File, #{max_secs => 10, silence_thresh => 200, silence_hits => 3}),
     log("call ~s: recorded ~s", [CallId, File]),
-    _ = chappe_mrf:play(Ep, File).
+    _ = chappe_mrf:play(Ep, File),
+    Ref = call_ref(Ep),
+    case chappe_mrf_store:adopt(File, Ref, #{}) of
+        {ok, Rec} -> log("call ~s: message ~s in the store: ~p", [CallId, Rec, recordings(Ref)]);
+        {error, Why} -> log("call ~s: message not stored: ~p", [CallId, Why])
+    end.
 
 %% the call runs in its own process; this one waits for its end
 wait_end({_, Ref}, CallId) ->
@@ -384,7 +470,9 @@ prompts(Dir) ->
     ok = filelib:ensure_path(Dir),
     Texts = [
         {menu, 440, "Press 1 for bob, 2 for an echo, 3 for the chappe conference, "
-                    "4 for the FreeSWITCH conference, or 9 to record a message."},
+                    "4 for the FreeSWITCH conference, 8 to see your voice level, "
+                    "or 9 to record a message."},
+        {speak, 600, "Speak now. The demo prints your level for ten seconds."},
         {pin, 520, "Enter the conference PIN."},
         {record, 700, "Record your message after the beep. Stop talking to hear it back."},
         {sorry, 300, "Bob is not available."}

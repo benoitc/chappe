@@ -25,6 +25,7 @@ live here in `docs/`.
 | chappe_rtpengine | [README](../apps/chappe_rtpengine/README.md) | [getting started](../apps/chappe_rtpengine/docs/guides/getting-started.md), [sessions](../apps/chappe_rtpengine/docs/guides/sessions.md), [nodes](../apps/chappe_rtpengine/docs/guides/nodes.md), [media features](../apps/chappe_rtpengine/docs/guides/media-features.md), [subscriptions](../apps/chappe_rtpengine/docs/guides/subscriptions.md), [testing](../apps/chappe_rtpengine/docs/guides/testing.md) |
 | chappe_mix | [README](../apps/chappe_mix/README.md) | [run a conference](../apps/chappe_mix/docs/guides/conference.md) |
 | chappe_esl | [README](../apps/chappe_esl/README.md) | [getting started](../apps/chappe_esl/docs/guides/getting-started.md), [inbound](../apps/chappe_esl/docs/guides/inbound.md), [outbound](../apps/chappe_esl/docs/guides/outbound.md), [events](../apps/chappe_esl/docs/guides/events.md), [call control](../apps/chappe_esl/docs/guides/call-control.md), [nodes](../apps/chappe_esl/docs/guides/nodes.md), [select a node](../apps/chappe_esl/docs/guides/select-node.md), [testing](../apps/chappe_esl/docs/guides/testing.md) |
+| chappe_audio | [README](../apps/chappe_audio/README.md) | [take audio from a fork](../apps/chappe_audio/docs/guides/fork.md), [record a call](../apps/chappe_audio/docs/guides/record.md) |
 | chappe_mrf | [README](../apps/chappe_mrf/README.md), [features](../apps/chappe_mrf/docs/features.md) | [IVR menu](../apps/chappe_mrf/docs/guides/ivr-menu.md), [bridge](../apps/chappe_mrf/docs/guides/bridge.md), [conference](../apps/chappe_mrf/docs/guides/conference.md), [drachtio mapping](../apps/chappe_mrf/docs/drachtio-mapping.md) |
 
 Configuration reference per app:
@@ -32,6 +33,7 @@ Configuration reference per app:
 [chappe_rtpengine](../apps/chappe_rtpengine/docs/configuration.md),
 [chappe_mix](../apps/chappe_mix/docs/configuration.md),
 [chappe_esl](../apps/chappe_esl/docs/configuration.md),
+[chappe_audio](../apps/chappe_audio/docs/configuration.md),
 [chappe_mrf](../apps/chappe_mrf/docs/configuration.md).
 
 What each app can do today: the `docs/features.md` of
@@ -61,6 +63,7 @@ What each app can do today: the `docs/features.md` of
     with its evidence in [PERF.md](../apps/chappe_mix/test/audit/PERF.md)
     and [ATTEMPTS.md](../apps/chappe_mix/test/audit/ATTEMPTS.md)
   - chappe_esl: [overview](../apps/chappe_esl/docs/design/overview.md)
+  - chappe_audio: [overview](../apps/chappe_audio/docs/design/overview.md)
   - chappe_mrf: [overview](../apps/chappe_mrf/docs/design/overview.md)
 
 ### You contribute to chappe
@@ -82,6 +85,8 @@ What each app can do today: the `docs/features.md` of
 | ring several phones at once | [B2BUA forking](../apps/chappe_sip/docs/guides/b2bua-forking.md) |
 | hang up, transfer or move a live call | [B2BUA call control](../apps/chappe_sip/docs/guides/b2bua-call-control.md) |
 | anchor media, record, play, fork audio | [media](../apps/chappe_sip/docs/guides/media.md), [chappe_rtpengine sessions](../apps/chappe_rtpengine/docs/guides/sessions.md) |
+| record a call, find a recording | [record a call](../apps/chappe_audio/docs/guides/record.md) |
+| get a call's audio into Erlang | [take audio from a fork](../apps/chappe_audio/docs/guides/fork.md), [chappe_mix taps](../apps/chappe_mix/docs/guides/conference.md#tap-a-party-or-the-room) |
 | run a conference | [chappe_mix conference](../apps/chappe_mix/docs/guides/conference.md), [chappe_mrf conference](../apps/chappe_mrf/docs/guides/conference.md) |
 | build an IVR on FreeSWITCH | [IVR menu](../apps/chappe_mrf/docs/guides/ivr-menu.md) |
 | drive FreeSWITCH directly | [chappe_esl getting started](../apps/chappe_esl/docs/guides/getting-started.md) |

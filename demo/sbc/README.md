@@ -144,6 +144,7 @@ and waits for a digit:
 | 2 | you move to a new FreeSWITCH endpoint that echoes you |
 | 3 | you join `demo-native`, a conference on chappe_mix behind rtpengine |
 | 4 | you enter the PIN `1234` and join `demo-fs`, a mod_conference room |
+| 8 | you speak for 10 s while the demo prints your level, from a fork into chappe_audio |
 | 9 | you record a message after the prompt; it plays back, then the menu again |
 
 The prompts are spoken by macOS `say` when it is there (a tone each
@@ -179,6 +180,33 @@ that call ends, and the next `2000` lands on fs2.
 
 A browser can call `2000` too. Option 1 calls bob wherever he registered
 (a browser bob gets WebRTC media from rtpengine).
+
+## See your voice level, and find the recordings
+
+Press 8 in the IVR and speak. FreeSWITCH forks your audio (mod_audio_fork)
+into chappe_audio on port 18090 (`DEMO_AUDIO_PORT`), and the log prints a
+level line twice a second:
+
+```
+demo: call 5c1f...@...: forking to ws://host.docker.internal:18090/audio/9b0e...
+demo: call 5c1f...@...: fork connected from {{192,168,65,1},53012}
+demo: call 5c1f...@...: fork metadata {"call":"75a5294a0517ae328579"}
+demo: call 5c1f...@...:  -23.4 dBFS ##################
+demo: call 5c1f...@...:  -71.0 dBFS
+demo: call 5c1f...@...: fork closed; recordings: [#{id => ..., source => <<"fork">>, ...}]
+```
+
+The fork is also written to the recording store, and the message you
+record with 9 is adopted into it once it has played back. Both land in
+`demo/sbc/recordings/YYYY/MM/DD/<call_ref>/`, each `.wav` with its `.json`
+next to it. Find them by the call's ref from `make demo-shell`:
+
+```erlang
+demo_sbc:recordings(<<"75a5294a0517ae328579">>).
+%% [#{id => <<"20261114-...">>, source => <<"fork">>, duration_ms => 10020,
+%%    path => <<"demo/sbc/recordings/2026/11/14/75a5.../20261114-....wav">>},
+%%  #{id => <<"20261114-...">>, source => <<"freeswitch">>, ...}]
+```
 
 ## Put the call on hold
 
