@@ -189,6 +189,24 @@ the endpoint's own id goes as `X-Chappe-Endpoint`, and `info/1` returns it.
 
 Without it, `X-Chappe-Call` is the endpoint's random id, as before.
 
+## Deploy FreeSWITCH nodes
+
+Turn API expansion off on production nodes, in `switch.conf`:
+
+```xml
+<configuration name="switch.conf" description="Core Configuration">
+  <settings>
+    <param name="api-expansion" value="false"/>
+  </settings>
+</configuration>
+```
+
+FreeSWITCH expands `${var}` in every application argument, and with API
+expansion on (its default) also `${api(args)}`, so text that reaches an
+application can run an API command such as `system`. The typed helpers
+refuse text holding `${`; this setting is the defence in depth for raw
+`chappe_mrf:execute/3,4` callers and for dialplans. The chappe labs run with it off.
+
 ## Notes
 
 - A command blocks the process that calls it, not the endpoint: digits

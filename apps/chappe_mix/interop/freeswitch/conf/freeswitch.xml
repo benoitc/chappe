@@ -18,6 +18,9 @@
   <section name="configuration" description="Various Configuration">
     <configuration name="switch.conf" description="Core Configuration">
       <settings>
+        <!-- no API calls expanded in channel variables and app arguments:
+             text that reaches FreeSWITCH cannot run API commands -->
+        <param name="api-expansion" value="false"/>
         <param name="colorize-console" value="false"/>
         <param name="loglevel" value="notice"/>
         <param name="max-sessions" value="4000"/>

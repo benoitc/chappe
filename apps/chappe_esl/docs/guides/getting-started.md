@@ -61,6 +61,24 @@ end.
 ok = chappe_esl:close(Conn).
 ```
 
+## Deploy FreeSWITCH nodes
+
+Turn API expansion off on production nodes, in `switch.conf`:
+
+```xml
+<configuration name="switch.conf" description="Core Configuration">
+  <settings>
+    <param name="api-expansion" value="false"/>
+  </settings>
+</configuration>
+```
+
+FreeSWITCH expands `${var}` in every application argument, and with API
+expansion on (its default) also `${api(args)}`, so text that reaches an
+application can run an API command such as `system`. The typed helpers
+refuse text holding `${`; this setting is the defence in depth for raw
+`exec` callers and for dialplans. The chappe labs run with it off.
+
 ## Next
 
 - [Inbound connections](inbound.md)
