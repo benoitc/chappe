@@ -179,7 +179,10 @@ participant: the answer decides, which is why the selection lives there. See the
 `chappe_rtpengine` subscriptions guide for the wire-level detail and for feeding
 several receivers from a single subscription.
 
-To originate a SIPREC INVITE rather than receive one, `create_uac/2` takes
+To record a call to a recording server, use `chappe_sip_siprec:start/3`
+([Record a call with SIPREC](siprec.md)); to write the streams of an
+incoming recording to the store, `chappe_sip_siprec_srs:serve/3`. To build
+the SIPREC INVITE yourself, `create_uac/2` takes
 `body` plus `content_type` instead of `local_sdp`, so you can send the
 `multipart/mixed` yourself; the peer's answer is on the dialog
 (`chappe_sip_dialog:remote_sdp/1`).

@@ -66,6 +66,8 @@ decisions, contributing) is in the [umbrella docs](../../../docs/README.md).
 
 - [Put media under a call](guides/media.md): rtpengine anchoring, taps,
   SIPREC, ducking, conferences on chappe_mix.
+- [Record a call with SIPREC](guides/siprec.md): the recording client, its
+  metadata, and chappe as the recording server.
 
 ## Operations
 

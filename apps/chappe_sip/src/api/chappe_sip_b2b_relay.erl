@@ -397,15 +397,12 @@ send_failure(Res, _Other) ->
 %% ---- set_media/2 and info/1 ----
 
 handle_call(From, info, #{media := M, pending := P} = S) ->
-    reply(From, #{
+    reply(From, (maps:with([hold, call_id, call_ref, related], M))#{
         media => chappe_sip_b2b_media:mode(M),
-        hold => maps:get(hold, M),
-        call_id => maps:get(call_id, M),
         session => chappe_sip_b2b_media:session(M),
         pending => P =/= undefined,
         winner => maps:get(winner, S),
-        call_ref => maps:get(call_ref, M),
-        related => maps:get(related, M)
+        parties => chappe_sip_b2b:parties(S)
     }),
     S;
 handle_call(From, {set_media, Mode}, #{media := #{mode := Mode}} = S) ->

@@ -545,39 +545,14 @@ opt_text(Name, Key, Map) ->
     end.
 
 text(Name, Value) ->
-    el(Name, [], [escape(Value)]).
+    el(Name, [], [chappe_sip_lib:xml_escape(Value)]).
 
 el(Name, Attrs, Content) ->
-    As = [[<<" ">>, K, <<"=\"">>, escape(V), <<"\"">>] || {K, V} <- Attrs],
+    As = [
+        [<<" ">>, K, <<"=\"">>, chappe_sip_lib:xml_escape(V), <<"\"">>]
+     || {K, V} <- Attrs
+    ],
     case iolist_size(Content) of
         0 -> [<<"<">>, Name, As, <<"/>">>];
         _ -> [<<"<">>, Name, As, <<">">>, Content, <<"</">>, Name, <<">">>]
     end.
-
-escape(Bin) ->
-    [escape_char(C) || C <- chars(Bin, [])].
-
-escape_char($<) -> <<"&lt;">>;
-escape_char($>) -> <<"&gt;">>;
-escape_char($&) -> <<"&amp;">>;
-escape_char($") -> <<"&quot;">>;
-escape_char($') -> <<"&apos;">>;
-%% in attributes a raw tab or newline would be normalised to a space
-escape_char($\t) -> <<"&#9;">>;
-escape_char($\n) -> <<"&#10;">>;
-escape_char($\r) -> <<"&#13;">>;
-escape_char(C) -> <<C/utf8>>.
-
-%% code points of Bin; invalid UTF-8 and XML-forbidden characters become
-%% U+FFFD
-chars(<<C/utf8, Rest/binary>>, Acc) ->
-    chars(Rest, [xml_char(C) | Acc]);
-chars(<<_, Rest/binary>>, Acc) ->
-    chars(Rest, [16#FFFD | Acc]);
-chars(<<>>, Acc) ->
-    lists:reverse(Acc).
-
-xml_char(C) when C =:= 16#9; C =:= 16#A; C =:= 16#D -> C;
-xml_char(C) when C < 16#20 -> 16#FFFD;
-xml_char(C) when C =:= 16#FFFE; C =:= 16#FFFF -> 16#FFFD;
-xml_char(C) -> C.

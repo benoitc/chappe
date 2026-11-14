@@ -34,6 +34,10 @@
 %%    watches its call's relay, so it needs nothing of the stack's.
 %% 5. chappe_sip_stack_sup: the SIP engine and per-call state (rest_for_one);
 %%    everything there dies with the engine.
+%% 6. chappe_sip_siprec_sup: the SIPREC recordings this node sends; after
+%%    the stack, so they stop first and still send their BYE.
+%%    chappe_sip_siprec_rtp_sup: the streams this node records as a SIPREC
+%%    recording server.
 -module(chappe_sip_sup).
 -behaviour(supervisor).
 
@@ -70,6 +74,10 @@ init([]) ->
         sup(chappe_sip_media_sup),
         sup(chappe_sip_b2b_sup),
         sup(chappe_sip_stack_sup),
+        %% after the stack: a recording stopped at shutdown still sends its
+        %% BYE (chappe_sip_siprec)
+        sup(chappe_sip_siprec_sup),
+        sup(chappe_sip_siprec_rtp_sup),
         %% after the stack: stopped first, while a REGISTER can still go out
         sup(chappe_sip_regc_sup)
     ],

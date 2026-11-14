@@ -1454,7 +1454,12 @@ do_create_uas_1(Req, Opts, WorkerPid, S) ->
     LocalAddr = <<ToVal/binary, ";tag=", LocalTag/binary>>,
     TxnH = chappe_sip_req:txn(Req),
     RTarget = contact_uri(chappe_sip_msg:get(<<"contact">>, Msg), FromVal),
-    Contact = uas_contact(Req, S),
+    %% contact_params: a feature tag after the `>' (+sip.srs for a
+    %% recording server, RFC 7866 6.2)
+    Contact = <<
+        (uas_contact(Req, S))/binary,
+        (maps:get(contact_params, Opts, <<>>))/binary
+    >>,
     %% a 2xx to an INVITE waits for its ACK (RFC 3261 13.3.1.4). The native
     %% stack keeps its server transaction until the ACK or Timer H and names
     %% it in both; the WS transport names the dialog leg.

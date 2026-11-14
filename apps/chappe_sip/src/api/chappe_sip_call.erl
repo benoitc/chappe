@@ -11,9 +11,10 @@
 %% in a HEP log packet per Call-ID.
 %%
 %% A process that serves the call (the B2BUA, a dialog, the rtpengine
-%% session) joins it while it does: the pg group {chappe_sip_call, Ref} of
-%% the `chappe' scope for the cluster, and a node-local table that keeps
-%% the handle it serves under (a b2b(), a dialog(), a media session). A
+%% session, a SIPREC recording) joins it while it does: the pg group
+%% {chappe_sip_call, Ref} of the `chappe' scope for the cluster, and a
+%% node-local table that keeps the handle it serves under (a b2b(), a
+%% dialog(), a media session, a recording's pid). A
 %% process leaves on leave/2 or when it exits. lookup/1 asks the members'
 %% nodes for their handles, so a call is found from any node.
 -module(chappe_sip_call).
@@ -38,12 +39,13 @@
 -type state() :: #state{}.
 
 -type call_ref() :: binary().
--type role() :: b2b | dialog | media.
+-type role() :: b2b | dialog | media | siprec.
 %% What lookup/1 finds of a call, on every node.
 -type calls() :: #{
     b2b := [chappe_sip_b2b:b2b()],
     dialogs := [chappe_sip_dialog:dialog()],
-    media := [chappe_sip_media:session()]
+    media := [chappe_sip_media:session()],
+    siprec := [chappe_sip_siprec:rec()]
 }.
 
 %% The `chappe' pg scope, unless an app of the node started it already.
@@ -143,7 +145,8 @@ lookup(Ref) ->
     #{
         b2b => [H || {b2b, H} <- Found],
         dialogs => [H || {dialog, H} <- Found],
-        media => [H || {media, H} <- Found]
+        media => [H || {media, H} <- Found],
+        siprec => [H || {siprec, H} <- Found]
     }.
 
 at(Node, Ref) when Node =:= node() ->
