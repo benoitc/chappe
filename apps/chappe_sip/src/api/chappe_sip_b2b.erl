@@ -157,14 +157,18 @@
 %%                            answer them with chappe_sip_res:send/3.
 %%                            Without a notify process the relay answers
 %%                            them as a dialog does: REFER 603, others 200
-%%   transfer              => off (default) | auto. auto: a REFER from
+%%   transfer              => off (default) | auto | notify. auto: a REFER from
 %%                            either leg is carried out by the B2BUA
 %%                            itself (chappe_sip_b2b_transfer): the
 %%                            target replaces the leg that sent it, the
 %%                            other leg keeps its media and sees no
 %%                            re-INVITE. Needs anchored media (a REFER on
 %%                            a direct call gets 488). requests' refer is
-%%                            then ignored
+%%                            then ignored. notify: the notify process
+%%                            gets {chappe_sip_b2b, Ref, {refer, Info}}
+%%                            and decides with chappe_sip_b2b_transfer:
+%%                            accept/2 or reject/2 (603 after
+%%                            transfer_opts timeout, 10000 ms)
 %%   transfer_opts         => #{policy => fun((Info) -> boolean() |
 %%                            {reject, Code}), domains => [Host],
 %%                            max_transfers => N}: policy decides who may

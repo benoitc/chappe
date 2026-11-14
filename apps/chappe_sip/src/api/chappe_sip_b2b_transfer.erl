@@ -26,12 +26,13 @@
 -include("chappe_sip.hrl").
 
 -export([valid/1, mode/1, start/1, start_link/1, init/1]).
+-export([accept/2, reject/2]).
 %% for the relay loop (chappe_sip_b2b_relay)
 -export([options/2, refer/4, monitor/1, down/2, detach/3]).
 
 -export_type([mode/0, info/0]).
 
--type mode() :: off | auto.
+-type mode() :: off | auto | notify.
 %% What the policy fun sees of a REFER. referrer is the From of the
 %% REFER, the identity its dialog was formed with; referred_by is what the
 %% REFER claims and is not checked (RFC 3892 6): never grant on it alone.
@@ -61,7 +62,7 @@
 %%       300..699}), domains => [binary()], max_transfers => pos_integer()}
 -spec valid(map()) -> boolean().
 valid(Opts) ->
-    lists:member(maps:get(transfer, Opts, off), [off, auto]) andalso
+    lists:member(maps:get(transfer, Opts, off), [off, auto, notify]) andalso
         valid_topts(maps:get(transfer_opts, Opts, #{})).
 
 valid_topts(T) when is_map(T) ->
@@ -72,6 +73,7 @@ valid_topts(_T) ->
 valid_topt(policy, F) -> is_function(F, 1);
 valid_topt(domains, Ds) -> is_list(Ds) andalso lists:all(fun is_binary/1, Ds);
 valid_topt(max_transfers, N) -> is_integer(N) andalso N >= 0;
+valid_topt(timeout, T) -> is_integer(T) andalso T > 0;
 valid_topt(_K, _V) -> false.
 
 %% The transfer mode of a call's options.
@@ -113,6 +115,7 @@ refer(X, Req, Res, #{media := M, transfers := N} = S) ->
         ref => maps:get(ref, M),
         call_ref => maps:get(call_ref, M),
         opts => maps:get(transfer_opts, S),
+        mode => maps:get(transfer, S),
         transfers => N
     },
     case start(Args) of
@@ -331,10 +334,12 @@ referrer(Req) ->
 
 %% ---- the call's policy ----
 
+decide(Info, #{mode := notify} = S) ->
+    ask(Info, S);
 decide(Info, #{opts := TOpts, res := Res} = S) ->
     case policy(Info, TOpts) of
         true ->
-            accept(Info, S);
+            take(Info, S);
         {reject, Code} ->
             _ = chappe_sip_res:send(Res, Code, #{}),
             ok;
@@ -342,6 +347,65 @@ decide(Info, #{opts := TOpts, res := Res} = S) ->
             _ = chappe_sip_res:send(Res, 403, #{reason => <<"Forbidden">>}),
             ok
     end.
+
+%% transfer => notify: the call's notify process decides, with accept/2
+%% or reject/2, within the timeout (10 s, then 603)
+ask(Info, #{notify := Pid, ref := Ref, res := Res, mon := Mon} = S) when
+    is_pid(Pid)
+->
+    Public = maps:without([dialog2, ref2], Info),
+    Pid ! {chappe_sip_b2b, Ref, {refer, Public#{transfer => self()}}},
+    receive
+        {?MODULE, {accept, Opts}} ->
+            take(retarget(Info, Opts), S);
+        {?MODULE, {reject, Code}} ->
+            _ = chappe_sip_res:send(Res, Code, #{}),
+            ok;
+        {'DOWN', Mon, process, _, _} ->
+            %% the call is over
+            _ = chappe_sip_res:send(Res, 481, #{}),
+            ok
+    after maps:get(timeout, maps:get(opts, S), 10000) ->
+        _ = chappe_sip_res:send(Res, 603, #{reason => <<"Declined">>}),
+        ok
+    end;
+ask(_Info, #{res := Res}) ->
+    _ = chappe_sip_res:send(Res, 603, #{reason => <<"Declined">>}),
+    ok.
+
+%% the app's own target: a blind transfer there
+retarget(Info, #{target := T}) when is_binary(T), T =/= <<>> ->
+    (maps:without([replaces, local, dialog2, ref2], Info))#{
+        target := T, kind := blind
+    };
+retarget(Info, _Opts) ->
+    Info.
+
+%% Carry out the REFER that {refer, Info} announced (transfer => notify).
+%% Opts: target => Uri sends the transferee there instead (a blind
+%% transfer then, whatever the REFER named). Runs on any node.
+-spec accept(map(), map()) -> ok | {error, badarg}.
+accept(#{transfer := Pid}, Opts) when is_pid(Pid), is_map(Opts) ->
+    case maps:get(target, Opts, <<>>) of
+        T when is_binary(T) ->
+            Pid ! {?MODULE, {accept, Opts}},
+            ok;
+        _ ->
+            {error, badarg}
+    end;
+accept(_Info, _Opts) ->
+    {error, badarg}.
+
+%% Refuse it: the REFER gets Code (403 by default practice), nothing is
+%% called.
+-spec reject(map(), 300..699) -> ok | {error, badarg}.
+reject(#{transfer := Pid}, Code) when
+    is_pid(Pid), is_integer(Code), Code >= 300, Code =< 699
+->
+    Pid ! {?MODULE, {reject, Code}},
+    ok;
+reject(_Info, _Code) ->
+    {error, badarg}.
 
 %% The app's policy, else the default: a target on one of the call's
 %% domains (transfer_opts domains, default this node's host). A tel: URI
@@ -382,7 +446,7 @@ own_hosts() ->
 
 %% ---- carrying it out ----
 
-accept(Info, #{dialog := D, req := Req, res := Res} = S) ->
+take(Info, #{dialog := D, req := Req, res := Res} = S) ->
     Opts = #{owner => self(), authorize => fun(_, _) -> true end},
     case chappe_sip_refer:accept(D, Req, Res, Opts) of
         {ok, Refer} ->

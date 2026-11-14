@@ -15,6 +15,8 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -export([all/0, init_per_suite/1, end_per_suite/1, end_per_testcase/2]).
+-export([notify_accept/1, notify_reject/1, notify_retarget/1,
+         notify_from_another_node/1]).
 -export([attended_local_join/1, attended_remote_replaces/1,
          attended_other_party_refused/1]).
 -export([blind_from_a/1, blind_keeps_identity/1, blind_keeps_call_ref/1]).
@@ -27,7 +29,8 @@
 all() ->
     [blind_from_b, blind_from_a, blind_keeps_identity, blind_keeps_call_ref,
      blind_target_fails, attended_local_join, attended_remote_replaces,
-     attended_other_party_refused, offnet_refused, policy_rejects,
+     attended_other_party_refused, notify_accept, notify_reject,
+     notify_retarget, notify_from_another_node, offnet_refused, policy_rejects,
      policy_sees_untrusted_referred_by, direct_media_refused, transfer_limit,
      bye_method_refused, one_transfer_at_a_time, transfer_crash_call_goes_on,
      call_end_stops_transfer, multiple_refer_unsupported].
@@ -269,6 +272,108 @@ attended_other_party_refused(_Config) ->
     timer:sleep(300),
     ?assertMatch(#{media := anchor}, chappe_sip_b2b:info(DaveCall)),
     no_message(bye, 300).
+
+%% ---- transfer => notify ----
+
+%% The app decides: it gets {refer, Info} and accepts; the transfer then
+%% runs as with auto.
+%% req: R3515-04
+notify_accept(_Config) ->
+    {EP, CP} = setup(#{transfer => notify}),
+    NP = ?UA:pick(),
+    callee_refers(CP, EP, refer_to(NP), []),
+    target(NP, answer),
+    caller(EP, fun(_Sock, _D) -> ok end),
+    #{b2b := {_, Ref}} = got(legs),
+    Info = refer_event(Ref),
+    ?assertMatch(#{kind := blind, leg := b, referrer := <<"<sip:callee@", _/binary>>},
+                 Info),
+    no_message(refer_answer, 300),
+    ok = chappe_sip_b2b_transfer:accept(Info, #{}),
+    ?assertEqual(200, ?UA:status(got(refer_answer))),
+    _ = got(target_invite),
+    _ = got(bye),
+    ok = expect_event(Ref, {transferred, b}).
+
+%% The app refuses with its code; nothing is called.
+notify_reject(_Config) ->
+    {EP, CP} = setup(#{transfer => notify}),
+    NP = ?UA:pick(),
+    callee_refers(CP, EP, refer_to(NP), []),
+    caller(EP, fun(_Sock, _D) -> ok end),
+    #{b2b := {_, Ref}} = got(legs),
+    Info = refer_event(Ref),
+    ?assertEqual({error, badarg}, chappe_sip_b2b_transfer:reject(Info, 200)),
+    ok = chappe_sip_b2b_transfer:reject(Info, 603),
+    ?assertEqual(603, ?UA:status(got(refer_answer))),
+    no_message(notify, 500).
+
+%% The app sends the transferee somewhere else than the REFER asked.
+notify_retarget(_Config) ->
+    {EP, CP} = setup(#{transfer => notify}),
+    NP = ?UA:pick(),
+    callee_refers(CP, EP, <<"<sip:carol@203.0.113.9>">>, []),
+    target(NP, answer),
+    caller(EP, fun(_Sock, _D) -> ok end),
+    #{b2b := {_, Ref}} = got(legs),
+    Info = refer_event(Ref),
+    Other = <<"sip:carol@127.0.0.1:", (integer_to_binary(NP))/binary>>,
+    ok = chappe_sip_b2b_transfer:accept(Info, #{target => Other}),
+    Inv = got(target_invite),
+    ?assertMatch(<<"INVITE ", Other:(byte_size(Other))/binary, _/binary>>, Inv).
+
+%% chappe-erlang-patterns: the notify process is on another node; it gets
+%% {refer, Info} there and accepts from there.
+notify_from_another_node(_Config) ->
+    ok = ensure_distributed(),
+    Paths = lists:append([["-pa", P] || P <- code:get_path()]),
+    {ok, Peer, Node} = peer:start_link(#{name => peer:random_name(),
+                                         args => Paths}),
+    try
+        Test = self(),
+        Remote = erpc:call(Node, erlang, spawn, [fun() -> remote_app(Test) end]),
+        {EP, CP} = setup(#{transfer => notify, notify => Remote}),
+        NP = ?UA:pick(),
+        callee_refers(CP, EP, refer_to(NP), []),
+        target(NP, answer),
+        caller(EP, fun(_Sock, _D) -> ok end),
+        _ = got(legs),
+        ?assertEqual(Node, got(remote_accepted)),
+        ?assertEqual(200, ?UA:status(got(refer_answer))),
+        _ = got(target_invite),
+        ?assertMatch({transferred, b, _}, got(remote_event))
+    after
+        peer:stop(Peer)
+    end.
+
+%% on the peer node: accept each REFER, pass the call's events on
+remote_app(Test) ->
+    receive
+        {chappe_sip_b2b, _Ref, {refer, Info}} ->
+            ok = chappe_sip_b2b_transfer:accept(Info, #{}),
+            Test ! {remote_accepted, node()},
+            remote_app(Test);
+        {chappe_sip_b2b, _Ref, {transferred, _, _} = Ev} ->
+            Test ! {remote_event, Ev},
+            remote_app(Test);
+        _ ->
+            remote_app(Test)
+    end.
+
+ensure_distributed() ->
+    case node() of
+        nonode@nohost ->
+            {ok, _} = net_kernel:start(list_to_atom("d_xfer_ct_" ++ os:getpid()),
+                                       #{name_domain => shortnames}),
+            ok;
+        _ ->
+            ok
+    end.
+
+refer_event(Ref) ->
+    receive {chappe_sip_b2b, Ref, {refer, Info}} -> Info
+    after 10000 -> ct:fail(no_refer_event)
+    end.
 
 %% ---- policy and safety ----
 
