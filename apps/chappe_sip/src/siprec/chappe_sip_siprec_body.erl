@@ -11,7 +11,7 @@
 -module(chappe_sip_siprec_body).
 
 -export([body/1, media/1, identity/3, answers/2, sdp_of/1, sdp_only/1]).
--export([srs/1, valid_opts/1]).
+-export([srs/1, valid_opts/1, security/1]).
 
 %% The RS body: the SDP offer, a sendonly (or, paused, inactive) m-line per
 %% stream with its label, and the full metadata snapshot.
@@ -212,6 +212,56 @@ sdp_only(Sdp) ->
         [S] -> S
     end.
 
+%% RFC 7866 12, for chappe_sip_siprec:init/1: {ok, Srtp} when the RS can be
+%% as secure as the call (Srtp: its taps must be SRTP), {error,
+%% {insecure_srs, tls}} when the call has a TLS leg and the SRS is not
+%% reached over TLS
+-spec security(map()) -> {ok, boolean()} | {error, {insecure_srs, tls}}.
+security(#{source := {room, _}}) ->
+    {ok, false};
+security(#{opts := #{allow_downgrade := true}}) ->
+    {ok, false};
+security(#{call_ref := CallRef, srs := Srs, opts := Opts}) ->
+    Legs = [leg_security(D) || {dialog, D} <- chappe_sip_call:local(CallRef)],
+    Tls = lists:member(tls, lists:append(Legs)),
+    Srtp = lists:member(srtp, lists:append(Legs)),
+    RsTls =
+        chappe_sip_uri:is_secure(Srs) orelse
+            case Opts of
+                #{proxy := P} when is_binary(P) -> chappe_sip_uri:is_secure(P);
+                _ -> false
+            end,
+    case Tls andalso not RsTls of
+        true -> {error, {insecure_srs, tls}};
+        false -> {ok, Srtp}
+    end.
+
+%% what makes a leg of the call secure: tls when its dialog was formed over
+%% TLS (our sips: Contact there), srtp when its media is; the RS dialogs of
+%% recordings (+sip.src, +sip.srs) are not legs of the call
+leg_security(D) ->
+    try {chappe_sip_dialog:local_contact(D), chappe_sip_dialog:remote_sdp(D)} of
+        {Contact, Sdp} when is_binary(Contact) ->
+            case binary:match(Contact, [<<"+sip.src">>, <<"+sip.srs">>]) of
+                nomatch ->
+                    [tls || chappe_sip_uri:is_secure(Contact)] ++
+                        [srtp || savp(Sdp)];
+                _ ->
+                    []
+            end;
+        _ ->
+            []
+    catch
+        exit:_ -> []
+    end.
+
+savp(Sdp) ->
+    {_, Media} = chappe_sip_sdp:parse(Sdp),
+    lists:any(
+        fun(#{proto := P}) -> binary:match(P, <<"SAVP">>) =/= nomatch end,
+        Media
+    ).
+
 %% The recording server's URI: a sip: or sips: URI, or the siprec_srs
 %% config for default.
 -spec srs(binary() | default) -> {ok, binary()} | {error, no_srs | badarg}.
@@ -250,6 +300,8 @@ valid_opt({codec, C}) ->
     is_map(C);
 valid_opt({ptime, P}) ->
     is_integer(P) andalso P > 0;
+valid_opt({allow_downgrade, B}) ->
+    is_boolean(B);
 valid_opt({K, _}) ->
     lists:member(K, [from, proxy, auth, flow]).
 

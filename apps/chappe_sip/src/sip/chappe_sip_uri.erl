@@ -17,7 +17,7 @@
 -module(chappe_sip_uri).
 
 -export([parse/1, format/1, same_authority/2, equal/2, equal_strict/2, aor/1]).
--export([take_param/2, is_sips/1, is_sips_unreliable/1]).
+-export([take_param/2, is_sips/1, is_sips_unreliable/1, is_secure/1]).
 
 -type uri() :: map().
 
@@ -200,6 +200,19 @@ is_sips(<<Scheme:4/binary, ":", _/binary>>) ->
     chappe_sip_lib:lower(Scheme) =:= <<"sips">>;
 is_sips(_) ->
     false.
+
+%% A URI reached over TLS: a SIPS URI (RFC 3261 19.1), or a sip one whose
+%% transport parameter is tls or wss. A name-addr's URI counts too.
+-spec is_secure(binary()) -> boolean().
+is_secure(Uri0) ->
+    Uri = chappe_sip_hdr:name_addr_uri(Uri0),
+    is_sips(Uri) orelse
+        case take_param(Uri, <<"transport">>) of
+            {V, _} when is_binary(V) ->
+                lists:member(chappe_sip_lib:lower(V), [<<"tls">>, <<"wss">>]);
+            _ ->
+                false
+        end.
 
 %% A SIPS URI whose transport parameter names an unreliable transport (RFC
 %% 3261 19.1.1: it MUST name a reliable one).

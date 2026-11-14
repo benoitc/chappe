@@ -14,6 +14,18 @@
 %% recvonly and +sip.srs in its Contact. A stream it cannot take (not
 %% PCMU or PCMA, past max_streams) is answered with port 0 (RFC 3264 6).
 %%
+%% Each receiver takes RTP from the recording client only: from the
+%% address the client's SDP gives for its stream, latched to the first
+%% source seen there (chappe_sip_siprec_rtp). rtp_source => learn latches
+%% to the first source wherever it comes from, for a client behind a NAT
+%% that writes its private address.
+%%
+%% The receivers are plain RTP/AVP: they hold no SRTP keys. A stream
+%% offered as RTP/SAVP or RTP/SAVPF is answered with port 0, and an offer
+%% with no stream left that had a secure one is refused 488 with a 302
+%% Warning (RFC 3261 20.43). RFC 7866 12.2 asks an SRS for SRTP; record
+%% such a client through an rtpengine that decrypts it first.
+%%
 %% Each stream goes to its sink:
 %%   store => default | module()   a recording of the store, opened with
 %%       the call_ref of the metadata (the call_ref chappe's client puts
@@ -36,7 +48,8 @@
 %% Why}}, Why the BYE request or the dialog's reason. Opts also take ip (the
 %% address the receivers bind, default 127.0.0.1), advertise (the address
 %% in the SDP, default ip), max_streams (default 4), max_queue (default
-%% 500) and headers for the 200.
+%% 500), rtp_source (negotiated, the default, or learn) and headers for the
+%% 200.
 %%
 %% {error, not_recording_session} leaves Res unanswered, for the app to
 %% treat as an ordinary call or refuse; {error, _} on a body that does not
@@ -161,15 +174,41 @@ answer(Req, Res, Sdp, Doc, Sink, Opts) ->
         {L, S}
      || #{label := L} = S <- chappe_sip_siprec_meta:senders(Doc)
     ]),
-    {Sess, Media} = chappe_sip_sdp:sections(Sdp),
-    _ = Sess,
+    {_Sess, Media} = chappe_sip_sdp:sections(Sdp),
+    Remotes = remotes(Sdp, Opts),
     Max = maps:get(max_streams, Opts, 4),
     Taken = lists:map(
         fun({I, Sec}) ->
-            stream(I =< Max, Sec, Senders, CallRef, Sink, Ip, Opts)
+            stream(
+                I =< Max,
+                Sec,
+                Senders,
+                CallRef,
+                Sink,
+                Ip,
+                Opts#{remote => lists:nth(I, Remotes)}
+            )
         end,
         lists:enumerate(Media)
     ),
+    Streams = [S || {_, S} <- Taken, S =/= undefined],
+    case Streams =:= [] andalso lists:any(fun secure/1, Media) of
+        true ->
+            _ = chappe_sip_res:send(Res, 488, #{
+                headers => [
+                    {<<"Warning">>, [
+                        <<"302 ">>,
+                        Adv,
+                        <<" \"Incompatible transport protocol\"">>
+                    ]}
+                ]
+            }),
+            {error, srtp};
+        false ->
+            answer_streams(Req, Res, Adv, Taken, Streams, CallRef, Doc, Opts)
+    end.
+
+answer_streams(Req, Res, Adv, Taken, Streams, CallRef, Doc, Opts) ->
     Answer = chappe_sip_sdp:join(
         [
             <<"v=0">>,
@@ -180,7 +219,6 @@ answer(Req, Res, Sdp, Doc, Sink, Opts) ->
         ],
         [Lines || {Lines, _} <- Taken]
     ),
-    Streams = [S || {_, S} <- Taken, S =/= undefined],
     case
         chappe_sip:create_uas(Req, Res, #{
             local_sdp => Answer,
@@ -277,11 +315,36 @@ call_ref(Req, Doc) ->
         [] -> chappe_sip_req:call_ref(Req)
     end.
 
+%% where each stream of the offer comes from: its c= address (or the
+%% session's) and its port, undefined when that is no IP literal or the
+%% app said to learn it
+remotes(Sdp, #{rtp_source := learn}) ->
+    {_, Ms} = chappe_sip_sdp:parse(Sdp),
+    [undefined || _ <- Ms];
+remotes(Sdp, _Opts) ->
+    {Sess, Ms} = chappe_sip_sdp:parse(Sdp),
+    [remote(maps:get(addr, M, Sess), P) || #{port := P} = M <- Ms].
+
+remote(Addr, Port) ->
+    case chappe_sip_sdp:address(Addr) of
+        {ok, {0, 0, 0, 0}} -> undefined;
+        {ok, {0, 0, 0, 0, 0, 0, 0, 0}} -> undefined;
+        {ok, Ip} -> {Ip, Port};
+        error -> undefined
+    end.
+
+%% an m-line of a secure profile (RTP/SAVP, RTP/SAVPF, UDP/TLS/RTP/SAVP...)
+secure([M | _]) ->
+    case m_line(M) of
+        {_, _, Proto, _} -> binary:match(Proto, <<"SAVP">>) =/= nomatch;
+        undefined -> false
+    end.
+
 %% one recorded stream: a receiver and its recvonly m-line, or port 0
 stream(Room, [M | Rest], Senders, CallRef, Sink, Ip, Opts) ->
     Label = label(Rest),
     case {Room, m_line(M)} of
-        {true, {<<"audio">>, Port, Fmts}} when Port =/= 0 ->
+        {true, {<<"audio">>, Port, <<"RTP/AVP">>, Fmts}} when Port =/= 0 ->
             case [F || F <- Fmts, lists:member(F, ?LAWS)] of
                 [] ->
                     {rejected(M), undefined};
@@ -317,7 +380,8 @@ receiver(Label, Laws, Senders, CallRef, Sink0, Ip, Opts, M) ->
         ip => Ip,
         label => label_or(Label),
         sink => Sink,
-        max_queue => maps:get(max_queue, Opts, 500)
+        max_queue => maps:get(max_queue, Opts, 500),
+        remote => maps:get(remote, Opts)
     },
     case chappe_sip_siprec_rtp:start(Args) of
         {ok, Pid} ->
@@ -354,8 +418,8 @@ label(Lines) ->
 
 m_line(<<"m=", Rest/binary>>) ->
     case chappe_sip_sdp:words(Rest) of
-        [Kind, Port, _Proto | Fmts] ->
-            {Kind, chappe_sip_lib:to_int(Port, 0), Fmts};
+        [Kind, Port, Proto | Fmts] ->
+            {Kind, chappe_sip_lib:to_int(Port, 0), Proto, Fmts};
         _ ->
             undefined
     end.

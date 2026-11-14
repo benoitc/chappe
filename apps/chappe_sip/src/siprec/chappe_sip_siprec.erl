@@ -76,6 +76,17 @@
 %%   legacy_content_type => boolean() (default false): label the metadata
 %%                     application/rs-metadata, RFC 7866's name, for a
 %%                     recorder that predates RFC 9806
+%%   allow_downgrade => boolean() (default false): record a secure call to a
+%%                     recording server that is not as secure (below)
+%%
+%% RFC 7866 12: the RS must be at least as secure as the call. A call with
+%% a leg over TLS (a sips: or transport=tls or wss Contact) is recorded
+%% only to a sips: or transport=tls SrsUri (or proxy), else start/3 is
+%% {error, {insecure_srs, tls}}; a call with an SRTP leg (RTP/SAVP,
+%% RTP/SAVPF) has its taps offered to the SRS as RTP/SAVP, keyed by
+%% rtpengine apart from the call's keys (12.2), so a recording server
+%% without SRTP refuses them and the recording stops. allow_downgrade =>
+%% true lifts both, for an SRS on a network the app trusts.
 %% SrsUri is the SRS's URI, or `default' for the siprec_srs config.
 %% start/3 returns once the process runs, before the SRS answers:
 %% {error, badarg} for a bad argument, {error, not_anchored} for a call
@@ -233,9 +244,14 @@ init(#{call_ref := CallRef, owner := Owner} = Args) ->
         true ->
             {stop, too_many};
         false ->
-            ok = chappe_sip_call:join(CallRef, siprec, self()),
-            {ok, new_state(Args, erlang:monitor(process, Owner)),
-                {continue, invite}}
+            case chappe_sip_siprec_body:security(Args) of
+                {ok, Srtp} ->
+                    ok = chappe_sip_call:join(CallRef, siprec, self()),
+                    St = new_state(Args, erlang:monitor(process, Owner)),
+                    {ok, St#{srtp => Srtp}, {continue, invite}};
+                {error, Why} ->
+                    {stop, Why}
+            end
     end.
 
 new_state(

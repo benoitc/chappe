@@ -64,12 +64,12 @@ tap(#{party := room}, #{source := {room, Room}, call_ref := Ref}) ->
         {error, _} = E ->
             E
     end;
-tap(#{party := Leg}, #{session := S, opts := Opts}) ->
+tap(#{party := Leg}, #{session := S, opts := Opts} = St) ->
     %% the call's media session holds the tap for this process, and
     %% removes it if the recording dies without closing it
     Sub = maps:merge(
         #{party => party(Leg), holder => self()},
-        maps:with([codec, ptime], Opts)
+        maps:merge(maps:with([codec, ptime], Opts), srtp(St))
     ),
     case chappe_sip_media:subscribe(S, Sub) of
         {ok, #{sdp := Sdp, to_tag := ToTag}} ->
@@ -82,6 +82,12 @@ tap(#{party := Leg}, #{session := S, opts := Opts}) ->
         {error, _} = E ->
             E
     end.
+
+%% RFC 7866 12: the RS at least as secure as the call. A call with an SRTP
+%% leg is tapped as SRTP whatever the tapped party sends, with keys of the
+%% tap's own (rtpengine re-encrypts, 12.2: a different key)
+srtp(#{srtp := true}) -> #{transport_protocol => <<"RTP/SAVP">>};
+srtp(_St) -> #{}.
 
 party(a) -> caller;
 party(b) -> callee.

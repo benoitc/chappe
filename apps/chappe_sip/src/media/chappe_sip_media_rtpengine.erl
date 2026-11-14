@@ -246,7 +246,10 @@ maybe_put(Key, Value, Map) -> Map#{Key => Value}.
 %% PCMU so an STT receiver needs no codec logic. A caller-supplied `codec' wins
 %% (`codec => #{}' disables the default transcode).
 sub_params(Opts) ->
-    Keep = maps:with([party, from_tags, flags, codec, ptime, holder], Opts),
+    Keep = maps:with(
+        [party, from_tags, flags, codec, ptime, holder, transport_protocol],
+        Opts
+    ),
     maps:merge(#{codec => #{transcode => [<<"PCMU">>]}}, Keep).
 
 party_params(Opts) ->

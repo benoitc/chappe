@@ -30,6 +30,8 @@
 -export([room_recorded/1, room_not_up/1, server_sink_bound/1,
          server_metadata_update/1, room_ends_recording/1, recording_over_tls/1,
          demo_store_writes_wav/1]).
+-export([server_latches_to_client/1, server_refuses_srtp/1,
+         srtp_call_tapped_as_srtp/1, tls_call_needs_tls_srs/1]).
 
 all() ->
     [invite_is_a_recording_session, chappe_as_recording_server,
@@ -42,7 +44,9 @@ all() ->
      server_not_a_recording_session, server_sink_and_stream_crash,
      server_refuses_bad_body, server_answers_on_the_wire,
      server_sink_bound, server_metadata_update, room_recorded, room_not_up,
-     room_ends_recording, recording_over_tls, demo_store_writes_wav].
+     room_ends_recording, recording_over_tls, demo_store_writes_wav,
+     server_latches_to_client, server_refuses_srtp, srtp_call_tapped_as_srtp,
+     tls_call_needs_tls_srs].
 
 -define(UA, chappe_sip_test_ua).
 -define(M, chappe_sip_siprec_meta).
@@ -770,7 +774,147 @@ server_answers_on_the_wire(_Config) ->
     ?assertMatch(<<"m=audio 0 ", _/binary>>, hd(M2)),
     #{streams := [#{label := <<"1">>}]} = got(srs_served).
 
+%% ---- the security of the recording session (RFC 7866 12) ----
+
+%% A receiver takes RTP from the recording client only: the address its
+%% SDP gave, latched to the first source there; another source, or a
+%% stream whose client is elsewhere, is dropped.
+server_latches_to_client(_Config) ->
+    #{ep := EP} = call(),
+    {ok, Src} = gen_udp:open(0, [binary, {ip, {127, 0, 0, 1}}]),
+    {ok, Other} = gen_udp:open(0, [binary, {ip, {127, 0, 0, 1}}]),
+    SP = integer_to_binary(?UA:lport(Src)),
+    Sdp = <<"v=0\r\no=src 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\n"
+            "m=audio ", SP/binary, " RTP/AVP 0\r\na=sendonly\r\na=label:1\r\n"
+            "m=audio 30002 RTP/AVP 0\r\nc=IN IP4 192.0.2.10\r\na=sendonly\r\na=label:2\r\n">>,
+    R = wire_rs(EP, <<"sip:sink@127.0.0.1">>, Sdp),
+    ?assertEqual(200, ?UA:status(R)),
+    #{streams := [#{pid := S1, port := P1}, #{pid := S2, port := P2}]} = got(srs_served),
+    Frame = rtp(0, binary:copy(<<16#FF>>, 160)),
+    ok = gen_udp:send(Src, {127, 0, 0, 1}, P1, Frame),
+    receive {chappe_sip_siprec_rtp, S1, {audio, _}} -> ok after 2000 -> ct:fail(no_audio) end,
+    ok = gen_udp:send(Other, {127, 0, 0, 1}, P1, Frame),
+    ok = gen_udp:send(Src, {127, 0, 0, 1}, P2, Frame),
+    receive {chappe_sip_siprec_rtp, S, {audio, _}} when S =:= S1; S =:= S2 ->
+        ct:fail({spoofed, S})
+    after 500 -> ok
+    end,
+    ok = gen_udp:send(Src, {127, 0, 0, 1}, P1, Frame),
+    receive {chappe_sip_siprec_rtp, S1, {audio, _}} -> ok after 2000 -> ct:fail(no_audio) end,
+    gen_udp:close(Src),
+    gen_udp:close(Other).
+
+%% The direct receivers hold no SRTP keys: an SRTP stream is refused with
+%% port 0 and its profile kept (RFC 3264 6), and an offer left with no
+%% stream is refused 488 with Warning 302 (RFC 3261 20.43), never
+%% answered as plain RTP.
+server_refuses_srtp(_Config) ->
+    #{ep := EP} = call(),
+    Crypto = <<"a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:WVNfX19zZW1jdGwgKCkgewkyMjA7fQp9CnVubGVz\r\n">>,
+    Only = <<"v=0\r\no=src 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\n"
+             "m=audio 30000 RTP/SAVP 0\r\n", Crypto/binary, "a=sendonly\r\na=label:1\r\n">>,
+    R1 = wire_rs(EP, <<"sip:sink@127.0.0.1">>, Only),
+    ?assertEqual(488, ?UA:status(R1)),
+    ?assertMatch(<<"302 ", _/binary>>, ?UA:hdr(R1, <<"warning">>)),
+    ?assertEqual({error, srtp}, got(srs_served)),
+    Mixed = <<Only/binary, "m=audio 30002 RTP/AVP 0\r\na=sendonly\r\na=label:2\r\n">>,
+    R2 = wire_rs(EP, <<"sip:sink@127.0.0.1">>, Mixed),
+    ?assertEqual(200, ?UA:status(R2)),
+    {_, [M1, M2]} = chappe_sip_sdp:sections(?UA:body(R2)),
+    ?assertMatch(<<"m=audio 0 RTP/SAVP", _/binary>>, hd(M1)),
+    ?assertMatch(<<"m=audio ", _/binary>>, hd(M2)),
+    ?assertNotMatch(<<"m=audio 0 ", _/binary>>, hd(M2)),
+    #{streams := [#{label := <<"2">>}]} = got(srs_served).
+
+%% RFC 7866 12, 12.2: a call with an SRTP leg is recorded as SRTP: every
+%% tap, the plain party's too, is asked of rtpengine as RTP/SAVP (with its
+%% own keys); allow_downgrade => true records it as the parties send.
+%% req: R7866-12-1
+srtp_call_tapped_as_srtp(_Config) ->
+    #{b2b := B2b} = call(#{media => anchor, savp => true}),
+    _ = drain(),
+    SP = ?UA:pick(),
+    srs(SP, fun(_Sock, _D, _Src) -> ok end),
+    {ok, Rec} = chappe_sip_siprec:start(B2b, srs_uri(SP), #{}),
+    {started, _} = event(Rec),
+    Subs = [C || {rtpe_cmd, #{<<"command">> := <<"subscribe request">>} = C} <- drain()],
+    ?assertEqual(2, length(Subs)),
+    ?assert(lists:all(fun(C) -> maps:get(<<"transport-protocol">>, C, none) =:= <<"RTP/SAVP">> end,
+                      Subs)),
+    ok = chappe_sip_siprec:stop(Rec),
+    {stopped, _} = event(Rec),
+    SP2 = ?UA:pick(),
+    srs(SP2, fun(_Sock, _D, _Src) -> ok end),
+    {ok, Rec2} = chappe_sip_siprec:start(B2b, srs_uri(SP2), #{allow_downgrade => true}),
+    {started, _} = event(Rec2),
+    Subs2 = [C || {rtpe_cmd, #{<<"command">> := <<"subscribe request">>} = C} <- drain()],
+    ?assertEqual(2, length(Subs2)),
+    ?assertNot(lists:any(fun(C) -> maps:is_key(<<"transport-protocol">>, C) end, Subs2)),
+    ok = chappe_sip_siprec:stop(Rec2).
+
+%% RFC 7866 12: a call signalled over TLS (its leg A's dialog has our sips
+%% Contact) is not recorded to a plain sip SRS; to a sips one it is, and
+%% allow_downgrade => true lets the app choose the plain one.
+%% req: R7866-12-1
+tls_call_needs_tls_srs(Config) ->
+    chappe_sip_tls_SUITE:with_ca(Config, "siprecsec", fun(Dir) ->
+        TP = chappe_sip_tls_SUITE:start_tls(Dir, #{}),
+        EP = chappe_sip_tls_SUITE:engine_port(),
+        ok = chappe_sip:handle(<<"INVITE">>, fun handler/2, #{option_tags => [<<"siprec">>]}),
+        persistent_term:put(siprec_test_ep, EP),
+        #{b2b := B2b} = call(#{media => anchor, ruri => <<"sips:app@127.0.0.1">>}),
+        Plain = <<"sip:sink@127.0.0.1:", (integer_to_binary(EP))/binary>>,
+        ?assertEqual({error, {insecure_srs, tls}}, chappe_sip_siprec:start(B2b, Plain, #{})),
+        {ok, Rec} = chappe_sip_siprec:start(
+                      B2b, <<"sips:sink@127.0.0.1:", (integer_to_binary(TP))/binary>>, #{}),
+        {started, _} = event(Rec),
+        ok = chappe_sip_siprec:stop(Rec),
+        {stopped, _} = event(Rec),
+        {ok, Rec2} = chappe_sip_siprec:start(B2b, Plain, #{allow_downgrade => true}),
+        {started, _} = event(Rec2),
+        ok = chappe_sip_siprec:stop(Rec2)
+    end).
+
 %% ---- helpers ----
+
+%% the caller's offer as SRTP
+savp(Inv) ->
+    Crypto = <<"a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:WVNfX19zZW1jdGwgKCkgewkyMjA7fQp9CnVubGVz\r\n">>,
+    [Head, Sdp0] = binary:split(Inv, <<"\r\n\r\n">>),
+    Sdp = <<(binary:replace(Sdp0, <<" RTP/AVP ">>, <<" RTP/SAVP ">>))/binary, Crypto/binary>>,
+    Len = integer_to_binary(byte_size(Sdp)),
+    Head1 = re:replace(Head, <<"Content-Length: *[0-9]+">>, <<"Content-Length: ", Len/binary>>,
+                       [{return, binary}, caseless]),
+    <<Head1/binary, "\r\n\r\n", Sdp/binary>>.
+
+%% a recording client on the wire: an RS INVITE of Sdp to Ruri, its final
+%% response (ACKed and left up when a 2xx)
+wire_rs(EP, Ruri, Sdp) ->
+    {CT, Body} = chappe_sip_multipart:build([
+        #{content_type => <<"application/sdp">>, body => Sdp},
+        #{content_type => ?M:content_type(), disposition => ?M:disposition(),
+          body => ?M:build(#{})}
+    ]),
+    ?UA:peer(0, fun(Sock) ->
+        P = integer_to_binary(?UA:lport(Sock)),
+        Inv0 = ?UA:invite(Sock, EP, #{call_id => ?UA:callid(), from_tag => ?UA:tag(),
+                                      ruri => Ruri, body => Body,
+                                      headers => [{<<"Require">>, <<"siprec">>}]}),
+        Inv = binary:replace(
+                binary:replace(Inv0, <<"Content-Type: application/sdp">>,
+                               <<"Content-Type: ", CT/binary>>),
+                <<"Contact: <sip:caller@127.0.0.1:", P/binary, ">">>,
+                <<"Contact: <sip:caller@127.0.0.1:", P/binary, ">;+sip.src">>),
+        ?UA:send(Sock, EP, Inv),
+        R = ?UA:recv_any(Sock, 6000),
+        case ?UA:status(R) of
+            200 -> ?UA:ack(?UA:dialog_from_2xx(Sock, Inv, R), EP);
+            _ -> ok
+        end,
+        b2b_relay_tell({wire_rs, R}),
+        timer:sleep(infinity)
+    end),
+    got(wire_rs).
 
 srs_uri(SP) -> <<"sip:srs@127.0.0.1:", (integer_to_binary(SP))/binary>>.
 
@@ -800,7 +944,12 @@ call(Opts) ->
         callee_loop(Sock, D)
     end),
     Caller = ?UA:peer(0, fun(Sock) ->
-        Inv = ?UA:invite(Sock, EP, #{call_id => ?UA:callid(), from_tag => <<"atag">>}),
+        Inv0 = ?UA:invite(Sock, EP, #{call_id => ?UA:callid(), from_tag => <<"atag">>,
+                                      ruri => maps:get(ruri, Opts, <<"sip:app@127.0.0.1">>)}),
+        Inv = case Opts of
+                  #{savp := true} -> savp(Inv0);
+                  _ -> Inv0
+              end,
         ?UA:send(Sock, EP, Inv),
         R = ?UA:recv_status(Sock, 200),
         D = ?UA:dialog_from_2xx(Sock, Inv, R),
@@ -849,7 +998,8 @@ handler(Req, Res) ->
                                      max_queue => persistent_term:get(siprec_test_sink_queue, 500)});
         _ ->
             Callee = <<"sip:callee@127.0.0.1:", (integer_to_binary(CP))/binary>>,
-            {ok, Legs} = chappe_sip:create_b2bua(Req, Res, Callee, maps:without([test, cp], Opts)),
+            {ok, Legs} = chappe_sip:create_b2bua(Req, Res, Callee,
+                                                 maps:without([test, cp, ruri, savp], Opts)),
             Test ! {legs, Legs},
             chappe_sip_b2b:relay(Legs)
     end.
