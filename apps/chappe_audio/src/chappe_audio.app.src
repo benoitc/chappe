@@ -1,0 +1,20 @@
+%% Copyright 2026 Benoit Chesneau
+%% SPDX-License-Identifier: Apache-2.0
+
+{application, chappe_audio, [
+    {description, "Audio intake for FreeSWITCH audio forks"},
+    {vsn, "0.1.0"},
+    {registered, [
+        chappe_audio_sup,
+        chappe_audio_registry,
+        chappe_audio_listener_sup,
+        chappe_audio_conn_sup,
+        chappe_audio_stream_sup,
+        chappe_audio_listener
+    ]},
+    {mod, {chappe_audio_app, []}},
+    {applications, [kernel, stdlib, crypto, ws]},
+    {env, []},
+    {licenses, ["Apache-2.0"]},
+    {links, []}
+]}.

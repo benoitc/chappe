@@ -14,7 +14,8 @@
 # and FS2_ESL_PORT (18022) move the stack out of the way of another one.
 # ESL_SOCKET_PORT (18084) is the outbound listener the socket extension
 # connects back to; ESL_MEDIA_DIR (_build/esl-media) is shared with both
-# nodes as /media for prompts and recordings.
+# nodes as /media for prompts and recordings. chappe_audio_live_SUITE then
+# forks fs1's audio into a chappe_audio listener on AUDIO_PORT (18085).
 #
 # Usage: apps/chappe_esl/test/e2e.sh   (or: make interop-esl)
 set -u
@@ -23,6 +24,7 @@ cd "$(dirname "$0")/../../.."
 FS1_ESL_PORT=${FS1_ESL_PORT:-18021}
 FS2_ESL_PORT=${FS2_ESL_PORT:-18022}
 ESL_SOCKET_PORT=${ESL_SOCKET_PORT:-18084}
+AUDIO_PORT=${AUDIO_PORT:-18085}
 # created here, before docker would create it owned by root
 ESL_MEDIA_DIR=${ESL_MEDIA_DIR:-$(pwd)/_build/esl-media}
 mkdir -p "$ESL_MEDIA_DIR"
@@ -41,6 +43,11 @@ FS_HOST=127.0.0.1 FS_PORT=$FS1_ESL_PORT FS2_PORT=$FS2_ESL_PORT \
     FS_PASSWORD=ClueCon FS_REQUIRED=1 FS_COMPOSE="$COMPOSE" \
     rebar3 ct --dir apps/chappe_esl/test --suite chappe_esl_live_SUITE
 RC=$?
+
+FS_HOST=127.0.0.1 FS_PORT=$FS1_ESL_PORT FS_PASSWORD=ClueCon \
+    AUDIO_PORT=$AUDIO_PORT \
+    rebar3 ct --dir apps/chappe_audio/test --suite chappe_audio_live_SUITE
+[ $? -eq 0 ] || RC=1
 
 $COMPOSE down >/dev/null 2>&1
 exit $RC
