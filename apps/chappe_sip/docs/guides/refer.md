@@ -205,9 +205,18 @@ The notify process gets `{chappe_sip_b2b, Ref, Event}`:
 
 ### Decide who may transfer where
 
-Without a policy fun, a target must be a sip or sips URI on one of
-`domains` (default this node's host): another host or a `tel:` number gets
-403 before anything is called. Give your own policy to decide:
+Without a policy fun, a target must be a sip or sips URI with a user, on
+one of `domains`, and without `maddr`; anything else gets 403 before
+anything is called:
+
+- A domain given as `<<"pbx.example.com">>` takes any port;
+  `<<"pbx.example.com:5080">>` takes only that one.
+- Without `domains`, the target must be this node at one of its own listen
+  addresses, port included, so your INVITE handler routes it.
+- `maddr` would send the INVITE elsewhere than the host you allowed.
+- The target's 3xx is not followed: the transfer fails with that status.
+
+Give your own policy to decide:
 
 ```erlang
 Policy = fun(#{target := Target, referrer := Who}) ->

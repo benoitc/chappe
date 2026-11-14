@@ -479,9 +479,13 @@ reject(_Info, _Code) ->
     {error, badarg}.
 
 %% The app's policy, else the default: a target on one of the call's
-%% domains (transfer_opts domains, default this node's host). A tel: URI
-%% or another host is off-net: refused, so a REFER cannot place a call the
-%% referrer could not make itself (toll fraud).
+%% domains (transfer_opts domains, default this node's own listen
+%% addresses). A tel: URI or another host is off-net: refused, so a REFER
+%% cannot place a call the referrer could not make itself (toll fraud).
+%% The target must name a user (a URI with none names a server), carry
+%% no maddr (which sofia would send the INVITE to instead of the host),
+%% and be on a domain's port: a domain given as Host takes any port,
+%% Host:Port and the node's own addresses only theirs.
 policy(Info, #{policy := F}) ->
     case F(Info) of
         true ->
@@ -495,31 +499,61 @@ policy(#{kind := attended, local := true}, _TOpts) ->
     %% two parties of this node already in calls: nothing new is called
     true;
 policy(#{target := Target}, TOpts) ->
-    on_net(Target, maps:get(domains, TOpts, own_hosts())).
+    Domains =
+        case maps:find(domains, TOpts) of
+            {ok, Ds} -> [domain(<<"sip:", D/binary>>, any) || D <- Ds];
+            error -> [domain(C, default) || C <- own_contacts()]
+        end,
+    on_net(Target, [D || {_, _} = D <- Domains]).
 
 on_net(Target, Domains) ->
     case chappe_sip_uri:parse(Target) of
-        {ok, #{scheme := S, host := Host}} when S =:= sip; S =:= sips ->
-            lists:member(
-                chappe_sip_lib:lower(Host), [
-                    chappe_sip_lib:lower(D)
-                 || D <- Domains
-                ]
-            );
+        {ok, #{scheme := S, host := Host, user := User, params := Ps} = U} when
+            (S =:= sip orelse S =:= sips) andalso User =/= <<>>
+        ->
+            Port = port(S, maps:get(port, U, undefined)),
+            not has_maddr(Ps) andalso
+                lists:any(
+                    fun({H, P}) ->
+                        H =:= chappe_sip_lib:lower(Host) andalso
+                            (P =:= any orelse P =:= Port)
+                    end,
+                    Domains
+                );
         _ ->
             false
     end.
 
-own_hosts() ->
-    case chappe_sip_engine:contact() of
-        undefined ->
-            [];
-        C ->
-            case chappe_sip_uri:parse(C) of
-                {ok, #{host := H}} -> [H];
-                _ -> []
-            end
+has_maddr(Params) ->
+    lists:member(
+        <<"maddr">>, [chappe_sip_lib:lower(K) || K <- maps:keys(Params)]
+    ).
+
+%% {Host, Port | any} of an app's domain (no port: any) or of a listen
+%% address (no port: the scheme's default)
+domain(Uri, NoPort) ->
+    case chappe_sip_uri:parse(Uri) of
+        {ok, #{scheme := S, host := H} = U} ->
+            {chappe_sip_lib:lower(H),
+                case {maps:find(port, U), NoPort} of
+                    {{ok, P}, _} -> P;
+                    {error, any} -> any;
+                    {error, default} -> port(S, undefined)
+                end};
+        _ ->
+            error
     end.
+
+own_contacts() ->
+    case {chappe_sip_binds:contacts(), chappe_sip_engine:contact()} of
+        {[], undefined} -> [];
+        {[], C} -> [C];
+        {Cs, _} -> Cs
+    end.
+
+port(sips, undefined) -> 5061;
+port(_S, undefined) -> 5060;
+port(_S, P) -> P.
 
 %% ---- carrying it out ----
 

@@ -175,8 +175,10 @@
 %%                            max_transfers => N}: policy decides who may
 %%                            transfer where (it runs in the transfer's
 %%                            process, on the call's node); without one a
-%%                            target must be a sip or sips URI on one of
-%%                            domains (default this node's host). At most
+%%                            target must be a sip or sips URI with a user
+%%                            and no maddr, on one of domains (Host: any
+%%                            port, Host:Port: that one; default this
+%%                            node's listen addresses). At most
 %%                            max_transfers (5) per call
 %%   relay_info            => boolean (default false): an INFO from one
 %%                            leg (DTMF, RFC 6086) goes to the other, and

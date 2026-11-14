@@ -18,6 +18,8 @@
 -export([notify_accept/1, notify_reject/1, notify_retarget/1,
          notify_from_another_node/1]).
 -export([attended_join_fails_keeps_calls/1]).
+-export([maddr_refused/1, own_host_other_port_refused/1, no_user_refused/1,
+         domain_port_refused/1, redirect_not_followed/1]).
 -export([attended_local_join/1, attended_remote_replaces/1,
          attended_other_party_refused/1]).
 -export([blind_from_a/1, blind_keeps_identity/1, blind_keeps_call_ref/1,
@@ -36,7 +38,9 @@ all() ->
      transferor_bye_then_failure_ends_call,
      blind_target_fails, attended_local_join, attended_join_fails_keeps_calls, attended_remote_replaces,
      attended_other_party_refused, notify_accept, notify_reject,
-     notify_retarget, notify_from_another_node, offnet_refused, policy_rejects,
+     notify_retarget, notify_from_another_node, offnet_refused,
+     maddr_refused, own_host_other_port_refused, no_user_refused,
+     domain_port_refused, redirect_not_followed, policy_rejects,
      policy_sees_untrusted_referred_by, direct_media_refused, transfer_limit,
      bye_method_refused, one_transfer_at_a_time, transfer_crash_call_goes_on,
      call_end_stops_transfer, multiple_refer_unsupported].
@@ -483,6 +487,70 @@ offnet_refused(_Config) ->
     ?assertEqual(403, ?UA:status(got(refer_answer))),
     no_message(notify, 1000).
 
+%% A target on one of the call's domains whose maddr sends the INVITE
+%% elsewhere is off-net: refused 403.
+%% req: R5589-06
+maddr_refused(_Config) ->
+    {EP, CP} = setup(#{}),
+    NP = ?UA:pick(),
+    callee_refers(CP, EP, <<"<sip:carol@127.0.0.1:", (integer_to_binary(NP))/binary,
+                            ";maddr=203.0.113.9>">>, []),
+    caller(EP, fun(_Sock, _D) -> ok end),
+    _ = got(legs),
+    ?assertEqual(403, ?UA:status(got(refer_answer))),
+    no_message(notify, 500).
+
+%% Without domains, a target must be this node at its own address: the
+%% same host on another port is another service, refused 403.
+%% req: R5589-06
+own_host_other_port_refused(_Config) ->
+    {EP, CP} = setup(#{transfer_opts => #{}}),
+    NP = ?UA:pick(),
+    callee_refers(CP, EP, refer_to(NP), []),
+    caller(EP, fun(_Sock, _D) -> ok end),
+    _ = got(legs),
+    ?assertEqual(403, ?UA:status(got(refer_answer))),
+    no_message(notify, 500).
+
+%% A target with no user names a server, not a party: refused 403.
+%% req: R5589-06
+no_user_refused(_Config) ->
+    {EP, CP} = setup(#{}),
+    NP = ?UA:pick(),
+    callee_refers(CP, EP, <<"<sip:127.0.0.1:", (integer_to_binary(NP))/binary,
+                            ">">>, []),
+    caller(EP, fun(_Sock, _D) -> ok end),
+    _ = got(legs),
+    ?assertEqual(403, ?UA:status(got(refer_answer))).
+
+%% A domain that names a port takes only that port.
+%% req: R5589-06
+domain_port_refused(_Config) ->
+    {EP, CP} = setup(#{transfer_opts => #{domains => [<<"127.0.0.1:9">>]}}),
+    NP = ?UA:pick(),
+    callee_refers(CP, EP, refer_to(NP), []),
+    caller(EP, fun(_Sock, _D) -> ok end),
+    _ = got(legs),
+    ?assertEqual(403, ?UA:status(got(refer_answer))).
+
+%% The target redirects (302): the transfer leg does not follow it, so a
+%% REFER cannot reach through a redirect a target the policy never saw.
+%% Bob's final NOTIFY carries the 302, and the call stays as it was.
+%% req: R5589-06
+redirect_not_followed(_Config) ->
+    {EP, CP} = setup(#{}),
+    NP = ?UA:pick(),
+    callee_refers(CP, EP, refer_to(NP), []),
+    target(NP, redirect),
+    caller(EP, fun(_Sock, _D) -> ok end),
+    #{b2b := B2b} = got(legs),
+    ?assertEqual(200, ?UA:status(got(refer_answer))),
+    _ = got(target_invite),
+    _ = got(notify),
+    ?assertMatch(<<"SIP/2.0 302 ", _/binary>>, ?UA:body(got(notify))),
+    no_message(target_invite, 1000),
+    ?assertMatch(#{media := anchor}, chappe_sip_b2b:info(B2b)).
+
 %% A policy fun decides, with the code it gives.
 policy_rejects(_Config) ->
     Policy = fun(#{target := _}) -> {reject, 603} end,
@@ -611,9 +679,13 @@ multiple_refer_unsupported(_Config) ->
 
 %% ---- helpers ----
 
+%% the call's domains take loopback on any port: the targets of these
+%% cases are peers on ports of their own
 setup(Opts) ->
     setup_opts(maps:merge(#{media => anchor, notify => self(),
-                            transfer => auto}, Opts)).
+                            transfer => auto,
+                            transfer_opts => #{domains => [<<"127.0.0.1">>]}},
+                          Opts)).
 
 %% the app bridges every INVITE to the callee port and relays
 setup_opts(Opts) ->
@@ -851,6 +923,16 @@ related_record(CallRef, N) ->
     after 5000 -> false
     end.
 
+%% a redirected target: tell the test of any INVITE that follows
+serve_invites(Sock) ->
+    receive
+        {udp, Sock, _, _, <<"INVITE ", _/binary>> = Inv} ->
+            tell({target_invite, Inv}),
+            serve_invites(Sock);
+        {udp, Sock, _, _, _} ->
+            serve_invites(Sock)
+    end.
+
 %% The transfer target (Carol): answer, busy or ring for ever.
 target(Port, How) ->
     ?UA:peer(Port, fun(Sock) ->
@@ -872,6 +954,13 @@ target(Port, How) ->
                 ?UA:send(Sock, Src, ?UA:resp(Inv, 180, <<"Ringing">>, Tag,
                                              [contact(Sock)], <<>>)),
                 serve(Sock, Tag);
+            redirect ->
+                Moved = {<<"Contact">>, <<"<sip:dave@127.0.0.1:",
+                                          (integer_to_binary(Port))/binary,
+                                          ">">>},
+                ?UA:send(Sock, Src, ?UA:resp(Inv, 302, <<"Moved Temporarily">>,
+                                             Tag, [Moved], <<>>)),
+                serve_invites(Sock);
             ring_then_busy ->
                 ?UA:send(Sock, Src, ?UA:resp(Inv, 180, <<"Ringing">>, Tag,
                                              [contact(Sock)], <<>>)),
