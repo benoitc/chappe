@@ -19,7 +19,7 @@
 %% rtpengine writing into a folder shared with chappe).
 %%
 %% Reading. find/1 asks the store of every node through pg (the
-%% chappe_audio_store group of the `chappe' scope), since the file backend
+%% chappe_audio_store group of its `chappe_audio' scope), since the file backend
 %% keeps a recording on the node that wrote it; get/1, read/2 and
 %% delete/1 go to the node that holds the recording.
 -module(chappe_audio_store).

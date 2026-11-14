@@ -7,7 +7,7 @@
     {vsn, "0.1.0"},
     {registered, [
         chappe_audio_sup,
-        chappe_audio_pg,
+        chappe_audio,
         chappe_audio_registry,
         chappe_audio_store_srv,
         chappe_audio_writer_sup,

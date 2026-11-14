@@ -5,7 +5,7 @@
 %%
 %% It starts waiting, registered under its id on this node for the
 %% handshake to find (chappe_audio_registry), and in the pg group
-%% {chappe_audio, Ref} of the `chappe' scope when it has a ref. A
+%% {chappe_audio, Ref} of the `chappe_audio' scope when it has a ref. A
 %% handshake that passes the path and token checks claims it (one
 %% connection per stream), then hands it the socket; the stream starts
 %% the ws_session on it and links to it, so either going takes the

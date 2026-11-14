@@ -291,7 +291,7 @@ find_across_nodes(Config) ->
     Ref = <<"two-nodes">>,
     {ok, Here} = record(Ref, <<1, 0>>),
     {ok, There} = peer:call(Peer, ?MODULE, record, [Ref, <<2, 0>>]),
-    wait(fun() -> length(pg:get_members(chappe, chappe_audio_store)) =:= 2 end),
+    wait(fun() -> length(pg:get_members(chappe_audio, chappe_audio_store)) =:= 2 end),
     Found = chappe_audio_store:find(Ref),
     ?assertEqual(lists:sort([Here, There]), lists:sort([I || #{id := I} <- Found])),
     ?assertEqual(lists:sort([node(), Node]), lists:sort([N || #{node := N} <- Found])),
@@ -299,7 +299,7 @@ find_across_nodes(Config) ->
     {ok, #{node := Node}} = chappe_audio_store:get(There),
     {ok, <<2, 0>>} = chappe_audio_store:read(There, {44, 2}),
     peer:stop(Peer),
-    wait(fun() -> length(pg:get_members(chappe, chappe_audio_store)) =:= 1 end),
+    wait(fun() -> length(pg:get_members(chappe_audio, chappe_audio_store)) =:= 1 end),
     ?assertMatch([#{id := Here}], chappe_audio_store:find(Ref)).
 
 %% ---- helpers ----

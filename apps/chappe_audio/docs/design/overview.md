@@ -8,8 +8,7 @@ the store, or review a change to them.
 
 ```
 chappe_audio_sup (rest_for_one)
-|-- chappe_audio_pg                its groups in the `chappe' pg scope, run by
-|                                  whichever app starts first, restarted here
+|-- pg scope chappe_audio          its own, for streams by ref and the stores
 |-- chappe_audio_registry          streams waiting for their fork, by id (ETS)
 |-- chappe_audio_store_srv         the node's store: config, pg group, sweep
 |-- chappe_audio_writer_sup        one chappe_audio_writer per recording
