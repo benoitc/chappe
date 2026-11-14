@@ -13,7 +13,7 @@
 -export([b_leg_carries_ref/1, app_ref/1, bad_app_ref/1, uac_ref/1,
          lookup_while_up/1, owner_death_leaves/1, relay_crash_leaves/1,
          async_relay_moves/1, peer_node_lookup/1, hep_correlates/1,
-         anchored_media_found/1]).
+         anchored_media_found/1, scope_owned_by_app/1]).
 
 -import(chappe_sip_test_ua, [peer/2, expect/1, recv_req/2, recv_status/2,
                              send/3, lport/1, resp/6, sdp/1, tag/0, callid/0,
@@ -22,7 +22,8 @@
 all() ->
     [b_leg_carries_ref, app_ref, bad_app_ref, uac_ref, lookup_while_up,
      owner_death_leaves, relay_crash_leaves, async_relay_moves,
-     peer_node_lookup, hep_correlates, anchored_media_found].
+     peer_node_lookup, hep_correlates, anchored_media_found,
+     scope_owned_by_app].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -233,6 +234,16 @@ async_relay_moves(_Config) ->
     ok = gone(Ref),
     Worker ! stop.
 
+%% The lookup scope is chappe_sip's own: a child of its supervisor, so it
+%% lives and stops with the app, and no other app's scope is shared.
+scope_owned_by_app(_Config) ->
+    chappe_sip = chappe_sip_call:scope(),
+    Pid = whereis(chappe_sip),
+    true = is_pid(Pid),
+    {chappe_sip_pg, Pid, worker, _} =
+        lists:keyfind(chappe_sip_pg, 1, supervisor:which_children(chappe_sip_sup)),
+    undefined = whereis(chappe).
+
 %% A peer node finds the call through pg, reads it with info/1 and ends it
 %% with hangup/2: handles work across nodes.
 peer_node_lookup(_Config) ->
@@ -241,7 +252,8 @@ peer_node_lookup(_Config) ->
     {ok, Peer, Node} = peer:start_link(#{name => peer:random_name(),
                                          args => Paths}),
     try
-        {ok, _} = erpc:call(Node, pg, start, [chappe]),
+        %% the peer runs no chappe_sip: it holds only the lookup scope
+        {ok, _} = erpc:call(Node, pg, start, [chappe_sip]),
         {EP, CP} = setup(),
         Test = self(),
         ok = chappe_sip:invite(fun(Req, Res) ->
@@ -442,7 +454,7 @@ gone(Ref, 0) ->
 gone(Ref, N) ->
     case
         {chappe_sip:calls(#{call_ref => Ref}),
-         pg:get_members(chappe, {chappe_sip_call, Ref})}
+         pg:get_members(chappe_sip, {chappe_sip_call, Ref})}
     of
         {{ok, #{b2b := [], dialogs := [], media := []}}, []} ->
             ok;

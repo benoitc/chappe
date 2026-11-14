@@ -1412,6 +1412,27 @@ static void op_reliable_1xx(engine_t *e, const op_t *op) {
     }
 }
 
+/* The listen address a send names, as the engine's own copy of its ident.
+ * nta keeps the TPTAG_IDENT pointer in the transaction (orq_tpn) and uses
+ * it again, after this op is freed, to send the ACK of a non-2xx final
+ * and a CANCEL: the op's buffer would dangle and the ACK find no
+ * transport (RFC 3261 17.1.1.3). The engine's idents live as long as the
+ * agent. NULL with *unknown = 0: none asked for, or a single address;
+ * NULL with *unknown = 1: no listen address has that ident. */
+static const char *op_ident(const engine_t *e, const op_t *op,
+                            int *unknown) {
+    *unknown = 0;
+    if (!op->ident[0] || !e->has_idents) return NULL;
+    if (strcmp(op->ident, e->ident) == 0) return e->ident;
+    for (int i = 0; i < e->nx; i++)
+        if (strcmp(op->ident, e->xident[i]) == 0) return e->xident[i];
+    if (strcmp(op->ident, e->tls_ident) == 0) return e->tls_ident;
+    for (int i = 0; i < e->ntlsx; i++)
+        if (strcmp(op->ident, e->tls_xident[i]) == 0) return e->tls_xident[i];
+    *unknown = 1;
+    return NULL;
+}
+
 static void op_request(engine_t *e, const op_t *op) {
     msg_t *m = op_msg(op);
     if (!m) {
@@ -1441,6 +1462,14 @@ static void op_request(engine_t *e, const op_t *op) {
         }
         ftp = f->tp;
     }
+    int unknown;
+    const char *ident = op_ident(e, op, &unknown);
+    if (unknown) {
+        msg_destroy(m);
+        enif_free(ctx);
+        send_op_failed(e, op->h, "unknown local address");
+        return;
+    }
     /* A proxy branch (one with our loop-detection branch) of an INVITE
      * is created outside UA mode: a UA client transaction ACKs and BYEs
      * a second 2xx with another To-tag itself, while a proxy forwards
@@ -1455,8 +1484,7 @@ static void op_request(engine_t *e, const op_t *op) {
     nta_outgoing_t *orq = nta_outgoing_mcreate(
         e->agent, outgoing_response_cb, (nta_outgoing_magic_t *)ctx,
         route, m, TAG_IF(op->branch[0], NTATAG_BRANCH_KEY(op->branch)),
-        TAG_IF(ftp, NTATAG_TPORT(ftp)),
-        TAG_IF(op->ident[0] && e->has_idents, TPTAG_IDENT(op->ident)),
+        TAG_IF(ftp, NTATAG_TPORT(ftp)), TAG_IF(ident, TPTAG_IDENT(ident)),
         TAG_END());
     if (proxy_inv &&
         nta_agent_set_params(e->agent, NTATAG_UA(1), TAG_END()) < 0)
@@ -1591,11 +1619,17 @@ static void op_cb(su_root_magic_t *magic, su_msg_r msg, su_msg_arg_t *arg) {
             send_op_failed(e, op->h, "unknown flow");
             break;
         }
+        int unknown;
+        const char *ident = op_ident(e, op, &unknown);
+        if (unknown) {
+            msg_destroy(m);
+            send_op_failed(e, op->h, "unknown local address");
+            break;
+        }
         nta_outgoing_t *orq = nta_outgoing_mcreate(
             e->agent, NULL, NULL, route, m,
             TAG_IF(f, NTATAG_TPORT(f ? f->tp : NULL)),
-            TAG_IF(op->ident[0] && e->has_idents, TPTAG_IDENT(op->ident)),
-            TAG_END());
+            TAG_IF(ident, TPTAG_IDENT(ident)), TAG_END());
         if (!orq) {
             msg_destroy(m);
             send_op_failed(e, op->h, "nta_outgoing_mcreate (send) failed");

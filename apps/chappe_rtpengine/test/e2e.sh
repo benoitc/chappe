@@ -52,5 +52,12 @@ RTPENGINE_HOST=127.0.0.1 \
     rebar3 ct --suite chappe_rtpengine_live_SUITE,chappe_rtpengine_e2e_SUITE,chappe_rtpengine_siprec_SUITE
 RC=$?
 
+# chappe_sip's SIPREC client and recording server on the same daemon,
+# from the umbrella (chappe_sip is not a dependency of this app)
+(cd ../.. && RTPENGINE_HOST=127.0.0.1 \
+    RTPENGINE_PORT=$NG_PORT \
+    RTPENGINE_MEDIA_IP="$MEDIA_IP" \
+    rebar3 ct --suite apps/chappe_sip/test/chappe_sip_siprec_live_SUITE) || RC=1
+
 $COMPOSE down >/dev/null 2>&1
 exit $RC

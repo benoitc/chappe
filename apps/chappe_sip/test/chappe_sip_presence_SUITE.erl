@@ -604,7 +604,10 @@ epa_one_at_a_time(Config) ->
     Seq1 = cseq(P1),
     recv_none(Sock, fun(B) -> is_publish(B) andalso cseq(B) =/= Seq1 end, 1500),
     send(Sock, EP, ok_pub(P1, <<"e1">>, 3600, [])),
-    {P2, _} = recv(Sock, {method, <<"PUBLISH">>}, 3000),
+    %% the next PUBLISH, not a retransmission of the first (Timer E runs
+    %% at T1 while it waits for the 200)
+    {P2, _} = recv(Sock, fun(B) -> is_publish(B) andalso cseq(B) =/= Seq1 end,
+                   3000),
     ?assertEqual([<<"e1">>], hdrs(<<"sip-if-match">>, P2)),
     ?assertEqual(doc(Uri, closed), body(P2)).
 

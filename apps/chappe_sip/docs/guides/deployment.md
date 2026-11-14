@@ -155,8 +155,28 @@ ok = chappe_sip:start(#{
 - An invalid `public`, `local_nets` or a `uri` that already has `maddr`
   fails the start with `{error, {contact, bad_public}}` or
   `{error, {contact, bad_local_nets}}`.
-- The Record-Route of the proxy names `public`, and so does the Contact a
-  B2BUA puts on what it sends the A leg.
+- A proxy between the two sides record-routes twice (RFC 5658), public for
+  the outside one and local for the inside one.
+- The Contact a B2BUA puts on what it sends the A leg names `public`.
+
+## Keep connections open through NAT
+
+A NAT or a firewall drops an idle TCP mapping after a few minutes. Ask the
+stack to send a CRLFCRLF ping (RFC 5626 4.4.1) on every TCP connection
+that has been idle for a while:
+
+```erlang
+ok = chappe_sip:start(#{contact => <<"sip:10.0.0.5:5060">>,
+                        tcp_keepalive_ms => 30000}).
+```
+
+- TCP only. sofia's TLS transport has no connection timer, and adding one
+  is not a small change: a ping has to go through `SSL_write`, and sofia's
+  `tls_write` asserts that a write that blocked is retried with the same
+  buffer, so a blocked ping would break the next message. On TLS, the
+  client keeps its flow alive (RFC 5626 makes the UA send keep-alives, at
+  the `registrar_flow_timer` interval).
+- UDP never gets it: RFC 5626 4.4.1 forbids the CRLF keep-alive there.
 
 ## Capture to Homer
 

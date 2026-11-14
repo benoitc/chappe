@@ -245,7 +245,8 @@ create_uac(Uri, Opts) ->
 %% Find a call by its call_ref (chappe_sip_req:call_ref/1, the call_ref of
 %% chappe_sip_b2b:info/1, X-Chappe-Call on its legs) on every node of the
 %% cluster: the B2BUA (a chappe_sip_b2b:b2b() for info/1, hangup/2 ...),
-%% the dialogs and the rtpengine sessions serving it. Each process is
+%% the dialogs, the rtpengine sessions and the SIPREC recordings
+%% (chappe_sip_siprec) serving it. Each process is
 %% listed while it serves the call; a node that does not answer in 5 s is
 %% left out. {error, badarg} for anything but #{call_ref := binary()}.
 -spec calls(#{call_ref := binary()}) ->

@@ -24,6 +24,9 @@
          sips_request_sips_contact/1, subscribe_notify_over_tls/1]).
 -export([uac_secure_contact/1, uac_dialog_sips_contact/1,
          sips_ruri_via_sip_proxy/1, sips_transport_udp_refused/1]).
+%% the CA, the TLS listener and the UDP port, for the TLS cases of other
+%% suites (chappe_sip_siprec_SUITE)
+-export([with_ca/3, start_tls/2, engine_port/0]).
 
 all() ->
     [tls_options, udp_still_works, tls_bad_verify, verify_none_needs_insecure,
@@ -238,9 +241,10 @@ sips_request_to_sip_target(Config) ->
     end).
 
 %% A request that came over TLS but goes on to a sip target is
-%% record-routed with a sip URI (RFC 3261 16.6 step 4), and the 2xx going
-%% back over TLS carries it rewritten to our sips URI (16.7 step 8).
-%% req: R3261-P-009 R3261-P-029
+%% record-routed twice (RFC 5658 5): our sips URI for the TLS side, then
+%% our sip URI on top for the sip side (RFC 3261 16.6 step 4). The 2xx
+%% goes back unchanged, and each side's first hop is its own URI.
+%% req: R3261-P-009 R3261-P-029 R5658-01
 record_route_tls_to_sip(Config) ->
     with_ca(Config, "rr2", fun(Dir) ->
         TP = start_tls(Dir, #{}),
@@ -258,13 +262,15 @@ record_route_tls_to_sip(Config) ->
                      after 5000 -> ct:fail(no_forwarded_invite)
                      end,
         {ok, M} = chappe_sip_msg:parse(Inv),
-        RR = chappe_sip_msg:get(<<"record-route">>, M),
-        ?assertMatch(<<"<sip:127.0.0.1:", _/binary>>, RR),
+        RRs = rr_values(M),
+        ?assertMatch([<<"<sip:127.0.0.1:", _/binary>>,
+                      <<"<sips:127.0.0.1:", _/binary>>], RRs),
+        RR = iolist_to_binary(lists:join(<<", ">>, RRs)),
         ok = gen_udp:send(U, {127,0,0,1}, Src, ok200(M, RR)),
         R200 = recv_tls_final(S),
         {ok, M200} = chappe_sip_msg:parse(R200),
-        ?assertMatch(<<"<sips:127.0.0.1:", _/binary>>,
-                     chappe_sip_msg:get(<<"record-route">>, M200)),
+        %% unchanged: the caller reverses it, its first hop is the sips one
+        ?assertEqual(RRs, rr_values(M200)),
         gen_udp:close(U),
         ssl:close(S)
     end).
@@ -736,6 +742,10 @@ sips_uri(Port) ->
     <<"sips:srv@127.0.0.1:", (integer_to_binary(Port))/binary>>.
 
 %% a callee 200 to the forwarded INVITE M, echoing its Record-Route
+rr_values(M) ->
+    [V || H <- chappe_sip_msg:get_all(<<"record-route">>, M),
+          V <- chappe_sip_hdr:split_list(H)].
+
 ok200(M, RR) ->
     Vias = [[<<"Via: ">>, V, <<"\r\n">>] || V <- chappe_sip_msg:get_all(<<"via">>, M)],
     iolist_to_binary(

@@ -27,11 +27,13 @@
 -module(chappe_sip_binds).
 
 -export([options/1, publish/1, aliases/1, own_uris/0]).
+-export([outbound_route/0, outbound_route_opt/1]).
 -export([contacts/0, local/1, contact_at/1, tls_contact_at/1, pick_local/2]).
 -export([contact_or_primary/2, send_ident/2, inherit/3, for_peer/2]).
 
 -define(BINDS, {?MODULE, binds}).
 -define(ALIASES, {?MODULE, aliases}).
+-define(OUTBOUND, {?MODULE, outbound_route}).
 
 %% Every listen address, plain then TLS, as bare URIs (no parameters).
 -spec contacts() -> [binary()].
@@ -321,7 +323,42 @@ ident(_) ->
 -spec publish(map()) -> ok.
 publish(Opts) ->
     put_term(?BINDS, binds_of(Opts)),
-    put_term(?ALIASES, maps:get(aliases, Opts, [])).
+    put_term(?ALIASES, maps:get(aliases, Opts, [])),
+    put_term(?OUTBOUND, [
+        R
+     || R <- [maps:get(outbound_route, Opts, undefined)], R =/= undefined
+    ]).
+
+%% The route set preloaded on a request that names no proxy, flow or
+%% route of its own (the outbound_route start option, RFC 3261 8.1.2): []
+%% or the one Route value.
+-spec outbound_route() -> [binary()].
+outbound_route() ->
+    persistent_term:get(?OUTBOUND, []).
+
+%% outbound_route => Uri: a sip: or sips: URI with no NUL, as a loose
+%% Route value (;lr added when missing)
+-spec outbound_route_opt(term()) -> {ok, binary()} | error.
+outbound_route_opt(U) when is_binary(U), byte_size(U) < 512 ->
+    %% a bare URI keeps its parameters (transport=...); <...> is unwrapped
+    Bare =
+        case U of
+            <<"<", _/binary>> -> chappe_sip_hdr:name_addr_uri(U);
+            _ -> U
+        end,
+    case
+        binary:match(U, <<0>>) =:= nomatch andalso chappe_sip_uri:parse(Bare)
+    of
+        {ok, #{scheme := S, params := P}} when S =:= sip; S =:= sips ->
+            case has_param(<<"lr">>, P) of
+                true -> {ok, <<"<", Bare/binary, ">">>};
+                false -> {ok, <<"<", Bare/binary, ";lr>">>}
+            end;
+        _ ->
+            error
+    end;
+outbound_route_opt(_) ->
+    error.
 
 put_term(Key, Value) ->
     case persistent_term:get(Key, []) of

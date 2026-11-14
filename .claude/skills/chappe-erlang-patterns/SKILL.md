@@ -30,9 +30,12 @@ item when you write the code, when you plan it, and when you review it.
 4. **Distributable.** An app on one node can drive a call on another.
    - Handles are pids, references or opaque terms that carry them, so they work across
      nodes. No API needs the caller to be on the same node.
-   - Cluster-wide lookups go through `pg` in the `chappe` scope. A process joins the
-     group while it serves the thing and leaves when it stops. A node-local ETS index is
-     fine as a cache next to it, never instead of it.
+   - Cluster-wide lookups go through `pg`, in a scope named after the app that owns
+     the lookup (`chappe_sip`, `chappe_audio`, ...) and started by that app's own
+     supervisor. No app starts or restarts another app's scope, and no scope is shared,
+     so each app owns its lookups and stops cleanly. A process joins the group while it
+     serves the thing and leaves when it stops. A node-local ETS index is fine as a
+     cache next to it, never instead of it.
    - Nothing on an API path depends on a locally registered name, a local file another
      node cannot see, or `node()` being the caller's node.
    - A fun given as an option runs on the node that holds the call; say so in the doc.
@@ -41,10 +44,15 @@ item when you write the code, when you plan it, and when you review it.
 5. **Bounded.** A process that receives media, events or requests from outside has a
    bound on what it queues, and documents what happens past it (drop, close, slow the
    sender). `chappe_sip_config:get(ws_transport_max_mailbox)` is the model.
-6. **Dispatch by pattern.** `handle_call`, `handle_cast`, `handle_info` and `receive`
+6. **One message shape per event.** An app's messages keep the same form whatever
+   options were passed: `{App, Handle, Event}`. Context such as the call's `call_ref`
+   is read from the handle (`info/1`, `ref/1`), never added to the message only when an
+   option asks for it, so a `receive` written once matches every message. A new field
+   goes inside `Event` or behind the handle, not as an extra tuple element.
+7. **Dispatch by pattern.** `handle_call`, `handle_cast`, `handle_info` and `receive`
    match message shapes, never a variable tested with `element/2` or a guard on a list of
    atoms (`AGENTS.md`).
-7. **Fail loudly, at the edge.** Validate arguments in the caller's process and return
+8. **Fail loudly, at the edge.** Validate arguments in the caller's process and return
    `{error, badarg}` there, so a bad argument never crashes a live call's process.
    Unexpected messages are logged once, not crashed on.
 

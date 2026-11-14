@@ -4,7 +4,7 @@
 %% @doc Root supervisor.
 %%
 %% Child order is deliberate:
-%% 0. the `chappe' pg scope (unless an app started it) and chappe_sip_call,
+%% 0. the `chappe_sip' pg scope, owned by this app, and chappe_sip_call,
 %%    which owns the table of what serves each call_ref: first, since
 %%    every call process may join it.
 %% 1.chappe_sip_registry_keeper: owns the location-store ETS, so the bindings
@@ -34,6 +34,10 @@
 %%    watches its call's relay, so it needs nothing of the stack's.
 %% 5. chappe_sip_stack_sup: the SIP engine and per-call state (rest_for_one);
 %%    everything there dies with the engine.
+%% 6. chappe_sip_siprec_sup: the SIPREC recordings this node sends; after
+%%    the stack, so they stop first and still send their BYE.
+%%    chappe_sip_siprec_rtp_sup: the streams this node records as a SIPREC
+%%    recording server.
 -module(chappe_sip_sup).
 -behaviour(supervisor).
 
@@ -48,10 +52,12 @@ init([]) ->
     ok = chappe_sip_guard:init_table(),
     SupFlags = #{strategy => one_for_one, intensity => 10, period => 10},
     Children = [
-        %% the `chappe' pg scope and the call_ref table: calls are found
+        %% this app's pg scope and the call_ref table: calls are found
         %% by call_ref from any node (chappe_sip_call)
-        (worker(chappe_sip_call))#{
-            id => chappe_pg_scope, start => {chappe_sip_call, start_scope, []}
+        #{
+            id => chappe_sip_pg,
+            start => {pg, start_link, [chappe_sip_call:scope()]},
+            type => worker
         },
         worker(chappe_sip_call),
         worker(chappe_sip_registry_keeper),
@@ -70,6 +76,10 @@ init([]) ->
         sup(chappe_sip_media_sup),
         sup(chappe_sip_b2b_sup),
         sup(chappe_sip_stack_sup),
+        %% after the stack: a recording stopped at shutdown still sends its
+        %% BYE (chappe_sip_siprec)
+        sup(chappe_sip_siprec_sup),
+        sup(chappe_sip_siprec_rtp_sup),
         %% after the stack: stopped first, while a REGISTER can still go out
         sup(chappe_sip_regc_sup)
     ],

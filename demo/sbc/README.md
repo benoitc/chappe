@@ -208,6 +208,32 @@ demo_sbc:recordings(<<"75a5294a0517ae328579">>).
 %%  #{id => <<"20261114-...">>, source => <<"freeswitch">>, ...}]
 ```
 
+## Record a call with SIPREC
+
+Register bob, then dial `3001` from alice. The demo calls bob with the
+media anchored in rtpengine and records the call: it taps each party in
+rtpengine and sends a SIPREC INVITE to its own recording server, the route
+`sip:srs@` of the same node. The recording server writes each party's
+stream as a WAV file, through the store the demo plugs in:
+
+```
+demo: call 7a1e...@... alice -> bob up, media anchor
+demo: call 7a1e...@... recorded to sip:srs@127.0.0.1:5060
+demo: recording 5b0c...: 2 streams
+demo: recorded _build/demo-recordings/5b0c.../9f3a21c0.wav (96000 bytes of audio)
+```
+
+Talk, hang up, and list them from `make demo-shell`:
+
+```erlang
+demo_sbc:recordings().
+%% [{"_build/demo-recordings/5b0c.../9f3a21c0.wav", [<<"sip:alice@...">>]},
+%%  {"_build/demo-recordings/5b0c.../c41d07aa.wav", [<<"sip:bob@...">>]}]
+```
+
+Each file is one party (16-bit, 8 kHz, mono; `afplay` plays it), in a
+folder named by the call's `call_ref`.
+
 ## Put the call on hold
 
 Press hold on either phone. The log shows the event the B2BUA sends:

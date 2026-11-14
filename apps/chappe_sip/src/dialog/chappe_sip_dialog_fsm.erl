@@ -807,6 +807,8 @@ query(From, local_tag, #data{local_tag = T} = D) ->
     {keep_state, D, [{reply, From, T}]};
 query(From, remote_tag, #data{remote_addr = RA} = D) ->
     {keep_state, D, [{reply, From, addr_tag(RA)}]};
+query(From, remote_addr, #data{remote_addr = RA} = D) ->
+    {keep_state, D, [{reply, From, RA}]};
 query(From, call_id, #data{call_id = C} = D) ->
     {keep_state, D, [{reply, From, C}]};
 query(From, remote_sdp, #data{remote_sdp = S} = D) ->
@@ -815,8 +817,6 @@ query(From, local_sdp, #data{local_sdp = S} = D) ->
     {keep_state, D, [{reply, From, S}]};
 query(From, local_contact, #data{local_contact = C} = D) ->
     {keep_state, D, [{reply, From, C}]};
-query(From, remote_addr, #data{remote_addr = RA} = D) ->
-    {keep_state, D, [{reply, From, RA}]};
 query(From, local_addr, #data{local_addr = LA} = D) ->
     {keep_state, D, [{reply, From, LA}]};
 query(From, call_ref, #data{call_ref = Ref} = D) ->
@@ -1520,8 +1520,9 @@ start_reinvite_1(
     Seq = D#data.local_cseq + 1,
     % ACK must reuse this CSeq
     D1 = D#data{local_cseq = Seq},
+    CT = maps:get(content_type, Opts, <<"application/sdp">>),
     Headers =
-        [{<<"Content-Type">>, <<"application/sdp">>} || NewSdp =/= <<>>] ++
+        [{<<"Content-Type">>, CT} || NewSdp =/= <<>>] ++
             chappe_sip_session_timer:refresh_headers(D#data.st),
     Raw = build_indialog(D1, <<"INVITE">>, Seq, Headers, NewSdp),
     case chappe_sip_engine:send_request(route(D), Raw, self()) of
@@ -2103,7 +2104,12 @@ with_actions(Stop, _A) ->
 start_st_refresh(#data{st = #{peer_update := true}} = D) ->
     send_st_refresh(<<"UPDATE">>, [], <<>>, D);
 start_st_refresh(#data{local_sdp = Sdp} = D) ->
-    CT = [{<<"Content-Type">>, <<"application/sdp">>} || Sdp =/= <<>>],
+    %% the session as we last offered it: an SDP, or the multipart a SIPREC
+    %% recording session sends (modify/3 content_type)
+    CT = [
+        {<<"Content-Type">>, chappe_sip_multipart:content_type(Sdp)}
+     || Sdp =/= <<>>
+    ],
     send_st_refresh(<<"INVITE">>, CT, Sdp, D).
 
 send_st_refresh(Method, Headers, Body, #data{st = St} = D) ->

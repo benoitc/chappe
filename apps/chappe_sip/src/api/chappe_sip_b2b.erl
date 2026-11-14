@@ -59,6 +59,7 @@
 %% helpers of the chappe_sip_b2b_* modules
 -export([timer_c/1, remote_tag/1, remote_sdp/1, destroy_quietly/2]).
 -export([offers/4, dest_bopts/2]).
+-export([parties/1]).
 
 -export_type([b2b/0, legs/0, target/0, dest/0, branch_opts/0, winner/0]).
 
@@ -998,7 +999,9 @@ set_media(B2b, Mode) when Mode =:= direct; Mode =:= anchor ->
 %% What the call is doing: #{media := direct | anchor, hold := #{a, b},
 %% call_id := binary(), session := chappe_sip_media:session() | undefined,
 %% pending := boolean(), winner := winner() | undefined, call_ref :=
-%% binary() | undefined, related := binary() | undefined}. winner is the
+%% binary() | undefined, related := binary() | undefined, parties :=
+%% #{a, b => binary() | undefined}}. parties names who is on each leg: A's
+%% From and B's To, as name-addrs with their tags. winner is the
 %% destination leg B is now: the one that answered create_b2bua/4 or a
 %% replace_b/3 fork (undefined for legs made another way, or after
 %% replace_b/3 to a URI or a dialog).
@@ -1116,6 +1119,22 @@ remote_sdp(Dlg) ->
         Sdp -> Sdp
     catch
         exit:_ -> <<>>
+    end.
+
+%% Who is on each leg of the relay state S, for info/1: A's From and B's
+%% To; undefined for a leg whose dialog is gone.
+-spec parties(#{
+    a := chappe_sip_dialog:dialog(), b := chappe_sip_dialog:dialog(), _ => _
+}) ->
+    #{a := binary() | undefined, b := binary() | undefined}.
+parties(#{a := A, b := B}) ->
+    #{a => remote_addr(A), b => remote_addr(B)}.
+
+remote_addr(Dlg) ->
+    try
+        chappe_sip_dialog:remote_addr(Dlg)
+    catch
+        exit:_ -> undefined
     end.
 
 -spec remote_tag(chappe_sip_dialog:dialog()) -> binary() | undefined.

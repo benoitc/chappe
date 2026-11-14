@@ -22,7 +22,7 @@ shape fails the start with `{error, {Key, Value}}`.
 ok = chappe_sip:start(#{
     contact => <<"sip:10.0.0.5:5060">>,
     sip_timers => #{t1 => 500, t2 => 4000, t4 => 5000},
-    outbound_proxy => <<"sip:proxy.example.com;transport=tcp">>,
+    outbound_route => <<"sip:proxy.example.com;transport=tcp">>,
     tcp_keepalive_ms => 30000,
     udp_mtu => 1300,
     aliases => [<<"sbc.example.com">>]
@@ -31,11 +31,21 @@ ok = chappe_sip:start(#{
 
 | Key | Default | What it does |
 | --- | --- | --- |
-| `sip_timers` | `#{t1 => 500, t2 => 4000, t4 => 5000}` | RFC 3261 timers in ms, for UDP, TCP and TLS transactions (WebSocket ones use the `ws_*` settings below). `t1` 10 to 60000, `t2` 10 to 600000 and never below `t1`, `t4` 10 to 600000. Timers B, F, H and J follow `t1` (64*T1). sofia starts the first UDP retransmission at no less than 1 s whatever `t1`. |
-| `outbound_proxy` | none | A `sip:` or `sips:` URI every request with no route of its own goes to (a UAC request with no `proxy` option, an in-dialog request with no route set). A proxied request keeps its own next hop. |
-| `tcp_keepalive_ms` | off | Sends a CRLFCRLF ping (RFC 5626 4.4.1) on every TCP connection idle this long, 1000 to 3600000. sofia does not ping TLS connections; UDP never gets it. |
+| `sip_timers` | `#{t1 => 500, t2 => 4000, t4 => 5000}` | RFC 3261 timers in ms, for UDP, TCP and TLS transactions (WebSocket ones use the `ws_*` settings below). `t1` 10 to 60000, `t2` 10 to 600000 and never below `t1`, `t4` 10 to 600000. Timers B, F, H and J follow `t1` (64*T1). The first UDP retransmission comes after `t1` (sofia patch 0005). |
+| `outbound_proxy` | none | Next hop only: a `sip:` or `sips:` URI every request with no route of its own goes to, with no Route header added (a UAC request with no `proxy` option, an in-dialog request with no route set). A proxied request keeps its own next hop. |
+| `outbound_route` | none | A `sip:` or `sips:` URI preloaded as the one Route of every request with no proxy, flow or route set of its own (RFC 3261 8.1.2 recommends this form); `;lr` is added when missing. The proxy then sees a Route naming it. Not with `outbound_proxy`. |
+| `tcp_keepalive_ms` | off | Sends a CRLFCRLF ping (RFC 5626 4.4.1) on every TCP connection idle this long, 1000 to 3600000. TCP only: TLS connections and UDP get no ping (see the note below the table). |
 | `udp_mtu` | `1300` | A request larger than this goes over TCP instead of UDP (RFC 3261 18.1.1), 576 to 65535. |
 | `aliases` | `[]` | Up to 16 other names of this node (a DNS name, or a `sip:`/`sips:` URI with an optional port). A Route naming one is ours, as a listen address is; a name with no port matches the port of each listen address. |
+
+Keep-alive and TLS: sofia's TLS transport has no connection timer, and a
+ping cannot be added in a contained way. A CRLFCRLF on a TLS connection has
+to go through `SSL_write`, and sofia's `tls_write` keeps the buffer of a
+write that would block and asserts that the next write passes the same
+buffer. A ping that blocks on a connection whose peer stopped reading would
+make the next SIP message fail that assertion. For TLS flows, rely on the
+client's keep-alives (RFC 5626 4.4.1 makes the UA send them, at the
+`registrar_flow_timer` interval) and on the registrar's expiry.
 
 ## Engine
 
@@ -68,6 +78,15 @@ ok = chappe_sip:start(#{
 | `record_route_ttl_s` | `86400` | Lifetime of a Record-Route marker, signed into it. A dialog record-routed through the proxy must end within it; a marker past it is refused. |
 | `flow_token_secret` | (random) | Secret keying the Record-Route marker/flow-token HMAC. Unset generates a per-node random secret at boot; set a stable shared value only if record-routed dialogs must survive a restart or span a cluster. A configured value shorter than 16 bytes stops the application from starting. |
 | `supported_option_tags` | `[<<"100rel">>, <<"replaces">>, <<"timer">>, <<"tdialog">>, <<"norefersub">>]` | Option tags a request may list in `Require` without a 420. Add `<<"siprec">>` on a recording server; a single route adds its own with `chappe_sip:handle/3`. |
+
+## SIPREC
+
+| Key | Default | What it does |
+| --- | --- | --- |
+| `siprec_srs` | `undefined` | The recording server URI `chappe_sip_siprec:start/3` uses when given `default`. |
+| `siprec_max_per_call` | `2` | Recordings one call may have at once; one more is refused with `{error, too_many}`. |
+| `siprec_answer_timeout_ms` | `10000` | How long a recording server may take to answer the INVITE or a re-INVITE. Past it the INVITE is cancelled, or the session ended with a BYE, and the owner gets `stopped` with reason `{srs, timeout}`. |
+| `siprec_store` | `chappe_audio_store` | The store a recording server writes each stream to with `store => default` (`chappe_sip_siprec_srs:serve/3`): a module with `open/2`, `write/2` and `close/2`, as `chappe_audio_store` of the chappe_audio app has them. |
 
 ## WebSocket
 

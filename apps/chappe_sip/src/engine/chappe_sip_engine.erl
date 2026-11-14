@@ -997,7 +997,8 @@ start_opts(Opts) ->
 
 %% The agent settings, checked with the NIF's bounds and flattened into
 %% its keys (sip_t1, sip_t2, sip_t4, outbound_proxy, tcp_keepalive_ms,
-%% udp_mtu). aliases stay in Erlang: they are names of this node, known to
+%% udp_mtu; tcp_keepalive_ms pings TCP connections only, not TLS ones).
+%% aliases stay in Erlang: they are names of this node, known to
 %% the proxy's own-address check (chappe_sip_binds:own_uris/0).
 -spec agent_opts(map()) -> {ok, map()} | {error, {atom(), term()}}.
 agent_opts(Opts) ->
@@ -1006,8 +1007,18 @@ agent_opts(Opts) ->
         {outbound_proxy, fun outbound_proxy/1},
         {tcp_keepalive_ms, in_range(1000, 3600000)},
         {udp_mtu, in_range(576, 65535)},
-        {aliases, fun chappe_sip_binds:aliases/1}
+        {aliases, fun chappe_sip_binds:aliases/1},
+        {outbound_route, fun outbound_route/1}
     ],
+    case
+        maps:is_key(outbound_proxy, Opts) andalso
+            maps:find(outbound_route, Opts)
+    of
+        {ok, R} -> {error, {outbound_route, {with_outbound_proxy, R}}};
+        _ -> agent_opts(Opts, Checks)
+    end.
+
+agent_opts(Opts, Checks) ->
     lists:foldl(
         fun
             ({Key, Check}, {ok, Acc}) ->
@@ -1069,6 +1080,13 @@ sip_timers(_) ->
 nif_timer(t1) -> sip_t1;
 nif_timer(t2) -> sip_t2;
 nif_timer(t4) -> sip_t4.
+
+%% outbound_route: kept in Erlang as its Route value (chappe_sip_binds)
+outbound_route(U) ->
+    case chappe_sip_binds:outbound_route_opt(U) of
+        {ok, R} -> {ok, #{outbound_route => R}};
+        error -> error
+    end.
 
 %% a sip: or sips: URI with no NUL
 outbound_proxy(P) when is_binary(P) ->
@@ -1436,7 +1454,12 @@ do_create_uas_1(Req, Opts, WorkerPid, S) ->
     LocalAddr = <<ToVal/binary, ";tag=", LocalTag/binary>>,
     TxnH = chappe_sip_req:txn(Req),
     RTarget = contact_uri(chappe_sip_msg:get(<<"contact">>, Msg), FromVal),
-    Contact = uas_contact(Req, S),
+    %% contact_params: a feature tag after the `>' (+sip.srs for a
+    %% recording server, RFC 7866 6.2)
+    Contact = <<
+        (uas_contact(Req, S))/binary,
+        (maps:get(contact_params, Opts, <<>>))/binary
+    >>,
     %% a 2xx to an INVITE waits for its ACK (RFC 3261 13.3.1.4). The native
     %% stack keeps its server transaction until the ACK or Timer H and names
     %% it in both; the WS transport names the dialog leg.

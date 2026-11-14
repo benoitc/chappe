@@ -103,8 +103,9 @@ the ref to get every Call-ID of the call, then open those calls.
 
 ## Notes
 
-- The lookup uses `pg` in the `chappe` scope. A node joins the cluster's
-  lookups once it runs chappe_sip (or starts that scope) and is connected.
+- The lookup uses `pg` in the `chappe_sip` scope, which chappe_sip starts
+  and stops with itself. A node joins the cluster's lookups once it runs
+  chappe_sip and is connected.
 - A lookup can be briefly stale: a process that just ended may still be
   listed for a moment. Its handle then answers `{error, noproc}`.
 - B2BUA events keep their `{chappe_sip_b2b, Ref, Event}` shape: map the

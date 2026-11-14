@@ -47,6 +47,14 @@ init([]) ->
             shutdown => infinity,
             type => supervisor,
             modules => [chappe_sip_uac_sup]
+        },
+        #{
+            id => chappe_sip_proxy_sup,
+            start => {chappe_sip_proxy_sup, start_link, []},
+            restart => permanent,
+            shutdown => infinity,
+            type => supervisor,
+            modules => [chappe_sip_proxy_sup]
         }
     ],
     {ok, {SupFlags, Children}}.
