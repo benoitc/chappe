@@ -1589,19 +1589,22 @@ uas_contact(Req, S) ->
                 chappe_sip_msg:uri(Msg) | sips_candidates(Msg)
             ]),
     Local = chappe_sip_binds:local(chappe_sip_req:meta(Req)),
-    case
-        {
-            Secure,
-            chappe_sip_binds:tls_contact_at(Local),
-            chappe_sip_binds:contact_at(Local),
-            tls_uri(S)
-        }
-    of
-        {true, Tls, _, _} when is_binary(Tls) -> <<"<", Tls/binary, ">">>;
-        {true, _, _, Tls} when is_binary(Tls) -> <<"<", Tls/binary, ">">>;
-        {false, _, C, _} when is_binary(C) -> <<"<", C/binary, ">">>;
-        _ -> local_contact(S)
-    end.
+    Contact =
+        case
+            {
+                Secure,
+                chappe_sip_binds:tls_contact_at(Local),
+                chappe_sip_binds:contact_at(Local),
+                tls_uri(S)
+            }
+        of
+            {true, Tls, _, _} when is_binary(Tls) -> <<"<", Tls/binary, ">">>;
+            {true, _, _, Tls} when is_binary(Tls) -> <<"<", Tls/binary, ">">>;
+            {false, _, C, _} when is_binary(C) -> <<"<", C/binary, ">">>;
+            _ -> local_contact(S)
+        end,
+    %% behind 1:1 NAT, a peer on the local network gets the local address
+    chappe_sip_binds:for_peer(Contact, chappe_sip_req:source_ip(Req)).
 
 %% the top Record-Route, else the Contact, as bare URIs
 sips_candidates(Msg) ->

@@ -7,8 +7,10 @@ in `src/chappe_sip_config.erl`; `registrations` and `metrics` are read
 directly from the application env. How to set them, and which ones matter
 first, is in the [configuration guide](guides/configuration.md).
 
-Listen addresses are not settings: they are the `contact` (one URI or a
-list) and the TLS `contact` of `chappe_sip:start/1`.
+Listen addresses are not settings: they are the `contact` (one URI, a
+contact map with `public` and `local_nets` for 1:1 NAT, or a list) and the
+TLS `contact` of `chappe_sip:start/1`. See
+[Deployment](guides/deployment.md#run-behind-11-nat).
 
 ## Engine
 

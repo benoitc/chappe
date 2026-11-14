@@ -1409,7 +1409,22 @@ default_or(R) -> R.
 %% (RFC 3261 8.1.1.8), so a dialog it forms is secure (12.2.1.1).
 default_contact(#data{opts = #{contact := C}}) ->
     C;
-default_contact(#data{} = D) ->
+default_contact(#data{uri = Uri, proxy = Proxy} = D) ->
+    %% behind 1:1 NAT, a target on the local network gets the local address
+    chappe_sip_binds:for_peer(bound_contact(D), target_host(Proxy, Uri)).
+
+target_host(Proxy, Uri) ->
+    Target =
+        case Proxy of
+            P when is_binary(P) -> P;
+            _ -> Uri
+        end,
+    case is_binary(Target) andalso chappe_sip_uri:parse(Target) of
+        {ok, #{host := H}} -> H;
+        _ -> undefined
+    end.
+
+bound_contact(#data{} = D) ->
     %% with several listen addresses, the one we send from
     case local(D) of
         undefined ->

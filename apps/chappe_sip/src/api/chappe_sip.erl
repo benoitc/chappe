@@ -87,7 +87,7 @@
 %% max_message_size defaults to the application setting. hep (or the
 %% `hep' application setting) sends a HEPv3 copy of every SIP message sent
 %% and received to a capture server (Homer); capture_id defaults to 200.
--spec start(#{contact := binary() | [binary()], _ => _}) ->
+-spec start(#{contact := binary() | map() | [binary() | map()], _ => _}) ->
     ok | {error, already_started | term()}.
 start(Opts) ->
     case start_hep(maps:get(hep, Opts, chappe_sip_config:get(hep))) of
