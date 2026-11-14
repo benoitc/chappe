@@ -138,3 +138,20 @@ file only summarises what an agent needs to act.
   `ATTEMPTS.md`. Check the load average before timing anything, and run every
   new test against the code before the change to see it fail.
 - `verify_none`/permissive TLS is test-only; never ship it in `src/`.
+- Build for fully distributable Erlang apps: every long-lived process is
+  supervised, isolated (one per call, stream, session or room), owned (it
+  monitors its owner, sends it events, cleans up when it dies), reachable from
+  another node (pids and references as handles, `pg` in the `chappe` scope for
+  lookups), and bounded. No state in the process dictionary. The
+  `chappe-erlang-patterns` skill has the checklist and the tests it asks for.
+
+## Skills
+
+In `.claude/skills/`. Use them; a review states the result of each that applies.
+
+- `chappe-phase-plan`: plan one phase in plan mode.
+- `chappe-lane`: brief or work one lane of a plan.
+- `chappe-erlang-patterns`: supervision, isolation, ownership, distribution.
+- `rfc-compliance`: check a change against the specs it claims, from their text.
+- `protocol-change-review`: compliance, latest specification and safety, per
+  commit, before a commit or a merge that touches a protocol.
