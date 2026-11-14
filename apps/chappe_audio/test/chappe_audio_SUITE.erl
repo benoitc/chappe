@@ -28,6 +28,8 @@ all() ->
         connect_timeout,
         owner_death,
         stream_crash,
+        listener_crash,
+        handshake_crash,
         set_owner,
         flood_bound,
         bad_options,
@@ -312,6 +314,45 @@ stream_crash(Config) ->
     {ok, _} = chappe_audio_test_ws:connect(Url2),
     {chappe_audio, S2, {connected, _}} = recv(),
     ok = chappe_audio:close(S2).
+
+%% The listener crashes: its socket and acceptor go with it, so nothing
+%% new connects, but the streams it opened are their own processes and
+%% keep their forks; open/2 on it says no_listener.
+listener_crash(_Config) ->
+    {ok, L} = chappe_audio:listen(#{}),
+    Port = port(L),
+    {ok, S, Url} = chappe_audio:open(L, #{}),
+    {ok, C} = chappe_audio_test_ws:connect(Url),
+    {chappe_audio, S, {connected, _}} = recv(),
+    Mon = monitor(process, L),
+    exit(L, kill),
+    {'DOWN', Mon, process, L, killed} = recv(),
+    ?assertEqual(
+        {error, econnrefused},
+        gen_tcp:connect({127, 0, 0, 1}, Port, [binary, {active, false}])
+    ),
+    ok = chappe_audio_test_ws:send(C, {binary, <<5, 0>>}),
+    {chappe_audio, S, {frame, <<5, 0>>}} = recv(),
+    ?assertEqual({error, no_listener}, chappe_audio:open(L, #{})),
+    ok = chappe_audio:close(S).
+
+%% A handshake crashes: its client's connection closes, the listener
+%% and the stream the client was after go on, and the next handshake to
+%% that stream succeeds.
+handshake_crash(Config) ->
+    L = ?config(listener, Config),
+    {ok, S, Url} = chappe_audio:open(L, #{}),
+    {ok, Sock} = gen_tcp:connect({127, 0, 0, 1}, port(L), [binary, {active, false}]),
+    ok = gen_tcp:send(Sock, <<"GET /audio/x HTTP/1.1\r\n">>),
+    wait(fun() -> supervisor:which_children(chappe_audio_conn_sup) =/= [] end),
+    [{_, Conn, _, _}] = supervisor:which_children(chappe_audio_conn_sup),
+    exit(Conn, kill),
+    ?assertEqual({error, closed}, gen_tcp:recv(Sock, 0, 2000)),
+    ?assert(is_process_alive(L)),
+    ?assertMatch(#{phase := waiting}, chappe_audio:info(S)),
+    {ok, _} = chappe_audio_test_ws:connect(Url),
+    {chappe_audio, S, {connected, _}} = recv(),
+    ok = chappe_audio:close(S).
 
 %% set_owner moves the events, and the old owner's death no longer
 %% matters.
