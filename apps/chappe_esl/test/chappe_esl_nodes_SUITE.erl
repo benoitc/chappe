@@ -16,6 +16,7 @@
     add_remove/1,
     up_with_load/1,
     channel_events/1,
+    filtered_events/1,
     heartbeat_timeout/1,
     probe_failure/1,
     probe_timeout/1,
@@ -44,6 +45,7 @@ all() ->
         add_remove,
         up_with_load,
         channel_events,
+        filtered_events,
         heartbeat_timeout,
         probe_failure,
         probe_timeout,
@@ -211,6 +213,38 @@ channel_events(_Config) ->
     ?assertEqual(0, sessions(fs1)),
     ok = chappe_esl:node_unsubscribe(fs1),
     chappe_esl_fake_server:inject(Fake, Create),
+    receive
+        {chappe_esl_node, fs1, {event, _}} -> ct:fail(still_subscribed)
+    after 200 -> ok
+    end.
+
+%% node_events/2 hands a subscriber only the events whose headers match:
+%% a conference room gets its own room's events, not every channel of
+%% the node.
+filtered_events(_Config) ->
+    {Fake, Port} = fake(#{heartbeat => 60000}),
+    ok = add(fs1, Port, #{heartbeat_interval_ms => 60000}),
+    ok = wait_state(fs1, up),
+    Match = #{<<"Event-Subclass">> => <<"conference::maintenance">>, <<"Conference-Name">> => <<"r1">>},
+    ok = chappe_esl:node_events(fs1, Match),
+    ?assertEqual({error, badarg}, chappe_esl:node_events(fs1, #{1 => 2})),
+    Room = fun(R) ->
+        chappe_esl_fake_server:json_event(<<"CUSTOM">>, [
+            {<<"Event-Subclass">>, <<"conference::maintenance">>},
+            {<<"Conference-Name">>, R},
+            {<<"Action">>, <<"add-member">>}
+        ])
+    end,
+    Create = chappe_esl_fake_server:json_event(<<"CHANNEL_CREATE">>, [{<<"Unique-ID">>, <<"u-9">>}]),
+    chappe_esl_fake_server:inject(Fake, [Create, Room(<<"r2">>), Room(<<"r1">>)]),
+    Ev = expect_event(fs1, <<"CUSTOM">>),
+    ?assertEqual(<<"r1">>, chappe_esl_event:header(<<"Conference-Name">>, Ev)),
+    receive
+        {chappe_esl_node, fs1, {event, _} = E} -> ct:fail({unfiltered, E})
+    after 300 -> ok
+    end,
+    ok = chappe_esl:node_unsubscribe(fs1),
+    chappe_esl_fake_server:inject(Fake, Room(<<"r1">>)),
     receive
         {chappe_esl_node, fs1, {event, _}} -> ct:fail(still_subscribed)
     after 200 -> ok

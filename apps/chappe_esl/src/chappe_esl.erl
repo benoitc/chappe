@@ -33,7 +33,7 @@
 -export([node_add/2, node_remove/1, nodes/0, node_status/1]).
 -export([node_drain/1, node_resume/1, node_select/1]).
 -export([node_api/2, node_bgapi/2]).
--export([node_subscribe/1, node_events/1, node_unsubscribe/1]).
+-export([node_subscribe/1, node_events/1, node_events/2, node_unsubscribe/1]).
 
 -export_type([conn/0, listener_opts/0, api_error/0]).
 
@@ -320,6 +320,14 @@ node_subscribe(Name) ->
 -spec node_events(chappe_esl_nodes:name() | all) -> ok.
 node_events(Name) ->
     chappe_esl_nodes:events(Name).
+
+%% node_events/1 for the events whose headers hold every value of Match
+%% (#{Header => Value}, binaries), so a subscriber that wants a few of a
+%% busy node's events (one conference room's) is sent no others.
+-spec node_events(chappe_esl_nodes:name() | all, #{binary() => binary()}) ->
+    ok | {error, badarg}.
+node_events(Name, Match) ->
+    chappe_esl_nodes:events(Name, Match).
 
 -spec node_unsubscribe(chappe_esl_nodes:name() | all) -> ok.
 node_unsubscribe(Name) ->

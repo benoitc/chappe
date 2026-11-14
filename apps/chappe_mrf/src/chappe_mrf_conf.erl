@@ -429,8 +429,9 @@ init_backend(Name, Opts, Caller) ->
         fs ->
             case fs_node(Opts) of
                 {ok, Node} ->
-                    %% room-wide events (play-file-done) carry no channel
-                    ok = node_events(Node),
+                    %% room-wide events (play-file-done) carry no channel;
+                    %% only this room's are sent here
+                    ok = node_events(Node, Name),
                     {ok, S0#state{node = Node}};
                 {error, _} = Err ->
                     {stop, Err}
@@ -452,9 +453,13 @@ dial_cfg(Opts) ->
     ).
 
 %% No node registry running (a node given by name only): no room events.
-node_events(Node) ->
+node_events(Node, Name) ->
+    Match = #{
+        <<"Event-Subclass">> => <<"conference::maintenance">>,
+        <<"Conference-Name">> => Name
+    },
     try
-        chappe_esl:node_events(Node)
+        chappe_esl:node_events(Node, Match)
     catch
         exit:_ -> ok
     end.
