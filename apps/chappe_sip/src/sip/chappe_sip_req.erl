@@ -28,13 +28,16 @@
     called_number/1
 ]).
 -export([call_ref/1, set_call_ref/2]).
+-export([set_local/3, local/2, local/3, locals/1, is_req/1]).
 
 -record(req, {
     msg :: chappe_sip_msg:msg(),
     txn :: non_neg_integer() | undefined,
     meta :: map(),
     %% the call this request belongs to (chappe_sip_call)
-    call_ref :: binary() | undefined
+    call_ref :: binary() | undefined,
+    %% what middleware and handlers attach to the request (set_local/3)
+    locals = #{} :: map()
 }).
 
 -opaque req() :: #req{}.
@@ -69,6 +72,36 @@ set_call_ref(#req{} = Req, Ref) ->
         true -> Req#req{call_ref = Ref};
         false -> {error, badarg}
     end.
+
+%% The request with Key set to Value among its locals: data a middleware
+%% hands to the middleware and the handler after it (an authenticated
+%% account, a tenant, a route decision). The locals live in the request
+%% value, not in a process: hand the new request on with {next, Req1}
+%% (chappe_sip_middleware).
+-spec set_local(term(), term(), req()) -> req().
+set_local(Key, Value, #req{locals = L} = Req) ->
+    Req#req{locals = L#{Key => Value}}.
+
+%% The local Key of the request; error(badarg) when it is not set.
+-spec local(term(), req()) -> term().
+local(Key, #req{locals = L}) ->
+    case L of
+        #{Key := V} -> V;
+        _ -> error(badarg, [Key])
+    end.
+
+%% The local Key of the request, or Default.
+-spec local(term(), req(), term()) -> term().
+local(Key, #req{locals = L}, Default) ->
+    maps:get(Key, L, Default).
+
+-spec is_req(term()) -> boolean().
+is_req(#req{}) -> true;
+is_req(_) -> false.
+
+%% Every local of the request.
+-spec locals(req()) -> map().
+locals(#req{locals = L}) -> L.
 
 -spec msg(req()) -> chappe_sip_msg:msg().
 msg(#req{msg = M}) -> M.

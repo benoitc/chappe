@@ -162,6 +162,34 @@ ok = chappe_sip:invite(fun(Req, Res) -> chappe_sip_handler:start(my_call, Req, R
 `{ignore, State}`. A `handle_dialog` callback returns `{ok, State}` or
 `{stop, State}` (which sends BYE).
 
+## Pass data from a middleware to the handler
+
+A middleware that learns something about the request (the account it
+authenticated, a tenant, a routing decision) puts it in the request's
+locals and hands the new request on by returning `{next, Req1}`. The
+locals live in the request value, so they follow it wherever you pass it.
+
+```erlang
+ok = chappe_sip:use(fun(Req, Res, _Next) ->
+    case lookup_account(chappe_sip_req:get(<<"x-account">>, Req)) of
+        {ok, Account} ->
+            {next, chappe_sip_req:set_local(account, Account, Req)};
+        error ->
+            chappe_sip_res:send(Res, 403, #{})
+    end
+end),
+ok = chappe_sip:invite(fun(Req, Res) ->
+    Account = chappe_sip_req:local(account, Req),
+    Plan = chappe_sip_req:local(plan, Req, basic),
+    route(Account, Plan, Req, Res)
+end).
+```
+
+- `local/2` fails with `badarg` when the key is not set; `local/3` takes a
+  default; `locals/1` returns them all.
+- A middleware calling `Next()` passes the request it got, locals included.
+  Call `Next()` or return `{next, _}`, not both.
+
 ## Match an INVITE with Replaces
 
 An INVITE carrying a `Replaces` header (RFC 3891) asks you to swap one of your
