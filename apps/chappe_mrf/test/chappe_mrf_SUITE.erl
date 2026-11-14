@@ -21,6 +21,7 @@
     refer_adds_fs/1,
     refer_hostile_target/1,
     refer_bgdial/1,
+    dialed_party_leaves/1,
     member_transferred/1,
     caller_hangup/1,
     unknown_channel_refused/1,
@@ -72,6 +73,7 @@ all() ->
         refer_adds_fs,
         refer_hostile_target,
         refer_bgdial,
+        dialed_party_leaves,
         member_transferred,
         caller_hangup,
         unknown_channel_refused,
@@ -458,6 +460,40 @@ refer_bgdial(Config) ->
     ?assertMatch(#{members := 1}, chappe_mrf_conf:info(Conf)),
     ok = chappe_mrf:destroy(Ep),
     ?F:fs_stop(Slow).
+
+%% A party the room dialed for a REFER hangs up: its del-member (on the
+%% node's events, as it has no endpoint) takes it off the roster and out
+%% of the max_members count.
+dialed_party_leaves(Config) ->
+    ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
+    {ok, Conf} = chappe_mrf:conference(<<"leaveroom">>, #{
+        backend => fs, node => fs1, max_members => 2, refer_policy => fun(_) -> true end
+    }),
+    {ok, Ep} = chappe_mrf:create_endpoint(#{targets => [{fs1, fs_uri(Config)}]}),
+    {ok, _} = chappe_mrf_conf:join(Conf, Ep, #{}),
+    {joined, _, _} = joined(Conf),
+    Entity = <<"sip:leaveroom@127.0.0.1:", (integer_to_binary(?config(ep, Config)))/binary>>,
+    {Sock, _} = refer(Config, Entity, <<"boss">>, <<"<sip:dave@10.0.0.8>">>),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(Sock)),
+    {fake_fs, _, _, {cmd, Dial}} = fs_cmd(<<"conference leaveroom bgdial">>),
+    {match, [Uuid]} = re:run(Dial, <<"origination_uuid=([^}]+)}">>, [{capture, all_but_first, binary}]),
+    Maint = fun(Action) ->
+        Conf ! {chappe_esl_node, fs1, {event, #{body => <<>>, headers => #{
+            <<"Event-Name">> => <<"CUSTOM">>,
+            <<"Event-Subclass">> => <<"conference::maintenance">>,
+            <<"Conference-Name">> => <<"leaveroom">>,
+            <<"Action">> => Action,
+            <<"Member-ID">> => <<"88">>,
+            <<"Unique-ID">> => Uuid}
+        }}}
+    end,
+    Maint(<<"add-member">>),
+    {joined, <<"88">>, _} = joined(Conf),
+    ?assertMatch(#{members := 2}, chappe_mrf_conf:info(Conf)),
+    Maint(<<"del-member">>),
+    conf_event(Conf, {left, <<"88">>, departed}),
+    ?assertMatch(#{members := 1}, chappe_mrf_conf:info(Conf)),
+    ok = chappe_mrf:destroy(Ep).
 
 %% A member's call is transferred by REFER (its B2BUA carries it out,
 %% transfer => auto): handed the call's transferred event, the room shows

@@ -207,6 +207,11 @@ room_event(Ev, #state{name = Name} = S) ->
             chappe_mrf_conf:emit(
                 {play_done, chappe_mrf_lib:to_bin(H(<<"File">>))}, S
             );
+        {<<"conference::maintenance">>, Name, <<"del-member">>} ->
+            %% a party dialed in for a REFER has no endpoint whose events
+            %% would say it left: the node's do (an endpoint member's
+            %% del-member also comes on its channel; gone/2 takes it once)
+            dialed_gone(chappe_mrf_lib:to_bin(H(<<"Member-ID">>)), S);
         {<<"conference::maintenance">>, Name, <<"bgdial-result">>} ->
             chappe_mrf_conf_refer:fs_result(
                 chappe_mrf_lib:to_bin(H(<<"Peer-UUID">>)),
@@ -222,6 +227,12 @@ room_event(Ev, #state{name = Name} = S) ->
             );
         _ ->
             S
+    end.
+
+dialed_gone(Id, #state{members = M} = S) ->
+    case M of
+        #{Id := #{dialed := _}} -> chappe_mrf_conf:gone(Id, S);
+        _ -> S
     end.
 
 event(Ep, Ev, #state{name = Name} = S) ->
