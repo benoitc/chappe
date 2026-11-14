@@ -422,7 +422,7 @@ from_another_node(_Config) ->
     Paths = lists:append([["-pa", P] || P <- code:get_path()]),
     {ok, Peer, Node} = peer:start_link(#{name => peer:random_name(), args => Paths}),
     try
-        {ok, _} = erpc:call(Node, pg, start, [chappe]),
+        {ok, _} = erpc:call(Node, pg, start, [chappe_sip]),
         #{b2b := B2b, call_ref := Ref} = call(),
         SP = ?UA:pick(),
         srs(SP, fun(_Sock, _D, _Src) -> ok end),

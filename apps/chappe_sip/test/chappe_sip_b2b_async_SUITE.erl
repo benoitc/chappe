@@ -97,7 +97,7 @@ from_another_node(_Config) ->
     {ok, Peer, Node} = peer:start_link(#{name => peer:random_name(),
                                          args => Paths}),
     try
-        {ok, _} = erpc:call(Node, pg, start, [chappe]),
+        {ok, _} = erpc:call(Node, pg, start, [chappe_sip]),
         {EP, CP} = setup(#{}),
         callee(CP, fun(_Sock) -> ok end),
         caller(EP, fun(_Sock, _D) -> ok end),
