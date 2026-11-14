@@ -84,7 +84,8 @@
 %%   focus     => true: serve RFC 4575 conference-info (entity, the
 %%                conference URI, defaults to sip:Name@<this node>); the
 %%                parties a REFER brings in are dialed with isfocus in
-%%                their Contact (RFC 4579 5.5)
+%%                their Contact, and only such a room removes a member
+%%                for a REFER with method=BYE (RFC 4579 5.5, 5.11)
 %%   refer_policy => fun((Info) -> boolean() | {reject, Code}): decides a
 %%                REFER to the room (refer/3), Info as chappe_sip_focus:
 %%                refer/4 gives it (action add | remove, target, referrer,

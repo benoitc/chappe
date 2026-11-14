@@ -26,6 +26,7 @@
     focus_member_refer_adds/1,
     member_refer_transfers/1,
     focus_member_refer_removes/1,
+    bye_refused_without_focus/1,
     session_recording_waits_for_close/1,
     room_recording_waits_for_close/1,
     caller_hangup/1,
@@ -83,6 +84,7 @@ all() ->
         focus_member_refer_adds,
         member_refer_transfers,
         focus_member_refer_removes,
+        bye_refused_without_focus,
         session_recording_waits_for_close,
         room_recording_waits_for_close,
         caller_hangup,
@@ -643,6 +645,30 @@ focus_member_refer_removes(Config) ->
     _ = ua_event(Ua2, bye),
     ?assert(final_notify(Ua1, <<"SIP/2.0 200">>)),
     ?assertMatch([#{id := M1}], chappe_mrf_conf:members(Conf)),
+    ok = chappe_mrf_conf:stop(Conf).
+
+%% Removal is a focus's (RFC 4579 5.11): a room without focus => true
+%% refuses a REFER with method=BYE 403, in a member's dialog or to its
+%% URI, whatever its policy says, and every member stays.
+bye_refused_without_focus(Config) ->
+    ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
+    {ok, Conf} = chappe_mrf:conference(<<"nobye">>, #{
+        focus => false, refer_policy => fun(_) -> true end
+    }),
+    {Ua1, _M1} = room_caller(Config, Conf),
+    {ua, Ua1, {final, 200, _}} = ua_answer(Ua1),
+    {Ua2, M2} = room_caller(Config, Conf),
+    {ua, Ua2, {final, 200, _}} = ua_answer(Ua2),
+    [#{uri := U2}] = [Mb || #{id := Id} = Mb <- chappe_mrf_conf:members(Conf), Id =:= M2],
+    Bye = <<"<", U2/binary, ";method=BYE>">>,
+    ok = ?F:ua_refer(Ua1, Bye),
+    {ua, Ua1, {response, R}} = ua_msg(Ua1, response),
+    ?assertMatch(<<"SIP/2.0 403", _/binary>>, R),
+    Uri = <<"sip:nobye@127.0.0.1:", (integer_to_binary(?config(ep, Config)))/binary>>,
+    {Sock, _} = refer(Config, Uri, <<"boss">>, Bye),
+    ?assertMatch(<<"SIP/2.0 403", _/binary>>, sip_response(Sock)),
+    no_ua_event(Ua2, bye, 500),
+    ?assertEqual(2, length(chappe_mrf_conf:members(Conf))),
     ok = chappe_mrf_conf:stop(Conf).
 
 %% A caller answered straight into Conf (join/3 with {call, Req, Res}).

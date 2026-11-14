@@ -6,7 +6,8 @@
 %% - a REFER to the room's URI asks the focus to bring a party in (5.5):
 %%   the room dials it out and the referrer hears the outcome as NOTIFYs;
 %%   with method=BYE in its Refer-To it asks the focus to remove the
-%%   member with that URI (5.11). The room's refer_policy decides both.
+%%   member with that URI (5.11), in a focus room only. The room's
+%%   refer_policy decides both.
 %% - a member's REFER, in its dialog with the room, follows what the room
 %%   told it it is: a room with focus => true answers its members with the
 %%   conference URI and isfocus (RFC 4579 4.2), so its REFER is to a
@@ -85,9 +86,14 @@ refer(Conf, Req, Res) ->
 %% The room's policy behind the dial-string check: a party to add whose
 %% URI FreeSWITCH would read as more than one destination is refused
 %% 403 before the policy runs; otherwise the policy sees the dial string
-%% it would run as `dial'.
+%% it would run as `dial'. Removing a member (method=BYE) is a focus's
+%% (RFC 4579 5.11): a room without focus => true refuses it 403 (RFC
+%% 3515 2.4.2 leaves the 4xx-6xx to RFC 3261) whatever the policy says.
 guard(Policy, Cfg) ->
+    Focus = maps:get(entity, Cfg, undefined) =/= undefined,
     fun
+        (#{action := remove}) when not Focus ->
+            {reject, 403};
         (#{action := add, target := Target} = Info) ->
             case dialable(Target) of
                 true ->

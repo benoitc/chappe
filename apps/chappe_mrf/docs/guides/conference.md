@@ -216,7 +216,8 @@ ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
   referrer gets NOTIFY 200 once it answers (408 after `dial_timeout`, or
   the party's status).
 - `method=BYE` removes the member whose `uri` matches (the join's `uri`,
-  or a dialed party's); 404 when none does.
+  or a dialed party's); 404 when none does. Only a `focus => true` room
+  removes: any other room refuses it 403, whatever its policy says.
 - Without `refer_policy` every REFER is refused 403. The policy sees
   `#{action, target, referrer, referred_by}`, and for an add the dial
   string it would run as `dial`; `referred_by` is only claimed, never
@@ -233,8 +234,9 @@ the conference URI with `isfocus` as its Contact in a `focus => true` room
 - in a focus room a REFER is to the focus: its Refer-To party is dialed
   in, with the Refer-To's Replaces on that INVITE (5.10), or with
   `method=BYE` the member it names is removed (5.11);
-- in a room without `focus => true` it is an RFC 3515 transfer: the target
-  takes the member's place on its call, shown as
+- in a room without `focus => true` it is an RFC 3515 transfer (and
+  `method=BYE` is refused 403): the target takes the member's place on
+  its call, shown as
   `{left, Member, transferred}` then `{joined, Member, #{uri := Target}}`.
 
 The room's `refer_policy` decides each. A call you answered yourself
