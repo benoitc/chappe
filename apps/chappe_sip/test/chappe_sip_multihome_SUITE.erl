@@ -20,7 +20,7 @@
          uac_by_family/1, single_contact/1, bad_contact/1,
          answer_on_second_v4/1, uac_local/1, udp_flow_local/1,
          public_advertised/1, public_local_nets/1, bad_public/1,
-         double_record_route/1]).
+         double_record_route/1, ack_491_on_each_address/1]).
 
 -define(V4, {127, 0, 0, 1}).
 -define(V4B, {127, 0, 0, 2}).
@@ -28,6 +28,7 @@
 
 all() ->
     [answer_on_each_address, record_route_per_address, double_record_route,
+     ack_491_on_each_address,
      uac_by_family,
      single_contact, bad_contact, public_advertised, public_local_nets,
      bad_public, {group, second_v4}].
@@ -70,6 +71,43 @@ end_per_testcase(_Case, _Config) ->
     ok.
 
 %% ---- 127.0.0.1 and ::1 ----
+
+%% req: R3261-280
+%% With two listen addresses, a re-INVITE of a dialog answered 491 is
+%% ACKed (RFC 3261 17.1.1.3), every time, from the address it left from.
+ack_491_on_each_address(_Config) ->
+    {P4, P6} = start_v4_v6(),
+    ok = answer(),
+    lists:foreach(
+        fun({Ip, Port}) ->
+            [ack_491(Ip, Port) || _ <- lists:seq(1, 3)]
+        end,
+        [{?V4, P4}, {?V6, P6}]
+    ).
+
+ack_491(Ip, Port) ->
+    Peer = peer(Ip),
+    {_Ok, _Meta} = call(Peer, Ip, Port),
+    D = receive
+            {dialog, Dlg} -> Dlg
+        after 5000 -> ct:fail(no_dialog)
+        end,
+    Self = self(),
+    spawn(fun() ->
+        Self ! {modified, chappe_sip_dialog:modify(D, sdp(), #{retry_on_glare => false})}
+    end),
+    {ReInv, From} = recv_req(Peer, <<"INVITE">>),
+    ?assertEqual({Ip, Port}, From),
+    ok = reply(Peer, From, ReInv, 491),
+    {Ack, AckFrom} = recv_req(Peer, <<"ACK">>),
+    ?assertEqual({Ip, Port}, AckFrom),
+    _ = Ack,
+    receive {modified, _} -> ok after 5000 -> ct:fail(no_modify_result) end,
+    self() ! {dialog, D},
+    hangup(),
+    {Bye, BFrom} = recv_req(Peer, <<"BYE">>),
+    ok = reply(Peer, BFrom, Bye, 200),
+    close(Peer).
 
 %% req: R5658-01 R5658-02
 %% A request that comes to the IPv4 address and leaves for an IPv6 peer
