@@ -423,6 +423,16 @@ app(<<"play_and_get_digits">>, Arg, Common, #{node := #{opts := Opts}} = C) ->
     Digits = maps:get(digits, Opts, <<"1">>),
     complete(C, Common, [{<<"variable_", Var/binary>>, Digits}]),
     C;
+app(<<"playback">>, Arg, Common, C) ->
+    Extra =
+        case binary:match(Arg, <<"missing">>) of
+            nomatch ->
+                [{<<"Application-Response">>, <<"FILE PLAYED">>}, {<<"variable_playback_ms">>, <<"1234">>}];
+            _ ->
+                [{<<"Application-Response">>, <<"FILE NOT FOUND">>}]
+        end,
+    event(C, <<"CHANNEL_EXECUTE_COMPLETE">>, Common ++ Extra),
+    C;
 app(<<"conference">>, Arg, _Common, #{node := #{opts := Opts}} = C) ->
     [Room | _] = binary:split(Arg, <<"@">>),
     Id = integer_to_binary(erlang:unique_integer([positive])),

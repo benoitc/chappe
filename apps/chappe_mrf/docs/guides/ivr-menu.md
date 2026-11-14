@@ -44,7 +44,29 @@ menu(Ep, B2b) ->
 ```
 
 `play_collect/2` takes `min`, `max`, `tries`, `timeout`, `terminators`,
-`invalid_file` and `digit_timeout`; `{ok, <<>>}` means no digit came.
+`invalid_file` and `digit_timeout`; `{ok, <<>>}` means no digit came. With
+`result => full` you also get the terminator pressed and the last entry
+the `regexp` refused:
+
+```erlang
+{ok, #{digits := Pin, terminator := <<"#">>, invalid := <<>>}} =
+    chappe_mrf:play_collect(Ep, #{file => <<"/media/pin.wav">>, max => 6,
+                                  regexp => <<"\\d{4,6}">>, result => full}).
+```
+
+## Know how a prompt played
+
+`play/3` returns `{error, not_found}` for a file the node cannot find.
+`play_info/3` also tells you how long it played:
+
+```erlang
+{ok, #{ms := Ms, response := <<"FILE PLAYED">>}} =
+    chappe_mrf:play_info(Ep, <<"/media/news.wav">>, #{offset => 8000 * 30,
+                                                      limit_secs => 20}).
+```
+
+`offset` starts that many samples into the file (30 s of an 8 kHz file
+here); `limit_secs` (2 or more) stops it after that many seconds.
 
 ## Record and play back
 

@@ -22,6 +22,7 @@
     create_endpoint_bridge/1,
     bridge_to_uri/1,
     endpoint_commands/1,
+    play_results/1,
     endpoint_call_notices/1,
     node_down/1,
     native_conference/1,
@@ -58,6 +59,7 @@ all() ->
         create_endpoint_bridge,
         bridge_to_uri,
         endpoint_commands,
+        play_results,
         endpoint_call_notices,
         node_down,
         native_conference,
@@ -380,6 +382,26 @@ endpoint_commands(Config) ->
     ok = chappe_mrf:destroy(Ep),
     _ = fs_cmd(<<"uuid_kill ", Uuid/binary>>),
     ?assertEqual({error, gone}, chappe_mrf:play(Ep, <<"/a.wav">>)).
+
+%% A missing file is an error, play_info/3 reports how long the file
+%% played, and play_collect/2 can return the whole result.
+play_results(Config) ->
+    {ok, Ep} = chappe_mrf:create_endpoint(#{targets => [{fs1, fs_uri(Config)}]}),
+    ?assertEqual({error, not_found}, chappe_mrf:play(Ep, <<"/media/missing.wav">>)),
+    ?assertEqual(
+        {error, not_found},
+        chappe_mrf:play(Ep, [<<"/a.wav">>, <<"/missing.wav">>, <<"/b.wav">>])
+    ),
+    ?assertEqual(
+        {ok, #{ms => 1234, response => <<"FILE PLAYED">>}},
+        chappe_mrf:play_info(Ep, <<"/a.wav">>, #{offset => 800})
+    ),
+    _ = fs_cmd(<<"/a.wav@@800">>),
+    ?assertEqual(
+        {ok, #{digits => <<"1">>, terminator => <<>>, invalid => <<>>}},
+        chappe_mrf:play_collect(Ep, #{file => <<"/p.wav">>, result => full})
+    ),
+    ok = chappe_mrf:destroy(Ep).
 
 %% The call's linger and disconnect notices leave a live endpoint as it is:
 %% closed and the hangup are what end it.

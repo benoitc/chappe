@@ -25,7 +25,7 @@ chappe equivalents. Use it when you port a drachtio app.
 | `new Mrf(srf)`, `mrf.connect(opts)` | `chappe_esl:node_add/2` per node, `chappe_mrf:start/1` |
 | `ms.connectCaller(req, res)` | `chappe_mrf:connect_caller(Req, Res, Opts)` returns `{ok, Ep, B2b}` |
 | `ms.createEndpoint()` | `chappe_mrf:create_endpoint(Opts)` |
-| `ep.play(file)` | `chappe_mrf:play(Ep, File)` |
+| `ep.play(file)` | `chappe_mrf:play(Ep, File)`; `play_info/3` for `playbackMs` and the response |
 | `ep.playCollect(opts)` | `chappe_mrf:play_collect(Ep, Opts)` |
 | `ep.record(file, opts)` | `chappe_mrf:record(Ep, Path, Opts)` |
 | `ep.recordSession` | `chappe_mrf:record_session/2`, `record_session_stop/2` |

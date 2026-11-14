@@ -54,7 +54,8 @@
 %% gen_server.
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
--export_type([call/0, exec_opts/0, start_opts/0, msg/0, fork_module/0]).
+-export_type([call/0, exec_opts/0, playback_opts/0, digits/0]).
+-export_type([start_opts/0, msg/0, fork_module/0]).
 
 -define(EXEC_TIMEOUT, 60000).
 -define(CLEANUP_TIMEOUT, 2000).
@@ -72,6 +73,19 @@
     wait => boolean(),
     lock => boolean(),
     loops => pos_integer()
+}.
+%% playback/3: exec_opts plus offset (samples) and limit_secs.
+-type playback_opts() :: #{
+    timeout => timeout(),
+    wait => boolean(),
+    lock => boolean(),
+    loops => pos_integer(),
+    offset => non_neg_integer(),
+    limit_secs => pos_integer()
+}.
+%% play_and_get_digits/2 with result => full.
+-type digits() :: #{
+    digits := binary(), terminator := binary(), invalid := binary()
 }.
 %% owner: the process that gets the messages and whose death ends the call
 %% (the caller). uuid: the channel, required on an inbound connection.
@@ -193,22 +207,69 @@ answer(Call) ->
     done(exec(Call, <<"answer">>, <<>>)).
 
 %% Play a file; the completion event's Application-Response says how it
-%% ended (FILE PLAYED, FILE NOT FOUND, ...).
+%% ended (FILE PLAYED, FILE NOT FOUND, PLAYBACK ERROR) and its
+%% variable_playback_ms how long it played.
 -spec playback(call(), iodata()) -> {ok, event()} | {error, term()}.
 playback(Call, File) ->
     playback(Call, File, #{}).
 
--spec playback(call(), iodata(), exec_opts()) ->
+%% Opts, besides exec_opts: offset (start this many samples into the file,
+%% FreeSWITCH's File@@Samples), limit_secs (stop after this many seconds,
+%% at least 2, through playback_timeout_sec; the playback then still ends
+%% as FILE PLAYED). A bad value returns {error, {bad_option, Key}}.
+-spec playback(call(), iodata(), playback_opts()) ->
     {ok, event()} | {error, term()}.
 playback(Call, File, Opts) ->
-    exec(Call, <<"playback">>, File, Opts).
+    case playback_args(File, Opts) of
+        {ok, Arg, undefined} ->
+            exec(Call, <<"playback">>, Arg, exec_opts(Opts));
+        {ok, Arg, Secs} ->
+            limited_playback(Call, Arg, Secs, exec_opts(Opts));
+        {error, _} = Err ->
+            Err
+    end.
+
+playback_args(File, Opts) ->
+    case {maps:get(offset, Opts, 0), maps:get(limit_secs, Opts, undefined)} of
+        {Off, _} when not is_integer(Off); Off < 0 ->
+            {error, {bad_option, offset}};
+        {_, Secs} when Secs =/= undefined, not is_integer(Secs) ->
+            {error, {bad_option, limit_secs}};
+        {_, Secs} when is_integer(Secs), Secs < 2 ->
+            {error, {bad_option, limit_secs}};
+        {0, Secs} ->
+            {ok, File, Secs};
+        {Off, Secs} ->
+            {ok, [File, <<"@@">>, integer_to_binary(Off)], Secs}
+    end.
+
+%% FreeSWITCH reads the limit from the channel: set before, cleared after,
+%% one application after the other (event-lock).
+limited_playback(Call, Arg, Secs, Opts) ->
+    Vars = [
+        <<"playback_timeout_sec=">>,
+        integer_to_binary(Secs),
+        <<" playback_timeout_as_success=true">>
+    ],
+    case exec(Call, <<"multiset">>, Vars) of
+        {ok, _} ->
+            Result = exec(Call, <<"playback">>, Arg, Opts),
+            _ = exec(Call, <<"unset">>, <<"playback_timeout_sec">>),
+            Result;
+        Error ->
+            Error
+    end.
 
 %% Play a prompt and collect digits. Opts: file (required), min (1), max
 %% (1), tries (1), timeout (5000 ms), terminators (<<"#">>), invalid_file
 %% (silence_stream://250), regexp (<<"[0-9*#]+">>), digit_timeout (timeout),
 %% var (chappe_digits), plus exec_opts. Returns the digits FreeSWITCH stored
-%% in var, <<>> when none were entered.
--spec play_and_get_digits(call(), map()) -> {ok, binary()} | {error, term()}.
+%% in var, <<>> when none were entered. With result => full it returns
+%% #{digits, terminator, invalid}: the terminator pressed (<<>> for none,
+%% from read_terminator_used) and the last entry the regexp refused (<<>>
+%% for none, from <var>_invalid).
+-spec play_and_get_digits(call(), map()) ->
+    {ok, binary() | digits()} | {error, term()}.
 play_and_get_digits(Call, #{file := File} = Opts) ->
     Timeout = maps:get(timeout, Opts, 5000),
     Var = to_bin(maps:get(var, Opts, ?DIGITS_VAR)),
@@ -234,8 +295,21 @@ play_and_get_digits(Call, #{file := File} = Opts) ->
         })
     of
         {ok, Ev} ->
-            Digits = chappe_esl_event:header(<<"variable_", Var/binary>>, Ev),
-            {ok, to_bin(Digits)};
+            V = fun(Name) ->
+                to_bin(
+                    chappe_esl_event:header(<<"variable_", Name/binary>>, Ev)
+                )
+            end,
+            case maps:get(result, Opts, digits) of
+                full ->
+                    {ok, #{
+                        digits => V(Var),
+                        terminator => V(<<"read_terminator_used">>),
+                        invalid => V(<<Var/binary, "_invalid">>)
+                    }};
+                _ ->
+                    {ok, V(Var)}
+            end;
         Error ->
             Error
     end.

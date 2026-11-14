@@ -23,6 +23,8 @@
     raw_exec_long_arg/1,
     inbound_call/1,
     play_and_get_digits/1,
+    play_and_get_digits_full/1,
+    playback_options/1,
     dtmf_and_hangup/1,
     helpers/1,
     audio_stream_commands/1,
@@ -65,6 +67,8 @@ all() ->
         raw_exec_long_arg,
         inbound_call,
         play_and_get_digits,
+        play_and_get_digits_full,
+        playback_options,
         dtmf_and_hangup,
         helpers,
         audio_stream_commands,
@@ -348,6 +352,58 @@ play_and_get_digits(_Config) ->
         {ok, <<>>},
         chappe_esl_call:play_and_get_digits(Call2, #{file => <<"p.wav">>})
     ).
+
+%% result => full also reads the terminator and the refused entry.
+%% req: ESL-37
+play_and_get_digits_full(_Config) ->
+    Vars = [
+        {<<"variable_pin">>, <<"42">>},
+        {<<"variable_read_terminator_used">>, <<"#">>},
+        {<<"variable_pin_invalid">>, <<"9">>}
+    ],
+    {Call, _Fake} = outbound(#{
+        apps => #{<<"play_and_get_digits">> => #{vars => Vars}}
+    }),
+    ?assertEqual(
+        {ok, #{digits => <<"42">>, terminator => <<"#">>, invalid => <<"9">>}},
+        chappe_esl_call:play_and_get_digits(Call, #{
+            file => <<"p.wav">>, var => <<"pin">>, result => full
+        })
+    ),
+    {Call2, _} = outbound(#{}),
+    ?assertEqual(
+        {ok, #{digits => <<>>, terminator => <<>>, invalid => <<>>}},
+        chappe_esl_call:play_and_get_digits(Call2, #{
+            file => <<"p.wav">>, result => full
+        })
+    ).
+
+%% offset seeks with File@@Samples; limit_secs sets playback_timeout_sec
+%% around the playback and clears it after; bad values are refused before
+%% anything is sent.
+%% req: ESL-37
+playback_options(_Config) ->
+    {Call, _Fake} = outbound(#{}),
+    {ok, _} = chappe_esl_call:playback(Call, "a.wav", #{offset => 8000}),
+    expect_app(<<"playback">>, <<"a.wav@@8000">>),
+    {ok, _} = chappe_esl_call:playback(Call, "b.wav", #{limit_secs => 3}),
+    expect_app(
+        <<"multiset">>,
+        <<"playback_timeout_sec=3 playback_timeout_as_success=true">>
+    ),
+    expect_app(<<"playback">>, <<"b.wav">>),
+    expect_app(<<"unset">>, <<"playback_timeout_sec">>),
+    [
+        ?assertEqual(
+            {error, {bad_option, K}}, chappe_esl_call:playback(Call, "c", O)
+        )
+     || {K, O} <- [
+            {offset, #{offset => -1}},
+            {offset, #{offset => <<"1">>}},
+            {limit_secs, #{limit_secs => 1}},
+            {limit_secs, #{limit_secs => 2.5}}
+        ]
+    ].
 
 %% req: ESL-38
 dtmf_and_hangup(_Config) ->

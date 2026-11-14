@@ -34,7 +34,7 @@
 
 -export([start/1, listen/1, stop_listener/0, install/0]).
 -export([connect_caller/3, create_endpoint/1, bridge/2, bridge/3]).
--export([play/2, play/3, play_collect/2, record/3]).
+-export([play/2, play/3, play_info/3, play_collect/2, record/3]).
 -export([record_session/2, record_session_stop/2, send_dtmf/2, set/3]).
 -export([api/2, execute/3, fork_audio_start/3, fork_audio_stop/1]).
 -export([modify/2, destroy/1, uuid/1, node/1, info/1]).
@@ -314,7 +314,10 @@ give_back(D, Ep) ->
 play(Ep, Files) ->
     play(Ep, Files, #{}).
 
-%% Opts: chappe_esl_call:exec_opts() (timeout, ...).
+%% Opts: chappe_esl_call:playback_opts() (timeout, offset in samples,
+%% limit_secs, ...). A file the node cannot find is {error, not_found},
+%% one it cannot play {error, playback_error}; a list stops at the first
+%% error.
 -spec play(endpoint(), iodata() | [binary()], map()) -> ok | {error, term()}.
 play(Ep, [F | _] = Files, Opts) when is_binary(F) ->
     lists:foldl(
@@ -326,15 +329,33 @@ play(Ep, [F | _] = Files, Opts) when is_binary(F) ->
         Files
     );
 play(Ep, File, Opts) ->
+    case play_info(Ep, File, Opts) of
+        {ok, _} -> ok;
+        Err -> Err
+    end.
+
+%% play/3 for one file, with how it went: #{ms, response}, the time it
+%% played (FreeSWITCH's playback_ms, undefined when it did not say) and
+%% the Application-Response (FILE PLAYED).
+-spec play_info(endpoint(), iodata(), map()) ->
+    {ok, #{ms := non_neg_integer() | undefined, response := binary()}}
+    | {error, term()}.
+play_info(Ep, File, Opts) ->
     with_call(Ep, fun(C) ->
-        chappe_mrf_lib:done(chappe_esl_call:playback(C, File, Opts))
+        case chappe_esl_call:playback(C, File, Opts) of
+            {ok, Ev} -> chappe_mrf_lib:playback_result(Ev);
+            Err -> Err
+        end
     end).
 
 %% Play a prompt and collect digits: {ok, Digits}, <<>> when none came.
 %% Opts: file (the prompt, required), min (1), max (1), tries (1),
 %% timeout (5000 ms), terminators (<<"#">>), invalid_file, digit_timeout,
-%% regexp.
--spec play_collect(endpoint(), map()) -> {ok, binary()} | {error, term()}.
+%% regexp. result => full returns #{digits, terminator, invalid} instead:
+%% the terminator pressed and the last entry the regexp refused (<<>> for
+%% none).
+-spec play_collect(endpoint(), map()) ->
+    {ok, binary() | chappe_esl_call:digits()} | {error, term()}.
 play_collect(Ep, Opts) ->
     with_call(Ep, fun(C) -> chappe_esl_call:play_and_get_digits(C, Opts) end).
 
