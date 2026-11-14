@@ -70,11 +70,15 @@ Then:
 ```erlang
 {ok, Id} = chappe_mrf:record(Ep, <<"/media/msg.wav">>, #{max_secs => 30, store => default}),
 ok = chappe_mrf:record_session(Ep, <<"/media/call.wav">>, #{store => default}),
-{ok, Id2} = chappe_mrf:record_session_stop(Ep, <<"/media/call.wav">>).
+ok = chappe_mrf:record_session_stop(Ep, <<"/media/call.wav">>),
+receive {chappe_mrf, Ep, {recorded, Id2}} -> Id2 end.
 ```
 
-A session recording still going at the hangup is adopted then, and the
-endpoint's owner gets `{chappe_mrf, Ep, {recorded, Id}}`. The recording is
+A session recording is adopted once FreeSWITCH has closed the file (its
+RECORD_STOP, after `record_session_stop/2` or the hangup), and the
+endpoint's owner gets `{chappe_mrf, Ep, {recorded, Id}}`. If the close is
+never seen (the endpoint goes first), the file is copied once it stops
+growing and the source is left where it is. The recording is
 filed under the endpoint's call_ref; pass `ref => Bin` to choose another.
 A path outside the shared folder returns `{error, not_shared}` before
 FreeSWITCH sees the command.

@@ -23,6 +23,8 @@
     refer_bgdial/1,
     dialed_party_leaves/1,
     member_transferred/1,
+    session_recording_waits_for_close/1,
+    room_recording_waits_for_close/1,
     caller_hangup/1,
     unknown_channel_refused/1,
     owner_death_kills_channel/1,
@@ -75,6 +77,8 @@ all() ->
         refer_bgdial,
         dialed_party_leaves,
         member_transferred,
+        session_recording_waits_for_close,
+        room_recording_waits_for_close,
         caller_hangup,
         unknown_channel_refused,
         owner_death_kills_channel,
@@ -493,6 +497,62 @@ dialed_party_leaves(Config) ->
     Maint(<<"del-member">>),
     conf_event(Conf, {left, <<"88">>, departed}),
     ?assertMatch(#{members := 1}, chappe_mrf_conf:info(Conf)),
+    ok = chappe_mrf:destroy(Ep).
+
+%% A session recording is adopted only once FreeSWITCH says it closed
+%% the file (RECORD_STOP, which comes after the media bug goes), never
+%% when record_session_stop/2 returns: until then the file stays where
+%% FreeSWITCH writes it.
+session_recording_waits_for_close(Config) ->
+    ivr(Config),
+    ok = chappe_audio_store:configure(#{dir => filename:join(?config(priv_dir, Config), "store")}),
+    Path = iolist_to_binary(filename:join(?config(priv_dir, Config), "sess.wav")),
+    ok = file:write_file(Path, chappe_audio_wav:header(8000, 1, 0)),
+    {_Ua, Ep, _B2b, Owner} = call_in(Config),
+    ok = in_owner(Owner, fun() -> chappe_mrf:record_session(Ep, Path, #{store => default}) end),
+    _ = fs_cmd(<<"RECORD_STOP">>),
+    ok = in_owner(Owner, fun() -> chappe_mrf:record_session_stop(Ep, Path) end),
+    timer:sleep(800),
+    ?assert(filelib:is_regular(Path)),
+    ok = ?F:fs_event(?config(fs, Config), <<"RECORD_STOP">>, [{<<"Record-File-Path">>, Path}]),
+    Id =
+        receive
+            {owner, {chappe_mrf, Ep, {recorded, R}}} -> R
+        after 5000 -> ct:fail(no_recorded)
+        end,
+    ?assertMatch({ok, _}, chappe_audio_store:get(Id)),
+    ?assertNot(filelib:is_regular(Path)),
+    Owner ! stop.
+
+%% A room recording is adopted on mod_conference's stop-recording (the
+%% file closed), not when `recording stop all' returns.
+room_recording_waits_for_close(Config) ->
+    ok = chappe_audio_store:configure(#{dir => filename:join(?config(priv_dir, Config), "store")}),
+    Path = iolist_to_binary(filename:join(?config(priv_dir, Config), "room.wav")),
+    ok = file:write_file(Path, chappe_audio_wav:header(8000, 1, 0)),
+    {ok, Conf} = chappe_mrf:conference(<<"recroom">>, #{backend => fs, node => fs1}),
+    {ok, Ep} = chappe_mrf:create_endpoint(#{targets => [{fs1, fs_uri(Config)}]}),
+    {ok, _} = chappe_mrf_conf:join(Conf, Ep, #{}),
+    {joined, _, _} = joined(Conf),
+    ok = chappe_mrf_conf:record(Conf, Path, #{store => default, ref => <<"room-r">>}),
+    ok = chappe_mrf_conf:stop_record(Conf),
+    receive
+        {chappe_mrf_conf, Conf, {recorded, _, _}} = M -> ct:fail({too_early, M})
+    after 800 -> ok
+    end,
+    ?assert(filelib:is_regular(Path)),
+    Conf ! {chappe_esl_node, fs1, {event, #{body => <<>>, headers => #{
+        <<"Event-Name">> => <<"CUSTOM">>,
+        <<"Event-Subclass">> => <<"conference::maintenance">>,
+        <<"Conference-Name">> => <<"recroom">>,
+        <<"Action">> => <<"stop-recording">>,
+        <<"Path">> => Path}
+    }}},
+    receive
+        {chappe_mrf_conf, Conf, {recorded, _, {ok, Id}}} ->
+            ?assertMatch({ok, #{call_ref := <<"room-r">>}}, chappe_audio_store:get(Id))
+    after 5000 -> ct:fail(no_recorded)
+    end,
     ok = chappe_mrf:destroy(Ep).
 
 %% A member's call is transferred by REFER (its B2BUA carries it out,

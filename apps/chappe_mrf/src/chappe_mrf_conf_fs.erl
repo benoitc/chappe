@@ -213,6 +213,10 @@ room_event(Ev, #state{name = Name} = S) ->
             %% would say it left: the node's do (an endpoint member's
             %% del-member also comes on its channel; gone/2 takes it once)
             dialed_gone(chappe_mrf_lib:to_bin(H(<<"Member-ID">>)), S);
+        {<<"conference::maintenance">>, Name, <<"stop-recording">>} ->
+            chappe_mrf_conf:recording_closed(
+                chappe_mrf_lib:to_bin(H(<<"Path">>)), S
+            );
         {<<"conference::maintenance">>, Name, <<"bgdial-result">>} ->
             chappe_mrf_conf_refer:fs_result(
                 chappe_mrf_lib:to_bin(H(<<"Peer-UUID">>)),

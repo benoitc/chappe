@@ -433,17 +433,16 @@ record_session(Ep, Path) ->
     record_session(Ep, Path, #{}).
 
 %% record_session/2 with store => default (and ref, parties) as for
-%% record/3: the file is adopted into the store when the recording ends,
-%% at record_session_stop/2 (which then returns {ok, Id}) or at the
-%% hangup, when the owner gets {recorded, Id}.
+%% record/3: the file is adopted into the store once FreeSWITCH has
+%% closed it (its RECORD_STOP, after record_session_stop/2 or the
+%% hangup), and the owner gets {recorded, Id}.
 -spec record_session(endpoint(), iodata(), map()) -> ok | {error, term()}.
 record_session(Ep, Path, Opts) ->
     with_call(Ep, fun(C) ->
         chappe_mrf_store:record_session(C, Ep, Path, Opts)
     end).
 
--spec record_session_stop(endpoint(), iodata()) ->
-    ok | {ok, binary()} | {error, term()}.
+-spec record_session_stop(endpoint(), iodata()) -> ok | {error, term()}.
 record_session_stop(Ep, Path) ->
     with_call(Ep, fun(C) ->
         chappe_mrf_store:record_session_stop(C, Ep, Path)

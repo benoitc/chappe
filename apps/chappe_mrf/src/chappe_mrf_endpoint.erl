@@ -48,7 +48,7 @@
 -export([start/1, start_link/1]).
 -export([attach/3, await/2, call/1, info/1, watch/2, set_dialog/2]).
 -export([handed/1, destroy/1, check_events/1, set_owner/2]).
--export([track_recording/4, take_recording/2]).
+-export([track_recording/4]).
 -export([callback_mode/0, init/1, waiting/3, ready/3, gone/3, terminate/3]).
 
 -export_type([endpoint/0]).
@@ -56,6 +56,10 @@
 -type endpoint() :: pid().
 
 -define(LINGER, 30000).
+%% how long a gone endpoint waits for the outcome of its adoptions
+-define(ADOPT_LINGER, 70000).
+%% how long a file whose close was never seen must hold its size
+-define(ORPHAN_SETTLE, 2000).
 
 -record(state, {
     id :: binary(),
@@ -79,7 +83,9 @@
     events = [] :: [event_spec()],
     %% session recordings to adopt into the store when they end, by the
     %% path FreeSWITCH writes: the call_ref and meta to adopt them under
-    recordings = #{} :: #{binary() => {binary(), map()}}
+    recordings = #{} :: #{binary() => {binary(), map()}},
+    %% adoptions started whose outcome has not come yet
+    adopting = 0 :: non_neg_integer()
 }).
 -type state() :: #state{}.
 %% What an owner may ask to hear (events => [...] at start).
@@ -123,22 +129,15 @@ info(Ep) ->
     safe(Ep, info, 5000).
 
 %% Adopt the session recording FreeSWITCH writes at Path into the store
-%% under Ref when it ends: at take_recording/2 (record_session_stop/2),
-%% else at the hangup (the owner then gets {recorded, Id}) or when the
-%% endpoint goes.
+%% under Ref once FreeSWITCH has closed it: its RECORD_STOP (after
+%% record_session_stop/2, or after the hangup, while the endpoint
+%% lingers), and the owner gets {recorded, Id}. A recording whose close
+%% was never seen (the endpoint goes first, or no RECORD_STOP came by the
+%% end of the linger) is copied, never moved, once it stops growing.
 -spec track_recording(endpoint(), binary(), binary(), map()) ->
     ok | {error, term()}.
 track_recording(Ep, Path, Ref, Meta) ->
     safe(Ep, {recording, {track, Path, Ref, Meta}}, 5000).
-
-%% The call_ref and meta a tracked recording was started with, no longer
-%% tracked; error when it was not.
--spec take_recording(endpoint(), binary()) -> {ok, {binary(), map()}} | error.
-take_recording(Ep, Path) ->
-    case safe(Ep, {recording, {take, Path}}, 5000) of
-        {ok, _} = Ok -> Ok;
-        _ -> error
-    end.
 
 %% Pid gets {chappe_mrf_endpoint, Ep, Event} from now on.
 -spec watch(endpoint(), pid()) -> ok | {error, term()}.
@@ -237,10 +236,31 @@ ready(EventType, Msg, Data) ->
 
 gone({call, From}, Req, _Data) when Req =:= await; Req =:= call ->
     {keep_state_and_data, [{reply, From, {error, hangup}}]};
-gone(state_timeout, linger, _Data) ->
+gone(state_timeout, linger, #state{recordings = R, adopting = 0}) when
+    map_size(R) =:= 0
+->
     {stop, normal};
+gone(state_timeout, linger, Data) ->
+    %% recordings whose RECORD_STOP never came are copied (FreeSWITCH may
+    %% still hold them), and the endpoint waits for the store's outcome
+    Data1 = adopt_recordings(Data, false),
+    {keep_state, Data1, [{state_timeout, ?ADOPT_LINGER, linger}]};
+gone(info, {chappe_esl_call, _, {event, Ev}}, Data) ->
+    case chappe_esl_event:name(Ev) of
+        <<"RECORD_STOP">> -> {keep_state, record_stopped(Ev, Data)};
+        _ -> keep_state_and_data
+    end;
 gone(info, {chappe_esl_call, _, _}, _Data) ->
     keep_state_and_data;
+gone(info, {chappe_audio_store, _Job, {adopted, Key, Result}}, Data) ->
+    adopted(Result, Key, Data),
+    Data1 = Data#state{adopting = max(0, Data#state.adopting - 1)},
+    case Data1 of
+        #state{recordings = R, adopting = 0} when map_size(R) =:= 0 ->
+            {stop, normal, Data1};
+        _ ->
+            {keep_state, Data1}
+    end;
 gone(EventType, Msg, Data) ->
     common(EventType, Msg, gone, Data).
 
@@ -325,13 +345,21 @@ call_msg(closed, Data) ->
     hungup(<<"CONNECTION_CLOSED">>, Data#state{call = undefined});
 call_msg({event, Ev}, Data) ->
     Name = chappe_esl_event:name(Ev),
-    _ = Name =:= <<"CUSTOM">> andalso tell(Data, {event, Ev}),
-    _ = [notify(Data, E) || E <- owner_events(Name, Ev, Data#state.events)],
-    keep_state_and_data;
+    Data1 =
+        case Name of
+            <<"RECORD_STOP">> -> record_stopped(Ev, Data);
+            _ -> Data
+        end,
+    call_event(Name, Ev, Data1);
 call_msg({complete, App, Ev}, Data) ->
     notify(Data, {complete, App, Ev}),
     tell(Data, {complete, App, Ev}),
     keep_state_and_data.
+
+call_event(Name, Ev, Data) ->
+    _ = Name =:= <<"CUSTOM">> andalso tell(Data, {event, Ev}),
+    _ = [notify(Data, E) || E <- owner_events(Name, Ev, Data#state.events)],
+    {keep_state, Data}.
 
 %% The owner messages a channel event makes, from what the owner asked.
 owner_events(<<"PLAYBACK_START">>, Ev, Wanted) ->
@@ -385,23 +413,40 @@ esl_event({channel, N}) -> N.
 hungup(Cause, #state{linger = Linger} = Data) ->
     notify(Data, {hangup, Cause}),
     tell(Data, hangup),
-    Data1 = adopt_recordings(Data, false),
-    {next_state, gone, Data1, [{state_timeout, Linger, linger}]}.
+    {next_state, gone, Data, [{state_timeout, Linger, linger}]}.
 
 recording({track, Path, Ref, Meta}, #state{recordings = Recs} = Data) ->
     {ok, Data#state{recordings = Recs#{Path => {Ref, Meta}}}};
-recording({take, Path}, #state{recordings = Recs} = Data) ->
+recording(_Req, Data) ->
+    {{error, unknown}, Data}.
+
+%% FreeSWITCH closed a file it recorded: a tracked one goes to the store.
+record_stopped(Ev, #state{recordings = Recs} = Data) ->
+    Path = chappe_mrf_lib:to_bin(
+        chappe_esl_event:header(<<"Record-File-Path">>, Ev)
+    ),
     case maps:take(Path, Recs) of
-        {Rec, Recs1} -> {{ok, Rec}, Data#state{recordings = Recs1}};
-        error -> {error, Data}
+        {{Ref, Meta}, Recs1} ->
+            ok = adopt_one(Path, {Ref, Meta}, self(), #{}, Data),
+            Data#state{recordings = Recs1, adopting = Data#state.adopting + 1};
+        error ->
+            Data
     end.
 
-%% The session recordings still tracked end with the channel: each goes
-%% to a job of the store, which tells this endpoint (Notify) the outcome,
-%% and the endpoint tells its owner {recorded, Id} (adopted/2). Stop says
-%% whether the channel is still up and must stop recording first (the
-%% endpoint goes before its hangup; nobody is then told). The tracked
-%% ones are forgotten here, so a hangup and a terminate adopt once.
+%% One recording to a job of the store; a refusal is the owner's news.
+adopt_one(Path, {Ref, Meta}, Notify, Extra, Data) ->
+    case chappe_mrf_store:adopt_async(Path, Ref, Meta, Notify, Extra) of
+        {ok, _Job, _Key} -> ok;
+        {error, Reason} -> notify(Data, {record_failed, Path, Reason})
+    end.
+
+%% The session recordings whose close FreeSWITCH never reported: each is
+%% copied (keep: FreeSWITCH may still hold the file, never remove it) by a
+%% job of the store once it stops growing, which tells this endpoint
+%% (Notify) the outcome, and the endpoint its owner {recorded, Id}
+%% (adopted/3). Stop says whether the channel is still up and must stop
+%% recording first (the endpoint goes before its hangup; nobody is then
+%% told). The tracked ones are forgotten here, so they are adopted once.
 adopt_recordings(#state{recordings = Recs} = Data, Stop) ->
     Notify =
         case Stop of
@@ -413,14 +458,14 @@ adopt_recordings(#state{recordings = Recs} = Data, Stop) ->
             _ =
                 Stop andalso is_pid(Data#state.call) andalso
                     chappe_esl_call:record_session_stop(Data#state.call, Path),
-            case chappe_mrf_store:adopt_async(Path, Ref, Meta, Notify) of
-                {ok, _Job, _Key} -> ok;
-                {error, Reason} -> notify(Data, {record_failed, Path, Reason})
-            end
+            Keep = #{keep => true, settle_ms => ?ORPHAN_SETTLE},
+            adopt_one(Path, {Ref, Meta}, Notify, Keep, Data)
         end,
         Recs
     ),
-    Data#state{recordings = #{}}.
+    Data#state{
+        recordings = #{}, adopting = Data#state.adopting + map_size(Recs)
+    }.
 
 %% A job's outcome: the owner hears of it.
 adopted({ok, Id}, _Key, Data) ->

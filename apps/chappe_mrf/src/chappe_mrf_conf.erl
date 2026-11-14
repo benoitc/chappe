@@ -53,7 +53,7 @@
 -export([loop_invite/4, subscribe/3, refer/3, b2b_event/2]).
 %% for the backends (chappe_mrf_conf_native, chappe_mrf_conf_fs)
 -export([call/3, emit/2, publish/1, gone/2, gone/3, talking/3, public/2]).
--export([member/3, drop_member/3]).
+-export([member/3, drop_member/3, recording_closed/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -export_type([conf/0, member/0]).
@@ -62,6 +62,9 @@
 -type member() :: binary().
 
 -include("chappe_mrf_conf.hrl").
+
+%% how long a stopped recording waits for its stop-recording event
+-define(CLOSE_WAIT, 15000).
 
 %% ---- API ----
 
@@ -617,6 +620,9 @@ handle_info({chappe_mrf, Ep, Event}, S) when is_pid(Ep) ->
     {noreply, chappe_mrf_conf_refer:native_event(Ep, Event, S)};
 handle_info({chappe_audio_store, _Job, {adopted, Key, Result}}, S) ->
     {noreply, emit({recorded, Key, Result}, S)};
+handle_info({timeout, _, room_recording_close}, #state{stopping = St} = S) ->
+    _ = adopt_recordings(St, self(), orphan()),
+    {noreply, S#state{stopping = []}};
 handle_info({refer_bgdial, Uuid, Result}, S) ->
     {noreply, chappe_mrf_conf_refer:fs_started(Uuid, Result, S)};
 handle_info({timeout, _, {refer_dial, Key}}, S) ->
@@ -648,7 +654,9 @@ terminate(_Reason, #state{members = M, focus = F} = S) ->
     _ =
         S#state.recordings =/= [] andalso
             chappe_mrf_conf_fs:stop_record(S) =:= ok andalso
-            adopt_recordings(S, undefined),
+            adopt_recordings(
+                S#state.recordings ++ S#state.stopping, undefined, orphan()
+            ),
     maps:foreach(fun(Id, Mb) -> _ = hangup_member(Id, Mb, S) end, M),
     ok.
 
@@ -815,8 +823,11 @@ record_req({start, Path, Opts}, #state{backend = fs} = S) ->
 record_req(stop, #state{backend = fs} = S) ->
     case chappe_mrf_conf_fs:stop_record(S) of
         ok when S#state.recordings =/= [] ->
-            _ = adopt_recordings(S, self()),
-            {reply, ok, S#state{recordings = []}};
+            %% adopted on stop-recording (the file closed); a room whose
+            %% node events never say it gets a copy after a while
+            _ = erlang:start_timer(?CLOSE_WAIT, self(), room_recording_close),
+            Stopping = S#state.recordings ++ S#state.stopping,
+            {reply, ok, S#state{recordings = [], stopping = Stopping}};
         Reply ->
             {reply, Reply, S}
     end;
@@ -854,14 +865,32 @@ record_stored(Path, Opts, S) ->
         Err -> {reply, Err, S}
     end.
 
-%% The room's stored recordings, stopped, into the store (source room),
-%% each in a job of the store: Notify (the room) hears the outcome and
-%% its listeners get {recorded, Path, {ok, Id} | {error, Reason}}.
-adopt_recordings(#state{recordings = Recs}, Notify) ->
+%% The room's stored recordings into the store (source room), each in a
+%% job of the store: Notify (the room) hears the outcome and its
+%% listeners get {recorded, Path, {ok, Id} | {error, Reason}}. Extra is
+%% orphan() for files whose close was never seen: copied, not moved.
+adopt_recordings(Recs, Notify, Extra) ->
     [
-        chappe_mrf_store:adopt_async(Path, Ref, Meta#{source => room}, Notify)
+        chappe_mrf_store:adopt_async(
+            Path, Ref, Meta#{source => room}, Notify, Extra
+        )
      || {Path, Ref, Meta} <- lists:reverse(Recs)
     ].
+
+orphan() ->
+    #{keep => true, settle_ms => 2000}.
+
+%% mod_conference closed a recording's file (stop-recording): a stopped
+%% stored one is adopted now.
+-spec recording_closed(binary(), #state{}) -> #state{}.
+recording_closed(Path, #state{stopping = St} = S) ->
+    case lists:keytake(Path, 1, St) of
+        {value, Rec, St1} ->
+            _ = adopt_recordings([Rec], self(), #{}),
+            S#state{stopping = St1};
+        false ->
+            S
+    end.
 
 %% transfer/3's steps here, sent as {transfer, Step, Member}: out marks the
 %% member and hands over what the other conference needs, cancel undoes
