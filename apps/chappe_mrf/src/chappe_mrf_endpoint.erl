@@ -232,8 +232,6 @@ ready({call, From}, Req, Data) when Req =:= await; Req =:= call ->
     {keep_state_and_data, [{reply, From, {ok, ready_value(Req, Data)}}]};
 ready(info, {chappe_esl_call, Call, Msg}, #state{call = Call} = Data) ->
     call_msg(Msg, Data);
-ready(info, {chappe_esl_call, Call, Msg, _Ref}, #state{call = Call} = Data) ->
-    call_msg(Msg, Data);
 ready(EventType, Msg, Data) ->
     common(EventType, Msg, ready, Data).
 
@@ -242,8 +240,6 @@ gone({call, From}, Req, _Data) when Req =:= await; Req =:= call ->
 gone(state_timeout, linger, _Data) ->
     {stop, normal};
 gone(info, {chappe_esl_call, _, _}, _Data) ->
-    keep_state_and_data;
-gone(info, {chappe_esl_call, _, _, _}, _Data) ->
     keep_state_and_data;
 gone(EventType, Msg, Data) ->
     common(EventType, Msg, gone, Data).

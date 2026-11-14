@@ -119,9 +119,8 @@
 %% owner: the process that gets the messages and whose death ends the call
 %% (the caller). uuid: the channel, required on an inbound connection.
 %% cleanup: on owner death, stop forks and recordings and kill the channel
-%% (true). ref: an opaque binary (a call ref); every message to the owner
-%% then carries it as {chappe_esl_call, Call, Msg, Ref}, and ref/1 returns
-%% it.
+%% (true). ref: an opaque binary (a call ref), returned by ref/1; the
+%% messages to the owner keep their {chappe_esl_call, Call, Msg} shape.
 -type start_opts() :: #{
     owner => pid(), uuid => binary(), cleanup => boolean(), ref => binary()
 }.
@@ -1115,11 +1114,8 @@ fail_pending(P, Reply) ->
         P
     ).
 
-notify(#state{owner = Owner, ref = undefined} = State, Msg) ->
+notify(#state{owner = Owner} = State, Msg) ->
     Owner ! {?MODULE, self(), Msg},
-    State;
-notify(#state{owner = Owner, ref = Ref} = State, Msg) ->
-    Owner ! {?MODULE, self(), Msg, Ref},
     State.
 
 closed(#state{pending = P} = State) ->

@@ -429,10 +429,14 @@ session_ref(Config) ->
     ?assertEqual(<<"call_ref:call-9">>, maps:get(<<"metadata">>, Offer)),
     ?assertEqual(<<"mine">>, maps:get(<<"metadata">>, Answer)),
     chappe_rtpengine_fake_server:set_handler(Server, fun(_N, _Cmd) -> drop end),
+    %% one message shape with or without a ref: the ref is read from
+    %% the handle
     receive
-        {chappe_rtpengine_session, Sess, {node_down, Node}, <<"call-9">>} -> ok
-    after 5000 -> error(no_node_down_with_ref)
+        {chappe_rtpengine_session, Sess, {node_down, Node}} -> ok;
+        {chappe_rtpengine_session, Sess, {node_down, Node}, _} -> error(four_tuple)
+    after 5000 -> error(no_node_down)
     end,
+    ?assertMatch(#{ref := <<"call-9">>}, chappe_rtpengine_session:info(Sess)),
     chappe_rtpengine_fake_server:set_handler(
         Server, fun chappe_rtpengine_fake_server:default_handler/2
     ),

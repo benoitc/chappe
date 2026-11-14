@@ -13,12 +13,12 @@
 %%                                 url => <<"ws://10.0.0.5:8090">>}),
 %% {ok, Stream, Url} = chappe_audio:open(L, #{ref => CallRef}),
 %% ok = chappe_mrf:fork_audio(Ep, Url, #{mix => mono, rate => 8000}),
-%% receive {chappe_audio, Stream, {frame, Pcm}, CallRef} -> ... end.
+%% receive {chappe_audio, Stream, {frame, Pcm}} -> ... end.
 %% '''
 %%
 %% Events, to the owner (the caller of open/2 unless `owner' says
-%% otherwise): {chappe_audio, Stream, Event}, or with a ref
-%% {chappe_audio, Stream, Event, Ref}. Event is:
+%% otherwise), always {chappe_audio, Stream, Event}; the stream's ref is
+%% read with ref/1. Event is:
 %%
 %% - {connected, #{path, peer, subprotocol}}: the fork connected;
 %% - {text, Bin}: a text message, the fork's metadata first;
@@ -32,7 +32,7 @@
 -module(chappe_audio).
 
 -export([listen/1, listener_info/1, stop_listener/1]).
--export([open/1, open/2, close/1, info/1, set_owner/2, send_text/2]).
+-export([open/1, open/2, close/1, info/1, ref/1, set_owner/2, send_text/2]).
 -export([streams/1, levels/2]).
 
 -export_type([listener/0, stream/0, listen_opts/0, open_opts/0]).
@@ -144,6 +144,16 @@ close(Stream) ->
 -spec info(stream()) -> map().
 info(Stream) ->
     chappe_audio_stream:info(Stream).
+
+%% The ref the stream was opened with, undefined without one;
+%% {error, closed} once the stream is gone.
+-spec ref(stream()) -> binary() | undefined | {error, closed}.
+ref(Stream) ->
+    try
+        chappe_audio_stream:ref(Stream)
+    catch
+        exit:_ -> {error, closed}
+    end.
 
 -spec set_owner(stream(), pid()) -> ok | {error, badarg}.
 set_owner(Stream, Pid) when is_pid(Pid) ->

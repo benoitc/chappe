@@ -350,9 +350,11 @@ call_ref(_Config) ->
     {ok, Call} = chappe_esl_call:start(Conn, #{uuid => <<"in-2">>, ref => <<"c-7">>}),
     ?assertEqual(<<"c-7">>, chappe_esl_call:ref(Call)),
     ok = chappe_esl_fake_server:dtmf(Fake, <<"3">>),
+    %% one message shape with or without a ref; ref/1 gives the ref
     receive
-        {chappe_esl_call, Call, {dtmf, <<"3">>}, <<"c-7">>} -> ok
-    after 5000 -> ct:fail(no_ref_message)
+        {chappe_esl_call, Call, {dtmf, <<"3">>}} -> ok;
+        {chappe_esl_call, Call, {dtmf, <<"3">>}, _} -> ct:fail(four_tuple)
+    after 5000 -> ct:fail(no_message)
     end,
     ok = chappe_esl_call:stop(Call),
     ok = chappe_esl_fake_server:stop(Fake),

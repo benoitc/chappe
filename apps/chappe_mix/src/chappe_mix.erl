@@ -40,6 +40,7 @@
     direction/3,
     relate/4,
     events/2,
+    ref/1,
     tap/3,
     untap/2,
     taps/1,
@@ -77,8 +78,8 @@
 %% the levels are not computed at all); talk_threshold (dBFS RMS over a
 %% frame, default -40), talk_start_ms (default 60) and talk_stop_ms
 %% (default 300) set the detection. ref: an opaque binary of the app's
-%% (a call ref); a leg's own ref (leg_opts()) wins over it. An event about
-%% a leg with a ref carries it: `{chappe_mix, Conf, {talking, Leg, T}, Ref}'.
+%% (a call ref), returned by ref/1; a leg's own ref (leg_opts()) is in
+%% legs/1. Events keep their {chappe_mix, Conf, Event} shape either way.
 %% tick_ceiling (default true) arms the tick at the millisecond at or
 %% after it is due, so it never fires early; false truncates, and most
 %% ticks fire up to 1 ms early. prefill_shrink (default false) takes back
@@ -229,15 +230,19 @@ events(Conf, Pid) when is_pid(Pid); Pid =:= undefined ->
 relate(Conf, Listener, Speaker, Rel) when Rel =:= hear; Rel =:= nohear ->
     gen_server:call(Conf, {relate, Listener, Speaker, Rel}).
 
+%% The room's ref (conf_opts()), undefined without one.
+-spec ref(conf()) -> binary() | undefined.
+ref(Conf) ->
+    gen_server:call(Conf, ref).
+
 %% Hand the decoded audio of a party (a leg) or of the room to a
-%% process, every 20 ms: {chappe_mix, Conf, {tap, Tap, Pcm}}, or with a
-%% ref {chappe_mix, Conf, {tap, Tap, Pcm}, Ref}, where Pcm is 320 bytes
-%% of 16-bit signed little-endian PCM at 8 kHz. A party's tap carries
+%% process, every 20 ms: {chappe_mix, Conf, {tap, Tap, Pcm}}, where Pcm
+%% is 320 bytes of 16-bit signed little-endian PCM at 8 kHz. A party's tap carries
 %% what the room takes from the leg (silence when it sends nothing or is
 %% muted); the room's carries every talker. Opts: to (default the
 %% caller), max_queue (default 500: past that many messages waiting at
 %% `to', a frame is dropped and counted in taps/1), ref (default the
-%% leg's, else the room's). The tap ends when `to' dies, with untap/2, or
+%% leg's, else the room's; taps/1 shows it). The tap ends when `to' dies, with untap/2, or
 %% with {tap_closed, Tap} when its leg leaves or the room stops. For
 %% calls that never touch FreeSWITCH: a recorder, a transcriber.
 -spec tap(conf(), room | leg(), #{
@@ -270,7 +275,7 @@ pos(N) -> is_integer(N) andalso N > 0.
 untap(Conf, Tap) ->
     gen_server:call(Conf, {taps, {remove, Tap}}).
 
-%% The taps of a conference: tap, source, to, dropped.
+%% The taps of a conference: tap, source, to, ref, dropped.
 -spec taps(conf()) -> [map()].
 taps(Conf) ->
     gen_server:call(Conf, {taps, list}).

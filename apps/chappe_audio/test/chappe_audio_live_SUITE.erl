@@ -180,7 +180,7 @@ api(Config, Cmd) ->
 
 event(S) ->
     receive
-        {chappe_audio, S, E, _Ref} -> E
+        {chappe_audio, S, E} -> E
     after 10000 -> ct:fail(no_event)
     end.
 

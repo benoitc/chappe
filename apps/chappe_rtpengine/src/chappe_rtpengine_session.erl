@@ -107,10 +107,10 @@
 %% when absent), dtmf (optional; true subscribes the session to the
 %% chappe_rtpengine_dtmf listener and forwards events to the owner as
 %% {chappe_rtpengine_session, Pid, {dtmf, Event}}), ref (optional; an opaque
-%% binary, such as a call ref: every owner event then carries it as
-%% {chappe_rtpengine_session, Pid, Event, Ref}, info/1 returns it, and each
-%% offer, answer and publish sends it as metadata call_ref:<Ref>, unless
-%% the params set metadata). The calling process becomes the owner.
+%% binary, such as a call ref: info/1 returns it, the owner events keep
+%% their {chappe_rtpengine_session, Pid, Event} shape, and each offer,
+%% answer and publish sends it as metadata call_ref:<Ref>, unless the
+%% params set metadata). The calling process becomes the owner.
 -spec start(map()) -> {ok, pid()} | {error, term()}.
 start(#{ref := Ref}) when not is_binary(Ref) ->
     {error, {bad_option, ref}};
@@ -808,13 +808,7 @@ active(State) ->
     ]).
 
 notify_owner(Event, Data) ->
-    _ =
-        case Data#data.ref of
-            undefined ->
-                Data#data.owner ! {chappe_rtpengine_session, self(), Event};
-            Ref ->
-                Data#data.owner ! {chappe_rtpengine_session, self(), Event, Ref}
-        end,
+    Data#data.owner ! {chappe_rtpengine_session, self(), Event},
     ok.
 
 resolve_node(CallId, Opts) ->

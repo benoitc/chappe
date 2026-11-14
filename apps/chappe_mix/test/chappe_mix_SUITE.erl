@@ -1192,10 +1192,19 @@ talker_refs(_Config) ->
     ?assertEqual({error, {bad_option, ref}}, chappe_mix:start(#{ref => x})),
     ok = chappe_mix:stop(Conf).
 
+%% one event shape with or without a ref: the ref is the leg's, from
+%% legs/1, else the room's, from ref/1
 ref_event(Conf) ->
     receive
-        {chappe_mix, Conf, {talking, Leg, T}, Ref} -> {Leg, T, Ref}
+        {chappe_mix, Conf, {talking, Leg, T}} -> {Leg, T, leg_ref(Conf, Leg)};
+        {chappe_mix, Conf, {talking, _, _}, _} -> ct:fail(four_tuple)
     after 2000 -> ct:fail(no_ref_event)
+    end.
+
+leg_ref(Conf, Leg) ->
+    case [R || #{id := Id, ref := R} <- chappe_mix:legs(Conf), Id =:= Leg] of
+        [R] when is_binary(R) -> R;
+        _ -> chappe_mix:ref(Conf)
     end.
 
 talk_event(Conf, Ms) ->

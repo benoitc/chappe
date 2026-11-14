@@ -74,7 +74,8 @@ muted_party_is_silent(_Config) ->
     chappe_mix_test_tone:stop(A),
     ok = chappe_mix:stop(Conf).
 
-%% A tap's messages carry its own ref, else its leg's, else the room's.
+%% A tap's messages keep one shape; taps/1 gives its ref: its own, else
+%% its leg's, else the room's.
 refs(_Config) ->
     {ok, Conf} = chappe_mix:start(#{ref => <<"room-ref">>}),
     {ok, L1, _} = chappe_mix:add_leg(Conf, #{ref => <<"leg-ref">>}),
@@ -82,9 +83,12 @@ refs(_Config) ->
     {ok, T1} = chappe_mix:tap(Conf, L1, #{}),
     {ok, T2} = chappe_mix:tap(Conf, L2, #{}),
     {ok, T3} = chappe_mix:tap(Conf, room, #{ref => <<"own">>}),
-    {chappe_mix, Conf, {tap, T1, <<_:2560>>}, <<"leg-ref">>} = tap_msg(T1),
-    {chappe_mix, Conf, {tap, T2, _}, <<"room-ref">>} = tap_msg(T2),
-    {chappe_mix, Conf, {tap, T3, _}, <<"own">>} = tap_msg(T3),
+    {chappe_mix, Conf, {tap, T1, <<_:2560>>}} = tap_msg(T1),
+    {chappe_mix, Conf, {tap, T2, _}} = tap_msg(T2),
+    {chappe_mix, Conf, {tap, T3, _}} = tap_msg(T3),
+    Refs = maps:from_list([{T, R} || #{tap := T, ref := R} <- chappe_mix:taps(Conf)]),
+    ?assertEqual(#{T1 => <<"leg-ref">>, T2 => <<"room-ref">>, T3 => <<"own">>}, Refs),
+    ?assertEqual(<<"room-ref">>, chappe_mix:ref(Conf)),
     ok = chappe_mix:stop(Conf).
 
 %% A party's tap ends with tap_closed when its leg leaves, and when it
@@ -219,7 +223,7 @@ collect(Conf, T, N) ->
 tap_msg(T) ->
     receive
         {chappe_mix, _, {tap, T, _}} = M -> M;
-        {chappe_mix, _, {tap, T, _}, _} = M -> M
+        {chappe_mix, _, {tap, T, _}, _} -> ct:fail(four_tuple)
     after 2000 -> ct:fail(no_tap)
     end.
 

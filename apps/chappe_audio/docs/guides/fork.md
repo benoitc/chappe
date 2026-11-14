@@ -54,20 +54,20 @@ uuid_audio_stream <uuid> start <url> mono 8k {"call":"42"}
 ```erlang
 loop(Stream) ->
     receive
-        {chappe_audio, Stream, {connected, #{peer := Peer}}, _Ref} ->
+        {chappe_audio, Stream, {connected, #{peer := Peer}}} ->
             loop(Stream);
-        {chappe_audio, Stream, {text, Metadata}, _Ref} ->
+        {chappe_audio, Stream, {text, Metadata}} ->
             loop(Stream);
-        {chappe_audio, Stream, {frame, Pcm}, _Ref} ->
+        {chappe_audio, Stream, {frame, Pcm}} ->
             [Db] = chappe_audio:levels(Pcm, 1),
             loop(Stream);
-        {chappe_audio, Stream, closed, _Ref} ->
+        {chappe_audio, Stream, closed} ->
             done
     end.
 ```
 
-Without a `ref`, the events have three elements:
-`{chappe_audio, Stream, Event}`.
+The events keep this shape with or without a `ref`; read the stream's ref
+with `chappe_audio:ref(Stream)`.
 
 - `{frame, Pcm}` is one WebSocket message: 16-bit signed little-endian PCM
   at the rate you started the fork with, usually 20 ms. In stereo the two

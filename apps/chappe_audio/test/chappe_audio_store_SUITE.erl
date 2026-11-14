@@ -245,14 +245,14 @@ stream_to_store(_Config) ->
     Ref = <<"fork-rec">>,
     {ok, S, Url} = chappe_audio:open(L, #{ref => Ref, store => default}),
     {ok, C} = chappe_audio_test_ws:connect(Url),
-    {chappe_audio, S, {connected, _}, Ref} = recv(),
+    {chappe_audio, S, {connected, _}} = recv(),
     Frame = binary:copy(<<3, 0>>, 160),
     [ok = chappe_audio_test_ws:send(C, {binary, Frame}) || _ <- lists:seq(1, 10)],
-    [{chappe_audio, S, {frame, Frame}, Ref} = recv() || _ <- lists:seq(1, 10)],
+    [{chappe_audio, S, {frame, Frame}} = recv() || _ <- lists:seq(1, 10)],
     ?assert(is_pid(maps:get(recording, chappe_audio:info(S)))),
     ok = chappe_audio:close(S),
     receive
-        {chappe_audio, S, closed, Ref} -> ok
+        {chappe_audio, S, closed} -> ok
     after 5000 -> ct:fail(not_closed)
     end,
     [#{source := <<"fork">>, bytes := Bytes, duration_ms := 200}] =

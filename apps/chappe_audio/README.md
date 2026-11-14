@@ -17,7 +17,7 @@ recordings land. It is a leaf app: it depends on erlang_ws and nothing SIP.
 {ok, Stream, Url} = chappe_audio:open(L, #{ref => CallRef}),
 ok = chappe_mrf:fork_audio_start(Ep, Url, #{mix => mono, rate => 8000}),
 receive
-    {chappe_audio, Stream, {frame, Pcm}, CallRef} -> handle(Pcm)
+    {chappe_audio, Stream, {frame, Pcm}} -> handle(Pcm)
 end.
 ```
 

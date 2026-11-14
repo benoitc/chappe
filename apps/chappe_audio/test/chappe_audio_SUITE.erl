@@ -278,7 +278,7 @@ stream_crash(Config) ->
     {ok, S, Url} = chappe_audio:open(L, #{ref => <<"crash">>}),
     Mon = monitor(process, S),
     {ok, C} = chappe_audio_test_ws:connect(Url),
-    {chappe_audio, S, {connected, _}, <<"crash">>} = recv(),
+    {chappe_audio, S, {connected, _}} = recv(),
     exit(S, kill),
     {'DOWN', Mon, process, S, killed} = recv(),
     receive
@@ -392,9 +392,10 @@ from_peer_node(Config) ->
     ?assertEqual(node(), node(S)),
     wait(fun() -> peer:call(Peer, chappe_audio, streams, [Ref]) =:= [S] end),
     C = raw(Url),
-    {fwd, {chappe_audio, S, {connected, _}, Ref}} = recv(),
+    {fwd, {chappe_audio, S, {connected, _}}} = recv(),
     raw_send(C, {binary, <<7, 0>>}),
-    {fwd, {chappe_audio, S, {frame, <<7, 0>>}, Ref}} = recv(),
+    {fwd, {chappe_audio, S, {frame, <<7, 0>>}}} = recv(),
+    ?assertEqual(Ref, peer:call(Peer, chappe_audio, ref, [S])),
     ?assertMatch(#{owner := Owner}, peer:call(Peer, chappe_audio, info, [S])),
     %% the owner's node goes: the stream sees its owner die
     peer:stop(Peer),
@@ -448,9 +449,14 @@ recv() ->
     after 5000 -> ct:fail(timeout)
     end.
 
+%% one event shape with or without a ref: the ref is read from the
+%% stream
 event(S, Ref) ->
     receive
-        {chappe_audio, S, E, Ref} -> E
+        {chappe_audio, S, _, _} -> ct:fail(four_tuple);
+        {chappe_audio, S, E} ->
+            ?assert(lists:member(chappe_audio:ref(S), [Ref, {error, closed}])),
+            E
     after 5000 -> ct:fail(no_event)
     end.
 

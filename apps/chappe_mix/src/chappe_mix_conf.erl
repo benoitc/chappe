@@ -167,8 +167,10 @@ handle_call({events, Pid}, _From, S) ->
     {reply, ok, S#state{events = Pid}};
 handle_call(stats, _From, S) ->
     {reply, stats(S), S};
+handle_call(ref, _From, S) ->
+    {reply, S#state.ref, S};
 handle_call({taps, Req}, _From, #state{taps = Taps} = S) ->
-    {Reply, Taps1} = chappe_mix_tap:call(Req, Taps, S#state.legs),
+    {Reply, Taps1} = chappe_mix_tap:call(Req, Taps, S#state.legs, S#state.ref),
     {reply, Reply, S#state{taps = Taps1}};
 handle_call(_Req, _From, S) ->
     {reply, {error, unknown_call}, S}.
@@ -194,7 +196,7 @@ handle_info(_Info, S) ->
 %% Every leg hears the mixer leave (7.3).
 terminate(_Reason, S) ->
     [chappe_mix_leg:close(bye(L, S)) || L <- maps:values(S#state.legs)],
-    _ = chappe_mix_tap:closed(S#state.taps, all, S#state.legs, S#state.ref),
+    _ = chappe_mix_tap:closed(S#state.taps, all),
     ok.
 
 %% ---- legs ----
@@ -212,7 +214,7 @@ remove(Leg, Legs, S) ->
     %% a leg that goes while talking stops talking
     _ =
         Leg#leg.talking andalso S#state.events =/= undefined andalso
-            talking(S#state.events, Leg#leg.id, false, ref(Leg, S)),
+            talking(S#state.events, Leg#leg.id, false),
     left(Leg, S#state{
         legs = forget(Leg#leg.id, Legs),
         socks = maps:without(chappe_mix_leg:socks(Leg), S#state.socks),
@@ -453,7 +455,7 @@ rtcp_in(From, Pkt, L0, S) ->
 %% A leg leaving the mix: the others hear BYE for its source (7.3).
 left(#leg{id = Id} = L, S0) ->
     %% its taps end with it
-    Taps = chappe_mix_tap:closed(S0#state.taps, Id, #{Id => L}, S0#state.ref),
+    Taps = chappe_mix_tap:closed(S0#state.taps, Id),
     S = S0#state{taps = Taps},
     case src_ssrc(L) of
         undefined -> S;
@@ -611,23 +613,12 @@ mix(#state{legs = Legs, events = Pid} = S, Missed) ->
             _ -> S#state.talk_params
         end,
     {Legs1, Events, Frames, Mixed} = chappe_mix_room:mix(Legs, Missed, Talk),
-    [
-        talking(Pid, Id, T, ref(maps:get(Id, Legs1, undefined), S))
-     || {Id, T} <- Events
-    ],
-    Taps = chappe_mix_tap:send_all(
-        S#state.taps, Frames, Mixed, Legs1, S#state.ref
-    ),
+    [talking(Pid, Id, T) || {Id, T} <- Events],
+    Taps = chappe_mix_tap:send_all(S#state.taps, Frames, Mixed),
     S#state{legs = Legs1, taps = Taps}.
 
-%% With a ref (the leg's, else the room's) the event carries it.
-talking(Pid, Id, T, undefined) ->
-    Pid ! {chappe_mix, self(), {talking, Id, T}};
-talking(Pid, Id, T, Ref) ->
-    Pid ! {chappe_mix, self(), {talking, Id, T}, Ref}.
-
-ref(#leg{ref = Ref}, _S) when Ref =/= undefined -> Ref;
-ref(_Leg, #state{ref = Ref}) -> Ref.
+talking(Pid, Id, T) ->
+    Pid ! {chappe_mix, self(), {talking, Id, T}}.
 
 %% Talker detection: a frame counts as talk over Db dBFS RMS (default
 %% -40), talk starts after StartMs of it and stops after StopMs without

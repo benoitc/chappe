@@ -12,9 +12,9 @@
 %% other. Unclaimed after connect_timeout, it closes.
 %%
 %% Events go to the owner, which the stream monitors:
-%% {chappe_audio, Stream, Event}, or {chappe_audio, Stream, Event, Ref}
-%% with a ref. Event is {connected, Info}, {text, Bin} (the metadata a
-%% fork sends first, and any text after it), {frame, Pcm} (one binary
+%% {chappe_audio, Stream, Event}, with or without a ref (ref/1 reads
+%% it). Event is {connected, Info}, {text, Bin} (the metadata a fork
+%% sends first, and any text after it), {frame, Pcm} (one binary
 %% message of L16 audio, interleaved when stereo), and closed, last.
 %%
 %% The bound: a frame or a text is dropped, and counted in info/1, when
@@ -30,7 +30,7 @@
 -behaviour(gen_server).
 
 -export([start/2, claim/1, attach/2, attach_failed/1]).
--export([close/1, info/1, set_owner/2, send_text/2]).
+-export([close/1, info/1, ref/1, set_owner/2, send_text/2]).
 -export([start_link/3]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
@@ -116,6 +116,10 @@ close(Stream) ->
 info(Stream) ->
     gen_server:call(Stream, info).
 
+-spec ref(pid()) -> binary() | undefined.
+ref(Stream) ->
+    gen_server:call(Stream, ref).
+
 -spec set_owner(pid(), pid()) -> ok.
 set_owner(Stream, Pid) ->
     gen_server:call(Stream, {set_owner, Pid}).
@@ -167,6 +171,8 @@ handle_call(close, _From, S) ->
     {reply, ok, S};
 handle_call(info, _From, S) ->
     {reply, info_map(S), S};
+handle_call(ref, _From, S) ->
+    {reply, S#state.ref, S};
 handle_call({set_owner, Pid}, _From, #state{owner_mon = Mon} = S) ->
     demonitor(Mon, [flush]),
     {reply, ok, S#state{owner = Pid, owner_mon = monitor(process, Pid)}};
@@ -316,8 +322,7 @@ event(#state{owner = Owner} = S, Event) ->
     Owner ! msg(S, Event),
     ok.
 
-msg(#state{ref = undefined}, Event) -> {chappe_audio, self(), Event};
-msg(#state{ref = Ref}, Event) -> {chappe_audio, self(), Event, Ref}.
+msg(_S, Event) -> {chappe_audio, self(), Event}.
 
 info_map(S) ->
     maps:merge(S#state.conn, #{

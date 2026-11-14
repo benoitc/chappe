@@ -194,8 +194,9 @@ does, and it is the only message that says the process stopped. Ignore the
 first two if you have no use for them, but do not crash on them.
 
 Start the call with `ref => Ref` (an opaque binary, such as your call's
-correlation id) and every message carries it as a fourth element,
-`{chappe_esl_call, Call, Msg, Ref}`; `chappe_esl_call:ref/1` returns it.
+correlation id) and read it back with `chappe_esl_call:ref/1`. The
+messages keep their `{chappe_esl_call, Call, Msg}` shape with or without
+a ref, so one `receive` matches them all.
 
 ## Run a slow command
 

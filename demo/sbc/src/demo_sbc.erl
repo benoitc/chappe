@@ -396,7 +396,7 @@ fs_conf(B2b, CallId) ->
 %% prints its level twice a second, and the stream is written to the store
 fork(Ep, CallId) ->
     Ref = call_ref(Ep),
-    Printer = spawn(fun() -> levels(CallId, 0, []) end),
+    Printer = spawn(fun() -> levels(CallId, Ref, 0, []) end),
     {ok, Stream, Url} = chappe_audio:open(persistent_term:get({?MODULE, audio}), #{
         ref => Ref, owner => Printer, store => default
     }),
@@ -414,22 +414,22 @@ fork(Ep, CallId) ->
 
 %% The fork's events: a level line every 25 frames (500 ms), the loudest
 %% of them, drawn as a bar.
-levels(CallId, N, Lv) ->
+levels(CallId, Ref, N, Lv) ->
     receive
-        {chappe_audio, _, {connected, #{peer := Peer}}, _} ->
+        {chappe_audio, _, {connected, #{peer := Peer}}} ->
             log("call ~s: fork connected from ~p", [CallId, Peer]),
-            levels(CallId, N, Lv);
-        {chappe_audio, _, {text, Meta}, _} ->
+            levels(CallId, Ref, N, Lv);
+        {chappe_audio, _, {text, Meta}} ->
             log("call ~s: fork metadata ~s", [CallId, Meta]),
-            levels(CallId, N, Lv);
-        {chappe_audio, _, {frame, Pcm}, _} when N =:= 24 ->
+            levels(CallId, Ref, N, Lv);
+        {chappe_audio, _, {frame, Pcm}} when N =:= 24 ->
             Db = lists:max([db(L) || L <- [hd(chappe_audio:levels(Pcm, 1)) | Lv]]),
             Bar = lists:duplicate(max(0, round((Db + 60) / 2)), $#),
             log("call ~s: ~6.1f dBFS ~s", [CallId, Db, Bar]),
-            levels(CallId, 0, []);
-        {chappe_audio, _, {frame, Pcm}, _} ->
-            levels(CallId, N + 1, [hd(chappe_audio:levels(Pcm, 1)) | Lv]);
-        {chappe_audio, _, closed, Ref} ->
+            levels(CallId, Ref, 0, []);
+        {chappe_audio, _, {frame, Pcm}} ->
+            levels(CallId, Ref, N + 1, [hd(chappe_audio:levels(Pcm, 1)) | Lv]);
+        {chappe_audio, _, closed} ->
             log("call ~s: fork closed; recordings: ~p", [CallId, recordings(Ref)])
     end.
 
