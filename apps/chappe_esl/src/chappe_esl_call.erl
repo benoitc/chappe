@@ -307,7 +307,9 @@ playback(Call, File) ->
 -spec playback(call(), iodata(), playback_opts()) ->
     {ok, event()} | {error, term()}.
 playback(Call, File, Opts) ->
-    case playback_args(File, Opts) of
+    case chappe_esl_exec:expands(File) orelse playback_args(File, Opts) of
+        true ->
+            {error, {bad_option, file}};
         {ok, Arg, undefined} ->
             exec(Call, <<"playback">>, Arg, exec_opts(Opts));
         {ok, Arg, Secs} ->
@@ -358,6 +360,18 @@ limited_playback(Call, Arg, Secs, Opts) ->
 -spec play_and_get_digits(call(), map()) ->
     {ok, binary() | digits()} | {error, term()}.
 play_and_get_digits(Call, #{file := File} = Opts) ->
+    Text = [
+        File,
+        maps:get(invalid_file, Opts, <<>>),
+        maps:get(terminators, Opts, <<>>),
+        maps:get(regexp, Opts, <<>>)
+    ],
+    case lists:any(fun chappe_esl_exec:expands/1, Text) of
+        true -> {error, {bad_option, file}};
+        false -> collect(Call, File, Opts)
+    end.
+
+collect(Call, File, Opts) ->
     Timeout = maps:get(timeout, Opts, 5000),
     Var = to_bin(maps:get(var, Opts, ?DIGITS_VAR)),
     Args = join([
@@ -405,6 +419,12 @@ play_and_get_digits(Call, #{file := File} = Opts) ->
 %% (record's optional arguments), plus exec_opts.
 -spec record(call(), iodata(), map()) -> {ok, event()} | {error, term()}.
 record(Call, Path, Opts) ->
+    case chappe_esl_exec:expands(Path) of
+        true -> {error, {bad_option, path}};
+        false -> record_file(Call, Path, Opts)
+    end.
+
+record_file(Call, Path, Opts) ->
     Limits = [
         int(V)
      || K <- [max_secs, silence_thresh, silence_hits],
@@ -422,7 +442,10 @@ record(Call, Path, Opts) ->
 %% recording runs until record_session_stop/2 or the hangup.
 -spec record_session(call(), iodata()) -> ok | {error, term()}.
 record_session(Call, Path) ->
-    call(Call, {record_session, to_bin(Path)}).
+    case chappe_esl_exec:expands(Path) of
+        true -> {error, {bad_option, path}};
+        false -> call(Call, {record_session, to_bin(Path)})
+    end.
 
 -spec record_session_stop(call(), iodata()) -> ok | {error, term()}.
 record_session_stop(Call, Path) ->
@@ -431,16 +454,27 @@ record_session_stop(Call, Path) ->
 %% Send DTMF digits to the far end (the send_dtmf application).
 -spec send_dtmf(call(), iodata()) -> ok | {error, term()}.
 send_dtmf(Call, Digits) ->
-    done(exec(Call, <<"send_dtmf">>, Digits)).
+    case chappe_esl_exec:expands(Digits) of
+        true -> {error, {bad_option, digits}};
+        false -> done(exec(Call, <<"send_dtmf">>, Digits))
+    end.
 
 -spec set(call(), iodata(), iodata()) -> ok | {error, term()}.
 set(Call, Var, Value) ->
-    done(exec(Call, <<"set">>, [Var, $=, Value])).
+    var_app(Call, <<"set">>, Var, Value).
+
+%% set and export: neither the name nor the value may expand.
+var_app(Call, App, Var, Value) ->
+    case {chappe_esl_exec:expands(Var), chappe_esl_exec:expands(Value)} of
+        {true, _} -> {error, {bad_option, var}};
+        {_, true} -> {error, {bad_option, value}};
+        _ -> done(exec(Call, App, [Var, $=, Value]))
+    end.
 
 %% Set a variable on the channel and on the channel it gets bridged to.
 -spec export(call(), iodata(), iodata()) -> ok | {error, term()}.
 export(Call, Var, Value) ->
-    done(exec(Call, <<"export">>, [Var, $=, Value])).
+    var_app(Call, <<"export">>, Var, Value).
 
 %% Say Text with mod_say: a number, a date, digits, by language. Opts:
 %% language (<<"en">>, the mod_say module that speaks it), type (number:
@@ -544,8 +578,11 @@ tts_word(W) when is_binary(W) ->
 tts_word(_) ->
     false.
 
+%% One line of text that FreeSWITCH takes as it is: no line break, nothing
+%% it would expand (chappe_esl_exec:expands/1).
 one_line(Text) ->
-    binary:match(Text, [<<"\n">>, <<"\r">>]) =:= nomatch.
+    binary:match(Text, [<<"\n">>, <<"\r">>]) =:= nomatch andalso
+        not chappe_esl_exec:expands(Text).
 
 %% Listen for the tones of a mod_spandsp tone descriptor (Name, from the
 %% node's spandsp.conf): the owner gets {tone, ToneName} each time one is

@@ -232,6 +232,16 @@ Other messages that arrive meanwhile stay in your mailbox.
 
 ## Notes
 
+- FreeSWITCH expands `${var}` and, unless `switch.conf` sets
+  `api-expansion` to false, `${api(args)}` (`${system(...)}` among them) in
+  every application argument before the application runs. The typed
+  helpers (`speak`, `say`, `playback`, `play_and_get_digits`, `record`,
+  `record_session`, `set`, `export`, `multiset`, `send_dtmf`) refuse text
+  holding `${` with `{error, {bad_option, Key}}`, so text from a caller or
+  a database cannot run commands on the node. `exec/3,4` is raw: what you
+  pass is expanded. Set `api-expansion` to false on nodes that do not need
+  it.
+
 - Applications run one after the other (`event-lock`). A request queued
   behind a long one waits for it; its timeout counts from when you sent it.
 - A timeout stops the application with `uuid_break`: at once when it is

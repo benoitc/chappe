@@ -30,6 +30,7 @@
     variables_and_audio/1,
     fork_commands/1,
     say_and_speak/1,
+    no_expansion/1,
     detection/1,
     dtmf_and_hangup/1,
     helpers/1,
@@ -80,6 +81,7 @@ all() ->
         variables_and_audio,
         fork_commands,
         say_and_speak,
+        no_expansion,
         detection,
         dtmf_and_hangup,
         helpers,
@@ -470,6 +472,31 @@ detection(_Config) ->
             end}
         ]
     ].
+
+%% FreeSWITCH expands ${var} and ${api(args)} in every application
+%% argument before the application runs (switch_core_session_execute_
+%% application, api expansion on unless switch.conf says api-expansion
+%% false), so text a typed helper takes is refused when it holds `${':
+%% ${system(...)} would run a command on the node. execute/4 stays raw.
+no_expansion(_Config) ->
+    {Call, _Fake} = outbound(#{}),
+    Evil = <<"x ${system(touch /tmp/pwn)}">>,
+    Bad = fun(K, R) -> ?assertEqual({error, {bad_option, K}}, R) end,
+    Bad(text, chappe_esl_call:speak(Call, Evil, #{})),
+    Bad(text, chappe_esl_call:say(Call, Evil, #{})),
+    Bad(vars, chappe_esl_call:multiset(Call, #{<<"a">> => Evil})),
+    Bad(value, chappe_esl_call:set(Call, <<"a">>, Evil)),
+    Bad(value, chappe_esl_call:export(Call, <<"a">>, Evil)),
+    Bad(var, chappe_esl_call:set(Call, <<"${a}">>, <<"1">>)),
+    Bad(file, chappe_esl_call:playback(Call, <<"/m/${x}.wav">>)),
+    Bad(file, chappe_esl_call:play_and_get_digits(Call, #{file => <<"${x}">>})),
+    Bad(path, chappe_esl_call:record(Call, <<"/m/${x}.wav">>, #{})),
+    Bad(path, chappe_esl_call:record_session(Call, <<"/m/$${x}.wav">>)),
+    Bad(digits, chappe_esl_call:send_dtmf(Call, <<"1${x}">>)),
+    no_app(500),
+    %% a `$' that starts no expansion is plain text
+    ok = chappe_esl_call:speak(Call, <<"costs $5">>, #{}),
+    expect_app(<<"speak">>, <<"costs $5">>).
 
 %% say builds `<lang> <type> <method> [gender] <text>', speak
 %% `[engine|]voice|text'; options that would change how FreeSWITCH splits
@@ -1319,6 +1346,19 @@ block_with(Needle) ->
     case contains(Block, Needle) of
         true -> Block;
         false -> block_with(Needle)
+    end.
+
+%% No execute reaches the fake within Ms.
+no_app(Ms) ->
+    receive
+        {fake_server, _, B} when is_binary(B) ->
+            case contains(B, <<"execute-app-name">>) of
+                true -> ct:fail({sent, B});
+                false -> no_app(Ms)
+            end;
+        {fake_server, _, _} ->
+            no_app(Ms)
+    after Ms -> ok
     end.
 
 flush_blocks() ->

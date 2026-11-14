@@ -7,6 +7,7 @@
 %% the quoting of the arguments FreeSWITCH splits on spaces.
 -module(chappe_esl_exec).
 
+-export([expands/1]).
 -export([exec/5, send/6, break/3, app_uuid/0, arg/1, channel_uuid/1]).
 -export([fork_start_cmd/4, fork_stop_cmd/2, fork_ctl_cmd/4]).
 
@@ -166,6 +167,16 @@ break(Conn, Uuid, Scope) ->
         end,
     _ = chappe_esl:api(Conn, [<<"uuid_break ">>, Uuid, All], ?BREAK_TIMEOUT),
     ok.
+
+%% Whether text would be expanded by FreeSWITCH in an application
+%% argument: switch_core_session_execute_application runs every argument
+%% through switch_channel_expand_variables, which replaces ${var} and
+%% $${global}, and, with api expansion (on unless switch.conf sets
+%% api-expansion false), ${api(args)}: ${system(...)} runs a command on
+%% the node. The typed helpers refuse such text; execute/4 is raw.
+-spec expands(iodata()) -> boolean().
+expands(Text) ->
+    binary:match(iolist_to_binary(Text), <<"${">>) =/= nomatch.
 
 %% One argument of an application or api command that FreeSWITCH splits on
 %% spaces: backslashes and single quotes are escaped, and an argument with a
