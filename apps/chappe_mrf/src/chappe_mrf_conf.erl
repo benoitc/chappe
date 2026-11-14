@@ -623,10 +623,8 @@ handle_info({fs_join_timeout, Ep}, #state{pending = P} = S) ->
         error ->
             {noreply, S}
     end;
-handle_info({chappe_sip_siprec, Rec, {stopped, _}}, #state{siprec = R} = S) ->
-    {noreply, S#state{siprec = lists:delete(Rec, R)}};
-handle_info({chappe_sip_siprec, _Rec, _Event}, S) ->
-    {noreply, S};
+handle_info({chappe_sip_siprec, Rec, Event}, S) ->
+    {noreply, siprec_event(Rec, Event, S)};
 handle_info({'DOWN', Mon, process, _, _}, #state{owner_mon = Mon} = S) ->
     {stop, normal, S};
 handle_info({'DOWN', Mon, process, Pid, _}, #state{listeners = L} = S) ->
@@ -834,6 +832,13 @@ record_req({start, Srs, Opts}, #state{backend = native} = S) ->
 record_req(stop, #state{backend = native, siprec = Recs} = S) ->
     lists:foreach(fun chappe_sip_siprec:stop/1, Recs),
     {reply, ok, S#state{siprec = []}}.
+
+%% The events of a native room's SIPREC recordings, which this process
+%% owns: a stopped one is forgotten.
+siprec_event(Rec, {stopped, _}, #state{siprec = R} = S) ->
+    S#state{siprec = lists:delete(Rec, R)};
+siprec_event(_Rec, _Event, S) ->
+    S.
 
 %% A recording to adopt when it stops: its path must be shared.
 record_stored(Path, Opts, S) ->
