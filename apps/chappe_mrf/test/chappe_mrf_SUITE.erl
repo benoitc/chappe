@@ -34,6 +34,7 @@
     endpoint_call_notices/1,
     node_down/1,
     native_conference/1,
+    native_record_to_store/1,
     native_room_outlives_caller/1,
     native_join_unanswered/1,
     native_talking/1,
@@ -82,6 +83,7 @@ all() ->
         endpoint_call_notices,
         node_down,
         native_conference,
+        native_record_to_store,
         native_room_outlives_caller,
         native_join_unanswered,
         native_talking,
@@ -781,6 +783,51 @@ node_down(Config) ->
     end,
     chappe_mrf:destroy(Ep).
 
+%% A native room recorded through SIPREC to chappe_sip's recording server
+%% on this node, store => default: the mix lands in chappe_audio's store
+%% under the ref given to record/3.
+native_record_to_store(Config) ->
+    Test = self(),
+    Dir = filename:join(?config(priv_dir, Config), "native-rec"),
+    ok = chappe_audio_store:configure(#{dir => Dir}),
+    Targets = [{fs1, fs_uri(Config)}],
+    ok = chappe_sip:handle(
+        <<"INVITE">>,
+        fun(Req, Res) ->
+            case chappe_sip_req:uri(Req) of
+                <<"sip:srs@", _/binary>> ->
+                    {ok, Srs} = chappe_sip_siprec_srs:serve(Req, Res, #{store => default}),
+                    chappe_sip_siprec_srs:run(Srs);
+                _ ->
+                    {ok, Ep, B2b} = chappe_mrf:connect_caller(
+                        Req, Res, #{targets => Targets, notify => Test}
+                    ),
+                    Test ! {connected, Ep, B2b, self()},
+                    owner_loop(Test)
+            end
+        end,
+        #{option_tags => [<<"siprec">>]}
+    ),
+    {ok, Conf} = chappe_mrf:conference(<<"natrec">>, #{backend => native}),
+    {Ua, _Ep, B2b, _Owner} = call_in(Config),
+    {ok, _M} = chappe_mrf_conf:join(Conf, B2b, #{}),
+    _ = fs_what(bye),
+    Srs = <<"sip:srs@127.0.0.1:", (integer_to_binary(?config(ep, Config)))/binary>>,
+    ok = chappe_mrf_conf:record(Conf, Srs, #{ref => <<"natrec-ref">>}),
+    timer:sleep(500),
+    ok = chappe_mrf_conf:stop_record(Conf),
+    [R] = stored(<<"natrec-ref">>, 50),
+    ?assertMatch(#{source := <<"siprec">>, parties := [<<"sip:mrf-natrec@chappe.invalid">>]}, R),
+    ?F:ua_bye(Ua).
+
+stored(Ref, 0) ->
+    ct:fail({not_stored, Ref, chappe_audio_store:find(Ref)});
+stored(Ref, N) ->
+    case chappe_audio_store:find(Ref) of
+        [_ | _] = Recs -> Recs;
+        [] -> timer:sleep(100), stored(Ref, N - 1)
+    end.
+
 %% Three callers in a native room: each joins through a loopback INVITE
 %% to the mixer (the caller sees no re-INVITE, its FreeSWITCH channel a
 %% BYE), mute and kick work, and the events reach the notify process.
@@ -992,8 +1039,9 @@ fs_conference_room(Config) ->
     }}},
     conf_event(Conf, {play_done, <<"/media/all.wav">>}),
     {ok, Native} = chappe_mrf:conference(<<"nat3">>, #{}),
-    ?assertEqual({error, {unsupported, native}}, chappe_mrf_conf:record(Native, <<"/x.wav">>)),
-    ?assertEqual({error, {unsupported, native}}, chappe_mrf_conf:stop_record(Native)),
+    %% native: the target is a recording server's URI, not a path
+    ?assertMatch({error, _}, chappe_mrf_conf:record(Native, <<"/x.wav">>)),
+    ?assertEqual(ok, chappe_mrf_conf:stop_record(Native)),
     ok = chappe_mrf:destroy(Ep).
 
 %% transfer/3 between two fs rooms of one node: mod_conference moves the

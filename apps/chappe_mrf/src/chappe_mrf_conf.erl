@@ -239,8 +239,13 @@ play(Conf, Member, File) -> call(Conf, {play, Member, File}).
 %% default adopts the file into the recording store (chappe_audio_store)
 %% when it stops, under ref (default the room's name), with parties for
 %% its sidecar; Path must be in the folder FreeSWITCH shares with this
-%% node (chappe_mrf's shared_dir env). The native backend records through
-%% PR 5's recorder and returns {error, {unsupported, native}} here.
+%% node (chappe_mrf's shared_dir env).
+%%
+%% native: the second argument is a recording server's URI, and the room's
+%% mix is recorded to it through SIPREC (chappe_sip_siprec, one
+%% participant) under ref (default the room's name), until stop_record/1
+%% or the room's end. A chappe_sip recording server with store => default
+%% writes it to the recording store.
 -spec record(conf(), iodata()) -> ok | {error, term()}.
 record(Conf, Path) ->
     record(Conf, Path, #{}).
@@ -618,6 +623,10 @@ handle_info({fs_join_timeout, Ep}, #state{pending = P} = S) ->
         error ->
             {noreply, S}
     end;
+handle_info({chappe_sip_siprec, Rec, {stopped, _}}, #state{siprec = R} = S) ->
+    {noreply, S#state{siprec = lists:delete(Rec, R)}};
+handle_info({chappe_sip_siprec, _Rec, _Event}, S) ->
+    {noreply, S};
 handle_info({'DOWN', Mon, process, _, _}, #state{owner_mon = Mon} = S) ->
     {stop, normal, S};
 handle_info({'DOWN', Mon, process, Pid, _}, #state{listeners = L} = S) ->
@@ -812,8 +821,19 @@ record_req(stop, #state{backend = fs} = S) ->
         Reply ->
             {reply, Reply, S}
     end;
-record_req(_Req, S) ->
-    {reply, {error, {unsupported, native}}, S}.
+record_req({start, Srs, Opts}, #state{backend = native} = S) ->
+    Ref = maps:get(ref, Opts, S#state.name),
+    case
+        chappe_sip_siprec:start({room, S#state.room}, Srs, #{
+            call_ref => Ref, owner => self()
+        })
+    of
+        {ok, Rec} -> {reply, ok, S#state{siprec = [Rec | S#state.siprec]}};
+        {error, _} = Err -> {reply, Err, S}
+    end;
+record_req(stop, #state{backend = native, siprec = Recs} = S) ->
+    lists:foreach(fun chappe_sip_siprec:stop/1, Recs),
+    {reply, ok, S#state{siprec = []}}.
 
 %% A recording to adopt when it stops: its path must be shared.
 record_stored(Path, Opts, S) ->

@@ -76,6 +76,23 @@ between the mixer and the node when they differ:
 {ok, Member} = chappe_mrf_conf:join(Conf, Ep, #{}).
 ```
 
+### Record a native room
+
+A native room is recorded through SIPREC: its mix goes to the recording
+server you name, as one participant, until `stop_record/1` or the room's
+end.
+
+```erlang
+ok = chappe_mrf_conf:record(Conf, <<"sip:srs@recorder.example.com">>,
+                            #{ref => CallRef}),
+ok = chappe_mrf_conf:stop_record(Conf).
+```
+
+`ref` is the recording's `call_ref` (default the room's name). Point it at
+chappe's own recording server (`chappe_sip_siprec_srs:serve/3` with
+`store => default`) to land the mix in the recording store, then find it
+with `chappe_audio_store:find(CallRef)`.
+
 ### Answer a caller into the room
 
 A caller whose INVITE you have not answered joins straight from its handler:

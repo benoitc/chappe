@@ -33,6 +33,9 @@
     %% fs recordings started with store => default, adopted into the
     %% recording store when they stop: {Path, CallRef, Meta}
     recordings = [] :: [{binary(), binary(), map()}],
+    %% native recordings: SIPREC sessions of the room (chappe_sip_siprec),
+    %% owned by this process
+    siprec = [] :: [pid()],
     %% REFER to the room (chappe_mrf_conf_refer): who decides, how a
     %% target is dialed (dial fun, profile, timeout, endpoint options), and
     %% the dial-outs under way
