@@ -9,6 +9,7 @@
 
 -include_lib("proper/include/proper.hrl").
 -include_lib("eunit/include/eunit.hrl").
+-include_lib("hlc/include/hlc.hrl").
 
 -define(M, chappe_cluster_machine).
 -define(LEASE, 6000).
@@ -72,7 +73,7 @@ armed(Effs) ->
     [Name || {timer, {expire, _, _, _} = Name, T} <- Effs, T =/= infinity].
 
 hlc(N) ->
-    {hlc, N}.
+    #timestamp{wall_time = N}.
 
 pid(N) ->
     list_to_pid("<0." ++ integer_to_list(N) ++ ".0>").
@@ -188,7 +189,7 @@ claim_and_owned_test() ->
     {Eb, S2} = renew(b, S1),
     {S3, {ok, L}, Effs} = claim(k, a, Ea, pid(1), S2),
     ?assertMatch(
-        #{key := k, node := a, epoch := Ea, region := r1, hlc := {hlc, 1}}, L
+        #{key := k, node := a, epoch := Ea, region := r1, hlc := #timestamp{wall_time = 1}}, L
     ),
     ?assert(lists:member({monitor, process, pid(1)}, Effs)),
     {_, R, _} = claim(k, b, Eb, pid(2), S3),
@@ -215,13 +216,13 @@ release_frees_the_key_test() ->
     {Ea, S1} = renew(a, init()),
     {Eb, S2} = renew(b, S1),
     {S3, {ok, L}, _} = claim(k, a, Ea, pid(1), S2),
-    {S4, ok, _} = ap({release, k, maps:get(seq, L)}, S3),
+    {S4, {ok, _}, _} = ap({release, k, maps:get(seq, L), hlc(5)}, S3),
     ?assertMatch({ok, _}, element(2, claim(k, b, Eb, pid(2), S4))).
 
 release_with_a_stale_seq_is_ignored_test() ->
     {Ea, S1} = renew(a, init()),
     {S2, {ok, L}, _} = claim(k, a, Ea, pid(1), S1),
-    {S3, ok, _} = ap({release, k, maps:get(seq, L) + 100}, S2),
+    {S3, {ok, _}, _} = ap({release, k, maps:get(seq, L) + 100, hlc(5)}, S2),
     ?assertMatch([#{key := k}], ?M:leases(S3)).
 
 holder_death_releases_test() ->
@@ -275,7 +276,7 @@ owner_query_test() ->
         ?M:query_owner(k, S2)
     ),
     ?assertEqual(none, ?M:query_owner(other, S2)),
-    ?assertMatch([#{key := k, fence := Fence, hlc := {hlc, 1}}], ?M:leases(S2)).
+    ?assertMatch([#{key := k, fence := Fence, hlc := #timestamp{wall_time = 1}}], ?M:leases(S2)).
 
 release_cursor_after_n_entries_test() ->
     {E, S1} = renew(a, init()),
@@ -286,39 +287,62 @@ release_cursor_after_n_entries_test() ->
     {_, _, E4} = ap(4098, {renew, a, E, ?LEASE, []}, S3),
     ?assertEqual([], [X || {release_cursor, _, _} = X <- E4]).
 
+%% ---- HLC ----
+
+%% A release on a node whose wall clock runs ahead, then a claim on a node
+%% whose clock is behind: the grant comes after the release in HLC order,
+%% and so does every later write.
+claim_after_release_is_later_in_hlc_test() ->
+    {Ea, S1} = renew(a, init()),
+    {Eb, S2} = renew(b, S1),
+    {S3, {ok, La}, _} = ap({claim, k, a, Ea, pid(1), make_ref(), 100, hlc(1000)}, S2),
+    {S4, {ok, Released}, _} = ap({release, k, maps:get(seq, La), hlc(2000)}, S3),
+    ?assert(Released >= hlc(2000)),
+    {S5, {ok, Lb}, _} = ap({claim, k, b, Eb, pid(2), make_ref(), 100, hlc(10)}, S4),
+    ?assert(maps:get(hlc, Lb) > Released),
+    {_, {ok, _, Put}, _} = ap({put, <<"x">>, 1, 10, hlc(20)}, S5),
+    ?assert(Put > maps:get(hlc, Lb)).
+
+%% A stamp ahead of everything the region saw stays as it is.
+a_later_stamp_is_kept_test() ->
+    {Ea, S1} = renew(a, init()),
+    {_, {ok, L}, _} = ap({claim, k, a, Ea, pid(1), make_ref(), 100, hlc(500)}, S1),
+    ?assertEqual(hlc(500), maps:get(hlc, L)).
+
 %% ---- KV ----
 
 kv_put_get_delete_test() ->
     {_, S0} = renew(a, init()),
-    {S1, {ok, V1}, E1} = ap({put, <<"a/1">>, x, 10, hlc(1)}, S0),
+    {S1, {ok, V1, _}, E1} = ap({put, <<"a/1">>, x, 10, hlc(1)}, S0),
     ?assertMatch(
         [
             {send_msg, {chappe_cluster_watch, a},
-                {chappe_cluster_kv, put, <<"a/1">>, x, {hlc, 1}}, [local]}
+                {chappe_cluster_kv, put, <<"a/1">>, x, #timestamp{wall_time = 1}},
+                [local]}
         ],
         E1
     ),
     ?assertEqual({ok, x, V1}, ?M:query_get(<<"a/1">>, S1)),
-    {S2, {ok, V2}, _} = ap({put, <<"a/1">>, y, 10, hlc(2)}, S1),
+    {S2, {ok, V2, _}, _} = ap({put, <<"a/1">>, y, 10, hlc(2)}, S1),
     ?assert(V2 > V1),
-    {S3, ok, E3} = ap({delete, <<"a/1">>, hlc(3)}, S2),
+    {S3, {ok, _}, E3} = ap({delete, <<"a/1">>, hlc(3)}, S2),
     ?assertMatch(
-        [{send_msg, _, {chappe_cluster_kv, delete, <<"a/1">>, y, {hlc, 3}}, _}], E3
+        [{send_msg, _, {chappe_cluster_kv, delete, <<"a/1">>, y, #timestamp{wall_time = 3}}, _}], E3
     ),
     ?assertEqual(not_found, ?M:query_get(<<"a/1">>, S3)),
-    {_, ok, []} = ap({delete, <<"a/1">>, hlc(4)}, S3).
+    {_, {ok, _}, []} = ap({delete, <<"a/1">>, hlc(4)}, S3).
 
 kv_cas_test() ->
     S0 = init(),
-    {S1, {ok, V1}, _} = ap({cas, <<"k">>, 0, x, 10, hlc(1)}, S0),
+    {S1, {ok, V1, _}, _} = ap({cas, <<"k">>, 0, x, 10, hlc(1)}, S0),
     ?assertEqual({error, {version, V1}}, element(2, ap({cas, <<"k">>, 0, y, 10, hlc(2)}, S1))),
-    {S2, {ok, V2}, _} = ap({cas, <<"k">>, V1, y, 10, hlc(3)}, S1),
+    {S2, {ok, V2, _}, _} = ap({cas, <<"k">>, V1, y, 10, hlc(3)}, S1),
     ?assert(V2 > V1),
     {_, {error, {version, V2}}, _} = ap({cas, <<"k">>, V1, z, 10, hlc(4)}, S2).
 
 kv_max_keys_test() ->
-    {S1, {ok, _}, _} = ap({put, <<"a">>, 1, 1, hlc(1)}, init()),
-    {S2, {ok, _}, _} = ap({put, <<"a">>, 2, 1, hlc(2)}, S1),
+    {S1, {ok, _, _}, _} = ap({put, <<"a">>, 1, 1, hlc(1)}, init()),
+    {S2, {ok, _, _}, _} = ap({put, <<"a">>, 2, 1, hlc(2)}, S1),
     ?assertEqual({error, max_keys}, element(2, ap({put, <<"b">>, 1, 1, hlc(3)}, S2))).
 
 %% ---- property: adversarial schedules ----
@@ -478,7 +502,7 @@ step({claim, K, N, P, Timeout}, M = #{epochs := Es}) ->
 step({release, K}, M = #{held := Held}) ->
     case Held of
         #{K := {_, _, _, Seq}} ->
-            {ok, M1} = apply_cmd({release, K, Seq}, M),
+            {{ok, _}, M1} = apply_cmd({release, K, Seq, hlc(0)}, M),
             M1#{held := maps:remove(K, Held)};
         _ ->
             M
@@ -488,13 +512,13 @@ step({down, P}, M) ->
     {ok, M1 = #{held := Held}} = apply_cmd({down, Pid, killed}, M),
     M1#{held := maps:filter(fun(_, {_, _, H, _}) -> H =/= Pid end, Held)};
 step({put, K, V}, M = #{kv := Kv}) ->
-    {{ok, New}, M1} = apply_cmd({put, K, V, 100, hlc(0)}, M),
+    {{ok, New, _}, M1} = apply_cmd({put, K, V, 100, hlc(0)}, M),
     ?assert(New > maps:get(K, Kv, 0)),
     M1#{kv := Kv#{K => New}};
 step({cas, K, Ver, V}, M = #{kv := Kv}) ->
     Cur = maps:get(K, Kv, 0),
     case apply_cmd({cas, K, Ver, V, 100, hlc(0)}, M) of
-        {{ok, New}, M1} ->
+        {{ok, New, _}, M1} ->
             ?assertEqual(Cur, Ver),
             ?assert(New > Cur),
             M1#{kv := Kv#{K => New}};
@@ -504,7 +528,7 @@ step({cas, K, Ver, V}, M = #{kv := Kv}) ->
             M1
     end;
 step({delete, K}, M = #{kv := Kv}) ->
-    {ok, M1} = apply_cmd({delete, K, hlc(0)}, M),
+    {{ok, _}, M1} = apply_cmd({delete, K, hlc(0)}, M),
     M1#{kv := maps:remove(K, Kv)}.
 
 %% A grant: the previous holder of the key, if any, was released, died, or

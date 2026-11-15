@@ -43,9 +43,15 @@
 %% region-wide counter bumped on every grant, so it is strictly increasing
 %% per key (and across the region). Compare fences by Seq.
 %%
-%% HLC: claims and KV writes carry the writer's hybrid logical clock stamp
-%% (chappe_cluster:now/0); the machine keeps it as a value, in the lease,
-%% the leases() rows and the watch events. It never orders anything by it.
+%% HLC: claims, releases and KV writes carry the writer's hybrid logical
+%% clock stamp (chappe_cluster:now/0). The machine merges it with the
+%% latest stamp it handed out: the stamp, when it is later, or that latest
+%% one with its logical part ticked. The merged stamp goes in the lease,
+%% the leases() rows, the watch events and the reply, and the caller moves
+%% its own clock to it. So whatever the region applies after an event is
+%% later than it in HLC order, whichever node's wall clock runs ahead: a
+%% claim after a release gets a later stamp than the release. The machine
+%% never orders any ownership decision by it.
 %%
 %% Holders are monitored through Ra's monitor effects, from the leader; a
 %% holder's death releases its leases. A `noconnection' down keeps them:
@@ -53,6 +59,8 @@
 %% `nodeup'.
 -module(chappe_cluster_machine).
 -behaviour(ra_machine).
+
+-include_lib("hlc/include/hlc.hrl").
 
 -export([init/1, apply/3, state_enter/2, overview/1]).
 -export([
@@ -113,7 +121,9 @@
     kv = #{} :: #{binary() => {pos_integer(), term(), term()}},
     kv_seq = 0 :: non_neg_integer(),
     %% the index of the last release cursor
-    cursor = 0 :: non_neg_integer()
+    cursor = 0 :: non_neg_integer(),
+    %% the latest HLC the region handed out
+    hlc = #timestamp{} :: #timestamp{}
 }).
 
 -opaque state() :: #cc{}.
@@ -174,14 +184,8 @@ do({claim, Key, Node, Epoch, Pid, CRef, MaxLeases, Hlc}, S) ->
         true -> claim(Key, Node, Epoch, Pid, {CRef, MaxLeases, Hlc}, S);
         false -> {S, {error, stale_epoch}, []}
     end;
-do({release, Key, Seq}, S0 = #cc{leases = Leases}) ->
-    case Leases of
-        #{Key := #held{seq = Seq} = H} ->
-            {S, Effs} = drop(Key, H, S0),
-            {S, ok, Effs};
-        _ ->
-            {S0, ok, []}
-    end;
+do({release, Key, Seq, Hlc}, S) ->
+    release(Key, Seq, Hlc, S);
 do({put, Key, Value, MaxKeys, Hlc}, S) ->
     put(Key, Value, MaxKeys, Hlc, S);
 do({cas, Key, Version, Value, MaxKeys, Hlc}, S = #cc{kv = Kv}) ->
@@ -194,12 +198,17 @@ do({cas, Key, Version, Value, MaxKeys, Hlc}, S = #cc{kv = Kv}) ->
         Version -> put(Key, Value, MaxKeys, Hlc, S);
         _ -> {S, {error, {version, Cur}}, []}
     end;
-do({delete, Key, Hlc}, S = #cc{kv = Kv}) ->
+do({delete, Key, Hlc}, S0) ->
+    {Stamp, S = #cc{kv = Kv}} = stamp(Hlc, S0),
     case maps:take(Key, Kv) of
         {{_, Value, _}, Kv1} ->
-            {S#cc{kv = Kv1}, ok, kv_events(delete, Key, Value, Hlc, S)};
+            {
+                S#cc{kv = Kv1},
+                {ok, Stamp},
+                kv_events(delete, Key, Value, Stamp, S)
+            };
         error ->
-            {S, ok, []}
+            {S, {ok, Stamp}, []}
     end;
 do({down, Pid, noconnection}, S) ->
     {S, ok, [{monitor, node, node(Pid)}]};
@@ -374,15 +383,27 @@ grant(Key, H0 = #held{node = Node, pid = Pid}, Max, S) ->
             {S, {error, max_leases}, []};
         true ->
             Seq = Seq0 + 1,
-            H = H0#held{seq = Seq},
+            {Stamp, #cc{hlc = Latest}} = stamp(H0#held.hlc, S),
+            H = H0#held{seq = Seq, hlc = Stamp},
             Keys = maps:get(Pid, ByPid, #{}),
             S1 = S#cc{
+                hlc = Latest,
                 leases = Leases#{Key => H},
                 counts = Counts#{Node => Count + 1},
                 by_pid = ByPid#{Pid => Keys#{Key => true}},
                 seq = Seq
             },
             {S1, {ok, view(Key, H, S1)}, [{monitor, process, Pid}]}
+    end.
+
+release(Key, Seq, Hlc, S0 = #cc{leases = Leases}) ->
+    {Stamp, S1} = stamp(Hlc, S0),
+    case Leases of
+        #{Key := #held{seq = Seq} = H} ->
+            {S, Effs} = drop(Key, H, S1),
+            {S, {ok, Stamp}, Effs};
+        _ ->
+            {S1, {ok, Stamp}, []}
     end.
 
 %% Remove one lease; demonitor its holder when it holds nothing else.
@@ -428,9 +449,18 @@ put(Key, Value, MaxKeys, Hlc, S = #cc{kv = Kv, kv_seq = V0}) ->
             {S, {error, max_keys}, []};
         true ->
             V = V0 + 1,
-            S1 = S#cc{kv = Kv#{Key => {V, Value, Hlc}}, kv_seq = V},
-            {S1, {ok, V}, kv_events(put, Key, Value, Hlc, S1)}
+            {Stamp, S0} = stamp(Hlc, S),
+            S1 = S0#cc{kv = Kv#{Key => {V, Value, Stamp}}, kv_seq = V},
+            {S1, {ok, V, Stamp}, kv_events(put, Key, Value, Stamp, S1)}
     end.
+
+%% The region's next stamp: the command's, when it is later than the latest
+%% the region handed out, or that latest one ticked.
+stamp(#timestamp{} = Hlc, S = #cc{hlc = Latest}) when Hlc > Latest ->
+    {Hlc, S#cc{hlc = Hlc}};
+stamp(_Hlc, S = #cc{hlc = Latest = #timestamp{logical = L}}) ->
+    Next = Latest#timestamp{logical = L + 1},
+    {Next, S#cc{hlc = Next}}.
 
 %% One event per live node, for the watch hub on that node. With `local',
 %% a member hands it to the hub on its own node and the leader to the nodes

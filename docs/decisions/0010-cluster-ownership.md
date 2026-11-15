@@ -96,7 +96,11 @@ What the repository and the research show:
   reads one.
 - **HLC where a timestamp is needed.** Each node keeps one hybrid logical
   clock (hlc 3.0.4, the one barrel_p2p uses). Claims and KV writes carry
-  the writer's stamp; leases, `leases()` rows and watch events carry it,
+  the writer's stamp, which the region merges with the latest stamp it
+  handed out (the later of the two, or that one ticked), so HLC order
+  follows the region's order of events; leases, `leases()` rows, watch
+  events and the replies carry the merged stamp, and the caller's clock
+  moves to it,
   and a node's clock moves forward with the stamps it receives, but by no
   more than `hlc_max_offset_ms` (10 s) past its own wall clock, so one node
   with a far-future clock cannot drag the others along.
