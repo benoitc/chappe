@@ -62,6 +62,45 @@ program prints its result and exits cleanly.
 4. Remove the matching suppression from `../fuzz/ubsan.supp`, if there is
    one, and run `make fuzz`.
 
+## Re-vendor sofia-sip
+
+You need this when upstream ships a release, above all a security one. The
+vendored tree is the upstream tag as `git archive` gives it, without its
+`.gitignore`, plus the autoreconf output (`configure`, `aclocal.m4`,
+`config.h.in`, every `Makefile.in`, the libtool and automake helpers), so a
+clean clone builds without autotools.
+
+1. Take the tag's tree and list the files the current vendoring adds to the
+   tag it came from (the generated set):
+
+   ```sh
+   git clone --filter=blob:none https://github.com/freeswitch/sofia-sip.git up
+   git -C up archive vX.Y.Z | (mkdir new && tar -x -C new)
+   git -C up ls-tree -r --name-only OLD_SHA | sort > old.txt
+   git ls-files apps/chappe_sip/c_src/sofia-sip \
+     | sed 's#^apps/chappe_sip/c_src/sofia-sip/##' | sort > vend.txt
+   comm -13 old.txt vend.txt > generated.txt
+   ```
+
+2. Regenerate that set on a copy of the new tree:
+
+   ```sh
+   cp -R new gen
+   (cd gen && LIBTOOLIZE=glibtoolize autoreconf -fiv)   # libtoolize on Linux
+   ```
+
+3. Replace the vendored tree with `new/`, drop `.gitignore`, and copy every
+   file of `generated.txt` from `gen/`. `git status` must show upstream's
+   changes and the regenerated files only.
+4. Check that every patch still applies:
+   `sh ../prepare_sofia.sh /tmp/sofia-check`. A patch upstream has merged is
+   dropped (see below); one that no longer applies is redone on the new
+   tree.
+5. Update the pin (tag and commit) in `AGENTS.md`,
+   `docs/history/plan.md` and `../../THIRD_PARTY_LICENSES.md`, then build
+   on a fresh NIF volume and run `make check`, `make asan`, `make fuzz` and
+   the conformance lab.
+
 ## Drop a patch
 
 When upstream merges the fix and we update the vendored tree, delete the

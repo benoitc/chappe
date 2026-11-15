@@ -148,9 +148,9 @@ build_triplet = @build@
 host_triplet = @host@
 target_triplet = @target@
 check_PROGRAMS = torture_sresolv$(EXEEXT) test_sresolv$(EXEEXT) \
-	check_sres_sip$(EXEEXT)
+	check_sres_sip$(EXEEXT) torture_sres_domain$(EXEEXT)
 TESTS = check_sres_sip$(EXEEXT) torture_sresolv$(EXEEXT) \
-	run_test_sresolv
+	run_test_sresolv torture_sres_domain$(EXEEXT)
 
 # Use with --enable-ndebug
 @NDEBUG_TRUE@am__append_1 = -DNDEBUG
@@ -195,6 +195,15 @@ test_sresolv_DEPENDENCIES = libsresolv.la ../url/liburl.la \
 test_sresolv_LINK = $(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) \
 	$(LIBTOOLFLAGS) --mode=link $(CCLD) $(AM_CFLAGS) $(CFLAGS) \
 	$(test_sresolv_LDFLAGS) $(LDFLAGS) -o $@
+am_torture_sres_domain_OBJECTS =  \
+	torture_sres_domain-torture_sres_domain.$(OBJEXT) \
+	torture_sres_domain-sres_cache.$(OBJEXT) \
+	torture_sres_domain-sres_blocking.$(OBJEXT) \
+	torture_sres_domain-sresolv.$(OBJEXT) \
+	torture_sres_domain-sres_sip.$(OBJEXT)
+torture_sres_domain_OBJECTS = $(am_torture_sres_domain_OBJECTS)
+torture_sres_domain_DEPENDENCIES = ../url/liburl.la ../bnf/libbnf.la \
+	../su/libsu.la
 torture_sresolv_SOURCES = torture_sresolv.c
 torture_sresolv_OBJECTS = torture_sresolv.$(OBJEXT)
 torture_sresolv_LDADD = $(LDADD)
@@ -219,6 +228,11 @@ am__depfiles_remade = ./$(DEPDIR)/check_sres_sip.Po \
 	./$(DEPDIR)/sres.Plo ./$(DEPDIR)/sres_blocking.Plo \
 	./$(DEPDIR)/sres_cache.Plo ./$(DEPDIR)/sres_sip.Plo \
 	./$(DEPDIR)/sresolv.Plo ./$(DEPDIR)/test_sresolv.Po \
+	./$(DEPDIR)/torture_sres_domain-sres_blocking.Po \
+	./$(DEPDIR)/torture_sres_domain-sres_cache.Po \
+	./$(DEPDIR)/torture_sres_domain-sres_sip.Po \
+	./$(DEPDIR)/torture_sres_domain-sresolv.Po \
+	./$(DEPDIR)/torture_sres_domain-torture_sres_domain.Po \
 	./$(DEPDIR)/torture_sresolv.Po
 am__mv = mv -f
 COMPILE = $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) \
@@ -233,9 +247,10 @@ am__v_CCLD_ = $(am__v_CCLD_@AM_DEFAULT_V@)
 am__v_CCLD_0 = @echo "  CCLD    " $@;
 am__v_CCLD_1 = 
 SOURCES = $(libsresolv_la_SOURCES) check_sres_sip.c test_sresolv.c \
-	torture_sresolv.c
+	$(torture_sres_domain_SOURCES) torture_sresolv.c
 DIST_SOURCES = $(libsresolv_la_SOURCES) check_sres_sip.c \
-	test_sresolv.c torture_sresolv.c
+	test_sresolv.c $(torture_sres_domain_SOURCES) \
+	torture_sresolv.c
 am__can_run_installinfo = \
   case $$AM_UPDATE_INFO_DIR in \
     n|no|NO) false;; \
@@ -645,6 +660,16 @@ AM_CPPFLAGS = -I$(srcdir)/../url -I../url -I$(srcdir)/../bnf -I../bnf \
 # Build targets
 noinst_LTLIBRARIES = libsresolv.la
 check_sres_sip_LDADD = $(LDADD) ${top_builddir}/s2check/libs2.a @CHECK_LIBS@
+# Includes sres.c to reach the static name decoder, so link the sibling
+# objects directly instead of libsresolv.la (which carries its own sres.o).
+torture_sres_domain_SOURCES = torture_sres_domain.c \
+			sres_cache.c sres_blocking.c sresolv.c sres_sip.c
+
+# Per-target flags give these shared sources unique object names
+# (torture_sres_domain-*.o), so they do not clash with the libtool objects
+# libsresolv.la builds from the same files.
+torture_sres_domain_CPPFLAGS = $(AM_CPPFLAGS)
+torture_sres_domain_LDADD = ../url/liburl.la ../bnf/libbnf.la ../su/libsu.la
 CLEANFILES = resolv.conf error.conf named.conf.tmp \
 			.test_sresolv.api.conf.?????? \
 			named.run
@@ -802,6 +827,10 @@ test_sresolv$(EXEEXT): $(test_sresolv_OBJECTS) $(test_sresolv_DEPENDENCIES) $(EX
 	@rm -f test_sresolv$(EXEEXT)
 	$(AM_V_CCLD)$(test_sresolv_LINK) $(test_sresolv_OBJECTS) $(test_sresolv_LDADD) $(LIBS)
 
+torture_sres_domain$(EXEEXT): $(torture_sres_domain_OBJECTS) $(torture_sres_domain_DEPENDENCIES) $(EXTRA_torture_sres_domain_DEPENDENCIES) 
+	@rm -f torture_sres_domain$(EXEEXT)
+	$(AM_V_CCLD)$(LINK) $(torture_sres_domain_OBJECTS) $(torture_sres_domain_LDADD) $(LIBS)
+
 torture_sresolv$(EXEEXT): $(torture_sresolv_OBJECTS) $(torture_sresolv_DEPENDENCIES) $(EXTRA_torture_sresolv_DEPENDENCIES) 
 	@rm -f torture_sresolv$(EXEEXT)
 	$(AM_V_CCLD)$(LINK) $(torture_sresolv_OBJECTS) $(torture_sresolv_LDADD) $(LIBS)
@@ -819,6 +848,11 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/sres_sip.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/sresolv.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/test_sresolv.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/torture_sres_domain-sres_blocking.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/torture_sres_domain-sres_cache.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/torture_sres_domain-sres_sip.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/torture_sres_domain-sresolv.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/torture_sres_domain-torture_sres_domain.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/torture_sresolv.Po@am__quote@ # am--include-marker
 
 $(am__depfiles_remade):
@@ -833,6 +867,76 @@ am--depfiles: $(am__depfiles_remade)
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='$<' object='$@' libtool=no @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(COMPILE) -c -o $@ `$(CYGPATH_W) '$<'`
+
+torture_sres_domain-torture_sres_domain.o: torture_sres_domain.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(torture_sres_domain_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT torture_sres_domain-torture_sres_domain.o -MD -MP -MF $(DEPDIR)/torture_sres_domain-torture_sres_domain.Tpo -c -o torture_sres_domain-torture_sres_domain.o `test -f 'torture_sres_domain.c' || echo '$(srcdir)/'`torture_sres_domain.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/torture_sres_domain-torture_sres_domain.Tpo $(DEPDIR)/torture_sres_domain-torture_sres_domain.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='torture_sres_domain.c' object='torture_sres_domain-torture_sres_domain.o' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(torture_sres_domain_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o torture_sres_domain-torture_sres_domain.o `test -f 'torture_sres_domain.c' || echo '$(srcdir)/'`torture_sres_domain.c
+
+torture_sres_domain-torture_sres_domain.obj: torture_sres_domain.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(torture_sres_domain_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT torture_sres_domain-torture_sres_domain.obj -MD -MP -MF $(DEPDIR)/torture_sres_domain-torture_sres_domain.Tpo -c -o torture_sres_domain-torture_sres_domain.obj `if test -f 'torture_sres_domain.c'; then $(CYGPATH_W) 'torture_sres_domain.c'; else $(CYGPATH_W) '$(srcdir)/torture_sres_domain.c'; fi`
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/torture_sres_domain-torture_sres_domain.Tpo $(DEPDIR)/torture_sres_domain-torture_sres_domain.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='torture_sres_domain.c' object='torture_sres_domain-torture_sres_domain.obj' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(torture_sres_domain_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o torture_sres_domain-torture_sres_domain.obj `if test -f 'torture_sres_domain.c'; then $(CYGPATH_W) 'torture_sres_domain.c'; else $(CYGPATH_W) '$(srcdir)/torture_sres_domain.c'; fi`
+
+torture_sres_domain-sres_cache.o: sres_cache.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(torture_sres_domain_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT torture_sres_domain-sres_cache.o -MD -MP -MF $(DEPDIR)/torture_sres_domain-sres_cache.Tpo -c -o torture_sres_domain-sres_cache.o `test -f 'sres_cache.c' || echo '$(srcdir)/'`sres_cache.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/torture_sres_domain-sres_cache.Tpo $(DEPDIR)/torture_sres_domain-sres_cache.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='sres_cache.c' object='torture_sres_domain-sres_cache.o' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(torture_sres_domain_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o torture_sres_domain-sres_cache.o `test -f 'sres_cache.c' || echo '$(srcdir)/'`sres_cache.c
+
+torture_sres_domain-sres_cache.obj: sres_cache.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(torture_sres_domain_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT torture_sres_domain-sres_cache.obj -MD -MP -MF $(DEPDIR)/torture_sres_domain-sres_cache.Tpo -c -o torture_sres_domain-sres_cache.obj `if test -f 'sres_cache.c'; then $(CYGPATH_W) 'sres_cache.c'; else $(CYGPATH_W) '$(srcdir)/sres_cache.c'; fi`
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/torture_sres_domain-sres_cache.Tpo $(DEPDIR)/torture_sres_domain-sres_cache.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='sres_cache.c' object='torture_sres_domain-sres_cache.obj' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(torture_sres_domain_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o torture_sres_domain-sres_cache.obj `if test -f 'sres_cache.c'; then $(CYGPATH_W) 'sres_cache.c'; else $(CYGPATH_W) '$(srcdir)/sres_cache.c'; fi`
+
+torture_sres_domain-sres_blocking.o: sres_blocking.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(torture_sres_domain_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT torture_sres_domain-sres_blocking.o -MD -MP -MF $(DEPDIR)/torture_sres_domain-sres_blocking.Tpo -c -o torture_sres_domain-sres_blocking.o `test -f 'sres_blocking.c' || echo '$(srcdir)/'`sres_blocking.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/torture_sres_domain-sres_blocking.Tpo $(DEPDIR)/torture_sres_domain-sres_blocking.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='sres_blocking.c' object='torture_sres_domain-sres_blocking.o' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(torture_sres_domain_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o torture_sres_domain-sres_blocking.o `test -f 'sres_blocking.c' || echo '$(srcdir)/'`sres_blocking.c
+
+torture_sres_domain-sres_blocking.obj: sres_blocking.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(torture_sres_domain_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT torture_sres_domain-sres_blocking.obj -MD -MP -MF $(DEPDIR)/torture_sres_domain-sres_blocking.Tpo -c -o torture_sres_domain-sres_blocking.obj `if test -f 'sres_blocking.c'; then $(CYGPATH_W) 'sres_blocking.c'; else $(CYGPATH_W) '$(srcdir)/sres_blocking.c'; fi`
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/torture_sres_domain-sres_blocking.Tpo $(DEPDIR)/torture_sres_domain-sres_blocking.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='sres_blocking.c' object='torture_sres_domain-sres_blocking.obj' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(torture_sres_domain_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o torture_sres_domain-sres_blocking.obj `if test -f 'sres_blocking.c'; then $(CYGPATH_W) 'sres_blocking.c'; else $(CYGPATH_W) '$(srcdir)/sres_blocking.c'; fi`
+
+torture_sres_domain-sresolv.o: sresolv.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(torture_sres_domain_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT torture_sres_domain-sresolv.o -MD -MP -MF $(DEPDIR)/torture_sres_domain-sresolv.Tpo -c -o torture_sres_domain-sresolv.o `test -f 'sresolv.c' || echo '$(srcdir)/'`sresolv.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/torture_sres_domain-sresolv.Tpo $(DEPDIR)/torture_sres_domain-sresolv.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='sresolv.c' object='torture_sres_domain-sresolv.o' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(torture_sres_domain_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o torture_sres_domain-sresolv.o `test -f 'sresolv.c' || echo '$(srcdir)/'`sresolv.c
+
+torture_sres_domain-sresolv.obj: sresolv.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(torture_sres_domain_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT torture_sres_domain-sresolv.obj -MD -MP -MF $(DEPDIR)/torture_sres_domain-sresolv.Tpo -c -o torture_sres_domain-sresolv.obj `if test -f 'sresolv.c'; then $(CYGPATH_W) 'sresolv.c'; else $(CYGPATH_W) '$(srcdir)/sresolv.c'; fi`
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/torture_sres_domain-sresolv.Tpo $(DEPDIR)/torture_sres_domain-sresolv.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='sresolv.c' object='torture_sres_domain-sresolv.obj' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(torture_sres_domain_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o torture_sres_domain-sresolv.obj `if test -f 'sresolv.c'; then $(CYGPATH_W) 'sresolv.c'; else $(CYGPATH_W) '$(srcdir)/sresolv.c'; fi`
+
+torture_sres_domain-sres_sip.o: sres_sip.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(torture_sres_domain_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT torture_sres_domain-sres_sip.o -MD -MP -MF $(DEPDIR)/torture_sres_domain-sres_sip.Tpo -c -o torture_sres_domain-sres_sip.o `test -f 'sres_sip.c' || echo '$(srcdir)/'`sres_sip.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/torture_sres_domain-sres_sip.Tpo $(DEPDIR)/torture_sres_domain-sres_sip.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='sres_sip.c' object='torture_sres_domain-sres_sip.o' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(torture_sres_domain_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o torture_sres_domain-sres_sip.o `test -f 'sres_sip.c' || echo '$(srcdir)/'`sres_sip.c
+
+torture_sres_domain-sres_sip.obj: sres_sip.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(torture_sres_domain_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT torture_sres_domain-sres_sip.obj -MD -MP -MF $(DEPDIR)/torture_sres_domain-sres_sip.Tpo -c -o torture_sres_domain-sres_sip.obj `if test -f 'sres_sip.c'; then $(CYGPATH_W) 'sres_sip.c'; else $(CYGPATH_W) '$(srcdir)/sres_sip.c'; fi`
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/torture_sres_domain-sres_sip.Tpo $(DEPDIR)/torture_sres_domain-sres_sip.Po
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='sres_sip.c' object='torture_sres_domain-sres_sip.obj' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(torture_sres_domain_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o torture_sres_domain-sres_sip.obj `if test -f 'sres_sip.c'; then $(CYGPATH_W) 'sres_sip.c'; else $(CYGPATH_W) '$(srcdir)/sres_sip.c'; fi`
 
 mostlyclean-libtool:
 	-rm -f *.lo
@@ -1103,6 +1207,13 @@ run_test_sresolv.log: run_test_sresolv
 	--log-file $$b.log --trs-file $$b.trs \
 	$(am__common_driver_flags) $(AM_LOG_DRIVER_FLAGS) $(LOG_DRIVER_FLAGS) -- $(LOG_COMPILE) \
 	"$$tst" $(AM_TESTS_FD_REDIRECT)
+torture_sres_domain.log: torture_sres_domain$(EXEEXT)
+	@p='torture_sres_domain$(EXEEXT)'; \
+	b='torture_sres_domain'; \
+	$(am__check_pre) $(LOG_DRIVER) --test-name "$$f" \
+	--log-file $$b.log --trs-file $$b.trs \
+	$(am__common_driver_flags) $(AM_LOG_DRIVER_FLAGS) $(LOG_DRIVER_FLAGS) -- $(LOG_COMPILE) \
+	"$$tst" $(AM_TESTS_FD_REDIRECT)
 .test.log:
 	@p='$<'; \
 	$(am__set_b); \
@@ -1210,6 +1321,11 @@ distclean: distclean-am
 	-rm -f ./$(DEPDIR)/sres_sip.Plo
 	-rm -f ./$(DEPDIR)/sresolv.Plo
 	-rm -f ./$(DEPDIR)/test_sresolv.Po
+	-rm -f ./$(DEPDIR)/torture_sres_domain-sres_blocking.Po
+	-rm -f ./$(DEPDIR)/torture_sres_domain-sres_cache.Po
+	-rm -f ./$(DEPDIR)/torture_sres_domain-sres_sip.Po
+	-rm -f ./$(DEPDIR)/torture_sres_domain-sresolv.Po
+	-rm -f ./$(DEPDIR)/torture_sres_domain-torture_sres_domain.Po
 	-rm -f ./$(DEPDIR)/torture_sresolv.Po
 	-rm -f Makefile
 distclean-am: clean-am distclean-compile distclean-generic \
@@ -1263,6 +1379,11 @@ maintainer-clean: maintainer-clean-am
 	-rm -f ./$(DEPDIR)/sres_sip.Plo
 	-rm -f ./$(DEPDIR)/sresolv.Plo
 	-rm -f ./$(DEPDIR)/test_sresolv.Po
+	-rm -f ./$(DEPDIR)/torture_sres_domain-sres_blocking.Po
+	-rm -f ./$(DEPDIR)/torture_sres_domain-sres_cache.Po
+	-rm -f ./$(DEPDIR)/torture_sres_domain-sres_sip.Po
+	-rm -f ./$(DEPDIR)/torture_sres_domain-sresolv.Po
+	-rm -f ./$(DEPDIR)/torture_sres_domain-torture_sres_domain.Po
 	-rm -f ./$(DEPDIR)/torture_sresolv.Po
 	-rm -f Makefile
 maintainer-clean-am: distclean-am maintainer-clean-generic

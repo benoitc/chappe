@@ -7,6 +7,15 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 
 ## Unreleased
 
+- chappe_sip security: the bundled sofia-sip is now 1.13.19, which fixes
+  three flaws. A crafted DNS answer could make the resolver loop forever,
+  so a hostile or spoofed DNS server could freeze outbound routing
+  (CVE-2026-116792). A crafted WebSocket frame could corrupt memory in
+  sofia's own WebSocket transport (CVE-2026-116791); chappe serves
+  WebSocket in Erlang, so this only mattered to a node configured with a
+  sofia `ws` or `wss` contact. A crafted multipart body could make the
+  parser read past its buffer (CVE-2026-110658). Update if you run an
+  earlier chappe_sip.
 - chappe_esl and chappe_mrf: the fork docs now say that a stereo
   mod_audio_stream fork sends nothing unless both directions carry audio,
   and to fork in mono or mixed instead when you need the caller's audio
