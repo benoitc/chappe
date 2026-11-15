@@ -8,7 +8,8 @@
     {registered, [
         chappe_cluster_sup,
         chappe_cluster_node,
-        chappe_cluster_watch_sup,
+        chappe_cluster_watch,
+        chappe_cluster_lapse,
         chappe_cluster_singleton_sup
     ]},
     {mod, {chappe_cluster_app, []}},

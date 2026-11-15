@@ -9,6 +9,12 @@
 %% `lost', or when the child stops, it stops the child, gives the lease
 %% back and contends again.
 %%
+%% On `lost' the child is killed (exit `kill', not a shutdown): the node
+%% gives its leases up renew_ms / 2 before the region may let another node
+%% run the child, and a graceful shutdown could outlast that. A stop while
+%% the lease holds (stop_singleton/1, the app stopping) is a shutdown,
+%% bounded by what is left of the lease, then a kill.
+%%
 %% Fenced side effects: fence/1 returns the lease's fence while this node
 %% runs the child, for the child to carry on what it writes.
 -module(chappe_cluster_singleton).
@@ -67,7 +73,7 @@ handle_info(contend, St) ->
 handle_info(
     {chappe_cluster, #{seq := Seq}, lost}, St = #state{lease = #{seq := Seq}}
 ) ->
-    {noreply, retry(stop_child(St#state{lease = undefined}))};
+    {noreply, retry(kill_child(St#state{lease = undefined}))};
 handle_info({chappe_cluster, _OldLease, lost}, St) ->
     {noreply, St};
 handle_info({'DOWN', Ref, process, _, _}, St = #state{child = {_, Ref}}) ->
@@ -112,6 +118,24 @@ run(Lease, St = #state{spec = Spec, name = Name}) ->
             retry(give_back(St#state{lease = Lease}))
     end.
 
+%% Kill the child and its supervisor at once, and wait for the child.
+kill_child(St = #state{sup = Sup, child = Child}) ->
+    case Child of
+        {Pid, Ref} ->
+            erlang:demonitor(Ref, [flush]),
+            Mon = erlang:monitor(process, Pid),
+            exit(Pid, kill),
+            wait_down(Mon, Pid, 5000);
+        undefined ->
+            ok
+    end,
+    case Sup of
+        undefined -> ok;
+        _ -> stop_sup(Sup, kill, 0)
+    end,
+    St#state{sup = undefined, child = undefined}.
+
+%% Shut the child down, for no longer than what is left of the lease.
 stop_child(St = #state{sup = undefined, child = undefined}) ->
     St;
 stop_child(St = #state{sup = Sup, child = Child}) ->
@@ -123,24 +147,32 @@ stop_child(St = #state{sup = Sup, child = Child}) ->
         undefined ->
             ok;
         _ ->
-            unlink(Sup),
-            Mon = erlang:monitor(process, Sup),
-            exit(Sup, shutdown),
-            receive
-                {'DOWN', Mon, process, Sup, _} -> ok
-            after 5000 ->
-                exit(Sup, kill),
-                receive
-                    {'DOWN', Mon, process, Sup, _} -> ok
-                after 5000 -> ok
-                end
-            end,
-            receive
-                {'EXIT', Sup, _} -> ok
-            after 0 -> ok
-            end
+            stop_sup(
+                Sup, shutdown, min(5000, chappe_cluster_tab:remaining_ms())
+            )
     end,
     St#state{sup = undefined, child = undefined}.
+
+stop_sup(Sup, How, Wait) ->
+    unlink(Sup),
+    Mon = erlang:monitor(process, Sup),
+    exit(Sup, How),
+    receive
+        {'DOWN', Mon, process, Sup, _} -> ok
+    after Wait ->
+        exit(Sup, kill),
+        wait_down(Mon, Sup, 5000)
+    end,
+    receive
+        {'EXIT', Sup, _} -> ok
+    after 0 -> ok
+    end.
+
+wait_down(Mon, Pid, Timeout) ->
+    receive
+        {'DOWN', Mon, process, Pid, _} -> ok
+    after Timeout -> ok
+    end.
 
 give_back(St = #state{lease = undefined}) ->
     St;

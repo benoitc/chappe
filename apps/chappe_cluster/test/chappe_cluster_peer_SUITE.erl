@@ -18,6 +18,7 @@ all() ->
     [
         takeover_after_a_node_stops,
         quorum_loss_is_bounded,
+        cut_off_holder_hears_lost_before_takeover,
         api_from_other_nodes,
         join_and_leave,
         singleton_moves_when_its_node_stops
@@ -94,13 +95,104 @@ quorum_loss_is_bounded(Config) ->
     ?assertEqual({error, no_quorum}, erpc:call(N1, chappe_cluster, put, [<<"q">>, 1])),
     ?assert(erlang:monotonic_time(millisecond) - T2 < 3000).
 
+%% Cut the holder's node off from the other two while the holder runs: it
+%% hears lost before the other side's claim succeeds (one host, one clock).
+cut_off_holder_hears_lost_before_takeover(Config) ->
+    [N1, N2, N3] = ?config(nodes, Config),
+    Holder = erpc:call(N1, erlang, spawn, [fun() -> lost_clock(none) end]),
+    {ok, L1} = erpc:call(N1, chappe_cluster, claim, [cut_key, #{pid => Holder}]),
+    wait(fun() -> owner_node(N2, cut_key) =:= N1 end),
+    Cookie = erlang:get_cookie(),
+    cut(N1, [N2, N3], Cookie),
+    try
+        T0 = erlang:system_time(millisecond),
+        Claimer = holder(N2),
+        L2 = erpc:call(N2, ?MODULE, claim_until, [cut_key, Claimer, 400]),
+        TClaim = erpc:call(N2, erlang, system_time, [millisecond]),
+        ?assert(seq(L2) > seq(L1)),
+        heal(N1, [N2, N3], Cookie),
+        Holder ! {get, self()},
+        TLost =
+            receive
+                {lost_at, T} when is_integer(T) -> T;
+                {lost_at, none} -> ct:fail(no_lost)
+            after 10000 -> ct:fail(holder_gone)
+            end,
+        ct:pal("cut at ~b, lost at +~b, taken at +~b", [T0, TLost - T0, TClaim - T0]),
+        ?assert(TLost < TClaim)
+    after
+        heal(N1, [N2, N3], Cookie)
+    end.
+
+%% A holder that keeps the time it heard lost.
+lost_clock(At) ->
+    receive
+        {chappe_cluster, _, lost} when At =:= none ->
+            lost_clock(erlang:system_time(millisecond));
+        {get, From} ->
+            From ! {lost_at, At},
+            lost_clock(At);
+        _ ->
+            lost_clock(At)
+    end.
+
+claim_until(Key, Pid, 0) ->
+    error(
+        {no_takeover, Key, chappe_cluster:claim(Key, #{pid => Pid}), nodes(),
+            erlang:system_time(millisecond),
+            ra:local_query(
+                chappe_cluster_config:server_id(),
+                fun chappe_cluster_machine:overview/1
+            )}
+    );
+claim_until(Key, Pid, N) ->
+    case chappe_cluster:claim(Key, #{pid => Pid, timeout => 1000}) of
+        {ok, L} ->
+            L;
+        {error, _} ->
+            timer:sleep(50),
+            claim_until(Key, Pid, N - 1)
+    end.
+
+%% A partition both ways that the nodes cannot heal on their own: each side
+%% expects a different cookie from the other, then drops the connection.
+cut(N1, Others, _Cookie) ->
+    [
+        begin
+            true = erpc:call(N1, erlang, set_cookie, [N, 'chappe-cut-a']),
+            true = erpc:call(N, erlang, set_cookie, [N1, 'chappe-cut-b']),
+            _ = erpc:call(N1, erlang, disconnect_node, [N]),
+            _ = erpc:call(N, erlang, disconnect_node, [N1])
+        end
+     || N <- Others
+    ],
+    ok.
+
+heal(N1, Others, Cookie) ->
+    _ = net_kernel:connect_node(N1),
+    [
+        begin
+            _ = catch_call(N1, erlang, set_cookie, [N, Cookie]),
+            _ = catch_call(N, erlang, set_cookie, [N1, Cookie]),
+            _ = catch_call(N, net_kernel, connect_node, [N1])
+        end
+     || N <- Others
+    ],
+    ok.
+
+seq(#{seq := S}) -> S.
+
 %% From another node: owners, watches and singletons are seen across the
-%% region; a holder on a node that runs no chappe_cluster hears lost.
+%% region; a lease is held on its own node only.
 api_from_other_nodes(Config) ->
     [N1, N2, N3] = ?config(nodes, Config),
     Self = self(),
-    %% a holder on this CT node, which runs no chappe_cluster
-    Holder = spawn(fun() -> forward(Self) end),
+    %% a holder on this CT node cannot hold a lease of N1
+    Far = spawn(fun() -> forward(Self) end),
+    ?assertEqual(
+        {error, badarg}, erpc:call(N1, chappe_cluster, claim, [far_key, #{pid => Far}])
+    ),
+    Holder = holder(N1),
     {ok, L} = erpc:call(N1, chappe_cluster, claim, [far_key, #{pid => Holder}]),
     wait(fun() -> owner_pid(N3, far_key) =:= Holder end),
     %% a watcher on N2 sees a put made on N3
@@ -121,7 +213,7 @@ api_from_other_nodes(Config) ->
     timer:sleep(3 * ?RENEW),
     ?assertEqual([Pid], singleton_pids(far_s, [N1, N2, N3])),
     [?assertEqual({ok, Pid}, erpc:call(N, chappe_cluster, whereis_singleton, [far_s])) || N <- [N1, N2, N3]],
-    %% the holder on the CT node is released from another node
+    %% the lease is released from another node
     ok = erpc:call(N2, chappe_cluster, release, [L]),
     wait(fun() -> owner_pid(N3, far_key) =:= none end).
 
