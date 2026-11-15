@@ -97,7 +97,8 @@ do_claim(Key, Pid, Timeout) ->
             {error, no_quorum}
     end.
 
-claimed({ok, {ok, Lease}}, _Key, _CRef, {Epoch, Gen}) ->
+claimed({ok, {ok, #{hlc := Hlc} = Lease}}, _Key, _CRef, {Epoch, Gen}) ->
+    ok = seen(Hlc),
     %% still live, at the epoch and with no lapse since the claim left
     case chappe_cluster_tab:hold(Lease, Epoch, Gen) of
         ok -> {ok, Lease};
@@ -122,8 +123,8 @@ release(#{key := Key, seq := Seq, node := Node} = Lease) ->
             true -> chappe_cluster_tab:unhold(Key, Seq);
             false -> chappe_cluster_node:untrack(Lease)
         end,
-    case command({release, Key, Seq}, cfg(command_timeout)) of
-        {ok, ok} -> ok;
+    case command({release, Key, Seq, now()}, cfg(command_timeout)) of
+        {ok, {ok, Hlc}} -> seen(Hlc);
         {error, no_quorum} -> chappe_cluster_node:abandon(Node, {seq, Key, Seq})
     end;
 release(_) ->
@@ -188,7 +189,7 @@ put(_, _) ->
 -spec delete(binary()) -> ok | {error, no_quorum | badarg}.
 delete(Key) when is_binary(Key) ->
     case command({delete, Key, now()}, cfg(command_timeout)) of
-        {ok, ok} -> ok;
+        {ok, {ok, Hlc}} -> seen(Hlc);
         {error, _} = E -> E
     end;
 delete(_) ->
@@ -212,8 +213,13 @@ write(Value, Cmd) ->
             {error, too_large};
         false ->
             case command(Cmd, cfg(command_timeout)) of
-                {ok, Reply} -> Reply;
-                {error, _} = E -> E
+                {ok, {ok, Version, Hlc}} ->
+                    ok = seen(Hlc),
+                    {ok, Version};
+                {ok, {error, _} = E} ->
+                    E;
+                {error, _} = E ->
+                    E
             end
     end.
 
@@ -406,6 +412,15 @@ status() ->
 -spec now() -> hlc().
 now() ->
     hlc:now(chappe_cluster_hlc).
+
+%% The region's stamp moves this node's clock forward (within its max
+%% offset), so what this node does next is later than what it saw.
+seen(Hlc) ->
+    try hlc:update(chappe_cluster_hlc, Hlc) of
+        _ -> ok
+    catch
+        exit:_ -> ok
+    end.
 
 %% ---- internals ----
 

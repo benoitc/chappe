@@ -193,6 +193,9 @@ handle_info(ping, S) ->
   `renew_ms` and `max_drift` leave no margin.
 - Timestamps: `chappe_cluster:now()` returns this node's hybrid logical
   clock. Leases, `leases()` rows and watch events carry the writer's
-  stamp; use it to order events in logs, not to decide ownership.
+  stamp, merged by the region with the latest stamp it handed out, so
+  anything applied after an event (a claim after a release) carries a
+  later stamp, whichever wall clock runs ahead. Use it to order events in
+  logs, not to decide ownership.
 - Stopping the app tells every holder lost, and the next start takes a
   new epoch.
