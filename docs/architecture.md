@@ -29,6 +29,7 @@ flowchart TB
         mix[chappe_mix]
         esl[chappe_esl]
         audio[chappe_audio]
+        cluster[chappe_cluster]
     end
     mrf --> sip
     mrf --> esl
@@ -40,11 +41,12 @@ flowchart TB
     esl -. "Event Socket" .- fs[(FreeSWITCH nodes)]
     mix -. "RTP" .- rtpengine
     audio -. "WebSocket (audio forks)" .- fs
+    cluster -. "Raft (Ra), one group per region" .- nodes[(the region's other chappe nodes)]
 ```
 
 | Layer | Apps | Rule |
 |---|---|---|
-| Leaf | chappe_rtpengine, chappe_mix, chappe_esl, chappe_audio | Speak one protocol. Depend on no other chappe app and on nothing SIP. |
+| Leaf | chappe_rtpengine, chappe_mix, chappe_esl, chappe_audio, chappe_cluster | Speak one protocol. Depend on no other chappe app and on nothing SIP. |
 | Core | chappe_sip | The SIP stack. Uses chappe_rtpengine and chappe_mix through its media facade (`chappe_sip_media`), started on demand. Never uses chappe_esl. |
 | Orchestration | chappe_mrf | Ties SIP to media servers. May depend on the core and the leaves. Nothing in the umbrella depends on it. |
 
@@ -58,6 +60,8 @@ Why the rules exist:
   [0005](decisions/0005-chappe-mix.md).
 - Code that needs SIP and FreeSWITCH at once goes to an orchestration app,
   not into chappe_sip: [0006](decisions/0006-mrf-orchestration-app.md).
+- What needs one owner in a cluster takes a lease from chappe_cluster, one
+  Ra group per region: [0010](decisions/0010-cluster-ownership.md).
 
 The dependencies are in each `apps/*/src/*.app.src`. chappe_sip lists
 neither chappe_rtpengine nor chappe_mix in `applications`: they are loaded
@@ -100,6 +104,12 @@ chappe_audio_sup (rest_for_one)
 |-- chappe_audio_stream_sup        one chappe_audio_stream per fork
 |-- chappe_audio_conn_sup          one chappe_audio_conn per handshake
 `-- chappe_audio_listener_sup      one chappe_audio_listener per port
+
+chappe_cluster_sup (rest_for_one)
+|-- pg scope chappe_cluster        watchers by prefix, running singletons
+|-- chappe_cluster_watch           hands KV changes to local watchers
+|-- chappe_cluster_node            the Ra member, liveness, tracked leases
+`-- chappe_cluster_singleton_sup   one chappe_cluster_singleton per name
 
 chappe_mrf_sup (one_for_one)
 |-- chappe_mrf_registry            correlation id and loop token lookup
