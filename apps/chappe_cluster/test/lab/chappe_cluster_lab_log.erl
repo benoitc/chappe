@@ -2,7 +2,7 @@
 %% SPDX-License-Identifier: Apache-2.0
 
 %% The event log of one lab node boot: one `{Time, Holder, Key, Kind,
-%% Fence}.' line per event in `<log_dir>/<node>-<boot>.log', written as it
+%% Fence}.' line per event in `<log_dir>/<host>-<boot>.log', written as it
 %% comes (no write buffer), so a docker kill loses at most the last lines.
 -module(chappe_cluster_lab_log).
 -behaviour(gen_server).
@@ -29,8 +29,8 @@ stats() ->
     gen_server:call(?MODULE, stats).
 
 init({#{log_dir := Dir}, Boot}) ->
-    [Name, _Host] = string:split(atom_to_list(node()), "@"),
-    File = filename:join(Dir, Name ++ "-" ++ integer_to_list(Boot) ++ ".log"),
+    [_Name, Host] = string:split(atom_to_list(node()), "@"),
+    File = filename:join(Dir, Host ++ "-" ++ integer_to_list(Boot) ++ ".log"),
     ok = filelib:ensure_dir(File),
     {ok, Fd} = file:open(File, [append, raw, binary]),
     {ok, #{fd => Fd, stats => #{}}}.

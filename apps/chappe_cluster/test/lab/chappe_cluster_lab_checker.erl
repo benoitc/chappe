@@ -325,7 +325,7 @@ format(#{kind := Kind, at := At} = V) ->
         [io_lib:format("  first: ~p~n", [brief(F)]) || F <- opt(first, V)],
         [io_lib:format("  second: ~p~n", [brief(S)]) || S <- opt(second, V)],
         "  events around it:\n",
-        [io_lib:format("    ~p~n", [E]) || E <- maps:get(context, V, [])]
+        [io_lib:format("    ~w~n", [E]) || E <- maps:get(context, V, [])]
     ].
 
 opt(Key, V) ->

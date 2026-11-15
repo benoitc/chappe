@@ -21,8 +21,7 @@ stop(Pid) ->
     gen_server:call(Pid, stop, 30000).
 
 init({Opts, Boot, I}) ->
-    [Name, _Host] = string:split(atom_to_list(node()), "@"),
-    Holder = {list_to_atom(Name), Boot, {I, erlang:unique_integer([positive])}},
+    Holder = {node(), Boot, {I, erlang:unique_integer([positive])}},
     self() ! tick,
     {ok, Opts#{holder => Holder, lease => none, beats => 0}}.
 
