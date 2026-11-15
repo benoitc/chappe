@@ -21,7 +21,7 @@ media concepts.
 
 ## Requirements
 
-- Erlang/OTP 29
+- Erlang/OTP 29.1.2 or later (earlier releases have TLS flaws (CVE-2026-89422, a TLS 1.3 server impersonation, and CVE-2026-105236, an SNI resumption bypass))
 - rebar3
 - A FreeSWITCH with `mod_event_socket` for live use
 

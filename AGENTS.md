@@ -4,7 +4,8 @@ Instructions for AI coding agents working on this project.
 
 ## Project Overview
 
-`chappe` is an opensource SIP/media platform for Erlang/OTP 29, a rebar3
+`chappe` is an opensource SIP/media platform for Erlang/OTP 29.1.2 or later (older 29 releases have TLS
+CVEs; every rebar.config sets `minimum_otp_vsn`), a rebar3
 umbrella of composable apps you build voice services on. Products (an SBC, an AI
 voice product, a PBX) live in their own repos and depend on these packages; they
 are not here.

@@ -19,6 +19,11 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
   listens on 127.0.0.1 only by default. When FreeSWITCH runs on another
   host, set the address to listen on and the networks FreeSWITCH connects
   from in chappe_mrf's configuration, or FreeSWITCH can no longer reach it.
+- Every app now needs Erlang/OTP 29.1.2 or later, and the build refuses an
+  older one. OTP 29 releases before 29.1.1 let a TLS 1.3 server be
+  impersonated (CVE-2026-89422), and before 29.1.2 a resumed session could
+  skip authentication through SNI (CVE-2026-105236). chappe serves and
+  dials SIP over TLS, so an older OTP left those connections open to both.
 - chappe_esl and chappe_mrf: the fork docs now say that a stereo
   mod_audio_stream fork sends nothing unless both directions carry audio,
   and to fork in mono or mixed instead when you need the caller's audio

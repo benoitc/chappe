@@ -39,5 +39,5 @@ rebar3 ct
 - Run `rebar3 fmt`; elvis must pass (per-module ignores live in the umbrella
   `elvis.config` with a one-line reason; `chappe_rtpengine_session` is the handle-event
   gen_statem, `chappe_rtpengine_bencode` uses throw as parser control flow).
-- OTP 29. No em-dash in code/docs/messages; never the word "comprehensive".
+- OTP 29.1.2 or later. No em-dash in code/docs/messages; never the word "comprehensive".
 - No generated/co-authored commit trailers; one imperative subject line.

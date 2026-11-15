@@ -176,7 +176,7 @@ goes to `FREESWITCH_HOST` on the port from the SDP, and
 
 On macOS docker runs a Linux VM, so in `host` mode every FreeSWITCH packet
 crosses the host-to-VM hop and chappe_mix's do not. `vm` runs the same arm in
-an `erlang:29` container on FreeSWITCH's network (the umbrella mounted
+an `erlang:29.1.2` container on FreeSWITCH's network (the umbrella mounted
 read-only), so both mixers run in the same VM; chappe_mix is still reached on
 loopback there and FreeSWITCH over the docker bridge. Compare latency in `vm`
 mode. The arm checks the load in the VM, which on macOS leaves out the host,

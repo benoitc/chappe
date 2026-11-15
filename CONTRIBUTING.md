@@ -8,8 +8,8 @@ workflow in [docs/contributing/](docs/README.md#if-you-want-to-change-something)
 
 ## Start here
 
-1. Build: `make` (the first run builds the vendored sofia-sip; Erlang/OTP 29,
-   rebar3, a C toolchain, autotools, OpenSSL).
+1. Build: `make` (the first run builds the vendored sofia-sip; Erlang/OTP
+   29.1.2 or later, rebar3, a C toolchain, autotools, OpenSSL).
 2. Read [Concepts](docs/concepts.md) and [Architecture](docs/architecture.md).
 3. Find the code with [Navigation](docs/navigation.md).
 
@@ -78,7 +78,8 @@ uses the fake engine.
   `apps/chappe_mix/test/audit/PERF.md` and what was tried and reverted in
   `ATTEMPTS.md`. Check the load average before timing anything.
 - **TLS:** `verify_none` and permissive TLS are test-only; never in `src/`.
-- **OTP 29 only.** sofia-sip is vendored at a pinned version. The vendored
+- **OTP 29.1.2 or later.** Every rebar.config sets `minimum_otp_vsn`, so
+  rebar3 refuses an older OTP: earlier releases have TLS flaws (CVE-2026-89422, a TLS 1.3 server impersonation, and CVE-2026-105236, an SNI resumption bypass). sofia-sip is vendored at a pinned version. The vendored
   tree stays as upstream ships it; fixes we need go as patches in
   `apps/chappe_sip/c_src/sofia-patches`, each with an upstream ticket and a
   repro, applied at build time (see its README).

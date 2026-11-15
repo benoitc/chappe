@@ -10,7 +10,7 @@
 # Usage:
 #   ref.sh suite                  chappe_mix_ref_SUITE      (make interop-ref)
 #   ref.sh host ARM [ARGS...]     a bench arm on this machine (make bench-ref)
-#   ref.sh vm ARM [ARGS...]       a bench arm in an erlang:29 container on
+#   ref.sh vm ARM [ARGS...]       a bench arm in an erlang:29.1.2 container on
 #                                 FreeSWITCH's network: on macOS, the same
 #                                 Linux VM, so neither side pays the
 #                                 host-to-VM hop
