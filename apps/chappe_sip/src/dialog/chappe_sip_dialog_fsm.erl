@@ -1480,10 +1480,12 @@ start_bye(From, Hdrs, #data{pending = undefined} = D0) ->
     Seq = D0#data.local_cseq + 1,
     D = D0#data{local_cseq = Seq},
     Raw = build_indialog(D, <<"BYE">>, Seq, Hdrs, <<>>),
+    %% RFC 3891: a Replaces naming this dialog now gets 603. Marked before
+    %% the BYE leaves, so a Replaces sent once the peer has it never finds
+    %% the dialog still confirmed.
+    set_index_state(D, terminated),
     case chappe_sip_engine:send_request(route(D), Raw, self()) of
         {ok, TxnH} ->
-            %% RFC 3891: a Replaces naming this dialog now gets 603
-            set_index_state(D, terminated),
             {next_state, terminating, D#data{pending = {From, TxnH}}};
         {error, Reason} ->
             unindex(D),
