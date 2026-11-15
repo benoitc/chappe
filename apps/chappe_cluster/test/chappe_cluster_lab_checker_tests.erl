@@ -36,19 +36,21 @@ overlap_test() ->
     Log = [
         {10, a(), k, claim_ok, f(1)},
         {25, b(), k, claim_ok, f(2)},
-        {30, a(), k, lost, f(1)}
+        {30, a(), k, renew, f(1)},
+        {31, a(), k, lost, f(1)}
     ],
     {violation, V} = ?C:check(Log),
     ?assertMatch(#{kind := overlap, key := k, at := 25}, V),
     ?assertMatch(#{first := #{holder := {n1, 1, 1}}}, V),
     ?assertMatch(#{second := #{holder := {n2, 1, 1}}}, V),
-    ?assertEqual(3, length(maps:get(context, V))).
+    ?assertEqual(4, length(maps:get(context, V))).
 
 margin_test() ->
     Log = [
         {10, a(), k, claim_ok, f(1)},
         {25, b(), k, claim_ok, f(2)},
-        {30, a(), k, lost, f(1)}
+        {30, a(), k, renew, f(1)},
+        {31, a(), k, lost, f(1)}
     ],
     ?assertEqual(ok, ?C:check(Log, #{margin_us => 5})),
     ?assertEqual(overlap, kind(?C:check(Log, #{margin_us => 4}))).
@@ -78,10 +80,25 @@ late_lost_test() ->
     Log = [
         {10, a(), k, claim_ok, f(1)},
         {50, b(), k, claim_ok, f(2)},
+        {55, a(), k, fence_used, f(1)},
         {60, b(), k, release, f(2)},
         {70, a(), k, lost, f(1)}
     ],
     ?assertEqual(overlap, kind(?C:check(Log))).
+
+%% a holder paused across the takeover that wakes up to its lost did
+%% nothing while the other held the key
+lost_after_a_pause_test() ->
+    Log = [
+        {10, a(), k, claim_ok, f(1)},
+        {20, a(), k, fence_used, f(1)},
+        {50, b(), k, claim_ok, f(2)},
+        {70, a(), k, lost, f(1)},
+        {80, b(), k, release, f(2)}
+    ],
+    ?assertEqual(ok, ?C:check(Log)),
+    Acted = Log ++ [{65, a(), k, fence_used, f(1)}],
+    ?assertEqual(overlap, kind(?C:check(Acted))).
 
 %% a long lease covering a short one behind a third
 overlap_with_earlier_long_lease_test() ->
