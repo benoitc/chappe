@@ -5,7 +5,8 @@ Raft group per region on Ra and holds three things in it: each node's
 liveness, fenced leases, and a small KV with versions and watches. On top of
 the leases it runs singletons: a child that runs on one node of the region and
 moves when that node goes. Use it when two nodes must never both own the same
-room, binding or job. It is a leaf app: it depends on `ra` and nothing SIP.
+room, binding or job. It does not need the nodes' clocks in sync. It is a
+leaf app: it depends on `ra` and `hlc`, and nothing SIP.
 
 ## Claim a key
 
@@ -34,7 +35,7 @@ a side effect.
 {ok, up, V1} = chappe_cluster:get(<<"trunk/carrier1">>),
 {ok, _V2} = chappe_cluster:cas(<<"trunk/carrier1">>, V1, down),
 ok = chappe_cluster:watch(<<"trunk/">>).
-%% {chappe_cluster, watch, {put, <<"trunk/carrier1">>, down}}
+%% {chappe_cluster, watch, {put, <<"trunk/carrier1">>, down, Hlc}}
 ```
 
 ## Run one of something
@@ -64,6 +65,8 @@ Application env, validated at start (a bad value fails the start with
 | `data_dir` | `"cluster_data"` | Ra's log and snapshots, one folder per node |
 | `lease_ms` | `6000` | how long one renewal keeps a node live |
 | `renew_ms` | `2000` | how often a node renews; `lease_ms >= 3 * renew_ms` |
+| `max_drift` | `1` | clock rate drift bound, in percent; checked against the two above |
+| `wall_clock` | `{erlang, system_time, [millisecond]}` | the HLC's wall clock |
 | `max_leases` | `100000` | leases one node may hold |
 | `max_keys` | `100000` | keys in the region's KV |
 | `max_value_bytes` | `65536` | one KV value, in external term size |

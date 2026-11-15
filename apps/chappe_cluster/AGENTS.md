@@ -14,7 +14,8 @@ Layers: `chappe_cluster_config` (the env, validated at start),
 directly by its tests), `chappe_cluster_tab` (the node's holders and liveness, a
 table the supervisor owns), `chappe_cluster_lapse` (gives every lease up at
 the local deadline), `chappe_cluster_node` (one per node: the Ra system and
-member, renewals), `chappe_cluster_watch` (hands KV changes to
+member, renewals), `chappe_cluster_ra` (Ra calls bounded by one deadline),
+`chappe_cluster_watch` (hands KV changes to
 local watchers, found through the `chappe_cluster` pg scope),
 `chappe_cluster_singleton_sup` and `chappe_cluster_singleton` (one contender
 per singleton name), and `chappe_cluster_directory` (the cross-region seam)
@@ -36,9 +37,10 @@ rebar3 ct         # chappe_cluster_SUITE (one node), chappe_cluster_peer_SUITE
 
 ## Conventions
 
-- Keep this lib SIP-free. Its only dependency is `ra`.
-- The machine is deterministic: time comes from the command's metadata, never
-  from a clock in `apply/3`.
+- Keep this lib SIP-free. Its dependencies are `ra` and `hlc`.
+- The machine has no clock: it never reads a time or the command
+  metadata's `system_time`. Expiry is the leader's monotonic Ra timer;
+  timestamps are HLC values carried in commands.
 - Every new process follows the `chappe-erlang-patterns` skill, with its four
   tests (owner death, own crash, a `peer` node, a flood past the bound).
 - OTP 29. No em-dash in code, docs or messages; never the word "comprehensive".
