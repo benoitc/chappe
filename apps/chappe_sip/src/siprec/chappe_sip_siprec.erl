@@ -282,6 +282,7 @@ new_state(
         uac => undefined,
         timer => undefined,
         dialog => undefined,
+        early => [],
         pending => undefined,
         dirty => false,
         recheck => false
@@ -551,12 +552,17 @@ replace_party(Leg, Parties, #{participants := Ps, streams := Ss} = St) ->
 handle_info({chappe_sip_uac, Ref, {ok, D}}, #{uac := Ref, timer := T} = St) ->
     cancel_timer(T),
     St1 = St#{
-        uac := undefined, timer := undefined, dialog := D, state := active
+        uac := undefined,
+        timer := undefined,
+        dialog := D,
+        state := active,
+        early := []
     },
     %% the SRS answered: each tap gets its streams of the answer
     case chappe_sip_siprec_tap:answer(chappe_sip_dialog:remote_sdp(D), St1) of
         ok ->
             event(started, #{dialog => D}, St1),
+            replay(maps:get(early, St)),
             again(St1);
         {error, Why} ->
             fail(Why, St1)
@@ -588,6 +594,19 @@ handle_info(
     party_change(undefined, St);
 handle_info({chappe_sip_b2b, _Ref, {replaced, _Leg}}, St) ->
     {noreply, St#{recheck := true}};
+%% the dialog and the UAC are two senders, so the SRS's first in-dialog
+%% request (a re-INVITE, its ACK) can arrive before the UAC tells us the
+%% dialog: hold it until then (a few at most, see hold/2)
+handle_info(
+    {chappe_sip_dialog, _D, _Ev, _Req, _Res} = Msg,
+    #{state := inviting, dialog := undefined} = St
+) ->
+    hold(Msg, St);
+handle_info(
+    {chappe_sip_dialog, _D, _Ev, _Arg} = Msg,
+    #{state := inviting, dialog := undefined} = St
+) ->
+    hold(Msg, St);
 %% the SRS: a snapshot request (RFC 7866 9.2), a re-INVITE, its BYE
 handle_info({chappe_sip_dialog, D, update, Req, Res}, #{dialog := D} = St) ->
     srs_update(Req, Res, St);
@@ -596,6 +615,9 @@ handle_info({chappe_sip_dialog, D, modify, Req, Res}, #{dialog := D} = St) ->
 handle_info({chappe_sip_dialog, D, destroy, _}, #{dialog := D} = St) ->
     stop_with(srs_bye, St#{dialog := undefined});
 handle_info({chappe_sip_dialog, _D, _Ev, _}, St) ->
+    {noreply, St};
+%% an ACK carries no response to send
+handle_info({chappe_sip_dialog, _D, _Ev, _Req, undefined}, St) ->
     {noreply, St};
 handle_info({chappe_sip_dialog, _D, _Ev, _Req, Res}, St) ->
     _ = chappe_sip_res:send(Res, 405),
@@ -609,6 +631,23 @@ handle_info({'DOWN', Mon, process, _, _}, #{owner_mon := Mon} = St) ->
 handle_info(Msg, St) ->
     logger:notice("chappe_sip_siprec: unexpected ~0P", [Msg, 20]),
     {noreply, St}.
+
+%% Dialog events held while the INVITE's answer is on its way. The window
+%% is one message long, so the bound is small: past it a request is refused
+%% with 491 (RFC 3261 14.2, try again later) and the rest is dropped.
+-define(MAX_EARLY, 8).
+
+hold(Msg, #{early := Early} = St) when length(Early) < ?MAX_EARLY ->
+    {noreply, St#{early := [Msg | Early]}};
+hold({chappe_sip_dialog, _D, _Ev, _Req, Res}, St) when Res =/= undefined ->
+    _ = chappe_sip_res:send(Res, 491),
+    {noreply, St};
+hold(_Msg, St) ->
+    {noreply, St}.
+
+%% handled in the order they came, once the dialog is known
+replay(Early) ->
+    lists:foreach(fun(M) -> self() ! M end, lists:reverse(Early)).
 
 %% what ended the recording when its media went: the call, or the room
 ended(#{source := {room, _}}) -> room_ended;
