@@ -152,10 +152,24 @@ ok = chappe_esl_call:audio_fork_stop(Call).
 | `mix` | `mono` | `mono` (caller only), `mixed` (both in one channel) or `stereo` (one channel each). |
 | `rate` | `16000` | Sample rate in Hz. For mod_audio_stream, 8000 and 16000 are sent as `8k` and `16k`. |
 | `metadata` | none | Text sent to the server as the first frame. |
+| `bugname` | `audio_fork` | mod_audio_fork only: the fork's name, so one channel runs several. mod_audio_stream has one fork per channel and refuses it. |
 
-The call remembers which module started the fork: `audio_fork_stop/1` and
-the cleanup when the owner dies send that module's stop. Any other `module`
-returns `{error, {bad_option, module}}`.
+The call remembers which module and bug name started each fork:
+`audio_fork_stop/1` and the cleanup when the owner dies send each its stop.
+Any other `module` returns `{error, {bad_option, module}}`.
+
+Pause, resume, talk to the server or stop one fork. The last argument
+names the forks (`#{}` for all of them, `#{bugname => B}`, `#{module => M}`):
+
+```erlang
+ok = chappe_esl_call:audio_fork_pause(Call, #{bugname => <<"asr">>}),
+ok = chappe_esl_call:audio_fork_resume(Call, #{}),
+ok = chappe_esl_call:audio_fork_send_text(Call, <<"{\"type\": \"mark\"}">>, #{}),
+ok = chappe_esl_call:audio_fork_stop(Call, #{bugname => <<"asr">>}).
+```
+
+Pause keeps the WebSocket open and stops the audio. With no fork running
+that the selection names, they return `{error, not_forking}`.
 
 ## Receive the call's messages
 
@@ -178,6 +192,11 @@ socket stays open. `disconnect` means FreeSWITCH sends nothing more on this
 connection. Neither ends a request in flight or the call process: `closed`
 does, and it is the only message that says the process stopped. Ignore the
 first two if you have no use for them, but do not crash on them.
+
+Start the call with `ref => Ref` (an opaque binary, such as your call's
+correlation id) and read it back with `chappe_esl_call:ref/1`. The
+messages keep their `{chappe_esl_call, Call, Msg}` shape with or without
+a ref, so one `receive` matches them all.
 
 ## Run a slow command
 
@@ -212,6 +231,16 @@ ok = chappe_esl:myevents(Conn, plain),
 Other messages that arrive meanwhile stay in your mailbox.
 
 ## Notes
+
+- FreeSWITCH expands `${var}` and, unless `switch.conf` sets
+  `api-expansion` to false, `${api(args)}` (`${system(...)}` among them) in
+  every application argument before the application runs. The typed
+  helpers (`speak`, `say`, `playback`, `play_and_get_digits`, `record`,
+  `record_session`, `set`, `export`, `multiset`, `send_dtmf`) refuse text
+  holding `${` with `{error, {bad_option, Key}}`, so text from a caller or
+  a database cannot run commands on the node. `exec/3,4` is raw: what you
+  pass is expanded. Set `api-expansion` to false on nodes that do not need
+  it.
 
 - Applications run one after the other (`event-lock`). A request queued
   behind a long one waits for it; its timeout counts from when you sent it.

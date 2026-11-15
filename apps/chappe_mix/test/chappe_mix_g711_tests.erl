@@ -92,3 +92,32 @@ frame_test_() ->
         ),
         ?_assertEqual(<<>>, chappe_mix_g711:encode_frame(ulaw, []))
     ].
+
+%% A tap's PCM: each code word decoded to 16-bit little-endian, a short
+%% frame padded with silence to 160 samples.
+pcm_test_() ->
+    Frame = list_to_binary(lists:seq(0, 159)),
+    Want = <<
+        <<(chappe_mix_g711:decode(alaw, B)):16/little-signed>>
+     || <<B>> <= Frame
+    >>,
+    Short = chappe_mix_g711:pcm(ulaw, <<255, 255>>),
+    [
+        ?_assertEqual(Want, chappe_mix_g711:pcm(alaw, Frame)),
+        ?_assertEqual(320, byte_size(Short)),
+        ?_assertEqual(<<0:2560>>, chappe_mix_g711:pcm(ulaw, <<>>))
+    ].
+
+%% The room's PCM: the sum clipped to 16 bits, silence when nobody talks.
+dsp_pcm_test_() ->
+    Loud = chappe_mix_dsp:mixed(
+        lists:foldl(
+            fun(_, Acc) -> chappe_mix_dsp:add(Acc, ulaw, binary:copy(<<16#80>>, 160)) end,
+            chappe_mix_dsp:new(),
+            [1, 2]
+        )
+    ),
+    [
+        ?_assertEqual(<<0:2560>>, chappe_mix_dsp:pcm(chappe_mix_dsp:mixed(chappe_mix_dsp:new()))),
+        ?_assertEqual(binary:copy(<<32767:16/little>>, 160), chappe_mix_dsp:pcm(Loud))
+    ].

@@ -320,7 +320,8 @@ jobs:
           key: build-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config', 'apps/chappe_sip/c_src/build.sh') }}
       - run: make interop-mix
 
-  # The ESL client against a real FreeSWITCH.
+  # The ESL client against a real FreeSWITCH, and its audio forks into
+  # chappe_audio.
   esl-interop:
     name: FreeSWITCH ESL interop
     needs: [build]

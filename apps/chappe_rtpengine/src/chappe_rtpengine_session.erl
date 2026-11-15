@@ -73,6 +73,9 @@
     unsilence_media/2,
     start_recording/1,
     stop_recording/1,
+    start_forwarding/2,
+    stop_forwarding/1,
+    stop_forwarding/2,
     subscribe_request/2,
     subscribe_answer/2,
     unsubscribe/2
@@ -93,6 +96,9 @@
     reoffer = false :: boolean(),
     branches = [] :: [binary()],
     media_lost = false :: boolean(),
+    %% the app's opaque reference (a call ref): in every owner event, and
+    %% sent to the daemon as call metadata
+    ref :: binary() | undefined,
     %% subscriptions held by a process (subscribe_request/2 with
     %% holder): its monitor to the subscription's to-tag
     holds = #{} :: #{reference() => binary()},
@@ -103,9 +109,14 @@
 %% Opts: call_id (required), node (optional; pool-selected and pinned
 %% when absent), dtmf (optional; true subscribes the session to the
 %% chappe_rtpengine_dtmf listener and forwards events to the owner as
-%% {chappe_rtpengine_session, Pid, {dtmf, Event}}). The calling process becomes
-%% the owner.
+%% {chappe_rtpengine_session, Pid, {dtmf, Event}}), ref (optional; an opaque
+%% binary, such as a call ref: info/1 returns it, the owner events keep
+%% their {chappe_rtpengine_session, Pid, Event} shape, and each offer,
+%% answer and publish sends it as metadata call_ref:<Ref>, unless the
+%% params set metadata). The calling process becomes the owner.
 -spec start(map()) -> {ok, pid()} | {error, term()}.
+start(#{ref := Ref}) when not is_binary(Ref) ->
+    {error, {bad_option, ref}};
 start(#{call_id := _} = Opts) ->
     supervisor:start_child(chappe_rtpengine_session_sup, [self(), Opts]);
 start(_Opts) ->
@@ -257,6 +268,24 @@ start_recording(Session) ->
 stop_recording(Session) ->
     cmd(Session, stop_recording, #{}).
 
+%% Forward the call's PCM to the recording daemon over TCP/TLS, apart from
+%% call recording. With no options the whole call; party => caller |
+%% callee (or the raw selection keys of block_media/2) picks one
+%% direction.
+-spec start_forwarding(pid(), chappe_rtpengine_ng:params()) ->
+    chappe_rtpengine_ng:result() | {error, term()}.
+start_forwarding(Session, Opts) ->
+    cmd(Session, start_forwarding, Opts).
+
+-spec stop_forwarding(pid()) -> chappe_rtpengine_ng:result() | {error, term()}.
+stop_forwarding(Session) ->
+    stop_forwarding(Session, #{}).
+
+-spec stop_forwarding(pid(), chappe_rtpengine_ng:params()) ->
+    chappe_rtpengine_ng:result() | {error, term()}.
+stop_forwarding(Session, Opts) ->
+    cmd(Session, stop_forwarding, Opts).
+
 %% Media subscriptions are how a consumer (a recorder, an STT feed, a
 %% conference mixer leg, a listen-in party) taps this call's media.
 %% subscribe request returns an SDP offer describing the source
@@ -319,7 +348,8 @@ init([Owner, Opts]) ->
                 call_id = CallId,
                 node = Node,
                 generation = Gen,
-                pinned = Pinned
+                pinned = Pinned,
+                ref = maps:get(ref, Opts, undefined)
             }};
         {error, Reason} ->
             {stop, Reason}
@@ -475,7 +505,8 @@ handle_event({call, From}, info, State, Data) ->
         from_tag => Data#data.from_tag,
         to_tag => Data#data.to_tag,
         branches => Data#data.branches,
-        media_lost => Data#data.media_lost
+        media_lost => Data#data.media_lost,
+        ref => Data#data.ref
     },
     {keep_state_and_data, [{reply, From, Info}]};
 %% client replies
@@ -836,8 +867,34 @@ resolve_node(CallId, Opts) ->
 %% when the caller does not override it. Subscription commands get no
 %% from-tag injection: there it selects which participant to tap, and
 %% the default is the caller's choice, not the session's.
+%% The ref goes on every offer, answer and publish as NG metadata, as the
+%% key:value pair rtpengine writes into its recording metadata
+%% (call_ref:<ref>), unless the caller sets metadata itself.
+with_ref(Command, Params, #data{ref = Ref}) when
+    is_binary(Ref) andalso
+        (Command =:= offer orelse Command =:= answer orelse
+            Command =:= publish)
+->
+    case maps:is_key(metadata, Params) of
+        true -> Params;
+        false -> Params#{metadata => <<"call_ref:", (meta_value(Ref))/binary>>}
+    end;
+with_ref(_Command, Params, _Data) ->
+    Params.
+
+%% rtpengine reads metadata as key:value pairs split on `|': the ref's
+%% own `|' (and `%', so the encoding reads back) are percent-encoded, so
+%% a ref cannot add a key.
+meta_value(Ref) ->
+    binary:replace(
+        binary:replace(Ref, <<"%">>, <<"%25">>, [global]),
+        <<"|">>,
+        <<"%7C">>,
+        [global]
+    ).
+
 send_async(Command, Params0, Data) ->
-    Params1 = Params0#{call_id => Data#data.call_id},
+    Params1 = with_ref(Command, Params0#{call_id => Data#data.call_id}, Data),
     Inject =
         inject_from_tag(Command) andalso
             Data#data.from_tag =/= undefined andalso
@@ -921,6 +978,8 @@ media_control(block_media) -> true;
 media_control(unblock_media) -> true;
 media_control(silence_media) -> true;
 media_control(unsilence_media) -> true;
+media_control(start_forwarding) -> true;
+media_control(stop_forwarding) -> true;
 media_control(_Command) -> false.
 
 targeted(Params) ->

@@ -13,7 +13,7 @@
 -export([child_spec/1, start_link/1]).
 -export([add/2, remove/1, list/0, status/1, select/1]).
 -export([drain/1, resume/1, api/2, bgapi/2]).
--export([subscribe/1, events/1, unsubscribe/1]).
+-export([subscribe/1, events/1, events/2, unsubscribe/1]).
 -export([notify/3, scope/0]).
 -export([init/1]).
 
@@ -135,6 +135,22 @@ subscribe(Name) ->
 events(Name) ->
     join({events, Name}).
 
+%% events/1 for the events whose headers hold every value of Match. The
+%% match is part of the group, so subscribers with the same one share it.
+-spec events(name() | all, #{binary() => binary()}) -> ok | {error, badarg}.
+events(Name, Match) when is_map(Match), map_size(Match) > 0 ->
+    case
+        lists:all(
+            fun({K, V}) -> is_binary(K) andalso is_binary(V) end,
+            maps:to_list(Match)
+        )
+    of
+        true -> join({events, Name, Match});
+        false -> {error, badarg}
+    end;
+events(_Name, _Match) ->
+    {error, badarg}.
+
 %% Leave both the state and the event groups of Name (or `all').
 -spec unsubscribe(name() | all) -> ok.
 unsubscribe(Name) ->
@@ -144,6 +160,10 @@ unsubscribe(Name) ->
         _ ->
             _ = pg:leave(?SCOPE, {state, Name}, self()),
             _ = pg:leave(?SCOPE, {events, Name}, self()),
+            _ = [
+                pg:leave(?SCOPE, G, self())
+             || {events, N, _} = G <- pg:which_groups(?SCOPE), N =:= Name
+            ],
             ok
     end.
 
@@ -152,7 +172,8 @@ unsubscribe(Name) ->
 notify(Group, Name, Msg) ->
     try
         pg:get_members(?SCOPE, {Group, Name}) ++
-            pg:get_members(?SCOPE, {Group, all})
+            pg:get_members(?SCOPE, {Group, all}) ++
+            filtered(Group, Name, Msg)
     of
         Pids ->
             lists:foreach(
@@ -163,6 +184,24 @@ notify(Group, Name, Msg) ->
         %% the scope is gone (the registry is stopping)
         error:badarg -> ok
     end.
+
+%% The subscribers of events/2 whose match an event meets.
+filtered(events, Name, {event, Ev}) ->
+    [
+        Pid
+     || {events, N, Match} = G <- pg:which_groups(?SCOPE),
+        N =:= Name orelse N =:= all,
+        matches(Match, Ev),
+        Pid <- pg:get_members(?SCOPE, G)
+    ];
+filtered(_Group, _Name, _Msg) ->
+    [].
+
+matches(Match, Ev) ->
+    lists:all(
+        fun({K, V}) -> chappe_esl_event:header(K, Ev) =:= V end,
+        maps:to_list(Match)
+    ).
 
 -spec scope() -> atom().
 scope() ->

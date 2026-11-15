@@ -27,13 +27,21 @@ join(B2b, Opts, From, #state{anchor_params = AP} = S) ->
 %% An incoming call not answered yet, in its request worker: A is
 %% answered by a B2BUA call to the loopback (the mixer behind rtpengine),
 %% which then runs in a process of its own.
-join_call(Conf, Req, Res, Opts) ->
+join_call(Conf, Req, Res, Opts0) ->
+    %% who the member is, for a REFER's method=BYE: the URI it calls from
+    Opts = maps:merge(#{uri => chappe_mrf_conf_refer:from_uri(Req)}, Opts0),
     case chappe_mrf_conf:call(Conf, {join, {call, Opts}}, 5000) of
-        {ok, Token, Uri, AP} ->
-            B2bOpts = #{media => anchor, anchor_params => AP},
+        {ok, Token, Uri, AP, Entity} ->
+            %% the room's REFERs come to the room (chappe_mrf_conf_refer);
+            %% a focus room answers with the conference URI and isfocus
+            %% as the member's Contact (RFC 4579 4.2)
+            B2bOpts = (chappe_mrf_conf_refer:member_opts(Conf, Entity))#{
+                media => anchor,
+                anchor_params => AP
+            },
             Result =
                 case chappe_sip:create_b2bua(Req, Res, Uri, B2bOpts) of
-                    {ok, Legs} -> chappe_sip_b2b:relay_async(Legs, #{});
+                    {ok, Legs} -> relay(Legs, Conf);
                     {error, _} = Err -> Err
                 end,
             chappe_mrf_conf:call(
@@ -45,13 +53,24 @@ join_call(Conf, Req, Res, Opts) ->
             Err
     end.
 
+%% The call runs on its own; its member dialog (leg A) is kept with it so
+%% a REFER the call hands the room can be answered in that dialog.
+relay(Legs, Conf) ->
+    case chappe_sip_b2b:relay_async(Legs, #{notify => Conf}) of
+        {ok, B2b} = Ok ->
+            ok = chappe_mrf_conf_refer:keep_dialog(B2b, Legs),
+            Ok;
+        Err ->
+            Err
+    end.
+
 %% the loopback a joining call is sent to, and the flags toward the mixer
 prepare_call(Opts, #state{anchor_params = AP} = S) ->
     Token = chappe_mrf_lib:new_id(),
     ok = chappe_mrf_registry:put({loop, Token}, self()),
     J = #{opts => Opts},
     Uri = iolist_to_binary(chappe_mrf:loop_target(Token)),
-    {reply, {ok, Token, Uri, AP}, S#state{
+    {reply, {ok, Token, Uri, AP, S#state.entity}, S#state{
         pending = (S#state.pending)#{Token => J}
     }}.
 

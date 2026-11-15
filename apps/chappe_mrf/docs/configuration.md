@@ -15,6 +15,7 @@ the `mrf` dialplan extension shown in the [README](../README.md).
 | Key | Default | What it does |
 |---|---|---|
 | `esl_port` | unset | Port of the outbound socket listener FreeSWITCH connects back to. Set, the listener starts with the application. |
+| `shared_dir` | unset | `#{freeswitch => Dir, local => Dir}`: the folder FreeSWITCH records into, as the node and as this host see it. Recordings asked with `store => default` must be in it; unset, both paths are the same. |
 
 ```erlang
 %% sys.config
@@ -27,6 +28,19 @@ loopback INVITE middleware native rooms need):
 ```erlang
 ok = chappe_mrf:start(#{esl_port => 8084}).
 ```
+
+## Record options
+
+`record/3`, `record_session/3` and `chappe_mrf_conf:record/3` take, beside
+FreeSWITCH's own options:
+
+| Key | Default | What it does |
+|---|---|---|
+| `store` | unset | `default` adopts the finished file into the recording store (chappe_audio). `record/3` then returns `{ok, Id}`; a session recording, once FreeSWITCH closed it (RECORD_STOP), sends the owner `{recorded, Id}`, and a room's (on mod_conference's stop-recording) the room's listeners `{recorded, Path, {ok, Id}}`. The file is taken in by a job of the store, never in the endpoint or the room. |
+| `ref` | the endpoint's call_ref (else its id); the room's name | The call_ref the recording is filed under. |
+| `parties` | `[]` | Who is on the call, for the sidecar. |
+
+See [Record a call](../../chappe_audio/docs/guides/record.md).
 
 ## connect_caller/3 options
 
@@ -72,9 +86,15 @@ Passed to `chappe_mrf:conference/2`.
 | `profile` | fs | `<<"default">>` | mod_conference profile. |
 | `bridge` | fs | `#{}` | `chappe_mrf:bridge/3` options for a caller joined from a call. |
 | `join_timeout` | fs | `15000` | Milliseconds a member may take to appear in the room. |
+| `refer_policy` | both | none | `fun(Info) -> boolean() \| {reject, Code}` for a REFER to the room; unset, REFERs are refused 403. |
+| `dial` | both | `sofia/<dial_profile>/<target>` | `fun(Target) -> iodata()`: the dial string of a party a REFER adds. |
+| `dial_profile` | both | `<<"external">>` | The sofia profile of the default dial string. |
+| `dial_timeout` | both | `30000` | Milliseconds the added party has to answer. |
+| `dial_endpoint` | native | `#{}` | `create_endpoint/1` options (`node`, `select`, `targets`) of the endpoint that dials it. |
 
 Join options (`chappe_mrf_conf:join/3`): `name`, `mute`, `deaf`,
-`moderator`; on fs also `pin`, `pin_prompt` (default
+`moderator`, `uri` (who the member is, for a REFER's `method=BYE`); on fs
+also `pin`, `pin_prompt` (default
 `silence_stream://250`), `pin_tries` (`3`) and `flags`.
 
 ## Where it lives

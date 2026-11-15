@@ -7,6 +7,51 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 
 ## Unreleased
 
+- chappe_audio, a new app: it receives the audio FreeSWITCH forks over a
+  WebSocket, from mod_audio_fork or mod_audio_stream, checks the path and a
+  token, and hands each stream to a process of yours, with a bound on what
+  waits for it. Before, you had to write this listener yourself.
+- Recording store: chappe now ships a default store for recordings, a folder
+  of WAV files with a JSON file next to each naming the call, the parties
+  and the source. A recording in progress is never listed, a call's
+  recordings are found by its reference from any node, and old ones can be
+  swept. You choose the folder, or plug in your own store. Forks, FreeSWITCH
+  recordings, conference recordings and SIPREC sessions can all land there.
+- SIPREC recording server: with the default store, each recorded stream is
+  now written to the recording store, so a call recorded to chappe is found
+  next to its other recordings. chappe_audio must run on that node.
+- chappe_mrf conferences: a native room can now be recorded, its mix sent
+  through SIPREC to the recording server you name. A FreeSWITCH room can be
+  recorded too, into the store. Rooms take a member limit and flags, report
+  mute, digits and finished prompts, and a member can be moved to another
+  room. Before, only the FreeSWITCH backend could record and nothing moved
+  a member.
+- chappe_mrf conferences: a member can now transfer itself out of a room by
+  REFER, blind or attended, and a party can be added to or removed from a
+  room by REFER, on both backends. FreeSWITCH does not handle REFER in a
+  conference, so chappe does.
+- chappe_mrf playback: playing a missing file is now an error, you can learn
+  how long a prompt played and how it ended, digit collection can return the
+  terminator and the invalid digits, and a prompt can start at an offset and
+  stop after a time limit. Before, the result of a prompt was dropped.
+- chappe_mrf endpoints: the owner can now ask for playback start and stop,
+  custom and channel events. Endpoints can be muted and unmuted, their
+  variables read, several variables set at once or exported, and an
+  application run without waiting for it.
+- chappe_mrf audio forks: a fork can now be named, sent in stereo, paused,
+  resumed and sent text, on both fork modules where the module allows it.
+- chappe_mrf speech and detection: endpoints can now say numbers and dates
+  with mod_say, speak text with a text to speech module, and detect tones
+  and faxes, with events to the owner. The FreeSWITCH lab image now builds
+  mod_flite for this.
+- chappe_mix: a tap now hands the decoded audio of a party or of the whole
+  room to a process, for calls that never touch FreeSWITCH.
+- chappe_rtpengine: you can now list the calls of a node, read its
+  statistics, and start and stop forwarding a call's media.
+- Call correlation in the media apps: endpoints, FreeSWITCH call control,
+  rtpengine sessions and mixer legs now carry the call's reference and
+  return it in their events, so one call is followed across all of them.
+
 - B2BUA: an anchored call no longer strips encryption from a caller that
   offers encrypted media (SRTP with keys in the SDP). Before, the caller was
   answered with plain media unless your app asked otherwise; now each leg is

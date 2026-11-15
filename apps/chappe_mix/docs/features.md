@@ -66,6 +66,11 @@ What chappe_mix does today, and what is planned.
 - The RTP timestamp stays on the sampling clock across an overrun; the
   marker bit is always 0 (no silence suppression).
 - The conference stops when its owner exits.
+- Taps: the decoded PCM of one party, or of the whole room, handed to a
+  process (`tap/3`), for calls that never touch FreeSWITCH.
+  [Conference guide](guides/conference.md#tap-a-party-or-the-room)
+- Legs and rooms carry an opaque `ref` (the call's reference) and return it
+  in their events.
 - Counters per leg (received, lost, late, dropped, underruns, sent,
   prefill, filtered, collisions, loops, RTCP sent, received and invalid)
   and per conference

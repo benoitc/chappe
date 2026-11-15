@@ -9,25 +9,69 @@
 
 -include("chappe_mrf_conf.hrl").
 
--export([join/5, start_join/5, event/3, gone_ep/2, api/3, lock_cmd/1]).
+-export([
+    join/5,
+    join_call/5,
+    start_join/5,
+    join_timeout/2,
+    event/3,
+    gone_ep/2,
+    api/3,
+    api_raw/2,
+    api_route/1,
+    lock_cmd/1
+]).
+-export([adopt/6, record/2, stop_record/1, dtmf/3, room_event/2]).
 
 %% ---- fs join, in the caller ----
 
 join(Conf, Node, Bridge, Target, Opts) ->
     case endpoint(Conf, Node, Bridge, Target) of
-        {ok, Ep, Owned} ->
-            case check_pin(Ep, Opts) of
-                ok ->
-                    chappe_mrf_conf:call(
-                        Conf,
-                        {join, {fs, Ep, Owned, Opts}},
-                        ?MRF_JOIN_TIMEOUT + 5000
-                    );
+        {ok, Ep, Owned} -> enter(Conf, Ep, Owned, Opts);
+        {error, _} = Err -> Err
+    end.
+
+%% An incoming call not answered yet, in its request worker: chappe's
+%% B2BUA answers the caller (chappe_mrf_conf_refer:member_opts/2) and
+%% bridges it to an endpoint on the room's node, which then joins.
+join_call(Conf, #{node := Node, bridge := Bridge} = Info, Req, Res, Opts0) ->
+    Opts = maps:merge(#{uri => chappe_mrf_conf_refer:from_uri(Req)}, Opts0),
+    Member = chappe_mrf_conf_refer:member_opts(
+        Conf, maps:get(entity, Info, undefined)
+    ),
+    CallOpts = maps:merge(maps:with([anchor_params], Bridge), Member#{
+        node => Node, owner => Conf
+    }),
+    case chappe_mrf:connect_caller(Req, Res, CallOpts) of
+        {ok, Ep, B2b} -> enter(Conf, Ep, true, Opts#{b2b => B2b});
+        {error, _} = Err -> Err
+    end.
+
+%% Ep, on the room's node, enters the PIN if the join asks one, then the
+%% room; an endpoint made for the join goes if it does not get in.
+enter(Conf, Ep, Owned, Opts) ->
+    case check_pin(Ep, Opts) of
+        ok ->
+            case
+                chappe_mrf_conf:call(
+                    Conf,
+                    {join, {fs, Ep, Owned, Opts}},
+                    ?MRF_JOIN_TIMEOUT + 5000
+                )
+            of
+                {ok, _} = Ok ->
+                    Ok;
+                {error, timeout} = Err ->
+                    %% the conference destroys it on its own timer
+                    Err;
                 {error, _} = Err ->
+                    %% refused (full, locked meanwhile): the endpoint
+                    %% made for the join goes
                     _ = Owned andalso chappe_mrf:destroy(Ep),
                     Err
             end;
         {error, _} = Err ->
+            _ = Owned andalso chappe_mrf:destroy(Ep),
             Err
     end.
 
@@ -78,41 +122,154 @@ check_pin(Ep, Pin, Prompt, Tries) ->
 start_join(
     Ep, Owned, Opts, From, #state{name = Name, profile = Profile} = S
 ) ->
+    case watch(Ep) of
+        {ok, Call} ->
+            Flags =
+                [mute || maps:get(mute, Opts, false)] ++
+                    [deaf || maps:get(deaf, Opts, false)] ++
+                    [moderator || maps:get(moderator, Opts, false)] ++
+                    maps:get(flags, Opts, []),
+            case
+                room_flags(Call, S) =:= ok andalso
+                    chappe_esl_call:conference(Call, Name, #{
+                        profile => Profile, flags => Flags
+                    })
+            of
+                {ok, _AppUuid} ->
+                    {noreply,
+                        pending(Ep, #{owned => Owned, opts => Opts}, From, S)};
+                false ->
+                    {reply, {error, room_flags}, S};
+                {error, _} = Err ->
+                    {reply, Err, S}
+            end;
+        {error, _} = Err ->
+            {reply, Err, S}
+    end.
+
+%% A member of the conference FromName on this node comes over (transfer/3):
+%% mod_conference moves its channel, and its add-member here completes the
+%% join. Ownership of an endpoint the other conference made follows then.
+adopt(Ep, Owned, Opts, {FromName, FromId}, From, #state{name = Name} = S) ->
+    case watch(Ep) of
+        {ok, _Call} ->
+            Cmd = [
+                <<"conference ">>,
+                FromName,
+                <<" transfer ">>,
+                Name,
+                <<" ">>,
+                FromId
+            ],
+            case chappe_mrf_lib:api_ok(chappe_mrf:api(Ep, Cmd)) of
+                ok ->
+                    J = #{owned => Owned, opts => Opts, adopt => true},
+                    {noreply, pending(Ep, J, From, S)};
+                {error, _} = Err ->
+                    {reply, Err, S}
+            end;
+        {error, _} = Err ->
+            {reply, Err, S}
+    end.
+
+%% The member's channel events reach this conference: its own CUSTOM
+%% conference::maintenance, dtmf and hangup (as a watcher).
+watch(Ep) ->
     case chappe_mrf:info(Ep) of
         #{conn := Conn} when is_pid(Conn) ->
             ok = chappe_mrf_endpoint:watch(Ep, self()),
             _ = chappe_esl:subscribe(Conn, [
                 <<"CUSTOM">>, <<"conference::maintenance">>
             ]),
-            Flags =
-                [mute || maps:get(mute, Opts, false)] ++
-                    [deaf || maps:get(deaf, Opts, false)] ++
-                    [moderator || maps:get(moderator, Opts, false)] ++
-                    maps:get(flags, Opts, []),
-            {ok, Call} = chappe_mrf_endpoint:call(Ep),
-            case
-                chappe_esl_call:conference(Call, Name, #{
-                    profile => Profile, flags => Flags
-                })
-            of
-                {ok, _AppUuid} ->
-                    TRef = erlang:send_after(
-                        S#state.join_timeout, self(), {fs_join_timeout, Ep}
-                    ),
-                    J = #{
-                        from => From,
-                        owned => Owned,
-                        opts => Opts,
-                        timer => TRef
-                    },
-                    {noreply, S#state{
-                        pending = (S#state.pending)#{{ep, Ep} => J}
-                    }};
-                {error, _} = Err ->
-                    {reply, Err, S}
-            end;
+            chappe_mrf_endpoint:call(Ep);
+        #{} ->
+            {error, not_connected};
+        Err ->
+            Err
+    end.
+
+room_flags(_Call, #state{room_flags = []}) ->
+    ok;
+room_flags(Call, #state{room_flags = Flags}) ->
+    chappe_esl_call:set(Call, <<"conference_flags">>, lists:join($|, Flags)).
+
+pending(Ep, J, From, S) ->
+    TRef = erlang:send_after(
+        S#state.join_timeout, self(), {fs_join_timeout, Ep}
+    ),
+    S#state{
+        pending = (S#state.pending)#{
+            {ep, Ep} => J#{from => From, timer => TRef}
+        }
+    }.
+
+%% Record the room: a file on the node.
+record(Path, S) ->
+    chappe_mrf_lib:api_ok(
+        api(any, [<<"recording start">>, chappe_esl_exec:arg(Path)], S)
+    ).
+
+stop_record(S) ->
+    chappe_mrf_lib:api_ok(api(any, [<<"recording stop all">>], S)).
+
+%% A digit from a member's channel.
+dtmf(Ep, Digit, #state{members = M} = S) ->
+    case [Id || {Id, #{ep := E}} <- maps:to_list(M), E =:= Ep] of
+        [Id | _] -> chappe_mrf_conf:emit({dtmf, Id, Digit}, S);
+        [] -> S
+    end.
+
+%% A node event (chappe_esl:node_events/1): only what carries no member,
+%% the members' own come over their channels.
+room_event(Ev, #state{name = Name} = S) ->
+    H = fun(K) -> chappe_esl_event:header(K, Ev) end,
+    case {H(<<"Event-Subclass">>), H(<<"Conference-Name">>), H(<<"Action">>)} of
+        {<<"conference::maintenance">>, Name, <<"play-file-done">>} ->
+            chappe_mrf_conf:emit(
+                {play_done, chappe_mrf_lib:to_bin(H(<<"File">>))}, S
+            );
+        {<<"conference::maintenance">>, Name, <<"del-member">>} ->
+            %% a party dialed in for a REFER has no endpoint whose events
+            %% would say it left: the node's do (an endpoint member's
+            %% del-member also comes on its channel; gone/2 takes it once)
+            dialed_gone(chappe_mrf_lib:to_bin(H(<<"Member-ID">>)), S);
+        {<<"conference::maintenance">>, Name, <<"stop-recording">>} ->
+            chappe_mrf_conf:recording_closed(
+                chappe_mrf_lib:to_bin(H(<<"Path">>)), S
+            );
+        {<<"conference::maintenance">>, Name, <<"bgdial-result">>} ->
+            chappe_mrf_conf_refer:fs_result(
+                chappe_mrf_lib:to_bin(H(<<"Peer-UUID">>)),
+                chappe_mrf_lib:to_bin(H(<<"Result">>)),
+                S
+            );
+        {<<"conference::maintenance">>, Name, <<"add-member">>} ->
+            %% a party the room dialed for a REFER (its uuid is ours)
+            chappe_mrf_conf_refer:fs_added(
+                chappe_mrf_lib:to_bin(H(<<"Unique-ID">>)),
+                chappe_mrf_lib:to_bin(H(<<"Member-ID">>)),
+                S
+            );
         _ ->
-            {reply, {error, not_connected}, S}
+            S
+    end.
+
+%% A member that never showed up in the room: its join fails, and the
+%% endpoint made for it goes.
+join_timeout(Ep, #state{pending = P} = S) ->
+    case maps:take({ep, Ep}, P) of
+        {#{from := From, owned := Owned}, P1} ->
+            gen_server:reply(From, {error, timeout}),
+            _ = Owned andalso spawn(fun() -> chappe_mrf:destroy(Ep) end),
+            S#state{pending = P1};
+        error ->
+            S
+    end.
+
+dialed_gone(Id, #state{members = M} = S) ->
+    case M of
+        #{Id := #{dialed := _}} -> chappe_mrf_conf:gone(Id, S);
+        _ -> S
     end.
 
 event(Ep, Ev, #state{name = Name} = S) ->
@@ -123,16 +280,20 @@ event(Ep, Ev, #state{name = Name} = S) ->
                 H(<<"Action">>),
                 chappe_mrf_lib:to_bin(H(<<"Member-ID">>)),
                 Ep,
+                Ev,
                 S
             );
         _ ->
             S
     end.
 
-action(<<"add-member">>, Id, Ep, #state{pending = P} = S) ->
+action(<<"add-member">>, Id, Ep, _Ev, #state{pending = P} = S) ->
     case maps:take({ep, Ep}, P) of
-        {#{from := From, owned := Owned, opts := Opts, timer := TRef}, P1} ->
+        {#{from := From, owned := Owned, opts := Opts, timer := TRef} = J, P1} ->
             _ = erlang:cancel_timer(TRef),
+            _ =
+                Owned andalso maps:get(adopt, J, false) andalso
+                    chappe_mrf_endpoint:set_owner(Ep, self()),
             Mb = chappe_mrf_conf:member(Opts, Id, #{ep => Ep, owned => Owned}),
             gen_server:reply(From, {ok, Id}),
             S1 = S#state{pending = P1, members = (S#state.members)#{Id => Mb}},
@@ -142,14 +303,32 @@ action(<<"add-member">>, Id, Ep, #state{pending = P} = S) ->
         error ->
             S
     end;
-action(<<"del-member">>, Id, _Ep, S) ->
+action(<<"del-member">>, Id, _Ep, _Ev, S) ->
     chappe_mrf_conf:gone(Id, S);
-action(<<"start-talking">>, Id, _Ep, S) ->
+action(<<"start-talking">>, Id, _Ep, _Ev, S) ->
     chappe_mrf_conf:talking(Id, true, S);
-action(<<"stop-talking">>, Id, _Ep, S) ->
+action(<<"stop-talking">>, Id, _Ep, _Ev, S) ->
     chappe_mrf_conf:talking(Id, false, S);
-action(_Action, _Id, _Ep, S) ->
+action(<<"mute-member">>, Id, _Ep, _Ev, S) ->
+    muted(Id, true, S);
+action(<<"unmute-member">>, Id, _Ep, _Ev, S) ->
+    muted(Id, false, S);
+action(<<"play-file-member-done">>, Id, _Ep, Ev, S) ->
+    File = chappe_mrf_lib:to_bin(chappe_esl_event:header(<<"File">>, Ev)),
+    chappe_mrf_conf:emit({play_done, Id, File}, S);
+action(_Action, _Id, _Ep, _Ev, S) ->
     S.
+
+muted(Id, Mute, #state{members = M} = S) ->
+    case M of
+        #{Id := Mb} ->
+            S1 = S#state{members = M#{Id := Mb#{mute => Mute}}},
+            chappe_mrf_conf:publish(
+                chappe_mrf_conf:emit({muted, Id, Mute}, S1)
+            );
+        _ ->
+            S
+    end.
 
 gone_ep(Ep, #state{members = M, pending = P} = S) ->
     S1 =
@@ -172,7 +351,27 @@ api(any, Args, #state{members = M, node = Node, name = Name}) ->
         [] -> chappe_esl:node_api(Node, conf_cmd(Name, Args))
     end;
 api(#{ep := Ep}, Args, #state{name = Name}) ->
-    chappe_mrf:api(Ep, conf_cmd(Name, Args)).
+    chappe_mrf:api(Ep, conf_cmd(Name, Args));
+api(#{dialed := _}, Args, S) ->
+    api(any, Args, S).
+
+%% Where a command for the room's node can go without the room process
+%% waiting: the node's own connection (the registry's), else a member's
+%% call socket.
+api_route(#state{members = M, node = Node}) ->
+    Member =
+        case [Ep || #{ep := Ep} <- maps:values(M)] of
+            [Ep | _] -> {ep, Ep};
+            [] -> none
+        end,
+    {node, Node, Member}.
+
+%% A command of the room's node that is not a conference command.
+api_raw(Cmd, #state{members = M, node = Node}) ->
+    case [Ep || #{ep := Ep} <- maps:values(M)] of
+        [Ep | _] -> chappe_mrf:api(Ep, Cmd);
+        [] -> chappe_esl:node_api(Node, Cmd)
+    end.
 
 conf_cmd(Name, Args) ->
     [<<"conference ">>, Name, <<" ">> | lists:join(<<" ">>, Args)].

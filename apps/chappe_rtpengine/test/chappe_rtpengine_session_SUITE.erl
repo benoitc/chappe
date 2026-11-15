@@ -30,6 +30,8 @@
     media_subscription_flow/1,
     publish_one_sided/1,
     media_ducking/1,
+    forwarding/1,
+    session_ref/1,
     play_media_blob/1,
     stop_while_offer_pending/1,
     owner_dies_while_offering/1,
@@ -55,6 +57,8 @@ all() ->
         media_subscription_flow,
         publish_one_sided,
         media_ducking,
+        forwarding,
+        session_ref,
         play_media_blob,
         stop_while_offer_pending,
         owner_dies_while_offering,
@@ -115,7 +119,7 @@ handler(_Case) ->
 
 opts(offer_timeout_returns_error) ->
     #{timeout => 50, attempts => 2};
-opts(node_restart_notifies_owner) ->
+opts(Case) when Case =:= node_restart_notifies_owner; Case =:= session_ref ->
     #{timeout => 50, attempts => 1, down_after => 2, health_interval => 100};
 opts(_Case) ->
     #{}.
@@ -397,6 +401,62 @@ media_commands(Config) ->
     wait_dead(Sess),
     ok.
 
+%% A session's ref goes to the daemon as call metadata on offer and
+%% answer (metadata the caller sets wins), comes back from info/1, and
+%% rides on every owner event.
+session_ref(Config) ->
+    Server = ?config(server, Config),
+    Node = ?config(node, Config),
+    ?assertEqual(
+        {error, {bad_option, ref}},
+        chappe_rtpengine:start_session(#{call_id => <<"r">>, ref => 1})
+    ),
+    {ok, Sess} = chappe_rtpengine:start_session(#{
+        call_id => <<"sess-ref">>, ref => <<"call-9">>
+    }),
+    {ok, _} = chappe_rtpengine_session:offer(Sess, #{
+        from_tag => <<"ft">>, sdp => sdp()
+    }),
+    {ok, _} = chappe_rtpengine_session:answer(Sess, #{
+        to_tag => <<"tt">>, sdp => sdp(), metadata => <<"mine">>
+    }),
+    #{ref := <<"call-9">>} = chappe_rtpengine_session:info(Sess),
+    [Offer, Answer] = [
+        C
+     || {_, #{<<"command">> := N} = C} <- chappe_rtpengine_fake_server:received(Server),
+        N =/= <<"ping">>
+    ],
+    ?assertEqual(<<"call_ref:call-9">>, maps:get(<<"metadata">>, Offer)),
+    ?assertEqual(<<"mine">>, maps:get(<<"metadata">>, Answer)),
+    %% rtpengine splits metadata on `|' into key:value pairs: a ref
+    %% holding one cannot add a key of its own
+    {ok, Sess2} = chappe_rtpengine:start_session(#{
+        call_id => <<"sess-ref2">>, ref => <<"a|evil:1%">>
+    }),
+    {ok, _} = chappe_rtpengine_session:offer(Sess2, #{from_tag => <<"f2">>, sdp => sdp()}),
+    [Offer2] = [
+        C
+     || {_, #{<<"command">> := <<"offer">>, <<"call-id">> := <<"sess-ref2">>} = C} <-
+            chappe_rtpengine_fake_server:received(Server)
+    ],
+    ?assertEqual(<<"call_ref:a%7Cevil:1%25">>, maps:get(<<"metadata">>, Offer2)),
+    ok = chappe_rtpengine_session:stop(Sess2),
+    chappe_rtpengine_fake_server:set_handler(Server, fun(_N, _Cmd) -> drop end),
+    %% one message shape with or without a ref: the ref is read from
+    %% the handle
+    receive
+        {chappe_rtpengine_session, Sess, {node_down, Node}} -> ok;
+        {chappe_rtpengine_session, Sess, {node_down, Node}, _} -> error(four_tuple)
+    after 5000 -> error(no_node_down)
+    end,
+    ?assertMatch(#{ref := <<"call-9">>}, chappe_rtpengine_session:info(Sess)),
+    chappe_rtpengine_fake_server:set_handler(
+        Server, fun chappe_rtpengine_fake_server:default_handler/2
+    ),
+    ok = chappe_rtpengine_session:stop(Sess),
+    wait_dead(Sess),
+    ok.
+
 %% req: RNG-11
 node_restart_notifies_owner(Config) ->
     Server = ?config(server, Config),
@@ -557,6 +617,29 @@ media_ducking(Config) ->
         chappe_rtpengine_session:silence_media(Sess2, #{party => callee}),
     ok = chappe_rtpengine_session:stop(Sess2),
     wait_dead(Sess2),
+    ok.
+
+%% start and stop forwarding take block media's selection: the whole call
+%% by default, one direction with party.
+forwarding(Config) ->
+    Server = ?config(server, Config),
+    Sess = establish(<<"sess-fwd">>, <<"ft-f">>, <<"tt-f">>),
+    {ok, _} = chappe_rtpengine_session:start_forwarding(Sess, #{}),
+    {ok, _} = chappe_rtpengine_session:start_forwarding(Sess, #{party => callee}),
+    {ok, _} = chappe_rtpengine_session:stop_forwarding(Sess),
+    [_, _, StartAll, StartCallee, StopAll] = [
+        Cmd
+     || {_, Cmd} <- chappe_rtpengine_fake_server:received(Server)
+    ],
+    ?assertEqual(<<"start forwarding">>, maps:get(<<"command">>, StartAll)),
+    ?assertEqual(<<"sess-fwd">>, maps:get(<<"call-id">>, StartAll)),
+    ?assertEqual([<<"all">>], maps:get(<<"flags">>, StartAll)),
+    ?assertEqual(<<"tt-f">>, maps:get(<<"from-tag">>, StartCallee)),
+    ?assertEqual([<<"directional">>], maps:get(<<"flags">>, StartCallee)),
+    ?assertEqual(<<"stop forwarding">>, maps:get(<<"command">>, StopAll)),
+    ?assertEqual([<<"all">>], maps:get(<<"flags">>, StopAll)),
+    ok = chappe_rtpengine_session:stop(Sess),
+    wait_dead(Sess),
     ok.
 
 play_media_blob(Config) ->

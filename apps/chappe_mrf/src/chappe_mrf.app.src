@@ -13,9 +13,11 @@
         chappe_mrf_conf_sup
     ]},
     {mod, {chappe_mrf_app, []}},
-    {applications, [kernel, stdlib, chappe_sip, chappe_esl]},
+    {applications, [kernel, stdlib, chappe_sip, chappe_esl, chappe_audio]},
     %% esl_port: the port of the listener the FreeSWITCH dialplan `socket'
-    %% application connects back to (started with the app when set)
+    %% application connects back to (started with the app when set);
+    %% shared_dir: #{freeswitch => Dir, local => Dir}, the folder FreeSWITCH
+    %% records into as each side sees it (unset: the same path)
     {env, []},
     {licenses, ["Apache-2.0"]},
     {links, []}

@@ -6,17 +6,26 @@
 # interop/docker-compose.yml. RTPENGINE_MEDIA_IP (the address rtpengine
 # can send media back to) is discovered from inside the container.
 #
+# RTPE_PROJECT (compose project), RTPE_NAME (container, rtpe-e2e) and the
+# RTPE_*_PORT, RTPE_RTP_MIN and RTPE_RTP_MAX ports move the lab out of the
+# way of another one.
+#
 # Usage: test/e2e.sh   (or: make interop)
 set -u
 
-NAME=rtpe-e2e
-NG_PORT=12222
-NG_TCP_PORT=12223
-NG_HTTP_PORT=12224
-NG_HTTPS_PORT=12225
+: "${RTPE_NAME:=rtpe-e2e}" "${RTPE_NG_PORT:=12222}" "${RTPE_TCP_PORT:=12223}"
+: "${RTPE_HTTP_PORT:=12224}" "${RTPE_HTTPS_PORT:=12225}"
+: "${RTPE_RTP_MIN:=30000}" "${RTPE_RTP_MAX:=30100}"
+export RTPE_NAME RTPE_NG_PORT RTPE_TCP_PORT RTPE_HTTP_PORT RTPE_HTTPS_PORT \
+    RTPE_RTP_MIN RTPE_RTP_MAX
+NAME=$RTPE_NAME
+NG_PORT=$RTPE_NG_PORT
+NG_TCP_PORT=$RTPE_TCP_PORT
+NG_HTTP_PORT=$RTPE_HTTP_PORT
+NG_HTTPS_PORT=$RTPE_HTTPS_PORT
 
 cd "$(dirname "$0")/.."
-COMPOSE="docker compose -f interop/docker-compose.yml"
+COMPOSE="docker compose -p ${RTPE_PROJECT:-interop} -f interop/docker-compose.yml"
 
 $COMPOSE up -d --build --force-recreate || exit 1
 sleep 2

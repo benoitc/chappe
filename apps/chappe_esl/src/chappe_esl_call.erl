@@ -21,6 +21,8 @@
 %%   {complete, App, Event}    a completion no request waits for (an app
 %%                             started with wait => false, or the dialplan's;
 %%                             a timed out request's completion is dropped)
+%%   {tone, Name}              a tone of detect_tones/2 was heard
+%%   {fax, detected}           a fax tone of detect_fax/2 was heard
 %%   {event, Event}            any other event of the channel
 %%   linger                    the channel hung up; the final events still
 %%                             follow and the socket stays open
@@ -44,21 +46,49 @@
 %% Raw execute on a connection.
 -export([exec/5]).
 %% Call process.
--export([start/1, start/2, stop/1, uuid/1]).
--export([exec/3, exec/4, api/2]).
+-export([start/1, start/2, stop/1, uuid/1, ref/1]).
+-export([exec/3, exec/4, api/2, subscribe/2, event_word/1]).
 %% Typed helpers.
 -export([answer/1, playback/2, playback/3, play_and_get_digits/2]).
 -export([record/3, record_session/2, record_session_stop/2]).
 -export([send_dtmf/2, set/3, export/3, hangup/1, hangup/2]).
+-export([multiset/2, getvar/2, dump/1, mute/2, unmute/2]).
+-export([say/3, speak/3, detect_tones/2, stop_detect_tones/1]).
+-export([detect_fax/2, stop_detect_fax/1]).
 -export([conference/2, conference/3, audio_fork_start/3, audio_fork_stop/1]).
+-export([audio_fork_stop/2, audio_fork_pause/2, audio_fork_resume/2]).
+-export([audio_fork_send_text/3]).
 %% gen_server.
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
--export_type([call/0, exec_opts/0, start_opts/0, msg/0, fork_module/0]).
+-export_type([call/0, exec_opts/0, playback_opts/0, digits/0]).
+-export_type([start_opts/0, msg/0, fork_module/0, fork_select/0]).
 
 -define(EXEC_TIMEOUT, 60000).
 -define(CLEANUP_TIMEOUT, 2000).
 -define(DIGITS_VAR, <<"chappe_digits">>).
+%% mod_say's say types (switch_ivr_get_say_type_by_name).
+-define(SAY_TYPES, [
+    number,
+    items,
+    persons,
+    messages,
+    currency,
+    time_measurement,
+    current_date,
+    current_time,
+    current_date_time,
+    short_date_time,
+    telephone_number,
+    telephone_extension,
+    url,
+    ip_address,
+    email_address,
+    postal_address,
+    account_number,
+    name_spelled,
+    name_phonetic
+]).
 
 -type call() :: pid().
 -type event() :: chappe_esl_event:event().
@@ -73,18 +103,41 @@
     lock => boolean(),
     loops => pos_integer()
 }.
+%% playback/3: exec_opts plus offset (samples) and limit_secs.
+-type playback_opts() :: #{
+    timeout => timeout(),
+    wait => boolean(),
+    lock => boolean(),
+    loops => pos_integer(),
+    offset => non_neg_integer(),
+    limit_secs => pos_integer()
+}.
+%% play_and_get_digits/2 with result => full.
+-type digits() :: #{
+    digits := binary(), terminator := binary(), invalid := binary()
+}.
 %% owner: the process that gets the messages and whose death ends the call
 %% (the caller). uuid: the channel, required on an inbound connection.
 %% cleanup: on owner death, stop forks and recordings and kill the channel
-%% (true).
--type start_opts() :: #{owner => pid(), uuid => binary(), cleanup => boolean()}.
+%% (true). ref: an opaque binary (a call ref), returned by ref/1; the
+%% messages to the owner keep their {chappe_esl_call, Call, Msg} shape.
+-type start_opts() :: #{
+    owner => pid(), uuid => binary(), cleanup => boolean(), ref => binary()
+}.
 %% audio_fork: mod_audio_fork (uuid_audio_fork); audio_stream:
 %% mod_audio_stream (uuid_audio_stream).
 -type fork_module() :: audio_fork | audio_stream.
+%% A fork this call runs: its module and its bug name (undefined: the
+%% module default).
+-type fork() :: {fork_module(), binary() | undefined}.
+%% Which forks a fork command names: by module, by bug name, or all.
+-type fork_select() :: #{module => fork_module(), bugname => binary()}.
 -type msg() ::
     {dtmf, binary()}
     | {hangup, binary()}
     | {complete, binary(), event()}
+    | {tone, binary()}
+    | {fax, detected}
     | {event, event()}
     | linger
     | disconnect
@@ -97,9 +150,10 @@
     owner :: pid(),
     owner_mon :: reference(),
     cleanup :: boolean(),
+    ref :: binary() | undefined,
     hungup = false :: boolean(),
     %% the fork modules started, oldest first
-    forks = [] :: [fork_module()],
+    forks = [] :: [fork()],
     recordings = [] :: [binary()],
     %% the application running now (its Application-UUID), and the timed
     %% out ones: broken when they run, their completion dropped
@@ -120,7 +174,7 @@
 %% exec_accepted: wait => false, the caller gets the uuid once accepted.
 -type job() ::
     {reply, gen_server:from()}
-    | {fork_start, gen_server:from(), fork_module(), boolean()}
+    | {fork_start, gen_server:from(), fork(), boolean()}
     | {exec_sent, binary()}
     | {exec_accepted, gen_server:from(), binary()}
     | ignore.
@@ -152,9 +206,16 @@ start(Conn) ->
 %% Take over a connection for one channel. On an outbound connection the
 %% channel is the connected one; on an inbound connection pass its uuid.
 -spec start(chappe_esl:conn(), start_opts()) -> {ok, call()} | {error, term()}.
+start(_Conn, #{ref := Ref}) when not is_binary(Ref) ->
+    {error, {bad_option, ref}};
 start(Conn, Opts) ->
     Owner = maps:get(owner, Opts, self()),
     gen_server:start(?MODULE, {Conn, Owner, Opts}, []).
+
+%% The ref given at start, undefined without one.
+-spec ref(call()) -> binary() | undefined | {error, closed}.
+ref(Call) ->
+    call(Call, ref).
 
 %% Stop the call process and close its connection. The channel is left
 %% alone: no cleanup, no uuid_kill.
@@ -186,6 +247,46 @@ exec(Call, App, Args, Opts) ->
 api(Call, Cmd) ->
     call(Call, {api, Cmd}).
 
+%% Add events of the channel to what the owner gets as {event, Event}:
+%% event names (<<"PLAYBACK_START">>, 'DETECTED_TONE') and {custom,
+%% Subclass} for a CUSTOM subclass. The call's own subscription (myevents,
+%% or the Unique-ID filter on inbound) still limits them to this channel.
+-spec subscribe(call(), [atom() | binary() | {custom, binary()}]) ->
+    ok | {error, term()}.
+subscribe(Call, Events) ->
+    case event_names(Events, [], []) of
+        {ok, []} -> ok;
+        {ok, Names} -> call(Call, {subscribe, Names});
+        error -> {error, {bad_option, events}}
+    end.
+
+%% FreeSWITCH reads every word after CUSTOM as a subclass: CUSTOM goes last.
+event_names([], Names, []) ->
+    {ok, lists:reverse(Names)};
+event_names([], Names, Subs) ->
+    {ok, lists:reverse(Names) ++ [<<"CUSTOM">> | lists:reverse(Subs)]};
+event_names([{custom, Sub} | T], Names, Subs) ->
+    case event_word(Sub) of
+        true -> event_names(T, Names, [Sub | Subs]);
+        false -> error
+    end;
+event_names([Name | T], Names, Subs) when is_atom(Name) ->
+    event_names([atom_to_binary(Name) | T], Names, Subs);
+event_names([<<"CUSTOM">> | _], _Names, _Subs) ->
+    error;
+event_names([Name | T], Names, Subs) ->
+    case event_word(Name) of
+        true -> event_names(T, [Name | Names], Subs);
+        false -> error
+    end.
+
+%% One word of an event command: no blank, no line break.
+-spec event_word(term()) -> boolean().
+event_word(W) when is_binary(W), W =/= <<>> ->
+    binary:match(W, [<<" ">>, <<"\t">>, <<"\n">>, <<"\r">>]) =:= nomatch;
+event_word(_) ->
+    false.
+
 %% Typed helpers
 
 -spec answer(call()) -> ok | {error, term()}.
@@ -193,23 +294,84 @@ answer(Call) ->
     done(exec(Call, <<"answer">>, <<>>)).
 
 %% Play a file; the completion event's Application-Response says how it
-%% ended (FILE PLAYED, FILE NOT FOUND, ...).
+%% ended (FILE PLAYED, FILE NOT FOUND, PLAYBACK ERROR) and its
+%% variable_playback_ms how long it played.
 -spec playback(call(), iodata()) -> {ok, event()} | {error, term()}.
 playback(Call, File) ->
     playback(Call, File, #{}).
 
--spec playback(call(), iodata(), exec_opts()) ->
+%% Opts, besides exec_opts: offset (start this many samples into the file,
+%% FreeSWITCH's File@@Samples), limit_secs (stop after this many seconds,
+%% at least 2, through playback_timeout_sec; the playback then still ends
+%% as FILE PLAYED). A bad value returns {error, {bad_option, Key}}.
+-spec playback(call(), iodata(), playback_opts()) ->
     {ok, event()} | {error, term()}.
 playback(Call, File, Opts) ->
-    exec(Call, <<"playback">>, File, Opts).
+    case chappe_esl_exec:expands(File) orelse playback_args(File, Opts) of
+        true ->
+            {error, {bad_option, file}};
+        {ok, Arg, undefined} ->
+            exec(Call, <<"playback">>, Arg, exec_opts(Opts));
+        {ok, Arg, Secs} ->
+            limited_playback(Call, Arg, Secs, exec_opts(Opts));
+        {error, _} = Err ->
+            Err
+    end.
+
+playback_args(File, Opts) ->
+    case {maps:get(offset, Opts, 0), maps:get(limit_secs, Opts, undefined)} of
+        {Off, _} when not is_integer(Off); Off < 0 ->
+            {error, {bad_option, offset}};
+        {_, Secs} when Secs =/= undefined, not is_integer(Secs) ->
+            {error, {bad_option, limit_secs}};
+        {_, Secs} when is_integer(Secs), Secs < 2 ->
+            {error, {bad_option, limit_secs}};
+        {0, Secs} ->
+            {ok, File, Secs};
+        {Off, Secs} ->
+            {ok, [File, <<"@@">>, integer_to_binary(Off)], Secs}
+    end.
+
+%% FreeSWITCH reads the limit from the channel: set before, cleared after,
+%% one application after the other (event-lock).
+limited_playback(Call, Arg, Secs, Opts) ->
+    Vars = [
+        <<"playback_timeout_sec=">>,
+        integer_to_binary(Secs),
+        <<" playback_timeout_as_success=true">>
+    ],
+    case exec(Call, <<"multiset">>, Vars) of
+        {ok, _} ->
+            Result = exec(Call, <<"playback">>, Arg, Opts),
+            _ = exec(Call, <<"unset">>, <<"playback_timeout_sec">>),
+            Result;
+        Error ->
+            Error
+    end.
 
 %% Play a prompt and collect digits. Opts: file (required), min (1), max
 %% (1), tries (1), timeout (5000 ms), terminators (<<"#">>), invalid_file
 %% (silence_stream://250), regexp (<<"[0-9*#]+">>), digit_timeout (timeout),
 %% var (chappe_digits), plus exec_opts. Returns the digits FreeSWITCH stored
-%% in var, <<>> when none were entered.
--spec play_and_get_digits(call(), map()) -> {ok, binary()} | {error, term()}.
+%% in var, <<>> when none were entered. With result => full it returns
+%% #{digits, terminator, invalid}: the terminator pressed (<<>> for none,
+%% from read_terminator_used) and the last entry the regexp refused (<<>>
+%% for none, from <var>_invalid).
+-spec play_and_get_digits(call(), map()) ->
+    {ok, binary() | digits()} | {error, term()}.
 play_and_get_digits(Call, #{file := File} = Opts) ->
+    Text = [
+        File,
+        maps:get(invalid_file, Opts, <<>>),
+        maps:get(terminators, Opts, <<>>),
+        maps:get(regexp, Opts, <<>>)
+    ],
+    case lists:any(fun chappe_esl_exec:expands/1, Text) of
+        true -> {error, {bad_option, file}};
+        false -> collect(Call, File, Opts)
+    end.
+
+collect(Call, File, Opts) ->
     Timeout = maps:get(timeout, Opts, 5000),
     Var = to_bin(maps:get(var, Opts, ?DIGITS_VAR)),
     Args = join([
@@ -234,8 +396,21 @@ play_and_get_digits(Call, #{file := File} = Opts) ->
         })
     of
         {ok, Ev} ->
-            Digits = chappe_esl_event:header(<<"variable_", Var/binary>>, Ev),
-            {ok, to_bin(Digits)};
+            V = fun(Name) ->
+                to_bin(
+                    chappe_esl_event:header(<<"variable_", Name/binary>>, Ev)
+                )
+            end,
+            case maps:get(result, Opts, digits) of
+                full ->
+                    {ok, #{
+                        digits => V(Var),
+                        terminator => V(<<"read_terminator_used">>),
+                        invalid => V(<<Var/binary, "_invalid">>)
+                    }};
+                _ ->
+                    {ok, V(Var)}
+            end;
         Error ->
             Error
     end.
@@ -244,6 +419,12 @@ play_and_get_digits(Call, #{file := File} = Opts) ->
 %% (record's optional arguments), plus exec_opts.
 -spec record(call(), iodata(), map()) -> {ok, event()} | {error, term()}.
 record(Call, Path, Opts) ->
+    case chappe_esl_exec:expands(Path) of
+        true -> {error, {bad_option, path}};
+        false -> record_file(Call, Path, Opts)
+    end.
+
+record_file(Call, Path, Opts) ->
     Limits = [
         int(V)
      || K <- [max_secs, silence_thresh, silence_hits],
@@ -261,7 +442,10 @@ record(Call, Path, Opts) ->
 %% recording runs until record_session_stop/2 or the hangup.
 -spec record_session(call(), iodata()) -> ok | {error, term()}.
 record_session(Call, Path) ->
-    call(Call, {record_session, to_bin(Path)}).
+    case chappe_esl_exec:expands(Path) of
+        true -> {error, {bad_option, path}};
+        false -> call(Call, {record_session, to_bin(Path)})
+    end.
 
 -spec record_session_stop(call(), iodata()) -> ok | {error, term()}.
 record_session_stop(Call, Path) ->
@@ -270,16 +454,316 @@ record_session_stop(Call, Path) ->
 %% Send DTMF digits to the far end (the send_dtmf application).
 -spec send_dtmf(call(), iodata()) -> ok | {error, term()}.
 send_dtmf(Call, Digits) ->
-    done(exec(Call, <<"send_dtmf">>, Digits)).
+    case chappe_esl_exec:expands(Digits) of
+        true -> {error, {bad_option, digits}};
+        false -> done(exec(Call, <<"send_dtmf">>, Digits))
+    end.
 
 -spec set(call(), iodata(), iodata()) -> ok | {error, term()}.
 set(Call, Var, Value) ->
-    done(exec(Call, <<"set">>, [Var, $=, Value])).
+    var_app(Call, <<"set">>, Var, Value).
+
+%% set and export: neither the name nor the value may expand.
+var_app(Call, App, Var, Value) ->
+    case {chappe_esl_exec:expands(Var), chappe_esl_exec:expands(Value)} of
+        {true, _} -> {error, {bad_option, var}};
+        {_, true} -> {error, {bad_option, value}};
+        _ -> done(exec(Call, App, [Var, $=, Value]))
+    end.
 
 %% Set a variable on the channel and on the channel it gets bridged to.
 -spec export(call(), iodata(), iodata()) -> ok | {error, term()}.
 export(Call, Var, Value) ->
-    done(exec(Call, <<"export">>, [Var, $=, Value])).
+    var_app(Call, <<"export">>, Var, Value).
+
+%% Say Text with mod_say: a number, a date, digits, by language. Opts:
+%% language (<<"en">>, the mod_say module that speaks it), type (number:
+%% number | items | persons | messages | currency | time_measurement |
+%% current_date | current_time | current_date_time | short_date_time |
+%% telephone_number | telephone_extension | url | ip_address |
+%% email_address | postal_address | account_number | name_spelled |
+%% name_phonetic), method (pronounced: pronounced | iterated | counted),
+%% gender (masculine | feminine | neuter), plus exec_opts. The module plays
+%% sound files from the channel's sound_prefix; a missing one is skipped.
+-spec say(call(), iodata(), map()) -> ok | {error, term()}.
+say(Call, Text, Opts) ->
+    case say_args(to_bin(Text), Opts) of
+        {ok, Arg} -> done(exec(Call, <<"say">>, Arg, exec_opts(Opts)));
+        {error, _} = Err -> Err
+    end.
+
+say_args(Text, Opts) ->
+    Lang =
+        case maps:get(language, Opts, <<"en">>) of
+            L when is_atom(L) -> atom_to_binary(L);
+            L -> L
+        end,
+    Type = maps:get(type, Opts, number),
+    Method = maps:get(method, Opts, pronounced),
+    Gender = maps:get(gender, Opts, undefined),
+    check_say(Text, Lang, Type, Method, Gender).
+
+check_say(Text, Lang, Type, Method, Gender) ->
+    case
+        {
+            tts_word(Lang),
+            lists:member(Type, ?SAY_TYPES),
+            lists:member(Method, [pronounced, iterated, counted]),
+            lists:member(Gender, [undefined, masculine, feminine, neuter]),
+            Text =/= <<>> andalso one_line(Text)
+        }
+    of
+        {false, _, _, _, _} ->
+            {error, {bad_option, language}};
+        {_, false, _, _, _} ->
+            {error, {bad_option, type}};
+        {_, _, false, _, _} ->
+            {error, {bad_option, method}};
+        {_, _, _, false, _} ->
+            {error, {bad_option, gender}};
+        {_, _, _, _, false} ->
+            {error, {bad_option, text}};
+        _ ->
+            G = [[atom_to_binary(Gender), <<" ">>] || Gender =/= undefined],
+            {ok, [
+                Lang,
+                <<" ">>,
+                atom_to_binary(Type),
+                <<" ">>,
+                atom_to_binary(Method),
+                <<" ">>,
+                G,
+                chappe_esl_exec:arg(Text)
+            ]}
+    end.
+
+%% Speak Text with a text to speech module (the speak application). Opts:
+%% engine (the module, as <<"flite">>) and voice (as <<"kal">>), both
+%% defaulting to the channel's tts_engine and tts_voice, plus exec_opts.
+%% An engine needs a voice. Text with a `|' needs both, which FreeSWITCH
+%% would otherwise read as separators.
+-spec speak(call(), iodata(), map()) -> ok | {error, term()}.
+speak(Call, Text0, Opts) ->
+    Text = to_bin(Text0),
+    Engine = maps:get(engine, Opts, undefined),
+    Voice = maps:get(voice, Opts, undefined),
+    Pipe = binary:match(Text, <<"|">>) =/= nomatch,
+    Valid = fun
+        (undefined) -> true;
+        (W) -> tts_word(W)
+    end,
+    case {Valid(Engine), Valid(Voice), Text =/= <<>> andalso one_line(Text)} of
+        {false, _, _} ->
+            {error, {bad_option, engine}};
+        {_, false, _} ->
+            {error, {bad_option, voice}};
+        {_, _, false} ->
+            {error, {bad_option, text}};
+        _ when Engine =/= undefined, Voice =:= undefined ->
+            {error, {bad_option, voice}};
+        _ when Pipe, Engine =:= undefined ->
+            {error, {bad_option, text}};
+        _ ->
+            Arg =
+                case {Engine, Voice} of
+                    {undefined, undefined} -> Text;
+                    {undefined, V} -> [V, $|, Text];
+                    {E, V} -> [E, $|, V, $|, Text]
+                end,
+            done(exec(Call, <<"speak">>, Arg, exec_opts(Opts)))
+    end.
+
+tts_word(W) when is_binary(W) ->
+    event_word(W) andalso binary:match(W, [<<"|">>, <<"'">>]) =:= nomatch;
+tts_word(_) ->
+    false.
+
+%% One line of text that FreeSWITCH takes as it is: no line break, nothing
+%% it would expand (chappe_esl_exec:expands/1).
+one_line(Text) ->
+    binary:match(Text, [<<"\n">>, <<"\r">>]) =:= nomatch andalso
+        not chappe_esl_exec:expands(Text).
+
+%% Listen for the tones of a mod_spandsp tone descriptor (Name, from the
+%% node's spandsp.conf): the owner gets {tone, ToneName} each time one is
+%% heard, until stop_detect_tones/1 or the hangup.
+-spec detect_tones(call(), iodata()) -> ok | {error, term()}.
+detect_tones(Call, Name) ->
+    case tts_word(to_bin(Name)) of
+        true ->
+            detector(
+                Call, <<"spandsp_start_tone_detect">>, Name, <<"+OK started">>
+            );
+        false ->
+            {error, {bad_option, name}}
+    end.
+
+-spec stop_detect_tones(call()) -> ok | {error, term()}.
+stop_detect_tones(Call) ->
+    done(exec(Call, <<"spandsp_stop_tone_detect">>, <<>>)).
+
+%% Listen for a fax (mod_spandsp): the owner gets {fax, detected} once.
+%% Opts: tone (cng, the calling fax, default; ced, the answering one),
+%% timeout (seconds to listen, 0 for no limit, the default).
+-spec detect_fax(call(), map()) -> ok | {error, term()}.
+detect_fax(Call, Opts) ->
+    case {maps:get(tone, Opts, cng), maps:get(timeout, Opts, 0)} of
+        {Tone, _} when Tone =/= cng, Tone =/= ced ->
+            {error, {bad_option, tone}};
+        {_, Secs} when not is_integer(Secs); Secs < 0 ->
+            {error, {bad_option, timeout}};
+        {Tone, Secs} ->
+            %% the application runs `set' when it hears the tone, and
+            %% fires the DETECTED_TONE the owner hears
+            Arg = [
+                <<"set chappe_fax_detected=true ">>,
+                integer_to_binary(Secs),
+                <<" ">>,
+                atom_to_binary(Tone)
+            ],
+            detector(Call, <<"spandsp_start_fax_detect">>, Arg, undefined)
+    end.
+
+-spec stop_detect_fax(call()) -> ok | {error, term()}.
+stop_detect_fax(Call) ->
+    done(exec(Call, <<"spandsp_stop_fax_detect">>, <<>>)).
+
+detector(Call, App, Arg, Expect) ->
+    case subscribe(Call, [<<"DETECTED_TONE">>]) of
+        ok ->
+            case {exec(Call, App, Arg), Expect} of
+                {{ok, _}, undefined} ->
+                    ok;
+                {{ok, Ev}, _} ->
+                    case
+                        chappe_esl_event:header(<<"Application-Response">>, Ev)
+                    of
+                        Expect -> ok;
+                        Other -> {error, to_bin(Other)}
+                    end;
+                {Error, _} ->
+                    Error
+            end;
+        Error ->
+            Error
+    end.
+
+%% Set several variables at once (multiset). Names are words without `=';
+%% the values are split on a delimiter none of them contains. At most 256
+%% variables, as multiset takes.
+-spec multiset(call(), #{iodata() => iodata()}) -> ok | {error, term()}.
+multiset(_Call, Vars) when map_size(Vars) =:= 0 ->
+    ok;
+multiset(Call, Vars) when is_map(Vars), map_size(Vars) =< 256 ->
+    Pairs = [{to_bin(K), to_bin(V)} || K := V <- Vars],
+    case lists:all(fun valid_var/1, Pairs) andalso delimiter(Pairs) of
+        false ->
+            {error, {bad_option, vars}};
+        none ->
+            {error, {bad_option, vars}};
+        Delim ->
+            Arg = [
+                <<"^^">>,
+                Delim,
+                lists:join(Delim, [[K, $=, V] || {K, V} <- lists:sort(Pairs)])
+            ],
+            done(exec(Call, <<"multiset">>, Arg))
+    end;
+multiset(_Call, _Vars) ->
+    {error, {bad_option, vars}}.
+
+valid_var({K, V}) ->
+    event_word(K) andalso binary:match(K, <<"=">>) =:= nomatch andalso
+        one_line(V).
+
+delimiter(Pairs) ->
+    Used = iolist_to_binary([[K, V] || {K, V} <- Pairs]),
+    case
+        [
+            D
+         || D <- [<<"|">>, <<"~">>, <<"^">>, <<";">>, <<"#">>, <<"!">>],
+            binary:match(Used, D) =:= nomatch
+        ]
+    of
+        [D | _] -> D;
+        [] -> none
+    end.
+
+%% A channel variable (uuid_getvar): undefined when it is not set.
+-spec getvar(call(), iodata()) -> {ok, binary() | undefined} | {error, term()}.
+getvar(Call, Var) ->
+    case event_word(to_bin(Var)) of
+        true ->
+            case
+                with_uuid(Call, fun(U) ->
+                    api(Call, [<<"uuid_getvar ">>, U, $\s, Var])
+                end)
+            of
+                {ok, <<"_undef_">>} -> {ok, undefined};
+                {ok, Value} -> {ok, Value};
+                Error -> Error
+            end;
+        false ->
+            {error, {bad_option, var}}
+    end.
+
+%% Every variable of the channel (uuid_dump json), without the variable_
+%% prefix FreeSWITCH puts on them.
+-spec dump(call()) -> {ok, #{binary() => binary()}} | {error, term()}.
+dump(Call) ->
+    case
+        with_uuid(Call, fun(U) ->
+            api(Call, [<<"uuid_dump ">>, U, <<" json">>])
+        end)
+    of
+        {ok, Json} ->
+            try json:decode(Json) of
+                #{} = M ->
+                    {ok,
+                        #{
+                            K => to_bin(V)
+                         || <<"variable_", K/binary>> := V <- M, is_binary(V)
+                        }};
+                _ ->
+                    {error, {bad_reply, Json}}
+            catch
+                error:_ -> {error, {bad_reply, Json}}
+            end;
+        Error ->
+            Error
+    end.
+
+%% Mute what the channel reads (the caller's audio) or writes (what the
+%% caller hears), with uuid_audio; unmute/2 takes it back.
+-spec mute(call(), read | write) -> ok | {error, term()}.
+mute(Call, Dir) ->
+    audio(Call, Dir, <<"1">>).
+
+-spec unmute(call(), read | write) -> ok | {error, term()}.
+unmute(Call, Dir) ->
+    audio(Call, Dir, <<"0">>).
+
+audio(Call, Dir, Level) when Dir =:= read; Dir =:= write ->
+    with_uuid(Call, fun(U) ->
+        ok(
+            api(Call, [
+                <<"uuid_audio ">>,
+                U,
+                <<" start ">>,
+                atom_to_binary(Dir),
+                <<" mute ">>,
+                Level
+            ])
+        )
+    end);
+audio(_Call, _Dir, _Level) ->
+    {error, {bad_option, direction}}.
+
+with_uuid(Call, Fun) ->
+    case call(Call, uuid) of
+        Uuid when is_binary(Uuid) -> Fun(Uuid);
+        Error -> Error
+    end.
 
 -spec hangup(call()) -> ok | {error, term()}.
 hangup(Call) ->
@@ -321,13 +805,15 @@ conference(Call, Room, Opts) ->
 %% Fork the channel audio to a websocket. Opts: module (audio_fork, the
 %% default, for mod_audio_fork, or audio_stream for mod_audio_stream), mix
 %% (mono | mixed | stereo, default mono), rate (16000), metadata (sent to the
-%% server as the first text frame). An unknown module returns
-%% {error, {bad_option, module}}.
+%% server as the first text frame), bugname (mod_audio_fork only: the name
+%% of this fork's media bug, so one channel can run several forks; default
+%% audio_fork). An unknown module returns {error, {bad_option, module}}, a
+%% bugname on mod_audio_stream {error, {bad_option, bugname}}.
 -spec audio_fork_start(call(), iodata(), map()) -> ok | {error, term()}.
 audio_fork_start(Call, Url, Opts) ->
-    case fork_module(Opts) of
-        {ok, Module} -> call(Call, {fork_start, Module, Url, Opts});
-        error -> {error, {bad_option, module}}
+    case fork_key(Opts) of
+        {ok, Key} -> call(Call, {fork_start, Key, Url, Opts});
+        {error, _} = Err -> Err
     end.
 
 %% Stop the forks this call started, each with its module's command
@@ -335,6 +821,36 @@ audio_fork_start(Call, Url, Opts) ->
 -spec audio_fork_stop(call()) -> ok | {error, term()}.
 audio_fork_stop(Call) ->
     call(Call, fork_stop).
+
+%% The fork commands on the forks this call started that Sel names
+%% (module, bugname; an empty map names them all). Both modules take stop,
+%% pause, resume and send_text; pause keeps the WebSocket open and stops
+%% the audio, resume sends it again, and send_text sends Text to the
+%% server as a text frame. No fork named: {error, not_forking}.
+-spec audio_fork_stop(call(), fork_select()) -> ok | {error, term()}.
+audio_fork_stop(Call, Sel) ->
+    fork_ctl(Call, Sel, stop).
+
+-spec audio_fork_pause(call(), fork_select()) -> ok | {error, term()}.
+audio_fork_pause(Call, Sel) ->
+    fork_ctl(Call, Sel, pause).
+
+-spec audio_fork_resume(call(), fork_select()) -> ok | {error, term()}.
+audio_fork_resume(Call, Sel) ->
+    fork_ctl(Call, Sel, resume).
+
+-spec audio_fork_send_text(call(), iodata(), fork_select()) ->
+    ok | {error, term()}.
+audio_fork_send_text(Call, Text, Sel) ->
+    case binary:match(to_bin(Text), [<<"\n">>, <<"\r">>]) of
+        nomatch -> fork_ctl(Call, Sel, {send_text, Text});
+        _ -> {error, {bad_option, text}}
+    end.
+
+fork_ctl(Call, Sel, Verb) when is_map(Sel) ->
+    call(Call, {fork_ctl, maps:with([module, bugname], Sel), Verb});
+fork_ctl(_Call, _Sel, _Verb) ->
+    {error, {bad_option, select}}.
 
 %% gen_server
 
@@ -353,7 +869,8 @@ init({Conn, Owner, Opts}) ->
                         uuid = Uuid,
                         owner = Owner,
                         owner_mon = monitor(process, Owner),
-                        cleanup = maps:get(cleanup, Opts, true)
+                        cleanup = maps:get(cleanup, Opts, true),
+                        ref = maps:get(ref, Opts, undefined)
                     }};
                 {error, Reason} ->
                     {stop, {subscribe_failed, Reason}}
@@ -362,12 +879,19 @@ init({Conn, Owner, Opts}) ->
             {stop, Reason}
     end.
 
+handle_call(ref, _From, #state{ref = Ref} = State) ->
+    {reply, Ref, State};
 handle_call(uuid, _From, #state{uuid = Uuid} = State) ->
     {reply, Uuid, State};
 handle_call({exec, _App, _Args, _Opts}, _From, #state{hungup = true} = State) ->
     {reply, {error, hangup}, State};
 handle_call({exec, App, Args, Opts}, From, State) ->
     start_exec(App, Args, Opts, From, State);
+handle_call({subscribe, Names}, From, #state{conn = Conn} = State) ->
+    {noreply,
+        job(
+            fun() -> chappe_esl:subscribe(Conn, Names) end, {reply, From}, State
+        )};
 handle_call({api, Cmd}, From, #state{conn = Conn} = State) ->
     {noreply,
         job(fun() -> chappe_esl:api(Conn, Cmd) end, {reply, From}, State)};
@@ -380,20 +904,25 @@ handle_call(
 ) ->
     State1 = State#state{recordings = lists:delete(Path, Recs)},
     sync_exec(<<"stop_record_session">>, Path, From, State1);
-handle_call({fork_start, Module, Url, Opts}, From, State) ->
+handle_call({fork_start, {Module, _} = Key, Url, Opts}, From, State) ->
     #state{conn = Conn, uuid = Uuid, forks = Forks} = State,
     Cmd = chappe_esl_exec:fork_start_cmd(Module, Uuid, Url, Opts),
-    Job = {fork_start, From, Module, lists:member(Module, Forks)},
+    Job = {fork_start, From, Key, lists:member(Key, Forks)},
     %% tracked before it starts, so an owner dying meanwhile still stops it
-    State1 = State#state{forks = track_fork(Module, Forks)},
+    State1 = State#state{forks = track_fork(Key, Forks)},
     {noreply, job(fun() -> ok(chappe_esl:api(Conn, Cmd)) end, Job, State1)};
 handle_call(fork_stop, From, #state{forks = Forks} = State) ->
-    #state{conn = Conn, uuid = Uuid} = State,
-    Cmds = [chappe_esl_exec:fork_stop_cmd(M, Uuid) || M <- stop_modules(Forks)],
-    Stop = fun() ->
-        first_error([ok(chappe_esl:api(Conn, Cmd)) || Cmd <- Cmds])
-    end,
-    {noreply, job(Stop, {reply, From}, State#state{forks = []})};
+    {noreply, fork_cmds(stop_keys(Forks), stop, From, State#state{forks = []})};
+handle_call({fork_ctl, Sel, Verb}, From, #state{forks = Forks} = State) ->
+    case [F || F <- Forks, selected(Sel, F)] of
+        [] ->
+            {reply, {error, not_forking}, State};
+        Targets when Verb =:= stop ->
+            State1 = State#state{forks = Forks -- Targets},
+            {noreply, fork_cmds(Targets, stop, From, State1)};
+        Targets ->
+            {noreply, fork_cmds(Targets, Verb, From, State)}
+    end;
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown_call}, State}.
 
@@ -518,8 +1047,20 @@ fork_settled(_Error, _Module, true, State) ->
 fork_settled(_Error, Module, false, #state{forks = Forks} = State) ->
     State#state{forks = lists:delete(Module, Forks)}.
 
-track_fork(Module, Forks) ->
-    lists:delete(Module, Forks) ++ [Module].
+track_fork(Key, Forks) ->
+    lists:delete(Key, Forks) ++ [Key].
+
+%% One api command per fork, in a helper; the first error is the reply.
+fork_cmds(Keys, Verb, From, #state{conn = Conn, uuid = Uuid} = State) ->
+    Cmds = [chappe_esl_exec:fork_ctl_cmd(M, Uuid, B, Verb) || {M, B} <- Keys],
+    Run = fun() ->
+        first_error([ok(chappe_esl:api(Conn, Cmd)) || Cmd <- Cmds])
+    end,
+    job(Run, {reply, From}, State).
+
+selected(Sel, {Module, Bug}) ->
+    maps:get(module, Sel, Module) =:= Module andalso
+        maps:get(bugname, Sel, Bug) =:= Bug.
 
 %% A helper whose own completion only says done or not.
 sync_exec(_App, _Args, _From, #state{hungup = true} = State) ->
@@ -553,6 +1094,17 @@ event(<<"CHANNEL_EXECUTE_COMPLETE">>, Ev, State0) ->
         {error, error} ->
             App = to_bin(chappe_esl_event:header(<<"Application">>, Ev)),
             notify(State, {complete, App, Ev})
+    end;
+event(<<"DETECTED_TONE">>, Ev, State) ->
+    case
+        {
+            chappe_esl_event:header(<<"Detected-Tone">>, Ev),
+            chappe_esl_event:header(<<"Detected-Fax-Tone">>, Ev)
+        }
+    of
+        {Tone, _} when is_binary(Tone) -> notify(State, {tone, Tone});
+        {_, <<"true">>} -> notify(State, {fax, detected});
+        _ -> notify(State, {event, Ev})
     end;
 event(<<"DTMF">>, Ev, State) ->
     notify(
@@ -617,7 +1169,7 @@ cleanup(#state{hungup = true}) ->
     ok;
 cleanup(#state{conn = Conn, uuid = Uuid, forks = Forks, recordings = Recs}) ->
     Cmds =
-        [chappe_esl_exec:fork_stop_cmd(M, Uuid) || M <- Forks] ++
+        [chappe_esl_exec:fork_ctl_cmd(M, Uuid, B, stop) || {M, B} <- Forks] ++
             [
                 [
                     <<"uuid_record ">>,
@@ -655,14 +1207,29 @@ subscribe(inbound, Conn, Uuid) ->
         Error -> Error
     end.
 
+fork_key(Opts) ->
+    case {fork_module(Opts), maps:get(bugname, Opts, undefined)} of
+        {error, _} -> {error, {bad_option, module}};
+        {{ok, M}, undefined} -> {ok, {M, undefined}};
+        {{ok, audio_stream}, _} -> {error, {bad_option, bugname}};
+        {{ok, audio_fork}, Bug} -> fork_bug(to_bin(Bug))
+    end.
+
+%% A bug name is one word FreeSWITCH reads back as is.
+fork_bug(Bug) ->
+    case event_word(Bug) andalso binary:match(Bug, [<<"'">>, <<"\\">>]) of
+        nomatch -> {ok, {audio_fork, Bug}};
+        _ -> {error, {bad_option, bugname}}
+    end.
+
 fork_module(#{module := audio_fork}) -> {ok, audio_fork};
 fork_module(#{module := audio_stream}) -> {ok, audio_stream};
 fork_module(#{module := _}) -> error;
 fork_module(#{}) -> {ok, audio_fork}.
 
 %% Nothing tracked: send the mod_audio_fork stop, as before modules existed.
-stop_modules([]) -> [audio_fork];
-stop_modules(Forks) -> Forks.
+stop_keys([]) -> [{audio_fork, undefined}];
+stop_keys(Forks) -> Forks.
 
 first_error(Replies) ->
     case [E || E <- Replies, E =/= ok] of

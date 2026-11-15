@@ -76,10 +76,29 @@ between the mixer and the node when they differ:
 {ok, Member} = chappe_mrf_conf:join(Conf, Ep, #{}).
 ```
 
+### Record a native room
+
+A native room is recorded through SIPREC: its mix goes to the recording
+server you name, as one participant, until `stop_record/1` or the room's
+end.
+
+```erlang
+ok = chappe_mrf_conf:record(Conf, <<"sip:srs@recorder.example.com">>,
+                            #{ref => CallRef}),
+ok = chappe_mrf_conf:stop_record(Conf).
+```
+
+`ref` is the recording's `call_ref` (default the room's name). Point it at
+chappe's own recording server (`chappe_sip_siprec_srs:serve/3` with
+`store => default`) to land the mix in the recording store, then find it
+with `chappe_audio_store:find(CallRef)`.
+
 ### Answer a caller into the room
 
-A caller whose INVITE you have not answered joins straight from its handler:
-the room's mixer answers it through rtpengine, with no placeholder leg first.
+A caller whose INVITE you have not answered joins straight from its handler.
+On native the room's mixer answers it through rtpengine, with no placeholder
+leg first; on fs chappe answers it and bridges it to an endpoint on the
+room's node.
 
 ```erlang
 ok = chappe_sip:invite(fun(Req, Res) ->
@@ -91,8 +110,8 @@ end).
 - Call it in the INVITE's request worker; it returns once the caller is in.
 - The call then runs in a process of its own (`chappe_sip_b2b:relay_async/2`),
   so the handler may return. The caller hanging up is a `left` event.
-- On an fs room it returns `{error, {unsupported, fs}}`: answer the call and
-  join its `B2b` instead.
+- On fs the join's `pin`, `pin_prompt` and `pin_tries` apply as for a
+  `B2b`.
 
 Kicking an endpoint takes it out of the room; its channel stays yours.
 An endpoint of `connect_caller/3` already carries a call: join the call
@@ -129,6 +148,120 @@ A caller joined from its call is bridged into a new endpoint on the
 room's node, enters the PIN (`play_collect`, three tries), then runs the
 conference application. Member ids are mod_conference's. An endpoint
 already on that node joins as it is: `chappe_mrf_conf:join(Conf, Ep, #{})`.
+
+Room flags, a size limit and recording:
+
+```erlang
+{ok, Conf} = chappe_mrf:conference(<<"board">>, #{
+    backend => fs, node => fs1, max_members => 10,
+    room_flags => [<<"wait-mod">>, <<"audio-always">>]
+}),
+ok = chappe_mrf_conf:record(Conf, <<"/recordings/board.wav">>),
+%% ...
+ok = chappe_mrf_conf:stop_record(Conf).
+```
+
+`max_members` works on both backends: past it `join/3` returns
+`{error, full}`. The recording is a file the node writes.
+
+## Room events
+
+Besides `joined`, `left` and `talking`, the receivers get:
+
+```erlang
+receive
+    {chappe_mrf_conf, Conf, {muted, Member, true}} -> muted;
+    {chappe_mrf_conf, Conf, {dtmf, Member, Digit}} -> Digit;           %% fs
+    {chappe_mrf_conf, Conf, {play_done, Member, File}} -> File;        %% fs, play/3
+    {chappe_mrf_conf, Conf, {play_done, File}} -> File                 %% fs, play/2
+end.
+```
+
+`{play_done, File}` concerns the whole room, so it comes from the node's
+events: add them when you register the node,
+`chappe_esl:node_add(fs1, #{..., events => [<<"CUSTOM">>, <<"conference::maintenance">>]})`.
+
+## Move a member to another room
+
+```erlang
+{ok, NewId} = chappe_mrf_conf:transfer(Lobby, Member, Board).
+```
+
+Both rooms use the same backend. On fs they are on one node and
+mod_conference moves the channel; on native the member's call moves to the
+other mixer through rtpengine, without a re-INVITE. The member leaves the
+first room with reason `transferred`. An endpoint you joined to a native
+room cannot move this way (`{error, {unsupported, endpoint_member}}`).
+
+## Add or remove a party by REFER
+
+A REFER to the room's URI asks it to bring a party in, or, with
+`method=BYE` in the Refer-To, to remove one (RFC 4579 5.5, 5.11). Give the
+room a policy and route REFERs to it:
+
+```erlang
+ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
+{ok, Conf} = chappe_mrf:conference(<<"board">>, #{
+    focus => true,
+    refer_policy => fun(#{action := _, referrer := R}) -> is_moderator(R) end,
+    dial_endpoint => #{select => #{}},
+    dial_profile => <<"carrier">>
+}),
+{ok, M} = chappe_mrf_conf:join(Conf, B2b, #{uri => <<"sip:alice@example.com">>}).
+```
+
+- An added party is dialed into the room: on native an endpoint of the
+  pool joins the mixer and bridges to it, on fs mod_conference dials it
+  into the room. In a `focus => true` room (native or fs) that INVITE
+  carries the room's name as its Contact user and `isfocus` (RFC 4579
+  5.5); the Contact's host is the FreeSWITCH node that holds the call. It joins as `{joined, Member, #{uri := Target}}`, and the
+  referrer gets NOTIFY 200 once it answers (408 after `dial_timeout`, or
+  the party's status).
+- `method=BYE` removes the member whose `uri` matches (the join's `uri`,
+  or a dialed party's); 404 when none does. Only a `focus => true` room
+  removes: any other room refuses it 403, whatever its policy says.
+- Without `refer_policy` every REFER is refused 403. The policy sees
+  `#{action, target, referrer, referred_by}`, and for an add the dial
+  string it would run as `dial`; `referred_by` is only claimed, never
+  grant on it alone. Decide on where the call goes (`dial`), not only on
+  who asks: that is what a toll-fraud REFER aims at.
+- A target URI with anything FreeSWITCH reads as dial-string syntax
+  (`, | [ ] { } < > ' $ \`, `:_:`, spaces) is refused 403 before the
+  policy runs: only letters, digits and `- . _ ~ ! * + = ; @ : %` pass.
+
+A caller the room answers itself (`join/3` with `{call, Req, Res}`) gets
+the conference URI with `isfocus` as its Contact in a `focus => true` room
+(RFC 4579 4.2), and the room takes the REFERs in its dialog:
+
+- in a focus room a REFER is to the focus: its Refer-To party is dialed
+  in, with the Refer-To's Replaces on that INVITE (5.10), or with
+  `method=BYE` the member it names is removed (5.11);
+- in a room without `focus => true` it is an RFC 3515 transfer (and
+  `method=BYE` is refused 403): the target takes the member's place on
+  its call, shown as
+  `{left, Member, transferred}` then `{joined, Member, #{uri := Target}}`.
+
+The room's `refer_policy` decides each. A call you answered yourself
+(`connect_caller/3`) carries the Contact you gave it: pass
+`contact_params => #{a => chappe_sip_focus:contact_params()}` there for a
+focus room, and `requests => [refer]`, then hand the room each
+`{chappe_sip_b2b, Ref, {request, a, refer, Req, Res}}` with `b2b_event/2`.
+Parties dialed in come from FreeSWITCH, with the room's name and
+`isfocus` in its Contact in a focus room.
+
+A member's own REFER on a call with `transfer => auto` is carried out by
+its B2BUA: the target takes the member's place. Hand the room the call's
+event from your notify process:
+
+```erlang
+receive
+    {chappe_sip_b2b, _Ref, {transferred, _Leg, _Info}} = Ev ->
+        ok = chappe_mrf_conf:b2b_event(Conf, Ev)
+end.
+```
+
+The room shows `{left, Member, transferred}`, then
+`{joined, Member, #{uri := Target}}`.
 
 ## Notes
 

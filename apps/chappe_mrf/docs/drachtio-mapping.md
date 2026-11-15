@@ -27,7 +27,7 @@ chappe equivalents. Use it when you port a drachtio app.
 | `dlg.on('refer')` carrying out the transfer yourself | `transfer => auto` (blind and attended, under a `policy`), or `transfer => notify` and `{refer, Info}` with `accept/2`, `reject/2` |
 | REFER to a conference URI | `chappe_sip_focus:refer/4` |
 | a SIPREC client (jambonz) | `chappe_sip_siprec:start(B2b \| {room, Id}, Srs, Opts)`, `pause/1`, `resume/1`, `stop/1` |
-| a SIPREC server | `chappe_sip_siprec_srs:serve/3` then `run/1`; metadata with `chappe_sip_siprec_meta` |
+| a SIPREC server | `chappe_sip_siprec_srs:serve/3` then `run/1`, `store => default` for chappe_audio's store; metadata with `chappe_sip_siprec_meta` |
 | `srf.proxyRequest(req, dest, {followRedirects, provisionalTimeout, finalTimeout})` | `chappe_sip:proxy_request/3` options `follow_redirects`, `provisional_timeout`, `final_timeout` |
 | `srf.createUAC(uri, opts)` | `chappe_sip:create_uac(Uri, Opts)` |
 | `srf.createUAS(req, res, {localSdp})` | `chappe_sip:create_uas(Req, Res, #{local_sdp => Sdp \| fun(Offer)})` |
@@ -54,23 +54,33 @@ chappe equivalents. Use it when you port a drachtio app.
 | `new Mrf(srf)`, `mrf.connect(opts)` | `chappe_esl:node_add/2` per node, `chappe_mrf:start/1` |
 | `ms.connectCaller(req, res)` | `chappe_mrf:connect_caller(Req, Res, Opts)` returns `{ok, Ep, B2b}` |
 | `ms.createEndpoint()` | `chappe_mrf:create_endpoint(Opts)` |
-| `ep.play(file)` | `chappe_mrf:play(Ep, File)` |
+| `ep.play(file)` | `chappe_mrf:play(Ep, File)`; `play_info/3` for `playbackMs` and the response |
 | `ep.playCollect(opts)` | `chappe_mrf:play_collect(Ep, Opts)` |
 | `ep.record(file, opts)` | `chappe_mrf:record(Ep, Path, Opts)` |
 | `ep.recordSession` | `chappe_mrf:record_session/2`, `record_session_stop/2` |
-| `ep.forkAudioStart(opts)` | `chappe_mrf:fork_audio_start(Ep, Url, Opts)` |
-| `ep.set(var, val)` | `chappe_mrf:set(Ep, Var, Val)` |
+| `ep.forkAudioStart(opts)` | `chappe_mrf:fork_audio_start(Ep, Url, Opts)` (`bugname`, `mix`, `metadata`) |
+| `ep.forkAudioPause`, `forkAudioResume`, `forkAudioSendText` | `chappe_mrf:fork_audio_pause/1,2`, `fork_audio_resume/1,2`, `fork_audio_send_text/2,3` |
+| `ep.set(var, val)`, `ep.set(obj)` | `chappe_mrf:set(Ep, Var, Val)`, `set(Ep, Map)` |
+| `ep.export(var, val)` | `chappe_mrf:export(Ep, Var, Val)` |
+| `ep.getChannelVariables()` | `chappe_mrf:vars(Ep)`, `var(Ep, Name)` |
+| `ep.mute()`, `ep.unmute()` | `chappe_mrf:mute(Ep, read)`, `unmute(Ep, read)` |
 | `ep.api(cmd)` | `chappe_mrf:api(Ep, Cmd)` |
-| `ep.execute(app, args)` | `chappe_mrf:execute(Ep, App, Args)` |
+| `ep.execute(app, args)` | `chappe_mrf:execute(Ep, App, Args)`; `execute/4` with `wait => false` |
 | `ep.modify(sdp)` | `chappe_mrf:modify(Ep, Sdp | hold | unhold)` |
 | `ep.bridge(other)` | `chappe_mrf:bridge(B2b, Ep | Uri)` |
 | `ep.destroy()` | `chappe_mrf:destroy(Ep)` |
 | `ep.on('dtmf')`, `ep.on('destroy')` | `{chappe_mrf, Ep, {dtmf, D}}`, `{chappe_mrf, Ep, {hangup, Cause}}` |
-| `ep.say`, `ep.speak` | not wrapped: `execute/3` where the node has the modules |
+| `ep.on('playback-start')`, `ep.addCustomEventListener` | `events => [playback_start, playback_stop, {custom, Sub}, {channel, Name}]` |
+| `ep.say`, `ep.speak` | `chappe_mrf:say(Ep, Text, Opts)` (mod_say), `speak(Ep, Text, #{engine, voice})` |
 | `ms.createConference(name, opts)` | `chappe_mrf:conference(Name, #{backend => fs})` |
 | `ep.joinConference(conf)` | `chappe_mrf_conf:join(Conf, Ep | B2b, Opts)` |
 | `conf.mute/kick/lock` | `chappe_mrf_conf:mute/2`, `kick/2`, `lock/1` |
+| `conf.startRecording`, `stopRecording` | `chappe_mrf_conf:record/2,3`, `stop_record/1` (fs: a file the node writes; native: through SIPREC to a recording server) |
+| `conf.set('max_members')`, conference flags | `max_members`, `room_flags` options of `conference/2` |
+| `conference transfer` | `chappe_mrf_conf:transfer(From, Member, To)` |
 | (none) | `backend => native`: a room on chappe_mix, with `relate/4` |
+| a WebSocket server for `forkAudioStart` | `chappe_audio:listen/1`, `open/2` |
+| a member's REFER in a conference | handled by chappe on both backends |
 
 ## Differences to know
 

@@ -18,6 +18,9 @@
   <section name="configuration" description="Various Configuration">
     <configuration name="switch.conf" description="Core Configuration">
       <settings>
+        <!-- no API calls expanded in channel variables and app arguments:
+             text that reaches FreeSWITCH cannot run API commands -->
+        <param name="api-expansion" value="false"/>
         <param name="colorize-console" value="false"/>
         <param name="loglevel" value="notice"/>
         <param name="max-sessions" value="200"/>
@@ -42,7 +45,22 @@
         <load module="mod_sndfile"/>
         <load module="mod_audio_fork"/>
         <load module="mod_audio_stream"/>
+        <load module="mod_say_en"/>
+        <load module="mod_flite"/>
+        <load module="mod_spandsp"/>
       </modules>
+    </configuration>
+
+    <!-- tone detection for the live suite: fs1 plays 440 Hz on the
+         controlled channel, so `chappe_440' hears it after half a second -->
+    <configuration name="spandsp.conf" description="SpanDSP config">
+      <descriptors>
+        <descriptor name="chappe_440">
+          <tone name="TONE_440">
+            <element freq1="440" freq2="0" min="500" max="0"/>
+          </tone>
+        </descriptor>
+      </descriptors>
     </configuration>
 
     <configuration name="console.conf" description="Console Logger">
@@ -115,6 +133,15 @@
         </profile>
       </profiles>
     </configuration>
+  </section>
+
+  <!-- say: the language and where its sound files are. mod_say_en reads
+       digits/N.wav and the like under the prefix; the live suite writes
+       them, one marker tone each -->
+  <section name="languages" description="Language Management">
+    <language name="en" say-module="en" sound-prefix="/media/sounds">
+      <phrases><macros/></phrases>
+    </language>
   </section>
 
   <section name="dialplan" description="Regex/XML Dialplan">

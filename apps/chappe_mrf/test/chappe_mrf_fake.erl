@@ -31,7 +31,7 @@
 -export([refuser_start/1]).
 -export([esl_start/0, esl_stop/1]).
 -export([rtpe_start/1, rtpe_stop/1]).
--export([ua_call/2, ua_bye/1, ua_rtp/2, ua_rtp/3, callee_start/1]).
+-export([ua_call/2, ua_bye/1, ua_refer/2, ua_rtp/2, ua_rtp/3, callee_start/1]).
 -export([pick/0, sdp/2, hdr/2, body/1]).
 
 -define(RTPE_NODE, chappe_mrf_fake_rtpe).
@@ -52,7 +52,9 @@ pick() ->
 
 %% ---- FreeSWITCH ----
 
-%% Opts: esl_port (the chappe_mrf listener), digits (what
+%% Opts: esl_port (the chappe_mrf listener), dial_delay (ms a
+%% `conference <room> dial' takes before it answers, as the real one
+%% originates first), digits (what
 %% play_and_get_digits collects, default <<"1">>), name.
 fs_start(Name, Opts) ->
     Parent = self(),
@@ -408,11 +410,24 @@ esl_cmd(Block, #{tcp := Tcp} = C) ->
 api(<<"uuid_kill ", _/binary>>, #{tcp := Tcp} = C) ->
     tcp(Tcp, api_resp(<<"+OK">>)),
     end_channel(C, <<"NORMAL_CLEARING">>, true);
-api(<<"conference ", Rest/binary>>, #{tcp := Tcp} = C) ->
-    tcp(Tcp, api_resp(<<"+OK">>)),
+api(<<"conference ", Rest/binary>>, #{tcp := Tcp, node := #{opts := Opts}} = C) ->
+    case binary:split(Rest, <<" ">>, [global]) of
+        [_Room, <<"dial">> | _] ->
+            %% mod_conference's dial originates before it answers
+            timer:sleep(maps:get(dial_delay, Opts, 0)),
+            tcp(Tcp, api_resp(<<"+OK Call Requested: result: [SUCCESS]">>));
+        [_Room, <<"bgdial">> | _] ->
+            tcp(Tcp, api_resp(<<"+OK Job-UUID: job-1">>));
+        _ ->
+            tcp(Tcp, api_resp(<<"+OK">>))
+    end,
     case binary:split(Rest, <<" ">>, [global]) of
         [Room, <<"kick">>, Id] ->
             member_event(C, Room, <<"del-member">>, Id),
+            C;
+        [Room, <<"transfer">>, To, Id] ->
+            member_event(C, Room, <<"del-member">>, Id),
+            member_event(C, To, <<"add-member">>, integer_to_binary(erlang:unique_integer([positive]))),
             C;
         _ ->
             C
@@ -452,10 +467,26 @@ app(<<"play_and_get_digits">>, Arg, Common, #{node := #{opts := Opts}} = C) ->
     Digits = maps:get(digits, Opts, <<"1">>),
     complete(C, Common, [{<<"variable_", Var/binary>>, Digits}]),
     C;
+app(<<"spandsp_start_tone_detect">>, _Arg, Common, C) ->
+    event(C, <<"CHANNEL_EXECUTE_COMPLETE">>, Common ++ [{<<"Application-Response">>, <<"+OK started">>}]),
+    C;
+app(<<"playback">>, Arg, Common, C) ->
+    Extra =
+        case binary:match(Arg, <<"missing">>) of
+            nomatch ->
+                [{<<"Application-Response">>, <<"FILE PLAYED">>}, {<<"variable_playback_ms">>, <<"1234">>}];
+            _ ->
+                [{<<"Application-Response">>, <<"FILE NOT FOUND">>}]
+        end,
+    event(C, <<"CHANNEL_EXECUTE_COMPLETE">>, Common ++ Extra),
+    C;
 app(<<"conference">>, Arg, _Common, #{node := #{opts := Opts}} = C) ->
     [Room | _] = binary:split(Arg, <<"@">>),
     Id = integer_to_binary(erlang:unique_integer([positive])),
     _ = maps:get(silent_conference, Opts, false) orelse member_event(C, Room, <<"add-member">>, Id),
+    C;
+%% bridge runs as long as the bridged call: no completion until then
+app(<<"bridge">>, _Arg, _Common, C) ->
     C;
 app(_App, _Arg, Common, C) ->
     complete(C, Common, []),
@@ -483,11 +514,16 @@ event(#{tcp := Tcp, uuid := Uuid}, Name, Headers) ->
     ]),
     tcp(Tcp, frame(<<"text/event-plain">>, Inner)).
 
-channel_data(#{uuid := Uuid, id := Id, node := #{port := Port}}) ->
-    IdLine =
+channel_data(#{uuid := Uuid, id := Id, invite := Invite, node := #{port := Port}}) ->
+    IdLine0 =
         case Id of
             undefined -> <<>>;
             _ -> <<"variable_sip_h_X-Chappe-Call: ", Id/binary, "\n">>
+        end,
+    IdLine =
+        case hdr(Invite, <<"x-chappe-endpoint">>) of
+            undefined -> IdLine0;
+            EpId -> <<IdLine0/binary, "variable_sip_h_X-Chappe-Endpoint: ", EpId/binary, "\n">>
         end,
     <<"Content-Type: command/reply\nReply-Text: +OK\nUnique-ID: ", Uuid/binary,
         "\nChannel-Unique-ID: ", Uuid/binary, "\n", IdLine/binary,
@@ -535,7 +571,7 @@ esl_start() ->
         {ok, L} = gen_tcp:listen(0, [binary, {active, false}, {reuseaddr, true}, {ip, {127, 0, 0, 1}}]),
         {ok, Port} = inet:port(L),
         Parent ! {esl_ready, self(), Port},
-        esl_accept(L)
+        esl_accept(L, Parent)
     end),
     receive
         {esl_ready, Pid, Port} -> {Pid, Port}
@@ -546,41 +582,45 @@ esl_stop({Pid, _}) ->
     Pid ! stop,
     ok.
 
-esl_accept(L) ->
+esl_accept(L, Parent) ->
     case gen_tcp:accept(L, 100) of
         {ok, S} ->
             ok = inet:setopts(S, [{active, true}]),
             ok = gen_tcp:send(S, <<"Content-Type: auth/request\n\n">>),
-            esl_serve(L, S, <<>>);
+            esl_serve(L, S, <<>>, Parent);
         {error, timeout} ->
             receive
                 stop -> gen_tcp:close(L)
-            after 0 -> esl_accept(L)
+            after 0 -> esl_accept(L, Parent)
             end
     end.
 
-esl_serve(L, S, Buf) ->
+%% the api commands it gets go to Parent as {fake_esl, self(), {api, Block}}
+esl_serve(L, S, Buf, Parent) ->
     receive
         {tcp, S, Data} ->
-            esl_serve(L, S, esl_answer(S, <<Buf/binary, Data/binary>>));
+            esl_serve(L, S, esl_answer(S, <<Buf/binary, Data/binary>>, Parent), Parent);
         {tcp_closed, S} ->
-            esl_accept(L);
+            esl_accept(L, Parent);
         stop ->
             gen_tcp:close(S),
             gen_tcp:close(L)
     end.
 
-esl_answer(S, Buf) ->
+esl_answer(S, Buf, Parent) ->
     case binary:split(Buf, <<"\n\n">>) of
         [_] ->
             Buf;
         [Block, Rest] ->
             _ =
                 case Block of
-                    <<"api ", _/binary>> -> gen_tcp:send(S, api_resp(<<"+OK">>));
-                    _ -> gen_tcp:send(S, reply(<<"+OK">>))
+                    <<"api ", _/binary>> ->
+                        Parent ! {fake_esl, self(), {api, Block}},
+                        gen_tcp:send(S, api_resp(<<"+OK">>));
+                    _ ->
+                        gen_tcp:send(S, reply(<<"+OK">>))
                 end,
-            esl_answer(S, Rest)
+            esl_answer(S, Rest, Parent)
     end.
 
 %% ---- rtpengine ----
@@ -669,6 +709,13 @@ ua_bye(Ua) ->
     Ua ! bye,
     ok.
 
+%% a REFER in the call's dialog with ReferTo (a Refer-To value); the
+%% final answer comes back as {ua, Ua, {response, Bin}}, the NOTIFYs as
+%% {ua, Ua, {request, Bin}}
+ua_refer(Ua, ReferTo) ->
+    Ua ! {refer, ReferTo},
+    ok.
+
 %% send G.711 to the far end of the answer for Ms
 ua_rtp(Ua, Ms) ->
     Ua ! {rtp, Ms},
@@ -713,6 +760,11 @@ ua_up(#{sock := Sock, rtp := Rtp, parent := Parent, engine := EP, dialog := D, c
             ok = gen_udp:send(Sock, {127, 0, 0, 1}, Src,
                               resp(I, 200, <<"OK">>, <<>>, [], sdp(<<"caller">>, element(2, inet:port(Rtp))))),
             ua_up(U);
+        {udp, Sock, _, _, <<"SIP/2.0 1", _/binary>>} ->
+            ua_up(U);
+        {udp, Sock, _, _, <<"SIP/2.0 ", _/binary>> = R} ->
+            Parent ! {ua, self(), {response, R}},
+            ua_up(U);
         {udp, Sock, _, Src, <<M, _/binary>> = Req} when M >= $A, M =< $Z ->
             _ = gen_udp:send(Sock, {127, 0, 0, 1}, Src, resp(Req, 200, <<"OK">>, <<>>, [], <<>>)),
             Parent ! {ua, self(), {request, Req}},
@@ -726,6 +778,15 @@ ua_up(#{sock := Sock, rtp := Rtp, parent := Parent, engine := EP, dialog := D, c
             ua_up(U);
         bye ->
             ok = gen_udp:send(Sock, {127, 0, 0, 1}, EP, ua_req(<<"BYE">>, N + 1, U, D)),
+            ua_up(U#{cseq := N + 1});
+        {refer, ReferTo} ->
+            #{port := P} = U,
+            Refer = ua_req(<<"REFER">>, N + 1, U, D),
+            [Head, _] = binary:split(Refer, <<"\r\n\r\n">>),
+            Extra = <<"\r\nRefer-To: ", ReferTo/binary, "\r\nContact: <sip:caller@127.0.0.1:", P/binary, ">">>,
+            Head1 = binary:replace(Head, <<"\r\nContent-Length: 0">>, <<>>),
+            Msg = <<Head1/binary, Extra/binary, "\r\nContent-Length: 0\r\n\r\n">>,
+            ok = gen_udp:send(Sock, {127, 0, 0, 1}, EP, Msg),
             ua_up(U#{cseq := N + 1});
         {rtp, Ms} ->
             send_rtp(Rtp, maps:get(remote, D), Ms),

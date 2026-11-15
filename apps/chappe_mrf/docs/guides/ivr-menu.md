@@ -44,7 +44,29 @@ menu(Ep, B2b) ->
 ```
 
 `play_collect/2` takes `min`, `max`, `tries`, `timeout`, `terminators`,
-`invalid_file` and `digit_timeout`; `{ok, <<>>}` means no digit came.
+`invalid_file` and `digit_timeout`; `{ok, <<>>}` means no digit came. With
+`result => full` you also get the terminator pressed and the last entry
+the `regexp` refused:
+
+```erlang
+{ok, #{digits := Pin, terminator := <<"#">>, invalid := <<>>}} =
+    chappe_mrf:play_collect(Ep, #{file => <<"/media/pin.wav">>, max => 6,
+                                  regexp => <<"\\d{4,6}">>, result => full}).
+```
+
+## Know how a prompt played
+
+`play/3` returns `{error, not_found}` for a file the node cannot find.
+`play_info/3` also tells you how long it played:
+
+```erlang
+{ok, #{ms := Ms, response := <<"FILE PLAYED">>}} =
+    chappe_mrf:play_info(Ep, <<"/media/news.wav">>, #{offset => 8000 * 30,
+                                                      limit_secs => 20}).
+```
+
+`offset` starts that many samples into the file (30 s of an 8 kHz file
+here); `limit_secs` (2 or more) stops it after that many seconds.
 
 ## Record and play back
 
@@ -68,6 +90,23 @@ receive
 end.
 ```
 
+Ask for more with `events` when you connect the caller or create the
+endpoint:
+
+```erlang
+{ok, Ep, B2b} = chappe_mrf:connect_caller(Req, Res, #{
+    events => [playback_start, playback_stop,
+               {custom, <<"mod_audio_fork::connect">>},
+               {channel, <<"CHANNEL_BRIDGE">>}]
+}),
+receive
+    {chappe_mrf, Ep, {playback_start, File}} -> File;
+    {chappe_mrf, Ep, {playback_stop, File, <<"done">>}} -> File;
+    {chappe_mrf, Ep, {custom, Subclass, Ev}} -> {Subclass, Ev};
+    {chappe_mrf, Ep, {channel, Name, Ev}} -> {Name, Ev}
+end.
+```
+
 The call's events (`{chappe_sip_b2b, Ref, Event}`, `{done, Why}` at the
 end) go to the `notify` option, the handler by default.
 
@@ -76,17 +115,100 @@ end) go to the `notify` option, the handler by default.
 | function | what it does |
 |----------|--------------|
 | `send_dtmf/2` | send digits to the caller |
-| `set/3` | set a channel variable |
+| `set/3`, `set/2` | set a channel variable, or a map of them (multiset) |
+| `export/3` | set a variable on the channel and the channel it is bridged to |
+| `var/2`, `vars/1` | read one variable (`undefined` when unset), or all of them |
+| `mute/2`, `unmute/2` | mute what the caller says (`read`) or hears (`write`) |
 | `api/2` | run an api command on the endpoint's node |
 | `execute/3` | run any dialplan application and wait for it |
-| `fork_audio_start/3`, `fork_audio_stop/1` | stream the audio to a WebSocket (mod_audio_fork) |
+| `execute/4` | the same with options; `wait => false` returns `{ok, AppUuid}` at once and the owner gets `{chappe_mrf, Ep, {complete, App, Ev}}` |
+| `fork_audio_start/3`, `fork_audio_stop/1` | stream the audio to a WebSocket (mod_audio_fork, or `module => audio_stream`); `bugname` names one of several forks, `mix => stereo` puts the caller left and the node right |
+| `fork_audio_pause/1,2`, `fork_audio_resume/1,2` | stop and restart the audio of the forks (all, or `#{bugname => B}`), the WebSocket stays open |
+| `fork_audio_send_text/2,3` | send a text frame to the fork's server |
 | `modify/2` | `hold`, `unhold`, or a new SDP on an endpoint of `create_endpoint/1` |
 | `destroy/1` | hang up and free the endpoint |
 
+## Say numbers and speak text
+
+`say/3` reads a number, a date or digits with the node's mod_say module
+(mod_say_en for English) and its sound files. `speak/3` runs a text to
+speech module: mod_flite in the lab, a vendor module in production.
+
+```erlang
+ok = chappe_mrf:say(Ep, <<"42">>, #{type => number}),
+ok = chappe_mrf:say(Ep, integer_to_binary(erlang:system_time(second)),
+                    #{type => current_time}),
+ok = chappe_mrf:say(Ep, <<"1234">>, #{type => number, method => iterated}),
+ok = chappe_mrf:speak(Ep, <<"Your call is important to us">>,
+                      #{engine => <<"flite">>, voice => <<"kal">>}).
+```
+
+`say/3` takes `language` (`<<"en">>`), `type`, `method` (`pronounced`,
+`iterated`, `counted`) and `gender`. FreeSWITCH needs the language in its
+configuration, with where its sound files are:
+
+```xml
+<section name="languages">
+  <language name="en" say-module="en" sound-prefix="/usr/share/sounds/en/us/callie">
+    <phrases><macros/></phrases>
+  </language>
+</section>
+```
+
+`speak/3` without `engine` and `voice` uses the channel's `tts_engine` and
+`tts_voice`.
+
+## Detect tones and faxes
+
+mod_spandsp listens on the channel and tells the owner what it heard. Tone
+descriptors (busy, ringback, a beep) live in the node's `spandsp.conf`:
+
+```erlang
+ok = chappe_mrf:detect_tones(Ep, <<"call_progress">>),
+ok = chappe_mrf:detect_fax(Ep),
+receive
+    {chappe_mrf, Ep, {tone, <<"BUSY_TONE">>}} -> busy;
+    {chappe_mrf, Ep, {fax, detected}} -> fax
+end,
+ok = chappe_mrf:stop_detect_tones(Ep).
+```
+
+`detect_fax/2` takes `tone` (`cng`, a calling fax, or `ced`, an answering
+one) and `timeout` in seconds.
+
+## Follow the call
+
+Give the call's ref and the endpoint carries it: the INVITE to the node has
+it as `X-Chappe-Call` (FreeSWITCH logs it as `variable_sip_h_X-Chappe-Call`),
+the endpoint's own id goes as `X-Chappe-Endpoint`, and `info/1` returns it.
+
+```erlang
+{ok, Ep, B2b} = chappe_mrf:connect_caller(Req, Res, #{call_ref => Ref}),
+#{call_ref := Ref} = chappe_mrf:info(Ep).
+```
+
+Without it, `X-Chappe-Call` is the endpoint's random id, as before.
+
+## Deploy FreeSWITCH nodes
+
+Turn API expansion off on production nodes, in `switch.conf`:
+
+```xml
+<configuration name="switch.conf" description="Core Configuration">
+  <settings>
+    <param name="api-expansion" value="false"/>
+  </settings>
+</configuration>
+```
+
+FreeSWITCH expands `${var}` in every application argument, and with API
+expansion on (its default) also `${api(args)}`, so text that reaches an
+application can run an API command such as `system`. The typed helpers
+refuse text holding `${`; this setting is the defence in depth for raw
+`chappe_mrf:execute/3,4` callers and for dialplans. The chappe labs run with it off.
+
 ## Notes
 
-- `say` and `speak` are not wrapped: run them with `execute/3` where the
-  node has the modules.
 - A command blocks the process that calls it, not the endpoint: digits
   keep reaching the owner during a long playback.
 

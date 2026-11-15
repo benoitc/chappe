@@ -40,6 +40,10 @@
     direction/3,
     relate/4,
     events/2,
+    ref/1,
+    tap/3,
+    untap/2,
+    taps/1,
     legs/1,
     stats/1
 ]).
@@ -53,8 +57,10 @@
 -type endpoint() :: {inet:ip_address(), inet:port_number()}.
 %% What the room does with a leg, from the room's side: sendrecv (mixed,
 %% hears the room), sendonly (hears the room, mixed into nothing: a
-%% recorder), recvonly (heard by all, sent nothing: a prompt player, or a
-%% deaf party), inactive. The mixer's SDP for the leg says the same.
+%% recorder over RTP), recvonly (heard by all, sent nothing: a prompt
+%% player, or a deaf party), inactive. The mixer's SDP for the leg says
+%% the same. A recorder in Erlang takes tap/3 instead: decoded PCM of a
+%% party or of the room, with no RTP leg.
 -type direction() :: sendrecv | sendonly | recvonly | inactive.
 
 %% ip: the address legs bind to and advertise (default 127.0.0.1, so
@@ -71,7 +77,9 @@
 %% false}}' when a leg starts or stops talking (off by default, and then
 %% the levels are not computed at all); talk_threshold (dBFS RMS over a
 %% frame, default -40), talk_start_ms (default 60) and talk_stop_ms
-%% (default 300) set the detection.
+%% (default 300) set the detection. ref: an opaque binary of the app's
+%% (a call ref), returned by ref/1; a leg's own ref (leg_opts()) is in
+%% legs/1. Events keep their {chappe_mix, Conf, Event} shape either way.
 %% tick_ceiling (default true) arms the tick at the millisecond at or
 %% after it is due, so it never fires early; false truncates, and most
 %% ticks fire up to 1 ms early. prefill_shrink (default false) takes back
@@ -90,7 +98,8 @@
     law => chappe_mix_g711:law(),
     depth => pos_integer(),
     cname => binary(),
-    ssrc_draw => fun(() -> 0..16#FFFFFFFF)
+    ssrc_draw => fun(() -> 0..16#FFFFFFFF),
+    ref => binary()
 }.
 
 %% remote: where to send the mix; unset, it is learnt from the first
@@ -112,7 +121,8 @@
 %% direction(), default sendrecv; mute => true on top of it is what
 %% mute/3 does. injected: the leg carries media the room itself plays (a
 %% prompt, music), so listeners see the mixer's SSRC for it in their CSRC
-%% lists (RFC 3550 7.1).
+%% lists (RFC 3550 7.1). ref: the app's opaque binary for this leg, in its
+%% events and in legs/1; it moves with the leg (move_leg/3).
 -type leg_opts() :: #{
     remote => endpoint(),
     law => chappe_mix_g711:law(),
@@ -124,7 +134,8 @@
     injected => boolean(),
     rtcp => mux | pair,
     rtcp_remote => endpoint(),
-    name => binary()
+    name => binary(),
+    ref => binary()
 }.
 
 %% Where a leg sends, as set_remote/3 takes it: the far end alone, or the
@@ -140,6 +151,8 @@
     }.
 
 -spec start(conf_opts()) -> {ok, conf()} | {error, term()}.
+start(#{ref := Ref}) when not is_binary(Ref) ->
+    {error, {bad_option, ref}};
 start(Opts) ->
     Owner = maps:get(owner, Opts, self()),
     supervisor:start_child(chappe_mix_conf_sup, [Opts#{owner => Owner}]).
@@ -157,6 +170,8 @@ stop(Conf) ->
         rtcp_port := inet:port_number()
     }}
     | {error, term()}.
+add_leg(_Conf, #{ref := Ref}) when not is_binary(Ref) ->
+    {error, {bad_option, ref}};
 add_leg(Conf, Opts) ->
     gen_server:call(Conf, {add_leg, Opts}).
 
@@ -214,6 +229,56 @@ events(Conf, Pid) when is_pid(Pid); Pid =:= undefined ->
 -spec relate(conf(), leg(), leg(), hear | nohear) -> ok | {error, not_found}.
 relate(Conf, Listener, Speaker, Rel) when Rel =:= hear; Rel =:= nohear ->
     gen_server:call(Conf, {relate, Listener, Speaker, Rel}).
+
+%% The room's ref (conf_opts()), undefined without one.
+-spec ref(conf()) -> binary() | undefined.
+ref(Conf) ->
+    gen_server:call(Conf, ref).
+
+%% Hand the decoded audio of a party (a leg) or of the room to a
+%% process, every 20 ms: {chappe_mix, Conf, {tap, Tap, Pcm}}, where Pcm
+%% is 320 bytes of 16-bit signed little-endian PCM at 8 kHz. A party's tap carries
+%% what the room takes from the leg (silence when it sends nothing or is
+%% muted); the room's carries every talker. Opts: to (default the
+%% caller), max_queue (default 500: past that many messages waiting at
+%% `to', a frame is dropped and counted in taps/1), ref (default the
+%% leg's, else the room's; taps/1 shows it). The tap ends when `to' dies, with untap/2, or
+%% with {tap_closed, Tap} when its leg leaves or the room stops. For
+%% calls that never touch FreeSWITCH: a recorder, a transcriber.
+-spec tap(conf(), room | leg(), #{
+    to => pid(), max_queue => pos_integer(), ref => binary()
+}) -> {ok, reference()} | {error, not_found | badarg}.
+tap(Conf, room, Opts) ->
+    add_tap(Conf, room, Opts);
+tap(Conf, Leg, Opts) when is_integer(Leg) ->
+    add_tap(Conf, Leg, Opts);
+tap(_Conf, _Source, _Opts) ->
+    {error, badarg}.
+
+add_tap(Conf, Source, #{} = Opts) ->
+    To = maps:get(to, Opts, self()),
+    Max = maps:get(max_queue, Opts, 500),
+    Ref = maps:get(ref, Opts, undefined),
+    case
+        is_pid(To) andalso pos(Max) andalso
+            (Ref =:= undefined orelse is_binary(Ref))
+    of
+        true -> gen_server:call(Conf, {taps, {add, Source, To, Max, Ref}});
+        false -> {error, badarg}
+    end;
+add_tap(_Conf, _Source, _Opts) ->
+    {error, badarg}.
+
+pos(N) -> is_integer(N) andalso N > 0.
+
+-spec untap(conf(), reference()) -> ok | {error, not_found}.
+untap(Conf, Tap) ->
+    gen_server:call(Conf, {taps, {remove, Tap}}).
+
+%% The taps of a conference: tap, source, to, ref, dropped.
+-spec taps(conf()) -> [map()].
+taps(Conf) ->
+    gen_server:call(Conf, {taps, list}).
 
 %% Per-leg state and counters, among them: ssrc (ours on that leg),
 %% source_ssrc, csrcs (of the last packet), filtered (RTP or RTCP from

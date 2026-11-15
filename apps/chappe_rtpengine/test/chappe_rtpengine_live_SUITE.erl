@@ -15,6 +15,7 @@
 -export([
     ping/1,
     offer_answer_query_delete/1,
+    list_statistics_forwarding/1,
     media_subscription/1,
     tcp_transport/1,
     ws_transport/1,
@@ -25,6 +26,7 @@ all() ->
     [
         ping,
         offer_answer_query_delete,
+        list_statistics_forwarding,
         media_subscription,
         tcp_transport,
         ws_transport,
@@ -91,6 +93,35 @@ offer_answer_query_delete(_Config) ->
 
     %% the session is gone now
     {error, _, _} = chappe_rtpengine:query(chappe_rtpengine_live, #{call_id => CallId}),
+    ok.
+
+%% list/2 finds a call the node runs, statistics/1 reads its counters,
+%% and a session's forwarding commands reach the daemon.
+list_statistics_forwarding(_Config) ->
+    Node = chappe_rtpengine_live,
+    Suffix = integer_to_binary(erlang:unique_integer([positive])),
+    CallId = <<"chappe-rtpengine-list-", Suffix/binary>>,
+    {ok, Sess} = chappe_rtpengine:start_session(#{call_id => CallId, node => Node}),
+    {ok, _} = chappe_rtpengine_session:offer(Sess, #{
+        from_tag => <<"from-", Suffix/binary>>,
+        sdp => sdp(<<"198.51.100.1">>, 30000),
+        ice => remove
+    }),
+    {ok, _} = chappe_rtpengine_session:answer(Sess, #{
+        to_tag => <<"to-", Suffix/binary>>,
+        sdp => sdp(<<"198.51.100.2">>, 40000),
+        ice => remove
+    }),
+    {ok, Calls} = chappe_rtpengine:list(Node, #{limit => 1000}),
+    ?assert(lists:member(CallId, Calls)),
+    {ok, Stats} = chappe_rtpengine:statistics(Node),
+    #{<<"currentstatistics">> := #{<<"sessionstotal">> := Total}} = Stats,
+    ?assert(Total >= 1),
+    Fwd = chappe_rtpengine_session:start_forwarding(Sess, #{}),
+    ct:pal("start forwarding: ~p", [Fwd]),
+    ?assertMatch({ok, _}, Fwd),
+    ?assertMatch({ok, _}, chappe_rtpengine_session:stop_forwarding(Sess)),
+    ok = chappe_rtpengine_session:stop(Sess),
     ok.
 
 %% Needs RTPENGINE_TCP_PORT pointing at a --listen-tcp-ng listener.

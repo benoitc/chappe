@@ -24,7 +24,10 @@
 
 -export([all/0, init_per_suite/1, end_per_suite/1]).
 -export([
-    transcoded_n_minus_one/1, thirty_ms_n_minus_one/1, dtmf_through_rtpengine/1
+    transcoded_n_minus_one/1,
+    thirty_ms_n_minus_one/1,
+    dtmf_through_rtpengine/1,
+    taps_through_rtpengine/1
 ]).
 
 -define(NODE, chappe_mix_live).
@@ -34,7 +37,12 @@
 -define(ABSENT, -54.7).
 
 all() ->
-    [transcoded_n_minus_one, thirty_ms_n_minus_one, dtmf_through_rtpengine].
+    [
+        transcoded_n_minus_one,
+        thirty_ms_n_minus_one,
+        dtmf_through_rtpengine,
+        taps_through_rtpengine
+    ].
 
 init_per_suite(Config) ->
     case {os:getenv("RTPENGINE_HOST"), os:getenv("RTPENGINE_MEDIA_IP")} of
@@ -108,6 +116,39 @@ n_minus_one(Config, Kinds) ->
     ],
     [?assert(W * 50 =< N, {weak, Kind, W, N}) || {Kind, W, N} <- Weak],
     ok.
+
+%% Taps behind rtpengine: the PCMA party's tap carries its tone decoded
+%% to PCM (rtpengine transcodes it to PCMU towards the mixer) and not the
+%% other party's, and the room's tap carries both.
+taps_through_rtpengine(Config) ->
+    {ok, Conf} = chappe_mix:start(#{ip => {0, 0, 0, 0}}),
+    [#{leg := LA}, _] =
+        Parties = [party(Config, Conf, Kind, F) || {Kind, F} <- [{pcma, 440}, {pcmu, 1100}]],
+    timer:sleep(2000),
+    {ok, TA} = chappe_mix:tap(Conf, LA, #{}),
+    {ok, TR} = chappe_mix:tap(Conf, room, #{}),
+    Party = tap_samples(Conf, TA, 100),
+    Room = tap_samples(Conf, TR, 100),
+    [cleanup(P) || P <- Parties],
+    ok = chappe_mix:stop(Conf),
+    [{440, A440}, {1100, A1100}] = chappe_mix_test_tone:levels(Party, [440, 1100]),
+    [{440, R440}, {1100, R1100}] = chappe_mix_test_tone:levels(Room, [440, 1100]),
+    ct:log("party tap 440 ~.1f 1100 ~.1f, room tap 440 ~.1f 1100 ~.1f", [
+        A440, A1100, R440, R1100
+    ]),
+    ?assert(A440 > ?PRESENT - 6),
+    ?assert(A1100 < ?ABSENT),
+    ?assert(R440 > ?PRESENT - 6 andalso R1100 > ?PRESENT - 6).
+
+%% N tap messages of Tap, as samples, skipping the other taps'.
+tap_samples(_Conf, _Tap, 0) ->
+    [];
+tap_samples(Conf, Tap, N) ->
+    receive
+        {chappe_mix, Conf, {tap, Tap, Pcm}} ->
+            [S || <<S:16/little-signed>> <= Pcm] ++ tap_samples(Conf, Tap, N - 1)
+    after 2000 -> ct:fail(no_tap)
+    end.
 
 %% RFC 4733 events through rtpengine: both parties negotiate PCMU and
 %% telephone-event 101 with rtpengine on both sides of it, A sends a
@@ -248,6 +289,7 @@ party(Config, Conf, Kind, Freq) ->
         kind => Kind,
         freq => Freq,
         ep => Ep,
+        leg => Leg,
         sessions => Sessions,
         relay => Relay
     }.

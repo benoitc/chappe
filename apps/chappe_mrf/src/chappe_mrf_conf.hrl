@@ -24,6 +24,25 @@
     %% how long an fs member may take to show up in the room
     join_timeout = ?MRF_JOIN_TIMEOUT :: pos_integer(),
     bridge = #{} :: map(),
+    %% no join past this many members (pending joins count)
+    max_members = infinity :: pos_integer() | infinity,
+    %% fs: mod_conference room flags, set on each joining channel
+    room_flags = [] :: [binary()],
     focus :: chappe_sip_focus:focus() | undefined,
-    entity :: binary() | undefined
+    entity :: binary() | undefined,
+    %% fs recordings started with store => default, adopted into the
+    %% recording store when they stop: {Path, CallRef, Meta}
+    recordings = [] :: [{binary(), binary(), map()}],
+    %% those stopped, until mod_conference's stop-recording says the file
+    %% is closed
+    stopping = [] :: [{binary(), binary(), map()}],
+    %% native recordings: SIPREC sessions of the room (chappe_sip_siprec),
+    %% owned by this process
+    siprec = [] :: [pid()],
+    %% REFER to the room (chappe_mrf_conf_refer): who decides, how a
+    %% target is dialed (dial fun, profile, timeout, endpoint options), and
+    %% the dial-outs under way
+    refer_policy :: fun((map()) -> boolean() | {reject, 300..699}) | undefined,
+    dial = #{} :: map(),
+    dialing = #{} :: #{term() => map()}
 }).

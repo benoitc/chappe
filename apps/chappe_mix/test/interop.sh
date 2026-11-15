@@ -8,14 +8,19 @@
 # the address rtpengine can send media back to, is discovered from inside
 # the container.
 #
+# RTPE_PROJECT, RTPE_NAME and the RTPE_* ports move the lab out of the way
+# of another one, as for apps/chappe_rtpengine/test/e2e.sh.
+#
 # Usage: apps/chappe_mix/test/interop.sh   (or: make interop-mix)
 set -u
 
-NAME=rtpe-e2e
-NG_PORT=12222
+: "${RTPE_NAME:=rtpe-e2e}" "${RTPE_NG_PORT:=12222}"
+export RTPE_NAME RTPE_NG_PORT
+NAME=$RTPE_NAME
+NG_PORT=$RTPE_NG_PORT
 
 cd "$(dirname "$0")/../../.."
-COMPOSE="docker compose -f apps/chappe_rtpengine/interop/docker-compose.yml"
+COMPOSE="docker compose -p ${RTPE_PROJECT:-interop} -f apps/chappe_rtpengine/interop/docker-compose.yml"
 
 $COMPOSE up -d --build --force-recreate || exit 1
 sleep 2

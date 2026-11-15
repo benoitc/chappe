@@ -28,20 +28,23 @@ flowchart TB
         rtpe[chappe_rtpengine]
         mix[chappe_mix]
         esl[chappe_esl]
+        audio[chappe_audio]
     end
     mrf --> sip
     mrf --> esl
+    mrf --> audio
     sip --> rtpe
     sip --> mix
     sip -. "SIP (UDP, TCP, TLS, WS)" .- peers[(SIP peers, phones, browsers)]
     rtpe -. "NG protocol" .- rtpengine[(rtpengine daemon)]
     esl -. "Event Socket" .- fs[(FreeSWITCH nodes)]
     mix -. "RTP" .- rtpengine
+    audio -. "WebSocket (audio forks)" .- fs
 ```
 
 | Layer | Apps | Rule |
 |---|---|---|
-| Leaf | chappe_rtpengine, chappe_mix, chappe_esl | Speak one protocol. Depend on no other chappe app and on nothing SIP. |
+| Leaf | chappe_rtpengine, chappe_mix, chappe_esl, chappe_audio | Speak one protocol. Depend on no other chappe app and on nothing SIP. |
 | Core | chappe_sip | The SIP stack. Uses chappe_rtpengine and chappe_mix through its media facade (`chappe_sip_media`), started on demand. Never uses chappe_esl. |
 | Orchestration | chappe_mrf | Ties SIP to media servers. May depend on the core and the leaves. Nothing in the umbrella depends on it. |
 
@@ -88,6 +91,15 @@ chappe_mix_sup (one_for_one)
 chappe_esl_sup (one_for_one)
 |-- chappe_esl_outbound_sup        one chappe_esl_conn per outbound socket
 `-- chappe_esl_nodes               when the `nodes' app env is set
+
+chappe_audio_sup (rest_for_one)
+|-- pg scope chappe_audio          streams by call ref, the cluster's stores
+|-- chappe_audio_registry          streams waiting for their fork, by id
+|-- chappe_audio_store_srv         the recording store: config, pg, sweep
+|-- chappe_audio_writer_sup        one chappe_audio_writer per recording
+|-- chappe_audio_stream_sup        one chappe_audio_stream per fork
+|-- chappe_audio_conn_sup          one chappe_audio_conn per handshake
+`-- chappe_audio_listener_sup      one chappe_audio_listener per port
 
 chappe_mrf_sup (one_for_one)
 |-- chappe_mrf_registry            correlation id and loop token lookup

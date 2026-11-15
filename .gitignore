@@ -8,6 +8,7 @@ erl_crash.dump
 doc/
 apps/*/priv/lib/*.so
 apps/*/priv/lib/*.dSYM/
+demo/sbc/recordings/
 apps/*/c_src/build/
 apps/*/interop/node_modules/
 *.dSYM/

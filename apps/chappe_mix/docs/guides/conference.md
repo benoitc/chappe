@@ -69,6 +69,11 @@ end.
 Set `talk_threshold`, `talk_start_ms` and `talk_stop_ms` in `start/1` to
 tune the detection (see [Configuration](../configuration.md)).
 
+Give the room or a leg a `ref` (an opaque binary, such as a call's
+correlation id) and read it back from the handle: `chappe_mix:ref(Conf)`
+for the room, `legs/1` for each leg's `ref`. The events keep their
+`{chappe_mix, Conf, Event}` shape either way.
+
 ## Move a leg to another room
 
 ```erlang
@@ -159,6 +164,34 @@ To put rtpengine in front of the mixer for that call, anchor it with an
 `anchor` session and give the mixer the offer rtpengine makes: the steps
 are in the chappe_sip [media design](../../../chappe_sip/docs/design/media.md),
 section "Put rtpengine in front of the mixer".
+
+## Tap a party or the room
+
+A tap hands you the decoded audio of one leg, or of the whole room, every
+20 ms, with no RTP leg to set up: a recorder or a transcriber in Erlang.
+
+```erlang
+{ok, Tap} = chappe_mix:tap(Conf, Leg, #{}),
+{ok, RoomTap} = chappe_mix:tap(Conf, room, #{to => Recorder}),
+receive
+    {chappe_mix, Conf, {tap, Tap, Pcm}} -> ok
+end,
+ok = chappe_mix:untap(Conf, Tap).
+```
+
+`Pcm` is 320 bytes of 16-bit signed little-endian PCM at 8 kHz. A party's
+tap carries what the room takes from it (silence while it is muted or
+sends nothing); the room's carries every talker. A tap's ref (its own
+`ref`, else the leg's, else the room's) is in `chappe_mix:taps/1`.
+
+- The tap ends when its process dies, at `untap/2`, or with
+  `{tap_closed, Tap}` when its leg leaves (removed or moved) or the room
+  stops.
+- Past `max_queue` messages waiting at the process (500), a frame is
+  dropped and counted in `chappe_mix:taps/1`; the room's clock never
+  waits for a reader.
+- To keep the audio, write it to the recording store
+  ([Record a call](../../../chappe_audio/docs/guides/record.md)).
 
 ## Notes
 

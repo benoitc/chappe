@@ -19,6 +19,7 @@
 -export([
     forged_source_ignored/1,
     ping_pong/1,
+    list_and_statistics/1,
     offer_answer_query_delete/1,
     node_error_reply/1,
     retransmit_recovers/1,
@@ -56,6 +57,7 @@ all() ->
     [
         forged_source_ignored,
         ping_pong,
+        list_and_statistics,
         offer_answer_query_delete,
         node_error_reply,
         retransmit_recovers,
@@ -386,6 +388,26 @@ offer_answer_query_delete(Config) ->
     {_, Offer} = hd(Received),
     ?assertEqual(<<"remove">>, maps:get(<<"ICE">>, Offer)),
     ?assertEqual([<<"trust-address">>], maps:get(<<"flags">>, Offer)),
+    ok.
+
+%% list/1,2 return the call-ids (limit on the wire), statistics/1 the
+%% statistics dictionary; a bad limit is refused before anything is sent.
+list_and_statistics(Config) ->
+    Node = ?config(node, Config),
+    Server = ?config(server, Config),
+    ?assertEqual({ok, [<<"c1">>, <<"c2">>, <<"c3">>]}, chappe_rtpengine:list(Node)),
+    ?assertEqual({ok, [<<"c1">>]}, chappe_rtpengine:list(Node, #{limit => 1})),
+    ?assertEqual(
+        {ok, #{<<"currentstatistics">> => #{<<"sessionstotal">> => 3}}},
+        chappe_rtpengine:statistics(Node)
+    ),
+    ?assertEqual(
+        {error, {bad_option, limit}}, chappe_rtpengine:list(Node, #{limit => 0})
+    ),
+    [{_, L1}, {_, L2}, {_, St}] = chappe_rtpengine_fake_server:received(Server),
+    ?assertEqual(#{<<"command">> => <<"list">>}, L1),
+    ?assertEqual(#{<<"command">> => <<"list">>, <<"limit">> => 1}, L2),
+    ?assertEqual(#{<<"command">> => <<"statistics">>}, St),
     ok.
 
 %% req: RNG-07

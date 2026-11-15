@@ -22,7 +22,16 @@
     raw_exec_interleaved/1,
     raw_exec_long_arg/1,
     inbound_call/1,
+    call_ref/1,
     play_and_get_digits/1,
+    play_and_get_digits_full/1,
+    playback_options/1,
+    subscribe_events/1,
+    variables_and_audio/1,
+    fork_commands/1,
+    say_and_speak/1,
+    no_expansion/1,
+    detection/1,
     dtmf_and_hangup/1,
     helpers/1,
     audio_stream_commands/1,
@@ -64,7 +73,16 @@ all() ->
         raw_exec_interleaved,
         raw_exec_long_arg,
         inbound_call,
+        call_ref,
         play_and_get_digits,
+        play_and_get_digits_full,
+        playback_options,
+        subscribe_events,
+        variables_and_audio,
+        fork_commands,
+        say_and_speak,
+        no_expansion,
+        detection,
         dtmf_and_hangup,
         helpers,
         audio_stream_commands,
@@ -322,6 +340,29 @@ inbound_call(_Config) ->
     ok = chappe_esl_call:stop(Call),
     ok = chappe_esl_fake_server:stop(Fake).
 
+%% A call started with a ref returns it from ref/1 and in every owner
+%% message; without one the messages keep their three elements.
+call_ref(_Config) ->
+    {ok, Fake, Port} = chappe_esl_fake_server:start(#{channel => <<"in-2">>}),
+    {ok, Conn} = chappe_esl:connect(#{host => {127, 0, 0, 1}, port => Port}),
+    ?assertEqual(
+        {error, {bad_option, ref}},
+        chappe_esl_call:start(Conn, #{uuid => <<"in-2">>, ref => call})
+    ),
+    {ok, Call} = chappe_esl_call:start(Conn, #{uuid => <<"in-2">>, ref => <<"c-7">>}),
+    ?assertEqual(<<"c-7">>, chappe_esl_call:ref(Call)),
+    ok = chappe_esl_fake_server:dtmf(Fake, <<"3">>),
+    %% one message shape with or without a ref; ref/1 gives the ref
+    receive
+        {chappe_esl_call, Call, {dtmf, <<"3">>}} -> ok;
+        {chappe_esl_call, Call, {dtmf, <<"3">>}, _} -> ct:fail(four_tuple)
+    after 5000 -> ct:fail(no_message)
+    end,
+    ok = chappe_esl_call:stop(Call),
+    ok = chappe_esl_fake_server:stop(Fake),
+    {Call2, _} = outbound(#{}),
+    ?assertEqual(undefined, chappe_esl_call:ref(Call2)).
+
 %% req: ESL-37
 play_and_get_digits(_Config) ->
     Vars = [{<<"variable_chappe_digits">>, <<"1234">>}],
@@ -348,6 +389,352 @@ play_and_get_digits(_Config) ->
         {ok, <<>>},
         chappe_esl_call:play_and_get_digits(Call2, #{file => <<"p.wav">>})
     ).
+
+%% result => full also reads the terminator and the refused entry.
+%% req: ESL-37
+play_and_get_digits_full(_Config) ->
+    Vars = [
+        {<<"variable_pin">>, <<"42">>},
+        {<<"variable_read_terminator_used">>, <<"#">>},
+        {<<"variable_pin_invalid">>, <<"9">>}
+    ],
+    {Call, _Fake} = outbound(#{
+        apps => #{<<"play_and_get_digits">> => #{vars => Vars}}
+    }),
+    ?assertEqual(
+        {ok, #{digits => <<"42">>, terminator => <<"#">>, invalid => <<"9">>}},
+        chappe_esl_call:play_and_get_digits(Call, #{
+            file => <<"p.wav">>, var => <<"pin">>, result => full
+        })
+    ),
+    {Call2, _} = outbound(#{}),
+    ?assertEqual(
+        {ok, #{digits => <<>>, terminator => <<>>, invalid => <<>>}},
+        chappe_esl_call:play_and_get_digits(Call2, #{
+            file => <<"p.wav">>, result => full
+        })
+    ).
+
+%% Tone and fax detection subscribe to DETECTED_TONE, start mod_spandsp's
+%% detector, and turn its events into {tone, Name} and {fax, detected}; a
+%% detector that does not start is an error.
+%% req: ESL-37 ESL-38
+detection(_Config) ->
+    Apps = #{
+        <<"spandsp_start_tone_detect">> => #{response => <<"+OK started">>}
+    },
+    {Call, Fake} = outbound(#{apps => Apps}),
+    ok = chappe_esl_call:detect_tones(Call, <<"chappe">>),
+    ?assertEqual(<<"event plain DETECTED_TONE">>, block_with(<<"event plain">>)),
+    expect_app(<<"spandsp_start_tone_detect">>, <<"chappe">>),
+    ok = chappe_esl_call:detect_fax(Call, #{tone => ced, timeout => 30}),
+    expect_app(
+        <<"spandsp_start_fax_detect">>, <<"set chappe_fax_detected=true 30 ced">>
+    ),
+    Inject = fun(Headers) ->
+        chappe_esl_fake_server:inject(
+            Fake,
+            chappe_esl_fake_server:plain_event(
+                <<"DETECTED_TONE">>, [{<<"Unique-ID">>, ?UUID} | Headers]
+            )
+        )
+    end,
+    ok = Inject([{<<"Detected-Tone">>, <<"BUSY_TONE">>}]),
+    ?assertEqual({tone, <<"BUSY_TONE">>}, owner_msg_skip_events(Call)),
+    ok = Inject([{<<"Detected-Fax-Tone">>, <<"true">>}]),
+    ?assertEqual({fax, detected}, owner_msg_skip_events(Call)),
+    ok = chappe_esl_call:stop_detect_tones(Call),
+    _ = block_with(<<"execute-app-name: spandsp_stop_tone_detect">>),
+    ok = chappe_esl_call:stop_detect_fax(Call),
+    _ = block_with(<<"execute-app-name: spandsp_stop_fax_detect">>),
+    {Call2, _} = outbound(#{
+        apps => #{
+            <<"spandsp_start_tone_detect">> => #{
+                response => <<"-ERR failed to start tone detector">>
+            }
+        }
+    }),
+    ?assertEqual(
+        {error, <<"-ERR failed to start tone detector">>},
+        chappe_esl_call:detect_tones(Call2, <<"nope">>)
+    ),
+    [
+        ?assertEqual(Err, F())
+     || {Err, F} <- [
+            {{error, {bad_option, name}}, fun() ->
+                chappe_esl_call:detect_tones(Call2, <<"a b">>)
+            end},
+            {{error, {bad_option, tone}}, fun() ->
+                chappe_esl_call:detect_fax(Call2, #{tone => v21})
+            end},
+            {{error, {bad_option, timeout}}, fun() ->
+                chappe_esl_call:detect_fax(Call2, #{timeout => -1})
+            end}
+        ]
+    ].
+
+%% FreeSWITCH expands ${var} and ${api(args)} in every application
+%% argument before the application runs (switch_core_session_execute_
+%% application, api expansion on unless switch.conf says api-expansion
+%% false), so text a typed helper takes is refused when it holds `${':
+%% ${system(...)} would run a command on the node. execute/4 stays raw.
+no_expansion(_Config) ->
+    {Call, _Fake} = outbound(#{}),
+    Evil = <<"x ${system(touch /tmp/pwn)}">>,
+    Bad = fun(K, R) -> ?assertEqual({error, {bad_option, K}}, R) end,
+    Bad(text, chappe_esl_call:speak(Call, Evil, #{})),
+    Bad(text, chappe_esl_call:say(Call, Evil, #{})),
+    Bad(vars, chappe_esl_call:multiset(Call, #{<<"a">> => Evil})),
+    Bad(value, chappe_esl_call:set(Call, <<"a">>, Evil)),
+    Bad(value, chappe_esl_call:export(Call, <<"a">>, Evil)),
+    Bad(var, chappe_esl_call:set(Call, <<"${a}">>, <<"1">>)),
+    Bad(file, chappe_esl_call:playback(Call, <<"/m/${x}.wav">>)),
+    Bad(file, chappe_esl_call:play_and_get_digits(Call, #{file => <<"${x}">>})),
+    Bad(path, chappe_esl_call:record(Call, <<"/m/${x}.wav">>, #{})),
+    Bad(path, chappe_esl_call:record_session(Call, <<"/m/$${x}.wav">>)),
+    Bad(digits, chappe_esl_call:send_dtmf(Call, <<"1${x}">>)),
+    no_app(500),
+    %% a `$' that starts no expansion is plain text
+    ok = chappe_esl_call:speak(Call, <<"costs $5">>, #{}),
+    expect_app(<<"speak">>, <<"costs $5">>).
+
+%% say builds `<lang> <type> <method> [gender] <text>', speak
+%% `[engine|]voice|text'; options that would change how FreeSWITCH splits
+%% the argument are refused.
+%% req: ESL-37
+say_and_speak(_Config) ->
+    {Call, _Fake} = outbound(#{}),
+    ok = chappe_esl_call:say(Call, <<"42">>, #{}),
+    expect_app(<<"say">>, <<"en number pronounced 42">>),
+    ok = chappe_esl_call:say(Call, "2026-11-14 10:00", #{
+        language => fr, type => current_date, method => pronounced,
+        gender => feminine
+    }),
+    expect_app(
+        <<"say">>, <<"fr current_date pronounced feminine '2026-11-14 10:00'">>
+    ),
+    ok = chappe_esl_call:speak(Call, <<"hello | world">>, #{
+        engine => <<"flite">>, voice => <<"kal">>
+    }),
+    expect_app(<<"speak">>, <<"flite|kal|hello | world">>),
+    ok = chappe_esl_call:speak(Call, <<"hi">>, #{voice => <<"slt">>}),
+    expect_app(<<"speak">>, <<"slt|hi">>),
+    ok = chappe_esl_call:speak(Call, <<"plain">>, #{}),
+    expect_app(<<"speak">>, <<"plain">>),
+    [
+        ?assertEqual({error, {bad_option, K}}, chappe_esl_call:say(Call, T, O))
+     || {K, T, O} <- [
+            {type, <<"1">>, #{type => date}},
+            {method, <<"1">>, #{method => loud}},
+            {gender, <<"1">>, #{gender => other}},
+            {language, <<"1">>, #{language => <<"en us">>}},
+            {language, <<"1">>, #{language => 42}},
+            {text, <<>>, #{}},
+            {text, <<"1\n2">>, #{}}
+        ]
+    ],
+    [
+        ?assertEqual(
+            {error, {bad_option, K}}, chappe_esl_call:speak(Call, T, O)
+        )
+     || {K, T, O} <- [
+            {text, <<"a|b">>, #{}},
+            {text, <<"a|b">>, #{voice => <<"kal">>}},
+            {voice, <<"a">>, #{engine => <<"flite">>}},
+            {engine, <<"a">>, #{engine => <<"fl|ite">>, voice => <<"k">>}},
+            {voice, <<"a">>, #{voice => <<"k l">>}},
+            {text, <<"a\r\nb">>, #{}}
+        ]
+    ].
+
+%% Named forks: the bug name goes after the rate (before the metadata) and
+%% after each verb; pause, resume and send_text reach the forks the
+%% selection names, in each module's grammar; a stopped fork is no longer
+%% tracked; the owner's death stops each fork still running by its name.
+%% req: ESL-37 ESL-39
+fork_commands(_Config) ->
+    Owner = spawn(fun() -> receive after infinity -> ok end end),
+    {Call, _Fake} = outbound(#{}, Owner),
+    ok = chappe_esl_call:audio_fork_start(Call, "ws://a", #{
+        bugname => <<"left">>, mix => stereo, rate => 8000
+    }),
+    ?assertEqual(
+        <<"api uuid_audio_fork fake-uuid-1 start ws://a stereo 8000 left">>,
+        block_with(<<"uuid_audio_fork">>)
+    ),
+    ok = chappe_esl_call:audio_fork_start(Call, "ws://b", #{
+        bugname => <<"right">>, metadata => <<"{\"a\": 1}">>
+    }),
+    ?assertEqual(
+        <<"api uuid_audio_fork fake-uuid-1 start ws://b mono 16000 right ",
+            "'{\"a\": 1}'">>,
+        block_with(<<"uuid_audio_fork">>)
+    ),
+    ok = chappe_esl_call:audio_fork_start(Call, "ws://c", #{
+        module => audio_stream
+    }),
+    _ = block_with(<<"uuid_audio_stream">>),
+    ok = chappe_esl_call:audio_fork_pause(Call, #{bugname => <<"left">>}),
+    ?assertEqual(
+        <<"api uuid_audio_fork fake-uuid-1 pause left">>,
+        block_with(<<"pause">>)
+    ),
+    ok = chappe_esl_call:audio_fork_resume(Call, #{module => audio_stream}),
+    ?assertEqual(
+        <<"api uuid_audio_stream fake-uuid-1 resume">>,
+        block_with(<<"resume">>)
+    ),
+    ok = chappe_esl_call:audio_fork_send_text(Call, "hi there", #{}),
+    ?assertEqual(
+        <<"api uuid_audio_fork fake-uuid-1 send_text left 'hi there'">>,
+        block_with(<<"send_text">>)
+    ),
+    ?assertEqual(
+        <<"api uuid_audio_fork fake-uuid-1 send_text right 'hi there'">>,
+        block_with(<<"send_text">>)
+    ),
+    ?assertEqual(
+        <<"api uuid_audio_stream fake-uuid-1 send_text 'hi there'">>,
+        block_with(<<"send_text">>)
+    ),
+    ok = chappe_esl_call:audio_fork_stop(Call, #{bugname => <<"right">>}),
+    ?assertEqual(
+        <<"api uuid_audio_fork fake-uuid-1 stop right">>,
+        block_with(<<"stop">>)
+    ),
+    ?assertEqual(
+        {error, not_forking},
+        chappe_esl_call:audio_fork_pause(Call, #{bugname => <<"right">>})
+    ),
+    [
+        ?assertEqual(Err, chappe_esl_call:audio_fork_start(Call, "ws://d", O))
+     || {Err, O} <- [
+            {{error, {bad_option, bugname}}, #{
+                module => audio_stream, bugname => <<"x">>
+            }},
+            {{error, {bad_option, bugname}}, #{bugname => <<"a b">>}},
+            {{error, {bad_option, bugname}}, #{bugname => <<"a'b">>}}
+        ]
+    ],
+    ?assertEqual(
+        {error, {bad_option, text}},
+        chappe_esl_call:audio_fork_send_text(Call, <<"a\nb">>, #{})
+    ),
+    ?assertEqual(
+        {error, {bad_option, select}},
+        chappe_esl_call:audio_fork_pause(Call, all)
+    ),
+    exit(Owner, kill),
+    ?assertEqual(
+        <<"api uuid_audio_fork fake-uuid-1 stop left">>,
+        block_with(<<"stop">>)
+    ),
+    ?assertEqual(
+        <<"api uuid_audio_stream fake-uuid-1 stop">>,
+        block_with(<<"stop">>)
+    ),
+    ?assertMatch(<<"api uuid_kill fake-uuid-1", _/binary>>, block_with(<<"uuid_kill">>)).
+
+%% multiset picks a delimiter no value contains; getvar and dump read the
+%% channel over api; mute and unmute use uuid_audio. Bad input is refused
+%% before anything is sent.
+%% req: ESL-37
+variables_and_audio(_Config) ->
+    Dump = <<"{\"Unique-ID\": \"fake-uuid-1\", \"variable_a\": \"1\", ",
+        "\"variable_b\": \"x|y\"}">>,
+    {Call, _Fake} = outbound(#{
+        api => #{
+            <<"uuid_getvar fake-uuid-1 a">> => <<"1">>,
+            <<"uuid_getvar fake-uuid-1 nope">> => <<"_undef_">>,
+            <<"uuid_dump fake-uuid-1 json">> => Dump
+        }
+    }),
+    ok = chappe_esl_call:multiset(Call, #{<<"a">> => <<"1">>, "b" => "x y"}),
+    expect_app(<<"multiset">>, <<"^^|a=1|b=x y">>),
+    ok = chappe_esl_call:multiset(Call, #{<<"b">> => <<"x|y">>}),
+    expect_app(<<"multiset">>, <<"^^~b=x|y">>),
+    ok = chappe_esl_call:multiset(Call, #{}),
+    [
+        ?assertEqual(
+            {error, {bad_option, vars}}, chappe_esl_call:multiset(Call, V)
+        )
+     || V <- [
+            #{<<"a=b">> => <<"1">>},
+            #{<<"a b">> => <<"1">>},
+            #{<<"a">> => <<"1\n2">>},
+            #{<<"a">> => <<"|~^;#!">>},
+            nope
+        ]
+    ],
+    ?assertEqual({ok, <<"1">>}, chappe_esl_call:getvar(Call, <<"a">>)),
+    ?assertEqual({ok, undefined}, chappe_esl_call:getvar(Call, "nope")),
+    ?assertEqual(
+        {error, {bad_option, var}}, chappe_esl_call:getvar(Call, <<"a b">>)
+    ),
+    ?assertEqual(
+        {ok, #{<<"a">> => <<"1">>, <<"b">> => <<"x|y">>}},
+        chappe_esl_call:dump(Call)
+    ),
+    ok = chappe_esl_call:mute(Call, read),
+    ?assertEqual(
+        <<"api uuid_audio fake-uuid-1 start read mute 1">>,
+        block_with(<<"uuid_audio">>)
+    ),
+    ok = chappe_esl_call:unmute(Call, write),
+    ?assertEqual(
+        <<"api uuid_audio fake-uuid-1 start write mute 0">>,
+        block_with(<<"uuid_audio">>)
+    ),
+    ?assertEqual(
+        {error, {bad_option, direction}}, chappe_esl_call:mute(Call, both)
+    ).
+
+%% subscribe/2 adds events with CUSTOM and its subclasses last, and
+%% refuses words that would break the command.
+%% req: ESL-34
+subscribe_events(_Config) ->
+    {Call, _Fake} = outbound(#{}),
+    ok = chappe_esl_call:subscribe(Call, [
+        {custom, <<"a::b">>}, 'PLAYBACK_START', <<"DETECTED_TONE">>
+    ]),
+    ?assertEqual(
+        <<"event plain PLAYBACK_START DETECTED_TONE CUSTOM a::b">>,
+        block_with(<<"event plain">>)
+    ),
+    ok = chappe_esl_call:subscribe(Call, []),
+    [
+        ?assertEqual(
+            {error, {bad_option, events}}, chappe_esl_call:subscribe(Call, E)
+        )
+     || E <- [[<<"A B">>], [{custom, <<"x\ny">>}], [<<"CUSTOM">>], [<<>>], [1]]
+    ].
+
+%% offset seeks with File@@Samples; limit_secs sets playback_timeout_sec
+%% around the playback and clears it after; bad values are refused before
+%% anything is sent.
+%% req: ESL-37
+playback_options(_Config) ->
+    {Call, _Fake} = outbound(#{}),
+    {ok, _} = chappe_esl_call:playback(Call, "a.wav", #{offset => 8000}),
+    expect_app(<<"playback">>, <<"a.wav@@8000">>),
+    {ok, _} = chappe_esl_call:playback(Call, "b.wav", #{limit_secs => 3}),
+    expect_app(
+        <<"multiset">>,
+        <<"playback_timeout_sec=3 playback_timeout_as_success=true">>
+    ),
+    expect_app(<<"playback">>, <<"b.wav">>),
+    expect_app(<<"unset">>, <<"playback_timeout_sec">>),
+    [
+        ?assertEqual(
+            {error, {bad_option, K}}, chappe_esl_call:playback(Call, "c", O)
+        )
+     || {K, O} <- [
+            {offset, #{offset => -1}},
+            {offset, #{offset => <<"1">>}},
+            {limit_secs, #{limit_secs => 1}},
+            {limit_secs, #{limit_secs => 2.5}}
+        ]
+    ].
 
 %% req: ESL-38
 dtmf_and_hangup(_Config) ->
@@ -959,6 +1346,19 @@ block_with(Needle) ->
     case contains(Block, Needle) of
         true -> Block;
         false -> block_with(Needle)
+    end.
+
+%% No execute reaches the fake within Ms.
+no_app(Ms) ->
+    receive
+        {fake_server, _, B} when is_binary(B) ->
+            case contains(B, <<"execute-app-name">>) of
+                true -> ct:fail({sent, B});
+                false -> no_app(Ms)
+            end;
+        {fake_server, _, _} ->
+            no_app(Ms)
+    after Ms -> ok
     end.
 
 flush_blocks() ->

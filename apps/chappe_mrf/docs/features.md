@@ -9,12 +9,30 @@ that shows you how to use it.
   call is anchored in rtpengine and bridged to a node chappe_esl picks, with
   failover to the next up node on 408, 503 or a transport error.
   [IVR menu guide](guides/ivr-menu.md)
-- **Endpoint commands**: play (a file or a list), play and collect digits,
-  record, record the session, send DTMF, set a variable, api, any dialplan
-  application (`execute/3`), hold and unhold, audio forks to a WebSocket
-  (mod_audio_fork). [IVR menu guide](guides/ivr-menu.md)
+- **Endpoint commands**: play (a file or a list, from an offset, within a
+  time limit), play and collect digits, record, record the session, send
+  DTMF, set, multiset and export variables, read them, mute and unmute, api,
+  any dialplan application (`execute/3`, or `execute/4` without waiting),
+  hold and unhold. [IVR menu guide](guides/ivr-menu.md)
+- **Playback results**: a missing file is `{error, not_found}`, `play_info/3`
+  gives the length and response, `play_collect/2` with `result => full` the
+  terminator and the invalid entry.
+  [IVR menu guide](guides/ivr-menu.md#know-how-a-prompt-played)
+- **Audio forks** to a WebSocket over mod_audio_fork or mod_audio_stream:
+  named, mono or stereo, paused, resumed, sent text; into chappe_audio with
+  `store => default` to record them. [IVR menu guide](guides/ivr-menu.md#other-commands)
+- **Say and speak**: numbers, dates and digits with mod_say, text with a
+  TTS module (flite in the lab).
+  [IVR menu guide](guides/ivr-menu.md#say-numbers-and-speak-text)
+- **Tone and fax detection** over mod_spandsp, with events to the owner.
+  [IVR menu guide](guides/ivr-menu.md#detect-tones-and-faxes)
 - **Endpoint events** to the owner: DTMF digits, hangup with its cause, node
-  down. [Design](design/overview.md#endpoint-lifecycle)
+  down, and on request playback start and stop, custom and channel events.
+  [IVR menu guide](guides/ivr-menu.md#react-to-events)
+- **Recordings into the store**: `record/3`, `record_session/3` and room
+  recordings with `store => default` are adopted into chappe_audio's store
+  under the call's `call_ref`.
+  [Record a call](../../chappe_audio/docs/guides/record.md)
 - **Endpoints with no caller** (`create_endpoint/1`), bridged in later.
   [Bridge guide](guides/bridge.md)
 - **Bridge without a re-INVITE** to the caller (`bridge/2,3`): to another
@@ -24,8 +42,16 @@ that shows you how to use it.
   only), talker events, prompts on each caller's leg.
   [Conference guide](guides/conference.md)
 - **FreeSWITCH conferences** on mod_conference: join, mute, deaf, kick,
-  lock, PIN entry, talker events, play into the room.
-  [Conference guide](guides/conference.md)
+  lock, PIN entry, talker events, play into the room, recording, a member
+  limit and room flags, mute, DTMF and prompt events.
+  [Conference guide](guides/conference.md#freeswitch-rooms)
+- **Native room recording** through SIPREC to a recording server
+  (`record/3` with its URI). [Conference guide](guides/conference.md#record-a-native-room)
+- **Move a member** to another room of the same backend (`transfer/3`).
+  [Conference guide](guides/conference.md#move-a-member-to-another-room)
+- **REFER in rooms**, both backends: a member transfers itself out, blind
+  or attended, and a REFER to the room adds or removes a party under your
+  policy. [Conference guide](guides/conference.md#add-or-remove-a-party-by-refer)
 - **RFC 4575 conference state** for native rooms (`focus => true`,
   `focus_subscribe/2`). [Conference guide](guides/conference.md)
 - **Cleanup**: an endpoint's channel is killed when its owner exits, after
@@ -34,11 +60,6 @@ that shows you how to use it.
 - **Correlation** of SIP legs and ESL sockets by `X-Chappe-Call`; unknown
   channels are refused. [Design](design/overview.md#correlation-x-chappe-call)
 - **Compliance**: every MRF row passes on fakes ([matrix](compliance.md)).
-
-## Out of scope
-
-- `say` and `speak` (TTS needs FreeSWITCH modules the lab does not load):
-  run them with `execute/3` where your nodes have them.
 
 ## Planned
 

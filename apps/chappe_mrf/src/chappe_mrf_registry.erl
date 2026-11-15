@@ -5,7 +5,9 @@
 %%   {call, Id}  the endpoint whose FreeSWITCH channel carries
 %%               X-Chappe-Call: Id (the outbound socket finds it here);
 %%   {loop, Id}  the conference a loopback INVITE to the mixer belongs to;
-%%   {conf, Name} a conference by name.
+%%   {conf, Name} a conference by name;
+%%   {a_dialog, Ref, Dialog} the caller's dialog of the call Ref, under
+%%               the process that runs the call.
 %% An entry goes with the process that put it there.
 -module(chappe_mrf_registry).
 -behaviour(gen_server).

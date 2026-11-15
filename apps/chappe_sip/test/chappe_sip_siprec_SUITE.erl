@@ -29,10 +29,11 @@
          server_answers_on_the_wire/1]).
 -export([room_recorded/1, room_not_up/1, server_sink_bound/1,
          server_metadata_update/1, room_ends_recording/1, recording_over_tls/1,
-         demo_store_writes_wav/1]).
+         server_writes_audio_store/1, room_recorded_to_store/1]).
 -export([server_latches_to_client/1, server_takes_srtp/1,
          server_refuses_srtp_it_cannot_take/1, server_srtp_rekey/1,
-         server_srtp_flood/1, server_srtp_lifetime/1, anchor_keeps_srtp_caller/1, log/2,
+         server_srtp_flood/1, server_srtp_lifetime/1,
+         anchor_keeps_srtp_caller/1, log/2,
          srtp_call_tapped_as_srtp/1, tls_call_needs_tls_srs/1]).
 -export([too_many_at_once/1, srs_reinvite_more_streams/1,
          dialog_event_without_response/1]).
@@ -48,10 +49,11 @@ all() ->
      server_not_a_recording_session, server_sink_and_stream_crash,
      server_refuses_bad_body, server_answers_on_the_wire,
      server_sink_bound, server_metadata_update, room_recorded, room_not_up,
-     room_ends_recording, recording_over_tls, demo_store_writes_wav,
+     room_ends_recording, recording_over_tls,
+     server_writes_audio_store, room_recorded_to_store,
      server_latches_to_client, server_takes_srtp,
-     server_refuses_srtp_it_cannot_take, server_srtp_rekey, server_srtp_flood, server_srtp_lifetime,
-     anchor_keeps_srtp_caller,
+     server_refuses_srtp_it_cannot_take, server_srtp_rekey,
+     server_srtp_flood, server_srtp_lifetime, anchor_keeps_srtp_caller,
      srtp_call_tapped_as_srtp,
      tls_call_needs_tls_srs, too_many_at_once, srs_reinvite_more_streams,
      dialog_event_without_response].
@@ -576,6 +578,81 @@ server_writes_store(_Config) ->
      || {R, _} <- Opens],
     gen_udp:close(Sock).
 
+%% store => default with no siprec_store set: each stream lands in
+%% chappe_audio's store, found by the call's call_ref with source siprec
+%% and the stream's sender as its party.
+server_writes_audio_store(Config) ->
+    with_audio_store(Config, fun() ->
+        #{b2b := B2b, call_ref := Ref, ep := EP} = call(),
+        {ok, Rec} = chappe_sip_siprec:start(B2b, store_uri(EP), #{}),
+        {started, _} = event(Rec),
+        #{streams := [#{port := P1}, #{port := P2}]} = got(srs_served),
+        {ok, Sock} = gen_udp:open(0, [binary]),
+        ok = gen_udp:send(Sock, {127, 0, 0, 1}, P1, rtp(0, binary:copy(<<16#FF>>, 160))),
+        ok = gen_udp:send(Sock, {127, 0, 0, 1}, P2, rtp(8, binary:copy(<<16#D5>>, 160))),
+        timer:sleep(200),
+        ok = chappe_sip_siprec:stop(Rec),
+        {stopped, _} = event(Rec),
+        gen_udp:close(Sock),
+        Recs = stored(Ref, 2),
+        ?assertEqual([<<"siprec">>], lists:usort([source(R) || R <- Recs])),
+        ?assertMatch([[<<"sip:callee@", _/binary>>], [<<"sip:caller@", _/binary>>]],
+                     lists:sort([maps:get(parties, R) || R <- Recs])),
+        %% 160 samples of 16-bit PCM after the 44-byte WAVE header
+        ?assert(lists:all(fun(R) -> maps:get(bytes, R) >= 44 + 320 end, Recs))
+    end).
+
+%% A native room recorded through SIPREC to chappe's own recording server:
+%% the mix is one stream, in the store under the room's call_ref.
+room_recorded_to_store(Config) ->
+    with_audio_store(Config, fun() ->
+        ok = chappe_sip_media:configure(#{mix => #{ip => {127, 0, 0, 1}}}),
+        EP = start_app(),
+        persistent_term:put(siprec_test_opts, #{test => self(), cp => 0}),
+        {ok, Party} = chappe_sip_media:session(#{call_id => <<"room-party-3">>},
+                                               #{capability => conference}),
+        {ok, _} = chappe_sip_media:conference(Party, <<"r3">>, #{}),
+        {ok, Rec} = chappe_sip_siprec:start({room, <<"r3">>}, store_uri(EP),
+                                            #{call_ref => <<"room-r3">>}),
+        {started, _} = event(Rec),
+        #{streams := [_]} = got(srs_served),
+        timer:sleep(500),
+        ok = chappe_sip_siprec:stop(Rec),
+        {stopped, _} = event(Rec),
+        ok = chappe_sip_media:stop(Party),
+        [R] = stored(<<"room-r3">>, 1),
+        ?assertEqual(<<"siprec">>, source(R)),
+        ?assertEqual([<<"sip:r3@chappe.invalid">>], maps:get(parties, R)),
+        ?assert(maps:get(bytes, R) > 44)
+    end).
+
+with_audio_store(Config, Fun) ->
+    Dir = filename:join(?config(priv_dir, Config), "audio-store"),
+    {ok, _} = application:ensure_all_started(chappe_audio),
+    try
+        ok = chappe_audio_store:configure(#{dir => Dir}),
+        Fun()
+    after
+        ok = application:stop(chappe_audio)
+    end.
+
+store_uri(EP) ->
+    <<"sip:store@127.0.0.1:", (integer_to_binary(EP))/binary>>.
+
+source(#{source := S}) when is_atom(S) -> atom_to_binary(S);
+source(#{source := S}) -> S.
+
+%% the N recordings of Ref, once the writers have closed them
+stored(Ref, N) -> stored(Ref, N, 50).
+
+stored(Ref, N, 0) ->
+    ct:fail({not_stored, Ref, N, chappe_audio_store:find(Ref)});
+stored(Ref, N, Tries) ->
+    case chappe_audio_store:find(Ref) of
+        Recs when length(Recs) =:= N -> Recs;
+        _ -> timer:sleep(100), stored(Ref, N, Tries - 1)
+    end.
+
 %% RFC 7866 6.2: without +sip.src and siprec it is not a recording
 %% session; the app decides (here a 403).
 %% req: R7866-6.2-1
@@ -756,35 +833,6 @@ recording_over_tls(Config) ->
         ok = chappe_sip_siprec:stop(Rec),
         {stopped, _} = event(Rec)
     end).
-
-%% The SBC demo records 3001 to its own recording server, which writes
-%% each stream through the store seam to a WAV file the demo's own store
-%% module keeps (demo/sbc/src/demo_sbc.erl): one file per stream under the
-%% call_ref, its sizes right once closed.
-demo_store_writes_wav(Config) ->
-    Src = proplists:get_value(source, ?MODULE:module_info(compile)),
-    Demo = filename:join([filename:dirname(Src), "..", "..", "..", "demo", "sbc", "src",
-                          "demo_sbc.erl"]),
-    Out = ?config(priv_dir, Config),
-    {ok, demo_sbc} = compile:file(Demo, [{outdir, Out}, return_errors]),
-    {module, demo_sbc} = code:load_abs(filename:join(Out, "demo_sbc")),
-    Dir = filename:join(Out, "recordings"),
-    os:putenv("DEMO_RECORDINGS", Dir),
-    {ok, Rec} = demo_sbc:open(#{call_ref => <<"c-1">>, source => siprec,
-                                parties => [<<"sip:alice@chappe.demo">>],
-                                format => #{rate => 8000, channels => 1}},
-                              #{owner => self()}),
-    ok = demo_sbc:write(Rec, binary:copy(<<1, 0>>, 160)),
-    ok = demo_sbc:write(Rec, binary:copy(<<2, 0>>, 160)),
-    {ok, Id} = demo_sbc:close(Rec, #{}),
-    [Wav] = filelib:wildcard(filename:join([Dir, "c-1", "*.wav"])),
-    ?assertMatch({_, _}, binary:match(list_to_binary(Wav), Id)),
-    {ok, <<"RIFF", Riff:32/little, "WAVE", "fmt ", 16:32/little, 1:16/little, 1:16/little,
-           8000:32/little, 16000:32/little, 2:16/little, 16:16/little,
-           "data", 640:32/little, Data/binary>>} = file:read_file(Wav),
-    ?assertEqual(36 + 640, Riff),
-    ?assertEqual(640, byte_size(Data)),
-    os:unsetenv("DEMO_RECORDINGS").
 
 %% A room that is not up is not made by its recording.
 room_not_up(_Config) ->

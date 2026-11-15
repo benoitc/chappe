@@ -22,6 +22,7 @@
     encode/2,
     decode_frame/2,
     encode_frame/2,
+    pcm/2,
     tables/1,
     encoder/1
 ]).
@@ -101,6 +102,18 @@ encode(alaw, X) ->
 decode_frame(Law, Frame) ->
     {Dec, _Enc} = tables(Law),
     [element(B + 1, Dec) || <<B>> <= Frame].
+
+%% Decode a frame of code words to 16-bit signed little-endian PCM, one
+%% 20 ms frame of 160 samples: a shorter frame is padded with silence, as
+%% the mix does (chappe_mix_dsp).
+-spec pcm(law(), binary()) -> binary().
+pcm(Law, Frame) ->
+    {Dec, _Enc} = tables(Law),
+    Pcm = <<<<(element(B + 1, Dec)):16/little-signed>> || <<B>> <= Frame>>,
+    case 320 - byte_size(Pcm) of
+        Pad when Pad > 0 -> <<Pcm/binary, 0:(Pad * 8)>>;
+        _ -> Pcm
+    end.
 
 %% Encode a list of linear samples to a frame, clipping each sample.
 -spec encode_frame(law(), [integer()]) -> binary().

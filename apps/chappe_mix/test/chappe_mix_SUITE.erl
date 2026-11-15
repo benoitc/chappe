@@ -32,6 +32,7 @@
     relate_pairs/1,
     injected_media/1,
     talker_events/1,
+    talker_refs/1,
     loud_room_gain/1,
     probe_calibration/1,
     rtcp_sender_reports/1,
@@ -77,6 +78,7 @@ all() ->
         relate_pairs,
         injected_media,
         talker_events,
+        talker_refs,
         loud_room_gain,
         probe_calibration,
         rtcp_sender_reports,
@@ -1170,6 +1172,40 @@ loud_room_gain(_Config) ->
     [chappe_mix_test_tone:stop(T) || T <- Talkers],
     wait_until(fun() -> Gain() =:= 1.0 end, 2000),
     ok = chappe_mix:stop(Conf).
+
+%% Refs: a leg's ref (or the room's) comes back in its talker events and
+%% in legs/1; a ref that is not a binary is refused.
+talker_refs(_Config) ->
+    {ok, Conf} = chappe_mix:start(#{events => self(), ref => <<"room-1">>}),
+    {ok, LA, #{port := MA}} = chappe_mix:add_leg(Conf, #{ref => <<"call-a">>}),
+    {ok, LB, #{port := MB}} = chappe_mix:add_leg(Conf, #{}),
+    {A, _} = chappe_mix_test_tone:endpoint(#{freq => 1100, dst => {?LO, MA}}),
+    ?assertEqual({LA, true, <<"call-a">>}, ref_event(Conf)),
+    chappe_mix_test_tone:stop(A),
+    ?assertEqual({LA, false, <<"call-a">>}, ref_event(Conf)),
+    {B, _} = chappe_mix_test_tone:endpoint(#{freq => 1100, dst => {?LO, MB}}),
+    ?assertEqual({LB, true, <<"room-1">>}, ref_event(Conf)),
+    chappe_mix_test_tone:stop(B),
+    Refs = lists:sort([{Id, R} || #{id := Id, ref := R} <- chappe_mix:legs(Conf)]),
+    ?assertEqual(lists:sort([{LA, <<"call-a">>}, {LB, undefined}]), Refs),
+    ?assertEqual({error, {bad_option, ref}}, chappe_mix:add_leg(Conf, #{ref => 1})),
+    ?assertEqual({error, {bad_option, ref}}, chappe_mix:start(#{ref => x})),
+    ok = chappe_mix:stop(Conf).
+
+%% one event shape with or without a ref: the ref is the leg's, from
+%% legs/1, else the room's, from ref/1
+ref_event(Conf) ->
+    receive
+        {chappe_mix, Conf, {talking, Leg, T}} -> {Leg, T, leg_ref(Conf, Leg)};
+        {chappe_mix, Conf, {talking, _, _}, _} -> ct:fail(four_tuple)
+    after 2000 -> ct:fail(no_ref_event)
+    end.
+
+leg_ref(Conf, Leg) ->
+    case [R || #{id := Id, ref := R} <- chappe_mix:legs(Conf), Id =:= Leg] of
+        [R] when is_binary(R) -> R;
+        _ -> chappe_mix:ref(Conf)
+    end.
 
 talk_event(Conf, Ms) ->
     receive

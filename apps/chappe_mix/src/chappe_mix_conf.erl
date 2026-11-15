@@ -46,6 +46,8 @@
 
 -record(state, {
     owner :: pid(),
+    %% the app's opaque reference for the room, in its events
+    ref :: binary() | undefined,
     %% receives one message per tick when set (see chappe_mix:conf_opts())
     trace :: pid() | undefined,
     %% gets talker events, and the detection they come from
@@ -74,7 +76,9 @@
     late = #{} :: #{pos_integer() | infinity => non_neg_integer()},
     late_max = 0 :: non_neg_integer(),
     %% counters of legs that were removed
-    retired = #{} :: #{atom() => non_neg_integer()}
+    retired = #{} :: #{atom() => non_neg_integer()},
+    %% processes handed a party's or the room's audio (chappe_mix_tap)
+    taps = #{} :: chappe_mix_tap:taps()
 }).
 
 -type state() :: #state{}.
@@ -97,6 +101,7 @@ init(#{owner := Owner} = Opts) ->
     arm(Next, maps:get(tick_ceiling, Opts, true)),
     {ok, #state{
         owner = Owner,
+        ref = maps:get(ref, Opts, undefined),
         trace = maps:get(trace, Opts, undefined),
         events = maps:get(events, Opts, undefined),
         talk_params = talk_params(Opts),
@@ -148,13 +153,7 @@ handle_call({set_remote, Id, #{remote := _} = Opts}, _From, S) ->
 handle_call({set_remote, Id, Remote}, From, S) ->
     handle_call({set_remote, Id, #{remote => Remote}}, From, S);
 handle_call({mute, Id, Mute}, _From, S) ->
-    update_leg(
-        Id,
-        fun(#leg{direction = D} = L) ->
-            L#leg{direction = chappe_mix_leg:mute_direction(D, Mute)}
-        end,
-        S
-    );
+    update_leg(Id, fun(L) -> mute(L, Mute) end, S);
 handle_call({direction, Id, Dir}, _From, S) ->
     update_leg(Id, fun(L) -> L#leg{direction = Dir} end, S);
 handle_call({relate, Id, Speaker, Rel}, _From, S) ->
@@ -168,6 +167,11 @@ handle_call({events, Pid}, _From, S) ->
     {reply, ok, S#state{events = Pid}};
 handle_call(stats, _From, S) ->
     {reply, stats(S), S};
+handle_call(ref, _From, S) ->
+    {reply, S#state.ref, S};
+handle_call({taps, Req}, _From, #state{taps = Taps} = S) ->
+    {Reply, Taps1} = chappe_mix_tap:call(Req, Taps, S#state.legs, S#state.ref),
+    {reply, Reply, S#state{taps = Taps1}};
 handle_call(_Req, _From, S) ->
     {reply, {error, unknown_call}, S}.
 
@@ -183,12 +187,16 @@ handle_info({udp_passive, Sock}, S) ->
     {noreply, S};
 handle_info({'DOWN', _Ref, process, Owner, _}, #state{owner = Owner} = S) ->
     {stop, normal, S};
+handle_info({'DOWN', Mon, process, _, _}, #state{taps = Taps} = S) ->
+    %% a tap's receiver is gone: so is the tap
+    {noreply, S#state{taps = chappe_mix_tap:down(Taps, Mon)}};
 handle_info(_Info, S) ->
     {noreply, S}.
 
 %% Every leg hears the mixer leave (7.3).
 terminate(_Reason, S) ->
     [chappe_mix_leg:close(bye(L, S)) || L <- maps:values(S#state.legs)],
+    _ = chappe_mix_tap:closed(S#state.taps, all),
     ok.
 
 %% ---- legs ----
@@ -251,6 +259,9 @@ give(Socks, To) ->
         false ->
             error
     end.
+
+mute(#leg{direction = D} = L, Mute) ->
+    L#leg{direction = chappe_mix_leg:mute_direction(D, Mute)}.
 
 %% Leg Id is gone: nobody is kept from hearing it any more.
 forget(Id, Legs) ->
@@ -442,7 +453,10 @@ rtcp_in(From, Pkt, L0, S) ->
     end.
 
 %% A leg leaving the mix: the others hear BYE for its source (7.3).
-left(L, S) ->
+left(#leg{id = Id} = L, S0) ->
+    %% its taps end with it
+    Taps = chappe_mix_tap:closed(S0#state.taps, Id),
+    S = S0#state{taps = Taps},
     case src_ssrc(L) of
         undefined -> S;
         Ssrc -> forward_byes([Ssrc], L#leg.id, S)
@@ -598,9 +612,10 @@ mix(#state{legs = Legs, events = Pid} = S, Missed) ->
             undefined -> undefined;
             _ -> S#state.talk_params
         end,
-    {Legs1, Events} = chappe_mix_room:mix(Legs, Missed, Talk),
+    {Legs1, Events, Frames, Mixed} = chappe_mix_room:mix(Legs, Missed, Talk),
     [talking(Pid, Id, T) || {Id, T} <- Events],
-    S#state{legs = Legs1}.
+    Taps = chappe_mix_tap:send_all(S#state.taps, Frames, Mixed),
+    S#state{legs = Legs1, taps = Taps}.
 
 talking(Pid, Id, T) ->
     Pid ! {chappe_mix, self(), {talking, Id, T}}.
