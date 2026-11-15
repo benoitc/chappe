@@ -79,8 +79,11 @@ handle_info(Msg, St) ->
     logger:notice("chappe_cluster_singleton: unexpected ~0p", [Msg]),
     {noreply, St}.
 
+%% No release here: once the child is gone this process exits, and the
+%% region frees the key when its holder (this process) dies. A release
+%% would only add a quorum wait to the shutdown.
 terminate(_Reason, St) ->
-    _ = give_back(stop_child(St)),
+    _ = stop_child(St),
     ok.
 
 %% ---- internals ----
@@ -129,21 +132,31 @@ kill_child(St = #state{sup = Sup, child = Child}) ->
     end,
     St#state{sup = undefined, child = undefined}.
 
-%% Shut the child down, for no longer than what is left of the lease.
+%% Shut the child down, for no longer than what is left of the lease, then
+%% kill it: the key is given back only once the child is gone, even a child
+%% that traps exits.
 stop_child(St = #state{sup = undefined, child = undefined}) ->
     St;
 stop_child(St = #state{sup = Sup, child = Child}) ->
-    case Child of
-        {_, Ref} -> erlang:demonitor(Ref, [flush]);
-        undefined -> ok
-    end,
+    Wait = min(5000, chappe_cluster_tab:remaining_ms()),
+    ChildMon =
+        case Child of
+            {Pid, Ref} ->
+                erlang:demonitor(Ref, [flush]),
+                {Pid, erlang:monitor(process, Pid)};
+            undefined ->
+                undefined
+        end,
     case Sup of
+        undefined -> ok;
+        _ -> stop_sup(Sup, shutdown, Wait)
+    end,
+    case ChildMon of
+        {P, M} ->
+            exit(P, kill),
+            wait_down(M, P, 5000);
         undefined ->
-            ok;
-        _ ->
-            stop_sup(
-                Sup, shutdown, min(5000, chappe_cluster_tab:remaining_ms())
-            )
+            ok
     end,
     St#state{sup = undefined, child = undefined}.
 

@@ -42,6 +42,7 @@ all() ->
         singleton_child_crash_restarts_it,
         singleton_contender_crash_stops_its_child,
         singleton_lost_kills_a_slow_child,
+        singleton_stop_outlives_no_trapping_child,
         stop_singleton,
         directory_local,
         now_never_goes_back,
@@ -444,6 +445,31 @@ singleton_lost_kills_a_slow_child(_Config) ->
         end
     end),
     ok = chappe_cluster:stop_singleton(s_slow).
+
+%% Stopping a singleton whose child traps exits: the key is free only
+%% once the child is gone.
+singleton_stop_outlives_no_trapping_child(_Config) ->
+    Spec = #{id => s_trap, start => {?MODULE, start_slow_child, []}},
+    ok = chappe_cluster:singleton(s_trap, Spec),
+    P = wait_singleton(s_trap, undefined),
+    Self = self(),
+    Key = {chappe_cluster_singleton, s_trap},
+    Watch = spawn(fun() -> Self ! {freed, poll_free(Key, P)} end),
+    ok = chappe_cluster:stop_singleton(s_trap),
+    receive
+        {freed, ChildAlive} -> ?assertNot(ChildAlive)
+    after 30000 -> ct:fail(never_freed)
+    end,
+    exit(Watch, kill).
+
+poll_free(Key, P) ->
+    case chappe_cluster:owner(Key) of
+        none ->
+            is_process_alive(P);
+        _ ->
+            timer:sleep(5),
+            poll_free(Key, P)
+    end.
 
 stop_singleton(_Config) ->
     ok = chappe_cluster:singleton(s_stop, child_spec(s_stop)),

@@ -158,21 +158,27 @@ hold(#{key := Key, seq := Seq} = Lease, Epoch, Gen) ->
             lapsed
     end.
 
+%% Valid: the row is there, at this seq, the node is live at the lease's
+%% epoch, and the holder is alive (the region frees a dead holder's lease
+%% at once, before any sweep here).
 -spec valid(map()) -> boolean().
-valid(#{key := Key, seq := Seq, epoch := Epoch}) ->
+valid(#{key := Key, seq := Seq}) ->
     case lookup({holder, Key}) of
-        [{_, Seq, _}] -> live() =:= {ok, Epoch};
+        [{_, Seq, Lease}] -> holds(Lease);
         _ -> false
     end.
+
+holds(#{epoch := Epoch, pid := Pid}) ->
+    live() =:= {ok, Epoch} andalso is_process_alive(Pid).
 
 %% The lease held through this node for `Key', while it is valid.
 -spec valid_lease(term()) -> {ok, map()} | none.
 valid_lease(Key) ->
     case lookup({holder, Key}) of
-        [{_, _, #{epoch := Epoch} = Lease}] ->
-            case live() of
-                {ok, Epoch} -> {ok, Lease};
-                _ -> none
+        [{_, _, Lease}] ->
+            case holds(Lease) of
+                true -> {ok, Lease};
+                false -> none
             end;
         _ ->
             none
