@@ -12,7 +12,7 @@ Each phase of chappe work gets its own plan, written in plan mode and approved b
 1. Explore the code the phase touches (read-only agents, at most three in parallel).
 2. Collect the history that applies:
    - commits, branches and parked work to reuse (`git log`, removed code with `git show <sha>^:<path>`);
-   - gap lists from the apps that drive the work (for example `chappe_pbx/doc/chappe-gaps.md`);
+   - gap lists from the apps that drive the work (for example `chappe_switchboard/docs/chappe-gaps.md`);
    - design docs under `apps/*/docs/design/`.
 3. Check facts against code, not docs: a feature in `features.md` with no module and no test counts as absent.
 
