@@ -13,8 +13,11 @@
 
 %% ---- helpers ----
 
+%% A machine whose first leader has graced (term 1).
 init() ->
-    ?M:init(#{name => test, region => r1, reap_ms => 2000}).
+    S = ?M:init(#{name => test, region => r1, reap_ms => 2000}),
+    {S1, ok, _} = ?M:apply(meta(1, 0), {timeout, grace}, S),
+    S1.
 
 meta(Idx, Now) ->
     #{index => Idx, term => 1, system_time => Now}.
@@ -232,7 +235,7 @@ grace_extends_every_node_test() ->
     {Ea, S1} = renew(a, 0, init()),
     {S2, {ok, _}, _} = claim(k, a, Ea, pid(1), 10, S1),
     %% the new leader's clock is 2000 ms ahead of the old one's
-    {S3, ok, _} = ap(grace, 2000, S2),
+    {S3, ok, _} = ap({timeout, grace}, 2000, S2),
     {Eb, S4} = renew(b, 7000, S3),
     {_, R, _} = claim(k, b, Eb, pid(2), 7500, S4),
     ?assertMatch({error, {owned, _}}, R).
@@ -240,13 +243,32 @@ grace_extends_every_node_test() ->
 grace_never_shortens_test() ->
     {Ea, S1} = renew(a, 5000, init()),
     {S2, {ok, _}, _} = claim(k, a, Ea, pid(1), 5010, S1),
-    {S3, ok, _} = ap(grace, 0, S2),
+    {S3, ok, _} = ap({timeout, grace}, 0, S2),
     {Eb, S4} = renew(b, 10500, S3),
     ?assertMatch({error, {owned, _}}, element(2, claim(k, b, Eb, pid(2), 10500, S4))).
 
-leader_enter_appends_grace_test() ->
+leader_enter_starts_grace_test() ->
     {_, S1} = renew(a, 0, init()),
-    ?assert(lists:member({append, grace}, ?M:state_enter(leader, S1))).
+    ?assert(lists:member({timer, grace, 0}, ?M:state_enter(leader, S1))).
+
+%% Before its grace, a new term expires nobody: an ahead clock cannot take
+%% a key or start a new epoch.
+no_expiry_before_grace_test() ->
+    {Ea, S1} = renew(a, 0, init()),
+    {S2, {ok, _}, _} = claim(k, a, Ea, pid(1), 10, S1),
+    {Eb, S3} = renew(b, 0, S2),
+    Late = ?LEASE + 3000,
+    {S4, R1, _} = ?M:apply(meta2(5, Late, 2), {claim, k, b, Eb, pid(2), make_ref(), 100}, S3),
+    ?assertMatch({error, {owned, _}}, R1),
+    {S5, {ok, Ea}, _} = ?M:apply(meta2(6, Late, 2), {renew, a, ?LEASE, []}, S4),
+    {_, ok, _} = ?M:apply(meta2(7, Late, 2), {timeout, reap}, S5),
+    {S6, ok, _} = ?M:apply(meta2(8, Late, 2), {timeout, grace}, S4),
+    {_, R2, _} = ?M:apply(meta2(9, Late + 1, 2), {claim, k, b, Eb, pid(2), make_ref(), 100}, S6),
+    %% grace gave a a full lease from the new clock
+    ?assertMatch({error, {owned, _}}, R2).
+
+meta2(Idx, Now, Term) ->
+    #{index => Idx, term => Term, system_time => Now}.
 
 release_cursor_after_n_entries_test() ->
     {_, S1} = renew(a, 0, init()),
@@ -280,6 +302,7 @@ op() ->
         {wait, range(1, 2 * ?LEASE)},
         %% a new leader, its clock off by up to three renew periods
         {leader, range(-3 * ?RENEW, 3 * ?RENEW)},
+        grace,
         reap,
         {put, oneof([<<"x">>, <<"y">>]), int()},
         {cas, oneof([<<"x">>, <<"y">>]), range(0, 40), int()},
@@ -316,6 +339,7 @@ model() ->
         s => init(),
         now => 0,
         off => 0,
+        term => 1,
         idx => 1,
         live => #{},
         held => #{},
@@ -333,7 +357,7 @@ run([Op | Ops], M) ->
 %% Apply one command stamped by the current leader `Delay' ms after it was
 %% sent at `now'; the reply comes back at the same time.
 apply_cmd(Cmd, Delay, M = #{s := S, now := Now, off := Off, idx := Idx, log := Log}) ->
-    Meta = meta(Idx, Now + Delay + Off),
+    Meta = meta2(Idx, Now + Delay + Off, maps:get(term, M)),
     {S1, Reply, _} =
         case ?M:apply(Meta, Cmd, S) of
             {A, B} -> {A, B, []};
@@ -343,9 +367,11 @@ apply_cmd(Cmd, Delay, M = #{s := S, now := Now, off := Off, idx := Idx, log := L
 
 step({wait, Ms}, M = #{now := Now}) ->
     M#{now := Now + Ms};
-step({leader, Off}, M) ->
-    %% the new leader appends grace as it takes over (state_enter)
-    {ok, M1} = apply_cmd(grace, 0, M#{off := Off}),
+step({leader, Off}, M = #{term := T}) ->
+    %% a new leader; its grace comes as a later entry
+    M#{off := Off, term := T + 1};
+step(grace, M) ->
+    {ok, M1} = apply_cmd({timeout, grace}, 0, M),
     M1;
 step({renew, N, Delay}, M0) ->
     M = give_up(N, M0),
@@ -466,7 +492,8 @@ replays(#{s := S, log := Log0}) ->
             Entries
         )
     end,
-    ?assertEqual(S, Fold(Log, init())),
+    S0 = init(),
+    ?assertEqual(S, Fold(Log, S0)),
     {First, Rest} = lists:split(length(Log) div 2, Log),
-    Snapshot = binary_to_term(term_to_binary(Fold(First, init()))),
+    Snapshot = binary_to_term(term_to_binary(Fold(First, S0))),
     ?assertEqual(S, Fold(Rest, Snapshot)).
