@@ -83,6 +83,9 @@ ok = storage:write(Key, Value, #{fence => Seq}).
   wait (an integer; `infinity` is refused).
 - A claim waits for the quorum up to its timeout. On a call setup path,
   claim from another process or with a short timeout.
+- Claiming a key you already hold returns `{error, {owned, Owner}}` with
+  yourself as the owner. A claim that timed out may still be granted
+  later; chappe_cluster gives it back, so retry after a short wait.
 - Before each side effect, check `chappe_cluster:valid(Lease)` (true while
   this node still holds it) and carry the fence.
 - Seq grows strictly per key. Have whatever you write to reject a fence
