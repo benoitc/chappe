@@ -206,18 +206,15 @@ caps(#{nodes := [N1 | _]} = Cfg) ->
 only([], Caps) -> Caps;
 only(Wanted, Caps) -> [C || C <- Caps, lists:member(C, Wanted)].
 
-%% libfaketime is in the image and the beam's wall clock follows the file.
+%% libfaketime is in the image and shifts a clock: probed on a `date' of
+%% its own, so the probe never moves a running beam's clock.
 skew_works(Cfg, Node) ->
-    case root(Cfg, Node, "test -w /lab/faketime") of
-        0 ->
-            ok = set_skew(Cfg, Node, 30000),
-            timer:sleep(2000),
-            Shift = clock_shift(Cfg, Node),
-            ok = set_skew(Cfg, Node, 0),
-            abs(Shift - 30000) < 2000;
-        _ ->
-            false
-    end.
+    Probe =
+        "test -w /lab/faketime && L=$(find /usr/lib -name libfaketime.so.1 "
+        "| head -n 1) && echo +30 > /tmp/clb_probe && "
+        "A=$(date +%s) && B=$(LD_PRELOAD=$L FAKETIME_TIMESTAMP_FILE=/tmp/clb_probe "
+        "date +%s) && test $((B - A)) -ge 28 && test $((B - A)) -le 32",
+    root(Cfg, Node, Probe) =:= 0.
 
 %% The beam's os:system_time against the container's real clock, in ms.
 clock_shift(Cfg, Node) ->
