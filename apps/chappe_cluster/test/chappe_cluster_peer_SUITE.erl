@@ -19,6 +19,7 @@ all() ->
         takeover_after_a_node_stops,
         quorum_loss_is_bounded,
         leader_change_never_expires_early,
+        new_leader_expires_a_node_it_never_heard,
         wall_clock_jumps_change_nothing,
         cut_off_holder_hears_lost_before_takeover,
         api_from_other_nodes,
@@ -36,7 +37,12 @@ end_per_suite(_Config) ->
 
 init_per_testcase(Case, Config) ->
     Dir = filename:join(?config(priv_dir, Config), atom_to_list(Case)),
-    Peers = [chappe_cluster_test_dist:peer("cc" ++ integer_to_list(I)) || I <- [1, 2, 3]],
+    Count =
+        case Case of
+            new_leader_expires_a_node_it_never_heard -> 5;
+            _ -> 3
+        end,
+    Peers = [chappe_cluster_test_dist:peer("cc" ++ integer_to_list(I)) || I <- lists:seq(1, Count)],
     Nodes = [N || {_, N} <- Peers],
     [ok = chappe_cluster_test_dist:start_app(N, env(Nodes), Dir) || N <- Nodes],
     [ok = wait_live(N) || N <- Nodes],
@@ -120,6 +126,46 @@ leader_change_never_expires_early(Config) ->
     end,
     ?assert(erpc:call(N, chappe_cluster, valid, [L])),
     [?assertMatch({ok, #{pid := Holder}}, erpc:call(R, chappe_cluster, owner, [lc_key, consistent])) || R <- Rest].
+
+%% Stop a node, then the leader at once: the new leader never applied a
+%% renew of that node, so only the timer it arms as it takes over can
+%% expire it. The node's key comes free no earlier than lease_ms after the
+%% stop, and no later than lease_ms after the election plus a bound.
+new_leader_expires_a_node_it_never_heard(Config) ->
+    Peers = ?config(peers, Config),
+    Nodes = ?config(nodes, Config),
+    {_, LeaderNode} = leader(hd(Nodes)),
+    [X | _] = Nodes -- [LeaderNode],
+    {ok, _} = erpc:call(X, chappe_cluster, claim, [nl_key, #{pid => holder(X)}]),
+    {PX, X} = lists:keyfind(X, 2, Peers),
+    {PL, LeaderNode} = lists:keyfind(LeaderNode, 2, Peers),
+    T0 = erlang:monotonic_time(millisecond),
+    ok = chappe_cluster_test_dist:stop_peer(PX),
+    ok = chappe_cluster_test_dist:stop_peer(PL),
+    Rest = [R | _] = Nodes -- [X, LeaderNode],
+    wait(fun() -> lists:member(element(2, leader(R)), Rest) end, 300),
+    TElect = erlang:monotonic_time(millisecond),
+    Claimer = holder(R),
+    Bound = 5000,
+    TFree = claim_by(R, nl_key, Claimer, TElect + ?LEASE + Bound),
+    ct:pal("stop at 0, elected at +~b, free at +~b", [TElect - T0, TFree - T0]),
+    ?assert(TFree - T0 >= ?LEASE),
+    ?assert(TFree - TElect =< ?LEASE + Bound).
+
+%% Claim until it succeeds or the deadline passes; the time it succeeded.
+claim_by(Node, Key, Pid, Deadline) ->
+    case erpc:call(Node, chappe_cluster, claim, [Key, #{pid => Pid, timeout => 1000}]) of
+        {ok, _} ->
+            erlang:monotonic_time(millisecond);
+        {error, _} = E ->
+            case erlang:monotonic_time(millisecond) > Deadline of
+                true ->
+                    ct:fail({never_free, Key, E});
+                false ->
+                    timer:sleep(50),
+                    claim_by(Node, Key, Pid, Deadline)
+            end
+    end.
 
 %% Move every node's wall clock (the HLC's) an hour forward, then an hour
 %% back, under a held lease: nothing expires, nothing is taken over, and

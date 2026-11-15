@@ -35,6 +35,10 @@
     set_members/1,
     leader/0,
     set_leader/1,
+    incarnation/0,
+    set_incarnation/1,
+    known_epoch/0,
+    set_known_epoch/1,
     hold/3,
     valid/1,
     valid_lease/1,
@@ -144,6 +148,32 @@ members() ->
 -spec set_members([{atom(), node()}]) -> ok.
 set_members(Ms) ->
     true = ets:insert(?TAB, {members, Ms}),
+    ok.
+
+%% This app start's incarnation number, from the region.
+-spec incarnation() -> pos_integer() | undefined.
+incarnation() ->
+    case lookup(incarnation) of
+        [{incarnation, I}] -> I;
+        _ -> undefined
+    end.
+
+-spec set_incarnation(pos_integer() | undefined) -> ok.
+set_incarnation(I) ->
+    true = ets:insert(?TAB, {incarnation, I}),
+    ok.
+
+%% The last epoch the region gave this incarnation.
+-spec known_epoch() -> pos_integer() | undefined.
+known_epoch() ->
+    case lookup(known_epoch) of
+        [{known_epoch, E}] -> E;
+        _ -> undefined
+    end.
+
+-spec set_known_epoch(pos_integer()) -> ok.
+set_known_epoch(E) ->
+    true = ets:insert(?TAB, {known_epoch, E}),
     ok.
 
 -spec leader() -> {atom(), node()} | undefined.

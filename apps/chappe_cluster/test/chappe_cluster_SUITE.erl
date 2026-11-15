@@ -8,6 +8,7 @@
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
+-include_lib("hlc/include/hlc.hrl").
 
 -compile([export_all, nowarn_export_all]).
 
@@ -21,7 +22,7 @@ all() ->
     [
         claim_owner_release,
         owned_by_another_holder,
-        claim_again_bumps_the_fence,
+        claim_again_is_refused,
         holder_death_releases,
         lease_for_another_pid,
         agent_crash_keeps_leases,
@@ -51,6 +52,7 @@ all() ->
         stop_singleton,
         directory_local,
         now_never_goes_back,
+        far_future_stamp_moves_no_clock,
         bad_arguments,
         bad_config_fails_the_start
     ].
@@ -116,14 +118,18 @@ owned_by_another_holder(_Config) ->
     ?assert(seq(L2) > seq(L)),
     exit(Other, kill).
 
-claim_again_bumps_the_fence(_Config) ->
+%% A second claim by the holder is refused: a try never takes over the
+%% lease of another try.
+claim_again_is_refused(_Config) ->
     {ok, L1} = chappe_cluster:claim(k_again, #{}),
-    {ok, L2} = chappe_cluster:claim(k_again, #{}),
-    {R, E, S1} = chappe_cluster:fence(L1),
-    ?assertMatch({R, E, S2} when S2 > S1, chappe_cluster:fence(L2)),
-    %% releasing the first lease leaves the second alone
+    ?assertMatch(
+        {error, {owned, #{pid := P}}} when P =:= self(),
+        chappe_cluster:claim(k_again, #{})
+    ),
+    ?assert(chappe_cluster:valid(L1)),
     ok = chappe_cluster:release(L1),
-    ?assertMatch({ok, #{pid := P}} when P =:= self(), chappe_cluster:owner(k_again)),
+    {ok, L2} = chappe_cluster:claim(k_again, #{}),
+    ?assert(seq(L2) > seq(L1)),
     ok = chappe_cluster:release(L2).
 
 %% Owner death: the holder dies, the region frees its key.
@@ -615,6 +621,15 @@ now_never_goes_back(_Config) ->
     ?assert(hlc:less(lists:last(Stamps), H)),
     ?assertMatch([#{hlc := H}], [R || #{key := k_hlc} = R <- chappe_cluster:leases()]),
     ok = chappe_cluster:release(L).
+
+%% A stamp from a node whose wall clock is an hour ahead does not drag
+%% this node's HLC with it (the clock's max offset).
+far_future_stamp_moves_no_clock(_Config) ->
+    Far = #timestamp{wall_time = erlang:system_time(millisecond) + 3600000},
+    chappe_cluster_watch ! {chappe_cluster_kv, put, <<"far/x">>, v, Far},
+    _ = sys:get_state(chappe_cluster_watch),
+    #timestamp{wall_time = W} = chappe_cluster:now(),
+    ?assert(W < erlang:system_time(millisecond) + 60000).
 
 bad_arguments(_Config) ->
     ?assertEqual({error, badarg}, chappe_cluster:claim(k, nomap)),

@@ -57,8 +57,13 @@ handle_cast(_Msg, St) ->
     {noreply, St}.
 
 handle_info({chappe_cluster_kv, Op, Key, Value, Hlc}, St) ->
-    %% the writer's stamp moves this node's clock forward
-    _ = hlc:update(chappe_cluster_hlc, Hlc),
+    %% the writer's stamp moves this node's clock forward, within the
+    %% clock's max offset; a slow or gone clock never stops the delivery
+    try hlc:update(chappe_cluster_hlc, Hlc) of
+        _ -> ok
+    catch
+        exit:_ -> ok
+    end,
     Max = chappe_cluster_config:get(max_watch_mailbox),
     Watchers = lists:usort(
         lists:append([

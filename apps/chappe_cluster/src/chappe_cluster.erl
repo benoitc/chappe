@@ -66,8 +66,9 @@
 
 %% Claim `Key' for `pid' (default the caller). Options: `pid', a process on
 %% this node (the lease follows this node's liveness), and `timeout' in ms
-%% (default command_timeout). Claiming a key you already hold returns a new
-%% lease with a greater fence. A grant that comes back after this node lost
+%% (default command_timeout). Claiming a key you already hold returns
+%% `{error, {owned, Owner}}' with yourself as the owner: a try never takes
+%% over the lease of another try. A grant that comes back after this node lost
 %% its liveness is given back and returns no_quorum.
 -spec claim(term(), map()) ->
     {ok, lease()}
