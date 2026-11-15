@@ -100,6 +100,16 @@ if [ ! -f "$DIST/lib/libsofia-sip-ua.a" ] || [ "$(cat "$SOFIA_STAMP" 2>/dev/null
         tail -n 40 "$BUILD/sofia-make.log" >&2
         exit 1
     }
+    # Upstream's own test that a DNS name whose compression pointers loop
+    # is refused instead of spinning the resolver (CVE-2026-116792). It
+    # needs no network and builds from the objects above in seconds.
+    ( cd "$BUILD/sofia/libsofia-sip-ua/sresolv" && \
+      make torture_sres_domain && ./torture_sres_domain ) \
+        >"$BUILD/sofia-check.log" 2>&1 || {
+        echo "error: sofia check torture_sres_domain failed:" >&2
+        tail -n 40 "$BUILD/sofia-check.log" >&2
+        exit 1
+    }
     echo "$SOFIA_KEY" > "$SOFIA_STAMP"
 fi
 

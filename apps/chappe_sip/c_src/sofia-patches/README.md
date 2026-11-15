@@ -16,7 +16,9 @@ from that copy; the fuzz build calls it with its own directory.
 `prepare_sofia.sh --key` prints the vendored tree's hash and the patches'
 checksum, which is part of sofia's build stamp, so adding or changing a
 patch rebuilds sofia and relinks the NIF. The vendored tree in git never
-changes.
+changes. After building sofia, `build.sh` builds and runs upstream's
+`torture_sres_domain` (the DNS compression loop of CVE-2026-116792); a
+failure fails the build, and the log is `build/sofia-check.log`.
 
 ## The patches
 
