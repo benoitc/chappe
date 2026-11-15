@@ -13,7 +13,8 @@
 # ESL_PROJECT (compose project, default chappe-esl), FS1_ESL_PORT (18021)
 # and FS2_ESL_PORT (18022) move the stack out of the way of another one.
 # ESL_SOCKET_PORT (18084) is the outbound listener the socket extension
-# connects back to; ESL_MEDIA_DIR (_build/esl-media) is shared with both
+# connects back to, on ESL_SOCKET_IP (0.0.0.0) taking the peers of
+# ESL_SOCKET_ALLOW (loopback and docker's pools, comma-separated CIDRs); ESL_MEDIA_DIR (_build/esl-media) is shared with both
 # nodes as /media for prompts and recordings. chappe_audio_live_SUITE then
 # forks fs1's audio into a chappe_audio listener on AUDIO_PORT (18085).
 #

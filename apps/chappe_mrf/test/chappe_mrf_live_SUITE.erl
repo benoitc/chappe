@@ -100,7 +100,15 @@ setup(Config) ->
     ok = chappe_sip:start(#{
         contact => <<"sip:127.0.0.1:", (integer_to_binary(SipPort))/binary>>
     }),
-    ok = chappe_mrf:start(#{esl_port => Int("MRF_SOCKET_PORT", "17084")}),
+    %% FreeSWITCH reaches the listener from the docker network (on Linux
+    %% from a bridge address, through host-gateway): listen on every
+    %% interface and take only loopback and docker's address pools
+    {ok, EslIp} = inet:parse_address(Env("MRF_ESL_IP", "0.0.0.0")),
+    ok = chappe_mrf:start(#{
+        esl_port => Int("MRF_SOCKET_PORT", "17084"),
+        esl_ip => EslIp,
+        esl_allow => string:lexemes(Env("MRF_ESL_ALLOW", "127.0.0.0/8,172.16.0.0/12,192.168.0.0/16"), ",")
+    }),
     ok = chappe_sip_media:configure(#{
         rtpengine => #{
             nodes => [#{name => ?RTPE, host => "127.0.0.1", port => Int("MRF_NG_PORT", "17222")}]

@@ -79,8 +79,11 @@ start(File) ->
             mix => #{ip => {0, 0, 0, 0}, advertise => env("DEMO_MEDIA_IP", "127.0.0.1")}
         }
     }),
+    {ok, MrfIp} = inet:parse_address(env("DEMO_MRF_IP", maps:get(mrf_ip, Cfg, "127.0.0.1"))),
     ok = chappe_mrf:start(#{
-        esl_port => list_to_integer(env("DEMO_MRF_PORT", maps:get(mrf_port, Cfg, 18084)))
+        esl_port => list_to_integer(env("DEMO_MRF_PORT", maps:get(mrf_port, Cfg, 18084))),
+        esl_ip => MrfIp,
+        esl_allow => mrf_allow(Cfg)
     }),
     ok = prompts(env("DEMO_MEDIA_DIR", "_build/demo-media")),
     ok = chappe_sip:peer_subscribe(Keeper),
@@ -128,6 +131,13 @@ audio(Cfg) ->
 -spec recordings(binary()) -> [map()].
 recordings(Ref) ->
     [maps:with([id, source, duration_ms, path], R) || R <- chappe_audio_store:find(Ref)].
+
+%% DEMO_MRF_ALLOW (comma-separated) wins over mrf_allow; neither, any peer.
+mrf_allow(Cfg) ->
+    case os:getenv("DEMO_MRF_ALLOW", "") of
+        "" -> maps:get(mrf_allow, Cfg, []);
+        V -> string:lexemes(V, ",")
+    end.
 
 env(Name, Default) ->
     case os:getenv(Name) of

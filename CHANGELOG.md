@@ -15,6 +15,10 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
   The listener also closes a connection that does not send its channel data
   in time, and new ones past a limit while others still wait, so a peer
   that opens connections and sends nothing can no longer pile them up.
+- chappe_mrf, a breaking change that follows: its event socket listener
+  listens on 127.0.0.1 only by default. When FreeSWITCH runs on another
+  host, set the address to listen on and the networks FreeSWITCH connects
+  from in chappe_mrf's configuration, or FreeSWITCH can no longer reach it.
 - chappe_esl and chappe_mrf: the fork docs now say that a stereo
   mod_audio_stream fork sends nothing unless both directions carry audio,
   and to fork in mono or mixed instead when you need the caller's audio

@@ -73,7 +73,7 @@ No module is marked internal in its source yet.
 | chappe_rtpengine | the application; started on demand by `chappe_sip_media_sup` when chappe_sip's `media` config names it | `chappe_rtpengine:add_node/2`, or chappe_sip's `media => #{rtpengine => ...}`; app env `dtmf_listen`, `dtmf_ip`, `dtmf_allowed_sources` | `chappe_rtpengine_dtmf`, [configuration reference](../apps/chappe_rtpengine/docs/configuration.md) |
 | chappe_mix | the application; started on demand like chappe_rtpengine | `chappe_mix:start/1` options per room, or chappe_sip's `media => #{mix => ...}` | `chappe_mix` moduledoc, [configuration reference](../apps/chappe_mix/docs/configuration.md) |
 | chappe_esl | the application; the node registry starts when the `nodes` app env is set | `chappe_esl:connect/1`, `chappe_esl:node_add/2`, `chappe_esl:start_listener/3`; app env `nodes`, `max_frame_bytes` | `chappe_esl_sup`, `chappe_esl_parser`, [configuration reference](../apps/chappe_esl/docs/configuration.md) |
-| chappe_mrf | the application, after chappe_sip and chappe_esl; `chappe_mrf:start/1` after `chappe_sip:start/1` | `chappe_mrf:start/1` (`esl_port`); app env `esl_port` starts the listener with the app | `chappe_mrf_app`, [configuration reference](../apps/chappe_mrf/docs/configuration.md) |
+| chappe_mrf | the application, after chappe_sip and chappe_esl; `chappe_mrf:start/1` after `chappe_sip:start/1` | `chappe_mrf:start/1` (`esl_port`, `esl_ip`, `esl_allow`); app env `esl_port` starts the listener with the app | `chappe_mrf_app`, [configuration reference](../apps/chappe_mrf/docs/configuration.md) |
 
 The development shell (`rebar3 shell`) starts all five apps with
 `apps/chappe_sip/config/sys.config` (root `rebar.config`, `shell`).

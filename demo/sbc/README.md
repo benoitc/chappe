@@ -313,6 +313,9 @@ log shows the call, `{hold,a}` and `{unhold,a}`.
 - `run-sipp.sh 1000` calls the pool with SIPp.
 - The IVR listens for the FreeSWITCH event sockets on 18084
   (`DEMO_MRF_PORT`, `mrf_port` in `demo.config`); `make demo` passes the
-  same port to the containers.
+  same port to the containers. The pool connects from the docker network,
+  so the listener binds every interface and takes only loopback and
+  docker's address pools (`mrf_ip`, `mrf_allow`; `DEMO_MRF_IP`,
+  `DEMO_MRF_ALLOW` win).
 - Text to speech is out of scope: the menu is a wav file. See
   `apps/chappe_mrf/docs` to build your own IVR.
