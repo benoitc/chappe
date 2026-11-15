@@ -7,6 +7,26 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 
 ## Unreleased
 
+- chappe_esl and chappe_mrf: the fork docs now say that a stereo
+  mod_audio_stream fork sends nothing unless both directions carry audio,
+  and to fork in mono or mixed instead when you need the caller's audio
+  whatever the other side does.
+- SIPREC recording server, a change of behaviour: an offer with no stream
+  the server can take is now refused with 488 and a warning that says why,
+  and serving it returns an error. Before, unless the streams were SRTP, it
+  was accepted with every stream turned down, leaving your app to hang up an
+  empty session. An app that relied on that empty session must handle the
+  error instead.
+- chappe_audio: a listener can now be put under your own supervisor, so it
+  is restarted on its port when it dies and lives as long as your app.
+  Before, a listener that crashed stayed down.
+- SIPREC recording server: the declared result of serving a session left
+  out keys it really returns, so dialyzer told an app calling it that the
+  success case could never happen. It now describes the session as it is.
+- SIPREC recording server: the ports its receivers bind can now be limited
+  to a range, per server or for the whole node. Before, each stream took a
+  random port, so a recording client could not reach a server running in a
+  container that publishes only a range.
 - chappe_audio, a new app: it receives the audio FreeSWITCH forks over a
   WebSocket, from mod_audio_fork or mod_audio_stream, checks the path and a
   token, and hands each stream to a process of yours, with a bound on what

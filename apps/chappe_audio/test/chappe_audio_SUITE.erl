@@ -30,6 +30,7 @@ all() ->
         owner_death,
         stream_crash,
         listener_crash,
+        child_spec_restarts,
         handshake_crash,
         set_owner,
         flood_bound,
@@ -350,6 +351,49 @@ listener_crash(_Config) ->
     {chappe_audio, S, {frame, <<5, 0>>}} = recv(),
     ?assertEqual({error, no_listener}, chappe_audio:open(L, #{})),
     ok = chappe_audio:close(S).
+
+%% child_spec/1 puts a listener under the app's own supervisor: it is
+%% restarted when it dies, on the same port and under its registered
+%% name; the streams it opened keep their owner and their forks, and the
+%% new listener takes new ones. A bad option fails the child spec.
+child_spec_restarts(_Config) ->
+    {ok, Probe} = gen_tcp:listen(0, [{ip, {127, 0, 0, 1}}]),
+    {ok, Port} = inet:port(Probe),
+    ok = gen_tcp:close(Probe),
+    Spec = chappe_audio:child_spec(#{port => Port, register => audio_test_listener}),
+    ?assertMatch(#{id := _, start := {_, _, _}}, Spec),
+    {ok, Sup} = supervisor:start_link(?MODULE, {test_sup, [Spec]}),
+    L = whereis(audio_test_listener),
+    ?assertEqual(Port, port(audio_test_listener)),
+    {ok, S, Url} = chappe_audio:open(audio_test_listener, #{}),
+    {ok, C} = chappe_audio_test_ws:connect(Url),
+    {chappe_audio, S, {connected, _}} = recv(),
+    exit(L, kill),
+    wait(fun() ->
+        case whereis(audio_test_listener) of
+            undefined -> false;
+            L -> false;
+            _ -> true
+        end
+    end),
+    ?assertEqual(Port, port(audio_test_listener)),
+    ok = chappe_audio_test_ws:send(C, {binary, <<7, 0>>}),
+    {chappe_audio, S, {frame, <<7, 0>>}} = recv(),
+    {ok, S2, Url2} = chappe_audio:open(audio_test_listener, #{}),
+    {ok, _} = chappe_audio_test_ws:connect(Url2),
+    {chappe_audio, S2, {connected, _}} = recv(),
+    ok = chappe_audio:close(S),
+    ok = chappe_audio:close(S2),
+    ?assertError({bad_option, port}, chappe_audio:child_spec(#{port => -1})),
+    ?assertError(badarg, chappe_audio:child_spec(nope)),
+    unlink(Sup),
+    Mon = monitor(process, Sup),
+    exit(Sup, shutdown),
+    receive {'DOWN', Mon, process, Sup, _} -> ok end,
+    ?assertEqual(undefined, whereis(audio_test_listener)).
+
+init({test_sup, Specs}) ->
+    {ok, {#{strategy => one_for_one, intensity => 5, period => 10}, Specs}}.
 
 %% A handshake crashes: its client's connection closes, the listener
 %% and the stream the client was after go on, and the next handshake to

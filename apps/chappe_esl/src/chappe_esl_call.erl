@@ -808,7 +808,10 @@ conference(Call, Room, Opts) ->
 %% server as the first text frame), bugname (mod_audio_fork only: the name
 %% of this fork's media bug, so one channel can run several forks; default
 %% audio_fork). An unknown module returns {error, {bad_option, module}}, a
-%% bugname on mod_audio_stream {error, {bad_option, bugname}}.
+%% bugname on mod_audio_stream {error, {bad_option, bugname}}. A stereo
+%% fork of mod_audio_stream sends only while both directions carry audio
+%% (FreeSWITCH's and the module's behaviour): mono or mixed send whenever
+%% the caller does.
 -spec audio_fork_start(call(), iodata(), map()) -> ok | {error, term()}.
 audio_fork_start(Call, Url, Opts) ->
     case fork_key(Opts) of

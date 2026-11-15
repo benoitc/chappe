@@ -37,6 +37,7 @@
          srtp_call_tapped_as_srtp/1, tls_call_needs_tls_srs/1]).
 -export([too_many_at_once/1, srs_reinvite_more_streams/1,
          dialog_event_without_response/1]).
+-export([server_rtp_ports/1, server_rtp_ports_busy/1, server_refuses_no_stream/1]).
 
 all() ->
     [invite_is_a_recording_session, chappe_as_recording_server,
@@ -56,7 +57,8 @@ all() ->
      server_srtp_flood, server_srtp_lifetime, anchor_keeps_srtp_caller,
      srtp_call_tapped_as_srtp,
      tls_call_needs_tls_srs, too_many_at_once, srs_reinvite_more_streams,
-     dialog_event_without_response].
+     dialog_event_without_response, server_rtp_ports,
+     server_rtp_ports_busy, server_refuses_no_stream].
 
 -define(UA, chappe_sip_test_ua).
 -define(M, chappe_sip_siprec_meta).
@@ -81,6 +83,8 @@ end_per_testcase(_Case, _Config) ->
     _ = [exit(P, kill) || {_, P, _, _} <- supervisor:which_children(chappe_sip_siprec_sup)],
     application:unset_env(chappe_sip, siprec_max_per_call),
     application:unset_env(chappe_sip, siprec_store),
+    application:unset_env(chappe_sip, siprec_rtp_ports),
+    _ = persistent_term:erase(siprec_test_srs_opts),
     _ = persistent_term:erase(siprec_test_ep),
     _ = chappe_sip:stop(),
     _ = chappe_sip_engine:reset_routes(),
@@ -893,6 +897,105 @@ server_answers_on_the_wire(_Config) ->
     ?assertMatch(<<"m=audio 0 ", _/binary>>, hd(M2)),
     #{streams := [#{label := <<"1">>}]} = got(srs_served).
 
+%% rtp_ports => {Min, Max}: each stream binds a port in the range (a
+%% container publishes only those). A range of two serving one stream
+%% binds inside it; a range smaller than the streams refuses the extra
+%% ones with port 0; the siprec_rtp_ports config is the default; a range
+%% that is not one is badarg, answered 500.
+server_rtp_ports(_Config) ->
+    #{ep := EP} = call(),
+    Head = <<"v=0\r\no=src 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\n">>,
+    One = <<Head/binary, "m=audio 30000 RTP/AVP 0\r\na=sendonly\r\na=label:1\r\n">>,
+    Two = <<One/binary, "m=audio 30002 RTP/AVP 0\r\na=sendonly\r\na=label:2\r\n">>,
+    P = free_ports(2),
+    persistent_term:put(siprec_test_srs_opts, #{rtp_ports => {P, P + 1}}),
+    R1 = wire_rs(EP, <<"sip:ports@127.0.0.1">>, One),
+    ?assertEqual(200, ?UA:status(R1)),
+    #{streams := [#{port := P1}]} = got(srs_served),
+    ?assert(P1 =:= P orelse P1 =:= P + 1),
+    {_, [M1]} = chappe_sip_sdp:sections(?UA:body(R1)),
+    ?assertMatch({_, _}, binary:match(hd(M1), <<"m=audio ", (integer_to_binary(P1))/binary>>)),
+    Q = free_ports(1),
+    persistent_term:put(siprec_test_srs_opts, #{rtp_ports => {Q, Q}}),
+    R2 = wire_rs(EP, <<"sip:ports@127.0.0.1">>, Two),
+    ?assertEqual(200, ?UA:status(R2)),
+    #{streams := [#{port := Q, label := <<"1">>}]} = got(srs_served),
+    {_, [A1, A2]} = chappe_sip_sdp:sections(?UA:body(R2)),
+    ?assertMatch({_, _}, binary:match(hd(A1), <<"m=audio ", (integer_to_binary(Q))/binary>>)),
+    ?assertMatch(<<"m=audio 0 ", _/binary>>, hd(A2)),
+    C = free_ports(1),
+    application:set_env(chappe_sip, siprec_rtp_ports, {C, C}),
+    persistent_term:put(siprec_test_srs_opts, #{}),
+    R3 = wire_rs(EP, <<"sip:ports@127.0.0.1">>, One),
+    ?assertEqual(200, ?UA:status(R3)),
+    #{streams := [#{port := C}]} = got(srs_served),
+    application:unset_env(chappe_sip, siprec_rtp_ports),
+    [begin
+         persistent_term:put(siprec_test_srs_opts, #{rtp_ports => Bad}),
+         R = wire_rs(EP, <<"sip:ports@127.0.0.1">>, One),
+         ?assertEqual(500, ?UA:status(R)),
+         ?assertEqual({error, badarg}, got(srs_served))
+     end || Bad <- [{10, 5}, {0, 10}, {1, 70000}, nope]].
+
+%% An offer with no stream the server can take is refused 488 (RFC 3261
+%% 21.4.26), not answered with every port 0: Warning 305 when it offered
+%% audio in no codec the server takes, or no port was left for it, 304
+%% when it offered no audio at all (RFC 3261 20.43); serve/3 returns
+%% {error, no_streams}.
+server_refuses_no_stream(_Config) ->
+    #{ep := EP} = call(),
+    Head = <<"v=0\r\no=src 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\n">>,
+    Codec = <<Head/binary, "m=audio 30000 RTP/AVP 18\r\na=sendonly\r\na=label:1\r\n"
+              "m=audio 30002 RTP/AVP 9\r\na=sendonly\r\na=label:2\r\n">>,
+    R1 = wire_rs(EP, <<"sip:sink@127.0.0.1">>, Codec),
+    ?assertEqual(488, ?UA:status(R1)),
+    ?assertMatch(<<"305 ", _/binary>>, ?UA:hdr(R1, <<"warning">>)),
+    ?assertEqual({error, no_streams}, got(srs_served)),
+    Video = <<Head/binary, "m=video 30000 RTP/AVP 96\r\na=sendonly\r\na=label:1\r\n">>,
+    R2 = wire_rs(EP, <<"sip:sink@127.0.0.1">>, Video),
+    ?assertEqual(488, ?UA:status(R2)),
+    ?assertMatch(<<"304 ", _/binary>>, ?UA:hdr(R2, <<"warning">>)),
+    ?assertEqual({error, no_streams}, got(srs_served)),
+    P = free_ports(1),
+    {ok, Busy} = gen_udp:open(P, [binary, {ip, {127, 0, 0, 1}}]),
+    persistent_term:put(siprec_test_srs_opts, #{rtp_ports => {P, P}}),
+    R3 = wire_rs(EP, <<"sip:ports@127.0.0.1">>, <<Head/binary, "m=audio 30000 RTP/AVP 0\r\na=sendonly\r\n">>),
+    ?assertEqual(488, ?UA:status(R3)),
+    ?assertMatch(<<"305 ", _/binary>>, ?UA:hdr(R3, <<"warning">>)),
+    ?assertEqual({error, no_streams}, got(srs_served)),
+    gen_udp:close(Busy).
+
+%% A busy port of the range is skipped: with all but one taken, each
+%% stream binds the one left, whatever offset it starts at.
+server_rtp_ports_busy(_Config) ->
+    #{ep := EP} = call(),
+    Sdp = <<"v=0\r\no=src 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\n"
+            "m=audio 30000 RTP/AVP 0\r\na=sendonly\r\na=label:1\r\n">>,
+    P = free_ports(3),
+    Busy = [begin {ok, S} = gen_udp:open(B, [binary, {ip, {127, 0, 0, 1}}]), S end
+            || B <- [P, P + 1]],
+    persistent_term:put(siprec_test_srs_opts, #{rtp_ports => {P, P + 2}}),
+    [begin
+         R = wire_rs(EP, <<"sip:ports@127.0.0.1">>, Sdp),
+         ?assertEqual(200, ?UA:status(R)),
+         Last = P + 2,
+         #{streams := [#{port := Last, pid := Pid}]} = got(srs_served),
+         Mon = monitor(process, Pid),
+         ok = chappe_sip_siprec_rtp:stop(Pid),
+         receive {'DOWN', Mon, process, Pid, _} -> ok end
+     end || _ <- lists:seq(1, 4)],
+    [gen_udp:close(S) || S <- Busy].
+
+%% N consecutive UDP ports free on 127.0.0.1, the first returned
+free_ports(N) ->
+    P = 20000 + rand:uniform(20000),
+    Socks = [gen_udp:open(X, [binary, {ip, {127, 0, 0, 1}}]) || X <- lists:seq(P, P + N - 1)],
+    [gen_udp:close(S) || {ok, S} <- Socks],
+    case lists:all(fun({ok, _}) -> true; (_) -> false end, Socks) of
+        true -> P;
+        false -> free_ports(N)
+    end.
+
 %% ---- the security of the recording session (RFC 7866 12) ----
 
 %% A receiver takes RTP from the recording client only: the address its
@@ -1380,6 +1483,9 @@ handler(Req, Res) ->
         <<"sips:sink@", _/binary>> ->
             Test ! {srs_transport, chappe_sip_req:get(<<"via">>, Req)},
             served(Test, Req, Res, #{sink => Test});
+        <<"sip:ports@", _/binary>> ->
+            Ports = persistent_term:get(siprec_test_srs_opts, #{}),
+            served(Test, Req, Res, Ports#{sink => Test, keys_over_tls => false});
         <<"sip:tlskeys@", _/binary>> ->
             %% the default: SDES keys only over TLS (RFC 4568 8.3)
             served(Test, Req, Res, #{sink => Test});

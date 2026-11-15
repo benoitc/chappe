@@ -128,6 +128,13 @@ end) go to the `notify` option, the handler by default.
 | `modify/2` | `hold`, `unhold`, or a new SDP on an endpoint of `create_endpoint/1` |
 | `destroy/1` | hang up and free the endpoint |
 
+A stereo fork with `module => audio_stream` sends only while both
+directions carry audio: FreeSWITCH and mod_audio_stream build it that way.
+On an endpoint that is not bridged, or while you play into it, the
+WebSocket gets nothing. Use `mix => mono` for the caller alone, or
+`mix => mixed` for both directions in one channel, when you need audio
+whatever the other side does.
+
 ## Say numbers and speak text
 
 `say/3` reads a number, a date or digits with the node's mod_say module

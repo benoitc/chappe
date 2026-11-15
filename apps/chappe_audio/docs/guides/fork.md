@@ -25,6 +25,36 @@ add `tls => SslServerOptions`; the URL then starts with `wss://`.
 To start one with the application instead, set the `listener` env (see
 [configuration](../configuration.md)) and call `chappe_audio:open/1`.
 
+### Keep a listener for your app's lifetime
+
+`listen/1` starts a temporary listener: it is not linked to you and nothing
+restarts it when it dies. To keep one as long as your app runs, put it
+under your own supervisor with `chappe_audio:child_spec/1`:
+
+```erlang
+init([]) ->
+    Listener = chappe_audio:child_spec(#{
+        port => 8090,
+        ip => {0, 0, 0, 0},
+        url => <<"ws://10.0.0.5:8090">>,
+        register => my_audio_listener
+    }),
+    {ok, {#{strategy => one_for_one}, [Listener]}}.
+```
+
+It takes the options of `listen/1`, plus `register` (a local name) and `id`
+(the child id, default the name). Give a fixed `port`: a restarted listener
+binds it again, while with port 0 it would get a new one. Open streams by
+the name, since the pid changes on a restart:
+
+```erlang
+{ok, Stream, Url} = chappe_audio:open(my_audio_listener, #{ref => CallRef}).
+```
+
+Streams are their own processes: when the listener restarts, the open ones
+keep their owner and their fork. chappe_audio must be started before your
+supervisor. A bad option raises `{bad_option, Key}`.
+
 ## Open a stream and start the fork
 
 ```erlang
@@ -71,7 +101,10 @@ with `chappe_audio:ref(Stream)`.
 
 - `{frame, Pcm}` is one WebSocket message: 16-bit signed little-endian PCM
   at the rate you started the fork with, usually 20 ms. In stereo the two
-  channels are interleaved, the caller on the left.
+  channels are interleaved, the caller on the left. A stereo fork of
+  mod_audio_stream sends only while both directions carry audio (nothing
+  arrives on a channel with nothing bridged, or while a prompt plays into
+  it): fork in `mono` or `mixed` if you need the caller's audio regardless.
 - `{text, Bin}` is the fork's metadata first, then any text it sends.
 - `{closed, Why}` is always the last event. `Why` is `normal` (you called
   `close/1`), `peer_closed` (the fork stopped, or the connection ended for
