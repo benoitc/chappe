@@ -12,7 +12,11 @@
 %% (chappe_sip_siprec_meta), starts one receiver per recorded stream
 %% (chappe_sip_siprec_rtp, G.711) and answers 200 with every stream
 %% recvonly and +sip.srs in its Contact. A stream it cannot take (not
-%% PCMU or PCMA, past max_streams) is answered with port 0 (RFC 3264 6).
+%% PCMU or PCMA, past max_streams) is answered with port 0 (RFC 3264 6),
+%% and an offer with no stream it can take is refused 488 with a Warning
+%% (RFC 3261 20.43): 305 Incompatible media format when audio came in no
+%% codec it takes (or found no port), 304 Media type not available when
+%% no audio came, and serve/3 returns {error, no_streams}.
 %%
 %% Each receiver takes RTP from the recording client only: from the
 %% address the client's SDP gives for its stream, latched to the first
@@ -70,7 +74,8 @@
 %%
 %% {error, not_recording_session} leaves Res unanswered, for the app to
 %% treat as an ordinary call or refuse; {error, _} on a body that does not
-%% parse or a store that is not there answers 488 or 500.
+%% parse or a store that is not there answers 488 or 500, and {error,
+%% no_streams} or {error, srtp} was answered 488.
 -module(chappe_sip_siprec_srs).
 
 -export([serve/3, run/1, is_recording_session/1, store/1]).
@@ -245,20 +250,35 @@ answer(Req, Res, Sdp, Doc, Sink, Opts0) ->
         lists:enumerate(Media)
     ),
     Streams = [S || {_, S} <- Taken, S =/= undefined],
-    case Streams =:= [] andalso lists:any(fun secure/1, Media) of
-        true ->
-            _ = chappe_sip_res:send(Res, 488, #{
-                headers => [
-                    {<<"Warning">>, [
-                        <<"302 ">>,
-                        Adv,
-                        <<" \"Incompatible transport protocol\"">>
-                    ]}
-                ]
-            }),
-            {error, srtp};
-        false ->
-            answer_streams(Req, Res, Adv, Taken, Streams, CallRef, Doc, Opts)
+    case Streams of
+        [] -> refuse(Res, Adv, Media);
+        _ -> answer_streams(Req, Res, Adv, Taken, Streams, CallRef, Doc, Opts)
+    end.
+
+%% No stream it can take: 488 (RFC 3261 21.4.26), with the Warning that
+%% says why (20.43): 302 when a stream was secure ({error, srtp}), 305 when
+%% audio came in no codec it takes or found no port, 304 when no audio came
+refuse(Res, Adv, Media) ->
+    {Code, Text, Why} =
+        case {lists:any(fun secure/1, Media), lists:any(fun audio/1, Media)} of
+            {true, _} ->
+                {<<"302">>, <<"Incompatible transport protocol">>, srtp};
+            {false, true} ->
+                {<<"305">>, <<"Incompatible media format">>, no_streams};
+            {false, false} ->
+                {<<"304">>, <<"Media type not available">>, no_streams}
+        end,
+    _ = chappe_sip_res:send(Res, 488, #{
+        headers => [
+            {<<"Warning">>, [Code, <<" ">>, Adv, <<" \"">>, Text, <<"\"">>]}
+        ]
+    }),
+    {error, Why}.
+
+audio([M | _]) ->
+    case m_line(M) of
+        {<<"audio">>, _, _, _} -> true;
+        _ -> false
     end.
 
 %% the SDP of the streams taken, at version Ver of its o= line

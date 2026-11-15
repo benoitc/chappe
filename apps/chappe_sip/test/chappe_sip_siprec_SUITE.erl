@@ -37,7 +37,7 @@
          srtp_call_tapped_as_srtp/1, tls_call_needs_tls_srs/1]).
 -export([too_many_at_once/1, srs_reinvite_more_streams/1,
          dialog_event_without_response/1]).
--export([server_rtp_ports/1, server_rtp_ports_busy/1]).
+-export([server_rtp_ports/1, server_rtp_ports_busy/1, server_refuses_no_stream/1]).
 
 all() ->
     [invite_is_a_recording_session, chappe_as_recording_server,
@@ -58,7 +58,7 @@ all() ->
      srtp_call_tapped_as_srtp,
      tls_call_needs_tls_srs, too_many_at_once, srs_reinvite_more_streams,
      dialog_event_without_response, server_rtp_ports,
-     server_rtp_ports_busy].
+     server_rtp_ports_busy, server_refuses_no_stream].
 
 -define(UA, chappe_sip_test_ua).
 -define(M, chappe_sip_siprec_meta).
@@ -936,6 +936,34 @@ server_rtp_ports(_Config) ->
          ?assertEqual(500, ?UA:status(R)),
          ?assertEqual({error, badarg}, got(srs_served))
      end || Bad <- [{10, 5}, {0, 10}, {1, 70000}, nope]].
+
+%% An offer with no stream the server can take is refused 488 (RFC 3261
+%% 21.4.26), not answered with every port 0: Warning 305 when it offered
+%% audio in no codec the server takes, or no port was left for it, 304
+%% when it offered no audio at all (RFC 3261 20.43); serve/3 returns
+%% {error, no_streams}.
+server_refuses_no_stream(_Config) ->
+    #{ep := EP} = call(),
+    Head = <<"v=0\r\no=src 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\n">>,
+    Codec = <<Head/binary, "m=audio 30000 RTP/AVP 18\r\na=sendonly\r\na=label:1\r\n"
+              "m=audio 30002 RTP/AVP 9\r\na=sendonly\r\na=label:2\r\n">>,
+    R1 = wire_rs(EP, <<"sip:sink@127.0.0.1">>, Codec),
+    ?assertEqual(488, ?UA:status(R1)),
+    ?assertMatch(<<"305 ", _/binary>>, ?UA:hdr(R1, <<"warning">>)),
+    ?assertEqual({error, no_streams}, got(srs_served)),
+    Video = <<Head/binary, "m=video 30000 RTP/AVP 96\r\na=sendonly\r\na=label:1\r\n">>,
+    R2 = wire_rs(EP, <<"sip:sink@127.0.0.1">>, Video),
+    ?assertEqual(488, ?UA:status(R2)),
+    ?assertMatch(<<"304 ", _/binary>>, ?UA:hdr(R2, <<"warning">>)),
+    ?assertEqual({error, no_streams}, got(srs_served)),
+    P = free_ports(1),
+    {ok, Busy} = gen_udp:open(P, [binary, {ip, {127, 0, 0, 1}}]),
+    persistent_term:put(siprec_test_srs_opts, #{rtp_ports => {P, P}}),
+    R3 = wire_rs(EP, <<"sip:ports@127.0.0.1">>, <<Head/binary, "m=audio 30000 RTP/AVP 0\r\na=sendonly\r\n">>),
+    ?assertEqual(488, ?UA:status(R3)),
+    ?assertMatch(<<"305 ", _/binary>>, ?UA:hdr(R3, <<"warning">>)),
+    ?assertEqual({error, no_streams}, got(srs_served)),
+    gen_udp:close(Busy).
 
 %% A busy port of the range is skipped: with all but one taken, each
 %% stream binds the one left, whatever offset it starts at.

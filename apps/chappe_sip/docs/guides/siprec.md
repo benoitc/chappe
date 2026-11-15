@@ -129,6 +129,14 @@ module with its `open/2`, `write/2` and `close/2` works. To take
 the audio yourself, give `sink => Pid` instead: the process gets
 `{chappe_sip_siprec_rtp, Stream, {audio, Pcm}}`, 16-bit PCM at 8 kHz.
 
+A stream the server cannot take (not PCMU or PCMA, past `max_streams`, no
+free port) is answered with port 0. When no stream is left, `serve/3`
+refuses the INVITE with 488 and returns `{error, no_streams}`, so you never
+hold an empty session. Its Warning says why: 305 (Incompatible media
+format) when the audio came in no codec the server takes or found no port,
+304 (Media type not available) when no audio came, 302 when the streams
+were SRTP it cannot take (`{error, srtp}`, see below).
+
 `run/1` carries the session until the BYE: it answers each re-INVITE and
 UPDATE of the client and hands the metadata each carries (a party change,
 a pause) to the notify process (`notify => Pid`, else the sink):

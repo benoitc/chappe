@@ -7,6 +7,12 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 
 ## Unreleased
 
+- SIPREC recording server, a change of behaviour: an offer with no stream
+  the server can take is now refused with 488 and a warning that says why,
+  and serving it returns an error. Before, unless the streams were SRTP, it
+  was accepted with every stream turned down, leaving your app to hang up an
+  empty session. An app that relied on that empty session must handle the
+  error instead.
 - chappe_audio: a listener can now be put under your own supervisor, so it
   is restarted on its port when it dies and lives as long as your app.
   Before, a listener that crashed stayed down.
