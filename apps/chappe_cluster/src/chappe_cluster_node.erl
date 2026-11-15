@@ -279,7 +279,6 @@ stop_local() ->
 %% gets logged.
 -dialyzer({nowarn_function, start_renew/1}).
 start_renew(St = #state{renew = undefined}) ->
-    Members = members(),
     Items = chappe_cluster_tab:pending(),
     LeaseMs = chappe_cluster_config:get(lease_ms),
     Budget = chappe_cluster_config:get(renew_ms),
@@ -293,13 +292,13 @@ start_renew(St = #state{renew = undefined}) ->
         end,
     Cmd = {renew, node(), Epoch, LeaseMs, Items},
     {_, Ref} = spawn_monitor(fun() ->
-        exit({renewed, ra:process_command(Members, Cmd, #{timeout => Budget})})
+        exit({renewed, chappe_cluster_ra:command(Cmd, Budget)})
     end),
     St#state{renew = {Ref, Sent, Items}};
 start_renew(St) ->
     St.
 
-renewed({renewed, {ok, {ok, Epoch}, _Leader}}, Sent, Items) ->
+renewed({renewed, {ok, {ok, Epoch}}}, Sent, Items) ->
     LeaseMs = chappe_cluster_config:get(lease_ms),
     RenewMs = chappe_cluster_config:get(renew_ms),
     Deadline = Sent + LeaseMs - RenewMs div 2,
@@ -329,7 +328,8 @@ start_refresh(St = #state{refresh = undefined}) ->
 start_refresh(St) ->
     St.
 
-refreshed({members, {ok, [_ | _] = Ms, _}}) ->
+refreshed({members, {ok, [_ | _] = Ms, Leader}}) ->
+    ok = chappe_cluster_tab:set_leader(Leader),
     chappe_cluster_tab:set_members(Ms);
 refreshed(_) ->
     ok.

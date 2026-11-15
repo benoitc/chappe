@@ -30,6 +30,8 @@
     lapse_if_due/0,
     members/0,
     set_members/1,
+    leader/0,
+    set_leader/1,
     hold/3,
     valid/1,
     valid_lease/1,
@@ -139,6 +141,18 @@ members() ->
 -spec set_members([{atom(), node()}]) -> ok.
 set_members(Ms) ->
     true = ets:insert(?TAB, {members, Ms}),
+    ok.
+
+-spec leader() -> {atom(), node()} | undefined.
+leader() ->
+    case lookup(leader) of
+        [{leader, L}] -> L;
+        _ -> undefined
+    end.
+
+-spec set_leader({atom(), node()}) -> ok.
+set_leader(L) ->
+    true = ets:insert(?TAB, {leader, L}),
     ok.
 
 %% ---- holders ----

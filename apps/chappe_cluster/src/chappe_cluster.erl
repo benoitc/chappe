@@ -408,16 +408,9 @@ now() ->
 
 %% ---- internals ----
 
+%% Bounded by the timeout whatever the members do (chappe_cluster_ra).
 command(Cmd, Timeout) ->
-    case
-        ra:process_command(chappe_cluster_node:members(), Cmd, #{
-            timeout => Timeout
-        })
-    of
-        {ok, Reply, _Leader} -> {ok, Reply};
-        {timeout, _} -> {error, no_quorum};
-        {error, _} -> {error, no_quorum}
-    end.
+    chappe_cluster_ra:command(Cmd, Timeout).
 
 query(Q) ->
     Timeout = cfg(command_timeout),
