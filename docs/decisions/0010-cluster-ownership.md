@@ -48,15 +48,35 @@ What the repository and the research show:
   record expired starts a new epoch, and the old epoch's leases are dead.
 - **Deterministic time.** The machine uses the timestamp the leader stamps
   on each command, never a replica's clock, so every replica applies the
-  log to the same state.
+  log to the same state. In Ra 3.2.0 the leader stamps a command with
+  `erlang:system_time(millisecond)` when it receives it, and the stamp is
+  written to the log with the entry (`chappe_cluster_machine`, moduledoc).
 - **Fences.** A lease carries `{Region, NodeEpoch, Seq}`. Seq grows strictly
   per key, so a side effect can carry it and the receiver can refuse an
   older owner; the region in it refuses a stale owner coming from another
   region.
-- **The holder gives up first.** A node tells its holders their lease is
-  lost `renew_ms / 2` before the region can expire it, so the old holder
-  stops before a new one starts, with that margin for clock skew between
-  leaders.
+- **The holder gives up first.** A renewal sent at T keeps the node live
+  in the region until at least T + `lease_ms`, by the leader's clock. The
+  node tells its holders their lease is lost at T + `lease_ms -
+  renew_ms / 2`, by its own monotonic clock, from a process that does
+  nothing else (`chappe_cluster_lapse`), and the holders and that deadline
+  live in a table the app's supervisor owns, so an agent crash loses
+  neither. A grant that comes back after the deadline is given back.
+  `chappe_cluster:valid/1` tells a holder, before each side effect, whether
+  its lease still holds.
+- **Leader clocks.** Two leaders' clocks may differ, and under the default
+  `no_time_warp` an offset fixed when a node booted never corrects. So a
+  new leader's first entry, `grace`, gives every node at least `lease_ms`
+  from the new leader's clock, and the entries before it judge no node
+  expired. A leader whose clock runs ahead never expires a node before its
+  holders gave up, whatever the offset. What remains assumed: during one
+  lease, a leader's clock does not jump (an NTP step on the leader, or
+  `multi_time_warp`), and clocks run at the same rate within
+  `renew_ms / 2` per lease.
+- **Singletons are killed on lost.** A singleton's child gets an `exit(Pid,
+  kill)` the moment its node gives the lease up: there is no time for a
+  graceful stop inside the `renew_ms / 2` margin. A stop while the lease
+  holds is a shutdown, bounded by what is left of the lease.
 - **barrel_p2p later, as the directory.** Between regions, a later plan
   publishes `{home region, owner, fence}` through barrel_p2p behind the
   `chappe_cluster_directory` behaviour. It tells a region where a resource
@@ -65,14 +85,17 @@ What the repository and the research show:
 ## What a lost quorum does
 
 - A node that cannot renew for `lease_ms - renew_ms / 2` tells every holder
-  `{chappe_cluster, Lease, lost}`. A singleton stops its child there.
-- New claims and KV writes return `{error, no_quorum}` within their timeout
-  (immediately once the node knows it is not live). Reads from the local
-  replica still answer, possibly stale.
-- Nothing on a call's setup path waits for the quorum: calls go on, and only
-  the creation of new owned resources (a room, a binding) stops until the
-  region is whole again. The majority side of a partition takes over the
-  minority's keys once their leases run out.
+  `{chappe_cluster, Lease, lost}`. A singleton's child is killed there.
+- A claim or a KV write waits for the quorum up to its timeout
+  (`command_timeout`, 5 s by default), then returns `{error, no_quorum}`;
+  once the node knows it is not live, a claim returns at once. Reads from
+  the local replica still answer, possibly stale.
+- So a call setup path that claims a resource can wait. The users in PR 2
+  (rooms, the registrar) must claim asynchronously, or with a short
+  `timeout`, and fall back to what they do without a cluster: a lost quorum
+  stops the creation of new owned resources, never the calls already up.
+  The majority side of a partition takes over the minority's keys once
+  their leases run out.
 
 ## Consequences
 
@@ -85,6 +108,10 @@ What the repository and the research show:
   groups, joined later by the directory, not one stretched group.
 - Fences compare by Seq: the node epoch of a takeover can be lower than the
   previous holder's.
+- A lease is held on the node that claimed it: its holder must be a local
+  process, since `lost` is a local message from that node.
+- `lease_ms` must be at least three times `renew_ms`: a renewal may take up
+  to `renew_ms`, and the holder gives up `renew_ms / 2` early.
 
 ## Open questions
 

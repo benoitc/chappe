@@ -13,8 +13,11 @@
 
 %% ---- helpers ----
 
+%% A machine whose first leader has graced (term 1).
 init() ->
-    ?M:init(#{name => test, region => r1, reap_ms => 2000}).
+    S = ?M:init(#{name => test, region => r1, reap_ms => 2000}),
+    {S1, ok, _} = ?M:apply(meta(1, 0), {timeout, grace}, S),
+    S1.
 
 meta(Idx, Now) ->
     #{index => Idx, term => 1, system_time => Now}.
@@ -222,19 +225,84 @@ kv_max_keys_test() ->
     {_, R, _} = ap({put, <<"b">>, 1, 1}, 0, S2),
     ?assertEqual({error, max_keys}, R).
 
+
+%% ---- leader changes and compaction ----
+
+%% A new leader appends `grace': every node keeps at least lease_ms from
+%% the new leader's clock, so a leader whose clock runs ahead never expires
+%% a node early.
+grace_extends_every_node_test() ->
+    {Ea, S1} = renew(a, 0, init()),
+    {S2, {ok, _}, _} = claim(k, a, Ea, pid(1), 10, S1),
+    %% the new leader's clock is 2000 ms ahead of the old one's
+    {S3, ok, _} = ap({timeout, grace}, 2000, S2),
+    {Eb, S4} = renew(b, 7000, S3),
+    {_, R, _} = claim(k, b, Eb, pid(2), 7500, S4),
+    ?assertMatch({error, {owned, _}}, R).
+
+grace_never_shortens_test() ->
+    {Ea, S1} = renew(a, 5000, init()),
+    {S2, {ok, _}, _} = claim(k, a, Ea, pid(1), 5010, S1),
+    {S3, ok, _} = ap({timeout, grace}, 0, S2),
+    {Eb, S4} = renew(b, 10500, S3),
+    ?assertMatch({error, {owned, _}}, element(2, claim(k, b, Eb, pid(2), 10500, S4))).
+
+leader_enter_starts_grace_test() ->
+    {_, S1} = renew(a, 0, init()),
+    ?assert(lists:member({timer, grace, 0}, ?M:state_enter(leader, S1))).
+
+%% Before its grace, a new term expires nobody: an ahead clock cannot take
+%% a key or start a new epoch.
+no_expiry_before_grace_test() ->
+    {Ea, S1} = renew(a, 0, init()),
+    {S2, {ok, _}, _} = claim(k, a, Ea, pid(1), 10, S1),
+    {Eb, S3} = renew(b, 0, S2),
+    Late = ?LEASE + 3000,
+    {S4, R1, _} = ?M:apply(meta2(5, Late, 2), {claim, k, b, Eb, pid(2), make_ref(), 100}, S3),
+    ?assertMatch({error, {owned, _}}, R1),
+    {S5, {ok, Ea}, _} = ?M:apply(meta2(6, Late, 2), {renew, a, ?LEASE, []}, S4),
+    {_, ok, _} = ?M:apply(meta2(7, Late, 2), {timeout, reap}, S5),
+    {S6, ok, _} = ?M:apply(meta2(8, Late, 2), {timeout, grace}, S4),
+    {_, R2, _} = ?M:apply(meta2(9, Late + 1, 2), {claim, k, b, Eb, pid(2), make_ref(), 100}, S6),
+    %% grace gave a a full lease from the new clock
+    ?assertMatch({error, {owned, _}}, R2).
+
+meta2(Idx, Now, Term) ->
+    #{index => Idx, term => Term, system_time => Now}.
+
+release_cursor_after_n_entries_test() ->
+    {_, S1} = renew(a, 0, init()),
+    %% no user command lands on a multiple of the interval
+    {S2, _, E2} = ap(4095, {renew, a, ?LEASE, []}, 1, S1),
+    ?assertEqual([], [E || {release_cursor, _, _} = E <- E2]),
+    {S3, _, E3} = ap(4097, {renew, a, ?LEASE, []}, 2, S2),
+    ?assertMatch([{release_cursor, 4097, _}], [E || {release_cursor, _, _} = E <- E3]),
+    {_, _, E4} = ap(4098, {renew, a, ?LEASE, []}, 3, S3),
+    ?assertEqual([], [E || {release_cursor, _, _} = E <- E4]).
+
 %% ---- properties ----
 
 -define(NODES, [a, b, c]).
 -define(KEYS, [k1, k2, k3]).
 -define(PIDS, [1, 2, 3, 4, 5, 6]).
+-define(RENEW, 2000).
+%% what a holder believes: its node's last renewal, sent at T, holds until
+%% T + lease_ms - renew_ms / 2 (chappe_cluster_node)
+-define(MARGIN, (?RENEW div 2)).
+
+delay() ->
+    range(0, ?RENEW).
 
 op() ->
     oneof([
-        {renew, oneof(?NODES)},
-        {claim, oneof(?KEYS), oneof(?NODES), oneof(?PIDS)},
-        {release, oneof(?KEYS)},
+        {renew, oneof(?NODES), delay()},
+        {claim, oneof(?KEYS), oneof(?NODES), oneof(?PIDS), delay(), boolean()},
+        {release, oneof(?KEYS), delay()},
         {down, oneof(?PIDS)},
         {wait, range(1, 2 * ?LEASE)},
+        %% a new leader, its clock off by up to three renew periods
+        {leader, range(-3 * ?RENEW, 3 * ?RENEW)},
+        grace,
         reap,
         {put, oneof([<<"x">>, <<"y">>]), int()},
         {cas, oneof([<<"x">>, <<"y">>]), range(0, 40), int()},
@@ -246,7 +314,8 @@ prop_leases_and_kv() ->
         Ops,
         list(op()),
         begin
-            run(Ops, model()),
+            M = run(Ops, model()),
+            replays(M),
             true
         end
     ).
@@ -254,25 +323,30 @@ prop_leases_and_kv() ->
 leases_property_test() ->
     ?assert(
         proper:quickcheck(prop_leases_and_kv(), [
-            {numtests, 500}, {max_size, 80}, {to_file, user}
+            {numtests, 1000}, {max_size, 100}, {to_file, user}
         ])
     ).
 
-%% The model: what holders and nodes believe, from the replies they got.
-%% - live: node -> {Epoch, LastRenewTime} as the node saw its renewals;
-%% - held: key -> {Node, Epoch, Pid, Seq} the last grant, while its holder
-%%   still believes it owns it;
-%% - seqs: key -> the last fence seq granted;
-%% - kv: key -> version.
+%% The model, in real time (`now'), with the leader's clock at now + off:
+%% - live: node -> {Epoch, SentAt} of its last renewal that came back;
+%% - held: key -> {Node, Epoch, Pid, Seq}, the holder that believes it
+%%   holds the key (it got {ok, Lease} in time);
+%% - pending: node -> what its next renewal carries (abandoned claims,
+%%   leases its holders gave up), as chappe_cluster_node queues them;
+%% - log: every {Meta, Command} applied, for the replay check.
 model() ->
     #{
         s => init(),
         now => 0,
+        off => 0,
+        term => 1,
         idx => 1,
         live => #{},
         held => #{},
         seqs => #{},
-        kv => #{}
+        kv => #{},
+        pending => #{},
+        log => []
     }.
 
 run([], M) ->
@@ -280,99 +354,146 @@ run([], M) ->
 run([Op | Ops], M) ->
     run(Ops, step(Op, M)).
 
+%% Apply one command stamped by the current leader `Delay' ms after it was
+%% sent at `now'; the reply comes back at the same time.
+apply_cmd(Cmd, Delay, M = #{s := S, now := Now, off := Off, idx := Idx, log := Log}) ->
+    Meta = meta2(Idx, Now + Delay + Off, maps:get(term, M)),
+    {S1, Reply, _} =
+        case ?M:apply(Meta, Cmd, S) of
+            {A, B} -> {A, B, []};
+            {A, B, C} -> {A, B, C}
+        end,
+    {Reply, M#{s := S1, idx := Idx + 1, now := Now + Delay, log := [{Meta, Cmd} | Log]}}.
+
 step({wait, Ms}, M = #{now := Now}) ->
     M#{now := Now + Ms};
-step(Op, M = #{s := S, now := Now, idx := Idx}) ->
-    Cmd = command(Op, M),
-    {S1, Reply, _} = ap(Idx, Cmd, Now, S),
-    check(Op, Cmd, Reply, M#{s := S1, idx := Idx + 1}).
-
-command({renew, N}, _) ->
-    {renew, N, ?LEASE, []};
-command({claim, K, N, P}, #{live := Live}) ->
-    E =
-        case Live of
-            #{N := {E0, _}} -> E0;
-            _ -> 0
-        end,
-    {claim, K, N, E, pid(P), make_ref(), 100};
-command({release, K}, #{held := Held}) ->
-    Seq =
-        case Held of
-            #{K := {_, _, _, S}} -> S;
-            _ -> 0
-        end,
-    {release, K, Seq};
-command({down, P}, _) ->
-    {down, pid(P), killed};
-command(reap, _) ->
-    {timeout, reap};
-command({put, K, V}, _) ->
-    {put, K, V, 100};
-command({cas, K, Ver, V}, _) ->
-    {cas, K, Ver, V, 100};
-command({delete, K}, _) ->
-    {delete, K}.
-
-check({renew, N}, _, {ok, E}, M = #{live := Live, now := Now}) ->
-    M#{live := Live#{N => {E, Now}}};
-check({claim, K, _, P}, _, {ok, L}, M) ->
-    #{node := N, epoch := E, seq := Seq} = L,
-    Pid = pid(P),
-    #{held := Held, seqs := Seqs, now := Now} = M,
+step({leader, Off}, M = #{term := T}) ->
+    %% a new leader; its grace comes as a later entry
+    M#{off := Off, term := T + 1};
+step(grace, M) ->
+    {ok, M1} = apply_cmd({timeout, grace}, 0, M),
+    M1;
+step({renew, N, Delay}, M0) ->
+    M = give_up(N, M0),
+    #{pending := P, now := Sent} = M,
+    Items = maps:get(N, P, []),
+    {{ok, E}, M1 = #{live := Live}} = apply_cmd({renew, N, ?LEASE, Items}, Delay, M),
+    M1#{live := Live#{N => {E, Sent}}, pending := P#{N => []}};
+step({claim, K, N, P, Delay, Timeout}, M) ->
+    case node_live(N, M) of
+        false ->
+            %% chappe_cluster:claim/2 returns no_quorum without sending
+            M;
+        {true, E} ->
+            CRef = make_ref(),
+            Cmd = {claim, K, N, E, pid(P), CRef, 100},
+            {Reply, M1} = apply_cmd(Cmd, Delay, M),
+            claimed(Reply, K, N, P, CRef, Timeout, M1)
+    end;
+step({release, K, Delay}, M = #{held := Held}) ->
     case Held of
-        #{K := {_, _, OldPid, _}} when OldPid =:= Pid ->
-            %% the holder claimed again: a new fence, the same holder
-            fence_grows(K, Seq, Seqs),
-            M#{held := Held#{K => {N, E, Pid, Seq}}, seqs := Seqs#{K => Seq}};
-        #{K := Prev} ->
-            %% a new holder while the previous one may still believe it
-            %% holds: its node's last renewal must be past lease_ms
-            ?assert(not believes(Prev, M), {overlap, K, Prev, L, Now}),
-            fence_grows(K, Seq, Seqs),
-            M#{held := Held#{K => {N, E, Pid, Seq}}, seqs := Seqs#{K => Seq}};
+        #{K := {_, _, _, Seq}} ->
+            {ok, M1} = apply_cmd({release, K, Seq}, Delay, M),
+            M1#{held := maps:remove(K, Held)};
         _ ->
-            fence_grows(K, Seq, Seqs),
-            M#{held := Held#{K => {N, E, Pid, Seq}}, seqs := Seqs#{K => Seq}}
-    end;
-check({release, K}, {release, K, Seq}, ok, M = #{held := Held}) ->
-    case Held of
-        #{K := {_, _, _, Seq}} -> M#{held := maps:remove(K, Held)};
-        _ -> M
-    end;
-check({down, P}, _, ok, M = #{held := Held}) ->
-    Pid = pid(P),
-    M#{held := maps:filter(fun(_, {_, _, H, _}) -> H =/= Pid end, Held)};
-check({cas, K, Ver, _}, _, Reply, M = #{kv := Kv}) ->
-    Cur = maps:get(K, Kv, 0),
-    case Reply of
-        {ok, New} ->
-            ?assertEqual(Cur, Ver),
-            ?assert(New > Cur),
-            M#{kv := Kv#{K => New}};
-        {error, {version, Got}} ->
-            ?assertNotEqual(Cur, Ver),
-            ?assertEqual(Cur, Got),
             M
     end;
-check({put, K, _}, _, {ok, New}, M = #{kv := Kv}) ->
+step({down, P}, M = #{held := Held}) ->
+    Pid = pid(P),
+    {ok, M1} = apply_cmd({down, Pid, killed}, 0, M),
+    M1#{held := maps:filter(fun(_, {_, _, H, _}) -> H =/= Pid end, Held)};
+step(reap, M) ->
+    {ok, M1} = apply_cmd({timeout, reap}, 0, M),
+    M1;
+step({put, K, V}, M = #{kv := Kv}) ->
+    {{ok, New}, M1} = apply_cmd({put, K, V, 100}, 0, M),
     ?assert(New > maps:get(K, Kv, 0)),
-    M#{kv := Kv#{K => New}};
-check({delete, K}, _, ok, M = #{kv := Kv}) ->
-    M#{kv := maps:remove(K, Kv)};
-check(_, _, _, M) ->
+    M1#{kv := Kv#{K => New}};
+step({cas, K, Ver, V}, M = #{kv := Kv}) ->
+    Cur = maps:get(K, Kv, 0),
+    case apply_cmd({cas, K, Ver, V, 100}, 0, M) of
+        {{ok, New}, M1} ->
+            ?assertEqual(Cur, Ver),
+            ?assert(New > Cur),
+            M1#{kv := Kv#{K => New}};
+        {{error, {version, Got}}, M1} ->
+            ?assertNotEqual(Cur, Ver),
+            ?assertEqual(Cur, Got),
+            M1
+    end;
+step({delete, K}, M = #{kv := Kv}) ->
+    {ok, M1} = apply_cmd({delete, K}, 0, M),
+    M1#{kv := maps:remove(K, Kv)}.
+
+claimed({ok, L}, K, N, _P, CRef, true, M) ->
+    %% the caller timed out: it abandons the claim by its ref
+    fence(K, L, queue(N, {claim, K, CRef}, M));
+claimed({ok, L}, K, N, P, _CRef, false, M) ->
+    #{epoch := E, seq := Seq} = L,
+    M1 = fence(K, L, M),
+    case node_live(N, M1) of
+        {true, E} ->
+            Pid = pid(P),
+            #{held := Held, now := Now} = M1,
+            case Held of
+                #{K := {_, _, OldPid, _} = Prev} when OldPid =/= Pid ->
+                    ?assert(not believes(Prev, M1), {overlap, K, Prev, L, Now});
+                _ ->
+                    ok
+            end,
+            M1#{held := Held#{K => {N, E, Pid, Seq}}};
+        _ ->
+            %% the reply came after the node's deadline: no_quorum, and
+            %% the lease goes back with the next renewal
+            queue(N, {seq, K, Seq}, M1)
+    end;
+claimed(_Error, _K, _N, _P, _CRef, _Timeout, M) ->
     M.
 
-%% A holder believes it holds while its node renewed the lease's epoch
-%% less than lease_ms ago (what chappe_cluster_node enforces locally).
-believes({N, E, _, _}, #{live := Live, now := Now}) ->
-    case Live of
-        #{N := {E, T}} -> Now < T + ?LEASE;
-        _ -> false
-    end.
-
-fence_grows(K, Seq, Seqs) ->
+fence(K, #{seq := Seq}, M = #{seqs := Seqs}) ->
     case Seqs of
         #{K := Prev} -> ?assert(Seq > Prev);
         _ -> ok
+    end,
+    M#{seqs := Seqs#{K => Seq}}.
+
+queue(N, Item, M = #{pending := P}) ->
+    M#{pending := P#{N => [Item | maps:get(N, P, [])]}}.
+
+%% The node's holders whose belief ended give their leases up, queued for
+%% the next renewal (the lapse in chappe_cluster_node).
+give_up(N, M = #{held := Held}) ->
+    Gone = [{K, Seq} || K := {HN, _, _, Seq} = H <- Held, HN =:= N, not believes(H, M)],
+    lists:foldl(
+        fun({K, Seq}, MA = #{held := HA}) ->
+            queue(N, {seq, K, Seq}, MA#{held := maps:remove(K, HA)})
+        end,
+        M,
+        Gone
+    ).
+
+node_live(N, #{live := Live, now := Now}) ->
+    case Live of
+        #{N := {E, T}} when Now < T + ?LEASE - ?MARGIN -> {true, E};
+        _ -> false
     end.
+
+believes({N, E, _, _}, M) ->
+    node_live(N, M) =:= {true, E}.
+
+%% The same log applied again, and a snapshot taken half way plus the rest
+%% of the log, give the same state.
+replays(#{s := S, log := Log0}) ->
+    Log = lists:reverse(Log0),
+    Fold = fun(Entries, From) ->
+        lists:foldl(
+            fun({Meta, Cmd}, SA) -> element(1, ?M:apply(Meta, Cmd, SA)) end,
+            From,
+            Entries
+        )
+    end,
+    S0 = init(),
+    ?assertEqual(S, Fold(Log, S0)),
+    {First, Rest} = lists:split(length(Log) div 2, Log),
+    Snapshot = binary_to_term(term_to_binary(Fold(First, S0))),
+    ?assertEqual(S, Fold(Rest, Snapshot)).

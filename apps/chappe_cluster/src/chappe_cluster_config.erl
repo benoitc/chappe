@@ -108,8 +108,8 @@ valid(_, V) ->
     is_integer(V) andalso V > 0.
 
 %% A holder gives its lease up renew_ms / 2 before lease_ms runs out, and a
-%% node must get at least one renewal in before that.
-check_timing(#{lease_ms := L, renew_ms := R}) when L >= 2 * R ->
+%% node must get two renewals in before that (each may take renew_ms).
+check_timing(#{lease_ms := L, renew_ms := R}) when L >= 3 * R ->
     ok;
 check_timing(_) ->
     error({badarg, lease_ms}).

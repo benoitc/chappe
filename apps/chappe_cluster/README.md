@@ -22,8 +22,10 @@ case chappe_cluster:claim({room, <<"sales">>}, #{}) of
 end.
 ```
 
-The holder gets `{chappe_cluster, Lease, lost}` when its node's liveness
-lapses or another node takes the key over; it stops acting on it then.
+The holder, a process on the claiming node, gets `{chappe_cluster, Lease,
+lost}` when its node's liveness lapses or another node takes the key over;
+it stops acting on it then. `chappe_cluster:valid(Lease)` checks it before
+a side effect.
 
 ## Keep a value
 
@@ -61,7 +63,7 @@ Application env, validated at start (a bad value fails the start with
 | `voters` | `[node()]` | the region's Ra members at boot |
 | `data_dir` | `"cluster_data"` | Ra's log and snapshots, one folder per node |
 | `lease_ms` | `6000` | how long one renewal keeps a node live |
-| `renew_ms` | `2000` | how often a node renews; `lease_ms >= 2 * renew_ms` |
+| `renew_ms` | `2000` | how often a node renews; `lease_ms >= 3 * renew_ms` |
 | `max_leases` | `100000` | leases one node may hold |
 | `max_keys` | `100000` | keys in the region's KV |
 | `max_value_bytes` | `65536` | one KV value, in external term size |

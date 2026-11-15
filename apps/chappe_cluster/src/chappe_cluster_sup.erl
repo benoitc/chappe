@@ -4,10 +4,15 @@
 %% The supervision tree, rest_for_one so that what depends on a process
 %% restarts with it:
 %%
-%% - chappe_cluster's own pg scope, `chappe_cluster' (running singletons);
+%% - chappe_cluster's own pg scope, `chappe_cluster' (watchers, running
+%%   singletons);
 %% - the watch hub, before the member that feeds it;
-%% - the node agent: the Ra system and member, liveness, tracked leases;
+%% - the lapse timer, before the agent: an agent crash leaves it armed;
+%% - the node agent: the Ra system and member, renewals;
 %% - the singleton supervisor, one contender per singleton name.
+%%
+%% This supervisor owns `chappe_cluster_tab' (chappe_cluster_tab), the
+%% node's holders and liveness, so that no child's crash loses them.
 -module(chappe_cluster_sup).
 -behaviour(supervisor).
 
@@ -18,11 +23,16 @@ start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
 init([]) ->
+    ok = chappe_cluster_tab:new(),
     Children = [
         #{id => chappe_cluster_pg, start => {pg, start_link, [chappe_cluster]}},
         #{
             id => chappe_cluster_watch,
             start => {chappe_cluster_watch, start_link, []}
+        },
+        #{
+            id => chappe_cluster_lapse,
+            start => {chappe_cluster_lapse, start_link, []}
         },
         #{
             id => chappe_cluster_node,

@@ -11,8 +11,10 @@ module prefix: `chappe_cluster_*`. Why it works this way:
 
 Layers: `chappe_cluster_config` (the env, validated at start),
 `chappe_cluster_machine` (the Ra machine: liveness, leases, KV; pure, applied
-directly by its tests), `chappe_cluster_node` (one per node: the Ra system and
-member, renewals, tracked leases), `chappe_cluster_watch` (hands KV changes to
+directly by its tests), `chappe_cluster_tab` (the node's holders and liveness, a
+table the supervisor owns), `chappe_cluster_lapse` (gives every lease up at
+the local deadline), `chappe_cluster_node` (one per node: the Ra system and
+member, renewals), `chappe_cluster_watch` (hands KV changes to
 local watchers, found through the `chappe_cluster` pg scope),
 `chappe_cluster_singleton_sup` and `chappe_cluster_singleton` (one contender
 per singleton name), and `chappe_cluster_directory` (the cross-region seam)

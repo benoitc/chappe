@@ -78,7 +78,13 @@ ok = storage:write(Key, Value, #{fence => Seq}).
 ```
 
 - The caller is the holder; pass `#{pid => Pid}` to make another process
-  hold it, and `#{timeout => Ms}` to bound the wait.
+  on the same node hold it (a pid on another node is `{error, badarg}`: the
+  lease follows this node's liveness), and `#{timeout => Ms}` to bound the
+  wait (an integer; `infinity` is refused).
+- A claim waits for the quorum up to its timeout. On a call setup path,
+  claim from another process or with a short timeout.
+- Before each side effect, check `chappe_cluster:valid(Lease)` (true while
+  this node still holds it) and carry the fence.
 - Seq grows strictly per key. Have whatever you write to reject a fence
   lower than the last one it saw.
 - The holder's death releases the lease. `release/1` gives it back.
@@ -135,6 +141,13 @@ ok = chappe_cluster:singleton(trunk_pinger,
 - One node holds the lease `{chappe_cluster_singleton, trunk_pinger}` and
   runs the child; when it loses the lease or the child stops, another node
   starts it.
+- On `lost` the child is killed (`exit(Pid, kill)`), with no shutdown: it
+  is dead before another node may start its own, and its `terminate/2`
+  does not run. Keep what it writes fenced, and do not rely on a cleanup
+  at stop. When you stop it yourself (`stop_singleton/1`) it gets a normal
+  shutdown, bounded by what is left of the lease.
+- Two copies never run at the same time, as long as the clock assumption
+  of decision 0010 holds.
 - `chappe_cluster:whereis_singleton(trunk_pinger)` finds the running child
   from any node.
 - Inside the child, `chappe_cluster:singleton_fence(trunk_pinger)` returns
@@ -149,5 +162,6 @@ ok = chappe_cluster:singleton(trunk_pinger,
 - `chappe_cluster:home(Key)` returns this node's region; the
   `chappe_cluster_directory` behaviour (`publish/3`, `resolve/1`) is where a
   cross-region backend will plug in.
-- Set `lease_ms` at least twice `renew_ms`. A smaller `lease_ms` moves keys
-  faster after a crash and loses them faster on a slow network.
+- Set `lease_ms` at least three times `renew_ms`, or the app refuses to
+  start. A smaller `lease_ms` moves keys faster after a crash and loses
+  them faster on a slow network.

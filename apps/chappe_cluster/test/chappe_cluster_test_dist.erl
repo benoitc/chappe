@@ -37,7 +37,9 @@ peer(Base) ->
         name => Name,
         host => Host,
         connection => standard_io,
-        args => Paths
+        %% a cut between two peers stays between them: global does not
+        %% drop the other connections to keep its view whole
+        args => ["-kernel", "prevent_overlapping_partitions", "false" | Paths]
     }),
     ok = connect(Node, 50),
     {Peer, Node}.

@@ -27,6 +27,7 @@
     owner/1,
     owner/2,
     fence/1,
+    valid/1,
     leases/0,
     get/1,
     put/2,
@@ -57,9 +58,11 @@
 
 %% ---- leases ----
 
-%% Claim `Key' for `pid' (default the caller). Options: `pid', `timeout'
+%% Claim `Key' for `pid' (default the caller). Options: `pid', a process on
+%% this node (the lease follows this node's liveness), and `timeout' in ms
 %% (default command_timeout). Claiming a key you already hold returns a new
-%% lease with a greater fence.
+%% lease with a greater fence. A grant that comes back after this node lost
+%% its liveness is given back and returns no_quorum.
 -spec claim(term(), map()) ->
     {ok, lease()}
     | {error, {owned, owner()}}
@@ -69,7 +72,7 @@
 claim(Key, Opts) when is_map(Opts) ->
     Pid = maps:get(pid, Opts, self()),
     Timeout = maps:get(timeout, Opts, cfg(command_timeout)),
-    case is_pid(Pid) andalso is_timeout(Timeout) of
+    case is_pid(Pid) andalso node(Pid) =:= node() andalso is_timeout(Timeout) of
         true -> do_claim(Key, Pid, Timeout);
         false -> {error, badarg}
     end;
@@ -77,24 +80,27 @@ claim(_, _) ->
     {error, badarg}.
 
 do_claim(Key, Pid, Timeout) ->
-    case chappe_cluster_node:live() of
-        {ok, Epoch} ->
+    case chappe_cluster_node:live_gen() of
+        {ok, Epoch, Gen} ->
             CRef = make_ref(),
             Cmd = {claim, Key, node(), Epoch, Pid, CRef, cfg(max_leases)},
-            claimed(command(Cmd, Timeout), Key, CRef);
+            claimed(command(Cmd, Timeout), Key, CRef, {Epoch, Gen});
         not_live ->
             {error, no_quorum}
     end.
 
-claimed({ok, {ok, Lease}}, _Key, _CRef) ->
-    ok = chappe_cluster_node:track(Lease),
-    {ok, Lease};
-claimed({ok, {error, stale_epoch}}, _Key, _CRef) ->
+claimed({ok, {ok, Lease}}, _Key, _CRef, {Epoch, Gen}) ->
+    %% still live, at the epoch and with no lapse since the claim left
+    case chappe_cluster_tab:hold(Lease, Epoch, Gen) of
+        ok -> {ok, Lease};
+        lapsed -> {error, no_quorum}
+    end;
+claimed({ok, {error, stale_epoch}}, _Key, _CRef, _) ->
     %% the leader saw this node lapse before this node did
     {error, no_quorum};
-claimed({ok, {error, _} = E}, _Key, _CRef) ->
+claimed({ok, {error, _} = E}, _Key, _CRef, _) ->
     E;
-claimed({error, no_quorum}, Key, CRef) ->
+claimed({error, no_quorum}, Key, CRef, _) ->
     %% the claim may still be applied: have the next renewal undo it
     ok = chappe_cluster_node:abandon(node(), {claim, Key, CRef}),
     {error, no_quorum}.
@@ -103,7 +109,11 @@ claimed({error, no_quorum}, Key, CRef) ->
 %% next renewal; it returns ok either way.
 -spec release(lease()) -> ok | {error, badarg}.
 release(#{key := Key, seq := Seq, node := Node} = Lease) ->
-    ok = chappe_cluster_node:untrack(Lease),
+    ok =
+        case Node =:= node() of
+            true -> chappe_cluster_tab:unhold(Key, Seq);
+            false -> chappe_cluster_node:untrack(Lease)
+        end,
     case command({release, Key, Seq}, cfg(command_timeout)) of
         {ok, ok} -> ok;
         {error, no_quorum} -> chappe_cluster_node:abandon(Node, {seq, Key, Seq})
@@ -129,6 +139,18 @@ owner(_, _) ->
 -spec fence(lease()) -> fence().
 fence(#{region := R, epoch := E, seq := S}) ->
     {R, E, S}.
+
+%% Whether the lease still holds on this node: its node is live at its
+%% epoch, before the local deadline, and it was not lost, released or
+%% taken over. Check it before each side effect, and carry the fence.
+%% False on any other node than the lease's.
+-spec valid(term()) -> boolean().
+valid(#{node := Node, key := _, seq := _, epoch := _} = Lease) when
+    Node =:= node()
+->
+    chappe_cluster_tab:valid(Lease);
+valid(_) ->
+    false.
 
 %% Every valid lease in the region, from the local replica.
 -spec leases() ->
@@ -281,8 +303,18 @@ join(_) ->
     {error, badarg}.
 
 start_remote(Node, Leader, Timeout) ->
-    {ok, Ids, _} = ra:members(Leader, Timeout),
-    try erpc:call(Node, chappe_cluster_node, start_member, [Ids], Timeout) of
+    case ra:members(Leader, Timeout) of
+        {ok, Ids, _} -> start_remote_member(Node, Ids, Timeout);
+        {timeout, _} -> {error, no_quorum};
+        {error, _} = E -> E
+    end.
+
+start_remote_member(Node, Ids, Timeout) ->
+    try
+        erpc:call(
+            Node, chappe_cluster_node, start_member, [Ids], Timeout + 12000
+        )
+    of
         ok -> ok;
         {error, _} = E -> E
     catch
@@ -386,5 +418,4 @@ cfg(Key) ->
 now_ms() ->
     erlang:system_time(millisecond).
 
-is_timeout(infinity) -> true;
 is_timeout(T) -> is_integer(T) andalso T >= 0.
