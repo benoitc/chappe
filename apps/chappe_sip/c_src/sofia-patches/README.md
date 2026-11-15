@@ -36,6 +36,18 @@ it with the same command and the system frameworks or `-lpthread`), 0006 by
 `chappe_sip_tls_SUITE` once `make asan` ran every suite (its repro is a TLS
 handshake, which the ticket describes; there is no program in `repro/`).
 
+## sofia's WebSocket transport
+
+chappe serves WebSocket in Erlang (`src/ws/`), never through sofia's
+`tport_type_ws.c` and `ws.c`. chappe_sip refuses a native contact naming
+`ws`, `wss` or `*` (`{error, badarg}` at start) and gives a contact with no
+transport `udp,tcp` (`tls` for a sips: one), so sofia never opens that
+transport. The code is still compiled: sofia's configure has no switch for
+ws alone. `tport/Makefile.am` builds `ws.c` and `tport_type_ws.c` under
+`HAVE_NTH`, and `tport.c` registers the ws vtables under
+`HAVE_SOFIA_NTH`, so the only way to drop them is `--disable-nth`, which
+also drops the nth and http modules.
+
 ## Reproduce a bug
 
 `repro/` holds a tiny program per patch. Build sofia with UBSan, then, from

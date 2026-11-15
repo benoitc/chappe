@@ -16,6 +16,12 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
   sofia `ws` or `wss` contact. A crafted multipart body could make the
   parser read past its buffer (CVE-2026-110658). Update if you run an
   earlier chappe_sip.
+- chappe_sip security, a change of behaviour: sofia's own WebSocket
+  transport is never opened. A native or TLS contact naming `ws`, `wss` or
+  every transport (`*`) now fails the start with `badarg`, and a TLS
+  contact naming no transport binds TLS only, where sofia also opened its
+  WebSocket transports on it. WebSocket is served by the `ws` and `wss`
+  options, as before.
 - chappe_esl and chappe_mrf: the fork docs now say that a stereo
   mod_audio_stream fork sends nothing unless both directions carry audio,
   and to fork in mono or mixed instead when you need the caller's audio
