@@ -11,7 +11,7 @@
 -module(chappe_cluster_lab_log).
 -behaviour(gen_server).
 
--export([start_link/2, log/4, sync/0, stats/0]).
+-export([start_link/2, log/4, count/1, sync/0, stats/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -spec start_link(map(), integer()) -> {ok, pid()}.
@@ -24,6 +24,11 @@ log(Holder, Key, Kind, Fence) ->
     Offset = persistent_term:get({?MODULE, offset}),
     T = erlang:monotonic_time(microsecond) + Offset,
     gen_server:cast(?MODULE, {log, {T, Holder, Key, Kind, Fence}}).
+
+%% @doc Count an answer that logs no event (a claim refused as owned).
+-spec count(atom()) -> ok.
+count(What) ->
+    gen_server:cast(?MODULE, {count, What}).
 
 -spec sync() -> ok.
 sync() ->
@@ -47,6 +52,10 @@ handle_call(sync, _From, #{fd := Fd} = S) ->
 handle_call(stats, _From, #{stats := Stats} = S) ->
     {reply, Stats, S}.
 
+handle_cast({count, What}, #{stats := Stats} = S) ->
+    {noreply, S#{
+        stats => maps:update_with(What, fun(N) -> N + 1 end, 1, Stats)
+    }};
 handle_cast({log, {_, _, _, Kind, _} = Ev}, #{fd := Fd, stats := Stats} = S) ->
     ok = file:write(Fd, io_lib:format("~w.~n", [Ev])),
     Stats1 = maps:update_with(Kind, fun(N) -> N + 1 end, 1, Stats),

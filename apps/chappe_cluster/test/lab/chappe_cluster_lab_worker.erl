@@ -81,6 +81,10 @@ claim(#{keys := NKeys, holder := H, hold_ms := {Lo, Hi}} = S) ->
             Hold = Lo + rand:uniform(Hi - Lo),
             Until = erlang:monotonic_time(millisecond) + Hold,
             beat(S#{lease => {Lease, Key, Fence, Until}});
+        {error, {owned, _}} ->
+            %% the region answered: the key is someone else's
+            chappe_cluster_lab_log:count(owned),
+            next(S);
         {error, _} ->
             next(S)
     catch

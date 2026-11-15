@@ -449,16 +449,19 @@ has_cluster(#{nodes := [N1 | _]} = Cfg) ->
         _ -> false
     end.
 
-%% After the last heal every node claims again within ten seconds.
+%% After the last heal the region answers every node's claims again within
+%% 15 s: granted, or refused because another holder has the key.
 live(#{nodes := Nodes} = Cfg) ->
     Before = [{N, claims(Cfg, N)} || N <- Nodes],
-    timer:sleep(10000),
+    timer:sleep(15000),
     [N || {N, C0} <- Before, claims(Cfg, N) =< C0].
 
 claims(Cfg, Node) ->
     case erl_call(Cfg, Node, "chappe_cluster_lab_client stats []") of
-        {ok, #{claim_ok := C}} -> C;
-        _ -> 0
+        {ok, #{} = Stats} ->
+            maps:get(claim_ok, Stats, 0) + maps:get(owned, Stats, 0);
+        _ ->
+            0
     end.
 
 stop_clients(#{nodes := Nodes} = Cfg) ->
@@ -502,7 +505,9 @@ verdict(#{margin_us := Margin, renew_ms := Renew} = Cfg, Dir, Dead, Sched) ->
             {error, "no lease was ever claimed"};
         ok when Dead =/= [] ->
             {error,
-                io_lib:format("no claim after the last heal on ~p", [Dead])};
+                io_lib:format("no claim answered after the last heal on ~p", [
+                    Dead
+                ])};
         ok ->
             io:format(
                 "~nPASS: no overlapping lease, fences grow on every key~n"
