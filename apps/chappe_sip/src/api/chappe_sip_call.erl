@@ -23,7 +23,7 @@
 
 -export([scope/0, start_link/0]).
 -export([new_ref/0, valid/1, valid_opts/1, header/0]).
--export([join/3, join/4, leave/2, leave/3, lookup/1, local/1]).
+-export([join/3, join/4, leave/2, leave/3, lookup/1, lookup/2, local/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -export_type([call_ref/0, role/0, calls/0]).
@@ -137,7 +137,16 @@ leave(_Ref, _Role, _Pid) ->
 %% that does not answer in 5 s is left out.
 -spec lookup(call_ref()) -> calls().
 lookup(Ref) ->
-    Nodes = lists:usort([node(P) || P <- pg:get_members(?SCOPE, group(Ref))]),
+    lookup(Ref, []).
+
+%% lookup/1, also asking Nodes, known to serve the call (the node of one of
+%% its dialogs): pg tells other nodes of a join a moment after it, so a
+%% process that just joined on another node may not be listed here yet.
+-spec lookup(call_ref(), [node()]) -> calls().
+lookup(Ref, Nodes0) ->
+    Nodes = lists:usort(
+        Nodes0 ++ [node(P) || P <- pg:get_members(?SCOPE, group(Ref))]
+    ),
     Found = lists:append([at(N, Ref) || N <- Nodes]),
     #{
         b2b => [H || {b2b, H} <- Found],

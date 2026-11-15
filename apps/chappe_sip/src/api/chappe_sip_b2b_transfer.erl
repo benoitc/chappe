@@ -300,7 +300,10 @@ attended(#{call_id := C, to_tag := T, from_tag := F} = R, Info, S) ->
 local(D2, Info, #{b2b := Own}) ->
     try chappe_sip_dialog:call_ref(D2) of
         Ref when is_binary(Ref) ->
-            #{b2b := Calls} = chappe_sip_call:lookup(Ref),
+            %% the dialog's own node knows its call at once
+            #{b2b := Calls} = chappe_sip_call:lookup(
+                Ref, [node(chappe_sip_dialog:pid(D2))]
+            ),
             holder([B || B <- Calls, B =/= Own], D2, Info);
         _ ->
             {reject, 403, <<"Forbidden">>}

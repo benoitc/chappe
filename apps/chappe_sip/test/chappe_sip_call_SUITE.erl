@@ -9,6 +9,7 @@
 -include_lib("common_test/include/ct.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
+-export([lookup_asks_named_node/1]).
 -export([all/0, init_per_suite/1, end_per_suite/1, end_per_testcase/2]).
 -export([b_leg_carries_ref/1, app_ref/1, bad_app_ref/1, uac_ref/1,
          lookup_while_up/1, owner_death_leaves/1, relay_crash_leaves/1,
@@ -23,7 +24,7 @@ all() ->
     [b_leg_carries_ref, app_ref, bad_app_ref, uac_ref, lookup_while_up,
      owner_death_leaves, relay_crash_leaves, async_relay_moves,
      peer_node_lookup, hep_correlates, anchored_media_found,
-     scope_owned_by_app].
+     scope_owned_by_app, lookup_asks_named_node].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -243,6 +244,27 @@ scope_owned_by_app(_Config) ->
     {chappe_sip_pg, Pid, worker, _} =
         lists:keyfind(chappe_sip_pg, 1, supervisor:which_children(chappe_sip_sup)),
     undefined = whereis(chappe).
+
+%% A process that has just joined a call on another node may not be in this
+%% node's pg view yet: lookup/2 asks the node named for it all the same
+%% (the attended transfer names the node of the dialog it found).
+lookup_asks_named_node(_Config) ->
+    ok = chappe_sip_test_dist:ensure(),
+    Paths = lists:append([["-pa", P] || P <- code:get_path()]),
+    {ok, Peer, Node} = peer:start_link(#{name => peer:random_name(),
+                                         args => Paths}),
+    try
+        {ok, _} = erpc:call(Node, application, ensure_all_started, [chappe_sip]),
+        Ref = chappe_sip_call:new_ref(),
+        Holder = erpc:call(Node, erlang, spawn, [timer, sleep, [infinity]]),
+        %% recorded as serving the call, its pg join not seen here yet
+        true = erpc:call(Node, ets, insert,
+                         [chappe_sip_call_members, {{Ref, b2b, Holder}, held}]),
+        ?assertMatch(#{b2b := []}, chappe_sip_call:lookup(Ref)),
+        ?assertMatch(#{b2b := [held]}, chappe_sip_call:lookup(Ref, [Node]))
+    after
+        peer:stop(Peer)
+    end.
 
 %% A peer node finds the call through pg, reads it with info/1 and ends it
 %% with hangup/2: handles work across nodes.
