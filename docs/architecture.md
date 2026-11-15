@@ -108,7 +108,8 @@ chappe_audio_sup (rest_for_one)
 chappe_cluster_sup (rest_for_one)
 |-- pg scope chappe_cluster        watchers by prefix, running singletons
 |-- chappe_cluster_watch           hands KV changes to local watchers
-|-- chappe_cluster_node            the Ra member, liveness, tracked leases
+|-- chappe_cluster_lapse           gives every lease up at the deadline
+|-- chappe_cluster_node            the Ra member, renewals
 `-- chappe_cluster_singleton_sup   one chappe_cluster_singleton per name
 
 chappe_mrf_sup (one_for_one)
