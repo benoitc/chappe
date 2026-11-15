@@ -869,6 +869,9 @@ send_provisional(BMsg, #{req := Req, res := Res, atag := ATag} = W0) ->
     %% every relayed 1xx carries A's To-tag, so it establishes an early
     %% dialog and needs our Contact (RFC 3261 12.1.1)
     Hdrs = CT ++ [{<<"Contact">>, contact(Req)}],
+    %% A's early leg exists before the 1xx leaves, so an UPDATE A sends as
+    %% soon as it has it finds the leg (RFC 3311 5.1)
+    W1 = chappe_sip_b2b_early:leg(W),
     _ = chappe_sip_res:send(Res, Status, #{
         reason => Reason,
         headers => Hdrs,
@@ -876,7 +879,6 @@ send_provisional(BMsg, #{req := Req, res := Res, atag := ATag} = W0) ->
         to_tag => ATag,
         reliable => Reliable
     }),
-    W1 = chappe_sip_b2b_early:leg(W),
     case Reliable of
         true -> W1#{prack_wait := {true, Body =/= <<>>}};
         false -> W1

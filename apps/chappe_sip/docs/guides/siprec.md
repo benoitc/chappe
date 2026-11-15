@@ -260,8 +260,9 @@ called from any node with the call's `b2b` handle (from
 
 ## Where it lives
 
-- Modules: `chappe_sip_siprec` (the client), `chappe_sip_siprec_meta`
-  (metadata), `chappe_sip_siprec_srs` and `chappe_sip_siprec_rtp` (the
+- Modules: `chappe_sip_siprec` (the client), `chappe_sip_siprec_peer`
+  (what the recording server sends in the client's dialog),
+  `chappe_sip_siprec_meta` (metadata), `chappe_sip_siprec_srs` and `chappe_sip_siprec_rtp` (the
   server side), `chappe_sip_srtp` (SRTP decryption), `chappe_sip_sdes`
   (`a=crypto` lines), `chappe_sip_multipart`.
 - Tests: `chappe_sip_siprec_SUITE`, `chappe_sip_siprec_meta_tests`,

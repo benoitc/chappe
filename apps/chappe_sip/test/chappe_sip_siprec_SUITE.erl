@@ -35,7 +35,8 @@
          server_srtp_flood/1, server_srtp_lifetime/1,
          anchor_keeps_srtp_caller/1, log/2,
          srtp_call_tapped_as_srtp/1, tls_call_needs_tls_srs/1]).
--export([too_many_at_once/1, srs_reinvite_more_streams/1]).
+-export([too_many_at_once/1, srs_reinvite_more_streams/1,
+         dialog_event_without_response/1]).
 
 all() ->
     [invite_is_a_recording_session, chappe_as_recording_server,
@@ -54,7 +55,8 @@ all() ->
      server_refuses_srtp_it_cannot_take, server_srtp_rekey,
      server_srtp_flood, server_srtp_lifetime, anchor_keeps_srtp_caller,
      srtp_call_tapped_as_srtp,
-     tls_call_needs_tls_srs, too_many_at_once, srs_reinvite_more_streams].
+     tls_call_needs_tls_srs, too_many_at_once, srs_reinvite_more_streams,
+     dialog_event_without_response].
 
 -define(UA, chappe_sip_test_ua).
 -define(M, chappe_sip_siprec_meta).
@@ -443,6 +445,21 @@ srs_reinvite_more_streams(_Config) ->
     ?assertMatch(<<"m=audio 0 RTP/AVP", _/binary>>, hd(M3)),
     ok = chappe_sip_siprec:stop(Rec).
 
+%% A dialog event with no response to send (an ACK) is not answered: the
+%% recording goes on.
+dialog_event_without_response(_Config) ->
+    #{b2b := B2b} = call(),
+    SP = ?UA:pick(),
+    srs(SP, fun(_Sock, _D, _Src) -> ok end),
+    {ok, Rec} = chappe_sip_siprec:start(B2b, srs_uri(SP), #{}),
+    {started, _} = event(Rec),
+    MRef = erlang:monitor(process, Rec),
+    Rec ! {chappe_sip_dialog, {dialog, self(), 0}, ack, ack_req, undefined},
+    receive {'DOWN', MRef, process, Rec, Why} -> ct:fail({crashed, Why})
+    after 500 -> ok
+    end,
+    ok = chappe_sip_siprec:stop(Rec).
+
 %% Bad arguments fail in the caller; a direct call cannot be recorded;
 %% default needs a configured SRS.
 bad_arguments(_Config) ->
@@ -499,7 +516,7 @@ legacy_content_type(_Config) ->
 %% process runs here, next to the call, the events reach the peer, and
 %% the peer finds it by the call's call_ref.
 from_another_node(_Config) ->
-    ok = ensure_distributed(),
+    ok = chappe_sip_test_dist:ensure(),
     Paths = lists:append([["-pa", P] || P <- code:get_path()]),
     {ok, Peer, Node} = peer:start_link(#{name => peer:random_name(), args => Paths}),
     try
@@ -1496,12 +1513,3 @@ got3(Tag) ->
 drain() ->
     receive {rtpe_cmd, _} = C -> [C | drain()] after 300 -> [] end.
 
-ensure_distributed() ->
-    case node() of
-        nonode@nohost ->
-            {ok, _} = net_kernel:start(list_to_atom("e_siprec_ct_" ++ os:getpid()),
-                                       #{name_domain => shortnames}),
-            ok;
-        _ ->
-            ok
-    end.

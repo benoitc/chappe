@@ -282,6 +282,7 @@ new_state(
         uac => undefined,
         timer => undefined,
         dialog => undefined,
+        early => [],
         pending => undefined,
         dirty => false,
         recheck => false
@@ -551,12 +552,17 @@ replace_party(Leg, Parties, #{participants := Ps, streams := Ss} = St) ->
 handle_info({chappe_sip_uac, Ref, {ok, D}}, #{uac := Ref, timer := T} = St) ->
     cancel_timer(T),
     St1 = St#{
-        uac := undefined, timer := undefined, dialog := D, state := active
+        uac := undefined,
+        timer := undefined,
+        dialog := D,
+        state := active,
+        early := []
     },
     %% the SRS answered: each tap gets its streams of the answer
     case chappe_sip_siprec_tap:answer(chappe_sip_dialog:remote_sdp(D), St1) of
         ok ->
             event(started, #{dialog => D}, St1),
+            chappe_sip_siprec_peer:replay(maps:get(early, St)),
             again(St1);
         {error, Why} ->
             fail(Why, St1)
@@ -588,18 +594,11 @@ handle_info(
     party_change(undefined, St);
 handle_info({chappe_sip_b2b, _Ref, {replaced, _Leg}}, St) ->
     {noreply, St#{recheck := true}};
-%% the SRS: a snapshot request (RFC 7866 9.2), a re-INVITE, its BYE
-handle_info({chappe_sip_dialog, D, update, Req, Res}, #{dialog := D} = St) ->
-    srs_update(Req, Res, St);
-handle_info({chappe_sip_dialog, D, modify, Req, Res}, #{dialog := D} = St) ->
-    srs_reinvite(Req, Res, St);
-handle_info({chappe_sip_dialog, D, destroy, _}, #{dialog := D} = St) ->
-    stop_with(srs_bye, St#{dialog := undefined});
-handle_info({chappe_sip_dialog, _D, _Ev, _}, St) ->
-    {noreply, St};
-handle_info({chappe_sip_dialog, _D, _Ev, _Req, Res}, St) ->
-    _ = chappe_sip_res:send(Res, 405),
-    {noreply, St};
+%% what the SRS sends in the recording's dialog (chappe_sip_siprec_peer)
+handle_info({chappe_sip_dialog, _D, _Ev, _Arg} = Msg, St) ->
+    peer(Msg, St);
+handle_info({chappe_sip_dialog, _D, _Ev, _Req, _Res} = Msg, St) ->
+    peer(Msg, St);
 %% the call ended: its rtpengine session is gone
 handle_info({'DOWN', Mon, process, _, _}, #{media_mon := Mon} = St) ->
     {stop, normal, stopped(ended(St), abandon(St#{media_mon := undefined}))};
@@ -639,50 +638,20 @@ rejected(timeout) ->
 rejected(Why) ->
     {error, Why}.
 
-%% RFC 7866 9.2: an UPDATE with a snapshot request is answered, then a
+%% RFC 7866 9.2: a snapshot request is answered by the peer module, then a
 %% full snapshot goes in a re-INVITE (9.1: "MUST immediately")
-srs_update(Req, Res, St) ->
-    Body = chappe_sip_req:body(Req),
-    case
-        chappe_sip_siprec_meta:snapshot_request(
-            chappe_sip_req:get(<<"content-type">>, Req), Body
-        )
-    of
-        {ok, Reason} ->
-            _ = chappe_sip_res:send(Res, 200),
+peer(Msg, St) ->
+    case chappe_sip_siprec_peer:handle(Msg, St) of
+        {noreply, _} = Keep ->
+            Keep;
+        {snapshot, Reason} ->
             event(snapshot, #{reason => Reason}, St),
             case St of
                 #{pending := undefined} -> reoffer(undefined, none, St);
                 _ -> {noreply, St#{dirty := true}}
             end;
-        no when Body =:= <<>> ->
-            _ = chappe_sip_res:send(Res, 200),
-            {noreply, St};
-        no ->
-            %% an offer from the SRS: the recorded streams stay as they are
-            _ = chappe_sip_res:send(Res, 488),
-            {noreply, St}
-    end.
-
-%% A re-INVITE of the SRS (RFC 7866 7.2: ready to record now, or a stream
-%% it no longer takes): the recorded streams are answered as they are,
-%% sendonly or, paused, inactive, and an m-line past them is refused with
-%% port 0, so the answer has as many as the offer (RFC 3264 6); an offer
-%% with fewer than the session has removed a stream (8) and gets 488. Its
-%% offer reaches rtpengine.
-srs_reinvite(Req, Res, St) ->
-    Offer = chappe_sip_req:body(Req),
-    case Offer =/= <<>> andalso chappe_sip_siprec_body:reanswer(Offer, St) of
-        {ok, Answer} ->
-            _ = chappe_sip_res:send(Res, 200, #{
-                body => Answer,
-                headers => [{<<"Content-Type">>, <<"application/sdp">>}]
-            }),
-            _ = chappe_sip_siprec_tap:answer(Offer, St),
-            {noreply, St};
-        _ ->
-            _ = chappe_sip_res:send(Res, 488),
-            {noreply, St}
+        bye ->
+            stop_with(srs_bye, St#{dialog := undefined})
     end.
 
 %% ---- events ----

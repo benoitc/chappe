@@ -289,6 +289,7 @@ refer_bye_removes_participant(Config) ->
         (_) -> true
     end),
     {ok, _, _} = invite(P2, Uri, []),
+    ok = joined(P2),
     Target = <<"<", (ua_uri(P2))/binary, ";method=BYE>">>,
     {ok, 200} = ua_call(Host, {refer, ?config(focus, Config), Target}),
     Byes = fun() -> [M || {<<"BYE">>, M, _} <- ua_call(P2, requests)] end,
@@ -306,6 +307,7 @@ refer_not_allowed(Config) ->
     end),
     {ok, Call1, _} = invite(P1, Uri, []),
     {ok, _, _} = invite(P2, Uri, []),
+    ok = joined(P2),
     Target = <<"<", (ua_uri(P2))/binary, ";method=BYE>">>,
     {ok, 403} = ua_call(P1, {refer, Call1, Target}),
     timer:sleep(500),
@@ -567,6 +569,14 @@ subscribe(UA, Uri, Event, Hdrs) -> ua_call(UA, {subscribe, Uri, Event, Hdrs}).
 refresh(UA, Sub, Expires) -> ua_call(UA, {refresh, Sub, Expires}).
 bye(UA, CallId) -> ua_call(UA, {bye, CallId}).
 options(UA, Uri) -> ua_call(UA, {options, Uri}).
+%% the focus records a caller once its handler has the dialog, which can
+%% be after the caller has the 200: wait for it before a REFER names it
+joined(P) ->
+    Uri = ua_uri(P),
+    wait_until(
+        fun() -> lists:member(Uri, chappe_sip_test_focus:members()) end, 5000
+    ).
+
 ua_uri(UA) -> ua_call(UA, uri).
 
 ua_start(Name, EP) ->

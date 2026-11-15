@@ -88,7 +88,11 @@ record(Config, Mode) ->
                     chappe_sip_siprec_srs:serve(Req, Res, #{
                         sink => Test, ip => {0, 0, 0, 0}, advertise => MediaIp,
                         %% the lab sends the RS over plain UDP
-                        keys_over_tls => false
+                        keys_over_tls => false,
+                        %% the lab's rtpengine is behind docker's NAT: its
+                        %% SDP says 127.0.0.1, its RTP comes from the
+                        %% container's address (on Linux)
+                        rtp_source => learn
                     }),
                 Test ! {srs_streams, Streams},
                 Test ! {srs_offer, chappe_sip_req:body(Req)},
