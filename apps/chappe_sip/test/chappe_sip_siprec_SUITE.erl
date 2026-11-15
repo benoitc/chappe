@@ -497,7 +497,7 @@ legacy_content_type(_Config) ->
 %% process runs here, next to the call, the events reach the peer, and
 %% the peer finds it by the call's call_ref.
 from_another_node(_Config) ->
-    ok = ensure_distributed(),
+    ok = chappe_sip_test_dist:ensure(),
     Paths = lists:append([["-pa", P] || P <- code:get_path()]),
     {ok, Peer, Node} = peer:start_link(#{name => peer:random_name(), args => Paths}),
     try
@@ -1448,12 +1448,3 @@ got3(Tag) ->
 drain() ->
     receive {rtpe_cmd, _} = C -> [C | drain()] after 300 -> [] end.
 
-ensure_distributed() ->
-    case node() of
-        nonode@nohost ->
-            {ok, _} = net_kernel:start(list_to_atom("e_siprec_ct_" ++ os:getpid()),
-                                       #{name_domain => shortnames}),
-            ok;
-        _ ->
-            ok
-    end.

@@ -115,7 +115,7 @@ relay_crash_ends_call(_Config) ->
 %% A peer node finds the call by its call_ref (pg), asks it for its
 %% state and hangs it up.
 from_another_node(_Config) ->
-    ok = ensure_distributed(),
+    ok = chappe_sip_test_dist:ensure(),
     Paths = lists:append([["-pa", P] || P <- code:get_path()]),
     {ok, Peer, Node} = peer:start_link(#{name => peer:random_name(),
                                          args => Paths}),
@@ -269,12 +269,3 @@ wait_until(F, N) ->
         false -> timer:sleep(100), wait_until(F, N - 1)
     end.
 
-ensure_distributed() ->
-    case node() of
-        nonode@nohost ->
-            {ok, _} = net_kernel:start(list_to_atom("d_async_ct_" ++ os:getpid()),
-                                       #{name_domain => shortnames}),
-            ok;
-        _ ->
-            ok
-    end.

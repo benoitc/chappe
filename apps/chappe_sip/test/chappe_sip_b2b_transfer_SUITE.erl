@@ -528,7 +528,7 @@ notify_retarget(_Config) ->
 %% chappe-erlang-patterns: the notify process is on another node; it gets
 %% {refer, Info} there and accepts from there.
 notify_from_another_node(_Config) ->
-    ok = ensure_distributed(),
+    ok = chappe_sip_test_dist:ensure(),
     Paths = lists:append([["-pa", P] || P <- code:get_path()]),
     {ok, Peer, Node} = peer:start_link(#{name => peer:random_name(),
                                          args => Paths}),
@@ -556,7 +556,7 @@ notify_from_another_node(_Config) ->
 %% with a re-INVITE, and both of Bob's calls end.
 %% req: R5589-10
 attended_join_across_nodes(_Config) ->
-    ok = ensure_distributed(),
+    ok = chappe_sip_test_dist:ensure(),
     Paths = lists:append([["-pa", P] || P <- code:get_path()]),
     {ok, Peer, Node} = peer:start_link(#{name => peer:random_name(),
                                          args => Paths}),
@@ -622,15 +622,6 @@ remote_app(Test) ->
             remote_app(Test)
     end.
 
-ensure_distributed() ->
-    case node() of
-        nonode@nohost ->
-            {ok, _} = net_kernel:start(list_to_atom("d_xfer_ct_" ++ os:getpid()),
-                                       #{name_domain => shortnames}),
-            ok;
-        _ ->
-            ok
-    end.
 
 refer_event(Ref) ->
     receive {chappe_sip_b2b, Ref, {refer, Info}} -> Info

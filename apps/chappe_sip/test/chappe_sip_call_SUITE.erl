@@ -247,7 +247,7 @@ scope_owned_by_app(_Config) ->
 %% A peer node finds the call through pg, reads it with info/1 and ends it
 %% with hangup/2: handles work across nodes.
 peer_node_lookup(_Config) ->
-    ok = ensure_distributed(),
+    ok = chappe_sip_test_dist:ensure(),
     Paths = lists:append([["-pa", P] || P <- code:get_path()]),
     {ok, Peer, Node} = peer:start_link(#{name => peer:random_name(),
                                          args => Paths}),
@@ -472,16 +472,6 @@ wait_found(Node, Ref, N) ->
         _ -> timer:sleep(100), wait_found(Node, Ref, N - 1)
     end.
 
-ensure_distributed() ->
-    case node() of
-        nonode@nohost ->
-            {ok, _} = net_kernel:start(list_to_atom("a_call_ct_" ++
-                                           os:getpid()),
-                                       #{name_domain => shortnames}),
-            ok;
-        _ ->
-            ok
-    end.
 
 hep_packets(_Sock, 0) -> [];
 hep_packets(Sock, N) ->
