@@ -78,6 +78,9 @@ handle_channel(Conn, Channel, _Args) ->
 {ok, _Ref} = chappe_esl:start_listener(8084, my_handler, []).
 ```
 
+The listener binds 127.0.0.1. For FreeSWITCH on another host, pass `ip` and
+`allow` (see [Outbound connections](docs/guides/outbound.md)).
+
 ## Call control
 
 Run applications and wait for each to finish, collect digits, and get DTMF

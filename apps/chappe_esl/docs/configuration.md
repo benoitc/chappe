@@ -65,10 +65,15 @@ module, its arguments and, with `/4`, a map of options:
 | Key | Default | Meaning |
 |---|---|---|
 | `linger` | `true` | `true` sends `linger` after `connect`, so events after the hangup still arrive; an integer sends `linger <Seconds>`; `false` sends nothing. |
-| `ip` | every IPv4 interface | `inet:ip_address()` to listen on; an IPv6 address listens on IPv6. |
+| `ip` | `{127, 0, 0, 1}` | `inet:ip_address()` to listen on; an IPv6 address listens on IPv6. |
+| `allow` | unset (any peer) | CIDR networks or addresses (binaries or strings) peers may connect from. A peer outside is closed right after accept and counted as `refused`. |
 | `backlog` | `128` | Length of the queue of connections not yet accepted. |
+| `max_pending` | `64` | Accepted connections that may wait for their channel data at once; a new one past it is closed (`busy`). |
+| `first_frame_timeout` | `5000` | Milliseconds a peer has to send its channel data after `connect`; then it is closed. |
 
 A bad value returns `{error, {bad_option, Key}}` and nothing listens.
+`chappe_esl:listener_stats/1` returns the listener's counters. See
+[Outbound connections](guides/outbound.md).
 
 ## Audio fork options
 

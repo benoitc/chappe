@@ -7,6 +7,14 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 
 ## Unreleased
 
+- chappe_esl, a breaking change: the outbound listener now listens on
+  127.0.0.1 only, unless you give it an address. Before, it listened on
+  every interface and gave a call to anyone who connected. When FreeSWITCH
+  runs on another host, give the listener the address to listen on and the
+  networks FreeSWITCH connects from; a peer outside them is closed at once.
+  The listener also closes a connection that does not send its channel data
+  in time, and new ones past a limit while others still wait, so a peer
+  that opens connections and sends nothing can no longer pile them up.
 - chappe_esl and chappe_mrf: the fork docs now say that a stereo
   mod_audio_stream fork sends nothing unless both directions carry audio,
   and to fork in mono or mixed instead when you need the caller's audio

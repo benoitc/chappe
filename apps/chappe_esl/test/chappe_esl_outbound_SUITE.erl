@@ -15,6 +15,11 @@
     linger_then_disconnect/1,
     listen_ip/1,
     listen_ipv6/1,
+    default_bind_loopback/1,
+    allow_refuses_peer/1,
+    allow_takes_peer/1,
+    max_pending_bound/1,
+    first_frame_timeout/1,
     bad_listener_options/1
 ]).
 %% chappe_esl_handler callback.
@@ -29,6 +34,11 @@ all() ->
         linger_then_disconnect,
         listen_ip,
         listen_ipv6,
+        default_bind_loopback,
+        allow_refuses_peer,
+        allow_takes_peer,
+        max_pending_bound,
+        first_frame_timeout,
         bad_listener_options
     ].
 
@@ -217,7 +227,126 @@ listen_ipv6(_Config) ->
             {skip, {no_ipv6_loopback, Reason}}
     end.
 
-%% A bad ip, backlog or linger is refused before anything listens.
+%% With no ip, the listener binds loopback only: a connection on another
+%% local address is refused.
+default_bind_loopback(_Config) ->
+    case other_local_address() of
+        undefined ->
+            {skip, no_other_local_address};
+        Other ->
+            Port = pick_port(),
+            {ok, _Ref} = chappe_esl:start_listener(Port, ?MODULE, self()),
+            try
+                S = fs_connect(Port),
+                ?assertEqual(<<"connect">>, recv_block(S)),
+                ?assertEqual(
+                    {error, econnrefused},
+                    gen_tcp:connect(Other, Port, [binary], 5000)
+                )
+            after
+                chappe_esl:stop_listener(Port)
+            end
+    end.
+
+%% A peer outside `allow' is closed right after accept: nothing is sent to
+%% it, no connection process starts, the handler never runs, and the
+%% listener counts it.
+allow_refuses_peer(_Config) ->
+    Port = pick_port(),
+    {ok, _Ref} = chappe_esl:start_listener(Port, ?MODULE, self(), #{
+        allow => [<<"10.0.0.0/8">>, "192.0.2.1"]
+    }),
+    try
+        Before = conn_count(),
+        S = fs_connect(Port),
+        _ = gen_tcp:send(S, channel_frame()),
+        ?assertEqual({error, closed}, gen_tcp:recv(S, 0, 5000)),
+        ?assertEqual(Before, conn_count()),
+        receive
+            {channel, _, _} -> ct:fail(handler_ran)
+        after 200 -> ok
+        end,
+        ?assertMatch(
+            #{refused := 1, accepted := 0, pending := 0},
+            chappe_esl:listener_stats(Port)
+        )
+    after
+        chappe_esl:stop_listener(Port)
+    end.
+
+%% A peer inside `allow' is served as before.
+allow_takes_peer(_Config) ->
+    Port = pick_port(),
+    {ok, _Ref} = chappe_esl:start_listener(Port, ?MODULE, self(), #{
+        allow => [<<"10.0.0.0/8">>, <<"127.0.0.0/8">>]
+    }),
+    try
+        S = fs_connect(Port),
+        ?assertEqual(<<"connect">>, recv_block(S)),
+        ok = gen_tcp:send(S, channel_frame()),
+        receive
+            {channel, _Conn, _Channel} -> ok
+        after 5000 ->
+            ct:fail(no_channel)
+        end,
+        ?assertMatch(
+            #{refused := 0, accepted := 1, pending := 0},
+            chappe_esl:listener_stats(Port)
+        )
+    after
+        chappe_esl:stop_listener(Port)
+    end.
+
+%% Past max_pending connections waiting for their first frame, a new one
+%% is closed at once; once one sends its channel data, room is made again.
+max_pending_bound(_Config) ->
+    Port = pick_port(),
+    {ok, _Ref} = chappe_esl:start_listener(Port, ?MODULE, self(), #{
+        max_pending => 2
+    }),
+    try
+        S1 = fs_connect(Port),
+        ?assertEqual(<<"connect">>, recv_block(S1)),
+        S2 = fs_connect(Port),
+        ?assertEqual(<<"connect">>, recv_block(S2)),
+        S3 = fs_connect(Port),
+        ?assertEqual({error, closed}, gen_tcp:recv(S3, 0, 5000)),
+        ?assertMatch(
+            #{busy := 1, pending := 2}, chappe_esl:listener_stats(Port)
+        ),
+        ok = gen_tcp:send(S1, channel_frame()),
+        receive
+            {channel, _, _} -> ok
+        after 5000 -> ct:fail(no_channel)
+        end,
+        S4 = fs_connect(Port),
+        ?assertEqual(<<"connect">>, recv_block(S4)),
+        ?assertMatch(
+            #{busy := 1, pending := 2, accepted := 3},
+            chappe_esl:listener_stats(Port)
+        )
+    after
+        chappe_esl:stop_listener(Port)
+    end.
+
+%% A peer that sends no channel data within first_frame_timeout is closed.
+first_frame_timeout(_Config) ->
+    Port = pick_port(),
+    {ok, _Ref} = chappe_esl:start_listener(Port, ?MODULE, self(), #{
+        first_frame_timeout => 200
+    }),
+    try
+        S = fs_connect(Port),
+        ?assertEqual(<<"connect">>, recv_block(S)),
+        T0 = erlang:monotonic_time(millisecond),
+        ?assertEqual({error, closed}, gen_tcp:recv(S, 0, 5000)),
+        ?assert(erlang:monotonic_time(millisecond) - T0 < 2000),
+        ok = wait_stats(Port, #{first_frame_timeouts => 1, pending => 0}, 50)
+    after
+        chappe_esl:stop_listener(Port)
+    end.
+
+%% A bad option is refused before anything listens.
 bad_listener_options(_Config) ->
     Bad = [
         {ip, "127.0.0.1"},
@@ -225,7 +354,15 @@ bad_listener_options(_Config) ->
         {ip, localhost},
         {backlog, 0},
         {backlog, many},
-        {linger, -1}
+        {linger, -1},
+        {allow, <<"10.0.0.0/8">>},
+        {allow, [<<"10.0.0.0/33">>]},
+        {allow, [<<"not an address">>]},
+        {allow, [{10, 0, 0, 0}]},
+        {max_pending, 0},
+        {max_pending, infinity},
+        {first_frame_timeout, 0},
+        {first_frame_timeout, soon}
     ],
     lists:foreach(
         fun({Key, Value}) ->
@@ -240,6 +377,21 @@ bad_listener_options(_Config) ->
     ).
 
 %% helpers
+
+conn_count() ->
+    proplists:get_value(active, supervisor:count_children(chappe_esl_outbound_sup)).
+
+wait_stats(Port, Want, 0) ->
+    ct:fail({stats, chappe_esl:listener_stats(Port), Want});
+wait_stats(Port, Want, N) ->
+    Stats = chappe_esl:listener_stats(Port),
+    case maps:with(maps:keys(Want), Stats) of
+        Want ->
+            ok;
+        _ ->
+            timer:sleep(20),
+            wait_stats(Port, Want, N - 1)
+    end.
 
 %% An IPv4 address of this host other than loopback, undefined when there
 %% is none.

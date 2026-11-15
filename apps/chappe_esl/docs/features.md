@@ -28,8 +28,11 @@ capability exists before you reach for it.
 - Outbound listener with a per-channel `chappe_esl_handler` behaviour and channel
   data on connect. `linger` is sent after `connect` by default
   (`start_listener/4` with `#{linger => false | Seconds}` to change it).
-  The listener binds every IPv4 interface or the `ip` you give (IPv4 or
-  IPv6), with a configurable `backlog`; a bad value is refused. A
+  The listener binds 127.0.0.1 or the `ip` you give (IPv4 or IPv6), takes
+  only the peers in `allow` (CIDR networks, checked right after accept),
+  bounds the connections waiting for their channel data (`max_pending`,
+  `first_frame_timeout`) and counts what it refuses (`listener_stats/1`),
+  with a configurable `backlog`; a bad value is refused. A
   disconnect notice with Content-Disposition `linger` is delivered as
   `{chappe_esl_linger, Conn}`, any other as `{chappe_esl_disconnect, Conn}`.
 - Streaming frame parser tolerant of arbitrary TCP chunking. A Content-Length
