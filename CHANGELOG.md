@@ -22,6 +22,11 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
   contact naming no transport binds TLS only, where sofia also opened its
   WebSocket transports on it. WebSocket is served by the `ws` and `wss`
   options, as before.
+- chappe_sip security: chappe_sip now takes livery 0.14 and instrument 2.0,
+  which bring a hackney without its five published flaws (header
+  injection, credentials resent on redirect, CA pinning, an SSRF allow
+  list bypass, unbounded bodies) and an ssl_verify_fun that no longer
+  matches wildcard certificates across labels.
 - chappe_sip security: the bundled sofia-sip is now built without its
   WebSocket and HTTP code, which chappe never used, so a future flaw there
   cannot reach a chappe node.

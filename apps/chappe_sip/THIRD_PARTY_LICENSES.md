@@ -42,7 +42,8 @@ tarballs, container images) must:
 The SIP-over-WebSocket transport uses livery
 (https://github.com/benoitc/livery) and the `ws` (erlang_ws) library.
 livery is a rebar3 git dependency (not vendored) and is started lazily,
-only when a WS listener is configured. Its dependency tree is pure Erlang.
+only when a WS listener is configured. Its dependency tree is pure Erlang
+except `instrument`, below.
 
 ## instrument (MIT)
 
