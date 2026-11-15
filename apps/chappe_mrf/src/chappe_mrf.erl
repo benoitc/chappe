@@ -57,7 +57,6 @@
 
 -type endpoint() :: chappe_mrf_endpoint:endpoint().
 
--define(LISTENER, {?MODULE, listener}).
 -define(LOOP_PREFIX, "mrf-mix-").
 %% record options of chappe_mrf's, not FreeSWITCH's
 -define(STORE_OPTS, [store, ref, parties]).
@@ -70,7 +69,11 @@
 %% connects from, CIDR strings or binaries; unset, any peer that reaches
 %% esl_ip). It also installs the INVITE middleware the native conference
 %% backend relies on (install/0).
--spec start(#{atom() => term()}) -> ok | {error, term()}.
+-spec start(#{
+    esl_port => inet:port_number(),
+    esl_ip => inet:ip_address(),
+    esl_allow => [string() | binary()]
+}) -> ok | {error, term()}.
 start(Opts) ->
     ok = install(),
     case maps:find(esl_port, Opts) of
@@ -88,31 +91,16 @@ listen(Port) ->
 -spec listen(inet:port_number(), chappe_esl:listener_opts()) ->
     ok | {error, term()}.
 listen(Port, ListenerOpts) ->
-    case chappe_esl:start_listener(Port, chappe_mrf_esl, [], ListenerOpts) of
-        {ok, _} ->
-            persistent_term:put(?LISTENER, Port),
-            ok;
-        {error, already_started} ->
-            ok;
-        {error, _} = Err ->
-            Err
-    end.
+    chappe_mrf_esl:listen(Port, ListenerOpts).
 
 %% esl_ip and esl_allow as chappe_esl's ip and allow.
 -spec listener_opts(map()) -> chappe_esl:listener_opts().
 listener_opts(Opts) ->
-    Keys = #{esl_ip => ip, esl_allow => allow},
-    #{maps:get(K, Keys) => V || K := V <- maps:with(maps:keys(Keys), Opts)}.
+    chappe_mrf_esl:listener_opts(Opts).
 
 -spec stop_listener() -> ok | {error, term()}.
 stop_listener() ->
-    case persistent_term:get(?LISTENER, undefined) of
-        undefined ->
-            ok;
-        Port ->
-            _ = persistent_term:erase(?LISTENER),
-            chappe_esl:stop_listener(Port)
-    end.
+    chappe_mrf_esl:stop_listener().
 
 %% Take the loopback INVITEs that bring a call into a native conference
 %% (see chappe_mrf_conf). Runs once per chappe_sip:start/1.

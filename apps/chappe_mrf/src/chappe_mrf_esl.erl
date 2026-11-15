@@ -6,13 +6,48 @@
 %% channel carries the X-Chappe-Call header of the INVITE as
 %% variable_sip_h_X-Chappe-Call; the endpoint registered under that id
 %% takes the connection over. A channel nobody waits for is hung up.
+%% It also starts and stops the listener chappe_mrf runs this handler on
+%% (chappe_mrf:listen/2, chappe_mrf:stop_listener/0).
 -module(chappe_mrf_esl).
 -behaviour(chappe_esl_handler).
 
 -export([handle_channel/3, header/0, var/0, headers/2]).
+-export([listen/2, listener_opts/1, stop_listener/0]).
 
 -define(HEADER, <<"X-Chappe-Call">>).
 -define(EP_HEADER, <<"X-Chappe-Endpoint">>).
+%% the port of the running listener
+-define(LISTENER, {chappe_mrf, listener}).
+
+%% Listen for FreeSWITCH outbound sockets on Port with this handler.
+-spec listen(inet:port_number(), chappe_esl:listener_opts()) ->
+    ok | {error, term()}.
+listen(Port, ListenerOpts) ->
+    case chappe_esl:start_listener(Port, ?MODULE, [], ListenerOpts) of
+        {ok, _} ->
+            persistent_term:put(?LISTENER, Port),
+            ok;
+        {error, already_started} ->
+            ok;
+        {error, _} = Err ->
+            Err
+    end.
+
+%% chappe_mrf's esl_ip and esl_allow as chappe_esl's ip and allow.
+-spec listener_opts(map()) -> chappe_esl:listener_opts().
+listener_opts(Opts) ->
+    Keys = #{esl_ip => ip, esl_allow => allow},
+    #{maps:get(K, Keys) => V || K := V <- maps:with(maps:keys(Keys), Opts)}.
+
+-spec stop_listener() -> ok | {error, term()}.
+stop_listener() ->
+    case persistent_term:get(?LISTENER, undefined) of
+        undefined ->
+            ok;
+        Port ->
+            _ = persistent_term:erase(?LISTENER),
+            chappe_esl:stop_listener(Port)
+    end.
 
 %% The SIP header that carries the call's correlation id.
 -spec header() -> binary().
