@@ -67,6 +67,7 @@ Application env, validated at start (a bad value fails the start with
 | `renew_ms` | `2000` | how often a node renews; `lease_ms >= 3 * renew_ms` |
 | `max_drift` | `1` | clock rate drift bound, in percent; checked against the two above |
 | `wall_clock` | `{erlang, system_time, [millisecond]}` | the HLC's wall clock |
+| `hlc_max_offset_ms` | `10000` | how far a received stamp may move the HLC past the wall clock (0: no limit) |
 | `max_leases` | `100000` | leases one node may hold |
 | `max_keys` | `100000` | keys in the region's KV |
 | `max_value_bytes` | `65536` | one KV value, in external term size |

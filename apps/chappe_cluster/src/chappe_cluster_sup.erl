@@ -29,7 +29,12 @@ init([]) ->
         #{id => chappe_cluster_pg, start => {pg, start_link, [chappe_cluster]}},
         #{
             id => chappe_cluster_hlc,
-            start => {hlc, start_link, [chappe_cluster_hlc, wall_clock(), 0]}
+            start =>
+                {hlc, start_link, [
+                    chappe_cluster_hlc,
+                    wall_clock(),
+                    chappe_cluster_config:get(hlc_max_offset_ms)
+                ]}
         },
         #{
             id => chappe_cluster_watch,

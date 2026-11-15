@@ -19,6 +19,8 @@
 %% | max_watch_mailbox | 10000              | a watcher's queue before overflow |
 %% | command_timeout   | 5000               | a write's wait for the quorum     |
 %% | max_drift         | 1                  | clock rate drift bound, percent   |
+%% | hlc_max_offset_ms | 10000              | how far a received stamp may move |
+%% |                   |                    | the HLC ahead of the wall clock   |
 %% | wall_clock        | {erlang, system_time, [millisecond]} | the HLC's wall clock |
 %% | directory         | chappe_cluster_directory_local | the directory backend |
 -module(chappe_cluster_config).
@@ -41,6 +43,7 @@
     max_watch_mailbox,
     command_timeout,
     max_drift,
+    hlc_max_offset_ms,
     wall_clock,
     directory
 ]).
@@ -99,6 +102,7 @@ default(max_value_bytes) -> 65536;
 default(max_watch_mailbox) -> 10000;
 default(command_timeout) -> 5000;
 default(max_drift) -> 1;
+default(hlc_max_offset_ms) -> 10000;
 default(wall_clock) -> {erlang, system_time, [millisecond]};
 default(directory) -> chappe_cluster_directory_local.
 
@@ -116,6 +120,8 @@ valid(wall_clock, {M, F, A}) ->
     is_atom(M) andalso is_atom(F) andalso is_list(A);
 valid(wall_clock, _) ->
     false;
+valid(hlc_max_offset_ms, V) ->
+    is_integer(V) andalso V >= 0;
 valid(_, V) ->
     is_integer(V) andalso V > 0.
 

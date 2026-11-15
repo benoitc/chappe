@@ -6,25 +6,38 @@
 %% No clock. The machine never reads a time, neither its own nor the
 %% `system_time' Ra puts in a command's metadata: it applies results.
 %%
-%% - `{renew, Node, Epoch, LeaseMs, Items}' keeps the node live at Epoch
-%%   when Epoch is its current epoch, or gives it a new one (from a
-%%   region-wide counter) and ends the old one's leases;
-%% - `{timeout, {expire, Node, Epoch}}' ends the node's epoch and frees its
-%%   keys, only when Epoch is still current; otherwise it changes nothing;
+%% - `{renew, Node, Epoch, LeaseMs, Items}' keeps the node live when Epoch
+%%   is its current epoch, and counts the renew. Any other epoch (a delayed
+%%   command from before a lapse) is refused with `{error, stale_epoch}'
+%%   and changes nothing;
+%% - `{incarnate, Node}' gives the node its next incarnation number (an
+%%   app start asks for one before anything else);
+%% - `{renew, Node, {new, Inc, Replace}, LeaseMs, Items}' asks for a new
+%%   epoch (from a region-wide counter) for incarnation Inc. It is stale
+%%   unless Inc is the node's latest incarnation, and it ends the current
+%%   epoch only when that epoch is the one it names (Replace, the last
+%%   epoch this incarnation knew) or was taken by an earlier incarnation.
+%%   So a delayed request, from an attempt that timed out or from an
+%%   earlier incarnation, never ends the epoch a later attempt got;
+%% - `{timeout, {expire, Node, Epoch, Count}}' ends the node's epoch and
+%%   frees its keys, only when {Epoch, Count} is still the node's current
+%%   epoch and renew count; otherwise it changes nothing;
 %% - a claim succeeds on a free key only: every lease of an ended epoch is
-%%   dropped when the epoch ends.
+%%   dropped when the epoch ends. A second claim by the same holder is
+%%   refused, so a delayed try never takes over the lease of its retry.
 %%
 %% Replay and snapshots are deterministic by construction.
 %%
 %% Expiry is the leader's decision, on its own monotonic clock: each renew
-%% the leader applies (re)starts a Ra timer `{expire, Node, Epoch}' of
-%% lease_ms, and a new leader starts one for every live node as it takes
-%% over (state_enter/2). Ra runs these timers on the leader only, on
-%% erlang timers (monotonic), and when one fires it appends
-%% `{timeout, {expire, Node, Epoch}}' to the log. A timer of a deposed
-%% leader that still lands is harmless: it ends only a node that missed its
-%% renewals by that leader's count, and the epoch check drops it if the
-%% node renewed into another epoch.
+%% the leader applies cancels the node's previous timer and starts
+%% `{expire, Node, Epoch, Count}' of lease_ms, named after that renew; a
+%% new leader starts one for every live node as it takes over
+%% (state_enter/2). Ra runs these timers on the leader only, on erlang
+%% timers (monotonic), and when one fires it appends `{timeout, Name}' to
+%% the log (ra_server_proc:leader/3, `machine_timeout'). That entry can
+%% land behind a renew whose commit stalled; the renew counts, so the
+%% stale timer no longer names the current renew and ends nothing. A timer
+%% of a deposed leader that still lands is dropped the same way.
 %%
 %% Fences: a lease's fence is `{Region, NodeEpoch, Seq}'. Seq comes from a
 %% region-wide counter bumped on every grant, so it is strictly increasing
@@ -43,6 +56,8 @@
 
 -export([init/1, apply/3, state_enter/2, overview/1]).
 -export([
+    expire_timer/2,
+    incarnation/2,
     query_owner/2,
     query_get/2,
     query_leases/1,
@@ -82,8 +97,11 @@
 
 -record(cc, {
     region :: atom(),
-    %% node -> {its current epoch, its lease_ms}
-    nodes = #{} :: #{node() => {epoch(), pos_integer()}},
+    %% node -> {its current epoch, its lease_ms, its renew count, the
+    %% incarnation that took the epoch}
+    nodes = #{} :: #{node() => {epoch(), pos_integer(), pos_integer(), term()}},
+    %% node -> its latest incarnation number
+    incs = #{} :: #{node() => pos_integer()},
     last_epoch = 0 :: non_neg_integer(),
     leases = #{} :: #{key() => #held{}},
     %% holder pid -> its keys
@@ -122,7 +140,7 @@ apply(#{index := Idx}, Cmd, S0) ->
 %% leader's clock, and every holder is monitored again.
 -spec state_enter(ra_server:ra_state() | eol, state()) -> ra_machine:effects().
 state_enter(leader, #cc{nodes = Nodes, by_pid = ByPid}) ->
-    [{timer, {expire, N, E}, L} || N := {E, L} <- Nodes] ++
+    [{timer, {expire, N, E, C}, L} || N := {E, L, C, _} <- Nodes] ++
         [{monitor, process, P} || P <- maps:keys(ByPid)];
 state_enter(_, _) ->
     [].
@@ -139,12 +157,13 @@ overview(#cc{} = S) ->
 %% ---- commands ----
 
 do({renew, Node, Epoch, LeaseMs, Abandoned}, S0) ->
-    {E, S1, Effs1} = renew(Node, Epoch, LeaseMs, S0),
-    {S, Effs2} = abandon(Abandoned, Node, S1),
-    {S, {ok, E}, Effs1 ++ Effs2};
-do({timeout, {expire, Node, Epoch}}, S0 = #cc{nodes = Nodes}) ->
+    renewed(renew(Node, Epoch, LeaseMs, S0), Node, Abandoned, S0);
+do({incarnate, Node}, S = #cc{incs = Incs}) ->
+    Inc = maps:get(Node, Incs, 0) + 1,
+    {S#cc{incs = Incs#{Node => Inc}}, {ok, Inc}, []};
+do({timeout, {expire, Node, Epoch, Count}}, S0 = #cc{nodes = Nodes}) ->
     case Nodes of
-        #{Node := {Epoch, _}} ->
+        #{Node := {Epoch, _, Count, _}} ->
             {S, Effs} = end_epoch(Node, Epoch, S0),
             {S#cc{nodes = maps:remove(Node, S#cc.nodes)}, ok, Effs};
         _ ->
@@ -196,39 +215,71 @@ do(_Unknown, S) ->
 
 %% ---- liveness ----
 
-%% The node's current epoch goes on, and the leader's timer restarts; any
-%% other epoch it gives (a lapsed node, a restart, a stale one) starts a new
-%% epoch and ends the current one.
-renew(Node, Epoch, LeaseMs, S0 = #cc{nodes = Nodes, last_epoch = Last}) ->
-    case Nodes of
-        #{Node := {Epoch, _}} ->
-            S = S0#cc{nodes = Nodes#{Node := {Epoch, LeaseMs}}},
-            {Epoch, S, [{timer, {expire, Node, Epoch}, LeaseMs}]};
+renewed({ok, E, S1, Effs1}, Node, Abandoned, _S0) ->
+    {S, Effs2} = abandon(Abandoned, Node, S1),
+    {S, {ok, E}, Effs1 ++ Effs2};
+renewed(stale, _Node, _Abandoned, S0) ->
+    {S0, {error, stale_epoch}, []}.
+
+%% A new epoch for the node's latest incarnation, replacing the epoch it
+%% names or one an earlier incarnation took; anything else is stale.
+renew(Node, {new, Inc, Replace}, LeaseMs, S0 = #cc{nodes = Nodes, incs = Incs}) ->
+    case {maps:get(Node, Incs, 0), Nodes} of
+        {Inc, #{Node := {Replace, _, _, Inc}}} ->
+            new_epoch(Node, Inc, LeaseMs, S0);
+        {Inc, #{Node := {_, _, _, Inc}}} ->
+            %% this incarnation already got a newer epoch: a delayed try
+            stale;
+        {Inc, _} ->
+            %% none yet, or an earlier incarnation's
+            new_epoch(Node, Inc, LeaseMs, S0);
         _ ->
-            New = Last + 1,
-            {S1, Effs} =
-                case Nodes of
-                    #{Node := {Old, _}} ->
-                        {SA, EA} = end_epoch(Node, Old, S0),
-                        {SA, [{timer, {expire, Node, Old}, infinity} | EA]};
-                    _ ->
-                        {S0, []}
-                end,
-            S = S1#cc{
-                nodes = (S1#cc.nodes)#{Node => {New, LeaseMs}},
-                last_epoch = New
-            },
-            {New, S, Effs ++ [{timer, {expire, Node, New}, LeaseMs}]}
+            %% not the node's latest incarnation
+            stale
+    end;
+%% The node's current epoch goes on, its renew is counted, and the leader's
+%% timer moves to this renew. Any other epoch is stale.
+renew(Node, Epoch, LeaseMs, S0 = #cc{nodes = Nodes}) ->
+    case Nodes of
+        #{Node := {Epoch, _, C, Inc}} ->
+            S = S0#cc{nodes = Nodes#{Node := {Epoch, LeaseMs, C + 1, Inc}}},
+            Effs = [
+                {timer, {expire, Node, Epoch, C}, infinity},
+                {timer, {expire, Node, Epoch, C + 1}, LeaseMs}
+            ],
+            {ok, Epoch, S, Effs};
+        _ ->
+            stale
     end.
+
+%% A new epoch for the node; the current one (if any) ends.
+new_epoch(Node, Inc, LeaseMs, S0 = #cc{nodes = Nodes, last_epoch = Last}) ->
+    New = Last + 1,
+    {S1, Effs} =
+        case Nodes of
+            #{Node := {Old, _, C, _}} ->
+                {SA, EA} = end_epoch(Node, Old, S0),
+                {SA, [{timer, {expire, Node, Old, C}, infinity} | EA]};
+            _ ->
+                {S0, []}
+        end,
+    S = S1#cc{
+        nodes = (S1#cc.nodes)#{Node => {New, LeaseMs, 1, Inc}},
+        last_epoch = New
+    },
+    {ok, New, S, Effs ++ [{timer, {expire, Node, New, 1}, LeaseMs}]}.
 
 live(Node, Epoch, #cc{nodes = Nodes}) ->
     case Nodes of
-        #{Node := {Epoch, _}} -> true;
+        #{Node := {Epoch, _, _, _}} -> true;
         _ -> false
     end.
 
 %% Drop every lease of the node's epoch, and tell its agent each key is
-%% gone (its holders were told already, by its own deadline).
+%% gone. Nothing depends on that message, which may be lost: the holders
+%% gave up already, by their own deadline, before the leader's timer could
+%% end the epoch (chappe_cluster_config:timing_ok/3); the agent's sweep and
+%% the epoch checks of valid/1 cover its row. It only tidies up earlier.
 end_epoch(Node, Epoch, S0 = #cc{leases = Leases}) ->
     maps:fold(
         fun
@@ -294,14 +345,10 @@ abandoned(_, _, _) ->
 
 claim(Key, Node, Epoch, Pid, {CRef, Max, Hlc}, S0 = #cc{leases = Leases}) ->
     case Leases of
-        #{Key := #held{pid = Pid, node = Node, epoch = Epoch} = H} ->
-            %% the holder claims again: a new seq, so a release or an
-            %% abandon queued for the old claim leaves this one alone
-            Seq = S0#cc.seq + 1,
-            H1 = H#held{seq = Seq, cref = CRef, hlc = Hlc},
-            S = S0#cc{leases = Leases#{Key := H1}, seq = Seq},
-            {S, {ok, view(Key, H1, S)}, []};
         #{Key := H} ->
+            %% owned, by another holder or by this one through another try:
+            %% a delayed try never takes over the lease of its retry, so
+            %% the abandon of one try drops only its own lease
             {S0, {error, {owned, owner_view(H, S0)}}, []};
         _ ->
             grant(
@@ -431,7 +478,21 @@ leases(S = #cc{leases = Leases}) ->
 
 -spec epochs(state()) -> #{node() => epoch()}.
 epochs(#cc{nodes = Nodes}) ->
-    #{N => E || N := {E, _} <- Nodes}.
+    #{N => E || N := {E, _, _, _} <- Nodes}.
+
+%% The node's latest incarnation number, 0 before any.
+-spec incarnation(node(), state()) -> non_neg_integer().
+incarnation(Node, #cc{incs = Incs}) ->
+    maps:get(Node, Incs, 0).
+
+%% The name of the node's current expire timer.
+-spec expire_timer(node(), state()) ->
+    {expire, node(), epoch(), pos_integer()} | none.
+expire_timer(Node, #cc{nodes = Nodes}) ->
+    case Nodes of
+        #{Node := {E, _, C, _}} -> {expire, Node, E, C};
+        _ -> none
+    end.
 
 -spec counts(state()) -> #{node() => pos_integer()}.
 counts(#cc{counts = C}) ->
