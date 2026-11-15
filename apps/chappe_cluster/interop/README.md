@@ -45,8 +45,8 @@ node count and docker host give the same schedule.
    (`+C multi_time_warp`) follow it. An offset matters when a lease runs
    out across two clocks, hence the isolate inside it.
 4. On each node three workers claim one of six keys at random, hold it for
-   0.5 to 8 s while logging the fence every 200 ms, and release it. Before
-   each side effect a worker reads its mailbox for `lost` (and calls
+   0.5 to 12 s (past lease_ms, `CLB_HOLD_MS`) while logging the fence
+   every 200 ms, and release it. Before each side effect a worker reads its mailbox for `lost` (and calls
    `chappe_cluster:valid/1` when the app exports it). Every node also
    contends for one singleton whose child logs its fence every 200 ms and
    takes 1.5 s (`CLB_SINGLETON_STOP_MS`, more than renew_ms / 2) to stop.
@@ -88,5 +88,5 @@ time, even on a skewed node).
   `singleton` checks the workers' keys or the singleton's only.
 - `CLB_SINGLETON=0` leaves the singleton out; `CLB_FAKETIME=0` runs the
   beams without libfaketime.
-- `CLB_LEASE_MS`, `CLB_RENEW_MS`, `CLB_WORKERS`, `CLB_KEYS` and
-  `CLB_TICKTIME` (net_ticktime, 10 s) tune the nodes.
+- `CLB_LEASE_MS`, `CLB_RENEW_MS`, `CLB_WORKERS`, `CLB_KEYS`,
+  `CLB_HOLD_MS` and `CLB_TICKTIME` (net_ticktime, 10 s) tune the nodes.

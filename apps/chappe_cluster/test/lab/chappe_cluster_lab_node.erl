@@ -9,6 +9,8 @@
 %%     CLB_LEASE_MS  lease_ms (6000)        CLB_RENEW_MS  renew_ms (2000)
 %%     CLB_WORKERS   workers per node (3)   CLB_KEYS      keys in play (6)
 %%     CLB_LOG_DIR   where the event log goes (/logs)
+%%     CLB_HOLD_MS   a worker holds a key 0.5 s to this long (12000, past
+%%                   lease_ms, so a lease runs out under a fault)
 %%     CLB_CLIENT    0 starts chappe_cluster only
 %%     CLB_SINGLETON 0 skips the singleton (chappe_cluster_lab_single)
 %%     CLB_SINGLETON_STOP_MS  how long its child takes to stop (renew_ms * 3/4)
@@ -59,7 +61,7 @@ start_client() ->
                 log_dir => env("CLB_LOG_DIR", "/logs"),
                 workers => int("CLB_WORKERS", 3),
                 keys => int("CLB_KEYS", 6),
-                hold_ms => {500, 8000},
+                hold_ms => {500, int("CLB_HOLD_MS", 12000)},
                 beat_ms => 200
             }),
             start_singleton()

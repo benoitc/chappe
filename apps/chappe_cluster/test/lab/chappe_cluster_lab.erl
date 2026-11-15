@@ -49,7 +49,10 @@ settings() ->
         margin_us => int("MARGIN_MS", 0) * 1000,
         lease_ms => int("CLB_LEASE_MS", 6000),
         renew_ms => int("CLB_RENEW_MS", 2000),
-        faults => [list_to_atom(F) || F <- string:lexemes(env("FAULTS", ""), ", ")],
+        faults => [
+            list_to_atom(F)
+         || F <- string:lexemes(env("FAULTS", ""), ", ")
+        ],
         check_keys => env("CHECK_KEYS", "all"),
         selftest => env("SELFTEST", "1") =/= "0",
         keep => env("KEEP", "0") =:= "1"

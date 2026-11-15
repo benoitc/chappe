@@ -97,8 +97,9 @@ loop(T, End, Nodes, Caps, Opts, S0, Acc) ->
         true ->
             {Settle, S3} = between(maps:get(settle_ms, Opts), S2),
             {Inner, S4} = inner(Fault, T, Nodes, Opts, S3),
-            Acc1 = [{T + Hold, {heal, Fault}} | lists:reverse(Inner)] ++
-                [{T, Fault} | Acc],
+            Acc1 =
+                [{T + Hold, {heal, Fault}} | lists:reverse(Inner)] ++
+                    [{T, Fault} | Acc],
             loop(T + Hold + Settle, End, Nodes, Caps, Opts, S4, Acc1)
     end.
 
@@ -106,17 +107,22 @@ loop(T, End, Nodes, Caps, Opts, S0, Acc) ->
 inner({skew, _, _}, T, Nodes, #{lease_ms := Lease} = Opts, S0) ->
     {Cut, S1} = pick(Nodes, S0),
     At = T + maps:get(skew_cut_at_ms, Opts),
-    {[{At, {isolate, [Cut]}}, {At + Lease + 2000, {heal, {isolate, [Cut]}}}], S1};
+    {
+        [{At, {isolate, [Cut]}}, {At + Lease + 2000, {heal, {isolate, [Cut]}}}],
+        S1
+    };
 inner(_Fault, _T, _Nodes, _Opts, S) ->
     {[], S}.
 
-hold({pause, _, Ms}, _Opts, S) -> {Ms, S};
+hold({pause, _, Ms}, _Opts, S) ->
+    {Ms, S};
 hold({skew, _, _}, #{skew_hold_ms := Range} = Opts, S0) ->
     %% past the nested isolate
     #{skew_cut_at_ms := At, lease_ms := Lease} = Opts,
     {Ms, S1} = between(Range, S0),
     {max(Ms, At + Lease + 3000), S1};
-hold(_Fault, #{hold_ms := Range}, S) -> between(Range, S).
+hold(_Fault, #{hold_ms := Range}, S) ->
+    between(Range, S).
 
 fault(Nodes, Caps, Opts, S0) ->
     {Cap, S1} = pick(Caps, S0),

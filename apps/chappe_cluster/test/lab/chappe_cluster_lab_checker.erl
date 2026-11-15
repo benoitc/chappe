@@ -108,7 +108,10 @@ check(Events0, Opts) ->
                     {error, V} ->
                         [V];
                     {ok, Leases} ->
-                        Leases1 = [killed(L, Kills, Bound, Slack) || L <- Leases],
+                        Leases1 = [
+                            killed(L, Kills, Bound, Slack)
+                         || L <- Leases
+                        ],
                         violations(Leases1, Margin, FenceKey)
                 end,
             first_violation(Found, Events, Ctx)
@@ -129,11 +132,15 @@ is_kill(_) -> false.
 %% last event within the slack of the kill): the region holds it for the
 %% kill bound past the kill. A holder silent long before the kill was
 %% already gone (a singleton child killed on lost logs no end).
-killed(#{open := true, holder := H, start := S, stop := E} = L, Kills, Bound, Slack) ->
+killed(
+    #{open := true, holder := H, start := S, stop := E} = L, Kills, Bound, Slack
+) ->
     Node = holder_node(H),
     case lists:sort([T || {N, T} <- Kills, N =:= Node, T >= S]) of
-        [T | _] when E >= T - Slack -> L#{stop => max(E, T + Bound), killed => T};
-        _ -> L
+        [T | _] when E >= T - Slack ->
+            L#{stop => max(E, T + Bound), killed => T};
+        _ ->
+            L
     end;
 killed(L, _Kills, _Bound, _Slack) ->
     L.
