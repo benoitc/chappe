@@ -36,13 +36,14 @@ node count and docker host give the same schedule.
    | kill a minority, sometimes a majority | `docker kill`, then `docker start` |
    | delay one node by 50 to 400 ms | `tc netem` |
    | pause a node past lease_ms, or for about renew_ms / 2 | `docker pause`, then `unpause` |
-   | move a node's wall clock by 0.2 to 4 s, either way, for 65 to 90 s | libfaketime |
+   | move a node's wall clock by 0.2 to 4 s, either way, for 72 to 95 s, and isolate a node 62 s in for lease_ms + 2 s | libfaketime, `docker network disconnect` |
 
    `split`, `delay` and `skew` are skipped when the docker host has no
    usable iptables or tc, or the image has no libfaketime, and the run
    says so. A skew holds over a minute because the runtime notices an OS
-   clock change within about 60 s; only then does `erlang:system_time`
-   (`+C multi_time_warp`) follow it.
+   clock change within 60 s; only then does `erlang:system_time`
+   (`+C multi_time_warp`) follow it. An offset matters when a lease runs
+   out across two clocks, hence the isolate inside it.
 4. On each node three workers claim one of six keys at random, hold it for
    0.5 to 8 s while logging the fence every 200 ms, and release it. Before
    each side effect a worker reads its mailbox for `lost` (and calls

@@ -23,6 +23,16 @@ every_fault_is_healed_in_order_test() ->
 
 check_pairs([]) ->
     ok;
+check_pairs([
+    {T1, {skew, _, _} = F},
+    {T2, {isolate, _} = I},
+    {T3, {heal, I}},
+    {T4, {heal, F}}
+    | Rest
+]) ->
+    %% the isolate nested in a skew
+    ?assert(T1 < T2 andalso T2 < T3 andalso T3 < T4),
+    check_pairs([{T1, F}, {T4, {heal, F}} | Rest]);
 check_pairs([{T1, Fault}, {T2, {heal, Fault}} | Rest]) ->
     ?assert(T2 > T1),
     case Rest of
@@ -89,3 +99,11 @@ check_pause([]) ->
 check_pause([{T1, {pause, _, Ms} = F}, {T2, {heal, F}} | Rest]) ->
     ?assertEqual(T1 + Ms, T2),
     check_pause(Rest).
+
+skew_nests_an_isolate_test() ->
+    Sched = ?S:build(9, 1800000, names(3), [skew]),
+    Skews = [T || {T, {skew, _, _}} <- Sched],
+    Cuts = [T || {T, {isolate, _}} <- Sched],
+    ?assertNotEqual([], Skews),
+    ?assertEqual([T + 62000 || T <- Skews], Cuts),
+    check_pairs(Sched).

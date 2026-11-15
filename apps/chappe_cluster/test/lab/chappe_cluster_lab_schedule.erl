@@ -19,9 +19,13 @@
 %%     {heal, Fault}              undo Fault (reconnect, flush, start, clear,
 %%                                unpause, clock back)
 %%
-%% A skew holds 65 to 90 s: the runtime notices an OS clock change within
-%% about 60 s (+C multi_time_warp), and only then does erlang:system_time
-%% follow it; os:system_time follows at once.
+%% A skew holds 72 to 95 s: the runtime notices an OS clock change within
+%% 60 s (+C multi_time_warp), and only then does erlang:system_time follow
+%% it; os:system_time follows at once. An offset matters when a lease runs
+%% out across two clocks (a leader stamps expiries with its own), so 62 s
+%% into each skew, once the runtime has seen it, one node is isolated for
+%% lease_ms + 2 s: its leases lapse, and the leader may move. That isolate
+%% is the one fault nested in another.
 %%
 %% One fault holds at a time. Faults start after a settle period, so the
 %% cluster forms first, and the last heal leaves `tail' ms before the end.
@@ -51,7 +55,8 @@
     settle_ms => {3000, 12000},
     %% kept free of faults at the end, so the nodes claim again
     tail_ms => 15000,
-    skew_hold_ms => {65000, 90000},
+    skew_hold_ms => {72000, 95000},
+    skew_cut_at_ms => 62000,
     lease_ms => 6000,
     renew_ms => 2000
 }).
@@ -91,12 +96,26 @@ loop(T, End, Nodes, Caps, Opts, S0, Acc) ->
             lists:reverse(Acc);
         true ->
             {Settle, S3} = between(maps:get(settle_ms, Opts), S2),
-            Acc1 = [{T + Hold, {heal, Fault}}, {T, Fault} | Acc],
-            loop(T + Hold + Settle, End, Nodes, Caps, Opts, S3, Acc1)
+            {Inner, S4} = inner(Fault, T, Nodes, Opts, S3),
+            Acc1 = [{T + Hold, {heal, Fault}} | lists:reverse(Inner)] ++
+                [{T, Fault} | Acc],
+            loop(T + Hold + Settle, End, Nodes, Caps, Opts, S4, Acc1)
     end.
 
+%% The isolate inside a skew.
+inner({skew, _, _}, T, Nodes, #{lease_ms := Lease} = Opts, S0) ->
+    {Cut, S1} = pick(Nodes, S0),
+    At = T + maps:get(skew_cut_at_ms, Opts),
+    {[{At, {isolate, [Cut]}}, {At + Lease + 2000, {heal, {isolate, [Cut]}}}], S1};
+inner(_Fault, _T, _Nodes, _Opts, S) ->
+    {[], S}.
+
 hold({pause, _, Ms}, _Opts, S) -> {Ms, S};
-hold({skew, _, _}, #{skew_hold_ms := Range}, S) -> between(Range, S);
+hold({skew, _, _}, #{skew_hold_ms := Range} = Opts, S0) ->
+    %% past the nested isolate
+    #{skew_cut_at_ms := At, lease_ms := Lease} = Opts,
+    {Ms, S1} = between(Range, S0),
+    {max(Ms, At + Lease + 3000), S1};
 hold(_Fault, #{hold_ms := Range}, S) -> between(Range, S).
 
 fault(Nodes, Caps, Opts, S0) ->
