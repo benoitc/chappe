@@ -7,6 +7,15 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 
 ## Unreleased
 
+- chappe_cluster, a new app: one owner at a time for anything a cluster
+  must not run twice, such as a conference room or a job that pings a
+  trunk. A node claims a key and gets a lease with a number that only
+  grows, so work done by an owner that lost its lease can be refused. It
+  also keeps a small replicated store you can watch, and runs a process on
+  exactly one node. Nodes of one region agree through Raft; losing the
+  majority stops new claims, never new calls. It does not need the nodes'
+  clocks to agree: only that they run at about the same rate. Before, every
+  node acted as if it were alone.
 - chappe_esl and chappe_mrf: the fork docs now say that a stereo
   mod_audio_stream fork sends nothing unless both directions carry audio,
   and to fork in mono or mixed instead when you need the caller's audio

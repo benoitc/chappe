@@ -1,0 +1,67 @@
+# Copyright 2026 Benoit Chesneau
+# SPDX-License-Identifier: Apache-2.0
+#
+# The cluster lab: up to five chappe_cluster nodes (n1..n5) on one network,
+# each running as lab@nN with every started node as a voter. Nothing is
+# published on the host: the controller (chappe_cluster_lab, driven by
+# apps/chappe_cluster/test/e2e.sh) reaches the nodes through docker exec
+# and erl_call, and injects faults with docker network disconnect, docker
+# kill and pause, iptables, tc and libfaketime. NET_ADMIN is for iptables
+# and tc. Test-only.
+#
+# CLB_COOKIE (required, never printed), CLB_NODES (the started nodes),
+# CLB_PROJECT (compose project and network prefix, default clb).
+
+x-node: &node
+  image: ${CLB_PROJECT:-clb}-node:lab
+  build:
+    context: ..
+    dockerfile: interop/Dockerfile
+  environment:
+    CLB_COOKIE: ${CLB_COOKIE:?CLB_COOKIE is required}
+    CLB_NODES: ${CLB_NODES:-n1 n2 n3 n4 n5}
+    CLB_LEASE_MS: ${CLB_LEASE_MS:-6000}
+    CLB_RENEW_MS: ${CLB_RENEW_MS:-2000}
+    CLB_WORKERS: ${CLB_WORKERS:-3}
+    CLB_KEYS: ${CLB_KEYS:-6}
+    CLB_HOLD_MS: ${CLB_HOLD_MS:-12000}
+    CLB_TICKTIME: ${CLB_TICKTIME:-10}
+    CLB_SINGLETON: ${CLB_SINGLETON:-1}
+    CLB_SINGLETON_STOP_MS: ${CLB_SINGLETON_STOP_MS:-1500}
+    CLB_FAKETIME: ${CLB_FAKETIME:-1}
+    CLB_TIME_WARP: ${CLB_TIME_WARP:-multi}
+    # MODE=proofs only: the fake cluster (test/lab/chappe_cluster_lab_fake)
+    CLB_BACKEND: ${CLB_BACKEND:-chappe_cluster}
+    FAKE_MODE: ${FAKE_MODE:-naive}
+  cap_add:
+    - NET_ADMIN
+  networks:
+    - lab
+  stop_grace_period: 2s
+  healthcheck:
+    test: ["CMD", "erl_call", "-sname", "lab", "-timeout", "5",
+           "-a", "erlang is_alive []"]
+    interval: 2s
+    timeout: 8s
+    retries: 30
+
+services:
+  n1:
+    <<: *node
+    hostname: n1
+  n2:
+    <<: *node
+    hostname: n2
+  n3:
+    <<: *node
+    hostname: n3
+  n4:
+    <<: *node
+    hostname: n4
+  n5:
+    <<: *node
+    hostname: n5
+
+networks:
+  lab:
+    name: ${CLB_PROJECT:-clb}_lab

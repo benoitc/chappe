@@ -1,0 +1,29 @@
+%% Copyright 2026 Benoit Chesneau
+%% SPDX-License-Identifier: Apache-2.0
+
+{application, chappe_cluster, [
+    {description,
+        "Ownership across a cluster: leases, fences, a KV and singletons on Ra"},
+    {vsn, "0.1.0"},
+    {registered, [
+        chappe_cluster_sup,
+        chappe_cluster_node,
+        chappe_cluster_watch,
+        chappe_cluster_lapse,
+        chappe_cluster_hlc,
+        chappe_cluster_singleton_sup
+    ]},
+    {mod, {chappe_cluster_app, []}},
+    {applications, [kernel, stdlib, ra, hlc]},
+    {env, [
+        {region, default},
+        {data_dir, "cluster_data"},
+        {lease_ms, 6000},
+        {renew_ms, 2000},
+        {max_leases, 100000},
+        {max_keys, 100000},
+        {max_value_bytes, 65536}
+    ]},
+    {licenses, ["Apache-2.0"]},
+    {links, []}
+]}.

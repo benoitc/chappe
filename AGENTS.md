@@ -25,6 +25,10 @@ apps/chappe_mix/         RTP audio conference mixer (G.711, N-1 mix, one
 apps/chappe_audio/       Audio intake: a WebSocket sink for mod_audio_fork and
                          mod_audio_stream, one process per stream. SIP-free.
                          Facade module: chappe_audio.
+apps/chappe_cluster/     Ownership across a cluster on Ra (Raft): fenced
+                         leases, a small KV with watches, singletons, one
+                         Ra group per region. SIP-free. Facade module:
+                         chappe_cluster.
 apps/chappe_mrf/         Media resource function (drachtio-fsmrf style):
                          IVR endpoints on FreeSWITCH, bridging, conferences
                          on chappe_mix or mod_conference. An orchestration
@@ -36,13 +40,13 @@ docs/                    Umbrella docs: concepts, architecture, decisions,
 scripts/                 compliance.escript (requirement matrices).
 ```
 
-Layers: leaf (chappe_rtpengine, chappe_mix, chappe_esl, chappe_audio), core (chappe_sip),
+Layers: leaf (chappe_rtpengine, chappe_mix, chappe_esl, chappe_audio, chappe_cluster), core (chappe_sip),
 orchestration (chappe_mrf). See `docs/architecture.md`.
 
 Inside the umbrella the apps reference each other by name (no fetched cross
 deps). External deps (`livery`, `ws`) are git/hex. Each app is published to hex
 independently. Module prefixes are `chappe_sip_*` / `chappe_rtpengine_*` /
-`chappe_esl_*` / `chappe_mix_*` / `chappe_audio_*` / `chappe_mrf_*`; only the app-named facade modules carry the
+`chappe_esl_*` / `chappe_mix_*` / `chappe_audio_*` / `chappe_cluster_*` / `chappe_mrf_*`; only the app-named facade modules carry the
 `chappe_` brand.
 
 sofia-sip is vendored in `apps/chappe_sip/c_src/sofia-sip` (no git submodule), so
@@ -62,7 +66,7 @@ rebar3 lint         # Elvis linter (config: elvis.config)
 rebar3 xref         # cross-reference analysis
 rebar3 dialyzer     # type checking
 rebar3 eunit        # unit + property tests
-rebar3 ct           # Common Test suites (chappe_sip_*, chappe_rtpengine_*, chappe_mix_*, chappe_esl_*, chappe_audio_*, chappe_mrf_*_SUITE)
+rebar3 ct           # Common Test suites (chappe_sip_*, chappe_rtpengine_*, chappe_mix_*, chappe_esl_*, chappe_audio_*, chappe_cluster_*, chappe_mrf_*_SUITE)
 ```
 
 `make check` runs all of them. CI (`.github/workflows/ci.yml`) runs
@@ -72,7 +76,7 @@ the `MIN_COVERAGE` floor set in the workflow (raise it, never lower it). The
 docker jobs run the conformance lab and the compliance gate
 (`make interop-conformance`, `make compliance GATE=demo`), the JsSIP/Kamailio
 suite, the SBC lab (`make interop-sbc`), `make interop`, `make interop-mix`,
-`make interop-esl`, `make interop-mrf`, and the C NIF under AddressSanitizer (`make asan`; see `apps/chappe_sip/test/asan/`).
+`make interop-esl`, `make interop-mrf`, the cluster lab (`make interop-cluster`: nodes partitioned and killed on a seeded schedule, checked for overlapping leases), and the C NIF under AddressSanitizer (`make asan`; see `apps/chappe_sip/test/asan/`).
 
 ## Build & Development Commands
 
@@ -130,7 +134,7 @@ file only summarises what an agent needs to act.
   envelope tag and dispatch inside a helper that matches each shape. Pattern
   clauses compile to a jump table on arity and tag, keep the exact message
   shapes visible to readers and dialyzer, and fail at the right place.
-- Keep the leaf apps (chappe_rtpengine, chappe_esl, chappe_mix, chappe_audio) SIP-free;
+- Keep the leaf apps (chappe_rtpengine, chappe_esl, chappe_mix, chappe_audio, chappe_cluster) SIP-free;
   SIP-coupled logic belongs in chappe_sip, an orchestration app or a
   consuming product.
 - An orchestration app (chappe_mrf) may depend on chappe_sip and on the

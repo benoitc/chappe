@@ -9,6 +9,7 @@ doc/
 apps/*/priv/lib/*.so
 apps/*/priv/lib/*.dSYM/
 demo/sbc/recordings/
+cluster_data/
 apps/*/c_src/build/
 apps/*/interop/node_modules/
 *.dSYM/
