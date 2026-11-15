@@ -43,40 +43,50 @@ What the repository and the research show:
   with versions (`chappe_cluster_machine`). The region's voters are three
   nodes, or two plus a small node that runs only chappe_cluster.
 - **Epoch leases.** Each node renews one liveness record every `renew_ms`;
-  a lease is valid while its node's record is. A node holding a thousand
-  rooms writes one renewal per period, not a thousand. A renewal after the
-  record expired starts a new epoch, and the old epoch's leases are dead.
-- **Deterministic time.** The machine uses the timestamp the leader stamps
-  on each command, never a replica's clock, so every replica applies the
-  log to the same state. In Ra 3.2.0 the leader stamps a command with
-  `erlang:system_time(millisecond)` when it receives it, and the stamp is
-  written to the log with the entry (`chappe_cluster_machine`, moduledoc).
+  a lease is valid while its node's epoch is. A node holding a thousand
+  rooms writes one renewal per period, not a thousand.
+- **No clock in the machine.** The Ra machine never reads a time, neither
+  its own nor the stamp Ra puts in a command. It applies results: a renew
+  keeps the node's current epoch (or gives it a new one, ending the old
+  epoch's leases), an expire ends an epoch only if it is still current,
+  and a claim succeeds only on a free key. Replay and snapshots are
+  deterministic by construction.
+- **The leader decides expiry, on its monotonic clock.** Each renew the
+  leader applies restarts a Ra timer `{expire, Node, Epoch}` of `lease_ms`;
+  Ra runs these timers on the leader only, as erlang timers, which are
+  monotonic. A new leader starts one for every live node at the moment it
+  becomes leader (`state_enter`), so a node gets a full `lease_ms` from
+  each new leader. When a timer fires, the leader appends the expire. An
+  expire of a deposed leader that still lands is harmless: it ends only a
+  node that missed its renewals by that leader's count, and the epoch
+  check drops it when the node has renewed into another epoch.
+- **The holder gives up first, on its own monotonic clock.** A renewal sent
+  at T and answered keeps its holders until T + `lease_ms - renew_ms / 2`
+  by the node's monotonic clock. The leader applied it after T, and
+  expires the node `lease_ms` after that, or after it became leader, by
+  its own. With every clock's rate within `max_drift` of real time
+  (default 1 %), the worst case is a slow node and a fast leader:
+  `(lease_ms - renew_ms / 2) * (1 + d) < lease_ms * (1 - d)`, checked at
+  start (`chappe_cluster_config:timing_ok/3`). With the defaults the
+  margin covers up to about 9 %. The lost comes from a process that does
+  nothing else (`chappe_cluster_lapse`), the holders and the deadline live
+  in a table the app's supervisor owns, and a grant that comes back after
+  the deadline is given back. `chappe_cluster:valid/1` tells a holder,
+  before each side effect, whether its lease still holds.
+- **What remains assumed:** clocks run at about the same rate (within
+  `max_drift`) during one lease. Nothing assumes the nodes' wall clocks
+  agree, or that a wall clock does not jump: no lease, expiry or claim
+  reads one.
+- **HLC where a timestamp is needed.** Each node keeps one hybrid logical
+  clock (hlc 3.0.4, the one barrel_p2p uses). Claims and KV writes carry
+  the writer's stamp; leases, `leases()` rows and watch events carry it,
+  and a node's clock moves forward with the stamps it receives.
+  `chappe_cluster:now/0` returns it. It orders events for logs and for the
+  cross-region directory; no ownership decision depends on it.
 - **Fences.** A lease carries `{Region, NodeEpoch, Seq}`. Seq grows strictly
   per key, so a side effect can carry it and the receiver can refuse an
   older owner; the region in it refuses a stale owner coming from another
   region.
-- **The holder gives up first.** A renewal sent at T keeps the node live
-  in the region until at least T + `lease_ms`, by the leader's clock. The
-  node tells its holders their lease is lost at T + `lease_ms -
-  renew_ms / 2`, by its own monotonic clock, from a process that does
-  nothing else (`chappe_cluster_lapse`), and the holders and that deadline
-  live in a table the app's supervisor owns, so an agent crash loses
-  neither. A grant that comes back after the deadline is given back.
-  `chappe_cluster:valid/1` tells a holder, before each side effect, whether
-  its lease still holds.
-- **Leader clocks.** Two leaders' clocks may differ, and under the default
-  `no_time_warp` an offset fixed when a node booted never corrects. So a
-  new leader's first entry, `grace`, gives every node at least `lease_ms`
-  from the new leader's clock, and the entries before it judge no node
-  expired. A leader whose clock runs ahead never expires a node before its
-  holders gave up, whatever the offset. What remains assumed: during one
-  lease, a leader's clock does not jump (an NTP step on the leader, or
-  `multi_time_warp`), and clocks run at the same rate within
-  `renew_ms / 2` per lease. Run nodes with the default time warp mode and
-  slew, not step, the clock (chrony or ntpd in slew mode). The cluster lab
-  runs `multi_time_warp` and injects clock jumps of up to 4 s on purpose,
-  to test beyond this assumption; no run so far broke a lease, but that is
-  evidence, not a promise.
 - **Singletons are killed on lost.** A singleton's child gets an `exit(Pid,
   kill)` the moment its node gives the lease up: there is no time for a
   graceful stop inside the `renew_ms / 2` margin. A stop while the lease
@@ -110,7 +120,7 @@ What the repository and the research show:
 
 ## Consequences
 
-- chappe_cluster is a leaf app: SIP-free, depending on `ra` only. chappe_sip
+- chappe_cluster is a leaf app: SIP-free, depending on `ra` and `hlc` only. chappe_sip
   and chappe_mrf use it behind one function per owned resource; with no
   cluster configured they behave as before.
 - Each member keeps a Raft log under `data_dir`, and each region needs a
@@ -123,6 +133,10 @@ What the repository and the research show:
   process, since `lost` is a local message from that node.
 - `lease_ms` must be at least three times `renew_ms`: a renewal may take up
   to `renew_ms`, and the holder gives up `renew_ms / 2` early.
+- Every Ra call (claims, releases, KV writes, renewals) keeps one deadline:
+  the last known leader first, each member only what is left of it.
+- Stopping the app tells every holder lost; the next start takes a new
+  epoch, which ends the old one's leases in the region.
 
 ## Open questions
 

@@ -13,8 +13,11 @@
 %% - `{members, [ServerId]}': the region's Ra members as last seen;
 %% - `{{holder, Key}, Seq, Lease}': a lease claimed through this node, and
 %%   its holder to tell on lost;
-%% - `{{pending, Item}}': what the next renewal carries back to the region
-%%   (abandoned claims, leases given up).
+%% - `{leader, ServerId}': the region's leader as last seen;
+%% - `{{pending, Kind, Key}, Item}': what the next renewal carries back to
+%%   the region (abandoned claims, leases given up), one per kind and key
+%%   (only the latest matters: a key has one lease), and
+%%   `{pending_count, N}', their number, for their own bound.
 %%
 %% Updates of `live' are compare-and-swap (ets:select_replace/2), so a
 %% renewal and a lapse that race never lose each other's effect.
@@ -30,6 +33,8 @@
     lapse_if_due/0,
     members/0,
     set_members/1,
+    leader/0,
+    set_leader/1,
     hold/3,
     valid/1,
     valid_lease/1,
@@ -53,7 +58,7 @@ new() ->
         {read_concurrency, true},
         {write_concurrency, true}
     ]),
-    true = ets:insert(?TAB, {live, undefined, 0, 0}),
+    true = ets:insert(?TAB, [{live, undefined, 0, 0}, {pending_count, 0}]),
     ok.
 
 %% ---- liveness ----
@@ -141,6 +146,18 @@ set_members(Ms) ->
     true = ets:insert(?TAB, {members, Ms}),
     ok.
 
+-spec leader() -> {atom(), node()} | undefined.
+leader() ->
+    case lookup(leader) of
+        [{leader, L}] -> L;
+        _ -> undefined
+    end.
+
+-spec set_leader({atom(), node()}) -> ok.
+set_leader(L) ->
+    true = ets:insert(?TAB, {leader, L}),
+    ok.
+
 %% ---- holders ----
 
 %% Register a lease granted while the node was live at {Epoch, Gen}. The
@@ -158,21 +175,27 @@ hold(#{key := Key, seq := Seq} = Lease, Epoch, Gen) ->
             lapsed
     end.
 
+%% Valid: the row is there, at this seq, the node is live at the lease's
+%% epoch, and the holder is alive (the region frees a dead holder's lease
+%% at once, before any sweep here).
 -spec valid(map()) -> boolean().
-valid(#{key := Key, seq := Seq, epoch := Epoch}) ->
+valid(#{key := Key, seq := Seq}) ->
     case lookup({holder, Key}) of
-        [{_, Seq, _}] -> live() =:= {ok, Epoch};
+        [{_, Seq, Lease}] -> holds(Lease);
         _ -> false
     end.
+
+holds(#{epoch := Epoch, pid := Pid}) ->
+    live() =:= {ok, Epoch} andalso is_process_alive(Pid).
 
 %% The lease held through this node for `Key', while it is valid.
 -spec valid_lease(term()) -> {ok, map()} | none.
 valid_lease(Key) ->
     case lookup({holder, Key}) of
-        [{_, _, #{epoch := Epoch} = Lease}] ->
-            case live() of
-                {ok, Epoch} -> {ok, Lease};
-                _ -> none
+        [{_, _, Lease}] ->
+            case holds(Lease) of
+                true -> {ok, Lease};
+                false -> none
             end;
         _ ->
             none
@@ -237,23 +260,53 @@ lost(#{pid := Pid} = Lease) ->
 
 %% ---- pending ----
 
-%% Bounded: past three times max_leases rows the item is dropped (its lease
-%% still ends with its holder or its node).
--spec queue(term()) -> ok.
-queue(Item) ->
-    case ets:info(?TAB, size) < 3 * chappe_cluster_config:get(max_leases) of
-        true -> true = ets:insert(?TAB, {{pending, Item}});
-        false -> true
+%% One row per kind and key: a newer item replaces the older one. Bounded
+%% on their own count: past three times max_leases a new key's item is
+%% dropped (its lease still ends with its holder or its node).
+-spec queue({claim | seq, term(), term()}) -> ok.
+queue({Kind, Key, _} = Item) ->
+    Row = {{pending, Kind, Key}, Item},
+    case ets:insert_new(?TAB, Row) of
+        true ->
+            Max = 3 * chappe_cluster_config:get(max_leases),
+            case ets:update_counter(?TAB, pending_count, 1) > Max of
+                true ->
+                    _ = ets:update_counter(?TAB, pending_count, -1),
+                    true = ets:delete_object(?TAB, Row);
+                false ->
+                    true
+            end;
+        false ->
+            true = ets:insert(?TAB, Row)
     end,
     ok.
 
 -spec pending() -> list().
 pending() ->
-    [I || {{pending, I}} <- ets:match_object(?TAB, {{pending, '_'}})].
+    [
+        I
+     || {{pending, _, _}, I} <- ets:match_object(?TAB, {
+            {pending, '_', '_'}, '_'
+        })
+    ].
 
+%% The renewal carried `Items': drop each one that was not replaced since.
 -spec sent(list()) -> ok.
 sent(Items) ->
-    lists:foreach(fun(I) -> ets:delete(?TAB, {pending, I}) end, Items).
+    lists:foreach(
+        fun({Kind, Key, _} = Item) ->
+            Row = {{pending, Kind, Key}, Item},
+            case ets:lookup(?TAB, {pending, Kind, Key}) of
+                [Row] ->
+                    true = ets:delete_object(?TAB, Row),
+                    _ = ets:update_counter(?TAB, pending_count, -1),
+                    ok;
+                _ ->
+                    ok
+            end
+        end,
+        Items
+    ).
 
 %% ---- internals ----
 
