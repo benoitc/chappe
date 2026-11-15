@@ -16,7 +16,8 @@
 -include_lib("chappe_sip/include/chappe_sip_uac.hrl").
 
 -export([start/1, start/2, stop/0, install/0]).
--export([set_description/1, kick/1, uri/0, set_private/1, subscribe_policy/1]).
+-export([set_description/1, kick/1, members/0, uri/0, set_private/1,
+         subscribe_policy/1]).
 -export([refer_policy/1, hide_focus/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
@@ -67,6 +68,11 @@ set_description(D) ->
 %% 4579 6): it joins anonymous even without a Privacy header
 set_private(Uri) ->
     gen_server:call(?MODULE, {private, Uri}).
+
+%% the user entities of the participants the focus has recorded: a joining
+%% caller is recorded once its handler has the dialog, after the 200
+members() ->
+    gen_server:call(?MODULE, members).
 
 %% the focus hangs up the participant whose user entity is Uri
 kick(Uri) ->
@@ -210,6 +216,17 @@ handle_call({private, Uri}, _From, S) ->
     {reply, ok, S#state{private = [Uri | S#state.private]}};
 handle_call({description, D}, _From, S) ->
     {reply, ok, changed(S#state{description = maps:merge(S#state.description, D)})};
+handle_call(members, _From, S) ->
+    {reply,
+        [
+            U
+         || #{uri := U, dialog := D, ep := #{status := St}} <- maps:values(
+                S#state.legs
+            ),
+            D =/= undefined,
+            St =/= disconnected
+        ],
+        S};
 handle_call({kick, Uri}, _From, S) ->
     Ds = [
         D
