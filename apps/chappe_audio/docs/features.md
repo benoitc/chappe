@@ -9,6 +9,9 @@ page that shows you how to use it.
   one listener, a path and a token per stream checked before the upgrade, a
   bound on the handshakes one address may hold, ws or wss.
   [Take audio from a fork](guides/fork.md)
+- **A listener under your supervisor**: `child_spec/1` keeps one for your
+  app's lifetime, restarted on its port.
+  [Take audio from a fork](guides/fork.md#keep-a-listener-for-your-apps-lifetime)
 - **One process per stream**, owned by the process you name: mono or stereo
   16-bit PCM as `{frame, Pcm}`, the fork's text and metadata, and `closed`
   with its reason. Frames past the stream's bound are dropped and counted;

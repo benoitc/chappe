@@ -7,6 +7,9 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 
 ## Unreleased
 
+- chappe_audio: a listener can now be put under your own supervisor, so it
+  is restarted on its port when it dies and lives as long as your app.
+  Before, a listener that crashed stayed down.
 - SIPREC recording server: the declared result of serving a session left
   out keys it really returns, so dialyzer told an app calling it that the
   success case could never happen. It now describes the session as it is.
