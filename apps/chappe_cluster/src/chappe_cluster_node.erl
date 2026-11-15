@@ -16,10 +16,12 @@
 %% chappe_cluster_lapse's job, so a crash or a full mailbox here never
 %% delays a `lost'.
 %%
-%% The local deadline: a renewal sent at T keeps the node live, in the
-%% leader's view, until at least T + lease_ms (the leader stamps it later
-%% than T, and a new leader extends every node by grace). The node gives
-%% every lease up at T + lease_ms - renew_ms / 2.
+%% The local deadline: a renewal sent at T keeps the node live until the
+%% leader's timer runs out, lease_ms after the leader applied it (later
+%% than T) or after it became leader, on the leader's monotonic clock. The
+%% node gives every lease up at T + lease_ms - renew_ms / 2 on its own
+%% monotonic clock; chappe_cluster_config:timing_ok/3 checks that this
+%% comes first under the max_drift bound. No wall clock is read.
 -module(chappe_cluster_node).
 -behaviour(gen_server).
 
@@ -249,8 +251,7 @@ member(Ids, Voters) ->
                 log_init_args => #{uid => UId},
                 machine =>
                     {module, chappe_cluster_machine, #{
-                        region => chappe_cluster_config:get(region),
-                        reap_ms => chappe_cluster_config:get(renew_ms)
+                        region => chappe_cluster_config:get(region)
                     }}
             },
             case ra:start_server(?SYSTEM, Conf) of
@@ -283,7 +284,14 @@ start_renew(St = #state{renew = undefined}) ->
     LeaseMs = chappe_cluster_config:get(lease_ms),
     Budget = chappe_cluster_config:get(renew_ms),
     Sent = erlang:monotonic_time(millisecond),
-    Cmd = {renew, node(), LeaseMs, Items},
+    %% the current epoch while the node is live; after a lapse, none, so
+    %% the region starts a new one and ends what the holders gave up
+    Epoch =
+        case live() of
+            {ok, E} -> E;
+            not_live -> undefined
+        end,
+    Cmd = {renew, node(), Epoch, LeaseMs, Items},
     {_, Ref} = spawn_monitor(fun() ->
         exit({renewed, ra:process_command(Members, Cmd, #{timeout => Budget})})
     end),

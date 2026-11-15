@@ -44,6 +44,7 @@ all() ->
         singleton_lost_kills_a_slow_child,
         stop_singleton,
         directory_local,
+        now_never_goes_back,
         bad_arguments,
         bad_config_fails_the_start
     ].
@@ -92,7 +93,7 @@ claim_owner_release(_Config) ->
     Owner = #{node => node(), pid => self(), fence => Fence},
     ?assertEqual({ok, Owner}, chappe_cluster:owner(k_basic)),
     ?assertEqual({ok, Owner}, chappe_cluster:owner(k_basic, consistent)),
-    ?assert(lists:member(Owner#{key => k_basic}, chappe_cluster:leases())),
+    ?assert(lists:member(Owner#{key => k_basic}, [maps:remove(hlc, R) || R <- chappe_cluster:leases()])),
     ok = chappe_cluster:release(L),
     ?assertEqual(none, chappe_cluster:owner(k_basic)),
     ?assertEqual(none, chappe_cluster:owner(k_basic, consistent)).
@@ -311,9 +312,11 @@ watch_events(_Config) ->
     ok = chappe_cluster:watch(<<"w/">>),
     {ok, _} = chappe_cluster:put(<<"other/1">>, 0),
     {ok, _} = chappe_cluster:put(<<"w/1">>, 1),
-    ?assertEqual({put, <<"w/1">>, 1}, recv_watch()),
+    {put, <<"w/1">>, 1, H1} = recv_watch(),
     ok = chappe_cluster:delete(<<"w/1">>),
-    ?assertEqual({delete, <<"w/1">>, 1}, recv_watch()),
+    {delete, <<"w/1">>, 1, H2} = recv_watch(),
+    ?assert(hlc:less(H1, H2)),
+    ?assert(hlc:less(H2, chappe_cluster:now())),
     ok = chappe_cluster:unwatch(<<"w/">>),
     {ok, _} = chappe_cluster:put(<<"w/2">>, 2),
     receive
@@ -334,7 +337,7 @@ watch_survives_a_hub_crash(_Config) ->
     end),
     ok = wait_live(),
     {ok, _} = chappe_cluster:put(<<"wc/1">>, 1),
-    ?assertEqual({put, <<"wc/1">>, 1}, recv_watch()),
+    ?assertMatch({put, <<"wc/1">>, 1, _}, recv_watch()),
     ok = chappe_cluster:delete(<<"wc/1">>).
 
 %% Owner death: the watcher dies, its watch goes.
@@ -463,6 +466,15 @@ directory_local(_Config) ->
     ),
     ?assertEqual({error, badarg}, chappe_cluster_directory:publish(k, "r", #{})).
 
+%% The HLC moves forward, and a lease carries the stamp of its claim.
+now_never_goes_back(_Config) ->
+    Stamps = [chappe_cluster:now() || _ <- lists:seq(1, 1000)],
+    [?assert(hlc:less(A, B)) || {A, B} <- lists:zip(lists:droplast(Stamps), tl(Stamps))],
+    {ok, #{hlc := H} = L} = chappe_cluster:claim(k_hlc, #{}),
+    ?assert(hlc:less(lists:last(Stamps), H)),
+    ?assertMatch([#{hlc := H}], [R || #{key := k_hlc} = R <- chappe_cluster:leases()]),
+    ok = chappe_cluster:release(L).
+
 bad_arguments(_Config) ->
     ?assertEqual({error, badarg}, chappe_cluster:claim(k, nomap)),
     ?assertEqual({error, badarg}, chappe_cluster:claim(k, #{pid => notapid})),
@@ -484,6 +496,8 @@ bad_config_fails_the_start(_Config) ->
     Bad = [
         {lease_ms, 100},
         {lease_ms, 2 * ?RENEW},
+        {max_drift, 20},
+        {wall_clock, nofun},
         {renew_ms, 0},
         {region, "r"},
         {voters, []},
