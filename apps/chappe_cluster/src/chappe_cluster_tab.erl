@@ -32,6 +32,7 @@
     set_members/1,
     hold/3,
     valid/1,
+    valid_lease/1,
     unhold/2,
     lose_epochs/1,
     taken/2,
@@ -162,6 +163,19 @@ valid(#{key := Key, seq := Seq, epoch := Epoch}) ->
     case lookup({holder, Key}) of
         [{_, Seq, _}] -> live() =:= {ok, Epoch};
         _ -> false
+    end.
+
+%% The lease held through this node for `Key', while it is valid.
+-spec valid_lease(term()) -> {ok, map()} | none.
+valid_lease(Key) ->
+    case lookup({holder, Key}) of
+        [{_, _, #{epoch := Epoch} = Lease}] ->
+            case live() of
+                {ok, Epoch} -> {ok, Lease};
+                _ -> none
+            end;
+        _ ->
+            none
     end.
 
 -spec unhold(term(), pos_integer()) -> ok.

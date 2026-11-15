@@ -21,7 +21,8 @@ all() ->
         cut_off_holder_hears_lost_before_takeover,
         api_from_other_nodes,
         join_and_leave,
-        singleton_moves_when_its_node_stops
+        singleton_moves_when_its_node_stops,
+        paused_singleton_child_sees_its_lease_gone
     ].
 
 init_per_suite(Config) ->
@@ -251,6 +252,59 @@ singleton_moves_when_its_node_stops(Config) ->
     wait(fun() -> length(singleton_pids(mover, Rest)) =:= 1 end, 200),
     [Pid2] = singleton_pids(mover, Rest),
     ?assertNotEqual(Runner, node(Pid2)).
+
+%% A paused child, whose contender is paused too so no kill reaches it,
+%% wakes up after another node took the singleton over: its check says
+%% the lease is gone before it does anything.
+paused_singleton_child_sees_its_lease_gone(Config) ->
+    Nodes = ?config(nodes, Config),
+    Spec = #{id => checker, start => {?MODULE, start_checker, [paused]}},
+    [ok = erpc:call(N, chappe_cluster, singleton, [paused, Spec]) || N <- Nodes],
+    wait(fun() -> length(singleton_pids(paused, Nodes)) =:= 1 end),
+    [Child] = singleton_pids(paused, Nodes),
+    X = node(Child),
+    Rest = Nodes -- [X],
+    ?assert(gen_server:call(Child, check)),
+    {ok, {default, _, Seq0}} = erpc:call(X, chappe_cluster, singleton_fence, [paused]),
+    Contender = erpc:call(X, ?MODULE, contender, [paused]),
+    ok = erpc:call(X, sys, suspend, [Contender]),
+    ok = erpc:call(X, sys, suspend, [Child]),
+    Cookie = erlang:get_cookie(),
+    cut(X, Rest, Cookie),
+    try
+        wait(fun() -> [P || P <- singleton_pids(paused, Rest), node(P) =/= X] =/= [] end, 200),
+        [Other] = [P || P <- singleton_pids(paused, Rest), node(P) =/= X],
+        {ok, {default, _, Seq1}} =
+            erpc:call(node(Other), chappe_cluster, singleton_fence, [paused]),
+        ?assert(Seq1 > Seq0),
+        ok = erpc:call(X, sys, resume, [Child]),
+        ?assertNot(gen_server:call(Child, check)),
+        ?assertNot(erpc:call(X, chappe_cluster, singleton_valid, [paused])),
+        ?assertEqual(none, erpc:call(X, chappe_cluster, singleton_fence, [paused]))
+    after
+        heal(X, Rest, Cookie),
+        _ = catch_call(X, sys, resume, [Contender])
+    end.
+
+%% A singleton child that answers `check' with singleton_valid/1, the test
+%% it runs before each side effect.
+start_checker(Name) ->
+    gen_server:start_link(?MODULE, {checker, Name}, []).
+
+init({checker, Name}) ->
+    {ok, Name}.
+
+handle_call(check, _From, Name) ->
+    {reply, chappe_cluster:singleton_valid(Name), Name}.
+
+handle_cast(_Msg, Name) ->
+    {noreply, Name}.
+
+contender(Name) ->
+    {Name, Pid, _, _} = lists:keyfind(
+        Name, 1, supervisor:which_children(chappe_cluster_singleton_sup)
+    ),
+    Pid.
 
 %% ---- helpers ----
 
