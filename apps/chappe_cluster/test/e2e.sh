@@ -4,7 +4,8 @@
 #
 # The cluster lab (make interop-cluster): NODES chappe_cluster nodes in
 # docker (apps/chappe_cluster/interop), a seeded schedule of partitions,
-# kills and delays, and the lease checker over every node's event log.
+# kills, pauses, delays and clock skews, and the lease checker over every
+# node's event log.
 # The controller (test/lab/chappe_cluster_lab.erl) runs here, on the host,
 # and reaches the nodes through docker; nothing is published on the host.
 #
@@ -13,7 +14,11 @@
 #   NODES=5         3 to 5
 #   MODE=run        run: self-test then the schedule; topology: self-test only
 #   SELFTEST=1      0 skips the self-test before a run
-#   MARGIN_MS=0     overlap allowed between two leases (clock skew)
+#   MARGIN_MS=0     overlap allowed between two leases
+#   KILL_BOUND_MS   how long a killed node's leases stay its (renew_ms / 2)
+#   FAULTS=...      keep these fault kinds only (isolate,split,kill,delay,
+#                   pause,skew)
+#   CHECK_KEYS=all  lab or singleton checks only those keys
 #   KEEP=1          leave the containers up afterwards
 #   CLB_PROJECT=clb compose project, network and image prefix
 #   CLB_COOKIE      the nodes' cookie; a random one when unset, never printed

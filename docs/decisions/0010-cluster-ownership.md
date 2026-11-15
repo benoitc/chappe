@@ -76,7 +76,14 @@ What the repository and the research show:
 - **Singletons are killed on lost.** A singleton's child gets an `exit(Pid,
   kill)` the moment its node gives the lease up: there is no time for a
   graceful stop inside the `renew_ms / 2` margin. A stop while the lease
-  holds is a shutdown, bounded by what is left of the lease.
+  holds is a shutdown, bounded by what is left of the lease. A kill cannot
+  reach a paused process (a suspended VM or container, a long GC): when it
+  wakes up the lease may be another node's. So a child checks
+  `chappe_cluster:singleton_valid/1` before each side effect and carries
+  `chappe_cluster:singleton_fence/1` on it, as a plain holder checks
+  `valid/1`; both read the node's table, not a process. The cluster lab
+  found this: a paused child wrote with its old fence after another node
+  had started the singleton.
 - **barrel_p2p later, as the directory.** Between regions, a later plan
   publishes `{home region, owner, fence}` through barrel_p2p behind the
   `chappe_cluster_directory` behaviour. It tells a region where a resource

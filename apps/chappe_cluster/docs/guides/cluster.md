@@ -146,12 +146,29 @@ ok = chappe_cluster:singleton(trunk_pinger,
   does not run. Keep what it writes fenced, and do not rely on a cleanup
   at stop. When you stop it yourself (`stop_singleton/1`) it gets a normal
   shutdown, bounded by what is left of the lease.
-- Two copies never run at the same time, as long as the clock assumption
-  of decision 0010 holds.
+- Two copies never act at the same time, as long as each checks before it
+  acts and the clock assumption of decision 0010 holds. A paused copy can
+  still be alive while another runs; the fence lets whatever it writes to
+  refuse it.
 - `chappe_cluster:whereis_singleton(trunk_pinger)` finds the running child
   from any node.
-- Inside the child, `chappe_cluster:singleton_fence(trunk_pinger)` returns
-  the fence to carry on its side effects.
+- Inside the child, check `chappe_cluster:singleton_valid(trunk_pinger)`
+  before each side effect, and carry
+  `chappe_cluster:singleton_fence(trunk_pinger)` on it. Both read a table,
+  so they cost no message:
+
+```erlang
+handle_info(ping, S) ->
+    case chappe_cluster:singleton_fence(trunk_pinger) of
+        {ok, Fence} -> send_options(S, Fence);
+        none -> ok                 %% the lease is gone: do nothing
+    end,
+    {noreply, S}.
+```
+
+  The kill on `lost` cannot reach a child that is paused (a suspended VM
+  or container, a long GC): when it wakes up, the lease may already belong
+  to another node, and only this check stops it before it acts.
 - `chappe_cluster:stop_singleton(trunk_pinger)` stops contending from this
   node.
 

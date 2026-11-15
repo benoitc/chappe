@@ -36,19 +36,21 @@ overlap_test() ->
     Log = [
         {10, a(), k, claim_ok, f(1)},
         {25, b(), k, claim_ok, f(2)},
-        {30, a(), k, lost, f(1)}
+        {30, a(), k, renew, f(1)},
+        {31, a(), k, lost, f(1)}
     ],
     {violation, V} = ?C:check(Log),
     ?assertMatch(#{kind := overlap, key := k, at := 25}, V),
     ?assertMatch(#{first := #{holder := {n1, 1, 1}}}, V),
     ?assertMatch(#{second := #{holder := {n2, 1, 1}}}, V),
-    ?assertEqual(3, length(maps:get(context, V))).
+    ?assertEqual(4, length(maps:get(context, V))).
 
 margin_test() ->
     Log = [
         {10, a(), k, claim_ok, f(1)},
         {25, b(), k, claim_ok, f(2)},
-        {30, a(), k, lost, f(1)}
+        {30, a(), k, renew, f(1)},
+        {31, a(), k, lost, f(1)}
     ],
     ?assertEqual(ok, ?C:check(Log, #{margin_us => 5})),
     ?assertEqual(overlap, kind(?C:check(Log, #{margin_us => 4}))).
@@ -78,10 +80,25 @@ late_lost_test() ->
     Log = [
         {10, a(), k, claim_ok, f(1)},
         {50, b(), k, claim_ok, f(2)},
+        {55, a(), k, fence_used, f(1)},
         {60, b(), k, release, f(2)},
         {70, a(), k, lost, f(1)}
     ],
     ?assertEqual(overlap, kind(?C:check(Log))).
+
+%% a holder paused across the takeover that wakes up to its lost did
+%% nothing while the other held the key
+lost_after_a_pause_test() ->
+    Log = [
+        {10, a(), k, claim_ok, f(1)},
+        {20, a(), k, fence_used, f(1)},
+        {50, b(), k, claim_ok, f(2)},
+        {70, a(), k, lost, f(1)},
+        {80, b(), k, release, f(2)}
+    ],
+    ?assertEqual(ok, ?C:check(Log)),
+    Acted = Log ++ [{65, a(), k, fence_used, f(1)}],
+    ?assertEqual(overlap, kind(?C:check(Acted))).
 
 %% a long lease covering a short one behind a third
 overlap_with_earlier_long_lease_test() ->
@@ -227,3 +244,71 @@ stats_test() ->
         },
         ?C:stats(Log)
     ).
+
+%% a killed holder: the region keeps its lease kill_bound_us past the kill
+kill_bound_test() ->
+    Log = [
+        {10, a(), k, claim_ok, f(1)},
+        {20, a(), k, renew, f(1)},
+        {25, controller, n1, killed, none},
+        {40, b(), k, claim_ok, f(2)}
+    ],
+    ?assertEqual(ok, ?C:check(Log)),
+    ?assertEqual(ok, ?C:check(Log, #{kill_bound_us => 15})),
+    {violation, V} = ?C:check(Log, #{kill_bound_us => 16}),
+    ?assertMatch(#{kind := overlap, at := 40, first := #{killed := 25}}, V).
+
+kill_bound_only_for_open_leases_on_that_node_test() ->
+    Log = [
+        {10, a(), k, claim_ok, f(1)},
+        {20, a(), k, release, f(1)},
+        {21, b(), k, claim_ok, f(2)},
+        {25, controller, n1, killed, none},
+        {26, controller, n2, killed, none},
+        {35, {n3, 1, 1}, k, claim_ok, f(3)}
+    ],
+    %% n1 had released; n2's open lease is held to 26 + the bound
+    ?assertEqual(ok, ?C:check(Log, #{kill_bound_us => 9})),
+    ?assertEqual(overlap, kind(?C:check(Log, #{kill_bound_us => 10}))).
+
+kill_before_the_claim_does_not_count_test() ->
+    Log = [
+        {5, controller, n1, killed, none},
+        {10, a(), k, claim_ok, f(1)},
+        {20, b(), k, claim_ok, f(2)}
+    ],
+    ?assertEqual(ok, ?C:check(Log, #{kill_bound_us => 100})).
+
+kills_are_not_holders_test() ->
+    Log = [{10, a(), k, claim_ok, f(1)}, {15, controller, n1, killed, none}],
+    ?assertMatch(#{holders := 1, kills := 1, events := 1}, ?C:stats(Log)).
+
+%% a holder silent long before its node is killed had already stopped (a
+%% singleton child killed on lost logs no end): no kill bound for it
+kill_bound_skips_a_silent_holder_test() ->
+    Old = {n1, 1, {singleton, 1}},
+    New = {n1, 2, {singleton, 2}},
+    Log = [
+        {10, Old, k, claim_ok, f(1)},
+        {20, Old, k, fence_used, f(1)},
+        {3000020, New, k, claim_ok, f(2)},
+        {3000030, New, k, fence_used, f(2)},
+        {3000040, controller, n1, killed, none}
+    ],
+    Opts = #{kill_bound_us => 1000000},
+    ?assertEqual(ok, ?C:check(Log, Opts)),
+    ?assertEqual(overlap, kind(?C:check(Log, Opts#{kill_slack_us => 4000000}))).
+
+%% a killed node started again may end its old epoch at once
+kill_bound_ends_at_the_restart_test() ->
+    Log = [
+        {10, a(), k, claim_ok, f(1)},
+        {20, a(), k, renew, f(1)},
+        {25, controller, n1, killed, none},
+        {30, controller, n1, started, none},
+        {35, b(), k, claim_ok, f(2)}
+    ],
+    Opts = #{kill_bound_us => 100},
+    ?assertEqual(ok, ?C:check(Log, Opts)),
+    Early = [E || {T, _, _, _, _} = E <- Log, T =/= 35] ++ [{28, b(), k, claim_ok, f(2)}],
+    ?assertEqual(overlap, kind(?C:check(Early, Opts))).

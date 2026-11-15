@@ -13,10 +13,22 @@
 %% release | fence_used, and Fence is the fence of the lease the event is
 %% about.
 %%
-%% A lease is valid, from its holder's point of view, from its claim_ok to
-%% its lost or release. A holder that logs neither (its node was killed, or
-%% the run ended) held it until its last logged event on that key: past that
-%% point it did nothing with it. The checker asserts:
+%% Time is real time: the lab logger stamps events from the monotonic clock,
+%% so a node whose wall clock is skewed still logs the true time.
+%%
+%% A lease is held, from its holder's point of view, from its claim_ok to
+%% its release, or to its last renew or fence_used when it was told it
+%% lost the key (it acted on the lease until then, and a paused holder that
+%% wakes up to its lost acts no more). A holder that logs neither (its node
+%% was killed, or the run ended) held it until its last logged event on
+%% that key.
+%%
+%% The controller adds `{Time, controller, Node, killed, none}' when it kills
+%% a node. A lease its holder's node still held then is the region's until
+%% kill_bound_us later (renew_ms / 2: the holder was not yet told to stop,
+%% so the region promised it at least that long), and a takeover sooner is
+%% an overlap. This holds for a holder that logged within kill_slack_us
+%% (1 s) of the kill; one silent longer had already stopped. The checker asserts:
 %%
 %% - no overlap: two leases on one key never overlap by more than the margin
 %%   (margin_us, for timestamps taken on different clocks);
@@ -41,7 +53,8 @@
 
 -export_type([event/0, violation/0]).
 
--type kind() :: claim_ok | renew | lost | release | fence_used.
+-type kind() ::
+    claim_ok | renew | lost | release | fence_used | killed | started.
 -type event() :: {integer(), term(), term(), kind(), term()}.
 -type lease() :: #{
     key := term(),
@@ -64,11 +77,13 @@
 }.
 -type opts() :: #{
     margin_us => non_neg_integer(),
+    kill_bound_us => non_neg_integer(),
+    kill_slack_us => non_neg_integer(),
     fence_key => fun((term()) -> term()),
     context => non_neg_integer()
 }.
 
--define(KINDS, [claim_ok, renew, lost, release, fence_used]).
+-define(KINDS, [claim_ok, renew, lost, release, fence_used, killed, started]).
 
 %% @doc Check a log with no margin.
 -spec check([event()]) -> ok | {violation, violation()}.
@@ -86,10 +101,20 @@ check(Events0, Opts) ->
             {violation, #{kind => bad_event, at => 0, first => Bad}};
         [] ->
             Events = lists:keysort(1, Events0),
+            Kills = [{N, T} || {T, controller, N, killed, _} <- Events],
+            Starts = [{N, T} || {T, controller, N, started, _} <- Events],
+            Bound = maps:get(kill_bound_us, Opts, 0),
+            Slack = maps:get(kill_slack_us, Opts, 1000000),
             Found =
-                case leases(Events) of
-                    {error, V} -> [V];
-                    {ok, Leases} -> violations(Leases, Margin, FenceKey)
+                case leases([E || E <- Events, not is_kill(E)]) of
+                    {error, V} ->
+                        [V];
+                    {ok, Leases} ->
+                        Leases1 = [
+                            killed(L, Kills, Starts, Bound, Slack)
+                         || L <- Leases
+                        ],
+                        violations(Leases1, Margin, FenceKey)
                 end,
             first_violation(Found, Events, Ctx)
     end.
@@ -101,6 +126,38 @@ first_violation(Found, Events, Ctx) ->
     {violation, V#{context => context(V, Events, Ctx)}}.
 
 at(#{at := At}) -> At.
+
+is_kill({_, controller, _, _, _}) -> true;
+is_kill(_) -> false.
+
+%% An open lease whose node was killed while its holder still logged (its
+%% last event within the slack of the kill): the region holds it for the
+%% kill bound past the kill, or until the node is started again: a node
+%% back with a new incarnation may end its old epoch at once, its old
+%% holders being dead. A holder silent long before the kill was already
+%% gone (a singleton child killed on lost logs no end).
+killed(
+    #{open := true, holder := H, start := S, stop := E} = L,
+    Kills,
+    Starts,
+    Bound,
+    Slack
+) ->
+    Node = holder_node(H),
+    case lists:sort([T || {N, T} <- Kills, N =:= Node, T >= S]) of
+        [T | _] when E >= T - Slack ->
+            Back = lists:sort([B || {N, B} <- Starts, N =:= Node, B >= T]),
+            Until =
+                case Back of
+                    [B | _] -> min(T + Bound, B);
+                    [] -> T + Bound
+                end,
+            L#{stop => max(E, Until), killed => T};
+        _ ->
+            L
+    end;
+killed(L, _Kills, _Starts, _Bound, _Slack) ->
+    L.
 
 %% The leases of a log sorted by time, or the first event that uses a key
 %% its holder does not hold.
@@ -148,7 +205,14 @@ leases([{T, H, K, Kind, F} = E | Rest], Open, Done) when
                 kind => use_without_lease, at => T, key => K, second => E
             }}
     end;
-leases([{T, H, K, _LostOrRelease, _F} = E | Rest], Open, Done) ->
+leases([{_T, H, K, lost, _F} = E | Rest], Open, Done) ->
+    %% told it lost: it acted last at its last renew or fence use (a
+    %% paused holder wakes up to its lost and does nothing more)
+    case maps:take({K, H}, Open) of
+        {L, Open1} -> leases(Rest, Open1, [L#{last => E} | Done]);
+        error -> leases(Rest, Open, Done)
+    end;
+leases([{T, H, K, release, _F} = E | Rest], Open, Done) ->
     case maps:take({K, H}, Open) of
         {L, Open1} -> leases(Rest, Open1, [L#{stop => T, last => E} | Done]);
         %% a lost after a release, or for a lease never seen: nothing held
@@ -280,7 +344,8 @@ read_logs(Dir) ->
 %% @doc Counts for the report: events, claims, losts, releases, fence uses,
 %% holders, keys, and takeovers (a claim on a key last held by another node).
 -spec stats([event()]) -> #{atom() => non_neg_integer()}.
-stats(Events) ->
+stats(Events0) ->
+    Events = [E || E <- Events0, not is_kill(E)],
     Count = fun(Kind) ->
         length([E || {_, _, _, K, _} = E <- Events, K =:= Kind])
     end,
@@ -292,7 +357,8 @@ stats(Events) ->
         uses => Count(fence_used),
         holders => length(lists:usort([H || {_, H, _, _, _} <- Events])),
         keys => length(lists:usort([K || {_, _, K, _, _} <- Events])),
-        takeovers => takeovers(Events)
+        takeovers => takeovers(Events),
+        kills => length(Events0) - length(Events)
     }.
 
 takeovers(Events) ->
@@ -334,7 +400,8 @@ opt(Key, V) ->
         #{} -> []
     end.
 
-brief(#{holder := H, fence := F, start := S, stop := E, open := O}) ->
-    #{holder => H, fence => F, start => S, stop => E, open => O};
+brief(#{holder := H, fence := F, start := S, stop := E, open := O} = L) ->
+    Brief = #{holder => H, fence => F, start => S, stop => E, open => O},
+    maps:merge(Brief, maps:with([killed], L));
 brief(Ev) ->
     Ev.

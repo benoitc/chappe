@@ -38,6 +38,8 @@
     singleton/2,
     stop_singleton/1,
     whereis_singleton/1,
+    singleton_valid/1,
+    singleton_lease/1,
     singleton_fence/1,
     home/1,
     join/1,
@@ -266,15 +268,31 @@ whereis_singleton(Name) ->
         [] -> none
     end.
 
-%% The fence of `Name' when this node runs it.
+%% Whether this node still holds `Name''s lease, as valid/1 tells it: its
+%% liveness, its local deadline, and the lease not lost or taken over. A
+%% singleton's child calls it before each side effect: the kill on lost
+%% cannot reach a child that is paused (a VM suspended, a long GC, a
+%% stopped container), and a paused child must not act on waking up. It
+%% reads a table, with no message to any process.
+-spec singleton_valid(term()) -> boolean().
+singleton_valid(Name) ->
+    case singleton_lease(Name) of
+        {ok, _} -> true;
+        none -> false
+    end.
+
+%% `Name''s lease while this node holds it, read the same way.
+-spec singleton_lease(term()) -> {ok, lease()} | none.
+singleton_lease(Name) ->
+    chappe_cluster_tab:valid_lease(chappe_cluster_singleton:key(Name)).
+
+%% The fence of `Name' while this node holds its lease, for the child to
+%% carry on its side effects.
 -spec singleton_fence(term()) -> {ok, fence()} | none.
 singleton_fence(Name) ->
-    Children = supervisor:which_children(chappe_cluster_singleton_sup),
-    case lists:keyfind(Name, 1, Children) of
-        {Name, Pid, _, _} when is_pid(Pid) ->
-            chappe_cluster_singleton:fence(Pid);
-        _ ->
-            none
+    case singleton_lease(Name) of
+        {ok, Lease} -> {ok, fence(Lease)};
+        none -> none
     end.
 
 %% ---- regions ----

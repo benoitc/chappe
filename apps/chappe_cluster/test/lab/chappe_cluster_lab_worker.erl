@@ -34,19 +34,43 @@ handle_cast(_Msg, S) ->
 handle_info(tick, #{lease := none} = S) ->
     {noreply, claim(S)};
 handle_info({beat, Lease}, #{lease := {Lease, _Key, _Fence, Until}} = S) ->
-    case erlang:monotonic_time(millisecond) >= Until of
-        true -> {noreply, next(release(S))};
-        false -> {noreply, beat(S)}
+    case {held(Lease), erlang:monotonic_time(millisecond) >= Until} of
+        {false, _} -> {noreply, lost(S)};
+        {true, true} -> {noreply, next(release(S))};
+        {true, false} -> {noreply, beat(S)}
     end;
-handle_info(
-    {chappe_cluster, Lease, lost}, #{lease := {Lease, Key, Fence, _}} = S
-) ->
-    #{holder := H} = S,
-    chappe_cluster_lab_log:log(H, Key, lost, Fence),
-    {noreply, next(S#{lease => none})};
+handle_info({chappe_cluster, Lease, lost}, #{lease := {Lease, _, _, _}} = S) ->
+    {noreply, lost(S)};
 handle_info(_Stale, S) ->
     %% a beat or a lost for a lease already gone
     {noreply, S}.
+
+lost(#{lease := {_Lease, Key, Fence, _}, holder := H} = S) ->
+    chappe_cluster_lab_log:log(H, Key, lost, Fence),
+    next(S#{lease => none}).
+
+%% Before each side effect: a lost already in the mailbox wins, and so does
+%% chappe_cluster:valid/1 when the app has it (a paused holder wakes up to
+%% its beat and its lost at once).
+held(Lease) ->
+    receive
+        {chappe_cluster, Lease, lost} -> false
+    after 0 ->
+        case erlang:function_exported(chappe_cluster, valid, 1) of
+            true -> valid(Lease);
+            false -> true
+        end
+    end.
+
+valid(Lease) ->
+    %% resolved at run time: the app may not export it
+    Mod = chappe_cluster,
+    try Mod:valid(Lease) of
+        true -> true;
+        _ -> false
+    catch
+        _:_ -> false
+    end.
 
 claim(#{keys := NKeys, holder := H, hold_ms := {Lo, Hi}} = S) ->
     Key = {lab, rand:uniform(NKeys)},
@@ -57,6 +81,10 @@ claim(#{keys := NKeys, holder := H, hold_ms := {Lo, Hi}} = S) ->
             Hold = Lo + rand:uniform(Hi - Lo),
             Until = erlang:monotonic_time(millisecond) + Hold,
             beat(S#{lease => {Lease, Key, Fence, Until}});
+        {error, {owned, _}} ->
+            %% the region answered: the key is someone else's
+            chappe_cluster_lab_log:count(owned),
+            next(S);
         {error, _} ->
             next(S)
     catch
