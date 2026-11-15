@@ -4,6 +4,10 @@
 %% The event log of one lab node boot: one `{Time, Holder, Key, Kind,
 %% Fence}.' line per event in `<log_dir>/<host>-<boot>.log', written as it
 %% comes (no write buffer), so a docker kill loses at most the last lines.
+%%
+%% Times are real time read from the monotonic clock, with the offset to the
+%% wall clock taken when the log starts: the lab skews a node's wall clock
+%% (libfaketime) while it runs, and the checker compares true times.
 -module(chappe_cluster_lab_log).
 -behaviour(gen_server).
 
@@ -14,10 +18,11 @@
 start_link(Opts, Boot) ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, {Opts, Boot}, []).
 
-%% @doc Log an event, stamped with this node's clock now.
+%% @doc Log an event, stamped with the real time now.
 -spec log(term(), term(), atom(), term()) -> ok.
 log(Holder, Key, Kind, Fence) ->
-    T = os:system_time(microsecond),
+    Offset = persistent_term:get({?MODULE, offset}),
+    T = erlang:monotonic_time(microsecond) + Offset,
     gen_server:cast(?MODULE, {log, {T, Holder, Key, Kind, Fence}}).
 
 -spec sync() -> ok.
@@ -32,6 +37,8 @@ init({#{log_dir := Dir}, Boot}) ->
     [_Name, Host] = string:split(atom_to_list(node()), "@"),
     File = filename:join(Dir, Host ++ "-" ++ integer_to_list(Boot) ++ ".log"),
     ok = filelib:ensure_dir(File),
+    Offset = os:system_time(microsecond) - erlang:monotonic_time(microsecond),
+    ok = persistent_term:put({?MODULE, offset}, Offset),
     {ok, Fd} = file:open(File, [append, raw, binary]),
     {ok, #{fd => Fd, stats => #{}}}.
 

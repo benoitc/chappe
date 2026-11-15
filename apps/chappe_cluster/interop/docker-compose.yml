@@ -6,7 +6,8 @@
 # published on the host: the controller (chappe_cluster_lab, driven by
 # apps/chappe_cluster/test/e2e.sh) reaches the nodes through docker exec
 # and erl_call, and injects faults with docker network disconnect, docker
-# kill, iptables and tc. NET_ADMIN is for those two. Test-only.
+# kill and pause, iptables, tc and libfaketime. NET_ADMIN is for iptables
+# and tc. Test-only.
 #
 # CLB_COOKIE (required, never printed), CLB_NODES (the started nodes),
 # CLB_PROJECT (compose project and network prefix, default clb).
@@ -24,6 +25,9 @@ x-node: &node
     CLB_WORKERS: ${CLB_WORKERS:-3}
     CLB_KEYS: ${CLB_KEYS:-6}
     CLB_TICKTIME: ${CLB_TICKTIME:-10}
+    CLB_SINGLETON: ${CLB_SINGLETON:-1}
+    CLB_SINGLETON_STOP_MS: ${CLB_SINGLETON_STOP_MS:-1500}
+    CLB_FAKETIME: ${CLB_FAKETIME:-1}
   cap_add:
     - NET_ADMIN
   networks:

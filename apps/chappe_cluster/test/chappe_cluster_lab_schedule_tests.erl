@@ -8,7 +8,7 @@
 
 names(N) -> ["n" ++ integer_to_list(I) || I <- lists:seq(1, N)].
 
-caps() -> [isolate, split, kill, delay].
+caps() -> [isolate, split, kill, delay, pause, skew].
 
 same_seed_same_schedule_test() ->
     A = ?S:build(42, 300000, names(5), caps()),
@@ -62,3 +62,30 @@ kind(F) -> element(1, F).
 describe_test() ->
     Text = iolist_to_binary(?S:describe([{1500, {kill, ["n1"]}}])),
     ?assertMatch({_, _}, binary:match(Text, <<"1.500 s">>)).
+
+pause_and_skew_ranges_test() ->
+    Sched = lists:append([
+        ?S:build(Seed, 1800000, names(5), [pause, skew])
+     || Seed <- lists:seq(1, 20)
+    ]),
+    Pauses = [Ms || {_, {pause, _, Ms}} <- Sched],
+    Skews = [Ms || {_, {skew, _, Ms}} <- Sched],
+    %% past lease_ms (6000), or about renew_ms / 2 (1000)
+    ?assert(lists:any(fun(Ms) -> Ms > 6000 end, Pauses)),
+    ?assert(lists:any(fun(Ms) -> Ms >= 750 andalso Ms =< 1250 end, Pauses)),
+    [?assert((Ms > 6000 andalso Ms =< 11000) orelse (Ms >= 750 andalso Ms =< 1250)) || Ms <- Pauses],
+    %% below and above renew_ms / 2, both ways
+    ?assert(lists:any(fun(Ms) -> abs(Ms) < 1000 end, Skews)),
+    ?assert(lists:any(fun(Ms) -> abs(Ms) > 1000 end, Skews)),
+    ?assert(lists:any(fun(Ms) -> Ms < 0 end, Skews)),
+    [?assert(abs(Ms) >= 200 andalso abs(Ms) =< 4000) || Ms <- Skews].
+
+pause_heals_after_its_length_test() ->
+    Sched = ?S:build(5, 600000, names(3), [pause]),
+    check_pause(Sched).
+
+check_pause([]) ->
+    ok;
+check_pause([{T1, {pause, _, Ms} = F}, {T2, {heal, F}} | Rest]) ->
+    ?assertEqual(T1 + Ms, T2),
+    check_pause(Rest).

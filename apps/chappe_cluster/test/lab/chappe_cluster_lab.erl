@@ -47,6 +47,10 @@ settings() ->
         project => env("CLB_PROJECT", "clb"),
         out => env("CLB_OUT", "_build/clb"),
         margin_us => int("MARGIN_MS", 0) * 1000,
+        lease_ms => int("CLB_LEASE_MS", 6000),
+        renew_ms => int("CLB_RENEW_MS", 2000),
+        faults => [list_to_atom(F) || F <- string:lexemes(env("FAULTS", ""), ", ")],
+        check_keys => env("CHECK_KEYS", "all"),
         selftest => env("SELFTEST", "1") =/= "0",
         keep => env("KEEP", "0") =:= "1"
     }.
@@ -74,9 +78,13 @@ run(#{mode := Mode, nodes := Nodes, seed := Seed} = Cfg) ->
     Result =
         try
             Ids = ids(Cfg),
-            Cfg1 = Cfg#{ids => Ids, net => maps:get(project, Cfg) ++ "_lab"},
+            Cfg1 = Cfg#{
+                ids => Ids,
+                net => maps:get(project, Cfg) ++ "_lab",
+                kills => kills_file(Cfg)
+            },
             ok = wait_mesh(Cfg1, 90000),
-            Caps = caps(Cfg1),
+            Caps = only(maps:get(faults, Cfg1), caps(Cfg1)),
             io:format("faults available: ~p~n", [Caps]),
             case Mode of
                 "topology" ->
@@ -187,7 +195,59 @@ parse_term(Out) ->
 caps(#{nodes := [N1 | _]} = Cfg) ->
     Iptables = root(Cfg, N1, "iptables -L OUTPUT -n") =:= 0,
     Tc = root(Cfg, N1, "tc qdisc show") =:= 0,
-    [isolate, kill] ++ [split || Iptables] ++ [delay || Tc].
+    Skew = skew_works(Cfg, N1),
+    [isolate, kill, pause] ++ [split || Iptables] ++ [delay || Tc] ++
+        [skew || Skew].
+
+%% FAULTS=pause,skew keeps those kinds only.
+only([], Caps) -> Caps;
+only(Wanted, Caps) -> [C || C <- Caps, lists:member(C, Wanted)].
+
+%% libfaketime is in the image and the beam's wall clock follows the file.
+skew_works(Cfg, Node) ->
+    case root(Cfg, Node, "test -w /lab/faketime") of
+        0 ->
+            ok = set_skew(Cfg, Node, 30000),
+            timer:sleep(2000),
+            Shift = clock_shift(Cfg, Node),
+            ok = set_skew(Cfg, Node, 0),
+            abs(Shift - 30000) < 2000;
+        _ ->
+            false
+    end.
+
+%% The beam's os:system_time against the container's real clock, in ms.
+clock_shift(Cfg, Node) ->
+    {ok, Beam} = erl_call(Cfg, Node, "os system_time [millisecond]"),
+    Real = real_time_us(Cfg, Node) div 1000,
+    Beam - Real.
+
+real_time_us(Cfg, Node) ->
+    {0, Out} = check(docker(["exec", id(Cfg, Node), "date", "+%s%6N"], 30000)),
+    list_to_integer(string:trim(Out)).
+
+set_skew(Cfg, Node, Ms) ->
+    Sign =
+        case Ms < 0 of
+            true -> "-";
+            false -> "+"
+        end,
+    Off = lists:flatten(io_lib:format("~s~.3f", [Sign, abs(Ms) / 1000])),
+    0 = root(Cfg, Node, "echo " ++ Off ++ " > /lab/faketime"),
+    ok.
+
+kills_file(#{out := Out, seed := Seed}) ->
+    File = filename:join([Out, "kills", integer_to_list(Seed) ++ ".log"]),
+    ok = filelib:ensure_dir(File),
+    _ = file:delete(File),
+    File.
+
+%% The kill, as the checker reads it, stamped with the node's real clock
+%% just before docker kill.
+record_kill(#{kills := File} = Cfg, Node) ->
+    T = real_time_us(Cfg, Node),
+    Ev = {T, controller, list_to_atom("lab@" ++ Node), killed, none},
+    ok = file:write_file(File, io_lib:format("~w.~n", [Ev]), [append]).
 
 apply_action(Cfg, {isolate, Nodes}) ->
     [disconnect(Cfg, N) || N <- Nodes],
@@ -216,6 +276,7 @@ apply_action(Cfg, {heal, {split, Minority, _}}) ->
     ],
     ok;
 apply_action(Cfg, {kill, Nodes}) ->
+    [ok = record_kill(Cfg, N) || N <- Nodes],
     {0, _} = check(compose(Cfg, ["kill", "-s", "KILL" | Nodes], 60000)),
     ok;
 apply_action(Cfg, {heal, {kill, Nodes}}) ->
@@ -227,6 +288,16 @@ apply_action(Cfg, {delay, Node, Ms}) ->
     ]),
     0 = root(Cfg, Node, lists:flatten(Cmd)),
     ok;
+apply_action(Cfg, {pause, Node, _Ms}) ->
+    {0, _} = check(docker(["pause", id(Cfg, Node)], 30000)),
+    ok;
+apply_action(Cfg, {heal, {pause, Node, _Ms}}) ->
+    {0, _} = check(docker(["unpause", id(Cfg, Node)], 30000)),
+    ok;
+apply_action(Cfg, {skew, Node, Ms}) ->
+    set_skew(Cfg, Node, Ms);
+apply_action(Cfg, {heal, {skew, Node, _Ms}}) ->
+    set_skew(Cfg, Node, 0);
 apply_action(Cfg, {heal, {delay, Node, _}}) ->
     0 = root(
         Cfg,
@@ -272,7 +343,7 @@ selftest(#{nodes := [A, B, C | _]} = Cfg, Caps) ->
                 {split, [A], (maps:get(nodes, Cfg) -- [A])}
              || lists:member(split, Caps)
             ] ++
-            [{kill, [B]}],
+            [{kill, [B]}, {pause, C, 0}],
     lists:foreach(
         fun(Fault) ->
             [Cut | _] = cut(Fault),
@@ -301,11 +372,30 @@ selftest(#{nodes := [A, B, C | _]} = Cfg, Caps) ->
         false ->
             io:format("  skipped delay: tc is not usable in this docker host~n")
     end,
+    case lists:member(skew, Caps) of
+        true ->
+            ok = apply_action(Cfg, {skew, A, -1500}),
+            ok = wait(
+                fun() -> abs(clock_shift(Cfg, A) + 1500) < 500 end,
+                10000,
+                "the skewed clock is 1.5 s behind"
+            ),
+            ok = apply_action(Cfg, {heal, {skew, A, -1500}}),
+            ok = wait(
+                fun() -> abs(clock_shift(Cfg, A)) < 500 end,
+                10000,
+                "the clock is back"
+            ),
+            io:format("  ok ~p~n", [{skew, A, -1500}]);
+        false ->
+            io:format("  skipped skew: libfaketime is not in the image~n")
+    end,
     ok.
 
 cut({isolate, Ns}) -> Ns;
 cut({split, Ns, _}) -> Ns;
-cut({kill, Ns}) -> Ns.
+cut({kill, Ns}) -> Ns;
+cut({pause, N, _}) -> [N].
 
 %% ---- the randomized run ----------------------------------------------------
 
@@ -315,8 +405,9 @@ schedule_run(Cfg, Caps) ->
         false ->
             {error, "chappe_cluster is not in the node image"};
         true ->
+            Timing = maps:with([lease_ms, renew_ms], Cfg),
             Sched = chappe_cluster_lab_schedule:build(
-                Seed, Duration, Nodes, Caps
+                Seed, Duration, Nodes, Caps, Timing
             ),
             io:format("schedule (SEED=~p):~n~s", [
                 Seed, chappe_cluster_lab_schedule:describe(Sched)
@@ -368,10 +459,11 @@ stop_clients(#{nodes := Nodes} = Cfg) ->
     ],
     ok.
 
-collect(#{nodes := Nodes, out := Out, seed := Seed} = Cfg) ->
+collect(#{nodes := Nodes, out := Out, seed := Seed, kills := Kills} = Cfg) ->
     Dir = filename:join([Out, "logs", integer_to_list(Seed)]),
     _ = file:del_dir_r(Dir),
     ok = filelib:ensure_dir(filename:join(Dir, "x")),
+    _ = file:copy(Kills, filename:join(Dir, "controller.log")),
     [
         {0, _} = check(
             compose(Cfg, ["cp", N ++ ":/logs", filename:join(Dir, N)], 60000)
@@ -380,13 +472,20 @@ collect(#{nodes := Nodes, out := Out, seed := Seed} = Cfg) ->
     ],
     Dir.
 
-verdict(#{margin_us := Margin}, Dir, Dead, Sched) ->
-    {Events, Bad} = chappe_cluster_lab_checker:read_logs(Dir),
+verdict(#{margin_us := Margin, renew_ms := Renew} = Cfg, Dir, Dead, Sched) ->
+    {Events0, Bad} = chappe_cluster_lab_checker:read_logs(Dir),
+    Events = keys(maps:get(check_keys, Cfg), Events0),
     Stats = chappe_cluster_lab_checker:stats(Events),
-    io:format("~nlogs: ~s~nfaults: ~p~nevents: ~p (~p cut lines)~n", [
-        Dir, length(Sched) div 2, Stats, Bad
-    ]),
-    case chappe_cluster_lab_checker:check(Events, #{margin_us => Margin}) of
+    %% a node killed before it was told to stop held its leases for at
+    %% least renew_ms / 2 more
+    Bound = int("KILL_BOUND_MS", Renew div 2) * 1000,
+    io:format(
+        "~nlogs: ~s~nfaults: ~p~nevents: ~p (~p cut lines)~n"
+        "margin: ~p us, kill bound: ~p us~n",
+        [Dir, length(Sched) div 2, Stats, Bad, Margin, Bound]
+    ),
+    Opts = #{margin_us => Margin, kill_bound_us => Bound},
+    case chappe_cluster_lab_checker:check(Events, Opts) of
         {violation, V} ->
             io:format("~s", [chappe_cluster_lab_checker:format(V)]),
             {error, "the lease checker found a violation"};
@@ -401,6 +500,18 @@ verdict(#{margin_us := Margin}, Dir, Dead, Sched) ->
             ),
             ok
     end.
+
+%% CHECK_KEYS=singleton checks the singleton's key only, lab the workers'.
+keys("singleton", Events) ->
+    [E || {_, _, K, _, _} = E <- Events, is_kill_or(singleton, E, K)];
+keys("lab", Events) ->
+    [E || {_, _, K, _, _} = E <- Events, is_kill_or(lab, E, K)];
+keys(_, Events) ->
+    Events.
+
+is_kill_or(_Tag, {_, controller, _, killed, _}, _K) -> true;
+is_kill_or(Tag, _E, {Tag, _}) -> true;
+is_kill_or(_Tag, _E, _K) -> false.
 
 %% ---- helpers ---------------------------------------------------------------
 

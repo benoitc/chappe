@@ -374,8 +374,9 @@ jobs:
           name: mrf-interop-ct-logs
           path: _build/test/logs
 
-  # Five chappe_cluster nodes under a seeded schedule of partitions, kills
-  # and delays; the lease checker fails the job on any overlapping lease.
+  # Five chappe_cluster nodes under a seeded schedule of partitions, kills,
+  # pauses, delays and clock skews; the lease checker fails the job on any
+  # overlapping lease.
   # The seed is in the log: SEED=... make interop-cluster replays it.
   cluster-interop:
     name: chappe_cluster lab (partitions, lease checker)

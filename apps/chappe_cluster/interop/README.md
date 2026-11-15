@@ -35,13 +35,28 @@ node count and docker host give the same schedule.
    | split a minority from the rest | `iptables` DROP on the minority |
    | kill a minority, sometimes a majority | `docker kill`, then `docker start` |
    | delay one node by 50 to 400 ms | `tc netem` |
+   | pause a node past lease_ms, or for about renew_ms / 2 | `docker pause`, then `unpause` |
+   | move a node's wall clock by 0.2 to 4 s, either way, for 65 to 90 s | libfaketime |
 
-   `split` and `delay` are skipped when the docker host has no usable
-   iptables or tc, and the run says so.
+   `split`, `delay` and `skew` are skipped when the docker host has no
+   usable iptables or tc, or the image has no libfaketime, and the run
+   says so. A skew holds over a minute because the runtime notices an OS
+   clock change within about 60 s; only then does `erlang:system_time`
+   (`+C multi_time_warp`) follow it.
 4. On each node three workers claim one of six keys at random, hold it for
-   0.5 to 8 s while logging the fence every 200 ms, and release it. Every
-   claim, renew, fence use, lost and release goes to `/logs` in the node.
-5. After the last heal every node must claim again. The controller then
+   0.5 to 8 s while logging the fence every 200 ms, and release it. Before
+   each side effect a worker reads its mailbox for `lost` (and calls
+   `chappe_cluster:valid/1` when the app exports it). Every node also
+   contends for one singleton whose child logs its fence every 200 ms and
+   takes 1.5 s (`CLB_SINGLETON_STOP_MS`, more than renew_ms / 2) to stop.
+   Every claim, renew, fence use, lost and release goes to `/logs` in the
+   node, stamped with real time from the monotonic clock, so a skewed node
+   still logs true times.
+5. When it kills a node the controller logs the node's real time just
+   before the kill. A lease that node held is the region's for renew_ms / 2
+   more (`KILL_BOUND_MS`): its holder had not been told to stop, so a
+   takeover sooner is an overlap.
+6. After the last heal every node must claim again. The controller then
    stops the workers, copies the logs to `_build/clb/logs/<seed>/` and runs
    `chappe_cluster_lab_checker`.
 
@@ -59,13 +74,18 @@ violation: overlap at 1763200000123456
 The holder is `{Node, Boot, {Worker, Incarnation}}`. Times are each node's
 clock in microseconds; the controller prints the wall time of every fault in
 the same unit, so you can find the fault that preceded the violation.
-`MARGIN_MS` tolerates that much overlap for clock skew (0 by default: all
-containers share the docker host's clock).
+`MARGIN_MS` tolerates that much overlap (0 by default: the times are real
+time, even on a skewed node).
 
 ## Notes
 
 - `KEEP=1` leaves the containers up; attach with
   `docker exec -it clb-n1-1 erl -sname dbg -remsh lab@n1`.
 - `CLB_PROJECT` moves the compose project, network and image name.
+- `FAULTS=pause,skew` keeps those fault kinds only (`FAULTS=none` runs
+  with no fault, a control run); `CHECK_KEYS=lab` or
+  `singleton` checks the workers' keys or the singleton's only.
+- `CLB_SINGLETON=0` leaves the singleton out; `CLB_FAKETIME=0` runs the
+  beams without libfaketime.
 - `CLB_LEASE_MS`, `CLB_RENEW_MS`, `CLB_WORKERS`, `CLB_KEYS` and
   `CLB_TICKTIME` (net_ticktime, 10 s) tune the nodes.

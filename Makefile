@@ -82,9 +82,9 @@ interop-mrf:
 	apps/chappe_mrf/test/e2e.sh
 
 # chappe_cluster nodes in docker under a seeded schedule of partitions,
-# kills and delays, then the lease checker over every node's log
-# (apps/chappe_cluster/interop). SEED replays a run, DURATION sets its
-# length (5m), NODES the node count (3 to 5).
+# kills, pauses, delays and clock skews, then the lease checker over every
+# node's log (apps/chappe_cluster/interop). SEED replays a run, DURATION
+# sets its length (5m), NODES the node count (3 to 5).
 interop-cluster:
 	apps/chappe_cluster/test/e2e.sh
 
