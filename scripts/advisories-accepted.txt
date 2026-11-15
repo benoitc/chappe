@@ -1,0 +1,12 @@
+# Hex advisories looked at and accepted for the version in rebar.lock
+# (scripts/advisories.py hex). Each entry covers that version only.
+#
+# hackney 4.7.4 comes in through instrument (its OTLP exporter) and livery
+# (its HTTP client and auth helpers); chappe calls none of them. The fixed
+# hackney (4.9.0 and later) needs quic 2 or 3, and livery takes quic 1.8,
+# so it cannot be locked until livery moves. Drop these lines then.
+EEF-CVE-2026-112880 hackney 4.7.4  # proxy auth header injection; no hackney calls
+EEF-CVE-2026-113440 hackney 4.7.4  # credentials resent on redirect; no hackney calls
+EEF-CVE-2026-115693 hackney 4.7.4  # custom cacerts trust; no hackney calls
+EEF-CVE-2026-115700 hackney 4.7.4  # SSRF allow list bypass; no hackney calls
+EEF-CVE-2026-97200 hackney 4.7.4   # unbounded response body; no hackney calls
