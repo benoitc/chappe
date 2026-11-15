@@ -76,7 +76,7 @@ the `MIN_COVERAGE` floor set in the workflow (raise it, never lower it). The
 docker jobs run the conformance lab and the compliance gate
 (`make interop-conformance`, `make compliance GATE=demo`), the JsSIP/Kamailio
 suite, the SBC lab (`make interop-sbc`), `make interop`, `make interop-mix`,
-`make interop-esl`, `make interop-mrf`, and the C NIF under AddressSanitizer (`make asan`; see `apps/chappe_sip/test/asan/`).
+`make interop-esl`, `make interop-mrf`, the cluster lab (`make interop-cluster`: nodes partitioned and killed on a seeded schedule, checked for overlapping leases), and the C NIF under AddressSanitizer (`make asan`; see `apps/chappe_sip/test/asan/`).
 
 ## Build & Development Commands
 
