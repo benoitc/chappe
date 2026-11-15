@@ -30,6 +30,11 @@ all() ->
         lapse_fires_through_a_flooded_agent,
         late_claim_reply_is_no_quorum,
         valid_follows_the_lease,
+        valid_is_false_once_the_holder_died,
+        commands_keep_their_deadline,
+        lapse_rearms_from_the_table,
+        pending_releases_are_bounded_on_their_own,
+        app_stop_tells_the_holders,
         no_quorum_is_bounded,
         max_leases_bound,
         kv_put_get_cas_delete,
@@ -230,6 +235,116 @@ valid_follows_the_lease(_Config) ->
         ?assertNot(chappe_cluster:valid(L2))
     end),
     ?assertNot(chappe_cluster:valid(nolease)).
+
+%% The holder died: its lease is no longer valid, before any sweep.
+valid_is_false_once_the_holder_died(_Config) ->
+    H = spawn_holder(),
+    {ok, L} = chappe_cluster:claim(k_dead, #{pid => H}),
+    ?assert(chappe_cluster:valid(L)),
+    Agent = whereis(chappe_cluster_node),
+    ok = sys:suspend(Agent),
+    try
+        exit(H, kill),
+        wait(fun() -> not is_process_alive(H) end),
+        ?assertNot(chappe_cluster:valid(L))
+    after
+        sys:resume(Agent)
+    end.
+
+%% A claim never waits past its timeout, whatever the members do: the
+%% known leader goes first, and a hung member gets only what is left.
+commands_keep_their_deadline(_Config) ->
+    Hung = spawn(fun Loop() ->
+        receive
+            _ -> Loop()
+        end
+    end),
+    Hung2 = spawn(fun Loop() ->
+        receive
+            _ -> Loop()
+        end
+    end),
+    true = register(hung_member, Hung),
+    true = register(hung_member2, Hung2),
+    Real = chappe_cluster_config:server_id(),
+    Members = chappe_cluster_node:members(),
+    try
+        ok = chappe_cluster_tab:set_members([{hung_member, node()}, Real]),
+        ok = chappe_cluster_tab:set_leader(Real),
+        T0 = erlang:monotonic_time(millisecond),
+        {ok, L} = chappe_cluster:claim(k_deadline, #{timeout => 1000}),
+        ?assert(erlang:monotonic_time(millisecond) - T0 < 500),
+        ok = chappe_cluster:release(L),
+        ok = chappe_cluster_tab:set_members([{hung_member, node()}, {hung_member2, node()}]),
+        ok = chappe_cluster_tab:set_leader({hung_member2, node()}),
+        T1 = erlang:monotonic_time(millisecond),
+        ?assertEqual({error, no_quorum}, chappe_cluster:claim(k_deadline, #{timeout => 1000})),
+        ?assert(erlang:monotonic_time(millisecond) - T1 < 1300)
+    after
+        ok = chappe_cluster_tab:set_members(Members),
+        ok = chappe_cluster_tab:set_leader(Real),
+        exit(Hung, kill),
+        exit(Hung2, kill)
+    end,
+    wait(fun() -> chappe_cluster:owner(k_deadline) =:= none end).
+
+%% The lapse timer lost its arm (an agent crash between a renewal and its
+%% arm): the lapse process still fires from the table.
+lapse_rearms_from_the_table(_Config) ->
+    {ok, _} = chappe_cluster:claim(k_rearm, #{}),
+    Agent = whereis(chappe_cluster_node),
+    ok = sys:suspend(Agent),
+    try
+        _ = sys:replace_state(chappe_cluster_lapse, fun(St) ->
+            _ = erlang:cancel_timer(element(2, St)),
+            setelement(2, St, undefined)
+        end),
+        receive
+            {chappe_cluster, #{key := k_rearm}, lost} -> ok
+        after 3 * ?LEASE -> ct:fail(no_lost)
+        end
+    after
+        sys:resume(Agent)
+    end,
+    ok = wait_live().
+
+%% The pending releases have their own bound: holders and other rows do
+%% not crowd them out.
+pending_releases_are_bounded_on_their_own(_Config) ->
+    H = spawn_holder(),
+    Leases = [L || I <- lists:seq(1, 20), {ok, L} <- [chappe_cluster:claim({k_pb, I}, #{pid => H})]],
+    Agent = whereis(chappe_cluster_node),
+    ok = sys:suspend(Agent),
+    try
+        [ok = chappe_cluster_tab:queue({claim, {k_pq, I}, make_ref()}) || I <- lists:seq(1, 3 * ?MAX_LEASES - 10)],
+        ok = chappe_cluster_tab:queue({seq, k_pkeep, 7}),
+        ?assert(lists:member({seq, k_pkeep, 7}, chappe_cluster_tab:pending())),
+        %% one per key and kind: a newer item for a key replaces the older
+        ok = chappe_cluster_tab:queue({claim, {k_pq, 1}, newer}),
+        ?assertEqual(1, length([x || {claim, {k_pq, 1}, _} <- chappe_cluster_tab:pending()])),
+        [ok = chappe_cluster_tab:queue({claim, {k_over, I}, make_ref()}) || I <- lists:seq(1, 50)],
+        ?assert(length(chappe_cluster_tab:pending()) =< 3 * ?MAX_LEASES)
+    after
+        sys:resume(Agent)
+    end,
+    exit(H, kill),
+    _ = Leases,
+    wait(fun() -> chappe_cluster_tab:pending() =:= [] end, 200).
+
+%% Stopping the app tells every holder lost; the next start takes a new
+%% epoch, so the old leases end in the region.
+app_stop_tells_the_holders(_Config) ->
+    {ok, #{epoch := E}} = chappe_cluster:claim(k_stop, #{}),
+    ok = application:stop(chappe_cluster),
+    receive
+        {chappe_cluster, #{key := k_stop}, lost} -> ok
+    after 5000 -> ct:fail(no_lost)
+    end,
+    {ok, _} = application:ensure_all_started(chappe_cluster),
+    ok = wait_live(),
+    {ok, E2} = chappe_cluster_node:live(),
+    ?assert(E2 > E),
+    wait(fun() -> chappe_cluster:owner(k_stop) =:= none end).
 
 %% The node cannot reach the quorum (its member is suspended): its holders
 %% are told the lease is lost before lease_ms runs out.
