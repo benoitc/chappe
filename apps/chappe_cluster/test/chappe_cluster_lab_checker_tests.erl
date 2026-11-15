@@ -298,3 +298,17 @@ kill_bound_skips_a_silent_holder_test() ->
     Opts = #{kill_bound_us => 1000000},
     ?assertEqual(ok, ?C:check(Log, Opts)),
     ?assertEqual(overlap, kind(?C:check(Log, Opts#{kill_slack_us => 4000000}))).
+
+%% a killed node started again may end its old epoch at once
+kill_bound_ends_at_the_restart_test() ->
+    Log = [
+        {10, a(), k, claim_ok, f(1)},
+        {20, a(), k, renew, f(1)},
+        {25, controller, n1, killed, none},
+        {30, controller, n1, started, none},
+        {35, b(), k, claim_ok, f(2)}
+    ],
+    Opts = #{kill_bound_us => 100},
+    ?assertEqual(ok, ?C:check(Log, Opts)),
+    Early = [E || {T, _, _, _, _} = E <- Log, T =/= 35] ++ [{28, b(), k, claim_ok, f(2)}],
+    ?assertEqual(overlap, kind(?C:check(Early, Opts))).

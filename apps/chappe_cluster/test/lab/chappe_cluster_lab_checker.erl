@@ -53,7 +53,8 @@
 
 -export_type([event/0, violation/0]).
 
--type kind() :: claim_ok | renew | lost | release | fence_used | killed.
+-type kind() ::
+    claim_ok | renew | lost | release | fence_used | killed | started.
 -type event() :: {integer(), term(), term(), kind(), term()}.
 -type lease() :: #{
     key := term(),
@@ -82,7 +83,7 @@
     context => non_neg_integer()
 }.
 
--define(KINDS, [claim_ok, renew, lost, release, fence_used, killed]).
+-define(KINDS, [claim_ok, renew, lost, release, fence_used, killed, started]).
 
 %% @doc Check a log with no margin.
 -spec check([event()]) -> ok | {violation, violation()}.
@@ -101,6 +102,7 @@ check(Events0, Opts) ->
         [] ->
             Events = lists:keysort(1, Events0),
             Kills = [{N, T} || {T, controller, N, killed, _} <- Events],
+            Starts = [{N, T} || {T, controller, N, started, _} <- Events],
             Bound = maps:get(kill_bound_us, Opts, 0),
             Slack = maps:get(kill_slack_us, Opts, 1000000),
             Found =
@@ -109,7 +111,7 @@ check(Events0, Opts) ->
                         [V];
                     {ok, Leases} ->
                         Leases1 = [
-                            killed(L, Kills, Bound, Slack)
+                            killed(L, Kills, Starts, Bound, Slack)
                          || L <- Leases
                         ],
                         violations(Leases1, Margin, FenceKey)
@@ -125,24 +127,36 @@ first_violation(Found, Events, Ctx) ->
 
 at(#{at := At}) -> At.
 
-is_kill({_, controller, _, killed, _}) -> true;
+is_kill({_, controller, _, _, _}) -> true;
 is_kill(_) -> false.
 
 %% An open lease whose node was killed while its holder still logged (its
 %% last event within the slack of the kill): the region holds it for the
-%% kill bound past the kill. A holder silent long before the kill was
-%% already gone (a singleton child killed on lost logs no end).
+%% kill bound past the kill, or until the node is started again: a node
+%% back with a new incarnation may end its old epoch at once, its old
+%% holders being dead. A holder silent long before the kill was already
+%% gone (a singleton child killed on lost logs no end).
 killed(
-    #{open := true, holder := H, start := S, stop := E} = L, Kills, Bound, Slack
+    #{open := true, holder := H, start := S, stop := E} = L,
+    Kills,
+    Starts,
+    Bound,
+    Slack
 ) ->
     Node = holder_node(H),
     case lists:sort([T || {N, T} <- Kills, N =:= Node, T >= S]) of
         [T | _] when E >= T - Slack ->
-            L#{stop => max(E, T + Bound), killed => T};
+            Back = lists:sort([B || {N, B} <- Starts, N =:= Node, B >= T]),
+            Until =
+                case Back of
+                    [B | _] -> min(T + Bound, B);
+                    [] -> T + Bound
+                end,
+            L#{stop => max(E, Until), killed => T};
         _ ->
             L
     end;
-killed(L, _Kills, _Bound, _Slack) ->
+killed(L, _Kills, _Starts, _Bound, _Slack) ->
     L.
 
 %% The leases of a log sorted by time, or the first event that uses a key

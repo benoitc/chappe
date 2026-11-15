@@ -249,6 +249,14 @@ record_kill(#{kills := File} = Cfg, Node) ->
     Ev = {T, controller, list_to_atom("lab@" ++ Node), killed, none},
     ok = file:write_file(File, io_lib:format("~w.~n", [Ev]), [append]).
 
+%% The restart, stamped just before docker start with the clock of a node
+%% that runs (they share the docker host's clock).
+record_start(#{kills := File, nodes := All} = Cfg, Node, Killed) ->
+    [Up | _] = All -- Killed,
+    T = real_time_us(Cfg, Up),
+    Ev = {T, controller, list_to_atom("lab@" ++ Node), started, none},
+    ok = file:write_file(File, io_lib:format("~w.~n", [Ev]), [append]).
+
 apply_action(Cfg, {isolate, Nodes}) ->
     [disconnect(Cfg, N) || N <- Nodes],
     ok;
@@ -280,6 +288,7 @@ apply_action(Cfg, {kill, Nodes}) ->
     {0, _} = check(compose(Cfg, ["kill", "-s", "KILL" | Nodes], 60000)),
     ok;
 apply_action(Cfg, {heal, {kill, Nodes}}) ->
+    [ok = record_start(Cfg, N, Nodes) || N <- Nodes],
     {0, _} = check(compose(Cfg, ["start" | Nodes], 120000)),
     ok;
 apply_action(Cfg, {delay, Node, Ms}) ->
