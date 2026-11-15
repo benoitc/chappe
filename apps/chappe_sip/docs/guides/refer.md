@@ -12,6 +12,8 @@ participants on request (RFC 4579).
 
 - A peer transfers a call to you or through you (you are the recipient).
 - You transfer a call yourself (you are the sender).
+- A B2BUA call carries a transfer out itself, blind or attended
+  (`transfer => auto`, below).
 - A conference focus handles REFERs to add (`method=INVITE`), remove
   (`method=BYE`) or refer (`method=REFER`) a participant.
 
@@ -157,6 +159,150 @@ NOTIFY router hands them to `chappe_sip_refer` before your own
 `chappe_sip_refer:notify_handler/0` and `handle_notify/2` still work in a
 handler of yours.
 
+## Transfer a B2BUA call
+
+When the call is a B2BUA call (`create_b2bua/4`), let the B2BUA carry the
+REFER out itself. The leg that sends the REFER is the transferor; the other
+leg is the transferee and keeps its media: the target replaces the
+transferor's leg behind rtpengine, so the transferee sees no re-INVITE.
+This needs `media => anchor`.
+
+```erlang
+{ok, Legs} = chappe_sip:create_b2bua(Req, Res, Callee, #{
+    media => anchor,
+    notify => self(),
+    transfer => auto,
+    transfer_opts => #{domains => [<<"pbx.example.com">>]}
+}),
+{done, _} = chappe_sip_b2b:relay(Legs).
+```
+
+What happens on a REFER from either leg:
+
+- The REFER is checked (as above), then the call's policy decides. It is
+  answered 200 and the referrer gets `NOTIFY 100 Trying`.
+- Blind (RFC 5589 6): the B2BUA INVITEs the Refer-To target on the
+  referrer's side, under the identity the referrer saw on its leg, with the
+  REFER's Referred-By unchanged. On a 2xx the referrer gets the final
+  `NOTIFY 200`, then a BYE. On a failure it gets the final status and the
+  call stays as it was.
+- Attended (RFC 5589 7.3): a Refer-To with Replaces naming a leg of another
+  B2BUA call, on this node or another node of the cluster (found through
+  the `chappe_sip` pg scope), joins the two remote parties through rtpengine:
+  the target's leg leaves its call and is re-INVITEd into this one, and no
+  new INVITE goes out. A Replaces naming no local dialog goes to the target
+  in an INVITE with Replaces and `Require: replaces`.
+- The new leg keeps the call's `call_ref`, and its call record names it with
+  `related`.
+
+The notify process gets `{chappe_sip_b2b, Ref, Event}`:
+
+| Event | When |
+|---|---|
+| `{transfer, Leg, Info}` | the REFER was accepted |
+| `{replaced, Leg}` | the target took the leg over |
+| `{transferred, Leg, Info}` | the referrer heard the result and was hung up |
+| `{transfer_failed, Leg, Info}` | the target failed; `Info` has `status` |
+
+### Decide who may transfer where
+
+Without a policy fun, a target must be a sip or sips URI with a user, on
+one of `domains`, and without `maddr`; anything else gets 403 before
+anything is called:
+
+- A domain given as `<<"pbx.example.com">>` takes any port;
+  `<<"pbx.example.com:5080">>` takes only that one.
+- Without `domains`, the target must be this node at one of its own listen
+  addresses, port included, so your INVITE handler routes it.
+- `maddr` would send the INVITE elsewhere than the host you allowed.
+- The target's 3xx is not followed: the transfer fails with that status.
+
+Give your own policy to decide:
+
+```erlang
+Policy = fun(#{target := Target, referrer := Who}) ->
+    allowed(Who, Target)
+end,
+Opts = #{media => anchor, transfer => auto,
+         transfer_opts => #{policy => Policy, max_transfers => 3}}.
+```
+
+The fun gets `kind` (`blind` or `attended`), `leg`, `target`, `refer_to`,
+`referrer`, `referred_by`, `principal`, `call_ref` and `transfers` (and
+`local` and `replaces_principal` for an attended transfer), and returns `true`,
+`false` (403) or `{reject, Code}`. It runs in the transfer's process, on
+the node that holds the call.
+
+- `referrer` is the REFER's From, the identity its dialog was formed with.
+  `referred_by` is only what the REFER claims (RFC 3892 6): never grant on
+  it alone.
+- An attended transfer that joins two calls of this node needs proof that
+  the referrer is the party it replaces (RFC 3891 3). Record who your app
+  authenticated on each leg with `create_b2bua/4`'s `principal => #{a | b
+  => Who}`: without a policy fun, the join goes ahead only when the
+  referrer's leg and the leg the Replaces names carry the same principal,
+  and gets 403 otherwise, that call left alone. A policy fun sees them as
+  `principal` and `replaces_principal`. The REFER's From is never enough:
+  nothing authenticated it.
+- A call carries at most `max_transfers` transfers (default 5), one at a
+  time: a second REFER while one runs gets 500 with Retry-After.
+- A REFER for another method than INVITE gets 403. A REFER with
+  `Require: multiple-refer` (RFC 5368) gets 420 with Unsupported.
+
+### Decide each transfer in your app
+
+With `transfer => notify` your notify process gets each REFER first:
+
+```erlang
+receive
+    {chappe_sip_b2b, Ref, {refer, #{target := Target} = Info}} ->
+        case allowed(Target) of
+            true -> ok = chappe_sip_b2b_transfer:accept(Info, #{});
+            false -> ok = chappe_sip_b2b_transfer:reject(Info, 403)
+        end
+end.
+```
+
+`accept/2` takes `target => Uri` to send the transferee elsewhere (a blind
+transfer then). Without an answer within `transfer_opts` `timeout` (10000
+ms) the REFER gets 603. Both calls work from any node.
+
+### Calls to FreeSWITCH and conferences
+
+- A chappe_mrf call (`chappe_mrf:connect_caller/3` with `transfer => auto`)
+  is a B2BUA call: a REFER from the FreeSWITCH side (a deflect) is carried
+  out by chappe, the channel gets the final NOTIFY and a BYE, and the
+  caller sees neither the REFER nor a re-INVITE.
+- A conference member's REFER on its call is a transfer of that call: the
+  target takes the member's place, on either backend.
+- A REFER to the focus (RFC 4579) goes through `chappe_sip_focus:refer/4`:
+
+```erlang
+case chappe_sip_focus:refer(Dialog, RReq, RRes, #{policy => Policy}) of
+    {add, Uri, Refer} -> dial_in(Uri, Refer);
+    {transfer, Uri, Refer} -> replace_member(Uri, Refer);
+    {remove, Uri, Refer} -> kick(Uri, Refer);
+    {error, _} -> ok
+end.
+```
+
+What a REFER means follows where it was sent. To the conference URI, or
+in a dialog whose Contact carries `isfocus`, a Refer-To for an INVITE is
+`add` (5.5). In a dialog of a room that hides it is a focus (no
+`isfocus`, 4.2), it is `transfer`: an RFC 3515 transfer of that member.
+`remove` is a Refer-To with `method=BYE` (5.11). The policy gets `action`,
+`target`, `replaces`, `referrer` and `referred_by`; without one all are
+refused 403. Report with `chappe_sip_refer:final/2`.
+
+When `replaces` is set, put it on your INVITE to the target: that brings a
+point-to-point call into the conference (5.10). `chappe_sip_refer:target/1`
+has it too.
+
+A room whose members join through a B2BUA call marks those legs with
+`create_b2bua/4`'s `contact_params => #{a => <<";isfocus">>}`, or sets
+their whole Contact with
+`a_headers => [{<<"Contact">>, chappe_sip_focus:contact(ConfUri)}]`.
+
 ## REFER behaviour in detail
 
 - REFER (RFC 3515 as updated by RFC 7647), both sides, in `chappe_sip_refer`
@@ -187,6 +333,10 @@ handler of yours.
 
 - Modules: `chappe_sip_refer`, `chappe_sip_refer_sub`,
   `chappe_sip_refer_registry`, `chappe_sip_sipfrag`,
-  `chappe_sip_notify_router`.
-- Tests: `chappe_sip_refer_SUITE`, `chappe_sip_sipfrag_tests`.
-- Lab: none.
+  `chappe_sip_notify_router`, `chappe_sip_b2b_transfer`,
+  `chappe_sip_b2b_sup`, `chappe_sip_focus`.
+- Tests: `chappe_sip_refer_SUITE`, `chappe_sip_sipfrag_tests`,
+  `chappe_sip_b2b_transfer_SUITE`, `chappe_sip_focus_SUITE`,
+  `chappe_mrf_SUITE` (`fs_refer_transfers_caller`).
+- Lab: the conformance lab (`make interop-conformance`): `b2b_refer_refused`
+  (SIPp), `pjsua_b2b_refer_blind` and `pjsua_b2b_refer_attended`.

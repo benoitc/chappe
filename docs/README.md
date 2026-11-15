@@ -14,6 +14,8 @@ live here in `docs/`.
 - Want to build a service: [Getting started with chappe_sip](../apps/chappe_sip/docs/guides/getting-started.md).
 - Want to change the code: [CONTRIBUTING](../CONTRIBUTING.md), then
   [Navigation](navigation.md).
+- Porting a drachtio app: [drachtio parity](drachtio-parity.md), then the
+  [drachtio mapping](../apps/chappe_mrf/docs/drachtio-mapping.md).
 
 ## By reader
 

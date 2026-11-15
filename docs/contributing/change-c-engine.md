@@ -87,12 +87,13 @@ make asan
 `make tsan`, `make lint-c` and `make fuzz` are the other checks; `engine.md`
 ("How to check") says what each runs.
 
-`make asan` runs the smoke, dialog_ops, lifecycle, NIF boundary and core
-suites under AddressSanitizer and UndefinedBehaviorSanitizer with
-LeakSanitizer on, in a Linux container (macOS strips the interceptors from a
-dlopen'd NIF). Pass other suites as the first argument of
-`apps/chappe_sip/test/asan/run.sh`. `ASAN_DETECT_LEAKS=0` checks memory errors
-only.
+`make asan` runs every chappe_sip suite (each one starts the NIF) under
+AddressSanitizer and UndefinedBehaviorSanitizer with LeakSanitizer on, in a
+Linux container (macOS strips the interceptors from a dlopen'd NIF). The
+BEAM runs with `+Mea min`, so what the NIF takes with `enif_alloc` comes
+from malloc and ASan sees it. Pass a shorter list as the first argument of
+`apps/chappe_sip/test/asan/run.sh` while you iterate. `ASAN_DETECT_LEAKS=0`
+checks memory errors only.
 
 ## How to know it works
 

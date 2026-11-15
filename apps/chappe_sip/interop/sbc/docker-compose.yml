@@ -20,6 +20,14 @@ networks:
         - subnet: 10.253.9.0/24
           # SIPp gets an address from here; the services keep theirs below
           ip_range: 10.253.9.128/25
+  # the NAT case: the node binds 10.253.10.10 and advertises 203.0.113.10
+  # (1:1 NAT); 10.253.10.0/26 is its local network, SIPp from the range
+  # above it stands for the internet
+  nat:
+    ipam:
+      config:
+        - subnet: 10.253.10.0/24
+          ip_range: 10.253.10.128/25
 
 # the compiled chappe tree; lab.sh build creates and fills it
 volumes:
@@ -88,6 +96,8 @@ services:
     networks:
       lab:
         ipv4_address: 10.253.9.10
+      nat:
+        ipv4_address: 10.253.10.10
     volumes:
       - work:/work
       - ./node:/sbc:ro

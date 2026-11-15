@@ -26,7 +26,7 @@
 %% re-INVITE (and reports them), and sends BYE or RTP.
 -module(chappe_mrf_fake).
 
--export([fs_start/2, fs_stop/1, fs_dtmf/2, fs_hangup/2, fs_port/1]).
+-export([fs_start/2, fs_stop/1, fs_dtmf/2, fs_hangup/2, fs_port/1, fs_refer/2]).
 -export([fs_event/3, socket_start/3, socket_event/3, socket_stop/1]).
 -export([refuser_start/1]).
 -export([esl_start/0, esl_stop/1]).
@@ -88,6 +88,13 @@ fs_dtmf({Pid, _}, Digit) ->
 
 fs_hangup({Pid, _}, Cause) ->
     Pid ! {all, {hangup, Cause}},
+    ok.
+
+%% every channel of the node REFERs its caller to ReferTo (a Refer-To
+%% value), as a deflect does; the answer is {response, Bin}, each NOTIFY
+%% {notify, Bin}
+fs_refer({Pid, _}, ReferTo) ->
+    Pid ! {all, {refer, ReferTo}},
     ok.
 
 %% an event on every channel of the node
@@ -199,7 +206,12 @@ fs_loop(#{sock := Sock, calls := Calls} = S) ->
             gen_udp:close(Sock)
     end.
 
-fs_sip(<<"SIP/2.0 ", _/binary>>, _Src, S) ->
+fs_sip(<<"SIP/2.0 ", _/binary>> = R, _Src, #{calls := Calls} = S) ->
+    _ =
+        case maps:find(hdr(R, <<"call-id">>), Calls) of
+            {ok, C} -> C ! {sip_resp, R};
+            error -> ok
+        end,
     S;
 fs_sip(Bin, Src, #{calls := Calls} = S) ->
     CallId = hdr(Bin, <<"call-id">>),
@@ -267,6 +279,12 @@ chan_loop(#{tcp := Tcp} = C) ->
             chan_loop_sip_only(C);
         {sip, Bin, Src} ->
             chan_loop(chan_sip(Bin, Src, C));
+        {sip_resp, R} ->
+            report(C, {response, R}),
+            chan_loop(C);
+        {refer, ReferTo} ->
+            send_refer(C, ReferTo),
+            chan_loop(C);
         {dtmf, Digit} ->
             event(C, <<"DTMF">>, [{<<"DTMF-Digit">>, Digit}]),
             chan_loop(C);
@@ -310,6 +328,10 @@ chan_sip(Bin, Src, #{node := Node} = C) ->
             C;
         <<"ACK">> ->
             C;
+        <<"NOTIFY">> ->
+            send_sip(Node, Src, resp(Bin, 200, <<"OK">>, <<>>, [], <<>>)),
+            report(C, {notify, Bin}),
+            C;
         _ ->
             send_sip(Node, Src, resp(Bin, 200, <<"OK">>, <<>>, [], <<>>)),
             C
@@ -325,20 +347,27 @@ end_channel(#{tcp := Tcp, node := Node} = C, Cause, SendBye) ->
     maps:get(pid, Node) ! {call_done, hdr(maps:get(invite, C), <<"call-id">>)},
     exit(normal).
 
-send_bye(#{invite := Inv, tag := Tag, src := Src, node := Node}) ->
+send_bye(C) ->
+    send_in_dialog(C, <<"200 BYE">>, []).
+
+send_refer(#{node := Node} = C, ReferTo) ->
+    send_in_dialog(C, <<"150 REFER">>, [{<<"Refer-To">>, ReferTo}, contact(Node)]).
+
+send_in_dialog(#{invite := Inv, tag := Tag, src := Src, node := Node}, CSeq, Extra) ->
     {ok, #{uri := Target}} = chappe_sip_hdr:name_addr(hdr(Inv, <<"contact">>)),
     P = integer_to_binary(maps:get(port, Node)),
     To = hdr(Inv, <<"from">>),
     From = <<(hdr(Inv, <<"to">>))/binary, ";tag=", Tag/binary>>,
-    Bye = build(<<"BYE">>, Target, [
+    [_, Method] = binary:split(CSeq, <<" ">>),
+    Req = build(Method, Target, [
         {<<"Via">>, <<"SIP/2.0/UDP 127.0.0.1:", P/binary, ";branch=", (branch())/binary>>},
         {<<"Max-Forwards">>, <<"70">>},
         {<<"From">>, From},
         {<<"To">>, To},
         {<<"Call-ID">>, hdr(Inv, <<"call-id">>)},
-        {<<"CSeq">>, <<"200 BYE">>}
-    ], <<>>),
-    send_sip(Node, Src, Bye),
+        {<<"CSeq">>, CSeq}
+    ] ++ Extra, <<>>),
+    send_sip(Node, Src, Req),
     ok.
 
 %% ---- the outbound socket ----
@@ -686,6 +715,7 @@ ua_up(#{sock := Sock, rtp := Rtp, parent := Parent, engine := EP, dialog := D, c
             ua_up(U);
         {udp, Sock, _, Src, <<M, _/binary>> = Req} when M >= $A, M =< $Z ->
             _ = gen_udp:send(Sock, {127, 0, 0, 1}, Src, resp(Req, 200, <<"OK">>, <<>>, [], <<>>)),
+            Parent ! {ua, self(), {request, Req}},
             ua_up(U);
         {udp, Sock, _, _, _} ->
             ua_up(U);

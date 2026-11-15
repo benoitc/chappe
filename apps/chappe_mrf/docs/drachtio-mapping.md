@@ -12,11 +12,40 @@ chappe equivalents. Use it when you port a drachtio app.
 | `createB2BUA` with an array of URIs (serial) | a list target, or `pass_failure => false` and your own loop |
 | simultaneous ringing | `{parallel, [Uri]}` target |
 | `proxyRequestHeaders`, `proxyResponseHeaders` | `proxy_request_headers`, `proxy_response_headers` |
+| `responseHeaders` | `a_headers` |
+| `localSdpB`, `localSdpA` (values or functions) | `local_sdp_b`, `local_sdp_a` (values or funs) |
+| `auth` (object or function) | `auth` (map, list or fun of the challenge) |
+| `followRedirects`, `keepUriOnRedirect` | `follow_redirects`, `keep_uri_on_redirect` (B2BUA and UAC) |
+| `cbRequest`, `cbProvisional`, `cbFinalizedUac` | `notify` events `{b_request, Info}`, `{b_provisional, Msg}`, `{b_early, Dialog}` |
+| `req.locals`, `next()` | `chappe_sip_req:set_local/3`, `local/2,3`; return `{next, Req1}` from a middleware |
+| `dlg.on('hold' / 'unhold' / 'refresh')` | `{chappe_sip_dialog, D, hold \| unhold \| refresh, Req}` |
+| `dlg.on('publish')` | `handled_events => [publish]` |
+| (none) | `chappe_sip:dialog_events/1`: every dialog's state as it changes |
+| (none) | `call_ref`, `chappe_sip:calls/1`: one id per call across legs, records and nodes |
 | `uac.destroy({headers})` | `chappe_sip_b2b:hangup(B2b, #{headers, reason})` |
 | `dlg.on('refer' / 'info' / 'message')` | `requests => [refer, info, message]`, events `{chappe_sip_b2b, Ref, {request, ...}}` |
+| `dlg.on('refer')` carrying out the transfer yourself | `transfer => auto` (blind and attended, under a `policy`), or `transfer => notify` and `{refer, Info}` with `accept/2`, `reject/2` |
+| REFER to a conference URI | `chappe_sip_focus:refer/4` |
+| a SIPREC client (jambonz) | `chappe_sip_siprec:start(B2b \| {room, Id}, Srs, Opts)`, `pause/1`, `resume/1`, `stop/1` |
+| a SIPREC server | `chappe_sip_siprec_srs:serve/3` then `run/1`; metadata with `chappe_sip_siprec_meta` |
+| `srf.proxyRequest(req, dest, {followRedirects, provisionalTimeout, finalTimeout})` | `chappe_sip:proxy_request/3` options `follow_redirects`, `provisional_timeout`, `final_timeout` |
 | `srf.createUAC(uri, opts)` | `chappe_sip:create_uac(Uri, Opts)` |
+| `srf.createUAS(req, res, {localSdp})` | `chappe_sip:create_uas(Req, Res, #{local_sdp => Sdp \| fun(Offer)})` |
 | `srf.register(...)` client | `chappe_sip:register_client/2` |
 | `srf.use(fn)` middleware | `chappe_sip:use/1,2` |
+
+## drachtio-server
+
+| drachtio-server | chappe_sip |
+|-----------------|------------|
+| `<contact>` with `external-ip`, `local-net` | `contact => #{uri, public, local_nets}` in `chappe_sip:start/1` |
+| `<sip><timers>` T1, T2, T4 | `sip_timers => #{t1, t2, t4}` |
+| `<outbound-proxy>` | `outbound_proxy`, or `outbound_route` (a preloaded Route) |
+| `<tcp-keepalive-interval>` | `tcp_keepalive_ms` (TCP only, not TLS) |
+| `<udp-mtu>` | `udp_mtu` |
+| `<dns-names>` | `aliases` |
+| `<spammers>` | guard rules on any header, with an action per transport |
+| `<prometheus>` | `metrics => #{port => P}` |
 
 ## drachtio-fsmrf
 

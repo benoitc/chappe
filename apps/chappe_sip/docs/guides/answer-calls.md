@@ -60,8 +60,27 @@ the dialog and reported as `{auto_answered, Event}`:
 | UPDATE without SDP, INFO, NOTIFY, MESSAGE | 200 |
 | OPTIONS | 200 with Allow, Accept and Supported |
 | REFER | 603 |
-| REGISTER, PUBLISH | 405 with Allow |
+| REGISTER, PUBLISH | 405 with Allow (claim `publish` to answer an in-dialog PUBLISH yourself) |
 | any other method | 501 with Allow |
+
+A re-INVITE or UPDATE the dialog answered 200 is also reported as what it
+did to the session, after its `auto_answered`:
+
+```erlang
+loop(Dialog) ->
+    receive
+        {chappe_sip_dialog, Dialog, hold, _Req} -> moh_start(), loop(Dialog);
+        {chappe_sip_dialog, Dialog, unhold, _Req} -> moh_stop(), loop(Dialog);
+        {chappe_sip_dialog, Dialog, refresh, _Req} -> loop(Dialog);
+        {chappe_sip_dialog, Dialog, destroy, _} -> ok
+    end.
+```
+
+- `hold`: no live stream of the peer's offer receives (`sendonly` or
+  `inactive`, RFC 3264 8.4); `unhold`: one receives again.
+- `refresh`: no offer, or an offer that keeps the hold state (a session
+  timer refresh, say).
+- A claimed `modify` or `update` gets none of these: you have the request.
 
 Whether claimed or not, the dialog keeps `chappe_sip_dialog:remote_sdp/1` (the
 peer's SDP) and `chappe_sip_dialog:local_sdp/1` (yours) up to date across
@@ -75,6 +94,33 @@ stack: OPTIONS gets 200 with Allow, Accept, Supported (and Allow-Events when
 you gave `chappe_sip:subscribe/2` a package list), a method it knows gets 405
 and any other 501, both with Allow. Register `chappe_sip:options/1` to answer
 OPTIONS yourself.
+
+## Watch every dialog's state
+
+`chappe_sip:dialog_events/1` sends a process the state of each INVITE
+dialog of the node as it changes: for a monitor, a dashboard or an RFC 4235
+dialog package of your own.
+
+```erlang
+watch() ->
+    ok = chappe_sip:dialog_events(self()),
+    loop().
+
+loop() ->
+    receive
+        {chappe_sip_dialog_event, #{state := State, call_id := CallId,
+                                    call_ref := Ref}} ->
+            logger:info("~s (~p) ~p", [CallId, Ref, State]),
+            loop()
+    end.
+```
+
+- `state` is `early`, `confirmed` or `terminated` (its BYE started, or the
+  dialog ended); each dialog gets one `terminated`.
+- The map also has `dialog`, `local_tag`, `remote_tag` and `role`.
+- The stream stops when the process exits, or with
+  `chappe_sip_dialog_index:unsubscribe/1`. A subscriber of this node with
+  10000 messages waiting misses events until it catches up.
 
 ## Drive the dialog
 
@@ -161,6 +207,34 @@ ok = chappe_sip:invite(fun(Req, Res) -> chappe_sip_handler:start(my_call, Req, R
 `init/1` returns `{answer, Opts, State}`, `{reject, Status, State}`, or
 `{ignore, State}`. A `handle_dialog` callback returns `{ok, State}` or
 `{stop, State}` (which sends BYE).
+
+## Pass data from a middleware to the handler
+
+A middleware that learns something about the request (the account it
+authenticated, a tenant, a routing decision) puts it in the request's
+locals and hands the new request on by returning `{next, Req1}`. The
+locals live in the request value, so they follow it wherever you pass it.
+
+```erlang
+ok = chappe_sip:use(fun(Req, Res, _Next) ->
+    case lookup_account(chappe_sip_req:get(<<"x-account">>, Req)) of
+        {ok, Account} ->
+            {next, chappe_sip_req:set_local(account, Account, Req)};
+        error ->
+            chappe_sip_res:send(Res, 403, #{})
+    end
+end),
+ok = chappe_sip:invite(fun(Req, Res) ->
+    Account = chappe_sip_req:local(account, Req),
+    Plan = chappe_sip_req:local(plan, Req, basic),
+    route(Account, Plan, Req, Res)
+end).
+```
+
+- `local/2` fails with `badarg` when the key is not set; `local/3` takes a
+  default; `locals/1` returns them all.
+- A middleware calling `Next()` passes the request it got, locals included.
+  Call `Next()` or return `{next, _}`, not both.
 
 ## Match an INVITE with Replaces
 

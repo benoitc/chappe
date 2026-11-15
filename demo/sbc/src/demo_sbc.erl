@@ -31,6 +31,13 @@
 %%   demo_sbc:members(Name)    a conference's members
 %%   demo_sbc:kick(Name, Id)   drop a member
 %%
+%% 3001 calls bob and records the call through SIPREC (chappe_sip_siprec)
+%% to the demo's own recording server, the route sip:srs@ of this node
+%% (chappe_sip_siprec_srs): each party's stream is written as a WAV file
+%% under _build/demo-recordings/<call_ref>/ by this module's store
+%% (open/2, write/2, close/2, the store seam the recording server calls).
+%%   demo_sbc:recordings()     the files written, with their parties
+%%
 %% route/1 maps a dialled user to where the call goes. It is the one place
 %% to add targets: a FreeSWITCH pool, for one, is a {peer_group, G} there.
 -module(demo_sbc).
@@ -39,6 +46,8 @@
 -export([calls/0, anchor/1, direct/1, peers/0, nodes/0, drain/1, resume/1]).
 -export([route/1]).
 -export([confs/0, members/1, kick/2]).
+%% the recording store the demo's recording server writes to
+-export([open/2, write/2, close/2, recordings/0]).
 
 -define(CALLS, demo_sbc_calls).
 %% call id => {FreeSWITCH node, channel uuid}
@@ -82,7 +91,9 @@ start(File) ->
         qualify_interval_ms => 30000
     }),
     ok = chappe_sip:register(Registrar),
-    ok = chappe_sip:invite(fun(Req, Res) -> invite(Keeper, Req, Res) end),
+    %% siprec: the demo is its own recording server too (sip:srs@)
+    ok = chappe_sip:handle(<<"INVITE">>, fun(Req, Res) -> invite(Keeper, Req, Res) end,
+                           #{option_tags => [<<"siprec">>]}),
     ok = http(
         list_to_integer(env("DEMO_HTTP_PORT", maps:get(http_port, Cfg))),
         filename:join(filename:dirname(File), "web/index.html")
@@ -197,7 +208,16 @@ extra_route(User, Cfg) ->
 invite(Keeper, Req, Res) ->
     CallId = chappe_sip_req:call_id(Req),
     Called = user(chappe_sip_req:uri(Req)),
-    Ivr = maps:get(ivr, persistent_term:get({?MODULE, cfg}), <<"2000">>),
+    Cfg = persistent_term:get({?MODULE, cfg}),
+    Ivr = maps:get(ivr, Cfg, <<"2000">>),
+    Recorded = maps:get(record, Cfg, <<"3001">>),
+    case Called of
+        <<"srs">> -> recording_server(Req, Res);
+        Recorded -> recorded_call(Keeper, CallId, Req, Res);
+        _ -> invite(Keeper, CallId, Called, Ivr, Req, Res)
+    end.
+
+invite(Keeper, CallId, Called, Ivr, Req, Res) ->
     case Called =:= Ivr orelse route(Called) of
         true ->
             ivr(Req, Res);
@@ -219,13 +239,18 @@ take(Key, Map) ->
     {maps:get(Key, Map, undefined), maps:remove(Key, Map)}.
 
 bridge(CallId, Called, Req, Res, Target, Opts) ->
-    case chappe_sip:create_b2bua(Req, Res, Target, Opts) of
+    case chappe_sip:create_b2bua(Req, Res, Target, maps:remove(record, Opts)) of
         {ok, #{b2b := B2b, media := M} = Legs} ->
             From = user(chappe_sip_req:get(<<"from">>, Req)),
             true = ets:insert(?CALLS, {CallId, B2b, From, Called}),
             log("call ~s ~s -> ~s up, media ~p", [
                 CallId, From, Called, chappe_sip_b2b_media:mode(M)
             ]),
+            %% this process runs the call's relay once bridge/6 returns, so
+            %% the recording starts from another one (it reads the call);
+            %% the keeper owns it, and the call's end stops it
+            _ = maps:get(record, Opts, false) andalso
+                spawn(fun() -> record_call(CallId, B2b, maps:get(notify, Opts)) end),
             Done = chappe_sip_b2b:relay(Legs),
             ets:delete(?CALLS, CallId),
             ets:delete(?FS, CallId),
@@ -266,6 +291,92 @@ user(Value) ->
     case chappe_sip_uri:parse(Uri) of
         {ok, #{user := User}} -> User;
         _ -> undefined
+    end.
+
+%% ---- 3001: a call to bob, recorded through SIPREC ----
+
+%% bob's route, anchored (each party is tapped in rtpengine), recorded once
+%% it is up
+recorded_call(Keeper, CallId, Req, Res) ->
+    case route(<<"bob">>) of
+        {ok, Target, Opts0} ->
+            {_BSide, Opts1} = take(b_side, Opts0),
+            bridge(CallId, <<"bob">>, Req, Res, Target, Opts1#{
+                media => anchor, notify => Keeper, record => true
+            });
+        {error, Status} ->
+            _ = chappe_sip_res:send(Res, Status),
+            log("call ~s to 3001: ~b", [CallId, Status])
+    end.
+
+record_call(CallId, B2b, Owner) ->
+    Cfg = persistent_term:get({?MODULE, cfg}),
+    Srs = iolist_to_binary(["sip:srs@", env("DEMO_IP", maps:get(ip, Cfg)), ":",
+                            env("DEMO_SIP_PORT", maps:get(sip_port, Cfg))]),
+    case chappe_sip_siprec:start(B2b, Srs, #{owner => Owner}) of
+        {ok, _Rec} -> log("call ~s recorded to ~s", [CallId, Srs]);
+        {error, Why} -> log("call ~s not recorded: ~p", [CallId, Why])
+    end.
+
+%% the recording server: rtpengine sends the streams to this host
+%% (DEMO_MEDIA_IP), each one written by the store below
+recording_server(Req, Res) ->
+    case chappe_sip_siprec_srs:serve(Req, Res, #{
+        store => ?MODULE,
+        ip => {0, 0, 0, 0},
+        advertise => list_to_binary(env("DEMO_MEDIA_IP", "127.0.0.1"))
+    }) of
+        {ok, #{call_ref := Ref, streams := Streams} = Srs} ->
+            log("recording ~s: ~b streams", [Ref, length(Streams)]),
+            {stopped, _} = chappe_sip_siprec_srs:run(Srs),
+            log("recording ~s ended", [Ref]);
+        {error, not_recording_session} ->
+            _ = chappe_sip_res:send(Res, 404);
+        {error, Why} ->
+            log("recording refused: ~p", [Why])
+    end.
+
+%% The store seam (chappe_audio_store's writing calls): a 16-bit mono WAV
+%% file per stream, its header written again with the sizes on close.
+%% Lane F's chappe_audio_store takes this place once it is merged.
+-spec open(map(), map()) -> {ok, {file:io_device(), file:filename(), non_neg_integer()}}.
+open(#{call_ref := Ref} = Meta, _Opts) ->
+    Id = binary:encode_hex(crypto:strong_rand_bytes(4), lowercase),
+    Path = filename:join([env("DEMO_RECORDINGS", "_build/demo-recordings"), Ref,
+                          <<Id/binary, ".wav">>]),
+    ok = filelib:ensure_dir(Path),
+    {ok, F} = file:open(Path, [write, raw, binary]),
+    ok = file:write(F, wav_header(0)),
+    ok = file:write_file(<<(filename:rootname(Path))/binary, ".parties">>,
+                         lists:join(<<"\n">>, maps:get(parties, Meta, []))),
+    {ok, {F, Path, 0}}.
+
+-spec write({file:io_device(), file:filename(), non_neg_integer()}, iodata()) -> ok.
+write({F, _Path, _N}, Pcm) ->
+    file:write(F, Pcm).
+
+-spec close({file:io_device(), file:filename(), non_neg_integer()}, map()) -> {ok, binary()}.
+close({F, Path, _}, _Extra) ->
+    {ok, Size} = file:position(F, eof),
+    ok = file:pwrite(F, 0, wav_header(Size - 44)),
+    ok = file:close(F),
+    log("recorded ~s (~b bytes of audio)", [Path, Size - 44]),
+    {ok, filename:basename(filename:rootname(Path))}.
+
+wav_header(Data) ->
+    <<"RIFF", (36 + Data):32/little, "WAVE", "fmt ", 16:32/little, 1:16/little,
+      1:16/little, 8000:32/little, 16000:32/little, 2:16/little, 16:16/little,
+      "data", Data:32/little>>.
+
+%% the recordings written, each with the parties the metadata named
+recordings() ->
+    Dir = env("DEMO_RECORDINGS", "_build/demo-recordings"),
+    [{W, parties(W)} || W <- lists:sort(filelib:wildcard(filename:join([Dir, "*", "*.wav"])))].
+
+parties(Wav) ->
+    case file:read_file(filename:rootname(Wav) ++ ".parties") of
+        {ok, B} -> binary:split(B, <<"\n">>, [global, trim_all]);
+        _ -> []
     end.
 
 %% ---- the 2000 IVR ----
@@ -508,6 +619,18 @@ keep() ->
             channel(Name, H);
         {chappe_esl_node, Name, State} when is_atom(State) ->
             log("FreeSWITCH ~p is ~p", [Name, State]);
+        %% the SIPREC recordings of 3001, which the keeper owns
+        {chappe_sip_siprec, _Rec, {started, _}} ->
+            log("recording started", []);
+        {chappe_sip_siprec, _Rec, {stopped, #{reason := Why}}} ->
+            log("recording stopped: ~p", [Why]);
+        %% the B leg rings: the call is not in the table yet
+        {chappe_sip_b2b, _Ref, {b_request, #{call_id := BCallId, uri := Uri}}} ->
+            log("B leg ~s to ~s", [BCallId, Uri]);
+        {chappe_sip_b2b, _Ref, {b_provisional, Msg}} ->
+            log("B leg answered ~b", [chappe_sip_msg:status(Msg)]);
+        {chappe_sip_b2b, _Ref, {b_early, _Dialog}} ->
+            log("B leg early dialog", []);
         {chappe_sip_b2b, Ref, Event} ->
             Calls = [C || {C, {_, R}, _, _} <- ets:tab2list(?CALLS), R =:= Ref],
             log("call ~s: ~p", [Calls, Event]);

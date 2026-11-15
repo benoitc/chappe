@@ -33,6 +33,7 @@
     max_message_size_bounds/1,
     invalid_capture/1,
     invalid_start_options/1,
+    agent_options_bounds/1,
     stats_shape/1,
     events_dropped_counted/1,
     refused_starts_keep_the_vm/1,
@@ -49,6 +50,7 @@ all() ->
         max_message_size_bounds,
         invalid_capture,
         invalid_start_options,
+        agent_options_bounds,
         stats_shape,
         events_dropped_counted,
         refused_starts_keep_the_vm,
@@ -208,6 +210,51 @@ invalid_start_options(_Config) ->
             #{contact => C, tls => Tls#{passphrase => 7}},
             #{contact => C, tls => Tls#{verify => sometimes}},
             #{contact => C, tls => Tls#{verify_clients => yes}}
+        ]
+    ],
+    ok.
+
+%% the agent settings: each out of its bounds, of the wrong type, or (T2)
+%% below the T1 in effect fails the start; the bounds are taken
+agent_options_bounds(_Config) ->
+    C = contact(),
+    Big = binary:copy(<<"p">>, 600),
+    [
+        refused(O#{contact => C})
+     || O <- [
+            #{sip_t1 => V}
+         || V <- [0, 9, 60001, -1, big, <<"500">>, 1.5]
+        ] ++
+            [#{sip_t2 => V} || V <- [9, 600001, 400]] ++
+            [#{sip_t4 => V} || V <- [0, 9, 600001]] ++
+            [#{sip_t1 => 1000, sip_t2 => 999}] ++
+            [#{udp_mtu => V} || V <- [0, 575, 65536]] ++
+            [#{tcp_keepalive_ms => V} || V <- [0, 999, 3600001, true]] ++
+            [
+                #{outbound_proxy => V}
+             || V <- [
+                    <<>>,
+                    <<"http://127.0.0.1">>,
+                    <<"tel:+15551234">>,
+                    <<"sip:127.0.0.1", 0, ":5060">>,
+                    <<"sip:", Big/binary>>,
+                    "sip:127.0.0.1",
+                    42
+                ]
+            ]
+    ],
+    [
+        started(O#{contact => contact()})
+     || O <- [
+            #{sip_t1 => 10, sip_t2 => 10, sip_t4 => 10},
+            #{sip_t1 => 60000, sip_t2 => 600000, sip_t4 => 600000},
+            #{sip_t2 => 500},
+            #{udp_mtu => 576},
+            #{udp_mtu => 65535},
+            #{tcp_keepalive_ms => 1000},
+            #{tcp_keepalive_ms => 3600000},
+            #{outbound_proxy => <<"sip:127.0.0.1:5999;transport=udp">>},
+            #{outbound_proxy => <<"SIPS:proxy.example.com">>}
         ]
     ],
     ok.

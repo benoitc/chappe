@@ -130,6 +130,54 @@ ok = chappe_sip:start(#{
 - A UDP binding learned on one address is reached from that address
   (`{udp, Ip, Port, Local}` in its flow).
 
+## Run behind 1:1 NAT
+
+A cloud host often has only a private address on its interface, and a
+public one the provider maps to it. Give the contact as a map: the stack
+binds `uri`, and advertises `public` in its Via and Contact.
+
+```erlang
+ok = chappe_sip:start(#{
+    contact => #{uri => <<"sip:10.0.0.5:5060">>,
+                 public => <<"203.0.113.7">>,
+                 local_nets => [<<"10.0.0.0/8">>]}
+}).
+```
+
+- A peer inside `local_nets` gets the local address in the Contact (on the
+  answers you send it and the requests you originate to it), so that
+  traffic stays inside the private network. Everyone else gets `public`.
+- The Via always names `public`. A peer on the private network still
+  answers to the address the request came from (RFC 3581 `rport`).
+- `local_nets` needs a concrete `uri` address, not `0.0.0.0`.
+- A list of contacts may mix plain URIs and maps; the TLS `contact` takes
+  maps too.
+- An invalid `public`, `local_nets` or a `uri` that already has `maddr`
+  fails the start with `{error, {contact, bad_public}}` or
+  `{error, {contact, bad_local_nets}}`.
+- A proxy between the two sides record-routes twice (RFC 5658), public for
+  the outside one and local for the inside one.
+- The Contact a B2BUA puts on what it sends the A leg names `public`.
+
+## Keep connections open through NAT
+
+A NAT or a firewall drops an idle TCP mapping after a few minutes. Ask the
+stack to send a CRLFCRLF ping (RFC 5626 4.4.1) on every TCP connection
+that has been idle for a while:
+
+```erlang
+ok = chappe_sip:start(#{contact => <<"sip:10.0.0.5:5060">>,
+                        tcp_keepalive_ms => 30000}).
+```
+
+- TCP only. sofia's TLS transport has no connection timer, and adding one
+  is not a small change: a ping has to go through `SSL_write`, and sofia's
+  `tls_write` asserts that a write that blocked is retried with the same
+  buffer, so a blocked ping would break the next message. On TLS, the
+  client keeps its flow alive (RFC 5626 makes the UA send keep-alives, at
+  the `registrar_flow_timer` interval).
+- UDP never gets it: RFC 5626 4.4.1 forbids the CRLF keep-alive there.
+
 ## Capture to Homer
 
 To see the node's calls in Homer, point it at your heplify-server in

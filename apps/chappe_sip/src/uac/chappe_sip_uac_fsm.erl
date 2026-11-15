@@ -134,7 +134,7 @@ init(#{uri := Uri0, opts := Opts} = Args) ->
 start_request(
     #{
         uri := Uri,
-        opts := Opts,
+        opts := Opts0,
         ref := Ref,
         notify := Notify,
         owner := Owner
@@ -143,6 +143,7 @@ start_request(
 ) ->
     %% auth_state: the challenges a previous request of the caller answered
     %% (a registration refresh), so this one carries credentials at once
+    Opts = call_ref(Method, Opts0),
     {Challenges, NonceCount} = maps:get(auth_state, Opts, {[], #{}}),
     Data0 = #data{
         challenges = Challenges,
@@ -162,7 +163,7 @@ start_request(
         cseq = maps:get(cseq, Opts, 1),
         seq = atomics:new(1, []),
         proxy = maps:get(proxy, Opts, undefined),
-        route_set = maps:get(route_set, Opts, []),
+        route_set = maps:get(route_set, Opts, preloaded_route(Opts)),
         flow = maps:get(flow, Opts, undefined),
         tried = [Uri]
     },
@@ -190,10 +191,46 @@ start_request(
             {stop, Reason}
     end.
 
+%% An INVITE starts a call: it serves the caller's call_ref, else one of
+%% its own (chappe_sip_call); its dialogs serve it too.
+call_ref(<<"INVITE">>, #{call_ref := Ref} = Opts) when is_binary(Ref) ->
+    Opts;
+call_ref(<<"INVITE">>, Opts) ->
+    Opts#{call_ref => chappe_sip_call:new_ref()};
+call_ref(_Method, Opts) ->
+    Opts.
+
+%% the X-Chappe-Call header of an INVITE, unless the caller put one in
+%% its headers or asked for none (call_ref_header => false)
+call_ref_header(<<"INVITE">>, #{call_ref := Ref} = Opts, Hdrs) when
+    is_binary(Ref)
+->
+    Name = chappe_sip_call:header(),
+    Has = lists:any(
+        fun({N, _}) ->
+            chappe_sip_lib:lower(N) =:= chappe_sip_lib:lower(Name)
+        end,
+        Hdrs
+    ),
+    case Has orelse not maps:get(call_ref_header, Opts, true) of
+        true -> [];
+        false -> [{Name, Ref}]
+    end;
+call_ref_header(_Method, _Opts, _Hdrs) ->
+    [].
+
 %% ---- trying / proceeding ----
 
 trying(info, {chappe_sip_op, TxnH, ok}, #data{txn = TxnH} = D) ->
-    notify(D, {request_sent, #{call_id => D#data.call_id}}),
+    notify(
+        D,
+        {request_sent, #{
+            call_id => D#data.call_id,
+            uri => D#data.uri,
+            method => D#data.method,
+            cseq => D#data.cseq
+        }}
+    ),
     {keep_state, D};
 trying(info, {chappe_sip_op, TxnH, {error, Reason}}, #data{txn = TxnH} = D) ->
     notify(D, {error, Reason}),
@@ -827,6 +864,12 @@ route(#data{flow = Flow}) when Flow =/= undefined ->
 route(#data{uri = Uri} = D) ->
     chappe_sip_route:secure_hop(Uri, next_hop(D)).
 
+%% RFC 3261 8.1.2: the stack's outbound_route option, as the route set of
+%% a request that names no proxy, flow or route set of its own
+preloaded_route(#{proxy := _}) -> [];
+preloaded_route(#{flow := _}) -> [];
+preloaded_route(_Opts) -> chappe_sip_binds:outbound_route().
+
 next_hop(#data{proxy = Proxy}) when Proxy =/= undefined ->
     Proxy;
 next_hop(#data{route_set = [First | _]}) ->
@@ -867,7 +910,8 @@ build_request(#data{
             _ ->
                 ExtraHeaders0
         end ++ supported_header(Supported, ExtraHeaders0) ++
-            allow_header(Method, ExtraHeaders0),
+            allow_header(Method, ExtraHeaders0) ++
+            call_ref_header(Method, Opts, ExtraHeaders0),
     %% RFC 4028 7.1: an INVITE asks for a Session-Expires when configured
     StHeaders =
         case Method of
@@ -1128,7 +1172,7 @@ retry_with_auth(Status, Msg, #data{cseq = CSeq} = D) ->
     Usable = [
         C
      || C <- chappe_sip_digest:select(Parsed),
-        credentials_for(challenge_realm(C), Auth) =/= none
+        credentials_for(C, Auth) =/= none
     ],
     case merge_challenges(AuthHdrName, Usable, D#data.challenges) of
         {ok, Cs} when D#data.auth_rounds < ?MAX_AUTH_ROUNDS ->
@@ -1185,11 +1229,27 @@ challenge_nonce(#{params := P}) -> maps:get(<<"nonce">>, P, <<>>).
 
 %% auth is #{user, pass} or a list of them; one naming a realm answers only
 %% that realm's challenges
-credentials_for(_Realm, undefined) ->
+credentials_for(_Chal, undefined) ->
     none;
-credentials_for(Realm, #{} = A) ->
-    credentials_for(Realm, [A]);
-credentials_for(Realm, List) when is_list(List) ->
+credentials_for(Chal, F) when is_function(F, 1) ->
+    %% the app picks the credentials for this challenge
+    try F(Chal) of
+        Auth when is_map(Auth); is_list(Auth) -> credentials(Chal, Auth);
+        _ -> none
+    catch
+        Class:Why ->
+            logger:warning("chappe_sip_uac: auth fun failed: ~p:~p", [
+                Class, Why
+            ]),
+            none
+    end;
+credentials_for(Chal, Auth) ->
+    credentials(Chal, Auth).
+
+credentials(Chal, #{} = A) ->
+    credentials(Chal, [A]);
+credentials(Chal, List) when is_list(List) ->
+    Realm = challenge_realm(Chal),
     Named = [A || #{realm := R} = A <- List, R =:= Realm],
     Any = [A || A <- List, not maps:is_key(realm, A)],
     case Named ++ Any of
@@ -1212,7 +1272,7 @@ with_credentials(#data{challenges = Cs, opts = Opts} = D) ->
         fun({Name, Chal}, {HAcc, NAcc}) ->
             Nonce = challenge_nonce(Chal),
             N = maps:get(Nonce, NAcc, 0) + 1,
-            {User, Pass} = credentials_for(challenge_realm(Chal), Auth),
+            {User, Pass} = credentials_for(Chal, Auth),
             case
                 chappe_sip_digest:credentials(#{
                     method => D#data.method,
@@ -1262,10 +1322,8 @@ redirect(_Status, Msg, #data{redirects = R} = D) ->
 
 next_target(#data{targets = []}) ->
     {error, no_target};
-next_target(#data{targets = [T | Rest], uri = OldUri, cseq = CSeq} = D) ->
-    D1 = strip_auth_across_authority(OldUri, T, D#data{
-        uri = T,
-        to = <<"<", T/binary, ">">>,
+next_target(#data{targets = [T | Rest], cseq = CSeq} = D) ->
+    D1 = redirect_to(T, D#data{
         cseq = CSeq + 1,
         targets = Rest,
         tried = [T | D#data.tried],
@@ -1277,55 +1335,29 @@ next_target(#data{targets = [T | Rest], uri = OldUri, cseq = CSeq} = D) ->
         {error, _} -> next_target(D1)
     end.
 
-%% sip/sips Contacts not tried yet, by q (1.0 when absent), header order
-%% on a tie. A URI's ?headers part is dropped: we do not let a redirect
-%% add headers to our request (RFC 3261 19.1.5 makes them optional); its
-%% method parameter is dropped too (8.1.3.4). A SIPS URI naming UDP is no
-%% target (19.1.1).
+%% A redirect target T becomes the Request-URI and the To (RFC 3261
+%% 8.1.3.4), or, with keep_uri_on_redirect (drachtio's keepUriOnRedirect),
+%% only the next hop: the Request-URI and To stay, as for a 305. The
+%% credentials stay with the authority they were given to.
+redirect_to(T, #data{opts = #{keep_uri_on_redirect := true}} = D) ->
+    Hop =
+        case D#data.proxy of
+            undefined -> D#data.uri;
+            P -> P
+        end,
+    strip_auth_across_authority(Hop, T, D#data{proxy = T});
+redirect_to(T, #data{uri = OldUri} = D) ->
+    strip_auth_across_authority(OldUri, T, D#data{
+        uri = T, to = <<"<", T/binary, ">">>
+    }).
+
+%% the 3xx Contacts not tried yet (chappe_sip_route:redirect_targets/1)
 redirect_targets(Msg, #data{tried = Tried}) ->
-    Contacts = lists:append([
-        L
-     || V <- chappe_sip_msg:get_all(<<"contact">>, Msg),
-        {ok, L} <- [chappe_sip_hdr:name_addr_list(V)]
-    ]),
-    Ranked = [
-        {-q_value(maps:get(params, C, #{})), I, without_headers(Uri)}
-     || {I, #{uri := Uri} = C} <- lists:enumerate(Contacts),
-        supported_target(Uri)
-    ],
-    Uris = [U || {_, _, U} <- lists:sort(Ranked)],
-    dedup([U || U <- Uris, not lists:member(U, Tried)]).
-
-dedup([]) -> [];
-dedup([H | T]) -> [H | dedup([X || X <- T, X =/= H])].
-
-supported_target(Uri) ->
-    case chappe_sip_uri:parse(Uri) of
-        {ok, #{scheme := S}} when S =:= sip; S =:= sips ->
-            not chappe_sip_uri:is_sips_unreliable(Uri);
-        _ ->
-            false
-    end.
-
-without_headers(Uri) ->
-    {_, U} = chappe_sip_uri:take_param(
-        hd(binary:split(Uri, <<"?">>)), <<"method">>
-    ),
-    U.
-
-q_value(#{<<"q">> := Q}) when is_binary(Q) ->
-    try
-        binary_to_float(Q)
-    catch
-        error:badarg ->
-            try
-                float(binary_to_integer(Q))
-            catch
-                error:badarg -> 0.0
-            end
-    end;
-q_value(_) ->
-    1.0.
+    [
+        U
+     || {U, _} <- chappe_sip_route:redirect_targets(Msg),
+        not lists:member(U, Tried)
+    ].
 
 %% The request options with the option tags a 420 named taken out of what
 %% we require; error when we required none of them (nothing to retry).
@@ -1409,7 +1441,22 @@ default_or(R) -> R.
 %% (RFC 3261 8.1.1.8), so a dialog it forms is secure (12.2.1.1).
 default_contact(#data{opts = #{contact := C}}) ->
     C;
-default_contact(#data{} = D) ->
+default_contact(#data{uri = Uri, proxy = Proxy} = D) ->
+    %% behind 1:1 NAT, a target on the local network gets the local address
+    chappe_sip_binds:for_peer(bound_contact(D), target_host(Proxy, Uri)).
+
+target_host(Proxy, Uri) ->
+    Target =
+        case Proxy of
+            P when is_binary(P) -> P;
+            _ -> Uri
+        end,
+    case is_binary(Target) andalso chappe_sip_uri:parse(Target) of
+        {ok, #{host := H}} -> H;
+        _ -> undefined
+    end.
+
+bound_contact(#data{} = D) ->
     %% with several listen addresses, the one we send from
     case local(D) of
         undefined ->
@@ -1499,10 +1546,14 @@ notify_1(#data{notify = Pid, ref = Ref}, Event) ->
 %% Opts cdr => #{role => b2b_b, link => Id}: a b2bua's B leg
 open_cdr(#data{opts = Opts} = D) ->
     Cdr = maps:get(cdr, Opts, #{}),
+    CallRef = maps:get(call_ref, Opts, undefined),
+    ok = chappe_sip_hep:correlate(D#data.call_id, CallRef, uac),
     chappe_sip_cdr:open(
         maps:get(role, Cdr, uac),
         #{
             link => maps:get(link, Cdr, undefined),
+            call_ref => CallRef,
+            related => maps:get(related, Opts, undefined),
             call_id => D#data.call_id,
             from => D#data.from,
             to => D#data.to,

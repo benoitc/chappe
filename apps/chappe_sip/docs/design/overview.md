@@ -101,12 +101,13 @@ Why the order matters:
 | root | Boot, root supervisor, configuration defaults, metrics | `chappe_sip_app`, `chappe_sip_sup`, `chappe_sip_config`, `chappe_sip_metrics` |
 | `engine/` | The NIF and the dispatcher, listen addresses, HEP for WS | `chappe_sip_engine`, `chappe_sip_nif`, `chappe_sip_binds`, `chappe_sip_hep` |
 | `conn/` | Request workers, the stack supervisor, the location store | `chappe_sip_request_worker`, `chappe_sip_request_sup`, `chappe_sip_stack_sup`, `chappe_sip_registry`, `chappe_sip_registry_keeper` |
-| `sip/` | The message model and pure protocol helpers | `chappe_sip_msg`, `chappe_sip_hdr`, `chappe_sip_hdr_io`, `chappe_sip_uri`, `chappe_sip_req`, `chappe_sip_res`, `chappe_sip_sdp`, `chappe_sip_sipfrag`, `chappe_sip_digest`, `chappe_sip_digest_nc`, `chappe_sip_net` |
+| `sip/` | The message model and pure protocol helpers | `chappe_sip_msg`, `chappe_sip_hdr`, `chappe_sip_hdr_io`, `chappe_sip_uri`, `chappe_sip_req`, `chappe_sip_res`, `chappe_sip_sdp`, `chappe_sip_sdes`, `chappe_sip_multipart`, `chappe_sip_sipfrag`, `chappe_sip_digest`, `chappe_sip_digest_nc`, `chappe_sip_net` |
 | `dialog/` | Dialogs, session timers, REFER, the subscriber side of events, the NOTIFY router | `chappe_sip_dialog`, `chappe_sip_dialog_fsm`, `chappe_sip_dialog_index`, `chappe_sip_dialog_sup`, `chappe_sip_session_timer`, `chappe_sip_refer*`, `chappe_sip_subscriber*`, `chappe_sip_notify_router` |
 | `uac/` | Outbound transactions | `chappe_sip_uac`, `chappe_sip_uac_fsm`, `chappe_sip_uac_sup` |
 | `proxy/` | The stateful proxy and Record-Route | `chappe_sip_proxy`, `chappe_sip_proxy_rules`, `chappe_sip_proxy_dialog`, `chappe_sip_route` |
 | `ws/` | SIP over WebSocket | `chappe_sip_ws*` |
-| `media/` | The media facade and its backends | `chappe_sip_media*` |
+| `media/` | The media facade and its backends, and receive-only SRTP | `chappe_sip_media*`, `chappe_sip_srtp` |
+| `siprec/` | SIPREC: the recording client, its metadata, the recording server side | `chappe_sip_siprec*` |
 | `peers/` | OPTIONS-monitored peers and the registrar's qualify | `chappe_sip_peers`, `chappe_sip_peer`, `chappe_sip_peers_sup`, `chappe_sip_peer_sup`, `chappe_sip_qualify` |
 | `api/` | The facade, extension behaviours, feature subsystems, event packages | see below |
 
@@ -195,7 +196,7 @@ Public (documented, stable within a release, used by applications):
   `chappe_sip_focus`, `chappe_sip_confinfo`, `chappe_sip_cdr`,
   `chappe_sip_media`, `chappe_sip_metrics`, `chappe_sip_config`.
 - Message helpers: `chappe_sip_msg`, `chappe_sip_hdr`, `chappe_sip_uri`,
-  `chappe_sip_sdp`, `chappe_sip_sipfrag`, `chappe_sip_digest`.
+  `chappe_sip_sdp`, `chappe_sip_multipart`, `chappe_sip_sipfrag`, `chappe_sip_digest`.
 
 Everything else is internal: the engine and NIF, fsms, supervisors, the WS
 transport, the B2BUA helper modules (`chappe_sip_b2b_*`), the proxy helpers,

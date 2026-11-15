@@ -33,7 +33,8 @@
          st_negotiate/1, st_422/1, st_refresh_uac/1, st_refresh_uas/1,
          st_expiry/1, subscribe/1, subscribe_489/1, presence/1, mwi/1,
          dns_srv/1, dns_sips_failover/1,
-         pjsua_refer_blind/1, pjsua_refer_attended/1,
+         pjsua_refer_blind/1, pjsua_refer_attended/1, b2b_refer_refused/1,
+         pjsua_b2b_refer_blind/1, pjsua_b2b_refer_attended/1,
          pjsua_session_timer/1, hep_capture/1]).
 
 suite() -> [{timetrap, {minutes, 5}}].
@@ -50,10 +51,11 @@ groups() ->
                  reinvite_offer, reinvite_offerless, update_offer, glare,
                  replaces_nomatch, replaces_confirmed, replaces_early,
                  refer_notify, refer_event_id, refer_norefersub,
-                 st_negotiate, st_422, st_refresh_uac, st_refresh_uas,
+                 b2b_refer_refused, st_negotiate, st_422, st_refresh_uac, st_refresh_uas,
                  st_expiry, subscribe, subscribe_489, presence, mwi,
                  dns_srv, dns_sips_failover]},
      {pjsua, [], [pjsua_refer_blind, pjsua_refer_attended,
+                  pjsua_b2b_refer_blind, pjsua_b2b_refer_attended,
                   pjsua_session_timer]},
      {hep, [], [hep_capture]}].
 
@@ -167,6 +169,12 @@ refer_event_id(Config) -> sipp(?FUNCTION_NAME, Config).
 %% req: R4488-01 R4488-03
 refer_norefersub(Config) -> sipp(?FUNCTION_NAME, Config).
 
+%% A B2BUA call (transfer => auto) refuses what it must not carry out:
+%% an off-net target (403), a REFER for a BYE (403), several targets
+%% (Require: multiple-refer, 420 with Unsupported), and the call goes on.
+%% req: R5589-06 R5368-01 R5368-02
+b2b_refer_refused(Config) -> sipp(?FUNCTION_NAME, Config).
+
 %% ---- session timers ----
 
 %% RFC 4028 9: Session-Expires with the refresher in the 2xx, and
@@ -247,6 +255,20 @@ pjsua_refer_blind(Config) -> pjsua(refer_blind, Config).
 %% one with a second agent, and REFERs chappe to the second with Replaces.
 %% req: R7647-04 R3515-05 R3515-10 R3891-23
 pjsua_refer_attended(Config) -> pjsua(refer_attended, Config).
+
+%% RFC 5589 6 through the B2BUA: pjsua a calls pjsua b through chappe
+%% (transfer => auto, media anchored); b blind-transfers a to pjsua c.
+%% chappe calls c on b's side, a gets no INVITE, b gets the final NOTIFY
+%% 200 and then a BYE.
+%% req: R5589-01 R5589-02 R5589-03 R5589-04 R7647-04 R3515-23
+pjsua_b2b_refer_blind(Config) -> pjsua(b2b_refer_blind, Config).
+
+%% RFC 5589 7.3 through the B2BUA: a calls b and b calls c, both through
+%% chappe; b transfers with Replaces. Both calls are chappe's, so the
+%% two remote parties are joined through the anchor with no new INVITE;
+%% b sees the final 200 and loses both calls.
+%% req: R5589-10 R5589-02
+pjsua_b2b_refer_attended(Config) -> pjsua(b2b_refer_attended, Config).
 
 %% pjsua calls chappe with session timers on (--timer=2, 90 s): the 2xx
 %% must carry Session-Expires, and pjsua's refresh before 45 s is taken.

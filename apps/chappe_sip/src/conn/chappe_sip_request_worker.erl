@@ -44,8 +44,10 @@ init(
     },
     case parse_valid(Raw) of
         {ok, Msg} ->
+            %% the call this request starts (or a request of its own)
+            Meta1 = Meta#{call_ref => chappe_sip_call:new_ref()},
             run(
-                Msg, TxnH, open_cdr(Msg, TxnH, Meta), Res, Middlewares, Handler
+                Msg, TxnH, open_cdr(Msg, TxnH, Meta1), Res, Middlewares, Handler
             );
         {error, Why} ->
             %% unparseable or missing a mandatory header (RFC 3261 8.1.1)
@@ -125,8 +127,9 @@ run_1(Msg, TxnH, Meta, Res, Middlewares, Handler) ->
             )
     end.
 
-dispatch(Msg, TxnH, Meta, Res, Middlewares, Handler) ->
-    Req = chappe_sip_req:new(Msg, TxnH, Meta),
+dispatch(Msg, TxnH, Meta0, Res, Middlewares, Handler) ->
+    {CallRef, Meta} = maps:take(call_ref, Meta0),
+    Req = chappe_sip_req:new(Msg, TxnH, Meta, CallRef),
     Method = chappe_sip_msg:method(Msg),
     %% expose Res so helpers that complete the transaction directly
     %% (proxy_request) can mark it final and avoid a spurious 500
@@ -163,7 +166,12 @@ crashed(Class, Reason, Stack, Res) ->
 
 %% An INVITE starting a call opens its call record, driven by this worker
 %% until a dialog takes it over; its id rides on the request (meta cdr).
-open_cdr(Msg, TxnH, Meta) ->
+%% A HEP capture server learns the call_ref of its Call-ID.
+open_cdr(Msg, TxnH, #{call_ref := CallRef} = Meta) ->
+    _ =
+        chappe_sip_msg:method(Msg) =:= <<"INVITE">> andalso
+            chappe_sip_msg:to_tag(Msg) =:= undefined andalso
+            chappe_sip_hep:correlate(chappe_sip_msg:call_id(Msg), CallRef, uas),
     case
         chappe_sip_msg:method(Msg) =:= <<"INVITE">> andalso
             chappe_sip_msg:to_tag(Msg) =:= undefined andalso
@@ -179,6 +187,7 @@ open_cdr(Msg, TxnH, Meta) ->
                 Role,
                 #{
                     txn => TxnH,
+                    call_ref => CallRef,
                     call_id => chappe_sip_msg:call_id(Msg),
                     from => chappe_sip_msg:get(<<"from">>, Msg),
                     to => chappe_sip_msg:get(<<"to">>, Msg),

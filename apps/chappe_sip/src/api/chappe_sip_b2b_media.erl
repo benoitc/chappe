@@ -24,7 +24,8 @@
 
 -export([new/2, start/1, stop/1, mode/1, set_mode/2, session/1]).
 -export([set_tag/3, offer/3, answer/3, final_answer/3, rejected/3, hook/1]).
--export([fork_offer/3, branch/2, unhold/2, b_flags/1]).
+-export([fork_offer/3, branch/2, unhold/2, b_flags/1, flags/2]).
+-export([serve/1, call_opts/1, event/2]).
 
 -export_type([state/0, mode/0, leg/0, profile/0]).
 
@@ -36,6 +37,8 @@
     call_id := binary(),
     tags := #{leg() => binary() | undefined},
     webrtc := #{leg() => boolean()},
+    %% the RTP profile each leg's last SDP used, undefined before one
+    proto := #{leg() => binary() | undefined},
     hold := #{leg() => boolean()},
     rewrite := fun(
         (leg(), offer | answer, binary()) -> iodata() | {reject, 300..699}
@@ -43,6 +46,8 @@
     params := #{leg() => map()},
     notify := pid() | undefined,
     ref := reference(),
+    call_ref := binary() | undefined,
+    related := binary() | undefined,
     last := {leg(), binary() | undefined, binary(), binary()} | undefined,
     origin := leg() | undefined,
     via := binary() | undefined
@@ -56,8 +61,8 @@
     via => binary() | undefined
 }.
 
-%% Init: #{mode, call_id, a_tag, b_webrtc, a_webrtc, ref} plus the
-%% app's Opts (rewrite_sdp, anchor_params, notify).
+%% Init: #{mode, call_id, a_tag, b_webrtc, a_webrtc, ref, call_ref,
+%% related} plus the app's Opts (rewrite_sdp, anchor_params, notify).
 -spec new(map(), map()) -> state().
 new(Init, Opts) ->
     #{
@@ -69,15 +74,31 @@ new(Init, Opts) ->
             a => maps:get(a_webrtc, Init, false),
             b => maps:get(b_webrtc, Init, false)
         },
+        proto => #{a => undefined, b => undefined},
         hold => #{a => false, b => false},
         rewrite => hook(maps:get(rewrite_sdp, Opts, undefined)),
         params => maps:get(anchor_params, Opts, #{}),
         notify => maps:get(notify, Opts, undefined),
         ref => maps:get(ref, Init),
+        call_ref => maps:get(call_ref, Init, undefined),
+        related => maps:get(related, Init, undefined),
         last => undefined,
         origin => undefined,
         via => undefined
     }.
+
+%% The calling process serves the call of M as its B2BUA, under the
+%% b2b() handle of M's reference (chappe_sip_call).
+-spec serve(state()) -> ok.
+serve(#{call_ref := CallRef, ref := Ref}) ->
+    chappe_sip_call:join(CallRef, b2b, {self(), Ref}).
+
+%% The call_ref and related of M, as options of a new leg's UAC.
+-spec call_opts(state()) -> map().
+call_opts(M) ->
+    maps:filter(
+        fun(_K, V) -> V =/= undefined end, maps:with([call_ref, related], M)
+    ).
 
 %% The rewrite_sdp hook as a 3-arity fun: fun(Leg, offer | answer, Sdp),
 %% the 2-arity fun(Leg, Sdp) of earlier releases, or none.
@@ -97,6 +118,16 @@ start(#{mode := anchor, session := undefined} = M) ->
     Id = #{call_id => CallId, from_tag => ATag},
     case chappe_sip_media:session(Id, #{capability => anchor}) of
         {ok, S} ->
+            %% the session is found by the call's ref while it lives
+            _ =
+                case chappe_sip_media:pid(S) of
+                    Pid when is_pid(Pid) ->
+                        chappe_sip_call:join(
+                            maps:get(call_ref, M), media, S, Pid
+                        );
+                    undefined ->
+                        ok
+                end,
             {ok, M#{session := S, last := undefined, origin := undefined}};
         {error, _} = Err ->
             Err
@@ -170,9 +201,11 @@ final_answer(Y, Sdp, M) ->
 %% with its flags (and its via-branch), and once it wins the call keeps
 %% them.
 -spec branch(profile(), state()) -> state().
-branch(P, #{webrtc := W} = M) ->
+branch(P, #{webrtc := W, proto := Protos} = M) ->
     M#{
         webrtc := W#{b := maps:get(webrtc, P)},
+        %% a new B has used no profile yet: the old B's says nothing of it
+        proto := Protos#{b := undefined},
         params := maps:get(params, P),
         via := maps:get(via, P, undefined)
     }.
@@ -206,6 +239,10 @@ fork_offer(Sdp, [P0 | _] = Ps, M0) ->
 %% The flags rtpengine writes the SDP toward B with.
 -spec b_flags(state()) -> map().
 b_flags(M) -> toward(b, M).
+
+%% The flags rtpengine writes the SDP toward Leg with.
+-spec flags(leg(), state()) -> map().
+flags(Leg, M) -> toward(Leg, M).
 
 %% Leg now has another party behind it, which is not on hold.
 -spec unhold(leg(), state()) -> state().
@@ -364,10 +401,12 @@ answer_opts(Y, #{tags := Tags, via := Via} = M) ->
 other(a) -> b;
 other(b) -> a.
 
-%% what rtpengine writes for the leg the SDP goes to: DTLS-SRTP with ICE
-%% for a WebRTC leg, plain RTP without ICE otherwise; the app's
-%% anchor_params for that leg go on top
-toward(Leg, #{webrtc := W, params := P}) ->
+%% what rtpengine writes for the leg the SDP goes to: the profile that leg
+%% used itself (an SRTP leg stays SRTP, RTP/SAVP or RTP/SAVPF, a plain one
+%% plain: never a downgrade), else DTLS-SRTP for a WebRTC leg and plain
+%% RTP for another; ICE for a WebRTC leg only; the app's anchor_params for
+%% that leg go on top
+toward(Leg, #{webrtc := W, params := P} = M) ->
     Base =
         case maps:get(Leg, W) of
             true ->
@@ -383,12 +422,45 @@ toward(Leg, #{webrtc := W, params := P}) ->
                     rtcp_mux => [demux]
                 }
         end,
-    maps:merge(Base, maps:get(Leg, P, #{})).
+    maps:merge(own_profile(Leg, M, Base), maps:get(Leg, P, #{})).
+
+own_profile(Leg, #{proto := Protos}, Base) ->
+    case maps:get(Leg, Protos) of
+        P when
+            P =:= <<"RTP/AVP">>;
+            P =:= <<"RTP/AVPF">>;
+            P =:= <<"RTP/SAVP">>;
+            P =:= <<"RTP/SAVPF">>;
+            P =:= <<"UDP/TLS/RTP/SAVP">>;
+            P =:= <<"UDP/TLS/RTP/SAVPF">>
+        ->
+            Base#{transport_protocol => P};
+        _ ->
+            Base
+    end.
 
 seen(_Leg, <<>>, M) ->
     M;
-seen(Leg, Sdp, #{webrtc := W} = M) ->
-    M#{webrtc := W#{Leg => chappe_sip_sdp:webrtc(Sdp)}}.
+seen(Leg, Sdp, #{webrtc := W, proto := Protos} = M) ->
+    M#{
+        webrtc := W#{Leg => chappe_sip_sdp:webrtc(Sdp)},
+        proto := Protos#{Leg => proto(Sdp)}
+    }.
+
+%% the profile of an SDP's first live m-line
+proto(Sdp) ->
+    case
+        [
+            P
+         || #{port := Port, proto := P} <- element(
+                2, chappe_sip_sdp:parse(Sdp)
+            ),
+            Port =/= 0
+        ]
+    of
+        [P | _] -> P;
+        [] -> undefined
+    end.
 
 hold(_X, <<>>, M) ->
     M;
@@ -408,8 +480,21 @@ hold(X, Sdp, #{hold := H} = M) ->
             M#{hold := H#{X => New}}
     end.
 
-event(_Ev, #{notify := undefined}) ->
+%% Send Ev to the call's notify process, if any, as {chappe_sip_b2b, Ref,
+%% Ev}. A party change ({replaced, Leg}) also goes to the call's SIPREC
+%% recordings, which tell their recording server (chappe_sip_siprec).
+-spec event(term(), state()) -> ok.
+event({replaced, _} = Ev, #{ref := Ref, call_ref := CallRef} = M) ->
+    _ = [
+        Rec ! {chappe_sip_b2b, Ref, Ev}
+     || Rec <- chappe_sip_siprec:local(CallRef)
+    ],
+    notify(Ev, M);
+event(Ev, M) ->
+    notify(Ev, M).
+
+notify(_Ev, #{notify := undefined}) ->
     ok;
-event(Ev, #{notify := Pid, ref := Ref}) ->
+notify(Ev, #{notify := Pid, ref := Ref}) ->
     Pid ! {chappe_sip_b2b, Ref, Ev},
     ok.

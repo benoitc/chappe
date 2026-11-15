@@ -64,6 +64,23 @@ reply(#{<<"command">> := <<"offer">>, <<"sdp">> := Sdp} = Cmd) ->
     ok(via(Sdp, Cmd), <<"offer">>, maps:get(<<"from-tag">>, Cmd, <<>>));
 reply(#{<<"command">> := <<"answer">>, <<"sdp">> := Sdp} = Cmd) ->
     ok(via(Sdp, Cmd), <<"answer">>, maps:get(<<"to-tag">>, Cmd, <<>>));
+reply(#{<<"command">> := <<"subscribe request">>} = Cmd) ->
+    %% one sendonly PCMU m-line per tapped party, at a port of its own,
+    %% marked with the party's tag
+    Tags = maps:get(<<"from-tags">>, Cmd, [<<"all">>]),
+    N = erlang:unique_integer([positive]),
+    Media = [
+        [<<"m=audio ">>, integer_to_binary(20000 + (N rem 10000) * 2),
+         <<" RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\na=sendonly\r\na=rtpe-sub:">>,
+         T, <<"\r\n">>]
+     || T <- Tags
+    ],
+    #{<<"result">> => <<"ok">>,
+      <<"to-tag">> => <<"sub-", (integer_to_binary(N))/binary>>,
+      <<"sdp">> => iolist_to_binary([
+          <<"v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\n">>,
+          Media
+      ])};
 reply(_Cmd) ->
     #{<<"result">> => <<"ok">>}.
 

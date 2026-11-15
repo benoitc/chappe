@@ -9,7 +9,8 @@
 %% and string:trim/1 these never raise and never touch non-ASCII bytes.
 -module(chappe_sip_lib).
 
--export([lower/1, trim/1, unhex/1, to_int/2, delta_seconds/2]).
+-export([lower/1, upper/1, all_digits/1, trim/1, unhex/1, to_int/2]).
+-export([delta_seconds/2, xml_escape/1]).
 
 %% ASCII lowercase.
 -spec lower(binary()) -> binary().
@@ -17,6 +18,20 @@ lower(B) -> <<<<(lower_byte(C))>> || <<C>> <= B>>.
 
 lower_byte(C) when C >= $A, C =< $Z -> C + 32;
 lower_byte(C) -> C.
+
+%% ASCII uppercase.
+-spec upper(binary()) -> binary().
+upper(B) -> <<<<(upper_byte(C))>> || <<C>> <= B>>.
+
+upper_byte(C) when C >= $a, C =< $z -> C - 32;
+upper_byte(C) -> C.
+
+%% One or more ASCII digits, nothing else.
+-spec all_digits(binary()) -> boolean().
+all_digits(<<>>) ->
+    false;
+all_digits(B) ->
+    lists:all(fun(D) -> D >= $0 andalso D =< $9 end, binary_to_list(B)).
 
 %% Strip leading and trailing SP and HTAB (OWS, RFC 3261 25.1).
 -spec trim(binary()) -> binary().
@@ -59,3 +74,36 @@ delta_seconds(B, Default) ->
         N when is_integer(N), N >= 0 -> N;
         _ -> Default
     end.
+
+%% Text or an attribute value as XML character data: the markup
+%% characters as entities, a raw tab or newline as a character reference
+%% (an attribute would normalise it to a space), invalid UTF-8 and the
+%% characters XML forbids as U+FFFD.
+-spec xml_escape(binary()) -> iolist().
+xml_escape(Bin) ->
+    [escape_char(C) || C <- chars(Bin, [])].
+
+escape_char($<) -> <<"&lt;">>;
+escape_char($>) -> <<"&gt;">>;
+escape_char($&) -> <<"&amp;">>;
+escape_char($") -> <<"&quot;">>;
+escape_char($') -> <<"&apos;">>;
+%% in attributes a raw tab or newline would be normalised to a space
+escape_char($\t) -> <<"&#9;">>;
+escape_char($\n) -> <<"&#10;">>;
+escape_char($\r) -> <<"&#13;">>;
+escape_char(C) -> <<C/utf8>>.
+
+%% code points of Bin; invalid UTF-8 and XML-forbidden characters become
+%% U+FFFD
+chars(<<C/utf8, Rest/binary>>, Acc) ->
+    chars(Rest, [xml_char(C) | Acc]);
+chars(<<_, Rest/binary>>, Acc) ->
+    chars(Rest, [16#FFFD | Acc]);
+chars(<<>>, Acc) ->
+    lists:reverse(Acc).
+
+xml_char(C) when C =:= 16#9; C =:= 16#A; C =:= 16#D -> C;
+xml_char(C) when C < 16#20 -> 16#FFFD;
+xml_char(C) when C =:= 16#FFFE; C =:= 16#FFFF -> 16#FFFD;
+xml_char(C) -> C.

@@ -66,6 +66,8 @@ decisions, contributing) is in the [umbrella docs](../../../docs/README.md).
 
 - [Put media under a call](guides/media.md): rtpengine anchoring, taps,
   SIPREC, ducking, conferences on chappe_mix.
+- [Record a call with SIPREC](guides/siprec.md): the recording client, its
+  metadata, and chappe as the recording server.
 
 ## Operations
 
@@ -76,6 +78,8 @@ decisions, contributing) is in the [umbrella docs](../../../docs/README.md).
 - [Deployment](guides/deployment.md): the release, systemd, the hang
   policy, security defaults.
 - [Call records (CDR)](guides/call-records.md).
+- [Follow a call](guides/follow-a-call.md): one `call_ref` across legs,
+  records, capture and nodes.
 - [SIP capture (HEP)](guides/capture.md).
 - [Metrics](guides/metrics.md): Prometheus.
 - [Interop testing](guides/interop-testing.md): the JsSIP, conformance and

@@ -76,6 +76,61 @@ and one that never answered is dropped; either way it counts as a 408. The
 default is the `timer_c_ms` setting (185 s; the RFC asks for more than 3
 minutes).
 
+## Move on from a dead or slow branch
+
+Timer C restarts with every provisional, so a target that keeps ringing
+holds the call. Two timeouts per branch end it sooner:
+
+```erlang
+chappe_sip:proxy_request(Req, Dests, #{provisional_timeout => 2000,
+                                       final_timeout => 30000}).
+```
+
+- `provisional_timeout`: a branch that sent nothing, not even a 100, by
+  then is dropped (no CANCEL: RFC 3261 9.1 allows one only after a
+  provisional) and counts as a 408. With sequential forking the next
+  target is tried.
+- `final_timeout`: a branch with no final by then is CANCELled (or dropped
+  if it never sent a provisional) and counts as a 408, whatever its
+  provisionals did to Timer C.
+
+Both are in ms, off by default, and run next to Timer C: the first to fire
+ends the branch.
+
+## Follow redirects
+
+By default a 3xx is a final like any other and may reach the caller. With
+`follow_redirects` the proxy recurses on its Contacts (RFC 3261 16.7 step
+4):
+
+```erlang
+Local = fun(Uri) -> binary:match(Uri, <<"@10.0.0.">>) =/= nomatch end,
+chappe_sip:proxy_request(Req, Dests, #{
+    follow_redirects => #{max_targets => 5, max_depth => 2, allow => Local}
+}).
+```
+
+- The Contacts are tried in q order, next in sequential forking, at once in
+  parallel forking.
+- `max_targets` (default 5, at most 32) caps the targets every 3xx of the
+  transaction adds together; `max_depth` (default 2, at most 8) caps how
+  many 3xx deep a target may come from.
+- `allow` is your policy: a fun of the URI, run in the request worker. A
+  URI it refuses, one already in the target set, and a SIP URI for a SIPS
+  request are not tried. Without one, only the proxy's own domains are
+  followed: the hosts of its listen addresses, its `aliases` and the
+  `registrar_domains` it serves.
+- The Contacts tried leave the 3xx. A 3xx with Contacts left can still be
+  the best final the caller gets; one with none left is not.
+- `follow_redirects => true` takes the defaults, own domains included. A
+  callee could otherwise 302 the caller to any number; to follow other
+  networks, give `allow` your rule, such as
+  `allow => fun(_Uri) -> true end` on a trusted core.
+- A Contact naming the proxy itself brings the request back in. It counts
+  the hops it made through the proxy: its depth starts there, and once back
+  it follows no Contact naming the proxy again, so one request reaches at
+  most `1 + max_targets` targets however its 3xx chain.
+
 ## Route to a registered browser
 
 Resolve an AOR to a WebSocket flow and forward over it:
@@ -129,7 +184,7 @@ the REGISTER came on; a UDP flow is its source address and port.
 
 ## Record-route and in-dialog
 
-With `record_route => true`, chappe_sip inserts one Record-Route carrying flow
+With `record_route => true`, chappe_sip inserts a Record-Route carrying flow
 tokens, so ACK/BYE/re-INVITE come back through the proxy and are forwarded to
 the far end in both directions, whatever their `Require`, including a CANCEL of a re-INVITE in transit.
 The token of each WebSocket leg is in the route, so a browser-to-browser
@@ -140,12 +195,21 @@ expiry, see `flow_token_secret` and `record_route_ttl_s` in
 [Configuration](configuration.md)): a forged or expired route is not ours and
 is not relayed.
 
+When the request arrives on one address and leaves from another (two
+listen addresses, IPv4 in and IPv6 out, TLS in and UDP out, or the two
+sides of a 1:1 NAT), the proxy inserts two Record-Routes (RFC 5658 5): the
+address the caller reached first, then the one the callee reaches on top.
+Each side's route set starts with an address it can reach, and nothing is
+rewritten in the responses. An in-dialog request carrying both of our
+Routes has both removed, so it does not spiral through us.
+
 ## SIPS and TLS
 
 - The Record-Route is a `sips:` URI (the TLS listener) when the forwarded
   request's Request-URI or top Route is SIPS, and a `sip:` URI otherwise. When
-  the two sides differ (TLS in, UDP out), the Record-Route in the responses
-  going back is rewritten for the upstream side (16.7 step 8).
+  the two sides differ (TLS in, UDP out), the request is record-routed twice,
+  `sips:` for the TLS side, instead of rewriting the Record-Route in the
+  responses (RFC 5658 4 and 5).
 - A SIPS request is only forwarded to a SIPS target (480 otherwise); a SIP
   request for a SIPS target keeps a `sip:` Request-URI and goes over TLS (RFC
   5630).
@@ -164,12 +228,11 @@ is not relayed.
   merged, 503 sent as 500). Every 2xx is forwarded for 64*T1 after the first
   (RFC 6026), also over TCP/TLS, where nta ends the client transaction at
   the first 2xx: the shim's agent callback catches the later ones. Record-Route insertion (sips when the forwarded request is
-  SIPS, rewritten in responses across TLS/non-TLS) and in-dialog forwarding
+  SIPS, doubled across addresses or TLS/non-TLS) and in-dialog forwarding
   through it, CANCEL of a transit re-INVITE included.
 
 ## Notes
 
-- One Record-Route per forward (single interface per transport).
 - A 2xx after the first is forwarded over UDP; on TCP or TLS the client
   transaction ends with the first 2xx, so a later fork's 2xx is dropped by
   the stack.
@@ -179,6 +242,8 @@ is not relayed.
 ## Where it lives
 
 - Modules: `chappe_sip_proxy`, `chappe_sip_proxy_rules`,
+  `chappe_sip_proxy_redirect` (follow_redirects, the branch timeouts),
+  `chappe_sip_proxy_accepted` (the RFC 6026 Accepted state),
   `chappe_sip_proxy_dialog`, `chappe_sip_route`, the stray 2xx path of the
   NIF (`stray_cb`).
 - Tests: `chappe_sip_proxy_conf_SUITE`, `chappe_sip_proxy_forking_SUITE`,

@@ -18,15 +18,20 @@
          init_per_testcase/2, end_per_testcase/2]).
 -export([answer_on_each_address/1, record_route_per_address/1,
          uac_by_family/1, single_contact/1, bad_contact/1,
-         answer_on_second_v4/1, uac_local/1, udp_flow_local/1]).
+         answer_on_second_v4/1, uac_local/1, udp_flow_local/1,
+         public_advertised/1, public_local_nets/1, bad_public/1,
+         double_record_route/1, ack_491_on_each_address/1]).
 
 -define(V4, {127, 0, 0, 1}).
 -define(V4B, {127, 0, 0, 2}).
 -define(V6, {0, 0, 0, 0, 0, 0, 0, 1}).
 
 all() ->
-    [answer_on_each_address, record_route_per_address, uac_by_family,
-     single_contact, bad_contact, {group, second_v4}].
+    [answer_on_each_address, record_route_per_address, double_record_route,
+     ack_491_on_each_address,
+     uac_by_family,
+     single_contact, bad_contact, public_advertised, public_local_nets,
+     bad_public, {group, second_v4}].
 
 groups() ->
     [{second_v4, [], [answer_on_second_v4, uac_local, udp_flow_local]}].
@@ -67,6 +72,78 @@ end_per_testcase(_Case, _Config) ->
 
 %% ---- 127.0.0.1 and ::1 ----
 
+%% req: R3261-280
+%% With two listen addresses, a re-INVITE of a dialog answered 491 is
+%% ACKed (RFC 3261 17.1.1.3), every time, from the address it left from.
+ack_491_on_each_address(_Config) ->
+    {P4, P6} = start_v4_v6(),
+    ok = answer(),
+    lists:foreach(
+        fun({Ip, Port}) ->
+            [ack_491(Ip, Port) || _ <- lists:seq(1, 3)]
+        end,
+        [{?V4, P4}, {?V6, P6}]
+    ).
+
+ack_491(Ip, Port) ->
+    Peer = peer(Ip),
+    {_Ok, _Meta} = call(Peer, Ip, Port),
+    D = receive
+            {dialog, Dlg} -> Dlg
+        after 5000 -> ct:fail(no_dialog)
+        end,
+    Self = self(),
+    spawn(fun() ->
+        Self ! {modified, chappe_sip_dialog:modify(D, sdp(), #{retry_on_glare => false})}
+    end),
+    {ReInv, From} = recv_req(Peer, <<"INVITE">>),
+    ?assertEqual({Ip, Port}, From),
+    ok = reply(Peer, From, ReInv, 491),
+    {Ack, AckFrom} = recv_req(Peer, <<"ACK">>),
+    ?assertEqual({Ip, Port}, AckFrom),
+    _ = Ack,
+    receive {modified, _} -> ok after 5000 -> ct:fail(no_modify_result) end,
+    self() ! {dialog, D},
+    hangup(),
+    {Bye, BFrom} = recv_req(Peer, <<"BYE">>),
+    ok = reply(Peer, BFrom, Bye, 200),
+    close(Peer).
+
+%% req: R5658-01 R5658-02
+%% A request that comes to the IPv4 address and leaves for an IPv6 peer
+%% is record-routed twice (RFC 5658 5): the IPv6 address on top for the
+%% callee, the IPv4 one below for the caller. The callee's BYE, routed
+%% through both, reaches the caller with neither of our Routes left.
+double_record_route(_Config) ->
+    {P4, P6} = start_v4_v6(),
+    Down = peer(?V6),
+    DownUri = <<"sip:down@[::1]:", (integer_to_binary(port(Down)))/binary>>,
+    ok = chappe_sip:invite(fun(Req, _Res) ->
+        chappe_sip:proxy_request(Req, [DownUri], #{record_route => true})
+    end),
+    Up = peer(?V4),
+    ok = send(Up, ?V4, P4, invite(Up, ?V4, P4)),
+    {Fwd, DSrc} = recv_req(Down, <<"INVITE">>),
+    {ok, M} = chappe_sip_msg:parse(Fwd),
+    RRs = [V || H <- chappe_sip_msg:get_all(<<"record-route">>, M),
+                V <- chappe_sip_hdr:split_list(H)],
+    ct:log("Record-Route: ~p", [RRs]),
+    P6B = integer_to_binary(P6),
+    P4B = integer_to_binary(P4),
+    ?assertMatch([<<"<sip:[::1]:", P6B:(byte_size(P6B))/binary, ";", _/binary>>,
+                  <<"<sip:127.0.0.1:", P4B:(byte_size(P4B))/binary, ";", _/binary>>],
+                 RRs),
+    %% the callee answers, then hangs up through the route set it got
+    {DIp, DPort} = DSrc,
+    ok = send(Down, DIp, DPort, ok200(Fwd, Down, RRs)),
+    {_Ok, _} = recv_resp(Up, 200),
+    ok = send(Down, ?V6, P6, bye(Fwd, Down, RRs)),
+    {Bye, _} = recv_req(Up, <<"BYE">>),
+    {ok, BM} = chappe_sip_msg:parse(Bye),
+    ?assertEqual([], chappe_sip_msg:get_all(<<"route">>, BM)),
+    close(Up),
+    close(Down).
+
 %% An INVITE to each address: the 2xx Contact names that address, the
 %% request meta says where it arrived, and the dialog's BYE leaves from it.
 answer_on_each_address(_Config) ->
@@ -106,7 +183,10 @@ record_route_per_address(_Config) ->
             ok = send(Up, Ip, Port, invite(Up, Ip, Port)),
             {Fwd, _} = recv_req(Down, <<"INVITE">>),
             {ok, M} = chappe_sip_msg:parse(Fwd),
-            RR = chappe_sip_msg:get(<<"record-route">>, M),
+            %% the address it arrived on is in the route set (alone, or
+            %% under the outbound one when it leaves from another)
+            RR = iolist_to_binary(
+                lists:join(<<", ">>, chappe_sip_msg:get_all(<<"record-route">>, M))),
             ct:log("Record-Route via ~p: ~s", [Ip, RR]),
             Want = <<(host(Ip))/binary, ":", (integer_to_binary(Port))/binary>>,
             ?assertNotEqual(nomatch, binary:match(RR, Want)),
@@ -158,6 +238,83 @@ bad_contact(_Config) ->
                  chappe_sip:start(#{contact => []})),
     ?assertEqual({error, {contact, bad_contact}},
                  chappe_sip:start(#{contact => [<<"sip:127.0.0.1">>, 5060]})).
+
+%% ---- 1:1 NAT: a public address advertised, a local one bound ----
+
+%% public => Host: the stack binds the local address and advertises the
+%% public one. A peer outside local_nets gets it in the 2xx Contact, and
+%% in the Via (RFC 3261 18.1.1 sent-by) and Contact of what we send.
+public_advertised(_Config) ->
+    P = chappe_sip_test_port:pick(),
+    ok = chappe_sip:start(#{contact => #{uri => uri(?V4, P),
+                                         public => <<"192.0.2.10">>,
+                                         local_nets => [<<"10.0.0.0/8">>]}}),
+    Public = <<"sip:192.0.2.10:", (integer_to_binary(P))/binary>>,
+    ?assertEqual(Public, hd(binary:split(
+        chappe_sip_hdr:name_addr_uri(chappe_sip_engine:contact()), <<";">>))),
+    ok = answer(),
+    Peer = peer(?V4),
+    {Ok, _Meta} = call(Peer, ?V4, P),
+    ?assertEqual(Public, contact_uri(Ok)),
+    hangup(),
+    {Bye, From} = recv_req(Peer, <<"BYE">>),
+    %% sent from the bound address
+    ?assertEqual({?V4, P}, From),
+    ?assertNotEqual(nomatch, binary:match(via(Bye), <<"192.0.2.10:">>)),
+    ok = reply(Peer, From, Bye, 200),
+    {Opt, From2} = uac_options(Peer),
+    ?assertEqual({?V4, P}, From2),
+    ?assertNotEqual(nomatch, binary:match(via(Opt), <<"192.0.2.10:">>)),
+    ?assertEqual(Public, contact_uri(Opt)),
+    close(Peer).
+
+%% A peer inside local_nets gets the local address in the Contact, both
+%% on the 2xx we answer and on a request we send.
+public_local_nets(_Config) ->
+    P = chappe_sip_test_port:pick(),
+    ok = chappe_sip:start(#{contact => #{uri => uri(?V4, P),
+                                         public => <<"192.0.2.10">>,
+                                         local_nets => [<<"127.0.0.0/8">>]}}),
+    ok = answer(),
+    Peer = peer(?V4),
+    {Ok, _Meta} = call(Peer, ?V4, P),
+    ?assertEqual(uri(?V4, P), contact_uri(Ok)),
+    hangup(),
+    {Bye, From} = recv_req(Peer, <<"BYE">>),
+    ok = reply(Peer, From, Bye, 200),
+    {Opt, _} = uac_options(Peer),
+    ?assertEqual(uri(?V4, P), contact_uri(Opt)),
+    close(Peer).
+
+%% A bad public host, a bad network, local_nets without public or on a
+%% wildcard bind, or a contact that already has maddr fails the start.
+bad_public(_Config) ->
+    U = uri(?V4, chappe_sip_test_port:pick()),
+    [?assertEqual({error, {contact, Why}}, chappe_sip:start(#{contact => C}))
+     || {C, Why} <- [
+            {#{uri => U, public => <<"a b">>}, bad_public},
+            {#{uri => U, public => <<"x;maddr=1">>}, bad_public},
+            {#{uri => U, public => <<"1.2.3.4", 0>>}, bad_public},
+            {#{uri => U, public => 42}, bad_public},
+            {#{uri => U, local_nets => [<<"10.0.0.0/8">>]}, bad_public},
+            {#{uri => U, public => <<"192.0.2.1">>, local_nets => [<<"x">>]},
+             bad_local_nets},
+            {#{uri => U, public => <<"192.0.2.1">>, local_nets => nope},
+             bad_local_nets},
+            {#{uri => <<"sip:0.0.0.0:5099">>, public => <<"192.0.2.1">>,
+               local_nets => [<<"10.0.0.0/8">>]}, bad_public},
+            {#{uri => <<U/binary, ";maddr=127.0.0.1">>,
+               public => <<"192.0.2.1">>}, bad_public},
+            {#{uri => <<"nope">>}, bad_contact}
+        ]].
+
+uac_options(Peer) ->
+    Target = <<"sip:peer@127.0.0.1:", (integer_to_binary(port(Peer)))/binary>>,
+    {ok, Ref} = chappe_sip:request(Target, #{method => <<"OPTIONS">>}),
+    {Opt, From} = recv_req(Peer, <<"OPTIONS">>),
+    ok = reply(Peer, From, Opt, 200),
+    {ok, _} = chappe_sip_uac:await_response(Ref, 5000),
+    {Opt, From}.
 
 %% ---- 127.0.0.1 and 127.0.0.2 ----
 
@@ -365,6 +522,57 @@ register_req(#{ip := Ip} = Peer, ToPort) ->
         "Expires: 3600\r\n",
         "Content-Length: 0\r\n\r\n"
     ]).
+
+%% the callee's 200 to a forwarded INVITE, echoing its Record-Routes
+ok200(Inv, Peer, RRs) ->
+    {ok, M} = chappe_sip_msg:parse(Inv),
+    iolist_to_binary(
+        ["SIP/2.0 200 OK
+",
+         [["Via: ", V, "
+"] || V <- chappe_sip_msg:get_all(<<"via">>, M)],
+         [["Record-Route: ", R, "
+"] || R <- RRs],
+         "From: ", chappe_sip_msg:get(<<"from">>, M), "
+",
+         "To: ", chappe_sip_msg:get(<<"to">>, M), ";tag=callee
+",
+         "Call-ID: ", chappe_sip_msg:call_id(M), "
+",
+         "CSeq: 1 INVITE
+",
+         "Contact: <sip:down@[::1]:", integer_to_binary(port(Peer)), ">
+",
+         "Content-Length: 0
+
+"]).
+
+%% the callee's BYE through the route set it learned (top first)
+bye(Inv, Peer, RRs) ->
+    {ok, M} = chappe_sip_msg:parse(Inv),
+    {ok, #{uri := Target}} =
+        chappe_sip_hdr:name_addr(chappe_sip_msg:get(<<"contact">>, M)),
+    iolist_to_binary(
+        ["BYE ", Target, " SIP/2.0
+",
+         "Via: SIP/2.0/UDP [::1]:", integer_to_binary(port(Peer)),
+         ";branch=z9hG4bK", hex(6), ";rport
+",
+         "Max-Forwards: 70
+",
+         [["Route: ", R, "
+"] || R <- RRs],
+         "From: ", chappe_sip_msg:get(<<"to">>, M), ";tag=callee
+",
+         "To: ", chappe_sip_msg:get(<<"from">>, M), "
+",
+         "Call-ID: ", chappe_sip_msg:call_id(M), "
+",
+         "CSeq: 2 BYE
+",
+         "Content-Length: 0
+
+"]).
 
 contact_uri(Msg) ->
     {ok, M} = chappe_sip_msg:parse(Msg),

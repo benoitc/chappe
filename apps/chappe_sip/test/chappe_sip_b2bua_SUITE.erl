@@ -23,6 +23,10 @@
 -export([fork_branch_opts/1, serial_branch_opts/1, hunt_keeps_a_tag/1]).
 -export([bad_from_refused/1, bad_from_fork_refused/1,
          bad_from_not_passed/1]).
+-export([b_events_notified/1, app_cancels_b/1]).
+-export([a_headers_on_2xx/1, a_headers_on_failure/1, contact_params_each_leg/1]).
+-export([b_redirect_followed/1, local_sdp_b_fun/1]).
+-export([relayed_1xx_contact_public/1, relayed_1xx_contact_local/1]).
 
 all() ->
     [b2b_success_bye, b2b_callee_busy, b2b_caller_cancel,
@@ -31,7 +35,11 @@ all() ->
      fork_all_fail_best, fork_timer_c, fork_late_2xx, pass_failure_timer_c,
      start_failure_answered, start_failure_not_passed, fork_branch_opts,
      serial_branch_opts, hunt_keeps_a_tag, bad_from_refused,
-     bad_from_fork_refused, bad_from_not_passed].
+     bad_from_fork_refused, bad_from_not_passed, b_events_notified,
+     app_cancels_b, a_headers_on_2xx, a_headers_on_failure,
+     contact_params_each_leg,
+     b_redirect_followed, local_sdp_b_fun, relayed_1xx_contact_public,
+     relayed_1xx_contact_local].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -286,6 +294,280 @@ b2b_callee_busy(_Config) ->
     ok = expect(caller_got_486),
     receive
         {b2b_result, {error, #chappe_sip_error{status = 486}}} -> ok
+    after 5000 -> ct:fail(no_b2b_failure)
+    end.
+
+%% The notify process hears of B's INVITE (with its Call-ID), of B's early
+%% dialog and of each provisional, before the call is up.
+b_events_notified(_Config) ->
+    {EnginePort, CalleePort} = setup(),
+    Test = self(),
+    CalleeUri = <<"sip:callee@127.0.0.1:", (integer_to_binary(CalleePort))/binary>>,
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        {ok, Legs} = chappe_sip:create_b2bua(Req, Res, CalleeUri,
+                                             #{notify => Test}),
+        Test ! b2b_up,
+        {done, _} = chappe_sip_b2b:relay(Legs)
+    end),
+    callee(CalleePort, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        {ok, InvMsg} = chappe_sip_msg:parse(Inv),
+        Test ! {b_call_id, chappe_sip_msg:call_id(InvMsg)},
+        ToTag = tag(),
+        send(Sock, Src, resp(Inv, 180, <<"Ringing">>, ToTag,
+                             [{<<"Contact">>, ctc(CalleePort)}], <<>>)),
+        send(Sock, Src, resp(Inv, 200, <<"OK">>, ToTag,
+                             [{<<"Contact">>, ctc(CalleePort)}], sdp(<<"callee">>))),
+        {_Ack, _} = recv(Sock, <<"ACK">>),
+        {Bye, BSrc} = recv(Sock, <<"BYE">>),
+        send(Sock, BSrc, resp(Bye, 200, <<"OK">>, ToTag, [], <<>>))
+    end),
+    caller(fun(Sock) ->
+        Call = callid(),
+        FT = <<"cfte">>,
+        send(Sock, EnginePort, invite(Sock, EnginePort, Call, FT)),
+        R200 = recv_status(Sock, 200),
+        TT = to_tag(R200),
+        send(Sock, EnginePort, ack(Sock, EnginePort, Call, FT, TT)),
+        timer:sleep(100),
+        send(Sock, EnginePort, bye(Sock, EnginePort, Call, FT, TT)),
+        _ = recv_status(Sock, 200)
+    end),
+    BCallId = receive {b_call_id, C} -> C after 6000 -> ct:fail(no_b) end,
+    receive
+        {chappe_sip_b2b, _, {b_request, #{call_id := BCallId,
+                                          method := <<"INVITE">>,
+                                          uac := _}}} -> ok
+    after 6000 -> ct:fail(no_b_request)
+    end,
+    receive {chappe_sip_b2b, _, {b_early, _Dialog}} -> ok
+    after 6000 -> ct:fail(no_b_early)
+    end,
+    receive
+        {chappe_sip_b2b, _, {b_provisional, Msg}} ->
+            180 = chappe_sip_msg:status(Msg)
+    after 6000 -> ct:fail(no_b_provisional)
+    end,
+    ok = expect(b2b_up).
+
+%% With the uac of {b_request, _} the app CANCELs B before it answers
+%% (drachtio's cbRequest): A gets B's 487.
+app_cancels_b(_Config) ->
+    {EnginePort, CalleePort} = setup(),
+    Test = self(),
+    CalleeUri = <<"sip:callee@127.0.0.1:", (integer_to_binary(CalleePort))/binary>>,
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        Test ! {b2b_result,
+                chappe_sip:create_b2bua(Req, Res, CalleeUri, #{notify => Test})}
+    end),
+    callee(CalleePort, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        ToTag = tag(),
+        send(Sock, Src, resp(Inv, 180, <<"Ringing">>, ToTag, [], <<>>)),
+        {Cancel, CSrc} = recv(Sock, <<"CANCEL">>),
+        send(Sock, CSrc, resp(Cancel, 200, <<"OK">>, ToTag, [], <<>>)),
+        send(Sock, Src, resp(Inv, 487, <<"Request Terminated">>, ToTag, [], <<>>)),
+        Test ! callee_cancelled
+    end),
+    caller(fun(Sock) ->
+        Call = callid(),
+        send(Sock, EnginePort, invite(Sock, EnginePort, Call, <<"cftc">>)),
+        R = recv_status(Sock, 487),
+        send(Sock, EnginePort, ack_status(Sock, EnginePort, Call, <<"cftc">>, R)),
+        Test ! caller_got_487
+    end),
+    receive
+        {chappe_sip_b2b, _, {b_provisional, _}} -> ok
+    after 6000 -> ct:fail(no_b_provisional)
+    end,
+    Uac = receive {chappe_sip_b2b, _, {b_request, #{uac := U}}} -> U
+          after 0 -> ct:fail(no_b_request)
+          end,
+    ok = chappe_sip_uac:cancel(Uac),
+    ok = expect(callee_cancelled),
+    ok = expect(caller_got_487),
+    receive
+        {b2b_result, {error, #chappe_sip_error{status = 487}}} -> ok
+    after 5000 -> ct:fail(no_b2b_failure)
+    end.
+
+%% follow_redirects goes to the B leg: B's 302 is followed there and A
+%% gets the 2xx of the target it named, never the 302.
+b_redirect_followed(_Config) ->
+    {EnginePort, CalleePort} = setup(),
+    MovedPort = pick(),
+    Test = self(),
+    CalleeUri = <<"sip:callee@127.0.0.1:", (integer_to_binary(CalleePort))/binary>>,
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        {ok, Legs} = chappe_sip:create_b2bua(Req, Res, CalleeUri,
+                                             #{follow_redirects => true}),
+        {done, _} = chappe_sip_b2b:relay(Legs)
+    end),
+    callee(CalleePort, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        send(Sock, Src, resp(Inv, 302, <<"Moved Temporarily">>, tag(),
+                             [{<<"Contact">>, <<"<", (ctc(MovedPort))/binary, ">">>}],
+                             <<>>))
+    end),
+    callee(MovedPort, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        Test ! moved_called,
+        ToTag = tag(),
+        send(Sock, Src, resp(Inv, 200, <<"OK">>, ToTag,
+                             [{<<"Contact">>, ctc(MovedPort)}], sdp(<<"moved">>))),
+        {_Ack, _} = recv(Sock, <<"ACK">>),
+        {Bye, BSrc} = recv(Sock, <<"BYE">>),
+        send(Sock, BSrc, resp(Bye, 200, <<"OK">>, ToTag, [], <<>>))
+    end),
+    caller(fun(Sock) ->
+        Call = callid(),
+        FT = <<"cftr">>,
+        send(Sock, EnginePort, invite(Sock, EnginePort, Call, FT)),
+        R200 = recv_status(Sock, 200),
+        {_, _} = binary:match(R200, <<"moved">>),
+        TT = to_tag(R200),
+        send(Sock, EnginePort, ack(Sock, EnginePort, Call, FT, TT)),
+        send(Sock, EnginePort, bye(Sock, EnginePort, Call, FT, TT)),
+        _ = recv_status(Sock, 200),
+        Test ! caller_done
+    end),
+    ok = expect(moved_called),
+    ok = expect(caller_done).
+
+%% local_sdp_b as a fun of A's offer: B gets what it returns.
+local_sdp_b_fun(_Config) ->
+    {EnginePort, CalleePort} = setup(),
+    Test = self(),
+    CalleeUri = <<"sip:callee@127.0.0.1:", (integer_to_binary(CalleePort))/binary>>,
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        {ok, Legs} = chappe_sip:create_b2bua(Req, Res, CalleeUri, #{
+            local_sdp_b => fun(SdpA) -> <<SdpA/binary, "a=x-from-fun\r\n">> end
+        }),
+        {done, _} = chappe_sip_b2b:relay(Legs)
+    end),
+    callee(CalleePort, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        Test ! {b_offer, binary:match(Inv, <<"a=x-from-fun">>) =/= nomatch,
+                binary:match(Inv, <<"o=caller">>) =/= nomatch},
+        ToTag = tag(),
+        send(Sock, Src, resp(Inv, 200, <<"OK">>, ToTag,
+                             [{<<"Contact">>, ctc(CalleePort)}], sdp(<<"callee">>))),
+        {_Ack, _} = recv(Sock, <<"ACK">>),
+        {Bye, BSrc} = recv(Sock, <<"BYE">>),
+        send(Sock, BSrc, resp(Bye, 200, <<"OK">>, ToTag, [], <<>>))
+    end),
+    caller(fun(Sock) ->
+        Call = callid(),
+        FT = <<"cftf">>,
+        send(Sock, EnginePort, invite(Sock, EnginePort, Call, FT)),
+        R200 = recv_status(Sock, 200),
+        TT = to_tag(R200),
+        send(Sock, EnginePort, ack(Sock, EnginePort, Call, FT, TT)),
+        send(Sock, EnginePort, bye(Sock, EnginePort, Call, FT, TT)),
+        _ = recv_status(Sock, 200)
+    end),
+    ok = expect({b_offer, true, true}).
+
+%% contact_params go after the Contact of each leg: A's 2xx and B's
+%% INVITE (a conference room marks its member legs with isfocus, RFC
+%% 4579 4.2).
+%% req: R4579-06
+contact_params_each_leg(_Config) ->
+    {EnginePort, CalleePort} = setup(),
+    Test = self(),
+    CalleeUri = <<"sip:callee@127.0.0.1:", (integer_to_binary(CalleePort))/binary>>,
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        {ok, Legs} = chappe_sip:create_b2bua(Req, Res, CalleeUri, #{
+            contact_params => #{a => <<";isfocus">>, b => <<";isfocus">>}
+        }),
+        {done, _} = chappe_sip_b2b:relay(Legs)
+    end),
+    callee(CalleePort, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        {ok, IM} = chappe_sip_msg:parse(Inv),
+        Test ! {b_contact, chappe_sip_msg:get(<<"contact">>, IM)},
+        ToTag = tag(),
+        send(Sock, Src, resp(Inv, 200, <<"OK">>, ToTag,
+                             [{<<"Contact">>, ctc(CalleePort)}], sdp(<<"callee">>))),
+        {_Ack, _} = recv(Sock, <<"ACK">>),
+        {Bye, BSrc} = recv(Sock, <<"BYE">>),
+        send(Sock, BSrc, resp(Bye, 200, <<"OK">>, ToTag, [], <<>>))
+    end),
+    caller(fun(Sock) ->
+        Call = callid(),
+        FT = <<"cfti">>,
+        send(Sock, EnginePort, invite(Sock, EnginePort, Call, FT)),
+        R200 = recv_status(Sock, 200),
+        {ok, M} = chappe_sip_msg:parse(R200),
+        Test ! {a_contact, chappe_sip_msg:get(<<"contact">>, M)},
+        TT = to_tag(R200),
+        send(Sock, EnginePort, ack(Sock, EnginePort, Call, FT, TT)),
+        send(Sock, EnginePort, bye(Sock, EnginePort, Call, FT, TT)),
+        _ = recv_status(Sock, 200)
+    end),
+    [A, B] = [receive {K, V} -> V after 6000 -> ct:fail({no, K}) end
+              || K <- [a_contact, b_contact]],
+    ?assertMatch({_, _}, binary:match(A, <<">;isfocus">>)),
+    ?assertMatch({_, _}, binary:match(B, <<">;isfocus">>)).
+
+%% a_headers go on A's 2xx (drachtio's responseHeaders).
+a_headers_on_2xx(_Config) ->
+    {EnginePort, CalleePort} = setup(),
+    Test = self(),
+    CalleeUri = <<"sip:callee@127.0.0.1:", (integer_to_binary(CalleePort))/binary>>,
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        {ok, Legs} = chappe_sip:create_b2bua(Req, Res, CalleeUri, #{
+            a_headers => [{<<"X-Billing">>, <<"acct-7">>}]
+        }),
+        {done, _} = chappe_sip_b2b:relay(Legs)
+    end),
+    callee(CalleePort, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        ToTag = tag(),
+        send(Sock, Src, resp(Inv, 200, <<"OK">>, ToTag,
+                             [{<<"Contact">>, ctc(CalleePort)}], sdp(<<"callee">>))),
+        {_Ack, _} = recv(Sock, <<"ACK">>),
+        {Bye, BSrc} = recv(Sock, <<"BYE">>),
+        send(Sock, BSrc, resp(Bye, 200, <<"OK">>, ToTag, [], <<>>))
+    end),
+    caller(fun(Sock) ->
+        Call = callid(),
+        FT = <<"cfth">>,
+        send(Sock, EnginePort, invite(Sock, EnginePort, Call, FT)),
+        R200 = recv_status(Sock, 200),
+        {ok, M} = chappe_sip_msg:parse(R200),
+        Test ! {x_billing, chappe_sip_msg:get(<<"x-billing">>, M)},
+        TT = to_tag(R200),
+        send(Sock, EnginePort, ack(Sock, EnginePort, Call, FT, TT)),
+        send(Sock, EnginePort, bye(Sock, EnginePort, Call, FT, TT)),
+        _ = recv_status(Sock, 200)
+    end),
+    ok = expect({x_billing, <<"acct-7">>}).
+
+%% ... and on the failure A gets when B fails.
+a_headers_on_failure(_Config) ->
+    {EnginePort, CalleePort} = setup(),
+    Test = self(),
+    CalleeUri = <<"sip:callee@127.0.0.1:", (integer_to_binary(CalleePort))/binary>>,
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        Test ! {b2b_result, chappe_sip:create_b2bua(Req, Res, CalleeUri, #{
+            a_headers => [{<<"X-Billing">>, <<"acct-8">>}]
+        })}
+    end),
+    callee(CalleePort, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        send(Sock, Src, resp(Inv, 486, <<"Busy Here">>, tag(), [], <<>>))
+    end),
+    caller(fun(Sock) ->
+        Call = callid(),
+        send(Sock, EnginePort, invite(Sock, EnginePort, Call, <<"cfti">>)),
+        R = recv_status(Sock, 486),
+        {ok, M} = chappe_sip_msg:parse(R),
+        Test ! {x_billing, chappe_sip_msg:get(<<"x-billing">>, M)},
+        send(Sock, EnginePort, ack_status(Sock, EnginePort, Call, <<"cfti">>, R))
+    end),
+    ok = expect({x_billing, <<"acct-8">>}),
+    receive {b2b_result, {error, #chappe_sip_error{status = 486}}} -> ok
     after 5000 -> ct:fail(no_b2b_failure)
     end.
 
@@ -900,6 +1182,46 @@ peer(Port, Fun) ->
 
 expect(Msg) ->
     receive Msg -> ok after 6000 -> ct:fail({expected, Msg}) end.
+
+%% Behind 1:1 NAT (a contact with public and local_nets), the 1xx the
+%% B2BUA relays to A carries the address A should reach it at: the public
+%% one for a caller outside local_nets, the local one for a caller inside.
+relayed_1xx_contact_public(_Config) ->
+    ?assertEqual(<<"192.0.2.10">>, relayed_1xx_contact_host([<<"10.0.0.0/8">>])).
+
+relayed_1xx_contact_local(_Config) ->
+    ?assertEqual(<<"127.0.0.1">>, relayed_1xx_contact_host([<<"127.0.0.0/8">>])).
+
+relayed_1xx_contact_host(Nets) ->
+    EP = pick(),
+    CP = pick(),
+    ok = chappe_sip:start(#{contact => #{
+        uri => <<"sip:127.0.0.1:", (integer_to_binary(EP))/binary>>,
+        public => <<"192.0.2.10">>,
+        local_nets => Nets
+    }}),
+    Test = self(),
+    CalleeUri = <<"sip:callee@127.0.0.1:", (integer_to_binary(CP))/binary>>,
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        Test ! {b2b, chappe_sip:create_b2bua(Req, Res, CalleeUri, #{})}
+    end),
+    callee(CP, fun(Sock) ->
+        {Inv, Src} = recv(Sock, <<"INVITE">>),
+        send(Sock, Src, resp(Inv, 180, <<"Ringing">>, tag(),
+                             [{<<"Contact">>, ctc(CP)}], <<>>)),
+        timer:sleep(infinity)
+    end),
+    caller(fun(Sock) ->
+        send(Sock, EP, invite(Sock, EP, callid(), tag())),
+        R180 = recv_status(Sock, 180),
+        {ok, M} = chappe_sip_msg:parse(R180),
+        {ok, #{uri := U}} =
+            chappe_sip_hdr:name_addr(chappe_sip_msg:get(<<"contact">>, M)),
+        {ok, #{host := H}} = chappe_sip_uri:parse(U),
+        Test ! {host, H},
+        timer:sleep(infinity)
+    end),
+    receive {host, H} -> H after 6000 -> ct:fail(no_180) end.
 
 %% ---- SIP helpers ----
 

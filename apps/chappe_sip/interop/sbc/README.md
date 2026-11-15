@@ -38,6 +38,12 @@ Docker Desktop on macOS cannot send UDP from the host to a container.
 | `kamailio` | 10.253.9.40 | dispatcher pinging the node (`dispatcher.list`, `../kamailio/kamailio.cfg`) |
 | SIPp | from 10.253.9.128/25 | one container per call (`lab.sh sipp`), image built from `../sipp` |
 
+The node also sits on a second network, `nat` (`10.253.10.0/24`), as a host
+behind 1:1 NAT: it binds 10.253.10.10:5060 and advertises 203.0.113.10, except
+to its local network 10.253.10.0/26. `lab.sh sipp-nat` runs SIPp there, from
+10.253.10.128/25 (outside: it gets the public address) or from the address
+you give (inside: it gets the local one).
+
 The Request-URI user picks what the node does with a call: `anchor...` anchors
 it, `direct...` passes the SDP through, `glare` answers then re-INVITEs right
 after the ACK.

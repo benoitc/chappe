@@ -7,6 +7,81 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 
 ## Unreleased
 
+- B2BUA: an anchored call no longer strips encryption from a caller that
+  offers encrypted media (SRTP with keys in the SDP). Before, the caller was
+  answered with plain media unless your app asked otherwise; now each leg is
+  answered in the media profile it used itself, encrypted or not, and your
+  app can still choose another.
+- SIPREC: chappe's recording server now takes encrypted media (SRTP with
+  keys in the SDP), as the SIPREC standard requires, and decrypts it itself.
+  Before, it refused every encrypted stream, so a recording client that
+  encrypts its media, chappe's own client on an encrypted call included,
+  could not record to it without an rtpengine in front. Forged and replayed
+  packets are dropped and counted. The keys must reach the server over TLS:
+  an encrypted stream offered over plain SIP is refused, unless you tell the
+  server your network is trusted.
+- Call correlation: each call now gets one reference, carried on every leg it
+  creates, in every call record and in the capture sent to Homer. You can give
+  your own, for example one coming from upstream, and find the processes
+  serving a call from any node of the cluster. Before, each part had its own
+  id and following one call across legs, records and capture took guesswork.
+- B2BUA: your application now hears when the outgoing leg sends its INVITE,
+  gets a provisional answer or an early dialog, so it learns that leg's
+  Call-ID and can cancel it while it rings. Before, these events were dropped.
+- B2BUA: you can now add headers to the answer sent back to the caller,
+  follow redirects on the outgoing leg and keep the original request URI
+  when you do, and compute the outgoing offer, the credentials and the
+  answer of a call you take yourself from a function.
+- Middleware can now hand data to the request handler with the request it
+  passes on. Middleware written for the earlier form keeps working.
+- Dialogs now tell their owner of hold, unhold, session refreshes and
+  in-dialog PUBLISH, and you can follow every dialog's state as it changes.
+- Transfers: the B2BUA can now carry out a blind or attended transfer
+  itself, on either leg, including on calls bridged to FreeSWITCH, which
+  never sees the REFER. Every transfer goes through your policy; without
+  one, a transfer to another network is refused, and a call takes a bounded
+  number of transfers. Your application can also decide each transfer
+  itself. A REFER to a conference focus can add or remove a participant.
+  Before, the B2BUA refused every REFER unless your application took it.
+- Call recording: chappe can now record a call or a native conference room
+  to a SIPREC recording server, with pause, resume and the party changes
+  sent as they happen, and can act as a recording server itself, handing
+  each stream and its metadata to your application.
+- Deployment behind 1:1 NAT: a listen address can now advertise a public
+  address while bound to the local one, and show the local address to the
+  networks you list. A provisional answer relayed by the B2BUA now carries
+  the address the caller should reach, local or public.
+- New start options: the SIP timers, an outbound proxy or a preloaded route,
+  a keep-alive ping on idle TCP connections, the size past which a request
+  goes over TCP, and other names of the node. Each is checked when the stack
+  starts. The keep-alive does not reach TLS connections.
+- Edge protection: guard rules can now match any header, not only the
+  User-Agent, and act per transport, for example a silent drop on TCP and a
+  403 on UDP.
+- Proxy: redirects can now be followed, within limits you set, and a branch
+  that stays silent or never answers can be dropped before the call-wide
+  timer.
+- Metrics: chappe_sip can now serve its metrics on a port of its own, with
+  no web server of yours.
+- Fixed: with several listen addresses, the ACK of a failed re-INVITE, and a
+  CANCEL, could be lost, because the engine handed the SIP stack an address
+  it then freed. They now always go out from the address the request left
+  from.
+- Fixed: over UDP the first retransmission of a request came a full second
+  after it, whatever the T1 timer, so a request got fewer retransmissions
+  than the RFC asks before it timed out. It now comes after T1.
+- Fixed: a proxy listening on two addresses or transports record-routed the
+  call once, so requests later in the call could reach it on the wrong side.
+  It now adds one entry per side.
+- Fixed: the call record of a proxied, record-routed call could miss a BYE
+  that came right after the answer.
+- Fixed: the proxy's handling of late answers after a call is set up now
+  runs supervised and remembers a bounded number of them, so a downstream
+  element sending answer after answer can no longer grow its memory.
+- B2BUA: a call relayed in the background now runs supervised, and is hung
+  up when the owner you name for it dies. Without one it runs until a party
+  hangs up, as before.
+
 - B2BUA and chappe_mrf: when you move a call to a new callee, you can now say
   who that callee sees as calling. Before, a phone rung after an IVR menu
   showed the PBX instead of the real caller. A malformed value is refused and

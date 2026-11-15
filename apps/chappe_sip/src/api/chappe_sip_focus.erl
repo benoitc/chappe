@@ -31,7 +31,7 @@
 -include("chappe_sip.hrl").
 
 -export([contact/1, contact_params/0, headers/1, privacy_requested/1]).
--export([departure/1, referred/1, media/2, leg_status/1]).
+-export([departure/1, referred/1, media/2, leg_status/1, refer/4]).
 -export([check_subscribe/1, subscribe/4]).
 -export([new/1, update/2, handle_info/2, stop/1, subscriptions/1]).
 
@@ -136,6 +136,108 @@ is_bye(Why) ->
     catch
         _:_ -> false
     end.
+
+%% ---- REFER to the focus (RFC 4579 5.5, 5.11) ----
+
+%% A REFER to the focus, in a participant's dialog D or outside any dialog
+%% (D undefined: a REFER to the conference URI). What it means follows
+%% its Request-URI: a REFER to the conference URI, or in a dialog whose
+%% Contact carries isfocus, is a REFER to a focus, and a Refer-To for an
+%% INVITE (the default method) asks it to bring the target in (add, 5.5);
+%% in a dialog of a room that hides it is a focus (no isfocus, 4.2) it is
+%% an RFC 3515 transfer of that member (transfer). A Refer-To with
+%% method=BYE asks the focus to remove that participant (5.11). Any other
+%% method is refused 403: a focus does not fan out requests it does not
+%% understand (RFC 5368 10). The app's policy decides all three, with
+%%   #{action := add | remove | transfer, target := Uri,
+%%     replaces := chappe_sip_hdr:replaces() | undefined,
+%%     referrer := NameAddr, referred_by := binary() | undefined}
+%% replaces is the Replaces the Refer-To carries: the focus puts it on
+%% its INVITE to the target, which brings a point-to-point call into the
+%% conference (5.10); chappe_sip_refer:target/1 has it too.
+%% referrer is the REFER's From, the identity its dialog (or its digest,
+%% when the app checked one) vouches for; referred_by is only claimed
+%% (RFC 3892 6). Without a policy everything is refused 403. Once
+%% allowed, the REFER is accepted (200 and NOTIFY 100 Trying,
+%% chappe_sip_refer:accept/3,4) and the app carries it out, then reports
+%% with chappe_sip_refer:final/2. Opts: policy, and accept's (owner,
+%% expires, ...).
+-spec refer(
+    chappe_sip_dialog:dialog() | undefined,
+    chappe_sip_req:req(),
+    chappe_sip_res:res(),
+    map()
+) ->
+    {add | remove | transfer, binary(), chappe_sip_refer:refer()}
+    | {error, {rejected, 300..699} | term()}.
+refer(D, Req, Res, Opts) ->
+    %% the policy below decides a BYE as well
+    case chappe_sip_refer:check(Req, #{authorize => fun(_, _) -> true end}) of
+        {reject, Status, Reason} ->
+            reject(Res, Status, Reason);
+        {ok, #{method := M} = RT} ->
+            case focus_action(M, D =:= undefined orelse is_focus(D)) of
+                undefined -> reject(Res, 403, <<"Forbidden">>);
+                Action -> allowed(D, Req, Res, info(Action, RT, Req), Opts)
+            end
+    end.
+
+info(Action, #{target := Target} = RT, Req) ->
+    From = chappe_sip_req:get(<<"from">>, Req),
+    #{
+        action => Action,
+        target => Target,
+        replaces => maps:get(replaces, RT, undefined),
+        referrer => chappe_sip_b2b_hdr:caller(From),
+        referred_by => chappe_sip_req:get(<<"referred-by">>, Req)
+    }.
+
+focus_action(<<"INVITE">>, true) -> add;
+focus_action(<<"INVITE">>, false) -> transfer;
+focus_action(<<"BYE">>, _Focus) -> remove;
+focus_action(_M, _Focus) -> undefined.
+
+%% whether the REFER reached a focus: the conference URI itself, or a
+%% dialog whose Contact (the member's remote target) carries isfocus
+is_focus(D) ->
+    try chappe_sip_dialog:local_contact(D) of
+        C -> chappe_sip_hdr:has_param(C, <<"isfocus">>)
+    catch
+        exit:_ -> false
+    end.
+
+allowed(D, Req, Res, #{action := Action, target := Target} = Info, Opts) ->
+    Verdict =
+        case maps:find(policy, Opts) of
+            {ok, F} when is_function(F, 1) -> F(Info);
+            _ -> false
+        end,
+    case Verdict of
+        true ->
+            AOpts = (maps:without([policy], Opts))#{
+                authorize => fun(_, _) -> true end
+            },
+            case accept_refer(D, Req, Res, AOpts) of
+                {ok, Refer} -> {Action, Target, Refer};
+                {error, _} = Err -> Err
+            end;
+        {reject, Code} when is_integer(Code), Code >= 300, Code =< 699 ->
+            reject(Res, Code, <<>>);
+        _ ->
+            reject(Res, 403, <<"Forbidden">>)
+    end.
+
+accept_refer(undefined, Req, Res, Opts) ->
+    chappe_sip_refer:accept(Req, Res, Opts);
+accept_refer(D, Req, Res, Opts) ->
+    chappe_sip_refer:accept(D, Req, Res, Opts).
+
+reject(Res, Status, Reason) ->
+    _ = chappe_sip_res:send(Res, Status, reason(Reason)),
+    {error, {rejected, Status}}.
+
+reason(<<>>) -> #{};
+reason(R) -> #{reason => R}.
 
 %% The <referred> of an endpoint the focus called because of a REFER: by
 %% is the REFER's Referred-By URI (RFC 4575 5.7.2, RFC 3892).

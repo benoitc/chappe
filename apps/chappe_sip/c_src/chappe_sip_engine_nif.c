@@ -31,6 +31,7 @@
 #include <ctype.h>
 #include <dirent.h>
 #include <string.h>
+#include <strings.h>
 #include <time.h>
 #include <unistd.h>
 #include <sys/socket.h>
@@ -119,6 +120,20 @@
  * 64 MiB one message could hold the stack thread and its memory */
 #define MIN_MSG_SIZE 1024
 #define MAX_MSG_SIZE ((size_t)64 * 1024 * 1024)
+/* RFC 3261 17 timers (ms): T1 may be smaller on a closed network, or
+ * larger on a slow link; T2 caps the retransmit interval and is never
+ * below T1; T4 is how long a message stays in the network */
+#define MIN_SIP_T 10
+#define MAX_SIP_T1 60000
+#define MAX_SIP_T2 600000
+#define MAX_SIP_T4 600000
+/* udp_mtu: above it a request goes over TCP (RFC 3261 18.1.1); 576 is
+ * the IPv4 datagram every host takes, 65535 the UDP limit */
+#define MIN_UDP_MTU 576
+#define MAX_UDP_MTU 65535
+/* tcp_keepalive_ms: the CRLF ping interval on TCP (RFC 5626 4.4.1) */
+#define MIN_KEEPALIVE_MS 1000
+#define MAX_KEEPALIVE_MS 3600000
 /* the reason phrase and To-tag a response carries (op_t) */
 #define MAX_REASON 80
 #define MAX_TAG 80
@@ -243,6 +258,15 @@ typedef struct engine {
     char capture[MAX_CONTACT];
     int capt_fd;
 
+    /* optional agent settings, 0 / "" for nta's default: the RFC 3261
+     * timers, the UDP MTU, the CRLF keep-alive interval of TCP
+     * connections, and the outbound proxy a request with no route of its
+     * own goes to (NTATAG_DEFAULT_PROXY) */
+    unsigned sip_t1, sip_t2, sip_t4;
+    unsigned udp_mtu;
+    unsigned tcp_keepalive;
+    char outbound_proxy[MAX_CONTACT];
+
     /* stack-thread-only state */
     su_root_t *root;
     nta_agent_t *agent;
@@ -277,7 +301,8 @@ static ERL_NIF_TERM am_ok, am_error, am_undefined, am_chappe_sip_engine, am_requ
     am_ack_timeout, am_transport, am_verify_clients, am_true, am_conn,
     am_flow_closed, am_capture, am_ident, am_contacts, am_local,
     am_local_ip, am_local_port, am_false, am_none, am_enomem, am_incoming,
-    am_discarded, am_events_dropped, am_alloc_failed;
+    am_discarded, am_events_dropped, am_alloc_failed, am_sip_t1, am_sip_t2,
+    am_sip_t4, am_udp_mtu, am_tcp_keepalive_ms, am_outbound_proxy;
 
 /* operations enqueued to the stack thread */
 enum { OP_RESPOND = 1, OP_HEALTH, OP_STOP, OP_REQUEST, OP_LEG_CREATE,
@@ -1387,6 +1412,27 @@ static void op_reliable_1xx(engine_t *e, const op_t *op) {
     }
 }
 
+/* The listen address a send names, as the engine's own copy of its ident.
+ * nta keeps the TPTAG_IDENT pointer in the transaction (orq_tpn) and uses
+ * it again, after this op is freed, to send the ACK of a non-2xx final
+ * and a CANCEL: the op's buffer would dangle and the ACK find no
+ * transport (RFC 3261 17.1.1.3). The engine's idents live as long as the
+ * agent. NULL with *unknown = 0: none asked for, or a single address;
+ * NULL with *unknown = 1: no listen address has that ident. */
+static const char *op_ident(const engine_t *e, const op_t *op,
+                            int *unknown) {
+    *unknown = 0;
+    if (!op->ident[0] || !e->has_idents) return NULL;
+    if (strcmp(op->ident, e->ident) == 0) return e->ident;
+    for (int i = 0; i < e->nx; i++)
+        if (strcmp(op->ident, e->xident[i]) == 0) return e->xident[i];
+    if (strcmp(op->ident, e->tls_ident) == 0) return e->tls_ident;
+    for (int i = 0; i < e->ntlsx; i++)
+        if (strcmp(op->ident, e->tls_xident[i]) == 0) return e->tls_xident[i];
+    *unknown = 1;
+    return NULL;
+}
+
 static void op_request(engine_t *e, const op_t *op) {
     msg_t *m = op_msg(op);
     if (!m) {
@@ -1416,6 +1462,14 @@ static void op_request(engine_t *e, const op_t *op) {
         }
         ftp = f->tp;
     }
+    int unknown;
+    const char *ident = op_ident(e, op, &unknown);
+    if (unknown) {
+        msg_destroy(m);
+        enif_free(ctx);
+        send_op_failed(e, op->h, "unknown local address");
+        return;
+    }
     /* A proxy branch (one with our loop-detection branch) of an INVITE
      * is created outside UA mode: a UA client transaction ACKs and BYEs
      * a second 2xx with another To-tag itself, while a proxy forwards
@@ -1430,8 +1484,7 @@ static void op_request(engine_t *e, const op_t *op) {
     nta_outgoing_t *orq = nta_outgoing_mcreate(
         e->agent, outgoing_response_cb, (nta_outgoing_magic_t *)ctx,
         route, m, TAG_IF(op->branch[0], NTATAG_BRANCH_KEY(op->branch)),
-        TAG_IF(ftp, NTATAG_TPORT(ftp)),
-        TAG_IF(op->ident[0] && e->has_idents, TPTAG_IDENT(op->ident)),
+        TAG_IF(ftp, NTATAG_TPORT(ftp)), TAG_IF(ident, TPTAG_IDENT(ident)),
         TAG_END());
     if (proxy_inv &&
         nta_agent_set_params(e->agent, NTATAG_UA(1), TAG_END()) < 0)
@@ -1463,6 +1516,42 @@ static void op_request(engine_t *e, const op_t *op) {
         if (e->px_head) e->px_head->px_prev = ctx;
         e->px_head = ctx;
     }
+    send_op_ok(e, op->h);
+}
+
+/* fire-and-forget send (ACK to a 2xx). Create the outgoing transaction to
+ * put the message on the wire, then destroy it immediately: an ACK gets no
+ * response. mcreate queues the message on the transport before returning. */
+static void op_send(engine_t *e, const op_t *op) {
+    msg_t *m = op_msg(op);
+    if (!m) {
+        send_op_failed(e, op->h, "unparseable message");
+        return;
+    }
+    url_string_t *route = op->route ? URL_STRING_MAKE(op->route) : NULL;
+    flow_t *f = op->flow ? tab_get(e, op->flow, H_FLOW) : NULL;
+    if (op->flow && !f) {
+        msg_destroy(m);
+        send_op_failed(e, op->h, "unknown flow");
+        return;
+    }
+    int unknown;
+    const char *ident = op_ident(e, op, &unknown);
+    if (unknown) {
+        msg_destroy(m);
+        send_op_failed(e, op->h, "unknown local address");
+        return;
+    }
+    nta_outgoing_t *orq = nta_outgoing_mcreate(
+        e->agent, NULL, NULL, route, m,
+        TAG_IF(f, NTATAG_TPORT(f ? f->tp : NULL)),
+        TAG_IF(ident, TPTAG_IDENT(ident)), TAG_END());
+    if (!orq) {
+        msg_destroy(m);
+        send_op_failed(e, op->h, "nta_outgoing_mcreate (send) failed");
+        return;
+    }
+    nta_outgoing_destroy(orq);
     send_op_ok(e, op->h);
 }
 
@@ -1549,37 +1638,9 @@ static void op_cb(su_root_magic_t *magic, su_msg_r msg, su_msg_arg_t *arg) {
         }
         break;
     }
-    case OP_SEND: {
-        /* fire-and-forget send (ACK to a 2xx). Create the outgoing
-         * transaction to put the message on the wire, then destroy it
-         * immediately: an ACK gets no response. mcreate queues the
-         * message on the transport before returning. */
-        msg_t *m = op_msg(op);
-        if (!m) {
-            send_op_failed(e, op->h, "unparseable message");
-            break;
-        }
-        url_string_t *route = op->route ? URL_STRING_MAKE(op->route) : NULL;
-        flow_t *f = op->flow ? tab_get(e, op->flow, H_FLOW) : NULL;
-        if (op->flow && !f) {
-            msg_destroy(m);
-            send_op_failed(e, op->h, "unknown flow");
-            break;
-        }
-        nta_outgoing_t *orq = nta_outgoing_mcreate(
-            e->agent, NULL, NULL, route, m,
-            TAG_IF(f, NTATAG_TPORT(f ? f->tp : NULL)),
-            TAG_IF(op->ident[0] && e->has_idents, TPTAG_IDENT(op->ident)),
-            TAG_END());
-        if (!orq) {
-            msg_destroy(m);
-            send_op_failed(e, op->h, "nta_outgoing_mcreate (send) failed");
-            break;
-        }
-        nta_outgoing_destroy(orq);
-        send_op_ok(e, op->h);
+    case OP_SEND:
+        op_send(e, op);
         break;
-    }
     case OP_CANCEL: {
         nta_outgoing_t *orq = tab_get(e, op->h, H_OUTGOING);
         if (orq) {
@@ -1905,6 +1966,20 @@ static void *stack_main(void *arg) {
                                         sip_mask_registrar | sip_mask_pref |
                                         sip_mask_privacy | sip_mask_events |
                                         sip_mask_publish)),
+        /* the agent settings, each only when asked for. nta does not
+         * derive Timer B/F/H/J (64*T1) from T1, so T1X64 goes with it;
+         * T1 and T2 are bounded (MAX_SIP_T1, MAX_SIP_T2), so the product
+         * fits an unsigned. The keep-alive reaches each tport's
+         * connections; tport pings TCP only (its TLS vtable has no
+         * connection timer). */
+        TAG_IF(e->sip_t1, NTATAG_SIP_T1(e->sip_t1)),
+        TAG_IF(e->sip_t1, NTATAG_SIP_T1X64(64u * e->sip_t1)),
+        TAG_IF(e->sip_t2, NTATAG_SIP_T2(e->sip_t2)),
+        TAG_IF(e->sip_t4, NTATAG_SIP_T4(e->sip_t4)),
+        TAG_IF(e->udp_mtu, NTATAG_UDP_MTU(e->udp_mtu)),
+        TAG_IF(e->tcp_keepalive, TPTAG_KEEPALIVE(e->tcp_keepalive)),
+        TAG_IF(e->outbound_proxy[0],
+               NTATAG_DEFAULT_PROXY(URL_STRING_MAKE(e->outbound_proxy))),
         TAG_END());
     if (before)
         e->capt_fd = capture_fd(before, nbefore, capture_port(e->capture));
@@ -1918,14 +1993,27 @@ static void *stack_main(void *arg) {
         return thread_exit(e);
     }
 
+    /* nta_agent_create ignores what agent_set_params refuses: an outbound
+     * proxy it could not take is a failed start, not a silent direct
+     * send */
+    const char *bind_err = NULL;
+    if (e->outbound_proxy[0]) {
+        url_string_t const *dp = NULL;
+        if (nta_agent_get_params(e->agent, NTATAG_DEFAULT_PROXY_REF(dp),
+                                 TAG_END()) != 1 ||
+            dp == NULL)
+            bind_err = "outbound_proxy refused by nta";
+    }
+
     /* no default leg: a request no dialog leg takes reaches stray_cb
      * before nta makes a transaction of it (request_in) */
 
     /* the other listen addresses, each with the ident a send names it by */
-    const char *bind_err = NULL;
     for (int i = 0; i < e->nx && !bind_err; i++) {
         if (nta_agent_add_tport(e->agent, URL_STRING_MAKE(e->xcontact[i]),
                                 TPTAG_IDENT(e->xident[i]), TPTAG_PONG2PING(1),
+                                TAG_IF(e->tcp_keepalive,
+                                       TPTAG_KEEPALIVE(e->tcp_keepalive)),
                                 TAG_END()) < 0)
             bind_err = "nta_agent_add_tport failed (bad or busy contact?)";
     }
@@ -2186,6 +2274,51 @@ static int get_max_size(ErlNifEnv *env, ERL_NIF_TERM opts, engine_t *e) {
     return 1;
 }
 
+/* key => an integer in lo..hi into *out (left alone when absent) */
+NODISCARD static int get_opt_uint(ErlNifEnv *env, ERL_NIF_TERM map,
+                                  ERL_NIF_TERM key, unsigned lo, unsigned hi,
+                                  unsigned *out) {
+    ERL_NIF_TERM v;
+    unsigned u;
+    if (!enif_get_map_value(env, map, key, &v)) return OPT_ABSENT;
+    if (!enif_get_uint(env, v, &u) || u < lo || u > hi) return OPT_BAD;
+    *out = u;
+    return OPT_SET;
+}
+
+/* the agent settings: sip_t1, sip_t2, sip_t4 (ms; T2 never below the
+ * T1 in effect), udp_mtu, tcp_keepalive_ms, and outbound_proxy, a sip: or
+ * sips: URI */
+static int get_agent_opts(ErlNifEnv *env, ERL_NIF_TERM opts, engine_t *e) {
+    if (get_opt_uint(env, opts, am_sip_t1, MIN_SIP_T, MAX_SIP_T1,
+                     &e->sip_t1) == OPT_BAD ||
+        get_opt_uint(env, opts, am_sip_t2, MIN_SIP_T, MAX_SIP_T2,
+                     &e->sip_t2) == OPT_BAD ||
+        get_opt_uint(env, opts, am_sip_t4, MIN_SIP_T, MAX_SIP_T4,
+                     &e->sip_t4) == OPT_BAD ||
+        get_opt_uint(env, opts, am_udp_mtu, MIN_UDP_MTU, MAX_UDP_MTU,
+                     &e->udp_mtu) == OPT_BAD ||
+        get_opt_uint(env, opts, am_tcp_keepalive_ms, MIN_KEEPALIVE_MS,
+                     MAX_KEEPALIVE_MS, &e->tcp_keepalive) == OPT_BAD)
+        return 0;
+    /* T2 is checked against the T1 in effect, nta's default when unset */
+    unsigned t1 = e->sip_t1 ? e->sip_t1 : (unsigned)NTA_SIP_T1;
+    unsigned t2 = e->sip_t2 ? e->sip_t2 : (unsigned)NTA_SIP_T2;
+    if (t2 < t1) return 0;
+    switch (get_opt_bin(env, opts, am_outbound_proxy, e->outbound_proxy,
+                        sizeof e->outbound_proxy)) {
+    case OPT_BAD:
+        return 0;
+    case OPT_SET:
+        /* nta takes sip:, sips: and urn: and ignores anything else
+         * without a word; refuse it here instead */
+        return strncasecmp(e->outbound_proxy, "sip:", 4) == 0 ||
+               strncasecmp(e->outbound_proxy, "sips:", 5) == 0;
+    default:
+        return 1;
+    }
+}
+
 /* optional TLS transport: #{tls => #{contact := ..., cert_dir => ...,
  * passphrase => ..., ciphers => ..., verify => none | peer,
  * verify_clients => boolean()}} */
@@ -2264,7 +2397,7 @@ static ERL_NIF_TERM nif_start(ErlNifEnv *env, int argc,
         get_opt_bin(env, argv[0], am_ident, e->ident, sizeof e->ident) ==
             OPT_BAD ||
         !get_capture(env, argv[0], e) || !get_max_size(env, argv[0], e) ||
-        !get_tls(env, argv[0], e))
+        !get_agent_opts(env, argv[0], e) || !get_tls(env, argv[0], e))
         return start_refused(env, e);
 
     /* a send may name an ident only when every transport has one: tport
@@ -2842,6 +2975,12 @@ static int load(ErlNifEnv *env, void **priv, ERL_NIF_TERM info) {
     am_discarded = enif_make_atom(env, "discarded");
     am_events_dropped = enif_make_atom(env, "events_dropped");
     am_alloc_failed = enif_make_atom(env, "alloc_failed");
+    am_sip_t1 = enif_make_atom(env, "sip_t1");
+    am_sip_t2 = enif_make_atom(env, "sip_t2");
+    am_sip_t4 = enif_make_atom(env, "sip_t4");
+    am_udp_mtu = enif_make_atom(env, "udp_mtu");
+    am_tcp_keepalive_ms = enif_make_atom(env, "tcp_keepalive_ms");
+    am_outbound_proxy = enif_make_atom(env, "outbound_proxy");
     return 0;
 }
 

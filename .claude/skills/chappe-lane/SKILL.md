@@ -9,7 +9,7 @@ A lane is one agent working on one set of files, in its own worktree, next to ot
 
 ## Before you start
 
-1. Read the approved plan file the brief names, and `AGENTS.md`.
+1. Read the approved plan file the brief names, `AGENTS.md`, and the `chappe-erlang-patterns` skill. A lane touching a protocol also follows `protocol-change-review`.
 2. Branch from the current `main`, not from the worktree's base commit:
 
    ```sh

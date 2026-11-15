@@ -59,6 +59,59 @@ name. A malformed value, such as one holding a line break, never reaches B on
 any transport: you get `{error, badarg}` and A hears a 500, or nothing with
 `pass_failure => false`, where you answer A yourself.
 
+More options, each a drachtio-srf one you may know:
+
+```erlang
+chappe_sip:create_b2bua(Req, Res, Callee, #{
+    a_headers        => [{<<"X-Billing">>, Account}],  %% on A's final response
+    local_sdp_b      => fun(SdpA) -> strip_video(SdpA) end,
+    local_sdp_a      => fun(SdpB) -> SdpB end,
+    auth             => fun(Challenge) -> credentials_for(Challenge) end,
+    follow_redirects => true,                           %% B's 3xx, on the B leg
+    keep_uri_on_redirect => true,                       %% a 3xx Contact is the next hop only
+    call_ref         => UpstreamRef,                    %% see Follow a call
+    notify           => self()
+}).
+```
+
+- `a_headers` go on A's 2xx and on the failure A gets when B fails
+  (`responseHeaders`).
+- `local_sdp_b` and `local_sdp_a` take a value or a fun; `auth` takes a
+  credentials map, a list, or a fun of the parsed challenge. A fun runs on
+  the node that holds the call (`local_sdp_*` in your handler's process,
+  `auth` in the B leg's UAC process).
+- `follow_redirects` and `keep_uri_on_redirect` work as for
+  [create_uac/2](originate-calls.md#follow-redirects): A never sees B's 3xx.
+
+## Watch the B leg ring
+
+With `notify`, your process hears of B before it answers (drachtio's
+`cbRequest`, `cbProvisional` and `cbFinalizedUac`):
+
+```erlang
+watch(Ref) ->
+    receive
+        {chappe_sip_b2b, Ref, {b_request, #{call_id := BCallId, uac := Uac}}} ->
+            logger:info("B leg ~s", [BCallId]),
+            put_aside(Uac),
+            watch(Ref);
+        {chappe_sip_b2b, Ref, {b_early, _EarlyDialog}} ->
+            watch(Ref);
+        {chappe_sip_b2b, Ref, {b_provisional, Msg}} ->
+            logger:info("B rings: ~p", [chappe_sip_msg:status(Msg)]),
+            watch(Ref)
+    end.
+```
+
+- `b_request` comes each time B's INVITE goes out (again after a 401 or a
+  3xx), with `call_id`, `uri`, `method`, `cseq` and `uac`.
+  `chappe_sip_uac:cancel(Uac)` CANCELs B; A then gets B's 487.
+- `b_early` names each early dialog B forms, `b_provisional` each 1xx (a
+  `chappe_sip_msg:msg()`). With a fork, each branch sends its own.
+- `Ref` is the reference of the result's `b2b`; you learn it when
+  `create_b2bua/4` returns, so take these events in another process, or
+  match `{chappe_sip_b2b, _, _}` while the call rings.
+
 ## Act as a privacy service
 
 Set `privacy => true` when your b2bua is the privacy service of RFC 3323 for
@@ -115,12 +168,21 @@ the SDP through a media anchor such as rtpengine before the other leg sees it.
   its PRACK when that 1xx carried SDP.
 - The `Reason` of a BYE or CANCEL (RFC 3326) goes out on the other leg's BYE
   or CANCEL.
+- A REFER never crosses. With `transfer => auto` or `notify` the B2BUA
+  carries the transfer out itself (see [REFER](refer.md#transfer-a-b2bua-call));
+  otherwise it goes to your notify process when `requests` names it, else
+  it gets 603.
 
 ## Notes
 
 - Each leg negotiates and refreshes its own session timer (RFC 4028): see
   [Session timers](session-timers.md).
 - A crash of either dialog fsm tears the call down (the relay monitors both).
+- With `media => anchor`, each leg is answered in the RTP profile it used
+  itself: an SRTP caller (`RTP/SAVP`, `RTP/SAVPF`) stays SRTP, with a key of
+  rtpengine's, a plain one plain. The first offer toward B is plain RTP, or
+  DTLS-SRTP with ICE for a WebRTC B. `anchor_params => #{a | b => #{
+  transport_protocol => ...}}` overrides it.
 - Server-initiated BYE reaches a WebSocket B leg over its flow automatically.
 
 ## Where it lives
