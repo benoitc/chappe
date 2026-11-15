@@ -374,6 +374,28 @@ jobs:
           name: mrf-interop-ct-logs
           path: _build/test/logs
 
+  # Five chappe_cluster nodes under a seeded schedule of partitions, kills
+  # and delays; the lease checker fails the job on any overlapping lease.
+  # The seed is in the log: SEED=... make interop-cluster replays it.
+  cluster-interop:
+    name: chappe_cluster lab (partitions, lease checker)
+    needs: [build]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ env.OTP }}
+          rebar3-version: ${{ env.REBAR3 }}
+      - run: docker pull erlang:29
+      - run: DURATION=5m make interop-cluster
+      - name: Lease logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cluster-lab-logs
+          path: _build/clb/logs
+
   # The C NIF under ASan + UBSan (Linux container), then a short fuzz run:
   # 30 s per libFuzzer target and the NIF boundary fuzz suite.
   asan:

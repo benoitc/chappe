@@ -1,0 +1,58 @@
+# Copyright 2026 Benoit Chesneau
+# SPDX-License-Identifier: Apache-2.0
+#
+# The cluster lab: up to five chappe_cluster nodes (n1..n5) on one network,
+# each running as lab@nN with every started node as a voter. Nothing is
+# published on the host: the controller (chappe_cluster_lab, driven by
+# apps/chappe_cluster/test/e2e.sh) reaches the nodes through docker exec
+# and erl_call, and injects faults with docker network disconnect, docker
+# kill, iptables and tc. NET_ADMIN is for those two. Test-only.
+#
+# CLB_COOKIE (required, never printed), CLB_NODES (the started nodes),
+# CLB_PROJECT (compose project and network prefix, default clb).
+
+x-node: &node
+  image: ${CLB_PROJECT:-clb}-node:lab
+  build:
+    context: ..
+    dockerfile: interop/Dockerfile
+  environment:
+    CLB_COOKIE: ${CLB_COOKIE:?CLB_COOKIE is required}
+    CLB_NODES: ${CLB_NODES:-n1 n2 n3 n4 n5}
+    CLB_LEASE_MS: ${CLB_LEASE_MS:-6000}
+    CLB_RENEW_MS: ${CLB_RENEW_MS:-2000}
+    CLB_WORKERS: ${CLB_WORKERS:-3}
+    CLB_KEYS: ${CLB_KEYS:-6}
+    CLB_TICKTIME: ${CLB_TICKTIME:-10}
+  cap_add:
+    - NET_ADMIN
+  networks:
+    - lab
+  stop_grace_period: 2s
+  healthcheck:
+    test: ["CMD", "erl_call", "-sname", "lab", "-timeout", "5",
+           "-a", "erlang is_alive []"]
+    interval: 2s
+    timeout: 8s
+    retries: 30
+
+services:
+  n1:
+    <<: *node
+    hostname: n1
+  n2:
+    <<: *node
+    hostname: n2
+  n3:
+    <<: *node
+    hostname: n3
+  n4:
+    <<: *node
+    hostname: n4
+  n5:
+    <<: *node
+    hostname: n5
+
+networks:
+  lab:
+    name: ${CLB_PROJECT:-clb}_lab

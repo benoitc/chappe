@@ -5,7 +5,8 @@
 
 .PHONY: all compile test test-static check eunit ct lint xref dialyzer \
         fmt fmt-check asan tsan lint-c fuzz interop interop-mix interop-ref bench-ref bench-pass \
-        interop-conformance interop-esl demo-esl interop-sbc interop-mrf compliance \
+        interop-conformance interop-esl demo-esl interop-sbc interop-mrf \
+        interop-cluster compliance \
         cover docs clean \
         demo demo-shell demo-down
 
@@ -79,6 +80,13 @@ interop-esl:
 # stopped mid-call; apps/chappe_mrf/interop).
 interop-mrf:
 	apps/chappe_mrf/test/e2e.sh
+
+# chappe_cluster nodes in docker under a seeded schedule of partitions,
+# kills and delays, then the lease checker over every node's log
+# (apps/chappe_cluster/interop). SEED replays a run, DURATION sets its
+# length (5m), NODES the node count (3 to 5).
+interop-cluster:
+	apps/chappe_cluster/test/e2e.sh
 
 # Two FreeSWITCH nodes and a shell with chappe_esl monitoring them
 # (apps/chappe_esl/examples/README.md).
