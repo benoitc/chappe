@@ -1519,6 +1519,42 @@ static void op_request(engine_t *e, const op_t *op) {
     send_op_ok(e, op->h);
 }
 
+/* fire-and-forget send (ACK to a 2xx). Create the outgoing transaction to
+ * put the message on the wire, then destroy it immediately: an ACK gets no
+ * response. mcreate queues the message on the transport before returning. */
+static void op_send(engine_t *e, const op_t *op) {
+    msg_t *m = op_msg(op);
+    if (!m) {
+        send_op_failed(e, op->h, "unparseable message");
+        return;
+    }
+    url_string_t *route = op->route ? URL_STRING_MAKE(op->route) : NULL;
+    flow_t *f = op->flow ? tab_get(e, op->flow, H_FLOW) : NULL;
+    if (op->flow && !f) {
+        msg_destroy(m);
+        send_op_failed(e, op->h, "unknown flow");
+        return;
+    }
+    int unknown;
+    const char *ident = op_ident(e, op, &unknown);
+    if (unknown) {
+        msg_destroy(m);
+        send_op_failed(e, op->h, "unknown local address");
+        return;
+    }
+    nta_outgoing_t *orq = nta_outgoing_mcreate(
+        e->agent, NULL, NULL, route, m,
+        TAG_IF(f, NTATAG_TPORT(f ? f->tp : NULL)),
+        TAG_IF(ident, TPTAG_IDENT(ident)), TAG_END());
+    if (!orq) {
+        msg_destroy(m);
+        send_op_failed(e, op->h, "nta_outgoing_mcreate (send) failed");
+        return;
+    }
+    nta_outgoing_destroy(orq);
+    send_op_ok(e, op->h);
+}
+
 static void op_cb(su_root_magic_t *magic, su_msg_r msg, su_msg_arg_t *arg) {
     (void)magic;
     (void)msg;
@@ -1602,43 +1638,9 @@ static void op_cb(su_root_magic_t *magic, su_msg_r msg, su_msg_arg_t *arg) {
         }
         break;
     }
-    case OP_SEND: {
-        /* fire-and-forget send (ACK to a 2xx). Create the outgoing
-         * transaction to put the message on the wire, then destroy it
-         * immediately: an ACK gets no response. mcreate queues the
-         * message on the transport before returning. */
-        msg_t *m = op_msg(op);
-        if (!m) {
-            send_op_failed(e, op->h, "unparseable message");
-            break;
-        }
-        url_string_t *route = op->route ? URL_STRING_MAKE(op->route) : NULL;
-        flow_t *f = op->flow ? tab_get(e, op->flow, H_FLOW) : NULL;
-        if (op->flow && !f) {
-            msg_destroy(m);
-            send_op_failed(e, op->h, "unknown flow");
-            break;
-        }
-        int unknown;
-        const char *ident = op_ident(e, op, &unknown);
-        if (unknown) {
-            msg_destroy(m);
-            send_op_failed(e, op->h, "unknown local address");
-            break;
-        }
-        nta_outgoing_t *orq = nta_outgoing_mcreate(
-            e->agent, NULL, NULL, route, m,
-            TAG_IF(f, NTATAG_TPORT(f ? f->tp : NULL)),
-            TAG_IF(ident, TPTAG_IDENT(ident)), TAG_END());
-        if (!orq) {
-            msg_destroy(m);
-            send_op_failed(e, op->h, "nta_outgoing_mcreate (send) failed");
-            break;
-        }
-        nta_outgoing_destroy(orq);
-        send_op_ok(e, op->h);
+    case OP_SEND:
+        op_send(e, op);
         break;
-    }
     case OP_CANCEL: {
         nta_outgoing_t *orq = tab_get(e, op->h, H_OUTGOING);
         if (orq) {
