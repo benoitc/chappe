@@ -77,14 +77,25 @@
 
 -define(LAWS, [<<"0">>, <<"8">>]).
 
+-export_type([srs/0]).
+
+%% The session serve/3 answered, for run/1: its dialog, the call_ref, the
+%% metadata of the INVITE and the streams taken; the other keys are
+%% run/1's (the answer, its version, the notify process).
+-type srs() :: #{
+    dialog := chappe_sip_dialog:dialog(),
+    call_ref := binary() | undefined,
+    metadata := map(),
+    streams := [map()],
+    answer := binary(),
+    taken := [{[binary()], map() | undefined}],
+    advertise := binary(),
+    version := pos_integer(),
+    notify := pid() | undefined
+}.
+
 -spec serve(chappe_sip_req:req(), chappe_sip_res:res(), map()) ->
-    {ok, #{
-        dialog := chappe_sip_dialog:dialog(),
-        call_ref := binary() | undefined,
-        metadata := map(),
-        streams := [map()]
-    }}
-    | {error, term()}.
+    {ok, srs()} | {error, term()}.
 serve(Req, Res, Opts0) ->
     case rtp_ports(Opts0) of
         {ok, Ports} ->
@@ -299,7 +310,7 @@ notify(_Opts) -> undefined.
 %% Carry the session in the calling process (the dialog's owner) until it
 %% ends: each re-INVITE or UPDATE of the client is answered, its metadata
 %% told. Returns {stopped, Why}.
--spec run(map()) -> {stopped, term()}.
+-spec run(srs()) -> {stopped, term()}.
 run(#{dialog := D} = Srs) ->
     Mon = chappe_sip_dialog:monitor(D),
     Why = loop(D, Mon, Srs),

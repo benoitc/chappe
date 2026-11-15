@@ -7,6 +7,9 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 
 ## Unreleased
 
+- SIPREC recording server: the declared result of serving a session left
+  out keys it really returns, so dialyzer told an app calling it that the
+  success case could never happen. It now describes the session as it is.
 - SIPREC recording server: the ports its receivers bind can now be limited
   to a range, per server or for the whole node. Before, each stream took a
   random port, so a recording client could not reach a server running in a
