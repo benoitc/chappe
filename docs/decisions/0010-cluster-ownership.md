@@ -56,11 +56,17 @@ What the repository and the research show:
   later command made:
   - a renew of an epoch the region ended is refused, and changes nothing;
   - a new epoch is asked for by the node's incarnation (a number the
-    region hands out at each app start) and names the epoch it replaces;
-    a delayed request, or one from an earlier incarnation, is refused;
+    region hands out at each app start) and names the epoch it replaces.
+    A request from an earlier incarnation is refused. A request from the
+    latest incarnation is refused when the current epoch is one this
+    incarnation already got (a delayed try); when the current epoch was
+    taken by an earlier incarnation, any request of the latest one
+    replaces it: that epoch belongs to an app start that is gone, whose
+    holders were told lost when it stopped, or cannot pass `valid/1` if
+    it crashed;
   - a second claim by the same holder is refused, so a delayed try never
-    takes over the lease of its retry, and an abandoned try drops only
-    its own lease.
+    takes over the lease of its retry. Every abandoned try is queued apart
+    (by its claim ref) and drops only its own lease.
 - **The leader decides expiry, on its monotonic clock.** Each renew the
   leader applies cancels the node's timer and starts `{expire, Node,
   Epoch, Count}` of `lease_ms`, named after that renew. Ra runs these
