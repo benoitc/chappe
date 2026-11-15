@@ -3,36 +3,49 @@
 %%
 %% The region's Ra machine: node liveness, leases and a KV with versions.
 %%
-%% Leases follow the epoch-lease model. Each node renews one liveness
-%% record, `{Epoch, Expires}'; a lease taken at that epoch is valid while the
-%% record is, so a node keeps every lease it holds with one write per renew
-%% period. A renewal after the record expired starts a new epoch, from a
-%% region-wide counter, and the leases of the old epoch are dead.
+%% No clock. The machine never reads a time, neither its own nor the
+%% `system_time' Ra puts in a command's metadata: it applies results.
 %%
-%% Time is deterministic: every timestamp is the `system_time' in the
-%% command's metadata, never this process's clock, so each replica applies
-%% the log to the same state. In Ra 3.2.0 the leader stamps it: its
-%% ra_server_proc:leader/3 builds each command with make_command/4, which
-%% puts `erlang:system_time(millisecond)' in the entry's `ts' as the leader
-%% receives it (a follower forwards commands to the leader unstamped), the
-%% entry is written to the log with it, and ra_server renames `ts' to
-%% `system_time' when it applies the entry. Timer timeouts and monitor
-%% downs are commands the leader stamps the same way.
+%% - `{renew, Node, Epoch, LeaseMs, Items}' keeps the node live when Epoch
+%%   is its current epoch, and counts the renew. Any other epoch (a delayed
+%%   command from before a lapse) is refused with `{error, stale_epoch}'
+%%   and changes nothing;
+%% - `{incarnate, Node}' gives the node its next incarnation number (an
+%%   app start asks for one before anything else);
+%% - `{renew, Node, {new, Inc, Replace}, LeaseMs, Items}' asks for a new
+%%   epoch (from a region-wide counter) for incarnation Inc. It is stale
+%%   unless Inc is the node's latest incarnation, and it ends the current
+%%   epoch only when that epoch is the one it names (Replace, the last
+%%   epoch this incarnation knew) or was taken by an earlier incarnation.
+%%   So a delayed request, from an attempt that timed out or from an
+%%   earlier incarnation, never ends the epoch a later attempt got;
+%% - `{timeout, {expire, Node, Epoch, Count}}' ends the node's epoch and
+%%   frees its keys, only when {Epoch, Count} is still the node's current
+%%   epoch and renew count; otherwise it changes nothing;
+%% - a claim succeeds on a free key only: every lease of an ended epoch is
+%%   dropped when the epoch ends. A second claim by the same holder is
+%%   refused, so a delayed try never takes over the lease of its retry.
 %%
-%% Leader clocks: two leaders' clocks may disagree. A new leader starts a
-%% zero `grace' timer (state_enter/2; Ra refuses an append from a state
-%% enter), so its first own entry after its election is `{timeout, grace}',
-%% stamped by its clock: it gives every node at least its lease_ms from that
-%% clock. Until that entry is applied, the entries of the new term judge no
-%% node expired: no takeover, no new epoch on renewal, no reap. So a leader
-%% whose clock runs ahead never expires a node before that node's holders
-%% gave up. What remains assumed: a leader's clock does not jump, and
-%% clocks run at about the same rate, for the length of one lease.
+%% Replay and snapshots are deterministic by construction.
+%%
+%% Expiry is the leader's decision, on its own monotonic clock: each renew
+%% the leader applies cancels the node's previous timer and starts
+%% `{expire, Node, Epoch, Count}' of lease_ms, named after that renew; a
+%% new leader starts one for every live node as it takes over
+%% (state_enter/2). Ra runs these timers on the leader only, on erlang
+%% timers (monotonic), and when one fires it appends `{timeout, Name}' to
+%% the log (ra_server_proc:leader/3, `machine_timeout'). That entry can
+%% land behind a renew whose commit stalled; the renew counts, so the
+%% stale timer no longer names the current renew and ends nothing. A timer
+%% of a deposed leader that still lands is dropped the same way.
 %%
 %% Fences: a lease's fence is `{Region, NodeEpoch, Seq}'. Seq comes from a
 %% region-wide counter bumped on every grant, so it is strictly increasing
-%% per key (and across the region). Compare fences by Seq: the node epoch of
-%% a takeover may be lower than the previous holder's.
+%% per key (and across the region). Compare fences by Seq.
+%%
+%% HLC: claims and KV writes carry the writer's hybrid logical clock stamp
+%% (chappe_cluster:now/0); the machine keeps it as a value, in the lease,
+%% the leases() rows and the watch events. It never orders anything by it.
 %%
 %% Holders are monitored through Ra's monitor effects, from the leader; a
 %% holder's death releases its leases. A `noconnection' down keeps them:
@@ -43,15 +56,18 @@
 
 -export([init/1, apply/3, state_enter/2, overview/1]).
 -export([
-    query_owner/3,
+    expire_timer/2,
+    incarnation/2,
+    query_owner/2,
     query_get/2,
-    query_leases/2,
-    query_node_leases/3,
-    leases/2,
+    query_leases/1,
+    query_node_leases/2,
+    leases/1,
+    epochs/1,
     counts/1
 ]).
 
--export_type([state/0, lease/0, fence/0, key/0]).
+-export_type([state/0, lease/0, fence/0, key/0, epoch/0]).
 
 %% Take a snapshot once this many entries were applied since the last one.
 -define(SNAPSHOT_EVERY, 4096).
@@ -66,22 +82,26 @@
     node := node(),
     pid := pid(),
     epoch := epoch(),
-    seq := seq()
+    seq := seq(),
+    hlc := term()
 }.
 
 -record(held, {
     node :: node(),
     pid :: pid(),
     epoch :: epoch(),
-    seq :: seq(),
-    cref :: reference()
+    seq :: non_neg_integer(),
+    cref :: reference(),
+    hlc :: term()
 }).
 
 -record(cc, {
     region :: atom(),
-    reap_ms :: pos_integer(),
-    %% node -> {Epoch, Expires, LeaseMs}
-    nodes = #{} :: #{node() => {epoch(), integer(), pos_integer()}},
+    %% node -> {its current epoch, its lease_ms, its renew count, the
+    %% incarnation that took the epoch}
+    nodes = #{} :: #{node() => {epoch(), pos_integer(), pos_integer(), term()}},
+    %% node -> its latest incarnation number
+    incs = #{} :: #{node() => pos_integer()},
     last_epoch = 0 :: non_neg_integer(),
     leases = #{} :: #{key() => #held{}},
     %% holder pid -> its keys
@@ -89,17 +109,11 @@
     %% node -> number of leases it holds
     counts = #{} :: #{node() => pos_integer()},
     seq = 0 :: non_neg_integer(),
-    kv = #{} :: #{binary() => {pos_integer(), term()}},
+    %% key -> {Version, Value, HLC}
+    kv = #{} :: #{binary() => {pos_integer(), term(), term()}},
     kv_seq = 0 :: non_neg_integer(),
-    %% a node was renewed into a new epoch, or may have expired, since the
-    %% last reap
-    dirty = false :: boolean(),
     %% the index of the last release cursor
-    cursor = 0 :: non_neg_integer(),
-    %% the term of the entry being applied, and of the last grace: while
-    %% term > graced, no node is judged expired
-    term = 0 :: non_neg_integer(),
-    graced = 0 :: non_neg_integer()
+    cursor = 0 :: non_neg_integer()
 }).
 
 -opaque state() :: #cc{}.
@@ -108,17 +122,12 @@
 
 -spec init(map()) -> state().
 init(Conf) ->
-    #cc{
-        region = maps:get(region, Conf, default),
-        reap_ms = maps:get(reap_ms, Conf, 2000)
-    }.
+    #cc{region = maps:get(region, Conf, default)}.
 
 -spec apply(ra_machine:command_meta_data(), term(), state()) ->
     {state(), term(), ra_machine:effects()}.
-apply(#{index := Idx} = Meta, Cmd, S0) ->
-    Now = maps:get(system_time, Meta),
-    Term = maps:get(term, Meta, S0#cc.term),
-    {S, Reply, Effs} = do(Cmd, Now, S0#cc{term = Term}),
+apply(#{index := Idx}, Cmd, S0) ->
+    {S, Reply, Effs} = do(Cmd, S0),
     case Idx - S#cc.cursor >= ?SNAPSHOT_EVERY of
         true ->
             S1 = S#cc{cursor = Idx},
@@ -127,13 +136,12 @@ apply(#{index := Idx} = Meta, Cmd, S0) ->
             {S, Reply, Effs}
     end.
 
-%% On a new leader: grace at once, monitor every holder again and start the
-%% reap timer.
+%% On a new leader: every live node gets a full lease_ms from now, on this
+%% leader's clock, and every holder is monitored again.
 -spec state_enter(ra_server:ra_state() | eol, state()) -> ra_machine:effects().
-state_enter(leader, #cc{by_pid = ByPid, reap_ms = Reap}) ->
-    [{timer, grace, 0}] ++
-        [{monitor, process, P} || P <- maps:keys(ByPid)] ++
-        [{timer, reap, Reap}];
+state_enter(leader, #cc{nodes = Nodes, by_pid = ByPid}) ->
+    [{timer, {expire, N, E, C}, L} || N := {E, L, C, _} <- Nodes] ++
+        [{monitor, process, P} || P <- maps:keys(ByPid)];
 state_enter(_, _) ->
     [].
 
@@ -148,16 +156,25 @@ overview(#cc{} = S) ->
 
 %% ---- commands ----
 
-do({renew, Node, LeaseMs, Abandoned}, Now, S0) ->
-    {Epoch, S1} = renew(Node, LeaseMs, Now, S0),
-    {S, Effs} = abandon(Abandoned, Node, S1),
-    {S, {ok, Epoch}, Effs};
-do({claim, Key, Node, Epoch, Pid, CRef, MaxLeases}, Now, S) ->
-    case live(Node, Epoch, Now, S) of
-        true -> claim(Key, Node, Epoch, Pid, CRef, MaxLeases, Now, S);
+do({renew, Node, Epoch, LeaseMs, Abandoned}, S0) ->
+    renewed(renew(Node, Epoch, LeaseMs, S0), Node, Abandoned, S0);
+do({incarnate, Node}, S = #cc{incs = Incs}) ->
+    Inc = maps:get(Node, Incs, 0) + 1,
+    {S#cc{incs = Incs#{Node => Inc}}, {ok, Inc}, []};
+do({timeout, {expire, Node, Epoch, Count}}, S0 = #cc{nodes = Nodes}) ->
+    case Nodes of
+        #{Node := {Epoch, _, Count, _}} ->
+            {S, Effs} = end_epoch(Node, Epoch, S0),
+            {S#cc{nodes = maps:remove(Node, S#cc.nodes)}, ok, Effs};
+        _ ->
+            {S0, ok, []}
+    end;
+do({claim, Key, Node, Epoch, Pid, CRef, MaxLeases, Hlc}, S) ->
+    case live(Node, Epoch, S) of
+        true -> claim(Key, Node, Epoch, Pid, {CRef, MaxLeases, Hlc}, S);
         false -> {S, {error, stale_epoch}, []}
     end;
-do({release, Key, Seq}, _Now, S0 = #cc{leases = Leases}) ->
+do({release, Key, Seq}, S0 = #cc{leases = Leases}) ->
     case Leases of
         #{Key := #held{seq = Seq} = H} ->
             {S, Effs} = drop(Key, H, S0),
@@ -165,49 +182,121 @@ do({release, Key, Seq}, _Now, S0 = #cc{leases = Leases}) ->
         _ ->
             {S0, ok, []}
     end;
-do({put, Key, Value, MaxKeys}, _Now, S) ->
-    put(Key, Value, MaxKeys, S);
-do({cas, Key, Version, Value, MaxKeys}, _Now, S = #cc{kv = Kv}) ->
+do({put, Key, Value, MaxKeys, Hlc}, S) ->
+    put(Key, Value, MaxKeys, Hlc, S);
+do({cas, Key, Version, Value, MaxKeys, Hlc}, S = #cc{kv = Kv}) ->
     Cur =
         case Kv of
-            #{Key := {V, _}} -> V;
+            #{Key := {V, _, _}} -> V;
             _ -> 0
         end,
     case Cur of
-        Version -> put(Key, Value, MaxKeys, S);
+        Version -> put(Key, Value, MaxKeys, Hlc, S);
         _ -> {S, {error, {version, Cur}}, []}
     end;
-do({delete, Key}, _Now, S = #cc{kv = Kv}) ->
+do({delete, Key, Hlc}, S = #cc{kv = Kv}) ->
     case maps:take(Key, Kv) of
-        {{_, Value}, Kv1} ->
-            {S#cc{kv = Kv1}, ok, kv_events(delete, Key, Value, S)};
+        {{_, Value, _}, Kv1} ->
+            {S#cc{kv = Kv1}, ok, kv_events(delete, Key, Value, Hlc, S)};
         error ->
             {S, ok, []}
     end;
-do({down, Pid, noconnection}, _Now, S) ->
+do({down, Pid, noconnection}, S) ->
     {S, ok, [{monitor, node, node(Pid)}]};
-do({down, Pid, _Reason}, _Now, S0) ->
+do({down, Pid, _Reason}, S0) ->
     {S, Effs} = holder_down(Pid, S0),
     {S, ok, Effs};
-do({nodeup, Node}, _Now, S = #cc{by_pid = ByPid}) ->
+do({nodeup, Node}, S = #cc{by_pid = ByPid}) ->
     {S, ok, [{monitor, process, P} || P <- maps:keys(ByPid), node(P) =:= Node]};
-do({nodedown, _Node}, _Now, S) ->
+do({nodedown, _Node}, S) ->
     {S, ok, []};
-do({timeout, grace}, Now, S) ->
-    {grace(Now, S), ok, []};
-do({timeout, reap}, Now, S0 = #cc{reap_ms = Reap}) ->
-    {S, Effs} = reap(Now, S0),
-    {S, ok, Effs ++ [{timer, reap, Reap}]};
-do(_Unknown, _Now, S) ->
+do(_Unknown, S) ->
     {S, {error, unknown_command}, []}.
 
 %% ---- liveness ----
 
-%% A new leader's first entry: every node keeps at least its lease_ms from
-%% this leader's clock, and the term may judge expiry again.
-grace(Now, S = #cc{nodes = Nodes, term = Term}) ->
-    Nodes1 = #{N => {E, max(Exp, Now + L), L} || N := {E, Exp, L} <- Nodes},
-    S#cc{nodes = Nodes1, graced = Term}.
+renewed({ok, E, S1, Effs1}, Node, Abandoned, _S0) ->
+    {S, Effs2} = abandon(Abandoned, Node, S1),
+    {S, {ok, E}, Effs1 ++ Effs2};
+renewed(stale, _Node, _Abandoned, S0) ->
+    {S0, {error, stale_epoch}, []}.
+
+%% A new epoch for the node's latest incarnation, replacing the epoch it
+%% names or one an earlier incarnation took; anything else is stale.
+renew(Node, {new, Inc, Replace}, LeaseMs, S0 = #cc{nodes = Nodes, incs = Incs}) ->
+    case {maps:get(Node, Incs, 0), Nodes} of
+        {Inc, #{Node := {Replace, _, _, Inc}}} ->
+            new_epoch(Node, Inc, LeaseMs, S0);
+        {Inc, #{Node := {_, _, _, Inc}}} ->
+            %% this incarnation already got a newer epoch: a delayed try
+            stale;
+        {Inc, _} ->
+            %% none yet, or an earlier incarnation's
+            new_epoch(Node, Inc, LeaseMs, S0);
+        _ ->
+            %% not the node's latest incarnation
+            stale
+    end;
+%% The node's current epoch goes on, its renew is counted, and the leader's
+%% timer moves to this renew. Any other epoch is stale.
+renew(Node, Epoch, LeaseMs, S0 = #cc{nodes = Nodes}) ->
+    case Nodes of
+        #{Node := {Epoch, _, C, Inc}} ->
+            S = S0#cc{nodes = Nodes#{Node := {Epoch, LeaseMs, C + 1, Inc}}},
+            Effs = [
+                {timer, {expire, Node, Epoch, C}, infinity},
+                {timer, {expire, Node, Epoch, C + 1}, LeaseMs}
+            ],
+            {ok, Epoch, S, Effs};
+        _ ->
+            stale
+    end.
+
+%% A new epoch for the node; the current one (if any) ends.
+new_epoch(Node, Inc, LeaseMs, S0 = #cc{nodes = Nodes, last_epoch = Last}) ->
+    New = Last + 1,
+    {S1, Effs} =
+        case Nodes of
+            #{Node := {Old, _, C, _}} ->
+                {SA, EA} = end_epoch(Node, Old, S0),
+                {SA, [{timer, {expire, Node, Old, C}, infinity} | EA]};
+            _ ->
+                {S0, []}
+        end,
+    S = S1#cc{
+        nodes = (S1#cc.nodes)#{Node => {New, LeaseMs, 1, Inc}},
+        last_epoch = New
+    },
+    {ok, New, S, Effs ++ [{timer, {expire, Node, New, 1}, LeaseMs}]}.
+
+live(Node, Epoch, #cc{nodes = Nodes}) ->
+    case Nodes of
+        #{Node := {Epoch, _, _, _}} -> true;
+        _ -> false
+    end.
+
+%% Drop every lease of the node's epoch, and tell its agent each key is
+%% gone. Nothing depends on that message, which may be lost: the holders
+%% gave up already, by their own deadline, before the leader's timer could
+%% end the epoch (chappe_cluster_config:timing_ok/3); the agent's sweep and
+%% the epoch checks of valid/1 cover its row. It only tidies up earlier.
+end_epoch(Node, Epoch, S0 = #cc{leases = Leases}) ->
+    maps:fold(
+        fun
+            (Key, #held{node = N, epoch = E, seq = Seq} = H, {SA, EA}) when
+                N =:= Node, E =:= Epoch
+            ->
+                {SB, EB} = drop(Key, H, SA),
+                Taken =
+                    {send_msg, {chappe_cluster_node, Node},
+                        {chappe_cluster_taken, Key, Seq}},
+                {SB, EA ++ [Taken | EB]};
+            (_, _, Acc) ->
+                Acc
+        end,
+        {S0, []},
+        Leases
+    ).
 
 holder_down(Pid, S0 = #cc{by_pid = ByPid}) ->
     Keys = maps:keys(maps:get(Pid, ByPid, #{})),
@@ -220,29 +309,6 @@ holder_down(Pid, S0 = #cc{by_pid = ByPid}) ->
         {S0, []},
         Keys
     ).
-
-renew(Node, LeaseMs, Now, S = #cc{nodes = Nodes, last_epoch = Last}) ->
-    case Nodes of
-        #{Node := {Epoch, Expires, _}} when
-            Now < Expires; S#cc.term > S#cc.graced
-        ->
-            %% never shorter than what an earlier leader gave
-            Exp = max(Expires, Now + LeaseMs),
-            {Epoch, S#cc{nodes = Nodes#{Node := {Epoch, Exp, LeaseMs}}}};
-        _ ->
-            Epoch = Last + 1,
-            Nodes1 = Nodes#{Node => {Epoch, Now + LeaseMs, LeaseMs}},
-            {Epoch, S#cc{nodes = Nodes1, last_epoch = Epoch, dirty = true}}
-    end.
-
-live(Node, Epoch, Now, #cc{nodes = Nodes, term = T, graced = G}) ->
-    case Nodes of
-        #{Node := {Epoch, Expires, _}} -> Now < Expires orelse T > G;
-        _ -> false
-    end.
-
-valid(#held{node = N, epoch = E}, Now, S) ->
-    live(N, E, Now, S).
 
 %% Release what a node gave up on: a claim its caller timed out on (by
 %% claim ref), or a lease its holders were told was lost, or released
@@ -277,46 +343,38 @@ abandoned(_, _, _) ->
 
 %% ---- leases ----
 
-claim(Key, Node, Epoch, Pid, CRef, Max, Now, S0 = #cc{leases = Leases}) ->
+claim(Key, Node, Epoch, Pid, {CRef, Max, Hlc}, S0 = #cc{leases = Leases}) ->
     case Leases of
-        #{Key := #held{pid = Pid, node = Node} = H} when
-            H#held.epoch =:= Epoch
-        ->
-            %% the holder claims again: a new seq, so a release or an
-            %% abandon queued for the old claim leaves this one alone
-            Seq = S0#cc.seq + 1,
-            H1 = H#held{seq = Seq, cref = CRef},
-            S = S0#cc{leases = Leases#{Key := H1}, seq = Seq},
-            {S, {ok, view(Key, H1, S)}, []};
         #{Key := H} ->
-            case valid(H, Now, S0) of
-                true ->
-                    {S0, {error, {owned, owner_view(H, S0)}}, []};
-                false ->
-                    {S1, Effs} = drop(Key, H, S0),
-                    Taken = {
-                        send_msg,
-                        {chappe_cluster_node, H#held.node},
-                        {chappe_cluster_taken, Key, H#held.seq}
-                    },
-                    grant(Key, Node, Epoch, Pid, CRef, Max, S1, Effs ++ [Taken])
-            end;
+            %% owned, by another holder or by this one through another try:
+            %% a delayed try never takes over the lease of its retry, so
+            %% the abandon of one try drops only its own lease
+            {S0, {error, {owned, owner_view(H, S0)}}, []};
         _ ->
-            grant(Key, Node, Epoch, Pid, CRef, Max, S0, [])
+            grant(
+                Key,
+                #held{
+                    node = Node,
+                    pid = Pid,
+                    epoch = Epoch,
+                    seq = 0,
+                    cref = CRef,
+                    hlc = Hlc
+                },
+                Max,
+                S0
+            )
     end.
 
-grant(Key, Node, Epoch, Pid, CRef, Max, S, Effs) ->
+grant(Key, H0 = #held{node = Node, pid = Pid}, Max, S) ->
     #cc{leases = Leases, counts = Counts, by_pid = ByPid, seq = Seq0} = S,
     Count = maps:get(Node, Counts, 0),
     case Count < Max of
         false ->
-            %% a refused takeover still drops the dead lease
-            {S, {error, max_leases}, Effs};
+            {S, {error, max_leases}, []};
         true ->
             Seq = Seq0 + 1,
-            H = #held{
-                node = Node, pid = Pid, epoch = Epoch, seq = Seq, cref = CRef
-            },
+            H = H0#held{seq = Seq},
             Keys = maps:get(Pid, ByPid, #{}),
             S1 = S#cc{
                 leases = Leases#{Key => H},
@@ -324,7 +382,7 @@ grant(Key, Node, Epoch, Pid, CRef, Max, S, Effs) ->
                 by_pid = ByPid#{Pid => Keys#{Key => true}},
                 seq = Seq
             },
-            {S1, {ok, view(Key, H, S1)}, Effs ++ [{monitor, process, Pid}]}
+            {S1, {ok, view(Key, H, S1)}, [{monitor, process, Pid}]}
     end.
 
 %% Remove one lease; demonitor its holder when it holds nothing else.
@@ -346,63 +404,39 @@ drop(Key, #held{node = Node, pid = Pid}, S) ->
     },
     {S1, Effs}.
 
-%% Drop every lease that is no longer valid, and the liveness records of
-%% expired nodes that hold nothing. Only walks the leases when a node may
-%% have expired or changed epoch since the last reap.
-reap(_Now, S0 = #cc{term = T, graced = G}) when T > G ->
-    {S0, []};
-reap(Now, S0 = #cc{nodes = Nodes}) ->
-    Expired = [N || N := {_, Exp, _} <- Nodes, Now >= Exp],
-    case Expired =:= [] andalso not S0#cc.dirty of
-        true ->
-            {S0, []};
-        false ->
-            {S1, Effs} = maps:fold(
-                fun(Key, H, {SA, EA}) ->
-                    case valid(H, Now, SA) of
-                        true ->
-                            {SA, EA};
-                        false ->
-                            {SB, EB} = drop(Key, H, SA),
-                            {SB, EA ++ EB}
-                    end
-                end,
-                {S0, []},
-                S0#cc.leases
-            ),
-            Counts = S1#cc.counts,
-            Nodes1 = maps:filter(
-                fun(N, {_, Exp, _}) ->
-                    Now < Exp orelse maps:is_key(N, Counts)
-                end,
-                S1#cc.nodes
-            ),
-            {S1#cc{nodes = Nodes1, dirty = false}, Effs}
-    end.
-
-view(Key, #held{node = N, pid = P, epoch = E, seq = Seq}, #cc{region = R}) ->
-    #{key => Key, region => R, node => N, pid => P, epoch => E, seq => Seq}.
+view(Key, #held{node = N, pid = P, epoch = E, seq = Seq, hlc = Hlc}, #cc{
+    region = R
+}) ->
+    #{
+        key => Key,
+        region => R,
+        node => N,
+        pid => P,
+        epoch => E,
+        seq => Seq,
+        hlc => Hlc
+    }.
 
 owner_view(#held{node = N, pid = P, epoch = E, seq = Seq}, #cc{region = R}) ->
     #{node => N, pid => P, fence => {R, E, Seq}}.
 
 %% ---- KV ----
 
-put(Key, Value, MaxKeys, S = #cc{kv = Kv, kv_seq = V0}) ->
+put(Key, Value, MaxKeys, Hlc, S = #cc{kv = Kv, kv_seq = V0}) ->
     case maps:is_key(Key, Kv) orelse map_size(Kv) < MaxKeys of
         false ->
             {S, {error, max_keys}, []};
         true ->
             V = V0 + 1,
-            S1 = S#cc{kv = Kv#{Key => {V, Value}}, kv_seq = V},
-            {S1, {ok, V}, kv_events(put, Key, Value, S1)}
+            S1 = S#cc{kv = Kv#{Key => {V, Value, Hlc}}, kv_seq = V},
+            {S1, {ok, V}, kv_events(put, Key, Value, Hlc, S1)}
     end.
 
-%% One event per node with a liveness record, for the watch hub on that
-%% node. With `local', a member hands it to the hub on its own node and the
-%% leader to the nodes that run no member; a node without a hub drops it.
-kv_events(Op, Key, Value, #cc{nodes = Nodes}) ->
-    Msg = {chappe_cluster_kv, Op, Key, Value},
+%% One event per live node, for the watch hub on that node. With `local',
+%% a member hands it to the hub on its own node and the leader to the nodes
+%% that run no member; a node without a hub drops it.
+kv_events(Op, Key, Value, Hlc, #cc{nodes = Nodes}) ->
+    Msg = {chappe_cluster_kv, Op, Key, Value, Hlc},
     [
         {send_msg, {chappe_cluster_watch, N}, Msg, [local]}
      || N <- lists:sort(maps:keys(Nodes))
@@ -410,45 +444,55 @@ kv_events(Op, Key, Value, #cc{nodes = Nodes}) ->
 
 %% ---- queries (run inside Ra, the state last) ----
 
--spec query_owner(key(), integer(), state()) ->
+-spec query_owner(key(), state()) ->
     {ok, #{node := node(), pid := pid(), fence := fence()}} | none.
-query_owner(Key, Now, S = #cc{leases = Leases}) ->
+query_owner(Key, S = #cc{leases = Leases}) ->
     case Leases of
-        #{Key := H} ->
-            case valid(H, Now, S) of
-                true -> {ok, owner_view(H, S)};
-                false -> none
-            end;
-        _ ->
-            none
+        #{Key := H} -> {ok, owner_view(H, S)};
+        _ -> none
     end.
 
 -spec query_get(binary(), state()) -> {ok, term(), pos_integer()} | not_found.
 query_get(Key, #cc{kv = Kv}) ->
     case Kv of
-        #{Key := {V, Value}} -> {ok, Value, V};
+        #{Key := {V, Value, _}} -> {ok, Value, V};
         _ -> not_found
     end.
 
-%% Every valid lease, with its owner and fence.
--spec query_leases(integer(), state()) -> [map()].
-query_leases(Now, S) ->
-    leases(Now, S).
+%% Every lease, with its owner, fence and HLC.
+-spec query_leases(state()) -> [map()].
+query_leases(S) ->
+    leases(S).
 
-%% The valid leases a node holds, as lease() values.
--spec query_node_leases(node(), integer(), state()) -> [lease()].
-query_node_leases(Node, Now, S = #cc{leases = Leases}) ->
-    [
-        view(K, H, S)
-     || K := #held{node = N} = H <- Leases, N =:= Node, valid(H, Now, S)
-    ].
+%% The leases a node holds, as lease() values.
+-spec query_node_leases(node(), state()) -> [lease()].
+query_node_leases(Node, S = #cc{leases = Leases}) ->
+    [view(K, H, S) || K := #held{node = N} = H <- Leases, N =:= Node].
 
--spec leases(integer(), state()) -> [map()].
-leases(Now, S = #cc{leases = Leases}) ->
+-spec leases(state()) -> [map()].
+leases(S = #cc{leases = Leases}) ->
     lists:sort([
-        (owner_view(H, S))#{key => K}
-     || K := H <- Leases, valid(H, Now, S)
+        (owner_view(H, S))#{key => K, hlc => H#held.hlc}
+     || K := H <- Leases
     ]).
+
+-spec epochs(state()) -> #{node() => epoch()}.
+epochs(#cc{nodes = Nodes}) ->
+    #{N => E || N := {E, _, _, _} <- Nodes}.
+
+%% The node's latest incarnation number, 0 before any.
+-spec incarnation(node(), state()) -> non_neg_integer().
+incarnation(Node, #cc{incs = Incs}) ->
+    maps:get(Node, Incs, 0).
+
+%% The name of the node's current expire timer.
+-spec expire_timer(node(), state()) ->
+    {expire, node(), epoch(), pos_integer()} | none.
+expire_timer(Node, #cc{nodes = Nodes}) ->
+    case Nodes of
+        #{Node := {E, _, C, _}} -> {expire, Node, E, C};
+        _ -> none
+    end.
 
 -spec counts(state()) -> #{node() => pos_integer()}.
 counts(#cc{counts = C}) ->

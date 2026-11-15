@@ -19,7 +19,7 @@
 %% caller's process: a bad one returns `{error, badarg}'.
 -module(chappe_cluster).
 
--compile({no_auto_import, [get/1, put/2]}).
+-compile({no_auto_import, [get/1, put/2, now/0]}).
 
 -export([
     claim/2,
@@ -44,16 +44,20 @@
     home/1,
     join/1,
     leave/1,
-    status/0
+    status/0,
+    now/0
 ]).
 
--export_type([lease/0, fence/0, owner/0]).
+-export_type([lease/0, fence/0, owner/0, hlc/0]).
 
 -type lease() :: chappe_cluster_machine:lease().
 -type fence() :: {
     Region :: atom(), NodeEpoch :: pos_integer(), Seq :: pos_integer()
 }.
 -type owner() :: #{node := node(), pid := pid(), fence := fence()}.
+%% a hybrid logical clock timestamp (hlc 3.0.4, `#timestamp{wall_time,
+%% logical}' from hlc.hrl)
+-type hlc() :: hlc:timestamp().
 
 -define(M, chappe_cluster_machine).
 -define(SYSTEM, chappe_cluster).
@@ -62,8 +66,9 @@
 
 %% Claim `Key' for `pid' (default the caller). Options: `pid', a process on
 %% this node (the lease follows this node's liveness), and `timeout' in ms
-%% (default command_timeout). Claiming a key you already hold returns a new
-%% lease with a greater fence. A grant that comes back after this node lost
+%% (default command_timeout). Claiming a key you already hold returns
+%% `{error, {owned, Owner}}' with yourself as the owner: a try never takes
+%% over the lease of another try. A grant that comes back after this node lost
 %% its liveness is given back and returns no_quorum.
 -spec claim(term(), map()) ->
     {ok, lease()}
@@ -85,7 +90,8 @@ do_claim(Key, Pid, Timeout) ->
     case chappe_cluster_node:live_gen() of
         {ok, Epoch, Gen} ->
             CRef = make_ref(),
-            Cmd = {claim, Key, node(), Epoch, Pid, CRef, cfg(max_leases)},
+            Cmd =
+                {claim, Key, node(), Epoch, Pid, CRef, cfg(max_leases), now()},
             claimed(command(Cmd, Timeout), Key, CRef, {Epoch, Gen});
         not_live ->
             {error, no_quorum}
@@ -127,12 +133,12 @@ release(_) ->
 %% node runs no member).
 -spec owner(term()) -> {ok, owner()} | none | {error, no_quorum}.
 owner(Key) ->
-    query({?M, query_owner, [Key, now_ms()]}).
+    query({?M, query_owner, [Key]}).
 
 %% The same, read through the leader.
 -spec owner(term(), consistent) -> {ok, owner()} | none | {error, no_quorum}.
 owner(Key, consistent) ->
-    consistent({?M, query_owner, [Key, now_ms()]});
+    consistent({?M, query_owner, [Key]});
 owner(_, _) ->
     {error, badarg}.
 
@@ -158,7 +164,7 @@ valid(_) ->
 -spec leases() ->
     [#{key := term(), node := node(), pid := pid(), fence := fence()}].
 leases() ->
-    case query({?M, query_leases, [now_ms()]}) of
+    case query({?M, query_leases, []}) of
         L when is_list(L) -> L;
         {error, no_quorum} -> []
     end.
@@ -175,13 +181,13 @@ get(_) ->
 -spec put(binary(), term()) ->
     {ok, pos_integer()} | {error, no_quorum | max_keys | too_large | badarg}.
 put(Key, Value) when is_binary(Key) ->
-    write(Value, {put, Key, Value, cfg(max_keys)});
+    write(Value, {put, Key, Value, cfg(max_keys), now()});
 put(_, _) ->
     {error, badarg}.
 
 -spec delete(binary()) -> ok | {error, no_quorum | badarg}.
 delete(Key) when is_binary(Key) ->
-    case command({delete, Key}, cfg(command_timeout)) of
+    case command({delete, Key, now()}, cfg(command_timeout)) of
         {ok, ok} -> ok;
         {error, _} = E -> E
     end;
@@ -196,7 +202,7 @@ delete(_) ->
 cas(Key, Version, Value) when
     is_binary(Key), is_integer(Version), Version >= 0
 ->
-    write(Value, {cas, Key, Version, Value, cfg(max_keys)});
+    write(Value, {cas, Key, Version, Value, cfg(max_keys), now()});
 cas(_, _, _) ->
     {error, badarg}.
 
@@ -211,7 +217,7 @@ write(Value, Cmd) ->
             end
     end.
 
-%% The caller gets `{chappe_cluster, watch, {put | delete, Key, Value}}'
+%% The caller gets `{chappe_cluster, watch, {put | delete, Key, Value, Hlc}}'
 %% for each change under `Prefix' (`<<>>' for all), or `{chappe_cluster,
 %% watch, overflow}' once when its mailbox is full, which ends its watches.
 -spec watch(binary()) -> ok | {error, badarg}.
@@ -393,18 +399,19 @@ status() ->
         leader => Leader
     }.
 
+%% This node's hybrid logical clock, ticked. Claims and KV writes carry it,
+%% and a node's clock moves forward with every stamp it receives (watch
+%% events). It orders events across nodes for logs and the cross-region
+%% directory; no lease or expiry depends on it.
+-spec now() -> hlc().
+now() ->
+    hlc:now(chappe_cluster_hlc).
+
 %% ---- internals ----
 
+%% Bounded by the timeout whatever the members do (chappe_cluster_ra).
 command(Cmd, Timeout) ->
-    case
-        ra:process_command(chappe_cluster_node:members(), Cmd, #{
-            timeout => Timeout
-        })
-    of
-        {ok, Reply, _Leader} -> {ok, Reply};
-        {timeout, _} -> {error, no_quorum};
-        {error, _} -> {error, no_quorum}
-    end.
+    chappe_cluster_ra:command(Cmd, Timeout).
 
 query(Q) ->
     Timeout = cfg(command_timeout),
@@ -432,8 +439,5 @@ consistent(Q) ->
 
 cfg(Key) ->
     chappe_cluster_config:get(Key).
-
-now_ms() ->
-    erlang:system_time(millisecond).
 
 is_timeout(T) -> is_integer(T) andalso T >= 0.

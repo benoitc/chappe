@@ -13,8 +13,9 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
   grows, so work done by an owner that lost its lease can be refused. It
   also keeps a small replicated store you can watch, and runs a process on
   exactly one node. Nodes of one region agree through Raft; losing the
-  majority stops new claims, never new calls. Before, every node acted as
-  if it were alone.
+  majority stops new claims, never new calls. It does not need the nodes'
+  clocks to agree: only that they run at about the same rate. Before, every
+  node acted as if it were alone.
 - chappe_audio, a new app: it receives the audio FreeSWITCH forks over a
   WebSocket, from mod_audio_fork or mod_audio_stream, checks the path and a
   token, and hands each stream to a process of yours, with a bound on what

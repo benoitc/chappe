@@ -8,6 +8,7 @@
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
+-include_lib("hlc/include/hlc.hrl").
 
 -compile([export_all, nowarn_export_all]).
 
@@ -21,7 +22,7 @@ all() ->
     [
         claim_owner_release,
         owned_by_another_holder,
-        claim_again_bumps_the_fence,
+        claim_again_is_refused,
         holder_death_releases,
         lease_for_another_pid,
         agent_crash_keeps_leases,
@@ -30,6 +31,11 @@ all() ->
         lapse_fires_through_a_flooded_agent,
         late_claim_reply_is_no_quorum,
         valid_follows_the_lease,
+        valid_is_false_once_the_holder_died,
+        commands_keep_their_deadline,
+        lapse_rearms_from_the_table,
+        pending_releases_are_bounded_on_their_own,
+        app_stop_tells_the_holders,
         no_quorum_is_bounded,
         max_leases_bound,
         kv_put_get_cas_delete,
@@ -42,8 +48,11 @@ all() ->
         singleton_child_crash_restarts_it,
         singleton_contender_crash_stops_its_child,
         singleton_lost_kills_a_slow_child,
+        singleton_stop_outlives_no_trapping_child,
         stop_singleton,
         directory_local,
+        now_never_goes_back,
+        far_future_stamp_moves_no_clock,
         bad_arguments,
         bad_config_fails_the_start
     ].
@@ -92,7 +101,7 @@ claim_owner_release(_Config) ->
     Owner = #{node => node(), pid => self(), fence => Fence},
     ?assertEqual({ok, Owner}, chappe_cluster:owner(k_basic)),
     ?assertEqual({ok, Owner}, chappe_cluster:owner(k_basic, consistent)),
-    ?assert(lists:member(Owner#{key => k_basic}, chappe_cluster:leases())),
+    ?assert(lists:member(Owner#{key => k_basic}, [maps:remove(hlc, R) || R <- chappe_cluster:leases()])),
     ok = chappe_cluster:release(L),
     ?assertEqual(none, chappe_cluster:owner(k_basic)),
     ?assertEqual(none, chappe_cluster:owner(k_basic, consistent)).
@@ -109,14 +118,18 @@ owned_by_another_holder(_Config) ->
     ?assert(seq(L2) > seq(L)),
     exit(Other, kill).
 
-claim_again_bumps_the_fence(_Config) ->
+%% A second claim by the holder is refused: a try never takes over the
+%% lease of another try.
+claim_again_is_refused(_Config) ->
     {ok, L1} = chappe_cluster:claim(k_again, #{}),
-    {ok, L2} = chappe_cluster:claim(k_again, #{}),
-    {R, E, S1} = chappe_cluster:fence(L1),
-    ?assertMatch({R, E, S2} when S2 > S1, chappe_cluster:fence(L2)),
-    %% releasing the first lease leaves the second alone
+    ?assertMatch(
+        {error, {owned, #{pid := P}}} when P =:= self(),
+        chappe_cluster:claim(k_again, #{})
+    ),
+    ?assert(chappe_cluster:valid(L1)),
     ok = chappe_cluster:release(L1),
-    ?assertMatch({ok, #{pid := P}} when P =:= self(), chappe_cluster:owner(k_again)),
+    {ok, L2} = chappe_cluster:claim(k_again, #{}),
+    ?assert(seq(L2) > seq(L1)),
     ok = chappe_cluster:release(L2).
 
 %% Owner death: the holder dies, the region frees its key.
@@ -229,6 +242,116 @@ valid_follows_the_lease(_Config) ->
     end),
     ?assertNot(chappe_cluster:valid(nolease)).
 
+%% The holder died: its lease is no longer valid, before any sweep.
+valid_is_false_once_the_holder_died(_Config) ->
+    H = spawn_holder(),
+    {ok, L} = chappe_cluster:claim(k_dead, #{pid => H}),
+    ?assert(chappe_cluster:valid(L)),
+    Agent = whereis(chappe_cluster_node),
+    ok = sys:suspend(Agent),
+    try
+        exit(H, kill),
+        wait(fun() -> not is_process_alive(H) end),
+        ?assertNot(chappe_cluster:valid(L))
+    after
+        sys:resume(Agent)
+    end.
+
+%% A claim never waits past its timeout, whatever the members do: the
+%% known leader goes first, and a hung member gets only what is left.
+commands_keep_their_deadline(_Config) ->
+    Hung = spawn(fun Loop() ->
+        receive
+            _ -> Loop()
+        end
+    end),
+    Hung2 = spawn(fun Loop() ->
+        receive
+            _ -> Loop()
+        end
+    end),
+    true = register(hung_member, Hung),
+    true = register(hung_member2, Hung2),
+    Real = chappe_cluster_config:server_id(),
+    Members = chappe_cluster_node:members(),
+    try
+        ok = chappe_cluster_tab:set_members([{hung_member, node()}, Real]),
+        ok = chappe_cluster_tab:set_leader(Real),
+        T0 = erlang:monotonic_time(millisecond),
+        {ok, L} = chappe_cluster:claim(k_deadline, #{timeout => 1000}),
+        ?assert(erlang:monotonic_time(millisecond) - T0 < 500),
+        ok = chappe_cluster:release(L),
+        ok = chappe_cluster_tab:set_members([{hung_member, node()}, {hung_member2, node()}]),
+        ok = chappe_cluster_tab:set_leader({hung_member2, node()}),
+        T1 = erlang:monotonic_time(millisecond),
+        ?assertEqual({error, no_quorum}, chappe_cluster:claim(k_deadline, #{timeout => 1000})),
+        ?assert(erlang:monotonic_time(millisecond) - T1 < 1300)
+    after
+        ok = chappe_cluster_tab:set_members(Members),
+        ok = chappe_cluster_tab:set_leader(Real),
+        exit(Hung, kill),
+        exit(Hung2, kill)
+    end,
+    wait(fun() -> chappe_cluster:owner(k_deadline) =:= none end).
+
+%% The lapse timer lost its arm (an agent crash between a renewal and its
+%% arm): the lapse process still fires from the table.
+lapse_rearms_from_the_table(_Config) ->
+    {ok, _} = chappe_cluster:claim(k_rearm, #{}),
+    Agent = whereis(chappe_cluster_node),
+    ok = sys:suspend(Agent),
+    try
+        _ = sys:replace_state(chappe_cluster_lapse, fun(St) ->
+            _ = erlang:cancel_timer(element(2, St)),
+            setelement(2, St, undefined)
+        end),
+        receive
+            {chappe_cluster, #{key := k_rearm}, lost} -> ok
+        after 3 * ?LEASE -> ct:fail(no_lost)
+        end
+    after
+        sys:resume(Agent)
+    end,
+    ok = wait_live().
+
+%% The pending releases have their own bound: holders and other rows do
+%% not crowd them out.
+pending_releases_are_bounded_on_their_own(_Config) ->
+    H = spawn_holder(),
+    Leases = [L || I <- lists:seq(1, 20), {ok, L} <- [chappe_cluster:claim({k_pb, I}, #{pid => H})]],
+    Agent = whereis(chappe_cluster_node),
+    ok = sys:suspend(Agent),
+    try
+        [ok = chappe_cluster_tab:queue({claim, {k_pq, I}, make_ref()}) || I <- lists:seq(1, 3 * ?MAX_LEASES - 10)],
+        ok = chappe_cluster_tab:queue({seq, k_pkeep, 7}),
+        ?assert(lists:member({seq, k_pkeep, 7}, chappe_cluster_tab:pending())),
+        %% one per key and kind: a newer item for a key replaces the older
+        ok = chappe_cluster_tab:queue({claim, {k_pq, 1}, newer}),
+        ?assertEqual(1, length([x || {claim, {k_pq, 1}, _} <- chappe_cluster_tab:pending()])),
+        [ok = chappe_cluster_tab:queue({claim, {k_over, I}, make_ref()}) || I <- lists:seq(1, 50)],
+        ?assert(length(chappe_cluster_tab:pending()) =< 3 * ?MAX_LEASES)
+    after
+        sys:resume(Agent)
+    end,
+    exit(H, kill),
+    _ = Leases,
+    wait(fun() -> chappe_cluster_tab:pending() =:= [] end, 200).
+
+%% Stopping the app tells every holder lost; the next start takes a new
+%% epoch, so the old leases end in the region.
+app_stop_tells_the_holders(_Config) ->
+    {ok, #{epoch := E}} = chappe_cluster:claim(k_stop, #{}),
+    ok = application:stop(chappe_cluster),
+    receive
+        {chappe_cluster, #{key := k_stop}, lost} -> ok
+    after 5000 -> ct:fail(no_lost)
+    end,
+    {ok, _} = application:ensure_all_started(chappe_cluster),
+    ok = wait_live(),
+    {ok, E2} = chappe_cluster_node:live(),
+    ?assert(E2 > E),
+    wait(fun() -> chappe_cluster:owner(k_stop) =:= none end).
+
 %% The node cannot reach the quorum (its member is suspended): its holders
 %% are told the lease is lost before lease_ms runs out.
 lapse_tells_the_holder(_Config) ->
@@ -311,9 +434,11 @@ watch_events(_Config) ->
     ok = chappe_cluster:watch(<<"w/">>),
     {ok, _} = chappe_cluster:put(<<"other/1">>, 0),
     {ok, _} = chappe_cluster:put(<<"w/1">>, 1),
-    ?assertEqual({put, <<"w/1">>, 1}, recv_watch()),
+    {put, <<"w/1">>, 1, H1} = recv_watch(),
     ok = chappe_cluster:delete(<<"w/1">>),
-    ?assertEqual({delete, <<"w/1">>, 1}, recv_watch()),
+    {delete, <<"w/1">>, 1, H2} = recv_watch(),
+    ?assert(hlc:less(H1, H2)),
+    ?assert(hlc:less(H2, chappe_cluster:now())),
     ok = chappe_cluster:unwatch(<<"w/">>),
     {ok, _} = chappe_cluster:put(<<"w/2">>, 2),
     receive
@@ -334,7 +459,7 @@ watch_survives_a_hub_crash(_Config) ->
     end),
     ok = wait_live(),
     {ok, _} = chappe_cluster:put(<<"wc/1">>, 1),
-    ?assertEqual({put, <<"wc/1">>, 1}, recv_watch()),
+    ?assertMatch({put, <<"wc/1">>, 1, _}, recv_watch()),
     ok = chappe_cluster:delete(<<"wc/1">>).
 
 %% Owner death: the watcher dies, its watch goes.
@@ -442,6 +567,31 @@ singleton_lost_kills_a_slow_child(_Config) ->
     end),
     ok = chappe_cluster:stop_singleton(s_slow).
 
+%% Stopping a singleton whose child traps exits: the key is free only
+%% once the child is gone.
+singleton_stop_outlives_no_trapping_child(_Config) ->
+    Spec = #{id => s_trap, start => {?MODULE, start_slow_child, []}},
+    ok = chappe_cluster:singleton(s_trap, Spec),
+    P = wait_singleton(s_trap, undefined),
+    Self = self(),
+    Key = {chappe_cluster_singleton, s_trap},
+    Watch = spawn(fun() -> Self ! {freed, poll_free(Key, P)} end),
+    ok = chappe_cluster:stop_singleton(s_trap),
+    receive
+        {freed, ChildAlive} -> ?assertNot(ChildAlive)
+    after 30000 -> ct:fail(never_freed)
+    end,
+    exit(Watch, kill).
+
+poll_free(Key, P) ->
+    case chappe_cluster:owner(Key) of
+        none ->
+            is_process_alive(P);
+        _ ->
+            timer:sleep(5),
+            poll_free(Key, P)
+    end.
+
 stop_singleton(_Config) ->
     ok = chappe_cluster:singleton(s_stop, child_spec(s_stop)),
     P = wait_singleton(s_stop, undefined),
@@ -462,6 +612,24 @@ directory_local(_Config) ->
         chappe_cluster_directory:resolve({room, <<"r1">>})
     ),
     ?assertEqual({error, badarg}, chappe_cluster_directory:publish(k, "r", #{})).
+
+%% The HLC moves forward, and a lease carries the stamp of its claim.
+now_never_goes_back(_Config) ->
+    Stamps = [chappe_cluster:now() || _ <- lists:seq(1, 1000)],
+    [?assert(hlc:less(A, B)) || {A, B} <- lists:zip(lists:droplast(Stamps), tl(Stamps))],
+    {ok, #{hlc := H} = L} = chappe_cluster:claim(k_hlc, #{}),
+    ?assert(hlc:less(lists:last(Stamps), H)),
+    ?assertMatch([#{hlc := H}], [R || #{key := k_hlc} = R <- chappe_cluster:leases()]),
+    ok = chappe_cluster:release(L).
+
+%% A stamp from a node whose wall clock is an hour ahead does not drag
+%% this node's HLC with it (the clock's max offset).
+far_future_stamp_moves_no_clock(_Config) ->
+    Far = #timestamp{wall_time = erlang:system_time(millisecond) + 3600000},
+    chappe_cluster_watch ! {chappe_cluster_kv, put, <<"far/x">>, v, Far},
+    _ = sys:get_state(chappe_cluster_watch),
+    #timestamp{wall_time = W} = chappe_cluster:now(),
+    ?assert(W < erlang:system_time(millisecond) + 60000).
 
 bad_arguments(_Config) ->
     ?assertEqual({error, badarg}, chappe_cluster:claim(k, nomap)),
@@ -484,6 +652,8 @@ bad_config_fails_the_start(_Config) ->
     Bad = [
         {lease_ms, 100},
         {lease_ms, 2 * ?RENEW},
+        {max_drift, 20},
+        {wall_clock, nofun},
         {renew_ms, 0},
         {region, "r"},
         {voters, []},

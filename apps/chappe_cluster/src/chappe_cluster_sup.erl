@@ -6,6 +6,7 @@
 %%
 %% - chappe_cluster's own pg scope, `chappe_cluster' (watchers, running
 %%   singletons);
+%% - the node's hybrid logical clock, `chappe_cluster_hlc' (hlc);
 %% - the watch hub, before the member that feeds it;
 %% - the lapse timer, before the agent: an agent crash leaves it armed;
 %% - the node agent: the Ra system and member, renewals;
@@ -27,6 +28,15 @@ init([]) ->
     Children = [
         #{id => chappe_cluster_pg, start => {pg, start_link, [chappe_cluster]}},
         #{
+            id => chappe_cluster_hlc,
+            start =>
+                {hlc, start_link, [
+                    chappe_cluster_hlc,
+                    wall_clock(),
+                    chappe_cluster_config:get(hlc_max_offset_ms)
+                ]}
+        },
+        #{
             id => chappe_cluster_watch,
             start => {chappe_cluster_watch, start_link, []}
         },
@@ -46,3 +56,8 @@ init([]) ->
         }
     ],
     {ok, {#{strategy => rest_for_one, intensity => 5, period => 10}, Children}}.
+
+%% The HLC's wall clock, the `wall_clock' env ({M, F, A}).
+wall_clock() ->
+    {M, F, A} = chappe_cluster_config:get(wall_clock),
+    fun() -> erlang:apply(M, F, A) end.

@@ -10,10 +10,11 @@
         chappe_cluster_node,
         chappe_cluster_watch,
         chappe_cluster_lapse,
+        chappe_cluster_hlc,
         chappe_cluster_singleton_sup
     ]},
     {mod, {chappe_cluster_app, []}},
-    {applications, [kernel, stdlib, ra]},
+    {applications, [kernel, stdlib, ra, hlc]},
     {env, [
         {region, default},
         {data_dir, "cluster_data"},

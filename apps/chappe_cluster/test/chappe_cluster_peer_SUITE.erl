@@ -18,6 +18,9 @@ all() ->
     [
         takeover_after_a_node_stops,
         quorum_loss_is_bounded,
+        leader_change_never_expires_early,
+        new_leader_expires_a_node_it_never_heard,
+        wall_clock_jumps_change_nothing,
         cut_off_holder_hears_lost_before_takeover,
         api_from_other_nodes,
         join_and_leave,
@@ -34,7 +37,12 @@ end_per_suite(_Config) ->
 
 init_per_testcase(Case, Config) ->
     Dir = filename:join(?config(priv_dir, Config), atom_to_list(Case)),
-    Peers = [chappe_cluster_test_dist:peer("cc" ++ integer_to_list(I)) || I <- [1, 2, 3]],
+    Count =
+        case Case of
+            new_leader_expires_a_node_it_never_heard -> 5;
+            _ -> 3
+        end,
+    Peers = [chappe_cluster_test_dist:peer("cc" ++ integer_to_list(I)) || I <- lists:seq(1, Count)],
     Nodes = [N || {_, N} <- Peers],
     [ok = chappe_cluster_test_dist:start_app(N, env(Nodes), Dir) || N <- Nodes],
     [ok = wait_live(N) || N <- Nodes],
@@ -49,6 +57,7 @@ env(Voters) ->
     #{
         voters => Voters,
         lease_ms => ?LEASE,
+        wall_clock => {?MODULE, wall_ms, []},
         renew_ms => ?RENEW,
         command_timeout => 2000
     }.
@@ -95,6 +104,104 @@ quorum_loss_is_bounded(Config) ->
     T2 = erlang:monotonic_time(millisecond),
     ?assertEqual({error, no_quorum}, erpc:call(N1, chappe_cluster, put, [<<"q">>, 1])),
     ?assert(erlang:monotonic_time(millisecond) - T2 < 3000).
+
+%% Stop the leader while another node holds a lease: the new leader starts
+%% that node's timer when it takes over, so the holder never hears lost and
+%% the key stays its own.
+leader_change_never_expires_early(Config) ->
+    Peers = ?config(peers, Config),
+    Nodes = ?config(nodes, Config),
+    {_, LeaderNode} = leader(hd(Nodes)),
+    [N | _] = Nodes -- [LeaderNode],
+    Self = self(),
+    Holder = erpc:call(N, erlang, spawn, [fun() -> forward(Self) end]),
+    {ok, L} = erpc:call(N, chappe_cluster, claim, [lc_key, #{pid => Holder}]),
+    {LeaderPeer, LeaderNode} = lists:keyfind(LeaderNode, 2, Peers),
+    ok = chappe_cluster_test_dist:stop_peer(LeaderPeer),
+    Rest = Nodes -- [LeaderNode],
+    wait(fun() -> lists:member(element(2, leader(hd(Rest))), Rest) end, 200),
+    receive
+        {fwd, {chappe_cluster, _, lost}} = M -> ct:fail({lost, M})
+    after 3 * ?LEASE -> ok
+    end,
+    ?assert(erpc:call(N, chappe_cluster, valid, [L])),
+    [?assertMatch({ok, #{pid := Holder}}, erpc:call(R, chappe_cluster, owner, [lc_key, consistent])) || R <- Rest].
+
+%% Stop a node, then the leader at once: the new leader never applied a
+%% renew of that node, so only the timer it arms as it takes over can
+%% expire it. The node's key comes free no earlier than lease_ms after the
+%% stop, and no later than lease_ms after the election plus a bound.
+new_leader_expires_a_node_it_never_heard(Config) ->
+    Peers = ?config(peers, Config),
+    Nodes = ?config(nodes, Config),
+    {_, LeaderNode} = leader(hd(Nodes)),
+    [X | _] = Nodes -- [LeaderNode],
+    {ok, _} = erpc:call(X, chappe_cluster, claim, [nl_key, #{pid => holder(X)}]),
+    {PX, X} = lists:keyfind(X, 2, Peers),
+    {PL, LeaderNode} = lists:keyfind(LeaderNode, 2, Peers),
+    T0 = erlang:monotonic_time(millisecond),
+    ok = chappe_cluster_test_dist:stop_peer(PX),
+    ok = chappe_cluster_test_dist:stop_peer(PL),
+    Rest = [R | _] = Nodes -- [X, LeaderNode],
+    wait(fun() -> lists:member(element(2, leader(R)), Rest) end, 300),
+    TElect = erlang:monotonic_time(millisecond),
+    Claimer = holder(R),
+    Bound = 5000,
+    TFree = claim_by(R, nl_key, Claimer, TElect + ?LEASE + Bound),
+    ct:pal("stop at 0, elected at +~b, free at +~b", [TElect - T0, TFree - T0]),
+    ?assert(TFree - T0 >= ?LEASE),
+    ?assert(TFree - TElect =< ?LEASE + Bound).
+
+%% Claim until it succeeds or the deadline passes; the time it succeeded.
+claim_by(Node, Key, Pid, Deadline) ->
+    case erpc:call(Node, chappe_cluster, claim, [Key, #{pid => Pid, timeout => 1000}]) of
+        {ok, _} ->
+            erlang:monotonic_time(millisecond);
+        {error, _} = E ->
+            case erlang:monotonic_time(millisecond) > Deadline of
+                true ->
+                    ct:fail({never_free, Key, E});
+                false ->
+                    timer:sleep(50),
+                    claim_by(Node, Key, Pid, Deadline)
+            end
+    end.
+
+%% Move every node's wall clock (the HLC's) an hour forward, then an hour
+%% back, under a held lease: nothing expires, nothing is taken over, and
+%% the HLC never goes back.
+wall_clock_jumps_change_nothing(Config) ->
+    Nodes = [N1, N2 | _] = ?config(nodes, Config),
+    Self = self(),
+    Holder = erpc:call(N1, erlang, spawn, [fun() -> forward(Self) end]),
+    {ok, L} = erpc:call(N1, chappe_cluster, claim, [wc_key, #{pid => Holder}]),
+    H0 = erpc:call(N1, chappe_cluster, now, []),
+    [ok = erpc:call(N, ?MODULE, jump, [3600 * 1000]) || N <- Nodes],
+    timer:sleep(2 * ?LEASE),
+    [ok = erpc:call(N, ?MODULE, jump, [-3600 * 1000]) || N <- Nodes],
+    timer:sleep(2 * ?LEASE),
+    receive
+        {fwd, {chappe_cluster, _, lost}} = M -> ct:fail({lost, M})
+    after 0 -> ok
+    end,
+    ?assert(erpc:call(N1, chappe_cluster, valid, [L])),
+    ?assertMatch({error, {owned, _}}, erpc:call(N2, chappe_cluster, claim, [wc_key, #{}])),
+    H1 = erpc:call(N1, chappe_cluster, now, []),
+    ?assert(hlc:less(H0, H1)),
+    [ok = erpc:call(N, ?MODULE, jump, [0]) || N <- Nodes].
+
+%% The test wall clock: system time plus an offset the test moves.
+wall_ms() ->
+    erlang:system_time(millisecond) + persistent_term:get({?MODULE, offset}, 0).
+
+jump(Ms) ->
+    persistent_term:put({?MODULE, offset}, Ms).
+
+leader(Node) ->
+    case catch_call(Node, ra, members, [erpc:call(Node, chappe_cluster_node, members, [])]) of
+        {ok, _, Leader} -> Leader;
+        _ -> {none, none}
+    end.
 
 %% Cut the holder's node off from the other two while the holder runs: it
 %% hears lost before the other side's claim succeeds (one host, one clock).
@@ -204,7 +311,7 @@ api_from_other_nodes(Config) ->
     end,
     {ok, _} = erpc:call(N3, chappe_cluster, put, [<<"far/1">>, v]),
     receive
-        {fwd, {chappe_cluster, watch, {put, <<"far/1">>, v}}} -> ok
+        {fwd, {chappe_cluster, watch, {put, <<"far/1">>, v, _}}} -> ok
     after 5000 -> ct:fail(no_event)
     end,
     %% a singleton started on every node runs once, found through pg

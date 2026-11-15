@@ -83,6 +83,9 @@ ok = storage:write(Key, Value, #{fence => Seq}).
   wait (an integer; `infinity` is refused).
 - A claim waits for the quorum up to its timeout. On a call setup path,
   claim from another process or with a short timeout.
+- Claiming a key you already hold returns `{error, {owned, Owner}}` with
+  yourself as the owner. A claim that timed out may still be granted
+  later; chappe_cluster gives it back, so retry after a short wait.
 - Before each side effect, check `chappe_cluster:valid(Lease)` (true while
   this node still holds it) and carry the fence.
 - Seq grows strictly per key. Have whatever you write to reject a fence
@@ -119,8 +122,8 @@ Watch a prefix from the process that wants the changes:
 ```erlang
 ok = chappe_cluster:watch(<<"peer/">>),
 receive
-    {chappe_cluster, watch, {put, Key, Value}} -> update(Key, Value);
-    {chappe_cluster, watch, {delete, Key, _Old}} -> drop(Key);
+    {chappe_cluster, watch, {put, Key, Value, _Hlc}} -> update(Key, Value);
+    {chappe_cluster, watch, {delete, Key, _Old, _Hlc}} -> drop(Key);
     {chappe_cluster, watch, overflow} -> resync()
 end.
 ```
@@ -147,7 +150,7 @@ ok = chappe_cluster:singleton(trunk_pinger,
   at stop. When you stop it yourself (`stop_singleton/1`) it gets a normal
   shutdown, bounded by what is left of the lease.
 - Two copies never act at the same time, as long as each checks before it
-  acts and the clock assumption of decision 0010 holds. A paused copy can
+  acts and clocks run at about the same rate (decision 0010). A paused copy can
   still be alive while another runs; the fence lets whatever it writes to
   refuse it.
 - `chappe_cluster:whereis_singleton(trunk_pinger)` finds the running child
@@ -182,3 +185,14 @@ handle_info(ping, S) ->
 - Set `lease_ms` at least three times `renew_ms`, or the app refuses to
   start. A smaller `lease_ms` moves keys faster after a crash and loses
   them faster on a slow network.
+- Clocks: nothing needs the nodes' wall clocks to agree, and a wall clock
+  that jumps changes no lease. Expiry runs on the leader's monotonic
+  clock, and each holder gives up on its own; the only assumption is that
+  clocks run at about the same rate, within `max_drift` percent (default
+  1), during one lease. The app refuses to start when `lease_ms`,
+  `renew_ms` and `max_drift` leave no margin.
+- Timestamps: `chappe_cluster:now()` returns this node's hybrid logical
+  clock. Leases, `leases()` rows and watch events carry the writer's
+  stamp; use it to order events in logs, not to decide ownership.
+- Stopping the app tells every holder lost, and the next start takes a
+  new epoch.

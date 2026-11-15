@@ -2,9 +2,9 @@
 %% SPDX-License-Identifier: Apache-2.0
 %%
 %% The node's KV watch hub, registered locally. The region's machine sends
-%% it `{chappe_cluster_kv, put | delete, Key, Value}' for each change, in
+%% it `{chappe_cluster_kv, put | delete, Key, Value, Hlc}' for each change, in
 %% log order; the hub hands it to every local watcher whose prefix matches,
-%% as `{chappe_cluster, watch, {put | delete, Key, Value}}'.
+%% as `{chappe_cluster, watch, {put | delete, Key, Value, Hlc}}'.
 %%
 %% The watchers are members of the pg group `{chappe_cluster_watch, Prefix}'
 %% in the `chappe_cluster' scope, so the hub keeps no state: a restart of
@@ -56,7 +56,14 @@ handle_call(_Req, _From, St) ->
 handle_cast(_Msg, St) ->
     {noreply, St}.
 
-handle_info({chappe_cluster_kv, Op, Key, Value}, St) ->
+handle_info({chappe_cluster_kv, Op, Key, Value, Hlc}, St) ->
+    %% the writer's stamp moves this node's clock forward, within the
+    %% clock's max offset; a slow or gone clock never stops the delivery
+    try hlc:update(chappe_cluster_hlc, Hlc) of
+        _ -> ok
+    catch
+        exit:_ -> ok
+    end,
     Max = chappe_cluster_config:get(max_watch_mailbox),
     Watchers = lists:usort(
         lists:append([
@@ -66,7 +73,7 @@ handle_info({chappe_cluster_kv, Op, Key, Value}, St) ->
         ])
     ),
     lists:foreach(
-        fun(Pid) -> deliver(Pid, {Op, Key, Value}, Max) end, Watchers
+        fun(Pid) -> deliver(Pid, {Op, Key, Value, Hlc}, Max) end, Watchers
     ),
     {noreply, St};
 handle_info(Msg, St) ->

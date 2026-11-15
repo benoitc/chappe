@@ -16,10 +16,12 @@
 %% chappe_cluster_lapse's job, so a crash or a full mailbox here never
 %% delays a `lost'.
 %%
-%% The local deadline: a renewal sent at T keeps the node live, in the
-%% leader's view, until at least T + lease_ms (the leader stamps it later
-%% than T, and a new leader extends every node by grace). The node gives
-%% every lease up at T + lease_ms - renew_ms / 2.
+%% The local deadline: a renewal sent at T keeps the node live until the
+%% leader's timer runs out, lease_ms after the leader applied it (later
+%% than T) or after it became leader, on the leader's monotonic clock. The
+%% node gives every lease up at T + lease_ms - renew_ms / 2 on its own
+%% monotonic clock; chappe_cluster_config:timing_ok/3 checks that this
+%% comes first under the max_drift bound. No wall clock is read.
 -module(chappe_cluster_node).
 -behaviour(gen_server).
 
@@ -42,7 +44,7 @@
 
 -record(state, {
     %% the renewal in flight: helper monitor, its send time, what it carries
-    renew :: undefined | {reference(), integer(), list()},
+    renew :: undefined | {reference(), integer(), list(), tuple()},
     %% the members refresh in flight
     refresh :: undefined | reference(),
     %% member operations in flight: helper monitor -> caller (or init)
@@ -153,9 +155,10 @@ handle_info(tick, St) ->
     ok = chappe_cluster_tab:sweep(),
     {noreply, start_refresh(start_renew(St))};
 handle_info(
-    {'DOWN', Ref, process, _, Result}, St = #state{renew = {Ref, Sent, Items}}
+    {'DOWN', Ref, process, _, Result},
+    St = #state{renew = {Ref, Sent, Items, Cmd}}
 ) ->
-    renewed(Result, Sent, Items),
+    renewed(Result, Sent, Items, Cmd),
     {noreply, St#state{renew = undefined}};
 handle_info({'DOWN', Ref, process, _, Result}, St = #state{refresh = Ref}) ->
     refreshed(Result),
@@ -249,8 +252,7 @@ member(Ids, Voters) ->
                 log_init_args => #{uid => UId},
                 machine =>
                     {module, chappe_cluster_machine, #{
-                        region => chappe_cluster_config:get(region),
-                        reap_ms => chappe_cluster_config:get(renew_ms)
+                        region => chappe_cluster_config:get(region)
                     }}
             },
             case ra:start_server(?SYSTEM, Conf) of
@@ -278,24 +280,38 @@ stop_local() ->
 %% gets logged.
 -dialyzer({nowarn_function, start_renew/1}).
 start_renew(St = #state{renew = undefined}) ->
-    Members = members(),
     Items = chappe_cluster_tab:pending(),
     LeaseMs = chappe_cluster_config:get(lease_ms),
     Budget = chappe_cluster_config:get(renew_ms),
     Sent = erlang:monotonic_time(millisecond),
-    Cmd = {renew, node(), LeaseMs, Items},
+    Cmd =
+        case {chappe_cluster_tab:incarnation(), live()} of
+            {undefined, _} ->
+                %% an app start: the region numbers this incarnation first
+                {incarnate, node()};
+            {_, {ok, E}} ->
+                {renew, node(), E, LeaseMs, Items};
+            {Inc, not_live} ->
+                %% after a lapse, or at start: a new epoch, replacing the
+                %% last one this incarnation knew
+                Known = chappe_cluster_tab:known_epoch(),
+                {renew, node(), {new, Inc, Known}, LeaseMs, Items}
+        end,
     {_, Ref} = spawn_monitor(fun() ->
-        exit({renewed, ra:process_command(Members, Cmd, #{timeout => Budget})})
+        exit({renewed, chappe_cluster_ra:command(Cmd, Budget)})
     end),
-    St#state{renew = {Ref, Sent, Items}};
+    St#state{renew = {Ref, Sent, Items, Cmd}};
 start_renew(St) ->
     St.
 
-renewed({renewed, {ok, {ok, Epoch}, _Leader}}, Sent, Items) ->
+renewed({renewed, {ok, {ok, Inc}}}, _Sent, _Items, {incarnate, _}) ->
+    chappe_cluster_tab:set_incarnation(Inc);
+renewed({renewed, {ok, {ok, Epoch}}}, Sent, Items, _Cmd) ->
     LeaseMs = chappe_cluster_config:get(lease_ms),
     RenewMs = chappe_cluster_config:get(renew_ms),
     Deadline = Sent + LeaseMs - RenewMs div 2,
     ok = chappe_cluster_tab:sent(Items),
+    ok = chappe_cluster_tab:set_known_epoch(Epoch),
     case erlang:monotonic_time(millisecond) < Deadline of
         true ->
             ok = chappe_cluster_tab:lose_epochs(Epoch),
@@ -305,7 +321,18 @@ renewed({renewed, {ok, {ok, Epoch}, _Leader}}, Sent, Items) ->
             %% it came back too late to keep anything
             ok
     end;
-renewed(_Failed, _Sent, _Items) ->
+renewed({renewed, {ok, {error, stale_epoch}}}, _Sent, _Items, Cmd) ->
+    %% the region ended the epoch this node renews, or this incarnation is
+    %% not the node's latest: the holders lose their leases now, and the
+    %% next renewal asks for a new epoch (after a new incarnation)
+    case Cmd of
+        {renew, _, {new, _, _}, _, _} ->
+            chappe_cluster_tab:set_incarnation(undefined);
+        _ ->
+            ok
+    end,
+    chappe_cluster_tab:lapse();
+renewed(_Failed, _Sent, _Items, _Cmd) ->
     %% no quorum: the lapse timer decides
     ok.
 
@@ -321,7 +348,8 @@ start_refresh(St = #state{refresh = undefined}) ->
 start_refresh(St) ->
     St.
 
-refreshed({members, {ok, [_ | _] = Ms, _}}) ->
+refreshed({members, {ok, [_ | _] = Ms, Leader}}) ->
+    ok = chappe_cluster_tab:set_leader(Leader),
     chappe_cluster_tab:set_members(Ms);
 refreshed(_) ->
     ok.
