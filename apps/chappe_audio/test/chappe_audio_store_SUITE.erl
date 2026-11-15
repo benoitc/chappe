@@ -358,7 +358,7 @@ bad_arguments(Config) ->
 %% call's recordings of both, and get/1 and read/2 reach the one held
 %% by the other node.
 find_across_nodes(Config) ->
-    ok = ensure_dist(),
+    ok = chappe_audio_test_dist:ensure(),
     Paths = lists:append([["-pa", P] || P <- code:get_path()]),
     {ok, Peer, Node} = peer:start_link(#{
         name => peer:random_name(), args => Paths, connection => standard_io
@@ -410,11 +410,3 @@ wait(F, N) ->
             wait(F, N - 1)
     end.
 
-ensure_dist() ->
-    case node() of
-        nonode@nohost ->
-            {ok, _} = net_kernel:start(chappe_audio_ct, #{name_domain => shortnames}),
-            ok;
-        _ ->
-            ok
-    end.

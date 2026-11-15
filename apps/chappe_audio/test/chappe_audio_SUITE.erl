@@ -401,12 +401,11 @@ flood_bound(Config) ->
     Send = fun(N) -> [ok = chappe_audio_test_ws:send(C, {binary, Frame}) || _ <- lists:seq(1, N)] end,
     Send(2000),
     wait(fun() -> maps:get(frames, chappe_audio:info(S)) =:= 2000 end),
-    {memory, M1} = process_info(S, memory),
-    {memory, O1} = process_info(Owner, memory),
+    %% what each process holds, not a heap not yet collected
+    {M1, O1} = retained(S, Owner),
     Send(20000),
     wait(fun() -> maps:get(frames, chappe_audio:info(S)) =:= 22000 end),
-    {memory, M2} = process_info(S, memory),
-    {memory, O2} = process_info(Owner, memory),
+    {M2, O2} = retained(S, Owner),
     #{dropped := Dropped} = chappe_audio:info(S),
     {message_queue_len, Q} = process_info(Owner, message_queue_len),
     ct:pal("owner queue ~p, dropped ~p, stream ~p -> ~p, owner ~p -> ~p", [
@@ -474,7 +473,7 @@ tls(_Config) ->
 %% An app on another node opens a stream on this node's listener, gets
 %% its events there, and finds it through pg.
 from_peer_node(Config) ->
-    ok = ensure_dist(),
+    ok = chappe_audio_test_dist:ensure(),
     L = ?config(listener, Config),
     Paths = lists:append([["-pa", P] || P <- code:get_path()]),
     {ok, Peer, Node} = peer:start_link(#{name => peer:random_name(), args => Paths, connection => standard_io}),
@@ -620,14 +619,13 @@ wait(F, N) ->
             wait(F, N - 1)
     end.
 
+retained(S, Owner) ->
+    true = erlang:garbage_collect(S),
+    true = erlang:garbage_collect(Owner),
+    {memory, M} = process_info(S, memory),
+    {memory, O} = process_info(Owner, memory),
+    {M, O}.
+
 wait_dead(Pid) ->
     wait(fun() -> not is_process_alive(Pid) end).
 
-ensure_dist() ->
-    case node() of
-        nonode@nohost ->
-            {ok, _} = net_kernel:start(chappe_audio_ct, #{name_domain => shortnames}),
-            ok;
-        _ ->
-            ok
-    end.

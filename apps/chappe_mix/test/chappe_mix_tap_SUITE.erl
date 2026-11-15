@@ -185,7 +185,7 @@ flood_bound(_Config) ->
 %% A receiver on another node: taps go across, and its node going takes
 %% the tap away.
 from_peer_node(_Config) ->
-    ok = ensure_dist(),
+    ok = chappe_mix_test_dist:ensure(),
     Paths = lists:append([["-pa", P] || P <- code:get_path()]),
     {ok, Peer, Node} = peer:start_link(#{
         name => peer:random_name(), args => Paths, connection => standard_io
@@ -270,11 +270,3 @@ wait(F, N) ->
             wait(F, N - 1)
     end.
 
-ensure_dist() ->
-    case node() of
-        nonode@nohost ->
-            {ok, _} = net_kernel:start(chappe_mix_ct, #{name_domain => shortnames}),
-            ok;
-        _ ->
-            ok
-    end.
