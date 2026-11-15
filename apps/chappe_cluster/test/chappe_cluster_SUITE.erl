@@ -25,7 +25,11 @@ all() ->
         holder_death_releases,
         lease_for_another_pid,
         agent_crash_keeps_leases,
+        agent_crash_without_quorum_tells_the_holder,
         lapse_tells_the_holder,
+        lapse_fires_through_a_flooded_agent,
+        late_claim_reply_is_no_quorum,
+        valid_follows_the_lease,
         no_quorum_is_bounded,
         max_leases_bound,
         kv_put_get_cas_delete,
@@ -37,6 +41,7 @@ all() ->
         singleton_runs_one_child,
         singleton_child_crash_restarts_it,
         singleton_contender_crash_stops_its_child,
+        singleton_lost_kills_a_slow_child,
         stop_singleton,
         directory_local,
         bad_arguments,
@@ -150,6 +155,79 @@ agent_crash_keeps_leases(_Config) ->
     after 0 -> ok
     end,
     ok = chappe_cluster:release(L).
+
+%% Own crash while the quorum is gone: the holders are still told lost
+%% before lease_ms runs out.
+agent_crash_without_quorum_tells_the_holder(_Config) ->
+    {ok, L} = chappe_cluster:claim(k_agent_nq, #{}),
+    T0 = erlang:monotonic_time(millisecond),
+    with_member_suspended(fun() ->
+        exit(whereis(chappe_cluster_node), kill),
+        receive
+            {chappe_cluster, #{key := k_agent_nq} = Lost, lost} ->
+                ?assertEqual(seq(L), seq(Lost)),
+                ?assert(erlang:monotonic_time(millisecond) - T0 < ?LEASE)
+        after 3 * ?LEASE ->
+            ct:fail(no_lost)
+        end
+    end),
+    ok = wait_live(),
+    wait(fun() -> chappe_cluster:owner(k_agent_nq) =:= none end).
+
+%% The lapse fires on time even with the agent's mailbox full.
+lapse_fires_through_a_flooded_agent(_Config) ->
+    {ok, _} = chappe_cluster:claim(k_flood, #{}),
+    Agent = whereis(chappe_cluster_node),
+    T0 = erlang:monotonic_time(millisecond),
+    with_member_suspended(fun() ->
+        ok = sys:suspend(Agent),
+        [gen_server:cast(Agent, {junk, I}) || I <- lists:seq(1, 200000)],
+        try
+            receive
+                {chappe_cluster, #{key := k_flood}, lost} ->
+                    ?assert(erlang:monotonic_time(millisecond) - T0 < ?LEASE)
+            after 3 * ?LEASE ->
+                ct:fail(no_lost)
+            end
+        after
+            sys:resume(Agent)
+        end
+    end),
+    ok = wait_live(),
+    wait(fun() -> chappe_cluster:owner(k_flood) =:= none end, 300).
+
+%% A grant that comes back after the node's deadline is not a lease.
+late_claim_reply_is_no_quorum(_Config) ->
+    Self = self(),
+    Pid = whereis(chappe_cluster_config:server_name()),
+    ok = sys:suspend(Pid),
+    C = spawn(fun() ->
+        Self ! {claimed, chappe_cluster:claim(k_late, #{timeout => 3 * ?LEASE})}
+    end),
+    wait(fun() -> chappe_cluster_node:live() =:= not_live end),
+    ok = sys:resume(Pid),
+    receive
+        {claimed, R} -> ?assertEqual({error, no_quorum}, R)
+    after 4 * ?LEASE -> ct:fail(no_reply)
+    end,
+    exit(C, kill),
+    ok = wait_live(),
+    wait(fun() -> chappe_cluster:owner(k_late) =:= none end).
+
+valid_follows_the_lease(_Config) ->
+    {ok, L} = chappe_cluster:claim(k_valid, #{}),
+    ?assert(chappe_cluster:valid(L)),
+    ok = chappe_cluster:release(L),
+    ?assertNot(chappe_cluster:valid(L)),
+    {ok, L2} = chappe_cluster:claim(k_valid, #{}),
+    with_member_suspended(fun() ->
+        receive
+            {chappe_cluster, _, lost} -> ok
+        after 3 * ?LEASE -> ct:fail(no_lost)
+        end,
+        ?assertNot(chappe_cluster:valid(L2))
+    end),
+    ?assertNot(chappe_cluster:valid(nolease)).
 
 %% The node cannot reach the quorum (its member is suspended): its holders
 %% are told the lease is lost before lease_ms runs out.
@@ -346,6 +424,24 @@ singleton_contender_crash_stops_its_child(_Config) ->
     _ = wait_singleton(s_cont, P1),
     ok = chappe_cluster:stop_singleton(s_cont).
 
+%% On lost the child is killed, not shut down: a child that takes its time
+%% to stop is gone well before another node could run it.
+singleton_lost_kills_a_slow_child(_Config) ->
+    Spec = #{id => s_slow, start => {?MODULE, start_slow_child, []}},
+    ok = chappe_cluster:singleton(s_slow, Spec),
+    P = wait_singleton(s_slow, undefined),
+    Ref = erlang:monitor(process, P),
+    T0 = erlang:monotonic_time(millisecond),
+    with_member_suspended(fun() ->
+        receive
+            {'DOWN', Ref, process, P, Reason} ->
+                ?assertEqual(killed, Reason),
+                ?assert(erlang:monotonic_time(millisecond) - T0 < ?LEASE)
+        after 3 * ?LEASE -> ct:fail(child_alive)
+        end
+    end),
+    ok = chappe_cluster:stop_singleton(s_slow).
+
 stop_singleton(_Config) ->
     ok = chappe_cluster:singleton(s_stop, child_spec(s_stop)),
     P = wait_singleton(s_stop, undefined),
@@ -371,6 +467,7 @@ bad_arguments(_Config) ->
     ?assertEqual({error, badarg}, chappe_cluster:claim(k, nomap)),
     ?assertEqual({error, badarg}, chappe_cluster:claim(k, #{pid => notapid})),
     ?assertEqual({error, badarg}, chappe_cluster:claim(k, #{timeout => -1})),
+    ?assertEqual({error, badarg}, chappe_cluster:claim(k, #{timeout => infinity})),
     ?assertEqual({error, badarg}, chappe_cluster:release(nolease)),
     ?assertEqual({error, badarg}, chappe_cluster:owner(k, sometimes)),
     ?assertEqual({error, badarg}, chappe_cluster:get(notbinary)),
@@ -386,6 +483,7 @@ bad_arguments(_Config) ->
 bad_config_fails_the_start(_Config) ->
     Bad = [
         {lease_ms, 100},
+        {lease_ms, 2 * ?RENEW},
         {renew_ms, 0},
         {region, "r"},
         {voters, []},
@@ -419,8 +517,7 @@ spawn_holder() ->
     end).
 
 tracked(Key) ->
-    St = sys:get_state(chappe_cluster_node),
-    maps:is_key(Key, element(5, St)).
+    ets:member(chappe_cluster_tab, {holder, Key}).
 
 with_member_suspended(Fun) ->
     Pid = whereis(chappe_cluster_config:server_name()),
@@ -468,6 +565,16 @@ start_child(_Name) ->
         spawn_link(fun() ->
             receive
                 stop -> ok
+            end
+        end)}.
+
+%% A child that traps exits and takes 10 s to stop.
+start_slow_child() ->
+    {ok,
+        spawn_link(fun() ->
+            process_flag(trap_exit, true),
+            receive
+                {'EXIT', _, _} -> timer:sleep(10000)
             end
         end)}.
 
