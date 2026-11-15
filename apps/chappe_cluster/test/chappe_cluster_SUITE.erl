@@ -35,6 +35,7 @@ all() ->
         commands_keep_their_deadline,
         lapse_rearms_from_the_table,
         pending_releases_are_bounded_on_their_own,
+        every_abandoned_try_is_given_back,
         app_stop_tells_the_holders,
         no_quorum_is_bounded,
         max_leases_bound,
@@ -325,9 +326,12 @@ pending_releases_are_bounded_on_their_own(_Config) ->
         [ok = chappe_cluster_tab:queue({claim, {k_pq, I}, make_ref()}) || I <- lists:seq(1, 3 * ?MAX_LEASES - 10)],
         ok = chappe_cluster_tab:queue({seq, k_pkeep, 7}),
         ?assert(lists:member({seq, k_pkeep, 7}, chappe_cluster_tab:pending())),
-        %% one per key and kind: a newer item for a key replaces the older
+        %% a release keeps one row per key (the newer seq replaces the
+        %% older); every abandoned try keeps its own
+        ok = chappe_cluster_tab:queue({seq, k_pkeep, 8}),
+        ?assertEqual([{seq, k_pkeep, 8}], [I || {seq, k_pkeep, _} = I <- chappe_cluster_tab:pending()]),
         ok = chappe_cluster_tab:queue({claim, {k_pq, 1}, newer}),
-        ?assertEqual(1, length([x || {claim, {k_pq, 1}, _} <- chappe_cluster_tab:pending()])),
+        ?assertEqual(2, length([x || {claim, {k_pq, 1}, _} <- chappe_cluster_tab:pending()])),
         [ok = chappe_cluster_tab:queue({claim, {k_over, I}, make_ref()}) || I <- lists:seq(1, 50)],
         ?assert(length(chappe_cluster_tab:pending()) =< 3 * ?MAX_LEASES)
     after
@@ -336,6 +340,32 @@ pending_releases_are_bounded_on_their_own(_Config) ->
     exit(H, kill),
     _ = Leases,
     wait(fun() -> chappe_cluster_tab:pending() =:= [] end, 200).
+
+%% Two tries time out; the first is granted late, the second refused. Both
+%% abandons reach the region, so the late grant is given back and a retry
+%% succeeds after the next renewal.
+every_abandoned_try_is_given_back(_Config) ->
+    {ok, E} = chappe_cluster_node:live(),
+    C1 = make_ref(),
+    C2 = make_ref(),
+    Agent = whereis(chappe_cluster_node),
+    ok = sys:suspend(Agent),
+    try
+        ok = chappe_cluster_tab:queue({claim, k_tries, C1}),
+        ok = chappe_cluster_tab:queue({claim, k_tries, C2}),
+        %% try 1 lands late and is granted, try 2 is refused
+        {ok, {ok, _}} = chappe_cluster_ra:command(
+            {claim, k_tries, node(), E, self(), C1, 100, chappe_cluster:now()}, 2000
+        ),
+        {ok, {error, {owned, _}}} = chappe_cluster_ra:command(
+            {claim, k_tries, node(), E, self(), C2, 100, chappe_cluster:now()}, 2000
+        )
+    after
+        sys:resume(Agent)
+    end,
+    wait(fun() -> chappe_cluster:owner(k_tries) =:= none end),
+    {ok, L} = chappe_cluster:claim(k_tries, #{}),
+    ok = chappe_cluster:release(L).
 
 %% Stopping the app tells every holder lost; the next start takes a new
 %% epoch, so the old leases end in the region.
