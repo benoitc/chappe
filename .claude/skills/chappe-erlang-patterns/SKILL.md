@@ -40,7 +40,8 @@ item when you write the code, when you plan it, and when you review it.
      node cannot see, or `node()` being the caller's node.
    - A fun given as an option runs on the node that holds the call; say so in the doc.
    - Anything that needs exactly one owner in a cluster sits behind one function, so the
-     Raft ownership app can take it over (see the cluster decision in `docs/decisions/`).
+     Raft ownership app, `chappe_cluster`, can take it over (see decision
+     [0010](../../../docs/decisions/0010-cluster-ownership.md)).
 5. **Bounded.** A process that receives media, events or requests from outside has a
    bound on what it queues, and documents what happens past it (drop, close, slow the
    sender). `chappe_sip_config:get(ws_transport_max_mailbox)` is the model.

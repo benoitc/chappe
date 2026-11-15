@@ -20,6 +20,7 @@ question for the maintainer.
 | [0007](0007-ws-transaction-layer.md) | WebSocket has its own Erlang transaction layer | Proposed, to confirm by the maintainer |
 | [0008](0008-remote-app-model.md) | The remote-app model | Open: the repository contradicts itself |
 | [0009](0009-srtp-in-erlang.md) | SRTP is decrypted in Erlang where chappe receives media itself | Accepted |
+| [0010](0010-cluster-ownership.md) | One Ra group per region owns what needs one owner | Accepted |
 
 ## Add a record
 
