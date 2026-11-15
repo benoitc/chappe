@@ -62,6 +62,31 @@ node count and docker host give the same schedule.
    stops the workers, copies the logs to `_build/clb/logs/<seed>/` and runs
    `chappe_cluster_lab_checker`.
 
+## Prove each fault can fail
+
+A fault the checker never fails on proves nothing. `MODE=proofs` runs each
+fault against a fake cluster (`test/lab/chappe_cluster_lab_fake.erl`, test
+code only, never part of the app) that has the matching bug, and expects the
+checker to report a violation; two controls run the fake where it is right
+and expect a pass. It takes about 20 minutes on 3 nodes, so it is a by-hand
+step, not a CI job:
+
+```sh
+MODE=proofs make interop-cluster
+```
+
+| Proof | Fake mode | Faults | Expect |
+|---|---|---|---|
+| control | careful | none | pass |
+| pause | lazylost: no check before a side effect, lost heard late | pause | violation |
+| kill | naive: frees a key when its holder's node drops | kill | violation |
+| skew | skewtrust: a takeover judged by the claimant's clock | skew | violation |
+| skew_control | careful: judged by the server's clock | skew | pass |
+| singleton | careful: the child stops slowly on lost | isolate, pause | violation |
+
+Each run's output is in `_build/clb/proof-<name>.log`. Run when you change
+a fault, the schedule or the checker.
+
 ## Read a failure
 
 The checker prints the first violation and the events of its key around it:
@@ -88,6 +113,7 @@ time, even on a skewed node).
   with no fault, a control run); `CHECK_KEYS=lab` or
   `singleton` checks the workers' keys or the singleton's only.
 - `CLB_SINGLETON=0` leaves the singleton out; `CLB_FAKETIME=0` runs the
-  beams without libfaketime.
+  beams without libfaketime; `CLB_TIME_WARP=default` runs them in the
+  runtime's default time warp mode instead of `multi_time_warp`.
 - `CLB_LEASE_MS`, `CLB_RENEW_MS`, `CLB_WORKERS`, `CLB_KEYS`,
   `CLB_HOLD_MS` and `CLB_TICKTIME` (net_ticktime, 10 s) tune the nodes.

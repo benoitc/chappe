@@ -17,11 +17,10 @@
 %% so a node whose wall clock is skewed still logs the true time.
 %%
 %% A lease is held, from its holder's point of view, from its claim_ok to
-%% its release, or to its last renew or fence_used when it was told it
-%% lost the key (it acted on the lease until then, and a paused holder that
-%% wakes up to its lost acts no more). A holder that logs neither (its node
-%% was killed, or the run ended) held it until its last logged event on
-%% that key.
+%% its last renew or fence_used before its lost or release: it acted on the
+%% lease until then, and a paused holder that wakes up to its lost or its
+%% release acts no more. A holder that logs neither (its node was killed,
+%% or the run ended) held it until its last logged event on that key.
 %%
 %% The controller adds `{Time, controller, Node, killed, none}' when it kills
 %% a node. A lease its holder's node still held then is the region's until
@@ -38,12 +37,14 @@
 %%   lease on the key, with that lease's fence.
 %%
 %% check/2 returns the first violation in time, with the events of its key
-%% around it.
+%% around it. With `order => hlc' it checks the same assertions in the
+%% order of the events' hybrid logical clocks (see view/2).
 -module(chappe_cluster_lab_checker).
 
 -export([
     check/1,
     check/2,
+    view/2,
     leases/1,
     parse/1,
     read_logs/1,
@@ -76,6 +77,7 @@
     context => [event()]
 }.
 -type opts() :: #{
+    order => time | hlc,
     margin_us => non_neg_integer(),
     kill_bound_us => non_neg_integer(),
     kill_slack_us => non_neg_integer(),
@@ -92,7 +94,8 @@ check(Events) ->
 
 %% @doc Check a log. The events may come in any order (one file per node).
 -spec check([event()], opts()) -> ok | {violation, violation()}.
-check(Events0, Opts) ->
+check(Events00, Opts) ->
+    Events0 = view(maps:get(order, Opts, time), Events00),
     Margin = maps:get(margin_us, Opts, 0),
     FenceKey = maps:get(fence_key, Opts, fun fence_key/1),
     Ctx = maps:get(context, Opts, 8),
@@ -205,16 +208,12 @@ leases([{T, H, K, Kind, F} = E | Rest], Open, Done) when
                 kind => use_without_lease, at => T, key => K, second => E
             }}
     end;
-leases([{_T, H, K, lost, _F} = E | Rest], Open, Done) ->
-    %% told it lost: it acted last at its last renew or fence use (a
-    %% paused holder wakes up to its lost and does nothing more)
+leases([{_T, H, K, _LostOrRelease, _F} = E | Rest], Open, Done) ->
+    %% lost or given back: it acted last at its last renew or fence use (a
+    %% paused holder may wake up to its lost, or to its release, and do
+    %% nothing more)
     case maps:take({K, H}, Open) of
         {L, Open1} -> leases(Rest, Open1, [L#{last => E} | Done]);
-        error -> leases(Rest, Open, Done)
-    end;
-leases([{T, H, K, release, _F} = E | Rest], Open, Done) ->
-    case maps:take({K, H}, Open) of
-        {L, Open1} -> leases(Rest, Open1, [L#{stop => T, last => E} | Done]);
         %% a lost after a release, or for a lease never seen: nothing held
         error -> leases(Rest, Open, Done)
     end.
@@ -224,7 +223,7 @@ by_start(#{start := A}, #{start := B}) -> A =< B.
 violations(Leases, Margin, FenceKey) ->
     ByKey = maps:groups_from_list(fun(#{key := K}) -> K end, Leases),
     lists:append([
-        overlaps(Ls, Margin) ++ fence_order(Ls, FenceKey)
+        overlaps(Ls, Margin) ++ fence_order(Ls, FenceKey, Margin)
      || Ls <- maps:values(ByKey)
     ]).
 
@@ -237,8 +236,16 @@ overlaps([First | Rest], Margin) ->
 
 overlaps([], _Prev, _Margin) ->
     [];
-overlaps([#{start := S} = L | _], #{stop := E} = Prev, Margin) when
-    S < E - Margin
+%% With a margin (a clock off by up to that much), an overlap counts only
+%% when no shift within it explains it: the later lease does not start
+%% within the margin of the earlier one's end, and does not end within the
+%% margin of its start (a lease stamped ahead that really came first).
+overlaps(
+    [#{start := S, stop := LE} = L | _],
+    #{start := PS, stop := E} = Prev,
+    Margin
+) when
+    S < E - Margin, LE - PS > Margin
 ->
     [
         #{
@@ -257,18 +264,21 @@ overlaps([#{stop := E} = L | Rest], #{stop := PE} = Prev, Margin) ->
         end,
     overlaps(Rest, Next, Margin).
 
-fence_order([], _FenceKey) ->
+%% Claims within the margin of each other may be in either order.
+fence_order([], _FenceKey, _Margin) ->
     [];
-fence_order([First | Rest], FenceKey) ->
-    fence_order(Rest, First, FenceKey).
+fence_order([First | Rest], FenceKey, Margin) ->
+    fence_order(Rest, First, FenceKey, Margin).
 
-fence_order([], _Prev, _FenceKey) ->
+fence_order([], _Prev, _FenceKey, _Margin) ->
     [];
-fence_order([#{fence := F, start := S, key := K} = L | Rest], Prev, FenceKey) ->
-    #{fence := PF} = Prev,
-    case FenceKey(F) > FenceKey(PF) of
+fence_order(
+    [#{fence := F, start := S, key := K} = L | Rest], Prev, FenceKey, Margin
+) ->
+    #{fence := PF, start := PS} = Prev,
+    case FenceKey(F) > FenceKey(PF) orelse S - PS =< Margin of
         true ->
-            fence_order(Rest, L, FenceKey);
+            fence_order(Rest, L, FenceKey, Margin);
         false ->
             [
                 #{
@@ -285,6 +295,26 @@ fence_order([#{fence := F, start := S, key := K} = L | Rest], Prev, FenceKey) ->
 %% are not comparable.
 fence_key({_Region, _Epoch, Seq}) -> Seq;
 fence_key(Fence) -> Fence.
+
+%% The log in one order: by the true time each event carries, or by its
+%% hybrid logical clock (causal order). An event logs `{Time, Holder, Key,
+%% Kind, Fence}' or the same with its Hlc (a `{timestamp, WallMs,
+%% Logical}' record) last. The hlc view keys each event by WallMs * 1000 +
+%% Logical, in microsecond-like units, and leaves out what has no Hlc
+%% (the controller's kills, a node without chappe_cluster:now/0).
+-spec view(time | hlc, [tuple()]) -> [tuple()].
+view(time, Events) ->
+    [time_event(E) || E <- Events];
+view(hlc, Events) ->
+    [
+        {W * 1000 + min(L, 999), H, K, Kind, F}
+     || {_T, H, K, Kind, F, {timestamp, W, L}} <- Events,
+        is_integer(W),
+        is_integer(L)
+    ].
+
+time_event({T, H, K, Kind, F, _Hlc}) -> {T, H, K, Kind, F};
+time_event(E) -> E.
 
 valid_event({T, _H, _K, Kind, _F}) when is_integer(T) ->
     lists:member(Kind, ?KINDS);
@@ -344,7 +374,8 @@ read_logs(Dir) ->
 %% @doc Counts for the report: events, claims, losts, releases, fence uses,
 %% holders, keys, and takeovers (a claim on a key last held by another node).
 -spec stats([event()]) -> #{atom() => non_neg_integer()}.
-stats(Events0) ->
+stats(Events00) ->
+    Events0 = view(time, Events00),
     Events = [E || E <- Events0, not is_kill(E)],
     Count = fun(Kind) ->
         length([E || {_, _, _, K, _} = E <- Events, K =:= Kind])

@@ -84,7 +84,9 @@ interop-mrf:
 # chappe_cluster nodes in docker under a seeded schedule of partitions,
 # kills, pauses, delays and clock skews, then the lease checker over every
 # node's log (apps/chappe_cluster/interop). SEED replays a run, DURATION
-# sets its length (5m), NODES the node count (3 to 5).
+# sets its length (5m), NODES the node count (3 to 5). MODE=proofs runs
+# each fault against a fake cluster with the matching bug and expects the
+# checker to fail (about 20 minutes; by hand, not in CI).
 interop-cluster:
 	apps/chappe_cluster/test/e2e.sh
 

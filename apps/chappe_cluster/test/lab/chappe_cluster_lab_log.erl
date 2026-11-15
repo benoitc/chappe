@@ -2,7 +2,7 @@
 %% SPDX-License-Identifier: Apache-2.0
 
 %% The event log of one lab node boot: one `{Time, Holder, Key, Kind,
-%% Fence}.' line per event in `<log_dir>/<host>-<boot>.log', written as it
+%% Fence, Hlc}.' line per event in `<log_dir>/<host>-<boot>.log', written as it
 %% comes (no write buffer), so a docker kill loses at most the last lines.
 %%
 %% Times are real time read from the monotonic clock, with the offset to the
@@ -18,12 +18,27 @@
 start_link(Opts, Boot) ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, {Opts, Boot}, []).
 
-%% @doc Log an event, stamped with the real time now.
+%% @doc Log an event, stamped with the real time now and with the node's
+%% hybrid logical clock (chappe_cluster:now/0, `none' without it).
 -spec log(term(), term(), atom(), term()) -> ok.
 log(Holder, Key, Kind, Fence) ->
     Offset = persistent_term:get({?MODULE, offset}),
     T = erlang:monotonic_time(microsecond) + Offset,
-    gen_server:cast(?MODULE, {log, {T, Holder, Key, Kind, Fence}}).
+    Ev = {T, Holder, Key, Kind, Fence, hlc()},
+    gen_server:cast(?MODULE, {log, Ev}).
+
+hlc() ->
+    Mod = chappe_cluster_lab_node:backend(),
+    case erlang:function_exported(Mod, now, 0) of
+        true ->
+            try
+                Mod:now()
+            catch
+                _:_ -> none
+            end;
+        false ->
+            none
+    end.
 
 %% @doc Count an answer that logs no event (a claim refused as owned).
 -spec count(atom()) -> ok.
@@ -56,7 +71,7 @@ handle_cast({count, What}, #{stats := Stats} = S) ->
     {noreply, S#{
         stats => maps:update_with(What, fun(N) -> N + 1 end, 1, Stats)
     }};
-handle_cast({log, {_, _, _, Kind, _} = Ev}, #{fd := Fd, stats := Stats} = S) ->
+handle_cast({log, {_, _, _, Kind, _, _} = Ev}, #{fd := Fd, stats := Stats} = S) ->
     ok = file:write(Fd, io_lib:format("~w.~n", [Ev])),
     Stats1 = maps:update_with(Kind, fun(N) -> N + 1 end, 1, Stats),
     {noreply, S#{stats => Stats1}}.

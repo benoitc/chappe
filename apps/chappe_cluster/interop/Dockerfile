@@ -23,12 +23,7 @@ RUN if [ -f rebar.config ] && [ -d src ]; then \
         mkdir -p /lab/lib; \
     fi \
     && mkdir -p /lab/ebin \
-    && erlc -o /lab/ebin \
-        test/lab/chappe_cluster_lab_node.erl \
-        test/lab/chappe_cluster_lab_client.erl \
-        test/lab/chappe_cluster_lab_log.erl \
-        test/lab/chappe_cluster_lab_worker.erl \
-        test/lab/chappe_cluster_lab_single.erl
+    && erlc -o /lab/ebin test/lab/*.erl
 
 COPY interop/node/run.sh /usr/local/bin/clb-node
 ENV PATH=/usr/local/lib/erlang/bin:$PATH
