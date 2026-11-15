@@ -158,6 +158,14 @@ The call remembers which module and bug name started each fork:
 `audio_fork_stop/1` and the cleanup when the owner dies send each its stop.
 Any other `module` returns `{error, {bad_option, module}}`.
 
+A stereo fork on mod_audio_stream sends only while both directions carry
+audio. This is how FreeSWITCH and mod_audio_stream build the two channels:
+with nothing bridged to the channel, or while you play into it (a
+`uuid_broadcast` into the other leg), the server gets nothing. To get audio
+whenever the caller speaks, fork with `mix => mono` (the caller alone), or
+`mix => mixed` for both directions in one channel. mod_audio_stream 1.1
+takes only these three mixes.
+
 Pause, resume, talk to the server or stop one fork. The last argument
 names the forks (`#{}` for all of them, `#{bugname => B}`, `#{module => M}`):
 

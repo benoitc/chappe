@@ -218,7 +218,7 @@ from the repository, it is a question, not an invented answer.
 | 0007 | WebSocket has its own Erlang transaction layer | Moduledoc only | Why not sofia's WS transport? |
 | 0008 | The remote-app model | `remote-app.md` draft, `plan.md` "dropped", `features.md` "planned" | Which is true now? Keep as draft, mark rejected, or delete? |
 | none | Versioning and publishing | Root 0.1.0, chappe_sip 0.2.0, per-app `source_url` to old repos | One version for the umbrella, or one per app on hex? Are the old per-app repos mirrors or retired? |
-| none | Product references in open-source docs | Skills and notebooks name product repos (i3_bridge, chappe_pbx) | Acceptable, or should they be removed? |
+| none | Product references in open-source docs | Skills and notebooks name product repos (i3_bridge, chappe_switchboard) | Acceptable, or should they be removed? |
 | none | Public API stability | Nothing stated | Which modules are public, and what is the deprecation policy? |
 
 ## 7. Developer navigation guide (seed for `docs/navigation.md`)

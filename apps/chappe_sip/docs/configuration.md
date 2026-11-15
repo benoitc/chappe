@@ -87,6 +87,7 @@ client's keep-alives (RFC 5626 4.4.1 makes the UA send them, at the
 | `siprec_max_per_call` | `2` | Recordings one call may have at once; one more is refused with `{error, too_many}`. |
 | `siprec_answer_timeout_ms` | `10000` | How long a recording server may take to answer the INVITE or a re-INVITE. Past it the INVITE is cancelled, or the session ended with a BYE, and the owner gets `stopped` with reason `{srs, timeout}`. |
 | `siprec_store` | `chappe_audio_store` | The store a recording server writes each stream to with `store => default` (`chappe_sip_siprec_srs:serve/3`): a module with `open/2`, `write/2` and `close/2`, as `chappe_audio_store` of the chappe_audio app has them. |
+| `siprec_rtp_ports` | `undefined` | The UDP ports a recording server's receivers bind, `{Min, Max}`: each stream takes a free port in the range, and a stream that finds none is refused with port 0. Set it when the server runs behind a NAT or in a container that publishes only those ports. `undefined` binds any port; the `rtp_ports` option of `chappe_sip_siprec_srs:serve/3` overrides it. |
 
 ## WebSocket
 

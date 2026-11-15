@@ -129,6 +129,14 @@ module with its `open/2`, `write/2` and `close/2` works. To take
 the audio yourself, give `sink => Pid` instead: the process gets
 `{chappe_sip_siprec_rtp, Stream, {audio, Pcm}}`, 16-bit PCM at 8 kHz.
 
+A stream the server cannot take (not PCMU or PCMA, past `max_streams`, no
+free port) is answered with port 0. When no stream is left, `serve/3`
+refuses the INVITE with 488 and returns `{error, no_streams}`, so you never
+hold an empty session. Its Warning says why: 305 (Incompatible media
+format) when the audio came in no codec the server takes or found no port,
+304 (Media type not available) when no audio came, 302 when the streams
+were SRTP it cannot take (`{error, srtp}`, see below).
+
 `run/1` carries the session until the BYE: it answers each re-INVITE and
 UPDATE of the client and hands the metadata each carries (a party change,
 a pause) to the notify process (`notify => Pid`, else the sink):
@@ -141,6 +149,33 @@ receive
         done
 end.
 ```
+
+### Bind the receivers to a port range
+
+Each stream's receiver binds any free UDP port by default. Behind Docker or
+a NAT that forwards only a range, give `rtp_ports`, and advertise the
+address the client reaches:
+
+```erlang
+{ok, Srs} = chappe_sip_siprec_srs:serve(Req, Res, #{
+    store => default,
+    ip => {0, 0, 0, 0},
+    advertise => <<"203.0.113.7">>,
+    rtp_ports => {40000, 40100}
+}),
+chappe_sip_siprec_srs:run(Srs).
+```
+
+Each stream takes a free port of the range, starting at a random one and
+skipping the ports in use. A stream that finds none is refused with port 0,
+as a stream the server cannot take. To set it once for every recording
+server of the node, use the `siprec_rtp_ports` setting (see
+[configuration](../configuration.md)); `rtp_ports` overrides it. A range
+that is not `{Min, Max}` with `0 < Min =< Max < 65536` is
+`{error, badarg}`, and the INVITE gets 500.
+
+The receiver takes no RTCP, so it needs one port per stream: size the range
+for `max_streams` times the sessions you serve at once.
 
 ## Keep the recording as secure as the call
 

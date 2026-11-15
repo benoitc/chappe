@@ -34,7 +34,7 @@
 %% streams on every node through pg.
 -module(chappe_audio).
 
--export([listen/1, listener_info/1, stop_listener/1]).
+-export([listen/1, child_spec/1, listener_info/1, stop_listener/1]).
 -export([open/1, open/2, close/1, info/1, ref/1, set_owner/2, send_text/2]).
 -export([streams/1, levels/2]).
 
@@ -103,6 +103,44 @@ listen(Opts) when is_map(Opts) ->
     end;
 listen(_) ->
     {error, badarg}.
+
+%% A child spec for a listener under your own supervisor: the way to keep
+%% one for your app's lifetime. listen/1 starts a temporary listener that
+%% nothing restarts; this one is permanent, restarted by your supervisor
+%% when it dies, on the same port when you give one. Opts are listen/1's,
+%% and two of the spec: register, a local name the listener takes (its pid
+%% changes on a restart, the name does not), and id (default the register
+%% name, else chappe_audio_listener). The chappe_audio application must be
+%% running: the listener's handshakes and streams run under its
+%% supervisors. A bad option raises {bad_option, Key}, badarg for no map.
+-spec child_spec(listen_opts() | #{register => atom(), id => term()}) ->
+    supervisor:child_spec().
+child_spec(Opts) when is_map(Opts) ->
+    Listen = maps:without([register, id], Opts),
+    case {check_listen(maps:to_list(Listen)), maps:get(register, Opts, none)} of
+        {ok, Name} when is_atom(Name) ->
+            Args =
+                case Name of
+                    none -> Listen;
+                    _ -> Listen#{register => Name}
+                end,
+            Id = maps:get(id, Opts, listener_id(Name)),
+            #{
+                id => Id,
+                start => {chappe_audio_listener, start_link, [Args]},
+                restart => permanent,
+                type => worker
+            };
+        {ok, _} ->
+            error({bad_option, register});
+        {{error, Why}, _} ->
+            error(Why)
+    end;
+child_spec(_) ->
+    error(badarg).
+
+listener_id(none) -> chappe_audio_listener;
+listener_id(Name) -> Name.
 
 -spec listener_info(listener()) -> map().
 listener_info(L) ->

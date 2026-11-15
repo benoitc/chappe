@@ -81,7 +81,13 @@
 %% Args: #{owner := pid(), ip := inet:ip_address(), label := binary(),
 %% sink := {store, Module, StoreMeta} | {pid, pid()}, max_queue =>
 %% pos_integer(), remote => {inet:ip_address(), inet:port_number()} |
-%% undefined, srtp => chappe_sip_srtp:ctx() | undefined}.
+%% undefined, srtp => chappe_sip_srtp:ctx() | undefined, ports =>
+%% {Min, Max} | undefined}.
+%%
+%% ports: the socket binds a free port of the range, trying each once from
+%% a random offset and skipping those in use; none free is {error,
+%% no_port}. undefined (the default) binds any port. The stream takes no
+%% RTCP: muxed RTCP is dropped, and nothing listens on the port above.
 -spec start(map()) -> {ok, pid()} | {error, term()}.
 start(Args) ->
     supervisor:start_child(chappe_sip_siprec_rtp_sup, [Args]).
@@ -122,9 +128,9 @@ stats(Pid) ->
 rekey(Pid, Ctx) ->
     gen_server:call(Pid, {rekey, Ctx}).
 
--spec init(map()) -> {ok, state()} | {stop, term()}.
+-spec init(map()) -> {ok, state()} | {stop, term()} | {error, no_port}.
 init(#{owner := Owner, ip := Ip, label := Label, sink := Sink0} = Args) ->
-    case gen_udp:open(0, [binary, {ip, Ip}, {active, ?ACTIVE}]) of
+    case open(Ip, maps:get(ports, Args, undefined)) of
         {ok, Sock} ->
             {ok, Port} = inet:port(Sock),
             case open_sink(Sink0) of
@@ -143,9 +149,30 @@ init(#{owner := Owner, ip := Ip, label := Label, sink := Sink0} = Args) ->
                     gen_udp:close(Sock),
                     {stop, Why}
             end;
+        {error, no_port} ->
+            {error, no_port};
         {error, Why} ->
             {stop, Why}
     end.
+
+%% a socket on any port, or on the first free port of the range from a
+%% random offset
+open(Ip, undefined) ->
+    udp(Ip, 0);
+open(Ip, {Min, Max}) ->
+    N = Max - Min + 1,
+    open(Ip, Min, N, rand:uniform(N) - 1, N).
+
+open(_Ip, _Min, _N, _At, 0) ->
+    {error, no_port};
+open(Ip, Min, N, At, Left) ->
+    case udp(Ip, Min + At) of
+        {error, eaddrinuse} -> open(Ip, Min, N, (At + 1) rem N, Left - 1);
+        Other -> Other
+    end.
+
+udp(Ip, Port) ->
+    gen_udp:open(Port, [binary, {ip, Ip}, {active, ?ACTIVE}]).
 
 %% The store seam: a recording of the store module (chappe_audio_store by
 %% default, see chappe_sip_siprec_srs:store/1) opened with open/2 and fed
