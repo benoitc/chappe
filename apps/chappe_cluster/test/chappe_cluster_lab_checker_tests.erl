@@ -265,3 +265,19 @@ kill_before_the_claim_does_not_count_test() ->
 kills_are_not_holders_test() ->
     Log = [{10, a(), k, claim_ok, f(1)}, {15, controller, n1, killed, none}],
     ?assertMatch(#{holders := 1, kills := 1, events := 1}, ?C:stats(Log)).
+
+%% a holder silent long before its node is killed had already stopped (a
+%% singleton child killed on lost logs no end): no kill bound for it
+kill_bound_skips_a_silent_holder_test() ->
+    Old = {n1, 1, {singleton, 1}},
+    New = {n1, 2, {singleton, 2}},
+    Log = [
+        {10, Old, k, claim_ok, f(1)},
+        {20, Old, k, fence_used, f(1)},
+        {3000020, New, k, claim_ok, f(2)},
+        {3000030, New, k, fence_used, f(2)},
+        {3000040, controller, n1, killed, none}
+    ],
+    Opts = #{kill_bound_us => 1000000},
+    ?assertEqual(ok, ?C:check(Log, Opts)),
+    ?assertEqual(overlap, kind(?C:check(Log, Opts#{kill_slack_us => 4000000}))).

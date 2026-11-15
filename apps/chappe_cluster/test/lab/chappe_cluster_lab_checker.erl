@@ -25,7 +25,8 @@
 %% a node. A lease its holder's node still held then is the region's until
 %% kill_bound_us later (renew_ms / 2: the holder was not yet told to stop,
 %% so the region promised it at least that long), and a takeover sooner is
-%% an overlap. The checker asserts:
+%% an overlap. This holds for a holder that logged within kill_slack_us
+%% (1 s) of the kill; one silent longer had already stopped. The checker asserts:
 %%
 %% - no overlap: two leases on one key never overlap by more than the margin
 %%   (margin_us, for timestamps taken on different clocks);
@@ -74,6 +75,7 @@
 -type opts() :: #{
     margin_us => non_neg_integer(),
     kill_bound_us => non_neg_integer(),
+    kill_slack_us => non_neg_integer(),
     fence_key => fun((term()) -> term()),
     context => non_neg_integer()
 }.
@@ -98,12 +100,13 @@ check(Events0, Opts) ->
             Events = lists:keysort(1, Events0),
             Kills = [{N, T} || {T, controller, N, killed, _} <- Events],
             Bound = maps:get(kill_bound_us, Opts, 0),
+            Slack = maps:get(kill_slack_us, Opts, 1000000),
             Found =
                 case leases([E || E <- Events, not is_kill(E)]) of
                     {error, V} ->
                         [V];
                     {ok, Leases} ->
-                        Leases1 = [killed(L, Kills, Bound) || L <- Leases],
+                        Leases1 = [killed(L, Kills, Bound, Slack) || L <- Leases],
                         violations(Leases1, Margin, FenceKey)
                 end,
             first_violation(Found, Events, Ctx)
@@ -120,15 +123,17 @@ at(#{at := At}) -> At.
 is_kill({_, controller, _, killed, _}) -> true;
 is_kill(_) -> false.
 
-%% An open lease whose node was killed after its claim: the region holds
-%% it for the kill bound past the kill.
-killed(#{open := true, holder := H, start := S, stop := E} = L, Kills, Bound) ->
+%% An open lease whose node was killed while its holder still logged (its
+%% last event within the slack of the kill): the region holds it for the
+%% kill bound past the kill. A holder silent long before the kill was
+%% already gone (a singleton child killed on lost logs no end).
+killed(#{open := true, holder := H, start := S, stop := E} = L, Kills, Bound, Slack) ->
     Node = holder_node(H),
     case lists:sort([T || {N, T} <- Kills, N =:= Node, T >= S]) of
-        [T | _] -> L#{stop => max(E, T + Bound), killed => T};
-        [] -> L
+        [T | _] when E >= T - Slack -> L#{stop => max(E, T + Bound), killed => T};
+        _ -> L
     end;
-killed(L, _Kills, _Bound) ->
+killed(L, _Kills, _Bound, _Slack) ->
     L.
 
 %% The leases of a log sorted by time, or the first event that uses a key
