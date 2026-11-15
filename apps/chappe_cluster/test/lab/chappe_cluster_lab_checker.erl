@@ -223,7 +223,7 @@ by_start(#{start := A}, #{start := B}) -> A =< B.
 violations(Leases, Margin, FenceKey) ->
     ByKey = maps:groups_from_list(fun(#{key := K}) -> K end, Leases),
     lists:append([
-        overlaps(Ls, Margin) ++ fence_order(Ls, FenceKey)
+        overlaps(Ls, Margin) ++ fence_order(Ls, FenceKey, Margin)
      || Ls <- maps:values(ByKey)
     ]).
 
@@ -236,8 +236,16 @@ overlaps([First | Rest], Margin) ->
 
 overlaps([], _Prev, _Margin) ->
     [];
-overlaps([#{start := S} = L | _], #{stop := E} = Prev, Margin) when
-    S < E - Margin
+%% With a margin (a clock off by up to that much), an overlap counts only
+%% when no shift within it explains it: the later lease does not start
+%% within the margin of the earlier one's end, and does not end within the
+%% margin of its start (a lease stamped ahead that really came first).
+overlaps(
+    [#{start := S, stop := LE} = L | _],
+    #{start := PS, stop := E} = Prev,
+    Margin
+) when
+    S < E - Margin, LE - PS > Margin
 ->
     [
         #{
@@ -256,18 +264,21 @@ overlaps([#{stop := E} = L | Rest], #{stop := PE} = Prev, Margin) ->
         end,
     overlaps(Rest, Next, Margin).
 
-fence_order([], _FenceKey) ->
+%% Claims within the margin of each other may be in either order.
+fence_order([], _FenceKey, _Margin) ->
     [];
-fence_order([First | Rest], FenceKey) ->
-    fence_order(Rest, First, FenceKey).
+fence_order([First | Rest], FenceKey, Margin) ->
+    fence_order(Rest, First, FenceKey, Margin).
 
-fence_order([], _Prev, _FenceKey) ->
+fence_order([], _Prev, _FenceKey, _Margin) ->
     [];
-fence_order([#{fence := F, start := S, key := K} = L | Rest], Prev, FenceKey) ->
-    #{fence := PF} = Prev,
-    case FenceKey(F) > FenceKey(PF) of
+fence_order(
+    [#{fence := F, start := S, key := K} = L | Rest], Prev, FenceKey, Margin
+) ->
+    #{fence := PF, start := PS} = Prev,
+    case FenceKey(F) > FenceKey(PF) orelse S - PS =< Margin of
         true ->
-            fence_order(Rest, L, FenceKey);
+            fence_order(Rest, L, FenceKey, Margin);
         false ->
             [
                 #{

@@ -353,3 +353,18 @@ hlc_view_leaves_out_events_without_a_clock_test() ->
     ),
     ?assertEqual(3, length(?C:view(time, Log))),
     ?assertMatch(#{claims := 2, kills := 1}, ?C:stats(Log)).
+
+%% a clock ahead puts a short lease inside a long one: when it ends within
+%% the margin of the long one's start, it may have come first
+margin_is_a_shared_length_test() ->
+    Log = [
+        {100, a(), k, claim_ok, f(1)},
+        {200, a(), k, fence_used, f(1)},
+        {210, a(), k, release, f(1)},
+        {120, b(), k, claim_ok, f(2)},
+        {125, b(), k, fence_used, f(2)},
+        {126, b(), k, release, f(2)}
+    ],
+    ?assertEqual(ok, ?C:check(Log, #{margin_us => 25})),
+    ?assertEqual(overlap, kind(?C:check(Log, #{margin_us => 24}))),
+    ?assertEqual(overlap, kind(?C:check(Log))).
