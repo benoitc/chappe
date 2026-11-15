@@ -72,7 +72,11 @@ What the repository and the research show:
   holders gave up, whatever the offset. What remains assumed: during one
   lease, a leader's clock does not jump (an NTP step on the leader, or
   `multi_time_warp`), and clocks run at the same rate within
-  `renew_ms / 2` per lease.
+  `renew_ms / 2` per lease. Run nodes with the default time warp mode and
+  slew, not step, the clock (chrony or ntpd in slew mode). The cluster lab
+  runs `multi_time_warp` and injects clock jumps of up to 4 s on purpose,
+  to test beyond this assumption; no run so far broke a lease, but that is
+  evidence, not a promise.
 - **Singletons are killed on lost.** A singleton's child gets an `exit(Pid,
   kill)` the moment its node gives the lease up: there is no time for a
   graceful stop inside the `renew_ms / 2` margin. A stop while the lease
