@@ -63,7 +63,9 @@ init_per_suite(Config) ->
     [{env, Env} | Config].
 
 end_per_suite(_Config) ->
+    %% leave the CT node as it was for the suites that run after this one
     _ = application:stop(chappe_cluster),
+    [_ = application:stop(A) || A <- [ra, aten, gen_batch_server, seshat]],
     ok.
 
 init_per_testcase(_Case, Config) ->

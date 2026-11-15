@@ -16,7 +16,9 @@ ensure() ->
     case node() of
         nonode@nohost ->
             _ = os:cmd("epmd -daemon"),
-            Name = list_to_atom("chappe_ct_" ++ os:getpid()),
+            %% localhost: the host's own name may resolve to an address
+            %% other nodes on it cannot reach (a laptop changing network)
+            Name = list_to_atom("chappe_ct_" ++ os:getpid() ++ "@localhost"),
             {ok, _} = net_kernel:start(Name, #{name_domain => shortnames}),
             ok;
         _ ->
@@ -28,13 +30,30 @@ ensure() ->
 peer(Base) ->
     Name = list_to_atom(Base ++ "_" ++ integer_to_list(erlang:unique_integer([positive]))),
     Paths = lists:append([["-pa", P] || P <- code:get_path()]),
+    %% the peer takes this node's host part (localhost when ensure/0
+    %% started it)
+    [_, Host] = string:split(atom_to_list(node()), "@"),
     {ok, Peer, Node} = peer:start_link(#{
         name => Name,
+        host => Host,
         connection => standard_io,
         args => Paths
     }),
-    true = net_kernel:connect_node(Node),
+    ok = connect(Node, 50),
     {Peer, Node}.
+
+%% A loaded host can refuse the first attempt while the peer's
+%% distribution comes up.
+connect(Node, 0) ->
+    error({no_connection, Node});
+connect(Node, N) ->
+    case net_kernel:connect_node(Node) of
+        true ->
+            ok;
+        _ ->
+            timer:sleep(200),
+            connect(Node, N - 1)
+    end.
 
 %% Start chappe_cluster on `Node' with `Env' (a map of app env).
 -spec start_app(node(), map(), string()) -> ok.
