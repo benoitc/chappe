@@ -55,8 +55,9 @@ node count and docker host give the same schedule.
    still logs true times.
 5. When it kills a node the controller logs the node's real time just
    before the kill. A lease that node held is the region's for renew_ms / 2
-   more (`KILL_BOUND_MS`): its holder had not been told to stop, so a
-   takeover sooner is an overlap.
+   more (`KILL_BOUND_MS`), or until the node is started again: its holder
+   had not been told to stop, so a takeover sooner is an overlap. A
+   holder silent for a second before the kill had already stopped.
 6. After the last heal every node must claim again. The controller then
    stops the workers, copies the logs to `_build/clb/logs/<seed>/` and runs
    `chappe_cluster_lab_checker`.
