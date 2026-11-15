@@ -5,8 +5,10 @@
 %% of the region. It logs its side effects on the key `{singleton, Name}':
 %% claim_ok with the singleton's fence once it runs, fence_used every beat,
 %% and, when it is stopped, more fence_used for stop_ms (longer than
-%% renew_ms / 2, a child that is slow to stop) before its release. Two
-%% children running at once show up in the checker as an overlap.
+%% renew_ms / 2, a child that is slow to stop) before its release. Before
+%% each side effect it asks chappe_cluster:singleton_valid/1, when the app
+%% exports it, and logs lost and stops acting on false. Two children running
+%% at once show up in the checker as an overlap.
 -module(chappe_cluster_lab_single).
 -behaviour(gen_server).
 
@@ -52,6 +54,8 @@ handle_call(_Req, _From, S) ->
 handle_cast(_Msg, S) ->
     {noreply, S}.
 
+handle_info(beat, #{fence := none} = S) ->
+    {noreply, S};
 handle_info(beat, S) ->
     {noreply, beat(S)};
 handle_info(_Msg, S) ->
@@ -59,23 +63,51 @@ handle_info(_Msg, S) ->
 
 terminate(_Reason, #{fence := none}) ->
     ok;
-terminate(_Reason, #{fence := Fence, holder := H, key := K, stop_ms := Stop}) ->
+terminate(_Reason, #{fence := Fence, holder := H, key := K} = S) ->
+    #{stop_ms := Stop} = S,
     Until = erlang:monotonic_time(millisecond) + Stop,
-    slow_stop(H, K, Fence, Until),
-    chappe_cluster_lab_log:log(H, K, release, Fence).
+    case slow_stop(S, Until) of
+        done -> chappe_cluster_lab_log:log(H, K, release, Fence);
+        lost -> ok
+    end.
 
+%% A side effect, once chappe_cluster says the singleton still runs here.
 beat(#{fence := Fence, holder := H, key := K, beat_ms := Beat} = S) ->
-    chappe_cluster_lab_log:log(H, K, fence_used, Fence),
-    erlang:send_after(Beat, self(), beat),
-    S.
-
-%% Side effects while stopping, every 100 ms.
-slow_stop(H, K, Fence, Until) ->
-    case erlang:monotonic_time(millisecond) < Until of
+    case valid(S) of
         true ->
             chappe_cluster_lab_log:log(H, K, fence_used, Fence),
-            timer:sleep(100),
-            slow_stop(H, K, Fence, Until);
+            erlang:send_after(Beat, self(), beat),
+            S;
         false ->
-            ok
+            chappe_cluster_lab_log:log(H, K, lost, Fence),
+            S#{fence => none}
+    end.
+
+%% Side effects while stopping, every 100 ms, each checked the same way.
+slow_stop(#{fence := Fence, holder := H, key := K} = S, Until) ->
+    case {erlang:monotonic_time(millisecond) < Until, valid(S)} of
+        {false, _} ->
+            done;
+        {true, false} ->
+            chappe_cluster_lab_log:log(H, K, lost, Fence),
+            lost;
+        {true, true} ->
+            chappe_cluster_lab_log:log(H, K, fence_used, Fence),
+            timer:sleep(100),
+            slow_stop(S, Until)
+    end.
+
+%% chappe_cluster:singleton_valid/1 when the app has it.
+valid(#{name := Name}) ->
+    Mod = chappe_cluster,
+    case erlang:function_exported(Mod, singleton_valid, 1) of
+        true ->
+            try Mod:singleton_valid(Name) of
+                true -> true;
+                _ -> false
+            catch
+                _:_ -> false
+            end;
+        false ->
+            true
     end.
