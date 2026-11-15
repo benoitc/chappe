@@ -501,10 +501,30 @@ verdict(#{margin_us := Margin, renew_ms := Renew} = Cfg, Dir, Dead, Sched) ->
         [Dir, length(Sched) div 2, Stats, Bad, Margin, Bound]
     ),
     Opts = #{margin_us => Margin, kill_bound_us => Bound},
-    case chappe_cluster_lab_checker:check(Events, Opts) of
-        {violation, V} ->
-            io:format("~s", [chappe_cluster_lab_checker:format(V)]),
+    %% the causal view: clocks may be skewed by what the schedule injects,
+    %% and an hlc carries a skewed wall clock to the nodes it talks to
+    HlcMargin = int("HLC_MARGIN_MS", max_skew_ms(Sched) + 100) * 1000,
+    io:format("hlc view margin: ~p us~n", [HlcMargin]),
+    HlcOpts = #{order => hlc, margin_us => HlcMargin},
+    Views = [
+        {time, chappe_cluster_lab_checker:check(Events, Opts)},
+        {hlc, chappe_cluster_lab_checker:check(Events, HlcOpts)}
+    ],
+    case [{View, V} || {View, {violation, V}} <- Views] of
+        [_ | _] = Found ->
+            [
+                io:format("~n~p view: ~s", [
+                    View, chappe_cluster_lab_checker:format(V)
+                ])
+             || {View, V} <- Found
+            ],
             violation;
+        [] ->
+            alive(Stats, Dead)
+    end.
+
+alive(Stats, Dead) ->
+    case ok of
         ok when map_get(claims, Stats) =:= 0 ->
             {error, "no lease was ever claimed"};
         ok when Dead =/= [] ->
@@ -514,20 +534,24 @@ verdict(#{margin_us := Margin, renew_ms := Renew} = Cfg, Dir, Dead, Sched) ->
                 ])};
         ok ->
             io:format(
-                "~nPASS: no overlapping lease, fences grow on every key~n"
+                "~nPASS: no overlapping lease, fences grow on every key "
+                "(true time and hlc order)~n"
             ),
             ok
     end.
 
+max_skew_ms(Sched) ->
+    lists:max([0 | [abs(Ms) || {_, {skew, _, Ms}} <- Sched]]).
+
 %% CHECK_KEYS=singleton checks the singleton's key only, lab the workers'.
 keys("singleton", Events) ->
-    [E || {_, _, K, _, _} = E <- Events, is_kill_or(singleton, E, K)];
+    [E || E <- Events, is_kill_or(singleton, E, element(3, E))];
 keys("lab", Events) ->
-    [E || {_, _, K, _, _} = E <- Events, is_kill_or(lab, E, K)];
+    [E || E <- Events, is_kill_or(lab, E, element(3, E))];
 keys(_, Events) ->
     Events.
 
-is_kill_or(_Tag, {_, controller, _, killed, _}, _K) -> true;
+is_kill_or(_Tag, {_, controller, _, _, _}, _K) -> true;
 is_kill_or(Tag, _E, {Tag, _}) -> true;
 is_kill_or(_Tag, _E, _K) -> false.
 

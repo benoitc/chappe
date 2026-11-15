@@ -37,12 +37,14 @@
 %%   lease on the key, with that lease's fence.
 %%
 %% check/2 returns the first violation in time, with the events of its key
-%% around it.
+%% around it. With `order => hlc' it checks the same assertions in the
+%% order of the events' hybrid logical clocks (see view/2).
 -module(chappe_cluster_lab_checker).
 
 -export([
     check/1,
     check/2,
+    view/2,
     leases/1,
     parse/1,
     read_logs/1,
@@ -75,6 +77,7 @@
     context => [event()]
 }.
 -type opts() :: #{
+    order => time | hlc,
     margin_us => non_neg_integer(),
     kill_bound_us => non_neg_integer(),
     kill_slack_us => non_neg_integer(),
@@ -91,7 +94,8 @@ check(Events) ->
 
 %% @doc Check a log. The events may come in any order (one file per node).
 -spec check([event()], opts()) -> ok | {violation, violation()}.
-check(Events0, Opts) ->
+check(Events00, Opts) ->
+    Events0 = view(maps:get(order, Opts, time), Events00),
     Margin = maps:get(margin_us, Opts, 0),
     FenceKey = maps:get(fence_key, Opts, fun fence_key/1),
     Ctx = maps:get(context, Opts, 8),
@@ -281,6 +285,26 @@ fence_order([#{fence := F, start := S, key := K} = L | Rest], Prev, FenceKey) ->
 fence_key({_Region, _Epoch, Seq}) -> Seq;
 fence_key(Fence) -> Fence.
 
+%% The log in one order: by the true time each event carries, or by its
+%% hybrid logical clock (causal order). An event logs `{Time, Holder, Key,
+%% Kind, Fence}' or the same with its Hlc (a `{timestamp, WallMs,
+%% Logical}' record) last. The hlc view keys each event by WallMs * 1000 +
+%% Logical, in microsecond-like units, and leaves out what has no Hlc
+%% (the controller's kills, a node without chappe_cluster:now/0).
+-spec view(time | hlc, [tuple()]) -> [tuple()].
+view(time, Events) ->
+    [time_event(E) || E <- Events];
+view(hlc, Events) ->
+    [
+        {W * 1000 + min(L, 999), H, K, Kind, F}
+     || {_T, H, K, Kind, F, {timestamp, W, L}} <- Events,
+        is_integer(W),
+        is_integer(L)
+    ].
+
+time_event({T, H, K, Kind, F, _Hlc}) -> {T, H, K, Kind, F};
+time_event(E) -> E.
+
 valid_event({T, _H, _K, Kind, _F}) when is_integer(T) ->
     lists:member(Kind, ?KINDS);
 valid_event(_) ->
@@ -339,7 +363,8 @@ read_logs(Dir) ->
 %% @doc Counts for the report: events, claims, losts, releases, fence uses,
 %% holders, keys, and takeovers (a claim on a key last held by another node).
 -spec stats([event()]) -> #{atom() => non_neg_integer()}.
-stats(Events0) ->
+stats(Events00) ->
+    Events0 = view(time, Events00),
     Events = [E || E <- Events0, not is_kill(E)],
     Count = fun(Kind) ->
         length([E || {_, _, _, K, _} = E <- Events, K =:= Kind])

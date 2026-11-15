@@ -315,3 +315,41 @@ kill_bound_ends_at_the_restart_test() ->
     ?assertEqual(ok, ?C:check(Log, Opts)),
     Early = [E || {T, _, _, _, _} = E <- Log, T =/= 35] ++ [{28, b(), k, claim_ok, f(2)}],
     ?assertEqual(overlap, kind(?C:check(Early, Opts))).
+
+hlc(W, L) -> {timestamp, W, L}.
+
+%% the same log in true time and in hlc order: here the true times say the
+%% handover was clean, and the clocks say b claimed before a's last act
+hlc_view_test() ->
+    Log = [
+        {10, a(), k, claim_ok, f(1), hlc(100, 0)},
+        {20, a(), k, fence_used, f(1), hlc(105, 0)},
+        {25, a(), k, release, f(1), hlc(106, 0)},
+        {30, b(), k, claim_ok, f(2), hlc(104, 3)},
+        {40, b(), k, release, f(2), hlc(110, 0)}
+    ],
+    ?assertEqual(ok, ?C:check(Log)),
+    {violation, V} = ?C:check(Log, #{order => hlc}),
+    ?assertMatch(#{kind := overlap, at := 104003}, V),
+    ?assertEqual(ok, ?C:check(Log, #{order => hlc, margin_us => 2000})).
+
+hlc_logical_orders_one_millisecond_test() ->
+    Log = [
+        {10, a(), k, claim_ok, f(1), hlc(100, 0)},
+        {20, a(), k, fence_used, f(1), hlc(100, 1)},
+        {25, a(), k, release, f(1), hlc(100, 2)},
+        {30, b(), k, claim_ok, f(2), hlc(100, 3)}
+    ],
+    ?assertEqual(ok, ?C:check(Log, #{order => hlc})).
+
+hlc_view_leaves_out_events_without_a_clock_test() ->
+    Log = [
+        {10, a(), k, claim_ok, f(1), hlc(100, 0)},
+        {15, controller, n1, killed, none},
+        {20, b(), k, claim_ok, f(2), none}
+    ],
+    ?assertEqual(
+        [{100000, a(), k, claim_ok, f(1)}], ?C:view(hlc, Log)
+    ),
+    ?assertEqual(3, length(?C:view(time, Log))),
+    ?assertMatch(#{claims := 2, kills := 1}, ?C:stats(Log)).
