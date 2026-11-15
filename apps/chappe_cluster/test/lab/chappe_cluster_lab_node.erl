@@ -15,21 +15,35 @@
 %%     CLB_SINGLETON 0 skips the singleton (chappe_cluster_lab_single)
 %%     CLB_SINGLETON_STOP_MS  how long its child takes to stop (renew_ms * 3/4)
 %%
+%%     CLB_BACKEND   fake runs chappe_cluster_lab_fake (FAKE_MODE) instead
+%%                   of chappe_cluster, for the lab's proofs
+%%
 %% Without chappe_cluster in the code path the node only joins the lab
 %% network, which is enough for the topology check.
 -module(chappe_cluster_lab_node).
 
--export([start/0, voters/0]).
+-export([start/0, voters/0, backend/0]).
 
 -spec start() -> ok.
 start() ->
-    case code:which(chappe_cluster) of
-        non_existing ->
+    case {env("CLB_BACKEND", "chappe_cluster"), code:which(chappe_cluster)} of
+        {"fake", _} ->
+            ok = persistent_term:put(?MODULE, chappe_cluster_lab_fake),
+            ok = chappe_cluster_lab_fake:start(),
+            ok = start_client();
+        {_, non_existing} ->
             ok;
-        _ ->
+        {_, _} ->
+            ok = persistent_term:put(?MODULE, chappe_cluster),
             ok = start_cluster(),
             ok = start_client()
     end.
+
+%% @doc The module the lab's workers and singleton call: chappe_cluster,
+%% or the fake.
+-spec backend() -> module().
+backend() ->
+    persistent_term:get(?MODULE, chappe_cluster).
 
 %% @doc Every lab node, by the node name it runs under.
 -spec voters() -> [node()].
@@ -79,7 +93,8 @@ start_singleton() ->
                 stop_ms => int("CLB_SINGLETON_STOP_MS", Renew * 3 div 4)
             },
             Spec = chappe_cluster_lab_single:spec(clb, Opts),
-            ok = chappe_cluster:singleton(clb, Spec)
+            Backend = backend(),
+            ok = Backend:singleton(clb, Spec)
     end.
 
 env(Name, Default) ->

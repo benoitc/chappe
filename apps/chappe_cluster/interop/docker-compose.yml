@@ -29,6 +29,10 @@ x-node: &node
     CLB_SINGLETON: ${CLB_SINGLETON:-1}
     CLB_SINGLETON_STOP_MS: ${CLB_SINGLETON_STOP_MS:-1500}
     CLB_FAKETIME: ${CLB_FAKETIME:-1}
+    CLB_TIME_WARP: ${CLB_TIME_WARP:-multi}
+    # MODE=proofs only: the fake cluster (test/lab/chappe_cluster_lab_fake)
+    CLB_BACKEND: ${CLB_BACKEND:-chappe_cluster}
+    FAKE_MODE: ${FAKE_MODE:-naive}
   cap_add:
     - NET_ADMIN
   networks:

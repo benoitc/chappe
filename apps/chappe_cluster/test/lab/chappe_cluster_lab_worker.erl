@@ -56,15 +56,14 @@ held(Lease) ->
     receive
         {chappe_cluster, Lease, lost} -> false
     after 0 ->
-        case erlang:function_exported(chappe_cluster, valid, 1) of
+        case erlang:function_exported(backend(), valid, 1) of
             true -> valid(Lease);
             false -> true
         end
     end.
 
 valid(Lease) ->
-    %% resolved at run time: the app may not export it
-    Mod = chappe_cluster,
+    Mod = backend(),
     try Mod:valid(Lease) of
         true -> true;
         _ -> false
@@ -74,9 +73,10 @@ valid(Lease) ->
 
 claim(#{keys := NKeys, holder := H, hold_ms := {Lo, Hi}} = S) ->
     Key = {lab, rand:uniform(NKeys)},
-    try chappe_cluster:claim(Key, #{}) of
+    Mod = backend(),
+    try Mod:claim(Key, #{}) of
         {ok, Lease} ->
-            Fence = chappe_cluster:fence(Lease),
+            Fence = Mod:fence(Lease),
             chappe_cluster_lab_log:log(H, Key, claim_ok, Fence),
             Hold = Lo + rand:uniform(Hi - Lo),
             Until = erlang:monotonic_time(millisecond) + Hold,
@@ -107,12 +107,16 @@ release(#{lease := none} = S) ->
 release(#{lease := {Lease, Key, Fence, _}, holder := H} = S) ->
     %% the belief ends here, before the cluster frees the key
     chappe_cluster_lab_log:log(H, Key, release, Fence),
-    try chappe_cluster:release(Lease) of
+    Mod = backend(),
+    try Mod:release(Lease) of
         _ -> ok
     catch
         _:_ -> ok
     end,
     S#{lease => none}.
+
+backend() ->
+    chappe_cluster_lab_node:backend().
 
 next(S) ->
     erlang:send_after(100 + rand:uniform(900), self(), tick),

@@ -17,11 +17,10 @@
 %% so a node whose wall clock is skewed still logs the true time.
 %%
 %% A lease is held, from its holder's point of view, from its claim_ok to
-%% its release, or to its last renew or fence_used when it was told it
-%% lost the key (it acted on the lease until then, and a paused holder that
-%% wakes up to its lost acts no more). A holder that logs neither (its node
-%% was killed, or the run ended) held it until its last logged event on
-%% that key.
+%% its last renew or fence_used before its lost or release: it acted on the
+%% lease until then, and a paused holder that wakes up to its lost or its
+%% release acts no more. A holder that logs neither (its node was killed,
+%% or the run ended) held it until its last logged event on that key.
 %%
 %% The controller adds `{Time, controller, Node, killed, none}' when it kills
 %% a node. A lease its holder's node still held then is the region's until
@@ -205,16 +204,12 @@ leases([{T, H, K, Kind, F} = E | Rest], Open, Done) when
                 kind => use_without_lease, at => T, key => K, second => E
             }}
     end;
-leases([{_T, H, K, lost, _F} = E | Rest], Open, Done) ->
-    %% told it lost: it acted last at its last renew or fence use (a
-    %% paused holder wakes up to its lost and does nothing more)
+leases([{_T, H, K, _LostOrRelease, _F} = E | Rest], Open, Done) ->
+    %% lost or given back: it acted last at its last renew or fence use (a
+    %% paused holder may wake up to its lost, or to its release, and do
+    %% nothing more)
     case maps:take({K, H}, Open) of
         {L, Open1} -> leases(Rest, Open1, [L#{last => E} | Done]);
-        error -> leases(Rest, Open, Done)
-    end;
-leases([{T, H, K, release, _F} = E | Rest], Open, Done) ->
-    case maps:take({K, H}, Open) of
-        {L, Open1} -> leases(Rest, Open1, [L#{stop => T, last => E} | Done]);
         %% a lost after a release, or for a lease never seen: nothing held
         error -> leases(Rest, Open, Done)
     end.

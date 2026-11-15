@@ -40,7 +40,8 @@ init({Name, Opts}) ->
 %% The contender answers once start_child returned, so the fence is asked
 %% after init.
 handle_continue(fence, #{name := Name, holder := H, key := K} = S) ->
-    case chappe_cluster:singleton_fence(Name) of
+    Backend = chappe_cluster_lab_node:backend(),
+    case Backend:singleton_fence(Name) of
         {ok, Fence} ->
             chappe_cluster_lab_log:log(H, K, claim_ok, Fence),
             {noreply, beat(S#{fence => Fence})};
@@ -99,7 +100,7 @@ slow_stop(#{fence := Fence, holder := H, key := K} = S, Until) ->
 
 %% chappe_cluster:singleton_valid/1 when the app has it.
 valid(#{name := Name}) ->
-    Mod = chappe_cluster,
+    Mod = chappe_cluster_lab_node:backend(),
     case erlang:function_exported(Mod, singleton_valid, 1) of
         true ->
             try Mod:singleton_valid(Name) of

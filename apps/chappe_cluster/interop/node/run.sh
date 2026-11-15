@@ -11,7 +11,10 @@
 # With libfaketime in the image the beam's wall clock is the real one plus
 # the offset in /lab/faketime ("+1.5", "-0.7", seconds), which the
 # controller rewrites to skew this node while it runs; the monotonic clock
-# stays real. +C multi_time_warp lets erlang:system_time follow the shift.
+# stays real. CLB_TIME_WARP=multi (the default) runs the beam with
+# +C multi_time_warp, so erlang:system_time follows the shift; default runs
+# it in the runtime's default mode (no_time_warp), where only os:system_time
+# does.
 set -eu
 
 if [ -z "${CLB_COOKIE:-}" ]; then
@@ -40,8 +43,13 @@ if [ -n "$FT" ] && [ "${CLB_FAKETIME:-1}" != "0" ]; then
         FAKETIME_CACHE_DURATION
 fi
 
+case "${CLB_TIME_WARP:-multi}" in
+    multi) WARP="+C multi_time_warp" ;;
+    *) WARP="" ;;
+esac
+
 # shellcheck disable=SC2086
-exec erl -sname lab -noshell -noinput +C multi_time_warp \
+exec erl -sname lab -noshell -noinput $WARP \
     -kernel net_ticktime "${CLB_TICKTIME:-10}" \
     $PA -pa /lab/ebin \
     -eval 'ok = chappe_cluster_lab_node:start().'

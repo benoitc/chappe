@@ -9,7 +9,8 @@
 %% runs chappe_cluster_lab_checker on it.
 %%
 %% main/0 reads its settings from the environment (see test/e2e.sh) and
-%% halts with 0 when the run is clean.
+%% halts with 0 when the run is clean, 2 when the checker found a violation
+%% and 1 on any other failure.
 -module(chappe_cluster_lab).
 
 -export([main/0]).
@@ -21,6 +22,9 @@ main() ->
         try run(settings()) of
             ok ->
                 0;
+            violation ->
+                io:format("~nFAIL: the lease checker found a violation~n"),
+                2;
             {error, Why} ->
                 io:format("~nFAIL: ~ts~n", [Why]),
                 1
@@ -500,7 +504,7 @@ verdict(#{margin_us := Margin, renew_ms := Renew} = Cfg, Dir, Dead, Sched) ->
     case chappe_cluster_lab_checker:check(Events, Opts) of
         {violation, V} ->
             io:format("~s", [chappe_cluster_lab_checker:format(V)]),
-            {error, "the lease checker found a violation"};
+            violation;
         ok when map_get(claims, Stats) =:= 0 ->
             {error, "no lease was ever claimed"};
         ok when Dead =/= [] ->

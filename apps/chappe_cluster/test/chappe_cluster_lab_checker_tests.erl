@@ -109,6 +109,7 @@ overlap_with_earlier_long_lease_test() ->
         {13, b(), k, release, f(2)},
         {14, C, k, claim_ok, f(3)},
         {15, C, k, release, f(3)},
+        {99, a(), k, fence_used, f(1)},
         {100, a(), k, release, f(1)}
     ],
     {violation, V} = ?C:check(Log),
@@ -172,9 +173,11 @@ first_violation_in_time_test() ->
     Log = [
         {100, a(), k2, claim_ok, f(1)},
         {110, b(), k2, claim_ok, f(2)},
+        {115, a(), k2, fence_used, f(1)},
         {120, a(), k2, release, f(1)},
         {10, a(), k1, claim_ok, f(1)},
         {50, b(), k1, claim_ok, f(2)},
+        {55, a(), k1, fence_used, f(1)},
         {60, a(), k1, release, f(1)}
     ],
     {violation, V} = ?C:check(Log),
