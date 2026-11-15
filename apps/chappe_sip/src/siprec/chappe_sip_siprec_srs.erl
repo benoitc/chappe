@@ -60,9 +60,13 @@
 %% and the end of the session as {chappe_sip_siprec_srs, Dialog, {stopped,
 %% Why}}, Why the BYE request or the dialog's reason. Opts also take ip (the
 %% address the receivers bind, default 127.0.0.1), advertise (the address
-%% in the SDP, default ip), max_streams (default 4), max_queue (default
-%% 500), rtp_source (negotiated, the default, or learn), keys_over_tls
-%% (default true) and headers for the 200.
+%% in the SDP, default ip), rtp_ports ({Min, Max}: each stream binds a
+%% free port in the range, for a server behind a NAT or a container that
+%% publishes only those; a stream finding none is refused with port 0;
+%% default the siprec_rtp_ports setting, undefined for any port; anything
+%% else is {error, badarg}, answered 500), max_streams (default 4),
+%% max_queue (default 500), rtp_source (negotiated, the default, or
+%% learn), keys_over_tls (default true) and headers for the 200.
 %%
 %% {error, not_recording_session} leaves Res unanswered, for the app to
 %% treat as an ordinary call or refuse; {error, _} on a body that does not
@@ -81,10 +85,31 @@
         streams := [map()]
     }}
     | {error, term()}.
-serve(Req, Res, Opts) ->
-    case is_recording_session(Req) of
-        false -> {error, not_recording_session};
-        true -> serve_1(Req, Res, Opts)
+serve(Req, Res, Opts0) ->
+    case rtp_ports(Opts0) of
+        {ok, Ports} ->
+            Opts = Opts0#{rtp_ports => Ports},
+            case is_recording_session(Req) of
+                false -> {error, not_recording_session};
+                true -> serve_1(Req, Res, Opts)
+            end;
+        error ->
+            _ = chappe_sip_res:send(Res, 500),
+            {error, badarg}
+    end.
+
+%% the ports the receivers bind: Opts' rtp_ports, else the siprec_rtp_ports
+%% setting; undefined is any port
+rtp_ports(Opts) ->
+    case maps:get(rtp_ports, Opts, chappe_sip_config:get(siprec_rtp_ports)) of
+        undefined ->
+            {ok, undefined};
+        {Min, Max} = R when
+            is_integer(Min), is_integer(Max), Min > 0, Min =< Max, Max < 65536
+        ->
+            {ok, R};
+        _ ->
+            error
     end.
 
 %% RFC 7866 6.2: an INVITE is a recording session only with both the
@@ -528,7 +553,8 @@ receiver(Label, Laws, Senders, CallRef, Sink0, Ip, Opts, M, {Proto, Srtp}) ->
         sink => Sink,
         max_queue => maps:get(max_queue, Opts, 500),
         remote => maps:get(remote, Opts),
-        srtp => srtp_of(Srtp)
+        srtp => srtp_of(Srtp),
+        ports => maps:get(rtp_ports, Opts)
     },
     case chappe_sip_siprec_rtp:start(Args) of
         {ok, Pid} ->

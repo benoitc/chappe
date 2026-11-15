@@ -142,6 +142,33 @@ receive
 end.
 ```
 
+### Bind the receivers to a port range
+
+Each stream's receiver binds any free UDP port by default. Behind Docker or
+a NAT that forwards only a range, give `rtp_ports`, and advertise the
+address the client reaches:
+
+```erlang
+{ok, Srs} = chappe_sip_siprec_srs:serve(Req, Res, #{
+    store => default,
+    ip => {0, 0, 0, 0},
+    advertise => <<"203.0.113.7">>,
+    rtp_ports => {40000, 40100}
+}),
+chappe_sip_siprec_srs:run(Srs).
+```
+
+Each stream takes a free port of the range, starting at a random one and
+skipping the ports in use. A stream that finds none is refused with port 0,
+as a stream the server cannot take. To set it once for every recording
+server of the node, use the `siprec_rtp_ports` setting (see
+[configuration](../configuration.md)); `rtp_ports` overrides it. A range
+that is not `{Min, Max}` with `0 < Min =< Max < 65536` is
+`{error, badarg}`, and the INVITE gets 500.
+
+The receiver takes no RTCP, so it needs one port per stream: size the range
+for `max_streams` times the sessions you serve at once.
+
 ## Keep the recording as secure as the call
 
 RFC 7866 12 asks the recording session to be at least as secure as the

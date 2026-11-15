@@ -7,6 +7,10 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 
 ## Unreleased
 
+- SIPREC recording server: the ports its receivers bind can now be limited
+  to a range, per server or for the whole node. Before, each stream took a
+  random port, so a recording client could not reach a server running in a
+  container that publishes only a range.
 - chappe_audio, a new app: it receives the audio FreeSWITCH forks over a
   WebSocket, from mod_audio_fork or mod_audio_stream, checks the path and a
   token, and hands each stream to a process of yours, with a bound on what
