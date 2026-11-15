@@ -22,6 +22,9 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
   contact naming no transport binds TLS only, where sofia also opened its
   WebSocket transports on it. WebSocket is served by the `ws` and `wss`
   options, as before.
+- chappe_sip security: the bundled sofia-sip is now built without its
+  WebSocket and HTTP code, which chappe never used, so a future flaw there
+  cannot reach a chappe node.
 - chappe_esl and chappe_mrf: the fork docs now say that a stereo
   mod_audio_stream fork sends nothing unless both directions carry audio,
   and to fork in mono or mixed instead when you need the caller's audio

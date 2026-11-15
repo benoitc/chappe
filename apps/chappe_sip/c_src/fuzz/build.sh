@@ -8,7 +8,7 @@
 # libFuzzer steers by the coverage of the code it runs, so the sofia linked
 # here is a second static build, instrumented for coverage and built with
 # ASan and UBSan, beside the plain one the NIF links. It is configured like
-# build.sh's (no zlib, static, -DNDEBUG as shipped), from the same patched
+# build.sh's (no zlib, no nth, static, -DNDEBUG as shipped), from the same patched
 # copy of the vendored tree (prepare_sofia.sh), and stamped on that tree,
 # the patches and the flags below.
 #
@@ -41,7 +41,7 @@ CFLAGS_SOFIA="$CFLAGS_SOFIA -Wno-error=implicit-function-declaration"
 CFLAGS_SOFIA="$CFLAGS_SOFIA -Wno-error=implicit-int -Wno-error=int-conversion"
 
 SRC_KEY=$(sh "$CSRC/prepare_sofia.sh" --key)
-KEY=$(printf '%s %s %s' "$SRC_KEY" "$CLANG" "$CFLAGS_SOFIA" | cksum | awk '{print $1}')
+KEY=$(printf '%s %s %s nonth' "$SRC_KEY" "$CLANG" "$CFLAGS_SOFIA" | cksum | awk '{print $1}')
 STAMP="$OUT/.sofia.stamp"
 SOFIA_COPY="$OUT/sofia-src"
 
@@ -55,7 +55,7 @@ if [ ! -f "$DIST/lib/libsofia-sip-ua.a" ] || [ "$(cat "$STAMP" 2>/dev/null)" != 
     ( cd "$OUT/sofia" && \
       "$SOFIA_COPY/configure" --prefix="$DIST" \
           --disable-shared --enable-static --with-pic \
-          --disable-glib ac_cv_lib_z_compress=no \
+          --disable-glib --disable-nth ac_cv_lib_z_compress=no \
           CC="$CLANG" CFLAGS="$CFLAGS_SOFIA" ) \
         >"$OUT/sofia-configure.log" 2>&1 || {
         echo "error: fuzz sofia configure failed:" >&2

@@ -393,7 +393,9 @@ chappe_sip:start(#{
   ws on the same TCP port and fail with "address already in use";
   chappe_sip_binds defaults contacts to `;transport=udp,tcp` (`tls` for a
   sips: or TLS contact) and refuses one naming `ws`, `wss` or `*`, so
-  sofia's own WebSocket transport is never opened (see
+  sofia's own WebSocket transport is never opened. sofia is also built
+  with `--disable-nth`, so its ws, wss, HTTP CONNECT, http and nth code is
+  not compiled (patch 0007 makes that build link; see
   `c_src/sofia-patches/README.md`).
 
 ## Appendix: abort audit (M0, sofia @ 7333682, freeswitch fork)

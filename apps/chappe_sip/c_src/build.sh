@@ -31,7 +31,7 @@ fi
 SOFIA_SRC_KEY=$(sh "$CSRC/prepare_sofia.sh" --key)
 # bump SOFIA_CONF when the configure options change, so a tree built with
 # the old ones is reconfigured
-SOFIA_CONF=nozlib
+SOFIA_CONF=nozlib-nonth
 SOFIA_KEY="$SOFIA_SRC_KEY-$SOFIA_CONF"
 SOFIA_COPY="$BUILD/sofia-src"
 
@@ -83,10 +83,13 @@ if [ ! -f "$DIST/lib/libsofia-sip-ua.a" ] || [ "$(cat "$SOFIA_STAMP" 2>/dev/null
     # and deflates responses to compressed requests whatever their
     # Accept-Encoding. chappe applies no content coding; the request worker
     # answers 415 to an encoded INVITE body instead.
+    # No nth: it is the only switch for sofia's ws, wss and HTTP CONNECT
+    # transports (tport_type_ws.c, ws.c) and the http and nth modules.
+    # chappe serves WebSocket in Erlang and links none of them.
     ( cd "$BUILD/sofia" && \
       "$SOFIA_COPY/configure" --prefix="$DIST" \
           --disable-shared --enable-static --with-pic \
-          --disable-glib $SSL_OPT ac_cv_lib_z_compress=no \
+          --disable-glib --disable-nth $SSL_OPT ac_cv_lib_z_compress=no \
           CFLAGS="-O2 -g -DNDEBUG $RELAX" LDFLAGS="$DARWIN_FRAMEWORKS" ) \
         >"$BUILD/sofia-configure.log" 2>&1 || {
         echo "error: sofia configure failed:" >&2
