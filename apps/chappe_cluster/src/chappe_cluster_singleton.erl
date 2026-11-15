@@ -15,12 +15,14 @@
 %% the lease holds (stop_singleton/1, the app stopping) is a shutdown,
 %% bounded by what is left of the lease, then a kill.
 %%
-%% Fenced side effects: fence/1 returns the lease's fence while this node
-%% runs the child, for the child to carry on what it writes.
+%% Fenced side effects: the child checks chappe_cluster:singleton_valid/1
+%% before each one and carries chappe_cluster:singleton_fence/1; both read
+%% the node's table, not this process, so they answer even while it is
+%% busy or paused.
 -module(chappe_cluster_singleton).
 -behaviour(gen_server).
 
--export([start_link/2, fence/1, group/1]).
+-export([start_link/2, key/1, group/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -record(state, {
@@ -38,11 +40,6 @@
 start_link(Name, Spec) ->
     gen_server:start_link(?MODULE, {Name, Spec}, []).
 
-%% The fence of the running singleton, from its contender.
--spec fence(pid()) -> {ok, chappe_cluster:fence()} | none.
-fence(Contender) ->
-    gen_server:call(Contender, fence).
-
 -spec group(term()) -> {chappe_cluster_singleton, term()}.
 group(Name) ->
     {chappe_cluster_singleton, Name}.
@@ -53,10 +50,6 @@ init({Name, Spec}) ->
     self() ! contend,
     {ok, #state{name = Name, spec = Spec}}.
 
-handle_call(fence, _From, St = #state{lease = undefined}) ->
-    {reply, none, St};
-handle_call(fence, _From, St = #state{lease = Lease}) ->
-    {reply, {ok, chappe_cluster:fence(Lease)}, St};
 handle_call(_Req, _From, St) ->
     {reply, {error, unknown_call}, St}.
 
@@ -92,6 +85,7 @@ terminate(_Reason, St) ->
 
 %% ---- internals ----
 
+-spec key(term()) -> {chappe_cluster_singleton, term()}.
 key(Name) ->
     {chappe_cluster_singleton, Name}.
 
