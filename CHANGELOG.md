@@ -7,6 +7,10 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 
 ## Unreleased
 
+- chappe_esl and chappe_mrf: the fork docs now say that a stereo
+  mod_audio_stream fork sends nothing unless both directions carry audio,
+  and to fork in mono or mixed instead when you need the caller's audio
+  whatever the other side does.
 - SIPREC recording server, a change of behaviour: an offer with no stream
   the server can take is now refused with 488 and a warning that says why,
   and serving it returns an error. Before, unless the streams were SRTP, it

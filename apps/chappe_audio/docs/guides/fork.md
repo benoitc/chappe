@@ -101,7 +101,10 @@ with `chappe_audio:ref(Stream)`.
 
 - `{frame, Pcm}` is one WebSocket message: 16-bit signed little-endian PCM
   at the rate you started the fork with, usually 20 ms. In stereo the two
-  channels are interleaved, the caller on the left.
+  channels are interleaved, the caller on the left. A stereo fork of
+  mod_audio_stream sends only while both directions carry audio (nothing
+  arrives on a channel with nothing bridged, or while a prompt plays into
+  it): fork in `mono` or `mixed` if you need the caller's audio regardless.
 - `{text, Bin}` is the fork's metadata first, then any text it sends.
 - `{closed, Why}` is always the last event. `Why` is `normal` (you called
   `close/1`), `peer_closed` (the fork stopped, or the connection ended for

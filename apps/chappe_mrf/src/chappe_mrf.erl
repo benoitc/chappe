@@ -543,7 +543,9 @@ execute(Ep, App, Args, Opts) ->
 %% mix (mono | mixed | stereo: stereo puts the caller on the left and
 %% what the node sends on the right), rate, metadata, module
 %% (audio_fork | audio_stream), bugname (mod_audio_fork: a name per fork,
-%% to run several on one channel).
+%% to run several on one channel). A stereo fork of mod_audio_stream sends
+%% only while both directions carry audio (FreeSWITCH's and the module's
+%% behaviour): mono or mixed send whenever the caller does.
 -spec fork_audio_start(endpoint(), iodata(), map()) -> ok | {error, term()}.
 fork_audio_start(Ep, Url, Opts) ->
     with_call(Ep, fun(C) -> chappe_esl_call:audio_fork_start(C, Url, Opts) end).
