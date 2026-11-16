@@ -282,11 +282,14 @@ one owner in the region:
 {ok, Member} = chappe_mrf_conf:join(Conf, B2b, #{}).
 ```
 
-- The room's process claims the lease `{chappe_mrf_conf, Name}` before it
-  registers the name. On another node, `conference/2` returns the pid of
-  the room that holds it, and `join/3` works on it from there.
-- Opening a room waits for the region at most `claim_timeout` (1000 ms).
-  Joining a room that is open claims nothing.
+- `conference/2` starts the room's process waiting, claims the lease
+  `{chappe_mrf_conf, Name}` for it, then hands the lease over. Only then
+  does the room register its name and take members. On another node,
+  `conference/2` returns the pid of the room that holds the lease, and
+  `join/3` works on it from there.
+- The claim runs in the process that calls `conference/2` and waits at
+  most `claim_timeout` (1000 ms), so rooms opening at once never wait on
+  each other. Joining a room that is open claims nothing.
 - When the owner node stops, its members' calls on other nodes stay up.
   `conference/2` returns `{error, {owner_unreachable, Node}}` until the
   lease runs out (within the cluster's `lease_ms`), then opens the room on

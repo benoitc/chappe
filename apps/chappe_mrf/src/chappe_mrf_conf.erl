@@ -41,9 +41,13 @@
 %%                              {error, Reason}
 %%
 %% With the chappe_mrf `cluster' setting chappe_cluster, a room's name has
-%% one owner in the region: init/1 claims the lease {chappe_mrf_conf,
-%% Name} before it registers the name on this node, and start/2 on any
-%% node returns the room of the node that holds it. When the region takes
+%% one owner in the region, and start/2 on any node returns the room of
+%% the node that holds it. start/2 starts the room process waiting (no
+%% name, no backend, its pid given to no one), claims the lease
+%% {chappe_mrf_conf, Name} for it from the caller's process, then hands
+%% the lease over (activate): only then does the room register its name,
+%% set up its backend and become known. So the claim never holds the conf
+%% supervisor, and a room takes members only under its lease. When the region takes
 %% the lease back ({chappe_cluster, Lease, lost}: this node lost its
 %% quorum, or stopped renewing), the room takes no new member, tells its
 %% event receivers lost, gives its name up on this node and stops once
@@ -80,6 +84,8 @@
 
 %% how long a stopped recording waits for its stop-recording event
 -define(CLOSE_WAIT, 15000).
+%% how long a cluster room waits for its starter's lease
+-define(WAIT_MAX, 60000).
 
 %% ---- API ----
 
@@ -138,13 +144,55 @@ start(Name, Opts) ->
             {ok, Conf};
         error ->
             Args = #{name => Name, opts => Opts, caller => self()},
-            case chappe_mrf_sup:start_conf(Args) of
-                {ok, Conf} -> {ok, Conf};
-                {error, {already_started, Conf}} -> reachable(Conf);
-                {error, no_quorum} -> known_owner(Name);
-                {error, _} = Err -> Err
+            case application:get_env(chappe_mrf, cluster, none) of
+                chappe_cluster -> start_claimed(Name, Args);
+                _ -> start_local(Args)
             end
     end.
+
+start_local(Args) ->
+    case chappe_mrf_sup:start_conf(Args) of
+        {ok, Conf} -> {ok, Conf};
+        {error, {already_started, Conf}} -> {ok, Conf};
+        {error, _} = Err -> Err
+    end.
+
+%% The claim runs here, in the caller, for the waiting room: it waits at
+%% most claim_timeout (1000 ms; a node that knows it lost its quorum
+%% answers at once), and no other room's start waits behind it.
+start_claimed(Name, Args) ->
+    %% started on first use, as the media apps are
+    maybe
+        {ok, _} ?= cluster_started(),
+        {ok, Room} ?= chappe_mrf_sup:start_conf(Args#{wait => true}),
+        Timeout = application:get_env(chappe_mrf, claim_timeout, 1000),
+        Claim = chappe_cluster:claim(lease_key(Name), #{
+            pid => Room, timeout => Timeout
+        }),
+        claimed(Claim, Room, Name)
+    end.
+
+cluster_started() ->
+    case application:ensure_all_started(chappe_cluster) of
+        {ok, _} = Ok -> Ok;
+        {error, Why} -> {error, {cluster, Why}}
+    end.
+
+claimed({ok, Lease}, Room, _Name) ->
+    case call(Room, {activate, Lease}, 30000) of
+        ok -> {ok, Room};
+        {error, {already_started, Other}} -> {ok, Other};
+        {error, _} = Err -> Err
+    end;
+claimed({error, {owned, #{pid := Other}}}, Room, _Name) ->
+    ok = stop(Room),
+    reachable(Other);
+claimed({error, no_quorum}, Room, Name) ->
+    ok = stop(Room),
+    known_owner(Name);
+claimed({error, _} = Err, Room, _Name) ->
+    ok = stop(Room),
+    Err.
 
 %% The room another node runs, when this node reaches it.
 reachable(Conf) ->
@@ -456,44 +504,63 @@ call(Conf, Req, Timeout) ->
 
 %% ---- gen_server ----
 
+init(#{name := Name, caller := Caller, wait := true} = Args) ->
+    %% cluster: nothing until the starter hands the lease over; a starter
+    %% gone, or one that never does, ends the wait
+    process_flag(trap_exit, true),
+    _ = erlang:send_after(?WAIT_MAX, self(), wait_timeout),
+    {ok, #state{
+        name = Name,
+        backend = native,
+        room = <<>>,
+        waiting = #{args => Args, mon => monitor(process, Caller)}
+    }};
 init(#{name := Name, opts := Opts, caller := Caller}) ->
     process_flag(trap_exit, true),
-    case claim(Name) of
-        {ok, Lease} ->
-            case chappe_mrf_registry:put({conf, Name}, self()) of
-                ok ->
-                    init_backend(Name, Opts, Caller, Lease);
-                {error, exists} ->
-                    {ok, Other} = chappe_mrf_registry:lookup({conf, Name}),
-                    {stop, {already_started, Other}}
-            end;
-        {owned, Other} ->
-            {stop, {already_started, Other}};
-        {error, Why} ->
-            {stop, Why}
+    case chappe_mrf_registry:put({conf, Name}, self()) of
+        ok ->
+            init_backend(Name, Opts, Caller, undefined);
+        {error, exists} ->
+            {ok, Other} = chappe_mrf_registry:lookup({conf, Name}),
+            {stop, {already_started, Other}}
     end.
 
-%% The name's lease, cluster => chappe_cluster; the claim waits at most
-%% claim_timeout (1000 ms), so a lost quorum holds a call setup up that
-%% long at most (a node that knows it is not live answers at once).
-claim(Name) ->
-    case application:get_env(chappe_mrf, cluster, none) of
-        chappe_cluster ->
-            %% started on first use, as the media apps are
-            case application:ensure_all_started(chappe_cluster) of
-                {ok, _} -> claim_lease(Name);
-                {error, Why} -> {error, {cluster, Why}}
-            end;
-        _ ->
-            {ok, undefined}
+%% The lease claimed for this waiting room: still valid, the room takes
+%% its name on this node and sets its backend up.
+activate(Lease, #state{waiting = #{args := Args, mon := Mon}} = S) ->
+    #{name := Name, opts := Opts, caller := Caller} = Args,
+    demonitor(Mon, [flush]),
+    case chappe_cluster:valid(Lease) of
+        true -> activate_name(Name, Opts, Caller, Lease, S);
+        false -> {stop, normal, {error, no_quorum}, S}
     end.
 
-claim_lease(Name) ->
-    Timeout = application:get_env(chappe_mrf, claim_timeout, 1000),
-    case chappe_cluster:claim(lease_key(Name), #{timeout => Timeout}) of
-        {ok, Lease} -> {ok, Lease};
-        {error, {owned, #{pid := Other}}} -> {owned, Other};
-        {error, _} = Err -> Err
+%% A waiting room takes only its lease; it ends when its starter goes or
+%% never hands the lease over.
+waiting_call({activate, Lease}, S) ->
+    activate(Lease, S);
+waiting_call(_Req, S) ->
+    {reply, {error, starting}, S}.
+
+waiting_info(wait_timeout, S) ->
+    {stop, normal, S};
+waiting_info({'DOWN', Mon, process, _, _}, #state{waiting = #{mon := Mon}} = S) ->
+    {stop, normal, S};
+waiting_info(_Info, S) ->
+    %% a lost before the lease was handed over: activate/2 finds the
+    %% lease no longer valid
+    {noreply, S}.
+
+activate_name(Name, Opts, Caller, Lease, S) ->
+    case chappe_mrf_registry:put({conf, Name}, self()) of
+        ok ->
+            case init_backend(Name, Opts, Caller, Lease) of
+                {ok, S1} -> {reply, ok, S1};
+                {stop, Why} -> {stop, normal, {error, Why}, S}
+            end;
+        {error, exists} ->
+            {ok, Other} = chappe_mrf_registry:lookup({conf, Name}),
+            {stop, normal, {error, {already_started, Other}}, S}
     end.
 
 init_backend(Name, Opts, Caller, Lease) ->
@@ -591,6 +658,8 @@ conf_uri(Name) ->
             <<"sip:", Name/binary, "@invalid">>
     end.
 
+handle_call(Req, _From, #state{waiting = #{}} = S) ->
+    waiting_call(Req, S);
 handle_call(info, _From, S) ->
     {reply,
         #{
@@ -733,8 +802,7 @@ lost_empty(S) ->
 close_if_empty(#state{lost = true, members = M, pending = P}) when
     map_size(M) =:= 0, map_size(P) =:= 0
 ->
-    self() ! lost_empty,
-    ok;
+    gen_server:cast(self(), lost_empty);
 close_if_empty(_S) ->
     ok.
 
@@ -750,6 +818,8 @@ handle_cast({loop_failed, Token}, S) ->
     {noreply, S#state{pending = maps:remove(Token, S#state.pending)}};
 handle_cast({transferred, Ref, Info}, S) ->
     {noreply, chappe_mrf_conf_refer:transferred(Ref, Info, S)};
+handle_cast(lost_empty, S) ->
+    lost_empty(S);
 handle_cast(_Msg, S) ->
     {noreply, S}.
 
@@ -796,8 +866,8 @@ handle_info({chappe_sip_siprec, Rec, Event}, S) ->
     {noreply, siprec_event(Rec, Event, S)};
 handle_info({chappe_cluster, Lease, lost}, S) ->
     {noreply, lease_lost(Lease, S)};
-handle_info(lost_empty, S) ->
-    lost_empty(S);
+handle_info(Info, #state{waiting = #{}} = S) ->
+    waiting_info(Info, S);
 handle_info({'DOWN', Mon, process, _, _}, #state{owner_mon = Mon} = S) ->
     {stop, normal, S};
 handle_info({'DOWN', Mon, process, Pid, _}, #state{listeners = L} = S) ->
