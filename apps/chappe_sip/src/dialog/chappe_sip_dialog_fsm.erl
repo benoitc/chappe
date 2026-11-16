@@ -249,7 +249,10 @@ init(
         cdr = maps:get(cdr, Args, undefined),
         call_ref = maps:get(call_ref, Opts, undefined)
     },
-    Data1 = derived(Data),
+    %% in the index before a UAS dialog's 2xx leaves (chappe_sip_engine sends
+    %% it once we are started), so a peer acting on that 2xx at once, by a
+    %% Replaces or a find_dialog/3, finds the dialog
+    Data1 = index(derived(Data)),
     ok = announce(Data1),
     %% Any dialog-forming response (UAS) is sent by chappe_sip_engine (sending
     %% it from here would re-enter chappe_sip_engine during our own start and
@@ -281,7 +284,7 @@ answer_in_ack(_D) ->
 %% ---- setup: waiting for the leg op result ----
 
 setup({call, From}, await_ready, #data{ready = true, leg = LegH} = D) ->
-    {next_state, confirmed, index(D), [{reply, From, {ok, LegH}}]};
+    {next_state, confirmed, D, [{reply, From, {ok, LegH}}]};
 setup({call, From}, await_ready, D) ->
     {keep_state, D#data{await_from = From}};
 setup(
@@ -293,7 +296,7 @@ setup(
 setup(
     info, {chappe_sip_op, LegH, ok}, #data{leg = LegH, await_from = From} = D
 ) ->
-    {next_state, confirmed, index(D#data{await_from = undefined}), [
+    {next_state, confirmed, D#data{await_from = undefined}, [
         {reply, From, {ok, LegH}}
     ]};
 setup(info, {chappe_sip_op, LegH, {error, Reason}}, #data{leg = LegH} = D) ->
@@ -339,8 +342,12 @@ setup(info, {chappe_sip_cancel, TxnH, _}, #data{txn = TxnH} = D) ->
     {keep_state, D, [postpone]};
 setup(info, _Other, D) ->
     {keep_state, D};
-setup({call, From}, _Req, D) ->
-    {keep_state, D, [{reply, From, {error, not_ready}}]}.
+setup({call, _From}, _Req, D) ->
+    %% the dialog is indexed from its start, so it can be found (and
+    %% called) before the owner has waited for its leg: serve the call once
+    %% confirmed; a setup that fails stops the fsm and the caller's call
+    %% with it
+    {keep_state, D, [postpone]}.
 
 %% ---- confirmed ----
 
