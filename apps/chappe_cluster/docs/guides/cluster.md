@@ -117,6 +117,19 @@ end,
 {ok, _V3} = chappe_cluster:cas(<<"peer/new">>, 0, x).   %% create only
 ```
 
+On a request path, bound the wait for the quorum, delete only the version
+you read, and list what a prefix holds (from the local replica):
+
+```erlang
+{ok, V4} = chappe_cluster:cas(<<"peer/other">>, 0, y, #{timeout => 500}),
+ok = chappe_cluster:delete(<<"peer/other">>, #{version => V4, timeout => 500}),
+Keys = chappe_cluster:keys(<<"peer/">>).
+```
+
+A delete of a version that is no longer the key's returns
+`{error, {version, Current}}` and leaves the key alone, so a delete never
+removes a write it did not see.
+
 Watch a prefix from the process that wants the changes:
 
 ```erlang

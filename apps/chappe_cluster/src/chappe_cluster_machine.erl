@@ -68,6 +68,7 @@
     incarnation/2,
     query_owner/2,
     query_get/2,
+    query_keys/2,
     query_leases/1,
     query_node_leases/2,
     leases/1,
@@ -198,6 +199,8 @@ do({cas, Key, Version, Value, MaxKeys, Hlc}, S = #cc{kv = Kv}) ->
         Version -> put(Key, Value, MaxKeys, Hlc, S);
         _ -> {S, {error, {version, Cur}}, []}
     end;
+do({delete, Key, Version, Hlc}, S) ->
+    delete_version(Key, Version, Hlc, S);
 do({delete, Key, Hlc}, S0) ->
     {Stamp, S = #cc{kv = Kv}} = stamp(Hlc, S0),
     case maps:take(Key, Kv) of
@@ -454,6 +457,15 @@ put(Key, Value, MaxKeys, Hlc, S = #cc{kv = Kv, kv_seq = V0}) ->
             {S1, {ok, V, Stamp}, kv_events(put, Key, Value, Stamp, S1)}
     end.
 
+%% A delete only of the version the writer read: a late one, or one racing
+%% a write, changes nothing.
+delete_version(Key, Version, Hlc, S = #cc{kv = Kv}) ->
+    case Kv of
+        #{Key := {Version, _, _}} -> do({delete, Key, Hlc}, S);
+        #{Key := {Cur, _, _}} -> {S, {error, {version, Cur}}, []};
+        _ -> {S, {error, {version, 0}}, []}
+    end.
+
 %% The region's next stamp: the command's, when it is later than the latest
 %% the region handed out, or that latest one ticked.
 stamp(#timestamp{} = Hlc, S = #cc{hlc = Latest}) when Hlc > Latest ->
@@ -488,6 +500,15 @@ query_get(Key, #cc{kv = Kv}) ->
         #{Key := {V, Value, _}} -> {ok, Value, V};
         _ -> not_found
     end.
+
+%% The keys that start with Prefix, sorted.
+-spec query_keys(binary(), state()) -> [binary()].
+query_keys(Prefix, #cc{kv = Kv}) ->
+    N = byte_size(Prefix),
+    lists:sort([
+        K
+     || K := _ <- Kv, binary:longest_common_prefix([K, Prefix]) =:= N
+    ]).
 
 %% Every lease, with its owner, fence and HLC.
 -spec query_leases(state()) -> [map()].

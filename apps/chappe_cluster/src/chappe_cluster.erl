@@ -32,7 +32,10 @@
     get/1,
     put/2,
     delete/1,
+    delete/2,
     cas/3,
+    cas/4,
+    keys/1,
     watch/1,
     unwatch/1,
     singleton/2,
@@ -48,7 +51,7 @@
     now/0
 ]).
 
--export_type([lease/0, fence/0, owner/0, hlc/0]).
+-export_type([lease/0, fence/0, owner/0, hlc/0, timeout_ms/0]).
 
 -type lease() :: chappe_cluster_machine:lease().
 -type fence() :: {
@@ -58,6 +61,7 @@
 %% a hybrid logical clock timestamp (hlc 3.0.4, `#timestamp{wall_time,
 %% logical}' from hlc.hrl)
 -type hlc() :: hlc:timestamp().
+-type timeout_ms() :: non_neg_integer().
 
 -define(M, chappe_cluster_machine).
 -define(SYSTEM, chappe_cluster).
@@ -207,12 +211,66 @@ cas(Key, Version, Value) when
 cas(_, _, _) ->
     {error, badarg}.
 
+%% cas/3 with options: `timeout' in ms (default command_timeout), so a
+%% caller on a request path can bound its wait for the quorum.
+-spec cas(binary(), non_neg_integer(), term(), #{timeout => timeout_ms()}) ->
+    {ok, pos_integer()}
+    | {error, {version, non_neg_integer()}}
+    | {error, no_quorum | max_keys | too_large | badarg}.
+cas(Key, Version, Value, #{} = Opts) when
+    is_binary(Key), is_integer(Version), Version >= 0
+->
+    case opt_timeout(Opts) of
+        {ok, T} ->
+            write(Value, {cas, Key, Version, Value, cfg(max_keys), now()}, T);
+        error ->
+            {error, badarg}
+    end;
+cas(_, _, _, _) ->
+    {error, badarg}.
+
+%% Delete `Key' only while its version is `Version' (as get/1 returned it).
+%% Options: `timeout' in ms (default command_timeout).
+-spec delete(binary(), #{version := pos_integer(), timeout => timeout_ms()}) ->
+    ok | {error, {version, non_neg_integer()}} | {error, no_quorum | badarg}.
+delete(Key, #{version := Version} = Opts) when
+    is_binary(Key), is_integer(Version), Version > 0
+->
+    case opt_timeout(Opts) of
+        {ok, T} ->
+            case command({delete, Key, Version, now()}, T) of
+                {ok, {ok, Hlc}} -> seen(Hlc);
+                {ok, {error, _} = E} -> E;
+                {error, _} = E -> E
+            end;
+        error ->
+            {error, badarg}
+    end;
+delete(_, _) ->
+    {error, badarg}.
+
+%% The keys that start with `Prefix', sorted, from the local replica.
+-spec keys(binary()) -> [binary()] | {error, term()}.
+keys(Prefix) when is_binary(Prefix) ->
+    query({?M, query_keys, [Prefix]});
+keys(_) ->
+    {error, badarg}.
+
+opt_timeout(Opts) ->
+    case maps:get(timeout, Opts, cfg(command_timeout)) of
+        T when is_integer(T), T >= 0 -> {ok, T};
+        _ -> error
+    end.
+
 write(Value, Cmd) ->
+    write(Value, Cmd, cfg(command_timeout)).
+
+write(Value, Cmd, Timeout) ->
     case erlang:external_size(Value) > cfg(max_value_bytes) of
         true ->
             {error, too_large};
         false ->
-            case command(Cmd, cfg(command_timeout)) of
+            case command(Cmd, Timeout) of
                 {ok, {ok, Version, Hlc}} ->
                     ok = seen(Hlc),
                     {ok, Version};
