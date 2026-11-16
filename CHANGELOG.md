@@ -7,6 +7,22 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 
 ## Unreleased
 
+- chappe_mrf: conference rooms can now span a cluster. With the new
+  `cluster` setting, a room name has one owner across the nodes, so two
+  callers dialing the same room on two nodes land in the same room. When
+  the node running a room stops, the callers on other nodes keep their
+  calls and the next caller opens the room on a live node. Without a
+  majority of the cluster, no new room opens. Before, each node opened
+  its own room for the same name.
+- chappe_sip: a peer can now be pinged from one node of a cluster
+  instead of from every node (`probe => singleton`), and every node sees
+  the same up or down state. Before, a trunk got one OPTIONS per node.
+- chappe_sip: a message-waiting update now reaches the subscribers of
+  every node, not only those of the node where you made it. No cluster
+  setup is needed.
+- chappe_audio: the recording sweep takes a guard that says whether this
+  node sweeps, so one node can sweep a store the nodes share. Each node
+  still sweeps its own files by default.
 - chappe_cluster, a new app: one owner at a time for anything a cluster
   must not run twice, such as a conference room or a job that pings a
   trunk. A node claims a key and gets a lease with a number that only

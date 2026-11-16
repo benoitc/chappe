@@ -44,5 +44,9 @@
     %% the dial-outs under way
     refer_policy :: fun((map()) -> boolean() | {reject, 300..699}) | undefined,
     dial = #{} :: map(),
-    dialing = #{} :: #{term() => map()}
+    dialing = #{} :: #{term() => map()},
+    %% cluster => chappe_cluster: the room's lease on its name; lost once
+    %% the region took it back (no new member from then on)
+    lease :: map() | undefined,
+    lost = false :: boolean()
 }).

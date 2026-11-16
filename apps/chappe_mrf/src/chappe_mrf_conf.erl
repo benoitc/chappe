@@ -27,6 +27,8 @@
 %%   {left, Member, Reason}     departed | kicked | hangup | transferred
 %%                              (transferred: moved by transfer/3, or its
 %%                              call transferred by REFER, see b2b_event/2)
+%%   lost                       cluster: the region took the room's name
+%%                              back; no new member, the ones in stay
 %%   {talking, Member, boolean()}
 %%   {muted, Member, boolean()} the member was muted or unmuted
 %%   {dtmf, Member, Digit}      fs: a digit from the member
@@ -37,6 +39,19 @@
 %%   {recorded, Path, Result}   fs: a recording started with store =>
 %%                              default is in the store: {ok, Id}, or
 %%                              {error, Reason}
+%%
+%% With the chappe_mrf `cluster' setting chappe_cluster, a room's name has
+%% one owner in the region: init/1 claims the lease {chappe_mrf_conf,
+%% Name} before it registers the name on this node, and start/2 on any
+%% node returns the room of the node that holds it. When the region takes
+%% the lease back ({chappe_cluster, Lease, lost}: this node lost its
+%% quorum, or stopped renewing), the room takes no new member, tells its
+%% event receivers lost, gives its name up on this node and stops once
+%% its last member leaves; the members already in keep their calls. A
+%% join checks chappe_cluster:valid/1 first. Without a quorum, start/2
+%% does not open a second room: it returns the room the local replica
+%% names, when it runs on a node this one reaches, else {error,
+%% no_quorum} (docs/guides/conference.md says why).
 %%
 %% transfer/3 moves a member to another conference of the same backend:
 %% on fs both rooms are on one node and mod_conference moves the channel
@@ -110,6 +125,12 @@
 %% to its node's events (chappe_esl:node_events/1): give the node
 %% events => [<<"CUSTOM">>, <<"conference::maintenance">>] in
 %% chappe_esl:node_add/2. A member's own events come over its channel.
+%%
+%% With the `cluster' setting chappe_cluster the room may run on another
+%% node: start/2 returns its pid. {error, no_quorum} when the region
+%% cannot be reached and no reachable room is known, {error,
+%% {owner_unreachable, Node}} while the lease of a node this one cannot
+%% reach runs out (retry: the name comes free within lease_ms).
 -spec start(binary(), map()) -> {ok, conf()} | {error, term()}.
 start(Name, Opts) ->
     case chappe_mrf_registry:lookup({conf, Name}) of
@@ -119,10 +140,39 @@ start(Name, Opts) ->
             Args = #{name => Name, opts => Opts, caller => self()},
             case chappe_mrf_sup:start_conf(Args) of
                 {ok, Conf} -> {ok, Conf};
-                {error, {already_started, Conf}} -> {ok, Conf};
+                {error, {already_started, Conf}} -> reachable(Conf);
+                {error, no_quorum} -> known_owner(Name);
                 {error, _} = Err -> Err
             end
     end.
+
+%% The room another node runs, when this node reaches it.
+reachable(Conf) ->
+    Node = node(Conf),
+    case Node =:= node() orelse lists:member(Node, nodes()) of
+        true -> {ok, Conf};
+        false -> {error, {owner_unreachable, Node}}
+    end.
+
+%% No quorum: the owner the local replica knows, never a second room. One
+%% on this node is a room that gave its name up (lost) or is gone: start/2
+%% found no room registered here.
+known_owner(Name) ->
+    Here = node(),
+    case chappe_cluster:owner(lease_key(Name)) of
+        {ok, #{node := Here}} ->
+            {error, no_quorum};
+        {ok, #{pid := Conf}} ->
+            case reachable(Conf) of
+                {ok, _} = Ok -> Ok;
+                {error, _} -> {error, no_quorum}
+            end;
+        _ ->
+            {error, no_quorum}
+    end.
+
+lease_key(Name) ->
+    {?MODULE, Name}.
 
 -spec start_link(map()) -> gen_server:start_ret().
 start_link(Args) ->
@@ -171,6 +221,8 @@ join(Conf, Target, Opts) ->
     case info(Conf) of
         #{backend := native} ->
             native_join(Conf, Target, Opts);
+        #{lost := true} ->
+            {error, lost};
         #{backend := fs, locked := true} ->
             {error, locked};
         #{backend := fs, members := N, max_members := Max} when N >= Max ->
@@ -406,18 +458,42 @@ call(Conf, Req, Timeout) ->
 
 init(#{name := Name, opts := Opts, caller := Caller}) ->
     process_flag(trap_exit, true),
-    case chappe_mrf_registry:put({conf, Name}, self()) of
-        ok ->
-            init_backend(Name, Opts, Caller);
-        {error, exists} ->
-            {ok, Other} = chappe_mrf_registry:lookup({conf, Name}),
-            {stop, {already_started, Other}}
+    case claim(Name) of
+        {ok, Lease} ->
+            case chappe_mrf_registry:put({conf, Name}, self()) of
+                ok ->
+                    init_backend(Name, Opts, Caller, Lease);
+                {error, exists} ->
+                    {ok, Other} = chappe_mrf_registry:lookup({conf, Name}),
+                    {stop, {already_started, Other}}
+            end;
+        {owned, Other} ->
+            {stop, {already_started, Other}};
+        {error, Why} ->
+            {stop, Why}
     end.
 
-init_backend(Name, Opts, Caller) ->
+%% The name's lease, cluster => chappe_cluster; the claim waits at most
+%% claim_timeout (1000 ms), so a lost quorum holds a call setup up that
+%% long at most (a node that knows it is not live answers at once).
+claim(Name) ->
+    case application:get_env(chappe_mrf, cluster, none) of
+        chappe_cluster ->
+            Timeout = application:get_env(chappe_mrf, claim_timeout, 1000),
+            case chappe_cluster:claim(lease_key(Name), #{timeout => Timeout}) of
+                {ok, Lease} -> {ok, Lease};
+                {error, {owned, #{pid := Other}}} -> {owned, Other};
+                {error, _} = Err -> Err
+            end;
+        _ ->
+            {ok, undefined}
+    end.
+
+init_backend(Name, Opts, Caller, Lease) ->
     Notify = maps:get(notify, Opts, Caller),
     S0 = #state{
         name = Name,
+        lease = Lease,
         backend = maps:get(backend, Opts, native),
         room = <<"mrf-", Name/binary>>,
         profile = chappe_mrf_lib:to_bin(maps:get(profile, Opts, <<"default">>)),
@@ -519,13 +595,16 @@ handle_call(info, _From, S) ->
             bridge => S#state.bridge,
             entity => S#state.entity,
             members => map_size(S#state.members),
-            max_members => S#state.max_members
+            max_members => S#state.max_members,
+            lost => S#state.lost
         },
         S};
+handle_call({record, stop}, _From, S) ->
+    record_req(stop, S);
 handle_call({record, Req}, _From, S) ->
-    record_req(Req, S);
+    owned(S, fun(S1) -> record_req(Req, S1) end);
 handle_call({refer, Req}, _From, S) ->
-    chappe_mrf_conf_refer:call(Req, S);
+    owned(S, fun(S1) -> chappe_mrf_conf_refer:call(Req, S1) end);
 handle_call({transfer, Step, Id}, _From, S) ->
     transfer_step(Step, Id, S);
 handle_call({events, Pid}, _From, #state{listeners = L} = S) ->
@@ -575,24 +654,82 @@ join_req({call_done, Token, Result}, From, #state{pending = P} = S) ->
         _ ->
             {reply, {error, join_failed}, S}
     end;
-join_req(_Req, _From, #state{locked = true} = S) ->
+join_req(Req, From, S) ->
+    owned(S, fun(S1) -> join_open(Req, From, S1) end).
+
+join_open(_Req, _From, #state{locked = true} = S) ->
     {reply, {error, locked}, S};
-join_req(
+join_open(
     _Req, _From, #state{members = M, pending = P, max_members = Max} = S
 ) when
     map_size(M) + map_size(P) >= Max
 ->
     {reply, {error, full}, S};
-join_req({adopt, Ep, Owned, Opts, FromName, FromId}, From, S) ->
+join_open({adopt, Ep, Owned, Opts, FromName, FromId}, From, S) ->
     chappe_mrf_conf_fs:adopt(Ep, Owned, Opts, {FromName, FromId}, From, S);
-join_req({ep, Ep, Opts}, _From, S) ->
+join_open({ep, Ep, Opts}, _From, S) ->
     chappe_mrf_conf_native:join_endpoint(Ep, Opts, S);
-join_req({b2b, B2b, Opts}, From, S) ->
+join_open({b2b, B2b, Opts}, From, S) ->
     chappe_mrf_conf_native:join(B2b, Opts, From, S);
-join_req({call, Opts}, _From, S) ->
+join_open({call, Opts}, _From, S) ->
     chappe_mrf_conf_native:prepare_call(Opts, S);
-join_req({fs, Ep, Owned, Opts}, From, S) ->
+join_open({fs, Ep, Owned, Opts}, From, S) ->
     chappe_mrf_conf_fs:start_join(Ep, Owned, Opts, From, S).
+
+%% Run a call that brings someone in (a join, a REFER, a recording) only
+%% while the room owns its name: with a lease, chappe_cluster:valid/1
+%% says so, read from this node's table before the side effect.
+owned(#state{lost = true} = S, _Fun) ->
+    {reply, {error, lost}, S};
+owned(#state{lease = undefined} = S, Fun) ->
+    Fun(S);
+owned(#state{lease = Lease} = S, Fun) ->
+    case chappe_cluster:valid(Lease) of
+        true -> Fun(S);
+        false -> {reply, {error, lost}, lose(S)}
+    end.
+
+%% The region took the name back: no new member, the receivers hear
+%% lost, the name is free on this node for the next start/2 (which
+%% claims it again), and the room ends with its last member.
+lose(#state{lost = true} = S) ->
+    S;
+lose(#state{name = Name} = S) ->
+    ok = chappe_mrf_registry:delete({conf, Name}),
+    S1 = emit(lost, S#state{lost = true}),
+    ok = close_if_empty(S1),
+    S1.
+
+%% an fs member's endpoint events
+endpoint_event(Ep, {event, Ev}, S) ->
+    chappe_mrf_conf_fs:event(Ep, Ev, S);
+endpoint_event(Ep, hangup, S) ->
+    chappe_mrf_conf_fs:gone_ep(Ep, S);
+endpoint_event(Ep, {dtmf, Digit}, S) ->
+    chappe_mrf_conf_fs:dtmf(Ep, Digit, S);
+endpoint_event(_Ep, _Other, S) ->
+    S.
+
+%% the lost of this room's lease (not of an older one)
+lease_lost(#{seq := Seq}, #state{lease = #{seq := Seq}} = S) ->
+    lose(S);
+lease_lost(_OldLease, S) ->
+    S.
+
+lost_empty(#state{lost = true, members = M, pending = P} = S) when
+    map_size(M) =:= 0, map_size(P) =:= 0
+->
+    {stop, normal, S};
+lost_empty(S) ->
+    {noreply, S}.
+
+close_if_empty(#state{lost = true, members = M, pending = P}) when
+    map_size(M) =:= 0, map_size(P) =:= 0
+->
+    self() ! lost_empty,
+    ok;
+close_if_empty(_S) ->
+    ok.
 
 handle_cast({loop_dialog, Token, D}, #state{pending = P} = S) ->
     case P of
@@ -625,12 +762,8 @@ handle_info({chappe_sip_dialog, D, destroy, _Why}, S) ->
     end;
 handle_info({chappe_sip_media, {talking, _Room, Id, Talking}}, S) ->
     {noreply, talking(Id, Talking, S)};
-handle_info({chappe_mrf_endpoint, Ep, {event, Ev}}, S) ->
-    {noreply, chappe_mrf_conf_fs:event(Ep, Ev, S)};
-handle_info({chappe_mrf_endpoint, Ep, hangup}, S) ->
-    {noreply, chappe_mrf_conf_fs:gone_ep(Ep, S)};
-handle_info({chappe_mrf_endpoint, Ep, {dtmf, Digit}}, S) ->
-    {noreply, chappe_mrf_conf_fs:dtmf(Ep, Digit, S)};
+handle_info({chappe_mrf_endpoint, Ep, Event}, S) ->
+    {noreply, endpoint_event(Ep, Event, S)};
 handle_info({chappe_esl_node, Node, {event, Ev}}, #state{node = Node} = S) ->
     {noreply, chappe_mrf_conf_fs:room_event(Ev, S)};
 handle_info({chappe_mrf, Ep, {hangup, _} = E}, S) when is_pid(Ep) ->
@@ -654,6 +787,10 @@ handle_info({fs_join_timeout, Ep}, S) ->
     {noreply, chappe_mrf_conf_fs:join_timeout(Ep, S)};
 handle_info({chappe_sip_siprec, Rec, Event}, S) ->
     {noreply, siprec_event(Rec, Event, S)};
+handle_info({chappe_cluster, Lease, lost}, S) ->
+    {noreply, lease_lost(Lease, S)};
+handle_info(lost_empty, S) ->
+    lost_empty(S);
 handle_info({'DOWN', Mon, process, _, _}, #state{owner_mon = Mon} = S) ->
     {stop, normal, S};
 handle_info({'DOWN', Mon, process, Pid, _}, #state{listeners = L} = S) ->
@@ -767,7 +904,9 @@ gone(Id, Reason, #state{members = M} = S) ->
                     #{session := MS} -> chappe_sip_media:leave(MS);
                     _ -> ok
                 end,
-            publish(emit({left, Id, transferred}, S#state{members = M1}));
+            S1 = publish(emit({left, Id, transferred}, S#state{members = M1})),
+            ok = close_if_empty(S1),
+            S1;
         {Mb, M1} ->
             _ =
                 case Mb of
@@ -781,7 +920,9 @@ gone(Id, Reason, #state{members = M} = S) ->
                     _ ->
                         ok
                 end,
-            publish(emit({left, Id, Reason}, S#state{members = M1}));
+            S1 = publish(emit({left, Id, Reason}, S#state{members = M1})),
+            ok = close_if_empty(S1),
+            S1;
         error ->
             S
     end.
