@@ -290,10 +290,13 @@ one owner in the region:
 - The claim runs in the process that calls `conference/2` and waits at
   most `claim_timeout` (1000 ms), so rooms opening at once never wait on
   each other. Joining a room that is open claims nothing.
-- When the owner node stops, its members' calls on other nodes stay up.
-  `conference/2` returns `{error, {owner_unreachable, Node}}` until the
-  lease runs out (within the cluster's `lease_ms`), then opens the room on
-  a live node; new callers land there.
+- When the owner node crashes (or is killed, or cut off), its members'
+  calls on other nodes stay up, without the room's audio, until they hang
+  up. When it stops in order (`init:stop/0`, a `docker stop`), the room's
+  dialogs end with it and its callers get a BYE.
+- Either way `conference/2` returns `{error, {owner_unreachable, Node}}`
+  until the lease runs out (within the cluster's `lease_ms`), then opens
+  the room on a live node; new callers land there.
 - When the region takes the lease back (the node lost its quorum), the
   room gets `lost`: it takes no new member (`{error, lost}`), sends
   `{chappe_mrf_conf, Conf, lost}` to its receivers, frees the name on its

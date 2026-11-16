@@ -17,6 +17,7 @@
 -export([
     one_room_from_two_nodes/1,
     owner_node_dies/1,
+    owner_node_shuts_down/1,
     lost_stops_new_joins/1,
     room_crash_frees_name/1,
     no_quorum_starts_in_parallel/1,
@@ -30,6 +31,7 @@ all() ->
     [
         one_room_from_two_nodes,
         owner_node_dies,
+        owner_node_shuts_down,
         lost_stops_new_joins,
         room_crash_frees_name,
         no_quorum_starts_in_parallel,
@@ -147,6 +149,27 @@ owner_node_dies(Config) ->
     ?assertMatch([#{id := M2}], chappe_mrf_conf:members(New)),
     ?F:ua_bye(Ua2),
     ?F:ua_bye(Ua).
+
+%% An orderly stop of the owner node (init:stop/0, as `docker stop'
+%% does) is not a crash: the room's dialogs end with their owner and say
+%% BYE, so its callers on other nodes hear the room end rather than
+%% silence. The room then opens on a live node.
+owner_node_shuts_down(Config) ->
+    [{_, N1}, {_, N2} | _] = ?config(peers, Config),
+    {ok, Conf} = erpc:call(N1, chappe_mrf, conference, [<<"shuts">>, #{}]),
+    {Ua, _M} = join_call(Config, Conf),
+    MRef = monitor(process, Conf),
+    ok = erpc:call(N1, init, stop, []),
+    receive
+        {'DOWN', MRef, process, Conf, _} -> ok
+    after 20000 -> ct:fail(room_still_up)
+    end,
+    receive
+        {ua, Ua, {bye, _}} -> ok
+    after 10000 -> ct:fail(no_bye)
+    end,
+    New = wait_room(N2, <<"shuts">>, N1),
+    ?assertNotEqual(N1, node(New)).
 
 %% The owner node loses its quorum: the room hears lost, tells its
 %% notify process, refuses a new member, and the member in keeps its
