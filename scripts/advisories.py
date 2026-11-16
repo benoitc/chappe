@@ -26,33 +26,83 @@ import urllib.request
 OSV_BATCH = "https://api.osv.dev/v1/querybatch"
 
 
+VERSION_RE = re.compile(r"^\s*v?(\d+(?:\.\d+)*)\s*$")
+OPS = {
+    "<=": lambda c: c <= 0,
+    ">=": lambda c: c >= 0,
+    "<": lambda c: c < 0,
+    ">": lambda c: c > 0,
+    "=": lambda c: c == 0,
+    "==": lambda c: c == 0,
+}
+
+
 def version(text):
-    """A dotted version as a tuple of ints (1.13.17 -> (1, 13, 17))."""
-    parts = re.findall(r"\d+", text)
-    if not parts:
-        raise ValueError("no version in %r" % text)
-    return tuple(int(p) for p in parts)
+    """A dotted version as a tuple of ints (1.13.17 -> (1, 13, 17)).
+    Anything else (a suffix, a word, nothing) is a ValueError."""
+    m = VERSION_RE.match(text or "")
+    if not m:
+        raise ValueError("not a version: %r" % text)
+    return tuple(int(p) for p in m.group(1).split("."))
+
+
+def compare(a, b):
+    """-1, 0 or 1, the shorter version padded with zeros: 1.13 == 1.13.0."""
+    n = max(len(a), len(b))
+    a = a + (0,) * (n - len(a))
+    b = b + (0,) * (n - len(b))
+    return (a > b) - (a < b)
 
 
 def in_range(v, expr):
     """True when v satisfies every comma-separated clause of expr:
-    `<= 1.13.17`, `>= 1.0, < 1.13.18`, or a bare `1.13.13` (equal)."""
-    ops = {
-        "<=": lambda a, b: a <= b,
-        ">=": lambda a, b: a >= b,
-        "<": lambda a, b: a < b,
-        ">": lambda a, b: a > b,
-        "=": lambda a, b: a == b,
-    }
-    clauses = [c.strip() for c in expr.split(",") if c.strip()]
-    if not clauses:
-        return False
+    `<= 1.13.17`, `>= 1.0, < 1.13.18`, `1.13.13` (equal) or
+    `1.13.17 - 1.13.18` (both ends included). A range that does not parse
+    is a ValueError: the caller counts it as affected."""
+    clauses = [c.strip() for c in (expr or "").split(",")]
+    if not clauses or any(c == "" for c in clauses):
+        raise ValueError("not a range: %r" % expr)
     for clause in clauses:
-        m = re.match(r"^(<=|>=|<|>|=)?\s*(.+)$", clause)
-        op, ver = m.group(1) or "=", m.group(2)
-        if not ops[op](v, version(ver)):
+        hyphen = re.match(r"^(\S+)\s+-\s+(\S+)$", clause)
+        if hyphen:
+            lo, hi = version(hyphen.group(1)), version(hyphen.group(2))
+            if not (compare(v, lo) >= 0 and compare(v, hi) <= 0):
+                return False
+            continue
+        m = re.match(r"^(<=|>=|==|<|>|=)?\s*(.+)$", clause)
+        op = m.group(1) or "="
+        if not OPS[op](compare(v, version(m.group(2)))):
             return False
     return True
+
+
+def affected(v, advisory):
+    """[(range, reason)] of the advisory's entries that cover v; an entry
+    with no range, or one that does not parse, covers it (fail closed)."""
+    vulns = advisory.get("vulnerabilities") or []
+    if not vulns:
+        return [("-", "no vulnerable range given")]
+    hits = []
+    for vuln in vulns:
+        rng = vuln.get("vulnerable_version_range")
+        if not rng:
+            hits.append(("-", "no vulnerable range given"))
+            continue
+        try:
+            if in_range(v, rng):
+                hits.append((rng, "in range"))
+        except ValueError as e:
+            hits.append((rng, "range not understood (%s)" % e))
+    return hits
+
+
+def flatten(advisories):
+    """The advisories of a `gh api` answer, slurped pages flattened."""
+    if not isinstance(advisories, list):
+        raise ValueError("advisories are not a list")
+    if advisories and all(isinstance(a, list) for a in advisories):
+        advisories = [a for page in advisories for a in page]
+    return advisories
 
 
 def sofia(configure_ac, advisories_json):
@@ -62,30 +112,38 @@ def sofia(configure_ac, advisories_json):
         print("error: no AC_INIT([sofia-sip], ...) in %s" % configure_ac)
         return 2
     pin = m.group(1)
-    v = version(pin)
-    with open(advisories_json) as f:
-        advisories = json.load(f)
-    # `gh api --paginate --slurp` gives a list of pages
-    if advisories and all(isinstance(a, list) for a in advisories):
-        advisories = [a for page in advisories for a in page]
-    hits = []
-    for adv in advisories:
-        if adv.get("state", "published") != "published":
-            continue
-        for vuln in adv.get("vulnerabilities") or []:
-            rng = vuln.get("vulnerable_version_range") or ""
-            if rng and in_range(v, rng):
-                hits.append((adv, rng, vuln.get("patched_versions") or "?"))
-    print("sofia-sip %s, %d advisories checked" % (pin, len(advisories)))
-    for adv, rng, fixed in hits:
-        print("AFFECTED %s %s (%s): vulnerable %s, patched %s: %s" % (
-            adv.get("ghsa_id"), adv.get("cve_id") or "-",
-            adv.get("severity") or "?", rng, fixed,
-            adv.get("summary") or ""))
-    if hits:
+    try:
+        v = version(pin)
+        with open(advisories_json) as f:
+            advisories = flatten(json.load(f))
+    except ValueError as e:
+        print("error: %s" % e)
+        return 2
+    published = [a for a in advisories
+                 if a.get("state", "published") == "published"]
+    # freeswitch/sofia-sip has published advisories (at least the three
+    # fixed in 1.13.18): none means the query or its answer went wrong
+    if not published:
+        print("error: no published sofia-sip advisory in %s" % advisories_json)
+        return 2
+    print("sofia-sip %s, %d advisories checked" % (pin, len(published)))
+    bad = 0
+    for adv in published:
+        for rng, why in affected(v, adv):
+            bad += 1
+            print("AFFECTED %s %s (%s): vulnerable %s, patched %s, %s: %s" % (
+                adv.get("ghsa_id"), adv.get("cve_id") or "-",
+                adv.get("severity") or "?", rng,
+                patched(adv), why, adv.get("summary") or ""))
+    if bad:
         return 1
     print("ok: no advisory covers sofia-sip %s" % pin)
     return 0
+
+
+def patched(adv):
+    return ", ".join(v.get("patched_versions") or "?"
+                     for v in adv.get("vulnerabilities") or []) or "?"
 
 
 def locked_hex(rebar_lock):
@@ -128,7 +186,18 @@ def hex_check(rebar_lock, accepted_path=None):
     except Exception as e:  # network or API error: not a clean result
         print("error: osv.dev query failed: %s" % e)
         return 2
-    affected = 0
+    return hex_report(pkgs, results, accepted)
+
+
+def hex_report(pkgs, results, accepted=frozenset()):
+    """Print the osv.dev results of pkgs (one per package, in order) and
+    return the exit status."""
+    if not isinstance(results, list) or len(results) != len(pkgs):
+        print("error: osv.dev answered %s results for %d packages" % (
+            len(results) if isinstance(results, list) else "no",
+            len(pkgs)))
+        return 2
+    flagged = 0
     for (app, name, vsn), res in zip(pkgs, results):
         ids = [v["id"] for v in res.get("vulns") or []]
         known = [i for i in ids if (i, name, vsn) in accepted]
@@ -137,11 +206,11 @@ def hex_check(rebar_lock, accepted_path=None):
             print("accepted %s %s (app %s): %s" % (
                 name, vsn, app, " ".join(known)))
         if ids:
-            affected += 1
+            flagged += 1
             print("AFFECTED %s %s (app %s): %s" % (
                 name, vsn, app, " ".join(ids)))
     print("%d hex packages checked against osv.dev" % len(pkgs))
-    if affected:
+    if flagged:
         return 1
     print("ok: no osv.dev advisory for the locked hex packages")
     return 0
