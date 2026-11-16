@@ -45,7 +45,8 @@
 %% (127.0.0.1 by default; an IPv6 address listens on IPv6). allow: the
 %% networks peers may connect from, as CIDR strings or binaries
 %% (<<"10.0.0.0/8">>, "192.0.2.7"); a peer outside is closed right after
-%% accept. Left out, every peer that reaches `ip' is taken. backlog: the
+%% accept. Left out, every peer that reaches `ip' is taken; an empty list
+%% is refused. backlog: the
 %% length of the queue of connections not yet accepted (128). max_pending:
 %% how many accepted connections may wait for their channel data at once
 %% (64); a new one past it is closed. first_frame_timeout: milliseconds a
@@ -368,6 +369,9 @@ valid_listener_value(linger, L) ->
     is_integer(L) andalso L > 0;
 valid_listener_value(ip, Ip) ->
     inet:is_ip_address(Ip);
+%% an empty allow list would read as any peer: leave it out for that
+valid_listener_value(allow, []) ->
+    false;
 valid_listener_value(allow, Nets) ->
     chappe_esl_cidr:parse_list(Nets) =/= error;
 valid_listener_value(_PosInt, N) ->

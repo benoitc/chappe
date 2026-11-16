@@ -16,21 +16,32 @@
 
 -define(HEADER, <<"X-Chappe-Call">>).
 -define(EP_HEADER, <<"X-Chappe-Endpoint">>).
-%% the port of the running listener
+%% the port and options of the running listener
 -define(LISTENER, {chappe_mrf, listener}).
 
-%% Listen for FreeSWITCH outbound sockets on Port with this handler.
+%% Listen for FreeSWITCH outbound sockets on Port with this handler. A
+%% listener of ours already on Port with the same options is kept; with
+%% other options it returns {error, {listener_running, RunningOpts}}, so
+%% an allow list asked for is never dropped silently. Another listener on
+%% Port returns {error, already_started}.
 -spec listen(inet:port_number(), chappe_esl:listener_opts()) ->
     ok | {error, term()}.
 listen(Port, ListenerOpts) ->
     case chappe_esl:start_listener(Port, ?MODULE, [], ListenerOpts) of
         {ok, _} ->
-            persistent_term:put(?LISTENER, Port),
+            persistent_term:put(?LISTENER, {Port, ListenerOpts}),
             ok;
         {error, already_started} ->
-            ok;
+            running(Port, ListenerOpts);
         {error, _} = Err ->
             Err
+    end.
+
+running(Port, Opts) ->
+    case persistent_term:get(?LISTENER, undefined) of
+        {Port, Opts} -> ok;
+        {Port, Running} -> {error, {listener_running, Running}};
+        _ -> {error, already_started}
     end.
 
 %% chappe_mrf's esl_ip and esl_allow as chappe_esl's ip and allow.
@@ -44,7 +55,7 @@ stop_listener() ->
     case persistent_term:get(?LISTENER, undefined) of
         undefined ->
             ok;
-        Port ->
+        {Port, _Opts} ->
             _ = persistent_term:erase(?LISTENER),
             chappe_esl:stop_listener(Port)
     end.

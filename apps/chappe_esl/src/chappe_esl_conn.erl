@@ -7,7 +7,7 @@
 %% answers the auth/request with the password and waits for +OK before telling
 %% the owner it is ready. Outbound: the listener hands over an accepted socket,
 %% the `accepting' state sends "connect", reads the initial channel data
-%% (closing the socket when it does not arrive within `first_frame_timeout'),
+%% (stopping when it has not arrived `first_frame_timeout' after start),
 %% tells the listener, sends "linger" (unless disabled) so events after
 %% hangup still arrive, and starts the user handler. Both converge on `ready'.
 %%
@@ -148,7 +148,11 @@ init(#{mode := outbound} = Opts) ->
         listener = maps:get(listener, Opts, undefined),
         first_frame_timeout = maps:get(first_frame_timeout, Opts, 5000)
     },
-    {ok, accepting, Data}.
+    %% armed here, not on activate: a connection never handed its socket
+    %% still ends
+    {ok, accepting, Data, [
+        {state_timeout, Data#data.first_frame_timeout, first_frame}
+    ]}.
 
 %% inbound: authenticate
 
@@ -190,13 +194,11 @@ handle_auth_frame(_Other, Data) ->
 
 %% outbound: accept
 
-accepting(cast, {activate, Socket}, #data{first_frame_timeout = T} = Data) ->
+accepting(cast, {activate, Socket}, Data) ->
     ok = inet:setopts(Socket, [{active, once}]),
     %% the peer may already be gone; the close then arrives as tcp_closed
     _ = gen_tcp:send(Socket, <<"connect\n\n">>),
-    {keep_state, Data#data{socket = Socket}, [
-        {state_timeout, T, first_frame}
-    ]};
+    {keep_state, Data#data{socket = Socket}};
 accepting(state_timeout, first_frame, Data) ->
     tell_listener(Data, first_frame_timeout),
     {stop, normal, Data};

@@ -15,6 +15,8 @@
 -behaviour(gen_server).
 
 -export([start_link/1, stats/1]).
+%% the acceptor's handoff, exported for the failed-handoff test
+-export([handoff/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -include_lib("kernel/include/logger.hrl").
@@ -194,8 +196,13 @@ handoff(Owner, Socket) ->
     case gen_server:call(Owner, admit, infinity) of
         {ok, Conn} ->
             case gen_tcp:controlling_process(Socket, Conn) of
-                ok -> chappe_esl_conn:activate(Conn, Socket);
-                {error, _} -> gen_tcp:close(Socket)
+                ok ->
+                    chappe_esl_conn:activate(Conn, Socket);
+                {error, _} ->
+                    %% the connection would wait for a socket that never
+                    %% comes, holding a max_pending slot
+                    _ = gen_tcp:close(Socket),
+                    chappe_esl_outbound_sup:stop_conn(Conn)
             end;
         busy ->
             gen_tcp:close(Socket);

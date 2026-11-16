@@ -20,6 +20,8 @@
     allow_takes_peer/1,
     max_pending_bound/1,
     first_frame_timeout/1,
+    failed_handoff_frees_slot/1,
+    unactivated_conn_times_out/1,
     bad_listener_options/1
 ]).
 %% chappe_esl_handler callback.
@@ -39,6 +41,8 @@ all() ->
         allow_takes_peer,
         max_pending_bound,
         first_frame_timeout,
+        failed_handoff_frees_slot,
+        unactivated_conn_times_out,
         bad_listener_options
     ].
 
@@ -346,6 +350,42 @@ first_frame_timeout(_Config) ->
         chappe_esl:stop_listener(Port)
     end.
 
+%% A handoff that cannot give the socket to its connection (here a socket
+%% already closed) stops that connection, so its max_pending slot comes
+%% back and the next peer is served.
+failed_handoff_frees_slot(_Config) ->
+    Port = pick_port(),
+    {ok, _Ref} = chappe_esl:start_listener(Port, ?MODULE, self(), #{
+        max_pending => 1
+    }),
+    try
+        {ok, Listener} = chappe_esl_sup:listener(Port),
+        {ok, Dead} = gen_tcp:listen(0, []),
+        ok = gen_tcp:close(Dead),
+        _ = chappe_esl_listener:handoff(Listener, Dead),
+        ok = wait_stats(Port, #{accepted => 1, pending => 0}, 50),
+        S = fs_connect(Port),
+        ?assertEqual(<<"connect">>, recv_block(S))
+    after
+        chappe_esl:stop_listener(Port)
+    end.
+
+%% A connection that is never handed its socket still times out, from
+%% init, and tells its listener.
+unactivated_conn_times_out(_Config) ->
+    {ok, Conn} = chappe_esl_outbound_sup:start_conn(?MODULE, self(), #{
+        listener => self(), first_frame_timeout => 100
+    }),
+    Mon = monitor(process, Conn),
+    receive
+        {chappe_esl_listener, Conn, first_frame_timeout} -> ok
+    after 2000 -> ct:fail(no_timeout)
+    end,
+    receive
+        {'DOWN', Mon, process, Conn, _} -> ok
+    after 2000 -> ct:fail(conn_alive)
+    end.
+
 %% A bad option is refused before anything listens.
 bad_listener_options(_Config) ->
     Bad = [
@@ -359,6 +399,7 @@ bad_listener_options(_Config) ->
         {allow, [<<"10.0.0.0/33">>]},
         {allow, [<<"not an address">>]},
         {allow, [{10, 0, 0, 0}]},
+        {allow, []},
         {max_pending, 0},
         {max_pending, infinity},
         {first_frame_timeout, 0},

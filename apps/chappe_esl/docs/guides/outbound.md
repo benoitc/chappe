@@ -100,6 +100,8 @@ and list the addresses it connects from in `allow`:
 or IPv6. The listener checks each peer right after accept: a peer outside
 the list is closed before any byte is read or any process started, and
 counted as `refused`. Without `allow`, every peer that reaches `ip` is taken.
+An empty list is refused as a bad option, so it never reads as "any peer"
+by mistake.
 
 Keep a firewall rule in front of the port too, letting in only your
 FreeSWITCH hosts: `allow` closes the connection after the TCP handshake, a

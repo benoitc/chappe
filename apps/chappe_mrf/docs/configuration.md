@@ -43,6 +43,12 @@ The listener binds 127.0.0.1 by default: the outbound socket has no
 authentication, so it does not open to the network unless you say so. Keep
 a firewall rule that lets only your FreeSWITCH hosts reach the port too. A
 bad `esl_ip` or `esl_allow` returns `{error, {bad_option, ip | allow}}`.
+
+When a listener started by chappe_mrf already runs on `esl_port` (from the
+app env, or an earlier `start/1`), `start/1` keeps it only if you ask for
+the same `esl_ip` and `esl_allow`. Otherwise it returns
+`{error, {listener_running, RunningOpts}}` and the running listener stays
+as it is: stop it with `chappe_mrf:stop_listener/0`, then start again.
 See [Outbound connections](../../chappe_esl/docs/guides/outbound.md).
 
 ## Record options
