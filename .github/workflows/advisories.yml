@@ -1,0 +1,46 @@
+name: Advisories
+
+# The third-party code chappe ships, checked against published advisories:
+# the vendored sofia-sip against its GitHub security advisories, and the
+# hex packages of rebar.lock against osv.dev. The weekly run catches an
+# advisory published after the last change.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sofia:
+    name: sofia-sip advisories
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Test the advisory script
+        run: make advisories-test
+      - name: Fetch freeswitch/sofia-sip advisories
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --paginate --slurp \
+            repos/freeswitch/sofia-sip/security-advisories \
+            > "$RUNNER_TEMP/sofia-advisories.json"
+      - name: Check the vendored version
+        run: |
+          python3 -I scripts/advisories.py sofia \
+            apps/chappe_sip/c_src/sofia-sip/configure.ac \
+            "$RUNNER_TEMP/sofia-advisories.json"
+
+  hex:
+    name: hex packages on osv.dev
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check rebar.lock
+        run: python3 -I scripts/advisories.py hex rebar.lock

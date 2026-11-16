@@ -15,19 +15,41 @@ the `mrf` dialplan extension shown in the [README](../README.md).
 | Key | Default | What it does |
 |---|---|---|
 | `esl_port` | unset | Port of the outbound socket listener FreeSWITCH connects back to. Set, the listener starts with the application. |
+| `esl_ip` | `{127, 0, 0, 1}` | Address the listener binds. Set it to the interface FreeSWITCH reaches you on when FreeSWITCH runs on another host. |
+| `esl_allow` | unset (any peer) | CIDR networks or addresses (strings or binaries) FreeSWITCH connects from. A peer outside is closed right after accept. |
 | `shared_dir` | unset | `#{freeswitch => Dir, local => Dir}`: the folder FreeSWITCH records into, as the node and as this host see it. Recordings asked with `store => default` must be in it; unset, both paths are the same. |
 
 ```erlang
 %% sys.config
-[{chappe_mrf, [{esl_port, 8084}]}].
+[{chappe_mrf, [
+    {esl_port, 8084},
+    {esl_ip, {10, 0, 0, 5}},
+    {esl_allow, ["10.0.0.8", "10.0.0.9"]}
+]}].
 ```
 
 The same at run time, after `chappe_sip:start/1` (it also installs the
 loopback INVITE middleware native rooms need):
 
 ```erlang
-ok = chappe_mrf:start(#{esl_port => 8084}).
+ok = chappe_mrf:start(#{
+    esl_port => 8084,
+    esl_ip => {10, 0, 0, 5},
+    esl_allow => [<<"10.0.0.8">>, <<"10.0.0.9">>]
+}).
 ```
+
+The listener binds 127.0.0.1 by default: the outbound socket has no
+authentication, so it does not open to the network unless you say so. Keep
+a firewall rule that lets only your FreeSWITCH hosts reach the port too. A
+bad `esl_ip` or `esl_allow` returns `{error, {bad_option, ip | allow}}`.
+
+When a listener started by chappe_mrf already runs on `esl_port` (from the
+app env, or an earlier `start/1`), `start/1` keeps it only if you ask for
+the same `esl_ip` and `esl_allow`. Otherwise it returns
+`{error, {listener_running, RunningOpts}}` and the running listener stays
+as it is: stop it with `chappe_mrf:stop_listener/0`, then start again.
+See [Outbound connections](../../chappe_esl/docs/guides/outbound.md).
 
 ## Record options
 

@@ -13,6 +13,8 @@
     %% instrument holds the metrics (chappe_sip_metrics); livery renders them
     {applications, [kernel, stdlib, crypto, xmerl, instrument]},
     {env, []},
-    {licenses, ["Apache-2.0"]},
+    %% chappe_sip is Apache-2.0; the NIF links the vendored sofia-sip, which
+    %% is LGPL-2.1-or-later (THIRD_PARTY_LICENSES.md)
+    {licenses, ["Apache-2.0", "LGPL-2.1-or-later"]},
     {links, []}
 ]}.

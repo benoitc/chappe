@@ -57,7 +57,13 @@
 -export([requested_expires/2]).
 -export([init/1, callback_mode/0, terminate/3]).
 -export([indialog_request/4]).
--export([setup/3, confirmed/3, in_transaction/3, terminating/3]).
+-export([
+    setup/3,
+    setup_failed/3,
+    confirmed/3,
+    in_transaction/3,
+    terminating/3
+]).
 
 -record(data, {
     leg :: non_neg_integer(),
@@ -249,7 +255,11 @@ init(
         cdr = maps:get(cdr, Args, undefined),
         call_ref = maps:get(call_ref, Opts, undefined)
     },
-    Data1 = derived(Data),
+    %% in the index before a UAS dialog's 2xx leaves (chappe_sip_engine sends
+    %% it once we are started), so a peer acting on that 2xx at once, by a
+    %% Replaces or a find_dialog/3, finds the dialog. The state stream hears
+    %% of it once it is confirmed (setup_done/1).
+    Data1 = index(derived(Data)),
     ok = announce(Data1),
     %% Any dialog-forming response (UAS) is sent by chappe_sip_engine (sending
     %% it from here would re-enter chappe_sip_engine during our own start and
@@ -281,7 +291,7 @@ answer_in_ack(_D) ->
 %% ---- setup: waiting for the leg op result ----
 
 setup({call, From}, await_ready, #data{ready = true, leg = LegH} = D) ->
-    {next_state, confirmed, index(D), [{reply, From, {ok, LegH}}]};
+    {next_state, confirmed, setup_done(D), [{reply, From, {ok, LegH}}]};
 setup({call, From}, await_ready, D) ->
     {keep_state, D#data{await_from = From}};
 setup(
@@ -293,12 +303,12 @@ setup(
 setup(
     info, {chappe_sip_op, LegH, ok}, #data{leg = LegH, await_from = From} = D
 ) ->
-    {next_state, confirmed, index(D#data{await_from = undefined}), [
+    {next_state, confirmed, setup_done(D#data{await_from = undefined}), [
         {reply, From, {ok, LegH}}
     ]};
 setup(info, {chappe_sip_op, LegH, {error, Reason}}, #data{leg = LegH} = D) ->
     reply_await(D, {error, Reason}),
-    {stop, normal, D};
+    fail_setup(D);
 setup(
     info,
     {'DOWN', MRef, process, _, _},
@@ -306,7 +316,7 @@ setup(
 ) ->
     %% owner died before the dialog was confirmed; drop the half-formed leg
     reply_await(D, {error, owner_down}),
-    {stop, normal, D#data{cdr_why = owner_down}};
+    fail_setup(D#data{cdr_why = owner_down});
 setup(
     info,
     {'DOWN', MRef, process, _, _},
@@ -315,13 +325,13 @@ setup(
     {keep_state, D};
 setup(info, {chappe_sip_engine_restart, _}, D) ->
     reply_await(D, {error, engine_restart}),
-    {stop, normal, D#data{cdr_why = engine_restart}};
+    fail_setup(D#data{cdr_why = engine_restart});
 setup(info, {chappe_sip_flow_lost, LegH}, #data{leg = LegH} = D) ->
     reply_await(D, {error, flow_lost}),
-    {stop, normal, D#data{cdr_why = flow_lost}};
+    fail_setup(D#data{cdr_why = flow_lost});
 setup(state_timeout, setup_timeout, D) ->
     reply_await(D, {error, setup_timeout}),
-    {stop, normal, D};
+    fail_setup(D);
 setup({timeout, _}, _, D) ->
     %% subscription expiry, session refresh or expiry: once confirmed
     {keep_state, D, [postpone]};
@@ -339,8 +349,34 @@ setup(info, {chappe_sip_cancel, TxnH, _}, #data{txn = TxnH} = D) ->
     {keep_state, D, [postpone]};
 setup(info, _Other, D) ->
     {keep_state, D};
-setup({call, From}, _Req, D) ->
-    {keep_state, D, [{reply, From, {error, not_ready}}]}.
+setup({call, From}, Query, D) when ?IS_QUERY(Query) ->
+    %% what the dialog was started with is known already
+    query(From, Query, D);
+setup({call, _From}, _Req, D) ->
+    %% the dialog is indexed from its start, so it can be found (and
+    %% called) before the owner has waited for its leg: serve the call once
+    %% confirmed, or answer it {error, terminated} if the setup fails
+    {keep_state, D, [postpone]}.
+
+%% the dialog leaves setup: the state stream hears of it now, not when it
+%% was indexed, so a setup that fails never reads as confirmed
+setup_done(#data{indexed = undefined} = D) ->
+    D;
+setup_done(D) ->
+    ok = publish_state(D, D#data.index_state),
+    D.
+
+%% a setup that fails answers the calls it postponed, then stops: they are
+%% replayed in setup_failed, ahead of the zero timeout
+fail_setup(D) ->
+    {next_state, setup_failed, D, [{state_timeout, 0, stop}]}.
+
+setup_failed(state_timeout, stop, D) ->
+    {stop, normal, D};
+setup_failed({call, From}, _Req, D) ->
+    {keep_state, D, [{reply, From, {error, terminated}}]};
+setup_failed(_Type, _Event, D) ->
+    {keep_state, D}.
 
 %% ---- confirmed ----
 
@@ -2199,9 +2235,7 @@ index(#data{remote_addr = RA} = D) ->
                 )
             of
                 ok ->
-                    D1 = D#data{indexed = Key},
-                    ok = publish_state(D1, D#data.index_state),
-                    D1;
+                    D#data{indexed = Key};
                 {error, Reason} ->
                     logger:warning(
                         "chappe_sip_dialog_fsm: not indexed ~p: ~p",

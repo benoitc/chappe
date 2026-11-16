@@ -46,7 +46,7 @@ services:
   # bench arms that must not pay the host-to-VM hop. The umbrella is
   # mounted read-only; the arms run from its _build.
   bench:
-    image: erlang:29
+    image: erlang:29.1.2
     container_name: chappe-mix-bench
     profiles: ["bench"]
     working_dir: /src

@@ -8,7 +8,7 @@
 -module(chappe_esl_outbound_sup).
 -behaviour(supervisor).
 
--export([start_link/0, start_conn/2, start_conn/3]).
+-export([start_link/0, start_conn/2, start_conn/3, stop_conn/1]).
 -export([init/1]).
 
 start_link() ->
@@ -25,6 +25,12 @@ start_conn(Handler, Args, ConnOpts) ->
         mode => outbound, handler => Handler, handler_args => Args
     },
     supervisor:start_child(?MODULE, [Opts]).
+
+%% Stop a connection the listener could not hand its socket to.
+-spec stop_conn(pid()) -> ok.
+stop_conn(Conn) ->
+    _ = supervisor:terminate_child(?MODULE, Conn),
+    ok.
 
 init([]) ->
     SupFlags = #{strategy => simple_one_for_one, intensity => 10, period => 10},

@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        otp: ['29']
+        otp: ['29.1.2']
     steps:
       # actions pinned by commit SHA (mutable tags are a supply-chain risk)
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -46,7 +46,7 @@ jobs:
             _build
             c_src/build
             ~/.cache/rebar3
-          key: ${{ runner.os }}-otp-${{ matrix.otp }}-${{ hashFiles('rebar.lock', '.gitmodules', 'c_src/build.sh') }}
+          key: ${{ runner.os }}-otp-${{ matrix.otp }}-${{ hashFiles('rebar.lock', 'c_src/build.sh') }}
           restore-keys: |
             ${{ runner.os }}-otp-${{ matrix.otp }}-
 
@@ -70,7 +70,7 @@ jobs:
       - name: Set up Erlang
         uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
         with:
-          otp-version: '29'
+          otp-version: '29.1.2'
           rebar3-version: '3.24.0'
 
       - name: Install C build dependencies

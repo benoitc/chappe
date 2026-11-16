@@ -99,7 +99,7 @@ Why the order matters:
 | Directory | Owns | Modules |
 |---|---|---|
 | root | Boot, root supervisor, configuration defaults, metrics | `chappe_sip_app`, `chappe_sip_sup`, `chappe_sip_config`, `chappe_sip_metrics` |
-| `engine/` | The NIF and the dispatcher, listen addresses, HEP for WS | `chappe_sip_engine`, `chappe_sip_nif`, `chappe_sip_binds`, `chappe_sip_hep` |
+| `engine/` | The NIF and the dispatcher, listen addresses, HEP for WS | `chappe_sip_engine`, `chappe_sip_nif`, `chappe_sip_binds`, `chappe_sip_bind_uri`, `chappe_sip_hep` |
 | `conn/` | Request workers, the stack supervisor, the location store | `chappe_sip_request_worker`, `chappe_sip_request_sup`, `chappe_sip_stack_sup`, `chappe_sip_registry`, `chappe_sip_registry_keeper` |
 | `sip/` | The message model and pure protocol helpers | `chappe_sip_msg`, `chappe_sip_hdr`, `chappe_sip_hdr_io`, `chappe_sip_uri`, `chappe_sip_req`, `chappe_sip_res`, `chappe_sip_sdp`, `chappe_sip_sdes`, `chappe_sip_multipart`, `chappe_sip_sipfrag`, `chappe_sip_digest`, `chappe_sip_digest_nc`, `chappe_sip_net` |
 | `dialog/` | Dialogs, session timers, REFER, the subscriber side of events, the NOTIFY router | `chappe_sip_dialog`, `chappe_sip_dialog_fsm`, `chappe_sip_dialog_index`, `chappe_sip_dialog_sup`, `chappe_sip_session_timer`, `chappe_sip_refer*`, `chappe_sip_subscriber*`, `chappe_sip_notify_router` |

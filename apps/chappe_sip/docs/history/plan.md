@@ -12,7 +12,7 @@ Erlang. Full design: `docs/design/engine.md` and the approved plan this
 file tracks.
 
 Pins:
-- sofia-sip: freeswitch/sofia-sip @ 7333682a297f28130ff46d5ef0f9e2f72adca0e8 (v1.13.17-55)
+- sofia-sip: freeswitch/sofia-sip @ 6dce59d35535e6dd3945c7b0f76dbf1ba884202d (v1.13.19)
 - Erlang/OTP: 29 only
 
 One commit closes each milestone.

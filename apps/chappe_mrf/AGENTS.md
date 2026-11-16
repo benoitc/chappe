@@ -37,6 +37,6 @@ make interop-mrf                         # chappe_mrf_live_SUITE, real FreeSWITC
 
 - Nothing in the umbrella depends on chappe_mrf. Shared helpers live in
   `chappe_mrf_lib`; never copy one from another app.
-- OTP 29. No em-dash in code, docs or messages; never the word
+- OTP 29.1.2 or later. No em-dash in code, docs or messages; never the word
   "comprehensive".
 - No generated or co-authored commit trailers; one imperative subject line.

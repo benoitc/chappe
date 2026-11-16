@@ -16,6 +16,8 @@
     {applications, [kernel, stdlib, chappe_sip, chappe_esl, chappe_audio]},
     %% esl_port: the port of the listener the FreeSWITCH dialplan `socket'
     %% application connects back to (started with the app when set);
+    %% esl_ip: the address it listens on (127.0.0.1 unset); esl_allow: the
+    %% networks FreeSWITCH connects from, CIDR strings (any peer unset);
     %% shared_dir: #{freeswitch => Dir, local => Dir}, the folder FreeSWITCH
     %% records into as each side sees it (unset: the same path)
     {env, []},

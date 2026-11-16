@@ -86,6 +86,9 @@
 %% secure WebSocket with the agent.pem of its cert_dir (or certfile/keyfile).
 %% contact (and tls contact) may list several URIs, one per listen address:
 %% a request is answered, and record-routed, with the address it came to.
+%% A contact with no transport parameter binds udp,tcp (tls for a sips: or
+%% tls contact). WebSocket is served by the ws and wss options only: a
+%% contact naming ws, wss or * fails the start with {error, badarg}.
 %% max_message_size defaults to the application setting. hep (or the
 %% `hep' application setting) sends a HEPv3 copy of every SIP message sent
 %% and received to a capture server (Homer); capture_id defaults to 200.

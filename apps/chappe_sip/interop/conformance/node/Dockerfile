@@ -7,7 +7,7 @@
 # change only recompiles what changed. The node runs on the lab network
 # next to SIPp and pjsua, because Docker Desktop on macOS cannot send UDP
 # from the host to container addresses.
-FROM erlang:29
+FROM erlang:29.1.2
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     autoconf automake libtool pkg-config libssl-dev cmake rsync \

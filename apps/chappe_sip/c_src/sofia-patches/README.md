@@ -16,7 +16,12 @@ from that copy; the fuzz build calls it with its own directory.
 `prepare_sofia.sh --key` prints the vendored tree's hash and the patches'
 checksum, which is part of sofia's build stamp, so adding or changing a
 patch rebuilds sofia and relinks the NIF. The vendored tree in git never
-changes.
+changes. After building sofia, `build.sh` builds and runs upstream's
+`torture_sres_domain` (the DNS compression loop of CVE-2026-116792); a
+failure fails the build, and the log is `build/sofia-check.log`. The test
+runs on the build machine, so it is skipped when configure's host differs
+from its build system (a cross build), and when you set
+`SOFIA_SKIP_CHECK=1`; the build says which.
 
 ## The patches
 
@@ -28,13 +33,32 @@ changes.
 | `0004-msg-date-signed-shift.patch` | undefined shift of a signed `char` in `msg_date.c` when a month name has a high byte | [`tickets/0004-msg-date-signed-shift.md`](tickets/0004-msg-date-signed-shift.md), not filed yet |
 | `0005-nta-timer-a-at-t1.patch` | Timer A/E of a UDP client transaction started at no less than 1 s whatever T1, against RFC 3261 17.1.1.2 and 17.1.2.2 | [`tickets/0005-nta-timer-a-at-t1.md`](tickets/0005-nta-timer-a-at-t1.md), not filed yet |
 | `0006-tport-tls-san-leak.patch` | `tls_post_connection_check()` leaked the decoded subjectAltName of the peer's certificate on every outbound TLS connection | [`tickets/0006-tport-tls-san-leak.md`](tickets/0006-tport-tls-san-leak.md), not filed yet |
+| `0007-tport-reload-tls-without-nth.patch` | `tport_reload_tls()` called the WSS code even when nth (and so ws) is not built, so `--disable-nth` did not link | [`tickets/0007-tport-reload-tls-without-nth.md`](tickets/0007-tport-reload-tls-without-nth.md), not filed yet |
 
 0001 and 0002 were found by the libFuzzer targets in `../fuzz` under
 UBSan, 0003 by the NIF fuzz suite (`chappe_sip_nif_fuzz_SUITE`) under ASan,
 0005 by `chappe_sip_engine_opts_SUITE` (its repro needs no sanitizer: link
 it with the same command and the system frameworks or `-lpthread`), 0006 by
 `chappe_sip_tls_SUITE` once `make asan` ran every suite (its repro is a TLS
-handshake, which the ticket describes; there is no program in `repro/`).
+handshake, which the ticket describes; there is no program in `repro/`),
+0007 by building with `--disable-nth` (the repro is that build, as the
+ticket says).
+
+## sofia's WebSocket transport
+
+chappe serves WebSocket in Erlang (`src/ws/`), never through sofia's
+`tport_type_ws.c` and `ws.c`. chappe_sip refuses a native contact naming
+`ws`, `wss` or `*` (`{error, badarg}` at start) and gives a contact with no
+transport `udp,tcp` (`tls` for a sips: one), so sofia never opens that
+transport.
+
+The code is not compiled either. sofia's configure has no switch for ws
+alone: `tport/Makefile.am` builds `ws.c` and `tport_type_ws.c` under
+`HAVE_NTH`, and `tport.c` registers the ws vtables under
+`HAVE_SOFIA_NTH`. So `build.sh` and the fuzz build configure sofia with
+`--disable-nth`, which also drops the http and nth modules and the HTTP
+CONNECT transport. chappe links none of them: the NIF uses nta, tport,
+sip, msg, url, su and sresolv only. Patch 0007 makes that build link.
 
 ## Reproduce a bug
 
@@ -61,6 +85,48 @@ program prints its result and exits cleanly.
 3. Add a repro program in `repro/` and a row in the table above.
 4. Remove the matching suppression from `../fuzz/ubsan.supp`, if there is
    one, and run `make fuzz`.
+
+## Re-vendor sofia-sip
+
+You need this when upstream ships a release, above all a security one. The
+vendored tree is the upstream tag as `git archive` gives it, without its
+`.gitignore`, plus the autoreconf output (`configure`, `aclocal.m4`,
+`config.h.in`, every `Makefile.in`, the libtool and automake helpers), so a
+clean clone builds without autotools.
+
+1. Take the tag's tree and list the files the current vendoring adds to the
+   tag it came from (the generated set):
+
+   ```sh
+   git clone --filter=blob:none https://github.com/freeswitch/sofia-sip.git up
+   git -C up archive vX.Y.Z | (mkdir new && tar -x -C new)
+   git -C up ls-tree -r --name-only OLD_SHA | sort > old.txt
+   git ls-files apps/chappe_sip/c_src/sofia-sip \
+     | sed 's#^apps/chappe_sip/c_src/sofia-sip/##' | sort > vend.txt
+   # autoreconf -i leaves backups (config.guess~): never vendor them
+   comm -13 old.txt vend.txt | grep -v '~$' > generated.txt
+   ```
+
+2. Regenerate that set on a copy of the new tree:
+
+   ```sh
+   cp -R new gen
+   (cd gen && LIBTOOLIZE=glibtoolize autoreconf -fiv)   # libtoolize on Linux
+   ```
+
+3. Replace the vendored tree with `new/`, drop `.gitignore`, and copy every
+   file of `generated.txt` from `gen/`. `git status` must show upstream's
+   changes and the regenerated files only, with no `*~` backup among them
+   (`git ls-files apps/chappe_sip/c_src/sofia-sip | grep '~$'` prints
+   nothing).
+4. Check that every patch still applies:
+   `sh ../prepare_sofia.sh /tmp/sofia-check`. A patch upstream has merged is
+   dropped (see below); one that no longer applies is redone on the new
+   tree.
+5. Update the pin (tag and commit) in `AGENTS.md`,
+   `docs/history/plan.md` and `../../THIRD_PARTY_LICENSES.md`, then build
+   on a fresh NIF volume and run `make check`, `make asan`, `make fuzz` and
+   the conformance lab.
 
 ## Drop a patch
 

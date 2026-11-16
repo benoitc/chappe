@@ -45,5 +45,5 @@ fail again. Record the mutations in `ATTEMPTS.md` and the commit body.
 - Nothing a peer sends becomes an atom.
 - Run `rebar3 fmt`; elvis must pass (per-module ignores live in the umbrella
   `elvis.config` with a one-line reason).
-- OTP 29. No em-dash in code, docs or messages; never the word "comprehensive".
+- OTP 29.1.2 or later. No em-dash in code, docs or messages; never the word "comprehensive".
 - No generated or co-authored commit trailers; one imperative subject line.

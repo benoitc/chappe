@@ -31,7 +31,7 @@ fi
 SOFIA_SRC_KEY=$(sh "$CSRC/prepare_sofia.sh" --key)
 # bump SOFIA_CONF when the configure options change, so a tree built with
 # the old ones is reconfigured
-SOFIA_CONF=nozlib
+SOFIA_CONF=nozlib-nonth
 SOFIA_KEY="$SOFIA_SRC_KEY-$SOFIA_CONF"
 SOFIA_COPY="$BUILD/sofia-src"
 
@@ -83,10 +83,13 @@ if [ ! -f "$DIST/lib/libsofia-sip-ua.a" ] || [ "$(cat "$SOFIA_STAMP" 2>/dev/null
     # and deflates responses to compressed requests whatever their
     # Accept-Encoding. chappe applies no content coding; the request worker
     # answers 415 to an encoded INVITE body instead.
+    # No nth: it is the only switch for sofia's ws, wss and HTTP CONNECT
+    # transports (tport_type_ws.c, ws.c) and the http and nth modules.
+    # chappe serves WebSocket in Erlang and links none of them.
     ( cd "$BUILD/sofia" && \
       "$SOFIA_COPY/configure" --prefix="$DIST" \
           --disable-shared --enable-static --with-pic \
-          --disable-glib $SSL_OPT ac_cv_lib_z_compress=no \
+          --disable-glib --disable-nth $SSL_OPT ac_cv_lib_z_compress=no \
           CFLAGS="-O2 -g -DNDEBUG $RELAX" LDFLAGS="$DARWIN_FRAMEWORKS" ) \
         >"$BUILD/sofia-configure.log" 2>&1 || {
         echo "error: sofia configure failed:" >&2
@@ -100,6 +103,28 @@ if [ ! -f "$DIST/lib/libsofia-sip-ua.a" ] || [ "$(cat "$SOFIA_STAMP" 2>/dev/null
         tail -n 40 "$BUILD/sofia-make.log" >&2
         exit 1
     }
+    # Upstream's own test that a DNS name whose compression pointers loop
+    # is refused instead of spinning the resolver (CVE-2026-116792). It
+    # needs no network and builds from the objects above in seconds. It
+    # runs on the build host, so it is skipped when configure's host is not
+    # its build system (cross-compiling: the program could not run here) or
+    # when SOFIA_SKIP_CHECK=1.
+    CONF_LOG="$BUILD/sofia/config.log"
+    SOFIA_HOST=$(sed -n "s/^host='\(.*\)'$/\1/p" "$CONF_LOG" | head -1)
+    SOFIA_BUILD=$(sed -n "s/^build='\(.*\)'$/\1/p" "$CONF_LOG" | head -1)
+    if [ "${SOFIA_SKIP_CHECK:-0}" = "1" ]; then
+        echo "==> sofia check skipped (SOFIA_SKIP_CHECK=1)"
+    elif [ "$SOFIA_HOST" != "$SOFIA_BUILD" ]; then
+        echo "==> sofia check skipped (cross-compiling for $SOFIA_HOST)"
+    else
+        ( cd "$BUILD/sofia/libsofia-sip-ua/sresolv" && \
+          make torture_sres_domain && ./torture_sres_domain ) \
+            >"$BUILD/sofia-check.log" 2>&1 || {
+            echo "error: sofia check torture_sres_domain failed:" >&2
+            tail -n 40 "$BUILD/sofia-check.log" >&2
+            exit 1
+        }
+    fi
     echo "$SOFIA_KEY" > "$SOFIA_STAMP"
 fi
 

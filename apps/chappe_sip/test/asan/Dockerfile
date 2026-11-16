@@ -6,7 +6,7 @@
 # drives: gcc 14 (ASan, UBSan, TSan runtimes and -fanalyzer), clang 19 with
 # libFuzzer and clang-tidy. macOS cannot install sanitizer interceptors into
 # a dlopen'd NIF and has no libFuzzer or clang-tidy; Linux + LD_PRELOAD can.
-FROM erlang:29
+FROM erlang:29.1.2
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     autoconf automake libtool pkg-config libssl-dev cmake rsync \

@@ -45,5 +45,5 @@ socket); the live suite is gated on a real FreeSWITCH.
   keep `#data{}` state, `chappe_esl_conn` calls a pluggable handler module, and
   the `chappe_esl` facade is over the function limit; ignores are in the
   umbrella `elvis.config`).
-- OTP 29. No em-dash in code/docs/messages; never the word "comprehensive".
+- OTP 29.1.2 or later. No em-dash in code/docs/messages; never the word "comprehensive".
 - No generated/co-authored commit trailers; one imperative subject line.
