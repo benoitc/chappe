@@ -21,7 +21,8 @@
          answer_on_second_v4/1, uac_local/1, udp_flow_local/1,
          public_advertised/1, public_local_nets/1, bad_public/1,
          double_record_route/1, ack_491_on_each_address/1,
-         ws_transport_refused/1, tls_contact_default_transport/1]).
+         ws_transport_refused/1, tls_contact_default_transport/1,
+         contact_forms/1]).
 
 -define(V4, {127, 0, 0, 1}).
 -define(V4B, {127, 0, 0, 2}).
@@ -32,7 +33,8 @@ all() ->
      ack_491_on_each_address,
      uac_by_family,
      single_contact, bad_contact, ws_transport_refused,
-     tls_contact_default_transport, public_advertised, public_local_nets,
+     tls_contact_default_transport, contact_forms, public_advertised,
+     public_local_nets,
      bad_public, {group, second_v4}].
 
 groups() ->
@@ -278,6 +280,45 @@ tls_contact_default_transport(_Config) ->
     ?assertEqual(<<"sip:127.0.0.1:5060;transport=udp,tcp">>, C),
     ?assertEqual(<<"sips:127.0.0.1:5061;transport=tls">>, T),
     ?assertEqual(<<"sips:[::1]:5061;transport=tls">>, T2).
+
+%% A contact in angle brackets is unwrapped before its transport is
+%% checked or added; one with a display name or anything after the `>' is
+%% refused. An empty transport, a percent-encoded ws and a broken escape
+%% are refused too, plain or TLS.
+contact_forms(_Config) ->
+    Opts = fun(C) -> #{contact => C} end,
+    {ok, #{contact := C1}} =
+        chappe_sip_binds:options(Opts(<<"<sip:127.0.0.1:5060>">>)),
+    ?assertEqual(<<"sip:127.0.0.1:5060;transport=udp,tcp">>, C1),
+    {ok, #{contact := C2}} =
+        chappe_sip_binds:options(Opts(<<" <sip:127.0.0.1:5060;transport=udp> ">>)),
+    ?assertEqual(<<"sip:127.0.0.1:5060;transport=udp">>, C2),
+    {ok, #{contact := C3}} =
+        chappe_sip_binds:options(Opts(<<"sip:127.0.0.1:5060;transport=t%63p">>)),
+    ?assertEqual(<<"sip:127.0.0.1:5060;transport=t%63p">>, C3),
+    Bad = [<<"<sip:127.0.0.1:5060;transport=ws>">>,
+           <<"Me <sip:127.0.0.1:5060>">>,
+           <<"<sip:127.0.0.1:5060>;transport=udp">>,
+           <<"<sip:127.0.0.1:5060">>,
+           <<"sip:127.0.0.1:5060;transport=">>,
+           <<"sip:127.0.0.1:5060;transport=;lr">>,
+           <<"sip:127.0.0.1:5060;transport=udp,">>,
+           <<"sip:127.0.0.1:5060;transport=w%73">>,
+           <<"sip:127.0.0.1:5060;transport=%57S">>,
+           <<"sip:127.0.0.1:5060;transport=u%zzp">>],
+    [?assertEqual({error, badarg}, chappe_sip_binds:options(Opts(B)), B)
+     || B <- Bad],
+    [?assertEqual({error, badarg},
+                  chappe_sip_binds:options(
+                    #{contact => <<"sip:127.0.0.1:5060">>,
+                      tls => #{contact => T}}), T)
+     || T <- [<<"<sips:127.0.0.1:5061;transport=wss>">>,
+              <<"sips:127.0.0.1:5061;transport=">>,
+              <<"sips:127.0.0.1:5061;transport=w%73s">>]],
+    {ok, #{tls := #{contact := T1}}} =
+        chappe_sip_binds:options(#{contact => <<"sip:127.0.0.1:5060">>,
+                                   tls => #{contact => <<"<sips:127.0.0.1:5061>">>}}),
+    ?assertEqual(<<"sips:127.0.0.1:5061;transport=tls">>, T1).
 
 %% ---- 1:1 NAT: a public address advertised, a local one bound ----
 
