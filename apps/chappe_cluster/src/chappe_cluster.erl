@@ -30,6 +30,7 @@
     valid/1,
     leases/0,
     get/1,
+    get/2,
     put/2,
     delete/1,
     delete/2,
@@ -181,6 +182,15 @@ leases() ->
 get(Key) when is_binary(Key) ->
     query({?M, query_get, [Key]});
 get(_) ->
+    {error, badarg}.
+
+%% get/1 through the leader: the region's latest value, for a writer whose
+%% compare-and-swap found the local replica behind.
+-spec get(binary(), consistent) ->
+    {ok, term(), pos_integer()} | not_found | {error, term()}.
+get(Key, consistent) when is_binary(Key) ->
+    consistent({?M, query_get, [Key]});
+get(_, _) ->
     {error, badarg}.
 
 -spec put(binary(), term()) ->

@@ -12,7 +12,7 @@
 -module(chappe_sip_registry_keeper).
 -behaviour(gen_server).
 
--export([start_link/0]).
+-export([start_link/0, tables/0]).
 -export([init/1, handle_call/3, handle_cast/2]).
 
 -define(TAB, chappe_sip_registry).
@@ -25,6 +25,13 @@ start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 init([]) ->
+    ok = tables(),
+    {ok, #{}}.
+
+%% Create the tables this process owns, those that are missing (the
+%% calling process owns them when it is not this one: tests).
+-spec tables() -> ok.
+tables() ->
     _ = ensure_table(?TAB, [named_table, set, public, {read_concurrency, true}]),
     _ = ensure_table(?CFG_TAB, [named_table, set, public]),
     _ = ensure_table(?HELD_TAB, [named_table, set, public]),
@@ -35,7 +42,7 @@ init([]) ->
         {read_concurrency, true},
         {write_concurrency, true}
     ]),
-    {ok, #{}}.
+    ok.
 
 ensure_table(Name, Opts) ->
     case ets:info(Name) of

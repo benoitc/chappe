@@ -60,6 +60,9 @@
 ]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 -export([handle_continue/2]).
+-ifdef(TEST).
+-export([register_with/3]).
+-endif.
 
 %% a write that lost a compare-and-swap this many times in a row fails 500
 -define(TAB, chappe_sip_registry).
@@ -124,16 +127,32 @@ register_request(Req, Opts) ->
             %% compare-and-swap orders it against the other nodes; the
             %% request worker is the caller, so nothing is left behind a
             %% caller that gave up
-            cas_register(Store, Req, Opts, ?CAS_TRIES)
+            cas_register(Store, Req, Opts, local, ?CAS_TRIES)
     end.
 
-cas_register(_Store, _Req, _Opts, 0) ->
+-ifdef(TEST).
+%% register_request/2 against a given backend (tests)
+register_with(Store, Req, Opts) ->
+    cas_register(Store, Req, Opts, local, ?CAS_TRIES).
+-endif.
+
+%% The first try reads the local replica; one that lost the compare-and-
+%% swap waits a little and reads through the leader, since the replica
+%% that misled it may still be behind.
+cas_register(_Store, _Req, _Opts, _Mode, 0) ->
     {error, 500};
-cas_register(Store, Req, Opts, N) ->
-    case do_register(Store, Req, Opts) of
-        {error, conflict} -> cas_register(Store, Req, Opts, N - 1);
-        Result -> Result
+cas_register(Store, Req, Opts, Mode, N) ->
+    case do_register(Store, Req, Opts, Mode) of
+        {error, conflict} ->
+            backoff(N),
+            cas_register(Store, Req, Opts, consistent, N - 1);
+        Result ->
+            Result
     end.
+
+%% 2, 5, 10, 20 ms before the tries after the first: under 40 ms in all
+backoff(N) ->
+    timer:sleep((5 bsl (?CAS_TRIES - N)) div 2).
 
 %% Live contact URIs for an AOR (or a To/Contact header value / URI), the
 %% highest q first.
@@ -352,10 +371,13 @@ terminate(_Reason, _S) ->
 %% backend that saw another write in between refuses it ({error,
 %% conflict}: read and apply again).
 do_register(Store, Req, Opts) ->
+    do_register(Store, Req, Opts, local).
+
+do_register(Store, Req, Opts, Mode) ->
     Msg = chappe_sip_req:msg(Req),
     case aor_of(Msg, Opts) of
         {ok, Aor} ->
-            case chappe_sip_location:read(Store, Aor) of
+            case chappe_sip_location:read(Store, Aor, Mode) of
                 {ok, Bs, Version} ->
                     register_aor({Store, Aor, Bs, Version}, Msg, Opts);
                 {error, _} = E ->
@@ -780,21 +802,25 @@ stale_flow(_B, _Boot) ->
 %% Apply Fun to an AOR's bindings and write the result, reading again when
 %% another writer got in between.
 modify(Store, Aor, Fun) ->
-    modify(Store, Aor, Fun, ?CAS_TRIES).
+    modify(Store, Aor, Fun, local, ?CAS_TRIES).
 
-modify(_Store, _Aor, _Fun, 0) ->
+modify(_Store, _Aor, _Fun, _Mode, 0) ->
     {error, conflict};
-modify(Store, Aor, Fun, N) ->
-    case chappe_sip_location:read(Store, Aor) of
+modify(Store, Aor, Fun, Mode, N) ->
+    case chappe_sip_location:read(Store, Aor, Mode) of
         {ok, Bs, Version} ->
             case Fun(Bs) of
                 Bs ->
                     ok;
                 New ->
                     case chappe_sip_location:write(Store, Aor, Version, New) of
-                        ok -> held(Store, Aor, New);
-                        {error, conflict} -> modify(Store, Aor, Fun, N - 1);
-                        {error, _} = E -> E
+                        ok ->
+                            held(Store, Aor, New);
+                        {error, conflict} ->
+                            backoff(N),
+                            modify(Store, Aor, Fun, consistent, N - 1);
+                        {error, _} = E ->
+                            E
                     end
             end;
         {error, _} = E ->

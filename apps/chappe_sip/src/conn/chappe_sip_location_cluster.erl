@@ -5,7 +5,9 @@
 %% KV (chappe_cluster), under `chappe_sip/aor/<AOR>'.
 %%
 %% - A read is the local replica: eventually consistent, which routing
-%%   tolerates, and it answers while the region has no quorum.
+%%   tolerates, and it answers while the region has no quorum. A writer
+%%   whose compare-and-swap lost reads again through the leader, since the
+%%   replica that misled it may still be behind.
 %% - A write is a compare-and-swap on the version the read returned, so
 %%   two nodes taking REGISTERs for one AOR at once never lose either:
 %%   the loser reads again. It waits for the quorum at most
@@ -19,7 +21,7 @@
 
 -include("chappe_sip_location.hrl").
 
--export([read/1, write/3, aors/0, clear/0]).
+-export([read/2, write/3, aors/0, clear/0]).
 -export([prefix/0]).
 
 -define(PREFIX, <<"chappe_sip/aor/">>).
@@ -29,8 +31,13 @@
 prefix() ->
     ?PREFIX.
 
-read(Aor) ->
-    case chappe_cluster:get(key(Aor)) of
+read(Aor, local) ->
+    result_of(chappe_cluster:get(key(Aor)));
+read(Aor, consistent) ->
+    result_of(chappe_cluster:get(key(Aor), consistent)).
+
+result_of(Got) ->
+    case Got of
         {ok, Maps, Version} when is_list(Maps) ->
             {ok, [from_map(M) || M <- Maps, is_map(M)], Version};
         not_found ->

@@ -9,11 +9,11 @@
 -module(chappe_sip_location_ets).
 -behaviour(chappe_sip_location).
 
--export([read/1, write/3, aors/0, clear/0]).
+-export([read/2, write/3, aors/0, clear/0]).
 
 -define(TAB, chappe_sip_registry).
 
-read(Aor) ->
+read(Aor, _Mode) ->
     case ets:lookup(?TAB, Aor) of
         [{Aor, Bs}] -> {ok, Bs, 0};
         [] -> {ok, [], 0}
