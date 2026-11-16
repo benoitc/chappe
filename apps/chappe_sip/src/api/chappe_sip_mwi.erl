@@ -21,7 +21,10 @@
 %% Across nodes: the notifier of each node joins the chappe_sip_mwi group
 %% of the chappe_sip pg scope, and update/2 reaches the subscribers of
 %% every node, whichever node took the SUBSCRIBE. It is a lookup, not an
-%% owner: no lease, and it works without chappe_cluster.
+%% owner: no lease, and it works without chappe_cluster. Each update
+%% carries a version (the wall clock, the node, a counter), and a notifier
+%% keeps the latest it saw, so updates made at once on two nodes end the
+%% same on both.
 -module(chappe_sip_mwi).
 
 -export([render/1, parse/1, content_type/0]).
@@ -184,10 +187,17 @@ serve(#{summary := Summary} = Opts) when is_function(Summary, 1) ->
 -spec update(binary(), summary()) -> ok.
 update(Account, Summary) ->
     Key = chappe_sip_esc:resource(Account),
-    ok = chappe_sip_notifier:put(?N, Key, Summary),
+    %% the wall clock, then the node and a counter: the later update wins
+    %% on every node, whichever arrives last
+    Version = {
+        erlang:system_time(microsecond),
+        node(),
+        erlang:unique_integer([monotonic])
+    },
+    ok = chappe_sip_notifier:put(?N, Key, Summary, Version),
     Here = node(),
     _ = [
-        chappe_sip_notifier:put_async(P, Key, Summary)
+        chappe_sip_notifier:put_async(P, Key, Summary, Version)
      || P <- pg:get_members(chappe_sip_call:scope(), group()),
         node(P) =/= Here
     ],

@@ -31,7 +31,7 @@
 -export([pa_full_state/1, pa_rate/1, pa_accept_406/1, pa_deny_403/1,
          pa_pending/1, pa_polite/1, pa_digest/1, pa_fetch/1]).
 -export([mwi_initial_and_update/1, mwi_rate/1, mwi_auth/1,
-         mwi_other_node/1]).
+         mwi_other_node/1, mwi_order_across_nodes/1]).
 -export([epa_lifecycle/1, epa_one_at_a_time/1, epa_412/1, epa_423/1,
          epa_digest/1]).
 -export([watcher_pidf/1, watcher_mwi/1, watcher_one_dialog/1,
@@ -55,7 +55,7 @@ groups() ->
      {pa, [], [pa_full_state, pa_rate, pa_accept_406, pa_deny_403,
                pa_pending, pa_polite, pa_digest, pa_fetch]},
      {mwi, [], [mwi_initial_and_update, mwi_rate, mwi_auth,
-                 mwi_other_node]},
+                 mwi_other_node, mwi_order_across_nodes]},
      {epa, [], [epa_lifecycle, epa_one_at_a_time, epa_412, epa_423,
                 epa_digest]},
      {watcher, [], [watcher_pidf, watcher_mwi, watcher_one_dialog,
@@ -537,6 +537,42 @@ mwi_other_node(Config) ->
                        [Acc, #{messages => #{voice => {4, 0}}}]),
         {N2, _} = recv_notify(Sock, EP),
         ?assertMatch({_, _}, binary:match(body(N2), <<"Voice-Message: 4/0">>))
+    after
+        chappe_sip_test_cluster:stop_peer(Peer)
+    end.
+
+%% Two updates of one account on two nodes, the older one delivered
+%% last on one of them: both nodes end with the newer summary.
+mwi_order_across_nodes(_Config) ->
+    ok = chappe_sip_test_cluster:ensure(),
+    {Peer, Node} = chappe_sip_test_cluster:peer("mwio"),
+    try
+        {ok, _} = erpc:call(Node, application, ensure_all_started, [chappe_sip]),
+        Acc = <<"sip:order@127.0.0.1">>,
+        Here = node(),
+        ok = wait_until(fun() ->
+            lists:member(Here, [node(P) || P <- erpc:call(Node, pg, get_members,
+                [chappe_sip_call:scope(), chappe_sip_mwi])])
+        end),
+        Remote = erpc:call(Node, erlang, whereis, [chappe_sip_mwi_notifier]),
+        %% the peer's notifier holds its mail: the older update, made
+        %% there, waits behind it
+        ok = sys:suspend(Remote),
+        Older = #{messages => #{voice => {1, 0}}},
+        Newer = #{messages => #{voice => {9, 0}}},
+        Self = self(),
+        _ = spawn(fun() ->
+                      Self ! {older, erpc:call(Node, chappe_sip_mwi, update, [Acc, Older])}
+                  end),
+        timer:sleep(200),
+        ok = chappe_sip_mwi:update(Acc, Newer),
+        ok = sys:resume(Remote),
+        receive {older, ok} -> ok after 5000 -> ct:fail(no_older) end,
+        timer:sleep(300),
+        Key = chappe_sip_esc:resource(Acc),
+        ?assertEqual(Newer, chappe_sip_notifier:get(chappe_sip_mwi_notifier, Key)),
+        ?assertEqual(Newer, erpc:call(Node, chappe_sip_notifier, get,
+                                      [chappe_sip_mwi_notifier, Key]))
     after
         chappe_sip_test_cluster:stop_peer(Peer)
     end.
