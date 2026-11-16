@@ -388,7 +388,7 @@ jobs:
         with:
           otp-version: ${{ env.OTP }}
           rebar3-version: ${{ env.REBAR3 }}
-      - run: docker pull erlang:29
+      - run: docker pull erlang:29.1.2
       - run: DURATION=5m make interop-cluster
       - name: Lease logs
         if: failure()

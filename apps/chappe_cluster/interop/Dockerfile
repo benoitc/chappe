@@ -8,7 +8,7 @@
 # libfaketime (a node's wall clock moved while it runs). faketime is
 # optional: without it the lab skips clock skew. The cookie comes from
 # CLB_COOKIE at start (node/run.sh), never from the image.
-FROM erlang:29
+FROM erlang:29.1.2
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     iproute2 iptables \
