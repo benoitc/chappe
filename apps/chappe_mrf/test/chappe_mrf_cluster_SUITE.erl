@@ -21,6 +21,10 @@
     owner_node_shuts_down/1,
     lost_lease_moves_members/1,
     fs_clean_stop_frees_name/1,
+    draining_node_routes_away/1,
+    transfer_deadline_restores_member/1,
+    rehome_helper_is_owned/1,
+    start_has_one_deadline/1,
     lost_stops_new_joins/1,
     room_crash_frees_name/1,
     no_quorum_starts_in_parallel/1,
@@ -40,6 +44,10 @@ all() ->
         owner_node_shuts_down,
         lost_lease_moves_members,
         fs_clean_stop_frees_name,
+        draining_node_routes_away,
+        transfer_deadline_restores_member,
+        rehome_helper_is_owned,
+        start_has_one_deadline,
         lost_stops_new_joins,
         room_crash_frees_name,
         no_quorum_starts_in_parallel,
@@ -100,6 +108,8 @@ mode(_) -> chappe_cluster.
 
 %% long leases: the node stays live (its claims wait) seconds after it
 %% lost its quorum
+cluster_env(rehome_helper_is_owned) ->
+    #{lease_ms => 2000, renew_ms => 500, command_timeout => 500};
 cluster_env(fs_clean_stop_frees_name) ->
     #{lease_ms => 9000, renew_ms => 3000, command_timeout => 5000};
 cluster_env(no_quorum_starts_in_parallel) ->
@@ -200,6 +210,97 @@ fs_clean_stop_frees_name(Config) ->
     {ok, New} = erpc:call(N2, chappe_mrf, conference, [<<"fsstop">>, #{backend => fs, node => fs1}]),
     ?assertEqual(N2, node(New)),
     ?assert(erlang:monotonic_time(millisecond) - T0 < 4000).
+
+%% While a node drains (a clean stop under way), a new room never opens
+%% there: start/2 opens it on a live node of the region.
+draining_node_routes_away(Config) ->
+    [N1 | _] = ?config(nodes, Config),
+    ok = erpc:call(N1, chappe_mrf_conf_move, draining, [true]),
+    {ok, Conf} = erpc:call(N1, chappe_mrf, conference, [<<"drainnew">>, #{}]),
+    ?assertNotEqual(N1, node(Conf)),
+    ok = erpc:call(N1, chappe_mrf_conf_move, draining, [false]).
+
+%% A move that cannot finish by its deadline is cut, and the member it
+%% was moving is the room's again (not left marked as on its way out), so
+%% the next try can move it.
+transfer_deadline_restores_member(Config) ->
+    [N1, N2 | _] = ?config(nodes, Config),
+    {ok, Conf} = erpc:call(N1, chappe_mrf, conference, [<<"dl">>, #{}]),
+    {Ua, M} = join_call(Config, Conf),
+    {ok, To} = erpc:call(N2, chappe_mrf, conference, [<<"dlto">>, #{}]),
+    %% the target's node takes no INVITE: the move's join hangs
+    ok = erpc:call(N2, chappe_sip, stop, []),
+    Deadline = erpc:call(N1, erlang, monotonic_time, [millisecond]) + 2000,
+    T0 = erlang:monotonic_time(millisecond),
+    ?assertEqual({error, timeout},
+                 erpc:call(N1, chappe_mrf_conf_move, transfer_all, [Conf, [M], To, Deadline], 20000)),
+    ?assert(erlang:monotonic_time(millisecond) - T0 < 5000),
+    #state{members = #{M := Mb}} = sys:get_state(Conf),
+    ?assertNot(is_map_key(transfer, Mb)),
+    ?F:ua_bye(Ua).
+
+%% The helper that moves a lost room's members is the room's: it gives
+%% up at rehome_ms, its crash leaves the room as it was, and it ends with
+%% the room.
+rehome_helper_is_owned(Config) ->
+    [{_, N1}, {P2, _}, {P3, _}] = ?config(peers, Config),
+    ok = erpc:call(N1, application, set_env, [chappe_mrf, rehome_ms, 4000]),
+    Rooms = [begin
+                 {ok, C} = erpc:call(N1, chappe_mrf, conference, [Name, #{notify => self()}]),
+                 {Ua, M} = join_call(Config, C),
+                 {C, Ua, M}
+             end || Name <- [<<"own1">>, <<"own2">>, <<"own3">>]],
+    ok = ?C:stop_peer(P2),
+    ok = ?C:stop_peer(P3),
+    [receive {chappe_mrf_conf, C, lost} -> ok after 10000 -> ct:fail({no_lost, C}) end
+     || {C, _, _} <- Rooms],
+    [{C1, _, M1}, {C2, _, _}, {C3, _, _}] = Rooms,
+    [H1, H2, H3] = [helper_of(C) || {C, _, _} <- Rooms],
+    %% its own crash: the room and its member stay
+    exit(H1, kill),
+    timer:sleep(300),
+    ?assert(erpc:call(N1, erlang, is_process_alive, [C1])),
+    ?assertMatch([#{id := M1}], chappe_mrf_conf:members(C1)),
+    %% its room's death: it goes too
+    R2 = monitor(process, H2),
+    exit(C2, kill),
+    receive {'DOWN', R2, process, H2, _} -> ok after 3000 -> ct:fail(helper_outlives_room) end,
+    %% its bound: it gives up by rehome_ms
+    R3 = monitor(process, H3),
+    receive {'DOWN', R3, process, H3, _} -> ok after 8000 -> ct:fail(helper_unbounded) end,
+    ?assert(erpc:call(N1, erlang, is_process_alive, [C3])),
+    [?F:ua_bye(Ua) || {_, Ua, _} <- Rooms].
+
+helper_of(Conf) ->
+    helper_of(Conf, 50).
+
+helper_of(Conf, 0) ->
+    ct:fail({no_helper, Conf, links(Conf)});
+helper_of(Conf, N) ->
+    case [P || P <- links(Conf), is_pid(P), node(P) =:= node(Conf),
+               erpc:call(node(Conf), erlang, process_info, [P, initial_call])
+                   =:= {initial_call, {erlang, apply, 2}}] of
+        [H | _] -> H;
+        [] -> timer:sleep(100), helper_of(Conf, N - 1)
+    end.
+
+links(Conf) ->
+    {links, L} = erpc:call(node(Conf), erlang, process_info, [Conf, links]),
+    L.
+
+%% start/2 has one deadline, start_timeout, for all its tries: an owner
+%% that never runs costs the caller that long, not 35 s per try.
+start_has_one_deadline(Config) ->
+    [N1, N2 | _] = ?config(nodes, Config),
+    ok = erpc:call(N2, application, set_env, [chappe_mrf, start_timeout, 3000]),
+    Holder = erpc:call(N1, erlang, spawn, [timer, sleep, [infinity]]),
+    W = waiting(N1, <<"never">>, Holder),
+    {ok, _} = erpc:call(N1, chappe_cluster, claim, [{chappe_mrf_conf, <<"never">>}, #{pid => W}]),
+    T0 = erlang:monotonic_time(millisecond),
+    ?assertEqual({error, timeout}, erpc:call(N2, chappe_mrf, conference, [<<"never">>, #{}], 60000)),
+    Took = erlang:monotonic_time(millisecond) - T0,
+    ct:pal("start gave up after ~b ms", [Took]),
+    ?assert(Took < 5000).
 
 %% The room's lease is lost while its node runs: its members move to the
 %% room that owns the name next, with no BYE, and the old room ends.

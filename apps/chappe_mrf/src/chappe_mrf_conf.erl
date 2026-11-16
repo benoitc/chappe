@@ -85,12 +85,10 @@
 %% how long a stopped recording waits for its stop-recording event
 -define(CLOSE_WAIT, 15000).
 %% how long a cluster room waits for its starter's lease
--define(WAIT_MAX, 60000).
-%% start/2 on a cluster: how long it waits for an owner still waiting
-%% for its lease, and how many times it starts over when that owner is
-%% gone
--define(AWAIT_MS, 35000).
--define(START_TRIES, 5).
+-define(WAIT_MAX, 10000).
+%% start/2 on a cluster: its one deadline for every try (start_timeout),
+%% and the pause before it starts over when the owner it found is gone
+-define(START_MS, 10000).
 -define(RETRY_MS, 300).
 
 %% ---- API ----
@@ -151,21 +149,41 @@ start(Name, Opts) ->
         error ->
             Args = #{name => Name, opts => Opts, caller => self()},
             case application:get_env(chappe_mrf, cluster, none) of
-                chappe_cluster -> start_cluster(Name, Args, ?START_TRIES);
+                chappe_cluster -> start_cluster(Name, Args, start_deadline());
                 _ -> start_local(Args)
             end
     end.
 
+start_deadline() ->
+    erlang:monotonic_time(millisecond) +
+        application:get_env(chappe_mrf, start_timeout, ?START_MS).
+
+left(Deadline) ->
+    max(1, Deadline - erlang:monotonic_time(millisecond)).
+
+expired(Deadline) ->
+    erlang:monotonic_time(millisecond) + ?RETRY_MS >= Deadline.
+
 %% A room the local replica names on another node is used as it is: a
 %% call setup there needs no Raft write. Otherwise claim.
-start_cluster(Name, Args, Tries) ->
-    case cluster_started() of
-        {ok, _} ->
-            case remote_owner(Name) of
-                {ok, Conf} -> await_active(Conf, Name, Args, Tries);
-                none -> start_claimed(Name, Args, Tries)
+start_cluster(Name, #{opts := Opts} = Args, Deadline) ->
+    case {cluster_started(), chappe_mrf_conf_move:draining()} of
+        {{ok, _}, true} ->
+            %% this node is stopping: the room opens on a live node
+            case
+                chappe_mrf_conf_move:open(
+                    Name, Opts, chappe_mrf_conf_move:region(), none, Deadline
+                )
+            of
+                {ok, Conf} -> {ok, Conf};
+                {error, _} -> {error, draining}
             end;
-        {error, _} = Err ->
+        {{ok, _}, false} ->
+            case remote_owner(Name) of
+                {ok, Conf} -> await_active(Conf, Name, Args, Deadline);
+                none -> start_claimed(Name, Args, Deadline)
+            end;
+        {{error, _} = Err, _} ->
             Err
     end.
 
@@ -183,23 +201,25 @@ remote_owner(Name) ->
 
 %% The owner may still be waiting for its lease: its info/1 answers once
 %% it runs. One that never runs (its starter died, its claim came back
-%% stale) is gone: try again, a bounded number of times.
-await_active(Conf, Name, Args, Tries) ->
-    case call(Conf, info, ?AWAIT_MS) of
-        #{lost := false} ->
-            {ok, Conf};
-        #{lost := true} when Tries > 1 ->
-            %% a room that gave its name up is not the owner any more
+%% stale) is gone, as is one that gave its name up: try again, until the
+%% start's deadline.
+await_active(Conf, Name, Args, Deadline) ->
+    case call(Conf, info, left(Deadline)) of
+        #{lost := false} -> {ok, Conf};
+        #{lost := true} -> again(Name, Args, Deadline, {error, lost});
+        {error, noproc} -> again(Name, Args, Deadline, {error, noproc});
+        {error, _} = Err -> Err
+    end.
+
+again(Name, Args, Deadline, Err) ->
+    case expired(Deadline) of
+        true ->
+            Err;
+        false ->
+            %% a dead holder's lease goes with it once the region hears of
+            %% its death
             timer:sleep(?RETRY_MS),
-            start_cluster(Name, Args, Tries - 1);
-        #{} ->
-            {error, lost};
-        {error, noproc} when Tries > 1 ->
-            %% its lease goes with it, once the region hears of its death
-            timer:sleep(?RETRY_MS),
-            start_cluster(Name, Args, Tries - 1);
-        {error, _} = Err ->
-            Err
+            start_cluster(Name, Args, Deadline)
     end.
 
 start_local(Args) ->
@@ -212,14 +232,16 @@ start_local(Args) ->
 %% The claim runs here, in the caller, for the waiting room: it waits at
 %% most claim_timeout (1000 ms; a node that knows it lost its quorum
 %% answers at once), and no other room's start waits behind it.
-start_claimed(Name, Args, Tries) ->
+start_claimed(Name, Args, Deadline) ->
     maybe
         {ok, Room} ?= chappe_mrf_sup:start_conf(Args#{wait => true}),
-        Timeout = application:get_env(chappe_mrf, claim_timeout, 1000),
+        Timeout = min(
+            application:get_env(chappe_mrf, claim_timeout, 1000), left(Deadline)
+        ),
         Claim = chappe_cluster:claim(lease_key(Name), #{
             pid => Room, timeout => Timeout
         }),
-        claimed(Claim, Room, Name, Args, Tries)
+        claimed(Claim, Room, Name, Args, Deadline)
     end.
 
 cluster_started() ->
@@ -228,22 +250,22 @@ cluster_started() ->
         {error, Why} -> {error, {cluster, Why}}
     end.
 
-claimed({ok, Lease}, Room, _Name, _Args, _Tries) ->
-    case call(Room, {activate, Lease}, 30000) of
+claimed({ok, Lease}, Room, _Name, _Args, Deadline) ->
+    case call(Room, {activate, Lease}, left(Deadline)) of
         ok -> {ok, Room};
         {error, {already_started, Other}} -> {ok, Other};
         {error, _} = Err -> Err
     end;
-claimed({error, {owned, #{pid := Other}}}, Room, Name, Args, Tries) ->
+claimed({error, {owned, #{pid := Other}}}, Room, Name, Args, Deadline) ->
     ok = stop(Room),
     case reachable(Other) of
-        {ok, _} -> await_active(Other, Name, Args, Tries);
+        {ok, _} -> await_active(Other, Name, Args, Deadline);
         {error, _} = Err -> Err
     end;
-claimed({error, no_quorum}, Room, Name, _Args, _Tries) ->
+claimed({error, no_quorum}, Room, Name, _Args, _Deadline) ->
     ok = stop(Room),
     known_owner(Name);
-claimed({error, _} = Err, Room, _Name, _Args, _Tries) ->
+claimed({error, _} = Err, Room, _Name, _Args, _Deadline) ->
     ok = stop(Room),
     Err.
 
@@ -565,7 +587,11 @@ init(#{name := Name, caller := Caller, wait := true} = Args) ->
     %% cluster: nothing until the starter hands the lease over; a starter
     %% gone, or one that never does, ends the wait
     process_flag(trap_exit, true),
-    _ = erlang:send_after(?WAIT_MAX, self(), wait_timeout),
+    _ = erlang:send_after(
+        application:get_env(chappe_mrf, start_timeout, ?WAIT_MAX),
+        self(),
+        wait_timeout
+    ),
     {ok, #state{
         name = Name,
         backend = native,
@@ -602,12 +628,24 @@ waiting_call({activate, Lease}, _From, S) ->
 waiting_call(Req, From, #state{waiting = #{deferred := D} = W} = S) ->
     %% answered once it runs (or never, when it stops: the caller's call
     %% exits noproc)
-    {noreply, S#state{waiting = W#{deferred := [{Req, From} | D]}}}.
+    Expires =
+        erlang:monotonic_time(millisecond) +
+            application:get_env(chappe_mrf, start_timeout, ?START_MS),
+    {noreply, S#state{waiting = W#{deferred := [{Req, From, Expires} | D]}}}.
 
 %% The calls that came while it waited, in their order, now it runs.
 run_deferred([], S) ->
     S;
-run_deferred([{Req, From} | Rest], S) ->
+run_deferred([{Req, From, Expires} | Rest], S) ->
+    case erlang:monotonic_time(millisecond) > Expires of
+        true ->
+            %% its caller gave up: the request is not run
+            run_deferred(Rest, S);
+        false ->
+            run_deferred_one(Req, From, Rest, S)
+    end.
+
+run_deferred_one(Req, From, Rest, S) ->
     case handle_call(Req, From, S) of
         {reply, Reply, S1} ->
             gen_server:reply(From, Reply),
@@ -868,7 +906,9 @@ rehome(rehome, #state{backend = native, name = Name, opts = Opts} = S) when
     Self = self(),
     Ms = application:get_env(chappe_mrf, rehome_ms, 30000),
     Deadline = erlang:monotonic_time(millisecond) + Ms,
-    {_, _} = spawn_monitor(fun() ->
+    %% linked: it ends with the room (which traps exits, so the helper's
+    %% own end is only a message)
+    _ = spawn_link(fun() ->
         chappe_mrf_conf_move:rehome(Self, Name, Opts, Deadline)
     end),
     ok;

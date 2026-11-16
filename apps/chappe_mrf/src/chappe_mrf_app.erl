@@ -10,6 +10,7 @@
 %% the peers of esl_allow when those are set.
 -spec start(application:start_type(), term()) -> {ok, pid()}.
 start(_Type, _Args) ->
+    ok = chappe_mrf_conf_move:draining(false),
     %% cluster: chappe_cluster starts first, so it stops after this app
     %% and the rooms can still hand their leases off in prep_stop/1
     ok =
