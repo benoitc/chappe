@@ -318,7 +318,7 @@ init([]) ->
         end,
     case chappe_sip_location:backend() of
         chappe_sip_location_ets -> {ok, schedule_sweep(#{})};
-        _ -> {ok, #{}, {continue, cluster}}
+        _ -> {ok, schedule_resync(#{}), {continue, cluster}}
     end.
 
 %% On a cluster the sweep is one singleton for the region. chappe_cluster
@@ -380,6 +380,9 @@ handle_cast(_Msg, S) ->
 handle_info(sweep, S) ->
     ok = sweep(fun() -> true end),
     {noreply, schedule_sweep(S)};
+handle_info(resync, S) ->
+    ok = resync(),
+    {noreply, schedule_resync(S)};
 handle_info(retry_purge, #{pending := Pending} = S0) ->
     S = S0#{pending := #{}, retry := undefined},
     {noreply,
@@ -840,7 +843,9 @@ modify(Store, Aor, Fun, Mode, N) ->
         {ok, Bs, Version} ->
             case Fun(Bs) of
                 Bs ->
-                    ok;
+                    %% nothing to write, but the index follows what the
+                    %% store holds (another node may have changed it)
+                    held(Store, Aor, Bs);
                 New ->
                     case chappe_sip_location:write(Store, Aor, Version, New) of
                         ok ->
@@ -858,6 +863,33 @@ modify(Store, Aor, Fun, Mode, N) ->
 
 is_conn({conn, _}) -> true;
 is_conn(_) -> false.
+
+%% On a cluster, other nodes change the AORs this node indexes: the sweep
+%% deletes an expired binding, a device registers again through another
+%% node. Every registrar_sweep_ms each indexed AOR is read again and its
+%% index entries follow its live bindings, so the index holds only what
+%% this node still has. It visits this node's own entries, not the region.
+resync() ->
+    Store = chappe_sip_location:backend(),
+    Aors = lists:usort(
+        ets:select(?FLOWS, [{{{aor, '$1', '_'}}, [], ['$1']}]) ++
+            [A || {A} <- ets:tab2list(?HELD)]
+    ),
+    lists:foreach(
+        fun(Aor) ->
+            case chappe_sip_location:read(Store, Aor) of
+                {ok, Bs, _} -> held(Store, Aor, live(Bs, now_s()));
+                {error, _} -> ok
+            end
+        end,
+        Aors
+    ).
+
+schedule_resync(S) ->
+    _ = erlang:send_after(
+        chappe_sip_config:get(registrar_sweep_ms), self(), resync
+    ),
+    S.
 
 %% Drop the bindings of a flow that went (or of every connection). On a
 %% cluster without a quorum the write cannot be made: the purge is kept
