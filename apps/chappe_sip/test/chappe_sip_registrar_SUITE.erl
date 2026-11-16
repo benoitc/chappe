@@ -23,7 +23,8 @@
          path_stored/1, outbound_flows/1, outbound_rules/1,
          min_expires_default/1, auth_required/1, refusals_below_600/1,
          independent_registers/1, default_expires_taken/1,
-         max_expires_caps/1, bindings_survive_a_node_name_change/1]).
+         max_expires_caps/1, bindings_survive_a_node_name_change/1,
+         flow_purge_reads_its_own_aors/1]).
 -export([live_register/1, live_register_auth/1, live_min_expires_423/1,
          live_path_outbound/1, live_require_path/1,
          live_record_route_ignored/1, live_never_6xx/1,
@@ -44,7 +45,8 @@ groups() ->
                  path_stored, outbound_flows, outbound_rules,
                  min_expires_default, auth_required, refusals_below_600,
                  independent_registers, default_expires_taken,
-                 max_expires_caps, bindings_survive_a_node_name_change]},
+                 max_expires_caps, bindings_survive_a_node_name_change,
+                 flow_purge_reads_its_own_aors]},
      {live, [], [live_register, live_register_auth, live_min_expires_423,
                  live_path_outbound, live_require_path,
                  live_record_route_ignored, live_never_6xx,
@@ -869,6 +871,34 @@ bindings_survive_a_node_name_change(_Config) ->
         ?assertEqual([curi(1)], chappe_sip_registry:lookup(aor()))
     after
         Started andalso net_kernel:stop()
+    end.
+
+%% A dropped flow purges the AORs bound to it, not every AOR in the store:
+%% the purge reads the one AOR on the flow, whatever the store holds.
+flow_purge_reads_its_own_aors(_Config) ->
+    [{ok, [_]} = reg(<<"<sip:u", (integer_to_binary(I))/binary, "@example.com>">>,
+                     [contact(1, 3600)], undefined, <<"p">>, 1)
+     || I <- lists:seq(1, 300)],
+    {ok, [_], _} = regx(#{contacts => [bare_contact(2)], expires => 3600, flow => 7}),
+    MFA = {chappe_sip_location, read, 3},
+    erlang:trace_pattern(MFA, true, [call_count]),
+    try
+        ok = chappe_sip_registry:remove_flow(7),
+        %% the cast is handled once the registry answers a later call
+        _ = sys:get_state(chappe_sip_registry),
+        {call_count, Reads} = erlang:trace_info(MFA, call_count),
+        ok = wait_empty(aor(), 50),
+        ct:pal("purge read ~b AORs", [Reads]),
+        ?assert(Reads < 10)
+    after
+        erlang:trace_pattern(MFA, false, [call_count])
+    end.
+
+wait_empty(_Aor, 0) -> ct:fail(still_bound);
+wait_empty(Aor, N) ->
+    case chappe_sip_registry:bindings(Aor) of
+        [] -> ok;
+        _ -> timer:sleep(20), wait_empty(Aor, N - 1)
     end.
 
 %% ---- helpers ----

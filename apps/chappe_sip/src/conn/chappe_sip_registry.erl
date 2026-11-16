@@ -67,6 +67,7 @@
 %% a write that lost a compare-and-swap this many times in a row fails 500
 -define(TAB, chappe_sip_registry).
 -define(HELD, chappe_sip_registry_held).
+-define(FLOWS, chappe_sip_registry_flows).
 -define(CAS_TRIES, 5).
 %% an edge route stays valid this long past its binding's expiry, for a
 %% request already on its way
@@ -266,6 +267,9 @@ clear() ->
 
 %% Delete the expired bindings of every AOR while Continue() is true (the
 %% sweep on a cluster checks its lease before each write).
+%% An AOR is judged only on its own bindings, read just before the write:
+%% one missing from a partial aors/0 (a page that failed to read) is left
+%% for the next sweep, never deleted.
 -spec sweep(fun(() -> boolean())) -> ok.
 sweep(Continue) ->
     Store = chappe_sip_location:backend(),
@@ -345,6 +349,8 @@ handle_call({register, Req, Opts, Deadline}, {Caller, _}, S) ->
 handle_call({mutate, Op}, _From, S) ->
     {reply, apply_op(chappe_sip_location_ets, Op), S};
 handle_call(clear, _From, S) ->
+    true = ets:delete_all_objects(?FLOWS),
+    true = ets:delete_all_objects(?HELD),
     {reply, chappe_sip_location:clear(chappe_sip_location:backend()), S};
 handle_call(_Req, _From, S) ->
     {reply, {error, unknown_call}, S}.
@@ -861,8 +867,15 @@ purge_or_retry(What, S) ->
             end
     end.
 
-keep({flow, Flow}) -> fun(#binding{flow = F}) -> F =/= Flow end;
-keep(conns) -> fun(#binding{flow = F}) -> not is_conn(F) end.
+%% what to keep, and the AORs to look at: the ones the flow index has
+%% for that flow (or for any connection), not every AOR of the store
+keep({flow, Flow}) ->
+    {fun(#binding{flow = F}) -> F =/= Flow end, aors_on(Flow)};
+keep(conns) ->
+    {fun(#binding{flow = F}) -> not is_conn(F) end, aors_on({conn, '_'})}.
+
+aors_on(Flow) ->
+    lists:usort(ets:select(?FLOWS, [{{{flow, Flow, '$1'}}, [], ['$1']}])).
 
 arm_retry(#{retry := TRef} = S) when TRef =/= undefined ->
     S;
@@ -872,14 +885,14 @@ arm_retry(S) ->
 %% Keep the bindings of this node that Keep accepts, deleting an AOR left
 %% empty. Another node's bindings are its own to purge. retry when a write
 %% could not be made for want of a quorum.
-purge(Keep) ->
+purge({Keep, Aors}) ->
     Store = chappe_sip_location:backend(),
     Mine = fun(#binding{node = N} = B) ->
         (N =/= node() andalso N =/= undefined) orelse Keep(B)
     end,
     Results = [
         modify(Store, Aor, fun(Bs) -> lists:filter(Mine, Bs) end)
-     || Aor <- mine()
+     || Aor <- Aors
     ],
     case lists:member({error, no_quorum}, Results) of
         true -> retry;
@@ -895,9 +908,32 @@ mine() ->
         _ -> [Aor || {Aor} <- ets:tab2list(?HELD)]
     end.
 
-held(chappe_sip_location_ets, _Aor, _Bs) ->
+%% After a write: index the flows of this node's bindings of the AOR and,
+%% on a cluster, that this node holds some.
+held(Store, Aor, Bs) ->
+    ok = index_flows(Aor, Bs),
+    held_aor(Store, Aor, Bs).
+
+index_flows(Aor, Bs) ->
+    Old = ets:select(?FLOWS, [{{{aor, Aor, '$1'}}, [], ['$1']}]),
+    New = lists:usort([
+        F
+     || #binding{node = N, flow = F} <- Bs,
+        F =/= undefined,
+        N =:= node() orelse N =:= undefined
+    ]),
+    _ = [
+        ets:delete(?FLOWS, K)
+     || F <- Old -- New, K <- [{aor, Aor, F}, {flow, F, Aor}]
+    ],
+    true = ets:insert(
+        ?FLOWS, [{{aor, Aor, F}} || F <- New] ++ [{{flow, F, Aor}} || F <- New]
+    ),
+    ok.
+
+held_aor(chappe_sip_location_ets, _Aor, _Bs) ->
     ok;
-held(_Store, Aor, Bs) ->
+held_aor(_Store, Aor, Bs) ->
     _ =
         case lists:any(fun(#binding{node = N}) -> N =:= node() end, Bs) of
             true -> ets:insert(?HELD, {Aor});
