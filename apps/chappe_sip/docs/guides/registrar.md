@@ -152,6 +152,88 @@ chappe_sip:proxy_request(Req, {flow, Uri, Flow}, #{}).
 When that TCP/TLS connection closes, its bindings go (RFC 5626 7). A
 re-registration over another connection moves the binding to it.
 
+## Run the registrar on a cluster
+
+With `cluster => chappe_cluster`, every node of a region shares one location
+store: a REGISTER taken on one node is found on every other, and a call from
+any node reaches the device. You need it when your devices register to
+several nodes behind one name (DNS, a load balancer) and any node may place a
+call to them. Start chappe_cluster on each node first (see the chappe_cluster
+guide, `docs/guides/cluster.md`), then:
+
+```erlang
+[{chappe_sip, [
+    {cluster, chappe_cluster},
+    %% the same on every node: edge routes stay valid across restarts
+    {flow_token_secret, <<"a-shared-secret-of-16-bytes-or-more">>}
+]}].
+```
+
+Route a call with `location_target/1`, which gives the right target from any
+node:
+
+```erlang
+ok = chappe_sip:invite(fun(Req, Res) ->
+    case chappe_sip:location_target(<<"sip:bob@example.com">>) of
+        {ok, Target} -> chappe_sip:proxy_request(Req, Target, #{});
+        {error, not_found} -> chappe_sip_res:send(Res, 480)
+    end
+end).
+```
+
+For a b2bua, give each binding its route set:
+
+```erlang
+Dests = [{C, #{flow => F, route_set => Path}}
+         || #{contact := C, send_flow := F, path := Path}
+                <- chappe_sip:bindings(<<"sip:bob@example.com">>)],
+{ok, Legs} = chappe_sip:create_b2bua(Req, Res, {parallel, Dests}, #{}).
+```
+
+What happens:
+
+- Each binding records the node that took its REGISTER (`node`). A device
+  reached over that node's connection (an RFC 5626 flow, a WebSocket, a UDP
+  source behind a NAT) also gets an edge route (`edge`): that node's address
+  and a token naming the flow, under a MAC.
+- On another node, `bindings/1` puts the edge route first in `path`, and
+  `target` is `{route, Contact, Path}`. The request goes to the edge node,
+  which forwards it over the connection it holds and record-routes the
+  dialog (RFC 5626 5.3), so the rest of the call goes the same way.
+- A device whose contact is reachable as it is has no edge route: any node
+  sends to it directly.
+- The edge node stops: a UDP binding is reached at its address from the
+  node that calls (a NAT that filters by source may drop it). A TCP, TLS or
+  WebSocket binding is left out of `bindings/1`: the device is unreachable
+  until it registers again on a live node.
+- Keep-alives (`qualify_interval_ms`) go from the node that holds each
+  binding. Expired bindings are deleted by one node of the region, a
+  chappe_cluster singleton that moves when its node stops.
+- Without a quorum (two of three nodes down) a REGISTER gets 503 with
+  `Retry-After` (`registrar_retry_after`) after at most
+  `registrar_cluster_timeout_ms`. Bindings already stored keep their
+  expiry, and calls to them still go through: lookups read the node's own
+  replica.
+
+Notes:
+
+- Why 503 rather than a binding kept on one node: a 200 says the binding
+  is stored (RFC 3261 10.3 step 8). A binding only one node knows would be
+  missing from every other node, and merging it later, after the majority
+  took REGISTERs for the same AOR, would break the CSeq ordering of 10.3. A
+  device told 503 keeps its current binding and retries after
+  `Retry-After` (RFC 3261 21.5.4), and decision 0010's rule holds: no call
+  stops, only the registration waits.
+- Two nodes taking REGISTERs for one AOR at once never lose one: each write
+  is a compare-and-swap on the AOR's value, retried on a conflict.
+- An AOR's bindings must fit chappe_cluster's `max_value_bytes` (a REGISTER
+  past it gets 403), and the region's `max_keys` bounds the AORs (503 past
+  it). `registrar_max_aors` applies to a single node only.
+- An edge route names a connection of one boot of its node: after that
+  node restarts, its TCP, TLS and WebSocket bindings are unreachable until
+  the devices register again. Set the same `flow_token_secret` on every
+  node so UDP edge routes survive a restart.
+
 ## Registrar behaviour in detail
 
 - Registrar (RFC 3261 10.3): `chappe_sip:registrar/1` is a ready REGISTER
@@ -201,7 +283,11 @@ re-registration over another connection moves the binding to it.
 ## Where it lives
 
 - Modules: `chappe_sip_registrar`, `chappe_sip_registry`,
-  `chappe_sip_registry_keeper`, `chappe_sip_qualify`, `chappe_sip_route`
-  (flows).
-- Tests: `chappe_sip_registrar_SUITE`, `chappe_sip_digest_SUITE`.
+  `chappe_sip_registry_keeper`, `chappe_sip_location` (the store backends
+  `chappe_sip_location_ets` and `chappe_sip_location_cluster`),
+  `chappe_sip_registry_sweep` (the cluster sweep), `chappe_sip_qualify`,
+  `chappe_sip_route` (flows and edge routes), `chappe_sip_proxy_dialog` (the
+  edge forward).
+- Tests: `chappe_sip_registrar_SUITE`, `chappe_sip_registrar_cluster_SUITE`
+  (three peer nodes), `chappe_sip_digest_SUITE`, `chappe_sip_route_tests`.
 - Lab: `make interop-conformance`.

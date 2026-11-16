@@ -37,7 +37,8 @@
     update/1,
     register/1
 ]).
--export([registrar/1, location/1, location_flow/1, bindings/1]).
+-export([registrar/1, location/1, location_flow/1, location_target/1]).
+-export([bindings/1]).
 -export([
     register_client/2,
     unregister_client/1,
@@ -298,7 +299,9 @@ create_b2bua(Req, Res, Uri, Opts) ->
 %% Proxy an incoming request to one or more targets (RFC 3261 16). A
 %% target is a URI (or host[:port]), {ws, Flow} (a WS connection), or
 %% {flow, Uri, Flow}: the contact Uri reached over the RFC 5626 flow of its
-%% binding (location_flow/1). Opts:
+%% binding (location_flow/1). {route, Uri, RouteSet}: the contact Uri reached through
+%% that route set (a binding another node of a cluster holds, or its
+%% Path; location_target/1). Opts:
 %%   forking => sequential | parallel, record_route => boolean,
 %%   timer_c => ms (Timer C per INVITE branch, default timer_c_ms),
 %%   provisional_timeout => ms, final_timeout => ms (per branch),
@@ -311,7 +314,8 @@ when
     Dest ::
         binary()
         | {ws, integer()}
-        | {flow, binary(), chappe_sip_engine:flow()}.
+        | {flow, binary(), chappe_sip_engine:flow()}
+        | {route, binary(), [binary()]}.
 proxy_request(Req, Dest, Opts) ->
     chappe_sip_proxy:proxy_request(Req, Dest, Opts).
 
@@ -505,13 +509,34 @@ location(AorOrUri) ->
 %% <<"tcp">>, <<"tls">>; undefined over WebSocket). send_flow is the flow
 %% to reach that binding over, as location_flow/1 gives it for the first
 %% one (undefined: send to the contact): pass it as the flow of a branch
-%% to fork to every device of a user.
+%% to fork to every device of a user. target is the proxy_request/3
+%% target that reaches it (location_target/1). node is the node that took
+%% the REGISTER; on a cluster, a binding another node holds has its edge
+%% route (edge) first in path, so its target is {route, Contact, Path}
+%% (chappe_sip_registry).
 -spec bindings(binary()) -> [map()].
 bindings(AorOrUri) ->
     [
-        B#{send_flow => binding_flow(B)}
-     || B <- chappe_sip_registry:bindings(AorOrUri)
+        B#{send_flow => F, target => target(B, F)}
+     || B <- chappe_sip_registry:bindings(AorOrUri),
+        F <- [chappe_sip_registry:send_flow(B)]
     ].
+
+%% The proxy_request/3 target that reaches an AOR's first binding: its
+%% contact, {flow, Contact, Flow} over its flow, or {route, Contact,
+%% RouteSet} through its path (RFC 3327) or, on a cluster, through the
+%% node that holds its flow (RFC 5626 5.3).
+-spec location_target(binary()) ->
+    {ok, chappe_sip_proxy:dest()} | {error, not_found}.
+location_target(AorOrUri) ->
+    case bindings(AorOrUri) of
+        [#{target := T} | _] -> {ok, T};
+        [] -> {error, not_found}
+    end.
+
+target(#{contact := C, path := [_ | _] = Path}, _Flow) -> {route, C, Path};
+target(#{contact := C}, undefined) -> C;
+target(#{contact := C}, Flow) -> {flow, C, Flow}.
 
 %% Resolve an AOR to its first binding's contact URI and transport flow.
 %% A registered WS UA has a flow', and so has an RFC 5626 outbound binding
@@ -526,17 +551,10 @@ bindings(AorOrUri) ->
     {ok, binary(), chappe_sip_engine:flow() | undefined} | {error, not_found}.
 location_flow(AorOrUri) ->
     case chappe_sip_registry:bindings(AorOrUri) of
-        [B | _] -> {ok, maps:get(contact, B), binding_flow(B)};
-        [] -> {error, not_found}
-    end.
-
-binding_flow(#{flow := Flow}) when Flow =/= undefined ->
-    Flow;
-binding_flow(#{contact := Contact} = B) ->
-    Received = maps:get(received, B, undefined),
-    case chappe_sip_route:nated(Contact, Received) of
-        true -> Received;
-        false -> undefined
+        [B | _] ->
+            {ok, maps:get(contact, B), chappe_sip_registry:send_flow(B)};
+        [] ->
+            {error, not_found}
     end.
 
 %% The live dialog with this identity, from our side: LocalTag is the tag we

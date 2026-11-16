@@ -5,7 +5,7 @@
 -module(chappe_sip_app).
 -behaviour(application).
 
--export([start/2, stop/1]).
+-export([start/2, prep_stop/1, stop/1]).
 -export([insecure_cookie/1]).
 
 start(_Type, _Args) ->
@@ -26,6 +26,11 @@ start(_Type, _Args) ->
                     Err
             end
     end.
+
+%% on a cluster, hand the registry sweep to another node first
+prep_stop(State) ->
+    ok = chappe_sip_registry:leave_cluster(),
+    State.
 
 stop(_State) ->
     ok.

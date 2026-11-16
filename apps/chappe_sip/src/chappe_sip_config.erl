@@ -109,6 +109,17 @@ default(registrar_flow_timer) -> 120;
 %% memory): distinct AORs, and contacts bound to one AOR.
 default(registrar_max_aors) -> 100000;
 default(registrar_max_bindings_per_aor) -> 10;
+%% How often the location store deletes expired bindings (ms); reads skip
+%% them meanwhile.
+default(registrar_sweep_ms) -> 30000;
+%% Where the location store lives, and who owns what needs one owner:
+%% none (this node alone) or chappe_cluster (the region's KV and leases,
+%% docs/decisions/0010). chappe_cluster is started on first use.
+default(cluster) -> none;
+%% On a cluster: how long a REGISTER waits for the region's quorum (ms),
+%% and the Retry-After (s) of the 503 it gets without one.
+default(registrar_cluster_timeout_ms) -> 1000;
+default(registrar_retry_after) -> 5;
 %% Bounds on the event state compositor (chappe_sip_esc): live publications
 %% in all, and for one resource across its packages (a new one past either
 %% gets 503 with Retry-After); the bytes of one PUBLISH body (413 above).

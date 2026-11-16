@@ -73,6 +73,62 @@ next_flow_test() ->
     ?assertEqual(next_hop,
                  chappe_sip_route:next_flow(undefined, {undefined, undefined})).
 
+%% A connection or a UDP address rides in a Record-Route as a token, under
+%% the MAC, and comes back as the flow it names.
+conn_and_udp_tokens_round_trip_test() ->
+    Flows = [{conn, 12}, {udp, <<"192.0.2.7">>, 5070},
+             {udp, <<"2001:db8::1">>, 5060, <<"10.0.0.1">>}],
+    lists:foreach(
+      fun(F) ->
+          RR = chappe_sip_route:record_route(<<"sip:10.0.0.1:5060">>,
+                                             {undefined, F}, <<"c9">>),
+          ?assert(chappe_sip_route:is_self(RR, undefined, <<"c9">>)),
+          {ok, M} = chappe_sip_msg:parse(bye(RR, <<"c9">>)),
+          ?assertMatch({_, {undefined, F}, _}, chappe_sip_route:pop_self(M))
+      end, Flows).
+
+%% A request from the registered UA over its own flow goes on by its next
+%% hop; one from anywhere else goes to that flow.
+next_flow_by_connection_test() ->
+    Udp = {udp, <<"192.0.2.7">>, 5070},
+    ?assertEqual(next_hop, chappe_sip_route:next_flow(
+                             {udp, <<"192.0.2.7">>, 5070, <<"10.0.0.1">>},
+                             {undefined, Udp})),
+    ?assertEqual(Udp, chappe_sip_route:next_flow({udp, <<"10.0.0.9">>, 5060},
+                                                 {undefined, Udp})),
+    ?assertEqual({conn, 3}, chappe_sip_route:next_flow({conn, 4},
+                                                       {undefined, {conn, 3}})),
+    ?assertEqual(next_hop, chappe_sip_route:next_flow({conn, 3},
+                                                      {undefined, {conn, 3}})).
+
+%% An edge route is ours for any Call-ID, names its flow, and stops being
+%% ours once forged or expired.
+%% req: R5626-R-13
+edge_route_test() ->
+    Exp = erlang:system_time(second) + 60,
+    R = chappe_sip_route:edge_route(<<"sip:10.0.0.1:5060">>, {conn, 5},
+                                    <<"tcp">>, Exp),
+    ?assert(chappe_sip_route:is_self(R, undefined, <<"any">>)),
+    {ok, M} = chappe_sip_msg:parse(bye(R, <<"x">>)),
+    ?assertEqual({ok, {conn, 5}, <<"tcp">>}, chappe_sip_route:edge_flow(M)),
+    Forged = binary:replace(R, <<"ftokd=c5">>, <<"ftokd=c6">>),
+    ?assertNot(chappe_sip_route:is_self(Forged, undefined, <<"any">>)),
+    Old = chappe_sip_route:edge_route(<<"sip:10.0.0.1:5060">>, {conn, 5},
+                                      <<"tcp">>, Exp - 120),
+    ?assertNot(chappe_sip_route:is_self(Old, undefined, <<"any">>)),
+    %% no Record-Route stands for an edge route
+    RR = chappe_sip_route:record_route(<<"sip:10.0.0.1:5060">>,
+                                       {undefined, {conn, 5}}, <<"x">>),
+    {ok, M2} = chappe_sip_msg:parse(bye(RR, <<"x">>)),
+    ?assertEqual(none, chappe_sip_route:edge_flow(M2)).
+
+bye(Route, CallId) ->
+    <<"BYE sip:b@10.0.0.3 SIP/2.0\r\n"
+      "Via: SIP/2.0/UDP 10.0.0.9;branch=z9hG4bKx\r\n"
+      "Route: ", Route/binary, "\r\n"
+      "From: <sip:a@x>;tag=1\r\nTo: <sip:b@x>;tag=2\r\n"
+      "Call-ID: ", CallId/binary, "\r\nCSeq: 2 BYE\r\nContent-Length: 0\r\n\r\n">>.
+
 %% ---- best response (RFC 3261 16.7 step 6) ----
 
 best_6xx_wins_test() ->

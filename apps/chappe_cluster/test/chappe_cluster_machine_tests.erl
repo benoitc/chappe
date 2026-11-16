@@ -377,6 +377,26 @@ kv_cas_test() ->
     ?assert(V2 > V1),
     {_, {error, {version, V2}}, _} = ap({cas, <<"k">>, V1, z, 10, hlc(4)}, S2).
 
+%% A delete names the version it read: a late one, or one that lost a race
+%% to a write, leaves the key alone.
+kv_versioned_delete_test() ->
+    S0 = init(),
+    {S1, {ok, V1, _}, _} = ap({cas, <<"k">>, 0, x, 10, hlc(1)}, S0),
+    {S2, {ok, V2, _}, _} = ap({cas, <<"k">>, V1, y, 10, hlc(2)}, S1),
+    ?assertEqual({error, {version, V2}}, element(2, ap({delete, <<"k">>, V1, hlc(3)}, S2))),
+    {S3, {ok, _}, _} = ap({delete, <<"k">>, V2, hlc(4)}, S2),
+    ?assertEqual(not_found, ?M:query_get(<<"k">>, S3)),
+    ?assertEqual({error, {version, 0}}, element(2, ap({delete, <<"k">>, V2, hlc(5)}, S3))).
+
+kv_keys_by_prefix_test() ->
+    S = lists:foldl(
+        fun(K, Acc) -> element(1, ap({put, K, 1, 10, hlc(1)}, Acc)) end,
+        init(),
+        [<<"reg/b">>, <<"reg/a">>, <<"re">>, <<"other">>]
+    ),
+    ?assertEqual([<<"reg/a">>, <<"reg/b">>], ?M:query_keys(<<"reg/">>, S)),
+    ?assertEqual(4, length(?M:query_keys(<<>>, S))).
+
 kv_max_keys_test() ->
     {S1, {ok, _, _}, _} = ap({put, <<"a">>, 1, 1, hlc(1)}, init()),
     {S2, {ok, _, _}, _} = ap({put, <<"a">>, 2, 1, hlc(2)}, S1),
