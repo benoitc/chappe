@@ -12,13 +12,19 @@
 %%   and changes nothing;
 %% - `{incarnate, Node}' gives the node its next incarnation number (an
 %%   app start asks for one before anything else);
-%% - `{renew, Node, {new, Inc, Replace}, LeaseMs, Items}' asks for a new
-%%   epoch (from a region-wide counter) for incarnation Inc. It is stale
-%%   unless Inc is the node's latest incarnation, and it ends the current
-%%   epoch only when that epoch is the one it names (Replace, the last
-%%   epoch this incarnation knew) or was taken by an earlier incarnation.
-%%   So a delayed request, from an attempt that timed out or from an
-%%   earlier incarnation, never ends the epoch a later attempt got;
+%% - `{renew, Node, {new, Inc, Replace, Ref}, LeaseMs, Items}' asks for a
+%%   new epoch (from a region-wide counter) for incarnation Inc. It is
+%%   stale unless Inc is the node's latest incarnation, and it ends the
+%%   current epoch only when that epoch is the one it names (Replace, the
+%%   last epoch this incarnation knew) or was taken by an earlier
+%%   incarnation. So a delayed request, from an attempt that timed out or
+%%   from an earlier incarnation, never ends the epoch a later attempt got.
+%%   Ref names the request: the agent keeps it across its retries until
+%%   one succeeds, and the epoch keeps the Ref that created it. When the
+%%   current epoch was created by this incarnation with this Ref (a
+%%   timed-out try applied, then its retry), the request renews that epoch
+%%   and returns it, instead of a stale that would cost the node a new
+%%   incarnation;
 %% - `{timeout, {expire, Node, Epoch, Count}}' ends the node's epoch and
 %%   frees its keys, only when {Epoch, Count} is still the node's current
 %%   epoch and renew count; otherwise it changes nothing;
@@ -106,8 +112,10 @@
 -record(cc, {
     region :: atom(),
     %% node -> {its current epoch, its lease_ms, its renew count, the
-    %% incarnation that took the epoch}
-    nodes = #{} :: #{node() => {epoch(), pos_integer(), pos_integer(), term()}},
+    %% incarnation that took the epoch, the ref of the request that took it}
+    nodes = #{} :: #{
+        node() => {epoch(), pos_integer(), pos_integer(), term(), term()}
+    },
     %% node -> its latest incarnation number
     incs = #{} :: #{node() => pos_integer()},
     last_epoch = 0 :: non_neg_integer(),
@@ -150,7 +158,7 @@ apply(#{index := Idx}, Cmd, S0) ->
 %% leader's clock, and every holder is monitored again.
 -spec state_enter(ra_server:ra_state() | eol, state()) -> ra_machine:effects().
 state_enter(leader, #cc{nodes = Nodes, by_pid = ByPid}) ->
-    [{timer, {expire, N, E, C}, L} || N := {E, L, C, _} <- Nodes] ++
+    [{timer, {expire, N, E, C}, L} || N := {E, L, C, _, _} <- Nodes] ++
         [{monitor, process, P} || P <- maps:keys(ByPid)];
 state_enter(_, _) ->
     [].
@@ -173,7 +181,7 @@ do({incarnate, Node}, S = #cc{incs = Incs}) ->
     {S#cc{incs = Incs#{Node => Inc}}, {ok, Inc}, []};
 do({timeout, {expire, Node, Epoch, Count}}, S0 = #cc{nodes = Nodes}) ->
     case Nodes of
-        #{Node := {Epoch, _, Count, _}} ->
+        #{Node := {Epoch, _, Count, _, _}} ->
             {S, Effs} = end_epoch(Node, Epoch, S0),
             {S#cc{nodes = maps:remove(Node, S#cc.nodes)}, ok, Effs};
         _ ->
@@ -231,17 +239,27 @@ renewed(stale, _Node, _Abandoned, S0) ->
     {S0, {error, stale_epoch}, []}.
 
 %% A new epoch for the node's latest incarnation, replacing the epoch it
-%% names or one an earlier incarnation took; anything else is stale.
-renew(Node, {new, Inc, Replace}, LeaseMs, S0 = #cc{nodes = Nodes, incs = Incs}) ->
+%% names or one an earlier incarnation took; the same request applied
+%% again renews the epoch it took; anything else is stale.
+renew(
+    Node,
+    {new, Inc, Replace, Ref},
+    LeaseMs,
+    S0 = #cc{nodes = Nodes, incs = Incs}
+) ->
     case {maps:get(Node, Incs, 0), Nodes} of
-        {Inc, #{Node := {Replace, _, _, Inc}}} ->
-            new_epoch(Node, Inc, LeaseMs, S0);
-        {Inc, #{Node := {_, _, _, Inc}}} ->
+        {Inc, #{Node := {Epoch, _, _, Inc, Ref}}} ->
+            %% this request took the current epoch already: a timed-out
+            %% try applied before its retry, or after it
+            renew(Node, Epoch, LeaseMs, S0);
+        {Inc, #{Node := {Replace, _, _, Inc, _}}} ->
+            new_epoch(Node, {Inc, Ref}, LeaseMs, S0);
+        {Inc, #{Node := {_, _, _, Inc, _}}} ->
             %% this incarnation already got a newer epoch: a delayed try
             stale;
         {Inc, _} ->
             %% none yet, or an earlier incarnation's
-            new_epoch(Node, Inc, LeaseMs, S0);
+            new_epoch(Node, {Inc, Ref}, LeaseMs, S0);
         _ ->
             %% not the node's latest incarnation
             stale
@@ -250,8 +268,10 @@ renew(Node, {new, Inc, Replace}, LeaseMs, S0 = #cc{nodes = Nodes, incs = Incs}) 
 %% timer moves to this renew. Any other epoch is stale.
 renew(Node, Epoch, LeaseMs, S0 = #cc{nodes = Nodes}) ->
     case Nodes of
-        #{Node := {Epoch, _, C, Inc}} ->
-            S = S0#cc{nodes = Nodes#{Node := {Epoch, LeaseMs, C + 1, Inc}}},
+        #{Node := {Epoch, _, C, Inc, Ref}} ->
+            S = S0#cc{
+                nodes = Nodes#{Node := {Epoch, LeaseMs, C + 1, Inc, Ref}}
+            },
             Effs = [
                 {timer, {expire, Node, Epoch, C}, infinity},
                 {timer, {expire, Node, Epoch, C + 1}, LeaseMs}
@@ -261,26 +281,29 @@ renew(Node, Epoch, LeaseMs, S0 = #cc{nodes = Nodes}) ->
             stale
     end.
 
-%% A new epoch for the node; the current one (if any) ends.
-new_epoch(Node, Inc, LeaseMs, S0 = #cc{nodes = Nodes, last_epoch = Last}) ->
+%% A new epoch for the node, taken by incarnation Inc with request Ref; the
+%% current one (if any) ends.
+new_epoch(
+    Node, {Inc, Ref}, LeaseMs, S0 = #cc{nodes = Nodes, last_epoch = Last}
+) ->
     New = Last + 1,
     {S1, Effs} =
         case Nodes of
-            #{Node := {Old, _, C, _}} ->
+            #{Node := {Old, _, C, _, _}} ->
                 {SA, EA} = end_epoch(Node, Old, S0),
                 {SA, [{timer, {expire, Node, Old, C}, infinity} | EA]};
             _ ->
                 {S0, []}
         end,
     S = S1#cc{
-        nodes = (S1#cc.nodes)#{Node => {New, LeaseMs, 1, Inc}},
+        nodes = (S1#cc.nodes)#{Node => {New, LeaseMs, 1, Inc, Ref}},
         last_epoch = New
     },
     {ok, New, S, Effs ++ [{timer, {expire, Node, New, 1}, LeaseMs}]}.
 
 live(Node, Epoch, #cc{nodes = Nodes}) ->
     case Nodes of
-        #{Node := {Epoch, _, _, _}} -> true;
+        #{Node := {Epoch, _, _, _, _}} -> true;
         _ -> false
     end.
 
@@ -508,7 +531,7 @@ leases(S = #cc{leases = Leases}) ->
 
 -spec epochs(state()) -> #{node() => epoch()}.
 epochs(#cc{nodes = Nodes}) ->
-    #{N => E || N := {E, _, _, _} <- Nodes}.
+    #{N => E || N := {E, _, _, _, _} <- Nodes}.
 
 %% The node's latest incarnation number, 0 before any.
 -spec incarnation(node(), state()) -> non_neg_integer().
@@ -520,7 +543,7 @@ incarnation(Node, #cc{incs = Incs}) ->
     {expire, node(), epoch(), pos_integer()} | none.
 expire_timer(Node, #cc{nodes = Nodes}) ->
     case Nodes of
-        #{Node := {E, _, C, _}} -> {expire, Node, E, C};
+        #{Node := {E, _, C, _, _}} -> {expire, Node, E, C};
         _ -> none
     end.
 
