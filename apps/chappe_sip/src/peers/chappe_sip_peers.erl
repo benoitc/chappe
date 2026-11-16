@@ -47,7 +47,7 @@
     unsubscribe/1
 ]).
 %% for chappe_sip_peer and chappe_sip_qualify
--export([put/2, notify/1, kv_key/1, singleton/1]).
+-export([put/2, notify/1, kv_key/1, singleton/1, local/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -export_type([name/0, opts/0, policy/0, info/0]).
@@ -234,6 +234,12 @@ put(Name, Info) ->
 notify(Event) ->
     gen_server:cast(?MODULE, {notify, Event}).
 
+%% The pinger of a singleton-probed peer on this node: its word goes to
+%% this node's table as a KV event would, fenced.
+-spec local(name(), map()) -> ok.
+local(Name, Value) ->
+    gen_server:cast(?MODULE, {local, Name, Value}).
+
 %% The region KV key of a singleton-probed peer's state.
 -spec kv_key(name()) -> binary().
 kv_key(Name) ->
@@ -319,6 +325,8 @@ handle_call({unsubscribe, Pid}, _From, #state{subs = Subs} = S) ->
 handle_call(_Req, _From, S) ->
     {reply, {error, unknown_call}, S}.
 
+handle_cast({local, Name, Value}, S) ->
+    {noreply, kv_apply(Name, Value, S)};
 handle_cast({notify, Event}, S) ->
     ok = notify_subs(Event, S),
     {noreply, S};
