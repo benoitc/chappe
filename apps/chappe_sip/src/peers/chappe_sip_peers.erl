@@ -352,7 +352,14 @@ handle_info(_Info, S) ->
 
 %% The row starts unknown (or as the KV has it), then follows the KV; the
 %% singleton runs the probe on one node of the region.
-add_single(Name, Opts, S0) ->
+add_single(Name, Opts, S) ->
+    %% started on first use, as the media apps are
+    case application:ensure_all_started(chappe_cluster) of
+        {ok, _} -> add_single_started(Name, Opts, S);
+        {error, Why} -> {reply, {error, {cluster, Why}}, S}
+    end.
+
+add_single_started(Name, Opts, S0) ->
     ok = ?MODULE:put(Name, chappe_sip_peer:initial(Opts)),
     S1 = watch(S0),
     S2 = kv_read(Name, S1#state{singles = (S1#state.singles)#{Name => 0}}),

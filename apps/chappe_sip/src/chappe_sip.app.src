@@ -11,9 +11,6 @@
     %% (chappe_sip:start with a `ws' option), so a UDP/TCP/TLS-only node pays nothing
     %% for the WebSocket dependency tree.
     %% instrument holds the metrics (chappe_sip_metrics); livery renders them
-    %% chappe_cluster is not listed: with the `cluster' setting
-    %% chappe_cluster, the release starts it before chappe_sip; with the
-    %% default (none) nothing of it runs
     {applications, [kernel, stdlib, crypto, xmerl, instrument]},
     {env, []},
     %% chappe_sip is Apache-2.0; the NIF links the vendored sofia-sip, which

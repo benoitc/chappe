@@ -13,13 +13,14 @@
 -export([all/0, init_per_suite/1, end_per_suite/1, init_per_testcase/2,
          end_per_testcase/2]).
 -export([singleton_probe/1, prober_crash_and_overflow/1,
-         singleton_needs_cluster/1]).
+         singleton_needs_cluster/1, env_peer_starts_cluster/1]).
 
 -define(UA, chappe_sip_test_ua).
 -define(C, chappe_sip_test_cluster).
 
 all() ->
-    [singleton_probe, prober_crash_and_overflow, singleton_needs_cluster].
+    [singleton_probe, prober_crash_and_overflow, singleton_needs_cluster,
+     env_peer_starts_cluster].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif, [{persistent, true}]),
@@ -30,6 +31,9 @@ end_per_suite(_Config) ->
     application:unset_env(chappe_sip, engine_mod, [{persistent, true}]),
     ok.
 
+init_per_testcase(env_peer_starts_cluster, Config) ->
+    {Peer, Node} = ?C:peer("pc"),
+    [{peers, [{Peer, Node}]}, {nodes, [Node]} | Config];
 init_per_testcase(Case, Config) when Case =/= singleton_needs_cluster ->
     Dir = filename:join(?config(priv_dir, Config), atom_to_list(Case)),
     Peers = [?C:peer("pc" ++ integer_to_list(I)) || I <- [1, 2, 3]],
@@ -141,6 +145,29 @@ singleton_needs_cluster(Config) ->
                  erpc:call(N, chappe_sip, peer_add, [t, #{uri => Uri, probe => sometimes}])),
     ok = erpc:call(N, chappe_sip, peer_add, [t, #{uri => Uri, probe => all_nodes}]),
     ok = erpc:call(N, chappe_sip, peer_remove, [t]).
+
+%% A singleton peer of the `peers' setting, with chappe_cluster configured
+%% but not started: chappe_sip starts it on first use, during its own
+%% start, and the peer is pinged.
+env_peer_starts_cluster(Config) ->
+    [N] = ?config(nodes, Config),
+    {TPort, _Trunk} = trunk(),
+    Dir = filename:join(?config(priv_dir, Config), "env_peer"),
+    Env = #{voters => [N], lease_ms => 2000, renew_ms => 500,
+            data_dir => filename:join(Dir, atom_to_list(N))},
+    ok = erpc:call(N, application, load, [chappe_cluster]),
+    [ok = erpc:call(N, application, set_env, [chappe_cluster, K, V]) || K := V <- Env],
+    Opts = #{uri => <<"sip:trunk@127.0.0.1:", (integer_to_binary(TPort))/binary>>,
+             interval_ms => 300, timeout_ms => 300, probe => singleton},
+    ok = erpc:call(N, application, set_env, [chappe_sip, peers, [{envtrunk, Opts}]]),
+    _ = start_sip(N, cluster),
+    ?assert(lists:keymember(chappe_cluster, 1, erpc:call(N, application, which_applications, []))),
+    ok = wait(fun() ->
+                  case erpc:call(N, chappe_sip, peer_status, [envtrunk]) of
+                      {ok, #{state := up}} -> {true, ok};
+                      _ -> false
+                  end
+              end, 150).
 
 %% ---- helpers ----
 

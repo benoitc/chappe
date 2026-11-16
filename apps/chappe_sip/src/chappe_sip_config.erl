@@ -109,6 +109,10 @@ default(registrar_flow_timer) -> 120;
 %% memory): distinct AORs, and contacts bound to one AOR.
 default(registrar_max_aors) -> 100000;
 default(registrar_max_bindings_per_aor) -> 10;
+%% Where the location store lives, and who owns what needs one owner:
+%% none (this node alone) or chappe_cluster (the region's KV and leases,
+%% docs/decisions/0010). chappe_cluster is started on first use.
+default(cluster) -> none;
 %% Bounds on the event state compositor (chappe_sip_esc): live publications
 %% in all, and for one resource across its packages (a new one past either
 %% gets 503 with Retry-After); the bytes of one PUBLISH body (413 above).
@@ -162,8 +166,4 @@ default(siprec_store) -> chappe_audio_store;
 %% The UDP ports its receivers bind, {Min, Max} (a container publishes only
 %% those); undefined binds any port. serve/3's rtp_ports overrides it.
 default(siprec_rtp_ports) -> undefined;
-%% Ownership across nodes: none (each node on its own) or chappe_cluster
-%% (the region's leases, KV and singletons; the chappe_cluster app must
-%% run on this node).
-default(cluster) -> none;
 default(_) -> undefined.

@@ -42,9 +42,9 @@ Peers can also come from the application environment:
 
 By default every node that adds a peer pings it, so a trunk gets one
 OPTIONS per node per interval. On a cluster, `probe => singleton` has one
-node ping it and share what it sees with the others. You need the
-chappe_cluster app running and the chappe_sip setting `cluster =>
-chappe_cluster`:
+node ping it and share what it sees with the others. Set the chappe_sip
+setting `cluster => chappe_cluster` and configure chappe_cluster (its
+`voters`); chappe_sip starts it on first use:
 
 ```erlang
 %% sys.config, on every node

@@ -47,12 +47,6 @@ make the next SIP message fail that assertion. For TLS flows, rely on the
 client's keep-alives (RFC 5626 4.4.1 makes the UA send them, at the
 `registrar_flow_timer` interval) and on the registrar's expiry.
 
-## Cluster
-
-| Key | Default | What it does |
-| --- | --- | --- |
-| `cluster` | `none` | `none`: each node on its own, as before. `chappe_cluster`: the features that need one owner across nodes use the region's chappe_cluster (leases, KV, singletons), for example a peer with `probe => singleton`. Start chappe_cluster before chappe_sip; chappe_sip does not start it. |
-
 ## Engine
 
 | Key | Default | What it does |
@@ -121,6 +115,7 @@ client's keep-alives (RFC 5626 4.4.1 makes the UA send them, at the
 | `registrar_flow_timer` | `120` | `Flow-Timer` (s) in the 2xx to a REGISTER that sets up an RFC 5626 outbound flow over a direct connection. |
 | `registrar_max_aors` | `100000` | Distinct AORs the location store holds; a new AOR past this is rejected 503. |
 | `registrar_max_bindings_per_aor` | `10` | Contacts bound to one AOR; a REGISTER exceeding this is rejected 403. |
+| `cluster` | `none` | `none`: the location store is this node's. `chappe_cluster`: it is the region's KV, shared by every node (chappe_cluster is started on first use); see the registrar guide, "Run the registrar on a cluster". It also lets a peer be pinged from one node (`probe => singleton`, [Run an SBC](guides/sbc.md#ping-a-peer-from-one-node-of-a-cluster)). |
 
 ## Event state compositor (PUBLISH)
 

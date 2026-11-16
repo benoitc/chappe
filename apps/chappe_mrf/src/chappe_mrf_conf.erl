@@ -479,14 +479,21 @@ init(#{name := Name, opts := Opts, caller := Caller}) ->
 claim(Name) ->
     case application:get_env(chappe_mrf, cluster, none) of
         chappe_cluster ->
-            Timeout = application:get_env(chappe_mrf, claim_timeout, 1000),
-            case chappe_cluster:claim(lease_key(Name), #{timeout => Timeout}) of
-                {ok, Lease} -> {ok, Lease};
-                {error, {owned, #{pid := Other}}} -> {owned, Other};
-                {error, _} = Err -> Err
+            %% started on first use, as the media apps are
+            case application:ensure_all_started(chappe_cluster) of
+                {ok, _} -> claim_lease(Name);
+                {error, Why} -> {error, {cluster, Why}}
             end;
         _ ->
             {ok, undefined}
+    end.
+
+claim_lease(Name) ->
+    Timeout = application:get_env(chappe_mrf, claim_timeout, 1000),
+    case chappe_cluster:claim(lease_key(Name), #{timeout => Timeout}) of
+        {ok, Lease} -> {ok, Lease};
+        {error, {owned, #{pid := Other}}} -> {owned, Other};
+        {error, _} = Err -> Err
     end.
 
 init_backend(Name, Opts, Caller, Lease) ->

@@ -268,8 +268,9 @@ The room shows `{left, Member, transferred}`, then
 
 On one node, a room name names one room. On several nodes, two callers
 dialing the same room on two nodes would land in two rooms. Set the
-chappe_mrf setting `cluster => chappe_cluster` on every node, with the
-chappe_cluster app running, and a room name has one owner in the region:
+chappe_mrf setting `cluster => chappe_cluster` on every node, with
+chappe_cluster configured (it starts on first use), and a room name has
+one owner in the region:
 
 ```erlang
 %% sys.config, on every node
