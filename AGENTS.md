@@ -118,7 +118,7 @@ file only summarises what an agent needs to act.
   trailers.
 - Never use the em-dash character in code, docs, or messages.
 - Never use the word "comprehensive" in tickets, comments, PRs, or MRs.
-- OTP 29 only. sofia pin: freeswitch/sofia-sip v1.13.19 (vendored).
+- OTP 29.1.2 or later. sofia pin: freeswitch/sofia-sip v1.13.19 (vendored).
 - Share code, do not copy it. Before writing a helper, look for one in the
   app (`grep -rn '^name(' apps/<app>/src`). When a second module needs a
   helper, export it from the module that owns the concept (`chappe_sip_hdr`
