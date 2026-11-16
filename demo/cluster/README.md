@@ -43,8 +43,9 @@ make demo-cluster-smoke
 ```
 
 It plays every step below with SIPp, checks each one, and prints
-`smoke: PASSED`. CI-style: it starts the demo and removes it at the end
-(`KEEP=1` leaves it up).
+`smoke: PASSED`. It starts the demo and removes it at the end (`KEEP=1`
+leaves it up); on a failure the containers' logs land in
+`_build/demo-cluster-logs`. CI runs it on every pull request.
 
 ## Call a phone registered on another node
 

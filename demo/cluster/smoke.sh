@@ -13,12 +13,14 @@
 #      call stays up, and a new caller opens the room on a live node;
 #   5. chappe_cluster:leases().
 # DEMO_CLUSTER_PROJECT names the compose project (chappe-demo-cluster);
-# KEEP=1 leaves the demo up.
+# KEEP=1 leaves the demo up. On a failure every container's log goes to
+# DEMO_CLUSTER_LOGS (_build/demo-cluster-logs), for CI to upload.
 #
 # Usage: demo/cluster/smoke.sh   (or: make demo-cluster-smoke)
 set -eu
 
 HERE=$(cd "$(dirname "$0")" && pwd)
+LOGS=${DEMO_CLUSTER_LOGS:-$HERE/../../_build/demo-cluster-logs}
 P=${DEMO_CLUSTER_PROJECT:-chappe-demo-cluster}
 DC="docker compose -p $P -f $HERE/docker-compose.yml"
 SIPP="-m 1 -l 1 -nostdin -trace_err"
@@ -45,6 +47,15 @@ wait_ok() {
 service() { echo "${1#demo@}"; }
 
 cleanup() {
+    rc=$?
+    if [ "$rc" != 0 ]; then
+        mkdir -p "$LOGS"
+        $DC --profile tools logs --no-color > "$LOGS/compose.log" 2>&1 || true
+        for c in bob alice confa confb confc confd confe; do
+            docker logs "$P-$c" > "$LOGS/sipp-$c.log" 2>&1 || true
+        done
+        say "logs in $LOGS"
+    fi
     for c in bob alice confa confb confc confd confe; do docker rm -f "$P-$c" >/dev/null 2>&1 || true; done
     [ "${KEEP:-0}" = 1 ] || $DC --profile tools down -v >/dev/null 2>&1 || true
 }
