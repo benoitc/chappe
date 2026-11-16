@@ -11,7 +11,9 @@
 # MRF_PROJECT (compose project, default chappe-mrf) and the MRF_* ports of
 # the compose file move the lab out of the way of another one;
 # MRF_SIP_PORT (17060) is the chappe node's own SIP port, MRF_MEDIA_DIR
-# (_build/mrf-media) the shared /media. MRF_KEEP=1 leaves the lab up.
+# (_build/mrf-media) the shared /media. The chappe_mrf listener binds
+# MRF_ESL_IP (0.0.0.0) and takes the peers of MRF_ESL_ALLOW (loopback and
+# docker's pools, comma-separated CIDRs). MRF_KEEP=1 leaves the lab up.
 #
 # Usage: apps/chappe_mrf/test/e2e.sh   (or: make interop-mrf)
 set -u

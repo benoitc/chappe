@@ -28,8 +28,15 @@ ok = chappe_sip:start(#{
 }),
 ok = chappe_esl:node_add(fs1, #{host => "10.0.0.8", port => 8021,
                                 sip_uri => <<"sip:10.0.0.8:5080">>}),
-ok = chappe_mrf:start(#{esl_port => 8084}).
+ok = chappe_mrf:start(#{
+    esl_port => 8084,
+    esl_ip => {10, 0, 0, 5},
+    esl_allow => [<<"10.0.0.8/32">>]
+}).
 ```
+
+The listener binds 127.0.0.1 unless you give `esl_ip`; with FreeSWITCH on
+another host, set `esl_ip` and list its addresses in `esl_allow`.
 
 Each FreeSWITCH node hands the calls chappe_mrf sends it back to the
 listener, with one dialplan extension:

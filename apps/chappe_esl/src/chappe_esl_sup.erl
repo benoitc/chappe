@@ -11,7 +11,7 @@
 -behaviour(supervisor).
 
 -export([start_link/0]).
--export([start_listener/1, stop_listener/1]).
+-export([start_listener/1, stop_listener/1, listener/1]).
 -export([init/1]).
 
 start_link() ->
@@ -37,6 +37,15 @@ stop_listener(Ref) ->
     case supervisor:terminate_child(?MODULE, Id) of
         ok -> supervisor:delete_child(?MODULE, Id);
         {error, _} = Error -> Error
+    end.
+
+%% The pid of a running listener.
+-spec listener(term()) -> {ok, pid()} | error.
+listener(Ref) ->
+    Id = {chappe_esl_listener, Ref},
+    case [P || {I, P, _, _} <- supervisor:which_children(?MODULE), I =:= Id] of
+        [Pid] when is_pid(Pid) -> {ok, Pid};
+        _ -> error
     end.
 
 init([]) ->

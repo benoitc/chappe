@@ -31,7 +31,7 @@ The full list, and which modules are internal, is in the
 
 ## Quickstart
 
-You need Erlang/OTP 29, a C toolchain, autoconf, automake, libtool and
+You need Erlang/OTP 29.1.2 or later (earlier releases have TLS flaws (CVE-2026-89422, a TLS 1.3 server impersonation, and CVE-2026-105236, an SNI resumption bypass)), a C toolchain, autoconf, automake, libtool and
 pkg-config (on macOS: `brew install boost autoconf automake libtool pkg-config`,
 and `openssl@3` if missing). sofia-sip is vendored, so the build needs no
 network for it.

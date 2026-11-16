@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 env:
-  OTP: '29'
+  OTP: '29.1.2'
   REBAR3: '3.25.0'
 
 permissions:

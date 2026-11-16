@@ -6,9 +6,10 @@
 %% Inbound: init connects to mod_event_socket, then the `authenticating' state
 %% answers the auth/request with the password and waits for +OK before telling
 %% the owner it is ready. Outbound: the listener hands over an accepted socket,
-%% the `accepting' state sends "connect", reads the initial channel data, sends
-%% "linger" (unless disabled) so events after hangup still arrive, and starts
-%% the user handler. Both converge on `ready'.
+%% the `accepting' state sends "connect", reads the initial channel data
+%% (closing the socket when it does not arrive within `first_frame_timeout'),
+%% tells the listener, sends "linger" (unless disabled) so events after
+%% hangup still arrive, and starts the user handler. Both converge on `ready'.
 %%
 %% In `ready', bytes are fed to chappe_esl_parser and each frame is classified:
 %% command/reply and api/response are answers to the oldest still-unanswered
@@ -48,6 +49,10 @@
     handler_args :: term(),
     handler_pid :: pid() | undefined,
     linger = true :: linger(),
+    %% outbound: the listener told when the channel data arrives, and how
+    %% long the peer has to send it
+    listener :: pid() | undefined,
+    first_frame_timeout = 5000 :: pos_integer(),
     channel :: chappe_esl_event:event() | undefined,
     %% `internal' marks a command the connection sent itself (linger): its
     %% reply keeps the FIFO aligned and is dropped.
@@ -139,7 +144,9 @@ init(#{mode := outbound} = Opts) ->
         parser = chappe_esl_parser:new(),
         handler = maps:get(handler, Opts),
         handler_args = maps:get(handler_args, Opts, undefined),
-        linger = maps:get(linger, Opts, true)
+        linger = maps:get(linger, Opts, true),
+        listener = maps:get(listener, Opts, undefined),
+        first_frame_timeout = maps:get(first_frame_timeout, Opts, 5000)
     },
     {ok, accepting, Data}.
 
@@ -183,10 +190,16 @@ handle_auth_frame(_Other, Data) ->
 
 %% outbound: accept
 
-accepting(cast, {activate, Socket}, Data) ->
+accepting(cast, {activate, Socket}, #data{first_frame_timeout = T} = Data) ->
     ok = inet:setopts(Socket, [{active, once}]),
-    ok = gen_tcp:send(Socket, <<"connect\n\n">>),
-    {keep_state, Data#data{socket = Socket}};
+    %% the peer may already be gone; the close then arrives as tcp_closed
+    _ = gen_tcp:send(Socket, <<"connect\n\n">>),
+    {keep_state, Data#data{socket = Socket}, [
+        {state_timeout, T, first_frame}
+    ]};
+accepting(state_timeout, first_frame, Data) ->
+    tell_listener(Data, first_frame_timeout),
+    {stop, normal, Data};
 accepting(info, {tcp, S, Bytes}, #data{socket = S} = Data) ->
     feed(Bytes, Data);
 accepting(info, {tcp_closed, S}, #data{socket = S} = Data) ->
@@ -204,6 +217,7 @@ accepting(_Type, _Msg, Data) ->
     {keep_state, Data}.
 
 start_handler(Channel, #data{handler = Mod, handler_args = Args} = Data0) ->
+    tell_listener(Data0, ready),
     Data = send_linger(Data0),
     Conn = self(),
     Pid = spawn_link(fun() -> Mod:handle_channel(Conn, Channel, Args) end),
@@ -214,6 +228,12 @@ start_handler(Channel, #data{handler = Mod, handler_args = Args} = Data0) ->
         owner_mon = monitor(process, Pid)
     },
     {next_state, ready, Data1}.
+
+tell_listener(#data{listener = undefined}, _What) ->
+    ok;
+tell_listener(#data{listener = L}, What) ->
+    L ! {chappe_esl_listener, self(), What},
+    ok.
 
 %% Ask FreeSWITCH to keep the socket open after hangup so the final channel
 %% events arrive. The reply is queued as `internal' and dropped.

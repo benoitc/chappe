@@ -62,6 +62,7 @@
     endpoint_socket_errors/1,
     endpoint_dialog_ends/1,
     setup_edges/1,
+    listener_ip_allow/1,
     registry_edges/1,
     sip_edges/1,
     conf_edges/1,
@@ -121,6 +122,7 @@ all() ->
         endpoint_socket_errors,
         endpoint_dialog_ends,
         setup_edges,
+        listener_ip_allow,
         registry_edges,
         sip_edges,
         conf_edges,
@@ -1719,6 +1721,34 @@ setup_edges(Config) ->
     ok = application:stop(chappe_mrf),
     ok = application:start(chappe_mrf),
     ok = chappe_mrf:start(#{esl_port => ?config(lp, Config)}).
+
+%% esl_ip and esl_allow reach the listener, from start/1 and from the app
+%% env: a peer outside the allow list is closed and counted.
+listener_ip_allow(Config) ->
+    ok = chappe_mrf:stop_listener(),
+    Port = ?F:pick(),
+    Opts = #{esl_port => Port, esl_ip => {127, 0, 0, 1}, esl_allow => [<<"192.0.2.0/24">>]},
+    ?assertEqual({error, {bad_option, allow}}, chappe_mrf:start(Opts#{esl_allow => [nope]})),
+    try
+        ok = chappe_mrf:start(Opts),
+        ?assertMatch(#{ip := {127, 0, 0, 1}}, chappe_esl:listener_stats(Port)),
+        {ok, S} = gen_tcp:connect({127, 0, 0, 1}, Port, [binary, {active, false}]),
+        ?assertEqual({error, closed}, gen_tcp:recv(S, 0, 5000)),
+        ?assertMatch(#{refused := 1}, chappe_esl:listener_stats(Port)),
+        ok = chappe_mrf:stop_listener(),
+        ok = application:stop(chappe_mrf),
+        ok = application:set_env(chappe_mrf, esl_port, Port),
+        ok = application:set_env(chappe_mrf, esl_allow, ["192.0.2.0/24"]),
+        ok = application:start(chappe_mrf),
+        {ok, S2} = gen_tcp:connect({127, 0, 0, 1}, Port, [binary, {active, false}]),
+        ?assertEqual({error, closed}, gen_tcp:recv(S2, 0, 5000))
+    after
+        _ = application:unset_env(chappe_mrf, esl_port),
+        _ = application:unset_env(chappe_mrf, esl_allow),
+        _ = application:stop(chappe_mrf),
+        ok = application:start(chappe_mrf),
+        ok = chappe_mrf:start(#{esl_port => ?config(lp, Config)})
+    end.
 
 %% The registry refuses a live key, and ignores what it does not know.
 registry_edges(_Config) ->

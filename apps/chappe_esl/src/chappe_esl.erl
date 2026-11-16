@@ -11,9 +11,10 @@
 %% set_controlling_process/2.
 %%
 %% Outbound: start_listener/3,4 listens for dialplan socket connections and
-%% runs a chappe_esl_handler per accepted channel. Each connection sends
-%% `linger' after `connect' unless the listener is started with
-%% #{linger => false}.
+%% runs a chappe_esl_handler per accepted channel. It listens on 127.0.0.1
+%% unless given `ip', and takes only the peers in `allow' when given. Each
+%% connection sends `linger' after `connect' unless the listener is started
+%% with #{linger => false}.
 -module(chappe_esl).
 
 %% Inbound connection.
@@ -29,6 +30,7 @@
 -export([stats/1]).
 %% Outbound listener.
 -export([start_listener/3, start_listener/4, stop_listener/1]).
+-export([listener_stats/1]).
 %% Node registry.
 -export([node_add/2, node_remove/1, nodes/0, node_status/1]).
 -export([node_drain/1, node_resume/1, node_select/1]).
@@ -40,12 +42,21 @@
 -type conn() :: pid().
 %% linger: true (default) sends `linger', a positive integer sends
 %% `linger <Seconds>', false sends nothing. ip: the address to listen on
-%% (every IPv4 interface by default; an IPv6 address listens on IPv6).
-%% backlog: the length of the pending connection queue (128).
+%% (127.0.0.1 by default; an IPv6 address listens on IPv6). allow: the
+%% networks peers may connect from, as CIDR strings or binaries
+%% (<<"10.0.0.0/8">>, "192.0.2.7"); a peer outside is closed right after
+%% accept. Left out, every peer that reaches `ip' is taken. backlog: the
+%% length of the queue of connections not yet accepted (128). max_pending:
+%% how many accepted connections may wait for their channel data at once
+%% (64); a new one past it is closed. first_frame_timeout: milliseconds a
+%% peer has to send its channel data after `connect' (5000).
 -type listener_opts() :: #{
     linger => boolean() | pos_integer(),
     ip => inet:ip_address(),
-    backlog => pos_integer()
+    allow => [string() | binary()],
+    backlog => pos_integer(),
+    max_pending => pos_integer(),
+    first_frame_timeout => pos_integer()
 }.
 -type api_error() ::
     timeout | closed | binary() | {unexpected_reply, term()} | inet:posix().
@@ -233,7 +244,7 @@ start_listener(Port, Handler, HandlerArgs) ->
 -spec start_listener(inet:port_number(), module(), term(), listener_opts()) ->
     {ok, term()} | {error, term()}.
 start_listener(Port, Handler, HandlerArgs, ListenerOpts) ->
-    Keys = [linger, ip, backlog],
+    Keys = [linger, ip, allow, backlog, max_pending, first_frame_timeout],
     case [K || K <- Keys, not valid_listener_opt(K, ListenerOpts)] of
         [] ->
             Opts = (maps:with(Keys, ListenerOpts))#{
@@ -254,6 +265,16 @@ start_listener(Port, Handler, HandlerArgs, ListenerOpts) ->
 -spec stop_listener(term()) -> ok | {error, term()}.
 stop_listener(Ref) ->
     chappe_esl_sup:stop_listener(Ref).
+
+%% The listener's counters: accepted, refused (peers outside `allow'),
+%% busy (closed past `max_pending'), first_frame_timeouts, pending (waiting
+%% for their channel data now), and its ip and ref.
+-spec listener_stats(term()) -> #{atom() => term()} | {error, not_found}.
+listener_stats(Ref) ->
+    case chappe_esl_sup:listener(Ref) of
+        {ok, Pid} -> chappe_esl_listener:stats(Pid);
+        error -> {error, not_found}
+    end.
 
 %% Node registry
 
@@ -343,9 +364,14 @@ valid_listener_opt(Key, Opts) ->
     end.
 
 valid_listener_value(linger, L) when is_boolean(L) -> true;
-valid_listener_value(linger, L) -> is_integer(L) andalso L > 0;
-valid_listener_value(ip, Ip) -> inet:is_ip_address(Ip);
-valid_listener_value(backlog, N) -> is_integer(N) andalso N > 0.
+valid_listener_value(linger, L) ->
+    is_integer(L) andalso L > 0;
+valid_listener_value(ip, Ip) ->
+    inet:is_ip_address(Ip);
+valid_listener_value(allow, Nets) ->
+    chappe_esl_cidr:parse_list(Nets) =/= error;
+valid_listener_value(_PosInt, N) ->
+    is_integer(N) andalso N > 0.
 
 header_lines(Headers) ->
     [[K, <<": ">>, V, <<"\n">>] || {K, V} <- Headers].

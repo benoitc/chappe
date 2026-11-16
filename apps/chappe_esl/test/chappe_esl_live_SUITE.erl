@@ -14,7 +14,8 @@
 %% stop/start case needs FS_COMPOSE (the compose command line) to stop and
 %% start fs1. The `call' group drives a channel with chappe_esl_call: fs1
 %% calls fs2's socket-<port> extension, which connects back to a listener
-%% here (ESL_SOCKET_PORT, 18084); it needs ESL_MEDIA_DIR, the directory both
+%% here (ESL_SOCKET_PORT, 18084, on ESL_SOCKET_IP with ESL_SOCKET_ALLOW,
+%% see start_socket/1); it needs ESL_MEDIA_DIR, the directory both
 %% nodes mount as /media, for its prompt and recordings.
 -module(chappe_esl_live_SUITE).
 -behaviour(chappe_esl_handler).
@@ -710,9 +711,16 @@ stop_and_restart(_Config) ->
 
 %% helpers
 
+%% fs2 connects from the docker network (on Linux from a bridge address,
+%% through host-gateway): listen on every interface and take only loopback
+%% and docker's address pools (ESL_SOCKET_IP, ESL_SOCKET_ALLOW).
 start_socket(Config) ->
     Port = ?config(socket_port, Config),
-    {ok, _} = chappe_esl:start_listener(Port, ?MODULE, self()),
+    {ok, Ip} = inet:parse_address(os:getenv("ESL_SOCKET_IP", "0.0.0.0")),
+    Allow = string:lexemes(os:getenv("ESL_SOCKET_ALLOW", "127.0.0.0/8,172.16.0.0/12,192.168.0.0/16"), ","),
+    {ok, _} = chappe_esl:start_listener(Port, ?MODULE, self(), #{
+        ip => Ip, allow => Allow
+    }),
     Config ++ [{a_uuid, new_uuid()}].
 
 %% fs1 calls fs2's socket extension and keeps playing a tone (so its RTP

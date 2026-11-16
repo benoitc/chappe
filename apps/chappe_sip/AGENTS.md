@@ -9,7 +9,7 @@ the doc wins and this file is stale.
 ## Project overview
 
 `chappe_sip` is the SIP core of the chappe umbrella, a port of the drachtio
-model (drachtio-server and drachtio-srf) to Erlang/OTP 29. It embeds
+model (drachtio-server and drachtio-srf) to Erlang/OTP 29.1.2 or later. It embeds
 sofia-sip's `nta` transaction layer through a thin plain-C NIF; all
 transaction-user logic (dialogs, UAC, B2BUA, proxy, registrar, digest,
 middleware, events) is Erlang. Module prefix: `chappe_sip_`. The drachtio

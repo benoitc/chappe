@@ -68,8 +68,8 @@ Then follow [demo/sbc/README.md](demo/sbc/README.md).
 
 ### Build your first service
 
-Requires Erlang/OTP 29, rebar3, a C toolchain, autotools and OpenSSL. The
-first compile builds the vendored sofia-sip.
+Requires Erlang/OTP 29.1.2 or later (earlier releases have TLS flaws (CVE-2026-89422, a TLS 1.3 server impersonation, and CVE-2026-105236, an SNI resumption bypass)), rebar3, a C toolchain, autotools
+and OpenSSL. The first compile builds the vendored sofia-sip.
 
 ```sh
 make

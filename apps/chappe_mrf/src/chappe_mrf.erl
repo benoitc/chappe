@@ -18,7 +18,9 @@
 %% Each FreeSWITCH node needs a dialplan extension that hands the call to
 %% this node: <action application="socket" data="Host:Port async full"/>
 %% for the user the INVITE is sent to (`mrf' by default), where Port is
-%% the listener of start/1 (or the `esl_port' app env). The INVITE carries
+%% the listener of start/1 (or the `esl_port' app env). The listener binds
+%% 127.0.0.1 unless esl_ip is given; with FreeSWITCH on another host, set
+%% esl_ip and esl_allow. The INVITE carries
 %% X-Chappe-Call; FreeSWITCH reports it as variable_sip_h_X-Chappe-Call,
 %% which is how the socket finds its endpoint.
 %%
@@ -34,7 +36,9 @@
 %% when it ends.
 -module(chappe_mrf).
 
--export([start/1, listen/1, stop_listener/0, install/0]).
+-export([
+    start/1, listen/1, listen/2, listener_opts/1, stop_listener/0, install/0
+]).
 -export([connect_caller/3, create_endpoint/1, bridge/2, bridge/3]).
 -export([play/2, play/3, play_info/3, play_collect/2, record/3]).
 -export([record_session/2, record_session/3, record_session_stop/2]).
@@ -53,7 +57,6 @@
 
 -type endpoint() :: chappe_mrf_endpoint:endpoint().
 
--define(LISTENER, {?MODULE, listener}).
 -define(LOOP_PREFIX, "mrf-mix-").
 %% record options of chappe_mrf's, not FreeSWITCH's
 -define(STORE_OPTS, [store, ref, parties]).
@@ -61,38 +64,43 @@
 %% ---- setup ----
 
 %% Run after chappe_sip:start/1. Opts: esl_port (the outbound socket
-%% listener FreeSWITCH connects back to). It also installs the INVITE
-%% middleware the native conference backend relies on (install/0).
--spec start(#{esl_port => inet:port_number()}) -> ok | {error, term()}.
+%% listener FreeSWITCH connects back to), esl_ip (the address it listens
+%% on, 127.0.0.1 by default) and esl_allow (the networks FreeSWITCH
+%% connects from, CIDR strings or binaries; unset, any peer that reaches
+%% esl_ip). It also installs the INVITE middleware the native conference
+%% backend relies on (install/0).
+-spec start(#{
+    esl_port => inet:port_number(),
+    esl_ip => inet:ip_address(),
+    esl_allow => [string() | binary()]
+}) -> ok | {error, term()}.
 start(Opts) ->
     ok = install(),
     case maps:find(esl_port, Opts) of
-        {ok, Port} -> listen(Port);
+        {ok, Port} -> listen(Port, listener_opts(Opts));
         error -> ok
     end.
 
 %% Listen for FreeSWITCH outbound sockets on Port.
 -spec listen(inet:port_number()) -> ok | {error, term()}.
 listen(Port) ->
-    case chappe_esl:start_listener(Port, chappe_mrf_esl, []) of
-        {ok, _} ->
-            persistent_term:put(?LISTENER, Port),
-            ok;
-        {error, already_started} ->
-            ok;
-        {error, _} = Err ->
-            Err
-    end.
+    listen(Port, #{}).
+
+%% The same with chappe_esl listener options (ip, allow, ...). A bad one
+%% returns {error, {bad_option, Key}}.
+-spec listen(inet:port_number(), chappe_esl:listener_opts()) ->
+    ok | {error, term()}.
+listen(Port, ListenerOpts) ->
+    chappe_mrf_esl:listen(Port, ListenerOpts).
+
+%% esl_ip and esl_allow as chappe_esl's ip and allow.
+-spec listener_opts(map()) -> chappe_esl:listener_opts().
+listener_opts(Opts) ->
+    chappe_mrf_esl:listener_opts(Opts).
 
 -spec stop_listener() -> ok | {error, term()}.
 stop_listener() ->
-    case persistent_term:get(?LISTENER, undefined) of
-        undefined ->
-            ok;
-        Port ->
-            _ = persistent_term:erase(?LISTENER),
-            chappe_esl:stop_listener(Port)
-    end.
+    chappe_mrf_esl:stop_listener().
 
 %% Take the loopback INVITEs that bring a call into a native conference
 %% (see chappe_mrf_conf). Runs once per chappe_sip:start/1.

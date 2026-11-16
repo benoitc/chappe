@@ -39,6 +39,23 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 - chappe_sip security: the bundled sofia-sip is now built without its
   WebSocket and HTTP code, which chappe never used, so a future flaw there
   cannot reach a chappe node.
+- chappe_esl, a breaking change: the outbound listener now listens on
+  127.0.0.1 only, unless you give it an address. Before, it listened on
+  every interface and gave a call to anyone who connected. When FreeSWITCH
+  runs on another host, give the listener the address to listen on and the
+  networks FreeSWITCH connects from; a peer outside them is closed at once.
+  The listener also closes a connection that does not send its channel data
+  in time, and new ones past a limit while others still wait, so a peer
+  that opens connections and sends nothing can no longer pile them up.
+- chappe_mrf, a breaking change that follows: its event socket listener
+  listens on 127.0.0.1 only by default. When FreeSWITCH runs on another
+  host, set the address to listen on and the networks FreeSWITCH connects
+  from in chappe_mrf's configuration, or FreeSWITCH can no longer reach it.
+- Every app now needs Erlang/OTP 29.1.2 or later, and the build refuses an
+  older one. OTP 29 releases before 29.1.1 let a TLS 1.3 server be
+  impersonated (CVE-2026-89422), and before 29.1.2 a resumed session could
+  skip authentication through SNI (CVE-2026-105236). chappe serves and
+  dials SIP over TLS, so an older OTP left those connections open to both.
 - chappe_esl and chappe_mrf: the fork docs now say that a stereo
   mod_audio_stream fork sends nothing unless both directions carry audio,
   and to fork in mono or mixed instead when you need the caller's audio

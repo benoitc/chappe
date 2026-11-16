@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 env:
-  OTP: '29'
+  OTP: '29.1.2'
   # line coverage floor for `make cover`; raise it as coverage grows
   MIN_COVERAGE: '80'
   REBAR3: '3.25.0'
