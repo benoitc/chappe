@@ -18,7 +18,10 @@ checksum, which is part of sofia's build stamp, so adding or changing a
 patch rebuilds sofia and relinks the NIF. The vendored tree in git never
 changes. After building sofia, `build.sh` builds and runs upstream's
 `torture_sres_domain` (the DNS compression loop of CVE-2026-116792); a
-failure fails the build, and the log is `build/sofia-check.log`.
+failure fails the build, and the log is `build/sofia-check.log`. The test
+runs on the build machine, so it is skipped when configure's host differs
+from its build system (a cross build), and when you set
+`SOFIA_SKIP_CHECK=1`; the build says which.
 
 ## The patches
 
