@@ -25,6 +25,7 @@ all() ->
         public_contact_is_sent_directly,
         conn_token_refused_on_another_node,
         dead_flow_at_the_edge,
+        busy_edge_keeps_the_binding,
         flow_index_follows_a_sweep,
         flow_index_follows_a_move,
         cseq_and_expires_across_nodes,
@@ -245,6 +246,31 @@ reg_req(Contacts, CallId, CSeq) ->
        <<"Content-Length: 0\r\n\r\n">>]),
     {ok, Msg} = chappe_sip_msg:parse(Raw),
     chappe_sip_req:new(Msg, undefined, #{}).
+
+%% The edge cannot forward for a reason other than a lost flow (its WS
+%% transport is not there to take the request, as while it restarts):
+%% 500, not 430, and the binding stays.
+busy_edge_keeps_the_binding(Config) ->
+    [N1, N2, _] = ?config(nodes, Config),
+    [_, P2, _] = ?config(ports, Config),
+    [W1 | _] = ?config(ws_ports, Config),
+    C = ws_connect(W1),
+    ok = ws:send(C, {text, ws_register()}),
+    _ = recv_ws(<<"SIP/2.0 200">>),
+    [_] = wait_bindings(N2, 1),
+    Ws = erpc:call(N1, erlang, whereis, [chappe_sip_ws_transport]),
+    true = erpc:call(N1, erlang, unregister, [chappe_sip_ws_transport]),
+    try
+        {ok, Caller} = udp(),
+        send(Caller, P2, invite(lport(Caller), <<"cb1">>)),
+        _ = recv_status(Caller, 500, 15000)
+    after
+        erpc:call(N1, erlang, register, [chappe_sip_ws_transport, Ws])
+    end,
+    timer:sleep(500),
+    ?assertMatch([_], erpc:call(N1, chappe_sip, bindings, [?AOR])),
+    ?assertMatch([_], erpc:call(N2, chappe_sip, bindings, [?AOR])),
+    ws:close(C, 1000).
 
 %% an RFC 5626 TCP binding on Node whose connection does not exist
 dead_conn_binding(Node, CallId) ->
