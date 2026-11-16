@@ -17,8 +17,10 @@
 -export([
     one_room_from_two_nodes/1,
     owner_node_dies/1,
+    owner_node_shuts_down/1,
     lost_stops_new_joins/1,
     room_crash_frees_name/1,
+    no_quorum_starts_in_parallel/1,
     no_cluster_unchanged/1
 ]).
 
@@ -29,8 +31,10 @@ all() ->
     [
         one_room_from_two_nodes,
         owner_node_dies,
+        owner_node_shuts_down,
         lost_stops_new_joins,
         room_crash_frees_name,
+        no_quorum_starts_in_parallel,
         no_cluster_unchanged
     ].
 
@@ -68,7 +72,7 @@ init_per_testcase(Case, Config) ->
     Nodes = [N || {_, N} <- Peers],
     Mode = mode(Case),
     _ = Mode =:= chappe_cluster andalso
-        [ok = ?C:start_cluster(N, Nodes, Dir) || N <- Nodes],
+        [ok = ?C:start_cluster(N, Nodes, Dir, cluster_env(Case)) || N <- Nodes],
     _ = Mode =:= chappe_cluster andalso [ok = ?C:wait_live(N) || N <- Nodes],
     [ok = start_mrf(N, Mode) || N <- Nodes],
     [{ep, EP}, {rtpe, Rtpe}, {peers, Peers}, {nodes, Nodes} | Config].
@@ -82,6 +86,13 @@ end_per_testcase(_Case, Config) ->
 
 mode(no_cluster_unchanged) -> none;
 mode(_) -> chappe_cluster.
+
+%% long leases: the node stays live (its claims wait) seconds after it
+%% lost its quorum
+cluster_env(no_quorum_starts_in_parallel) ->
+    #{lease_ms => 9000, renew_ms => 3000, command_timeout => 5000};
+cluster_env(_) ->
+    #{}.
 
 start_mrf(N, Mode) ->
     ok = erpc:call(N, application, load, [chappe_mrf]),
@@ -139,6 +150,27 @@ owner_node_dies(Config) ->
     ?F:ua_bye(Ua2),
     ?F:ua_bye(Ua).
 
+%% An orderly stop of the owner node (init:stop/0, as `docker stop'
+%% does) is not a crash: the room's dialogs end with their owner and say
+%% BYE, so its callers on other nodes hear the room end rather than
+%% silence. The room then opens on a live node.
+owner_node_shuts_down(Config) ->
+    [{_, N1}, {_, N2} | _] = ?config(peers, Config),
+    {ok, Conf} = erpc:call(N1, chappe_mrf, conference, [<<"shuts">>, #{}]),
+    {Ua, _M} = join_call(Config, Conf),
+    MRef = monitor(process, Conf),
+    ok = erpc:call(N1, init, stop, []),
+    receive
+        {'DOWN', MRef, process, Conf, _} -> ok
+    after 20000 -> ct:fail(room_still_up)
+    end,
+    receive
+        {ua, Ua, {bye, _}} -> ok
+    after 10000 -> ct:fail(no_bye)
+    end,
+    New = wait_room(N2, <<"shuts">>, N1),
+    ?assertNotEqual(N1, node(New)).
+
 %% The owner node loses its quorum: the room hears lost, tells its
 %% notify process, refuses a new member, and the member in keeps its
 %% call. That node opens no second room (no_quorum).
@@ -181,6 +213,32 @@ room_crash_frees_name(Config) ->
     ?assertNotEqual(Conf, New),
     ?assertEqual(N2, node(New)),
     ?assert(erlang:monotonic_time(millisecond) - T0 < 1500).
+
+%% The quorum is gone but the node does not know yet: each claim waits
+%% its claim_timeout. Three rooms started at once wait side by side, not
+%% one after the other: the claim runs in the caller, not in the conf
+%% supervisor.
+no_quorum_starts_in_parallel(Config) ->
+    [{_, N1}, {P2, _}, {P3, _}] = ?config(peers, Config),
+    ok = erpc:call(N1, application, set_env, [chappe_mrf, claim_timeout, 2000]),
+    ok = ?C:stop_peer(P2),
+    ok = ?C:stop_peer(P3),
+    Test = self(),
+    T0 = erlang:monotonic_time(millisecond),
+    Names = [<<"par", (integer_to_binary(I))/binary>> || I <- [1, 2, 3]],
+    _ = [spawn(fun() ->
+                   R = erpc:call(N1, chappe_mrf, conference, [Name, #{}]),
+                   Test ! {started, Name, R, erlang:monotonic_time(millisecond) - T0}
+               end)
+         || Name <- Names],
+    Got = [receive {started, Name, R, Ms} -> {R, Ms} after 20000 -> ct:fail({no_start, Name}) end
+           || Name <- Names],
+    ct:pal("~p", [Got]),
+    [?assertEqual({error, no_quorum}, R) || {R, _} <- Got],
+    Slowest = lists:max([Ms || {_, Ms} <- Got]),
+    ?assert(Slowest < 3500),
+    %% the supervisor answers meanwhile: nothing queued behind a claim
+    ?assertMatch([_ | _], erpc:call(N1, supervisor, which_children, [chappe_mrf_sup])).
 
 %% cluster => none: each node opens its own room, as before.
 no_cluster_unchanged(Config) ->

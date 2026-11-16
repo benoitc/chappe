@@ -48,5 +48,8 @@
     %% cluster => chappe_cluster: the room's lease on its name; lost once
     %% the region took it back (no new member from then on)
     lease :: map() | undefined,
-    lost = false :: boolean()
+    lost = false :: boolean(),
+    %% cluster: started, waiting for the lease its starter claims (the
+    %% init args, and the starter's monitor); undefined once it runs
+    waiting :: #{args := map(), mon := reference()} | undefined
 }).

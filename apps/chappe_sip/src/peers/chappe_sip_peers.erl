@@ -54,6 +54,10 @@
 
 -define(TAB, chappe_sip_peers).
 -define(KV_PREFIX, "chappe_sip/peer/").
+%% how often the singleton-probed peers are read back from the KV: the
+%% region sends watch events to the nodes it holds live, so a node that
+%% was not yet live, or lost an event, catches up within this
+-define(RESYNC_MS, 5000).
 
 %% subs: subscriber => monitor; procs: peer name => {pid, monitor};
 %% singles: the probe => singleton peers, by name, with the greatest
@@ -327,9 +331,11 @@ handle_info({chappe_cluster, watch, {delete, _Key, _Old, _Hlc}}, S) ->
     {noreply, S};
 handle_info({chappe_cluster, watch, overflow}, S) ->
     %% the watch ended: watch again, then read what may have been missed
-    S1 = watch(S#state{watching = false}),
-    {noreply,
-        maps:fold(fun(N, _, Acc) -> kv_read(N, Acc) end, S1, S1#state.singles)};
+    ok = chappe_cluster:watch(<<?KV_PREFIX>>),
+    {noreply, resync(S)};
+handle_info(kv_resync, S) ->
+    _ = erlang:send_after(?RESYNC_MS, self(), kv_resync),
+    {noreply, resync(S)};
 handle_info(
     {'DOWN', MRef, process, Pid, _}, #state{subs = Subs, procs = P} = S
 ) ->
@@ -382,7 +388,11 @@ watch(#state{watching = true} = S) ->
     S;
 watch(S) ->
     ok = chappe_cluster:watch(<<?KV_PREFIX>>),
+    _ = erlang:send_after(?RESYNC_MS, self(), kv_resync),
     S#state{watching = true}.
+
+resync(S) ->
+    maps:fold(fun(N, _, Acc) -> kv_read(N, Acc) end, S, S#state.singles).
 
 kv_read(Name, S) ->
     case chappe_cluster:get(kv_key(Name)) of

@@ -1,0 +1,122 @@
+# Copyright 2026 Benoit Chesneau
+# SPDX-License-Identifier: Apache-2.0
+#
+# The cluster demo (README.md): three chappe nodes n1, n2 and n3 running
+# chappe_cluster, chappe_sip and chappe_mrf, a trunk they ping, and
+# rtpengine in front of the conference mixer, on one docker network
+# (172.29.18.0/24 unless DEMO_CLUSTER_NET says otherwise). `build' compiles
+# the tree once into the `work' volume; every other service runs from it.
+# Nothing is published on the host: softphones reach the nodes at their
+# addresses on the network (Linux, OrbStack), and smoke.sh drives SIPp
+# inside it.
+name: chappe-demo-cluster
+
+x-node: &node
+  image: chappe-demo-cluster
+  command: ["node"]
+  depends_on:
+    build:
+      condition: service_completed_successfully
+  volumes:
+    - work:/work:ro
+  environment: &node_env
+    VOTERS: "demo@n1,demo@n2,demo@n3"
+    RTPENGINE_IP: "${DEMO_CLUSTER_PREFIX:-172.29.18}.20"
+    TRUNK_IP: "${DEMO_CLUSTER_PREFIX:-172.29.18}.30"
+    FLOW_SECRET: "demo-cluster-flow-secret-shared"
+    COOKIE: "${DEMO_CLUSTER_COOKIE:-chappe-demo-cluster}"
+
+services:
+  build:
+    image: chappe-demo-cluster
+    build: ./node
+    command: ["build"]
+    volumes:
+      - ../..:/host:ro
+      - work:/work
+
+  n1:
+    <<: *node
+    hostname: n1
+    environment:
+      <<: *node_env
+      NODE_IP: "${DEMO_CLUSTER_PREFIX:-172.29.18}.11"
+    networks:
+      demo:
+        ipv4_address: "${DEMO_CLUSTER_PREFIX:-172.29.18}.11"
+
+  n2:
+    <<: *node
+    hostname: n2
+    environment:
+      <<: *node_env
+      NODE_IP: "${DEMO_CLUSTER_PREFIX:-172.29.18}.12"
+    networks:
+      demo:
+        ipv4_address: "${DEMO_CLUSTER_PREFIX:-172.29.18}.12"
+
+  n3:
+    <<: *node
+    hostname: n3
+    environment:
+      <<: *node_env
+      NODE_IP: "${DEMO_CLUSTER_PREFIX:-172.29.18}.13"
+    networks:
+      demo:
+        ipv4_address: "${DEMO_CLUSTER_PREFIX:-172.29.18}.13"
+
+  trunk:
+    <<: *node
+    hostname: trunk
+    command: ["trunk"]
+    networks:
+      demo:
+        ipv4_address: "${DEMO_CLUSTER_PREFIX:-172.29.18}.30"
+
+  ctl:
+    <<: *node
+    hostname: ctl
+    command: ["ctl"]
+    environment:
+      <<: *node_env
+      NODES: "demo@n1,demo@n2,demo@n3"
+      TRUNK_NODE: "trunk@trunk"
+    networks:
+      demo: {}
+
+  rtpengine:
+    build: ../../apps/chappe_rtpengine/interop
+    image: chappe-rtpengine-interop
+    command: >
+      rtpengine
+      --interface=${DEMO_CLUSTER_PREFIX:-172.29.18}.20
+      --listen-ng=0.0.0.0:22222
+      --port-min=30000 --port-max=30200
+      --delete-delay=0
+      --foreground --log-stderr
+    networks:
+      demo:
+        ipv4_address: "${DEMO_CLUSTER_PREFIX:-172.29.18}.20"
+
+  # SIPp for smoke.sh: `docker compose run --rm sipp ...'
+  sipp:
+    build: ../../apps/chappe_sip/interop/sipp
+    image: chappe-conf-sipp
+    profiles: ["tools"]
+    entrypoint: ["sipp"]
+    volumes:
+      - ./sipp:/scen:ro
+      - ../sbc/sipp:/demo:ro
+    networks:
+      demo: {}
+
+volumes:
+  work: {}
+
+networks:
+  demo:
+    # IPv4 only: SIPp and the nodes advertise the address they resolve
+    enable_ipv6: false
+    ipam:
+      config:
+        - subnet: "${DEMO_CLUSTER_PREFIX:-172.29.18}.0/24"

@@ -8,7 +8,8 @@
         interop-conformance interop-esl demo-esl interop-sbc interop-mrf \
         interop-cluster compliance \
         cover docs clean advisories-test \
-        demo demo-shell demo-down
+        demo demo-shell demo-down demo-cluster demo-cluster-smoke \
+        demo-cluster-shell demo-cluster-down
 
 all: compile
 
@@ -173,6 +174,27 @@ demo-shell:
 
 demo-down:
 	$(DEMO_COMPOSE) down
+
+# Three chappe nodes on chappe_cluster in docker (demo/cluster/README.md):
+# one registrar, one conference room and one trunk pinger across them.
+# demo-cluster-smoke runs the README's walkthrough with SIPp and checks it;
+# demo-cluster-shell N=n1 attaches a shell to a node.
+DEMO_CLUSTER_COMPOSE = docker compose -f demo/cluster/docker-compose.yml
+N ?= n1
+
+demo-cluster:
+	$(DEMO_CLUSTER_COMPOSE) up -d --build
+	$(DEMO_CLUSTER_COMPOSE) exec -T ctl demo-node ctl-run ready
+	@echo "demo-cluster: up; see demo/cluster/README.md"
+
+demo-cluster-smoke:
+	demo/cluster/smoke.sh
+
+demo-cluster-shell:
+	$(DEMO_CLUSTER_COMPOSE) exec $(N) demo-node shell $(N)
+
+demo-cluster-down:
+	$(DEMO_CLUSTER_COMPOSE) --profile tools down -v
 
 # eunit + ct line coverage over every app; fails under MIN_COVERAGE percent.
 # Raise MIN_COVERAGE as coverage grows, never lower it.

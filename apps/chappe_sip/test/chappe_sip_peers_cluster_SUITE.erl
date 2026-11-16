@@ -13,14 +13,15 @@
 -export([all/0, init_per_suite/1, end_per_suite/1, init_per_testcase/2,
          end_per_testcase/2]).
 -export([singleton_probe/1, prober_crash_and_overflow/1,
-         singleton_needs_cluster/1, env_peer_starts_cluster/1]).
+         singleton_needs_cluster/1, env_peer_starts_cluster/1,
+         missed_event_resynced/1]).
 
 -define(UA, chappe_sip_test_ua).
 -define(C, chappe_sip_test_cluster).
 
 all() ->
     [singleton_probe, prober_crash_and_overflow, singleton_needs_cluster,
-     env_peer_starts_cluster].
+     env_peer_starts_cluster, missed_event_resynced].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif, [{persistent, true}]),
@@ -168,6 +169,22 @@ env_peer_starts_cluster(Config) ->
                       _ -> false
                   end
               end, 150).
+
+%% A node that missed a KV event (it was not live yet when the pinger
+%% wrote, so the region sent it none) reads the state back on its own
+%% within the resync period.
+missed_event_resynced(Config) ->
+    [N1, N2 | _] = ?config(nodes, Config),
+    {TPort, _Trunk} = trunk(),
+    Opts = #{uri => <<"sip:trunk@127.0.0.1:", (integer_to_binary(TPort))/binary>>,
+             interval_ms => 300, timeout_ms => 300, probe => singleton},
+    [ok = erpc:call(N, chappe_sip, peer_add, [trunk, Opts]) || N <- [N1, N2]],
+    [ok = wait_state(N, up) || N <- [N1, N2]],
+    %% N2's row as if the last event never came
+    {ok, Info} = erpc:call(N2, chappe_sip, peer_status, [trunk]),
+    ok = erpc:call(N2, chappe_sip_peers, put, [trunk, Info#{state := unknown}]),
+    {ok, #{state := unknown}} = erpc:call(N2, chappe_sip, peer_status, [trunk]),
+    ok = wait_state(N2, up).
 
 %% ---- helpers ----
 
