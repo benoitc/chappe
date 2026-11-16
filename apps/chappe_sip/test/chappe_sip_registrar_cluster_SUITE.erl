@@ -21,6 +21,7 @@ all() ->
     [
         udp_call_through_the_edge,
         tcp_call_through_the_edge,
+        ws_call_through_the_edge,
         public_contact_is_sent_directly,
         cseq_and_expires_across_nodes,
         edge_node_down,
@@ -42,8 +43,9 @@ init_per_testcase(Case, Config) ->
     Nodes = [N || {_, N} <- Peers],
     [ok = start_cluster(N, Nodes, Dir) || N <- Nodes],
     [wait(fun() -> erpc:call(N, chappe_cluster_node, live, []) =/= not_live end, 300) || N <- Nodes],
-    Ports = [start_sip(N) || N <- Nodes],
-    [{peers, Peers}, {nodes, Nodes}, {ports, Ports} | Config].
+    Both = [start_sip(N) || N <- Nodes],
+    [{peers, Peers}, {nodes, Nodes}, {ports, [P || {P, _} <- Both]},
+     {ws_ports, [W || {_, W} <- Both]} | Config].
 
 end_per_testcase(_Case, Config) ->
     [stop_peer(P) || {P, _} <- ?config(peers, Config)],
@@ -104,6 +106,47 @@ tcp_call_through_the_edge(Config) ->
     ok = gen_tcp:send(T, busy(Inv)),
     _ = recv_status(Caller, 486),
     gen_tcp:close(T).
+
+%% A WebSocket UA registers on node 1: a call from node 2 reaches it over
+%% its WS connection through node 1, record-routed there. The caller's BYE
+%% goes through node 1 to the WS flow, and in a second call the UA's own
+%% BYE goes back through node 1 to the caller.
+%% req: R5626-R-13
+ws_call_through_the_edge(Config) ->
+    [N1, N2, _] = ?config(nodes, Config),
+    [P1, P2, _] = ?config(ports, Config),
+    [W1 | _] = ?config(ws_ports, Config),
+    C = ws_connect(W1),
+    ok = ws:send(C, {text, ws_register()}),
+    _ = recv_ws(<<"SIP/2.0 200">>),
+    [B] = wait_bindings(N2, 1),
+    ?assertEqual(N1, maps:get(node, B)),
+    ?assertMatch(<<"<sip:127.0.0.1:", _/binary>>, maps:get(edge, B)),
+    ?assertNotEqual(nomatch, binary:match(maps:get(edge, B), <<";edge=ws">>)),
+    %% the caller hangs up
+    {ok, Caller} = udp(),
+    send(Caller, P2, invite(lport(Caller), <<"cw1">>)),
+    {ok, M} = chappe_sip_msg:parse(recv_ws(<<"INVITE ">>)),
+    ?assertEqual(<<"sip:alice@df7jal23ls0d.invalid;transport=ws">>,
+                 chappe_sip_msg:uri(M)),
+    RRs = chappe_sip_msg:get_all(<<"record-route">>, M),
+    ?assertEqual(2, length(RRs)),
+    ok = ws:send(C, {text, ws_ok_for(M, RRs)}),
+    _ = recv_status(Caller, 200),
+    send(Caller, P1, bye_to(lport(Caller), <<"cw1">>, ws_contact_uri(),
+                            lists:reverse(RRs))),
+    {ok, Bye} = chappe_sip_msg:parse(recv_ws(<<"BYE ">>)),
+    ok = ws:send(C, {text, response(<<"200 OK">>, Bye, [])}),
+    _ = recv_status(Caller, 200),
+    %% the UA hangs up: its BYE routes back through node 1 to the caller
+    send(Caller, P2, invite(lport(Caller), <<"cw2">>)),
+    {ok, M2} = chappe_sip_msg:parse(recv_ws(<<"INVITE ">>)),
+    RRs2 = chappe_sip_msg:get_all(<<"record-route">>, M2),
+    ok = ws:send(C, {text, ws_ok_for(M2, RRs2)}),
+    _ = recv_status(Caller, 200),
+    ok = ws:send(C, {text, ws_bye(lport(Caller), <<"cw2">>, RRs2)}),
+    {_, P1} = recv_req(Caller, <<"BYE">>),
+    ws:close(C, 1000).
 
 %% A UA reachable at its Contact gets no edge route: node 2 sends to it
 %% directly.
@@ -289,12 +332,14 @@ start_sip(Node) ->
     [ok = erpc:call(Node, application, set_env, [chappe_sip, K, V]) || K := V <- Sip],
     {ok, _} = erpc:call(Node, application, ensure_all_started, [chappe_sip]),
     Port = pick(),
-    ok = erpc:call(Node, ?MODULE, serve, [Port]),
-    Port.
+    WsPort = pick(),
+    ok = erpc:call(Node, ?MODULE, serve, [Port, WsPort]),
+    {Port, WsPort}.
 
 %% runs on the peer
-serve(Port) ->
-    ok = chappe_sip:start(#{contact => <<"sip:127.0.0.1:", (integer_to_binary(Port))/binary>>}),
+serve(Port, WsPort) ->
+    ok = chappe_sip:start(#{contact => <<"sip:127.0.0.1:", (integer_to_binary(Port))/binary>>,
+                            ws => #{port => WsPort}}),
     ok = chappe_sip:register(chappe_sip:registrar(#{allow_unauthenticated => true})),
     chappe_sip:invite(fun ?MODULE:call/2).
 
@@ -423,9 +468,12 @@ invite(LP, CallId) ->
       "Content-Length: 0\r\n\r\n">>.
 
 bye(LP, CallId, Routes) ->
+    bye_to(LP, CallId, <<"sip:alice@192.0.2.50:5060">>, Routes).
+
+bye_to(LP, CallId, Target, Routes) ->
     P = integer_to_binary(LP),
     iolist_to_binary(
-      [<<"BYE sip:alice@192.0.2.50:5060 SIP/2.0\r\n">>,
+      [<<"BYE ", Target/binary, " SIP/2.0\r\n">>,
        <<"Via: SIP/2.0/UDP 127.0.0.1:", P/binary, ";rport;branch=z9hG4bKby", CallId/binary, "\r\n">>,
        [[<<"Route: ">>, R, <<"\r\n">>] || R <- Routes],
        <<"Max-Forwards: 70\r\n">>,
@@ -448,11 +496,64 @@ response(Status, M, Extra) ->
     iolist_to_binary(
       [<<"SIP/2.0 ">>, Status, <<"\r\n">>, Vias,
        <<"From: ">>, chappe_sip_msg:get(<<"from">>, M), <<"\r\n">>,
-       <<"To: ">>, chappe_sip_msg:get(<<"to">>, M), <<";tag=al\r\n">>,
+       <<"To: ">>, chappe_sip_msg:get(<<"to">>, M),
+       case chappe_sip_msg:to_tag(M) of
+           undefined -> <<";tag=al">>;
+           _ -> <<>>
+       end, <<"\r\n">>,
        <<"Call-ID: ">>, chappe_sip_msg:call_id(M), <<"\r\n">>,
        <<"CSeq: ">>, chappe_sip_msg:get(<<"cseq">>, M), <<"\r\n">>,
        Extra,
        <<"Content-Length: 0\r\n\r\n">>]).
+
+%% ---- WebSocket UA ----
+
+ws_connect(WP) ->
+    Url = <<"ws://127.0.0.1:", (integer_to_binary(WP))/binary, "/ws">>,
+    {ok, C} = ws:connect(Url, #{handler => chappe_sip_ws_test_client,
+                                handler_opts => #{notify => self()},
+                                subprotocols => [<<"sip">>]}),
+    C.
+
+ws_contact_uri() ->
+    <<"sip:alice@df7jal23ls0d.invalid;transport=ws">>.
+
+ws_register() ->
+    <<"REGISTER sip:127.0.0.1 SIP/2.0\r\n"
+      "Via: SIP/2.0/WS df7jal23ls0d.invalid;branch=z9hG4bKwsreg\r\n"
+      "Max-Forwards: 70\r\n"
+      "From: <sip:alice@127.0.0.1>;tag=wsreg\r\n"
+      "To: <sip:alice@127.0.0.1>\r\n"
+      "Contact: <sip:alice@df7jal23ls0d.invalid;transport=ws>\r\n"
+      "Call-ID: wsreg-call@ct\r\n"
+      "CSeq: 1 REGISTER\r\nExpires: 3600\r\nContent-Length: 0\r\n\r\n">>.
+
+ws_ok_for(M, RRs) ->
+    response(<<"200 OK">>, M,
+             [[<<"Record-Route: ">>, R, <<"\r\n">>] || R <- RRs] ++
+                 [<<"Contact: <">>, ws_contact_uri(), <<">\r\n">>]).
+
+%% the UA's BYE: its route set is the Record-Route as it got it
+ws_bye(CallerPort, CallId, RRs) ->
+    P = integer_to_binary(CallerPort),
+    iolist_to_binary(
+      [<<"BYE sip:bob@127.0.0.1:", P/binary, " SIP/2.0\r\n">>,
+       <<"Via: SIP/2.0/WS df7jal23ls0d.invalid;branch=z9hG4bKwsbye", CallId/binary, "\r\n">>,
+       [[<<"Route: ">>, R, <<"\r\n">>] || R <- RRs],
+       <<"Max-Forwards: 70\r\n">>,
+       <<"From: <sip:alice@127.0.0.1>;tag=al\r\n">>,
+       <<"To: <sip:bob@127.0.0.1>;tag=cb\r\n">>,
+       <<"Call-ID: ", CallId/binary, "@ct\r\nCSeq: 1 BYE\r\n">>,
+       <<"Content-Length: 0\r\n\r\n">>]).
+
+%% the next text frame starting with Prefix
+recv_ws(Prefix) ->
+    L = byte_size(Prefix),
+    receive
+        {ws_in, <<Prefix:L/binary, _/binary>> = Bin} -> Bin;
+        {ws_in, _Other} -> recv_ws(Prefix)
+    after 8000 -> ct:fail({no_ws_frame, Prefix})
+    end.
 
 %% ---- sockets ----
 
