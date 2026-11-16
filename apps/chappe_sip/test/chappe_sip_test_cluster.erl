@@ -4,7 +4,8 @@
 %% Peer nodes for the suites that run chappe_sip on several nodes, with
 %% or without chappe_cluster. ensure/0 names this node @localhost (a
 %% loaded host may not resolve its own name for -sname peers); a node
-%% already distributed keeps its name and its peers take its host.
+%% already distributed keeps its name, and its peers still run on
+%% localhost.
 -module(chappe_sip_test_cluster).
 
 -export([ensure/0, peer/1, stop_peer/1, start_cluster/3, start_cluster/4, wait_live/1]).
@@ -27,10 +28,12 @@ ensure() ->
 peer(Base) ->
     Name = list_to_atom(Base ++ "_" ++ integer_to_list(erlang:unique_integer([positive]))),
     Paths = lists:append([["-pa", P] || P <- code:get_path()]),
-    [_, Host] = string:split(atom_to_list(node()), "@"),
+    %% always localhost: a peer on this host's own name may not reach the
+    %% others when that name resolves badly (a laptop between networks),
+    %% and this node, whatever its name, reaches localhost
     {ok, Peer, Node} = peer:start_link(#{
         name => Name,
-        host => Host,
+        host => "localhost",
         connection => standard_io,
         args => ["-kernel", "prevent_overlapping_partitions", "false" | Paths]
     }),
