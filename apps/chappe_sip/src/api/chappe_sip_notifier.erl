@@ -29,6 +29,7 @@
     put/4,
     put_async/4,
     get/2,
+    put_next/4,
     set_state/3,
     set_interval/2,
     watchers/2
@@ -104,6 +105,15 @@ put(Name, Key, Data, Version) ->
 put_async(Server, Key, Data, Version) ->
     gen_server:cast(Server, {put, Key, Data, Version}).
 
+%% put/4 with the version Next(Last) makes from the one last taken for
+%% Key (undefined: none), in the notifier as it takes the data, so the
+%% new version is later than whatever came before it here. Returns that
+%% version, for the other nodes. Next runs in the notifier.
+-spec put_next(atom(), term(), term(), fun((term()) -> term())) ->
+    {ok, term()}.
+put_next(Name, Key, Data, Next) when is_function(Next, 1) ->
+    gen_server:call(Name, {put_next, Key, Data, Next}).
+
 -spec get(atom(), term()) -> term() | undefined.
 get(Name, Key) ->
     gen_server:call(Name, {get, Key}).
@@ -166,9 +176,22 @@ handle_call({put, Key, Data}, _From, S) ->
     {reply, ok, notify_key(Key, S1)};
 handle_call({put, Key, Data, Version}, _From, S) ->
     {reply, ok, versioned(Key, Data, Version, S)};
+handle_call({put_next, Key, Data, Next}, _From, S) ->
+    Version = Next(maps:get(Key, S#state.versions, undefined)),
+    {reply, {ok, Version}, versioned(Key, Data, Version, S)};
 handle_call({get, Key}, _From, S) ->
     {reply, maps:get(Key, S#state.data, undefined), S};
 handle_call({set_state, Key, Fun}, _From, S) ->
+    {reply, ok, set_state_of(Key, Fun, S)};
+handle_call({watchers, Key}, _From, S) ->
+    {reply,
+        [
+            {P, WS}
+         || P := #{key := K, wstate := WS} <- S#state.watchers, K =:= Key
+        ],
+        S}.
+
+set_state_of(Key, Fun, S) ->
     Moved = [
         {Pid, New}
      || {Pid, WS, New} <- [
@@ -177,7 +200,7 @@ handle_call({set_state, Key, Fun}, _From, S) ->
         ],
         New =/= WS
     ],
-    S1 = lists:foldl(
+    lists:foldl(
         fun({Pid, New}, Acc) ->
             W = maps:get(Pid, Acc#state.watchers),
             Acc1 = Acc#state{
@@ -190,21 +213,18 @@ handle_call({set_state, Key, Fun}, _From, S) ->
         end,
         S,
         Moved
-    ),
-    {reply, ok, S1};
-handle_call({watchers, Key}, _From, S) ->
-    {reply,
-        [
-            {P, WS}
-         || P := #{key := K, wstate := WS} <- S#state.watchers, K =:= Key
-        ],
-        S}.
+    ).
 
 handle_cast({changed, Key}, S) ->
     {noreply, notify_key(Key, S)};
 handle_cast({put, Key, Data, Version}, S) ->
-    %% a put/4 made on another node (see start_link/4's group)
+    %% a put/4 made on another node (see start_link/4's group); its
+    %% stamp moves this node's clock (chappe_sip_hlc)
+    ok = seen(Version),
     {noreply, versioned(Key, Data, Version, S)}.
+
+seen({Stamp, _Node, _N}) -> chappe_sip_hlc:seen(Stamp);
+seen(_Version) -> ok.
 
 handle_info({chappe_sip_dialog, D, {refreshed, _}, _Req}, S) ->
     %% RFC 6665 4.2.1.2: a NOTIFY after every accepted refresh
