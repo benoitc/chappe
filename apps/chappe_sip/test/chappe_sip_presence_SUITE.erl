@@ -30,7 +30,8 @@
          esc_max_per_resource/1, esc_body_413/1, esc_watch_once/1]).
 -export([pa_full_state/1, pa_rate/1, pa_accept_406/1, pa_deny_403/1,
          pa_pending/1, pa_polite/1, pa_digest/1, pa_fetch/1]).
--export([mwi_initial_and_update/1, mwi_rate/1, mwi_auth/1]).
+-export([mwi_initial_and_update/1, mwi_rate/1, mwi_auth/1,
+         mwi_other_node/1]).
 -export([epa_lifecycle/1, epa_one_at_a_time/1, epa_412/1, epa_423/1,
          epa_digest/1]).
 -export([watcher_pidf/1, watcher_mwi/1, watcher_one_dialog/1,
@@ -53,7 +54,8 @@ groups() ->
                 esc_max_per_resource, esc_body_413, esc_watch_once]},
      {pa, [], [pa_full_state, pa_rate, pa_accept_406, pa_deny_403,
                pa_pending, pa_polite, pa_digest, pa_fetch]},
-     {mwi, [], [mwi_initial_and_update, mwi_rate, mwi_auth]},
+     {mwi, [], [mwi_initial_and_update, mwi_rate, mwi_auth,
+                 mwi_other_node]},
      {epa, [], [epa_lifecycle, epa_one_at_a_time, epa_412, epa_423,
                 epa_digest]},
      {watcher, [], [watcher_pidf, watcher_mwi, watcher_one_dialog,
@@ -511,6 +513,41 @@ mwi_initial_and_update(Config) ->
     {N2, _} = recv_notify(Sock, EP),
     ?assertEqual(<<"Messages-Waiting: yes\r\nMessage-Account: ", Acc/binary,
                    "\r\nVoice-Message: 2/1\r\n">>, body(N2)).
+
+%% update/2 on another node reaches a subscriber of this one: the
+%% notifiers of every node share a pg group, with no cluster configured.
+mwi_other_node(Config) ->
+    {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
+                        ?config(user, Config)},
+    ok = chappe_sip_test_cluster:ensure(),
+    {Peer, Node} = chappe_sip_test_cluster:peer("mwi"),
+    try
+        {ok, _} = erpc:call(Node, application, ensure_all_started, [chappe_sip]),
+        Acc = res(User),
+        ok = chappe_sip_mwi:serve(#{summary => fun(_) -> #{} end}),
+        send(Sock, EP, subscribe(Sock, Acc, <<"message-summary">>, [])),
+        {200, _} = ok_and_notify(Sock),
+        Here = node(),
+        ok = wait_until(fun() ->
+            lists:member(Here, [node(P) || P <- erpc:call(Node, pg, get_members,
+                [chappe_sip_call:scope(), chappe_sip_mwi])])
+        end),
+        timer:sleep(1100),
+        ok = erpc:call(Node, chappe_sip_mwi, update,
+                       [Acc, #{messages => #{voice => {4, 0}}}]),
+        {N2, _} = recv_notify(Sock, EP),
+        ?assertMatch({_, _}, binary:match(body(N2), <<"Voice-Message: 4/0">>))
+    after
+        chappe_sip_test_cluster:stop_peer(Peer)
+    end.
+
+wait_until(F) -> wait_until(F, 50).
+wait_until(_F, 0) -> {error, timeout};
+wait_until(F, N) ->
+    case F() of
+        true -> ok;
+        false -> timer:sleep(100), wait_until(F, N - 1)
+    end.
 
 %% Never more than one NOTIFY a second to a subscriber.
 %% req: R3842-20

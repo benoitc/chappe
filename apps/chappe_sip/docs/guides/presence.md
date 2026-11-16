@@ -176,6 +176,19 @@ refuses with 403.
 `application/simple-message-summary` body; a subscriber's `doc` holds the
 parsed summary.
 
+### Message waiting on several nodes
+
+Call `serve/1` on every node that takes SUBSCRIBEs. Then call `update/2` on
+any node: it reaches the subscribers of every node, whichever node took
+their SUBSCRIBE.
+
+- Each node's notifier joins the `chappe_sip_mwi` group of the
+  `chappe_sip` pg scope, and `update/2` sends the summary to every member.
+- This is a lookup, not ownership: it needs no chappe_cluster and works
+  with `cluster => none`.
+- A node that joins later gets an account's summary from your `summary`
+  fun on its first subscription, as a single node does.
+
 ## Notes
 
 - Publications live in the node: they outlive an engine restart, not a node
@@ -189,5 +202,5 @@ parsed summary.
 - Modules: `chappe_sip_presence`, `chappe_sip_pidf`, `chappe_sip_mwi`,
   `chappe_sip_esc`, `chappe_sip_notifier`, `chappe_sip_publisher`,
   `chappe_sip_events_sup`.
-- Tests: `chappe_sip_presence_SUITE`.
+- Tests: `chappe_sip_presence_SUITE` (`mwi_other_node` for the fan-out).
 - Lab: none.

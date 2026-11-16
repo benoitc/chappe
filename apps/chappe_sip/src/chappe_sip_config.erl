@@ -162,4 +162,8 @@ default(siprec_store) -> chappe_audio_store;
 %% The UDP ports its receivers bind, {Min, Max} (a container publishes only
 %% those); undefined binds any port. serve/3's rtp_ports overrides it.
 default(siprec_rtp_ports) -> undefined;
+%% Ownership across nodes: none (each node on its own) or chappe_cluster
+%% (the region's leases, KV and singletons; the chappe_cluster app must
+%% run on this node).
+default(cluster) -> none;
 default(_) -> undefined.
