@@ -7,6 +7,21 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 
 ## Unreleased
 
+- chappe_sip: the registrar can run on a cluster. With `cluster =>
+  chappe_cluster`, a device that registers to one node is found from every
+  node, and a call placed on any node reaches it, through the node that
+  holds its connection when it is behind a NAT, on TCP, TLS or WebSocket.
+  Two nodes taking registrations for one user at once never lose one, and
+  expired registrations are cleaned up by one node of the region. When the
+  region has lost its majority, a registration gets 503 with Retry-After
+  instead of a binding only one node would know; calls to devices already
+  registered keep working. When the node a TCP, TLS or WebSocket device is
+  connected to stops, the device is unreachable until it registers again;
+  a UDP device is still reached directly. Without the setting nothing
+  changes.
+- chappe_cluster: a delete that names the version it read, a
+  compare-and-swap with its own timeout, and a listing of the keys under a
+  prefix.
 - chappe_cluster, a new app: one owner at a time for anything a cluster
   must not run twice, such as a conference room or a job that pings a
   trunk. A node claims a key and gets a lease with a number that only

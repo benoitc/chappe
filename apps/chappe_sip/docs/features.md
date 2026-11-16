@@ -45,6 +45,7 @@ coverage, row by row, is in the [compliance matrix](compliance.md).
 | Capability | Guide |
 |---|---|
 | Registrar and location store, Path, outbound flows (RFC 5626), NAT, the flow of each binding | [Registrar](guides/registrar.md) |
+| Registrar on a cluster: one location store for every node, calls routed through the node that holds the device's connection, 503 with Retry-After without a quorum | [Registrar](guides/registrar.md#run-the-registrar-on-a-cluster) |
 | Outbound registration to a carrier or PBX | [Register to a carrier](guides/register-to-a-carrier.md) |
 
 ## Events and transfer
