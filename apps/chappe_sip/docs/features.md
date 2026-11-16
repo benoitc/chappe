@@ -36,6 +36,7 @@ coverage, row by row, is in the [compliance matrix](compliance.md).
 | B2BUA parallel forking, serial targets, per-branch flow, headers and anchor flags, the answering branch, `pass_failure` hunting under one To-tag | [Fork and hunt](guides/b2bua-forking.md) |
 | B2BUA hangup, in-dialog requests, INFO relay, `replace_b`, `relay_async`, `set_owner` | [Call control](guides/b2bua-call-control.md) |
 | Peers monitored by OPTIONS, peer groups with failover, direct or anchored media per call | [Run an SBC](guides/sbc.md) |
+| Peers pinged from one node of a cluster, their state shared with every node (`probe => singleton`) | [Run an SBC](guides/sbc.md#ping-a-peer-from-one-node-of-a-cluster) |
 | Stateful forking proxy (RFC 3261 16), Record-Route, in-dialog forwarding | [Proxy](guides/proxy.md) |
 | Proxy redirects followed (bounded), provisional and final timeouts per branch, double Record-Route (RFC 5658) | [Proxy](guides/proxy.md#follow-redirects) |
 | Guard: rules on any header, ACL and rate limits, an action per transport, silent drop with an engine blocklist | [Protect the edge](guides/protect-the-edge.md) |
@@ -54,6 +55,7 @@ coverage, row by row, is in the [compliance matrix](compliance.md).
 |---|---|
 | SUBSCRIBE/NOTIFY, both sides, event package routing (RFC 6665) | [Subscriptions](guides/subscriptions.md) |
 | PUBLISH, presence (RFC 3856), message waiting (RFC 3842) | [Presence](guides/presence.md) |
+| Message-waiting updates reach the subscribers of every node | [Presence](guides/presence.md#message-waiting-on-several-nodes) |
 | REFER, both sides (RFC 3515, RFC 7647) | [REFER](guides/refer.md) |
 | B2BUA transfers, blind and attended, under a policy or decided by the app, on calls to FreeSWITCH too | [REFER](guides/refer.md#transfer-a-b2bua-call) |
 | Conference focus and conference state (RFC 4579, RFC 4575) | [Conference focus](guides/conference-focus.md) |

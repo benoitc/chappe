@@ -38,6 +38,42 @@ Peers can also come from the application environment:
 {chappe_sip, [{peers, [{fs1, #{uri => <<"sip:10.0.0.31:5080">>, group => media}}]}]}
 ```
 
+## Ping a peer from one node of a cluster
+
+By default every node that adds a peer pings it, so a trunk gets one
+OPTIONS per node per interval. On a cluster, `probe => singleton` has one
+node ping it and share what it sees with the others. Set the chappe_sip
+setting `cluster => chappe_cluster` and configure chappe_cluster (its
+`voters`); chappe_sip starts it on first use:
+
+```erlang
+%% sys.config, on every node
+{chappe_sip, [{cluster, chappe_cluster},
+              {peers, [{carrier1, #{uri => <<"sip:203.0.113.10">>,
+                                    group => carriers, probe => singleton}}]}]}
+```
+
+Or at run time, on every node, with the same options:
+
+```erlang
+ok = chappe_sip:peer_add(carrier1, #{uri => <<"sip:203.0.113.10">>,
+                                     group => carriers, probe => singleton}).
+```
+
+- One node runs the pinger, a chappe_cluster singleton; when that node
+  stops, another one takes over and goes on from the last known state.
+- The pinger puts the peer's state in the region's KV when the state or
+  the last status changes, with its fence; each node watches the KV and
+  updates its own table, so `peer_select/2`, `{peer_group, G}` and the
+  subscribers see the same state everywhere.
+- The pinger checks `chappe_cluster:singleton_valid/1` before each OPTIONS
+  and each write: a paused node that wakes up after the takeover neither
+  pings nor writes, and a node ignores a state with an older fence than
+  the last one it took.
+- `rtt_ms` on the other nodes is the one of the last shared change.
+- Without `cluster => chappe_cluster`, `probe => singleton` returns
+  `{error, no_cluster}`.
+
 ## Send calls to a group
 
 Give `create_b2bua/4` a `{peer_group, Group}` target. The call goes to the

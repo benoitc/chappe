@@ -24,6 +24,14 @@
 %%
 %% Peers also come from the `peers' application setting, a list of
 %% {Name, Opts}, added when the application starts.
+%%
+%% probe => all_nodes (the default): each node that adds the peer pings
+%% it. probe => singleton, with the `cluster' setting chappe_cluster: one
+%% node of the region pings it (a chappe_cluster singleton, moved to
+%% another node when its node stops) and puts the peer's state in the
+%% region's KV, fenced; every node that added it watches the KV and keeps
+%% its own table, and its subscribers, in step. Add the peer on every
+%% node that may ping it, with the same options.
 -module(chappe_sip_peers).
 -behaviour(gen_server).
 
@@ -39,17 +47,22 @@
     unsubscribe/1
 ]).
 %% for chappe_sip_peer and chappe_sip_qualify
--export([put/2, notify/1]).
+-export([put/2, notify/1, kv_key/1, singleton/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -export_type([name/0, opts/0, policy/0, info/0]).
 
 -define(TAB, chappe_sip_peers).
+-define(KV_PREFIX, "chappe_sip/peer/").
 
-%% subs: subscriber => monitor; procs: peer name => {pid, monitor}
+%% subs: subscriber => monitor; procs: peer name => {pid, monitor};
+%% singles: the probe => singleton peers, by name, with the greatest
+%% fence Seq seen in the KV for each; watching: the KV prefix is watched
 -record(state, {
     subs = #{} :: #{pid() => reference()},
-    procs = #{} :: #{term() => {pid(), reference()}}
+    procs = #{} :: #{term() => {pid(), reference()}},
+    singles = #{} :: #{term() => non_neg_integer()},
+    watching = false :: boolean()
 }).
 -type state() :: #state{}.
 
@@ -66,7 +79,8 @@
     down_after => pos_integer(),
     alive_codes => [100..699],
     from => binary(),
-    proxy => binary()
+    proxy => binary(),
+    probe => all_nodes | singleton
 }.
 %% state: unknown until the first probe settles it; last_status: the
 %% status of the last probe (timeout when none came); rtt_ms: how long
@@ -109,12 +123,23 @@ env_peers(Peers) when is_map(Peers) -> maps:to_list(Peers);
 env_peers(Peers) when is_list(Peers) -> Peers;
 env_peers(_) -> [].
 
-%% Start monitoring a peer.
--spec add(name(), opts()) -> ok | {error, already_exists | bad_uri | term()}.
+%% Start monitoring a peer. probe => singleton needs the `cluster'
+%% setting chappe_cluster ({error, no_cluster} otherwise).
+-spec add(name(), opts()) ->
+    ok | {error, already_exists | bad_uri | no_cluster | term()}.
 add(Name, #{uri := Uri} = Opts) when is_binary(Uri) ->
-    case chappe_sip_uri:parse(Uri) of
-        {ok, _} -> gen_server:call(?MODULE, {add, Name, Opts});
-        _ -> {error, bad_uri}
+    case {chappe_sip_uri:parse(Uri), probe(Opts)} of
+        {{ok, _}, singleton} ->
+            case chappe_sip_config:get(cluster) of
+                chappe_cluster -> gen_server:call(?MODULE, {add, Name, Opts});
+                _ -> {error, no_cluster}
+            end;
+        {{ok, _}, all_nodes} ->
+            gen_server:call(?MODULE, {add, Name, Opts});
+        {{ok, _}, bad} ->
+            {error, {bad_option, probe}};
+        _ ->
+            {error, bad_uri}
     end;
 add(_Name, _Opts) ->
     {error, bad_uri}.
@@ -205,6 +230,21 @@ put(Name, Info) ->
 notify(Event) ->
     gen_server:cast(?MODULE, {notify, Event}).
 
+%% The region KV key of a singleton-probed peer's state.
+-spec kv_key(name()) -> binary().
+kv_key(Name) ->
+    <<?KV_PREFIX, (term_to_binary(Name))/binary>>.
+
+%% The chappe_cluster singleton that pings a singleton-probed peer.
+-spec singleton(name()) -> {chappe_sip_peer, name()}.
+singleton(Name) ->
+    {chappe_sip_peer, Name}.
+
+probe(#{probe := singleton}) -> singleton;
+probe(#{probe := all_nodes}) -> all_nodes;
+probe(#{probe := _}) -> bad;
+probe(#{}) -> all_nodes.
+
 tab() ->
     try
         ets:tab2list(?TAB)
@@ -226,11 +266,13 @@ init([]) ->
     _ = ets:new(?TAB, [named_table, public, set, {read_concurrency, true}]),
     {ok, #state{}}.
 
-handle_call({add, Name, Opts}, _From, #state{procs = P} = S) ->
-    case maps:is_key(Name, P) of
-        true ->
+handle_call({add, Name, Opts}, _From, #state{procs = P, singles = Sg} = S) ->
+    case {maps:is_key(Name, P) orelse maps:is_key(Name, Sg), probe(Opts)} of
+        {true, _} ->
             {reply, {error, already_exists}, S};
-        false ->
+        {false, singleton} ->
+            add_single(Name, Opts, S);
+        {false, _} ->
             case chappe_sip_peer_sup:start_peer(Name, Opts) of
                 {ok, Pid} ->
                     MRef = erlang:monitor(process, Pid),
@@ -239,14 +281,18 @@ handle_call({add, Name, Opts}, _From, #state{procs = P} = S) ->
                     {reply, Err, S}
             end
     end;
-handle_call({remove, Name}, _From, #state{procs = P} = S) ->
-    case maps:take(Name, P) of
-        {{Pid, MRef}, P1} ->
+handle_call({remove, Name}, _From, #state{procs = P, singles = Sg} = S) ->
+    case {maps:take(Name, P), Sg} of
+        {{{Pid, MRef}, P1}, _} ->
             erlang:demonitor(MRef, [flush]),
             _ = chappe_sip_peer_sup:stop_peer(Pid),
             ets:delete(?TAB, {peer, Name}),
             {reply, ok, S#state{procs = P1}};
-        error ->
+        {error, #{Name := _}} ->
+            _ = chappe_cluster:stop_singleton(singleton(Name)),
+            ets:delete(?TAB, {peer, Name}),
+            {reply, ok, S#state{singles = maps:remove(Name, Sg)}};
+        {error, _} ->
             {reply, {error, not_found}, S}
     end;
 handle_call({subscribe, Pid}, _From, #state{subs = Subs} = S) ->
@@ -269,12 +315,21 @@ handle_call({unsubscribe, Pid}, _From, #state{subs = Subs} = S) ->
 handle_call(_Req, _From, S) ->
     {reply, {error, unknown_call}, S}.
 
-handle_cast({notify, Event}, #state{subs = Subs} = S) ->
-    _ = [Pid ! Event || Pid <- maps:keys(Subs)],
+handle_cast({notify, Event}, S) ->
+    ok = notify_subs(Event, S),
     {noreply, S};
 handle_cast(_Msg, S) ->
     {noreply, S}.
 
+handle_info({chappe_cluster, watch, {put, Key, Value, _Hlc}}, S) ->
+    {noreply, kv_put(Key, Value, S)};
+handle_info({chappe_cluster, watch, {delete, _Key, _Old, _Hlc}}, S) ->
+    {noreply, S};
+handle_info({chappe_cluster, watch, overflow}, S) ->
+    %% the watch ended: watch again, then read what may have been missed
+    S1 = watch(S#state{watching = false}),
+    {noreply,
+        maps:fold(fun(N, _, Acc) -> kv_read(N, Acc) end, S1, S1#state.singles)};
 handle_info(
     {'DOWN', MRef, process, Pid, _}, #state{subs = Subs, procs = P} = S
 ) ->
@@ -292,3 +347,82 @@ handle_info(
     end;
 handle_info(_Info, S) ->
     {noreply, S}.
+
+%% ---- probe => singleton ----
+
+%% The row starts unknown (or as the KV has it), then follows the KV; the
+%% singleton runs the probe on one node of the region.
+add_single(Name, Opts, S) ->
+    %% started on first use, as the media apps are
+    case application:ensure_all_started(chappe_cluster) of
+        {ok, _} -> add_single_started(Name, Opts, S);
+        {error, Why} -> {reply, {error, {cluster, Why}}, S}
+    end.
+
+add_single_started(Name, Opts, S0) ->
+    ok = ?MODULE:put(Name, chappe_sip_peer:initial(Opts)),
+    S1 = watch(S0),
+    S2 = kv_read(Name, S1#state{singles = (S1#state.singles)#{Name => 0}}),
+    Spec = #{
+        id => singleton(Name),
+        start => {chappe_sip_peer, start_link, [Name, Opts]},
+        shutdown => 2000
+    },
+    case chappe_cluster:singleton(singleton(Name), Spec) of
+        Ok when Ok =:= ok; Ok =:= {error, already_started} ->
+            {reply, ok, S2};
+        {error, _} = Err ->
+            ets:delete(?TAB, {peer, Name}),
+            {reply, Err, S2#state{
+                singles = maps:remove(Name, S2#state.singles)
+            }}
+    end.
+
+watch(#state{watching = true} = S) ->
+    S;
+watch(S) ->
+    ok = chappe_cluster:watch(<<?KV_PREFIX>>),
+    S#state{watching = true}.
+
+kv_read(Name, S) ->
+    case chappe_cluster:get(kv_key(Name)) of
+        {ok, Value, _Version} -> kv_apply(Name, Value, S);
+        _ -> S
+    end.
+
+kv_put(<<?KV_PREFIX, Bin/binary>>, Value, S) ->
+    try binary_to_term(Bin, [safe]) of
+        Name -> kv_apply(Name, Value, S)
+    catch
+        error:badarg -> S
+    end;
+kv_put(_Key, _Value, S) ->
+    S.
+
+%% A state from the singleton: kept when its fence is not older than the
+%% last one seen (a paused prober that wakes up cannot undo the new one's
+%% word), and told to the subscribers when it changes the state.
+kv_apply(Name, #{info := Info, fence := {_, _, Seq}}, #state{singles = Sg} = S) ->
+    case Sg of
+        #{Name := Last} when Seq >= Last ->
+            Old =
+                case lookup({peer, Name}) of
+                    [{_, #{state := St}}] -> St;
+                    [] -> unknown
+                end,
+            ok = ?MODULE:put(Name, Info),
+            _ =
+                case maps:get(state, Info) of
+                    Old -> ok;
+                    New -> notify_subs({chappe_sip_peer, Name, New}, S)
+                end,
+            S#state{singles = Sg#{Name := Seq}};
+        _ ->
+            S
+    end;
+kv_apply(_Name, _Value, S) ->
+    S.
+
+notify_subs(Event, #state{subs = Subs}) ->
+    _ = [Pid ! Event || Pid <- maps:keys(Subs)],
+    ok.

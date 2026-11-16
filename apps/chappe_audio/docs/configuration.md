@@ -62,6 +62,7 @@ you wire chappe_audio into a release or tune a listener.
 | `dir` | `"recordings"` | The file backend's folder. |
 | `retention_days` | unset | Day folders older than this are deleted by the sweep. |
 | `sweep_interval` | `3600000` | Milliseconds between sweeps. |
+| `sweep_guard` | unset (always) | A fun of no argument, or `{M, F, A}`, returning whether this node sweeps now; anything but `true`, or a failure, skips the sweep. For a store the nodes share, back it with a chappe_cluster singleton ([Record a call](guides/record.md#sweep-a-shared-store-from-one-node)). |
 
 Related: chappe_mrf's `shared_dir` env maps the folder FreeSWITCH records
 into to this node's view of it ([Record a call](guides/record.md)).

@@ -22,9 +22,11 @@
 
 -export([
     start_link/3,
+    start_link/4,
     add/4, add/5,
     changed/2,
     put/3,
+    put_async/3,
     get/2,
     set_state/3,
     set_interval/2,
@@ -49,7 +51,17 @@
 -spec start_link(atom(), module(), non_neg_integer()) ->
     {ok, pid()} | {error, term()}.
 start_link(Name, Mod, Interval) ->
-    gen_server:start_link({local, Name}, ?MODULE, {Mod, Interval}, []).
+    start_link(Name, Mod, Interval, #{}).
+
+%% Opts: group => term(), a pg group of the chappe_sip scope the notifier
+%% joins, so a put/3 on one node can reach the watchers of every node
+%% (chappe_sip_mwi:update/2 casts to its members).
+-spec start_link(atom(), module(), non_neg_integer(), map()) ->
+    {ok, pid()} | {error, term()}.
+start_link(Name, Mod, Interval, Opts) ->
+    gen_server:start_link(
+        {local, Name}, ?MODULE, {Mod, Interval, Opts}, []
+    ).
 
 %% A subscription to Key accepted by the SUBSCRIBE handler (its dialog is
 %% owned by this process): send it the state now.
@@ -76,6 +88,12 @@ changed(Name, Key) ->
 put(Name, Key, Data) ->
     gen_server:call(Name, {put, Key, Data}).
 
+%% put/3 without waiting, to a notifier by name or pid (one on another
+%% node, found in its group).
+-spec put_async(atom() | pid(), term(), term()) -> ok.
+put_async(Server, Key, Data) ->
+    gen_server:cast(Server, {put, Key, Data}).
+
 -spec get(atom(), term()) -> term() | undefined.
 get(Name, Key) ->
     gen_server:call(Name, {get, Key}).
@@ -98,10 +116,17 @@ watchers(Name, Key) ->
 
 %% ---- gen_server ----
 
--spec init({module(), non_neg_integer()}) -> {ok, state()}.
-init({Mod, Interval}) ->
+-spec init({module(), non_neg_integer(), map()}) -> {ok, state()}.
+init({Mod, Interval, Opts}) ->
     %% a sender that crashes must not take the notifier down
     process_flag(trap_exit, true),
+    ok =
+        case Opts of
+            #{group := Group} ->
+                pg:join(chappe_sip_call:scope(), Group, self());
+            #{} ->
+                ok
+        end,
     {ok, #state{mod = Mod, interval = Interval}}.
 
 handle_call({interval, I}, _From, S) ->
@@ -164,7 +189,11 @@ handle_call({watchers, Key}, _From, S) ->
         S}.
 
 handle_cast({changed, Key}, S) ->
-    {noreply, notify_key(Key, S)}.
+    {noreply, notify_key(Key, S)};
+handle_cast({put, Key, Data}, S) ->
+    %% a put/3 made on another node (see start_link/4's group)
+    S1 = S#state{data = (S#state.data)#{Key => Data}},
+    {noreply, notify_key(Key, S1)}.
 
 handle_info({chappe_sip_dialog, D, {refreshed, _}, _Req}, S) ->
     %% RFC 6665 4.2.1.2: a NOTIFY after every accepted refresh

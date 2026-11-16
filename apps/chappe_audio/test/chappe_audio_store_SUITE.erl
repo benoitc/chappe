@@ -22,6 +22,7 @@ all() ->
         adopt_in_job,
         retention_and_stale_parts,
         sweep_spares_live_writers,
+        sweep_guard_skips,
         writer_owner_death,
         writer_crash,
         writer_bound,
@@ -241,6 +242,37 @@ retention_and_stale_parts(Config) ->
     ?assertEqual({error, not_found}, chappe_audio_store:get(OldId)),
     ?assertMatch({ok, _}, chappe_audio_store:get(NewId)),
     {ok, _} = chappe_audio_store:close(Writer, #{}).
+
+%% A sweep_guard that says no skips the sweep, timed or asked for; one
+%% that says yes (or an {M, F, A}) runs it. A guard that crashes counts as
+%% no.
+sweep_guard_skips(Config) ->
+    Dir = ?config(dir, Config),
+    {ok, Id} = record(<<"guarded">>, <<0, 0>>),
+    Stale = filename:join(filename:dirname(maps:get(path, ok(chappe_audio_store:get(Id)))), "dead.wav.part"),
+    Old = calendar:system_time_to_local_time(os:system_time(second) - 7200, second),
+    ok = file:write_file(Stale, <<"x">>),
+    ok = file:change_time(Stale, Old),
+    Self = self(),
+    No = fun() -> Self ! guard_asked, false end,
+    ok = chappe_audio_store:configure(#{dir => Dir, sweep_guard => No, sweep_interval => 100}),
+    receive
+        guard_asked -> ok
+    after 2000 -> ct:fail(guard_not_asked)
+    end,
+    {ok, 0} = chappe_audio_store:sweep(),
+    ?assert(filelib:is_regular(Stale)),
+    ok = chappe_audio_store:configure(#{dir => Dir, sweep_guard => fun() -> error(boom) end}),
+    {ok, 0} = chappe_audio_store:sweep(),
+    ?assert(filelib:is_regular(Stale)),
+    ok = chappe_audio_store:configure(#{dir => Dir, sweep_guard => {erlang, is_atom, [x]}}),
+    {ok, 0} = chappe_audio_store:sweep(),
+    ?assertNot(filelib:is_regular(Stale)),
+    ?assertEqual(
+        {error, {bad_option, sweep_guard}},
+        chappe_audio_store:configure(#{dir => Dir, sweep_guard => fun(_) -> true end})
+    ),
+    ok = chappe_audio_store:configure(#{dir => Dir}).
 
 %% A writer that wrote nothing for hours (a paused fork, a held SIPREC
 %% session) keeps its partial file through the sweep; once the writer is

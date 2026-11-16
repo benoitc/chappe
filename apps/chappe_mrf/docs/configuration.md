@@ -17,6 +17,8 @@ the `mrf` dialplan extension shown in the [README](../README.md).
 | `esl_port` | unset | Port of the outbound socket listener FreeSWITCH connects back to. Set, the listener starts with the application. |
 | `esl_ip` | `{127, 0, 0, 1}` | Address the listener binds. Set it to the interface FreeSWITCH reaches you on when FreeSWITCH runs on another host. |
 | `esl_allow` | unset (any peer) | CIDR networks or addresses (strings or binaries) FreeSWITCH connects from. A peer outside is closed right after accept. |
+| `cluster` | `none` | `none`: each node opens its own rooms. `chappe_cluster`: a room name has one owner in the region, and `conference/2` on any node returns that room ([conference guide](guides/conference.md#run-rooms-on-a-cluster)). chappe_cluster is started on first use; configure it (its `voters`). |
+| `claim_timeout` | `1000` | Milliseconds a room's start waits for the region's answer to its claim, with `cluster => chappe_cluster`. |
 | `shared_dir` | unset | `#{freeswitch => Dir, local => Dir}`: the folder FreeSWITCH records into, as the node and as this host see it. Recordings asked with `store => default` must be in it; unset, both paths are the same. |
 
 ```erlang

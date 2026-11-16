@@ -173,7 +173,8 @@ receive
     {chappe_mrf_conf, Conf, {muted, Member, true}} -> muted;
     {chappe_mrf_conf, Conf, {dtmf, Member, Digit}} -> Digit;           %% fs
     {chappe_mrf_conf, Conf, {play_done, Member, File}} -> File;        %% fs, play/3
-    {chappe_mrf_conf, Conf, {play_done, File}} -> File                 %% fs, play/2
+    {chappe_mrf_conf, Conf, {play_done, File}} -> File;                %% fs, play/2
+    {chappe_mrf_conf, Conf, lost} -> stop_sending_callers()            %% cluster
 end.
 ```
 
@@ -263,6 +264,51 @@ end.
 The room shows `{left, Member, transferred}`, then
 `{joined, Member, #{uri := Target}}`.
 
+## Run rooms on a cluster
+
+On one node, a room name names one room. On several nodes, two callers
+dialing the same room on two nodes would land in two rooms. Set the
+chappe_mrf setting `cluster => chappe_cluster` on every node, with
+chappe_cluster configured (it starts on first use), and a room name has
+one owner in the region:
+
+```erlang
+%% sys.config, on every node
+{chappe_mrf, [{cluster, chappe_cluster}]}
+```
+
+```erlang
+{ok, Conf} = chappe_mrf:conference(<<"board">>, #{}),
+{ok, Member} = chappe_mrf_conf:join(Conf, B2b, #{}).
+```
+
+- The room's process claims the lease `{chappe_mrf_conf, Name}` before it
+  registers the name. On another node, `conference/2` returns the pid of
+  the room that holds it, and `join/3` works on it from there.
+- Opening a room waits for the region at most `claim_timeout` (1000 ms).
+  Joining a room that is open claims nothing.
+- When the owner node stops, its members' calls on other nodes stay up.
+  `conference/2` returns `{error, {owner_unreachable, Node}}` until the
+  lease runs out (within the cluster's `lease_ms`), then opens the room on
+  a live node; new callers land there.
+- When the region takes the lease back (the node lost its quorum), the
+  room gets `lost`: it takes no new member (`{error, lost}`), sends
+  `{chappe_mrf_conf, Conf, lost}` to its receivers, frees the name on its
+  node and stops when its last member leaves. The members in keep their
+  calls.
+- A join, a REFER and a recording start check `chappe_cluster:valid/1`
+  first.
+
+Without a quorum, `conference/2` does not open a room. It returns the
+room the local replica names when this node reaches it, else `{error,
+no_quorum}`: play a prompt or send the call elsewhere. The reason is that
+the majority side can claim the name while the minority cannot. A room
+opened without a lease on the minority would take members while the
+majority's room takes others, and the two halves of the call would not
+hear each other, with nothing to tell them. Refusing keeps one room per
+name whenever a quorum exists, and calls already in a room are not
+touched.
+
 ## Notes
 
 - The room ends with `chappe_mrf_conf:stop/1`, or with the `owner` process
@@ -275,6 +321,7 @@ The room shows `{left, Member, transferred}`, then
 - Modules: `chappe_mrf_conf` (API and process), `chappe_mrf_conf_native`,
   `chappe_mrf_conf_fs`; the loopback middleware is in `chappe_mrf`
 - Tests: `apps/chappe_mrf/test/chappe_mrf_SUITE.erl`,
-  `chappe_mrf_live_SUITE.erl`
+  `chappe_mrf_live_SUITE.erl`, `chappe_mrf_cluster_SUITE.erl` (rooms on
+  three peer nodes)
 - Lab: `make interop-mrf` (native and FreeSWITCH rooms)
 - Design: [overview](../design/overview.md#native-conferences-and-the-loopback-middleware)

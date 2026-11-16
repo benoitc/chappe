@@ -116,7 +116,7 @@ client's keep-alives (RFC 5626 4.4.1 makes the UA send them, at the
 | `registrar_max_aors` | `100000` | Distinct AORs the location store holds; a new AOR past this is rejected 503. |
 | `registrar_max_bindings_per_aor` | `10` | Contacts bound to one AOR; a REGISTER exceeding this is rejected 403. |
 | `registrar_sweep_ms` | `30000` | How often expired bindings are deleted from the location store; lookups skip them meanwhile. |
-| `cluster` | `none` | `none`: the location store is this node's. `chappe_cluster`: it is the region's KV, shared by every node (chappe_cluster is started on first use); see the registrar guide, "Run the registrar on a cluster". |
+| `cluster` | `none` | `none`: the location store is this node's. `chappe_cluster`: it is the region's KV, shared by every node (chappe_cluster is started on first use); see the registrar guide, "Run the registrar on a cluster". It also lets a peer be pinged from one node (`probe => singleton`, [Run an SBC](guides/sbc.md#ping-a-peer-from-one-node-of-a-cluster)). |
 | `registrar_cluster_timeout_ms` | `1000` | On a cluster, how long a REGISTER waits for the region's quorum before it gets 503. |
 | `registrar_retry_after` | `5` | On a cluster, the `Retry-After` (s) of the 503 a REGISTER gets without a quorum. |
 

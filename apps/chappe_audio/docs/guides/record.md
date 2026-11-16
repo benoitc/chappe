@@ -133,11 +133,37 @@ ok = chappe_audio_store:delete(Id).
 call's recordings wherever they were written. `read/2` returns a byte range
 of the file, for playback over HTTP with Range requests.
 
+## Sweep a shared store from one node
+
+Each node sweeps its own store. That is right for the file backend, where
+each node holds its own folder. When the nodes share one store (a shared
+folder, an object store backend), let one node sweep it: pass a
+`sweep_guard`, a fun (or `{M, F, A}`) that says whether this node sweeps
+now. Back it with a chappe_cluster singleton, whose lease is held by one
+node of the region at a time:
+
+```erlang
+%% on every node: one of them runs the (idle) child and holds the lease
+ok = chappe_cluster:singleton(recording_sweep,
+                              #{id => sweep, start => {my_idle, start_link, []}}),
+ok = chappe_audio_store:configure(#{
+    backend => my_store,
+    sweep_guard => fun() -> chappe_cluster:singleton_valid(recording_sweep) end
+}).
+```
+
+- The guard runs before each sweep, timed or asked for with
+  `chappe_audio_store:sweep/0`. A guard that returns anything but `true`,
+  or fails, skips the sweep (`{ok, 0}`).
+- The default is no guard: the node always sweeps.
+- chappe_audio does not depend on chappe_cluster; the guard is yours.
+
 ## Notes
 
 - Retention: with `retention_days`, the sweep (hourly, `sweep_interval`)
   deletes the day folders older than that. It also removes `.part` files an
-  hour old, which a writer that died leaves behind.
+  hour old, which a writer that died leaves behind. On a shared store, see
+  `sweep_guard` above.
 - Another backend (an object store) is a module with the
   `chappe_audio_store` callbacks, set as `backend => my_store`.
 - The SIPREC server side writes to the store through the same API
