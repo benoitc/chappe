@@ -233,6 +233,10 @@ Notes:
   node restarts, its TCP, TLS and WebSocket bindings are unreachable until
   the devices register again. Set the same `flow_token_secret` on every
   node so UDP edge routes survive a restart.
+- A route that names a connection or a WebSocket (an edge route, or the
+  Record-Route of a dialog through one) is accepted only by the node and
+  boot that made it, even with a shared `flow_token_secret`: on another
+  node, or after a restart, that id may be another device's connection.
 
 ## Registrar behaviour in detail
 

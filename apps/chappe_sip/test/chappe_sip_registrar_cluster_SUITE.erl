@@ -23,6 +23,7 @@ all() ->
         tcp_call_through_the_edge,
         ws_call_through_the_edge,
         public_contact_is_sent_directly,
+        conn_token_refused_on_another_node,
         cseq_and_expires_across_nodes,
         edge_node_down,
         lost_quorum_refuses_register,
@@ -147,6 +148,26 @@ ws_call_through_the_edge(Config) ->
     ok = ws:send(C, {text, ws_bye(lport(Caller), <<"cw2">>, RRs2)}),
     {_, P1} = recv_req(Caller, <<"BYE">>),
     ws:close(C, 1000).
+
+%% Every node shares flow_token_secret: a Record-Route or an edge route
+%% naming node 1's connection 5 is node 1's only. On node 2, connection 5
+%% is another device's.
+conn_token_refused_on_another_node(Config) ->
+    [N1, N2, _] = ?config(nodes, Config),
+    RR = erpc:call(N1, chappe_sip_route, record_route,
+                   [<<"sip:127.0.0.1:5060">>, {undefined, {conn, 5}}, <<"cn1">>]),
+    ?assert(erpc:call(N1, chappe_sip_route, is_self, [RR, undefined, <<"cn1">>])),
+    ?assertNot(erpc:call(N2, chappe_sip_route, is_self, [RR, undefined, <<"cn1">>])),
+    Exp = erlang:system_time(second) + 60,
+    Edge = erpc:call(N1, chappe_sip_route, edge_route,
+                     [<<"sip:127.0.0.1:5060">>, {conn, 5}, <<"tcp">>, Exp]),
+    ?assert(erpc:call(N1, chappe_sip_route, is_self, [Edge, undefined, <<"x">>])),
+    ?assertNot(erpc:call(N2, chappe_sip_route, is_self, [Edge, undefined, <<"x">>])),
+    %% a UDP address is the same place from either node
+    Udp = erpc:call(N1, chappe_sip_route, record_route,
+                    [<<"sip:127.0.0.1:5060">>, {undefined, {udp, <<"192.0.2.7">>, 5070}},
+                     <<"cn1">>]),
+    ?assert(erpc:call(N2, chappe_sip_route, is_self, [Udp, undefined, <<"cn1">>])).
 
 %% A UA reachable at its Contact gets no edge route: node 2 sends to it
 %% directly.
