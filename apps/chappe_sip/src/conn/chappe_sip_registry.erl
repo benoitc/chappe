@@ -71,6 +71,10 @@
 %% an edge route stays valid this long past its binding's expiry, for a
 %% request already on its way
 -define(EDGE_GRACE_S, 32).
+%% a purge the region could not take is tried again this often, and at
+%% most this many wait
+-define(PURGE_RETRY_MS, 1000).
+-define(MAX_PENDING, 10000).
 %% how long a REGISTER waits for the store; one not started this long
 %% before that deadline is refused, so it cannot land after its caller
 %% has answered 500
@@ -346,17 +350,21 @@ handle_call(_Req, _From, S) ->
     {reply, {error, unknown_call}, S}.
 
 handle_cast({remove_flow, Flow}, S) ->
-    purge(fun(#binding{flow = F}) -> F =/= Flow end),
-    {noreply, S};
+    {noreply, purge_or_retry({flow, Flow}, S)};
 handle_cast(remove_conn_flows, S) ->
-    purge(fun(#binding{flow = F}) -> not is_conn(F) end),
-    {noreply, S};
+    {noreply, purge_or_retry(conns, S)};
 handle_cast(_Msg, S) ->
     {noreply, S}.
 
 handle_info(sweep, S) ->
     ok = sweep(fun() -> true end),
     {noreply, schedule_sweep(S)};
+handle_info(retry_purge, #{pending := Pending} = S0) ->
+    S = S0#{pending := #{}, retry := undefined},
+    {noreply,
+        maps:fold(
+            fun(What, _, Acc) -> purge_or_retry(What, Acc) end, S, Pending
+        )};
 handle_info(_Info, S) ->
     {noreply, S}.
 
@@ -830,19 +838,53 @@ modify(Store, Aor, Fun, Mode, N) ->
 is_conn({conn, _}) -> true;
 is_conn(_) -> false.
 
+%% Drop the bindings of a flow that went (or of every connection). On a
+%% cluster without a quorum the write cannot be made: the purge is kept
+%% and tried again every ?PURGE_RETRY_MS until the region takes it, so a
+%% dead flow does not stay bound. At most ?MAX_PENDING purges wait; past
+%% that one is dropped, logged, and its bindings expire on their own.
+purge_or_retry(What, S) ->
+    case purge(keep(What)) of
+        ok ->
+            S;
+        retry ->
+            Pending = maps:get(pending, S, #{}),
+            case map_size(Pending) < ?MAX_PENDING of
+                true ->
+                    arm_retry(S#{pending => Pending#{What => true}});
+                false ->
+                    logger:warning(
+                        "chappe_sip_registry: purge of ~p dropped, too many waiting",
+                        [What]
+                    ),
+                    S
+            end
+    end.
+
+keep({flow, Flow}) -> fun(#binding{flow = F}) -> F =/= Flow end;
+keep(conns) -> fun(#binding{flow = F}) -> not is_conn(F) end.
+
+arm_retry(#{retry := TRef} = S) when TRef =/= undefined ->
+    S;
+arm_retry(S) ->
+    S#{retry => erlang:send_after(?PURGE_RETRY_MS, self(), retry_purge)}.
+
 %% Keep the bindings of this node that Keep accepts, deleting an AOR left
-%% empty. Another node's bindings are its own to purge.
+%% empty. Another node's bindings are its own to purge. retry when a write
+%% could not be made for want of a quorum.
 purge(Keep) ->
     Store = chappe_sip_location:backend(),
     Mine = fun(#binding{node = N} = B) ->
         (N =/= node() andalso N =/= undefined) orelse Keep(B)
     end,
-    lists:foreach(
-        fun(Aor) ->
-            modify(Store, Aor, fun(Bs) -> lists:filter(Mine, Bs) end)
-        end,
-        mine()
-    ).
+    Results = [
+        modify(Store, Aor, fun(Bs) -> lists:filter(Mine, Bs) end)
+     || Aor <- mine()
+    ],
+    case lists:member({error, no_quorum}, Results) of
+        true -> retry;
+        false -> ok
+    end.
 
 %% The AORs that may hold a binding this node took: every one on a single
 %% node; on a cluster, the ones this node wrote one for (an index, so a

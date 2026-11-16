@@ -200,6 +200,10 @@ What happens:
   `target` is `{route, Contact, Path}`. The request goes to the edge node,
   which forwards it over the connection it holds and record-routes the
   dialog (RFC 5626 5.3), so the rest of the call goes the same way.
+- The flow is gone at the edge node (the connection closed under the
+  request): it answers 430 Flow Failed (RFC 5626 5.3) and drops the
+  bindings of that flow. Without a quorum it retries the removal every
+  second until the region takes it.
 - A device whose contact is reachable as it is has no edge route: any node
   sends to it directly.
 - The edge node stops: a UDP binding is reached at its address from the
