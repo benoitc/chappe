@@ -8,9 +8,31 @@
 
 -include("chappe_sip.hrl").
 
--export([get/1, t1/0, set_t1/1, t64/0]).
+-export([get/1, t1/0, set_t1/1, t64/0, check_cluster/0]).
 
 -define(T1, {?MODULE, t1}).
+
+%% The `cluster' setting, checked at start: chappe_cluster must be in the
+%% release (a release that leaves it out cannot run in cluster mode, and
+%% is refused rather than left to fail on the first REGISTER).
+-spec check_cluster() ->
+    ok | {error, {cluster, {chappe_cluster_not_installed | badarg, term()}}}.
+check_cluster() ->
+    case application:get_env(chappe_sip, cluster, default(cluster)) of
+        none ->
+            ok;
+        chappe_cluster ->
+            case application:load(chappe_cluster) of
+                ok ->
+                    ok;
+                {error, {already_loaded, chappe_cluster}} ->
+                    ok;
+                {error, Why} ->
+                    {error, {cluster, {chappe_cluster_not_installed, Why}}}
+            end;
+        Other ->
+            {error, {cluster, {badarg, Other}}}
+    end.
 
 -spec get(atom()) -> term().
 get(Key) ->

@@ -323,18 +323,33 @@ init([]) ->
 
 %% On a cluster the sweep is one singleton for the region. chappe_cluster
 %% is started here, on first use, not as a dependency of the app.
+%% chappe_sip refuses to start without it (chappe_sip_config:
+%% check_cluster/0); one that fails to start is logged, and the sweep is
+%% left to the other nodes, rather than crash-looping this supervisor.
 handle_continue(cluster, S) ->
-    {ok, _} = application:ensure_all_started(chappe_cluster),
-    case
-        chappe_cluster:singleton(
-            chappe_sip_registry_sweep:name(),
-            chappe_sip_registry_sweep:child_spec()
-        )
-    of
-        ok -> ok;
-        {error, already_started} -> ok
+    case application:ensure_all_started(chappe_cluster) of
+        {ok, _} ->
+            case
+                chappe_cluster:singleton(
+                    chappe_sip_registry_sweep:name(),
+                    chappe_sip_registry_sweep:child_spec()
+                )
+            of
+                ok -> ok;
+                {error, already_started} -> ok;
+                {error, Why} -> no_sweep(Why)
+            end;
+        {error, Why} ->
+            no_sweep(Why)
     end,
     {noreply, S}.
+
+no_sweep(Why) ->
+    logger:error(
+        "chappe_sip_registry: cluster => chappe_cluster, but chappe_cluster "
+        "did not start (~p): this node does not sweep the location store",
+        [Why]
+    ).
 
 handle_call({register, Req, Opts, Deadline}, {Caller, _}, S) ->
     %% RFC 3261 10.3: a REGISTER whose caller gave up (its call timed out

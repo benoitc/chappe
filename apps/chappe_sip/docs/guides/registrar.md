@@ -169,6 +169,11 @@ guide, `docs/guides/cluster.md`), then:
 ]}].
 ```
 
+Put chappe_cluster in your release next to chappe_sip (it is not a
+dependency, so nothing pulls it in): a node set to `cluster => chappe_cluster`
+without it refuses to start with `{cluster, {chappe_cluster_not_installed,
+_}}`.
+
 Route a call with `location_target/1`, which gives the right target from any
 node:
 

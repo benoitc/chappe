@@ -18,11 +18,18 @@ start(_Type, _Args) ->
             %% seed the per-node Record-Route/flow-token secret before any
             %% request worker can mint or validate a route marker; a
             %% configured secret that is too short stops the boot
-            case chappe_sip_route:ensure_secret() of
-                ok ->
+            case
+                {
+                    chappe_sip_route:ensure_secret(),
+                    chappe_sip_config:check_cluster()
+                }
+            of
+                {ok, ok} ->
                     ok = chappe_sip_metrics:setup(),
                     chappe_sip_sup:start_link();
-                {error, _} = Err ->
+                {{error, _} = Err, _} ->
+                    Err;
+                {ok, {error, _} = Err} ->
                     Err
             end
     end.

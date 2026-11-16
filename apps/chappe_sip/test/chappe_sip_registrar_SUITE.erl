@@ -24,7 +24,7 @@
          min_expires_default/1, auth_required/1, refusals_below_600/1,
          independent_registers/1, default_expires_taken/1,
          max_expires_caps/1, bindings_survive_a_node_name_change/1,
-         flow_purge_reads_its_own_aors/1]).
+         flow_purge_reads_its_own_aors/1, cluster_without_chappe_cluster/1]).
 -export([live_register/1, live_register_auth/1, live_min_expires_423/1,
          live_path_outbound/1, live_require_path/1,
          live_record_route_ignored/1, live_never_6xx/1,
@@ -46,7 +46,7 @@ groups() ->
                  min_expires_default, auth_required, refusals_below_600,
                  independent_registers, default_expires_taken,
                  max_expires_caps, bindings_survive_a_node_name_change,
-                 flow_purge_reads_its_own_aors]},
+                 flow_purge_reads_its_own_aors, cluster_without_chappe_cluster]},
      {live, [], [live_register, live_register_auth, live_min_expires_423,
                  live_path_outbound, live_require_path,
                  live_record_route_ignored, live_never_6xx,
@@ -855,6 +855,14 @@ live_send_flow_per_binding(_Config) ->
 bindings_survive_a_node_name_change(_Config) ->
     {ok, [_], _} = regx(#{contacts => [bare_contact(1)], expires => 3600,
                           flow => 7}),
+    with_dist(fun() ->
+        [B] = chappe_sip_registry:bindings(aor()),
+        ?assertEqual(7, maps:get(flow, B)),
+        ?assertEqual([curi(1)], chappe_sip_registry:lookup(aor()))
+    end).
+
+%% Fun with this node distributed (@localhost), as it was after
+with_dist(Fun) ->
     Started =
         case node() of
             nonode@nohost ->
@@ -866,9 +874,7 @@ bindings_survive_a_node_name_change(_Config) ->
                 false
         end,
     try
-        [B] = chappe_sip_registry:bindings(aor()),
-        ?assertEqual(7, maps:get(flow, B)),
-        ?assertEqual([curi(1)], chappe_sip_registry:lookup(aor()))
+        Fun()
     after
         Started andalso net_kernel:stop()
     end.
@@ -899,6 +905,31 @@ wait_empty(Aor, N) ->
     case chappe_sip_registry:bindings(Aor) of
         [] -> ok;
         _ -> timer:sleep(20), wait_empty(Aor, N - 1)
+    end.
+
+%% A release that leaves chappe_cluster out, configured for a cluster:
+%% chappe_sip refuses to start with a clear error, instead of starting and
+%% crash-looping.
+cluster_without_chappe_cluster(_Config) ->
+    with_dist(fun no_cluster_app/0).
+
+no_cluster_app() ->
+    Paths = [P || P <- code:get_path(), string:find(P, "chappe_cluster") =:= nomatch],
+    [_, Host] = string:split(atom_to_list(node()), "@"),
+    {ok, Peer, Node} = peer:start_link(#{
+        name => peer:random_name(), host => Host, connection => standard_io,
+        args => lists:append([["-pa", P] || P <- Paths])}),
+    try
+        ok = erpc:call(Node, application, load, [chappe_sip]),
+        ok = erpc:call(Node, application, set_env, [chappe_sip, cluster, chappe_cluster]),
+        ok = erpc:call(Node, application, set_env, [chappe_sip, engine_mod, chappe_sip_nif]),
+        R = erpc:call(Node, application, ensure_all_started, [chappe_sip]),
+        ct:pal("start: ~p", [R]),
+        ?assertMatch({error, {chappe_sip, _}}, R),
+        {error, {chappe_sip, Why}} = R,
+        ?assertNotEqual(nomatch, string:find(io_lib:format("~p", [Why]), "chappe_cluster"))
+    after
+        peer:stop(Peer)
     end.
 
 %% ---- helpers ----
