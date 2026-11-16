@@ -15,8 +15,10 @@
 -behaviour(gen_server).
 
 -export([start_link/1, stats/1]).
-%% the acceptor's handoff, exported for the failed-handoff test
+%% the acceptor's handoff, exported for the failed-handoff test only
+-ifdef(TEST).
 -export([handoff/2]).
+-endif.
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -include_lib("kernel/include/logger.hrl").
