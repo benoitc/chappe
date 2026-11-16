@@ -10,7 +10,7 @@
  {<<"instrument">>,{pkg,<<"instrument">>,<<"2.0.0">>},0},
  {<<"livery">>,
   {git,"https://github.com/benoitc/livery.git",
-       {ref,"58e86b62fc3d6d17e71f6e626788daaba8c7924d"}},
+       {ref,"50620f82a7b6f0f79a9fad8cbf4b28419e2e9d8c"}},
   0},
  {<<"mimerl">>,{pkg,<<"mimerl">>,<<"1.5.0">>},1},
  {<<"parse_trans">>,{pkg,<<"parse_trans">>,<<"3.4.2">>},2},
