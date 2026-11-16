@@ -7,7 +7,7 @@
         fmt fmt-check asan tsan lint-c fuzz interop interop-mix interop-ref bench-ref bench-pass \
         interop-conformance interop-esl demo-esl interop-sbc interop-mrf \
         interop-cluster compliance \
-        cover docs clean \
+        cover docs clean advisories-test \
         demo demo-shell demo-down
 
 all: compile
@@ -115,6 +115,11 @@ bench-ref:
 PASS ?= all
 bench-pass:
 	apps/chappe_mix/bench/pass.sh $(PASS)
+
+# The unit tests of scripts/advisories.py (versions, ranges, fail-closed
+# cases); the Advisories workflow runs them before its checks.
+advisories-test:
+	python3 -I scripts/advisories_test.py
 
 # Each app's compliance matrix from its requirements, the `%% req:'
 # annotations and the latest CT results. GATE=demo fails on any hard

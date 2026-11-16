@@ -18,7 +18,10 @@ checksum, which is part of sofia's build stamp, so adding or changing a
 patch rebuilds sofia and relinks the NIF. The vendored tree in git never
 changes. After building sofia, `build.sh` builds and runs upstream's
 `torture_sres_domain` (the DNS compression loop of CVE-2026-116792); a
-failure fails the build, and the log is `build/sofia-check.log`.
+failure fails the build, and the log is `build/sofia-check.log`. The test
+runs on the build machine, so it is skipped when configure's host differs
+from its build system (a cross build), and when you set
+`SOFIA_SKIP_CHECK=1`; the build says which.
 
 ## The patches
 
@@ -100,7 +103,8 @@ clean clone builds without autotools.
    git -C up ls-tree -r --name-only OLD_SHA | sort > old.txt
    git ls-files apps/chappe_sip/c_src/sofia-sip \
      | sed 's#^apps/chappe_sip/c_src/sofia-sip/##' | sort > vend.txt
-   comm -13 old.txt vend.txt > generated.txt
+   # autoreconf -i leaves backups (config.guess~): never vendor them
+   comm -13 old.txt vend.txt | grep -v '~$' > generated.txt
    ```
 
 2. Regenerate that set on a copy of the new tree:
@@ -112,7 +116,9 @@ clean clone builds without autotools.
 
 3. Replace the vendored tree with `new/`, drop `.gitignore`, and copy every
    file of `generated.txt` from `gen/`. `git status` must show upstream's
-   changes and the regenerated files only.
+   changes and the regenerated files only, with no `*~` backup among them
+   (`git ls-files apps/chappe_sip/c_src/sofia-sip | grep '~$'` prints
+   nothing).
 4. Check that every patch still applies:
    `sh ../prepare_sofia.sh /tmp/sofia-check`. A patch upstream has merged is
    dropped (see below); one that no longer applies is redone on the new

@@ -107,7 +107,7 @@ pick_local_1(Local, _Target) ->
         badarg
         | {contact | tls, bad_contact | bad_public | bad_local_nets}}.
 options(#{contact := C} = Opts) ->
-    case binds_opts(C, fun native_uri/1) of
+    case binds_opts(C, fun chappe_sip_bind_uri:native/1) of
         {ok, First, Rest, Nat} ->
             case with_tls_binds(maps:get(tls, Opts, undefined)) of
                 {ok, Tls, TlsNat} ->
@@ -136,7 +136,7 @@ options(Opts) ->
     {ok, Opts}.
 
 with_tls_binds(#{contact := C} = Tls) ->
-    case binds_opts(C, fun tls_uri/1) of
+    case binds_opts(C, fun chappe_sip_bind_uri:tls/1) of
         {ok, First, Rest, Nat} ->
             {ok,
                 Tls#{
@@ -292,57 +292,6 @@ is_host_char(C) when C >= $a, C =< $z -> true;
 is_host_char(C) when C >= $A, C =< $Z -> true;
 is_host_char(C) when C >= $0, C =< $9 -> true;
 is_host_char(C) -> C =:= $. orelse C =:= $-.
-
-%% A contact with no transport parameter is unrestricted for sofia: a sip:
-%% one binds udp, tcp, sctp and ws, a sips: one tls, wss and ws. sofia's
-%% WebSocket transport is never opened (the Erlang one serves WebSocket),
-%% so a contact naming ws, wss or * is refused, and one naming nothing gets
-%% udp,tcp (tls for a sips: URI).
-native_uri(C) ->
-    case scheme(C) of
-        <<"sips:">> -> restrict(C, <<"tls">>);
-        _ -> restrict(C, <<"udp,tcp">>)
-    end.
-
-%% a TLS contact binds tls unless it names its transports
-tls_uri(C) ->
-    restrict(C, <<"tls">>).
-
-restrict(C, Default) ->
-    case transports(C) of
-        [] ->
-            {ok, <<C/binary, ";transport=", Default/binary>>};
-        Ts ->
-            case lists:any(fun sofia_ws/1, Ts) of
-                true -> badarg;
-                false -> {ok, C}
-            end
-    end.
-
-sofia_ws(<<"ws">>) -> true;
-sofia_ws(<<"wss">>) -> true;
-sofia_ws(<<"*">>) -> true;
-sofia_ws(_) -> false.
-
-scheme(C) ->
-    case chappe_sip_lib:lower(C) of
-        <<"<", S:5/binary, _/binary>> -> S;
-        <<S:5/binary, _/binary>> -> S;
-        _ -> <<>>
-    end.
-
-%% the transports a bind URI names, lowercased, as sofia reads them: the
-%% comma list of its transport parameter ([] when it has none)
-transports(C) ->
-    L = chappe_sip_lib:lower(C),
-    case binary:match(L, <<";transport=">>) of
-        nomatch ->
-            [];
-        {At, Len} ->
-            Rest = binary:part(L, At + Len, byte_size(L) - At - Len),
-            [V | _] = binary:split(Rest, [<<";">>, <<">">>, <<"?">>]),
-            [T || T <- binary:split(V, <<",">>, [global]), T =/= <<>>]
-    end.
 
 %% the ident of a bind URI: the local address of a public one, else its
 %% host
