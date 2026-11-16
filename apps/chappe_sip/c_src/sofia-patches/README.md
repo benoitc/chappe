@@ -103,7 +103,8 @@ clean clone builds without autotools.
    git -C up ls-tree -r --name-only OLD_SHA | sort > old.txt
    git ls-files apps/chappe_sip/c_src/sofia-sip \
      | sed 's#^apps/chappe_sip/c_src/sofia-sip/##' | sort > vend.txt
-   comm -13 old.txt vend.txt > generated.txt
+   # autoreconf -i leaves backups (config.guess~): never vendor them
+   comm -13 old.txt vend.txt | grep -v '~$' > generated.txt
    ```
 
 2. Regenerate that set on a copy of the new tree:
@@ -115,7 +116,9 @@ clean clone builds without autotools.
 
 3. Replace the vendored tree with `new/`, drop `.gitignore`, and copy every
    file of `generated.txt` from `gen/`. `git status` must show upstream's
-   changes and the regenerated files only.
+   changes and the regenerated files only, with no `*~` backup among them
+   (`git ls-files apps/chappe_sip/c_src/sofia-sip | grep '~$'` prints
+   nothing).
 4. Check that every patch still applies:
    `sh ../prepare_sofia.sh /tmp/sofia-check`. A patch upstream has merged is
    dropped (see below); one that no longer applies is redone on the new
