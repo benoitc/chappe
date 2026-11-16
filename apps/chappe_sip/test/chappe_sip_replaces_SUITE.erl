@@ -18,10 +18,12 @@
 -include_lib("common_test/include/ct.hrl").
 -include_lib("eunit/include/eunit.hrl").
 -include("chappe_sip.hrl").
+-include("chappe_sip_dialog.hrl").
 
 -export([all/0, init_per_suite/1, end_per_suite/1, end_per_testcase/2]).
 -export([
     uas_find_dialog/1,
+    uas_indexed_before_2xx/1,
     uas_find_replaced_live/1,
     find_replaced_rules/1,
     find_replaced_rejects/1,
@@ -48,7 +50,7 @@
 -define(TAB, chappe_sip_dialog_index).
 
 all() ->
-    [uas_find_dialog, uas_find_replaced_live, find_replaced_rules,
+    [uas_find_dialog, uas_indexed_before_2xx, uas_find_replaced_live, find_replaced_rules,
      find_replaced_rejects, uac_orientation, removed_after_peer_bye,
      removed_after_local_bye, terminated_while_bye_in_flight,
      removed_after_owner_death, removed_after_fsm_crash,
@@ -94,6 +96,52 @@ uas_find_dialog(_Config) ->
     ?assertEqual({error, not_found},
                  chappe_sip:find_dialog(string:uppercase(Call), TT, FT)),
     hangup(Sock, Dlg, TT).
+
+%% The UAS dialog is in the index before its 2xx leaves: a peer that acts
+%% on the 2xx at once (a Replaces, an app finding the dialog by its tags)
+%% finds it, even while the owner has not yet waited for the leg. A call
+%% on it then waits for the dialog to be confirmed instead of failing.
+uas_indexed_before_2xx(_Config) ->
+    EP = chappe_sip_test_port:pick(),
+    ok = chappe_sip:start(#{contact => <<"sip:127.0.0.1:",
+                                         (integer_to_binary(EP))/binary>>}),
+    Test = self(),
+    %% the owner holds the dialog in setup: the 2xx is out, await_ready not
+    %% called yet
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        {ok, Pid} = chappe_sip_engine:create_uas(
+            Req, #{owner => self(), local_sdp => sdp()}
+        ),
+        Test ! {setup, Pid, self()},
+        receive release -> ok end,
+        {ok, Id} = gen_statem:call(Pid, await_ready, 5000),
+        chappe_sip_res:mark_final(Res),
+        Dlg = chappe_sip_dialog:make(Pid, Id),
+        Test ! {dialog, Dlg, self()},
+        owner_loop(Test, Dlg)
+    end),
+    {ok, Sock} = gen_udp:open(0, [binary, {active, true}, {ip, {127,0,0,1}}]),
+    Call = callid(),
+    FT = <<"ft", (binary:encode_hex(crypto:strong_rand_bytes(3)))/binary>>,
+    send(Sock, EP, invite(Sock, Call, FT, [])),
+    {Pid, Handler} = receive {setup, P, H} -> {P, H}
+                     after 5000 -> ct:fail(no_setup) end,
+    {ok, M} = chappe_sip_msg:parse(recv_status(Sock, 200)),
+    TT = chappe_sip_msg:to_tag(M),
+    {ok, Found} = chappe_sip:find_dialog(Call, TT, FT),
+    ?assertEqual(Pid, Found#dialog.pid),
+    Self = self(),
+    spawn_link(fun() -> Self ! {tag, chappe_sip_dialog:remote_tag(Found)} end),
+    receive {tag, Early} -> ct:fail({answered_in_setup, Early})
+    after 200 -> ok
+    end,
+    Handler ! release,
+    receive {dialog, Found, _} -> ok after 5000 -> ct:fail(no_dialog) end,
+    receive {tag, Tag} -> ?assertEqual(FT, Tag)
+    after 5000 -> ct:fail(no_tag)
+    end,
+    send(Sock, EP, ack(Sock, Call, FT, TT)),
+    hangup(Sock, Found, TT).
 
 %% an INVITE carrying Replaces, received through the engine, resolves to the
 %% dialog it names; the swapped tags do not

@@ -1,0 +1,24 @@
+--- a/libsofia-sip-ua/tport/tport.c
++++ b/libsofia-sip-ua/tport/tport.c
+@@ -320,7 +320,9 @@
+   ti.configured = 1;
+ 
+   for (tp = tport_primaries(self); tp; tp = tport_next(tp)) {
+-    /* Reload WSS transport certificates */
++#if HAVE_SOFIA_NTH
++    /* Reload WSS transport certificates (the ws transports are built
++       with nth only) */
+     if (tp->tp_protoname && strcasecmp(tp->tp_protoname, "wss") == 0) {
+       tport_ws_primary_t *wspri = (tport_ws_primary_t *)tp->tp_pri;
+       if (wspri->ssl_ctx) {
+@@ -334,7 +336,9 @@
+           SU_DEBUG_1(("tport_reload_tls: WSS certificate reload failed\n" VA_NONE));
+         }
+       }
+-    } else if (tport_has_tls(tp)) {
++    } else
++#endif
++    if (tport_has_tls(tp)) {
+       tport_tls_primary_t *tlspri = (tport_tls_primary_t *)tp->tp_pri;
+       if (tlspri->tlspri_master) {
+         if (tls_reload_cert(tlspri->tlspri_master, &ti) == 0)

@@ -46,7 +46,7 @@ jobs:
             _build
             c_src/build
             ~/.cache/rebar3
-          key: ${{ runner.os }}-otp-${{ matrix.otp }}-${{ hashFiles('rebar.lock', '.gitmodules', 'c_src/build.sh') }}
+          key: ${{ runner.os }}-otp-${{ matrix.otp }}-${{ hashFiles('rebar.lock', 'c_src/build.sh') }}
           restore-keys: |
             ${{ runner.os }}-otp-${{ matrix.otp }}-
 

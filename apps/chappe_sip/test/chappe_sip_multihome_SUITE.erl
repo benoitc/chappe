@@ -20,7 +20,8 @@
          uac_by_family/1, single_contact/1, bad_contact/1,
          answer_on_second_v4/1, uac_local/1, udp_flow_local/1,
          public_advertised/1, public_local_nets/1, bad_public/1,
-         double_record_route/1, ack_491_on_each_address/1]).
+         double_record_route/1, ack_491_on_each_address/1,
+         ws_transport_refused/1, tls_contact_default_transport/1]).
 
 -define(V4, {127, 0, 0, 1}).
 -define(V4B, {127, 0, 0, 2}).
@@ -30,7 +31,8 @@ all() ->
     [answer_on_each_address, record_route_per_address, double_record_route,
      ack_491_on_each_address,
      uac_by_family,
-     single_contact, bad_contact, public_advertised, public_local_nets,
+     single_contact, bad_contact, ws_transport_refused,
+     tls_contact_default_transport, public_advertised, public_local_nets,
      bad_public, {group, second_v4}].
 
 groups() ->
@@ -238,6 +240,44 @@ bad_contact(_Config) ->
                  chappe_sip:start(#{contact => []})),
     ?assertEqual({error, {contact, bad_contact}},
                  chappe_sip:start(#{contact => [<<"sip:127.0.0.1">>, 5060]})).
+
+%% sofia's own WebSocket transport is never opened: only the Erlang one
+%% (the ws and wss options) serves WebSocket. A native contact naming ws,
+%% wss or every transport (*) fails the start, plain or TLS, alone or in a
+%% list, and nothing is bound.
+ws_transport_refused(_Config) ->
+    P = chappe_sip_test_port:pick(),
+    U = uri(?V4, P),
+    Bad = [<<U/binary, ";transport=ws">>,
+           <<U/binary, ";transport=WSS">>,
+           <<U/binary, ";transport=udp,ws">>,
+           <<U/binary, ";transport=*">>],
+    lists:foreach(
+      fun(C) ->
+              ?assertEqual({error, badarg}, chappe_sip:start(#{contact => C})),
+              ?assertEqual({error, badarg},
+                           chappe_sip:start(#{contact => [uri(?V6, P), C]})),
+              ?assertEqual({error, badarg},
+                           chappe_sip:start(#{contact => #{uri => C}}))
+      end, Bad),
+    Tls = <<"sips:127.0.0.1:", (integer_to_binary(P + 1))/binary,
+            ";transport=tls,wss">>,
+    ?assertEqual({error, badarg},
+                 chappe_sip:start(#{contact => U, tls => #{contact => Tls}})),
+    {ok, S} = gen_udp:open(P, [{ip, ?V4}]),
+    ok = gen_udp:close(S).
+
+%% A TLS contact that names no transport binds TLS only: left to sofia, a
+%% sips: URI would also open its ws and wss transports.
+tls_contact_default_transport(_Config) ->
+    Opts = #{contact => <<"sip:127.0.0.1:5060">>,
+             tls => #{contact => [<<"sips:127.0.0.1:5061">>,
+                                  <<"sips:[::1]:5061;transport=tls">>]}},
+    {ok, #{contact := C, tls := #{contact := T, contacts := [{T2, _}]}}} =
+        chappe_sip_binds:options(Opts),
+    ?assertEqual(<<"sip:127.0.0.1:5060;transport=udp,tcp">>, C),
+    ?assertEqual(<<"sips:127.0.0.1:5061;transport=tls">>, T),
+    ?assertEqual(<<"sips:[::1]:5061;transport=tls">>, T2).
 
 %% ---- 1:1 NAT: a public address advertised, a local one bound ----
 
