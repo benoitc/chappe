@@ -36,6 +36,7 @@
     cas/3,
     cas/4,
     keys/1,
+    keys/2,
     watch/1,
     unwatch/1,
     singleton/2,
@@ -50,6 +51,10 @@
     status/0,
     now/0
 ]).
+
+%% keys/2: the default page, and the largest one a caller may ask for
+-define(KEYS_PAGE, 1000).
+-define(KEYS_PAGE_MAX, 10000).
 
 -export_type([lease/0, fence/0, owner/0, hlc/0, timeout_ms/0]).
 
@@ -249,11 +254,35 @@ delete(Key, #{version := Version} = Opts) when
 delete(_, _) ->
     {error, badarg}.
 
-%% The keys that start with `Prefix', sorted, from the local replica.
--spec keys(binary()) -> [binary()] | {error, term()}.
-keys(Prefix) when is_binary(Prefix) ->
-    query({?M, query_keys, [Prefix]});
-keys(_) ->
+%% The first page of the keys that start with `Prefix': keys/2 with the
+%% default limit.
+-spec keys(binary()) ->
+    {ok, [binary()], done | {more, binary()}} | {error, term()}.
+keys(Prefix) ->
+    keys(Prefix, #{}).
+
+%% One page of the keys that start with `Prefix', sorted, from the local
+%% replica. Paginated, never capped silently: at most `limit' keys
+%% (default ?KEYS_PAGE, at most ?KEYS_PAGE_MAX), after `cursor' (the
+%% `{more, Cursor}' of the previous page). `done' when no key remains.
+-spec keys(binary(), #{limit => pos_integer(), cursor => binary()}) ->
+    {ok, [binary()], done | {more, binary()}} | {error, term()}.
+keys(Prefix, Opts) when is_binary(Prefix), is_map(Opts) ->
+    Limit = maps:get(limit, Opts, ?KEYS_PAGE),
+    Cursor = maps:get(cursor, Opts, start),
+    case
+        is_integer(Limit) andalso Limit > 0 andalso Limit =< ?KEYS_PAGE_MAX andalso
+            (Cursor =:= start orelse is_binary(Cursor))
+    of
+        true ->
+            case query({?M, query_keys, [Prefix, Cursor, Limit]}) of
+                {Keys, Next} when is_list(Keys) -> {ok, Keys, Next};
+                {error, _} = E -> E
+            end;
+        false ->
+            {error, badarg}
+    end;
+keys(_, _) ->
     {error, badarg}.
 
 opt_timeout(Opts) ->

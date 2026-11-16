@@ -394,8 +394,43 @@ kv_keys_by_prefix_test() ->
         init(),
         [<<"reg/b">>, <<"reg/a">>, <<"re">>, <<"other">>]
     ),
-    ?assertEqual([<<"reg/a">>, <<"reg/b">>], ?M:query_keys(<<"reg/">>, S)),
-    ?assertEqual(4, length(?M:query_keys(<<>>, S))).
+    ?assertEqual({[<<"reg/a">>, <<"reg/b">>], done}, ?M:query_keys(<<"reg/">>, start, 10, S)),
+    ?assertMatch({[_, _, _, _], done}, ?M:query_keys(<<>>, start, 10, S)),
+    ?assertEqual({[], done}, ?M:query_keys(<<"zz">>, start, 10, S)).
+
+%% A large KV, several prefixes interleaved, some keys deleted: paging a
+%% prefix returns exactly its keys, sorted, each once, and a page never
+%% holds more than its limit.
+kv_keys_on_a_large_kv_test() ->
+    Prefixes = [<<"a/">>, <<"reg/">>, <<"reg">>, <<"reh/">>, <<"z">>],
+    All = [<<P/binary, (integer_to_binary(I))/binary>> || I <- lists:seq(1, 5000), P <- Prefixes],
+    S1 = lists:foldl(
+        fun(K, Acc) -> element(1, ap({put, K, 1, 100000, hlc(1)}, Acc)) end,
+        init(),
+        All
+    ),
+    Gone = [K || K <- All, erlang:phash2(K, 7) =:= 0],
+    S = lists:foldl(fun(K, Acc) -> element(1, ap({delete, K, hlc(2)}, Acc)) end, S1, Gone),
+    Live = All -- Gone,
+    lists:foreach(
+        fun({Prefix, Limit}) ->
+            N = byte_size(Prefix),
+            Want = lists:sort([K || <<P:N/binary, _/binary>> = K <- Live, P =:= Prefix]),
+            Got = pages(Prefix, start, Limit, S, []),
+            ?assert(lists:all(fun(Page) -> length(Page) =< Limit end, Got)),
+            ?assertEqual(Want, lists:append(Got))
+        end,
+        [{P, L} || P <- [<<"reg/">>, <<"reg">>, <<"re">>, <<"z">>, <<>>, <<"q">>], L <- [1, 7, 1000, 30000]]
+    ),
+    %% the index is the map's keys, also after a snapshot round trip
+    Snap = binary_to_term(term_to_binary(S)),
+    ?assertEqual(lists:sort(Live), element(1, ?M:query_keys(<<>>, start, 100000, Snap))).
+
+pages(Prefix, Cursor, Limit, S, Acc) ->
+    case ?M:query_keys(Prefix, Cursor, Limit, S) of
+        {Keys, done} -> lists:reverse([Keys | Acc]);
+        {Keys, {more, Last}} -> pages(Prefix, Last, Limit, S, [Keys | Acc])
+    end.
 
 kv_max_keys_test() ->
     {S1, {ok, _, _}, _} = ap({put, <<"a">>, 1, 1, hlc(1)}, init()),
@@ -407,6 +442,7 @@ kv_max_keys_test() ->
 -define(NODES, [a, b, c]).
 -define(KEYS, [k1, k2, k3]).
 -define(PIDS, [1, 2, 3, 4, 5, 6]).
+-define(KV_KEYS, [<<"x">>, <<"y">>, <<"xy">>, <<"x/1">>]).
 
 op() ->
     oneof([
@@ -422,9 +458,9 @@ op() ->
         {claim, oneof(?KEYS), oneof(?NODES), oneof(?PIDS), boolean()},
         {release, oneof(?KEYS)},
         {down, oneof(?PIDS)},
-        {put, oneof([<<"x">>, <<"y">>]), int()},
-        {cas, oneof([<<"x">>, <<"y">>]), range(0, 40), int()},
-        {delete, oneof([<<"x">>, <<"y">>])}
+        {put, oneof(?KV_KEYS), int()},
+        {cas, oneof(?KV_KEYS), range(0, 40), int()},
+        {delete, oneof(?KV_KEYS)}
     ]).
 
 prop_schedules() ->
@@ -434,6 +470,7 @@ prop_schedules() ->
         begin
             M = run(Ops, model()),
             replays(M),
+            listed(M),
             true
         end
     ).
@@ -625,6 +662,17 @@ step({cas, K, Ver, V}, M = #{kv := Kv}) ->
 step({delete, K}, M = #{kv := Kv}) ->
     {{ok, _}, M1} = apply_cmd({delete, K, hlc(0)}, M),
     M1#{kv := maps:remove(K, Kv)}.
+
+%% The ordered index lists what the model holds, page by page.
+listed(#{s := S, kv := Kv}) ->
+    lists:foreach(
+        fun(Prefix) ->
+            N = byte_size(Prefix),
+            Want = lists:sort([K || <<P:N/binary, _/binary>> = K := _ <- Kv, P =:= Prefix]),
+            ?assertEqual(Want, lists:append(pages(Prefix, start, 1, S, [])))
+        end,
+        [<<>>, <<"x">>, <<"x/">>, <<"q">>]
+    ).
 
 %% A grant: the previous holder of the key, if any, was released, died, or
 %% its epoch is dead. The fence grows.

@@ -74,7 +74,7 @@
     incarnation/2,
     query_owner/2,
     query_get/2,
-    query_keys/2,
+    query_keys/4,
     query_leases/1,
     query_node_leases/2,
     leases/1,
@@ -128,6 +128,9 @@
     seq = 0 :: non_neg_integer(),
     %% key -> {Version, Value, HLC}
     kv = #{} :: #{binary() => {pos_integer(), term(), term()}},
+    %% the KV's keys, ordered, so a prefix listing seeks to the prefix and
+    %% reads only the keys under it; kept in step with kv by put and delete
+    kv_index = gb_sets:empty() :: gb_sets:set(binary()),
     kv_seq = 0 :: non_neg_integer(),
     %% the index of the last release cursor
     cursor = 0 :: non_neg_integer(),
@@ -214,7 +217,7 @@ do({delete, Key, Hlc}, S0) ->
     case maps:take(Key, Kv) of
         {{_, Value, _}, Kv1} ->
             {
-                S#cc{kv = Kv1},
+                S#cc{kv = Kv1, kv_index = gb_sets:delete(Key, S#cc.kv_index)},
                 {ok, Stamp},
                 kv_events(delete, Key, Value, Stamp, S)
             };
@@ -476,7 +479,11 @@ put(Key, Value, MaxKeys, Hlc, S = #cc{kv = Kv, kv_seq = V0}) ->
         true ->
             V = V0 + 1,
             {Stamp, S0} = stamp(Hlc, S),
-            S1 = S0#cc{kv = Kv#{Key => {V, Value, Stamp}}, kv_seq = V},
+            S1 = S0#cc{
+                kv = Kv#{Key => {V, Value, Stamp}},
+                kv_index = gb_sets:add_element(Key, S0#cc.kv_index),
+                kv_seq = V
+            },
             {S1, {ok, V, Stamp}, kv_events(put, Key, Value, Stamp, S1)}
     end.
 
@@ -524,14 +531,35 @@ query_get(Key, #cc{kv = Kv}) ->
         _ -> not_found
     end.
 
-%% The keys that start with Prefix, sorted.
--spec query_keys(binary(), state()) -> [binary()].
-query_keys(Prefix, #cc{kv = Kv}) ->
+%% At most Limit keys that start with Prefix, sorted, after Cursor (a key
+%% a previous page returned, or `start'). The work is the page, not the
+%% KV: the ordered index seeks to the prefix (or the cursor) and stops at
+%% the first key past it. `{more, Last}' when keys remain: pass Last as
+%% the next page's cursor.
+-spec query_keys(binary(), binary() | start, pos_integer(), state()) ->
+    {[binary()], done | {more, binary()}}.
+query_keys(Prefix, Cursor, Limit, #cc{kv_index = Index}) ->
+    From =
+        case Cursor of
+            start -> Prefix;
+            _ -> max(Prefix, Cursor)
+        end,
+    page(gb_sets:iterator_from(From, Index), Prefix, Cursor, Limit, []).
+
+page(It0, Prefix, Cursor, Left, Acc) ->
     N = byte_size(Prefix),
-    lists:sort([
-        K
-     || K := _ <- Kv, binary:longest_common_prefix([K, Prefix]) =:= N
-    ]).
+    case gb_sets:next(It0) of
+        {Cursor, It} ->
+            %% the cursor itself: the previous page's last key
+            page(It, Prefix, Cursor, Left, Acc);
+        {<<P:N/binary, _/binary>> = K, It} when P =:= Prefix, Left > 0 ->
+            page(It, Prefix, Cursor, Left - 1, [K | Acc]);
+        {<<P:N/binary, _/binary>>, _} when P =:= Prefix ->
+            %% a key under the prefix past a full page
+            {lists:reverse(Acc), {more, hd(Acc)}};
+        _ ->
+            {lists:reverse(Acc), done}
+    end.
 
 %% Every lease, with its owner, fence and HLC.
 -spec query_leases(state()) -> [map()].
