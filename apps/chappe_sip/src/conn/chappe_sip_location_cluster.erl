@@ -61,14 +61,22 @@ write(Aor, Version, Bs) ->
         )
     ).
 
+%% Every AOR, a page of keys at a time.
 aors() ->
-    case chappe_cluster:keys(?PREFIX) of
-        Keys when is_list(Keys) ->
-            N = byte_size(?PREFIX),
-            [Aor || <<_:N/binary, Aor/binary>> <- Keys];
+    aors(#{}, []).
+
+aors(Opts, Acc) ->
+    N = byte_size(?PREFIX),
+    case chappe_cluster:keys(?PREFIX, Opts) of
+        {ok, Keys, Next} ->
+            Aors = [Aor || <<_:N/binary, Aor/binary>> <- Keys],
+            more(Next, [Aors | Acc]);
         {error, _} ->
-            []
+            lists:append(lists:reverse(Acc))
     end.
+
+more(done, Acc) -> lists:append(lists:reverse(Acc));
+more({more, Cursor}, Acc) -> aors(#{cursor => Cursor}, Acc).
 
 clear() ->
     lists:foreach(fun(Aor) -> chappe_cluster:delete(key(Aor)) end, aors()).
