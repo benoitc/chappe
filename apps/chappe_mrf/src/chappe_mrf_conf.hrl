@@ -51,5 +51,10 @@
     lost = false :: boolean(),
     %% cluster: started, waiting for the lease its starter claims (the
     %% init args, and the starter's monitor); undefined once it runs
-    waiting :: #{args := map(), mon := reference()} | undefined
+    waiting ::
+        #{args := map(), mon := reference(), deferred := [{term(), term()}]}
+        | undefined,
+    %% the options it started with, for the room that takes its members
+    %% over (a handoff, a lost lease)
+    opts = #{} :: map()
 }).

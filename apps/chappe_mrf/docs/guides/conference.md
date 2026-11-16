@@ -285,25 +285,38 @@ one owner in the region:
 - `conference/2` starts the room's process waiting, claims the lease
   `{chappe_mrf_conf, Name}` for it, then hands the lease over. Only then
   does the room register its name and take members. On another node,
-  `conference/2` returns the pid of the room that holds the lease, and
-  `join/3` works on it from there.
+  `conference/2` returns the pid of the room that holds the lease, found
+  in the node's replica with no write to the region, and `join/3` works
+  on it from there. A start that finds the room still waiting for its
+  lease gets it once it runs.
 - The claim runs in the process that calls `conference/2` and waits at
   most `claim_timeout` (1000 ms), so rooms opening at once never wait on
-  each other. Joining a room that is open claims nothing.
+  each other.
+- A clean stop of the room's node (`init:stop/0`, `docker stop`, stopping
+  chappe_mrf) hands the room off first: the room gives its lease back, a
+  room of the same name opens on a live node, and the members whose calls
+  run on other nodes move there, with a short gap in the audio and no
+  re-INVITE to the caller. The members whose calls run on the stopping
+  node end with it. The handoff takes at most `drain_ms` (5000).
 - When the owner node crashes (or is killed, or cut off), its members'
   calls on other nodes stay up, without the room's audio, until they hang
-  up. When it stops in order (`init:stop/0`, a `docker stop`), the room's
-  dialogs end with it and its callers get a BYE.
-- Either way `conference/2` returns `{error, {owner_unreachable, Node}}`
-  until the lease runs out (within the cluster's `lease_ms`), then opens
-  the room on a live node; new callers land there.
-- When the region takes the lease back (the node lost its quorum), the
-  room gets `lost`: it takes no new member (`{error, lost}`), sends
-  `{chappe_mrf_conf, Conf, lost}` to its receivers, frees the name on its
-  node and stops when its last member leaves. The members in keep their
-  calls.
+  up. `conference/2` returns `{error, {owner_unreachable, Node}}` until
+  the lease runs out (within the cluster's `lease_ms`), then opens the
+  room on a live node; new callers land there.
+- When the region takes the lease back while the node runs (it lost its
+  quorum, or paused), the room gets `lost`: it takes no new member
+  (`{error, lost}`), sends `{chappe_mrf_conf, Conf, lost}` to its
+  receivers and frees the name on its node. It then moves its members to
+  the room that owns the name next, as soon as the region lets one open
+  (on the majority side, or here once the quorum is back), trying for
+  `rehome_ms` (30000), and stops when its last member leaves.
 - A join, a REFER and a recording start check `chappe_cluster:valid/1`
-  first.
+  first; an fs join checks it before it bridges or answers the caller.
+- fs rooms do not move: the conference lives in FreeSWITCH, and each
+  member is a channel driven through the event socket the stopping node
+  holds, which hangs the channel up when it closes. A clean stop gives
+  the name back at once, so the next caller opens the room on a live
+  node.
 
 Without a quorum, `conference/2` does not open a room. It returns the
 room the local replica names when this node reaches it, else `{error,

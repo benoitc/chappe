@@ -397,6 +397,24 @@ jobs:
           name: cluster-lab-logs
           path: _build/clb/logs
 
+  # The cluster demo's walkthrough (demo/cluster): three chappe nodes in
+  # docker, a call across nodes, the trunk pinger moving, a room handed
+  # off on a clean stop and kept up on a kill, all driven by SIPp.
+  demo-cluster:
+    name: Cluster demo smoke test
+    needs: [build]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - run: docker pull erlang:29.1.2
+      - run: make demo-cluster-smoke
+      - name: Demo logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-cluster-logs
+          path: _build/demo-cluster-logs
+
   # The C NIF under ASan + UBSan (Linux container), then a short fuzz run:
   # 30 s per libFuzzer target and the NIF boundary fuzz suite.
   asan:

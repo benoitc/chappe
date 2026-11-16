@@ -86,6 +86,12 @@
 -define(CLOSE_WAIT, 15000).
 %% how long a cluster room waits for its starter's lease
 -define(WAIT_MAX, 60000).
+%% start/2 on a cluster: how long it waits for an owner still waiting
+%% for its lease, and how many times it starts over when that owner is
+%% gone
+-define(AWAIT_MS, 35000).
+-define(START_TRIES, 5).
+-define(RETRY_MS, 300).
 
 %% ---- API ----
 
@@ -145,9 +151,55 @@ start(Name, Opts) ->
         error ->
             Args = #{name => Name, opts => Opts, caller => self()},
             case application:get_env(chappe_mrf, cluster, none) of
-                chappe_cluster -> start_claimed(Name, Args);
+                chappe_cluster -> start_cluster(Name, Args, ?START_TRIES);
                 _ -> start_local(Args)
             end
+    end.
+
+%% A room the local replica names on another node is used as it is: a
+%% call setup there needs no Raft write. Otherwise claim.
+start_cluster(Name, Args, Tries) ->
+    case cluster_started() of
+        {ok, _} ->
+            case remote_owner(Name) of
+                {ok, Conf} -> await_active(Conf, Name, Args, Tries);
+                none -> start_claimed(Name, Args, Tries)
+            end;
+        {error, _} = Err ->
+            Err
+    end.
+
+remote_owner(Name) ->
+    Here = node(),
+    case chappe_cluster:owner(lease_key(Name)) of
+        {ok, #{node := Node, pid := Conf}} when Node =/= Here ->
+            case lists:member(Node, nodes()) of
+                true -> {ok, Conf};
+                false -> none
+            end;
+        _ ->
+            none
+    end.
+
+%% The owner may still be waiting for its lease: its info/1 answers once
+%% it runs. One that never runs (its starter died, its claim came back
+%% stale) is gone: try again, a bounded number of times.
+await_active(Conf, Name, Args, Tries) ->
+    case call(Conf, info, ?AWAIT_MS) of
+        #{lost := false} ->
+            {ok, Conf};
+        #{lost := true} when Tries > 1 ->
+            %% a room that gave its name up is not the owner any more
+            timer:sleep(?RETRY_MS),
+            start_cluster(Name, Args, Tries - 1);
+        #{} ->
+            {error, lost};
+        {error, noproc} when Tries > 1 ->
+            %% its lease goes with it, once the region hears of its death
+            timer:sleep(?RETRY_MS),
+            start_cluster(Name, Args, Tries - 1);
+        {error, _} = Err ->
+            Err
     end.
 
 start_local(Args) ->
@@ -160,16 +212,14 @@ start_local(Args) ->
 %% The claim runs here, in the caller, for the waiting room: it waits at
 %% most claim_timeout (1000 ms; a node that knows it lost its quorum
 %% answers at once), and no other room's start waits behind it.
-start_claimed(Name, Args) ->
-    %% started on first use, as the media apps are
+start_claimed(Name, Args, Tries) ->
     maybe
-        {ok, _} ?= cluster_started(),
         {ok, Room} ?= chappe_mrf_sup:start_conf(Args#{wait => true}),
         Timeout = application:get_env(chappe_mrf, claim_timeout, 1000),
         Claim = chappe_cluster:claim(lease_key(Name), #{
             pid => Room, timeout => Timeout
         }),
-        claimed(Claim, Room, Name)
+        claimed(Claim, Room, Name, Args, Tries)
     end.
 
 cluster_started() ->
@@ -178,19 +228,22 @@ cluster_started() ->
         {error, Why} -> {error, {cluster, Why}}
     end.
 
-claimed({ok, Lease}, Room, _Name) ->
+claimed({ok, Lease}, Room, _Name, _Args, _Tries) ->
     case call(Room, {activate, Lease}, 30000) of
         ok -> {ok, Room};
         {error, {already_started, Other}} -> {ok, Other};
         {error, _} = Err -> Err
     end;
-claimed({error, {owned, #{pid := Other}}}, Room, _Name) ->
+claimed({error, {owned, #{pid := Other}}}, Room, Name, Args, Tries) ->
     ok = stop(Room),
-    reachable(Other);
-claimed({error, no_quorum}, Room, Name) ->
+    case reachable(Other) of
+        {ok, _} -> await_active(Other, Name, Args, Tries);
+        {error, _} = Err -> Err
+    end;
+claimed({error, no_quorum}, Room, Name, _Args, _Tries) ->
     ok = stop(Room),
     known_owner(Name);
-claimed({error, _} = Err, Room, _Name) ->
+claimed({error, _} = Err, Room, _Name, _Args, _Tries) ->
     ok = stop(Room),
     Err.
 
@@ -276,7 +329,11 @@ join(Conf, Target, Opts) ->
         #{backend := fs, members := N, max_members := Max} when N >= Max ->
             {error, full};
         #{backend := fs} = Info ->
-            fs_join(Conf, Info, Target, Opts);
+            %% the lease before the caller is bridged or answered
+            case call(Conf, {join, check}) of
+                ok -> fs_join(Conf, Info, Target, Opts);
+                {error, _} = Err -> Err
+            end;
         Err ->
             Err
     end.
@@ -513,7 +570,9 @@ init(#{name := Name, caller := Caller, wait := true} = Args) ->
         name = Name,
         backend = native,
         room = <<>>,
-        waiting = #{args => Args, mon => monitor(process, Caller)}
+        waiting = #{
+            args => Args, mon => monitor(process, Caller), deferred => []
+        }
     }};
 init(#{name := Name, opts := Opts, caller := Caller}) ->
     process_flag(trap_exit, true),
@@ -527,20 +586,35 @@ init(#{name := Name, opts := Opts, caller := Caller}) ->
 
 %% The lease claimed for this waiting room: still valid, the room takes
 %% its name on this node and sets its backend up.
-activate(Lease, #state{waiting = #{args := Args, mon := Mon}} = S) ->
+activate(Lease, #state{waiting = W} = S) ->
+    #{args := Args, mon := Mon, deferred := Deferred} = W,
     #{name := Name, opts := Opts, caller := Caller} = Args,
     demonitor(Mon, [flush]),
     case chappe_cluster:valid(Lease) of
-        true -> activate_name(Name, Opts, Caller, Lease, S);
+        true -> activate_name(Name, Opts, Caller, Lease, Deferred, S);
         false -> {stop, normal, {error, no_quorum}, S}
     end.
 
 %% A waiting room takes only its lease; it ends when its starter goes or
 %% never hands the lease over.
-waiting_call({activate, Lease}, S) ->
+waiting_call({activate, Lease}, _From, S) ->
     activate(Lease, S);
-waiting_call(_Req, S) ->
-    {reply, {error, starting}, S}.
+waiting_call(Req, From, #state{waiting = #{deferred := D} = W} = S) ->
+    %% answered once it runs (or never, when it stops: the caller's call
+    %% exits noproc)
+    {noreply, S#state{waiting = W#{deferred := [{Req, From} | D]}}}.
+
+%% The calls that came while it waited, in their order, now it runs.
+run_deferred([], S) ->
+    S;
+run_deferred([{Req, From} | Rest], S) ->
+    case handle_call(Req, From, S) of
+        {reply, Reply, S1} ->
+            gen_server:reply(From, Reply),
+            run_deferred(Rest, S1);
+        {noreply, S1} ->
+            run_deferred(Rest, S1)
+    end.
 
 waiting_info(wait_timeout, S) ->
     {stop, normal, S};
@@ -551,12 +625,14 @@ waiting_info(_Info, S) ->
     %% lease no longer valid
     {noreply, S}.
 
-activate_name(Name, Opts, Caller, Lease, S) ->
+activate_name(Name, Opts, Caller, Lease, Deferred, S) ->
     case chappe_mrf_registry:put({conf, Name}, self()) of
         ok ->
             case init_backend(Name, Opts, Caller, Lease) of
-                {ok, S1} -> {reply, ok, S1};
-                {stop, Why} -> {stop, normal, {error, Why}, S}
+                {ok, S1} ->
+                    {reply, ok, run_deferred(lists:reverse(Deferred), S1)};
+                {stop, Why} ->
+                    {stop, normal, {error, Why}, S}
             end;
         {error, exists} ->
             {ok, Other} = chappe_mrf_registry:lookup({conf, Name}),
@@ -568,6 +644,7 @@ init_backend(Name, Opts, Caller, Lease) ->
     S0 = #state{
         name = Name,
         lease = Lease,
+        opts = Opts,
         backend = maps:get(backend, Opts, native),
         room = <<"mrf-", Name/binary>>,
         profile = chappe_mrf_lib:to_bin(maps:get(profile, Opts, <<"default">>)),
@@ -658,8 +735,8 @@ conf_uri(Name) ->
             <<"sip:", Name/binary, "@invalid">>
     end.
 
-handle_call(Req, _From, #state{waiting = #{}} = S) ->
-    waiting_call(Req, S);
+handle_call(Req, From, #state{waiting = #{}} = S) ->
+    waiting_call(Req, From, S);
 handle_call(info, _From, S) ->
     {reply,
         #{
@@ -741,6 +818,9 @@ join_open(
     map_size(M) + map_size(P) >= Max
 ->
     {reply, {error, full}, S};
+join_open(check, _From, S) ->
+    %% may a member come in now (the lease, the lock, the limit)
+    {reply, ok, S};
 join_open({adopt, Ep, Owned, Opts, FromName, FromId}, From, S) ->
     chappe_mrf_conf_fs:adopt(Ep, Owned, Opts, {FromName, FromId}, From, S);
 join_open({ep, Ep, Opts}, _From, S) ->
@@ -767,14 +847,68 @@ owned(#state{lease = Lease} = S, Fun) ->
 
 %% The region took the name back: no new member, the receivers hear
 %% lost, the name is free on this node for the next start/2 (which
-%% claims it again), and the room ends with its last member.
-lose(#state{lost = true} = S) ->
+%% claims it again), the members move to the room that owns the name
+%% next (chappe_mrf_conf_move:rehome/4), and the room ends with its last
+%% member.
+lose(S) ->
+    lose(S, rehome).
+
+lose(#state{lost = true} = S, _Then) ->
     S;
-lose(#state{name = Name} = S) ->
+lose(#state{name = Name} = S, Then) ->
     ok = chappe_mrf_registry:delete({conf, Name}),
     S1 = emit(lost, S#state{lost = true}),
     ok = close_if_empty(S1),
+    ok = rehome(Then, S1),
     S1.
+
+rehome(rehome, #state{backend = native, name = Name, opts = Opts} = S) when
+    map_size(S#state.members) > 0
+->
+    Self = self(),
+    Ms = application:get_env(chappe_mrf, rehome_ms, 30000),
+    Deadline = erlang:monotonic_time(millisecond) + Ms,
+    {_, _} = spawn_monitor(fun() ->
+        chappe_mrf_conf_move:rehome(Self, Name, Opts, Deadline)
+    end),
+    ok;
+rehome(_Then, _S) ->
+    ok.
+
+%% chappe_mrf_conf_move asks: handoff (this node stops: give the lease
+%% back, take no member, say which members can move), ids (the members a
+%% call can move).
+move_req(handoff, #state{lease = Lease} = S) ->
+    _ = Lease =/= undefined andalso chappe_cluster:release(Lease),
+    S1 = lose(S#state{lease = undefined}, handoff),
+    Here = node(),
+    Remote = [
+        Id
+     || Id := #{b2b := {Pid, _}} <- S1#state.members, node(Pid) =/= Here
+    ],
+    {reply,
+        #{
+            backend => S1#state.backend,
+            name => S1#state.name,
+            opts => portable(S1#state.opts),
+            members => Remote
+        },
+        S1};
+move_req(ids, #state{members = M} = S) ->
+    {reply, [Id || Id := #{b2b := _} = Mb <- M, not is_map_key(transfer, Mb)],
+        S}.
+
+%% The options the room opens with elsewhere: without the processes of
+%% this node that is stopping
+portable(Opts) ->
+    Here = node(),
+    maps:filter(
+        fun
+            (K, Pid) when K =:= owner; K =:= notify -> node(Pid) =/= Here;
+            (_, _) -> true
+        end,
+        Opts
+    ).
 
 %% an fs member's endpoint events
 endpoint_event(Ep, {event, Ev}, S) ->
@@ -1136,6 +1270,8 @@ recording_closed(Path, #state{stopping = St} = S) ->
 %% transfer/3's steps here, sent as {transfer, Step, Member}: out marks the
 %% member and hands over what the other conference needs, cancel undoes
 %% the mark after a failed join there.
+transfer_step(move, Mode, S) ->
+    move_req(Mode, S);
 transfer_step(out, Id, #state{members = M} = S) ->
     case M of
         #{Id := #{transfer := true}} ->

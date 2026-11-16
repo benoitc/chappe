@@ -43,8 +43,9 @@ make demo-cluster-smoke
 ```
 
 It plays every step below with SIPp, checks each one, and prints
-`smoke: PASSED`. CI-style: it starts the demo and removes it at the end
-(`KEEP=1` leaves it up).
+`smoke: PASSED`. It starts the demo and removes it at the end (`KEEP=1`
+leaves it up); on a failure the containers' logs land in
+`_build/demo-cluster-logs`. CI runs it on every pull request.
 
 ## Call a phone registered on another node
 
@@ -77,9 +78,23 @@ demo_cluster:room().
 %% #{node => 'demo@n1', pid => <...>, members => [#{...}, #{...}]}
 ```
 
+## Stop the room's node
+
+Stop the node the room runs on, here n1:
+
+```sh
+docker compose -f demo/cluster/docker-compose.yml stop n1
+```
+
+- Before it stops, n1 hands the room off: it gives the lease back, a room
+  with the same name opens on n2 or n3, and the caller on another node
+  moves into it. That caller hears a short gap, then the room again.
+- The caller whose call ran on n1 is hung up with it.
+- `demo_cluster:room()` on n2 names the new room, with its member.
+
 ## Kill the room's node
 
-Kill the node the room runs on, here n1, as a crash would:
+Kill it instead, as a crash would:
 
 ```sh
 docker compose -f demo/cluster/docker-compose.yml kill n1
@@ -87,8 +102,6 @@ docker compose -f demo/cluster/docker-compose.yml kill n1
 
 - The caller whose call runs on another node stays up: its node keeps the
   call. The audio of the room stops, since its mixer was on n1.
-- `docker compose stop n1` is an orderly stop instead: the room's dialogs
-  end with it, and both callers get a BYE.
 - About `lease_ms` (6 s) later the room's lease is free. Dial `3000` again
   (from any phone, on n2 or n3): the room opens on a live node, and
   `demo_cluster:room()` names it.

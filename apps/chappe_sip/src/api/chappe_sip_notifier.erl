@@ -26,7 +26,8 @@
     add/4, add/5,
     changed/2,
     put/3,
-    put_async/3,
+    put/4,
+    put_async/4,
     get/2,
     set_state/3,
     set_interval/2,
@@ -44,7 +45,9 @@
     %% dialog pid => watcher
     watchers = #{} :: #{pid() => map()},
     %% Key => what the callback renders from (MWI counts)
-    data = #{} :: #{term() => term()}
+    data = #{} :: #{term() => term()},
+    %% Key => the version of its data, for put/4: an older one is ignored
+    versions = #{} :: #{term() => term()}
 }).
 -type state() :: #state{}.
 
@@ -88,11 +91,18 @@ changed(Name, Key) ->
 put(Name, Key, Data) ->
     gen_server:call(Name, {put, Key, Data}).
 
-%% put/3 without waiting, to a notifier by name or pid (one on another
+%% put/3 with a Version: the data is taken only when Version is greater
+%% (in term order) than the one Key holds, so puts made on several nodes
+%% end the same on every node, whatever order they arrive in.
+-spec put(atom(), term(), term(), term()) -> ok.
+put(Name, Key, Data, Version) ->
+    gen_server:call(Name, {put, Key, Data, Version}).
+
+%% put/4 without waiting, to a notifier by name or pid (one on another
 %% node, found in its group).
--spec put_async(atom() | pid(), term(), term()) -> ok.
-put_async(Server, Key, Data) ->
-    gen_server:cast(Server, {put, Key, Data}).
+-spec put_async(atom() | pid(), term(), term(), term()) -> ok.
+put_async(Server, Key, Data, Version) ->
+    gen_server:cast(Server, {put, Key, Data, Version}).
 
 -spec get(atom(), term()) -> term() | undefined.
 get(Name, Key) ->
@@ -154,6 +164,8 @@ handle_call({add, Dialog, Key, WState, Fetch}, _From, S) ->
 handle_call({put, Key, Data}, _From, S) ->
     S1 = S#state{data = (S#state.data)#{Key => Data}},
     {reply, ok, notify_key(Key, S1)};
+handle_call({put, Key, Data, Version}, _From, S) ->
+    {reply, ok, versioned(Key, Data, Version, S)};
 handle_call({get, Key}, _From, S) ->
     {reply, maps:get(Key, S#state.data, undefined), S};
 handle_call({set_state, Key, Fun}, _From, S) ->
@@ -190,10 +202,9 @@ handle_call({watchers, Key}, _From, S) ->
 
 handle_cast({changed, Key}, S) ->
     {noreply, notify_key(Key, S)};
-handle_cast({put, Key, Data}, S) ->
-    %% a put/3 made on another node (see start_link/4's group)
-    S1 = S#state{data = (S#state.data)#{Key => Data}},
-    {noreply, notify_key(Key, S1)}.
+handle_cast({put, Key, Data, Version}, S) ->
+    %% a put/4 made on another node (see start_link/4's group)
+    {noreply, versioned(Key, Data, Version, S)}.
 
 handle_info({chappe_sip_dialog, D, {refreshed, _}, _Req}, S) ->
     %% RFC 6665 4.2.1.2: a NOTIFY after every accepted refresh
@@ -226,6 +237,18 @@ handle_info(_Msg, S) ->
     {noreply, S}.
 
 %% ---- internal ----
+
+versioned(Key, Data, Version, #state{versions = V} = S) ->
+    case V of
+        #{Key := Old} when Old >= Version ->
+            S;
+        _ ->
+            S1 = S#state{
+                data = (S#state.data)#{Key => Data},
+                versions = V#{Key => Version}
+            },
+            notify_key(Key, S1)
+    end.
 
 active_state(pending) -> pending;
 active_state(_) -> active.

@@ -14,14 +14,16 @@
          end_per_testcase/2]).
 -export([singleton_probe/1, prober_crash_and_overflow/1,
          singleton_needs_cluster/1, env_peer_starts_cluster/1,
-         missed_event_resynced/1]).
+         missed_event_resynced/1, stale_write_refused/1,
+         prober_table_without_quorum/1]).
 
 -define(UA, chappe_sip_test_ua).
 -define(C, chappe_sip_test_cluster).
 
 all() ->
     [singleton_probe, prober_crash_and_overflow, singleton_needs_cluster,
-     env_peer_starts_cluster, missed_event_resynced].
+     env_peer_starts_cluster, missed_event_resynced, stale_write_refused,
+     prober_table_without_quorum].
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif, [{persistent, true}]),
@@ -35,6 +37,16 @@ end_per_suite(_Config) ->
 init_per_testcase(env_peer_starts_cluster, Config) ->
     {Peer, Node} = ?C:peer("pc"),
     [{peers, [{Peer, Node}]}, {nodes, [Node]} | Config];
+init_per_testcase(prober_table_without_quorum = Case, Config) ->
+    %% a long lease: the pinger keeps it while the trunk goes down
+    Dir = filename:join(?config(priv_dir, Config), atom_to_list(Case)),
+    Peers = [?C:peer("pc" ++ integer_to_list(I)) || I <- [1, 2, 3]],
+    Nodes = [N || {_, N} <- Peers],
+    Long = #{lease_ms => 9000, renew_ms => 3000, command_timeout => 1000},
+    [ok = ?C:start_cluster(N, Nodes, Dir, Long) || N <- Nodes],
+    [ok = ?C:wait_live(N) || N <- Nodes],
+    Ports = [{start_sip(N, cluster), N} || N <- Nodes],
+    [{peers, Peers}, {nodes, Nodes}, {ports, Ports} | Config];
 init_per_testcase(Case, Config) when Case =/= singleton_needs_cluster ->
     Dir = filename:join(?config(priv_dir, Config), atom_to_list(Case)),
     Peers = [?C:peer("pc" ++ integer_to_list(I)) || I <- [1, 2, 3]],
@@ -185,6 +197,39 @@ missed_event_resynced(Config) ->
     ok = erpc:call(N2, chappe_sip_peers, put, [trunk, Info#{state := unknown}]),
     {ok, #{state := unknown}} = erpc:call(N2, chappe_sip, peer_status, [trunk]),
     ok = wait_state(N2, up).
+
+%% A write from a pinger whose fence is older than the one in the KV (a
+%% paused holder that wakes up after the takeover) is refused, so a node
+%% that reads the KV later never takes its word.
+stale_write_refused(Config) ->
+    [N1 | _] = Nodes = ?config(nodes, Config),
+    {TPort, _Trunk} = trunk(),
+    Opts = #{uri => <<"sip:trunk@127.0.0.1:", (integer_to_binary(TPort))/binary>>,
+             interval_ms => 300, timeout_ms => 300, probe => singleton},
+    [ok = erpc:call(N, chappe_sip, peer_add, [trunk, Opts]) || N <- Nodes],
+    [ok = wait_state(N, up) || N <- Nodes],
+    Key = erpc:call(N1, chappe_sip_peers, kv_key, [trunk]),
+    {ok, #{info := Info, fence := {R, E, Seq}}, _} = erpc:call(N1, chappe_cluster, get, [Key]),
+    Stale = {R, E, Seq - 1},
+    ?assertEqual({error, stale},
+                 erpc:call(N1, chappe_sip_peer, share, [trunk, Info#{state := down}, Stale])),
+    {ok, #{info := #{state := up}, fence := {_, _, Seq}}, _} = erpc:call(N1, chappe_cluster, get, [Key]).
+
+%% Without a quorum the pinger's KV write fails, yet its own node's table
+%% follows what it sees: the trunk going down shows there.
+prober_table_without_quorum(Config) ->
+    Peers = ?config(peers, Config),
+    [N1 | _] = ?config(nodes, Config),
+    {TPort, Trunk} = trunk(),
+    Opts = #{uri => <<"sip:trunk@127.0.0.1:", (integer_to_binary(TPort))/binary>>,
+             interval_ms => 200, timeout_ms => 200, up_after => 1, down_after => 2,
+             probe => singleton},
+    ok = erpc:call(N1, chappe_sip, peer_add, [trunk, Opts]),
+    N1 = wait_prober(N1),
+    ok = wait_state(N1, up),
+    [?C:stop_peer(P) || {P, N} <- Peers, N =/= N1],
+    Trunk ! {mode, silent},
+    ok = wait_state(N1, down).
 
 %% ---- helpers ----
 

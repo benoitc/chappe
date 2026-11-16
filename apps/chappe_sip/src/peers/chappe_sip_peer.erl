@@ -13,7 +13,7 @@
 
 -include("chappe_sip.hrl").
 
--export([start_link/2, initial/1]).
+-export([start_link/2, initial/1, share/3]).
 -export([init/1, callback_mode/0, handle_event/4]).
 
 -record(state, {
@@ -198,12 +198,8 @@ publish(#state{name = Name, info = #{state := New} = Info} = S, #{state := Old})
 kv_write(Name, Info) ->
     case chappe_cluster:singleton_fence(chappe_sip_peers:singleton(Name)) of
         {ok, Fence} ->
-            case
-                chappe_cluster:put(chappe_sip_peers:kv_key(Name), #{
-                    info => Info, fence => Fence
-                })
-            of
-                {ok, _} ->
+            case share(Name, Info, Fence) of
+                ok ->
                     true;
                 {error, Why} ->
                     logger:notice(
@@ -215,6 +211,39 @@ kv_write(Name, Info) ->
             end;
         none ->
             false
+    end.
+
+%% A singleton pinger's word on the peer, under Fence: this node's table
+%% takes it at once (a lost quorum does not hide the peer's state from
+%% the node that sees it), then the region's KV, by compare and set, and
+%% only while no greater fence is there: a paused pinger that wakes up
+%% after the takeover cannot overwrite the new one.
+-spec share(term(), chappe_sip_peers:info(), chappe_cluster:fence()) ->
+    ok | {error, stale | term()}.
+share(Name, Info, Fence) ->
+    Value = #{info => Info, fence => Fence},
+    ok = chappe_sip_peers:local(Name, Value),
+    cas(chappe_sip_peers:kv_key(Name), Value, 3).
+
+cas(_Key, _Value, 0) ->
+    {error, contended};
+cas(Key, #{fence := {_, _, Seq}} = Value, Tries) ->
+    case chappe_cluster:get(Key) of
+        {ok, #{fence := {_, _, Cur}}, _Version} when Cur > Seq ->
+            {error, stale};
+        {ok, _Old, Version} ->
+            cas_put(Key, Version, Value, Tries);
+        not_found ->
+            cas_put(Key, 0, Value, Tries);
+        {error, _} = Err ->
+            Err
+    end.
+
+cas_put(Key, Version, Value, Tries) ->
+    case chappe_cluster:cas(Key, Version, Value) of
+        {ok, _} -> ok;
+        {error, {version, _}} -> cas(Key, Value, Tries - 1);
+        {error, _} = Err -> Err
     end.
 
 next(Old, #state{oks = Oks}, #{up_after := Up}) when Old =/= up, Oks >= Up ->
