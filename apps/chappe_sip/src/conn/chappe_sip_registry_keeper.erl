@@ -18,6 +18,8 @@
 -define(TAB, chappe_sip_registry).
 -define(CFG_TAB, chappe_sip_engine_cfg).
 -define(DIALOG_TAB, chappe_sip_dialog_index).
+%% on a cluster, the AORs this node took a binding of (chappe_sip_registry)
+-define(HELD_TAB, chappe_sip_registry_held).
 
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
@@ -25,6 +27,7 @@ start_link() ->
 init([]) ->
     _ = ensure_table(?TAB, [named_table, set, public, {read_concurrency, true}]),
     _ = ensure_table(?CFG_TAB, [named_table, set, public]),
+    _ = ensure_table(?HELD_TAB, [named_table, set, public]),
     _ = ensure_table(?DIALOG_TAB, [
         named_table,
         set,

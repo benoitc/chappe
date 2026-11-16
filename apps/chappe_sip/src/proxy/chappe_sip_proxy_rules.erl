@@ -219,6 +219,8 @@ hostport(Bin) ->
 %% transport parameter names UDP is refused (RFC 3261 19.1.1).
 retarget({ws, _}, Msg) ->
     {ok, Msg, undefined};
+retarget({route, Uri, _RouteSet}, Msg) ->
+    retarget(Uri, Msg);
 retarget({flow, Uri, _Flow}, Msg) ->
     %% a binding reached over its flow: the Request-URI is its contact
     retarget(Uri, Msg);
@@ -306,6 +308,13 @@ next_hop({ws, _} = D, _Via, Msg) ->
 next_hop({flow, _Uri, Flow}, _Via, Msg) ->
     %% RFC 5626 5.3: a binding's flow is the way to reach it
     {chappe_sip_route:flow_route(Flow), Msg};
+next_hop({route, _Uri, RouteSet}, Via, Msg) ->
+    %% RFC 3261 16.6 step 6: a route set toward the target goes ahead of
+    %% the Route headers the request still carries
+    Msg1 = chappe_sip_route:set_routes(
+        RouteSet ++ chappe_sip_route:routes(Msg), Msg
+    ),
+    next_hop(undefined, Via, Msg1);
 next_hop(_Dest, Via, Msg) ->
     case chappe_sip_route:routes(Msg) of
         [] when is_binary(Via) ->

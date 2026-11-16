@@ -8,7 +8,8 @@
 %% (chappe_sip_registry, RFC 3261 10.3) and answers: 200 with every binding
 %% (expires, q), a Date, the request's Path (RFC 3327) and, for an RFC 5626
 %% flow, Require: outbound and a Flow-Timer; or the store's refusal (400,
-%% 403, 404, 420 with Unsupported: path, 423 with Min-Expires, 439, 503).
+%% 403, 404, 420 with Unsupported: path, 423 with Min-Expires, 439, 503;
+%% on a cluster without a quorum, 503 with Retry-After).
 -module(chappe_sip_registrar).
 
 -export([handler/1, aor_owned/3]).
@@ -120,6 +121,8 @@ do_register(Opts0, Req, Res) ->
                 }
             ),
             ok;
+        {error, no_quorum} ->
+            no_quorum(Res);
         {error, 439} ->
             _ = chappe_sip_res:send(
                 Res, 439, #{reason => <<"First Hop Lacks Outbound Support">>}
@@ -141,6 +144,17 @@ do_register(Opts0, Req, Res) ->
             _ = chappe_sip_res:send(Res, Status),
             ok
     end.
+
+%% on a cluster the region could not take the write: no 200 for a binding
+%% that is not stored (RFC 3261 10.3 step 8); the UA keeps its current
+%% binding and retries after Retry-After (21.5.4)
+no_quorum(Res) ->
+    After = integer_to_binary(chappe_sip_config:get(registrar_retry_after)),
+    _ = chappe_sip_res:send(Res, 503, #{
+        reason => <<"Service Unavailable">>,
+        headers => [{<<"Retry-After">>, After}]
+    }),
+    ok.
 
 with_direct_flow(undefined, Opts) -> Opts;
 with_direct_flow(Flow, Opts) -> Opts#{outbound_flow => Flow}.

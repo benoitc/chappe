@@ -25,8 +25,10 @@
 forward_indialog(Req, Res) ->
     ServerTxn = chappe_sip_req:txn(Req),
     Msg0 = chappe_sip_req:msg(Req),
-    {NextHop, Flows, Msg1} = pop_route(Msg0),
-    Arrived = maps:get(flow, chappe_sip_req:meta(Req), undefined),
+    Edge = chappe_sip_route:edge_flow(Msg0),
+    {NextHop, Flows, Msg1a} = pop_route(Msg0),
+    Msg1 = edge_record_route(Edge, Msg0, Msg1a),
+    Arrived = chappe_sip_route:arrival_flow(chappe_sip_req:meta(Req)),
     Route = indialog_route(Arrived, NextHop, Flows),
     IsInvite = chappe_sip_msg:method(Msg1) =:= <<"INVITE">>,
     IsInvite andalso chappe_sip_engine:mark_proxied(ServerTxn),
@@ -207,9 +209,64 @@ pop_route(Msg) ->
 %% leg is not WS; from a non-WS transport to the WS leg the tokens name.
 indialog_route(Arrived, NextHop, Flows) ->
     case chappe_sip_route:next_flow(Arrived, Flows) of
-        {ws, _} = Ws -> Ws;
-        next_hop -> NextHop
+        next_hop -> NextHop;
+        Route -> Route
     end.
+
+%% RFC 5626 5.3: a new dialog-forming request that came through an edge
+%% route (another node of the cluster sends to a binding this node holds)
+%% is record-routed here, so the dialog's requests come back over the
+%% flow. Two routes (RFC 5658): the one the far side uses names the flow,
+%% the one the registered UA uses (over its own transport) names none, so
+%% each direction is told by the route it arrives on.
+edge_record_route({ok, Flow, Transport}, Msg0, Msg) ->
+    case
+        chappe_sip_msg:to_tag(Msg) =:= undefined andalso
+            dialog_forming(chappe_sip_msg:method(Msg))
+    of
+        true ->
+            [Top | _] = chappe_sip_route:routes(Msg0),
+            Us = chappe_sip_hdr:name_addr_uri(Top),
+            CallId = chappe_sip_msg:call_id(Msg),
+            Far = chappe_sip_route:record_route(
+                Us, {undefined, Flow}, CallId
+            ),
+            Near = chappe_sip_route:record_route(
+                ua_side(Us, Transport),
+                undefined,
+                CallId,
+                ua_transport(Transport)
+            ),
+            chappe_sip_msg:prepend(
+                <<"Record-Route">>,
+                Near,
+                chappe_sip_msg:prepend(<<"Record-Route">>, Far, Msg)
+            );
+        false ->
+            Msg
+    end;
+edge_record_route(none, _Msg0, Msg) ->
+    Msg.
+
+dialog_forming(<<"INVITE">>) -> true;
+dialog_forming(<<"SUBSCRIBE">>) -> true;
+dialog_forming(<<"REFER">>) -> true;
+dialog_forming(_) -> false.
+
+%% the address the registered UA reaches us at: our TLS contact for a TLS
+%% flow, else the edge route's own host and port
+ua_side(Us, <<"tls">>) ->
+    case chappe_sip_binds:contact_or_primary(undefined, true) of
+        Tls when is_binary(Tls) -> Tls;
+        _ -> Us
+    end;
+ua_side(Us, _Transport) ->
+    Us.
+
+ua_transport(<<"tcp">>) -> #{transport => <<"tcp">>};
+ua_transport(<<"ws">>) -> #{transport => <<"ws">>};
+ua_transport(<<"wss">>) -> #{transport => <<"wss">>};
+ua_transport(_) -> #{}.
 
 send_ack(NextHop, Raw) ->
     try chappe_sip_engine:send_stateless(NextHop, Raw, self()) of

@@ -21,7 +21,16 @@
 %% Flow tokens: `ftok' names the WS flow the dialog-forming request came in
 %% on (the upstream leg) and `ftokd' the WS flow it went out on (the
 %% downstream leg). A WS-to-WS dialog carries both, so each side's in-dialog
-%% requests route to the other.
+%% requests route to the other. A token may also name a TCP/TLS connection
+%% (`c<Id>') or a UDP source address (`u<hex ip>-<port>[-<hex local>]'),
+%% the flows a registration is reached over on the node that took it.
+%%
+%% Edge routes (RFC 5626 5.3): a registrar node that holds a binding's
+%% flow hands out a Route naming itself and that flow (edge_route/4), so a
+%% request from another node of a cluster goes through it. The route
+%% carries `edge=<transport>' and a MAC over its host, port, flow,
+%% transport and expiry (no Call-ID: it serves any new request), and
+%% expires with the binding.
 -module(chappe_sip_route).
 
 -export([record_route/3, is_self/3, pop_self/1, strip_via/1]).
@@ -29,15 +38,20 @@
 -export([routes/1, set_routes/2, uri_is_self/2, recover_strict/1]).
 -export([next_flow/2, request_target/2, flow_route/1, secure_hop/2]).
 -export([received_flow/1, nated/2, redirect_targets/1]).
+-export([record_route/4, edge_route/4, edge_flow/1, arrival_flow/1, boot/0]).
 
 -export_type([flows/0]).
 
-%% {Upstream WS flow, Downstream WS flow}
--type flows() :: {integer() | undefined, integer() | undefined}.
+%% {Upstream flow, Downstream flow}: WS flows (integers), or the TCP/TLS
+%% connection or UDP address a registration is reached over
+-type flows() :: {
+    chappe_sip_engine:flow() | undefined, chappe_sip_engine:flow() | undefined
+}.
 
 -define(MARK, <<"espx">>).
 -define(SECRET_KEY, {chappe_sip_route, flow_secret}).
 -define(BOOT_KEY, {chappe_sip_route, boot}).
+-define(BOOT_ID_KEY, {chappe_sip_route, boot_id}).
 
 %% Build the Record-Route header value to prepend (angle-bracketed) from the
 %% engine's bound contact, for the dialog identified by CallId. Strips
@@ -48,17 +62,75 @@
 -spec record_route(
     binary() | undefined, flows() | integer() | undefined, binary()
 ) -> binary().
-record_route(Contact, Flow, CallId) when
+record_route(Contact, Flow, CallId) ->
+    record_route(Contact, Flow, CallId, #{}).
+
+%% record_route/3 with options: `transport', a transport parameter for the
+%% route (the side that reaches us over TCP or TLS).
+-spec record_route(
+    binary() | undefined,
+    flows() | integer() | undefined,
+    binary(),
+    #{transport => binary()}
+) -> binary().
+record_route(Contact, Flow, CallId, Opts) when
     is_integer(Flow); Flow =:= undefined
 ->
-    record_route(Contact, {Flow, undefined}, CallId);
-record_route(Contact, {Up, Down}, CallId) ->
+    record_route(Contact, {Flow, undefined}, CallId, Opts);
+record_route(Contact, {Up, Down}, CallId, Opts) ->
     {Base, Host, Port} = contact_hostport(Contact),
     Exp = erlang:system_time(second) + ttl(),
     Sig = sign(Host, Port, {Up, Down}, CallId, Exp),
-    <<"<", Base/binary, ";lr;", ?MARK/binary, "=", Sig/binary, ";exp=",
-        (integer_to_binary(Exp))/binary, (flow_param(<<"ftok">>, Up))/binary,
+    <<"<", Base/binary, (transport_param(Opts))/binary, ";lr;", ?MARK/binary,
+        "=", Sig/binary, ";exp=", (integer_to_binary(Exp))/binary,
+        (flow_param(<<"ftok">>, Up))/binary,
         (flow_param(<<"ftokd">>, Down))/binary, ">">>.
+
+transport_param(#{transport := T}) when is_binary(T) ->
+    <<";transport=", T/binary>>;
+transport_param(_) ->
+    <<>>.
+
+%% The Route a registrar node hands out for a binding whose flow it holds
+%% (RFC 5626 5.3): EdgeUri is this node's address, Flow the binding's flow,
+%% Transport the one it came over (udp, tcp, tls, ws, wss), Exp the
+%% binding's expiry (epoch seconds). A request that comes to us with it on
+%% top is forwarded over Flow.
+-spec edge_route(
+    binary(), chappe_sip_engine:flow(), binary(), non_neg_integer()
+) -> binary().
+edge_route(EdgeUri, Flow, Transport, Exp) ->
+    {Base, Host, Port} = contact_hostport(EdgeUri),
+    Tok = ftok(Flow),
+    Sig = edge_sign(Host, Port, Tok, Transport, Exp),
+    <<"<", Base/binary, ";lr;", ?MARK/binary, "=", Sig/binary, ";exp=",
+        (integer_to_binary(Exp))/binary, ";ftokd=", Tok/binary, ";edge=",
+        Transport/binary, ">">>.
+
+%% The flow and transport of a valid edge route on top of a request.
+-spec edge_flow(chappe_sip_msg:msg()) ->
+    {ok, chappe_sip_engine:flow(), binary()} | none.
+edge_flow(Msg) ->
+    case routes(Msg) of
+        [Top | _] -> edge_of(route_uri(Top));
+        [] -> none
+    end.
+
+edge_of({ok, #{params := #{<<"edge">> := T} = P} = U}) when is_binary(T) ->
+    case {valid_uri(U, undefined), flows(P)} of
+        {true, {_, Flow}} when Flow =/= undefined -> {ok, Flow, T};
+        _ -> none
+    end;
+edge_of(_) ->
+    none.
+
+%% The flow a request arrived on, from its meta: its WS flow, else its
+%% TCP/TLS connection or UDP source (received_flow/1).
+-spec arrival_flow(map()) -> chappe_sip_engine:flow() | undefined.
+arrival_flow(#{flow := Flow}) when is_integer(Flow) ->
+    Flow;
+arrival_flow(Meta) ->
+    received_flow(Meta).
 
 %% The Request-URI and Route headers of a request in a dialog (RFC 3261
 %% 12.2.1.1). A loose router (;lr on the first route) leaves the remote
@@ -114,10 +186,62 @@ without_udp(Hop) ->
             Hop
     end.
 
-flow_param(Name, Flow) when is_integer(Flow) ->
-    <<";", Name/binary, "=", (integer_to_binary(Flow))/binary>>;
-flow_param(_Name, _) ->
-    <<>>.
+flow_param(_Name, undefined) ->
+    <<>>;
+flow_param(Name, Flow) ->
+    <<";", Name/binary, "=", (ftok(Flow))/binary>>.
+
+%% A flow as a URI parameter value: a WS flow as its integer (the form
+%% markers always had), a connection as c<Id>, a UDP address as
+%% u<hex ip>-<port>, with -<hex local> when it names a listen address.
+ftok(Flow) when is_integer(Flow) ->
+    integer_to_binary(Flow);
+ftok({conn, Id}) ->
+    <<"c", (integer_to_binary(Id))/binary>>;
+ftok({udp, Ip, Port}) ->
+    <<"u", (binary:encode_hex(Ip, lowercase))/binary, "-",
+        (integer_to_binary(Port))/binary>>;
+ftok({udp, Ip, Port, Local}) ->
+    <<
+        (ftok({udp, Ip, Port}))/binary,
+        "-",
+        (binary:encode_hex(Local, lowercase))/binary
+    >>.
+
+unftok(<<"c", Id/binary>>) ->
+    case to_int(Id) of
+        N when is_integer(N), N > 0 -> {conn, N};
+        _ -> undefined
+    end;
+unftok(<<"u", Rest/binary>>) ->
+    try binary:split(Rest, <<"-">>, [global]) of
+        [Ip, Port] ->
+            udp_flow(binary:decode_hex(Ip), to_int(Port), []);
+        [Ip, Port, Local] ->
+            udp_flow(binary:decode_hex(Ip), to_int(Port), [
+                binary:decode_hex(Local)
+            ]);
+        _ ->
+            undefined
+    catch
+        error:badarg -> undefined
+    end;
+unftok(V) ->
+    to_int(V).
+
+udp_flow(Ip, Port, Local) when
+    is_integer(Port), Port > 0, Port < 65536, Ip =/= <<>>
+->
+    list_to_tuple([udp, Ip, Port | Local]);
+udp_flow(_Ip, _Port, _Local) ->
+    undefined.
+
+to_int(V) ->
+    try
+        binary_to_integer(V)
+    catch
+        error:badarg -> undefined
+    end.
 
 %% Does this Route (or Record-Route) header value target us for the dialog
 %% CallId? True only when it carries our marker with a MAC that validates
@@ -141,6 +265,19 @@ uri_is_self(Uri, CallId) ->
         _ -> false
     end.
 
+valid_uri(#{params := #{<<"edge">> := T, ?MARK := Sig} = P} = U, _CallId) when
+    is_binary(T), is_binary(Sig)
+->
+    %% an edge route serves any new request: no Call-ID in its MAC
+    case {expiry(P), maps:get(<<"ftokd">>, P, undefined)} of
+        {{ok, Exp}, Tok} when is_binary(Tok) ->
+            Host = maps:get(host, U, undefined),
+            Port = maps:get(port, U, undefined),
+            Exp >= erlang:system_time(second) andalso
+                mac_equal(Sig, edge_sign(Host, Port, Tok, T, Exp));
+        _ ->
+            false
+    end;
 valid_uri(#{params := P} = U, CallId) ->
     case maps:get(?MARK, P, undefined) of
         Sig when is_binary(Sig) -> valid_sig(Sig, U, P, CallId);
@@ -162,7 +299,7 @@ valid_sig(Sig, U, P, CallId) ->
             legacy_window() andalso
                 mac_equal(
                     Sig,
-                    legacy_sign(Host, Port, ftok_value(P, <<"ftok">>), CallId)
+                    legacy_sign(Host, Port, legacy_flow(P), CallId)
                 );
         error ->
             false
@@ -271,38 +408,52 @@ recover_strict(Msg) ->
 next_hop([]) -> undefined;
 next_hop([Next | _]) -> chappe_sip_hdr:name_addr_uri(Next).
 
-%% Where an in-dialog request goes: Arrived is the WS flow it came in on
-%% (undefined over UDP/TCP/TLS). From one WS leg it goes to the other one,
-%% or by the next hop when that leg is not WS; from a non-WS transport it
-%% goes to the WS leg the tokens name, if any.
--spec next_flow(integer() | undefined, flows()) ->
-    {ws, integer()} | next_hop.
+%% Where an in-dialog request goes: Arrived is the flow it came in on (a
+%% WS flow, a connection or a UDP source; undefined when unknown). From
+%% one leg it goes to the other one, or by the next hop when that leg has
+%% no token; from elsewhere it goes to the leg the tokens name, when they
+%% name one.
+-spec next_flow(chappe_sip_engine:flow() | undefined, flows()) ->
+    chappe_sip_engine:route() | next_hop.
 next_flow(Arrived, {Up, Down}) when is_integer(Arrived) ->
     case {Arrived =:= Up, Arrived =:= Down} of
-        {true, _} when is_integer(Down) -> {ws, Down};
-        {_, true} when is_integer(Up) -> {ws, Up};
+        {true, _} when Down =/= undefined -> flow_route(Down);
+        {_, true} when Up =/= undefined -> flow_route(Up);
         _ -> next_hop
     end;
-next_flow(undefined, {Up, undefined}) when is_integer(Up) ->
-    {ws, Up};
-next_flow(undefined, {undefined, Down}) when is_integer(Down) ->
-    {ws, Down};
-next_flow(_Arrived, _Flows) ->
-    next_hop.
+next_flow(Arrived, {Up, Down}) ->
+    case {same_flow(Arrived, Up), same_flow(Arrived, Down)} of
+        {true, _} when Down =/= undefined -> flow_route(Down);
+        {_, true} when Up =/= undefined -> flow_route(Up);
+        {false, false} -> named_flow(Up, Down);
+        _ -> next_hop
+    end.
+
+named_flow(Up, undefined) when Up =/= undefined -> flow_route(Up);
+named_flow(undefined, Down) when Down =/= undefined -> flow_route(Down);
+named_flow(_Up, _Down) -> next_hop.
+
+%% a UDP source matches a token with or without its listen address
+same_flow(undefined, _) -> false;
+same_flow(_, undefined) -> false;
+same_flow({udp, Ip, Port, _}, F) -> same_flow({udp, Ip, Port}, F);
+same_flow(A, {udp, Ip, Port, _}) -> same_flow(A, {udp, Ip, Port});
+same_flow(A, B) -> A =:= B.
 
 flows(P) ->
     {ftok_value(P, <<"ftok">>), ftok_value(P, <<"ftokd">>)}.
 
 ftok_value(P, Name) ->
     case maps:get(Name, P, undefined) of
-        V when is_binary(V) ->
-            try
-                binary_to_integer(V)
-            catch
-                _:_ -> undefined
-            end;
-        _ ->
-            undefined
+        V when is_binary(V) -> unftok(V);
+        _ -> undefined
+    end.
+
+%% the one flow of a marker from before expiries: a WS flow only
+legacy_flow(P) ->
+    case ftok_value(P, <<"ftok">>) of
+        F when is_integer(F) -> F;
+        _ -> undefined
     end.
 
 %% Strip the proxy's own (top) Via before relaying a response upstream.
@@ -330,6 +481,9 @@ ensure_secret() ->
             _ =
                 persistent_term:get(?BOOT_KEY, undefined) =:= undefined andalso
                     persistent_term:put(?BOOT_KEY, erlang:system_time(second)),
+            _ =
+                persistent_term:get(?BOOT_ID_KEY, undefined) =:= undefined andalso
+                    persistent_term:put(?BOOT_ID_KEY, new_boot_id()),
             _ = secret(),
             ok;
         {error, _} = Err ->
@@ -376,15 +530,53 @@ sign(Host, Port, {Up, Down}, CallId, Exp) ->
         "|",
         (ni(Port))/binary,
         "|",
-        (ni(Up))/binary,
+        (nf(Up))/binary,
         "|",
-        (ni(Down))/binary,
+        (nf(Down))/binary,
         "|",
         (nb(CallId))/binary,
         "|",
         (ni(Exp))/binary
     >>,
     mac(Data).
+
+%% This VM's boot: a connection or WS flow id names something only within
+%% one boot, so a route to one carries it.
+-spec boot() -> binary().
+boot() ->
+    case persistent_term:get(?BOOT_ID_KEY, undefined) of
+        undefined ->
+            persistent_term:put(?BOOT_ID_KEY, new_boot_id()),
+            persistent_term:get(?BOOT_ID_KEY);
+        Id ->
+            Id
+    end.
+
+new_boot_id() ->
+    binary:encode_hex(crypto:strong_rand_bytes(8), lowercase).
+
+%% an edge route: host, port, flow token, transport and expiry, under its
+%% own prefix so no Record-Route MAC can stand for one. A connection or WS
+%% token also carries the boot: after a restart the same id may name
+%% another device's connection. A UDP address stays valid.
+edge_sign(Host, Port, <<"u", _/binary>> = Tok, Transport, Exp) ->
+    edge_mac(Host, Port, Tok, Transport, Exp);
+edge_sign(Host, Port, Tok, Transport, Exp) ->
+    edge_mac(Host, Port, <<Tok/binary, "|", (boot())/binary>>, Transport, Exp).
+
+edge_mac(Host, Port, Tok, Transport, Exp) ->
+    mac(<<
+        "e1|",
+        (nb(Host))/binary,
+        "|",
+        (ni(Port))/binary,
+        "|",
+        Tok/binary,
+        "|",
+        Transport/binary,
+        "|",
+        (ni(Exp))/binary
+    >>).
 
 %% the pre-expiry marker: host, port, one flow and Call-ID
 legacy_sign(Host, Port, Flow, CallId) ->
@@ -403,6 +595,9 @@ mac(Data) ->
 
 nb(undefined) -> <<>>;
 nb(B) when is_binary(B) -> B.
+
+nf(undefined) -> <<>>;
+nf(F) -> ftok(F).
 
 ni(undefined) -> <<>>;
 ni(I) when is_integer(I) -> integer_to_binary(I).
