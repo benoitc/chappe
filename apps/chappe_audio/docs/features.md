@@ -24,6 +24,9 @@ page that shows you how to use it.
   write, close, adopt a finished file, find by `call_ref` on every node, get,
   read a byte range, delete, and a retention sweep. Another backend is a
   module with the same callbacks. [Record a call](guides/record.md)
+- **Sweep guard**: a fun that says whether this node sweeps, so one node
+  sweeps a store the nodes share.
+  [Record a call](guides/record.md#sweep-a-shared-store-from-one-node)
 - **Store writers**: one supervised process per recording, bounded, owned by
   the stream or session that feeds it; one that crashes leaves a partial
   file the sweep removes. [Record a call](guides/record.md#notes)

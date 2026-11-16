@@ -4,7 +4,8 @@
 %% The node's store: it holds the storage config, answers the lookups of
 %% chappe_audio_store for this node (its own callers' and other nodes',
 %% which find it in the chappe_audio_store pg group of the `chappe'
-%% scope), and runs the sweep every sweep_interval.
+%% scope), and runs the sweep every sweep_interval, when its sweep_guard
+%% says this node sweeps now.
 -module(chappe_audio_store_srv).
 -behaviour(gen_server).
 
@@ -100,8 +101,8 @@ handle_call({read, Id, Range}, _From, #state{backend = B, config = C} = S) ->
     {reply, B:read(Id, Range, C), S};
 handle_call({delete, Id}, _From, #state{backend = B, config = C} = S) ->
     {reply, B:delete(Id, C), S};
-handle_call(sweep, _From, #state{backend = B} = S) ->
-    {reply, B:sweep(sweep_config(S)), S};
+handle_call(sweep, _From, S) ->
+    {reply, guarded_sweep(S), S};
 handle_call({writing, Writer, Part}, _From, #state{live = L} = S) ->
     {reply, ok, S#state{live = L#{monitor(process, Writer) => Part}}};
 handle_call(_Req, _From, S) ->
@@ -126,18 +127,44 @@ handle_info({'DOWN', Mon, process, Job, Reason}, #state{jobs = J} = S) ->
             {noreply, S}
     end;
 handle_info(
-    {timeout, T, sweep}, #state{timer = T, backend = B} = S
+    {timeout, T, sweep}, #state{timer = T} = S
 ) ->
-    _ = B:sweep(sweep_config(S)),
+    _ = guarded_sweep(S),
     {noreply, arm(S)};
 handle_info(_Info, S) ->
     {noreply, S}.
 
 %% ---- internal ----
 
+%% The sweep, when the guard says this node sweeps now. A shared folder
+%% or a network backend passes a guard so one node sweeps (a cluster
+%% singleton); a guard that fails counts as no.
+guarded_sweep(#state{backend = B, config = C} = S) ->
+    case sweeps(maps:get(sweep_guard, C, undefined)) of
+        true -> B:sweep(sweep_config(S));
+        false -> {ok, 0}
+    end.
+
+sweeps(undefined) ->
+    true;
+sweeps(Guard) ->
+    try run_guard(Guard) of
+        true -> true;
+        _ -> false
+    catch
+        Class:Why ->
+            logger:warning("chappe_audio_store: sweep_guard ~p: ~p", [
+                Class, Why
+            ]),
+            false
+    end.
+
+run_guard({M, F, A}) -> apply(M, F, A);
+run_guard(Fun) -> Fun().
+
 %% The backend's config for a sweep, with the live writers' parts.
 sweep_config(#state{config = C, live = L}) ->
-    C#{live => maps:from_keys(maps:values(L), true)}.
+    maps:remove(sweep_guard, C#{live => maps:from_keys(maps:values(L), true)}).
 
 %% One job per source path: a second ask joins the running one, an ask
 %% for one done gets its outcome again (the file is in the store).
@@ -224,6 +251,10 @@ opt_ok(retention_days, D) ->
     D =:= undefined orelse (is_integer(D) andalso D > 0);
 opt_ok(sweep_interval, I) ->
     is_integer(I) andalso I > 0;
+opt_ok(sweep_guard, {M, F, A}) ->
+    is_atom(M) andalso is_atom(F) andalso is_list(A);
+opt_ok(sweep_guard, G) ->
+    is_function(G, 0);
 opt_ok(_, _) ->
     true.
 
