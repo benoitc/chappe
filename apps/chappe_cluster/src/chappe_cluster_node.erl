@@ -293,9 +293,12 @@ start_renew(St = #state{renew = undefined}) ->
                 {renew, node(), E, LeaseMs, Items};
             {Inc, not_live} ->
                 %% after a lapse, or at start: a new epoch, replacing the
-                %% last one this incarnation knew
+                %% last one this incarnation knew. Retries carry the same
+                %% ref, so a timed-out try that applies first does not make
+                %% the retry stale
                 Known = chappe_cluster_tab:known_epoch(),
-                {renew, node(), {new, Inc, Known}, LeaseMs, Items}
+                Req = chappe_cluster_tab:new_epoch_ref(),
+                {renew, node(), {new, Inc, Known, Req}, LeaseMs, Items}
         end,
     {_, Ref} = spawn_monitor(fun() ->
         exit({renewed, chappe_cluster_ra:command(Cmd, Budget)})
@@ -306,7 +309,8 @@ start_renew(St) ->
 
 renewed({renewed, {ok, {ok, Inc}}}, _Sent, _Items, {incarnate, _}) ->
     chappe_cluster_tab:set_incarnation(Inc);
-renewed({renewed, {ok, {ok, Epoch}}}, Sent, Items, _Cmd) ->
+renewed({renewed, {ok, {ok, Epoch}}}, Sent, Items, Cmd) ->
+    ok = new_epoch_done(Cmd),
     LeaseMs = chappe_cluster_config:get(lease_ms),
     RenewMs = chappe_cluster_config:get(renew_ms),
     Deadline = Sent + LeaseMs - RenewMs div 2,
@@ -326,7 +330,8 @@ renewed({renewed, {ok, {error, stale_epoch}}}, _Sent, _Items, Cmd) ->
     %% not the node's latest: the holders lose their leases now, and the
     %% next renewal asks for a new epoch (after a new incarnation)
     case Cmd of
-        {renew, _, {new, _, _}, _, _} ->
+        {renew, _, {new, _, _, _}, _, _} ->
+            ok = new_epoch_done(Cmd),
             chappe_cluster_tab:set_incarnation(undefined);
         _ ->
             ok
@@ -334,6 +339,12 @@ renewed({renewed, {ok, {error, stale_epoch}}}, _Sent, _Items, Cmd) ->
     chappe_cluster_tab:lapse();
 renewed(_Failed, _Sent, _Items, _Cmd) ->
     %% no quorum: the lapse timer decides
+    ok.
+
+%% A request for a new epoch got its answer: the next one is a new request.
+new_epoch_done({renew, _, {new, _, _, _}, _, _}) ->
+    chappe_cluster_tab:clear_new_epoch_ref();
+new_epoch_done(_) ->
     ok.
 
 %% The members, from a member's view, off the renewal path.

@@ -63,7 +63,13 @@ What the repository and the research show:
     taken by an earlier incarnation, any request of the latest one
     replaces it: that epoch belongs to an app start that is gone, whose
     holders were told lost when it stopped, or cannot pass `valid/1` if
-    it crashed;
+    it crashed. Each request also carries a ref, which the node keeps
+    across its retries until one is answered, and the epoch keeps the ref
+    that took it. When a try whose caller timed out takes the epoch and
+    its retry applies after it, the retry renews that epoch and gets it
+    back, instead of a refusal that would cost the node a new
+    incarnation. The ref only ever renews the epoch it took: a refused
+    epoch stays refused, and an expire still checks epoch and count;
   - a second claim by the same holder is refused, so a delayed try never
     takes over the lease of its retry. Every abandoned try is queued apart
     (by its claim ref) and drops only its own lease.
