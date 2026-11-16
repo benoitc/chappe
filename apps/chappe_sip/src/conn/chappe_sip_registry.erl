@@ -172,10 +172,10 @@ lookup(AorOrUri) ->
 bindings(AorOrUri) ->
     Aor = aor_key(AorOrUri),
     Now = now_s(),
-    case chappe_sip_location:read(chappe_sip_location:backend(), Aor) of
+    Store = chappe_sip_location:backend(),
+    case chappe_sip_location:read(Store, Aor) of
         {ok, Bs, _} ->
-            Up = [node() | nodes()],
-            by_q(lists:append([view(B, Now, Up) || B <- live(Bs, Now)]));
+            by_q(lists:append([view(Store, B, Now) || B <- live(Bs, Now)]));
         {error, _} ->
             []
     end.
@@ -907,11 +907,15 @@ edge_transport(_Flow, _B) -> <<"udp">>.
 %% another node holds: no flow or received (they name that node's
 %% connections) and its edge route ahead of its path; when that node is
 %% gone, a UDP one is reached at its address, any other is left out.
-view(#binding{node = N} = B, Now, _Up) when N =:= node(); N =:= undefined ->
+view(chappe_sip_location_ets, B, Now) ->
+    %% one node: every binding is this node's, whatever it is called now
     [to_map(B, Now)];
-view(#binding{edge = undefined} = B, Now, _Up) ->
+view(_Store, #binding{node = N} = B, Now) when N =:= node(); N =:= undefined ->
+    [to_map(B, Now)];
+view(_Store, #binding{edge = undefined} = B, Now) ->
     [(to_map(B, Now))#{flow => undefined, received => undefined}];
-view(#binding{node = N, edge = Edge, path = Path} = B, Now, Up) ->
+view(_Store, #binding{node = N, edge = Edge, path = Path} = B, Now) ->
+    Up = [node() | nodes()],
     M = (to_map(B, Now))#{flow => undefined, received => undefined},
     case {lists:member(N, Up), send_flow(to_map(B, Now))} of
         {true, _} -> [M#{path => [Edge | Path]}];

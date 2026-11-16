@@ -23,7 +23,7 @@
          path_stored/1, outbound_flows/1, outbound_rules/1,
          min_expires_default/1, auth_required/1, refusals_below_600/1,
          independent_registers/1, default_expires_taken/1,
-         max_expires_caps/1]).
+         max_expires_caps/1, bindings_survive_a_node_name_change/1]).
 -export([live_register/1, live_register_auth/1, live_min_expires_423/1,
          live_path_outbound/1, live_require_path/1,
          live_record_route_ignored/1, live_never_6xx/1,
@@ -44,7 +44,7 @@ groups() ->
                  path_stored, outbound_flows, outbound_rules,
                  min_expires_default, auth_required, refusals_below_600,
                  independent_registers, default_expires_taken,
-                 max_expires_caps]},
+                 max_expires_caps, bindings_survive_a_node_name_change]},
      {live, [], [live_register, live_register_auth, live_min_expires_423,
                  live_path_outbound, live_require_path,
                  live_record_route_ignored, live_never_6xx,
@@ -847,6 +847,29 @@ live_send_flow_per_binding(_Config) ->
     ?assertEqual(undefined, maps:get(send_flow, DB)),
     gen_udp:close(Direct),
     gen_udp:close(Nated).
+
+%% Without a cluster every binding is this node's, whatever the node is
+%% called: a binding taken before distribution starts keeps its flow.
+bindings_survive_a_node_name_change(_Config) ->
+    {ok, [_], _} = regx(#{contacts => [bare_contact(1)], expires => 3600,
+                          flow => 7}),
+    Started =
+        case node() of
+            nonode@nohost ->
+                _ = os:cmd("epmd -daemon"),
+                Name = list_to_atom("clc_rename_" ++ os:getpid() ++ "@localhost"),
+                {ok, _} = net_kernel:start(Name, #{name_domain => shortnames}),
+                true;
+            _ ->
+                false
+        end,
+    try
+        [B] = chappe_sip_registry:bindings(aor()),
+        ?assertEqual(7, maps:get(flow, B)),
+        ?assertEqual([curi(1)], chappe_sip_registry:lookup(aor()))
+    after
+        Started andalso net_kernel:stop()
+    end.
 
 %% ---- helpers ----
 
