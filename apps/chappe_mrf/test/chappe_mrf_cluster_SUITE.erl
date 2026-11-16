@@ -11,6 +11,7 @@
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
+-include_lib("chappe_mrf/src/chappe_mrf_conf.hrl").
 
 -export([all/0, init_per_suite/1, end_per_suite/1]).
 -export([init_per_testcase/2, end_per_testcase/2]).
@@ -21,6 +22,9 @@
     lost_stops_new_joins/1,
     room_crash_frees_name/1,
     no_quorum_starts_in_parallel/1,
+    waiting_owner_answers_once_running/1,
+    non_owner_start_claims_nothing/1,
+    fs_join_checks_lease_first/1,
     no_cluster_unchanged/1
 ]).
 
@@ -35,6 +39,9 @@ all() ->
         lost_stops_new_joins,
         room_crash_frees_name,
         no_quorum_starts_in_parallel,
+        waiting_owner_answers_once_running,
+        non_owner_start_claims_nothing,
+        fs_join_checks_lease_first,
         no_cluster_unchanged
     ].
 
@@ -239,6 +246,90 @@ no_quorum_starts_in_parallel(Config) ->
     ?assert(Slowest < 3500),
     %% the supervisor answers meanwhile: nothing queued behind a claim
     ?assertMatch([_ | _], erpc:call(N1, supervisor, which_children, [chappe_mrf_sup])).
+
+%% A start that loses the claim to a room still waiting for its lease
+%% gets that room once it runs, not one that answers {error, starting};
+%% when the waiting room dies instead, the start opens the room itself.
+waiting_owner_answers_once_running(Config) ->
+    [N1, N2 | _] = ?config(nodes, Config),
+    Holder = erpc:call(N1, erlang, spawn, [timer, sleep, [infinity]]),
+    W = waiting(N1, <<"wait1">>, Holder),
+    {ok, Lease} = erpc:call(N1, chappe_cluster, claim, [{chappe_mrf_conf, <<"wait1">>}, #{pid => W}]),
+    Test = self(),
+    _ = spawn(fun() ->
+                  R = erpc:call(N2, chappe_mrf, conference, [<<"wait1">>, #{}]),
+                  Info = case R of {ok, C} -> chappe_mrf_conf:info(C); _ -> none end,
+                  Test ! {started, R, Info}
+              end),
+    timer:sleep(500),
+    ok = gen_server:call(W, {activate, Lease}),
+    receive
+        {started, {ok, W}, #{name := <<"wait1">>}} -> ok;
+        {started, R1, I1} -> ct:fail({got, R1, I1})
+    after 20000 -> ct:fail(no_start)
+    end,
+    W2 = waiting(N1, <<"wait2">>, Holder),
+    {ok, _} = erpc:call(N1, chappe_cluster, claim, [{chappe_mrf_conf, <<"wait2">>}, #{pid => W2}]),
+    _ = spawn(fun() ->
+                  R = erpc:call(N2, chappe_mrf, conference, [<<"wait2">>, #{}]),
+                  Test ! {started2, R}
+              end),
+    timer:sleep(500),
+    exit(W2, kill),
+    receive
+        {started2, {ok, C2}} ->
+            ?assertEqual(N2, node(C2)),
+            ?assertMatch(#{name := <<"wait2">>}, chappe_mrf_conf:info(C2));
+        {started2, R2} ->
+            ct:fail({got2, R2})
+    after 20000 -> ct:fail(no_start2)
+    end.
+
+%% A room another node runs is found in the local replica: starting it
+%% from a node that does not own it writes nothing to the region.
+non_owner_start_claims_nothing(Config) ->
+    [N1, N2 | _] = ?config(nodes, Config),
+    {ok, Conf} = erpc:call(N1, chappe_mrf, conference, [<<"owned">>, #{}]),
+    ok = wait_owner(N2, <<"owned">>, Conf),
+    MFA = {chappe_cluster, claim, 2},
+    _ = erpc:call(N2, erlang, trace_pattern, [MFA, true, [call_count]]),
+    [{ok, Conf} = erpc:call(N2, chappe_mrf, conference, [<<"owned">>, #{}]) || _ <- [1, 2, 3]],
+    {call_count, Count} = erpc:call(N2, erlang, trace_info, [MFA, call_count]),
+    _ = erpc:call(N2, erlang, trace_pattern, [MFA, false, [call_count]]),
+    ?assertEqual(0, Count).
+
+%% An fs room whose lease no longer holds refuses a joining call before
+%% it bridges or answers the caller: the refusal is lost, not what
+%% connecting to FreeSWITCH would have given.
+fs_join_checks_lease_first(Config) ->
+    [N1 | _] = ?config(nodes, Config),
+    {ok, Conf} = erpc:call(N1, chappe_mrf, conference, [<<"fsroom">>, #{backend => fs, node => fs1}]),
+    #state{lease = Lease} = sys:get_state(Conf),
+    ok = erpc:call(N1, chappe_cluster, release, [Lease]),
+    Ua = ?F:ua_call(?config(ep, Config), #{}),
+    W = receive {invite, Pid} -> Pid after 10000 -> ct:fail(no_invite) end,
+    W ! {join, Conf},
+    ?assertEqual({error, lost}, receive {join, R} -> R after 10000 -> ct:fail(no_join) end),
+    no_ua_event(Ua, final, 500),
+    W ! stop.
+
+%% A room process started waiting for its lease, as start/2 does, with
+%% Holder as its starter.
+waiting(Node, Name, Holder) ->
+    {ok, W} = erpc:call(Node, chappe_mrf_sup, start_conf,
+                        [#{name => Name, opts => #{}, caller => Holder, wait => true}]),
+    W.
+
+wait_owner(Node, Name, Conf) ->
+    wait_owner(Node, Name, Conf, 50).
+
+wait_owner(_Node, Name, _Conf, 0) ->
+    ct:fail({no_owner, Name});
+wait_owner(Node, Name, Conf, N) ->
+    case erpc:call(Node, chappe_cluster, owner, [{chappe_mrf_conf, Name}]) of
+        {ok, #{pid := Conf}} -> ok;
+        _ -> timer:sleep(100), wait_owner(Node, Name, Conf, N - 1)
+    end.
 
 %% cluster => none: each node opens its own room, as before.
 no_cluster_unchanged(Config) ->
