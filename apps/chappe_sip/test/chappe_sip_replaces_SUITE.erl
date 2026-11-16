@@ -24,6 +24,8 @@
 -export([
     uas_find_dialog/1,
     uas_indexed_before_2xx/1,
+    setup_failed_no_confirmed/1,
+    setup_failed_postponed_call/1,
     uas_find_replaced_live/1,
     find_replaced_rules/1,
     find_replaced_rejects/1,
@@ -50,7 +52,8 @@
 -define(TAB, chappe_sip_dialog_index).
 
 all() ->
-    [uas_find_dialog, uas_indexed_before_2xx, uas_find_replaced_live, find_replaced_rules,
+    [uas_find_dialog, uas_indexed_before_2xx, setup_failed_no_confirmed,
+     setup_failed_postponed_call, uas_find_replaced_live, find_replaced_rules,
      find_replaced_rejects, uac_orientation, removed_after_peer_bye,
      removed_after_local_bye, terminated_while_bye_in_flight,
      removed_after_owner_death, removed_after_fsm_crash,
@@ -99,15 +102,74 @@ uas_find_dialog(_Config) ->
 
 %% The UAS dialog is in the index before its 2xx leaves: a peer that acts
 %% on the 2xx at once (a Replaces, an app finding the dialog by its tags)
-%% finds it, even while the owner has not yet waited for the leg. A call
-%% on it then waits for the dialog to be confirmed instead of failing.
+%% finds it, even while the owner has not yet waited for the leg. A query
+%% is answered at once; a call that goes on the wire waits for the dialog
+%% to be confirmed instead of failing.
 uas_indexed_before_2xx(_Config) ->
+    #{sock := Sock, ep := EP, call := Call, ft := FT, tt := TT, pid := Pid,
+      handler := Handler, found := Found} = held_setup(),
+    ?assertEqual(Pid, Found#dialog.pid),
+    ?assertEqual(FT, chappe_sip_dialog:remote_tag(Found)),
+    Self = self(),
+    spawn_link(fun() ->
+        Self ! {notified, chappe_sip_dialog:notify(
+                            Found, #{event => <<"x">>, state => active})}
+    end),
+    receive {notified, Early} -> ct:fail({answered_in_setup, Early})
+    after 300 -> ok
+    end,
+    Handler ! release,
+    receive {dialog, Found, _} -> ok after 5000 -> ct:fail(no_dialog) end,
+    send(Sock, EP, ack(Sock, Call, FT, TT)),
+    ok = await_notified(Sock, TT),
+    hangup(Sock, Found, TT).
+
+%% A setup that fails (here the owner dies before waiting for the leg)
+%% never told the dialog state stream the dialog was confirmed.
+setup_failed_no_confirmed(_Config) ->
+    ok = chappe_sip:dialog_events(self()),
+    #{handler := Handler, found := Found} = held_setup(),
+    exit(Handler, kill),
+    receive
+        {chappe_sip_dialog_event, #{dialog := Found, state := terminated}} ->
+            ok
+    after 5000 -> ct:fail(no_terminated)
+    end,
+    receive
+        {chappe_sip_dialog_event, #{dialog := Found, state := confirmed}} = E ->
+            ct:fail({confirmed, E})
+    after 0 -> ok
+    end,
+    ok = chappe_sip_dialog_index:unsubscribe(self()).
+
+%% A call waiting on a dialog still in setup gets {error, terminated} when
+%% the setup fails, not an exit.
+setup_failed_postponed_call(_Config) ->
+    #{handler := Handler, found := Found} = held_setup(),
+    Self = self(),
+    spawn(fun() ->
+        R = try
+                chappe_sip_dialog:notify(
+                  Found, #{event => <<"x">>, state => active})
+            catch C:E -> {C, E}
+            end,
+        Self ! {notified, R}
+    end),
+    receive {notified, Early} -> ct:fail({answered_in_setup, Early})
+    after 300 -> ok
+    end,
+    exit(Handler, kill),
+    receive {notified, R} -> ?assertEqual({error, terminated}, R)
+    after 5000 -> ct:fail(no_reply)
+    end.
+
+%% a dialog the owner holds in setup: the 2xx is out, await_ready is not
+%% called until the handler gets `release'
+held_setup() ->
     EP = chappe_sip_test_port:pick(),
     ok = chappe_sip:start(#{contact => <<"sip:127.0.0.1:",
                                          (integer_to_binary(EP))/binary>>}),
     Test = self(),
-    %% the owner holds the dialog in setup: the 2xx is out, await_ready not
-    %% called yet
     ok = chappe_sip:invite(fun(Req, Res) ->
         {ok, Pid} = chappe_sip_engine:create_uas(
             Req, #{owner => self(), local_sdp => sdp()}
@@ -129,19 +191,20 @@ uas_indexed_before_2xx(_Config) ->
     {ok, M} = chappe_sip_msg:parse(recv_status(Sock, 200)),
     TT = chappe_sip_msg:to_tag(M),
     {ok, Found} = chappe_sip:find_dialog(Call, TT, FT),
-    ?assertEqual(Pid, Found#dialog.pid),
-    Self = self(),
-    spawn_link(fun() -> Self ! {tag, chappe_sip_dialog:remote_tag(Found)} end),
-    receive {tag, Early} -> ct:fail({answered_in_setup, Early})
-    after 200 -> ok
-    end,
-    Handler ! release,
-    receive {dialog, Found, _} -> ok after 5000 -> ct:fail(no_dialog) end,
-    receive {tag, Tag} -> ?assertEqual(FT, Tag)
-    after 5000 -> ct:fail(no_tag)
-    end,
-    send(Sock, EP, ack(Sock, Call, FT, TT)),
-    hangup(Sock, Found, TT).
+    #{sock => Sock, ep => EP, call => Call, ft => FT, tt => TT, pid => Pid,
+      handler => Handler, found => Found}.
+
+%% the postponed notify/2 is answered once the dialog is confirmed; a
+%% NOTIFY it puts on the wire is answered 200
+await_notified(Sock, TT) ->
+    receive
+        {notified, _} ->
+            ok;
+        {udp, Sock, _, Src, <<"NOTIFY ", _/binary>> = Bin} ->
+            send(Sock, Src, resp(Bin, 200, <<"OK">>, TT, [], <<>>)),
+            await_notified(Sock, TT)
+    after 5000 -> ct:fail(no_notify_reply)
+    end.
 
 %% an INVITE carrying Replaces, received through the engine, resolves to the
 %% dialog it names; the swapped tags do not
