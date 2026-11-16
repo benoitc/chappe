@@ -19,14 +19,16 @@
 
 -include("chappe_sip_location.hrl").
 
--export([backend/0, read/2, write/4, aors/1, clear/1]).
+-export([backend/0, read/2, read/3, write/4, aors/1, clear/1]).
 -export_type([version/0]).
 
 -type binding() :: #binding{}.
 -type version() :: non_neg_integer().
 
 %% The AOR's bindings, expired ones included, and their version (0: none).
--callback read(Aor :: binary()) ->
+%% local: this node's view (on a cluster, its replica, which may lag);
+%% consistent: the latest the store holds (on a cluster, the leader's).
+-callback read(Aor :: binary(), local | consistent) ->
     {ok, [binding()], version()} | {error, no_quorum}.
 %% Replace the AOR's bindings ([] removes the AOR) if it is still at
 %% Version. `full': a new AOR past the store's bound; `too_large': the
@@ -43,7 +45,12 @@
 -spec read(module(), binary()) ->
     {ok, [tuple()], version()} | {error, no_quorum}.
 read(Store, Aor) ->
-    Store:read(Aor).
+    read(Store, Aor, local).
+
+-spec read(module(), binary(), local | consistent) ->
+    {ok, [tuple()], version()} | {error, no_quorum}.
+read(Store, Aor, Mode) ->
+    Store:read(Aor, Mode).
 
 -spec write(module(), binary(), version(), [tuple()]) ->
     ok | {error, conflict | no_quorum | too_large | full}.

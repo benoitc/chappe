@@ -60,14 +60,22 @@
 ]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 -export([handle_continue/2]).
+-ifdef(TEST).
+-export([register_with/3]).
+-endif.
 
 %% a write that lost a compare-and-swap this many times in a row fails 500
 -define(TAB, chappe_sip_registry).
 -define(HELD, chappe_sip_registry_held).
+-define(FLOWS, chappe_sip_registry_flows).
 -define(CAS_TRIES, 5).
 %% an edge route stays valid this long past its binding's expiry, for a
 %% request already on its way
 -define(EDGE_GRACE_S, 32).
+%% a purge the region could not take is tried again this often, and at
+%% most this many wait
+-define(PURGE_RETRY_MS, 1000).
+-define(MAX_PENDING, 10000).
 %% how long a REGISTER waits for the store; one not started this long
 %% before that deadline is refused, so it cannot land after its caller
 %% has answered 500
@@ -124,16 +132,32 @@ register_request(Req, Opts) ->
             %% compare-and-swap orders it against the other nodes; the
             %% request worker is the caller, so nothing is left behind a
             %% caller that gave up
-            cas_register(Store, Req, Opts, ?CAS_TRIES)
+            cas_register(Store, Req, Opts, local, ?CAS_TRIES)
     end.
 
-cas_register(_Store, _Req, _Opts, 0) ->
+-ifdef(TEST).
+%% register_request/2 against a given backend (tests)
+register_with(Store, Req, Opts) ->
+    cas_register(Store, Req, Opts, local, ?CAS_TRIES).
+-endif.
+
+%% The first try reads the local replica; one that lost the compare-and-
+%% swap waits a little and reads through the leader, since the replica
+%% that misled it may still be behind.
+cas_register(_Store, _Req, _Opts, _Mode, 0) ->
     {error, 500};
-cas_register(Store, Req, Opts, N) ->
-    case do_register(Store, Req, Opts) of
-        {error, conflict} -> cas_register(Store, Req, Opts, N - 1);
-        Result -> Result
+cas_register(Store, Req, Opts, Mode, N) ->
+    case do_register(Store, Req, Opts, Mode) of
+        {error, conflict} ->
+            backoff(N),
+            cas_register(Store, Req, Opts, consistent, N - 1);
+        Result ->
+            Result
     end.
+
+%% 2, 5, 10, 20 ms before the tries after the first: under 40 ms in all
+backoff(N) ->
+    timer:sleep((5 bsl (?CAS_TRIES - N)) div 2).
 
 %% Live contact URIs for an AOR (or a To/Contact header value / URI), the
 %% highest q first.
@@ -153,10 +177,10 @@ lookup(AorOrUri) ->
 bindings(AorOrUri) ->
     Aor = aor_key(AorOrUri),
     Now = now_s(),
-    case chappe_sip_location:read(chappe_sip_location:backend(), Aor) of
+    Store = chappe_sip_location:backend(),
+    case chappe_sip_location:read(Store, Aor) of
         {ok, Bs, _} ->
-            Up = [node() | nodes()],
-            by_q(lists:append([view(B, Now, Up) || B <- live(Bs, Now)]));
+            by_q(lists:append([view(Store, B, Now) || B <- live(Bs, Now)]));
         {error, _} ->
             []
     end.
@@ -243,6 +267,9 @@ clear() ->
 
 %% Delete the expired bindings of every AOR while Continue() is true (the
 %% sweep on a cluster checks its lease before each write).
+%% An AOR is judged only on its own bindings, read just before the write:
+%% one missing from a partial aors/0 (a page that failed to read) is left
+%% for the next sweep, never deleted.
 -spec sweep(fun(() -> boolean())) -> ok.
 sweep(Continue) ->
     Store = chappe_sip_location:backend(),
@@ -296,18 +323,33 @@ init([]) ->
 
 %% On a cluster the sweep is one singleton for the region. chappe_cluster
 %% is started here, on first use, not as a dependency of the app.
+%% chappe_sip refuses to start without it (chappe_sip_config:
+%% check_cluster/0); one that fails to start is logged, and the sweep is
+%% left to the other nodes, rather than crash-looping this supervisor.
 handle_continue(cluster, S) ->
-    {ok, _} = application:ensure_all_started(chappe_cluster),
-    case
-        chappe_cluster:singleton(
-            chappe_sip_registry_sweep:name(),
-            chappe_sip_registry_sweep:child_spec()
-        )
-    of
-        ok -> ok;
-        {error, already_started} -> ok
+    case application:ensure_all_started(chappe_cluster) of
+        {ok, _} ->
+            case
+                chappe_cluster:singleton(
+                    chappe_sip_registry_sweep:name(),
+                    chappe_sip_registry_sweep:child_spec()
+                )
+            of
+                ok -> ok;
+                {error, already_started} -> ok;
+                {error, Why} -> no_sweep(Why)
+            end;
+        {error, Why} ->
+            no_sweep(Why)
     end,
     {noreply, S}.
+
+no_sweep(Why) ->
+    logger:error(
+        "chappe_sip_registry: cluster => chappe_cluster, but chappe_cluster "
+        "did not start (~p): this node does not sweep the location store",
+        [Why]
+    ).
 
 handle_call({register, Req, Opts, Deadline}, {Caller, _}, S) ->
     %% RFC 3261 10.3: a REGISTER whose caller gave up (its call timed out
@@ -322,22 +364,28 @@ handle_call({register, Req, Opts, Deadline}, {Caller, _}, S) ->
 handle_call({mutate, Op}, _From, S) ->
     {reply, apply_op(chappe_sip_location_ets, Op), S};
 handle_call(clear, _From, S) ->
+    true = ets:delete_all_objects(?FLOWS),
+    true = ets:delete_all_objects(?HELD),
     {reply, chappe_sip_location:clear(chappe_sip_location:backend()), S};
 handle_call(_Req, _From, S) ->
     {reply, {error, unknown_call}, S}.
 
 handle_cast({remove_flow, Flow}, S) ->
-    purge(fun(#binding{flow = F}) -> F =/= Flow end),
-    {noreply, S};
+    {noreply, purge_or_retry({flow, Flow}, S)};
 handle_cast(remove_conn_flows, S) ->
-    purge(fun(#binding{flow = F}) -> not is_conn(F) end),
-    {noreply, S};
+    {noreply, purge_or_retry(conns, S)};
 handle_cast(_Msg, S) ->
     {noreply, S}.
 
 handle_info(sweep, S) ->
     ok = sweep(fun() -> true end),
     {noreply, schedule_sweep(S)};
+handle_info(retry_purge, #{pending := Pending} = S0) ->
+    S = S0#{pending := #{}, retry := undefined},
+    {noreply,
+        maps:fold(
+            fun(What, _, Acc) -> purge_or_retry(What, Acc) end, S, Pending
+        )};
 handle_info(_Info, S) ->
     {noreply, S}.
 
@@ -352,10 +400,13 @@ terminate(_Reason, _S) ->
 %% backend that saw another write in between refuses it ({error,
 %% conflict}: read and apply again).
 do_register(Store, Req, Opts) ->
+    do_register(Store, Req, Opts, local).
+
+do_register(Store, Req, Opts, Mode) ->
     Msg = chappe_sip_req:msg(Req),
     case aor_of(Msg, Opts) of
         {ok, Aor} ->
-            case chappe_sip_location:read(Store, Aor) of
+            case chappe_sip_location:read(Store, Aor, Mode) of
                 {ok, Bs, Version} ->
                     register_aor({Store, Aor, Bs, Version}, Msg, Opts);
                 {error, _} = E ->
@@ -780,21 +831,25 @@ stale_flow(_B, _Boot) ->
 %% Apply Fun to an AOR's bindings and write the result, reading again when
 %% another writer got in between.
 modify(Store, Aor, Fun) ->
-    modify(Store, Aor, Fun, ?CAS_TRIES).
+    modify(Store, Aor, Fun, local, ?CAS_TRIES).
 
-modify(_Store, _Aor, _Fun, 0) ->
+modify(_Store, _Aor, _Fun, _Mode, 0) ->
     {error, conflict};
-modify(Store, Aor, Fun, N) ->
-    case chappe_sip_location:read(Store, Aor) of
+modify(Store, Aor, Fun, Mode, N) ->
+    case chappe_sip_location:read(Store, Aor, Mode) of
         {ok, Bs, Version} ->
             case Fun(Bs) of
                 Bs ->
                     ok;
                 New ->
                     case chappe_sip_location:write(Store, Aor, Version, New) of
-                        ok -> held(Store, Aor, New);
-                        {error, conflict} -> modify(Store, Aor, Fun, N - 1);
-                        {error, _} = E -> E
+                        ok ->
+                            held(Store, Aor, New);
+                        {error, conflict} ->
+                            backoff(N),
+                            modify(Store, Aor, Fun, consistent, N - 1);
+                        {error, _} = E ->
+                            E
                     end
             end;
         {error, _} = E ->
@@ -804,19 +859,60 @@ modify(Store, Aor, Fun, N) ->
 is_conn({conn, _}) -> true;
 is_conn(_) -> false.
 
+%% Drop the bindings of a flow that went (or of every connection). On a
+%% cluster without a quorum the write cannot be made: the purge is kept
+%% and tried again every ?PURGE_RETRY_MS until the region takes it, so a
+%% dead flow does not stay bound. At most ?MAX_PENDING purges wait; past
+%% that one is dropped, logged, and its bindings expire on their own.
+purge_or_retry(What, S) ->
+    case purge(keep(What)) of
+        ok ->
+            S;
+        retry ->
+            Pending = maps:get(pending, S, #{}),
+            case map_size(Pending) < ?MAX_PENDING of
+                true ->
+                    arm_retry(S#{pending => Pending#{What => true}});
+                false ->
+                    logger:warning(
+                        "chappe_sip_registry: purge of ~p dropped, too many waiting",
+                        [What]
+                    ),
+                    S
+            end
+    end.
+
+%% what to keep, and the AORs to look at: the ones the flow index has
+%% for that flow (or for any connection), not every AOR of the store
+keep({flow, Flow}) ->
+    {fun(#binding{flow = F}) -> F =/= Flow end, aors_on(Flow)};
+keep(conns) ->
+    {fun(#binding{flow = F}) -> not is_conn(F) end, aors_on({conn, '_'})}.
+
+aors_on(Flow) ->
+    lists:usort(ets:select(?FLOWS, [{{{flow, Flow, '$1'}}, [], ['$1']}])).
+
+arm_retry(#{retry := TRef} = S) when TRef =/= undefined ->
+    S;
+arm_retry(S) ->
+    S#{retry => erlang:send_after(?PURGE_RETRY_MS, self(), retry_purge)}.
+
 %% Keep the bindings of this node that Keep accepts, deleting an AOR left
-%% empty. Another node's bindings are its own to purge.
-purge(Keep) ->
+%% empty. Another node's bindings are its own to purge. retry when a write
+%% could not be made for want of a quorum.
+purge({Keep, Aors}) ->
     Store = chappe_sip_location:backend(),
     Mine = fun(#binding{node = N} = B) ->
         (N =/= node() andalso N =/= undefined) orelse Keep(B)
     end,
-    lists:foreach(
-        fun(Aor) ->
-            modify(Store, Aor, fun(Bs) -> lists:filter(Mine, Bs) end)
-        end,
-        mine()
-    ).
+    Results = [
+        modify(Store, Aor, fun(Bs) -> lists:filter(Mine, Bs) end)
+     || Aor <- Aors
+    ],
+    case lists:member({error, no_quorum}, Results) of
+        true -> retry;
+        false -> ok
+    end.
 
 %% The AORs that may hold a binding this node took: every one on a single
 %% node; on a cluster, the ones this node wrote one for (an index, so a
@@ -827,9 +923,32 @@ mine() ->
         _ -> [Aor || {Aor} <- ets:tab2list(?HELD)]
     end.
 
-held(chappe_sip_location_ets, _Aor, _Bs) ->
+%% After a write: index the flows of this node's bindings of the AOR and,
+%% on a cluster, that this node holds some.
+held(Store, Aor, Bs) ->
+    ok = index_flows(Aor, Bs),
+    held_aor(Store, Aor, Bs).
+
+index_flows(Aor, Bs) ->
+    Old = ets:select(?FLOWS, [{{{aor, Aor, '$1'}}, [], ['$1']}]),
+    New = lists:usort([
+        F
+     || #binding{node = N, flow = F} <- Bs,
+        F =/= undefined,
+        N =:= node() orelse N =:= undefined
+    ]),
+    _ = [
+        ets:delete(?FLOWS, K)
+     || F <- Old -- New, K <- [{aor, Aor, F}, {flow, F, Aor}]
+    ],
+    true = ets:insert(
+        ?FLOWS, [{{aor, Aor, F}} || F <- New] ++ [{{flow, F, Aor}} || F <- New]
+    ),
+    ok.
+
+held_aor(chappe_sip_location_ets, _Aor, _Bs) ->
     ok;
-held(_Store, Aor, Bs) ->
+held_aor(_Store, Aor, Bs) ->
     _ =
         case lists:any(fun(#binding{node = N}) -> N =:= node() end, Bs) of
             true -> ets:insert(?HELD, {Aor});
@@ -881,11 +1000,15 @@ edge_transport(_Flow, _B) -> <<"udp">>.
 %% another node holds: no flow or received (they name that node's
 %% connections) and its edge route ahead of its path; when that node is
 %% gone, a UDP one is reached at its address, any other is left out.
-view(#binding{node = N} = B, Now, _Up) when N =:= node(); N =:= undefined ->
+view(chappe_sip_location_ets, B, Now) ->
+    %% one node: every binding is this node's, whatever it is called now
     [to_map(B, Now)];
-view(#binding{edge = undefined} = B, Now, _Up) ->
+view(_Store, #binding{node = N} = B, Now) when N =:= node(); N =:= undefined ->
+    [to_map(B, Now)];
+view(_Store, #binding{edge = undefined} = B, Now) ->
     [(to_map(B, Now))#{flow => undefined, received => undefined}];
-view(#binding{node = N, edge = Edge, path = Path} = B, Now, Up) ->
+view(_Store, #binding{node = N, edge = Edge, path = Path} = B, Now) ->
+    Up = [node() | nodes()],
     M = (to_map(B, Now))#{flow => undefined, received => undefined},
     case {lists:member(N, Up), send_flow(to_map(B, Now))} of
         {true, _} -> [M#{path => [Edge | Path]}];

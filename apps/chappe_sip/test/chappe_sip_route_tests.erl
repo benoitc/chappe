@@ -87,6 +87,28 @@ conn_and_udp_tokens_round_trip_test() ->
           ?assertMatch({_, {undefined, F}, _}, chappe_sip_route:pop_self(M))
       end, Flows).
 
+%% A connection or WS id names something only within one boot: after a
+%% restart the same id may be another device's connection, so a
+%% Record-Route naming one stops being ours. A UDP address stays valid.
+conn_token_bound_to_boot_test() ->
+    Boot = chappe_sip_route:boot(),
+    Conn = chappe_sip_route:record_route(<<"sip:10.0.0.1:5060">>,
+                                         {undefined, {conn, 5}}, <<"c10">>),
+    Ws = chappe_sip_route:record_route(<<"sip:10.0.0.1:5060">>, {7, 9},
+                                       <<"c10">>),
+    Udp = chappe_sip_route:record_route(<<"sip:10.0.0.1:5060">>,
+                                        {undefined, {udp, <<"192.0.2.7">>, 5070}},
+                                        <<"c10">>),
+    ?assert(chappe_sip_route:is_self(Conn, undefined, <<"c10">>)),
+    persistent_term:put({chappe_sip_route, boot_id}, <<"another-boot">>),
+    try
+        ?assertNot(chappe_sip_route:is_self(Conn, undefined, <<"c10">>)),
+        ?assertNot(chappe_sip_route:is_self(Ws, undefined, <<"c10">>)),
+        ?assert(chappe_sip_route:is_self(Udp, undefined, <<"c10">>))
+    after
+        persistent_term:put({chappe_sip_route, boot_id}, Boot)
+    end.
+
 %% A request from the registered UA over its own flow goes on by its next
 %% hop; one from anywhere else goes to that flow.
 next_flow_by_connection_test() ->

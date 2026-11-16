@@ -23,6 +23,8 @@ all() ->
         tcp_call_through_the_edge,
         ws_call_through_the_edge,
         public_contact_is_sent_directly,
+        conn_token_refused_on_another_node,
+        dead_flow_at_the_edge,
         cseq_and_expires_across_nodes,
         edge_node_down,
         lost_quorum_refuses_register,
@@ -147,6 +149,104 @@ ws_call_through_the_edge(Config) ->
     ok = ws:send(C, {text, ws_bye(lport(Caller), <<"cw2">>, RRs2)}),
     {_, P1} = recv_req(Caller, <<"BYE">>),
     ws:close(C, 1000).
+
+%% Every node shares flow_token_secret: a Record-Route or an edge route
+%% naming node 1's connection 5 is node 1's only. On node 2, connection 5
+%% is another device's.
+conn_token_refused_on_another_node(Config) ->
+    [N1, N2, _] = ?config(nodes, Config),
+    RR = erpc:call(N1, chappe_sip_route, record_route,
+                   [<<"sip:127.0.0.1:5060">>, {undefined, {conn, 5}}, <<"cn1">>]),
+    ?assert(erpc:call(N1, chappe_sip_route, is_self, [RR, undefined, <<"cn1">>])),
+    ?assertNot(erpc:call(N2, chappe_sip_route, is_self, [RR, undefined, <<"cn1">>])),
+    Exp = erlang:system_time(second) + 60,
+    Edge = erpc:call(N1, chappe_sip_route, edge_route,
+                     [<<"sip:127.0.0.1:5060">>, {conn, 5}, <<"tcp">>, Exp]),
+    ?assert(erpc:call(N1, chappe_sip_route, is_self, [Edge, undefined, <<"x">>])),
+    ?assertNot(erpc:call(N2, chappe_sip_route, is_self, [Edge, undefined, <<"x">>])),
+    %% a UDP address is the same place from either node
+    Udp = erpc:call(N1, chappe_sip_route, record_route,
+                    [<<"sip:127.0.0.1:5060">>, {undefined, {udp, <<"192.0.2.7">>, 5070}},
+                     <<"cn1">>]),
+    ?assert(erpc:call(N2, chappe_sip_route, is_self, [Udp, undefined, <<"cn1">>])).
+
+%% The connection an edge route names is gone without the edge hearing of
+%% it: the edge answers 430 Flow Failed (RFC 5626 5.3) and drops the
+%% binding. Cut off from the quorum, it drops it once the quorum is back.
+%% req: R5626-R-13
+dead_flow_at_the_edge(Config) ->
+    [N1, N2, N3] = ?config(nodes, Config),
+    [P1, P2, _] = ?config(ports, Config),
+    {ok, [_]} = dead_conn_binding(N1, <<"df1">>),
+    [B] = wait_bindings(N2, 1),
+    {ok, Caller} = udp(),
+    send(Caller, P2, invite(lport(Caller), <<"cf1">>)),
+    _ = recv_status(Caller, 430),
+    wait(fun() -> erpc:call(N2, chappe_sip, bindings, [?AOR]) =:= [] end),
+    %% again, with node 1 alone: the 430 at once, the removal later
+    {ok, [_]} = dead_conn_binding(N1, <<"df2">>),
+    [B2] = wait_bindings(N2, 1),
+    Edge = maps:get(edge, B2),
+    cut(N1, [N2, N3]),
+    try
+        send(Caller, P1, invite_routed(lport(Caller), <<"cf2">>, Edge)),
+        _ = recv_status(Caller, 430),
+        %% still stored: node 1 could not write the removal
+        ?assertMatch({ok, [_], _}, erpc:call(N2, chappe_cluster, get, [key(?AOR)]))
+    after
+        heal(N1, [N2, N3])
+    end,
+    wait(fun() -> erpc:call(N2, chappe_sip, bindings, [?AOR]) =:= [] end, 300),
+    _ = B.
+
+%% an RFC 5626 TCP binding on Node whose connection does not exist
+dead_conn_binding(Node, CallId) ->
+    Raw = iolist_to_binary(
+      [<<"REGISTER sip:127.0.0.1 SIP/2.0\r\n">>,
+       <<"Via: SIP/2.0/TCP 127.0.0.1:5999;branch=z9hG4bK", CallId/binary, "\r\n">>,
+       <<"Max-Forwards: 70\r\n">>,
+       <<"From: <sip:alice@127.0.0.1>;tag=ft\r\n">>,
+       <<"To: <sip:alice@127.0.0.1>\r\n">>,
+       <<"Call-ID: ", CallId/binary, "@ct\r\nCSeq: 1 REGISTER\r\n">>,
+       <<"Contact: <sip:alice@192.0.2.9:5070;transport=tcp;ob>"
+         ";+sip.instance=\"<urn:uuid:", CallId/binary, ">\";reg-id=1\r\n">>,
+       <<"Supported: outbound\r\nExpires: 3600\r\nContent-Length: 0\r\n\r\n">>]),
+    {ok, Msg} = chappe_sip_msg:parse(Raw),
+    erpc:call(Node, chappe_sip_registry, register_contacts,
+              [chappe_sip_req:new(Msg, undefined, #{}),
+               #{outbound_flow => {conn, 987654}, transport => <<"tcp">>}]).
+
+invite_routed(LP, CallId, Route) ->
+    P = integer_to_binary(LP),
+    <<"INVITE sip:alice@192.0.2.9:5070;transport=tcp;ob SIP/2.0\r\n"
+      "Via: SIP/2.0/UDP 127.0.0.1:", P/binary, ";rport;branch=z9hG4bKcr", CallId/binary, "\r\n"
+      "Route: ", Route/binary, "\r\n"
+      "Max-Forwards: 70\r\n"
+      "From: <sip:bob@127.0.0.1>;tag=cb\r\n"
+      "To: <sip:alice@127.0.0.1>\r\n"
+      "Contact: <sip:bob@127.0.0.1:", P/binary, ">\r\n"
+      "Call-ID: ", CallId/binary, "@ct\r\nCSeq: 1 INVITE\r\n"
+      "Content-Length: 0\r\n\r\n">>.
+
+%% Node can no longer reach Others, nor they it (a cookie apart, so
+%% distribution does not reconnect)
+cut(Node, Others) ->
+    [begin
+         true = erpc:call(Node, erlang, set_cookie, [N, 'clc-cut-a']),
+         true = erpc:call(N, erlang, set_cookie, [Node, 'clc-cut-b']),
+         _ = erpc:call(Node, erlang, disconnect_node, [N]),
+         _ = erpc:call(N, erlang, disconnect_node, [Node])
+     end || N <- Others],
+    ok.
+
+heal(Node, Others) ->
+    Cookie = erlang:get_cookie(),
+    [begin
+         _ = erpc:call(Node, erlang, set_cookie, [N, Cookie]),
+         _ = erpc:call(N, erlang, set_cookie, [Node, Cookie]),
+         _ = erpc:call(N, net_kernel, connect_node, [Node])
+     end || N <- Others],
+    ok.
 
 %% A UA reachable at its Contact gets no edge route: node 2 sends to it
 %% directly.

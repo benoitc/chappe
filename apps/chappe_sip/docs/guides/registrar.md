@@ -169,6 +169,11 @@ guide, `docs/guides/cluster.md`), then:
 ]}].
 ```
 
+Put chappe_cluster in your release next to chappe_sip (it is not a
+dependency, so nothing pulls it in): a node set to `cluster => chappe_cluster`
+without it refuses to start with `{cluster, {chappe_cluster_not_installed,
+_}}`.
+
 Route a call with `location_target/1`, which gives the right target from any
 node:
 
@@ -200,6 +205,10 @@ What happens:
   `target` is `{route, Contact, Path}`. The request goes to the edge node,
   which forwards it over the connection it holds and record-routes the
   dialog (RFC 5626 5.3), so the rest of the call goes the same way.
+- The flow is gone at the edge node (the connection closed under the
+  request): it answers 430 Flow Failed (RFC 5626 5.3) and drops the
+  bindings of that flow. Without a quorum it retries the removal every
+  second until the region takes it.
 - A device whose contact is reachable as it is has no edge route: any node
   sends to it directly.
 - The edge node stops: a UDP binding is reached at its address from the
@@ -233,6 +242,10 @@ Notes:
   node restarts, its TCP, TLS and WebSocket bindings are unreachable until
   the devices register again. Set the same `flow_token_secret` on every
   node so UDP edge routes survive a restart.
+- A route that names a connection or a WebSocket (an edge route, or the
+  Record-Route of a dialog through one) is accepted only by the node and
+  boot that made it, even with a shared `flow_token_secret`: on another
+  node, or after a restart, that id may be another device's connection.
 
 ## Registrar behaviour in detail
 

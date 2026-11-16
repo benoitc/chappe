@@ -52,7 +52,8 @@ forward_indialog(Req, Res) ->
                         timer_c => TimerC,
                         deadline => erlang:monotonic_time(millisecond) + TimerC,
                         anchor => Anchor,
-                        cancelled => false
+                        cancelled => false,
+                        edge => Edge
                     }),
                     indialog_release(Anchor, Msg1);
                 {error, Reason} ->
@@ -60,7 +61,7 @@ forward_indialog(Req, Res) ->
                         "chappe_sip_proxy: in-dialog forward failed: ~p",
                         [Reason]
                     ),
-                    _ = respond(ServerTxn, 500, <<"Server Internal Error">>)
+                    _ = forward_failed(ServerTxn, Edge)
             end;
         {error, loop_detected} ->
             _ = respond(ServerTxn, 483, <<"Too Many Hops">>)
@@ -99,7 +100,7 @@ relay_indialog(#{server := ServerTxn, out := OutTxn, anchor := Anchor} = R) ->
             logger:warning("chappe_sip_proxy: in-dialog branch error: ~p", [
                 Reason
             ]),
-            _ = respond(ServerTxn, 500, <<"Server Internal Error">>),
+            _ = forward_failed(ServerTxn, maps:get(edge, R, none)),
             chappe_sip_engine:finish_txn(OutTxn);
         {chappe_sip_op, OutTxn, ok} ->
             relay_indialog(R)
@@ -108,6 +109,16 @@ relay_indialog(#{server := ServerTxn, out := OutTxn, anchor := Anchor} = R) ->
         _ = respond(ServerTxn, 408, <<"Request Timeout">>),
         chappe_sip_engine:finish_txn(OutTxn)
     end.
+
+%% RFC 5626 5.3: the flow an edge route names is gone. The UA is
+%% unreachable until it registers again: 430 Flow Failed, and its bindings
+%% on that flow go (chappe_sip_registry retries the removal while the
+%% region has no quorum). Any other forward that failed is a 500.
+forward_failed(ServerTxn, {ok, Flow, _Transport}) ->
+    ok = chappe_sip_registry:remove_flow(Flow),
+    respond(ServerTxn, 430, <<"Flow Failed">>);
+forward_failed(ServerTxn, none) ->
+    respond(ServerTxn, 500, <<"Server Internal Error">>).
 
 remaining(Deadline) -> max(0, Deadline - erlang:monotonic_time(millisecond)).
 

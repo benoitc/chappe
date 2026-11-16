@@ -536,9 +536,28 @@ sign(Host, Port, {Up, Down}, CallId, Exp) ->
         "|",
         (nb(CallId))/binary,
         "|",
-        (ni(Exp))/binary
+        (ni(Exp))/binary,
+        (bound(Up, Down))/binary
     >>,
     mac(Data).
+
+%% A connection or WS id names something only on the node and boot that
+%% minted it: on another node sharing flow_token_secret, or after a
+%% restart that reuses the id, it may be another device's connection. A
+%% marker naming one carries both, so only its own node and boot accept
+%% it. A UDP address names the same place from anywhere.
+bound(Up, Down) ->
+    case local_id(Up) orelse local_id(Down) of
+        true -> here();
+        false -> <<>>
+    end.
+
+local_id({conn, _}) -> true;
+local_id(F) when is_integer(F) -> true;
+local_id(_) -> false.
+
+here() ->
+    <<"|", (atom_to_binary(node()))/binary, "|", (boot())/binary>>.
 
 %% This VM's boot: a connection or WS flow id names something only within
 %% one boot, so a route to one carries it.
@@ -562,7 +581,7 @@ new_boot_id() ->
 edge_sign(Host, Port, <<"u", _/binary>> = Tok, Transport, Exp) ->
     edge_mac(Host, Port, Tok, Transport, Exp);
 edge_sign(Host, Port, Tok, Transport, Exp) ->
-    edge_mac(Host, Port, <<Tok/binary, "|", (boot())/binary>>, Transport, Exp).
+    edge_mac(Host, Port, <<Tok/binary, (here())/binary>>, Transport, Exp).
 
 edge_mac(Host, Port, Tok, Transport, Exp) ->
     mac(<<
