@@ -63,6 +63,7 @@
     endpoint_dialog_ends/1,
     setup_edges/1,
     listener_ip_allow/1,
+    listener_options_differ/1,
     registry_edges/1,
     sip_edges/1,
     conf_edges/1,
@@ -123,6 +124,7 @@ all() ->
         endpoint_dialog_ends,
         setup_edges,
         listener_ip_allow,
+        listener_options_differ,
         registry_edges,
         sip_edges,
         conf_edges,
@@ -1745,6 +1747,37 @@ listener_ip_allow(Config) ->
     after
         _ = application:unset_env(chappe_mrf, esl_port),
         _ = application:unset_env(chappe_mrf, esl_allow),
+        _ = application:stop(chappe_mrf),
+        ok = application:start(chappe_mrf),
+        ok = chappe_mrf:start(#{esl_port => ?config(lp, Config)})
+    end.
+
+%% A listener already running on the port with other options is not
+%% silently kept: start/1 returns an error naming the running options.
+%% The same options again are fine.
+listener_options_differ(Config) ->
+    Port = ?F:pick(),
+    try
+        ok = application:stop(chappe_mrf),
+        ok = application:set_env(chappe_mrf, esl_port, Port),
+        ok = application:start(chappe_mrf),
+        Allow = [<<"192.0.2.0/24">>],
+        ?assertEqual(
+            {error, {listener_running, #{}}},
+            chappe_mrf:start(#{esl_port => Port, esl_allow => Allow})
+        ),
+        ?assertMatch(#{refused := 0}, chappe_esl:listener_stats(Port)),
+        ok = chappe_mrf:start(#{esl_port => Port}),
+        ok = chappe_mrf:stop_listener(),
+        ok = chappe_mrf:start(#{esl_port => Port, esl_allow => Allow}),
+        ok = chappe_mrf:start(#{esl_port => Port, esl_allow => Allow}),
+        ?assertEqual(
+            {error, {listener_running, #{allow => Allow}}},
+            chappe_mrf:start(#{esl_port => Port})
+        )
+    after
+        _ = chappe_mrf:stop_listener(),
+        _ = application:unset_env(chappe_mrf, esl_port),
         _ = application:stop(chappe_mrf),
         ok = application:start(chappe_mrf),
         ok = chappe_mrf:start(#{esl_port => ?config(lp, Config)})
