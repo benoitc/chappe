@@ -155,7 +155,10 @@ cas_register(Store, Req, Opts, Mode, N) ->
             Result
     end.
 
-%% 2, 5, 10, 20 ms before the tries after the first: under 40 ms in all
+%% 2, 5, 10, 20 ms before the tries after the first: under 40 ms in all.
+%% None after the last try, which gives up at once.
+backoff(1) ->
+    ok;
 backoff(N) ->
     timer:sleep((5 bsl (?CAS_TRIES - N)) div 2).
 
