@@ -25,6 +25,7 @@
     transfer_deadline_restores_member/1,
     rehome_helper_is_owned/1,
     start_has_one_deadline/1,
+    cluster_setting_checked_at_start/1,
     lost_stops_new_joins/1,
     room_crash_frees_name/1,
     no_quorum_starts_in_parallel/1,
@@ -48,6 +49,7 @@ all() ->
         transfer_deadline_restores_member,
         rehome_helper_is_owned,
         start_has_one_deadline,
+        cluster_setting_checked_at_start,
         lost_stops_new_joins,
         room_crash_frees_name,
         no_quorum_starts_in_parallel,
@@ -301,6 +303,23 @@ start_has_one_deadline(Config) ->
     Took = erlang:monotonic_time(millisecond) - T0,
     ct:pal("start gave up after ~b ms", [Took]),
     ?assert(Took < 5000).
+
+%% The cluster setting is checked when chappe_mrf starts: a release
+%% without chappe_cluster, or a value that is not one, is a clean start
+%% error, not a crash on the first room.
+cluster_setting_checked_at_start(_Config) ->
+    {P1, N1} = ?C:peer("nocluster", [chappe_cluster]),
+    try
+        ok = erpc:call(N1, application, load, [chappe_mrf]),
+        ok = erpc:call(N1, application, set_env, [chappe_mrf, cluster, chappe_cluster]),
+        {error, E1} = erpc:call(N1, application, ensure_all_started, [chappe_mrf]),
+        ?assertMatch({match, _}, re:run(io_lib:format("~p", [E1]), "chappe_cluster_not_installed")),
+        ok = erpc:call(N1, application, set_env, [chappe_mrf, cluster, bogus]),
+        {error, E2} = erpc:call(N1, application, ensure_all_started, [chappe_mrf]),
+        ?assertMatch({match, _}, re:run(io_lib:format("~p", [E2]), "badarg, *bogus"))
+    after
+        ?C:stop_peer(P1)
+    end.
 
 %% The room's lease is lost while its node runs: its members move to the
 %% room that owns the name next, with no BYE, and the old room ends.
