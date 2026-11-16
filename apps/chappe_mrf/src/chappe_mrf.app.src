@@ -22,7 +22,9 @@
     %% records into as each side sees it (unset: the same path); cluster:
     %% none (default) or chappe_cluster, a room name owned once in the
     %% region (chappe_cluster is started on first use); claim_timeout: ms a
-    %% room's claim waits (1000)
+    %% room's claim waits (1000); drain_ms: the handoff of a clean stop
+    %% (5000); rehome_ms: how long a room that lost its lease moves its
+    %% members (30000)
     {env, []},
     {licenses, ["Apache-2.0"]},
     {links, []}

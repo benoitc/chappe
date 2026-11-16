@@ -19,6 +19,8 @@
     one_room_from_two_nodes/1,
     owner_node_dies/1,
     owner_node_shuts_down/1,
+    lost_lease_moves_members/1,
+    fs_clean_stop_frees_name/1,
     lost_stops_new_joins/1,
     room_crash_frees_name/1,
     no_quorum_starts_in_parallel/1,
@@ -36,6 +38,8 @@ all() ->
         one_room_from_two_nodes,
         owner_node_dies,
         owner_node_shuts_down,
+        lost_lease_moves_members,
+        fs_clean_stop_frees_name,
         lost_stops_new_joins,
         room_crash_frees_name,
         no_quorum_starts_in_parallel,
@@ -96,6 +100,8 @@ mode(_) -> chappe_cluster.
 
 %% long leases: the node stays live (its claims wait) seconds after it
 %% lost its quorum
+cluster_env(fs_clean_stop_frees_name) ->
+    #{lease_ms => 9000, renew_ms => 3000, command_timeout => 5000};
 cluster_env(no_quorum_starts_in_parallel) ->
     #{lease_ms => 9000, renew_ms => 3000, command_timeout => 5000};
 cluster_env(_) ->
@@ -157,13 +163,13 @@ owner_node_dies(Config) ->
     ?F:ua_bye(Ua2),
     ?F:ua_bye(Ua).
 
-%% An orderly stop of the owner node (init:stop/0, as `docker stop'
-%% does) is not a crash: the room's dialogs end with their owner and say
-%% BYE, so its callers on other nodes hear the room end rather than
-%% silence. The room then opens on a live node.
+%% A clean stop of the owner node (init:stop/0, as `docker stop' does):
+%% before its dialogs end, the room gives its lease back, a room of the
+%% same name opens on a live node, and the member whose call runs here
+%% (on this test node) moves there with no BYE.
 owner_node_shuts_down(Config) ->
     [{_, N1}, {_, N2} | _] = ?config(peers, Config),
-    {ok, Conf} = erpc:call(N1, chappe_mrf, conference, [<<"shuts">>, #{}]),
+    {ok, Conf} = erpc:call(N1, chappe_mrf, conference, [<<"shuts">>, #{notify => self()}]),
     {Ua, _M} = join_call(Config, Conf),
     MRef = monitor(process, Conf),
     ok = erpc:call(N1, init, stop, []),
@@ -171,12 +177,50 @@ owner_node_shuts_down(Config) ->
         {'DOWN', MRef, process, Conf, _} -> ok
     after 20000 -> ct:fail(room_still_up)
     end,
-    receive
-        {ua, Ua, {bye, _}} -> ok
-    after 10000 -> ct:fail(no_bye)
-    end,
     New = wait_room(N2, <<"shuts">>, N1),
-    ?assertNotEqual(N1, node(New)).
+    %% the old room ends once the member's call left it; the new one
+    %% counts the member once the join completes
+    ok = wait_members(New, 1),
+    no_ua_event(Ua, bye, 3000),
+    ?F:ua_bye(Ua).
+
+%% An fs room does not move (its members are FreeSWITCH channels driven
+%% through this node's sockets), but a clean stop gives its name back at
+%% once: the room opens on a live node well before lease_ms (9 s here).
+fs_clean_stop_frees_name(Config) ->
+    [{_, N1}, {_, N2} | _] = ?config(peers, Config),
+    {ok, Conf} = erpc:call(N1, chappe_mrf, conference, [<<"fsstop">>, #{backend => fs, node => fs1}]),
+    MRef = monitor(process, Conf),
+    ok = erpc:call(N1, init, stop, []),
+    receive
+        {'DOWN', MRef, process, Conf, _} -> ok
+    after 20000 -> ct:fail(room_still_up)
+    end,
+    T0 = erlang:monotonic_time(millisecond),
+    {ok, New} = erpc:call(N2, chappe_mrf, conference, [<<"fsstop">>, #{backend => fs, node => fs1}]),
+    ?assertEqual(N2, node(New)),
+    ?assert(erlang:monotonic_time(millisecond) - T0 < 4000).
+
+%% The room's lease is lost while its node runs: its members move to the
+%% room that owns the name next, with no BYE, and the old room ends.
+lost_lease_moves_members(Config) ->
+    [N1 | _] = ?config(nodes, Config),
+    {ok, Conf} = erpc:call(N1, chappe_mrf, conference, [<<"rehome">>, #{}]),
+    {Ua, _M} = join_call(Config, Conf),
+    #state{lease = Lease} = sys:get_state(Conf),
+    MRef = monitor(process, Conf),
+    ok = erpc:call(N1, chappe_cluster, release, [Lease]),
+    %% the next way in finds the lease gone
+    ?assertEqual({error, lost}, gen_server:call(Conf, {join, check})),
+    receive
+        {'DOWN', MRef, process, Conf, _} -> ok
+    after 30000 -> ct:fail(old_room_stays)
+    end,
+    {ok, New} = erpc:call(N1, chappe_mrf, conference, [<<"rehome">>, #{}]),
+    ?assertNotEqual(Conf, New),
+    ok = wait_members(New, 1),
+    no_ua_event(Ua, bye, 1000),
+    ?F:ua_bye(Ua).
 
 %% The owner node loses its quorum: the room hears lost, tells its
 %% notify process, refuses a new member, and the member in keeps its
@@ -312,6 +356,17 @@ fs_join_checks_lease_first(Config) ->
     ?assertEqual({error, lost}, receive {join, R} -> R after 10000 -> ct:fail(no_join) end),
     no_ua_event(Ua, final, 500),
     W ! stop.
+
+wait_members(Conf, N) ->
+    wait_members(Conf, N, 50).
+
+wait_members(Conf, N, 0) ->
+    ct:fail({members, Conf, chappe_mrf_conf:members(Conf), expected, N});
+wait_members(Conf, N, Tries) ->
+    case length(chappe_mrf_conf:members(Conf)) of
+        N -> ok;
+        _ -> timer:sleep(100), wait_members(Conf, N, Tries - 1)
+    end.
 
 %% A room process started waiting for its lease, as start/2 does, with
 %% Holder as its starter.

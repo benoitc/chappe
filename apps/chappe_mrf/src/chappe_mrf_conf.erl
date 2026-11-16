@@ -186,8 +186,14 @@ remote_owner(Name) ->
 %% stale) is gone: try again, a bounded number of times.
 await_active(Conf, Name, Args, Tries) ->
     case call(Conf, info, ?AWAIT_MS) of
-        #{} ->
+        #{lost := false} ->
             {ok, Conf};
+        #{lost := true} when Tries > 1 ->
+            %% a room that gave its name up is not the owner any more
+            timer:sleep(?RETRY_MS),
+            start_cluster(Name, Args, Tries - 1);
+        #{} ->
+            {error, lost};
         {error, noproc} when Tries > 1 ->
             %% its lease goes with it, once the region hears of its death
             timer:sleep(?RETRY_MS),
@@ -841,14 +847,68 @@ owned(#state{lease = Lease} = S, Fun) ->
 
 %% The region took the name back: no new member, the receivers hear
 %% lost, the name is free on this node for the next start/2 (which
-%% claims it again), and the room ends with its last member.
-lose(#state{lost = true} = S) ->
+%% claims it again), the members move to the room that owns the name
+%% next (chappe_mrf_conf_move:rehome/4), and the room ends with its last
+%% member.
+lose(S) ->
+    lose(S, rehome).
+
+lose(#state{lost = true} = S, _Then) ->
     S;
-lose(#state{name = Name} = S) ->
+lose(#state{name = Name} = S, Then) ->
     ok = chappe_mrf_registry:delete({conf, Name}),
     S1 = emit(lost, S#state{lost = true}),
     ok = close_if_empty(S1),
+    ok = rehome(Then, S1),
     S1.
+
+rehome(rehome, #state{backend = native, name = Name, opts = Opts} = S) when
+    map_size(S#state.members) > 0
+->
+    Self = self(),
+    Ms = application:get_env(chappe_mrf, rehome_ms, 30000),
+    Deadline = erlang:monotonic_time(millisecond) + Ms,
+    {_, _} = spawn_monitor(fun() ->
+        chappe_mrf_conf_move:rehome(Self, Name, Opts, Deadline)
+    end),
+    ok;
+rehome(_Then, _S) ->
+    ok.
+
+%% chappe_mrf_conf_move asks: handoff (this node stops: give the lease
+%% back, take no member, say which members can move), ids (the members a
+%% call can move).
+move_req(handoff, #state{lease = Lease} = S) ->
+    _ = Lease =/= undefined andalso chappe_cluster:release(Lease),
+    S1 = lose(S#state{lease = undefined}, handoff),
+    Here = node(),
+    Remote = [
+        Id
+     || Id := #{b2b := {Pid, _}} <- S1#state.members, node(Pid) =/= Here
+    ],
+    {reply,
+        #{
+            backend => S1#state.backend,
+            name => S1#state.name,
+            opts => portable(S1#state.opts),
+            members => Remote
+        },
+        S1};
+move_req(ids, #state{members = M} = S) ->
+    {reply, [Id || Id := #{b2b := _} = Mb <- M, not is_map_key(transfer, Mb)],
+        S}.
+
+%% The options the room opens with elsewhere: without the processes of
+%% this node that is stopping
+portable(Opts) ->
+    Here = node(),
+    maps:filter(
+        fun
+            (K, Pid) when K =:= owner; K =:= notify -> node(Pid) =/= Here;
+            (_, _) -> true
+        end,
+        Opts
+    ).
 
 %% an fs member's endpoint events
 endpoint_event(Ep, {event, Ev}, S) ->
@@ -1210,6 +1270,8 @@ recording_closed(Path, #state{stopping = St} = S) ->
 %% transfer/3's steps here, sent as {transfer, Step, Member}: out marks the
 %% member and hands over what the other conference needs, cancel undoes
 %% the mark after a failed join there.
+transfer_step(move, Mode, S) ->
+    move_req(Mode, S);
 transfer_step(out, Id, #state{members = M} = S) ->
     case M of
         #{Id := #{transfer := true}} ->

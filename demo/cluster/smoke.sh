@@ -7,9 +7,11 @@
 #   1. bob registers on n1, alice calls him through n2;
 #   2. the trunk's OPTIONS leave from one node, and move when it stops;
 #   3. two callers dial 3000 on n1 and n2 and land in one room; the room's
-#      node stops, the other caller's call stays up, and a new caller
-#      opens the room on a live node;
-#   4. chappe_cluster:leases().
+#      node stops cleanly (docker stop): the room hands off, and the other
+#      caller is in the room on a live node;
+#   4. the same room's node is killed (docker kill): the other caller's
+#      call stays up, and a new caller opens the room on a live node;
+#   5. chappe_cluster:leases().
 # DEMO_CLUSTER_PROJECT names the compose project (chappe-demo-cluster);
 # KEEP=1 leaves the demo up.
 #
@@ -43,7 +45,7 @@ wait_ok() {
 service() { echo "${1#demo@}"; }
 
 cleanup() {
-    for c in bob alice confa confb confc; do docker rm -f "$P-$c" >/dev/null 2>&1 || true; done
+    for c in bob alice confa confb confc confd confe; do docker rm -f "$P-$c" >/dev/null 2>&1 || true; done
     [ "${KEEP:-0}" = 1 ] || $DC --profile tools down -v >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -81,31 +83,59 @@ say "the pings moved to $NEXT"
 $DC start "$(service "$PINGER")" >/dev/null
 ctl live "$PINGER"
 
-say "3. two callers dial 3000 on n1 and n2"
-sipp confa -sf /scen/call.xml -s 3000 -d 45000 "$N1"
+say "3. two callers dial 3000 on n1 and n2; a clean stop hands the room off"
+sipp confa -sf /scen/call.xml -s 3000 -d 40000 "$N1"
 ctl room 1 >/dev/null
-sipp confb -sf /scen/call.xml -s 3000 -d 45000 "$N2"
+sipp confb -sf /scen/call.xml -s 3000 -d 40000 "$N2"
 OWNER=$(ctl room 2)
-say "both in one room, on $OWNER; killing it"
-# a kill, as a crash: an orderly stop ends the room's calls with a BYE
-$DC kill "$(service "$OWNER")" >/dev/null
+say "both in one room, on $OWNER; stopping it"
+$DC stop "$(service "$OWNER")" >/dev/null
 case "$OWNER" in
     demo@n1) STAYS=confb ;;
     demo@n2) STAYS=confa ;;
     *) STAYS="confa confb" ;;
 esac
-# the lease of the stopped node runs out (lease_ms, 6 s), then the next
+MOVED=$(ctl room 1 "$OWNER")
+say "the room moved to $MOVED with its caller ($STAYS)"
+for c in $STAYS; do wait_ok "$c"; done
+say "the moved caller stayed up and hung up normally"
+docker rm -f "$P-confa" "$P-confb" >/dev/null 2>&1 || true
+$DC start "$(service "$OWNER")" >/dev/null
+ctl live "$OWNER"
+
+say "4. a kill: the caller stays up, the next caller reopens the room"
+sipp confd -sf /scen/call.xml -s 3000 -d 40000 "$N3"
+ROOM=$(ctl room 1)
+case "$ROOM" in
+    demo@n3) FAR=$N1 ;;
+    *) FAR=$N3 ;;
+esac
+# the second caller on another node than the room's
+sipp confe -sf /scen/call.xml -s 3000 -d 40000 "$FAR"
+ROOM=$(ctl room 2)
+say "both in one room, on $ROOM; killing it"
+$DC kill "$(service "$ROOM")" >/dev/null
+case "$ROOM" in
+    demo@n3) STAYS=confe ;;
+    *) STAYS=confd ;;
+esac
+# the lease of the killed node runs out (lease_ms, 6 s), then the next
 # caller opens the room on a live node
 sleep 10
-sipp confc -sf /scen/call.xml -s 3000 -d 4000 "$N3"
-MOVED=$(ctl room 1 "$OWNER")
-say "the room moved to $MOVED"
+case "$ROOM" in
+    demo@n2) NEXT=$N1 ;;
+    *) NEXT=$N2 ;;
+esac
+sipp confc -sf /scen/call.xml -s 3000 -d 4000 "$NEXT"
+REOPENED=$(ctl room 1 "$ROOM")
+say "the room reopened on $REOPENED"
 wait_ok confc
 for c in $STAYS; do wait_ok "$c"; done
 say "the caller on a live node stayed up ($STAYS)"
-docker rm -f "$P-confa" "$P-confb" >/dev/null 2>&1 || true
+docker rm -f "$P-confd" "$P-confe" >/dev/null 2>&1 || true
+OWNER=$ROOM
 
-say "4. the leases"
+say "5. the leases"
 ctl leases
 $DC start "$(service "$OWNER")" >/dev/null
 ctl live "$OWNER"
