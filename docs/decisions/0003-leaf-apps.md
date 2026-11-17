@@ -25,7 +25,7 @@ What the repository shows:
   comment).
 - `AGENTS.md`: "Helpers are not shared across apps: each app is published
   on its own and the leaf apps take no umbrella deps."
-- The `applications` lists confirm it: chappe_rtpengine needs `ws`,
+- The `applications` lists confirm it: chappe_rtpengine needs `crypto` and `ws`,
   chappe_mix `crypto`, chappe_esl nothing beyond kernel and stdlib,
   chappe_audio `crypto` and `ws`, chappe_cluster `ra` and `hlc`
   (`apps/*/src/*.app.src`).

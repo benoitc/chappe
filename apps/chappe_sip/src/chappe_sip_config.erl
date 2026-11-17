@@ -136,7 +136,8 @@ default(registrar_max_bindings_per_aor) -> 10;
 default(registrar_sweep_ms) -> 30000;
 %% Where the location store lives, and who owns what needs one owner:
 %% none (this node alone) or chappe_cluster (the region's KV and leases,
-%% docs/decisions/0010). chappe_cluster is started on first use.
+%% docs/decisions/0010). chappe_cluster is started at boot, before the
+%% supervisor, when this is chappe_cluster.
 default(cluster) -> none;
 %% On a cluster: how long a REGISTER waits for the region's quorum (ms),
 %% and the Retry-After (s) of the 503 it gets without one.

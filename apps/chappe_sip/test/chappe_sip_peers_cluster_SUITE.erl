@@ -161,8 +161,8 @@ singleton_needs_cluster(Config) ->
     ok = erpc:call(N, chappe_sip, peer_remove, [t]).
 
 %% A singleton peer of the `peers' setting, with chappe_cluster configured
-%% but not started: chappe_sip starts it on first use, during its own
-%% start, and the peer is pinged.
+%% but not started: chappe_sip starts it during its own start, and the
+%% peer is pinged.
 env_peer_starts_cluster(Config) ->
     [N] = ?config(nodes, Config),
     {TPort, _Trunk} = trunk(),
