@@ -17,11 +17,18 @@ endpoint commands), `chappe_mrf_endpoint` (one gen_statem per FreeSWITCH
 channel: correlation, answer, events to the owner, cleanup),
 `chappe_mrf_esl` (the outbound socket handler that finds the endpoint by
 X-Chappe-Call), `chappe_mrf_registry` (the ETS table of who waits for
-what), `chappe_mrf_conf` (one gen_server per conference) with its backends
-`chappe_mrf_conf_native` (chappe_mix behind rtpengine, via a loopback
-INVITE) and `chappe_mrf_conf_fs` (mod_conference), `chappe_mrf_conf_refer` (REFER to a room
-and a member's transfer), `chappe_mrf_store` (FreeSWITCH
-recordings adopted into the chappe_audio store), `chappe_mrf_lib`.
+what), `chappe_mrf_conf` (one gen_server per conference),
+`chappe_mrf_conf_backend` (the backend behaviour and the room API a
+backend calls) with its backends `chappe_mrf_conf_native` (chappe_mix
+behind rtpengine, via a loopback INVITE) and `chappe_mrf_conf_fs`
+(mod_conference; its caller-side join in `chappe_mrf_conf_fs_join`),
+`chappe_mrf_conf_refer` (REFER to a room and a member's transfer),
+`chappe_mrf_conf_transfer` (`transfer/3` between rooms),
+`chappe_mrf_conf_cluster` (the cluster start and lease decisions),
+`chappe_mrf_conf_move` (handoff and rehome of cluster rooms),
+`chappe_mrf_conf_focus` (RFC 4575 conference-info), `chappe_mrf_store`
+(FreeSWITCH recordings adopted into the chappe_audio store),
+`chappe_mrf_lib`.
 
 ## Required Checks
 
