@@ -88,19 +88,19 @@ publish(Pid, Id, Sdp, Opts) ->
 
 -spec play(pid(), map()) -> ok | {error, term()}.
 play(Pid, Media) ->
-    to_ok(chappe_rtpengine_session:play_media(Pid, Media)).
+    to_ok(chappe_rtpengine_cmd:play_media(Pid, Media)).
 
 -spec record(pid(), map()) -> ok | {error, term()}.
 record(Pid, _Opts) ->
-    to_ok(chappe_rtpengine_session:start_recording(Pid)).
+    to_ok(chappe_rtpengine_cmd:start_recording(Pid)).
 
 -spec stop_record(pid()) -> ok | {error, term()}.
 stop_record(Pid) ->
-    to_ok(chappe_rtpengine_session:stop_recording(Pid)).
+    to_ok(chappe_rtpengine_cmd:stop_recording(Pid)).
 
 -spec dtmf(pid(), map()) -> ok | {error, term()}.
 dtmf(Pid, Params) ->
-    to_ok(chappe_rtpengine_session:play_dtmf(Pid, Params)).
+    to_ok(chappe_rtpengine_cmd:play_dtmf(Pid, Params)).
 
 %% Tap the media to an external consumer. Party/flags/codec/ptime select the
 %% source and the fork output; chappe_rtpengine_session injects call-id and resolves the
@@ -115,16 +115,16 @@ dtmf(Pid, Params) ->
     | {error, term()}.
 subscribe(Pid, _Id, Opts) ->
     reply_sub(
-        chappe_rtpengine_session:subscribe_request(Pid, sub_params(Opts))
+        chappe_rtpengine_cmd:subscribe_request(Pid, sub_params(Opts))
     ).
 
 -spec subscribe_answer(pid(), map()) -> ok | {error, term()}.
 subscribe_answer(Pid, Params) ->
-    to_ok(chappe_rtpengine_session:subscribe_answer(Pid, Params)).
+    to_ok(chappe_rtpengine_cmd:subscribe_answer(Pid, Params)).
 
 -spec unsubscribe(pid(), map()) -> ok | {error, term()}.
 unsubscribe(Pid, Params) ->
-    to_ok(chappe_rtpengine_session:unsubscribe(Pid, Params)).
+    to_ok(chappe_rtpengine_cmd:unsubscribe(Pid, Params)).
 
 %% Duck a party (or the whole call) by blocking or silencing its media. The
 %% party sugar is resolved by chappe_rtpengine_session from its stored tags.
@@ -132,16 +132,16 @@ unsubscribe(Pid, Params) ->
 duck(Pid, Opts) ->
     P = party_params(Opts),
     case maps:get(mode, Opts, block) of
-        block -> to_ok(chappe_rtpengine_session:block_media(Pid, P));
-        silence -> to_ok(chappe_rtpengine_session:silence_media(Pid, P))
+        block -> to_ok(chappe_rtpengine_cmd:block_media(Pid, P));
+        silence -> to_ok(chappe_rtpengine_cmd:silence_media(Pid, P))
     end.
 
 -spec unduck(pid(), map()) -> ok | {error, term()}.
 unduck(Pid, Opts) ->
     P = party_params(Opts),
     case maps:get(mode, Opts, block) of
-        block -> to_ok(chappe_rtpengine_session:unblock_media(Pid, P));
-        silence -> to_ok(chappe_rtpengine_session:unsilence_media(Pid, P))
+        block -> to_ok(chappe_rtpengine_cmd:unblock_media(Pid, P));
+        silence -> to_ok(chappe_rtpengine_cmd:unsilence_media(Pid, P))
     end.
 
 -spec stop(pid()) -> ok.

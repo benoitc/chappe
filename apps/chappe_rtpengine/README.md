@@ -175,14 +175,14 @@ A callee-initiated re-INVITE swaps the tag direction on the wire for you: `chapp
 Media commands run against the established session with its identity injected:
 
 ```erlang
-{ok, _} = chappe_rtpengine_session:play_media(Sess, #{file => <<"/prompts/hello.wav">>}),
-{ok, _} = chappe_rtpengine_session:play_dtmf(Sess, #{code => 5, duration => 100}),
-{ok, _} = chappe_rtpengine_session:start_recording(Sess),
-{ok, _} = chappe_rtpengine_session:stop_media(Sess),
+{ok, _} = chappe_rtpengine_cmd:play_media(Sess, #{file => <<"/prompts/hello.wav">>}),
+{ok, _} = chappe_rtpengine_cmd:play_dtmf(Sess, #{code => 5, duration => 100}),
+{ok, _} = chappe_rtpengine_cmd:start_recording(Sess),
+{ok, _} = chappe_rtpengine_cmd:stop_media(Sess),
 %% duck one direction (interpreter style): silence keeps packets
 %% flowing as silence, block stops them entirely
-{ok, _} = chappe_rtpengine_session:silence_media(Sess, #{party => caller}),
-{ok, _} = chappe_rtpengine_session:unsilence_media(Sess, #{party => caller}).
+{ok, _} = chappe_rtpengine_cmd:silence_media(Sess, #{party => caller}),
+{ok, _} = chappe_rtpengine_cmd:unsilence_media(Sess, #{party => caller}).
 ```
 
 Your process (the session owner) receives `{chappe_rtpengine_session, Pid, {node_down, Node}}` when the pinned node stops answering, and `{chappe_rtpengine_session, Pid, {node_restarted, Node}}` when the node came back restarted or replied "unknown call-id": the media session on it is gone, and you decide between re-offering and tearing down.
@@ -212,12 +212,12 @@ end.
 To tap a call's media (recording taps, listen-in, conference graphs), request a subscription: rtpengine returns an SDP offer for the tapped streams and a to-tag naming the subscription, which you answer with the consumer's SDP:
 
 ```erlang
-{ok, Sub} = chappe_rtpengine_session:subscribe_request(Sess, #{flags => [all]}),
+{ok, Sub} = chappe_rtpengine_cmd:subscribe_request(Sess, #{flags => [all]}),
 SubTag = maps:get(<<"to-tag">>, Sub),
 OfferedSDP = chappe_rtpengine_ng:sdp(Sub),
-{ok, _} = chappe_rtpengine_session:subscribe_answer(Sess, #{to_tag => SubTag, sdp => ConsumerSDP}),
+{ok, _} = chappe_rtpengine_cmd:subscribe_answer(Sess, #{to_tag => SubTag, sdp => ConsumerSDP}),
 %% later
-{ok, _} = chappe_rtpengine_session:unsubscribe(Sess, #{to_tag => SubTag}).
+{ok, _} = chappe_rtpengine_cmd:unsubscribe(Sess, #{to_tag => SubTag}).
 ```
 
 Pass `from_tag` instead of `flags => [all]` to tap a single participant. Subscriptions need an rtpengine built with transcoding support; minimal builds reply "Unrecognized command".

@@ -115,6 +115,8 @@ jobs:
             ~/.cache/rebar3
           key: build-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config', 'apps/chappe_sip/c_src/build.sh') }}
       - run: rebar3 compile
+      - name: Demos compile against the apps
+        run: make demo-compile
 
   eunit:
     name: EUnit

@@ -14,7 +14,7 @@
 -export([add/2, remove/1, list/0, status/1, select/1]).
 -export([drain/1, resume/1, api/2, bgapi/2]).
 -export([subscribe/1, events/1, events/2, unsubscribe/1]).
--export([notify/3, scope/0]).
+-export([notify/3]).
 -export([init/1]).
 
 -export_type([name/0, select_opts/0]).
@@ -202,10 +202,6 @@ matches(Match, Ev) ->
         fun({K, V}) -> chappe_esl_event:header(K, Ev) =:= V end,
         maps:to_list(Match)
     ).
-
--spec scope() -> atom().
-scope() ->
-    ?SCOPE.
 
 init(Nodes) ->
     _ = ets:new(?TAB, [named_table, public, set, {read_concurrency, true}]),

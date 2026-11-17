@@ -117,10 +117,10 @@ list_statistics_forwarding(_Config) ->
     {ok, Stats} = chappe_rtpengine:statistics(Node),
     #{<<"currentstatistics">> := #{<<"sessionstotal">> := Total}} = Stats,
     ?assert(Total >= 1),
-    Fwd = chappe_rtpengine_session:start_forwarding(Sess, #{}),
+    Fwd = chappe_rtpengine_cmd:start_forwarding(Sess, #{}),
     ct:pal("start forwarding: ~p", [Fwd]),
     ?assertMatch({ok, _}, Fwd),
-    ?assertMatch({ok, _}, chappe_rtpengine_session:stop_forwarding(Sess)),
+    ?assertMatch({ok, _}, chappe_rtpengine_cmd:stop_forwarding(Sess)),
     ok = chappe_rtpengine_session:stop(Sess),
     ok.
 

@@ -27,7 +27,8 @@
     command/2,
     encode_command/2,
     decode_reply/1,
-    sdp/1
+    sdp/1,
+    require/2
 ]).
 
 -type params() :: #{atom() | binary() => term()}.
@@ -37,6 +38,14 @@
     | {error, term(), reply()}.
 
 -export_type([params/0, reply/0, result/0]).
+
+%% ok when Params carries every key of Keys.
+-spec require([atom()], params()) -> ok | {error, {missing_params, [atom()]}}.
+require(Keys, Params) ->
+    case [K || K <- Keys, not maps:is_key(K, Params)] of
+        [] -> ok;
+        Missing -> {error, {missing_params, Missing}}
+    end.
 
 %% Build the NG dictionary for a command.
 -spec command(atom(), params()) -> #{binary() => term()}.

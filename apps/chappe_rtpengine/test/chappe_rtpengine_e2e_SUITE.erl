@@ -218,7 +218,7 @@ interpreter_primitives(_Config) ->
 
     %% 1) fork the caller's media to the receiver as plain PCMU
     case
-        chappe_rtpengine_session:subscribe_request(Sess, #{
+        chappe_rtpengine_cmd:subscribe_request(Sess, #{
             from_tags => [FromTag],
             codec => #{mask => [all], transcode => ['PCMU']},
             ptime => 20
@@ -232,7 +232,7 @@ interpreter_primitives(_Config) ->
             %% allow-transcoding lets the receiver answer with fewer
             %% codecs than the source party offers (PCMU only here);
             %% without it rtpengine requires a full answer
-            {ok, _} = chappe_rtpengine_session:subscribe_answer(Sess, #{
+            {ok, _} = chappe_rtpengine_cmd:subscribe_answer(Sess, #{
                 to_tag => SubTag,
                 sdp => receiver_sdp(MediaIP, PortR),
                 flags => [allow_transcoding]
@@ -243,12 +243,12 @@ interpreter_primitives(_Config) ->
             %% clip is kept under one MTU: blobs ride inside the NG
             %% datagram, so real-size TTS clips belong on the TCP
             %% transport or on a file path.
-            {ok, _} = chappe_rtpengine_session:play_media(Sess, #{
+            {ok, _} = chappe_rtpengine_cmd:play_media(Sess, #{
                 blob => wav_blob(400),
                 party => callee
             }),
             %% the clip is 50 ms; it may already be done when we stop
-            case chappe_rtpengine_session:stop_media(Sess) of
+            case chappe_rtpengine_cmd:stop_media(Sess) of
                 {ok, _} -> ok;
                 {error, <<"Not currently playing media">>, _} -> ok
             end,
@@ -258,16 +258,16 @@ interpreter_primitives(_Config) ->
             drain(SockB),
 
             %% 3) duck the caller direction and restore it
-            {ok, _} = chappe_rtpengine_session:block_media(Sess, #{party => caller}),
+            {ok, _} = chappe_rtpengine_cmd:block_media(Sess, #{party => caller}),
             ok = assert_blocked(SockA, RtpeIP, ToCallerPort, SockB),
-            {ok, _} = chappe_rtpengine_session:unblock_media(Sess, #{party => caller}),
+            {ok, _} = chappe_rtpengine_cmd:unblock_media(Sess, #{party => caller}),
             ok = relay(SockA, RtpeIP, ToCallerPort, SockB, rtp(60, Payload)),
-            {ok, _} = chappe_rtpengine_session:silence_media(Sess, #{party => caller}),
-            {ok, _} = chappe_rtpengine_session:unsilence_media(Sess, #{
+            {ok, _} = chappe_rtpengine_cmd:silence_media(Sess, #{party => caller}),
+            {ok, _} = chappe_rtpengine_cmd:unsilence_media(Sess, #{
                 party => caller
             }),
 
-            {ok, _} = chappe_rtpengine_session:unsubscribe(Sess, #{to_tag => SubTag}),
+            {ok, _} = chappe_rtpengine_cmd:unsubscribe(Sess, #{to_tag => SubTag}),
             ok = chappe_rtpengine_session:stop(Sess)
     end,
     gen_udp:close(SockA),
@@ -304,17 +304,17 @@ recording_and_dtmf(_Config) ->
     }),
 
     %% recording (needs --recording-dir on the rtpengine)
-    case chappe_rtpengine_session:start_recording(Sess) of
+    case chappe_rtpengine_cmd:start_recording(Sess) of
         {ok, _} ->
-            {ok, _} = chappe_rtpengine_session:stop_recording(Sess);
+            {ok, _} = chappe_rtpengine_cmd:stop_recording(Sess);
         Other1 ->
             ct:log("recording unavailable: ~p", [Other1])
     end,
 
     %% DTMF injection (needs transcoding)
-    case chappe_rtpengine_session:play_dtmf(Sess, #{code => 5, duration => 100}) of
+    case chappe_rtpengine_cmd:play_dtmf(Sess, #{code => 5, duration => 100}) of
         {ok, _} ->
-            case chappe_rtpengine_session:stop_media(Sess) of
+            case chappe_rtpengine_cmd:stop_media(Sess) of
                 {ok, _} -> ok;
                 {error, _, _} -> ok
             end;
@@ -323,8 +323,8 @@ recording_and_dtmf(_Config) ->
     end,
 
     %% DTMF blocking is core (no transcoding); assert it works.
-    {ok, _} = chappe_rtpengine_session:block_dtmf(Sess),
-    {ok, _} = chappe_rtpengine_session:unblock_dtmf(Sess),
+    {ok, _} = chappe_rtpengine_cmd:block_dtmf(Sess),
+    {ok, _} = chappe_rtpengine_cmd:unblock_dtmf(Sess),
 
     ok = chappe_rtpengine_session:stop(Sess),
     gen_udp:close(SockA),
@@ -416,7 +416,7 @@ ws_blob_playback_over_mtu(_Config) ->
     %% one second of audio, about 16 KiB with the WAV header
     Blob = wav_blob(8000),
     ?assert(byte_size(Blob) > 1500),
-    case chappe_rtpengine_session:play_media(Sess, #{blob => Blob, party => callee}) of
+    case chappe_rtpengine_cmd:play_media(Sess, #{blob => Blob, party => callee}) of
         {error, <<"Unrecognized command">>, _} ->
             ok = chappe_rtpengine_session:stop(Sess),
             gen_udp:close(SockA),
@@ -425,7 +425,7 @@ ws_blob_playback_over_mtu(_Config) ->
             throw({skip, "rtpengine built without the media player"});
         {ok, _} ->
             ok = wait_for_packet(SockB, 2000),
-            case chappe_rtpengine_session:stop_media(Sess) of
+            case chappe_rtpengine_cmd:stop_media(Sess) of
                 {ok, _} -> ok;
                 {error, <<"Not currently playing media">>, _} -> ok
             end,
