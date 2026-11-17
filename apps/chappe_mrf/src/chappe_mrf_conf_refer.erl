@@ -67,21 +67,29 @@ refer(Conf, Req, Res) ->
                         end,
                     chappe_sip_refer:final(Refer, Status);
                 {add, Target, Refer} ->
-                    %% the backend dials (dial/4)
-                    case
-                        chappe_mrf_conf:call(
-                            Conf, {refer, {dial, Target, Refer, #{}}}, 30000
-                        )
-                    of
-                        ok -> ok;
-                        {error, _} = Err -> fail(Refer, Err)
-                    end;
+                    add_out(Conf, Target, Refer, Cfg);
                 {error, _} = Err ->
                     Err
             end;
         {error, _} = Err ->
             _ = chappe_sip_res:send(Res, 404),
             Err
+    end.
+
+%% The party a REFER to the room adds: a backend that dials from here
+%% (dial_out/4) does it in this request worker, which hears its outcome;
+%% the room's dial/4 otherwise.
+add_out(Conf, Target, Refer, #{backend := B} = Cfg) ->
+    Mod = chappe_mrf_conf_backend:module(B),
+    case chappe_mrf_conf_backend:optional(Mod, dial_out, 4) of
+        true ->
+            Mod:dial_out(Conf, Target, Refer, Cfg);
+        false ->
+            Dial = {refer, {dial, Target, Refer, #{}}},
+            case chappe_mrf_conf:call(Conf, Dial, 30000) of
+                ok -> ok;
+                {error, _} = Err -> fail(Refer, Err)
+            end
     end.
 
 %% A B2BUA event of a member's call the app hands the room
@@ -239,7 +247,13 @@ call(cfg, S) ->
             P -> P
         end,
     Cfg = maps:merge(#{endpoint => #{}}, S#state.dial),
-    {reply, Cfg#{policy => Policy, entity => S#state.entity}, S};
+    {reply,
+        Cfg#{
+            policy => Policy,
+            backend => S#state.backend,
+            entity => S#state.entity
+        },
+        S};
 call({remove, Target}, S) ->
     {Reply, S1} = remove(Target, S),
     {reply, Reply, S1};

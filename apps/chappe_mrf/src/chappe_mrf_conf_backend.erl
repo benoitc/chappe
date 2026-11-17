@@ -9,19 +9,21 @@
 %% option names it: native, fs, or any module with this behaviour.
 %%
 %% Two sides:
-%%   - join/4, transfer_check/2 and transfer_in/3 run in the caller of
-%%     chappe_mrf_conf (join/3, transfer/3): they may block, and talk to
-%%     the room with chappe_mrf_conf:call/3. A join sends {join, Req}: the
-%%     room checks its lease, lock and member limit, then hands Req to
-%%     admit/3.
+%%   - join/4, transfer_check/2, transfer_in/3 and dial_out/4 run in the
+%%     caller of chappe_mrf_conf (join/3, transfer/3, a REFER's request
+%%     worker): they may block, and talk to the room with
+%%     chappe_mrf_conf:call/3. A join sends {join, Req}: the room checks
+%%     its lease, lock and member limit, then hands Req to admit/3.
 %%   - every other callback runs in the room process on room(), the
 %%     room's state, and returns it. The backend keeps its own state in
 %%     it: bstate/1 reads it, bstate/2 sets it (init/2 gives the first).
 %%
 %% The room handles the requests it knows (members, flags, play, lock,
-%% the REFERs, transfers, the cluster lease). A call {backend, Req}
-%% goes to handle_call/3, a cast {backend, Msg} and any message the room
-%% does not know go to handle_info/2 (ignore: not the backend's).
+%% the REFERs, transfers, the cluster lease). A call {backend, Req} goes
+%% to handle_call/3, a cast {backend, Msg} to handle_cast/2, and any
+%% message the room does not know to handle_info/2 (ignore: not the
+%% backend's, the room's focus may take it). The room reads which
+%% optional callbacks its backend has once, when it starts.
 %%
 %% Callbacks a backend leaves out are features it does not have: the
 %% room answers {error, {unsupported, Backend}} (relate, record,
@@ -55,7 +57,8 @@
 
 -include("chappe_mrf_conf.hrl").
 
--export([module/1, optional/3, supported/4, unsupported/1]).
+-export([module/1, optional/3, callbacks/1, has/3, supported/4]).
+-export([unsupported/1]).
 -export([bstate/1, bstate/2, name/1, members/1, member_by/3]).
 -export([member/3, put_member/3, joined/3, public/2]).
 -export([emit/2, publish/1, talking/3, gone/2, gone/3, drop_member/3]).
@@ -82,6 +85,15 @@
     Handover :: tuple(),
     From :: #{name := binary(), member := member()}
 ) -> {ok, member()} | {error, term()}.
+%% Dial a party a REFER to the room brings in, in the REFER's request
+%% worker (without it the room's dial/4 does); ok once it is under way,
+%% the referrer told the outcome.
+-callback dial_out(
+    Conf :: pid(),
+    Target :: binary(),
+    Refer :: chappe_sip_refer:refer(),
+    Cfg :: map()
+) -> ok | {error, term()}.
 
 %% ---- in the room ----
 
@@ -93,6 +105,7 @@
 -callback admit(Req :: term(), From :: gen_server:from(), room()) -> reply().
 -callback handle_call(Req :: term(), From :: gen_server:from(), room()) ->
     reply().
+-callback handle_cast(Msg :: term(), room()) -> {noreply, room()}.
 -callback handle_info(Msg :: term(), room()) -> {noreply, room()} | ignore.
 %% mute or deaf a member; the room keeps the flag once it is ok.
 -callback set_flag(member(), member_info(), mute | deaf, boolean(), room()) ->
@@ -127,7 +140,9 @@
 -optional_callbacks([
     transfer_check/2,
     transfer_in/3,
+    dial_out/4,
     handle_call/3,
+    handle_cast/2,
     handle_info/2,
     lock/2,
     relate/4,
@@ -144,17 +159,33 @@ module(native) -> chappe_mrf_conf_native;
 module(fs) -> chappe_mrf_conf_fs;
 module(Mod) -> Mod.
 
+%% Whether Mod has an optional callback, in the caller.
 -spec optional(module(), atom(), arity()) -> boolean().
 optional(Mod, F, Arity) ->
     _ = code:ensure_loaded(Mod),
     erlang:function_exported(Mod, F, Arity).
+
+%% The optional callbacks Mod has, read once when the room starts.
+-spec callbacks(module()) -> #{{atom(), arity()} => true}.
+callbacks(Mod) ->
+    {module, Mod} = code:ensure_loaded(Mod),
+    #{
+        FA => true
+     || {F, A} = FA <- ?MODULE:behaviour_info(optional_callbacks),
+        erlang:function_exported(Mod, F, A)
+    }.
+
+%% Whether the room's backend has an optional callback.
+-spec has(atom(), arity(), room()) -> boolean().
+has(F, Arity, #state{callbacks = C}) ->
+    is_map_key({F, Arity}, C).
 
 %% Run Fun(Mod) when the backend has F/Arity; the one place a room
 %% answers a feature its backend lacks.
 -spec supported(atom(), arity(), room(), fun((module()) -> R)) ->
     R | {reply, {error, {unsupported, atom()}}, room()}.
 supported(F, Arity, #state{mod = Mod} = S, Fun) ->
-    case optional(Mod, F, Arity) of
+    case has(F, Arity, S) of
         true -> Fun(Mod);
         false -> {reply, unsupported(S), S}
     end.

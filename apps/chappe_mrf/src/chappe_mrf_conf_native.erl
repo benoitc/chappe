@@ -9,9 +9,10 @@
 
 -include("chappe_mrf_conf.hrl").
 
--export([init/2, info/1, join/4, admit/3, handle_call/3, handle_info/2]).
+-export([init/2, info/1, join/4, admit/3, handle_call/3, handle_cast/2]).
+-export([handle_info/2]).
 -export([set_flag/5, hangup/3, left/2, play/3, portable/0]).
--export([relate/4, record/3, stop_record/1, handover/1, dial/4]).
+-export([relate/4, record/3, stop_record/1, handover/1, dial/4, dial_out/4]).
 -export([loop_invite/4]).
 
 -record(native, {
@@ -67,18 +68,22 @@ handle_call({call_done, Token, Result}, From, #state{pending = P} = S) ->
 handle_call(_Req, _From, S) ->
     {reply, {error, unknown_call}, S}.
 
+%% the loopback dialog of loop_invite/4, or its failure
+handle_cast({loop_dialog, Token, D}, #state{pending = P} = S) ->
+    case P of
+        #{Token := J} -> {noreply, complete(Token, J#{dialog => D}, S)};
+        _ -> {noreply, S}
+    end;
+handle_cast({loop_failed, Token}, S) ->
+    {noreply, S#state{pending = maps:remove(Token, S#state.pending)}};
+handle_cast(_Msg, S) ->
+    {noreply, S}.
+
 handle_info({join_result, Token, Result}, #state{pending = P} = S) ->
     case P of
         #{Token := J} -> {noreply, result(Token, J, Result, S)};
         _ -> {noreply, S}
     end;
-handle_info({loop_dialog, Token, D}, #state{pending = P} = S) ->
-    case P of
-        #{Token := J} -> {noreply, complete(Token, J#{dialog => D}, S)};
-        _ -> {noreply, S}
-    end;
-handle_info({loop_failed, Token}, S) ->
-    {noreply, S#state{pending = maps:remove(Token, S#state.pending)}};
 handle_info({chappe_sip_siprec, Rec, {stopped, _}}, S) ->
     %% a stopped recording is forgotten
     #native{siprec = R} = B = chappe_mrf_conf_backend:bstate(S),
@@ -117,7 +122,10 @@ set_flag(_Id, #{session := MS}, deaf, false, S) ->
 set_flag(Id, #{session := MS}, mute, true, S) ->
     muted(Id, true, chappe_sip_media:mute(MS), S);
 set_flag(Id, #{session := MS}, mute, false, S) ->
-    muted(Id, false, chappe_sip_media:unmute(MS), S).
+    muted(Id, false, chappe_sip_media:unmute(MS), S);
+set_flag(_Id, _Mb, _Flag, _Value, _S) ->
+    %% a member without a mixer session
+    {error, unsupported}.
 
 flag_ok(ok, S) -> {ok, S};
 flag_ok({error, _} = Err, _S) -> Err.
@@ -206,8 +214,12 @@ handover(#{rtpe := _}) ->
 handover(_Mb) ->
     {error, not_member}.
 
-%% An endpoint joins the mixer, then bridges to the target; in a helper,
-%% since it waits for the endpoint.
+%% An endpoint joins the mixer, then bridges to the target. A REFER to
+%% the room: in its request worker, which hears the outcome.
+dial_out(Conf, Target, Refer, Cfg) ->
+    chappe_mrf_conf_refer:dial_native(Conf, Target, Refer, Cfg).
+
+%% A member's REFER: in a helper, since it waits for the endpoint.
 dial(Target, Refer, Cfg, S) ->
     Conf = self(),
     _ = spawn(fun() ->

@@ -47,5 +47,7 @@
         | undefined,
     %% the options it started with, for the room that takes its members
     %% over (a handoff, a lost lease)
-    opts = #{} :: map()
+    opts = #{} :: map(),
+    %% the optional callbacks the backend has (chappe_mrf_conf_backend)
+    callbacks = #{} :: #{{atom(), arity()} => true}
 }).

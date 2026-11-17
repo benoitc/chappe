@@ -474,6 +474,7 @@ init_backend(Name, Opts, Caller, Lease) ->
                 backend = Backend,
                 mod = Mod,
                 bstate = B,
+                callbacks = chappe_mrf_conf_backend:callbacks(Mod),
                 lease = Lease,
                 opts = Opts,
                 room = <<"mrf-", Name/binary>>,
@@ -522,7 +523,7 @@ handle_call(members, _From, #state{members = M} = S) ->
     {reply, [chappe_mrf_conf_backend:public(Id, Mb) || {Id, Mb} <- Sorted], S};
 handle_call({lock, Lock}, _From, #state{mod = Mod} = S) ->
     _ =
-        chappe_mrf_conf_backend:optional(Mod, lock, 2) andalso
+        chappe_mrf_conf_backend:has(lock, 2, S) andalso
             Mod:lock(Lock, S),
     {reply, ok, S#state{locked = Lock}};
 handle_call({drop, Id, Reason}, _From, S) ->
@@ -615,8 +616,12 @@ lost_empty(#state{lost = Lost, members = M, pending = P} = S) ->
 
 handle_cast(_Msg, #state{waiting = #{}} = S) ->
     {noreply, S};
-handle_cast({backend, Msg}, S) ->
-    backend_info(Msg, S);
+handle_cast({backend, Msg}, #state{mod = Mod} = S) ->
+    %% the backend's own casts; dropped when it takes none
+    case chappe_mrf_conf_backend:has(handle_cast, 2, S) of
+        true -> Mod:handle_cast(Msg, S);
+        false -> {noreply, S}
+    end;
 handle_cast({transferred, Ref, Info}, S) ->
     {noreply, chappe_mrf_conf_refer:transferred(Ref, Info, S)};
 handle_cast(lost_empty, S) ->
@@ -662,7 +667,7 @@ handle_info(Info, S) ->
 
 %% A message the room does not know: the backend's, else the focus's.
 backend_info(Info, #state{mod = Mod} = S) ->
-    Has = chappe_mrf_conf_backend:optional(Mod, handle_info, 2),
+    Has = chappe_mrf_conf_backend:has(handle_info, 2, S),
     case Has andalso Mod:handle_info(Info, S) of
         {noreply, _} = Reply -> Reply;
         _NotTheBackends -> chappe_mrf_conf_focus:handle_info(Info, S)
@@ -684,9 +689,7 @@ terminate(_Reason, #state{members = M0, focus = F, mod = Mod} = S) ->
     _ = safely(fun() -> F =/= undefined andalso chappe_sip_focus:stop(F) end),
     %% the room's end stops what the backend runs (fs: its recordings)
     _ = safely(fun() ->
-        Mod =/= undefined andalso
-            chappe_mrf_conf_backend:optional(Mod, terminate, 1) andalso
-            Mod:terminate(S)
+        chappe_mrf_conf_backend:has(terminate, 1, S) andalso Mod:terminate(S)
     end),
     maps:foreach(
         fun(Id, Mb) ->
@@ -774,7 +777,7 @@ transfer_step(Step, Arg, Pid, #state{members = M, pending = P} = S) ->
         chappe_mrf_conf_transfer:run(Actions, S#state{members = M1})}.
 
 handover(Mb, #state{mod = Mod} = S) ->
-    case chappe_mrf_conf_backend:optional(Mod, handover, 1) of
+    case chappe_mrf_conf_backend:has(handover, 1, S) of
         true -> Mod:handover(Mb);
         false -> chappe_mrf_conf_backend:unsupported(S)
     end.
