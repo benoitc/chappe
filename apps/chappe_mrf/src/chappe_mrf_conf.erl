@@ -495,7 +495,11 @@ transfer_to(Conf, Member, To, #{name := FromName}, _Dest) ->
             Err
     end.
 
-finish_transfer(_Conf, _Member, {ok, _} = Ok) ->
+finish_transfer(Conf, Member, {ok, _} = Ok) ->
+    %% the member is the other room's now: it leaves this one at once,
+    %% not when its old leg's BYE comes, so a room ending meanwhile never
+    %% hangs it up
+    _ = call(Conf, {transfer, done, Member}),
     Ok;
 finish_transfer(Conf, Member, Error) ->
     _ = call(Conf, {transfer, cancel, Member}),
@@ -1407,6 +1411,11 @@ transfer_step(handle_of, Id, #state{members = M} = S) ->
     end;
 transfer_step(holds, Handle, #state{members = M, pending = P} = S) ->
     {reply, holds(Handle, maps:values(M), maps:values(P)), S};
+transfer_step(done, Id, #state{members = M} = S) ->
+    case M of
+        #{Id := #{transfer := true}} -> {reply, ok, gone(Id, transferred, S)};
+        _ -> {reply, ok, S}
+    end;
 transfer_step(cancel, Id, #state{members = M} = S) ->
     case M of
         #{Id := Mb} ->

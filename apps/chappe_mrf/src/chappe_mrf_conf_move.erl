@@ -141,8 +141,17 @@ move(Conf, Name, Opts, Ids, Nodes, Deadline) ->
 -spec transfer_all(pid(), [binary()], pid(), integer()) ->
     ok | {error, timeout}.
 transfer_all(Conf, Ids, New, Deadline) ->
-    Jobs = [spawn_monitor(fun() -> job(Conf, Id, New) end) || Id <- Ids],
-    wait_jobs(Jobs, Deadline, ok).
+    Self = self(),
+    Jobs = [
+        {
+            spawn_monitor(fun() ->
+                Self ! {moved, self(), job(Conf, Id, New)}
+            end),
+            Id
+        }
+     || Id <- Ids
+    ],
+    wait_jobs(Jobs, Deadline, [], []).
 
 %% One member's move. A crash in it is that member's failed move: when
 %% the member never reached New, it is handed back to Conf for the next
@@ -151,10 +160,12 @@ job(Conf, Id, New) ->
     job(Conf, Id, New, fun chappe_mrf_conf:transfer/3).
 
 -spec job(pid(), binary(), pid(), fun((pid(), binary(), pid()) -> term())) ->
-    ok.
+    ok | {error, term()}.
 job(Conf, Id, New, Transfer) ->
     try Transfer(Conf, Id, New) of
-        _ -> ok
+        {ok, _} -> ok;
+        {error, _} = Err -> Err;
+        Other -> {error, Other}
     catch
         Class:Why ->
             logger:notice("chappe_mrf_conf_move: move of ~s failed: ~0p", [
@@ -175,15 +186,18 @@ settle(Conf, Id, New) ->
     end.
 
 settle(Conf, Id, _New, _Handle, 0) ->
-    hand_back(Conf, Id);
+    hand_back(Conf, Id),
+    {error, handed_back};
 settle(Conf, Id, New, Handle, Tries) ->
     case chappe_mrf_conf:call(New, {transfer, holds, Handle}, 5000) of
         member ->
             ok;
         no ->
-            hand_back(Conf, Id);
+            hand_back(Conf, Id),
+            {error, handed_back};
         {error, noproc} ->
-            hand_back(Conf, Id);
+            hand_back(Conf, Id),
+            {error, handed_back};
         _PendingOrSlow ->
             %% still joining there, or slow to say: ask again
             timer:sleep(?SETTLE_MS),
@@ -194,14 +208,28 @@ hand_back(Conf, Id) ->
     _ = chappe_mrf_conf:call(Conf, {transfer, cancel, Id}, 5000),
     ok.
 
-wait_jobs([], _Deadline, Result) ->
-    Result;
-wait_jobs([{Pid, Mon} | Rest], Deadline, Result) ->
+%% ok only when every move ended in New; {error, timeout} while one
+%% still runs at the deadline (it goes on); else the members whose move
+%% failed
+wait_jobs([], _Deadline, [], []) ->
+    ok;
+wait_jobs([], _Deadline, _Failed, [_ | _]) ->
+    {error, timeout};
+wait_jobs([], _Deadline, Failed, []) ->
+    {error, {failed, lists:reverse(Failed)}};
+wait_jobs([{{Pid, Mon}, Id} | Rest], Deadline, Failed, Running) ->
     receive
-        {'DOWN', Mon, process, Pid, _} -> wait_jobs(Rest, Deadline, Result)
+        {moved, Pid, ok} ->
+            demonitor(Mon, [flush]),
+            wait_jobs(Rest, Deadline, Failed, Running);
+        {moved, Pid, _Error} ->
+            demonitor(Mon, [flush]),
+            wait_jobs(Rest, Deadline, [Id | Failed], Running);
+        {'DOWN', Mon, process, Pid, _} ->
+            wait_jobs(Rest, Deadline, [Id | Failed], Running)
     after left(Deadline) ->
         demonitor(Mon, [flush]),
-        wait_jobs(Rest, Deadline, {error, timeout})
+        wait_jobs(Rest, Deadline, Failed, [Id | Running])
     end.
 
 %% The room of Name on the first node of Nodes that opens or finds one

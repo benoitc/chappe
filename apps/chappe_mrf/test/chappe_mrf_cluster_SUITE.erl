@@ -23,6 +23,7 @@
     fs_clean_stop_frees_name/1,
     draining_node_routes_away/1,
     transfer_deadline_restores_member/1,
+    done_move_leaves_old_room/1,
     rehome_helper_is_owned/1,
     start_has_one_deadline/1,
     cluster_setting_checked_at_start/1,
@@ -56,6 +57,7 @@ all() ->
         fs_clean_stop_frees_name,
         draining_node_routes_away,
         transfer_deadline_restores_member,
+        done_move_leaves_old_room,
         rehome_helper_is_owned,
         start_has_one_deadline,
         cluster_setting_checked_at_start,
@@ -252,13 +254,22 @@ transfer_deadline_restores_member(Config) ->
     ok = erpc:call(N2, chappe_sip, stop, []),
     Deadline = erpc:call(N1, erlang, monotonic_time, [millisecond]) + 2000,
     T0 = erlang:monotonic_time(millisecond),
-    ?assertEqual({error, timeout},
-                 erpc:call(N1, chappe_mrf_conf_move, transfer_all, [Conf, [M], To, Deadline], 20000)),
+    %% a move that has not ended, or one that failed, is never ok: here
+    %% the join either still runs at the deadline or fails at once (a
+    %% host that answers the dead port with an ICMP error)
+    Result = erpc:call(N1, chappe_mrf_conf_move, transfer_all, [Conf, [M], To, Deadline], 20000),
+    ct:pal("transfer_all: ~p", [Result]),
+    ?assert(lists:member(Result, [{error, timeout}, {error, {failed, [M]}}])),
     ?assert(erlang:monotonic_time(millisecond) - T0 < 5000),
     %% the move is not cut: its join fails on its own, and the member is
     %% the old room's again
     ok = wait_unmarked(Conf, M, 600),
     ?assertMatch([#{id := M}], chappe_mrf_conf:members(Conf)),
+    %% a move that fails at once is a failure, not ok
+    ok = chappe_mrf_conf:stop(To),
+    Deadline2 = erpc:call(N1, erlang, monotonic_time, [millisecond]) + 2000,
+    ?assertEqual({error, {failed, [M]}},
+                 erpc:call(N1, chappe_mrf_conf_move, transfer_all, [Conf, [M], To, Deadline2], 20000)),
     ?F:ua_bye(Ua).
 
 wait_unmarked(Conf, M, 0) ->
@@ -268,6 +279,21 @@ wait_unmarked(Conf, M, N) ->
         #state{members = #{M := Mb}} when not is_map_key(transfer, Mb) -> ok;
         _ -> timer:sleep(100), wait_unmarked(Conf, M, N - 1)
     end.
+
+%% A move that ended well takes the member out of the old room at once,
+%% not when its old leg's BYE arrives: so a room ending right after (a
+%% drain's end) never hangs up a member that is already in the new room.
+done_move_leaves_old_room(Config) ->
+    [N1, N2 | _] = ?config(nodes, Config),
+    {ok, Conf} = erpc:call(N1, chappe_mrf, conference, [<<"done">>, #{}]),
+    {Ua, M} = join_call(Config, Conf),
+    {ok, To} = erpc:call(N2, chappe_mrf, conference, [<<"doneto">>, #{}]),
+    Deadline = erpc:call(N1, erlang, monotonic_time, [millisecond]) + 10000,
+    ok = erpc:call(N1, chappe_mrf_conf_move, transfer_all, [Conf, [M], To, Deadline], 20000),
+    #state{members = Ms} = sys:get_state(Conf),
+    ?assertNot(is_map_key(M, Ms)),
+    ok = wait_members(To, 1),
+    ?F:ua_bye(Ua).
 
 %% The helper that moves a lost room's members is the room's: it gives
 %% up at rehome_ms, its crash leaves the room as it was, and it ends with
@@ -556,7 +582,8 @@ slow_new_room_not_handed_back(Config) ->
     #state{members = #{M := Mb}} = sys:get_state(Conf),
     ?assert(is_map_key(transfer, Mb)),
     ok = sys:resume(To),
-    receive {settled, ok} -> ok after 20000 -> ct:fail(no_settle) end,
+    %% New never got it: handed back, and reported as a failed move
+    receive {settled, {error, handed_back}} -> ok after 20000 -> ct:fail(no_settle) end,
     ok = wait_unmarked(Conf, M, 50),
     ?F:ua_bye(Ua).
 
