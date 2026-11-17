@@ -970,7 +970,11 @@ start_engine(Mod, Opts, Retries, Backoff) ->
     case Mod:start(Opts, self()) of
         {ok, Engine} ->
             %% the connections of a previous engine are gone, and so are
-            %% the bindings learned on them; the ids start again
+            %% the bindings learned on them. Connection ids come from one
+            %% counter for the life of the VM (the NIF's g_next_id), so an
+            %% id never comes back: the record of closed ones is cleared
+            %% only to free it, since the stack already refuses a previous
+            %% engine's ids as unknown
             _ =
                 ets:info(?CLOSED_TAB) =/= undefined andalso
                     ets:delete_all_objects(?CLOSED_TAB),
@@ -2446,10 +2450,11 @@ log_level(5) -> notice;
 log_level(6) -> info;
 log_level(_) -> debug.
 
-%% True when the native stack's TCP/TLS connection Id closed lately (this
-%% engine's run). A request sent over a connection as it closes can come
-%% back as the stack's own 503 rather than an error: the edge proxy tells
-%% a lost flow from a busy UA with this (RFC 5626 5.3).
+%% True when the native stack's TCP/TLS connection Id closed lately
+%% (since this engine started; ids are never reused within the VM). A
+%% request sent over a connection as it closes can come back as the
+%% stack's own 503 rather than an error: the edge proxy tells a lost flow
+%% from a busy UA with this (RFC 5626 5.3).
 -spec conn_closed(pos_integer()) -> boolean().
 conn_closed(Id) ->
     try
