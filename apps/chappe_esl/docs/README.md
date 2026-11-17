@@ -20,8 +20,8 @@ This is the map of the chappe_esl pages. Start with the app
 
 - [Design overview](design/overview.md): modules, supervision, the
   connection FSM, call control, the node registry, framing, failures
-- [Leaf library contract](design/leaf-library-contract.md): why no SIP
-  dependency
+- [Decision 0003](../../../docs/decisions/0003-leaf-apps.md): why it is a
+  leaf app, with no SIP dependency
 - [Features](features.md)
 
 ## Compliance
