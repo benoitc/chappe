@@ -54,7 +54,6 @@
 ).
 
 -export([start_link/1]).
--export([requested_expires/2]).
 -export([init/1, callback_mode/0, terminate/3]).
 -export([indialog_request/4]).
 -export([
@@ -212,6 +211,10 @@ init(
     } = Args
 ) ->
     MRef = erlang:monitor(process, Owner),
+    Contact = maps:get(local_contact, Args, undefined),
+    Sub = chappe_sip_subscription:new(
+        maps:get(subscription, Opts, undefined), Contact
+    ),
     Data = #data{
         leg = LegH,
         txn = maps:get(txn, Args, undefined),
@@ -237,11 +240,8 @@ init(
         remote_sdp = maps:get(remote_sdp, Args, <<>>),
         role = maps:get(role, Args, uac),
         index_state = initial_index_state(Args, Opts),
-        sub = init_sub(
-            maps:get(subscription, Opts, undefined),
-            maps:get(local_contact, Args, undefined)
-        ),
-        local_contact = maps:get(local_contact, Args, undefined),
+        sub = Sub,
+        local_contact = Contact,
         remote_cseq = maps:get(remote_cseq, Args, 0),
         ack_wait = maps:get(ack_wait, Args, false),
         pending_ack = maps:get(pending_ack, Args, undefined),
@@ -266,9 +266,8 @@ init(
     %% deadlock). A UAC dialog has already been answered (2xx) before we
     %% start. A setup timeout bounds the wait for the leg op result, so a
     %% never-arriving op_ok/op_failed does not strand the fsm and its leg.
-    {ok, setup, Data1,
-        [{state_timeout, 30000, setup_timeout} | sub_timer(Data#data.sub)] ++
-            st_timers(Data#data.st)}.
+    Timers = chappe_sip_subscription:timer(Sub) ++ st_timers(Data#data.st),
+    {ok, setup, Data1, [{state_timeout, 30000, setup_timeout} | Timers]}.
 
 %% the call record follows the dialog, and the dialog is found by its
 %% call's ref while it lives (chappe_sip_call)
@@ -1264,59 +1263,17 @@ handle_ack(Raw, #data{ack_answer = Pending} = D) ->
 
 %% ---- subscriptions (RFC 6665) ----
 
-init_sub(undefined, _Contact) ->
-    undefined;
-init_sub(#{expires := Expires} = Opts, Contact) ->
-    Grace = maps:get(unsubscribe_grace, Opts, 5000),
-    #{
-        event => maps:get(event, Opts, undefined),
-        %% Expires: 0 on the initial SUBSCRIBE is a fetch: the owner has the
-        %% unsubscribe grace to send its one terminated NOTIFY
-        expires_at => now_ms() + expiry_ms(Expires, Grace),
-        granted_at => now_ms() + Expires * 1000,
-        max => maps:get(max, Opts, Expires),
-        min => maps:get(min, Opts, 0),
-        grace => Grace,
-        state => active,
-        contact => Contact,
-        term_reason => terminated,
-        keep_body => maps:get(keep_body, Opts, false),
-        last_body => undefined
-    }.
-
-sub_timer(undefined) ->
-    [];
-sub_timer(#{expires_at := At}) ->
-    [{{timeout, sub_expiry}, max(0, At - now_ms()), expire}].
-
-expiry_ms(0, Grace) -> Grace;
-expiry_ms(Seconds, _Grace) -> Seconds * 1000.
-
-now_ms() -> erlang:monotonic_time(millisecond).
-
-%% seconds left on the subscription, rounded up
-remaining(#{granted_at := At}) ->
-    max(0, (At - now_ms() + 999) div 1000).
-
-%% The Expires a SUBSCRIBE asks for, or Default when it has none (or an
-%% unreadable one).
--spec requested_expires(chappe_sip_req:req(), non_neg_integer()) ->
-    non_neg_integer().
-requested_expires(Req, Default) ->
-    case chappe_sip_req:get(<<"expires">>, Req) of
-        undefined ->
-            Default;
-        V ->
-            chappe_sip_lib:delta_seconds(V, Default)
-    end.
-
 %% an in-dialog SUBSCRIBE refreshes this subscription only when its Event
 %% names it (RFC 6665 8.2.1: type and id). Another one would be a second
 %% subscription sharing the dialog, which is refused 403 (RFC 6665 4.5.2);
 %% for the refer package that is also a subscription REFER did not create
 %% (RFC 3515 2.4.4).
 handle_refresh(TxnH, Req, #data{sub = #{event := Event}} = D) ->
-    case same_event(chappe_sip_req:get(<<"event">>, Req), Event) of
+    case
+        chappe_sip_subscription:same_event(
+            chappe_sip_req:get(<<"event">>, Req), Event
+        )
+    of
         true ->
             refresh(TxnH, Req, D);
         false ->
@@ -1326,26 +1283,16 @@ handle_refresh(TxnH, Req, #data{sub = #{event := Event}} = D) ->
             {keep_state, D}
     end.
 
-same_event(_Asked, undefined) ->
-    true;
-same_event(Asked, Event) ->
-    case {chappe_sip_hdr:event(Asked), chappe_sip_hdr:event(Event)} of
-        {{ok, E}, {ok, E}} -> true;
-        _ -> false
-    end.
-
 %% Expires 0 unsubscribes (the owner then sends the final NOTIFY), anything
 %% else refreshes the expiry within max/min
 refresh(TxnH, Req, #data{sub = #{max := Max, min := Min} = Sub} = D) ->
-    case requested_expires(Req, Max) of
+    case chappe_sip_subscription:requested_expires(Req, Max) of
         0 ->
             ok = refresh_respond(TxnH, 0, D),
             notify4(D, unsubscribed, Req),
-            Now = now_ms(),
-            Sub1 = Sub#{
-                expires_at := Now + maps:get(grace, Sub), granted_at := Now
-            },
-            {keep_state, D#data{sub = Sub1}, sub_timer(Sub1)};
+            Sub1 = chappe_sip_subscription:unsubscribed(Sub),
+            {keep_state, D#data{sub = Sub1},
+                chappe_sip_subscription:timer(Sub1)};
         N when N < Min ->
             Hdrs = [{<<"Min-Expires">>, integer_to_binary(Min)}],
             _ = chappe_sip_engine:dialog_respond(
@@ -1361,9 +1308,9 @@ refresh(TxnH, Req, #data{sub = #{max := Max, min := Min} = Sub} = D) ->
             Granted = min(N, Max),
             ok = refresh_respond(TxnH, Granted, D),
             notify4(D, {refreshed, Granted}, Req),
-            At = now_ms() + Granted * 1000,
-            Sub1 = Sub#{expires_at := At, granted_at := At},
-            {keep_state, D#data{sub = Sub1}, sub_timer(Sub1)}
+            Sub1 = chappe_sip_subscription:refreshed(Sub, Granted),
+            {keep_state, D#data{sub = Sub1},
+                chappe_sip_subscription:timer(Sub1)}
     end.
 
 refresh_respond(TxnH, Expires, #data{sub = #{contact := Contact}}) ->
@@ -1404,16 +1351,9 @@ start_final_notify(
     From, Reason, TermReason, #data{pending = undefined, sub = Sub} = D
 ) ->
     Seq = D#data.local_cseq + 1,
-    D1 = D#data{local_cseq = Seq, sub = Sub#{term_reason := TermReason}},
-    State = <<"terminated;reason=", Reason/binary>>,
-    {CT, Body} =
-        case Sub of
-            #{last_body := {C, B}} -> {C, B};
-            _ -> {undefined, <<>>}
-        end,
-    Headers =
-        event_header(sub_event(D)) ++
-            [{<<"Subscription-State">>, State}] ++ ct_header(CT, Body),
+    {Sub1, Headers, Body} =
+        chappe_sip_subscription:final_notify(Sub, Reason, TermReason),
+    D1 = D#data{local_cseq = Seq, sub = Sub1},
     Raw = build_indialog(D1, <<"NOTIFY">>, Seq, Headers, Body),
     case chappe_sip_engine:send_request(route(D), Raw, self()) of
         {ok, TxnH} ->
@@ -1438,7 +1378,10 @@ start_notify(From, Spec, D) ->
                 body => maps:get(body, Spec, <<>>),
                 content_type => maps:get(content_type, Spec, undefined)
             },
-            start_request(From, ReqSpec, keep_body(ReqSpec, D), {
+            D1 = D#data{
+                sub = chappe_sip_subscription:keep_body(ReqSpec, D#data.sub)
+            },
+            start_request(From, ReqSpec, D1, {
                 notify, Terminal
             });
         {error, Reason} ->
@@ -1464,37 +1407,15 @@ notify_headers(Spec, D) ->
 
 notify_state(Event, Spec, D) ->
     State = maps:get(state, Spec, undefined),
-    case sub_state_value(State, Spec, D) of
+    case chappe_sip_subscription:state_value(State, Spec, D#data.sub) of
         {ok, Value, Terminal} ->
             Headers =
-                event_header(Event) ++ [{<<"Subscription-State">>, Value}],
+                chappe_sip_subscription:event_header(Event) ++
+                    [{<<"Subscription-State">>, Value}],
             {ok, Headers, Terminal andalso D#data.sub =/= undefined};
         error ->
             {error, badarg}
     end.
-
-sub_state_value(State, Spec, D) when State =:= active; State =:= pending ->
-    Value = <<(atom_to_binary(State))/binary, (expires_param(Spec, D))/binary>>,
-    {ok, Value, false};
-sub_state_value({terminated, Reason}, _Spec, _D) ->
-    {ok, <<"terminated;reason=", (to_bin(Reason))/binary>>, true};
-sub_state_value(_, _Spec, _D) ->
-    error.
-
-%% a subscription states what is left of it; outside one (the implicit REFER
-%% subscription of an INVITE dialog) only an explicit expires is sent
-expires_param(_Spec, #data{sub = #{} = Sub}) ->
-    <<";expires=", (integer_to_binary(remaining(Sub)))/binary>>;
-expires_param(#{expires := N}, _D) when is_integer(N), N >= 0 ->
-    <<";expires=", (integer_to_binary(N))/binary>>;
-expires_param(_Spec, _D) ->
-    <<>>.
-
-keep_body(Spec, #data{sub = #{keep_body := true} = Sub} = D) ->
-    #{content_type := CT, body := Body} = Spec,
-    D#data{sub = Sub#{last_body := {CT, iolist_to_binary(Body)}}};
-keep_body(_Spec, D) ->
-    D.
 
 term_reason(#data{sub = #{term_reason := R}}) -> R;
 term_reason(#data{bye_reason = R}) when R =/= undefined -> R;
@@ -1503,12 +1424,7 @@ term_reason(_) -> byed.
 sub_event(#data{sub = #{event := E}}) -> E;
 sub_event(_) -> undefined.
 
-event_header(undefined) -> [];
-event_header(Event) -> [{<<"Event">>, Event}].
-
-to_bin(B) when is_binary(B) -> B;
-to_bin(A) when is_atom(A) -> atom_to_binary(A);
-to_bin(L) when is_list(L) -> iolist_to_binary(L).
+now_ms() -> erlang:monotonic_time(millisecond).
 
 %% ---- helpers ----
 
@@ -1609,126 +1525,15 @@ ct_header(CT, _Body) -> [{<<"Content-Type">>, CT}].
 
 %% hold/unhold rewrite the stored local SDP direction attribute
 resolve_sdp(hold, CurSdp, _Hold) ->
-    {next_version(chappe_sip_sdp_hold(CurSdp, true)), true};
+    {chappe_sip_sdp:next_version(chappe_sip_sdp:hold(CurSdp, true)), true};
 resolve_sdp(unhold, CurSdp, _Hold) ->
-    {next_version(chappe_sip_sdp_hold(CurSdp, false)), false};
+    {chappe_sip_sdp:next_version(chappe_sip_sdp:hold(CurSdp, false)), false};
 resolve_sdp(none, _CurSdp, Hold) ->
     {<<>>, Hold};
 resolve_sdp(Sdp, _CurSdp, Hold) when is_binary(Sdp); is_list(Sdp) ->
     {iolist_to_binary(Sdp), Hold};
 resolve_sdp(undefined, CurSdp, Hold) ->
-    {next_version(CurSdp), Hold}.
-
-%% RFC 3261 14.1 (RFC 3264 8): a new offer built from our last session
-%% description carries the next o= session version
-next_version(Sdp) ->
-    case
-        re:run(Sdp, "^(o=\\S+ \\S+ )([0-9]+)", [
-            multiline, {capture, [1, 2], index}
-        ])
-    of
-        {match, [{S, L}, {VS, VL}]} ->
-            V = binary_to_integer(binary:part(Sdp, VS, VL)),
-            <<
-                (binary:part(Sdp, 0, S))/binary,
-                (binary:part(Sdp, S, L))/binary,
-                (integer_to_binary(V + 1))/binary,
-                (binary:part(Sdp, VS + VL, byte_size(Sdp) - VS - VL))/binary
-            >>;
-        nomatch ->
-            Sdp
-    end.
-
-%% RFC 3264 8.4: hold moves every live stream to sendonly
-%% (or inactive when it was recvonly); unhold reverses that. Each m= section
-%% gets its own direction attribute, so a session-level one is folded into
-%% them. A rejected stream (port 0) is left alone.
-chappe_sip_sdp_hold(Sdp, Hold) ->
-    Eol =
-        case binary:match(Sdp, <<"\r\n">>) of
-            nomatch -> <<"\n">>;
-            _ -> <<"\r\n">>
-        end,
-    Lines = [L || L <- binary:split(Sdp, Eol, [global]), L =/= <<>>],
-    {Session, Medias} = sdp_sections(Lines),
-    SessDir = sdp_direction(Session, <<"sendrecv">>),
-    Out =
-        case Medias of
-            [] ->
-                set_direction(Session, hold_direction(SessDir, Hold));
-            _ ->
-                [L || L <- Session, not is_direction(L)] ++
-                    lists:append([
-                        media_hold(M, SessDir, Hold)
-                     || M <- Medias
-                    ])
-        end,
-    iolist_to_binary([[L, Eol] || L <- Out]).
-
-%% session lines, then one list of lines per m= section
-sdp_sections(Lines) ->
-    {Session, Rest} = lists:splitwith(
-        fun(L) -> not is_mline(L) end, Lines
-    ),
-    {Session, media_sections(Rest)}.
-
-media_sections([]) ->
-    [];
-media_sections([M | Rest]) ->
-    {Body, More} = lists:splitwith(fun(L) -> not is_mline(L) end, Rest),
-    [[M | Body] | media_sections(More)].
-
-is_mline(<<"m=", _/binary>>) -> true;
-is_mline(_) -> false.
-
-media_hold([M | _] = Section, SessDir, Hold) ->
-    case binary:split(M, <<" ">>, [global]) of
-        [_, <<"0">> | _] ->
-            Section;
-        _ ->
-            Dir = sdp_direction(Section, SessDir),
-            set_direction(Section, hold_direction(Dir, Hold))
-    end.
-
-hold_direction(<<"sendrecv">>, true) -> <<"sendonly">>;
-hold_direction(<<"recvonly">>, true) -> <<"inactive">>;
-hold_direction(<<"sendonly">>, false) -> <<"sendrecv">>;
-hold_direction(<<"inactive">>, false) -> <<"recvonly">>;
-hold_direction(Dir, _Hold) -> Dir.
-
-sdp_direction(Lines, Default) ->
-    case [D || <<"a=", D/binary>> <- Lines, is_direction(<<"a=", D/binary>>)] of
-        [] -> Default;
-        Dirs -> lists:last(Dirs)
-    end.
-
-is_direction(<<"a=", D/binary>>) ->
-    lists:member(D, [
-        <<"sendrecv">>, <<"sendonly">>, <<"recvonly">>, <<"inactive">>
-    ]);
-is_direction(_) ->
-    false.
-
-%% replace the section's direction attribute in place, or add one
-set_direction(Lines, Dir) ->
-    Attr = <<"a=", Dir/binary>>,
-    case lists:any(fun is_direction/1, Lines) of
-        true ->
-            {Out, _} = lists:mapfoldl(
-                fun(L, Done) ->
-                    case is_direction(L) of
-                        true when not Done -> {[Attr], true};
-                        true -> {[], Done};
-                        false -> {[L], Done}
-                    end
-                end,
-                false,
-                Lines
-            ),
-            lists:append(Out);
-        false ->
-            Lines ++ [Attr]
-    end.
+    {chappe_sip_sdp:next_version(CurSdp), Hold}.
 
 %% An in-dialog request of a dialog that has no fsm yet (a B2BUA's early
 %% leg): Dlg names its parts, the result is the raw request and where to

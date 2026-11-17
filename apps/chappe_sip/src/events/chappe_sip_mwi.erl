@@ -259,7 +259,7 @@ accept(Req, Res, Account, #{summary := Summary} = Opts) ->
                                 ?N, Account, Summary(Account)
                             ),
                     Fetch =
-                        chappe_sip_dialog_fsm:requested_expires(Req, 1) =:= 0,
+                        chappe_sip_subscription:requested_expires(Req, 1) =:= 0,
                     chappe_sip_notifier:add(?N, Dialog, Account, active, Fetch);
                 {error, _} ->
                     ok

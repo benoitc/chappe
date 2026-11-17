@@ -157,7 +157,7 @@ create_session(Req, Res, Opts) ->
 create_subscription(Req, Res, Opts) ->
     Max = maps:get(expires, Opts, 3600),
     Min = maps:get(min_expires, Opts, 0),
-    case chappe_sip_dialog_fsm:requested_expires(Req, Max) of
+    case chappe_sip_subscription:requested_expires(Req, Max) of
         N when N > 0, N < Min ->
             %% RFC 6665 4.2.1.1: too brief, 423 with Min-Expires
             _ = chappe_sip_res:send(Res, 423, #{

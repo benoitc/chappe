@@ -144,7 +144,7 @@ accept(Req, Res, Presentity, WState, Opts) ->
     },
     case chappe_sip_dialog:create_uas(Req, Res, UasOpts) of
         {ok, Dialog} ->
-            Fetch = chappe_sip_dialog_fsm:requested_expires(Req, 1) =:= 0,
+            Fetch = chappe_sip_subscription:requested_expires(Req, 1) =:= 0,
             chappe_sip_notifier:add(?N, Dialog, Presentity, WState, Fetch);
         {error, _} ->
             ok
