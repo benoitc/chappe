@@ -180,11 +180,14 @@ settle(Conf, Id, New, Handle, Tries) ->
     case chappe_mrf_conf:call(New, {transfer, holds, Handle}, 5000) of
         member ->
             ok;
-        pending ->
+        no ->
+            hand_back(Conf, Id);
+        {error, noproc} ->
+            hand_back(Conf, Id);
+        _PendingOrSlow ->
+            %% still joining there, or slow to say: ask again
             timer:sleep(?SETTLE_MS),
-            settle(Conf, Id, New, Handle, Tries - 1);
-        _ ->
-            hand_back(Conf, Id)
+            settle(Conf, Id, New, Handle, Tries - 1)
     end.
 
 hand_back(Conf, Id) ->
