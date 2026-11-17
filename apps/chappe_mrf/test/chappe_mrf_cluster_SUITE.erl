@@ -30,6 +30,8 @@
     activate_refused_while_draining/1,
     deferred_call_past_its_caller/1,
     job_crash_keeps_rehome/1,
+    crashed_job_settles_by_the_call/1,
+    room_end_keeps_a_member_on_its_way/1,
     lost_stops_new_joins/1,
     room_crash_frees_name/1,
     no_quorum_starts_in_parallel/1,
@@ -58,6 +60,8 @@ all() ->
         activate_refused_while_draining,
         deferred_call_past_its_caller,
         job_crash_keeps_rehome,
+        crashed_job_settles_by_the_call,
+        room_end_keeps_a_member_on_its_way,
         lost_stops_new_joins,
         room_crash_frees_name,
         no_quorum_starts_in_parallel,
@@ -432,6 +436,62 @@ job_of(Runner, N) ->
     case [P || P <- Mine, is_pid(P), P =/= Runner, node(P) =:= node(Runner)] of
         [J | _] -> J;
         [] -> timer:sleep(50), job_of(Runner, N - 1)
+    end.
+
+%% A move that crashes while its join is still under way in New: whether
+%% the member arrived is decided by its call (New is asked about the
+%% member's b2b), not by its name, so it is not handed back to Conf while
+%% New is taking it in.
+crashed_job_settles_by_the_call(Config) ->
+    [N1, N2 | _] = ?config(nodes, Config),
+    {ok, Conf} = erpc:call(N1, chappe_mrf, conference, [<<"named">>, #{}]),
+    {Ua, M} = join_call(Config, Conf),
+    {ok, To} = erpc:call(N2, chappe_mrf, conference, [<<"namedto">>, #{}]),
+    #state{members = #{M := #{b2b := {B2b, _}}}} = sys:get_state(Conf),
+    true = erlang:suspend_process(B2b),
+    %% the move runs in its own process and the job crashes meanwhile
+    Crash = fun(C, I, N) ->
+        _ = spawn(fun() -> chappe_mrf_conf:transfer(C, I, N) end),
+        timer:sleep(800),
+        error(crash_after_join)
+    end,
+    Self = self(),
+    _ = spawn(fun() ->
+                  Self ! {job, erpc:call(N1, chappe_mrf_conf_move, job, [Conf, M, To, Crash], 30000)}
+              end),
+    %% resumed by the process that suspended it
+    timer:sleep(2000),
+    true = erlang:resume_process(B2b),
+    receive {job, ok} -> ok after 30000 -> ct:fail(no_job_end) end,
+    %% the job waited for New to settle: the member is New's
+    ok = wait_members(To, 1),
+    ok = wait_members(Conf, 0),
+    ?F:ua_bye(Ua).
+
+%% A room that ends while one of its members is on its way to another
+%% room does not hang that member up: the move completes, and the call
+%% is in the other room.
+room_end_keeps_a_member_on_its_way(Config) ->
+    [N1, N2 | _] = ?config(nodes, Config),
+    {ok, Conf} = erpc:call(N1, chappe_mrf, conference, [<<"ending">>, #{}]),
+    {Ua, M} = join_call(Config, Conf),
+    {ok, To} = erpc:call(N2, chappe_mrf, conference, [<<"endingto">>, #{}]),
+    #state{members = #{M := #{b2b := {B2b, _}}}} = sys:get_state(Conf),
+    true = erlang:suspend_process(B2b),
+    _ = erpc:call(N1, erlang, spawn, [chappe_mrf_conf, transfer, [Conf, M, To]]),
+    ok = wait_marked(Conf, M, 50),
+    ok = erpc:call(N1, supervisor, terminate_child, [chappe_mrf_conf_sup, Conf]),
+    true = erlang:resume_process(B2b),
+    ok = wait_members(To, 1),
+    no_ua_event(Ua, bye, 2000),
+    ?F:ua_bye(Ua).
+
+wait_marked(Conf, M, 0) ->
+    ct:fail({not_marked, Conf, M});
+wait_marked(Conf, M, N) ->
+    case sys:get_state(Conf) of
+        #state{members = #{M := #{transfer := true}}} -> ok;
+        _ -> timer:sleep(100), wait_marked(Conf, M, N - 1)
     end.
 
 %% The room's lease is lost while its node runs: its members move to the

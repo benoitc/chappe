@@ -697,16 +697,29 @@ waiting_info(_Info, S) ->
 
 activate_name(Name, Opts, Caller, Lease, Deferred, S) ->
     case chappe_mrf_registry:put({conf, Name}, self()) of
-        ok ->
-            case init_backend(Name, Opts, Caller, Lease) of
-                {ok, S1} ->
-                    {reply, ok, run_deferred(lists:reverse(Deferred), S1)};
-                {stop, Why} ->
-                    {stop, normal, {error, Why}, S}
+        ok when Lease =/= undefined ->
+            %% checked again now the name is ours: a drain that began
+            %% between the first check and the name would never hand
+            %% this room off
+            case chappe_mrf_conf_move:draining() of
+                true ->
+                    ok = chappe_mrf_registry:delete({conf, Name}),
+                    _ = chappe_cluster:release(Lease),
+                    {stop, normal, {error, draining}, S};
+                false ->
+                    run_backend(Name, Opts, Caller, Lease, Deferred, S)
             end;
+        ok ->
+            run_backend(Name, Opts, Caller, Lease, Deferred, S);
         {error, exists} ->
             {ok, Other} = chappe_mrf_registry:lookup({conf, Name}),
             {stop, normal, {error, {already_started, Other}}, S}
+    end.
+
+run_backend(Name, Opts, Caller, Lease, Deferred, S) ->
+    case init_backend(Name, Opts, Caller, Lease) of
+        {ok, S1} -> {reply, ok, run_deferred(lists:reverse(Deferred), S1)};
+        {stop, Why} -> {stop, normal, {error, Why}, S}
     end.
 
 init_backend(Name, Opts, Caller, Lease) ->
@@ -817,6 +830,8 @@ handle_call({record, Req}, _From, S) ->
     owned(S, fun(S1) -> record_req(Req, S1) end);
 handle_call({refer, Req}, _From, S) ->
     owned(S, fun(S1) -> chappe_mrf_conf_refer:call(Req, S1) end);
+handle_call({transfer, out, Id}, {Mover, _}, S) ->
+    transfer_out(Id, Mover, S);
 handle_call({transfer, Step, Id}, _From, S) ->
     transfer_step(Step, Id, S);
 handle_call({events, Pid}, _From, #state{listeners = L} = S) ->
@@ -1080,7 +1095,10 @@ handle_info(Info, #state{focus = F} = S) when F =/= undefined ->
 handle_info(_Info, S) ->
     {noreply, S}.
 
-terminate(_Reason, #state{members = M, focus = F} = S) ->
+terminate(_Reason, #state{members = M0, focus = F} = S) ->
+    %% a member on its way out is its mover's: its dialog goes to the
+    %% mover, and ends when the move does
+    M = maps:filter(fun(_Id, Mb) -> not handed_over(Mb) end, M0),
     _ = F =/= undefined andalso chappe_sip_focus:stop(F),
     %% the room's end stops its recordings: the stored ones are adopted
     _ =
@@ -1091,6 +1109,20 @@ terminate(_Reason, #state{members = M, focus = F} = S) ->
             ),
     maps:foreach(fun(Id, Mb) -> _ = hangup_member(Id, Mb, S) end, M),
     ok.
+
+handed_over(#{transfer := true, mover := Mover, dialog := D}) when
+    is_pid(Mover)
+->
+    is_process_alive(Mover) andalso
+        try chappe_sip_dialog:set_owner(D, Mover) of
+            ok -> true
+        catch
+            exit:_ -> false
+        end;
+handed_over(#{transfer := true}) ->
+    true;
+handed_over(_Mb) ->
+    false.
 
 %% ---- members ----
 
@@ -1333,33 +1365,62 @@ recording_closed(Path, #state{stopping = St} = S) ->
 %% the mark after a failed join there.
 transfer_step(move, Mode, S) ->
     move_req(Mode, S);
-transfer_step(out, Id, #state{members = M} = S) ->
+transfer_step(handle_of, Id, #state{members = M} = S) ->
+    case M of
+        #{Id := #{b2b := B2b}} -> {reply, {ok, {b2b, B2b}}, S};
+        #{Id := #{ep := Ep}} -> {reply, {ok, {ep, Ep}}, S};
+        _ -> {reply, none, S}
+    end;
+transfer_step(holds, Handle, #state{members = M, pending = P} = S) ->
+    {reply, holds(Handle, maps:values(M), maps:values(P)), S};
+transfer_step(cancel, Id, #state{members = M} = S) ->
+    case M of
+        #{Id := Mb} ->
+            {reply, ok, S#state{
+                members = M#{Id := maps:without([transfer, mover], Mb)}
+            }};
+        _ ->
+            {reply, ok, S}
+    end;
+transfer_step(out, Id, S) ->
+    transfer_out(Id, undefined, S).
+
+%% whether a call (its b2b) or an endpoint is one of the members, or one
+%% joining
+holds(Handle, Members, Pending) ->
+    case {lists:any(has(Handle), Members), lists:any(has(Handle), Pending)} of
+        {true, _} -> member;
+        {false, true} -> pending;
+        {false, false} -> no
+    end.
+
+has({b2b, B2b}) -> fun(Mb) -> maps:get(b2b, Mb, undefined) =:= B2b end;
+has({ep, Ep}) -> fun(Mb) -> maps:get(ep, Mb, undefined) =:= Ep end.
+
+%% A member leaves for another room: the process that moves it (Mover)
+%% is noted, so the room's end hands it the member's dialog rather than
+%% cutting the call halfway through the move.
+transfer_out(Id, Mover, #state{members = M} = S) ->
     case M of
         #{Id := #{transfer := true}} ->
             {reply, {error, transferring}, S};
         #{Id := #{b2b := B2b} = Mb} ->
-            {reply, {ok, {native, B2b, join_opts(Mb)}}, mark(Id, Mb, S)};
+            {reply, {ok, {native, B2b, join_opts(Mb)}}, mark(Id, Mb, Mover, S)};
         #{Id := #{rtpe := _}} ->
             %% an endpoint of the app in a native room: its dialog is the
             %% app's, not a call this room can re-anchor
             {reply, {error, {unsupported, endpoint_member}}, S};
         #{Id := #{ep := Ep, owned := Owned} = Mb} ->
-            {reply, {ok, {fs, Ep, Owned, join_opts(Mb)}}, mark(Id, Mb, S)};
+            {reply, {ok, {fs, Ep, Owned, join_opts(Mb)}},
+                mark(Id, Mb, Mover, S)};
         _ ->
             {reply, {error, not_member}, S}
-    end;
-transfer_step(cancel, Id, #state{members = M} = S) ->
-    case M of
-        #{Id := Mb} ->
-            {reply, ok, S#state{members = M#{Id := maps:remove(transfer, Mb)}}};
-        _ ->
-            {reply, ok, S}
     end.
 
 %% A member on its way to another conference: what leaves it here is
-%% the transfer.
-mark(Id, Mb, #state{members = M} = S) ->
-    S#state{members = M#{Id := Mb#{transfer => true}}}.
+%% the transfer, run by Mover.
+mark(Id, Mb, Mover, #state{members = M} = S) ->
+    S#state{members = M#{Id := Mb#{transfer => true, mover => Mover}}}.
 
 %% What a member asked for when it joined, for the conference it moves to.
 join_opts(Mb) ->

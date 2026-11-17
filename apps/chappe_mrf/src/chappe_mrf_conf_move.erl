@@ -34,12 +34,15 @@
 -module(chappe_mrf_conf_move).
 
 -export([drain/1, handoff/2, rehome/4, transfer_all/4]).
--export([draining/0, draining/1, open/5, region/0]).
+-export([draining/0, draining/1, open/5, region/0, job/4]).
 
 %% each room's own bound inside drain/1's
 -define(OPEN_MS, 5000).
 %% one round of a rehome
 -define(ROUND_MS, 10000).
+%% how long a crashed move waits for New to settle its join (100 x 200 ms)
+-define(SETTLE_TRIES, 100).
+-define(SETTLE_MS, 200).
 %% what drain/1 gives a handoff past the deadline to hand its members
 %% back before it is killed
 -define(GRACE_MS, 1000).
@@ -143,37 +146,50 @@ transfer_all(Conf, Ids, New, Deadline) ->
 
 %% One member's move. A crash in it is that member's failed move: when
 %% the member never reached New, it is handed back to Conf for the next
-%% round.
+%% round (settle/3).
 job(Conf, Id, New) ->
-    try chappe_mrf_conf:transfer(Conf, Id, New) of
+    job(Conf, Id, New, fun chappe_mrf_conf:transfer/3).
+
+-spec job(pid(), binary(), pid(), fun((pid(), binary(), pid()) -> term())) ->
+    ok.
+job(Conf, Id, New, Transfer) ->
+    try Transfer(Conf, Id, New) of
         _ -> ok
     catch
         Class:Why ->
             logger:notice("chappe_mrf_conf_move: move of ~s failed: ~0p", [
                 Id, {Class, Why}
             ]),
-            case arrived(Id, New) of
-                true ->
-                    ok;
-                false ->
-                    _ = chappe_mrf_conf:call(Conf, {transfer, cancel, Id}, 5000)
-            end
+            settle(Conf, Id, New)
     end.
 
-%% A member a move brought in keeps its name (the id it had)
-arrived(Id, New) ->
-    case chappe_mrf_conf:members(New) of
-        Ms when is_list(Ms) ->
-            lists:any(
-                fun
-                    (#{name := N}) -> N =:= Id;
-                    (_) -> false
-                end,
-                Ms
-            );
-        _ ->
-            false
+%% Whether the member reached New is the member's call's to say: New is
+%% asked about the call (its b2b, or its FreeSWITCH endpoint), never
+%% about a name. While New is still joining it, wait; once New has it,
+%% Conf loses it when the call's old leg ends; when New never got it,
+%% Conf takes it back.
+settle(Conf, Id, New) ->
+    case chappe_mrf_conf:call(Conf, {transfer, handle_of, Id}, 5000) of
+        {ok, Handle} -> settle(Conf, Id, New, Handle, ?SETTLE_TRIES);
+        _ -> ok
     end.
+
+settle(Conf, Id, _New, _Handle, 0) ->
+    hand_back(Conf, Id);
+settle(Conf, Id, New, Handle, Tries) ->
+    case chappe_mrf_conf:call(New, {transfer, holds, Handle}, 5000) of
+        member ->
+            ok;
+        pending ->
+            timer:sleep(?SETTLE_MS),
+            settle(Conf, Id, New, Handle, Tries - 1);
+        _ ->
+            hand_back(Conf, Id)
+    end.
+
+hand_back(Conf, Id) ->
+    _ = chappe_mrf_conf:call(Conf, {transfer, cancel, Id}, 5000),
+    ok.
 
 wait_jobs([], _Deadline, Result) ->
     Result;
