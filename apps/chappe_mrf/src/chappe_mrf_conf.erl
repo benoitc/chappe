@@ -1083,7 +1083,7 @@ handle_info({'DOWN', Mon, process, _, _}, #state{owner_mon = Mon} = S) ->
 handle_info({'DOWN', Mon, process, Pid, _}, #state{listeners = L} = S) ->
     case L of
         #{Pid := Mon} -> {noreply, S#state{listeners = maps:remove(Pid, L)}};
-        _ -> {noreply, S}
+        _ -> {noreply, mover_down(Mon, S)}
     end;
 handle_info({'EXIT', _, _}, S) ->
     {noreply, S};
@@ -1095,33 +1095,67 @@ handle_info(Info, #state{focus = F} = S) when F =/= undefined ->
 handle_info(_Info, S) ->
     {noreply, S}.
 
+%% Every step runs, whatever one member's does. Outside a drain, a
+%% member on its way out is its mover's: its dialog goes to the mover and
+%% ends when the move does. In a drain (a clean stop), the moves had
+%% drain_ms; one not done by then is hung up here, on purpose, rather
+%% than left to a job the stop kills next.
 terminate(_Reason, #state{members = M0, focus = F} = S) ->
-    %% a member on its way out is its mover's: its dialog goes to the
-    %% mover, and ends when the move does
-    M = maps:filter(fun(_Id, Mb) -> not handed_over(Mb) end, M0),
-    _ = F =/= undefined andalso chappe_sip_focus:stop(F),
+    Draining = chappe_mrf_conf_move:draining(),
+    M = maps:filter(fun(_Id, Mb) -> not handed_over(Mb, Draining) end, M0),
+    _ = safely(fun() -> F =/= undefined andalso chappe_sip_focus:stop(F) end),
     %% the room's end stops its recordings: the stored ones are adopted
-    _ =
+    _ = safely(fun() ->
         S#state.recordings =/= [] andalso
             chappe_mrf_conf_fs:stop_record(S) =:= ok andalso
             adopt_recordings(
                 S#state.recordings ++ S#state.stopping, undefined, orphan()
-            ),
-    maps:foreach(fun(Id, Mb) -> _ = hangup_member(Id, Mb, S) end, M),
+            )
+    end),
+    maps:foreach(
+        fun(Id, Mb) ->
+            _ = safely(fun() -> end_member(Id, Mb, Draining, S) end)
+        end,
+        M
+    ),
     ok.
 
-handed_over(#{transfer := true, mover := Mover, dialog := D}) when
+safely(Fun) ->
+    try
+        Fun()
+    catch
+        Class:Why ->
+            logger:notice("chappe_mrf_conf: at the room's end: ~0p", [
+                {Class, Why}
+            ]),
+            error
+    end.
+
+%% a member hung up at the room's end; one cut mid-move by a drain gets
+%% its whole call ended, so its caller hears a clean BYE whatever state
+%% the move left the call in
+end_member(Id, #{transfer := true, b2b := {Pid, _} = B2b} = Mb, true, S) ->
+    ok = erpc:cast(node(Pid), chappe_sip_b2b, hangup, [B2b, #{}]),
+    hangup_member(Id, Mb, S);
+end_member(Id, Mb, _Draining, S) ->
+    hangup_member(Id, Mb, S).
+
+handed_over(#{transfer := true}, true) ->
+    false;
+handed_over(#{transfer := true, mover := Mover, dialog := D}, false) when
     is_pid(Mover)
 ->
-    is_process_alive(Mover) andalso
-        try chappe_sip_dialog:set_owner(D, Mover) of
-            ok -> true
-        catch
-            exit:_ -> false
-        end;
-handed_over(#{transfer := true}) ->
+    %% a dead mover, here or on another node, is the dialog's to see
+    try chappe_sip_dialog:set_owner(D, Mover) of
+        ok -> true
+    catch
+        _:_ -> false
+    end;
+handed_over(#{transfer := true}, false) ->
+    %% fs: the endpoint goes with its owner, this room, unless the other
+    %% room adopted it already
     true;
-handed_over(_Mb) ->
+handed_over(_Mb, _Draining) ->
     false.
 
 %% ---- members ----
@@ -1412,7 +1446,7 @@ transfer_out(Id, Mover, #state{members = M} = S) ->
             {reply, {error, {unsupported, endpoint_member}}, S};
         #{Id := #{ep := Ep, owned := Owned} = Mb} ->
             {reply, {ok, {fs, Ep, Owned, join_opts(Mb)}},
-                mark(Id, Mb, Mover, S)};
+                watch_mover(Id, mark(Id, Mb, Mover, S))};
         _ ->
             {reply, {error, not_member}, S}
     end.
@@ -1421,6 +1455,41 @@ transfer_out(Id, Mover, #state{members = M} = S) ->
 %% the transfer, run by Mover.
 mark(Id, Mb, Mover, #state{members = M} = S) ->
     S#state{members = M#{Id := Mb#{transfer => true, mover => Mover}}}.
+
+%% An fs member's move is watched: if its mover dies before the other
+%% room adopted it (the member is still here, marked), the room acts
+%% rather than keep it marked for good: an endpoint it owns is destroyed
+%% (its channel may be half way through a conference transfer), an app's
+%% endpoint is a member here again.
+watch_mover(Id, #state{members = M} = S) ->
+    case M of
+        #{Id := #{mover := Mover} = Mb} when is_pid(Mover) ->
+            S#state{
+                members = M#{Id := Mb#{mover_mon => monitor(process, Mover)}}
+            };
+        _ ->
+            S
+    end.
+
+mover_down(Mon, #state{members = M} = S) ->
+    case
+        [
+            {Id, Mb}
+         || Id := #{mover_mon := MM, transfer := true} = Mb <- M, MM =:= Mon
+        ]
+    of
+        [{Id, #{ep := Ep, owned := true}}] ->
+            _ = spawn(fun() -> chappe_mrf:destroy(Ep) end),
+            gone(Id, hangup, S);
+        [{Id, Mb}] ->
+            S#state{
+                members = M#{
+                    Id := maps:without([transfer, mover, mover_mon], Mb)
+                }
+            };
+        [] ->
+            S
+    end.
 
 %% What a member asked for when it joined, for the conference it moves to.
 join_opts(Mb) ->

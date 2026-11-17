@@ -32,6 +32,9 @@
     job_crash_keeps_rehome/1,
     crashed_job_settles_by_the_call/1,
     room_end_keeps_a_member_on_its_way/1,
+    remote_mover_room_end/1,
+    drain_deadline_hangs_up/1,
+    slow_new_room_not_handed_back/1,
     lost_stops_new_joins/1,
     room_crash_frees_name/1,
     no_quorum_starts_in_parallel/1,
@@ -62,6 +65,9 @@ all() ->
         job_crash_keeps_rehome,
         crashed_job_settles_by_the_call,
         room_end_keeps_a_member_on_its_way,
+        remote_mover_room_end,
+        drain_deadline_hangs_up,
+        slow_new_room_not_handed_back,
         lost_stops_new_joins,
         room_crash_frees_name,
         no_quorum_starts_in_parallel,
@@ -484,6 +490,74 @@ room_end_keeps_a_member_on_its_way(Config) ->
     true = erlang:resume_process(B2b),
     ok = wait_members(To, 1),
     no_ua_event(Ua, bye, 2000),
+    ?F:ua_bye(Ua).
+
+%% The room ends while a move started on another node is under way: its
+%% end still runs every step, so the member that is not moving is hung
+%% up.
+remote_mover_room_end(Config) ->
+    [N1, N2 | _] = ?config(nodes, Config),
+    {ok, Conf} = erpc:call(N1, chappe_mrf, conference, [<<"remote">>, #{}]),
+    {Ua1, M1} = join_call(Config, Conf),
+    {Ua2, _M2} = join_call(Config, Conf),
+    {ok, To} = erpc:call(N2, chappe_mrf, conference, [<<"remoteto">>, #{}]),
+    #state{members = #{M1 := #{b2b := {B2b, _}}}} = sys:get_state(Conf),
+    true = erlang:suspend_process(B2b),
+    %% the mover runs on N2
+    _ = erpc:call(N2, erlang, spawn, [chappe_mrf_conf, transfer, [Conf, M1, To]]),
+    ok = wait_marked(Conf, M1, 50),
+    MRef = monitor(process, Conf),
+    ok = erpc:call(N1, supervisor, terminate_child, [chappe_mrf_conf_sup, Conf]),
+    %% terminate/2 ran to its end: the exit is the shutdown, not a crash
+    receive {'DOWN', MRef, process, Conf, Why} -> ?assertEqual(shutdown, Why)
+    after 10000 -> ct:fail(room_still_up)
+    end,
+    receive {ua, Ua2, {bye, _}} -> ok after 10000 -> ct:fail(other_member_not_hung_up) end,
+    true = erlang:resume_process(B2b),
+    ?F:ua_bye(Ua1).
+
+%% A clean stop whose drain_ms runs out while a member's move is still
+%% under way: the room hangs the member up (a clean BYE) rather than
+%% leave the move to a job the stop is about to kill, and the member is
+%% in no room after.
+drain_deadline_hangs_up(Config) ->
+    [N1, N2 | _] = ?config(nodes, Config),
+    ok = erpc:call(N1, application, set_env, [chappe_mrf, drain_ms, 1500]),
+    {ok, Conf} = erpc:call(N1, chappe_mrf, conference, [<<"cut">>, #{}]),
+    {Ua, M} = join_call(Config, Conf),
+    #state{members = #{M := #{b2b := {B2b, _}}}} = sys:get_state(Conf),
+    true = erlang:suspend_process(B2b),
+    Self = self(),
+    _ = spawn(fun() -> Self ! {stopped, erpc:call(N1, application, stop, [chappe_mrf], 30000)} end),
+    receive {stopped, ok} -> ok after 30000 -> ct:fail(no_stop) end,
+    true = erlang:resume_process(B2b),
+    receive {ua, Ua, {bye, _}} -> ok after 10000 -> ct:fail(no_bye) end,
+    timer:sleep(2000),
+    {ok, New} = erpc:call(N2, chappe_mrf, conference, [<<"cut">>, #{}]),
+    ?assertEqual([], chappe_mrf_conf:members(New)).
+
+%% A crashed move's new room is only slow to answer: the member is not
+%% handed back while it may still be joining there; once the new room
+%% says it never got it, it is.
+slow_new_room_not_handed_back(Config) ->
+    [N1, N2 | _] = ?config(nodes, Config),
+    {ok, Conf} = erpc:call(N1, chappe_mrf, conference, [<<"slow">>, #{}]),
+    {Ua, M} = join_call(Config, Conf),
+    {ok, To} = erpc:call(N2, chappe_mrf, conference, [<<"slowto">>, #{}]),
+    %% marked as on its way, by this test's process
+    {ok, {native, _, _}} = gen_server:call(Conf, {transfer, out, M}),
+    ok = sys:suspend(To),
+    Self = self(),
+    _ = erpc:call(N1, erlang, spawn, [fun() ->
+        Self ! {settled, chappe_mrf_conf_move:job(Conf, M, To, fun(_, _, _) -> error(crash) end)}
+    end]),
+    timer:sleep(6500),
+    %% past the 5 s timeout of its first ask, still marked
+    #state{members = #{M := Mb}} = sys:get_state(Conf),
+    ?assert(is_map_key(transfer, Mb)),
+    ok = sys:resume(To),
+    receive {settled, ok} -> ok after 20000 -> ct:fail(no_settle) end,
+    ok = wait_unmarked(Conf, M, 50),
     ?F:ua_bye(Ua).
 
 wait_marked(Conf, M, 0) ->
