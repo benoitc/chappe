@@ -7,9 +7,9 @@
 %% the quoting of the arguments FreeSWITCH splits on spaces.
 -module(chappe_esl_exec).
 
--export([expands/1]).
+-export([expands/1, event_word/1, event_names/1]).
 -export([exec/5, send/6, break/3, app_uuid/0, arg/1, channel_uuid/1]).
--export([fork_start_cmd/4, fork_stop_cmd/2, fork_ctl_cmd/4]).
+-export([fork_key/1, fork_start_cmd/4, fork_ctl_cmd/4, cleanup_cmds/3]).
 
 -define(EXEC_TIMEOUT, 60000).
 -define(BREAK_TIMEOUT, 2000).
@@ -178,6 +178,39 @@ break(Conn, Uuid, Scope) ->
 expands(Text) ->
     binary:match(iolist_to_binary(Text), <<"${">>) =/= nomatch.
 
+%% One word of an event command: no blank, no line break.
+-spec event_word(term()) -> boolean().
+event_word(W) when is_binary(W), W =/= <<>> ->
+    binary:match(W, [<<" ">>, <<"\t">>, <<"\n">>, <<"\r">>]) =:= nomatch;
+event_word(_) ->
+    false.
+
+%% The event names of a subscribe, CUSTOM subclasses last: FreeSWITCH
+%% reads every word after CUSTOM as a subclass.
+-spec event_names([atom() | binary() | {custom, binary()}]) ->
+    {ok, [binary()]} | error.
+event_names(Events) ->
+    event_names(Events, [], []).
+
+event_names([], Names, []) ->
+    {ok, lists:reverse(Names)};
+event_names([], Names, Subs) ->
+    {ok, lists:reverse(Names) ++ [<<"CUSTOM">> | lists:reverse(Subs)]};
+event_names([{custom, Sub} | T], Names, Subs) ->
+    case event_word(Sub) of
+        true -> event_names(T, Names, [Sub | Subs]);
+        false -> error
+    end;
+event_names([Name | T], Names, Subs) when is_atom(Name) ->
+    event_names([atom_to_binary(Name) | T], Names, Subs);
+event_names([<<"CUSTOM">> | _], _Names, _Subs) ->
+    error;
+event_names([Name | T], Names, Subs) ->
+    case event_word(Name) of
+        true -> event_names(T, [Name | Names], Subs);
+        false -> error
+    end.
+
 %% One argument of an application or api command that FreeSWITCH splits on
 %% spaces: backslashes and single quotes are escaped, and an argument with a
 %% space (or an empty one) is single quoted.
@@ -196,6 +229,35 @@ arg(Arg0) ->
         true -> <<"'", Escaped/binary, "'">>;
         false -> Escaped
     end.
+
+%% The fork an audio_fork_start names: its module (audio_fork, the default,
+%% or audio_stream) and its bug name (mod_audio_fork only; undefined for
+%% the module default).
+-spec fork_key(map()) ->
+    {ok, {chappe_esl_call:fork_module(), binary() | undefined}}
+    | {error, {bad_option, module | bugname}}.
+fork_key(Opts) ->
+    case {fork_module(Opts), maps:get(bugname, Opts, undefined)} of
+        {error, _} -> {error, {bad_option, module}};
+        {{ok, M}, undefined} -> {ok, {M, undefined}};
+        {{ok, audio_stream}, _} -> {error, {bad_option, bugname}};
+        {{ok, audio_fork}, Bug} -> fork_bug(bug_bin(Bug))
+    end.
+
+%% A bug name is one word FreeSWITCH reads back as is.
+fork_bug(Bug) ->
+    case event_word(Bug) andalso binary:match(Bug, [<<"'">>, <<"\\">>]) of
+        nomatch -> {ok, {audio_fork, Bug}};
+        _ -> {error, {bad_option, bugname}}
+    end.
+
+bug_bin(A) when is_atom(A) -> atom_to_binary(A);
+bug_bin(B) -> iolist_to_binary(B).
+
+fork_module(#{module := audio_fork}) -> {ok, audio_fork};
+fork_module(#{module := audio_stream}) -> {ok, audio_stream};
+fork_module(#{module := _}) -> error;
+fork_module(#{}) -> {ok, audio_fork}.
 
 %% uuid_<api> <uuid> start <url> <mix> <rate> [bugname] [metadata]; the
 %% bug name is mod_audio_fork's (mod_audio_stream has one bug per channel).
@@ -233,10 +295,6 @@ fork_start_cmd(Module, Uuid, Url, Opts) ->
         Rate,
         Meta
     ].
-
--spec fork_stop_cmd(chappe_esl_call:fork_module(), binary()) -> iodata().
-fork_stop_cmd(Module, Uuid) ->
-    fork_ctl_cmd(Module, Uuid, undefined, stop).
 
 %% stop, pause, resume or send_text on one fork: mod_audio_fork takes the
 %% bug name after the verb (and always before the text, which it would
@@ -277,6 +335,18 @@ fork_rate(_Module, Rate) -> Rate.
 %% audio_fork); mod_audio_stream reads it right after the rate.
 fork_metadata(audio_fork, Meta) -> [<<"audio_fork ">>, Meta];
 fork_metadata(audio_stream, Meta) -> Meta.
+
+%% What a call process sends when its owner dies: stop each fork, then each
+%% session recording (in the order given), then kill the channel.
+-spec cleanup_cmds(
+    binary(),
+    [{chappe_esl_call:fork_module(), binary() | undefined}],
+    [binary()]
+) -> [iodata()].
+cleanup_cmds(Uuid, Forks, Recs) ->
+    [fork_ctl_cmd(M, Uuid, B, stop) || {M, B} <- Forks] ++
+        [[<<"uuid_record ">>, Uuid, <<" stop ">>, arg(Path)] || Path <- Recs] ++
+        [[<<"uuid_kill ">>, Uuid]].
 
 %% The uuid of an outbound connection's channel data.
 -spec channel_uuid(chappe_esl_event:event()) -> binary() | undefined.

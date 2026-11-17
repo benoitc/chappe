@@ -44,7 +44,6 @@
     stop_singleton/1,
     whereis_singleton/1,
     singleton_valid/1,
-    singleton_lease/1,
     singleton_fence/1,
     home/1,
     join/1,

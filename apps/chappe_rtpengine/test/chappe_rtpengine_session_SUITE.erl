@@ -365,20 +365,20 @@ media_commands(Config) ->
     {ok, Idle} = chappe_rtpengine:start_session(#{
         call_id => <<"sess-media-idle">>
     }),
-    {error, not_started} = chappe_rtpengine_session:play_media(Idle, #{
+    {error, not_started} = chappe_rtpengine_cmd:play_media(Idle, #{
         file => <<"/prompts/hello.wav">>
     }),
     ok = chappe_rtpengine_session:stop(Idle),
     wait_dead(Idle),
 
     Sess = establish(<<"sess-media">>, <<"ft-m">>, <<"tt-m">>),
-    {ok, _} = chappe_rtpengine_session:play_media(Sess, #{
+    {ok, _} = chappe_rtpengine_cmd:play_media(Sess, #{
         file => <<"/prompts/hello.wav">>
     }),
-    {ok, _} = chappe_rtpengine_session:play_dtmf(Sess, #{code => 5, duration => 100}),
-    {ok, _} = chappe_rtpengine_session:block_dtmf(Sess),
-    {ok, _} = chappe_rtpengine_session:start_recording(Sess),
-    {ok, _} = chappe_rtpengine_session:stop_media(Sess),
+    {ok, _} = chappe_rtpengine_cmd:play_dtmf(Sess, #{code => 5, duration => 100}),
+    {ok, _} = chappe_rtpengine_cmd:block_dtmf(Sess),
+    {ok, _} = chappe_rtpengine_cmd:start_recording(Sess),
+    {ok, _} = chappe_rtpengine_cmd:stop_media(Sess),
     Commands = commands(Server),
     ?assertEqual(
         [
@@ -528,7 +528,7 @@ publish_one_sided(Config) ->
     {error, busy} = chappe_rtpengine_session:publish(Sess, #{
         from_tag => <<"ft-p">>, sdp => sdp()
     }),
-    {ok, _} = chappe_rtpengine_session:subscribe_request(Sess, #{
+    {ok, _} = chappe_rtpengine_cmd:subscribe_request(Sess, #{
         from_tags => [<<"ft-p">>]
     }),
     ok = chappe_rtpengine_session:stop(Sess),
@@ -545,15 +545,15 @@ publish_one_sided(Config) ->
 media_subscription_flow(Config) ->
     Server = ?config(server, Config),
     Sess = establish(<<"sess-sub">>, <<"ft-s">>, <<"tt-s">>),
-    {ok, SubReply} = chappe_rtpengine_session:subscribe_request(Sess, #{
+    {ok, SubReply} = chappe_rtpengine_cmd:subscribe_request(Sess, #{
         flags => [all]
     }),
     SubTag = maps:get(<<"to-tag">>, SubReply),
     ?assertNotEqual(undefined, chappe_rtpengine_ng:sdp(SubReply)),
-    {ok, _} = chappe_rtpengine_session:subscribe_answer(Sess, #{
+    {ok, _} = chappe_rtpengine_cmd:subscribe_answer(Sess, #{
         to_tag => SubTag, sdp => sdp()
     }),
-    {ok, _} = chappe_rtpengine_session:unsubscribe(Sess, #{to_tag => SubTag}),
+    {ok, _} = chappe_rtpengine_cmd:unsubscribe(Sess, #{to_tag => SubTag}),
 
     Received = chappe_rtpengine_fake_server:received(Server),
     {_, SubReq} = lists:nth(3, Received),
@@ -570,7 +570,7 @@ media_subscription_flow(Config) ->
     ?assertEqual(SubTag, maps:get(<<"to-tag">>, Unsub)),
 
     {error, {missing_params, [to_tag]}} =
-        chappe_rtpengine_session:subscribe_answer(Sess, #{sdp => sdp()}),
+        chappe_rtpengine_cmd:subscribe_answer(Sess, #{sdp => sdp()}),
     ok = chappe_rtpengine_session:stop(Sess),
     wait_dead(Sess),
     ok.
@@ -580,12 +580,12 @@ media_ducking(Config) ->
     Sess = establish(<<"sess-duck">>, <<"ft-d">>, <<"tt-d">>),
 
     %% one direction: the party's tag plus the directional flag
-    {ok, _} = chappe_rtpengine_session:silence_media(Sess, #{party => caller}),
-    {ok, _} = chappe_rtpengine_session:silence_media(Sess, #{party => callee}),
+    {ok, _} = chappe_rtpengine_cmd:silence_media(Sess, #{party => caller}),
+    {ok, _} = chappe_rtpengine_cmd:silence_media(Sess, #{party => callee}),
     %% whole call by default
-    {ok, _} = chappe_rtpengine_session:block_media(Sess),
-    {ok, _} = chappe_rtpengine_session:unblock_media(Sess),
-    {ok, _} = chappe_rtpengine_session:unsilence_media(Sess, #{party => caller}),
+    {ok, _} = chappe_rtpengine_cmd:block_media(Sess),
+    {ok, _} = chappe_rtpengine_cmd:unblock_media(Sess),
+    {ok, _} = chappe_rtpengine_cmd:unsilence_media(Sess, #{party => caller}),
 
     [_, _, SilCaller, SilCallee, BlockAll, UnblockAll, UnsilCaller] = [
         Cmd
@@ -614,7 +614,7 @@ media_ducking(Config) ->
         from_tag => <<"ft-d2">>, sdp => sdp()
     }),
     {error, no_to_tag} =
-        chappe_rtpengine_session:silence_media(Sess2, #{party => callee}),
+        chappe_rtpengine_cmd:silence_media(Sess2, #{party => callee}),
     ok = chappe_rtpengine_session:stop(Sess2),
     wait_dead(Sess2),
     ok.
@@ -624,9 +624,9 @@ media_ducking(Config) ->
 forwarding(Config) ->
     Server = ?config(server, Config),
     Sess = establish(<<"sess-fwd">>, <<"ft-f">>, <<"tt-f">>),
-    {ok, _} = chappe_rtpengine_session:start_forwarding(Sess, #{}),
-    {ok, _} = chappe_rtpengine_session:start_forwarding(Sess, #{party => callee}),
-    {ok, _} = chappe_rtpengine_session:stop_forwarding(Sess),
+    {ok, _} = chappe_rtpengine_cmd:start_forwarding(Sess, #{}),
+    {ok, _} = chappe_rtpengine_cmd:start_forwarding(Sess, #{party => callee}),
+    {ok, _} = chappe_rtpengine_cmd:stop_forwarding(Sess),
     [_, _, StartAll, StartCallee, StopAll] = [
         Cmd
      || {_, Cmd} <- chappe_rtpengine_fake_server:received(Server)
@@ -646,7 +646,7 @@ play_media_blob(Config) ->
     Server = ?config(server, Config),
     Sess = establish(<<"sess-blob">>, <<"ft-b">>, <<"tt-b">>),
     Blob = <<"RIFF", 0, 1, 2, 255, 254, "fake-wav">>,
-    {ok, _} = chappe_rtpengine_session:play_media(Sess, #{
+    {ok, _} = chappe_rtpengine_cmd:play_media(Sess, #{
         blob => Blob,
         party => callee,
         repeat_times => 2
@@ -830,7 +830,7 @@ bad_param_keeps_session(Config) ->
     _ = Config,
     Sess = establish(<<"sess-bp">>, <<"ft-bp">>, <<"tt-bp">>),
     {error, {bad_param, volume, 0.5}} =
-        chappe_rtpengine_session:play_dtmf(Sess, #{code => 1, volume => 0.5}),
+        chappe_rtpengine_cmd:play_dtmf(Sess, #{code => 1, volume => 0.5}),
     #{state := established} = chappe_rtpengine_session:info(Sess),
     ok = chappe_rtpengine_session:stop(Sess),
     wait_dead(Sess),

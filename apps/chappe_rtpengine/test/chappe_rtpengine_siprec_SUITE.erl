@@ -95,7 +95,7 @@ publish_anchors_every_stream(_Config) ->
     ),
     ?assertEqual([0, 1, 2], [I || #{index := I} <- Streams]),
 
-    {ok, _} = chappe_rtpengine_session:unsubscribe(Sess, #{
+    {ok, _} = chappe_rtpengine_cmd:unsubscribe(Sess, #{
         to_tag => maps:get(<<"to-tag">>, Sub)
     }),
 
@@ -103,7 +103,7 @@ publish_anchors_every_stream(_Config) ->
     %% a stream is selectable either way. Note they collide: label "1" is
     %% stream 0's source label and stream 1's added one, and the first
     %% match wins.
-    {ok, Sub2} = chappe_rtpengine_session:subscribe_request(Sess, #{
+    {ok, Sub2} = chappe_rtpengine_cmd:subscribe_request(Sess, #{
         from_tags => [SrcTag], flags => [siprec]
     }),
     Labelled = chappe_rtpengine_sdp:streams(chappe_rtpengine_ng:sdp(Sub2)),
@@ -111,7 +111,7 @@ publish_anchors_every_stream(_Config) ->
         [[<<"1">>, <<"0">>], [<<"2">>, <<"1">>], [<<"3">>, <<"2">>]],
         [Ls || #{labels := Ls} <- Labelled]
     ),
-    {ok, _} = chappe_rtpengine_session:unsubscribe(Sess, #{
+    {ok, _} = chappe_rtpengine_cmd:unsubscribe(Sess, #{
         to_tag => maps:get(<<"to-tag">>, Sub2)
     }),
     ok = chappe_rtpengine_session:stop(Sess),
@@ -142,7 +142,7 @@ per_stream_fork_to_receivers(_Config) ->
                 {label, label(I)},
                 #{address => MediaIP, port => port_of(I, Receivers), ptime => 20}
             ),
-            {ok, _} = chappe_rtpengine_session:subscribe_answer(Sess, #{
+            {ok, _} = chappe_rtpengine_cmd:subscribe_answer(Sess, #{
                 to_tag => SubTag,
                 sdp => Answer,
                 flags => [allow_transcoding]
@@ -157,7 +157,7 @@ per_stream_fork_to_receivers(_Config) ->
 
     lists:foreach(
         fun(SubTag) ->
-            {ok, _} = chappe_rtpengine_session:unsubscribe(Sess, #{
+            {ok, _} = chappe_rtpengine_cmd:unsubscribe(Sess, #{
                 to_tag => SubTag
             })
         end,
@@ -192,14 +192,14 @@ one_subscription_many_receivers(_Config) ->
     {ok, Answer} = chappe_rtpengine_sdp:fork_answer(
         chappe_rtpengine_ng:sdp(Sub), Routes
     ),
-    {ok, _} = chappe_rtpengine_session:subscribe_answer(Sess, #{
+    {ok, _} = chappe_rtpengine_cmd:subscribe_answer(Sess, #{
         to_tag => SubTag, sdp => Answer, flags => [allow_transcoding]
     }),
 
     ok = pump(Sources, SrcPorts),
     assert_separated(Receivers),
 
-    {ok, _} = chappe_rtpengine_session:unsubscribe(Sess, #{to_tag => SubTag}),
+    {ok, _} = chappe_rtpengine_cmd:unsubscribe(Sess, #{to_tag => SubTag}),
     ok = chappe_rtpengine_session:stop(Sess),
     close(Sources ++ Receivers),
     ok.
@@ -233,19 +233,19 @@ inject_into_one_leg_while_ducked(_Config) ->
     ok = relay(SockA, RtpeIP, ToCaller, SockB),
 
     %% duck the caller: nothing it sends reaches the callee
-    {ok, _} = chappe_rtpengine_session:block_media(Sess, #{party => caller}),
+    {ok, _} = chappe_rtpengine_cmd:block_media(Sess, #{party => caller}),
     ok = assert_blocked(SockA, RtpeIP, ToCaller, SockB),
 
     %% inject into the callee's leg; with the caller ducked, anything
     %% arriving at the callee socket is the injected clip
     case
-        chappe_rtpengine_session:play_media(Sess, #{
+        chappe_rtpengine_cmd:play_media(Sess, #{
             blob => wav_blob(400), party => callee
         })
     of
         {ok, _} ->
             ?assert(received_within(SockB, 3000)),
-            case chappe_rtpengine_session:stop_media(Sess) of
+            case chappe_rtpengine_cmd:stop_media(Sess) of
                 {ok, _} -> ok;
                 {error, <<"Not currently playing media">>, _} -> ok
             end,
@@ -258,7 +258,7 @@ inject_into_one_leg_while_ducked(_Config) ->
     end,
 
     %% restore: the caller's own media relays again
-    {ok, _} = chappe_rtpengine_session:unblock_media(Sess, #{party => caller}),
+    {ok, _} = chappe_rtpengine_cmd:unblock_media(Sess, #{party => caller}),
     ok = relay(SockA, RtpeIP, ToCaller, SockB),
 
     ok = chappe_rtpengine_session:stop(Sess),
@@ -293,7 +293,7 @@ anchor(Sess, SrcTag, MediaIP, Sources) ->
 %% A fork the receiver needs no codec logic for: source codecs masked
 %% out, PCMU only, fixed 20 ms packetization.
 subscribe(Sess, SrcTag) ->
-    chappe_rtpengine_session:subscribe_request(Sess, #{
+    chappe_rtpengine_cmd:subscribe_request(Sess, #{
         from_tags => [SrcTag],
         codec => #{mask => [all], transcode => ['PCMU']},
         ptime => 20

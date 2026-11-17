@@ -15,6 +15,14 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 - chappe_mrf, breaking: `chappe_mrf_conf:refer/3`, `chappe_mrf_esl:header/0`
   and `chappe_mrf_esl:var/0` are removed. Nothing used them; a REFER to a
   room is handled by the room itself.
+- chappe_rtpengine, breaking: the media commands of a session (play,
+  record, DTMF, forwarding, subscriptions and the others) moved from
+  `chappe_rtpengine_session` to `chappe_rtpengine_cmd`, with the same names
+  and arguments. Change the module name in your calls.
+- Removed unused functions: `chappe_esl_exec:fork_stop_cmd/2`,
+  `chappe_esl_nodes:scope/0`, `chappe_esl_outbound_sup:start_conn/2`,
+  `chappe_cluster_machine:query_node_leases/2` and
+  `chappe_cluster_machine:counts/1`.
 
 - chappe_cluster, a new app: it lets several chappe nodes agree on a
   single owner for anything that must not run twice, such as a conference

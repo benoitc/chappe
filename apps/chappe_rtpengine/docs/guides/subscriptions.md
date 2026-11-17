@@ -7,16 +7,16 @@ This guide covers tapping a call's media with rtpengine's subscription model. Yo
 Request a subscription: rtpengine returns an SDP offer describing the tapped streams and a to-tag naming the subscription. Answer it with the consumer's SDP:
 
 ```erlang
-{ok, Sub} = chappe_rtpengine_session:subscribe_request(Sess, #{flags => [all]}),
+{ok, Sub} = chappe_rtpengine_cmd:subscribe_request(Sess, #{flags => [all]}),
 SubTag = maps:get(<<"to-tag">>, Sub),
 OfferedSDP = chappe_rtpengine_ng:sdp(Sub),
 
 %% hand OfferedSDP to the consumer (a recorder, another call leg),
 %% get its answer SDP back
-{ok, _} = chappe_rtpengine_session:subscribe_answer(Sess, #{to_tag => SubTag, sdp => ConsumerSDP}),
+{ok, _} = chappe_rtpengine_cmd:subscribe_answer(Sess, #{to_tag => SubTag, sdp => ConsumerSDP}),
 
 %% when done
-{ok, _} = chappe_rtpengine_session:unsubscribe(Sess, #{to_tag => SubTag}).
+{ok, _} = chappe_rtpengine_cmd:unsubscribe(Sess, #{to_tag => SubTag}).
 ```
 
 Pass `party => caller | callee` (or `from_tags => [Tag]`) instead of `flags => [all]` to tap a single participant.
@@ -44,7 +44,7 @@ A participant can carry several media streams: a SIPREC recording offer is one d
 So to send each recorded party to its own receiver, subscribe once per stream and answer each subscription with only that stream live. `chappe_rtpengine_sdp` builds those answers; `streams/1` gives you the offer's m-line order and labels:
 
 ```erlang
-{ok, Sub} = chappe_rtpengine_session:subscribe_request(Sess, #{
+{ok, Sub} = chappe_rtpengine_cmd:subscribe_request(Sess, #{
     from_tags => [SrcTag],
     codec => #{mask => [all], transcode => ['PCMU']},
     ptime => 20
@@ -58,7 +58,7 @@ OfferSDP = chappe_rtpengine_ng:sdp(Sub),
                                                 #{address => <<"198.51.100.7">>,
                                                   port => 40000,
                                                   ptime => 20}),
-{ok, _} = chappe_rtpengine_session:subscribe_answer(Sess, #{
+{ok, _} = chappe_rtpengine_cmd:subscribe_answer(Sess, #{
     to_tag => SubTag, sdp => Answer, flags => [allow_transcoding]
 }).
 ```
@@ -89,13 +89,13 @@ Notes:
 For live transcription, fork one party's media to an RTP receiver in a known plain codec so decoding stays trivial. Mask the source codecs and transcode to PCMU with a fixed ptime, and answer with the receiver's address. The `allow_transcoding` flag on the answer lets the receiver accept fewer codecs than the source party uses:
 
 ```erlang
-{ok, Sub} = chappe_rtpengine_session:subscribe_request(Sess, #{
+{ok, Sub} = chappe_rtpengine_cmd:subscribe_request(Sess, #{
     party => caller,
     codec => #{mask => [all], transcode => ['PCMU']},
     ptime => 20
 }),
 SubTag = maps:get(<<"to-tag">>, Sub),
-{ok, _} = chappe_rtpengine_session:subscribe_answer(Sess, #{
+{ok, _} = chappe_rtpengine_cmd:subscribe_answer(Sess, #{
     to_tag => SubTag,
     sdp => ReceiverSDP,   % PCMU-only, recvonly, the receiver's ip:port
     flags => [allow_transcoding]
@@ -116,6 +116,6 @@ Notes:
 
 ## Where it lives
 
-- Modules: `chappe_rtpengine_session` (`subscribe_request/2`, `subscribe_answer/2`, `unsubscribe/2`), `chappe_rtpengine_sdp` (fork answers)
+- Modules: `chappe_rtpengine_cmd` (`subscribe_request/2`, `subscribe_answer/2`, `unsubscribe/2`), `chappe_rtpengine_sdp` (fork answers)
 - Tests: `apps/chappe_rtpengine/test/chappe_rtpengine_sdp_tests.erl`, `chappe_rtpengine_session_SUITE.erl`
 - Lab: `make interop` (`chappe_rtpengine_siprec_SUITE`, `chappe_rtpengine_live_SUITE`)
