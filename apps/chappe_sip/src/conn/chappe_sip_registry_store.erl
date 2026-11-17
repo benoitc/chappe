@@ -21,11 +21,11 @@
 
 -include("chappe_sip_location.hrl").
 
--export([modify/3, modify/5, write/5, backoff/1, tries/0]).
--export([live/2, is_conn/1, held/4, held/5, gen/0, drop_after/2]).
--export([stamp_of/3, droppable/2, flow_aors/0, resync_apply/4]).
+-export([modify/3, write/5, backoff/1, tries/0]).
+-export([live/2, gen/0]).
+-export([stamp_of/3, flow_aors/0, resync_apply/4]).
 -export([purge_or_retry/2, retry_purge/1, clear_index/0]).
--export([to_map/2, by_q/1, send_flow/1, now_s/0]).
+-export([to_map/2, by_q/1, send_flow/1]).
 
 -define(FLOWS, chappe_sip_registry_flows).
 %% a write that lost a compare-and-swap this many times in a row fails

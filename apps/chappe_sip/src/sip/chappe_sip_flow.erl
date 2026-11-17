@@ -25,10 +25,13 @@
 -module(chappe_sip_flow).
 
 -export([received_flow/1, arrival_flow/1, nated/2, flow_route/1]).
--export([token/1, untoken/1, tokens/1, same/2]).
+-export([token/1, tokens/1, same/2]).
 -export([edge_route/4, edge_flow/1, valid_edge/1]).
--export([ensure_secret/0, check_secret/1, boot/0, booted_at/0, here/0]).
+-export([ensure_secret/0, boot/0, booted_at/0, here/0]).
 -export([mac/1, fields/1, mac_equal/2, expiry/1]).
+-ifdef(TEST).
+-export([check_secret/1, untoken/1]).
+-endif.
 
 -define(MARK, <<"espx">>).
 -define(SECRET_KEY, {chappe_sip_flow, secret}).

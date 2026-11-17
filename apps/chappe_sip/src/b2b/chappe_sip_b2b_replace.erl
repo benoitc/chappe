@@ -23,8 +23,8 @@
 %% a via-branch other than the first reaches nobody.
 -module(chappe_sip_b2b_replace).
 
--export([valid/2, offer/5, moved/4, reopen/4, result/1]).
--export([call/4, swap/6, abort/3, latched/2, prepare/6]).
+-export([valid/2, reopen/4, result/1]).
+-export([swap/6, abort/3, prepare/6]).
 
 -export_type([won/0]).
 

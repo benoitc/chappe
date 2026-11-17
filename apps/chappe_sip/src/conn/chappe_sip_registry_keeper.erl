@@ -12,8 +12,11 @@
 -module(chappe_sip_registry_keeper).
 -behaviour(gen_server).
 
--export([start_link/0, tables/0]).
+-export([start_link/0]).
 -export([init/1, handle_call/3, handle_cast/2]).
+-ifdef(TEST).
+-export([tables/0]).
+-endif.
 
 -define(TAB, chappe_sip_registry).
 -define(CFG_TAB, chappe_sip_engine_cfg).

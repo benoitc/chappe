@@ -6,7 +6,9 @@
 -behaviour(application).
 
 -export([start/2, prep_stop/1, stop/1]).
+-ifdef(TEST).
 -export([insecure_cookie/1]).
+-endif.
 
 start(_Type, _Args) ->
     case insecure_cookie(erlang:get_cookie()) of

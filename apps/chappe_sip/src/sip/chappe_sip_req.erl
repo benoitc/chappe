@@ -20,12 +20,8 @@
     get_all/2,
     call_id/1,
     from_tag/1,
-    can_form_dialog/1,
     source_ip/1,
-    source_port/1,
-    calling_number/1,
-    calling_name/1,
-    called_number/1
+    source_port/1
 ]).
 -export([call_ref/1, set_call_ref/2]).
 -export([set_local/3, local/2, local/3, locals/1, is_req/1]).
@@ -133,9 +129,6 @@ call_id(#req{msg = M}) -> chappe_sip_msg:call_id(M).
 -spec from_tag(req()) -> binary() | undefined.
 from_tag(#req{msg = M}) -> chappe_sip_msg:from_tag(M).
 
--spec can_form_dialog(req()) -> boolean().
-can_form_dialog(#req{msg = M}) -> chappe_sip_msg:can_form_dialog(M).
-
 %% The wire source address of the request (the engine's peer, not the spoofable
 %% Via sent-by). undefined if the transport did not report it. This is the
 %% trust anchor for a source-IP ACL.
@@ -149,44 +142,3 @@ source_ip(#req{meta = Meta}) ->
 -spec source_port(req()) -> non_neg_integer() | undefined.
 source_port(#req{meta = Meta}) ->
     maps:get(source_port, Meta, undefined).
-
-%% P-Asserted-Identity user, else From user (drachtio semantics).
--spec calling_number(req()) -> binary() | undefined.
-calling_number(#req{msg = M}) ->
-    case chappe_sip_msg:get(<<"p-asserted-identity">>, M) of
-        undefined ->
-            user_of(chappe_sip_msg:from(M));
-        Pai ->
-            case chappe_sip_hdr:name_addr(Pai) of
-                {ok, Na} -> user_of({ok, Na});
-                _ -> user_of(chappe_sip_msg:from(M))
-            end
-    end.
-
--spec calling_name(req()) -> binary() | undefined.
-calling_name(#req{msg = M}) ->
-    case chappe_sip_msg:from(M) of
-        {ok, #{display := D}} -> D;
-        _ -> undefined
-    end.
-
-%% user part of the request URI
--spec called_number(req()) -> binary() | undefined.
-called_number(#req{msg = M}) ->
-    case chappe_sip_msg:uri(M) of
-        undefined ->
-            undefined;
-        U ->
-            case chappe_sip_uri:parse(U) of
-                {ok, #{user := User}} -> User;
-                _ -> undefined
-            end
-    end.
-
-user_of({ok, #{uri := U}}) ->
-    case chappe_sip_uri:parse(U) of
-        {ok, #{user := User}} -> User;
-        _ -> undefined
-    end;
-user_of(_) ->
-    undefined.

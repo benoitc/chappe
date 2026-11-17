@@ -29,7 +29,9 @@
 -export([read/2, write/3, aors/0, clear/0]).
 -export([write_mode/0, start/0, stop/0, periodic/2, held/4, mine/0]).
 -export([view/2, edge/1]).
+-ifdef(TEST).
 -export([resync/1, resync_reads/4]).
+-endif.
 
 -define(PREFIX, <<"chappe_sip/aor/">>).
 -define(HELD, chappe_sip_registry_held).
@@ -215,8 +217,8 @@ resync_reads(Store, [Aor | Rest], Owner, N) ->
             ok
     end.
 
+-ifdef(TEST).
 %% a whole pass of Store's index in the caller
--spec resync(module()) -> ok.
 resync(Store) ->
     lists:foreach(
         fun(Aor) ->
@@ -230,6 +232,7 @@ resync(Store) ->
         end,
         indexed_aors()
     ).
+-endif.
 
 %% The held index: the AORs this node took a binding of, so it keeps
 %% alive and purges those without reading the region. An entry carries

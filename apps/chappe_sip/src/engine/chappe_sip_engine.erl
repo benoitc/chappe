@@ -93,7 +93,6 @@
     | {udp, binary(), inet:port_number()}
     | {udp, binary(), inet:port_number(), binary()}
     | undefined.
--export([validate_tls/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -record(state, {

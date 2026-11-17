@@ -15,10 +15,20 @@
 
 -include("chappe_sip.hrl").
 
--export([build/2, with_contact/3, with_supported/3, with_allow/3]).
--export([dialog_contact/2, has_hdr/2]).
--export([contact/3, local_contact/1, contact_uri/2]).
--export([fsm_args/2, local_addr/2, ack_wait/2, early/2, remote_cseq/1]).
+-export([build/2]).
+-export([contact/3]).
+-export([fsm_args/2, local_addr/2, ack_wait/2, early/2]).
+-ifdef(TEST).
+-export([
+    with_supported/3,
+    with_allow/3,
+    dialog_contact/2,
+    has_hdr/2,
+    local_contact/1,
+    contact_uri/2,
+    remote_cseq/1
+]).
+-endif.
 
 -export_type([headers/0]).
 

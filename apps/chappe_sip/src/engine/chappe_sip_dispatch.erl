@@ -22,9 +22,12 @@
 -include("chappe_sip.hrl").
 
 -export([stray_in_dialog/2, route_for/4, bad_event/3, unrouted/3]).
--export([unhandled/3, event_header/1]).
--export([merge_check/4, merge_key/1, top_branch/1]).
--export([allow_value/2, allow_events/2, event_package/1, is_own_route/2]).
+-export([event_header/1]).
+-export([merge_check/4]).
+-export([allow_events/2, is_own_route/2]).
+-ifdef(TEST).
+-export([event_package/1, merge_key/1]).
+-endif.
 
 -export_type([packages/0, events/0, merge/0, route_key/0]).
 

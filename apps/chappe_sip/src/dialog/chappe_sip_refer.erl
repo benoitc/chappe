@@ -27,7 +27,7 @@
 
 -export([check/1, check/2, accept/3, accept/4]).
 -export([progress/2, progress/3, final/2, final/3]).
--export([target/1, dialog/1, referred_by/1, target_dialog/1, subscription/1]).
+-export([target/1, referred_by/1, target_dialog/1, subscription/1]).
 -export([send/3, handle_notify/2, notify_handler/0]).
 -export([route/3]).
 
@@ -299,11 +299,6 @@ emit(#refer{pid = Pid}, Frag, State) ->
 %% (INVITE, BYE, REFER, ...), URI headers, Replaces.
 -spec target(refer()) -> target().
 target(#refer{target = T}) -> T.
-
-%% The dialog the subscription lives in: the one the REFER came in, or the
-%% one its 200 formed. undefined for an out-of-dialog REFER without one.
--spec dialog(refer()) -> chappe_sip_dialog:dialog() | undefined.
-dialog(#refer{dialog = D}) -> D.
 
 %% The process of the REFER's implicit subscription, undefined when there
 %% is none (Refer-Sub: false). It ends once the final NOTIFY is out (or

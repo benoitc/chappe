@@ -9,7 +9,7 @@
 %% this process as the dialog owner, then calls add/4. From there:
 %%   - the watcher gets the full state at once (RFC 6665 4.2.1.2), again on
 %%     every refresh, and in the terminated NOTIFY of an unsubscribe;
-%%   - changed/2 sends the state to every watcher of the resource, never
+%%   - put/3 sends the state to every watcher of the resource, never
 %%     two NOTIFYs to one watcher closer than min_interval ms: a change
 %%     held back goes out when the interval has passed, so none is lost;
 %%   - NOTIFYs go through one process per watcher, in order, so a slow
@@ -24,15 +24,13 @@
     start_link/3,
     start_link/4,
     add/4, add/5,
-    changed/2,
     put/3,
     put/4,
     put_async/4,
     get/2,
     put_next/4,
     set_state/3,
-    set_interval/2,
-    watchers/2
+    set_interval/2
 ]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
@@ -82,11 +80,6 @@ add(Name, Dialog, Key, WState) ->
 add(Name, Dialog, Key, WState, Fetch) ->
     gen_server:call(Name, {add, Dialog, Key, WState, Fetch}).
 
-%% Key's state changed: every watcher of it gets a NOTIFY.
--spec changed(atom(), term()) -> ok.
-changed(Name, Key) ->
-    gen_server:cast(Name, {changed, Key}).
-
 %% Store Key's data and notify its watchers.
 -spec put(atom(), term(), term()) -> ok.
 put(Name, Key, Data) ->
@@ -128,11 +121,6 @@ set_state(Name, Key, Fun) ->
 -spec set_interval(atom(), non_neg_integer()) -> ok.
 set_interval(Name, Ms) ->
     gen_server:call(Name, {interval, Ms}).
-
-%% The watchers of Key: [{DialogPid, WState}].
--spec watchers(atom(), term()) -> [{pid(), atom()}].
-watchers(Name, Key) ->
-    gen_server:call(Name, {watchers, Key}).
 
 %% ---- gen_server ----
 
@@ -182,14 +170,7 @@ handle_call({put_next, Key, Data, Next}, _From, S) ->
 handle_call({get, Key}, _From, S) ->
     {reply, maps:get(Key, S#state.data, undefined), S};
 handle_call({set_state, Key, Fun}, _From, S) ->
-    {reply, ok, set_state_of(Key, Fun, S)};
-handle_call({watchers, Key}, _From, S) ->
-    {reply,
-        [
-            {P, WS}
-         || P := #{key := K, wstate := WS} <- S#state.watchers, K =:= Key
-        ],
-        S}.
+    {reply, ok, set_state_of(Key, Fun, S)}.
 
 set_state_of(Key, Fun, S) ->
     Moved = [
@@ -215,8 +196,6 @@ set_state_of(Key, Fun, S) ->
         Moved
     ).
 
-handle_cast({changed, Key}, S) ->
-    {noreply, notify_key(Key, S)};
 handle_cast({put, Key, Data, Version}, S) ->
     %% a put/4 made on another node (see start_link/4's group); its
     %% stamp moves this node's clock (chappe_sip_hlc)

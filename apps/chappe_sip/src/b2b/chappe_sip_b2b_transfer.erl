@@ -27,10 +27,10 @@
 
 -include("chappe_sip.hrl").
 
--export([valid/1, mode/1, start/1, start_link/1, init/1]).
+-export([valid/1, mode/1, start_link/1, init/1]).
 -export([accept/2, reject/2]).
 %% for the relay loop (chappe_sip_b2b_relay)
--export([options/2, refer/4, monitor/1, down/2, transferor/1]).
+-export([options/2, refer/4, monitor/1, down/2]).
 -export([leg_gone/4, principal/2]).
 
 -export_type([mode/0, info/0]).

@@ -8,7 +8,7 @@
 -module(chappe_sip_proxy_rules).
 
 -export([best_response/1, loop_hash/1, looped/1, new_branch/1, own_hops/1]).
--export([retarget/2, is_own_address/1, is_loose/1]).
+-export([retarget/2, is_own_address/1]).
 -export([record_routes/1, rr_contact/2, next_hop/3]).
 
 %% the reasons 4xx preferred by 16.7 step 6: they let the client retry

@@ -13,8 +13,11 @@
 
 -include("chappe_sip.hrl").
 
--export([start_link/2, initial/1, share/3]).
+-export([start_link/2, initial/1]).
 -export([init/1, callback_mode/0, handle_event/4]).
+-ifdef(TEST).
+-export([share/3]).
+-endif.
 
 -record(state, {
     name :: term(),

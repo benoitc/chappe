@@ -29,7 +29,10 @@
 %% from the offer's); chappe receives only, so it never uses it.
 -module(chappe_sip_sdes).
 
--export([select/1, parse/1, answer/1]).
+-export([select/1, answer/1]).
+-ifdef(TEST).
+-export([parse/1]).
+-endif.
 
 -export_type([crypto/0, suite/0]).
 
