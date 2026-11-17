@@ -29,6 +29,7 @@ all() ->
         transport_503_on_a_closed_flow,
         flow_index_follows_a_sweep,
         flow_index_follows_a_move,
+        resync_without_quorum_does_not_block,
         cseq_and_expires_across_nodes,
         edge_node_down,
         lost_quorum_refuses_register,
@@ -231,16 +232,44 @@ flow_index_follows_a_move(Config) ->
     wait(fun() -> flow_index(N1) =:= [] end, 100),
     ?assertNotEqual([], flow_index(N2)).
 
+%% Node 1 holds many AORs and loses its quorum: the resync, which reads
+%% each through the leader, does not hold the registry, so a dropped flow
+%% is still handled at once.
+resync_without_quorum_does_not_block(Config) ->
+    [N1, N2, N3] = ?config(nodes, Config),
+    [{ok, [_]} = erpc:call(N1, chappe_sip_registry, register_contacts,
+                           [reg_req(<<"<sip:u", (integer_to_binary(I))/binary, "@example.com>">>,
+                                    [contact(1, 3600)], <<"rq">>, 1),
+                            #{flow => 100 + I}])
+     || I <- lists:seq(1, 20)],
+    Reg = erpc:call(N1, erlang, whereis, [chappe_sip_registry]),
+    cut(N1, [N2, N3]),
+    try
+        Reg ! resync,
+        timer:sleep(200),
+        T0 = erlang:monotonic_time(millisecond),
+        ok = erpc:call(N1, chappe_sip_registry, remove_flow, [9999]),
+        _ = erpc:call(N1, sys, get_state, [Reg, 10000]),
+        Took = erlang:monotonic_time(millisecond) - T0,
+        ct:pal("remove_flow handled after ~b ms", [Took]),
+        ?assert(Took < 1000)
+    after
+        heal(N1, [N2, N3])
+    end.
+
 flow_index(Node) ->
     erpc:call(Node, ets, tab2list, [chappe_sip_registry_flows]).
 
 reg_req(Contacts, CallId, CSeq) ->
+    reg_req(aor(), Contacts, CallId, CSeq).
+
+reg_req(Aor, Contacts, CallId, CSeq) ->
     Raw = iolist_to_binary(
       [<<"REGISTER sip:example.com SIP/2.0\r\n">>,
        <<"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKix">>, CallId, <<"\r\n">>,
        <<"Max-Forwards: 70\r\n">>,
-       <<"From: ">>, aor(), <<";tag=ft\r\n">>,
-       <<"To: ">>, aor(), <<"\r\n">>,
+       <<"From: ">>, Aor, <<";tag=ft\r\n">>,
+       <<"To: ">>, Aor, <<"\r\n">>,
        <<"Call-ID: ">>, CallId, <<"@ct\r\n">>,
        <<"CSeq: ">>, integer_to_binary(CSeq), <<" REGISTER\r\n">>,
        [[<<"Contact: ">>, C, <<"\r\n">>] || C <- Contacts],

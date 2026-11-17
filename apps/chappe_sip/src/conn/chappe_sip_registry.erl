@@ -62,6 +62,7 @@
 -export([handle_continue/2]).
 -ifdef(TEST).
 -export([register_with/3, resync_with/1, modify_with/3]).
+-export([resync_apply/4, gen_for_test/0]).
 -endif.
 
 %% a write that lost a compare-and-swap this many times in a row fails 500
@@ -76,6 +77,9 @@
 %% most this many wait
 -define(PURGE_RETRY_MS, 1000).
 -define(MAX_PENDING, 10000).
+%% the resync pauses this long every this many reads
+-define(RESYNC_BATCH, 50).
+-define(RESYNC_PAUSE_MS, 20).
 %% how long a REGISTER waits for the store; one not started this long
 %% before that deadline is refused, so it cannot land after its caller
 %% has answered 500
@@ -146,6 +150,9 @@ resync_with(Store) ->
 modify_with(Store, Aor, Fun) ->
     _ = modify(Store, Aor, Fun),
     ok.
+
+gen_for_test() ->
+    gen().
 -endif.
 
 %% The first try reads the local replica; one that lost the compare-and-
@@ -392,8 +399,12 @@ handle_info(sweep, S) ->
     ok = sweep(fun() -> true end),
     {noreply, schedule_sweep(S)};
 handle_info(resync, S) ->
-    ok = resync(),
-    {noreply, schedule_resync(S)};
+    {noreply, schedule_resync(start_resync(S))};
+handle_info({resync_read, Aor, Bs, T0}, S) ->
+    ok = resync_apply(chappe_sip_location:backend(), Aor, Bs, T0),
+    {noreply, S};
+handle_info({'DOWN', Ref, process, _Pid, _Why}, #{resync := Ref} = S) ->
+    {noreply, S#{resync := undefined}};
 handle_info(retry_purge, #{pending := Pending} = S0) ->
     S = S0#{pending := #{}, retry := undefined},
     {noreply,
@@ -884,28 +895,63 @@ is_conn(_) -> false.
 %% node. Every registrar_sweep_ms each indexed AOR is read again and its
 %% index entries follow its live bindings, so the index holds only what
 %% this node still has. It visits this node's own entries, not the region.
-resync() ->
-    resync(chappe_sip_location:backend()).
+%%
+%% The reads go through the leader, so they run in a helper, not in this
+%% process: a dropped flow is purged at once whatever the region does. The
+%% helper reads the AORs one after another, a pause every ?RESYNC_BATCH,
+%% stops at the first that finds no quorum, and sends each read here
+%% ({resync_read, ...}), where the index decision is made. One pass at a
+%% time: a tick that finds one still running starts none.
+start_resync(#{resync := Ref} = S) when is_reference(Ref) ->
+    S;
+start_resync(S) ->
+    Store = chappe_sip_location:backend(),
+    Aors = indexed_aors(),
+    Owner = self(),
+    {_Pid, Ref} = spawn_monitor(fun() -> resync_reads(Store, Aors, Owner, 0) end),
+    S#{resync => Ref}.
 
-resync(Store) ->
-    Aors = lists:usort(
+indexed_aors() ->
+    lists:usort(
         ets:select(?FLOWS, [{{{aor, '$1', '_'}, '_'}, [], ['$1']}]) ++
-            [A || {A} <- ets:tab2list(?HELD)]
-    ),
+            [A || {A, _} <- ets:tab2list(?HELD)]
+    ).
+
+resync_reads(_Store, [], _Owner, _N) ->
+    ok;
+resync_reads(Store, [Aor | Rest], Owner, N) ->
+    _ =
+        N > 0 andalso N rem ?RESYNC_BATCH =:= 0 andalso
+            timer:sleep(?RESYNC_PAUSE_MS),
+    T0 = gen(),
+    case chappe_sip_location:read(Store, Aor, consistent) of
+        {ok, Bs, _} ->
+            Owner ! {resync_read, Aor, Bs, T0},
+            resync_reads(Store, Rest, Owner, N + 1);
+        {error, _} ->
+            %% no quorum: the rest would wait as long; the next pass tries
+            ok
+    end.
+
+%% an entry is dropped only on what the region holds, and only one made
+%% before the read began (T0)
+resync_apply(Store, Aor, Bs, T0) ->
+    held(Store, Aor, live(Bs, now_s()), {before, T0}).
+
+-ifdef(TEST).
+%% a whole pass in the caller (tests)
+resync(Store) ->
     lists:foreach(
         fun(Aor) ->
-            %% through the leader: an entry is dropped only on what the
-            %% region holds, and only one made before this read
             T0 = gen(),
             case chappe_sip_location:read(Store, Aor, consistent) of
-                {ok, Bs, _} ->
-                    held(Store, Aor, live(Bs, now_s()), {before, T0});
-                {error, _} ->
-                    ok
+                {ok, Bs, _} -> resync_apply(Store, Aor, Bs, T0);
+                {error, _} -> ok
             end
         end,
-        Aors
+        indexed_aors()
     ).
+-endif.
 
 %% index entries carry when they were made; a read that starts at T0 may
 %% drop only entries made before it, since a write indexed after T0 may be
@@ -990,7 +1036,7 @@ purge({Keep, Aors}) ->
 mine() ->
     case chappe_sip_location:backend() of
         chappe_sip_location_ets -> aors();
-        _ -> [Aor || {Aor} <- ets:tab2list(?HELD)]
+        _ -> [Aor || {Aor, _} <- ets:tab2list(?HELD)]
     end.
 
 %% After a write or a read: index the flows of this node's bindings of
@@ -1030,13 +1076,20 @@ droppable(_T, keep) -> false.
 held_aor(chappe_sip_location_ets, _Aor, _Bs, _Drop) ->
     ok;
 held_aor(_Store, Aor, Bs, Drop) ->
+    %% an entry carries when it was made, as the flow index's do: a read
+    %% that began before it does not remove it
     _ =
         case
             {lists:any(fun(#binding{node = N}) -> N =:= node() end, Bs), Drop}
         of
-            {true, _} -> ets:insert(?HELD, {Aor});
-            {false, {before, _}} -> ets:delete(?HELD, Aor);
-            {false, keep} -> true
+            {true, _} ->
+                ets:insert(?HELD, {Aor, gen()});
+            {false, {before, T0}} ->
+                ets:select_delete(?HELD, [
+                    {{Aor, '$1'}, [{'<', '$1', T0}], [true]}
+                ]);
+            {false, keep} ->
+                true
         end,
     ok.
 

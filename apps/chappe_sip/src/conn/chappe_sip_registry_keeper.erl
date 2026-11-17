@@ -18,7 +18,8 @@
 -define(TAB, chappe_sip_registry).
 -define(CFG_TAB, chappe_sip_engine_cfg).
 -define(DIALOG_TAB, chappe_sip_dialog_index).
-%% on a cluster, the AORs this node took a binding of (chappe_sip_registry)
+%% on a cluster, the AORs this node took a binding of, {Aor, Made}
+%% (chappe_sip_registry)
 -define(HELD_TAB, chappe_sip_registry_held).
 %% the flows of this node's bindings, both ways: {flow, Flow, Aor} and
 %% {aor, Aor, Flow} (chappe_sip_registry)
