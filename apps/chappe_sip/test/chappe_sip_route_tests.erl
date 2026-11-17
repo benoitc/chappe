@@ -100,13 +100,13 @@ conn_token_bound_to_boot_test() ->
                                         {undefined, {udp, <<"192.0.2.7">>, 5070}},
                                         <<"c10">>),
     ?assert(chappe_sip_route:is_self(Conn, undefined, <<"c10">>)),
-    persistent_term:put({chappe_sip_flow, boot_id}, <<"another-boot">>),
+    persistent_term:put({chappe_sip_route, boot_id}, <<"another-boot">>),
     try
         ?assertNot(chappe_sip_route:is_self(Conn, undefined, <<"c10">>)),
         ?assertNot(chappe_sip_route:is_self(Ws, undefined, <<"c10">>)),
         ?assert(chappe_sip_route:is_self(Udp, undefined, <<"c10">>))
     after
-        persistent_term:put({chappe_sip_flow, boot_id}, Boot)
+        persistent_term:put({chappe_sip_route, boot_id}, Boot)
     end.
 
 %% A marker from before expiries carries no node or boot: one naming a WS

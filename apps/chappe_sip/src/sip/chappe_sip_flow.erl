@@ -34,9 +34,12 @@
 -endif.
 
 -define(MARK, <<"espx">>).
--define(SECRET_KEY, {chappe_sip_flow, secret}).
--define(BOOT_KEY, {chappe_sip_flow, boot}).
--define(BOOT_ID_KEY, {chappe_sip_flow, boot_id}).
+%% the keys chappe_sip_route stored them under before they moved here, so a
+%% node upgraded in place keeps its secret, its boot and the routes made
+%% under them
+-define(SECRET_KEY, {chappe_sip_route, flow_secret}).
+-define(BOOT_KEY, {chappe_sip_route, boot}).
+-define(BOOT_ID_KEY, {chappe_sip_route, boot_id}).
 
 %% The flow a request arrived on, from its meta: its TCP/TLS connection,
 %% or the address and port a UDP request came from (RFC 3581 received and
