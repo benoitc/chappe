@@ -126,7 +126,10 @@ handoff_of(Name, Opts, Portable, Members) ->
         portable => Portable,
         name => Name,
         opts => maps:filter(Keep, Opts),
-        members => [Id || Id := #{b2b := {Pid, _}} <- Members, node(Pid) =/= Here]
+        members => [
+            Id
+         || Id := #{b2b := {Pid, _}} <- Members, node(Pid) =/= Here
+        ]
     }.
 
 %% The members a call can move: those with a call, not on their way out.

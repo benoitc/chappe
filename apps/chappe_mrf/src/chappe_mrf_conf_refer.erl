@@ -226,7 +226,9 @@ setup(Opts, S) ->
             {ok, V} <- [maps:find(O, Opts)]
         ]
     ),
-    S#state{refer_policy = maps:get(refer_policy, Opts, undefined), dial = Dial}.
+    S#state{
+        refer_policy = maps:get(refer_policy, Opts, undefined), dial = Dial
+    }.
 
 %% The room's REFER requests, sent as {refer, Req}.
 -spec call(term(), #state{}) -> {reply, term(), #state{}}.
@@ -500,7 +502,9 @@ add(Target, Refer, Extra, S) ->
 remove(Target, #state{members = M} = S) ->
     case [Id || Id := #{uri := U} <- M, same_uri(U, Target)] of
         [Id | _] ->
-            {reply, ok, S1} = chappe_mrf_conf_backend:drop_member(Id, kicked, S),
+            {reply, ok, S1} = chappe_mrf_conf_backend:drop_member(
+                Id, kicked, S
+            ),
             {ok, S1};
         [] ->
             {{error, not_found}, S}

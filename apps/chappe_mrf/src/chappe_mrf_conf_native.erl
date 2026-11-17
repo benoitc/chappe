@@ -44,7 +44,9 @@ join(Conf, _Info, B2b, Opts) when is_tuple(B2b) ->
         Conf, {join, {b2b, B2b, Opts}}, ?MRF_JOIN_TIMEOUT + 80000
     );
 join(Conf, _Info, Ep, Opts) ->
-    chappe_mrf_conf:call(Conf, {join, {ep, Ep, Opts}}, ?MRF_JOIN_TIMEOUT + 80000).
+    chappe_mrf_conf:call(
+        Conf, {join, {ep, Ep, Opts}}, ?MRF_JOIN_TIMEOUT + 80000
+    ).
 
 admit({ep, Ep, Opts}, _From, S) ->
     join_endpoint(Ep, Opts, S);
@@ -80,13 +82,18 @@ handle_info({loop_failed, Token}, S) ->
 handle_info({chappe_sip_siprec, Rec, {stopped, _}}, S) ->
     %% a stopped recording is forgotten
     #native{siprec = R} = B = chappe_mrf_conf_backend:bstate(S),
-    {noreply, chappe_mrf_conf_backend:bstate(B#native{siprec = lists:delete(Rec, R)}, S)};
+    {noreply,
+        chappe_mrf_conf_backend:bstate(
+            B#native{siprec = lists:delete(Rec, R)}, S
+        )};
 handle_info({chappe_mrf_endpoint, Ep, hangup}, S) ->
     {noreply, gone_ep(Ep, S)};
 handle_info({chappe_mrf_endpoint, Ep, {dtmf, Digit}}, S) ->
     case chappe_mrf_conf_backend:member_by(ep, Ep, S) of
-        {ok, Id} -> {noreply, chappe_mrf_conf_backend:emit({dtmf, Id, Digit}, S)};
-        error -> {noreply, S}
+        {ok, Id} ->
+            {noreply, chappe_mrf_conf_backend:emit({dtmf, Id, Digit}, S)};
+        error ->
+            {noreply, S}
     end;
 handle_info({chappe_mrf, Ep, {hangup, _} = E}, S) when is_pid(Ep) ->
     %% a dialed endpoint's (chappe_mrf_conf_refer), or a member's
@@ -116,8 +123,10 @@ flag_ok(ok, S) -> {ok, S};
 flag_ok({error, _} = Err, _S) -> Err.
 
 %% the mixer does not say it: the room does
-muted(Id, Mute, ok, S) -> {ok, chappe_mrf_conf_backend:emit({muted, Id, Mute}, S)};
-muted(_Id, _Mute, {error, _} = Err, _S) -> Err.
+muted(Id, Mute, ok, S) ->
+    {ok, chappe_mrf_conf_backend:emit({muted, Id, Mute}, S)};
+muted(_Id, _Mute, {error, _} = Err, _S) ->
+    Err.
 
 hangup(_Id, #{rtpe := _}, _S) ->
     %% an endpoint of the app: out of the room, its channel stays
@@ -178,7 +187,8 @@ record(Srs, Opts, #state{name = Name, room = Room} = S) ->
         {ok, Rec} ->
             B1 = B#native{siprec = [Rec | Recs]},
             {ok, chappe_mrf_conf_backend:bstate(B1, S)};
-        {error, _} = Err -> {Err, S}
+        {error, _} = Err ->
+            {Err, S}
     end.
 
 stop_record(S) ->
@@ -212,7 +222,9 @@ dial(Target, Refer, Cfg, S) ->
     ok.
 loop_invite(Conf, Token, Req, Res) ->
     Offer = chappe_sip_req:body(Req),
-    case chappe_mrf_conf:call(Conf, {backend, {loop_offer, Token, Offer}}, 30000) of
+    case
+        chappe_mrf_conf:call(Conf, {backend, {loop_offer, Token, Offer}}, 30000)
+    of
         {ok, Answer} ->
             Msg =
                 case
@@ -382,7 +394,8 @@ join_endpoint(Ep, Opts, #state{name = Name, room = Room} = S) ->
                     Mb = chappe_mrf_conf_backend:member(Opts, Id, #{
                         ep => Ep, session => MS, rtpe => RS
                     }),
-                    {reply, {ok, Id}, chappe_mrf_conf_backend:joined(Id, Mb, S)};
+                    {reply, {ok, Id},
+                        chappe_mrf_conf_backend:joined(Id, Mb, S)};
                 {error, _} = Err ->
                     {reply, Err, S}
             end;

@@ -112,8 +112,10 @@ handle_info({chappe_mrf_endpoint, Ep, hangup}, S) ->
 handle_info({chappe_mrf_endpoint, Ep, {dtmf, Digit}}, S) ->
     %% a digit from a member's channel
     case chappe_mrf_conf_backend:member_by(ep, Ep, S) of
-        {ok, Id} -> {noreply, chappe_mrf_conf_backend:emit({dtmf, Id, Digit}, S)};
-        error -> {noreply, S}
+        {ok, Id} ->
+            {noreply, chappe_mrf_conf_backend:emit({dtmf, Id, Digit}, S)};
+        error ->
+            {noreply, S}
     end;
 handle_info({chappe_mrf, Ep, {hangup, _}}, S) when is_pid(Ep) ->
     {noreply, gone_ep(Ep, S)};
@@ -200,7 +202,9 @@ record_stored(Path, Opts, S) ->
         {ok, _} ?= chappe_mrf_store:local_path(Path),
         ok ?= record_cmd(Path, S),
         #fs{recordings = Recs} = B = chappe_mrf_conf_backend:bstate(S),
-        Rec = {Path, maps:get(ref, Opts, S#state.name), maps:with([parties], Opts)},
+        Rec =
+            {Path, maps:get(ref, Opts, S#state.name),
+                maps:with([parties], Opts)},
         {ok, chappe_mrf_conf_backend:bstate(B#fs{recordings = [Rec | Recs]}, S)}
     else
         Err -> {Err, S}
@@ -212,7 +216,8 @@ record_cmd(Path, S) ->
     ).
 
 stop_record(S) ->
-    #fs{recordings = Recs, stopping = St} = B = chappe_mrf_conf_backend:bstate(S),
+    #fs{recordings = Recs, stopping = St} =
+        B = chappe_mrf_conf_backend:bstate(S),
     case stop_cmd(S) of
         ok when Recs =/= [] ->
             %% adopted on stop-recording (the file closed); a room whose
@@ -365,7 +370,9 @@ room_flags(Call, S) ->
         #fs{room_flags = []} ->
             ok;
         #fs{room_flags = Flags} ->
-            chappe_esl_call:set(Call, <<"conference_flags">>, lists:join($|, Flags))
+            chappe_esl_call:set(
+                Call, <<"conference_flags">>, lists:join($|, Flags)
+            )
     end.
 
 pending(Ep, J, From, S) ->
@@ -389,7 +396,9 @@ room_event(Ev, #state{name = Name} = S) ->
     end.
 
 room_action(<<"play-file-done">>, H, S) ->
-    chappe_mrf_conf_backend:emit({play_done, chappe_mrf_lib:to_bin(H(<<"File">>))}, S);
+    chappe_mrf_conf_backend:emit(
+        {play_done, chappe_mrf_lib:to_bin(H(<<"File">>))}, S
+    );
 room_action(<<"del-member">>, H, S) ->
     %% a party dialed in for a REFER has no endpoint whose events would
     %% say it left: the node's do (an endpoint member's del-member also
@@ -453,9 +462,13 @@ action(<<"add-member">>, Id, Ep, _Ev, #state{pending = P} = S) ->
             _ =
                 Owned andalso maps:get(adopt, J, false) andalso
                     chappe_mrf_endpoint:set_owner(Ep, self()),
-            Mb = chappe_mrf_conf_backend:member(Opts, Id, #{ep => Ep, owned => Owned}),
+            Mb = chappe_mrf_conf_backend:member(Opts, Id, #{
+                ep => Ep, owned => Owned
+            }),
             gen_server:reply(From, {ok, Id}),
-            S1 = chappe_mrf_conf_backend:put_member(Id, Mb, S#state{pending = P1}),
+            S1 = chappe_mrf_conf_backend:put_member(Id, Mb, S#state{
+                pending = P1
+            }),
             Info = chappe_mrf_conf_backend:public(Id, Mb),
             chappe_mrf_conf_backend:emit({joined, Id, Info}, S1);
         error ->

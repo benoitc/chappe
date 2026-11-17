@@ -332,7 +332,9 @@ init(#{name := Name, caller := Caller, wait := true} = Args) ->
     %% cluster: nothing until the starter hands the lease over; a starter
     %% gone, or one that never does, ends the wait
     process_flag(trap_exit, true),
-    _ = erlang:send_after(chappe_mrf_conf_cluster:start_timeout(), self(), wait_timeout),
+    _ = erlang:send_after(
+        chappe_mrf_conf_cluster:start_timeout(), self(), wait_timeout
+    ),
     {ok, #state{
         name = Name,
         backend = native,
@@ -358,7 +360,11 @@ activate(Lease, #state{waiting = W} = S) ->
     #{name := Name, opts := Opts, caller := Caller} = Args,
     demonitor(Mon, [flush]),
     Draining = chappe_mrf_conf_move:draining(),
-    case chappe_mrf_conf_cluster:activation(Draining, chappe_cluster:valid(Lease)) of
+    case
+        chappe_mrf_conf_cluster:activation(
+            Draining, chappe_cluster:valid(Lease)
+        )
+    of
         release ->
             %% the node began to drain after the claim: no room here, the
             %% start goes elsewhere
@@ -515,7 +521,9 @@ handle_call(members, _From, #state{members = M} = S) ->
     Sorted = lists:sort(maps:to_list(M)),
     {reply, [chappe_mrf_conf_backend:public(Id, Mb) || {Id, Mb} <- Sorted], S};
 handle_call({lock, Lock}, _From, #state{mod = Mod} = S) ->
-    _ = chappe_mrf_conf_backend:optional(Mod, lock, 2) andalso Mod:lock(Lock, S),
+    _ =
+        chappe_mrf_conf_backend:optional(Mod, lock, 2) andalso
+            Mod:lock(Lock, S),
     {reply, ok, S#state{locked = Lock}};
 handle_call({drop, Id, Reason}, _From, S) ->
     with_member(Id, S, fun(_Mb) ->
@@ -644,7 +652,8 @@ handle_info({'DOWN', Mon, process, Pid, _}, #state{listeners = L} = S) ->
             {M, Actions} = chappe_mrf_conf_transfer:mover_down(
                 Mon, S#state.members
             ),
-            {noreply, run_actions(Actions, S#state{members = M})}
+            {noreply,
+                chappe_mrf_conf_transfer:run(Actions, S#state{members = M})}
     end;
 handle_info({'EXIT', _, _}, S) ->
     {noreply, S};
@@ -667,7 +676,9 @@ backend_info(Info, #state{mod = Mod} = S) ->
 terminate(_Reason, #state{members = M0, focus = F, mod = Mod} = S) ->
     Draining = chappe_mrf_conf_move:draining(),
     M = maps:filter(
-        fun(_Id, Mb) -> not chappe_mrf_conf_transfer:handed_over(Mb, Draining) end,
+        fun(_Id, Mb) ->
+            not chappe_mrf_conf_transfer:handed_over(Mb, Draining)
+        end,
         M0
     ),
     _ = safely(fun() -> F =/= undefined andalso chappe_sip_focus:stop(F) end),
@@ -759,22 +770,11 @@ transfer_step(Step, Arg, Pid, #state{members = M, pending = P} = S) ->
     {Reply, M1, Actions} = chappe_mrf_conf_transfer:step(
         Step, Arg, {Pid, Handover}, {M, P}
     ),
-    {reply, Reply, run_actions(Actions, S#state{members = M1})}.
+    {reply, Reply,
+        chappe_mrf_conf_transfer:run(Actions, S#state{members = M1})}.
 
 handover(Mb, #state{mod = Mod} = S) ->
     case chappe_mrf_conf_backend:optional(Mod, handover, 1) of
         true -> Mod:handover(Mb);
         false -> chappe_mrf_conf_backend:unsupported(S)
     end.
-
-run_actions([], S) ->
-    S;
-run_actions([{monitor, Id, Pid} | Rest], #state{members = M} = S) ->
-    #{Id := Mb} = M,
-    Mb1 = Mb#{mover_mon => monitor(process, Pid)},
-    run_actions(Rest, S#state{members = M#{Id := Mb1}});
-run_actions([{gone, Id, Why} | Rest], S) ->
-    run_actions(Rest, chappe_mrf_conf_backend:gone(Id, Why, S));
-run_actions([{destroy, Ep} | Rest], S) ->
-    _ = spawn(fun() -> chappe_mrf:destroy(Ep) end),
-    run_actions(Rest, S).

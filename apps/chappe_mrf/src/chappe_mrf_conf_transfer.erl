@@ -13,11 +13,11 @@
 %%
 %% The room's side, step/4 and mover_down/2, works on the room's members
 %% and the joins under way, and returns {Reply, Members, Actions}: the
-%% room runs the actions ({monitor, Id, Mover}, {gone, Id, Reason},
+%% room runs the actions (run/2: {monitor, Id, Mover}, {gone, Id, Reason},
 %% {destroy, Ep}).
 -module(chappe_mrf_conf_transfer).
 
--export([transfer/3, step/4, mover_down/2, handed_over/2, cut/2]).
+-export([transfer/3, step/4, mover_down/2, run/2, handed_over/2, cut/2]).
 
 -export_type([action/0, members/0, handover/0]).
 
@@ -144,7 +144,12 @@ watch(_Watch, _Id, _Mover) -> [].
 %% transfer), an app's endpoint is a member here again.
 -spec mover_down(reference(), members()) -> {members(), [action()]}.
 mover_down(Mon, M) ->
-    case [{Id, Mb} || Id := #{mover_mon := MM, transfer := true} = Mb <- M, MM =:= Mon] of
+    case
+        [
+            {Id, Mb}
+         || Id := #{mover_mon := MM, transfer := true} = Mb <- M, MM =:= Mon
+        ]
+    of
         [{Id, #{ep := Ep, owned := true}}] ->
             {M, [{destroy, Ep}, {gone, Id, hangup}]};
         [{Id, Mb}] ->
@@ -152,6 +157,21 @@ mover_down(Mon, M) ->
         [] ->
             {M, []}
     end.
+
+%% The actions of step/4 and mover_down/2, run by the room on its state.
+-spec run([action()], chappe_mrf_conf_backend:room()) ->
+    chappe_mrf_conf_backend:room().
+run([], Room) ->
+    Room;
+run([{monitor, Id, Pid} | Rest], Room) ->
+    #{Id := Mb} = chappe_mrf_conf_backend:members(Room),
+    Mb1 = Mb#{mover_mon => monitor(process, Pid)},
+    run(Rest, chappe_mrf_conf_backend:put_member(Id, Mb1, Room));
+run([{gone, Id, Why} | Rest], Room) ->
+    run(Rest, chappe_mrf_conf_backend:gone(Id, Why, Room));
+run([{destroy, Ep} | Rest], Room) ->
+    _ = spawn(fun() -> chappe_mrf:destroy(Ep) end),
+    run(Rest, Room).
 
 %% At the room's end: whether a member on its way out is its mover's
 %% now. Outside a drain its dialog goes to the mover; in a drain it is

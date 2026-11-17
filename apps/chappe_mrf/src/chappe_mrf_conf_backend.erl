@@ -85,12 +85,14 @@
 
 %% ---- in the room ----
 
--callback init(Name :: binary(), Opts :: map()) -> {ok, term()} | {error, term()}.
+-callback init(Name :: binary(), Opts :: map()) ->
+    {ok, term()} | {error, term()}.
 %% Keys the backend adds to the room's info/1 (node, bridge).
 -callback info(BState :: term()) -> map().
 %% A join request ({join, Req}) the room took.
 -callback admit(Req :: term(), From :: gen_server:from(), room()) -> reply().
--callback handle_call(Req :: term(), From :: gen_server:from(), room()) -> reply().
+-callback handle_call(Req :: term(), From :: gen_server:from(), room()) ->
+    reply().
 -callback handle_info(Msg :: term(), room()) -> {noreply, room()} | ignore.
 %% mute or deaf a member; the room keeps the flag once it is ok.
 -callback set_flag(member(), member_info(), mute | deaf, boolean(), room()) ->
