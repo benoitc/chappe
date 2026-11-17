@@ -1083,7 +1083,7 @@ handle_info({'DOWN', Mon, process, _, _}, #state{owner_mon = Mon} = S) ->
 handle_info({'DOWN', Mon, process, Pid, _}, #state{listeners = L} = S) ->
     case L of
         #{Pid := Mon} -> {noreply, S#state{listeners = maps:remove(Pid, L)}};
-        _ -> {noreply, S}
+        _ -> {noreply, mover_down(Mon, S)}
     end;
 handle_info({'EXIT', _, _}, S) ->
     {noreply, S};
@@ -1446,7 +1446,7 @@ transfer_out(Id, Mover, #state{members = M} = S) ->
             {reply, {error, {unsupported, endpoint_member}}, S};
         #{Id := #{ep := Ep, owned := Owned} = Mb} ->
             {reply, {ok, {fs, Ep, Owned, join_opts(Mb)}},
-                mark(Id, Mb, Mover, S)};
+                watch_mover(Id, mark(Id, Mb, Mover, S))};
         _ ->
             {reply, {error, not_member}, S}
     end.
@@ -1455,6 +1455,41 @@ transfer_out(Id, Mover, #state{members = M} = S) ->
 %% the transfer, run by Mover.
 mark(Id, Mb, Mover, #state{members = M} = S) ->
     S#state{members = M#{Id := Mb#{transfer => true, mover => Mover}}}.
+
+%% An fs member's move is watched: if its mover dies before the other
+%% room adopted it (the member is still here, marked), the room acts
+%% rather than keep it marked for good: an endpoint it owns is destroyed
+%% (its channel may be half way through a conference transfer), an app's
+%% endpoint is a member here again.
+watch_mover(Id, #state{members = M} = S) ->
+    case M of
+        #{Id := #{mover := Mover} = Mb} when is_pid(Mover) ->
+            S#state{
+                members = M#{Id := Mb#{mover_mon => monitor(process, Mover)}}
+            };
+        _ ->
+            S
+    end.
+
+mover_down(Mon, #state{members = M} = S) ->
+    case
+        [
+            {Id, Mb}
+         || Id := #{mover_mon := MM, transfer := true} = Mb <- M, MM =:= Mon
+        ]
+    of
+        [{Id, #{ep := Ep, owned := true}}] ->
+            _ = spawn(fun() -> chappe_mrf:destroy(Ep) end),
+            gone(Id, hangup, S);
+        [{Id, Mb}] ->
+            S#state{
+                members = M#{
+                    Id := maps:without([transfer, mover, mover_mon], Mb)
+                }
+            };
+        [] ->
+            S
+    end.
 
 %% What a member asked for when it joined, for the conference it moves to.
 join_opts(Mb) ->

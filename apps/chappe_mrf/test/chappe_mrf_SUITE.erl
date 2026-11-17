@@ -52,6 +52,7 @@
     fs_conference_bad_pin/1,
     fs_conference_room/1,
     fs_conference_transfer/1,
+    fs_mover_dies/1,
     native_conference_transfer/1,
     conference_focus/1,
     attach_timeout/1,
@@ -113,6 +114,7 @@ all() ->
         fs_conference_bad_pin,
         fs_conference_room,
         fs_conference_transfer,
+        fs_mover_dies,
         native_conference_transfer,
         conference_focus,
         attach_timeout,
@@ -1427,6 +1429,31 @@ fs_conference_transfer(Config) ->
     ?assertEqual({error, not_member}, chappe_mrf_conf:transfer(A, <<"nobody">>, B)),
     ?assertEqual({error, same_conference}, chappe_mrf_conf:transfer(B, NewId, B)),
     ok = chappe_mrf:destroy(Ep).
+
+%% The process moving an fs member dies before the other room adopted
+%% it: the room watches it, so the member is not left marked forever
+%% (an app's endpoint is the room's member again).
+fs_mover_dies(Config) ->
+    {ok, A} = chappe_mrf:conference(<<"fsmover">>, #{backend => fs, node => fs1}),
+    {ok, Ep} = chappe_mrf:create_endpoint(#{targets => [{fs1, fs_uri(Config)}]}),
+    {ok, Id} = chappe_mrf_conf:join(A, Ep, #{}),
+    Self = self(),
+    Mover = spawn(fun() ->
+        Self ! {marked, gen_server:call(A, {transfer, out, Id})},
+        receive stop -> ok end
+    end),
+    receive {marked, {ok, {fs, Ep, _, _}}} -> ok after 5000 -> ct:fail(no_mark) end,
+    exit(Mover, kill),
+    ok = unmarked(A, Id, 50),
+    ok = chappe_mrf:destroy(Ep).
+
+unmarked(_A, Id, 0) ->
+    ct:fail({still_marked, Id});
+unmarked(A, Id, N) ->
+    case maps:get(Id, element(9, sys:get_state(A)), #{}) of
+        #{transfer := true} -> timer:sleep(100), unmarked(A, Id, N - 1);
+        _ -> ok
+    end.
 
 %% transfer/3 between two native rooms: the member's call is re-anchored
 %% to the other mixer without a re-INVITE to the caller.
