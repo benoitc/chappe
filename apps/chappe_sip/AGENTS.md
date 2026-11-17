@@ -74,21 +74,31 @@ engine, the NIF event contract and its risky regions are in
 The layers in one line each:
 
 - `engine/`: `chappe_sip_engine` (the singleton that owns the NIF and
-  dispatches every op to sofia or the WS transport by handle), `chappe_sip_nif`.
-- `conn/`: request workers, the stack supervisor, the location store.
-- `sip/`: the message model and pure protocol helpers.
+  dispatches every op to sofia or the WS transport by handle), its pure
+  policy (`chappe_sip_dispatch`, `chappe_sip_uas_response`), `chappe_sip_nif`.
+- `conn/`: request workers, the stack supervisor, the location store
+  (`chappe_sip_registry` and its `_store` and `_contact` helpers, the
+  `chappe_sip_location` backends).
+- `sip/`: the message model and pure protocol helpers, with
+  `chappe_sip_route` (Record-Route) and `chappe_sip_flow` (flow tokens,
+  edge routes, the route secret).
 - `dialog/`, `uac/`: dialog and client transaction fsms, REFER, the
   subscriber side of events, session timers.
-- `proxy/`: the stateful proxy; `chappe_sip_route` there is cross-cutting
-  (Record-Route, route secrets, flow tokens).
+- `proxy/`: the stateful proxy.
 - `ws/`: the WebSocket transport and its own transaction layer.
 - `media/`: the media facade over chappe_rtpengine and chappe_mix.
 - `peers/`: OPTIONS-monitored peers and the registrar's qualify.
+- `b2b/`: the B2BUA (`chappe_sip_b2b` and its `chappe_sip_b2b_*` helpers).
+- `events/`: the event packages and the conference focus (`esc`,
+  `notifier`, `presence`, `pidf`, `mwi`, `publisher`, `focus`,
+  `confinfo`, `events_sup`).
+- `core/`: `chappe_sip_call` and `chappe_sip_cdr`, services the dialogs,
+  UACs, the B2BUA and the proxy all use.
 - `api/`: the `chappe_sip` facade, the extension points (`handler`,
-  `middleware`, `guard`), the B2BUA (`chappe_sip_b2b` and eight
-  `chappe_sip_b2b_*` helpers), `cdr` (a core service filed here), `regc`,
-  `registrar`, `focus`, `confinfo`, and the event packages (`esc`,
-  `notifier`, `presence`, `pidf`, `mwi`, `publisher`).
+  `middleware`, `guard`), `regc` and `registrar`. No module of the stack
+  calls the facade; an xref query in the root `rebar.config` checks it.
+- `siprec/`: the SIPREC client and the recording server's SIP side; the
+  server's RTP receivers and SRTP are in chappe_audio.
 - root: `chappe_sip_app`, `chappe_sip_sup`, `chappe_sip_config` (every
   tunable and its default), `chappe_sip_metrics`.
 
