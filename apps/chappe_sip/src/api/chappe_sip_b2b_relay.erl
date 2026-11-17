@@ -191,9 +191,11 @@ other(b) -> a.
 done(#{pending := P, media := M}, Peer, Why, Tag) ->
     stop_pending(P),
     _ = chappe_sip_b2b_media:stop(M),
-    _ = chappe_sip_dialog:destroy(Peer, #{
-        headers => chappe_sip_b2b_hdr:reason_headers(Why)
-    }),
+    %% the peer may be gone already (an engine restart ends every dialog
+    %% at once)
+    _ = chappe_sip_b2b:destroy_quietly(
+        Peer, chappe_sip_b2b_hdr:reason_headers(Why)
+    ),
     {done, Tag}.
 
 stop_pending(#{
