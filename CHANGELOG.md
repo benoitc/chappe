@@ -7,6 +7,9 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 
 ## Unreleased
 
+- chappe_esl: a peer refused by the listener's allow list is counted before
+  its connection is closed, so the refusal shows in the listener's stats
+  as soon as the peer sees the close.
 - chappe_sip: cancelling a request after the SIP stack was stopped no
   longer crashes the stack; it returns an error. Holding a call whose SDP
   mixes line endings now rewrites every media line.
