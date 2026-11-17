@@ -190,142 +190,37 @@ set_owner(Session, Owner) when is_pid(Owner) ->
 cmd(Session, Command, Params) ->
     safe_call(Session, {aux, Command, Params}).
 
-%% Announcement or prompt to the from-tag party by default; pass
-%% party => caller | callee | all (or label) to pick the leg. Provide
-%% the audio as file, blob (raw bytes), blob64 (base64) or db_id, and
-%% loop with repeat_times. The reply may carry duration in ms.
--spec play_media(pid(), chappe_rtpengine_ng:params()) ->
-    chappe_rtpengine_ng:result() | {error, term()}.
-play_media(Session, Params) ->
-    cmd(Session, play_media, Params).
+%% The typed auxiliary commands: chappe_rtpengine_cmd documents them.
 
--spec stop_media(pid()) -> chappe_rtpengine_ng:result() | {error, term()}.
-stop_media(Session) ->
-    cmd(Session, stop_media, #{}).
-
-%% Params: code (digit), and optionally duration, volume, pause.
--spec play_dtmf(pid(), chappe_rtpengine_ng:params()) ->
-    chappe_rtpengine_ng:result() | {error, term()}.
-play_dtmf(Session, Params) ->
-    cmd(Session, play_dtmf, Params).
-
--spec block_dtmf(pid()) -> chappe_rtpengine_ng:result() | {error, term()}.
-block_dtmf(Session) ->
-    cmd(Session, block_dtmf, #{}).
-
--spec unblock_dtmf(pid()) -> chappe_rtpengine_ng:result() | {error, term()}.
-unblock_dtmf(Session) ->
-    cmd(Session, unblock_dtmf, #{}).
-
-%% Media blocking and silencing, the ducking primitives. Blocking
-%% stops a party's packets entirely; silencing keeps them flowing but
-%% replaces the audio with silence. With no options the whole call is
-%% affected. Target one direction with party => caller | callee: the
-%% party's tag goes out as from-tag together with the directional
-%% flag, which rtpengine requires for per-party media control. Raw NG
-%% keys (label, address, to_tag, flags, ...) pass through and win.
--spec block_media(pid()) -> chappe_rtpengine_ng:result() | {error, term()}.
-block_media(Session) ->
-    block_media(Session, #{}).
-
--spec block_media(pid(), chappe_rtpengine_ng:params()) ->
-    chappe_rtpengine_ng:result() | {error, term()}.
-block_media(Session, Opts) ->
-    cmd(Session, block_media, Opts).
-
--spec unblock_media(pid()) -> chappe_rtpengine_ng:result() | {error, term()}.
-unblock_media(Session) ->
-    unblock_media(Session, #{}).
-
--spec unblock_media(pid(), chappe_rtpengine_ng:params()) ->
-    chappe_rtpengine_ng:result() | {error, term()}.
+play_media(Session, Params) -> chappe_rtpengine_cmd:play_media(Session, Params).
+stop_media(Session) -> chappe_rtpengine_cmd:stop_media(Session).
+play_dtmf(Session, Params) -> chappe_rtpengine_cmd:play_dtmf(Session, Params).
+block_dtmf(Session) -> chappe_rtpengine_cmd:block_dtmf(Session).
+unblock_dtmf(Session) -> chappe_rtpengine_cmd:unblock_dtmf(Session).
+block_media(Session) -> chappe_rtpengine_cmd:block_media(Session).
+block_media(Session, Opts) -> chappe_rtpengine_cmd:block_media(Session, Opts).
+unblock_media(Session) -> chappe_rtpengine_cmd:unblock_media(Session).
 unblock_media(Session, Opts) ->
-    cmd(Session, unblock_media, Opts).
-
--spec silence_media(pid()) -> chappe_rtpengine_ng:result() | {error, term()}.
-silence_media(Session) ->
-    silence_media(Session, #{}).
-
--spec silence_media(pid(), chappe_rtpengine_ng:params()) ->
-    chappe_rtpengine_ng:result() | {error, term()}.
+    chappe_rtpengine_cmd:unblock_media(Session, Opts).
+silence_media(Session) -> chappe_rtpengine_cmd:silence_media(Session).
 silence_media(Session, Opts) ->
-    cmd(Session, silence_media, Opts).
-
--spec unsilence_media(pid()) -> chappe_rtpengine_ng:result() | {error, term()}.
-unsilence_media(Session) ->
-    unsilence_media(Session, #{}).
-
--spec unsilence_media(pid(), chappe_rtpengine_ng:params()) ->
-    chappe_rtpengine_ng:result() | {error, term()}.
+    chappe_rtpengine_cmd:silence_media(Session, Opts).
+unsilence_media(Session) -> chappe_rtpengine_cmd:unsilence_media(Session).
 unsilence_media(Session, Opts) ->
-    cmd(Session, unsilence_media, Opts).
-
--spec start_recording(pid()) -> chappe_rtpengine_ng:result() | {error, term()}.
-start_recording(Session) ->
-    cmd(Session, start_recording, #{}).
-
--spec stop_recording(pid()) -> chappe_rtpengine_ng:result() | {error, term()}.
-stop_recording(Session) ->
-    cmd(Session, stop_recording, #{}).
-
-%% Forward the call's PCM to the recording daemon over TCP/TLS, apart from
-%% call recording. With no options the whole call; party => caller |
-%% callee (or the raw selection keys of block_media/2) picks one
-%% direction.
--spec start_forwarding(pid(), chappe_rtpengine_ng:params()) ->
-    chappe_rtpengine_ng:result() | {error, term()}.
+    chappe_rtpengine_cmd:unsilence_media(Session, Opts).
+start_recording(Session) -> chappe_rtpengine_cmd:start_recording(Session).
+stop_recording(Session) -> chappe_rtpengine_cmd:stop_recording(Session).
 start_forwarding(Session, Opts) ->
-    cmd(Session, start_forwarding, Opts).
-
--spec stop_forwarding(pid()) -> chappe_rtpengine_ng:result() | {error, term()}.
-stop_forwarding(Session) ->
-    stop_forwarding(Session, #{}).
-
--spec stop_forwarding(pid(), chappe_rtpengine_ng:params()) ->
-    chappe_rtpengine_ng:result() | {error, term()}.
+    chappe_rtpengine_cmd:start_forwarding(Session, Opts).
+stop_forwarding(Session) -> chappe_rtpengine_cmd:stop_forwarding(Session).
 stop_forwarding(Session, Opts) ->
-    cmd(Session, stop_forwarding, Opts).
-
-%% Media subscriptions are how a consumer (a recorder, an STT feed, a
-%% conference mixer leg, a listen-in party) taps this call's media.
-%% subscribe request returns an SDP offer describing the source
-%% streams plus a to-tag naming the subscription; answer it with the
-%% consumer's SDP. No from-tag is injected on subscription commands:
-%% pass party => caller | callee (or from_tags => [Tag]) to tap one
-%% participant, or flags => [all] for everyone. Control the output
-%% with codec => #{mask => [...], transcode => [...]} and ptime.
-%%
-%% The offer describes every media stream of the tapped participants,
-%% so a participant with N streams (a SIPREC recording offer, one
-%% m-line per party) is tapped as N streams in m-line order. rtpengine
-%% has no request-side selector for one of them: the answer decides,
-%% by giving that m-line a port and rejecting the rest. Build it with
-%% chappe_rtpengine_sdp:fork_answer/3 to send one stream to one receiver.
-%%
-%% holder => pid() makes the subscription that process's: the session
-%% monitors it and unsubscribes when it exits, however it exits, so a
-%% consumer that crashes leaves no fork running. unsubscribe/2 of the
-%% to-tag releases it.
--spec subscribe_request(pid(), chappe_rtpengine_ng:params()) ->
-    chappe_rtpengine_ng:result() | {error, term()}.
+    chappe_rtpengine_cmd:stop_forwarding(Session, Opts).
 subscribe_request(Session, Params) ->
-    cmd(Session, subscribe_request, Params).
-
--spec subscribe_answer(pid(), chappe_rtpengine_ng:params()) ->
-    chappe_rtpengine_ng:result() | {error, term()}.
+    chappe_rtpengine_cmd:subscribe_request(Session, Params).
 subscribe_answer(Session, Params) ->
-    case check([to_tag, sdp], Params) of
-        ok -> cmd(Session, subscribe_answer, Params);
-        {error, _} = Error -> Error
-    end.
-
--spec unsubscribe(pid(), chappe_rtpengine_ng:params()) ->
-    chappe_rtpengine_ng:result() | {error, term()}.
+    chappe_rtpengine_cmd:subscribe_answer(Session, Params).
 unsubscribe(Session, Params) ->
-    case check([to_tag], Params) of
-        ok -> cmd(Session, unsubscribe, Params);
-        {error, _} = Error -> Error
-    end.
+    chappe_rtpengine_cmd:unsubscribe(Session, Params).
 
 %% gen_statem callbacks
 
@@ -358,43 +253,15 @@ init([Owner, Opts]) ->
 %% offer
 
 handle_event({call, From}, {offer, Params}, idle, Data) ->
-    case check([from_tag, sdp], Params) of
+    case require([from_tag, sdp], Params) of
         ok ->
-            case send_async(offer, Params, Data) of
-                {ok, Ref, Data1} ->
-                    Data2 = Data1#data{
-                        from_tag = maps:get(from_tag, Params)
-                    },
-                    {next_state, offering,
-                        add_pending(Ref, From, offer, Data2)};
-                {error, Reason} ->
-                    {keep_state_and_data, [{reply, From, {error, Reason}}]}
-            end;
+            Data1 = Data#data{from_tag = maps:get(from_tag, Params)},
+            send(offer, Params, {From, offer}, offering, Data1);
         {error, _} = Error ->
             {keep_state_and_data, [{reply, From, Error}]}
     end;
-handle_event({call, From}, {offer, Params0}, established, Data) ->
-    %% re-INVITE
-    Initiator = maps:get(initiator, Params0, caller),
-    Params1 = maps:remove(initiator, Params0),
-    case check([sdp], Params1) of
-        ok when Initiator =:= callee, Data#data.to_tag =:= undefined ->
-            {keep_state_and_data, [{reply, From, {error, no_to_tag}}]};
-        ok ->
-            Params = maps:merge(
-                reoffer_tags(Initiator, Params1, Data), Params1
-            ),
-            case send_async(offer, Params, Data) of
-                {ok, Ref, Data1} ->
-                    Data2 = Data1#data{reoffer_initiator = Initiator},
-                    {next_state, reoffering,
-                        add_pending(Ref, From, reoffer, Data2)};
-                {error, Reason} ->
-                    {keep_state_and_data, [{reply, From, {error, Reason}}]}
-            end;
-        {error, _} = Error ->
-            {keep_state_and_data, [{reply, From, Error}]}
-    end;
+handle_event({call, From}, {offer, Params}, established, Data) ->
+    reoffer(From, Params, Data);
 handle_event({call, From}, {offer, _Params}, deleting, _Data) ->
     {keep_state_and_data, [{reply, From, {error, busy}}]};
 handle_event({call, From}, {offer, _Params}, _State, _Data) ->
@@ -404,27 +271,17 @@ handle_event({call, From}, {offer, _Params}, _State, _Data) ->
 handle_event(
     {call, From}, reoffer_rejected, offered, #data{reoffer = true} = Data
 ) ->
-    {next_state, established,
-        Data#data{reoffer = false, reoffer_initiator = caller}, [
-            {reply, From, ok}
-        ]};
+    Data1 = Data#data{reoffer = false, reoffer_initiator = caller},
+    {next_state, established, Data1, [{reply, From, ok}]};
 handle_event({call, From}, reoffer_rejected, _State, _Data) ->
     {keep_state_and_data, [{reply, From, {error, no_reoffer}}]};
 %% publish (one-sided offer; rtpengine writes the answer)
 
 handle_event({call, From}, {publish, Params}, idle, Data) ->
-    case check([from_tag, sdp], Params) of
+    case require([from_tag, sdp], Params) of
         ok ->
-            case send_async(publish, Params, Data) of
-                {ok, Ref, Data1} ->
-                    Data2 = Data1#data{
-                        from_tag = maps:get(from_tag, Params)
-                    },
-                    {next_state, publishing,
-                        add_pending(Ref, From, publish, Data2)};
-                {error, Reason} ->
-                    {keep_state_and_data, [{reply, From, {error, Reason}}]}
-            end;
+            Data1 = Data#data{from_tag = maps:get(from_tag, Params)},
+            send(publish, Params, {From, publish}, publishing, Data1);
         {error, _} = Error ->
             {keep_state_and_data, [{reply, From, Error}]}
     end;
@@ -441,37 +298,17 @@ handle_event({call, From}, {answer, _Params}, idle, _Data) ->
     {keep_state_and_data, [{reply, From, {error, no_offer}}]};
 handle_event({call, From}, {answer, _Params}, _State, _Data) ->
     {keep_state_and_data, [{reply, From, {error, busy}}]};
-%% query
+%% query and the auxiliary commands (playback, DTMF, recording, ...)
 
-handle_event({call, From}, query, idle, _Data) ->
-    {keep_state_and_data, [{reply, From, {error, not_started}}]};
-handle_event({call, From}, query, deleting, _Data) ->
-    {keep_state_and_data, [{reply, From, {error, busy}}]};
-handle_event({call, From}, query, _State, Data) ->
-    case send_async(query, #{}, Data) of
-        {ok, Ref, Data1} ->
-            {keep_state, add_pending(Ref, From, query, Data1)};
-        {error, Reason} ->
-            {keep_state_and_data, [{reply, From, {error, Reason}}]}
+handle_event({call, From}, query, State, Data) ->
+    case started(State) of
+        ok -> send(query, #{}, {From, query}, keep, Data);
+        Error -> {keep_state_and_data, [{reply, From, Error}]}
     end;
-%% auxiliary commands (playback, DTMF, recording, ...)
-
-handle_event({call, From}, {aux, _Command, _Params}, idle, _Data) ->
-    {keep_state_and_data, [{reply, From, {error, not_started}}]};
-handle_event({call, From}, {aux, _Command, _Params}, deleting, _Data) ->
-    {keep_state_and_data, [{reply, From, {error, busy}}]};
-handle_event({call, From}, {aux, Command, Params0}, _State, Data) ->
-    {Kind, Params1} = aux_kind(Command, Params0),
-    case resolve_party(Command, Params1, Data) of
-        {ok, Params} ->
-            case send_async(Command, Params, release(Command, Params, Data)) of
-                {ok, Ref, Data1} ->
-                    {keep_state, add_pending(Ref, From, Kind, Data1)};
-                {error, Reason} ->
-                    {keep_state_and_data, [{reply, From, {error, Reason}}]}
-            end;
-        {error, Reason} ->
-            {keep_state_and_data, [{reply, From, {error, Reason}}]}
+handle_event({call, From}, {aux, Command, Params}, State, Data) ->
+    case started(State) of
+        ok -> aux(From, Command, Params, Data);
+        Error -> {keep_state_and_data, [{reply, From, Error}]}
     end;
 %% stop
 
@@ -488,36 +325,22 @@ handle_event({call, From}, stop, _State, Data) ->
             %% best-effort delete attempt
             {stop_and_reply, normal, [{reply, From, {error, Reason}}]}
     end;
-%% owner
+%% owner and info
 
 handle_event({call, From}, {set_owner, Owner}, _State, Data) ->
     demonitor(Data#data.owner_mon, [flush]),
     Data1 = Data#data{owner = Owner, owner_mon = monitor(process, Owner)},
     {keep_state, Data1, [{reply, From, ok}]};
-%% info
-
 handle_event({call, From}, info, State, Data) ->
-    Info = #{
-        state => State,
-        call_id => Data#data.call_id,
-        node => Data#data.node,
-        generation => Data#data.generation,
-        from_tag => Data#data.from_tag,
-        to_tag => Data#data.to_tag,
-        branches => Data#data.branches,
-        media_lost => Data#data.media_lost,
-        ref => Data#data.ref
-    },
-    {keep_state_and_data, [{reply, From, Info}]};
+    {keep_state_and_data, [{reply, From, info_map(State, Data)}]};
 %% client replies
 
 handle_event(info, {chappe_rtpengine_reply, Ref, Result}, State, Data) ->
     case maps:take(Ref, Data#data.pending) of
         {{From, Kind}, Rest} ->
-            Data1 = note_media_lost(Kind, Result, State, Data#data{
-                pending = Rest
-            }),
-            handle_reply(Kind, From, Result, State, Data1);
+            Data1 = Data#data{pending = Rest},
+            Data2 = note_media_lost(Kind, Result, State, Data1),
+            handle_reply(Kind, From, Result, State, Data2);
         error ->
             keep_state_and_data
     end;
@@ -540,69 +363,30 @@ handle_event(
     State,
     #data{node = Node, generation = OldGen} = Data
 ) when Gen > OldGen ->
-    Data1 = Data#data{generation = Gen},
-    case active(State) andalso not Data#data.media_lost of
-        true ->
-            notify_owner({node_restarted, Node}, Data1),
-            {keep_state, Data1#data{media_lost = true}};
-        false ->
-            {keep_state, Data1}
-    end;
+    node_restarted(State, Data#data{generation = Gen});
 handle_event(info, {chappe_rtpengine_pool, _Event}, _State, _Data) ->
     keep_state_and_data;
 %% DTMF events for this call (subscription made with dtmf => true)
 
 handle_event(
-    info,
-    {chappe_rtpengine_dtmf, CallId, Event},
-    _State,
-    #data{call_id = CallId} = Data
+    info, {chappe_rtpengine_dtmf, CallId, Event}, _, #data{call_id = CallId} = D
 ) ->
-    notify_owner({dtmf, Event}, Data),
+    notify_owner({dtmf, Event}, D),
     keep_state_and_data;
 %% a holder of subscriptions exited: its forks are removed
 
 handle_event(
-    info,
-    {'DOWN', Mon, process, _Pid, _Reason},
-    State,
-    #data{holds = Holds} = Data
-) when is_map_key(Mon, Holds) ->
-    {ToTag, Rest} = maps:take(Mon, Holds),
-    Data1 = Data#data{holds = Rest},
-    case active(State) of
-        true ->
-            case send_async(unsubscribe, #{to_tag => ToTag}, Data1) of
-                {ok, Ref, Data2} ->
-                    {keep_state, add_pending(Ref, undefined, released, Data2)};
-                {error, _} ->
-                    {keep_state, Data1}
-            end;
-        false ->
-            {keep_state, Data1}
-    end;
+    info, {'DOWN', Mon, process, _, _}, State, #data{holds = H} = Data
+) when
+    is_map_key(Mon, H)
+->
+    holder_down(Mon, State, Data);
 %% owner death
 
 handle_event(
-    info,
-    {'DOWN', Mon, process, _Pid, _Reason},
-    State,
-    #data{owner_mon = Mon} = Data
+    info, {'DOWN', Mon, process, _, _}, State, #data{owner_mon = Mon} = Data
 ) ->
-    case State of
-        idle ->
-            {stop, normal};
-        deleting ->
-            keep_state_and_data;
-        _ ->
-            case send_async(delete, #{}, Data) of
-                {ok, Ref, Data1} ->
-                    {next_state, deleting,
-                        add_pending(Ref, undefined, delete, Data1)};
-                {error, _} ->
-                    {stop, normal}
-            end
-    end;
+    owner_down(State, Data);
 handle_event(info, _Info, _State, _Data) ->
     keep_state_and_data;
 handle_event({call, From}, _Request, _State, _Data) ->
@@ -617,6 +401,104 @@ terminate(_Reason, State, Data) ->
 
 %% internal
 
+%% Send a command whose reply From waits for (Kind says how to settle
+%% it, reply/5), then move to Next (keep: stay); a send that fails
+%% answers From with the error at once.
+send(Command, Params, {From, Kind}, Next, Data) ->
+    case send_async(Command, Params, Data) of
+        {ok, Ref, Data1} ->
+            next(Next, add_pending(Ref, From, Kind, Data1));
+        {error, Reason} ->
+            {keep_state_and_data, [{reply, From, {error, Reason}}]}
+    end.
+
+next(keep, Data) -> {keep_state, Data};
+next(State, Data) -> {next_state, State, Data}.
+
+%% query and the auxiliary commands need a session on the node, and none
+%% goes out while it is being deleted.
+started(idle) -> {error, not_started};
+started(deleting) -> {error, busy};
+started(_State) -> ok.
+
+%% A re-INVITE offer: the stored tags, swapped when the callee offers.
+reoffer(From, Params0, Data) ->
+    Initiator = maps:get(initiator, Params0, caller),
+    Params1 = maps:remove(initiator, Params0),
+    case require([sdp], Params1) of
+        ok when Initiator =:= callee, Data#data.to_tag =:= undefined ->
+            {keep_state_and_data, [{reply, From, {error, no_to_tag}}]};
+        ok ->
+            Params = maps:merge(
+                reoffer_tags(Initiator, Params1, Data), Params1
+            ),
+            Data1 = Data#data{reoffer_initiator = Initiator},
+            send(offer, Params, {From, reoffer}, reoffering, Data1);
+        {error, _} = Error ->
+            {keep_state_and_data, [{reply, From, Error}]}
+    end.
+
+aux(From, Command, Params0, Data) ->
+    {Kind, Params1} = aux_kind(Command, Params0),
+    case resolve_party(Command, Params1, Data) of
+        {ok, Params} ->
+            Data1 = release(Command, Params, Data),
+            send(Command, Params, {From, Kind}, keep, Data1);
+        {error, Reason} ->
+            {keep_state_and_data, [{reply, From, {error, Reason}}]}
+    end.
+
+info_map(State, Data) ->
+    #{
+        state => State,
+        call_id => Data#data.call_id,
+        node => Data#data.node,
+        generation => Data#data.generation,
+        from_tag => Data#data.from_tag,
+        to_tag => Data#data.to_tag,
+        branches => Data#data.branches,
+        media_lost => Data#data.media_lost,
+        ref => Data#data.ref
+    }.
+
+%% The pinned node came back with a new generation: the media on it is
+%% gone, the owner hears it once.
+node_restarted(State, Data) ->
+    case active(State) andalso not Data#data.media_lost of
+        true ->
+            notify_owner({node_restarted, Data#data.node}, Data),
+            {keep_state, Data#data{media_lost = true}};
+        false ->
+            {keep_state, Data}
+    end.
+
+holder_down(Mon, State, #data{holds = Holds} = Data) ->
+    {ToTag, Rest} = maps:take(Mon, Holds),
+    Data1 = Data#data{holds = Rest},
+    case active(State) of
+        true ->
+            case send_async(unsubscribe, #{to_tag => ToTag}, Data1) of
+                {ok, Ref, Data2} ->
+                    {keep_state, add_pending(Ref, undefined, released, Data2)};
+                {error, _} ->
+                    {keep_state, Data1}
+            end;
+        false ->
+            {keep_state, Data1}
+    end.
+
+owner_down(idle, _Data) ->
+    {stop, normal};
+owner_down(deleting, _Data) ->
+    keep_state_and_data;
+owner_down(_State, Data) ->
+    case send_async(delete, #{}, Data) of
+        {ok, Ref, Data1} ->
+            {next_state, deleting, add_pending(Ref, undefined, delete, Data1)};
+        {error, _} ->
+            {stop, normal}
+    end.
+
 %% Answers share one path from offered (first answer) and established
 %% (repeated answers). Branch = the answering party's tag when the
 %% offer direction is caller; final => true prunes losing branches.
@@ -628,32 +510,21 @@ do_answer(From, Params0, StateKind, Data) ->
         Data#data.reoffer_initiator =:= caller andalso
             Data#data.to_tag =:= undefined andalso
             not maps:is_key(to_tag, Params1),
-    case check([sdp | [to_tag || NeedToTag]], Params1) of
+    case require([sdp | [to_tag || NeedToTag]], Params1) of
         ok ->
             {Tags, BranchTag} = answer_tags(Params1, Data),
             Params = maps:merge(Tags, Params1),
             Kind = {answer_sent, StateKind, BranchTag, Final, PrevToTag},
-            case send_async(answer, Params, Data) of
-                {ok, Ref, Data1} ->
-                    Data2 =
-                        case {StateKind, BranchTag} of
-                            {answering, none} -> Data1;
-                            {answering, _} -> Data1#data{to_tag = BranchTag};
-                            _ -> Data1
-                        end,
-                    Next =
-                        case StateKind of
-                            answering -> answering;
-                            established -> established
-                        end,
-                    Actions = add_pending(Ref, From, Kind, Data2),
-                    case Next of
-                        answering -> {next_state, answering, Actions};
-                        established -> {keep_state, Actions}
-                    end;
-                {error, Reason} ->
-                    {keep_state_and_data, [{reply, From, {error, Reason}}]}
-            end;
+            {Next, Data1} =
+                case {StateKind, BranchTag} of
+                    {answering, none} ->
+                        {answering, Data};
+                    {answering, _} ->
+                        {answering, Data#data{to_tag = BranchTag}};
+                    {established, _} ->
+                        {keep, Data}
+                end,
+            send(answer, Params, {From, Kind}, Next, Data1);
         {error, _} = Error ->
             {keep_state_and_data, [{reply, From, Error}]}
     end.
@@ -701,21 +572,35 @@ pinned_state(_Kind) -> any.
 reply_stopped(undefined) -> [];
 reply_stopped(From) -> [{reply, From, {error, stopped}}].
 
-reply(offer, From, Result, offering, Data) ->
+%% A reply settles an offer/answer exchange or the auxiliary command it
+%% answers.
+reply(Kind, From, Result, State, Data) ->
+    case negotiation(Kind) of
+        true -> negotiated(Kind, From, Result, State, Data);
+        false -> aux_reply(Kind, From, Result, State, Data)
+    end.
+
+negotiation(offer) -> true;
+negotiation(publish) -> true;
+negotiation(reoffer) -> true;
+negotiation({answer_sent, _, _, _, _}) -> true;
+negotiation(_Kind) -> false.
+
+negotiated(offer, From, Result, offering, Data) ->
     Next =
         case Result of
             {ok, _} -> offered;
             _ -> idle
         end,
     {next_state, Next, Data, [{reply, From, Result}]};
-reply(publish, From, Result, publishing, Data) ->
+negotiated(publish, From, Result, publishing, Data) ->
     Next =
         case Result of
             {ok, _} -> established;
             _ -> idle
         end,
     {next_state, Next, Data, [{reply, From, Result}]};
-reply(reoffer, From, Result, reoffering, Data) ->
+negotiated(reoffer, From, Result, reoffering, Data) ->
     case Result of
         {ok, _} ->
             {next_state, offered, Data#data{reoffer = true}, [
@@ -726,7 +611,7 @@ reply(reoffer, From, Result, reoffering, Data) ->
                 {reply, From, Result}
             ]}
     end;
-reply(
+negotiated(
     {answer_sent, answering, BranchTag, Final, PrevToTag},
     From,
     Result,
@@ -748,7 +633,7 @@ reply(
                 {reply, From, Result}
             ]}
     end;
-reply(
+negotiated(
     {answer_sent, established, BranchTag, Final, _PrevToTag},
     From,
     Result,
@@ -760,24 +645,27 @@ reply(
             {ok, _} -> settle_answer(BranchTag, Final, Data);
             _ -> Data
         end,
-    {keep_state, Data1, [{reply, From, Result}]};
-reply(query, From, Result, _State, Data) ->
+    {keep_state, Data1, [{reply, From, Result}]}.
+
+aux_reply(query, From, Result, _State, Data) ->
     {keep_state, Data, [{reply, From, Result}]};
-reply(aux, From, Result, _State, Data) ->
+aux_reply(aux, From, Result, _State, Data) ->
     {keep_state, Data, [{reply, From, Result}]};
-reply({held, Holder}, From, {ok, #{<<"to-tag">> := ToTag}} = Result, _, Data) ->
+aux_reply(
+    {held, Holder}, From, {ok, #{<<"to-tag">> := ToTag}} = Result, _, Data
+) ->
     Mon = monitor(process, Holder),
     Holds = maps:put(Mon, ToTag, Data#data.holds),
     {keep_state, Data#data{holds = Holds}, [{reply, From, Result}]};
-reply({held, _Holder}, From, Result, _State, Data) ->
+aux_reply({held, _Holder}, From, Result, _State, Data) ->
     {keep_state, Data, [{reply, From, Result}]};
-reply(released, undefined, _Result, _State, Data) ->
+aux_reply(released, undefined, _Result, _State, Data) ->
     {keep_state, Data};
-reply(branch_delete, undefined, _Result, _State, Data) ->
+aux_reply(branch_delete, undefined, _Result, _State, Data) ->
     {keep_state, Data};
-reply(delete, undefined, _Result, _State, Data) ->
+aux_reply(delete, undefined, _Result, _State, Data) ->
     {stop_and_reply, normal, stopped_replies(Data), Data};
-reply(delete, From, Result, _State, Data) ->
+aux_reply(delete, From, Result, _State, Data) ->
     {stop_and_reply, normal,
         [{reply, From, delete_result(Result)} | stopped_replies(Data)], Data}.
 
@@ -998,11 +886,8 @@ add_flag(Flag, Params) ->
 add_pending(Ref, From, Kind, Data) ->
     Data#data{pending = maps:put(Ref, {From, Kind}, Data#data.pending)}.
 
-check(Keys, Params) ->
-    case [K || K <- Keys, not maps:is_key(K, Params)] of
-        [] -> ok;
-        Missing -> {error, {missing_params, Missing}}
-    end.
+require(Keys, Params) ->
+    chappe_rtpengine_ng:require(Keys, Params).
 
 %% Best-effort synchronous delete for exits that bypassed the deleting
 %% state (crash, supervisor shutdown, unreachable client at stop).
