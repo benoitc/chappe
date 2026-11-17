@@ -10,7 +10,7 @@ third one, in chappe_mrf or in your own app, or change one of the two.
 
 ## Before you start
 
-- [concepts.md: Media resource function](../concepts.md#media-resource-function).
+- [glossary.md: Media resource function](../glossary.md#media-resource-function).
 - [apps/chappe_mrf/docs/design/overview.md](../../apps/chappe_mrf/docs/design/overview.md).
 - The contract itself: the moduledoc of
   `apps/chappe_mrf/src/chappe_mrf_conf_backend.erl`.

@@ -9,7 +9,7 @@ or want to know which test proves a behaviour.
 
 ## Before you start
 
-- [concepts.md: Compliance row](../concepts.md#compliance-row).
+- [glossary.md: Compliance row](../glossary.md#compliance-row).
 - The catalogue of the app you change:
   `apps/<app>/docs/compliance/requirements.tsv`.
 

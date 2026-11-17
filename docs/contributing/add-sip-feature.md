@@ -7,7 +7,7 @@ method or RFC rule in chappe_sip.
 
 ## Before you start
 
-- [concepts.md: Engine and nta](../concepts.md#engine-and-nta): what sofia
+- [glossary.md: Engine and nta](../glossary.md#engine-and-nta): what sofia
   does for you (transactions, retransmits, Via) and what the Erlang side owns.
 - [apps/chappe_sip/docs/design/overview.md](../../apps/chappe_sip/docs/design/overview.md):
   the layers of `src/`.

@@ -8,8 +8,8 @@ or a new backend such as another media server.
 
 ## Before you start
 
-- [concepts.md: Anchor and direct media](../concepts.md#anchor-and-direct-media)
-  and [NG protocol](../concepts.md#ng-protocol).
+- [glossary.md: Anchor and direct media](../glossary.md#anchor-and-direct-media)
+  and [NG protocol](../glossary.md#ng-protocol).
 - [apps/chappe_sip/docs/design/media.md](../../apps/chappe_sip/docs/design/media.md):
   the boundary and why media stays out of the SIP processes.
 - The leaf rule in [AGENTS.md](../../AGENTS.md): chappe_rtpengine and
