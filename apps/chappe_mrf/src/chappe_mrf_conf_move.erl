@@ -19,10 +19,12 @@
 %%     back) and moves every member there, round after round until
 %%     rehome_ms.
 %%
-%% Every move has a deadline. The transfer jobs are linked to the process
-%% that runs the move (and so die with it); one still running at the
-%% deadline is killed and its member handed back to the room (transfer
-%% cancel), for the next round to move.
+%% Every move has a deadline, past which the mover stops waiting. A
+%% transfer job is never cut: one cut halfway through its join could
+%% leave its member in both rooms. Each runs to its own end (transfer/3
+%% hands the member back to its room when the join fails), monitored, not
+%% linked, so neither its crash nor its mover's end takes the other down;
+%% a member still on its way is skipped by the next round.
 %%
 %% fs rooms do not move: the conference is FreeSWITCH's, each member a
 %% channel driven through the outbound socket the stopping node holds,
@@ -64,8 +66,8 @@ drain(Ms) ->
     Jobs = [spawn_monitor(fun() -> handoff(C, Deadline) end) || C <- Rooms],
     wait_handoffs(Jobs, Deadline + ?GRACE_MS).
 
-%% a handoff past its own deadline and the grace is killed, and its
-%% linked transfer jobs with it
+%% a handoff past its own deadline and the grace is killed; its transfer
+%% jobs run on to their end
 wait_handoffs([], _Deadline) ->
     ok;
 wait_handoffs([{Pid, Mon} | Rest], Deadline) ->
@@ -130,36 +132,57 @@ move(Conf, Name, Opts, Ids, Nodes, Deadline) ->
         {error, _} = Err -> Err
     end.
 
-%% Move each of Ids from Conf to New, at once, by Deadline. A move still
-%% running then is killed and its member handed back to Conf.
+%% Move each of Ids from Conf to New, at once, waiting until Deadline.
+%% ok once every move ended, {error, timeout} when some still run (they
+%% go on: see above).
 -spec transfer_all(pid(), [binary()], pid(), integer()) ->
     ok | {error, timeout}.
 transfer_all(Conf, Ids, New, Deadline) ->
-    Jobs = [
-        {
-            spawn_link(fun() -> _ = chappe_mrf_conf:transfer(Conf, Id, New) end),
-            Id
-        }
-     || Id <- Ids
-    ],
-    wait_jobs(
-        [{Pid, monitor(process, Pid), Id} || {Pid, Id} <- Jobs],
-        Conf,
-        Deadline,
-        ok
-    ).
+    Jobs = [spawn_monitor(fun() -> job(Conf, Id, New) end) || Id <- Ids],
+    wait_jobs(Jobs, Deadline, ok).
 
-wait_jobs([], _Conf, _Deadline, Result) ->
+%% One member's move. A crash in it is that member's failed move: when
+%% the member never reached New, it is handed back to Conf for the next
+%% round.
+job(Conf, Id, New) ->
+    try chappe_mrf_conf:transfer(Conf, Id, New) of
+        _ -> ok
+    catch
+        Class:Why ->
+            logger:notice("chappe_mrf_conf_move: move of ~s failed: ~0p", [
+                Id, {Class, Why}
+            ]),
+            case arrived(Id, New) of
+                true ->
+                    ok;
+                false ->
+                    _ = chappe_mrf_conf:call(Conf, {transfer, cancel, Id}, 5000)
+            end
+    end.
+
+%% A member a move brought in keeps its name (the id it had)
+arrived(Id, New) ->
+    case chappe_mrf_conf:members(New) of
+        Ms when is_list(Ms) ->
+            lists:any(
+                fun
+                    (#{name := N}) -> N =:= Id;
+                    (_) -> false
+                end,
+                Ms
+            );
+        _ ->
+            false
+    end.
+
+wait_jobs([], _Deadline, Result) ->
     Result;
-wait_jobs([{Pid, Mon, Id} | Rest], Conf, Deadline, Result) ->
+wait_jobs([{Pid, Mon} | Rest], Deadline, Result) ->
     receive
-        {'DOWN', Mon, process, Pid, _} ->
-            wait_jobs(Rest, Conf, Deadline, Result)
+        {'DOWN', Mon, process, Pid, _} -> wait_jobs(Rest, Deadline, Result)
     after left(Deadline) ->
-        unlink(Pid),
-        exit(Pid, kill),
-        _ = chappe_mrf_conf:call(Conf, {transfer, cancel, Id}, 5000),
-        wait_jobs(Rest, Conf, Deadline, {error, timeout})
+        demonitor(Mon, [flush]),
+        wait_jobs(Rest, Deadline, {error, timeout})
     end.
 
 %% The room of Name on the first node of Nodes that opens or finds one
