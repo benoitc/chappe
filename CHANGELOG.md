@@ -7,6 +7,26 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 
 ## Unreleased
 
+- chappe_sip: cancelling a request after the SIP stack was stopped no
+  longer crashes the stack; it returns an error. Holding a call whose SDP
+  mixes line endings now rewrites every media line.
+- chappe_sip, chappe_audio: the SIPREC recording server now takes its audio
+  in through chappe_audio, so chappe_sip itself never handles media. Run
+  chappe_audio next to chappe_sip to record; without it, a recording
+  session is refused cleanly instead of crashing. A crash in the recording
+  store no longer drops live recordings.
+- chappe_sip, breaking: the SIPREC receiver modules moved to chappe_audio
+  (`chappe_audio_rtp`, `chappe_audio_srtp`; G.711 decoding is
+  `chappe_audio_pcm:decode/2`), and the flow-token functions of
+  `chappe_sip_route` moved to `chappe_sip_flow`. Unused functions are
+  removed: `chappe_sip:bye/1` and `update/1`, `chappe_sip_engine:unhandle/1`,
+  `respond/3` and `unreg_handle/1`, `chappe_sip_msg:new_response/3`,
+  `chappe_sip_req:can_form_dialog/1`, `chappe_sip_res:final_ref/1`,
+  `chappe_sip_siprec_meta:ns/0` and `ext_ns/0`,
+  `chappe_sip_focus:subscriptions/1`, `chappe_sip_notifier:changed/2` and
+  `watchers/2`, `chappe_sip_location_cluster:prefix/0` and
+  `chappe_sip_refer:dialog/1`.
+
 - chappe_cluster, a new app: it lets several chappe nodes agree on a
   single owner for anything that must not run twice, such as a conference
   room, a user's registration or a job that pings a trunk. It also keeps a
