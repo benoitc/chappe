@@ -10,7 +10,8 @@ workflow in [docs/contributing/](docs/README.md#if-you-want-to-change-something)
 
 1. Build: `make` (the first run builds the vendored sofia-sip; Erlang/OTP
    29.1.2 or later, rebar3, a C toolchain, autotools, OpenSSL).
-2. Read [Concepts](docs/concepts.md) and [Architecture](docs/architecture.md).
+2. Read [Concepts](docs/concepts.md), the [Glossary](docs/glossary.md) and
+   [Architecture](docs/architecture.md).
 3. Find the code with [Navigation](docs/navigation.md).
 
 ## Checks
@@ -117,7 +118,7 @@ breaking change of the app it belongs to.
 |---|---|
 | `README.md` | Orientation: what chappe is, the apps, where to start |
 | `docs/README.md` | The map of every document |
-| `docs/concepts.md`, `docs/architecture.md`, `docs/navigation.md` | Mental model, how the apps fit, where the code is |
+| `docs/concepts.md`, `docs/glossary.md`, `docs/architecture.md`, `docs/navigation.md` | Mental model, vocabulary, how the apps fit, where the code is |
 | `docs/decisions/` | One record per boundary and its reason |
 | `docs/contributing/` | One workflow per task |
 | `docs/plans/` | Maintainer plans |

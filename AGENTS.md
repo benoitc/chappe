@@ -110,7 +110,8 @@ The human documentation is the source for the rules and the structure; this
 file only summarises what an agent needs to act.
 
 - `docs/README.md`: the map of every document.
-- `docs/concepts.md`: the vocabulary (leg, owner, anchor, flow, node, ...).
+- `docs/concepts.md`: the mental model.
+- `docs/glossary.md`: the vocabulary (leg, owner, anchor, flow, lease, ...).
 - `docs/architecture.md`: the apps, supervision and the main call flows.
 - `docs/navigation.md`: concept to module to test, public vs internal
   modules, where configuration lives.
