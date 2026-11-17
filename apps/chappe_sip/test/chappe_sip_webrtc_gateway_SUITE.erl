@@ -655,11 +655,13 @@ recv_ws(Code) ->
     after 6000 -> ct:fail({no_ws_status, Code})
     end.
 
+%% Selective: other frames stay in the mailbox. The proxy forwards a 2xx
+%% ACK and the BYE after it independently, so the BYE may reach the
+%% browser first and must still be there when the test asks for it.
 recv_ws_method(Method) ->
     L = byte_size(Method),
     receive
-        {ws_in, <<M:L/binary, " ", _/binary>> = Bin} when M =:= Method -> Bin;
-        {ws_in, _} -> recv_ws_method(Method)
+        {ws_in, <<M:L/binary, " ", _/binary>> = Bin} when M =:= Method -> Bin
     after 6000 -> ct:fail({no_ws_req, Method})
     end.
 
