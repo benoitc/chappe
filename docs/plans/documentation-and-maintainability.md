@@ -1,400 +1,348 @@
 # Documentation and maintainability plan
 
 This is a plan, not documentation. It records what a human developer meets
-today when they open the repository, what is missing or misleading, and the
-order in which to fix it. No source code is changed by this plan; code
+when they open the repository today, what is missing or misleading, and the
+order in which to fix it. No source code is changed by this plan. Code
 findings are listed so they can be planned separately.
 
-Baseline: `main` at `e539f8d` (after #18). Measurements are code lines (no
-blanks, no comments) unless stated.
+Baseline: `main` at `77dea16` (after #37). Line counts are code lines,
+without blanks or comments. Function lengths add up every clause of a
+function.
 
-## 1. What a newcomer meets today
+The first version of this plan (2026-10-31, baseline `e539f8d`) was carried
+out in #19. Section 1 says what it left behind. The rest of the plan covers
+what changed since: two new apps, SIPREC, call correlation, the cluster
+users, and the security pass.
 
-| Area | Size | State |
-|---|---|---|
-| chappe_sip | 84 modules, 21.5k lines, plus a 2.6k-line C NIF | 21 guides, 4 design docs, a 536-line `features.md` |
-| chappe_rtpengine | 15 modules, 2.5k lines | README, 6 guides, overview |
-| chappe_esl | 14 modules, 2.2k lines | README, 8 guides, overview |
-| chappe_mix | 12 modules, 2.2k lines | **no README, no guide, no design doc** |
-| chappe_mrf | 10 modules, 1.6k lines | README, 3 guides, a drachtio mapping |
-| demo/sbc | one 560-line module | the best end-to-end walkthrough, linked from nowhere |
+## 1. Where the first plan left the repository
 
-Main problems, in the order a newcomer hits them:
+The structure from #19 works and should stay:
 
-1. **No starting point.** The root README lists four of the five apps, omits
-   chappe_mrf and the demo, contains no link, and says nothing about how the
-   apps fit together. The dependency rules (leaf, core, orchestration) exist
-   only in `AGENTS.md`, which is written for AI agents.
-2. **No vocabulary.** There is no glossary. `nta`, NG, ESL, B2BUA, UAS/UAC,
-   anchor, flow, Timer C, focus, MRF are used before being defined. "Leg"
-   means three different things (an nta leg, a B2BUA side, a mixer
-   participant).
-3. **No "why".** The big decisions (a NIF over sofia nta, one process per
-   call, SIP-free leaf apps, rtpengine kept external, a home-grown mixer,
-   chappe_mrf as a separate orchestration app) are asserted, never argued.
-   The evidence for some of them is buried in lab notebooks
-   (`apps/chappe_mix/test/audit/ATTEMPTS.md`, `PERF.md`).
-4. **No "where".** Guides almost never point to the module or the test that
-   implements what they describe. Features shipped in #17 and #18 (forking,
-   `replace_b`, `relay_async`, `hangup/2`, in-dialog requests, the
-   registration client, the guard, metrics) have no guide at all, only
-   `features.md` bullets.
-5. **Stale and contradicting statements.** Examples:
-   - `apps/chappe_sip/AGENTS.md:29` says erlfmt is not applied, while CI
-     enforces it;
-   - `apps/chappe_sip/AGENTS.md:53` speaks of a sofia submodule, though sofia
-     is vendored;
-   - `apps/chappe_sip/docs/design/overview.md` shows a supervision tree
-     missing nine children, and promises `chappe_sip_mN_SUITE` suites that do
-     not exist;
-   - two CHANGELOGs with different versions (root 0.1.0, chappe_sip 0.2.0);
-   - "Planned: multi-app model" in `features.md`, "dropped" in `plan.md`,
-     "draft" in `remote-app.md`, none linking the others;
-   - two copies of the leaf-library contract that disagree;
-   - getting-started guides that clone standalone repos that are no longer
-     the source.
-6. **Unclear public surface.** No module is marked internal. The ex_doc
-   groups in `apps/chappe_sip/rebar.config` expose internals
-   (`ws_transport`, `route`, `registry`) and omit user-facing modules (refer,
-   presence, mwi, regc, cdr, focus, peers, guard). chappe_mix and chappe_mrf
-   have no ex_doc configuration, and there is no umbrella docs target.
-7. **No contributor guide.** There is no `CONTRIBUTING.md`, and none of these
-   is written down:
-   - how to add a guide, a module, an app, a test or fake, or an interop lab;
-   - how to debug a call;
-   - what all the `make interop-*` targets do, in one place.
+- the orientation path: README, `docs/README.md`, concepts, architecture,
+  decisions, navigation;
+- one design overview, a configuration reference and a short `features.md`
+  per app;
+- 14 contributor workflows;
+- a "Where it lives" footer on every chappe_sip guide;
+- decisions 0001 to 0010.
+
+The problem today is not structure but **drift**. PRs #20 to #37 added
+chappe_audio and chappe_cluster, SIPREC, `call_ref`, a location store
+behaviour, edge routes, cluster rooms and an MWI fan-out. Their user guides
+were written. The cross-cutting pages were not updated:
+
+| Page | What drifted |
+|---|---|
+| `README.md` | The apps table and the diagram show 5 of the 7 apps. They miss SIPREC, `make demo-cluster` and the cluster lab. "RTP never flows through a SIP process" (:53) is false since `chappe_sip_siprec_rtp`. |
+| `docs/architecture.md` | Says "five apps" (:3). The core is described as using only rtpengine and mix (:50), with no edge to cluster or audio. Supervision trees miss 7 chappe_sip children, `chappe_audio_adopt_sup` and `chappe_cluster_hlc`. The rtpengine child order is wrong. |
+| `docs/concepts.md` | No entry for lease, epoch, fence, singleton, region, quorum, HLC, `call_ref`, SIPREC (SRC, SRS), audio fork, stream, store, sweep, location backend, directory, pg scope or ESC. "Fork" is used in two senses (B2BUA fork, audio fork). |
+| `docs/navigation.md` | No rows for audio, cluster, SIPREC, call correlation, location backends, transfer and join, SRTP or metrics HTTP. Existing rows miss newer modules and suites. Every name it gives still exists: the problem is omission. |
+| `docs/README.md` | No chappe_cluster row. The guide list misses `siprec.md` and `follow-a-call.md`, and the labs list misses the mix, mrf and cluster labs. |
+| `docs/contributing/labs.md`, `add-tests.md` | No `interop-cluster`, `demo-cluster`, `demo-esl`, `advisories` or `fuzz`. No audio or cluster fakes, no multi-node test helpers. |
+| `apps/chappe_sip/docs/design/overview.md` | The supervision tree misses `pg`, `call`, `hlc`, `metrics_http`, `b2b_sup`, both siprec sups and `proxy_sup`. The boot section misses the cluster check and `prep_stop`. The directory table misses `siprec/`, the location backends and `lib`. The module counts are wrong (9 b2b modules, actually 12), and so is the test map. |
+| `apps/chappe_mrf/docs/design/overview.md` | Never mentions the cluster. The module table misses `_conf_move`, `_conf_refer` and `_store`. The backend contract table is stale on both sides. `configuration.md` says "one key" (there are nine). |
+| `apps/chappe_mix`, `chappe_esl`, `chappe_rtpengine` overviews | Miss `chappe_mix_move` and `_tap`, and `chappe_esl_cidr`. Give a wrong `ws` pin. Leave `holder =>` and `reoffer_tags` out. |
+| ex_doc groups | About 30 chappe_sip modules are ungrouped, 5 of them public (`call`, `siprec`, `siprec_srs`, `location`, `multipart`). `siprec.md` and `follow-a-call.md` are not extras. chappe_cluster groups 3 of 13 modules; chappe_audio has no "Internal" group. |
+| Contradictions | Some pages say chappe_cluster "starts on first use", while the code starts it at boot (chappe_sip `configuration.md:119`, chappe_mrf `README.md:21`). The remote-app model is "out of scope", "Open" and "Planned" in three places. Decision 0010 describes per-node ownership in the present tense. |
+
+What this tells you about the fix: **pages that copy facts from the code
+drift; pages that point to the code do not.** The supervision trees, the
+module lists, the leaf-app list (kept in 4 places, two already wrong) and the
+counts are all copies. The plan below removes copies where it can, and checks
+the remaining ones in CI.
 
 ## 2. Recommended structure
 
-The documentation is a path from orientation to implementation. Each level
-links to the next. User guides stay with their app, because each app is
-published on its own. Everything that spans apps moves to a new umbrella
-`docs/`.
+Keep the #19 layout. Change four things:
 
 ```
-README.md                       orientation: what, who, the five apps, start here
-CONTRIBUTING.md                 how to work in this repo (checks, conventions, PRs)
-CHANGELOG.md                    single changelog (merge apps/chappe_sip/CHANGELOG.md)
+README.md                  orientation; 7 apps; 3 ways in (unchanged role)
 docs/
-  README.md                     documentation map, by reader and by question
-  concepts.md                   mental model and glossary
-  architecture.md               how the apps fit, dependency rules, main flows
-  decisions/                    short records: one decision, its reason, its cost
-  navigation.md                 concept -> app -> directory -> module -> tests
-  contributing/                 "If you want to..." workflows
-  plans/                        plans like this one (maintainer-facing)
-apps/<app>/
-  README.md                     the app in one page: role, start here, public modules
-  docs/README.md                the app's documentation index
-  docs/design/overview.md       internal architecture of the app (contributors)
-  docs/guides/*.md              task guides (users)
-  docs/features.md              capability tracker, short, with links
-  docs/compliance*              generated matrix and how to extend it
+  README.md                map, by reader and by question
+  concepts.md              the mental model only (about 150 lines)
+  glossary.md              NEW: one-paragraph terms, alphabetical, linked from everywhere
+  architecture.md          apps, dependency rules, main flows; NO full supervision trees
+  decisions/               + 0011 to 0016 (section 6)
+  navigation.md            concept -> module -> test, one row per subsystem
+  contributing/            + 5 workflows (section 8)
+  plans/                   this plan
+apps/<app>/docs/design/overview.md   the ONLY home of the app's supervision tree and module list
 ```
 
-`AGENTS.md` files stay for AI agents. They should link to the human
-documents instead of being the only home of a rule.
+1. **Split `concepts.md`.** At 343 lines it mixes a mental model with a
+   glossary, and the new terms would push it past 450. The model (a call is
+   a process, owner and notify, legs, anchoring, flows, the engine boundary,
+   ownership in a cluster) stays in `concepts.md`. The definitions move to
+   `glossary.md`.
+2. **Supervision trees live once, in each app's overview.**
+   `architecture.md` keeps a one-level picture (each app's top supervisor
+   and its main subtrees) and links to the overview. Today the same tree is
+   kept in two places, and both are wrong.
+3. **The leaf-app list lives once,** in decision 0003. Other pages link to
+   it instead of listing the apps.
+4. **chappe_cluster gets the same page set as the other apps:**
+   `design/overview.md`, `configuration.md`, `features.md`, and its lab in
+   the ex_doc extras.
 
 ## 3. The starting point
 
-The root `README.md` becomes the single entry. In one screen it says:
+The root `README.md` stays the single entry point. Its job does not change:
+in one screen, what chappe is, the apps, three ways in, and the checks. It
+needs:
 
-- what chappe is (an Erlang platform for building voice services, signalling
-  in Erlang, media in rtpengine, FreeSWITCH or chappe_mix) and who it is for;
-- the five apps in one table: role, depends on, start reading at;
-- one diagram of the system (apps, external media servers, peers);
-- three ways in:
-  1. "Run the demo" (`make demo`, `demo/sbc/README.md`);
-  2. "Build your first service" (chappe_sip getting started);
-  3. "Understand the code" (`docs/README.md`);
-- how to run the checks (`make check`), with a link to `CONTRIBUTING.md`.
+- the 7 apps in the table, each with one line and its layer;
+- the diagram with chappe_audio, chappe_cluster and the SIPREC path;
+- a fourth way in: "Run several nodes" (`make demo-cluster`,
+  `demo/cluster/README.md`);
+- the false RTP sentence corrected: "SIP processes never relay call media;
+  a SIPREC receiver takes recorded audio in, see 0012";
+- the OTP floor said once, with a link, not repeated in three files.
 
 ## 4. Proposed documents
 
-Each document is listed with its intent, reader, what the reader understands
-afterwards, where it points next, and its depth.
+For each: intent, reader, what they understand after, where it points next,
+depth.
 
 ### Umbrella
 
-| Document | Intent | Reader | Understands after | Points to | Depth |
+| Document | Action | Intent and reader | Understands after | Points to | Depth |
 |---|---|---|---|---|---|
-| `README.md` (rewrite) | Orientation | Everyone | What chappe is, the five apps, where to start | demo, getting started, `docs/README.md` | One screen |
-| `docs/README.md` (new) | Map of all docs, by role and by question ("I want to answer calls", "I want to change the B2BUA") | Everyone | Which page answers their question | Every doc | Index only |
-| `docs/concepts.md` (new) | Mental model and glossary. Leg (three meanings), A/B, anchor, direct media, flow, binding, AOR, Timer C, early media, late offer, 3PCC, owner and notify process, middleware, handler, NG, ESL inbound and outbound, MRF/MRFC/MRFP, node, peer, room, relation, talker, focus, CDR, HEP | New developers, users | The words used everywhere else | `architecture.md` | Short entries, one paragraph each |
-| `docs/architecture.md` (new) | How the apps fit. Leaf apps (rtpengine, mix, esl), core (sip), orchestration (mrf), and why the dependency rules exist. Supervision at a glance. The five main flows as diagrams: inbound INVITE, anchored B2BUA, connect a caller to FreeSWITCH, native conference, registration | Developers understanding the system | Where execution enters, which app owns what, what talks to what | `decisions/`, `navigation.md`, app overviews | Medium; diagrams first, prose second |
-| `docs/decisions/NNNN-*.md` (new) | One decision per page: context, decision, consequences, status. Candidates in §6 | Contributors about to change a boundary | Why a boundary exists and what breaks if moved | `architecture.md` | Half a page each |
-| `docs/navigation.md` (new) | The developer guide. A table from concept to app, directory, entry module, internal modules, tests, interop lab and guide. Also: public vs internal modules per app, and where configuration and startup live | Contributors | Where to look before opening the tree | App overviews, `contributing/` | Tables |
-| `CONTRIBUTING.md` (new) | How to work here: checks, commit and PR style, no em-dash, share code, tests first, labs, where AI-agent rules live | Contributors | How to get a change accepted | `contributing/` | Short |
-| `docs/contributing/*.md` (new) | "If you want to..." workflows, see §8 | Contributors | The exact files, tests and checks for a task | `navigation.md` | One page each |
-| `CHANGELOG.md` (merge) | Single user-facing history | Users | What changed and what it means | none | Unchanged style |
+| `README.md` | Update | Orientation, everyone | The 7 apps and where to start | demos, getting started, `docs/README.md` | One screen |
+| `docs/README.md` | Update | The map. Add chappe_cluster, the two missing guides, the three labs, and the questions "run several nodes", "record with SIPREC", "follow a call across nodes" | Which page answers their question | every doc | Index only |
+| `docs/concepts.md` | Rewrite (shorter) | Mental model, new developers. Add one section: ownership in a cluster (lease, epoch, fence; lookups on pg, ownership on Ra; a lost quorum stops claims, not calls) | Why chappe is shaped as it is | `glossary.md`, `architecture.md` | About 150 lines |
+| `docs/glossary.md` | New | Terms, everyone. Every term in section 1's concepts row, plus the existing ones moved from concepts. "Fork" gets two entries. "Node" separates a FreeSWITCH or rtpengine node from a cluster node | The words used everywhere else | the page that owns each term | One paragraph per term |
+| `docs/architecture.md` | Update | How the apps fit, developers. 7 apps, the real dependency edges (chappe_sip to cluster and audio, as optional siblings), one-level supervision, and three new flows (section 10) | Where execution enters and what talks to what | decisions, app overviews | Diagrams first |
+| `docs/navigation.md` | Update | Concept to code, contributors. New rows for audio, cluster, SIPREC, call correlation, location backends, B2BUA transfer and join, SRTP and SDES, metrics HTTP, ESC. Fill in the missing modules and suites in the existing rows. Add audio and cluster to the public, startup and fakes tables | Where to look before opening the tree | app overviews, workflows | Tables |
+| `docs/decisions/0011` to `0016` | New | Why, for contributors changing a boundary (section 6) | What breaks if the boundary moves | architecture | Half a page each |
+| `docs/decisions/0010` | Update | Record what #37 moved onto the cluster, and close or keep open the question of bindings in the KV | The current state | cluster overview | Small edit |
+| `docs/contributing/labs.md`, `add-tests.md`, `debug-a-call.md` | Update | Add the cluster lab and demo, `demo-esl`, `advisories`, `fuzz`, the audio and cluster fakes, `*_test_dist` and peer suites, and `call_ref` and HEP in debugging | Which lab or helper to use | each lab README | Rows |
+| `docs/drachtio-parity.md` | Update | Align the remote-app status with 0008 | One answer | 0008 | Small edit |
 
-### chappe_sip
+### Per app
 
-| Document | Action | Intent and notes |
-|---|---|---|
-| `README.md` | **Rewrite** | Role in one paragraph, public modules, three-step quickstart from the umbrella (not a standalone clone), links. |
-| `AGENTS.md` | **Rewrite** | Fix the stale build and fmt notes, the module layers and the suite path. Link to `docs/design/overview.md` instead of repeating it. |
-| `CHANGELOG.md` | **Merge** into root | Removes the version contradiction. |
-| `docs/README.md` | Keep | Becomes the app index; add every guide (`sbc`, `b2bua-reinvite`, `capture` are missing today) and the design docs. |
-| `docs/design/overview.md` | **Rewrite** | Current supervision tree. The layers of `src/` and what each directory owns. Entry points (inbound, outbound, boot). Public vs internal. A test map by area. |
-| `docs/design/engine.md` | Keep, extend | Add the NIF event contract (now only in `src/engine/chappe_sip_nif.erl`), a "risky regions" section, and the reasons for the NIF. Move the M0 abort audit to an appendix. Fix the `doc/` path cited in the C header. |
-| `docs/design/media.md` | **Split** | Keep the boundary and reasoning as design. Move the configuration recipes into a guide (`guides/media.md`). Link chappe_rtpengine, chappe_mix and chappe_mrf. |
-| `docs/design/remote-app.md` | Keep, mark as draft | Add a status line and link it from `features.md` "Planned" and from `decisions/`. |
-| `docs/design/b2bua.md` (new) | New | The B2BUA as a subsystem: modules (`b2b`, `relay`, `fork`, `early`, `media`, `replace`, `requests`, `async`, `hdr`), the relay loop, `replace_b`, ownership. |
-| `docs/design/ws-transport.md` (new) | New | Why WS has its own transaction layer, how it mirrors nta, and where the two must stay in step. |
-| `docs/features.md` | **Split** | Keep a short capability tracker, each line linking to its guide. Move the 270 lines of option prose into guides and moduledocs. Move "Breaking changes" to the CHANGELOG and "Planned" to issues or `decisions/`. |
-| `docs/plan.md` | **Move** to `docs/history/` or remove | It stops at M16 and is maintainer history. |
-| New guides | **New** | `b2bua-forking.md` (parallel fork, `pass_failure`, hunting); `b2bua-call-control.md` (`hangup`, in-dialog requests, `relay_info`, `replace_b`, `relay_async`, `set_owner`); `register-to-a-carrier.md` (regc); `protect-the-edge.md` (guard, ACL, flood, `drop`); `metrics.md`; `media.md` (from the split) |
-| `docs/guides/*` | Keep; add a "Where it lives" footer | Each guide ends with modules, tests and the related lab. |
-| `interop/sbc`, `interop/conformance` | **New README** each | What the lab proves, how to run it, how to add a case. |
-
-### chappe_rtpengine, chappe_esl
-
-- **Keep** the READMEs and guides.
-- **Fix** the getting-started guides, which point to standalone repos.
-- **Update** the overviews:
-  - chappe_rtpengine is missing `_sdp`, `_dtmf`, `_resolve` and `_ws_handler`, and wrongly says "SDP opaque";
-  - chappe_esl is missing `chappe_esl_call` and `chappe_esl_exec`.
-- **Merge** the two `leaf-library-contract.md` copies into one decision record, `docs/decisions/0003-leaf-apps.md`, and leave a short pointer in each app.
-- **Add** `docs/compliance/README.md` for chappe_rtpengine, or link the shared contributing page.
-
-### chappe_mix
-
-| Document | Action | Intent |
-|---|---|---|
-| `README.md` | **New** | What the mixer is, when to use it rather than a FreeSWITCH conference, and how it is reached (through `chappe_sip_media` or standalone). |
-| `docs/design/overview.md` | **New** | The clock and tick model, N-1 mixing, the jitter buffer, RTCP, socket ownership, relations. Today the code and `PERF.md` are the only source. |
-| `docs/guides/conference.md` | **New** | Running a room, standalone and behind rtpengine. |
-| `test/audit/PERF.md`, `ATTEMPTS.md` | Keep in place, excluded from user docs | Lab notebooks. Strip the scratch path and the product names, and link them from the overview as evidence. |
-| ex_doc | **Add** | Same shape as the other apps. |
-
-### chappe_mrf
-
-- **Keep** the README, the 3 guides and `drachtio-mapping.md`.
-- **New:**
-  - `docs/design/overview.md`, covering the MRFC/MRFP split, the endpoint lifecycle, the correlation header, the loopback middleware, the two conference backends and the backend callback contract;
-  - `docs/features.md`;
-  - `interop/README.md`.
-- **Add** an ex_doc configuration and an umbrella docs target.
-
-### demo/sbc
-
-- Keep the README.
-- Link it from the root README, the chappe_sip `sbc.md` guide and chappe_mrf.
-- See finding M19: the demo is not compiled by CI.
-
-## 5. Concepts that need dedicated explanations
-
-1. **A call is a process.** Who owns a dialog, what happens when the owner
-   dies, and the owner versus notify roles. This idea is behind every API
-   that takes an `owner` or `notify` option.
-2. **Legs, A and B, and the relay.** How the B2BUA bridges two dialogs and
-   which side sees what.
-3. **Media anchoring vs direct media**, and why `replace_b` needs anchoring.
-4. **Transport flows and NAT** (RFC 5626 flows, `received`, sending to the
-   source address).
-5. **Two transaction layers:** sofia nta for UDP, TCP and TLS, and the Erlang
-   one for WebSocket.
-6. **The engine boundary:** handles, the event contract, threads, and what
-   survives a restart.
-7. **Media resource function:** controller vs processors, an endpoint, the
-   outbound ESL socket, and correlation.
-8. **The mixer's timing model.**
-9. **Compliance tracking:** requirement rows, test claims, gates.
-
-## 6. Design decisions to record, and questions for the maintainer
-
-Each becomes a page in `docs/decisions/`. Where the reason cannot be inferred
-from the repository, it is a question, not an invented answer.
-
-| # | Decision | What the repository shows | Question for the maintainer |
+| App | Keep | Update | New |
 |---|---|---|---|
-| 0001 | SIP transactions in sofia nta through a NIF | `engine.md` explains the mechanism only | Answered, record accepted: an Erlang layer is possible and performance is not the obstacle; nta is kept for its transports, RFC 3263 resolution and interop maturity, and the NIF is held to the safety rules in `engine.md`. |
-| 0002 | One process per call | Asserted in `overview.md:32` | Confirm the reasons: isolation, crash containment, a simple owner model? |
-| 0003 | Leaf apps take no SIP dependency | A rule in `AGENTS.md` | Is publishing each app on its own the main reason? Should chappe_mix count as a media leaf, given that the contract says "no media concept"? |
-| 0004 | rtpengine stays an external daemon | Implicit | Confirm: SRTP/DTLS/ICE and transcoding are out of scope for Erlang? |
-| 0005 | chappe_mix exists next to FreeSWITCH conferences | Evidence only in `ATTEMPTS.md` and `PERF.md` | Confirm the reasons: density, latency, control over relations, the rtpengine mixer not usable? |
-| 0006 | chappe_mrf is an orchestration app | A rule in `AGENTS.md` | Confirm the placement rule for future orchestration apps. |
-| 0007 | WebSocket has its own Erlang transaction layer | Moduledoc only | Why not sofia's WS transport? |
-| 0008 | The remote-app model | `remote-app.md` draft, `plan.md` "dropped", `features.md` "planned" | Which is true now? Keep as draft, mark rejected, or delete? |
-| none | Versioning and publishing | Root 0.1.0, chappe_sip 0.2.0, per-app `source_url` to old repos | One version for the umbrella, or one per app on hex? Are the old per-app repos mirrors or retired? |
-| none | Product references in open-source docs | Skills and notebooks name product repos (i3_bridge, chappe_switchboard) | Acceptable, or should they be removed? |
-| none | Public API stability | Nothing stated | Which modules are public, and what is the deprecation policy? |
+| chappe_sip | guides (all have footers), `features.md` (96 lines, still a tracker), `configuration.md` (every key present) | `design/overview.md`: tree, boot and `prep_stop`, directories, counts, public modules, test map with Cluster and SIPREC rows. `AGENTS.md` layers. `configuration.md:119`. The sbc and conformance lab READMEs (missing cases). ex_doc groups and extras | `design/siprec.md`: SRC and SRS, the meta and body modules, where RTP enters, the store hand-off. `design/registrar.md` or a section of the overview: the location behaviour, CAS and read-retry, edge routes, why 430 and 503. Both reasons now exist only in moduledocs |
+| chappe_cluster | README, `guides/cluster.md`, AGENTS | ex_doc: group all 13 modules, add the lab README as an extra | `design/overview.md`: supervision (who owns the holder table and why), the machine and its no-clock rule, the holder deadline, singletons, the directory seam, tests and the lab checker. `configuration.md` (moved from the README table). `features.md`. A "Where it lives" footer |
+| chappe_audio | README, overview, configuration, features, guides | overview: `adopt_sup`, `adopt`, `lib`, a test map. ex_doc "Internal" group, `features.md` in extras. Footers on `fork.md` and `record.md` | none |
+| chappe_mrf | README, guides, drachtio mapping | `design/overview.md`: a "Rooms in a cluster" section (claim in the caller, the waiting room, draining, `prep_stop` handoff, rehome, why fs rooms do not move, the timeouts and why), the module table, the backend contract, failure rows (clean stop, lost lease, no quorum). `configuration.md`: nine keys, read where. README wording on when chappe_cluster starts. Interop README: the cluster suite | none |
+| chappe_mix | everything | overview: `_move`, `_tap` (and why a tap drops frames when the remote distribution buffer is full). `configuration.md`: tap options | none |
+| chappe_esl | everything | overview: `_cidr`, `start_listener/4`. `configuration.md`: `bugname`. Outbound guide: the screen-before-spawn order and the accept backoff, in one paragraph | none |
+| chappe_rtpengine | everything | overview `ws` pin. `features.md`: `stop_forwarding/2`, and drop the "seven gates" line. Subscriptions guide: `holder =>`. Sessions guide: via-branch re-offers | none |
 
-## 7. Developer navigation guide (seed for `docs/navigation.md`)
+The two `leaf-library-contract.md` stubs are 6-line pointers now. Remove
+them, and remove their ex_doc extras and index lines: 0003 is the record.
+
+## 5. Concepts that need a dedicated explanation
+
+The nine from the first plan are written, in `concepts.md` and the design
+docs. New ones:
+
+1. **Ownership in a cluster.** Ownership needs consensus and lookups do not:
+   that is why both pg and Ra are present. Epoch leases (one renewal keeps
+   every lease of a node), fences, and what a lost quorum stops. Home:
+   `concepts.md`, then the chappe_cluster overview.
+2. **Time without wall clocks.** Monotonic deadlines on the holder, the
+   leader's expiry timer, HLC for ordering. There is one clock per node:
+   chappe_cluster's when it runs, otherwise chappe_sip's own
+   (`chappe_sip_hlc`, both built on the `hlc` dep). This is written only in
+   the `chappe_sip_hlc` moduledoc.
+3. **Reaching a device registered on another node.** The edge route, the
+   flow token tied to one boot, 430 when the flow is gone. Home: the
+   registrar design section.
+4. **Call correlation.** `call_ref`, the pg lookup, following a call across
+   nodes. `follow-a-call.md` covers use, not the model.
+5. **Recording paths.** Three ways audio leaves a call (an rtpengine fork, a
+   FreeSWITCH `mod_audio_stream` fork, SIPREC to the built-in SRS), where
+   each lands (chappe_audio streams and the store), and when you choose
+   which. Today this is spread over five guides in three apps.
+6. **Optional sibling apps.** chappe_sip and chappe_mrf use chappe_cluster
+   and chappe_audio without listing them in `applications`, so that the
+   stop order lets a node hand off before it stops. A release must include
+   `{chappe_cluster, load}`. This is a rule every product that ships a
+   release has to follow, and it is written only in code comments.
+
+## 6. Decisions to record, and questions for the maintainer
+
+Proposed records:
+
+| # | Decision | Evidence today |
+|---|---|---|
+| 0011 | chappe_audio is a leaf app with a store behaviour | moduledocs, overview |
+| 0012 | A SIPREC SRS lives in chappe_sip and takes RTP in | code, 0009 mentions it; contradicts the README rule and bends 0004 |
+| 0013 | Calls are found across nodes through `call_ref` on pg, not owned | code, `follow-a-call.md` |
+| 0014 | chappe_cluster and chappe_audio are optional siblings, started by their users, kept out of `applications` for the stop order | `chappe_sip_app.erl:36-41`, `chappe_mrf_app.erl:12-17` |
+| 0015 | Registrar bindings sit behind a location behaviour; cross-node calls route through the edge node | `chappe_sip_location.erl:3-20`, `chappe_sip_route.erl:29-31` |
+| 0016 | Security defaults: the ESL listener binds loopback with an allow list, sofia's own WS transport stays closed, the OTP floor, the advisory gate | #36, CHANGELOG |
+
+Questions only a maintainer can answer. They are left as questions, with no
+invented answers:
+
+| # | Question | Why it matters |
+|---|---|---|
+| Q1 | 0008, the remote-app model: open, out of scope, or planned? Three pages disagree | One status to write everywhere |
+| Q2 | 0002, 0004, 0005 and 0007 are still "Proposed, to confirm"; 0003 and 0006 have reasons still to confirm. Do you accept them as written? | Unconfirmed records read as guesses |
+| Q3 | Registrar bindings in the region KV at scale (0010:176-179): accepted for now, or still open? | 0010 and 0015 must agree |
+| Q4 | The README rule "RTP never flows through a SIP process": is the new rule "except a SIPREC receiver", or should the SRS move out of chappe_sip one day? | Decides whether 0012 is a permanent rule or an exception with a planned exit |
+| Q5 | Public API stability: which modules are public, and what is the deprecation policy? (Unanswered since the first plan.) | The ex_doc groups and the "public" column in navigation depend on it |
+| Q6 | chappe_mrf_conf backends: commit to a behaviour (finding M16), or keep the contract documented only? | Decides whether workflow 7 can say "implement this behaviour" |
+
+## 7. Developer navigation guide: rows to add to `docs/navigation.md`
 
 | If you care about | App, directory | Start at | Internal modules | Tests | Lab |
 |---|---|---|---|---|---|
-| Answering and placing calls | chappe_sip `src/api`, `src/dialog`, `src/uac` | `chappe_sip`, `chappe_sip_dialog`, `chappe_sip_uac` | `chappe_sip_dialog_fsm`, `chappe_sip_uac_fsm` | `core`, `core_uac`, `uas`, `uac`, `indialog`, `dialog_ops`, `handler` | conformance |
-| Inbound request pipeline | `src/engine`, `src/conn` | `chappe_sip_engine` (`handle_event`, `dispatch`), `chappe_sip_request_worker` | `chappe_sip_middleware`, `chappe_sip_guard` | `pipeline` (fake engine), `guard`, `ood` | none |
-| B2BUA | `src/api/chappe_sip_b2b*` | `chappe_sip_b2b` | `b2b_relay`, `_fork`, `_early`, `_media`, `_replace`, `_requests`, `_async`, `_hdr` | `b2bua`, `b2b_relay`, `forked_2xx`, `webrtc_gateway` | sbc |
-| Proxy | `src/proxy` | `chappe_sip_proxy` | `_proxy_rules`, `_proxy_dialog`, `_route` | `proxy_conf`, `proxy_forking`, `proxy_record_route`, `proxy_media` | conformance |
-| Registrar and location | `src/api/chappe_sip_registrar`, `src/conn/chappe_sip_registry` | `chappe_sip:registrar/1` | `_registry`, `_registry_keeper`, `_qualify` | `registrar`, `digest` | conformance |
-| Registering to a carrier | `src/api/chappe_sip_regc` | `chappe_sip:register_client/2` | `_regc_sup` | `regc` | none |
-| WebSocket and WebRTC | `src/ws` | `chappe_sip_ws_listener` | `_ws_transport`, `_ws_conn` | `websocket`, `ws_conf`, `webrtc_gateway` | sip-interop (JsSIP) |
-| Presence, MWI, subscriptions | `src/api` (packages), `src/dialog` (subscriber, refer) | `chappe_sip:event_package/2` | `_notifier`, `_subscriber`, `_notify_router` | `subscribe`, `subscriber`, `presence`, `refer` | none |
-| Peers, OPTIONS, failover | `src/peers` | `chappe_sip:peer_add/2` | `_peer`, `_peers` | `peers` | sbc |
-| Media facade | `src/media` | `chappe_sip_media` | `_media_rtpengine`, `_media_mix` | `media` (fake), `proxy_media` | interop |
-| The C engine | `c_src`, `src/engine/chappe_sip_nif` | `docs/design/engine.md` | `chappe_sip_engine_nif.c` | `engine_lifecycle`, `engine_smoke`, `ops` | asan |
-| rtpengine control | chappe_rtpengine | `chappe_rtpengine`, `chappe_rtpengine_session` | `_client`, `_pool`, `_ng`, `_bencode` | `client`, `pool`, `session`, `dtmf`, `live`, `e2e` | interop |
-| Conference mixing | chappe_mix | `chappe_mix` | `_conf`, `_room`, `_leg`, `_dsp`, `_jbuf` | `chappe_mix`, `rfc`, `live`, `ref` | interop-mix, interop-ref |
-| FreeSWITCH control | chappe_esl | `chappe_esl`, `chappe_esl_call` | `_conn`, `_exec`, `_node`, `_nodes` | `conn`, `call`, `outbound`, `nodes`, `live` | interop-esl |
-| IVR, bridging, conferences | chappe_mrf | `chappe_mrf`, `chappe_mrf_conf` | `_endpoint`, `_esl`, `_registry`, `_conf_native`, `_conf_fs` | `chappe_mrf`, `live` | interop-mrf |
-| Compliance | `apps/*/docs/compliance` | `requirements.tsv` | `apps/chappe_sip/test/chappe_sip_compliance.erl`, `scripts/compliance.escript` | all suites (`%% req:` lines) | conformance |
-| Configuration | `chappe_sip_config` (defaults); app env per app | `chappe_sip_config:get/1` | none | each app's suites | none |
+| Ownership in a cluster | chappe_cluster `src` | `chappe_cluster` | `_machine`, `_node`, `_ra`, `_lapse`, `_tab`, `_watch`, `_config` | `chappe_cluster_SUITE`, the PropEr machine tests, `test/lab` | `make interop-cluster` |
+| Singletons | chappe_cluster | `chappe_cluster:singleton/2` | `_singleton`, `_singleton_sup` | cluster suites | `make interop-cluster` |
+| Cross-region seam | chappe_cluster | `chappe_cluster_directory` | `_directory_local` | eunit | none |
+| Location store | chappe_sip `src/conn` | `chappe_sip_location` (behaviour) | `_location_ets`, `_location_cluster`, `_registry_sweep` | `registrar_cluster`, `location_lagging`, `registry_lag_tests` | `make demo-cluster` |
+| Edge routes, flow tokens | chappe_sip `src/proxy` | `chappe_sip_route` | `_proxy_dialog` (430) | `registrar_cluster`, `proxy_record_route` | `make demo-cluster` |
+| Call correlation | chappe_sip `src/api` | `chappe_sip_call`, `chappe_sip:calls/1` | `chappe_sip_pg` | `call` | none |
+| SIPREC client | chappe_sip `src/siprec` | `chappe_sip_siprec` | `_siprec_meta`, `_siprec_body`, `_siprec_tap`, `_siprec_peer` | `siprec`, `siprec_meta_tests` | `siprec_live` |
+| SIPREC server | chappe_sip `src/siprec` | `chappe_sip_siprec_srs` | `_siprec_rtp`, `_siprec_rtp_sup` | `siprec`, `siprec_live` | `siprec_live` |
+| SRTP and SDES | chappe_sip `src/media` | decision 0009 | `chappe_sip_srtp`, `chappe_sip_sdes` | `srtp_tests`, `sdes_tests` | none |
+| B2BUA transfers and joins | chappe_sip `src/api` | `chappe_sip_b2b_transfer` | `_b2b_join` | `b2b_transfer`, `b2b_async`, `replaces` | `make interop-conformance` (pjsua REFER cases) |
+| Audio forks and streams | chappe_audio | `chappe_audio` | `_listener`, `_conn`, `_stream`, `_ws`, `_pcm`, `_registry`, `_pg` | `chappe_audio_SUITE`, `pg_SUITE` | `chappe_audio_live_SUITE` |
+| Recording store | chappe_audio | `chappe_audio_store` (behaviour) | `_store_srv`, `_store_file`, `_writer`, `_adopt`, `_wav` | `store_SUITE`, `wav_tests` | none |
+| Rooms in a cluster | chappe_mrf | `chappe_mrf_conf` | `_conf_move`, `chappe_mix_move` | `chappe_mrf_cluster_SUITE` | `make demo-cluster` |
+| ESL listener screening | chappe_esl | `chappe_esl:start_listener/4` | `_listener`, `_cidr` | `outbound`, `cidr_tests` | `make interop-esl` |
 
-## 8. Contributor workflows ("If you want to...")
+## 8. Contributor workflows
 
-One page each under `docs/contributing/`. Every page names real directories,
-modules, tests and the check to run.
+The 14 workflows from #19 exist. Update three (labs, add tests, debug a
+call: see section 4). Add these, one page each, every page naming real
+modules, tests and the check to run:
 
-1. **Run and read the checks and labs:** what `make check` does, every
-   `make interop-*` target, what each lab proves, the env gates
-   (`RTPENGINE_HOST`, `FS_HOST`, `MRF`, `INTEROP`, `CONFORMANCE`), and `*_KEEP`
-   to keep a lab up.
-2. **Debug a call through the system:** HEP capture, CDR events, SIPp traces,
-   `chappe_rtpengine:query`, `fs_cli`, and which process owns what.
-3. **Change B2BUA behaviour:** the b2b modules, the relay loop, the tests to
-   extend, and the sbc lab.
-4. **Add a SIP feature or header:** `chappe_sip_hdr`, `chappe_sip_msg`, the
-   facade, compliance rows.
-5. **Add an event package:** notifier, subscriber, `event_package/2`, an
-   example from presence or MWI.
-6. **Add a media backend or capability:** `chappe_sip_media` capability
-   routing, the backend adapter shape, the fake (`chappe_sip_test_rtpe`).
-7. **Add a chappe_mrf conference backend:** today an implicit callback
-   contract; see finding M16.
-8. **Add an app to the umbrella:** where it sits (leaf, core,
-   orchestration), the rebar, Makefile, CI, elvis and ex_doc wiring.
-9. **Add tests:** fakes per app (`chappe_sip_engine_fake`,
-   `chappe_rtpengine_fake_server`, `chappe_esl_fake_server`,
-   `chappe_mrf_fake`), CT conventions, running a test against the old code
-   first, flaky-test guidance.
-10. **Add an interop lab:** the compose, script and env-gate pattern shared by
-    the five labs.
-11. **Add or update a compliance row:** one shared page, replacing three
-    near-duplicate READMEs.
-12. **Write or change a guide:** style, where it goes, adding it to ex_doc
-    extras and the index, and how `doc_snippets_tests` checks snippets.
-13. **Change the C engine:** read `engine.md` first, the risky regions, ASan.
-14. **Extend the public API:** the facade, documenting the option, guide,
-    CHANGELOG, compliance.
+1. **Use the cluster in a feature** (lease or singleton): choose between a
+   lease, a singleton and a pg lookup; handle `lost`; carry the fence on a
+   side effect; check `valid/1` before acting; the four tests from the
+   distributable rule; the lab checker. Start from `chappe_mrf_conf` (lease)
+   and `chappe_sip_peers` (singleton).
+2. **Add a location store backend:** the `chappe_sip_location` callbacks,
+   the CAS contract, the read-retry, and `location_lagging` as the model
+   test.
+3. **Add an audio store backend:** the 11 `chappe_audio_store` callbacks,
+   the two-step rename, retention and `sweep_guard`, and `store_SUITE` as
+   the contract test.
+4. **Add a cross-region directory backend:** the
+   `chappe_cluster_directory` seam, what the fence's region is for, and why
+   the directory never decides ownership (0010).
+5. **Debug a call across nodes:** find it by `call_ref`, find which node
+   holds the flow or the lease (`chappe_cluster:owner/1`), and read the
+   lab's logs and checker output.
+
+Workflow 7 (add a chappe_mrf conference backend) is wrong today: the
+contract it describes is stale. Rewrite it after Q6.
 
 ## 9. Maintainability findings
 
 Primary problem: **Doc** (documentation), **Nav** (navigation), **Name**
 (naming), **Org** (module organisation), **Cx** (code complexity), **Arch**
-(genuine architecture). "Doc first" means the boundary should be written
-down before any code split is planned.
+(architecture). "Doc first" means the boundary is written down before any
+split is planned.
 
-| # | Area | Measurements | Finding | Primary | Recommendation |
-|---|---|---|---|---|---|
-| M1 | `chappe_sip_engine` | 1891 lines, 116 funcs, 39 exports; `handle_call` 354 lines (about 60 clauses), `handle_event` 125, `handle_info` 100; 11-field state; fan-in 15, fan-out 21 | Eight responsibilities: NIF lifecycle and health, config snapshot, route registry, inbound dispatch policy (merge, stray, unhandled), worker pool, handle table, UAS response building, sofia/WS multiplexing. No one sentence describes it. It also depends upward on the proxy. | Org, then Arch | Doc first: a responsibility map in the overview. A later split can move out the stateless parts (UAS response building, dispatch policy). Keep the process state in place. Tests only use a narrow API, so internals can move. |
-| M2 | `chappe_sip_dialog_fsm` | 1717 lines, 134 funcs, 47-field data; `confirmed` 124, `in_transaction` 83 | State machine, subscription lifecycle, SDP hold rewriting, session-timer glue, request building and the index, in one module. The state is partly implicit in flags. The moduledoc is stale ("M3"). | Cx, Org | Doc the states and the variants. Later, move SDP hold to the sdp module, `requested_expires` to hdr, and subscription teardown to its own module. Tests: `dialog_fsm_tests`, `indialog`, `dialog_ops`, `subscribe`, `session_timer`, `replaces`, `prack*`. |
-| M3 | `chappe_sip_uac_fsm` | 1228 lines; `handle_response` 143 | A long chain of status classes; auth and redirect are pure and separable | Cx | Later: extract auth and redirect helpers (low risk, nothing calls the fsm directly). |
-| M4 | `chappe_sip_ws_transport` | 1102 lines, 85 funcs | A second transaction layer mirroring nta in one gen_server | Arch | Doc first (`design/ws-transport.md`, decision 0007). A split along server, client and wire helpers would help later. |
-| M5 | `src/api/` directory | 26 modules | Mixes the facade, extension behaviours, feature subsystems (b2b x9, focus, cdr, regc, registrar) and event packages. Event packages are split between `api/` and `dialog/`. The CDR is a core service filed as API. | Nav, Org | Doc the layout first. Later, `b2b/` and `events/` directories, with cdr moved to core. |
-| M6 | `chappe_sip_route` | 358 lines | Record-Route, HMAC markers and the boot secret, WS flow tokens and NAT `received_flow`, used by the engine, dialogs, uac, b2b and the registrar. "route" under `proxy/` hides that. | Name | Rename or split (`route`, `flow`), or at least document. |
-| M7 | `chappe_sip` facade | 427 lines, 49 exports, fan-out 26 | Core modules (engine, refer, media, request worker) call back into the facade, which creates cycles | Arch | Move the shared helpers the core uses out of the facade. |
-| M8 | Public vs internal | none marked | ex_doc groups expose internals and omit public modules. Doc comment styles differ (`%% @doc` in chappe_sip, plain `%%` elsewhere, no `-moduledoc`). Several moduledocs are stale or missing (`chappe_sip`, `dialog_fsm`, `b2b_hdr`, `focus`, `confinfo`, `hdr`). | Doc, Nav | Mark internal modules in ex_doc, fix the groups, and settle one doc comment convention. These are doc-only changes to source comments. |
-| M9 | `chappe_sip_hdr` and `hdr_io` | 695 lines; `hdr_io` has one function | The scope has grown beyond what the moduledoc says; `hdr_io` sits next to `hdr` but serializes. | Name, Doc | Update the moduledoc. Possibly fold `hdr_io` into `msg`. |
-| M10 | `chappe_rtpengine_session` | 682 lines, 33 exports; `handle_event` 197, `reply` 68 | A state x reply cross-product, plus about 20 thin command wrappers | Org, Cx | Later, move the command wrappers to their own module. Doc the state model. |
-| M11 | `chappe_rtpengine_client` | 585 lines | UDP retransmit, the TCP stream and WS in one gen_server, branching on transport | Arch | Later, a transport behaviour. |
-| M12 | `chappe_rtpengine_pool` | `handle_call` 58 | Lock-free reads in the caller while the gen_server writes, generation counters | Doc | Document the concurrency model in the overview. |
-| M13 | `chappe_mix_conf`, `_dsp`, `_jbuf` | 456 lines and smaller | The timing model, RTCP schedule and socket ownership are hard; the code is cohesive | Doc | New design overview. |
-| M14 | `chappe_esl_call` and `chappe_esl_exec` | 432 lines, 29 exports | Correlation is split across two modules for size reasons; the reader must know both | Nav, Org | Document the split, or regroup by concept. |
-| M15 | `chappe_esl_conn` | 325 lines | One FSM for inbound (authenticating) and outbound (accepting) mode | Arch | Doc first; a split by mode later if it grows. |
-| M16 | `chappe_mrf_conf` and its backends | 446 lines, 33 exports | The public API is mixed with an implicit backend callback API (`call`, `emit`, `gone`, `talking`, `member`), and calls run both ways | Arch, Org | Define a `chappe_mrf_conf_backend` behaviour and document it. This also makes workflow 7 possible. |
-| M17 | `chappe_mrf` facade | 347 lines, 30 exports | Also holds the loopback middleware, node candidate selection and focus code | Org | Later, move those into their own modules. |
-| M18 | Shared tooling inside one app | `chappe_sip_compliance.erl` and `doc_snippets_tests.erl` live in `apps/chappe_sip/test` but serve all apps | Hard to find, and it couples every app to chappe_sip's test dir | Nav, Org | Move to an umbrella `tools/` (or `test/`) directory. |
-| M19 | `demo/sbc` | 560 lines | Not compiled by any test or CI job, so it can rot | Org | Compile it in CI (and run the scripted SIPp walk). |
-| M20 | Configuration keys | `env []` in every `.app.src` | App env keys are documented only in code or scattered guides (`chappe_mrf` `esl_port` only in an `.app.src` comment) | Doc | One configuration reference per app, linked from `navigation.md`. |
-| M21 | The C NIF | 2619 lines; `op_cb` about 300 lines (14 ops), `nif_start` about 155 | Risky regions (state CAS, root rwlock, dtor and down, table drain ownership, stray 2xx handling) are only partly marked | Doc, Cx | A "risky regions" section in `engine.md` with line anchors. |
-| M22 | elvis ignore lists | 8 modules exempt from size and duplication rules | The ignore list is an implicit debt register, and the reasons sit next to only some entries | Doc | Give each exemption a reason and link it to the finding here. |
+Module growth since the first plan:
 
-Unusually large functions worth reviewing:
+| Module | Then | Now | Exports | Fan-in |
+|---|---|---|---|---|
+| `chappe_mrf_conf` | 446 | 1127 | 41 | 5 |
+| `chappe_esl_call` | 432 | 952 | 47 | 5 |
+| `chappe_sip_registry` | 631 | 942 | 27 | 10 |
+| `chappe_sip_b2b` | 501 | 723 | 20 | 15 |
+| `chappe_sip_route` | 358 | 574 | 23 | 12 |
+| `chappe_sip_engine` | 1891 | 2007 | 40 | 19 |
+| `chappe_sip_dialog_fsm` | 1717 | 1791 | 11 | 6 |
+
+The elvis `max_module_length` exemption list went from 8 modules to 12.
+`chappe_sip_engine` is exempt from 12 rules.
+
+### Findings, new or changed
+
+| # | Area | Finding | Primary | Recommendation |
+|---|---|---|---|---|
+| N1 | `chappe_mrf_conf` (1127 lines, 105 functions, 41 exports) | It does five jobs: the room's public API; the cluster lifecycle (claim in the caller, waiting room, activate, lease lost, draining, handoff, rehome, mover watch); member operations; recordings (start, store, adopt orphans, SIPREC events); transfers and REFER. Its backends call back into it through an implicit API, and `_conf_move` and `_conf_refer` call it through `call/3` tags. You cannot describe it in one sentence, and you cannot change rehome without reading most of it. It grew 2.5x in two weeks. | Arch, Org | Doc first: the "Rooms in a cluster" section and a corrected backend contract. Then a plan, in this order: a `chappe_mrf_conf_backend` behaviour (M16, Q6); the cluster lifecycle as a helper module that the room process calls (as `_conf_move` already is); recordings as a helper. The process state stays in one place. Tests: `chappe_mrf_SUITE`, `chappe_mrf_cluster_SUITE`, `chappe_mrf_live_SUITE`. |
+| N2 | `chappe_esl_call` (952 lines, 47 exports) | The typed verbs (one function per dialplan application) are mixed with the process: correlation of completions, helper processes for every blocking command, owner death. elvis says it is "one function per verb", which explains the exports but not the rest. | Org | Later: move the verb functions (argument checks and command building) next to `chappe_esl_exec`, and keep the process with correlation and lifecycle. Doc first: the overview states the split between `_call` and `_exec` (old M14). |
+| N3 | `chappe_sip_registry` (942 lines) | RFC 3261 binding rules, the serialized writer, and the cluster path (CAS retry, edge routes, node-held bindings, purge) in one module. The location behaviour took the storage out; the cluster policy stayed. The moduledoc is good. | Doc, Org | Doc first (design section, 0015). The cluster write path could later move to `_location_cluster` or a helper if it grows again. |
+| N4 | `chappe_sip_route` (574 lines) | Now holds three concepts under one secret: Record-Route markers, WS and connection flow tokens, and edge routes. It still lives in `proxy/` under the name "route", which hides that the registrar and the B2BUA depend on it. | Name | Old M6, now stronger. Rename or split along route and flow, or at least move it to `sip/` and document it in the registrar section. |
+| N5 | The node clock | Two clock processes can exist (chappe_cluster's `chappe_cluster_hlc` and chappe_sip's `chappe_sip_hlc_clock`), and `chappe_sip_hlc` picks one. The design is one clock per node, but a reader who meets two names assumes two clocks. | Doc | Write the rule in the glossary and the cluster overview. No code change. |
+| N6 | Optional sibling apps | The rule (start chappe_cluster from your own start, keep it out of `applications`, release with `{chappe_cluster, load}`) is in code comments only, and pages contradict each other on when the app starts. | Doc, Arch | 0014, and one paragraph in each user app's configuration page. |
+| N7 | `src/api/` (30 modules) | Old M5, grown: it now also holds `chappe_sip_call` (a core lookup service), the b2b transfer and join modules, and `chappe_sip_esc`. | Nav, Org | Doc the layout in the overview first. A `b2b/` directory stays the most useful later move (12 modules). |
+| N8 | Doc drift | Section 1: supervision trees, module lists and counts are copied into prose. | Nav | Remove the copies (section 2). For the rest, a docs check in CI: every `src` module appears in an ex_doc group, and every child in each `*_sup` appears in the app overview. It is a script under `scripts/` and touches no source. |
+| N9 | `chappe_rtpengine_session:handle_event` (220 lines) | Longest function in the tree (was 197). State times reply, plus `holder` and re-offer branches. | Cx | Old M10. Doc the state model first. |
+
+### Findings from the first plan, status
+
+| # | Status |
+|---|---|
+| M1 `chappe_sip_engine` | Open, grown. 2007 lines, 123 functions; `handle_call` has 46 clauses over about 370 lines; the state has 17 fields (was 11); fan-in 19. The responsibility map in the overview exists. Next step is still a plan to move the stateless parts (UAS response building, dispatch policy). |
+| M2 `chappe_sip_dialog_fsm` | Open; the longest state functions got shorter (`confirmed` 53 lines). The states doc exists. |
+| M3 `chappe_sip_uac_fsm` | Open, unchanged. |
+| M4 `chappe_sip_ws_transport` | Documented (`design/ws-transport.md`, 0007). Size unchanged. |
+| M7 `chappe_sip` facade | Open: fan-in 30. |
+| M8 public vs internal | Partly done; regressed (section 1, ex_doc). Q5 still open. |
+| M16 mrf backend behaviour | Open, and more urgent: see N1. |
+| M18 shared tooling | Open: `chappe_sip_compliance.erl` and `doc_snippets_tests.erl` still sit in `apps/chappe_sip/test`. |
+| M19 demo in CI | Half done: `demo/cluster` runs in CI (`demo-cluster-smoke`); `demo/sbc` is still not compiled by any job. |
+| M22 elvis reasons | Done: every exemption has a reason. The list grew to 12 modules. |
+| M6, M5 | See N4, N7. |
+| Others | Documentation items done in #19. |
+
+### Unusually long functions
 
 | Function | Lines |
 |---|---|
-| `chappe_sip_engine:handle_call` | 354 |
-| `op_cb` in the NIF | about 300 |
-| `chappe_rtpengine_session:handle_event` | 197 |
-| `nif_start` | about 155 |
-| `chappe_sip_uac_fsm:handle_response` | 143 |
-| `chappe_sip_engine:handle_event` | 125 |
-| `chappe_sip_dialog_fsm:confirmed` | 124 |
-| `chappe_sip_engine:handle_info` | 100 |
-| `chappe_sip_dialog_fsm:in_transaction` | 83 |
+| `chappe_sip_engine:handle_call` | about 370 (46 clauses) |
+| `op_cb` in the NIF (3029 lines in all) | about 300 |
+| `chappe_rtpengine_session:handle_event` | 220 |
+| `chappe_sip_engine:handle_event` | 126 |
+| `chappe_sip_engine:do_create_uas_1` | 78 |
+| `chappe_rtpengine_session:reply` | 76 |
+| `chappe_sip_engine:handle_info` | 67 |
+| `chappe_mrf_conf:handle_info` | 60 |
 
-Large and coherent, so acceptable as they are, with better docs:
-
-| Module | Lines | Role |
-|---|---|---|
-| `chappe_sip_registry` | 631 | the location store |
-| `chappe_sip_proxy` | 500 | RFC 3261 section 16 |
-| `chappe_sip_msg` | 418 | the message model |
-| `chappe_sip_subscriber` | 473 | the RFC 6665 subscriber |
-| `chappe_sip_regc` | 392 | the registration client |
-| `chappe_sip_confinfo` | 466 | pure rendering |
+Large and coherent, acceptable with the docs above: `chappe_cluster_machine`
+(427 lines, one Ra machine), `chappe_sip_siprec_srs` (485),
+`chappe_sip_siprec` (475), `chappe_sip_siprec_meta` (415),
+`chappe_mrf_conf_refer` (475), `chappe_sip_b2b_transfer` (440).
 
 ## 10. Diagrams and examples
 
-1. **System context.** The five apps, external rtpengine, FreeSWITCH
-   nodes, SIP peers, browsers, and the dependency arrows (for `README.md` and
-   `architecture.md`).
-2. **Sequence diagrams for the five flows in §7 of `architecture.md`.**
-   Inbound INVITE, anchored B2BUA, `connect_caller` to FreeSWITCH, native
-   conference join through the loopback, registration.
-3. **Supervision trees.** One small tree per app, generated or kept short.
-4. **Dialog states.** The dialog fsm states and their variants.
-5. **The B2BUA relay and `replace_b`.** Who sends what to whom; A sees no
-   re-INVITE.
-6. **Engine threads and handles.** This already exists in `engine.md`; link
-   it.
-7. **The mixer tick.** Packets in, tick, N-1 mixes out.
-8. **The compliance pipeline.** TSV rows, `%% req:` claims, CT logs, matrix,
-   gate.
-9. **A worked example per concept page.** A runnable snippet (checked by
-   `doc_snippets_tests`).
+1. **System context**, updated: 7 apps, the SIPREC path, cluster nodes (README
+   and architecture).
+2. **Lease lifecycle** (sequence): claim, renew, leader expiry, `lost`, a
+   takeover with a higher fence. (Cluster overview.)
+3. **A call to a device registered on another node** (sequence): lookup,
+   edge route, the forward over the held flow, 430 when it is gone.
+   (Registrar section.)
+4. **A room on a clean stop** (sequence): `prep_stop`, drain, handoff to a
+   live node, members moved, the old room told. (mrf overview.)
+5. **Recording paths** (one picture): rtpengine fork, `mod_audio_stream`
+   fork, SIPREC SRC to SRS, all into chappe_audio streams and the store.
+6. **A worked cluster example** in the cluster guide: three nodes in a
+   shell, claim, kill, take over. It should be checked by
+   `doc_snippets_tests` where it can run.
 
 ## 11. Implementation order
 
 Each step is its own PR, documentation only unless stated.
 
-1. **Orientation and quick fixes.**
-   - Root `README.md`, `docs/README.md`, `docs/concepts.md`.
-   - The stale statements listed in §1.5, including both AGENTS files, the
-     chappe_sip README quickstart and the getting-started repo links.
-   - Merge the CHANGELOGs.
-2. **Architecture and decisions.**
-   - `docs/architecture.md` with the context and flow diagrams.
-   - `docs/decisions/` for 0001 to 0008, after the maintainer answers §6.
-   - Merge the leaf-library contracts into 0003.
-3. **Navigation.**
-   - `docs/navigation.md`.
-   - Fix the ex_doc groups, mark internal modules, add ex_doc to chappe_mix and
-     chappe_mrf, and add an umbrella `make docs`. This touches only the
-     rebar.config files and doc comments.
-4. **App overviews.**
-   - Rewrite the chappe_sip `overview.md`.
-   - New overviews for chappe_mix and chappe_mrf, the chappe_mix README, and
-     updates to the rtpengine and esl overviews.
-   - New `design/b2bua.md` and `design/ws-transport.md`.
-5. **Contributor guide.** `CONTRIBUTING.md` and the 14 workflows, starting
-   with labs, debugging a call, and adding tests.
-6. **Missing user guides** for #17 and #18 features, and a "Where it lives"
-   footer on every guide.
-7. **Reorganise existing pages.**
-   - Split `features.md` and `media.md`.
-   - Archive `plan.md`.
-   - Add READMEs to the sbc and conformance labs.
-8. **Maintainability, documentation side.** Address M8, M12, M13, M20, M21 and
-   M22. These need no code change.
-9. **Maintainability, code side.** Each gets its own plan, in this order:
-   1. M19 (demo in CI)
-   2. M18 (shared tooling)
-   3. M16 (mrf backend behaviour)
-   4. M6 (route naming)
-   5. M5 (directories)
-   6. M1, M2, M3, M4, M7 and M10 to M11, refactors that only start once their
-      boundary is documented.
+1. **Drift fixes, no new pages.** README, `architecture.md` (one-level trees),
+   `docs/README.md`, AGENTS files, the counts, the "starts on first use"
+   contradictions, the leaf-app list to one place, the app overviews' module
+   tables, the configuration pages, and the lab READMEs. Remove the
+   leaf-library stubs.
+2. **ex_doc groups and extras** for every app. This touches only the
+   `rebar.config` files.
+3. **Glossary and concepts split,** with the cluster and recording sections.
+4. **Navigation rows** (section 7), and the labs, add-tests and debug-a-call
+   updates.
+5. **New design pages:** the chappe_cluster overview, configuration and
+   features; the chappe_mrf "Rooms in a cluster" section and backend
+   contract; chappe_sip `design/siprec.md` and the registrar section;
+   decision 0010 updated.
+6. **Decisions 0011 to 0016,** after the maintainer answers Q1 to Q4.
+7. **New workflows** (section 8), and workflow 7 after Q6.
+8. **Docs check in CI** (N8): a script and a CI job, no source change. Ask
+   before adding the job.
+9. **Code side, each with its own plan:** N1 with M16 first (it is growing
+   fastest), then M19 for `demo/sbc`, M18, N4, N2, then M1 once its
+   stateless parts are agreed.
