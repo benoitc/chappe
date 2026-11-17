@@ -236,22 +236,17 @@ answer(Req, Res, Sdp, Doc, Sink, Opts0) ->
     Ip = maps:get(ip, Opts, {127, 0, 0, 1}),
     Adv = advertise(Opts, Ip),
     {_Sess, Media} = chappe_sip_sdp:sections(Sdp),
-    case audio_running() of
-        true ->
-            take(Req, Res, Sdp, Doc, Sink, Opts, {CallRef, Ip, Adv, Media});
-        false ->
+    %% the receivers' supervisor runs only with the chappe_audio application
+    case whereis(chappe_audio_rtp_sup) of
+        undefined ->
             ?LOG_WARNING(#{
-                what => siprec_srs_no_audio,
-                call_ref => CallRef,
-                why => "chappe_audio is not running: every stream is refused"
+                what => siprec_srs_chappe_audio_not_running, call_ref => CallRef
             }),
             _ = refuse(Res, Adv, Media),
-            {error, no_audio}
+            {error, no_audio};
+        _ ->
+            take(Req, Res, Sdp, Doc, Sink, Opts, {CallRef, Ip, Adv, Media})
     end.
-
-%% the receivers' supervisor runs only with the chappe_audio application
-audio_running() ->
-    whereis(chappe_audio_rtp_sup) =/= undefined.
 
 take(Req, Res, Sdp, Doc, Sink, Opts, {CallRef, Ip, Adv, Media}) ->
     Senders = maps:from_list([
