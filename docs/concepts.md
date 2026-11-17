@@ -334,7 +334,7 @@ claims and the last CT results into the app's `docs/compliance.md`, and
 `GATE=demo` fails on a required row that is not passing.
 
 Where it lives: `apps/*/docs/compliance/`, `scripts/compliance.escript`,
-`apps/chappe_sip/test/chappe_sip_compliance.erl`. Workflow:
+`scripts/compliance/chappe_sip_compliance.erl`. Workflow:
 [compliance](contributing/compliance.md).
 
 ## Read this next

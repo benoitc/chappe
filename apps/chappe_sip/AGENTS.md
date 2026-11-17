@@ -124,11 +124,12 @@ out-of-dialog request runs the middleware and the handler and owns the call.
 - `test/chappe_sip_*_SUITE.erl`: Common Test suites named for the area they
   cover, driven by live UDP peers and WebSocket clients.
 - `test/*_tests.erl`: eunit (message model, digest, SDP, routes, metrics).
-- `test/doc_snippets_tests.erl`: parses every `erlang` block in the docs of
-  every app, the umbrella `docs/` tree and `CONTRIBUTING.md`, and checks that
-  each `chappe_*:fun/arity` it calls is exported. Use `...` for elisions.
 - `test/chappe_sip_engine_fake.erl`: the pure-Erlang engine backend.
-- `test/chappe_sip_compliance.erl`: the compliance matrix generator.
+- In the umbrella: `test/doc_snippets_tests.erl` parses every `erlang` block
+  in the docs of every app, the umbrella `docs/` tree and `CONTRIBUTING.md`,
+  and checks that each `chappe_*:fun/arity` it calls is exported (use `...`
+  for elisions); `scripts/compliance/chappe_sip_compliance.erl` is the
+  compliance matrix generator, its eunit in `test/`.
 - `test/asan/`: the NIF under AddressSanitizer in a Linux container.
 
 ## Linting notes

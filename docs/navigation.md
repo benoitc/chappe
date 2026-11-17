@@ -39,7 +39,7 @@ names with a leading `_` carry the app prefix (`_proxy_rules` is
 | Conference mixing | `apps/chappe_mix/src` | `chappe_mix` | `_conf`, `_room`, `_leg`, `_session`, `_dsp`, `_jbuf`, `_rtp`, `_rtcp`, `_g711` | `chappe_mix`, `rfc`, `live`, `ref` | `make interop-mix`, `make interop-ref` |
 | FreeSWITCH control | `apps/chappe_esl/src` | `chappe_esl`, `chappe_esl_call` | `_conn`, `_exec`, `_inbound`, `_listener`, `_node`, `_nodes`, `_parser` | `conn`, `call`, `outbound`, `nodes`, `live` | `make interop-esl` |
 | IVR, bridging, conferences | `apps/chappe_mrf/src` | `chappe_mrf`, `chappe_mrf_conf` | `_endpoint`, `_esl`, `_registry`, `_conf_native`, `_conf_fs`, `_lib` | `chappe_mrf` (fake `chappe_mrf_fake`), `live` | `make interop-mrf` |
-| Compliance | `apps/*/docs/compliance` | `requirements.tsv` | `apps/chappe_sip/test/chappe_sip_compliance.erl`, `scripts/compliance.escript` | every suite (`%% req:` lines) | `make compliance` |
+| Compliance | `apps/*/docs/compliance` | `requirements.tsv` | `scripts/compliance/chappe_sip_compliance.erl`, `scripts/compliance.escript` | every suite (`%% req:` lines) | `make compliance` |
 | Configuration | see [below](#where-configuration-and-startup-live) | `chappe_sip_config:get/1` | none | each app's suites | none |
 
 Test fakes, one per remote end:
