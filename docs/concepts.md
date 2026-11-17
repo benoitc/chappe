@@ -30,9 +30,9 @@ sofia-sip's `nta`, compiled into a C NIF that one Erlang process drives.
 WebSocket has its own Erlang transaction layer that speaks the same event
 contract, so everything above it does not care which one carried a request.
 
-**Leaf apps know nothing of SIP.** chappe_rtpengine, chappe_mix and
-chappe_esl each speak one protocol and are usable alone. chappe_sip uses the
-first two through its media facade. chappe_mrf sits on top and ties SIP to
+**Leaf apps know nothing of SIP.** Each leaf app
+([0003](decisions/0003-leaf-apps.md)) has one concern and is usable alone.
+chappe_sip uses chappe_rtpengine and chappe_mix through its media facade. chappe_mrf sits on top and ties SIP to
 FreeSWITCH.
 
 **Every claim has a test.** RFC requirements are rows in a TSV file, tests

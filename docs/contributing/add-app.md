@@ -17,8 +17,8 @@ server, or a new orchestration layer over chappe_sip.
 
 | Layer | Apps | May depend on | Rule |
 |---|---|---|---|
-| Leaf | chappe_rtpengine, chappe_mix, chappe_esl | no umbrella app | SIP-free; no helper shared across apps |
-| Core | chappe_sip | the leaf media apps, through `chappe_sip_media` only | owns SIP |
+| Leaf | the apps listed in [0003](../decisions/0003-leaf-apps.md) | no umbrella app | SIP-free; one concern; no helper shared across apps |
+| Core | chappe_sip | leaf apps: the media apps through `chappe_sip_media` only, chappe_audio and chappe_cluster as optional | owns SIP |
 | Orchestration | chappe_mrf | chappe_sip and leaf apps | composes them; owns no protocol |
 
 Pick the lowest layer that works. A leaf app that needs SIP is not a leaf:

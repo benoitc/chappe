@@ -23,9 +23,10 @@ apps/chappe_mix/         RTP audio conference mixer (G.711, N-1 mix, one
                          process per conference). SIP-free; rtpengine in
                          front handles SRTP and transcoding. Facade module:
                          chappe_mix.
-apps/chappe_audio/       Audio intake: a WebSocket sink for mod_audio_fork and
-                         mod_audio_stream, one process per stream. SIP-free.
-                         Facade module: chappe_audio.
+apps/chappe_audio/       Audio intake and store: a WebSocket sink for
+                         mod_audio_fork and mod_audio_stream, SIPREC RTP
+                         intake, the recording store. SIP-free. Facade
+                         module: chappe_audio.
 apps/chappe_cluster/     Ownership across a cluster on Ra (Raft): fenced
                          leases, a small KV with watches, singletons, one
                          Ra group per region. SIP-free. Facade module:
@@ -35,17 +36,23 @@ apps/chappe_mrf/         Media resource function (drachtio-fsmrf style):
                          on chappe_mix or mod_conference. An orchestration
                          app. Facade module: chappe_mrf.
 demo/sbc/                A runnable SBC on chappe_sip and chappe_mrf
-                         (`make demo`). Not compiled by CI.
+                         (`make demo`). CI compiles it (`make demo-compile`).
+demo/cluster/            Three nodes on chappe_cluster: registrar, room,
+                         trunk pinger (`make demo-cluster`). CI runs its
+                         walkthrough (`make demo-cluster-smoke`).
 docs/                    Umbrella docs: concepts, architecture, decisions,
                          navigation, contributor workflows, plans.
-scripts/                 compliance.escript (requirement matrices).
+scripts/                 compliance.escript and compliance/ (requirement
+                         matrices), advisories.py and advisories_test.py
+                         (security advisories check).
 ```
 
-Layers: leaf (chappe_rtpengine, chappe_mix, chappe_esl, chappe_audio, chappe_cluster), core (chappe_sip),
+Layers: leaf (chappe_rtpengine, chappe_mix, chappe_esl, chappe_audio,
+chappe_cluster; see `docs/decisions/0003-leaf-apps.md`), core (chappe_sip),
 orchestration (chappe_mrf). See `docs/architecture.md`.
 
 Inside the umbrella the apps reference each other by name (no fetched cross
-deps). External deps (`livery`, `ws`) are git/hex. Each app is published to hex
+deps). External deps (`livery`, `ws`, `ra`, `hlc`, `instrument`) are git/hex. Each app is published to hex
 independently. Module prefixes are `chappe_sip_*` / `chappe_rtpengine_*` /
 `chappe_esl_*` / `chappe_mix_*` / `chappe_audio_*` / `chappe_cluster_*` / `chappe_mrf_*`; only the app-named facade modules carry the
 `chappe_` brand.
@@ -77,7 +84,13 @@ the `MIN_COVERAGE` floor set in the workflow (raise it, never lower it). The
 docker jobs run the conformance lab and the compliance gate
 (`make interop-conformance`, `make compliance GATE=demo`), the JsSIP/Kamailio
 suite, the SBC lab (`make interop-sbc`), `make interop`, `make interop-mix`,
-`make interop-esl`, `make interop-mrf`, the cluster lab (`make interop-cluster`: nodes partitioned and killed on a seeded schedule, checked for overlapping leases), and the C NIF under AddressSanitizer (`make asan`; see `apps/chappe_sip/test/asan/`).
+`make interop-esl`, `make interop-mrf`, the cluster lab (`make interop-cluster`: nodes partitioned and killed on a seeded schedule, checked for overlapping leases), the cluster demo walkthrough (`make demo-cluster-smoke`), and the C NIF
+under AddressSanitizer with a short fuzz run (`make asan`, `make fuzz`),
+ThreadSanitizer (`make tsan`) and the C linters (`make lint-c`; see
+`apps/chappe_sip/test/asan/`). The `build` job also runs
+`make demo-compile`. Separate workflows run the advisories check
+(`advisories.yml`, `make advisories-test` first) and a longer scheduled fuzz
+(`fuzz.yml`).
 
 ## Build & Development Commands
 
@@ -135,7 +148,8 @@ file only summarises what an agent needs to act.
   envelope tag and dispatch inside a helper that matches each shape. Pattern
   clauses compile to a jump table on arity and tag, keep the exact message
   shapes visible to readers and dialyzer, and fail at the right place.
-- Keep the leaf apps (chappe_rtpengine, chappe_esl, chappe_mix, chappe_audio, chappe_cluster) SIP-free;
+- Keep the leaf apps (chappe_rtpengine, chappe_esl, chappe_mix, chappe_audio,
+  chappe_cluster; `docs/decisions/0003-leaf-apps.md`) SIP-free;
   SIP-coupled logic belongs in chappe_sip, an orchestration app or a
   consuming product.
 - An orchestration app (chappe_mrf) may depend on chappe_sip and on the
