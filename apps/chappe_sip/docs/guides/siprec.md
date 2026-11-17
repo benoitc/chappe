@@ -129,6 +129,10 @@ module with its `open/2`, `write/2` and `close/2` works. To take
 the audio yourself, give `sink => Pid` instead: the process gets
 `{chappe_sip_siprec_rtp, Stream, {audio, Pcm}}`, 16-bit PCM at 8 kHz.
 
+The server's RTP receivers run under the chappe_audio application, an
+optional dependency of chappe_sip: without it running on the node, every
+stream is refused 488 and `serve/3` returns `{error, no_audio}`.
+
 A stream the server cannot take (not PCMU or PCMA, past `max_streams`, no
 free port) is answered with port 0. When no stream is left, `serve/3`
 refuses the INVITE with 488 and returns `{error, no_streams}`, so you never

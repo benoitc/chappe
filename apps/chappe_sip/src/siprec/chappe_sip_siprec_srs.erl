@@ -76,7 +76,14 @@
 %% treat as an ordinary call or refuse; {error, _} on a body that does not
 %% parse or a store that is not there answers 488 or 500, and {error,
 %% no_streams} or {error, srtp} was answered 488.
+%%
+%% The receivers run under the chappe_audio application, an optional
+%% dependency of chappe_sip: without it running, every stream is refused,
+%% 488 as above, the session logs why once, and serve/3 returns {error,
+%% no_audio}.
 -module(chappe_sip_siprec_srs).
+
+-include_lib("kernel/include/logger.hrl").
 
 -export([serve/3, run/1, is_recording_session/1, store/1]).
 
@@ -228,11 +235,29 @@ answer(Req, Res, Sdp, Doc, Sink, Opts0) ->
     CallRef = call_ref(Req, Doc),
     Ip = maps:get(ip, Opts, {127, 0, 0, 1}),
     Adv = advertise(Opts, Ip),
+    {_Sess, Media} = chappe_sip_sdp:sections(Sdp),
+    case audio_running() of
+        true ->
+            take(Req, Res, Sdp, Doc, Sink, Opts, {CallRef, Ip, Adv, Media});
+        false ->
+            ?LOG_WARNING(#{
+                what => siprec_srs_no_audio,
+                call_ref => CallRef,
+                why => "chappe_audio is not running: every stream is refused"
+            }),
+            _ = refuse(Res, Adv, Media),
+            {error, no_audio}
+    end.
+
+%% the receivers' supervisor runs only with the chappe_audio application
+audio_running() ->
+    whereis(chappe_audio_rtp_sup) =/= undefined.
+
+take(Req, Res, Sdp, Doc, Sink, Opts, {CallRef, Ip, Adv, Media}) ->
     Senders = maps:from_list([
         {L, S}
      || #{label := L} = S <- chappe_sip_siprec_meta:senders(Doc)
     ]),
-    {_Sess, Media} = chappe_sip_sdp:sections(Sdp),
     Remotes = remotes(Sdp, Opts),
     Max = maps:get(max_streams, Opts, 4),
     Taken = lists:map(
