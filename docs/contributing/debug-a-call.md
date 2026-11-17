@@ -9,7 +9,9 @@ audio, or leaves state behind.
 ## Before you start
 
 - [glossary.md: Owner and notify process](../glossary.md#owner-and-notify-process)
-  and [A leg and B leg](../glossary.md#a-leg-and-b-leg).
+  and [A leg and B leg](../glossary.md#a-leg-and-b-leg); for a cluster,
+  [call_ref](../glossary.md#call_ref), [Lease](../glossary.md#lease) and
+  [Edge route](../glossary.md#edge-route).
 - [architecture.md](../architecture.md): the main flows.
 - The guides [capture.md](../../apps/chappe_sip/docs/guides/capture.md) and
   [call-records.md](../../apps/chappe_sip/docs/guides/call-records.md).
@@ -98,6 +100,73 @@ A call that drops at once usually has an owner that exited early.
    with their flags; `chappe_mrf_conf:info(Conf)` gives the backend and the
    node.
 
+## Across nodes
+
+On a cluster a call's legs, its media and its room may each run on a
+different node. Find the call by its [call_ref](../glossary.md#call_ref),
+then the node that holds each part.
+
+1. Read the call_ref. Every leg carries it as `X-Chappe-Call`, every CDR
+   has it as `call_ref`, and HEP logs it next to the Call-ID. Then list
+   the handles that serve the call, on every node
+   ([decision 0013](../decisions/0013-call-ref-lookup.md)):
+
+   ```erlang
+   {ok, #{b2b := B2bs, dialogs := Dialogs, media := Media, siprec := Recs}} =
+       chappe_sip:calls(#{call_ref => <<"0123456789abcdef01234567">>}),
+   [node(P) || P <- B2bs].
+   ```
+
+   A handle that just ended may still be listed for a moment; a handle
+   that answers `{error, noproc}` is gone.
+
+2. Find the node that holds the callee's [flow](../glossary.md#flow). A
+   binding another node holds comes with that node and its
+   [edge route](../glossary.md#edge-route)
+   ([decision 0015](../decisions/0015-location-behaviour.md)):
+
+   ```erlang
+   [{maps:get(node, B), maps:get(edge, B)}
+    || B <- chappe_sip_registry:bindings(<<"sip:bob@chappe.demo">>)].
+   ```
+
+   A request routed to a node that lost the flow is answered 430 Flow
+   Failed (`chappe_sip_proxy_dialog`): the phone must register again.
+
+3. Find the owner of a [lease](../glossary.md#lease): a room, a
+   [singleton](../glossary.md#singleton)
+   ([decision 0010](../decisions/0010-cluster-ownership.md)):
+
+   ```erlang
+   chappe_cluster:owner({chappe_mrf_conf, <<"demo">>}),
+   chappe_cluster:whereis_singleton({chappe_sip_peer, trunk}),
+   chappe_cluster:leases().
+   ```
+
+   `none` means no node holds it; `{error, no_quorum}` means this node's
+   region has lost its majority. The fence grows each time the key changes
+   hands.
+
+4. Read HEP and the CDR across nodes. Search the collector by the
+   call_ref: each node logs a correlation packet that ties it to the
+   Call-ID of each leg (`chappe_sip_hep`). Subscribe to the CDR on each
+   node that serves the call (`chappe_sip_cdr:subscribe/1`, step 2 of Steps)
+   and match the records by `call_ref`.
+
+5. In the cluster demo (`make demo-cluster`), read each node's log and
+   attach a shell to one:
+
+   ```sh
+   docker compose -f demo/cluster/docker-compose.yml logs -f n1 n2 n3 trunk
+   make demo-cluster-shell N=n2
+   ```
+
+   In the chaos lab (`make interop-cluster`), the checker prints the first
+   violation and its key's events; every node's log is in
+   `_build/clb/logs/<seed>/`, and `SEED=<seed> make interop-cluster`
+   replays the run. See the
+   [lab README](../../apps/chappe_cluster/interop/README.md#read-a-failure).
+
 ## Tests to add or run
 
 - Turn the failing call into a CT case before you fix it, with the fake that
@@ -123,6 +192,9 @@ A call that drops at once usually has an owner that exited early.
 ## Related
 
 - [labs.md](labs.md)
+- Decisions [0010](../decisions/0010-cluster-ownership.md),
+  [0013](../decisions/0013-call-ref-lookup.md) and
+  [0015](../decisions/0015-location-behaviour.md)
 - [change-b2bua.md](change-b2bua.md)
 - [apps/chappe_sip/docs/guides/capture.md](../../apps/chappe_sip/docs/guides/capture.md)
 - [apps/chappe_sip/docs/guides/call-records.md](../../apps/chappe_sip/docs/guides/call-records.md)
