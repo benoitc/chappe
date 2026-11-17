@@ -1,7 +1,8 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% A conference: one process per room, on one of two backends.
+%% A conference: one process per room, on a backend
+%% (chappe_mrf_conf_backend): native, fs, or a module of the app's.
 %%
 %% native: the room is a chappe_mix conference the process owns (it stays
 %% up between callers, until stop/1 or the owner exits). A caller joins
@@ -42,26 +43,21 @@
 %%
 %% With the chappe_mrf `cluster' setting chappe_cluster, a room's name has
 %% one owner in the region, and start/2 on any node returns the room of
-%% the node that holds it. start/2 starts the room process waiting (no
-%% name, no backend, its pid given to no one), claims the lease
-%% {chappe_mrf_conf, Name} for it from the caller's process, then hands
-%% the lease over (activate): only then does the room register its name,
-%% set up its backend and become known. So the claim never holds the conf
-%% supervisor, and a room takes members only under its lease. When the region takes
-%% the lease back ({chappe_cluster, Lease, lost}: this node lost its
-%% quorum, or stopped renewing), the room takes no new member, tells its
-%% event receivers lost, gives its name up on this node and stops once
-%% its last member leaves; the members already in keep their calls. A
-%% join checks chappe_cluster:valid/1 first. Without a quorum, start/2
-%% does not open a second room: it returns the room the local replica
-%% names, when it runs on a node this one reaches, else {error,
-%% no_quorum} (docs/guides/conference.md says why).
+%% the node that holds it (chappe_mrf_conf_cluster). A room waits for the
+%% lease its starter claims ({activate, Lease}) before it takes its name
+%% and sets its backend up. When the region takes the lease back
+%% ({chappe_cluster, Lease, lost}: this node lost its quorum, or stopped
+%% renewing), the room takes no new member, tells its event receivers
+%% lost, gives its name up on this node and stops once its last member
+%% leaves; the members already in keep their calls. A join checks
+%% chappe_cluster:valid/1 first (docs/guides/conference.md says why).
 %%
-%% transfer/3 moves a member to another conference of the same backend:
-%% on fs both rooms are on one node and mod_conference moves the channel
-%% (conference transfer); on native the member's call is re-anchored to
-%% the other room's mixer, the caller seeing no re-INVITE. The member
-%% gets a new id there, and leaves this one with reason transferred.
+%% transfer/3 moves a member to another conference of the same backend
+%% (chappe_mrf_conf_transfer): on fs both rooms are on one node and
+%% mod_conference moves the channel (conference transfer); on native the
+%% member's call is re-anchored to the other room's mixer, the caller
+%% seeing no re-INVITE. The member gets a new id there, and leaves this
+%% one with reason transferred.
 -module(chappe_mrf_conf).
 -behaviour(gen_server).
 
@@ -69,10 +65,9 @@
 -export([join/3, leave/2, kick/2, mute/2, unmute/2, deaf/2, undeaf/2]).
 -export([lock/1, unlock/1, members/1, relate/4, play/2, play/3]).
 -export([record/2, record/3, stop_record/1, transfer/3]).
--export([loop_invite/4, subscribe/3, refer/3, b2b_event/2]).
-%% for the backends (chappe_mrf_conf_native, chappe_mrf_conf_fs)
--export([call/3, emit/2, publish/1, gone/2, gone/3, talking/3, public/2]).
--export([member/3, drop_member/3, recording_closed/2]).
+-export([loop_invite/4, subscribe/3, b2b_event/2]).
+%% for the backends, in the caller (chappe_mrf_conf_backend)
+-export([call/3]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -export_type([conf/0, member/0]).
@@ -82,19 +77,11 @@
 
 -include("chappe_mrf_conf.hrl").
 
-%% how long a stopped recording waits for its stop-recording event
--define(CLOSE_WAIT, 15000).
-%% how long a cluster room waits for its starter's lease
--define(WAIT_MAX, 10000).
-%% start/2 on a cluster: its one deadline for every try (start_timeout),
-%% and the pause before it starts over when the owner it found is gone
--define(START_MS, 10000).
--define(RETRY_MS, 300).
-
 %% ---- API ----
 
 %% Start the conference Name, or find it when it runs. Opts:
-%%   backend   => native | fs (default native)
+%%   backend   => native | fs | module() (default native; a module is a
+%%                chappe_mrf_conf_backend)
 %%   owner     => pid(): the conference stops when it exits (default none:
 %%                it runs until stop/1)
 %%   notify    => pid(): gets its events (default the caller)
@@ -112,9 +99,10 @@
 %%                their Contact, and only such a room removes a member
 %%                for a REFER with method=BYE (RFC 4579 5.5, 5.11)
 %%   refer_policy => fun((Info) -> boolean() | {reject, Code}): decides a
-%%                REFER to the room (refer/3), Info as chappe_sip_focus:
-%%                refer/4 gives it (action add | remove, target, referrer,
-%%                referred_by); without one every REFER is refused 403
+%%                REFER to the room (chappe_mrf:focus_refer/2), Info as
+%%                chappe_sip_focus:refer/4 gives it (action add | remove,
+%%                target, referrer, referred_by); without one every REFER
+%%                is refused 403
 %%   dial      => fun((Target) -> iodata()): the dial string of a party a
 %%                REFER brings in (default sofia/<dial_profile>/<target>)
 %%   dial_profile => the sofia profile of that default (<<"external">>)
@@ -149,77 +137,9 @@ start(Name, Opts) ->
         error ->
             Args = #{name => Name, opts => Opts, caller => self()},
             case application:get_env(chappe_mrf, cluster, none) of
-                chappe_cluster -> start_cluster(Name, Args, start_deadline());
+                chappe_cluster -> chappe_mrf_conf_cluster:start(Name, Args);
                 _ -> start_local(Args)
             end
-    end.
-
-start_deadline() ->
-    erlang:monotonic_time(millisecond) +
-        application:get_env(chappe_mrf, start_timeout, ?START_MS).
-
-left(Deadline) ->
-    max(1, Deadline - erlang:monotonic_time(millisecond)).
-
-expired(Deadline) ->
-    erlang:monotonic_time(millisecond) + ?RETRY_MS >= Deadline.
-
-%% A room the local replica names on another node is used as it is: a
-%% call setup there needs no Raft write. Otherwise claim.
-start_cluster(Name, #{opts := Opts} = Args, Deadline) ->
-    case {cluster_started(), chappe_mrf_conf_move:draining()} of
-        {{ok, _}, true} ->
-            %% this node is stopping: the room opens on a live node
-            case
-                chappe_mrf_conf_move:open(
-                    Name, Opts, chappe_mrf_conf_move:region(), none, Deadline
-                )
-            of
-                {ok, Conf} -> {ok, Conf};
-                {error, _} -> {error, draining}
-            end;
-        {{ok, _}, false} ->
-            case remote_owner(Name) of
-                {ok, Conf} -> await_active(Conf, Name, Args, Deadline);
-                none -> start_claimed(Name, Args, Deadline)
-            end;
-        {{error, _} = Err, _} ->
-            Err
-    end.
-
-remote_owner(Name) ->
-    Here = node(),
-    case chappe_cluster:owner(lease_key(Name)) of
-        {ok, #{node := Node, pid := Conf}} when Node =/= Here ->
-            case lists:member(Node, nodes()) of
-                true -> {ok, Conf};
-                false -> none
-            end;
-        _ ->
-            none
-    end.
-
-%% The owner may still be waiting for its lease: its info/1 answers once
-%% it runs. One that never runs (its starter died, its claim came back
-%% stale) is gone, as is one that gave its name up: try again, until the
-%% start's deadline.
-await_active(Conf, Name, Args, Deadline) ->
-    case call(Conf, info, left(Deadline)) of
-        #{lost := false} -> {ok, Conf};
-        #{lost := true} -> again(Name, Args, Deadline, {error, lost});
-        {error, noproc} -> again(Name, Args, Deadline, {error, noproc});
-        {error, _} = Err -> Err
-    end.
-
-again(Name, Args, Deadline, Err) ->
-    case expired(Deadline) of
-        true ->
-            Err;
-        false ->
-            %% a dead holder's lease goes with it once the region hears of
-            %% its death
-            timer:sleep(?RETRY_MS),
-            start_cluster(Name, Args, Deadline)
     end.
 
 start_local(Args) ->
@@ -228,75 +148,6 @@ start_local(Args) ->
         {error, {already_started, Conf}} -> {ok, Conf};
         {error, _} = Err -> Err
     end.
-
-%% The claim runs here, in the caller, for the waiting room: it waits at
-%% most claim_timeout (1000 ms; a node that knows it lost its quorum
-%% answers at once), and no other room's start waits behind it.
-start_claimed(Name, Args, Deadline) ->
-    maybe
-        {ok, Room} ?= chappe_mrf_sup:start_conf(Args#{wait => true}),
-        Timeout = min(
-            application:get_env(chappe_mrf, claim_timeout, 1000), left(Deadline)
-        ),
-        Claim = chappe_cluster:claim(lease_key(Name), #{
-            pid => Room, timeout => Timeout
-        }),
-        claimed(Claim, Room, Name, Args, Deadline)
-    end.
-
-cluster_started() ->
-    case application:ensure_all_started(chappe_cluster) of
-        {ok, _} = Ok -> Ok;
-        {error, Why} -> {error, {cluster, Why}}
-    end.
-
-claimed({ok, Lease}, Room, Name, Args, Deadline) ->
-    case call(Room, {activate, Lease}, left(Deadline)) of
-        ok -> {ok, Room};
-        {error, {already_started, Other}} -> {ok, Other};
-        {error, draining} -> start_cluster(Name, Args, Deadline);
-        {error, _} = Err -> Err
-    end;
-claimed({error, {owned, #{pid := Other}}}, Room, Name, Args, Deadline) ->
-    ok = stop(Room),
-    case reachable(Other) of
-        {ok, _} -> await_active(Other, Name, Args, Deadline);
-        {error, _} = Err -> Err
-    end;
-claimed({error, no_quorum}, Room, Name, _Args, _Deadline) ->
-    ok = stop(Room),
-    known_owner(Name);
-claimed({error, _} = Err, Room, _Name, _Args, _Deadline) ->
-    ok = stop(Room),
-    Err.
-
-%% The room another node runs, when this node reaches it.
-reachable(Conf) ->
-    Node = node(Conf),
-    case Node =:= node() orelse lists:member(Node, nodes()) of
-        true -> {ok, Conf};
-        false -> {error, {owner_unreachable, Node}}
-    end.
-
-%% No quorum: the owner the local replica knows, never a second room. One
-%% on this node is a room that gave its name up (lost) or is gone: start/2
-%% found no room registered here.
-known_owner(Name) ->
-    Here = node(),
-    case chappe_cluster:owner(lease_key(Name)) of
-        {ok, #{node := Here}} ->
-            {error, no_quorum};
-        {ok, #{pid := Conf}} ->
-            case reachable(Conf) of
-                {ok, _} = Ok -> Ok;
-                {error, _} -> {error, no_quorum}
-            end;
-        _ ->
-            {error, no_quorum}
-    end.
-
-lease_key(Name) ->
-    {?MODULE, Name}.
 
 -spec start_link(map()) -> gen_server:start_ret().
 start_link(Args) ->
@@ -332,7 +183,8 @@ events(Conf, Pid) ->
 %% fs, it must be on the conference's node. Opts: name, mute,
 %% deaf, moderator; fs also pin (the PIN to enter first), pin_prompt
 %% (the file asking for it), pin_tries (3), flags (more mod_conference
-%% member flags). {ok, Member} once the member is in.
+%% member flags). {ok, Member} once the member is in. Runs in the caller
+%% (the backend's join/4).
 -spec join(
     conf(),
     chappe_sip_b2b:b2b()
@@ -343,39 +195,12 @@ events(Conf, Pid) ->
     {ok, member()} | {error, term()}.
 join(Conf, Target, Opts) ->
     case info(Conf) of
-        #{backend := native} ->
-            native_join(Conf, Target, Opts);
-        #{lost := true} ->
-            {error, lost};
-        #{backend := fs, locked := true} ->
-            {error, locked};
-        #{backend := fs, members := N, max_members := Max} when N >= Max ->
-            {error, full};
-        #{backend := fs} = Info ->
-            %% the lease before the caller is bridged or answered
-            case call(Conf, {join, check}) of
-                ok -> fs_join(Conf, Info, Target, Opts);
-                {error, _} = Err -> Err
-            end;
+        #{backend := B} = Info ->
+            Mod = chappe_mrf_conf_backend:module(B),
+            Mod:join(Conf, Info, Target, Opts);
         Err ->
             Err
     end.
-
-native_join(Conf, {call, Req, Res}, Opts) ->
-    chappe_mrf_conf_native:join_call(Conf, Req, Res, Opts);
-native_join(Conf, B2b, Opts) when is_tuple(B2b) ->
-    call(Conf, {join, {b2b, B2b, Opts}}, ?MRF_JOIN_TIMEOUT + 80000);
-native_join(Conf, Ep, Opts) ->
-    call(Conf, {join, {ep, Ep, Opts}}, ?MRF_JOIN_TIMEOUT + 80000).
-
-fs_join(Conf, Info, {call, Req, Res}, Opts) ->
-    chappe_mrf_conf_fs:join_call(Conf, Info, Req, Res, Opts);
-fs_join(Conf, #{node := Node, bridge := Bridge}, B2b, Opts) when
-    is_tuple(B2b)
-->
-    chappe_mrf_conf_fs:join(Conf, Node, Bridge, B2b, Opts#{b2b => B2b});
-fs_join(Conf, #{node := Node, bridge := Bridge}, Ep, Opts) ->
-    chappe_mrf_conf_fs:join(Conf, Node, Bridge, Ep, Opts).
 
 %% The member leaves (its call is hung up).
 -spec leave(conf(), member()) -> ok | {error, term()}.
@@ -459,83 +284,15 @@ stop_record(Conf) ->
 %% Returns its id in To once it is in; it leaves this one with reason
 %% transferred. Runs in the caller: each conference only does its part.
 -spec transfer(conf(), member(), conf()) -> {ok, member()} | {error, term()}.
-transfer(Conf, _Member, Conf) ->
-    {error, same_conference};
 transfer(Conf, Member, To) ->
-    case {info(Conf), info(To)} of
-        {#{backend := B} = From, #{backend := B} = Dest} ->
-            transfer_to(Conf, Member, To, From, Dest);
-        {#{backend := _}, #{backend := _}} ->
-            {error, backend_mismatch};
-        {#{backend := _}, Err} ->
-            Err;
-        {Err, _} ->
-            Err
-    end.
+    chappe_mrf_conf_transfer:transfer(Conf, Member, To).
 
-transfer_to(_Conf, _Member, _To, #{node := N1}, #{backend := fs, node := N2}) when
-    N1 =/= N2
-->
-    {error, {unsupported, cross_node}};
-transfer_to(Conf, Member, To, #{name := FromName}, _Dest) ->
-    case call(Conf, {transfer, out, Member}) of
-        {ok, {native, B2b, Opts}} ->
-            finish_transfer(Conf, Member, join(To, B2b, Opts));
-        {ok, {fs, Ep, Owned, Opts}} ->
-            finish_transfer(
-                Conf,
-                Member,
-                call(
-                    To,
-                    {join, {adopt, Ep, Owned, Opts, FromName, Member}},
-                    ?MRF_JOIN_TIMEOUT + 5000
-                )
-            );
-        {error, _} = Err ->
-            Err
-    end.
-
-finish_transfer(Conf, Member, {ok, _} = Ok) ->
-    %% the member is the other room's now: it leaves this one at once,
-    %% not when its old leg's BYE comes, so a room ending meanwhile never
-    %% hangs it up
-    _ = call(Conf, {transfer, done, Member}),
-    Ok;
-finish_transfer(Conf, Member, Error) ->
-    _ = call(Conf, {transfer, cancel, Member}),
-    Error.
-
-%% The loopback INVITE of a native join reached this node: the mixer
-%% answers its offer, and the dialog is the conference's. Runs in the
-%% INVITE's request worker (chappe_mrf's middleware).
+%% The loopback INVITE of a native join reached this node (chappe_mrf's
+%% middleware): see chappe_mrf_conf_native.
 -spec loop_invite(conf(), binary(), chappe_sip_req:req(), chappe_sip_res:res()) ->
     ok.
 loop_invite(Conf, Token, Req, Res) ->
-    case call(Conf, {loop_offer, Token, chappe_sip_req:body(Req)}) of
-        {ok, Answer} ->
-            case
-                chappe_sip:create_uas(Req, Res, #{
-                    local_sdp => Answer, owner => Conf
-                })
-            of
-                {ok, D} -> gen_server:cast(Conf, {loop_dialog, Token, D});
-                {error, _} -> gen_server:cast(Conf, {loop_failed, Token})
-            end;
-        {error, _} ->
-            _ = chappe_sip_res:send(Res, 488),
-            ok
-    end.
-
-%% A REFER to the room's URI, out of any dialog (run it in the REFER's
-%% request worker, from a chappe_sip:refer/1 handler, or use
-%% chappe_mrf:focus_refer/2): the room's refer_policy decides, then a
-%% Refer-To party is dialed into the room, or with method=BYE the member
-%% with that URI (join/3's uri option, or a dialed party's) is removed.
-%% The referrer hears the outcome as NOTIFYs. See chappe_mrf_conf_refer.
--spec refer(conf(), chappe_sip_req:req(), chappe_sip_res:res()) ->
-    ok | {error, term()}.
-refer(Conf, Req, Res) ->
-    chappe_mrf_conf_refer:refer(Conf, Req, Res).
+    chappe_mrf_conf_native:loop_invite(Conf, Token, Req, Res).
 
 %% Hand the room a B2BUA event of a member's call (the app's notify
 %% process gets them): {chappe_sip_b2b, Ref, {transferred, Leg, Info}}
@@ -546,38 +303,21 @@ refer(Conf, Req, Res) ->
 %% ignored. A caller the room answers itself (join/3 with {call, Req,
 %% Res}) needs none of this: the room is its notify process.
 -spec b2b_event(conf(), term()) -> ok.
-b2b_event(Conf, {chappe_sip_b2b, Ref, {transferred, _Leg, Info}}) when
-    is_reference(Ref), is_map(Info)
-->
-    gen_server:cast(Conf, {transferred, Ref, Info});
-b2b_event(
-    Conf, {chappe_sip_b2b, Ref, {request, _Leg, refer, _Req, _Res}} = M
-) when
-    is_reference(Ref)
-->
-    %% a call with requests => [refer] whose notify process is the app's
-    Conf ! M,
-    ok;
-b2b_event(_Conf, _Event) ->
-    ok.
+b2b_event(Conf, Event) ->
+    chappe_mrf_conf_refer:b2b_event(Conf, Event).
 
 %% A SUBSCRIBE to this conference's state (focus => true).
 -spec subscribe(conf(), chappe_sip_req:req(), chappe_sip_res:res()) ->
     {ok, chappe_sip_dialog:dialog()} | {error, term()}.
 subscribe(Conf, Req, Res) ->
-    case info(Conf) of
-        #{entity := Entity} when is_binary(Entity) ->
-            chappe_sip_focus:subscribe(Req, Res, Conf, #{
-                contact => chappe_sip_focus:contact(Entity)
-            });
-        _ ->
-            _ = chappe_sip_res:send(Res, 489),
-            {error, no_focus}
-    end.
+    chappe_mrf_conf_focus:subscribe(Conf, Req, Res).
 
 call(Conf, Req) ->
     call(Conf, Req, 30000).
 
+%% A call to the room with the caller's timeout: a room still waiting for
+%% its lease holds it that long at most.
+-spec call(conf(), term(), timeout()) -> term().
 call(Conf, Req, Timeout) ->
     try
         gen_server:call(Conf, {within, Timeout, Req}, Timeout)
@@ -593,9 +333,7 @@ init(#{name := Name, caller := Caller, wait := true} = Args) ->
     %% gone, or one that never does, ends the wait
     process_flag(trap_exit, true),
     _ = erlang:send_after(
-        application:get_env(chappe_mrf, start_timeout, ?WAIT_MAX),
-        self(),
-        wait_timeout
+        chappe_mrf_conf_cluster:start_timeout(), self(), wait_timeout
     ),
     {ok, #state{
         name = Name,
@@ -621,15 +359,20 @@ activate(Lease, #state{waiting = W} = S) ->
     #{args := Args, mon := Mon, deferred := Deferred} = W,
     #{name := Name, opts := Opts, caller := Caller} = Args,
     demonitor(Mon, [flush]),
-    case {chappe_mrf_conf_move:draining(), chappe_cluster:valid(Lease)} of
-        {true, _} ->
+    Draining = chappe_mrf_conf_move:draining(),
+    case
+        chappe_mrf_conf_cluster:activation(
+            Draining, chappe_cluster:valid(Lease)
+        )
+    of
+        release ->
             %% the node began to drain after the claim: no room here, the
             %% start goes elsewhere
             _ = chappe_cluster:release(Lease),
             {stop, normal, {error, draining}, S};
-        {false, true} ->
+        run ->
             activate_name(Name, Opts, Caller, Lease, Deferred, S);
-        {false, false} ->
+        no_quorum ->
             {stop, normal, {error, no_quorum}, S}
     end.
 
@@ -650,24 +393,20 @@ within(Ms, Req, From, #state{waiting = #{}} = S) ->
 within(_Ms, Req, From, S) ->
     handle_call(Req, From, S).
 
-info_map(S) ->
-    #{
+info_map(#state{mod = Mod, bstate = B} = S) ->
+    maps:merge(Mod:info(B), #{
         name => S#state.name,
         backend => S#state.backend,
-        node => S#state.node,
         room => S#state.room,
         locked => S#state.locked,
-        bridge => S#state.bridge,
         entity => S#state.entity,
         members => map_size(S#state.members),
         max_members => S#state.max_members,
         lost => S#state.lost
-    }.
+    }).
 
-timeout_ms(infinity) ->
-    application:get_env(chappe_mrf, start_timeout, ?START_MS);
-timeout_ms(Ms) ->
-    Ms.
+timeout_ms(infinity) -> chappe_mrf_conf_cluster:start_timeout();
+timeout_ms(Ms) -> Ms.
 
 %% The calls that came while it waited, in their order, now it runs.
 run_deferred([], S) ->
@@ -701,7 +440,7 @@ waiting_info(_Info, S) ->
 
 activate_name(Name, Opts, Caller, Lease, Deferred, S) ->
     case chappe_mrf_registry:put({conf, Name}, self()) of
-        ok when Lease =/= undefined ->
+        ok ->
             %% checked again now the name is ours: a drain that began
             %% between the first check and the name would never hand
             %% this room off
@@ -713,8 +452,6 @@ activate_name(Name, Opts, Caller, Lease, Deferred, S) ->
                 false ->
                     run_backend(Name, Opts, Caller, Lease, Deferred, S)
             end;
-        ok ->
-            run_backend(Name, Opts, Caller, Lease, Deferred, S);
         {error, exists} ->
             {ok, Other} = chappe_mrf_registry:lookup({conf, Name}),
             {stop, normal, {error, {already_started, Other}}, S}
@@ -727,99 +464,32 @@ run_backend(Name, Opts, Caller, Lease, Deferred, S) ->
     end.
 
 init_backend(Name, Opts, Caller, Lease) ->
-    Notify = maps:get(notify, Opts, Caller),
-    S0 = #state{
-        name = Name,
-        lease = Lease,
-        opts = Opts,
-        backend = maps:get(backend, Opts, native),
-        room = <<"mrf-", Name/binary>>,
-        profile = chappe_mrf_lib:to_bin(maps:get(profile, Opts, <<"default">>)),
-        owner_mon =
-            case maps:find(owner, Opts) of
-                {ok, Owner} -> monitor(process, Owner);
-                error -> undefined
-            end,
-        listeners = #{Notify => monitor(process, Notify)},
-        anchor_params = maps:get(anchor_params, Opts, #{}),
-        endpoint_params = maps:get(endpoint_params, Opts, #{}),
-        join_timeout = maps:get(join_timeout, Opts, ?MRF_JOIN_TIMEOUT),
-        bridge = maps:get(bridge, Opts, #{}),
-        max_members = maps:get(max_members, Opts, infinity),
-        room_flags = [
-            chappe_mrf_lib:to_bin(F)
-         || F <- maps:get(room_flags, Opts, [])
-        ],
-        refer_policy = maps:get(refer_policy, Opts, undefined),
-        dial = dial_cfg(Opts)
-    },
-    case S0#state.backend of
-        native ->
-            {ok, focus(Opts, S0)};
-        fs ->
-            case fs_node(Opts) of
-                {ok, Node} ->
-                    %% room-wide events (play-file-done) carry no channel;
-                    %% only this room's are sent here
-                    ok = node_events(Node, Name),
-                    {ok, focus(Opts, S0#state{node = Node})};
-                {error, _} = Err ->
-                    {stop, Err}
-            end
-    end.
-
-dial_cfg(Opts) ->
-    maps:from_list(
-        [
-            {K, V}
-         || {O, K} <- [
-                {dial, dial},
-                {dial_profile, profile},
-                {dial_timeout, timeout},
-                {dial_endpoint, endpoint}
-            ],
-            {ok, V} <- [maps:find(O, Opts)]
-        ]
-    ).
-
-%% No node registry running (a node given by name only): no room events.
-node_events(Node, Name) ->
-    Match = #{
-        <<"Event-Subclass">> => <<"conference::maintenance">>,
-        <<"Conference-Name">> => Name
-    },
-    try
-        chappe_esl:node_events(Node, Match)
-    catch
-        exit:_ -> ok
-    end.
-
-fs_node(#{node := Node}) ->
-    {ok, Node};
-fs_node(Opts) ->
-    case chappe_esl:node_select(maps:get(select, Opts, #{})) of
-        {ok, Node} -> {ok, Node};
-        {error, Why} -> {error, Why}
-    end.
-
-focus(#{focus := true} = Opts, #state{name = Name} = S) ->
-    Entity =
-        case maps:find(entity, Opts) of
-            {ok, E} -> E;
-            error -> conf_uri(Name)
-        end,
-    F = chappe_sip_focus:new(#{entity => Entity, min_interval => 0}),
-    S#state{entity = Entity, focus = F};
-focus(_Opts, S) ->
-    S.
-
-conf_uri(Name) ->
-    case chappe_sip_hdr:name_addr(chappe_sip_b2b:contact()) of
-        {ok, #{uri := Uri}} ->
-            {ok, U} = chappe_sip_uri:parse(Uri),
-            chappe_sip_uri:format(U#{user => Name});
-        _ ->
-            <<"sip:", Name/binary, "@invalid">>
+    Backend = maps:get(backend, Opts, native),
+    Mod = chappe_mrf_conf_backend:module(Backend),
+    case Mod:init(Name, Opts) of
+        {ok, B} ->
+            Notify = maps:get(notify, Opts, Caller),
+            S = #state{
+                name = Name,
+                backend = Backend,
+                mod = Mod,
+                bstate = B,
+                callbacks = chappe_mrf_conf_backend:callbacks(Mod),
+                lease = Lease,
+                opts = Opts,
+                room = <<"mrf-", Name/binary>>,
+                owner_mon =
+                    case maps:find(owner, Opts) of
+                        {ok, Owner} -> monitor(process, Owner);
+                        error -> undefined
+                    end,
+                listeners = #{Notify => monitor(process, Notify)},
+                max_members = maps:get(max_members, Opts, infinity)
+            },
+            S1 = chappe_mrf_conf_refer:setup(Opts, S),
+            {ok, chappe_mrf_conf_focus:setup(Opts, S1)};
+        {error, _} = Err ->
+            {stop, Err}
     end.
 
 handle_call({within, Ms, Req}, From, S) ->
@@ -828,16 +498,12 @@ handle_call(Req, From, #state{waiting = #{}} = S) ->
     waiting_call(Req, From, infinity, S);
 handle_call(info, _From, S) ->
     {reply, info_map(S), S};
-handle_call({record, stop}, _From, S) ->
-    record_req(stop, S);
 handle_call({record, Req}, _From, S) ->
-    owned(S, fun(S1) -> record_req(Req, S1) end);
+    record_req(Req, S);
 handle_call({refer, Req}, _From, S) ->
     owned(S, fun(S1) -> chappe_mrf_conf_refer:call(Req, S1) end);
-handle_call({transfer, out, Id}, {Mover, _}, S) ->
-    transfer_out(Id, Mover, S);
-handle_call({transfer, Step, Id}, _From, S) ->
-    transfer_step(Step, Id, S);
+handle_call({transfer, Step, Arg}, {Pid, _}, S) ->
+    transfer_step(Step, Arg, Pid, S);
 handle_call({events, Pid}, _From, #state{listeners = L} = S) ->
     L1 =
         case L of
@@ -846,29 +512,30 @@ handle_call({events, Pid}, _From, #state{listeners = L} = S) ->
         end,
     {reply, ok, S#state{listeners = L1}};
 handle_call({join, Req}, From, S) ->
-    join_req(Req, From, S);
-handle_call({loop_offer, Token, Offer}, _From, S) ->
-    chappe_mrf_conf_native:offer(Token, Offer, S);
+    owned(S, fun(S1) -> join_open(Req, From, S1) end);
+handle_call({backend, Req}, From, S) ->
+    %% the backend's own calls (chappe_mrf_conf_backend)
+    chappe_mrf_conf_backend:supported(handle_call, 3, S, fun(Mod) ->
+        Mod:handle_call(Req, From, S)
+    end);
 handle_call(members, _From, #state{members = M} = S) ->
-    {reply, [public(Id, Mb) || {Id, Mb} <- lists:sort(maps:to_list(M))], S};
-handle_call({lock, Lock}, _From, S) ->
+    Sorted = lists:sort(maps:to_list(M)),
+    {reply, [chappe_mrf_conf_backend:public(Id, Mb) || {Id, Mb} <- Sorted], S};
+handle_call({lock, Lock}, _From, #state{mod = Mod} = S) ->
     _ =
-        S#state.backend =:= fs andalso
-            chappe_mrf_conf_fs:api(any, [chappe_mrf_conf_fs:lock_cmd(Lock)], S),
+        chappe_mrf_conf_backend:has(lock, 2, S) andalso
+            Mod:lock(Lock, S),
     {reply, ok, S#state{locked = Lock}};
 handle_call({drop, Id, Reason}, _From, S) ->
-    with_member(Id, S, fun(Mb) -> drop(Id, Mb, Reason, S) end);
+    with_member(Id, S, fun(_Mb) ->
+        chappe_mrf_conf_backend:drop_member(Id, Reason, S)
+    end);
 handle_call({set, Id, Flag, Value}, _From, S) ->
     with_member(Id, S, fun(Mb) -> set_flag(Id, Mb, Flag, Value, S) end);
-handle_call({relate, L, Sp, Rel}, _From, #state{backend = native} = S) ->
-    case {maps:find(L, S#state.members), maps:find(Sp, S#state.members)} of
-        {{ok, #{session := SL}}, {ok, #{session := SS}}} ->
-            {reply, chappe_sip_media:relate(SL, SS, Rel), S};
-        _ ->
-            {reply, {error, not_member}, S}
-    end;
-handle_call({relate, _, _, _}, _From, S) ->
-    {reply, {error, {unsupported, fs}}, S};
+handle_call({relate, L, Sp, Rel}, _From, S) ->
+    chappe_mrf_conf_backend:supported(relate, 4, S, fun(Mod) ->
+        relate(Mod, L, Sp, Rel, S)
+    end);
 handle_call({play, Who, File}, _From, S) ->
     {reply, play_to(Who, File, S), S};
 handle_call(_Req, _From, S) ->
@@ -876,18 +543,7 @@ handle_call(_Req, _From, S) ->
 
 %% Every way in for a member, sent as {join, Req}. A join already under
 %% way still completes; a locked room takes no new member, whatever the
-%% way in.
-join_req({call_done, Token, Result}, From, #state{pending = P} = S) ->
-    case P of
-        #{Token := J} ->
-            {noreply,
-                chappe_mrf_conf_native:call_done(Token, J, Result, From, S)};
-        _ ->
-            {reply, {error, join_failed}, S}
-    end;
-join_req(Req, From, S) ->
-    owned(S, fun(S1) -> join_open(Req, From, S1) end).
-
+%% way in. The backend takes the rest (admit/3).
 join_open(_Req, _From, #state{locked = true} = S) ->
     {reply, {error, locked}, S};
 join_open(
@@ -899,16 +555,8 @@ join_open(
 join_open(check, _From, S) ->
     %% may a member come in now (the lease, the lock, the limit)
     {reply, ok, S};
-join_open({adopt, Ep, Owned, Opts, FromName, FromId}, From, S) ->
-    chappe_mrf_conf_fs:adopt(Ep, Owned, Opts, {FromName, FromId}, From, S);
-join_open({ep, Ep, Opts}, _From, S) ->
-    chappe_mrf_conf_native:join_endpoint(Ep, Opts, S);
-join_open({b2b, B2b, Opts}, From, S) ->
-    chappe_mrf_conf_native:join(B2b, Opts, From, S);
-join_open({call, Opts}, _From, S) ->
-    chappe_mrf_conf_native:prepare_call(Opts, S);
-join_open({fs, Ep, Owned, Opts}, From, S) ->
-    chappe_mrf_conf_fs:start_join(Ep, Owned, Opts, From, S).
+join_open(Req, From, #state{mod = Mod} = S) ->
+    Mod:admit(Req, From, S).
 
 %% Run a call that brings someone in (a join, a REFER, a recording) only
 %% while the room owns its name: with a lease, chappe_cluster:valid/1
@@ -935,22 +583,15 @@ lose(#state{lost = true} = S, _Then) ->
     S;
 lose(#state{name = Name} = S, Then) ->
     ok = chappe_mrf_registry:delete({conf, Name}),
-    S1 = emit(lost, S#state{lost = true}),
-    ok = close_if_empty(S1),
+    S1 = chappe_mrf_conf_backend:emit(lost, S#state{lost = true}),
+    ok = chappe_mrf_conf_backend:close_if_empty(S1),
     ok = rehome(Then, S1),
     S1.
 
-rehome(rehome, #state{backend = native, name = Name, opts = Opts} = S) when
-    map_size(S#state.members) > 0
+rehome(rehome, #state{mod = Mod, members = M, name = Name, opts = Opts}) when
+    map_size(M) > 0
 ->
-    Self = self(),
-    Ms = application:get_env(chappe_mrf, rehome_ms, 30000),
-    Deadline = erlang:monotonic_time(millisecond) + Ms,
-    %% linked: it ends with the room (which traps exits, so the helper's
-    %% own end is only a message)
-    _ = spawn_link(fun() ->
-        chappe_mrf_conf_move:rehome(Self, Name, Opts, Deadline)
-    end),
+    _ = Mod:portable() andalso chappe_mrf_conf_move:start_rehome(Name, Opts),
     ok;
 rehome(_Then, _S) ->
     ok.
@@ -958,78 +599,29 @@ rehome(_Then, _S) ->
 %% chappe_mrf_conf_move asks: handoff (this node stops: give the lease
 %% back, take no member, say which members can move), ids (the members a
 %% call can move).
-move_req(handoff, #state{lease = Lease} = S) ->
+move_req(handoff, #state{lease = Lease, mod = Mod} = S) ->
     _ = Lease =/= undefined andalso chappe_cluster:release(Lease),
-    S1 = lose(S#state{lease = undefined}, handoff),
-    Here = node(),
-    Remote = [
-        Id
-     || Id := #{b2b := {Pid, _}} <- S1#state.members, node(Pid) =/= Here
-    ],
-    {reply,
-        #{
-            backend => S1#state.backend,
-            name => S1#state.name,
-            opts => portable(S1#state.opts),
-            members => Remote
-        },
-        S1};
+    #state{name = Name, opts = Opts, members = M} =
+        S1 = lose(S#state{lease = undefined}, handoff),
+    Reply = chappe_mrf_conf_move:handoff_of(Name, Opts, Mod:portable(), M),
+    {reply, Reply#{backend => S1#state.backend}, S1};
 move_req(ids, #state{members = M} = S) ->
-    {reply, [Id || Id := #{b2b := _} = Mb <- M, not is_map_key(transfer, Mb)],
-        S}.
+    {reply, chappe_mrf_conf_move:movable(M), S}.
 
-%% The options the room opens with elsewhere: without the processes of
-%% this node that is stopping
-portable(Opts) ->
-    Here = node(),
-    maps:filter(
-        fun
-            (K, Pid) when K =:= owner; K =:= notify -> node(Pid) =/= Here;
-            (_, _) -> true
-        end,
-        Opts
-    ).
+lost_empty(#state{lost = Lost, members = M, pending = P} = S) ->
+    case chappe_mrf_conf_cluster:closing(Lost, M, P) of
+        true -> {stop, normal, S};
+        false -> {noreply, S}
+    end.
 
-%% an fs member's endpoint events
-endpoint_event(Ep, {event, Ev}, S) ->
-    chappe_mrf_conf_fs:event(Ep, Ev, S);
-endpoint_event(Ep, hangup, S) ->
-    chappe_mrf_conf_fs:gone_ep(Ep, S);
-endpoint_event(Ep, {dtmf, Digit}, S) ->
-    chappe_mrf_conf_fs:dtmf(Ep, Digit, S);
-endpoint_event(_Ep, _Other, S) ->
-    S.
-
-%% the lost of this room's lease (not of an older one)
-lease_lost(#{seq := Seq}, #state{lease = #{seq := Seq}} = S) ->
-    lose(S);
-lease_lost(_OldLease, S) ->
-    S.
-
-lost_empty(#state{lost = true, members = M, pending = P} = S) when
-    map_size(M) =:= 0, map_size(P) =:= 0
-->
-    {stop, normal, S};
-lost_empty(S) ->
-    {noreply, S}.
-
-close_if_empty(#state{lost = true, members = M, pending = P}) when
-    map_size(M) =:= 0, map_size(P) =:= 0
-->
-    gen_server:cast(self(), lost_empty);
-close_if_empty(_S) ->
-    ok.
-
-handle_cast({loop_dialog, Token, D}, #state{pending = P} = S) ->
-    case P of
-        #{Token := J} ->
-            {noreply,
-                chappe_mrf_conf_native:complete(Token, J#{dialog => D}, S)};
-        _ ->
-            {noreply, S}
+handle_cast(_Msg, #state{waiting = #{}} = S) ->
+    {noreply, S};
+handle_cast({backend, Msg}, #state{mod = Mod} = S) ->
+    %% the backend's own casts; dropped when it takes none
+    case chappe_mrf_conf_backend:has(handle_cast, 2, S) of
+        true -> Mod:handle_cast(Msg, S);
+        false -> {noreply, S}
     end;
-handle_cast({loop_failed, Token}, S) ->
-    {noreply, S#state{pending = maps:remove(Token, S#state.pending)}};
 handle_cast({transferred, Ref, Info}, S) ->
     {noreply, chappe_mrf_conf_refer:transferred(Ref, Info, S)};
 handle_cast(lost_empty, S) ->
@@ -1037,84 +629,67 @@ handle_cast(lost_empty, S) ->
 handle_cast(_Msg, S) ->
     {noreply, S}.
 
-handle_info({join_result, Token, Result}, #state{pending = P} = S) ->
-    case P of
-        #{Token := J} ->
-            {noreply, chappe_mrf_conf_native:result(Token, J, Result, S)};
-        _ ->
-            {noreply, S}
-    end;
-handle_info({chappe_sip_dialog, D, destroy, _Why}, S) ->
-    case
-        [Id || {Id, #{dialog := MD}} <- maps:to_list(S#state.members), MD =:= D]
-    of
-        [Id | _] -> {noreply, gone(Id, S)};
-        [] -> {noreply, S}
-    end;
-handle_info({chappe_sip_media, {talking, _Room, Id, Talking}}, S) ->
-    {noreply, talking(Id, Talking, S)};
-handle_info({chappe_mrf_endpoint, Ep, Event}, S) ->
-    {noreply, endpoint_event(Ep, Event, S)};
-handle_info({chappe_esl_node, Node, {event, Ev}}, #state{node = Node} = S) ->
-    {noreply, chappe_mrf_conf_fs:room_event(Ev, S)};
-handle_info({chappe_mrf, Ep, {hangup, _} = E}, S) when is_pid(Ep) ->
-    S1 = chappe_mrf_conf_refer:native_event(Ep, E, S),
-    {noreply, chappe_mrf_conf_fs:gone_ep(Ep, S1)};
-handle_info({chappe_mrf, Ep, Event}, S) when is_pid(Ep) ->
-    %% a dialed endpoint's channel and completion events
-    {noreply, chappe_mrf_conf_refer:native_event(Ep, Event, S)};
-handle_info({chappe_sip_b2b, Ref, {request, _Leg, refer, Req, Res}}, S) ->
-    {noreply, chappe_mrf_conf_refer:member_refer(Ref, Req, Res, S)};
-handle_info({chappe_audio_store, _Job, {adopted, Key, Result}}, S) ->
-    {noreply, emit({recorded, Key, Result}, S)};
-handle_info({timeout, _, room_recording_close}, #state{stopping = St} = S) ->
-    _ = adopt_recordings(St, self(), orphan()),
-    {noreply, S#state{stopping = []}};
-handle_info({refer_bgdial, Uuid, Result}, S) ->
-    {noreply, chappe_mrf_conf_refer:fs_started(Uuid, Result, S)};
-handle_info({timeout, _, {refer_dial, Key}}, S) ->
-    {noreply, chappe_mrf_conf_refer:timeout(Key, S)};
-handle_info({fs_join_timeout, Ep}, S) ->
-    {noreply, chappe_mrf_conf_fs:join_timeout(Ep, S)};
-handle_info({chappe_sip_siprec, Rec, Event}, S) ->
-    {noreply, siprec_event(Rec, Event, S)};
-handle_info({chappe_cluster, Lease, lost}, S) ->
-    {noreply, lease_lost(Lease, S)};
 handle_info(Info, #state{waiting = #{}} = S) ->
     waiting_info(Info, S);
+handle_info({chappe_sip_dialog, D, destroy, _Why}, S) ->
+    case chappe_mrf_conf_backend:member_by(dialog, D, S) of
+        {ok, Id} -> {noreply, chappe_mrf_conf_backend:gone(Id, S)};
+        error -> {noreply, S}
+    end;
+handle_info({chappe_sip_media, {talking, _Room, Id, Talking}}, S) ->
+    {noreply, chappe_mrf_conf_backend:talking(Id, Talking, S)};
+handle_info({chappe_sip_b2b, Ref, {request, _Leg, refer, Req, Res}}, S) ->
+    {noreply, chappe_mrf_conf_refer:member_refer(Ref, Req, Res, S)};
+handle_info({timeout, _, {refer_dial, Key}}, S) ->
+    {noreply, chappe_mrf_conf_refer:timeout(Key, S)};
+handle_info({chappe_cluster, Lost, lost}, #state{lease = Lease} = S) ->
+    case chappe_mrf_conf_cluster:same_lease(Lost, Lease) of
+        true -> {noreply, lose(S)};
+        false -> {noreply, S}
+    end;
 handle_info({'DOWN', Mon, process, _, _}, #state{owner_mon = Mon} = S) ->
     {stop, normal, S};
 handle_info({'DOWN', Mon, process, Pid, _}, #state{listeners = L} = S) ->
     case L of
-        #{Pid := Mon} -> {noreply, S#state{listeners = maps:remove(Pid, L)}};
-        _ -> {noreply, mover_down(Mon, S)}
+        #{Pid := Mon} ->
+            {noreply, S#state{listeners = maps:remove(Pid, L)}};
+        _ ->
+            {M, Actions} = chappe_mrf_conf_transfer:mover_down(
+                Mon, S#state.members
+            ),
+            {noreply,
+                chappe_mrf_conf_transfer:run(Actions, S#state{members = M})}
     end;
 handle_info({'EXIT', _, _}, S) ->
     {noreply, S};
-handle_info(Info, #state{focus = F} = S) when F =/= undefined ->
-    case chappe_sip_focus:handle_info(Info, F) of
-        {ok, F1} -> {noreply, S#state{focus = F1}};
-        ignore -> {noreply, S}
-    end;
-handle_info(_Info, S) ->
-    {noreply, S}.
+handle_info(Info, S) ->
+    backend_info(Info, S).
+
+%% A message the room does not know: the backend's, else the focus's.
+backend_info(Info, #state{mod = Mod} = S) ->
+    Has = chappe_mrf_conf_backend:has(handle_info, 2, S),
+    case Has andalso Mod:handle_info(Info, S) of
+        {noreply, _} = Reply -> Reply;
+        _NotTheBackends -> chappe_mrf_conf_focus:handle_info(Info, S)
+    end.
 
 %% Every step runs, whatever one member's does. Outside a drain, a
 %% member on its way out is its mover's: its dialog goes to the mover and
 %% ends when the move does. In a drain (a clean stop), the moves had
 %% drain_ms; one not done by then is hung up here, on purpose, rather
 %% than left to a job the stop kills next.
-terminate(_Reason, #state{members = M0, focus = F} = S) ->
+terminate(_Reason, #state{members = M0, focus = F, mod = Mod} = S) ->
     Draining = chappe_mrf_conf_move:draining(),
-    M = maps:filter(fun(_Id, Mb) -> not handed_over(Mb, Draining) end, M0),
+    M = maps:filter(
+        fun(_Id, Mb) ->
+            not chappe_mrf_conf_transfer:handed_over(Mb, Draining)
+        end,
+        M0
+    ),
     _ = safely(fun() -> F =/= undefined andalso chappe_sip_focus:stop(F) end),
-    %% the room's end stops its recordings: the stored ones are adopted
+    %% the room's end stops what the backend runs (fs: its recordings)
     _ = safely(fun() ->
-        S#state.recordings =/= [] andalso
-            chappe_mrf_conf_fs:stop_record(S) =:= ok andalso
-            adopt_recordings(
-                S#state.recordings ++ S#state.stopping, undefined, orphan()
-            )
+        chappe_mrf_conf_backend:has(terminate, 1, S) andalso Mod:terminate(S)
     end),
     maps:foreach(
         fun(Id, Mb) ->
@@ -1135,32 +710,11 @@ safely(Fun) ->
             error
     end.
 
-%% a member hung up at the room's end; one cut mid-move by a drain gets
-%% its whole call ended, so its caller hears a clean BYE whatever state
-%% the move left the call in
-end_member(Id, #{transfer := true, b2b := {Pid, _} = B2b} = Mb, true, S) ->
-    ok = erpc:cast(node(Pid), chappe_sip_b2b, hangup, [B2b, #{}]),
-    hangup_member(Id, Mb, S);
-end_member(Id, Mb, _Draining, S) ->
-    hangup_member(Id, Mb, S).
-
-handed_over(#{transfer := true}, true) ->
-    false;
-handed_over(#{transfer := true, mover := Mover, dialog := D}, false) when
-    is_pid(Mover)
-->
-    %% a dead mover, here or on another node, is the dialog's to see
-    try chappe_sip_dialog:set_owner(D, Mover) of
-        ok -> true
-    catch
-        _:_ -> false
-    end;
-handed_over(#{transfer := true}, false) ->
-    %% fs: the endpoint goes with its owner, this room, unless the other
-    %% room adopted it already
-    true;
-handed_over(_Mb, _Draining) ->
-    false.
+%% a member hung up at the room's end (one cut mid-move by a drain, its
+%% whole call: chappe_mrf_conf_transfer:cut/2)
+end_member(Id, Mb, Draining, #state{mod = Mod} = S) ->
+    ok = chappe_mrf_conf_transfer:cut(Mb, Draining),
+    Mod:hangup(Id, Mb, S).
 
 %% ---- members ----
 
@@ -1170,376 +724,60 @@ with_member(Id, #state{members = M} = S, Fun) ->
         _ -> {reply, {error, not_member}, S}
     end.
 
-set_flag(Id, Mb, Flag, Value, S) ->
-    case apply_flag(Id, Mb, Flag, Value, S) of
-        ok ->
-            S1 = S#state{
-                members = (S#state.members)#{Id => Mb#{Flag => Value}}
-            },
-            %% fs reports mute-member itself
-            S2 =
-                case {Flag, S#state.backend} of
-                    {mute, native} -> emit({muted, Id, Value}, S1);
-                    _ -> S1
-                end,
-            {reply, ok, publish(S2)};
+set_flag(Id, Mb, Flag, Value, #state{mod = Mod} = S) ->
+    case Mod:set_flag(Id, Mb, Flag, Value, S) of
+        {ok, #state{members = M} = S1} ->
+            S2 = S1#state{members = M#{Id => Mb#{Flag => Value}}},
+            {reply, ok, chappe_mrf_conf_backend:publish(S2)};
+        {error, unsupported} ->
+            {reply, chappe_mrf_conf_backend:unsupported(S), S};
         {error, _} = Err ->
             {reply, Err, S}
     end.
 
-apply_flag(_Id, #{session := MS}, mute, true, _S) ->
-    chappe_sip_media:mute(MS);
-apply_flag(_Id, #{session := MS}, mute, false, _S) ->
-    chappe_sip_media:unmute(MS);
-apply_flag(_Id, #{session := MS}, deaf, true, _S) ->
-    chappe_sip_media:deaf(MS);
-apply_flag(_Id, #{session := MS}, deaf, false, _S) ->
-    chappe_sip_media:undeaf(MS);
-apply_flag(Id, #{ep := _} = Mb, Flag, Value, S) ->
-    Cmd =
-        case {Flag, Value} of
-            {mute, true} -> <<"mute">>;
-            {mute, false} -> <<"unmute">>;
-            {deaf, true} -> <<"deaf">>;
-            {deaf, false} -> <<"undeaf">>
-        end,
-    chappe_mrf_lib:api_ok(chappe_mrf_conf_fs:api(Mb, [Cmd, Id], S)).
-
-%% Drop member Id for Reason (leave/2, kick/2, a REFER's method=BYE).
--spec drop_member(member(), atom(), #state{}) -> {reply, ok, #state{}}.
-drop_member(Id, Reason, #state{members = M} = S) ->
-    drop(Id, maps:get(Id, M), Reason, S).
-
-%% leave/2 and kick/2
-drop(Id, Mb, Reason, S) ->
-    _ = hangup_member(Id, Mb, S),
-    {reply, ok, gone(Id, Reason, S)}.
-
-hangup_member(_Id, #{rtpe := _}, _S) ->
-    %% an endpoint of the app: out of the room, its channel stays
-    ok;
-hangup_member(_Id, #{dialog := D}, _S) ->
-    _ = spawn(fun() -> chappe_mrf_lib:destroy_dialog(D) end),
-    ok;
-hangup_member(Id, Mb, S) ->
-    %% fs: an endpoint in the room, or a party mod_conference dialed in
-    %% for a REFER (dialed)
-    _ = chappe_mrf_conf_fs:api(Mb, [<<"kick">>, Id], S),
-    _ =
-        case Mb of
-            #{ep := Ep, owned := true} ->
-                spawn(fun() -> chappe_mrf:destroy(Ep) end);
-            _ ->
-                ok
-        end,
-    ok.
-
-gone(Id, S) ->
-    gone(Id, departed, S).
-
-gone(Id, Reason, #state{members = M} = S) ->
-    case maps:take(Id, M) of
-        {#{transfer := true} = Mb, M1} ->
-            %% its call or channel lives on in the other conference
-            _ =
-                case Mb of
-                    #{session := MS} -> chappe_sip_media:leave(MS);
-                    _ -> ok
-                end,
-            S1 = publish(emit({left, Id, transferred}, S#state{members = M1})),
-            ok = close_if_empty(S1),
-            S1;
-        {Mb, M1} ->
-            _ =
-                case Mb of
-                    #{session := MS, rtpe := RS} ->
-                        _ = chappe_sip_media:leave(MS),
-                        chappe_sip_media:stop(RS);
-                    #{session := MS} ->
-                        chappe_sip_media:leave(MS);
-                    #{ep := Ep, owned := true} ->
-                        spawn(fun() -> chappe_mrf:destroy(Ep) end);
-                    _ ->
-                        ok
-                end,
-            S1 = publish(emit({left, Id, Reason}, S#state{members = M1})),
-            ok = close_if_empty(S1),
-            S1;
-        error ->
-            S
+relate(Mod, L, Sp, Rel, #state{members = M} = S) ->
+    case M of
+        #{L := LMb, Sp := SMb} -> {reply, Mod:relate(LMb, SMb, Rel, S), S};
+        _ -> {reply, {error, not_member}, S}
     end.
 
-talking(Id, Talking, #state{members = M} = S) ->
+play_to(all, File, #state{mod = Mod} = S) ->
+    Mod:play(all, File, S);
+play_to(Id, File, #state{mod = Mod, members = M} = S) ->
     case M of
-        #{Id := Mb} ->
-            S1 = S#state{members = M#{Id := Mb#{talking => Talking}}},
-            emit({talking, Id, Talking}, S1);
-        _ ->
-            S
-    end.
-
-play_to(all, File, #state{backend = fs} = S) ->
-    chappe_mrf_lib:api_ok(chappe_mrf_conf_fs:api(any, [<<"play">>, File], S));
-play_to(Id, File, #state{backend = fs, members = M} = S) ->
-    case M of
-        #{Id := Mb} ->
-            chappe_mrf_lib:api_ok(
-                chappe_mrf_conf_fs:api(Mb, [<<"play">>, File, Id], S)
-            );
-        _ ->
-            {error, not_member}
-    end;
-play_to(all, File, #state{members = M}) ->
-    lists:foldl(
-        fun(Mb, Acc) ->
-            case chappe_mrf_conf_native:play_leg(Mb, File) of
-                ok -> Acc;
-                Err -> Err
-            end
-        end,
-        ok,
-        maps:values(M)
-    );
-play_to(Id, File, #state{members = M}) ->
-    case M of
-        #{Id := Mb} -> chappe_mrf_conf_native:play_leg(Mb, File);
+        #{Id := Mb} -> Mod:play({Id, Mb}, File, S);
         _ -> {error, not_member}
     end.
 
-%% A member as the conference keeps it: Base (its media) and what the
-%% join asked for.
-member(Opts, Id, Base0) ->
-    %% uri: who the member is, for a REFER's method=BYE; b2b: its call,
-    %% for a transfer (when the backend's own base has none)
-    Base = maps:merge(maps:with([uri, b2b], Opts), Base0),
-    Base#{
-        name => chappe_mrf_lib:to_bin(maps:get(name, Opts, Id)),
-        mute => maps:get(mute, Opts, false),
-        deaf => maps:get(deaf, Opts, false),
-        moderator => maps:get(moderator, Opts, false),
-        talking => false
-    }.
+%% record/2,3 and stop_record/1, sent as {record, Req}: a recording
+%% starts only while the room owns its name.
+record_req(stop, S) ->
+    chappe_mrf_conf_backend:supported(stop_record, 1, S, fun(Mod) ->
+        {Reply, S1} = Mod:stop_record(S),
+        {reply, Reply, S1}
+    end);
+record_req({start, Path, Opts}, S) ->
+    owned(S, fun(S1) ->
+        chappe_mrf_conf_backend:supported(record, 3, S1, fun(Mod) ->
+            {Reply, S2} = Mod:record(Path, Opts, S1),
+            {reply, Reply, S2}
+        end)
+    end).
 
-%% record/2,3 and stop_record/1, sent as {record, Req}.
-record_req({start, Path, Opts}, #state{backend = fs} = S) ->
-    case chappe_mrf_store:wanted(Opts) of
-        false -> {reply, chappe_mrf_conf_fs:record(Path, S), S};
-        true -> record_stored(Path, Opts, S)
-    end;
-record_req(stop, #state{backend = fs} = S) ->
-    case chappe_mrf_conf_fs:stop_record(S) of
-        ok when S#state.recordings =/= [] ->
-            %% adopted on stop-recording (the file closed); a room whose
-            %% node events never say it gets a copy after a while
-            _ = erlang:start_timer(?CLOSE_WAIT, self(), room_recording_close),
-            Stopping = S#state.recordings ++ S#state.stopping,
-            {reply, ok, S#state{recordings = [], stopping = Stopping}};
-        Reply ->
-            {reply, Reply, S}
-    end;
-record_req({start, Srs, Opts}, #state{backend = native} = S) ->
-    Ref = maps:get(ref, Opts, S#state.name),
-    case
-        chappe_sip_siprec:start({room, S#state.room}, Srs, #{
-            call_ref => Ref, owner => self()
-        })
-    of
-        {ok, Rec} -> {reply, ok, S#state{siprec = [Rec | S#state.siprec]}};
-        {error, _} = Err -> {reply, Err, S}
-    end;
-record_req(stop, #state{backend = native, siprec = Recs} = S) ->
-    lists:foreach(fun chappe_sip_siprec:stop/1, Recs),
-    {reply, ok, S#state{siprec = []}}.
-
-%% The events of a native room's SIPREC recordings, which this process
-%% owns: a stopped one is forgotten.
-siprec_event(Rec, {stopped, _}, #state{siprec = R} = S) ->
-    S#state{siprec = lists:delete(Rec, R)};
-siprec_event(_Rec, _Event, S) ->
-    S.
-
-%% A recording to adopt when it stops: its path must be shared.
-record_stored(Path, Opts, S) ->
-    maybe
-        {ok, _} ?= chappe_mrf_store:local_path(Path),
-        ok ?= chappe_mrf_conf_fs:record(Path, S),
-        Rec =
-            {Path, maps:get(ref, Opts, S#state.name),
-                maps:with([parties], Opts)},
-        {reply, ok, S#state{recordings = [Rec | S#state.recordings]}}
-    else
-        Err -> {reply, Err, S}
-    end.
-
-%% The room's stored recordings into the store (source room), each in a
-%% job of the store: Notify (the room) hears the outcome and its
-%% listeners get {recorded, Path, {ok, Id} | {error, Reason}}. Extra is
-%% orphan() for files whose close was never seen: copied, not moved.
-adopt_recordings(Recs, Notify, Extra) ->
-    [
-        chappe_mrf_store:adopt_async(
-            Path, Ref, Meta#{source => room}, Notify, Extra
-        )
-     || {Path, Ref, Meta} <- lists:reverse(Recs)
-    ].
-
-orphan() ->
-    #{keep => true, settle_ms => 2000}.
-
-%% mod_conference closed a recording's file (stop-recording): a stopped
-%% stored one is adopted now.
--spec recording_closed(binary(), #state{}) -> #state{}.
-recording_closed(Path, #state{stopping = St} = S) ->
-    case lists:keytake(Path, 1, St) of
-        {value, Rec, St1} ->
-            _ = adopt_recordings([Rec], self(), #{}),
-            S#state{stopping = St1};
-        false ->
-            S
-    end.
-
-%% transfer/3's steps here, sent as {transfer, Step, Member}: out marks the
-%% member and hands over what the other conference needs, cancel undoes
-%% the mark after a failed join there.
-transfer_step(move, Mode, S) ->
+%% transfer/3's steps here, sent as {transfer, Step, Arg}
+%% (chappe_mrf_conf_transfer); move: chappe_mrf_conf_move's.
+transfer_step(move, Mode, _Pid, S) ->
     move_req(Mode, S);
-transfer_step(handle_of, Id, #state{members = M} = S) ->
-    case M of
-        #{Id := #{b2b := B2b}} -> {reply, {ok, {b2b, B2b}}, S};
-        #{Id := #{ep := Ep}} -> {reply, {ok, {ep, Ep}}, S};
-        _ -> {reply, none, S}
-    end;
-transfer_step(holds, Handle, #state{members = M, pending = P} = S) ->
-    {reply, holds(Handle, maps:values(M), maps:values(P)), S};
-transfer_step(done, Id, #state{members = M} = S) ->
-    case M of
-        #{Id := #{transfer := true}} -> {reply, ok, gone(Id, transferred, S)};
-        _ -> {reply, ok, S}
-    end;
-transfer_step(cancel, Id, #state{members = M} = S) ->
-    case M of
-        #{Id := Mb} ->
-            {reply, ok, S#state{
-                members = M#{Id := maps:without([transfer, mover], Mb)}
-            }};
-        _ ->
-            {reply, ok, S}
-    end;
-transfer_step(out, Id, S) ->
-    transfer_out(Id, undefined, S).
+transfer_step(Step, Arg, Pid, #state{members = M, pending = P} = S) ->
+    Handover = fun(Mb) -> handover(Mb, S) end,
+    {Reply, M1, Actions} = chappe_mrf_conf_transfer:step(
+        Step, Arg, {Pid, Handover}, {M, P}
+    ),
+    {reply, Reply,
+        chappe_mrf_conf_transfer:run(Actions, S#state{members = M1})}.
 
-%% whether a call (its b2b) or an endpoint is one of the members, or one
-%% joining
-holds(Handle, Members, Pending) ->
-    case {lists:any(has(Handle), Members), lists:any(has(Handle), Pending)} of
-        {true, _} -> member;
-        {false, true} -> pending;
-        {false, false} -> no
+handover(Mb, #state{mod = Mod} = S) ->
+    case chappe_mrf_conf_backend:has(handover, 1, S) of
+        true -> Mod:handover(Mb);
+        false -> chappe_mrf_conf_backend:unsupported(S)
     end.
-
-has({b2b, B2b}) -> fun(Mb) -> maps:get(b2b, Mb, undefined) =:= B2b end;
-has({ep, Ep}) -> fun(Mb) -> maps:get(ep, Mb, undefined) =:= Ep end.
-
-%% A member leaves for another room: the process that moves it (Mover)
-%% is noted, so the room's end hands it the member's dialog rather than
-%% cutting the call halfway through the move.
-transfer_out(Id, Mover, #state{members = M} = S) ->
-    case M of
-        #{Id := #{transfer := true}} ->
-            {reply, {error, transferring}, S};
-        #{Id := #{b2b := B2b} = Mb} ->
-            {reply, {ok, {native, B2b, join_opts(Mb)}}, mark(Id, Mb, Mover, S)};
-        #{Id := #{rtpe := _}} ->
-            %% an endpoint of the app in a native room: its dialog is the
-            %% app's, not a call this room can re-anchor
-            {reply, {error, {unsupported, endpoint_member}}, S};
-        #{Id := #{ep := Ep, owned := Owned} = Mb} ->
-            {reply, {ok, {fs, Ep, Owned, join_opts(Mb)}},
-                watch_mover(Id, mark(Id, Mb, Mover, S))};
-        _ ->
-            {reply, {error, not_member}, S}
-    end.
-
-%% A member on its way to another conference: what leaves it here is
-%% the transfer, run by Mover.
-mark(Id, Mb, Mover, #state{members = M} = S) ->
-    S#state{members = M#{Id := Mb#{transfer => true, mover => Mover}}}.
-
-%% An fs member's move is watched: if its mover dies before the other
-%% room adopted it (the member is still here, marked), the room acts
-%% rather than keep it marked for good: an endpoint it owns is destroyed
-%% (its channel may be half way through a conference transfer), an app's
-%% endpoint is a member here again.
-watch_mover(Id, #state{members = M} = S) ->
-    case M of
-        #{Id := #{mover := Mover} = Mb} when is_pid(Mover) ->
-            S#state{
-                members = M#{Id := Mb#{mover_mon => monitor(process, Mover)}}
-            };
-        _ ->
-            S
-    end.
-
-mover_down(Mon, #state{members = M} = S) ->
-    case
-        [
-            {Id, Mb}
-         || Id := #{mover_mon := MM, transfer := true} = Mb <- M, MM =:= Mon
-        ]
-    of
-        [{Id, #{ep := Ep, owned := true}}] ->
-            _ = spawn(fun() -> chappe_mrf:destroy(Ep) end),
-            gone(Id, hangup, S);
-        [{Id, Mb}] ->
-            S#state{
-                members = M#{
-                    Id := maps:without([transfer, mover, mover_mon], Mb)
-                }
-            };
-        [] ->
-            S
-    end.
-
-%% What a member asked for when it joined, for the conference it moves to.
-join_opts(Mb) ->
-    maps:with([name, mute, deaf, moderator], Mb).
-
-public(Id, Mb) ->
-    (maps:with([name, mute, deaf, moderator, talking, uri], Mb))#{id => Id}.
-
-emit(Event, #state{listeners = L} = S) ->
-    _ = [Pid ! {chappe_mrf_conf, self(), Event} || Pid <- maps:keys(L)],
-    S.
-
-%% the conference-info of a focus: one user per member
-publish(#state{focus = undefined} = S) ->
-    S;
-publish(#state{focus = F, entity = E, members = M} = S) ->
-    Users = [
-        #{
-            entity => <<E/binary, ";member=", Id/binary>>,
-            display_text => maps:get(name, Mb),
-            roles => [<<"moderator">> || maps:get(moderator, Mb)],
-            endpoints => [
-                #{
-                    entity => <<E/binary, ";member=", Id/binary>>,
-                    status =>
-                        case maps:get(mute, Mb) of
-                            true -> muted_via_focus;
-                            false -> connected
-                        end,
-                    joining_method => dialed_in
-                }
-            ]
-        }
-     || {Id, Mb} <- lists:sort(maps:to_list(M))
-    ],
-    Conf = #{
-        entity => E,
-        version => 0,
-        user_count => length(Users),
-        users => Users
-    },
-    S#state{focus = chappe_sip_focus:update(Conf, F)}.
-
-%% ---- helpers ----

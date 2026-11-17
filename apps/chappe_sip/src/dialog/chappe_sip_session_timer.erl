@@ -21,7 +21,7 @@
 
 -export([config/1, uas/2, supported/1, uac_headers/2, uac_answer/3]).
 -export([refresh_headers/1, incoming/3, response/3]).
--export([parse_se/1, supports_timer/1, allows_update/1, min_se/1]).
+-export([min_se/1]).
 -export([timeouts/1, cancel_timeouts/0, retry_after_422/2]).
 
 -export_type([st/0, cfg/0]).

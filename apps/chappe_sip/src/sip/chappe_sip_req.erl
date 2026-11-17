@@ -20,7 +20,6 @@
     get_all/2,
     call_id/1,
     from_tag/1,
-    can_form_dialog/1,
     source_ip/1,
     source_port/1,
     calling_number/1,
@@ -132,9 +131,6 @@ call_id(#req{msg = M}) -> chappe_sip_msg:call_id(M).
 
 -spec from_tag(req()) -> binary() | undefined.
 from_tag(#req{msg = M}) -> chappe_sip_msg:from_tag(M).
-
--spec can_form_dialog(req()) -> boolean().
-can_form_dialog(#req{msg = M}) -> chappe_sip_msg:can_form_dialog(M).
 
 %% The wire source address of the request (the engine's peer, not the spoofable
 %% Via sent-by). undefined if the transport did not report it. This is the

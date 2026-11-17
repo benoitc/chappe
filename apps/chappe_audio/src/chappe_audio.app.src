@@ -13,6 +13,7 @@
         chappe_audio_writer_sup,
         chappe_audio_adopt_sup,
         chappe_audio_listener_sup,
+        chappe_audio_rtp_sup,
         chappe_audio_conn_sup,
         chappe_audio_stream_sup,
         chappe_audio_listener

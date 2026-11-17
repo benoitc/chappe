@@ -1,43 +1,44 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 
-%% @doc One recorded stream at a recording server (chappe_sip_siprec_srs):
-%% a UDP socket that takes the stream's RTP (RFC 3550), decodes its G.711
-%% (PCMU or PCMA, RFC 3551) to 16-bit linear PCM and hands it to its sink:
-%% a recording of the store, or a process.
+%% @doc One received RTP stream: a UDP socket that takes the stream's RTP
+%% (RFC 3550), decodes its G.711 (PCMU or PCMA, RFC 3551) to 16-bit linear
+%% PCM (chappe_audio_pcm) and hands it to its sink: a recording of the
+%% store, or a process. A SIPREC recording server (chappe_sip_siprec_srs)
+%% runs one per recorded stream; start one with chappe_audio:rtp_receiver/1.
 %%
-%% One process per stream, under chappe_sip_siprec_rtp_sup, owned by the
-%% process that answered the recording session: it stops when the owner
-%% exits or on stop/1, and then finishes its store recording. A stream
-%% that crashes leaves the store's partial file to its sweep and never
-%% touches the session or the other streams.
+%% One process per stream, under chappe_audio_rtp_sup, owned by the
+%% process that started it: it stops when the owner exits or on stop/1,
+%% and then finishes its store recording. A stream that crashes leaves the
+%% store's partial file to its sweep and never touches its owner or the
+%% other streams.
 %%
 %% Bounds: the socket is read {active, N} at a time; a process sink gets
-%% {chappe_sip_siprec_rtp, Stream, {audio, Pcm}} and frames are dropped
-%% while its queue holds max_queue messages (default 500); the store's
-%% writer has its own bound (its write/2 says dropped). RTP of another
-%% payload type, RTCP and anything that does not parse is dropped.
+%% {Tag, Stream, {audio, Pcm}} (Tag is the tag option, default
+%% chappe_audio_rtp) and frames are dropped while its queue holds
+%% max_queue messages (default 500); the store's writer has its own bound
+%% (its write/2 says dropped). RTP of another payload type, RTCP and
+%% anything that does not parse is dropped.
 %%
-%% Source: RTP is taken from the recording client only. The stream latches
-%% to the first source at the address the client's SDP gave for it (any
-%% port, as a NAT may change it; the client sends from where it receives,
-%% RFC 4961), and drops every other source from then on. A stream whose SDP
-%% gives no usable address, or started with remote => undefined, latches
-%% to the first source.
+%% Source: RTP is taken from the sender only. The stream latches to the
+%% first source at the remote address it was given (any port, as a NAT may
+%% change it; the sender sends from where it receives, RFC 4961), and
+%% drops every other source from then on. A stream started with remote =>
+%% undefined latches to the first source.
 %%
-%% SRTP: started with srtp => Ctx (chappe_sip_srtp:new/1, from the
-%% client's a=crypto line), the stream takes SRTP only (RFC 3711): each
+%% SRTP: started with srtp => Ctx (chappe_audio_srtp:new/1, from the
+%% sender's a=crypto line), the stream takes SRTP only (RFC 3711): each
 %% packet is authenticated, checked against the replay window and
-%% decrypted (chappe_sip_srtp:unprotect/2) before it is decoded, and an
+%% decrypted (chappe_audio_srtp:unprotect/2) before it is decoded, and an
 %% SRTCP packet on the same port (RFC 5761) is authenticated and dropped.
 %% It latches to its source only once a packet authenticates there, so a
 %% forged packet cannot take the stream. A packet that fails (forged,
 %% replayed, malformed, past the key's lifetime) is dropped and counted
 %% (stats/1); the first failure is logged, then at most one line per
 %% 10 s window with the count since the last one. rekey/2 gives the stream
-%% the client's new key (a re-INVITE). The keys stay in the context and
-%% format_status/1 leaves them out of every report.
--module(chappe_sip_siprec_rtp).
+%% the sender's new key. The keys stay in the context and format_status/1
+%% leaves them out of every report.
+-module(chappe_audio_rtp).
 -behaviour(gen_server).
 
 -export([start/1, start_link/1, stop/1, port/1, stats/1, rekey/2]).
@@ -51,13 +52,13 @@
 ]).
 
 -include_lib("kernel/include/logger.hrl").
--export([decode/2]).
 
 -record(state, {
     sock :: gen_udp:socket(),
     port :: inet:port_number(),
     owner_mon :: reference(),
     sink :: {store, module(), term()} | {pid, pid()},
+    tag :: atom(),
     max_queue :: pos_integer(),
     label :: binary(),
     %% the client's address as its SDP gave it, and the source latched
@@ -66,7 +67,7 @@
     packets = 0 :: non_neg_integer(),
     %% SRTP (redacted in reports), the packets it dropped, and the
     %% failures not logged yet with the time of the last log line
-    srtp :: chappe_sip_srtp:ctx() | undefined | redacted,
+    srtp :: chappe_audio_srtp:ctx() | undefined | redacted,
     failed = 0 :: non_neg_integer(),
     replayed = 0 :: non_neg_integer(),
     unlogged = 0 :: non_neg_integer(),
@@ -81,8 +82,8 @@
 %% Args: #{owner := pid(), ip := inet:ip_address(), label := binary(),
 %% sink := {store, Module, StoreMeta} | {pid, pid()}, max_queue =>
 %% pos_integer(), remote => {inet:ip_address(), inet:port_number()} |
-%% undefined, srtp => chappe_sip_srtp:ctx() | undefined, ports =>
-%% {Min, Max} | undefined}.
+%% undefined, srtp => chappe_audio_srtp:ctx() | undefined, ports =>
+%% {Min, Max} | undefined, tag => atom()}.
 %%
 %% ports: the socket binds a free port of the range, trying each once from
 %% a random offset and skipping those in use; none free is {error,
@@ -90,7 +91,7 @@
 %% RTCP: muxed RTCP is dropped, and nothing listens on the port above.
 -spec start(map()) -> {ok, pid()} | {error, term()}.
 start(Args) ->
-    supervisor:start_child(chappe_sip_siprec_rtp_sup, [Args]).
+    supervisor:start_child(chappe_audio_rtp_sup, [Args]).
 
 -spec start_link(map()) -> {ok, pid()} | {error, term()}.
 start_link(Args) ->
@@ -124,7 +125,7 @@ stats(Pid) ->
 
 %% The client's new key for an SRTP stream (RFC 4568 7.1.4), its
 %% rollover counters and replay lists kept; ignored on a plain stream.
--spec rekey(pid(), chappe_sip_srtp:ctx()) -> ok.
+-spec rekey(pid(), chappe_audio_srtp:ctx()) -> ok.
 rekey(Pid, Ctx) ->
     gen_server:call(Pid, {rekey, Ctx}).
 
@@ -140,6 +141,7 @@ init(#{owner := Owner, ip := Ip, label := Label, sink := Sink0} = Args) ->
                         port = Port,
                         owner_mon = erlang:monitor(process, Owner),
                         sink = Sink,
+                        tag = maps:get(tag, Args, ?MODULE),
                         max_queue = maps:get(max_queue, Args, 500),
                         label = Label,
                         remote = maps:get(remote, Args, undefined),
@@ -174,9 +176,9 @@ open(Ip, Min, N, At, Left) ->
 udp(Ip, Port) ->
     gen_udp:open(Port, [binary, {ip, Ip}, {active, ?ACTIVE}]).
 
-%% The store seam: a recording of the store module (chappe_audio_store by
-%% default, see chappe_sip_siprec_srs:store/1) opened with open/2 and fed
-%% 16-bit PCM with write/2, finished with close/2.
+%% The store seam: a recording of the store module (chappe_audio_store or
+%% any module with the same open/2, write/2 and close/2) opened with
+%% open/2, fed 16-bit PCM with write/2 and finished with close/2.
 open_sink({store, Mod, Meta}) ->
     case Mod:open(Meta, #{owner => self()}) of
         {ok, Rec} -> {ok, {store, Mod, Rec}};
@@ -192,7 +194,7 @@ handle_call(stats, _From, #state{packets = P, failed = F, replayed = R} = S) ->
 handle_call({rekey, _Ctx}, _From, #state{srtp = undefined} = S) ->
     {reply, ok, S};
 handle_call({rekey, Ctx}, _From, #state{srtp = Old} = S) ->
-    {reply, ok, S#state{srtp = chappe_sip_srtp:rekey(Old, Ctx)}};
+    {reply, ok, S#state{srtp = chappe_audio_srtp:rekey(Old, Ctx)}};
 handle_call(stop, _From, S) ->
     {stop, normal, close_sink(S), S#state{sink = {pid, self()}}}.
 
@@ -240,9 +242,9 @@ source(_Ip, _Port, _S) ->
 take(Packet, From, #state{srtp = undefined} = S) ->
     packet(Packet, S#state{latched = From});
 take(Packet, From, #state{srtp = Ctx} = S) ->
-    case chappe_sip_srtp:is_rtcp(Packet) of
-        true -> srtcp(chappe_sip_srtp:unprotect_rtcp(Packet, Ctx), From, S);
-        false -> srtp(chappe_sip_srtp:unprotect(Packet, Ctx), From, S)
+    case chappe_audio_srtp:is_rtcp(Packet) of
+        true -> srtcp(chappe_audio_srtp:unprotect_rtcp(Packet, Ctx), From, S);
+        false -> srtp(chappe_audio_srtp:unprotect(Packet, Ctx), From, S)
     end.
 
 srtp({ok, Rtp, Ctx}, From, S) ->
@@ -293,7 +295,7 @@ packet(
 ->
     case payload(P, X, CC, Rest) of
         {ok, Payload} ->
-            sink(decode(law(PT), Payload), S#state{
+            sink(chappe_audio_pcm:decode(law(PT), Payload), S#state{
                 packets = S#state.packets + 1
             });
         error ->
@@ -338,39 +340,11 @@ padding(1, Body) ->
 sink(Pcm, #state{sink = {store, Mod, Rec}} = S) ->
     _ = Mod:write(Rec, Pcm),
     S;
-sink(Pcm, #state{sink = {pid, Pid}, max_queue = Max} = S) ->
+sink(Pcm, #state{sink = {pid, Pid}, max_queue = Max, tag = Tag} = S) ->
     case process_info(Pid, message_queue_len) of
         {message_queue_len, N} when N < Max ->
-            Pid ! {?MODULE, self(), {audio, Pcm}};
+            Pid ! {Tag, self(), {audio, Pcm}};
         _ ->
             ok
     end,
     S.
-
-%% G.711 (ITU-T G.711, the reference arithmetic) to 16-bit little-endian
-%% linear PCM.
--spec decode(ulaw | alaw, binary()) -> binary().
-decode(Law, Bin) ->
-    <<<<(sample(Law, B)):16/little-signed>> || <<B>> <= Bin>>.
-
-sample(ulaw, U0) ->
-    U = bnot U0 band 16#FF,
-    Exp = (U bsr 4) band 7,
-    T = ((((U band 16#0F) bsl 3) + 16#84) bsl Exp) - 16#84,
-    case U band 16#80 of
-        0 -> T;
-        _ -> -T
-    end;
-sample(alaw, A0) ->
-    A = A0 bxor 16#55,
-    T0 = (A band 16#0F) bsl 4,
-    T =
-        case (A band 16#70) bsr 4 of
-            0 -> T0 + 8;
-            1 -> T0 + 16#108;
-            Seg -> (T0 + 16#108) bsl (Seg - 1)
-        end,
-    case A band 16#80 of
-        0 -> -T;
-        _ -> T
-    end.

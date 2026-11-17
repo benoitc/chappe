@@ -2206,7 +2206,7 @@ hold_uac_after_ack(Ms) ->
     end),
     Hold = fun
         (_, {in, {'$gen_call', {Pid, _},
-                  {send_stateless, _, <<"ACK ", _/binary>>, _}}}, _) ->
+                  {txn, {send_stateless, _, <<"ACK ", _/binary>>, _}}}}, _) ->
             Ref = make_ref(),
             Holder ! {hold, Pid, self(), Ref},
             receive {Ref, held} -> done after 1000 -> done end;

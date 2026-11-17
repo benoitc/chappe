@@ -25,7 +25,10 @@
 -module(chappe_esl_node).
 -behaviour(gen_statem).
 
--export([start_link/2, validate/1, backoff/3, parse_status/1]).
+-export([start_link/2, validate/1]).
+-ifdef(TEST).
+-export([backoff/3]).
+-endif.
 -export([callback_mode/0, init/1, handle_event/4, terminate/3]).
 
 -export_type([state/0, config/0]).

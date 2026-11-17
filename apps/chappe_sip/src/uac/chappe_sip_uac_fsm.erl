@@ -860,7 +860,7 @@ local(#data{opts = Opts, uri = Uri, proxy = Proxy}) ->
 %% route by the Request-URI); a sip: hop is reached as sips: when the
 %% Request-URI is SIPS (RFC 3261 8.1.2)
 route(#data{flow = Flow}) when Flow =/= undefined ->
-    chappe_sip_route:flow_route(Flow);
+    chappe_sip_flow:flow_route(Flow);
 route(#data{uri = Uri} = D) ->
     chappe_sip_route:secure_hop(Uri, next_hop(D)).
 
@@ -1037,7 +1037,7 @@ route_set(Msg) ->
 %% ACK/BYE/PRACK destination: the WS flow for a browser target, else the
 %% first route (a loose or a strict router), else by Request-URI
 ack_route(_Msg, #data{flow = Flow}) when Flow =/= undefined ->
-    chappe_sip_route:flow_route(Flow);
+    chappe_sip_flow:flow_route(Flow);
 ack_route(Msg, _D) ->
     case route_set(Msg) of
         [First | _] ->
@@ -1162,19 +1162,9 @@ create_dialog(DialogArgs) ->
 %% credentials were refused, unless it says stale=true (only the nonce
 %% expired: retry with the new one, RFC 7616 3.3).
 retry_with_auth(Status, Msg, #data{cseq = CSeq} = D) ->
-    {ChalHdr, AuthHdrName} = challenge_header(Status),
     Auth = maps:get(auth, D#data.opts, undefined),
-    Parsed = [
-        C
-     || V <- chappe_sip_msg:get_all(ChalHdr, Msg),
-        {ok, C} <- [chappe_sip_hdr:auth(V)]
-    ],
-    Usable = [
-        C
-     || C <- chappe_sip_digest:select(Parsed),
-        credentials_for(C, Auth) =/= none
-    ],
-    case merge_challenges(AuthHdrName, Usable, D#data.challenges) of
+    {AuthHdrName, Usable} = chappe_sip_uac_auth:usable(Status, Msg, Auth),
+    case chappe_sip_uac_auth:merge(AuthHdrName, Usable, D#data.challenges) of
         {ok, Cs} when D#data.auth_rounds < ?MAX_AUTH_ROUNDS ->
             chappe_sip_engine:finish_txn(D#data.txn),
             send_request(D#data{
@@ -1188,75 +1178,6 @@ retry_with_auth(Status, Msg, #data{cseq = CSeq} = D) ->
             Err
     end.
 
-merge_challenges(_Name, [], _Old) ->
-    {error, no_auth};
-merge_challenges(Name, New, Old) ->
-    lists:foldl(
-        fun
-            (_C, {error, _} = Err) ->
-                Err;
-            (C, {ok, Acc}) ->
-                Key = {Name, challenge_realm(C)},
-                case [X || {N, X} <- Acc, {N, challenge_realm(X)} =:= Key] of
-                    [] ->
-                        {ok, Acc ++ [{Name, C}]};
-                    [_ | _] ->
-                        case is_stale(C) of
-                            true -> {ok, replace_challenge(Key, C, Acc)};
-                            false -> {error, rejected}
-                        end
-                end
-        end,
-        {ok, Old},
-        New
-    ).
-
-replace_challenge({Name, Realm}, C, Cs) ->
-    [
-        case N =:= Name andalso challenge_realm(X) =:= Realm of
-            true -> {N, C};
-            false -> {N, X}
-        end
-     || {N, X} <- Cs
-    ].
-
-is_stale(#{params := P}) ->
-    string:lowercase(maps:get(<<"stale">>, P, <<"false">>)) =:= <<"true">>.
-
-challenge_realm(#{params := P}) -> maps:get(<<"realm">>, P, <<>>).
-
-challenge_nonce(#{params := P}) -> maps:get(<<"nonce">>, P, <<>>).
-
-%% auth is #{user, pass} or a list of them; one naming a realm answers only
-%% that realm's challenges
-credentials_for(_Chal, undefined) ->
-    none;
-credentials_for(Chal, F) when is_function(F, 1) ->
-    %% the app picks the credentials for this challenge
-    try F(Chal) of
-        Auth when is_map(Auth); is_list(Auth) -> credentials(Chal, Auth);
-        _ -> none
-    catch
-        Class:Why ->
-            logger:warning("chappe_sip_uac: auth fun failed: ~p:~p", [
-                Class, Why
-            ]),
-            none
-    end;
-credentials_for(Chal, Auth) ->
-    credentials(Chal, Auth).
-
-credentials(Chal, #{} = A) ->
-    credentials(Chal, [A]);
-credentials(Chal, List) when is_list(List) ->
-    Realm = challenge_realm(Chal),
-    Named = [A || #{realm := R} = A <- List, R =:= Realm],
-    Any = [A || A <- List, not maps:is_key(realm, A)],
-    case Named ++ Any of
-        [#{user := U, pass := P} | _] -> {U, P};
-        _ -> none
-    end.
-
 %% report_auth => true: the challenges answered and their nonce counts, for
 %% the caller's next request (auth_state)
 report_auth(#data{opts = #{report_auth := true}, challenges = [_ | _]} = D) ->
@@ -1268,27 +1189,8 @@ report_auth(_D) ->
 %% one per challenge, each nonce counting its requests (RFC 7616 3.4)
 with_credentials(#data{challenges = Cs, opts = Opts} = D) ->
     Auth = maps:get(auth, Opts, undefined),
-    {Hdrs, NC} = lists:foldl(
-        fun({Name, Chal}, {HAcc, NAcc}) ->
-            Nonce = challenge_nonce(Chal),
-            N = maps:get(Nonce, NAcc, 0) + 1,
-            {User, Pass} = credentials_for(Chal, Auth),
-            case
-                chappe_sip_digest:credentials(#{
-                    method => D#data.method,
-                    uri => D#data.uri,
-                    username => User,
-                    password => Pass,
-                    challenge => Chal,
-                    nc => N
-                })
-            of
-                {ok, V} -> {HAcc ++ [{Name, V}], NAcc#{Nonce => N}};
-                {error, _} -> {HAcc, NAcc}
-            end
-        end,
-        {[], D#data.nonce_count},
-        Cs
+    {Hdrs, NC} = chappe_sip_uac_auth:headers(
+        Cs, Auth, D#data.method, D#data.uri, D#data.nonce_count
     ),
     D#data{auth_hdrs = Hdrs, nonce_count = NC}.
 
@@ -1351,13 +1253,8 @@ redirect_to(T, #data{uri = OldUri} = D) ->
         uri = T, to = <<"<", T/binary, ">">>
     }).
 
-%% the 3xx Contacts not tried yet (chappe_sip_route:redirect_targets/1)
 redirect_targets(Msg, #data{tried = Tried}) ->
-    [
-        U
-     || {U, _} <- chappe_sip_route:redirect_targets(Msg),
-        not lists:member(U, Tried)
-    ].
+    chappe_sip_uac_auth:redirect_targets(Msg, Tried).
 
 %% The request options with the option tags a 420 named taken out of what
 %% we require; error when we required none of them (nothing to retry).
@@ -1405,9 +1302,6 @@ strip_auth_across_authority(OldUri, NewUri, D) ->
     end.
 
 %% ---- helpers ----
-
-challenge_header(401) -> {<<"www-authenticate">>, <<"Authorization">>};
-challenge_header(407) -> {<<"proxy-authenticate">>, <<"Proxy-Authorization">>}.
 
 target_uri(Msg) ->
     case chappe_sip_msg:get(<<"contact">>, Msg) of

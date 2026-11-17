@@ -23,7 +23,7 @@ names with a leading `_` carry the app prefix (`_proxy_rules` is
 |---|---|---|---|---|---|
 | Answering and placing calls | chappe_sip `src/api`, `src/dialog`, `src/uac` | `chappe_sip`, `chappe_sip_dialog`, `chappe_sip_uac` | `_dialog_fsm`, `_uac_fsm`, `_dialog_index`, `_session_timer` | `core`, `core_uac`, `uas`, `uac`, `indialog`, `dialog_ops`, `handler`, `session_timer`, `prack` | `make interop-conformance` |
 | Inbound request pipeline | chappe_sip `src/engine`, `src/conn` | `chappe_sip_engine` (`handle_event/2`, `dispatch/4`), `chappe_sip_request_worker` | `_middleware`, `_guard`, `_request_sup` | `pipeline` (fake engine), `guard`, `ood` | none |
-| B2BUA | chappe_sip `src/api/chappe_sip_b2b*` | `chappe_sip_b2b` | `_b2b_relay`, `_b2b_fork`, `_b2b_early`, `_b2b_media`, `_b2b_replace`, `_b2b_requests`, `_b2b_async`, `_b2b_hdr` | `b2bua`, `b2b_relay`, `forked_2xx`, `webrtc_gateway` | `make interop-sbc` |
+| B2BUA | chappe_sip `src/b2b/chappe_sip_b2b*` | `chappe_sip_b2b` | `_b2b_relay`, `_b2b_fork`, `_b2b_early`, `_b2b_media`, `_b2b_replace`, `_b2b_requests`, `_b2b_async`, `_b2b_hdr` | `b2bua`, `b2b_relay`, `forked_2xx`, `webrtc_gateway` | `make interop-sbc` |
 | Proxy | chappe_sip `src/proxy` | `chappe_sip_proxy` | `_proxy_rules`, `_proxy_dialog`, `_route` | `proxy_conf`, `proxy_forking`, `proxy_record_route`, `proxy_media` | `make interop-conformance` |
 | Registrar and location | chappe_sip `src/api/chappe_sip_registrar.erl`, `src/conn/chappe_sip_registry.erl` | `chappe_sip:registrar/1` | `_registry`, `_registry_keeper`, `_qualify` (`src/peers`), `_digest`, `_digest_nc` | `registrar`, `digest`, `digest_tests` | `make interop-conformance` |
 | Registering to a carrier | chappe_sip `src/api/chappe_sip_regc.erl` | `chappe_sip:register_client/2` | `_regc_sup` | `regc` | none |
@@ -31,15 +31,15 @@ names with a leading `_` carry the app prefix (`_proxy_rules` is
 | Presence, MWI, subscriptions | chappe_sip `src/api` (packages), `src/dialog` (subscriber, refer) | `chappe_sip:event_package/2`, `chappe_sip:subscribe_to/3` | `_notifier`, `_subscriber`, `_notify_router`, `_presence`, `_mwi`, `_pidf` | `subscribe`, `subscriber`, `presence`, `refer` | none |
 | Peers, OPTIONS, failover | chappe_sip `src/peers` | `chappe_sip:peer_add/2` | `_peer`, `_peers`, `_peer_sup` | `peers` | `make interop-sbc` |
 | Media facade | chappe_sip `src/media` | `chappe_sip_media` | `_media_rtpengine`, `_media_mix`, `_media_mix_sdp`, `_media_sup` | `media` (fake `chappe_sip_test_rtpe`), `proxy_media` | `make interop` |
-| Call records and capture | chappe_sip `src/api/chappe_sip_cdr.erl`, `src/engine/chappe_sip_hep.erl` | `chappe_sip_cdr:subscribe/1` | `_hep` | `cdr`, `hep`, `hep_tests` | none |
+| Call records and capture | chappe_sip `src/core/chappe_sip_cdr.erl`, `src/engine/chappe_sip_hep.erl` | `chappe_sip_cdr:subscribe/1` | `_hep` | `cdr`, `hep`, `hep_tests` | none |
 | Conference focus | chappe_sip `src/api` | `chappe_sip_focus` | `_confinfo` | `focus`, `confinfo_tests` | none |
 | Metrics | chappe_sip `src/chappe_sip_metrics.erl` | `chappe_sip_metrics` | none | `metrics_tests` | none |
 | The C engine | chappe_sip `c_src`, `src/engine/chappe_sip_nif.erl` | [engine.md](../apps/chappe_sip/docs/design/engine.md) | `c_src/chappe_sip_engine_nif.c` | `engine_lifecycle`, `engine_smoke`, `ops` | `make asan` |
-| rtpengine control | `apps/chappe_rtpengine/src` | `chappe_rtpengine`, `chappe_rtpengine_session` | `_client`, `_pool`, `_ng`, `_bencode`, `_stream`, `_sdp`, `_dtmf` | `client`, `pool`, `session`, `dtmf`, `siprec`, `live`, `e2e` | `make interop` |
+| rtpengine control | `apps/chappe_rtpengine/src` | `chappe_rtpengine`, `chappe_rtpengine_session`, `chappe_rtpengine_cmd` | `_client`, `_pool`, `_ng`, `_bencode`, `_stream`, `_sdp`, `_dtmf` | `client`, `pool`, `session`, `dtmf`, `siprec`, `live`, `e2e` | `make interop` |
 | Conference mixing | `apps/chappe_mix/src` | `chappe_mix` | `_conf`, `_room`, `_leg`, `_session`, `_dsp`, `_jbuf`, `_rtp`, `_rtcp`, `_g711` | `chappe_mix`, `rfc`, `live`, `ref` | `make interop-mix`, `make interop-ref` |
 | FreeSWITCH control | `apps/chappe_esl/src` | `chappe_esl`, `chappe_esl_call` | `_conn`, `_exec`, `_inbound`, `_listener`, `_node`, `_nodes`, `_parser` | `conn`, `call`, `outbound`, `nodes`, `live` | `make interop-esl` |
 | IVR, bridging, conferences | `apps/chappe_mrf/src` | `chappe_mrf`, `chappe_mrf_conf` | `_endpoint`, `_esl`, `_registry`, `_conf_native`, `_conf_fs`, `_lib` | `chappe_mrf` (fake `chappe_mrf_fake`), `live` | `make interop-mrf` |
-| Compliance | `apps/*/docs/compliance` | `requirements.tsv` | `apps/chappe_sip/test/chappe_sip_compliance.erl`, `scripts/compliance.escript` | every suite (`%% req:` lines) | `make compliance` |
+| Compliance | `apps/*/docs/compliance` | `requirements.tsv` | `scripts/compliance/chappe_sip_compliance.erl`, `scripts/compliance.escript` | every suite (`%% req:` lines) | `make compliance` |
 | Configuration | see [below](#where-configuration-and-startup-live) | `chappe_sip_config:get/1` | none | each app's suites | none |
 
 Test fakes, one per remote end:
@@ -60,7 +60,7 @@ No module is marked internal in its source yet.
 | App | Public | Internal |
 |---|---|---|
 | chappe_sip | `chappe_sip` (facade), `chappe_sip_req`, `chappe_sip_res`, `chappe_sip_dialog`, `chappe_sip_uac`, `chappe_sip_b2b`, `chappe_sip_handler` (behaviour), `chappe_sip_media`, `chappe_sip_refer`, `chappe_sip_focus`, `chappe_sip_confinfo`, `chappe_sip_presence`, `chappe_sip_mwi`, `chappe_sip_publisher`, `chappe_sip_pidf`, `chappe_sip_cdr`, `chappe_sip_guard`, `chappe_sip_metrics`, `chappe_sip_digest`, and the message helpers `chappe_sip_hdr`, `chappe_sip_msg`, `chappe_sip_uri`, `chappe_sip_sdp` | the engine and NIF, the fsms (`_dialog_fsm`, `_uac_fsm`), every `_sup`, `_request_worker`, `_registry*`, `_route`, `_proxy_*`, `_ws_*`, `_b2b_*` helpers, `_media_rtpengine`, `_media_mix*`, `_notify_router`, `_subscriber`, `_peer`, `_qualify`, `_digest_nc`, `_hep`, `_config` |
-| chappe_rtpengine | `chappe_rtpengine` (facade), `chappe_rtpengine_session`, `chappe_rtpengine_sdp`, `chappe_rtpengine_ng` (types and params), `chappe_rtpengine_dtmf` | `_client`, `_pool`, `_bencode`, `_stream`, `_resolve`, `_ws_handler`, every `_sup` |
+| chappe_rtpengine | `chappe_rtpengine` (facade), `chappe_rtpengine_session`, `chappe_rtpengine_cmd`, `chappe_rtpengine_sdp`, `chappe_rtpengine_ng` (types and params), `chappe_rtpengine_dtmf` | `_client`, `_pool`, `_bencode`, `_stream`, `_resolve`, `_ws_handler`, every `_sup` |
 | chappe_mix | `chappe_mix` (facade) | `_conf`, `_room`, `_leg`, `_session`, `_dsp`, `_jbuf`, `_rtp`, `_rtcp`, `_g711`, `_sup` |
 | chappe_esl | `chappe_esl` (facade), `chappe_esl_call`, `chappe_esl_event`, `chappe_esl_handler` (behaviour) | `_conn`, `_exec`, `_inbound`, `_listener`, `_node`, `_nodes`, `_parser`, every `_sup` |
 | chappe_mrf | `chappe_mrf` (facade), `chappe_mrf_conf` | `_endpoint`, `_esl`, `_registry`, `_conf_native`, `_conf_fs`, `_lib`, `_sup` |

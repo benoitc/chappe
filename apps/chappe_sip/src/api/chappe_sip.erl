@@ -29,12 +29,10 @@
     message/1,
     info/1,
     notify/1,
-    bye/1,
     subscribe/1,
     subscribe/2,
     publish/1,
     refer/1,
-    update/1,
     register/1
 ]).
 -export([registrar/1, location/1, location_flow/1, location_target/1]).
@@ -336,9 +334,6 @@ info(F) -> handle(<<"INFO">>, F).
 -spec notify(fun()) -> ok.
 notify(F) -> handle(<<"NOTIFY">>, F).
 
--spec bye(fun()) -> ok.
-bye(F) -> handle(<<"BYE">>, F).
-
 -spec subscribe(fun()) -> ok.
 subscribe(F) -> handle(<<"SUBSCRIBE">>, F).
 
@@ -429,9 +424,6 @@ accept_refer(Dialog, Req, Res, Opts) ->
     {ok, reference(), map()} | {error, term()}.
 send_refer(To, Target, Opts) ->
     chappe_sip_refer:send(To, Target, Opts).
-
--spec update(fun()) -> ok.
-update(F) -> handle(<<"UPDATE">>, F).
 
 -spec register(fun()) -> ok.
 register(F) -> handle(<<"REGISTER">>, F).
@@ -562,10 +554,7 @@ location_flow(AorOrUri) ->
 -spec find_dialog(binary(), binary(), binary()) ->
     {ok, chappe_sip_dialog:dialog()} | {error, not_found}.
 find_dialog(CallId, LocalTag, RemoteTag) ->
-    case chappe_sip_dialog_index:lookup({CallId, LocalTag, RemoteTag}) of
-        {ok, {Pid, Id, _State, _Role}} -> {ok, chappe_sip_dialog:make(Pid, Id)};
-        not_found -> {error, not_found}
-    end.
+    chappe_sip_dialog:find(CallId, LocalTag, RemoteTag).
 
 %% The dialog an incoming request's Replaces header names (RFC 3891 section
 %% 3). As the recipient, the header's to-tag is our local tag and its

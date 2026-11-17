@@ -26,7 +26,7 @@
 %% Every key but id (and the ids an association names) is optional. Times
 %% are RFC 3339 binaries (RFC 7865 6.9). call_ref is chappe's own
 %% extension of the session element (RFC 7865 9 allows elements of other
-%% namespaces there), in the namespace ext_ns/0, so a recording server
+%% namespaces there), in chappe's own namespace, so a recording server
 %% finds the call in chappe's records.
 %%
 %% The media type is application/rs-metadata+xml (RFC 9806 replaces RFC
@@ -36,7 +36,7 @@
 
 -export([build/1, parse/1, snapshot_request/1, snapshot_request/2]).
 -export([new_id/0, now/0, content_type/0, is_content_type/1, disposition/0]).
--export([ns/0, ext_ns/0, senders/1]).
+-export([senders/1]).
 
 -export_type([doc/0, participant/0, stream/0]).
 
@@ -68,12 +68,6 @@
 }.
 
 %% ---- constants ----
-
--spec ns() -> binary().
-ns() -> <<?NS>>.
-
--spec ext_ns() -> binary().
-ext_ns() -> <<?EXT_NS>>.
 
 %% RFC 9806 2, 4.1.
 -spec content_type() -> binary().

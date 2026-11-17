@@ -12,7 +12,7 @@
 %% that is not multipart comes back as its one part.
 -module(chappe_sip_multipart).
 
--export([build/1, parse/2, find/2, boundary/1, content_type/1]).
+-export([build/1, parse/2, find/2, content_type/1]).
 
 -export_type([part/0]).
 

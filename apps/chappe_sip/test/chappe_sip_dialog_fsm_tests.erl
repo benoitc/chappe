@@ -31,13 +31,13 @@ bye_in_setup_test() ->
     Fsm ! {chappe_sip_indialog, 1, 77, #{}, Bye},
     %% still in setup: nothing answered yet
     receive
-        {engine_call, {dialog_respond, 77, _, _, _, _, _}} -> ?assert(false)
+        {engine_call, {txn, {dialog_respond, 77, _, _, _, _, _}}} -> ?assert(false)
     after 200 -> ok
     end,
     Fsm ! {chappe_sip_op, 1, ok},
     ?assertEqual({ok, 1}, gen_statem:call(Fsm, await_ready)),
     receive
-        {engine_call, {dialog_respond, 77, Status, _, _, _, _}} ->
+        {engine_call, {txn, {dialog_respond, 77, Status, _, _, _, _}}} ->
             ?assertEqual(200, Status)
     after 2000 -> ?assert(false)
     end,

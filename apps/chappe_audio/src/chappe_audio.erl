@@ -37,8 +37,10 @@
 -export([listen/1, child_spec/1, listener_info/1, stop_listener/1]).
 -export([open/1, open/2, close/1, info/1, ref/1, set_owner/2, send_text/2]).
 -export([streams/1, levels/2]).
+-export([rtp_receiver/1]).
 
 -export_type([listener/0, stream/0, listen_opts/0, open_opts/0]).
+-export_type([rtp_opts/0]).
 
 -type listener() :: pid() | atom() | {atom(), node()}.
 -type stream() :: pid().
@@ -93,6 +95,28 @@
     max_queue_bytes => pos_integer(),
     connect_timeout => pos_integer(),
     store => default | none
+}.
+
+%% An RTP receiver (chappe_audio_rtp): owner, the process it lives for;
+%% ip, the address its socket binds; label, its name in logs; sink, a
+%% recording of a store module ({store, Module, Meta}, opened with
+%% Module:open(Meta, Opts)) or a process ({pid, Pid}, which gets {Tag,
+%% Receiver, {audio, Pcm}}); max_queue, the bound on that process's queue
+%% (default 500); remote, the sender's address it latches to (default
+%% undefined: the first source); srtp, a chappe_audio_srtp context for an
+%% SRTP stream; ports, the range its socket binds a free port of (default
+%% undefined: any port); tag, the first element of its messages (default
+%% chappe_audio_rtp).
+-type rtp_opts() :: #{
+    owner := pid(),
+    ip := inet:ip_address(),
+    label := binary(),
+    sink := {store, module(), term()} | {pid, pid()},
+    max_queue => pos_integer(),
+    remote => {inet:ip_address(), inet:port_number()} | undefined,
+    srtp => chappe_audio_srtp:ctx() | undefined,
+    ports => {inet:port_number(), inet:port_number()} | undefined,
+    tag => atom()
 }.
 
 -spec listen(listen_opts()) -> {ok, listener()} | {error, term()}.
@@ -228,6 +252,18 @@ streams(Ref) when is_binary(Ref) ->
 -spec levels(binary(), 1 | 2) -> [float() | '-inf'].
 levels(Pcm, Channels) ->
     chappe_audio_pcm:levels(Pcm, Channels).
+
+%% Start an RTP receiver (see rtp_opts()) under the chappe_audio
+%% application: its port is chappe_audio_rtp:port/1, and it stops with
+%% its owner or on chappe_audio_rtp:stop/1. No free port in the range is
+%% {error, no_port}; the application not running, {error, not_started}.
+-spec rtp_receiver(rtp_opts()) -> {ok, pid()} | {error, term()}.
+rtp_receiver(Opts) when is_map(Opts) ->
+    try
+        chappe_audio_rtp:start(Opts)
+    catch
+        exit:{noproc, _} -> {error, not_started}
+    end.
 
 %% ---- argument checks, in the caller ----
 

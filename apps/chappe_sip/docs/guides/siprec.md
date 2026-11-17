@@ -129,6 +129,10 @@ module with its `open/2`, `write/2` and `close/2` works. To take
 the audio yourself, give `sink => Pid` instead: the process gets
 `{chappe_sip_siprec_rtp, Stream, {audio, Pcm}}`, 16-bit PCM at 8 kHz.
 
+The server's RTP receivers run under the chappe_audio application, an
+optional dependency of chappe_sip: without it running on the node, every
+stream is refused 488 and `serve/3` returns `{error, no_audio}`.
+
 A stream the server cannot take (not PCMU or PCMA, past `max_streams`, no
 free port) is answered with port 0. When no stream is left, `serve/3`
 refuses the INVITE with 488 and returns `{error, no_streams}`, so you never
@@ -242,12 +246,12 @@ re-INVITE with a new key gives the stream the new key.
   past the key's lifetime, a packet of a fifth SSRC. The stream latches to
   its source only once a packet authenticates. The first drop is logged,
   then one line per 10 s; read the counters with
-  `chappe_sip_siprec_rtp:stats/1`:
+  `chappe_audio_rtp:stats/1`:
 
 ```erlang
 #{streams := [#{pid := Stream} | _]} = Srs,
 #{packets := _, failed := _, replayed := _} =
-    chappe_sip_siprec_rtp:stats(Stream).
+    chappe_audio_rtp:stats(Stream).
 ```
 
 ### What is encrypted where
@@ -297,11 +301,11 @@ called from any node with the call's `b2b` handle (from
 
 - Modules: `chappe_sip_siprec` (the client), `chappe_sip_siprec_peer`
   (what the recording server sends in the client's dialog),
-  `chappe_sip_siprec_meta` (metadata), `chappe_sip_siprec_srs` and `chappe_sip_siprec_rtp` (the
-  server side), `chappe_sip_srtp` (SRTP decryption), `chappe_sip_sdes`
+  `chappe_sip_siprec_meta` (metadata), `chappe_sip_siprec_srs` and `chappe_audio_rtp` (the
+  server side), `chappe_audio_srtp` (SRTP decryption, in chappe_audio), `chappe_sip_sdes`
   (`a=crypto` lines), `chappe_sip_multipart`.
 - Tests: `chappe_sip_siprec_SUITE`, `chappe_sip_siprec_meta_tests`,
-  `chappe_sip_srtp_tests`, `chappe_sip_sdes_tests`,
+  `chappe_audio_srtp_tests`, `chappe_audio_rtp_SUITE`, `chappe_sip_sdes_tests`,
   `chappe_sip_siprec_live_SUITE` (`make interop`).
 - Specs: RFC 7866 (updated by RFC 9806), RFC 7865, RFC 6341, RFC 3711,
   RFC 4568. Why chappe decrypts SRTP itself here:

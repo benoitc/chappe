@@ -6,7 +6,7 @@
 %% runs on).
 -module(chappe_audio_pcm).
 
--export([levels/2]).
+-export([levels/2, decode/2]).
 
 %% The RMS level of each channel over the frame, in dBFS (0 is a full
 %% scale square wave); '-inf' for digital silence or an empty frame.
@@ -30,3 +30,31 @@ sum_sq2(_, {A, B}, N) ->
 db({0, _}) -> '-inf';
 db({_, 0}) -> '-inf';
 db({Sq, N}) -> 20 * math:log10(math:sqrt(Sq / N) / 32768).
+
+%% G.711 (ITU-T G.711, the reference arithmetic) to 16-bit little-endian
+%% linear PCM.
+-spec decode(ulaw | alaw, binary()) -> binary().
+decode(Law, Bin) ->
+    <<<<(sample(Law, B)):16/little-signed>> || <<B>> <= Bin>>.
+
+sample(ulaw, U0) ->
+    U = bnot U0 band 16#FF,
+    Exp = (U bsr 4) band 7,
+    T = ((((U band 16#0F) bsl 3) + 16#84) bsl Exp) - 16#84,
+    case U band 16#80 of
+        0 -> T;
+        _ -> -T
+    end;
+sample(alaw, A0) ->
+    A = A0 bxor 16#55,
+    T0 = (A band 16#0F) bsl 4,
+    T =
+        case (A band 16#70) bsr 4 of
+            0 -> T0 + 8;
+            1 -> T0 + 16#108;
+            Seg -> (T0 + 16#108) bsl (Seg - 1)
+        end,
+    case A band 16#80 of
+        0 -> -T;
+        _ -> T
+    end.

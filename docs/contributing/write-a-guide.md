@@ -24,7 +24,7 @@ document a new feature, fix a guide, or add a design page.
 | App index | `apps/<app>/docs/README.md` (chappe_sip), else the app `README.md` |
 | ex_doc wiring | `apps/<app>/rebar.config`: `extras`, `groups_for_extras` |
 | Pages that span apps | `docs/` at the root (concepts, architecture, decisions, navigation, contributing) |
-| The snippet check | `apps/chappe_sip/test/doc_snippets_tests.erl` |
+| The snippet check | `test/doc_snippets_tests.erl` |
 
 ## Style
 

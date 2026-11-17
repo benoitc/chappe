@@ -760,7 +760,7 @@ create_a(
         end,
     UasOpts = nat_flow(Req, UasOpts1),
     Winner = chappe_sip_b2b_fork:winner(W),
-    case chappe_sip:create_uas(Req, Res, UasOpts) of
+    case chappe_sip_dialog:create_uas(Req, Res, UasOpts) of
         {ok, ADialog} ->
             _ = erase(a_side_key(Res)),
             Legs = #{
@@ -809,8 +809,8 @@ keep_a_side(#{res := Res} = W) ->
 %% requests of its dialog (our re-INVITE, BYE) go to where its INVITE came
 %% from instead (RFC 3581, Kamailio's fix_nated_contact)
 nat_flow(Req, Opts) ->
-    Flow = chappe_sip_route:received_flow(chappe_sip_req:meta(Req)),
-    case chappe_sip_route:nated(chappe_sip_req:get(<<"contact">>, Req), Flow) of
+    Flow = chappe_sip_flow:received_flow(chappe_sip_req:meta(Req)),
+    case chappe_sip_flow:nated(chappe_sip_req:get(<<"contact">>, Req), Flow) of
         true -> Opts#{flow => Flow};
         false -> Opts
     end.

@@ -10,7 +10,7 @@
 %% arguments, made in the caller.
 -module(chappe_sip_siprec_body).
 
--export([body/1, media/1, identity/3, answers/2, sdp_of/1, sdp_only/1]).
+-export([body/1, media/1, identity/3, answers/2]).
 -export([srs/1, valid_opts/1, security/1, reanswer/2]).
 
 %% The RS body: the SDP offer, a sendonly (or, paused, inactive) m-line per

@@ -14,9 +14,11 @@ gen_statem per connection: inbound auth + outbound accept, FIFO command/reply
 correlation, event delivery to an owner), `chappe_esl_inbound` (connect helper),
 `chappe_esl_listener` / `chappe_esl_outbound_sup` (outbound dialplan sockets),
 `chappe_esl_handler` (the outbound channel behaviour), `chappe_esl_call` (one
-gen_server per controlled channel: typed helpers, completion correlation,
-owner-death cleanup), `chappe_esl_exec` (the sendmsg execute with an
-Event-UUID, the raw wait for its completion, uuid_break, argument quoting),
+gen_server per controlled channel: completion correlation, jobs, forks and
+recordings, owner-death cleanup, and a wrapper for every typed verb),
+`chappe_esl_verbs` (the typed verbs: argument checks and command building),
+`chappe_esl_exec` (the sendmsg execute with an Event-UUID, the raw wait for
+its completion, uuid_break, argument quoting, the fork and cleanup commands),
 `chappe_esl_nodes` (the FreeSWITCH node registry: a supervisor owning the node ETS table and pg scope,
 started only when nodes exist) and `chappe_esl_node` (one gen_statem per node:
 connection, backoff, HEARTBEAT load, probes, drain).

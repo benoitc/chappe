@@ -8,15 +8,11 @@
 -module(chappe_esl_outbound_sup).
 -behaviour(supervisor).
 
--export([start_link/0, start_conn/2, start_conn/3, stop_conn/1]).
+-export([start_link/0, start_conn/3, stop_conn/1]).
 -export([init/1]).
 
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
-
--spec start_conn(module(), term()) -> {ok, pid()} | {error, term()}.
-start_conn(Handler, Args) ->
-    start_conn(Handler, Args, #{}).
 
 %% ConnOpts carries per-listener connection options (`linger').
 -spec start_conn(module(), term(), map()) -> {ok, pid()} | {error, term()}.

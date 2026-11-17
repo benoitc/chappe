@@ -12,7 +12,7 @@
 %% host).
 -module(chappe_mrf_store).
 
--export([wanted/1, local_path/1, adopt/3, adopt_async/4, adopt_async/5]).
+-export([wanted/1, local_path/1, adopt/3, adopt_async/5]).
 -export([recorded/3]).
 -export([record_session/4, record_session_stop/3]).
 

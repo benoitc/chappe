@@ -9,7 +9,7 @@
 %% chappe_sip:notify/1 handler; with none of them, 481 (RFC 6665 4.1.3).
 -module(chappe_sip_notify_router).
 
--export([handler/1, route/2]).
+-export([handler/1]).
 
 -define(TAB, chappe_sip_subscribers).
 

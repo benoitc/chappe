@@ -16,7 +16,7 @@
     valid_from/1,
     caller/1
 ]).
--export([privacy/2, privacy_unsupported/2, privacy_failure/1]).
+-export([privacy_unsupported/2, privacy_failure/1]).
 
 %% RFC 3323 5.3: the informational headers a user agent adds that a
 %% privacy service removes under user (and header) privacy
