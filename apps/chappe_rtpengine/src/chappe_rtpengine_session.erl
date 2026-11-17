@@ -517,19 +517,28 @@ pinned_state(_Kind) -> any.
 reply_stopped(undefined) -> [];
 reply_stopped(From) -> [{reply, From, {error, stopped}}].
 
-%% A reply settles an offer/answer exchange or the auxiliary command it
-%% answers.
-reply(Kind, From, Result, State, Data) ->
-    case negotiation(Kind) of
-        true -> negotiated(Kind, From, Result, State, Data);
-        false -> aux_reply(Kind, From, Result, State, Data)
-    end.
-
-negotiation(offer) -> true;
-negotiation(publish) -> true;
-negotiation(reoffer) -> true;
-negotiation({answer_sent, _, _, _, _}) -> true;
-negotiation(_Kind) -> false.
+%% A reply settles an offer/answer exchange (negotiated/5) or the
+%% auxiliary command it answers (aux_reply/5).
+reply(offer, From, Result, State, Data) ->
+    negotiated(offer, From, Result, State, Data);
+reply(publish, From, Result, State, Data) ->
+    negotiated(publish, From, Result, State, Data);
+reply(reoffer, From, Result, State, Data) ->
+    negotiated(reoffer, From, Result, State, Data);
+reply({answer_sent, _, _, _, _} = Kind, From, Result, State, Data) ->
+    negotiated(Kind, From, Result, State, Data);
+reply(query, From, Result, State, Data) ->
+    aux_reply(query, From, Result, State, Data);
+reply(aux, From, Result, State, Data) ->
+    aux_reply(aux, From, Result, State, Data);
+reply({held, _} = Kind, From, Result, State, Data) ->
+    aux_reply(Kind, From, Result, State, Data);
+reply(released, From, Result, State, Data) ->
+    aux_reply(released, From, Result, State, Data);
+reply(branch_delete, From, Result, State, Data) ->
+    aux_reply(branch_delete, From, Result, State, Data);
+reply(delete, From, Result, State, Data) ->
+    aux_reply(delete, From, Result, State, Data).
 
 negotiated(offer, From, Result, offering, Data) ->
     Next =

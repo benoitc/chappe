@@ -557,8 +557,10 @@ subscribe(Call, Events) ->
     chappe_esl_call:subscribe(Call, Events).
 
 %% The call's channel uuid; {error, closed} once the call process is gone.
+%% It waits as long as the call process takes, as chappe_esl_call's own
+%% requests do (uuid/1 keeps the default timeout).
 with_uuid(Call, Fun) ->
-    try chappe_esl_call:uuid(Call) of
+    try gen_server:call(Call, uuid, infinity) of
         Uuid -> Fun(Uuid)
     catch
         exit:{_Reason, {gen_server, call, _}} -> {error, closed}

@@ -116,6 +116,6 @@ Notes:
 
 ## Where it lives
 
-- Modules: `chappe_rtpengine_session` (`subscribe_request/2`, `subscribe_answer/2`, `unsubscribe/2`), `chappe_rtpengine_sdp` (fork answers)
+- Modules: `chappe_rtpengine_cmd` (`subscribe_request/2`, `subscribe_answer/2`, `unsubscribe/2`), `chappe_rtpengine_sdp` (fork answers)
 - Tests: `apps/chappe_rtpengine/test/chappe_rtpengine_sdp_tests.erl`, `chappe_rtpengine_session_SUITE.erl`
 - Lab: `make interop` (`chappe_rtpengine_siprec_SUITE`, `chappe_rtpengine_live_SUITE`)
