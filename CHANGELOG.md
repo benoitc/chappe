@@ -26,6 +26,14 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
   `chappe_sip_focus:subscriptions/1`, `chappe_sip_notifier:changed/2` and
   `watchers/2`, `chappe_sip_location_cluster:prefix/0` and
   `chappe_sip_refer:dialog/1`.
+- chappe_rtpengine, breaking: the media commands of a session (play,
+  record, DTMF, forwarding, subscriptions and the others) moved from
+  `chappe_rtpengine_session` to `chappe_rtpengine_cmd`, with the same names
+  and arguments. Change the module name in your calls.
+- Removed unused functions: `chappe_esl_exec:fork_stop_cmd/2`,
+  `chappe_esl_nodes:scope/0`, `chappe_esl_outbound_sup:start_conn/2`,
+  `chappe_cluster_machine:query_node_leases/2` and
+  `chappe_cluster_machine:counts/1`.
 
 - chappe_cluster, a new app: it lets several chappe nodes agree on a
   single owner for anything that must not run twice, such as a conference

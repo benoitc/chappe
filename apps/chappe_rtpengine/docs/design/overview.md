@@ -103,8 +103,9 @@ Before that, any reply in an active state that says "unknown call-id" tells
 the owner `{node_restarted, Node}`, once (`note_media_lost/4`).
 
 The auxiliary commands (`play_media/2`, `silence_media/2`,
-`subscribe_request/2`, ...) are thin wrappers that inject the call-id, the
-tags and the pinned node, then go through the same reply path.
+`subscribe_request/2`, ...) live in `chappe_rtpengine_cmd`, each a call to
+`chappe_rtpengine_session:cmd/3`. The session injects the call-id, the tags
+and the pinned node, then the reply goes through the same path.
 
 ### SDP helpers
 

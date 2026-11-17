@@ -24,7 +24,7 @@
 -module(chappe_rtpengine_dtmf).
 -behaviour(gen_server).
 
--export([start_link/0, open/1, open/2, close/0, port/0]).
+-export([start_link/0, open/1, open/2, close/0]).
 -export([subscribe/1, unsubscribe/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
@@ -71,10 +71,6 @@ open(Port, Opts) when is_map(Opts) ->
 close() ->
     gen_server:call(?MODULE, close, ?CALL_TIMEOUT).
 
--spec port() -> inet:port_number() | undefined.
-port() ->
-    gen_server:call(?MODULE, port, ?CALL_TIMEOUT).
-
 %% The calling process receives {chappe_rtpengine_dtmf, CallId, Event} for every
 %% DTMF event on that call until it unsubscribes or dies.
 -spec subscribe(binary()) -> ok.
@@ -120,8 +116,6 @@ handle_call({open, Port, Opts}, _From, State0) ->
     end;
 handle_call(close, _From, State) ->
     {reply, ok, close_socket(State)};
-handle_call(port, _From, State) ->
-    {reply, State#state.port, State};
 handle_call({subscribe, CallId, Pid}, _From, State) ->
     case lists:member({CallId, Pid}, ets:lookup(?SUBS, CallId)) of
         true ->

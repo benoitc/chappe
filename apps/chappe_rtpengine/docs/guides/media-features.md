@@ -7,14 +7,14 @@ This guide covers the media features you build IVRs, voicemail, call recording a
 Media commands run against an established session with its identity injected:
 
 ```erlang
-{ok, _} = chappe_rtpengine_session:play_media(Sess, #{file => <<"/prompts/welcome.wav">>}),
-{ok, _} = chappe_rtpengine_session:stop_media(Sess).
+{ok, _} = chappe_rtpengine_cmd:play_media(Sess, #{file => <<"/prompts/welcome.wav">>}),
+{ok, _} = chappe_rtpengine_cmd:stop_media(Sess).
 ```
 
 Pick the leg with `party => caller | callee | all` (default is the caller). Provide the audio as `file`, `blob` (raw bytes of the media file), `blob64` (base64) or `db_id`, and loop with `repeat_times`. The reply carries `duration` in ms when rtpengine can determine it:
 
 ```erlang
-{ok, _} = chappe_rtpengine_session:play_media(Sess, #{
+{ok, _} = chappe_rtpengine_cmd:play_media(Sess, #{
     blob => TTSClip,
     party => callee
 }).
@@ -27,10 +27,10 @@ Blobs travel inside the NG message. Over UDP that limits them to roughly one MTU
 For duck-and-replace (an interpreter speaking a translation over one party), silence or block one direction while the clip plays. Silencing keeps the party's packets flowing but replaces the audio with silence; blocking stops the packets entirely:
 
 ```erlang
-{ok, _} = chappe_rtpengine_session:silence_media(Sess, #{party => caller}),
-{ok, _} = chappe_rtpengine_session:play_media(Sess, #{blob => Translation, party => callee}),
+{ok, _} = chappe_rtpengine_cmd:silence_media(Sess, #{party => caller}),
+{ok, _} = chappe_rtpengine_cmd:play_media(Sess, #{blob => Translation, party => callee}),
 %% when the clip is done
-{ok, _} = chappe_rtpengine_session:unsilence_media(Sess, #{party => caller}).
+{ok, _} = chappe_rtpengine_cmd:unsilence_media(Sess, #{party => caller}).
 ```
 
 With no options the whole call is affected (`block_media(Sess)` mutes everything). `party => caller | callee` targets one direction: the party's tag goes out as from-tag together with the `directional` flag, which rtpengine requires for per-party media control. Raw NG keys (`label`, `address`, `to_tag`, `flags`) pass through for finer selection.
@@ -38,8 +38,8 @@ With no options the whole call is affected (`block_media(Sess)` mutes everything
 ## Record the call
 
 ```erlang
-{ok, _} = chappe_rtpengine_session:start_recording(Sess),
-{ok, _} = chappe_rtpengine_session:stop_recording(Sess).
+{ok, _} = chappe_rtpengine_cmd:start_recording(Sess),
+{ok, _} = chappe_rtpengine_cmd:stop_recording(Sess).
 ```
 
 Recording output is configured on the rtpengine side (`--recording-dir`, `--recording-method`).
@@ -48,8 +48,8 @@ Forward the call's PCM to the recording daemon over TCP/TLS, apart from
 recording, for the whole call or one direction:
 
 ```erlang
-{ok, _} = chappe_rtpengine_session:start_forwarding(Sess, #{party => caller}),
-{ok, _} = chappe_rtpengine_session:stop_forwarding(Sess).
+{ok, _} = chappe_rtpengine_cmd:start_forwarding(Sess, #{party => caller}),
+{ok, _} = chappe_rtpengine_cmd:stop_forwarding(Sess).
 ```
 
 The options are `block_media/2`'s.
@@ -57,9 +57,9 @@ The options are `block_media/2`'s.
 ## Send and block DTMF
 
 ```erlang
-{ok, _} = chappe_rtpengine_session:play_dtmf(Sess, #{code => 5, duration => 100}),
-{ok, _} = chappe_rtpengine_session:block_dtmf(Sess),
-{ok, _} = chappe_rtpengine_session:unblock_dtmf(Sess).
+{ok, _} = chappe_rtpengine_cmd:play_dtmf(Sess, #{code => 5, duration => 100}),
+{ok, _} = chappe_rtpengine_cmd:block_dtmf(Sess),
+{ok, _} = chappe_rtpengine_cmd:unblock_dtmf(Sess).
 ```
 
 ## Receive DTMF events

@@ -83,7 +83,8 @@ fork_flow(Config) ->
     ?assertEqual({closed, peer_closed}, event(S, Ref)),
     wait_dead(S),
     wait(fun() -> chappe_audio:streams(Ref) =:= [] end),
-    ?assertEqual(error, chappe_audio_registry:lookup(id(Url))).
+    %% the registry drops the entry on the stream's DOWN, after it died
+    wait(fun() -> chappe_audio_registry:lookup(id(Url)) =:= error end).
 
 %% mod_audio_stream offers no subprotocol: none is selected, and the
 %% events carry no ref when the stream has none.
@@ -308,7 +309,8 @@ owner_death(Config) ->
     ?assertEqual(1001, close_code(C)),
     wait_dead(S),
     wait(fun() -> chappe_audio:streams(Ref) =:= [] end),
-    ?assertEqual(error, chappe_audio_registry:lookup(id(Url))).
+    %% the registry drops the entry on the stream's DOWN, after it died
+    wait(fun() -> chappe_audio_registry:lookup(id(Url)) =:= error end).
 
 %% The stream crashes: the link takes its session down, the fork sees
 %% the connection end, the owner sees the stream go, and the listener

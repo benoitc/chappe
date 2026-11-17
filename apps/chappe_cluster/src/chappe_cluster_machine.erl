@@ -76,10 +76,8 @@
     query_get/2,
     query_keys/4,
     query_leases/1,
-    query_node_leases/2,
     leases/1,
-    epochs/1,
-    counts/1
+    epochs/1
 ]).
 
 -export_type([state/0, lease/0, fence/0, key/0, epoch/0]).
@@ -566,11 +564,6 @@ page(It0, Prefix, Cursor, Left, Acc) ->
 query_leases(S) ->
     leases(S).
 
-%% The leases a node holds, as lease() values.
--spec query_node_leases(node(), state()) -> [lease()].
-query_node_leases(Node, S = #cc{leases = Leases}) ->
-    [view(K, H, S) || K := #held{node = N} = H <- Leases, N =:= Node].
-
 -spec leases(state()) -> [map()].
 leases(S = #cc{leases = Leases}) ->
     lists:sort([
@@ -595,7 +588,3 @@ expire_timer(Node, #cc{nodes = Nodes}) ->
         #{Node := {E, _, C, _, _}} -> {expire, Node, E, C};
         _ -> none
     end.
-
--spec counts(state()) -> #{node() => pos_integer()}.
-counts(#cc{counts = C}) ->
-    C.
