@@ -23,8 +23,8 @@ backend. To use it, read the [media guide](../guides/media.md).
 
 - The SIP processes never touch RTP. RTP flows through rtpengine and through
   the chappe_mix conference processes. The one receiver in chappe_sip is the
-  SIPREC recording server's stream process (`chappe_sip_siprec_rtp`), the
-  media's last stop: it decrypts SRTP itself (`chappe_sip_srtp`, receive
+  SIPREC recording server's stream process (`chappe_audio_rtp`, in chappe_audio), the
+  media's last stop: it decrypts SRTP itself (`chappe_audio_srtp`, receive
   only), and never relays or sends media
   ([decision 0009](../../../../docs/decisions/0009-srtp-in-erlang.md)).
 - The engines are driven by SIP-free leaf apps: `chappe_rtpengine` speaks

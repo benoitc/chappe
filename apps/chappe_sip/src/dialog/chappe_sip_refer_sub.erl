@@ -195,7 +195,7 @@ refresh(Req, Res, #state{max_expires = Max, dialog = D} = S) ->
      || C <- [chappe_sip_dialog:local_contact(D)],
         C =/= undefined
     ],
-    case chappe_sip_dialog_fsm:requested_expires(Req, Default) of
+    case chappe_sip_subscription:requested_expires(Req, Default) of
         0 ->
             ok = answer(Res, 0, Contact),
             report(S#state.frag, {terminated, <<"timeout">>}, S);

@@ -10,7 +10,7 @@
 %% INVITE is a recording session (RFC 7866 6.2: +sip.src in the Contact
 %% and siprec in Require), reads its SDP and metadata
 %% (chappe_sip_siprec_meta), starts one receiver per recorded stream
-%% (chappe_sip_siprec_rtp, G.711) and answers 200 with every stream
+%% (chappe_audio_rtp, G.711) and answers 200 with every stream
 %% recvonly and +sip.srs in its Contact. A stream it cannot take (not
 %% PCMU or PCMA, past max_streams) is answered with port 0 (RFC 3264 6),
 %% and an offer with no stream it can take is refused 488 with a Warning
@@ -20,7 +20,7 @@
 %%
 %% Each receiver takes RTP from the recording client only: from the
 %% address the client's SDP gives for its stream, latched to the first
-%% source seen there (chappe_sip_siprec_rtp). rtp_source => learn latches
+%% source seen there (chappe_audio_rtp). rtp_source => learn latches
 %% to the first source wherever it comes from, for a client behind a NAT
 %% that writes its private address.
 %%
@@ -29,7 +29,7 @@
 %% line it can take (chappe_sip_sdes: AES_CM_128_HMAC_SHA1_80 or _32) is
 %% answered in the same profile with an a=crypto line of its own (RFC 4568
 %% 7.1.2), and its receiver authenticates and decrypts each packet
-%% (chappe_sip_srtp) before it decodes it. A re-INVITE that changes a
+%% (chappe_audio_srtp) before it decodes it. A re-INVITE that changes a
 %% stream's key gives its receiver the new one. A secure stream with no
 %% line it can take (another suite, several keys, a key derivation rate,
 %% UNENCRYPTED_SRTP..., DTLS-SRTP's UDP/TLS/RTP/SAVP) is answered with port
@@ -76,7 +76,14 @@
 %% treat as an ordinary call or refuse; {error, _} on a body that does not
 %% parse or a store that is not there answers 488 or 500, and {error,
 %% no_streams} or {error, srtp} was answered 488.
+%%
+%% The receivers run under the chappe_audio application, an optional
+%% dependency of chappe_sip: without it running, every stream is refused,
+%% 488 as above, the session logs why once, and serve/3 returns {error,
+%% no_audio}.
 -module(chappe_sip_siprec_srs).
+
+-include_lib("kernel/include/logger.hrl").
 
 -export([serve/3, run/1, is_recording_session/1, store/1]).
 
@@ -152,9 +159,9 @@ contact_params(C) ->
     end.
 
 %% The store a stream is written to: default is the siprec_store setting
-%% (chappe_audio_store). chappe_sip calls it through this one seam
-%% (chappe_sip_siprec_rtp opens, writes and closes), so it does not depend
-%% on the chappe_audio app and an app may give its own module.
+%% (chappe_audio_store). The stream's receiver (chappe_audio_rtp) opens,
+%% writes and closes it through this one seam, so an app may give its own
+%% module.
 -spec store(default | module()) -> module().
 store(default) -> chappe_sip_config:get(siprec_store);
 store(Mod) when is_atom(Mod) -> Mod.
@@ -228,11 +235,24 @@ answer(Req, Res, Sdp, Doc, Sink, Opts0) ->
     CallRef = call_ref(Req, Doc),
     Ip = maps:get(ip, Opts, {127, 0, 0, 1}),
     Adv = advertise(Opts, Ip),
+    {_Sess, Media} = chappe_sip_sdp:sections(Sdp),
+    %% the receivers' supervisor runs only with the chappe_audio application
+    case whereis(chappe_audio_rtp_sup) of
+        undefined ->
+            ?LOG_WARNING(#{
+                what => siprec_srs_chappe_audio_not_running, call_ref => CallRef
+            }),
+            _ = refuse(Res, Adv, Media),
+            {error, no_audio};
+        _ ->
+            take(Req, Res, Sdp, Doc, Sink, Opts, {CallRef, Ip, Adv, Media})
+    end.
+
+take(Req, Res, Sdp, Doc, Sink, Opts, {CallRef, Ip, Adv, Media}) ->
     Senders = maps:from_list([
         {L, S}
      || #{label := L} = S <- chappe_sip_siprec_meta:senders(Doc)
     ]),
-    {_Sess, Media} = chappe_sip_sdp:sections(Sdp),
     Remotes = remotes(Sdp, Opts),
     Max = maps:get(max_streams, Opts, 4),
     Taken = lists:map(
@@ -298,7 +318,7 @@ answer_sdp(Adv, Ver, Taken) ->
 answer_streams(Req, Res, Adv, Taken, Streams, CallRef, Doc, Opts) ->
     Answer = answer_sdp(Adv, 1, Taken),
     case
-        chappe_sip:create_uas(Req, Res, #{
+        chappe_sip_dialog:create_uas(Req, Res, #{
             local_sdp => Answer,
             contact_params => <<";+sip.srs">>,
             headers => maps:get(headers, Opts, []),
@@ -319,7 +339,7 @@ answer_streams(Req, Res, Adv, Taken, Streams, CallRef, Doc, Opts) ->
                 streams => Streams
             }};
         {error, _} = E ->
-            _ = [chappe_sip_siprec_rtp:stop(P) || #{pid := P} <- Streams],
+            _ = [chappe_audio_rtp:stop(P) || #{pid := P} <- Streams],
             E
     end.
 
@@ -398,7 +418,7 @@ rekey_one({Lines, #{index := I, srtp := Hash, pid := Pid} = S} = T, Media) when
                 New ->
                     case srtp_ctx(C) of
                         {ok, Ctx} ->
-                            ok = chappe_sip_siprec_rtp:rekey(Pid, Ctx),
+                            ok = chappe_audio_rtp:rekey(Pid, Ctx),
                             {crypto_line(Lines, C), S#{srtp := New}};
                         error ->
                             T
@@ -425,7 +445,7 @@ key_hash(#{key := K, salt := S}) ->
 
 srtp_ctx(C) ->
     case
-        chappe_sip_srtp:new(
+        chappe_audio_srtp:new(
             maps:with([suite, key, salt, mki, lifetime, window], C)
         )
     of
@@ -585,11 +605,13 @@ receiver(Label, Laws, Senders, CallRef, Sink0, Ip, Opts, M, {Proto, Srtp}) ->
         max_queue => maps:get(max_queue, Opts, 500),
         remote => maps:get(remote, Opts),
         srtp => srtp_of(Srtp),
-        ports => maps:get(rtp_ports, Opts)
+        ports => maps:get(rtp_ports, Opts),
+        %% the tag a sink process has always matched
+        tag => chappe_sip_siprec_rtp
     },
-    case chappe_sip_siprec_rtp:start(Args) of
+    case chappe_audio:rtp_receiver(Args) of
         {ok, Pid} ->
-            Port = chappe_sip_siprec_rtp:port(Pid),
+            Port = chappe_audio_rtp:port(Pid),
             Lines =
                 [
                     <<"m=audio ", (integer_to_binary(Port))/binary, " ",

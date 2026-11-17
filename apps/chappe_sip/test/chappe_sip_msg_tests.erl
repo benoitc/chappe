@@ -289,3 +289,18 @@ option_tags_test() ->
     {ok, M} = chappe_sip_msg:parse(opts(<<"Require: 100REL, Timer\r\nRequire: siprec\r\n">>)),
     ?assertEqual([<<"100rel">>, <<"timer">>, <<"siprec">>],
                  chappe_sip_msg:option_tags(<<"require">>, M)).
+
+%% the drachtio-parity accessors of a request
+req_numbers_test() ->
+    Raw = <<"INVITE sip:1000@example.com SIP/2.0\r\n"
+            "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKn\r\n"
+            "From: \"Alice\" <sip:alice@example.com>;tag=a\r\n"
+            "To: <sip:1000@example.com>\r\n"
+            "Call-ID: n@x\r\nCSeq: 1 INVITE\r\nContent-Length: 0\r\n\r\n">>,
+    {ok, Msg} = chappe_sip_msg:parse(Raw),
+    Req = chappe_sip_req:new(Msg, undefined, #{}),
+    ?assertEqual(<<"alice">>, chappe_sip_req:calling_number(Req)),
+    ?assertEqual(<<"Alice">>, chappe_sip_req:calling_name(Req)),
+    ?assertEqual(<<"1000">>, chappe_sip_req:called_number(Req)),
+    Pai = chappe_sip_msg:prepend(<<"P-Asserted-Identity">>, <<"<sip:+15550100@example.com>">>, Msg),
+    ?assertEqual(<<"+15550100">>, chappe_sip_req:calling_number(chappe_sip_req:new(Pai, undefined, #{}))).

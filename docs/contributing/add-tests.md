@@ -83,7 +83,7 @@ make cover MIN_COVERAGE=80
 - A fake reproduces what the tests need, not the whole protocol. When a case
   depends on a behaviour the fake does not have, extend the fake in its own
   module and say what real behaviour it models in its header comment.
-- `doc_snippets_tests` (in `apps/chappe_sip/test/`) checks the code blocks in
+- `doc_snippets_tests` (in the umbrella `test/`) checks the code blocks in
   the docs: see [write-a-guide.md](write-a-guide.md).
 
 ## Related

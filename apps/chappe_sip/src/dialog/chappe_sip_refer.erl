@@ -27,7 +27,7 @@
 
 -export([check/1, check/2, accept/3, accept/4]).
 -export([progress/2, progress/3, final/2, final/3]).
--export([target/1, dialog/1, referred_by/1, target_dialog/1, subscription/1]).
+-export([target/1, referred_by/1, target_dialog/1, subscription/1]).
 -export([send/3, handle_notify/2, notify_handler/0]).
 -export([route/3]).
 
@@ -300,11 +300,6 @@ emit(#refer{pid = Pid}, Frag, State) ->
 -spec target(refer()) -> target().
 target(#refer{target = T}) -> T.
 
-%% The dialog the subscription lives in: the one the REFER came in, or the
-%% one its 200 formed. undefined for an out-of-dialog REFER without one.
--spec dialog(refer()) -> chappe_sip_dialog:dialog() | undefined.
-dialog(#refer{dialog = D}) -> D.
-
 %% The process of the REFER's implicit subscription, undefined when there
 %% is none (Refer-Sub: false). It ends once the final NOTIFY is out (or
 %% cannot go out any more), so monitoring it tells when the referrer has
@@ -332,7 +327,7 @@ target_dialog(Req) ->
         V ->
             case chappe_sip_hdr:target_dialog(V) of
                 {ok, #{call_id := C, local_tag := L, remote_tag := R}} ->
-                    chappe_sip:find_dialog(C, L, R);
+                    chappe_sip_dialog:find(C, L, R);
                 {error, _} = E ->
                     E
             end
@@ -383,7 +378,7 @@ send_ood(Uri, Target, Opts) ->
         from => <<(from_base(Opts))/binary, ";tag=", Tag/binary>>,
         headers => refer_headers(Target, Opts) ++ tdialog(Opts)
     },
-    case chappe_sip:request(Uri, UacOpts) of
+    case chappe_sip_uac:start(Uri, UacOpts) of
         {ok, Ref} ->
             Result = chappe_sip_uac:await_response(
                 Ref, maps:get(timeout, Opts, 32000)

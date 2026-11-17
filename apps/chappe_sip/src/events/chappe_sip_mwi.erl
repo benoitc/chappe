@@ -181,9 +181,13 @@ cap(B) -> min(binary_to_integer(B), ?MAX).
 %%   expires (3600), min_expires (60)
 -spec serve(#{summary := fun(), _ => _}) -> ok.
 serve(#{summary := Summary} = Opts) when is_function(Summary, 1) ->
-    chappe_sip:event_package(?PKG, fun(Req, Res) ->
-        subscribe(Req, Res, Opts)
-    end).
+    chappe_sip_engine:handle(
+        <<"SUBSCRIBE">>,
+        fun(Req, Res) ->
+            subscribe(Req, Res, Opts)
+        end,
+        #{package => ?PKG}
+    ).
 
 %% Account's summary changed: its subscribers get it, on every node.
 -spec update(binary(), summary()) -> ok.
@@ -246,7 +250,7 @@ accept(Req, Res, Account, #{summary := Summary} = Opts) ->
                 expires => maps:get(expires, Opts, 3600),
                 min_expires => maps:get(min_expires, Opts, 60)
             },
-            case chappe_sip:create_uas(Req, Res, UasOpts) of
+            case chappe_sip_dialog:create_uas(Req, Res, UasOpts) of
                 {ok, Dialog} ->
                     %% RFC 3842 3.8: the current summary at once
                     _ =
@@ -255,7 +259,7 @@ accept(Req, Res, Account, #{summary := Summary} = Opts) ->
                                 ?N, Account, Summary(Account)
                             ),
                     Fetch =
-                        chappe_sip_dialog_fsm:requested_expires(Req, 1) =:= 0,
+                        chappe_sip_subscription:requested_expires(Req, 1) =:= 0,
                     chappe_sip_notifier:add(?N, Dialog, Account, active, Fetch);
                 {error, _} ->
                     ok

@@ -23,7 +23,7 @@ names with a leading `_` carry the app prefix (`_proxy_rules` is
 |---|---|---|---|---|---|
 | Answering and placing calls | chappe_sip `src/api`, `src/dialog`, `src/uac` | `chappe_sip`, `chappe_sip_dialog`, `chappe_sip_uac` | `_dialog_fsm`, `_uac_fsm`, `_dialog_index`, `_session_timer` | `core`, `core_uac`, `uas`, `uac`, `indialog`, `dialog_ops`, `handler`, `session_timer`, `prack` | `make interop-conformance` |
 | Inbound request pipeline | chappe_sip `src/engine`, `src/conn` | `chappe_sip_engine` (`handle_event/2`, `dispatch/4`), `chappe_sip_request_worker` | `_middleware`, `_guard`, `_request_sup` | `pipeline` (fake engine), `guard`, `ood` | none |
-| B2BUA | chappe_sip `src/api/chappe_sip_b2b*` | `chappe_sip_b2b` | `_b2b_relay`, `_b2b_fork`, `_b2b_early`, `_b2b_media`, `_b2b_replace`, `_b2b_requests`, `_b2b_async`, `_b2b_hdr` | `b2bua`, `b2b_relay`, `forked_2xx`, `webrtc_gateway` | `make interop-sbc` |
+| B2BUA | chappe_sip `src/b2b/chappe_sip_b2b*` | `chappe_sip_b2b` | `_b2b_relay`, `_b2b_fork`, `_b2b_early`, `_b2b_media`, `_b2b_replace`, `_b2b_requests`, `_b2b_async`, `_b2b_hdr` | `b2bua`, `b2b_relay`, `forked_2xx`, `webrtc_gateway` | `make interop-sbc` |
 | Proxy | chappe_sip `src/proxy` | `chappe_sip_proxy` | `_proxy_rules`, `_proxy_dialog`, `_route` | `proxy_conf`, `proxy_forking`, `proxy_record_route`, `proxy_media` | `make interop-conformance` |
 | Registrar and location | chappe_sip `src/api/chappe_sip_registrar.erl`, `src/conn/chappe_sip_registry.erl` | `chappe_sip:registrar/1` | `_registry`, `_registry_keeper`, `_qualify` (`src/peers`), `_digest`, `_digest_nc` | `registrar`, `digest`, `digest_tests` | `make interop-conformance` |
 | Registering to a carrier | chappe_sip `src/api/chappe_sip_regc.erl` | `chappe_sip:register_client/2` | `_regc_sup` | `regc` | none |
@@ -31,7 +31,7 @@ names with a leading `_` carry the app prefix (`_proxy_rules` is
 | Presence, MWI, subscriptions | chappe_sip `src/api` (packages), `src/dialog` (subscriber, refer) | `chappe_sip:event_package/2`, `chappe_sip:subscribe_to/3` | `_notifier`, `_subscriber`, `_notify_router`, `_presence`, `_mwi`, `_pidf` | `subscribe`, `subscriber`, `presence`, `refer` | none |
 | Peers, OPTIONS, failover | chappe_sip `src/peers` | `chappe_sip:peer_add/2` | `_peer`, `_peers`, `_peer_sup` | `peers` | `make interop-sbc` |
 | Media facade | chappe_sip `src/media` | `chappe_sip_media` | `_media_rtpengine`, `_media_mix`, `_media_mix_sdp`, `_media_sup` | `media` (fake `chappe_sip_test_rtpe`), `proxy_media` | `make interop` |
-| Call records and capture | chappe_sip `src/api/chappe_sip_cdr.erl`, `src/engine/chappe_sip_hep.erl` | `chappe_sip_cdr:subscribe/1` | `_hep` | `cdr`, `hep`, `hep_tests` | none |
+| Call records and capture | chappe_sip `src/core/chappe_sip_cdr.erl`, `src/engine/chappe_sip_hep.erl` | `chappe_sip_cdr:subscribe/1` | `_hep` | `cdr`, `hep`, `hep_tests` | none |
 | Conference focus | chappe_sip `src/api` | `chappe_sip_focus` | `_confinfo` | `focus`, `confinfo_tests` | none |
 | Metrics | chappe_sip `src/chappe_sip_metrics.erl` | `chappe_sip_metrics` | none | `metrics_tests` | none |
 | The C engine | chappe_sip `c_src`, `src/engine/chappe_sip_nif.erl` | [engine.md](../apps/chappe_sip/docs/design/engine.md) | `c_src/chappe_sip_engine_nif.c` | `engine_lifecycle`, `engine_smoke`, `ops` | `make asan` |
@@ -39,7 +39,7 @@ names with a leading `_` carry the app prefix (`_proxy_rules` is
 | Conference mixing | `apps/chappe_mix/src` | `chappe_mix` | `_conf`, `_room`, `_leg`, `_session`, `_dsp`, `_jbuf`, `_rtp`, `_rtcp`, `_g711` | `chappe_mix`, `rfc`, `live`, `ref` | `make interop-mix`, `make interop-ref` |
 | FreeSWITCH control | `apps/chappe_esl/src` | `chappe_esl`, `chappe_esl_call` | `_conn`, `_exec`, `_inbound`, `_listener`, `_node`, `_nodes`, `_parser` | `conn`, `call`, `outbound`, `nodes`, `live` | `make interop-esl` |
 | IVR, bridging, conferences | `apps/chappe_mrf/src` | `chappe_mrf`, `chappe_mrf_conf` | `_endpoint`, `_esl`, `_registry`, `_conf_native`, `_conf_fs`, `_lib` | `chappe_mrf` (fake `chappe_mrf_fake`), `live` | `make interop-mrf` |
-| Compliance | `apps/*/docs/compliance` | `requirements.tsv` | `apps/chappe_sip/test/chappe_sip_compliance.erl`, `scripts/compliance.escript` | every suite (`%% req:` lines) | `make compliance` |
+| Compliance | `apps/*/docs/compliance` | `requirements.tsv` | `scripts/compliance/chappe_sip_compliance.erl`, `scripts/compliance.escript` | every suite (`%% req:` lines) | `make compliance` |
 | Configuration | see [below](#where-configuration-and-startup-live) | `chappe_sip_config:get/1` | none | each app's suites | none |
 
 Test fakes, one per remote end:

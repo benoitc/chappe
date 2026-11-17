@@ -107,8 +107,8 @@ record(Config, Mode) ->
     {MA, PA} = media_socket(),
     {MB, PB} = media_socket(),
     %% each party's own SRTP key (srtp mode)
-    KA = chappe_sip_test_srtp:master(),
-    KB = chappe_sip_test_srtp:master(),
+    KA = chappe_audio_test_srtp:master(),
+    KB = chappe_audio_test_srtp:master(),
     %% the callee: answers with its media address, then waits
     ?UA:peer(CP, fun(Sock) ->
         {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
@@ -162,8 +162,8 @@ record(Config, Mode) ->
     ?assert(N1 > 0 andalso N2 > 0),
     ?assertEqual([LA], L1 -- [0]),
     ?assertEqual([LB], L2 -- [0]),
-    ?assertMatch(#{failed := 0, replayed := 0}, chappe_sip_siprec_rtp:stats(S1)),
-    ?assertMatch(#{failed := 0, replayed := 0}, chappe_sip_siprec_rtp:stats(S2)),
+    ?assertMatch(#{failed := 0, replayed := 0}, chappe_audio_rtp:stats(S1)),
+    ?assertMatch(#{failed := 0, replayed := 0}, chappe_audio_rtp:stats(S2)),
     %% and the call itself carries both ways, each party hearing the other
     AAnswer = got(a_answer_sdp),
     ct:log("A's answer:~n~s~nB's offer:~n~s", [AAnswer, BOffer]),
@@ -192,7 +192,7 @@ sdp(Ip, Port, srtp, Key) ->
       "\r\nt=0 0\r\nm=audio ", (integer_to_binary(Port))/binary,
       " RTP/SAVP 0\r\na=rtpmap:0 PCMU/8000\r\na=sendrecv\r\n"
       "a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:",
-      (chappe_sip_test_srtp:inline(Key))/binary, "\r\n">>.
+      (chappe_audio_test_srtp:inline(Key))/binary, "\r\n">>.
 
 %% the anchor as it is: an SRTP caller is answered SRTP by itself
 b2b_opts(_Mode) ->
@@ -209,8 +209,8 @@ profile(Sdp) ->
 sender(plain, _Key) ->
     fun(Rtp) -> Rtp end;
 sender(srtp, Key) ->
-    Snd = chappe_sip_test_srtp:sender(Key),
-    fun(Rtp) -> chappe_sip_test_srtp:protect(Rtp, 0, Snd) end.
+    Snd = chappe_audio_test_srtp:sender(Key),
+    fun(Rtp) -> chappe_audio_test_srtp:protect(Rtp, 0, Snd) end.
 
 %% what a party does with what it receives: nothing, or decrypt it with
 %% the key rtpengine gave it in its SDP
@@ -219,11 +219,11 @@ receiver(plain, _Sdp) ->
 receiver(srtp, Sdp) ->
     {_, [[_M | Lines] | _]} = chappe_sip_sdp:sections(Sdp),
     {ok, C} = chappe_sip_sdes:select(Lines),
-    {ok, Ctx0} = chappe_sip_srtp:new(maps:with([suite, key, salt, mki, lifetime], C)),
+    {ok, Ctx0} = chappe_audio_srtp:new(maps:with([suite, key, salt, mki, lifetime], C)),
     Ref = make_ref(),
     put(Ref, Ctx0),
     fun(Pkt) ->
-        case chappe_sip_srtp:unprotect(Pkt, get(Ref)) of
+        case chappe_audio_srtp:unprotect(Pkt, get(Ref)) of
             {ok, Rtp, Ctx} -> put(Ref, Ctx), {ok, Rtp};
             {error, _} = E -> E
         end
@@ -254,7 +254,7 @@ levels(Stream, N, Acc) ->
     end.
 
 level(Byte) ->
-    <<S:16/little-signed>> = chappe_sip_siprec_rtp:decode(ulaw, <<Byte>>),
+    <<S:16/little-signed>> = chappe_audio_pcm:decode(ulaw, <<Byte>>),
     S.
 
 %% the distinct samples a party heard, decrypted as it must be
@@ -266,7 +266,7 @@ heard(Sock, Recv, Acc) ->
         {udp, Sock, _, _, Pkt} ->
             case Recv(Pkt) of
                 {ok, <<2:2, _:6, _:1, 0:7, _:80, Payload/binary>>} ->
-                    Pcm = chappe_sip_siprec_rtp:decode(ulaw, Payload),
+                    Pcm = chappe_audio_pcm:decode(ulaw, Payload),
                     heard(Sock, Recv, lists:umerge(Acc, lists:usort(
                         [S || <<S:16/little-signed>> <= Pcm])));
                 _ ->

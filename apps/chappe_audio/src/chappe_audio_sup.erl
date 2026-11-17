@@ -4,6 +4,9 @@
 %% The supervision tree, rest_for_one so that what depends on a process
 %% restarts with it:
 %%
+%% - first, the supervisor of the RTP receivers (chappe_audio_rtp), which
+%%   needs none of the others to start: a crash of the store or the
+%%   registry never drops a live SIPREC stream;
 %% - chappe_audio's own pg scope, `chappe_audio' (chappe_audio_pg), so
 %%   what depends on it restarts with it;
 %% - the registry, which owns the table of streams waiting for their
@@ -26,6 +29,7 @@ start_link() ->
 init(top) ->
     Children =
         [
+            sup(chappe_audio_rtp_sup, chappe_audio_rtp),
             #{
                 id => chappe_audio_pg,
                 start => {pg, start_link, [chappe_audio_pg:scope()]}

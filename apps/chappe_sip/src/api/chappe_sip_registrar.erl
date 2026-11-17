@@ -90,7 +90,7 @@ do_register(Opts0, Req, Res) ->
     %% TCP/TLS and UDP the flow it came on is kept for outbound bindings
     %% (RFC 5626 6)
     Meta = chappe_sip_req:meta(Req),
-    Received = chappe_sip_route:received_flow(Meta),
+    Received = chappe_sip_flow:received_flow(Meta),
     Opts1 = Opts0#{transport => maps:get(transport, Meta, undefined)},
     Opts =
         case maps:get(flow, Meta, undefined) of

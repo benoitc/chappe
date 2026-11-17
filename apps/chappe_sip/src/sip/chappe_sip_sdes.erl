@@ -2,12 +2,12 @@
 %% SPDX-License-Identifier: Apache-2.0
 
 %% @doc SDP security descriptions for SRTP (RFC 4568): the a=crypto lines
-%% of an offered media section, read for the suites chappe_sip_srtp
+%% of an offered media section, read for the suites chappe_audio_srtp
 %% decrypts, and the line that answers the one taken.
 %%
 %% select/1 takes a media section's lines and gives the first a=crypto
 %% line it can take (RFC 4568 5.1.2: the first valid, supported one), as
-%% the master key and salt chappe_sip_srtp:new/1 takes. What it takes:
+%% the master key and salt chappe_audio_srtp:new/1 takes. What it takes:
 %%   - suites AES_CM_128_HMAC_SHA1_80 and AES_CM_128_HMAC_SHA1_32 (6.2.1,
 %%     6.2.2), the inline key method, a key and salt of 30 octets (6.1);
 %%   - one master key, with or without a lifetime (decimal or 2^n, at most
@@ -29,13 +29,19 @@
 %% from the offer's); chappe receives only, so it never uses it.
 -module(chappe_sip_sdes).
 
--export([select/1, parse/1, answer/1]).
+-export([select/1, answer/1]).
+-ifdef(TEST).
+-export([parse/1]).
+-endif.
 
--export_type([crypto/0]).
+-export_type([crypto/0, suite/0]).
+
+%% the SRTP suites a crypto line can name that chappe decrypts
+-type suite() :: aes_cm_128_hmac_sha1_80 | aes_cm_128_hmac_sha1_32.
 
 -type crypto() :: #{
     tag := binary(),
-    suite := chappe_sip_srtp:suite(),
+    suite := suite(),
     key := binary(),
     salt := binary(),
     mki => binary(),

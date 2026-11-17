@@ -25,10 +25,10 @@
 forward_indialog(Req, Res) ->
     ServerTxn = chappe_sip_req:txn(Req),
     Msg0 = chappe_sip_req:msg(Req),
-    Edge = chappe_sip_route:edge_flow(Msg0),
+    Edge = chappe_sip_flow:edge_flow(Msg0),
     {NextHop, Flows, Msg1a} = pop_route(Msg0),
     Msg1 = edge_record_route(Edge, Msg0, Msg1a),
-    Arrived = chappe_sip_route:arrival_flow(chappe_sip_req:meta(Req)),
+    Arrived = chappe_sip_flow:arrival_flow(chappe_sip_req:meta(Req)),
     Route = indialog_route(Arrived, NextHop, Flows),
     IsInvite = chappe_sip_msg:method(Msg1) =:= <<"INVITE">>,
     IsInvite andalso chappe_sip_engine:mark_proxied(ServerTxn),

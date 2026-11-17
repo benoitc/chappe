@@ -186,7 +186,7 @@ expires_step(Req, Opts, Acc) ->
     Default = maps:get(default_expires, Opts, 3600),
     Min = maps:get(min_expires, Opts, 60),
     Max = maps:get(max_expires, Opts, 86400),
-    case chappe_sip_dialog_fsm:requested_expires(Req, Default) of
+    case chappe_sip_subscription:requested_expires(Req, Default) of
         N when N > 0, N < Min ->
             {reject, 423, <<"Interval Too Brief">>, [
                 {<<"Min-Expires">>, integer_to_binary(Min)}

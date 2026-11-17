@@ -117,7 +117,7 @@ itself, so it holds both dialogs and can change anything between them
 relay loop (`chappe_sip_b2b:relay/1,2`, or `relay_async/2` in a process of
 its own) carries re-INVITEs, UPDATEs and BYEs from one leg to the other.
 
-Where it lives: `apps/chappe_sip/src/api/chappe_sip_b2b*.erl`. Guide:
+Where it lives: `apps/chappe_sip/src/b2b/chappe_sip_b2b*.erl`. Guide:
 [B2BUA](../apps/chappe_sip/docs/guides/b2bua.md).
 
 ### Proxy
@@ -334,7 +334,7 @@ claims and the last CT results into the app's `docs/compliance.md`, and
 `GATE=demo` fails on a required row that is not passing.
 
 Where it lives: `apps/*/docs/compliance/`, `scripts/compliance.escript`,
-`apps/chappe_sip/test/chappe_sip_compliance.erl`. Workflow:
+`scripts/compliance/chappe_sip_compliance.erl`. Workflow:
 [compliance](contributing/compliance.md).
 
 ## Read this next

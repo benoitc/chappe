@@ -6,7 +6,9 @@
 -behaviour(application).
 
 -export([start/2, prep_stop/1, stop/1]).
+-ifdef(TEST).
 -export([insecure_cookie/1]).
+-endif.
 
 start(_Type, _Args) ->
     case insecure_cookie(erlang:get_cookie()) of
@@ -20,7 +22,7 @@ start(_Type, _Args) ->
             %% configured secret that is too short stops the boot
             case
                 {
-                    chappe_sip_route:ensure_secret(),
+                    chappe_sip_flow:ensure_secret(),
                     chappe_sip_config:check_cluster()
                 }
             of

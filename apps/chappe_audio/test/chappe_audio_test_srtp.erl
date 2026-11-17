@@ -2,11 +2,11 @@
 %% SPDX-License-Identifier: Apache-2.0
 
 %% The sending side of SRTP and SRTCP (RFC 3711), for tests only: chappe
-%% never sends SRTP. Written apart from chappe_sip_srtp on purpose (AES in
+%% never sends SRTP. Written apart from chappe_audio_srtp on purpose (AES in
 %% ECB mode block by block, the HMAC truncated by hand), so a test that
 %% decrypts what this encrypts checks two readings of the RFC against each
 %% other; the RFC 3711 Appendix B vectors anchor both.
--module(chappe_sip_test_srtp).
+-module(chappe_audio_test_srtp).
 
 -export([sender/1, sender/2, protect/3, protect_rtcp/3, master/0, inline/1]).
 

@@ -33,7 +33,7 @@
 -export([contact/1, contact_params/0, headers/1, privacy_requested/1]).
 -export([departure/1, referred/1, media/2, leg_status/1, refer/4]).
 -export([check_subscribe/1, subscribe/4]).
--export([new/1, update/2, handle_info/2, stop/1, subscriptions/1]).
+-export([new/1, update/2, handle_info/2, stop/1]).
 
 -export_type([focus/0]).
 
@@ -422,7 +422,7 @@ subscribe(Req, Res, Owner, #{contact := Contact} = Opts) ->
                 min_expires => maps:get(min_expires, Opts, 0),
                 headers => headers(Contact) ++ maps:get(headers, Opts, [])
             },
-            case chappe_sip:create_uas(Req, Res, UasOpts) of
+            case chappe_sip_dialog:create_uas(Req, Res, UasOpts) of
                 {ok, Dialog} ->
                     Owner !
                         {chappe_sip_focus, subscribed, Dialog,
@@ -541,11 +541,6 @@ stop(#focus{subs = Subs}) ->
         end,
         Subs
     ).
-
-%% The subscription dialogs being served.
--spec subscriptions(focus()) -> [chappe_sip_dialog:dialog()].
-subscriptions(#focus{subs = Subs}) ->
-    [D || #{dialog := D, ending := false} <- maps:values(Subs)].
 
 %% ---- internal: subscription events ----
 

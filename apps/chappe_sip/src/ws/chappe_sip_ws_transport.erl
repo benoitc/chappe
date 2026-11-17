@@ -48,7 +48,6 @@
 %% outbound-to-WS: originate a request/ACK to a registered WS UA over a flow
 -export([send_request/3, send_stateless/2, cancel/1, cancel/2]).
 %% the WS frame type a SIP message goes out in (RFC 7118 4.2)
--export([frame/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -record(s, {

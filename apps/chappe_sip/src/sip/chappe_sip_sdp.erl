@@ -14,6 +14,7 @@
 -export([parse/1, address/1, words/1]).
 -export([origin/1, same_version/2, on_hold/1, webrtc/1, connection/1]).
 -export([sections/1, join/2, refused/1]).
+-export([hold/2, next_version/1]).
 
 -export_type([media/0]).
 
@@ -241,4 +242,100 @@ port(Bin) ->
     case string:to_integer(Bin) of
         {N, _} when is_integer(N), N >= 0, N =< 65535 -> N;
         _ -> 0
+    end.
+
+%% RFC 3261 14.1 (RFC 3264 8): a new offer built from our last session
+%% description carries the next o= session version
+-spec next_version(binary()) -> binary().
+next_version(Sdp) ->
+    case
+        re:run(Sdp, "^(o=\\S+ \\S+ )([0-9]+)", [
+            multiline, {capture, [1, 2], index}
+        ])
+    of
+        {match, [{S, L}, {VS, VL}]} ->
+            V = binary_to_integer(binary:part(Sdp, VS, VL)),
+            <<
+                (binary:part(Sdp, 0, S))/binary,
+                (binary:part(Sdp, S, L))/binary,
+                (integer_to_binary(V + 1))/binary,
+                (binary:part(Sdp, VS + VL, byte_size(Sdp) - VS - VL))/binary
+            >>;
+        nomatch ->
+            Sdp
+    end.
+
+%% RFC 3264 8.4: hold moves every live stream to sendonly
+%% (or inactive when it was recvonly); unhold reverses that. Each m= section
+%% gets its own direction attribute, so a session-level one is folded into
+%% them. A rejected stream (port 0) is left alone.
+-spec hold(binary(), boolean()) -> binary().
+hold(Sdp, Hold) ->
+    Eol =
+        case binary:match(Sdp, <<"\r\n">>) of
+            nomatch -> <<"\n">>;
+            _ -> <<"\r\n">>
+        end,
+    {Session, Medias} = sections(Sdp),
+    SessDir = sdp_direction(Session, <<"sendrecv">>),
+    Out =
+        case Medias of
+            [] ->
+                set_direction(Session, hold_direction(SessDir, Hold));
+            _ ->
+                [L || L <- Session, not is_direction(L)] ++
+                    lists:append([
+                        media_hold(M, SessDir, Hold)
+                     || M <- Medias
+                    ])
+        end,
+    iolist_to_binary([[L, Eol] || L <- Out]).
+
+media_hold([M | _] = Section, SessDir, Hold) ->
+    case binary:split(M, <<" ">>, [global]) of
+        [_, <<"0">> | _] ->
+            Section;
+        _ ->
+            Dir = sdp_direction(Section, SessDir),
+            set_direction(Section, hold_direction(Dir, Hold))
+    end.
+
+hold_direction(<<"sendrecv">>, true) -> <<"sendonly">>;
+hold_direction(<<"recvonly">>, true) -> <<"inactive">>;
+hold_direction(<<"sendonly">>, false) -> <<"sendrecv">>;
+hold_direction(<<"inactive">>, false) -> <<"recvonly">>;
+hold_direction(Dir, _Hold) -> Dir.
+
+sdp_direction(Lines, Default) ->
+    case [D || <<"a=", D/binary>> <- Lines, is_direction(<<"a=", D/binary>>)] of
+        [] -> Default;
+        Dirs -> lists:last(Dirs)
+    end.
+
+is_direction(<<"a=", D/binary>>) ->
+    lists:member(D, [
+        <<"sendrecv">>, <<"sendonly">>, <<"recvonly">>, <<"inactive">>
+    ]);
+is_direction(_) ->
+    false.
+
+%% replace the section's direction attribute in place, or add one
+set_direction(Lines, Dir) ->
+    Attr = <<"a=", Dir/binary>>,
+    case lists:any(fun is_direction/1, Lines) of
+        true ->
+            {Out, _} = lists:mapfoldl(
+                fun(L, Done) ->
+                    case is_direction(L) of
+                        true when not Done -> {[Attr], true};
+                        true -> {[], Done};
+                        false -> {[L], Done}
+                    end
+                end,
+                false,
+                Lines
+            ),
+            lists:append(Out);
+        false ->
+            Lines ++ [Attr]
     end.

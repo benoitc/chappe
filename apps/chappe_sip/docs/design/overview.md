@@ -106,7 +106,7 @@ Why the order matters:
 | `uac/` | Outbound transactions | `chappe_sip_uac`, `chappe_sip_uac_fsm`, `chappe_sip_uac_sup` |
 | `proxy/` | The stateful proxy and Record-Route | `chappe_sip_proxy`, `chappe_sip_proxy_rules`, `chappe_sip_proxy_dialog`, `chappe_sip_route` |
 | `ws/` | SIP over WebSocket | `chappe_sip_ws*` |
-| `media/` | The media facade and its backends, and receive-only SRTP | `chappe_sip_media*`, `chappe_sip_srtp` |
+| `media/` | The media facade and its backends | `chappe_sip_media*` |
 | `siprec/` | SIPREC: the recording client, its metadata, the recording server side | `chappe_sip_siprec*` |
 | `peers/` | OPTIONS-monitored peers and the registrar's qualify | `chappe_sip_peers`, `chappe_sip_peer`, `chappe_sip_peers_sup`, `chappe_sip_peer_sup`, `chappe_sip_qualify` |
 | `api/` | The facade, extension behaviours, feature subsystems, event packages | see below |
@@ -141,7 +141,7 @@ The B2BUA subsystem is described in [b2bua](b2bua.md), the media facade in
 ## Entry points
 
 **Boot.** `chappe_sip_app:start/2` refuses the placeholder distribution
-cookie, seeds the route secret (`chappe_sip_route:ensure_secret/0`), sets up
+cookie, seeds the route secret (`chappe_sip_flow:ensure_secret/0`), sets up
 metrics and starts `chappe_sip_sup`. Nothing listens yet.
 `chappe_sip:start/1` then configures HEP, starts the WS listener if asked,
 configures media, starts the native engine (`chappe_sip_engine:start/1`),

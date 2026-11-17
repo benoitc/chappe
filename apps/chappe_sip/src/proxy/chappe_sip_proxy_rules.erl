@@ -8,7 +8,7 @@
 -module(chappe_sip_proxy_rules).
 
 -export([best_response/1, loop_hash/1, looped/1, new_branch/1, own_hops/1]).
--export([retarget/2, is_own_address/1, is_loose/1]).
+-export([retarget/2, is_own_address/1]).
 -export([record_routes/1, rr_contact/2, next_hop/3]).
 
 %% the reasons 4xx preferred by 16.7 step 6: they let the client retry
@@ -307,7 +307,7 @@ next_hop({ws, _} = D, _Via, Msg) ->
     {D, Msg};
 next_hop({flow, _Uri, Flow}, _Via, Msg) ->
     %% RFC 5626 5.3: a binding's flow is the way to reach it
-    {chappe_sip_route:flow_route(Flow), Msg};
+    {chappe_sip_flow:flow_route(Flow), Msg};
 next_hop({route, _Uri, RouteSet}, Via, Msg) ->
     %% RFC 3261 16.6 step 6: a route set toward the target goes ahead of
     %% the Route headers the request still carries

@@ -16,8 +16,7 @@
     prack_res/2,
     finished/1,
     mark_final/1,
-    req_txn/1,
-    final_ref/1
+    req_txn/1
 ]).
 
 -record(res, {
@@ -41,9 +40,6 @@ new(TxnH, Sender) when is_function(Sender, 3) ->
     res().
 new(TxnH, Sender, Final) when is_function(Sender, 3) ->
     #res{txn = TxnH, sender = Sender, final = Final}.
-
--spec final_ref(res()) -> atomics:atomics_ref().
-final_ref(#res{final = F}) -> F.
 
 -spec send(res(), 100..699) -> ok | {error, already_final | term()}.
 send(Res, Status) ->

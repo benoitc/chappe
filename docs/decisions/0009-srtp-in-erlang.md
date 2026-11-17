@@ -17,7 +17,7 @@ What the repository shows:
   and RTP/SAVPF [RFC5124]" and "At a minimum, the SRC and SRS MUST support
   the SDP security descriptions key negotiation mechanism [RFC4568]".
 - chappe's recording server receives each recorded stream itself, one
-  process per stream (`apps/chappe_sip/src/siprec/chappe_sip_siprec_rtp.erl`),
+  process per stream (`apps/chappe_audio/src/chappe_audio_rtp.erl`),
   with no rtpengine in front. Before this record it answered every
   `RTP/SAVP` stream with port 0, and an offer left with no stream with 488,
   so a recording client that follows 12.2 could not record to it
@@ -40,7 +40,7 @@ media's last stop. Today that is the SIPREC recording server only:
 - receive only: chappe never encrypts or sends SRTP;
 - SDES keys only (RFC 4568 `a=crypto`, `inline` key method), suites
   `AES_CM_128_HMAC_SHA1_80` and `AES_CM_128_HMAC_SHA1_32`, through OTP
-  `crypto` (`apps/chappe_sip/src/media/chappe_sip_srtp.erl`);
+  `crypto` (`apps/chappe_audio/src/chappe_audio_srtp.erl`);
 - no DTLS-SRTP, no MIKEY, no other cipher.
 
 rtpengine stays in charge of every stream chappe relays, anchors, forks or
@@ -59,7 +59,7 @@ rest stays out.
 - Per stream, the receiver keeps a bounded number of SSRC contexts and a
   fixed replay window; forged and replayed packets are dropped and counted,
   and logged once per window, never once per packet.
-- Another receiving process that wants SRTP reuses `chappe_sip_srtp`; a
+- Another receiving process that wants SRTP reuses `chappe_audio_srtp`; a
   process that relays media keeps going through rtpengine.
 
 ## Open questions

@@ -13,8 +13,11 @@
 
 -include("chappe_sip.hrl").
 
--export([start_link/2, initial/1, share/3]).
+-export([start_link/2, initial/1]).
 -export([init/1, callback_mode/0, handle_event/4]).
+-ifdef(TEST).
+-export([share/3]).
+-endif.
 
 -record(state, {
     name :: term(),
@@ -123,7 +126,7 @@ handle_event(cast, _Msg, _St, _S) ->
 send(#state{uri = Uri, opts = Opts}) ->
     Base = maps:with([from, proxy], Opts),
     try
-        chappe_sip:request(Uri, Base#{
+        chappe_sip_uac:start(Uri, Base#{
             method => <<"OPTIONS">>, notify => self(), owner => self()
         })
     catch

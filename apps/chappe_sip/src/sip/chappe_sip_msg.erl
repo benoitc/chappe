@@ -25,7 +25,7 @@
     to_tag/1,
     can_form_dialog/1
 ]).
--export([new_request/3, new_response/3]).
+-export([new_request/3]).
 
 -record(sip_msg, {
     type :: request | response,
@@ -491,14 +491,6 @@ new_request(Method, Uri, Headers) ->
     lists:foldl(
         fun({N, V}, M) -> add(N, V, M) end,
         #sip_msg{type = request, method = Method, uri = Uri},
-        Headers
-    ).
-
--spec new_response(100..699, binary(), [{binary(), iodata()}]) -> msg().
-new_response(Status, Reason, Headers) ->
-    lists:foldl(
-        fun({N, V}, M) -> add(N, V, M) end,
-        #sip_msg{type = response, status = Status, reason = Reason},
         Headers
     ).
 

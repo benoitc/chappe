@@ -19,7 +19,7 @@ or want to know which test proves a behaviour.
 |---|---|
 | Catalogues | `apps/{chappe_sip,chappe_mix,chappe_rtpengine,chappe_esl,chappe_mrf}/docs/compliance/requirements.tsv` |
 | Generated matrices (do not edit) | `apps/<app>/docs/compliance.md` |
-| The generator | `apps/chappe_sip/test/chappe_sip_compliance.erl`, eunit in `chappe_sip_compliance_tests.erl` |
+| The generator | `scripts/compliance/chappe_sip_compliance.erl`, eunit in `test/chappe_sip_compliance_tests.erl` |
 | The entry point | `scripts/compliance.escript` |
 | The make target | `compliance` in the root `Makefile` (`COMPLIANCE_APPS`) |
 | The CI gate | the `conformance` job in `.github/workflows/ci.yml` |

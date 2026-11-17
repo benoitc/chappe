@@ -27,7 +27,7 @@
     transport :: binary() | undefined,
     % the node that took the REGISTER and holds its flow
     node :: node() | undefined,
-    % that node's boot (chappe_sip_route:boot/0): a connection or WS flow
+    % that node's boot (chappe_sip_flow:boot/0): a connection or WS flow
     % of an earlier boot is gone
     boot :: term(),
     % cluster mode: the Route to that node for this flow (RFC 5626 5.3),

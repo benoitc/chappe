@@ -16,21 +16,21 @@ cookie_refused_test() ->
     ?assertNot(chappe_sip_app:insecure_cookie('a-real-secret-cookie')).
 
 flow_secret_check_test() ->
-    ?assertEqual(ok, chappe_sip_route:check_secret(undefined)),
-    ?assertEqual(ok, chappe_sip_route:check_secret(<<"0123456789abcdef">>)),
-    ?assertEqual(ok, chappe_sip_route:check_secret("0123456789abcdef")),
+    ?assertEqual(ok, chappe_sip_flow:check_secret(undefined)),
+    ?assertEqual(ok, chappe_sip_flow:check_secret(<<"0123456789abcdef">>)),
+    ?assertEqual(ok, chappe_sip_flow:check_secret("0123456789abcdef")),
     ?assertEqual({error, {flow_token_secret, too_short}},
-                 chappe_sip_route:check_secret(<<"short">>)),
+                 chappe_sip_flow:check_secret(<<"short">>)),
     ?assertEqual({error, {flow_token_secret, too_short}},
-                 chappe_sip_route:check_secret("short")),
+                 chappe_sip_flow:check_secret("short")),
     ?assertEqual({error, {flow_token_secret, too_short}},
-                 chappe_sip_route:check_secret(42)).
+                 chappe_sip_flow:check_secret(42)).
 
 short_secret_stops_boot_test() ->
     application:set_env(chappe_sip, flow_token_secret, <<"tooshort">>),
     try
         ?assertEqual({error, {flow_token_secret, too_short}},
-                     chappe_sip_route:ensure_secret())
+                     chappe_sip_flow:ensure_secret())
     after
         application:unset_env(chappe_sip, flow_token_secret)
     end.
@@ -91,7 +91,7 @@ conn_and_udp_tokens_round_trip_test() ->
 %% restart the same id may be another device's connection, so a
 %% Record-Route naming one stops being ours. A UDP address stays valid.
 conn_token_bound_to_boot_test() ->
-    Boot = chappe_sip_route:boot(),
+    Boot = chappe_sip_flow:boot(),
     Conn = chappe_sip_route:record_route(<<"sip:10.0.0.1:5060">>,
                                          {undefined, {conn, 5}}, <<"c10">>),
     Ws = chappe_sip_route:record_route(<<"sip:10.0.0.1:5060">>, {7, 9},
@@ -137,21 +137,21 @@ next_flow_by_connection_test() ->
 %% req: R5626-R-13
 edge_route_test() ->
     Exp = erlang:system_time(second) + 60,
-    R = chappe_sip_route:edge_route(<<"sip:10.0.0.1:5060">>, {conn, 5},
+    R = chappe_sip_flow:edge_route(<<"sip:10.0.0.1:5060">>, {conn, 5},
                                     <<"tcp">>, Exp),
     ?assert(chappe_sip_route:is_self(R, undefined, <<"any">>)),
     {ok, M} = chappe_sip_msg:parse(bye(R, <<"x">>)),
-    ?assertEqual({ok, {conn, 5}, <<"tcp">>}, chappe_sip_route:edge_flow(M)),
+    ?assertEqual({ok, {conn, 5}, <<"tcp">>}, chappe_sip_flow:edge_flow(M)),
     Forged = binary:replace(R, <<"ftokd=c5">>, <<"ftokd=c6">>),
     ?assertNot(chappe_sip_route:is_self(Forged, undefined, <<"any">>)),
-    Old = chappe_sip_route:edge_route(<<"sip:10.0.0.1:5060">>, {conn, 5},
+    Old = chappe_sip_flow:edge_route(<<"sip:10.0.0.1:5060">>, {conn, 5},
                                       <<"tcp">>, Exp - 120),
     ?assertNot(chappe_sip_route:is_self(Old, undefined, <<"any">>)),
     %% no Record-Route stands for an edge route
     RR = chappe_sip_route:record_route(<<"sip:10.0.0.1:5060">>,
                                        {undefined, {conn, 5}}, <<"x">>),
     {ok, M2} = chappe_sip_msg:parse(bye(RR, <<"x">>)),
-    ?assertEqual(none, chappe_sip_route:edge_flow(M2)).
+    ?assertEqual(none, chappe_sip_flow:edge_flow(M2)).
 
 bye(Route, CallId) ->
     <<"BYE sip:b@10.0.0.3 SIP/2.0\r\n"

@@ -25,24 +25,6 @@
 
 -include("chappe_sip.hrl").
 
-%% the methods chappe_sip recognises; any other is answered 501
--define(KNOWN_METHODS, [
-    <<"INVITE">>,
-    <<"ACK">>,
-    <<"CANCEL">>,
-    <<"BYE">>,
-    <<"OPTIONS">>,
-    <<"REGISTER">>,
-    <<"INFO">>,
-    <<"UPDATE">>,
-    <<"PRACK">>,
-    <<"REFER">>,
-    <<"SUBSCRIBE">>,
-    <<"NOTIFY">>,
-    <<"MESSAGE">>,
-    <<"PUBLISH">>
-]).
-
 %% guard-legal test for a WS-transport handle (mirrors chappe_sip_ws:base/0)
 -define(IS_WS(H), (is_integer(H) andalso (H) >= 16#4000000000000000)).
 
@@ -58,11 +40,10 @@
     restart_engine/0,
     use/2,
     handle/3,
-    unhandle/1,
     allow_events/0,
     reset_routes/0,
-    respond/3,
-    check_health/1
+    check_health/1,
+    forwarder/1
 ]).
 %% the guard's drop (chappe_sip_guard)
 -export([discard/1, block_source/2, stats/0]).
@@ -77,7 +58,6 @@
     early_leg/2,
     create_dialog/1,
     reg_handle/2,
-    unreg_handle/1,
     dialog_respond/6,
     send_request/3,
     send_request/4,
@@ -113,7 +93,6 @@
     | {udp, binary(), inet:port_number()}
     | {udp, binary(), inet:port_number(), binary()}
     | undefined.
--export([validate_tls/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -record(state, {
@@ -157,23 +136,23 @@ start_link() ->
 %% Bring the SIP stack up. Opts: #{contact := binary(), ...}
 -spec start(map()) -> ok | {error, already_started | term()}.
 start(Opts) when is_map(Opts) ->
-    gen_server:call(?MODULE, {start, Opts}, 30000).
+    gen_server:call(?MODULE, {lifecycle, {start, Opts}}, 30000).
 
 -spec stop() -> ok | {error, not_started | hung}.
 stop() ->
-    gen_server:call(?MODULE, stop, 15000).
+    gen_server:call(?MODULE, {lifecycle, stop}, 15000).
 
 %% Controlled restart of the SIP engine: tear down live dialogs (owners
 %% get {destroy, engine_restart}), stop and restart the NIF engine with
 %% the same options, and keep routes/middleware. All SIP state is lost.
 -spec restart_engine() -> ok | {error, term()}.
 restart_engine() ->
-    gen_server:call(?MODULE, restart_engine, 30000).
+    gen_server:call(?MODULE, {lifecycle, restart_engine}, 30000).
 
 %% Register middleware: fun(Req, Res, Next), optionally method-scoped.
 -spec use(binary() | '*', chappe_sip_middleware:mw()) -> ok.
 use(Method, Fun) when is_function(Fun, 3) ->
-    gen_server:call(?MODULE, {use, Method, Fun}).
+    gen_server:call(?MODULE, {routes, {use, Method, Fun}}).
 
 %% Register the handler for a SIP method: fun(Req, Res). Opts:
 %% option_tags (accepted in Require on top of supported_option_tags),
@@ -183,22 +162,12 @@ use(Method, Fun) when is_function(Fun, 3) ->
 %% chappe_sip:event_package/2).
 -spec handle(binary(), fun(), map()) -> ok.
 handle(Method, Fun, Opts) when is_binary(Method), is_function(Fun, 2) ->
-    gen_server:call(?MODULE, {handle, Method, Fun, Opts}).
-
-%% Unregister a method handler.
--spec unhandle(binary()) -> ok.
-unhandle(Method) ->
-    gen_server:call(?MODULE, {unhandle, Method}).
+    gen_server:call(?MODULE, {routes, {handle, Method, Fun, Opts}}).
 
 %% Drop all routes and middleware (tests, reconfiguration).
 -spec reset_routes() -> ok.
 reset_routes() ->
-    gen_server:call(?MODULE, reset_routes).
-
-%% Manual response path (tests, diagnostics).
--spec respond(non_neg_integer(), 100..699, binary()) -> ok | {error, term()}.
-respond(TxnH, Status, Reason) ->
-    gen_server:call(?MODULE, {respond, TxnH, Status, Reason}).
+    gen_server:call(?MODULE, {routes, reset}).
 
 %% The dialog leg of an INVITE's early dialog, before its dialog fsm: a
 %% B2BUA relaying provisionals under LocalTag takes the requests of that
@@ -208,24 +177,20 @@ respond(TxnH, Status, Reason) ->
 -spec early_leg(chappe_sip_req:req(), binary()) ->
     {ok, non_neg_integer()} | {error, term()}.
 early_leg(Req, LocalTag) ->
-    gen_server:call(?MODULE, {early_leg, Req, LocalTag}).
+    gen_server:call(?MODULE, {handles, {early_leg, Req, LocalTag}}).
 
 %% Create a UAS dialog for an incoming dialog-forming request. Called by
 %% chappe_sip_dialog from the request worker. Returns the started dialog fsm.
 -spec create_uas(chappe_sip_req:req(), map()) ->
     {ok, pid()} | {error, term()}.
 create_uas(Req, Opts) ->
-    gen_server:call(?MODULE, {create_uas, Req, Opts}).
+    gen_server:call(?MODULE, {handles, {create_uas, Req, Opts}}).
 
 %% Route engine handle events (op_ok/op_failed/response/ack/in-dialog
 %% request/cancel for this handle) to Pid.
 -spec reg_handle(non_neg_integer(), pid()) -> ok.
 reg_handle(H, Pid) ->
-    gen_server:call(?MODULE, {reg_handle, H, Pid}).
-
--spec unreg_handle(non_neg_integer()) -> ok.
-unreg_handle(H) ->
-    gen_server:call(?MODULE, {unreg_handle, H}).
+    gen_server:call(?MODULE, {handles, {reg_handle, H, Pid}}).
 
 %% Reply to a server transaction with a dialog tag (dialog fsm path).
 -spec dialog_respond(
@@ -239,7 +204,7 @@ unreg_handle(H) ->
 dialog_respond(TxnH, Status, Reason, Headers, Body, ToTag) ->
     gen_server:call(
         ?MODULE,
-        {dialog_respond, TxnH, Status, Reason, Headers, Body, ToTag}
+        {txn, {dialog_respond, TxnH, Status, Reason, Headers, Body, ToTag}}
     ).
 
 %% Send a complete request; responses/op results route to Pid.
@@ -253,45 +218,45 @@ send_request(Route, Raw, Pid) ->
 -spec send_request(route(), binary(), pid(), map()) ->
     {ok, non_neg_integer()} | {error, term()}.
 send_request(Route, Raw, Pid, Opts) ->
-    gen_server:call(?MODULE, {send_request, Route, Raw, Pid, Opts}).
+    gen_server:call(?MODULE, {txn, {send_request, Route, Raw, Pid, Opts}}).
 
 %% A proxy owns this server transaction: a CANCEL is relayed to its
 %% branches and the downstream 487 (or a late 2xx) goes upstream, instead
 %% of the stack answering 487 itself (RFC 3261 16.10).
 -spec mark_proxied(non_neg_integer()) -> ok.
 mark_proxied(TxnH) ->
-    gen_server:call(?MODULE, {mark_proxied, TxnH}).
+    gen_server:call(?MODULE, {handles, {mark_proxied, TxnH}}).
 
 %% Pid owns a call (it originated an INVITE through a UAC, a b2bua): its
 %% handler deadline no longer applies.
 -spec disarm(pid()) -> ok.
 disarm(Pid) ->
-    gen_server:call(?MODULE, {disarm, Pid}).
+    gen_server:call(?MODULE, {handles, {disarm, Pid}}).
 
 %% Proxy: relay a downstream response upstream on a server transaction.
 -spec relay_response(non_neg_integer(), 100..699, binary()) ->
     ok | {error, term()}.
 relay_response(ServerTxnH, Status, Raw) ->
-    gen_server:call(?MODULE, {relay_response, ServerTxnH, Status, Raw}).
+    gen_server:call(?MODULE, {txn, {relay_response, ServerTxnH, Status, Raw}}).
 
 %% Proxy: statelessly forward a response upstream with no server
 %% transaction (a forked second 2xx). Raw must keep the proxy's own top
 %% Via; the engine strips it and routes by the next Via.
 -spec forward_response(binary()) -> ok | {error, term()}.
 forward_response(Raw) ->
-    gen_server:call(?MODULE, {forward_response, Raw}).
+    gen_server:call(?MODULE, {txn, {forward_response, Raw}}).
 
 %% Create a dialog on the UAC side (leg + established fsm). DialogArgs is
 %% the chappe_sip_dialog_fsm arg map without the leg. Returns {ok, Pid, LegH}.
 -spec create_dialog(map()) -> {ok, pid(), non_neg_integer()} | {error, term()}.
 create_dialog(DialogArgs) ->
-    gen_server:call(?MODULE, {create_dialog, DialogArgs}).
+    gen_server:call(?MODULE, {handles, {create_dialog, DialogArgs}}).
 
 %% Fire-and-forget send (ACK to a 2xx); op result routes to Pid.
 -spec send_stateless(route(), binary(), pid()) ->
     {ok, non_neg_integer() | ws_ack} | {error, term()}.
 send_stateless(Route, Raw, Pid) ->
-    gen_server:call(?MODULE, {send_stateless, Route, Raw, Pid}).
+    gen_server:call(?MODULE, {txn, {send_stateless, Route, Raw, Pid}}).
 
 %% CANCEL an outstanding INVITE client transaction.
 -spec cancel_txn(non_neg_integer()) -> ok | {error, term()}.
@@ -302,7 +267,7 @@ cancel_txn(TxnH) ->
 -spec cancel_txn(non_neg_integer(), [{binary(), iodata()}]) ->
     ok | {error, term()}.
 cancel_txn(TxnH, Headers) ->
-    gen_server:call(?MODULE, {cancel_txn, TxnH, Headers}).
+    gen_server:call(?MODULE, {txn, {cancel_txn, TxnH, Headers}}).
 
 %% End a request without answering it (the guard's drop). Over WebSocket
 %% the transaction goes now. On the native transports nta has no silent
@@ -318,14 +283,14 @@ discard(TxnH) ->
 %% 0 lifts the block. Over WebSocket nothing is blocked.
 -spec block_source(binary(), non_neg_integer()) -> ok.
 block_source(Addr, Ms) ->
-    gen_server:call(?MODULE, {block_source, Addr, Ms}).
+    gen_server:call(?MODULE, {info, {block_source, Addr, Ms}}).
 
 %% #{incoming => server transactions held, discarded => requests the
 %% source blocklist discarded, events_dropped => events the shim could not
 %% deliver, alloc_failed => event binaries it could not allocate}
 -spec stats() -> chappe_sip_nif:stats().
 stats() ->
-    gen_server:call(?MODULE, stats).
+    gen_server:call(?MODULE, {info, stats}).
 
 %% Release a client transaction handle and stop routing for it.
 -spec finish_txn(non_neg_integer()) -> ok.
@@ -335,13 +300,13 @@ finish_txn(TxnH) ->
 %% The engine's bound contact URI (for building From/Contact on UAC).
 -spec contact() -> binary() | undefined.
 contact() ->
-    gen_server:call(?MODULE, contact).
+    gen_server:call(?MODULE, {info, contact}).
 
 %% The TLS listener's URI (sips:host:port), or undefined without one. A
 %% wildcard bind address is replaced by the primary contact's host.
 -spec tls_contact() -> binary() | undefined.
 tls_contact() ->
-    gen_server:call(?MODULE, tls_contact).
+    gen_server:call(?MODULE, {info, tls_contact}).
 
 %% Destroy a dialog leg (from the fsm's terminate).
 -spec destroy_leg(non_neg_integer()) -> ok.
@@ -352,10 +317,22 @@ destroy_leg(LegH) ->
 -spec check_health(timeout()) -> ok | {error, timeout | not_started}.
 check_health(Timeout) ->
     try
-        gen_server:call(?MODULE, check_health, Timeout)
+        gen_server:call(?MODULE, {lifecycle, check_health}, Timeout)
     catch
         exit:{timeout, _} -> {error, timeout}
     end.
+
+%% The proxy that forwards the in-dialog requests and 2xx ACKs loose-routed
+%% back to us after we record-routed their dialog: a module with
+%% forward_indialog/2 and forward_indialog_ack/2. chappe_sip_proxy_sup
+%% registers chappe_sip_proxy when it starts; with none, such a request
+%% goes to the handlers and such an ACK is dropped.
+-spec forwarder(module()) -> ok.
+forwarder(Mod) when is_atom(Mod) ->
+    persistent_term:put({?MODULE, forwarder}, Mod).
+
+forwarder() ->
+    persistent_term:get({?MODULE, forwarder}, undefined).
 
 %% gen_server
 
@@ -379,69 +356,34 @@ init([]) ->
             {ok, S#state{engine_opts = Opts}}
     end.
 
-handle_call({start, _}, _From, #state{engine = E} = S) when E =/= undefined ->
+%% Calls come in five envelopes, each served by its own helper: the
+%% stack's lifecycle, the routes, the handle table, the transactions, and
+%% what the engine tells about itself.
+handle_call({lifecycle, Op}, From, S) ->
+    lifecycle(Op, From, S);
+handle_call({routes, Op}, _From, S) ->
+    routes(Op, S);
+handle_call({handles, Op}, From, S) ->
+    handles(Op, From, S);
+handle_call({txn, Op}, _From, S) ->
+    txn(Op, S);
+handle_call({info, Op}, _From, S) ->
+    info(Op, S).
+
+lifecycle({start, _}, _From, #state{engine = E} = S) when E =/= undefined ->
     {reply, {error, already_started}, S};
-handle_call({start, Opts}, _From, #state{mod = Mod} = S) ->
+lifecycle({start, Opts}, _From, S) ->
     case start_opts(Opts) of
-        {ok, NOpts} ->
-            case
-                start_engine(
-                    Mod,
-                    NOpts,
-                    chappe_sip_config:get(engine_start_retries),
-                    100
-                )
-            of
-                {ok, Engine} ->
-                    cfg_put(opts, NOpts),
-                    publish(NOpts),
-                    {reply, ok, S#state{
-                        engine = Engine,
-                        engine_opts = NOpts,
-                        tref = schedule_health(Engine),
-                        misses = 0
-                    }};
-                {error, Reason} ->
-                    {reply, {error, Reason}, S}
-            end;
-        {error, _} = Err ->
-            {reply, Err, S}
+        {ok, NOpts} -> started(NOpts, S);
+        {error, _} = Err -> {reply, Err, S}
     end;
-handle_call(restart_engine, _From, #state{engine = undefined} = S) ->
+lifecycle(restart_engine, _From, #state{engine = undefined} = S) ->
     {reply, {error, not_started}, S};
-handle_call(
-    restart_engine,
-    _From,
-    #state{
-        mod = Mod,
-        engine = Engine,
-        engine_opts = Opts,
-        dialogs = Dialogs,
-        monitored = Monitored
-    } = S
-) ->
-    %% tell dialogs and UAC fsms their SIP state is going away, so an in-flight
-    %% transaction fails cleanly instead of waiting for a reply that the new
-    %% native stack will never deliver
-    stack_gone(S#state{dialogs = Dialogs, monitored = Monitored}),
-    _ = Mod:stop(Engine),
-    S1 = stack_down(S),
-    case
-        start_engine(
-            Mod, Opts, chappe_sip_config:get(engine_start_retries), 100
-        )
-    of
-        {ok, NewEngine} ->
-            {reply, ok, S1#state{
-                engine = NewEngine,
-                tref = schedule_health(NewEngine)
-            }};
-        {error, Reason} ->
-            {reply, {error, Reason}, S1}
-    end;
-handle_call(stop, _From, #state{engine = undefined} = S) ->
+lifecycle(restart_engine, _From, S) ->
+    restart(S);
+lifecycle(stop, _From, #state{engine = undefined} = S) ->
     {reply, {error, not_started}, S};
-handle_call(stop, _From, #state{mod = Mod, engine = Engine} = S) ->
+lifecycle(stop, _From, #state{mod = Mod, engine = Engine} = S) ->
     %% the dialogs and UAC fsms lose their SIP state, as on a restart
     stack_gone(S),
     Result = Mod:stop(Engine),
@@ -449,31 +391,67 @@ handle_call(stop, _From, #state{mod = Mod, engine = Engine} = S) ->
     cfg_del(opts),
     publish(#{}),
     {reply, Result, stack_down(S)};
-handle_call({use, Method, Fun}, _From, #state{middlewares = MW} = S) ->
+lifecycle(check_health, _From, #state{engine = undefined} = S) ->
+    {reply, {error, not_started}, S};
+lifecycle(
+    check_health,
+    From,
+    #state{mod = Mod, engine = Engine, health_waiters = W} = S
+) ->
+    ok = Mod:health(Engine),
+    {noreply, S#state{health_waiters = [From | W]}}.
+
+started(NOpts, #state{mod = Mod} = S) ->
+    Retries = chappe_sip_config:get(engine_start_retries),
+    case start_engine(Mod, NOpts, Retries, 100) of
+        {ok, Engine} ->
+            cfg_put(opts, NOpts),
+            publish(NOpts),
+            {reply, ok, S#state{
+                engine = Engine,
+                engine_opts = NOpts,
+                tref = schedule_health(Engine),
+                misses = 0
+            }};
+        {error, Reason} ->
+            {reply, {error, Reason}, S}
+    end.
+
+restart(#state{mod = Mod, engine = Engine, engine_opts = Opts} = S) ->
+    %% tell dialogs and UAC fsms their SIP state is going away, so an
+    %% in-flight transaction fails cleanly instead of waiting for a reply
+    %% that the new native stack will never deliver
+    stack_gone(S),
+    _ = Mod:stop(Engine),
+    S1 = stack_down(S),
+    Retries = chappe_sip_config:get(engine_start_retries),
+    case start_engine(Mod, Opts, Retries, 100) of
+        {ok, NewEngine} ->
+            {reply, ok, S1#state{
+                engine = NewEngine,
+                tref = schedule_health(NewEngine)
+            }};
+        {error, Reason} ->
+            {reply, {error, Reason}, S1}
+    end.
+
+routes({use, Method, Fun}, #state{middlewares = MW} = S) ->
     MW1 = MW ++ [{Method, Fun}],
     cfg_put(middlewares, MW1),
     {reply, ok, S#state{middlewares = MW1}};
-handle_call(
-    {handle, <<"SUBSCRIBE">>, Fun, #{package := Pkg0} = Opts}, _From, S
-) ->
+routes({handle, <<"SUBSCRIBE">>, Fun, #{package := Pkg0} = Opts}, S) ->
     Pkg = string:lowercase(Pkg0),
     cfg_put(packages, (cfg_get(packages, #{}))#{Pkg => Fun}),
     cfg_put({route_opts, {package, Pkg}}, route_opts(Opts)),
     {reply, ok, S};
-handle_call({handle, Method, Fun, Opts}, _From, #state{routes = R} = S) ->
+routes({handle, Method, Fun, Opts}, #state{routes = R} = S) ->
     R1 = R#{Method => Fun},
     cfg_put(routes, R1),
     cfg_put({route_opts, Method}, route_opts(Opts)),
     Method =:= <<"SUBSCRIBE">> andalso
         cfg_put(events, maps:get(events, Opts, any)),
     {reply, ok, S#state{routes = R1}};
-handle_call({unhandle, Method}, _From, #state{routes = R} = S) ->
-    R1 = maps:remove(Method, R),
-    cfg_put(routes, R1),
-    cfg_del({route_opts, Method}),
-    Method =:= <<"SUBSCRIBE">> andalso cfg_del(events),
-    {reply, ok, S#state{routes = R1}};
-handle_call(reset_routes, _From, #state{routes = R} = S) ->
+routes(reset, #state{routes = R} = S) ->
     _ = [cfg_del({route_opts, M}) || M <- maps:keys(R)],
     _ = [
         cfg_del({route_opts, {package, P}})
@@ -483,39 +461,33 @@ handle_call(reset_routes, _From, #state{routes = R} = S) ->
     cfg_del(events),
     cfg_del(packages),
     cfg_put(middlewares, []),
-    {reply, ok, S#state{routes = #{}, middlewares = []}};
-handle_call({respond, TxnH, Status, Reason}, _From, S) when ?IS_WS(TxnH) ->
-    {reply,
-        sent(
-            TxnH,
-            Status,
-            ws_call(fun() ->
-                chappe_sip_ws_transport:respond(
-                    TxnH, Status, Reason, <<>>, <<>>, <<>>
-                )
-            end)
-        ),
-        S};
-handle_call({respond, _, _, _}, _From, #state{engine = undefined} = S) ->
-    {reply, {error, not_started}, S};
-handle_call(
-    {respond, TxnH, Status, Reason},
-    _From,
-    #state{mod = Mod, engine = Engine} = S
-) ->
-    {reply,
-        sent(
-            TxnH,
-            Status,
-            Mod:respond(Engine, TxnH, Status, Reason, <<>>, <<>>, <<>>)
-        ),
-        S};
-handle_call({create_uas, Req, Opts}, {WorkerPid, _}, S) ->
+    {reply, ok, S#state{routes = #{}, middlewares = []}}.
+
+handles({create_uas, Req, Opts}, {WorkerPid, _}, S) ->
     do_create_uas(Req, Opts, WorkerPid, S);
-handle_call({early_leg, Req, LocalTag}, {Pid, _}, S) ->
+handles({early_leg, Req, LocalTag}, {Pid, _}, S) ->
+    early_leg(Req, LocalTag, Pid, S);
+handles({create_dialog, DialogArgs}, {Caller, _}, S) ->
+    %% WS-only nodes have engine = undefined; a WS-flow dialog still creates
+    %% its leg on the transport. dialog_leg_create/5 returns not_started for
+    %% a non-WS dialog with no native engine.
+    do_create_dialog(DialogArgs, Caller, S);
+handles({mark_proxied, TxnH}, {Pid, _}, S) when ?IS_WS(TxnH) ->
+    {reply, ok, S#state{proxied = (S#state.proxied)#{TxnH => Pid}}};
+handles({mark_proxied, _TxnH}, _From, #state{engine = undefined} = S) ->
+    {reply, ok, S};
+handles({mark_proxied, TxnH}, {Pid, _}, #state{mod = Mod, engine = E} = S) ->
+    _ = Mod:proxy_mark(E, TxnH),
+    {reply, ok, S#state{proxied = (S#state.proxied)#{TxnH => Pid}}};
+handles({disarm, Pid}, _From, S) ->
+    {reply, ok, disarm_deadline(Pid, S)};
+handles({reg_handle, H, Pid}, _From, S) ->
+    S1 = ensure_monitored(Pid, S),
+    {reply, ok, S1#state{handles = (S1#state.handles)#{H => Pid}}}.
+
+early_leg(Req, LocalTag, Pid, S) ->
     Msg = chappe_sip_req:msg(Req),
-    ToVal = chappe_sip_msg:get(<<"to">>, Msg),
-    LocalAddr = <<ToVal/binary, ";tag=", LocalTag/binary>>,
+    LocalAddr = chappe_sip_uas_response:local_addr(Msg, LocalTag),
     case
         leg_create(
             chappe_sip_req:txn(Req),
@@ -532,56 +504,45 @@ handle_call({early_leg, Req, LocalTag}, {Pid, _}, S) ->
             }};
         Err ->
             {reply, Err, S}
-    end;
-handle_call({create_dialog, DialogArgs}, {Caller, _}, S) ->
-    %% WS-only nodes have engine = undefined; a WS-flow dialog still creates
-    %% its leg on the transport. dialog_leg_create/5 returns not_started for
-    %% a non-WS dialog with no native engine.
-    do_create_dialog(DialogArgs, Caller, S);
-handle_call({send_stateless, {ws, Flow}, Raw, _Pid}, _From, S) ->
+    end.
+
+%% the transactions: a WS handle goes to the transport, a native one to
+%% the engine backend, which a WS-only node (or a stopped stack) lacks
+txn({dialog_respond, TxnH, Status, Reason, Headers, Body, ToTag}, S) ->
+    {reply, tagged_respond(TxnH, Status, Reason, Headers, Body, ToTag, S), S};
+txn({send_request, {ws, Flow}, Raw, Pid, _Opts}, S) ->
+    ws_request(Flow, Raw, Pid, S);
+txn({send_request, _, _, _, _}, #state{engine = undefined} = S) ->
+    {reply, {error, not_started}, S};
+txn({send_request, Route, Raw, Pid, Opts}, S) ->
+    native_request(Route, Raw, Pid, Opts, S);
+txn({send_stateless, {ws, Flow}, Raw, _Pid}, S) ->
     _ = chappe_sip_ws_transport:send_stateless(Flow, Raw),
     {reply, {ok, ws_ack}, S};
-handle_call({send_stateless, _, _, _}, _From, #state{engine = undefined} = S) ->
+txn({send_stateless, _, _, _}, #state{engine = undefined} = S) ->
     {reply, {error, not_started}, S};
-handle_call(
-    {send_stateless, Route, Raw, Pid},
-    _From,
-    #state{mod = Mod, engine = Engine} = S
-) when
-    Engine =/= undefined
-->
-    %% fire-and-forget (a 2xx ACK / stateless BYE): no response is expected, so
-    %% do not retain a handle route (it would linger until the owner exits)
-    case
-        chappe_sip_binds:send_ident(
-            Route, maps:get(Pid, S#state.locals, undefined)
-        )
-    of
+txn({send_stateless, Route, Raw, Pid}, #state{mod = Mod, engine = E} = S) ->
+    %% fire-and-forget (a 2xx ACK / stateless BYE): no response is expected,
+    %% so do not retain a handle route (it would linger until the owner
+    %% exits)
+    Local = maps:get(Pid, S#state.locals, undefined),
+    case chappe_sip_binds:send_ident(Route, Local) of
         undefined ->
-            {reply, Mod:send(Engine, native_route(Route), Raw), S};
+            {reply, Mod:send(E, native_route(Route), Raw), S};
         Ident ->
-            {reply, Mod:send(Engine, native_route(Route), Raw, Ident), S}
+            {reply, Mod:send(E, native_route(Route), Raw, Ident), S}
     end;
-handle_call({cancel_txn, TxnH, Hdrs}, _From, S) when ?IS_WS(TxnH) ->
+txn({cancel_txn, TxnH, Hdrs}, S) when ?IS_WS(TxnH) ->
     _ = chappe_sip_ws_transport:cancel(TxnH, chappe_sip_hdr_io:join(Hdrs)),
     {reply, ok, S};
-handle_call(
-    {cancel_txn, TxnH, []},
-    _From,
-    #state{mod = Mod, engine = Engine} = S
-) when Engine =/= undefined ->
+txn({cancel_txn, _, _}, #state{engine = undefined} = S) ->
+    %% a UAC still running after the stack was stopped
+    {reply, {error, not_started}, S};
+txn({cancel_txn, TxnH, []}, #state{mod = Mod, engine = Engine} = S) ->
     {reply, Mod:cancel(Engine, TxnH), S};
-handle_call(
-    {cancel_txn, TxnH, Hdrs},
-    _From,
-    #state{mod = Mod, engine = Engine} = S
-) when Engine =/= undefined ->
+txn({cancel_txn, TxnH, Hdrs}, #state{mod = Mod, engine = Engine} = S) ->
     {reply, Mod:cancel(Engine, TxnH, chappe_sip_hdr_io:join(Hdrs)), S};
-handle_call(
-    {relay_response, ServerTxnH, Status, Raw},
-    _From,
-    #state{handles = HM} = S
-) when ?IS_WS(ServerTxnH) ->
+txn({relay_response, ServerTxnH, Status, Raw}, S) when ?IS_WS(ServerTxnH) ->
     R = sent(
         ServerTxnH,
         Status,
@@ -589,100 +550,51 @@ handle_call(
             chappe_sip_ws_transport:relay(ServerTxnH, Status, Raw)
         end)
     ),
-    HM1 =
-        case Status >= 200 of
-            true -> maps:remove(ServerTxnH, HM);
-            false -> HM
-        end,
-    {reply, R, S#state{handles = HM1}};
-handle_call(
-    {relay_response, ServerTxnH, Status, Raw},
-    _From,
-    #state{mod = Mod, engine = Engine, handles = HM} = S
-) when
-    Engine =/= undefined
-->
+    {reply, R, relayed(ServerTxnH, Status, S)};
+txn({relay_response, _, _, _}, #state{engine = undefined} = S) ->
+    %% a proxy still running after the stack was stopped
+    {reply, {error, not_started}, S};
+txn({relay_response, ServerTxnH, Status, Raw}, S) ->
+    #state{mod = Mod, engine = Engine} = S,
     R = sent(ServerTxnH, Status, Mod:relay(Engine, ServerTxnH, Status, Raw)),
-    HM1 =
-        case Status >= 200 of
-            true -> maps:remove(ServerTxnH, HM);
-            false -> HM
-        end,
-    {reply, R, S#state{handles = HM1}};
-handle_call({forward_response, _}, _From, #state{engine = undefined} = S) ->
+    {reply, R, relayed(ServerTxnH, Status, S)};
+txn({forward_response, _}, #state{engine = undefined} = S) ->
     {reply, {error, not_started}, S};
-handle_call({Op, _, _, _}, _From, #state{engine = undefined} = S) when
-    Op =:= relay_response; Op =:= cancel_txn
+txn({forward_response, Raw}, #state{mod = Mod, engine = Engine} = S) ->
+    {reply, Mod:send_response(Engine, Raw), S}.
+
+%% a final response relayed upstream ends the server transaction's route
+relayed(ServerTxnH, Status, #state{handles = HM} = S) when Status >= 200 ->
+    S#state{handles = maps:remove(ServerTxnH, HM)};
+relayed(_ServerTxnH, _Status, S) ->
+    S.
+
+%% a response with a dialog tag on a server transaction
+tagged_respond(TxnH, Status, Reason, Headers, Body, ToTag, _S) when
+    ?IS_WS(TxnH)
 ->
-    %% a proxy or UAC still running after the stack was stopped
-    {reply, {error, not_started}, S};
-handle_call(
-    {forward_response, Raw},
-    _From,
-    #state{mod = Mod, engine = Engine} = S
-) when Engine =/= undefined ->
-    {reply, Mod:send_response(Engine, Raw), S};
-handle_call({block_source, Addr, Ms}, _From, #state{mod = Mod} = S) ->
-    {reply, Mod:block(Addr, Ms), S};
-handle_call(stats, _From, #state{mod = Mod} = S) ->
-    {reply, Mod:stats(), S};
-handle_call(contact, _From, #state{contact = C} = S) ->
-    {reply, C, S};
-handle_call(tls_contact, _From, S) ->
-    {reply, tls_uri(S), S};
-handle_call({mark_proxied, TxnH}, {Pid, _}, S) when ?IS_WS(TxnH) ->
-    {reply, ok, S#state{proxied = (S#state.proxied)#{TxnH => Pid}}};
-handle_call(
-    {mark_proxied, TxnH},
-    {Pid, _},
-    #state{mod = Mod, engine = Engine} = S
-) when Engine =/= undefined ->
-    _ = Mod:proxy_mark(Engine, TxnH),
-    {reply, ok, S#state{proxied = (S#state.proxied)#{TxnH => Pid}}};
-handle_call({mark_proxied, _TxnH}, _From, S) ->
-    {reply, ok, S};
-handle_call({disarm, Pid}, _From, S) ->
-    {reply, ok, disarm_deadline(Pid, S)};
-handle_call({reg_handle, H, Pid}, _From, S) ->
-    S1 = ensure_monitored(Pid, S),
-    {reply, ok, S1#state{handles = (S1#state.handles)#{H => Pid}}};
-handle_call({unreg_handle, H}, _From, #state{handles = HM} = S) ->
-    {reply, ok, S#state{handles = maps:remove(H, HM)}};
-handle_call(
-    {dialog_respond, TxnH, Status, Reason, Headers, Body, ToTag},
-    _From,
-    S
-) when ?IS_WS(TxnH) ->
-    {reply,
-        sent(
-            TxnH,
-            Status,
-            ws_call(fun() ->
-                chappe_sip_ws_transport:respond(
-                    TxnH, Status, Reason, Headers, Body, ToTag
-                )
-            end)
-        ),
-        S};
-handle_call(
-    {dialog_respond, TxnH, Status, Reason, Headers, Body, ToTag},
-    _From,
-    #state{mod = Mod, engine = Engine} = S
-) when
-    Engine =/= undefined
-->
-    {reply,
-        sent(
-            TxnH,
-            Status,
-            Mod:respond(Engine, TxnH, Status, Reason, Headers, Body, ToTag)
-        ),
-        S};
-handle_call(
-    {dialog_respond, _, _, _, _, _, _}, _From, #state{engine = undefined} = S
-) ->
-    {reply, {error, not_started}, S};
-handle_call({send_request, {ws, Flow}, Raw, Pid, _Opts}, _From, S) ->
+    sent(
+        TxnH,
+        Status,
+        ws_call(fun() ->
+            chappe_sip_ws_transport:respond(
+                TxnH, Status, Reason, Headers, Body, ToTag
+            )
+        end)
+    );
+tagged_respond(_TxnH, _Status, _Reason, _Headers, _Body, _ToTag, #state{
+    engine = undefined
+}) ->
+    {error, not_started};
+tagged_respond(TxnH, Status, Reason, Headers, Body, ToTag, S) ->
+    #state{mod = Mod, engine = Engine} = S,
+    sent(
+        TxnH,
+        Status,
+        Mod:respond(Engine, TxnH, Status, Reason, Headers, Body, ToTag)
+    ).
+
+ws_request(Flow, Raw, Pid, S) ->
     case
         ws_call(fun() ->
             chappe_sip_ws_transport:send_request(Flow, Raw, Pid)
@@ -699,18 +611,9 @@ handle_call({send_request, {ws, Flow}, Raw, Pid, _Opts}, _From, S) ->
             }};
         Err ->
             {reply, Err, S}
-    end;
-handle_call(
-    {send_request, _, _, _, _}, _From, #state{engine = undefined} = S
-) ->
-    {reply, {error, not_started}, S};
-handle_call(
-    {send_request, Route, Raw, Pid, Opts},
-    _From,
-    #state{mod = Mod, engine = Engine} = S
-) when
-    Engine =/= undefined
-->
+    end.
+
+native_request(Route, Raw, Pid, Opts, #state{mod = Mod, engine = Engine} = S) ->
     NRoute = native_route(Route),
     %% a local option sets the address Pid sends from from now on
     Locals =
@@ -742,16 +645,16 @@ handle_call(
             }};
         Err ->
             {reply, Err, S}
-    end;
-handle_call(check_health, _From, #state{engine = undefined} = S) ->
-    {reply, {error, not_started}, S};
-handle_call(
-    check_health,
-    From,
-    #state{mod = Mod, engine = Engine, health_waiters = W} = S
-) ->
-    ok = Mod:health(Engine),
-    {noreply, S#state{health_waiters = [From | W]}}.
+    end.
+
+info({block_source, Addr, Ms}, #state{mod = Mod} = S) ->
+    {reply, Mod:block(Addr, Ms), S};
+info(stats, #state{mod = Mod} = S) ->
+    {reply, Mod:stats(), S};
+info(contact, #state{contact = C} = S) ->
+    {reply, C, S};
+info(tls_contact, S) ->
+    {reply, tls_uri(S), S}.
 
 handle_cast({destroy_leg, LegH}, #state{handles = HM} = S) when
     ?IS_WS(LegH)
@@ -1341,33 +1244,9 @@ handle_event({ack, LegH, Raw}, #state{handles = HM, contact = Contact} = S) ->
             Pid ! {chappe_sip_ack, LegH, Raw};
         _ ->
             %% no dialog leg: a 2xx ACK routed through us as a record-routing
-            %% proxy is forwarded to the next hop; anything else is stray.
-            %% A WS-range LegH means the ACK arrived over that WS flow.
-            case is_own_route(Raw, Contact) of
-                true ->
-                    Arrived =
-                        case ?IS_WS(LegH) of
-                            true -> {ws, LegH};
-                            false -> udp
-                        end,
-                    _ = spawn(fun() ->
-                        try
-                            chappe_sip_proxy:forward_indialog_ack(
-                                Raw,
-                                Arrived
-                            )
-                        catch
-                            C:R:St ->
-                                logger:warning(
-                                    "chappe_sip: proxy 2xx-ACK forward "
-                                    "failed: ~p:~p~n~p",
-                                    [C, R, St]
-                                )
-                        end
-                    end);
-                false ->
-                    ok
-            end
+            %% proxy is forwarded to the next hop; anything else is stray
+            chappe_sip_dispatch:is_own_route(Raw, Contact) andalso
+                forward_ack(forwarder(), LegH, Raw)
     end,
     S;
 handle_event({ack_timeout, H}, #state{handles = HM} = S) ->
@@ -1435,6 +1314,28 @@ handle_event(Event, S) ->
     logger:debug("chappe_sip_engine: unhandled event ~p", [Event]),
     S.
 
+%% A WS-range LegH means the ACK arrived over that WS flow.
+forward_ack(undefined, _LegH, _Raw) ->
+    ok;
+forward_ack(Fwd, LegH, Raw) ->
+    Arrived =
+        case ?IS_WS(LegH) of
+            true -> {ws, LegH};
+            false -> udp
+        end,
+    _ = spawn(fun() ->
+        try
+            Fwd:forward_indialog_ack(Raw, Arrived)
+        catch
+            C:R:St ->
+                logger:warning(
+                    "chappe_sip: proxy 2xx-ACK forward failed: ~p:~p~n~p",
+                    [C, R, St]
+                )
+        end
+    end),
+    ok.
+
 %% the stack answered the INVITE 487 (a proxy relays its branches' final
 %% instead): an early dialog it formed ends, and so does its call record
 cancelled(TxnH, Req, #state{proxied = Px, early_uas = Early}) ->
@@ -1466,120 +1367,87 @@ do_create_uas(Req, Opts, WorkerPid, S) ->
 
 do_create_uas_1(Req, Opts, WorkerPid, S) ->
     Msg = chappe_sip_req:msg(Req),
-    CallId = chappe_sip_msg:call_id(Msg),
-    ToVal = chappe_sip_msg:get(<<"to">>, Msg),
-    FromVal = chappe_sip_msg:get(<<"from">>, Msg),
     %% honor a caller-chosen tag (b2bua pre-tags relayed provisionals with
     %% the same value so the early dialog and the 2xx share one To-tag)
     LocalTag = maps:get(local_tag, Opts, chappe_sip_dialog:gen_tag()),
-    LocalAddr = <<ToVal/binary, ";tag=", LocalTag/binary>>,
     TxnH = chappe_sip_req:txn(Req),
-    RTarget = contact_uri(chappe_sip_msg:get(<<"contact">>, Msg), FromVal),
-    %% contact_params: a feature tag after the `>' (+sip.srs for a
-    %% recording server, RFC 7866 6.2)
-    Contact = <<
-        (uas_contact(Req, S))/binary,
-        (maps:get(contact_params, Opts, <<>>))/binary
-    >>,
-    %% a 2xx to an INVITE waits for its ACK (RFC 3261 13.3.1.4). The native
-    %% stack keeps its server transaction until the ACK or Timer H and names
-    %% it in both; the WS transport names the dialog leg.
-    AckWait =
-        chappe_sip_msg:method(Msg) =:= <<"INVITE">> andalso
-            is_2xx(maps:get(status, Opts, 200)),
     %% a B2BUA's early leg (early_leg/2) becomes the dialog's
     Leg =
         case maps:get(leg, Opts, undefined) of
-            undefined -> leg_create(TxnH, Req, CallId, LocalAddr, FromVal, S);
-            EarlyLeg -> {ok, EarlyLeg}
+            undefined ->
+                leg_create(
+                    TxnH,
+                    Req,
+                    chappe_sip_msg:call_id(Msg),
+                    chappe_sip_uas_response:local_addr(Msg, LocalTag),
+                    chappe_sip_msg:get(<<"from">>, Msg),
+                    S
+                );
+            EarlyLeg ->
+                {ok, EarlyLeg}
         end,
     case Leg of
-        {ok, LegH} ->
-            Owner = maps:get(owner, Opts, WorkerPid),
-            FsmArgs = #{
-                leg => LegH,
-                txn => TxnH,
-                role => uas,
-                opts => Opts,
-                owner => Owner,
-                local_tag => LocalTag,
-                remote_addr => FromVal,
-                local_addr => LocalAddr,
-                remote_target => RTarget,
-                %% RFC 3261 12.1.1: route set = request Record-Route,
-                %% in order, so in-dialog requests traverse the proxies
-                route_set => chappe_sip_msg:get_all(<<"record-route">>, Msg),
-                remote_sdp => chappe_sip_req:body(Req),
-                %% a WS-originated request carries its flow so the
-                %% dialog can send in-dialog requests back over it
-                flow => maps:get(
-                    flow,
-                    Opts,
-                    maps:get(flow, chappe_sip_req:meta(Req), undefined)
-                ),
-                %% the Contact the 2xx carries; a subscription repeats it on
-                %% a refresh 2xx (SUBSCRIBE is a target refresh request)
-                local_contact => dialog_contact(Opts, Contact),
-                call_id => CallId,
-                %% RFC 3261 12.1.1: the remote CSeq starts at the request's
-                remote_cseq => req_cseq(Msg),
-                %% the requests a B2BUA sent in the early dialog count
-                cseq => maps:get(cseq, Opts, 1),
-                leg_ready => maps:is_key(leg, Opts),
-                ack_wait => AckWait,
-                %% the call record this INVITE opened, now the dialog's
-                cdr => maps:get(cdr, chappe_sip_req:meta(Req), undefined)
-            },
-            case chappe_sip_dialog_sup:start_dialog(FsmArgs) of
-                {ok, Pid} ->
-                    _ = erlang:monitor(process, Pid),
-                    %% send the dialog-forming response here (not from the
-                    %% fsm init: that would re-enter this gen_server and
-                    %% deadlock). op_ok/op_failed for the leg routes to Pid.
-                    _ = send_uas_response(TxnH, LocalTag, Opts, Contact, S),
-                    %% the owner now blocks for the call's lifetime; disarm its
-                    %% handler deadline so it is not killed mid-call
-                    S1 = disarm_deadline(Owner, S),
-                    HM0 = S1#state.handles,
-                    HM1 =
-                        case AckWait andalso not ?IS_WS(TxnH) of
-                            true -> HM0#{TxnH => Pid};
-                            false -> HM0
-                        end,
-                    %% the dialog sends from the address the request came to
-                    Locals =
-                        case chappe_sip_binds:local(chappe_sip_req:meta(Req)) of
-                            undefined -> S1#state.locals;
-                            L -> (S1#state.locals)#{Pid => L}
-                        end,
-                    {reply, {ok, Pid}, S1#state{
-                        handles = HM1#{LegH => Pid},
-                        dialogs = (S1#state.dialogs)#{Pid => true},
-                        early_uas = early_uas(Msg, Opts, TxnH, Pid, S1),
-                        locals = Locals
-                    }};
-                {error, Reason} ->
-                    _ = leg_destroy(TxnH, LegH, S),
-                    {reply, {error, Reason}, S}
-            end;
-        Err ->
-            {reply, Err, S}
+        {ok, LegH} -> start_uas(Req, Opts, WorkerPid, LocalTag, LegH, S);
+        Err -> {reply, Err, S}
     end.
 
-is_2xx(Status) -> is_integer(Status) andalso Status >= 200 andalso Status < 300.
-
-%% a 1xx from create_uas forms an early dialog of the INVITE
-early_uas(Msg, Opts, TxnH, Pid, #state{early_uas = E}) ->
-    case {chappe_sip_msg:method(Msg), maps:get(status, Opts, 200)} of
-        {<<"INVITE">>, St} when is_integer(St), St < 200 -> E#{TxnH => Pid};
-        _ -> E
+start_uas(Req, Opts, WorkerPid, LocalTag, LegH, S) ->
+    TxnH = chappe_sip_req:txn(Req),
+    %% contact_params: a feature tag after the `>' (+sip.srs for a
+    %% recording server, RFC 7866 6.2)
+    Ours = chappe_sip_uas_response:contact(Req, tls_uri(S), S#state.contact),
+    Contact = <<Ours/binary, (maps:get(contact_params, Opts, <<>>))/binary>>,
+    Owner = maps:get(owner, Opts, WorkerPid),
+    FsmArgs = chappe_sip_uas_response:fsm_args(Req, #{
+        leg => LegH,
+        owner => Owner,
+        local_tag => LocalTag,
+        contact => Contact,
+        opts => Opts
+    }),
+    case chappe_sip_dialog_sup:start_dialog(FsmArgs) of
+        {ok, Pid} ->
+            _ = erlang:monitor(process, Pid),
+            %% send the dialog-forming response here (not from the fsm
+            %% init: that would re-enter this gen_server and deadlock).
+            %% op_ok/op_failed for the leg routes to Pid.
+            _ = send_uas_response(TxnH, LocalTag, Opts, Contact, S),
+            {reply, {ok, Pid}, uas_started(Req, Opts, Owner, LegH, Pid, S)};
+        {error, Reason} ->
+            _ = leg_destroy(TxnH, LegH, S),
+            {reply, {error, Reason}, S}
     end.
 
-req_cseq(Msg) ->
-    case chappe_sip_msg:cseq(Msg) of
-        {ok, #{seq := N}} -> N;
-        _ -> 0
-    end.
+%% the dialog's handles, and its owner's deadline disarmed: the owner now
+%% blocks for the call's lifetime and must not be killed mid-call
+uas_started(Req, Opts, Owner, LegH, Pid, S) ->
+    Msg = chappe_sip_req:msg(Req),
+    TxnH = chappe_sip_req:txn(Req),
+    S1 = disarm_deadline(Owner, S),
+    HM0 = S1#state.handles,
+    AckWait = chappe_sip_uas_response:ack_wait(Msg, Opts),
+    HM1 =
+        case AckWait andalso not ?IS_WS(TxnH) of
+            true -> HM0#{TxnH => Pid};
+            false -> HM0
+        end,
+    Early =
+        case chappe_sip_uas_response:early(Msg, Opts) of
+            true -> (S1#state.early_uas)#{TxnH => Pid};
+            false -> S1#state.early_uas
+        end,
+    %% the dialog sends from the address the request came to
+    Locals =
+        case chappe_sip_binds:local(chappe_sip_req:meta(Req)) of
+            undefined -> S1#state.locals;
+            L -> (S1#state.locals)#{Pid => L}
+        end,
+    S1#state{
+        handles = HM1#{LegH => Pid},
+        dialogs = (S1#state.dialogs)#{Pid => true},
+        early_uas = Early,
+        locals = Locals
+    }.
 
 %% create the dialog leg on the backend that owns the request's transaction
 leg_create(TxnH, Req, CallId, LocalAddr, RemoteAddr, _S) when ?IS_WS(TxnH) ->
@@ -1609,178 +1477,9 @@ leg_destroy(_TxnH, _LegH, _S) ->
     ok.
 
 send_uas_response(TxnH, LocalTag, Opts, Contact, S) ->
-    Status = maps:get(status, Opts, 200),
-    Reason = maps:get(reason, Opts, <<"OK">>),
-    ExtraHeaders = with_allow(
-        Status,
-        Opts,
-        with_supported(
-            Status,
-            Opts,
-            with_contact(Status, maps:get(headers, Opts, []), Contact)
-        )
-    ),
-    {Headers, Body} =
-        case maps:get(local_sdp, Opts, undefined) of
-            undefined ->
-                {chappe_sip_hdr_io:join(ExtraHeaders), <<>>};
-            Sdp ->
-                {
-                    chappe_sip_hdr_io:join(
-                        [
-                            {<<"Content-Type">>, <<"application/sdp">>}
-                            | ExtraHeaders
-                        ]
-                    ),
-                    iolist_to_binary(Sdp)
-                }
-        end,
-    Sent =
-        case ?IS_WS(TxnH) of
-            true ->
-                ws_call(fun() ->
-                    chappe_sip_ws_transport:respond(
-                        TxnH,
-                        Status,
-                        Reason,
-                        Headers,
-                        Body,
-                        LocalTag
-                    )
-                end);
-            false ->
-                (S#state.mod):respond(
-                    S#state.engine,
-                    TxnH,
-                    Status,
-                    Reason,
-                    Headers,
-                    Body,
-                    LocalTag
-                )
-        end,
-    sent(TxnH, Status, Sent).
-
-%% A dialog-forming 2xx MUST carry a Contact (RFC 3261 12.1.1) so the peer
-%% can build the dialog and target in-dialog requests. Add our own unless the
-%% app already supplied one.
-with_contact(Status, Headers, Contact) when Status >= 200, Status < 300 ->
-    case has_hdr(<<"contact">>, Headers) of
-        true -> Headers;
-        false -> Headers ++ [{<<"Contact">>, Contact}]
-    end;
-with_contact(_Status, Headers, _Contact) ->
-    Headers.
-
-%% the 2xx forming an INVITE dialog lists our option tags (RFC 3891 6.2),
-%% unless the app set its own Supported
-with_supported(Status, #{subscription := _}, Headers) when Status >= 200 ->
-    Headers;
-with_supported(Status, _Opts, Headers) when Status >= 200, Status < 300 ->
-    case has_hdr(<<"supported">>, Headers) of
-        true -> Headers;
-        false -> Headers ++ [{<<"Supported">>, ?SUPPORTED}]
-    end;
-with_supported(_Status, _Opts, Headers) ->
-    Headers.
-
-%% RFC 3261 13.3.1.4: a 2xx to an INVITE SHOULD carry Allow
-with_allow(Status, #{subscription := _}, Headers) when Status >= 200 ->
-    Headers;
-with_allow(Status, _Opts, Headers) when Status >= 200, Status < 300 ->
-    case has_hdr(<<"allow">>, Headers) of
-        true -> Headers;
-        false -> Headers ++ [{<<"Allow">>, ?ALLOW}]
-    end;
-with_allow(_Status, _Opts, Headers) ->
-    Headers.
-
-dialog_contact(Opts, Contact) ->
-    Supplied = [
-        iolist_to_binary(V)
-     || {N, V} <- maps:get(headers, Opts, []),
-        string:lowercase(N) =:= <<"contact">>
-    ],
-    case Supplied of
-        [C | _] -> C;
-        [] -> Contact
-    end.
-
-has_hdr(Lname, Headers) ->
-    lists:any(
-        fun
-            ({N, _}) -> string:lowercase(N) =:= Lname;
-            (_) -> false
-        end,
-        Headers
-    ).
-
-%% RFC 3261 12.1.1: the 2xx Contact is a SIPS URI when the request had one
-%% in its Request-URI, its top Record-Route, or (with no Record-Route) its
-%% Contact; RFC 5630 also gives a dialog formed over TLS our sips Contact.
-uas_contact(Req, S) ->
-    Msg = chappe_sip_req:msg(Req),
-    Secure =
-        maps:get(transport, chappe_sip_req:meta(Req), undefined) =:= <<"tls">> orelse
-            lists:any(fun chappe_sip_uri:is_sips/1, [
-                chappe_sip_msg:uri(Msg) | sips_candidates(Msg)
-            ]),
-    Local = chappe_sip_binds:local(chappe_sip_req:meta(Req)),
-    Contact =
-        case
-            {
-                Secure,
-                chappe_sip_binds:tls_contact_at(Local),
-                chappe_sip_binds:contact_at(Local),
-                tls_uri(S)
-            }
-        of
-            {true, Tls, _, _} when is_binary(Tls) -> <<"<", Tls/binary, ">">>;
-            {true, _, _, Tls} when is_binary(Tls) -> <<"<", Tls/binary, ">">>;
-            {false, _, C, _} when is_binary(C) -> <<"<", C/binary, ">">>;
-            _ -> local_contact(S)
-        end,
-    %% behind 1:1 NAT, a peer on the local network gets the local address
-    chappe_sip_binds:for_peer(Contact, chappe_sip_req:source_ip(Req)).
-
-%% the top Record-Route, else the Contact, as bare URIs
-sips_candidates(Msg) ->
-    Hdr =
-        case chappe_sip_msg:get(<<"record-route">>, Msg) of
-            undefined -> chappe_sip_msg:get(<<"contact">>, Msg);
-            RR -> RR
-        end,
-    case Hdr of
-        undefined ->
-            [];
-        V ->
-            case chappe_sip_hdr:split_list(V) of
-                [Top | _] -> [chappe_sip_hdr:name_addr_uri(Top)];
-                [] -> []
-            end
-    end.
-
-%% The bound contact may arrive as a name-addr (<uri;params>); extract the
-%% bare URI and drop params so the Contact is a single well-formed name-addr.
-local_contact(#state{contact = C}) when is_binary(C) ->
-    Uri = chappe_sip_hdr:name_addr_uri(C),
-    Base =
-        case binary:split(Uri, <<";">>) of
-            [B | _] -> B;
-            _ -> Uri
-        end,
-    <<"<", Base/binary, ">">>;
-local_contact(_) ->
-    <<"<sip:anonymous.invalid>">>.
-
-%% peer Contact URI (in-dialog request target), else the remote addr URI
-contact_uri(undefined, RemoteAddr) ->
-    chappe_sip_hdr:name_addr_uri(RemoteAddr);
-contact_uri(Contact, RemoteAddr) ->
-    case chappe_sip_hdr:name_addr(Contact) of
-        {ok, #{uri := Uri}} -> Uri;
-        _ -> chappe_sip_hdr:name_addr_uri(RemoteAddr)
-    end.
+    {Status, Reason, Headers, Body} =
+        chappe_sip_uas_response:build(Opts, Contact),
+    tagged_respond(TxnH, Status, Reason, Headers, Body, LocalTag, S).
 
 %% Create a dialog (UAC path): allocate the leg and start the fsm already
 %% established. Returns {ok, DialogPid, LegH}.
@@ -1846,35 +1545,29 @@ dialog_leg_destroy(_LegH, _S) ->
     ok.
 
 %% A request carrying our own Record-Route on top is in-dialog traffic for a
-%% dialog we record-routed; forward it as a proxy instead of routing to a
-%% local handler. Otherwise dispatch to the registered method handler.
-dispatch(
-    TxnH,
-    Meta,
-    Raw,
-    #state{contact = Contact, workers = W} = S
-) ->
-    case is_own_route(Raw, Contact) of
-        true ->
-            case map_size(W) >= chappe_sip_config:get(max_request_workers) of
-                true ->
-                    shed(TxnH, 503, <<"Service Unavailable">>, S),
-                    S;
-                false ->
-                    Handler = fun(Req, Res) ->
-                        chappe_sip_proxy:forward_indialog(Req, Res)
-                    end,
-                    %% a proxy: Require is the far UAS's (RFC 3261 16)
-                    spawn_worker(
-                        TxnH, Meta, Raw, Handler, [], #{role => proxy}, S
-                    )
-            end;
-        false ->
+%% dialog we record-routed; the proxy forwards it instead of a local
+%% handler. Otherwise dispatch to the registered method handler.
+dispatch(TxnH, Meta, Raw, #state{contact = Contact} = S) ->
+    case {forwarder(), chappe_sip_dispatch:is_own_route(Raw, Contact)} of
+        {Fwd, true} when Fwd =/= undefined ->
+            forward(Fwd, TxnH, Meta, Raw, S);
+        _ ->
             dispatch_local(TxnH, Meta, Raw, S)
     end.
 
+forward(Fwd, TxnH, Meta, Raw, #state{workers = W} = S) ->
+    case map_size(W) >= chappe_sip_config:get(max_request_workers) of
+        true ->
+            shed(TxnH, 503, <<"Service Unavailable">>, S),
+            S;
+        false ->
+            Handler = fun(Req, Res) -> Fwd:forward_indialog(Req, Res) end,
+            %% a proxy: Require is the far UAS's (RFC 3261 16)
+            spawn_worker(TxnH, Meta, Raw, Handler, [], #{role => proxy}, S)
+    end.
+
 dispatch_local(TxnH, #{method := Method} = Meta, Raw, S) ->
-    case stray_in_dialog(Method, Raw) of
+    case chappe_sip_dispatch:stray_in_dialog(Method, Raw) of
         true ->
             %% RFC 3261 12.2.2 and 15.1.2: a request for a dialog we do not
             %% have is not a new one
@@ -1884,25 +1577,10 @@ dispatch_local(TxnH, #{method := Method} = Meta, Raw, S) ->
             dispatch_route(TxnH, Meta, Raw, S)
     end.
 
-%% A BYE, or a request tagged for a dialog, reaching the default leg names
-%% no dialog of ours. A NOTIFY is left to its handler: the application runs
-%% its own subscriptions, and their NOTIFYs carry our tag.
-stray_in_dialog(Method, _Raw) when
-    Method =:= <<"ACK">>; Method =:= <<"CANCEL">>; Method =:= <<"NOTIFY">>
-->
-    false;
-stray_in_dialog(<<"BYE">>, _Raw) ->
-    true;
-stray_in_dialog(_Method, Raw) ->
-    case chappe_sip_msg:parse(Raw) of
-        {ok, Msg} -> chappe_sip_msg:to_tag(Msg) =/= undefined;
-        {error, _} -> false
-    end.
-
 dispatch_route(
     TxnH, #{method := Method} = Meta, Raw, #state{routes = Routes} = S
 ) ->
-    case route_for(Method, Raw, Routes) of
+    case chappe_sip_dispatch:route_for(Method, Raw, Routes, events()) of
         {bad_event, Events} ->
             reject_event(TxnH, Events, S);
         {Handler, Key} ->
@@ -1911,229 +1589,72 @@ dispatch_route(
             unrouted(TxnH, Method, Routes, S)
     end.
 
-%% The handler of a request: its method's, the built-in NOTIFY router
-%% (subscriptions of ours, REFERs we sent, then yours), or for a SUBSCRIBE
-%% the one of its event package. Key names the route options.
-route_for(<<"NOTIFY">> = M, _Raw, Routes) ->
-    {chappe_sip_notify_router:handler(maps:get(M, Routes, undefined)), M};
-route_for(<<"SUBSCRIBE">> = M, Raw, Routes) ->
-    Pkgs = cfg_get(packages, #{}),
-    Pkg = event_package(Raw),
-    case {Pkgs, Routes} of
-        {#{Pkg := Fun}, _} when Pkg =/= <<"refer">> ->
-            {Fun, {package, Pkg}};
-        {_, #{M := Handler}} ->
-            {Handler, M};
-        _ when map_size(Pkgs) > 0 ->
-            {bad_event, allow_events()};
-        _ ->
-            none
-    end;
-route_for(Method, _Raw, Routes) ->
-    case Routes of
-        #{Method := Handler} -> {Handler, Method};
-        _ -> none
-    end.
-
-dispatch_handler(
-    TxnH,
-    #{method := Method} = Meta,
-    Raw,
-    Handler,
-    RouteKey,
-    #state{middlewares = MW, workers = W} = S
-) ->
+dispatch_handler(TxnH, #{method := Method} = Meta, Raw, Handler, Key, S) ->
     Max = chappe_sip_config:get(max_request_workers),
-    case bad_event(Method, Raw) of
+    case chappe_sip_dispatch:bad_event(Method, Raw, events()) of
         {true, Events} ->
             reject_event(TxnH, Events, S);
         refer ->
             respond_txn(TxnH, 403, <<"Forbidden">>, <<>>, S),
             S;
-        false when map_size(W) >= Max ->
+        false when map_size(S#state.workers) >= Max ->
             shed(TxnH, 503, <<"Service Unavailable">>, S),
             S;
         false ->
-            case merge_check(TxnH, Method, Raw, S) of
-                merged ->
-                    respond_txn(TxnH, 482, <<"Loop Detected">>, S),
-                    S;
-                Key ->
-                    index_merge(
-                        Key,
-                        TxnH,
-                        spawn_worker(
-                            TxnH,
-                            Meta,
-                            Raw,
-                            Handler,
-                            MW,
-                            cfg_get({route_opts, RouteKey}, #{}),
-                            S
-                        )
-                    )
-            end
+            run_handler(TxnH, Meta, Raw, Handler, Key, S)
     end.
 
-unrouted(_TxnH, <<"ACK">>, _Routes, S) ->
-    %% ACK never needs an answer
-    S;
-unrouted(TxnH, <<"CANCEL">>, _Routes, S) ->
-    %% nta answers a CANCEL matching one of our transactions; this one
-    %% matches none (RFC 3261 9.2)
-    respond_txn(TxnH, 481, <<"Call/Transaction Does Not Exist">>, S),
-    S;
+run_handler(TxnH, #{method := Method} = Meta, Raw, Handler, RouteKey, S) ->
+    case merge_check(TxnH, Method, Raw, S) of
+        merged ->
+            respond_txn(TxnH, 482, <<"Loop Detected">>, S),
+            S;
+        Key ->
+            RouteOpts = cfg_get({route_opts, RouteKey}, #{}),
+            MW = S#state.middlewares,
+            index_merge(
+                Key,
+                TxnH,
+                spawn_worker(TxnH, Meta, Raw, Handler, MW, RouteOpts, S)
+            )
+    end.
+
+%% respond_txn handles a WS or native transaction (a bare shed would send
+%% a WS txn to nta)
 unrouted(TxnH, Method, Routes, S) ->
-    %% respond_txn handles a WS or native transaction (a bare shed would
-    %% send a WS txn to nta)
-    {Status, Reason, Hdrs} = unhandled(Method, Routes),
-    respond_txn(TxnH, Status, Reason, chappe_sip_hdr_io:join(Hdrs), S),
-    S.
-
-%% No handler for the method. OPTIONS is answered 200 with what we take,
-%% as every UA must (RFC 3261 11); a method we know gets 405 and one we do
-%% not 501 (21.4.5, 21.5.2), both with Allow.
-unhandled(<<"OPTIONS">>, Routes) ->
-    Events =
-        case allow_events() of
-            any ->
-                [];
-            [] ->
-                [];
-            Pkgs ->
-                [
-                    {<<"Allow-Events">>,
-                        iolist_to_binary(lists:join(<<", ">>, Pkgs))}
-                ]
-        end,
-    {200, <<"OK">>,
-        [
-            {<<"Allow">>, allow_value(Routes)},
-            {<<"Accept">>, <<"application/sdp">>},
-            {<<"Supported">>, ?SUPPORTED}
-        ] ++ Events};
-unhandled(Method, Routes) ->
-    Allow = [{<<"Allow">>, allow_value(Routes)}],
-    case lists:member(Method, ?KNOWN_METHODS) of
-        true -> {405, <<"Method Not Allowed">>, Allow};
-        false -> {501, <<"Not Implemented">>, Allow}
+    case chappe_sip_dispatch:unrouted(Method, Routes, events()) of
+        noreply ->
+            S;
+        {Status, Reason, Hdrs} ->
+            Joined = chappe_sip_hdr_io:join(Hdrs),
+            respond_txn(TxnH, Status, Reason, Joined, S),
+            S
     end.
-
-%% A SUBSCRIBE for a package the notifier does not serve, or with no Event
-%% (the PINT default, never served), is answered 489 with the packages it
-%% does serve (RFC 6665 4.2.1.1, 7.2.1, 8.3.2). An out-of-dialog SUBSCRIBE
-%% for refer is refused 403.
-bad_event(<<"SUBSCRIBE">>, Raw) ->
-    case {event_package(Raw), allow_events()} of
-        {<<"refer">>, _} ->
-            %% a refer subscription exists only inside its REFER's dialog:
-            %% out of dialog it matches none (RFC 3515 2.4.4)
-            refer;
-        {_, any} ->
-            false;
-        {Pkg, Events} ->
-            case lists:member(Pkg, Events) of
-                true -> false;
-                false -> {true, Events}
-            end
-    end;
-bad_event(_Method, _Raw) ->
-    false.
 
 reject_event(TxnH, Events, S) ->
-    Hdr = chappe_sip_hdr_io:join([
-        {<<"Allow-Events">>, iolist_to_binary(lists:join(<<", ">>, Events))}
-    ]),
+    Hdr = chappe_sip_hdr_io:join([chappe_sip_dispatch:event_header(Events)]),
     respond_txn(TxnH, 489, <<"Bad Event">>, Hdr, S),
     S.
 
-%% The event packages we serve: those registered with handle_package/3 and
-%% those the SUBSCRIBE handler serves (chappe_sip:subscribe/2), or `any'
-%% when that handler was registered without a list (or none serves any).
+%% the event packages registered, and the events of the SUBSCRIBE handler
+events() ->
+    {cfg_get(packages, #{}), cfg_get(events, undefined)}.
+
+%% The event packages we serve: those registered with a handler of their
+%% own and those the SUBSCRIBE handler serves (chappe_sip:subscribe/2), or
+%% `any' when that handler was registered without a list (or none serves
+%% any).
 -spec allow_events() -> any | [binary()].
 allow_events() ->
-    Pkgs = lists:sort(maps:keys(cfg_get(packages, #{}))),
-    case {cfg_get(events, undefined), Pkgs} of
-        {any, _} -> any;
-        {undefined, []} -> any;
-        {undefined, _} -> Pkgs;
-        {Events, _} -> lists:usort(Events ++ Pkgs)
-    end.
+    {Pkgs, Events} = events(),
+    chappe_sip_dispatch:allow_events(Pkgs, Events).
 
-event_package(Raw) ->
-    case chappe_sip_msg:parse(Raw) of
-        {ok, Msg} ->
-            case chappe_sip_msg:get(<<"event">>, Msg) of
-                undefined ->
-                    undefined;
-                Ev ->
-                    [Pkg | _] = binary:split(Ev, <<";">>),
-                    string:lowercase(string:trim(Pkg))
-            end;
-        _ ->
-            undefined
-    end.
-
-%% RFC 3261 8.2.2.2: a request with no To-tag whose From-tag, Call-ID and
-%% CSeq match a transaction in progress but whose branch differs reached us
-%% twice (a fork upstream): merged, 482. When that transaction is proxied
-%% the request is a spiral through us (16.3) and goes on. Native
-%% transactions only, the stack keys the WS ones by flow.
+%% merged requests (chappe_sip_dispatch:merge_check/4), native
+%% transactions only: the stack keys the WS ones by flow
 merge_check(TxnH, _Method, _Raw, _S) when ?IS_WS(TxnH) ->
     none;
-merge_check(_TxnH, Method, _Raw, _S) when
-    Method =:= <<"ACK">>; Method =:= <<"CANCEL">>
-->
-    none;
-merge_check(_TxnH, _Method, Raw, #state{merge = Idx, proxied = Px}) ->
-    case merge_key(Raw) of
-        none ->
-            none;
-        {Key, Branch} ->
-            case Idx of
-                #{Key := {B, T, _}} when B =/= Branch ->
-                    case maps:is_key(T, Px) of
-                        true -> {Key, Branch};
-                        false -> merged
-                    end;
-                _ ->
-                    {Key, Branch}
-            end
-    end.
-
-merge_key(Raw) ->
-    case chappe_sip_msg:parse(Raw) of
-        {ok, Msg} ->
-            case
-                {
-                    chappe_sip_msg:to_tag(Msg),
-                    chappe_sip_msg:from_tag(Msg),
-                    chappe_sip_msg:cseq(Msg),
-                    top_branch(Msg)
-                }
-            of
-                {undefined, FT, {ok, #{seq := N, method := M}}, Branch} when
-                    is_binary(FT), is_binary(Branch)
-                ->
-                    {{FT, chappe_sip_msg:call_id(Msg), N, M}, Branch};
-                _ ->
-                    none
-            end;
-        {error, _} ->
-            none
-    end.
-
-top_branch(Msg) ->
-    case chappe_sip_msg:get(<<"via">>, Msg) of
-        undefined ->
-            undefined;
-        V ->
-            [Top | _] = chappe_sip_hdr:split_list(V) ++ [V],
-            case chappe_sip_hdr:via(Top) of
-                {ok, #{params := #{<<"branch">> := B}}} when is_binary(B) -> B;
-                _ -> undefined
-            end
-    end.
+merge_check(_TxnH, Method, Raw, #state{merge = Idx, proxied = Px}) ->
+    chappe_sip_dispatch:merge_check(Method, Raw, Idx, Px).
 
 %% the first transaction of a merge key stays indexed while its worker runs
 index_merge(none, _TxnH, S) ->
@@ -2154,43 +1675,6 @@ forget_txns(Pid, #state{merge = Idx, proxied = Px} = S) ->
         merge = maps:filter(fun(_K, {_, _, P}) -> P =/= Pid end, Idx),
         proxied = maps:filter(fun(_T, P) -> P =/= Pid end, Px)
     }.
-
-%% the methods we take out of dialog: those with a handler, plus the ones
-%% the stack answers itself (ACK, CANCEL, BYE in a dialog, OPTIONS)
-allow_value(Routes) ->
-    Packages = [<<"SUBSCRIBE">> || map_size(cfg_get(packages, #{})) > 0],
-    Methods = lists:usort(
-        maps:keys(Routes) ++ Packages ++
-            [<<"ACK">>, <<"BYE">>, <<"CANCEL">>, <<"OPTIONS">>, <<"NOTIFY">>]
-    ),
-    iolist_to_binary(lists:join(<<", ">>, Methods)).
-
-%% True when the top Route header targets this proxy (a request the far end
-%% loose-routed back to us after we record-routed the dialog). Gated on a
-%% cheap byte scan so requests without a Route header skip the parse.
-is_own_route(Raw, Contact) ->
-    case binary:match(Raw, <<"espx=">>) of
-        nomatch ->
-            false;
-        _ ->
-            case chappe_sip_msg:parse(Raw) of
-                {ok, Msg} ->
-                    CallId = chappe_sip_msg:call_id(Msg),
-                    case chappe_sip_route:routes(Msg) of
-                        [Top | _] ->
-                            chappe_sip_route:is_self(Top, Contact, CallId) orelse
-                                %% behind a strict router our Record-Route
-                                %% is the Request-URI (RFC 3261 16.4)
-                                chappe_sip_route:uri_is_self(
-                                    chappe_sip_msg:uri(Msg), CallId
-                                );
-                        [] ->
-                            false
-                    end;
-                {error, _} ->
-                    false
-            end
-    end.
 
 %% A worker that has become a call owner (created a dialog) or a proxy/UAC
 %% originator is legitimately long-lived; disarm its handler deadline so it is
