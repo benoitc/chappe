@@ -1508,7 +1508,9 @@ start_request(From, ReqSpec, D, Kind) ->
     Headers =
         Headers0 ++
             st_request_headers(Method, Headers0, D) ++
-            ct_header(maps:get(content_type, ReqSpec, undefined), Body),
+            chappe_sip_hdr_io:content_type(
+                maps:get(content_type, ReqSpec, undefined), Body
+            ),
     Raw = build_indialog(D1, Method, Seq, Headers, Body),
     case chappe_sip_engine:send_request(route(D), Raw, self()) of
         {ok, TxnH} ->
@@ -1518,10 +1520,6 @@ start_request(From, ReqSpec, D, Kind) ->
         {error, Reason} ->
             {keep_state, D, [{reply, From, {error, Reason}}]}
     end.
-
-ct_header(undefined, <<>>) -> [];
-ct_header(undefined, _Body) -> [];
-ct_header(CT, _Body) -> [{<<"Content-Type">>, CT}].
 
 %% hold/unhold rewrite the stored local SDP direction attribute
 resolve_sdp(hold, CurSdp, _Hold) ->

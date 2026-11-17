@@ -107,11 +107,9 @@ final_notify(#{event := Event} = Sub, Reason, TermReason) ->
         end,
     Headers =
         event_header(Event) ++
-            [{<<"Subscription-State">>, State}] ++ ct_header(CT, Body),
+            [{<<"Subscription-State">>, State}] ++
+            chappe_sip_hdr_io:content_type(CT, Body),
     {Sub#{term_reason := TermReason}, Headers, Body}.
-
-ct_header(undefined, _Body) -> [];
-ct_header(CT, _Body) -> [{<<"Content-Type">>, CT}].
 
 %% The Subscription-State of a NOTIFY from notify/2's state, and whether
 %% it ends the subscription. Sub is undefined outside a subscription (the
