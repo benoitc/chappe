@@ -10,8 +10,8 @@ and `apps/chappe_esl/docs/design/`.
 
 ## Status
 
-Accepted as a rule (`AGENTS.md`, "Conventions"). The reason is to confirm by
-the maintainer.
+Accepted (the maintainer's decision, 2026-11-17). The rule is also in
+`AGENTS.md`, "Conventions".
 
 ## Context
 
@@ -146,7 +146,6 @@ All of these pass before a change lands, wired into the Makefile and CI:
 
 ## Open questions
 
-- Is publishing each app on its own the main reason for the rule?
 - Should chappe_mix count as a media leaf, given that the contract says "no
   media concept"? The rtpengine copy listed chappe_mix as a leaf while
   saying "No dependency on chappe_sip, SIP, or any media concept".

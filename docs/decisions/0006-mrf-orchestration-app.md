@@ -8,8 +8,8 @@ chappe_sip.
 
 ## Status
 
-Accepted as a rule (`AGENTS.md`, "Conventions"). The reason is to confirm by
-the maintainer.
+Accepted (the maintainer's decision, 2026-11-17). The rule is also in
+`AGENTS.md`, "Conventions".
 
 ## Context
 
@@ -50,4 +50,4 @@ public `chappe_sip` API (`create_b2bua/4`, `relay_async/2`, `replace_b/3`,
 
 ## Open questions
 
-- Confirm the placement rule for future orchestration apps.
+None.

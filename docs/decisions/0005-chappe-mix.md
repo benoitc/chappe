@@ -7,7 +7,7 @@ you change the mixer's timing, mix or send path.
 
 ## Status
 
-Proposed, to confirm by the maintainer.
+Accepted (the maintainer's decision, 2026-11-17).
 
 ## Context
 
@@ -60,5 +60,4 @@ for every other codec and for SRTP.
 
 ## Open questions
 
-- Confirm the reasons: density, latency, control over relations, the
-  rtpengine mixer not usable?
+None.
