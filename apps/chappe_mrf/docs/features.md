@@ -47,6 +47,10 @@ that shows you how to use it.
   [Conference guide](guides/conference.md#freeswitch-rooms)
 - **Native room recording** through SIPREC to a recording server
   (`record/3` with its URI). [Conference guide](guides/conference.md#record-a-native-room)
+- **Rooms on a cluster**: with `cluster => chappe_cluster`, a room name has
+  one owner in the region, `conference/2` on any node returns it, and a
+  room whose lease is lost takes no new member.
+  [Conference guide](guides/conference.md#run-rooms-on-a-cluster)
 - **Move a member** to another room of the same backend (`transfer/3`).
   [Conference guide](guides/conference.md#move-a-member-to-another-room)
 - **REFER in rooms**, both backends: a member transfers itself out, blind

@@ -90,11 +90,15 @@
 %% What one destination changes over the call's options:
 %%   flow          the registered flow its INVITE goes over (the call's
 %%                 flow option when absent or undefined)
+%%   route_set     Route values its INVITE goes through (a binding
+%%                 another node of a cluster holds: the route set of its
+%%                 binding, chappe_sip:bindings/1)
 %%   headers       added to its INVITE after the call's b_headers
 %%   anchor_params #{a | b => map()}, merged flag by flag over the call's
 %%                 anchor_params for that leg
 -type branch_opts() :: #{
     flow => chappe_sip_engine:flow() | undefined,
+    route_set => [binary()],
     headers => [{binary(), iodata()}],
     anchor_params => #{a | b => map()}
 }.
@@ -522,9 +526,14 @@ dest_bopts(#{opts := BranchOpts, sdp := Sdp}, #{headers := Hdrs} = BOpts) ->
         local_sdp => Sdp,
         headers := Hdrs ++ maps:get(headers, BranchOpts, [])
     },
+    B2 =
+        case BranchOpts of
+            #{route_set := [_ | _] = RS} -> B1#{route_set => RS};
+            _ -> B1
+        end,
     case BranchOpts of
-        #{flow := Flow} when Flow =/= undefined -> B1#{flow => Flow};
-        _ -> B1
+        #{flow := Flow} when Flow =/= undefined -> B2#{flow => Flow};
+        _ -> B2
     end.
 
 %% Call the next target. Timer C: B may ring as long as it keeps sending

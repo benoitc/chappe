@@ -25,8 +25,10 @@
 forward_indialog(Req, Res) ->
     ServerTxn = chappe_sip_req:txn(Req),
     Msg0 = chappe_sip_req:msg(Req),
-    {NextHop, Flows, Msg1} = pop_route(Msg0),
-    Arrived = maps:get(flow, chappe_sip_req:meta(Req), undefined),
+    Edge = chappe_sip_route:edge_flow(Msg0),
+    {NextHop, Flows, Msg1a} = pop_route(Msg0),
+    Msg1 = edge_record_route(Edge, Msg0, Msg1a),
+    Arrived = chappe_sip_route:arrival_flow(chappe_sip_req:meta(Req)),
     Route = indialog_route(Arrived, NextHop, Flows),
     IsInvite = chappe_sip_msg:method(Msg1) =:= <<"INVITE">>,
     IsInvite andalso chappe_sip_engine:mark_proxied(ServerTxn),
@@ -50,7 +52,8 @@ forward_indialog(Req, Res) ->
                         timer_c => TimerC,
                         deadline => erlang:monotonic_time(millisecond) + TimerC,
                         anchor => Anchor,
-                        cancelled => false
+                        cancelled => false,
+                        edge => Edge
                     }),
                     indialog_release(Anchor, Msg1);
                 {error, Reason} ->
@@ -58,7 +61,7 @@ forward_indialog(Req, Res) ->
                         "chappe_sip_proxy: in-dialog forward failed: ~p",
                         [Reason]
                     ),
-                    _ = respond(ServerTxn, 500, <<"Server Internal Error">>)
+                    _ = forward_failed(ServerTxn, Edge, Reason)
             end;
         {error, loop_detected} ->
             _ = respond(ServerTxn, 483, <<"Too Many Hops">>)
@@ -66,23 +69,16 @@ forward_indialog(Req, Res) ->
     chappe_sip_res:mark_final(Res),
     ok.
 
-relay_indialog(#{server := ServerTxn, out := OutTxn, anchor := Anchor} = R) ->
+relay_indialog(#{server := ServerTxn, out := OutTxn} = R) ->
     receive
         {chappe_sip_response, OutTxn, #{status := Status}, Raw} ->
-            Raw2 = indialog_answer(Anchor, Status, Raw),
-            _ = relay(ServerTxn, Status, chappe_sip_route:strip_via(Raw2)),
-            case Status of
-                _ when Status >= 200 ->
+            case lost_flow(Status, maps:get(edge, R, none)) of
+                {lost, Flow} ->
+                    ok = chappe_sip_registry:remove_flow(Flow),
+                    _ = respond(ServerTxn, 430, <<"Flow Failed">>),
                     chappe_sip_engine:finish_txn(OutTxn);
-                100 ->
-                    relay_indialog(R);
-                _ ->
-                    %% Timer C restarts on each provisional (16.7 step 2)
-                    relay_indialog(R#{
-                        deadline :=
-                            erlang:monotonic_time(millisecond) +
-                            maps:get(timer_c, R)
-                    })
+                live ->
+                    relay_response(R, Status, Raw)
             end;
         {chappe_sip_cancel, ServerTxn, _CancelReq} ->
             %% 16.10: a CANCEL for a transit re-INVITE goes to its branch;
@@ -97,7 +93,7 @@ relay_indialog(#{server := ServerTxn, out := OutTxn, anchor := Anchor} = R) ->
             logger:warning("chappe_sip_proxy: in-dialog branch error: ~p", [
                 Reason
             ]),
-            _ = respond(ServerTxn, 500, <<"Server Internal Error">>),
+            _ = forward_failed(ServerTxn, maps:get(edge, R, none), Reason),
             chappe_sip_engine:finish_txn(OutTxn);
         {chappe_sip_op, OutTxn, ok} ->
             relay_indialog(R)
@@ -106,6 +102,58 @@ relay_indialog(#{server := ServerTxn, out := OutTxn, anchor := Anchor} = R) ->
         _ = respond(ServerTxn, 408, <<"Request Timeout">>),
         chappe_sip_engine:finish_txn(OutTxn)
     end.
+
+relay_response(
+    #{server := ServerTxn, out := OutTxn, anchor := Anchor} = R, Status, Raw
+) ->
+    Raw2 = indialog_answer(Anchor, Status, Raw),
+    _ = relay(ServerTxn, Status, chappe_sip_route:strip_via(Raw2)),
+    case Status of
+        _ when Status >= 200 ->
+            chappe_sip_engine:finish_txn(OutTxn);
+        100 ->
+            relay_indialog(R);
+        _ ->
+            %% Timer C restarts on each provisional (16.7 step 2)
+            relay_indialog(R#{
+                deadline :=
+                    erlang:monotonic_time(millisecond) + maps:get(timer_c, R)
+            })
+    end.
+
+%% A 503 on an edge forward over a connection that closed is the stack's
+%% own transport failure, not the UA's answer (the connection went as the
+%% request left): the flow is lost. Any other answer is the UA's.
+lost_flow(503, {ok, {conn, Id} = Flow, _Transport}) ->
+    case chappe_sip_engine:conn_closed(Id) of
+        true -> {lost, Flow};
+        false -> live
+    end;
+lost_flow(_Status, _Edge) ->
+    live.
+
+%% RFC 5626 5.3: the flow an edge route names no longer exists. The UA is
+%% unreachable until it registers again: 430 Flow Failed, and its bindings
+%% on that flow go (chappe_sip_registry retries the removal while the
+%% region has no quorum). Any other failure (the engine or the WS
+%% transport busy, a full transaction table) says nothing of the flow: a
+%% 500, and the binding stays.
+forward_failed(ServerTxn, {ok, Flow, _Transport}, Reason) ->
+    case flow_gone(Reason) of
+        true ->
+            ok = chappe_sip_registry:remove_flow(Flow),
+            respond(ServerTxn, 430, <<"Flow Failed">>);
+        false ->
+            respond(ServerTxn, 500, <<"Server Internal Error">>)
+    end;
+forward_failed(ServerTxn, none, _Reason) ->
+    respond(ServerTxn, 500, <<"Server Internal Error">>).
+
+%% the native stack has no such connection, or the WS transport no such
+%% flow
+flow_gone(<<"unknown flow">>) -> true;
+flow_gone(no_flow) -> true;
+flow_gone(_) -> false.
 
 remaining(Deadline) -> max(0, Deadline - erlang:monotonic_time(millisecond)).
 
@@ -207,9 +255,64 @@ pop_route(Msg) ->
 %% leg is not WS; from a non-WS transport to the WS leg the tokens name.
 indialog_route(Arrived, NextHop, Flows) ->
     case chappe_sip_route:next_flow(Arrived, Flows) of
-        {ws, _} = Ws -> Ws;
-        next_hop -> NextHop
+        next_hop -> NextHop;
+        Route -> Route
     end.
+
+%% RFC 5626 5.3: a new dialog-forming request that came through an edge
+%% route (another node of the cluster sends to a binding this node holds)
+%% is record-routed here, so the dialog's requests come back over the
+%% flow. Two routes (RFC 5658): the one the far side uses names the flow,
+%% the one the registered UA uses (over its own transport) names none, so
+%% each direction is told by the route it arrives on.
+edge_record_route({ok, Flow, Transport}, Msg0, Msg) ->
+    case
+        chappe_sip_msg:to_tag(Msg) =:= undefined andalso
+            dialog_forming(chappe_sip_msg:method(Msg))
+    of
+        true ->
+            [Top | _] = chappe_sip_route:routes(Msg0),
+            Us = chappe_sip_hdr:name_addr_uri(Top),
+            CallId = chappe_sip_msg:call_id(Msg),
+            Far = chappe_sip_route:record_route(
+                Us, {undefined, Flow}, CallId
+            ),
+            Near = chappe_sip_route:record_route(
+                ua_side(Us, Transport),
+                undefined,
+                CallId,
+                ua_transport(Transport)
+            ),
+            chappe_sip_msg:prepend(
+                <<"Record-Route">>,
+                Near,
+                chappe_sip_msg:prepend(<<"Record-Route">>, Far, Msg)
+            );
+        false ->
+            Msg
+    end;
+edge_record_route(none, _Msg0, Msg) ->
+    Msg.
+
+dialog_forming(<<"INVITE">>) -> true;
+dialog_forming(<<"SUBSCRIBE">>) -> true;
+dialog_forming(<<"REFER">>) -> true;
+dialog_forming(_) -> false.
+
+%% the address the registered UA reaches us at: our TLS contact for a TLS
+%% flow, else the edge route's own host and port
+ua_side(Us, <<"tls">>) ->
+    case chappe_sip_binds:contact_or_primary(undefined, true) of
+        Tls when is_binary(Tls) -> Tls;
+        _ -> Us
+    end;
+ua_side(Us, _Transport) ->
+    Us.
+
+ua_transport(<<"tcp">>) -> #{transport => <<"tcp">>};
+ua_transport(<<"ws">>) -> #{transport => <<"ws">>};
+ua_transport(<<"wss">>) -> #{transport => <<"wss">>};
+ua_transport(_) -> #{}.
 
 send_ack(NextHop, Raw) ->
     try chappe_sip_engine:send_stateless(NextHop, Raw, self()) of

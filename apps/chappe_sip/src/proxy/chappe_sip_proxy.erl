@@ -31,7 +31,8 @@
 -type dest() ::
     binary()
     | {ws, integer()}
-    | {flow, binary(), chappe_sip_engine:flow()}.
+    | {flow, binary(), chappe_sip_engine:flow()}
+    | {route, binary(), [binary()]}.
 
 -record(br, {
     dest :: dest(),
@@ -103,6 +104,8 @@ proxy_request(Req, Dest, Opts) when is_binary(Dest) ->
 proxy_request(Req, {ws, _} = Dest, Opts) ->
     proxy_request(Req, [Dest], Opts);
 proxy_request(Req, {flow, _, _} = Dest, Opts) ->
+    proxy_request(Req, [Dest], Opts);
+proxy_request(Req, {route, _, _} = Dest, Opts) ->
     proxy_request(Req, [Dest], Opts);
 proxy_request(_Req, [], _Opts) ->
     {error, no_destination};

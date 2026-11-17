@@ -242,7 +242,11 @@ configure(_) ->
     {error, badarg}.
 
 %% This node's storage config: backend (file, or a module), dir,
-%% retention_days, sweep_interval (ms).
+%% retention_days, sweep_interval (ms), sweep_guard (a fun/0 or {M, F, A}
+%% returning whether this node sweeps now; default always: each node
+%% sweeps its own files. For a shared folder or a network backend, pass
+%% one that is true on one node only, as a chappe_cluster singleton's
+%% lease gives).
 -spec config() -> map().
 config() ->
     call_local(config).

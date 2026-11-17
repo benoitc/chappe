@@ -60,6 +60,8 @@ init([]) ->
             type => worker
         },
         worker(chappe_sip_call),
+        %% the node's hybrid logical clock (chappe_sip_hlc)
+        chappe_sip_hlc:child_spec(),
         worker(chappe_sip_registry_keeper),
         worker(chappe_sip_registry),
         worker(chappe_sip_dialog_index),

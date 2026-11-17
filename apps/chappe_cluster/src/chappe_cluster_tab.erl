@@ -39,6 +39,8 @@
     set_incarnation/1,
     known_epoch/0,
     set_known_epoch/1,
+    new_epoch_ref/0,
+    clear_new_epoch_ref/0,
     hold/3,
     valid/1,
     valid_lease/1,
@@ -174,6 +176,24 @@ known_epoch() ->
 -spec set_known_epoch(pos_integer()) -> ok.
 set_known_epoch(E) ->
     true = ets:insert(?TAB, {known_epoch, E}),
+    ok.
+
+%% The ref of this node's request for a new epoch: the same one across
+%% retries, until one succeeds or is refused.
+-spec new_epoch_ref() -> reference().
+new_epoch_ref() ->
+    case lookup(new_epoch_ref) of
+        [{new_epoch_ref, Ref}] ->
+            Ref;
+        _ ->
+            Ref = make_ref(),
+            true = ets:insert(?TAB, {new_epoch_ref, Ref}),
+            Ref
+    end.
+
+-spec clear_new_epoch_ref() -> ok.
+clear_new_epoch_ref() ->
+    true = ets:delete(?TAB, new_epoch_ref),
     ok.
 
 -spec leader() -> {atom(), node()} | undefined.

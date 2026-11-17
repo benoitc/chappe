@@ -117,6 +117,35 @@ end,
 {ok, _V3} = chappe_cluster:cas(<<"peer/new">>, 0, x).   %% create only
 ```
 
+On a request path, bound the wait for the quorum, delete only the version
+you read, and list what a prefix holds (from the local replica):
+
+```erlang
+{ok, V4} = chappe_cluster:cas(<<"peer/other">>, 0, y, #{timeout => 500}),
+ok = chappe_cluster:delete(<<"peer/other">>, #{version => V4, timeout => 500}),
+{ok, Keys, Next} = chappe_cluster:keys(<<"peer/">>).
+```
+
+`keys/1,2` is paginated: a page holds at most `limit` keys (default 1000,
+at most 10000), sorted. When more remain, `Next` is `{more, Cursor}`; pass
+the cursor for the next page, until `done`. A page costs the replica the
+keys it returns, not a scan of the KV:
+
+```erlang
+all(Prefix) -> all(Prefix, #{}, []).
+
+all(Prefix, Opts, Acc) ->
+    case chappe_cluster:keys(Prefix, Opts) of
+        {ok, Keys, done} -> lists:append(lists:reverse([Keys | Acc]));
+        {ok, Keys, {more, C}} -> all(Prefix, Opts#{cursor => C}, [Keys | Acc]);
+        {error, _} = E -> E
+    end.
+```
+
+A delete of a version that is no longer the key's returns
+`{error, {version, Current}}` and leaves the key alone, so a delete never
+removes a write it did not see.
+
 Watch a prefix from the process that wants the changes:
 
 ```erlang

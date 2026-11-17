@@ -30,7 +30,9 @@
          esc_max_per_resource/1, esc_body_413/1, esc_watch_once/1]).
 -export([pa_full_state/1, pa_rate/1, pa_accept_406/1, pa_deny_403/1,
          pa_pending/1, pa_polite/1, pa_digest/1, pa_fetch/1]).
--export([mwi_initial_and_update/1, mwi_rate/1, mwi_auth/1]).
+-export([mwi_initial_and_update/1, mwi_rate/1, mwi_auth/1,
+         mwi_other_node/1, mwi_order_across_nodes/1,
+         mwi_clock_ahead_does_not_shadow/1, ahead_ms/0]).
 -export([epa_lifecycle/1, epa_one_at_a_time/1, epa_412/1, epa_423/1,
          epa_digest/1]).
 -export([watcher_pidf/1, watcher_mwi/1, watcher_one_dialog/1,
@@ -53,7 +55,9 @@ groups() ->
                 esc_max_per_resource, esc_body_413, esc_watch_once]},
      {pa, [], [pa_full_state, pa_rate, pa_accept_406, pa_deny_403,
                pa_pending, pa_polite, pa_digest, pa_fetch]},
-     {mwi, [], [mwi_initial_and_update, mwi_rate, mwi_auth]},
+     {mwi, [], [mwi_initial_and_update, mwi_rate, mwi_auth,
+                 mwi_other_node, mwi_order_across_nodes,
+                 mwi_clock_ahead_does_not_shadow]},
      {epa, [], [epa_lifecycle, epa_one_at_a_time, epa_412, epa_423,
                 epa_digest]},
      {watcher, [], [watcher_pidf, watcher_mwi, watcher_one_dialog,
@@ -511,6 +515,117 @@ mwi_initial_and_update(Config) ->
     {N2, _} = recv_notify(Sock, EP),
     ?assertEqual(<<"Messages-Waiting: yes\r\nMessage-Account: ", Acc/binary,
                    "\r\nVoice-Message: 2/1\r\n">>, body(N2)).
+
+%% update/2 on another node reaches a subscriber of this one: the
+%% notifiers of every node share a pg group, with no cluster configured.
+mwi_other_node(Config) ->
+    {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
+                        ?config(user, Config)},
+    ok = chappe_sip_test_cluster:ensure(),
+    {Peer, Node} = chappe_sip_test_cluster:peer("mwi"),
+    try
+        {ok, _} = erpc:call(Node, application, ensure_all_started, [chappe_sip]),
+        Acc = res(User),
+        ok = chappe_sip_mwi:serve(#{summary => fun(_) -> #{} end}),
+        send(Sock, EP, subscribe(Sock, Acc, <<"message-summary">>, [])),
+        {200, _} = ok_and_notify(Sock),
+        Here = node(),
+        ok = wait_until(fun() ->
+            lists:member(Here, [node(P) || P <- erpc:call(Node, pg, get_members,
+                [chappe_sip_call:scope(), chappe_sip_mwi])])
+        end),
+        timer:sleep(1100),
+        ok = erpc:call(Node, chappe_sip_mwi, update,
+                       [Acc, #{messages => #{voice => {4, 0}}}]),
+        {N2, _} = recv_notify(Sock, EP),
+        ?assertMatch({_, _}, binary:match(body(N2), <<"Voice-Message: 4/0">>))
+    after
+        chappe_sip_test_cluster:stop_peer(Peer)
+    end.
+
+%% Two updates of one account on two nodes, the older one delivered
+%% last on one of them: both nodes end with the newer summary.
+mwi_order_across_nodes(_Config) ->
+    ok = chappe_sip_test_cluster:ensure(),
+    {Peer, Node} = chappe_sip_test_cluster:peer("mwio"),
+    try
+        {ok, _} = erpc:call(Node, application, ensure_all_started, [chappe_sip]),
+        Acc = <<"sip:order@127.0.0.1">>,
+        Here = node(),
+        ok = wait_until(fun() ->
+            lists:member(Here, [node(P) || P <- erpc:call(Node, pg, get_members,
+                [chappe_sip_call:scope(), chappe_sip_mwi])])
+        end),
+        Remote = erpc:call(Node, erlang, whereis, [chappe_sip_mwi_notifier]),
+        %% the peer's notifier holds its mail: the older update, made
+        %% there, waits behind it
+        ok = sys:suspend(Remote),
+        Older = #{messages => #{voice => {1, 0}}},
+        Newer = #{messages => #{voice => {9, 0}}},
+        Self = self(),
+        _ = spawn(fun() ->
+                      Self ! {older, erpc:call(Node, chappe_sip_mwi, update, [Acc, Older])}
+                  end),
+        timer:sleep(200),
+        ok = chappe_sip_mwi:update(Acc, Newer),
+        ok = sys:resume(Remote),
+        receive {older, ok} -> ok after 5000 -> ct:fail(no_older) end,
+        timer:sleep(300),
+        Key = chappe_sip_esc:resource(Acc),
+        ?assertEqual(Newer, chappe_sip_notifier:get(chappe_sip_mwi_notifier, Key)),
+        ?assertEqual(Newer, erpc:call(Node, chappe_sip_notifier, get,
+                                      [chappe_sip_mwi_notifier, Key]))
+    after
+        chappe_sip_test_cluster:stop_peer(Peer)
+    end.
+
+%% A node whose wall clock runs an hour ahead updates an account; this
+%% node, having seen it, updates it after. The later update wins on both
+%% nodes: the order follows what each node saw (HLC), not the wall clocks.
+mwi_clock_ahead_does_not_shadow(_Config) ->
+    ok = chappe_sip_test_cluster:ensure(),
+    {Peer, Node} = chappe_sip_test_cluster:peer("mwic"),
+    try
+        ok = erpc:call(Node, application, set_env,
+                       [chappe_sip, wall_clock, {?MODULE, ahead_ms, []}]),
+        {ok, _} = erpc:call(Node, application, ensure_all_started, [chappe_sip]),
+        Acc = <<"sip:clock@127.0.0.1">>,
+        Key = chappe_sip_esc:resource(Acc),
+        Here = node(),
+        ok = wait_until(fun() ->
+            lists:member(Here, [node(P) || P <- erpc:call(Node, pg, get_members,
+                [chappe_sip_call:scope(), chappe_sip_mwi])])
+        end),
+        ok = wait_until(fun() ->
+            lists:member(Node, [node(P) || P <- pg:get_members(
+                chappe_sip_call:scope(), chappe_sip_mwi)])
+        end),
+        First = #{messages => #{voice => {1, 0}}},
+        Later = #{messages => #{voice => {7, 0}}},
+        ok = erpc:call(Node, chappe_sip_mwi, update, [Acc, First]),
+        ok = wait_until(fun() ->
+            chappe_sip_notifier:get(chappe_sip_mwi_notifier, Key) =:= First
+        end),
+        ok = chappe_sip_mwi:update(Acc, Later),
+        timer:sleep(300),
+        ?assertEqual(Later, chappe_sip_notifier:get(chappe_sip_mwi_notifier, Key)),
+        ?assertEqual(Later, erpc:call(Node, chappe_sip_notifier, get,
+                                      [chappe_sip_mwi_notifier, Key]))
+    after
+        chappe_sip_test_cluster:stop_peer(Peer)
+    end.
+
+%% the peer's wall clock, an hour ahead (ms)
+ahead_ms() ->
+    erlang:system_time(millisecond) + 3600 * 1000.
+
+wait_until(F) -> wait_until(F, 50).
+wait_until(_F, 0) -> {error, timeout};
+wait_until(F, N) ->
+    case F() of
+        true -> ok;
+        false -> timer:sleep(100), wait_until(F, N - 1)
+    end.
 
 %% Never more than one NOTIFY a second to a subscriber.
 %% req: R3842-20

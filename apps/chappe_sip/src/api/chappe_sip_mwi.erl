@@ -17,10 +17,20 @@
 %% Request-URI's address-of-record), and update/2 sends a new summary to
 %% every subscriber of an account, never more than once a second to one of
 %% them (RFC 3842 3.11).
+%%
+%% Across nodes: the notifier of each node joins the chappe_sip_mwi group
+%% of the chappe_sip pg scope, and update/2 reaches the subscribers of
+%% every node, whichever node took the SUBSCRIBE. It is a lookup, not an
+%% owner: no lease, and it works without chappe_cluster. Each update
+%% carries a version (a hybrid logical clock stamp, chappe_sip_hlc, then
+%% the node and a counter), and a notifier keeps the latest it saw, so
+%% updates made at once on two nodes end the same on both, and an update
+%% made after another one was seen wins, whatever the nodes' wall clocks
+%% say.
 -module(chappe_sip_mwi).
 
 -export([render/1, parse/1, content_type/0]).
--export([serve/1, update/2, body/3]).
+-export([serve/1, update/2, body/3, group/0]).
 -export_type([summary/0]).
 
 -define(N, chappe_sip_mwi_notifier).
@@ -175,10 +185,35 @@ serve(#{summary := Summary} = Opts) when is_function(Summary, 1) ->
         subscribe(Req, Res, Opts)
     end).
 
-%% Account's summary changed: its subscribers get it.
+%% Account's summary changed: its subscribers get it, on every node.
 -spec update(binary(), summary()) -> ok.
 update(Account, Summary) ->
-    chappe_sip_notifier:put(?N, chappe_sip_esc:resource(Account), Summary).
+    Key = chappe_sip_esc:resource(Account),
+    %% this node's clock now, moved past the update the notifier last
+    %% took for the account when that one is not before it (an update
+    %% seen from a node whose wall clock runs ahead); then the node and a
+    %% counter. The later update wins on every node, whichever arrives
+    %% last
+    Here = node(),
+    Stamp = chappe_sip_hlc:now(),
+    N = erlang:unique_integer([monotonic]),
+    Next = fun(Last) ->
+        {chappe_sip_hlc:later(Stamp, stamp(Last)), Here, N}
+    end,
+    {ok, Version} = chappe_sip_notifier:put_next(?N, Key, Summary, Next),
+    _ = [
+        chappe_sip_notifier:put_async(P, Key, Summary, Version)
+     || P <- pg:get_members(chappe_sip_call:scope(), group()),
+        node(P) =/= Here
+    ],
+    ok.
+
+stamp({Stamp, _Node, _N}) -> Stamp;
+stamp(_) -> undefined.
+
+%% The pg group (chappe_sip scope) of the message-summary notifiers.
+-spec group() -> atom().
+group() -> chappe_sip_mwi.
 
 %% chappe_sip_notifier callback
 -spec body(binary(), atom(), term()) -> {binary(), binary()}.

@@ -13,7 +13,7 @@
 
 -include("chappe_sip.hrl").
 
--export([start_link/2]).
+-export([start_link/2, initial/1, share/3]).
 -export([init/1, callback_mode/0, handle_event/4]).
 
 -record(state, {
@@ -26,7 +26,9 @@
     %% answered and failed probes in a row
     oks = 0 :: non_neg_integer(),
     fails = 0 :: non_neg_integer(),
-    info :: chappe_sip_peers:info()
+    info :: chappe_sip_peers:info(),
+    %% singleton: this process has written the KV once
+    shared = false :: boolean()
 }).
 -type state() :: #state{}.
 
@@ -46,10 +48,11 @@ start_link(Name, Opts) ->
 
 callback_mode() -> handle_event_function.
 
--spec init({term(), map()}) -> gen_statem:init_result(unknown, state()).
-init({Name, Opts0}) ->
+%% A peer's row before its first probe.
+-spec initial(map()) -> chappe_sip_peers:info().
+initial(Opts0) ->
     Opts = maps:merge(?DEFAULTS, Opts0),
-    Info = #{
+    #{
         uri => maps:get(uri, Opts),
         group => maps:get(group, Opts),
         priority => maps:get(priority, Opts),
@@ -58,16 +61,37 @@ init({Name, Opts0}) ->
         last_status => undefined,
         rtt_ms => undefined,
         since => erlang:system_time(millisecond)
-    },
-    ok = chappe_sip_peers:put(Name, Info),
+    }.
+
+-spec init({term(), map()}) ->
+    gen_statem:init_result(unknown | up | down, state()).
+init({Name, Opts0}) ->
+    Opts = maps:merge(?DEFAULTS, Opts0),
+    Info = start_info(Name, Opts),
     S = #state{
         name = Name, uri = maps:get(uri, Opts), opts = Opts, info = Info
     },
-    {ok, unknown, S, [{{timeout, probe}, 0, probe}]}.
+    {ok, maps:get(state, Info), S, [{{timeout, probe}, 0, probe}]}.
+
+%% all_nodes: a fresh row in the local table. singleton: the region's
+%% last word on the peer, so a takeover goes on from it (an up peer stays
+%% up while the new prober counts).
+start_info(Name, #{probe := singleton} = Opts) ->
+    case chappe_cluster:get(chappe_sip_peers:kv_key(Name)) of
+        {ok, #{info := Info}, _Version} -> Info;
+        _ -> initial(Opts)
+    end;
+start_info(Name, Opts) ->
+    Info = initial(Opts),
+    ok = chappe_sip_peers:put(Name, Info),
+    Info.
 
 handle_event({timeout, probe}, probe, _St, #state{opts = Opts} = S) ->
     Next = {{timeout, probe}, maps:get(interval_ms, Opts), probe},
-    case send(S) of
+    case probing(S) andalso send(S) of
+        false ->
+            %% the singleton's lease is gone: no OPTIONS from here
+            {keep_state_and_data, [Next]};
         {ok, Ref} ->
             {keep_state,
                 S#state{ref = Ref, sent = erlang:monotonic_time(millisecond)}, [
@@ -144,13 +168,83 @@ outcome(Status, #state{opts = Opts, info = Info0} = S0, Actions) ->
             Old -> Info1;
             _ -> Info1#{state => New, since => erlang:system_time(millisecond)}
         end,
-    ok = chappe_sip_peers:put(S#state.name, Info),
+    {next_state, New, publish(S#state{info = Info}, Info0), Actions}.
+
+probing(#state{name = Name, opts = #{probe := singleton}}) ->
+    chappe_cluster:singleton_valid(chappe_sip_peers:singleton(Name));
+probing(_S) ->
+    true.
+
+%% singleton: to the KV, fenced, when the state or the last status
+%% changed (an rtt alone is not worth a Raft write); all_nodes: to the
+%% local table, and a change to the subscribers.
+publish(#state{opts = #{probe := singleton}, info = New} = S, Old) ->
+    Same =
+        maps:with([state, last_status], Old) =:=
+            maps:with([state, last_status], New),
+    case Same andalso S#state.shared of
+        true -> S;
+        false -> S#state{shared = kv_write(S#state.name, New)}
+    end;
+publish(#state{name = Name, info = #{state := New} = Info} = S, #{state := Old}) ->
+    ok = chappe_sip_peers:put(Name, Info),
     _ =
         case New of
             Old -> ok;
-            _ -> chappe_sip_peers:notify({chappe_sip_peer, S#state.name, New})
+            _ -> chappe_sip_peers:notify({chappe_sip_peer, Name, New})
         end,
-    {next_state, New, S#state{info = Info}, Actions}.
+    S.
+
+kv_write(Name, Info) ->
+    case chappe_cluster:singleton_fence(chappe_sip_peers:singleton(Name)) of
+        {ok, Fence} ->
+            case share(Name, Info, Fence) of
+                ok ->
+                    true;
+                {error, Why} ->
+                    logger:notice(
+                        "chappe_sip_peer ~0p: state not shared: ~0p", [
+                            Name, Why
+                        ]
+                    ),
+                    false
+            end;
+        none ->
+            false
+    end.
+
+%% A singleton pinger's word on the peer, under Fence: this node's table
+%% takes it at once (a lost quorum does not hide the peer's state from
+%% the node that sees it), then the region's KV, by compare and set, and
+%% only while no greater fence is there: a paused pinger that wakes up
+%% after the takeover cannot overwrite the new one.
+-spec share(term(), chappe_sip_peers:info(), chappe_cluster:fence()) ->
+    ok | {error, stale | term()}.
+share(Name, Info, Fence) ->
+    Value = #{info => Info, fence => Fence},
+    ok = chappe_sip_peers:local(Name, Value),
+    cas(chappe_sip_peers:kv_key(Name), Value, 3).
+
+cas(_Key, _Value, 0) ->
+    {error, contended};
+cas(Key, #{fence := {_, _, Seq}} = Value, Tries) ->
+    case chappe_cluster:get(Key) of
+        {ok, #{fence := {_, _, Cur}}, _Version} when Cur > Seq ->
+            {error, stale};
+        {ok, _Old, Version} ->
+            cas_put(Key, Version, Value, Tries);
+        not_found ->
+            cas_put(Key, 0, Value, Tries);
+        {error, _} = Err ->
+            Err
+    end.
+
+cas_put(Key, Version, Value, Tries) ->
+    case chappe_cluster:cas(Key, Version, Value) of
+        {ok, _} -> ok;
+        {error, {version, _}} -> cas(Key, Value, Tries - 1);
+        {error, _} = Err -> Err
+    end.
 
 next(Old, #state{oks = Oks}, #{up_after := Up}) when Old =/= up, Oks >= Up ->
     up;

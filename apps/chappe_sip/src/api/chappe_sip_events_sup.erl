@@ -34,7 +34,10 @@ init(top) ->
         worker(
             chappe_sip_mwi_notifier,
             {chappe_sip_notifier, start_link, [
-                chappe_sip_mwi_notifier, chappe_sip_mwi, 1000
+                chappe_sip_mwi_notifier,
+                chappe_sip_mwi,
+                1000,
+                #{group => chappe_sip_mwi:group()}
             ]}
         ),
         #{

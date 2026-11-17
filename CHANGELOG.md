@@ -7,15 +7,49 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 
 ## Unreleased
 
-- chappe_cluster, a new app: one owner at a time for anything a cluster
-  must not run twice, such as a conference room or a job that pings a
-  trunk. A node claims a key and gets a lease with a number that only
-  grows, so work done by an owner that lost its lease can be refused. It
-  also keeps a small replicated store you can watch, and runs a process on
-  exactly one node. Nodes of one region agree through Raft; losing the
-  majority stops new claims, never new calls. It does not need the nodes'
-  clocks to agree: only that they run at about the same rate. Before, every
-  node acted as if it were alone.
+- chappe_cluster, a new app: it lets several chappe nodes agree on a
+  single owner for anything that must not run twice, such as a conference
+  room, a user's registration or a job that pings a trunk. It also keeps a
+  small store of values shared by the nodes, and can run a job on exactly
+  one node, moving it when that node stops. When more than half of the
+  nodes are unreachable, nothing new is claimed, but calls already up are
+  never touched. The nodes' clocks do not need to agree. Before, every node
+  acted as if it were alone.
+- chappe_sip: the registrar can run on several nodes. A device that
+  registers to one node can be called from any node, through the node that
+  holds its connection when it sits behind a NAT or uses TCP, TLS or
+  WebSocket. Two nodes taking registrations for one user at the same time
+  never lose one, and only one node cleans up expired registrations. When
+  most of the nodes are unreachable, a registration is refused with a
+  retry delay, and calls to devices already registered keep working. When
+  the node a TCP, TLS or WebSocket device is connected to stops, the device
+  cannot be reached until it registers again; a UDP device is still
+  reached directly. A single node works as before. A release that runs
+  the registrar on several nodes must include chappe_cluster (as
+  `{chappe_cluster, load}`): chappe_sip then starts it first, so it stops
+  last, and a node set up for several nodes without it refuses to start.
+- chappe_mrf: conference rooms can now span several nodes. Callers who dial
+  the same room on different nodes land in the same room. When the node
+  running a room is stopped cleanly, the room moves to a live node first,
+  and the callers on the other nodes follow it with a short gap in the
+  audio. When that node crashes instead, those callers keep their calls
+  but lose the room's audio, and the next caller opens the room on a live
+  node. A room cut off from the other nodes stops taking callers and moves
+  the ones it has to the room that replaces it as soon as it can. With
+  most of the nodes unreachable, no new room opens. FreeSWITCH rooms do
+  not move: their callers end with the node. Before, each node opened its
+  own room for the same name.
+- chappe_sip: a trunk or other peer can now be pinged from one node for
+  all of them, instead of from every node, and every node sees the same up
+  or down state, even after the pinging node changes. Before, a trunk got
+  the pings of every node.
+- chappe_sip: a message-waiting update now reaches the subscribers of
+  every node, not only those of the node where it was made, and two
+  updates made at the same time on two nodes leave the same, latest,
+  count everywhere. No cluster setup is needed.
+- chappe_audio: the clean-up of old recordings can now be limited to one
+  node, so a store the nodes share is cleaned once. Each node still cleans
+  its own files by default.
 - chappe_sip security: the bundled sofia-sip is now 1.13.19, which fixes
   three flaws. A crafted DNS answer could make the resolver loop forever,
   so a hostile or spoofed DNS server could freeze outbound routing

@@ -8,9 +8,31 @@
 
 -include("chappe_sip.hrl").
 
--export([get/1, t1/0, set_t1/1, t64/0]).
+-export([get/1, t1/0, set_t1/1, t64/0, check_cluster/0]).
 
 -define(T1, {?MODULE, t1}).
+
+%% The `cluster' setting, checked at start: chappe_cluster must be in the
+%% release (a release that leaves it out cannot run in cluster mode, and
+%% is refused rather than left to fail on the first REGISTER).
+-spec check_cluster() ->
+    ok | {error, {cluster, {chappe_cluster_not_installed | badarg, term()}}}.
+check_cluster() ->
+    case application:get_env(chappe_sip, cluster, default(cluster)) of
+        none ->
+            ok;
+        chappe_cluster ->
+            case application:load(chappe_cluster) of
+                ok ->
+                    ok;
+                {error, {already_loaded, chappe_cluster}} ->
+                    ok;
+                {error, Why} ->
+                    {error, {cluster, {chappe_cluster_not_installed, Why}}}
+            end;
+        Other ->
+            {error, {cluster, {badarg, Other}}}
+    end.
 
 -spec get(atom()) -> term().
 get(Key) ->
@@ -109,6 +131,22 @@ default(registrar_flow_timer) -> 120;
 %% memory): distinct AORs, and contacts bound to one AOR.
 default(registrar_max_aors) -> 100000;
 default(registrar_max_bindings_per_aor) -> 10;
+%% How often the location store deletes expired bindings (ms); reads skip
+%% them meanwhile.
+default(registrar_sweep_ms) -> 30000;
+%% Where the location store lives, and who owns what needs one owner:
+%% none (this node alone) or chappe_cluster (the region's KV and leases,
+%% docs/decisions/0010). chappe_cluster is started on first use.
+default(cluster) -> none;
+%% On a cluster: how long a REGISTER waits for the region's quorum (ms),
+%% and the Retry-After (s) of the 503 it gets without one.
+default(registrar_cluster_timeout_ms) -> 1000;
+default(registrar_retry_after) -> 5;
+%% The node's hybrid logical clock (chappe_sip_hlc), when chappe_cluster
+%% does not run one: its wall clock ({M, F, A} returning ms), and how far
+%% (ms) a stamp from another node may move it past that wall clock.
+default(wall_clock) -> {hlc, physical_clock, []};
+default(hlc_max_offset_ms) -> 10000;
 %% Bounds on the event state compositor (chappe_sip_esc): live publications
 %% in all, and for one resource across its packages (a new one past either
 %% gets 503 with Retry-After); the bytes of one PUBLISH body (413 above).

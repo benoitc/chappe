@@ -11,7 +11,8 @@
     %% (chappe_sip:start with a `ws' option), so a UDP/TCP/TLS-only node pays nothing
     %% for the WebSocket dependency tree.
     %% instrument holds the metrics (chappe_sip_metrics); livery renders them
-    {applications, [kernel, stdlib, crypto, xmerl, instrument]},
+    %% hlc: the node's hybrid logical clock (chappe_sip_hlc)
+    {applications, [kernel, stdlib, crypto, xmerl, instrument, hlc]},
     {env, []},
     %% chappe_sip is Apache-2.0; the NIF links the vendored sofia-sip, which
     %% is LGPL-2.1-or-later (THIRD_PARTY_LICENSES.md)

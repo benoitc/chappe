@@ -22,10 +22,14 @@
 
 -export([
     start_link/3,
+    start_link/4,
     add/4, add/5,
     changed/2,
     put/3,
+    put/4,
+    put_async/4,
     get/2,
+    put_next/4,
     set_state/3,
     set_interval/2,
     watchers/2
@@ -42,14 +46,26 @@
     %% dialog pid => watcher
     watchers = #{} :: #{pid() => map()},
     %% Key => what the callback renders from (MWI counts)
-    data = #{} :: #{term() => term()}
+    data = #{} :: #{term() => term()},
+    %% Key => the version of its data, for put/4: an older one is ignored
+    versions = #{} :: #{term() => term()}
 }).
 -type state() :: #state{}.
 
 -spec start_link(atom(), module(), non_neg_integer()) ->
     {ok, pid()} | {error, term()}.
 start_link(Name, Mod, Interval) ->
-    gen_server:start_link({local, Name}, ?MODULE, {Mod, Interval}, []).
+    start_link(Name, Mod, Interval, #{}).
+
+%% Opts: group => term(), a pg group of the chappe_sip scope the notifier
+%% joins, so a put/3 on one node can reach the watchers of every node
+%% (chappe_sip_mwi:update/2 casts to its members).
+-spec start_link(atom(), module(), non_neg_integer(), map()) ->
+    {ok, pid()} | {error, term()}.
+start_link(Name, Mod, Interval, Opts) ->
+    gen_server:start_link(
+        {local, Name}, ?MODULE, {Mod, Interval, Opts}, []
+    ).
 
 %% A subscription to Key accepted by the SUBSCRIBE handler (its dialog is
 %% owned by this process): send it the state now.
@@ -76,6 +92,28 @@ changed(Name, Key) ->
 put(Name, Key, Data) ->
     gen_server:call(Name, {put, Key, Data}).
 
+%% put/3 with a Version: the data is taken only when Version is greater
+%% (in term order) than the one Key holds, so puts made on several nodes
+%% end the same on every node, whatever order they arrive in.
+-spec put(atom(), term(), term(), term()) -> ok.
+put(Name, Key, Data, Version) ->
+    gen_server:call(Name, {put, Key, Data, Version}).
+
+%% put/4 without waiting, to a notifier by name or pid (one on another
+%% node, found in its group).
+-spec put_async(atom() | pid(), term(), term(), term()) -> ok.
+put_async(Server, Key, Data, Version) ->
+    gen_server:cast(Server, {put, Key, Data, Version}).
+
+%% put/4 with the version Next(Last) makes from the one last taken for
+%% Key (undefined: none), in the notifier as it takes the data, so the
+%% new version is later than whatever came before it here. Returns that
+%% version, for the other nodes. Next runs in the notifier.
+-spec put_next(atom(), term(), term(), fun((term()) -> term())) ->
+    {ok, term()}.
+put_next(Name, Key, Data, Next) when is_function(Next, 1) ->
+    gen_server:call(Name, {put_next, Key, Data, Next}).
+
 -spec get(atom(), term()) -> term() | undefined.
 get(Name, Key) ->
     gen_server:call(Name, {get, Key}).
@@ -98,10 +136,17 @@ watchers(Name, Key) ->
 
 %% ---- gen_server ----
 
--spec init({module(), non_neg_integer()}) -> {ok, state()}.
-init({Mod, Interval}) ->
+-spec init({module(), non_neg_integer(), map()}) -> {ok, state()}.
+init({Mod, Interval, Opts}) ->
     %% a sender that crashes must not take the notifier down
     process_flag(trap_exit, true),
+    ok =
+        case Opts of
+            #{group := Group} ->
+                pg:join(chappe_sip_call:scope(), Group, self());
+            #{} ->
+                ok
+        end,
     {ok, #state{mod = Mod, interval = Interval}}.
 
 handle_call({interval, I}, _From, S) ->
@@ -129,9 +174,24 @@ handle_call({add, Dialog, Key, WState, Fetch}, _From, S) ->
 handle_call({put, Key, Data}, _From, S) ->
     S1 = S#state{data = (S#state.data)#{Key => Data}},
     {reply, ok, notify_key(Key, S1)};
+handle_call({put, Key, Data, Version}, _From, S) ->
+    {reply, ok, versioned(Key, Data, Version, S)};
+handle_call({put_next, Key, Data, Next}, _From, S) ->
+    Version = Next(maps:get(Key, S#state.versions, undefined)),
+    {reply, {ok, Version}, versioned(Key, Data, Version, S)};
 handle_call({get, Key}, _From, S) ->
     {reply, maps:get(Key, S#state.data, undefined), S};
 handle_call({set_state, Key, Fun}, _From, S) ->
+    {reply, ok, set_state_of(Key, Fun, S)};
+handle_call({watchers, Key}, _From, S) ->
+    {reply,
+        [
+            {P, WS}
+         || P := #{key := K, wstate := WS} <- S#state.watchers, K =:= Key
+        ],
+        S}.
+
+set_state_of(Key, Fun, S) ->
     Moved = [
         {Pid, New}
      || {Pid, WS, New} <- [
@@ -140,7 +200,7 @@ handle_call({set_state, Key, Fun}, _From, S) ->
         ],
         New =/= WS
     ],
-    S1 = lists:foldl(
+    lists:foldl(
         fun({Pid, New}, Acc) ->
             W = maps:get(Pid, Acc#state.watchers),
             Acc1 = Acc#state{
@@ -153,18 +213,18 @@ handle_call({set_state, Key, Fun}, _From, S) ->
         end,
         S,
         Moved
-    ),
-    {reply, ok, S1};
-handle_call({watchers, Key}, _From, S) ->
-    {reply,
-        [
-            {P, WS}
-         || P := #{key := K, wstate := WS} <- S#state.watchers, K =:= Key
-        ],
-        S}.
+    ).
 
 handle_cast({changed, Key}, S) ->
-    {noreply, notify_key(Key, S)}.
+    {noreply, notify_key(Key, S)};
+handle_cast({put, Key, Data, Version}, S) ->
+    %% a put/4 made on another node (see start_link/4's group); its
+    %% stamp moves this node's clock (chappe_sip_hlc)
+    ok = seen(Version),
+    {noreply, versioned(Key, Data, Version, S)}.
+
+seen({Stamp, _Node, _N}) -> chappe_sip_hlc:seen(Stamp);
+seen(_Version) -> ok.
 
 handle_info({chappe_sip_dialog, D, {refreshed, _}, _Req}, S) ->
     %% RFC 6665 4.2.1.2: a NOTIFY after every accepted refresh
@@ -197,6 +257,18 @@ handle_info(_Msg, S) ->
     {noreply, S}.
 
 %% ---- internal ----
+
+versioned(Key, Data, Version, #state{versions = V} = S) ->
+    case V of
+        #{Key := Old} when Old >= Version ->
+            S;
+        _ ->
+            S1 = S#state{
+                data = (S#state.data)#{Key => Data},
+                versions = V#{Key => Version}
+            },
+            notify_key(Key, S1)
+    end.
 
 active_state(pending) -> pending;
 active_state(_) -> active.

@@ -11,6 +11,13 @@ FreeSWITCH. How the apps fit together is in the
 [umbrella documentation](../../docs/README.md) and the vocabulary in
 [concepts](../../docs/concepts.md).
 
+On several nodes, the `cluster => chappe_cluster` setting shares the
+registrar's location store and lets one node ping a peer for all of them.
+In that mode chappe_sip starts chappe_cluster as it starts, before its own
+processes, so chappe_cluster stops after it; include it in your release as
+`{chappe_cluster, load}`. With the default, `none`, nothing of it runs
+([configuration](docs/configuration.md)).
+
 ## Public modules
 
 | Module | Use it to |

@@ -11,6 +11,7 @@
 %% that leaves down_after OPTIONS in a row unanswered (a timeout, 408 or
 %% 503) is dropped from the location store, and the subscribers of
 %% chappe_sip_peers get {chappe_sip_qualify, Aor, Contact, unreachable}.
+%% On a cluster each node probes only the bindings it took.
 -module(chappe_sip_qualify).
 -behaviour(gen_server).
 
@@ -80,17 +81,13 @@ schedule(#state{tref = undefined, interval = I} = S) ->
 schedule(S) ->
     S.
 
+%% the bindings this node took: on a cluster each node keeps alive the
+%% flows it holds
 probe_all(S) ->
     lists:foldl(
-        fun(Aor, Acc) ->
-            lists:foldl(
-                fun(B, Acc1) -> probe(Aor, B, Acc1) end,
-                Acc,
-                [B || B <- chappe_sip_registry:bindings(Aor), udp(B)]
-            )
-        end,
+        fun({Aor, B}, Acc) -> probe(Aor, B, Acc) end,
         S,
-        chappe_sip_registry:aors()
+        [{Aor, B} || {Aor, B} <- chappe_sip_registry:held(), udp(B)]
     ).
 
 probe(Aor, #{contact := Contact} = B, #state{inflight = In} = S) ->
