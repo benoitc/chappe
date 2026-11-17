@@ -250,10 +250,11 @@ cluster_started() ->
         {error, Why} -> {error, {cluster, Why}}
     end.
 
-claimed({ok, Lease}, Room, _Name, _Args, Deadline) ->
+claimed({ok, Lease}, Room, Name, Args, Deadline) ->
     case call(Room, {activate, Lease}, left(Deadline)) of
         ok -> {ok, Room};
         {error, {already_started, Other}} -> {ok, Other};
+        {error, draining} -> start_cluster(Name, Args, Deadline);
         {error, _} = Err -> Err
     end;
 claimed({error, {owned, #{pid := Other}}}, Room, Name, Args, Deadline) ->
@@ -575,7 +576,7 @@ call(Conf, Req) ->
 
 call(Conf, Req, Timeout) ->
     try
-        gen_server:call(Conf, Req, Timeout)
+        gen_server:call(Conf, {within, Timeout, Req}, Timeout)
     catch
         exit:{timeout, _} -> {error, timeout};
         exit:_ -> {error, noproc}
@@ -616,22 +617,53 @@ activate(Lease, #state{waiting = W} = S) ->
     #{args := Args, mon := Mon, deferred := Deferred} = W,
     #{name := Name, opts := Opts, caller := Caller} = Args,
     demonitor(Mon, [flush]),
-    case chappe_cluster:valid(Lease) of
-        true -> activate_name(Name, Opts, Caller, Lease, Deferred, S);
-        false -> {stop, normal, {error, no_quorum}, S}
+    case {chappe_mrf_conf_move:draining(), chappe_cluster:valid(Lease)} of
+        {true, _} ->
+            %% the node began to drain after the claim: no room here, the
+            %% start goes elsewhere
+            _ = chappe_cluster:release(Lease),
+            {stop, normal, {error, draining}, S};
+        {false, true} ->
+            activate_name(Name, Opts, Caller, Lease, Deferred, S);
+        {false, false} ->
+            {stop, normal, {error, no_quorum}, S}
     end.
 
 %% A waiting room takes only its lease; it ends when its starter goes or
 %% never hands the lease over.
-waiting_call({activate, Lease}, _From, S) ->
+waiting_call({activate, Lease}, _From, _Ms, S) ->
     activate(Lease, S);
-waiting_call(Req, From, #state{waiting = #{deferred := D} = W} = S) ->
+waiting_call(Req, From, Ms, #state{waiting = #{deferred := D} = W} = S) ->
     %% answered once it runs (or never, when it stops: the caller's call
-    %% exits noproc)
-    Expires =
-        erlang:monotonic_time(millisecond) +
-            application:get_env(chappe_mrf, start_timeout, ?START_MS),
+    %% exits noproc), unless its caller gave up first (Ms, its timeout)
+    Expires = erlang:monotonic_time(millisecond) + timeout_ms(Ms),
     {noreply, S#state{waiting = W#{deferred := [{Req, From, Expires} | D]}}}.
+
+%% a call with its caller's timeout (call/3): a waiting room holds it for
+%% that long at most
+within(Ms, Req, From, #state{waiting = #{}} = S) ->
+    waiting_call(Req, From, Ms, S);
+within(_Ms, Req, From, S) ->
+    handle_call(Req, From, S).
+
+info_map(S) ->
+    #{
+        name => S#state.name,
+        backend => S#state.backend,
+        node => S#state.node,
+        room => S#state.room,
+        locked => S#state.locked,
+        bridge => S#state.bridge,
+        entity => S#state.entity,
+        members => map_size(S#state.members),
+        max_members => S#state.max_members,
+        lost => S#state.lost
+    }.
+
+timeout_ms(infinity) ->
+    application:get_env(chappe_mrf, start_timeout, ?START_MS);
+timeout_ms(Ms) ->
+    Ms.
 
 %% The calls that came while it waited, in their order, now it runs.
 run_deferred([], S) ->
@@ -773,23 +805,12 @@ conf_uri(Name) ->
             <<"sip:", Name/binary, "@invalid">>
     end.
 
+handle_call({within, Ms, Req}, From, S) ->
+    within(Ms, Req, From, S);
 handle_call(Req, From, #state{waiting = #{}} = S) ->
-    waiting_call(Req, From, S);
+    waiting_call(Req, From, infinity, S);
 handle_call(info, _From, S) ->
-    {reply,
-        #{
-            name => S#state.name,
-            backend => S#state.backend,
-            node => S#state.node,
-            room => S#state.room,
-            locked => S#state.locked,
-            bridge => S#state.bridge,
-            entity => S#state.entity,
-            members => map_size(S#state.members),
-            max_members => S#state.max_members,
-            lost => S#state.lost
-        },
-        S};
+    {reply, info_map(S), S};
 handle_call({record, stop}, _From, S) ->
     record_req(stop, S);
 handle_call({record, Req}, _From, S) ->

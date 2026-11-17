@@ -26,6 +26,10 @@
     rehome_helper_is_owned/1,
     start_has_one_deadline/1,
     cluster_setting_checked_at_start/1,
+    late_join_ends_in_one_room/1,
+    activate_refused_while_draining/1,
+    deferred_call_past_its_caller/1,
+    job_crash_keeps_rehome/1,
     lost_stops_new_joins/1,
     room_crash_frees_name/1,
     no_quorum_starts_in_parallel/1,
@@ -50,6 +54,10 @@ all() ->
         rehome_helper_is_owned,
         start_has_one_deadline,
         cluster_setting_checked_at_start,
+        late_join_ends_in_one_room,
+        activate_refused_while_draining,
+        deferred_call_past_its_caller,
+        job_crash_keeps_rehome,
         lost_stops_new_joins,
         room_crash_frees_name,
         no_quorum_starts_in_parallel,
@@ -237,9 +245,19 @@ transfer_deadline_restores_member(Config) ->
     ?assertEqual({error, timeout},
                  erpc:call(N1, chappe_mrf_conf_move, transfer_all, [Conf, [M], To, Deadline], 20000)),
     ?assert(erlang:monotonic_time(millisecond) - T0 < 5000),
-    #state{members = #{M := Mb}} = sys:get_state(Conf),
-    ?assertNot(is_map_key(transfer, Mb)),
+    %% the move is not cut: its join fails on its own, and the member is
+    %% the old room's again
+    ok = wait_unmarked(Conf, M, 600),
+    ?assertMatch([#{id := M}], chappe_mrf_conf:members(Conf)),
     ?F:ua_bye(Ua).
+
+wait_unmarked(Conf, M, 0) ->
+    ct:fail({still_marked, Conf, M});
+wait_unmarked(Conf, M, N) ->
+    case sys:get_state(Conf) of
+        #state{members = #{M := Mb}} when not is_map_key(transfer, Mb) -> ok;
+        _ -> timer:sleep(100), wait_unmarked(Conf, M, N - 1)
+    end.
 
 %% The helper that moves a lost room's members is the room's: it gives
 %% up at rehome_ms, its crash leaves the room as it was, and it ends with
@@ -319,6 +337,101 @@ cluster_setting_checked_at_start(_Config) ->
         ?assertMatch({match, _}, re:run(io_lib:format("~p", [E2]), "badarg, *bogus"))
     after
         ?C:stop_peer(P1)
+    end.
+
+%% A move whose join outlasts its deadline still ends with the member in
+%% exactly one room: the join is let settle, not cut halfway.
+late_join_ends_in_one_room(Config) ->
+    [N1, N2 | _] = ?config(nodes, Config),
+    {ok, Conf} = erpc:call(N1, chappe_mrf, conference, [<<"one">>, #{}]),
+    {Ua, M} = join_call(Config, Conf),
+    {ok, To} = erpc:call(N2, chappe_mrf, conference, [<<"oneto">>, #{}]),
+    #state{members = #{M := #{b2b := {B2b, _}}}} = sys:get_state(Conf),
+    %% the member's call (on this node) holds the move's re-INVITE
+    true = erlang:suspend_process(B2b),
+    Deadline = erpc:call(N1, erlang, monotonic_time, [millisecond]) + 1500,
+    {error, timeout} = erpc:call(N1, chappe_mrf_conf_move, transfer_all, [Conf, [M], To, Deadline], 20000),
+    timer:sleep(1000),
+    true = erlang:resume_process(B2b),
+    ok = wait_total([Conf, To], 1, 100),
+    timer:sleep(2000),
+    ?assertEqual(1, length(chappe_mrf_conf:members(Conf)) + length(chappe_mrf_conf:members(To))),
+    ?F:ua_bye(Ua).
+
+wait_total(Rooms, N, 0) ->
+    ct:fail({members, [chappe_mrf_conf:members(R) || R <- Rooms], expected, N});
+wait_total(Rooms, N, Tries) ->
+    case lists:sum([length(chappe_mrf_conf:members(R)) || R <- Rooms]) of
+        N -> ok;
+        _ -> timer:sleep(200), wait_total(Rooms, N, Tries - 1)
+    end.
+
+%% A start that claimed before the node began to drain cannot activate
+%% after: the room gives the lease back and the start goes elsewhere.
+activate_refused_while_draining(Config) ->
+    [N1 | _] = ?config(nodes, Config),
+    Holder = erpc:call(N1, erlang, spawn, [timer, sleep, [infinity]]),
+    W = waiting(N1, <<"late">>, Holder),
+    {ok, Lease} = erpc:call(N1, chappe_cluster, claim, [{chappe_mrf_conf, <<"late">>}, #{pid => W}]),
+    ok = erpc:call(N1, chappe_mrf_conf_move, draining, [true]),
+    MRef = monitor(process, W),
+    ?assertEqual({error, draining}, gen_server:call(W, {activate, Lease})),
+    receive {'DOWN', MRef, process, W, _} -> ok after 5000 -> ct:fail(still_waiting) end,
+    ok = wait_no_owner(N1, <<"late">>, 50),
+    ok = erpc:call(N1, chappe_mrf_conf_move, draining, [false]).
+
+wait_no_owner(_Node, Name, 0) ->
+    ct:fail({still_owned, Name});
+wait_no_owner(Node, Name, N) ->
+    case erpc:call(Node, chappe_cluster, owner, [{chappe_mrf_conf, Name}, consistent]) of
+        none -> ok;
+        _ -> timer:sleep(100), wait_no_owner(Node, Name, N - 1)
+    end.
+
+%% A call held by a waiting room whose caller gave up is not run when the
+%% room starts: here, adding a listener.
+deferred_call_past_its_caller(Config) ->
+    [N1 | _] = ?config(nodes, Config),
+    Holder = erpc:call(N1, erlang, spawn, [timer, sleep, [infinity]]),
+    W = waiting(N1, <<"held">>, Holder),
+    {ok, Lease} = erpc:call(N1, chappe_cluster, claim, [{chappe_mrf_conf, <<"held">>}, #{pid => W}]),
+    Listener = spawn(fun() -> receive stop -> ok end end),
+    ?assertEqual({error, timeout}, chappe_mrf_conf:call(W, {events, Listener}, 300)),
+    timer:sleep(500),
+    ok = gen_server:call(W, {activate, Lease}),
+    #state{listeners = L} = sys:get_state(W),
+    ?assertNot(is_map_key(Listener, L)),
+    chappe_mrf_conf:stop(W).
+
+%% A transfer job of a rehome that dies does not take the rehome with it.
+job_crash_keeps_rehome(Config) ->
+    [N1, N2 | _] = ?config(nodes, Config),
+    {ok, Conf} = erpc:call(N1, chappe_mrf, conference, [<<"jobs">>, #{}]),
+    {Ua, M} = join_call(Config, Conf),
+    {ok, To} = erpc:call(N2, chappe_mrf, conference, [<<"jobsto">>, #{}]),
+    #state{members = #{M := #{b2b := {B2b, _}}}} = sys:get_state(Conf),
+    true = erlang:suspend_process(B2b),
+    Self = self(),
+    Runner = erpc:call(N1, erlang, spawn, [fun() ->
+        Deadline = erlang:monotonic_time(millisecond) + 5000,
+        Self ! {runner, chappe_mrf_conf_move:transfer_all(Conf, [M], To, Deadline)}
+    end]),
+    Job = job_of(Runner, 50),
+    exit(Job, kill),
+    receive {runner, R} -> ct:pal("runner: ~p", [R]) after 10000 -> ct:fail(runner_died) end,
+    true = erlang:resume_process(B2b),
+    ?F:ua_bye(Ua).
+
+job_of(_Runner, 0) ->
+    ct:fail(no_job);
+job_of(Runner, N) ->
+    Mine = case erpc:call(node(Runner), erlang, process_info, [Runner, [links, monitors]]) of
+               [{links, L}, {monitors, Ms}] -> L ++ [P || {process, P} <- Ms];
+               _ -> []
+           end,
+    case [P || P <- Mine, is_pid(P), P =/= Runner, node(P) =:= node(Runner)] of
+        [J | _] -> J;
+        [] -> timer:sleep(50), job_of(Runner, N - 1)
     end.
 
 %% The room's lease is lost while its node runs: its members move to the
