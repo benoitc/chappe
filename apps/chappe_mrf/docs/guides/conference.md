@@ -297,7 +297,11 @@ one owner in the region:
   room of the same name opens on a live node, and the members whose calls
   run on other nodes move there, with a short gap in the audio and no
   re-INVITE to the caller. The members whose calls run on the stopping
-  node end with it. The handoff takes at most `drain_ms` (5000).
+  node end with it. The handoff takes at most `drain_ms` (5000): a member
+  whose move is not done by then is hung up, a clean BYE, and is in no
+  room after. Moves started any other way (`transfer/3`, a lost lease)
+  are never cut: a room that ends while one runs leaves the member's
+  call to the move.
 - When the owner node crashes (or is killed, or cut off), its members'
   calls on other nodes stay up, without the room's audio, until they hang
   up. `conference/2` returns `{error, {owner_unreachable, Node}}` until

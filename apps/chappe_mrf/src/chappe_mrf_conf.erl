@@ -1095,33 +1095,67 @@ handle_info(Info, #state{focus = F} = S) when F =/= undefined ->
 handle_info(_Info, S) ->
     {noreply, S}.
 
+%% Every step runs, whatever one member's does. Outside a drain, a
+%% member on its way out is its mover's: its dialog goes to the mover and
+%% ends when the move does. In a drain (a clean stop), the moves had
+%% drain_ms; one not done by then is hung up here, on purpose, rather
+%% than left to a job the stop kills next.
 terminate(_Reason, #state{members = M0, focus = F} = S) ->
-    %% a member on its way out is its mover's: its dialog goes to the
-    %% mover, and ends when the move does
-    M = maps:filter(fun(_Id, Mb) -> not handed_over(Mb) end, M0),
-    _ = F =/= undefined andalso chappe_sip_focus:stop(F),
+    Draining = chappe_mrf_conf_move:draining(),
+    M = maps:filter(fun(_Id, Mb) -> not handed_over(Mb, Draining) end, M0),
+    _ = safely(fun() -> F =/= undefined andalso chappe_sip_focus:stop(F) end),
     %% the room's end stops its recordings: the stored ones are adopted
-    _ =
+    _ = safely(fun() ->
         S#state.recordings =/= [] andalso
             chappe_mrf_conf_fs:stop_record(S) =:= ok andalso
             adopt_recordings(
                 S#state.recordings ++ S#state.stopping, undefined, orphan()
-            ),
-    maps:foreach(fun(Id, Mb) -> _ = hangup_member(Id, Mb, S) end, M),
+            )
+    end),
+    maps:foreach(
+        fun(Id, Mb) ->
+            _ = safely(fun() -> end_member(Id, Mb, Draining, S) end)
+        end,
+        M
+    ),
     ok.
 
-handed_over(#{transfer := true, mover := Mover, dialog := D}) when
+safely(Fun) ->
+    try
+        Fun()
+    catch
+        Class:Why ->
+            logger:notice("chappe_mrf_conf: at the room's end: ~0p", [
+                {Class, Why}
+            ]),
+            error
+    end.
+
+%% a member hung up at the room's end; one cut mid-move by a drain gets
+%% its whole call ended, so its caller hears a clean BYE whatever state
+%% the move left the call in
+end_member(Id, #{transfer := true, b2b := {Pid, _} = B2b} = Mb, true, S) ->
+    ok = erpc:cast(node(Pid), chappe_sip_b2b, hangup, [B2b, #{}]),
+    hangup_member(Id, Mb, S);
+end_member(Id, Mb, _Draining, S) ->
+    hangup_member(Id, Mb, S).
+
+handed_over(#{transfer := true}, true) ->
+    false;
+handed_over(#{transfer := true, mover := Mover, dialog := D}, false) when
     is_pid(Mover)
 ->
-    is_process_alive(Mover) andalso
-        try chappe_sip_dialog:set_owner(D, Mover) of
-            ok -> true
-        catch
-            exit:_ -> false
-        end;
-handed_over(#{transfer := true}) ->
+    %% a dead mover, here or on another node, is the dialog's to see
+    try chappe_sip_dialog:set_owner(D, Mover) of
+        ok -> true
+    catch
+        _:_ -> false
+    end;
+handed_over(#{transfer := true}, false) ->
+    %% fs: the endpoint goes with its owner, this room, unless the other
+    %% room adopted it already
     true;
-handed_over(_Mb) ->
+handed_over(_Mb, _Draining) ->
     false.
 
 %% ---- members ----
