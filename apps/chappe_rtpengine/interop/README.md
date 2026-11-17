@@ -12,7 +12,7 @@ mixer's live suite.
 |---|---|
 | `chappe_rtpengine_live_SUITE` | NG over UDP, TCP, WebSocket and secure WebSocket; ping, offer, answer, query, delete, a media subscription |
 | `chappe_rtpengine_e2e_SUITE` | SDES and DTLS-SRTP negotiation, media relay through a session (UDP and WS), the interpreter primitives (play, block, silence), recording and DTMF, a playback blob larger than one MTU over WS |
-| `chappe_rtpengine_siprec_SUITE` | recording forks (per-stream subscriptions) |
+| `chappe_rtpengine_siprec_SUITE` | a multi-stream recording offer anchored with publish (`publish_anchors_every_stream`), each stream forked to its own receiver by one subscription per stream (`per_stream_fork_to_receivers`) or by one subscription (`one_subscription_many_receivers`), audio injected into one leg while the other is ducked (`inject_into_one_leg_while_ducked`) |
 | `chappe_mix_live_SUITE` (`make interop-mix`) | the mixer behind rtpengine, legs transcoded to PCMU, N-1 checked by Goertzel |
 | `chappe_sip_media_SUITE` group `rtpengine_live` | the chappe_sip media facade in front of a real daemon; no make target runs it, set `RTPENGINE_HOST` and `RTPENGINE_MEDIA_IP` against this stack |
 

@@ -9,7 +9,7 @@ you change mixing, timing, the jitter buffer, RTCP or the leg SDP.
 
 | Target | Suite | Proves |
 |---|---|---|
-| `make interop-mix` | `chappe_mix_live_SUITE` | N-1 at each of three parties anchored by rtpengine (PCMU relayed, PCMA transcoded, an opus leg encoded and decoded by rtpengine), 30 ms packets, DTMF through rtpengine |
+| `make interop-mix` | `chappe_mix_live_SUITE` | N-1 at each of three parties anchored by rtpengine (PCMU relayed, PCMA transcoded, an opus leg encoded and decoded by rtpengine), 30 ms packets, DTMF through rtpengine, a party's and the room's taps behind rtpengine (`taps_through_rtpengine`) |
 | `make interop-ref` | `chappe_mix_ref_SUITE` | the mixer detects what mod_conference detects, for the same input; burst latency is logged, never asserted |
 
 ## Services

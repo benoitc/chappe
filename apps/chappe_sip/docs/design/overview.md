@@ -45,6 +45,9 @@ threads are in [the engine design](engine.md).
 
 ```
 chappe_sip_sup (one_for_one)
+|-- chappe_sip_pg                 pg scope of chappe_sip_call (calls by call_ref)
+|-- chappe_sip_call               the call_ref table
+|-- chappe_sip_hlc_clock          the node's hybrid logical clock (chappe_sip_hlc)
 |-- chappe_sip_registry_keeper    ETS owner: location store, engine config snapshot
 |-- chappe_sip_registry           location store
 |-- chappe_sip_dialog_index       live dialogs by identity (Replaces, lookups)
@@ -65,16 +68,22 @@ chappe_sip_sup (one_for_one)
 |   |-- chappe_sip_peer_sup        (simple_one_for_one: chappe_sip_peer)
 |   |-- chappe_sip_qualify         registrar keepalive of UDP contacts
 |   `-- chappe_sip_peers_env       temporary: loads the `peers` setting
+|-- chappe_sip_metrics_http       optional GET /metrics listener
 |-- chappe_sip_ws_sup (one_for_one)
 |   |-- chappe_sip_ws_transport
 |   `-- chappe_sip_ws_listener     added when a WS listener is configured
 |-- chappe_sip_media_sup (one_for_one)
 |   `-- chappe_sip_media_mix       added when `mix` is configured
+|-- chappe_sip_b2b_sup (one_for_one)
+|   |-- chappe_sip_b2b_relays      (simple_one_for_one: temporary chappe_sip_b2b_async)
+|   `-- chappe_sip_b2b_transfers   (simple_one_for_one: temporary chappe_sip_b2b_transfer)
 |-- chappe_sip_stack_sup (rest_for_one)
 |   |-- chappe_sip_engine          NIF owner and dispatcher
 |   |-- chappe_sip_request_sup     (simple_one_for_one: chappe_sip_request_worker)
 |   |-- chappe_sip_dialog_sup      (simple_one_for_one: chappe_sip_dialog_fsm)
-|   `-- chappe_sip_uac_sup         (simple_one_for_one: chappe_sip_uac_fsm)
+|   |-- chappe_sip_uac_sup         (simple_one_for_one: chappe_sip_uac_fsm)
+|   `-- chappe_sip_proxy_sup       (simple_one_for_one: chappe_sip_proxy_accepted)
+|-- chappe_sip_siprec_sup          (simple_one_for_one: temporary chappe_sip_siprec)
 `-- chappe_sip_regc_sup (one_for_one)
     |-- chappe_sip_regc_pg         pg scope for registration subscribers
     `-- {regc, Name}               one chappe_sip_regc per registration
@@ -86,9 +95,14 @@ Why the order matters:
   location store, the dialog index, call records, subscriptions, peers, the
   WS transport and media state.
 - `rest_for_one` under the stack means an engine failure restarts the call
-  state below it (workers, dialogs, UACs).
-- `chappe_sip_regc_sup` comes after the stack, so it stops first and a
-  registration can still send its `Expires: 0` on shutdown.
+  state below it (workers, dialogs, UACs, proxied INVITEs in the RFC 6026
+  Accepted state).
+- `chappe_sip_proxy_sup` registers `chappe_sip_proxy` with the engine as
+  the forwarder of requests loose-routed back to us
+  (`chappe_sip_engine:forwarder/1`).
+- `chappe_sip_siprec_sup` and `chappe_sip_regc_sup` come after the stack,
+  so they stop first: a recording can still send its BYE and a
+  registration its `Expires: 0` on shutdown.
 - `chappe_sip_sup` also creates the guard's rate table
   (`chappe_sip_guard:init_table/0`) for the life of the application.
 - A NIF-level crash takes the node; run the release under heart or systemd
@@ -96,44 +110,31 @@ Why the order matters:
 
 ## What each directory owns
 
-| Directory | Owns | Modules |
+| Directory | Owns | Key modules |
 |---|---|---|
-| root | Boot, root supervisor, configuration defaults, metrics | `chappe_sip_app`, `chappe_sip_sup`, `chappe_sip_config`, `chappe_sip_metrics` |
-| `engine/` | The NIF and the dispatcher, listen addresses, HEP for WS | `chappe_sip_engine`, `chappe_sip_nif`, `chappe_sip_binds`, `chappe_sip_bind_uri`, `chappe_sip_hep` |
-| `conn/` | Request workers, the stack supervisor, the location store | `chappe_sip_request_worker`, `chappe_sip_request_sup`, `chappe_sip_stack_sup`, `chappe_sip_registry`, `chappe_sip_registry_keeper` |
-| `sip/` | The message model and pure protocol helpers | `chappe_sip_msg`, `chappe_sip_hdr`, `chappe_sip_hdr_io`, `chappe_sip_uri`, `chappe_sip_req`, `chappe_sip_res`, `chappe_sip_sdp`, `chappe_sip_sdes`, `chappe_sip_multipart`, `chappe_sip_sipfrag`, `chappe_sip_digest`, `chappe_sip_digest_nc`, `chappe_sip_net` |
-| `dialog/` | Dialogs, session timers, REFER, the subscriber side of events, the NOTIFY router | `chappe_sip_dialog`, `chappe_sip_dialog_fsm`, `chappe_sip_dialog_index`, `chappe_sip_dialog_sup`, `chappe_sip_session_timer`, `chappe_sip_refer*`, `chappe_sip_subscriber*`, `chappe_sip_notify_router` |
-| `uac/` | Outbound transactions | `chappe_sip_uac`, `chappe_sip_uac_fsm`, `chappe_sip_uac_sup` |
-| `proxy/` | The stateful proxy and Record-Route | `chappe_sip_proxy`, `chappe_sip_proxy_rules`, `chappe_sip_proxy_dialog`, `chappe_sip_route` |
-| `ws/` | SIP over WebSocket | `chappe_sip_ws*` |
-| `media/` | The media facade and its backends | `chappe_sip_media*` |
-| `siprec/` | SIPREC: the recording client, its metadata, the recording server side | `chappe_sip_siprec*` |
+| root | Boot, root supervisor, configuration defaults, metrics | `chappe_sip_app`, `chappe_sip_sup`, `chappe_sip_config`, `chappe_sip_metrics`, `chappe_sip_metrics_http` |
+| `api/` | The facade, the extension points, outbound registration, the registrar | `chappe_sip`, `chappe_sip_handler`, `chappe_sip_middleware`, `chappe_sip_guard`, `chappe_sip_regc`, `chappe_sip_regc_sup`, `chappe_sip_registrar` |
+| `b2b/` | The B2BUA and its helpers: early media, forking, joins, transfers, relays | `chappe_sip_b2b`, `chappe_sip_b2b_sup`, `chappe_sip_b2b_async`, `chappe_sip_b2b_transfer`, `chappe_sip_b2b_relay`, `chappe_sip_b2b_*` |
+| `conn/` | Request workers, the stack supervisor, the location store and its backends | `chappe_sip_request_worker`, `chappe_sip_request_sup`, `chappe_sip_stack_sup`, `chappe_sip_registry`, `chappe_sip_registry_keeper`, `chappe_sip_registry_store`, `chappe_sip_registry_contact`, `chappe_sip_registry_sweep`, `chappe_sip_location`, `chappe_sip_location_ets`, `chappe_sip_location_cluster` |
+| `core/` | Services every layer reports to: call correlation and call records | `chappe_sip_call`, `chappe_sip_cdr` |
+| `dialog/` | Dialogs, session timers, REFER, the subscriber side of events, the NOTIFY router | `chappe_sip_dialog`, `chappe_sip_dialog_fsm`, `chappe_sip_dialog_index`, `chappe_sip_dialog_sup`, `chappe_sip_session_timer`, `chappe_sip_subscription`, `chappe_sip_refer*`, `chappe_sip_subscriber*`, `chappe_sip_notify_router` |
+| `engine/` | The NIF and the engine, the dispatch policy, the UAS response, listen addresses, HEP for WS | `chappe_sip_engine`, `chappe_sip_nif`, `chappe_sip_dispatch`, `chappe_sip_uas_response`, `chappe_sip_binds`, `chappe_sip_bind_uri`, `chappe_sip_hep` |
+| `events/` | The notifier side of events: PUBLISH, presence, message-summary, the conference focus | `chappe_sip_esc`, `chappe_sip_notifier`, `chappe_sip_presence`, `chappe_sip_pidf`, `chappe_sip_mwi`, `chappe_sip_publisher`, `chappe_sip_focus`, `chappe_sip_confinfo`, `chappe_sip_events_sup` |
+| `media/` | The media facade and its backends | `chappe_sip_media`, `chappe_sip_media_sup`, `chappe_sip_media_rtpengine`, `chappe_sip_media_mix`, `chappe_sip_media_mix_sdp` |
 | `peers/` | OPTIONS-monitored peers and the registrar's qualify | `chappe_sip_peers`, `chappe_sip_peer`, `chappe_sip_peers_sup`, `chappe_sip_peer_sup`, `chappe_sip_qualify` |
-| `api/` | The facade, extension behaviours, feature subsystems, event packages | see below |
+| `proxy/` | The stateful proxy, redirects, the Accepted-state processes | `chappe_sip_proxy`, `chappe_sip_proxy_accepted`, `chappe_sip_proxy_dialog`, `chappe_sip_proxy_redirect`, `chappe_sip_proxy_rules`, `chappe_sip_proxy_sup` |
+| `sip/` | The message model and pure protocol helpers, Record-Route and flows, the clock | `chappe_sip_msg`, `chappe_sip_hdr`, `chappe_sip_hdr_io`, `chappe_sip_uri`, `chappe_sip_req`, `chappe_sip_res`, `chappe_sip_sdp`, `chappe_sip_sdes`, `chappe_sip_multipart`, `chappe_sip_sipfrag`, `chappe_sip_digest`, `chappe_sip_digest_nc`, `chappe_sip_net`, `chappe_sip_route`, `chappe_sip_flow`, `chappe_sip_hlc`, `chappe_sip_lib` |
+| `siprec/` | SIPREC: the recording client, its metadata, the recording server side | `chappe_sip_siprec`, `chappe_sip_siprec_sup`, `chappe_sip_siprec_meta`, `chappe_sip_siprec_body`, `chappe_sip_siprec_srs`, `chappe_sip_siprec_peer`, `chappe_sip_siprec_tap` |
+| `uac/` | Outbound transactions and their digest answers | `chappe_sip_uac`, `chappe_sip_uac_fsm`, `chappe_sip_uac_sup`, `chappe_sip_uac_auth` |
+| `ws/` | SIP over WebSocket | `chappe_sip_ws`, `chappe_sip_ws_transport`, `chappe_sip_ws_conn`, `chappe_sip_ws_listener`, `chappe_sip_ws_sup` |
 
-Where the layout is surprising (findings M5, M6 and M9 of the
-[documentation plan](../../../../docs/plans/documentation-and-maintainability.md)):
+Where the layout is surprising:
 
-- `api/` mixes four kinds of module: the facade (`chappe_sip`), extension
-  points (`chappe_sip_handler`, `chappe_sip_middleware`, `chappe_sip_guard`),
-  feature subsystems (the nine `chappe_sip_b2b*` modules, `chappe_sip_focus`,
-  `chappe_sip_confinfo`, `chappe_sip_regc*`, `chappe_sip_registrar`) and the
-  event packages (`chappe_sip_esc`, `chappe_sip_notifier`,
-  `chappe_sip_presence`, `chappe_sip_pidf`, `chappe_sip_mwi`,
-  `chappe_sip_publisher`, `chappe_sip_events_sup`). The other half of
-  events (subscriber, REFER, the NOTIFY router) is in `dialog/`.
-- `chappe_sip_cdr` lives in `api/` but is a core service: dialogs, UACs, the
-  B2BUA and the proxy all report to it, and it is a direct child of
-  `chappe_sip_sup`.
-- `chappe_sip_route` lives in `proxy/` but is cross-cutting: Record-Route,
-  the HMAC route markers and the boot secret (`ensure_secret/0`, called by
-  `chappe_sip_app`), WS flow tokens and NAT `received` flows. The engine,
-  dialogs, UAC, B2BUA and registrar all use it.
 - `chappe_sip_hdr` parses far more than its name suggests (Replaces,
   Subscription-State, Refer-To, Privacy...), and `chappe_sip_hdr_io` holds
   one serialization function.
-- Core modules call back into the `chappe_sip` facade (finding M7), so the
-  facade is not a pure top layer.
+- The facade is a pure top layer: the xref query in the root `rebar.config`
+  forbids any `chappe_sip_*` module from calling `chappe_sip`.
 
 The B2BUA subsystem is described in [b2bua](b2bua.md), the media facade in
 [media](media.md).
@@ -141,8 +142,12 @@ The B2BUA subsystem is described in [b2bua](b2bua.md), the media facade in
 ## Entry points
 
 **Boot.** `chappe_sip_app:start/2` refuses the placeholder distribution
-cookie, seeds the route secret (`chappe_sip_flow:ensure_secret/0`), sets up
-metrics and starts `chappe_sip_sup`. Nothing listens yet.
+cookie, seeds the route secret (`chappe_sip_flow:ensure_secret/0`), checks
+the `cluster` setting (`chappe_sip_config:check_cluster/0`), starts
+chappe_cluster when `cluster => chappe_cluster`, sets up metrics and starts
+`chappe_sip_sup`. Nothing listens yet. On shutdown `prep_stop/1` calls
+`chappe_sip_registry:leave_cluster/0`, which hands the registry sweep to
+another node.
 `chappe_sip:start/1` then configures HEP, starts the WS listener if asked,
 configures media, starts the native engine (`chappe_sip_engine:start/1`),
 serves presence if asked, and loads the `registrations` setting.
@@ -153,9 +158,11 @@ serves presence if asked, and loads the `registrations` setting.
    `chappe_sip_engine`.
 2. `handle_event` sends an in-dialog request (a `LegH`) to the dialog fsm
    that owns the leg.
-3. Otherwise `dispatch` checks our own Record-Route (in-dialog proxying),
-   a stray in-dialog request (481), the merge rule (482) and the route
-   (`route_for`: method, NOTIFY router, SUBSCRIBE event package).
+3. Otherwise `dispatch` hands a request carrying our own Record-Route
+   (in-dialog proxying, `chappe_sip_dispatch:is_own_route/2`) to the
+   forwarder (`chappe_sip_proxy`). Else `chappe_sip_dispatch` decides on a
+   stray in-dialog request (481), the merge rule (482) and the route
+   (`route_for/4`: method, NOTIFY router, SUBSCRIBE event package).
 4. `spawn_worker` starts a `chappe_sip_request_worker` under the worker
    cap and arms the handler deadline.
 5. The worker parses the message, checks Require, runs the middleware and
@@ -261,24 +268,33 @@ backend for TU logic and error paths (`engine_mod`).
 
 | Area | Suites and eunit modules |
 |---|---|
-| Engine and NIF | `engine_smoke`, `engine_lifecycle`, `ops`, `handler`, `pipeline` (fake engine), `source_ip`, `multihome`, `transport`, `test/asan/` |
-| Inbound pipeline, guard | `pipeline`, `ood`, `guard` |
-| UAS, dialogs | `core`, `uas`, `indialog`, `dialog_ops`, `dialog_fsm_tests`, `replaces` |
-| UAC | `core_uac`, `uac`, `digest`, `digest_tests` |
+| Engine and NIF | `engine_smoke`, `engine_lifecycle`, `engine_opts`, `ops`, `handler`, `pipeline` (fake engine), `source_ip`, `multihome`, `transport`, `nif_boundary`, `nif_fuzz`, `test/asan/` |
+| Inbound pipeline, guard | `pipeline`, `ood`, `guard`, `dispatch_tests`, `uas_response_tests` |
+| UAS, dialogs, calls | `core`, `uas`, `indialog`, `dialog_ops`, `dialog_fsm_tests`, `replaces`, `call` |
+| UAC | `core_uac`, `uac`, `digest`, `digest_tests`, `uac_auth_tests` |
 | PRACK, session timers | `prack`, `prack_conf`, `session_timer` |
-| B2BUA | `b2bua`, `b2b_relay`, `forked_2xx`, `webrtc_gateway` |
-| Proxy | `proxy_conf`, `proxy_forking`, `proxy_record_route`, `proxy_media`, `route_tests` |
-| Registrar, regc, peers | `registrar`, `regc`, `peers` |
+| B2BUA | `b2bua`, `b2b_relay`, `b2b_async`, `b2b_transfer`, `forked_2xx`, `webrtc_gateway` |
+| Proxy | `proxy_conf`, `proxy_forking`, `proxy_record_route`, `proxy_media`, `route_tests`, `flow_tests` |
+| Registrar, regc, peers | `registrar`, `registrar_cluster`, `registry_lag_tests`, `regc`, `peers`, `peers_cluster` |
 | WebSocket, TLS | `websocket`, `ws_conf`, `tls` |
 | Events, REFER, focus | `subscribe`, `subscriber`, `presence`, `refer`, `focus`, `confinfo_tests`, `sipfrag_tests` |
-| CDR, HEP, metrics | `cdr`, `hep`, `hep_tests`, `metrics_tests` |
-| Media | `media` (NG fake, real chappe_mix rooms) |
-| Message model | `msg_tests`, `hdr_tests`, `uri_tests`, `sdp_tests`, `rfc4475` |
-| Compliance gates | `gate1`, `gate2`, `conformance` (`make interop-conformance`), `compliance_tests` |
+| SIPREC | `siprec`, `siprec_meta_tests`, `siprec_live` (real rtpengine) |
+| CDR, HEP, metrics | `cdr`, `hep`, `hep_tests`, `metrics_tests`, `metrics_http` |
+| Media | `media` (NG fake, real chappe_mix rooms), `sdes_tests` |
+| Message model | `msg_tests`, `hdr_tests`, `uri_tests`, `sdp_tests`, `lib_tests`, `rfc4475` |
+| Compliance gates | `gate1`, `gate2`, `conformance` (`make interop-conformance`) |
 | Real stacks | `interop` (`INTEROP=1`, JsSIP and Kamailio), `sbc_interop` (`make interop-sbc`) |
-| Docs | `doc_snippets_tests` (every `erlang` block in the docs) |
 
 Suite names drop the `chappe_sip_` prefix and the `_SUITE` suffix here.
+The umbrella `test/` holds `chappe_sip_compliance_tests` (the compliance
+generator) and `doc_snippets_tests` (every `erlang` block in the docs).
+
 Test helpers: `chappe_sip_test_ua`, `chappe_sip_raw_peer`,
 `chappe_sip_core_peer`, `chappe_sip_ws_test_client`, `chappe_sip_test_rtpe`
-(rtpengine fake), `chappe_sip_test_port`.
+(rtpengine fake), `chappe_sip_test_port` (with `chappe_sip_test_port_tests`),
+`chappe_sip_echo_handler` (a handler behaviour for the handler suite),
+`chappe_sip_test_cluster` and `chappe_sip_test_dist` (peer nodes),
+`chappe_sip_location_lagging` (a lagging location replica),
+`chappe_sip_test_focus`, `chappe_sip_test_conf_ua` and
+`chappe_sip_test_confinfo` (conference focus cases), `chappe_sip_test_store`
+(a SIPREC recording store).

@@ -85,6 +85,7 @@ A bad value returns `{error, {bad_option, Key}}` and nothing listens.
 | `mix` | `mono` | `mono`, `mixed` or `stereo`. |
 | `rate` | `16000` | Sample rate in Hz (`8k` and `16k` on the mod_audio_stream command line). |
 | `metadata` | none | First text frame sent to the server. |
+| `bugname` | `audio_fork` | mod_audio_fork only: the name of this fork's media bug, so one channel can run several forks. On mod_audio_stream it returns `{error, {bad_option, bugname}}`. |
 
 ## Where it lives
 

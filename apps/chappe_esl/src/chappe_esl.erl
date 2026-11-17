@@ -44,7 +44,7 @@
 %% `linger <Seconds>', false sends nothing. ip: the address to listen on
 %% (127.0.0.1 by default; an IPv6 address listens on IPv6). allow: the
 %% networks peers may connect from, as CIDR strings or binaries
-%% (<<"10.0.0.0/8">>, "192.0.2.7"); a peer outside is closed right after
+%% (`<<"10.0.0.0/8">>', `"192.0.2.7"'); a peer outside is closed right after
 %% accept. Left out, every peer that reaches `ip' is taken; an empty list
 %% is refused. backlog: the
 %% length of the queue of connections not yet accepted (128). max_pending:
@@ -280,7 +280,7 @@ listener_stats(Ref) ->
 %% Node registry
 
 %% Register a FreeSWITCH node and start monitoring it. Opts: host (required),
-%% port (8021), password (<<"ClueCon">>), tags ([]), weight (1),
+%% port (8021), password (`<<"ClueCon">>'), tags ([]), weight (1),
 %% max_sessions (infinity), sip_uri (undefined, kept for the caller),
 %% events (extra event names), probes (api commands run as health checks),
 %% heartbeat_interval_ms (20000, match the node's event-heartbeat-interval),

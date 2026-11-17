@@ -44,7 +44,7 @@ By default every node that adds a peer pings it, so a trunk gets one
 OPTIONS per node per interval. On a cluster, `probe => singleton` has one
 node ping it and share what it sees with the others. Set the chappe_sip
 setting `cluster => chappe_cluster` and configure chappe_cluster (its
-`voters`); chappe_sip starts it on first use:
+`voters`); chappe_sip starts it at boot, before its own processes:
 
 ```erlang
 %% sys.config, on every node

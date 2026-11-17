@@ -75,7 +75,7 @@ No module is marked internal in its source yet.
 | chappe_esl | the application; the node registry starts when the `nodes` app env is set | `chappe_esl:connect/1`, `chappe_esl:node_add/2`, `chappe_esl:start_listener/3`; app env `nodes`, `max_frame_bytes` | `chappe_esl_sup`, `chappe_esl_parser`, [configuration reference](../apps/chappe_esl/docs/configuration.md) |
 | chappe_mrf | the application, after chappe_sip and chappe_esl; `chappe_mrf:start/1` after `chappe_sip:start/1` | `chappe_mrf:start/1` (`esl_port`, `esl_ip`, `esl_allow`); app env `esl_port` starts the listener with the app | `chappe_mrf_app`, [configuration reference](../apps/chappe_mrf/docs/configuration.md) |
 
-The development shell (`rebar3 shell`) starts all five apps with
+The development shell (`rebar3 shell`) starts all seven apps with
 `apps/chappe_sip/config/sys.config` (root `rebar.config`, `shell`).
 
 ## Read this next

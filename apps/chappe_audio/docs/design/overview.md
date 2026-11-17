@@ -8,10 +8,12 @@ the store, or review a change to them.
 
 ```
 chappe_audio_sup (rest_for_one)
+|-- chappe_audio_rtp_sup           one chappe_audio_rtp per received RTP stream
 |-- pg scope chappe_audio          its own, for streams by ref and the stores
 |-- chappe_audio_registry          streams waiting for their fork, by id (ETS)
 |-- chappe_audio_store_srv         the node's store: config, pg group, sweep
 |-- chappe_audio_writer_sup        one chappe_audio_writer per recording
+|-- chappe_audio_adopt_sup         one chappe_audio_adopt per file taken into the store
 |-- chappe_audio_stream_sup        one chappe_audio_stream per fork
 |-- chappe_audio_conn_sup          one chappe_audio_conn per handshake
 |-- chappe_audio_listener_sup      one chappe_audio_listener per port
@@ -21,6 +23,19 @@ chappe_audio_sup (rest_for_one)
 Every child of a `_sup` is temporary: a stream, a writer or a handshake
 that crashes is not restarted, and its owner sees it go through its
 monitor.
+
+| Module | Role |
+|---|---|
+| `chappe_audio` | Public API: listeners, `open/1,2` for forks, `streams/1`, `levels/2`, and `rtp_receiver/1`, the RTP receiver a SIPREC recording server (`chappe_sip_siprec_srs`) starts per recorded stream. |
+| `chappe_audio_rtp` | One received RTP stream: UDP socket, G.711 decode to PCM, sink to a recording or a process. |
+| `chappe_audio_srtp` | Receive-only SRTP and SRTCP (RFC 3711) for `chappe_audio_rtp`. |
+| `chappe_audio_listener`, `chappe_audio_conn`, `chappe_audio_http` | The WebSocket listener, one opening handshake, its HTTP/1.1 side. |
+| `chappe_audio_stream`, `chappe_audio_ws`, `chappe_audio_registry` | One fork's stream, its ws_handler, the streams by id. |
+| `chappe_audio_store`, `chappe_audio_store_srv`, `chappe_audio_store_file` | The store API and behaviour, the node's store, the folder backend. |
+| `chappe_audio_writer`, `chappe_audio_adopt` | One recording being written, one finished file taken into the store. |
+| `chappe_audio_pcm`, `chappe_audio_wav` | 16-bit PCM helpers, the WAVE container. |
+| `chappe_audio_lib`, `chappe_audio_pg` | Shared helpers (bounded sends), the pg scope. |
+| `chappe_audio_app`, `chappe_audio_sup` | Boot and the root supervisor. |
 
 | Process | Owner | Cleans up | pg | Bound |
 |---|---|---|---|---|

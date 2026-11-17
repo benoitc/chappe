@@ -30,7 +30,6 @@
 - Test double (`chappe_rtpengine_fake_server`) with drop, duplicate, delayed and raw-reply injection, runtime handler swap
 - Compliance catalogue (`docs/compliance/requirements.tsv`): NG protocol behaviours, each claimed by the tests that prove it with `%% req:` lines
 - Live test suite against a real rtpengine, gated on `RTPENGINE_HOST`, driven by the `interop/` docker compose harness
-- Leaf-library toolchain (docs/design/leaf-library-contract.md): seven verification gates (compile, eunit, ct, elvis lint, xref, dialyzer, erlfmt) wired into the Makefile and CI
 
 ## Roadmap
 

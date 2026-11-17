@@ -158,8 +158,9 @@ With `cluster => chappe_cluster`, every node of a region shares one location
 store: a REGISTER taken on one node is found on every other, and a call from
 any node reaches the device. You need it when your devices register to
 several nodes behind one name (DNS, a load balancer) and any node may place a
-call to them. Start chappe_cluster on each node first (see the chappe_cluster
-guide, `docs/guides/cluster.md`), then:
+call to them. Configure chappe_cluster on each node (see the
+[chappe_cluster guide](../../../chappe_cluster/docs/guides/cluster.md)); chappe_sip
+starts it at boot. Then:
 
 ```erlang
 [{chappe_sip, [
@@ -174,8 +175,9 @@ load}` (it is not a dependency, so nothing pulls it in). With `cluster =>
 chappe_cluster`, chappe_sip starts it before its own processes, so it stops
 after chappe_sip and the registry hands its sweep over on the way out. A node
 set to `cluster => chappe_cluster` without it refuses to start with
-`{cluster, {chappe_cluster_not_installed, _}}`; with `cluster => none` it is
-never started.
+`{cluster, {chappe_cluster_not_installed, _}}`, and any other value than
+`none` or `chappe_cluster` with `{cluster, {badarg, Value}}`; with `cluster =>
+none` it is never started.
 
 ```erlang
 {relx, [{release, {my_sbc, "1.0.0"},

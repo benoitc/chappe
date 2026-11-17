@@ -3,7 +3,8 @@
 This page lists every option chappe_mix takes, with its default. Read it
 when you start a conference or add a leg and need to know what a key does.
 chappe_mix has no application environment: everything is set per
-conference (`chappe_mix:start/1`) or per leg (`chappe_mix:add_leg/2`).
+conference (`chappe_mix:start/1`), per leg (`chappe_mix:add_leg/2`) or
+per tap (`chappe_mix:tap/3`).
 
 ## Conference options
 
@@ -55,6 +56,22 @@ Passed to `chappe_mix:add_leg/2`.
 ```erlang
 {ok, Leg, #{ip := Ip, port := Port, rtcp_port := RtcpPort}} =
     chappe_mix:add_leg(Conf, #{rtcp => pair, dtmf_pt => 101, name => <<"bob">>}).
+```
+
+## Tap options
+
+The options of `chappe_mix:tap/3`, which hands a party's or the room's
+decoded audio to a process as `{chappe_mix, Conf, {tap, Tap, Pcm}}` every
+20 ms.
+
+| Key | Default | What it does |
+| --- | --- | --- |
+| `to` | the caller | Process that gets the frames. The tap ends when it dies. |
+| `max_queue` | `500` | Messages waiting at `to` past which a frame is dropped and counted in `taps/1`. |
+| `ref` | the leg's, else the room's | The ref `taps/1` shows for the tap. |
+
+```erlang
+{ok, Tap} = chappe_mix:tap(Conf, Leg, #{max_queue => 100}).
 ```
 
 ## From chappe_sip

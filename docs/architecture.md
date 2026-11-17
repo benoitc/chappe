@@ -1,6 +1,6 @@
 # Architecture
 
-This page shows how the five apps of the umbrella fit together, which
+This page shows how the seven apps of the umbrella fit together, which
 process owns what, and the path the five main flows take through the code.
 Read it when you need to know where execution enters, which app to change
 for a feature, or what talks to what before you open the tree. Each hop
@@ -34,21 +34,25 @@ flowchart TB
     mrf --> sip
     mrf --> esl
     mrf --> audio
+    mrf -. optional .-> cluster
     sip --> rtpe
     sip --> mix
+    sip -. "optional (SIPREC)" .-> audio
+    sip -. optional .-> cluster
     sip -. "SIP (UDP, TCP, TLS, WS)" .- peers[(SIP peers, phones, browsers)]
     rtpe -. "NG protocol" .- rtpengine[(rtpengine daemon)]
     esl -. "Event Socket" .- fs[(FreeSWITCH nodes)]
     mix -. "RTP" .- rtpengine
     audio -. "WebSocket (audio forks)" .- fs
+    audio -. "RTP (SIPREC)" .- srs[(SIPREC recorders)]
     cluster -. "Raft (Ra), one group per region" .- nodes[(the region's other chappe nodes)]
 ```
 
 | Layer | Apps | Rule |
 |---|---|---|
-| Leaf | chappe_rtpengine, chappe_mix, chappe_esl, chappe_audio, chappe_cluster | Speak one protocol. Depend on no other chappe app and on nothing SIP. |
-| Core | chappe_sip | The SIP stack. Uses chappe_rtpengine and chappe_mix through its media facade (`chappe_sip_media`), started on demand. Never uses chappe_esl. |
-| Orchestration | chappe_mrf | Ties SIP to media servers. May depend on the core and the leaves. Nothing in the umbrella depends on it. |
+| Leaf | the apps listed in [0003](decisions/0003-leaf-apps.md) | One concern each. Depend on no other chappe app and on nothing SIP. |
+| Core | chappe_sip | The SIP stack. Uses chappe_rtpengine and chappe_mix through its media facade (`chappe_sip_media`), started on demand. Takes SIPREC audio in through chappe_audio when it is installed. Starts chappe_cluster at boot when `cluster => chappe_cluster`. Never uses chappe_esl. |
+| Orchestration | chappe_mrf | Ties SIP to media servers. Depends on chappe_sip, chappe_esl and chappe_audio, and starts chappe_cluster at boot when its `cluster` env is `chappe_cluster`. Nothing in the umbrella depends on it. |
 
 Why the rules exist:
 
@@ -66,27 +70,34 @@ Why the rules exist:
 The dependencies are in each `apps/*/src/*.app.src`. chappe_sip lists
 neither chappe_rtpengine nor chappe_mix in `applications`: they are loaded
 with the release and started by `chappe_sip_media_sup` when a `media` config
-names them (`apps/chappe_sip/rebar.config`, `relx`).
+names them (`apps/chappe_sip/rebar.config`, `relx`). chappe_audio is in its
+`optional_applications`. chappe_cluster is in no `applications` list:
+`chappe_sip_app` and `chappe_mrf_app` start it before their supervisor when
+the `cluster` config names it, and refuse to boot when it is not installed.
 
 ## Supervision at a glance
 
 ```
 chappe_sip_sup (one_for_one)
+|-- chappe_sip_pg, chappe_sip_call, chappe_sip_hlc   pg scope, calls by call_ref, the node clock
 |-- chappe_sip_registry_keeper, chappe_sip_registry   location store (survives engine restarts)
 |-- chappe_sip_dialog_index, chappe_sip_digest_nc, chappe_sip_cdr, chappe_sip_hep
 |-- chappe_sip_refer_sup, chappe_sip_subscriber_sup, chappe_sip_events_sup
-|-- chappe_sip_peers_sup, chappe_sip_ws_sup, chappe_sip_media_sup
+|-- chappe_sip_peers_sup, chappe_sip_metrics_http, chappe_sip_ws_sup
+|-- chappe_sip_media_sup, chappe_sip_b2b_sup
 |-- chappe_sip_stack_sup (rest_for_one)
 |   |-- chappe_sip_engine          the one process that talks to the NIF
 |   |-- chappe_sip_request_sup     one worker per inbound out-of-dialog request
 |   |-- chappe_sip_dialog_sup      one chappe_sip_dialog_fsm per dialog
-|   `-- chappe_sip_uac_sup         one chappe_sip_uac_fsm per outbound transaction
+|   |-- chappe_sip_uac_sup         one chappe_sip_uac_fsm per outbound transaction
+|   `-- chappe_sip_proxy_sup       one Accepted-state process per proxied INVITE
+|-- chappe_sip_siprec_sup          one chappe_sip_siprec per recording this node sends
 `-- chappe_sip_regc_sup            one chappe_sip_regc per outbound registration
 
 chappe_rtpengine_sup (rest_for_one)
 |-- chappe_rtpengine_pool          nodes, health, call pinning
-|-- chappe_rtpengine_client_sup    one client per node
 |-- chappe_rtpengine_dtmf
+|-- chappe_rtpengine_client_sup    one client per node
 `-- chappe_rtpengine_session_sup   one session per call
 
 chappe_mix_sup (one_for_one)
@@ -97,16 +108,20 @@ chappe_esl_sup (one_for_one)
 `-- chappe_esl_nodes               when the `nodes' app env is set
 
 chappe_audio_sup (rest_for_one)
+|-- chappe_audio_rtp_sup           one chappe_audio_rtp per received RTP stream (SIPREC)
 |-- pg scope chappe_audio          streams by call ref, the cluster's stores
 |-- chappe_audio_registry          streams waiting for their fork, by id
 |-- chappe_audio_store_srv         the recording store: config, pg, sweep
 |-- chappe_audio_writer_sup        one chappe_audio_writer per recording
+|-- chappe_audio_adopt_sup         one chappe_audio_adopt per file taken into the store
 |-- chappe_audio_stream_sup        one chappe_audio_stream per fork
 |-- chappe_audio_conn_sup          one chappe_audio_conn per handshake
-`-- chappe_audio_listener_sup      one chappe_audio_listener per port
+|-- chappe_audio_listener_sup      one chappe_audio_listener per port
+`-- chappe_audio_listener          when the `listener' app env is set
 
 chappe_cluster_sup (rest_for_one)
 |-- pg scope chappe_cluster        watchers by prefix, running singletons
+|-- chappe_cluster_hlc             the node's hybrid logical clock
 |-- chappe_cluster_watch           hands KV changes to local watchers
 |-- chappe_cluster_lapse           gives every lease up at the deadline
 |-- chappe_cluster_node            the Ra member, renewals
@@ -118,10 +133,16 @@ chappe_mrf_sup (one_for_one)
 `-- chappe_mrf_conf_sup            one chappe_mrf_conf per conference
 ```
 
-Source: the `init/1` of each `*_sup.erl`. The app overviews have the full
-trees: [chappe_sip](../apps/chappe_sip/docs/design/overview.md),
+Source: the `init/1` of each `*_sup.erl`, in child order. The app overviews
+have the full trees:
+[chappe_sip](../apps/chappe_sip/docs/design/overview.md),
+[chappe_rtpengine](../apps/chappe_rtpengine/docs/design/overview.md),
 [chappe_mix](../apps/chappe_mix/docs/design/overview.md),
-[chappe_mrf](../apps/chappe_mrf/docs/design/overview.md).
+[chappe_esl](../apps/chappe_esl/docs/design/overview.md),
+[chappe_audio](../apps/chappe_audio/docs/design/overview.md),
+[chappe_mrf](../apps/chappe_mrf/docs/design/overview.md); for
+chappe_cluster, [its README](../apps/chappe_cluster/README.md) and
+[guide](../apps/chappe_cluster/docs/guides/cluster.md).
 
 ## Flows
 

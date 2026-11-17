@@ -37,7 +37,12 @@ make check          # compile, eunit, ct, lint, xref, dialyzer, fmt check
 CI (`.github/workflows/ci.yml`) also runs line coverage against a floor
 (`make cover MIN_COVERAGE=N`; raise the floor, never lower it), the
 compliance gate (`make compliance GATE=demo`), the NIF under
-AddressSanitizer (`make asan`), and the docker labs. What each lab proves
+AddressSanitizer with a short fuzz run (`make asan`, `make fuzz`) and
+ThreadSanitizer (`make tsan`), the C linters (`make lint-c`), the demo
+compile (`make demo-compile`), the cluster demo walkthrough
+(`make demo-cluster-smoke`), and the docker labs. Separate workflows run
+the advisories check (`advisories.yml`) and a longer scheduled fuzz
+(`fuzz.yml`). What each lab proves
 and how to run it: [labs](docs/contributing/labs.md).
 
 Pure Erlang work can skip the C build: `SKIP_ENGINE_BUILD=1 rebar3 compile`
@@ -66,10 +71,10 @@ uses the fake engine.
   shapes from readers and dialyzer, and lets a malformed message fail far
   from where it arrived. When several requests share a policy, send them
   under one envelope tag (`{join, Req}`) and match each shape in a helper.
-- **Keep the leaf apps SIP-free.** chappe_rtpengine, chappe_mix and
-  chappe_esl depend on no other chappe app. SIP-coupled logic belongs in
-  chappe_sip, an orchestration app such as chappe_mrf, or a product. See
-  [0003](docs/decisions/0003-leaf-apps.md) and
+- **Keep the leaf apps SIP-free.** The leaf apps listed in
+  [0003](docs/decisions/0003-leaf-apps.md) depend on no other chappe app.
+  SIP-coupled logic belongs in chappe_sip, an orchestration app such as
+  chappe_mrf, or a product. See also
   [0006](docs/decisions/0006-mrf-orchestration-app.md).
 - **Tests first.** Write the test, run it against the code before your
   change and see it fail, then make it pass.

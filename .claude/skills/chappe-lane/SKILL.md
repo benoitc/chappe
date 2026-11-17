@@ -36,7 +36,7 @@ Other lanes run on the same machine: check the load average before timing anythi
 - Write each new test first and run it against the old code to see it fail.
 - Share code, do not copy it (`AGENTS.md`). Export a helper from the module that owns the concept.
 - Do not edit `CHANGELOG.md`, `apps/chappe_sip/docs/features.md` or the compliance files unless the brief says so: the integrator writes user docs once lanes merge.
-- Leaf apps (`chappe_rtpengine`, `chappe_mix`, `chappe_esl`) stay SIP-free.
+- Leaf apps (`chappe_rtpengine`, `chappe_mix`, `chappe_esl`, `chappe_audio`, `chappe_cluster`; decision 0003) stay SIP-free.
 
 ## Before you report
 

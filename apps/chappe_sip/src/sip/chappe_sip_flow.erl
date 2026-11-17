@@ -9,8 +9,8 @@
 %% A flow is a WS connection (an integer), a TCP/TLS connection of the
 %% native stack ({conn, Id}) or a UDP source address ({udp, Ip, Port},
 %% with the listen address it reached when there are several). As a token
-%% in a URI parameter: a WS flow is its integer, a connection c<Id>, a UDP
-%% address u<hex ip>-<port>[-<hex local>].
+%% in a URI parameter: a WS flow is its integer, a connection `c<Id>', a UDP
+%% address `u<hex ip>-<port>[-<hex local>]'.
 %%
 %% Edge routes (RFC 5626 5.3): a registrar node that holds a binding's
 %% flow hands out a Route naming itself and that flow (edge_route/4), so a
@@ -109,8 +109,8 @@ flow_route({udp, _, _} = Flow) -> Flow;
 flow_route({udp, _, _, _} = Flow) -> Flow.
 
 %% A flow as a URI parameter value: a WS flow as its integer (the form
-%% markers always had), a connection as c<Id>, a UDP address as
-%% u<hex ip>-<port>, with -<hex local> when it names a listen address.
+%% markers always had), a connection as `c<Id>', a UDP address as
+%% `u<hex ip>-<port>', with `-<hex local>' when it names a listen address.
 -spec token(chappe_sip_engine:flow()) -> binary().
 token(Flow) when is_integer(Flow) ->
     integer_to_binary(Flow);

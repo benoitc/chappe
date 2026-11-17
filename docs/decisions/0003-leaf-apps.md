@@ -1,7 +1,8 @@
 # 0003: Leaf apps take no SIP dependency
 
 This record is the contract for the leaf apps of the umbrella
-(chappe_rtpengine, chappe_mix, chappe_esl): what a leaf app may depend on,
+(chappe_rtpengine, chappe_mix, chappe_esl, chappe_audio, chappe_cluster):
+what a leaf app may depend on,
 how it is laid out, built and tested. Read it before you start a new leaf
 app, review one, or add a dependency to one. It replaces the two copies of
 `leaf-library-contract.md` that lived in `apps/chappe_rtpengine/docs/design/`
@@ -17,15 +18,16 @@ the maintainer.
 What the repository shows:
 
 - `AGENTS.md`: "Keep the leaf apps (chappe_rtpengine, chappe_esl,
-  chappe_mix) SIP-free; SIP-coupled logic belongs in chappe_sip, an
+  chappe_mix, chappe_audio, chappe_cluster) SIP-free; SIP-coupled logic belongs in chappe_sip, an
   orchestration app or a consuming product", and "the leaf apps never
   depend on chappe_sip or on an orchestration app".
 - Each app is published to hex on its own (`AGENTS.md`, root `rebar.config`
   comment).
 - `AGENTS.md`: "Helpers are not shared across apps: each app is published
   on its own and the leaf apps take no umbrella deps."
-- The `applications` lists confirm it: chappe_rtpengine needs `ws`,
-  chappe_mix `crypto`, chappe_esl nothing beyond kernel and stdlib
+- The `applications` lists confirm it: chappe_rtpengine needs `crypto` and `ws`,
+  chappe_mix `crypto`, chappe_esl nothing beyond kernel and stdlib,
+  chappe_audio `crypto` and `ws`, chappe_cluster `ra` and `hlc`
   (`apps/*/src/*.app.src`).
 
 The two copies of the contract disagreed on four points:
@@ -40,25 +42,31 @@ The two copies of the contract disagreed on four points:
 This record takes the rtpengine copy on each point, since it is a superset
 and matches the code: chappe_rtpengine depends on `ws`, and
 `chappe_rtpengine_session` uses `handle_event_function`. The scope covers
-all three leaf apps.
+all five leaf apps.
 
 ## Decision
 
 ### Scope
 
-- A leaf app speaks exactly one wire protocol (rtpengine NG, RTP mixing,
-  FreeSWITCH Event Socket). No dependency on chappe_sip, on SIP, or on
-  another chappe app.
-- No runtime dependency beyond kernel and stdlib unless the protocol needs
+- A leaf app has exactly one concern. For chappe_rtpengine, chappe_mix and
+  chappe_esl it is a wire protocol (rtpengine NG, RTP mixing, FreeSWITCH
+  Event Socket). For chappe_audio it is the audio store and the intake of
+  recorded audio (audio forks over WebSocket, SIPREC RTP). For
+  chappe_cluster it is ownership across a cluster (leases, a small KV,
+  singletons). No dependency on chappe_sip, on SIP, or on another chappe
+  app.
+- No runtime dependency beyond kernel and stdlib unless the concern needs
   one. Prefer OTP built-ins (the `json` module, for example).
 - `{deps, []}` and an empty `rebar.lock` by default. A dependency the
-  protocol needs is pinned with `~>` from hex and the lock is committed
-  (chappe_rtpengine takes `ws` for NG over WebSocket).
+  concern needs is pinned from hex and the lock is committed
+  (chappe_rtpengine and chappe_audio take `ws` for WebSocket, chappe_cluster
+  takes `ra` for Raft and `hlc` for its clock).
 
 ### Layout
 
 - The public facade is named `chappe_<thing>`; every internal module carries
-  the app prefix (`chappe_rtpengine_`, `chappe_mix_`, `chappe_esl_`).
+  the app prefix (`chappe_rtpengine_`, `chappe_mix_`, `chappe_esl_`,
+  `chappe_audio_`, `chappe_cluster_`).
 - `src/` for code, `test/` for tests (flat), `docs/` for authored markdown,
   `doc/` for generated ex_doc HTML (git-ignored), `interop/` for a live test
   harness.
@@ -92,7 +100,7 @@ all three leaf apps.
 
 ### Toolchain
 
-- Erlang/OTP 29, rebar3.
+- Erlang/OTP 29.1.2 or later (`minimum_otp_vsn`), rebar3.
 - `{erl_opts, [debug_info, warnings_as_errors]}` on the default profile; the
   `test` profile adds `nowarn_export_all`.
 - Project plugins: `rebar3_lint`, `erlfmt` (print width 80),
