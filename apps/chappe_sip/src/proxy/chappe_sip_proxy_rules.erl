@@ -307,7 +307,7 @@ next_hop({ws, _} = D, _Via, Msg) ->
     {D, Msg};
 next_hop({flow, _Uri, Flow}, _Via, Msg) ->
     %% RFC 5626 5.3: a binding's flow is the way to reach it
-    {chappe_sip_route:flow_route(Flow), Msg};
+    {chappe_sip_flow:flow_route(Flow), Msg};
 next_hop({route, _Uri, RouteSet}, Via, Msg) ->
     %% RFC 3261 16.6 step 6: a route set toward the target goes ahead of
     %% the Route headers the request still carries

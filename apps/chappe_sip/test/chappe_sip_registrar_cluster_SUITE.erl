@@ -165,7 +165,7 @@ conn_token_refused_on_another_node(Config) ->
     ?assert(erpc:call(N1, chappe_sip_route, is_self, [RR, undefined, <<"cn1">>])),
     ?assertNot(erpc:call(N2, chappe_sip_route, is_self, [RR, undefined, <<"cn1">>])),
     Exp = erlang:system_time(second) + 60,
-    Edge = erpc:call(N1, chappe_sip_route, edge_route,
+    Edge = erpc:call(N1, chappe_sip_flow, edge_route,
                      [<<"sip:127.0.0.1:5060">>, {conn, 5}, <<"tcp">>, Exp]),
     ?assert(erpc:call(N1, chappe_sip_route, is_self, [Edge, undefined, <<"x">>])),
     ?assertNot(erpc:call(N2, chappe_sip_route, is_self, [Edge, undefined, <<"x">>])),

@@ -860,7 +860,7 @@ local(#data{opts = Opts, uri = Uri, proxy = Proxy}) ->
 %% route by the Request-URI); a sip: hop is reached as sips: when the
 %% Request-URI is SIPS (RFC 3261 8.1.2)
 route(#data{flow = Flow}) when Flow =/= undefined ->
-    chappe_sip_route:flow_route(Flow);
+    chappe_sip_flow:flow_route(Flow);
 route(#data{uri = Uri} = D) ->
     chappe_sip_route:secure_hop(Uri, next_hop(D)).
 
@@ -1037,7 +1037,7 @@ route_set(Msg) ->
 %% ACK/BYE/PRACK destination: the WS flow for a browser target, else the
 %% first route (a loose or a strict router), else by Request-URI
 ack_route(_Msg, #data{flow = Flow}) when Flow =/= undefined ->
-    chappe_sip_route:flow_route(Flow);
+    chappe_sip_flow:flow_route(Flow);
 ack_route(Msg, _D) ->
     case route_set(Msg) of
         [First | _] ->

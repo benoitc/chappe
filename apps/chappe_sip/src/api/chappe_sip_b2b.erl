@@ -809,8 +809,8 @@ keep_a_side(#{res := Res} = W) ->
 %% requests of its dialog (our re-INVITE, BYE) go to where its INVITE came
 %% from instead (RFC 3581, Kamailio's fix_nated_contact)
 nat_flow(Req, Opts) ->
-    Flow = chappe_sip_route:received_flow(chappe_sip_req:meta(Req)),
-    case chappe_sip_route:nated(chappe_sip_req:get(<<"contact">>, Req), Flow) of
+    Flow = chappe_sip_flow:received_flow(chappe_sip_req:meta(Req)),
+    case chappe_sip_flow:nated(chappe_sip_req:get(<<"contact">>, Req), Flow) of
         true -> Opts#{flow => Flow};
         false -> Opts
     end.

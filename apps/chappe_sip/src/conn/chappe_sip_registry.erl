@@ -224,7 +224,7 @@ send_flow(#{flow := Flow}) when Flow =/= undefined ->
     Flow;
 send_flow(#{contact := Contact} = B) ->
     Received = maps:get(received, B, undefined),
-    case chappe_sip_route:nated(Contact, Received) of
+    case chappe_sip_flow:nated(Contact, Received) of
         true -> Received;
         false -> undefined
     end.
@@ -708,7 +708,7 @@ apply_contacts(Ctx, Contacts, Msg, Opts, Info) ->
                 received = maps:get(received, Opts, undefined),
                 transport = maps:get(transport, Opts, undefined),
                 node = node(),
-                boot = chappe_sip_route:boot()
+                boot = chappe_sip_flow:boot()
             },
             Max = chappe_sip_config:get(registrar_max_expires),
             %% RFC 5626 6: a UA with a direct flow to us has its outbound
@@ -847,7 +847,7 @@ stored({_Store, _Aor, Bs, _Version, _T0}) ->
 %% the bindings not expired, and not bound to a connection or WS flow of
 %% an earlier boot of this node (those flows are gone)
 live(Bs, Now) ->
-    Boot = chappe_sip_route:boot(),
+    Boot = chappe_sip_flow:boot(),
     [B || B <- Bs, B#binding.expiry > Now, not stale_flow(B, Boot)].
 
 stale_flow(#binding{node = N, boot = B, flow = F}, Boot) when
@@ -1143,7 +1143,7 @@ edge_route(#binding{expiry = Exp} = B) ->
         Flow ->
             case chappe_sip_binds:contact_or_primary(local(Flow), false) of
                 Uri when is_binary(Uri) ->
-                    chappe_sip_route:edge_route(
+                    chappe_sip_flow:edge_route(
                         Uri, Flow, edge_transport(Flow, B), Exp + ?EDGE_GRACE_S
                     );
                 _ ->

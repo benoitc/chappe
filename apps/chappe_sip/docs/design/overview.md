@@ -141,7 +141,7 @@ The B2BUA subsystem is described in [b2bua](b2bua.md), the media facade in
 ## Entry points
 
 **Boot.** `chappe_sip_app:start/2` refuses the placeholder distribution
-cookie, seeds the route secret (`chappe_sip_route:ensure_secret/0`), sets up
+cookie, seeds the route secret (`chappe_sip_flow:ensure_secret/0`), sets up
 metrics and starts `chappe_sip_sup`. Nothing listens yet.
 `chappe_sip:start/1` then configures HEP, starts the WS listener if asked,
 configures media, starts the native engine (`chappe_sip_engine:start/1`),

@@ -1860,7 +1860,7 @@ send_ack_indialog(#data{local_cseq = CSeq} = D) ->
 %% (RFC 3261 12.2.1.1), otherwise nta routes by the Request-URI. A sip:
 %% first route is reached as sips: when the remote target is SIPS (8.1.2).
 route(#data{flow = Flow}) when Flow =/= undefined ->
-    chappe_sip_route:flow_route(Flow);
+    chappe_sip_flow:flow_route(Flow);
 route(#data{route_set = [First | _], remote_target = Target}) ->
     case chappe_sip_hdr:name_addr(First) of
         {ok, #{uri := Uri}} -> chappe_sip_route:secure_hop(Target, Uri);
