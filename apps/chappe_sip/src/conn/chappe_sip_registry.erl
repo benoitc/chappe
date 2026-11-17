@@ -324,11 +324,12 @@ init([]) ->
         _ -> {ok, schedule_resync(#{}), {continue, cluster}}
     end.
 
-%% On a cluster the sweep is one singleton for the region. chappe_cluster
-%% is started here, on first use, not as a dependency of the app.
-%% chappe_sip refuses to start without it (chappe_sip_config:
-%% check_cluster/0); one that fails to start is logged, and the sweep is
-%% left to the other nodes, rather than crash-looping this supervisor.
+%% On a cluster the sweep is one singleton for the region. chappe_sip_app
+%% starts chappe_cluster before this supervisor (and refuses to start
+%% without it); it is ensured again here, for a registry restarted after
+%% chappe_cluster stopped. One that fails to start is logged, and the
+%% sweep is left to the other nodes, rather than crash-looping this
+%% supervisor.
 handle_continue(cluster, S) ->
     case application:ensure_all_started(chappe_cluster) of
         {ok, _} ->

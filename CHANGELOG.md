@@ -24,7 +24,10 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
   retry delay, and calls to devices already registered keep working. When
   the node a TCP, TLS or WebSocket device is connected to stops, the device
   cannot be reached until it registers again; a UDP device is still
-  reached directly. A single node works as before.
+  reached directly. A single node works as before. A release that runs
+  the registrar on several nodes must include chappe_cluster (as
+  `{chappe_cluster, load}`): chappe_sip then starts it first, so it stops
+  last, and a node set up for several nodes without it refuses to start.
 - chappe_mrf: conference rooms can now span several nodes. Callers who dial
   the same room on different nodes land in the same room. When the node
   running a room is stopped cleanly, the room moves to a live node first,
