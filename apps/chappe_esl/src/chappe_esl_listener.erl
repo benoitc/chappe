@@ -190,9 +190,12 @@ screen(Owner, Socket, Allow) ->
             refuse(Owner, Socket, Reason)
     end.
 
+%% counted before the close, so a peer that sees the close also sees the
+%% count in listener_stats/1
 refuse(Owner, Socket, Peer) ->
+    gen_server:cast(Owner, {refused, Peer}),
     _ = gen_tcp:close(Socket),
-    gen_server:cast(Owner, {refused, Peer}).
+    ok.
 
 handoff(Owner, Socket) ->
     case gen_server:call(Owner, admit, infinity) of
