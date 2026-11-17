@@ -16,8 +16,10 @@
 %%
 %% A contact may also be a map, for a host behind 1:1 NAT (a cloud VM
 %% with a private address and a public one):
+%% ```
 %%   #{uri := <<"sip:10.0.0.5:5060">>, public => <<"203.0.113.7">>,
 %%     local_nets => [<<"10.0.0.0/8">>]}
+%% '''
 %% The stack binds the uri's address and advertises the public one in its
 %% Via and Contact. A peer inside one of local_nets gets the local address
 %% in the Contact instead (for_peer/2).

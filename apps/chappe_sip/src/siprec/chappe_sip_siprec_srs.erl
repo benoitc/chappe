@@ -6,7 +6,7 @@
 %% store, or hand its audio to a process.
 %%
 %% serve/3 runs in the INVITE handler, on a route that takes siprec
-%% (chappe_sip:handle/3 with option_tags => [<<"siprec">>]). It checks the
+%% (chappe_sip:handle/3 with `option_tags => [<<"siprec">>]'). It checks the
 %% INVITE is a recording session (RFC 7866 6.2: +sip.src in the Contact
 %% and siprec in Require), reads its SDP and metadata
 %% (chappe_sip_siprec_meta), starts one receiver per recorded stream
