@@ -107,6 +107,10 @@ A user-visible change adds a line to [CHANGELOG.md](CHANGELOG.md) under
 "Unreleased": plain English, what was wrong or what is new and what it means
 for the user, no code and no internal names.
 
+There is no deprecation policy before the first release. An export nobody
+calls is removed, not deprecated, and the CHANGELOG lists it as a
+breaking change of the app it belongs to.
+
 ## How the documentation is organised
 
 | Where | What |

@@ -7,7 +7,7 @@ the change usually has to be made in both layers.
 
 ## Status
 
-Proposed, to confirm by the maintainer.
+Accepted (the maintainer's decision, 2026-11-17).
 
 ## Context
 
@@ -25,8 +25,14 @@ What the repository shows:
 - The WS listener is served by livery, started only when a WS listener is
   configured (`apps/chappe_sip/src/chappe_sip.app.src`,
   `chappe_sip_ws_sup`).
-- `apps/chappe_sip/docs/plan.md`, M14 and M15, records the layer being
-  built; it states no reason for not using sofia's own WS transport.
+- `apps/chappe_sip/docs/history/plan.md`, M14 and M15, records the layer
+  being built; it states no reason for not using sofia's own WS transport.
+- sofia is now built without `nth`, the only switch for its `ws`, `wss`
+  and HTTP CONNECT transports, so none of them is linked
+  (`apps/chappe_sip/c_src/build.sh`, the `--disable-nth` comment), and a
+  contact naming `ws`, `wss` or `*` is refused with `badarg`
+  (`apps/chappe_sip/src/engine/chappe_sip_bind_uri.erl`). See
+  [0016](0016-security-defaults.md).
 - WS has its own timer settings, "no sofia timers over WS"
   ([configuration guide](../../apps/chappe_sip/docs/guides/configuration.md),
   `ws_client_txn_timeout_ms`, `ws_timer_c_ms`).
@@ -53,4 +59,6 @@ behaviour for a reliable transport and emits the same events.
 
 ## Open questions
 
-- Why not sofia's WS transport?
+- Why the layer was first written in Erlang rather than on sofia's WS
+  transport: neither `history/plan.md` nor the code says. Today's build no
+  longer links that transport, which settles where WS runs, not why.

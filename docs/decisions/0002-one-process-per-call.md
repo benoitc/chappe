@@ -8,7 +8,7 @@ server.
 
 ## Status
 
-Proposed, to confirm by the maintainer.
+Accepted (the maintainer's decision, 2026-11-17).
 
 ## Context
 
@@ -48,4 +48,4 @@ process only receives events.
 
 ## Open questions
 
-- Confirm the reasons: isolation, crash containment, a simple owner model?
+None.

@@ -7,7 +7,7 @@ feature that needs SRTP, DTLS, ICE or transcoding.
 
 ## Status
 
-Proposed, to confirm by the maintainer.
+Accepted (the maintainer's decision, 2026-11-17).
 
 ## Context
 
@@ -50,6 +50,6 @@ reimplemented in Erlang.
 
 ## Open questions
 
-- Confirm: DTLS, ICE and transcoding are out of scope for Erlang? SRTP is
-  answered by [0009](0009-srtp-in-erlang.md): decrypted in Erlang where
-  chappe receives media itself, in rtpengine for media it relays.
+None. SRTP has one exception, recorded in
+[0009](0009-srtp-in-erlang.md): it is decrypted in Erlang where chappe
+receives media itself, and stays in rtpengine for media chappe relays.

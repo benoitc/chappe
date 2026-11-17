@@ -1,7 +1,7 @@
 # Remote apps and the outbound connection model (draft)
 
-Status: draft, not implemented. Whether it is kept, rejected or dropped is
-recorded in [decision 0008](../../../../docs/decisions/0008-remote-app-model.md).
+Status: planned, not implemented. The phases below ship in order
+([decision 0008](../../../../docs/decisions/0008-remote-app-model.md)).
 
 This is a design draft for review. No code exists for it yet. It describes
 how a chappe_sip node could serve applications that run outside its VM:

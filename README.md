@@ -62,8 +62,8 @@ flowchart LR
 ```
 
 RTP never flows through a SIP process: SIPREC audio is taken in by
-chappe_audio. Dotted arrows are optional. See [Architecture](docs/architecture.md)
-for the flows.
+chappe_audio ([0012](docs/decisions/0012-siprec-srs.md)). Dotted arrows are
+optional. See [Architecture](docs/architecture.md) for the flows.
 
 ## Four ways in
 

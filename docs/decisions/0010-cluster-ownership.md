@@ -15,11 +15,33 @@ Accepted (the maintainer's decision, 2026-11-15).
 
 What the repository and the research show:
 
-- Before chappe_cluster, ownership was per node. A conference room claims its
-  name in a local ETS table (`chappe_mrf_registry`), the registrar keeps its
-  bindings in a local table (`chappe_sip_registry`), and the trunk OPTIONS
-  pings, the registry sweep and the recording retention sweep run on every
-  node. Two nodes could each open a room with the same name.
+- Before chappe_cluster, ownership was per node. A conference room claimed
+  its name in a local ETS table (`chappe_mrf_registry`), the registrar kept
+  its bindings in a local table (`chappe_sip_registry`), and the trunk
+  OPTIONS pings, the registry sweep and the recording retention sweep ran
+  on every node. Two nodes could each open a room with the same name.
+- #37 moved these users onto the cluster. chappe_sip and chappe_mrf turn
+  it on with their `cluster` setting (`none` by default); chappe_audio has
+  no such setting and takes a `sweep_guard` in its store config instead:
+  - the registrar: one KV value per AOR, its sweep a singleton
+    (`apps/chappe_sip/src/conn/chappe_sip_location_cluster.erl`,
+    `chappe_sip_registry_sweep.erl`; see
+    [0015](0015-location-behaviour.md));
+  - conference rooms: one lease per room name
+    (`apps/chappe_mrf/src/chappe_mrf_conf_cluster.erl`), handed off on a
+    clean stop (`chappe_mrf_conf_move.erl`);
+  - peers with `probe => singleton` (and the `cluster` setting): one node
+    of the region pings them
+    (`apps/chappe_sip/src/peers/chappe_sip_peers.erl`);
+  - the recording retention sweep can take a `sweep_guard`, so one node
+    sweeps a shared store
+    (`apps/chappe_audio/src/chappe_audio_store_srv.erl`,
+    `guarded_sweep/1`).
+
+  Message waiting crossed nodes in the same change, but as a lookup, not
+  an owner: `chappe_sip_mwi` reaches every node's subscribers through `pg`
+  with an HLC version per update, and needs no chappe_cluster (moduledoc
+  of `apps/chappe_sip/src/events/chappe_sip_mwi.erl`).
 - Lookups already work across nodes through `pg` (call refs, audio streams),
   and handles are pids. `pg` is eventually consistent: it finds things, it
   cannot make one of them the only one.
@@ -175,5 +197,13 @@ What the repository and the research show:
 
 - Rehoming a resource between regions (an explicit, fenced operator action)
   is the cross-region plan's question.
-- Whether the registrar's bindings stay in the region KV at large scale, or
-  move to their own Ra group per shard.
+- Answered (the maintainer's decision, 2026-11-17): the registrar's
+  bindings stay in the region KV. The limit is the KV's `max_keys`, one key
+  per AOR (100,000 by default, `default(max_keys)` in
+  `apps/chappe_cluster/src/chappe_cluster_config.erl`; a new AOR past it is
+  refused `full`, which `chappe_sip_registry` answers with 503), and the
+  write rate of one Ra group, since every REGISTER that writes a binding
+  is a compare-and-swap committed by the region's majority. A deployment
+  above that splits into regions.
+  [0015](0015-location-behaviour.md) records the location behaviour that
+  holds the bindings.
