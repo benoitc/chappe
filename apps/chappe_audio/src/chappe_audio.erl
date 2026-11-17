@@ -12,7 +12,7 @@
 %% {ok, L} = chappe_audio:listen(#{port => 8090, ip => {0, 0, 0, 0},
 %%                                 url => <<"ws://10.0.0.5:8090">>}),
 %% {ok, Stream, Url} = chappe_audio:open(L, #{ref => CallRef}),
-%% ok = chappe_mrf:fork_audio(Ep, Url, #{mix => mono, rate => 8000}),
+%% ok = chappe_mrf:fork_audio_start(Ep, Url, #{mix => mono, rate => 8000}),
 %% receive {chappe_audio, Stream, {frame, Pcm}} -> ... end.
 %% '''
 %%

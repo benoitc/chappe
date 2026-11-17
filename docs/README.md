@@ -9,7 +9,8 @@ live here in `docs/`.
 ## Start here
 
 - New to chappe: [README](../README.md), then [Concepts](concepts.md), then
-  [Architecture](architecture.md).
+  [Architecture](architecture.md). Look words up in the
+  [Glossary](glossary.md).
 - Want to see it work: [the demo SBC](../demo/sbc/README.md) (`make demo`),
   or [three nodes on a cluster](../demo/cluster/README.md) (`make demo-cluster`).
 - Want to build a service: [Getting started with chappe_sip](../apps/chappe_sip/docs/guides/getting-started.md).
@@ -53,7 +54,8 @@ its [README](../apps/chappe_cluster/README.md). What changed:
 
 ### You want to understand the system
 
-- [Concepts](concepts.md): the mental model and the glossary.
+- [Concepts](concepts.md): the mental model.
+- [Glossary](glossary.md): one paragraph per term, alphabetical.
 - [Architecture](architecture.md): the apps, supervision, the five main
   flows.
 - [Decisions](decisions/README.md): why each boundary exists.
@@ -105,7 +107,7 @@ its [README](../apps/chappe_cluster/README.md). What changed:
 | keep scanners and floods out | [protect the edge](../apps/chappe_sip/docs/guides/protect-the-edge.md) |
 | serve browsers | [WebSocket](../apps/chappe_sip/docs/guides/websocket.md) |
 | watch the system | [metrics](../apps/chappe_sip/docs/guides/metrics.md), [call records](../apps/chappe_sip/docs/guides/call-records.md), [capture](../apps/chappe_sip/docs/guides/capture.md) |
-| know what a word means | [Concepts](concepts.md) |
+| know what a word means | [Glossary](glossary.md) |
 | find the code for a feature | [Navigation](navigation.md) |
 | know why it is built this way | [Decisions](decisions/README.md) |
 

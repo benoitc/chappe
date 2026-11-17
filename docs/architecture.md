@@ -4,7 +4,8 @@ This page shows how the seven apps of the umbrella fit together, which
 process owns what, and the path the five main flows take through the code.
 Read it when you need to know where execution enters, which app to change
 for a feature, or what talks to what before you open the tree. Each hop
-below names a real module; the words are defined in
+below names a real module; the words are defined in the
+[Glossary](glossary.md), and the ideas behind them in
 [Concepts](concepts.md).
 
 ## Start here
@@ -359,6 +360,7 @@ Tests: `chappe_sip_registrar_SUITE`, `chappe_sip_digest_SUITE`,
 
 ## Read this next
 
+- [Glossary](glossary.md): the words this page uses.
 - [Decisions](decisions/README.md): why the boundaries are where they are.
 - [Navigation](navigation.md): from a concept to its modules and tests.
 - [chappe_sip design overview](../apps/chappe_sip/docs/design/overview.md)

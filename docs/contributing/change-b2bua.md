@@ -7,8 +7,8 @@ set up, forked, relayed, anchored, replaced or hung up.
 
 ## Before you start
 
-- [concepts.md: A leg and B leg](../concepts.md#a-leg-and-b-leg) and
-  [Anchor and direct media](../concepts.md#anchor-and-direct-media).
+- [glossary.md: A leg and B leg](../glossary.md#a-leg-and-b-leg) and
+  [Anchor and direct media](../glossary.md#anchor-and-direct-media).
 - [apps/chappe_sip/docs/design/b2bua.md](../../apps/chappe_sip/docs/design/b2bua.md):
   the subsystem, the relay loop, `replace_b`.
 - The user guides [b2bua.md](../../apps/chappe_sip/docs/guides/b2bua.md),

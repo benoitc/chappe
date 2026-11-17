@@ -1,11 +1,12 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% chappe_audio's pg scope, `chappe_audio': its own, started first by
-%% chappe_audio_sup, so a restart of the tree restarts it and stopping
-%% the app stops it (chappe-erlang-patterns rule 4: one scope per app, no
-%% app starts another's). The groups are {chappe_audio, Ref} for a call's
-%% streams and chappe_audio_store for the stores of the cluster.
+%% chappe_audio's pg scope, `chappe_audio': its own, started early by
+%% chappe_audio_sup (after the RTP receivers), so a restart of the tree
+%% restarts it and stopping the app stops it (chappe-erlang-patterns rule
+%% 4: one scope per app, no app starts another's). The groups are
+%% {chappe_audio, Ref} for a call's streams and chappe_audio_store for the
+%% stores of the cluster.
 -module(chappe_audio_pg).
 
 -export([scope/0, join/2, members/1]).

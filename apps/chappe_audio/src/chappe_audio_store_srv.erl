@@ -3,7 +3,7 @@
 %%
 %% The node's store: it holds the storage config, answers the lookups of
 %% chappe_audio_store for this node (its own callers' and other nodes',
-%% which find it in the chappe_audio_store pg group of the `chappe'
+%% which find it in the chappe_audio_store pg group of the `chappe_audio'
 %% scope), and runs the sweep every sweep_interval, when its sweep_guard
 %% says this node sweeps now.
 -module(chappe_audio_store_srv).

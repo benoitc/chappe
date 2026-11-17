@@ -11,7 +11,7 @@ the vendored sofia-sip.
 - [apps/chappe_sip/docs/design/engine.md](../../apps/chappe_sip/docs/design/engine.md),
   all of it: shape, threads, lifecycle protocols, health and hang policy,
   the risky regions, the safety rules and how to check them.
-- [concepts.md: Engine and nta](../concepts.md#engine-and-nta).
+- [glossary.md: Engine and nta](../glossary.md#engine-and-nta).
 - [decision 0001](../decisions/0001-sofia-nta-nif.md): why a NIF over
   sofia nta, and why that commits the shim to the safety rules.
 

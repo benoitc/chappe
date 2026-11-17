@@ -8,8 +8,8 @@ audio, or leaves state behind.
 
 ## Before you start
 
-- [concepts.md: Owner and notify process](../concepts.md#owner-and-notify-process)
-  and [A leg and B leg](../concepts.md#a-leg-and-b-leg).
+- [glossary.md: Owner and notify process](../glossary.md#owner-and-notify-process)
+  and [A leg and B leg](../glossary.md#a-leg-and-b-leg).
 - [architecture.md](../architecture.md): the main flows.
 - The guides [capture.md](../../apps/chappe_sip/docs/guides/capture.md) and
   [call-records.md](../../apps/chappe_sip/docs/guides/call-records.md).
