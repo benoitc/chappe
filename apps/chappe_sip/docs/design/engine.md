@@ -86,11 +86,11 @@ Before you add to it, find the part you are changing:
 |---|---|
 | NIF lifecycle and health | `start/1`, `stop/0`, `restart_engine/0`, `start_engine`, `engine_failed`, `stack_gone`, `stack_down`, `check_health/1`, `schedule_health` |
 | Config snapshot (survives an engine crash) | `cfg_put`, `cfg_get`, `cfg_del` over the `chappe_sip_engine_cfg` ETS table owned by `chappe_sip_registry_keeper` |
-| Route registry | `use/2`, `handle/3`, `unhandle/1`, `reset_routes/0`, `route_opts`, `allow_events/0` |
-| Inbound dispatch policy | `handle_event`, `dispatch`, `dispatch_local`, `stray_in_dialog`, `dispatch_route`, `route_for`, `dispatch_handler`, `unrouted`, `unhandled`, `merge_check` (RFC 3261 8.2.2.2), `is_own_route`, `cancelled` |
+| Route registry | `use/2`, `handle/3`, `reset_routes/0`, `route_opts`, `allow_events/0` |
+| Inbound dispatch policy | `handle_event`, `dispatch`, `dispatch_route`, `dispatch_handler`, `cancelled`; the pure policy in `chappe_sip_dispatch` (`stray_in_dialog`, `route_for`, `unrouted`, `merge_check` for RFC 3261 8.2.2.2, `is_own_route`); the proxy forwarder `forwarder/1` |
 | Worker pool | `spawn_worker`, `handler_deadline`, `disarm/1`, `at_dialog_cap`, `shed` (503 past `max_request_workers`) |
-| Handle table | `reg_handle/2`, `unreg_handle/1`, `ensure_monitored`, `drop_pid`, `destroy_owned_handles`, `destroy_handle` |
-| UAS response building | `respond/3`, `dialog_respond/6`, `do_create_uas`, `send_uas_response`, `with_contact`, `with_supported`, `with_allow`, `uas_contact`, `local_contact` |
+| Handle table | `reg_handle/2`, `ensure_monitored`, `drop_pid`, `destroy_owned_handles`, `destroy_handle` |
+| UAS response building | `dialog_respond/6`, `do_create_uas`, `send_uas_response`; the pure part in `chappe_sip_uas_response` (`build/2`, `contact/3`, `fsm_args/2`) |
 | sofia / WS multiplexing | `?IS_WS(H)`, `ws_call/1`, `ws_respond`, `leg_create`, `leg_destroy`, `dialog_leg_create`, `make_sender`, `sender_send` |
 
 The guard support (`discard/1`, `block_source/2`, `stats/0`) and the proxy
