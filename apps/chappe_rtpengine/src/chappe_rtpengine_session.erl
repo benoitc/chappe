@@ -56,30 +56,7 @@
     offer/2, answer/2, publish/2, reoffer_rejected/1, query/1, stop/1, info/1
 ]).
 -export([set_owner/2]).
--export([
-    cmd/3,
-    play_media/2,
-    stop_media/1,
-    play_dtmf/2,
-    block_dtmf/1,
-    unblock_dtmf/1,
-    block_media/1,
-    block_media/2,
-    unblock_media/1,
-    unblock_media/2,
-    silence_media/1,
-    silence_media/2,
-    unsilence_media/1,
-    unsilence_media/2,
-    start_recording/1,
-    stop_recording/1,
-    start_forwarding/2,
-    stop_forwarding/1,
-    stop_forwarding/2,
-    subscribe_request/2,
-    subscribe_answer/2,
-    unsubscribe/2
-]).
+-export([cmd/3]).
 -export([callback_mode/0, init/1, handle_event/4, terminate/3]).
 
 -record(data, {
@@ -189,38 +166,6 @@ set_owner(Session, Owner) when is_pid(Owner) ->
     chappe_rtpengine_ng:result() | {error, term()}.
 cmd(Session, Command, Params) ->
     safe_call(Session, {aux, Command, Params}).
-
-%% The typed auxiliary commands: chappe_rtpengine_cmd documents them.
-
-play_media(Session, Params) -> chappe_rtpengine_cmd:play_media(Session, Params).
-stop_media(Session) -> chappe_rtpengine_cmd:stop_media(Session).
-play_dtmf(Session, Params) -> chappe_rtpengine_cmd:play_dtmf(Session, Params).
-block_dtmf(Session) -> chappe_rtpengine_cmd:block_dtmf(Session).
-unblock_dtmf(Session) -> chappe_rtpengine_cmd:unblock_dtmf(Session).
-block_media(Session) -> chappe_rtpengine_cmd:block_media(Session).
-block_media(Session, Opts) -> chappe_rtpengine_cmd:block_media(Session, Opts).
-unblock_media(Session) -> chappe_rtpengine_cmd:unblock_media(Session).
-unblock_media(Session, Opts) ->
-    chappe_rtpengine_cmd:unblock_media(Session, Opts).
-silence_media(Session) -> chappe_rtpengine_cmd:silence_media(Session).
-silence_media(Session, Opts) ->
-    chappe_rtpengine_cmd:silence_media(Session, Opts).
-unsilence_media(Session) -> chappe_rtpengine_cmd:unsilence_media(Session).
-unsilence_media(Session, Opts) ->
-    chappe_rtpengine_cmd:unsilence_media(Session, Opts).
-start_recording(Session) -> chappe_rtpengine_cmd:start_recording(Session).
-stop_recording(Session) -> chappe_rtpengine_cmd:stop_recording(Session).
-start_forwarding(Session, Opts) ->
-    chappe_rtpengine_cmd:start_forwarding(Session, Opts).
-stop_forwarding(Session) -> chappe_rtpengine_cmd:stop_forwarding(Session).
-stop_forwarding(Session, Opts) ->
-    chappe_rtpengine_cmd:stop_forwarding(Session, Opts).
-subscribe_request(Session, Params) ->
-    chappe_rtpengine_cmd:subscribe_request(Session, Params).
-subscribe_answer(Session, Params) ->
-    chappe_rtpengine_cmd:subscribe_answer(Session, Params).
-unsubscribe(Session, Params) ->
-    chappe_rtpengine_cmd:unsubscribe(Session, Params).
 
 %% gen_statem callbacks
 

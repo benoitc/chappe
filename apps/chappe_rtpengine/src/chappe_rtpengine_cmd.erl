@@ -5,8 +5,7 @@
 %% media blocking and silencing, recording, forwarding and subscriptions.
 %% Each is chappe_rtpengine_session:cmd/3 with the command's name and
 %% defaults; the session process injects the call-id and tags and
-%% resolves the party sugar. chappe_rtpengine_session exports each of
-%% them as well.
+%% resolves the party sugar.
 -module(chappe_rtpengine_cmd).
 
 -export([
