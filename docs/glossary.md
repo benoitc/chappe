@@ -217,8 +217,8 @@ records the flow of a registration (RFC 5626 outbound, or the `received`
 address of a NATed UA) and sends to it rather than to the private Contact.
 A WebSocket connection is always a flow.
 
-Where it lives: `chappe_sip_route` (`received_flow/1`, `next_flow/2`,
-`flow_route/1`), `chappe_sip_engine` (the `flow()` type),
+Where it lives: `chappe_sip_flow` (`received_flow/1`, `flow_route/1`),
+`chappe_sip_route` (`next_flow/2`), `chappe_sip_engine` (the `flow()` type),
 `chappe_sip_registry`.
 
 ### Focus
@@ -407,10 +407,12 @@ used as a `{peer_group, G}` target. The demo's FreeSWITCH nodes are both a
 ### pg scope
 
 A pg scope is one instance of OTP's `pg` process groups; chappe uses them
-to find things across nodes, never to own them. Each app starts its own.
-`chappe_sip` (`chappe_sip_call:scope/0`, started by `chappe_sip_sup`) holds
-the group of each [`call_ref`](#call_ref) and the message-waiting
-subscribers. `chappe_audio` (`chappe_audio_pg`) holds a call's
+to find things across nodes, never to own them. Each app starts its own
+scopes and never another app's. `chappe_sip` (`chappe_sip_call:scope/0`,
+started by `chappe_sip_sup`) holds, among others, the group of each
+[`call_ref`](#call_ref), the dialog index, the event notifiers and the
+message-waiting subscribers; chappe_sip also runs a `chappe_sip_regc`
+scope for its outbound registrations. `chappe_audio` (`chappe_audio_pg`) holds a call's
 [streams](#stream) and the stores of the cluster. `chappe_cluster` holds its
 watchers and running singletons. pg is eventually consistent, so a lookup
 can be stale for a moment. See
