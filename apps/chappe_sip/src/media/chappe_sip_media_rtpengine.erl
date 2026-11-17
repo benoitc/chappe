@@ -20,6 +20,7 @@
     publish/4,
     play/2,
     record/2,
+    stop_record/1,
     dtmf/2,
     subscribe/3,
     subscribe_answer/2,
@@ -92,6 +93,10 @@ play(Pid, Media) ->
 -spec record(pid(), map()) -> ok | {error, term()}.
 record(Pid, _Opts) ->
     to_ok(chappe_rtpengine_cmd:start_recording(Pid)).
+
+-spec stop_record(pid()) -> ok | {error, term()}.
+stop_record(Pid) ->
+    to_ok(chappe_rtpengine_cmd:stop_recording(Pid)).
 
 -spec dtmf(pid(), map()) -> ok | {error, term()}.
 dtmf(Pid, Params) ->
