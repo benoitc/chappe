@@ -33,7 +33,9 @@
 %% room on a live node; the members in it end with the node.
 -module(chappe_mrf_conf_move).
 
--export([drain/1, handoff/2, rehome/4, transfer_all/4]).
+-export([drain/1, rehome/4, transfer_all/4]).
+%% for the room (chappe_mrf_conf)
+-export([start_rehome/2, handoff_of/4, movable/1]).
 -export([draining/0, draining/1, open/5, region/0, job/4]).
 
 %% each room's own bound inside drain/1's
@@ -90,7 +92,7 @@ handoff(Conf, Deadline) ->
             Conf, {transfer, move, handoff}, max(1, left(Deadline))
         )
     of
-        #{backend := native, name := Name, opts := Opts, members := Ids} when
+        #{portable := true, name := Name, opts := Opts, members := Ids} when
             Ids =/= []
         ->
             move(Conf, Name, Opts, Ids, region(), Deadline);
@@ -99,6 +101,41 @@ handoff(Conf, Deadline) ->
         {error, _} = Err ->
             Err
     end.
+
+%% In the room that lost its lease: the helper that rehomes its members,
+%% linked, so it ends with the room (which traps exits, so the helper's
+%% own end is only a message).
+-spec start_rehome(binary(), map()) -> pid().
+start_rehome(Name, Opts) ->
+    Self = self(),
+    Ms = application:get_env(chappe_mrf, rehome_ms, 30000),
+    Deadline = erlang:monotonic_time(millisecond) + Ms,
+    spawn_link(fun() -> rehome(Self, Name, Opts, Deadline) end).
+
+%% What a room handing off tells handoff/2: its name, the options it
+%% opens with elsewhere (without the processes of this node that is
+%% stopping), and the members whose calls run on other nodes.
+-spec handoff_of(binary(), map(), boolean(), #{binary() => map()}) -> map().
+handoff_of(Name, Opts, Portable, Members) ->
+    Here = node(),
+    Keep = fun
+        (K, Pid) when K =:= owner; K =:= notify -> node(Pid) =/= Here;
+        (_, _) -> true
+    end,
+    #{
+        portable => Portable,
+        name => Name,
+        opts => maps:filter(Keep, Opts),
+        members => [
+            Id
+         || Id := #{b2b := {Pid, _}} <- Members, node(Pid) =/= Here
+        ]
+    }.
+
+%% The members a call can move: those with a call, not on their way out.
+-spec movable(#{binary() => map()}) -> [binary()].
+movable(Members) ->
+    [Id || Id := #{b2b := _} = Mb <- Members, not is_map_key(transfer, Mb)].
 
 %% The room lost its lease: move its members to the room the region lets
 %% open, from this node or another, round after round until Deadline.

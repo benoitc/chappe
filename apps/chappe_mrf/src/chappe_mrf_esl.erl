@@ -11,7 +11,7 @@
 -module(chappe_mrf_esl).
 -behaviour(chappe_esl_handler).
 
--export([handle_channel/3, header/0, var/0, headers/2]).
+-export([handle_channel/3, headers/2]).
 -export([listen/2, listener_opts/1, stop_listener/0]).
 
 -define(HEADER, <<"X-Chappe-Call">>).
@@ -59,14 +59,6 @@ stop_listener() ->
             _ = persistent_term:erase(?LISTENER),
             chappe_esl:stop_listener(Port)
     end.
-
-%% The SIP header that carries the call's correlation id.
--spec header() -> binary().
-header() -> ?HEADER.
-
-%% The channel variable FreeSWITCH puts that header in.
--spec var() -> binary().
-var() -> <<"variable_sip_h_", ?HEADER/binary>>.
 
 %% The headers of an endpoint's INVITE: X-Chappe-Call is the call's ref
 %% when the app gave one (one call, several endpoints), else the

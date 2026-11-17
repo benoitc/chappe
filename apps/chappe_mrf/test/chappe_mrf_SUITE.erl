@@ -22,6 +22,7 @@
     refer_hostile_target/1,
     refer_bgdial/1,
     dialed_party_leaves/1,
+    dialed_party_flags/1,
     member_transferred/1,
     focus_member_refer_adds/1,
     member_refer_transfers/1,
@@ -84,6 +85,7 @@ all() ->
         refer_hostile_target,
         refer_bgdial,
         dialed_party_leaves,
+        dialed_party_flags,
         member_transferred,
         focus_member_refer_adds,
         member_refer_transfers,
@@ -523,6 +525,39 @@ dialed_party_leaves(Config) ->
     Maint(<<"del-member">>),
     conf_event(Conf, {left, <<"88">>, departed}),
     ?assertMatch(#{members := 1}, chappe_mrf_conf:info(Conf)),
+    ok = chappe_mrf:destroy(Ep).
+
+%% A party mod_conference dialed in for a REFER has no endpoint: mute and
+%% deaf go to the room's node as conference commands.
+dialed_party_flags(Config) ->
+    ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
+    {ok, Conf} = chappe_mrf:conference(<<"flagroom">>, #{
+        backend => fs, node => fs1, refer_policy => fun(_) -> true end
+    }),
+    {ok, Ep} = chappe_mrf:create_endpoint(#{targets => [{fs1, fs_uri(Config)}]}),
+    {ok, _} = chappe_mrf_conf:join(Conf, Ep, #{}),
+    {joined, _, _} = joined(Conf),
+    Entity = <<"sip:flagroom@127.0.0.1:", (integer_to_binary(?config(ep, Config)))/binary>>,
+    {Sock, _} = refer(Config, Entity, <<"boss">>, <<"<sip:dave@10.0.0.8>">>),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(Sock)),
+    {fake_fs, _, _, {cmd, Dial}} = fs_cmd(<<"conference flagroom bgdial">>),
+    {match, [Uuid]} = re:run(Dial, <<"origination_uuid=([^,}]+)">>, [{capture, all_but_first, binary}]),
+    Conf ! {chappe_esl_node, fs1, {event, #{body => <<>>, headers => #{
+        <<"Event-Name">> => <<"CUSTOM">>,
+        <<"Event-Subclass">> => <<"conference::maintenance">>,
+        <<"Conference-Name">> => <<"flagroom">>,
+        <<"Action">> => <<"add-member">>,
+        <<"Member-ID">> => <<"66">>,
+        <<"Unique-ID">> => Uuid}
+    }}},
+    {joined, <<"66">>, _} = joined(Conf),
+    ok = chappe_mrf_conf:mute(Conf, <<"66">>),
+    _ = fs_cmd(<<"conference flagroom mute 66">>),
+    ok = chappe_mrf_conf:deaf(Conf, <<"66">>),
+    _ = fs_cmd(<<"conference flagroom deaf 66">>),
+    ?assertMatch([#{mute := true, deaf := true}], [
+        M || #{id := <<"66">>} = M <- chappe_mrf_conf:members(Conf)
+    ]),
     ok = chappe_mrf:destroy(Ep).
 
 %% A session recording is adopted only once FreeSWITCH says it closed

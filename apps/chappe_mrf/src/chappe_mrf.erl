@@ -670,7 +670,7 @@ conferences() ->
 %% it with chappe_sip:event_package(<<"conference">>, fun
 %% chappe_mrf:focus_subscribe/2).
 %% A chappe_sip:refer/1 handler for REFERs to a conference's URI: the
-%% room named by the Request-URI's user takes it (chappe_mrf_conf:refer/3),
+%% room named by the Request-URI's user takes it (chappe_mrf_conf_refer:refer/3),
 %% 404 when there is none.
 -spec focus_refer(chappe_sip_req:req(), chappe_sip_res:res()) -> ok.
 focus_refer(Req, Res) ->

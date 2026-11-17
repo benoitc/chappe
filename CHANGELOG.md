@@ -26,6 +26,14 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
   `chappe_sip_focus:subscriptions/1`, `chappe_sip_notifier:changed/2` and
   `watchers/2`, `chappe_sip_location_cluster:prefix/0` and
   `chappe_sip_refer:dialog/1`.
+- chappe_mrf: a conference room on FreeSWITCH no longer stops when you
+  mute or deafen a party that was dialed into it by a REFER; the command
+  now reaches the conference. A conference backend is now a documented
+  behaviour, so you can add your own next to the chappe_mix and
+  FreeSWITCH ones.
+- chappe_mrf, breaking: `chappe_mrf_conf:refer/3`, `chappe_mrf_esl:header/0`
+  and `chappe_mrf_esl:var/0` are removed. Nothing used them; a REFER to a
+  room is handled by the room itself.
 - chappe_rtpengine, breaking: the media commands of a session (play,
   record, DTMF, forwarding, subscriptions and the others) moved from
   `chappe_rtpengine_session` to `chappe_rtpengine_cmd`, with the same names

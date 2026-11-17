@@ -1,44 +1,31 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 
-%% The state of a conference process (chappe_mrf_conf), shared with its
-%% backends.
+%% The state of a conference process (chappe_mrf_conf). A backend keeps
+%% its own state in bstate; native and fs, in this app, read the record
+%% too. A backend of another app uses the room API of
+%% chappe_mrf_conf_backend instead.
 
 -define(MRF_JOIN_TIMEOUT, 15000).
 
 -record(state, {
     name :: binary(),
-    backend :: native | fs,
+    %% the backend start/2 was given (native, fs, or a module) and the
+    %% module that runs it (undefined while the room waits for its lease)
+    backend :: atom(),
+    mod :: module() | undefined,
     room :: binary(),
-    node :: term(),
-    profile = <<"default">> :: binary(),
+    %% the backend's own state
+    bstate :: term(),
     owner_mon :: reference() | undefined,
     listeners = #{} :: #{pid() => reference()},
     members = #{} :: #{binary() => map()},
     pending = #{} :: #{term() => map()},
     locked = false :: boolean(),
-    anchor_params = #{} :: map(),
-    %% rtpengine flags between the mixer and an endpoint's node:
-    %% #{offer => map(), answer => map()}
-    endpoint_params = #{} :: map(),
-    %% how long an fs member may take to show up in the room
-    join_timeout = ?MRF_JOIN_TIMEOUT :: pos_integer(),
-    bridge = #{} :: map(),
     %% no join past this many members (pending joins count)
     max_members = infinity :: pos_integer() | infinity,
-    %% fs: mod_conference room flags, set on each joining channel
-    room_flags = [] :: [binary()],
     focus :: chappe_sip_focus:focus() | undefined,
     entity :: binary() | undefined,
-    %% fs recordings started with store => default, adopted into the
-    %% recording store when they stop: {Path, CallRef, Meta}
-    recordings = [] :: [{binary(), binary(), map()}],
-    %% those stopped, until mod_conference's stop-recording says the file
-    %% is closed
-    stopping = [] :: [{binary(), binary(), map()}],
-    %% native recordings: SIPREC sessions of the room (chappe_sip_siprec),
-    %% owned by this process
-    siprec = [] :: [pid()],
     %% REFER to the room (chappe_mrf_conf_refer): who decides, how a
     %% target is dialed (dial fun, profile, timeout, endpoint options), and
     %% the dial-outs under way
@@ -60,5 +47,7 @@
         | undefined,
     %% the options it started with, for the room that takes its members
     %% over (a handoff, a lost lease)
-    opts = #{} :: map()
+    opts = #{} :: map(),
+    %% the optional callbacks the backend has (chappe_mrf_conf_backend)
+    callbacks = #{} :: #{{atom(), arity()} => true}
 }).
