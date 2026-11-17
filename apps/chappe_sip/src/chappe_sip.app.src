@@ -12,7 +12,11 @@
     %% for the WebSocket dependency tree.
     %% instrument holds the metrics (chappe_sip_metrics); livery renders them
     %% hlc: the node's hybrid logical clock (chappe_sip_hlc)
-    {applications, [kernel, stdlib, crypto, xmerl, instrument, hlc]},
+    %% chappe_audio runs the streams of a SIPREC recording server
+    %% (chappe_sip_siprec_srs) and holds the default store; optional, so a
+    %% node without it runs everything else
+    {applications, [kernel, stdlib, crypto, xmerl, instrument, hlc, chappe_audio]},
+    {optional_applications, [chappe_audio]},
     {env, []},
     %% chappe_sip is Apache-2.0; the NIF links the vendored sofia-sip, which
     %% is LGPL-2.1-or-later (THIRD_PARTY_LICENSES.md)

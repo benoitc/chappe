@@ -1,16 +1,16 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 
-%% chappe_sip_srtp (RFC 3711, receive side) against the RFC's Appendix B
+%% chappe_audio_srtp (RFC 3711, receive side) against the RFC's Appendix B
 %% vectors, libsrtp's reference packets, a reference sender written apart
-%% (chappe_sip_test_srtp) on random packets, and malformed, forged and
+%% (chappe_audio_test_srtp) on random packets, and malformed, forged and
 %% replayed packets.
--module(chappe_sip_srtp_tests).
+-module(chappe_audio_srtp_tests).
 
 -include_lib("eunit/include/eunit.hrl").
 
--define(S, chappe_sip_srtp).
--define(T, chappe_sip_test_srtp).
+-define(S, chappe_audio_srtp).
+-define(T, chappe_audio_test_srtp).
 
 h(Hex) -> binary:decode_hex(Hex).
 

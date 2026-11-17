@@ -4,7 +4,7 @@
 %% @doc Receive-only SRTP and SRTCP (RFC 3711): authenticate, check for
 %% replay and decrypt the packets of one stream, for a process of chappe
 %% that receives media itself (the SIPREC recording server's streams,
-%% chappe_sip_siprec_rtp). chappe never sends SRTP; media it relays stays
+%% chappe_audio_rtp). chappe never sends SRTP; media it relays stays
 %% with rtpengine (docs/decisions/0009-srtp-in-erlang.md).
 %%
 %% Suites: AES_CM_128_HMAC_SHA1_80 and AES_CM_128_HMAC_SHA1_32 (RFC 4568
@@ -27,7 +27,7 @@
 %% Keys never leave this module: the context keeps them in a closure, so
 %% printing a context, a crash report or sys:get_state/1 shows no key, and
 %% every error is an atom.
--module(chappe_sip_srtp).
+-module(chappe_audio_srtp).
 
 -export([new/1, rekey/2, unprotect/2, unprotect_rtcp/2, is_rtcp/1]).
 -export([derive/4, crypt/5]).

@@ -11,7 +11,8 @@
 %% - the store (its config, its pg membership and its sweep) and the
 %%   supervisor of its writers, one per recording being written;
 %% - one simple_one_for_one supervisor per kind of short-lived process:
-%%   writers, streams, handshakes and listeners, every child temporary (a
+%%   writers, streams, handshakes, listeners and RTP receivers
+%%   (chappe_audio_rtp), every child temporary (a
 %%   stream or a writer that crashes is not restarted; its owner sees it
 %%   go);
 %% - the default listener, when the `listener' env is set.
@@ -42,7 +43,8 @@ init(top) ->
             sup(chappe_audio_adopt_sup, chappe_audio_adopt),
             sup(chappe_audio_stream_sup, chappe_audio_stream),
             sup(chappe_audio_conn_sup, chappe_audio_conn),
-            sup(chappe_audio_listener_sup, chappe_audio_listener)
+            sup(chappe_audio_listener_sup, chappe_audio_listener),
+            sup(chappe_audio_rtp_sup, chappe_audio_rtp)
         ] ++ default_listener(application:get_env(chappe_audio, listener)),
     {ok, {#{strategy => rest_for_one, intensity => 5, period => 10}, Children}};
 init({child, Mod}) ->

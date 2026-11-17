@@ -62,7 +62,7 @@ all() ->
 
 -define(UA, chappe_sip_test_ua).
 -define(M, chappe_sip_siprec_meta).
--define(SRTP, chappe_sip_test_srtp).
+-define(SRTP, chappe_audio_test_srtp).
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -637,7 +637,10 @@ with_audio_store(Config, Fun) ->
         ok = chappe_audio_store:configure(#{dir => Dir}),
         Fun()
     after
-        ok = application:stop(chappe_audio)
+        %% chappe_audio runs the receivers of the other cases: restart it
+        %% with its default store
+        ok = application:stop(chappe_audio),
+        {ok, _} = application:ensure_all_started(chappe_audio)
     end.
 
 store_uri(EP) ->
@@ -981,7 +984,7 @@ server_rtp_ports_busy(_Config) ->
          Last = P + 2,
          #{streams := [#{port := Last, pid := Pid}]} = got(srs_served),
          Mon = monitor(process, Pid),
-         ok = chappe_sip_siprec_rtp:stop(Pid),
+         ok = chappe_audio_rtp:stop(Pid),
          receive {'DOWN', Mon, process, Pid, _} -> ok end
      end || _ <- lists:seq(1, 4)],
     [gen_udp:close(S) || S <- Busy].
@@ -1073,7 +1076,7 @@ server_takes_srtp(_Config) ->
     ok = gen_udp:send(Other, {127, 0, 0, 1}, P1,
                       ?SRTP:protect(rtp(0, 1, Payload), 0, ?SRTP:sender(?SRTP:master()))),
     ok = gen_udp:send(Src, {127, 0, 0, 1}, P1, Pkt(2)),
-    Pcm = chappe_sip_siprec_rtp:decode(ulaw, Payload),
+    Pcm = chappe_audio_pcm:decode(ulaw, Payload),
     receive {chappe_sip_siprec_rtp, S1, {audio, Got}} -> ?assertEqual(Pcm, Got)
     after 2000 -> ct:fail(no_audio)
     end,
@@ -1086,7 +1089,7 @@ server_takes_srtp(_Config) ->
     receive {chappe_sip_siprec_rtp, S1, {audio, _}} -> ct:fail(replayed_heard)
     after 300 -> ok
     end,
-    ?assertEqual(#{packets => 2, failed => 1, replayed => 1}, chappe_sip_siprec_rtp:stats(S1)),
+    ?assertEqual(#{packets => 2, failed => 1, replayed => 1}, chappe_audio_rtp:stats(S1)),
     %% no key in the stream's status
     Status = iolist_to_binary(io_lib:format("~p", [sys:get_status(S1)])),
     Keys = [B || {_, B} <- maps:to_list(Snd), is_binary(B), byte_size(B) >= 14],
@@ -1166,7 +1169,7 @@ server_srtp_rekey(_Config) ->
     ok = Send(New, 12),
     receive {chappe_sip_siprec_rtp, S1, {audio, _}} -> ok after 2000 -> ct:fail(no_audio) end,
     receive {chappe_sip_siprec_rtp, S1, {audio, _}} -> ct:fail(old_key_heard) after 300 -> ok end,
-    ?assertEqual(#{packets => 2, failed => 1, replayed => 1}, chappe_sip_siprec_rtp:stats(S1)),
+    ?assertEqual(#{packets => 2, failed => 1, replayed => 1}, chappe_audio_rtp:stats(S1)),
     %% the same key again changes nothing
     Peer ! {reinvite, Sdp(<<"7">>, New)},
     R3 = got(wire_reinvite),
@@ -1233,11 +1236,11 @@ server_srtp_flood(_Config) ->
 
 %% the stream's counters once they stop moving
 wait_stats(S) ->
-    wait_stats(S, chappe_sip_siprec_rtp:stats(S)).
+    wait_stats(S, chappe_audio_rtp:stats(S)).
 
 wait_stats(S, Last) ->
     timer:sleep(200),
-    case chappe_sip_siprec_rtp:stats(S) of
+    case chappe_audio_rtp:stats(S) of
         Last -> Last;
         Now -> wait_stats(S, Now)
     end.
