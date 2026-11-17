@@ -10,9 +10,7 @@
 -module(chappe_sip_sipfrag).
 
 -export([build/1, build/2, parse/1, content_type/0, reason/1]).
--ifdef(TEST).
 -export([build/3]).
--endif.
 
 -export_type([frag/0]).
 
