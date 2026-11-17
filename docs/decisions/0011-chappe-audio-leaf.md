@@ -17,8 +17,8 @@ What the repository shows:
 - chappe_audio takes in two kinds of audio: WebSocket forks from
   FreeSWITCH (`mod_audio_fork`, `mod_audio_stream`), and RTP streams, one
   process per stream, started with `chappe_audio:rtp_receiver/1`
-  (moduledocs of `apps/chappe_audio/src/chappe_audio.erl` and
-  `chappe_audio_rtp.erl`). The RTP receiver decodes G.711 and, given an
+  (`rtp_receiver/1` in `apps/chappe_audio/src/chappe_audio.erl`, and the
+  moduledoc of `chappe_audio_rtp.erl`). The RTP receiver decodes G.711 and, given an
   SDES context, takes SRTP ([0009](0009-srtp-in-erlang.md)).
 - Its `applications` are kernel, stdlib, `crypto` and `ws`
   (`apps/chappe_audio/src/chappe_audio.app.src`): no umbrella app, as

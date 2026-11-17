@@ -20,8 +20,9 @@ What the repository and the research show:
   its bindings in a local table (`chappe_sip_registry`), and the trunk
   OPTIONS pings, the registry sweep and the recording retention sweep ran
   on every node. Two nodes could each open a room with the same name.
-- #37 moved these users onto the cluster, each behind the `cluster`
-  setting (`none` by default):
+- #37 moved these users onto the cluster. chappe_sip and chappe_mrf turn
+  it on with their `cluster` setting (`none` by default); chappe_audio has
+  no such setting and takes a `sweep_guard` in its store config instead:
   - the registrar: one KV value per AOR, its sweep a singleton
     (`apps/chappe_sip/src/conn/chappe_sip_location_cluster.erl`,
     `chappe_sip_registry_sweep.erl`; see
@@ -29,7 +30,8 @@ What the repository and the research show:
   - conference rooms: one lease per room name
     (`apps/chappe_mrf/src/chappe_mrf_conf_cluster.erl`), handed off on a
     clean stop (`chappe_mrf_conf_move.erl`);
-  - peers with `probe => singleton`: one node of the region pings them
+  - peers with `probe => singleton` (and the `cluster` setting): one node
+    of the region pings them
     (`apps/chappe_sip/src/peers/chappe_sip_peers.erl`);
   - the recording retention sweep can take a `sweep_guard`, so one node
     sweeps a shared store
@@ -201,6 +203,7 @@ What the repository and the research show:
   `apps/chappe_cluster/src/chappe_cluster_config.erl`; a new AOR past it is
   refused `full`, which `chappe_sip_registry` answers with 503), and the
   write rate of one Ra group, since every REGISTER that writes a binding
-  is a compare-and-swap committed by the region's majority. A deployment above that splits into regions.
+  is a compare-and-swap committed by the region's majority. A deployment
+  above that splits into regions.
   [0015](0015-location-behaviour.md) records the location behaviour that
   holds the bindings.
