@@ -72,3 +72,23 @@ stale_replica_keeps_the_flow_index_test() ->
 flow_aors(Flow) ->
     [A || {{flow, F, A}, _} <- ets:tab2list(chappe_sip_registry_flows), F =:= Flow] ++
         [A || {{flow, F, A}} <- ets:tab2list(chappe_sip_registry_flows), F =:= Flow].
+
+%% A resync read that began before a REGISTER (it saw no binding of this
+%% node) does not remove the AOR from what this node holds: the entry the
+%% REGISTER made is newer than the read.
+held_survives_a_racing_resync_test() ->
+    ok = ?STORE:new(),
+    _ = chappe_sip_registry_keeper:tables(),
+    true = ets:delete_all_objects(chappe_sip_registry_held),
+    Before = chappe_sip_registry:gen_for_test(),
+    {ok, [_], _} = chappe_sip_registry:register_with(?STORE, req(), #{}),
+    ?assert(held(?AOR)),
+    ok = chappe_sip_registry:resync_apply(?STORE, ?AOR, [], Before),
+    ?assert(held(?AOR)),
+    %% a read that began after it, with no binding of this node, does
+    After = chappe_sip_registry:gen_for_test(),
+    ok = chappe_sip_registry:resync_apply(?STORE, ?AOR, [], After),
+    ?assertNot(held(?AOR)).
+
+held(Aor) ->
+    ets:member(chappe_sip_registry_held, Aor).

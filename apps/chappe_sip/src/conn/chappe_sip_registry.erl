@@ -62,6 +62,7 @@
 -export([handle_continue/2]).
 -ifdef(TEST).
 -export([register_with/3, resync_with/1, modify_with/3]).
+-export([resync_apply/4, gen_for_test/0]).
 -endif.
 
 %% a write that lost a compare-and-swap this many times in a row fails 500
@@ -149,6 +150,9 @@ resync_with(Store) ->
 modify_with(Store, Aor, Fun) ->
     _ = modify(Store, Aor, Fun),
     ok.
+
+gen_for_test() ->
+    gen().
 -endif.
 
 %% The first try reads the local replica; one that lost the compare-and-
@@ -910,7 +914,7 @@ start_resync(S) ->
 indexed_aors() ->
     lists:usort(
         ets:select(?FLOWS, [{{{aor, '$1', '_'}, '_'}, [], ['$1']}]) ++
-            [A || {A} <- ets:tab2list(?HELD)]
+            [A || {A, _} <- ets:tab2list(?HELD)]
     ).
 
 resync_reads(_Store, [], _Owner, _N) ->
@@ -1032,7 +1036,7 @@ purge({Keep, Aors}) ->
 mine() ->
     case chappe_sip_location:backend() of
         chappe_sip_location_ets -> aors();
-        _ -> [Aor || {Aor} <- ets:tab2list(?HELD)]
+        _ -> [Aor || {Aor, _} <- ets:tab2list(?HELD)]
     end.
 
 %% After a write or a read: index the flows of this node's bindings of
@@ -1072,13 +1076,20 @@ droppable(_T, keep) -> false.
 held_aor(chappe_sip_location_ets, _Aor, _Bs, _Drop) ->
     ok;
 held_aor(_Store, Aor, Bs, Drop) ->
+    %% an entry carries when it was made, as the flow index's do: a read
+    %% that began before it does not remove it
     _ =
         case
             {lists:any(fun(#binding{node = N}) -> N =:= node() end, Bs), Drop}
         of
-            {true, _} -> ets:insert(?HELD, {Aor});
-            {false, {before, _}} -> ets:delete(?HELD, Aor);
-            {false, keep} -> true
+            {true, _} ->
+                ets:insert(?HELD, {Aor, gen()});
+            {false, {before, T0}} ->
+                ets:select_delete(?HELD, [
+                    {{Aor, '$1'}, [{'<', '$1', T0}], [true]}
+                ]);
+            {false, keep} ->
+                true
         end,
     ok.
 
