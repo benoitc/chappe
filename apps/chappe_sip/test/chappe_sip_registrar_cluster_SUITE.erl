@@ -26,6 +26,7 @@ all() ->
         conn_token_refused_on_another_node,
         dead_flow_at_the_edge,
         busy_edge_keeps_the_binding,
+        transport_503_on_a_closed_flow,
         flow_index_follows_a_sweep,
         flow_index_follows_a_move,
         cseq_and_expires_across_nodes,
@@ -271,6 +272,38 @@ busy_edge_keeps_the_binding(Config) ->
     ?assertMatch([_], erpc:call(N1, chappe_sip, bindings, [?AOR])),
     ?assertMatch([_], erpc:call(N2, chappe_sip, bindings, [?AOR])),
     ws:close(C, 1000).
+
+%% A connection closes while the edge forwards over it: the stack answers
+%% the branch with a 503 of its own rather than an error. When the edge
+%% knows that connection closed, it answers 430 and drops the binding; a
+%% 503 over a live connection is relayed as any 503 (a 500 upstream).
+transport_503_on_a_closed_flow(Config) ->
+    [N1, N2, _] = ?config(nodes, Config),
+    [P1, P2, _] = ?config(ports, Config),
+    {ok, T} = gen_tcp:connect({127, 0, 0, 1}, P1, [binary, {active, false}]),
+    Ct = <<"<sip:alice@192.0.2.9:5070;transport=tcp;ob>"
+           ";+sip.instance=\"<urn:uuid:t5>\";reg-id=1">>,
+    ok = gen_tcp:send(T, tcp_register(lport(T), Ct, 1)),
+    {ok, _} = chappe_sip_msg:parse(tcp_recv(T, <<"SIP/2.0">>)),
+    [_] = wait_bindings(N2, 1),
+    [#{flow := {conn, Id}}] = erpc:call(N1, chappe_sip, bindings, [?AOR]),
+    {ok, Caller} = udp(),
+    %% a live connection: the UA's own 503 goes upstream
+    send(Caller, P2, invite(lport(Caller), <<"ct5a">>)),
+    {ok, Inv1} = chappe_sip_msg:parse(tcp_recv(T, <<"INVITE">>)),
+    ok = gen_tcp:send(T, response(<<"503 Service Unavailable">>, Inv1, [])),
+    _ = recv_status(Caller, 500),
+    ?assertMatch([_], erpc:call(N1, chappe_sip, bindings, [?AOR])),
+    %% the connection is closed under the forward
+    send(Caller, P2, invite(lport(Caller), <<"ct5b">>)),
+    {ok, Inv2} = chappe_sip_msg:parse(tcp_recv(T, <<"INVITE">>)),
+    Engine = erpc:call(N1, erlang, whereis, [chappe_sip_engine]),
+    Engine ! {chappe_sip_engine, ws, {flow_closed, Id}},
+    timer:sleep(100),
+    ok = gen_tcp:send(T, response(<<"503 Service Unavailable">>, Inv2, [])),
+    _ = recv_status(Caller, 430),
+    wait(fun() -> erpc:call(N2, chappe_sip, bindings, [?AOR]) =:= [] end),
+    gen_tcp:close(T).
 
 %% an RFC 5626 TCP binding on Node whose connection does not exist
 dead_conn_binding(Node, CallId) ->
