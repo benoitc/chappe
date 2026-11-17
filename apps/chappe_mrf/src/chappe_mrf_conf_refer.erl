@@ -33,11 +33,12 @@
 
 -include("chappe_mrf_conf.hrl").
 
--export([refer/3, dial_native/4, focus/2, call/2]).
--export([fs_dial/3, remove/2, native_event/3, fs_added/3, timeout/2]).
+-export([refer/3, focus/2, b2b_event/2, setup/2, call/2]).
+%% for the backends' dial/4 (chappe_mrf_conf_backend)
+-export([dial_native/4, fs_dial/3]).
+-export([native_event/3, fs_added/3, timeout/2]).
 -export([fs_result/3, fs_started/3, member_refer/4]).
--export([member_opts/2, keep_dialog/2, from_uri/1]).
--export([transferred/3, dial_string/2, dialing/4, dialable/1]).
+-export([member_opts/2, keep_dialog/2, from_uri/1, transferred/3]).
 
 -define(DIAL_TIMEOUT, 30000).
 
@@ -48,7 +49,7 @@
     ok | {error, term()}.
 refer(Conf, Req, Res) ->
     case chappe_mrf_conf:call(Conf, {refer, cfg}, 30000) of
-        #{policy := Policy, backend := Backend} = Cfg ->
+        #{policy := Policy} = Cfg ->
             case
                 chappe_sip_focus:refer(undefined, Req, Res, #{
                     policy => guard(Policy, Cfg), owner => Conf
@@ -65,12 +66,11 @@ refer(Conf, Req, Res) ->
                             _ -> 404
                         end,
                     chappe_sip_refer:final(Refer, Status);
-                {add, Target, Refer} when Backend =:= native ->
-                    dial_native(Conf, Target, Refer, Cfg);
                 {add, Target, Refer} ->
+                    %% the backend dials (dial/4)
                     case
                         chappe_mrf_conf:call(
-                            Conf, {refer, {dial, Target, Refer}}, 30000
+                            Conf, {refer, {dial, Target, Refer, #{}}}, 30000
                         )
                     of
                         ok -> ok;
@@ -83,6 +83,24 @@ refer(Conf, Req, Res) ->
             _ = chappe_sip_res:send(Res, 404),
             Err
     end.
+
+%% A B2BUA event of a member's call the app hands the room
+%% (chappe_mrf_conf:b2b_event/2): a transfer, or a member's REFER.
+-spec b2b_event(pid(), term()) -> ok.
+b2b_event(Conf, {chappe_sip_b2b, Ref, {transferred, _Leg, Info}}) when
+    is_reference(Ref), is_map(Info)
+->
+    gen_server:cast(Conf, {transferred, Ref, Info});
+b2b_event(
+    Conf, {chappe_sip_b2b, Ref, {request, _Leg, refer, _Req, _Res}} = M
+) when
+    is_reference(Ref)
+->
+    %% a call with requests => [refer] whose notify process is the app's
+    Conf ! M,
+    ok;
+b2b_event(_Conf, _Event) ->
+    ok.
 
 %% The room's policy behind the dial-string check: a party to add whose
 %% URI FreeSWITCH would read as more than one destination is refused
@@ -192,6 +210,24 @@ dial_string(Cfg, Target) ->
 
 %% ---- in the conference process ----
 
+%% The REFER settings of start/2's options: the policy, and how a target
+%% is dialed.
+-spec setup(map(), #state{}) -> #state{}.
+setup(Opts, S) ->
+    Dial = maps:from_list(
+        [
+            {K, V}
+         || {O, K} <- [
+                {dial, dial},
+                {dial_profile, profile},
+                {dial_timeout, timeout},
+                {dial_endpoint, endpoint}
+            ],
+            {ok, V} <- [maps:find(O, Opts)]
+        ]
+    ),
+    S#state{refer_policy = maps:get(refer_policy, Opts, undefined), dial = Dial}.
+
 %% The room's REFER requests, sent as {refer, Req}.
 -spec call(term(), #state{}) -> {reply, term(), #state{}}.
 call(cfg, S) ->
@@ -201,21 +237,23 @@ call(cfg, S) ->
             P -> P
         end,
     Cfg = maps:merge(#{endpoint => #{}}, S#state.dial),
-    {reply,
-        Cfg#{
-            policy => Policy,
-            backend => S#state.backend,
-            entity => S#state.entity
-        },
-        S};
+    {reply, Cfg#{policy => Policy, entity => S#state.entity}, S};
 call({remove, Target}, S) ->
     {Reply, S1} = remove(Target, S),
     {reply, Reply, S1};
-call({dial, Target, Refer}, S) ->
-    {Reply, S1} = fs_dial(Target, Refer, S),
-    {reply, Reply, S1};
+call({dial, Target, Refer, Extra}, S) ->
+    dial(Target, Refer, Extra, S);
 call({dialing, Ep, Id, Refer}, S) ->
     {reply, ok, dialing(Ep, Id, Refer, S)}.
+
+%% Bring Target in: the backend dials it (Extra: the Replaces of a
+%% member's REFER), or the room says it cannot.
+dial(Target, Refer, Extra, S) ->
+    {reply, Cfg, _} = call(cfg, S),
+    chappe_mrf_conf_backend:supported(dial, 4, S, fun(Mod) ->
+        {Reply, S1} = Mod:dial(Target, Refer, maps:merge(Cfg, Extra), S),
+        {reply, Reply, S1}
+    end).
 
 %% native: the endpoint dialing Member's target, until it answers.
 -spec dialing(pid(), binary(), chappe_sip_refer:refer(), #state{}) -> #state{}.
@@ -402,14 +440,13 @@ carry_out({remove, Target, Refer}, _Id, _Mb, _D, _Cfg, S) ->
     {Reply, S1} = remove(Target, S),
     ok = chappe_sip_refer:final(Refer, removed(Reply)),
     S1;
-carry_out({add, Target, Refer}, _Id, _Mb, _D, Cfg, S) ->
+carry_out({add, Target, Refer}, _Id, _Mb, _D, _Cfg, S) ->
     case replaces(Refer) of
         {error, _} ->
             ok = chappe_sip_refer:final(Refer, 403),
             S;
         Rep ->
-            Cfg1 = maps:merge(Cfg, Rep),
-            add(Target, Refer, Cfg1, S)
+            add(Target, Refer, Rep, S)
     end;
 carry_out({transfer, Target, Refer}, _Id, #{b2b := B2b}, D, _Cfg, S) ->
     %% the target takes the member's place on the call's leg A; the old
@@ -449,22 +486,13 @@ replaces(Refer) ->
 
 %% Bring Target into the room: native dials it from an endpoint (in a
 %% helper: it waits for the endpoint), fs has mod_conference dial it.
-add(Target, Refer, #{backend := native} = Cfg, S) ->
-    Conf = self(),
-    _ = spawn(fun() -> dial_native(Conf, Target, Refer, Cfg) end),
-    S;
-add(Target, Refer, Cfg, S) ->
-    Dial = S#state.dial,
-    case
-        fs_dial(Target, Refer, S#state{
-            dial = maps:merge(Dial, maps:with([replaces], Cfg))
-        })
-    of
-        {ok, S1} ->
-            S1#state{dial = Dial};
-        {{error, _} = Err, S1} ->
+add(Target, Refer, Extra, S) ->
+    case dial(Target, Refer, Extra, S) of
+        {reply, ok, S1} ->
+            S1;
+        {reply, {error, _} = Err, S1} ->
             _ = fail(Refer, Err),
-            S1#state{dial = Dial}
+            S1
     end.
 
 %% REFER with method=BYE: the member with that URI is removed.
@@ -472,7 +500,7 @@ add(Target, Refer, Cfg, S) ->
 remove(Target, #state{members = M} = S) ->
     case [Id || Id := #{uri := U} <- M, same_uri(U, Target)] of
         [Id | _] ->
-            {reply, ok, S1} = chappe_mrf_conf:drop_member(Id, kicked, S),
+            {reply, ok, S1} = chappe_mrf_conf_backend:drop_member(Id, kicked, S),
             {ok, S1};
         [] ->
             {{error, not_found}, S}
@@ -516,22 +544,15 @@ native_event(Ep, Event, #state{dialing = D} = S) ->
 
 %% fs: the dialed target is in the room.
 -spec fs_added(binary(), binary(), #state{}) -> #state{}.
-fs_added(Uuid, Id, #state{dialing = D, members = M} = S) ->
+fs_added(Uuid, Id, #state{dialing = D} = S) ->
     case maps:take({uuid, Uuid}, D) of
         {#{refer := R, timer := T, target := Target}, D1} ->
             _ = erlang:cancel_timer(T),
             ok = chappe_sip_refer:final(R, 200),
-            Mb = chappe_mrf_conf:member(
-                #{name => Target, uri => Target}, Id, #{
-                    dialed => Uuid
-                }
+            Mb = chappe_mrf_conf_backend:member(
+                #{name => Target, uri => Target}, Id, #{dialed => Uuid}
             ),
-            S1 = S#state{dialing = D1, members = M#{Id => Mb}},
-            chappe_mrf_conf:publish(
-                chappe_mrf_conf:emit(
-                    {joined, Id, chappe_mrf_conf:public(Id, Mb)}, S1
-                )
-            );
+            chappe_mrf_conf_backend:joined(Id, Mb, S#state{dialing = D1});
         error ->
             S
     end.
@@ -559,7 +580,8 @@ timeout(Key, #state{dialing = D} = S) ->
 drop_dialed(Id, S) ->
     case S#state.members of
         #{Id := _} ->
-            {reply, ok, S1} = chappe_mrf_conf:drop_member(Id, departed, S),
+            {reply, ok, S1} =
+                chappe_mrf_conf_backend:drop_member(Id, departed, S),
             S1;
         _ ->
             S
@@ -575,13 +597,13 @@ timeout_ms(#state{dial = Cfg}) ->
 transferred(Ref, Info, #state{members = M} = S) ->
     case [Id || Id := #{b2b := {_, R}} <- M, R =:= Ref] of
         [Id | _] ->
-            S1 = chappe_mrf_conf:emit({left, Id, transferred}, S),
+            S1 = chappe_mrf_conf_backend:emit({left, Id, transferred}, S),
             Target = maps:get(target, Info, undefined),
             Mb = (maps:get(Id, M))#{name => name(Target, Id), uri => Target},
             S2 = S1#state{members = M#{Id := Mb}},
-            chappe_mrf_conf:publish(
-                chappe_mrf_conf:emit(
-                    {joined, Id, chappe_mrf_conf:public(Id, Mb)}, S2
+            chappe_mrf_conf_backend:publish(
+                chappe_mrf_conf_backend:emit(
+                    {joined, Id, chappe_mrf_conf_backend:public(Id, Mb)}, S2
                 )
             );
         [] ->
