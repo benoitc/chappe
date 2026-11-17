@@ -8,7 +8,7 @@
         interop-conformance interop-esl demo-esl interop-sbc interop-mrf \
         interop-cluster compliance \
         cover docs clean advisories-test \
-        demo demo-shell demo-down demo-cluster demo-cluster-smoke \
+        demo demo-compile demo-shell demo-down demo-cluster demo-cluster-smoke \
         demo-cluster-shell demo-cluster-down
 
 all: compile
@@ -167,6 +167,25 @@ demo:
 	erl -noshell -sname $(DEMO_NODE)@localhost -setcookie chappe-demo \
 	    -pa _build/default/lib/*/ebin _build/demo \
 	    -eval 'ok = demo_sbc:start("demo/sbc/demo.config").'
+
+# Compile the demos against the built apps, as CI does: erlc with
+# warnings as errors, then xref fails on any call the apps do not export.
+# Run it after rebar3 compile.
+DEMO_SRC = demo/sbc/src/demo_sbc.erl $(wildcard demo/cluster/src/*.erl)
+DEMO_XREF = try \
+	    {ok, _} = xref:start(demo_xref), \
+	    ok = xref:set_default(demo_xref, [{warnings, false}, {verbose, false}]), \
+	    ok = xref:set_library_path(demo_xref, code_path), \
+	    {ok, [_ | _]} = xref:add_directory(demo_xref, "_build/demo"), \
+	    {ok, Undef} = xref:analyze(demo_xref, undefined_function_calls), \
+	    [io:format("undefined call: ~p -> ~p~n", [F, T]) || {F, T} <- Undef], \
+	    halt(min(length(Undef), 1)) \
+	catch C:R -> io:format("demo xref failed: ~p:~p~n", [C, R]), halt(2) end.
+
+demo-compile:
+	mkdir -p _build/demo
+	erlc +warnings_as_errors +debug_info -o _build/demo $(DEMO_SRC)
+	erl -noshell -pa _build/default/lib/*/ebin -eval '$(DEMO_XREF)'
 
 demo-shell:
 	erl -sname demo-shell-$$$$@localhost -setcookie chappe-demo \
