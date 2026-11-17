@@ -62,8 +62,10 @@ cleanup() {
 trap cleanup EXIT
 
 say "building and starting (the first build compiles sofia-sip: a few minutes)"
+# the node image first: the other services only run it
+$DC build build
 $DC --profile tools build sipp >/dev/null
-$DC up -d --build
+$DC up -d
 ctl ready
 
 say "1. bob registers on n1, alice calls him through n2"
