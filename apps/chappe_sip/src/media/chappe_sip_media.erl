@@ -36,7 +36,6 @@
     publish/2, publish/3,
     play/2,
     record/2,
-    stop_record/1,
     dtmf/2,
     conference/2, conference/3,
     leave/1,
@@ -236,12 +235,6 @@ play(_S, _Media) ->
 record(#media_session{backend = rtpengine, ref = R}, Opts) ->
     chappe_sip_media_rtpengine:record(R, Opts);
 record(_S, _Opts) ->
-    {error, {unsupported, record}}.
-
--spec stop_record(session()) -> ok | {error, term()}.
-stop_record(#media_session{backend = rtpengine, ref = R}) ->
-    chappe_sip_media_rtpengine:stop_record(R);
-stop_record(_S) ->
     {error, {unsupported, record}}.
 
 -spec dtmf(session(), map()) -> ok | {error, term()}.
