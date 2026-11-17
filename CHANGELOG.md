@@ -7,6 +7,15 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 
 ## Unreleased
 
+- chappe_mrf: a conference room on FreeSWITCH no longer stops when you
+  mute or deafen a party that was dialed into it by a REFER; the command
+  now reaches the conference. A conference backend is now a documented
+  behaviour, so you can add your own next to the chappe_mix and
+  FreeSWITCH ones.
+- chappe_mrf, breaking: `chappe_mrf_conf:refer/3`, `chappe_mrf_esl:header/0`
+  and `chappe_mrf_esl:var/0` are removed. Nothing used them; a REFER to a
+  room is handled by the room itself.
+
 - chappe_cluster, a new app: it lets several chappe nodes agree on a
   single owner for anything that must not run twice, such as a conference
   room, a user's registration or a job that pings a trunk. It also keeps a
