@@ -131,15 +131,19 @@ untoken(<<"c", Id/binary>>) ->
         _ -> undefined
     end;
 untoken(<<"u", Rest/binary>>) ->
-    try binary:split(Rest, <<"-">>, [global]) of
-        [Ip, Port] ->
-            udp_flow(binary:decode_hex(Ip), to_int(Port), []);
-        [Ip, Port, Local] ->
-            udp_flow(binary:decode_hex(Ip), to_int(Port), [
-                binary:decode_hex(Local)
-            ]);
-        _ ->
-            undefined
+    %% the hex is the peer's to choose: any that does not decode names no
+    %% flow
+    try
+        case binary:split(Rest, <<"-">>, [global]) of
+            [Ip, Port] ->
+                udp_flow(binary:decode_hex(Ip), to_int(Port), []);
+            [Ip, Port, Local] ->
+                udp_flow(binary:decode_hex(Ip), to_int(Port), [
+                    binary:decode_hex(Local)
+                ]);
+            _ ->
+                undefined
+        end
     catch
         error:badarg -> undefined
     end;

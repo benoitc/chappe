@@ -60,6 +60,20 @@ nated_test() ->
     ?assertNot(?F:nated(<<"<sip:a@10.0.0.2>">>, {conn, 1})),
     ?assert(?F:nated(<<"sip:a@10.0.0.2">>, {udp, <<"192.0.2.1">>, 5062, <<"l">>})).
 
+%% a token that is not hex names no flow: the route is not ours, nothing
+%% crashes (a peer chooses the bytes of a Route it sends)
+bad_hex_token_test() ->
+    ?assertEqual(undefined, ?F:untoken(<<"uzz-1">>)),
+    ?assertEqual(undefined, ?F:untoken(<<"u313-5060">>)),
+    ?assertEqual(undefined, ?F:untoken(<<"u3132-5060-zz">>)),
+    ?assertEqual({undefined, undefined}, ?F:tokens(#{<<"ftok">> => <<"uzz-1">>})).
+
+%% a Record-Route carrying a forged bad token is not ours, and does not
+%% crash the check
+bad_hex_route_test() ->
+    R = <<"<sip:127.0.0.1:5060;lr;espx=00;exp=9999999999;ftok=uzz-1>">>,
+    ?assertNot(chappe_sip_route:is_self(R, undefined, <<"c">>)).
+
 flow_route_test() ->
     ?assertEqual({ws, 3}, ?F:flow_route(3)),
     ?assertEqual({conn, 3}, ?F:flow_route({conn, 3})).
