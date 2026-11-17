@@ -19,7 +19,8 @@
     store_sink/1,
     not_started/1,
     flood_past_queue/1,
-    own_crash/1
+    own_crash/1,
+    store_crash_spares_receiver/1
 ]).
 
 %% the store seam, for store_sink
@@ -38,7 +39,8 @@ all() ->
         store_sink,
         not_started,
         flood_past_queue,
-        own_crash
+        own_crash,
+        store_crash_spares_receiver
     ].
 
 init_per_suite(Config) ->
@@ -202,6 +204,28 @@ own_crash(_Config) ->
     {ok, R2} = receiver(#{}),
     ok = chappe_audio_rtp:stop(R2).
 
+%% the store's process (and so the registry's restart order) crashing
+%% leaves a live receiver alone
+store_crash_spares_receiver(_Config) ->
+    {ok, R} = receiver(#{}),
+    Store = whereis(chappe_audio_store_srv),
+    Mon = erlang:monitor(process, Store),
+    exit(Store, kill),
+    receive
+        {'DOWN', Mon, process, Store, killed} -> ok
+    after 2000 -> ct:fail(store_alive)
+    end,
+    wait_restarted(chappe_audio_store_srv, Store, 50),
+    ?assert(is_process_alive(R)),
+    {ok, Src} = gen_udp:open(0, [binary, {ip, ?LO}]),
+    ok = gen_udp:send(Src, ?LO, chappe_audio_rtp:port(R), rtp(0, 1, <<16#FF>>)),
+    receive
+        {chappe_audio_rtp, R, {audio, _}} -> ok
+    after 2000 -> ct:fail(no_audio)
+    end,
+    ok = chappe_audio_rtp:stop(R),
+    gen_udp:close(Src).
+
 %% ---- a store module, for store_sink ----
 
 
@@ -245,6 +269,17 @@ wait_packets(R, N, Tries) ->
         _ ->
             timer:sleep(20),
             wait_packets(R, N, Tries - 1)
+    end.
+
+wait_restarted(Name, _Old, 0) ->
+    ct:fail({not_restarted, Name});
+wait_restarted(Name, Old, Tries) ->
+    case whereis(Name) of
+        Pid when is_pid(Pid), Pid =/= Old ->
+            ok;
+        _ ->
+            timer:sleep(20),
+            wait_restarted(Name, Old, Tries - 1)
     end.
 
 flush(R) ->

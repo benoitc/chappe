@@ -4,6 +4,9 @@
 %% The supervision tree, rest_for_one so that what depends on a process
 %% restarts with it:
 %%
+%% - first, the supervisor of the RTP receivers (chappe_audio_rtp), which
+%%   needs none of the others to start: a crash of the store or the
+%%   registry never drops a live SIPREC stream;
 %% - chappe_audio's own pg scope, `chappe_audio' (chappe_audio_pg), so
 %%   what depends on it restarts with it;
 %% - the registry, which owns the table of streams waiting for their
@@ -11,8 +14,7 @@
 %% - the store (its config, its pg membership and its sweep) and the
 %%   supervisor of its writers, one per recording being written;
 %% - one simple_one_for_one supervisor per kind of short-lived process:
-%%   writers, streams, handshakes, listeners and RTP receivers
-%%   (chappe_audio_rtp), every child temporary (a
+%%   writers, streams, handshakes and listeners, every child temporary (a
 %%   stream or a writer that crashes is not restarted; its owner sees it
 %%   go);
 %% - the default listener, when the `listener' env is set.
@@ -27,6 +29,7 @@ start_link() ->
 init(top) ->
     Children =
         [
+            sup(chappe_audio_rtp_sup, chappe_audio_rtp),
             #{
                 id => chappe_audio_pg,
                 start => {pg, start_link, [chappe_audio_pg:scope()]}
@@ -43,8 +46,7 @@ init(top) ->
             sup(chappe_audio_adopt_sup, chappe_audio_adopt),
             sup(chappe_audio_stream_sup, chappe_audio_stream),
             sup(chappe_audio_conn_sup, chappe_audio_conn),
-            sup(chappe_audio_listener_sup, chappe_audio_listener),
-            sup(chappe_audio_rtp_sup, chappe_audio_rtp)
+            sup(chappe_audio_listener_sup, chappe_audio_listener)
         ] ++ default_listener(application:get_env(chappe_audio, listener)),
     {ok, {#{strategy => rest_for_one, intensity => 5, period => 10}, Children}};
 init({child, Mod}) ->
