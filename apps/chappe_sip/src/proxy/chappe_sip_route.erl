@@ -42,6 +42,10 @@
 
 -export_type([flows/0]).
 
+-ifdef(TEST).
+-export([legacy_marker/4]).
+-endif.
+
 %% {Upstream flow, Downstream flow}: WS flows (integers), or the TCP/TLS
 %% connection or UDP address a registration is reached over
 -type flows() :: {
@@ -295,12 +299,11 @@ valid_sig(Sig, U, P, CallId) ->
         legacy ->
             %% a marker minted before expiries existed (no exp): accepted
             %% only within one TTL of this node's boot, so a stable shared
-            %% secret does not keep them alive forever
-            legacy_window() andalso
-                mac_equal(
-                    Sig,
-                    legacy_sign(Host, Port, legacy_flow(P), CallId)
-                );
+            %% secret does not keep them alive forever, and only when it
+            %% names no flow: its MAC carries no node or boot, so a WS id
+            %% in it may be another node's, or one from before a restart
+            no_flow(P) andalso legacy_window() andalso
+                mac_equal(Sig, legacy_sign(Host, Port, undefined, CallId));
         error ->
             false
     end.
@@ -449,12 +452,8 @@ ftok_value(P, Name) ->
         _ -> undefined
     end.
 
-%% the one flow of a marker from before expiries: a WS flow only
-legacy_flow(P) ->
-    case ftok_value(P, <<"ftok">>) of
-        F when is_integer(F) -> F;
-        _ -> undefined
-    end.
+no_flow(P) ->
+    not maps:is_key(<<"ftok">>, P) andalso not maps:is_key(<<"ftokd">>, P).
 
 %% Strip the proxy's own (top) Via before relaying a response upstream.
 -spec strip_via(binary()) -> binary().
@@ -596,6 +595,19 @@ edge_mac(Host, Port, Tok, Transport, Exp) ->
         "|",
         (ni(Exp))/binary
     >>).
+
+-ifdef(TEST).
+%% A marker as releases before expiries minted it (tests).
+legacy_marker(Host, Port, Flow, CallId) ->
+    Sig = legacy_sign(Host, Port, Flow, CallId),
+    Tok =
+        case Flow of
+            undefined -> <<>>;
+            _ -> <<";ftok=", (integer_to_binary(Flow))/binary>>
+        end,
+    <<"<sip:", Host/binary, ":", (integer_to_binary(Port))/binary, ";lr;",
+        ?MARK/binary, "=", Sig/binary, Tok/binary, ">">>.
+-endif.
 
 %% the pre-expiry marker: host, port, one flow and Call-ID
 legacy_sign(Host, Port, Flow, CallId) ->

@@ -188,6 +188,13 @@ their SUBSCRIBE.
   with `cluster => none`.
 - A node that joins later gets an account's summary from your `summary`
   fun on its first subscription, as a single node does.
+- Updates are ordered by a hybrid logical clock (HLC), one per node:
+  chappe_cluster's when it runs, else chappe_sip's own. The order is
+  causal: an update made on a node after it received another one wins
+  over it, even when the other came from a node whose wall clock runs an
+  hour ahead. Two updates made at once on two nodes, each before seeing
+  the other, are ordered by their stamps and then by node, the same way
+  on every node. No node's wall clock needs to be right.
 
 ## Notes
 
@@ -201,6 +208,8 @@ their SUBSCRIBE.
 
 - Modules: `chappe_sip_presence`, `chappe_sip_pidf`, `chappe_sip_mwi`,
   `chappe_sip_esc`, `chappe_sip_notifier`, `chappe_sip_publisher`,
-  `chappe_sip_events_sup`.
-- Tests: `chappe_sip_presence_SUITE` (`mwi_other_node` for the fan-out).
+  `chappe_sip_events_sup`, `chappe_sip_hlc` (the clock).
+- Tests: `chappe_sip_presence_SUITE` (`mwi_other_node` for the fan-out,
+  `mwi_order_across_nodes` and `mwi_clock_ahead_does_not_shadow` for the
+  order).
 - Lab: none.

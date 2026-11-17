@@ -208,7 +208,9 @@ What happens:
 - The flow is gone at the edge node (the connection closed under the
   request): it answers 430 Flow Failed (RFC 5626 5.3) and drops the
   bindings of that flow. Without a quorum it retries the removal every
-  second until the region takes it.
+  second until the region takes it. Any other failure to forward (the
+  node busy, its WebSocket transport restarting) is a 500, and the binding
+  stays.
 - A device whose contact is reachable as it is has no edge route: any node
   sends to it directly.
 - The edge node stops: a UDP binding is reached at its address from the

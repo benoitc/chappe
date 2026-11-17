@@ -109,6 +109,15 @@ conn_token_bound_to_boot_test() ->
         persistent_term:put({chappe_sip_route, boot_id}, Boot)
     end.
 
+%% A marker from before expiries carries no node or boot: one naming a WS
+%% flow is refused (the id may be another node's, or from before a
+%% restart), one naming no flow is still ours within the window.
+legacy_marker_with_a_flow_refused_test() ->
+    WithFlow = chappe_sip_route:legacy_marker(<<"10.0.0.1">>, 5060, 7, <<"c11">>),
+    NoFlow = chappe_sip_route:legacy_marker(<<"10.0.0.1">>, 5060, undefined, <<"c11">>),
+    ?assertNot(chappe_sip_route:is_self(WithFlow, undefined, <<"c11">>)),
+    ?assert(chappe_sip_route:is_self(NoFlow, undefined, <<"c11">>)).
+
 %% A request from the registered UA over its own flow goes on by its next
 %% hop; one from anywhere else goes to that flow.
 next_flow_by_connection_test() ->

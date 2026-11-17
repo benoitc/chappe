@@ -61,7 +61,7 @@ forward_indialog(Req, Res) ->
                         "chappe_sip_proxy: in-dialog forward failed: ~p",
                         [Reason]
                     ),
-                    _ = forward_failed(ServerTxn, Edge)
+                    _ = forward_failed(ServerTxn, Edge, Reason)
             end;
         {error, loop_detected} ->
             _ = respond(ServerTxn, 483, <<"Too Many Hops">>)
@@ -100,7 +100,7 @@ relay_indialog(#{server := ServerTxn, out := OutTxn, anchor := Anchor} = R) ->
             logger:warning("chappe_sip_proxy: in-dialog branch error: ~p", [
                 Reason
             ]),
-            _ = forward_failed(ServerTxn, maps:get(edge, R, none)),
+            _ = forward_failed(ServerTxn, maps:get(edge, R, none), Reason),
             chappe_sip_engine:finish_txn(OutTxn);
         {chappe_sip_op, OutTxn, ok} ->
             relay_indialog(R)
@@ -110,15 +110,28 @@ relay_indialog(#{server := ServerTxn, out := OutTxn, anchor := Anchor} = R) ->
         chappe_sip_engine:finish_txn(OutTxn)
     end.
 
-%% RFC 5626 5.3: the flow an edge route names is gone. The UA is
+%% RFC 5626 5.3: the flow an edge route names no longer exists. The UA is
 %% unreachable until it registers again: 430 Flow Failed, and its bindings
 %% on that flow go (chappe_sip_registry retries the removal while the
-%% region has no quorum). Any other forward that failed is a 500.
-forward_failed(ServerTxn, {ok, Flow, _Transport}) ->
-    ok = chappe_sip_registry:remove_flow(Flow),
-    respond(ServerTxn, 430, <<"Flow Failed">>);
-forward_failed(ServerTxn, none) ->
+%% region has no quorum). Any other failure (the engine or the WS
+%% transport busy, a full transaction table) says nothing of the flow: a
+%% 500, and the binding stays.
+forward_failed(ServerTxn, {ok, Flow, _Transport}, Reason) ->
+    case flow_gone(Reason) of
+        true ->
+            ok = chappe_sip_registry:remove_flow(Flow),
+            respond(ServerTxn, 430, <<"Flow Failed">>);
+        false ->
+            respond(ServerTxn, 500, <<"Server Internal Error">>)
+    end;
+forward_failed(ServerTxn, none, _Reason) ->
     respond(ServerTxn, 500, <<"Server Internal Error">>).
+
+%% the native stack has no such connection, or the WS transport no such
+%% flow
+flow_gone(<<"unknown flow">>) -> true;
+flow_gone(no_flow) -> true;
+flow_gone(_) -> false.
 
 remaining(Deadline) -> max(0, Deadline - erlang:monotonic_time(millisecond)).
 

@@ -142,6 +142,11 @@ default(cluster) -> none;
 %% and the Retry-After (s) of the 503 it gets without one.
 default(registrar_cluster_timeout_ms) -> 1000;
 default(registrar_retry_after) -> 5;
+%% The node's hybrid logical clock (chappe_sip_hlc), when chappe_cluster
+%% does not run one: its wall clock ({M, F, A} returning ms), and how far
+%% (ms) a stamp from another node may move it past that wall clock.
+default(wall_clock) -> {hlc, physical_clock, []};
+default(hlc_max_offset_ms) -> 10000;
 %% Bounds on the event state compositor (chappe_sip_esc): live publications
 %% in all, and for one resource across its packages (a new one past either
 %% gets 503 with Retry-After); the bytes of one PUBLISH body (413 above).

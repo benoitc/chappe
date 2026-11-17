@@ -25,6 +25,9 @@ all() ->
         public_contact_is_sent_directly,
         conn_token_refused_on_another_node,
         dead_flow_at_the_edge,
+        busy_edge_keeps_the_binding,
+        flow_index_follows_a_sweep,
+        flow_index_follows_a_move,
         cseq_and_expires_across_nodes,
         edge_node_down,
         lost_quorum_refuses_register,
@@ -198,6 +201,76 @@ dead_flow_at_the_edge(Config) ->
     end,
     wait(fun() -> erpc:call(N2, chappe_sip, bindings, [?AOR]) =:= [] end, 300),
     _ = B.
+
+%% A node indexes the flow of a binding it took. The sweep, running on
+%% another node, deletes the binding once expired: the first node's index
+%% lets go of it too.
+flow_index_follows_a_sweep(Config) ->
+    Nodes = [N0 | _] = ?config(nodes, Config),
+    {ok, Sweeper} = wait_sweeper(N0),
+    %% a node the sweep does not run on
+    [N1 | _] = Nodes -- [node(Sweeper)],
+    {ok, [_]} = erpc:call(N1, chappe_sip_registry, register_contacts,
+                          [reg_req([contact(1, 2)], <<"ix1">>, 1), #{flow => 7}]),
+    ?assertNotEqual([], flow_index(N1)),
+    wait(fun() -> erpc:call(N1, chappe_cluster, get, [key(aor())]) =:= not_found end, 300),
+    wait(fun() -> flow_index(N1) =:= [] end, 100).
+
+%% The device registers again through node 2: its binding is node 2's now,
+%% and node 1's index lets go of it.
+flow_index_follows_a_move(Config) ->
+    [N1, N2 | _] = ?config(nodes, Config),
+    {ok, [_]} = erpc:call(N1, chappe_sip_registry, register_contacts,
+                          [reg_req([contact(1, 3600)], <<"ix2">>, 1), #{flow => 7}]),
+    ?assertNotEqual([], flow_index(N1)),
+    wait(fun() -> length(erpc:call(N2, chappe_sip_registry, bindings, [aor()])) =:= 1 end),
+    {ok, [B]} = erpc:call(N2, chappe_sip_registry, register_contacts,
+                          [reg_req([contact(1, 3600)], <<"ix3">>, 1), #{flow => 9}]),
+    ?assertEqual(N2, maps:get(node, B)),
+    wait(fun() -> flow_index(N1) =:= [] end, 100),
+    ?assertNotEqual([], flow_index(N2)).
+
+flow_index(Node) ->
+    erpc:call(Node, ets, tab2list, [chappe_sip_registry_flows]).
+
+reg_req(Contacts, CallId, CSeq) ->
+    Raw = iolist_to_binary(
+      [<<"REGISTER sip:example.com SIP/2.0\r\n">>,
+       <<"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKix">>, CallId, <<"\r\n">>,
+       <<"Max-Forwards: 70\r\n">>,
+       <<"From: ">>, aor(), <<";tag=ft\r\n">>,
+       <<"To: ">>, aor(), <<"\r\n">>,
+       <<"Call-ID: ">>, CallId, <<"@ct\r\n">>,
+       <<"CSeq: ">>, integer_to_binary(CSeq), <<" REGISTER\r\n">>,
+       [[<<"Contact: ">>, C, <<"\r\n">>] || C <- Contacts],
+       <<"Content-Length: 0\r\n\r\n">>]),
+    {ok, Msg} = chappe_sip_msg:parse(Raw),
+    chappe_sip_req:new(Msg, undefined, #{}).
+
+%% The edge cannot forward for a reason other than a lost flow (its WS
+%% transport is not there to take the request, as while it restarts):
+%% 500, not 430, and the binding stays.
+busy_edge_keeps_the_binding(Config) ->
+    [N1, N2, _] = ?config(nodes, Config),
+    [_, P2, _] = ?config(ports, Config),
+    [W1 | _] = ?config(ws_ports, Config),
+    C = ws_connect(W1),
+    ok = ws:send(C, {text, ws_register()}),
+    _ = recv_ws(<<"SIP/2.0 200">>),
+    [_] = wait_bindings(N2, 1),
+    Ws = erpc:call(N1, erlang, whereis, [chappe_sip_ws_transport]),
+    true = erpc:call(N1, erlang, unregister, [chappe_sip_ws_transport]),
+    try
+        {ok, Caller} = udp(),
+        send(Caller, P2, invite(lport(Caller), <<"cb1">>)),
+        _ = recv_status(Caller, 500, 15000)
+    after
+        erpc:call(N1, erlang, register, [chappe_sip_ws_transport, Ws])
+    end,
+    timer:sleep(500),
+    ?assertMatch([_], erpc:call(N1, chappe_sip, bindings, [?AOR])),
+    ?assertMatch([_], erpc:call(N2, chappe_sip, bindings, [?AOR])),
+    ws:close(C, 1000).
 
 %% an RFC 5626 TCP binding on Node whose connection does not exist
 dead_conn_binding(Node, CallId) ->
