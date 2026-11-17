@@ -52,7 +52,11 @@
     %% cluster: started, waiting for the lease its starter claims (the
     %% init args, and the starter's monitor); undefined once it runs
     waiting ::
-        #{args := map(), mon := reference(), deferred := [{term(), term()}]}
+        #{
+            args := map(),
+            mon := reference(),
+            deferred := [{term(), term(), integer()}]
+        }
         | undefined,
     %% the options it started with, for the room that takes its members
     %% over (a handoff, a lost lease)

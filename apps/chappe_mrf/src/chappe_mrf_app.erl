@@ -8,18 +8,39 @@
 %% With the esl_port env set, the listener the FreeSWITCH dialplan socket
 %% application connects back to starts with the app, on esl_ip and taking
 %% the peers of esl_allow when those are set.
--spec start(application:start_type(), term()) -> {ok, pid()}.
+%%
+%% With cluster => chappe_cluster, chappe_cluster starts here, before
+%% this app's supervisor: it then stops after this app, so the rooms can
+%% still hand their leases off in prep_stop/1. It is not in
+%% `applications' (nor `optional_applications', which would start it
+%% before this app in every mode): a release that runs a cluster includes
+%% it as {chappe_cluster, load}, and one without it is refused here.
+-spec start(application:start_type(), term()) -> {ok, pid()} | {error, term()}.
 start(_Type, _Args) ->
-    %% cluster: chappe_cluster starts first, so it stops after this app
-    %% and the rooms can still hand their leases off in prep_stop/1
-    ok =
-        case application:get_env(chappe_mrf, cluster, none) of
-            chappe_cluster ->
-                {ok, _} = application:ensure_all_started(chappe_cluster),
-                ok;
-            _ ->
-                ok
-        end,
+    ok = chappe_mrf_conf_move:draining(false),
+    case cluster(application:get_env(chappe_mrf, cluster, none)) of
+        ok -> start_sup();
+        {error, _} = Err -> Err
+    end.
+
+cluster(none) ->
+    ok;
+cluster(chappe_cluster) ->
+    case application:load(chappe_cluster) of
+        Loaded when
+            Loaded =:= ok; Loaded =:= {error, {already_loaded, chappe_cluster}}
+        ->
+            case application:ensure_all_started(chappe_cluster) of
+                {ok, _} -> ok;
+                {error, Why} -> {error, {cluster, Why}}
+            end;
+        {error, Why} ->
+            {error, {cluster, {chappe_cluster_not_installed, Why}}}
+    end;
+cluster(Other) ->
+    {error, {cluster, {badarg, Other}}}.
+
+start_sup() ->
     {ok, Sup} = chappe_mrf_sup:start_link(),
     ok =
         case application:get_env(chappe_mrf, esl_port) of

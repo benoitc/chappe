@@ -12,12 +12,22 @@ the `mrf` dialplan extension shown in the [README](../README.md).
 
 ## Application environment
 
+In a release that runs rooms on a cluster, include chappe_cluster without
+starting it; chappe_mrf starts it in cluster mode, and in `none` mode
+nothing of it runs:
+
+```erlang
+%% rebar.config, relx
+{release, {my_app, "1.0.0"}, [chappe_mrf, {chappe_cluster, load}, my_app]}.
+```
+
 | Key | Default | What it does |
 |---|---|---|
 | `esl_port` | unset | Port of the outbound socket listener FreeSWITCH connects back to. Set, the listener starts with the application. |
 | `esl_ip` | `{127, 0, 0, 1}` | Address the listener binds. Set it to the interface FreeSWITCH reaches you on when FreeSWITCH runs on another host. |
 | `esl_allow` | unset (any peer) | CIDR networks or addresses (strings or binaries) FreeSWITCH connects from. A peer outside is closed right after accept. |
-| `cluster` | `none` | `none`: each node opens its own rooms. `chappe_cluster`: a room name has one owner in the region, and `conference/2` on any node returns that room ([conference guide](guides/conference.md#run-rooms-on-a-cluster)). chappe_cluster is started on first use; configure it (its `voters`). |
+| `cluster` | `none` | `none`: each node opens its own rooms. `chappe_cluster`: a room name has one owner in the region, and `conference/2` on any node returns that room ([conference guide](guides/conference.md#run-rooms-on-a-cluster)). chappe_mrf starts chappe_cluster when it starts, so it stops after chappe_mrf; configure it (its `voters`). A release without chappe_cluster fails the start with `{cluster, {chappe_cluster_not_installed, _}}`; any other value with `{cluster, {badarg, Value}}`. |
+| `start_timeout` | `10000` | On a cluster, the most `conference/2` waits in all for the region and for a room still starting elsewhere; then `{error, timeout}`. |
 | `claim_timeout` | `1000` | Milliseconds a room's start waits for the region's answer to its claim, with `cluster => chappe_cluster`. |
 | `drain_ms` | `5000` | On a cluster, how long a clean stop of chappe_mrf spends handing its rooms off to live nodes, in all. |
 | `rehome_ms` | `30000` | On a cluster, how long a room that lost its lease keeps trying to move its members to the room that owns its name next. |

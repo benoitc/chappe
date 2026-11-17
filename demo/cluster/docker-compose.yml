@@ -13,6 +13,9 @@ name: chappe-demo-cluster
 
 x-node: &node
   image: chappe-demo-cluster
+  # built locally by the `build' service (`docker compose build build'),
+  # never pulled: there is no such image in a registry
+  pull_policy: never
   command: ["node"]
   depends_on:
     build:

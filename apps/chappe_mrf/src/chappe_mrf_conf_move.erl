@@ -5,16 +5,24 @@
 %%
 %% Two cases, one way to move:
 %%   - handoff: this node stops cleanly (an application stop, init:stop,
-%%     docker stop). chappe_mrf's prep_stop/1 drains every room before
-%%     the dialogs' owners die: each room gives its lease back, a room of
-%%     the same name opens on a live node, and the members whose calls run
-%%     on other nodes move there (transfer/3: the call is re-anchored to
-%%     the new mixer, the caller sees no re-INVITE, a short audio gap).
-%%     Members whose calls run on this node end with it.
+%%     docker stop). chappe_mrf's prep_stop/1 marks the node draining, so
+%%     no room opens here any more (start/2 opens it on a live node), then
+%%     drains every room before the dialogs' owners die: each room gives
+%%     its lease back, a room of the same name opens on a live node, and
+%%     the members whose calls run on other nodes move there (transfer/3:
+%%     the call is re-anchored to the new mixer, the caller sees no
+%%     re-INVITE, a short audio gap). Members whose calls run on this node
+%%     end with it.
 %%   - rehome: the room lost its lease while its node runs (a lost
-%%     quorum, a pause). A helper of the room opens the room where the
-%%     region lets it (the majority side, or here once the quorum is
-%%     back) and moves every member there, retrying until rehome_ms.
+%%     quorum, a pause). A helper linked to the room opens the room where
+%%     the region lets it (the majority side, or here once the quorum is
+%%     back) and moves every member there, round after round until
+%%     rehome_ms.
+%%
+%% Every move has a deadline. The transfer jobs are linked to the process
+%% that runs the move (and so die with it); one still running at the
+%% deadline is killed and its member handed back to the room (transfer
+%% cancel), for the next round to move.
 %%
 %% fs rooms do not move: the conference is FreeSWITCH's, each member a
 %% channel driven through the outbound socket the stopping node holds,
@@ -23,27 +31,49 @@
 %% room on a live node; the members in it end with the node.
 -module(chappe_mrf_conf_move).
 
--export([drain/1, handoff/2, rehome/4]).
+-export([drain/1, handoff/2, rehome/4, transfer_all/4]).
+-export([draining/0, draining/1, open/5, region/0]).
 
 %% each room's own bound inside drain/1's
 -define(OPEN_MS, 5000).
+%% one round of a rehome
+-define(ROUND_MS, 10000).
+%% what drain/1 gives a handoff past the deadline to hand its members
+%% back before it is killed
+-define(GRACE_MS, 1000).
+-define(DRAINING, {chappe_mrf, draining}).
+
+%% Whether this node is draining: start/2 then opens no room here.
+-spec draining() -> boolean().
+draining() ->
+    persistent_term:get(?DRAINING, false).
+
+-spec draining(boolean()) -> ok.
+draining(true) ->
+    persistent_term:put(?DRAINING, true);
+draining(false) ->
+    _ = persistent_term:erase(?DRAINING),
+    ok.
 
 %% Hand every cluster room of this node off, within Ms in all.
 -spec drain(non_neg_integer()) -> ok.
 drain(Ms) ->
+    ok = draining(true),
     Deadline = erlang:monotonic_time(millisecond) + Ms,
     Rooms = [C || {{conf, _}, C} <- chappe_mrf_registry:select({conf, '_'})],
     Jobs = [spawn_monitor(fun() -> handoff(C, Deadline) end) || C <- Rooms],
-    wait(Jobs, Deadline).
+    wait_handoffs(Jobs, Deadline + ?GRACE_MS).
 
-wait([], _Deadline) ->
+%% a handoff past its own deadline and the grace is killed, and its
+%% linked transfer jobs with it
+wait_handoffs([], _Deadline) ->
     ok;
-wait([{Pid, Mon} | Rest], Deadline) ->
+wait_handoffs([{Pid, Mon} | Rest], Deadline) ->
     receive
-        {'DOWN', Mon, process, Pid, _} -> wait(Rest, Deadline)
+        {'DOWN', Mon, process, Pid, _} -> wait_handoffs(Rest, Deadline)
     after left(Deadline) ->
         exit(Pid, kill),
-        wait(Rest, Deadline)
+        wait_handoffs(Rest, Deadline)
     end.
 
 %% One room: it gives its lease back and its name up, then its members
@@ -51,7 +81,9 @@ wait([{Pid, Mon} | Rest], Deadline) ->
 -spec handoff(pid(), integer()) -> ok | {error, term()}.
 handoff(Conf, Deadline) ->
     case
-        chappe_mrf_conf:call(Conf, {transfer, move, handoff}, left(Deadline))
+        chappe_mrf_conf:call(
+            Conf, {transfer, move, handoff}, max(1, left(Deadline))
+        )
     of
         #{backend := native, name := Name, opts := Opts, members := Ids} when
             Ids =/= []
@@ -63,16 +95,19 @@ handoff(Conf, Deadline) ->
             Err
     end.
 
-%% The room lost its lease: move its members (Ids) to the room the region
-%% lets open, from this node or another, until Deadline. Runs in a helper
-%% the room starts.
+%% The room lost its lease: move its members to the room the region lets
+%% open, from this node or another, round after round until Deadline.
+%% Runs in a helper linked to the room; a room gone ends it.
 -spec rehome(pid(), binary(), map(), integer()) -> ok | {error, term()}.
 rehome(Conf, Name, Opts, Deadline) ->
-    case chappe_mrf_conf:call(Conf, {transfer, move, ids}, left(Deadline)) of
+    Round = min(Deadline, erlang:monotonic_time(millisecond) + ?ROUND_MS),
+    case
+        chappe_mrf_conf:call(Conf, {transfer, move, ids}, max(1, left(Round)))
+    of
         [] ->
             ok;
         Ids when is_list(Ids) ->
-            case move(Conf, Name, Opts, Ids, [node() | region()], Deadline) of
+            case move(Conf, Name, Opts, Ids, [node() | region()], Round) of
                 ok ->
                     ok;
                 {error, _} ->
@@ -91,29 +126,63 @@ retry(Conf, Name, Opts, Deadline) ->
 
 move(Conf, Name, Opts, Ids, Nodes, Deadline) ->
     case open(Name, Opts, Nodes, Conf, Deadline) of
-        {ok, New} ->
-            Jobs = [
-                spawn_monitor(fun() ->
-                    chappe_mrf_conf:transfer(Conf, Id, New)
-                end)
-             || Id <- Ids
-            ],
-            wait(Jobs, Deadline);
-        {error, _} = Err ->
-            Err
+        {ok, New} -> transfer_all(Conf, Ids, New, Deadline);
+        {error, _} = Err -> Err
+    end.
+
+%% Move each of Ids from Conf to New, at once, by Deadline. A move still
+%% running then is killed and its member handed back to Conf.
+-spec transfer_all(pid(), [binary()], pid(), integer()) ->
+    ok | {error, timeout}.
+transfer_all(Conf, Ids, New, Deadline) ->
+    Jobs = [
+        {
+            spawn_link(fun() -> _ = chappe_mrf_conf:transfer(Conf, Id, New) end),
+            Id
+        }
+     || Id <- Ids
+    ],
+    wait_jobs(
+        [{Pid, monitor(process, Pid), Id} || {Pid, Id} <- Jobs],
+        Conf,
+        Deadline,
+        ok
+    ).
+
+wait_jobs([], _Conf, _Deadline, Result) ->
+    Result;
+wait_jobs([{Pid, Mon, Id} | Rest], Conf, Deadline, Result) ->
+    receive
+        {'DOWN', Mon, process, Pid, _} ->
+            wait_jobs(Rest, Conf, Deadline, Result)
+    after left(Deadline) ->
+        unlink(Pid),
+        exit(Pid, kill),
+        _ = chappe_mrf_conf:call(Conf, {transfer, cancel, Id}, 5000),
+        wait_jobs(Rest, Conf, Deadline, {error, timeout})
     end.
 
 %% The room of Name on the first node of Nodes that opens or finds one
-%% other than Conf.
+%% other than Conf, and never one on a draining node.
+-spec open(binary(), map(), [node()], pid() | none, integer()) ->
+    {ok, pid()} | {error, no_room}.
 open(_Name, _Opts, [], _Conf, _Deadline) ->
     {error, no_room};
 open(Name, Opts, [N | Rest], Conf, Deadline) ->
-    T = min(?OPEN_MS, left(Deadline)),
-    try erpc:call(N, chappe_mrf, conference, [Name, Opts], max(T, 1)) of
-        {ok, New} when New =/= Conf -> {ok, New};
-        _ -> open(Name, Opts, Rest, Conf, Deadline)
+    T = max(1, min(?OPEN_MS, left(Deadline))),
+    try erpc:call(N, chappe_mrf, conference, [Name, Opts], T) of
+        {ok, New} when New =/= Conf ->
+            elsewhere(New, Name, Opts, Rest, Conf, Deadline);
+        _ ->
+            open(Name, Opts, Rest, Conf, Deadline)
     catch
         _:_ -> open(Name, Opts, Rest, Conf, Deadline)
+    end.
+
+elsewhere(New, Name, Opts, Rest, Conf, Deadline) ->
+    case node(New) =:= node() andalso draining() of
+        true -> open(Name, Opts, Rest, Conf, Deadline);
+        false -> {ok, New}
     end.
 
 left(Deadline) ->
@@ -121,6 +190,7 @@ left(Deadline) ->
 
 %% The other nodes of the region this node reaches: a room opens only
 %% where the same cluster owns its name.
+-spec region() -> [node()].
 region() ->
     Here = node(),
     Up = nodes(),
