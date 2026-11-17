@@ -4,7 +4,7 @@
 %% register with: a fresh CI runner has none, which fails the start with
 %% nodistribution. ensure/0 starts epmd first, then the node.
 %%
-%% The suites also start peer nodes running chappe_cluster: peer/2 starts
+%% The suites also start peer nodes running chappe_cluster: peer/1 starts
 %% one with this node's code path, and start_app/3 sets the env and starts
 %% the app there.
 -module(chappe_cluster_test_dist).
