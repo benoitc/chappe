@@ -20,8 +20,10 @@ know is in the [glossary](glossary.md).
 Directories are relative to the app (`apps/<app>/`). Module names with a
 leading `_` carry the prefix of the row's app (`_proxy_rules` is
 `chappe_sip_proxy_rules`); a module of another app is written in full.
+"Modules behind it" lists what the start module relies on, public or not;
+which modules are public is in [the table below](#public-and-internal-modules-per-app).
 
-| If you care about | App, directory | Start at | Internal modules | Tests | Lab |
+| If you care about | App, directory | Start at | Modules behind it | Tests | Lab |
 |---|---|---|---|---|---|
 | Answering and placing calls | chappe_sip `src/api`, `src/dialog`, `src/uac` | `chappe_sip`, `chappe_sip_dialog`, `chappe_sip_uac` | `_dialog_fsm`, `_uac_fsm`, `_uac_auth`, `_dialog_index`, `_session_timer` | `core`, `core_uac`, `uas`, `uac`, `indialog`, `dialog_ops`, `handler`, `session_timer`, `prack`, `uac_auth_tests` | `make interop-conformance` |
 | Inbound request pipeline | chappe_sip `src/engine`, `src/conn` | `chappe_sip_engine`, `chappe_sip_request_worker` | `_dispatch`, `_middleware`, `_guard`, `_request_sup` | `pipeline` (fake engine), `guard`, `ood` | none |

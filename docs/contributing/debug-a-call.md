@@ -114,7 +114,7 @@ then the node that holds each part.
    ```erlang
    {ok, #{b2b := B2bs, dialogs := Dialogs, media := Media, siprec := Recs}} =
        chappe_sip:calls(#{call_ref => <<"0123456789abcdef01234567">>}),
-   [node(P) || P <- B2bs].
+   [node(P) || {P, _Ref} <- B2bs].
    ```
 
    A handle that just ended may still be listed for a moment; a handle
