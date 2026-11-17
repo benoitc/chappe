@@ -62,7 +62,7 @@
 -export([handle_continue/2]).
 -ifdef(TEST).
 -export([register_with/3, resync_with/1, modify_with/3]).
--export([resync_apply/4, gen_for_test/0]).
+-export([resync_apply/4, gen_for_test/0, resync_reads_for_test/3]).
 -endif.
 
 %% a write that lost a compare-and-swap this many times in a row fails 500
@@ -153,6 +153,9 @@ modify_with(Store, Aor, Fun) ->
 
 gen_for_test() ->
     gen().
+
+resync_reads_for_test(Store, Aors, Owner) ->
+    resync_reads(Store, Aors, Owner, 0).
 -endif.
 
 %% The first try reads the local replica; one that lost the compare-and-
@@ -871,7 +874,7 @@ modify(Store, Aor, Fun, Mode, N) ->
                     %% store holds (another node may have changed it):
                     %% from a read through the leader only, never from a
                     %% replica that may lag
-                    held(Store, Aor, Bs, drop_after(Mode, T0));
+                    held(Store, Aor, Bs, drop_after(Mode, T0), T0);
                 New ->
                     case chappe_sip_location:write(Store, Aor, Version, New) of
                         ok ->
@@ -924,7 +927,14 @@ resync_reads(Store, [Aor | Rest], Owner, N) ->
         N > 0 andalso N rem ?RESYNC_BATCH =:= 0 andalso
             timer:sleep(?RESYNC_PAUSE_MS),
     T0 = gen(),
-    case chappe_sip_location:read(Store, Aor, consistent) of
+    %% the pass ends with the registry that asked for it: a restarted
+    %% registry starts its own
+    case
+        is_process_alive(Owner) andalso
+            chappe_sip_location:read(Store, Aor, consistent)
+    of
+        false ->
+            ok;
         {ok, Bs, _} ->
             Owner ! {resync_read, Aor, Bs, T0},
             resync_reads(Store, Rest, Owner, N + 1);
@@ -936,7 +946,7 @@ resync_reads(Store, [Aor | Rest], Owner, N) ->
 %% an entry is dropped only on what the region holds, and only one made
 %% before the read began (T0)
 resync_apply(Store, Aor, Bs, T0) ->
-    held(Store, Aor, live(Bs, now_s()), {before, T0}).
+    held(Store, Aor, live(Bs, now_s()), {before, T0}, T0).
 
 -ifdef(TEST).
 %% a whole pass in the caller (tests)
@@ -1043,11 +1053,25 @@ mine() ->
 %% the AOR and, on a cluster, that this node holds some. Drop is
 %% {before, T0}: entries the bindings no longer have go, if made before
 %% T0; keep: nothing goes (the read may lag).
+%% After a write, entries are stamped now. After a read that began at T0,
+%% with T0 (held/5): what the read saw was true at T0, not later, so an
+%% entry it re-adds for a binding removed since does not outrank that
+%% removal. An entry already stamped later keeps its stamp.
 held(Store, Aor, Bs, Drop) ->
-    ok = index_flows(Aor, Bs, Drop),
-    held_aor(Store, Aor, Bs, Drop).
+    held(Store, Aor, Bs, Drop, gen()).
 
-index_flows(Aor, Bs, Drop) ->
+held(Store, Aor, Bs, Drop, Stamp) ->
+    ok = index_flows(Aor, Bs, Drop, Stamp),
+    held_aor(Store, Aor, Bs, Drop, Stamp).
+
+%% the later of the stamp an entry has and Stamp
+stamp_of(Tab, Key, Stamp) ->
+    case ets:lookup(Tab, Key) of
+        [{_, T}] when T > Stamp -> T;
+        _ -> Stamp
+    end.
+
+index_flows(Aor, Bs, Drop, Stamp) ->
     Old = ets:select(?FLOWS, [{{{aor, Aor, '$1'}, '$2'}, [], [{{'$1', '$2'}}]}]),
     New = lists:usort([
         F
@@ -1062,20 +1086,21 @@ index_flows(Aor, Bs, Drop) ->
         droppable(T, Drop),
         K <- [{aor, Aor, F}, {flow, F, Aor}]
     ],
-    Now = gen(),
     true = ets:insert(
         ?FLOWS,
-        [{{aor, Aor, F}, Now} || F <- New] ++
-            [{{flow, F, Aor}, Now} || F <- New]
+        [
+            {K, stamp_of(?FLOWS, K, Stamp)}
+         || F <- New, K <- [{aor, Aor, F}, {flow, F, Aor}]
+        ]
     ),
     ok.
 
 droppable(T, {before, T0}) -> T < T0;
 droppable(_T, keep) -> false.
 
-held_aor(chappe_sip_location_ets, _Aor, _Bs, _Drop) ->
+held_aor(chappe_sip_location_ets, _Aor, _Bs, _Drop, _Stamp) ->
     ok;
-held_aor(_Store, Aor, Bs, Drop) ->
+held_aor(_Store, Aor, Bs, Drop, Stamp) ->
     %% an entry carries when it was made, as the flow index's do: a read
     %% that began before it does not remove it
     _ =
@@ -1083,7 +1108,7 @@ held_aor(_Store, Aor, Bs, Drop) ->
             {lists:any(fun(#binding{node = N}) -> N =:= node() end, Bs), Drop}
         of
             {true, _} ->
-                ets:insert(?HELD, {Aor, gen()});
+                ets:insert(?HELD, {Aor, stamp_of(?HELD, Aor, Stamp)});
             {false, {before, T0}} ->
                 ets:select_delete(?HELD, [
                     {{Aor, '$1'}, [{'<', '$1', T0}], [true]}

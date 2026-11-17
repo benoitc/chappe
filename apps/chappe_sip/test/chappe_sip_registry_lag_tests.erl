@@ -92,3 +92,33 @@ held_survives_a_racing_resync_test() ->
 
 held(Aor) ->
     ets:member(chappe_sip_registry_held, Aor).
+
+%% A resync read applied late re-adds an entry with the time its read
+%% began, not now: a removal from a read that began after it still
+%% removes the entry.
+late_read_does_not_outrank_a_removal_test() ->
+    ok = ?STORE:new(),
+    _ = chappe_sip_registry_keeper:tables(),
+    true = ets:delete_all_objects(chappe_sip_registry_flows),
+    {ok, [_], _} = chappe_sip_registry:register_with(?STORE, req(), #{flow => 7}),
+    {Bs, _} = ?STORE:region(?AOR),
+    T0 = chappe_sip_registry:gen_for_test(),
+    T2 = chappe_sip_registry:gen_for_test(),
+    %% the read that began at T2 saw the binding gone
+    ok = chappe_sip_registry:resync_apply(?STORE, ?AOR, [], T2),
+    ?assertEqual([], flow_aors(7)),
+    %% the read that began at T0, still with it, lands after
+    ok = chappe_sip_registry:resync_apply(?STORE, ?AOR, Bs, T0),
+    ?assertEqual([?AOR], flow_aors(7)),
+    %% the next removal, from a read begun before this apply, takes it
+    ok = chappe_sip_registry:resync_apply(?STORE, ?AOR, [], T2),
+    ?assertEqual([], flow_aors(7)).
+
+%% A pass whose registry is gone reads nothing.
+resync_ends_with_its_registry_test() ->
+    ok = ?STORE:new(),
+    Dead = spawn(fun() -> ok end),
+    Ref = monitor(process, Dead),
+    receive {'DOWN', Ref, process, Dead, _} -> ok end,
+    ok = chappe_sip_registry:resync_reads_for_test(?STORE, [?AOR, <<"sip:b@x">>], Dead),
+    ?assertEqual(0, proplists:get_value(consistent, ?STORE:reads(), 0)).
