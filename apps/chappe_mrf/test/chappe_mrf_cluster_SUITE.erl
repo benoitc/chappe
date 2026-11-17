@@ -757,10 +757,15 @@ wait_members(Conf, N) ->
 wait_members(Conf, N, 0) ->
     ct:fail({members, Conf, chappe_mrf_conf:members(Conf), expected, N});
 wait_members(Conf, N, Tries) ->
-    case length(chappe_mrf_conf:members(Conf)) of
+    case count(chappe_mrf_conf:members(Conf)) of
         N -> ok;
         _ -> timer:sleep(100), wait_members(Conf, N, Tries - 1)
     end.
+
+%% A room whose owner is gone stops with its last member: no room left
+%% is no member left.
+count({error, noproc}) -> 0;
+count(Members) -> length(Members).
 
 %% A room process started waiting for its lease, as start/2 does, with
 %% Holder as its starter.

@@ -102,7 +102,8 @@ singleton_probe(Config) ->
     {FirstPeer, First} = lists:keyfind(First, 2, ?config(peers, Config)),
     ok = ?C:stop_peer(FirstPeer),
     Rest = Nodes -- [First],
-    Second = wait_prober(hd(Rest)),
+    %% the stopped node stays in pg until its nodedown reaches hd(Rest)
+    Second = wait_prober(hd(Rest), Rest),
     ?assert(lists:member(Second, Rest)),
     flush_options(),
     Senders2 = senders(2000),
@@ -235,12 +236,20 @@ prober_table_without_quorum(Config) ->
 
 %% The node running the trunk's singleton, once one does.
 wait_prober(Any) ->
+    wait_prober(Any, any).
+
+%% The node running the prober, as Any sees it; with a node list, only
+%% once it is one of them.
+wait_prober(Any, Among) ->
     wait(fun() ->
              case erpc:call(Any, chappe_cluster, whereis_singleton, [{chappe_sip_peer, trunk}]) of
-                 {ok, Pid} -> {true, node(Pid)};
+                 {ok, Pid} -> among(node(Pid), Among);
                  none -> false
              end
          end, 100).
+
+among(Node, any) -> {true, Node};
+among(Node, Nodes) -> lists:member(Node, Nodes) andalso {true, Node}.
 
 wait_state(N, State) ->
     ok = wait(fun() ->
