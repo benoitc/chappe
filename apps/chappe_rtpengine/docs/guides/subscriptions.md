@@ -21,6 +21,12 @@ OfferedSDP = chappe_rtpengine_ng:sdp(Sub),
 
 Pass `party => caller | callee` (or `from_tags => [Tag]`) instead of `flags => [all]` to tap a single participant.
 
+Pass `holder => pid()` to make the subscription that process's: the session monitors it and unsubscribes when it exits, however it exits, so a consumer that crashes leaves no fork running. `unsubscribe/2` of the to-tag still releases it early:
+
+```erlang
+{ok, Sub} = chappe_rtpengine_cmd:subscribe_request(Sess, #{party => caller, holder => Recorder}).
+```
+
 ## Anchor a call with no second leg
 
 A recording server or a publisher has nothing to negotiate with: it receives media and forks it, it never bridges an onward leg. Use `publish/2` instead of `offer/2` plus `answer/2`. rtpengine writes the answer itself, and the reply SDP is what you put in your 200 OK:

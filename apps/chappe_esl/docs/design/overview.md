@@ -36,6 +36,12 @@ JSON is decoded with the OTP `json` module.
   execute with an `Event-UUID`, the wait for its completion, `uuid_break`,
   the audio fork commands, and the quoting of arguments FreeSWITCH splits on
   spaces.
+- `chappe_esl_verbs` holds the typed verbs of `chappe_esl_call`: each checks
+  its arguments, refuses text FreeSWITCH would expand, and builds the
+  dialplan application or api command. `chappe_esl_call` keeps the process
+  and exports every verb, delegating to this module.
+- `chappe_esl_cidr` parses and matches the CIDR networks of the outbound
+  listener's `allow` list.
 
 ## Supervision
 
@@ -93,6 +99,8 @@ When the owner dies before the channel hangs up, the call process stops the
 audio forks and session recordings it started, kills the channel with
 `uuid_kill` and closes the connection. Read both modules together when you
 change how a command completes.
+The verbs themselves (argument checks and the command each one builds)
+are in `chappe_esl_verbs`; `chappe_esl_call` delegates to it.
 
 ## The node registry
 
@@ -167,7 +175,7 @@ listed in [Configuration](../configuration.md).
 
 - Code: `apps/chappe_esl/src/`
 - Tests: eunit `chappe_esl_parser_tests` (frames split at every byte),
-  `chappe_esl_event_tests`; suites `chappe_esl_conn_SUITE`,
+  `chappe_esl_event_tests`, `chappe_esl_cidr_tests`; suites `chappe_esl_conn_SUITE`,
   `_outbound_SUITE`, `_call_SUITE`, `_nodes_SUITE` against
   `chappe_esl_fake_server`
 - Lab: `make interop-esl` (`chappe_esl_live_SUITE` against FreeSWITCH in
