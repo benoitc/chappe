@@ -24,7 +24,8 @@
          min_expires_default/1, auth_required/1, refusals_below_600/1,
          independent_registers/1, default_expires_taken/1,
          max_expires_caps/1, bindings_survive_a_node_name_change/1,
-         flow_purge_reads_its_own_aors/1, cluster_without_chappe_cluster/1]).
+         flow_purge_reads_its_own_aors/1, cluster_without_chappe_cluster/1,
+         cluster_stops_after_chappe_sip/1]).
 -export([live_register/1, live_register_auth/1, live_min_expires_423/1,
          live_path_outbound/1, live_require_path/1,
          live_record_route_ignored/1, live_never_6xx/1,
@@ -46,7 +47,8 @@ groups() ->
                  min_expires_default, auth_required, refusals_below_600,
                  independent_registers, default_expires_taken,
                  max_expires_caps, bindings_survive_a_node_name_change,
-                 flow_purge_reads_its_own_aors, cluster_without_chappe_cluster]},
+                 flow_purge_reads_its_own_aors, cluster_without_chappe_cluster,
+                 cluster_stops_after_chappe_sip]},
      {live, [], [live_register, live_register_auth, live_min_expires_423,
                  live_path_outbound, live_require_path,
                  live_record_route_ignored, live_never_6xx,
@@ -930,6 +932,69 @@ no_cluster_app() ->
         ?assertNotEqual(nomatch, string:find(io_lib:format("~p", [Why]), "chappe_cluster"))
     after
         peer:stop(Peer)
+    end.
+
+%% In cluster mode chappe_sip starts chappe_cluster before its own
+%% supervisor, so the application controller stops chappe_cluster after
+%% chappe_sip: when chappe_sip stops, its prep_stop still finds
+%% chappe_cluster up and withdraws the registry sweep from it. Without a
+%% cluster, chappe_cluster is not started.
+cluster_stops_after_chappe_sip(Config) ->
+    Dir = filename:join(?config(priv_dir, Config), "stop_order"),
+    with_dist(fun() -> stop_order(Dir) end).
+
+stop_order(Dir) ->
+    [_, Host] = string:split(atom_to_list(node()), "@"),
+    {ok, Peer, Node} = peer:start_link(#{
+        name => peer:random_name(), host => Host, connection => standard_io,
+        args => lists:append([["-pa", P] || P <- code:get_path()])}),
+    try
+        ok = erpc:call(Node, application, load, [chappe_cluster]),
+        ok = erpc:call(Node, application, set_env,
+                       [chappe_cluster, data_dir, Dir]),
+        ok = erpc:call(Node, application, load, [chappe_sip]),
+        ok = erpc:call(Node, application, set_env, [chappe_sip, cluster, chappe_cluster]),
+        ok = erpc:call(Node, application, set_env, [chappe_sip, engine_mod, chappe_sip_nif]),
+        {ok, Started} = erpc:call(Node, application, ensure_all_started, [chappe_sip]),
+        ct:pal("started: ~p", [Started]),
+        %% which_applications lists the latest started first
+        Apps = [A || {A, _, _} <- erpc:call(Node, application, which_applications, [])],
+        ?assert(index_of(chappe_sip, Apps) < index_of(chappe_cluster, Apps)),
+        Sweep = chappe_sip_registry_sweep:name(),
+        ok = wait_true(fun() -> lists:keymember(Sweep, 1, singleton_children(Node)) end, 100),
+        ok = erpc:call(Node, application, stop, [chappe_sip]),
+        ?assert(lists:keymember(chappe_cluster, 1,
+                                erpc:call(Node, application, which_applications, []))),
+        ?assertNot(lists:keymember(Sweep, 1, singleton_children(Node)))
+    after
+        peer:stop(Peer)
+    end,
+    %% cluster => none: chappe_cluster stays unstarted
+    {ok, Peer2, Node2} = peer:start_link(#{
+        name => peer:random_name(), host => Host, connection => standard_io,
+        args => lists:append([["-pa", P] || P <- code:get_path()])}),
+    try
+        ok = erpc:call(Node2, application, load, [chappe_sip]),
+        ok = erpc:call(Node2, application, set_env, [chappe_sip, engine_mod, chappe_sip_nif]),
+        {ok, _} = erpc:call(Node2, application, ensure_all_started, [chappe_sip]),
+        ?assertNot(lists:keymember(chappe_cluster, 1,
+                                   erpc:call(Node2, application, which_applications, [])))
+    after
+        peer:stop(Peer2)
+    end.
+
+singleton_children(Node) ->
+    [{Id, P} || {Id, P, _, _} <- erpc:call(Node, supervisor, which_children,
+                                           [chappe_cluster_singleton_sup])].
+
+index_of(X, L) ->
+    length(lists:takewhile(fun(Y) -> Y =/= X end, L)).
+
+wait_true(_F, 0) -> {error, timeout};
+wait_true(F, N) ->
+    case F() of
+        true -> ok;
+        false -> timer:sleep(100), wait_true(F, N - 1)
     end.
 
 %% ---- helpers ----

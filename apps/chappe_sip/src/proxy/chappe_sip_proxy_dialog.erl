@@ -69,23 +69,16 @@ forward_indialog(Req, Res) ->
     chappe_sip_res:mark_final(Res),
     ok.
 
-relay_indialog(#{server := ServerTxn, out := OutTxn, anchor := Anchor} = R) ->
+relay_indialog(#{server := ServerTxn, out := OutTxn} = R) ->
     receive
         {chappe_sip_response, OutTxn, #{status := Status}, Raw} ->
-            Raw2 = indialog_answer(Anchor, Status, Raw),
-            _ = relay(ServerTxn, Status, chappe_sip_route:strip_via(Raw2)),
-            case Status of
-                _ when Status >= 200 ->
+            case lost_flow(Status, maps:get(edge, R, none)) of
+                {lost, Flow} ->
+                    ok = chappe_sip_registry:remove_flow(Flow),
+                    _ = respond(ServerTxn, 430, <<"Flow Failed">>),
                     chappe_sip_engine:finish_txn(OutTxn);
-                100 ->
-                    relay_indialog(R);
-                _ ->
-                    %% Timer C restarts on each provisional (16.7 step 2)
-                    relay_indialog(R#{
-                        deadline :=
-                            erlang:monotonic_time(millisecond) +
-                            maps:get(timer_c, R)
-                    })
+                live ->
+                    relay_response(R, Status, Raw)
             end;
         {chappe_sip_cancel, ServerTxn, _CancelReq} ->
             %% 16.10: a CANCEL for a transit re-INVITE goes to its branch;
@@ -109,6 +102,35 @@ relay_indialog(#{server := ServerTxn, out := OutTxn, anchor := Anchor} = R) ->
         _ = respond(ServerTxn, 408, <<"Request Timeout">>),
         chappe_sip_engine:finish_txn(OutTxn)
     end.
+
+relay_response(
+    #{server := ServerTxn, out := OutTxn, anchor := Anchor} = R, Status, Raw
+) ->
+    Raw2 = indialog_answer(Anchor, Status, Raw),
+    _ = relay(ServerTxn, Status, chappe_sip_route:strip_via(Raw2)),
+    case Status of
+        _ when Status >= 200 ->
+            chappe_sip_engine:finish_txn(OutTxn);
+        100 ->
+            relay_indialog(R);
+        _ ->
+            %% Timer C restarts on each provisional (16.7 step 2)
+            relay_indialog(R#{
+                deadline :=
+                    erlang:monotonic_time(millisecond) + maps:get(timer_c, R)
+            })
+    end.
+
+%% A 503 on an edge forward over a connection that closed is the stack's
+%% own transport failure, not the UA's answer (the connection went as the
+%% request left): the flow is lost. Any other answer is the UA's.
+lost_flow(503, {ok, {conn, Id} = Flow, _Transport}) ->
+    case chappe_sip_engine:conn_closed(Id) of
+        true -> {lost, Flow};
+        false -> live
+    end;
+lost_flow(_Status, _Edge) ->
+    live.
 
 %% RFC 5626 5.3: the flow an edge route names no longer exists. The UA is
 %% unreachable until it registers again: 430 Flow Failed, and its bindings

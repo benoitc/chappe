@@ -169,10 +169,18 @@ guide, `docs/guides/cluster.md`), then:
 ]}].
 ```
 
-Put chappe_cluster in your release next to chappe_sip (it is not a
-dependency, so nothing pulls it in): a node set to `cluster => chappe_cluster`
-without it refuses to start with `{cluster, {chappe_cluster_not_installed,
-_}}`.
+Put chappe_cluster in your release next to chappe_sip as `{chappe_cluster,
+load}` (it is not a dependency, so nothing pulls it in). With `cluster =>
+chappe_cluster`, chappe_sip starts it before its own processes, so it stops
+after chappe_sip and the registry hands its sweep over on the way out. A node
+set to `cluster => chappe_cluster` without it refuses to start with
+`{cluster, {chappe_cluster_not_installed, _}}`; with `cluster => none` it is
+never started.
+
+```erlang
+{relx, [{release, {my_sbc, "1.0.0"},
+         [chappe_sip, {chappe_cluster, load}]}]}.
+```
 
 Route a call with `location_target/1`, which gives the right target from any
 node:

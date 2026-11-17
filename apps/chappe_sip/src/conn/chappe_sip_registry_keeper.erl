@@ -23,6 +23,9 @@
 %% the flows of this node's bindings, both ways: {flow, Flow, Aor} and
 %% {aor, Aor, Flow} (chappe_sip_registry)
 -define(FLOWS_TAB, chappe_sip_registry_flows).
+%% the TCP/TLS connections of the native stack that closed lately
+%% (chappe_sip_engine:conn_closed/1)
+-define(CLOSED_TAB, chappe_sip_closed_conns).
 
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
@@ -39,6 +42,7 @@ tables() ->
     _ = ensure_table(?CFG_TAB, [named_table, set, public]),
     _ = ensure_table(?HELD_TAB, [named_table, set, public]),
     _ = ensure_table(?FLOWS_TAB, [named_table, ordered_set, public]),
+    _ = ensure_table(?CLOSED_TAB, [named_table, set, public]),
     _ = ensure_table(?DIALOG_TAB, [
         named_table,
         set,
