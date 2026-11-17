@@ -61,7 +61,7 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 -export([handle_continue/2]).
 -ifdef(TEST).
--export([register_with/3]).
+-export([register_with/3, resync_with/1, modify_with/3]).
 -endif.
 
 %% a write that lost a compare-and-swap this many times in a row fails 500
@@ -139,6 +139,13 @@ register_request(Req, Opts) ->
 %% register_request/2 against a given backend (tests)
 register_with(Store, Req, Opts) ->
     cas_register(Store, Req, Opts, local, ?CAS_TRIES).
+
+resync_with(Store) ->
+    resync(Store).
+
+modify_with(Store, Aor, Fun) ->
+    _ = modify(Store, Aor, Fun),
+    ok.
 -endif.
 
 %% The first try reads the local replica; one that lost the compare-and-
@@ -413,9 +420,10 @@ do_register(Store, Req, Opts, Mode) ->
     Msg = chappe_sip_req:msg(Req),
     case aor_of(Msg, Opts) of
         {ok, Aor} ->
+            T0 = gen(),
             case chappe_sip_location:read(Store, Aor, Mode) of
                 {ok, Bs, Version} ->
-                    register_aor({Store, Aor, Bs, Version}, Msg, Opts);
+                    register_aor({Store, Aor, Bs, Version, T0}, Msg, Opts);
                 {error, _} = E ->
                     E
             end;
@@ -810,16 +818,16 @@ commit(Ctx, Updated, Now) ->
             end
     end.
 
-write({Store, Aor, _Bs, Version}, Updated) ->
+write({Store, Aor, _Bs, Version, T0}, Updated) ->
     case chappe_sip_location:write(Store, Aor, Version, Updated) of
-        ok -> held(Store, Aor, Updated);
+        ok -> held(Store, Aor, Updated, {before, T0});
         {error, full} -> {error, 503};
         {error, too_large} -> {error, 403};
         {error, conflict} -> {error, conflict};
         {error, no_quorum} -> {error, no_quorum}
     end.
 
-stored({_Store, _Aor, Bs, _Version}) ->
+stored({_Store, _Aor, Bs, _Version, _T0}) ->
     Bs.
 
 %% the bindings not expired, and not bound to a connection or WS flow of
@@ -843,17 +851,20 @@ modify(Store, Aor, Fun) ->
 modify(_Store, _Aor, _Fun, _Mode, 0) ->
     {error, conflict};
 modify(Store, Aor, Fun, Mode, N) ->
+    T0 = gen(),
     case chappe_sip_location:read(Store, Aor, Mode) of
         {ok, Bs, Version} ->
             case Fun(Bs) of
                 Bs ->
                     %% nothing to write, but the index follows what the
-                    %% store holds (another node may have changed it)
-                    held(Store, Aor, Bs);
+                    %% store holds (another node may have changed it):
+                    %% from a read through the leader only, never from a
+                    %% replica that may lag
+                    held(Store, Aor, Bs, drop_after(Mode, T0));
                 New ->
                     case chappe_sip_location:write(Store, Aor, Version, New) of
                         ok ->
-                            held(Store, Aor, New);
+                            held(Store, Aor, New, {before, T0});
                         {error, conflict} ->
                             backoff(N),
                             modify(Store, Aor, Fun, consistent, N - 1);
@@ -874,20 +885,36 @@ is_conn(_) -> false.
 %% index entries follow its live bindings, so the index holds only what
 %% this node still has. It visits this node's own entries, not the region.
 resync() ->
-    Store = chappe_sip_location:backend(),
+    resync(chappe_sip_location:backend()).
+
+resync(Store) ->
     Aors = lists:usort(
-        ets:select(?FLOWS, [{{{aor, '$1', '_'}}, [], ['$1']}]) ++
+        ets:select(?FLOWS, [{{{aor, '$1', '_'}, '_'}, [], ['$1']}]) ++
             [A || {A} <- ets:tab2list(?HELD)]
     ),
     lists:foreach(
         fun(Aor) ->
-            case chappe_sip_location:read(Store, Aor) of
-                {ok, Bs, _} -> held(Store, Aor, live(Bs, now_s()));
-                {error, _} -> ok
+            %% through the leader: an entry is dropped only on what the
+            %% region holds, and only one made before this read
+            T0 = gen(),
+            case chappe_sip_location:read(Store, Aor, consistent) of
+                {ok, Bs, _} ->
+                    held(Store, Aor, live(Bs, now_s()), {before, T0});
+                {error, _} ->
+                    ok
             end
         end,
         Aors
     ).
+
+%% index entries carry when they were made; a read that starts at T0 may
+%% drop only entries made before it, since a write indexed after T0 may be
+%% newer than what the read saw
+gen() ->
+    erlang:unique_integer([monotonic]).
+
+drop_after(consistent, T0) -> {before, T0};
+drop_after(local, _T0) -> keep.
 
 schedule_resync(S) ->
     _ = erlang:send_after(
@@ -926,7 +953,7 @@ keep(conns) ->
     {fun(#binding{flow = F}) -> not is_conn(F) end, aors_on({conn, '_'})}.
 
 aors_on(Flow) ->
-    lists:usort(ets:select(?FLOWS, [{{{flow, Flow, '$1'}}, [], ['$1']}])).
+    lists:usort(ets:select(?FLOWS, [{{{flow, Flow, '$1'}, '_'}, [], ['$1']}])).
 
 arm_retry(#{retry := TRef} = S) when TRef =/= undefined ->
     S;
@@ -941,8 +968,15 @@ purge({Keep, Aors}) ->
     Mine = fun(#binding{node = N} = B) ->
         (N =/= node() andalso N =/= undefined) orelse Keep(B)
     end,
+    %% through the leader: a lagging replica could miss the binding
     Results = [
-        modify(Store, Aor, fun(Bs) -> lists:filter(Mine, Bs) end)
+        modify(
+            Store,
+            Aor,
+            fun(Bs) -> lists:filter(Mine, Bs) end,
+            consistent,
+            ?CAS_TRIES
+        )
      || Aor <- Aors
     ],
     case lists:member({error, no_quorum}, Results) of
@@ -959,14 +993,16 @@ mine() ->
         _ -> [Aor || {Aor} <- ets:tab2list(?HELD)]
     end.
 
-%% After a write: index the flows of this node's bindings of the AOR and,
-%% on a cluster, that this node holds some.
-held(Store, Aor, Bs) ->
-    ok = index_flows(Aor, Bs),
-    held_aor(Store, Aor, Bs).
+%% After a write or a read: index the flows of this node's bindings of
+%% the AOR and, on a cluster, that this node holds some. Drop is
+%% {before, T0}: entries the bindings no longer have go, if made before
+%% T0; keep: nothing goes (the read may lag).
+held(Store, Aor, Bs, Drop) ->
+    ok = index_flows(Aor, Bs, Drop),
+    held_aor(Store, Aor, Bs, Drop).
 
-index_flows(Aor, Bs) ->
-    Old = ets:select(?FLOWS, [{{{aor, Aor, '$1'}}, [], ['$1']}]),
+index_flows(Aor, Bs, Drop) ->
+    Old = ets:select(?FLOWS, [{{{aor, Aor, '$1'}, '$2'}, [], [{{'$1', '$2'}}]}]),
     New = lists:usort([
         F
      || #binding{node = N, flow = F} <- Bs,
@@ -975,20 +1011,32 @@ index_flows(Aor, Bs) ->
     ]),
     _ = [
         ets:delete(?FLOWS, K)
-     || F <- Old -- New, K <- [{aor, Aor, F}, {flow, F, Aor}]
+     || {F, T} <- Old,
+        not lists:member(F, New),
+        droppable(T, Drop),
+        K <- [{aor, Aor, F}, {flow, F, Aor}]
     ],
+    Now = gen(),
     true = ets:insert(
-        ?FLOWS, [{{aor, Aor, F}} || F <- New] ++ [{{flow, F, Aor}} || F <- New]
+        ?FLOWS,
+        [{{aor, Aor, F}, Now} || F <- New] ++
+            [{{flow, F, Aor}, Now} || F <- New]
     ),
     ok.
 
-held_aor(chappe_sip_location_ets, _Aor, _Bs) ->
+droppable(T, {before, T0}) -> T < T0;
+droppable(_T, keep) -> false.
+
+held_aor(chappe_sip_location_ets, _Aor, _Bs, _Drop) ->
     ok;
-held_aor(_Store, Aor, Bs) ->
+held_aor(_Store, Aor, Bs, Drop) ->
     _ =
-        case lists:any(fun(#binding{node = N}) -> N =:= node() end, Bs) of
-            true -> ets:insert(?HELD, {Aor});
-            false -> ets:delete(?HELD, Aor)
+        case
+            {lists:any(fun(#binding{node = N}) -> N =:= node() end, Bs), Drop}
+        of
+            {true, _} -> ets:insert(?HELD, {Aor});
+            {false, {before, _}} -> ets:delete(?HELD, Aor);
+            {false, keep} -> true
         end,
     ok.
 

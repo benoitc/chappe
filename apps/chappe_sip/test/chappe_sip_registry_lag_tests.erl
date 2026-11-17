@@ -48,3 +48,27 @@ req() ->
     >>,
     {ok, Msg} = chappe_sip_msg:parse(Raw),
     chappe_sip_req:new(Msg, undefined, #{}).
+
+%% The flow index is never shrunk on a stale read: a REGISTER indexed flow
+%% 7, the local replica has not caught up, and neither the resync nor a
+%% no-op change read from that replica drops the entry. Once the region
+%% has no binding on flow 7, the resync drops it.
+stale_replica_keeps_the_flow_index_test() ->
+    ok = ?STORE:new(),
+    _ = chappe_sip_registry_keeper:tables(),
+    true = ets:delete_all_objects(chappe_sip_registry_flows),
+    {ok, [_], _} = chappe_sip_registry:register_with(?STORE, req(), #{flow => 7}),
+    ?assertEqual([?AOR], flow_aors(7)),
+    ok = chappe_sip_registry:resync_with(?STORE),
+    ?assertEqual([?AOR], flow_aors(7)),
+    ok = chappe_sip_registry:modify_with(?STORE, ?AOR, fun(Bs) -> Bs end),
+    ?assertEqual([?AOR], flow_aors(7)),
+    %% the binding is gone from the region (another node swept it)
+    {_, V} = ?STORE:region(?AOR),
+    ok = ?STORE:set(region, ?AOR, {[], V + 1}),
+    ok = chappe_sip_registry:resync_with(?STORE),
+    ?assertEqual([], flow_aors(7)).
+
+flow_aors(Flow) ->
+    [A || {{flow, F, A}, _} <- ets:tab2list(chappe_sip_registry_flows), F =:= Flow] ++
+        [A || {{flow, F, A}} <- ets:tab2list(chappe_sip_registry_flows), F =:= Flow].
