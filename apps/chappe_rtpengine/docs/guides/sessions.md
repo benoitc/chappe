@@ -33,6 +33,12 @@ Offer again from an established session. The stored tags are reused; a callee-in
 {ok, Reply2} = chappe_rtpengine_session:offer(Sess, #{sdp => NewCalleeSDP, initiator => callee}).
 ```
 
+Which tags a re-offer sends:
+
+- A caller re-offer sends the stored from-tag and to-tag.
+- A caller re-offer with `via_branch` drops the to-tag: rtpengine tells branches apart only when the offer carries none.
+- A callee re-offer (`initiator => callee`) swaps the tags: its from-tag is the callee's tag, its to-tag the caller's. The answer to it keeps the swapped direction.
+
 Any offer while an offer/answer exchange is open (the first offer, a re-INVITE, or a publish still waiting for its reply or its answer) returns `{error, glare}` immediately. SIP owns glare resolution (491 and offset retry timers); resolve it in signalling and offer again.
 
 If the peer rejects the re-INVITE (488 or any other final error), roll the session back to `established` with the tags it had:

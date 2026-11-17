@@ -43,5 +43,5 @@ rebar3 ct         # chappe_cluster_SUITE (one node), chappe_cluster_peer_SUITE
   timestamps are HLC values carried in commands.
 - Every new process follows the `chappe-erlang-patterns` skill, with its four
   tests (owner death, own crash, a `peer` node, a flood past the bound).
-- OTP 29. No em-dash in code, docs or messages; never the word "comprehensive".
+- OTP 29.1.2 or later. No em-dash in code, docs or messages; never the word "comprehensive".
 - No generated or co-authored commit trailers; one imperative subject line.

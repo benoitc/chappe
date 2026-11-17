@@ -43,7 +43,16 @@ under chappe_esl's supervisor.
 | `chappe_mrf_esl` | The `chappe_esl_handler` for outbound sockets: finds the endpoint by correlation id. |
 | `chappe_mrf_registry` | Who waits for what: `{call, Id}`, `{loop, Token}`, `{conf, Name}`. |
 | `chappe_mrf_conf` | Public conference API and the conference process. |
-| `chappe_mrf_conf_native`, `chappe_mrf_conf_fs` | The two backends. |
+| `chappe_mrf_conf_backend` | The conference backend behaviour and the room API backends call. |
+| `chappe_mrf_conf_native`, `chappe_mrf_conf_fs` | The two backends: chappe_mix behind rtpengine, mod_conference. |
+| `chappe_mrf_conf_fs_join` | The fs backend's join, in the caller: endpoint, bridge, PIN. |
+| `chappe_mrf_conf_cluster` | A cluster room: the start in the caller and the lease decisions in the room. |
+| `chappe_mrf_conf_move` | Moving a cluster room's members to the room that owns its name next. |
+| `chappe_mrf_conf_transfer` | Moving a member from one conference to another (`chappe_mrf_conf:transfer/3`). |
+| `chappe_mrf_conf_refer` | REFER to and from a conference (RFC 4579). |
+| `chappe_mrf_conf_focus` | A room as an RFC 4575 conference focus. |
+| `chappe_mrf_store` | FreeSWITCH recordings adopted into the recording store (chappe_audio). |
+| `chappe_mrf_app`, `chappe_mrf_sup` | Boot (chappe_cluster, the ESL listener) and the root supervisor. |
 | `chappe_mrf_lib` | Small shared helpers (ids, `api` reply checks). |
 
 ## Endpoint lifecycle
@@ -156,39 +165,45 @@ conference process (`add-member`, `del-member`, `start-talking`,
 `conference <name> ...` api commands. A `pin` option has the member enter
 a PIN with `play_collect/2` before joining.
 
-## The backend contract (not yet a behaviour)
+## The backend behaviour
 
-The conference process (`chappe_mrf_conf`) and its two backends call each
-other in both directions. There is no `-behaviour` for it yet (plan
-finding M16); this is the contract the code follows today.
+A room (`chappe_mrf_conf`) is one process; its backend is the module that
+carries the media. `chappe_mrf_conf:start/2`'s `backend` option names it:
+`native`, `fs`, or any module that implements `chappe_mrf_conf_backend`.
 
-`chappe_mrf_conf` calls into the backends:
+Callbacks that run in the caller of `chappe_mrf_conf` (they may block, and
+talk to the room with `chappe_mrf_conf:call/3`):
 
-| Backend | Called for |
-|---|---|
-| `chappe_mrf_conf_native:join/4`, `join_endpoint/3` | a call or an endpoint joins |
-| `chappe_mrf_conf_native:offer/3` | the loopback INVITE's offer reached the mixer |
-| `chappe_mrf_conf_native:result/4`, `complete/3` | the `replace_b` result and the loopback dialog |
-| `chappe_mrf_conf_native:play_leg/2` | play to one member |
-| `chappe_mrf_conf_fs:join/5` | a join, run in the caller's process (endpoint, PIN) |
-| `chappe_mrf_conf_fs:start_join/5` | the same join, inside the conference process |
-| `chappe_mrf_conf_fs:event/3`, `gone_ep/2` | an endpoint's event or hangup |
-| `chappe_mrf_conf_fs:api/3`, `lock_cmd/1` | mod_conference api commands |
+| Callback | Required | Called for |
+|---|---|---|
+| `join/4` | yes | a call or an endpoint joins; the room checks its lease, lock and member limit, then hands the request to `admit/3` |
+| `transfer_check/2`, `transfer_in/3` | no | a member moves between rooms |
+| `dial_out/4` | no | a REFER to the room brings a party in, in the REFER's request worker |
 
-The backends call back into `chappe_mrf_conf` (exported "for the backends"):
+Callbacks that run in the room process on its state and return it:
 
-| Callback | What it does |
-|---|---|
-| `call/3` | a call to the conference process with a timeout, `{error, timeout \| noproc}` on failure |
-| `emit/2` | send `{chappe_mrf_conf, Conf, Event}` to every receiver |
-| `publish/1` | push the member list to the RFC 4575 focus, when there is one |
-| `gone/2`, `gone/3` | a member left; release its media, emit `left` |
-| `talking/3` | a member started or stopped talking |
-| `member/3` | build a member map from join options |
-| `public/2` | the member as `members/1` and events show it |
+| Callback | Required | Called for |
+|---|---|---|
+| `init/2`, `info/1` | yes | the backend's first state, the keys it adds to `info/1` |
+| `admit/3` | yes | a join the room took |
+| `set_flag/5`, `hangup/3`, `left/2`, `play/3`, `portable/0` | yes | mute and deaf, a member hung up or gone, prompts, whether members can move across nodes |
+| `handle_call/3`, `handle_cast/2`, `handle_info/2` | no | `{backend, Req}`, `{backend, Msg}`, and messages the room does not know |
+| `lock/2` | no | the room is locked or unlocked (without it the room only keeps the flag) |
+| `relate/4`, `record/3`, `stop_record/1` | no | who hears whom, room recordings |
+| `handover/1`, `dial/4`, `terminate/1` | no | a transfer out, a REFER dial in the room, the room's end |
 
-Backends share the conference state through `chappe_mrf_conf.hrl`. A third
-backend would implement the first table and use the second.
+A feature whose optional callback the backend leaves out is answered
+`{error, {unsupported, Backend}}`. The room reads which optional callbacks
+its backend has once, when it starts.
+
+The room API a backend calls, exported by `chappe_mrf_conf_backend`:
+`bstate/1,2` (the backend's own state), `name/1`, `members/1`,
+`member_by/3`, `member/3`, `put_member/3`, `joined/3`, `public/2`,
+`emit/2`, `publish/1`, `talking/3`, `gone/2,3`, `drop_member/3` and
+`close_if_empty/1`.
+
+To write a backend, follow
+[add a conference backend](../../../../docs/contributing/add-mrf-conference-backend.md).
 
 ## Failure handling
 
@@ -207,6 +222,9 @@ backend would implement the first table and use the second.
 
 - Code: `apps/chappe_mrf/src/`
 - Tests: `chappe_mrf_SUITE` (on fakes, claims the compliance rows),
+  `chappe_mrf_cluster_SUITE` (rooms on several nodes),
+  `chappe_mrf_conf_backend_SUITE` (a third backend on the behaviour),
+  `chappe_mrf_lib_tests`, `chappe_mrf_store_tests`, and
   `chappe_mrf_live_SUITE` (FreeSWITCH and rtpengine)
 - Lab: `make interop-mrf` (`apps/chappe_mrf/interop/`: rtpengine and two
   FreeSWITCH nodes)

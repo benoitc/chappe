@@ -42,6 +42,8 @@ an RTCP BYE and its sockets close.
 | `chappe_mix_session` | One leg's RTP session as RFC 3550 sees it (SSRC, sender and receiver state, RTCP timing). |
 | `chappe_mix_rtp`, `chappe_mix_rtcp` | Total parsers and builders: whatever a peer sends comes back as a value, never an exception or an atom. |
 | `chappe_mix_g711` | G.711 tables, built once at application start in `persistent_term`. |
+| `chappe_mix_move` | Moving a leg from one conference to another, in a short-lived process of its own. |
+| `chappe_mix_tap` | Taps: the decoded audio of a party or of the room handed to a process every 20 ms (`chappe_mix:tap/3`, `untap/2`, `taps/1`). |
 
 `chappe_mix_app` calls `chappe_mix_g711:init/0` before any room starts,
 because a `persistent_term:put` stalls every process on the node and would
@@ -222,7 +224,8 @@ exist in chappe_mix itself:
 
 - Code: `apps/chappe_mix/src/`
 - Tests: `chappe_mix_SUITE` (rooms on loopback), `chappe_mix_rfc_SUITE`
-  (RFC 3550 and 4733 rules on the wire), eunit for `jbuf`, `dsp`, `rtp`,
+  (RFC 3550 and 4733 rules on the wire), `chappe_mix_tap_SUITE` (taps),
+  eunit for `jbuf`, `dsp`, `rtp`,
   `rtcp`, `g711`
 - Labs: `make interop-mix` (behind rtpengine, `chappe_mix_live_SUITE`),
   `make interop-ref` (against mod_conference, `chappe_mix_ref_SUITE`)

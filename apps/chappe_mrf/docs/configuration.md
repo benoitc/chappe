@@ -1,7 +1,7 @@
 # Configuration
 
-This page lists what you can set in chappe_mrf: one application environment
-key, the options of `connect_caller/3` and `create_endpoint/1`, and the
+This page lists what you can set in chappe_mrf: the application environment
+keys, the options of `connect_caller/3` and `create_endpoint/1`, and the
 conference options. Read it when you wire chappe_mrf into a release or tune
 a call or a room.
 

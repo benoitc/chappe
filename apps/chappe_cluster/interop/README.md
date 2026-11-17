@@ -19,7 +19,7 @@ node count and docker host give the same schedule.
 
 ## What it does
 
-1. Builds one image from `apps/chappe_cluster` (OTP 29, chappe_cluster and
+1. Builds one image from `apps/chappe_cluster` (OTP 29.1.2, chappe_cluster and
    Ra, the lab client from `test/lab`) and starts `n1`..`nN` on the network
    `clb_lab`. Each node runs as `lab@nN` with every started node as a voter.
    The cookie comes from `CLB_COOKIE` (random when unset) and is never

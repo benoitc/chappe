@@ -18,7 +18,7 @@ and `chappe_sip_media`.
 Start chappe_sip with rtpengine (and chappe_mix for native rooms), the
 FreeSWITCH nodes in chappe_esl, then chappe_mrf. On several nodes, the
 `cluster => chappe_cluster` setting gives a room name one owner across
-them; chappe_mrf starts chappe_cluster on first use
+them; chappe_mrf starts chappe_cluster at boot, from `chappe_mrf_app`
 ([conference guide](docs/guides/conference.md#run-rooms-on-a-cluster)):
 
 ```erlang
