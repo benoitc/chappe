@@ -44,13 +44,21 @@ serve(#{authorize := Authorize} = Opts) when is_function(Authorize, 3) ->
         Esc ->
             Pkgs = maps:get(packages, Esc, #{}),
             EscOpts = maps:merge(maps:with([auth], Opts), Esc),
-            ok = chappe_sip:publish(EscOpts#{
-                packages => Pkgs#{?PKG => [chappe_sip_pidf:content_type()]}
-            })
+            ok = chappe_sip_engine:handle(
+                <<"PUBLISH">>,
+                chappe_sip_esc:handler(EscOpts#{
+                    packages => Pkgs#{?PKG => [chappe_sip_pidf:content_type()]}
+                }),
+                #{}
+            )
     end,
-    chappe_sip:event_package(?PKG, fun(Req, Res) ->
-        subscribe(Req, Res, Authorize, Opts)
-    end);
+    chappe_sip_engine:handle(
+        <<"SUBSCRIBE">>,
+        fun(Req, Res) ->
+            subscribe(Req, Res, Authorize, Opts)
+        end,
+        #{package => ?PKG}
+    );
 serve(_Opts) ->
     erlang:error({presence, authorize_required}).
 
@@ -134,7 +142,7 @@ accept(Req, Res, Presentity, WState, Opts) ->
         expires => maps:get(expires, Opts, 3600),
         min_expires => maps:get(min_expires, Opts, 60)
     },
-    case chappe_sip:create_uas(Req, Res, UasOpts) of
+    case chappe_sip_dialog:create_uas(Req, Res, UasOpts) of
         {ok, Dialog} ->
             Fetch = chappe_sip_dialog_fsm:requested_expires(Req, 1) =:= 0,
             chappe_sip_notifier:add(?N, Dialog, Presentity, WState, Fetch);

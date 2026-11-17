@@ -332,7 +332,7 @@ target_dialog(Req) ->
         V ->
             case chappe_sip_hdr:target_dialog(V) of
                 {ok, #{call_id := C, local_tag := L, remote_tag := R}} ->
-                    chappe_sip:find_dialog(C, L, R);
+                    chappe_sip_dialog:find(C, L, R);
                 {error, _} = E ->
                     E
             end
@@ -383,7 +383,7 @@ send_ood(Uri, Target, Opts) ->
         from => <<(from_base(Opts))/binary, ";tag=", Tag/binary>>,
         headers => refer_headers(Target, Opts) ++ tdialog(Opts)
     },
-    case chappe_sip:request(Uri, UacOpts) of
+    case chappe_sip_uac:start(Uri, UacOpts) of
         {ok, Ref} ->
             Result = chappe_sip_uac:await_response(
                 Ref, maps:get(timeout, Opts, 32000)

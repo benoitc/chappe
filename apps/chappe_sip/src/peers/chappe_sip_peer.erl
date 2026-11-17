@@ -123,7 +123,7 @@ handle_event(cast, _Msg, _St, _S) ->
 send(#state{uri = Uri, opts = Opts}) ->
     Base = maps:with([from, proxy], Opts),
     try
-        chappe_sip:request(Uri, Base#{
+        chappe_sip_uac:start(Uri, Base#{
             method => <<"OPTIONS">>, notify => self(), owner => self()
         })
     catch

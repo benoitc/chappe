@@ -50,7 +50,9 @@
 start(Module, Req, Res) ->
     case Module:init(Req) of
         {answer, Opts, State} ->
-            case chappe_sip:create_uas(Req, Res, Opts#{owner => self()}) of
+            case
+                chappe_sip_dialog:create_uas(Req, Res, Opts#{owner => self()})
+            of
                 {ok, Dialog} ->
                     Ref = chappe_sip_dialog:monitor(Dialog),
                     loop(Module, Dialog, Ref, State);

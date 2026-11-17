@@ -760,7 +760,7 @@ create_a(
         end,
     UasOpts = nat_flow(Req, UasOpts1),
     Winner = chappe_sip_b2b_fork:winner(W),
-    case chappe_sip:create_uas(Req, Res, UasOpts) of
+    case chappe_sip_dialog:create_uas(Req, Res, UasOpts) of
         {ok, ADialog} ->
             _ = erase(a_side_key(Res)),
             Legs = #{

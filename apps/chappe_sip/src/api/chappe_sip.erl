@@ -562,10 +562,7 @@ location_flow(AorOrUri) ->
 -spec find_dialog(binary(), binary(), binary()) ->
     {ok, chappe_sip_dialog:dialog()} | {error, not_found}.
 find_dialog(CallId, LocalTag, RemoteTag) ->
-    case chappe_sip_dialog_index:lookup({CallId, LocalTag, RemoteTag}) of
-        {ok, {Pid, Id, _State, _Role}} -> {ok, chappe_sip_dialog:make(Pid, Id)};
-        not_found -> {error, not_found}
-    end.
+    chappe_sip_dialog:find(CallId, LocalTag, RemoteTag).
 
 %% The dialog an incoming request's Replaces header names (RFC 3891 section
 %% 3). As the recipient, the header's to-tag is our local tag and its

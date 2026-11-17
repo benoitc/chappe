@@ -298,7 +298,7 @@ answer_sdp(Adv, Ver, Taken) ->
 answer_streams(Req, Res, Adv, Taken, Streams, CallRef, Doc, Opts) ->
     Answer = answer_sdp(Adv, 1, Taken),
     case
-        chappe_sip:create_uas(Req, Res, #{
+        chappe_sip_dialog:create_uas(Req, Res, #{
             local_sdp => Answer,
             contact_params => <<";+sip.srs">>,
             headers => maps:get(headers, Opts, []),

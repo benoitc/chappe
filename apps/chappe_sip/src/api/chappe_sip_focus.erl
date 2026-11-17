@@ -422,7 +422,7 @@ subscribe(Req, Res, Owner, #{contact := Contact} = Opts) ->
                 min_expires => maps:get(min_expires, Opts, 0),
                 headers => headers(Contact) ++ maps:get(headers, Opts, [])
             },
-            case chappe_sip:create_uas(Req, Res, UasOpts) of
+            case chappe_sip_dialog:create_uas(Req, Res, UasOpts) of
                 {ok, Dialog} ->
                     Owner !
                         {chappe_sip_focus, subscribed, Dialog,

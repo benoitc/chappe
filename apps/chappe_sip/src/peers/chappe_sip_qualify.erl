@@ -100,7 +100,7 @@ probe(Aor, #{contact := Contact} = B, #state{inflight = In} = S) ->
             {undefined, Received} -> Opts0#{flow => Received};
             {Flow, _} -> Opts0#{flow => Flow}
         end,
-    case chappe_sip:request(Contact, Opts) of
+    case chappe_sip_uac:start(Contact, Opts) of
         {ok, Ref} ->
             erlang:send_after(
                 S#state.timeout_ms, self(), {qualify_timeout, Ref}

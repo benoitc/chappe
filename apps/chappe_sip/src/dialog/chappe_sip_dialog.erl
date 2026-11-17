@@ -64,7 +64,7 @@
     wait/1,
     monitor/1
 ]).
--export([gen_tag/0, make/2, pid/1]).
+-export([gen_tag/0, make/2, pid/1, find/3]).
 
 -include("chappe_sip_dialog.hrl").
 
@@ -79,6 +79,15 @@
 %% Build a handle (used by chappe_sip_dialog_fsm when addressing the owner).
 -spec make(pid(), non_neg_integer()) -> dialog().
 make(Pid, Id) -> #dialog{pid = Pid, id = Id}.
+
+%% The live dialog of this node with this Call-ID, local tag and remote
+%% tag (chappe_sip_dialog_index).
+-spec find(binary(), binary(), binary()) -> {ok, dialog()} | {error, not_found}.
+find(CallId, LocalTag, RemoteTag) ->
+    case chappe_sip_dialog_index:lookup({CallId, LocalTag, RemoteTag}) of
+        {ok, {Pid, Id, _State, _Role}} -> {ok, make(Pid, Id)};
+        not_found -> {error, not_found}
+    end.
 
 %% Answer an incoming dialog-forming request as a UAS. Opts:
 %%   #{local_sdp => iodata() | fun((RemoteSdp :: binary()) -> iodata())

@@ -15,7 +15,9 @@
     %% chappe_audio runs the streams of a SIPREC recording server
     %% (chappe_sip_siprec_srs) and holds the default store; optional, so a
     %% node without it runs everything else
-    {applications, [kernel, stdlib, crypto, xmerl, instrument, hlc, chappe_audio]},
+    {applications, [
+        kernel, stdlib, crypto, xmerl, instrument, hlc, chappe_audio
+    ]},
     {optional_applications, [chappe_audio]},
     {env, []},
     %% chappe_sip is Apache-2.0; the NIF links the vendored sofia-sip, which
