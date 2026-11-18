@@ -126,7 +126,7 @@ Why the order matters:
 | `sip/` | The message model and pure protocol helpers, Record-Route and flows (see [registrar](registrar.md#flows-and-edge-routes)), the clock | `chappe_sip_msg`, `chappe_sip_hdr`, `chappe_sip_hdr_io`, `chappe_sip_uri`, `chappe_sip_req`, `chappe_sip_res`, `chappe_sip_sdp`, `chappe_sip_sdes`, `chappe_sip_multipart`, `chappe_sip_sipfrag`, `chappe_sip_digest`, `chappe_sip_digest_nc`, `chappe_sip_net`, `chappe_sip_route`, `chappe_sip_flow`, `chappe_sip_hlc`, `chappe_sip_lib` |
 | `siprec/` | SIPREC: the recording client, its metadata, the recording server side (see [SIPREC](siprec.md)) | `chappe_sip_siprec`, `chappe_sip_siprec_sup`, `chappe_sip_siprec_meta`, `chappe_sip_siprec_body`, `chappe_sip_siprec_srs`, `chappe_sip_siprec_peer`, `chappe_sip_siprec_tap` |
 | `uac/` | Outbound transactions and their digest answers | `chappe_sip_uac`, `chappe_sip_uac_fsm` (the process) with its helpers `chappe_sip_uac_req` (building and sending), `chappe_sip_uac_early` (early dialogs, PRACK, the dialog hand-off), `chappe_sip_uac_retry` (auth, 3xx, 420, 422) and `chappe_sip_uac_sdp`, `chappe_sip_uac_sup`, `chappe_sip_uac_auth` |
-| `ws/` | SIP over WebSocket | `chappe_sip_ws`, `chappe_sip_ws_transport`, `chappe_sip_ws_conn`, `chappe_sip_ws_listener`, `chappe_sip_ws_sup` |
+| `ws/` | SIP over WebSocket | `chappe_sip_ws`, `chappe_sip_ws_transport`, `chappe_sip_ws_txn`, `chappe_sip_ws_ctxn`, `chappe_sip_ws_msg`, `chappe_sip_ws_conn`, `chappe_sip_ws_listener`, `chappe_sip_ws_sup` |
 
 Where the layout is surprising:
 
