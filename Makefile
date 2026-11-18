@@ -3,7 +3,7 @@
 
 # chappe umbrella convenience targets over rebar3.
 
-.PHONY: all compile test test-static check eunit ct lint xref dialyzer \
+.PHONY: deps all compile test test-static check eunit ct lint xref dialyzer \
         fmt fmt-check asan tsan lint-c fuzz interop interop-mix interop-ref bench-ref bench-pass \
         interop-conformance interop-esl demo-esl interop-sbc interop-mrf \
         interop-cluster compliance \
@@ -12,6 +12,9 @@
         demo-cluster-shell demo-cluster-down
 
 all: compile
+
+deps:
+	scripts/fetch_deps.sh
 
 compile:
 	rebar3 compile
