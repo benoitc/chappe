@@ -31,6 +31,7 @@ after it restart too, so no client runs unknown to the registry.
 | `chappe_rtpengine_client_sup` | Runtime-added clients, transient restarts |
 | `chappe_rtpengine_pool` | ETS registry read directly by callers, gen_server serializes writes and health transitions |
 | `chappe_rtpengine_session` | Per-call FSM owning call-id, tags, and the pinned node |
+| `chappe_rtpengine_offer` | Pure offer/answer table of a session: the tags of a re-offer or an answer, the state a reply must find, where a reply moves the FSM, and the params of every command it sends (call-id, from-tag, ref metadata, party targeting) |
 | `chappe_rtpengine_cmd` | Typed auxiliary commands of a session (playback, DTMF, blocking and silencing, recording, forwarding, subscriptions), each a `chappe_rtpengine_session:cmd/3` with its defaults |
 | `chappe_rtpengine_app` | OTP application callback: starts the root supervisor |
 | `chappe_rtpengine_sdp` | Opt-in SDP helpers for subscriptions: the offer's m-lines and labels (`streams/1`), and an answer that routes chosen streams to a receiver (`fork_answer/2,3`) |
@@ -86,10 +87,13 @@ Design points:
 
 ### State x reply
 
-`handle_event/4` is long (plan finding M10) because what a client reply
-means depends on the request it answers and the state it lands in. Each
-request in flight is kept in `pending` by reference with its kind; the
-reply goes through `handle_reply/5` and then `reply/5`. Read it as a table:
+`handle_event/4` hands calls to `call/4` and messages to `info/3`. What a
+client reply means depends on the request it answers and the state it
+lands in. Each request in flight is kept in `pending` by reference with
+its kind; the reply goes through `handle_reply/5` and then `reply/5`. For
+an offer, publish or answer, `chappe_rtpengine_offer:negotiated/3` gives
+the next state and the data updates, and the session applies them. Read
+it as a table:
 
 | Request, state | `{ok, Reply}` | error |
 |---|---|---|
