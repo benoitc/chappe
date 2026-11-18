@@ -38,7 +38,10 @@
     failed_reanswer_keeps_to_tag/1,
     reoffer_rejected_rolls_back/1,
     competing_offers_are_glare/1,
-    bad_param_keeps_session/1
+    bad_param_keeps_session/1,
+    held_subscription_released/1,
+    set_owner_moves_the_session/1,
+    stale_node_up_is_ignored/1
 ]).
 
 all() ->
@@ -65,7 +68,10 @@ all() ->
         failed_reanswer_keeps_to_tag,
         reoffer_rejected_rolls_back,
         competing_offers_are_glare,
-        bad_param_keeps_session
+        bad_param_keeps_session,
+        held_subscription_released,
+        set_owner_moves_the_session,
+        stale_node_up_is_ignored
     ].
 
 init_per_suite(Config) ->
@@ -859,4 +865,132 @@ stop_in_idle_sends_no_delete(Config) ->
     wait_dead(Sess),
     ?assertEqual([], commands(Server)),
     error = chappe_rtpengine_pool:pinned(<<"sess-idle-stop">>),
+    ok.
+
+unsubscribes(Server) ->
+    [
+        maps:get(<<"to-tag">>, Cmd)
+     || {_Cookie, #{<<"command">> := <<"unsubscribe">>} = Cmd} <-
+            chappe_rtpengine_fake_server:received(Server)
+    ].
+
+holder() ->
+    spawn(fun() ->
+        receive
+            stop -> ok
+        end
+    end).
+
+kill(Pid) ->
+    exit(Pid, kill),
+    wait_dead(Pid).
+
+%% A subscription with a holder: the holder never reaches the wire, its
+%% death unsubscribes the fork, an explicit unsubscribe releases it, and
+%% a refused subscription holds nothing.
+held_subscription_released(Config) ->
+    Server = ?config(server, Config),
+    Sess = establish(<<"sess-held">>, <<"ft-h">>, <<"tt-h">>),
+    Holder1 = holder(),
+    {ok, Reply1} = chappe_rtpengine_cmd:subscribe_request(Sess, #{
+        flags => [all], holder => Holder1
+    }),
+    Tag1 = maps:get(<<"to-tag">>, Reply1),
+    {_, SubReq} = lists:nth(3, chappe_rtpengine_fake_server:received(Server)),
+    ?assertEqual(<<"subscribe request">>, maps:get(<<"command">>, SubReq)),
+    ?assertNot(maps:is_key(<<"holder">>, SubReq)),
+    %% the holder dies: the session unsubscribes its fork by to-tag
+    kill(Holder1),
+    ok = wait_until(fun() -> unsubscribes(Server) =:= [Tag1] end),
+    #{state := established} = chappe_rtpengine_session:info(Sess),
+    %% an explicit unsubscribe releases the hold: the holder's death
+    %% later sends nothing
+    Holder2 = holder(),
+    {ok, Reply2} = chappe_rtpengine_cmd:subscribe_request(Sess, #{
+        flags => [all], holder => Holder2
+    }),
+    Tag2 = maps:get(<<"to-tag">>, Reply2),
+    {ok, _} = chappe_rtpengine_cmd:unsubscribe(Sess, #{to_tag => Tag2}),
+    kill(Holder2),
+    %% a refused subscription has no to-tag and holds nothing
+    chappe_rtpengine_fake_server:set_handler(Server, fun
+        (_N, #{<<"command">> := <<"subscribe request">>}) ->
+            {reply, #{
+                <<"result">> => <<"error">>,
+                <<"error-reason">> => <<"no such stream">>
+            }};
+        (N, Cmd) ->
+            chappe_rtpengine_fake_server:default_handler(N, Cmd)
+    end),
+    Holder3 = holder(),
+    {error, <<"no such stream">>, _} =
+        chappe_rtpengine_cmd:subscribe_request(Sess, #{
+            flags => [all], holder => Holder3
+        }),
+    kill(Holder3),
+    #{state := established} = chappe_rtpengine_session:info(Sess),
+    ?assertEqual([Tag1, Tag2], unsubscribes(Server)),
+    ok = chappe_rtpengine_session:stop(Sess),
+    wait_dead(Sess),
+    ok.
+
+%% set_owner/2 moves the monitor: the old owner can leave, the new
+%% owner gets the events and its death deletes the session.
+set_owner_moves_the_session(Config) ->
+    Server = ?config(server, Config),
+    Node = ?config(node, Config),
+    Test = self(),
+    Old = spawn(fun() ->
+        {ok, Sess} = chappe_rtpengine:start_session(#{
+            call_id => <<"sess-owner">>
+        }),
+        {ok, _} = chappe_rtpengine_session:offer(Sess, #{
+            from_tag => <<"ft-o">>, sdp => sdp()
+        }),
+        ok = chappe_rtpengine_session:set_owner(Sess, Test),
+        Test ! {session, Sess}
+    end),
+    Sess =
+        receive
+            {session, S} -> S
+        after 5000 -> error(no_session)
+        end,
+    wait_dead(Old),
+    #{state := offered} = chappe_rtpengine_session:info(Sess),
+    %% events now reach the new owner
+    Sess ! {chappe_rtpengine_pool, {node_down, Node}},
+    receive
+        {chappe_rtpengine_session, Sess, {node_down, Node}} -> ok
+    after 5000 -> error(no_node_down_notice)
+    end,
+    New = holder(),
+    ok = chappe_rtpengine_session:set_owner(Sess, New),
+    kill(New),
+    wait_dead(Sess),
+    ?assertEqual([<<"offer">>, <<"delete">>], commands(Server)),
+    {error, session_down} = chappe_rtpengine_session:set_owner(Sess, Test),
+    ok.
+
+%% A node_up whose generation is not newer than the pinned one is stale:
+%% the media is still there and the owner hears nothing.
+stale_node_up_is_ignored(Config) ->
+    Node = ?config(node, Config),
+    Sess = establish(<<"sess-stale">>, <<"ft-st">>, <<"tt-st">>),
+    #{generation := Gen} = chappe_rtpengine_session:info(Sess),
+    Sess ! {chappe_rtpengine_pool, {node_up, Node, Gen}},
+    Sess ! {chappe_rtpengine_pool, {node_up, Node, Gen - 1}},
+    receive
+        {chappe_rtpengine_session, Sess, _} = Extra -> error({unexpected, Extra})
+    after 200 -> ok
+    end,
+    #{generation := Gen, media_lost := false} =
+        chappe_rtpengine_session:info(Sess),
+    %% a newer generation is a restart
+    Sess ! {chappe_rtpengine_pool, {node_up, Node, Gen + 1}},
+    receive
+        {chappe_rtpengine_session, Sess, {node_restarted, Node}} -> ok
+    after 5000 -> error(no_node_restarted_notice)
+    end,
+    ok = chappe_rtpengine_session:stop(Sess),
+    wait_dead(Sess),
     ok.
