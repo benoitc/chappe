@@ -149,7 +149,12 @@ md_files() ->
         [F || F <- Trees, not lists:any(fun(S) -> contains(F, S) end, Skip)].
 
 check_links(File) ->
-    Lines = lines(File),
+    case lines(File) of
+        {error, not_utf8} -> [fmt("~ts: not valid UTF-8", [File])];
+        Lines -> check_lines(File, Lines)
+    end.
+
+check_lines(File, Lines) ->
     lists:flatmap(
         fun({N, Line}) ->
             [
@@ -171,7 +176,7 @@ check_link(File, Target) ->
                     "" -> File;
                     _ -> normalize(filename:join(filename:dirname(File), Path))
                 end,
-            case filelib:is_file(Abs) of
+            case exists_exact(Abs) of
                 false ->
                     [fmt("broken link ~ts", [Target])];
                 true when Anchor =:= none ->
@@ -214,28 +219,44 @@ links(Line) ->
     L = re:replace(Line, "`[^`]*`", "", [global, unicode, {return, list}]),
     Inline =
         case
-            re:run(L, "\\]\\(\\s*<?([^)\\s>]+)>?(?:\\s+\"[^\"]*\")?\\s*\\)", [
+            re:run(
+                L,
+                "\\]\\(\\s*(?:<([^>]+)>|([^)\\s<>]+))"
+                "(?:\\s+(?:\"[^\"]*\"|'[^']*'|\\([^)]*\\)))?\\s*\\)",
+                [global, unicode, {capture, all_but_first, list}]
+            )
+        of
+            {match, Ms} -> [A ++ B || [A, B | _] <- [M ++ [""] || M <- Ms]];
+            nomatch -> []
+        end,
+    Href =
+        case
+            re:run(L, "<a\\s[^>]*href=\"([^\"]+)\"", [
                 global, unicode, {capture, all_but_first, list}
             ])
         of
-            {match, Ms} -> [T || [T] <- Ms];
+            {match, Hs} -> [H || [H] <- Hs];
             nomatch -> []
         end,
     Ref =
         case
-            re:run(L, "^\\s{0,3}\\[[^\\]]+\\]:\\s*<?([^\\s>]+)>?", [
+            re:run(L, "^\\s{0,3}\\[(?!\\^)[^\\]]+\\]:\\s*<?([^\\s>]+)>?", [
                 unicode, {capture, all_but_first, list}
             ])
         of
             {match, [T]} -> [T];
             nomatch -> []
         end,
-    Inline ++ Ref.
+    Inline ++ Href ++ Ref.
 
 %% ---- Headings and slugs ------------------------------------------------
 
 anchors(File) ->
-    Lines = [L || {_, L} <- unfenced(lines(File))],
+    Lines =
+        case lines(File) of
+            {error, not_utf8} -> [];
+            All -> [L || {_, L} <- unfenced(All)]
+        end,
     Heads = headings(Lines),
     Html = html_ids(Lines),
     dedup(Heads, #{}) ++ Html.
@@ -304,7 +325,7 @@ slug(Heading) ->
     T0 = re:replace(Heading, "!?\\[([^\\]]*)\\]\\([^)]*\\)", "\\1", [
         global, unicode, {return, list}
     ]),
-    T1 = re:replace(T0, "<[^>]+>", "", [global, unicode, {return, list}]),
+    T1 = untag(string:split(T0, "`", all), text),
     Lower = string:lowercase(unicode:characters_to_list(T1)),
     [
         case C of
@@ -313,6 +334,15 @@ slug(Heading) ->
         end
      || C <- Lower, keep(C)
     ].
+
+%% outside code spans an HTML tag goes; inside one its text stays
+untag([], _) ->
+    [];
+untag([Seg | Rest], text) ->
+    re:replace(Seg, "<[^>]+>", "", [global, unicode, {return, list}]) ++
+        untag(Rest, code);
+untag([Seg | Rest], code) ->
+    Seg ++ untag(Rest, text).
 
 keep(C) when C >= $a, C =< $z -> true;
 keep(C) when C >= $0, C =< $9 -> true;
@@ -329,25 +359,59 @@ is_letter(C) ->
 
 lines(File) ->
     {ok, Bin} = file:read_file(File),
-    Text = unicode:characters_to_list(Bin),
-    lists:zip(
-        lists:seq(1, length(string:split(Text, "\n", all))),
-        string:split(Text, "\n", all)
-    ).
+    case unicode:characters_to_list(Bin) of
+        Text when is_list(Text) ->
+            Split = string:split(Text, "\n", all),
+            lists:zip(lists:seq(1, length(Split)), Split);
+        _ ->
+            {error, not_utf8}
+    end.
 
 %% The lines outside fenced code blocks, with their numbers.
+%% HTML comments are dropped too, and a fence closes only on a line with
+%% the fence characters alone (CommonMark: no info string).
 unfenced(Lines) ->
     unfenced(Lines, none).
 
 unfenced([], _) ->
     [];
-unfenced([{N, L} | Rest], Fence) ->
-    case {fence(L), Fence} of
-        {none, none} -> [{N, L} | unfenced(Rest, none)];
-        {none, _} -> unfenced(Rest, Fence);
-        {F, none} -> unfenced(Rest, F);
-        {{C, Len}, {C, Open}} when Len >= Open -> unfenced(Rest, none);
-        {_, _} -> unfenced(Rest, Fence)
+unfenced([{N, L} | Rest], comment) ->
+    case string:split(L, "-->") of
+        [_, After] -> unfenced([{N, After} | Rest], none);
+        [_] -> unfenced(Rest, comment)
+    end;
+unfenced([{N, L} | Rest], none) ->
+    case fence(L) of
+        none ->
+            case uncomment(L) of
+                {open, Before} -> [{N, Before} | unfenced(Rest, comment)];
+                Clean -> [{N, Clean} | unfenced(Rest, none)]
+            end;
+        F ->
+            unfenced(Rest, F)
+    end;
+unfenced([{_, L} | Rest], {C, Open} = Fence) ->
+    case closing_fence(L) of
+        {C, Len} when Len >= Open -> unfenced(Rest, none);
+        _ -> unfenced(Rest, Fence)
+    end.
+
+%% drop the comments a line opens and closes; an open one ends the line
+uncomment(L) ->
+    Closed = re:replace(L, "<!--.*?-->", "", [global, unicode, {return, list}]),
+    case string:split(Closed, "<!--") of
+        [Before, _] -> {open, Before};
+        [_] -> Closed
+    end.
+
+closing_fence(L) ->
+    case
+        re:run(L, "^\\s{0,3}(`{3,}|~{3,})\\s*$", [
+            unicode, {capture, all_but_first, list}
+        ])
+    of
+        {match, [[C | _] = F]} -> {C, length(F)};
+        nomatch -> none
     end.
 
 fence(L) ->
@@ -372,6 +436,28 @@ norm([".." | T], [P | Acc]) when P =/= ".." -> norm(T, Acc);
 norm([H | T], Acc) -> norm(T, [H | Acc]).
 
 contains(S, Sub) -> string:find(S, Sub) =/= nomatch.
+
+%% filelib:is_file/1 with the name's case checked on every part, so a
+%% case-insensitive disk (macOS) fails like CI's Linux does
+exists_exact(Path) ->
+    filelib:is_file(Path) andalso exact(filename:split(Path), "").
+
+exact([], _) ->
+    true;
+exact([P | Rest], Dir) when P =:= "/"; P =:= "." ->
+    exact(Rest, filename:join(Dir, P));
+exact([P | Rest], Dir) ->
+    Here =
+        case Dir of
+            "" -> ".";
+            _ -> Dir
+        end,
+    case file:list_dir(Here) of
+        {ok, Names} ->
+            lists:member(P, Names) andalso exact(Rest, filename:join(Dir, P));
+        _ ->
+            true
+    end.
 
 to_list(B) when is_binary(B) -> binary_to_list(B);
 to_list(L) -> L.
