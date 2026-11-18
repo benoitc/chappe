@@ -62,7 +62,7 @@
 -callback periodic(Registry :: pid(), Job :: reference() | undefined) ->
     reference() | undefined.
 %% Index that this node holds bindings of the AOR (or no longer does)
-%% after a write or a read, as chappe_sip_registry_store:held/4 says.
+%% after a write or a read, as chappe_sip_registry_store:held/5 says.
 -callback held(Aor :: binary(), [binding()], drop(), Stamp :: integer()) -> ok.
 %% The AORs that may hold a binding this node took.
 -callback mine() -> [binary()].
