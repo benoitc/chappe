@@ -198,9 +198,7 @@ init([Owner, Opts]) ->
 handle_event({call, From}, Request, State, Data) ->
     call(From, Request, State, Data);
 handle_event(info, Info, State, Data) ->
-    info(Info, State, Data);
-handle_event(_Type, _Event, _State, _Data) ->
-    keep_state_and_data.
+    info(Info, State, Data).
 
 terminate(_Reason, State, Data) ->
     _ = final_delete(State, Data),
