@@ -97,6 +97,10 @@ decisions, contributing) is in the [umbrella docs](../../../docs/README.md).
   layer and what keeps it in step with nta.
 - [Media](design/media.md): the boundary with the media engines and
   capability routing.
+- [SIPREC](design/siprec.md): the recording client, the recording server,
+  where SIP stops and chappe_audio takes the RTP.
+- [Registrar](design/registrar.md): the binding rules, the location
+  behaviour and its backends, edge routes and 430 on a cluster.
 - [Remote apps](design/remote-app.md): a draft, not implemented.
 
 ## Compliance and history
