@@ -87,7 +87,7 @@ Call opts (`session_expires`, `min_se`, `session_refresher`) override these.
 
 ## Where it lives
 
-- Modules: `chappe_sip_session_timer` (negotiation), `chappe_sip_dialog_fsm`
-  (refresh and expiry).
+- Modules: `chappe_sip_session_timer` (negotiation), `chappe_sip_dialog_st`
+  (refresh and expiry, run by `chappe_sip_dialog_fsm`).
 - Tests: `chappe_sip_session_timer_SUITE`.
 - Lab: `make interop-sbc` (a refresh through the SBC).
