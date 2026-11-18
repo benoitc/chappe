@@ -35,7 +35,10 @@ The reasoning and its cost are recorded in
 |---|---|
 | `chappe_sip_ws_listener` | The livery service; started on demand when `ws` or `wss` is configured. |
 | `chappe_sip_ws_conn` | The ws handler of one connection: frames in and out, keepalive pings, the size cap. |
-| `chappe_sip_ws_transport` | The transaction layer: server and client transactions, legs, timers, flows. |
+| `chappe_sip_ws_transport` | The transaction layer's gen_server: its state, the message handling, inbound routing and the server transactions. |
+| `chappe_sip_ws_txn` | The transaction, leg and ACK-wait tables, their indexes and timers, and the two outputs: a message on a flow, an event to the engine. |
+| `chappe_sip_ws_ctxn` | The client transactions: originate, responses, Timer B/F and C, CANCEL and the ACK of a non-2xx final. |
+| `chappe_sip_ws_msg` | The pure message code: Via and branch, the response, CANCEL and ACK builders, the Content-Length and RAck checks, the frame type. |
 | `chappe_sip_ws` | The WS handle range (`base/0`). |
 | `chappe_sip_ws_sup` | Supervises the transport and the listener. |
 | `chappe_sip_hep` | HEP capture of WS traffic (sofia captures the native transports). |
@@ -75,8 +78,8 @@ When you change one of these on one side, change the other, and run both
 `chappe_sip_websocket_SUITE`/`chappe_sip_ws_conf_SUITE` and the native
 suites:
 
-- the event shapes and their meta keys (`chappe_sip_nif` header, the
-  transport's `deliver`);
+- the event shapes and their meta keys (`chappe_sip_nif` header,
+  `chappe_sip_ws_txn:engine_event/1`);
 - a new NIF op the engine forwards: add the WS function and the dispatch in
   `chappe_sip_engine` (`ws_call/1` wraps every call so a slow or restarting
   transport cannot crash the engine);
@@ -92,8 +95,10 @@ The transport survives an engine restart: it tolerates a briefly absent
 engine. If the transport itself restarts, its connections close, their
 bindings are dropped, and browsers reconnect and register again. Inbound
 frames are dropped while its mailbox is deeper than
-`ws_transport_max_mailbox`. It is one gen_server, about 1100 lines (finding
-M4 in the [documentation plan](../../../../docs/plans/documentation-and-maintainability.md)).
+`ws_transport_max_mailbox`. It is one gen_server process; its code is
+split across the four modules above, which share its `#state{}` through
+`src/ws/chappe_sip_ws_transport.hrl` (finding M4 in the
+[documentation plan](../../../../docs/plans/documentation-and-maintainability.md)).
 
 ## Tests
 

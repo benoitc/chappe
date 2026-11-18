@@ -54,8 +54,11 @@ behaviour for a reliable transport and emits the same events.
 - The guard's `drop` blocks a source before it costs a transaction over UDP,
   TCP and TLS, but over WS each request reaches the guard
   (`chappe_sip_guard` moduledoc).
-- `chappe_sip_ws_transport` is a large single gen_server (finding M4 in
-  `docs/plans/documentation-and-maintainability.md`).
+- The layer is one gen_server process, `chappe_sip_ws_transport`, whose
+  code is split by concern: `chappe_sip_ws_txn` (the transaction tables
+  and timers), `chappe_sip_ws_ctxn` (the client transactions) and
+  `chappe_sip_ws_msg` (the pure message code). Finding M4 in
+  `docs/plans/documentation-and-maintainability.md`.
 
 ## Open questions
 

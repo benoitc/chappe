@@ -13,6 +13,8 @@
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("eunit/include/eunit.hrl").
+%% the transport's #state{}, to read its branch index by field name
+-include_lib("chappe_sip/src/ws/chappe_sip_ws_transport.hrl").
 
 -export([all/0, init_per_suite/1, end_per_suite/1, end_per_testcase/2]).
 -export([subprotocol_required/1, binary_frame_in/1, binary_frame_out/1,
@@ -690,7 +692,7 @@ count(Bin, Pat) -> length(binary:matches(Bin, Pat)).
 
 %% the server transaction index entries still naming this branch
 branch_entries(Br) ->
-    Ix = element(6, sys:get_state(chappe_sip_ws_transport)),
+    #state{branch_ix = Ix} = sys:get_state(chappe_sip_ws_transport),
     [K || {_, B, _} = K <- maps:keys(Ix), B =:= Br].
 
 %% a response to a request received over WS (echoes Via, From, To, Call-ID,
