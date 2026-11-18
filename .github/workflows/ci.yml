@@ -28,6 +28,16 @@ jobs:
           rebar3-version: ${{ env.REBAR3 }}
       - run: rebar3 fmt --check
 
+  docs-check:
+    name: Docs check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ env.OTP }}
+      - run: make docs-check
+
   lint:
     name: Elvis lint
     runs-on: ubuntu-24.04
