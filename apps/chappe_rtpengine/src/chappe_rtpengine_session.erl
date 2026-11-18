@@ -195,9 +195,27 @@ init([Owner, Opts]) ->
             {stop, Reason}
     end.
 
+handle_event({call, From}, Request, State, Data) ->
+    call(From, Request, State, Data);
+handle_event(info, Info, State, Data) ->
+    info(Info, State, Data);
+handle_event(_Type, _Event, _State, _Data) ->
+    keep_state_and_data.
+
+terminate(_Reason, State, Data) ->
+    _ = final_delete(State, Data),
+    case Data#data.pinned of
+        true -> chappe_rtpengine_pool:unpin(Data#data.call_id);
+        false -> ok
+    end.
+
+%% internal
+
+%% calls, by request and then by state
+
 %% offer
 
-handle_event({call, From}, {offer, Params}, idle, Data) ->
+call(From, {offer, Params}, idle, Data) ->
     case require([from_tag, sdp], Params) of
         ok ->
             Data1 = Data#data{from_tag = maps:get(from_tag, Params)},
@@ -205,24 +223,22 @@ handle_event({call, From}, {offer, Params}, idle, Data) ->
         {error, _} = Error ->
             {keep_state_and_data, [{reply, From, Error}]}
     end;
-handle_event({call, From}, {offer, Params}, established, Data) ->
+call(From, {offer, Params}, established, Data) ->
     reoffer(From, Params, Data);
-handle_event({call, From}, {offer, _Params}, deleting, _Data) ->
+call(From, {offer, _Params}, deleting, _Data) ->
     {keep_state_and_data, [{reply, From, {error, busy}}]};
-handle_event({call, From}, {offer, _Params}, _State, _Data) ->
+call(From, {offer, _Params}, _State, _Data) ->
     %% an offer/answer exchange is already open
     {keep_state_and_data, [{reply, From, {error, glare}}]};
 %% re-INVITE rejected by the peer
-handle_event(
-    {call, From}, reoffer_rejected, offered, #data{reoffer = true} = Data
-) ->
+call(From, reoffer_rejected, offered, #data{reoffer = true} = Data) ->
     Data1 = Data#data{reoffer = false, reoffer_initiator = caller},
     {next_state, established, Data1, [{reply, From, ok}]};
-handle_event({call, From}, reoffer_rejected, _State, _Data) ->
+call(From, reoffer_rejected, _State, _Data) ->
     {keep_state_and_data, [{reply, From, {error, no_reoffer}}]};
 %% publish (one-sided offer; rtpengine writes the answer)
 
-handle_event({call, From}, {publish, Params}, idle, Data) ->
+call(From, {publish, Params}, idle, Data) ->
     case require([from_tag, sdp], Params) of
         ok ->
             Data1 = Data#data{from_tag = maps:get(from_tag, Params)},
@@ -230,38 +246,38 @@ handle_event({call, From}, {publish, Params}, idle, Data) ->
         {error, _} = Error ->
             {keep_state_and_data, [{reply, From, Error}]}
     end;
-handle_event({call, From}, {publish, _Params}, _State, _Data) ->
+call(From, {publish, _Params}, _State, _Data) ->
     {keep_state_and_data, [{reply, From, {error, busy}}]};
 %% answer
 
-handle_event({call, From}, {answer, Params}, offered, Data) ->
+call(From, {answer, Params}, offered, Data) ->
     do_answer(From, Params, answering, Data);
-handle_event({call, From}, {answer, Params}, established, Data) ->
+call(From, {answer, Params}, established, Data) ->
     %% repeated answer (early media then final, or a fork branch)
     do_answer(From, Params, established, Data);
-handle_event({call, From}, {answer, _Params}, idle, _Data) ->
+call(From, {answer, _Params}, idle, _Data) ->
     {keep_state_and_data, [{reply, From, {error, no_offer}}]};
-handle_event({call, From}, {answer, _Params}, _State, _Data) ->
+call(From, {answer, _Params}, _State, _Data) ->
     {keep_state_and_data, [{reply, From, {error, busy}}]};
 %% query and the auxiliary commands (playback, DTMF, recording, ...)
 
-handle_event({call, From}, query, State, Data) ->
+call(From, query, State, Data) ->
     case started(State) of
         ok -> send(query, #{}, {From, query}, keep, Data);
         Error -> {keep_state_and_data, [{reply, From, Error}]}
     end;
-handle_event({call, From}, {aux, Command, Params}, State, Data) ->
+call(From, {aux, Command, Params}, State, Data) ->
     case started(State) of
         ok -> aux(From, Command, Params, Data);
         Error -> {keep_state_and_data, [{reply, From, Error}]}
     end;
 %% stop
 
-handle_event({call, From}, stop, idle, _Data) ->
+call(From, stop, idle, _Data) ->
     {stop_and_reply, normal, [{reply, From, ok}]};
-handle_event({call, From}, stop, deleting, _Data) ->
+call(From, stop, deleting, _Data) ->
     {keep_state_and_data, [{reply, From, {error, busy}}]};
-handle_event({call, From}, stop, _State, Data) ->
+call(From, stop, _State, Data) ->
     case send_async(delete, #{}, Data) of
         {ok, Ref, Data1} ->
             {next_state, deleting, add_pending(Ref, From, delete, Data1)};
@@ -272,15 +288,20 @@ handle_event({call, From}, stop, _State, Data) ->
     end;
 %% owner and info
 
-handle_event({call, From}, {set_owner, Owner}, _State, Data) ->
+call(From, {set_owner, Owner}, _State, Data) ->
     demonitor(Data#data.owner_mon, [flush]),
     Data1 = Data#data{owner = Owner, owner_mon = monitor(process, Owner)},
     {keep_state, Data1, [{reply, From, ok}]};
-handle_event({call, From}, info, State, Data) ->
+call(From, info, State, Data) ->
     {keep_state_and_data, [{reply, From, info_map(State, Data)}]};
+call(From, _Request, _State, _Data) ->
+    {keep_state_and_data, [{reply, From, {error, unknown_call}}]}.
+
+%% info messages
+
 %% client replies
 
-handle_event(info, {chappe_rtpengine_reply, Ref, Result}, State, Data) ->
+info({chappe_rtpengine_reply, Ref, Result}, State, Data) ->
     case maps:take(Ref, Data#data.pending) of
         {{From, Kind}, Rest} ->
             Data1 = Data#data{pending = Rest},
@@ -291,60 +312,37 @@ handle_event(info, {chappe_rtpengine_reply, Ref, Result}, State, Data) ->
     end;
 %% pool events for the pinned node
 
-handle_event(
-    info,
-    {chappe_rtpengine_pool, {node_down, Node}},
-    State,
-    #data{node = Node} = Data
-) ->
+info({chappe_rtpengine_pool, {node_down, Node}}, State, #data{node = Node} = D) ->
     case active(State) of
-        true -> notify_owner({node_down, Node}, Data);
+        true -> notify_owner({node_down, Node}, D);
         false -> ok
     end,
     keep_state_and_data;
-handle_event(
-    info,
+info(
     {chappe_rtpengine_pool, {node_up, Node, Gen}},
     State,
     #data{node = Node, generation = OldGen} = Data
 ) when Gen > OldGen ->
     node_restarted(State, Data#data{generation = Gen});
-handle_event(info, {chappe_rtpengine_pool, _Event}, _State, _Data) ->
+info({chappe_rtpengine_pool, _Event}, _State, _Data) ->
     keep_state_and_data;
 %% DTMF events for this call (subscription made with dtmf => true)
 
-handle_event(
-    info, {chappe_rtpengine_dtmf, CallId, Event}, _, #data{call_id = CallId} = D
-) ->
+info({chappe_rtpengine_dtmf, CallId, Event}, _, #data{call_id = CallId} = D) ->
     notify_owner({dtmf, Event}, D),
     keep_state_and_data;
 %% a holder of subscriptions exited: its forks are removed
 
-handle_event(
-    info, {'DOWN', Mon, process, _, _}, State, #data{holds = H} = Data
-) when
+info({'DOWN', Mon, process, _, _}, State, #data{holds = H} = Data) when
     is_map_key(Mon, H)
 ->
     holder_down(Mon, State, Data);
 %% owner death
 
-handle_event(
-    info, {'DOWN', Mon, process, _, _}, State, #data{owner_mon = Mon} = Data
-) ->
+info({'DOWN', Mon, process, _, _}, State, #data{owner_mon = Mon} = Data) ->
     owner_down(State, Data);
-handle_event(info, _Info, _State, _Data) ->
-    keep_state_and_data;
-handle_event({call, From}, _Request, _State, _Data) ->
-    {keep_state_and_data, [{reply, From, {error, unknown_call}}]}.
-
-terminate(_Reason, State, Data) ->
-    _ = final_delete(State, Data),
-    case Data#data.pinned of
-        true -> chappe_rtpengine_pool:unpin(Data#data.call_id);
-        false -> ok
-    end.
-
-%% internal
+info(_Info, _State, _Data) ->
+    keep_state_and_data.
 
 %% Send a command whose reply From waits for (Kind says how to settle
 %% it, reply/5), then move to Next (keep: stay); a send that fails
