@@ -929,6 +929,10 @@ held_subscription_released(Config) ->
         }),
     kill(Holder3),
     #{state := established} = chappe_rtpengine_session:info(Sess),
+    %% one more NG round trip: the session handled the holders' DOWNs
+    %% before this call, so any unsubscribe they caused reached the
+    %% server before this query did
+    {ok, _} = chappe_rtpengine_session:query(Sess),
     ?assertEqual([Tag1, Tag2], unsubscribes(Server)),
     ok = chappe_rtpengine_session:stop(Sess),
     wait_dead(Sess),
