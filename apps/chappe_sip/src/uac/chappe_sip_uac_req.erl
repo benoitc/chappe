@@ -235,16 +235,14 @@ send_bye(Msg, Hdrs, #data{cseq = CSeq} = D) ->
 dialog_request(Method, Seq, Hdrs, Body, Msg, #data{call_id = CallId}) ->
     From = chappe_sip_msg:get(<<"from">>, Msg),
     To = chappe_sip_msg:get(<<"to">>, Msg),
-    {RURI, RouteSet} = chappe_sip_route:request_target(
-        target_uri(Msg), route_set(Msg)
-    ),
-    Routes = <<<<"Route: ", R/binary, "\r\n">> || R <- RouteSet>>,
-    <<Method/binary, " ", RURI/binary, " SIP/2.0\r\n", Routes/binary, "From: ",
-        From/binary, "\r\n", "To: ", To/binary, "\r\n", "Call-ID: ",
-        CallId/binary, "\r\n", "CSeq: ", (integer_to_binary(Seq))/binary, " ",
-        Method/binary, "\r\n", "Max-Forwards: 70\r\n", Hdrs/binary,
-        "Content-Length: ", (integer_to_binary(byte_size(Body)))/binary,
-        "\r\n\r\n", Body/binary>>.
+    chappe_sip_dialog_out:raw(
+        Method,
+        Seq,
+        {target_uri(Msg), route_set(Msg)},
+        {From, To, CallId},
+        Hdrs,
+        Body
+    ).
 
 %% RFC 3261 12.1.2: the route set is the 2xx Record-Route, reversed
 route_set(Msg) ->
