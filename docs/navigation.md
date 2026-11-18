@@ -25,7 +25,7 @@ which modules are public is in [the table below](#public-and-internal-modules-pe
 
 | If you care about | App, directory | Start at | Modules behind it | Tests | Lab |
 |---|---|---|---|---|---|
-| Answering and placing calls | chappe_sip `src/api`, `src/dialog`, `src/uac` | `chappe_sip`, `chappe_sip_dialog`, `chappe_sip_uac` | `_dialog_fsm`, `_uac_fsm`, `_uac_auth`, `_dialog_index`, `_session_timer` | `core`, `core_uac`, `uas`, `uac`, `indialog`, `dialog_ops`, `handler`, `session_timer`, `prack`, `uac_auth_tests` | `make interop-conformance` |
+| Answering and placing calls | chappe_sip `src/api`, `src/dialog`, `src/uac` | `chappe_sip`, `chappe_sip_dialog`, `chappe_sip_uac` | `_dialog_fsm` with `_dialog_route`, `_dialog_offer`, `_dialog_out`, `_dialog_sub`, `_dialog_st`, `_dialog_owner`; `_uac_fsm`, `_uac_auth`, `_dialog_index`, `_session_timer` | `core`, `core_uac`, `uas`, `uac`, `indialog`, `dialog_ops`, `dialog_fsm`, `handler`, `session_timer`, `prack`, `uac_auth_tests`, `dialog_parts_tests` | `make interop-conformance` |
 | Inbound request pipeline | chappe_sip `src/engine`, `src/conn` | `chappe_sip_engine`, `chappe_sip_request_worker` | `_dispatch`, `_middleware`, `_guard`, `_request_sup` | `pipeline` (fake engine), `guard`, `ood` | none |
 | Engine dispatch | chappe_sip `src/engine` | `chappe_sip_engine` | `_dispatch`, `_uas_response` (both pure) | `dispatch_tests`, `uas_response_tests`, `pipeline` | `make interop-conformance` |
 | B2BUA | chappe_sip `src/b2b` | `chappe_sip_b2b` | `_b2b_relay`, `_b2b_fork`, `_b2b_early`, `_b2b_media`, `_b2b_replace`, `_b2b_requests`, `_b2b_async`, `_b2b_hdr` | `b2bua`, `b2b_relay`, `forked_2xx`, `webrtc_gateway` | `make interop-sbc` |
