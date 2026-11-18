@@ -41,7 +41,8 @@ that must have exactly one owner in the region, or that other nodes must find.
    case chappe_cluster:claim({my_thing, Name}, #{pid => Pid, timeout => 1000}) of
        {ok, Lease} -> my_thing:activate(Pid, Lease);
        {error, {owned, #{pid := Other}}} -> my_thing:stop(Pid), {ok, Other};
-       {error, no_quorum} -> my_thing:stop(Pid), {error, no_quorum}
+       {error, no_quorum} -> my_thing:stop(Pid), {error, no_quorum};
+       {error, _} = Error -> my_thing:stop(Pid), Error
    end.
    ```
 

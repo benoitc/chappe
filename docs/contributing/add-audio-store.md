@@ -62,8 +62,13 @@ file backend.
 
 ## Tests to add or run
 
-`chappe_audio_store_SUITE` is the contract the file backend passes: copy it
-for yours, pointing `configure/1` at your module in `init_per_testcase/2`.
+`chappe_audio_store_SUITE` is the contract the file backend passes. Copy
+it for yours and point `configure/1` at your module in `init_per_testcase/2`,
+but rewrite the cases that look at files on disk: `layout_and_atomic_write`
+globs the directory for the `.wav.part` and `.wav`, `retention_and_stale_parts`
+backdates a `.part` with `file:change_time/2`, and the setup passes
+`#{dir => Dir}`. A store that is not files checks the same steps through its
+own API instead.
 
 | Case | Covers |
 |---|---|

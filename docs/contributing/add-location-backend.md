@@ -100,9 +100,9 @@ rebar3 ct --suite apps/chappe_sip/test/chappe_sip_registrar_cluster_SUITE
 - `read/2` returns expired bindings too; the registry filters them.
 - A value on a shared store may be read by a node of a later release:
   the cluster backend stores bindings as maps for that reason.
-- The moduledoc of `chappe_sip_location` names `periodic/3` and `held/5`:
-  those are the wrappers the registry calls, the callbacks are
-  `periodic/2` and `held/4`.
+- `chappe_sip_location` also exports wrappers the registry calls,
+  `periodic/3` and `held/5`, which take the backend module first; the
+  callbacks you implement are `periodic/2` and `held/4`.
 
 ## Related
 
