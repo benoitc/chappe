@@ -73,7 +73,7 @@ its [README](../apps/chappe_cluster/README.md). What changed:
     and [ATTEMPTS.md](../apps/chappe_mix/test/audit/ATTEMPTS.md)
   - chappe_esl: [overview](../apps/chappe_esl/docs/design/overview.md)
   - chappe_audio: [overview](../apps/chappe_audio/docs/design/overview.md)
-  - chappe_cluster: [README](../apps/chappe_cluster/README.md),
+  - chappe_cluster: [overview](../apps/chappe_cluster/docs/design/overview.md),
     [ownership record](decisions/0010-cluster-ownership.md)
   - chappe_mrf: [overview](../apps/chappe_mrf/docs/design/overview.md)
 

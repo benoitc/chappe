@@ -51,6 +51,8 @@ Call it on every node that may run it; one node runs it at a time.
 
 - [Run a cluster](docs/guides/cluster.md): three nodes, add one, lose one,
   and the API.
+- [Design overview](docs/design/overview.md): the processes and what each
+  one owns.
 - Why it works this way: [decision 0010](../../docs/decisions/0010-cluster-ownership.md).
 
 ## Configuration
