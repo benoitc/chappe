@@ -30,7 +30,7 @@ live here in `docs/`.
 | chappe_mix | [README](../apps/chappe_mix/README.md) | [run a conference](../apps/chappe_mix/docs/guides/conference.md) |
 | chappe_esl | [README](../apps/chappe_esl/README.md) | [getting started](../apps/chappe_esl/docs/guides/getting-started.md), [inbound](../apps/chappe_esl/docs/guides/inbound.md), [outbound](../apps/chappe_esl/docs/guides/outbound.md), [events](../apps/chappe_esl/docs/guides/events.md), [call control](../apps/chappe_esl/docs/guides/call-control.md), [nodes](../apps/chappe_esl/docs/guides/nodes.md), [select a node](../apps/chappe_esl/docs/guides/select-node.md), [testing](../apps/chappe_esl/docs/guides/testing.md) |
 | chappe_audio | [README](../apps/chappe_audio/README.md), [features](../apps/chappe_audio/docs/features.md) | [take audio from a fork](../apps/chappe_audio/docs/guides/fork.md), [record a call](../apps/chappe_audio/docs/guides/record.md) |
-| chappe_cluster | [README](../apps/chappe_cluster/README.md) | [run a cluster](../apps/chappe_cluster/docs/guides/cluster.md) |
+| chappe_cluster | [README](../apps/chappe_cluster/README.md), [design](../apps/chappe_cluster/docs/design/overview.md) | [run a cluster](../apps/chappe_cluster/docs/guides/cluster.md) |
 | chappe_mrf | [README](../apps/chappe_mrf/README.md), [features](../apps/chappe_mrf/docs/features.md) | [IVR menu](../apps/chappe_mrf/docs/guides/ivr-menu.md), [bridge](../apps/chappe_mrf/docs/guides/bridge.md), [conference](../apps/chappe_mrf/docs/guides/conference.md), [drachtio mapping](../apps/chappe_mrf/docs/drachtio-mapping.md) |
 
 Configuration reference per app:
@@ -39,7 +39,7 @@ Configuration reference per app:
 [chappe_mix](../apps/chappe_mix/docs/configuration.md),
 [chappe_esl](../apps/chappe_esl/docs/configuration.md),
 [chappe_audio](../apps/chappe_audio/docs/configuration.md),
-[chappe_cluster](../apps/chappe_cluster/README.md#configuration),
+[chappe_cluster](../apps/chappe_cluster/docs/configuration.md),
 [chappe_mrf](../apps/chappe_mrf/docs/configuration.md).
 
 What each app can do today: the `docs/features.md` of
@@ -48,8 +48,8 @@ What each app can do today: the `docs/features.md` of
 [chappe_mix](../apps/chappe_mix/docs/features.md),
 [chappe_esl](../apps/chappe_esl/docs/features.md),
 [chappe_mrf](../apps/chappe_mrf/docs/features.md),
-[chappe_audio](../apps/chappe_audio/docs/features.md); for chappe_cluster,
-its [README](../apps/chappe_cluster/README.md). What changed:
+[chappe_audio](../apps/chappe_audio/docs/features.md),
+[chappe_cluster](../apps/chappe_cluster/docs/features.md). What changed:
 [CHANGELOG](../CHANGELOG.md).
 
 ### You want to understand the system
@@ -66,6 +66,8 @@ its [README](../apps/chappe_cluster/README.md). What changed:
     [media](../apps/chappe_sip/docs/design/media.md),
     [B2BUA](../apps/chappe_sip/docs/design/b2bua.md),
     [WebSocket transport](../apps/chappe_sip/docs/design/ws-transport.md),
+    [SIPREC](../apps/chappe_sip/docs/design/siprec.md),
+    [registrar](../apps/chappe_sip/docs/design/registrar.md),
     [remote apps (draft)](../apps/chappe_sip/docs/design/remote-app.md)
   - chappe_rtpengine: [overview](../apps/chappe_rtpengine/docs/design/overview.md)
   - chappe_mix: [overview](../apps/chappe_mix/docs/design/overview.md),

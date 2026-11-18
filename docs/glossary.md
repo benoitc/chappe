@@ -140,8 +140,9 @@ through that node and never uses its connection directly.
 `chappe_sip_flow:edge_route/4` makes it: it names the node and the flow,
 carries `edge=<transport>` and a MAC under the node's secret, and expires
 with the binding. When the flow is gone, the proxy answers 430 Flow Failed
-and removes the bindings on it. See
-[0015](decisions/0015-location-behaviour.md).
+and removes the bindings on it. See the
+[registrar design](../apps/chappe_sip/docs/design/registrar.md#flows-and-edge-routes)
+and [0015](decisions/0015-location-behaviour.md).
 
 ### Endpoint
 
@@ -297,7 +298,9 @@ lapses. The holder gets `{chappe_cluster, Lease, lost}` when its node lapses
 or another node takes the key over, and checks `chappe_cluster:valid/1`
 before each side effect. Without a [quorum](#quorum) a claim returns
 `{error, no_quorum}`. chappe_mrf takes one lease per conference room name.
-See [claim and fence](../apps/chappe_cluster/docs/guides/cluster.md#claim-and-fence) and [0010](decisions/0010-cluster-ownership.md).
+See [claim and fence](../apps/chappe_cluster/docs/guides/cluster.md#claim-and-fence),
+the [cluster design](../apps/chappe_cluster/docs/design/overview.md) and
+[0010](decisions/0010-cluster-ownership.md).
 
 ### Leg
 
@@ -322,7 +325,8 @@ table, by default; `chappe_sip_location_cluster` with
 with compare-and-swap and read from the local replica. The backend also says
 how it is written (`serialized` or `cas`), swept, and shown from another
 node, where a binding reached over a flow carries an
-[edge route](#edge-route). See
+[edge route](#edge-route). See the
+[registrar design](../apps/chappe_sip/docs/design/registrar.md) and
 [0015](decisions/0015-location-behaviour.md).
 
 ### Media resource function
@@ -481,7 +485,8 @@ the metadata (RFC 7865). chappe's own SRS is
 `chappe_sip_siprec_srs:serve/3`, run in your INVITE handler: its SIP side
 stays in chappe_sip, and each recorded stream is received by a chappe_audio
 RTP receiver, never by a SIP process. See
-[record a call with SIPREC](../apps/chappe_sip/docs/guides/siprec.md) and
+[record a call with SIPREC](../apps/chappe_sip/docs/guides/siprec.md), the
+[SIPREC design](../apps/chappe_sip/docs/design/siprec.md) and
 [0012](decisions/0012-siprec-srs.md).
 
 ### Store and sweep

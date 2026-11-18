@@ -51,28 +51,15 @@ Call it on every node that may run it; one node runs it at a time.
 
 - [Run a cluster](docs/guides/cluster.md): three nodes, add one, lose one,
   and the API.
-- [Design overview](docs/design/overview.md): the processes and what each
-  one owns.
+- [Configuration](docs/configuration.md): every key, its default and the
+  timing check.
+- [Features](docs/features.md): what works and what is planned.
+- [Design overview](docs/design/overview.md): the machine, leases,
+  singletons, watches, the directory and the HLC.
 - Why it works this way: [decision 0010](../../docs/decisions/0010-cluster-ownership.md).
 
 ## Configuration
 
 Application env, validated at start (a bad value fails the start with
-`{error, badarg}`):
-
-| key | default | meaning |
-|---|---|---|
-| `region` | `default` | the region this node belongs to |
-| `voters` | `[node()]` | the region's Ra members at boot |
-| `data_dir` | `"cluster_data"` | Ra's log and snapshots, one folder per node |
-| `lease_ms` | `6000` | how long one renewal keeps a node live |
-| `renew_ms` | `2000` | how often a node renews; `lease_ms >= 3 * renew_ms` |
-| `max_drift` | `1` | clock rate drift bound, in percent; checked against the two above |
-| `wall_clock` | `{erlang, system_time, [millisecond]}` | the HLC's wall clock |
-| `hlc_max_offset_ms` | `10000` | how far a received stamp may move the HLC past the wall clock (0: no limit) |
-| `max_leases` | `100000` | leases one node may hold |
-| `max_keys` | `100000` | keys in the region's KV |
-| `max_value_bytes` | `65536` | one KV value, in external term size |
-| `max_watch_mailbox` | `10000` | a watcher's queue before it gets `overflow` |
-| `command_timeout` | `5000` | how long a write waits for the quorum |
-| `directory` | `chappe_cluster_directory_local` | the directory backend |
+`{error, badarg}`). Every key, with its default, is in
+[configuration](docs/configuration.md).

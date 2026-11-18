@@ -205,6 +205,173 @@ The room API a backend calls, exported by `chappe_mrf_conf_backend`:
 To write a backend, follow
 [add a conference backend](../../../../docs/contributing/add-mrf-conference-backend.md).
 
+## Rooms in a cluster
+
+With `cluster => chappe_cluster`, a room name has one owner in the region:
+the lease `{chappe_mrf_conf, Name}`
+(`chappe_mrf_conf_cluster:lease_key/1`). `chappe_mrf_app:start/2` starts
+chappe_cluster before the supervisor, so it stops after chappe_mrf and the
+rooms can still hand their leases off in `prep_stop/1`
+([decision 0014](../../../../docs/decisions/0014-optional-siblings.md)).
+The guide shows the setup:
+[run rooms on a cluster](../guides/conference.md#run-rooms-on-a-cluster).
+
+### The claim in the caller and the waiting room
+
+`chappe_mrf_conf:start/2` hands a cluster room to
+`chappe_mrf_conf_cluster:start/2`, which runs in the caller:
+
+1. If the local replica names an owner on another node this node reaches,
+   the caller uses that room, with no write to the region. It asks the room
+   for `info`: a room that runs and has not lost its name is returned; one
+   that lost it or is gone is tried again after 300 ms.
+2. Otherwise it starts the room's process waiting (`wait => true`): no
+   name, no backend, its pid given to no one. It claims the lease for that
+   pid, waiting at most `claim_timeout`, so no other room's start waits
+   behind it.
+3. It hands the lease over with `{activate, Lease}`.
+
+While it waits, the room takes only `{activate, Lease}`: other calls
+are kept, each with
+its caller's timeout, and run in order once it is active (a call whose
+caller gave up is dropped). The waiting room stops when its starter dies
+or after `start_timeout`.
+
+The claim's answers:
+
+| Claim | What `start/2` does |
+|---|---|
+| `{ok, Lease}` | activates the room and returns it |
+| `{error, {owned, Owner}}` | stops the waiting room and uses the owner's room if this node reaches it, else `{error, {owner_unreachable, Node}}` |
+| `{error, no_quorum}` | stops the waiting room and returns the room the local replica names when it is reachable and not on this node, else `{error, no_quorum}`: it never opens a second room |
+
+The whole start has one deadline, `start_timeout`.
+
+### Activation
+
+On `{activate, Lease}` the room asks `chappe_mrf_conf_cluster:activation/2`
+with two facts, whether the node drains and whether
+`chappe_cluster:valid(Lease)` holds:
+
+- draining: it releases the lease and stops with `{error, draining}`, and
+  the start goes on elsewhere;
+- valid: it registers its name, checks draining again (a drain that began
+  in between would never hand this room off), sets its backend up and runs
+  the calls it kept;
+- not valid: it stops with `{error, no_quorum}`.
+
+Each join, REFER and recording start checks `chappe_cluster:valid/1`
+again before its side effect (`owned/2` in `chappe_mrf_conf`).
+
+### Draining and the prep_stop handoff
+
+A clean stop of the node runs `chappe_mrf_app:prep_stop/1`, which calls
+`chappe_mrf_conf_move:drain/1` with `drain_ms`:
+
+1. The node is marked draining (`chappe_mrf_conf_move:draining/1`): no
+   room opens here any more; a start on this node opens the room on a live
+   node of the region, or returns `{error, draining}`.
+2. Each room gets `{transfer, move, handoff}` from its own helper. It
+   gives the lease back, frees its name and answers with its name, its
+   options without this node's processes, and the members whose calls run
+   on other nodes (`chappe_mrf_conf_move:handoff_of/4`).
+3. For a portable room with such members, the helper opens the room of the
+   same name on the first live node of the region that has or opens one
+   (`chappe_mrf:conference/2` over `erpc`, at most 5 s per node), then
+   moves every member at once (`chappe_mrf_conf_move:transfer_all/4`).
+4. A helper still running at the deadline plus 1 s is killed. Its moves
+   run on to their own end.
+5. When the room ends, in a drain, a member still on its way is hung up as
+   a whole call, a clean BYE; members whose calls run on this node end
+   with it.
+
+```mermaid
+sequenceDiagram
+    participant App as chappe_mrf_app (node A)
+    participant Mv as chappe_mrf_conf_move
+    participant RA as room on node A
+    participant Rg as region (chappe_cluster)
+    participant RB as room on node B
+    participant J as transfer job
+    App->>Mv: prep_stop/1: drain(drain_ms)
+    Mv->>Mv: draining(true)
+    Mv->>RA: {transfer, move, handoff}
+    RA->>Rg: release(Lease)
+    RA->>RA: free the name, emit lost
+    RA-->>Mv: name, opts, members with calls on other nodes
+    Mv->>RB: erpc chappe_mrf:conference(Name, Opts) on node B
+    RB->>Rg: claim {chappe_mrf_conf, Name}
+    Rg-->>RB: {ok, Lease}
+    RB-->>Mv: {ok, RoomB}
+    par one job per member
+        Mv->>J: chappe_mrf_conf:transfer(RoomA, Id, RoomB)
+        J->>RA: {transfer, out, Id}
+        J->>RB: join the call (re-anchored, no re-INVITE)
+        J->>RA: {transfer, done, Id}
+    end
+    Note over RA: at drain_ms: a member still moving is hung up, calls on node A end
+```
+
+### Rehome after a lost lease
+
+When the room gets `{chappe_cluster, Lease, lost}` for its own lease
+(`chappe_mrf_conf_cluster:same_lease/2`), or a `valid/1` check fails, it
+loses its name: it takes no new member (`{error, lost}`), tells its event
+receivers `lost` and frees the name on this node. If it is portable and
+has members, it starts a helper linked to it
+(`chappe_mrf_conf_move:start_rehome/2`) that tries for `rehome_ms`, in
+rounds of at most 10 s: open the room where the region lets it (this node
+first, then the region's other reachable nodes) and move every movable
+member there. A failed round waits up to 1 s and tries again. The room
+stops once it lost its name and has no member and no join under way
+(`chappe_mrf_conf_cluster:closing/3`).
+
+### Why fs rooms do not move
+
+`portable/0` is `true` for `chappe_mrf_conf_native` and `false` for
+`chappe_mrf_conf_fs`. An fs conference is FreeSWITCH's, and each member is
+a channel driven through the outbound socket the stopping node holds; the
+endpoint that owns the channel hangs it up when it stops. So a handoff of
+an fs room only gives the name back, and a lost fs room starts no rehome.
+The next caller opens the room on a live node.
+
+### Transfers as data
+
+A move is `chappe_mrf_conf:transfer/3`, which runs
+`chappe_mrf_conf_transfer:transfer/3` in the caller: each room only does
+its part. The room's side, `chappe_mrf_conf_transfer:step/4` and
+`mover_down/2`, is pure: it takes the members and the joins under way and
+returns `{Reply, Members, Actions}`. The room runs the actions with
+`chappe_mrf_conf_transfer:run/2`:
+
+| Action | What the room does |
+|---|---|
+| `{monitor, Id, Mover}` | watches the process moving the member |
+| `{gone, Id, Reason}` | removes the member (`transferred` once it arrived) |
+| `{destroy, Ep}` | destroys an endpoint it owned whose mover died mid-move |
+
+A transfer job that crashes settles by the call, not by name: the mover
+asks the old room which call the member is (`handle_of`) and the new room
+whether it holds it (`holds`), every 200 ms up to 100 times, and hands the
+member back (`cancel`) when the new room never got it or never says.
+
+### Timeouts
+
+| Bound | Default | Where |
+|---|---|---|
+| `start_timeout` | 10000 ms | the whole cluster start, and a waiting room's life |
+| `claim_timeout` | 1000 ms | one claim for a waiting room |
+| `drain_ms` | 5000 ms | the whole handoff in `prep_stop/1` |
+| `rehome_ms` | 30000 ms | a lost room's attempts to move its members |
+| retry after a gone owner | 300 ms | `chappe_mrf_conf_cluster` |
+| one node's open in a move | 5000 ms | `chappe_mrf_conf_move` |
+| one rehome round | 10000 ms | `chappe_mrf_conf_move` |
+| a killed handoff's grace | 1000 ms | past `drain_ms` |
+| a crashed move's settle | 100 x 200 ms | `chappe_mrf_conf_move` |
+
+The first four are chappe_mrf settings
+([configuration](../configuration.md)); the others are fixed in the code.
+
 ## Failure handling
 
 | Failure | Behaviour |
@@ -217,6 +384,10 @@ To write a backend, follow
 | Conference owner exits | the conference stops and every member is hung up (an app's endpoint leaves the room and keeps its channel) |
 | `bridge/2` fails | the endpoint takes its dialog back |
 | fs member never shows up | after `join_timeout` (15 s), `{error, timeout}`; an endpoint made for the join is destroyed |
+| Clean stop of a room's node (cluster) | the room gives its lease back and its members with calls on other nodes move to a room of the same name on a live node, within `drain_ms`; a move not done by then is hung up; fs rooms only give the name back |
+| Room's lease lost (cluster) | the room takes no new member (`{error, lost}`), sends `lost` and frees its name; a native room moves its members to the next owner for up to `rehome_ms` |
+| Owner node unreachable (cluster) | `conference/2` returns `{error, {owner_unreachable, Node}}` until the lease runs out, then opens the room on a live node |
+| No quorum (cluster) | `conference/2` opens no room: it returns the reachable room the local replica names, else `{error, no_quorum}`; rooms already open keep their calls |
 
 ## Where it lives
 
@@ -227,4 +398,5 @@ To write a backend, follow
   `chappe_mrf_lib_tests`, `chappe_mrf_store_tests`, and
   `chappe_mrf_live_SUITE` (FreeSWITCH and rtpengine)
 - Lab: `make interop-mrf` (`apps/chappe_mrf/interop/`: rtpengine and two
-  FreeSWITCH nodes)
+  FreeSWITCH nodes); `make demo-cluster` (rooms on a cluster,
+  `demo/cluster/README.md`)

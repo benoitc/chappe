@@ -59,6 +59,43 @@ monitor.
 4. The stream sends events to its owner, drops past the bound, and writes to
    its recording with `store => default`.
 
+## Recorded RTP
+
+A SIPREC recording server (`chappe_sip_siprec_srs` in chappe_sip) does
+the SIP and asks chappe_audio for one receiver per recorded stream with
+`chappe_audio:rtp_receiver/1`. The design of both sides is in the
+[SIPREC design page](../../../chappe_sip/docs/design/siprec.md).
+
+- **One process per stream.** Each receiver is a `chappe_audio_rtp` under
+  `chappe_audio_rtp_sup`, owned by the process that started it. It stops
+  when the owner exits or on `chappe_audio_rtp:stop/1`, and then finishes
+  its store recording. A receiver that crashes leaves its partial file to
+  the store's sweep and touches neither its owner nor the other streams.
+- **G.711 decode.** PCMU and PCMA become 16-bit linear PCM
+  (`chappe_audio_pcm`). Another payload type, RTCP and anything that does
+  not parse is dropped.
+- **The source.** The receiver latches to the first source at the
+  `remote` address it was given (any port), or, with `remote =>
+  undefined`, to the first source at all, and drops every other source.
+- **SRTP.** Given `srtp => Ctx` (`chappe_audio_srtp:new/1`), it takes SRTP
+  only: each packet is authenticated, checked against the replay window
+  and decrypted before it is decoded, and it latches only once a packet
+  authenticates. Failed packets are counted (`chappe_audio_rtp:stats/1`)
+  and logged at most once per 10 s. `chappe_audio_rtp:rekey/2` takes the
+  sender's new key. The keys stay in a closure and out of every report
+  ([decision 0009](../../../../docs/decisions/0009-srtp-in-erlang.md)).
+- **The sink.** `{store, Mod, Info}` writes a recording of the store;
+  `{pid, Pid}` sends `{Tag, Stream, {audio, Pcm}}` (`tag`, default
+  `chappe_audio_rtp`) and drops frames while the process has `max_queue`
+  (default 500) messages waiting.
+- **Ports.** `ports => {Min, Max}` binds a free port in the range;
+  none free is `{error, no_port}`. The app not running is
+  `{error, not_started}`.
+- **It outlives the store.** `chappe_audio_rtp_sup` is the first child of
+  the `rest_for_one` root, needing none of the others, so a crash of the
+  store or the registry never drops a live stream
+  ([decision 0011](../../../../docs/decisions/0011-chappe-audio-leaf.md)).
+
 ## The store
 
 `chappe_audio_store` is the API and the behaviour. Calls that write go to
@@ -67,6 +104,19 @@ group and merges; `get/1`, `read/2` and `delete/1` ask the local store and
 then the others. The file backend renames the audio, then the sidecar, so a
 listing never shows a recording in progress. A call_ref that is not a plain
 name becomes `x-` and its SHA-256 in the path.
+
+## Tests
+
+| Area | Tests |
+|---|---|
+| WebSocket forks, the listener and the handshake | `chappe_audio_SUITE`, `chappe_audio_http_tests` |
+| The store, writers, adoption, retention, lookups across nodes | `chappe_audio_store_SUITE` |
+| The pg scope | `chappe_audio_pg_SUITE` |
+| Recorded RTP: G.711, the source latch, SRTP, port range, owner exit, store sink, store crash | `chappe_audio_rtp_SUITE` |
+| SRTP against the RFC 3711 vectors and a reference sender | `chappe_audio_srtp_tests` (with `chappe_audio_test_srtp`) |
+| PCM and WAVE helpers | `chappe_audio_pcm_tests`, `chappe_audio_wav_tests` |
+| Real FreeSWITCH forks | `chappe_audio_live_SUITE` (`make interop-esl`) |
+| The SIPREC server end to end | `chappe_sip_siprec_SUITE`, `chappe_sip_siprec_live_SUITE` (`make interop`), in chappe_sip |
 
 ## Sources checked
 
