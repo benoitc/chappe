@@ -228,3 +228,15 @@ handle_info(ping, S) ->
   logs, not to decide ownership.
 - Stopping the app tells every holder lost, and the next start takes a
   new epoch.
+
+## Where it lives
+
+- Modules: `chappe_cluster` (the API), `chappe_cluster_machine` (leases and
+  the KV), `chappe_cluster_node` (renewals), `chappe_cluster_lapse`
+  (`lost`), `chappe_cluster_watch`, `chappe_cluster_singleton`,
+  `chappe_cluster_directory`
+- Tests: `chappe_cluster_SUITE` (one node), `chappe_cluster_peer_SUITE`
+  (several `peer` nodes), `chappe_cluster_machine_tests`
+- Lab: `make interop-cluster` ([the lab](../../interop/README.md))
+- Settings: [configuration](../configuration.md); design:
+  [overview](../design/overview.md)

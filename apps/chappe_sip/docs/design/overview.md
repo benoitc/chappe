@@ -115,7 +115,7 @@ Why the order matters:
 | root | Boot, root supervisor, configuration defaults, metrics | `chappe_sip_app`, `chappe_sip_sup`, `chappe_sip_config`, `chappe_sip_metrics`, `chappe_sip_metrics_http` |
 | `api/` | The facade, the extension points, outbound registration, the registrar | `chappe_sip`, `chappe_sip_handler`, `chappe_sip_middleware`, `chappe_sip_guard`, `chappe_sip_regc`, `chappe_sip_regc_sup`, `chappe_sip_registrar` |
 | `b2b/` | The B2BUA and its helpers: early media, forking, joins, transfers, relays | `chappe_sip_b2b`, `chappe_sip_b2b_sup`, `chappe_sip_b2b_async`, `chappe_sip_b2b_transfer`, `chappe_sip_b2b_relay`, `chappe_sip_b2b_*` |
-| `conn/` | Request workers, the stack supervisor, the location store and its backends | `chappe_sip_request_worker`, `chappe_sip_request_sup`, `chappe_sip_stack_sup`, `chappe_sip_registry`, `chappe_sip_registry_keeper`, `chappe_sip_registry_store`, `chappe_sip_registry_contact`, `chappe_sip_registry_sweep`, `chappe_sip_location`, `chappe_sip_location_ets`, `chappe_sip_location_cluster` |
+| `conn/` | Request workers, the stack supervisor, the location store and its backends (see [registrar](registrar.md)) | `chappe_sip_request_worker`, `chappe_sip_request_sup`, `chappe_sip_stack_sup`, `chappe_sip_registry`, `chappe_sip_registry_keeper`, `chappe_sip_registry_store`, `chappe_sip_registry_contact`, `chappe_sip_registry_sweep`, `chappe_sip_location`, `chappe_sip_location_ets`, `chappe_sip_location_cluster` |
 | `core/` | Services every layer reports to: call correlation and call records | `chappe_sip_call`, `chappe_sip_cdr` |
 | `dialog/` | Dialogs, session timers, REFER, the subscriber side of events, the NOTIFY router | `chappe_sip_dialog`, `chappe_sip_dialog_fsm`, `chappe_sip_dialog_index`, `chappe_sip_dialog_sup`, `chappe_sip_session_timer`, `chappe_sip_subscription`, `chappe_sip_refer*`, `chappe_sip_subscriber*`, `chappe_sip_notify_router` |
 | `engine/` | The NIF and the engine, the dispatch policy, the UAS response, listen addresses, HEP for WS | `chappe_sip_engine`, `chappe_sip_nif`, `chappe_sip_dispatch`, `chappe_sip_uas_response`, `chappe_sip_binds`, `chappe_sip_bind_uri`, `chappe_sip_hep` |
@@ -123,8 +123,8 @@ Why the order matters:
 | `media/` | The media facade and its backends | `chappe_sip_media`, `chappe_sip_media_sup`, `chappe_sip_media_rtpengine`, `chappe_sip_media_mix`, `chappe_sip_media_mix_sdp` |
 | `peers/` | OPTIONS-monitored peers and the registrar's qualify | `chappe_sip_peers`, `chappe_sip_peer`, `chappe_sip_peers_sup`, `chappe_sip_peer_sup`, `chappe_sip_qualify` |
 | `proxy/` | The stateful proxy, redirects, the Accepted-state processes | `chappe_sip_proxy`, `chappe_sip_proxy_accepted`, `chappe_sip_proxy_dialog`, `chappe_sip_proxy_redirect`, `chappe_sip_proxy_rules`, `chappe_sip_proxy_sup` |
-| `sip/` | The message model and pure protocol helpers, Record-Route and flows, the clock | `chappe_sip_msg`, `chappe_sip_hdr`, `chappe_sip_hdr_io`, `chappe_sip_uri`, `chappe_sip_req`, `chappe_sip_res`, `chappe_sip_sdp`, `chappe_sip_sdes`, `chappe_sip_multipart`, `chappe_sip_sipfrag`, `chappe_sip_digest`, `chappe_sip_digest_nc`, `chappe_sip_net`, `chappe_sip_route`, `chappe_sip_flow`, `chappe_sip_hlc`, `chappe_sip_lib` |
-| `siprec/` | SIPREC: the recording client, its metadata, the recording server side | `chappe_sip_siprec`, `chappe_sip_siprec_sup`, `chappe_sip_siprec_meta`, `chappe_sip_siprec_body`, `chappe_sip_siprec_srs`, `chappe_sip_siprec_peer`, `chappe_sip_siprec_tap` |
+| `sip/` | The message model and pure protocol helpers, Record-Route and flows (see [registrar](registrar.md#flows-and-edge-routes)), the clock | `chappe_sip_msg`, `chappe_sip_hdr`, `chappe_sip_hdr_io`, `chappe_sip_uri`, `chappe_sip_req`, `chappe_sip_res`, `chappe_sip_sdp`, `chappe_sip_sdes`, `chappe_sip_multipart`, `chappe_sip_sipfrag`, `chappe_sip_digest`, `chappe_sip_digest_nc`, `chappe_sip_net`, `chappe_sip_route`, `chappe_sip_flow`, `chappe_sip_hlc`, `chappe_sip_lib` |
+| `siprec/` | SIPREC: the recording client, its metadata, the recording server side (see [SIPREC](siprec.md)) | `chappe_sip_siprec`, `chappe_sip_siprec_sup`, `chappe_sip_siprec_meta`, `chappe_sip_siprec_body`, `chappe_sip_siprec_srs`, `chappe_sip_siprec_peer`, `chappe_sip_siprec_tap` |
 | `uac/` | Outbound transactions and their digest answers | `chappe_sip_uac`, `chappe_sip_uac_fsm`, `chappe_sip_uac_sup`, `chappe_sip_uac_auth` |
 | `ws/` | SIP over WebSocket | `chappe_sip_ws`, `chappe_sip_ws_transport`, `chappe_sip_ws_conn`, `chappe_sip_ws_listener`, `chappe_sip_ws_sup` |
 
@@ -137,7 +137,8 @@ Where the layout is surprising:
   forbids any `chappe_sip_*` module from calling `chappe_sip`.
 
 The B2BUA subsystem is described in [b2bua](b2bua.md), the media facade in
-[media](media.md).
+[media](media.md), SIPREC in [siprec](siprec.md), the registrar and its
+cluster path in [registrar](registrar.md).
 
 ## Entry points
 
