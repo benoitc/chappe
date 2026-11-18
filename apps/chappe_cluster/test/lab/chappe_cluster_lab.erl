@@ -441,9 +441,14 @@ schedule_run(Cfg, Caps) ->
             sleep_until(T0 + Duration - 10000),
             ok = wait_mesh(Cfg, 90000),
             Live = live(Cfg),
-            ok = stop_clients(Cfg),
+            Unstopped = stop_clients(Cfg),
+            %% the logs are collected even when a node did not stop, so
+            %% the failure can be read and replayed from its seed
             Dir = collect(Cfg),
-            verdict(Cfg, Dir, Live, Sched)
+            case Unstopped of
+                [] -> verdict(Cfg, Dir, Live, Sched);
+                _ -> {error, unstopped(Unstopped, Dir, Seed)}
+            end
     end.
 
 has_cluster(#{nodes := [N1 | _]} = Cfg) ->
@@ -468,25 +473,43 @@ claims(Cfg, Node) ->
             0
     end.
 
+%% The nodes whose client would not stop, with what erl_call said.
 stop_clients(#{nodes := Nodes} = Cfg) ->
-    [
-        {ok, ok} = erl_call(Cfg, N, "chappe_cluster_lab_client stop []", 120)
+    Results = [
+        {N, erl_call(Cfg, N, "chappe_cluster_lab_client stop []", 120)}
      || N <- Nodes
     ],
-    ok.
+    [{N, R} || {N, R} <- Results, R =/= {ok, ok}].
+
+unstopped(Unstopped, Dir, Seed) ->
+    io_lib:format(
+        "clients did not stop on ~p~nlogs: ~s (node logs and docker logs)~n"
+        "replay: SEED=~p make interop-cluster",
+        [Unstopped, Dir, Seed]
+    ).
 
 collect(#{nodes := Nodes, out := Out, seed := Seed, kills := Kills} = Cfg) ->
     Dir = filename:join([Out, "logs", integer_to_list(Seed)]),
     _ = file:del_dir_r(Dir),
     ok = filelib:ensure_dir(filename:join(Dir, "x")),
     _ = file:copy(Kills, filename:join(Dir, "controller.log")),
+    %% a node whose logs cannot be copied is reported by check/1 and the
+    %% others are still collected
     [
-        {0, _} = check(
-            compose(Cfg, ["cp", N ++ ":/logs", filename:join(Dir, N)], 60000)
-        )
+        check(compose(Cfg, ["cp", N ++ ":/logs", filename:join(Dir, N)], 60000))
+     || N <- Nodes
+    ],
+    %% the container output too: a node that crashed or did not come back
+    %% after a kill shows why there, not in its lease log
+    [
+        docker_log(Cfg, N, filename:join(Dir, N ++ ".docker.log"))
      || N <- Nodes
     ],
     Dir.
+
+docker_log(Cfg, Node, File) ->
+    {_, Out} = compose(Cfg, ["logs", "--no-color", Node], 60000),
+    ok = file:write_file(File, Out).
 
 verdict(#{margin_us := Margin, renew_ms := Renew} = Cfg, Dir, Dead, Sched) ->
     {Events0, Bad} = chappe_cluster_lab_checker:read_logs(Dir),
