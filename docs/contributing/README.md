@@ -29,6 +29,16 @@ where a concept lives.
 | Add a capability or a backend to `chappe_sip_media` | [add-media-backend.md](add-media-backend.md) |
 | Add or change a chappe_mrf conference backend | [add-mrf-conference-backend.md](add-mrf-conference-backend.md) |
 
+## Cluster and recording
+
+| If you want to | Read |
+|---|---|
+| Give something one owner in a region, or find it from any node | [use-the-cluster.md](use-the-cluster.md) |
+| Keep the registrar's bindings in another store | [add-location-backend.md](add-location-backend.md) |
+| Keep recordings in another store | [add-audio-store.md](add-audio-store.md) |
+| Add a cross-region directory backend | [add-directory-backend.md](add-directory-backend.md) |
+| Debug a call across nodes | [debug-a-call.md](debug-a-call.md#across-nodes) |
+
 ## Across the umbrella
 
 | If you want to | Read |
