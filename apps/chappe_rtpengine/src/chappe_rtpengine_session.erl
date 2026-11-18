@@ -216,38 +216,26 @@ terminate(_Reason, State, Data) ->
 %% offer
 
 call(From, {offer, Params}, idle, Data) ->
-    case require([from_tag, sdp], Params) of
-        ok ->
-            Data1 = Data#data{from_tag = maps:get(from_tag, Params)},
-            send(offer, Params, {From, offer}, offering, Data1);
-        {error, _} = Error ->
-            {keep_state_and_data, [{reply, From, Error}]}
-    end;
+    first_offer(From, offer, Params, offering, Data);
 call(From, {offer, Params}, established, Data) ->
     reoffer(From, Params, Data);
 call(From, {offer, _Params}, deleting, _Data) ->
-    {keep_state_and_data, [{reply, From, {error, busy}}]};
+    reply_now(From, {error, busy});
 call(From, {offer, _Params}, _State, _Data) ->
     %% an offer/answer exchange is already open
-    {keep_state_and_data, [{reply, From, {error, glare}}]};
+    reply_now(From, {error, glare});
 %% re-INVITE rejected by the peer
 call(From, reoffer_rejected, offered, #data{reoffer = true} = Data) ->
     Data1 = Data#data{reoffer = false, reoffer_initiator = caller},
     {next_state, established, Data1, [{reply, From, ok}]};
 call(From, reoffer_rejected, _State, _Data) ->
-    {keep_state_and_data, [{reply, From, {error, no_reoffer}}]};
+    reply_now(From, {error, no_reoffer});
 %% publish (one-sided offer; rtpengine writes the answer)
 
 call(From, {publish, Params}, idle, Data) ->
-    case require([from_tag, sdp], Params) of
-        ok ->
-            Data1 = Data#data{from_tag = maps:get(from_tag, Params)},
-            send(publish, Params, {From, publish}, publishing, Data1);
-        {error, _} = Error ->
-            {keep_state_and_data, [{reply, From, Error}]}
-    end;
+    first_offer(From, publish, Params, publishing, Data);
 call(From, {publish, _Params}, _State, _Data) ->
-    {keep_state_and_data, [{reply, From, {error, busy}}]};
+    reply_now(From, {error, busy});
 %% answer
 
 call(From, {answer, Params}, offered, Data) ->
@@ -256,27 +244,27 @@ call(From, {answer, Params}, established, Data) ->
     %% repeated answer (early media then final, or a fork branch)
     do_answer(From, Params, established, Data);
 call(From, {answer, _Params}, idle, _Data) ->
-    {keep_state_and_data, [{reply, From, {error, no_offer}}]};
+    reply_now(From, {error, no_offer});
 call(From, {answer, _Params}, _State, _Data) ->
-    {keep_state_and_data, [{reply, From, {error, busy}}]};
+    reply_now(From, {error, busy});
 %% query and the auxiliary commands (playback, DTMF, recording, ...)
 
 call(From, query, State, Data) ->
     case started(State) of
         ok -> send(query, #{}, {From, query}, keep, Data);
-        Error -> {keep_state_and_data, [{reply, From, Error}]}
+        Error -> reply_now(From, Error)
     end;
 call(From, {aux, Command, Params}, State, Data) ->
     case started(State) of
         ok -> aux(From, Command, Params, Data);
-        Error -> {keep_state_and_data, [{reply, From, Error}]}
+        Error -> reply_now(From, Error)
     end;
 %% stop
 
 call(From, stop, idle, _Data) ->
     {stop_and_reply, normal, [{reply, From, ok}]};
 call(From, stop, deleting, _Data) ->
-    {keep_state_and_data, [{reply, From, {error, busy}}]};
+    reply_now(From, {error, busy});
 call(From, stop, _State, Data) ->
     case send_async(delete, #{}, Data) of
         {ok, Ref, Data1} ->
@@ -293,9 +281,9 @@ call(From, {set_owner, Owner}, _State, Data) ->
     Data1 = Data#data{owner = Owner, owner_mon = monitor(process, Owner)},
     {keep_state, Data1, [{reply, From, ok}]};
 call(From, info, State, Data) ->
-    {keep_state_and_data, [{reply, From, info_map(State, Data)}]};
+    reply_now(From, info_map(State, Data));
 call(From, _Request, _State, _Data) ->
-    {keep_state_and_data, [{reply, From, {error, unknown_call}}]}.
+    reply_now(From, {error, unknown_call}).
 
 %% info messages
 
@@ -352,11 +340,24 @@ send(Command, Params, {From, Kind}, Next, Data) ->
         {ok, Ref, Data1} ->
             next(Next, add_pending(Ref, From, Kind, Data1));
         {error, Reason} ->
-            {keep_state_and_data, [{reply, From, {error, Reason}}]}
+            reply_now(From, {error, Reason})
     end.
 
 next(keep, Data) -> {keep_state, Data};
 next(State, Data) -> {next_state, State, Data}.
+
+reply_now(From, Reply) ->
+    {keep_state_and_data, [{reply, From, Reply}]}.
+
+%% The first offer, or a publish: it sets the caller's tag.
+first_offer(From, Command, Params, Next, Data) ->
+    case require([from_tag, sdp], Params) of
+        ok ->
+            Data1 = Data#data{from_tag = maps:get(from_tag, Params)},
+            send(Command, Params, {From, Command}, Next, Data1);
+        {error, _} = Error ->
+            reply_now(From, Error)
+    end.
 
 %% query and the auxiliary commands need a session on the node, and none
 %% goes out while it is being deleted.
@@ -370,25 +371,30 @@ reoffer(From, Params0, Data) ->
     Params1 = maps:remove(initiator, Params0),
     case require([sdp], Params1) of
         ok when Initiator =:= callee, Data#data.to_tag =:= undefined ->
-            {keep_state_and_data, [{reply, From, {error, no_to_tag}}]};
+            reply_now(From, {error, no_to_tag});
         ok ->
-            Params = maps:merge(
-                reoffer_tags(Initiator, Params1, Data), Params1
+            #data{from_tag = FromTag, to_tag = ToTag} = Data,
+            Tags = chappe_rtpengine_offer:reoffer_tags(
+                Initiator, Params1, FromTag, ToTag
             ),
+            Params = maps:merge(Tags, Params1),
             Data1 = Data#data{reoffer_initiator = Initiator},
             send(offer, Params, {From, reoffer}, reoffering, Data1);
         {error, _} = Error ->
-            {keep_state_and_data, [{reply, From, Error}]}
+            reply_now(From, Error)
     end.
 
 aux(From, Command, Params0, Data) ->
     {Kind, Params1} = aux_kind(Command, Params0),
-    case resolve_party(Command, Params1, Data) of
+    #data{from_tag = FromTag, to_tag = ToTag} = Data,
+    case
+        chappe_rtpengine_offer:resolve_party(Command, Params1, FromTag, ToTag)
+    of
         {ok, Params} ->
             Data1 = release(Command, Params, Data),
             send(Command, Params, {From, Kind}, keep, Data1);
         {error, Reason} ->
-            {keep_state_and_data, [{reply, From, {error, Reason}}]}
+            reply_now(From, {error, Reason})
     end.
 
 info_map(State, Data) ->
@@ -455,7 +461,14 @@ do_answer(From, Params0, StateKind, Data) ->
             not maps:is_key(to_tag, Params1),
     case require([sdp | [to_tag || NeedToTag]], Params1) of
         ok ->
-            {Tags, BranchTag} = answer_tags(Params1, Data),
+            #data{
+                reoffer_initiator = Initiator,
+                from_tag = FromTag,
+                to_tag = ToTag
+            } = Data,
+            {Tags, BranchTag} = chappe_rtpengine_offer:answer_tags(
+                Initiator, Params1, FromTag, ToTag
+            ),
             Params = maps:merge(Tags, Params1),
             Kind = {answer_sent, StateKind, BranchTag, Final, PrevToTag},
             {Next, Data1} =
@@ -469,32 +482,11 @@ do_answer(From, Params0, StateKind, Data) ->
                 end,
             send(answer, Params, {From, Kind}, Next, Data1);
         {error, _} = Error ->
-            {keep_state_and_data, [{reply, From, Error}]}
+            reply_now(From, Error)
     end.
 
-%% A re-offer naming a via_branch opens a branch: rtpengine only tells
-%% branches apart when it carries no to-tag, a to-tag there makes every
-%% via-branch the established leg.
-reoffer_tags(caller, #{via_branch := _}, Data) ->
-    #{from_tag => Data#data.from_tag};
-reoffer_tags(caller, _Params, Data) ->
-    Base = #{from_tag => Data#data.from_tag},
-    case Data#data.to_tag of
-        undefined -> Base;
-        ToTag -> Base#{to_tag => ToTag}
-    end;
-reoffer_tags(callee, _Params, Data) ->
-    #{from_tag => Data#data.to_tag, to_tag => Data#data.from_tag}.
-
-answer_tags(_Params, #data{reoffer_initiator = callee} = Data) ->
-    %% answering a callee-initiated re-INVITE: same swapped direction
-    {#{from_tag => Data#data.to_tag, to_tag => Data#data.from_tag}, none};
-answer_tags(Params, Data) ->
-    ToTag = maps:get(to_tag, Params, Data#data.to_tag),
-    {#{from_tag => Data#data.from_tag, to_tag => ToTag}, ToTag}.
-
 handle_reply(Kind, From, Result, State, Data) ->
-    case pinned_state(Kind) of
+    case chappe_rtpengine_offer:pinned_state(Kind) of
         any ->
             reply(Kind, From, Result, State, Data);
         State ->
@@ -504,122 +496,52 @@ handle_reply(Kind, From, Result, State, Data) ->
             {keep_state, Data, reply_stopped(From)}
     end.
 
-%% The state a reply of this kind must find the FSM in; any other
-%% state means the session is being torn down.
-pinned_state(offer) -> offering;
-pinned_state(publish) -> publishing;
-pinned_state(reoffer) -> reoffering;
-pinned_state({answer_sent, answering, _, _, _}) -> answering;
-pinned_state(_Kind) -> any.
-
 reply_stopped(undefined) -> [];
 reply_stopped(From) -> [{reply, From, {error, stopped}}].
 
-%% A reply settles an offer/answer exchange (negotiated/5) or the
-%% auxiliary command it answers (aux_reply/5).
-reply(offer, From, Result, State, Data) ->
-    negotiated(offer, From, Result, State, Data);
-reply(publish, From, Result, State, Data) ->
-    negotiated(publish, From, Result, State, Data);
-reply(reoffer, From, Result, State, Data) ->
-    negotiated(reoffer, From, Result, State, Data);
-reply({answer_sent, _, _, _, _} = Kind, From, Result, State, Data) ->
-    negotiated(Kind, From, Result, State, Data);
-reply(query, From, Result, State, Data) ->
-    aux_reply(query, From, Result, State, Data);
-reply(aux, From, Result, State, Data) ->
-    aux_reply(aux, From, Result, State, Data);
-reply({held, _} = Kind, From, Result, State, Data) ->
-    aux_reply(Kind, From, Result, State, Data);
-reply(released, From, Result, State, Data) ->
-    aux_reply(released, From, Result, State, Data);
-reply(branch_delete, From, Result, State, Data) ->
-    aux_reply(branch_delete, From, Result, State, Data);
-reply(delete, From, Result, State, Data) ->
-    aux_reply(delete, From, Result, State, Data).
-
-negotiated(offer, From, Result, offering, Data) ->
-    Next =
-        case Result of
-            {ok, _} -> offered;
-            _ -> idle
-        end,
-    {next_state, Next, Data, [{reply, From, Result}]};
-negotiated(publish, From, Result, publishing, Data) ->
-    Next =
-        case Result of
-            {ok, _} -> established;
-            _ -> idle
-        end,
-    {next_state, Next, Data, [{reply, From, Result}]};
-negotiated(reoffer, From, Result, reoffering, Data) ->
-    case Result of
-        {ok, _} ->
-            {next_state, offered, Data#data{reoffer = true}, [
-                {reply, From, Result}
-            ]};
-        _ ->
-            {next_state, established, Data#data{reoffer_initiator = caller}, [
-                {reply, From, Result}
-            ]}
-    end;
-negotiated(
-    {answer_sent, answering, BranchTag, Final, PrevToTag},
-    From,
-    Result,
-    answering,
-    Data
-) ->
-    case Result of
-        {ok, _} ->
-            Data1 = settle_answer(BranchTag, Final, Data),
-            {next_state, established,
-                Data1#data{reoffer_initiator = caller, reoffer = false}, [
-                    {reply, From, Result}
-                ]};
-        _ ->
-            %% a failed answer leaves the dialog's to-tag as it was:
-            %% undefined before the first answer, the established
-            %% call's tag after a re-INVITE
-            {next_state, offered, Data#data{to_tag = PrevToTag}, [
-                {reply, From, Result}
-            ]}
-    end;
-negotiated(
-    {answer_sent, established, BranchTag, Final, _PrevToTag},
-    From,
-    Result,
-    _State,
-    Data
-) ->
-    Data1 =
-        case Result of
-            {ok, _} -> settle_answer(BranchTag, Final, Data);
-            _ -> Data
-        end,
-    {keep_state, Data1, [{reply, From, Result}]}.
-
-aux_reply(query, From, Result, _State, Data) ->
+%% A reply settles the auxiliary command it answers, or else an
+%% offer/answer exchange (negotiated/5).
+reply(query, From, Result, _State, Data) ->
     {keep_state, Data, [{reply, From, Result}]};
-aux_reply(aux, From, Result, _State, Data) ->
+reply(aux, From, Result, _State, Data) ->
     {keep_state, Data, [{reply, From, Result}]};
-aux_reply(
-    {held, Holder}, From, {ok, #{<<"to-tag">> := ToTag}} = Result, _, Data
-) ->
+reply({held, Holder}, From, {ok, #{<<"to-tag">> := ToTag}} = Result, _, Data) ->
     Mon = monitor(process, Holder),
     Holds = maps:put(Mon, ToTag, Data#data.holds),
     {keep_state, Data#data{holds = Holds}, [{reply, From, Result}]};
-aux_reply({held, _Holder}, From, Result, _State, Data) ->
+reply({held, _Holder}, From, Result, _State, Data) ->
     {keep_state, Data, [{reply, From, Result}]};
-aux_reply(released, undefined, _Result, _State, Data) ->
+reply(released, undefined, _Result, _State, Data) ->
     {keep_state, Data};
-aux_reply(branch_delete, undefined, _Result, _State, Data) ->
+reply(branch_delete, undefined, _Result, _State, Data) ->
     {keep_state, Data};
-aux_reply(delete, undefined, _Result, _State, Data) ->
+reply(delete, undefined, _Result, _State, Data) ->
     {stop_and_reply, normal, stopped_replies(Data), Data};
-aux_reply(delete, From, Result, _State, Data) ->
+reply(delete, From, Result, _State, Data) ->
     {stop_and_reply, normal,
-        [{reply, From, delete_result(Result)} | stopped_replies(Data)], Data}.
+        [{reply, From, delete_result(Result)} | stopped_replies(Data)], Data};
+reply(Kind, From, Result, State, Data) ->
+    negotiated(Kind, From, Result, State, Data).
+
+%% The table in chappe_rtpengine_offer says where the exchange goes; the
+%% caller gets the reply as it came.
+negotiated(Kind, From, Result, State, Data) ->
+    {Next, Updates} = chappe_rtpengine_offer:negotiated(Kind, Result, State),
+    Data1 = lists:foldl(fun update/2, Data, Updates),
+    Actions = [{reply, From, Result}],
+    case Next of
+        keep -> {keep_state, Data1, Actions};
+        _ -> {next_state, Next, Data1, Actions}
+    end.
+
+update({settle, BranchTag, Final}, Data) ->
+    settle_answer(BranchTag, Final, Data);
+update({reoffer, Reoffer}, Data) ->
+    Data#data{reoffer = Reoffer};
+update({reoffer_initiator, Initiator}, Data) ->
+    Data#data{reoffer_initiator = Initiator};
+update({to_tag, ToTag}, Data) ->
+    Data#data{to_tag = ToTag}.
 
 %% Callers still waiting when the session ends hear that it stopped
 %% rather than seeing the process exit.
@@ -703,47 +625,11 @@ resolve_node(CallId, Opts) ->
             end
     end.
 
-%% call_id always comes from the session; the stored from_tag fills in
-%% when the caller does not override it. Subscription commands get no
-%% from-tag injection: there it selects which participant to tap, and
-%% the default is the caller's choice, not the session's.
-%% The ref goes on every offer, answer and publish as NG metadata, as the
-%% key:value pair rtpengine writes into its recording metadata
-%% (call_ref:<ref>), unless the caller sets metadata itself.
-with_ref(Command, Params, #data{ref = Ref}) when
-    is_binary(Ref) andalso
-        (Command =:= offer orelse Command =:= answer orelse
-            Command =:= publish)
-->
-    case maps:is_key(metadata, Params) of
-        true -> Params;
-        false -> Params#{metadata => <<"call_ref:", (meta_value(Ref))/binary>>}
-    end;
-with_ref(_Command, Params, _Data) ->
-    Params.
-
-%% rtpengine reads metadata as key:value pairs split on `|': the ref's
-%% own `|' (and `%', so the encoding reads back) are percent-encoded, so
-%% a ref cannot add a key.
-meta_value(Ref) ->
-    binary:replace(
-        binary:replace(Ref, <<"%">>, <<"%25">>, [global]),
-        <<"|">>,
-        <<"%7C">>,
-        [global]
-    ).
-
 send_async(Command, Params0, Data) ->
-    Params1 = with_ref(Command, Params0#{call_id => Data#data.call_id}, Data),
-    Inject =
-        inject_from_tag(Command) andalso
-            Data#data.from_tag =/= undefined andalso
-            not maps:is_key(from_tag, Params1),
-    Params =
-        case Inject of
-            true -> Params1#{from_tag => Data#data.from_tag};
-            false -> Params1
-        end,
+    #data{call_id = CallId, from_tag = FromTag, ref = CallRef} = Data,
+    Params = chappe_rtpengine_offer:params(
+        Command, Params0, CallId, FromTag, CallRef
+    ),
     try chappe_rtpengine_client:cmd_async(Data#data.node, Command, Params) of
         {ok, Ref} -> {ok, Ref, Data};
         {error, {bad_param, _, _}} = Error -> Error;
@@ -769,71 +655,6 @@ release(unsubscribe, #{to_tag := ToTag}, #data{holds = Holds} = Data) ->
     Data#data{holds = maps:without(Held, Holds)};
 release(_Command, _Params, Data) ->
     Data.
-
-inject_from_tag(subscribe_request) -> false;
-inject_from_tag(subscribe_answer) -> false;
-inject_from_tag(unsubscribe) -> false;
-inject_from_tag(_Command) -> true.
-
-%% party => caller | callee | all sugar on auxiliary commands. The
-%% wire form differs by command: subscriptions select with the
-%% from-tags list; block/silence media need from-tag plus the
-%% directional flag (rtpengine ignores a bare from-tag there); play
-%% media targets with a plain from-tag. Media control commands with
-%% no target at all default to the whole call (all flag).
-resolve_party(Command, Params, Data) ->
-    case maps:take(party, Params) of
-        error ->
-            {ok, default_target(Command, Params)};
-        {all, Rest} ->
-            {ok, add_flag(all, Rest)};
-        {caller, Rest} ->
-            tag_target(Command, Data#data.from_tag, Rest);
-        {callee, Rest} ->
-            case Data#data.to_tag of
-                undefined -> {error, no_to_tag};
-                ToTag -> tag_target(Command, ToTag, Rest)
-            end;
-        {Other, _Rest} ->
-            {error, {bad_party, Other}}
-    end.
-
-default_target(Command, Params) ->
-    case media_control(Command) andalso not targeted(Params) of
-        true -> add_flag(all, Params);
-        false -> Params
-    end.
-
-tag_target(_Command, undefined, _Params) ->
-    {error, no_from_tag};
-tag_target(subscribe_request, Tag, Params) ->
-    {ok, Params#{from_tags => [Tag]}};
-tag_target(Command, Tag, Params) ->
-    case media_control(Command) of
-        true -> {ok, add_flag(directional, Params#{from_tag => Tag})};
-        false -> {ok, Params#{from_tag => Tag}}
-    end.
-
-media_control(block_media) -> true;
-media_control(unblock_media) -> true;
-media_control(silence_media) -> true;
-media_control(unsilence_media) -> true;
-media_control(start_forwarding) -> true;
-media_control(stop_forwarding) -> true;
-media_control(_Command) -> false.
-
-targeted(Params) ->
-    lists:any(
-        fun(K) -> maps:is_key(K, Params) end,
-        [from_tag, to_tag, label, to_label, address, flags]
-    ).
-
-add_flag(Flag, Params) ->
-    Flags = maps:get(flags, Params, []),
-    case lists:member(Flag, Flags) of
-        true -> Params;
-        false -> Params#{flags => Flags ++ [Flag]}
-    end.
 
 add_pending(Ref, From, Kind, Data) ->
     Data#data{pending = maps:put(Ref, {From, Kind}, Data#data.pending)}.
