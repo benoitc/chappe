@@ -18,6 +18,27 @@ History:
 - This third version describes the layout after those PRs and records the
   maintainer's answers (section 6).
 
+## Status
+
+Done (2026-11-18). Each step of section 11 shipped as its own PR:
+
+| Step | PR |
+|---|---|
+| 1. Drift fixes, five leaf apps in 0003 | #43 |
+| 2. Decisions 0002 to 0016 | #45 |
+| 3. ex_doc groups and extras | #46 |
+| 4. Glossary and the concepts split | #48 |
+| 5. Navigation rows, labs, add-tests, debug-a-call | #49 |
+| 6. Design pages: cluster, SIPREC, registrar, rooms in a cluster | #50 |
+| 7. Workflows: cluster, location, audio store, directory | #51 |
+| 8. `make docs-check` in CI | #52 |
+
+Test races found on the way were fixed in #44 and #47. The open code
+findings of section 9 stay open, each for its own plan. `make docs-check`
+now keeps the groups, extras, supervisor names and links from drifting
+again; the facts it cannot check (prose, trees, counts) are the ones
+section 1 says to point at rather than copy.
+
 ## 1. Where the repository stands
 
 The structure from #19 works and stays:
