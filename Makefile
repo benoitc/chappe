@@ -7,7 +7,7 @@
         fmt fmt-check asan tsan lint-c fuzz interop interop-mix interop-ref bench-ref bench-pass \
         interop-conformance interop-esl demo-esl interop-sbc interop-mrf \
         interop-cluster compliance \
-        cover docs clean advisories-test \
+        cover docs docs-check clean advisories-test \
         demo demo-compile demo-shell demo-down demo-cluster demo-cluster-smoke \
         demo-cluster-shell demo-cluster-down
 
@@ -121,6 +121,11 @@ bench-pass:
 # cases); the Advisories workflow runs them before its checks.
 advisories-test:
 	python3 -I scripts/advisories_test.py
+
+# The docs follow the code: ex_doc groups and extras, supervisors in each
+# app's design overview, relative links and anchors. OTP only, no build.
+docs-check:
+	scripts/docs_check.escript
 
 # Each app's compliance matrix from its requirements, the `%% req:'
 # annotations and the latest CT results. GATE=demo fails on any hard

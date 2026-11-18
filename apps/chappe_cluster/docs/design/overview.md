@@ -195,8 +195,10 @@ backend is AP (decision 0010).
 
 ## HLC
 
-`chappe_cluster_hlc` is the node's hybrid logical clock (hlc), started
-with the `wall_clock` and `hlc_max_offset_ms` keys.
+The node's hybrid logical clock is a process of the `hlc` dependency,
+registered as `chappe_cluster_hlc` (a child of `chappe_cluster_sup`, not a
+module of this app), started with the `wall_clock` and `hlc_max_offset_ms`
+keys.
 `chappe_cluster:now/0` returns it, ticked. Claims, releases and KV writes
 carry the writer's stamp; the machine merges it with the latest stamp it
 handed out, puts the result in the lease, the `leases()` rows, the watch

@@ -141,9 +141,8 @@ have the full trees:
 [chappe_mix](../apps/chappe_mix/docs/design/overview.md),
 [chappe_esl](../apps/chappe_esl/docs/design/overview.md),
 [chappe_audio](../apps/chappe_audio/docs/design/overview.md),
-[chappe_mrf](../apps/chappe_mrf/docs/design/overview.md); for
-chappe_cluster, [its README](../apps/chappe_cluster/README.md) and
-[guide](../apps/chappe_cluster/docs/guides/cluster.md).
+[chappe_cluster](../apps/chappe_cluster/docs/design/overview.md),
+[chappe_mrf](../apps/chappe_mrf/docs/design/overview.md).
 
 ## Flows
 

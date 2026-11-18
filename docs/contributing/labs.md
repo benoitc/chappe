@@ -17,7 +17,7 @@ when you need to keep a lab up to look at it by hand.
 
 | What | Where |
 |---|---|
-| Check targets | `Makefile` (`check`, `test`, `test-static`, `cover`) |
+| Check targets | `Makefile` (`check`, `test`, `test-static`, `cover`, `docs-check`) |
 | Lab scripts | `apps/chappe_rtpengine/test/e2e.sh`, `apps/chappe_esl/test/e2e.sh`, `apps/chappe_mrf/test/e2e.sh`, `apps/chappe_cluster/test/e2e.sh`, `apps/chappe_mix/test/interop.sh`, `apps/chappe_mix/test/ref.sh` |
 | Lab definitions | `apps/*/interop/` (compose files, configs, lab READMEs) |
 | Demos | `demo/sbc/`, `demo/cluster/` (with `smoke.sh`), `apps/chappe_esl/examples/` |
@@ -51,6 +51,11 @@ make cover MIN_COVERAGE=80
   then checks the vendored sofia-sip and the hex packages of `rebar.lock`
   against published advisories, on each pull request and every Monday.
 - `make docs` builds the ex_doc HTML of each app into `apps/<app>/doc`.
+- `make docs-check` runs `scripts/docs_check.escript`, OTP only: every
+  module in one ex_doc group, every `docs/**/*.md` an ex_doc extra, every
+  supervisor named in its app's `docs/design/overview.md`, and every
+  relative markdown link and `#anchor` resolving. CI runs it next to the
+  static checks.
 
 ## The labs
 

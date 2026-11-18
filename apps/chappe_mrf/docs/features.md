@@ -63,11 +63,12 @@ that shows you how to use it.
   members when it stops. [Design](design/overview.md#failure-handling)
 - **Correlation** of SIP legs and ESL sockets by `X-Chappe-Call`; unknown
   channels are refused. [Design](design/overview.md#correlation-x-chappe-call)
+- **Conference backends** behind the `chappe_mrf_conf_backend` behaviour:
+  `native`, `fs`, or a module of your own.
+  [Design](design/overview.md#the-backend-behaviour)
 - **Compliance**: every MRF row passes on fakes ([matrix](compliance.md)).
 
 ## Planned
 
-- A `chappe_mrf_conf_backend` behaviour for the conference backends (today
-  an implicit contract, see the [design](design/overview.md#the-backend-contract-not-yet-a-behaviour)).
 - Move the loopback middleware and the node candidate selection out of the
   `chappe_mrf` facade into their own modules.
