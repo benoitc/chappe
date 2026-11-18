@@ -143,7 +143,8 @@ the same nonce (RFC 8760); put each in its own header. Pass
 
 ## Where it lives
 
-- Modules: `chappe_sip_digest`, `chappe_sip_digest_nc`, `chappe_sip_uac_fsm`
+- Modules: `chappe_sip_digest`, `chappe_sip_digest_nc`, `chappe_sip_uac_retry`
+  (the retry with credentials), `chappe_sip_uac_auth`
   (the 401/407 retry), `chappe_sip_registrar`.
 - Tests: `chappe_sip_digest_SUITE`, `chappe_sip_digest_tests`,
   `chappe_sip_registrar_SUITE`.
