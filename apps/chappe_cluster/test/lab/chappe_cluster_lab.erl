@@ -169,7 +169,23 @@ reach(Cfg, From, To) ->
 erl_call(Cfg, Node, Apply) ->
     erl_call(Cfg, Node, Apply, ?RPC_TIMEOUT_S + 5).
 
+%% erl_call now and then fails to connect to a node that is up (seen in CI
+%% on a loaded runner, both in the self-test and after the schedule); a
+%% failed connect is tried again a few times, 2 s apart. A node that is
+%% really down still fails once the tries are spent.
 erl_call(Cfg, Node, Apply, TimeoutS) ->
+    erl_call(Cfg, Node, Apply, TimeoutS, 5).
+
+erl_call(Cfg, Node, Apply, TimeoutS, Tries) ->
+    case erl_call_once(Cfg, Node, Apply, TimeoutS) of
+        {error, {_, "erl_call: failed to connect" ++ _}} when Tries > 1 ->
+            timer:sleep(2000),
+            erl_call(Cfg, Node, Apply, TimeoutS, Tries - 1);
+        Result ->
+            Result
+    end.
+
+erl_call_once(Cfg, Node, Apply, TimeoutS) ->
     Cmd = [
         "exec",
         id(Cfg, Node),
