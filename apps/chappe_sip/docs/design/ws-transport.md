@@ -50,7 +50,7 @@ The reasoning and its cost are recorded in
   [the engine design](engine.md#the-event-contract).
 - **Same operations.** `chappe_sip_engine` sends an operation to the NIF or
   to the transport by handle: WS handles start at `16#4000000000000000`
-  (`?IS_WS` in the engine, `chappe_sip_ws:base/0`). The transport exports
+  (`chappe_sip_ws:is_ws/1`, `chappe_sip_ws:base/0`). The transport exports
   `respond/6`, `reliable_respond/6`, `relay/3`, `leg_create/4`,
   `leg_destroy/1`, `finish_txn/1`, `send_request/3`, `send_stateless/2` and
   `cancel/1,2`, one for each NIF op the engine forwards.

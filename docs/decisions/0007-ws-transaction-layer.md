@@ -21,7 +21,7 @@ What the repository shows:
   and dialog legs by Call-ID and tags.
 - WS handles are allocated in their own range, and `chappe_sip_engine`
   sends each operation to the NIF or to the WS transport by handle
-  (`chappe_sip_ws:base/0`, the `?IS_WS` guard).
+  (`chappe_sip_ws:base/0`, `chappe_sip_ws:is_ws/1`).
 - The WS listener is served by livery, started only when a WS listener is
   configured (`apps/chappe_sip/src/chappe_sip.app.src`,
   `chappe_sip_ws_sup`).
