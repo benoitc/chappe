@@ -83,23 +83,26 @@ answered.
 
 ```mermaid
 sequenceDiagram
-    participant W as request worker
-    participant Reg as chappe_sip_registry
+    participant W as request worker (runs chappe_sip_registry code)
     participant L as chappe_sip_location_cluster
     participant KV as region KV (chappe_cluster)
-    W->>Reg: register_request/2
-    Reg->>L: read(Aor, local)
+    W->>W: register_request/2, cas mode
+    W->>L: read(Aor, local)
     L->>KV: chappe_cluster:get/1 (local replica)
     KV-->>L: {ok, Maps, V}
-    Reg->>Reg: apply the Contacts
-    Reg->>L: write(Aor, V, Bindings)
-    L-->>Reg: {error, conflict}
-    Reg->>Reg: chappe_sip_registry_store:backoff/1
-    Reg->>L: read(Aor, consistent)
+    W->>W: apply the Contacts
+    W->>L: write(Aor, V, Bindings)
+    L-->>W: {error, conflict}
+    W->>W: chappe_sip_registry_store:backoff/1
+    W->>L: read(Aor, consistent)
     L->>KV: chappe_cluster:get/2 (through the leader)
-    Reg->>L: write(Aor, V2, Bindings)
-    L-->>Reg: ok
+    W->>L: write(Aor, V2, Bindings)
+    L-->>W: ok
 ```
+
+In cas mode no registry process is involved: the request worker runs the
+read, the write and the retries. Only serialized mode goes through the
+`chappe_sip_registry` gen_server.
 
 - The first try reads the local replica. A try that lost the
   compare-and-swap reads through the leader, since the replica that misled
