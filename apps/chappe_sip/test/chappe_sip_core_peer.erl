@@ -36,21 +36,31 @@ send(Sock, Port, Bin) -> send(Sock, ?LO, Port, Bin).
 send(Sock, Ip, Port, Bin) -> ok = gen_udp:send(Sock, Ip, Port, Bin).
 
 %% The first datagram matching What: {status, Code}, {method, M}, any, or a
-%% fun(Bin) -> boolean(). Others are dropped. Returns {Bin, SrcPort}.
+%% fun(Bin) -> boolean(). Others are dropped. Returns {Bin, SrcPort}. On a
+%% timeout the failure names the start lines of what was dropped, so a
+%% wrong answer is told apart from no answer.
 recv(Sock, What, Timeout) ->
     Deadline = now_ms() + Timeout,
-    recv_until(Sock, matcher(What), Deadline, What).
+    recv_until(Sock, matcher(What), Deadline, What, []).
 
-recv_until(Sock, Match, Deadline, What) ->
+recv_until(Sock, Match, Deadline, What, Dropped) ->
     Left = max(0, Deadline - now_ms()),
     receive
         {udp, Sock, _Ip, Src, Bin} ->
             case Match(Bin) of
-                true -> {Bin, Src};
-                false -> recv_until(Sock, Match, Deadline, What)
+                true ->
+                    {Bin, Src};
+                false ->
+                    recv_until(
+                        Sock, Match, Deadline, What, [start_line(Bin) | Dropped]
+                    )
             end
-    after Left -> ct:fail({no_message, What})
+    after Left -> ct:fail({no_message, What, {dropped, lists:reverse(Dropped)}})
     end.
+
+start_line(Bin) ->
+    [Line | _] = binary:split(Bin, <<"\r\n">>),
+    Line.
 
 %% Assert that nothing matching What arrives within Timeout ms.
 recv_none(Sock, What, Timeout) ->
