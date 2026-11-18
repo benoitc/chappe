@@ -21,6 +21,7 @@ arch=$(uname -m)
 build_nif() {
     export ENGINE_SANITIZE=$1
     export ENGINE_EXTRA_CFLAGS=${2:-}
+    scripts/fetch_deps.sh
     rebar3 compile
     rebar3 as test compile
     export SKIP_ENGINE_BUILD=1

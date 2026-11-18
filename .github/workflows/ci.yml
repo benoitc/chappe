@@ -26,6 +26,7 @@ jobs:
         with:
           otp-version: ${{ env.OTP }}
           rebar3-version: ${{ env.REBAR3 }}
+      - run: scripts/fetch_deps.sh
       - run: rebar3 fmt --check
 
   docs-check:
@@ -57,6 +58,7 @@ jobs:
             _build
             ~/.cache/rebar3
           key: static-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config') }}
+      - run: scripts/fetch_deps.sh
       - run: rebar3 lint
 
   xref:
@@ -78,6 +80,7 @@ jobs:
             _build
             ~/.cache/rebar3
           key: static-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config') }}
+      - run: scripts/fetch_deps.sh
       - run: rebar3 xref
 
   dialyzer:
@@ -101,6 +104,7 @@ jobs:
             ~/.cache/rebar3
           key: plt-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config') }}
           restore-keys: plt-otp-${{ env.OTP }}-
+      - run: scripts/fetch_deps.sh
       - run: rebar3 dialyzer
 
   # ---- Build + tests: gated on static checks -----------------------------
@@ -124,6 +128,7 @@ jobs:
             _build
             ~/.cache/rebar3
           key: build-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config', 'apps/chappe_sip/c_src/build.sh') }}
+      - run: scripts/fetch_deps.sh
       - run: rebar3 compile
       - name: Demos compile against the apps
         run: make demo-compile
@@ -148,6 +153,7 @@ jobs:
             _build
             ~/.cache/rebar3
           key: build-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config', 'apps/chappe_sip/c_src/build.sh') }}
+      - run: scripts/fetch_deps.sh
       - run: rebar3 eunit
 
   ct:
@@ -171,6 +177,7 @@ jobs:
             ~/.cache/rebar3
           key: build-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config', 'apps/chappe_sip/c_src/build.sh') }}
       # eunit + ct under cover; the gate only ratchets up
+      - run: scripts/fetch_deps.sh
       - run: make cover MIN_COVERAGE=${{ env.MIN_COVERAGE }}
       - name: Coverage report
         if: always()
@@ -200,6 +207,7 @@ jobs:
             _build
             ~/.cache/rebar3
           key: build-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config', 'apps/chappe_sip/c_src/build.sh') }}
+      - run: scripts/fetch_deps.sh
       - run: make interop
       - name: Test logs
         if: failure()
@@ -231,6 +239,7 @@ jobs:
             _build
             ~/.cache/rebar3
           key: build-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config', 'apps/chappe_sip/c_src/build.sh') }}
+      - run: scripts/fetch_deps.sh
       - run: make ct
       - run: make interop-conformance
       - run: make compliance GATE=demo
@@ -269,6 +278,7 @@ jobs:
       - run: npm install --no-audit --no-fund
         working-directory: apps/chappe_sip/interop
       - run: docker pull ghcr.io/kamailio/kamailio-ci:5.8
+      - run: scripts/fetch_deps.sh
       - run: INTEROP=1 rebar3 ct --suite apps/chappe_sip/test/chappe_sip_interop_SUITE
 
   # The B2BUA as an SBC: SIPp through a chappe node to two FreeSWITCH peers,
@@ -296,6 +306,7 @@ jobs:
       - run: docker pull drachtio/drachtio-freeswitch-mrf:latest
       - run: docker pull ghcr.io/kamailio/kamailio-ci:5.8
       # the lab stays up after the run, so its logs can be read below
+      - run: scripts/fetch_deps.sh
       - run: make interop-sbc
         env:
           SBC_KEEP: '1'
@@ -330,6 +341,7 @@ jobs:
             _build
             ~/.cache/rebar3
           key: build-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config', 'apps/chappe_sip/c_src/build.sh') }}
+      - run: scripts/fetch_deps.sh
       - run: make interop-mix
 
   # The ESL client against a real FreeSWITCH, and its audio forks into
@@ -354,6 +366,7 @@ jobs:
             _build
             ~/.cache/rebar3
           key: build-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config', 'apps/chappe_sip/c_src/build.sh') }}
+      - run: scripts/fetch_deps.sh
       - run: make interop-esl
 
   # chappe_mrf against rtpengine and two FreeSWITCH media servers.
@@ -378,6 +391,7 @@ jobs:
             ~/.cache/rebar3
           key: build-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config', 'apps/chappe_sip/c_src/build.sh') }}
       - run: docker pull drachtio/drachtio-freeswitch-mrf:latest
+      - run: scripts/fetch_deps.sh
       - run: make interop-mrf
       - name: Test logs
         if: failure()
@@ -401,6 +415,7 @@ jobs:
           otp-version: ${{ env.OTP }}
           rebar3-version: ${{ env.REBAR3 }}
       - run: docker pull erlang:29.1.2
+      - run: scripts/fetch_deps.sh
       - run: DURATION=5m make interop-cluster
       - name: Lease logs
         if: failure()
