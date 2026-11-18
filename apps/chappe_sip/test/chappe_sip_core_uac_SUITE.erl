@@ -51,9 +51,12 @@
          request_uri_params_kept/1, invalid_uri_not_sent/1,
          uac_ignores_na_headers/1, redirect_not_cached/1,
          service_unavailable_no_retry/1, session_privacy_sdp_clear/1]).
+-export([too_many_challenges/1, redirect_cap/1, session_422_gives_up/1,
+         second_420_fails/1, foreign_420_fails/1, answer_after_early_bye/1,
+         abandon_established/1, sips_unreliable_not_sent/1]).
 
 all() ->
-    [{group, wire}, {group, timers}].
+    [{group, wire}, {group, limits}, {group, timers}].
 
 groups() ->
     [{wire, [], [request_construction, ack_2xx_and_bye, no_record_route,
@@ -84,6 +87,10 @@ groups() ->
                  invalid_uri_not_sent, uac_ignores_na_headers,
                  redirect_not_cached, service_unavailable_no_retry,
                  session_privacy_sdp_clear]},
+     %% the bounds and give-ups of one INVITE's retries
+     {limits, [], [too_many_challenges, redirect_cap, session_422_gives_up,
+                   second_420_fails, foreign_420_fails, answer_after_early_bye,
+                   abandon_established, sips_unreliable_not_sent]},
      %% each waits 64*T1 (32 s)
      {timers, [], [invite_timeout, uac_timer_d, uac_timer_f_proceeding]}].
 
@@ -1698,6 +1705,185 @@ callee_request(Sock, Method, Inv, Resp, CSeq, Opts) ->
                          from_tag => to_tag(Resp),
                          to => addr(hdr(<<"from">>, Inv)),
                          to_tag => from_tag(Inv), cseq => CSeq}, Opts)).
+
+%% ---- bounds and give-ups of one INVITE ----
+
+%% A new realm in every 401: four challenged INVITEs at most, then the
+%% fifth challenge fails the call with that 401 and nothing more is sent.
+too_many_challenges(Config) ->
+    {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
+    {ok, Ref} = chappe_sip_uac:start(callee(Sock), auth_opts(#{})),
+    Challenge = fun(Inv, N) ->
+        Chal = <<"Digest realm=\"r", (integer_to_binary(N))/binary,
+                 "\", nonce=\"n\", qop=\"auth\"">>,
+        send(Sock, EP, response(Inv, 401, #{
+            to_tag => tag(), headers => [{<<"WWW-Authenticate">>, Chal}]}))
+    end,
+    Last = lists:foldl(
+        fun(N, Inv) ->
+            Challenge(Inv, N),
+            {Next, _} = recv(Sock, {method, <<"INVITE">>}, 3000),
+            ?assertEqual(N, length(hdrs(<<"authorization">>, Next))),
+            Next
+        end,
+        element(1, recv(Sock, {method, <<"INVITE">>}, 3000)),
+        [1, 2, 3, 4]),
+    Challenge(Last, 5),
+    ?assertMatch({error, #chappe_sip_error{status = 401}},
+                 chappe_sip_uac:await(Ref, 3000)),
+    recv_none(Sock, {method, <<"INVITE">>}, 500).
+
+%% follow_redirects follows five 3xx; the sixth fails the call with it.
+redirect_cap(Config) ->
+    {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
+    LP = integer_to_binary(port(Sock)),
+    {ok, Ref} = chappe_sip_uac:start(callee(Sock), #{local_sdp => sdp(),
+                                                     follow_redirects => true,
+                                                     notify => self()}),
+    Redirect = fun(Inv, N) ->
+        Target = <<"sip:r", (integer_to_binary(N))/binary, "@127.0.0.1:",
+                   LP/binary>>,
+        send(Sock, EP, response(Inv, 302, #{
+            to_tag => tag(),
+            headers => [{<<"Contact">>, <<"<", Target/binary, ">">>}]})),
+        Target
+    end,
+    Last = lists:foldl(
+        fun(N, Inv) ->
+            Target = Redirect(Inv, N),
+            {Next, _} = recv(Sock, {method, <<"INVITE">>}, 3000),
+            ?assertEqual(Target, uri(Next)),
+            Next
+        end,
+        element(1, recv(Sock, {method, <<"INVITE">>}, 3000)),
+        [1, 2, 3, 4, 5]),
+    _ = Redirect(Last, 6),
+    ?assertMatch({error, #chappe_sip_error{status = 302}},
+                 chappe_sip_uac:await(Ref, 3000)),
+    recv_none(Sock, {method, <<"INVITE">>}, 500).
+
+%% RFC 4028 7.4: a 422 is retried at most three times, and not at all
+%% when its Min-SE is no more than what we asked for.
+session_422_gives_up(Config) ->
+    {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
+    Opts = #{local_sdp => sdp(), notify => self(), session_expires => 900},
+    Too = fun(Inv, MinSE) ->
+        send(Sock, EP, response(Inv, 422, #{
+            to_tag => tag(), headers => [{<<"Min-SE">>, MinSE}]}))
+    end,
+    {ok, Ref} = chappe_sip_uac:start(callee(Sock), Opts),
+    Last = lists:foldl(
+        fun(MinSE, Inv) ->
+            Too(Inv, MinSE),
+            {Next, _} = recv(Sock, {method, <<"INVITE">>}, 3000),
+            ?assertEqual(MinSE, hdr(<<"min-se">>, Next)),
+            Next
+        end,
+        element(1, recv(Sock, {method, <<"INVITE">>}, 3000)),
+        [<<"1000">>, <<"1100">>, <<"1200">>]),
+    Too(Last, <<"1300">>),
+    ?assertMatch({error, #chappe_sip_error{status = 422}},
+                 chappe_sip_uac:await(Ref, 3000)),
+    recv_none(Sock, {method, <<"INVITE">>}, 500),
+    {ok, Ref2} = chappe_sip_uac:start(callee(Sock), Opts),
+    {Inv2, _} = recv(Sock, {method, <<"INVITE">>}, 3000),
+    Too(Inv2, <<"900">>),
+    ?assertMatch({error, #chappe_sip_error{status = 422}},
+                 chappe_sip_uac:await(Ref2, 3000)),
+    recv_none(Sock, {method, <<"INVITE">>}, 500).
+
+%% RFC 3261 8.1.3.5: one retry without the extensions a 420 names; a
+%% second 420 fails the call.
+second_420_fails(Config) ->
+    {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
+    {ok, Ref} = chappe_sip_uac:start(callee(Sock), #{
+        local_sdp => sdp(), rel100 => require, notify => self(),
+        headers => [{<<"Require">>, <<"replaces">>}]}),
+    {Inv1, _} = recv(Sock, {method, <<"INVITE">>}, 3000),
+    send(Sock, EP, response(Inv1, 420, #{
+        to_tag => tag(), headers => [{<<"Unsupported">>, <<"100rel">>}]})),
+    {Inv2, _} = recv(Sock, {method, <<"INVITE">>}, 3000),
+    ?assertEqual([<<"replaces">>], hdrs(<<"require">>, Inv2)),
+    send(Sock, EP, response(Inv2, 420, #{
+        to_tag => tag(), headers => [{<<"Unsupported">>, <<"replaces">>}]})),
+    ?assertMatch({error, #chappe_sip_error{status = 420}},
+                 chappe_sip_uac:await(Ref, 3000)),
+    recv_none(Sock, {method, <<"INVITE">>}, 500).
+
+%% A 420 naming no option tag we required leaves nothing to retry.
+foreign_420_fails(Config) ->
+    {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
+    {ok, Ref} = chappe_sip_uac:start(callee(Sock), #{local_sdp => sdp(),
+                                                     notify => self()}),
+    {Inv, _} = recv(Sock, {method, <<"INVITE">>}, 3000),
+    send(Sock, EP, response(Inv, 420, #{
+        to_tag => tag(), headers => [{<<"Unsupported">>, <<"foo">>}]})),
+    ?assertMatch({error, #chappe_sip_error{status = 420}},
+                 chappe_sip_uac:await(Ref, 3000)),
+    recv_none(Sock, {method, <<"INVITE">>}, 500).
+
+%% The callee BYEs its early dialog, then sends a 200 with that To tag: the
+%% 200 is ACKed and BYEd, and the caller gets early_dialog_terminated
+%% (RFC 3261 13.2.2.4).
+answer_after_early_bye(Config) ->
+    {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
+    {ok, Ref} = chappe_sip_uac:start(callee(Sock), #{local_sdp => sdp(),
+                                                     notify => self()}),
+    {Inv, _} = recv(Sock, {method, <<"INVITE">>}, 3000),
+    ToTag = tag(),
+    Contact = [{<<"Contact">>, <<"<", (callee(Sock))/binary, ">">>}],
+    R180 = response(Inv, 180, #{to_tag => ToTag, headers => Contact}),
+    send(Sock, EP, R180),
+    ED = early_dialog(Ref),
+    send(Sock, EP, callee_request(Sock, <<"BYE">>, Inv, R180, 1, #{})),
+    {_, _} = recv(Sock, {status, 200, <<"BYE">>}, 3000),
+    receive {chappe_sip_dialog, ED, destroy, _} -> ok
+    after 3000 -> ct:fail(no_destroy)
+    end,
+    send(Sock, EP, response(Inv, 200, #{to_tag => ToTag, body => sdp(),
+                                        headers => Contact})),
+    {Ack, _} = recv(Sock, {method, <<"ACK">>}, 3000),
+    ?assertEqual(ToTag, to_tag(Ack)),
+    {Bye, _} = recv(Sock, {method, <<"BYE">>}, 3000),
+    ?assertEqual(ToTag, to_tag(Bye)),
+    ?assertEqual({error, early_dialog_terminated},
+                 chappe_sip_uac:await(Ref, 3000)).
+
+%% abandon after the 2xx: the dialog nobody will use is ended with a BYE,
+%% carrying the headers abandon/2 names.
+abandon_established(Config) ->
+    {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
+    Reason = <<"SIP;cause=200;text=\"elsewhere\"">>,
+    Abandons = [fun chappe_sip_uac:abandon/1,
+                fun(R) ->
+                    chappe_sip_uac:abandon(R, #{headers => [{<<"Reason">>,
+                                                             Reason}]})
+                end],
+    [Bye1, Bye2] = [abandon_answered(Sock, EP, A) || A <- Abandons],
+    ?assertEqual(undefined, hdr(<<"reason">>, Bye1)),
+    ?assertEqual(Reason, hdr(<<"reason">>, Bye2)).
+
+%% an INVITE answered 200, then abandoned with Abandon: the BYE it gets
+abandon_answered(Sock, EP, Abandon) ->
+    {ok, Ref} = chappe_sip_uac:start(callee(Sock), #{local_sdp => sdp(),
+                                                     notify => self()}),
+    {Inv, _} = recv(Sock, {method, <<"INVITE">>}, 3000),
+    _ = answer(Sock, EP, Inv, Ref),
+    {_, _} = recv(Sock, {method, <<"ACK">>}, 3000),
+    ok = Abandon(Ref),
+    {Bye, _} = recv(Sock, {method, <<"BYE">>}, 3000),
+    send(Sock, EP, response(Bye, 200, #{})),
+    Bye.
+
+%% RFC 3261 19.1.1: a SIPS URI over UDP is refused and nothing is sent.
+sips_unreliable_not_sent(Config) ->
+    Sock = ?config(sock, Config),
+    Uri = <<"sips:callee@127.0.0.1:", (integer_to_binary(port(Sock)))/binary,
+            ";transport=udp">>,
+    ?assertEqual({error, {bad_uri, sips_unreliable_transport}},
+                 chappe_sip_uac:start(Uri, #{local_sdp => sdp(),
+                                             notify => self()})),
+    recv_none(Sock, any, 500).
 
 %% ---- helpers of the cases above ----
 

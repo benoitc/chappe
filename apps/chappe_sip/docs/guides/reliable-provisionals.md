@@ -90,6 +90,6 @@ answer your `answer` fun returns, and the ACK then has no body:
 ## Where it lives
 
 - Modules: `chappe_sip_res` (`send_reliable/2`, `await_prack/1,2`),
-  `chappe_sip_uac_fsm` (auto-PRACK), the PRACK path of the NIF (`prack_cb`).
+  `chappe_sip_uac_early` (auto-PRACK), the PRACK path of the NIF (`prack_cb`).
 - Tests: `chappe_sip_prack_SUITE`, `chappe_sip_prack_conf_SUITE`.
 - Lab: `make interop-conformance`.

@@ -27,7 +27,7 @@ method or RFC rule in chappe_sip.
 | SDP | `src/sip/chappe_sip_sdp.erl` |
 | Default `Allow` and `Supported` | `include/chappe_sip.hrl` (`?ALLOW`, `?SUPPORTED_TAGS`), `src/chappe_sip_config.erl` |
 | In-dialog behaviour | `src/dialog/chappe_sip_dialog_fsm.erl` (the process), `chappe_sip_dialog_route` (inbound checks), `chappe_sip_dialog_offer` (offer/answer), `chappe_sip_dialog_out` (outgoing requests), `chappe_sip_session_timer`, `chappe_sip_refer` |
-| Outbound requests | `src/uac/chappe_sip_uac_fsm.erl` |
+| Outbound requests | `src/uac/chappe_sip_uac_fsm.erl` (the process), `chappe_sip_uac_req` (building), `chappe_sip_uac_retry` (3xx, 401/407, 420, 422) |
 | Inbound dispatch | `src/engine/chappe_sip_engine.erl`, `src/conn/chappe_sip_request_worker.erl` |
 | WebSocket transactions | `src/ws/chappe_sip_ws_transport.erl` |
 | Public entry points | `src/api/chappe_sip.erl` |
