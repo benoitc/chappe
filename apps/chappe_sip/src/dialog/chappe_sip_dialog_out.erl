@@ -14,7 +14,7 @@
 -export([build/5, send/5, route/1, transact/4]).
 -export([start_bye/3, start_reinvite/4, start_request/3, start_request/4]).
 -export([reinvite_response/5, send_ack/1, send_delayed_ack/3]).
--export([indialog_request/4, has_hdr/2]).
+-export([indialog_request/4, has_hdr/2, raw/6]).
 
 -export_type([headers/0]).
 
@@ -116,18 +116,39 @@ build(
     Headers,
     Body
 ) ->
-    {RURI, RouteSet} = chappe_sip_route:request_target(Target, RouteSet0),
-    Seq = integer_to_binary(CSeq),
     HdrBin = chappe_sip_hdr_io:join(
         with_supported(Method, with_contact(Method, Contact, Headers))
     ),
-    CL = integer_to_binary(byte_size(Body)),
+    raw(
+        Method,
+        CSeq,
+        {Target, RouteSet0},
+        {LocalAddr, RemoteAddr, CallId},
+        HdrBin,
+        Body
+    ).
+
+%% The bytes of a request inside a dialog, shared with the UAC fsm's ACK,
+%% BYE and PRACK: the Request-URI and Route headers from the remote target
+%% and the route set (RFC 3261 12.2.1.1, strict routers take the
+%% Request-URI), then From, To, Call-ID, CSeq, Max-Forwards, the headers
+%% (already joined) and the body.
+-spec raw(
+    binary(),
+    pos_integer(),
+    {binary(), [binary()]},
+    {binary(), binary(), binary()},
+    binary(),
+    binary()
+) -> binary().
+raw(Method, CSeq, {Target, RouteSet0}, {From, To, CallId}, HdrBin, Body) ->
+    {RURI, RouteSet} = chappe_sip_route:request_target(Target, RouteSet0),
     <<Method/binary, " ", RURI/binary, " SIP/2.0\r\n",
-        (route_headers(RouteSet))/binary, "From: ", LocalAddr/binary, "\r\n",
-        "To: ", RemoteAddr/binary, "\r\n", "Call-ID: ", CallId/binary, "\r\n",
-        "CSeq: ", Seq/binary, " ", Method/binary, "\r\n",
-        "Max-Forwards: 70\r\n", HdrBin/binary, "Content-Length: ", CL/binary,
-        "\r\n\r\n", Body/binary>>.
+        (route_headers(RouteSet))/binary, "From: ", From/binary, "\r\n", "To: ",
+        To/binary, "\r\n", "Call-ID: ", CallId/binary, "\r\n", "CSeq: ",
+        (integer_to_binary(CSeq))/binary, " ", Method/binary, "\r\n",
+        "Max-Forwards: 70\r\n", HdrBin/binary, "Content-Length: ",
+        (integer_to_binary(byte_size(Body)))/binary, "\r\n\r\n", Body/binary>>.
 
 %% Target refresh requests carry our Contact (RFC 3261 12.2.1.1 for
 %% re-INVITE and UPDATE, RFC 6665 4.1.2.2 and 4.2.2 for SUBSCRIBE and
