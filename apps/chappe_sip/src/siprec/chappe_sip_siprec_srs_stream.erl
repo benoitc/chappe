@@ -71,17 +71,49 @@ retake([{I, Sec, Offer} | Offers], [], Media, Ctx) ->
 retake([], _Taken, _Media, _Ctx) ->
     [].
 
+%% A stream with a receiver follows its re-offer (RFC 3264 8.2, 8.3):
+%% port 0 stops it; the same audio profile keeps it, re-latched to a moved
+%% source (8.3.1), with the offer's key and direction, unless no format it
+%% takes is left (8.3.2: port 0, stopped); another media type or profile
+%% (8.3.3) stops it and takes the stream as a new one, under the same
+%% rules (keys included).
 kept({_, undefined}, I, Sec, Offer, _Media, Ctx) ->
     take(I, Sec, Offer, Ctx);
-kept({_, #{pid := Pid}} = T, _I, [M | _], {_, Dir}, Media, _Ctx) ->
+kept(
+    {_, #{pid := Pid, profile := Proto}} = T,
+    I,
+    [M | _] = Sec,
+    Offer,
+    Media,
+    Ctx
+) ->
     case m_line(M) of
         {_, 0, _, _} ->
-            _ = chappe_audio_rtp:stop(Pid),
-            {rejected(M), undefined};
+            stopped(Pid, M);
+        {<<"audio">>, _, Proto, Fmts} ->
+            case [F || F <- Fmts, lists:member(F, ?LAWS)] of
+                [] -> stopped(Pid, M);
+                _ -> followed(T, Offer, Media)
+            end;
         _ ->
-            {Lines, S} = rekey_one(T, Media),
-            {chappe_sip_sdp:set_direction(Lines, Dir), S}
+            _ = chappe_audio_rtp:stop(Pid),
+            take(I, Sec, Offer, Ctx)
     end.
+
+stopped(Pid, M) ->
+    _ = chappe_audio_rtp:stop(Pid),
+    {rejected(M), undefined}.
+
+followed(T, {Remote, Dir}, Media) ->
+    {Lines, S} = rekey_one(T, Media),
+    {chappe_sip_sdp:set_direction(Lines, Dir), relatched(S, Remote)}.
+
+%% the receiver takes the source the re-offer gives, when it moved
+relatched(#{remote := Remote} = S, Remote) ->
+    S;
+relatched(#{pid := Pid} = S, Remote) ->
+    ok = chappe_audio_rtp:remote(Pid, Remote),
+    S#{remote := Remote}.
 
 %% RFC 4568 7.1.4: a re-offer may change a stream's key; its receiver
 %% takes the new one, and the answer echoes the new line's tag. A stream
@@ -253,6 +285,7 @@ receiver(Label, Laws, Senders, CallRef, Sink0, Ip, Opts, M, {Proto, Srtp}) ->
                 port => Port,
                 parties => Parties,
                 profile => Proto,
+                remote => maps:get(remote, Opts),
                 index => maps:get(index, Opts),
                 srtp => srtp_hash(Srtp)
             }};

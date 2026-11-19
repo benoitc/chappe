@@ -366,13 +366,9 @@ run(#{dialog := D} = Srs) ->
 loop(D, Mon, Srs) ->
     receive
         {chappe_sip_dialog, D, modify, Req, Res} ->
-            Read = read(Req),
-            updated(Req, Read, Srs),
-            loop(D, Mon, reoffered(modify, Read, Res, Srs));
+            loop(D, Mon, reoffered(modify, Req, Res, Srs));
         {chappe_sip_dialog, D, update, Req, Res} ->
-            Read = read(Req),
-            updated(Req, Read, Srs),
-            loop(D, Mon, reoffered(update, Read, Res, Srs));
+            loop(D, Mon, reoffered(update, Req, Res, Srs));
         {chappe_sip_dialog, D, destroy, Why} ->
             Why;
         {'DOWN', Mon, process, _, Why} ->
@@ -386,21 +382,28 @@ loop(D, Mon, Srs) ->
 %% than the session has is refused 488 (RFC 3264 8) and the session is
 %% left as it was. A re-INVITE with no offer gets the current SDP as the
 %% SRS's offer, and an UPDATE with none (the metadata alone, RFC 7866 9.1)
-%% an empty 200.
-reoffered(_Event, {ok, Sdp, Doc}, Res, Srs) ->
+%% an empty 200. The metadata a request carries is told once it is
+%% accepted, never for one refused.
+reoffered(Event, Req, Res, Srs) ->
+    reoffered(Event, Req, read(Req), Res, Srs).
+
+reoffered(_Event, Req, {ok, Sdp, Doc} = Read, Res, Srs) ->
     case reoffer(Sdp, Doc, Srs) of
         {ok, Srs1} ->
             send_answer(Res, Srs1),
+            updated(Req, Read, Srs1),
             Srs1;
         error ->
             _ = chappe_sip_res:send(Res, 488),
             Srs
     end;
-reoffered(modify, {error, _}, Res, Srs) ->
+reoffered(modify, Req, {error, _} = Read, Res, Srs) ->
     send_answer(Res, Srs),
+    updated(Req, Read, Srs),
     Srs;
-reoffered(update, {error, _}, Res, Srs) ->
+reoffered(update, Req, {error, _} = Read, Res, Srs) ->
     _ = chappe_sip_res:send(Res, 200),
+    updated(Req, Read, Srs),
     Srs.
 
 send_answer(Res, #{answer := Answer}) ->

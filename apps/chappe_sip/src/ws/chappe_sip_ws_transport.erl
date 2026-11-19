@@ -439,10 +439,13 @@ new_server_txn(Flow, Msg, Raw, Branch, Method, S) ->
             _ ->
                 S1
         end,
+    %% transport as the native engine names it (<<"ws">> or <<"wss">>),
+    %% for what decides on the transport a request came over
     Meta = #{
         method => Method,
         flow => Flow,
-        peer => chappe_sip_ws_txn:peer_of(Flow, S2)
+        peer => chappe_sip_ws_txn:peer_of(Flow, S2),
+        transport => atom_to_binary(chappe_sip_ws_txn:proto_of(Flow, S2))
     },
     chappe_sip_ws_txn:engine_event({request, TxnH, LegH, Meta, Raw}),
     S2.

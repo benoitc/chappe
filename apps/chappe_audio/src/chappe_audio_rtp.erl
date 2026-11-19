@@ -41,7 +41,7 @@
 -module(chappe_audio_rtp).
 -behaviour(gen_server).
 
--export([start/1, start_link/1, stop/1, port/1, stats/1, rekey/2]).
+-export([start/1, start_link/1, stop/1, port/1, stats/1, rekey/2, remote/2]).
 -export([
     init/1,
     handle_call/3,
@@ -129,6 +129,14 @@ stats(Pid) ->
 rekey(Pid, Ctx) ->
     gen_server:call(Pid, {rekey, Ctx}).
 
+%% The sender moved (a new address or port in its SDP): the stream drops
+%% the source it latched and latches again, as at its start, to the first
+%% source at the new remote (undefined: the first source).
+-spec remote(pid(), {inet:ip_address(), inet:port_number()} | undefined) ->
+    ok.
+remote(Pid, Remote) ->
+    gen_server:call(Pid, {remote, Remote}).
+
 -spec init(map()) -> {ok, state()} | {stop, term()} | {error, no_port}.
 init(#{owner := Owner, ip := Ip, label := Label, sink := Sink0} = Args) ->
     case open(Ip, maps:get(ports, Args, undefined)) of
@@ -195,6 +203,8 @@ handle_call({rekey, _Ctx}, _From, #state{srtp = undefined} = S) ->
     {reply, ok, S};
 handle_call({rekey, Ctx}, _From, #state{srtp = Old} = S) ->
     {reply, ok, S#state{srtp = chappe_audio_srtp:rekey(Old, Ctx)}};
+handle_call({remote, Remote}, _From, S) ->
+    {reply, ok, S#state{remote = Remote, latched = undefined}};
 handle_call(stop, _From, S) ->
     {stop, normal, close_sink(S), S#state{sink = {pid, self()}}}.
 
