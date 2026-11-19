@@ -20,6 +20,7 @@ jobs:
   sofia:
     name: sofia-sip advisories
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - name: Test the advisory script
@@ -40,6 +41,7 @@ jobs:
   hex:
     name: hex packages on osv.dev
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - name: Check rebar.lock
