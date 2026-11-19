@@ -76,6 +76,13 @@ capability exists before you reach for it.
   it in its events.
 - Requirement catalogue in `docs/compliance/requirements.tsv`.
 
+## Also exported
+
+These functions are exported and supported, but no guide shows them yet.
+
+- `chappe_esl_parser:buffer/1` returns the bytes not yet forming a frame;
+  `overflowed/1` says whether a partial frame passed the size bound.
+
 ## Roadmap
 
 - Commands without an API yet: `divert_events`, `resume`, `log`, `nolog`,
