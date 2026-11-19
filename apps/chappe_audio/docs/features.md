@@ -34,6 +34,18 @@ page that shows you how to use it.
   and room recordings (chappe_mrf), and chappe_sip's SIPREC recording
   server. [Record a call](guides/record.md#where-each-entry-points-audio-goes)
 
+## Also exported
+
+These functions are exported and supported, but no guide shows them yet.
+
+- `chappe_audio:stop_listener/1` stops a listener `listen/1` started.
+- `chappe_audio_store:config/0` returns this node's store settings (backend,
+  dir, retention, sweep interval and guard).
+- `chappe_audio_store_file:ref_dir/1` gives the folder name the file
+  backend uses for a `call_ref`.
+- `chappe_audio_srtp:derive/4` and `crypt/5` are the RFC 3711 key
+  derivation and AES-CM keystream the receiver uses.
+
 ## Planned
 
 - An object store backend (S3 and the like).
