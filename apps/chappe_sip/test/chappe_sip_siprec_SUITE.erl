@@ -44,7 +44,8 @@
 -export([server_keys_over_wss/1, server_answers_inactive_offer/1,
          server_refused_reoffer_keeps_metadata/1, server_reoffer_moves_source/1,
          server_reoffer_drops_g711/1, server_reoffer_changes_profile/1,
-         server_udp_rekey/1, server_reoffer_follows_formats/1]).
+         server_udp_rekey/1, server_reoffer_follows_formats/1,
+         server_reoffer_moves_behind_nat/1]).
 
 all() ->
     [invite_is_a_recording_session, chappe_as_recording_server,
@@ -71,7 +72,8 @@ all() ->
      server_keys_over_wss, server_answers_inactive_offer,
      server_refused_reoffer_keeps_metadata, server_reoffer_moves_source,
      server_reoffer_drops_g711, server_reoffer_changes_profile,
-     server_udp_rekey, server_reoffer_follows_formats].
+     server_udp_rekey, server_reoffer_follows_formats,
+     server_reoffer_moves_behind_nat].
 
 -define(UA, chappe_sip_test_ua).
 -define(M, chappe_sip_siprec_meta).
@@ -1682,11 +1684,10 @@ server_refused_reoffer_keeps_metadata(_Config) ->
     end.
 
 %% RFC 3264 8.3.1: a re-offer that moves a stream's source to another port
-%% re-latches its receiver to that port exactly: a late packet from the
-%% old port, arriving first, is dropped, the new source is taken. The SRTP
-%% context carries on across the move: a packet replayed from the new
-%% source is caught, and the old source's packets count as neither taken
-%% nor failed.
+%% re-latches its receiver: a late packet from the old source, arriving
+%% first, is dropped, the new source is taken. The SRTP context carries on
+%% across the move: a packet replayed from the new source is caught, and
+%% the old source's packets count as neither taken nor failed.
 %% req: R3264-8.3.1-1
 server_reoffer_moves_source(_Config) ->
     #{ep := EP} = call(),
@@ -1731,6 +1732,52 @@ server_reoffer_moves_source(_Config) ->
     ?assertEqual(#{packets => 2, failed => 0, replayed => 1}, chappe_audio_rtp:stats(S1)),
     gen_udp:close(A),
     gen_udp:close(B).
+
+%% A client behind a NAT that moves: the re-offer names port X, but its
+%% packets come from port Y of the same address, as at the start of the
+%% session; the receiver learns Y again from the new address and takes
+%% them, while a late packet of the old source is still dropped.
+%% req: R3264-8.3.1-1
+server_reoffer_moves_behind_nat(_Config) ->
+    #{ep := EP} = call(),
+    {ok, A} = gen_udp:open(0, [binary, {ip, {127, 0, 0, 1}}]),
+    {ok, X} = gen_udp:open(0, [binary, {ip, {127, 0, 0, 1}}]),
+    {ok, Y} = gen_udp:open(0, [binary, {ip, {127, 0, 0, 1}}]),
+    Master = ?SRTP:master(),
+    Sdp = fun(V, Sock) ->
+              <<"v=0\r\no=src 1 ", V/binary, " IN IP4 127.0.0.1\r\ns=-\r\n"
+                "c=IN IP4 127.0.0.1\r\nt=0 0\r\n"
+                "m=audio ", (integer_to_binary(?UA:lport(Sock)))/binary, " RTP/SAVP 0\r\n",
+                (crypto_line(<<"1 AES_CM_128_HMAC_SHA1_80">>, Master))/binary,
+                "a=sendonly\r\na=label:1\r\n">>
+          end,
+    {R, Peer} = wire_rs_session(EP, <<"sip:sink@127.0.0.1">>, Sdp(<<"1">>, A)),
+    ?assertEqual(200, ?UA:status(R)),
+    #{streams := [#{pid := S1, port := P1}]} = got(srs_served),
+    Send = fun(Sock, Seq) ->
+               gen_udp:send(Sock, {127, 0, 0, 1}, P1,
+                            ?SRTP:protect(rtp(0, Seq, <<0:1280>>), 0, ?SRTP:sender(Master)))
+           end,
+    ok = Send(A, 10),
+    receive {chappe_sip_siprec_rtp, S1, {audio, _}} -> ok after 2000 -> ct:fail(no_audio) end,
+    %% the re-offer names X; the client's NAT sends from Y
+    Peer ! {reinvite, Sdp(<<"2">>, X)},
+    ?assertEqual(200, ?UA:status(got(wire_reinvite))),
+    ok = Send(A, 11),
+    receive {chappe_sip_siprec_rtp, S1, {audio, _}} -> ct:fail(old_source_heard)
+    after 300 -> ok
+    end,
+    ok = Send(Y, 12),
+    receive {chappe_sip_siprec_rtp, S1, {audio, _}} -> ok
+    after 2000 -> ct:fail(nat_source_not_heard)
+    end,
+    ok = Send(Y, 12),
+    ok = Send(A, 13),
+    receive {chappe_sip_siprec_rtp, S1, {audio, _}} -> ct:fail(heard_again)
+    after 300 -> ok
+    end,
+    ?assertEqual(#{packets => 2, failed => 0, replayed => 1}, chappe_audio_rtp:stats(S1)),
+    [gen_udp:close(S) || S <- [A, X, Y]].
 
 %% RFC 3264 8.3.2: a re-offer that leaves a stream no format the server
 %% takes (no PCMU or PCMA) answers that m-line port 0 and stops its

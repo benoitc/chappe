@@ -24,7 +24,10 @@
 %% first source at the remote address it was given (any port, as a NAT may
 %% change it; the sender sends from where it receives, RFC 4961), and
 %% drops every other source from then on. A stream started with remote =>
-%% undefined latches to the first source.
+%% undefined latches to the first source. When the sender moves
+%% (remote/2), the stream learns again the same way from the new address,
+%% any port, and drops the source it had latched, so a late packet from
+%% the old source cannot take it.
 %%
 %% SRTP: started with srtp => Ctx (chappe_audio_srtp:new/1, from the
 %% sender's a=crypto line), the stream takes SRTP only (RFC 3711): each
@@ -61,9 +64,11 @@
     tag :: atom(),
     max_queue :: pos_integer(),
     label :: binary(),
-    %% the client's address as its SDP gave it, and the source latched
+    %% the client's address as its SDP gave it, the source latched, and
+    %% the one latched before the sender moved (remote/2), never taken again
     remote :: {inet:ip_address(), inet:port_number()} | undefined,
     latched :: {inet:ip_address(), inet:port_number()} | undefined,
+    moved_from :: {inet:ip_address(), inet:port_number()} | undefined,
     packets = 0 :: non_neg_integer(),
     %% SRTP (redacted in reports), the packets it dropped, and the
     %% failures not logged yet with the time of the last log line
@@ -129,10 +134,11 @@ stats(Pid) ->
 rekey(Pid, Ctx) ->
     gen_server:call(Pid, {rekey, Ctx}).
 
-%% The sender moved (a new address or port in its SDP): the stream latches
-%% to that address and port exactly, so a late packet from the old source
-%% is dropped, whatever its port (undefined: the first source again). The
-%% SRTP context, its replay lists and the counters carry on.
+%% The sender moved (a new address or port in its SDP): the stream learns
+%% its source again as at its start, the first one at the new address on
+%% any port (a NAT may change it; undefined: the first source), and drops
+%% a late packet from exactly the source it had latched. The SRTP context,
+%% its replay lists and the counters carry on.
 -spec remote(pid(), {inet:ip_address(), inet:port_number()} | undefined) ->
     ok.
 remote(Pid, Remote) ->
@@ -204,8 +210,8 @@ handle_call({rekey, _Ctx}, _From, #state{srtp = undefined} = S) ->
     {reply, ok, S};
 handle_call({rekey, Ctx}, _From, #state{srtp = Old} = S) ->
     {reply, ok, S#state{srtp = chappe_audio_srtp:rekey(Old, Ctx)}};
-handle_call({remote, Remote}, _From, S) ->
-    {reply, ok, S#state{remote = Remote, latched = Remote}};
+handle_call({remote, Remote}, _From, #state{latched = Old} = S) ->
+    {reply, ok, S#state{remote = Remote, latched = undefined, moved_from = Old}};
 handle_call(stop, _From, S) ->
     {stop, normal, close_sink(S), S#state{sink = {pid, self()}}}.
 
@@ -236,9 +242,12 @@ format_status(Status) ->
     Status.
 
 %% the latched source; before it, the first one from the client's address
+%% other than the one latched before the sender moved
 source(Ip, Port, #state{latched = {Ip, Port}}) ->
     {ok, {Ip, Port}};
 source(_Ip, _Port, #state{latched = {_, _}}) ->
+    drop;
+source(Ip, Port, #state{moved_from = {Ip, Port}}) ->
     drop;
 source(Ip, Port, #state{remote = {Ip, _}}) ->
     {ok, {Ip, Port}};

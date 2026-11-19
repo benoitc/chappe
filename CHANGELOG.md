@@ -24,7 +24,9 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
   recording server takes SRTP keys over WSS, call records name the WS
   transport, and registrations made over WebSocket keep it.
 - chappe_audio: an RTP receiver can be pointed at a new sender address,
-  for a sender that moves mid-stream; it then takes that address only.
+  for a sender that moves mid-stream. It learns the sender again from the
+  new address, behind a NAT too, and ignores late packets from where the
+  sender was before.
 - chappe_sip: a NOTIFY from another fork of a subscription could be
   answered 500 instead of 200 when the stack was busy, because the request
   ended before the new subscription had answered it. The new subscription

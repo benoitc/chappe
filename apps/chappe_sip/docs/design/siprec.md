@@ -178,8 +178,10 @@ offered one (RFC 3264 6):
 
 - a stream with a receiver keeps it while the offer keeps its audio
   profile and PCMU or PCMA. A new key goes to the receiver
-  (`chappe_audio_rtp:rekey/2`), a moved source re-latches it to the new
-  address and port exactly (`chappe_audio_rtp:remote/2`, RFC 3264 8.3.1),
+  (`chappe_audio_rtp:rekey/2`), a moved source re-latches it: it learns
+  again from the new address on any port, as at the start, and drops a
+  late packet from the old source (`chappe_audio_rtp:remote/2`, RFC 3264
+  8.3.1),
   the answer lists the offer's G.711 formats in its order (6.1), and the
   direction follows the offer (`a=inactive` for an inactive offer,
   `a=recvonly` for a sendonly one);
