@@ -7,6 +7,13 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 
 ## Unreleased
 
+- chappe_sip: the SIPREC recording server now answers re-offers as RFC
+  3264 asks. A paused recording (an inactive re-INVITE) is answered
+  inactive instead of recvonly, a re-INVITE that adds a stream gets an
+  answer line for it and starts recording it, an UPDATE that carries an SDP
+  offer gets its answer instead of an empty 200, and a stream the client
+  removes stops. SRTP keys sent to a `sips:` address over plain UDP are now
+  refused like any other keys sent without TLS.
 - chappe_sip: a NOTIFY from another fork of a subscription could be
   answered 500 instead of 200 when the stack was busy, because the request
   ended before the new subscription had answered it. The new subscription
