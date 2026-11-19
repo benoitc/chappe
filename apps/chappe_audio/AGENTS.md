@@ -17,7 +17,9 @@ its acceptor), `chappe_audio_conn` (one per opening handshake),
 `chappe_audio_pg` (its own pg scope, `chappe_audio`, started by its supervisor),
 `chappe_audio_pcm` (L16 levels, G.711 decode), `chappe_audio_rtp` (one received
 RTP stream, the SIPREC recording server's receiver) with `chappe_audio_srtp`
-(receive-only SRTP), and the recording store: `chappe_audio_store`
+(receive-side SRTP, SRTCP for its own reports) and `chappe_audio_rtp_rtcp`
+(pure: its RTCP session) on `chappe_audio_rtcp` (pure: RTCP packets,
+statistics, interval), and the recording store: `chappe_audio_store`
 (the behaviour and the API), `chappe_audio_store_srv` (the node's store: config,
 pg membership, sweep), `chappe_audio_writer` (one per recording being written),
 `chappe_audio_store_file` (the default backend) and `chappe_audio_wav` (pure:

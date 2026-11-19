@@ -37,7 +37,10 @@ What the repository shows:
 chappe may decrypt SRTP in Erlang where it receives media itself and is the
 media's last stop. Today that is the SIPREC recording server only:
 
-- receive only: chappe never encrypts or sends SRTP;
+- receive only for media: chappe never encrypts or sends SRTP. The one
+  thing it protects is the receiver's own RTCP reports (RFC 7866 8.1.1
+  requires RTCP), as SRTCP with the key of its SDP answer
+  (`chappe_audio_srtp:protect_rtcp/2`, added 2026-11-19);
 - SDES keys only (RFC 4568 `a=crypto`, `inline` key method), suites
   `AES_CM_128_HMAC_SHA1_80` and `AES_CM_128_HMAC_SHA1_32`, through OTP
   `crypto` (`apps/chappe_audio/src/chappe_audio_srtp.erl`);

@@ -1,7 +1,8 @@
 # Configuration
 
 This page lists what you can set in chappe_audio: two application
-environment keys, the listener options and the stream options. Read it when
+environment keys, the listener options, the stream options and the RTP
+receiver options. Read it when
 you wire chappe_audio into a release or tune a listener.
 
 ## Application environment
@@ -51,6 +52,42 @@ you wire chappe_audio into a release or tune a listener.
 | `max_queue_bytes` | `8388608` | Bytes of frames waiting at the owner past which one is dropped (with large frames this binds before `max_queue`). |
 | `connect_timeout` | `30000` | Milliseconds to wait for the fork. |
 | `store` | `none` | `default` writes the stream to the recording store. |
+
+## RTP receiver options
+
+`chappe_audio:rtp_receiver/1`, one receiver per recorded RTP stream (the
+SIPREC recording server starts them).
+
+| Key | Default | What it does |
+|---|---|---|
+| `owner` | required | The process the receiver lives for; it stops when the owner exits. |
+| `ip` | required | Address the socket binds. |
+| `label` | required | Its name in logs. |
+| `sink` | required | `{store, Module, Meta}` writes a recording; `{pid, Pid}` sends `{Tag, Receiver, {audio, Pcm}}`. |
+| `max_queue` | `500` | Messages waiting at a `{pid, Pid}` sink past which a frame is dropped. |
+| `remote` | `undefined` | The sender's address from its SDP; the receiver latches to the first source at that address (any port). `undefined` latches to the first source. |
+| `srtp` | `undefined` | A `chappe_audio_srtp` context of the sender's key: the stream takes SRTP only. |
+| `ports` | `undefined` (any) | `{Min, Max}`: the range the socket binds a free port of; none free is `{error, no_port}`. |
+| `tag` | `chappe_audio_rtp` | The first element of the sink's messages. |
+| `rtcp` | `none` | `none`: no RTCP, as before. `mux`: RTCP on the RTP port (`a=rtcp-mux`, RFC 5761). `port`: an even RTP port and RTCP on the next one. With `mux` or `port` the receiver reads the source's RTCP and sends a receiver report about every 5 s. |
+| `rtcp_remote` | `undefined` | With `rtcp => port`: where to send reports when the offer's `a=rtcp` names a port other than RTP + 1, until RTCP arrives from the source. |
+| `cname` | random | The CNAME in its reports (RFC 7022). Give the streams of one recording the same one to tie them together. |
+| `srtcp_out` | `undefined` | On an SRTP stream, a `chappe_audio_srtp` context of the receiver's own key, the one its SDP answer's `a=crypto` gives: it protects the reports as SRTCP. Without it an SRTP stream sends no report. |
+
+```erlang
+{ok, R} = chappe_audio:rtp_receiver(#{
+    owner => self(), ip => {10, 0, 0, 5}, label => <<"1">>,
+    sink => {pid, self()}, remote => {{10, 0, 0, 9}, 4000},
+    rtcp => mux
+}),
+Port = chappe_audio_rtp:port(R),          %% the m= port
+RtcpPort = chappe_audio_rtp:rtcp_port(R). %% the same with mux, Port + 1 with port
+```
+
+`chappe_audio_rtp:stats/1` then also gives `rtcp_sent`, `rtcp_received`
+and `sources`, one map per source: `ssrc`, `cname`, `received`, `lost`,
+`highest`, `jitter`. With a new key on a re-INVITE,
+`chappe_audio_rtp:rekey/3` takes the sender's key and the receiver's own.
 
 ## Storage options
 
