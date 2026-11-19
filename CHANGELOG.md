@@ -7,6 +7,10 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 
 ## Unreleased
 
+- chappe_sip: a NOTIFY from another fork of a subscription could be
+  answered 500 instead of 200 when the stack was busy, because the request
+  ended before the new subscription had answered it. The new subscription
+  now answers it before the request ends.
 - chappe_esl: a peer refused by the listener's allow list is counted before
   its connection is closed, so the refusal shows in the listener's stats
   as soon as the peer sees the close.
