@@ -1,14 +1,14 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 
-%% Upgrading the NIF library in place.
+%% Replacing the NIF library.
 %%
-%% A new version of chappe_sip_nif whose on_load loads another copy of the
-%% shim is an upgrade: the BEAM calls the new image's upgrade callback with
-%% the old image's private data. The new image must refuse while the old
-%% one runs an engine, and once that engine is stopped it must come up on
-%% its own: its resource type, atoms and sofia state, so a start, a request
-%% and a stop work with the new code.
+%% A new version of chappe_sip_nif loaded while the old code still holds
+%% the shim is an in-place upgrade, which the shim always refuses: the load
+%% fails and the old code stays, with or without a running engine. The way
+%% to replace the library is to stop the engine, delete and purge the
+%% module, then load the new one, which then starts an engine, answers a
+%% request and stops.
 %%
 %% The case runs in a peer node: it replaces chappe_sip_nif, which the
 %% other suites (and cover) on this node keep using.
@@ -18,39 +18,43 @@
 -include_lib("stdlib/include/assert.hrl").
 
 -export([all/0]).
--export([upgrade_after_stop/1]).
+-export([replace_after_purge/1]).
 %% run in the peer
--export([upgrade_scenario/1]).
+-export([replace_scenario/1]).
 
 all() ->
-    [upgrade_after_stop].
+    [replace_after_purge].
 
-%% refused while an engine runs, accepted once it stopped, then the new
-%% image starts an engine, answers a request and stops
-upgrade_after_stop(Config) ->
+%% an upgrade is refused with and without a running engine; stop, delete,
+%% purge and load gives a working new library
+replace_after_purge(Config) ->
     Dir = ?config(priv_dir, Config),
     Paths = lists:append([["-pa", P] || P <- code:get_path()]),
     {ok, Peer, _Node} = peer:start_link(#{connection => standard_io, args => Paths}),
     try
-        ?assertEqual(ok, peer:call(Peer, ?MODULE, upgrade_scenario, [Dir], 60000))
+        ?assertEqual(ok, peer:call(Peer, ?MODULE, replace_scenario, [Dir], 60000))
     after
         peer:stop(Peer)
     end.
 
-upgrade_scenario(Dir) ->
+replace_scenario(Dir) ->
     {module, chappe_sip_nif} = code:ensure_loaded(chappe_sip_nif),
     Next = upgraded_module(copy_nif(Dir)),
+
+    %% no engine: an upgrade is still refused
+    ?assertEqual({error, on_load_failure}, load(Next)),
 
     P0 = chappe_sip_test_port:pick(),
     {ok, E0} = chappe_sip_nif:start(#{contact => contact(P0)}, self()),
     ?assertEqual({error, on_load_failure}, load(Next)),
-    %% the refused load left the running image in place
+    %% the refused load left the running library in place
     ?assertEqual(ok, round_trip(E0, P0)),
     ok = chappe_sip_nif:stop(E0),
 
-    ?assertEqual({module, chappe_sip_nif}, load(Next)),
-    %% unloads the old image
+    %% stop, delete, purge (unloads the old library), then load
+    true = code:delete(chappe_sip_nif),
     true = code:soft_purge(chappe_sip_nif),
+    ?assertEqual({module, chappe_sip_nif}, load(Next)),
 
     P1 = chappe_sip_test_port:pick(),
     {ok, E1} = chappe_sip_nif:start(#{contact => contact(P1)}, self()),
@@ -61,8 +65,7 @@ upgrade_scenario(Dir) ->
 load(Bin) ->
     code:load_binary(chappe_sip_nif, "chappe_sip_nif_next.beam", Bin).
 
-%% the built shim under another name, so the next load_nif opens a second
-%% image of it rather than the one already loaded
+%% the built shim under another name, as a release ships a new library
 copy_nif(Dir) ->
     Src = filename:join([code:priv_dir(chappe_sip), "lib", "chappe_sip_engine_nif.so"]),
     Base = filename:join(Dir, "chappe_sip_engine_nif_next"),

@@ -41,10 +41,11 @@
 %% {error, badarg}, and max_message_size must be 1 KiB to 64 MiB. A call
 %% the shim has no memory for returns {error, enomem} and sends nothing.
 %%
-%% Loading a new version of this module upgrades the shim. The upgrade is
-%% refused, and the load fails with on_load_failure, while the old shim
-%% runs an engine: stop the stack first (docs/design/engine.md,
-%% "Upgrading the NIF").
+%% Loading a new version of this module while the old code still holds the
+%% shim is an in-place upgrade, which the shim always refuses (the load
+%% fails with on_load_failure). Stop the stack, delete and purge this
+%% module, then load the new one (docs/design/engine.md, "Upgrading the
+%% NIF").
 -module(chappe_sip_nif).
 
 -export([

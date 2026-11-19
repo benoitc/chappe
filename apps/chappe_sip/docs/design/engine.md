@@ -104,7 +104,7 @@ pure parts through `chappe_sip_engine_tests` (start options, `tls_uri/2`,
 
 ## Threads
 
-- `su_init()` runs once at NIF load or upgrade; `su_deinit()` at unload.
+- `su_init()` runs once at NIF load; `su_deinit()` at unload.
   Per-engine lifecycle is only su_root + nta_agent, so stop/start cycles
   never repeat global init. See [Upgrading the NIF](#upgrading-the-nif).
 - One engine thread (created with `enif_thread_create`) runs
@@ -240,52 +240,47 @@ and applies `engine_failure_action`:
 ## Upgrading the NIF
 
 You replace the shim in a running node when a release ships a new
-`chappe_sip_nif` and a new `chappe_sip_engine_nif.so`. The new library
-loads as an upgrade of the old one, and the shim refuses that upgrade
-while the old library runs an engine: its stack thread would keep running
-the old code after the old module is purged.
+`chappe_sip_nif` and a new `chappe_sip_engine_nif.so`. The shim refuses
+an in-place upgrade, so you stop the stack, remove the old module, then
+load the new one.
 
-1. Stop the stack, so no engine runs:
+1. Stop the stack, so no engine runs and no process holds an engine:
 
    ```erlang
    ok = application:stop(chappe_sip).
    ```
 
-2. Load the new module. Its `on_load` loads the new library; the load
-   fails with `{error, on_load_failure}` if an engine still runs.
+2. Delete and purge the module. The purge unloads the old library:
 
    ```erlang
-   {module, chappe_sip_nif} = code:load_file(chappe_sip_nif).
+   true = code:delete(chappe_sip_nif),
+   _ = code:purge(chappe_sip_nif).
    ```
 
-3. Purge the old module, which unloads the old library, and start the
-   stack again:
+3. Load the new module, whose `on_load` loads the new library, and start
+   the stack again:
 
    ```erlang
-   true = code:soft_purge(chappe_sip_nif),
+   {module, chappe_sip_nif} = code:load_file(chappe_sip_nif),
    ok = application:start(chappe_sip).
    ```
 
 Notes:
 
-- `load` and `upgrade` share `init_common`: the resource type (taken
-  over from the old library on upgrade, so an engine reference the old
-  library left behind is freed by the new one), the atoms, the blocklist
-  lock, `su_init` and the log redirect. Each library copy has its own
-  statics and its own sofia, linked statically.
-- Each module instance keeps private data naming its library's singleton;
-  `upgrade` reads the old instance's to see whether an engine runs or is
-  still stopping. An old library without that data predates the check and
-  is let through.
-- `unload` frees the private data. The last instance on a library runs
-  `su_deinit` and destroys the blocklist lock only when no engine runs on
-  it.
-- An engine carries the singleton of the library that started it, so the
-  new library's destructor never releases its own singleton for an engine
-  of the old one.
-- `chappe_sip_nif_upgrade_SUITE` loads a copy of the built library as an
-  upgrade in a peer node: refused while an engine runs, accepted once it
-  stopped, then a start, an OPTIONS round trip and a stop on the new one.
+- Loading a new `chappe_sip_nif` while the old code still holds the
+  library calls `upgrade`, which always fails: the load returns
+  `{error, on_load_failure}` and the old code stays, whether or not an
+  engine runs. A new library copy has its own statics and its own sofia,
+  linked statically. Taking over the old engines would run its code on
+  objects the old library made, with a layout it cannot know, and no
+  check of the old singleton can stop an old start racing the purge that
+  closes the old library.
+- `unload` runs `su_deinit` and drops the blocklist only when no engine
+  runs. The blocklist lives in the library, so a reload starts with an
+  empty one: block the addresses again after the stack is back.
+- `chappe_sip_nif_upgrade_SUITE` checks this in a peer node: an upgrade is
+  refused with and without a running engine, then a stop, delete, purge
+  and load give a library that starts, answers an OPTIONS and stops.
 
 ## Risky regions
 
@@ -302,7 +297,7 @@ region; run them under the sanitizers when you touch it.
 | Handle table drain, orphans, proxy branch list | `tab_drain`, `tab_del`, `ctx_release`, `orphans_sweep`, `px_unlink` | Teardown destroys every nta object before the agent; an incoming ctx a PRACK callback may still use goes on the orphan list instead of being freed; an outgoing ctx must leave the `px_head` list `stray_cb` walks before it is freed. | `chappe_sip_dialog_ops_SUITE`, `chappe_sip_prack_SUITE`, `chappe_sip_proxy_forking_SUITE` |
 | Flows | `flow_of`, `flow_free`, `flow_closed`, `flows_sweep`, `flow_err_cb` | A flow holds a `tport_ref` and a pending entry; both are released once, and the H_FLOW handle is removed by the caller. | `chappe_sip_transport_SUITE`, `chappe_sip_registrar_SUITE` |
 | Stray 2xx | `stray_cb`, `outgoing_response_cb` | A later 2xx of a proxy INVITE branch over TCP/TLS matches no transaction; it is sent to the branch handle only while that branch is in `px_head` (RFC 6026 Accepted state), else dropped. The outgoing callback never destroys the transaction: Erlang does with `txn_done`. | `chappe_sip_forked_2xx_SUITE`, `chappe_sip_proxy_forking_SUITE` |
-| Module lifecycle | `init_common`, `load`, `upgrade`, `unload` | An upgrade accepted while the old library runs an engine leaves a thread running code that the purge removes; a library that skips `init_common` has no resource type, atoms or sofia init, and its first start crashes the VM. | `chappe_sip_nif_upgrade_SUITE` |
+| Module lifecycle | `load`, `upgrade`, `unload` | `upgrade` must refuse: a new library taking over old engines runs on objects it did not make, and an old start can race the purge. `unload` keeps sofia and the blocklist while an engine runs. | `chappe_sip_nif_upgrade_SUITE` |
 | Request intake and discard | `request_in`, `blk_msg`, `blk_put`, `blk_has`, the `OP_DISCARD` case of `op_cb` | A blocked source is discarded before a server transaction exists; the blocklist is process-wide under `g_blk_lock` and outlives an engine; a discarded transaction gets no 100 Trying and ends with nta's silent 408. | `chappe_sip_guard_SUITE` |
 | The op dispatcher | `op_cb` (about 300 lines, 14 ops) | Every op must look its handle up with the right kind (`tab_get`), answer `op_failed` for an unknown one, and free its payload on every path (`op_free_payload`); an unknown kind reaches `default:`. | `chappe_sip_engine_smoke_SUITE`, `chappe_sip_dialog_ops_SUITE`, `chappe_sip_ops_SUITE` |
 | The NIF boundary | `nif_reply`, `send_raw`, `nif_leg_create`, `nif_cancel`, `get_opt_bin`, `get_tls`, `get_capture`, `get_max_size` | Every string sofia reads as a C string is refused when it holds a NUL, every size is capped before the copy, and a start option that is there but invalid fails the start. | `chappe_sip_nif_boundary_SUITE`, `chappe_sip_ops_SUITE` (`max_message_size_*`) |
