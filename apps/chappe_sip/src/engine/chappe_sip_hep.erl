@@ -47,10 +47,11 @@
     version := 3,
     capture_id := 1..4294967295
 }.
-%% A HEPv3 packet as encode/1 takes it and decode/1 returns it.
+%% A HEPv3 packet as encode/1 takes it. decode/1 (test builds only)
+%% returns the same keys, with an unknown proto as its number.
 -type packet() :: #{
     family => inet | inet6,
-    proto := udp | tcp | non_neg_integer(),
+    proto := udp | tcp,
     src := {inet:ip_address(), inet:port_number()},
     dst := {inet:ip_address(), inet:port_number()},
     time := {non_neg_integer(), 0..999999},
@@ -350,7 +351,7 @@ now_us() ->
     os:system_time(microsecond).
 
 -ifdef(TEST).
--spec decode(binary()) -> {ok, packet()} | {error, term()}.
+-spec decode(binary()) -> {ok, map()} | {error, term()}.
 decode(<<"HEP3", Len:16, Rest/binary>>) when byte_size(Rest) =:= Len - 6 ->
     try chunks(Rest, #{}) of
         #{sip := SIp, dip := DIp, sport := SP, dport := DP} = M ->
