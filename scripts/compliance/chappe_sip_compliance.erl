@@ -29,6 +29,7 @@
     gate/2,
     undocumented_deviations/1,
     expected_fail/2,
+    check_against/2,
     args/1,
     unknown_ids/2,
     render/1
@@ -42,13 +43,23 @@
 ]).
 
 %% main([RequirementsTsv, TestDir, LogDir, OutMd]), optionally followed
-%% by "--expected-fail" and the conformance lab's expected-fail file, and
-%% by "--gate" and a comma separated list of gated tiers (default table).
-%% LogDir is _build/test/logs: its newest ct_run.* directory and its
-%% eunit/ surefire reports.
+%% by "--expected-fail" and the conformance lab's expected-fail file,
+%% "--check-against" and the committed matrix (read before OutMd is
+%% written, so both may be the same file), and "--gate" and a comma
+%% separated list of gated tiers (default table). LogDir is
+%% _build/test/logs: its newest ct_run.* directory and its eunit/ surefire
+%% reports.
 main(Args) ->
-    {Paths, Gate, ExpectedFail} = args(Args),
+    {Paths, Gate, Opts} = args(Args),
     [ReqFile, TestDir, LogDir, Out] = Paths,
+    Committed =
+        case Opts of
+            #{check_against := CheckFile} ->
+                {ok, CommittedBin} = file:read_file(CheckFile),
+                CommittedBin;
+            #{} ->
+                none
+        end,
     {ok, Bin} = file:read_file(ReqFile),
     {ok, Reqs} = parse_requirements(Bin),
     Ann = lists:append([
@@ -82,9 +93,39 @@ main(Args) ->
      || {Case, Id} <- unknown_ids(Reqs, Ann)
     ],
     io:format("~s~n", [summary_line(Matrix)]),
-    case Gate of
-        none -> halt(0);
-        _ -> halt(gate_report(Matrix, Gate, ExpectedFail))
+    Checked = check_report(Committed, Matrix),
+    Gated =
+        case Gate of
+            none -> 0;
+            _ -> gate_report(Matrix, Gate, maps:get(expected_fail, Opts, none))
+        end,
+    halt(max(Checked, Gated)).
+
+%% One line per row the committed matrix claims as pass and this run does
+%% not (an error), and per row this run passes that it does not claim (a
+%% notice). Returns the exit status.
+check_report(none, _Matrix) ->
+    0;
+check_report(Committed, Matrix) ->
+    {Lost, Gained} = check_against(Committed, Matrix),
+    [
+        io:format(
+            "check: ~s is pass in the committed matrix, not in this run~n",
+            [Id]
+        )
+     || Id <- Lost
+    ],
+    [
+        io:format(
+            "notice: ~s passes in this run; the committed matrix does not "
+            "claim it~n",
+            [Id]
+        )
+     || Id <- Gained
+    ],
+    case Lost of
+        [] -> 0;
+        _ -> 1
     end.
 
 %% Print one line per gate problem and return the exit status.
@@ -126,25 +167,29 @@ gate_report(Matrix, Gate, ExpectedFail) ->
         _ -> 1
     end.
 
--spec args([string()]) -> {[string()], none | [binary()], none | string()}.
+-spec args([string()]) ->
+    {[string()], none | [binary()], #{atom() => string()}}.
 args(Args0) ->
-    {Args, ExpectedFail} = expected_fail_arg(Args0, []),
+    {Args, Opts} = file_opts(Args0, [], #{}),
     case lists:splitwith(fun(A) -> A =/= "--gate" end, Args) of
         {Paths, []} ->
-            {Paths, none, ExpectedFail};
+            {Paths, none, Opts};
         {Paths, ["--gate"]} ->
-            {Paths, [<<"table">>], ExpectedFail};
+            {Paths, [<<"table">>], Opts};
         {Paths, ["--gate", Tiers]} ->
             {Paths, [list_to_binary(T) || T <- string:lexemes(Tiers, ",")],
-                ExpectedFail}
+                Opts}
     end.
 
-expected_fail_arg([], Acc) ->
-    {lists:reverse(Acc), none};
-expected_fail_arg(["--expected-fail", File | T], Acc) ->
-    {lists:reverse(Acc, T), File};
-expected_fail_arg([A | T], Acc) ->
-    expected_fail_arg(T, [A | Acc]).
+%% The options that take a file, wherever they sit after the paths.
+file_opts([], Acc, Opts) ->
+    {lists:reverse(Acc), Opts};
+file_opts(["--expected-fail", File | T], Acc, Opts) ->
+    file_opts(T, Acc, Opts#{expected_fail => File});
+file_opts(["--check-against", File | T], Acc, Opts) ->
+    file_opts(T, Acc, Opts#{check_against => File});
+file_opts([A | T], Acc, Opts) ->
+    file_opts(T, [A | Acc], Opts).
 
 %% ---- requirements ----
 
@@ -285,11 +330,19 @@ result(_) -> fail.
 %% names a testcase "Module:Line Function" for a plain test and
 %% "Module:Line -Function/0-fun-N-" for a fun a generator returns, so both
 %% key on the function the test was written in. A function's
-%% result is the aggregate of its testcases: fail if one failed or
-%% errored, pass if all passed, skip otherwise.
+%% result is the aggregate of its testcases: fail if one failed, errored
+%% or hit its timeout, pass if all passed, skip otherwise.
+%%
+%% A fixture whose setup or cleanup failed is reported as "fixture setup
+%% [Id]" with no function, and the tests it guards never run. The report
+%% cannot tie it to a generator, so it fails the whole module: the key
+%% "Module:*" is fail, and every claim in that module fails (see matrix/3).
 -spec eunit_results([binary()]) -> #{binary() => pass | fail | skip}.
 eunit_results(Reports) ->
-    Cases = lists:append([testcases(Bin) || Bin <- Reports]),
+    Cases = lists:append([
+        testcases(Bin) ++ fixture_failures(Bin)
+     || Bin <- Reports
+    ]),
     lists:foldl(
         fun({Key, R}, Acc) ->
             maps:update_with(Key, fun(Old) -> worst(Old, R) end, R, Acc)
@@ -317,11 +370,29 @@ testcases(Bin) ->
     ].
 
 case_result(Body) ->
-    Tag = "<(failure|error|skipped)\\b",
-    case re:run(Body, Tag, [{capture, [1], binary}]) of
-        {match, [<<"skipped">>]} -> skip;
-        {match, [_]} -> fail;
-        nomatch -> pass
+    Tag = "<(failure|error|skipped)\\b([^>]*)",
+    case re:run(Body, Tag, [{capture, [1, 2], binary}]) of
+        {match, [<<"skipped">>, Attrs]} ->
+            case binary:match(Attrs, <<"type=\"timeout\"">>) of
+                nomatch -> skip;
+                _ -> fail
+            end;
+        {match, [_, _]} ->
+            fail;
+        nomatch ->
+            pass
+    end.
+
+fixture_failures(Bin) ->
+    Fixture =
+        "<testcase\\b[^>]*?\\bname=\"fixture (?:setup|cleanup) [^\"]*\"",
+    Suite = "<testsuite\\b[^>]*?\\bname=\"module '([^']+)'",
+    case
+        {re:run(Bin, Fixture),
+            re:run(Bin, Suite, [{capture, all_but_first, binary}])}
+    of
+        {{match, _}, {match, [Mod]}} -> [{<<Mod/binary, ":*">>, fail}];
+        _ -> []
     end.
 
 worst(fail, _) -> fail;
@@ -352,14 +423,19 @@ matrix(Reqs, Ann, Results) ->
             Tests = lists:sort(maps:get(Id, Claims, [])),
             R#{
                 tests => Tests,
-                status => status(R, [
-                    maps:get(T, Results, missing)
-                 || T <- Tests
-                ])
+                status => status(R, [result(T, Results) || T <- Tests])
             }
         end
      || #{id := Id} = R <- Reqs
     ].
+
+%% A test's result, or fail when its EUnit module had a fixture failure.
+result(Test, Results) ->
+    [Mod | _] = binary:split(Test, <<":">>),
+    case maps:find(<<Mod/binary, ":*">>, Results) of
+        {ok, fail} -> fail;
+        _ -> maps:get(Test, Results, missing)
+    end.
 
 status(#{tier := <<"deviation">>}, _) ->
     deviation;
@@ -427,6 +503,47 @@ row_ids(Text) ->
         {match, Ids} -> [Id || [Id] <- Ids];
         nomatch -> []
     end.
+
+%% Compare a committed matrix with this run. Returns the ids the committed
+%% file shows as pass and this run does not (it claims more than the run
+%% proves), and the ids this run passes that the committed file does not.
+-spec check_against(binary(), [map()]) -> {[binary()], [binary()]}.
+check_against(Committed, Matrix) ->
+    Old = committed_status(Committed),
+    Lost = [
+        Id
+     || #{id := Id, status := S} <- Matrix,
+        maps:get(Id, Old, none) =:= <<"pass">>,
+        S =/= pass
+    ],
+    Gained = [
+        Id
+     || #{id := Id, status := pass} <- Matrix,
+        maps:get(Id, Old, none) =/= <<"pass">>
+    ],
+    {Lost, Gained}.
+
+%% Status per id from the "## Requirements" table of a rendered matrix.
+committed_status(Md) ->
+    Rows =
+        case binary:split(Md, <<"\n## Requirements\n">>) of
+            [_, After] -> binary:split(After, <<"\n">>, [global]);
+            [_] -> []
+        end,
+    maps:from_list([
+        {Id, Status}
+     || <<"| ", _/binary>> = Line <- Rows,
+        [Id, _Kw, _Row, _Tier, Status | _] <- [
+            [
+                string:trim(F)
+             || F <- binary:split(
+                    binary:part(Line, 2, byte_size(Line) - 2),
+                    <<" | ">>,
+                    [global]
+                )
+            ]
+        ]
+    ]).
 
 %% ---- rendering ----
 

@@ -92,12 +92,9 @@ eunit_results_test() ->
         "    <system-out>noise</system-out>\n"
         "  </testcase>\n"
         "  <testcase time=\"0\" name=\"m_tests:30 -cut_test_/0-fun-3-\">\n"
-        "    <skipped type=\"timeout\"/>\n"
+        "    <skipped type=\"unknown\">cancelled</skipped>\n"
         "  </testcase>\n"
         "  <testcase time=\"0\" name=\"m_tests:31 cut_test_\"/>\n"
-        "  <testcase time=\"0\" name=\"fixture setup [1]\">\n"
-        "    <error type=\"error\">setup</error>\n"
-        "  </testcase>\n"
         "</testsuite>\n"
     >>,
     ?assertEqual(
@@ -109,6 +106,51 @@ eunit_results_test() ->
         },
         chappe_sip_compliance:eunit_results([Xml, <<"<testsuite/>">>])
     ).
+
+%% A test cut by its timeout did not pass: it fails its function.
+eunit_timeout_is_fail_test() ->
+    Xml = <<
+        "<testsuite tests=\"2\" name=\"module 'm_tests'\">\n"
+        "  <testcase time=\"0\" name=\"m_tests:30 -slow_test_/0-fun-3-\">\n"
+        "    <skipped type=\"timeout\"/>\n"
+        "  </testcase>\n"
+        "  <testcase time=\"0\" name=\"m_tests:31 -slow_test_/0-fun-5-\"/>\n"
+        "</testsuite>\n"
+    >>,
+    ?assertEqual(
+        #{<<"m_tests:slow_test_">> => fail},
+        chappe_sip_compliance:eunit_results([Xml])
+    ).
+
+%% A fixture whose setup or cleanup failed names no test, so its failure
+%% is the module's: every claim in that module fails, those with a result
+%% of their own and those whose tests never ran.
+eunit_fixture_failure_fails_module_test() ->
+    Xml = <<
+        "<testsuite tests=\"2\" name=\"module 'n_tests'\">\n"
+        "  <testcase time=\"0\" name=\"n_tests:0 plain_test\"/>\n"
+        "  <testcase time=\"0\" name=\"fixture setup [1,1]\">\n"
+        "    <error type=\"error\">setup</error>\n"
+        "  </testcase>\n"
+        "</testsuite>\n"
+    >>,
+    Res = chappe_sip_compliance:eunit_results([Xml]),
+    ?assertEqual(fail, maps:get(<<"n_tests:*">>, Res)),
+    {ok, Reqs} = chappe_sip_compliance:parse_requirements(tsv()),
+    Ann = [
+        {<<"n_tests:plain_test">>, [<<"X-4.7-14">>]},
+        {<<"n_tests:gen_test_">>, [<<"R4579-07">>]},
+        {<<"o_tests:other_test">>, [<<"R4028-01">>]}
+    ],
+    M = maps:from_list([
+        {Id, S}
+     || #{id := Id, status := S} <- chappe_sip_compliance:matrix(
+            Reqs, Ann, Res#{<<"o_tests:other_test">> => pass}
+        )
+    ]),
+    ?assertEqual(fail, maps:get(<<"X-4.7-14">>, M)),
+    ?assertEqual(fail, maps:get(<<"R4579-07">>, M)),
+    ?assertEqual(pass, maps:get(<<"R4028-01">>, M)).
 
 %% A requirement passes only when every test that claims it passed; one
 %% failure fails it; no test is untested; a skipped test proves nothing.
@@ -191,21 +233,21 @@ gate_test() ->
 %% `--expected-fail FILE' may come anywhere after the paths.
 args_test() ->
     P = ["a", "b", "c", "d"],
-    ?assertEqual({P, none, none}, chappe_sip_compliance:args(P)),
+    ?assertEqual({P, none, #{}}, chappe_sip_compliance:args(P)),
     ?assertEqual(
-        {P, [<<"table">>], none},
+        {P, [<<"table">>], #{}},
         chappe_sip_compliance:args(P ++ ["--gate"])
     ),
     ?assertEqual(
-        {P, [<<"demo">>, <<"platform">>], none},
+        {P, [<<"demo">>, <<"platform">>], #{}},
         chappe_sip_compliance:args(P ++ ["--gate", "demo,platform"])
     ),
     ?assertEqual(
-        {P, [<<"demo">>], "ef"},
+        {P, [<<"demo">>], #{expected_fail => "ef"}},
         chappe_sip_compliance:args(P ++ ["--expected-fail", "ef", "--gate", "demo"])
     ),
     ?assertEqual(
-        {P, [<<"table">>], "ef"},
+        {P, [<<"table">>], #{expected_fail => "ef"}},
         chappe_sip_compliance:args(P ++ ["--gate", "--expected-fail", "ef"])
     ).
 
@@ -248,6 +290,34 @@ unknown_ids_test() ->
         chappe_sip_compliance:unknown_ids(Reqs, [
             {<<"s:a">>, [<<"X-9.9-99">>, <<"R4579-07">>]}
         ])
+    ).
+
+%% The committed matrix may claim less than this run, never more: a row
+%% pass there and not pass here is a regression; the reverse is a gain.
+check_against_test() ->
+    {ok, Reqs} = chappe_sip_compliance:parse_requirements(tsv()),
+    Ann = [{<<"s:a">>, [<<"X-4.7-14">>, <<"R4579-07">>]}, {<<"s:b">>, [<<"R4028-01">>]}],
+    Committed = iolist_to_binary(
+        chappe_sip_compliance:render(
+            chappe_sip_compliance:matrix(Reqs, Ann, #{<<"s:a">> => pass})
+        )
+    ),
+    Now = chappe_sip_compliance:matrix(Reqs, Ann, #{
+        <<"s:a">> => skip, <<"s:b">> => pass
+    }),
+    ?assertEqual(
+        {[<<"X-4.7-14">>, <<"R4579-07">>], [<<"R4028-01">>]},
+        chappe_sip_compliance:check_against(Committed, Now)
+    ),
+    Same = chappe_sip_compliance:matrix(Reqs, Ann, #{<<"s:a">> => pass}),
+    ?assertEqual({[], []}, chappe_sip_compliance:check_against(Committed, Same)).
+
+%% `--check-against FILE' names the committed matrix to compare with.
+check_args_test() ->
+    P = ["a", "b", "c", "d"],
+    ?assertEqual(
+        {P, none, #{check_against => "m.md"}},
+        chappe_sip_compliance:args(P ++ ["--check-against", "m.md"])
     ).
 
 render_test() ->
