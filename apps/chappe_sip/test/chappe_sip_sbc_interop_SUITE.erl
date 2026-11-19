@@ -43,8 +43,12 @@ init_per_suite(Config) ->
         false ->
             {skip, "docker not found"};
         _ ->
+            %% the three steps may take 18 minutes each; this timetrap is
+            %% above their sum so a step that hangs is named by its own
+            %% timeout, not cut off by the suite's
+            ct:timetrap({minutes, 60}),
             Lab = lab(Config),
-            [ok = run(Lab, Step, 1200000) || Step <- ["images", "build", "up"]],
+            [ok = run(Lab, Step, 1080000) || Step <- ["images", "build", "up"]],
             [{lab, Lab} | Config]
     end.
 
@@ -220,15 +224,18 @@ options_failover(Config) ->
 %% ---- helpers ----
 
 run(Lab, Args, Timeout) ->
+    ct:pal("~s ~s: start", [Lab, Args]),
     Self = self(),
     Pid = spawn(fun() -> Self ! {self(), sh(Lab ++ " " ++ Args)} end),
     receive
-        {Pid, {0, _}} -> ok;
+        {Pid, {0, _}} -> ct:pal("~s ~s: ok", [Lab, Args]), ok;
         %% ct:pal, not ct:log: the CI job keeps no CT logs, so a lab step
         %% that fails must say why in the job output
         {Pid, {Rc, Out}} -> ct:pal("~s ~s: rc=~p~n~s", [Lab, Args, Rc, Out]),
                             {error, {Args, Rc}}
-    after Timeout -> ct:fail({timeout, Args})
+    after Timeout ->
+        ct:pal("~s ~s: no exit after ~p s", [Lab, Args, Timeout div 1000]),
+        ct:fail({timeout, Args})
     end.
 
 cmd(Lab, Args) ->
