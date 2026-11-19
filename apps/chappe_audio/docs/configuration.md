@@ -99,6 +99,11 @@ the [compliance matrix](compliance.md)):
   the old one (8.2).
 - It never sends media, so it sends RR, never SR.
 
+With `rtcp => port`, a source sending from port 65535 has no port above
+it: the receiver sends it no report until `rtcp_remote` or the source's
+own RTCP gives an address. A report that cannot be sent is dropped; the
+receiver keeps recording.
+
 `chappe_audio_rtp:stats/1` then also gives `rtcp_sent`, `rtcp_received`
 and `sources`, one map per source: `ssrc`, `cname`, `received`, `lost`,
 `highest`, `jitter`. With a new key on a re-INVITE,

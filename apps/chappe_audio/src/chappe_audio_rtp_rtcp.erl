@@ -53,16 +53,21 @@ mode(#session{mode = M}) -> M.
 %% units of the 8000 Hz G.711 clock. RTCP and what does not parse count
 %% for nothing.
 -spec rtp(session(), binary()) -> session().
-rtp(S, <<2:2, _:6, _M:1, PT:7, Seq:16, Ts:32, Ssrc:32, _/binary>>) when
-    PT < 72; PT > 76
-->
+rtp(S, Packet) ->
+    %% RFC 5761 4: SR to XR and the feedback types are RTCP, never RTP
+    case chappe_audio_rtcp:is_rtcp(Packet) of
+        true -> S;
+        false -> rtp_stats(S, Packet)
+    end.
+
+rtp_stats(S, <<2:2, _:6, _M:1, _PT:7, Seq:16, Ts:32, Ssrc:32, _/binary>>) ->
     Arrival = erlang:monotonic_time(microsecond) * 8 div 1000,
     with_source(
         Ssrc,
         fun(Src) -> chappe_audio_rtcp:src_rtp(Src, Seq, Ts, Arrival) end,
         collision(Ssrc, S)
     );
-rtp(S, _Packet) ->
+rtp_stats(S, _Packet) ->
     S.
 
 %% A compound packet of the source, plain, from From: SR, SDES CNAME and
@@ -179,16 +184,21 @@ has_sent(#session{sent = N}) -> N > 0.
 %% Where reports go, given the RTP source latched and the remote address
 %% of its SDP: where the source's RTCP came from; else its RTP address
 %% (mux) or the port above it (port, 11), or the RTCP address its SDP
-%% gave; else remote.
+%% gave; else remote. A source on port 65535 has no port above it, and
+%% so no report.
 -spec dest(session(), addr() | undefined, addr() | undefined) ->
     addr() | undefined.
 dest(#session{from = {_, _} = F}, _Latched, _Remote) -> F;
 dest(#session{mode = mux}, {_, _} = L, _Remote) -> L;
 dest(#session{mode = mux}, undefined, Remote) -> Remote;
 dest(#session{mode = port, remote = {_, _} = R}, _Latched, _Remote) -> R;
-dest(#session{mode = port}, {Ip, P}, _Remote) -> {Ip, P + 1};
-dest(#session{mode = port}, undefined, {Ip, P}) -> {Ip, P + 1};
-dest(#session{}, undefined, undefined) -> undefined.
+dest(#session{mode = port}, {Ip, P}, _Remote) -> above(Ip, P);
+dest(#session{mode = port}, undefined, {Ip, P}) -> above(Ip, P);
+dest(#session{}, _Latched, _Remote) -> undefined.
+
+%% a source on the last port has no port above it: no report goes
+above(Ip, P) when P < 65535 -> {Ip, P + 1};
+above(_Ip, _P) -> undefined.
 
 %% What stats/1 of the receiver adds.
 -spec stats(session()) ->

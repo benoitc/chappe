@@ -28,7 +28,9 @@
     rtcp_port_default_address/1,
     srtcp_report/1,
     rtcp_none_sends_nothing/1,
-    rtcp_port_pair/1
+    rtcp_port_pair/1,
+    rtcp_source_on_last_port/1,
+    rtcp_feedback_and_unknown/1
 ]).
 
 %% the store seam, for store_sink
@@ -60,7 +62,9 @@ all() ->
         rtcp_port_default_address,
         srtcp_report,
         rtcp_none_sends_nothing,
-        rtcp_port_pair
+        rtcp_port_pair,
+        rtcp_source_on_last_port,
+        rtcp_feedback_and_unknown
     ].
 
 init_per_suite(Config) ->
@@ -256,7 +260,10 @@ store_crash_spares_receiver(_Config) ->
 %% req: R7866-8.1.1-1 R7866-8.1.8-1 R7866-8.1.5.1-1 R5761-4-1 R5761-5.1.1-1
 %% req: R3550-6.1-1 R3550-6.1-2 R3550-6.1-3 R3550-6.4.1-1 R3550-6.4.1-2
 %% req: R3550-6.4.1-5 R3550-6.4.2-1 R3550-6.2-1 R3550-6.2-2 R3550-6.3-1
-%% req: R3550-6.3.7-1
+%% The packets go out back to back, so each one's D is its timestamp step
+%% and the block's jitter follows J += (|D| - J) / 16 (6.4.1), within the
+%% slack of the loopback.
+%% req: R3550-6.3.7-1 R3550-6.4.1-3 R3550-6.4.1-4
 rtcp_mux_report(_Config) ->
     {ok, R} = receiver(#{rtcp => mux, cname => <<"srs@test">>}),
     Port = chappe_audio_rtp:port(R),
@@ -280,6 +287,12 @@ rtcp_mux_report(_Config) ->
         B
     ),
     ?assert(maps:get(dlsr, B) > 0 andalso maps:get(dlsr, B) < 10 * 65536),
+    Expected = jitter([Q || Q <- lists:seq(1, 20), Q =/= 7]),
+    Jitter = maps:get(jitter, B),
+    ?assert(
+        Jitter >= 0.6 * Expected andalso Jitter =< 1.4 * Expected,
+        {jitter, Jitter, Expected}
+    ),
     ?assertEqual(
         #{type => sdes, chunks => [{Me, [{cname, <<"srs@test">>}]}]}, Sdes
     ),
@@ -359,7 +372,9 @@ rtcp_port_default_address(_Config) ->
 %% and the report goes back as SRTCP (RFC 3711 3.4) that the key of the
 %% receiver's SDP answer opens, index 0 first, and the sender's key does
 %% not
-%% req: R3711-3.4-1 R3711-3.4-2 R7866-8.1.1-1
+%% A new pair of keys (rekey/3) keeps the SRTCP index going: the BYE on
+%% stop, under the new key, has index 1 (RFC 3711 3.4).
+%% req: R3711-3.4-1 R3711-3.4-2 R3711-3.4-3 R7866-8.1.1-1
 srtcp_report(_Config) ->
     In = ?SRTP:master(),
     Out = ?SRTP:master(),
@@ -390,7 +405,15 @@ srtcp_report(_Config) ->
     Skip = byte_size(Pkt) - 14,
     <<_:Skip/binary, 1:1, 0:31, _:10/binary>> = Pkt,
     ?assertMatch(#{rtcp_received := 1}, chappe_audio_rtp:stats(R)),
+    Out2 = ?SRTP:master(),
+    ok = chappe_audio_rtp:rekey(R, ctx(?SRTP:master()), ctx(Out2)),
     ok = chappe_audio_rtp:stop(R),
+    Bye = udp_in(Src, 2000),
+    ?assertEqual({error, auth}, chappe_audio_srtp:unprotect_rtcp(Bye, ctx(Out))),
+    {ok, ByePlain, _} = chappe_audio_srtp:unprotect_rtcp(Bye, ctx(Out2)),
+    ?assertMatch({ok, [_, _, #{type := bye}]}, ?RTCP:parse(ByePlain)),
+    ByeSkip = byte_size(Bye) - 14,
+    <<_:ByeSkip/binary, 1:1, 1:31, _:10/binary>> = Bye,
     flush(R),
     gen_udp:close(Src).
 
@@ -449,6 +472,76 @@ rtcp_port_pair(_Config) ->
     ),
     ok = chappe_audio_rtp:stop(R),
     ?assertEqual({error, {bad_option, rtcp}}, receiver(#{rtcp => yes})).
+
+%% A source on UDP port 65535 has no port above it (RFC 3550 11): with
+%% rtcp => port and no RTCP heard, the receiver sends no report, and
+%% keeps running and recording.
+rtcp_source_on_last_port(_Config) ->
+    case gen_udp:open(65535, [binary, {ip, ?LO}]) of
+        {ok, Src} ->
+            {ok, R} = receiver(#{rtcp => port}),
+            Port = chappe_audio_rtp:port(R),
+            Mon = erlang:monitor(process, R),
+            ok = gen_udp:send(Src, ?LO, Port, rtp(0, 1, <<16#FF>>)),
+            %% past the first report's window (at most 3.75 s)
+            receive
+                {'DOWN', Mon, process, R, Why} -> ct:fail({receiver_died, Why})
+            after 4500 -> ok
+            end,
+            ok = gen_udp:send(Src, ?LO, Port, rtp(0, 2, <<16#FF>>)),
+            wait_packets(R, 2, 50),
+            ?assertMatch(#{rtcp_sent := 0}, chappe_audio_rtp:stats(R)),
+            ok = chappe_audio_rtp:stop(R),
+            flush(R),
+            gen_udp:close(Src);
+        {error, Why} ->
+            {skip, {port_65535, Why}}
+    end.
+
+%% Muxed feedback (PSFB 206) and XR (207) on the RTP port are RTCP (RFC
+%% 5761 4), never counted as RTP of another source; a compound packet
+%% with an RTCP type the receiver does not read (APP) is taken, the type
+%% ignored and the SDES after it read (RFC 3550 6.1).
+%% req: R5761-4-1 R3550-6.1-4
+rtcp_feedback_and_unknown(_Config) ->
+    {ok, P} = receiver(#{rtcp => port}),
+    {ok, M} = receiver(#{rtcp => mux}),
+    {ok, Src} = gen_udp:open(0, [binary, {ip, ?LO}]),
+    PP = chappe_audio_rtp:port(P),
+    Psfb = <<16#81, 206, 0, 2, 16#9999:32, 16#1234:32>>,
+    Xr = <<16#80, 207, 0, 1, 16#9998:32>>,
+    [ok = gen_udp:send(Src, ?LO, PP, rtp(0, Q, <<16#FF>>)) || Q <- [1, 2]],
+    ok = gen_udp:send(Src, ?LO, PP, Psfb),
+    ok = gen_udp:send(Src, ?LO, PP, Xr),
+    ok = gen_udp:send(Src, ?LO, PP, rtp(0, 3, <<16#FF>>)),
+    wait_packets(P, 3, 50),
+    ?assertMatch(
+        #{sources := [#{ssrc := 16#1234, received := 3}]},
+        chappe_audio_rtp:stats(P)
+    ),
+    MP = chappe_audio_rtp:port(M),
+    ok = gen_udp:send(Src, ?LO, MP, rtp(0, 1, <<16#FF>>)),
+    ok = gen_udp:send(Src, ?LO, MP, Psfb),
+    App = <<16#80, 204, 0, 2, 16#1234:32, "abcd">>,
+    Compound = iolist_to_binary([
+        ?RTCP:build([#{type => rr, ssrc => 16#1234, blocks => []}]),
+        App,
+        ?RTCP:build([#{type => sdes, chunks => [{16#1234, [{cname, <<"app">>}]}]}])
+    ]),
+    ok = gen_udp:send(Src, ?LO, MP, Compound),
+    wait_rtcp(M, 1, 50),
+    ?assertMatch(
+        #{
+            rtcp_received := 1,
+            sources := [#{ssrc := 16#1234, cname := <<"app">>, received := 1}]
+        },
+        chappe_audio_rtp:stats(M)
+    ),
+    ok = chappe_audio_rtp:stop(P),
+    ok = chappe_audio_rtp:stop(M),
+    flush(P),
+    flush(M),
+    gen_udp:close(Src).
 
 %% ---- a store module, for store_sink ----
 
@@ -565,6 +658,27 @@ pair(N) ->
         _ ->
             gen_udp:close(A),
             pair(N - 1)
+    end.
+
+%% RFC 3550 6.4.1 in floating point, for packets of these sequence
+%% numbers sent back to back at 160 timestamp units each
+jitter([First | Rest]) ->
+    {J, _} = lists:foldl(
+        fun(Q, {J, Prev}) -> {J + (abs((Q - Prev) * 160) - J) / 16, Q} end,
+        {0.0, First},
+        Rest
+    ),
+    J.
+
+wait_rtcp(R, N, 0) ->
+    ct:fail({rtcp_received, N, chappe_audio_rtp:stats(R)});
+wait_rtcp(R, N, Tries) ->
+    case chappe_audio_rtp:stats(R) of
+        #{rtcp_received := N} ->
+            ok;
+        _ ->
+            timer:sleep(20),
+            wait_rtcp(R, N, Tries - 1)
     end.
 
 flush(R) ->

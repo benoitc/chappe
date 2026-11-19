@@ -527,10 +527,13 @@ report(Bye, #state{rtcp = R, latched = L, remote = Remote} = S) ->
             {Bin, R1} = chappe_audio_rtp_rtcp:report(R, Bye),
             case protect(Bin, S#state{rtcp = R1}) of
                 {ok, Out, S1} ->
-                    _ = gen_udp:send(rtcp_out_sock(S1), Ip, Port, Out),
-                    S1#state{
-                        rtcp = chappe_audio_rtp_rtcp:sent(R1, byte_size(Out))
-                    };
+                    case send(rtcp_out_sock(S1), Ip, Port, Out) of
+                        ok ->
+                            R2 = chappe_audio_rtp_rtcp:sent(R1, byte_size(Out)),
+                            S1#state{rtcp = R2};
+                        {error, _} ->
+                            S1
+                    end;
                 skip ->
                     S
             end
@@ -546,6 +549,15 @@ protect(Bin, #state{srtcp_out = Ctx} = S) ->
     case chappe_audio_srtp:protect_rtcp(Bin, Ctx) of
         {ok, Out, Ctx1} -> {ok, Out, S#state{srtcp_out = Ctx1}};
         {error, _} -> skip
+    end.
+
+%% a report that cannot go (a bad address, the network down) is lost,
+%% never the receiver
+send(Sock, Ip, Port, Bin) ->
+    try
+        gen_udp:send(Sock, Ip, Port, Bin)
+    catch
+        error:Why -> {error, Why}
     end.
 
 rtcp_out_sock(#state{rtcp_sock = undefined, sock = Sock}) -> Sock;
