@@ -211,7 +211,10 @@ releases every flow before the agent is destroyed.
   without joining or freeing; the stuck thread keeps the resource alive
   (no use-after-free), and if it ever unblocks it self-cleans and resets
   the singleton. The thread slot leaks in that pathological case by design.
-- Singleton: one engine at a time. `g_engine_state` (C atomic) plus the
+- Singleton: one engine at a time. Only the engine that took the slot
+  releases it (an exchange on its own `holds_slot`), so stopping a
+  stopped engine again never frees the slot of the engine started after
+  it. `g_engine_state` (C atomic) plus the
   chappe_sip_engine gen_server serialize detach, stop, and reattach; while a
   teardown is in flight `start` returns `{error, stopping}` and the
   Erlang side retries with capped backoff.
@@ -295,7 +298,7 @@ region; run them under the sanitizers when you touch it.
 |---|---|---|---|
 | State CAS | `nif_start`, `stack_main`, `set_failed`, `request_stop` | `INIT -> READY` (stack thread), `INIT -> STOPPING` (a start that gave up) and `INIT -> FAILED` must stay mutually exclusive; a plain store lets an abandoned thread run orphaned. | `chappe_sip_engine_lifecycle_SUITE`, `chappe_sip_engine_smoke_SUITE` (`bind_failure`, `start_stop_cycles`) |
 | Root rwlock in enqueue | `enqueue`, `enqueue_locked`, `request_stop`, `teardown_sofia` | Foreign threads post under the read lock after re-checking READY; `request_stop` flips to STOPPING and posts OP_STOP under the write lock, so no op lands behind OP_STOP (it would leak its payload and a kept engine ref); the root is destroyed under the write lock. | `chappe_sip_engine_lifecycle_SUITE` |
-| Engine destructor and owner down | `engine_dtor`, `engine_down`, `thread_exit`, `start_refused` | The stack thread holds a resource ref until its last act, so the destructor runs after it exited; never self-join (`enif_equal_tids`), and never compare the tid of an engine refused before its thread existed (`tid_valid` first); release the singleton only by CAS from `G_STOPPING`, or a successor engine is clobbered. | `chappe_sip_nif_boundary_SUITE` (refused starts, a dead owner), `chappe_sip_engine_lifecycle_SUITE` |
+| Engine destructor and owner down | `engine_dtor`, `engine_down`, `thread_exit`, `start_refused` | The stack thread holds a resource ref until its last act, so the destructor runs after it exited; never self-join (`enif_equal_tids`), and never compare the tid of an engine refused before its thread existed (`tid_valid` first); release the singleton only from the engine that holds it (`release_slot`), or a successor engine is clobbered: a second stop of a stopped engine leaves the slot alone. | `chappe_sip_nif_boundary_SUITE` (refused starts, a dead owner, a second stop), `chappe_sip_engine_lifecycle_SUITE` |
 | Handle table drain, orphans, proxy branch list | `tab_drain`, `tab_del`, `ctx_release`, `orphans_sweep`, `px_unlink` | Teardown destroys every nta object before the agent; an incoming ctx a PRACK callback may still use goes on the orphan list instead of being freed; an outgoing ctx must leave the `px_head` list `stray_cb` walks before it is freed. | `chappe_sip_dialog_ops_SUITE`, `chappe_sip_prack_SUITE`, `chappe_sip_proxy_forking_SUITE` |
 | Flows | `flow_of`, `flow_free`, `flow_closed`, `flows_sweep`, `flow_err_cb` | A flow holds a `tport_ref` and a pending entry; both are released once, and the H_FLOW handle is removed by the caller. | `chappe_sip_transport_SUITE`, `chappe_sip_registrar_SUITE` |
 | Stray 2xx | `stray_cb`, `outgoing_response_cb` | A later 2xx of a proxy INVITE branch over TCP/TLS matches no transaction; it is sent to the branch handle only while that branch is in `px_head` (RFC 6026 Accepted state), else dropped. The outgoing callback never destroys the transaction: Erlang does with `txn_done`. | `chappe_sip_forked_2xx_SUITE`, `chappe_sip_proxy_forking_SUITE` |

@@ -292,6 +292,10 @@ typedef struct engine {
      * after an upgrade the new image's destructor runs for this engine
      * (ERL_NIF_RT_TAKEOVER) and must leave its own singleton alone */
     const void *image;
+    /* 1 while this engine holds the singleton slot; whoever exchanges it to
+     * 0 releases the slot, so a second stop of a stopped engine cannot free
+     * the slot of the engine started after it */
+    _Atomic int holds_slot;
 } engine_t;
 
 static ErlNifResourceType *ENGINE_RT = NULL;
@@ -2146,6 +2150,12 @@ static int stop_wait_join(engine_t *e) {
     return 1;
 }
 
+/* release the singleton slot if this engine still holds it */
+static void release_slot(engine_t *e) {
+    if (atomic_exchange(&e->holds_slot, 0))
+        atomic_store(&g_engine_state, G_NONE);
+}
+
 static void engine_dtor(ErlNifEnv *env, void *obj) {
     (void)env;
     engine_t *e = obj;
@@ -2166,16 +2176,13 @@ static void engine_dtor(ErlNifEnv *env, void *obj) {
         enif_rwlock_destroy(e->root_lock);
         e->root_lock = NULL;
     }
-    /* Release the singleton only if it is still G_STOPPING -- i.e. this engine
-     * (abandoned/hung start, or an owner-death stop) still holds the slot and
-     * no successor exists (none can start while STOPPING). A clean nif_stop
-     * already set G_NONE, after which a new engine may hold G_RUNNING;
-     * unconditionally storing G_NONE here would clobber that successor and
-     * break the one-engine invariant during stop/start churn. An engine of
-     * the image this one upgraded holds no slot here. */
-    int expect = G_STOPPING;
-    if (e->image == &g_engine_state)
-        atomic_compare_exchange_strong(&g_engine_state, &expect, G_NONE);
+    /* Release the singleton only if this engine still holds it (an abandoned
+     * or hung start, or an owner-death stop, all at G_STOPPING). A clean
+     * nif_stop already released it, after which a new engine may hold
+     * G_RUNNING; storing G_NONE here would clobber that successor and break
+     * the one-engine invariant during stop/start churn. An engine of the
+     * image this one upgraded holds no slot here. */
+    if (e->image == &g_engine_state) release_slot(e);
     TSAN_RELEASE(e);
 }
 
@@ -2359,7 +2366,7 @@ static int get_tls(ErlNifEnv *env, ERL_NIF_TERM opts, engine_t *e) {
 
 /* a start that never got its thread: free the singleton and the engine */
 static ERL_NIF_TERM start_refused(ErlNifEnv *env, engine_t *e) {
-    atomic_store(&g_engine_state, G_NONE);
+    release_slot(e);
     enif_release_resource(e);
     return enif_make_tuple2(env, am_error, am_badarg);
 }
@@ -2392,6 +2399,7 @@ static ERL_NIF_TERM nif_start(ErlNifEnv *env, int argc,
     e->capt_fd = -1;
     atomic_init(&e->state, ST_INIT);
     e->image = &g_engine_state;
+    atomic_init(&e->holds_slot, 1);
 
     e->root_lock = enif_rwlock_create("chappe_sip_root");
     if (!e->root_lock) return start_refused(env, e);
@@ -2421,7 +2429,7 @@ static ERL_NIF_TERM nif_start(ErlNifEnv *env, int argc,
     enif_keep_resource(e);
     if (enif_thread_create("chappe_sip_stack", &e->tid, stack_main, e, NULL) != 0) {
         enif_release_resource(e);   /* the thread ref (thread never ran) */
-        atomic_store(&g_engine_state, G_NONE);
+        release_slot(e);
         enif_release_resource(e);   /* the start ref */
         return enif_make_tuple2(env, am_error,
                                 mkbin(env, "thread_create failed", 20));
@@ -2436,7 +2444,7 @@ static ERL_NIF_TERM nif_start(ErlNifEnv *env, int argc,
         if (st == ST_FAILED) {
             enif_thread_join(e->tid, NULL);
             e->tid_valid = 0;
-            atomic_store(&g_engine_state, G_NONE);
+            release_slot(e);
             ERL_NIF_TERM why = mkbin(env, e->errbuf, strlen(e->errbuf));
             enif_release_resource(e);
             return enif_make_tuple2(
@@ -2466,7 +2474,7 @@ static ERL_NIF_TERM nif_start(ErlNifEnv *env, int argc,
         /* owner already dead: the thread is READY, so stop and join it before
          * dropping the base ref (never free e under the running thread) */
         stop_wait_join(e);
-        atomic_store(&g_engine_state, G_NONE);
+        release_slot(e);
         enif_release_resource(e);
         return enif_make_tuple2(env, am_error, am_badarg);
     }
@@ -2491,7 +2499,7 @@ static ERL_NIF_TERM nif_stop(ErlNifEnv *env, int argc,
         return enif_make_tuple2(env, am_error, am_hung);
     }
     enif_demonitor_process(env, e, &e->owner_mon);
-    atomic_store(&g_engine_state, G_NONE);
+    release_slot(e);
     return am_ok;
 }
 
