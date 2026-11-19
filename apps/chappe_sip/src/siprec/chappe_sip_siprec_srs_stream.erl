@@ -73,10 +73,12 @@ retake([], _Taken, _Media, _Ctx) ->
 
 %% A stream with a receiver follows its re-offer (RFC 3264 8.2, 8.3):
 %% port 0 stops it; the same audio profile keeps it, re-latched to a moved
-%% source (8.3.1), with the offer's key and direction, unless no format it
-%% takes is left (8.3.2: port 0, stopped); another media type or profile
-%% (8.3.3) stops it and takes the stream as a new one, under the same
-%% rules (keys included).
+%% source (8.3.1), with the offer's G.711 formats, key and direction,
+%% unless no format it takes is left (8.3.2: port 0, stopped) or the
+%% offer's keys came over a transport that is not secure (RFC 4568 8.3,
+%% judged on the request of this offer); another media type or profile
+%% (8.3.1, 8.3.3) stops it and takes the stream as a new one, under the
+%% same rules (keys included).
 kept({_, undefined}, I, Sec, Offer, _Media, Ctx) ->
     take(I, Sec, Offer, Ctx);
 kept(
@@ -85,15 +87,16 @@ kept(
     [M | _] = Sec,
     Offer,
     Media,
-    Ctx
+    #{opts := Opts} = Ctx
 ) ->
     case m_line(M) of
         {_, 0, _, _} ->
             stopped(Pid, M);
         {<<"audio">>, _, Proto, Fmts} ->
-            case [F || F <- Fmts, lists:member(F, ?LAWS)] of
-                [] -> stopped(Pid, M);
-                _ -> followed(T, Offer, Media)
+            case {laws(Fmts), sdes(Proto) andalso keys_refused(Opts)} of
+                {[], _} -> stopped(Pid, M);
+                {_, true} -> stopped(Pid, M);
+                {Laws, false} -> followed(T, Laws, Offer, Media)
             end;
         _ ->
             _ = chappe_audio_rtp:stop(Pid),
@@ -104,9 +107,41 @@ stopped(Pid, M) ->
     _ = chappe_audio_rtp:stop(Pid),
     {rejected(M), undefined}.
 
-followed(T, {Remote, Dir}, Media) ->
+followed(T, Laws, {Remote, Dir}, Media) ->
     {Lines, S} = rekey_one(T, Media),
-    {chappe_sip_sdp:set_direction(Lines, Dir), relatched(S, Remote)}.
+    {
+        chappe_sip_sdp:set_direction(formats(Lines, Laws), Dir),
+        relatched(S, Remote)
+    }.
+
+%% the stream's answer lines with the formats of the re-offer, in its
+%% order (RFC 3264 6.1), the rest of the m-line and the other lines kept
+formats([<<"m=", M/binary>> | Rest], Laws) ->
+    [Kind, Port, Proto | _] = chappe_sip_sdp:words(M),
+    [
+        iolist_to_binary([
+            <<"m=">>, lists:join(<<" ">>, [Kind, Port, Proto | Laws])
+        ])
+    ] ++
+        [rtpmap(L) || L <- Laws] ++
+        [L || L <- Rest, not is_rtpmap(L)].
+
+is_rtpmap(<<"a=rtpmap:", _/binary>>) -> true;
+is_rtpmap(_) -> false.
+
+%% the formats of an m-line the server takes, in its order
+laws(Fmts) ->
+    [F || F <- Fmts, lists:member(F, ?LAWS)].
+
+%% a profile keyed with SDES (RFC 7866 12.2)
+sdes(<<"RTP/SAVP">>) -> true;
+sdes(<<"RTP/SAVPF">>) -> true;
+sdes(_) -> false.
+
+%% RFC 4568 8.3: inline keys taken only over TLS or WSS, unless the app
+%% said otherwise (keys_over_tls => false)
+keys_refused(#{keys_over_tls := true, tls_in := false}) -> true;
+keys_refused(_Opts) -> false.
 
 %% the receiver takes the source the re-offer gives, when it moved
 relatched(#{remote := Remote} = S, Remote) ->
@@ -186,12 +221,7 @@ stream(Room, [M | Rest], Senders, CallRef, Sink, Ip, Opts) ->
     Label = label(Rest),
     case {Room, m_line(M)} of
         {true, {<<"audio">>, Port, Proto, Fmts}} when Port =/= 0 ->
-            case
-                {profile(Proto, Rest, Opts), [
-                    F
-                 || F <- Fmts, lists:member(F, ?LAWS)
-                ]}
-            of
+            case {profile(Proto, Rest, Opts), laws(Fmts)} of
                 {_, []} ->
                     {rejected(M), undefined};
                 {error, _} ->
@@ -217,11 +247,13 @@ stream(Room, [M | Rest], Senders, CallRef, Sink, Ip, Opts) ->
 %% 12.2, RFC 4568 7.1.2); every other profile is refused
 profile(<<"RTP/AVP">> = P, _Lines, _Opts) ->
     {P, undefined};
-profile(P, _Lines, #{keys_over_tls := true, tls_in := false}) when
-    P =:= <<"RTP/SAVP">>; P =:= <<"RTP/SAVPF">>
-->
-    error;
-profile(P, Lines, _Opts) when P =:= <<"RTP/SAVP">>; P =:= <<"RTP/SAVPF">> ->
+profile(P, Lines, Opts) ->
+    case sdes(P) andalso not keys_refused(Opts) of
+        true -> sdes_profile(P, Lines);
+        false -> error
+    end.
+
+sdes_profile(P, Lines) ->
     case chappe_sip_sdes:select(Lines) of
         {ok, C} ->
             case srtp_ctx(C) of
@@ -230,9 +262,7 @@ profile(P, Lines, _Opts) when P =:= <<"RTP/SAVP">>; P =:= <<"RTP/SAVPF">> ->
             end;
         {error, _} ->
             error
-    end;
-profile(_P, _Lines, _Opts) ->
-    error.
+    end.
 
 receiver(Label, Laws, Senders, CallRef, Sink0, Ip, Opts, M, {Proto, Srtp}) ->
     Parties = [

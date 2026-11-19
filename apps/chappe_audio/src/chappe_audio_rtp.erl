@@ -129,9 +129,10 @@ stats(Pid) ->
 rekey(Pid, Ctx) ->
     gen_server:call(Pid, {rekey, Ctx}).
 
-%% The sender moved (a new address or port in its SDP): the stream drops
-%% the source it latched and latches again, as at its start, to the first
-%% source at the new remote (undefined: the first source).
+%% The sender moved (a new address or port in its SDP): the stream latches
+%% to that address and port exactly, so a late packet from the old source
+%% is dropped, whatever its port (undefined: the first source again). The
+%% SRTP context, its replay lists and the counters carry on.
 -spec remote(pid(), {inet:ip_address(), inet:port_number()} | undefined) ->
     ok.
 remote(Pid, Remote) ->
@@ -204,7 +205,7 @@ handle_call({rekey, _Ctx}, _From, #state{srtp = undefined} = S) ->
 handle_call({rekey, Ctx}, _From, #state{srtp = Old} = S) ->
     {reply, ok, S#state{srtp = chappe_audio_srtp:rekey(Old, Ctx)}};
 handle_call({remote, Remote}, _From, S) ->
-    {reply, ok, S#state{remote = Remote, latched = undefined}};
+    {reply, ok, S#state{remote = Remote, latched = Remote}};
 handle_call(stop, _From, S) ->
     {stop, normal, close_sink(S), S#state{sink = {pid, self()}}}.
 

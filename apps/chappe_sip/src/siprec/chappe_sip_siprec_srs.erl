@@ -388,7 +388,7 @@ reoffered(Event, Req, Res, Srs) ->
     reoffered(Event, Req, read(Req), Res, Srs).
 
 reoffered(_Event, Req, {ok, Sdp, Doc} = Read, Res, Srs) ->
-    case reoffer(Sdp, Doc, Srs) of
+    case reoffer(Sdp, Doc, is_tls(Req), Srs) of
         {ok, Srs1} ->
             send_answer(Res, Srs1),
             updated(Req, Read, Srs1),
@@ -418,14 +418,17 @@ send_answer(Res, #{answer := Answer}) ->
 %% offer's (RFC 4568 7.1.4) and its direction the offer's (RFC 3264 6.1),
 %% and it is stopped and answered port 0 when the offer sets its port to 0
 %% (RFC 3264 8.2). A stream new to the session, or one refused before, is
-%% taken as in the INVITE: a receiver, or port 0 past max_streams. An
-%% answer that changes takes a new o= version (RFC 3264 8).
-reoffer(Sdp, Doc, #{taken := Taken, ctx := Ctx0} = Srs) ->
+%% taken as in the INVITE: a receiver, or port 0 past max_streams. The key
+%% rule (RFC 4568 8.3) is judged on TlsIn, the transport of the request
+%% carrying this offer. An answer that changes takes a new o= version (RFC
+%% 3264 8).
+reoffer(Sdp, Doc, TlsIn, #{taken := Taken, ctx := Ctx0} = Srs) ->
     {Sess, Media} = chappe_sip_sdp:sections(Sdp),
     case length(Media) >= length(Taken) of
         true ->
-            Ctx = Ctx0#{senders := senders_of(Doc, Ctx0)},
-            #{opts := Opts} = Ctx,
+            #{opts := Opts0} = Ctx0,
+            Opts = Opts0#{tls_in := TlsIn},
+            Ctx = Ctx0#{senders := senders_of(Doc, Ctx0), opts := Opts},
             Offers = [
                 {I, Sec, chappe_sip_siprec_srs_stream:offer(Sess, Sec, Opts)}
              || {I, Sec} <- lists:enumerate(Media)

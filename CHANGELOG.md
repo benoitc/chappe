@@ -13,16 +13,18 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
   answer line for it and starts recording it, an UPDATE that carries an SDP
   offer gets its answer instead of an empty 200, and a stream the client
   removes stops. A stream also follows the client when it moves to another
-  address or port, switches between plain RTP and SRTP, or drops G.711.
-  The metadata of a re-offer the server refuses is no longer reported to
-  the app. SRTP keys sent to a `sips:` address over plain UDP are now
-  refused like any other keys sent without TLS.
+  address or port, switches between plain RTP and SRTP, or changes its
+  G.711 codecs. The metadata of a re-offer the server refuses is no longer
+  reported to the app. SRTP keys sent to a `sips:` address over plain UDP
+  are now refused like any other keys sent without TLS, and keys in a
+  re-offer are judged on the transport that re-offer came over, not the
+  one the session started on.
 - chappe_sip: requests that arrive over WebSocket now say whether they came
   over WS or WSS, as requests over UDP, TCP and TLS already did. A
   recording server takes SRTP keys over WSS, call records name the WS
   transport, and registrations made over WebSocket keep it.
 - chappe_audio: an RTP receiver can be pointed at a new sender address,
-  for a sender that moves mid-stream.
+  for a sender that moves mid-stream; it then takes that address only.
 - chappe_sip: a NOTIFY from another fork of a subscription could be
   answered 500 instead of 200 when the stack was busy, because the request
   ended before the new subscription had answered it. The new subscription
