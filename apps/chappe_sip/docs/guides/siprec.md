@@ -144,11 +144,14 @@ were SRTP it cannot take (`{error, srtp}`, see below).
 `run/1` carries the session until the BYE. It answers each re-INVITE, and
 each UPDATE with an SDP offer, with one m-line per offered stream: a stream
 it has keeps its receiver, answered `a=inactive` while the client pauses it
-and `a=recvonly` again when it resumes, and a stream the offer adds gets a
-receiver of its own (port 0 past `max_streams`). An UPDATE with the
-metadata alone gets an empty 200. `run/1` hands the metadata each request
-carries (a party change, a pause) to the notify process (`notify => Pid`,
-else the sink):
+and `a=recvonly` again when it resumes, and following the client when it
+moves the stream to another address or port. A stream the offer adds gets a
+receiver of its own (port 0 past `max_streams`). A stream the client
+switches to another profile (RTP/AVP to RTP/SAVP) starts over as a new one,
+and a stream left without PCMU or PCMA stops (port 0). An UPDATE with the
+metadata alone gets an empty 200. `run/1` hands the metadata of each
+request it accepts (a party change, a pause) to the notify process
+(`notify => Pid`, else the sink):
 
 ```erlang
 receive
@@ -221,8 +224,8 @@ address.
 (RFC 7866 12.2), and decrypts them itself: no rtpengine is needed on the
 receive side. You need nothing in your handler, but the keys must come over
 TLS: RFC 4568 8.3 requires the SDP that carries them to be encrypted, so an
-SRTP stream offered over UDP or TCP is rejected with port 0, even to a
-`sips:` URI, and the offer gets 488 when no stream is left. Point your
+SRTP stream offered over UDP, TCP or plain WebSocket is rejected with port
+0, even to a `sips:` URI, and the offer gets 488 when no stream is left. Point your
 recording client at a `sips:` URI over TLS (or WSS). On a network you trust, take keys over
 plain SIP with `keys_over_tls => false`:
 

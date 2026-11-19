@@ -176,17 +176,23 @@ With no stream left the INVITE gets 488 and a Warning that says why:
 its 200, RFC 3311 5.2), through one re-offer path, with one m-line per
 offered one (RFC 3264 6):
 
-- a stream with a receiver keeps it. A new key goes to the receiver
-  (`chappe_audio_rtp:rekey/2`), the direction follows the offer
-  (`a=inactive` for an inactive offer, `a=recvonly` for a sendonly one),
-  and an offer at port 0 stops it (RFC 3264 8.2);
+- a stream with a receiver keeps it while the offer keeps its audio
+  profile and PCMU or PCMA. A new key goes to the receiver
+  (`chappe_audio_rtp:rekey/2`), a moved source re-latches it
+  (`chappe_audio_rtp:remote/2`, RFC 3264 8.3.1), and the direction follows
+  the offer (`a=inactive` for an inactive offer, `a=recvonly` for a
+  sendonly one);
+- an offer at port 0, or with no PCMU or PCMA left, stops the receiver
+  and answers port 0 (RFC 3264 8.2, 8.3.2); another media type or profile
+  stops it and takes the stream as a new one (8.3.1, 8.3.3);
 - a stream the offer adds, or one refused before, is taken as in the
   INVITE: a receiver, or port 0 past `max_streams`;
 - an answer that changes takes a new o= version (RFC 3264 8);
 - an offer with fewer m-lines than the session is refused 488, and the
   session stays as it was;
 - a re-INVITE with no offer gets the current SDP, and an UPDATE with the
-  metadata alone an empty 200.
+  metadata alone an empty 200;
+- the metadata of a request is told only once it is accepted.
 
 The notify process (`notify`, else the sink pid) gets:
 
