@@ -7,6 +7,35 @@ by hand.
 
 1394 requirements: 817 pass, 0 fail, 307 untested, 247 n/a, 21 deviation, 2 spec defect
 
+What chappe does not meet on purpose, and why, is listed under
+[Deviations](#deviations).
+
+## Deviations
+
+| ID | Source | Section | Requirement | Reason |
+| --- | --- | --- | --- | --- |
+| R4579-23 | RFC 4579 | 6 | A participant and focus SHOULD support an end-to-end integrity mechanism such as S/MIME. | S/MIME not implemented; TLS hop-by-hop is the documented substitute |
+| R4575-55 | RFC 4575 | 8.1 | ...an end-to-end means..., such as S/MIME described in Section 26.2.4 of RFC 3261 [8], SHOULD be... | S/MIME not implemented; mutual TLS hop-by-hop (R4575-56) is the substitute |
+| R7647-01 | RFC 7647 | 3 | A user agent (UA) accepting a REFER that creates a subscription MUST populate its Contact header... | GRUU (RFC 5627) not implemented: the REFER 2xx carries the stack Contact; for a focus the conference URI already routes to it |
+| R3891-20 | RFC 3891 | 8 | Since manipulating this dialog information could cause User Agents to replace the wrong dialog, use... | no end-to-end integrity (S/MIME) by design; TLS hop-by-hop only |
+| R3891-21 | RFC 3891 | 8 | Use of end-to-end security mechanisms to encrypt this information is also RECOMMENDED. | no end-to-end encryption (S/MIME) by design; TLS hop-by-hop only |
+| R3891-22 | RFC 3891 | 3 | The Referred-By header SHOULD reference a corresponding, valid Refererred-By Authenticated Identity... | S/MIME Authenticated Identity Body not verified by design; Referred-By trusted only from authenticated peers |
+| R6665-17 | RFC 6665 | 4.5.1 | Notifiers MUST implement the Globally Routable User Agent URI (GRUU) extension defined in... | GRUU (RFC 5627) not implemented, as R7647-01: the NOTIFY and 200 Contact is the stack Contact; for a focus the conference URI already routes back to the notifier |
+| R6665-40 | RFC 6665 | 4.1.3 | To prevent spoofing of events, NOTIFY requests SHOULD be authenticated using any defined SIP... | chappe does not challenge NOTIFYs itself: a NOTIFY matches a subscription only by Call-ID, tags and Event, and a chappe_sip:use(<<"NOTIFY">>, Mw) middleware can challenge them |
+| R3892-09 | RFC 3892 | 2.3 | The refer target MUST reject an otherwise well-formed request with an invalid Referred-By token... | S/MIME token validation not implemented by design, so an invalid token cannot be detected for 429 |
+| R3892-12 | RFC 3892 | 4.1 | A refer target MUST treat a Referred-By token with an invalid signature as an invalid token. | S/MIME token signature validation not implemented by design; tokens treated as absent |
+| R3261-047 | RFC 3261 | 8.1.3.3 | If more than one Via header field value is present in a response, the UAC SHOULD discard the... | nta (sofia-sip, vendored, patched at build time from c_src/sofia-patches) accepts a response carrying two Via values |
+| R3261-320 | RFC 3261 | 17.2.1 | In this case, the server transaction MUST transition to the "Terminated" state, and MUST indicate... | nta (sofia-sip, vendored, patched at build time from c_src/sofia-patches) releases the server transaction once the final is sent, so a Timer H failure after 3xx-6xx is not reported; retransmission up to Timer H passes |
+| R3261-353 | RFC 3261 | 18.1.2 | If the value of the "sent-by" parameter in that header field value does not correspond to a value... | nta (sofia-sip, vendored, patched at build time from c_src/sofia-patches) matches a response on its branch alone, not on sent-by |
+| R3261-372 | RFC 3261 | 18.3 | If the message is a response, it MUST be discarded. | nta (sofia-sip, vendored, patched at build time from c_src/sofia-patches) takes a response whose Content-Length exceeds the datagram as final; the request side gets 400 (R3261-373) |
+| R3261-419 | RFC 3261 | 20 | Similarly, a header field labeled "not applicable" for a response means that the UAS MUST NOT place... | sofia nta copies the request Record-Route into the stateless responses it builds itself (complete_response, nta.c:3899-3900), so a 400 for a malformed request carries Record-Route, which only 18x and 2xx may; sofia-sip is vendored, patched at build time from c_src/sofia-patches, and no patch touches this. Stateful responses copy it for 101-299 only, and the UAC half holds (core_uac_SUITE:uac_ignores_na_headers: a 200 with Route, Max-Forwards and Proxy-Require still sets up the call) |
+| R3581-010 | RFC 3581 | 4 | In fact, the server MUST insert a "received" parameter containing the source IP address that the... | nta (sofia-sip, vendored, patched at build time from c_src/sofia-patches) adds received only when the source address differs from the Via host; responses still route correctly |
+| R7118-011 | RFC 7118 | 4.1 | Messages other than SIP requests and responses MUST NOT be transmitted over this connection. | a client CRLFCRLF keepalive gets a CRLF pong (RFC 5626 4.4.1), as JsSIP and SIP.js expect; WS ping/pong are control frames, not messages |
+| R3903-53 | RFC 3903 | 14.2 | Also, the ESC SHOULD throttle incoming publications and the corresponding notifications resulting... | only the notifications are throttled (the presence notifier's min_interval); publications are bounded by the request-worker cap |
+| R3856-11 | RFC 3856 | 6.7 | In other words, for a user pres:user@example.com, the signator of the NOTIFY SHOULD be the... | chappe does not sign bodies (no S/MIME) |
+| R3842-22 | RFC 3842 | 6 | Furthermore, notifications SHOULD be encrypted and integrity protected using either end-to-end... | chappe sends the NOTIFY over the subscription's transport (TLS when the dialog is sips); it does not encrypt bodies end to end (no S/MIME) |
+| R7866-6.1.2-1 | RFC 7866 | 6.1.2 | For the CS, the SRC MUST provide recording indications to all participants in the CS. | left to the app: chappe_sip_siprec sends no a=record and plays no tone; the app plays a prompt (chappe_mrf, rtpengine play) or relies on an agreement, as the RFC allows |
+
 ## By row
 
 | Row | pass | fail | untested | other |

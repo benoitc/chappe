@@ -7,6 +7,13 @@ by hand.
 
 308 requirements: 86 pass, 0 fail, 60 untested, 162 n/a, 0 deviation, 0 spec defect
 
+What chappe does not meet on purpose, and why, is listed under
+[Deviations](#deviations).
+
+## Deviations
+
+None.
+
 ## By row
 
 | Row | pass | fail | untested | other |

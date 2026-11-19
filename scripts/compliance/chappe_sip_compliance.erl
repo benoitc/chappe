@@ -27,6 +27,8 @@
     eunit_results/1,
     matrix/3,
     gate/2,
+    undocumented_deviations/1,
+    expected_fail/2,
     args/1,
     unknown_ids/2,
     render/1
@@ -40,11 +42,12 @@
 ]).
 
 %% main([RequirementsTsv, TestDir, LogDir, OutMd]), optionally followed
+%% by "--expected-fail" and the conformance lab's expected-fail file, and
 %% by "--gate" and a comma separated list of gated tiers (default table).
 %% LogDir is _build/test/logs: its newest ct_run.* directory and its
 %% eunit/ surefire reports.
 main(Args) ->
-    {Paths, Gate} = args(Args),
+    {Paths, Gate, ExpectedFail} = args(Args),
     [ReqFile, TestDir, LogDir, Out] = Paths,
     {ok, Bin} = file:read_file(ReqFile),
     {ok, Reqs} = parse_requirements(Bin),
@@ -79,26 +82,69 @@ main(Args) ->
      || {Case, Id} <- unknown_ids(Reqs, Ann)
     ],
     io:format("~s~n", [summary_line(Matrix)]),
-    case Gate =/= none andalso gate(Matrix, Gate) of
-        {error, Open} ->
-            io:format("gate: ~p hard requirements of ~s not passing~n", [
-                length(Open), lists:join(",", Gate)
-            ]),
-            halt(1);
-        _ ->
-            halt(0)
+    case Gate of
+        none -> halt(0);
+        _ -> halt(gate_report(Matrix, Gate, ExpectedFail))
     end.
 
--spec args([string()]) -> {[string()], none | [binary()]}.
-args(Args) ->
+%% Print one line per gate problem and return the exit status.
+gate_report(Matrix, Gate, ExpectedFail) ->
+    Open =
+        case gate(Matrix, Gate) of
+            ok -> [];
+            {error, Ids} -> Ids
+        end,
+    [
+        io:format("gate: ~p hard requirements of ~s not passing~n", [
+            length(Open), lists:join(",", Gate)
+        ])
+     || Open =/= []
+    ],
+    Undocumented = undocumented_deviations(Matrix),
+    [
+        io:format("gate: deviation ~s has no reason in its notes~n", [Id])
+     || Id <- Undocumented
+    ],
+    Unbacked =
+        case ExpectedFail of
+            none ->
+                [];
+            File ->
+                {ok, EfBin} = file:read_file(File),
+                expected_fail(EfBin, Matrix)
+        end,
+    [
+        io:format(
+            "gate: expected-fail ~s names no requirement row with deviation "
+            "status~n",
+            [Case]
+        )
+     || Case <- Unbacked
+    ],
+    case {Open, Undocumented, Unbacked} of
+        {[], [], []} -> 0;
+        _ -> 1
+    end.
+
+-spec args([string()]) -> {[string()], none | [binary()], none | string()}.
+args(Args0) ->
+    {Args, ExpectedFail} = expected_fail_arg(Args0, []),
     case lists:splitwith(fun(A) -> A =/= "--gate" end, Args) of
         {Paths, []} ->
-            {Paths, none};
+            {Paths, none, ExpectedFail};
         {Paths, ["--gate"]} ->
-            {Paths, [<<"table">>]};
+            {Paths, [<<"table">>], ExpectedFail};
         {Paths, ["--gate", Tiers]} ->
-            {Paths, [list_to_binary(T) || T <- string:lexemes(Tiers, ",")]}
+            {Paths, [list_to_binary(T) || T <- string:lexemes(Tiers, ",")],
+                ExpectedFail}
     end.
+
+expected_fail_arg([], Acc) ->
+    {lists:reverse(Acc), none};
+expected_fail_arg(["--expected-fail", File | T], Acc) ->
+    {lists:reverse(Acc, T), File};
+expected_fail_arg([A | T], Acc) ->
+    expected_fail_arg(T, [A | Acc]).
 
 %% ---- requirements ----
 
@@ -344,6 +390,44 @@ gate(Matrix, Tiers) ->
         _ -> {error, Open}
     end.
 
+%% Deviation rows whose notes are empty: a deviation without a reason is
+%% not documented.
+-spec undocumented_deviations([map()]) -> [binary()].
+undocumented_deviations(Matrix) ->
+    [
+        Id
+     || #{id := Id, status := deviation, notes := Notes} <- Matrix,
+        string:trim(Notes) =:= <<>>
+    ].
+
+%% The cases of an expected-fail file (`case  reason' per line, `#'
+%% comments) whose reason names no requirement row with deviation status:
+%% a case that fails on purpose must point at the documented deviation.
+-spec expected_fail(binary(), [map()]) -> [binary()].
+expected_fail(Bin, Matrix) ->
+    Deviations = #{Id => true || #{id := Id, status := deviation} <- Matrix},
+    [
+        Case
+     || Line <- binary:split(Bin, [<<"\r\n">>, <<"\n">>], [global]),
+        [Case | Reason] <- [string:split(string:trim(Line), " ")],
+        Case =/= <<>>,
+        binary:first(Case) =/= $#,
+        not lists:any(
+            fun(Id) -> maps:is_key(Id, Deviations) end,
+            row_ids(iolist_to_binary(Reason))
+        )
+    ].
+
+row_ids(Text) ->
+    case
+        re:run(Text, "[A-Z][A-Za-z0-9]*(?:-[A-Za-z0-9.]+)+", [
+            global, {capture, first, binary}
+        ])
+    of
+        {match, Ids} -> [Id || [Id] <- Ids];
+        nomatch -> []
+    end.
+
 %% ---- rendering ----
 
 -spec render([map()]) -> iodata().
@@ -356,6 +440,9 @@ render(Matrix) ->
         "by hand.\n\n",
         summary_line(Matrix),
         "\n\n",
+        "What chappe does not meet on purpose, and why, is listed under\n"
+        "[Deviations](#deviations).\n\n",
+        deviations(Matrix),
         "## By row\n\n",
         "| Row | pass | fail | untested | other |\n| --- | ---: | ---: | ---: | ---: |\n",
         [row_line(Row, Matrix) || Row <- rows(Matrix)],
@@ -364,6 +451,40 @@ render(Matrix) ->
         "| --- | --- | --- | --- | --- | --- | --- |\n",
         [req_line(R) || R <- Matrix]
     ].
+
+deviations(Matrix) ->
+    [
+        "## Deviations\n\n",
+        case [R || #{status := deviation} = R <- Matrix] of
+            [] ->
+                "None.\n\n";
+            Devs ->
+                [
+                    "| ID | Source | Section | Requirement | Reason |\n",
+                    "| --- | --- | --- | --- | --- |\n",
+                    [deviation_line(R) || R <- Devs],
+                    "\n"
+                ]
+        end
+    ].
+
+deviation_line(#{
+    id := Id, source := Src, section := Sec, text := Text, notes := Notes
+}) ->
+    io_lib:format("| ~s | ~s | ~s | ~s | ~s |~n", [
+        Id, Src, Sec, escape(short(Text)), escape(Notes)
+    ]).
+
+%% The first 100 characters of a requirement, cut at a word.
+short(Text) ->
+    case string:length(Text) =< 100 of
+        true ->
+            Text;
+        false ->
+            Cut = string:slice(Text, 0, 100),
+            Words = string:split(Cut, " ", trailing),
+            iolist_to_binary([hd(Words), "..."])
+    end.
 
 summary_line(Matrix) ->
     Count = fun(S) -> length([ok || #{status := X} <- Matrix, X =:= S]) end,

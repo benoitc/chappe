@@ -187,18 +187,56 @@ gate_test() ->
         {error, [<<"R3515-01">>]}, chappe_sip_compliance:gate(None, [<<"demo">>])
     ).
 
-%% `--gate TIER,...' names the gated tiers; a bare `--gate' keeps `table'.
+%% `--gate TIER,...' names the gated tiers; a bare `--gate' keeps `table';
+%% `--expected-fail FILE' may come anywhere after the paths.
 args_test() ->
+    P = ["a", "b", "c", "d"],
+    ?assertEqual({P, none, none}, chappe_sip_compliance:args(P)),
     ?assertEqual(
-        {["a", "b", "c", "d"], none}, chappe_sip_compliance:args(["a", "b", "c", "d"])
+        {P, [<<"table">>], none},
+        chappe_sip_compliance:args(P ++ ["--gate"])
     ),
     ?assertEqual(
-        {["a", "b", "c", "d"], [<<"table">>]},
-        chappe_sip_compliance:args(["a", "b", "c", "d", "--gate"])
+        {P, [<<"demo">>, <<"platform">>], none},
+        chappe_sip_compliance:args(P ++ ["--gate", "demo,platform"])
     ),
     ?assertEqual(
-        {["a", "b", "c", "d"], [<<"demo">>, <<"platform">>]},
-        chappe_sip_compliance:args(["a", "b", "c", "d", "--gate", "demo,platform"])
+        {P, [<<"demo">>], "ef"},
+        chappe_sip_compliance:args(P ++ ["--expected-fail", "ef", "--gate", "demo"])
+    ),
+    ?assertEqual(
+        {P, [<<"table">>], "ef"},
+        chappe_sip_compliance:args(P ++ ["--gate", "--expected-fail", "ef"])
+    ).
+
+%% A deviation is documented: one with empty notes is reported by the gate.
+undocumented_deviations_test() ->
+    Tsv = <<
+        (tsv())/binary,
+        "R4579-24\tRFC 4579\t6\t901\tMUST\tfocus\tR7\tdeviation\tbare\t \n"
+    >>,
+    {ok, Reqs} = chappe_sip_compliance:parse_requirements(Tsv),
+    M = chappe_sip_compliance:matrix(Reqs, [], #{}),
+    ?assertEqual(
+        [<<"R4579-24">>], chappe_sip_compliance:undocumented_deviations(M)
+    ).
+
+%% Each expected-fail case must name, in its reason, a requirement row
+%% with deviation status.
+expected_fail_test() ->
+    {ok, Reqs} = chappe_sip_compliance:parse_requirements(tsv()),
+    M = chappe_sip_compliance:matrix(Reqs, [], #{}),
+    Ef = <<
+        "# a comment naming R4579-07\n"
+        "\n"
+        "tls_case     S/MIME not built (deviation R4579-23, TLS instead)\n"
+        "focus_case   isfocus missing (R4579-07)\n"
+        "bare_case    no id at all\n"
+        "lone_case\n"
+    >>,
+    ?assertEqual(
+        [<<"focus_case">>, <<"bare_case">>, <<"lone_case">>],
+        chappe_sip_compliance:expected_fail(Ef, M)
     ).
 
 %% Unknown ids in annotations are reported, so a typo cannot pretend to
@@ -218,4 +256,13 @@ render_test() ->
         chappe_sip_compliance:render(chappe_sip_compliance:matrix(Reqs, [], #{}))
     ),
     ?assertNotEqual(nomatch, binary:match(Md, <<"| X-4.7-14 |">>)),
-    ?assertNotEqual(nomatch, binary:match(Md, <<"untested">>)).
+    ?assertNotEqual(nomatch, binary:match(Md, <<"untested">>)),
+    %% the deviations come first, with their reason, linked from the top
+    ?assertNotEqual(nomatch, binary:match(Md, <<"(#deviations)">>)),
+    ?assertNotEqual(
+        nomatch,
+        binary:match(Md, <<"| R4579-23 | RFC 4579 | 6 | S/MIME | TLS instead |">>)
+    ),
+    {Dev, _} = binary:match(Md, <<"## Deviations">>),
+    {Rows, _} = binary:match(Md, <<"## Requirements">>),
+    ?assert(Dev < Rows).

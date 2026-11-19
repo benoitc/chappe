@@ -144,6 +144,8 @@ compliance:
 	    echo "$$app:"; \
 	    scripts/compliance.escript apps/$$app/docs/compliance/requirements.tsv \
 	        apps/$$app/test _build/test/logs apps/$$app/docs/compliance.md \
+	        $$(ef=apps/$$app/interop/conformance/expected-fail; \
+	           test -f $$ef && echo --expected-fail $$ef) \
 	        $(if $(GATE),--gate $(GATE)); \
 	done
 

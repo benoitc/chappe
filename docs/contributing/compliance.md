@@ -45,7 +45,13 @@ makes a promise, or want to know which test proves a behaviour.
    failed. It is untested when no test claims it, or when any claiming test
    was skipped or has no result: a skipped or missing test proves nothing.
 6. With `GATE=demo`, the run exits 1 if any row of tier `demo` whose keyword is
-   MUST, MUST NOT, SHALL, SHALL NOT or REQUIRED is not `pass`.
+   MUST, MUST NOT, SHALL, SHALL NOT or REQUIRED is not `pass`. It also exits 1,
+   with one line per row, when a `deviation` row has empty notes, or when a
+   case in `apps/<app>/interop/conformance/expected-fail` does not name a
+   `deviation` row in its reason.
+7. Each matrix opens with a Deviations section: one line per `deviation` row
+   with its id, source, section, a short form of the text and the notes as the
+   reason.
 
 ## The catalogue format
 
@@ -88,7 +94,7 @@ Tiers:
 
    or from an EUnit test, for a rule a pure module meets:
 
-   ```erlang
+   ```text
    %% req: RNG-09
    nesting_depth_bounded_test() ->
        ?assertEqual({error, too_deep}, chappe_rtpengine_bencode:decode(nested(65))).
@@ -104,6 +110,30 @@ Tiers:
 
 5. Commit the `requirements.tsv` change and the regenerated
    `apps/<app>/docs/compliance.md` together.
+
+## Record a deviation
+
+A deviation is a requirement chappe does not meet on purpose. Record it so a
+user can read what chappe does instead and decide whether it matters to them.
+
+1. Set the row's `tier` to `deviation`.
+2. Write the reason in `notes`: what chappe does instead, and why. For
+   example: "nta adds received only when the source differs from the Via
+   host; sofia-sip is vendored as upstream ships it".
+3. If a conformance case fails because of it, list the case in
+   `apps/chappe_sip/interop/conformance/expected-fail` and name the row id in
+   its reason:
+
+   ```text
+   rport_response   response Via has rport=N but no received (deviation R3581-010)
+   ```
+
+4. Regenerate. The row appears under Deviations at the top of
+   `apps/<app>/docs/compliance.md`, which is where users read them; the
+   [docs map](../README.md) links each app's section.
+
+The gate refuses a deviation with empty notes, and an expected-fail case that
+names no deviation row.
 
 ## The committed matrices and CI
 

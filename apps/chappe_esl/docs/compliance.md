@@ -7,6 +7,13 @@ by hand.
 
 39 requirements: 28 pass, 0 fail, 11 untested, 0 n/a, 0 deviation, 0 spec defect
 
+What chappe does not meet on purpose, and why, is listed under
+[Deviations](#deviations).
+
+## Deviations
+
+None.
+
 ## By row
 
 | Row | pass | fail | untested | other |
