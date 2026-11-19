@@ -224,8 +224,10 @@ run(Lab, Args, Timeout) ->
     Pid = spawn(fun() -> Self ! {self(), sh(Lab ++ " " ++ Args)} end),
     receive
         {Pid, {0, _}} -> ok;
-        {Pid, {Rc, Out}} -> ct:log("~s ~s: rc=~p~n~s", [Lab, Args, Rc, Out]),
-                            {error, Rc}
+        %% ct:pal, not ct:log: the CI job keeps no CT logs, so a lab step
+        %% that fails must say why in the job output
+        {Pid, {Rc, Out}} -> ct:pal("~s ~s: rc=~p~n~s", [Lab, Args, Rc, Out]),
+                            {error, {Args, Rc}}
     after Timeout -> ct:fail({timeout, Args})
     end.
 
