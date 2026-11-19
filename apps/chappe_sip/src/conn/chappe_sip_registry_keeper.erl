@@ -28,7 +28,7 @@
 %% {aor, Aor, Flow} (chappe_sip_registry)
 -define(FLOWS_TAB, chappe_sip_registry_flows).
 %% the TCP/TLS connections of the native stack that closed lately
-%% (chappe_sip_engine:conn_closed/1)
+%% (chappe_sip_engine_conns:conn_closed/1)
 -define(CLOSED_TAB, chappe_sip_closed_conns).
 
 start_link() ->

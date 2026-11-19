@@ -35,8 +35,9 @@ threads are in [the engine design](engine.md).
   same events; see [ws-transport](ws-transport.md).
 - **chappe_sip_engine** is the one process that talks to the NIF. It holds
   the routes and a handle table mapping engine handles to the processes that
-  own them, and dispatches inbound events. Its responsibilities are mapped
-  in [the engine design](engine.md#chappe_sip_engine-what-it-is-responsible-for).
+  own them, and dispatches inbound events. Its responsibilities, and the
+  `chappe_sip_engine_*` helpers that carry them, are mapped in
+  [the engine design](engine.md#chappe_sip_engine-what-it-is-responsible-for).
 - **A call is a process.** Each inbound out-of-dialog request runs in its
   own `chappe_sip_request_worker`. Each dialog is a `chappe_sip_dialog_fsm`;
   each outbound transaction a `chappe_sip_uac_fsm`.
@@ -99,7 +100,7 @@ Why the order matters:
   Accepted state).
 - `chappe_sip_proxy_sup` registers `chappe_sip_proxy` with the engine as
   the forwarder of requests loose-routed back to us
-  (`chappe_sip_engine:forwarder/1`).
+  (`chappe_sip_engine_backend:forwarder/1`).
 - `chappe_sip_siprec_sup` and `chappe_sip_regc_sup` come after the stack,
   so they stop first: a recording can still send its BYE and a
   registration its `Expires: 0` on shutdown.
@@ -118,7 +119,7 @@ Why the order matters:
 | `conn/` | Request workers, the stack supervisor, the location store and its backends (see [registrar](registrar.md)) | `chappe_sip_request_worker`, `chappe_sip_request_sup`, `chappe_sip_stack_sup`, `chappe_sip_registry`, `chappe_sip_registry_keeper`, `chappe_sip_registry_store`, `chappe_sip_registry_contact`, `chappe_sip_registry_sweep`, `chappe_sip_location`, `chappe_sip_location_ets`, `chappe_sip_location_cluster` |
 | `core/` | Services every layer reports to: call correlation and call records | `chappe_sip_call`, `chappe_sip_cdr` |
 | `dialog/` | Dialogs, session timers, REFER, the subscriber side of events, the NOTIFY router | `chappe_sip_dialog`, `chappe_sip_dialog_fsm` and its `chappe_sip_dialog_*` helpers (`_route`, `_offer`, `_out`, `_sub`, `_st`, `_owner`), `chappe_sip_dialog_index`, `chappe_sip_dialog_sup`, `chappe_sip_session_timer`, `chappe_sip_subscription`, `chappe_sip_refer*`, `chappe_sip_subscriber*`, `chappe_sip_notify_router` |
-| `engine/` | The NIF and the engine, the dispatch policy, the UAS response, listen addresses, HEP for WS | `chappe_sip_engine`, `chappe_sip_nif`, `chappe_sip_dispatch`, `chappe_sip_uas_response`, `chappe_sip_binds`, `chappe_sip_bind_uri`, `chappe_sip_hep` |
+| `engine/` | The NIF and the engine, the dispatch policy, the UAS response, listen addresses, HEP for WS | `chappe_sip_engine` and its `chappe_sip_engine_*` helpers (`_opts`, `_backend`, `_events`, `_handles`, `_conns`), `chappe_sip_nif`, `chappe_sip_dispatch`, `chappe_sip_uas_response`, `chappe_sip_binds`, `chappe_sip_bind_uri`, `chappe_sip_hep` |
 | `events/` | The notifier side of events: PUBLISH, presence, message-summary, the conference focus | `chappe_sip_esc`, `chappe_sip_notifier`, `chappe_sip_presence`, `chappe_sip_pidf`, `chappe_sip_mwi`, `chappe_sip_publisher`, `chappe_sip_focus`, `chappe_sip_confinfo`, `chappe_sip_events_sup` |
 | `media/` | The media facade and its backends | `chappe_sip_media`, `chappe_sip_media_sup`, `chappe_sip_media_rtpengine`, `chappe_sip_media_mix`, `chappe_sip_media_mix_sdp` |
 | `peers/` | OPTIONS-monitored peers and the registrar's qualify | `chappe_sip_peers`, `chappe_sip_peer`, `chappe_sip_peers_sup`, `chappe_sip_peer_sup`, `chappe_sip_qualify` |
@@ -269,7 +270,7 @@ backend for TU logic and error paths (`engine_mod`).
 
 | Area | Suites and eunit modules |
 |---|---|
-| Engine and NIF | `engine_smoke`, `engine_lifecycle`, `engine_opts`, `ops`, `handler`, `pipeline` (fake engine), `source_ip`, `multihome`, `transport`, `nif_boundary`, `nif_fuzz`, `test/asan/` |
+| Engine and NIF | `engine`, `engine_tests`, `engine_smoke`, `engine_lifecycle`, `engine_opts`, `ops`, `handler`, `pipeline` (fake engine), `source_ip`, `multihome`, `transport`, `nif_boundary`, `nif_fuzz`, `test/asan/` |
 | Inbound pipeline, guard | `pipeline`, `ood`, `guard`, `dispatch_tests`, `uas_response_tests` |
 | UAS, dialogs, calls | `core`, `uas`, `indialog`, `dialog_ops`, `dialog_fsm_tests`, `replaces`, `call` |
 | UAC | `core_uac`, `uac`, `digest`, `digest_tests`, `uac_auth_tests` |

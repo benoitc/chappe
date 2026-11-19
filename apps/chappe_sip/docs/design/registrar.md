@@ -200,7 +200,7 @@ When the flow the edge route names is gone, node B answers 430 Flow Failed
 
 - the send fails with `no_flow` or `<<"unknown flow">>` (`forward_failed/3`);
 - or the answer is a 503 on a `{conn, Id}` flow that closed as the request
-  left (`chappe_sip_engine:conn_closed/1`), the stack's own failure.
+  left (`chappe_sip_engine_conns:conn_closed/1`), the stack's own failure.
 
 Any other failure (the engine or the WS transport busy, a full transaction
 table) is a 500, and the binding stays.
