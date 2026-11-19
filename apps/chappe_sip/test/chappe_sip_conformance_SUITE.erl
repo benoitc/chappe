@@ -60,6 +60,9 @@ groups() ->
      {hep, [], [hep_capture]}].
 
 init_per_suite(Config) ->
+    %% building the lab images takes longer than a case may on a busy
+    %% runner; the cases keep the suite's 5 minutes
+    ct:timetrap({minutes, 20}),
     case docker_ready() of
         ok ->
             Dir = interop_dir(),
