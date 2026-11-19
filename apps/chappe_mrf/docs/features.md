@@ -68,6 +68,21 @@ that shows you how to use it.
   [Design](design/overview.md#the-backend-behaviour)
 - **Compliance**: every MRF row passes on fakes ([matrix](compliance.md)).
 
+## Also exported
+
+These functions are exported and supported, but no guide shows them yet.
+
+- `chappe_mrf:conferences/0` lists the running conferences as
+  `[{Name, Conf}]`.
+- `chappe_mrf:uuid/1` returns an endpoint's FreeSWITCH channel UUID.
+- `chappe_mrf:fork_audio_resume/1,2` resumes a paused audio fork, and
+  `fork_audio_send_text/2,3` sends the fork's server a text frame.
+- `chappe_mrf:stop_detect_fax/1` stops the fax tone detection
+  `detect_fax/1` started.
+- `chappe_mrf_conf_refer:refer/3` answers a REFER to a room's URI.
+- `chappe_mrf_conf_move:job/4` runs one member's move with the transfer
+  fun you give; `rehome/4` moves a room's members after it lost its lease.
+
 ## Planned
 
 - Move the loopback middleware and the node candidate selection out of the

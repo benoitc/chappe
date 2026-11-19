@@ -35,12 +35,13 @@
 -export([
     start/1,
     stop/0,
-    restart_engine/0,
     use/2,
     handle/3,
-    reset_routes/0,
-    check_health/1
+    reset_routes/0
 ]).
+-ifdef(TEST).
+-export([restart_engine/0, check_health/1]).
+-endif.
 %% the guard's drop (chappe_sip_guard)
 -export([discard/1, block_source/2, stats/0]).
 %% dialog/uac support
@@ -97,13 +98,6 @@ start(Opts) when is_map(Opts) ->
 -spec stop() -> ok | {error, not_started | hung}.
 stop() ->
     gen_server:call(?MODULE, {lifecycle, stop}, 15000).
-
-%% Controlled restart of the SIP engine: tear down live dialogs (owners
-%% get {destroy, engine_restart}), stop and restart the NIF engine with
-%% the same options, and keep routes/middleware. All SIP state is lost.
--spec restart_engine() -> ok | {error, term()}.
-restart_engine() ->
-    gen_server:call(?MODULE, {lifecycle, restart_engine}, 30000).
 
 %% Register middleware: fun(Req, Res, Next), optionally method-scoped.
 -spec use(binary() | '*', chappe_sip_middleware:mw()) -> ok.
@@ -268,15 +262,6 @@ tls_contact() ->
 -spec destroy_leg(non_neg_integer()) -> ok.
 destroy_leg(LegH) ->
     gen_server:cast(?MODULE, {destroy_leg, LegH}).
-
-%% Force one health round-trip through the stack thread event loop.
--spec check_health(timeout()) -> ok | {error, timeout | not_started}.
-check_health(Timeout) ->
-    try
-        gen_server:call(?MODULE, {lifecycle, check_health}, Timeout)
-    catch
-        exit:{timeout, _} -> {error, timeout}
-    end.
 
 %% gen_server
 
@@ -694,3 +679,21 @@ schedule_health(Engine) ->
         self(),
         {health_tick, Engine}
     ).
+
+-ifdef(TEST).
+%% Controlled restart of the SIP engine: tear down live dialogs (owners
+%% get {destroy, engine_restart}), stop and restart the NIF engine with
+%% the same options, and keep routes/middleware. All SIP state is lost.
+-spec restart_engine() -> ok | {error, term()}.
+restart_engine() ->
+    gen_server:call(?MODULE, {lifecycle, restart_engine}, 30000).
+
+%% Force one health round-trip through the stack thread event loop.
+-spec check_health(timeout()) -> ok | {error, timeout | not_started}.
+check_health(Timeout) ->
+    try
+        gen_server:call(?MODULE, {lifecycle, check_health}, Timeout)
+    catch
+        exit:{timeout, _} -> {error, timeout}
+    end.
+-endif.

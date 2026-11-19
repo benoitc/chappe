@@ -236,9 +236,9 @@ To see the node's calls in Homer, point it at your heplify-server in
 
 ## Behaviour changes
 
-- `chappe_sip:stop/0` and an engine degrade tear the dialogs down as
-  `restart_engine/0` does: owners get `destroy` with reason
-  `engine_restart`, and a UAC still ringing gets `{error, engine_restart}`.
+- `chappe_sip:stop/0`, an engine restart and an engine degrade tear the
+  dialogs down: owners get `destroy` with reason `engine_restart`, and a
+  UAC still ringing gets `{error, engine_restart}`.
 
 ## Notes
 

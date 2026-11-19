@@ -28,9 +28,10 @@
 
 -export([start_link/0, configure/1, validate/1, native_url/1, capture/4]).
 -export([correlate/3]).
--export([decode/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
--export([encode/1]).
+-ifdef(TEST).
+-export([encode/1, decode/1]).
+-endif.
 -export_type([config/0, packet/0]).
 
 %% HEP protocol type of a log entry (heplify-server's hep_proto_100)
@@ -46,10 +47,11 @@
     version := 3,
     capture_id := 1..4294967295
 }.
-%% A HEPv3 packet as encode/1 takes it and decode/1 returns it.
+%% A HEPv3 packet as encode/1 takes it. decode/1 (test builds only)
+%% returns the same keys, with an unknown proto as its number.
 -type packet() :: #{
     family => inet | inet6,
-    proto := udp | tcp | non_neg_integer(),
+    proto := udp | tcp,
     src := {inet:ip_address(), inet:port_number()},
     dst := {inet:ip_address(), inet:port_number()},
     time := {non_neg_integer(), 0..999999},
@@ -185,70 +187,8 @@ encode(#{src := {SIp, SPort}, dst := {DIp, DPort}, time := {Sec, Usec}} = P) ->
     Body = iolist_to_binary(Chunks),
     <<"HEP3", (byte_size(Body) + 6):16, Body/binary>>.
 
--spec decode(binary()) -> {ok, packet()} | {error, term()}.
-decode(<<"HEP3", Len:16, Rest/binary>>) when byte_size(Rest) =:= Len - 6 ->
-    try chunks(Rest, #{}) of
-        #{sip := SIp, dip := DIp, sport := SP, dport := DP} = M ->
-            Base = maps:without([sip, dip, sport, dport, sec, usec], M),
-            {ok, Base#{
-                src => {SIp, SP},
-                dst => {DIp, DP},
-                time => {maps:get(sec, M, 0), maps:get(usec, M, 0)}
-            }};
-        _ ->
-            {error, missing_chunks}
-    catch
-        error:_ -> {error, bad_chunk}
-    end;
-decode(_) ->
-    {error, not_hep3}.
-
 chunk(Type, Data) ->
     [<<0:16, Type:16, (byte_size(Data) + 6):16>>, Data].
-
-chunks(<<>>, M) ->
-    M;
-chunks(<<_Vendor:16, Type:16, Len:16, Rest/binary>>, M) when Len >= 6 ->
-    DLen = Len - 6,
-    <<Data:DLen/binary, Next/binary>> = Rest,
-    chunks(Next, field(Type, Data, M)).
-
-field(1, <<2:8>>, M) ->
-    M#{family => inet};
-field(1, <<_:8>>, M) ->
-    M#{family => inet6};
-field(2, <<6:8>>, M) ->
-    M#{proto => tcp};
-field(2, <<17:8>>, M) ->
-    M#{proto => udp};
-field(2, <<N:8>>, M) ->
-    M#{proto => N};
-field(T, <<A, B, C, D>>, M) when T =:= 3; T =:= 4 ->
-    ip_field(T, {A, B, C, D}, M);
-field(T, <<_:16/binary>> = B, M) when T =:= 5; T =:= 6 ->
-    <<A:16, Bb:16, C:16, D:16, E:16, F:16, G:16, H:16>> = B,
-    ip_field(T - 2, {A, Bb, C, D, E, F, G, H}, M);
-field(7, <<P:16>>, M) ->
-    M#{sport => P};
-field(8, <<P:16>>, M) ->
-    M#{dport => P};
-field(9, <<S:32>>, M) ->
-    M#{sec => S};
-field(10, <<U:32>>, M) ->
-    M#{usec => U};
-field(11, <<T:8>>, M) ->
-    M#{proto_type => T};
-field(12, <<I:32>>, M) ->
-    M#{capture_id => I};
-field(15, P, M) ->
-    M#{payload => P};
-field(17, C, M) ->
-    M#{correlation_id => C};
-field(_, _, M) ->
-    M.
-
-ip_field(3, Ip, M) -> M#{sip => Ip};
-ip_field(4, Ip, M) -> M#{dip => Ip}.
 
 ip({A, B, C, D}) ->
     <<A, B, C, D>>;
@@ -256,8 +196,7 @@ ip({A, B, C, D, E, F, G, H}) ->
     <<A:16, B:16, C:16, D:16, E:16, F:16, G:16, H:16>>.
 
 proto_num(udp) -> 17;
-proto_num(tcp) -> 6;
-proto_num(N) when is_integer(N) -> N.
+proto_num(tcp) -> 6.
 
 %% ---- gen_server ----
 
@@ -410,3 +349,67 @@ call_id(Raw) ->
 
 now_us() ->
     os:system_time(microsecond).
+
+-ifdef(TEST).
+-spec decode(binary()) -> {ok, map()} | {error, term()}.
+decode(<<"HEP3", Len:16, Rest/binary>>) when byte_size(Rest) =:= Len - 6 ->
+    try chunks(Rest, #{}) of
+        #{sip := SIp, dip := DIp, sport := SP, dport := DP} = M ->
+            Base = maps:without([sip, dip, sport, dport, sec, usec], M),
+            {ok, Base#{
+                src => {SIp, SP},
+                dst => {DIp, DP},
+                time => {maps:get(sec, M, 0), maps:get(usec, M, 0)}
+            }};
+        _ ->
+            {error, missing_chunks}
+    catch
+        error:_ -> {error, bad_chunk}
+    end;
+decode(_) ->
+    {error, not_hep3}.
+
+chunks(<<>>, M) ->
+    M;
+chunks(<<_Vendor:16, Type:16, Len:16, Rest/binary>>, M) when Len >= 6 ->
+    DLen = Len - 6,
+    <<Data:DLen/binary, Next/binary>> = Rest,
+    chunks(Next, field(Type, Data, M)).
+
+field(1, <<2:8>>, M) ->
+    M#{family => inet};
+field(1, <<_:8>>, M) ->
+    M#{family => inet6};
+field(2, <<6:8>>, M) ->
+    M#{proto => tcp};
+field(2, <<17:8>>, M) ->
+    M#{proto => udp};
+field(2, <<N:8>>, M) ->
+    M#{proto => N};
+field(T, <<A, B, C, D>>, M) when T =:= 3; T =:= 4 ->
+    ip_field(T, {A, B, C, D}, M);
+field(T, <<_:16/binary>> = B, M) when T =:= 5; T =:= 6 ->
+    <<A:16, Bb:16, C:16, D:16, E:16, F:16, G:16, H:16>> = B,
+    ip_field(T - 2, {A, Bb, C, D, E, F, G, H}, M);
+field(7, <<P:16>>, M) ->
+    M#{sport => P};
+field(8, <<P:16>>, M) ->
+    M#{dport => P};
+field(9, <<S:32>>, M) ->
+    M#{sec => S};
+field(10, <<U:32>>, M) ->
+    M#{usec => U};
+field(11, <<T:8>>, M) ->
+    M#{proto_type => T};
+field(12, <<I:32>>, M) ->
+    M#{capture_id => I};
+field(15, P, M) ->
+    M#{payload => P};
+field(17, C, M) ->
+    M#{correlation_id => C};
+field(_, _, M) ->
+    M.
+
+ip_field(3, Ip, M) -> M#{sip => Ip};
+ip_field(4, Ip, M) -> M#{dip => Ip}.
+-endif.

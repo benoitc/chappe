@@ -65,7 +65,7 @@ Billable duration is `ended_at - answered_at`.
 | `timeout` | `create_uac/2` gave up, or an in-dialog request got 408 |
 | `no_ack` | the 2xx we sent was never ACKed |
 | `session_expired`, `{refresh_failed, S}` | the session timer ended it (RFC 4028) |
-| `engine_restart` | the SIP stack went away (`restart_engine/0`, `chappe_sip:stop/0`, a degrade) |
+| `engine_restart` | the SIP stack went away (`chappe_sip:stop/0`, an engine restart or a degrade) |
 | `owner_down` | the process that owned the call exited |
 | `flow_lost` | the WebSocket connection of the call closed |
 | `unknown` | a proxied call whose end the proxy cannot see |

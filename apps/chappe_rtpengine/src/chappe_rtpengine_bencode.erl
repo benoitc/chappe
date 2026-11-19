@@ -15,12 +15,12 @@
 -module(chappe_rtpengine_bencode).
 
 -export([
-    encode/1,
     encode_to_binary/1,
-    decode/1,
-    decode_prefix/1,
-    decode_stream/1
+    decode/1
 ]).
+-ifdef(TEST).
+-export([encode/1, decode_prefix/1, decode_stream/1]).
+-endif.
 
 -define(MAX_DEPTH, 64).
 %% A partial value: the reason decode/1 reports, and a lower bound on
@@ -61,32 +61,6 @@ decode(Bin) when is_binary(Bin) ->
         {_Value, Rest} -> {error, {trailing_bytes, byte_size(Rest)}}
     catch
         throw:{incomplete, Reason, _Need} -> {error, Reason};
-        throw:Reason -> {error, Reason}
-    end.
-
-%% Decode one value from the head of a byte stream (NG over TCP):
-%% returns the value and the unconsumed rest, `incomplete` when the
-%% buffer ends mid-value, or an error for input that can never parse.
--spec decode_prefix(binary()) ->
-    {ok, value(), binary()} | incomplete | {error, term()}.
-decode_prefix(Bin) when is_binary(Bin) ->
-    case decode_stream(Bin) of
-        {more, _Need} -> incomplete;
-        Other -> Other
-    end.
-
-%% Like decode_prefix/1, but a partial value reports a lower bound on
-%% the number of further bytes it needs ({more, N}). A stream reader
-%% waits for at least that many before trying again, which keeps a
-%% large value arriving in many segments linear instead of rescanning
-%% the whole buffer per segment.
--spec decode_stream(binary()) ->
-    {ok, value(), binary()} | {more, pos_integer()} | {error, term()}.
-decode_stream(Bin) when is_binary(Bin) ->
-    try dec(Bin, 0) of
-        {Value, Rest} -> {ok, Value, Rest}
-    catch
-        throw:{incomplete, _Reason, Need} -> {more, Need};
         throw:Reason -> {error, Reason}
     end.
 
@@ -197,3 +171,31 @@ dec_dict(Bin, Depth, Acc) ->
     is_binary(K) orelse throw({bad_dict_key, K}),
     {V, Rest1} = dec(Rest0, Depth),
     dec_dict(Rest1, Depth, Acc#{K => V}).
+
+-ifdef(TEST).
+%% Decode one value from the head of a byte stream (NG over TCP):
+%% returns the value and the unconsumed rest, `incomplete` when the
+%% buffer ends mid-value, or an error for input that can never parse.
+-spec decode_prefix(binary()) ->
+    {ok, value(), binary()} | incomplete | {error, term()}.
+decode_prefix(Bin) when is_binary(Bin) ->
+    case decode_stream(Bin) of
+        {more, _Need} -> incomplete;
+        Other -> Other
+    end.
+
+%% Like decode_prefix/1, but a partial value reports a lower bound on
+%% the number of further bytes it needs ({more, N}). A stream reader
+%% waits for at least that many before trying again, which keeps a
+%% large value arriving in many segments linear instead of rescanning
+%% the whole buffer per segment.
+-spec decode_stream(binary()) ->
+    {ok, value(), binary()} | {more, pos_integer()} | {error, term()}.
+decode_stream(Bin) when is_binary(Bin) ->
+    try dec(Bin, 0) of
+        {Value, Rest} -> {ok, Value, Rest}
+    catch
+        throw:{incomplete, _Reason, Need} -> {more, Need};
+        throw:Reason -> {error, Reason}
+    end.
+-endif.

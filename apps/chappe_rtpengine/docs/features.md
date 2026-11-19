@@ -31,6 +31,15 @@
 - Compliance catalogue (`docs/compliance/requirements.tsv`): NG protocol behaviours, each claimed by the tests that prove it with `%% req:` lines
 - Live test suite against a real rtpengine, gated on `RTPENGINE_HOST`, driven by the `interop/` docker compose harness
 
+## Also exported
+
+These functions are exported and supported, but no guide shows them yet.
+
+- `chappe_rtpengine_cmd:block_media/1` and `unblock_media/1` block or
+  unblock the whole call's media (the `/2` forms take a party).
+- `chappe_rtpengine_pool:unsubscribe/0` stops the pool events `subscribe/0`
+  sends the calling process.
+
 ## Roadmap
 
 - Kernel-module statistics surfaced through the pool

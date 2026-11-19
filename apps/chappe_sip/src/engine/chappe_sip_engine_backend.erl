@@ -17,7 +17,10 @@
 -export([respond/8, respond_txn/6, relay/5, forward_response/3]).
 -export([request/6, ws_request/3, send/5, ws_send/2, cancel/4]).
 -export([leg_create/6, leg_destroy/3]).
--export([sender/2, native_route/1, raw_method/1]).
+-export([sender/2, raw_method/1]).
+-ifdef(TEST).
+-export([native_route/1]).
+-endif.
 -export([forwarder/1, forwarder/0, forward_handler/1, forward_ack/3]).
 
 %% where a dialog leg goes: the WS transport over a flow, or the native

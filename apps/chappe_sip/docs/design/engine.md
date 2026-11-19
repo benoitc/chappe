@@ -85,7 +85,7 @@ you are changing:
 
 | Responsibility | Where |
 |---|---|
-| NIF lifecycle and health | `chappe_sip_engine`: `start/1`, `stop/0`, `restart_engine/0`, `check_health/1`, `bring_up`, `start_engine`, `engine_failed`, `stack_gone` (the `chappe_sip_engine_restart` message), `stack_down`, `schedule_health` |
+| NIF lifecycle and health | `chappe_sip_engine`: `start/1`, `stop/0`, `restart_engine/0` and `check_health/1` (test builds), `bring_up`, `start_engine`, `engine_failed`, `stack_gone` (the `chappe_sip_engine_restart` message), `stack_down`, `schedule_health` |
 | Start options | `chappe_sip_engine_opts`: `start_opts/1` (TLS, listen addresses, agent settings, size cap, HEP capture; no side effect), `tls_uri/2` |
 | Config snapshot (survives an engine crash) | `chappe_sip_engine_opts`: `cfg_put/2`, `cfg_get/2`, `cfg_del/1` over the `chappe_sip_engine_cfg` ETS table owned by `chappe_sip_registry_keeper` |
 | Route registry | `chappe_sip_engine`: `use/2`, `handle/3`, `reset_routes/0`; kept by `chappe_sip_engine_opts:routes/3` |

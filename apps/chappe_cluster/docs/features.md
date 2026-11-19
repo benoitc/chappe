@@ -36,6 +36,15 @@ page that shows you how to use it.
   skews in docker, checked for overlapping leases
   (`make interop-cluster`). [The lab](../interop/README.md)
 
+## Also exported
+
+These functions are exported and supported, but no guide shows them yet.
+
+- `chappe_cluster:unwatch/1` stops a watch `watch/1` started on a prefix.
+- `chappe_cluster_machine:leases/1`, `epochs/1`, `incarnation/2` and
+  `expire_timer/2` read a machine state (the machine's own tests drive it
+  directly).
+
 ## Planned
 
 - A cross-region directory backend on barrel_p2p, behind

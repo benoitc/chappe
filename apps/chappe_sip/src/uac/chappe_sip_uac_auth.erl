@@ -13,7 +13,10 @@
 %% the header that answers it (Authorization or Proxy-Authorization).
 -module(chappe_sip_uac_auth).
 
--export([usable/3, merge/3, credentials_for/2, headers/5]).
+-export([usable/3, merge/3, headers/5]).
+-ifdef(TEST).
+-export([credentials_for/2]).
+-endif.
 -export([redirect_targets/2]).
 
 -export_type([challenge/0]).

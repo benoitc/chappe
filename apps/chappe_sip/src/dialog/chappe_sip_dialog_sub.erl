@@ -12,8 +12,10 @@
 -module(chappe_sip_dialog_sub).
 
 -export([handle_refresh/3, expire/1, after_request/3, term_reason/1]).
--export([start_teardown/3, start_final_notify/4, start_notify/3]).
+-export([start_teardown/3, start_notify/3]).
+-ifdef(TEST).
 -export([notify_headers/2]).
+-endif.
 
 -include("chappe_sip_dialog_fsm.hrl").
 
