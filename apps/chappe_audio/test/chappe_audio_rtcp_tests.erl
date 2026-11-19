@@ -216,6 +216,19 @@ jitter_test() ->
     {B3, _} = ?R:block(S3, 0),
     ?assertMatch(#{jitter := 0}, B3).
 
+%% packets 1 to 20 but 7, 160 timestamp units apart, all arriving at the
+%% same instant: D is 160 each time and 320 across the gap, and A.8's
+%% integer estimator gives 1833, reported 1833 >> 4 = 114
+%% req: R3550-6.4.1-3 R3550-6.4.1-4
+jitter_burst_test() ->
+    S = lists:foldl(
+        fun(Q, A) -> ?R:src_rtp(A, Q, Q * 160, 0) end,
+        ?R:src_new(7),
+        [Q || Q <- lists:seq(1, 20), Q =/= 7]
+    ),
+    {B, _} = ?R:block(S, 0),
+    ?assertMatch(#{jitter := 114}, B).
+
 %% the RTP timestamp wraps at 32 bits: the transit difference stays small
 jitter_wrap_test() ->
     S0 = ?R:src_rtp(?R:src_new(7), 1, 16#FFFFFF60, 0),

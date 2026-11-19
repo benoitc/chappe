@@ -260,10 +260,9 @@ store_crash_spares_receiver(_Config) ->
 %% req: R7866-8.1.1-1 R7866-8.1.8-1 R7866-8.1.5.1-1 R5761-4-1 R5761-5.1.1-1
 %% req: R3550-6.1-1 R3550-6.1-2 R3550-6.1-3 R3550-6.4.1-1 R3550-6.4.1-2
 %% req: R3550-6.4.1-5 R3550-6.4.2-1 R3550-6.2-1 R3550-6.2-2 R3550-6.3-1
-%% The packets go out back to back, so each one's D is its timestamp step
-%% and the block's jitter follows J += (|D| - J) / 16 (6.4.1), within the
-%% slack of the loopback.
-%% req: R3550-6.3.7-1 R3550-6.4.1-3 R3550-6.4.1-4
+%% The jitter field is only checked for sense here, as it depends on the
+%% loopback's timing; chappe_audio_rtcp_tests checks its values.
+%% req: R3550-6.3.7-1
 rtcp_mux_report(_Config) ->
     {ok, R} = receiver(#{rtcp => mux, cname => <<"srs@test">>}),
     Port = chappe_audio_rtp:port(R),
@@ -287,12 +286,8 @@ rtcp_mux_report(_Config) ->
         B
     ),
     ?assert(maps:get(dlsr, B) > 0 andalso maps:get(dlsr, B) < 10 * 65536),
-    Expected = jitter([Q || Q <- lists:seq(1, 20), Q =/= 7]),
-    Jitter = maps:get(jitter, B),
-    ?assert(
-        Jitter >= 0.6 * Expected andalso Jitter =< 1.4 * Expected,
-        {jitter, Jitter, Expected}
-    ),
+    %% below 10 s of the 8000 Hz clock
+    ?assert(maps:get(jitter, B) < 80000),
     ?assertEqual(
         #{type => sdes, chunks => [{Me, [{cname, <<"srs@test">>}]}]}, Sdes
     ),
@@ -659,16 +654,6 @@ pair(N) ->
             gen_udp:close(A),
             pair(N - 1)
     end.
-
-%% RFC 3550 6.4.1 in floating point, for packets of these sequence
-%% numbers sent back to back at 160 timestamp units each
-jitter([First | Rest]) ->
-    {J, _} = lists:foldl(
-        fun(Q, {J, Prev}) -> {J + (abs((Q - Prev) * 160) - J) / 16, Q} end,
-        {0.0, First},
-        Rest
-    ),
-    J.
 
 wait_rtcp(R, N, 0) ->
     ct:fail({rtcp_received, N, chappe_audio_rtp:stats(R)});
