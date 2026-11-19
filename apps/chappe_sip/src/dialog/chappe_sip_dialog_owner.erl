@@ -10,7 +10,7 @@
 -module(chappe_sip_dialog_owner).
 
 -export([dialog/1, reply/2, reply_await/2, sip_error/2, parse_req/3]).
--export([notify/4, notify4/3, notify_terminal/2, notify_terminal_req/2]).
+-export([notify/4, notify4/3, notify_terminal_req/2]).
 -export([stop/2]).
 -export([index/1, unindex/1, set_index_state/2, publish_state/2]).
 -export([cdr_bind/1, addr_tag/1]).

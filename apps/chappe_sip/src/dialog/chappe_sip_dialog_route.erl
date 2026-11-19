@@ -11,7 +11,10 @@
 %% Runs in the chappe_sip_dialog_fsm process, on its #data{}.
 -module(chappe_sip_dialog_route).
 
--export([handle_indialog/4, in_order/2, require_check/3]).
+-export([handle_indialog/4]).
+-ifdef(TEST).
+-export([in_order/2, require_check/3]).
+-endif.
 
 -include("chappe_sip_dialog_fsm.hrl").
 

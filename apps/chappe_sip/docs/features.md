@@ -82,6 +82,31 @@ coverage, row by row, is in the [compliance matrix](compliance.md).
 | Prometheus metrics, with an optional built-in listener | [Metrics](guides/metrics.md) |
 | Interop and conformance labs | [Interop testing](guides/interop-testing.md) |
 
+## Also exported
+
+These functions are exported and supported, but no guide shows them yet.
+
+- Facade: `chappe_sip:message/1` (the MESSAGE handler),
+  `chappe_sip:ws_listen/1` (start or replace the WebSocket listener) and
+  `chappe_sip:peer_remove/1` (drop a monitored peer).
+- `chappe_sip_req:calling_number/1` (P-Asserted-Identity user, else From
+  user), `calling_name/1` and `called_number/1` (the Request-URI user).
+- `chappe_sip_msg:has/2`, `parsed/2`, `new_request/3`, `can_form_dialog/1`
+  and `is_token/1`; `chappe_sip_hdr:referred_by/1`;
+  `chappe_sip_sdp:origin/1`; `chappe_sip_sipfrag:build/3`;
+  `chappe_sip_digest:algorithm/1`.
+- `chappe_sip_registry:register_contacts/2` applies a REGISTER to the
+  store, and `remove/1` drops every binding of an AOR.
+- `chappe_sip_call:leave/3` tells the call registry a process no longer
+  serves a call.
+- `chappe_sip_focus:check_subscribe/1` checks a conference SUBSCRIBE (489,
+  406).
+- `chappe_sip_siprec_meta:snapshot_request/1` builds an RFC 7865 snapshot
+  request; `chappe_sip_siprec_srs:store/1` names the store a recorded
+  stream is written to.
+- `chappe_sip_config:t1/0` returns the T1 the stack runs with, and
+  `chappe_sip_metrics_http:port/0` the metrics listener's port.
+
 ## Planned
 
 - A remote-app model (apps outside the SIP node's VM, in the spirit of

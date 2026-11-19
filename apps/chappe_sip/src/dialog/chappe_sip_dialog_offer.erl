@@ -11,7 +11,7 @@
 %% the owner of the ACK.
 -module(chappe_sip_dialog_offer).
 
--export([derived/1, held/1, keep_sdp/2, early_sdp/2, glare_delay/1]).
+-export([derived/1, keep_sdp/2, early_sdp/2, glare_delay/1]).
 -export([overlap/3, track_claimed/4, claimed_final/4, refreshed/3]).
 -export([refresh_target/2, refresh_contact/2, new_target/2]).
 -export([auto_answer/3, session_event/4, handle_ack/2, update_answered/4]).

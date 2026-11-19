@@ -14,7 +14,10 @@
 -module(chappe_sip_media_sup).
 -behaviour(supervisor).
 
--export([start_link/0, ensure_app/1, start_child/1, stop_child/1]).
+-export([start_link/0, ensure_app/1, start_child/1]).
+-ifdef(TEST).
+-export([stop_child/1]).
+-endif.
 -export([init/1]).
 
 start_link() ->
@@ -38,8 +41,10 @@ ensure_app(App) ->
 start_child(Spec) ->
     supervisor:start_child(?MODULE, Spec).
 
+-ifdef(TEST).
 -spec stop_child(term()) -> ok.
 stop_child(Id) ->
     _ = supervisor:terminate_child(?MODULE, Id),
     _ = supervisor:delete_child(?MODULE, Id),
     ok.
+-endif.

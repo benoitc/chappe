@@ -12,9 +12,11 @@
 
 -export([frame/1, content_length/1, rack/1, peer_100rel/1, tag_of/1]).
 -export([via_branch/1, cseq_method/1, req_seq/1, request_method/1]).
--export([add_received/2, insert_via/3, ensure_via/2, new_branch/0]).
--export([build_cancel/2, build_ack/2, build_response/7, record_route/3]).
--export([reason/1]).
+-export([insert_via/3, ensure_via/2, new_branch/0]).
+-export([build_cancel/2, build_ack/2, build_response/7]).
+-ifdef(TEST).
+-export([add_received/2, record_route/3, reason/1]).
+-endif.
 
 -export_type([peer/0]).
 

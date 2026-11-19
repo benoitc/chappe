@@ -11,10 +11,10 @@
 -module(chappe_sip_dialog_out).
 
 -export([respond/3, respond/4, respond/5, dialog_sender/2]).
--export([build/5, send/5, route/1, transact/4]).
+-export([send/5, transact/4]).
 -export([start_bye/3, start_reinvite/4, start_request/3, start_request/4]).
 -export([reinvite_response/5, send_ack/1, send_delayed_ack/3]).
--export([indialog_request/4, has_hdr/2, raw/6]).
+-export([indialog_request/4, raw/6]).
 
 -export_type([headers/0]).
 
