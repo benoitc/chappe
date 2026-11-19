@@ -15,6 +15,7 @@
 -export([origin/1, same_version/2, on_hold/1, webrtc/1, connection/1]).
 -export([sections/1, join/2, refused/1]).
 -export([hold/2, next_version/1]).
+-export([set_direction/2]).
 
 -export_type([media/0]).
 
@@ -319,7 +320,9 @@ is_direction(<<"a=", D/binary>>) ->
 is_direction(_) ->
     false.
 
-%% replace the section's direction attribute in place, or add one
+%% The lines of a section (or a session) with its direction attribute
+%% replaced in place by a=Dir, or a=Dir added when it has none.
+-spec set_direction([binary()], binary()) -> [binary()].
 set_direction(Lines, Dir) ->
     Attr = <<"a=", Dir/binary>>,
     case lists:any(fun is_direction/1, Lines) of
