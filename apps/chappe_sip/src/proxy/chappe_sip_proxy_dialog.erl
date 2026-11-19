@@ -125,7 +125,7 @@ relay_response(
 %% own transport failure, not the UA's answer (the connection went as the
 %% request left): the flow is lost. Any other answer is the UA's.
 lost_flow(503, {ok, {conn, Id} = Flow, _Transport}) ->
-    case chappe_sip_engine:conn_closed(Id) of
+    case chappe_sip_engine_conns:conn_closed(Id) of
         true -> {lost, Flow};
         false -> live
     end;

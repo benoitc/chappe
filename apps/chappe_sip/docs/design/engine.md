@@ -77,27 +77,30 @@ both together.
 
 ## chappe_sip_engine: what it is responsible for
 
-`chappe_sip_engine` is the one process that talks to the NIF. It has grown
-to eight responsibilities (finding M1 of the
-[documentation plan](../../../../docs/plans/documentation-and-maintainability.md)).
-Before you add to it, find the part you are changing:
+`chappe_sip_engine` is the one process that talks to the NIF. It keeps
+the gen_server, the call envelopes and the stack's lifecycle; its helper
+modules run in the same process, on the `#state{}` they share through
+`src/engine/chappe_sip_engine.hrl`. Before you add to it, find the part
+you are changing:
 
-| Responsibility | Where (functions) |
+| Responsibility | Where |
 |---|---|
-| NIF lifecycle and health | `start/1`, `stop/0`, `restart_engine/0`, `start_engine`, `engine_failed`, `stack_gone`, `stack_down`, `check_health/1`, `schedule_health` |
-| Config snapshot (survives an engine crash) | `cfg_put`, `cfg_get`, `cfg_del` over the `chappe_sip_engine_cfg` ETS table owned by `chappe_sip_registry_keeper` |
-| Route registry | `use/2`, `handle/3`, `reset_routes/0`, `route_opts`, `allow_events/0` |
-| Inbound dispatch policy | `handle_event`, `dispatch`, `dispatch_route`, `dispatch_handler`, `cancelled`; the pure policy in `chappe_sip_dispatch` (`stray_in_dialog`, `route_for`, `unrouted`, `merge_check` for RFC 3261 8.2.2.2, `is_own_route`); the proxy forwarder `forwarder/1` |
-| Worker pool | `spawn_worker`, `handler_deadline`, `disarm/1`, `at_dialog_cap`, `shed` (503 past `max_request_workers`) |
-| Handle table | `reg_handle/2`, `ensure_monitored`, `drop_pid`, `destroy_owned_handles`, `destroy_handle` |
-| UAS response building | `dialog_respond/6`, `do_create_uas`, `send_uas_response`; the pure part in `chappe_sip_uas_response` (`build/2`, `contact/3`, `fsm_args/2`) |
-| sofia / WS multiplexing | `?IS_WS(H)`, `ws_call/1`, `ws_respond`, `leg_create`, `leg_destroy`, `dialog_leg_create`, `make_sender`, `sender_send` |
+| NIF lifecycle and health | `chappe_sip_engine`: `start/1`, `stop/0`, `restart_engine/0`, `check_health/1`, `bring_up`, `start_engine`, `engine_failed`, `stack_gone` (the `chappe_sip_engine_restart` message), `stack_down`, `schedule_health` |
+| Start options | `chappe_sip_engine_opts`: `start_opts/1` (TLS, listen addresses, agent settings, size cap, HEP capture; no side effect), `tls_uri/2` |
+| Config snapshot (survives an engine crash) | `chappe_sip_engine_opts`: `cfg_put/2`, `cfg_get/2`, `cfg_del/1` over the `chappe_sip_engine_cfg` ETS table owned by `chappe_sip_registry_keeper` |
+| Route registry | `chappe_sip_engine`: `use/2`, `handle/3`, `reset_routes/0`; kept by `chappe_sip_engine_opts:routes/3` |
+| Inbound events and dispatch | `chappe_sip_engine_events`: `handle_event/2`, `to_owner`, `dispatch`, `dispatch_route`, `dispatch_handler`, `cancelled`, the 481 (`no_dialog`) and the 503 (`busy`); the pure policy in `chappe_sip_dispatch` (`stray_in_dialog`, `route_for`, `unrouted`, `merge_check` for RFC 3261 8.2.2.2, `is_own_route`) |
+| Worker pool | `chappe_sip_engine_events`: `spawn_worker`, `handler_deadline`; `chappe_sip_engine_handles`: `disarm_deadline/2`, `down/4` (the 500 of a worker gone without a final) |
+| Handle table and dialogs | `chappe_sip_engine_handles`: `handle/3` (`create_uas`, `early_leg`, `create_dialog`, `mark_proxied`, `disarm`, `reg_handle`), `ensure_monitored/2`, `down/4` |
+| UAS response building | `chappe_sip_engine_handles`: `start_uas`; the pure part in `chappe_sip_uas_response` (`build/2`, `contact/3`, `fsm_args/2`) |
+| Backend and WS calls | `chappe_sip_engine_backend`: every call to the engine backend (`engine_mod`), to `chappe_sip_ws_transport` (by `chappe_sip_ws:is_ws/1`) and to the forwarder (`forwarder/1`, `forward_ack/3`); `respond/8`, `relay/5`, `request/6`, `leg_create/6`, `leg_destroy/3`, `sender/2`, `native_route/1` |
+| Closed connections | `chappe_sip_engine_conns`: `conn_closed/1`, `closed/1`, `clear/0` (RFC 5626 5.3, read by the edge proxy) |
 
 The guard support (`discard/1`, `block_source/2`, `stats/0`) and the proxy
 support (`mark_proxied/1`, `relay_response/3`, `forward_response/1`) sit on
-top of these. Tests reach the engine only through its exported API, so the
-stateless parts (UAS response building, dispatch policy) can move out
-without touching the suites.
+top of these. Tests reach the engine through its exported API, and the
+pure parts through `chappe_sip_engine_tests` (start options, `tls_uri/2`,
+`native_route/1`, `raw_method/1`).
 
 ## Threads
 
