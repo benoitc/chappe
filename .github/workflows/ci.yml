@@ -59,6 +59,7 @@ jobs:
         with:
           path: |
             _build
+            !_build/test/logs
             ~/.cache/rebar3
           key: static-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config') }}
       - run: scripts/fetch_deps.sh
@@ -82,6 +83,7 @@ jobs:
         with:
           path: |
             _build
+            !_build/test/logs
             ~/.cache/rebar3
           key: static-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config') }}
       - run: scripts/fetch_deps.sh
@@ -130,6 +132,7 @@ jobs:
         with:
           path: |
             _build
+            !_build/test/logs
             ~/.cache/rebar3
           key: build-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config', 'apps/chappe_sip/c_src/build.sh') }}
       - run: scripts/fetch_deps.sh
@@ -154,6 +157,7 @@ jobs:
         with:
           path: |
             _build
+            !_build/test/logs
             ~/.cache/rebar3
           key: build-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config', 'apps/chappe_sip/c_src/build.sh') }}
       - run: scripts/fetch_deps.sh
@@ -176,6 +180,7 @@ jobs:
         with:
           path: |
             _build
+            !_build/test/logs
             ~/.cache/rebar3
           key: build-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config', 'apps/chappe_sip/c_src/build.sh') }}
       # eunit + ct under cover; the gate only ratchets up
@@ -206,6 +211,7 @@ jobs:
         with:
           path: |
             _build
+            !_build/test/logs
             ~/.cache/rebar3
           key: build-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config', 'apps/chappe_sip/c_src/build.sh') }}
       - run: scripts/fetch_deps.sh
@@ -219,7 +225,8 @@ jobs:
 
   # chappe_sip against SIPp, pjsua and a dnsmasq server (one flow per RFC
   # clause, RFC 3263 resolution included), then every
-  # app's requirement matrix; the demo tier must have no failing hard row.
+  # app's requirement matrix; the demo tier must have no failing hard row,
+  # and the committed matrices must be the ones this run produces.
   conformance:
     name: Conformance lab + compliance gate
     needs: [build]
@@ -237,12 +244,25 @@ jobs:
         with:
           path: |
             _build
+            !_build/test/logs
             ~/.cache/rebar3
           key: build-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config', 'apps/chappe_sip/c_src/build.sh') }}
       - run: scripts/fetch_deps.sh
-      - run: make ct
-      - run: make interop-conformance
-      - run: make compliance GATE=demo
+      # eunit, then one ct run with the conformance lab: the matrices read
+      # the newest ct run only
+      - run: make compliance-full GATE=demo
+      - name: Committed matrices match this run
+        run: |
+          git diff --exit-code -- 'apps/*/docs/compliance.md' || {
+            echo "::error::the committed compliance matrices differ from this run; commit the compliance-matrices artifact"
+            exit 1
+          }
+      - name: Compliance matrices
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compliance-matrices
+          path: apps/*/docs/compliance.md
       - name: Test logs
         if: failure()
         uses: actions/upload-artifact@v4
@@ -268,6 +288,7 @@ jobs:
         with:
           path: |
             _build
+            !_build/test/logs
             ~/.cache/rebar3
           key: build-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config', 'apps/chappe_sip/c_src/build.sh') }}
       - uses: actions/setup-node@v4
@@ -299,6 +320,7 @@ jobs:
         with:
           path: |
             _build
+            !_build/test/logs
             ~/.cache/rebar3
           key: build-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config', 'apps/chappe_sip/c_src/build.sh') }}
       - run: docker pull drachtio/drachtio-freeswitch-mrf:latest
@@ -336,6 +358,7 @@ jobs:
         with:
           path: |
             _build
+            !_build/test/logs
             ~/.cache/rebar3
           key: build-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config', 'apps/chappe_sip/c_src/build.sh') }}
       - run: scripts/fetch_deps.sh
@@ -360,6 +383,7 @@ jobs:
         with:
           path: |
             _build
+            !_build/test/logs
             ~/.cache/rebar3
           key: build-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config', 'apps/chappe_sip/c_src/build.sh') }}
       - run: scripts/fetch_deps.sh
@@ -383,6 +407,7 @@ jobs:
         with:
           path: |
             _build
+            !_build/test/logs
             ~/.cache/rebar3
           key: build-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config', 'apps/chappe_sip/c_src/build.sh') }}
       - run: docker pull drachtio/drachtio-freeswitch-mrf:latest
