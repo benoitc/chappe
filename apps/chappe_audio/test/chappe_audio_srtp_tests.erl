@@ -322,12 +322,42 @@ hex(B) -> binary:encode_hex(B, lowercase).
 dec(<<A, B, C, _/binary>>) ->
     iolist_to_binary(io_lib:format("~b,~b,~b", [A, B, C])).
 
-is_rtcp_test() ->
-    ?assert(?S:is_rtcp(h(<<"81c8000bcafebabe">>))),
-    ?assert(?S:is_rtcp(<<16#80, 223, 0, 0>>)),
-    ?assertNot(?S:is_rtcp(rtp(1, 2, <<>>))),
-    ?assertNot(?S:is_rtcp(<<16#80, 224>>)),
-    ?assertNot(?S:is_rtcp(<<>>)).
+%% ---- SRTCP, the sending side (the receiver's own reports) ----
+
+%% protect_rtcp/2 gives the bytes the reference sender gives at the same
+%% index (E set, the 31-bit index, the MKI, an 80-bit tag), from index 0
+%% up by one per packet (RFC 3711 3.4)
+%% req: R3711-3.4-1 R3711-3.4-2
+protect_rtcp_matches_reference_test() ->
+    Master = ?T:master(),
+    Snd = ?T:sender(Master, #{mki => <<1, 2>>}),
+    C0 = ctx(#{master => Master, mki => <<1, 2>>}),
+    Rtcp = h(<<"80c90001deadbeef81ca0002deadbeef0103616263000000">>),
+    {ok, P0, C1} = ?S:protect_rtcp(Rtcp, C0),
+    ?assertEqual(?T:protect_rtcp(Rtcp, 0, Snd), P0),
+    {ok, P1, _} = ?S:protect_rtcp(Rtcp, C1),
+    ?assertEqual(?T:protect_rtcp(Rtcp, 1, Snd), P1),
+    %% and the receive side takes it back
+    {ok, Plain, _} = ?S:unprotect_rtcp(P1, ctx(#{master => Master, mki => <<1, 2>>})),
+    ?assertEqual(Rtcp, Plain).
+
+%% a new key keeps the index going: it MUST NOT be reset (3.4)
+%% req: R3711-3.4-3
+protect_rtcp_rekey_keeps_index_test() ->
+    Rtcp = h(<<"80c90001deadbeef">>),
+    {ok, _, C1} = ?S:protect_rtcp(Rtcp, ctx()),
+    {ok, _, C2} = ?S:protect_rtcp(Rtcp, C1),
+    New = ?T:master(),
+    C3 = ?S:rekey(C2, ctx(#{master => New})),
+    {ok, P, _} = ?S:protect_rtcp(Rtcp, C3),
+    ?assertEqual(?T:protect_rtcp(Rtcp, 2, ?T:sender(New)), P).
+
+%% the key's lifetime bounds what it protects
+protect_rtcp_expired_test() ->
+    Rtcp = h(<<"80c90001deadbeef">>),
+    {ok, _, C1} = ?S:protect_rtcp(Rtcp, ctx(#{lifetime => 1})),
+    ?assertEqual({error, expired}, ?S:protect_rtcp(Rtcp, C1)),
+    ?assertEqual({error, malformed}, ?S:protect_rtcp(<<1, 2, 3>>, ctx())).
 
 %% ---- fuzz: mutated genuine packets ----
 

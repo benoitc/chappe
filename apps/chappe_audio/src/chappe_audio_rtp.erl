@@ -17,8 +17,8 @@
 %% {Tag, Stream, {audio, Pcm}} (Tag is the tag option, default
 %% chappe_audio_rtp) and frames are dropped while its queue holds
 %% max_queue messages (default 500); the store's writer has its own bound
-%% (its write/2 says dropped). RTP of another payload type, RTCP and
-%% anything that does not parse is dropped.
+%% (its write/2 says dropped). RTP of another payload type and anything
+%% that does not parse is dropped.
 %%
 %% Source: RTP is taken from the sender only. The stream latches to the
 %% first source at the remote address it was given (any port, as a NAT may
@@ -30,18 +30,36 @@
 %% sender's a=crypto line), the stream takes SRTP only (RFC 3711): each
 %% packet is authenticated, checked against the replay window and
 %% decrypted (chappe_audio_srtp:unprotect/2) before it is decoded, and an
-%% SRTCP packet on the same port (RFC 5761) is authenticated and dropped.
-%% It latches to its source only once a packet authenticates there, so a
-%% forged packet cannot take the stream. A packet that fails (forged,
-%% replayed, malformed, past the key's lifetime) is dropped and counted
-%% (stats/1); the first failure is logged, then at most one line per
-%% 10 s window with the count since the last one. rekey/2 gives the stream
-%% the sender's new key. The keys stay in the context and format_status/1
-%% leaves them out of every report.
+%% SRTCP packet is authenticated before it is read. It latches to its
+%% source only once a packet authenticates there, so a forged packet
+%% cannot take the stream. A packet that fails (forged, replayed,
+%% malformed, past the key's lifetime) is dropped and counted (stats/1);
+%% the first failure is logged, then at most one line per 10 s window with
+%% the count since the last one. rekey/2,3 give the stream new keys. The
+%% keys stay in the contexts and format_status/1 leaves them out of every
+%% report.
+%%
+%% RTCP (RFC 3550 6, RFC 7866 8.1.1): with rtcp => none (the default) the
+%% stream takes no RTCP: muxed RTCP is dropped (SRTCP authenticated, then
+%% dropped) and nothing listens on the port above. With rtcp => mux it
+%% takes RTCP on its RTP port (RFC 5761 4: the second octet 192 to 223);
+%% with rtcp => port its RTP port is even and it takes RTCP on the odd one
+%% above (RFC 3550 11), from its source's address only. It then keeps each
+%% source's reception statistics (chappe_audio_rtcp: A.1, A.3, A.8; at
+%% most 31 sources, one RR's worth), reads SR, SDES and BYE, and sends a
+%% receiver report on the interval of 6.2 (a 5 s minimum, 2.5 s for the
+%% first, times 0.5 to 1.5): an RR with one block per source heard since
+%% the last one, then SDES with its CNAME. It sends from the socket it
+%% takes RTCP on (symmetric RTCP, RFC 7866 8.1.8), to where the source's
+%% RTCP came from, else to its RTP address (mux) or the port above it
+%% (port), else to remote. Stopping after a report sends a BYE. An SRTP
+%% stream protects its reports with srtcp_out, a context of its own key
+%% (the one its SDP answer gave, RFC 4568); without one it sends none.
 -module(chappe_audio_rtp).
 -behaviour(gen_server).
 
--export([start/1, start_link/1, stop/1, port/1, stats/1, rekey/2]).
+-export([start/1, start_link/1, stop/1, port/1, rtcp_port/1, stats/1]).
+-export([rekey/2, rekey/3]).
 -export([
     init/1,
     handle_call/3,
@@ -53,6 +71,8 @@
 
 -include_lib("kernel/include/logger.hrl").
 
+-type addr() :: {inet:ip_address(), inet:port_number()}.
+
 -record(state, {
     sock :: gen_udp:socket(),
     port :: inet:port_number(),
@@ -62,8 +82,8 @@
     max_queue :: pos_integer(),
     label :: binary(),
     %% the client's address as its SDP gave it, and the source latched
-    remote :: {inet:ip_address(), inet:port_number()} | undefined,
-    latched :: {inet:ip_address(), inet:port_number()} | undefined,
+    remote :: addr() | undefined,
+    latched :: addr() | undefined,
     packets = 0 :: non_neg_integer(),
     %% SRTP (redacted in reports), the packets it dropped, and the
     %% failures not logged yet with the time of the last log line
@@ -71,24 +91,35 @@
     failed = 0 :: non_neg_integer(),
     replayed = 0 :: non_neg_integer(),
     unlogged = 0 :: non_neg_integer(),
-    logged_at :: integer() | undefined
+    logged_at :: integer() | undefined,
+    %% RTCP (undefined with rtcp => none), the socket above the RTP port
+    %% (rtcp => port), and the receiver's own key for its SRTCP (redacted
+    %% in reports)
+    rtcp :: chappe_audio_rtp_rtcp:session() | undefined,
+    rtcp_sock :: gen_udp:socket() | undefined,
+    srtcp_out :: chappe_audio_srtp:ctx() | undefined | redacted
 }).
 %% one log line per window of failed SRTP packets, in ms
 -define(LOG_WINDOW, 10000).
 -type state() :: #state{}.
 
 -define(ACTIVE, 50).
+%% tries at an even port and the one above it, with no range
+-define(PAIR_TRIES, 32).
 
 %% Args: #{owner := pid(), ip := inet:ip_address(), label := binary(),
 %% sink := {store, Module, StoreMeta} | {pid, pid()}, max_queue =>
 %% pos_integer(), remote => {inet:ip_address(), inet:port_number()} |
 %% undefined, srtp => chappe_audio_srtp:ctx() | undefined, ports =>
-%% {Min, Max} | undefined, tag => atom()}.
+%% {Min, Max} | undefined, tag => atom(), rtcp => none | mux | port,
+%% rtcp_remote => {inet:ip_address(), inet:port_number()} | undefined,
+%% cname => binary(), srtcp_out => chappe_audio_srtp:ctx() | undefined}.
 %%
 %% ports: the socket binds a free port of the range, trying each once from
-%% a random offset and skipping those in use; none free is {error,
-%% no_port}. undefined (the default) binds any port. The stream takes no
-%% RTCP: muxed RTCP is dropped, and nothing listens on the port above.
+%% a random offset and skipping those in use; with rtcp => port an even
+%% port whose next one is free too; none free is {error, no_port}.
+%% undefined (the default) binds any port. A bad rtcp is {error,
+%% {bad_option, rtcp}}.
 -spec start(map()) -> {ok, pid()} | {error, term()}.
 start(Args) ->
     supervisor:start_child(chappe_audio_rtp_sup, [Args]).
@@ -111,14 +142,24 @@ stop(Pid) ->
 port(Pid) ->
     gen_server:call(Pid, port).
 
+%% The port its RTCP is to be sent to: the RTP port with rtcp => mux, the
+%% one above with rtcp => port, undefined with rtcp => none.
+-spec rtcp_port(pid()) -> inet:port_number() | undefined.
+rtcp_port(Pid) ->
+    gen_server:call(Pid, rtcp_port).
+
 %% The packets taken, and the SRTP packets dropped: failed (forged,
 %% malformed, an unknown MKI, the key's lifetime past, too many SSRCs) and
-%% replayed.
+%% replayed. With RTCP on, also the compound packets sent and taken, and
+%% each source's statistics (chappe_audio_rtcp:src_info/1).
 -spec stats(pid()) ->
     #{
         packets := non_neg_integer(),
         failed := non_neg_integer(),
-        replayed := non_neg_integer()
+        replayed := non_neg_integer(),
+        rtcp_sent => non_neg_integer(),
+        rtcp_received => non_neg_integer(),
+        sources => [map()]
     }.
 stats(Pid) ->
     gen_server:call(Pid, stats).
@@ -129,14 +170,25 @@ stats(Pid) ->
 rekey(Pid, Ctx) ->
     gen_server:call(Pid, {rekey, Ctx}).
 
+%% rekey/2, and the receiver's own new key for its SRTCP (the one the new
+%% answer gives), its SRTCP index kept (RFC 3711 3.4).
+-spec rekey(pid(), chappe_audio_srtp:ctx(), chappe_audio_srtp:ctx()) -> ok.
+rekey(Pid, Ctx, Out) ->
+    gen_server:call(Pid, {rekey, Ctx, Out}).
+
 -spec init(map()) -> {ok, state()} | {stop, term()} | {error, no_port}.
 init(#{owner := Owner, ip := Ip, label := Label, sink := Sink0} = Args) ->
-    case open(Ip, maps:get(ports, Args, undefined)) of
-        {ok, Sock} ->
+    Mode = maps:get(rtcp, Args, none),
+    case
+        is_mode(Mode) andalso open(Ip, maps:get(ports, Args, undefined), Mode)
+    of
+        false ->
+            {stop, {bad_option, rtcp}};
+        {ok, Sock, RtcpSock} ->
             {ok, Port} = inet:port(Sock),
             case open_sink(Sink0) of
                 {ok, Sink} ->
-                    {ok, #state{
+                    S = #state{
                         sock = Sock,
                         port = Port,
                         owner_mon = erlang:monitor(process, Owner),
@@ -145,16 +197,53 @@ init(#{owner := Owner, ip := Ip, label := Label, sink := Sink0} = Args) ->
                         max_queue = maps:get(max_queue, Args, 500),
                         label = Label,
                         remote = maps:get(remote, Args, undefined),
-                        srtp = maps:get(srtp, Args, undefined)
-                    }};
+                        srtp = maps:get(srtp, Args, undefined),
+                        rtcp = session(Mode, Args),
+                        rtcp_sock = RtcpSock,
+                        srtcp_out = maps:get(srtcp_out, Args, undefined)
+                    },
+                    {ok, schedule(S)};
                 {error, Why} ->
-                    gen_udp:close(Sock),
+                    close(Sock, RtcpSock),
                     {stop, Why}
             end;
         {error, no_port} ->
             {error, no_port};
         {error, Why} ->
             {stop, Why}
+    end.
+
+is_mode(none) -> true;
+is_mode(mux) -> true;
+is_mode(port) -> true;
+is_mode(_) -> false.
+
+session(none, _Args) ->
+    undefined;
+session(Mode, Args) ->
+    chappe_audio_rtp_rtcp:new(
+        Mode,
+        maps:get(rtcp_remote, Args, undefined),
+        maps:get(cname, Args, chappe_audio_rtcp:cname())
+    ).
+
+%% the RTCP mode: none without a session
+mode(#state{rtcp = undefined}) -> none;
+mode(#state{rtcp = R}) -> chappe_audio_rtp_rtcp:mode(R).
+
+close(Sock, undefined) ->
+    gen_udp:close(Sock);
+close(Sock, RtcpSock) ->
+    gen_udp:close(Sock),
+    gen_udp:close(RtcpSock).
+
+%% the RTP socket, and with rtcp => port the RTCP one on the port above
+open(Ip, Ports, port) ->
+    open_pair(Ip, Ports);
+open(Ip, Ports, _Rtcp) ->
+    case open(Ip, Ports) of
+        {ok, Sock} -> {ok, Sock, undefined};
+        Err -> Err
     end.
 
 %% a socket on any port, or on the first free port of the range from a
@@ -173,6 +262,58 @@ open(Ip, Min, N, At, Left) ->
         Other -> Other
     end.
 
+%% RFC 3550 11: RTP on an even port, RTCP on the next one
+open_pair(Ip, undefined) ->
+    any_pair(Ip, ?PAIR_TRIES);
+open_pair(Ip, {Min, Max}) ->
+    First = Min + (Min band 1),
+    case (Max - 1 - First) div 2 + 1 of
+        N when N > 0, First + 1 =< Max ->
+            pair(Ip, First, N, rand:uniform(N) - 1, N);
+        _ ->
+            {error, no_port}
+    end.
+
+any_pair(_Ip, 0) ->
+    {error, no_port};
+any_pair(Ip, Tries) ->
+    case udp(Ip, 0) of
+        {ok, Sock} ->
+            {ok, P} = inet:port(Sock),
+            case P rem 2 =:= 0 andalso P < 65535 andalso udp(Ip, P + 1) of
+                {ok, RtcpSock} ->
+                    {ok, Sock, RtcpSock};
+                _ ->
+                    gen_udp:close(Sock),
+                    any_pair(Ip, Tries - 1)
+            end;
+        Err ->
+            Err
+    end.
+
+pair(_Ip, _First, _N, _At, 0) ->
+    {error, no_port};
+pair(Ip, First, N, At, Left) ->
+    P = First + 2 * At,
+    Next = fun() -> pair(Ip, First, N, (At + 1) rem N, Left - 1) end,
+    case udp(Ip, P) of
+        {ok, Sock} ->
+            case udp(Ip, P + 1) of
+                {ok, RtcpSock} ->
+                    {ok, Sock, RtcpSock};
+                {error, eaddrinuse} ->
+                    gen_udp:close(Sock),
+                    Next();
+                Err ->
+                    gen_udp:close(Sock),
+                    Err
+            end;
+        {error, eaddrinuse} ->
+            Next();
+        Err ->
+            Err
+    end.
+
 udp(Ip, Port) ->
     gen_udp:open(Port, [binary, {ip, Ip}, {active, ?ACTIVE}]).
 
@@ -189,38 +330,72 @@ open_sink({pid, Pid}) when is_pid(Pid) ->
 
 handle_call(port, _From, #state{port = P} = S) ->
     {reply, P, S};
-handle_call(stats, _From, #state{packets = P, failed = F, replayed = R} = S) ->
-    {reply, #{packets => P, failed => F, replayed => R}, S};
+handle_call(rtcp_port, _From, S) ->
+    {reply, rtcp_port_of(mode(S), S), S};
+handle_call(stats, _From, S) ->
+    {reply, stats_of(S), S};
 handle_call({rekey, _Ctx}, _From, #state{srtp = undefined} = S) ->
     {reply, ok, S};
 handle_call({rekey, Ctx}, _From, #state{srtp = Old} = S) ->
     {reply, ok, S#state{srtp = chappe_audio_srtp:rekey(Old, Ctx)}};
+handle_call({rekey, _Ctx, _Out}, _From, #state{srtp = undefined} = S) ->
+    {reply, ok, S};
+handle_call({rekey, Ctx, Out}, _From, #state{srtp = Old} = S) ->
+    {reply, ok, S#state{
+        srtp = chappe_audio_srtp:rekey(Old, Ctx),
+        srtcp_out = rekey_out(S#state.srtcp_out, Out)
+    }};
 handle_call(stop, _From, S) ->
     {stop, normal, close_sink(S), S#state{sink = {pid, self()}}}.
+
+rekey_out(undefined, Out) -> Out;
+rekey_out(Old, Out) -> chappe_audio_srtp:rekey(Old, Out).
+
+rtcp_port_of(none, _S) -> undefined;
+rtcp_port_of(mux, #state{port = P}) -> P;
+rtcp_port_of(port, #state{port = P}) -> P + 1.
+
+stats_of(#state{packets = P, failed = F, replayed = R, rtcp = Rtcp}) ->
+    Base = #{packets => P, failed => F, replayed => R},
+    case Rtcp of
+        undefined -> Base;
+        _ -> maps:merge(Base, chappe_audio_rtp_rtcp:stats(Rtcp))
+    end.
 
 handle_cast(_Msg, S) ->
     {noreply, S}.
 
 handle_info({udp, Sock, Ip, Port, Packet}, #state{sock = Sock} = S) ->
     case source(Ip, Port, S) of
-        {ok, From} -> {noreply, take(Packet, From, S)};
+        {ok, From} -> {noreply, take(mode(S), Packet, From, S)};
         drop -> {noreply, S}
+    end;
+handle_info({udp, Sock, Ip, Port, Packet}, #state{rtcp_sock = Sock} = S) ->
+    case rtcp_source(Ip, S) of
+        true -> {noreply, rtcp_port_in(Packet, {Ip, Port}, S)};
+        false -> {noreply, S}
     end;
 handle_info({udp_passive, Sock}, #state{sock = Sock} = S) ->
     ok = inet:setopts(Sock, [{active, ?ACTIVE}]),
     {noreply, S};
+handle_info({udp_passive, Sock}, #state{rtcp_sock = Sock} = S) ->
+    ok = inet:setopts(Sock, [{active, ?ACTIVE}]),
+    {noreply, S};
+handle_info(rtcp_report, S) ->
+    {noreply, schedule(report(false, S))};
 handle_info({'DOWN', Mon, process, _, _}, #state{owner_mon = Mon} = S) ->
     _ = close_sink(S),
     {stop, normal, S#state{sink = {pid, self()}}};
 handle_info(_Msg, S) ->
     {noreply, S}.
 
-terminate(_Why, #state{sock = Sock}) ->
-    gen_udp:close(Sock).
+terminate(_Why, #state{sock = Sock, rtcp_sock = RtcpSock} = S) ->
+    _ = bye(S),
+    close(Sock, RtcpSock).
 
 %% the SRTP keys never reach a crash report or sys:get_status/1
 format_status(#{state := #state{} = S} = Status) ->
-    Status#{state := S#state{srtp = redacted}};
+    Status#{state := S#state{srtp = redacted, srtcp_out = redacted}};
 format_status(Status) ->
     Status.
 
@@ -236,26 +411,60 @@ source(Ip, Port, #state{remote = undefined}) ->
 source(_Ip, _Port, _S) ->
     drop.
 
+%% RTCP on the port above: from the source's address only
+rtcp_source(Ip, #state{latched = {Ip, _}}) -> true;
+rtcp_source(_Ip, #state{latched = {_, _}}) -> false;
+rtcp_source(Ip, #state{remote = {Ip, _}}) -> true;
+rtcp_source(_Ip, #state{remote = undefined}) -> true;
+rtcp_source(_Ip, _S) -> false.
+
 %% A packet from an acceptable source: plain RTP latches to it; SRTP only
-%% once the packet authenticates. Muxed SRTCP (RFC 5761 4) is checked and
-%% dropped: the recording needs none of it.
-take(Packet, From, #state{srtp = undefined} = S) ->
-    packet(Packet, S#state{latched = From});
-take(Packet, From, #state{srtp = Ctx} = S) ->
-    case chappe_audio_srtp:is_rtcp(Packet) of
-        true -> srtcp(chappe_audio_srtp:unprotect_rtcp(Packet, Ctx), From, S);
-        false -> srtp(chappe_audio_srtp:unprotect(Packet, Ctx), From, S)
+%% once the packet authenticates. With rtcp => mux, RTCP on the port
+%% (RFC 5761 4) is read; otherwise it is dropped, SRTCP once it
+%% authenticates.
+take(Mode, Packet, From, #state{srtp = undefined} = S) ->
+    case Mode =:= mux andalso chappe_audio_rtcp:is_rtcp(Packet) of
+        true -> rtcp_in(Packet, From, S);
+        false -> rtp(Packet, S#state{latched = From})
+    end;
+take(Mode, Packet, From, #state{srtp = Ctx} = S) ->
+    case chappe_audio_rtcp:is_rtcp(Packet) of
+        true ->
+            Rtcp = chappe_audio_srtp:unprotect_rtcp(Packet, Ctx),
+            srtcp(Mode, Rtcp, From, S);
+        false ->
+            srtp(chappe_audio_srtp:unprotect(Packet, Ctx), From, S)
     end.
 
 srtp({ok, Rtp, Ctx}, From, S) ->
-    packet(Rtp, S#state{srtp = Ctx, latched = From});
+    rtp(Rtp, S#state{srtp = Ctx, latched = From});
 srtp({error, Why}, _From, S) ->
     dropped(Why, S).
 
-srtcp({ok, _Rtcp, Ctx}, From, S) ->
+srtcp(mux, {ok, Rtcp, Ctx}, From, S) ->
+    rtcp_in(Rtcp, From, S#state{srtp = Ctx, latched = From});
+srtcp(_Mode, {ok, _Rtcp, Ctx}, From, S) ->
     S#state{srtp = Ctx, latched = From};
-srtcp({error, Why}, _From, S) ->
+srtcp(_Mode, {error, Why}, _From, S) ->
     dropped(Why, S).
+
+%% a packet on the RTCP port: SRTCP once it authenticates, or RTCP
+rtcp_port_in(Packet, From, #state{srtp = undefined} = S) ->
+    rtcp_in(Packet, From, S);
+rtcp_port_in(Packet, From, #state{srtp = Ctx} = S) ->
+    case chappe_audio_srtp:unprotect_rtcp(Packet, Ctx) of
+        {ok, Rtcp, Ctx1} -> rtcp_in(Rtcp, From, S#state{srtp = Ctx1});
+        {error, Why} -> dropped(Why, S)
+    end.
+
+rtcp_in(Packet, From, #state{rtcp = R} = S) ->
+    S#state{rtcp = chappe_audio_rtp_rtcp:input(R, Packet, From)}.
+
+%% an RTP packet: in its source's statistics with RTCP on, then decoded
+rtp(Rtp, #state{rtcp = undefined} = S) ->
+    packet(Rtp, S);
+rtp(Rtp, #state{rtcp = R} = S) ->
+    packet(Rtp, S#state{rtcp = chappe_audio_rtp_rtcp:rtp(R, Rtp)}).
 
 %% RFC 3711 3.3 step 5: a replayed or forged packet is discarded and the
 %% event SHOULD be logged; once per window, so a flood costs one line
@@ -284,6 +493,65 @@ close_sink(#state{sink = {store, Mod, Rec}, packets = N}) ->
     Mod:close(Rec, #{packets => N});
 close_sink(#state{sink = {pid, _}}) ->
     ok.
+
+%% ---- RTCP reports ----
+
+%% the next report on the interval of RFC 3550 6.2
+schedule(#state{rtcp = undefined} = S) ->
+    S;
+schedule(#state{rtcp = R} = S) ->
+    _ = erlang:send_after(
+        chappe_audio_rtp_rtcp:interval(R), self(), rtcp_report
+    ),
+    S.
+
+%% RFC 3550 6.3.7: leaving, a BYE, only after a report went out
+bye(#state{rtcp = undefined}) ->
+    ok;
+bye(#state{rtcp = R} = S) ->
+    case chappe_audio_rtp_rtcp:has_sent(R) of
+        true ->
+            _ = report(true, S),
+            ok;
+        false ->
+            ok
+    end.
+
+%% a report to where the source's RTCP goes, if it is known, from the
+%% socket RTCP comes in on (symmetric RTCP, RFC 7866 8.1.8)
+report(Bye, #state{rtcp = R, latched = L, remote = Remote} = S) ->
+    case chappe_audio_rtp_rtcp:dest(R, L, Remote) of
+        undefined ->
+            S;
+        {Ip, Port} ->
+            {Bin, R1} = chappe_audio_rtp_rtcp:report(R, Bye),
+            case protect(Bin, S#state{rtcp = R1}) of
+                {ok, Out, S1} ->
+                    _ = gen_udp:send(rtcp_out_sock(S1), Ip, Port, Out),
+                    S1#state{
+                        rtcp = chappe_audio_rtp_rtcp:sent(R1, byte_size(Out))
+                    };
+                skip ->
+                    S
+            end
+    end.
+
+%% RFC 3711 3.4: on an SRTP stream, SRTCP with the receiver's own key, or
+%% nothing
+protect(Bin, #state{srtp = undefined} = S) ->
+    {ok, Bin, S};
+protect(_Bin, #state{srtcp_out = undefined}) ->
+    skip;
+protect(Bin, #state{srtcp_out = Ctx} = S) ->
+    case chappe_audio_srtp:protect_rtcp(Bin, Ctx) of
+        {ok, Out, Ctx1} -> {ok, Out, S#state{srtcp_out = Ctx1}};
+        {error, _} -> skip
+    end.
+
+rtcp_out_sock(#state{rtcp_sock = undefined, sock = Sock}) -> Sock;
+rtcp_out_sock(#state{rtcp_sock = Sock}) -> Sock.
+
+%% ---- RTP ----
 
 %% RTP v2 (RFC 3550 5.1) with PCMU (0) or PCMA (8): the payload past the
 %% CSRCs and any header extension, padding removed
