@@ -18,14 +18,15 @@
 
 -export([
     init/0,
-    decode/2,
-    encode/2,
     decode_frame/2,
     encode_frame/2,
     pcm/2,
     tables/1,
     encoder/1
 ]).
+-ifdef(TEST).
+-export([decode/2, encode/2]).
+-endif.
 
 -export_type([law/0]).
 
