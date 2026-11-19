@@ -2,13 +2,15 @@
 %% SPDX-License-Identifier: Apache-2.0
 %%
 %% The compliance matrix: every normative statement an app must meet
-%% (its docs/compliance/requirements.tsv), joined with the test cases that
-%% claim to prove it (`%% req: ID ...' lines above a CT case) and the
-%% latest result of each case (Common Test suite.log files).
+%% (its docs/compliance/requirements.tsv), joined with the tests that
+%% claim to prove it (`%% req: ID ...' lines above a CT case in a
+%% *_SUITE.erl or an EUnit test function in a *_tests.erl) and the result
+%% of each test in the newest run: the newest ct_run.* directory only, and
+%% the EUnit surefire reports.
 %%
-%% A requirement passes only when every test claiming it passed on its
-%% latest run. It fails if any of them failed. It is untested when no test
-%% claims it, or when the only tests claiming it were skipped: a skipped
+%% A requirement passes only when every test claiming it passed. It fails
+%% if any of them failed. It is untested when no test claims it, or when
+%% any claiming test was skipped or has no result: a skipped or missing
 %% test proves nothing. The matrix is generated, so it cannot claim a test
 %% that does not exist, and an annotation naming an unknown id is
 %% reported rather than counted.
@@ -21,6 +23,8 @@
     parse_requirements/1,
     annotations/2,
     results/1,
+    newest_run/1,
+    eunit_results/1,
     matrix/3,
     gate/2,
     args/1,
@@ -35,8 +39,10 @@
     <<"MUST">>, <<"MUST NOT">>, <<"SHALL">>, <<"SHALL NOT">>, <<"REQUIRED">>
 ]).
 
-%% main([RequirementsTsv, TestDir, CtLogDir, OutMd]), optionally followed
+%% main([RequirementsTsv, TestDir, LogDir, OutMd]), optionally followed
 %% by "--gate" and a comma separated list of gated tiers (default table).
+%% LogDir is _build/test/logs: its newest ct_run.* directory and its
+%% eunit/ surefire reports.
 main(Args) ->
     {Paths, Gate} = args(Args),
     [ReqFile, TestDir, LogDir, Out] = Paths,
@@ -47,15 +53,26 @@ main(Args) ->
             {ok, Src} = file:read_file(F),
             annotations(list_to_binary(filename:basename(F, ".erl")), Src)
         end
-     || F <- filelib:wildcard(filename:join(TestDir, "*_SUITE.erl"))
+     || Pattern <- ["*_SUITE.erl", "*_tests.erl"],
+        F <- filelib:wildcard(filename:join(TestDir, Pattern))
     ]),
-    Logs = [
-        {filelib:last_modified(F), element(2, file:read_file(F))}
-     || F <- filelib:wildcard(
-            filename:join([LogDir, "ct_run.*", "*", "run.*", "suite.log"])
-        )
-    ],
-    Matrix = matrix(Reqs, Ann, results(Logs)),
+    Ct =
+        case newest_run(filelib:wildcard(filename:join(LogDir, "ct_run.*"))) of
+            none ->
+                #{};
+            Run ->
+                results([
+                    element(2, file:read_file(F))
+                 || F <- filelib:wildcard(
+                        filename:join([Run, "*", "run.*", "suite.log"])
+                    )
+                ])
+        end,
+    Eunit = eunit_results([
+        element(2, file:read_file(F))
+     || F <- filelib:wildcard(filename:join([LogDir, "eunit", "TEST-*.xml"]))
+    ]),
+    Matrix = matrix(Reqs, Ann, maps:merge(Eunit, Ct)),
     ok = file:write_file(Out, render(Matrix)),
     [
         io:format("unknown requirement id ~s in ~s~n", [Id, Case])
@@ -110,8 +127,8 @@ parse_lines([L | T], N, Acc, Seen) ->
 
 %% ---- annotations ----
 
-%% [{<<"Suite:case">>, [Id]}] for every `%% req:' block followed by a
-%% function clause.
+%% [{<<"Module:Function">>, [Id]}] for every `%% req:' block followed by
+%% a function clause: a CT case, or an EUnit test or generator.
 -spec annotations(binary(), binary()) -> [{binary(), [binary()]}].
 annotations(Suite, Src) ->
     Lines = binary:split(Src, <<"\n">>, [global]),
@@ -159,14 +176,32 @@ unknown_ids(Reqs, Ann) ->
 
 %% ---- results ----
 
-%% Latest result per "Suite:case" across suite.log files, given as
-%% [{SortKey, Contents}]: a later key wins.
--spec results([{term(), binary()}]) -> #{binary() => pass | fail | skip}.
+%% The newest ct_run.* directory, by the timestamp that ends its name
+%% (ct_run.NODE.YYYY-MM-DD_HH.MM.SS). Older runs are ignored: a result
+%% does not outlive the run that produced it.
+-spec newest_run([string()]) -> none | string().
+newest_run(Dirs) ->
+    Stamped = [
+        {Stamp, D}
+     || D <- Dirs,
+        {match, [Stamp]} <- [
+            re:run(
+                D,
+                "(\\d{4}-\\d\\d-\\d\\d_\\d\\d\\.\\d\\d\\.\\d\\d)$",
+                [{capture, all_but_first, list}]
+            )
+        ]
+    ],
+    case lists:sort(Stamped) of
+        [] -> none;
+        Sorted -> element(2, lists:last(Sorted))
+    end.
+
+%% Result per "Suite:case" from the suite.log files of one run.
+-spec results([binary()]) -> #{binary() => pass | fail | skip}.
 results(Logs) ->
     lists:foldl(
-        fun({_Key, Bin}, Acc) -> maps:merge(Acc, parse_log(Bin)) end,
-        #{},
-        lists:keysort(1, Logs)
+        fun(Bin, Acc) -> maps:merge(Acc, parse_log(Bin)) end, #{}, Logs
     ).
 
 parse_log(Bin) ->
@@ -199,6 +234,55 @@ result(<<"ok">>) -> pass;
 result(<<"skipped", _/binary>>) -> skip;
 result(<<"auto_skipped", _/binary>>) -> skip;
 result(_) -> fail.
+
+%% Result per "Module:Function" from EUnit surefire reports. eunit_surefire
+%% names a testcase "Module:Line Function" for a plain test and
+%% "Module:Line -Function/0-fun-N-" for a fun a generator returns, so both
+%% key on the function the test was written in. A function's
+%% result is the aggregate of its testcases: fail if one failed or
+%% errored, pass if all passed, skip otherwise.
+-spec eunit_results([binary()]) -> #{binary() => pass | fail | skip}.
+eunit_results(Reports) ->
+    Cases = lists:append([testcases(Bin) || Bin <- Reports]),
+    lists:foldl(
+        fun({Key, R}, Acc) ->
+            maps:update_with(Key, fun(Old) -> worst(Old, R) end, R, Acc)
+        end,
+        #{},
+        Cases
+    ).
+
+testcases(Bin) ->
+    Found =
+        case
+            re:run(
+                Bin,
+                "<testcase\\b[^>]*?\\bname=\"([a-z][a-zA-Z0-9_]*):[0-9]+ -?"
+                "([a-z][a-zA-Z0-9_]*)[^\"]*\"[^>]*?(/>|>(.*?)</testcase>)",
+                [global, dotall, {capture, [1, 2, 4], binary}]
+            )
+        of
+            {match, M} -> M;
+            nomatch -> []
+        end,
+    [
+        {<<Mod/binary, ":", Fun/binary>>, case_result(Body)}
+     || [Mod, Fun, Body] <- Found
+    ].
+
+case_result(Body) ->
+    Tag = "<(failure|error|skipped)\\b",
+    case re:run(Body, Tag, [{capture, [1], binary}]) of
+        {match, [<<"skipped">>]} -> skip;
+        {match, [_]} -> fail;
+        nomatch -> pass
+    end.
+
+worst(fail, _) -> fail;
+worst(_, fail) -> fail;
+worst(skip, _) -> skip;
+worst(_, skip) -> skip;
+worst(pass, pass) -> pass.
 
 %% ---- matrix ----
 
@@ -237,12 +321,13 @@ status(#{tier := <<"spec-defect">>}, _) ->
     spec_defect;
 status(#{tier := <<"n/a">>}, _) ->
     na;
+status(_, []) ->
+    untested;
 status(_, Rs) ->
-    Run = [R || R <- Rs, R =:= pass orelse R =:= fail],
-    case {lists:member(fail, Run), Run} of
+    case {lists:member(fail, Rs), lists:all(fun(R) -> R =:= pass end, Rs)} of
         {true, _} -> fail;
-        {false, []} -> untested;
-        {false, _} -> pass
+        {false, true} -> pass;
+        {false, false} -> untested
     end.
 
 -spec gate([map()], [binary()]) -> ok | {error, [binary()]}.
@@ -266,8 +351,9 @@ render(Matrix) ->
     [
         "# Compliance matrix\n\n",
         "Generated by `make compliance` from `docs/compliance/requirements.tsv`,\n"
-        "the `%% req:` annotations in `test/*_SUITE.erl` and the latest Common Test\n"
-        "results. Do not edit by hand.\n\n",
+        "the `%% req:` annotations in `test/*_SUITE.erl` and `test/*_tests.erl`, and\n"
+        "the results of the newest Common Test run and EUnit reports. Do not edit\n"
+        "by hand.\n\n",
         summary_line(Matrix),
         "\n\n",
         "## By row\n\n",

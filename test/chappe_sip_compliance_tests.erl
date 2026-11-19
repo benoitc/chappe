@@ -54,25 +54,61 @@ annotations_test() ->
         "helper() -> ok.\n"
         "%% req: R4028-01\n"
         "timers(_Config) -> ok.\n"
+        "%% req: R3515-01\n"
+        "gen_test_() -> [].\n"
     >>,
     ?assertEqual(
         [
             {<<"x_SUITE:adhoc">>, [<<"X-4.7-14">>, <<"R4579-07">>]},
-            {<<"x_SUITE:timers">>, [<<"R4028-01">>]}
+            {<<"x_SUITE:timers">>, [<<"R4028-01">>]},
+            {<<"x_SUITE:gen_test_">>, [<<"R3515-01">>]}
         ],
         chappe_sip_compliance:annotations(<<"x_SUITE">>, Src)
     ).
 
-%% The latest result of a case wins across runs.
+%% Results of one run, merged across its suite.log files.
 results_test() ->
-    Old = <<"=case          x_SUITE:adhoc\n=result        failed: boom\n">>,
-    New =
-        <<"=case          x_SUITE:adhoc\n=result        ok\n=case          x_SUITE:timers\n=result        skipped: no rtpengine\n">>,
-    R = chappe_sip_compliance:results([{1, Old}, {2, New}]),
-    ?assertEqual(pass, maps:get(<<"x_SUITE:adhoc">>, R)),
-    ?assertEqual(skip, maps:get(<<"x_SUITE:timers">>, R)),
-    R2 = chappe_sip_compliance:results([{2, Old}, {1, New}]),
-    ?assertEqual(fail, maps:get(<<"x_SUITE:adhoc">>, R2)).
+    A = <<"=case          x_SUITE:adhoc\n=result        failed: boom\n">>,
+    B =
+        <<"=case          y_SUITE:adhoc\n=result        ok\n=case          y_SUITE:timers\n=result        skipped: no rtpengine\n">>,
+    R = chappe_sip_compliance:results([A, B]),
+    ?assertEqual(fail, maps:get(<<"x_SUITE:adhoc">>, R)),
+    ?assertEqual(pass, maps:get(<<"y_SUITE:adhoc">>, R)),
+    ?assertEqual(skip, maps:get(<<"y_SUITE:timers">>, R)).
+
+%% EUnit surefire testcases are keyed Module:Function; a generator's
+%% tests carry its name and its result is their aggregate.
+eunit_results_test() ->
+    Xml = <<
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n"
+        "<testsuite tests=\"6\" name=\"module 'm_tests'\">\n"
+        "  <testcase time=\"0.001\" name=\"m_tests:0 plain_test\"/>\n"
+        "  <testcase time=\"0.001\" name=\"m_tests:12 -gen_test_/0-fun-0-\"/>\n"
+        "  <testcase time=\"0.001\" name=\"m_tests:13 -gen_test_/0-fun-2- (a case)\">\n"
+        "    <failure type=\"assertEqual\">boom</failure>\n"
+        "  </testcase>\n"
+        "  <testcase time=\"0.001\" name=\"m_tests:20 ok_gen_test_\"/>\n"
+        "  <testcase time=\"0.001\" name=\"m_tests:21 -ok_gen_test_/0-fun-1-\">\n"
+        "    <system-out>noise</system-out>\n"
+        "  </testcase>\n"
+        "  <testcase time=\"0\" name=\"m_tests:30 -cut_test_/0-fun-3-\">\n"
+        "    <skipped type=\"timeout\"/>\n"
+        "  </testcase>\n"
+        "  <testcase time=\"0\" name=\"m_tests:31 cut_test_\"/>\n"
+        "  <testcase time=\"0\" name=\"fixture setup [1]\">\n"
+        "    <error type=\"error\">setup</error>\n"
+        "  </testcase>\n"
+        "</testsuite>\n"
+    >>,
+    ?assertEqual(
+        #{
+            <<"m_tests:plain_test">> => pass,
+            <<"m_tests:gen_test_">> => fail,
+            <<"m_tests:ok_gen_test_">> => pass,
+            <<"m_tests:cut_test_">> => skip
+        },
+        chappe_sip_compliance:eunit_results([Xml, <<"<testsuite/>">>])
+    ).
 
 %% A requirement passes only when every test that claims it passed; one
 %% failure fails it; no test is untested; a skipped test proves nothing.
@@ -93,6 +129,43 @@ status_test() ->
     ?assertEqual(untested, maps:get(<<"R4028-01">>, M)),
     ?assertEqual(untested, maps:get(<<"R4579-02">>, M)),
     ?assertEqual(deviation, maps:get(<<"R4579-23">>, M)).
+
+%% Every claim must pass: one claim passed and another skipped, or one
+%% passed and another has no result at all, leaves the row untested.
+status_needs_every_claim_test() ->
+    {ok, Reqs} = chappe_sip_compliance:parse_requirements(tsv()),
+    Ann = [
+        {<<"s:a">>, [<<"X-4.7-14">>, <<"R4579-07">>, <<"R4028-01">>]},
+        {<<"s:b">>, [<<"X-4.7-14">>]},
+        {<<"s:c">>, [<<"R4579-07">>]},
+        {<<"s:d">>, [<<"R4028-01">>]}
+    ],
+    Res = #{<<"s:a">> => pass, <<"s:b">> => skip, <<"s:d">> => pass},
+    M = maps:from_list([
+        {Id, S}
+     || #{id := Id, status := S} <- chappe_sip_compliance:matrix(Reqs, Ann, Res)
+    ]),
+    ?assertEqual(untested, maps:get(<<"X-4.7-14">>, M)),
+    ?assertEqual(untested, maps:get(<<"R4579-07">>, M)),
+    ?assertEqual(pass, maps:get(<<"R4028-01">>, M)),
+    Fail = chappe_sip_compliance:matrix(Reqs, Ann, Res#{<<"s:c">> => fail}),
+    ?assertMatch(
+        [fail],
+        [S || #{id := <<"R4579-07">>, status := S} <- Fail]
+    ).
+
+%% Only the newest ct_run directory counts, picked by the timestamp in its
+%% name whatever the node name.
+newest_run_test() ->
+    ?assertEqual(none, chappe_sip_compliance:newest_run([])),
+    ?assertEqual(
+        "logs/ct_run.b@h.example.2026-11-19_10.00.00",
+        chappe_sip_compliance:newest_run([
+            "logs/ct_run.z@h.2026-11-18_23.59.59",
+            "logs/ct_run.b@h.example.2026-11-19_10.00.00",
+            "logs/ct_run.a@h.2026-11-19_09.59.59"
+        ])
+    ).
 
 %% The gate: a hard requirement of a gated tier that is not passing fails
 %% it; a MAY, another tier or a documented deviation does not.
