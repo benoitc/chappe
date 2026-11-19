@@ -5,9 +5,10 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * Design (see doc/design/engine.md and the project plan):
- * - Global su_init once at NIF load; su_deinit at unload. Per-engine
- *   lifecycle is only su_root + nta_agent, so stop/start cycles never
- *   re-run global init.
+ * - Global su_init once at NIF load (or upgrade); su_deinit at unload.
+ *   Per-engine lifecycle is only su_root + nta_agent, so stop/start cycles
+ *   never re-run global init. An upgrade is refused while the old image
+ *   runs an engine (see upgrade()).
  * - ONE engine thread runs su_root_run. Every nta call happens on that
  *   thread; NIF calls enqueue operations via su_msg (safe from foreign
  *   threads) and return immediately.
@@ -287,6 +288,10 @@ typedef struct engine {
      * root. */
     ErlNifRWLock *root_lock;
     char errbuf[256];
+    /* the singleton of the image that started it, compared and never read:
+     * after an upgrade the new image's destructor runs for this engine
+     * (ERL_NIF_RT_TAKEOVER) and must leave its own singleton alone */
+    const void *image;
 } engine_t;
 
 static ErlNifResourceType *ENGINE_RT = NULL;
@@ -2166,9 +2171,11 @@ static void engine_dtor(ErlNifEnv *env, void *obj) {
      * no successor exists (none can start while STOPPING). A clean nif_stop
      * already set G_NONE, after which a new engine may hold G_RUNNING;
      * unconditionally storing G_NONE here would clobber that successor and
-     * break the one-engine invariant during stop/start churn. */
+     * break the one-engine invariant during stop/start churn. An engine of
+     * the image this one upgraded holds no slot here. */
     int expect = G_STOPPING;
-    atomic_compare_exchange_strong(&g_engine_state, &expect, G_NONE);
+    if (e->image == &g_engine_state)
+        atomic_compare_exchange_strong(&g_engine_state, &expect, G_NONE);
     TSAN_RELEASE(e);
 }
 
@@ -2384,6 +2391,7 @@ static ERL_NIF_TERM nif_start(ErlNifEnv *env, int argc,
     e->max_msg_size = DEFAULT_MAX_MSG_SIZE;
     e->capt_fd = -1;
     atomic_init(&e->state, ST_INIT);
+    e->image = &g_engine_state;
 
     e->root_lock = enif_rwlock_create("chappe_sip_root");
     if (!e->root_lock) return start_refused(env, e);
@@ -2898,21 +2906,44 @@ static ERL_NIF_TERM nif_health(ErlNifEnv *env, int argc,
     return am_ok;
 }
 
-/* ---------- module lifecycle ---------- */
+/* ---------- module lifecycle ----------
+ *
+ * Every load of the module's NIF calls load (first load) or upgrade (old
+ * code of the module has a NIF loaded). A new image has its own statics
+ * and its own copy of sofia, so both run init_common. Each module
+ * instance gets a priv_t naming its image's singleton, which is how
+ * upgrade sees whether the old image still runs an engine. */
 
-static int load(ErlNifEnv *env, void **priv, ERL_NIF_TERM info) {
-    (void)priv;
-    (void)info;
+typedef struct {
+    _Atomic int *engine_state;
+} priv_t;
+
+/* module instances alive on this image: the same file loaded again is the
+ * same image, so the last unload alone tears its globals down */
+static _Atomic int g_instances = 0;
+
+static int init_common(ErlNifEnv *env, ErlNifResourceFlags flags,
+                       void **priv) {
     ErlNifResourceTypeInit init = {
         .dtor = engine_dtor,
         .stop = NULL,
         .down = engine_down,
     };
-    ENGINE_RT = enif_open_resource_type_x(env, "chappe_sip_engine", &init,
-                                          ERL_NIF_RT_CREATE, NULL);
-    if (!ENGINE_RT) return -1;
+    priv_t *p = enif_alloc(sizeof *p);
+    if (!p) return -1;
+    p->engine_state = &g_engine_state;
+    ErlNifResourceType *rt =
+        enif_open_resource_type_x(env, "chappe_sip_engine", &init, flags, NULL);
+    if (!rt) {
+        enif_free(p);
+        return -1;
+    }
     if (!g_blk_lock) g_blk_lock = enif_mutex_create("chappe_sip_blocklist");
-    if (!g_blk_lock) return -1;
+    if (!g_blk_lock) {
+        enif_free(p);
+        return -1;
+    }
+    ENGINE_RT = rt;
 
     /* su_init() installs SIG_IGN for SIGPIPE process-wide; save BEAM's
      * disposition and restore it so the VM's signal handling is
@@ -2981,25 +3012,44 @@ static int load(ErlNifEnv *env, void **priv, ERL_NIF_TERM info) {
     am_udp_mtu = enif_make_atom(env, "udp_mtu");
     am_tcp_keepalive_ms = enif_make_atom(env, "tcp_keepalive_ms");
     am_outbound_proxy = enif_make_atom(env, "outbound_proxy");
+    atomic_fetch_add(&g_instances, 1);
+    *priv = p;
     return 0;
 }
 
+static int load(ErlNifEnv *env, void **priv, ERL_NIF_TERM info) {
+    (void)info;
+    return init_common(env, ERL_NIF_RT_CREATE, priv);
+}
+
+/* Refuse while the old image runs an engine (or one is stopping): its
+ * stack thread keeps running the old image's code and state, which a
+ * purge of the old module would pull from under it. Once it is stopped
+ * the new image sets itself up and takes over the resource type, so an
+ * engine reference the old image left behind is freed by this image. An
+ * old instance without priv data predates this check and is let through. */
 static int upgrade(ErlNifEnv *env, void **priv, void **old_priv,
                    ERL_NIF_TERM info) {
-    (void)env;
-    (void)priv;
-    (void)old_priv;
     (void)info;
-    /* Refuse hot upgrade while an engine is live; the old module stays. */
-    if (atomic_load(&g_engine_state) != G_NONE) return -1;
-    return 0;
+    const priv_t *old = *old_priv;
+    if (old && atomic_load(old->engine_state) != G_NONE) return -1;
+    return init_common(env, ERL_NIF_RT_CREATE | ERL_NIF_RT_TAKEOVER, priv);
 }
 
+/* The module instance is purged. sofia's globals and the blocklist lock go
+ * with the last instance on this image, and only when it runs no engine:
+ * a live stack thread still uses them. */
 static void unload(ErlNifEnv *env, void *priv) {
     (void)env;
-    (void)priv;
-    /* upgrade() refused while running, so no engine is live here */
-    su_deinit();
+    enif_free(priv);
+    if (atomic_fetch_sub(&g_instances, 1) == 1 &&
+        atomic_load(&g_engine_state) == G_NONE) {
+        su_deinit();
+        if (g_blk_lock) {
+            enif_mutex_destroy(g_blk_lock);
+            g_blk_lock = NULL;
+        }
+    }
 }
 
 static ErlNifFunc nif_funcs[] = {
