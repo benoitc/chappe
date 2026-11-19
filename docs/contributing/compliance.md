@@ -4,8 +4,8 @@ Each app keeps a catalogue of the behaviours it promises, one row per
 normative statement, and `make compliance` joins it with the tests that claim
 each row and their results in the newest run. The output is a generated matrix
 per app, committed next to the catalogue. CI fails if a hard requirement of
-the `demo` tier is not passing, or if a committed matrix differs from the one
-CI produces. Use this page when you close a protocol gap, add a feature that
+the `demo` tier is not passing, or if a committed matrix shows a row as pass
+that CI does not prove. Use this page when you close a protocol gap, add a feature that
 makes a promise, or want to know which test proves a behaviour.
 
 ## Before you start
@@ -29,7 +29,8 @@ makes a promise, or want to know which test proves a behaviour.
 ## How the matrix is computed
 
 1. `make compliance` runs `rebar3 as test compile`, then, per app,
-   `scripts/compliance.escript REQS.tsv TESTDIR CTLOGDIR OUT.md [--gate TIER]`.
+   `scripts/compliance.escript REQS.tsv TESTDIR LOGDIR OUT.md
+   [--expected-fail FILE] [--check-against COMMITTED.md] [--gate TIER]`.
 2. Claims are read from every `apps/<app>/test/*_SUITE.erl` and
    `apps/<app>/test/*_tests.erl`: a `%% req:` line (ids separated by spaces or
    commas) directly above a CT case or an EUnit test function. The claim is
@@ -40,7 +41,9 @@ makes a promise, or want to know which test proves a behaviour.
 4. EUnit results come from the surefire reports in
    `_build/test/logs/eunit`, which `make eunit` clears before it runs. A
    generator (`name_test_()`) counts as one test: it fails when one of its
-   tests failed, and passes when all of them passed.
+   tests failed or hit its timeout, and passes when all of them passed. A
+   fixture whose setup or cleanup failed names no test in the report, so it
+   fails every claim in its module.
 5. A row passes when every test claiming it passed. It fails when one of them
    failed. It is untested when no test claims it, or when any claiming test
    was skipped or has no result: a skipped or missing test proves nothing.
@@ -137,23 +140,28 @@ names no deviation row.
 
 ## The committed matrices and CI
 
-The committed matrices are the ones the CI `conformance` job produces. That
-job runs `make compliance-full GATE=demo`, then
-`git diff --exit-code -- 'apps/*/docs/compliance.md'`, and uploads the
-matrices it produced as the `compliance-matrices` artifact. A row whose result
-changed, a new claim or a new row all change the matrix, so the job fails until
-the matrix in the branch matches.
+A committed matrix comes from a local run or from CI, and never claims more
+than CI proves. CI's `conformance` job runs `make compliance-full GATE=demo
+CHECK=1`: it reads each committed matrix, regenerates it from EUnit and one CT
+run with `CONFORMANCE=1`, and then:
 
-The CI run is the reference because its inputs are fixed: EUnit, every CT
-suite in one run with `CONFORMANCE=1`, and the other docker labs skipped. A
-local `make check` skips the conformance suite, so the rows it claims show
-untested there; do not commit that matrix. Either:
+- fails, with one `check:` line per row, when a row is `pass` in the committed
+  matrix and not `pass` in this run: the committed file over-reports;
+- prints a `notice:` line per row this run passes and the committed file does
+  not: the committed file under-reports, which is allowed;
+- uploads the matrices it produced as the `compliance-matrices` artifact.
 
-- run `make compliance-full` on a machine with docker, which feeds the
-  generator the same inputs; or
-- push, download the `compliance-matrices` artifact of the failed run, copy
-  its files over `apps/*/docs/compliance.md`, and commit them.
+A local `make check` skips the conformance suite and some host-bound cases
+(the RFC 4475 UDP vectors need ports 5050, 5060 and 5070 free), so its matrix
+shows those rows untested. Committing it is safe: it claims less than CI. To
+refresh the committed matrices with everything CI proves:
 
+1. Open the `conformance` job of a CI run on your branch and download the
+   `compliance-matrices` artifact.
+2. Copy its files over `apps/*/docs/compliance.md`.
+3. Commit them.
+
+`make compliance-full` on a machine with docker gives the same inputs locally.
 Only the newest CT run counts, so do not run `make interop-conformance` after
 `make ct` and expect both: the second run replaces the first.
 
@@ -166,8 +174,7 @@ Only the newest CT run counts, so do not run `make interop-conformance` after
 ## How to know it works
 
 - `make compliance GATE=demo` exits 0.
-- The CI `conformance` job passes its "Committed matrices match this run"
-  step.
+- The CI `conformance` job prints no `check:` line.
 - Its output lists no `unknown requirement id`: a typo in a `%% req:` line is
   reported and covers nothing.
 - The row shows `pass` in the regenerated matrix.

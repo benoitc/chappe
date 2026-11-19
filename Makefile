@@ -135,27 +135,29 @@ docs-check:
 
 # Each app's compliance matrix from its requirements, the `%% req:'
 # annotations, the newest CT run and the EUnit reports. GATE=demo fails on
-# any hard requirement of the demo tier that is not passing.
+# any hard requirement of the demo tier that is not passing. CHECK=1 first
+# reads the committed matrix and fails on any row it shows as pass that
+# this run does not. Every app runs; the target fails if one of them did.
 COMPLIANCE_APPS = chappe_sip chappe_mix chappe_rtpengine chappe_esl chappe_mrf
 
 compliance:
 	rebar3 as test compile
-	@set -e; for app in $(COMPLIANCE_APPS); do \
+	@rc=0; for app in $(COMPLIANCE_APPS); do \
 	    echo "$$app:"; \
 	    scripts/compliance.escript apps/$$app/docs/compliance/requirements.tsv \
 	        apps/$$app/test _build/test/logs apps/$$app/docs/compliance.md \
 	        $$(ef=apps/$$app/interop/conformance/expected-fail; \
 	           test -f $$ef && echo --expected-fail $$ef) \
-	        $(if $(GATE),--gate $(GATE)); \
-	done
+	        $(if $(CHECK),--check-against apps/$$app/docs/compliance.md) \
+	        $(if $(GATE),--gate $(GATE)) || rc=1; \
+	done; exit $$rc
 
 # The matrices from the inputs CI's conformance job uses: EUnit, then one
-# CT run with the conformance lab (docker). The committed matrices are the
-# ones this produces; CI fails when they differ.
+# CT run with the conformance lab (docker).
 compliance-full:
 	$(MAKE) eunit
 	CONFORMANCE=1 $(MAKE) ct
-	$(MAKE) compliance $(if $(GATE),GATE=$(GATE))
+	$(MAKE) compliance $(if $(GATE),GATE=$(GATE)) $(if $(CHECK),CHECK=$(CHECK))
 
 # chappe_sip against SIPp and pjsua in docker, one flow per RFC clause,
 # with a dnsmasq server for the RFC 3263 cases
