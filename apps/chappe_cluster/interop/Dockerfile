@@ -18,6 +18,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY . /lab/app
 WORKDIR /lab/app
 RUN if [ -f rebar.config ] && [ -d src ]; then \
+        for i in 1 2 3 4; do rebar3 get-deps && break; \
+            rebar3 update || true; sleep $((i * 10)); done; \
         rebar3 compile && cp -r _build/default/lib /lab/lib; \
     else \
         mkdir -p /lab/lib; \

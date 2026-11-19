@@ -17,6 +17,7 @@ case "${1:-}" in
             --exclude=node_modules --exclude=/.claude --exclude=/.git \
             /host/ /work/src/
         cd /work/src
+        sh scripts/fetch_deps.sh
         rebar3 compile
         mkdir -p /work/sbc_ebin
         erlc -o /work/sbc_ebin /sbc/chappe_sbc_node.erl

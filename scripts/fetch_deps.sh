@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Copyright 2026 Benoit Chesneau
 # SPDX-License-Identifier: Apache-2.0
 #
