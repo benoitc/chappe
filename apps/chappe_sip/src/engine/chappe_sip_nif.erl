@@ -43,9 +43,9 @@
 %%
 %% Loading a new version of this module while the old code still holds the
 %% shim is an in-place upgrade, which the shim always refuses (the load
-%% fails with on_load_failure). Stop the stack, delete and purge this
-%% module, then load the new one (docs/design/engine.md, "Upgrading the
-%% NIF").
+%% fails with on_load_failure). replace/0 is the way to load a new library:
+%% with the stack stopped, it deletes and purges this module, then loads it
+%% again (docs/design/engine.md, "Upgrading the NIF").
 -module(chappe_sip_nif).
 
 -export([
@@ -69,7 +69,9 @@
     health/1,
     discard/2,
     block/2,
-    stats/0
+    stats/0,
+    engine_state/0,
+    replace/0
 ]).
 -nifs([
     start/2,
@@ -92,7 +94,8 @@
     health/1,
     discard/2,
     block/2,
-    stats/0
+    stats/0,
+    engine_state/0
 ]).
 -on_load(init/0).
 
@@ -298,3 +301,22 @@ block(_Addr, _TtlMs) ->
 -spec stats() -> stats().
 stats() ->
     erlang:nif_error(engine_nif_not_loaded).
+
+%% The engine singleton: none when no engine runs or is stopping.
+-spec engine_state() -> none | running | stopping.
+engine_state() ->
+    erlang:nif_error(engine_nif_not_loaded).
+
+%% Load this module and its library again from the code path, once no
+%% engine runs: delete, purge, load. Refused while an engine runs or is
+%% stopping, since purging under a live stack thread is unsafe.
+-spec replace() -> {module, ?MODULE} | {error, running | stopping | term()}.
+replace() ->
+    case engine_state() of
+        none ->
+            %% a tail call: no frame of this module stays on the stack, or
+            %% the purge would find this process running old code
+            chappe_sip_nif_reload:run(?MODULE);
+        State ->
+            {error, State}
+    end.

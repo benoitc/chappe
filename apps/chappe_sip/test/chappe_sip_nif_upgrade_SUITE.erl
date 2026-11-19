@@ -18,21 +18,55 @@
 -include_lib("stdlib/include/assert.hrl").
 
 -export([all/0]).
--export([replace_after_purge/1]).
+-export([
+    replace_after_purge/1,
+    owner_death_after_purge/1,
+    same_path_reload/1,
+    replace_refused_while_running/1
+]).
 %% run in the peer
--export([replace_scenario/1]).
+-export([
+    replace_scenario/1,
+    owner_death_scenario/0,
+    same_path_scenario/0,
+    replace_refused_scenario/0
+]).
 
 all() ->
-    [replace_after_purge].
+    [
+        replace_after_purge,
+        owner_death_after_purge,
+        same_path_reload,
+        replace_refused_while_running
+    ].
 
 %% an upgrade is refused with and without a running engine; stop, delete,
 %% purge and load gives a working new library
 replace_after_purge(Config) ->
-    Dir = ?config(priv_dir, Config),
+    in_peer(replace_scenario, [?config(priv_dir, Config)]).
+
+%% the owner of an engine dies after the module was purged: the last
+%% reference to the engine goes, and with it the library, which must not
+%% be closed under the stack thread still returning through it
+owner_death_after_purge(_Config) ->
+    in_peer(owner_death_scenario, []).
+
+%% replace/0 loads the same library file again while an engine of the old
+%% instance is still referenced, which shares the old instance's statics:
+%% the old instance's unload, once that engine goes, must leave them (the
+%% blocklist lock, sofia) to the new one
+same_path_reload(_Config) ->
+    in_peer(same_path_scenario, []).
+
+%% replace/0 refuses while an engine runs, then works once it stopped
+replace_refused_while_running(_Config) ->
+    in_peer(replace_refused_scenario, []).
+
+in_peer(F, Args) ->
     Paths = lists:append([["-pa", P] || P <- code:get_path()]),
     {ok, Peer, _Node} = peer:start_link(#{connection => standard_io, args => Paths}),
     try
-        ?assertEqual(ok, peer:call(Peer, ?MODULE, replace_scenario, [Dir], 60000))
+        ?assertEqual(ok, peer:call(Peer, ?MODULE, F, Args, 60000))
     after
         peer:stop(Peer)
     end.
@@ -61,6 +95,93 @@ replace_scenario(Dir) ->
     ?assertEqual(ok, round_trip(E1, P1)),
     ?assertEqual(ok, chappe_sip_nif:stop(E1)),
     ok.
+
+owner_death_scenario() ->
+    {module, chappe_sip_nif} = code:ensure_loaded(chappe_sip_nif),
+    {Owner, P} = engine_holder(running),
+    true = code:delete(chappe_sip_nif),
+    true = code:soft_purge(chappe_sip_nif),
+    exit(Owner, kill),
+    %% the stop runs on the engine's own threads; give it time to finish
+    timer:sleep(1000),
+    {module, chappe_sip_nif} = code:load_file(chappe_sip_nif),
+    ?assertEqual(ok, wait_start_ok(P, 50)).
+
+same_path_scenario() ->
+    {module, chappe_sip_nif} = code:ensure_loaded(chappe_sip_nif),
+    {Holder, _} = engine_holder(stopped),
+    %% the documented way, the same files
+    ?assertEqual({module, chappe_sip_nif}, chappe_sip_nif:replace()),
+    ?assertEqual(none, chappe_sip_nif:engine_state()),
+    %% the old instance's engine goes, and its unload runs
+    exit(Holder, kill),
+    timer:sleep(500),
+    ok = chappe_sip_nif:block(<<"127.0.0.1">>, 60000),
+    P = chappe_sip_test_port:pick(),
+    {ok, E} = chappe_sip_nif:start(#{contact => contact(P)}, self()),
+    #{discarded := D0} = chappe_sip_nif:stats(),
+    {ok, Sock} = gen_udp:open(0, [binary, {active, true}, {ip, {127, 0, 0, 1}}]),
+    {ok, Local} = inet:port(Sock),
+    ok = gen_udp:send(Sock, {127, 0, 0, 1}, P, options_msg(Local)),
+    receive
+        {chappe_sip_engine, E, {request, _, _, _, _}} -> error(not_blocked)
+    after 1000 -> ok
+    end,
+    #{discarded := D1} = chappe_sip_nif:stats(),
+    ?assert(D1 > D0),
+    gen_udp:close(Sock),
+    ?assertEqual(ok, chappe_sip_nif:stop(E)).
+
+replace_refused_scenario() ->
+    {module, chappe_sip_nif} = code:ensure_loaded(chappe_sip_nif),
+    P = chappe_sip_test_port:pick(),
+    {ok, E} = chappe_sip_nif:start(#{contact => contact(P)}, self()),
+    ?assertEqual(running, chappe_sip_nif:engine_state()),
+    ?assertEqual({error, running}, chappe_sip_nif:replace()),
+    %% still the same module and library
+    ?assertEqual(ok, round_trip(E, P)),
+    ok = chappe_sip_nif:stop(E),
+    ?assertEqual(none, chappe_sip_nif:engine_state()),
+    ?assertEqual({module, chappe_sip_nif}, chappe_sip_nif:replace()),
+    P1 = chappe_sip_test_port:pick(),
+    {ok, E1} = chappe_sip_nif:start(#{contact => contact(P1)}, self()),
+    ?assertEqual(ok, round_trip(E1, P1)),
+    ?assertEqual(ok, chappe_sip_nif:stop(E1)).
+
+%% a process that owns an engine and keeps its reference, running or
+%% stopped
+engine_holder(How) ->
+    Self = self(),
+    P = chappe_sip_test_port:pick(),
+    Pid = spawn(fun() ->
+        {ok, E} = chappe_sip_nif:start(#{contact => contact(P)}, self()),
+        case How of
+            running -> ok;
+            stopped -> ok = chappe_sip_nif:stop(E)
+        end,
+        Self ! {holding, self()},
+        receive
+            never -> E
+        end
+    end),
+    receive
+        {holding, Pid} -> {Pid, P}
+    after 10000 -> error(no_holder)
+    end.
+
+%% a start after the dead owner's engine stopped: the singleton is free
+%% once its stack thread is done
+wait_start_ok(_P, 0) ->
+    error(start_refused);
+wait_start_ok(P, N) ->
+    case chappe_sip_nif:start(#{contact => contact(P)}, self()) of
+        {ok, E} ->
+            ok = round_trip(E, P),
+            chappe_sip_nif:stop(E);
+        {error, stopping} ->
+            timer:sleep(100),
+            wait_start_ok(P, N - 1)
+    end.
 
 load(Bin) ->
     code:load_binary(chappe_sip_nif, "chappe_sip_nif_next.beam", Bin).
