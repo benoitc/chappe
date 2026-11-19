@@ -44,7 +44,7 @@ jobs:
           otp-version: ${{ env.OTP }}
           rebar3-version: ${{ env.REBAR3 }}
       - name: System deps (instrument NIF)
-        run: sudo apt-get update && sudo apt-get install -y cmake build-essential
+        run: scripts/ci_apt.sh cmake build-essential
       - name: Host
         run: |
           uptime
