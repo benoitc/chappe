@@ -118,15 +118,16 @@ init(#{owner := Owner, opts := Opts} = Args) ->
     case maps:get(fork, Args, undefined) of
         undefined ->
             new_subscription(D0);
-        #{notify := {Req, Res}} = Fork ->
-            %% a fork: the dialog the NOTIFY forms is ours
+        #{notify := {From, Req, Res}} = Fork ->
+            %% a fork: the dialog the NOTIFY forms is ours, and this
+            %% process answers it and tells the router it was handled
             D1 = D0#{
                 call_id => maps:get(call_id, Fork),
                 local_tag => maps:get(local_tag, Fork),
                 from => maps:get(from, Fork),
                 cseq => maps:get(cseq, Fork)
             },
-            {ok, active, D1, [{next_event, internal, {notify, Req, Res}}]}
+            {ok, active, D1, [{next_event, internal, {notify, From, Req, Res}}]}
     end.
 
 %% a new initial SUBSCRIBE: a fresh Call-ID and From tag (RFC 6665 4.1.2.2)
@@ -160,8 +161,8 @@ handle_event({call, From}, {notify, Req, Res}, _State, D) ->
         false ->
             {keep_state_and_data, [{reply, From, pass}]}
     end;
-handle_event(internal, {notify, Req, Res}, _State, D) ->
-    on_notify(undefined, Req, Res, D);
+handle_event(internal, {notify, From, Req, Res}, _State, D) ->
+    on_notify(From, Req, Res, D);
 handle_event(
     info, {chappe_sip_uac, Ref, Event}, State, #{uac := {Ref, Kind}} = D
 ) ->
@@ -300,7 +301,10 @@ new_subscription_in(D) ->
         {stop, Why} -> finish({error, Why}, D)
     end.
 
-%% a NOTIFY from a tag of another fork starts that subscription's process
+%% A NOTIFY from a tag of another fork starts that subscription's process.
+%% The new process answers the NOTIFY and only then replies `handled' to
+%% the router: replying here, before it ran, let the request worker end
+%% with the NOTIFY unanswered, and the engine answered it 500.
 fork(From, Req, Res, D) ->
     Args = #{
         uri => maps:get(uri, D),
@@ -308,7 +312,7 @@ fork(From, Req, Res, D) ->
         opts => maps:get(opts, D),
         owner => maps:get(owner, D),
         fork => #{
-            notify => {Req, Res},
+            notify => {From, Req, Res},
             call_id => maps:get(call_id, D),
             local_tag => maps:get(local_tag, D),
             from => maps:get(from, D),
@@ -317,8 +321,7 @@ fork(From, Req, Res, D) ->
     },
     case chappe_sip_subscriber_sup:start_subscriber(Args) of
         {ok, Pid} ->
-            tell(D, {forked, Pid}),
-            reply(From, handled);
+            tell(D, {forked, Pid});
         {error, _} ->
             reply(From, pass)
     end,
