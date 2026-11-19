@@ -99,7 +99,9 @@ the SIP and asks chappe_audio for one receiver per recorded stream with
   after a report. An SRTP stream protects its reports as SRTCP with
   `srtcp_out`, a context of the receiver's own key, its index from 0 and
   kept across `rekey/3`; without one it sends none. `rtcp => none`, the
-  default, keeps the receiver as it was: muxed RTCP is dropped.
+  default, keeps the receiver as it was: muxed RTCP is dropped. The
+  departures from RFC 3550 are listed in
+  [Configuration](../configuration.md#rtp-receiver-options).
 - **The sink.** `{store, Mod, Info}` writes a recording of the store;
   `{pid, Pid}` sends `{Tag, Stream, {audio, Pcm}}` (`tag`, default
   `chappe_audio_rtp`) and drops frames while the process has `max_queue`

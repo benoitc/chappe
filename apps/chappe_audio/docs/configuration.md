@@ -84,6 +84,21 @@ Port = chappe_audio_rtp:port(R),          %% the m= port
 RtcpPort = chappe_audio_rtp:rtcp_port(R). %% the same with mux, Port + 1 with port
 ```
 
+Where the receiver departs from RFC 3550 (each is a `deviation` row of
+the [compliance matrix](compliance.md)):
+
+- The interval is the 5 s minimum (2.5 s before the first report) times
+  0.5 to 1.5. There is no timer reconsideration, no reverse
+  reconsideration on BYE, and no e - 3/2 division (A.7), since the
+  session has two members.
+- The session bandwidth is fixed at 80 kbit/s; the SDP `b=` lines are not
+  read.
+- Sources are not timed out (6.3.5): a report carries only the sources
+  heard since the last one, and a BYE drops its source at once (6.2.1).
+- On an SSRC collision the receiver takes a new SSRC without a BYE for
+  the old one (8.2).
+- It never sends media, so it sends RR, never SR.
+
 `chappe_audio_rtp:stats/1` then also gives `rtcp_sent`, `rtcp_received`
 and `sources`, one map per source: `ssrc`, `cname`, `received`, `lost`,
 `highest`, `jitter`. With a new key on a re-INVITE,
