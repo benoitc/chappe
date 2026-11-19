@@ -288,26 +288,33 @@ Module sizes:
 | `chappe_esl_call` | 952 | 497 (+ `_verbs` 465) |
 | `chappe_sip_registry` | 942 | 476 |
 | `chappe_sip_route` | 574 | 323 (+ `_flow` 258) |
-| `chappe_sip_engine` | 2007 | 1538 (+ `_dispatch` 216, `_uas_response` 209) |
-| `chappe_rtpengine_session` | 766 | 646 (+ `_cmd` 104) |
-| `chappe_sip_dialog_fsm` | 1791 | 1631 |
+| `chappe_sip_engine` | 2007 | 492 (+ `_dispatch`, `_uas_response`, `_opts`, `_backend`, `_events`, `_handles`, `_conns`) |
+| `chappe_rtpengine_session` | 766 | 489 (+ `_cmd`, `_offer`) |
+| `chappe_sip_dialog_fsm` | 1791 | 483 (+ `_dialog_route`, `_offer`, `_out`, `_sub`, `_st`, `_owner`) |
+| `chappe_sip_uac_fsm` | 1157 | 418 (+ `_uac_req`, `_early`, `_retry`, `_sdp`) |
+| `chappe_sip_ws_transport` | 1099 | 472 (+ `_ws_msg`, `_ws_txn`, `_ws_ctxn`) |
 
-The elvis `max_module_length` list went from 12 modules to 8.
-`chappe_mrf_conf` and `chappe_rtpengine_session` left `no_god_modules`; `chappe_esl_call` stays there because it keeps one wrapper
-per verb. The engine left `no_deep_nesting` and
-`max_function_clause_length`.
+The elvis `max_module_length` list went from 12 modules to 3
+(`chappe_sip_hdr`, `chappe_rtpengine_client`, `chappe_sip_b2b`), each with
+its reason. The engine went from nine exemptions to one; the dynamic calls
+it made to the NIF backend are in `chappe_sip_engine_backend`, which carries
+that exemption alone. `chappe_esl_call` stays in `no_god_modules` because it
+keeps one wrapper per verb.
 
-Open findings. Each is a code change with its own plan, not part of this
-documentation plan:
+Findings, status:
 
-| # | Area | Finding |
+| # | Area | Status |
 |---|---|---|
-| M2 | `chappe_sip_dialog_fsm` (1631) | Still the largest state machine; its states doc exists. |
-| M3 | `chappe_sip_uac_fsm` (1157) | Auth moved out; redirect and the 420 and 422 retries remain. |
-| M4 | `chappe_sip_ws_transport` | Documented (0007). Size unchanged. |
-| M1 | `chappe_sip_engine` (1538) | Still exempt from about 10 elvis rules; `handle_event` and the NIF result handling remain the largest parts. |
-| N9 | `chappe_rtpengine_session:handle_event` | Still the longest function in a leaf app. Doc the state model first. |
-| T1 | Test-only exports | About 50 exports are used only by tests; the lanes put the internal ones under `-ifdef(TEST)` where they touched a module. A sweep of the rest is optional. |
+| M2 | `chappe_sip_dialog_fsm` | Done in #55. |
+| M3 | `chappe_sip_uac_fsm` | Done in #54; the in-dialog request bytes are shared with the dialog fsm since #56. |
+| M4 | `chappe_sip_ws_transport` | Done in #58. |
+| M1 | `chappe_sip_engine` | Done in #59. |
+| N9 | `chappe_rtpengine_session:handle_event` | Done in #57. |
+| T1 | Test-only exports | Open: about 50 exports are used only by tests. A sweep of the rest is its own plan. |
+
+The splits also found and fixed two bugs the tests had been hiding: a NOTIFY
+from another fork of a subscription could be answered 500 (#62), and a
+WebSocket timeout while creating a UAC dialog leg crashed the engine (#59).
 
 ## 10. Diagrams and examples
 
