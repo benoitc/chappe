@@ -136,8 +136,8 @@ gate_report(Matrix, Gate, ExpectedFail) ->
             {error, Ids} -> Ids
         end,
     [
-        io:format("gate: ~p hard requirements of ~s not passing~n", [
-            length(Open), lists:join(",", Gate)
+        io:format("gate: ~p hard requirements of ~s not passing: ~s~n", [
+            length(Open), lists:join(",", Gate), lists:join(" ", Open)
         ])
      || Open =/= []
     ],

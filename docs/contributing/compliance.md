@@ -128,7 +128,7 @@ user can read what chappe does instead and decide whether it matters to them.
    its reason:
 
    ```text
-   rport_response   response Via has rport=N but no received (deviation R3581-010)
+   rport_received   response Via has no received (deviation R3581-010)
    ```
 
 4. Regenerate. The row appears under Deviations at the top of
