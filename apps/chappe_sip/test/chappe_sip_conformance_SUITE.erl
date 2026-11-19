@@ -61,8 +61,10 @@ groups() ->
 
 init_per_suite(Config) ->
     %% building the lab images takes longer than a case may on a busy
-    %% runner; the cases keep the suite's 5 minutes
-    ct:timetrap({minutes, 20}),
+    %% runner; the cases keep the suite's 5 minutes. Each build step has
+    %% its own, shorter, timeout so a step that hangs is named in the log
+    %% before this timetrap fires.
+    ct:timetrap({minutes, 40}),
     case docker_ready() of
         ok ->
             Dir = interop_dir(),
@@ -371,16 +373,22 @@ pjsua(Kind, Config) ->
 build(Lab) ->
     case os:getenv("CONFORMANCE_NOBUILD") of
         false ->
-            {0, _} = run_logged(Lab, ["images"], 1800000),
-            {0, _} = run_logged(Lab, ["build"], 1800000),
+            {0, _} = run_logged(Lab, ["images"], 1080000),
+            {0, _} = run_logged(Lab, ["build"], 1080000),
             ok;
         _ ->
             ok
     end.
 
+%% ct:pal, not ct:log: the CI job keeps no CT logs, so the start, the
+%% exit and the output of each step must be in the job output
 run_logged(Lab, Args, Timeout) ->
+    T0 = erlang:monotonic_time(second),
+    ct:pal("lab ~p: start", [Args]),
     {Status, Out} = R = cmd(Lab, Args, Timeout),
-    ct:log("lab ~p exit ~p:~n~s", [Args, Status, Out]),
+    ct:pal("lab ~p: exit ~p after ~p s:~n~s", [
+        Args, Status, erlang:monotonic_time(second) - T0, Out
+    ]),
     R.
 
 lab(Config, Args, Timeout) ->

@@ -20,6 +20,7 @@ jobs:
   analyze:
     name: CodeQL (c-cpp, NIF shim)
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
     permissions:
       actions: read
       contents: read
@@ -31,9 +32,7 @@ jobs:
           otp-version: ${{ env.OTP }}
           rebar3-version: ${{ env.REBAR3 }}
       - name: System deps (sofia)
-        run: |
-          sudo apt-get update && sudo apt-get install -y \
-            pkg-config libssl-dev build-essential
+        run: scripts/ci_apt.sh pkg-config libssl-dev build-essential
       - name: Build sofia-sip (not traced)
         run: |
           apps/chappe_sip/c_src/build.sh
