@@ -211,9 +211,13 @@ releases every flow before the agent is destroyed.
   loop, and destroys the root under the write lock. `stop` polls EXITED
   (50ms steps, 5s cap) and joins. On timeout it returns `{error, hung}`
   without joining or freeing; the stuck thread keeps the resource alive
-  (no use-after-free), and if it ever unblocks it self-cleans and resets
-  the singleton. The thread slot leaks in that pathological case by design.
-- Singleton: one engine at a time. Only the engine that took the slot
+  (no use-after-free) and the singleton stays at stopping. If the thread
+  ever unblocks, the next start or `engine_state/0` joins it and drops its
+  reference, which frees the engine and the singleton. Until then the
+  thread slot leaks, by design.
+- Singleton: one engine at a time, or a replace of the library holding
+  the slot (`reserve_slot/0`; a start then returns `{error, replacing}`
+  and chappe_sip_engine retries it). Only the engine that took the slot
   releases it (an exchange on its own `holds_slot`), so stopping a
   stopped engine again never frees the slot of the engine started after
   it. `g_engine_state` (C atomic) plus the
@@ -267,11 +271,25 @@ files over the old ones, then reload the module with
 
 Notes:
 
-- `replace/0` returns `{error, running}` or `{error, stopping}` while an
-  engine runs or is still stopping, and changes nothing. Otherwise it
-  deletes, purges and loads `chappe_sip_nif`. `{error, old_code_in_use}`
-  means a process still runs the module's code; `code:purge/1` then
-  `code:load_file/1` finish the job.
+- `replace/0` returns `{error, running}`, `{error, stopping}` or
+  `{error, replacing}` while an engine runs, is still stopping, or another
+  replace runs, and changes nothing. Otherwise it reserves the engine
+  slot, then deletes, purges and loads `chappe_sip_nif`. While the slot is
+  reserved a start returns `{error, replacing}`, so a supervisor restart
+  cannot start an engine on the old library between the check and the
+  purge. The new library frees the slot once it is set up.
+- When `replace/0` fails, what you do depends on where:
+
+  | Result | State | What you do |
+  |---|---|---|
+  | `{error, old_code_in_use}`, the module still loaded | nothing changed, slot released | wait for the process running old `chappe_sip_nif` code, or kill it with `code:purge/1`, then call `replace/0` again |
+  | `{error, not_deleted}` | nothing changed, slot released | call `replace/0` again |
+  | `{error, old_code_in_use}`, `erlang:module_loaded(chappe_sip_nif)` is false | deleted, no current module | `code:purge(chappe_sip_nif)` (kills that process), then `code:load_file(chappe_sip_nif)` |
+  | an error from `code:load_file/1` (`nofile`, `on_load_failure`, ...) | deleted and purged, no current module | fix the cause (a missing or bad `.beam` or `.so`), then `code:load_file(chappe_sip_nif)` |
+
+  With no current `chappe_sip_nif`, nothing can start an engine: a
+  restarted chappe_sip_engine fails with `undef` (or, in an interactive
+  node, loads the module itself). The load that works frees the slot.
 - Purging `chappe_sip_nif` yourself while an engine runs, or after a stop
   returned `{error, hung}`, is unsafe: the stack thread keeps running the
   old library. Use `replace/0`, which checks first.
@@ -283,16 +301,21 @@ Notes:
   with a layout it cannot know, and no check of the old singleton can
   stop an old start racing the purge that closes the old library.
 - ERTS calls `unload` only once every engine of the purged instance is
-  gone. A reload of the same file while one is still referenced shares the
+  gone, as scheduler aux work that can run while the new instance's `load`
+  runs. A reload of the same file while one is still referenced shares the
   library's statics with the old instance, so `load` and `unload` count
-  instances: sofia's globals and the locks go with the last one.
+  instances (`instances/0`) under a lock that is never destroyed: the
+  first sets sofia and the locks up, the last tears them down.
 - The blocklist lives in the library. A reload starts with an empty one
   once the last instance is gone: block the addresses again after the
   stack is back.
 - `chappe_sip_nif_upgrade_SUITE` checks this in peer nodes: an upgrade is
   refused with and without a running engine; `replace/0` is refused while
   one runs and then gives a library that starts, answers an OPTIONS, blocks
-  and stops; and an owner dying after a purge frees its engine.
+  and stops; the old instance of a same-file reload unloads once its
+  engine goes; a reserved slot refuses a start; a reload that fails after
+  the delete leaves a slot the next load frees; and an owner dying after
+  a purge frees its engine.
 
 ## Risky regions
 
@@ -309,7 +332,7 @@ region; run them under the sanitizers when you touch it.
 | Handle table drain, orphans, proxy branch list | `tab_drain`, `tab_del`, `ctx_release`, `orphans_sweep`, `px_unlink` | Teardown destroys every nta object before the agent; an incoming ctx a PRACK callback may still use goes on the orphan list instead of being freed; an outgoing ctx must leave the `px_head` list `stray_cb` walks before it is freed. | `chappe_sip_dialog_ops_SUITE`, `chappe_sip_prack_SUITE`, `chappe_sip_proxy_forking_SUITE` |
 | Flows | `flow_of`, `flow_free`, `flow_closed`, `flows_sweep`, `flow_err_cb` | A flow holds a `tport_ref` and a pending entry; both are released once, and the H_FLOW handle is removed by the caller. | `chappe_sip_transport_SUITE`, `chappe_sip_registrar_SUITE` |
 | Stray 2xx | `stray_cb`, `outgoing_response_cb` | A later 2xx of a proxy INVITE branch over TCP/TLS matches no transaction; it is sent to the branch handle only while that branch is in `px_head` (RFC 6026 Accepted state), else dropped. The outgoing callback never destroys the transaction: Erlang does with `txn_done`. | `chappe_sip_forked_2xx_SUITE`, `chappe_sip_proxy_forking_SUITE` |
-| Module lifecycle | `load`, `upgrade`, `unload`, `nif_engine_state` | `upgrade` must refuse: a new library taking over old engines runs on objects it did not make, and an old start can race the purge. A same-file reload shares the statics with the old instance, so only the last `unload` (`g_loads`) runs `su_deinit` and destroys the locks. | `chappe_sip_nif_upgrade_SUITE` |
+| Module lifecycle | `load`, `upgrade`, `unload`, `nif_engine_state`, `nif_reserve_slot` | `upgrade` must refuse: a new library taking over old engines runs on objects it did not make, and an old start can race the purge. A same-file reload shares the statics with the old instance, and the old `unload` can run while the new `load` does: both take `g_lib_lock` (static, never destroyed), the first `load` sets up and only the last `unload` (`g_loads`) runs `su_deinit` and destroys the locks. `replace/0` holds the slot (`G_RESERVED`) from its check to the new `load`, which frees it. | `chappe_sip_nif_upgrade_SUITE` |
 | Request intake and discard | `request_in`, `blk_msg`, `blk_put`, `blk_has`, the `OP_DISCARD` case of `op_cb` | A blocked source is discarded before a server transaction exists; the blocklist is process-wide under `g_blk_lock` and outlives an engine; a discarded transaction gets no 100 Trying and ends with nta's silent 408. | `chappe_sip_guard_SUITE` |
 | The op dispatcher | `op_cb` (about 300 lines, 14 ops) | Every op must look its handle up with the right kind (`tab_get`), answer `op_failed` for an unknown one, and free its payload on every path (`op_free_payload`); an unknown kind reaches `default:`. | `chappe_sip_engine_smoke_SUITE`, `chappe_sip_dialog_ops_SUITE`, `chappe_sip_ops_SUITE` |
 | The NIF boundary | `nif_reply`, `send_raw`, `nif_leg_create`, `nif_cancel`, `get_opt_bin`, `get_tls`, `get_capture`, `get_max_size` | Every string sofia reads as a C string is refused when it holds a NUL, every size is capped before the copy, and a start option that is there but invalid fails the start. | `chappe_sip_nif_boundary_SUITE`, `chappe_sip_ops_SUITE` (`max_message_size_*`) |

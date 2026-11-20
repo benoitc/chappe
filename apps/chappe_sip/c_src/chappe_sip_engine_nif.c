@@ -37,6 +37,7 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <pthread.h>
 
 #include <erl_nif.h>
 
@@ -150,8 +151,9 @@
 /* engine states */
 enum { ST_INIT = 0, ST_READY, ST_FAILED, ST_STOPPING, ST_EXITED };
 
-/* global singleton guard */
-enum { G_NONE = 0, G_RUNNING, G_STOPPING };
+/* global singleton guard; G_RESERVED holds the slot for a replace of the
+ * library (nif_reserve_slot), so no start runs on the image being replaced */
+enum { G_NONE = 0, G_RUNNING, G_STOPPING, G_RESERVED };
 static _Atomic int g_engine_state = G_NONE;
 
 /* handle table entry kinds */
@@ -298,8 +300,17 @@ typedef struct engine {
 
 static ErlNifResourceType *ENGINE_RT = NULL;
 
-/* module instances that loaded this image (load and unload run under ERTS's
- * code loading lock) */
+/* The statics below are shared by every module instance that loaded this
+ * image (the same file loaded again while an old instance is still alive).
+ * Once the last resource of a purged instance goes, ERTS runs its unload
+ * as scheduler aux work holding the code modification permission
+ * (erl_nif.c, close_dynlib_aux); a new instance's load runs in its on_load
+ * process without it (erts_load_nif). The two can overlap, so g_lib_lock
+ * orders them. It is statically initialised and
+ * never destroyed, so it is valid for every instance. */
+static pthread_mutex_t g_lib_lock = PTHREAD_MUTEX_INITIALIZER;
+/* module instances that loaded this image, under g_lib_lock: the first sets
+ * the image up, the last to go tears it down */
 static int g_loads = 0;
 
 /* atoms */
@@ -313,7 +324,8 @@ static ERL_NIF_TERM am_ok, am_error, am_undefined, am_chappe_sip_engine, am_requ
     am_flow_closed, am_capture, am_ident, am_contacts, am_local,
     am_local_ip, am_local_port, am_false, am_none, am_enomem, am_incoming,
     am_discarded, am_events_dropped, am_alloc_failed, am_sip_t1, am_sip_t2,
-    am_sip_t4, am_udp_mtu, am_tcp_keepalive_ms, am_outbound_proxy, am_running;
+    am_sip_t4, am_udp_mtu, am_tcp_keepalive_ms, am_outbound_proxy, am_running,
+    am_replacing, am_not_reserved;
 
 /* operations enqueued to the stack thread */
 enum { OP_RESPOND = 1, OP_HEALTH, OP_STOP, OP_REQUEST, OP_LEG_CREATE,
@@ -2398,6 +2410,15 @@ static int get_tls(ErlNifEnv *env, ERL_NIF_TERM opts, engine_t *e) {
     return 1;
 }
 
+/* why the singleton slot, in state st, is not free */
+static ERL_NIF_TERM slot_taken(int st) {
+    switch (st) {
+    case G_STOPPING: return am_stopping;
+    case G_RESERVED: return am_replacing;
+    default: return am_already_started;
+    }
+}
+
 /* a start that never got its thread: free the singleton and the engine */
 static ERL_NIF_TERM start_refused(ErlNifEnv *env, engine_t *e) {
     release_slot(e);
@@ -2419,10 +2440,8 @@ static ERL_NIF_TERM nif_start(ErlNifEnv *env, int argc,
 
     /* singleton guard, serializes detach/stop/reattach */
     int expect = G_NONE;
-    if (!atomic_compare_exchange_strong(&g_engine_state, &expect, G_RUNNING)) {
-        return enif_make_tuple2(
-            env, am_error, expect == G_STOPPING ? am_stopping : am_already_started);
-    }
+    if (!atomic_compare_exchange_strong(&g_engine_state, &expect, G_RUNNING))
+        return enif_make_tuple2(env, am_error, slot_taken(expect));
 
     engine_t *e = enif_alloc_resource(ENGINE_RT, sizeof(engine_t));
     if (!e) {
@@ -2969,8 +2988,48 @@ static ERL_NIF_TERM nif_engine_state(ErlNifEnv *env, int argc,
     switch (atomic_load(&g_engine_state)) {
     case G_NONE: return am_none;
     case G_RUNNING: return am_running;
+    case G_RESERVED: return am_replacing;
     default: return am_stopping;
     }
+}
+
+/* reserve_slot() -> ok | {error, running | stopping | replacing}: take the
+ * free singleton slot for a replace, so no engine starts on this image
+ * until the replace is done. Released by release_slot/0 while the module
+ * is still current, else by the next load of the image (see load). */
+static ERL_NIF_TERM nif_reserve_slot(ErlNifEnv *env, int argc,
+                                     const ERL_NIF_TERM argv[]) {
+    (void)argc;
+    (void)argv;
+    reap_thread();
+    int expect = G_NONE;
+    if (!atomic_compare_exchange_strong(&g_engine_state, &expect, G_RESERVED))
+        return enif_make_tuple2(env, am_error,
+                                expect == G_RUNNING ? am_running
+                                                    : slot_taken(expect));
+    return am_ok;
+}
+
+/* release_slot() -> ok | {error, not_reserved} */
+static ERL_NIF_TERM nif_release_slot(ErlNifEnv *env, int argc,
+                                     const ERL_NIF_TERM argv[]) {
+    (void)argc;
+    (void)argv;
+    int expect = G_RESERVED;
+    if (!atomic_compare_exchange_strong(&g_engine_state, &expect, G_NONE))
+        return enif_make_tuple2(env, am_error, am_not_reserved);
+    return am_ok;
+}
+
+/* instances() -> N: the module instances sharing this image (g_loads) */
+static ERL_NIF_TERM nif_instances(ErlNifEnv *env, int argc,
+                                  const ERL_NIF_TERM argv[]) {
+    (void)argc;
+    (void)argv;
+    pthread_mutex_lock(&g_lib_lock);
+    int n = g_loads;
+    pthread_mutex_unlock(&g_lib_lock);
+    return enif_make_int(env, n);
 }
 
 /* ---------- module lifecycle ----------
@@ -2979,22 +3038,18 @@ static ERL_NIF_TERM nif_engine_state(ErlNifEnv *env, int argc,
  * it: replacing it means stopping the stack, deleting and purging the
  * module (unload), then loading the new one (load). See upgrade(). */
 
-static int load(ErlNifEnv *env, void **priv, ERL_NIF_TERM info) {
-    (void)priv;
-    (void)info;
-    ErlNifResourceTypeInit init = {
-        .dtor = engine_dtor,
-        .stop = NULL,
-        .down = engine_down,
-    };
-    ENGINE_RT = enif_open_resource_type_x(env, "chappe_sip_engine", &init,
-                                          ERL_NIF_RT_CREATE, NULL);
-    if (!ENGINE_RT) return -1;
-    if (!g_blk_lock) g_blk_lock = enif_mutex_create("chappe_sip_blocklist");
-    if (!g_blk_lock) return -1;
-    if (!g_life_lock) g_life_lock = enif_mutex_create("chappe_sip_life");
-    if (!g_life_lock) return -1;
-
+/* The first instance of the image sets up what the instances share: the
+ * locks and sofia's globals. Under g_lib_lock. */
+static int setup_image(void) {
+    g_blk_lock = enif_mutex_create("chappe_sip_blocklist");
+    g_life_lock = enif_mutex_create("chappe_sip_life");
+    if (!g_blk_lock || !g_life_lock) {
+        if (g_blk_lock) enif_mutex_destroy(g_blk_lock);
+        if (g_life_lock) enif_mutex_destroy(g_life_lock);
+        g_blk_lock = NULL;
+        g_life_lock = NULL;
+        return -1;
+    }
     /* su_init() installs SIG_IGN for SIGPIPE process-wide; save BEAM's
      * disposition and restore it so the VM's signal handling is
      * preserved (sofia's own socket writes use SO_NOSIGPIPE/MSG_NOSIGNAL). */
@@ -3003,6 +3058,31 @@ static int load(ErlNifEnv *env, void **priv, ERL_NIF_TERM info) {
     su_init();
     if (saved) sigaction(SIGPIPE, &old_pipe, NULL);
     su_log_redirect(NULL, log_cb, NULL);
+    return 0;
+}
+
+/* The last instance of the image goes: no engine of any instance is left
+ * (ERTS unloads an instance only once its resources are gone). Under
+ * g_lib_lock. The blocklist is emptied, so a later load starts with none. */
+static void teardown_image(void) {
+    su_deinit();
+    enif_mutex_destroy(g_blk_lock);
+    g_blk_lock = NULL;
+    enif_mutex_destroy(g_life_lock);
+    g_life_lock = NULL;
+    memset(g_blk, 0, sizeof g_blk);
+}
+
+static int load_locked(ErlNifEnv *env) {
+    ErlNifResourceTypeInit init = {
+        .dtor = engine_dtor,
+        .stop = NULL,
+        .down = engine_down,
+    };
+    ENGINE_RT = enif_open_resource_type_x(env, "chappe_sip_engine", &init,
+                                          ERL_NIF_RT_CREATE, NULL);
+    if (!ENGINE_RT) return -1;
+    if (g_loads == 0 && setup_image() != 0) return -1;
 
     am_ok = enif_make_atom(env, "ok");
     am_error = enif_make_atom(env, "error");
@@ -3063,8 +3143,25 @@ static int load(ErlNifEnv *env, void **priv, ERL_NIF_TERM info) {
     am_tcp_keepalive_ms = enif_make_atom(env, "tcp_keepalive_ms");
     am_outbound_proxy = enif_make_atom(env, "outbound_proxy");
     am_running = enif_make_atom(env, "running");
+    am_replacing = enif_make_atom(env, "replacing");
+    am_not_reserved = enif_make_atom(env, "not_reserved");
     g_loads++;
+    /* A replace reserved the slot before it deleted the old module, which
+     * then had no current code left to release it from. On the same image
+     * the reservation is still here: this instance is set up, so a start
+     * may now run on it. A different image starts at G_NONE. */
+    int expect = G_RESERVED;
+    (void)atomic_compare_exchange_strong(&g_engine_state, &expect, G_NONE);
     return 0;
+}
+
+static int load(ErlNifEnv *env, void **priv, ERL_NIF_TERM info) {
+    (void)priv;
+    (void)info;
+    pthread_mutex_lock(&g_lib_lock);
+    int rc = load_locked(env);
+    pthread_mutex_unlock(&g_lib_lock);
+    return rc;
 }
 
 /* An in-place upgrade (old code of the module still holds a library) is
@@ -3084,24 +3181,17 @@ static int upgrade(ErlNifEnv *env, void **priv, void **old_priv,
 }
 
 /* A module instance goes. ERTS calls this only once every engine resource
- * of the instance is gone, so no stack thread runs. The same file loaded
- * again while one was alive is the same image, with these statics shared
- * by both instances: sofia's globals and the locks go with the last one,
- * and the blocklist is then emptied, so a later load starts with none. */
+ * of the instance is gone, so no stack thread of it runs. The same file
+ * loaded again while one was alive is the same image, with its statics
+ * shared by both instances: they go with the last one, under g_lib_lock,
+ * so a load running at the same time either sees them torn down and sets
+ * them up again, or keeps them. */
 static void unload(ErlNifEnv *env, void *priv) {
     (void)env;
     (void)priv;
-    if (--g_loads > 0) return;
-    su_deinit();
-    if (g_blk_lock) {
-        enif_mutex_destroy(g_blk_lock);
-        g_blk_lock = NULL;
-    }
-    if (g_life_lock) {
-        enif_mutex_destroy(g_life_lock);
-        g_life_lock = NULL;
-    }
-    memset(g_blk, 0, sizeof g_blk);
+    pthread_mutex_lock(&g_lib_lock);
+    if (--g_loads == 0) teardown_image();
+    pthread_mutex_unlock(&g_lib_lock);
 }
 
 static ErlNifFunc nif_funcs[] = {
@@ -3127,6 +3217,9 @@ static ErlNifFunc nif_funcs[] = {
     {"block", 2, nif_block, 0},
     {"stats", 0, nif_stats, 0},
     {"engine_state", 0, nif_engine_state, 0},
+    {"reserve_slot", 0, nif_reserve_slot, 0},
+    {"release_slot", 0, nif_release_slot, 0},
+    {"instances", 0, nif_instances, 0},
 };
 
 ERL_NIF_INIT(chappe_sip_nif, nif_funcs, load, NULL, upgrade, unload)

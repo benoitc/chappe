@@ -22,14 +22,18 @@
     replace_after_purge/1,
     owner_death_after_purge/1,
     same_path_reload/1,
-    replace_refused_while_running/1
+    replace_refused_while_running/1,
+    reserved_slot_refuses_start/1,
+    failed_reload_frees_slot/1
 ]).
 %% run in the peer
 -export([
     replace_scenario/1,
     owner_death_scenario/0,
     same_path_scenario/0,
-    replace_refused_scenario/0
+    replace_refused_scenario/0,
+    reserved_scenario/0,
+    failed_reload_scenario/0
 ]).
 
 all() ->
@@ -37,7 +41,9 @@ all() ->
         replace_after_purge,
         owner_death_after_purge,
         same_path_reload,
-        replace_refused_while_running
+        replace_refused_while_running,
+        reserved_slot_refuses_start,
+        failed_reload_frees_slot
     ].
 
 %% an upgrade is refused with and without a running engine; stop, delete,
@@ -61,6 +67,16 @@ same_path_reload(_Config) ->
 %% replace/0 refuses while an engine runs, then works once it stopped
 replace_refused_while_running(_Config) ->
     in_peer(replace_refused_scenario, []).
+
+%% while a replace holds the engine slot, a start (a supervisor restart
+%% racing the replace) and a second replace are refused
+reserved_slot_refuses_start(_Config) ->
+    in_peer(reserved_scenario, []).
+
+%% a reload that fails after the delete leaves the slot reserved in the
+%% old image; the next load that works frees it
+failed_reload_frees_slot(_Config) ->
+    in_peer(failed_reload_scenario, []).
 
 in_peer(F, Args) ->
     Paths = lists:append([["-pa", P] || P <- code:get_path()]),
@@ -110,12 +126,15 @@ owner_death_scenario() ->
 same_path_scenario() ->
     {module, chappe_sip_nif} = code:ensure_loaded(chappe_sip_nif),
     {Holder, _} = engine_holder(stopped),
-    %% the documented way, the same files
+    ?assertEqual(1, chappe_sip_nif:instances()),
+    %% the documented way, the same files: the held engine keeps the old
+    %% instance, which shares the image with the new one
     ?assertEqual({module, chappe_sip_nif}, chappe_sip_nif:replace()),
     ?assertEqual(none, chappe_sip_nif:engine_state()),
+    ?assertEqual(2, chappe_sip_nif:instances()),
     %% the old instance's engine goes, and its unload runs
     exit(Holder, kill),
-    timer:sleep(500),
+    ok = wait_instances(1, 500),
     ok = chappe_sip_nif:block(<<"127.0.0.1">>, 60000),
     P = chappe_sip_test_port:pick(),
     {ok, E} = chappe_sip_nif:start(#{contact => contact(P)}, self()),
@@ -147,6 +166,59 @@ replace_refused_scenario() ->
     {ok, E1} = chappe_sip_nif:start(#{contact => contact(P1)}, self()),
     ?assertEqual(ok, round_trip(E1, P1)),
     ?assertEqual(ok, chappe_sip_nif:stop(E1)).
+
+reserved_scenario() ->
+    {module, chappe_sip_nif} = code:ensure_loaded(chappe_sip_nif),
+    P = chappe_sip_test_port:pick(),
+    ?assertEqual(ok, chappe_sip_nif:reserve_slot()),
+    ?assertEqual(replacing, chappe_sip_nif:engine_state()),
+    ?assertEqual({error, replacing}, chappe_sip_nif:reserve_slot()),
+    ?assertEqual(
+        {error, replacing}, chappe_sip_nif:start(#{contact => contact(P)}, self())
+    ),
+    ?assertEqual({error, replacing}, chappe_sip_nif:replace()),
+    ?assertEqual(ok, chappe_sip_nif:release_slot()),
+    ?assertEqual({error, not_reserved}, chappe_sip_nif:release_slot()),
+    ?assertEqual(none, chappe_sip_nif:engine_state()),
+    {ok, E} = chappe_sip_nif:start(#{contact => contact(P)}, self()),
+    %% a running engine is not reserved, and a release leaves it alone
+    ?assertEqual({error, running}, chappe_sip_nif:reserve_slot()),
+    ?assertEqual({error, not_reserved}, chappe_sip_nif:release_slot()),
+    ?assertEqual(running, chappe_sip_nif:engine_state()),
+    ?assertEqual(ok, chappe_sip_nif:stop(E)).
+
+failed_reload_scenario() ->
+    {module, chappe_sip_nif} = code:ensure_loaded(chappe_sip_nif),
+    {module, chappe_sip_nif_reload} = code:ensure_loaded(chappe_sip_nif_reload),
+    %% a held engine keeps the old instance, so its image (and the
+    %% reservation in it) stays for the next load of the same file
+    {Holder, _} = engine_holder(stopped),
+    Ebin = filename:dirname(code:which(chappe_sip_nif)),
+    true = code:del_path(Ebin),
+    ?assertEqual({error, nofile}, chappe_sip_nif:replace()),
+    ?assertEqual(false, erlang:module_loaded(chappe_sip_nif)),
+    true = code:add_patha(Ebin),
+    ?assertEqual({module, chappe_sip_nif}, code:load_file(chappe_sip_nif)),
+    ?assertEqual(2, chappe_sip_nif:instances()),
+    ?assertEqual(none, chappe_sip_nif:engine_state()),
+    P = chappe_sip_test_port:pick(),
+    {ok, E} = chappe_sip_nif:start(#{contact => contact(P)}, self()),
+    ?assertEqual(ok, round_trip(E, P)),
+    ?assertEqual(ok, chappe_sip_nif:stop(E)),
+    exit(Holder, kill),
+    wait_instances(1, 500).
+
+%% the old instance's unload has run once the image counts N instances
+wait_instances(N, 0) ->
+    error({instances, N, chappe_sip_nif:instances()});
+wait_instances(N, Tries) ->
+    case chappe_sip_nif:instances() of
+        N ->
+            ok;
+        _ ->
+            timer:sleep(10),
+            wait_instances(N, Tries - 1)
+    end.
 
 %% a process that owns an engine and keeps its reference, running or
 %% stopped

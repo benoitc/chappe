@@ -71,6 +71,9 @@
     block/2,
     stats/0,
     engine_state/0,
+    reserve_slot/0,
+    release_slot/0,
+    instances/0,
     replace/0
 ]).
 -nifs([
@@ -95,7 +98,10 @@
     discard/2,
     block/2,
     stats/0,
-    engine_state/0
+    engine_state/0,
+    reserve_slot/0,
+    release_slot/0,
+    instances/0
 ]).
 -on_load(init/0).
 
@@ -302,21 +308,44 @@ block(_Addr, _TtlMs) ->
 stats() ->
     erlang:nif_error(engine_nif_not_loaded).
 
-%% The engine singleton: none when no engine runs or is stopping.
--spec engine_state() -> none | running | stopping.
+%% The engine singleton: none when no engine runs, is stopping, or a
+%% replace holds the slot (replacing).
+-spec engine_state() -> none | running | stopping | replacing.
 engine_state() ->
     erlang:nif_error(engine_nif_not_loaded).
 
+%% Take the free engine slot for replace/0: a start is then refused with
+%% {error, replacing} until release_slot/0, or until the library is loaded
+%% again (which frees it once the new instance is set up).
+-spec reserve_slot() -> ok | {error, running | stopping | replacing}.
+reserve_slot() ->
+    erlang:nif_error(engine_nif_not_loaded).
+
+-spec release_slot() -> ok | {error, not_reserved}.
+release_slot() ->
+    erlang:nif_error(engine_nif_not_loaded).
+
+%% The module instances that share this library image: 2 while a purged
+%% instance of the same file still holds an engine, 1 once its unload ran.
+-spec instances() -> pos_integer().
+instances() ->
+    erlang:nif_error(engine_nif_not_loaded).
+
 %% Load this module and its library again from the code path, once no
-%% engine runs: delete, purge, load. Refused while an engine runs or is
-%% stopping, since purging under a live stack thread is unsafe.
--spec replace() -> {module, ?MODULE} | {error, running | stopping | term()}.
+%% engine runs: reserve the engine slot, delete, purge, load. Refused while
+%% an engine runs or is stopping, since purging under a live stack thread
+%% is unsafe; the reservation keeps a start (a supervisor restart) from
+%% running on the old library until the new one is set up.
+-spec replace() ->
+    {module, ?MODULE}
+    | {error,
+        running | stopping | replacing | old_code_in_use | not_deleted | term()}.
 replace() ->
-    case engine_state() of
-        none ->
+    case reserve_slot() of
+        ok ->
             %% a tail call: no frame of this module stays on the stack, or
             %% the purge would find this process running old code
             chappe_sip_nif_reload:run(?MODULE);
-        State ->
-            {error, State}
+        {error, _} = Error ->
+            Error
     end.
