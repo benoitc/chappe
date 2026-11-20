@@ -174,6 +174,15 @@ loss_test() ->
     {B2, _} = ?R:block(feed(S1, lists:seq(101, 150)), 0),
     ?assertMatch(#{fraction := 0, lost := 10, highest := 150}, B2).
 
+%% the cumulative loss is a signed 24-bit field (6.4.1): past 2^23 - 1 it
+%% stays there. Jumps of 2999 (under MAX_DROPOUT) across many cycles lose
+%% about 9 million packets.
+%% req: R3550-6.4.1-2
+lost_clamped_test() ->
+    Seqs = [(I * 2999) rem 65536 || I <- lists:seq(0, 3000)],
+    {B, _} = ?R:block(feed(?R:src_new(7), Seqs), 0),
+    ?assertMatch(#{lost := 16#7FFFFF, fraction := 255}, B).
+
 %% duplicates make the loss negative; the fraction is then 0
 duplicates_test() ->
     S = feed(?R:src_new(7), [1, 2, 2, 3, 3, 4]),

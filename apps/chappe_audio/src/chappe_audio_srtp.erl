@@ -61,8 +61,10 @@
     lifetime :: pos_integer(),
     rtp_used = 0 :: non_neg_integer(),
     rtcp_used = 0 :: non_neg_integer(),
-    %% the next SRTCP index this context sends with
+    %% the next SRTCP index this context sends with, and how many it sent
+    %% under its current key (the key's lifetime counts these)
     tx = 0 :: non_neg_integer(),
+    tx_used = 0 :: non_neg_integer(),
     window :: pos_integer(),
     max_ssrcs :: pos_integer(),
     %% SSRC => {ROC, s_l, replay bitmap}, its bit 0 the highest index
@@ -329,7 +331,9 @@ rtcp_advance({High, Bits}, _Index, Delta, W) ->
 %% the MKI, and the tag over all of it but the MKI.
 -spec protect_rtcp(binary(), ctx()) ->
     {ok, binary(), ctx()} | {error, malformed | expired}.
-protect_rtcp(_Rtcp, #ctx{tx = I, lifetime = L}) when I >= L; I >= ?SRTCP_MAX ->
+protect_rtcp(_Rtcp, #ctx{tx = I, tx_used = U, lifetime = L}) when
+    U >= L; I >= ?SRTCP_MAX
+->
     {error, expired};
 protect_rtcp(<<2:2, _:30, Ssrc:32, Rest/binary>> = Rtcp, #ctx{keys = KF} = C) ->
     K = KF(),
@@ -338,7 +342,9 @@ protect_rtcp(<<2:2, _:30, Ssrc:32, Rest/binary>> = Rtcp, #ctx{keys = KF} = C) ->
     Enc = crypt(K#keys.rtcp_enc, K#keys.rtcp_salt, Ssrc, I, Rest),
     Body = <<First/binary, Enc/binary, 1:1, I:31>>,
     Tag = tag(K#keys.rtcp_auth, Body, ?SRTCP_TAG),
-    {ok, <<Body/binary, (C#ctx.mki)/binary, Tag/binary>>, C#ctx{tx = I + 1}};
+    {ok, <<Body/binary, (C#ctx.mki)/binary, Tag/binary>>, C#ctx{
+        tx = I + 1, tx_used = C#ctx.tx_used + 1
+    }};
 protect_rtcp(_Rtcp, _C) ->
     {error, malformed}.
 

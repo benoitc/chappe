@@ -359,6 +359,17 @@ protect_rtcp_expired_test() ->
     ?assertEqual({error, expired}, ?S:protect_rtcp(Rtcp, C1)),
     ?assertEqual({error, malformed}, ?S:protect_rtcp(<<1, 2, 3>>, ctx())).
 
+%% a new key's lifetime counts what it protects, not the index carried
+%% over from the old key
+protect_rtcp_rekey_fresh_lifetime_test() ->
+    Rtcp = h(<<"80c90001deadbeef">>),
+    {ok, _, C1} = ?S:protect_rtcp(Rtcp, ctx()),
+    {ok, _, C2} = ?S:protect_rtcp(Rtcp, C1),
+    C3 = ?S:rekey(C2, ctx(#{master => ?T:master(), lifetime => 2})),
+    {ok, _, C4} = ?S:protect_rtcp(Rtcp, C3),
+    {ok, _, C5} = ?S:protect_rtcp(Rtcp, C4),
+    ?assertEqual({error, expired}, ?S:protect_rtcp(Rtcp, C5)).
+
 %% ---- fuzz: mutated genuine packets ----
 
 %% Genuine SRTP and SRTCP packets, mutated at random (bytes overwritten,
