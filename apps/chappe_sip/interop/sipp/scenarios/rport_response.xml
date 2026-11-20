@@ -3,8 +3,8 @@
      SPDX-License-Identifier: Apache-2.0
 
      A request whose Via carries rport. RFC 3581 section 4: the response Via
-     MUST carry received (even when equal to the sent-by host) and rport set
-     to the source port, and it goes back to that source address and port. -->
+     MUST carry rport set to the source port, and it goes back to that source
+     address and port. rport_received checks the received parameter. -->
 <scenario name="rport_response">
   <send retrans="500">
     <![CDATA[
@@ -41,9 +41,6 @@ To[ 	]*:[^
 Contact[ 	]*:[^
 ]*&lt;([^&gt;
 ]+)&gt;" search_in="msg" check_it="true" assign_to="chk,peer_contact"/>
-      <ereg regexp="
-Via[ 	]*:[^
-]*;received=[0-9.]+" search_in="msg" check_it="true" assign_to="chk"/>
       <ereg regexp="
 Via[ 	]*:[^
 ]*;rport=[0-9]+" search_in="msg" check_it="true" assign_to="chk"/>

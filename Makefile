@@ -6,7 +6,7 @@
 .PHONY: deps all compile test test-static check eunit ct lint xref dialyzer \
         fmt fmt-check asan tsan lint-c fuzz interop interop-mix interop-ref bench-ref bench-pass \
         interop-conformance interop-esl demo-esl interop-sbc interop-mrf \
-        interop-cluster compliance \
+        interop-cluster compliance compliance-full \
         cover docs docs-check clean advisories-test \
         demo demo-compile demo-shell demo-down demo-cluster demo-cluster-smoke \
         demo-cluster-shell demo-cluster-down
@@ -19,7 +19,10 @@ deps:
 compile:
 	rebar3 compile
 
+# The surefire reports (_build/test/logs/eunit, read by `make compliance')
+# are dropped first, so a module that no longer runs leaves no result.
 eunit:
+	rm -rf _build/test/logs/eunit
 	rebar3 eunit
 
 # rebar3 copies each app's test dir into _build and never prunes it, so a
@@ -131,18 +134,30 @@ docs-check:
 	scripts/docs_check.escript
 
 # Each app's compliance matrix from its requirements, the `%% req:'
-# annotations and the latest CT results. GATE=demo fails on any hard
-# requirement of the demo tier that is not passing.
+# annotations, the newest CT run and the EUnit reports. GATE=demo fails on
+# any hard requirement of the demo tier that is not passing. CHECK=1 first
+# reads the committed matrix and fails on any row it shows as pass that
+# this run does not. Every app runs; the target fails if one of them did.
 COMPLIANCE_APPS = chappe_sip chappe_mix chappe_rtpengine chappe_esl chappe_mrf
 
 compliance:
 	rebar3 as test compile
-	@set -e; for app in $(COMPLIANCE_APPS); do \
+	@rc=0; for app in $(COMPLIANCE_APPS); do \
 	    echo "$$app:"; \
 	    scripts/compliance.escript apps/$$app/docs/compliance/requirements.tsv \
 	        apps/$$app/test _build/test/logs apps/$$app/docs/compliance.md \
-	        $(if $(GATE),--gate $(GATE)); \
-	done
+	        $$(ef=apps/$$app/interop/conformance/expected-fail; \
+	           test -f $$ef && echo --expected-fail $$ef) \
+	        $(if $(CHECK),--check-against apps/$$app/docs/compliance.md) \
+	        $(if $(GATE),--gate $(GATE)) || rc=1; \
+	done; exit $$rc
+
+# The matrices from the inputs CI's conformance job uses: EUnit, then one
+# CT run with the conformance lab (docker).
+compliance-full:
+	$(MAKE) eunit
+	CONFORMANCE=1 $(MAKE) ct
+	$(MAKE) compliance $(if $(GATE),GATE=$(GATE)) $(if $(CHECK),CHECK=$(CHECK))
 
 # chappe_sip against SIPp and pjsua in docker, one flow per RFC clause,
 # with a dnsmasq server for the RFC 3263 cases
@@ -229,7 +244,7 @@ demo-cluster-down:
 MIN_COVERAGE ?= 0
 
 cover:
-	rm -rf _build/test/cover _build/test/lib/chappe_*/test
+	rm -rf _build/test/cover _build/test/lib/chappe_*/test _build/test/logs/eunit
 	rebar3 eunit --cover
 	rebar3 ct --cover
 	rebar3 cover --verbose --min_coverage=$(MIN_COVERAGE)
