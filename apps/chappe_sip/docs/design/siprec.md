@@ -180,13 +180,15 @@ offered one (RFC 3264 6):
   profile and PCMU or PCMA. A new key goes to the receiver
   (`chappe_audio_rtp:rekey/2`), a moved source re-latches it: it learns
   again from the new address on any port, as at the start, and drops a
-  late packet from the old source (`chappe_audio_rtp:remote/2`, RFC 3264
-  8.3.1),
+  late packet from the old source for 1 s (`chappe_audio_rtp:remote/2`,
+  RFC 3264 8.3.1), so a client that keeps sending from there is heard
+  again; an old-style hold (`c=0.0.0.0`, 8.4) keeps the source,
   the answer lists the offer's G.711 formats in its order (6.1), and the
-  direction follows the offer (`a=inactive` for an inactive offer,
-  `a=recvonly` for a sendonly one);
-- an offer at port 0, with no PCMU or PCMA left, or with SDES keys on a
-  request that did not come over TLS or WSS, stops the receiver and
+  direction follows the offer (`a=inactive` for an inactive or recvonly
+  offer, `a=recvonly` for a sendonly one);
+- an offer at port 0, with no PCMU or PCMA left, with SDES keys on a
+  request that did not come over TLS or WSS, or an SDES stream with no
+  `a=crypto` line the server takes (RFC 4568 5.1.2), stops the receiver and
   answers port 0 (RFC 3264 8.2, 8.3.2, RFC 4568 8.3); another media type
   or profile stops it and takes the stream as a new one (8.3.1, 8.3.3);
 - the key rule is judged on the transport of the request that carries

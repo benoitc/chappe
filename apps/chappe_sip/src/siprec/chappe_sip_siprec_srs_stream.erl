@@ -20,7 +20,10 @@
 -define(LAWS, [<<"0">>, <<"8">>]).
 
 %% the stream at index I of an offer: a receiver, or port 0 past
-%% max_streams or when it cannot be taken
+%% max_streams or when it cannot be taken; an offer on hold (c=0.0.0.0)
+%% learns its source
+take(I, Sec, {hold, Dir}, Ctx) ->
+    take(I, Sec, {undefined, Dir}, Ctx);
 take(I, Sec, {Remote, Dir}, #{opts := Opts} = Ctx) ->
     #{senders := Senders, call_ref := CallRef, sink := Sink, ip := Ip} = Ctx,
     stream(
@@ -35,7 +38,8 @@ take(I, Sec, {Remote, Dir}, #{opts := Opts} = Ctx) ->
 
 %% what a media section of an offer asks of its answer: where its stream
 %% comes from (its c= address, else the session's, and its port;
-%% undefined when that is no IP literal or the app said to learn it) and
+%% undefined when that is no IP literal or the app said to learn it, hold
+%% for c=0.0.0.0, RFC 3264 8.4) and
 %% the direction to answer it with (RFC 3264 6.1: the SRS only receives,
 %% so recvonly, or inactive when the offer does not send)
 offer(Sess, Sec, Opts) ->
@@ -73,10 +77,12 @@ retake([], _Taken, _Media, _Ctx) ->
 
 %% A stream with a receiver follows its re-offer (RFC 3264 8.2, 8.3):
 %% port 0 stops it; the same audio profile keeps it, re-latched to a moved
-%% source (8.3.1), with the offer's G.711 formats, key and direction,
-%% unless no format it takes is left (8.3.2: port 0, stopped) or the
-%% offer's keys came over a transport that is not secure (RFC 4568 8.3,
-%% judged on the request of this offer); another media type or profile
+%% source (8.3.1; an old-style hold, c=0.0.0.0, keeps its source, 8.4),
+%% with the offer's G.711 formats, key and direction, unless no format it
+%% takes is left (8.3.2: port 0, stopped), the offer's keys came over a
+%% transport that is not secure (RFC 4568 8.3, judged on the request of
+%% this offer) or an SDES stream has no key line it takes (RFC 4568 5.1.2,
+%% 7.1.2: port 0, stopped); another media type or profile
 %% (8.3.1, 8.3.3) stops it and takes the stream as a new one, under the
 %% same rules (keys included).
 kept({_, undefined}, I, Sec, Offer, _Media, Ctx) ->
@@ -96,7 +102,7 @@ kept(
             case {laws(Fmts), sdes(Proto) andalso keys_refused(Opts)} of
                 {[], _} -> stopped(Pid, M);
                 {_, true} -> stopped(Pid, M);
-                {Laws, false} -> followed(T, Laws, Offer, Media)
+                {Laws, false} -> followed(T, M, Laws, Offer, Media)
             end;
         _ ->
             _ = chappe_audio_rtp:stop(Pid),
@@ -107,12 +113,16 @@ stopped(Pid, M) ->
     _ = chappe_audio_rtp:stop(Pid),
     {rejected(M), undefined}.
 
-followed(T, Laws, {Remote, Dir}, Media) ->
-    {Lines, S} = rekey_one(T, Media),
-    {
-        chappe_sip_sdp:set_direction(formats(Lines, Laws), Dir),
-        relatched(S, Remote)
-    }.
+followed({_, #{pid := Pid}} = T, M, Laws, {Remote, Dir}, Media) ->
+    case rekey_one(T, Media) of
+        {ok, {Lines, S}} ->
+            {
+                chappe_sip_sdp:set_direction(formats(Lines, Laws), Dir),
+                relatched(S, Remote)
+            };
+        refused ->
+            stopped(Pid, M)
+    end.
 
 %% the stream's answer lines with the formats of the re-offer, in its
 %% order (RFC 3264 6.1), the rest of the m-line and the other lines kept
@@ -143,7 +153,10 @@ sdes(_) -> false.
 keys_refused(#{keys_over_tls := true, tls_in := false}) -> true;
 keys_refused(_Opts) -> false.
 
-%% the receiver takes the source the re-offer gives, when it moved
+%% the receiver takes the source the re-offer gives, when it moved; a
+%% hold keeps the source it has
+relatched(S, hold) ->
+    S;
 relatched(#{remote := Remote} = S, Remote) ->
     S;
 relatched(#{pid := Pid} = S, Remote) ->
@@ -152,7 +165,7 @@ relatched(#{pid := Pid} = S, Remote) ->
 
 %% RFC 4568 7.1.4: a re-offer may change a stream's key; its receiver
 %% takes the new one, and the answer echoes the new line's tag. A stream
-%% whose re-offer has no line it can take keeps its key.
+%% whose re-offer has no line it can take is refused (5.1.2, 7.1.2).
 rekey_one({Lines, #{index := I, srtp := Hash, pid := Pid} = S} = T, Media) when
     is_binary(Hash), I =< length(Media)
 ->
@@ -161,21 +174,21 @@ rekey_one({Lines, #{index := I, srtp := Hash, pid := Pid} = S} = T, Media) when
         {ok, C} ->
             case key_hash(C) of
                 Hash ->
-                    T;
+                    {ok, T};
                 New ->
                     case srtp_ctx(C) of
                         {ok, Ctx} ->
                             ok = chappe_audio_rtp:rekey(Pid, Ctx),
-                            {crypto_line(Lines, C), S#{srtp := New}};
+                            {ok, {crypto_line(Lines, C), S#{srtp := New}}};
                         error ->
-                            T
+                            refused
                     end
             end;
         {error, _} ->
-            T
+            refused
     end;
 rekey_one(T, _Media) ->
-    T.
+    {ok, T}.
 
 crypto_line(Lines, C) ->
     [
@@ -186,9 +199,10 @@ crypto_line(Lines, C) ->
      || L <- Lines
     ].
 
-%% what tells a key from another without keeping it
-key_hash(#{key := K, salt := S}) ->
-    crypto:hash(sha256, [K, S]).
+%% what tells a key line from another without keeping its key: a new tag
+%% with the same key is answered with that tag
+key_hash(#{tag := Tag, key := K, salt := S}) ->
+    crypto:hash(sha256, [Tag, 0, K, S]).
 
 srtp_ctx(C) ->
     case
@@ -202,8 +216,8 @@ srtp_ctx(C) ->
 
 remote(Addr, Port) ->
     case chappe_sip_sdp:address(Addr) of
-        {ok, {0, 0, 0, 0}} -> undefined;
-        {ok, {0, 0, 0, 0, 0, 0, 0, 0}} -> undefined;
+        {ok, {0, 0, 0, 0}} -> hold;
+        {ok, {0, 0, 0, 0, 0, 0, 0, 0}} -> hold;
         {ok, Ip} -> {Ip, Port};
         error -> undefined
     end.

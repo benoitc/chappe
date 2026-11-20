@@ -14,7 +14,10 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
   offer gets its answer instead of an empty 200, and a stream the client
   removes stops. A stream also follows the client when it moves to another
   address or port, switches between plain RTP and SRTP, or changes its
-  G.711 codecs. The metadata of a re-offer the server refuses is no longer
+  G.711 codecs. A re-offer that holds the old way (address 0.0.0.0) keeps
+  the stream's sender instead of taking audio from anyone, and an SRTP
+  re-offer with no key the server can use now refuses that stream instead
+  of keeping the old key. The metadata of a re-offer the server refuses is no longer
   reported to the app. SRTP keys sent to a `sips:` address over plain UDP
   are now refused like any other keys sent without TLS, and keys in a
   re-offer are judged on the transport that re-offer came over, not the
@@ -26,7 +29,8 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 - chappe_audio: an RTP receiver can be pointed at a new sender address,
   for a sender that moves mid-stream. It learns the sender again from the
   new address, behind a NAT too, and ignores late packets from where the
-  sender was before.
+  sender was before for one second. A sender that keeps sending from its
+  old place, its SDP port alone changed, is heard again after that.
 - chappe_sip: a NOTIFY from another fork of a subscription could be
   answered 500 instead of 200 when the stack was busy, because the request
   ended before the new subscription had answered it. The new subscription
