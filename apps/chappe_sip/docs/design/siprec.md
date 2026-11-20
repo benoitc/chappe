@@ -135,8 +135,13 @@ and close their store recordings. So the handler calls `serve/3` and then
 5. Each m-line, up to `max_streams` (default 4), gets a receiver through
    `chappe_audio:rtp_receiver/1`. The rest, and any stream it cannot take,
    are answered with port 0 (RFC 3264 6).
-6. The 200 has every taken stream `a=recvonly`, its `a=label`, PCMU (0)
-   and PCMA (8) only, and `+sip.srs` in the Contact.
+6. The 200 has every taken stream `a=recvonly` (`a=inactive` when the
+   offer does not send, RFC 3264 6.1), its `a=label`, PCMU (0) and PCMA
+   (8) only, and `+sip.srs` in the Contact.
+
+Steps 5 and 6, stream by stream, are `chappe_sip_siprec_srs_stream`:
+`offer/3` reads what a media section asks, `take/4` starts its receiver
+or answers port 0, and `retake/4` answers a re-offer.
 
 With no stream left the INVITE gets 488 and a Warning that says why:
 
@@ -148,7 +153,7 @@ With no stream left the INVITE gets 488 and a Warning that says why:
 
 ### What each receiver gets
 
-`chappe_sip_siprec_srs` builds the receiver's options (`rtp_opts()` in
+`chappe_sip_siprec_srs_stream` builds the receiver's options (`rtp_opts()` in
 `chappe_audio`):
 
 - `owner => self()`, the handler process;
@@ -167,10 +172,37 @@ With no stream left the INVITE gets 488 and a Warning that says why:
 
 ### run/1
 
-`run/1` answers each re-INVITE and UPDATE with the streams as they are. A
-re-INVITE that changes a stream's key hands the receiver the new one
-(`chappe_audio_rtp:rekey/2`). The notify process (`notify`, else the sink
-pid) gets:
+`run/1` answers each re-INVITE, and each UPDATE with an SDP offer (in
+its 200, RFC 3311 5.2), through one re-offer path, with one m-line per
+offered one (RFC 3264 6):
+
+- a stream with a receiver keeps it while the offer keeps its audio
+  profile and PCMU or PCMA. A new key goes to the receiver
+  (`chappe_audio_rtp:rekey/2`), a moved source re-latches it: it learns
+  again from the new address on any port, as at the start, and drops a
+  late packet from the old source for 1 s (`chappe_audio_rtp:remote/2`,
+  RFC 3264 8.3.1), so a client that keeps sending from there is heard
+  again; an old-style hold (`c=0.0.0.0`, 8.4) keeps the source,
+  the answer lists the offer's G.711 formats in its order (6.1), and the
+  direction follows the offer (`a=inactive` for an inactive or recvonly
+  offer, `a=recvonly` for a sendonly one);
+- an offer at port 0, with no PCMU or PCMA left, with SDES keys on a
+  request that did not come over TLS or WSS, or an SDES stream with no
+  `a=crypto` line the server takes (RFC 4568 5.1.2), stops the receiver and
+  answers port 0 (RFC 3264 8.2, 8.3.2, RFC 4568 8.3); another media type
+  or profile stops it and takes the stream as a new one (8.3.1, 8.3.3);
+- the key rule is judged on the transport of the request that carries
+  each offer, not on the INVITE's;
+- a stream the offer adds, or one refused before, is taken as in the
+  INVITE: a receiver, or port 0 past `max_streams`;
+- an answer that changes takes a new o= version (RFC 3264 8);
+- an offer with fewer m-lines than the session is refused 488, and the
+  session stays as it was;
+- a re-INVITE with no offer gets the current SDP, and an UPDATE with the
+  metadata alone an empty 200;
+- the metadata of a request is told only once it is accepted.
+
+The notify process (`notify`, else the sink pid) gets:
 
 - `{chappe_sip_siprec_srs, Dialog, {metadata, Doc}}` for each metadata
   update (RFC 7866 9.2);
@@ -213,7 +245,8 @@ a TLS leg is recorded only to a `sips:` or `transport=tls` SRS (RFC 7866
 - Client: `chappe_sip_siprec`, `chappe_sip_siprec_sup`,
   `chappe_sip_siprec_tap`, `chappe_sip_siprec_body`,
   `chappe_sip_siprec_meta`, `chappe_sip_siprec_peer`, in `src/siprec/`.
-- Server: `chappe_sip_siprec_srs` (`src/siprec/`), `chappe_sip_sdes` and
+- Server: `chappe_sip_siprec_srs` and `chappe_sip_siprec_srs_stream`
+  (`src/siprec/`), `chappe_sip_sdes` and
   `chappe_sip_multipart` (`src/sip/`); the receivers in chappe_audio:
   `chappe_audio_rtp`, `chappe_audio_srtp`, `chappe_audio_pcm` (see the
   [chappe_audio design](../../../chappe_audio/docs/design/overview.md#recorded-rtp)).

@@ -7,6 +7,30 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 
 ## Unreleased
 
+- chappe_sip: the SIPREC recording server now answers re-offers as RFC
+  3264 asks. A paused recording (an inactive re-INVITE) is answered
+  inactive instead of recvonly, a re-INVITE that adds a stream gets an
+  answer line for it and starts recording it, an UPDATE that carries an SDP
+  offer gets its answer instead of an empty 200, and a stream the client
+  removes stops. A stream also follows the client when it moves to another
+  address or port, switches between plain RTP and SRTP, or changes its
+  G.711 codecs. A re-offer that holds the old way (address 0.0.0.0) keeps
+  the stream's sender instead of taking audio from anyone, and an SRTP
+  re-offer with no key the server can use now refuses that stream instead
+  of keeping the old key. The metadata of a re-offer the server refuses is no longer
+  reported to the app. SRTP keys sent to a `sips:` address over plain UDP
+  are now refused like any other keys sent without TLS, and keys in a
+  re-offer are judged on the transport that re-offer came over, not the
+  one the session started on.
+- chappe_sip: requests that arrive over WebSocket now say whether they came
+  over WS or WSS, as requests over UDP, TCP and TLS already did. A
+  recording server takes SRTP keys over WSS, call records name the WS
+  transport, and registrations made over WebSocket keep it.
+- chappe_audio: an RTP receiver can be pointed at a new sender address,
+  for a sender that moves mid-stream. It learns the sender again from the
+  new address, behind a NAT too, and ignores late packets from where the
+  sender was before for one second. A sender that keeps sending from its
+  old place, its SDP port alone changed, is heard again after that.
 - chappe_audio: the RTP receiver can now take part in RTCP. Turned on, it
   reads the sender's reports, keeps reception statistics per source and
   sends receiver reports back on the RFC 3550 schedule, either on the

@@ -165,7 +165,8 @@ transport(#{transport := T}) when is_binary(T) ->
         <<"wss">> -> ws;
         _ -> default
     end;
-%% a WebSocket request carries its flow, an integer, and no transport
+%% a WebSocket request carries its flow, an integer, with its transport
+%% (ws or wss, both the ws action); a meta without the transport is one too
 transport(#{flow := F}) when is_integer(F) ->
     ws;
 transport(_Meta) ->

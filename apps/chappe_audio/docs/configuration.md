@@ -109,6 +109,12 @@ and `sources`, one map per source: `ssrc`, `cname`, `received`, `lost`,
 `highest`, `jitter`. With a new key on a re-INVITE,
 `chappe_audio_rtp:rekey/3` takes the sender's key and the receiver's own.
 
+One timing is fixed:
+
+| What | Value | What it does |
+|---|---|---|
+| Move grace | 1 s | After `chappe_audio_rtp:remote/2` (the sender moved), packets from the source latched before are dropped for this long. Past it, with no new source latched, that source may latch again when its address is the new remote address (any port), so a sender whose SDP port alone changed is heard again. |
+
 ## Storage options
 
 `storage` env, or `chappe_audio_store:configure/1` (per node).

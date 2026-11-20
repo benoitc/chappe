@@ -79,6 +79,8 @@ the SIP and asks chappe_audio for one receiver per recorded stream with
 - **The source.** The receiver latches to the first source at the
   `remote` address it was given (any port), or, with `remote =>
   undefined`, to the first source at all, and drops every other source.
+  `chappe_audio_rtp:remote/2` (the sender moved) makes it learn again from
+  the new address, the old source dropped for 1 s only.
 - **SRTP.** Given `srtp => Ctx` (`chappe_audio_srtp:new/1`), it takes SRTP
   only: each packet is authenticated, checked against the replay window
   and decrypted before it is decoded, and it latches only once a packet

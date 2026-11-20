@@ -39,6 +39,16 @@
          dialog_event_without_response/1]).
 -export([server_rtp_ports/1, server_rtp_ports_busy/1, server_refuses_no_stream/1]).
 -export([server_refuses_without_audio/1]).
+-export([server_reoffer_direction/1, server_reoffer_adds_stream/1,
+         server_update_offer/1, server_sips_over_udp/1]).
+-export([server_keys_over_wss/1, server_answers_inactive_offer/1,
+         server_refused_reoffer_keeps_metadata/1, server_reoffer_moves_source/1,
+         server_reoffer_drops_g711/1, server_reoffer_changes_profile/1,
+         server_udp_rekey/1, server_reoffer_follows_formats/1,
+         server_reoffer_moves_behind_nat/1, server_reoffer_port_only/1,
+         server_reoffer_old_hold/1, server_reoffer_drops_key/1,
+         server_reoffer_same_key_new_suite/1,
+         server_recvonly_offer/1]).
 
 all() ->
     [invite_is_a_recording_session, chappe_as_recording_server,
@@ -60,7 +70,16 @@ all() ->
      tls_call_needs_tls_srs, too_many_at_once, srs_reinvite_more_streams,
      dialog_event_without_response, server_rtp_ports,
      server_rtp_ports_busy, server_refuses_no_stream,
-     server_refuses_without_audio].
+     server_refuses_without_audio, server_reoffer_direction,
+     server_reoffer_adds_stream, server_update_offer, server_sips_over_udp,
+     server_keys_over_wss, server_answers_inactive_offer,
+     server_refused_reoffer_keeps_metadata, server_reoffer_moves_source,
+     server_reoffer_drops_g711, server_reoffer_changes_profile,
+     server_udp_rekey, server_reoffer_follows_formats,
+     server_reoffer_moves_behind_nat, server_reoffer_port_only,
+     server_reoffer_old_hold, server_reoffer_drops_key,
+     server_reoffer_same_key_new_suite,
+     server_recvonly_offer].
 
 -define(UA, chappe_sip_test_ua).
 -define(M, chappe_sip_siprec_meta).
@@ -1349,6 +1368,652 @@ tls_call_needs_tls_srs(Config) ->
         ok = chappe_sip_siprec:stop(Rec2)
     end).
 
+%% ---- re-offers at the recording server ----
+
+%% RFC 3264 6.1: an inactive re-offer (the client paused) is answered
+%% inactive, and a later sendonly one recvonly again; each answer that
+%% changes takes a new o= version (RFC 3264 8).
+%% req: R3264-6.1-1
+server_reoffer_direction(_Config) ->
+    #{ep := EP} = call(),
+    {R, Peer} = wire_rs_session(EP, <<"sip:sink@127.0.0.1">>, one_stream(<<"1">>, <<"sendonly">>)),
+    ?assertEqual(200, ?UA:status(R)),
+    #{streams := [#{port := P1}]} = got(srs_served),
+    Peer ! {reinvite, one_stream(<<"2">>, <<"inactive">>)},
+    R2 = got(wire_reinvite),
+    {_, [M2]} = chappe_sip_sdp:sections(?UA:body(R2)),
+    ?assert(lists:member(<<"a=inactive">>, M2)),
+    ?assertNot(lists:member(<<"a=recvonly">>, M2)),
+    ?assertMatch({_, _}, binary:match(hd(M2), integer_to_binary(P1))),
+    ?assertMatch({_, _}, binary:match(?UA:body(R2), <<"o=chappe 1 2 ">>)),
+    Peer ! {reinvite, one_stream(<<"3">>, <<"sendonly">>)},
+    R3 = got(wire_reinvite),
+    {_, [M3]} = chappe_sip_sdp:sections(?UA:body(R3)),
+    ?assert(lists:member(<<"a=recvonly">>, M3)),
+    ?assertNot(lists:member(<<"a=inactive">>, M3)),
+    ?assertMatch({_, _}, binary:match(?UA:body(R3), <<"o=chappe 1 3 ">>)).
+
+%% RFC 3264 6: a re-offer that adds a stream gets one answer m-line per
+%% offered one. The new stream gets a receiver of its own, which takes its
+%% audio; past max_streams it is refused with port 0.
+%% req: R3264-6-1
+server_reoffer_adds_stream(_Config) ->
+    #{ep := EP} = call(),
+    {ok, Src} = gen_udp:open(0, [binary, {ip, {127, 0, 0, 1}}]),
+    SP = integer_to_binary(?UA:lport(Src)),
+    Head = fun(V) ->
+               <<"v=0\r\no=src 1 ", V/binary, " IN IP4 127.0.0.1\r\ns=-\r\n"
+                 "c=IN IP4 127.0.0.1\r\nt=0 0\r\n">>
+           end,
+    One = <<"m=audio 30000 RTP/AVP 0\r\na=sendonly\r\na=label:1\r\n">>,
+    Two = <<One/binary, "m=audio ", SP/binary, " RTP/AVP 0\r\na=sendonly\r\na=label:2\r\n">>,
+    Three = <<Two/binary, "m=audio 30004 RTP/AVP 0\r\na=sendonly\r\na=label:3\r\n">>,
+    persistent_term:put(siprec_test_srs_opts, #{max_streams => 2}),
+    {R, Peer} = wire_rs_session(EP, <<"sip:ports@127.0.0.1">>,
+                                <<(Head(<<"1">>))/binary, One/binary>>),
+    ?assertEqual(200, ?UA:status(R)),
+    #{streams := [#{pid := S1, port := P1}]} = got(srs_served),
+    Peer ! {reinvite, <<(Head(<<"2">>))/binary, Two/binary>>},
+    R2 = got(wire_reinvite),
+    {_, [A1, A2]} = chappe_sip_sdp:sections(?UA:body(R2)),
+    ?assertMatch({_, _}, binary:match(hd(A1), <<"m=audio ", (integer_to_binary(P1))/binary>>)),
+    [_, P2b | _] = binary:split(hd(A2), <<" ">>, [global]),
+    P2 = binary_to_integer(P2b),
+    ?assertNotEqual(0, P2),
+    ?assertNotEqual(P1, P2),
+    ?assert(lists:member(<<"a=recvonly">>, A2)),
+    ?assertEqual(<<"2">>, label(A2)),
+    ok = gen_udp:send(Src, {127, 0, 0, 1}, P2, rtp(0, <<0:1280>>)),
+    S2 = receive
+             {chappe_sip_siprec_rtp, S, {audio, _}} -> S
+         after 2000 -> ct:fail(no_audio_on_new_stream)
+         end,
+    ?assertNotEqual(S1, S2),
+    Peer ! {reinvite, <<(Head(<<"3">>))/binary, Three/binary>>},
+    R3 = got(wire_reinvite),
+    {_, [B1, B2, B3]} = chappe_sip_sdp:sections(?UA:body(R3)),
+    ?assertEqual(hd(A1), hd(B1)),
+    ?assertEqual(hd(A2), hd(B2)),
+    ?assertMatch(<<"m=audio 0 ", _/binary>>, hd(B3)),
+    %% RFC 3264 8.2: the client removes the second stream (port 0); its
+    %% receiver stops and the answer keeps the m-line at port 0
+    Removed = binary:replace(Three, <<"m=audio ", SP/binary>>, <<"m=audio 0">>),
+    Peer ! {reinvite, <<(Head(<<"4">>))/binary, Removed/binary>>},
+    R4 = got(wire_reinvite),
+    {_, [C1, C2, C3]} = chappe_sip_sdp:sections(?UA:body(R4)),
+    ?assertEqual(hd(A1), hd(C1)),
+    ?assertMatch(<<"m=audio 0 ", _/binary>>, hd(C2)),
+    ?assertMatch(<<"m=audio 0 ", _/binary>>, hd(C3)),
+    ?assertMatch({_, _}, binary:match(?UA:body(R4), <<"o=chappe 1 4 ">>)),
+    ?assertNot(is_process_alive(S2)),
+    gen_udp:close(Src).
+
+%% RFC 3311 5.2: an UPDATE carrying an offer is answered in its 2xx, with
+%% the stream's direction from the offer; an UPDATE with the metadata
+%% alone (RFC 7866 9.1) keeps an empty 200.
+%% req: R3311-5.2-2
+server_update_offer(_Config) ->
+    #{ep := EP} = call(),
+    {R, Peer} = wire_rs_session(EP, <<"sip:sink@127.0.0.1">>, one_stream(<<"1">>, <<"sendonly">>)),
+    ?assertEqual(200, ?UA:status(R)),
+    #{streams := [#{port := P1}]} = got(srs_served),
+    Peer ! {update, one_stream(<<"2">>, <<"inactive">>)},
+    U1 = got(wire_update),
+    ?assertEqual(200, ?UA:status(U1)),
+    ?assertEqual(<<"application/sdp">>, ?UA:hdr(U1, <<"content-type">>)),
+    {_, [M1]} = chappe_sip_sdp:sections(?UA:body(U1)),
+    ?assertMatch({_, _}, binary:match(hd(M1), integer_to_binary(P1))),
+    ?assert(lists:member(<<"a=inactive">>, M1)),
+    ?assertMatch({_, _}, binary:match(?UA:body(U1), <<"o=chappe 1 2 ">>)),
+    Peer ! {update, metadata},
+    U2 = got(wire_update),
+    ?assertEqual(200, ?UA:status(U2)),
+    ?assertEqual(<<>>, ?UA:body(U2)).
+
+%% RFC 4568 8.3: a sips: Request-URI reached over UDP does not make the
+%% SDP encrypted, so SDES keys offered that way are refused (port 0, then
+%% 488 with a 302 Warning) as on any other transport that is not TLS.
+%% req: R4568-8.3-1
+server_sips_over_udp(_Config) ->
+    #{ep := EP} = call(),
+    K = ?SRTP:inline(?SRTP:master()),
+    Sdp = <<"v=0\r\no=src 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\n"
+            "m=audio 30000 RTP/SAVP 0\r\n"
+            "a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:", K/binary, "\r\n"
+            "a=sendonly\r\na=label:1\r\n">>,
+    R = wire_rs(EP, <<"sips:sink@127.0.0.1">>, Sdp),
+    ?assertMatch(<<"SIP/2.0/UDP ", _/binary>>, got(srs_transport)),
+    ?assertEqual(488, ?UA:status(R)),
+    ?assertMatch(<<"302 ", _/binary>>, ?UA:hdr(R, <<"warning">>)),
+    ?assertEqual({error, srtp}, got(srs_served)).
+
+%% RFC 4568 8.3 over WebSocket: SDES keys are taken from a recording
+%% client on a WSS flow, and refused (488, Warning 302) on a plain WS one,
+%% whatever the Request-URI says.
+%% req: R4568-8.3-1
+server_keys_over_wss(Config) ->
+    chappe_sip_tls_SUITE:with_ca(Config, "siprec_wss", fun(Dir) ->
+        {ok, _} = application:ensure_all_started(ssl),
+        EP = ?UA:pick(),
+        WP = ?UA:pick(),
+        SP = ?UA:pick(),
+        ok = chappe_sip:start(#{contact => <<"sip:127.0.0.1:", (integer_to_binary(EP))/binary>>,
+                                ws => #{port => WP},
+                                wss => #{port => SP, cert_dir => list_to_binary(Dir)}}),
+        ok = chappe_sip:handle(<<"INVITE">>, fun handler/2, #{option_tags => [<<"siprec">>]}),
+        persistent_term:put(siprec_test_opts, #{test => self(), cp => 0}),
+        K = ?SRTP:inline(?SRTP:master()),
+        Sdp = <<"v=0\r\no=src 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\n"
+                "m=audio 30000 RTP/SAVP 0\r\n"
+                "a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:", K/binary, "\r\n"
+                "a=sendonly\r\na=label:1\r\n">>,
+        Plain = ws_rs(<<"ws://127.0.0.1:", (integer_to_binary(WP))/binary, "/ws">>,
+                      <<"WS">>, <<"sip:tlskeys@127.0.0.1">>, Sdp),
+        ?assertMatch(<<"SIP/2.0 488 ", _/binary>>, Plain),
+        ?assertMatch(<<"302 ", _/binary>>, ?UA:hdr(Plain, <<"warning">>)),
+        ?assertEqual({error, srtp}, got(srs_served)),
+        Secure = ws_rs(<<"wss://127.0.0.1:", (integer_to_binary(SP))/binary, "/ws">>,
+                       <<"WSS">>, <<"sip:tlskeys@127.0.0.1">>, Sdp),
+        ?assertMatch(<<"SIP/2.0 200 ", _/binary>>, Secure),
+        ?assertMatch({_, _}, binary:match(?UA:body(Secure), <<"a=crypto:1 AES_CM_128_HMAC_SHA1_80">>)),
+        #{streams := [#{profile := <<"RTP/SAVP">>}]} = got(srs_served)
+    end).
+
+%% an RS INVITE of Sdp to Ruri from a WebSocket client at Url; its final
+%% response
+ws_rs(Url, Via, Ruri, Sdp) ->
+    {_Inv, R} = ws_rs_invite(Url, Via, Ruri, Sdp),
+    R.
+
+%% the same, {INVITE sent, final response}
+ws_rs_invite(Url, Via, Ruri, Sdp) ->
+    {CT, Body} = rs_body(Sdp),
+    {ok, C} = ws:connect(Url, #{handler => chappe_sip_ws_test_client,
+                                handler_opts => #{notify => self()},
+                                subprotocols => [<<"sip">>],
+                                ssl_opts => [{verify, verify_none}]}),
+    Inv = <<"INVITE ", Ruri/binary, " SIP/2.0\r\n"
+            "Via: SIP/2.0/", Via/binary, " a.invalid;branch=z9hG4bK", (?UA:tag())/binary, "\r\n"
+            "Max-Forwards: 70\r\n"
+            "From: <sip:src@127.0.0.1>;tag=", (?UA:tag())/binary, "\r\n"
+            "To: <sip:srs@127.0.0.1>\r\n"
+            "Contact: <sip:src@a.invalid;transport=ws>;+sip.src\r\n"
+            "Call-ID: ", (?UA:callid())/binary, "\r\nCSeq: 1 INVITE\r\n"
+            "Require: siprec\r\nContent-Type: ", CT/binary, "\r\n"
+            "Content-Length: ", (integer_to_binary(byte_size(Body)))/binary, "\r\n\r\n",
+            Body/binary>>,
+    ok = ws:send(C, {text, Inv}),
+    {Inv, ws_final()}.
+
+%% RFC 4568 8.3: the key rule is judged on the transport of the request
+%% that carries each offer. A session set up over TLS, re-INVITEd with a
+%% new key over UDP, gets that stream refused (port 0) and keeps its plain
+%% stream; the receiver of the refused one stops.
+%% req: R4568-8.3-1
+server_udp_rekey(Config) ->
+    chappe_sip_tls_SUITE:with_ca(Config, "rk", fun(Dir) ->
+        {ok, _} = application:ensure_all_started(ssl),
+        TP = chappe_sip_tls_SUITE:start_tls(Dir, #{}),
+        EP = chappe_sip_tls_SUITE:engine_port(),
+        ok = chappe_sip:handle(<<"INVITE">>, fun handler/2, #{option_tags => [<<"siprec">>]}),
+        persistent_term:put(siprec_test_opts, #{test => self(), cp => 0}),
+        Sdp = fun(V, Master) ->
+                  <<"v=0\r\no=src 1 ", V/binary, " IN IP4 127.0.0.1\r\ns=-\r\n"
+                    "c=IN IP4 127.0.0.1\r\nt=0 0\r\n"
+                    "m=audio 30000 RTP/AVP 0\r\na=sendonly\r\na=label:1\r\n"
+                    "m=audio 30002 RTP/SAVP 0\r\n",
+                    (crypto_line(<<"1 AES_CM_128_HMAC_SHA1_80">>, Master))/binary,
+                    "a=sendonly\r\na=label:2\r\n">>
+              end,
+        {Inv, R} = tls_rs_invite(TP, <<"sip:tlskeys@127.0.0.1">>, Sdp(<<"1">>, ?SRTP:master())),
+        ?assertMatch(<<"SIP/2.0 200 ", _/binary>>, R),
+        #{streams := [_, #{pid := S2, profile := <<"RTP/SAVP">>}]} = got(srs_served),
+        Test = self(),
+        ?UA:peer(0, fun(Sock) ->
+            D = ?UA:dialog_from_2xx(Sock, Inv, R),
+            ?UA:ack(D, EP),
+            {CT, Body} = rs_body(Sdp(<<"2">>, ?SRTP:master())),
+            {Re0, D1} = ?UA:in_dialog(D, <<"INVITE">>, [{<<"Require">>, <<"siprec">>}], Body),
+            Re = binary:replace(Re0, <<"Content-Type: application/sdp">>,
+                                <<"Content-Type: ", CT/binary>>),
+            ?UA:send(Sock, EP, Re),
+            R2 = recv_cseq(Sock, maps:get(cseq, D1)),
+            ?UA:status(R2) =:= 200 andalso ?UA:ack(D1, EP),
+            Test ! {udp_reinvite, R2},
+            timer:sleep(infinity)
+        end),
+        R2 = got(udp_reinvite),
+        ?assertEqual(200, ?UA:status(R2)),
+        {_, [M1, M2]} = chappe_sip_sdp:sections(?UA:body(R2)),
+        ?assertNotMatch(<<"m=audio 0 ", _/binary>>, hd(M1)),
+        ?assertMatch(<<"m=audio 0 RTP/SAVP", _/binary>>, hd(M2)),
+        ?assertNot(is_process_alive(S2))
+    end).
+
+%% an RS INVITE of Sdp to Ruri from a TLS client of the listener at TP:
+%% {INVITE sent, final response}
+tls_rs_invite(TP, Ruri, Sdp) ->
+    {CT, Body} = rs_body(Sdp),
+    S = case ssl:connect("127.0.0.1", TP, [{verify, verify_none}, binary,
+                                           {active, false}], 5000) of
+            {ok, Sk} -> Sk;
+            Err -> ct:fail({tls_connect, Err})
+        end,
+    {ok, {_, LP}} = ssl:sockname(S),
+    P = integer_to_binary(LP),
+    Inv = <<"INVITE ", Ruri/binary, " SIP/2.0\r\n"
+            "Via: SIP/2.0/TLS 127.0.0.1:", P/binary, ";branch=z9hG4bK", (?UA:tag())/binary, "\r\n"
+            "Max-Forwards: 70\r\n"
+            "From: <sip:src@127.0.0.1>;tag=", (?UA:tag())/binary, "\r\n"
+            "To: <sip:srs@127.0.0.1>\r\n"
+            "Contact: <sip:src@127.0.0.1:", P/binary, ";transport=tls>;+sip.src\r\n"
+            "Call-ID: ", (?UA:callid())/binary, "\r\nCSeq: 1 INVITE\r\n"
+            "Require: siprec\r\nContent-Type: ", CT/binary, "\r\n"
+            "Content-Length: ", (integer_to_binary(byte_size(Body)))/binary, "\r\n\r\n",
+            Body/binary>>,
+    ok = ssl:send(S, Inv),
+    {Inv, tls_final(S, <<>>)}.
+
+tls_final(S, Buf) ->
+    case chappe_sip_tls_SUITE:tls_next_msg(S, Buf) of
+        {<<"SIP/2.0 1", _/binary>>, Rest} -> tls_final(S, Rest);
+        {R, _Rest} -> R
+    end.
+
+%% RFC 3264 6.1, 8.3.2: the answer to a re-offer lists the G.711 formats
+%% of that offer, in its order, not those of the INVITE.
+%% req: R3264-8.3.2-1
+server_reoffer_follows_formats(_Config) ->
+    #{ep := EP} = call(),
+    Sdp = fun(V, Fmts) ->
+              <<"v=0\r\no=src 1 ", V/binary, " IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\n"
+                "t=0 0\r\nm=audio 30000 RTP/AVP ", Fmts/binary, "\r\na=sendonly\r\na=label:1\r\n">>
+          end,
+    {R, Peer} = wire_rs_session(EP, <<"sip:sink@127.0.0.1">>, Sdp(<<"1">>, <<"0">>)),
+    ?assertEqual(200, ?UA:status(R)),
+    #{streams := [#{pid := S1, port := P1}]} = got(srs_served),
+    Port = integer_to_binary(P1),
+    Peer ! {reinvite, Sdp(<<"2">>, <<"8">>)},
+    {_, [M2]} = chappe_sip_sdp:sections(?UA:body(got(wire_reinvite))),
+    ?assertEqual(<<"m=audio ", Port/binary, " RTP/AVP 8">>, hd(M2)),
+    ?assertEqual([<<"a=rtpmap:8 PCMA/8000">>], [L || <<"a=rtpmap:", _/binary>> = L <- M2]),
+    ?assertEqual(<<"1">>, label(M2)),
+    ?assert(lists:member(<<"a=recvonly">>, M2)),
+    Peer ! {reinvite, Sdp(<<"3">>, <<"8 18 0">>)},
+    {_, [M3]} = chappe_sip_sdp:sections(?UA:body(got(wire_reinvite))),
+    ?assertEqual(<<"m=audio ", Port/binary, " RTP/AVP 8 0">>, hd(M3)),
+    ?assertEqual([<<"a=rtpmap:8 PCMA/8000">>, <<"a=rtpmap:0 PCMU/8000">>],
+                 [L || <<"a=rtpmap:", _/binary>> = L <- M3]),
+    ?assert(is_process_alive(S1)).
+
+ws_final() ->
+    receive
+        {ws_in, <<"SIP/2.0 1", _/binary>>} -> ws_final();
+        {ws_in, <<"SIP/2.0 ", _/binary>> = R} -> R
+    after 6000 -> ct:fail(no_ws_final)
+    end.
+
+%% RFC 3264 6.1: an initial offer of an inactive stream is answered
+%% inactive, the receiver ready for when the client sends.
+%% req: R3264-6.1-1
+server_answers_inactive_offer(_Config) ->
+    #{ep := EP} = call(),
+    R = wire_rs(EP, <<"sip:sink@127.0.0.1">>, one_stream(<<"1">>, <<"inactive">>)),
+    ?assertEqual(200, ?UA:status(R)),
+    {_, [M]} = chappe_sip_sdp:sections(?UA:body(R)),
+    ?assertNotMatch(<<"m=audio 0 ", _/binary>>, hd(M)),
+    ?assert(lists:member(<<"a=inactive">>, M)),
+    ?assertNot(lists:member(<<"a=recvonly">>, M)),
+    #{streams := [_]} = got(srs_served).
+
+%% A re-offer the server refuses (488: fewer m-lines than the session)
+%% leaves the session as it was, and its metadata is not told; the same
+%% metadata in an accepted re-offer is.
+server_refused_reoffer_keeps_metadata(_Config) ->
+    #{ep := EP} = call(),
+    Head = <<"v=0\r\no=src 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\n">>,
+    One = <<"m=audio 30000 RTP/AVP 0\r\na=sendonly\r\na=label:1\r\n">>,
+    Two = <<One/binary, "m=audio 30002 RTP/AVP 0\r\na=sendonly\r\na=label:2\r\n">>,
+    Meta = #{streams => [#{id => <<"s1">>, label => <<"1">>}]},
+    {R, Peer} = wire_rs_session(EP, <<"sip:sink@127.0.0.1">>, <<Head/binary, Two/binary>>),
+    ?assertEqual(200, ?UA:status(R)),
+    #{dialog := D, streams := [#{pid := S1, port := P1}, #{pid := S2, port := P2}]} =
+        got(srs_served),
+    Peer ! {reinvite, <<Head/binary, One/binary>>, Meta},
+    ?assertEqual(488, ?UA:status(got(wire_reinvite))),
+    receive {chappe_sip_siprec_srs, D, {metadata, _}} -> ct:fail(refused_metadata_told)
+    after 500 -> ok
+    end,
+    %% both streams still record
+    {ok, Src} = gen_udp:open(0, [binary, {ip, {127, 0, 0, 1}}]),
+    {ok, Src2} = gen_udp:open(0, [binary, {ip, {127, 0, 0, 1}}]),
+    ok = gen_udp:send(Src, {127, 0, 0, 1}, P1, rtp(0, <<0:1280>>)),
+    ok = gen_udp:send(Src2, {127, 0, 0, 1}, P2, rtp(0, <<0:1280>>)),
+    [receive {chappe_sip_siprec_rtp, S, {audio, _}} -> ok
+     after 2000 -> ct:fail({not_recorded, S})
+     end || S <- [S1, S2]],
+    gen_udp:close(Src),
+    gen_udp:close(Src2),
+    Peer ! {reinvite, <<Head/binary, Two/binary>>, Meta},
+    ?assertEqual(200, ?UA:status(got(wire_reinvite))),
+    receive {chappe_sip_siprec_srs, D, {metadata, _}} -> ok
+    after 5000 -> ct:fail(no_metadata)
+    end.
+
+%% RFC 3264 8.3.1: a re-offer that moves a stream's source to another port
+%% re-latches its receiver: a late packet from the old source, arriving
+%% first, is dropped, the new source is taken. The SRTP context carries on
+%% across the move: a packet replayed from the new source is caught, and
+%% the old source's packets count as neither taken nor failed.
+%% req: R3264-8.3.1-1
+server_reoffer_moves_source(_Config) ->
+    #{ep := EP} = call(),
+    {ok, A} = gen_udp:open(0, [binary, {ip, {127, 0, 0, 1}}]),
+    {ok, B} = gen_udp:open(0, [binary, {ip, {127, 0, 0, 1}}]),
+    Master = ?SRTP:master(),
+    Sdp = fun(V, Sock) ->
+              <<"v=0\r\no=src 1 ", V/binary, " IN IP4 127.0.0.1\r\ns=-\r\n"
+                "c=IN IP4 127.0.0.1\r\nt=0 0\r\n"
+                "m=audio ", (integer_to_binary(?UA:lport(Sock)))/binary, " RTP/SAVP 0\r\n",
+                (crypto_line(<<"1 AES_CM_128_HMAC_SHA1_80">>, Master))/binary,
+                "a=sendonly\r\na=label:1\r\n">>
+          end,
+    {R, Peer} = wire_rs_session(EP, <<"sip:sink@127.0.0.1">>, Sdp(<<"1">>, A)),
+    ?assertEqual(200, ?UA:status(R)),
+    #{streams := [#{pid := S1, port := P1}]} = got(srs_served),
+    Send = fun(Sock, Seq) ->
+               gen_udp:send(Sock, {127, 0, 0, 1}, P1,
+                            ?SRTP:protect(rtp(0, Seq, <<0:1280>>), 0, ?SRTP:sender(Master)))
+           end,
+    ok = Send(A, 10),
+    receive {chappe_sip_siprec_rtp, S1, {audio, _}} -> ok after 2000 -> ct:fail(no_audio) end,
+    Peer ! {reinvite, Sdp(<<"2">>, B)},
+    R2 = got(wire_reinvite),
+    ?assertEqual(200, ?UA:status(R2)),
+    {_, [M2]} = chappe_sip_sdp:sections(?UA:body(R2)),
+    ?assertMatch({_, _}, binary:match(hd(M2), integer_to_binary(P1))),
+    %% a late packet from the old port comes first
+    ok = Send(A, 11),
+    receive {chappe_sip_siprec_rtp, S1, {audio, _}} -> ct:fail(old_source_heard)
+    after 300 -> ok
+    end,
+    ok = Send(B, 12),
+    receive {chappe_sip_siprec_rtp, S1, {audio, _}} -> ok
+    after 2000 -> ct:fail(new_source_not_heard)
+    end,
+    ok = Send(B, 12),
+    ok = Send(A, 13),
+    receive {chappe_sip_siprec_rtp, S1, {audio, _}} -> ct:fail(heard_again)
+    after 300 -> ok
+    end,
+    ?assertEqual(#{packets => 2, failed => 0, replayed => 1}, chappe_audio_rtp:stats(S1)),
+    gen_udp:close(A),
+    gen_udp:close(B).
+
+%% A client behind a NAT that moves: the re-offer names port X, but its
+%% packets come from port Y of the same address, as at the start of the
+%% session; the receiver learns Y again from the new address and takes
+%% them, while a late packet of the old source is still dropped.
+%% req: R3264-8.3.1-1
+server_reoffer_moves_behind_nat(_Config) ->
+    #{ep := EP} = call(),
+    {ok, A} = gen_udp:open(0, [binary, {ip, {127, 0, 0, 1}}]),
+    {ok, X} = gen_udp:open(0, [binary, {ip, {127, 0, 0, 1}}]),
+    {ok, Y} = gen_udp:open(0, [binary, {ip, {127, 0, 0, 1}}]),
+    Master = ?SRTP:master(),
+    Sdp = fun(V, Sock) ->
+              <<"v=0\r\no=src 1 ", V/binary, " IN IP4 127.0.0.1\r\ns=-\r\n"
+                "c=IN IP4 127.0.0.1\r\nt=0 0\r\n"
+                "m=audio ", (integer_to_binary(?UA:lport(Sock)))/binary, " RTP/SAVP 0\r\n",
+                (crypto_line(<<"1 AES_CM_128_HMAC_SHA1_80">>, Master))/binary,
+                "a=sendonly\r\na=label:1\r\n">>
+          end,
+    {R, Peer} = wire_rs_session(EP, <<"sip:sink@127.0.0.1">>, Sdp(<<"1">>, A)),
+    ?assertEqual(200, ?UA:status(R)),
+    #{streams := [#{pid := S1, port := P1}]} = got(srs_served),
+    Send = fun(Sock, Seq) ->
+               gen_udp:send(Sock, {127, 0, 0, 1}, P1,
+                            ?SRTP:protect(rtp(0, Seq, <<0:1280>>), 0, ?SRTP:sender(Master)))
+           end,
+    ok = Send(A, 10),
+    receive {chappe_sip_siprec_rtp, S1, {audio, _}} -> ok after 2000 -> ct:fail(no_audio) end,
+    %% the re-offer names X; the client's NAT sends from Y
+    Peer ! {reinvite, Sdp(<<"2">>, X)},
+    ?assertEqual(200, ?UA:status(got(wire_reinvite))),
+    ok = Send(A, 11),
+    receive {chappe_sip_siprec_rtp, S1, {audio, _}} -> ct:fail(old_source_heard)
+    after 300 -> ok
+    end,
+    ok = Send(Y, 12),
+    receive {chappe_sip_siprec_rtp, S1, {audio, _}} -> ok
+    after 2000 -> ct:fail(nat_source_not_heard)
+    end,
+    ok = Send(Y, 12),
+    ok = Send(A, 13),
+    receive {chappe_sip_siprec_rtp, S1, {audio, _}} -> ct:fail(heard_again)
+    after 300 -> ok
+    end,
+    ?assertEqual(#{packets => 2, failed => 0, replayed => 1}, chappe_audio_rtp:stats(S1)),
+    [gen_udp:close(S) || S <- [A, X, Y]].
+
+%% RFC 3264 8.3.2: a re-offer that leaves a stream no format the server
+%% takes (no PCMU or PCMA) answers that m-line port 0 and stops its
+%% receiver.
+%% req: R3264-8.3.2-1
+server_reoffer_drops_g711(_Config) ->
+    #{ep := EP} = call(),
+    Sdp = fun(V, Fmt) ->
+              <<"v=0\r\no=src 1 ", V/binary, " IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\n"
+                "t=0 0\r\nm=audio 30000 RTP/AVP ", Fmt/binary, "\r\na=sendonly\r\na=label:1\r\n"
+                "m=audio 30002 RTP/AVP 0\r\na=sendonly\r\na=label:2\r\n">>
+          end,
+    {R, Peer} = wire_rs_session(EP, <<"sip:sink@127.0.0.1">>, Sdp(<<"1">>, <<"0 8">>)),
+    ?assertEqual(200, ?UA:status(R)),
+    #{streams := [#{pid := S1}, _]} = got(srs_served),
+    Peer ! {reinvite, Sdp(<<"2">>, <<"18">>)},
+    R2 = got(wire_reinvite),
+    ?assertEqual(200, ?UA:status(R2)),
+    {_, [M1, M2]} = chappe_sip_sdp:sections(?UA:body(R2)),
+    ?assertMatch(<<"m=audio 0 RTP/AVP 18", _/binary>>, hd(M1)),
+    ?assertNotMatch(<<"m=audio 0 ", _/binary>>, hd(M2)),
+    ?assertNot(is_process_alive(S1)).
+
+%% RFC 3264 8.3.1: a re-offer that changes a stream's profile (RTP/AVP to
+%% RTP/SAVP and back) ends its receiver and takes the stream as a new one,
+%% under the same rules: SRTP with the offer's key, then plain RTP.
+%% req: R3264-8.3.1-2
+server_reoffer_changes_profile(_Config) ->
+    #{ep := EP} = call(),
+    K = crypto_line(<<"1 AES_CM_128_HMAC_SHA1_80">>, ?SRTP:master()),
+    Head = fun(V) ->
+               <<"v=0\r\no=src 1 ", V/binary, " IN IP4 127.0.0.1\r\ns=-\r\n"
+                 "c=IN IP4 127.0.0.1\r\nt=0 0\r\n">>
+           end,
+    Avp = <<"m=audio 30000 RTP/AVP 0\r\na=sendonly\r\na=label:1\r\n">>,
+    Savp = <<"m=audio 30000 RTP/SAVP 0\r\n", K/binary, "a=sendonly\r\na=label:1\r\n">>,
+    {R, Peer} = wire_rs_session(EP, <<"sip:sink@127.0.0.1">>, <<(Head(<<"1">>))/binary, Avp/binary>>),
+    ?assertEqual(200, ?UA:status(R)),
+    #{streams := [#{pid := S1}]} = got(srs_served),
+    Peer ! {reinvite, <<(Head(<<"2">>))/binary, Savp/binary>>},
+    R2 = got(wire_reinvite),
+    {_, [M2]} = chappe_sip_sdp:sections(?UA:body(R2)),
+    ?assertMatch(<<"m=audio ", _/binary>>, hd(M2)),
+    ?assertNotMatch(<<"m=audio 0 ", _/binary>>, hd(M2)),
+    ?assertMatch({_, _}, binary:match(hd(M2), <<" RTP/SAVP 0">>)),
+    ?assertMatch([<<"a=crypto:1 AES_CM_128_HMAC_SHA1_80", _/binary>>],
+                 [L || <<"a=crypto:", _/binary>> = L <- M2]),
+    ?assertNot(is_process_alive(S1)),
+    Peer ! {reinvite, <<(Head(<<"3">>))/binary, Avp/binary>>},
+    R3 = got(wire_reinvite),
+    {_, [M3]} = chappe_sip_sdp:sections(?UA:body(R3)),
+    ?assertNotMatch(<<"m=audio 0 ", _/binary>>, hd(M3)),
+    ?assertMatch({_, _}, binary:match(hd(M3), <<" RTP/AVP 0">>)),
+    ?assertEqual([], [L || <<"a=crypto:", _/binary>> = L <- M3]).
+
+%% RFC 3264 8.3.1: a re-offer that changes only the SDP port, the SRC
+%% still sending from the socket it always sent from (its sending port is
+%% not its SDP port): its audio is recorded again once the old source's
+%% grace window is over.
+%% req: R3264-8.3.1-1
+server_reoffer_port_only(_Config) ->
+    #{ep := EP} = call(),
+    Sdp = fun(V, Port) ->
+              <<"v=0\r\no=src 1 ", V/binary, " IN IP4 127.0.0.1\r\ns=-\r\n"
+                "c=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio ", Port/binary,
+                " RTP/AVP 0\r\na=sendonly\r\na=label:1\r\n">>
+          end,
+    {R, Peer} = wire_rs_session(EP, <<"sip:sink@127.0.0.1">>, Sdp(<<"1">>, <<"30000">>)),
+    ?assertEqual(200, ?UA:status(R)),
+    #{streams := [#{pid := S1, port := P1}]} = got(srs_served),
+    {ok, A} = gen_udp:open(0, [binary, {ip, {127, 0, 0, 1}}]),
+    ok = gen_udp:send(A, {127, 0, 0, 1}, P1, rtp(0, 1, <<0:1280>>)),
+    receive {chappe_sip_siprec_rtp, S1, {audio, _}} -> ok after 2000 -> ct:fail(no_audio) end,
+    Peer ! {reinvite, Sdp(<<"2">>, <<"30010">>)},
+    ?assertEqual(200, ?UA:status(got(wire_reinvite))),
+    drain_audio(S1),
+    ?assert(heard_within(A, P1, S1, 2, 40)),
+    gen_udp:close(A).
+
+%% RFC 3264 8.4: a re-offer that holds the old way (c=0.0.0.0) keeps the
+%% stream's source: another source is still dropped, the latched one
+%% taken, and the answer direction follows the offer's (6.1).
+%% req: R3264-6.1-1
+server_reoffer_old_hold(_Config) ->
+    #{ep := EP} = call(),
+    Sdp = fun(V, C) ->
+              <<"v=0\r\no=src 1 ", V/binary, " IN IP4 127.0.0.1\r\ns=-\r\n"
+                "c=IN IP4 ", C/binary, "\r\nt=0 0\r\nm=audio 30000 RTP/AVP 0\r\n"
+                "a=sendonly\r\na=label:1\r\n">>
+          end,
+    {R, Peer} = wire_rs_session(EP, <<"sip:sink@127.0.0.1">>, Sdp(<<"1">>, <<"127.0.0.1">>)),
+    ?assertEqual(200, ?UA:status(R)),
+    #{streams := [#{pid := S1, port := P1}]} = got(srs_served),
+    {ok, A} = gen_udp:open(0, [binary, {ip, {127, 0, 0, 1}}]),
+    {ok, B} = gen_udp:open(0, [binary, {ip, {127, 0, 0, 1}}]),
+    ok = gen_udp:send(A, {127, 0, 0, 1}, P1, rtp(0, 1, <<0:1280>>)),
+    receive {chappe_sip_siprec_rtp, S1, {audio, _}} -> ok after 2000 -> ct:fail(no_audio) end,
+    Peer ! {reinvite, Sdp(<<"2">>, <<"0.0.0.0">>)},
+    R2 = got(wire_reinvite),
+    ?assertEqual(200, ?UA:status(R2)),
+    {_, [M2]} = chappe_sip_sdp:sections(?UA:body(R2)),
+    ?assert(lists:member(<<"a=recvonly">>, M2)),
+    ok = gen_udp:send(B, {127, 0, 0, 1}, P1, rtp(0, 2, <<0:1280>>)),
+    receive {chappe_sip_siprec_rtp, S1, {audio, _}} -> ct:fail(other_source_heard)
+    after 300 -> ok
+    end,
+    ok = gen_udp:send(A, {127, 0, 0, 1}, P1, rtp(0, 3, <<0:1280>>)),
+    receive {chappe_sip_siprec_rtp, S1, {audio, _}} -> ok
+    after 2000 -> ct:fail(latched_source_dropped)
+    end,
+    gen_udp:close(A),
+    gen_udp:close(B).
+
+%% RFC 4568 7.1.2: an RTP/SAVP re-offer with no a=crypto line the server
+%% takes (none, or only a suite it does not know) refuses that stream:
+%% port 0, its receiver stopped, no a=crypto echoed.
+%% req: R4568-5.1.2-2
+server_reoffer_drops_key(_Config) ->
+    #{ep := EP} = call(),
+    K = crypto_line(<<"1 AES_CM_128_HMAC_SHA1_80">>, ?SRTP:master()),
+    F8 = crypto_line(<<"2 F8_128_HMAC_SHA1_80">>, ?SRTP:master()),
+    Sdp = fun(V, Keys) ->
+              <<"v=0\r\no=src 1 ", V/binary, " IN IP4 127.0.0.1\r\ns=-\r\n"
+                "c=IN IP4 127.0.0.1\r\nt=0 0\r\n"
+                "m=audio 30000 RTP/SAVP 0\r\n", Keys/binary, "a=sendonly\r\na=label:1\r\n"
+                "m=audio 30002 RTP/SAVP 0\r\n", K/binary, "a=sendonly\r\na=label:2\r\n">>
+          end,
+    {R, Peer} = wire_rs_session(EP, <<"sip:sink@127.0.0.1">>, Sdp(<<"1">>, K)),
+    ?assertEqual(200, ?UA:status(R)),
+    #{streams := [#{pid := S1}, #{pid := S2}]} = got(srs_served),
+    Peer ! {reinvite, Sdp(<<"2">>, F8)},
+    R2 = got(wire_reinvite),
+    ?assertEqual(200, ?UA:status(R2)),
+    {_, [M1, M2]} = chappe_sip_sdp:sections(?UA:body(R2)),
+    ?assertMatch(<<"m=audio 0 RTP/SAVP", _/binary>>, hd(M1)),
+    ?assertEqual([], [L || <<"a=crypto:", _/binary>> = L <- M1]),
+    ?assertNot(is_process_alive(S1)),
+    ?assertNotMatch(<<"m=audio 0 ", _/binary>>, hd(M2)),
+    ?assert(is_process_alive(S2)),
+    Peer ! {reinvite, Sdp(<<"3">>, <<>>)},
+    R3 = got(wire_reinvite),
+    ?assertEqual(200, ?UA:status(R3)),
+    {_, [N1, N2]} = chappe_sip_sdp:sections(?UA:body(R3)),
+    ?assertMatch(<<"m=audio 0 RTP/SAVP", _/binary>>, hd(N1)),
+    ?assertNotMatch(<<"m=audio 0 ", _/binary>>, hd(N2)).
+
+%% RFC 4568 7.1.2 and 6.1: a re-offer with the same key under another tag
+%% or another suite is answered with that tag and that suite.
+%% req: R4568-5.1.2-2
+server_reoffer_same_key_new_suite(_Config) ->
+    #{ep := EP} = call(),
+    Key = ?SRTP:master(),
+    Sdp = fun(V, Tag) ->
+              K = crypto_line(Tag, Key),
+              <<"v=0\r\no=src 1 ", V/binary, " IN IP4 127.0.0.1\r\ns=-\r\n"
+                "c=IN IP4 127.0.0.1\r\nt=0 0\r\n"
+                "m=audio 30000 RTP/SAVP 0\r\n", K/binary,
+                "a=sendonly\r\na=label:1\r\n">>
+          end,
+    Crypto = fun(R) ->
+                 {_, [M]} = chappe_sip_sdp:sections(?UA:body(R)),
+                 [L || <<"a=crypto:", _/binary>> = L <- M]
+             end,
+    {R, Peer} = wire_rs_session(EP, <<"sip:sink@127.0.0.1">>,
+                                Sdp(<<"1">>, <<"1 AES_CM_128_HMAC_SHA1_80">>)),
+    ?assertEqual(200, ?UA:status(R)),
+    #{streams := [#{pid := S1}]} = got(srs_served),
+    Peer ! {reinvite, Sdp(<<"2">>, <<"2 AES_CM_128_HMAC_SHA1_80">>)},
+    R2 = got(wire_reinvite),
+    ?assertMatch([<<"a=crypto:2 AES_CM_128_HMAC_SHA1_80 ", _/binary>>], Crypto(R2)),
+    Peer ! {reinvite, Sdp(<<"3">>, <<"2 AES_CM_128_HMAC_SHA1_32">>)},
+    R3 = got(wire_reinvite),
+    ?assertMatch([<<"a=crypto:2 AES_CM_128_HMAC_SHA1_32 ", _/binary>>], Crypto(R3)),
+    ?assert(is_process_alive(S1)).
+
+%% RFC 3264 6.1: a recvonly offer (the SRC does not send) is answered
+%% inactive, at the start and in a re-offer, and a sendonly re-offer
+%% after it recvonly.
+%% req: R3264-6.1-1
+server_recvonly_offer(_Config) ->
+    #{ep := EP} = call(),
+    {R, Peer} = wire_rs_session(EP, <<"sip:sink@127.0.0.1">>, one_stream(<<"1">>, <<"recvonly">>)),
+    ?assertEqual(200, ?UA:status(R)),
+    {_, [M1]} = chappe_sip_sdp:sections(?UA:body(R)),
+    ?assertNotMatch(<<"m=audio 0 ", _/binary>>, hd(M1)),
+    ?assert(lists:member(<<"a=inactive">>, M1)),
+    ?assertNot(lists:member(<<"a=recvonly">>, M1)),
+    #{streams := [#{pid := S1}]} = got(srs_served),
+    Peer ! {reinvite, one_stream(<<"2">>, <<"sendonly">>)},
+    R2 = got(wire_reinvite),
+    {_, [M2]} = chappe_sip_sdp:sections(?UA:body(R2)),
+    ?assert(lists:member(<<"a=recvonly">>, M2)),
+    Peer ! {reinvite, one_stream(<<"3">>, <<"recvonly">>)},
+    R3 = got(wire_reinvite),
+    ?assertEqual(200, ?UA:status(R3)),
+    {_, [M3]} = chappe_sip_sdp:sections(?UA:body(R3)),
+    ?assertNotMatch(<<"m=audio 0 ", _/binary>>, hd(M3)),
+    ?assert(lists:member(<<"a=inactive">>, M3)),
+    ?assertNot(lists:member(<<"a=recvonly">>, M3)),
+    ?assertNot(lists:member(<<"a=sendonly">>, M3)),
+    ?assert(is_process_alive(S1)).
+
+drain_audio(S) ->
+    receive {chappe_sip_siprec_rtp, S, {audio, _}} -> drain_audio(S) after 0 -> ok end.
+
+%% a packet from Sock heard within N sends, 100 ms apart
+heard_within(_Sock, _Port, _S, _Seq, 0) ->
+    false;
+heard_within(Sock, Port, S, Seq, N) ->
+    ok = gen_udp:send(Sock, {127, 0, 0, 1}, Port, rtp(0, Seq, <<0:1280>>)),
+    receive {chappe_sip_siprec_rtp, S, {audio, _}} -> true
+    after 100 -> heard_within(Sock, Port, S, Seq + 1, N - 1)
+    end.
+
+%% one G.711 stream at o= version V, in direction Dir
+one_stream(V, Dir) ->
+    <<"v=0\r\no=src 1 ", V/binary, " IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\n"
+      "t=0 0\r\nm=audio 30000 RTP/AVP 0\r\na=", Dir/binary, "\r\na=label:1\r\n">>.
+
 %% ---- helpers ----
 
 %% the caller's offer as SRTP
@@ -1363,14 +2028,21 @@ savp(Inv) ->
 
 %% the RS body of an SDP: multipart with an empty metadata snapshot
 rs_body(Sdp) ->
+    rs_body(Sdp, #{}).
+
+%% the RS body of an SDP and a metadata document
+rs_body(Sdp, Meta) ->
     chappe_sip_multipart:build([
         #{content_type => <<"application/sdp">>, body => Sdp},
         #{content_type => ?M:content_type(), disposition => ?M:disposition(),
-          body => ?M:build(#{})}
+          body => ?M:build(Meta)}
     ]).
 
 %% a recording client on the wire whose session stays up: {200, Peer};
-%% Peer ! {reinvite, Sdp} re-INVITEs and tells {wire_reinvite, Response}
+%% Peer ! {reinvite, Sdp} (or {reinvite, Sdp, Metadata}) re-INVITEs and
+%% tells {wire_reinvite, Response},
+%% Peer ! {update, Sdp | metadata} sends an UPDATE with that offer (or the
+%% metadata alone) and tells {wire_update, Response}
 wire_rs_session(EP, Ruri, Sdp) ->
     {CT, Body} = rs_body(Sdp),
     Test = self(),
@@ -1396,15 +2068,82 @@ wire_rs_session(EP, Ruri, Sdp) ->
 rs_session(Sock, EP, D, Test) ->
     receive
         {reinvite, Sdp} ->
-            {CT, Body} = rs_body(Sdp),
+            self() ! {reinvite, Sdp, #{}},
+            rs_session(Sock, EP, D, Test);
+        {reinvite, Sdp, Meta} ->
+            {CT, Body} = rs_body(Sdp, Meta),
             {Re0, D1} = ?UA:in_dialog(D, <<"INVITE">>, [{<<"Require">>, <<"siprec">>}], Body),
             Re = binary:replace(Re0, <<"Content-Type: application/sdp">>,
                                 <<"Content-Type: ", CT/binary>>),
             ?UA:send(Sock, EP, Re),
-            R = ?UA:recv_status(Sock, 200),
-            ?UA:ack(D1, EP),
-            Test ! {wire_reinvite, R},
+            N = maps:get(cseq, D1),
+            R = recv_cseq(Sock, N),
+            Told = case ?UA:status(R) of
+                       200 ->
+                           ?UA:ack(D1, EP),
+                           R;
+                       _ ->
+                           %% a final the server sends again once ACKed
+                           %% is a fault the test sees
+                           ?UA:send(Sock, EP, ack_non2xx(Re, R)),
+                           acked(R, quiet(Sock, N, 1500))
+                   end,
+            Test ! {wire_reinvite, Told},
+            rs_session(Sock, EP, D1, Test);
+        {update, metadata} ->
+            {Up0, D1} = ?UA:in_dialog(D, <<"UPDATE">>, [], ?M:build(#{})),
+            Up = binary:replace(Up0, <<"Content-Type: application/sdp">>,
+                                <<"Content-Type: ", (?M:content_type())/binary>>),
+            ?UA:send(Sock, EP, Up),
+            Test ! {wire_update, ?UA:recv_any(Sock, 6000)},
+            rs_session(Sock, EP, D1, Test);
+        {update, Sdp} ->
+            {CT, Body} = rs_body(Sdp),
+            {Up0, D1} = ?UA:in_dialog(D, <<"UPDATE">>, [{<<"Require">>, <<"siprec">>}], Body),
+            Up = binary:replace(Up0, <<"Content-Type: application/sdp">>,
+                                <<"Content-Type: ", CT/binary>>),
+            ?UA:send(Sock, EP, Up),
+            Test ! {wire_update, ?UA:recv_any(Sock, 6000)},
             rs_session(Sock, EP, D1, Test)
+    end.
+
+acked(R, true) -> R;
+acked(R, false) -> {final_sent_again, R}.
+
+%% no final response to CSeq N comes again within T ms
+quiet(Sock, N, T) ->
+    receive
+        {udp, Sock, _, _, <<"SIP/2.0 ", _/binary>> = Bin} ->
+            case ?UA:cseq(Bin) of
+                #{seq := N} -> false;
+                _ -> quiet(Sock, N, T)
+            end
+    after T -> true
+    end.
+
+%% RFC 3261 17.1.1.3: the ACK of a non-2xx final response to INVITE: the
+%% INVITE's Request-URI, top Via (its branch), From, Call-ID and CSeq
+%% number, with the response's To
+ack_non2xx(Inv, R) ->
+    [Line | _] = binary:split(Inv, <<"\r\n">>),
+    [_, Uri, _] = binary:split(Line, <<" ">>, [global]),
+    #{seq := N} = ?UA:cseq(Inv),
+    <<"ACK ", Uri/binary, " SIP/2.0\r\n"
+      "Via: ", (hd(?UA:hdrs(Inv, <<"via">>)))/binary, "\r\n"
+      "Max-Forwards: 70\r\n"
+      "From: ", (?UA:hdr(Inv, <<"from">>))/binary, "\r\n"
+      "To: ", (?UA:hdr(R, <<"to">>))/binary, "\r\n"
+      "Call-ID: ", (?UA:hdr(Inv, <<"call-id">>))/binary, "\r\n"
+      "CSeq: ", (integer_to_binary(N))/binary, " ACK\r\n"
+      "Content-Length: 0\r\n\r\n">>.
+
+%% the final response to the request of CSeq N (an earlier final sent
+%% again is skipped)
+recv_cseq(Sock, N) ->
+    R = ?UA:recv_any(Sock, 6000),
+    case ?UA:cseq(R) of
+        #{seq := N} -> R;
+        _ -> recv_cseq(Sock, N)
     end.
 
 %% a recording client on the wire: an RS INVITE of Sdp to Ruri, its final

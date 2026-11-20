@@ -37,8 +37,9 @@
 %% had a secure one is refused 488 with a 302 Warning (RFC 3261 20.43).
 %% The keys travel in the SDP, and RFC 4568 8.3 requires the SDP that
 %% carries an inline key to be encrypted: by default a secure stream offered
-%% over a transport that is not TLS (or WSS), to a Request-URI that is not
-%% sips:, is rejected the same way (port 0, RFC 4568 7.1.2: "its
+%% over a transport that is not TLS (or WSS), whatever its Request-URI (a
+%% sips: one reached over UDP is not encrypted), is rejected the same way
+%% (port 0, RFC 4568 7.1.2: "its
 %% configured policy prohibits", and 488 when no stream is left).
 %% keys_over_tls => false takes such keys, for a recording client on a
 %% network the app trusts.
@@ -57,7 +58,11 @@
 %% The streams belong to the calling process: they finish (and close their
 %% store recordings) when it exits, so the handler then calls run/1, which
 %% carries the session until it ends. run/1 answers each re-INVITE and
-%% UPDATE of the recording client with the streams as they are, and hands
+%% each UPDATE with an offer of the recording client (RFC 3311 5.2) with
+%% one m-line per offered one (RFC 3264 6): a stream it has keeps its
+%% receiver, with the offer's key and direction (inactive when the client
+%% pauses, RFC 3264 6.1), and a stream the offer adds is taken as in the
+%% INVITE, or port 0 past max_streams. It hands
 %% the metadata each carries (RFC 7866 9.2: the SRS keeps track of the
 %% updates) to the notify process (Opts' notify, else the sink pid) as
 %%   {chappe_sip_siprec_srs, Dialog, {metadata, Doc}}
@@ -87,13 +92,12 @@
 
 -export([serve/3, run/1, is_recording_session/1, store/1]).
 
--define(LAWS, [<<"0">>, <<"8">>]).
-
 -export_type([srs/0]).
 
 %% The session serve/3 answered, for run/1: its dialog, the call_ref, the
 %% metadata of the INVITE and the streams taken; the other keys are
-%% run/1's (the answer, its version, the notify process).
+%% run/1's (the answer, its version, the notify process, and what a
+%% re-offer needs to take a new stream).
 -type srs() :: #{
     dialog := chappe_sip_dialog:dialog(),
     call_ref := binary() | undefined,
@@ -103,7 +107,8 @@
     taken := [{[binary()], map() | undefined}],
     advertise := binary(),
     version := pos_integer(),
-    notify := pid() | undefined
+    notify := pid() | undefined,
+    ctx := map()
 }.
 
 -spec serve(chappe_sip_req:req(), chappe_sip_res:res(), map()) ->
@@ -249,38 +254,42 @@ answer(Req, Res, Sdp, Doc, Sink, Opts0) ->
     end.
 
 take(Req, Res, Sdp, Doc, Sink, Opts, {CallRef, Ip, Adv, Media}) ->
-    Senders = maps:from_list([
-        {L, S}
-     || #{label := L} = S <- chappe_sip_siprec_meta:senders(Doc)
-    ]),
-    Remotes = remotes(Sdp, Opts),
-    Max = maps:get(max_streams, Opts, 4),
-    Taken = lists:map(
-        fun({I, Sec}) ->
-            stream(
-                I =< Max,
-                Sec,
-                Senders,
-                CallRef,
-                Sink,
-                Ip,
-                Opts#{remote => lists:nth(I, Remotes), index => I}
-            )
-        end,
-        lists:enumerate(Media)
-    ),
+    Ctx = #{
+        senders => senders(Doc),
+        call_ref => CallRef,
+        sink => Sink,
+        ip => Ip,
+        opts => Opts
+    },
+    {Sess, _} = chappe_sip_sdp:sections(Sdp),
+    Taken = [
+        chappe_sip_siprec_srs_stream:take(I, Sec, Offer, Ctx)
+     || {I, Sec} <- lists:enumerate(Media),
+        Offer <- [chappe_sip_siprec_srs_stream:offer(Sess, Sec, Opts)]
+    ],
     Streams = [S || {_, S} <- Taken, S =/= undefined],
     case Streams of
         [] -> refuse(Res, Adv, Media);
-        _ -> answer_streams(Req, Res, Adv, Taken, Streams, CallRef, Doc, Opts)
+        _ -> answer_streams(Req, Res, Adv, Taken, Streams, Ctx, Doc)
     end.
+
+senders(Doc) ->
+    maps:from_list([
+        {L, S}
+     || #{label := L} = S <- chappe_sip_siprec_meta:senders(Doc)
+    ]).
 
 %% No stream it can take: 488 (RFC 3261 21.4.26), with the Warning that
 %% says why (20.43): 302 when a stream was secure ({error, srtp}), 305 when
 %% audio came in no codec it takes or found no port, 304 when no audio came
 refuse(Res, Adv, Media) ->
     {Code, Text, Why} =
-        case {lists:any(fun secure/1, Media), lists:any(fun audio/1, Media)} of
+        case
+            {
+                lists:any(fun chappe_sip_siprec_srs_stream:secure/1, Media),
+                lists:any(fun chappe_sip_siprec_srs_stream:audio/1, Media)
+            }
+        of
             {true, _} ->
                 {<<"302">>, <<"Incompatible transport protocol">>, srtp};
             {false, true} ->
@@ -294,12 +303,6 @@ refuse(Res, Adv, Media) ->
         ]
     }),
     {error, Why}.
-
-audio([M | _]) ->
-    case m_line(M) of
-        {<<"audio">>, _, _, _} -> true;
-        _ -> false
-    end.
 
 %% the SDP of the streams taken, at version Ver of its o= line
 answer_sdp(Adv, Ver, Taken) ->
@@ -315,7 +318,8 @@ answer_sdp(Adv, Ver, Taken) ->
         [Lines || {Lines, _} <- Taken]
     ).
 
-answer_streams(Req, Res, Adv, Taken, Streams, CallRef, Doc, Opts) ->
+answer_streams(Req, Res, Adv, Taken, Streams, Ctx, Doc) ->
+    #{call_ref := CallRef, opts := Opts} = Ctx,
     Answer = answer_sdp(Adv, 1, Taken),
     case
         chappe_sip_dialog:create_uas(Req, Res, #{
@@ -336,7 +340,8 @@ answer_streams(Req, Res, Adv, Taken, Streams, CallRef, Doc, Opts) ->
                 notify => notify(Opts),
                 call_ref => CallRef,
                 metadata => Doc,
-                streams => Streams
+                streams => Streams,
+                ctx => Ctx
             }};
         {error, _} = E ->
             _ = [chappe_audio_rtp:stop(P) || #{pid := P} <- Streams],
@@ -361,19 +366,9 @@ run(#{dialog := D} = Srs) ->
 loop(D, Mon, Srs) ->
     receive
         {chappe_sip_dialog, D, modify, Req, Res} ->
-            %% RFC 7866 7.2: the SRS answers with the streams it takes,
-            %% each with the client's key of this offer
-            updated(Req, Srs),
-            Srs1 = rekeyed(Req, Srs),
-            _ = chappe_sip_res:send(Res, 200, #{
-                body => maps:get(answer, Srs1),
-                headers => [{<<"Content-Type">>, <<"application/sdp">>}]
-            }),
-            loop(D, Mon, Srs1);
+            loop(D, Mon, reoffered(modify, Req, Res, Srs));
         {chappe_sip_dialog, D, update, Req, Res} ->
-            updated(Req, Srs),
-            _ = chappe_sip_res:send(Res, 200),
-            loop(D, Mon, Srs);
+            loop(D, Mon, reoffered(update, Req, Res, Srs));
         {chappe_sip_dialog, D, destroy, Why} ->
             Why;
         {'DOWN', Mon, process, _, Why} ->
@@ -382,22 +377,80 @@ loop(D, Mon, Srs) ->
             loop(D, Mon, Srs)
     end.
 
-%% RFC 4568 7.1.4: a re-offer may change a stream's key; its receiver
-%% takes the new one, and the answer echoes the new line's tag (a new o=
-%% version, RFC 3264 8). A stream whose re-offer has no line it can take
-%% keeps its key.
-rekeyed(Req, #{taken := Taken} = Srs) ->
-    case read(Req) of
-        {ok, Sdp, _Doc} ->
-            {_Sess, Media} = chappe_sip_sdp:sections(Sdp),
-            Taken1 = [rekey_one(T, Media) || T <- Taken],
-            case Taken1 =:= Taken of
-                true -> Srs;
-                false -> reanswer(Taken1, Srs)
-            end;
-        {error, _} ->
+%% A re-INVITE or an UPDATE of the client. With an offer, it is answered
+%% in the 2xx (RFC 7866 7.2, RFC 3311 5.2); an offer with fewer m-lines
+%% than the session has is refused 488 (RFC 3264 8) and the session is
+%% left as it was. A re-INVITE with no offer gets the current SDP as the
+%% SRS's offer, and an UPDATE with none (the metadata alone, RFC 7866 9.1)
+%% an empty 200. The metadata a request carries is told once it is
+%% accepted, never for one refused.
+reoffered(Event, Req, Res, Srs) ->
+    reoffered(Event, Req, read(Req), Res, Srs).
+
+reoffered(_Event, Req, {ok, Sdp, Doc} = Read, Res, Srs) ->
+    case reoffer(Sdp, Doc, is_tls(Req), Srs) of
+        {ok, Srs1} ->
+            send_answer(Res, Srs1),
+            updated(Req, Read, Srs1),
+            Srs1;
+        error ->
+            _ = chappe_sip_res:send(Res, 488),
             Srs
+    end;
+reoffered(modify, Req, {error, _} = Read, Res, Srs) ->
+    send_answer(Res, Srs),
+    updated(Req, Read, Srs),
+    Srs;
+reoffered(update, Req, {error, _} = Read, Res, Srs) ->
+    _ = chappe_sip_res:send(Res, 200),
+    updated(Req, Read, Srs),
+    Srs.
+
+send_answer(Res, #{answer := Answer}) ->
+    _ = chappe_sip_res:send(Res, 200, #{
+        body => Answer,
+        headers => [{<<"Content-Type">>, <<"application/sdp">>}]
+    }),
+    ok.
+
+%% RFC 3264 6 and 8: the answer to a re-offer has one m-line per offered
+%% one. A stream taken before keeps its receiver: its key follows the
+%% offer's (RFC 4568 7.1.4) and its direction the offer's (RFC 3264 6.1),
+%% and it is stopped and answered port 0 when the offer sets its port to 0
+%% (RFC 3264 8.2). A stream new to the session, or one refused before, is
+%% taken as in the INVITE: a receiver, or port 0 past max_streams. The key
+%% rule (RFC 4568 8.3) is judged on TlsIn, the transport of the request
+%% carrying this offer. An answer that changes takes a new o= version (RFC
+%% 3264 8).
+reoffer(Sdp, Doc, TlsIn, #{taken := Taken, ctx := Ctx0} = Srs) ->
+    {Sess, Media} = chappe_sip_sdp:sections(Sdp),
+    case length(Media) >= length(Taken) of
+        true ->
+            #{opts := Opts0} = Ctx0,
+            Opts = Opts0#{tls_in := TlsIn},
+            Ctx = Ctx0#{senders := senders_of(Doc, Ctx0), opts := Opts},
+            Offers = [
+                {I, Sec, chappe_sip_siprec_srs_stream:offer(Sess, Sec, Opts)}
+             || {I, Sec} <- lists:enumerate(Media)
+            ],
+            Taken1 = chappe_sip_siprec_srs_stream:retake(
+                Offers, Taken, Media, Ctx
+            ),
+            Srs1 = Srs#{
+                ctx := Ctx,
+                streams := [S || {_, S} <- Taken1, S =/= undefined]
+            },
+            case Taken1 =:= Taken of
+                true -> {ok, Srs1};
+                false -> {ok, reanswer(Taken1, Srs1)}
+            end;
+        false ->
+            error
     end.
+
+%% the senders of a re-offer's metadata, else those the session had
+senders_of(Doc, #{senders := Senders}) when map_size(Doc) =:= 0 -> Senders;
+senders_of(Doc, _Ctx) -> senders(Doc).
 
 reanswer(Taken, #{advertise := Adv, version := V} = Srs) ->
     Srs#{
@@ -406,71 +459,23 @@ reanswer(Taken, #{advertise := Adv, version := V} = Srs) ->
         answer := answer_sdp(Adv, V + 1, Taken)
     }.
 
-rekey_one({Lines, #{index := I, srtp := Hash, pid := Pid} = S} = T, Media) when
-    is_binary(Hash), I =< length(Media)
-->
-    [_M | Rest] = lists:nth(I, Media),
-    case chappe_sip_sdes:select(Rest) of
-        {ok, C} ->
-            case key_hash(C) of
-                Hash ->
-                    T;
-                New ->
-                    case srtp_ctx(C) of
-                        {ok, Ctx} ->
-                            ok = chappe_audio_rtp:rekey(Pid, Ctx),
-                            {crypto_line(Lines, C), S#{srtp := New}};
-                        error ->
-                            T
-                    end
-            end;
-        {error, _} ->
-            T
-    end;
-rekey_one(T, _Media) ->
-    T.
-
-crypto_line(Lines, C) ->
-    [
-        case L of
-            <<"a=crypto:", _/binary>> -> chappe_sip_sdes:answer(C);
-            _ -> L
-        end
-     || L <- Lines
-    ].
-
-%% what tells a key from another without keeping it
-key_hash(#{key := K, salt := S}) ->
-    crypto:hash(sha256, [K, S]).
-
-srtp_ctx(C) ->
-    case
-        chappe_audio_srtp:new(
-            maps:with([suite, key, salt, mki, lifetime, window], C)
-        )
-    of
-        {ok, Ctx} -> {ok, Ctx};
-        {error, _} -> error
-    end.
-
-%% the RS came over TLS or WSS, or to a sips: Request-URI
+%% the RS came over TLS or WSS (RFC 4568 8.3). Only the transport it
+%% came over says so: a sips: Request-URI reached over UDP is not
+%% encrypted, and a transport the stack does not name counts as not
+%% secure.
 is_tls(Req) ->
     case maps:get(transport, chappe_sip_req:meta(Req), undefined) of
         T when is_binary(T) ->
-            lists:member(chappe_sip_lib:lower(T), [<<"tls">>, <<"wss">>]) orelse
-                chappe_sip_uri:is_sips(chappe_sip_req:uri(Req));
+            lists:member(chappe_sip_lib:lower(T), [<<"tls">>, <<"wss">>]);
         _ ->
-            chappe_sip_uri:is_sips(chappe_sip_req:uri(Req))
+            false
     end.
 
 %% the metadata of a re-INVITE or UPDATE, when it carries some
-updated(Req, Srs) ->
-    case read(Req) of
-        {ok, _Sdp, #{} = Doc} when map_size(Doc) > 0 ->
-            tell({metadata, Doc}, Srs);
-        _ ->
-            metadata_only(Req, Srs)
-    end.
+updated(_Req, {ok, _Sdp, #{} = Doc}, Srs) when map_size(Doc) > 0 ->
+    tell({metadata, Doc}, Srs);
+updated(Req, _Read, Srs) ->
+    metadata_only(Req, Srs).
 
 %% an UPDATE may carry the metadata alone (RFC 7866 9.1)
 metadata_only(Req, Srs) ->
@@ -498,175 +503,3 @@ call_ref(Req, Doc) ->
         [R | _] -> R;
         [] -> chappe_sip_req:call_ref(Req)
     end.
-
-%% where each stream of the offer comes from: its c= address (or the
-%% session's) and its port, undefined when that is no IP literal or the
-%% app said to learn it
-remotes(Sdp, #{rtp_source := learn}) ->
-    {_, Ms} = chappe_sip_sdp:parse(Sdp),
-    [undefined || _ <- Ms];
-remotes(Sdp, _Opts) ->
-    {Sess, Ms} = chappe_sip_sdp:parse(Sdp),
-    [remote(maps:get(addr, M, Sess), P) || #{port := P} = M <- Ms].
-
-remote(Addr, Port) ->
-    case chappe_sip_sdp:address(Addr) of
-        {ok, {0, 0, 0, 0}} -> undefined;
-        {ok, {0, 0, 0, 0, 0, 0, 0, 0}} -> undefined;
-        {ok, Ip} -> {Ip, Port};
-        error -> undefined
-    end.
-
-%% an m-line of a secure profile (RTP/SAVP, RTP/SAVPF, UDP/TLS/RTP/SAVP...)
-secure([M | _]) ->
-    case m_line(M) of
-        {_, _, Proto, _} -> binary:match(Proto, <<"SAVP">>) =/= nomatch;
-        undefined -> false
-    end.
-
-%% one recorded stream: a receiver and its recvonly m-line, or port 0
-stream(Room, [M | Rest], Senders, CallRef, Sink, Ip, Opts) ->
-    Label = label(Rest),
-    case {Room, m_line(M)} of
-        {true, {<<"audio">>, Port, Proto, Fmts}} when Port =/= 0 ->
-            case
-                {profile(Proto, Rest, Opts), [
-                    F
-                 || F <- Fmts, lists:member(F, ?LAWS)
-                ]}
-            of
-                {_, []} ->
-                    {rejected(M), undefined};
-                {error, _} ->
-                    {rejected(M), undefined};
-                {Profile, Laws} ->
-                    receiver(
-                        Label,
-                        Laws,
-                        Senders,
-                        CallRef,
-                        Sink,
-                        Ip,
-                        Opts,
-                        M,
-                        Profile
-                    )
-            end;
-        _ ->
-            {rejected(M), undefined}
-    end.
-
-%% RTP/AVP, or RTP/SAVP and RTP/SAVPF with an SDES key it takes (RFC 7866
-%% 12.2, RFC 4568 7.1.2); every other profile is refused
-profile(<<"RTP/AVP">> = P, _Lines, _Opts) ->
-    {P, undefined};
-profile(P, _Lines, #{keys_over_tls := true, tls_in := false}) when
-    P =:= <<"RTP/SAVP">>; P =:= <<"RTP/SAVPF">>
-->
-    error;
-profile(P, Lines, _Opts) when P =:= <<"RTP/SAVP">>; P =:= <<"RTP/SAVPF">> ->
-    case chappe_sip_sdes:select(Lines) of
-        {ok, C} ->
-            case srtp_ctx(C) of
-                {ok, Ctx} -> {P, {C, Ctx}};
-                error -> error
-            end;
-        {error, _} ->
-            error
-    end;
-profile(_P, _Lines, _Opts) ->
-    error.
-
-receiver(Label, Laws, Senders, CallRef, Sink0, Ip, Opts, M, {Proto, Srtp}) ->
-    Parties = [
-        Aor
-     || #{participants := Ps} <- [
-            maps:get(Label, Senders, #{participants => []})
-        ],
-        #{names := [#{aor := Aor} | _]} <- Ps
-    ],
-    Sink =
-        case Sink0 of
-            {store, Mod} ->
-                {store, Mod, #{
-                    call_ref => store_ref(CallRef),
-                    source => siprec,
-                    parties => Parties,
-                    format => #{rate => 8000, channels => 1}
-                }};
-            {pid, _} = P ->
-                P
-        end,
-    Args = #{
-        owner => self(),
-        ip => Ip,
-        label => label_or(Label),
-        sink => Sink,
-        max_queue => maps:get(max_queue, Opts, 500),
-        remote => maps:get(remote, Opts),
-        srtp => srtp_of(Srtp),
-        ports => maps:get(rtp_ports, Opts),
-        %% the tag a sink process has always matched
-        tag => chappe_sip_siprec_rtp
-    },
-    case chappe_audio:rtp_receiver(Args) of
-        {ok, Pid} ->
-            Port = chappe_audio_rtp:port(Pid),
-            Lines =
-                [
-                    <<"m=audio ", (integer_to_binary(Port))/binary, " ",
-                        Proto/binary, " ",
-                        (iolist_to_binary(lists:join(<<" ">>, Laws)))/binary>>
-                ] ++
-                    [rtpmap(L) || L <- Laws] ++
-                    [<<"a=recvonly">>] ++
-                    [<<"a=label:", Label/binary>> || Label =/= undefined] ++
-                    crypto_answer(Srtp),
-            {Lines, #{
-                label => Label,
-                pid => Pid,
-                port => Port,
-                parties => Parties,
-                profile => Proto,
-                index => maps:get(index, Opts),
-                srtp => srtp_hash(Srtp)
-            }};
-        {error, _} ->
-            {rejected(M), undefined}
-    end.
-
-srtp_of(undefined) -> undefined;
-srtp_of({_C, Ctx}) -> Ctx.
-
-srtp_hash(undefined) -> undefined;
-srtp_hash({C, _Ctx}) -> key_hash(C).
-
-crypto_answer(undefined) -> [];
-crypto_answer({C, _Ctx}) -> [chappe_sip_sdes:answer(C)].
-
-store_ref(undefined) -> chappe_sip_call:new_ref();
-store_ref(R) -> R.
-
-label_or(undefined) -> <<>>;
-label_or(L) -> L.
-
-rtpmap(<<"0">>) -> <<"a=rtpmap:0 PCMU/8000">>;
-rtpmap(<<"8">>) -> <<"a=rtpmap:8 PCMA/8000">>.
-
-label(Lines) ->
-    case [L || <<"a=label:", L/binary>> <- Lines] of
-        [L | _] -> L;
-        [] -> undefined
-    end.
-
-m_line(<<"m=", Rest/binary>>) ->
-    case chappe_sip_sdp:words(Rest) of
-        [Kind, Port, Proto | Fmts] ->
-            {Kind, chappe_sip_lib:to_int(Port, 0), Proto, Fmts};
-        _ ->
-            undefined
-    end.
-
-%% RFC 3264 6: a stream refused keeps its m-line, port 0
-rejected(M) ->
-    chappe_sip_sdp:refused([M]).
