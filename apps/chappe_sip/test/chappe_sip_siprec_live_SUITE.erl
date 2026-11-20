@@ -18,6 +18,9 @@
 %% (RTP/SAVP, SDES): the recording client taps it as RTP/SAVP with
 %% rtpengine's keys, and chappe's SRS decrypts each stream itself.
 %%
+%% Each stream also sends rtpengine RTCP receiver reports (RFC 7866
+%% 8.1.1), SRTCP on the SRTP call; the case checks one went out on each.
+%%
 %% Gated on RTPENGINE_HOST and RTPENGINE_MEDIA_IP (make interop sets them).
 -module(chappe_sip_siprec_live_SUITE).
 
@@ -164,6 +167,8 @@ record(Config, Mode) ->
     ?assertEqual([LB], L2 -- [0]),
     ?assertMatch(#{failed := 0, replayed := 0}, chappe_audio_rtp:stats(S1)),
     ?assertMatch(#{failed := 0, replayed := 0}, chappe_audio_rtp:stats(S2)),
+    %% each stream reports to rtpengine (the first report within 3.75 s)
+    ct:log("RTCP: ~p~n~p", [reported(S1, 30), reported(S2, 30)]),
     %% and the call itself carries both ways, each party hearing the other
     AAnswer = got(a_answer_sdp),
     ct:log("A's answer:~n~s~nB's offer:~n~s", [AAnswer, BOffer]),
@@ -239,6 +244,18 @@ audio_port(Sdp) ->
 rtp(Ssrc, Seq, Byte) ->
     <<2:2, 0:6, 0:1, 0:7, Seq:16, (Seq * 160):32, Ssrc:32,
       (binary:copy(<<Byte>>, 160))/binary>>.
+
+%% the stream's stats once it has sent a report, polled N times 200 ms apart
+reported(S, 0) ->
+    ct:fail({no_rtcp_report, chappe_audio_rtp:stats(S)});
+reported(S, N) ->
+    case chappe_audio_rtp:stats(S) of
+        #{rtcp_sent := Sent} = Stats when Sent > 0 ->
+            Stats;
+        _ ->
+            timer:sleep(200),
+            reported(S, N - 1)
+    end.
 
 %% the distinct samples a stream of the recording carried
 levels(Stream) ->

@@ -12,7 +12,9 @@
 %% stream by stream: a stream with a receiver keeps it, with the offer's
 %% key (RFC 4568 7.1.4) and direction, and stops when the offer sets its
 %% port to 0 (RFC 3264 8.2); a stream new to the session goes through
-%% take/4.
+%% take/4. Each receiver runs RTCP (RFC 7866 8.1.1): muxed when the offer
+%% has a=rtcp-mux, else on the port above, with the session's CNAME and,
+%% on SRTP, the answer's own key for its SRTCP.
 -module(chappe_sip_siprec_srs_stream).
 
 -export([offer/3, take/4, retake/4, secure/1, audio/1]).
@@ -22,9 +24,9 @@
 %% the stream at index I of an offer: a receiver, or port 0 past
 %% max_streams or when it cannot be taken; an offer on hold (c=0.0.0.0)
 %% learns its source
-take(I, Sec, {hold, Dir}, Ctx) ->
-    take(I, Sec, {undefined, Dir}, Ctx);
-take(I, Sec, {Remote, Dir}, #{opts := Opts} = Ctx) ->
+take(I, Sec, {hold, Dir, Rtcp}, Ctx) ->
+    take(I, Sec, {undefined, Dir, Rtcp}, Ctx);
+take(I, Sec, {Remote, Dir, Rtcp}, #{opts := Opts} = Ctx) ->
     #{senders := Senders, call_ref := CallRef, sink := Sink, ip := Ip} = Ctx,
     stream(
         I =< maps:get(max_streams, Opts, 4),
@@ -33,7 +35,13 @@ take(I, Sec, {Remote, Dir}, #{opts := Opts} = Ctx) ->
         CallRef,
         Sink,
         Ip,
-        Opts#{remote => Remote, index => I, dir => Dir}
+        Opts#{
+            remote => Remote,
+            index => I,
+            dir => Dir,
+            rtcp => Rtcp,
+            cname => maps:get(cname, Ctx)
+        }
     ).
 
 %% what a media section of an offer asks of its answer: where its stream
@@ -41,14 +49,32 @@ take(I, Sec, {Remote, Dir}, #{opts := Opts} = Ctx) ->
 %% undefined when that is no IP literal or the app said to learn it, hold
 %% for c=0.0.0.0, RFC 3264 8.4) and
 %% the direction to answer it with (RFC 3264 6.1: the SRS only receives,
-%% so recvonly, or inactive when the offer does not send)
+%% so recvonly, or inactive when the offer does not send), and where its
+%% RTCP goes (rtcp_of/2)
 offer(Sess, Sec, Opts) ->
     case chappe_sip_sdp:parse(chappe_sip_sdp:join(Sess, [Sec])) of
         {Addr, [#{port := P, dir := Dir} = M]} ->
-            {remote_of(maps:get(addr, M, Addr), P, Opts), answer_dir(Dir)};
+            Remote = remote_of(maps:get(addr, M, Addr), P, Opts),
+            {Remote, answer_dir(Dir), rtcp_of(M, Remote)};
         {_, _} ->
-            {undefined, <<"recvonly">>}
+            {undefined, <<"recvonly">>, {port, undefined}}
     end.
+
+%% RTCP on the RTP port when the offer muxes it (RFC 5761 5.1.1: the
+%% answer then carries a=rtcp-mux), else on the port above (RFC 3550 11),
+%% the reports sent to the offer's a=rtcp when it names another place than
+%% the port above its RTP (RFC 3605); a source learned or on hold has no
+%% address to compare it with, and gets its reports where its RTCP comes
+%% from
+rtcp_of(#{mux := true}, _Remote) ->
+    mux;
+rtcp_of(M, {Ip, P}) ->
+    case chappe_sip_sdp:rtcp_address(M, Ip) of
+        {Ip, Above} when Above =:= P + 1 -> {port, undefined};
+        Where -> {port, Where}
+    end;
+rtcp_of(_M, _Remote) ->
+    {port, undefined}.
 
 answer_dir(sendonly) -> <<"recvonly">>;
 answer_dir(sendrecv) -> <<"recvonly">>;
@@ -83,15 +109,16 @@ retake([], _Taken, _Media, _Ctx) ->
 %% transport that is not secure (RFC 4568 8.3, judged on the request of
 %% this offer) or an SDES stream has no key line it takes (RFC 4568 5.1.2,
 %% 7.1.2: port 0, stopped); another media type or profile
-%% (8.3.1, 8.3.3) stops it and takes the stream as a new one, under the
+%% (8.3.1, 8.3.3), or RTCP moved (a=rtcp-mux added or dropped, another
+%% a=rtcp address), stops it and takes the stream as a new one, under the
 %% same rules (keys included).
 kept({_, undefined}, I, Sec, Offer, _Media, Ctx) ->
     take(I, Sec, Offer, Ctx);
 kept(
-    {_, #{pid := Pid, profile := Proto}} = T,
+    {_, #{pid := Pid, profile := Proto, rtcp := Rtcp, remote := Had}} = T,
     I,
     [M | _] = Sec,
-    Offer,
+    {Remote, _Dir, Wanted} = Offer,
     Media,
     #{opts := Opts} = Ctx
 ) ->
@@ -99,26 +126,46 @@ kept(
         {_, 0, _, _} ->
             stopped(Pid, M);
         {<<"audio">>, _, Proto, Fmts} ->
-            case {laws(Fmts), sdes(Proto) andalso keys_refused(Opts)} of
-                {[], _} -> stopped(Pid, M);
-                {_, true} -> stopped(Pid, M);
-                {Laws, false} -> followed(T, M, Laws, Offer, Media)
+            case
+                {
+                    laws(Fmts),
+                    sdes(Proto) andalso keys_refused(Opts),
+                    rtcp_moved(Rtcp, Wanted, Remote, Had)
+                }
+            of
+                {[], _, _} -> stopped(Pid, M);
+                {_, true, _} -> stopped(Pid, M);
+                {_, false, true} -> retaken(Pid, I, Sec, Offer, Ctx);
+                {Laws, false, false} -> followed(T, M, Laws, Offer, Media)
             end;
         _ ->
-            _ = chappe_audio_rtp:stop(Pid),
-            take(I, Sec, Offer, Ctx)
+            retaken(Pid, I, Sec, Offer, Ctx)
     end.
+
+retaken(Pid, I, Sec, Offer, Ctx) ->
+    _ = chappe_audio_rtp:stop(Pid),
+    take(I, Sec, Offer, Ctx).
+
+%% the receiver takes its RTCP mode and report address at its start, so a
+%% re-offer that changes either restarts it; a hold keeps both, and a
+%% stream taken with no source (on hold, or learned) had no address to
+%% compare an a=rtcp with: it keeps its receiver, whose reports go where
+%% its RTCP comes from
+rtcp_moved(Rtcp, Rtcp, _Remote, _Had) -> false;
+rtcp_moved({port, _}, {port, _}, hold, _Had) -> false;
+rtcp_moved({port, undefined}, {port, _}, _Remote, undefined) -> false;
+rtcp_moved(_Rtcp, _Wanted, _Remote, _Had) -> true.
 
 stopped(Pid, M) ->
     _ = chappe_audio_rtp:stop(Pid),
     {rejected(M), undefined}.
 
-followed({_, #{pid := Pid}} = T, M, Laws, {Remote, Dir}, Media) ->
+followed({_, #{pid := Pid}} = T, M, Laws, {Remote, Dir, Rtcp}, Media) ->
     case rekey_one(T, Media) of
         {ok, {Lines, S}} ->
             {
                 chappe_sip_sdp:set_direction(formats(Lines, Laws), Dir),
-                relatched(S, Remote)
+                rtcp_kept(relatched(S, Remote), Remote, Rtcp)
             };
         refused ->
             stopped(Pid, M)
@@ -163,8 +210,14 @@ relatched(#{pid := Pid} = S, Remote) ->
     ok = chappe_audio_rtp:remote(Pid, Remote),
     S#{remote := Remote}.
 
+%% a kept stream takes the RTCP its re-offer asks, so the next one that
+%% asks it again is no move; a hold keeps what it had
+rtcp_kept(S, hold, _Rtcp) -> S;
+rtcp_kept(S, _Remote, Rtcp) -> S#{rtcp := Rtcp}.
+
 %% RFC 4568 7.1.4: a re-offer may change a stream's key; its receiver
-%% takes the new one, and the answer echoes the new line's tag. A stream
+%% takes the new one, and the answer echoes the new line's tag with a new
+%% key of the server's, which its SRTCP reports then take. A stream
 %% whose re-offer has no line it can take is refused (5.1.2, 7.1.2).
 rekey_one({Lines, #{index := I, srtp := Hash, pid := Pid} = S} = T, Media) when
     is_binary(Hash), I =< length(Media)
@@ -178,8 +231,9 @@ rekey_one({Lines, #{index := I, srtp := Hash, pid := Pid} = S} = T, Media) when
                 New ->
                     case srtp_ctx(C) of
                         {ok, Ctx} ->
-                            ok = chappe_audio_rtp:rekey(Pid, Ctx),
-                            {ok, {crypto_line(Lines, C), S#{srtp := New}}};
+                            {[Line], Out} = answer_key({C, Ctx}),
+                            ok = chappe_audio_rtp:rekey(Pid, Ctx, Out),
+                            {ok, {crypto_line(Lines, Line), S#{srtp := New}}};
                         error ->
                             refused
                     end
@@ -190,10 +244,10 @@ rekey_one({Lines, #{index := I, srtp := Hash, pid := Pid} = S} = T, Media) when
 rekey_one(T, _Media) ->
     {ok, T}.
 
-crypto_line(Lines, C) ->
+crypto_line(Lines, Line) ->
     [
         case L of
-            <<"a=crypto:", _/binary>> -> chappe_sip_sdes:answer(C);
+            <<"a=crypto:", _/binary>> -> Line;
             _ -> L
         end
      || L <- Lines
@@ -286,29 +340,23 @@ receiver(Label, Laws, Senders, CallRef, Sink0, Ip, Opts, M, {Proto, Srtp}) ->
         ],
         #{names := [#{aor := Aor} | _]} <- Ps
     ],
-    Sink =
-        case Sink0 of
-            {store, Mod} ->
-                {store, Mod, #{
-                    call_ref => store_ref(CallRef),
-                    source => siprec,
-                    parties => Parties,
-                    format => #{rate => 8000, channels => 1}
-                }};
-            {pid, _} = P ->
-                P
-        end,
+    {Mode, RtcpRemote} = rtcp_args(maps:get(rtcp, Opts)),
+    {Crypto, Out} = answer_key(Srtp),
     Args = #{
         owner => self(),
         ip => Ip,
         label => label_or(Label),
-        sink => Sink,
+        sink => sink(Sink0, CallRef, Parties),
         max_queue => maps:get(max_queue, Opts, 500),
         remote => maps:get(remote, Opts),
         srtp => srtp_of(Srtp),
         ports => maps:get(rtp_ports, Opts),
         %% the tag a sink process has always matched
-        tag => chappe_sip_siprec_rtp
+        tag => chappe_sip_siprec_rtp,
+        rtcp => Mode,
+        rtcp_remote => RtcpRemote,
+        cname => maps:get(cname, Opts),
+        srtcp_out => Out
     },
     case chappe_audio:rtp_receiver(Args) of
         {ok, Pid} ->
@@ -321,14 +369,16 @@ receiver(Label, Laws, Senders, CallRef, Sink0, Ip, Opts, M, {Proto, Srtp}) ->
                 ] ++
                     [rtpmap(L) || L <- Laws] ++
                     [<<"a=", (maps:get(dir, Opts))/binary>>] ++
+                    rtcp_lines(Mode) ++
                     [<<"a=label:", Label/binary>> || Label =/= undefined] ++
-                    crypto_answer(Srtp),
+                    Crypto,
             {Lines, #{
                 label => Label,
                 pid => Pid,
                 port => Port,
                 parties => Parties,
                 profile => Proto,
+                rtcp => maps:get(rtcp, Opts),
                 remote => maps:get(remote, Opts),
                 index => maps:get(index, Opts),
                 srtp => srtp_hash(Srtp)
@@ -337,14 +387,40 @@ receiver(Label, Laws, Senders, CallRef, Sink0, Ip, Opts, M, {Proto, Srtp}) ->
             {rejected(M), undefined}
     end.
 
+%% a store sink opens its recording with the stream's call and parties
+sink({store, Mod}, CallRef, Parties) ->
+    {store, Mod, #{
+        call_ref => store_ref(CallRef),
+        source => siprec,
+        parties => Parties,
+        format => #{rate => 8000, channels => 1}
+    }};
+sink({pid, _} = P, _CallRef, _Parties) ->
+    P.
+
 srtp_of(undefined) -> undefined;
 srtp_of({_C, Ctx}) -> Ctx.
 
 srtp_hash(undefined) -> undefined;
 srtp_hash({C, _Ctx}) -> key_hash(C).
 
-crypto_answer(undefined) -> [];
-crypto_answer({C, _Ctx}) -> [chappe_sip_sdes:answer(C)].
+%% the answer's a=crypto line, a key of the server's (RFC 4568 7.1.2), and
+%% the context of that key, which protects its reports (SRTCP)
+answer_key(undefined) ->
+    {[], undefined};
+answer_key({C, _Ctx}) ->
+    {Line, Own} = chappe_sip_sdes:answer(C),
+    {ok, Out} = srtp_ctx(Own),
+    {[Line], Out}.
+
+rtcp_args(mux) -> {mux, undefined};
+rtcp_args({port, Where}) -> {port, Where}.
+
+%% RFC 5761 5.1.1: a muxed offer is answered a=rtcp-mux; otherwise RTCP
+%% is on the port above the RTP one, which the answer leaves unsaid (RFC
+%% 3605)
+rtcp_lines(mux) -> [<<"a=rtcp-mux">>];
+rtcp_lines(port) -> [].
 
 store_ref(undefined) -> chappe_sip_call:new_ref();
 store_ref(R) -> R.

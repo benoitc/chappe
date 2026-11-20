@@ -44,6 +44,14 @@
 %% keys_over_tls => false takes such keys, for a recording client on a
 %% network the app trusts.
 %%
+%% RTCP (RFC 7866 8.1): each receiver reads the client's RTCP and sends it
+%% receiver reports. A stream offered with a=rtcp-mux is answered with
+%% a=rtcp-mux and takes RTCP on its RTP port (RFC 5761 5.1.1); any other
+%% takes it on the port above an even RTP port (RFC 3550 11), its reports
+%% sent to the offer's a=rtcp when it names another place (RFC 3605). The
+%% streams of a session share one random CNAME (RFC 7022), and an SRTP
+%% stream's reports are SRTCP under the key of its answer's a=crypto line.
+%%
 %% Each stream goes to its sink:
 %%   store => default | module()   a recording of the store, opened with
 %%       the call_ref of the metadata (the call_ref chappe's client puts
@@ -259,7 +267,10 @@ take(Req, Res, Sdp, Doc, Sink, Opts, {CallRef, Ip, Adv, Media}) ->
         call_ref => CallRef,
         sink => Sink,
         ip => Ip,
-        opts => Opts
+        opts => Opts,
+        %% one CNAME for every stream of the session (RFC 7866 8.1.5.1),
+        %% random (RFC 7022)
+        cname => chappe_audio_rtcp:cname()
     },
     {Sess, _} = chappe_sip_sdp:sections(Sdp),
     Taken = [

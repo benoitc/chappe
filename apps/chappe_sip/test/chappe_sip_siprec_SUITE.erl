@@ -49,6 +49,9 @@
          server_reoffer_old_hold/1, server_reoffer_drops_key/1,
          server_reoffer_same_key_new_suite/1,
          server_recvonly_offer/1]).
+-export([server_rtcp_mux/1, server_rtcp_port/1, server_srtcp_report/1,
+         server_reoffer_toggles_rtcp_mux/1, server_rtcp_port_only/1,
+         server_hold_offer_keeps_rtcp/1]).
 
 all() ->
     [invite_is_a_recording_session, chappe_as_recording_server,
@@ -79,11 +82,19 @@ all() ->
      server_reoffer_moves_behind_nat, server_reoffer_port_only,
      server_reoffer_old_hold, server_reoffer_drops_key,
      server_reoffer_same_key_new_suite,
-     server_recvonly_offer].
+     server_recvonly_offer, server_rtcp_mux, server_rtcp_port,
+     server_srtcp_report, server_reoffer_toggles_rtcp_mux,
+     server_rtcp_port_only, server_hold_offer_keeps_rtcp].
 
 -define(UA, chappe_sip_test_ua).
 -define(M, chappe_sip_siprec_meta).
 -define(SRTP, chappe_audio_test_srtp).
+-define(RTCP, chappe_audio_rtcp).
+-define(LO, {127, 0, 0, 1}).
+%% the first report comes within 2.5 s times 1.5, the next within 7.5 s
+-define(RR_WAIT, 9000).
+%% the middle 32 bits of the NTP time of sr/0
+-define(SR_LSR, 16#12345678).
 
 init_per_suite(Config) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
@@ -925,12 +936,14 @@ server_answers_on_the_wire(_Config) ->
 %% container publishes only those). A range of two serving one stream
 %% binds inside it; a range smaller than the streams refuses the extra
 %% ones with port 0; the siprec_rtp_ports config is the default; a range
-%% that is not one is badarg, answered 500.
+%% that is not one is badarg, answered 500. The streams mux their RTCP,
+%% so each takes one port; without a=rtcp-mux a stream takes an even port
+%% and the one above it, and a range of one port has no room for it.
 server_rtp_ports(_Config) ->
     #{ep := EP} = call(),
     Head = <<"v=0\r\no=src 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\n">>,
-    One = <<Head/binary, "m=audio 30000 RTP/AVP 0\r\na=sendonly\r\na=label:1\r\n">>,
-    Two = <<One/binary, "m=audio 30002 RTP/AVP 0\r\na=sendonly\r\na=label:2\r\n">>,
+    One = <<Head/binary, "m=audio 30000 RTP/AVP 0\r\na=rtcp-mux\r\na=sendonly\r\na=label:1\r\n">>,
+    Two = <<One/binary, "m=audio 30002 RTP/AVP 0\r\na=rtcp-mux\r\na=sendonly\r\na=label:2\r\n">>,
     P = free_ports(2),
     persistent_term:put(siprec_test_srs_opts, #{rtp_ports => {P, P + 1}}),
     R1 = wire_rs(EP, <<"sip:ports@127.0.0.1">>, One),
@@ -954,6 +967,14 @@ server_rtp_ports(_Config) ->
     ?assertEqual(200, ?UA:status(R3)),
     #{streams := [#{port := C}]} = got(srs_served),
     application:unset_env(chappe_sip, siprec_rtp_ports),
+    persistent_term:put(siprec_test_srs_opts, #{rtp_ports => {C, C}}),
+    Plain = <<Head/binary, "m=audio 30000 RTP/AVP 0\r\na=sendonly\r\na=label:1\r\n">>,
+    ?assertEqual(488, ?UA:status(wire_rs(EP, <<"sip:ports@127.0.0.1">>, Plain))),
+    {error, no_streams} = got(srs_served),
+    E = even_ports(),
+    persistent_term:put(siprec_test_srs_opts, #{rtp_ports => {E, E + 1}}),
+    ?assertEqual(200, ?UA:status(wire_rs(EP, <<"sip:ports@127.0.0.1">>, Plain))),
+    #{streams := [#{port := E}]} = got(srs_served),
     [begin
          persistent_term:put(siprec_test_srs_opts, #{rtp_ports => Bad}),
          R = wire_rs(EP, <<"sip:ports@127.0.0.1">>, One),
@@ -1015,7 +1036,7 @@ server_refuses_without_audio(_Config) ->
 server_rtp_ports_busy(_Config) ->
     #{ep := EP} = call(),
     Sdp = <<"v=0\r\no=src 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\n"
-            "m=audio 30000 RTP/AVP 0\r\na=sendonly\r\na=label:1\r\n">>,
+            "m=audio 30000 RTP/AVP 0\r\na=rtcp-mux\r\na=sendonly\r\na=label:1\r\n">>,
     P = free_ports(3),
     Busy = [begin {ok, S} = gen_udp:open(B, [binary, {ip, {127, 0, 0, 1}}]), S end
             || B <- [P, P + 1]],
@@ -1030,6 +1051,17 @@ server_rtp_ports_busy(_Config) ->
          receive {'DOWN', Mon, process, Pid, _} -> ok end
      end || _ <- lists:seq(1, 4)],
     [gen_udp:close(S) || S <- Busy].
+
+%% two free UDP ports on 127.0.0.1, the first even
+even_ports() ->
+    case free_ports(2) of
+        P when P rem 2 =:= 0 -> P;
+        _ -> even_ports()
+    end.
+
+%% the packet counters of a stream, without its RTCP statistics
+counts(S) ->
+    maps:with([packets, failed, replayed], chappe_audio_rtp:stats(S)).
 
 %% N consecutive UDP ports free on 127.0.0.1, the first returned
 free_ports(N) ->
@@ -1131,7 +1163,7 @@ server_takes_srtp(_Config) ->
     receive {chappe_sip_siprec_rtp, S1, {audio, _}} -> ct:fail(replayed_heard)
     after 300 -> ok
     end,
-    ?assertEqual(#{packets => 2, failed => 1, replayed => 1}, chappe_audio_rtp:stats(S1)),
+    ?assertEqual(#{packets => 2, failed => 1, replayed => 1}, counts(S1)),
     %% no key in the stream's status
     Status = iolist_to_binary(io_lib:format("~p", [sys:get_status(S1)])),
     Keys = [B || {_, B} <- maps:to_list(Snd), is_binary(B), byte_size(B) >= 14],
@@ -1211,7 +1243,7 @@ server_srtp_rekey(_Config) ->
     ok = Send(New, 12),
     receive {chappe_sip_siprec_rtp, S1, {audio, _}} -> ok after 2000 -> ct:fail(no_audio) end,
     receive {chappe_sip_siprec_rtp, S1, {audio, _}} -> ct:fail(old_key_heard) after 300 -> ok end,
-    ?assertEqual(#{packets => 2, failed => 1, replayed => 1}, chappe_audio_rtp:stats(S1)),
+    ?assertEqual(#{packets => 2, failed => 1, replayed => 1}, counts(S1)),
     %% the same key again changes nothing
     Peer ! {reinvite, Sdp(<<"7">>, New)},
     R3 = got(wire_reinvite),
@@ -1278,11 +1310,11 @@ server_srtp_flood(_Config) ->
 
 %% the stream's counters once they stop moving
 wait_stats(S) ->
-    wait_stats(S, chappe_audio_rtp:stats(S)).
+    wait_stats(S, counts(S)).
 
 wait_stats(S, Last) ->
     timer:sleep(200),
-    case chappe_audio_rtp:stats(S) of
+    case counts(S) of
         Last -> Last;
         Now -> wait_stats(S, Now)
     end.
@@ -1746,7 +1778,7 @@ server_reoffer_moves_source(_Config) ->
     receive {chappe_sip_siprec_rtp, S1, {audio, _}} -> ct:fail(heard_again)
     after 300 -> ok
     end,
-    ?assertEqual(#{packets => 2, failed => 0, replayed => 1}, chappe_audio_rtp:stats(S1)),
+    ?assertEqual(#{packets => 2, failed => 0, replayed => 1}, counts(S1)),
     gen_udp:close(A),
     gen_udp:close(B).
 
@@ -1793,7 +1825,7 @@ server_reoffer_moves_behind_nat(_Config) ->
     receive {chappe_sip_siprec_rtp, S1, {audio, _}} -> ct:fail(heard_again)
     after 300 -> ok
     end,
-    ?assertEqual(#{packets => 2, failed => 0, replayed => 1}, chappe_audio_rtp:stats(S1)),
+    ?assertEqual(#{packets => 2, failed => 0, replayed => 1}, counts(S1)),
     [gen_udp:close(S) || S <- [A, X, Y]].
 
 %% RFC 3264 8.3.2: a re-offer that leaves a stream no format the server
@@ -1996,6 +2028,294 @@ server_recvonly_offer(_Config) ->
     ?assertNot(lists:member(<<"a=recvonly">>, M3)),
     ?assertNot(lists:member(<<"a=sendonly">>, M3)),
     ?assert(is_process_alive(S1)).
+
+%% RFC 7866 8.1.1, RFC 5761 5.1.1: an offer with a=rtcp-mux is answered
+%% with a=rtcp-mux on each stream, and the RTCP of each stream is taken on
+%% its RTP port: the client's SR is read, and a receiver report about its
+%% RTP comes back from that port, then an SDES CNAME, the same CNAME on
+%% both streams of the session (RFC 7866 8.1.5.1, RFC 7022). The report
+%% block carries the SR's time (LSR, the middle 32 bits of its NTP) and
+%% the delay since (DLSR). No a=rtcp is answered, and the answer keeps
+%% PCMU and PCMA only, a dynamic payload type of the offer left out (RFC
+%% 5761 4: none in the RTCP range 64-95).
+%% req: R7866-8.1-1 R7866-8.1.1-2 R7866-8.1.5.1-2 R5761-5.1.1-2 R5761-5.1.1-3
+server_rtcp_mux(_Config) ->
+    #{ep := EP} = call(),
+    {ok, A} = gen_udp:open(0, [binary, {ip, ?LO}]),
+    {ok, B} = gen_udp:open(0, [binary, {ip, ?LO}]),
+    Sdp = <<(rtcp_head())/binary,
+            "m=audio ", (lport(A))/binary, " RTP/AVP 96 0 8\r\n"
+            "a=rtpmap:96 opus/48000/2\r\na=rtcp-mux\r\n"
+            "a=sendonly\r\na=label:1\r\n"
+            "m=audio ", (lport(B))/binary, " RTP/AVP 0\r\na=rtcp-mux\r\n"
+            "a=sendonly\r\na=label:2\r\n">>,
+    R = wire_rs(EP, <<"sip:sink@127.0.0.1">>, Sdp),
+    ?assertEqual(200, ?UA:status(R)),
+    {_, [A1, A2]} = chappe_sip_sdp:sections(?UA:body(R)),
+    ?assert(lists:member(<<"a=rtcp-mux">>, A1)),
+    ?assert(lists:member(<<"a=rtcp-mux">>, A2)),
+    ?assertEqual([], [L || <<"a=rtcp:", _/binary>> = L <- A1 ++ A2]),
+    ?assertMatch([<<"m=audio">>, _, <<"RTP/AVP">>, <<"0">>, <<"8">>],
+                 chappe_sip_sdp:words(hd(A1))),
+    ?assertEqual([], [L || <<"a=rtpmap:96", _/binary>> = L <- A1]),
+    #{streams := [#{pid := S1, port := P1}, #{port := P2}]} = got(srs_served),
+    ok = rtp_and_sr(A, P1, P1),
+    ok = rtp_and_sr(B, P2, P2),
+    {Rr1, {?LO, P1}} = rr_in(A),
+    {Rr2, {?LO, P2}} = rr_in(B),
+    ?assertMatch([#{type := rr, blocks := [#{ssrc := 16#1234, highest := 5}]},
+                  #{type := sdes} | _], Rr1),
+    ?assertMatch([#{type := rr, blocks := [#{ssrc := 16#1234, highest := 5}]} | _], Rr2),
+    [#{type := rr, blocks := [#{lsr := Lsr, dlsr := Dlsr}]} | _] = Rr1,
+    ?assertEqual(?SR_LSR, Lsr),
+    ?assert(Dlsr > 0),
+    ?assertMatch(#{rtcp_received := N} when N >= 1, chappe_audio_rtp:stats(S1)),
+    ?assertEqual(cname(Rr1), cname(Rr2)),
+    gen_udp:close(A),
+    gen_udp:close(B).
+
+%% RFC 3550 11, RFC 3605: without a=rtcp-mux the answer has none, the RTP
+%% port is even and RTCP is taken on the port above it, which the answer
+%% leaves unsaid (no a=rtcp). A stream whose offer names another RTCP
+%% address (a=rtcp with a port and an address) gets its reports there; a
+%% stream whose SR comes to the port above gets its report back where the
+%% SR came from (symmetric RTCP, RFC 7866 8.1.8). One CNAME for the
+%% session.
+%% req: R7866-8.1-1 R7866-8.1.1-2 R7866-8.1.5.1-2 R5761-5.1.1-4 R3605-2.1-1
+server_rtcp_port(_Config) ->
+    #{ep := EP} = call(),
+    {ok, A} = gen_udp:open(0, [binary, {ip, ?LO}]),
+    {ok, ARtcp} = gen_udp:open(0, [binary, {ip, ?LO}]),
+    {ok, B} = gen_udp:open(0, [binary, {ip, ?LO}]),
+    {ok, BRtcp} = gen_udp:open(0, [binary, {ip, ?LO}]),
+    Sdp = <<(rtcp_head())/binary,
+            "m=audio ", (lport(A))/binary, " RTP/AVP 0\r\n"
+            "a=rtcp:", (lport(ARtcp))/binary, " IN IP4 127.0.0.1\r\n"
+            "a=sendonly\r\na=label:1\r\n"
+            "m=audio ", (lport(B))/binary, " RTP/AVP 0\r\na=sendonly\r\na=label:2\r\n">>,
+    R = wire_rs(EP, <<"sip:sink@127.0.0.1">>, Sdp),
+    ?assertEqual(200, ?UA:status(R)),
+    {_, [A1, A2]} = chappe_sip_sdp:sections(?UA:body(R)),
+    ?assertEqual([], [L || <<"a=rtcp", _/binary>> = L <- A1 ++ A2]),
+    #{streams := [#{pid := S1, port := P1}, #{port := P2}]} = got(srs_served),
+    ?assertEqual(0, P1 rem 2),
+    ?assertEqual(0, P2 rem 2),
+    ?assertEqual(P1 + 1, chappe_audio_rtp:rtcp_port(S1)),
+    ok = rtp_and_sr(A, P1, none),
+    ok = rtp_and_sr(B, P2, none),
+    ok = gen_udp:send(BRtcp, ?LO, P2 + 1, sr()),
+    {Rr1, {?LO, From1}} = rr_in(ARtcp),
+    ?assertEqual(P1 + 1, From1),
+    {Rr2, {?LO, From2}} = rr_in(BRtcp),
+    ?assertEqual(P2 + 1, From2),
+    ?assertMatch([#{type := rr, blocks := [#{ssrc := 16#1234, highest := 5}]} | _], Rr1),
+    ?assertMatch([#{type := rr, blocks := [#{ssrc := 16#1234, highest := 5}]} | _], Rr2),
+    ?assertEqual(cname(Rr1), cname(Rr2)),
+    [gen_udp:close(S) || S <- [A, ARtcp, B, BRtcp]].
+
+%% RFC 3711 3.4, RFC 4568 7.1.2: on an SRTP stream the reports go out as
+%% SRTCP under the key of the server's own a=crypto line (its answer), not
+%% the client's; a re-INVITE with a new client key gets a new answer key,
+%% and the reports after it open with that one.
+%% req: R7866-8.1-1 R5761-7-1
+server_srtcp_report(_Config) ->
+    #{ep := EP} = call(),
+    {ok, A} = gen_udp:open(0, [binary, {ip, ?LO}]),
+    Old = ?SRTP:master(),
+    New = ?SRTP:master(),
+    Sdp = fun(V, Tag, M) ->
+              <<"v=0\r\no=src 1 ", V/binary, " IN IP4 127.0.0.1\r\ns=-\r\n"
+                "c=IN IP4 127.0.0.1\r\nt=0 0\r\n"
+                "m=audio ", (lport(A))/binary, " RTP/SAVP 0\r\n",
+                (crypto_line(<<Tag/binary, " AES_CM_128_HMAC_SHA1_80">>, M))/binary,
+                "a=rtcp-mux\r\na=sendonly\r\na=label:1\r\n">>
+          end,
+    {R, Peer} = wire_rs_session(EP, <<"sip:sink@127.0.0.1">>, Sdp(<<"1">>, <<"1">>, Old)),
+    ?assertEqual(200, ?UA:status(R)),
+    Ans1 = answer_key(?UA:body(R)),
+    #{streams := [#{port := P1}]} = got(srs_served),
+    Snd = ?SRTP:sender(Old),
+    [ok = gen_udp:send(A, ?LO, P1, ?SRTP:protect(rtp(0, Seq, <<0:1280>>), 0, Snd))
+     || Seq <- lists:seq(1, 5)],
+    ok = gen_udp:send(A, ?LO, P1, ?SRTP:protect_rtcp(sr(), 0, Snd)),
+    Pkt = udp_in(A),
+    ?assertEqual({error, invalid}, ?RTCP:parse(Pkt)),
+    ?assertMatch({error, _}, chappe_audio_srtp:unprotect_rtcp(Pkt, ctx(Old))),
+    {ok, Plain, _} = chappe_audio_srtp:unprotect_rtcp(Pkt, Ans1),
+    ?assertMatch({ok, [#{type := rr, blocks := [#{ssrc := 16#1234}]}, #{type := sdes} | _]},
+                 ?RTCP:parse(Plain)),
+    Peer ! {reinvite, Sdp(<<"2">>, <<"2">>, New)},
+    R2 = got(wire_reinvite),
+    ?assertEqual(200, ?UA:status(R2)),
+    Ans2 = answer_key(?UA:body(R2)),
+    %% a report sent before the 200 may still be on its way
+    ?assertMatch({ok, [#{type := rr} | _]}, opened_within(A, Ans2, 2)),
+    gen_udp:close(A).
+
+%% A re-offer that adds a=rtcp-mux to a kept stream restarts its receiver,
+%% as a profile change does: the answer has a new port with a=rtcp-mux,
+%% and the report comes back on it; dropping it again restarts it with
+%% RTCP on the port above.
+%% req: R5761-5.1.1-2
+server_reoffer_toggles_rtcp_mux(_Config) ->
+    #{ep := EP} = call(),
+    {ok, A} = gen_udp:open(0, [binary, {ip, ?LO}]),
+    Sdp = fun(V, Mux) ->
+              <<"v=0\r\no=src 1 ", V/binary, " IN IP4 127.0.0.1\r\ns=-\r\n"
+                "c=IN IP4 127.0.0.1\r\nt=0 0\r\n"
+                "m=audio ", (lport(A))/binary, " RTP/AVP 0\r\n", Mux/binary,
+                "a=sendonly\r\na=label:1\r\n">>
+          end,
+    {R, Peer} = wire_rs_session(EP, <<"sip:sink@127.0.0.1">>, Sdp(<<"1">>, <<>>)),
+    ?assertEqual(200, ?UA:status(R)),
+    #{streams := [#{pid := S1}]} = got(srs_served),
+    Peer ! {reinvite, Sdp(<<"2">>, <<"a=rtcp-mux\r\n">>)},
+    R2 = got(wire_reinvite),
+    {_, [M2]} = chappe_sip_sdp:sections(?UA:body(R2)),
+    ?assert(lists:member(<<"a=rtcp-mux">>, M2)),
+    ?assertNot(is_process_alive(S1)),
+    P2 = m_port(M2),
+    ok = rtp_and_sr(A, P2, P2),
+    {[#{type := rr} | _], {?LO, P2}} = rr_in(A),
+    Peer ! {reinvite, Sdp(<<"3">>, <<>>)},
+    R3 = got(wire_reinvite),
+    {_, [M3]} = chappe_sip_sdp:sections(?UA:body(R3)),
+    ?assertNot(lists:member(<<"a=rtcp-mux">>, M3)),
+    P3 = m_port(M3),
+    ?assertNotEqual(0, P3),
+    ?assertEqual(0, P3 rem 2),
+    {ok, ARtcp} = gen_udp:open(0, [binary, {ip, ?LO}]),
+    ok = rtp_and_sr(A, P3, none),
+    ok = gen_udp:send(ARtcp, ?LO, P3 + 1, sr()),
+    {[#{type := rr} | _], {?LO, From3}} = rr_in(ARtcp),
+    ?assertEqual(P3 + 1, From3),
+    [gen_udp:close(S) || S <- [A, ARtcp]].
+
+%% RFC 3605: an a=rtcp with a port only names that port at the media's
+%% address; the reports go there, though it is not the port above the
+%% RTP one, until RTCP comes from the source, then where it came from
+%% (RFC 7866 8.1.8).
+%% req: R3605-2.1-1
+server_rtcp_port_only(_Config) ->
+    #{ep := EP} = call(),
+    {ok, A} = gen_udp:open(0, [binary, {ip, ?LO}]),
+    {ok, ARtcp} = gen_udp:open(0, [binary, {ip, ?LO}]),
+    {ok, C} = gen_udp:open(0, [binary, {ip, ?LO}]),
+    ?assertNotEqual(?UA:lport(A) + 1, ?UA:lport(ARtcp)),
+    Sdp = <<(rtcp_head())/binary,
+            "m=audio ", (lport(A))/binary, " RTP/AVP 0\r\n"
+            "a=rtcp:", (lport(ARtcp))/binary, "\r\n"
+            "a=sendonly\r\na=label:1\r\n">>,
+    R = wire_rs(EP, <<"sip:sink@127.0.0.1">>, Sdp),
+    ?assertEqual(200, ?UA:status(R)),
+    {_, [A1]} = chappe_sip_sdp:sections(?UA:body(R)),
+    ?assertEqual([], [L || <<"a=rtcp", _/binary>> = L <- A1]),
+    #{streams := [#{port := P1}]} = got(srs_served),
+    ok = rtp_and_sr(A, P1, none),
+    {[#{type := rr} | _], {?LO, From1}} = rr_in(ARtcp),
+    ?assertEqual(P1 + 1, From1),
+    ok = gen_udp:send(C, ?LO, P1 + 1, sr()),
+    {[#{type := rr} | _], {?LO, From2}} = rr_in(C),
+    ?assertEqual(P1 + 1, From2),
+    [gen_udp:close(S) || S <- [A, ARtcp, C]].
+
+%% A stream first offered on hold (c=0.0.0.0) has no address to compare
+%% its a=rtcp with; its first re-offer off hold is no RTCP move (RFC 3264
+%% 8.4): the receiver and its port are kept.
+server_hold_offer_keeps_rtcp(_Config) ->
+    #{ep := EP} = call(),
+    {ok, A} = gen_udp:open(0, [binary, {ip, ?LO}]),
+    {ok, ARtcp} = gen_udp:open(0, [binary, {ip, ?LO}]),
+    Sdp = fun(V, Addr) ->
+              <<"v=0\r\no=src 1 ", V/binary, " IN IP4 127.0.0.1\r\ns=-\r\n"
+                "c=IN IP4 ", Addr/binary, "\r\nt=0 0\r\n"
+                "m=audio ", (lport(A))/binary, " RTP/AVP 0\r\n"
+                "a=rtcp:", (lport(ARtcp))/binary, " IN IP4 127.0.0.1\r\n"
+                "a=sendonly\r\na=label:1\r\n">>
+          end,
+    {R, Peer} = wire_rs_session(EP, <<"sip:sink@127.0.0.1">>,
+                                Sdp(<<"1">>, <<"0.0.0.0">>)),
+    ?assertEqual(200, ?UA:status(R)),
+    {_, [M1]} = chappe_sip_sdp:sections(?UA:body(R)),
+    #{streams := [#{pid := S1}]} = got(srs_served),
+    Peer ! {reinvite, Sdp(<<"2">>, <<"127.0.0.1">>)},
+    R2 = got(wire_reinvite),
+    ?assertEqual(200, ?UA:status(R2)),
+    {_, [M2]} = chappe_sip_sdp:sections(?UA:body(R2)),
+    ?assertEqual(m_port(M1), m_port(M2)),
+    ?assert(is_process_alive(S1)),
+    Peer ! {reinvite, Sdp(<<"3">>, <<"127.0.0.1">>)},
+    R3 = got(wire_reinvite),
+    {_, [M3]} = chappe_sip_sdp:sections(?UA:body(R3)),
+    ?assertEqual(m_port(M1), m_port(M3)),
+    ?assert(is_process_alive(S1)),
+    [gen_udp:close(S) || S <- [A, ARtcp]].
+
+rtcp_head() ->
+    <<"v=0\r\no=src 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\n">>.
+
+lport(Sock) ->
+    integer_to_binary(?UA:lport(Sock)).
+
+m_port(M) ->
+    [_, Port | _] = chappe_sip_sdp:words(hd(M)),
+    binary_to_integer(Port).
+
+%% five RTP packets to Port, then an SR to RtcpPort (none: no SR)
+rtp_and_sr(Sock, Port, RtcpPort) ->
+    [ok = gen_udp:send(Sock, ?LO, Port, rtp(0, Seq, <<0:1280>>)) || Seq <- lists:seq(1, 5)],
+    case RtcpPort of
+        none -> ok;
+        _ -> gen_udp:send(Sock, ?LO, RtcpPort, sr())
+    end.
+
+%% the client's SR, SSRC 16#1234 as rtp/3 sends, with its CNAME
+sr() ->
+    ?RTCP:build([
+        #{type => sr, ssrc => 16#1234, ntp => 16#E0001234_56780000,
+          ts => 800, packets => 5, octets => 800, blocks => []},
+        #{type => sdes, chunks => [{16#1234, [{cname, <<"src@siprec">>}]}]}
+    ]).
+
+udp_in(Sock) ->
+    receive {udp, Sock, _, _, Bin} -> Bin
+    after ?RR_WAIT -> ct:fail(no_report)
+    end.
+
+%% the next RTCP report on Sock and where it came from
+rr_in(Sock) ->
+    receive
+        {udp, Sock, Ip, Port, Bin} ->
+            {ok, Parts} = ?RTCP:parse(Bin),
+            {Parts, {Ip, Port}}
+    after ?RR_WAIT -> ct:fail(no_report)
+    end.
+
+cname(Parts) ->
+    [C] = [C || #{type := sdes, chunks := Cs} <- Parts, {_, Items} <- Cs,
+                {cname, C} <- Items],
+    C.
+
+%% the first of N packets on Sock that Ctx opens, parsed
+opened_within(_Sock, _Ctx, 0) ->
+    ct:fail(no_report_under_the_new_key);
+opened_within(Sock, Ctx, N) ->
+    case chappe_audio_srtp:unprotect_rtcp(udp_in(Sock), Ctx) of
+        {ok, Plain, _} -> ?RTCP:parse(Plain);
+        {error, _} -> opened_within(Sock, Ctx, N - 1)
+    end.
+
+%% an SRTP context of the key of the answer's a=crypto line
+answer_key(Sdp) ->
+    {_, [M]} = chappe_sip_sdp:sections(Sdp),
+    {ok, C} = chappe_sip_sdes:select(M),
+    {ok, Ctx} = chappe_audio_srtp:new(maps:with([suite, key, salt], C)),
+    Ctx.
+
+ctx(<<Key:16/binary, Salt:14/binary>>) ->
+    {ok, Ctx} = chappe_audio_srtp:new(#{suite => aes_cm_128_hmac_sha1_80,
+                                         key => Key, salt => Salt}),
+    Ctx.
 
 drain_audio(S) ->
     receive {chappe_sip_siprec_rtp, S, {audio, _}} -> drain_audio(S) after 0 -> ok end.
