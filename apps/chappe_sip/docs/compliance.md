@@ -5,7 +5,7 @@ the `%% req:` annotations in `test/*_SUITE.erl` and `test/*_tests.erl`, and
 the results of the newest Common Test run and EUnit reports. Do not edit
 by hand.
 
-1394 requirements: 817 pass, 0 fail, 307 untested, 247 n/a, 21 deviation, 2 spec defect
+1408 requirements: 831 pass, 0 fail, 307 untested, 247 n/a, 21 deviation, 2 spec defect
 
 What chappe does not meet on purpose, and why, is listed under
 [Deviations](#deviations).
@@ -74,10 +74,11 @@ What chappe does not meet on purpose, and why, is listed under
 | replaces | 10 | 0 | 10 | 5 |
 | route | 8 | 0 | 0 | 0 |
 | rport | 2 | 0 | 6 | 4 |
+| rtcp | 8 | 0 | 0 | 0 |
 | sdp | 1 | 0 | 0 | 0 |
 | sdp-oa | 12 | 0 | 7 | 129 |
 | sipfrag | 3 | 0 | 9 | 3 |
-| siprec | 26 | 0 | 3 | 1 |
+| siprec | 32 | 0 | 3 | 1 |
 | sips | 5 | 0 | 0 | 0 |
 | srtp | 15 | 0 | 3 | 1 |
 | target-dialog | 7 | 0 | 6 | 4 |
@@ -1466,6 +1467,12 @@ What chappe does not meet on purpose, and why, is listed under
 | R7866-6.2-2 | MUST | siprec | platform | pass | chappe_sip_siprec_SUITE:server_answers_on_the_wire | The SRS MUST include the "+sip.srs" feature tag in the Contact URI, as per [RFC3840], for all RSs. |
 | R7866-7.2-1 | desc | siprec | platform | pass | chappe_sip_siprec_SUITE:server_answers_on_the_wire, chappe_sip_siprec_SUITE:srs_reinvite_more_streams | Typically, the SRS only receives RTP streams from the SRC; therefore, the SDP offer/answer from the SRS normally sets each media stream to receive media, by setting them with the "a=recvonly" attribute, according to the procedures of [RFC3264]. |
 | R7866-8.3.1-1 | MUST | siprec | platform | pass | chappe_sip_siprec_SUITE:server_answers_on_the_wire | The SDP answer from the SRS MUST include all m-lines, with any rejected m-lines indicated with a zero port, per [RFC3264]. |
+| R3264-6-1 | MUST | siprec | platform | pass | chappe_sip_siprec_SUITE:server_reoffer_adds_stream | For each "m=" line in the offer, there MUST be a corresponding "m=" line in the answer. |
+| R3264-6.1-1 | MUST | siprec | platform | pass | chappe_sip_siprec_SUITE:server_answers_inactive_offer, chappe_sip_siprec_SUITE:server_recvonly_offer, chappe_sip_siprec_SUITE:server_reoffer_direction, chappe_sip_siprec_SUITE:server_reoffer_old_hold | If a stream is offered as sendonly, the corresponding stream MUST be marked as recvonly or inactive in the answer. If an offered media stream is listed as inactive, it MUST be marked as inactive in the answer. |
+| R3311-5.2-2 | MUST | siprec | platform | pass | chappe_sip_siprec_SUITE:server_update_offer | If the session description has changed, the UAS MUST adjust the session parameters accordingly and generate an answer in the 2xx response. |
+| R3264-8.3.1-1 | MAY | siprec | platform | pass | chappe_sip_siprec_SUITE:server_reoffer_moves_behind_nat, chappe_sip_siprec_SUITE:server_reoffer_moves_source, chappe_sip_siprec_SUITE:server_reoffer_port_only | The port number for a stream MAY be changed. |
+| R3264-8.3.1-2 | MAY | siprec | platform | pass | chappe_sip_siprec_SUITE:server_reoffer_changes_profile | The transport for a stream MAY be changed. |
+| R3264-8.3.2-1 | MAY | siprec | platform | pass | chappe_sip_siprec_SUITE:server_reoffer_drops_g711, chappe_sip_siprec_SUITE:server_reoffer_follows_formats | The list of media formats used in the session MAY be changed. |
 | R7865-10-2 | MUST NOT | siprec | platform | pass | chappe_sip_siprec_SUITE:server_writes_store | For the sake of data minimization, the SRS MUST NOT record additional metadata that is not explicitly required by local policy. |
 | R6341-REQ-012 | MUST | siprec | platform | untested | chappe_sip_siprec_live_SUITE:both_parties_recorded | REQ-012: The mechanism MUST include a means for providing the SRS with metadata describing CSs that are being recorded, including the media being used and the identifiers of parties involved. |
 | R7866-9.2-3 | desc | siprec | platform | pass | chappe_sip_siprec_SUITE:server_metadata_update | Since the SRC can send partial updates based on the previous update, the SRS needs to keep track of the sequence of updates from the SRC. |
@@ -1480,11 +1487,19 @@ What chappe does not meet on purpose, and why, is listed under
 | R3711-3.4-1 | REQUIRED | srtp | platform | pass | chappe_sip_siprec_SUITE:server_takes_srtp | Message authentication for RTCP is REQUIRED, as it is the control protocol (e.g., it has a BYE packet) for RTP. |
 | R3711-4.3-1 | MUST | srtp | platform | pass | chappe_sip_siprec_SUITE:server_takes_srtp | Regardless of the encryption or message authentication transform that is employed (it may be an SRTP pre-defined transform or newly introduced according to Section 6), interoperable SRTP implementations MUST use the SRTP key derivation to generate session keys. |
 | R4568-5.1.2-1 | MUST | srtp | platform | pass | chappe_sip_siprec_SUITE:server_takes_srtp | When the answerer receives the initial offer with one or more crypto attributes for a given unicast media stream, the answerer MUST either accept exactly one of the offered crypto attributes, or the offered stream MUST be rejected. |
-| R4568-5.1.2-2 | MUST | srtp | platform | pass | chappe_sip_siprec_SUITE:server_refuses_srtp_it_cannot_take | If there are one or more crypto attributes in the offer, but none of them are valid or none of the valid ones are supported, the offered media stream MUST be rejected. |
+| R4568-5.1.2-2 | MUST | srtp | platform | pass | chappe_sip_siprec_SUITE:server_refuses_srtp_it_cannot_take, chappe_sip_siprec_SUITE:server_reoffer_drops_key, chappe_sip_siprec_SUITE:server_reoffer_same_key_new_suite | If there are one or more crypto attributes in the offer, but none of them are valid or none of the valid ones are supported, the offered media stream MUST be rejected. |
 | R4568-5.1.2-3 | MUST | srtp | platform | pass | chappe_sip_siprec_SUITE:server_takes_srtp | The tag and crypto-suite from the accepted crypto attribute in the offer (the same crypto-suite MUST be used in the send and receive direction). |
 | R4568-6.1-1 | MUST NOT | srtp | platform | pass | chappe_sip_siprec_SUITE:server_srtp_lifetime | Compliant implementations obey the policies associated with a master key and MUST NOT accept incoming packets that violate the policy (e.g., after the master key lifetime has expired). |
 | R4568-6.1-2 | MUST | srtp | platform | pass | chappe_sip_siprec_SUITE:server_refuses_srtp_it_cannot_take | If the length (after being decoded from base64) does not match that specified for the crypto-suite, the crypto attribute in question MUST be considered invalid. |
 | R4568-6.3.7-1 | MUST | srtp | platform | pass | chappe_sip_siprec_SUITE:server_refuses_srtp_it_cannot_take | If an SDP crypto attribute is received with an unknown session parameter that is not prefixed with a "-" character, that crypto attribute MUST be considered invalid. |
 | R4568-6.4.1-1 | MUST | srtp | platform | pass | chappe_sip_siprec_SUITE:server_takes_srtp | Media packets are authenticated: authentication MUST succeed; otherwise, the crypto context is not instantiated. |
 | R4568-7.1.2-1 | MUST | srtp | platform | untested | chappe_sip_siprec_SUITE:server_takes_srtp, chappe_sip_siprec_live_SUITE:srtp_call_recorded | When the answerer accepts an SRTP unicast media stream with a crypto line, the answerer MUST include one or more master keys appropriate for the selected crypto algorithm; the master key(s) included in the answer MUST be different from those in the offer. |
-| R4568-8.3-1 | REQUIRED | srtp | platform | pass | chappe_sip_siprec_SUITE:server_refuses_srtp_it_cannot_take | Furthermore, IT IS REQUIRED that encryption of the encapsulating payload be used whenever a master key parameter (inline) appears in the message. |
+| R4568-8.3-1 | REQUIRED | srtp | platform | pass | chappe_sip_siprec_SUITE:server_keys_over_wss, chappe_sip_siprec_SUITE:server_refuses_srtp_it_cannot_take, chappe_sip_siprec_SUITE:server_sips_over_udp, chappe_sip_siprec_SUITE:server_udp_rekey | Furthermore, IT IS REQUIRED that encryption of the encapsulating payload be used whenever a master key parameter (inline) appears in the message. |
+| R7866-8.1-1 | desc | rtcp | platform | pass | chappe_sip_siprec_SUITE:server_rtcp_mux, chappe_sip_siprec_SUITE:server_rtcp_port, chappe_sip_siprec_SUITE:server_srtcp_report | This section briefly describes important RTP/RTCP constructs and mechanisms that are particularly useful within the context of SIPREC. |
+| R7866-8.1.1-2 | REQUIRED | rtcp | platform | pass | chappe_sip_siprec_SUITE:server_rtcp_mux, chappe_sip_siprec_SUITE:server_rtcp_port | Support for RTCP is REQUIRED, per [RFC3550], and it provides, among other things, the following important functionality in relation to SIPREC: |
+| R7866-8.1.5.1-2 | desc | rtcp | platform | pass | chappe_sip_siprec_SUITE:server_rtcp_mux, chappe_sip_siprec_SUITE:server_rtcp_port | It is important that the SRC and recording-aware UAs generate CNAMEs appropriately and that the SRC and SRS interpret and use them for this purpose. |
+| R5761-5.1.1-2 | MUST | rtcp | platform | pass | chappe_sip_siprec_SUITE:server_reoffer_toggles_rtcp_mux, chappe_sip_siprec_SUITE:server_rtcp_mux | If the answerer wishes to multiplex RTP and RTCP onto a single port, it MUST include a media-level "a=rtcp-mux" attribute in the answer. |
+| R5761-5.1.1-3 | MUST | rtcp | platform | pass | chappe_sip_siprec_SUITE:server_rtcp_mux | The RTP payload types used in the answer MUST conform to the rules in Section 4. |
+| R5761-5.1.1-4 | desc | rtcp | platform | pass | chappe_sip_siprec_SUITE:server_rtcp_port | Instead, it should send and receive RTCP on a port allocated according to the usual port-selection rules (either the port pair, or a signalled port if the "a=rtcp:" attribute [10] is also included). |
+| R5761-7-1 | MUST | rtcp | platform | pass | chappe_sip_siprec_SUITE:server_srtcp_report | If the Secure Real-time Transport Protocol (SRTP) [13] is to be used in conjunction with multiplexed RTP and RTCP, then multiplexing MUST be done below the SRTP layer. |
+| R3605-2.1-1 | desc | rtcp | platform | pass | chappe_sip_siprec_SUITE:server_rtcp_port, chappe_sip_siprec_SUITE:server_rtcp_port_only | The RTCP attribute is used to document the RTCP port used for media stream, when that port is not the next higher (odd) port number following the RTP port described in the media line. |
