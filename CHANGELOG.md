@@ -7,6 +7,12 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 
 ## Unreleased
 
+- chappe_sip: loading a new copy of the SIP engine library into a running
+  node could leave the stack unable to start, or tear the library down
+  under a live call. An in-place upgrade is now refused. Use
+  `chappe_sip_nif:replace/0` with the stack stopped instead: it refuses
+  while an engine runs and blocks new starts until the reload is done.
+  The engine design doc explains what to do when a reload fails halfway.
 - chappe_sip: a NOTIFY from another fork of a subscription could be
   answered 500 instead of 200 when the stack was busy, because the request
   ended before the new subscription had answered it. The new subscription
