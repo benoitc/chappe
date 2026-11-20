@@ -300,6 +300,14 @@ typedef struct engine {
 
 static ErlNifResourceType *ENGINE_RT = NULL;
 
+/* Drop one engine ref. Under TSan the release orders what this thread did
+ * to e before the destructor, which may run on another thread once ERTS's
+ * (uninstrumented) refcount reaches 0, and acquires there. */
+static void engine_unref(engine_t *e) {
+    TSAN_RELEASE(e);
+    enif_release_resource(e);
+}
+
 /* The statics below are shared by every module instance that loaded this
  * image (the same file loaded again while an old instance is still alive).
  * Once the last resource of a purged instance goes, ERTS runs its unload
@@ -1758,7 +1766,7 @@ static void op_cb(su_root_magic_t *magic, su_msg_r msg, su_msg_arg_t *arg) {
         break;
     }
     op_free_payload(op);
-    enif_release_resource(e);
+    engine_unref(e);
 }
 
 /* Post an op to the stack thread. Caller MUST hold root_lock (read) and have
@@ -1773,7 +1781,7 @@ NODISCARD static int enqueue_locked(engine_t *e, const op_t *tpl) {
     op->e = e;
     enif_keep_resource(e);
     if (su_msg_send(msg) != 0) {
-        enif_release_resource(e);
+        engine_unref(e);
         su_msg_destroy(msg);
         return -1;
     }
@@ -2161,7 +2169,7 @@ static engine_t *g_unjoined = NULL;
  * it. The caller claimed e from g_unjoined. */
 static void join_thread(engine_t *e) {
     if (atomic_exchange(&e->tid_valid, 0)) enif_thread_join(e->tid, NULL);
-    enif_release_resource(e);
+    engine_unref(e);
 }
 
 /* claim e's thread for joining: 1 when the caller must join_thread it */
@@ -2213,6 +2221,7 @@ static void release_slot(engine_t *e) {
 static void engine_dtor(ErlNifEnv *env, void *obj) {
     (void)env;
     engine_t *e = obj;
+    TSAN_ACQUIRE(e);   /* every engine_unref happened before */
     /* The stack thread's ref goes only once the thread is joined
      * (join_thread), so reaching refcount 0 here means the thread is gone (or
      * never existed): no stop, wait or join is needed, memory is never freed
@@ -2422,7 +2431,7 @@ static ERL_NIF_TERM slot_taken(int st) {
 /* a start that never got its thread: free the singleton and the engine */
 static ERL_NIF_TERM start_refused(ErlNifEnv *env, engine_t *e) {
     release_slot(e);
-    enif_release_resource(e);
+    engine_unref(e);
     return enif_make_tuple2(env, am_error, am_badarg);
 }
 
@@ -2485,9 +2494,9 @@ static ERL_NIF_TERM nif_start(ErlNifEnv *env, int argc,
      * engine is unjoined), where a stop or a reaper claims the join. */
     enif_keep_resource(e);
     if (enif_thread_create("chappe_sip_stack", &e->tid, stack_main, e, NULL) != 0) {
-        enif_release_resource(e);   /* the thread ref (thread never ran) */
+        engine_unref(e);   /* the thread ref (thread never ran) */
         release_slot(e);
-        enif_release_resource(e);   /* the start ref */
+        engine_unref(e);   /* the start ref */
         return enif_make_tuple2(env, am_error,
                                 mkbin(env, "thread_create failed", 20));
     }
@@ -2505,7 +2514,7 @@ static ERL_NIF_TERM nif_start(ErlNifEnv *env, int argc,
             if (claim_thread(e)) join_thread(e);
             release_slot(e);
             ERL_NIF_TERM why = mkbin(env, e->errbuf, strlen(e->errbuf));
-            enif_release_resource(e);
+            engine_unref(e);
             return enif_make_tuple2(
                 env, am_error, enif_make_tuple2(env, am_engine_start, why));
         }
@@ -2521,7 +2530,7 @@ static ERL_NIF_TERM nif_start(ErlNifEnv *env, int argc,
             int einit = ST_INIT;
             if (atomic_compare_exchange_strong(&e->state, &einit, ST_STOPPING)) {
                 atomic_store(&g_engine_state, G_STOPPING);
-                enif_release_resource(e);   /* the start ref */
+                engine_unref(e);   /* the start ref */
                 return enif_make_tuple2(env, am_error, am_hung);
             }
             continue;
@@ -2537,12 +2546,12 @@ static ERL_NIF_TERM nif_start(ErlNifEnv *env, int argc,
          * G_STOPPING; its ref keeps e alive, and the destructor releases the
          * slot once it exits. */
         if (stop_wait_join(e)) release_slot(e);
-        enif_release_resource(e);
+        engine_unref(e);
         return enif_make_tuple2(env, am_error, am_badarg);
     }
 
     ERL_NIF_TERM ref = enif_make_resource(env, e);
-    enif_release_resource(e); /* term holds it now */
+    engine_unref(e); /* term holds it now */
     return enif_make_tuple2(env, am_ok, ref);
 }
 
