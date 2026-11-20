@@ -47,6 +47,7 @@
          server_udp_rekey/1, server_reoffer_follows_formats/1,
          server_reoffer_moves_behind_nat/1, server_reoffer_port_only/1,
          server_reoffer_old_hold/1, server_reoffer_drops_key/1,
+         server_reoffer_same_key_new_suite/1,
          server_recvonly_offer/1]).
 
 all() ->
@@ -77,6 +78,7 @@ all() ->
      server_udp_rekey, server_reoffer_follows_formats,
      server_reoffer_moves_behind_nat, server_reoffer_port_only,
      server_reoffer_old_hold, server_reoffer_drops_key,
+     server_reoffer_same_key_new_suite,
      server_recvonly_offer].
 
 -define(UA, chappe_sip_test_ua).
@@ -1938,6 +1940,35 @@ server_reoffer_drops_key(_Config) ->
     {_, [N1, N2]} = chappe_sip_sdp:sections(?UA:body(R3)),
     ?assertMatch(<<"m=audio 0 RTP/SAVP", _/binary>>, hd(N1)),
     ?assertNotMatch(<<"m=audio 0 ", _/binary>>, hd(N2)).
+
+%% RFC 4568 7.1.2 and 6.1: a re-offer with the same key under another tag
+%% or another suite is answered with that tag and that suite.
+%% req: R4568-5.1.2-2
+server_reoffer_same_key_new_suite(_Config) ->
+    #{ep := EP} = call(),
+    Key = ?SRTP:master(),
+    Sdp = fun(V, Tag) ->
+              K = crypto_line(Tag, Key),
+              <<"v=0\r\no=src 1 ", V/binary, " IN IP4 127.0.0.1\r\ns=-\r\n"
+                "c=IN IP4 127.0.0.1\r\nt=0 0\r\n"
+                "m=audio 30000 RTP/SAVP 0\r\n", K/binary,
+                "a=sendonly\r\na=label:1\r\n">>
+          end,
+    Crypto = fun(R) ->
+                 {_, [M]} = chappe_sip_sdp:sections(?UA:body(R)),
+                 [L || <<"a=crypto:", _/binary>> = L <- M]
+             end,
+    {R, Peer} = wire_rs_session(EP, <<"sip:sink@127.0.0.1">>,
+                                Sdp(<<"1">>, <<"1 AES_CM_128_HMAC_SHA1_80">>)),
+    ?assertEqual(200, ?UA:status(R)),
+    #{streams := [#{pid := S1}]} = got(srs_served),
+    Peer ! {reinvite, Sdp(<<"2">>, <<"2 AES_CM_128_HMAC_SHA1_80">>)},
+    R2 = got(wire_reinvite),
+    ?assertMatch([<<"a=crypto:2 AES_CM_128_HMAC_SHA1_80 ", _/binary>>], Crypto(R2)),
+    Peer ! {reinvite, Sdp(<<"3">>, <<"2 AES_CM_128_HMAC_SHA1_32">>)},
+    R3 = got(wire_reinvite),
+    ?assertMatch([<<"a=crypto:2 AES_CM_128_HMAC_SHA1_32 ", _/binary>>], Crypto(R3)),
+    ?assert(is_process_alive(S1)).
 
 %% RFC 3264 6.1: a recvonly offer (the SRC does not send) is answered
 %% inactive, at the start and in a re-offer, and a sendonly re-offer

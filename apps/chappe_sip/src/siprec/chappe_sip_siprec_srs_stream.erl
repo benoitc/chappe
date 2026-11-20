@@ -199,16 +199,18 @@ crypto_line(Lines, C) ->
      || L <- Lines
     ].
 
-%% what tells a key line from another without keeping its key: a new tag
-%% with the same key is answered with that tag
-key_hash(#{tag := Tag, key := K, salt := S}) ->
-    crypto:hash(sha256, [Tag, 0, K, S]).
+%% what tells a key line from another without keeping its key: the tag and
+%% every parameter the SRTP context is built from, so a new tag or suite
+%% with the same key is rekeyed and answered with that tag and suite
+key_hash(C = #{tag := Tag}) ->
+    crypto:hash(sha256, term_to_binary({Tag, srtp_params(C)})).
+
+srtp_params(C) ->
+    maps:with([suite, key, salt, mki, lifetime, window], C).
 
 srtp_ctx(C) ->
     case
-        chappe_audio_srtp:new(
-            maps:with([suite, key, salt, mki, lifetime, window], C)
-        )
+        chappe_audio_srtp:new(srtp_params(C))
     of
         {ok, Ctx} -> {ok, Ctx};
         {error, _} -> error

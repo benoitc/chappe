@@ -59,7 +59,7 @@ takes its options from its caller; one timing is fixed:
 
 | What | Value | What it does |
 |---|---|---|
-| Move grace | 1 s | After `chappe_audio_rtp:remote/2` (the sender moved), packets from the source latched before are dropped for this long. Past it, with no new source latched, that source may latch again, so a sender whose SDP port alone changed is heard again. |
+| Move grace | 1 s | After `chappe_audio_rtp:remote/2` (the sender moved), packets from the source latched before are dropped for this long. Past it, with no new source latched, that source may latch again when its address is the new remote address (any port), so a sender whose SDP port alone changed is heard again. |
 
 ## Storage options
 
