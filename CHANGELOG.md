@@ -7,6 +7,14 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 
 ## Unreleased
 
+- chappe_sip: the SIPREC recording server now sends RTCP receiver reports
+  to the recording client and reads the client's own reports, as RFC 7866
+  asks. A client that offers RTCP on the RTP port gets that in the answer;
+  otherwise RTCP uses the port above each stream's RTP port, or the one
+  the client names. All the streams of one recording carry the same name in
+  their reports, and on an encrypted stream the reports are encrypted too.
+  Each stream that does not share its RTCP port now takes two ports of a
+  configured port range instead of one, so a tight range may need to grow.
 - chappe_sip: the SIPREC recording server now answers re-offers as RFC
   3264 asks. A paused recording (an inactive re-INVITE) is answered
   inactive instead of recvonly, a re-INVITE that adds a stream gets an

@@ -186,8 +186,41 @@ server of the node, use the `siprec_rtp_ports` setting (see
 that is not `{Min, Max}` with `0 < Min =< Max < 65536` is
 `{error, badarg}`, and the INVITE gets 500.
 
-The receiver takes no RTCP, so it needs one port per stream: size the range
-for `max_streams` times the sessions you serve at once.
+A stream whose offer has `a=rtcp-mux` takes one port, its RTCP on the RTP
+port. Any other stream takes two, an even port for RTP and the one above it
+for RTCP (RFC 3550 11), so the range needs that pair free. Size the range
+for `max_streams` times the sessions you serve at once, twice over for
+clients that do not mux RTCP.
+
+### RTCP from the recording server
+
+You need nothing to turn it on: each stream reads the client's RTCP and
+sends it receiver reports (RFC 7866 8.1.1), so the client learns what the
+server loses.
+
+- An offer with `a=rtcp-mux` gets `a=rtcp-mux` back, and RTCP stays on the
+  RTP port (RFC 5761).
+- Without it, RTCP goes to the port above the RTP port. The answer says
+  nothing about it, as that is the default. When the offer's `a=rtcp`
+  names another port or address (RFC 3605), the reports go there until the
+  client's own RTCP arrives; then they go back where it came from
+  (symmetric RTCP).
+- Every stream of one recording session carries the same random CNAME
+  (RFC 7022), so the client can tie them together.
+- On an SRTP stream the reports are SRTCP under the key of the server's own
+  `a=crypto` line. A re-INVITE that changes the client's key gets a new
+  server key, and the reports follow it.
+- A re-INVITE that adds or drops `a=rtcp-mux`, or moves `a=rtcp`, on a
+  stream restarts that stream's receiver on a new port, as a change of
+  profile does; its recording starts again.
+
+Read what a stream heard from its source:
+
+```erlang
+#{streams := [#{pid := Stream} | _]} = Srs,
+#{rtcp_sent := _, rtcp_received := _, sources := _} =
+    chappe_audio_rtp:stats(Stream).
+```
 
 ## Keep the recording as secure as the call
 
@@ -239,7 +272,8 @@ chappe_sip_siprec_srs:run(Srs).
 
 For each secure stream the server takes the first `a=crypto` line it
 supports, answers it with a line of its own (the same tag and suite, a key
-of its own it never uses, since it only receives), and authenticates,
+of its own that protects only its RTCP reports, since it sends no media),
+and authenticates,
 checks for replay and decrypts each packet before it is decoded. A
 re-INVITE with a new key gives the stream the new key.
 
@@ -316,5 +350,5 @@ called from any node with the call's `b2b` handle (from
   `chappe_audio_srtp_tests`, `chappe_audio_rtp_SUITE`, `chappe_sip_sdes_tests`,
   `chappe_sip_siprec_live_SUITE` (`make interop`).
 - Specs: RFC 7866 (updated by RFC 9806), RFC 7865, RFC 6341, RFC 3711,
-  RFC 4568. Why chappe decrypts SRTP itself here:
+  RFC 4568, RFC 3550, RFC 5761, RFC 3605, RFC 7022. Why chappe decrypts SRTP itself here:
   [decision 0009](../../../../docs/decisions/0009-srtp-in-erlang.md).
