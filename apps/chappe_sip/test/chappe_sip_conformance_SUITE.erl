@@ -26,7 +26,8 @@
 -export([all/0, groups/0, suite/0, init_per_suite/1, end_per_suite/1,
          init_per_testcase/2, end_per_testcase/2]).
 -export([options/1, unknown_method/1, unknown_method_indialog/1,
-         trying_100/1, rport_response/1, rport_request/1, bye_reason/1,
+         trying_100/1, rport_response/1, rport_received/1, rport_request/1,
+         bye_reason/1,
          reinvite_offer/1, reinvite_offerless/1, update_offer/1, glare/1,
          replaces_nomatch/1, replaces_confirmed/1, replaces_early/1,
          refer_notify/1, refer_event_id/1, refer_norefersub/1,
@@ -47,7 +48,8 @@ all() ->
 
 groups() ->
     [{sipp, [], [options, unknown_method, unknown_method_indialog,
-                 trying_100, rport_response, rport_request, bye_reason,
+                 trying_100, rport_response, rport_received, rport_request,
+                 bye_reason,
                  reinvite_offer, reinvite_offerless, update_offer, glare,
                  replaces_nomatch, replaces_confirmed, replaces_early,
                  refer_notify, refer_event_id, refer_norefersub,
@@ -111,10 +113,15 @@ unknown_method_indialog(Config) -> sipp(?FUNCTION_NAME, Config).
 %% req: R3261-309
 trying_100(Config) -> sipp(?FUNCTION_NAME, Config).
 
-%% RFC 3581 4: received and rport filled in on the response Via, and the
-%% response goes back to the source.
-%% req: R3581-009 R3581-010 R3581-011 R3581-012
+%% RFC 3581 4: rport filled in on the response Via, and the response goes
+%% back to the source.
+%% req: R3581-009 R3581-011 R3581-012
 rport_response(Config) -> sipp(?FUNCTION_NAME, Config).
+
+%% RFC 3581 4: received on the response Via even when it equals the sent-by
+%% host (deviation R3581-010, listed in expected-fail).
+%% req: R3581-010
+rport_received(Config) -> sipp(?FUNCTION_NAME, Config).
 
 %% RFC 3581 3: our requests put a valueless rport in their Via.
 %% req: R3581-001 R3581-002

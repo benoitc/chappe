@@ -5,4 +5,4 @@
 # same change that makes its case pass. Never weaken a scenario instead.
 #
 # Seen failing against i3-bridge-media 2ee8b11; trimmed as the tracks merged.
-rport_response           response Via has rport=N but no received: nta adds received only when the source differs from the Via host (deviation R3581-010, sofia-sip vendored, patched at build time from c_src/sofia-patches)
+rport_received           response Via has no received: nta adds received only when the source differs from the Via host (deviation R3581-010, sofia-sip vendored, patched at build time from c_src/sofia-patches)

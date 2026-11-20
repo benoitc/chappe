@@ -596,11 +596,18 @@ start_engine(Mod, Opts, Retries, Backoff) ->
         {error, stopping} ->
             %% a previous instance is tearing down; starts are serialized
             %% through the C atomic guard
-            timer:sleep(Backoff),
-            start_engine(Mod, Opts, Retries - 1, min(Backoff * 2, 5000));
+            retry_start(Mod, Opts, Retries, Backoff);
+        {error, replacing} ->
+            %% chappe_sip_nif:replace/0 holds the slot until the new library
+            %% is loaded
+            retry_start(Mod, Opts, Retries, Backoff);
         {error, Reason} ->
             {error, Reason}
     end.
+
+retry_start(Mod, Opts, Retries, Backoff) ->
+    timer:sleep(Backoff),
+    start_engine(Mod, Opts, Retries - 1, min(Backoff * 2, 5000)).
 
 %% what the Erlang side reads of the running stack's options: its listen
 %% addresses and aliases, and T1, which the 64*T1 timers kept in Erlang

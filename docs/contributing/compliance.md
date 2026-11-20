@@ -2,10 +2,11 @@
 
 Each app keeps a catalogue of the behaviours it promises, one row per
 normative statement, and `make compliance` joins it with the tests that claim
-each row and their latest CT results. The output is a generated matrix per
-app, and CI fails if a hard requirement of the `demo` tier is not passing. Use
-this page when you close a protocol gap, add a feature that makes a promise,
-or want to know which test proves a behaviour.
+each row and their results in the newest run. The output is a generated matrix
+per app, committed next to the catalogue. CI fails if a hard requirement of
+the `demo` tier is not passing, or if a committed matrix shows a row as pass
+that CI does not prove. Use this page when you close a protocol gap, add a feature that
+makes a promise, or want to know which test proves a behaviour.
 
 ## Before you start
 
@@ -21,22 +22,39 @@ or want to know which test proves a behaviour.
 | Generated matrices (do not edit) | `apps/<app>/docs/compliance.md` |
 | The generator | `scripts/compliance/chappe_sip_compliance.erl`, eunit in `test/chappe_sip_compliance_tests.erl` |
 | The entry point | `scripts/compliance.escript` |
-| The make target | `compliance` in the root `Makefile` (`COMPLIANCE_APPS`) |
+| The make targets | `compliance` and `compliance-full` in the root `Makefile` (`COMPLIANCE_APPS`) |
+| EUnit reports | `_build/test/logs/eunit/TEST-*.xml`, set by `eunit_opts` in the `test` profile of `rebar.config` |
 | The CI gate | the `conformance` job in `.github/workflows/ci.yml` |
 
 ## How the matrix is computed
 
 1. `make compliance` runs `rebar3 as test compile`, then, per app,
-   `scripts/compliance.escript REQS.tsv TESTDIR CTLOGDIR OUT.md [--gate TIER]`.
-2. Claims are read from every `apps/<app>/test/*_SUITE.erl`: a `%% req:` line
-   (ids separated by spaces or commas) directly above a case function.
-3. Results come from the newest `suite.log` of each case under
-   `_build/test/logs`.
-4. A row passes when every case claiming it passed on its latest run. It fails
-   when one of them failed. It is untested when no case claims it, or every
-   claim was skipped: a skipped case proves nothing.
-5. With `GATE=demo`, the run exits 1 if any row of tier `demo` whose keyword is
-   MUST, MUST NOT, SHALL, SHALL NOT or REQUIRED is not `pass`.
+   `scripts/compliance.escript REQS.tsv TESTDIR LOGDIR OUT.md
+   [--expected-fail FILE] [--check-against COMMITTED.md] [--gate TIER]`.
+2. Claims are read from every `apps/<app>/test/*_SUITE.erl` and
+   `apps/<app>/test/*_tests.erl`: a `%% req:` line (ids separated by spaces or
+   commas) directly above a CT case or an EUnit test function. The claim is
+   keyed `Module:Function`.
+3. CT results come from the newest `ct_run.*` directory under
+   `_build/test/logs` only. Older runs are ignored, so a result never outlives
+   its run: after `rebar3 ct --suite X`, only X has results.
+4. EUnit results come from the surefire reports in
+   `_build/test/logs/eunit`, which `make eunit` clears before it runs. A
+   generator (`name_test_()`) counts as one test: it fails when one of its
+   tests failed or hit its timeout, and passes when all of them passed. A
+   fixture whose setup or cleanup failed names no test in the report, so it
+   fails every claim in its module.
+5. A row passes when every test claiming it passed. It fails when one of them
+   failed. It is untested when no test claims it, or when any claiming test
+   was skipped or has no result: a skipped or missing test proves nothing.
+6. With `GATE=demo`, the run exits 1 if any row of tier `demo` whose keyword is
+   MUST, MUST NOT, SHALL, SHALL NOT or REQUIRED is not `pass`. It also exits 1,
+   with one line per row, when a `deviation` row has empty notes, or when a
+   case in `apps/<app>/interop/conformance/expected-fail` does not name a
+   `deviation` row in its reason.
+7. Each matrix opens with a Deviations section: one line per `deviation` row
+   with its id, source, section, a short form of the text and the notes as the
+   reason.
 
 ## The catalogue format
 
@@ -77,16 +95,75 @@ Tiers:
    trying_100(Config) -> sipp(?FUNCTION_NAME, Config).
    ```
 
-3. Run the case on the old code and see it fail, then on the new code.
-4. Regenerate:
+   or from an EUnit test, for a rule a pure module meets:
+
+   ```text
+   %% req: RNG-09
+   nesting_depth_bounded_test() ->
+       ?assertEqual({error, too_deep}, chappe_rtpengine_bencode:decode(nested(65))).
+   ```
+
+3. Run the test on the old code and see it fail, then on the new code.
+4. Regenerate from the inputs CI uses (EUnit, then one CT run with the
+   conformance lab, which needs docker):
 
    ```sh
-   rebar3 ct
-   make compliance GATE=demo
+   make compliance-full GATE=demo
    ```
 
 5. Commit the `requirements.tsv` change and the regenerated
    `apps/<app>/docs/compliance.md` together.
+
+## Record a deviation
+
+A deviation is a requirement chappe does not meet on purpose. Record it so a
+user can read what chappe does instead and decide whether it matters to them.
+
+1. Set the row's `tier` to `deviation`.
+2. Write the reason in `notes`: what chappe does instead, and why. For
+   example: "nta adds received only when the source differs from the Via
+   host; sofia-sip is vendored as upstream ships it".
+3. If a conformance case fails because of it, list the case in
+   `apps/chappe_sip/interop/conformance/expected-fail` and name the row id in
+   its reason:
+
+   ```text
+   rport_received   response Via has no received (deviation R3581-010)
+   ```
+
+4. Regenerate. The row appears under Deviations at the top of
+   `apps/<app>/docs/compliance.md`, which is where users read them; the
+   [docs map](../README.md) links each app's section.
+
+The gate refuses a deviation with empty notes, and an expected-fail case that
+names no deviation row.
+
+## The committed matrices and CI
+
+A committed matrix comes from a local run or from CI, and never claims more
+than CI proves. CI's `conformance` job runs `make compliance-full GATE=demo
+CHECK=1`: it reads each committed matrix, regenerates it from EUnit and one CT
+run with `CONFORMANCE=1`, and then:
+
+- fails, with one `check:` line per row, when a row is `pass` in the committed
+  matrix and not `pass` in this run: the committed file over-reports;
+- prints a `notice:` line per row this run passes and the committed file does
+  not: the committed file under-reports, which is allowed;
+- uploads the matrices it produced as the `compliance-matrices` artifact.
+
+A local `make check` skips the conformance suite and some host-bound cases
+(the RFC 4475 UDP vectors need ports 5050, 5060 and 5070 free), so its matrix
+shows those rows untested. Committing it is safe: it claims less than CI. To
+refresh the committed matrices with everything CI proves:
+
+1. Open the `conformance` job of a CI run on your branch and download the
+   `compliance-matrices` artifact.
+2. Copy its files over `apps/*/docs/compliance.md`.
+3. Commit them.
+
+`make compliance-full` on a machine with docker gives the same inputs locally.
+Only the newest CT run counts, so do not run `make interop-conformance` after
+`make ct` and expect both: the second run replaces the first.
 
 ## Tests to add or run
 
@@ -97,6 +174,7 @@ Tiers:
 ## How to know it works
 
 - `make compliance GATE=demo` exits 0.
+- The CI `conformance` job prints no `check:` line.
 - Its output lists no `unknown requirement id`: a typo in a `%% req:` line is
   reported and covers nothing.
 - The row shows `pass` in the regenerated matrix.
@@ -108,13 +186,15 @@ Tiers:
   are `platform`. sofia is vendored as upstream ships it, so where nta deviates the row
   is a `deviation` with the reason (nta adds `received` only when the source
   differs from the Via host, against RFC 3581 4). Many rows are claimed by
-  `chappe_sip_conformance_SUITE`, so they pass only after
-  `make interop-conformance`.
+  `chappe_sip_conformance_SUITE`, so they pass only in a run with
+  `CONFORMANCE=1` (`make compliance-full`).
 - **chappe_mix.** RFC 3550, 3551, 3605, 4733 and 5761: the RTP, RTCP and
   telephone-event rules a mixer meets, `demo` where the conference flows use
   them.
 - **chappe_rtpengine.** There is no RFC for the NG protocol: `source` is
-  `rtpengine NG`, every row is `platform`.
+  `rtpengine NG`, every row is `platform`. The bencode and framing rows are
+  claimed by EUnit tests (`chappe_rtpengine_bencode_tests`,
+  `chappe_rtpengine_stream_tests`).
 - **chappe_esl.** No RFC for the event socket: `source` is `FreeSWITCH
   mod_event_socket`, `section` the protocol area, `line` `-`, every row
   `platform`. "chappe behaviour" in `notes` marks a client choice.

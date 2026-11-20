@@ -63,6 +63,13 @@ jobs:
           key: static-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config') }}
       - run: scripts/fetch_deps.sh
       - run: rebar3 lint
+      # actions/cache saves _build in its post step, after every step;
+      # drop the test logs first so no run's results reach a later job
+      # (an exclusion pattern under the _build path never matches: the
+      # cache takes the directory itself).
+      - name: Drop test logs before the cache saves _build
+        if: always()
+        run: rm -rf _build/test/logs
 
   xref:
     name: XRef
@@ -86,6 +93,13 @@ jobs:
           key: static-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config') }}
       - run: scripts/fetch_deps.sh
       - run: rebar3 xref
+      # actions/cache saves _build in its post step, after every step;
+      # drop the test logs first so no run's results reach a later job
+      # (an exclusion pattern under the _build path never matches: the
+      # cache takes the directory itself).
+      - name: Drop test logs before the cache saves _build
+        if: always()
+        run: rm -rf _build/test/logs
 
   dialyzer:
     name: Dialyzer
@@ -136,6 +150,13 @@ jobs:
       - run: rebar3 compile
       - name: Demos compile against the apps
         run: make demo-compile
+      # actions/cache saves _build in its post step, after every step;
+      # drop the test logs first so no run's results reach a later job
+      # (an exclusion pattern under the _build path never matches: the
+      # cache takes the directory itself).
+      - name: Drop test logs before the cache saves _build
+        if: always()
+        run: rm -rf _build/test/logs
 
   eunit:
     name: EUnit
@@ -158,6 +179,13 @@ jobs:
           key: build-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config', 'apps/chappe_sip/c_src/build.sh') }}
       - run: scripts/fetch_deps.sh
       - run: rebar3 eunit
+      # actions/cache saves _build in its post step, after every step;
+      # drop the test logs first so no run's results reach a later job
+      # (an exclusion pattern under the _build path never matches: the
+      # cache takes the directory itself).
+      - name: Drop test logs before the cache saves _build
+        if: always()
+        run: rm -rf _build/test/logs
 
   ct:
     name: Common Test
@@ -187,6 +215,13 @@ jobs:
         with:
           name: cover
           path: _build/test/cover
+      # actions/cache saves _build in its post step, after every step;
+      # drop the test logs first so no run's results reach a later job
+      # (an exclusion pattern under the _build path never matches: the
+      # cache takes the directory itself).
+      - name: Drop test logs before the cache saves _build
+        if: always()
+        run: rm -rf _build/test/logs
 
   # The suites gated on a real rtpengine, against the interop/ container.
   interop:
@@ -216,10 +251,18 @@ jobs:
         with:
           name: interop-ct-logs
           path: apps/chappe_rtpengine/_build/test/logs
+      # actions/cache saves _build in its post step, after every step;
+      # drop the test logs first so no run's results reach a later job
+      # (an exclusion pattern under the _build path never matches: the
+      # cache takes the directory itself).
+      - name: Drop test logs before the cache saves _build
+        if: always()
+        run: rm -rf _build/test/logs
 
   # chappe_sip against SIPp, pjsua and a dnsmasq server (one flow per RFC
   # clause, RFC 3263 resolution included), then every
-  # app's requirement matrix; the demo tier must have no failing hard row.
+  # app's requirement matrix; the demo tier must have no failing hard row,
+  # and a committed matrix must not claim a pass this run does not prove.
   conformance:
     name: Conformance lab + compliance gate
     needs: [build]
@@ -240,15 +283,30 @@ jobs:
             ~/.cache/rebar3
           key: build-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config', 'apps/chappe_sip/c_src/build.sh') }}
       - run: scripts/fetch_deps.sh
-      - run: make ct
-      - run: make interop-conformance
-      - run: make compliance GATE=demo
+      # eunit, then one ct run with the conformance lab: the matrices read
+      # the newest ct run only
+      # CHECK=1: fail on any row the committed matrix shows as pass and
+      # this run does not; rows only this run passes are a notice
+      - run: make compliance-full GATE=demo CHECK=1
+      - name: Compliance matrices
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compliance-matrices
+          path: apps/*/docs/compliance.md
       - name: Test logs
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: conformance-ct-logs
           path: _build/test/logs
+      # actions/cache saves _build in its post step, after every step;
+      # drop the test logs first so no run's results reach a later job
+      # (an exclusion pattern under the _build path never matches: the
+      # cache takes the directory itself).
+      - name: Drop test logs before the cache saves _build
+        if: always()
+        run: rm -rf _build/test/logs
 
   # A real JsSIP UA over WebSocket and a Kamailio container over UDP.
   sip-interop:
@@ -279,6 +337,13 @@ jobs:
       - run: docker pull ghcr.io/kamailio/kamailio-ci:5.8
       - run: scripts/fetch_deps.sh
       - run: INTEROP=1 rebar3 ct --suite apps/chappe_sip/test/chappe_sip_interop_SUITE
+      # actions/cache saves _build in its post step, after every step;
+      # drop the test logs first so no run's results reach a later job
+      # (an exclusion pattern under the _build path never matches: the
+      # cache takes the directory itself).
+      - name: Drop test logs before the cache saves _build
+        if: always()
+        run: rm -rf _build/test/logs
 
   # The B2BUA as an SBC: SIPp through a chappe node to two FreeSWITCH peers,
   # with rtpengine and Kamailio, all on one docker network.
@@ -317,6 +382,13 @@ jobs:
         with:
           name: sbc-interop-ct-logs
           path: _build/test/logs
+      # actions/cache saves _build in its post step, after every step;
+      # drop the test logs first so no run's results reach a later job
+      # (an exclusion pattern under the _build path never matches: the
+      # cache takes the directory itself).
+      - name: Drop test logs before the cache saves _build
+        if: always()
+        run: rm -rf _build/test/logs
 
   # The conference mixer behind a real rtpengine.
   mix-interop:
@@ -340,6 +412,13 @@ jobs:
           key: build-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config', 'apps/chappe_sip/c_src/build.sh') }}
       - run: scripts/fetch_deps.sh
       - run: make interop-mix
+      # actions/cache saves _build in its post step, after every step;
+      # drop the test logs first so no run's results reach a later job
+      # (an exclusion pattern under the _build path never matches: the
+      # cache takes the directory itself).
+      - name: Drop test logs before the cache saves _build
+        if: always()
+        run: rm -rf _build/test/logs
 
   # The ESL client against a real FreeSWITCH, and its audio forks into
   # chappe_audio.
@@ -364,6 +443,13 @@ jobs:
           key: build-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config', 'apps/chappe_sip/c_src/build.sh') }}
       - run: scripts/fetch_deps.sh
       - run: make interop-esl
+      # actions/cache saves _build in its post step, after every step;
+      # drop the test logs first so no run's results reach a later job
+      # (an exclusion pattern under the _build path never matches: the
+      # cache takes the directory itself).
+      - name: Drop test logs before the cache saves _build
+        if: always()
+        run: rm -rf _build/test/logs
 
   # chappe_mrf against rtpengine and two FreeSWITCH media servers.
   mrf-interop:
@@ -394,6 +480,13 @@ jobs:
         with:
           name: mrf-interop-ct-logs
           path: _build/test/logs
+      # actions/cache saves _build in its post step, after every step;
+      # drop the test logs first so no run's results reach a later job
+      # (an exclusion pattern under the _build path never matches: the
+      # cache takes the directory itself).
+      - name: Drop test logs before the cache saves _build
+        if: always()
+        run: rm -rf _build/test/logs
 
   # Five chappe_cluster nodes under a seeded schedule of partitions, kills,
   # pauses, delays and clock skews; the lease checker fails the job on any
