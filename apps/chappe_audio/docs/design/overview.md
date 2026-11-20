@@ -28,7 +28,9 @@ monitor.
 |---|---|
 | `chappe_audio` | Public API: listeners, `open/1,2` for forks, `streams/1`, `levels/2`, and `rtp_receiver/1`, the RTP receiver a SIPREC recording server (`chappe_sip_siprec_srs`) starts per recorded stream. |
 | `chappe_audio_rtp` | One received RTP stream: UDP socket, G.711 decode to PCM, sink to a recording or a process. |
-| `chappe_audio_srtp` | Receive-only SRTP and SRTCP (RFC 3711) for `chappe_audio_rtp`. |
+| `chappe_audio_srtp` | Receive-side SRTP and SRTCP (RFC 3711) for `chappe_audio_rtp`, and SRTCP for its own reports. |
+| `chappe_audio_rtp_rtcp` | Pure: one receiver's RTCP session (its SSRC and CNAME, its sources, where reports go, the next report). |
+| `chappe_audio_rtcp` | Pure RTCP (RFC 3550 6): compound packets, a source's reception statistics, the report interval. |
 | `chappe_audio_listener`, `chappe_audio_conn`, `chappe_audio_http` | The WebSocket listener, one opening handshake, its HTTP/1.1 side. |
 | `chappe_audio_stream`, `chappe_audio_ws`, `chappe_audio_registry` | One fork's stream, its ws_handler, the streams by id. |
 | `chappe_audio_store`, `chappe_audio_store_srv`, `chappe_audio_store_file` | The store API and behaviour, the node's store, the folder backend. |
@@ -72,8 +74,8 @@ the SIP and asks chappe_audio for one receiver per recorded stream with
   its store recording. A receiver that crashes leaves its partial file to
   the store's sweep and touches neither its owner nor the other streams.
 - **G.711 decode.** PCMU and PCMA become 16-bit linear PCM
-  (`chappe_audio_pcm`). Another payload type, RTCP and anything that does
-  not parse is dropped.
+  (`chappe_audio_pcm`). Another payload type and anything that does not
+  parse is dropped.
 - **The source.** The receiver latches to the first source at the
   `remote` address it was given (any port), or, with `remote =>
   undefined`, to the first source at all, and drops every other source.
@@ -84,6 +86,22 @@ the SIP and asks chappe_audio for one receiver per recorded stream with
   and logged at most once per 10 s. `chappe_audio_rtp:rekey/2` takes the
   sender's new key. The keys stay in a closure and out of every report
   ([decision 0009](../../../../docs/decisions/0009-srtp-in-erlang.md)).
+- **RTCP.** With `rtcp => mux` (RTCP on the RTP port, RFC 5761) or
+  `rtcp => port` (an even RTP port, RTCP on the next one), the receiver
+  keeps each source's reception statistics (`chappe_audio_rtcp`, RFC 3550
+  A.1, A.3, A.8; at most 31 sources), reads the source's SR, SDES and BYE,
+  and sends an RR with one block per source plus SDES CNAME on the 6.2
+  interval: 2.5 s then 5 s, each times 0.5 to 1.5. Timer reconsideration
+  is not done (two members, fixed), so the interval is not divided by
+  e - 3/2. It sends from the socket RTCP comes in on (symmetric RTCP, RFC
+  7866 8.1.8) to where the source's RTCP came from, else to its RTP
+  address (mux) or the port above it (port), and a BYE when it stops
+  after a report. An SRTP stream protects its reports as SRTCP with
+  `srtcp_out`, a context of the receiver's own key, its index from 0 and
+  kept across `rekey/3`; without one it sends none. `rtcp => none`, the
+  default, keeps the receiver as it was: muxed RTCP is dropped. The
+  departures from RFC 3550 are listed in
+  [Configuration](../configuration.md#rtp-receiver-options).
 - **The sink.** `{store, Mod, Info}` writes a recording of the store;
   `{pid, Pid}` sends `{Tag, Stream, {audio, Pcm}}` (`tag`, default
   `chappe_audio_rtp`) and drops frames while the process has `max_queue`
@@ -114,6 +132,8 @@ name becomes `x-` and its SHA-256 in the path.
 | The pg scope | `chappe_audio_pg_SUITE` |
 | Recorded RTP: G.711, the source latch, SRTP, port range, owner exit, store sink, store crash | `chappe_audio_rtp_SUITE` |
 | SRTP against the RFC 3711 vectors and a reference sender | `chappe_audio_srtp_tests` (with `chappe_audio_test_srtp`) |
+| RTCP packets, statistics, LSR/DLSR and the interval on RFC 3550 values | `chappe_audio_rtcp_tests` |
+| Receiver reports back to a fake source: mux, port pair, SRTCP, none | `chappe_audio_rtp_SUITE` |
 | PCM and WAVE helpers | `chappe_audio_pcm_tests`, `chappe_audio_wav_tests` |
 | Real FreeSWITCH forks | `chappe_audio_live_SUITE` (`make interop-esl`) |
 | The SIPREC server end to end | `chappe_sip_siprec_SUITE`, `chappe_sip_siprec_live_SUITE` (`make interop`), in chappe_sip |

@@ -106,7 +106,15 @@
 %% undefined: the first source); srtp, a chappe_audio_srtp context for an
 %% SRTP stream; ports, the range its socket binds a free port of (default
 %% undefined: any port); tag, the first element of its messages (default
-%% chappe_audio_rtp).
+%% chappe_audio_rtp); rtcp, none (the default: no RTCP), mux (RTCP on the
+%% RTP port, RFC 5761) or port (an even RTP port, RTCP on the next one):
+%% with mux or port it reads the source's RTCP and sends receiver reports
+%% (chappe_audio_rtp); rtcp_remote, the source's RTCP address when its
+%% SDP gave one (a=rtcp, RFC 3605; default its RTP port + 1); cname, the
+%% CNAME of its reports (default random, RFC 7022); srtcp_out, a
+%% chappe_audio_srtp context of the receiver's own key (its answer's
+%% a=crypto) that protects its reports on an SRTP stream, which sends
+%% none without it.
 -type rtp_opts() :: #{
     owner := pid(),
     ip := inet:ip_address(),
@@ -116,7 +124,11 @@
     remote => {inet:ip_address(), inet:port_number()} | undefined,
     srtp => chappe_audio_srtp:ctx() | undefined,
     ports => {inet:port_number(), inet:port_number()} | undefined,
-    tag => atom()
+    tag => atom(),
+    rtcp => none | mux | port,
+    rtcp_remote => {inet:ip_address(), inet:port_number()} | undefined,
+    cname => binary(),
+    srtcp_out => chappe_audio_srtp:ctx() | undefined
 }.
 
 -spec listen(listen_opts()) -> {ok, listener()} | {error, term()}.

@@ -138,7 +138,7 @@ docs-check:
 # any hard requirement of the demo tier that is not passing. CHECK=1 first
 # reads the committed matrix and fails on any row it shows as pass that
 # this run does not. Every app runs; the target fails if one of them did.
-COMPLIANCE_APPS = chappe_sip chappe_mix chappe_rtpengine chappe_esl chappe_mrf
+COMPLIANCE_APPS = chappe_sip chappe_mix chappe_rtpengine chappe_esl chappe_mrf chappe_audio
 
 compliance:
 	rebar3 as test compile
