@@ -15,6 +15,9 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
   their reports, and on an encrypted stream the reports are encrypted too.
   Each stream that does not share its RTCP port now takes two ports of a
   configured port range instead of one, so a tight range may need to grow.
+- chappe_sip, breaking: `chappe_sip_sdes:answer/1` now returns the answer
+  line together with the key it carries, so callers that used the line
+  alone must take it from the first element of the pair.
 - chappe_sip: the SIPREC recording server now answers re-offers as RFC
   3264 asks. A paused recording (an inactive re-INVITE) is answered
   inactive instead of recvonly, a re-INVITE that adds a stream gets an

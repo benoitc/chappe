@@ -245,7 +245,6 @@ rtp(Ssrc, Seq, Byte) ->
     <<2:2, 0:6, 0:1, 0:7, Seq:16, (Seq * 160):32, Ssrc:32,
       (binary:copy(<<Byte>>, 160))/binary>>.
 
-%% the distinct samples a stream of the recording carried
 %% the stream's stats once it has sent a report, polled N times 200 ms apart
 reported(S, 0) ->
     ct:fail({no_rtcp_report, chappe_audio_rtp:stats(S)});
@@ -258,6 +257,7 @@ reported(S, N) ->
             reported(S, N - 1)
     end.
 
+%% the distinct samples a stream of the recording carried
 levels(Stream) ->
     levels(Stream, 0, []).
 

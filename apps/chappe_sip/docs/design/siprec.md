@@ -164,15 +164,15 @@ With no stream left the INVITE gets 488 and a Warning that says why:
 - `srtp`: a `chappe_audio_srtp` context from the client's `a=crypto` line,
   or `undefined`;
 - `srtcp_out`: on an SRTP stream, a context of the key the answer's own
-  `a=crypto` line carries (`chappe_sip_sdes:answer/1` returns the line and
-  that key), so the reports go out as SRTCP;
+  `a=crypto` line carries (`chappe_sip_sdes:answer/1` returns `{Line,
+  Crypto}`, the line and that key), so the reports go out as SRTCP;
 - `rtcp`: `mux` when the offer's m-line has `a=rtcp-mux` (the answer echoes
   it, RFC 5761 5.1.1), else `port` (an even RTP port, RTCP on the next);
   `rtcp_remote`: with `port`, the offer's `a=rtcp` address when it is not
   the RTP address and port + 1 (`chappe_sip_sdp:rtcp_address/2`, RFC
   3605), else `undefined`; a learned or held source has none. The answer
-  carries `a=rtcp` only when the receiver's RTCP port is not RTP + 1, which
-  `port` never gives;
+  carries no `a=rtcp`: with `port` the receiver's RTCP port is always RTP
+  + 1;
 - `cname`: one per recording session (`chappe_audio_rtcp:cname/0`, RFC
   7022), kept in the session's context, so every stream of the session,
   re-offered ones included, reports the same CNAME (RFC 7866 8.1.5.1);
@@ -207,7 +207,10 @@ offered one (RFC 3264 6):
   or profile stops it and takes the stream as a new one (8.3.1, 8.3.3);
 - `a=rtcp-mux` added or dropped, or an `a=rtcp` that names another place,
   restarts the receiver the same way, as the receiver takes its RTCP mode
-  and report address only at its start; a hold keeps them;
+  and report address only at its start; a hold keeps them, and so does
+  the first re-offer of a stream taken with no source (on hold or
+  learned), which had no address to compare an `a=rtcp` with: its reports
+  go where its RTCP comes from;
 - the key rule is judged on the transport of the request that carries
   each offer, not on the INVITE's;
 - a stream the offer adds, or one refused before, is taken as in the
