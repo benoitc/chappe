@@ -26,7 +26,8 @@
 %%
 %% answer/1 gives the answer's a=crypto line: the tag and suite taken, and
 %% a fresh key of the answerer's (7.1.2: a key MUST be given, different
-%% from the offer's); chappe receives only, so it never uses it.
+%% from the offer's), with that key as a crypto(): chappe sends no media,
+%% so the key protects only its own RTCP reports (SRTCP, RFC 3711 3.4).
 -module(chappe_sip_sdes).
 
 -export([select/1, answer/1]).
@@ -239,12 +240,15 @@ session([<<"-", _/binary>> | Rest], C) ->
 session([_Unknown | _], _C) ->
     {error, invalid}.
 
-%% The answer's a=crypto line for the one taken.
--spec answer(crypto()) -> binary().
+%% The answer's a=crypto line for the one taken, and the answerer's own
+%% key it carries (what its SRTCP reports are protected with).
+-spec answer(crypto()) -> {binary(), crypto()}.
 answer(#{tag := Tag, suite := Suite}) ->
-    Key = base64:encode(crypto:strong_rand_bytes(30)),
-    <<"a=crypto:", Tag/binary, " ", (suite_name(Suite))/binary, " inline:",
-        Key/binary>>.
+    <<Key:16/binary, Salt:14/binary>> = Master = crypto:strong_rand_bytes(30),
+    Line =
+        <<"a=crypto:", Tag/binary, " ", (suite_name(Suite))/binary, " inline:",
+            (base64:encode(Master))/binary>>,
+    {Line, #{tag => Tag, suite => Suite, key => Key, salt => Salt}}.
 
 suite_name(aes_cm_128_hmac_sha1_80) -> <<"AES_CM_128_HMAC_SHA1_80">>;
 suite_name(aes_cm_128_hmac_sha1_32) -> <<"AES_CM_128_HMAC_SHA1_32">>.

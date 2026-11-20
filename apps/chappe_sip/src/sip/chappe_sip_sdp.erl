@@ -11,7 +11,7 @@
 %% rtpengine does that.
 -module(chappe_sip_sdp).
 
--export([parse/1, address/1, words/1]).
+-export([parse/1, address/1, words/1, rtcp_address/2]).
 -export([origin/1, same_version/2, on_hold/1, webrtc/1, connection/1]).
 -export([sections/1, join/2, refused/1]).
 -export([hold/2, next_version/1]).
@@ -133,6 +133,31 @@ connection(Sdp) ->
 -spec address(binary() | undefined) -> {ok, inet:ip_address()} | error.
 address(Bin) ->
     chappe_sip_net:address(Bin).
+
+%% Where a media line of parse/1 wants its RTCP when its a=rtcp names it
+%% (RFC 3605): that port, at the attribute's address or else Ip, the
+%% media's. undefined when RTCP is muxed (RFC 5761), without an a=rtcp or
+%% with one that does not parse.
+-spec rtcp_address(media(), inet:ip_address()) ->
+    {inet:ip_address(), inet:port_number()} | undefined.
+rtcp_address(#{mux := true}, _Ip) ->
+    undefined;
+rtcp_address(#{rtcp := V}, Ip) ->
+    case words(V) of
+        [P] -> rtcp_port(P, {ok, Ip});
+        [P, <<"IN">>, _Family, Addr | _] -> rtcp_port(P, address(Addr));
+        _ -> undefined
+    end;
+rtcp_address(_M, _Ip) ->
+    undefined.
+
+rtcp_port(P, {ok, Ip}) ->
+    case string:to_integer(P) of
+        {N, <<>>} when is_integer(N), N > 0, N =< 65535 -> {Ip, N};
+        _ -> undefined
+    end;
+rtcp_port(_P, error) ->
+    undefined.
 
 %% {SessionAddress, [Media]} where each media is #{media, port, proto,
 %% fmts, dir, addr (when it has its own c=), mux, rtcp, rtpmap, fmtp,

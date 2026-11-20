@@ -198,7 +198,7 @@ pick_stream(I, #{port := Port, fmts := Fmts} = M, SessAddr) ->
                 {ok, Ip} ->
                     {ok, #{
                         endpoint => {Ip, Port},
-                        rtcp => rtcp(M, Ip),
+                        rtcp => chappe_sip_sdp:rtcp_address(M, Ip),
                         law => Law,
                         mux => maps:get(mux, M, false),
                         ptime => maps:get(ptime, M, ?PTIME),
@@ -230,30 +230,6 @@ direction(true, true) -> sendrecv;
 direction(true, false) -> sendonly;
 direction(false, true) -> recvonly;
 direction(false, false) -> inactive.
-
-%% The RTCP address of a media-level a=rtcp: its port, and its address
-%% or else the media's. Muxed RTCP stays on the RTP port.
-rtcp(#{mux := true}, _Ip) ->
-    undefined;
-rtcp(#{rtcp := V}, Ip) ->
-    case chappe_sip_sdp:words(V) of
-        [P] ->
-            rtcp_port(P, {ok, Ip});
-        [P, <<"IN">>, _Family, Addr | _] ->
-            rtcp_port(P, chappe_sip_sdp:address(Addr));
-        _ ->
-            undefined
-    end;
-rtcp(_M, _Ip) ->
-    undefined.
-
-rtcp_port(P, {ok, Ip}) ->
-    case string:to_integer(P) of
-        {N, <<>>} when is_integer(N), N > 0, N =< 65535 -> {Ip, N};
-        _ -> undefined
-    end;
-rtcp_port(_P, error) ->
-    undefined.
 
 %% The first telephone-event/8000 among the m-line's formats.
 dtmf(#{fmts := Fmts} = M) ->

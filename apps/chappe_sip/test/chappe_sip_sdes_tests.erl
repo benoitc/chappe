@@ -93,14 +93,15 @@ select_test() ->
     ?assertEqual({error, unsupported}, ?D:select(lists:sublist(Lines, 3))).
 
 %% RFC 4568 7.1.2: the answer echoes the tag and suite, with a key of its
-%% own (never the offer's), that parses back
+%% own (never the offer's), that parses back to the key it returns
 answer_test() ->
     {ok, C} = ?D:parse(<<"9 AES_CM_128_HMAC_SHA1_32 inline:" ?K1>>),
-    <<"a=crypto:", V/binary>> = A = ?D:answer(C),
+    {<<"a=crypto:", V/binary>> = A, Own} = ?D:answer(C),
     ?assertMatch(<<"a=crypto:9 AES_CM_128_HMAC_SHA1_32 inline:", _/binary>>, A),
     {ok, Back} = ?D:parse(V),
     ?assertNotEqual(maps:get(key, C), maps:get(key, Back)),
-    ?assertNotEqual(?D:answer(C), A).
+    ?assertEqual(Own, maps:with([tag, suite, key, salt], Back)),
+    ?assertNotEqual(element(1, ?D:answer(C)), A).
 
 %% Random bytes as an a=crypto value: an answer or an error, never a crash.
 random_lines_test() ->
