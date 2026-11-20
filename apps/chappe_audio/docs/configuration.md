@@ -52,6 +52,15 @@ you wire chappe_audio into a release or tune a listener.
 | `connect_timeout` | `30000` | Milliseconds to wait for the fork. |
 | `store` | `none` | `default` writes the stream to the recording store. |
 
+## RTP receiver
+
+`chappe_audio:rtp_receiver/1` (the SIPREC recording server's receiver)
+takes its options from its caller; one timing is fixed:
+
+| What | Value | What it does |
+|---|---|---|
+| Move grace | 1 s | After `chappe_audio_rtp:remote/2` (the sender moved), packets from the source latched before are dropped for this long. Past it, with no new source latched, that source may latch again, so a sender whose SDP port alone changed is heard again. |
+
 ## Storage options
 
 `storage` env, or `chappe_audio_store:configure/1` (per node).

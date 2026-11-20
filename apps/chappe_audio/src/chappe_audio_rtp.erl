@@ -26,8 +26,11 @@
 %% drops every other source from then on. A stream started with remote =>
 %% undefined latches to the first source. When the sender moves
 %% (remote/2), the stream learns again the same way from the new address,
-%% any port, and drops the source it had latched, so a late packet from
-%% the old source cannot take it.
+%% any port, and drops the source it had latched for a grace window of
+%% 1 s, so a late packet from the old source cannot take it. Past the
+%% window, with no new source latched, the old source may latch again: a
+%% sender whose SDP port alone changed, still sending from where it did
+%% (its sending port need not be its SDP port), is heard again.
 %%
 %% SRTP: started with srtp => Ctx (chappe_audio_srtp:new/1, from the
 %% sender's a=crypto line), the stream takes SRTP only (RFC 3711): each
@@ -65,10 +68,12 @@
     max_queue :: pos_integer(),
     label :: binary(),
     %% the client's address as its SDP gave it, the source latched, and
-    %% the one latched before the sender moved (remote/2), never taken again
+    %% the one latched before the sender moved (remote/2), not taken again
+    %% until the monotonic time (ms) it holds
     remote :: {inet:ip_address(), inet:port_number()} | undefined,
     latched :: {inet:ip_address(), inet:port_number()} | undefined,
-    moved_from :: {inet:ip_address(), inet:port_number()} | undefined,
+    moved_from ::
+        {{inet:ip_address(), inet:port_number()}, integer()} | undefined,
     packets = 0 :: non_neg_integer(),
     %% SRTP (redacted in reports), the packets it dropped, and the
     %% failures not logged yet with the time of the last log line
@@ -80,6 +85,8 @@
 }).
 %% one log line per window of failed SRTP packets, in ms
 -define(LOG_WINDOW, 10000).
+%% how long the source latched before a move is dropped, in ms
+-define(MOVE_GRACE, 1000).
 -type state() :: #state{}.
 
 -define(ACTIVE, 50).
@@ -137,8 +144,9 @@ rekey(Pid, Ctx) ->
 %% The sender moved (a new address or port in its SDP): the stream learns
 %% its source again as at its start, the first one at the new address on
 %% any port (a NAT may change it; undefined: the first source), and drops
-%% a late packet from exactly the source it had latched. The SRTP context,
-%% its replay lists and the counters carry on.
+%% a late packet from exactly the source it had latched (or, with none
+%% latched since the last move, the one it dropped then) for 1 s. The
+%% SRTP context, its replay lists and the counters carry on.
 -spec remote(pid(), {inet:ip_address(), inet:port_number()} | undefined) ->
     ok.
 remote(Pid, Remote) ->
@@ -210,8 +218,10 @@ handle_call({rekey, _Ctx}, _From, #state{srtp = undefined} = S) ->
     {reply, ok, S};
 handle_call({rekey, Ctx}, _From, #state{srtp = Old} = S) ->
     {reply, ok, S#state{srtp = chappe_audio_srtp:rekey(Old, Ctx)}};
-handle_call({remote, Remote}, _From, #state{latched = Old} = S) ->
-    {reply, ok, S#state{remote = Remote, latched = undefined, moved_from = Old}};
+handle_call({remote, Remote}, _From, S) ->
+    {reply, ok, S#state{
+        remote = Remote, latched = undefined, moved_from = moved_from(S)
+    }};
 handle_call(stop, _From, S) ->
     {stop, normal, close_sink(S), S#state{sink = {pid, self()}}}.
 
@@ -241,19 +251,35 @@ format_status(#{state := #state{} = S} = Status) ->
 format_status(Status) ->
     Status.
 
-%% the latched source; before it, the first one from the client's address
-%% other than the one latched before the sender moved
+%% the source a move blocks: the one latched, else the one the last move
+%% blocked; for a new grace window
+moved_from(#state{latched = undefined, moved_from = undefined}) ->
+    undefined;
+moved_from(#state{latched = undefined, moved_from = {Old, _Until}}) ->
+    {Old, erlang:monotonic_time(millisecond) + ?MOVE_GRACE};
+moved_from(#state{latched = Old}) ->
+    {Old, erlang:monotonic_time(millisecond) + ?MOVE_GRACE}.
+
+%% the latched source; before it, the first one from the client's address,
+%% the one latched before the sender moved only once its window is over
 source(Ip, Port, #state{latched = {Ip, Port}}) ->
     {ok, {Ip, Port}};
 source(_Ip, _Port, #state{latched = {_, _}}) ->
     drop;
-source(Ip, Port, #state{moved_from = {Ip, Port}}) ->
-    drop;
-source(Ip, Port, #state{remote = {Ip, _}}) ->
+source(Ip, Port, #state{moved_from = {{Ip, Port}, Until}} = S) ->
+    case erlang:monotonic_time(millisecond) < Until of
+        true -> drop;
+        false -> learn(Ip, Port, S)
+    end;
+source(Ip, Port, S) ->
+    learn(Ip, Port, S).
+
+%% the first source from the client's address, any port, or any source
+learn(Ip, Port, #state{remote = {Ip, _}}) ->
     {ok, {Ip, Port}};
-source(Ip, Port, #state{remote = undefined}) ->
+learn(Ip, Port, #state{remote = undefined}) ->
     {ok, {Ip, Port}};
-source(_Ip, _Port, _S) ->
+learn(_Ip, _Port, _S) ->
     drop.
 
 %% A packet from an acceptable source: plain RTP latches to it; SRTP only
