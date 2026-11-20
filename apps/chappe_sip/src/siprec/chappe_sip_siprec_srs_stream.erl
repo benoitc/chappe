@@ -209,9 +209,7 @@ srtp_params(C) ->
     maps:with([suite, key, salt, mki, lifetime, window], C).
 
 srtp_ctx(C) ->
-    case
-        chappe_audio_srtp:new(srtp_params(C))
-    of
+    case chappe_audio_srtp:new(srtp_params(C)) of
         {ok, Ctx} -> {ok, Ctx};
         {error, _} -> error
     end.

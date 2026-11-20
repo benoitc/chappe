@@ -37,6 +37,7 @@
     stats_shape/1,
     events_dropped_counted/1,
     refused_starts_keep_the_vm/1,
+    second_stop_keeps_the_singleton/1,
     stop_with_internal_reply_queued/1
 ]).
 
@@ -54,6 +55,7 @@ all() ->
         stats_shape,
         events_dropped_counted,
         refused_starts_keep_the_vm,
+        second_stop_keeps_the_singleton,
         stop_with_internal_reply_queued
     ].
 
@@ -312,6 +314,27 @@ send_response_takes_responses(Config) ->
     end.
 
 %% helpers
+
+%% Stopping an engine that is already stopped must not release the
+%% singleton another engine holds: it used to, so a third engine started
+%% next to the running one.
+second_stop_keeps_the_singleton(_Config) ->
+    {ok, A} = chappe_sip_nif:start(#{contact => contact()}, self()),
+    ok = chappe_sip_nif:stop(A),
+    {ok, B} = chappe_sip_nif:start(#{contact => contact()}, self()),
+    try
+        ok = chappe_sip_nif:stop(A),
+        case chappe_sip_nif:start(#{contact => contact()}, self()) of
+            {error, already_started} ->
+                ok;
+            {ok, C} ->
+                ok = chappe_sip_nif:stop(C),
+                ct:fail(third_engine_started)
+        end
+    after
+        ok = chappe_sip_nif:stop(B),
+        flush()
+    end.
 
 refused(Opts) ->
     case chappe_sip_nif:start(Opts, self()) of

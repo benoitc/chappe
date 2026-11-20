@@ -34,6 +34,12 @@ page that shows you how to use it.
   and room recordings (chappe_mrf), and chappe_sip's SIPREC recording
   server. [Record a call](guides/record.md#where-each-entry-points-audio-goes)
 
+- **RTCP at the RTP receiver**: muxed or on the next port, the source's SR,
+  SDES and BYE read, receiver reports every 5 s or so, through SRTCP on an
+  SRTP stream. [Configuration](configuration.md#rtp-receiver-options)
+- **Compliance matrix** of the RTP receiver's RTCP rows.
+  [Compliance](compliance.md)
+
 ## Also exported
 
 These functions are exported and supported, but no guide shows them yet.

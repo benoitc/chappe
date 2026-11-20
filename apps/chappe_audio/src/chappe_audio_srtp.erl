@@ -1,11 +1,12 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 
-%% @doc Receive-only SRTP and SRTCP (RFC 3711): authenticate, check for
+%% @doc Receive-side SRTP and SRTCP (RFC 3711): authenticate, check for
 %% replay and decrypt the packets of one stream, for a process of chappe
 %% that receives media itself (the SIPREC recording server's streams,
-%% chappe_audio_rtp). chappe never sends SRTP; media it relays stays
-%% with rtpengine (docs/decisions/0009-srtp-in-erlang.md).
+%% chappe_audio_rtp). chappe never sends SRTP; the one thing it protects
+%% is that receiver's own RTCP reports (protect_rtcp/2). Media it relays
+%% stays with rtpengine (docs/decisions/0009-srtp-in-erlang.md).
 %%
 %% Suites: AES_CM_128_HMAC_SHA1_80 and AES_CM_128_HMAC_SHA1_32 (RFC 4568
 %% 6.2.1, 6.2.2): AES-128 in counter mode (RFC 3711 4.1.1), HMAC-SHA1
@@ -16,20 +17,25 @@
 %% new/1 takes the master key and salt (as chappe_sip_sdes:select/1 reads
 %% them) and gives a context; unprotect/2 and unprotect_rtcp/2 take a
 %% packet and the context and give the plain packet and the next context,
-%% or {error, Why} with the context unchanged. For each packet, in the
-%% order of RFC 3711 3.3: the index is estimated from the stream's rollover
-%% counter (3.3.1), checked against the replay window (3.3.2), the tag is
-%% checked in constant time, and only then is the payload decrypted and
-%% the context moved on. A stream's SSRC gets its context (late binding,
-%% RFC 4568 6.4.1) only once a packet of it authenticates, and a context
-%% holds at most max_ssrcs of them.
+%% or {error, Why} with the context unchanged. protect_rtcp/2 takes an
+%% RTCP compound packet and a context keyed with the receiver's own key
+%% (the one its SDP answer gave) and gives the SRTCP packet, encrypted,
+%% its index from 0 up by one per packet, kept across rekey/2 (3.4).
+%%
+%% For each packet received, in the order of RFC 3711 3.3: the index is
+%% estimated from the stream's rollover counter (3.3.1), checked against
+%% the replay window (3.3.2), the tag is checked in constant time, and
+%% only then is the payload decrypted and the context moved on. A
+%% stream's SSRC gets its context (late binding, RFC 4568 6.4.1) only once
+%% a packet of it authenticates, and a context holds at most max_ssrcs of
+%% them.
 %%
 %% Keys never leave this module: the context keeps them in a closure, so
 %% printing a context, a crash report or sys:get_state/1 shows no key, and
 %% every error is an atom.
 -module(chappe_audio_srtp).
 
--export([new/1, rekey/2, unprotect/2, unprotect_rtcp/2, is_rtcp/1]).
+-export([new/1, rekey/2, unprotect/2, unprotect_rtcp/2, protect_rtcp/2]).
 -export([derive/4, crypt/5]).
 
 -export_type([ctx/0, suite/0, reason/0]).
@@ -55,6 +61,10 @@
     lifetime :: pos_integer(),
     rtp_used = 0 :: non_neg_integer(),
     rtcp_used = 0 :: non_neg_integer(),
+    %% the next SRTCP index this context sends with, and how many it sent
+    %% under its current key (the key's lifetime counts these)
+    tx = 0 :: non_neg_integer(),
+    tx_used = 0 :: non_neg_integer(),
     window :: pos_integer(),
     max_ssrcs :: pos_integer(),
     %% SSRC => {ROC, s_l, replay bitmap}, its bit 0 the highest index
@@ -114,10 +124,11 @@ new(_) ->
 
 %% A new master key for a context (a re-INVITE that changes the key): the
 %% streams keep their rollover counters, indices and replay lists (RFC
-%% 3711 3.3.1: the ROC MUST NOT be reset), the new key gets its lifetime.
+%% 3711 3.3.1: the ROC MUST NOT be reset), the SRTCP index sent goes on
+%% (3.4), the new key gets its lifetime.
 -spec rekey(ctx(), ctx()) -> ctx().
-rekey(#ctx{rtp = Rtp, rtcp = Rtcp}, #ctx{} = New) ->
-    New#ctx{rtp = Rtp, rtcp = Rtcp}.
+rekey(#ctx{rtp = Rtp, rtcp = Rtcp, tx = Tx}, #ctx{} = New) ->
+    New#ctx{rtp = Rtp, rtcp = Rtcp, tx = Tx}.
 
 tag_len(aes_cm_128_hmac_sha1_80) -> 10;
 tag_len(aes_cm_128_hmac_sha1_32) -> 4;
@@ -130,12 +141,6 @@ valid_mki(M) ->
 
 mki_bin(undefined) -> <<>>;
 mki_bin(M) -> M.
-
-%% RFC 5761 4: on a multiplexed port, a packet whose second octet is 192
-%% to 223 (RTCP SR 200, RR 201, ...) is RTCP.
--spec is_rtcp(binary()) -> boolean().
-is_rtcp(<<_, B, _/binary>>) -> B >= 192 andalso B =< 223;
-is_rtcp(_) -> false.
 
 %% ---- SRTP ----
 
@@ -320,6 +325,28 @@ rtcp_advance({_High, Bits}, Index, Delta, W) when Delta > 0 ->
     {Index, mask((Bits bsl Delta) bor 1, W)};
 rtcp_advance({High, Bits}, _Index, Delta, W) ->
     {High, mask(Bits bor (1 bsl -Delta), W)}.
+
+%% An RTCP compound packet to its SRTCP packet (RFC 3711 3.4): all but
+%% the first 8 octets encrypted with the index as i, E set, the index,
+%% the MKI, and the tag over all of it but the MKI.
+-spec protect_rtcp(binary(), ctx()) ->
+    {ok, binary(), ctx()} | {error, malformed | expired}.
+protect_rtcp(_Rtcp, #ctx{tx = I, tx_used = U, lifetime = L}) when
+    U >= L; I >= ?SRTCP_MAX
+->
+    {error, expired};
+protect_rtcp(<<2:2, _:30, Ssrc:32, Rest/binary>> = Rtcp, #ctx{keys = KF} = C) ->
+    K = KF(),
+    I = C#ctx.tx,
+    First = binary:part(Rtcp, 0, 8),
+    Enc = crypt(K#keys.rtcp_enc, K#keys.rtcp_salt, Ssrc, I, Rest),
+    Body = <<First/binary, Enc/binary, 1:1, I:31>>,
+    Tag = tag(K#keys.rtcp_auth, Body, ?SRTCP_TAG),
+    {ok, <<Body/binary, (C#ctx.mki)/binary, Tag/binary>>, C#ctx{
+        tx = I + 1, tx_used = C#ctx.tx_used + 1
+    }};
+protect_rtcp(_Rtcp, _C) ->
+    {error, malformed}.
 
 %% ---- the transforms ----
 
