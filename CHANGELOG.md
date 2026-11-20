@@ -7,6 +7,12 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 
 ## Unreleased
 
+- chappe_audio: the RTP receiver can now take part in RTCP. Turned on, it
+  reads the sender's reports, keeps reception statistics per source and
+  sends receiver reports back on the RFC 3550 schedule, either on the
+  media port or on the next one, encrypted when the stream uses SRTP. It
+  stays off unless asked for. Where it departs from RFC 3550 is listed in
+  the app's configuration guide and compliance matrix.
 - chappe_sip: loading a new copy of the SIP engine library into a running
   node could leave the stack unable to start, or tear the library down
   under a live call. An in-place upgrade is now refused. Use
