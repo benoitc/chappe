@@ -10,25 +10,17 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 ### Before you upgrade
 
 - All apps: use Erlang/OTP 29.1.2 or later.
-- chappe_sip: replace the removed and moved functions listed under
-  chappe_sip, and take the answer line from the first element of what
-  `chappe_sip_sdes:answer/1` returns.
+- chappe_sip: replace the removed functions listed under chappe_sip, and
+  call `chappe_sip_flow:ensure_secret/0` instead of
+  `chappe_sip_route:ensure_secret/0`.
 - chappe_sip: drop `ws`, `wss` and `*` from native and TLS contacts, fix
   invalid start options, and keep the message size limit between 1 KiB and
   64 MiB, or the start fails.
-- chappe_sip: run chappe_audio on any node that records with the SIPREC
-  server, handle the error a SIPREC offer with no usable stream returns, and
-  widen a tight recording port range.
-- chappe_sip: ask for plain media yourself if an anchored call must answer
-  an SRTP caller in plain RTP, and allow unauthenticated PUBLISH explicitly
-  if you take presence without authentication.
 - chappe_sip: reload the SIP engine library with `chappe_sip_nif:replace/0`
   while the stack is stopped.
-- chappe_esl and chappe_mrf: set the listen address and allowed networks of
-  the event socket listener when FreeSWITCH runs on another host.
-- chappe_esl: accept the `linger` and `disconnect` call messages, and stop
-  calling the removed functions.
-- chappe_mrf, chappe_cluster: stop calling the removed functions.
+- chappe_esl: give the outbound listener its address and allowed networks
+  when FreeSWITCH runs on another host, and stop calling
+  `chappe_esl_outbound_sup:start_conn/2`.
 - chappe_rtpengine: call the session media commands on
   `chappe_rtpengine_cmd` instead of `chappe_rtpengine_session`.
 
@@ -36,17 +28,12 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 
 #### Breaking
 
-- Moved: the SIPREC receiver modules to chappe_audio (`chappe_audio_rtp`,
-  `chappe_audio_srtp`, `chappe_audio_pcm:decode/2`), and the flow-token
-  functions of `chappe_sip_route` to `chappe_sip_flow`.
 - Removed: `chappe_sip:bye/1` and `update/1`,
   `chappe_sip_engine:unhandle/1`, `respond/3` and `unreg_handle/1`,
-  `chappe_sip_msg:new_response/3`, `chappe_sip_req:can_form_dialog/1`,
-  `chappe_sip_res:final_ref/1`, `chappe_sip_siprec_meta:ns/0` and
-  `ext_ns/0`, `chappe_sip_focus:subscriptions/1`,
-  `chappe_sip_notifier:changed/2` and `watchers/2`,
-  `chappe_sip_location_cluster:prefix/0`, `chappe_sip_refer:dialog/1`.
-- `chappe_sip_sdes:answer/1` returns the answer line together with its key.
+  `chappe_sip_msg:new_response/3`, `chappe_sip_req:can_form_dialog/1` and
+  `chappe_sip_res:final_ref/1`.
+- Moved: `chappe_sip_route:ensure_secret/0` is now
+  `chappe_sip_flow:ensure_secret/0`.
 - sofia's own WebSocket transport is never opened: a native or TLS contact
   naming `ws`, `wss` or `*` fails the start, and a TLS contact naming no
   transport binds TLS only. The `ws` and `wss` options serve WebSocket.
@@ -55,20 +42,6 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 - An in-place upgrade of the SIP engine library is refused, as it could
   leave the stack unable to start or unload the library under a live call.
   Use `chappe_sip_nif:replace/0` with the stack stopped.
-- The SIPREC recording server takes its audio through chappe_audio, so
-  recording needs chappe_audio on the node; without it a session is refused
-  cleanly.
-- The SIPREC recording server refuses an offer with no stream it can take
-  with 488, and serving it returns an error, instead of accepting an empty
-  session your app had to hang up.
-- A SIPREC stream that does not share its RTCP port takes two ports of the
-  range instead of one.
-- An anchored B2BUA call keeps an SRTP caller encrypted instead of answering
-  it with plain media; each leg gets the profile it offered unless your app
-  chooses.
-- A server without authentication refuses PUBLISH unless you allow it, and
-  an authenticated user may publish only its own address unless your app
-  decides otherwise.
 
 #### New
 
@@ -85,11 +58,14 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 - SIPREC: record a call or a native room to a recording server, with pause,
   resume and party changes, or act as a recording server that hands each
   stream and its metadata to your app and writes it to the recording store.
+  The recording server takes its audio through chappe_audio, which must run
+  on the node, and refuses an offer with no stream it can take with 488.
 - The SIPREC recording server takes SRTP (keys over TLS or WSS only, unless
   you mark the network trusted), answers re-offers as RFC 3264 asks
   (pause, added and removed streams, UPDATE offers, moves and codec
-  changes), sends and reads RTCP as RFC 7866 asks, and can bind its ports
-  within a range for containers.
+  changes), sends and reads RTCP as RFC 7866 asks (a stream without shared
+  RTCP takes two ports), and can bind its ports within a range for
+  containers.
 - B2BUA forking and hunting: ring all of a user's devices at once, each with
   its own flow, headers and rtpengine flags, learn which one answered, or
   take over every failure and try the next target unseen by the caller.
@@ -108,7 +84,8 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
   transfer to another network is refused and transfers per call are
   bounded. A REFER to a conference focus adds or removes a participant.
 - B2BUA media: one option anchors a whole call in rtpengine, a helper picks
-  direct or anchored per call, and a live call can switch. The SDP hook
+  direct or anchored per call, and a live call can switch. An SRTP caller
+  stays encrypted unless your app chooses otherwise. The SDP hook
   tells offers from answers. INVITE and re-INVITE without an offer work end
   to end, UPDATE crosses while ringing, and hold and unhold reach your app.
 - B2BUA: a call can run in its own process; a background call runs
@@ -117,6 +94,9 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
   their state changes can be followed. Middleware can hand data to the
   request handler.
 - A registration client that keeps a registration to a carrier alive.
+- Presence and message-waiting: PUBLISH is taken only from authenticated
+  users for their own address, unless your app decides otherwise or you
+  allow unauthenticated PUBLISH, and stored publications are capped.
 - Peers watched with OPTIONS and picked by priority, turn or weight; a call
   to a group fails over on 408, 503 or a transport error. The registrar can
   keep UDP contacts open with OPTIONS.
@@ -147,8 +127,6 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
   published flaws and an ssl_verify_fun that matches wildcards correctly.
 - Security: digest authentication refuses a request whose Request-URI was
   changed after signing; before, only user, host and port were compared.
-- Security: stored presence publications are capped, so a flood cannot
-  fill memory.
 - Security: the caller identity given to a B2BUA call is checked, so
   untrusted text can no longer add SIP headers; a bad value gets you an
   error and the caller a 500.
@@ -209,20 +187,15 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 
 ### chappe_mrf
 
-#### Breaking
-
-- Removed: `chappe_mrf_conf:refer/3`, `chappe_mrf_esl:header/0` and
-  `chappe_mrf_esl:var/0`.
-- The event socket listener listens on 127.0.0.1 by default; set the
-  address and allowed networks when FreeSWITCH runs elsewhere.
-
 #### New
 
 - A new app, a media resource function in the drachtio-fsmrf style: answer
   a caller with a FreeSWITCH endpoint you drive from Erlang, move it to a
   phone or another endpoint unnoticed, and put it in a conference on
   chappe_mix or FreeSWITCH, with mute, kick, lock, PIN and talker events.
-  The channel hangs up when its owner dies.
+  The channel hangs up when its owner dies. Its event socket listener
+  listens on 127.0.0.1 unless you set an address and the networks
+  FreeSWITCH connects from.
 - Endpoints: playback results (duration, how it ended, missing files as
   errors), offsets and time limits, digit terminators and invalid digits,
   mute, variables, asynchronous applications, events to the owner, mod_say,
@@ -239,10 +212,6 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
   do not move.
 - Endpoints and rooms carry the call's reference in their events.
 
-#### Fixed
-
-- Muting or deafening a party dialed in by REFER stopped a FreeSWITCH room.
-
 ### chappe_esl
 
 #### Breaking
@@ -250,16 +219,14 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 - The outbound listener listens on 127.0.0.1 only unless you give it an
   address; before, anyone who connected got a call. Give it the networks
   FreeSWITCH connects from when it runs on another host.
-- Call processes receive `linger` and `disconnect` messages, which a closed
-  set of message clauses must accept.
-- Removed: `chappe_esl_exec:fork_stop_cmd/2`, `chappe_esl_nodes:scope/0`
-  and `chappe_esl_outbound_sup:start_conn/2`.
+- Removed: `chappe_esl_outbound_sup:start_conn/2`.
 
 #### New
 
 - Call control: drive a FreeSWITCH call step by step, each command waiting
   for completion, with prompts, digits, recording, audio streams to a
-  WebSocket, timeouts, and hang-up when the owner dies.
+  WebSocket, timeouts, and hang-up when the owner dies. Your call process
+  also hears `linger` and `disconnect` as the channel winds down.
 - Audio forks through mod_audio_fork or mod_audio_stream (v1.1.0 or
   newer). A stereo mod_audio_stream fork sends nothing unless both
   directions carry audio; fork in mono or mixed if that matters.
@@ -307,10 +274,6 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
   lost.
 
 ### chappe_cluster
-
-#### Breaking
-
-- Removed: `chappe_cluster_machine:query_node_leases/2` and `counts/1`.
 
 #### New
 
