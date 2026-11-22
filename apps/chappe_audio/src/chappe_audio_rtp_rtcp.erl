@@ -9,11 +9,20 @@
 %%
 %% The receiver and its sources are the members of the session, the
 %% sources its senders (RFC 3550 6.2, A.7); at most 31 sources are kept,
-%% one RR's worth. A source that sends BYE is dropped (6.2.1). A source
-%% that takes the receiver's SSRC makes it draw another (8.2).
+%% one RR's worth. A source that sends BYE is marked as gone (6.2.1):
+%% for ?BYE_GRACE_US after it, its RTP and RTCP still count against its
+%% entry, so a straggler that UDP reordered behind the BYE does not start
+%% its statistics again, but it is left out of the reports and of the
+%% member count. Past the grace the entry is removed, lazily, at the next
+%% report or packet of that source, and a packet then starts a new one.
+%% A source that takes the receiver's SSRC makes it draw another (8.2).
+%%
+%% The functions taking Now (microseconds, monotonic) are the pure core;
+%% the others read the clock.
 -module(chappe_audio_rtp_rtcp).
 
--export([new/3, mode/1, rtp/2, input/3, interval/1, report/2, sent/2]).
+-export([new/3, mode/1, rtp/2, rtp/3, input/3, input/4, interval/1]).
+-export([report/2, report/3, sent/2]).
 -export([has_sent/1, dest/3, stats/1]).
 
 -export_type([session/0, mode/0, addr/0]).
@@ -29,6 +38,8 @@
     ssrc :: chappe_audio_rtcp:ssrc(),
     cname :: binary(),
     sources = #{} :: #{chappe_audio_rtcp:ssrc() => chappe_audio_rtcp:src()},
+    %% the sources that sent BYE, and when (microseconds, monotonic)
+    byes = #{} :: #{chappe_audio_rtcp:ssrc() => integer()},
     avg_size = 100.0 :: float(),
     initial = true :: boolean(),
     sent = 0 :: non_neg_integer(),
@@ -39,6 +50,9 @@
 
 %% the sources one RR reports on
 -define(MAX_SOURCES, 31).
+%% how long a source's entry outlives its BYE: the 5 s minimum report
+%% interval (6.2); UDP reordering is far shorter
+-define(BYE_GRACE_US, 5000000).
 
 %% A session in Mode, with the source's RTCP address from its SDP (or
 %% undefined) and the receiver's CNAME.
@@ -54,20 +68,26 @@ mode(#session{mode = M}) -> M.
 %% for nothing.
 -spec rtp(session(), binary()) -> session().
 rtp(S, Packet) ->
+    rtp(S, Packet, erlang:monotonic_time(microsecond)).
+
+-spec rtp(session(), binary(), integer()) -> session().
+rtp(S, Packet, Now) ->
     %% RFC 5761 4: SR to XR and the feedback types are RTCP, never RTP
     case chappe_audio_rtcp:is_rtcp(Packet) of
         true -> S;
-        false -> rtp_stats(S, Packet)
+        false -> rtp_stats(S, Packet, Now)
     end.
 
-rtp_stats(S, <<2:2, _:6, _M:1, _PT:7, Seq:16, Ts:32, Ssrc:32, _/binary>>) ->
-    Arrival = erlang:monotonic_time(microsecond) * 8 div 1000,
+rtp_stats(
+    S, <<2:2, _:6, _M:1, _PT:7, Seq:16, Ts:32, Ssrc:32, _/binary>>, Now
+) ->
+    Arrival = Now * 8 div 1000,
     with_source(
         Ssrc,
         fun(Src) -> chappe_audio_rtcp:src_rtp(Src, Seq, Ts, Arrival) end,
-        collision(Ssrc, S)
+        collision(Ssrc, expire(Ssrc, Now, S))
     );
-rtp_stats(S, _Packet) ->
+rtp_stats(S, _Packet, _Now) ->
     S.
 
 %% A compound packet of the source, plain, from From: SR, SDES CNAME and
@@ -75,9 +95,12 @@ rtp_stats(S, _Packet) ->
 %% (A.2) is dropped.
 -spec input(session(), binary(), addr()) -> session().
 input(S, Packet, From) ->
+    input(S, Packet, From, erlang:monotonic_time(microsecond)).
+
+-spec input(session(), binary(), addr(), integer()) -> session().
+input(S, Packet, From, Now) ->
     case chappe_audio_rtcp:parse(Packet) of
         {ok, Parts} ->
-            Now = erlang:monotonic_time(microsecond),
             lists:foldl(
                 fun(Part, A) -> part(Part, Now, A) end,
                 S#session{
@@ -97,12 +120,12 @@ part(#{type := sr, ssrc := Ssrc, ntp := Ntp}, Now, S) ->
     with_source(
         Ssrc,
         fun(Src) -> chappe_audio_rtcp:src_sr(Src, Ntp, Now) end,
-        collision(Ssrc, S)
+        collision(Ssrc, expire(Ssrc, Now, S))
     );
 part(#{type := sdes, chunks := Chunks}, _Now, S) ->
     lists:foldl(fun cname/2, S, Chunks);
-part(#{type := bye, ssrcs := Ssrcs}, _Now, #session{sources = Srcs} = S) ->
-    S#session{sources = maps:without(Ssrcs, Srcs)};
+part(#{type := bye, ssrcs := Ssrcs}, Now, S) ->
+    lists:foldl(fun(Ssrc, A) -> bye(Ssrc, Now, A) end, S, Ssrcs);
 part(_Part, _Now, S) ->
     S.
 
@@ -115,6 +138,32 @@ cname({Ssrc, Items}, S) ->
         false ->
             S
     end.
+
+%% a known source marked as gone at its first BYE; a BYE for a source
+%% never heard creates nothing
+bye(Ssrc, Now, #session{sources = Srcs, byes = Byes} = S) ->
+    case Srcs of
+        #{Ssrc := _} when not is_map_key(Ssrc, Byes) ->
+            S#session{byes = Byes#{Ssrc => Now}};
+        #{} ->
+            S
+    end.
+
+%% the entry of a source whose BYE grace is over, removed
+expire(Ssrc, Now, #session{sources = Srcs, byes = Byes} = S) ->
+    case Byes of
+        #{Ssrc := At} when Now - At >= ?BYE_GRACE_US ->
+            S#session{
+                sources = maps:remove(Ssrc, Srcs),
+                byes = maps:remove(Ssrc, Byes)
+            };
+        #{} ->
+            S
+    end.
+
+%% every entry whose BYE grace is over, removed
+expire_all(Now, #session{byes = Byes} = S) ->
+    maps:fold(fun(Ssrc, _, A) -> expire(Ssrc, Now, A) end, S, Byes).
 
 collision(Ssrc, #session{ssrc = Ssrc} = S) -> S#session{ssrc = new_ssrc()};
 collision(_Ssrc, S) -> S.
@@ -138,19 +187,31 @@ new_ssrc() ->
 
 %% The time to the next report in ms (6.2, A.7).
 -spec interval(session()) -> pos_integer().
-interval(#session{sources = Srcs, avg_size = Avg, initial = Initial}) ->
-    N = map_size(Srcs),
+interval(#session{
+    sources = Srcs, byes = Byes, avg_size = Avg, initial = Initial
+}) ->
+    %% a source that sent BYE is no longer a member
+    N = map_size(Srcs) - map_size(Byes),
     chappe_audio_rtcp:interval(max(2, N + 1), N, false, Avg, Initial).
 
 %% The next compound packet, plain: an RR with a block per source heard
 %% since the last one (an empty RR when none was, 6.4.2), SDES with the
-%% CNAME (6.1), and with Bye a BYE (6.3.7).
+%% CNAME (6.1), and with Bye a BYE (6.3.7). A source that sent BYE has
+%% no block (6.2.1).
 -spec report(session(), boolean()) -> {binary(), session()}.
-report(#session{sources = Srcs, ssrc = Me, cname = Cname} = S, Bye) ->
-    Now = erlang:monotonic_time(microsecond),
+report(S, Bye) ->
+    report(S, Bye, erlang:monotonic_time(microsecond)).
+
+-spec report(session(), boolean(), integer()) -> {binary(), session()}.
+report(S0, Bye, Now) ->
+    #session{sources = Srcs, byes = Byes, ssrc = Me, cname = Cname} =
+        S = expire_all(Now, S0),
     {Blocks, Srcs1} = maps:fold(
         fun(Ssrc, Src, {Bs, Acc}) ->
-            case chappe_audio_rtcp:src_heard(Src) of
+            case
+                chappe_audio_rtcp:src_heard(Src) andalso
+                    not is_map_key(Ssrc, Byes)
+            of
                 true ->
                     {B, Src1} = chappe_audio_rtcp:block(Src, Now),
                     {[B | Bs], Acc#{Ssrc := Src1}};

@@ -5,7 +5,7 @@ the `%% req:` annotations in `test/*_SUITE.erl` and `test/*_tests.erl`, and
 the results of the newest Common Test run and EUnit reports. Do not edit
 by hand.
 
-31 requirements: 24 pass, 0 fail, 0 untested, 1 n/a, 6 deviation, 0 spec defect
+31 requirements: 25 pass, 0 fail, 0 untested, 1 n/a, 5 deviation, 0 spec defect
 
 What chappe does not meet on purpose, and why, is listed under
 [Deviations](#deviations).
@@ -17,7 +17,6 @@ What chappe does not meet on purpose, and why, is listed under
 | R3550-6.3.1-1 | RFC 3550 | 6.3.1 | 5. The resulting value of T is divided by e-3/2=1.21828 to compensate for the fact that the timer... | not divided: chappe does no timer reconsideration (6.3 lets a two-party unicast participant omit it), so the compensation would only shorten the average below the 5 s minimum; the interval is max(5 s, n * C) times 0.5 to 1.5 |
 | R3550-6.3.4-1 | RFC 3550 | 6.3.4 | Furthermore, to make the transmission rate of RTCP packets more adaptive to changes in group... | not run: the session is the receiver and its sender, so a BYE does not move the interval enough to matter; the next interval is drawn from the members left |
 | R3550-6.3.5-1 | RFC 3550 | 6.3.5 | At occasional intervals, the participant MUST check to see if any of the other participants time... | sources are not timed out: a report carries a block only for a source heard since the last report, a BYE drops its source, the table holds at most 31 sources, and the receiver ends with its recording session |
-| R3550-6.2.1-1 | RFC 3550 | 6.2.1 | Instead, the entry SHOULD be marked as having received a BYE and then deleted after an appropriate... | a source's entry is deleted as soon as its BYE comes; a straggler RTP packet starts a new entry, and its statistics start again |
 | R3550-8.2-1 | RFC 3550 | 8.2 | If a source discovers at any time that another source is using the same SSRC identifier as its own,... | on a collision the receiver draws a new random SSRC for its next report but sends no BYE for the old one: it sends no RTP, and its next report, under the new SSRC, tells the source |
 | R3550-6.2-3 | RFC 3550 | 6.2 | All participants MUST use the same value for the session bandwidth so that the same RTCP interval... | the session bandwidth is fixed at 80 kbit/s (PCMU at 20 ms with headers), RTCP 5% of it; the SDP b= lines are not read. With two members the 5 s minimum decides the interval either way |
 
@@ -25,7 +24,7 @@ What chappe does not meet on purpose, and why, is listed under
 
 | Row | pass | fail | untested | other |
 | --- | ---: | ---: | ---: | ---: |
-| rtcp | 21 | 0 | 0 | 7 |
+| rtcp | 22 | 0 | 0 | 6 |
 | srtp | 3 | 0 | 0 | 0 |
 
 ## Requirements
@@ -59,7 +58,7 @@ What chappe does not meet on purpose, and why, is listed under
 | R3550-6.3.1-1 | desc | rtcp | deviation | deviation |  | 5. The resulting value of T is divided by e-3/2=1.21828 to compensate for the fact that the timer reconsideration algorithm converges to a value of the RTCP bandwidth below the intended average. |
 | R3550-6.3.4-1 | SHOULD | rtcp | deviation | deviation |  | Furthermore, to make the transmission rate of RTCP packets more adaptive to changes in group membership, the following "reverse reconsideration" algorithm SHOULD be executed when a BYE packet is received that reduces members to a value less than pmembers: |
 | R3550-6.3.5-1 | MUST | rtcp | deviation | deviation |  | At occasional intervals, the participant MUST check to see if any of the other participants time out. |
-| R3550-6.2.1-1 | SHOULD | rtcp | deviation | deviation |  | Instead, the entry SHOULD be marked as having received a BYE and then deleted after an appropriate delay. |
+| R3550-6.2.1-1 | SHOULD | rtcp | platform | pass | chappe_audio_rtp_rtcp_tests:bye_not_reported_test, chappe_audio_rtp_rtcp_tests:new_entry_after_grace_test, chappe_audio_rtp_rtcp_tests:straggler_after_bye_test | Instead, the entry SHOULD be marked as having received a BYE and then deleted after an appropriate delay. |
 | R3550-8.2-1 | MUST | rtcp | deviation | deviation |  | If a source discovers at any time that another source is using the same SSRC identifier as its own, it MUST send an RTCP BYE packet for the old identifier and choose another random one. |
 | R3550-6.2-3 | MUST | rtcp | deviation | deviation |  | All participants MUST use the same value for the session bandwidth so that the same RTCP interval will be calculated. |
 | R3550-6.4-1 | desc | rtcp | n/a | n/a |  | The SR is issued if a site has sent any data packets during the interval since issuing the last report or the previous one, otherwise the RR is issued. |

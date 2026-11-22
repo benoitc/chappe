@@ -94,7 +94,7 @@ the [compliance matrix](compliance.md)):
 - The session bandwidth is fixed at 80 kbit/s; the SDP `b=` lines are not
   read.
 - Sources are not timed out (6.3.5): a report carries only the sources
-  heard since the last one, and a BYE drops its source at once (6.2.1).
+  heard since the last one.
 - On an SSRC collision the receiver takes a new SSRC without a BYE for
   the old one (8.2).
 - It never sends media, so it sends RR, never SR.
@@ -109,11 +109,12 @@ and `sources`, one map per source: `ssrc`, `cname`, `received`, `lost`,
 `highest`, `jitter`. With a new key on a re-INVITE,
 `chappe_audio_rtp:rekey/3` takes the sender's key and the receiver's own.
 
-One timing is fixed:
+Two timings are fixed:
 
 | What | Value | What it does |
 |---|---|---|
 | Move grace | 1 s | After `chappe_audio_rtp:remote/2` (the sender moved), packets from the source latched before are dropped for this long. Past it, with no new source latched, that source may latch again when its address is the new remote address (any port), so a sender whose SDP port alone changed is heard again. |
+| BYE grace | 5 s | After a source's RTCP BYE (RFC 3550 6.2.1), its entry is kept, marked: a straggler RTP packet that arrives after the BYE counts in its statistics instead of starting them again, and is still recorded, but the source gets no report block and no longer counts as a member. Past it the entry is removed at the next report or packet, and a packet from that SSRC starts a new entry. 5 s is the minimum report interval (6.2). |
 
 ## Storage options
 
