@@ -79,6 +79,9 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
   without the caller noticing, across networks, to several destinations at
   once (first answer wins, the caller stays if none does), choosing who the
   new callee sees as calling.
+- B2BUA caller identity: the identity you set for the outgoing leg is
+  checked, so untrusted text cannot add SIP headers; a bad value is never
+  sent and you get an error.
 - B2BUA transfers: blind or attended, on either leg, FreeSWITCH-bridged
   calls included, through your policy or your app. Without a policy, a
   transfer to another network is refused and transfers per call are
@@ -127,33 +130,19 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
   published flaws and an ssl_verify_fun that matches wildcards correctly.
 - Security: digest authentication refuses a request whose Request-URI was
   changed after signing; before, only user, host and port were compared.
-- Security: the caller identity given to a B2BUA call is checked, so
-  untrusted text can no longer add SIP headers; a bad value gets you an
-  error and the caller a 500.
 - The SIP engine refuses NUL bytes in headers, bodies, routes and options
   instead of cutting them short, refuses a message it cannot allocate
   instead of sending it incomplete, and no longer crashes the node on a
   refused start. Three sofia-sip parser bugs are patched at build time.
-- With several listen addresses, the ACK of a failed re-INVITE and a CANCEL
-  could be lost.
 - Over UDP the first retransmission ignored T1 and came after a second.
-- A proxy on two addresses or transports record-routed only one side.
+- A proxy listening on two transports record-routed only one side.
 - A proxy kept every late answer, so a peer could grow its memory.
-- The record of a proxied call could miss a BYE right after the answer.
-- A NOTIFY from another fork of a subscription could get a 500 under load.
-- When a B2BUA app tried targets in turn, the caller's hang-up could go
-  unanswered after a later target answered.
 - A UA with a private Contact address is now reached where its requests
   come from.
 - Cancelling a request after the stack stopped crashed it, and hold missed
   media lines in an SDP with mixed line endings.
-- A crash in the recording store dropped live SIPREC recordings.
-- The declared result of serving a SIPREC session made dialyzer reject the
-  success case in your app.
 - A request handler that ended normally after answering was logged as a
   crash.
-- The WebSocket transport, now on erlang_ws 0.5.0, could lose a message
-  sent with the upgrade response.
 
 ### chappe_audio
 
@@ -226,7 +215,9 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 - Call control: drive a FreeSWITCH call step by step, each command waiting
   for completion, with prompts, digits, recording, audio streams to a
   WebSocket, timeouts, and hang-up when the owner dies. Your call process
-  also hears `linger` and `disconnect` as the channel winds down.
+  also hears `linger` and `disconnect` as the channel winds down. A slow
+  command does not hold up timeouts or other callers; use bgapi if you need
+  FreeSWITCH events meanwhile.
 - Audio forks through mod_audio_fork or mod_audio_stream (v1.1.0 or
   newer). A stereo mod_audio_stream fork sends nothing unless both
   directions carry audio; fork in mono or mixed if that matters.
@@ -241,12 +232,8 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 
 #### Fixed
 
-- A slow api or fork command no longer stalls the call's timeouts or other
-  callers; use bgapi if you need FreeSWITCH events meanwhile.
 - The outbound listener ignored the backlog you passed.
 - A command on a closed or refused connection crashed the caller.
-- A peer refused by the allow list now shows in the listener's stats by
-  the time it sees the close.
 
 ### chappe_rtpengine
 
@@ -267,8 +254,6 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 
 - Security: only a UDP reply from the node asked is accepted, and request
   cookies are unguessable.
-- A TCP reply in many small pieces burned CPU and could stall other
-  requests.
 - Re-adding a node left extra health checks that could mark it down.
 - On erlang_ws 0.5.0, a reply sent with the WebSocket upgrade is no longer
   lost.
