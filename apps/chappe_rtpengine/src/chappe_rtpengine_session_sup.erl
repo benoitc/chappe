@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
-%%
-%% Supervisor for per-call media sessions. Sessions are temporary:
+
+%% @doc Supervisor for per-call media sessions. Sessions are temporary:
 %% a crashed session must not restart, because its rtpengine state
 %% and its owner's call context are gone; terminate/3 already made
 %% the best-effort delete.

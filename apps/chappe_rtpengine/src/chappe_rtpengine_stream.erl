@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
-%%
-%% Incremental framer for NG over TCP: a pure module, no process.
+
+%% @doc Incremental framer for NG over TCP: a pure module, no process.
 %%
 %% Each message on the stream is a cookie, one space, then exactly one
 %% bencode value. feed/2 takes the next chunk of bytes and returns the

@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
-%%
-%% Public API for controlling rtpengine nodes over the NG protocol.
+
+%% @doc Public API for controlling rtpengine nodes over the NG protocol.
 %%
 %% Add a node, then issue commands against it by name. Parameters are
 %% maps with atom keys (call_id, from_tag, sdp, ...); see chappe_rtpengine_ng for

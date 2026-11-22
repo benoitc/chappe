@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
-%%
-%% Per-call media session: a gen_statem owning one rtpengine session
+
+%% @doc Per-call media session: a gen_statem owning one rtpengine session
 %% (one call-id, one pinned node) across both B2BUA legs.
 %%
 %% States:

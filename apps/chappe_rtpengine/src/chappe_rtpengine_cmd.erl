@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
-%%
-%% The typed auxiliary NG commands of a media session: playback, DTMF,
+
+%% @doc The typed auxiliary NG commands of a media session: playback, DTMF,
 %% media blocking and silencing, recording, forwarding and subscriptions.
 %% Each is chappe_rtpengine_session:cmd/3 with the command's name and
 %% defaults; the session process injects the call-id and tags and

@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
-%%
-%% DTMF event listener.
+
+%% @doc DTMF event listener.
 %%
 %% rtpengine reports detected DTMF digits as one JSON datagram per
 %% event when started with --dtmf-log-dest=IP:PORT. This server owns
