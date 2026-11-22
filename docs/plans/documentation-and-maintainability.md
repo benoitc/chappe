@@ -17,6 +17,9 @@ History:
   (chappe_sip boundaries) did that. Section 7 lists what they changed.
 - This third version describes the layout after those PRs and records the
   maintainer's answers (section 6).
+- The release review of 2026-11-22 (baseline `878b5c9`, after #73) is
+  section 12: what changed since, the drift it left, and what to fix
+  before the first release since 0.1.0.
 
 ## Status
 
@@ -357,3 +360,128 @@ Each step is its own PR, documentation only.
 8. **Docs check in CI:** every `src` module appears in an ex_doc group, and
    every child of each `*_sup` appears in the app overview. A script under
    `scripts/` and a CI job. Ask before adding the job.
+
+## 12. Release review, 2026-11-22
+
+Baseline `878b5c9`, after #73. Sixteen PRs merged since section 11 was
+done: the last three module splits (#57 rtpengine session, #58 WebSocket
+transport, #59 engine), the export sweep (#67), CI hardening (#61, #63,
+#65, #66, #68), and the outside-audit fixes (#69 strict compliance gate,
+#70 NIF replace, #71 RTCP in chappe_audio, #72 SIPREC recording server
+re-offers, #73 RTCP at the recording server). `make docs-check` passes;
+the drift below is in places it does not look at.
+
+### 12.1 What still works for a new reader
+
+The reading path holds: `README.md`, `docs/README.md`, `architecture.md`
+(seven apps, which matches the code), `concepts.md`, then the app
+overviews. Keep it. Every module added since 2026-11-18 is in an ex_doc
+group, and all but one open with a purpose-first `@doc`.
+
+### 12.2 Drift to fix (documentation)
+
+| # | Where | What is wrong | Action |
+|---|---|---|---|
+| D1 | `docs/glossary.md:95` | Says the matrix comes from "the last CT results". Since #69: the newest CT run and the EUnit reports, a row passes only when every claim passed, a Deviations section, `CHECK=1`. | Rewrite as a short paragraph linking to `contributing/compliance.md`. |
+| D2 | `docs/contributing/add-tests.md:43` | "Only `*_SUITE.erl` cases count": wrong since EUnit claims count. | Rewrite. |
+| D3 | `docs/README.md:135-145`, `contributing/compliance.md:21` and `:182-204` | chappe_audio has a matrix since #71 but is missing from both lists; it has no `docs/compliance/README.md`, unlike esl, mrf, rtpengine and sip. | Add the entries and the README. |
+| D4 | `docs/navigation.md:39, :44, :49, :53, :89, :93` | Rows behind the splits: no `_ws_txn`, `_ws_ctxn`, `_ws_msg`, `_engine_*`, `_nif_reload`, `nif_upgrade_SUITE`, `chappe_rtpengine_offer`, `_srs_stream`, `chappe_audio_rtcp`, `chappe_audio_rtp_rtcp`. | Add them. |
+| D5 | `docs/navigation.md:89` vs `apps/chappe_sip/rebar.config:252` | `chappe_sip_siprec_srs_stream` is Internal in one, in the public SIPREC group in the other. | Maintainer decides (Q1), then fix the other. |
+| D6 | `apps/chappe_sip/docs/design/overview.md:196-213` | Its own public/internal list contradicts navigation.md and ex_doc (b2b join and transfer are public; no SIPREC or location rows) and says no deprecation policy exists, which `CONTRIBUTING.md:111` contradicts. | Replace with a pointer to navigation.md. |
+| D7 | `overview.md:122`, `engine.md:246-318`, `overview.md:273-281`, `contributing/change-c-engine.md:69-78` | `chappe_sip_nif_reload` and `chappe_sip_nif_upgrade_SUITE` are named nowhere; the C engine workflow has no step for the reload path. | Add them; add a "If you change load, unload or the singleton" step. |
+| D8 | `apps/chappe_sip/docs/guides/siprec.md`, `features.md` | The guide mentions a pause answered inactive but not the rest of #72 (an added or removed stream, a sender that moves, an RTP/SRTP switch, keys judged per request transport); features.md has no line. Only `design/siprec.md:189-213` covers it. The "Where it lives" footer (`:344-350`) misses `_srs_stream`, `chappe_audio_rtcp` and the RTCP tests. | Add a short "When the client re-offers" section, a features line, and the footer entries. |
+| D9 | `apps/chappe_audio/docs/configuration.md:86-100` | A hand-written list of RFC 3550 departures repeats the matrix's six deviation rows, and adds one ("never sends SR") that has no row. | Keep the matrix as the one source: add the missing row, link to it. |
+| D10 | `apps/chappe_rtpengine/src/chappe_rtpengine_offer.erl:4` | Plain `%%` header, no `@doc`: ex_doc shows nothing. | Change to `@doc`. |
+| D11 | `docs/glossary.md` | 46 terms, none for RTCP, SRTP/SDES or deviation, all now used across three apps. | Add short entries. |
+| D12 | `apps/chappe_sip/docs/design/engine.md` (503 lines) | The abort-audit appendix (`:488`) is history, not design. | Move it under `docs/history`. |
+
+### 12.3 The CHANGELOG before the release
+
+The Unreleased section is 502 lines and 119 entries in one flat list,
+since 0.1.0. Someone upgrading cannot scan it.
+
+- 6 entries are marked breaking, in two spellings ("breaking:" and "a
+  breaking change").
+- At least 3 breaking changes are not marked: removed functions in
+  chappe_esl and chappe_cluster (`CONTRIBUTING.md:112` says removals are
+  breaking), an empty SIPREC offer now refused with 488, and recording
+  streams without rtcp-mux now taking two ports.
+- 25 entries carry code spans and 8 name a function and arity; one
+  (`:49-52`) explains a NOTIFY race in internal terms. The project rule is
+  plain English with no implementation detail; function names belong only
+  in the lines that list removed API.
+- Prefixes mix app names (44 entries) and topics ("SIPREC recording
+  server:", "Security:").
+
+Action: before the version bumps, rewrite the section grouped by app, then
+Breaking, New, Fixed, with a "Before you upgrade" list at the top that
+gathers every breaking change. Each app's release section is then that
+app's part as is (the release notes reuse it).
+
+### 12.4 Decisions that live only in code or design pages
+
+None of these has a decision record. Each is a short record, or a line in
+an existing one:
+
+- An in-place NIF upgrade is refused; the library is replaced by purge then
+  load, with the engine slot reserved (`engine.md:296-302`).
+- The compliance rule: a row passes only when every claim passed, a
+  skipped claim makes it untested, and an expected failure must name a
+  deviation row.
+- RTCP at the recording server: receiver reports only, a fixed session
+  bandwidth, no reconsideration, one CNAME per recording, two ports
+  without rtcp-mux (each departure is a deviation row; the why is not
+  written down).
+- The 1 s move grace of the RTP receiver: the behaviour is in
+  `chappe_audio/docs/configuration.md:116`, not why 1 s or why it is fixed.
+- `a=record` (R7866-6.1.2-1) stays a deviation: the maintainer's choice of
+  2026-11-19, recorded only in the row's notes.
+
+### 12.5 Module size and complexity
+
+Code lines without blanks or comments (`apps/*/src`, 236 modules, about
+46,000 lines; chappe_sip is 135 modules and 28,400 lines).
+
+| Signal | Measurement | Reading |
+|---|---|---|
+| Modules at the lint ceiling | 17 modules sit between 470 and 500 lines, against elvis `max_module_length` 500: `chappe_sip_proxy`, `_media_mix`, `_engine`, `_b2b_relay`, `_focus`, `_refer`, `_dialog_fsm`, `_registry`, `_siprec`, `_ws_transport`, `chappe_mrf_conf_refer`, `chappe_mrf_conf`, `chappe_esl_call`, `chappe_mix_conf`, `chappe_rtpengine_session`, `chappe_mrf`, `chappe_audio_rtp` | The splits of section 9 stopped at the limit. The next feature in any of them trips lint, and the easy fix is a split by size rather than by responsibility. **Module organisation.** No action now; when one trips, split along a responsibility its overview names, or exempt it with a reason. |
+| Exempt from the length rule | `chappe_sip_hdr` 764 (one parser per header, coherent), `chappe_sip_b2b` 723 (every B2BUA option next to its entry point), `chappe_rtpengine_client` 595 (four transports in the process that owns the socket) | Reasons hold. Keep. |
+| Longest functions | `chappe_rtpengine_client:handle_info` 76, `chappe_sip_b2b:start_b` 74, `chappe_rtpengine_session:call` 74, `chappe_sip_proxy:on_response` 68, `chappe_sip_uac_fsm:trying` 64, `chappe_sip_b2b_relay:loop` 63 (span lines, comments included) | Review only when next changed. **Code complexity**, low. |
+| The C NIF | `chappe_sip_engine_nif.c` 3,234 lines, about 154 top-level functions; longest `op_cb` 181, `stack_main` 168, `deliver_request` 129, `nif_start` 118 | One file holds lifecycle, the op queue, event delivery and TLS. `engine.md` maps its risky regions, which is what a contributor needs first. A split of the file is a question (Q4), not a recommendation: it is covered by ASan, TSan and the fuzzer as one unit. **Architecture.** |
+| New since section 9 | `chappe_sip_siprec_srs` 338, `_srs_stream` 323, `chappe_audio_rtcp` 356, `chappe_audio_rtp_rtcp` 157, `chappe_audio_srtp` 275, `chappe_sip_nif_reload` 21 | Each has one responsibility. Fine. |
+
+T1 of section 9 (test-only exports) is done in #67.
+
+### 12.6 What `make docs-check` cannot catch
+
+It checks ex_doc groups, extras, supervisors named in overviews, and
+links and anchors. It does not check public versus internal agreement
+between navigation.md and ex_doc (D5), modules missing from overview
+tables and navigation rows (D4, D7), a missing `@doc` (D10), counts and
+lists in prose (D3), or CHANGELOG markings. Cheap additions: every module
+of an "Internal" group is in navigation.md's internal column and the
+reverse; every src module is named in its app overview; every module has
+a `@doc`. Ask before changing the CI job.
+
+### 12.7 Questions for the maintainer
+
+1. Is `chappe_sip_siprec_srs_stream` public API or internal (D5)?
+2. The CHANGELOG rewrite (12.3): is "by app, then Breaking, New, Fixed,
+   with a Before you upgrade list" the shape you want, and is it a release
+   blocker?
+3. Should chappe_audio keep dropping a source at its BYE at once
+   (deviation R3550-6.2.1-1) while chappe_mix keeps a grace delay?
+4. The C NIF stays one file, mapped by `engine.md`, or gets split by area
+   (lifecycle, ops, events, TLS) in a later plan?
+5. R7866-6.1.1-1 (actor srs) and R7866-6.1.1-4 (actor src) carry the same
+   SRC sentence. Intended, or should the srs row hold the SRS side?
+6. Should the docs check grow the three checks of 12.6?
+
+### 12.8 Order
+
+Documentation only, each its own PR, one open at a time:
+
+1. **Before the release:** D1 to D10 in one drift PR; the CHANGELOG
+   rewrite (12.3), if question 2 makes it a blocker.
+2. **Can wait:** decision records (12.4), D11, D12, and the docs check
+   additions (12.6) once question 6 is answered.
