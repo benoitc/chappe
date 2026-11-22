@@ -477,11 +477,17 @@ a `@doc`. Ask before changing the CI job.
    SRC sentence. Intended, or should the srs row hold the SRS side?
 6. Should the docs check grow the three checks of 12.6?
 
+Answers (2026-11-22): 1, public, so navigation.md follows ex_doc. 2, yes,
+the rewrite is a release blocker. 3, asked back: what the delay is for.
+4, split the NIF file, in its own plan. 5, not intended: the srs row
+takes the part that concerns the receiving side. 6, yes.
+
 ### 12.8 Order
 
 Documentation only, each its own PR, one open at a time:
 
-1. **Before the release:** D1 to D10 in one drift PR; the CHANGELOG
-   rewrite (12.3), if question 2 makes it a blocker.
-2. **Can wait:** decision records (12.4), D11, D12, and the docs check
-   additions (12.6) once question 6 is answered.
+1. **Before the release:** D1 to D10 with answers 1 and 5, in one drift
+   PR; then the CHANGELOG rewrite (12.3).
+2. **After it:** the docs check additions (12.6); decision records
+   (12.4), D11, D12.
+3. **Its own plan:** the NIF file split (answer 4).
