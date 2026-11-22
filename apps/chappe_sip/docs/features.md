@@ -66,6 +66,7 @@ coverage, row by row, is in the [compliance matrix](compliance.md).
 |---|---|
 | Media facade: anchor, tap, SIPREC, duck, play, record, DTMF on rtpengine | [Media](guides/media.md) |
 | SIPREC client (RFC 7866) for anchored calls and native rooms, and a recording server that writes to chappe_audio's store | [SIPREC](guides/siprec.md) |
+| SIPREC recording server answers re-offers per RFC 3264: pause and resume, streams added or removed, a sender that moves, an RTP/SRTP switch, SRTP keys taken only over TLS or WSS | [SIPREC](guides/siprec.md#when-the-client-re-offers) |
 | SIPREC recording server binds its receivers to a port range | [SIPREC](guides/siprec.md#bind-the-receivers-to-a-port-range) |
 | SIPREC recording server sends RTCP receiver reports (muxed or on the port above, SRTCP on SRTP streams, one CNAME per session) | [SIPREC](guides/siprec.md#rtcp-from-the-recording-server) |
 | SIPREC recording server takes SRTP (RTP/SAVP, RTP/SAVPF, SDES keys) and decrypts it itself | [SIPREC](guides/siprec.md#take-srtp-as-the-recording-server) |

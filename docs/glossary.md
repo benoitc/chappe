@@ -91,9 +91,15 @@ node has one agent, `chappe_cluster_node`, that renews its liveness. See
 
 One normative statement of an RFC (a MUST, SHOULD or MAY), one line of an
 app's `docs/compliance/requirements.tsv` with an id, an actor and a tier. A
-test claims rows with a `%% req:` comment; `make compliance` joins rows,
-claims and the last CT results into the app's `docs/compliance.md`, and
-`GATE=demo` fails on a required row that is not passing.
+CT case or an EUnit test claims rows with a `%% req:` comment above it.
+`make compliance` joins rows, claims, the newest CT run and the EUnit
+surefire reports into the app's `docs/compliance.md`. A row passes only
+when every test claiming it passed; a skipped or missing result leaves it
+untested. Rows of tier `deviation` are listed, with their reason, in the
+Deviations section at the top of the matrix. `GATE=demo` fails on a
+required row that is not passing, and `make compliance CHECK=1`
+(`--check-against`) fails when the committed matrix claims a pass this run
+does not prove; the reverse drift is only a notice.
 
 Where it lives: `apps/*/docs/compliance/`, `scripts/compliance.escript`,
 `scripts/compliance/chappe_sip_compliance.erl`. Workflow:

@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
-%%
-%% Host resolution for the NG client: a name or an address literal to one
+
+%% @doc Host resolution for the NG client: a name or an address literal to one
 %% address (IPv4 first, then IPv6), through inet or a caller-supplied
 %% resolver fun, and the same lookup in a monitored helper process so the
 %% client never blocks on DNS.

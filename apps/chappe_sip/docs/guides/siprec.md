@@ -141,17 +141,10 @@ format) when the audio came in no codec the server takes or found no port,
 304 (Media type not available) when no audio came, 302 when the streams
 were SRTP it cannot take (`{error, srtp}`, see below).
 
-`run/1` carries the session until the BYE. It answers each re-INVITE, and
-each UPDATE with an SDP offer, with one m-line per offered stream: a stream
-it has keeps its receiver, answered `a=inactive` while the client pauses it
-and `a=recvonly` again when it resumes, and following the client when it
-moves the stream to another address or port. A stream the offer adds gets a
-receiver of its own (port 0 past `max_streams`). A stream the client
-switches to another profile (RTP/AVP to RTP/SAVP) starts over as a new one,
-and a stream left without PCMU or PCMA stops (port 0). An UPDATE with the
-metadata alone gets an empty 200. `run/1` hands the metadata of each
-request it accepts (a party change, a pause) to the notify process
-(`notify => Pid`, else the sink):
+`run/1` carries the session until the BYE and answers the client's
+re-offers (see below). It hands the metadata of each request it accepts
+(a party change, a pause) to the notify process (`notify => Pid`, else the
+sink):
 
 ```erlang
 receive
@@ -161,6 +154,36 @@ receive
         done
 end.
 ```
+
+### When the client re-offers
+
+You do nothing: `run/1` answers each re-INVITE, and each UPDATE with an
+SDP offer, with one m-line per offered stream (RFC 3264). What the client
+changes, and what the server does:
+
+- **Pause and resume.** A paused stream keeps its receiver and is answered
+  `a=inactive`; it is answered `a=recvonly` again when the client resumes.
+- **A stream added.** It gets a receiver of its own, or port 0 past
+  `max_streams`.
+- **A stream removed** (port 0). Its receiver stops and the answer keeps
+  port 0.
+- **Fewer m-lines than the session.** Refused 488; the session stays as it
+  was.
+- **The sender moves** (another address or port). The receiver learns the
+  new source as at the start, and drops packets from the old one for 1 s.
+- **RTP to SRTP, or back** (RTP/AVP to RTP/SAVP). The stream starts over as
+  a new one. A stream left without PCMU or PCMA stops (port 0); otherwise
+  the answer follows the offer's G.711 formats in its order.
+- **SRTP in a re-offer.** Keys are taken only when the request that carries
+  them came over TLS or WSS, judged per request, not on the INVITE's
+  transport; otherwise the stream stops (port 0), even when the key is
+  unchanged. `keys_over_tls => false` turns this check off.
+- **`a=rtcp-mux` added or dropped**, or `a=rtcp` moved. The receiver
+  restarts with the new RTCP plan.
+- **UPDATE.** An UPDATE with SDP gets SDP in its 200; one with the metadata
+  alone gets an empty 200. A re-INVITE with no offer gets the current SDP.
+
+The full rules are in the [SIPREC design](../design/siprec.md#run1).
 
 ### Bind the receivers to a port range
 
@@ -343,10 +366,13 @@ called from any node with the call's `b2b` handle (from
 
 - Modules: `chappe_sip_siprec` (the client), `chappe_sip_siprec_peer`
   (what the recording server sends in the client's dialog),
-  `chappe_sip_siprec_meta` (metadata), `chappe_sip_siprec_srs` and `chappe_audio_rtp` (the
-  server side), `chappe_audio_srtp` (SRTP decryption, in chappe_audio), `chappe_sip_sdes`
-  (`a=crypto` lines), `chappe_sip_multipart`.
-- Tests: `chappe_sip_siprec_SUITE`, `chappe_sip_siprec_meta_tests`,
+  `chappe_sip_siprec_meta` (metadata), `chappe_sip_siprec_srs` (the
+  server side), `chappe_sip_siprec_srs_stream` (one recorded stream),
+  `chappe_audio_rtp` (its receiver), `chappe_audio_rtcp` (the receiver's
+  RTCP reports), `chappe_audio_srtp` (SRTP decryption, in chappe_audio),
+  `chappe_sip_sdes` (`a=crypto` lines), `chappe_sip_multipart`.
+- Tests: `chappe_sip_siprec_SUITE` (the RTCP cases are `server_rtcp_mux`,
+  `server_rtcp_port` and `server_srtcp_report`), `chappe_sip_siprec_meta_tests`,
   `chappe_audio_srtp_tests`, `chappe_audio_rtp_SUITE`, `chappe_sip_sdes_tests`,
   `chappe_sip_siprec_live_SUITE` (`make interop`).
 - Specs: RFC 7866 (updated by RFC 9806), RFC 7865, RFC 6341, RFC 3711,

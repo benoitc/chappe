@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
-%%
-%% Node registry with health tracking, load-based selection, and call
+
+%% @doc Node registry with health tracking, load-based selection, and call
 %% pinning.
 %%
 %% Reads happen in the calling process against ETS (selection, pin
