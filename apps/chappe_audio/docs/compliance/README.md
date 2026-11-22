@@ -19,6 +19,6 @@ only keeps what is specific to chappe_audio.
   `deviation`: the receiver only receives, so the sender rules of RFC 3550
   are `n/a`, and its RFC 3550 departures are `deviation` rows, listed with
   their reason in the [Deviations](../compliance.md#deviations) section.
-- Claims come from `chappe_audio_rtp_SUITE` (the receiver on real sockets)
+- Claims come from `chappe_audio_rtp_SUITE` (the receiver on real sockets),
   `chappe_audio_rtcp_tests` (the pure RTCP packets and statistics) and
   `chappe_audio_srtp_tests` (SRTCP).

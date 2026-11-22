@@ -174,9 +174,10 @@ changes, and what the server does:
 - **RTP to SRTP, or back** (RTP/AVP to RTP/SAVP). The stream starts over as
   a new one. A stream left without PCMU or PCMA stops (port 0); otherwise
   the answer follows the offer's G.711 formats in its order.
-- **New SRTP keys.** Taken only when the request that carries them came over
-  TLS or WSS, judged per request, not on the INVITE's transport; otherwise
-  the stream stops (port 0).
+- **SRTP in a re-offer.** Keys are taken only when the request that carries
+  them came over TLS or WSS, judged per request, not on the INVITE's
+  transport; otherwise the stream stops (port 0), even when the key is
+  unchanged. `keys_over_tls => false` turns this check off.
 - **`a=rtcp-mux` added or dropped**, or `a=rtcp` moved. The receiver
   restarts with the new RTCP plan.
 - **UPDATE.** An UPDATE with SDP gets SDP in its 200; one with the metadata
