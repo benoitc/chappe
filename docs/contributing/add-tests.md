@@ -40,8 +40,9 @@ for the external system, and the conventions the suites share.
 
 3. Fix the code, rerun the case, then the whole suite.
 4. If the case proves a requirement, put its ids on a `%% req:` line directly
-   above the case function ([compliance.md](compliance.md)). Only
-   `*_SUITE.erl` cases count.
+   above the case or EUnit test function ([compliance.md](compliance.md)).
+   Claims in `*_SUITE.erl` and `*_tests.erl` both count, keyed
+   `Module:Function`.
 5. To run chappe_sip without the NIF, point the engine at the fake, as
    `chappe_sip_pipeline_SUITE` does:
 

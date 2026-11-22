@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
-%%
-%% ws_handler bridging a WebSocket session to the owning chappe_rtpengine_client.
+
+%% @doc ws_handler bridging a WebSocket session to the owning chappe_rtpengine_client.
 %%
 %% init/2 runs inside the session start, so rejecting the negotiated
 %% subprotocol here makes ws:connect/2 fail synchronously: a server

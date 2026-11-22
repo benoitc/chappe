@@ -18,7 +18,7 @@ makes a promise, or want to know which test proves a behaviour.
 
 | Piece | Where |
 |---|---|
-| Catalogues | `apps/{chappe_sip,chappe_mix,chappe_rtpengine,chappe_esl,chappe_mrf}/docs/compliance/requirements.tsv` |
+| Catalogues | `apps/{chappe_sip,chappe_mix,chappe_rtpengine,chappe_esl,chappe_mrf,chappe_audio}/docs/compliance/requirements.tsv` |
 | Generated matrices (do not edit) | `apps/<app>/docs/compliance.md` |
 | The generator | `scripts/compliance/chappe_sip_compliance.erl`, eunit in `test/chappe_sip_compliance_tests.erl` |
 | The entry point | `scripts/compliance.escript` |
@@ -63,7 +63,7 @@ another column count, or a duplicate id, stops the generator.
 
 | Column | Meaning |
 |---|---|
-| `id` | stable, never renumbered: `R<rfc>-<n>` (chappe_sip, chappe_mix), `RNG-<n>` (chappe_rtpengine), `ESL-<n>` (chappe_esl), `MRF-<n>` (chappe_mrf) |
+| `id` | stable, never renumbered: `R<rfc>-<n>` (chappe_sip, chappe_mix), `RNG-<n>` (chappe_rtpengine), `R<rfc>-<section>-<n>` (chappe_audio), `ESL-<n>` (chappe_esl), `MRF-<n>` (chappe_mrf) |
 | `source`, `section`, `line` | where the sentence is: an RFC and its line, or the protocol and area with `-` as line |
 | `keyword` | the strongest RFC 2119 keyword of the sentence |
 | `actor` | uac, uas, ua, dialog, transaction, transport, b2bua, notifier, focus, mixer, client, ... |
@@ -202,6 +202,11 @@ Only the newest CT run counts, so do not run `make interop-conformance` after
   the model): `source` is `chappe_mrf`, every row `platform`.
   `chappe_mrf_SUITE` claims the rows on fakes, so they hold without docker;
   the SIP rules it relies on are in the chappe_sip catalogue.
+- **chappe_audio.** RFC 3550, 3711, 5761 and 7866: the RTCP and SRTCP rules
+  of the RTP receiver the SIPREC recording server uses, claimed by
+  `chappe_audio_rtp_SUITE` and the EUnit tests of the pure modules. It only
+  receives, so the sender rules are `n/a`; its RFC 3550 departures are
+  `deviation` rows. See its [catalogue notes](../../apps/chappe_audio/docs/compliance/README.md).
 
 ## Related
 
