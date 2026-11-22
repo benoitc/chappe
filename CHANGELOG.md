@@ -18,6 +18,10 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
   64 MiB, or the start fails.
 - chappe_sip: reload the SIP engine library with `chappe_sip_nif:replace/0`
   while the stack is stopped.
+- chappe_sip: build the registrar with `chappe_sip:registrar/1`, and give it
+  `auth` or set `allow_unauthenticated => true`, or it fails to start.
+- chappe_sip: remove `freeswitch` from the `chappe_sip_media` configuration;
+  run conferences on chappe_mix and drive FreeSWITCH through chappe_mrf.
 - chappe_esl: give the outbound listener its address and allowed networks
   when FreeSWITCH runs on another host, and stop calling
   `chappe_esl_outbound_sup:start_conn/2`.
@@ -28,7 +32,7 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 
 #### Breaking
 
-- Removed: `chappe_sip:bye/1` and `update/1`,
+- Removed: `chappe_sip:registrar/0`, `chappe_sip:bye/1` and `update/1`,
   `chappe_sip_engine:unhandle/1`, `respond/3` and `unreg_handle/1`,
   `chappe_sip_msg:new_response/3`, `chappe_sip_req:can_form_dialog/1` and
   `chappe_sip_res:final_ref/1`.
@@ -42,6 +46,13 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 - An in-place upgrade of the SIP engine library is refused, as it could
   leave the stack unable to start or unload the library under a live call.
   Use `chappe_sip_nif:replace/0` with the stack stopped.
+- A registrar with no `auth` fails to start unless you set
+  `allow_unauthenticated => true`. Before, it accepted unauthenticated
+  REGISTER requests by default.
+- The FreeSWITCH media backend of `chappe_sip_media` is removed
+  (`chappe_sip_media_freeswitch`, `chappe_sip_media_esl_mgr`), and a media
+  configuration naming `freeswitch` returns an error. Conferences run on
+  chappe_mix; FreeSWITCH is driven through chappe_mrf.
 
 #### New
 
@@ -135,6 +146,8 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
   instead of sending it incomplete, and no longer crashes the node on a
   refused start. Three sofia-sip parser bugs are patched at build time.
 - Over UDP the first retransmission ignored T1 and came after a second.
+- With a separate TLS contact, the ACK of a failed re-INVITE and a CANCEL
+  could be lost; they now leave from the address the request used.
 - A proxy listening on two transports record-routed only one side.
 - A proxy kept every late answer, so a peer could grow its memory.
 - A UA with a private Contact address is now reached where its requests
@@ -255,6 +268,8 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 - Security: only a UDP reply from the node asked is accepted, and request
   cookies are unguessable.
 - Re-adding a node left extra health checks that could mark it down.
+- Over TCP, a reply arriving in many small pieces used CPU out of
+  proportion to its size and could stall other requests.
 - On erlang_ws 0.5.0, a reply sent with the WebSocket upgrade is no longer
   lost.
 
