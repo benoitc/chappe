@@ -274,7 +274,9 @@ Notes:
 - `replace/0` returns `{error, running}`, `{error, stopping}` or
   `{error, replacing}` while an engine runs, is still stopping, or another
   replace runs, and changes nothing. Otherwise it reserves the engine
-  slot, then deletes, purges and loads `chappe_sip_nif`. While the slot is
+  slot, then `chappe_sip_nif_reload:run/1` deletes, purges and loads
+  `chappe_sip_nif`. That step lives in its own module so the process
+  running it holds no frame of the module it purges. While the slot is
   reserved a start returns `{error, replacing}`, so a supervisor restart
   cannot start an engine on the old library between the check and the
   purge. The new library frees the slot once it is set up.

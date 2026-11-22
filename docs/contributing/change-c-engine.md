@@ -65,6 +65,16 @@ the owner monitor, the handle table drain on stop, the handling of a stray
 
 6. Update `engine.md` in the same change when you touch a lifecycle protocol
    or a risky region, and name the tests that cover it.
+7. If you change `load`, `unload`, `upgrade`, the engine singleton or
+   `chappe_sip_nif:replace/0` (with `chappe_sip_nif_reload`), run the
+   upgrade and boundary suites, then both sanitizers:
+
+   ```sh
+   rebar3 ct --suite apps/chappe_sip/test/chappe_sip_nif_upgrade_SUITE
+   rebar3 ct --suite apps/chappe_sip/test/chappe_sip_nif_boundary_SUITE
+   make asan
+   make tsan
+   ```
 
 ## Tests to add or run
 
@@ -76,6 +86,8 @@ the owner monitor, the handle table drain on stop, the handling of a stray
 | `chappe_sip_ops_SUITE` | the failure policy on missed health checks, the dialog ceiling, the message-size cap and its bounds |
 | `chappe_sip_nif_boundary_SUITE` | what the shim refuses: NUL bytes, oversized fields, invalid start options, a request handed to `send_response/2`, and the `events_dropped` count |
 | `chappe_sip_handler_SUITE` | start/stop cycling and an OPTIONS burst |
+| `chappe_sip_nif_upgrade_SUITE` | replacing the library in peer nodes: an upgrade refused, `replace/0` refused while an engine runs, a reserved slot, a reload that fails half way |
+| `chappe_sip_ws_msg_tests` | the WebSocket twin of nta's message rules (Via and branch, CANCEL, ACK, responses), for a change in nta behaviour you mirror there |
 
 ```sh
 ENGINE_WERROR=1 rebar3 compile

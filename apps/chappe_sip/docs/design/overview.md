@@ -119,7 +119,7 @@ Why the order matters:
 | `conn/` | Request workers, the stack supervisor, the location store and its backends (see [registrar](registrar.md)) | `chappe_sip_request_worker`, `chappe_sip_request_sup`, `chappe_sip_stack_sup`, `chappe_sip_registry`, `chappe_sip_registry_keeper`, `chappe_sip_registry_store`, `chappe_sip_registry_contact`, `chappe_sip_registry_sweep`, `chappe_sip_location`, `chappe_sip_location_ets`, `chappe_sip_location_cluster` |
 | `core/` | Services every layer reports to: call correlation and call records | `chappe_sip_call`, `chappe_sip_cdr` |
 | `dialog/` | Dialogs, session timers, REFER, the subscriber side of events, the NOTIFY router | `chappe_sip_dialog`, `chappe_sip_dialog_fsm` and its `chappe_sip_dialog_*` helpers (`_route`, `_offer`, `_out`, `_sub`, `_st`, `_owner`), `chappe_sip_dialog_index`, `chappe_sip_dialog_sup`, `chappe_sip_session_timer`, `chappe_sip_subscription`, `chappe_sip_refer*`, `chappe_sip_subscriber*`, `chappe_sip_notify_router` |
-| `engine/` | The NIF and the engine, the dispatch policy, the UAS response, listen addresses, HEP for WS | `chappe_sip_engine` and its `chappe_sip_engine_*` helpers (`_opts`, `_backend`, `_events`, `_handles`, `_conns`), `chappe_sip_nif`, `chappe_sip_dispatch`, `chappe_sip_uas_response`, `chappe_sip_binds`, `chappe_sip_bind_uri`, `chappe_sip_hep` |
+| `engine/` | The NIF and the engine, the dispatch policy, the UAS response, listen addresses, HEP for WS | `chappe_sip_engine` and its `chappe_sip_engine_*` helpers (`_opts`, `_backend`, `_events`, `_handles`, `_conns`), `chappe_sip_nif`, `chappe_sip_nif_reload` (replacing the loaded library), `chappe_sip_dispatch`, `chappe_sip_uas_response`, `chappe_sip_binds`, `chappe_sip_bind_uri`, `chappe_sip_hep` |
 | `events/` | The notifier side of events: PUBLISH, presence, message-summary, the conference focus | `chappe_sip_esc`, `chappe_sip_notifier`, `chappe_sip_presence`, `chappe_sip_pidf`, `chappe_sip_mwi`, `chappe_sip_publisher`, `chappe_sip_focus`, `chappe_sip_confinfo`, `chappe_sip_events_sup` |
 | `media/` | The media facade and its backends | `chappe_sip_media`, `chappe_sip_media_sup`, `chappe_sip_media_rtpengine`, `chappe_sip_media_mix`, `chappe_sip_media_mix_sdp` |
 | `peers/` | OPTIONS-monitored peers and the registrar's qualify | `chappe_sip_peers`, `chappe_sip_peer`, `chappe_sip_peers_sup`, `chappe_sip_peer_sup`, `chappe_sip_qualify` |
@@ -193,24 +193,10 @@ the engine to send (`send_request/3,4`), registers its handle, and receives
 
 ## Public and internal modules
 
-Public (documented, stable within a release, used by applications):
-
-- Facade and extension points: `chappe_sip`, `chappe_sip_handler`,
-  `chappe_sip_middleware`, `chappe_sip_guard`.
-- Calls and dialogs: `chappe_sip_dialog`, `chappe_sip_uac`, `chappe_sip_req`,
-  `chappe_sip_res`, `chappe_sip_b2b`.
-- Features: `chappe_sip_proxy`, `chappe_sip_registry`, `chappe_sip_regc`,
-  `chappe_sip_peers`, `chappe_sip_refer`, `chappe_sip_subscriber`,
-  `chappe_sip_presence`, `chappe_sip_pidf`, `chappe_sip_mwi`,
-  `chappe_sip_focus`, `chappe_sip_confinfo`, `chappe_sip_cdr`,
-  `chappe_sip_media`, `chappe_sip_metrics`, `chappe_sip_config`.
-- Message helpers: `chappe_sip_msg`, `chappe_sip_hdr`, `chappe_sip_uri`,
-  `chappe_sip_sdp`, `chappe_sip_multipart`, `chappe_sip_sipfrag`, `chappe_sip_digest`.
-
-Everything else is internal: the engine and NIF, fsms, supervisors, the WS
-transport, the B2BUA helper modules (`chappe_sip_b2b_*`), the proxy helpers,
-the media backends, the event package internals. The ex_doc build groups
-them under "Internal". No deprecation policy is written down yet.
+Public modules are the ones your application calls; everything else may
+change between releases. The list is kept in one place, the ex_doc groups
+of `apps/chappe_sip/rebar.config`, and mirrored per app in
+[navigation](../../../../docs/navigation.md#public-and-internal-modules-per-app).
 
 ## Protocol behaviour
 
@@ -270,7 +256,7 @@ backend for TU logic and error paths (`engine_mod`).
 
 | Area | Suites and eunit modules |
 |---|---|
-| Engine and NIF | `engine`, `engine_tests`, `engine_smoke`, `engine_lifecycle`, `engine_opts`, `ops`, `handler`, `pipeline` (fake engine), `source_ip`, `multihome`, `transport`, `nif_boundary`, `nif_fuzz`, `test/asan/` |
+| Engine and NIF | `engine`, `engine_tests`, `engine_smoke`, `engine_lifecycle`, `engine_opts`, `ops`, `handler`, `pipeline` (fake engine), `source_ip`, `multihome`, `transport`, `nif_boundary`, `nif_upgrade`, `nif_fuzz`, `test/asan/` |
 | Inbound pipeline, guard | `pipeline`, `ood`, `guard`, `dispatch_tests`, `uas_response_tests` |
 | UAS, dialogs, calls | `core`, `uas`, `indialog`, `dialog_ops`, `dialog_fsm_tests`, `replaces`, `call` |
 | UAC | `core_uac`, `uac`, `digest`, `digest_tests`, `uac_auth_tests` |
@@ -278,9 +264,9 @@ backend for TU logic and error paths (`engine_mod`).
 | B2BUA | `b2bua`, `b2b_relay`, `b2b_async`, `b2b_transfer`, `forked_2xx`, `webrtc_gateway` |
 | Proxy | `proxy_conf`, `proxy_forking`, `proxy_record_route`, `proxy_media`, `route_tests`, `flow_tests` |
 | Registrar, regc, peers | `registrar`, `registrar_cluster`, `registry_lag_tests`, `regc`, `peers`, `peers_cluster` |
-| WebSocket, TLS | `websocket`, `ws_conf`, `tls` |
+| WebSocket, TLS | `websocket`, `ws_conf`, `ws_msg_tests`, `tls` |
 | Events, REFER, focus | `subscribe`, `subscriber`, `presence`, `refer`, `focus`, `confinfo_tests`, `sipfrag_tests` |
-| SIPREC | `siprec`, `siprec_meta_tests`, `siprec_live` (real rtpengine) |
+| SIPREC | `siprec` (client and recording server, RTCP included), `siprec_meta_tests`, `siprec_live` (real rtpengine) |
 | CDR, HEP, metrics | `cdr`, `hep`, `hep_tests`, `metrics_tests`, `metrics_http` |
 | Media | `media` (NG fake, real chappe_mix rooms), `sdes_tests` |
 | Message model | `msg_tests`, `hdr_tests`, `uri_tests`, `sdp_tests`, `lib_tests`, `rfc4475` |
