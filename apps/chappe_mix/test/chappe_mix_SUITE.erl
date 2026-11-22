@@ -46,7 +46,8 @@
     far_end_wins_the_latch/1,
     timestamp_after_overrun/1,
     ssrc_collision/1,
-    member_timeout/1
+    member_timeout/1,
+    bye_grace/1
 ]).
 
 -define(F, [440, 1100, 1700, 2300]).
@@ -92,7 +93,8 @@ all() ->
         far_end_wins_the_latch,
         timestamp_after_overrun,
         ssrc_collision,
-        member_timeout
+        member_timeout,
+        bye_grace
     ].
 
 init_per_suite(Config) ->
@@ -926,6 +928,47 @@ member_timeout(_Config) ->
     ?assertMatch([#{blocks := []} | _], After()),
     ?assertMatch(#{source_ssrc := undefined}, leg_stats(Conf, LA)),
     chappe_mix_test_peer:stop(PA),
+    ok = chappe_mix:stop(Conf).
+
+%% RFC 3550 6.2.1: after B's BYE, B's RTP arriving late does not bring
+%% it back into the mix for the 5 s grace: its audio is not taken, A's
+%% mixed packets carry no CSRC for it and the leg shows no source. Past the grace B is heard
+%% again.
+%% req: R3550-071
+bye_grace(_Config) ->
+    {ok, Conf} = chappe_mix:start(#{}),
+    [{PA, _LA}, {PB, LB}] = [peer_leg(Conf, Ssrc) || Ssrc <- [16#A, 16#B]],
+    wait_until(fun() -> csrcs_seen(PA) =:= [16#B] end, 2000),
+    #{port := MB} = leg_stats(Conf, LB),
+    ok = chappe_mix_test_peer:set(PB, sending, false),
+    ok = chappe_mix_test_peer:send(
+        PB,
+        {rtp, {?LO, MB}},
+        chappe_mix_rtcp:build([
+            #{type => rr, ssrc => 16#B, blocks => []},
+            #{type => sdes, chunks => [{16#B, [{cname, <<"b">>}]}]},
+            #{type => bye, ssrcs => [16#B]}
+        ])
+    ),
+    wait_until(fun() -> byes(PA) =/= [] end, 1000),
+    Bye = erlang:monotonic_time(millisecond),
+    #{source_ssrc := undefined, received := Received} = leg_stats(Conf, LB),
+    %% B's packets, late, for a second
+    ok = chappe_mix_test_peer:set(PB, sending, true),
+    timer:sleep(1000),
+    %% not in the mix: nothing reached the jitter buffer
+    ?assertMatch(
+        #{source_ssrc := undefined, received := Received}, leg_stats(Conf, LB)
+    ),
+    Late = [
+        C
+     || {T, #{csrcs := C}} <- rtp_seen(PA), T > Bye, lists:member(16#B, C)
+    ],
+    ?assertEqual([], Late),
+    %% past the grace B is a source again
+    wait_until(fun() -> csrcs_seen(PA) =:= [16#B] end, 5000 + 2000),
+    ?assertMatch(#{source_ssrc := 16#B}, leg_stats(Conf, LB)),
+    [chappe_mix_test_peer:stop(P) || P <- [PA, PB]],
     ok = chappe_mix:stop(Conf).
 
 %% ---- protocol case helpers ----

@@ -5,7 +5,7 @@ the `%% req:` annotations in `test/*_SUITE.erl` and `test/*_tests.erl`, and
 the results of the newest Common Test run and EUnit reports. Do not edit
 by hand.
 
-308 requirements: 86 pass, 0 fail, 60 untested, 162 n/a, 0 deviation, 0 spec defect
+308 requirements: 87 pass, 0 fail, 59 untested, 162 n/a, 0 deviation, 0 spec defect
 
 What chappe does not meet on purpose, and why, is listed under
 [Deviations](#deviations).
@@ -24,7 +24,7 @@ None.
 | rtcp | 42 | 0 | 37 | 72 |
 | rtcp-mux | 4 | 0 | 0 | 16 |
 | rtp | 10 | 0 | 8 | 37 |
-| ssrc | 13 | 0 | 14 | 3 |
+| ssrc | 14 | 0 | 13 | 3 |
 
 ## Requirements
 
@@ -198,7 +198,7 @@ None.
 | R3550-068 | SHOULD | ssrc | demo | untested |  | New sites are added to the count when they are heard, and an entry for each SHOULD be created in a table indexed by the SSRC or CSRC identifier (see Section 8.2) to keep track of them. |
 | R3550-069 | MAY | ssrc | demo | untested |  | New entries MAY be considered not valid until multiple packets carrying the new SSRC have been received (see Appendix A.1), or until an SDES RTCP packet containing a CNAME for that SSRC has been received. |
 | R3550-070 | MAY | ssrc | platform | untested |  | Entries MAY be deleted from the table when an RTCP BYE packet with the corresponding SSRC identifier is received, except that some straggler data packets might arrive after the BYE and cause the entry to be recreated. |
-| R3550-071 | SHOULD | ssrc | platform | untested |  | Instead, the entry SHOULD be marked as having received a BYE and then deleted after an appropriate delay. |
+| R3550-071 | SHOULD | ssrc | platform | pass | chappe_mix_SUITE:bye_grace, chappe_mix_rfc_SUITE:bye_grace | Instead, the entry SHOULD be marked as having received a BYE and then deleted after an appropriate delay. |
 | R3550-073 | SHOULD | rtcp | n/a | n/a |  | Therefore, this multiplier SHOULD be fixed for a particular profile. |
 | R3550-074 | MAY | rtcp | n/a | n/a |  | An implementation MAY use SSRC sampling, as described in [21], to reduce the storage requirements. |
 | R3550-075 | MAY | rtcp | n/a | n/a |  | An implementation MAY use any other algorithm with similar performance. |

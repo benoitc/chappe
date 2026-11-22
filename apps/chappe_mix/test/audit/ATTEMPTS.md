@@ -52,6 +52,16 @@ against deliberate mutations. A test that cannot fail is worse than no test.
   and three on `359a605` in the next minute (different cases each time,
   never a leak), so those failures are the load and not the move.
 
+- `chappe_mix_rfc_SUITE:bye_grace` and `chappe_mix_SUITE:bye_grace` (the
+  BYE grace, RFC 3550 6.2.1): both failed before the grace existed, the
+  straggler coming back as a new source (`{ok, _, true}`, and
+  `source_ssrc` 16#B on the leg). Five mutations, each caught: a grace
+  that never ends (both), a grace of 0 s (both), a report block for the
+  marked source (rfc), the marked source still named by `src_ssrc/1`
+  (both), and the straggler taken into the jitter buffer (wire, by the
+  leg's `received` count; the CSRC lists alone did not show it, so the
+  case checks it).
+
 ## The first tick-trace run: ticks fire early
 
 `tick_trace` first asserted due =< start. It failed: a tick fired 546 us

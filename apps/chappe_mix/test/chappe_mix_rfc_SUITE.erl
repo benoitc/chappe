@@ -22,6 +22,7 @@
     new_ssrc_not_seen/1,
     conflicts_rtp_and_rtcp_apart/1,
     interval_bounds/1,
+    bye_grace/1,
     sends_to_configured_remote/1,
     sender_30ms/1,
     sender_10ms/1,
@@ -57,7 +58,11 @@ all() ->
     ].
 
 groups() ->
-    [{codec, [], [empty_rr_first, jitter_formula, interval_bounds]}].
+    [
+        {codec, [], [
+            empty_rr_first, jitter_formula, interval_bounds, bye_grace
+        ]}
+    ].
 
 init_per_suite(Config) ->
     {ok, _} = application:ensure_all_started(chappe_mix),
@@ -908,6 +913,61 @@ empty_rr_first(_Config) ->
         S1, <<"cn">>, NoChunks, [#{type => bye, ssrcs => [16#1234]}], 0
     ),
     [{201, 0, <<16#1234:32>>}, {202, 1, _}, {203, 1, <<16#1234:32>>}] = walk(Bye).
+
+%% RFC 3550 6.2.1: a source that sent BYE is marked, not deleted. A
+%% straggler from it inside the 5 s grace does not bring it back: no
+%% source for the CSRC lists, no report block. Past the grace a packet
+%% from that SSRC is a new source again.
+%% req: R3550-071
+bye_grace(_Config) ->
+    Ms = fun(N) -> erlang:convert_time_unit(N, millisecond, native) end,
+    T0 = erlang:monotonic_time(),
+    Us = fun(T) -> erlang:convert_time_unit(T, native, microsecond) end,
+    Addr = {{127, 0, 0, 1}, 4000},
+    Pkt = fun(Seq) ->
+        #{pt => 0, seq => Seq, ts => Seq * 160, ssrc => 16#A, marker => false,
+          payload => <<>>}
+    end,
+    NoChunks = fun(_) -> [] end,
+    S0 = chappe_mix_session:new(16#1234, T0),
+    S1 = lists:foldl(
+        fun(Seq, A) ->
+            {ok, A1, _} = chappe_mix_session:rtp_in(A, Pkt(Seq), Addr, T0),
+            A1
+        end,
+        S0,
+        [1, 2, 3]
+    ),
+    ?assertEqual(16#A, chappe_mix_session:src_ssrc(S1)),
+    Bye = [#{type => bye, ssrcs => [16#A]}],
+    {S2, false, [16#A]} = chappe_mix_session:rtcp_in(
+        S1, Bye, 8, Addr, Us(T0 + Ms(100))
+    ),
+    ?assertEqual(undefined, chappe_mix_session:src_ssrc(S2)),
+    %% the straggler, inside the grace
+    R3 = chappe_mix_session:rtp_in(S2, Pkt(4), Addr, T0 + Ms(110)),
+    ?assertMatch({gone, _}, R3),
+    {gone, S3} = R3,
+    ?assertEqual(undefined, chappe_mix_session:src_ssrc(S3)),
+    {Rep, S4} = chappe_mix_session:report(
+        S3, <<"cn">>, NoChunks, [], Us(T0 + Ms(200))
+    ),
+    {ok, [#{type := rr, blocks := []} | _]} = chappe_mix_rtcp:parse(Rep),
+    %% a second BYE for it is not forwarded again
+    {_, false, []} = chappe_mix_session:rtcp_in(
+        S4, Bye, 8, Addr, Us(T0 + Ms(300))
+    ),
+    %% past the grace: a new source
+    {ok, S5, true} = chappe_mix_session:rtp_in(
+        S4, Pkt(100), Addr, T0 + Ms(100 + 5000)
+    ),
+    ?assertEqual(16#A, chappe_mix_session:src_ssrc(S5)),
+    %% a report past the grace drops the mark with no packet
+    S6 = chappe_mix_session:timeout(S3, T0 + Ms(100 + 5000)),
+    {ok, S7, true} = chappe_mix_session:rtp_in(
+        S6, Pkt(5), Addr, T0 + Ms(100 + 5000)
+    ),
+    ?assertEqual(16#A, chappe_mix_session:src_ssrc(S7)).
 
 %% The interarrival jitter of the report block against appendix A.8 run
 %% here on a scripted arrival pattern (irregular delays, a reordered

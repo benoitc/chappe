@@ -6,6 +6,13 @@
 %% receives and its reception statistics, the RTCP schedule, and the
 %% conflict list of 8.2. The conference owns the sockets; it sends what
 %% this module builds and hands it what arrives.
+%%
+%% A source that sends BYE is marked, not deleted (6.2.1): for ?BYE_GRACE_S
+%% its RTP, a straggler UDP reordered behind the BYE, counts against the
+%% marked entry and rtp_in/4 says `gone', so the conference does not mix
+%% it, and the source is out of the CSRC lists, the report blocks and the
+%% member count. Past the grace the mark goes, at the next report or
+%% packet, and a packet from that SSRC is a new source.
 -module(chappe_mix_session).
 
 -export([new/2, ssrc/1, src_ssrc/1, csrcs/1, info/1]).
@@ -20,6 +27,8 @@
 %% a source silent this long leaves the reports: five intervals at the
 %% 5 s minimum, which decides the interval here (6.3.5)
 -define(TIMEOUT_S, 25).
+%% how long a source's entry outlives its BYE: the 5 s minimum interval
+-define(BYE_GRACE_S, 5).
 -define(MAX_SDES, 4).
 -define(MAX_CONFLICTS, 8).
 
@@ -41,6 +50,8 @@
     %% and what its SDES said
     src :: chappe_mix_rtcp:src() | undefined,
     heard_at = 0 :: integer(),
+    %% when the source sent BYE (native monotonic): it is marked as gone
+    bye_at :: integer() | undefined,
     sdes = #{} :: #{ssrc() => [{cname | name, binary()}]},
     %% addresses that used our SSRC, RTP and RTCP apart (8.2)
     conflicts = [] :: [{rtp | rtcp, addr()}],
@@ -76,6 +87,7 @@ ssrc(#sess{ssrc = Ssrc}) -> Ssrc.
 
 -spec src_ssrc(session()) -> ssrc() | undefined.
 src_ssrc(#sess{src = undefined}) -> undefined;
+src_ssrc(#sess{bye_at = At}) when At =/= undefined -> undefined;
 src_ssrc(#sess{src = Src}) -> chappe_mix_rtcp:src_ssrc(Src).
 
 -spec csrcs(session()) -> [ssrc()].
@@ -136,10 +148,18 @@ advance(#sess{ts = Ts} = S, Step) ->
 %% from that address and a loop after (8.2); our SSRC in its CSRC list is
 %% our stream mixed back to us, a loop. On a collision the caller says
 %% BYE for the old SSRC, calls renew/2, and hands the packet in again.
+%% A straggler of a source inside its BYE grace is `gone': not mixed.
 -spec rtp_in(session(), chappe_mix_rtp:packet(), addr(), integer()) ->
-    {ok, session(), New :: boolean()} | {loop | collision, session()}.
+    {ok, session(), New :: boolean()} | {loop | collision | gone, session()}.
 rtp_in(#sess{ssrc = Ssrc} = S, #{ssrc := Ssrc}, Addr, _Now) ->
     conflict({rtp, Addr}, S);
+rtp_in(#sess{bye_at = At} = S0, P, Addr, Now) when At =/= undefined ->
+    case expire(S0, Now) of
+        #sess{bye_at = undefined} = S ->
+            rtp_in(S, P, Addr, Now);
+        S ->
+            straggler(S, P, Addr, Now)
+    end;
 rtp_in(
     #sess{ssrc = Mine} = S,
     #{ssrc := Ssrc, seq := Seq, ts := Ts} = P,
@@ -176,6 +196,31 @@ rtp_in(
                         end
                 end,
             {ok, S#sess{src = Src, heard_at = Now}, New}
+    end.
+
+%% RTP of a source marked as gone: the same SSRC counts against its entry
+%% and is not mixed; another SSRC is a new source.
+straggler(
+    #sess{src = Src0} = S, #{ssrc := Ssrc, seq := Seq, ts := Ts} = P, Addr, Now
+) ->
+    case chappe_mix_rtcp:src_ssrc(Src0) of
+        Ssrc ->
+            Arrival =
+                erlang:convert_time_unit(Now, native, microsecond) div 125,
+            {gone, S#sess{
+                src = chappe_mix_rtcp:src_update(Src0, Seq, Ts, Arrival)
+            }};
+        _ ->
+            rtp_in(S#sess{src = undefined, bye_at = undefined}, P, Addr, Now)
+    end.
+
+%% the mark and the entry of a source whose BYE grace is over, dropped
+expire(#sess{bye_at = undefined} = S, _Now) ->
+    S;
+expire(#sess{bye_at = At} = S, Now) ->
+    case Now - At >= erlang:convert_time_unit(?BYE_GRACE_S, second, native) of
+        true -> S#sess{src = undefined, bye_at = undefined};
+        false -> S
     end.
 
 conflict(Addr, #sess{conflicts = C} = S) ->
@@ -231,12 +276,14 @@ part(#{type := sr, ssrc := Ssrc, ntp := Ntp}, _Addr, Now, {S, C, Gone}) ->
     end;
 part(#{type := sdes, chunks := Chunks}, _Addr, _Now, {S, C, Gone}) ->
     {lists:foldl(fun sdes_in/2, S, Chunks), C, Gone};
-part(#{type := bye, ssrcs := Ssrcs}, _Addr, _Now, {S, C, Gone}) ->
+part(#{type := bye, ssrcs := Ssrcs}, _Addr, Now, {S, C, Gone}) ->
     Mine = src_ssrc(S),
     case Mine =/= undefined andalso lists:member(Mine, Ssrcs) of
         true ->
+            %% marked as gone, kept for the grace (6.2.1)
+            At = erlang:convert_time_unit(Now, microsecond, native),
             {
-                S#sess{src = undefined, sdes = maps:remove(Mine, S#sess.sdes)},
+                S#sess{bye_at = At, sdes = maps:remove(Mine, S#sess.sdes)},
                 C,
                 [Mine | Gone]
             };
@@ -284,10 +331,13 @@ csrc_items(S, Name, Names) ->
 due(#sess{next = Next}, Now) -> Next =< Now.
 
 %% Checked once per report (6.3.5): a source not heard for five
-%% intervals is no longer reported on, nor counted as a member.
+%% intervals is no longer reported on, nor counted as a member. A source
+%% whose BYE grace is over goes too (6.2.1).
 -spec timeout(session(), integer()) -> session().
 timeout(#sess{src = undefined} = S, _Now) ->
     S;
+timeout(#sess{bye_at = Bye} = S, Now) when Bye =/= undefined ->
+    expire(S, Now);
 timeout(#sess{heard_at = At} = S, Now) ->
     case Now - At > erlang:convert_time_unit(?TIMEOUT_S, second, native) of
         true -> S#sess{src = undefined};
@@ -317,6 +367,9 @@ report(#sess{ssrc = Ssrc} = S, Cname, Chunks, Extra, NowUs) ->
         case S#sess.src of
             undefined ->
                 {[], undefined};
+            %% a source that sent BYE has left: no block (6.2.1)
+            Src0 when S#sess.bye_at =/= undefined ->
+                {[], Src0};
             Src0 ->
                 {B, Src1} = chappe_mix_rtcp:report_block(Src0, NowUs),
                 {[B], Src1}
@@ -353,9 +406,9 @@ report(#sess{ssrc = Ssrc} = S, Cname, Chunks, Extra, NowUs) ->
 reported(S, Now) ->
     schedule(S#sess{initial = false}, Now).
 
-schedule(#sess{src = Src, pkts = Pkts} = S, Now) ->
+schedule(#sess{pkts = Pkts} = S, Now) ->
     Heard =
-        case Src of
+        case src_ssrc(S) of
             undefined -> 0;
             _ -> 1
         end,

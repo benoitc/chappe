@@ -132,6 +132,12 @@ The mixer follows RFC 3550 7.3 on it:
   at two members: the first report 1.03 to 3.08 s after the leg opens, then
   every 2.05 to 6.16 s. Timer reconsideration is not done because the member
   count never changes;
+- a source that sends BYE is marked, not deleted (6.2.1): for 5 s, the
+  minimum interval, its RTP arriving late is counted but not mixed, and
+  the source is out of the CSRC lists and the report blocks; then the
+  mark goes at the next report or packet, and that SSRC is a new source;
+- a source silent for 25 s, five intervals at the minimum, is no longer
+  reported on (6.3.5);
 - incoming RTCP is validated (A.2) and consumed on its leg; only CNAME,
   NAME and BYE cross to other legs, and `chappe_mix_conf` does the crossing;
 - all legs share one SSRC space (7.1, 8.2): collisions and loops are found

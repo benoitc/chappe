@@ -387,6 +387,9 @@ rtp_in(P, From, L0, S) ->
             case chappe_mix_session:rtp_in(L#leg.sess, P, From, Now) of
                 {loop, Sess} ->
                     put_leg(L#leg{sess = Sess}, S);
+                {gone, Sess} ->
+                    %% a straggler after its source's BYE: not mixed
+                    put_leg(L#leg{sess = Sess}, S);
                 {collision, Sess} ->
                     %% 8.2: BYE for the old SSRC, a new one, then the packet
                     L1 = renew(L#leg{sess = Sess}, S),
