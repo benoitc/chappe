@@ -5,7 +5,7 @@
 # Two-stage stamps: sofia rebuilds only when its vendored tree or its
 # patches (sofia-patches/) change, from a patched copy under build/sofia-src
 # (the vendored tree is never written to); the NIF recompiles only when the
-# shim, this script or its build environment change.
+# shim (any file under nif/), this script or its build environment change.
 # SKIP_ENGINE_BUILD=1 skips everything (pure Erlang work).
 set -e
 
@@ -17,7 +17,10 @@ SOFIA="$CSRC/sofia-sip"
 BUILD="$CSRC/build"
 DIST="$BUILD/dist"
 PRIV="$ROOT/priv/lib"
-NIF_SRC="$CSRC/chappe_sip_engine_nif.c"
+# the shim: every nif/*.c, compiled into the one .so; nif/engine.h is
+# their private header
+NIF_DIR="$CSRC/nif"
+NIF_SRCS=$(ls "$NIF_DIR"/*.c)
 NIF_SO="$PRIV/chappe_sip_engine_nif.so"
 
 if [ ! -f "$SOFIA/configure.ac" ]; then
@@ -36,7 +39,7 @@ SOFIA_KEY="$SOFIA_SRC_KEY-$SOFIA_CONF"
 SOFIA_COPY="$BUILD/sofia-src"
 
 # The NIF stamp must change when anything that affects the built object does:
-# the shim source, this script, the sanitizer, the target arch/OS, and the
+# the shim's sources and headers, this script, the sanitizer, the target arch/OS, and the
 # ERTS version (a .so built against a different erl_nif.h can crash the VM).
 ERTS_VSN=$(erl -noshell -eval \
     'io:format("~ts", [erlang:system_info(version)]), halt().' 2>/dev/null || echo unknown)
@@ -47,7 +50,8 @@ NIF_ENV="san=${ENGINE_SANITIZE:-none};werror=${ENGINE_WERROR:-0};cc=${CC}"
 NIF_ENV="$NIF_ENV;extra=${ENGINE_EXTRA_CFLAGS:-};plat=$(uname -sm);erts=${ERTS_VSN}"
 # the shim links sofia statically: a rebuilt sofia relinks it
 NIF_ENV="$NIF_ENV;sofia=$SOFIA_KEY"
-NIF_SUM=$(cksum "$NIF_SRC" "$0" | cksum | awk '{print $1}')
+NIF_SUM=$(cksum "$NIF_DIR"/*.c "$NIF_DIR"/*.h "$0" 2>/dev/null | cksum |
+    awk '{print $1}')
 NIF_SUM="$NIF_SUM-$(printf '%s' "$NIF_ENV" | cksum | awk '{print $1}')"
 
 # --- stage 1: sofia-sip static build ---
@@ -178,9 +182,14 @@ ldflag_ok() {
 }
 
 HARDEN=""
+# -fvisibility=hidden keeps every shim function out of the .so's dynamic
+# symbols (ERL_NIF_INIT exports nif_init with default visibility), so none
+# can clash with sofia's or another NIF's; -Wmissing-prototypes makes a
+# function another file calls declare itself in nif/engine.h.
 for f in -std=gnu17 \
          -Wall -Wextra -Wformat=2 -Wconversion -Wsign-conversion -Wshadow \
-         -Wnull-dereference -Wimplicit-fallthrough \
+         -Wnull-dereference -Wimplicit-fallthrough -Wmissing-prototypes \
+         -fvisibility=hidden \
          -fstack-protector-strong -fstack-clash-protection \
          -ftrivial-auto-var-init=zero; do
     cflag_ok "$f" && HARDEN="$HARDEN $f"
@@ -209,6 +218,6 @@ echo "==> shim flags:$HARDEN $HARDEN_LD"
 # erts and sofia headers are -isystem: their warnings are not the shim's
 "$CC" -O2 -g -fPIC $HARDEN $SAN ${ENGINE_EXTRA_CFLAGS:-} \
     -isystem "$ERTS_INCLUDE" -isystem "$SOFIA_INCLUDE" \
-    $SO_LDFLAGS $HARDEN_LD -o "$NIF_SO" "$NIF_SRC" $SOFIA_LIBS
+    $SO_LDFLAGS $HARDEN_LD -o "$NIF_SO" $NIF_SRCS $SOFIA_LIBS
 
 echo "$NIF_SUM" > "$NIF_STAMP"

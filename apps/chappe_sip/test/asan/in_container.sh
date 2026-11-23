@@ -94,31 +94,65 @@ lint_c() {
     unset ENGINE_SANITIZE
     cd "$app"
     c_src/build.sh
-    local erts sofia_inc src=$app/c_src/chappe_sip_engine_nif.c
+    local erts sofia_inc src srcs
+    srcs=("$app"/c_src/nif/*.c)
     erts=$(erl -noshell -eval \
         'io:format("~ts/erts-~ts/include", [code:root_dir(), erlang:system_info(version)]), halt().')
     sofia_inc=$(ls -d "$app"/c_src/build/dist/include/sofia-sip-* | head -1)
-    # the shim's own flags (build.sh), as a compilation database
+    # the shim's own flags (build.sh), as a compilation database with one
+    # entry per file
     local flags=(-std=gnu17 -O2 -fPIC -Wall -Wextra "-I$erts" "-I$sofia_inc")
     {
-        printf '[{"directory":"%s/c_src","file":"%s","arguments":["cc"' "$app" "$src"
-        for f in "${flags[@]}" -c "$src"; do printf ',"%s"' "$f"; done
-        printf ']}]\n'
+        local sep=''
+        printf '['
+        for src in "${srcs[@]}"; do
+            printf '%s{"directory":"%s/c_src","file":"%s","arguments":["cc"' \
+                "$sep" "$app" "$src"
+            for f in "${flags[@]}" -c "$src"; do printf ',"%s"' "$f"; done
+            printf ']}'
+            sep=','
+        done
+        printf ']\n'
     } >"$app"/c_src/build/compile_commands.json
     cp "$app"/c_src/build/compile_commands.json /out/
     local rc=0
     echo "==> clang-tidy (c_src/.clang-tidy)"
-    clang-tidy-19 -p "$app"/c_src/build --quiet "$src" \
+    clang-tidy-19 -p "$app"/c_src/build --quiet "${srcs[@]}" \
         >/out/clang-tidy.txt 2>&1 || rc=1
     cat /out/clang-tidy.txt
     echo "==> gcc -fanalyzer"
-    gcc -fanalyzer -fdiagnostics-plain-output "${flags[@]}" -c "$src" \
-        -o /dev/null >/out/fanalyzer.txt 2>&1 || rc=1
+    : >/out/fanalyzer.txt
+    for src in "${srcs[@]}"; do
+        gcc -fanalyzer -fdiagnostics-plain-output "${flags[@]}" -c "$src" \
+            -o /dev/null >>/out/fanalyzer.txt 2>&1 || rc=1
+    done
     cat /out/fanalyzer.txt
     # gcc reports analyzer findings as warnings: any one fails the job
     if grep -q '\[-Wanalyzer-' /out/fanalyzer.txt; then rc=1; fi
+    # The .so exports no shim symbol but nif_init (build.sh builds the shim
+    # with -fvisibility=hidden): an exported shim name could clash with
+    # sofia's or another NIF's. sofia's own exports are not checked: the
+    # names looked for are those the shim's objects define.
+    echo "==> shim symbols the NIF exports"
+    local objs shim so=$app/priv/lib/chappe_sip_engine_nif.so
+    objs=$(mktemp -d)
+    for src in "${srcs[@]}"; do
+        gcc "${flags[@]}" -c "$src" -o "$objs/$(basename "$src" .c).o"
+    done
+    shim=$(nm -g --defined-only "$objs"/*.o | awk 'NF == 3 {print $3}' |
+        sort -u)
+    nm -D --defined-only "$so" | awk 'NF == 3 {print $3}' | sort -u |
+        comm -12 - <(printf '%s\n' "$shim") | grep -vx nif_init \
+        >/out/exports.txt || true
+    rm -rf "$objs"
+    if [ -s /out/exports.txt ]; then
+        echo "error: the NIF exports shim symbols other than nif_init:"
+        cat /out/exports.txt
+        rc=1
+    fi
     echo "==> lint-c: $(grep -c 'warning:\|error:' /out/clang-tidy.txt || true) clang-tidy," \
-        "$(grep -c '\[-Wanalyzer-' /out/fanalyzer.txt || true) analyzer finding(s)"
+        "$(grep -c '\[-Wanalyzer-' /out/fanalyzer.txt || true) analyzer finding(s)," \
+        "$(wc -l </out/exports.txt) exported shim symbol(s)"
     return $rc
 }
 

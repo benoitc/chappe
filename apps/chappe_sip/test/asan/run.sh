@@ -2,7 +2,7 @@
 # Copyright 2026 Benoit Chesneau
 # SPDX-License-Identifier: Apache-2.0
 #
-# Check the C NIF (c_src/chappe_sip_engine_nif.c) in a Linux container.
+# Check the C NIF (c_src/nif/) in a Linux container.
 # macOS strips sanitizer interceptors for a dlopen'd NIF loaded into a
 # non-instrumented BEAM and has no libFuzzer or clang-tidy; Linux +
 # LD_PRELOAD installs the interceptors.
@@ -12,7 +12,8 @@
 #           engine) under ASan + UBSan, LeakSanitizer on, with the BEAM's
 #           allocators off (+Mea min) so enif_alloc'd memory is checked too
 #   tsan    the lifecycle stress and smoke suites under ThreadSanitizer
-#   lint-c  clang-tidy and gcc -fanalyzer on the shim
+#   lint-c  clang-tidy and gcc -fanalyzer on each shim file, and a check
+#           that the .so exports no shim symbol but nif_init
 #   fuzz    the libFuzzer targets (c_src/fuzz) then the NIF fuzz suite
 #           (chappe_sip_nif_fuzz_SUITE) under ASan + UBSan
 # A first argument that is not a mode is taken as the suite list (asan).
