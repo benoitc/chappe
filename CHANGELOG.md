@@ -171,8 +171,10 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
   shared store.
 - The RTP and SRTP receiver used by the SIPREC recording server. It follows
   a sender that moves mid-stream and can take part in RTCP (off by
-  default), with its departures from RFC 3550 listed in the configuration
-  guide.
+  default), with its departures from RFC 3550 listed in the compliance
+  matrix. A packet that arrives late, after its sender said goodbye, is
+  counted against that sender instead of restarting its statistics, while
+  a sender that keeps sending new audio is heard again at once.
 
 ### chappe_mix
 
@@ -186,6 +188,9 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
   parties can be moved between rooms safely.
 - A tap hands the decoded audio of a party or the room to a process.
 - Legs carry the call's reference in their events.
+- A late packet from a party that has just said goodbye is not mixed back
+  in, while a party that goes on sending, as some phones do on hold and
+  unhold, is heard again at once.
 
 ### chappe_mrf
 

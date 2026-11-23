@@ -46,7 +46,9 @@
     far_end_wins_the_latch/1,
     timestamp_after_overrun/1,
     ssrc_collision/1,
-    member_timeout/1
+    member_timeout/1,
+    bye_grace/1,
+    bye_then_new_remote/1
 ]).
 
 -define(F, [440, 1100, 1700, 2300]).
@@ -92,7 +94,9 @@ all() ->
         far_end_wins_the_latch,
         timestamp_after_overrun,
         ssrc_collision,
-        member_timeout
+        member_timeout,
+        bye_grace,
+        bye_then_new_remote
     ].
 
 init_per_suite(Config) ->
@@ -927,6 +931,73 @@ member_timeout(_Config) ->
     ?assertMatch(#{source_ssrc := undefined}, leg_stats(Conf, LA)),
     chappe_mix_test_peer:stop(PA),
     ok = chappe_mix:stop(Conf).
+
+%% RFC 3550 6.2.1: after B's BYE, B's stragglers (sequence numbers
+%% behind the highest one at the BYE) are not mixed for the 5 s grace:
+%% nothing reaches the jitter buffer, A's mixed packets carry no CSRC
+%% for B, the leg shows no source. B sending again (newer sequence
+%% numbers, the same SSRC) is mixed at once.
+%% req: R3550-071
+bye_grace(_Config) ->
+    {ok, Conf} = chappe_mix:start(#{}),
+    [{PA, _LA}, {PB, LB}] = [peer_leg(Conf, Ssrc) || Ssrc <- [16#A, 16#B]],
+    Bye = bye_from(Conf, PA, PB, LB),
+    #{received := Received} = leg_stats(Conf, LB),
+    %% stragglers: 500 behind where B was
+    ok = chappe_mix_test_peer:set(PB, seq, 500),
+    ok = chappe_mix_test_peer:set(PB, sending, true),
+    timer:sleep(1000),
+    ?assertMatch(
+        #{source_ssrc := undefined, received := Received}, leg_stats(Conf, LB)
+    ),
+    ?assertEqual([], csrc_after(PA, Bye, 16#B)),
+    %% B sending again, 1000 ahead: back in the mix well inside the grace
+    ok = chappe_mix_test_peer:set(PB, seq, 2000),
+    wait_until(fun() -> csrcs_seen(PA) =:= [16#B] end, 1000),
+    ?assert(erlang:monotonic_time(millisecond) - Bye < 4000),
+    ?assertMatch(#{source_ssrc := 16#B}, leg_stats(Conf, LB)),
+    [chappe_mix_test_peer:stop(P) || P <- [PA, PB]],
+    ok = chappe_mix:stop(Conf).
+
+%% A new far end set after the BYE is a new source: its first packet is
+%% mixed, whatever its sequence number.
+%% req: R3550-071
+bye_then_new_remote(_Config) ->
+    {ok, Conf} = chappe_mix:start(#{}),
+    [{PA, _LA}, {PB, LB}] = [peer_leg(Conf, Ssrc) || Ssrc <- [16#A, 16#B]],
+    _ = bye_from(Conf, PA, PB, LB),
+    ok = chappe_mix_test_peer:set(PB, seq, 500),
+    PPort = chappe_mix_test_peer:port(PB),
+    ok = chappe_mix:set_remote(Conf, LB, {?LO, PPort}),
+    ok = chappe_mix_test_peer:set(PB, sending, true),
+    wait_until(fun() -> csrcs_seen(PA) =:= [16#B] end, 1000),
+    [chappe_mix_test_peer:stop(P) || P <- [PA, PB]],
+    ok = chappe_mix:stop(Conf).
+
+%% B heard by A, then B quiet and its BYE in; when A got the BYE.
+bye_from(Conf, PA, PB, LB) ->
+    wait_until(fun() -> csrcs_seen(PA) =:= [16#B] end, 2000),
+    #{port := MB} = leg_stats(Conf, LB),
+    ok = chappe_mix_test_peer:set(PB, sending, false),
+    ok = chappe_mix_test_peer:send(
+        PB,
+        {rtp, {?LO, MB}},
+        chappe_mix_rtcp:build([
+            #{type => rr, ssrc => 16#B, blocks => []},
+            #{type => sdes, chunks => [{16#B, [{cname, <<"b">>}]}]},
+            #{type => bye, ssrcs => [16#B]}
+        ])
+    ),
+    wait_until(fun() -> byes(PA) =/= [] end, 1000),
+    ?assertMatch(#{source_ssrc := undefined}, leg_stats(Conf, LB)),
+    erlang:monotonic_time(millisecond).
+
+%% The CSRC lists naming Ssrc that Peer got after T.
+csrc_after(Peer, T, Ssrc) ->
+    [
+        C
+     || {At, #{csrcs := C}} <- rtp_seen(Peer), At > T, lists:member(Ssrc, C)
+    ].
 
 %% ---- protocol case helpers ----
 

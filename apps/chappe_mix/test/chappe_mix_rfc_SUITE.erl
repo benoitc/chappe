@@ -22,6 +22,9 @@
     new_ssrc_not_seen/1,
     conflicts_rtp_and_rtcp_apart/1,
     interval_bounds/1,
+    bye_grace/1,
+    bye_resume/1,
+    bye_resume_wrap/1,
     sends_to_configured_remote/1,
     sender_30ms/1,
     sender_10ms/1,
@@ -57,7 +60,16 @@ all() ->
     ].
 
 groups() ->
-    [{codec, [], [empty_rr_first, jitter_formula, interval_bounds]}].
+    [
+        {codec, [], [
+            empty_rr_first,
+            jitter_formula,
+            interval_bounds,
+            bye_grace,
+            bye_resume,
+            bye_resume_wrap
+        ]}
+    ].
 
 init_per_suite(Config) ->
     {ok, _} = application:ensure_all_started(chappe_mix),
@@ -908,6 +920,136 @@ empty_rr_first(_Config) ->
         S1, <<"cn">>, NoChunks, [#{type => bye, ssrcs => [16#1234]}], 0
     ),
     [{201, 0, <<16#1234:32>>}, {202, 1, _}, {203, 1, <<16#1234:32>>}] = walk(Bye).
+
+%% RFC 3550 6.2.1: a source that sent BYE is marked, not deleted. A
+%% straggler from it (a sequence number at or below the highest one at
+%% the BYE) inside the 5 s grace does not bring it back: no source for
+%% the CSRC lists, no report block. Past the grace even an old sequence
+%% number from that SSRC is a new source again.
+%% req: R3550-071
+bye_grace(_Config) ->
+    Ms = fun(N) -> erlang:convert_time_unit(N, millisecond, native) end,
+    T0 = erlang:monotonic_time(),
+    Us = fun(T) -> erlang:convert_time_unit(T, native, microsecond) end,
+    Addr = {{127, 0, 0, 1}, 4000},
+    Pkt = fun(Seq) ->
+        #{
+            pt => 0,
+            seq => Seq,
+            ts => Seq * 160,
+            ssrc => 16#A,
+            marker => false,
+            payload => <<>>
+        }
+    end,
+    NoChunks = fun(_) -> [] end,
+    S0 = chappe_mix_session:new(16#1234, T0),
+    S1 = lists:foldl(
+        fun(Seq, A) ->
+            {ok, A1, _} = chappe_mix_session:rtp_in(A, Pkt(Seq), Addr, T0),
+            A1
+        end,
+        S0,
+        [1, 2, 3]
+    ),
+    ?assertEqual(16#A, chappe_mix_session:src_ssrc(S1)),
+    Bye = [#{type => bye, ssrcs => [16#A]}],
+    {S2, false, [16#A]} = chappe_mix_session:rtcp_in(
+        S1, Bye, 8, Addr, Us(T0 + Ms(100))
+    ),
+    ?assertEqual(undefined, chappe_mix_session:src_ssrc(S2)),
+    %% the straggler, inside the grace
+    {gone, S2a} = chappe_mix_session:rtp_in(S2, Pkt(3), Addr, T0 + Ms(105)),
+    R3 = chappe_mix_session:rtp_in(S2a, Pkt(2), Addr, T0 + Ms(110)),
+    ?assertMatch({gone, _}, R3),
+    {gone, S3} = R3,
+    ?assertEqual(undefined, chappe_mix_session:src_ssrc(S3)),
+    {Rep, S4} = chappe_mix_session:report(
+        S3, <<"cn">>, NoChunks, [], Us(T0 + Ms(200))
+    ),
+    {ok, [#{type := rr, blocks := []} | _]} = chappe_mix_rtcp:parse(Rep),
+    %% a second BYE for it is not forwarded again
+    {_, false, []} = chappe_mix_session:rtcp_in(
+        S4, Bye, 8, Addr, Us(T0 + Ms(300))
+    ),
+    %% past the grace: a new source
+    {ok, S5, true} = chappe_mix_session:rtp_in(
+        S4, Pkt(2), Addr, T0 + Ms(100 + 5000)
+    ),
+    ?assertEqual(16#A, chappe_mix_session:src_ssrc(S5)),
+    %% a report past the grace drops the mark with no packet
+    S6 = chappe_mix_session:timeout(S3, T0 + Ms(100 + 5000)),
+    {ok, S7, true} = chappe_mix_session:rtp_in(
+        S6, Pkt(2), Addr, T0 + Ms(100 + 5000)
+    ),
+    ?assertEqual(16#A, chappe_mix_session:src_ssrc(S7)).
+
+%% RFC 3550 6.2.1, A.1: a packet newer than the highest sequence number
+%% at the BYE is the source sending again (a client that says BYE and
+%% restarts under the same SSRC on hold and unhold), not a straggler: the
+%% mark ends at once and the source continues its entry, mixed and
+%% reported on again.
+%% req: R3550-071
+bye_resume(_Config) ->
+    {S, T0, Addr, Pkt} = bye_session([1, 2, 3]),
+    Ms = fun(N) -> erlang:convert_time_unit(N, millisecond, native) end,
+    {ok, S1, true} = chappe_mix_session:rtp_in(S, Pkt(4), Addr, T0 + Ms(110)),
+    ?assertEqual(16#A, chappe_mix_session:src_ssrc(S1)),
+    %% the entry goes on: a later straggler is a reordered packet of it
+    {ok, S2, false} = chappe_mix_session:rtp_in(
+        S1, Pkt(2), Addr, T0 + Ms(120)
+    ),
+    {Rep, _} = chappe_mix_session:report(
+        S2, <<"cn">>, fun(_) -> [] end, [], 0
+    ),
+    {ok, [#{type := rr, blocks := [#{ssrc := 16#A, highest := 4}]} | _]} =
+        chappe_mix_rtcp:parse(Rep).
+
+%% The comparison wraps (A.1): with 65535 the highest at the BYE, 0 is
+%% newer and 65530 a straggler; with 10, 65530 is older across the wrap.
+%% req: R3550-071
+bye_resume_wrap(_Config) ->
+    Ms = fun(N) -> erlang:convert_time_unit(N, millisecond, native) end,
+    {S, T0, Addr, Pkt} = bye_session([65534, 65535]),
+    {gone, _} = chappe_mix_session:rtp_in(S, Pkt(65530), Addr, T0 + Ms(110)),
+    {gone, _} = chappe_mix_session:rtp_in(S, Pkt(65535), Addr, T0 + Ms(110)),
+    {ok, S1, true} = chappe_mix_session:rtp_in(S, Pkt(0), Addr, T0 + Ms(110)),
+    ?assertEqual(16#A, chappe_mix_session:src_ssrc(S1)),
+    {W, TW, AddrW, PktW} = bye_session([9, 10]),
+    {gone, _} = chappe_mix_session:rtp_in(W, PktW(65530), AddrW, TW + Ms(110)),
+    {ok, _, true} = chappe_mix_session:rtp_in(W, PktW(11), AddrW, TW + Ms(110)).
+
+%% A session that heard Seqs from source 16#A, then its BYE 100 ms on.
+bye_session(Seqs) ->
+    T0 = erlang:monotonic_time(),
+    Addr = {{127, 0, 0, 1}, 4000},
+    Pkt = fun(Seq) ->
+        #{
+            pt => 0,
+            seq => Seq,
+            ts => (Seq * 160) band 16#FFFFFFFF,
+            ssrc => 16#A,
+            marker => false,
+            payload => <<>>
+        }
+    end,
+    S0 = lists:foldl(
+        fun(Seq, A) ->
+            {ok, A1, _} = chappe_mix_session:rtp_in(A, Pkt(Seq), Addr, T0),
+            A1
+        end,
+        chappe_mix_session:new(16#1234, T0),
+        Seqs
+    ),
+    At = erlang:convert_time_unit(
+        T0 + erlang:convert_time_unit(100, millisecond, native),
+        native,
+        microsecond
+    ),
+    {S, false, [16#A]} = chappe_mix_session:rtcp_in(
+        S0, [#{type => bye, ssrcs => [16#A]}], 8, Addr, At
+    ),
+    {S, T0, Addr, Pkt}.
 
 %% The interarrival jitter of the report block against appendix A.8 run
 %% here on a scripted arrival pattern (irregular delays, a reordered
