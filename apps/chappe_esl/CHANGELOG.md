@@ -6,6 +6,8 @@ says how apps are released.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-23
+
 ### Before you upgrade
 
 - Use Erlang/OTP 29.1.2 or later.
