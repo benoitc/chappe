@@ -108,7 +108,7 @@ out-of-dialog request runs the middleware and the handler and owns the call.
 ## Rules for this app
 
 - Do not edit `c_src/sofia-sip` in place; a fix to sofia is a patch in
-  `c_src/sofia-patches`. Changes to `c_src/chappe_sip_engine_nif.c`
+  `c_src/sofia-patches`. Changes to the shim (`c_src/nif/`)
   need `make asan` and a read of the risky regions in `engine.md`.
 - A new tunable goes in `chappe_sip_config` with a default and in
   `docs/configuration.md`.

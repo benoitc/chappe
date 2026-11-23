@@ -1,8 +1,9 @@
 # Copyright 2026 Benoit Chesneau
 # SPDX-License-Identifier: Apache-2.0
 #
-# clang-tidy for the NIF shim (make lint-c). Only chappe_sip_engine_nif.c is
-# checked; the vendored sofia-sip and the ERTS headers are not ours.
+# clang-tidy for the NIF shim (make lint-c). Only the shim, the files under
+# c_src/nif/, is checked; the vendored sofia-sip and the ERTS headers are
+# not ours.
 #
 # Disabled, each for a reason:
 #   bugprone-easily-swappable-parameters: every NIF and sofia callback takes
@@ -26,5 +27,5 @@ Checks: >
   -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,
   -misc-include-cleaner
 WarningsAsErrors: '*'
-HeaderFilterRegex: 'chappe_sip_engine_nif'
+HeaderFilterRegex: 'c_src/nif/'
 FormatStyle: none

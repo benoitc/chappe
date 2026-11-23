@@ -1,7 +1,7 @@
 # Change the C engine
 
 The SIP engine is sofia-sip's nta transaction layer, linked into a NIF through
-a plain-C shim, `apps/chappe_sip/c_src/chappe_sip_engine_nif.c`. A bug there
+a plain-C shim, the files of `apps/chappe_sip/c_src/nif/`. A bug there
 does not crash a process, it crashes the node. Use this page when you add an
 operation or an event to the NIF, change its threading or lifecycle, or move
 the vendored sofia-sip.
@@ -19,8 +19,8 @@ the vendored sofia-sip.
 
 | Piece | Where (under `apps/chappe_sip/`) |
 |---|---|
-| The shim | `c_src/chappe_sip_engine_nif.c` |
-| The build | `c_src/build.sh` (stamp-gated: sofia rebuilds when its tree changes, the NIF when the shim, the script, `CC`, the sanitizer, `ENGINE_WERROR`, `ENGINE_EXTRA_CFLAGS` or ERTS change); `c_src/prepare_sofia.sh` makes the patched copy sofia is built from (build.sh and the fuzz build both use it), and `c_src/pin_autotools_mtimes.sh` keeps make from rerunning autotools on it |
+| The shim | `c_src/nif/`: one file per area, `engine.h` their private header; the table in `engine.md` ("Where the code lives") says which file holds what |
+| The build | `c_src/build.sh` (stamp-gated: sofia rebuilds when its tree changes, the NIF when any `c_src/nif/*.c` or `*.h`, the script, `CC`, the sanitizer, `ENGINE_WERROR`, `ENGINE_EXTRA_CFLAGS` or ERTS change); `c_src/prepare_sofia.sh` makes the patched copy sofia is built from (build.sh and the fuzz build both use it), and `c_src/pin_autotools_mtimes.sh` keeps make from rerunning autotools on it |
 | Vendored sofia-sip (LGPL-2.1, keep unmodified; fixes are patches) | `c_src/sofia-sip/`, `c_src/sofia-patches/`, `NOTICE` |
 | NIF stubs and the event contract | `src/engine/chappe_sip_nif.erl` (`{chappe_sip_engine, Ref, Event}` and every event shape) |
 | The process that owns the NIF | `src/engine/chappe_sip_engine.erl` |
@@ -32,6 +32,23 @@ describes them with the suites that cover each: the state CAS (INIT, READY,
 STOPPING, EXITED), the root read-write lock in `enqueue`, the destructor and
 the owner monitor, the handle table drain on stop, the handling of a stray
 2xx, and the argument checks at the NIF boundary.
+
+If you change one of these, open the file that holds it and `engine.h`:
+
+| If you change | Open (under `c_src/nif/`) |
+|---|---|
+| an op, or a NIF that enqueues one | `ops.c` |
+| an event shape | `events.c` |
+| how a request, ACK, CANCEL, PRACK or response arrives | `incoming.c` |
+| start, stop, the singleton or the start options | `lifecycle.c` |
+| the agent, the listen addresses, TLS or HEP capture | `stack.c` |
+| the handle table or flows | `table.c` |
+| the blocklist | `blocklist.c` |
+| an atom, `load`, `upgrade` or `unload` | `main.c` |
+
+A function another file calls drops `static` and gets a prototype in
+`engine.h`; the build (`-Wmissing-prototypes`, warnings as errors in CI)
+refuses one without it.
 
 ## Steps
 
@@ -111,7 +128,9 @@ checks memory errors only.
 
 - `make check` passes, with the NIF built (not `SKIP_ENGINE_BUILD`).
 - `make asan` passes with no new suppression in `lsan.supp`. A suppression
-  must never match a frame through `chappe_sip_engine_nif.c` or sofia.
+  must never match a frame through `c_src/nif/` or sofia.
+- `make lint-c` passes: clang-tidy and `gcc -fanalyzer` clean on every
+  file, and the `.so` exports no shim symbol but `nif_init`.
 - `make interop-conformance` and `make interop-sbc` pass: real traffic over
   UDP, TCP, TLS and WS.
 

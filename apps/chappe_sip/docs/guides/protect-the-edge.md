@@ -123,7 +123,8 @@ ok = chappe_sip:use(chappe_sip_guard:new(#{
 
 - Modules: `chappe_sip_guard` (the policy), `chappe_sip_engine`
   (`discard/1`, `block_source/2`), the C blocklist in
-  `c_src/chappe_sip_engine_nif.c` (`blk_put`, `request_in`), and
+  `c_src/nif/blocklist.c` (`blk_put`) and `c_src/nif/incoming.c`
+  (`request_in`), and
   `chappe_sip_net` (CIDR parsing).
 - Tests: `chappe_sip_guard_SUITE`.
 - Lab: none.

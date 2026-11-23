@@ -94,7 +94,7 @@ plain `rebar3 ct` stays green with no docker.
 | (no target) | `chappe_sip_interop_SUITE`: JsSIP and Kamailio | WS registration, a WebRTC call through the B2BUA, OPTIONS both ways | `INTEROP=1` | none |
 | `make asan` | every chappe_sip suite with the NIF under AddressSanitizer and UndefinedBehaviorSanitizer and the BEAM allocators off (`+Mea min`), in a Linux container | memory errors, leaks and undefined behaviour in the C NIF | none | the build volume persists; `ASAN_VOLUME` names it |
 | `make tsan` | the lifecycle stress and smoke suites with the NIF under ThreadSanitizer | data races between the stack thread and the NIF callers | none | n/a |
-| `make lint-c` | clang-tidy and `gcc -fanalyzer` over the shim | static findings in `chappe_sip_engine_nif.c` | none | n/a |
+| `make lint-c` | clang-tidy and `gcc -fanalyzer` over each file of the shim, and the exported symbols of the `.so` | static findings in `c_src/nif/`, a shim symbol the NIF exports | none | n/a |
 | `make fuzz` | the libFuzzer target on sofia's message parser and the NIF boundary fuzz suite, `FUZZ_TIME` seconds | no crash on random bytes or random NIF arguments | none | crashes are kept as regression seeds |
 | `make compliance GATE=demo` | the requirement matrices | no hard `demo` row is failing | none | n/a |
 

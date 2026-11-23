@@ -2,7 +2,7 @@
 
 This document describes how the SIP engine is embedded, what crosses the
 boundary between C and Erlang, and what keeps the VM safe. Read it before
-you touch `c_src/chappe_sip_engine_nif.c`, `src/engine/chappe_sip_nif.erl`
+you touch the C shim under `c_src/nif/`, `src/engine/chappe_sip_nif.erl`
 or `src/engine/chappe_sip_engine.erl`. The layers above the engine are in
 the [overview](overview.md).
 
@@ -21,6 +21,25 @@ default-leg callback looks a To-tagged SUBSCRIBE up with
 `nta_leg_by_dialog` and delivers it on that dialog's leg. That is what lets
 a subscription dialog see its refreshes; the WS transport matches legs by
 Call-ID and tags for every method and needs no such step.
+
+## Where the code lives
+
+The shim is one `.so` built from the files of `c_src/nif/`, one per area.
+`engine.h` is their private header: the safety macros, the types, the
+shared globals and a prototype of every function another file calls.
+Everything else is `static` in its file, and the `.so` exports no shim
+symbol but `nif_init` (`-fvisibility=hidden`; `make lint-c` checks it).
+
+| Area | File | Explained in |
+|---|---|---|
+| Atoms, `load`, `upgrade`, `unload`, the slot NIFs, `nif_funcs[]` | `main.c` | [Upgrading the NIF](#upgrading-the-nif) |
+| The engine singleton, the thread handoff and join, the start option checks, `start/2` and `stop/1` | `lifecycle.c` | [Lifecycle protocols](#lifecycle-protocols) |
+| The stack thread (`stack_main`, `teardown_sofia`), the extra listen addresses, TLS, HEP capture | `stack.c` | [Threads](#threads), [Several listen addresses](#several-listen-addresses), [HEP capture](#hep-capture), [TLS](#tls) |
+| `send_event`, the `mk_*_ev` constructors, `send_op_ok`/`send_op_failed`, the stats counters, sofia's log redirect | `events.c` | [The event contract](#the-event-contract) |
+| The sofia request and response callbacks (`request_in`, `deliver_request`, `prack_cb`, `stray_cb`, ...) | `incoming.c` | [Shape](#shape) |
+| The op queue (`enqueue`, `op_cb` and its handlers) and the op NIFs | `ops.c` | [Threads](#threads) |
+| The handle table, orphans, `reserve_id`, RFC 5626 flows | `table.c` | [Flows (RFC 5626)](#flows-rfc-5626) |
+| The source blocklist | `blocklist.c` | [protect-the-edge.md](../guides/protect-the-edge.md) |
 
 ## Why a NIF
 
@@ -323,27 +342,28 @@ Notes:
 
 These are the places in the C shim where a change can corrupt memory, leak,
 or deadlock. Read the comment above each function before you edit it, and
-run `make asan` after. The last column names the suites that exercise the
-region; run them under the sanitizers when you touch it.
+run `make asan` after. The functions column names the file of each, under
+`c_src/nif/`. The last column names the suites that exercise the region;
+run them under the sanitizers when you touch it.
 
 | Region | Functions | What can go wrong | Tests |
 |---|---|---|---|
-| State CAS | `nif_start`, `stack_main`, `set_failed`, `request_stop` | `INIT -> READY` (stack thread), `INIT -> STOPPING` (a start that gave up) and `INIT -> FAILED` must stay mutually exclusive; a plain store lets an abandoned thread run orphaned. | `chappe_sip_engine_lifecycle_SUITE`, `chappe_sip_engine_smoke_SUITE` (`bind_failure`, `start_stop_cycles`) |
-| Root rwlock in enqueue | `enqueue`, `enqueue_locked`, `request_stop`, `teardown_sofia` | Foreign threads post under the read lock after re-checking READY; `request_stop` flips to STOPPING and posts OP_STOP under the write lock, so no op lands behind OP_STOP (it would leak its payload and a kept engine ref); the root is destroyed under the write lock. | `chappe_sip_engine_lifecycle_SUITE` |
-| Engine destructor and owner down | `engine_dtor`, `engine_down`, `thread_exit`, `join_thread`, `claim_thread`, `reap_thread`, `start_refused` | The stack thread never drops its own resource ref: only the thread that joins it does, after the join, so the last release (the destructor, and perhaps ERTS closing a purged library) never runs on the stack thread or under it. A thread nobody waits for (owner death, an abandoned start, a hung stop) is joined by the next start or `engine_state/0` once it is done. Release the singleton only from the engine that holds it (`release_slot`), or a successor engine is clobbered: a second stop of a stopped engine leaves the slot alone, and a dead-owner start whose stop timed out keeps it until the destructor. | `chappe_sip_nif_boundary_SUITE` (refused starts, a dead owner, a second stop), `chappe_sip_engine_lifecycle_SUITE`, `chappe_sip_nif_upgrade_SUITE` (owner death after a purge) |
-| Handle table drain, orphans, proxy branch list | `tab_drain`, `tab_del`, `ctx_release`, `orphans_sweep`, `px_unlink` | Teardown destroys every nta object before the agent; an incoming ctx a PRACK callback may still use goes on the orphan list instead of being freed; an outgoing ctx must leave the `px_head` list `stray_cb` walks before it is freed. | `chappe_sip_dialog_ops_SUITE`, `chappe_sip_prack_SUITE`, `chappe_sip_proxy_forking_SUITE` |
-| Flows | `flow_of`, `flow_free`, `flow_closed`, `flows_sweep`, `flow_err_cb` | A flow holds a `tport_ref` and a pending entry; both are released once, and the H_FLOW handle is removed by the caller. | `chappe_sip_transport_SUITE`, `chappe_sip_registrar_SUITE` |
-| Stray 2xx | `stray_cb`, `outgoing_response_cb` | A later 2xx of a proxy INVITE branch over TCP/TLS matches no transaction; it is sent to the branch handle only while that branch is in `px_head` (RFC 6026 Accepted state), else dropped. The outgoing callback never destroys the transaction: Erlang does with `txn_done`. | `chappe_sip_forked_2xx_SUITE`, `chappe_sip_proxy_forking_SUITE` |
-| Module lifecycle | `load`, `upgrade`, `unload`, `nif_engine_state`, `nif_reserve_slot` | `upgrade` must refuse: a new library taking over old engines runs on objects it did not make, and an old start can race the purge. A same-file reload shares the statics with the old instance, and the old `unload` can run while the new `load` does: both take `g_lib_lock` (static, never destroyed), the first `load` sets up and only the last `unload` (`g_loads`) runs `su_deinit` and destroys the locks. `replace/0` holds the slot (`G_RESERVED`) from its check to the new `load`, which frees it. | `chappe_sip_nif_upgrade_SUITE` |
-| Request intake and discard | `request_in`, `blk_msg`, `blk_put`, `blk_has`, the `OP_DISCARD` case of `op_cb` | A blocked source is discarded before a server transaction exists; the blocklist is process-wide under `g_blk_lock` and outlives an engine; a discarded transaction gets no 100 Trying and ends with nta's silent 408. | `chappe_sip_guard_SUITE` |
-| The op dispatcher | `op_cb` (about 300 lines, 14 ops) | Every op must look its handle up with the right kind (`tab_get`), answer `op_failed` for an unknown one, and free its payload on every path (`op_free_payload`); an unknown kind reaches `default:`. | `chappe_sip_engine_smoke_SUITE`, `chappe_sip_dialog_ops_SUITE`, `chappe_sip_ops_SUITE` |
-| The NIF boundary | `nif_reply`, `send_raw`, `nif_leg_create`, `nif_cancel`, `get_opt_bin`, `get_tls`, `get_capture`, `get_max_size` | Every string sofia reads as a C string is refused when it holds a NUL, every size is capped before the copy, and a start option that is there but invalid fails the start. | `chappe_sip_nif_boundary_SUITE`, `chappe_sip_ops_SUITE` (`max_message_size_*`) |
+| State CAS | `nif_start`, `request_stop` (`lifecycle.c`); `stack_main`, `set_failed` (`stack.c`) | `INIT -> READY` (stack thread), `INIT -> STOPPING` (a start that gave up) and `INIT -> FAILED` must stay mutually exclusive; a plain store lets an abandoned thread run orphaned. | `chappe_sip_engine_lifecycle_SUITE`, `chappe_sip_engine_smoke_SUITE` (`bind_failure`, `start_stop_cycles`) |
+| Root rwlock in enqueue | `enqueue`, `enqueue_locked` (`ops.c`); `request_stop` (`lifecycle.c`); `teardown_sofia` (`stack.c`) | Foreign threads post under the read lock after re-checking READY; `request_stop` flips to STOPPING and posts OP_STOP under the write lock, so no op lands behind OP_STOP (it would leak its payload and a kept engine ref); the root is destroyed under the write lock. | `chappe_sip_engine_lifecycle_SUITE` |
+| Engine destructor and owner down | `engine_dtor`, `engine_down`, `join_thread`, `claim_thread`, `reap_thread`, `start_refused` (`lifecycle.c`); `thread_exit` (`stack.c`) | The stack thread never drops its own resource ref: only the thread that joins it does, after the join, so the last release (the destructor, and perhaps ERTS closing a purged library) never runs on the stack thread or under it. A thread nobody waits for (owner death, an abandoned start, a hung stop) is joined by the next start or `engine_state/0` once it is done. Release the singleton only from the engine that holds it (`release_slot`), or a successor engine is clobbered: a second stop of a stopped engine leaves the slot alone, and a dead-owner start whose stop timed out keeps it until the destructor. | `chappe_sip_nif_boundary_SUITE` (refused starts, a dead owner, a second stop), `chappe_sip_engine_lifecycle_SUITE`, `chappe_sip_nif_upgrade_SUITE` (owner death after a purge) |
+| Handle table drain, orphans, proxy branch list | `tab_drain`, `tab_del`, `ctx_release`, `orphans_sweep`, `px_unlink` (`table.c`) | Teardown destroys every nta object before the agent; an incoming ctx a PRACK callback may still use goes on the orphan list instead of being freed; an outgoing ctx must leave the `px_head` list `stray_cb` walks before it is freed. | `chappe_sip_dialog_ops_SUITE`, `chappe_sip_prack_SUITE`, `chappe_sip_proxy_forking_SUITE` |
+| Flows | `flow_of`, `flow_free`, `flow_closed`, `flows_sweep`, `flow_err_cb` (`table.c`) | A flow holds a `tport_ref` and a pending entry; both are released once, and the H_FLOW handle is removed by the caller. | `chappe_sip_transport_SUITE`, `chappe_sip_registrar_SUITE` |
+| Stray 2xx | `stray_cb`, `outgoing_response_cb` (`incoming.c`) | A later 2xx of a proxy INVITE branch over TCP/TLS matches no transaction; it is sent to the branch handle only while that branch is in `px_head` (RFC 6026 Accepted state), else dropped. The outgoing callback never destroys the transaction: Erlang does with `txn_done`. | `chappe_sip_forked_2xx_SUITE`, `chappe_sip_proxy_forking_SUITE` |
+| Module lifecycle | `load`, `upgrade`, `unload`, `nif_engine_state`, `nif_reserve_slot` (`main.c`) | `upgrade` must refuse: a new library taking over old engines runs on objects it did not make, and an old start can race the purge. A same-file reload shares the statics with the old instance, and the old `unload` can run while the new `load` does: both take `g_lib_lock` (static, never destroyed), the first `load` sets up and only the last `unload` (`g_loads`) runs `su_deinit` and destroys the locks. `replace/0` holds the slot (`G_RESERVED`) from its check to the new `load`, which frees it. | `chappe_sip_nif_upgrade_SUITE` |
+| Request intake and discard | `request_in` (`incoming.c`); `blk_msg`, `blk_put`, `blk_has` (`blocklist.c`); the `OP_DISCARD` case of `op_cb` (`ops.c`) | A blocked source is discarded before a server transaction exists; the blocklist is process-wide under `g_blk_lock` and outlives an engine; a discarded transaction gets no 100 Trying and ends with nta's silent 408. | `chappe_sip_guard_SUITE` |
+| The op dispatcher | `op_cb` (`ops.c`, about 180 lines, 14 ops) | Every op must look its handle up with the right kind (`tab_get`), answer `op_failed` for an unknown one, and free its payload on every path (`op_free_payload`); an unknown kind reaches `default:`. | `chappe_sip_engine_smoke_SUITE`, `chappe_sip_dialog_ops_SUITE`, `chappe_sip_ops_SUITE` |
+| The NIF boundary | `nif_reply`, `send_raw`, `nif_leg_create`, `nif_cancel` (`ops.c`); `get_opt_bin`, `get_tls`, `get_capture`, `get_max_size` (`lifecycle.c`) | Every string sofia reads as a C string is refused when it holds a NUL, every size is capped before the copy, and a start option that is there but invalid fails the start. | `chappe_sip_nif_boundary_SUITE`, `chappe_sip_ops_SUITE` (`max_message_size_*`) |
 
 ## Safety rules
 
 The NIF runs inside the VM, so a fault in it takes the node down
 ([decision 0001](../../../../docs/decisions/0001-sofia-nta-nif.md)). Every
-change to `chappe_sip_engine_nif.c` keeps these rules:
+change to the NIF sources under `c_src/nif/` keeps these rules:
 
 - **Explicit lengths, checked sizes.** A binary is copied with its length,
   never found by `strlen`. Every computed allocation size goes through
@@ -379,7 +399,8 @@ change to `chappe_sip_engine_nif.c` keeps these rules:
 
 The build enforces part of this. `c_src/build.sh` compiles the shim with
 `-std=gnu17`, `-Wall -Wextra -Wformat=2 -Wconversion -Wsign-conversion
--Wshadow -Wnull-dereference -Wimplicit-fallthrough`, the stack protector,
+-Wshadow -Wnull-dereference -Wimplicit-fallthrough -Wmissing-prototypes`
+and `-fvisibility=hidden`, the stack protector,
 stack clash protection, `_FORTIFY_SOURCE=3` (not under a sanitizer),
 zero-initialised automatic variables, control-flow protection
 (`-fcf-protection` on x86_64, `-mbranch-protection=standard` on arm64) and
@@ -397,7 +418,7 @@ keeps its own flags.
 |---|---|
 | `make asan` | every chappe_sip suite with the NIF under AddressSanitizer, LeakSanitizer and UndefinedBehaviorSanitizer (UBSan halts on the first error) and the BEAM allocators off (`+Mea min`), in a Linux container |
 | `make tsan` | the lifecycle stress and smoke suites with the NIF under ThreadSanitizer, for the threading of the stack thread and the NIF callers; the shim tells TSan that a destructor happens before ERTS reuses its memory (`TSAN_RELEASE`, `TSAN_ACQUIRE`), since the ERTS allocator is not instrumented |
-| `make lint-c` | clang-tidy (`bugprone-*`, `cert-*`, `clang-analyzer-*`, `misc-*`, configured in `.clang-tidy`) and `gcc -fanalyzer` over the shim only |
+| `make lint-c` | clang-tidy (`bugprone-*`, `cert-*`, `clang-analyzer-*`, `misc-*`, configured in `.clang-tidy`) and `gcc -fanalyzer` over each file of the shim, and a check that the `.so` exports no shim symbol but `nif_init` |
 | `make fuzz` | the libFuzzer targets in `c_src/fuzz/` on sofia's message and header parsers (sofia built from the same patched copy as the NIF's), and the NIF boundary fuzz suite; `FUZZ_TIME` sets the run in seconds, crashes are kept as regression seeds |
 | `ENGINE_WERROR=1 rebar3 compile` | the hardened build with warnings as errors, as CI builds it |
 

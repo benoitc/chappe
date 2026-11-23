@@ -4,7 +4,7 @@
 # that loads the NIF. A template suppresses a leak when it matches any frame
 # (function, source file or module path), so nothing here may match a frame
 # that a NIF call stack carries: the BEAM (erts-*/bin/beam.smp, hence the
-# anchored /bin/ paths), sofia-sip or chappe_sip_engine_nif.c. A leak
+# anchored /bin/ paths), sofia-sip or the shim (c_src/nif/). A leak
 # allocated under the NIF is always reported.
 
 # erts DNS port helper: exits with its last request buffer allocated.

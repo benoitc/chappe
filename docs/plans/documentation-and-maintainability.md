@@ -447,7 +447,7 @@ Code lines without blanks or comments (`apps/*/src`, 236 modules, about
 | Modules at the lint ceiling | 17 modules sit between 470 and 500 lines, against elvis `max_module_length` 500: `chappe_sip_proxy`, `_media_mix`, `_engine`, `_b2b_relay`, `_focus`, `_refer`, `_dialog_fsm`, `_registry`, `_siprec`, `_ws_transport`, `chappe_mrf_conf_refer`, `chappe_mrf_conf`, `chappe_esl_call`, `chappe_mix_conf`, `chappe_rtpengine_session`, `chappe_mrf`, `chappe_audio_rtp` | The splits of section 9 stopped at the limit. The next feature in any of them trips lint, and the easy fix is a split by size rather than by responsibility. **Module organisation.** No action now; when one trips, split along a responsibility its overview names, or exempt it with a reason. |
 | Exempt from the length rule | `chappe_sip_hdr` 764 (one parser per header, coherent), `chappe_sip_b2b` 723 (every B2BUA option next to its entry point), `chappe_rtpengine_client` 595 (four transports in the process that owns the socket) | Reasons hold. Keep. |
 | Longest functions | `chappe_rtpengine_client:handle_info` 76, `chappe_sip_b2b:start_b` 74, `chappe_rtpengine_session:call` 74, `chappe_sip_proxy:on_response` 68, `chappe_sip_uac_fsm:trying` 64, `chappe_sip_b2b_relay:loop` 63 (span lines, comments included) | Review only when next changed. **Code complexity**, low. |
-| The C NIF | `chappe_sip_engine_nif.c` 3,234 lines, about 154 top-level functions; longest `op_cb` 181, `stack_main` 168, `deliver_request` 129, `nif_start` 118 | One file holds lifecycle, the op queue, event delivery and TLS. `engine.md` maps its risky regions, which is what a contributor needs first. A split of the file is a question (Q4), not a recommendation: it is covered by ASan, TSan and the fuzzer as one unit. **Architecture.** |
+| The C NIF | `chappe_sip_engine_nif.c` 3,234 lines, about 154 top-level functions; longest `op_cb` 181, `stack_main` 168, `deliver_request` 129, `nif_start` 118 | One file holds lifecycle, the op queue, event delivery and TLS. `engine.md` maps its risky regions, which is what a contributor needs first. A split of the file is a question (Q4), not a recommendation: it is covered by ASan, TSan and the fuzzer as one unit. **Architecture.** Done (answer 4): split by area into `c_src/nif/`, one `.so`, code moved as it was; `engine.md` ("Where the code lives") maps area to file. |
 | New since section 9 | `chappe_sip_siprec_srs` 338, `_srs_stream` 323, `chappe_audio_rtcp` 356, `chappe_audio_rtp_rtcp` 157, `chappe_audio_srtp` 275, `chappe_sip_nif_reload` 21 | Each has one responsibility. Fine. |
 
 T1 of section 9 (test-only exports) is done in #67.
@@ -484,7 +484,8 @@ module doc. Counts in prose and CHANGELOG markings stay unchecked.
 
 Answers (2026-11-22): 1, public, so navigation.md follows ex_doc. 2, yes,
 the rewrite is a release blocker. 3, asked back: what the delay is for.
-4, split the NIF file, in its own plan. 5, not intended: the srs row
+4, split the NIF file, in its own plan (done: `c_src/nif/`, one file per
+area). 5, not intended: the srs row
 takes the part that concerns the receiving side. 6, yes.
 
 ### 12.8 Order
@@ -495,4 +496,4 @@ Documentation only, each its own PR, one open at a time:
    PR; then the CHANGELOG rewrite (12.3).
 2. **After it:** the docs check additions (12.6); decision records
    (12.4), D11, D12.
-3. **Its own plan:** the NIF file split (answer 4).
+3. **Its own plan:** the NIF file split (answer 4). Done.
