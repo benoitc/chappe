@@ -317,7 +317,7 @@ a leg is one of the two sides of a bridged call (see
 [A leg and B leg](#a-leg-and-b-leg)). In chappe_mix, a leg is one participant
 of a conference room: an RTP session with its own socket.
 
-Where it lives: engine legs in `apps/chappe_sip/c_src/chappe_sip_engine_nif.c`
+Where it lives: engine legs in `apps/chappe_sip/c_src/nif/` (`table.c`)
 and the handle table of `chappe_sip_engine`; B2BUA legs in
 `chappe_sip_b2b`; mixer legs in `chappe_mix:add_leg/2` and `chappe_mix_leg`.
 

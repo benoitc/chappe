@@ -28,7 +28,7 @@ threads are in [the engine design](engine.md).
                   chappe_sip_media --> chappe_rtpengine, chappe_mix
 ```
 
-- **The NIF shim** (`c_src/chappe_sip_engine_nif.c`) owns one sofia stack
+- **The NIF shim** (`c_src/nif/`) owns one sofia stack
   thread. It delivers inbound SIP as messages and accepts enqueue-only
   operations. It has no SIP logic: raw messages cross as binaries.
 - **The WebSocket transport** is an Erlang transaction layer that emits the
