@@ -51,11 +51,26 @@ make cover MIN_COVERAGE=80
   then checks the vendored sofia-sip and the hex packages of `rebar.lock`
   against published advisories, on each pull request and every Monday.
 - `make docs` builds the ex_doc HTML of each app into `apps/<app>/doc`.
-- `make docs-check` runs `scripts/docs_check.escript`, OTP only: every
-  module in one ex_doc group, every `docs/**/*.md` an ex_doc extra, every
-  supervisor named in its app's `docs/design/overview.md`, and every
-  relative markdown link and `#anchor` resolving. CI runs it next to the
-  static checks.
+- `make docs-check` runs `scripts/docs_check.escript`, OTP only, no build.
+  CI runs it next to the static checks. For each app it checks that:
+  - every src module is in one ex_doc group, and every module a group
+    names exists;
+  - every `docs/**/*.md` is an ex_doc extra, and every extra exists;
+  - every supervisor, and every src module, is named in the app's
+    `docs/design/overview.md`, in full or by a prefix wildcard such as
+    `chappe_sip_engine_*` (the bare `<app>_*` names nothing);
+  - every src module has a module doc, `%% @doc` or `-moduledoc`, before
+    its first function;
+  - the app's row in the public and internal table of
+    [navigation.md](../navigation.md) agrees with ex_doc: a module of the
+    group named "Internal" is in the Internal column, a module of any other
+    group in the Public column. A cell writes a name in full or as
+    `_suffix`; `_x*` is a prefix and "every `_x`" a suffix; a name written
+    out wins over a wildcard. A mismatch names the module, the
+    navigation.md line and the rebar.config line.
+
+  For the repository it checks that every relative markdown link and
+  `#anchor` resolves.
 
 ## The labs
 

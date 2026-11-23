@@ -10,14 +10,28 @@
 %%     module a group names exists;
 %%   - every docs/**/*.md (docs/history aside) is an ex_doc extra, and
 %%     every extra exists;
-%%   - every supervisor of src/** is named in docs/design/overview.md.
+%%   - every supervisor of src/** is named in docs/design/overview.md;
+%%   - every module of src/** is named in docs/design/overview.md, by its
+%%     name in full or by a prefix wildcard `chappe_sip_engine_*' (any
+%%     name ending in `*'; the bare `<app>_*' names nothing);
+%%   - every module of src/** has a module doc: a `%% @doc' line or a
+%%     `-moduledoc' attribute before its first function;
+%%   - the app's row of docs/navigation.md ("Public and internal modules
+%%     per app") agrees with the ex_doc groups: a module of the group
+%%     named "Internal" is internal, a module of any other group public.
+%%     In the row, a name is written in full or as `_suffix' for
+%%     `<app>_suffix'; `_x*' names every module starting with `<app>_x',
+%%     and "every `_x'" every module ending in `_x'. A name written out
+%%     wins over a wildcard, so `chappe_sip_b2b_join' in the public column
+%%     is public although `_b2b_*' is in the internal one.
 %% For the repository: every relative markdown link resolves, and every
 %% #anchor matches a heading of its target (GitHub slug rules).
 -mode(compile).
 
 main(_) ->
     Apps = lists:sort(filelib:wildcard("apps/*/rebar.config")),
-    AppFindings = lists:flatmap(fun check_app/1, Apps),
+    Nav = nav_rows("docs/navigation.md"),
+    AppFindings = lists:flatmap(fun(C) -> check_app(C, Nav) end, Apps),
     LinkFindings = lists:flatmap(fun check_links/1, md_files()),
     case AppFindings ++ LinkFindings of
         [] ->
@@ -29,7 +43,7 @@ main(_) ->
 
 %% ---- Per app -----------------------------------------------------------
 
-check_app(Config) ->
+check_app(Config, Nav) ->
     Dir = filename:dirname(Config),
     App = filename:basename(Dir),
     case file:consult(Config) of
@@ -41,8 +55,10 @@ check_app(Config) ->
              || M <-
                     check_groups(ExDoc, Mods) ++
                         check_extras(Dir, ExDoc) ++
-                        check_supervisors(Dir)
-            ];
+                        check_supervisors(Dir) ++
+                        check_overview(Dir, App, Mods) ++
+                        check_moduledocs(Mods)
+            ] ++ check_visibility(App, Config, ExDoc, Mods, Nav);
         {error, Reason} ->
             [fmt("~ts: cannot read ~ts: ~p", [App, Config, Reason])]
     end.
@@ -133,6 +149,217 @@ names(Text, Name) ->
         re:run(Text, "(?<![a-z0-9_])" ++ Name ++ "(?![a-z0-9_])", [
             {capture, none}
         ]).
+
+%% ---- Every module in its overview, with a module doc ------------------
+
+check_overview(Dir, App, Mods) ->
+    Overview = filename:join([Dir, "docs", "design", "overview.md"]),
+    case file:read_file(Overview) of
+        {ok, Text} ->
+            Wild = overview_wildcards(Text, App),
+            [
+                fmt("~ts is not named in docs/design/overview.md", [M])
+             || {Atom, _} <- Mods,
+                M <- [atom_to_list(Atom)],
+                not names(Text, M),
+                not lists:any(fun(P) -> lists:prefix(P, M) end, Wild)
+            ];
+        {error, _} ->
+            []
+    end.
+
+%% `prefix*' in backquotes; `<app>_*' would name every module, so it names
+%% none
+overview_wildcards(Text, App) ->
+    case
+        re:run(Text, "`([a-z][a-z0-9_]*)\\*`", [
+            global, {capture, all_but_first, list}
+        ])
+    of
+        {match, Ms} -> [P || [P] <- Ms, P =/= App ++ "_"];
+        nomatch -> []
+    end.
+
+check_moduledocs(Mods) ->
+    [
+        fmt(
+            "~ts has no module doc (%% @doc or -moduledoc before its first "
+            "function)",
+            [F]
+        )
+     || {_, F} <- Mods, not has_moduledoc(F)
+    ].
+
+has_moduledoc(File) ->
+    {ok, Bin} = file:read_file(File),
+    moduledoc(string:split(binary_to_list(Bin), "\n", all)).
+
+moduledoc([]) ->
+    false;
+moduledoc(["%% @doc" ++ _ | _]) ->
+    true;
+moduledoc(["-moduledoc" ++ _ | _]) ->
+    true;
+moduledoc([L | Rest]) ->
+    case re:run(L, "^[a-z][a-zA-Z0-9_]*\\(", [{capture, none}]) of
+        match -> false;
+        nomatch -> moduledoc(Rest)
+    end.
+
+%% ---- Public and internal: navigation.md against ex_doc ----------------
+
+-define(NAV, "docs/navigation.md").
+
+%% #{App => {Line, PublicCell, InternalCell}} from the table under the
+%% heading "Public and internal modules per app"
+nav_rows(File) ->
+    case filelib:is_regular(File) of
+        false ->
+            #{};
+        true ->
+            Lines = lines(File),
+            {_, After} = lists:splitwith(
+                fun({_, L}) ->
+                    not lists:prefix("## Public and internal modules", L)
+                end,
+                Lines
+            ),
+            maps:from_list(nav_table(tl_or_empty(After)))
+    end.
+
+tl_or_empty([]) -> [];
+tl_or_empty([_ | T]) -> T.
+
+nav_table([]) ->
+    [];
+nav_table([{_, "## " ++ _} | _]) ->
+    [];
+nav_table([{N, "| " ++ _ = L} | Rest]) ->
+    case [string:trim(C) || C <- string:split(L, "|", all)] of
+        ["", App, Pub, Int, ""] when App =/= "App" ->
+            case lists:prefix("---", App) of
+                true -> nav_table(Rest);
+                false -> [{App, {N, Pub, Int}} | nav_table(Rest)]
+            end;
+        _ ->
+            nav_table(Rest)
+    end;
+nav_table([_ | Rest]) ->
+    nav_table(Rest).
+
+check_visibility(App, Config, ExDoc, Mods, Nav) ->
+    case maps:find(App, Nav) of
+        error ->
+            [fmt("~ts: ~ts has no row for the app", [?NAV, App])];
+        {ok, {N, PubCell, IntCell}} ->
+            Groups = proplists:get_value(groups_for_modules, ExDoc, []),
+            Internal = lists:append([Ms || {<<"Internal">>, Ms} <- Groups]),
+            Known = [M || {M, _} <- Mods],
+            Pub = nav_names(App, PubCell),
+            Int = nav_names(App, IntCell),
+            Cfg = config_lines(Config),
+            Where = fun(M) -> fmt("~ts:~b", [Config, maps:get(M, Cfg, 0)]) end,
+            Ghosts = [
+                fmt("~ts:~b: ~ts names ~ts, which is not a module of src", [
+                    ?NAV, N, App, M
+                ])
+             || {exact, M} <- Pub ++ Int,
+                not lists:member(list_to_atom(M), Known)
+            ],
+            Ghosts ++
+                lists:flatmap(
+                    fun(M) ->
+                        Doc =
+                            case lists:member(M, Internal) of
+                                true -> internal;
+                                false -> public
+                            end,
+                        case visibility(atom_to_list(M), Pub, Int) of
+                            Doc ->
+                                [];
+                            none ->
+                                [
+                                    fmt(
+                                        "~ts:~b: ~ts is ~ts in ex_doc (~ts) "
+                                        "but not listed",
+                                        [?NAV, N, M, Doc, Where(M)]
+                                    )
+                                ];
+                            Other ->
+                                [
+                                    fmt(
+                                        "~ts:~b: ~ts is ~ts there but ~ts "
+                                        "in ex_doc (~ts)",
+                                        [?NAV, N, M, Other, Doc, Where(M)]
+                                    )
+                                ]
+                        end
+                    end,
+                    Known
+                )
+    end.
+
+%% a name written out wins; then the wildcards; public before internal
+visibility(M, Pub, Int) ->
+    Exact = fun(Ns) -> lists:member({exact, M}, Ns) end,
+    Wild = fun(Ns) -> lists:any(fun(P) -> wild(P, M) end, Ns) end,
+    case {Exact(Pub), Exact(Int), Wild(Pub), Wild(Int)} of
+        {true, _, _, _} -> public;
+        {_, true, _, _} -> internal;
+        {_, _, true, _} -> public;
+        {_, _, _, true} -> internal;
+        _ -> none
+    end.
+
+wild({prefix, P}, M) -> lists:prefix(P, M);
+wild({suffix, S}, M) -> lists:suffix(S, M);
+wild({exact, _}, _) -> false.
+
+%% the backquoted names of a cell: `_x' is `<app>_x', `_x*' a prefix,
+%% "every `_x'" a suffix; anything with `:' or `/' is a call, not a module
+nav_names(App, Cell) ->
+    {match, Ms} =
+        case
+            re:run(Cell, "(every\\s+)?`([^`]+)`", [
+                global, {capture, all_but_first, list}
+            ])
+        of
+            nomatch -> {match, []};
+            Found -> Found
+        end,
+    lists:flatmap(fun(M) -> nav_name(App, M) end, Ms).
+
+nav_name(App, [Every, Name]) ->
+    case lists:any(fun(C) -> lists:member(C, ":/ ") end, Name) of
+        true ->
+            [];
+        false ->
+            Full =
+                case Name of
+                    "_" ++ _ -> App ++ Name;
+                    _ -> Name
+                end,
+            case {Every, lists:last(Full)} of
+                {"", $*} -> [{prefix, lists:droplast(Full)}];
+                {"", _} -> [{exact, Full}];
+                {_, _} -> [{suffix, Name}]
+            end
+    end.
+
+%% each module of the ex_doc groups, with the line it is on
+config_lines(Config) ->
+    maps:from_list(
+        [
+            {list_to_atom(W), N}
+         || {N, L} <- lines(Config),
+            {match, Ws} <- [
+                re:run(L, "\\b([a-z][a-z0-9_]*)\\b", [
+                    global, {capture, all_but_first, list}
+                ])
+            ],
+            [W] <- Ws
+        ]
+    ).
 
 %% ---- Links -------------------------------------------------------------
 

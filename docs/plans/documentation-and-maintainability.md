@@ -463,6 +463,11 @@ of an "Internal" group is in navigation.md's internal column and the
 reverse; every src module is named in its app overview; every module has
 a `@doc`. Ask before changing the CI job.
 
+Done (answer 6): `make docs-check` now checks the public and internal
+columns of navigation.md against the "Internal" ex_doc group, that every
+src module is named in its app overview, and that every module has a
+module doc. Counts in prose and CHANGELOG markings stay unchecked.
+
 ### 12.7 Questions for the maintainer
 
 1. Is `chappe_sip_siprec_srs_stream` public API or internal (D5)?
