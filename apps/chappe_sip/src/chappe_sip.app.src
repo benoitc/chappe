@@ -4,7 +4,7 @@
 {application, chappe_sip, [
     {description,
         "SIP application server: drachtio ported to Erlang on sofia-sip"},
-    {vsn, "0.2.0"},
+    {vsn, "0.3.0"},
     {registered, [chappe_sip_sup, chappe_sip_engine]},
     {mod, {chappe_sip_app, []}},
     %% livery is started lazily by chappe_sip_ws_sup when a WS listener is configured

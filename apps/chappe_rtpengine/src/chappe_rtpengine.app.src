@@ -3,7 +3,7 @@
 
 {application, chappe_rtpengine, [
     {description, "Erlang client for the rtpengine NG control protocol"},
-    {vsn, "0.1.0"},
+    {vsn, "0.2.0"},
     {registered, [
         chappe_rtpengine_sup,
         chappe_rtpengine_pool,

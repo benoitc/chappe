@@ -6,6 +6,8 @@ says how apps are released.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-23
+
 ### New
 
 - Needs Erlang/OTP 29.1.2 or later: earlier OTP 29 releases let a TLS 1.3
