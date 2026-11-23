@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% Outbound listener. Owns one listen socket and a linked acceptor loop. For
+%% @doc Outbound listener. Owns one listen socket and a linked acceptor loop. For
 %% each connection FreeSWITCH opens, the acceptor checks the peer against the
 %% `allow' list first: a refused peer is closed and counted, before any byte
 %% is read or any process started. An allowed peer is admitted here, which

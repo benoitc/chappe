@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% Moving a member from one conference to another (chappe_mrf_conf:
+%% @doc Moving a member from one conference to another (chappe_mrf_conf:
 %% transfer/3).
 %%
 %% transfer/3 runs in the caller: each room only does its part. The room

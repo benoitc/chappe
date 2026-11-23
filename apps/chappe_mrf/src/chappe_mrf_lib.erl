@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% Small helpers shared by the chappe_mrf modules.
+%% @doc Small helpers shared by the chappe_mrf modules.
 -module(chappe_mrf_lib).
 
 -export([new_id/0, to_bin/1, destroy_dialog/1, done/1, api_ok/1]).

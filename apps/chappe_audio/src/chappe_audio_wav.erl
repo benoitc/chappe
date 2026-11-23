@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% The RIFF WAVE container for 16-bit PCM, as pure functions: the 44-byte
+%% @doc The RIFF WAVE container for 16-bit PCM, as pure functions: the 44-byte
 %% header a recording starts with, the two sizes patched in when it
 %% ends, and the format and length of a finished file (FreeSWITCH and
 %% rtpengine write other chunks, LIST among them, before the data).

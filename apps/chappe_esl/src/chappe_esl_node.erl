@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% One gen_statem per FreeSWITCH node, under chappe_esl_nodes. It owns the
+%% @doc One gen_statem per FreeSWITCH node, under chappe_esl_nodes. It owns the
 %% node's inbound connection (a chappe_esl_conn it is the controlling process
 %% of) and keeps the node's row in the registry table.
 %%

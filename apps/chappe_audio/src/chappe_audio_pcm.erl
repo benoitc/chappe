@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% 16-bit signed little-endian PCM, the format both fork modules send
+%% @doc 16-bit signed little-endian PCM, the format both fork modules send
 %% (FreeSWITCH L16 in host order, little-endian on the platforms it
 %% runs on).
 -module(chappe_audio_pcm).

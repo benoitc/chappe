@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% One recording being written: the process that holds the backend's
+%% @doc One recording being written: the process that holds the backend's
 %% handle, under chappe_audio_writer_sup (temporary).
 %%
 %% Its owner is the process that feeds it, which it monitors: when the

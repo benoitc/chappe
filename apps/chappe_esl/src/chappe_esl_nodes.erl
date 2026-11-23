@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% Registry of FreeSWITCH nodes. A supervisor of one chappe_esl_node per
+%% @doc Registry of FreeSWITCH nodes. A supervisor of one chappe_esl_node per
 %% node, plus the pg scope that carries their notices. It owns the
 %% `chappe_esl_nodes' ETS table (created in init/1, so it lives as long as
 %% the registry): each node writes its own row, readers (status, select,

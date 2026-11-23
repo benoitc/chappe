@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% Typed call control over the event socket.
+%% @doc Typed call control over the event socket.
 %%
 %% exec/5 runs a dialplan application on a channel and waits for its end: the
 %% sendmsg carries an Event-UUID, which FreeSWITCH reports back as the

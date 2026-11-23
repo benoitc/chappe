@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% chappe_audio's pg scope, `chappe_audio': its own, started early by
+%% @doc chappe_audio's pg scope, `chappe_audio': its own, started early by
 %% chappe_audio_sup (after the RTP receivers), so a restart of the tree
 %% restarts it and stopping the app stops it (chappe-erlang-patterns rule
 %% 4: one scope per app, no app starts another's). The groups are

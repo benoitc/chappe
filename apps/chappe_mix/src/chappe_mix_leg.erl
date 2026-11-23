@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% What one conference leg does on its own: open its sockets (RTP, and
+%% @doc What one conference leg does on its own: open its sockets (RTP, and
 %% RTCP on the next port when it is not multiplexed), filter and take
 %% what arrives, send its share of the mix and its RTCP. Anything that
 %% looks at other legs stays in chappe_mix_conf.

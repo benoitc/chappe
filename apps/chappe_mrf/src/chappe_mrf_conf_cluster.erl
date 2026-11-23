@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% A cluster room (the chappe_mrf `cluster' setting chappe_cluster): the
+%% @doc A cluster room (the chappe_mrf `cluster' setting chappe_cluster): the
 %% start in the caller, and the lease decisions the room process takes.
 %%
 %% start/2 runs in the caller of chappe_mrf_conf:start/2. It starts the

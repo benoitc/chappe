@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% One adoption: the process that takes a finished file into the store,
+%% @doc One adoption: the process that takes a finished file into the store,
 %% under chappe_audio_adopt_sup (temporary), so that a move across file
 %% systems (a copy, as long as it takes) never runs in the store's process
 %% or in the caller's (an endpoint, a room).

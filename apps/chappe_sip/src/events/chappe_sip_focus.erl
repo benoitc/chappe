@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 
-%% The SIP side of a conference focus (RFC 4579) and its conference state
+%% @doc The SIP side of a conference focus (RFC 4579) and its conference state
 %% notifier (RFC 4575 over RFC 6665), as a library for the process that
 %% owns the conference.
 %%

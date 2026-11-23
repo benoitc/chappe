@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% RTCP (RFC 3550 section 6) as far as a mixer needs it: compound packets
+%% @doc RTCP (RFC 3550 section 6) as far as a mixer needs it: compound packets
 %% built and parsed, the reception statistics of one source, and the
 %% report interval.
 %%

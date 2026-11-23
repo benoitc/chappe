@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% FreeSWITCH recordings into the recording store (chappe_audio_store).
+%% @doc FreeSWITCH recordings into the recording store (chappe_audio_store).
 %%
 %% FreeSWITCH writes a recording into a folder it shares with chappe;
 %% once the file is done chappe adopts it into the store under the call's

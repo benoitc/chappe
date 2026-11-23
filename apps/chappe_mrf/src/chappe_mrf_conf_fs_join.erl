@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% The fs backend's join, in the caller of chappe_mrf_conf:join/3 (after
+%% @doc The fs backend's join, in the caller of chappe_mrf_conf:join/3 (after
 %% chappe_mrf_conf_fs:join/4 checked the room): an endpoint on the room's
 %% node, made and bridged for a call, enters the PIN if the join asks one,
 %% then joins the room ({join, {fs, Ep, Owned, Opts}}).

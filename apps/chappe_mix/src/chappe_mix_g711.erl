@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% G.711 mu-law and A-law, between code words and 16-bit linear samples.
+%% @doc G.711 mu-law and A-law, between code words and 16-bit linear samples.
 %%
 %% The arithmetic follows the Sun reference implementation that every
 %% softswitch shares, so a frame decoded here sums the same as one decoded

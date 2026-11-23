@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% Behaviour for outbound (dialplan socket) connections.
+%% @doc Behaviour for outbound (dialplan socket) connections.
 %%
 %% The outbound listener starts one handler process per accepted channel and
 %% calls handle_channel/3 in it with the connection and the initial channel

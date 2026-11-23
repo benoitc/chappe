@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% The compute of one tick. Every talking leg's G.711 frame is decoded
+%% @doc The compute of one tick. Every talking leg's G.711 frame is decoded
 %% straight into one sum, an atomics array of 160 signed slots. Once every
 %% talker is in, mixed/1 reads the sum out into a tuple, and each leg's
 %% output is encoded from it less its own frame, decoded again from the

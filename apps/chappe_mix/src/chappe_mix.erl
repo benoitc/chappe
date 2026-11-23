@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% chappe_mix: an RTP audio conference mixer.
+%% @doc chappe_mix: an RTP audio conference mixer.
 %%
 %% A conference is a process that owns one UDP socket per leg. Every 20 ms
 %% it takes one frame from each leg's jitter buffer (legs may send

@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% One gen_statem per connection, owning the TCP socket.
+%% @doc One gen_statem per connection, owning the TCP socket.
 %%
 %% Inbound: init connects to mod_event_socket, then the `authenticating' state
 %% answers the auth/request with the password and waits for +OK before telling

@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% The outbound socket handler: FreeSWITCH runs the dialplan `socket'
+%% @doc The outbound socket handler: FreeSWITCH runs the dialplan `socket'
 %% application for a call chappe_mrf sent it, and connects here. The
 %% channel carries the X-Chappe-Call header of the INVITE as
 %% variable_sip_h_X-Chappe-Call; the endpoint registered under that id

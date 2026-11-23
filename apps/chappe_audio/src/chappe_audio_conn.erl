@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% One opening handshake (RFC 6455 4.2), before anything is trusted.
+%% @doc One opening handshake (RFC 6455 4.2), before anything is trusted.
 %%
 %% The process reads the upgrade request within handshake_timeout and
 %% max_handshake bytes, checks that the path names a stream waiting on

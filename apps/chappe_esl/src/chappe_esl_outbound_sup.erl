@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% Per-channel handler pool for outbound connections. simple_one_for_one of
+%% @doc Per-channel handler pool for outbound connections. simple_one_for_one of
 %% chappe_esl_conn processes started in outbound mode; each owns one accepted socket.
 %% The listener calls start_conn/3 on accept, then transfers socket ownership
 %% and activates the connection.

@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% The node's store: it holds the storage config, answers the lookups of
+%% @doc The node's store: it holds the storage config, answers the lookups of
 %% chappe_audio_store for this node (its own callers' and other nodes',
 %% which find it in the chappe_audio_store pg group of the `chappe_audio'
 %% scope), and runs the sweep every sweep_interval, when its sweep_guard

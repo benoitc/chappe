@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% The node's cluster table, `chappe_cluster_tab'. The app's supervisor
+%% @doc The node's cluster table, `chappe_cluster_tab'. The app's supervisor
 %% creates and owns it, so it outlives the agent and the lapse timer: a
 %% crash of either loses no holder. It is public: the facade writes a
 %% holder from the caller's process, so that no message queue stands

@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% IP networks in CIDR notation, for the `allow' list of the outbound
+%% @doc IP networks in CIDR notation, for the `allow' list of the outbound
 %% listener. chappe_esl takes no umbrella dependency, so it keeps its own.
 -module(chappe_esl_cidr).
 

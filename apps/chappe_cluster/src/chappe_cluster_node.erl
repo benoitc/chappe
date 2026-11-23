@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% The node's agent in its region. One per node, registered locally. It:
+%% @doc The node's agent in its region. One per node, registered locally. It:
 %%
 %% - starts the Ra system and, when this node is a voter, the region's Ra
 %%   server, in a helper so a slow disk never blocks it;

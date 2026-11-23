@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% One conference: the process that owns every leg's socket and runs the
+%% @doc One conference: the process that owns every leg's socket and runs the
 %% mix clock.
 %%
 %% The clock is absolute. Tick k fires at T0 + 20k ms on the monotonic

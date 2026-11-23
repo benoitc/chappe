@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% Root supervisor. Owns chappe_esl_outbound_sup (the per-channel handler pool for
+%% @doc Root supervisor. Owns chappe_esl_outbound_sup (the per-channel handler pool for
 %% accepted outbound connections). Outbound listeners are added as dynamic
 %% children by chappe_esl:start_listener/3. Inbound connections are not
 %% supervised here: chappe_esl:connect/1 links a fresh chappe_esl_conn to the caller.

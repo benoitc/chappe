@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% The `local' directory backend: entries live in the region's KV, under
+%% @doc The `local' directory backend: entries live in the region's KV, under
 %% `chappe_cluster/directory/' and the key's external term format, so only
 %% this region sees them.
 -module(chappe_cluster_directory_local).

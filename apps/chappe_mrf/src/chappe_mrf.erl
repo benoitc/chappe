@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% chappe_mrf: a media resource function in the drachtio-fsmrf style.
+%% @doc chappe_mrf: a media resource function in the drachtio-fsmrf style.
 %% chappe_mrf is the controller; FreeSWITCH, rtpengine and chappe_mix are
 %% the media processors.
 %%

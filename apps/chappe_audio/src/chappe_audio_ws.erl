@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% The ws_handler of a stream's connection. It runs in the ws_session
+%% @doc The ws_handler of a stream's connection. It runs in the ws_session
 %% process and only relays: each message in goes to the stream as
 %% {chappe_audio_ws, Session, {binary | text, Data}}, and a message over
 %% the stream's max_frame as {chappe_audio_ws, Session, too_large} (the

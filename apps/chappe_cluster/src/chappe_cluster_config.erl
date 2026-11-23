@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% The app's configuration: read from the application env once, at start,
+%% @doc The app's configuration: read from the application env once, at start,
 %% validated, and kept in a persistent term (it changes only when the app
 %% restarts). A bad value fails the start with `{error, badarg}' and a log
 %% line that names the key.

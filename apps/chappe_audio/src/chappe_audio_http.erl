@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% The HTTP/1.1 side of the opening handshake (RFC 6455 4.1, 4.2.1), as
+%% @doc The HTTP/1.1 side of the opening handshake (RFC 6455 4.1, 4.2.1), as
 %% pure functions: parse the upgrade request, find the stream id in its
 %% path and the token in its query or Authorization header, and build
 %% the refusals. The upgrade itself is checked by ws_h1_upgrade.

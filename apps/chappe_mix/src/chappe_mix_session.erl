@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% The RTP session of one mixer leg as RFC 3550 sees it, as plain data:
+%% @doc The RTP session of one mixer leg as RFC 3550 sees it, as plain data:
 %% the mixer's SSRC and sender state on that leg, the one source the leg
 %% receives and its reception statistics, the RTCP schedule, and the
 %% conflict list of 8.2. The conference owns the sockets; it sends what
