@@ -36,6 +36,8 @@ put the SIP-aware part in chappe_sip or in an orchestration app.
 | Compliance | `apps/<app>/docs/compliance/requirements.tsv`, and `COMPLIANCE_APPS` in the root `Makefile` | `apps/chappe_esl/docs/compliance/` |
 | Lab target | root `Makefile` (`interop-<app>`) and a CI job in `.github/workflows/ci.yml` | `interop-esl` |
 | Licence | `apps/<app>/LICENSE`, `NOTICE` if it vendors code | `apps/chappe_esl/` |
+| Changelog | `apps/<app>/CHANGELOG.md`, opening with `## [Unreleased]` | `apps/chappe_esl/CHANGELOG.md` |
+| Hex package | `links` and `files` in the `.app.src`, `rebar3_hex` in `project_plugins`, the app in the `package` matrix of `.github/workflows/ci.yml` | `apps/chappe_esl/`, [releasing](releasing.md) |
 | Docs | `apps/<app>/README.md`, `docs/design/overview.md`, `docs/guides/`, `docs/features.md` | `apps/chappe_esl/` |
 | Agent rules | `apps/<app>/AGENTS.md` and a `CLAUDE.md` holding `@AGENTS.md` | `apps/chappe_esl/` |
 
@@ -44,8 +46,9 @@ put the SIP-aware part in chappe_sip or in an orchestration app.
 1. Name it `chappe_<name>`. Modules are `chappe_<name>_*`; only the facade
    module `chappe_<name>` carries the bare name.
 2. Create `src/`, `test/`, `docs/`, the `.app.src` and `rebar.config`. List
-   only real runtime deps; inside the umbrella, apps reference each other by
-   name in `applications`.
+   only real runtime deps. A sibling in `applications` is also a
+   default-profile dep with a `~>` pin (`{chappe_sip, "~> 0.2.0"}`), which
+   the umbrella resolves to the local app; an optional sibling is neither.
 3. Write the facade module first, with a `-spec` on every export: it is the
    public API and what ex_doc shows under "Public API".
 4. Add `docs/compliance/requirements.tsv` (the 10-column header, see

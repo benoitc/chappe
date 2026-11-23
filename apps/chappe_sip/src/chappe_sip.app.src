@@ -23,5 +23,24 @@
     %% chappe_sip is Apache-2.0; the NIF links the vendored sofia-sip, which
     %% is LGPL-2.1-or-later (THIRD_PARTY_LICENSES.md)
     {licenses, ["Apache-2.0", "LGPL-2.1-or-later"]},
-    {links, []}
+    {links, [{"GitHub", "https://github.com/benoitc/chappe"}]},
+    %% the Hex package: the NIF is built from c_src by c_src/build.sh
+    %% (the vendored sofia-sip, its patches and the shim); the fuzz
+    %% harness, the build output and the tests are left out
+    {files, [
+        "src",
+        "include",
+        "c_src/build.sh",
+        "c_src/prepare_sofia.sh",
+        "c_src/pin_autotools_mtimes.sh",
+        "c_src/nif",
+        "c_src/sofia-patches",
+        "c_src/sofia-sip",
+        "rebar.config",
+        "README.md",
+        "LICENSE",
+        "CHANGELOG.md",
+        "NOTICE",
+        "THIRD_PARTY_LICENSES.md"
+    ]}
 ]}.

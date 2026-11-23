@@ -41,6 +41,34 @@ jobs:
           otp-version: ${{ env.OTP }}
       - run: make docs-check
 
+  # Each app's docs and Hex package, built as `rebar3 hex publish` builds
+  # them: the requirements matched against rebar.config, the Hex size
+  # limits, and for chappe_sip the NIF built from the unpacked package
+  # with no git (scripts/check_package.sh). An app whose sibling's version
+  # is not on Hex yet gets a warning instead.
+  package:
+    name: Package (${{ matrix.app }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [chappe_audio, chappe_esl, chappe_rtpengine, chappe_mix,
+              chappe_cluster, chappe_sip, chappe_mrf]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ env.OTP }}
+          rebar3-version: ${{ env.REBAR3 }}
+      - name: System deps (sofia + instrument)
+        run: scripts/ci_apt.sh pkg-config libssl-dev cmake build-essential
+      - uses: actions/cache@v5
+        with:
+          path: ~/.cache/rebar3
+          key: package-${{ matrix.app }}-${{ hashFiles(format('apps/{0}/rebar.config', matrix.app)) }}
+      - run: scripts/check_package.sh ${{ matrix.app }}
+
   lint:
     name: Elvis lint
     runs-on: ubuntu-24.04

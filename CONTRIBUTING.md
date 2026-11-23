@@ -40,11 +40,13 @@ CI (`.github/workflows/ci.yml`) also runs line coverage against a floor
 compliance gate (`make compliance GATE=demo`), the NIF under
 AddressSanitizer with a short fuzz run (`make asan`, `make fuzz`) and
 ThreadSanitizer (`make tsan`), the C linters (`make lint-c`), the demo
-compile (`make demo-compile`), the cluster demo walkthrough
+compile (`make demo-compile`), each app's Hex package
+(`scripts/check_package.sh <app>`), the cluster demo walkthrough
 (`make demo-cluster-smoke`), and the docker labs. Separate workflows run
-the advisories check (`advisories.yml`) and a longer scheduled fuzz
-(`fuzz.yml`). What each lab proves
-and how to run it: [labs](docs/contributing/labs.md).
+the advisories check (`advisories.yml`), a longer scheduled fuzz
+(`fuzz.yml`) and the bundle release (`release.yml`, see
+[releasing](docs/contributing/releasing.md)). What each lab proves and how
+to run it: [labs](docs/contributing/labs.md).
 
 Pure Erlang work can skip the C build: `SKIP_ENGINE_BUILD=1 rebar3 compile`
 uses the fake engine.
@@ -104,9 +106,13 @@ State the intent: what was wrong and why it matters. Then the solution in a
 few lines, and any breaking change. Do not describe the diff file by file;
 the reviewer reads the source. Keep it short, with no test plan section.
 
-A user-visible change adds a line to [CHANGELOG.md](CHANGELOG.md) under
-"Unreleased": plain English, what was wrong or what is new and what it means
-for the user, no code and no internal names.
+A user-visible change adds your line to the app's CHANGELOG,
+`apps/<app>/CHANGELOG.md`, under `## [Unreleased]` and its Breaking, New or
+Fixed heading: plain English, what was wrong or what is new and what it
+means for the user, no code and no internal names. A change to the
+repository that ships in no app (a lab, a make target, CI) goes under
+"Umbrella and tooling" in the root [CHANGELOG.md](CHANGELOG.md). Releasing
+is a separate step: see [Release the apps](docs/contributing/releasing.md).
 
 There is no deprecation policy before the first release. An export nobody
 calls is removed, not deprecated, and the CHANGELOG lists it as a

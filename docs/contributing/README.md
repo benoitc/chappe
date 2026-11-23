@@ -49,6 +49,7 @@ where a concept lives.
 | Add a docker lab or a case to one | [add-interop-lab.md](add-interop-lab.md) |
 | Add or update a compliance row | [compliance.md](compliance.md) |
 | Write or change a guide | [write-a-guide.md](write-a-guide.md) |
+| Cut a release, publish an app to Hex | [releasing.md](releasing.md) |
 
 ## The labs
 

@@ -1,0 +1,164 @@
+name: Release
+
+# The chappe bundle: a push to main that passes CI and bumps at least one
+# app's version is released as YYYY.MM.N (tag vYYYY.MM.N), N counting the
+# bundles of that month from 0. The release notes list every app's version
+# and the CHANGELOG section of each app released since the previous bundle
+# (scripts/bundle_notes.sh). Apps are not tagged: each is published to Hex
+# on its own, by hand. A push that bumps no app releases nothing. Never tag
+# or release by hand (docs/contributing/releasing.md): a re-run finishes a
+# half-done release.
+#
+# A pull request touching the release, an app's .app.src or its CHANGELOG
+# runs it dry: the notes are built and uploaded, nothing is tagged or
+# released.
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - scripts/bundle_notes.sh
+      - rebar.config
+      - apps/*/src/*.app.src
+      - apps/*/CHANGELOG.md
+
+# the plan job runs the scripts of a pull request's head: read only; the
+# release job alone writes
+permissions:
+  contents: read
+
+# bundles from main run one after the other; a pull request's dry run has its own
+concurrency:
+  group: release-${{ github.event.pull_request.number || 'main' }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    if: >-
+      github.event_name == 'pull_request' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      bundle: ${{ steps.n.outputs.bundle }}
+      sha: ${{ steps.n.outputs.sha }}
+      publish: ${{ steps.n.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - id: n
+        name: Bundle name
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          sha="$(git rev-parse HEAD)"
+          match='v20[0-9][0-9].[0-9][0-9].*'
+          prev="$(git describe --tags --match "$match" --abbrev=0 "$sha^" 2>/dev/null || echo -)"
+          # with no previous bundle, the commit versions are compared with:
+          # the parent on main, where the pull request leaves main for a
+          # pull request of several commits (as its squash merge will be)
+          base=""
+          if [ "$prev" = - ] && [ -n "$PR_BASE" ]; then
+            base="$(git merge-base "$PR_BASE" "$sha")"
+          fi
+          here="$(git tag --points-at "$sha" -l "$match" | head -1)"
+          later="$(git tag --contains "$sha" -l "$match" | head -1)"
+          bundle=""
+          why=""
+          if [ -n "$here" ]; then
+            # a re-run: the release job finishes what is missing
+            bundle="${here#v}"
+            why="already tagged $here: the release job completes it"
+          elif [ -n "$later" ]; then
+            why="stale run: the bundle $later already contains $sha, nothing to release"
+          elif [ -z "$(scripts/bundle_notes.sh --changed "$prev" "$sha" ${base:+"$base"})" ]; then
+            why="no app version changed since ${base:-$prev}: nothing to release"
+          else
+            ym="$(TZ=UTC git log -1 --date=format-local:%Y.%m --format=%cd "$sha")"
+            bundle="$ym.$(git tag -l "v$ym.*" | wc -l | tr -d ' ')"
+          fi
+          echo "${why:-bundle $bundle}"
+          publish=false
+          if [ -n "$bundle" ] && [ "$EVENT" = workflow_run ]; then
+            publish=true
+          fi
+          {
+            echo "sha=$sha"
+            echo "prev=$prev"
+            echo "base=$base"
+            echo "bundle=$bundle"
+            echo "why=$why"
+            echo "publish=$publish"
+          } >> "$GITHUB_OUTPUT"
+      - name: Notes
+        env:
+          BUNDLE: ${{ steps.n.outputs.bundle }}
+          PREV: ${{ steps.n.outputs.prev }}
+          BASE: ${{ steps.n.outputs.base }}
+          WHY: ${{ steps.n.outputs.why }}
+        run: |
+          if [ -n "$BUNDLE" ]; then
+            echo "# chappe $BUNDLE" >> "$GITHUB_STEP_SUMMARY"
+            scripts/bundle_notes.sh "$PREV" HEAD ${BASE:+"$BASE"} > notes.md
+          else
+            echo "$WHY" > notes.md
+          fi
+          cat notes.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: notes
+          path: notes.md
+
+  release:
+    needs: plan
+    if: needs.plan.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      BUNDLE: ${{ needs.plan.outputs.bundle }}
+      SHA: ${{ needs.plan.outputs.sha }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: notes
+          path: out
+      # idempotent: a re-run after a half-done release pushes the tag only
+      # when it is missing and creates the release only when it is missing
+      - name: Tag and release
+        run: |
+          tag="v$BUNDLE"
+          git fetch --tags --force origin
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            at="$(git rev-parse "$tag^{commit}")"
+            if [ "$at" != "$SHA" ]; then
+              echo "::error::$tag already exists at $at, not at $SHA"
+              exit 1
+            fi
+            echo "$tag already at $SHA"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$tag" -m "chappe $BUNDLE" "$SHA"
+            git push origin "$tag"
+          fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "release $tag already exists: nothing to do"
+          else
+            gh release create "$tag" --verify-tag --title "chappe $BUNDLE" \
+              --notes-file out/notes.md
+          fi
