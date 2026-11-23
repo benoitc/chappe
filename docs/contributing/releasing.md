@@ -19,9 +19,11 @@ tags. Read this page when you cut a release or publish an app.
   changed. A merge that bumps no app releases nothing.
 - An app's first release at the version it already carries (`0.1.0` with
   no bump) is listed in the next bundle's notes as "first release" when its
-  `## [0.1.0]` section is new, but it does not cut a bundle by itself.
+  `## [0.1.0]` section is new since the previous bundle (before the first
+  bundle, when it exists at all), but it does not cut a bundle by itself.
 - Never create a bundle tag or release by hand: the workflow counts the
-  existing tags to name the next bundle.
+  existing tags to name the next bundle, and a re-run of a half-done
+  release pushes the missing tag or creates the missing release.
 
 ## Cut a release
 
@@ -65,13 +67,15 @@ tags. Read this page when you cut a release or publish an app.
 - `.github/workflows/ci.yml`, job `package`: for each app, the docs and the
   Hex package as `rebar3 hex publish` builds them
   (`scripts/check_package.sh <app>`). It checks that the package declares
-  every dep of `rebar.config`, that it fits the Hex limits (8 MB
-  compressed, 64 MB uncompressed), and, for chappe_sip, that the NIF builds
-  from the unpacked package with no git. An app whose sibling's new version
-  is not on Hex yet gets a warning instead.
+  every dep of `rebar.config` with its constraint, that it fits the Hex
+  limits (8 MB compressed, 64 MB uncompressed), and, for chappe_sip, that
+  the NIF builds from the unpacked package with no git. An app whose
+  chappe sibling is not on Hex yet gets a warning instead; any other
+  missing package fails.
 - `.github/workflows/release.yml`, after CI passes on `main`: job `plan`
-  names the bundle, or stops when the commit is already tagged or no
-  version changed; job `release` tags it and creates the GitHub release.
+  names the bundle, or stops when no version changed or when a later
+  bundle already contains the commit (a stale re-run); job `release` tags
+  it and creates the GitHub release, each only when missing.
 
 ## Publish to Hex
 
@@ -89,6 +93,12 @@ is on Hex:
 | 5 | chappe_cluster | |
 | 6 | chappe_sip | (chappe_rtpengine, chappe_mix, chappe_cluster, chappe_audio: optional) |
 | 7 | chappe_mrf | chappe_sip, chappe_esl, chappe_audio |
+
+Before their first publish, chappe_sip, chappe_esl and chappe_rtpengine
+must be bumped (to 0.3.0, 0.2.0 and 0.2.0, in the release pull request):
+their current `## [0.2.0]` and `## [0.1.0]` sections describe older code,
+released before the umbrella, not what the package would carry. The
+`~>` pins of chappe_mrf on chappe_sip and chappe_esl follow those bumps.
 
 For each app, from a clean tree on the merged commit:
 

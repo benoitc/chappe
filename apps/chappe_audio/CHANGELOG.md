@@ -8,6 +8,9 @@ says how apps are released.
 
 ### New
 
+- Needs Erlang/OTP 29.1.2 or later: earlier OTP 29 releases let a TLS 1.3
+  server be impersonated (CVE-2026-89422) or a resumed session skip
+  authentication (CVE-2026-105236).
 - A new app. It receives the audio FreeSWITCH forks over WebSocket (from
   mod_audio_fork or mod_audio_stream), checks the path and a token, and
   hands each stream to your process. A listener can sit under your own

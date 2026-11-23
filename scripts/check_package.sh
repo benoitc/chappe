@@ -85,7 +85,18 @@ PKG="$WORK/pkg/$APP"
 copy_app "$APP" "$PKG"
 LOG="$WORK/hex-build.log"
 if ! (cd "$PKG" && rebar3 hex build) >"$LOG" 2>&1; then
-    if grep -q "Package not found in any repo" "$LOG"; then
+    # only an in-repo sibling may be missing from Hex (not published yet):
+    # any other missing package is a real failure
+    missing="$(grep -o 'Package not found in any repo: [a-z_0-9]*' "$LOG" |
+        sed 's/.*: //' | sort -u || true)"
+    others=""
+    for m in $missing; do
+        case "$m" in
+            chappe_*) [ -f "$ROOT/apps/$m/rebar.config" ] || others="$others $m" ;;
+            *) others="$others $m" ;;
+        esac
+    done
+    if [ -n "$missing" ] && [ -z "$others" ]; then
         grep "Package not found" "$LOG"
         echo "::warning title=$APP package not checked::$(grep -o 'Package not found in any repo: .*' "$LOG" | head -1). Publish that sibling first, then rerun."
         exit 0

@@ -9,10 +9,13 @@
 # version the app already carried). Only a version change cuts a bundle:
 # --changed lists bumps alone.
 #
-# Usage: scripts/bundle_notes.sh [--changed] FROM TO
-#   FROM       the previous bundle (a tag or a commit), or - for none: the
-#              apps whose version TO itself changed are listed as changed
+# Usage: scripts/bundle_notes.sh [--changed] FROM TO [BASE]
+#   FROM       the previous bundle (a tag or a commit), or - for none
 #   TO         the commit of the bundle
+#   BASE       with FROM -, the commit versions are compared with (TO^ by
+#              default: the apps whose version TO itself changed are
+#              bumps); every app with a section for its version at TO is
+#              then a first release, as no bundle carried it yet
 #   --changed  print only the apps whose version changed, one per line
 #              (nothing when no app was bumped: no bundle to release);
 #              a first release without a bump is not listed
@@ -24,7 +27,13 @@ ONLY_CHANGED=false
 if [ "${1:-}" = "--changed" ]; then ONLY_CHANGED=true; shift; fi
 FROM="$1"
 TO="$2"
-[ "$FROM" = "-" ] && FROM="$(git rev-parse --verify --quiet "$TO^" || true)"
+# SECTIONS_FROM: the ref whose sections are already released (none when
+# there is no previous bundle)
+SECTIONS_FROM="$FROM"
+if [ "$FROM" = "-" ]; then
+    SECTIONS_FROM=""
+    FROM="${3:-$(git rev-parse --verify --quiet "$TO^" || true)}"
+fi
 
 # The version of an app at a ref, empty when the app does not exist there.
 vsn() {
@@ -81,7 +90,8 @@ for app in $apps; do
             echo "| $app | $new (new) |"
         fi
     elif has_section "$TO" "$app" "$new" &&
-        ! { [ -n "$FROM" ] && has_section "$FROM" "$app" "$new"; }; then
+        ! { [ -n "$SECTIONS_FROM" ] &&
+            has_section "$SECTIONS_FROM" "$app" "$new"; }; then
         changed+=("$app")
         echo "| $app | $new (first release) |"
     else

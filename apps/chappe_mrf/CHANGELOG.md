@@ -8,6 +8,9 @@ says how apps are released.
 
 ### New
 
+- Needs Erlang/OTP 29.1.2 or later: earlier OTP 29 releases let a TLS 1.3
+  server be impersonated (CVE-2026-89422) or a resumed session skip
+  authentication (CVE-2026-105236).
 - A new app, a media resource function in the drachtio-fsmrf style: answer
   a caller with a FreeSWITCH endpoint you drive from Erlang, move it to a
   phone or another endpoint unnoticed, and put it in a conference on

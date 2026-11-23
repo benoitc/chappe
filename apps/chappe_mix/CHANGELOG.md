@@ -8,6 +8,9 @@ says how apps are released.
 
 ### New
 
+- Needs Erlang/OTP 29.1.2 or later: earlier OTP 29 releases let a TLS 1.3
+  server be impersonated (CVE-2026-89422) or a resumed session skip
+  authentication (CVE-2026-105236).
 - A new app: a G.711 RTP conference mixer in your node, one process per
   room, each party hearing everyone but itself, with gain control, RFC 4733
   digits, talker events and leg roles. rtpengine in front handles SRTP and

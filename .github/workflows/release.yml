@@ -3,10 +3,11 @@ name: Release
 # The chappe bundle: a push to main that passes CI and bumps at least one
 # app's version is released as YYYY.MM.N (tag vYYYY.MM.N), N counting the
 # bundles of that month from 0. The release notes list every app's version
-# and the CHANGELOG section of each app whose version changed since the
-# previous bundle (scripts/bundle_notes.sh). Apps are not tagged: each is
-# published to Hex on its own, by hand. A push that bumps no app releases
-# nothing. Never tag or release by hand (docs/contributing/releasing.md).
+# and the CHANGELOG section of each app released since the previous bundle
+# (scripts/bundle_notes.sh). Apps are not tagged: each is published to Hex
+# on its own, by hand. A push that bumps no app releases nothing. Never tag
+# or release by hand (docs/contributing/releasing.md): a re-run finishes a
+# half-done release.
 #
 # A pull request touching the release, an app's .app.src or its CHANGELOG
 # runs it dry: the notes are built and uploaded, nothing is tagged or
@@ -25,8 +26,10 @@ on:
       - apps/*/src/*.app.src
       - apps/*/CHANGELOG.md
 
+# the plan job runs the scripts of a pull request's head: read only; the
+# release job alone writes
 permissions:
-  contents: write
+  contents: read
 
 # bundles from main run one after the other; a pull request's dry run has its own
 concurrency:
@@ -53,45 +56,58 @@ jobs:
       - id: n
         name: Bundle name
         env:
-          BASE: ${{ github.event.pull_request.base.sha }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT: ${{ github.event_name }}
         run: |
           sha="$(git rev-parse HEAD)"
           match='v20[0-9][0-9].[0-9][0-9].*'
           prev="$(git describe --tags --match "$match" --abbrev=0 "$sha^" 2>/dev/null || echo -)"
-          # a pull request of several commits: compare with where it
-          # leaves main, as its squash merge will be
-          if [ "$prev" = - ] && [ -n "$BASE" ]; then
-            prev="$(git merge-base "$BASE" "$sha")"
+          # with no previous bundle, the commit versions are compared with:
+          # the parent on main, where the pull request leaves main for a
+          # pull request of several commits (as its squash merge will be)
+          base=""
+          if [ "$prev" = - ] && [ -n "$PR_BASE" ]; then
+            base="$(git merge-base "$PR_BASE" "$sha")"
           fi
+          here="$(git tag --points-at "$sha" -l "$match" | head -1)"
+          later="$(git tag --contains "$sha" -l "$match" | head -1)"
           bundle=""
           why=""
-          if [ -n "$(git tag --points-at "$sha" -l "$match")" ]; then
-            why="already released: $(git tag --points-at "$sha" -l "$match")"
-          elif [ -z "$(scripts/bundle_notes.sh --changed "$prev" "$sha")" ]; then
-            why="no app version changed since $prev: nothing to release"
+          if [ -n "$here" ]; then
+            # a re-run: the release job finishes what is missing
+            bundle="${here#v}"
+            why="already tagged $here: the release job completes it"
+          elif [ -n "$later" ]; then
+            why="stale run: the bundle $later already contains $sha, nothing to release"
+          elif [ -z "$(scripts/bundle_notes.sh --changed "$prev" "$sha" ${base:+"$base"})" ]; then
+            why="no app version changed since ${base:-$prev}: nothing to release"
           else
             ym="$(TZ=UTC git log -1 --date=format-local:%Y.%m --format=%cd "$sha")"
             bundle="$ym.$(git tag -l "v$ym.*" | wc -l | tr -d ' ')"
           fi
           echo "${why:-bundle $bundle}"
           publish=false
-          if [ -n "$bundle" ] && [ "${{ github.event_name }}" = workflow_run ]; then
+          if [ -n "$bundle" ] && [ "$EVENT" = workflow_run ]; then
             publish=true
           fi
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "prev=$prev" >> "$GITHUB_OUTPUT"
-          echo "bundle=$bundle" >> "$GITHUB_OUTPUT"
-          echo "why=$why" >> "$GITHUB_OUTPUT"
-          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          {
+            echo "sha=$sha"
+            echo "prev=$prev"
+            echo "base=$base"
+            echo "bundle=$bundle"
+            echo "why=$why"
+            echo "publish=$publish"
+          } >> "$GITHUB_OUTPUT"
       - name: Notes
         env:
           BUNDLE: ${{ steps.n.outputs.bundle }}
           PREV: ${{ steps.n.outputs.prev }}
+          BASE: ${{ steps.n.outputs.base }}
           WHY: ${{ steps.n.outputs.why }}
         run: |
           if [ -n "$BUNDLE" ]; then
             echo "# chappe $BUNDLE" >> "$GITHUB_STEP_SUMMARY"
-            scripts/bundle_notes.sh "$PREV" HEAD > notes.md
+            scripts/bundle_notes.sh "$PREV" HEAD ${BASE:+"$BASE"} > notes.md
           else
             echo "$WHY" > notes.md
           fi
@@ -106,22 +122,43 @@ jobs:
     if: needs.plan.outputs.publish == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    permissions:
+      contents: write
     env:
       BUNDLE: ${{ needs.plan.outputs.bundle }}
+      SHA: ${{ needs.plan.outputs.sha }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ needs.plan.outputs.sha }}
+          fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
           name: notes
           path: out
+      # idempotent: a re-run after a half-done release pushes the tag only
+      # when it is missing and creates the release only when it is missing
       - name: Tag and release
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "v$BUNDLE" -m "chappe $BUNDLE" "${{ needs.plan.outputs.sha }}"
-          git push origin "v$BUNDLE"
-          gh release create "v$BUNDLE" --title "chappe $BUNDLE" \
-            --notes-file out/notes.md
+          tag="v$BUNDLE"
+          git fetch --tags --force origin
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            at="$(git rev-parse "$tag^{commit}")"
+            if [ "$at" != "$SHA" ]; then
+              echo "::error::$tag already exists at $at, not at $SHA"
+              exit 1
+            fi
+            echo "$tag already at $SHA"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$tag" -m "chappe $BUNDLE" "$SHA"
+            git push origin "$tag"
+          fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "release $tag already exists: nothing to do"
+          else
+            gh release create "$tag" --verify-tag --title "chappe $BUNDLE" \
+              --notes-file out/notes.md
+          fi
