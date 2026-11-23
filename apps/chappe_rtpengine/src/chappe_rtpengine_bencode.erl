@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
-%%
-%% Bencode codec for the rtpengine NG protocol.
+
+%% @doc Bencode codec for the rtpengine NG protocol.
 %%
 %% Encoding is canonical: dictionary keys are emitted in ascending raw
 %% byte order, as required by bencode, and a map whose atom and binary

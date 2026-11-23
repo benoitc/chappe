@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
-%%
-%% Root supervisor. rest_for_one so that when the node registry (pool,
+
+%% @doc Root supervisor. rest_for_one so that when the node registry (pool,
 %% added later) restarts, the client supervisor restarts after it.
 -module(chappe_rtpengine_sup).
 -behaviour(supervisor).

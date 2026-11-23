@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
-%%
-%% The offer/answer table of a media session, as pure functions: which
+
+%% @doc The offer/answer table of a media session, as pure functions: which
 %% tags go on the wire for a re-offer or an answer, which state a reply
 %% must find the session in, and where the session goes once rtpengine
 %% has answered. It also builds the params of every command the session

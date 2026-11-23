@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
-%%
-%% NG protocol data model: builds command dictionaries from Erlang maps
+
+%% @doc NG protocol data model: builds command dictionaries from Erlang maps
 %% with atom keys, and classifies decoded replies.
 %%
 %% Atom keys map to the NG wire names: underscores become hyphens

@@ -1,5 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
+
+%% @doc The chappe_rtpengine application: starts the root supervisor.
 -module(chappe_rtpengine_app).
 -behaviour(application).
 

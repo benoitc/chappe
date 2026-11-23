@@ -19,5 +19,5 @@ There is no RFC for the FreeSWITCH event socket, so:
   rules.
 - every row is tier `platform`.
 
-Only `*_SUITE.erl` cases count toward the matrix. eunit tests may carry the
-same `%% req:` line as a pointer, but they do not prove a row on their own.
+Claims from CT cases (`*_SUITE.erl`) and EUnit tests (`*_tests.erl`) both
+count toward the matrix.

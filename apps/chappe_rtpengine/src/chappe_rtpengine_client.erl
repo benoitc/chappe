@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
-%%
-%% NG protocol transport client, one process per rtpengine node.
+
+%% @doc NG protocol transport client, one process per rtpengine node.
 %%
 %% Speaks NG over UDP (default), TCP (transport => tcp) for
 %% deployments whose SDP bodies outgrow safe datagram sizes, or

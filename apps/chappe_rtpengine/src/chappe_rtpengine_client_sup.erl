@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
-%%
-%% Supervisor for chappe_rtpengine_client processes, one per rtpengine node.
+
+%% @doc Supervisor for chappe_rtpengine_client processes, one per rtpengine node.
 %% Clients are added at runtime through chappe_rtpengine:add_node/2.
 -module(chappe_rtpengine_client_sup).
 -behaviour(supervisor).

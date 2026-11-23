@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
-%%
-%% Media-section helpers for subscription answers.
+
+%% @doc Media-section helpers for subscription answers.
 %%
 %% The client and the session keep SDP opaque: bodies go to rtpengine
 %% and come back rewritten, never parsed on the way. This module is the

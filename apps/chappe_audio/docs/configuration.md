@@ -84,20 +84,8 @@ Port = chappe_audio_rtp:port(R),          %% the m= port
 RtcpPort = chappe_audio_rtp:rtcp_port(R). %% the same with mux, Port + 1 with port
 ```
 
-Where the receiver departs from RFC 3550 (each is a `deviation` row of
-the [compliance matrix](compliance.md)):
-
-- The interval is the 5 s minimum (2.5 s before the first report) times
-  0.5 to 1.5. There is no timer reconsideration, no reverse
-  reconsideration on BYE, and no e - 3/2 division (A.7), since the
-  session has two members.
-- The session bandwidth is fixed at 80 kbit/s; the SDP `b=` lines are not
-  read.
-- Sources are not timed out (6.3.5): a report carries only the sources
-  heard since the last one.
-- On an SSRC collision the receiver takes a new SSRC without a BYE for
-  the old one (8.2).
-- It never sends media, so it sends RR, never SR.
+Where the receiver departs from RFC 3550 on purpose, and why, is in the
+[Deviations](compliance.md#deviations) section of the compliance matrix.
 
 With `rtcp => port`, a source sending from port 65535 has no port above
 it: the receiver sends it no report until `rtcp_remote` or the source's
@@ -109,12 +97,11 @@ and `sources`, one map per source: `ssrc`, `cname`, `received`, `lost`,
 `highest`, `jitter`. With a new key on a re-INVITE,
 `chappe_audio_rtp:rekey/3` takes the sender's key and the receiver's own.
 
-Two timings are fixed:
+One timing is fixed:
 
 | What | Value | What it does |
 |---|---|---|
 | Move grace | 1 s | After `chappe_audio_rtp:remote/2` (the sender moved), packets from the source latched before are dropped for this long. Past it, with no new source latched, that source may latch again when its address is the new remote address (any port), so a sender whose SDP port alone changed is heard again. |
-| BYE grace | 5 s | After a source's RTCP BYE (RFC 3550 6.2.1), its entry is kept, marked: a straggler RTP packet (a sequence number at or below the highest one at the BYE) counts in its statistics instead of starting them again, and is still recorded, but the source gets no report block and no longer counts as a member. A newer sequence number is the source sending again under the same SSRC: the mark ends and its statistics go on. Past the 5 s the entry is removed at the next report or packet, and a packet from that SSRC starts a new entry. 5 s is the minimum report interval (6.2). |
 
 ## Storage options
 
