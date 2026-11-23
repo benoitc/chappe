@@ -87,7 +87,7 @@ is in `demo/sbc` (`make demo` from the umbrella root).
 - [Design overview](docs/design/overview.md): supervision, layers, entry
   points, tests.
 - [Concepts](../../docs/concepts.md): the words used across chappe.
-- [CHANGELOG](../../CHANGELOG.md).
+- [CHANGELOG](CHANGELOG.md).
 
 ## License
 

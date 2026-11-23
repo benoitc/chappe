@@ -23,7 +23,7 @@ its documentation, its tests and its changelog line.
 | Defaults of app settings | `apps/chappe_sip/src/chappe_sip_config.erl` (`default/1`) for chappe_sip |
 | Guides | `apps/<app>/docs/guides/` |
 | Capability tracker | `apps/<app>/docs/features.md` |
-| Changelog | `CHANGELOG.md` at the root |
+| Changelog | `apps/<app>/CHANGELOG.md`, under `## [Unreleased]` |
 
 ## Steps
 
@@ -45,7 +45,7 @@ its documentation, its tests and its changelog line.
 7. A new public module goes into the right group of `groups_for_modules`.
 8. If the function makes a protocol promise, claim the row
    ([compliance.md](compliance.md)).
-9. Add the CHANGELOG entry, or hand the text to whoever merges: short, plain
+9. Add your line to the app's CHANGELOG, or hand the text to whoever merges: short, plain
    English, what is new and what it means for the user, no code and no
    internal names.
 

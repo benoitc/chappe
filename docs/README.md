@@ -50,6 +50,7 @@ What each app can do today: the `docs/features.md` of
 [chappe_mrf](../apps/chappe_mrf/docs/features.md),
 [chappe_audio](../apps/chappe_audio/docs/features.md),
 [chappe_cluster](../apps/chappe_cluster/docs/features.md). What changed:
+each app's `CHANGELOG.md`, indexed in the root
 [CHANGELOG](../CHANGELOG.md).
 
 ### You want to understand the system
