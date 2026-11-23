@@ -1,13 +1,13 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% The default store backend: recordings in a folder.
+%% @doc The default store backend: recordings in a folder.
 %%
 %% Layout, under `dir' (default "recordings"):
 %%
-%%   YYYY/MM/DD/<call_ref>/<id>.wav    the audio (or the adopted file's
+%%   `YYYY/MM/DD/<call_ref>/<id>.wav'  the audio (or the adopted file's
 %%                                     extension)
-%%   YYYY/MM/DD/<call_ref>/<id>.json   its sidecar: id, call_ref, parties,
+%%   `YYYY/MM/DD/<call_ref>/<id>.json' its sidecar: id, call_ref, parties,
 %%                                     source, start, duration_ms, format,
 %%                                     bytes, file
 %%

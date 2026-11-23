@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% The node's singletons: one chappe_cluster_singleton per name this node
+%% @doc The node's singletons: one chappe_cluster_singleton per name this node
 %% contends for (one_for_one, id = the name). The contender that holds the
 %% name's lease runs the child under a supervisor of its own, linked to it
 %% (the `{child, Spec}' clause), so the child never outlives the contender

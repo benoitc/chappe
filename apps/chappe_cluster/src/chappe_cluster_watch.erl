@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% The node's KV watch hub, registered locally. The region's machine sends
+%% @doc The node's KV watch hub, registered locally. The region's machine sends
 %% it `{chappe_cluster_kv, put | delete, Key, Value, Hlc}' for each change, in
 %% log order; the hub hands it to every local watcher whose prefix matches,
 %% as `{chappe_cluster, watch, {put | delete, Key, Value, Hlc}}'.

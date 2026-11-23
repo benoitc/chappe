@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% The native backend of chappe_mrf_conf (chappe_mrf_conf_backend): a
+%% @doc The native backend of chappe_mrf_conf (chappe_mrf_conf_backend): a
 %% chappe_mix room behind rtpengine, reached by a loopback INVITE (see
 %% chappe_mrf_conf).
 -module(chappe_mrf_conf_native).

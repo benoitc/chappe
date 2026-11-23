@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% A conference: one process per room, on a backend
+%% @doc A conference: one process per room, on a backend
 %% (chappe_mrf_conf_backend): native, fs, or a module of the app's.
 %%
 %% native: the room is a chappe_mix conference the process owns (it stays

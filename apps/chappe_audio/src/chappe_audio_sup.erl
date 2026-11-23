@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% The supervision tree, rest_for_one so that what depends on a process
+%% @doc The supervision tree, rest_for_one so that what depends on a process
 %% restarts with it:
 %%
 %% - first, the supervisor of the RTP receivers (chappe_audio_rtp), which

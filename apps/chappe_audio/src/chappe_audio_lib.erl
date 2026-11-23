@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% Helpers shared by the app's processes: bounded sends and stream
+%% @doc Helpers shared by the app's processes: bounded sends and stream
 %% tokens.
 -module(chappe_audio_lib).
 

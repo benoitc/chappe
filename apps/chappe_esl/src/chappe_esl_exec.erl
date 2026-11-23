@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% The wire side of chappe_esl_call: the sendmsg execute carrying an
+%% @doc The wire side of chappe_esl_call: the sendmsg execute carrying an
 %% Event-UUID, the wait for its CHANNEL_EXECUTE_COMPLETE from the controlling
 %% process (chappe_esl_call:exec/5), uuid_break, the audio fork commands, and
 %% the quoting of the arguments FreeSWITCH splits on spaces.

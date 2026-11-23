@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% A Ra command that never outlives its deadline. ra:process_command/3 with
+%% @doc A Ra command that never outlives its deadline. ra:process_command/3 with
 %% a member list tries each member with a fresh full timeout, and follows a
 %% redirect with another, so one hung member can make a call last several
 %% times its timeout. Here the last known leader goes first, each member

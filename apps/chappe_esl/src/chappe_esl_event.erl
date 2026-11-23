@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% Decode a parsed frame into a typed value by its Content-Type.
+%% @doc Decode a parsed frame into a typed value by its Content-Type.
 %%
 %% FreeSWITCH tags every frame with a Content-Type. command/reply and
 %% api/response are answers to commands; the text/event-* types carry events;

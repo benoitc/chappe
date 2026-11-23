@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% The typed verbs of a call process (chappe_esl_call): each checks its
+%% @doc The typed verbs of a call process (chappe_esl_call): each checks its
 %% arguments, refuses text FreeSWITCH would expand, builds the dialplan
 %% application or api command, and runs it with chappe_esl_call:exec/4 or
 %% chappe_esl_call:api/2. chappe_esl_call exports every verb as well, so

@@ -1,4 +1,4 @@
-%% What the recording server (SRS) sends in a recording's dialog, for
+%% @doc What the recording server (SRS) sends in a recording's dialog, for
 %% chappe_sip_siprec: a snapshot request in an UPDATE (RFC 7866 9.2), a
 %% re-INVITE (7.2), its BYE, and anything else, refused.
 %%

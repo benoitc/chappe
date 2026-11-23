@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% One node's contender for one singleton, under chappe_cluster_singleton_sup.
+%% @doc One node's contender for one singleton, under chappe_cluster_singleton_sup.
 %% Every renew_ms until it wins, it claims the lease `{chappe_cluster_singleton,
 %% Name}' for itself. Once it holds it, it starts the child under a
 %% supervisor linked to it and joins the child to the pg group

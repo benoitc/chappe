@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% One audio stream: the process a fork's WebSocket connection feeds.
+%% @doc One audio stream: the process a fork's WebSocket connection feeds.
 %%
 %% It starts waiting, registered under its id on this node for the
 %% handshake to find (chappe_audio_registry), and in the pg group

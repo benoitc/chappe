@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% The region's Ra machine: node liveness, leases and a KV with versions.
+%% @doc The region's Ra machine: node liveness, leases and a KV with versions.
 %%
 %% No clock. The machine never reads a time, neither its own nor the
 %% `system_time' Ra puts in a command's metadata: it applies results.

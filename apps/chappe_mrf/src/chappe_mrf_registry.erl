@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% Who waits for what, by key, in one ETS table:
+%% @doc Who waits for what, by key, in one ETS table:
 %%   {call, Id}  the endpoint whose FreeSWITCH channel carries
 %%               X-Chappe-Call: Id (the outbound socket finds it here);
 %%   {loop, Id}  the conference a loopback INVITE to the mixer belongs to;

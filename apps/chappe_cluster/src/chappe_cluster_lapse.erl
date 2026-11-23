@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% The node's lapse timer, registered locally. It does one thing: when the
+%% @doc The node's lapse timer, registered locally. It does one thing: when the
 %% node's local deadline passes without a renewal, it marks the node not
 %% live and tells every holder `{chappe_cluster, Lease, lost}'. It is its
 %% own process so nothing else in its mailbox can delay that: it only ever

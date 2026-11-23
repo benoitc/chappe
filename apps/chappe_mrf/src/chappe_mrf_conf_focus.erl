@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% A room as an RFC 4575 conference focus (start/2's focus => true): its
+%% @doc A room as an RFC 4575 conference focus (start/2's focus => true): its
 %% entity (the conference URI), the SUBSCRIBEs to its conference package
 %% and the conference-info they get, one user per member, through
 %% chappe_sip_focus.

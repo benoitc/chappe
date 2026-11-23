@@ -214,7 +214,7 @@ depends on it.
   `chappe_cluster_lapse`, `chappe_cluster_ra`, `chappe_cluster_watch`,
   `chappe_cluster_singleton`, `chappe_cluster_singleton_sup`,
   `chappe_cluster_directory`, `chappe_cluster_directory_local`,
-  `chappe_cluster_config`, `chappe_cluster_sup`
+  `chappe_cluster_config`, `chappe_cluster_sup`, `chappe_cluster_app`
 - Tests: `chappe_cluster_machine_tests` (the machine applied directly,
   with PropEr properties), `chappe_cluster_SUITE` (one node),
   `chappe_cluster_peer_SUITE` (three to five `peer` nodes: takeover,

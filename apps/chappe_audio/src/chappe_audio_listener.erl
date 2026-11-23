@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% One WebSocket listener: the process that owns the listening socket,
+%% @doc One WebSocket listener: the process that owns the listening socket,
 %% and the streams opened on it.
 %%
 %% An acceptor linked to it takes connections one at a time and hands

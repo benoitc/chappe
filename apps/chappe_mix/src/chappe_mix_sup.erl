@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% Top supervisor: one simple_one_for_one supervisor holding a temporary
+%% @doc Top supervisor: one simple_one_for_one supervisor holding a temporary
 %% child per conference. A conference that crashes is not restarted; its
 %% owner sees it go and decides.
 -module(chappe_mix_sup).

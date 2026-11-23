@@ -1,5 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
+
+%% @doc The chappe_mix application: starts the root supervisor.
 -module(chappe_mix_app).
 -behaviour(application).
 

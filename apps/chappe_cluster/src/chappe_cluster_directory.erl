@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% The directory: where a key lives, as `{home region, info}'. It is the
+%% @doc The directory: where a key lives, as `{home region, info}'. It is the
 %% seam between regions. This release ships the `local' backend
 %% (chappe_cluster_directory_local), which keeps the entries in the
 %% region's KV; a cross-region backend implements the same two callbacks

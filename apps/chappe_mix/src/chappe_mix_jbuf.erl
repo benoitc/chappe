@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% A fixed-depth jitter buffer for one incoming RTP stream, as plain data.
+%% @doc A fixed-depth jitter buffer for one incoming RTP stream, as plain data.
 %%
 %% Packets are kept by RTP timestamp, that is by the offset of their first
 %% sample, so a sender may use any packet size: 10, 20, 30 ms, up to the

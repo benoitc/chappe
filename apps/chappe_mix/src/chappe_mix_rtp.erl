@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% RTP packets (RFC 3550), as far as a mixer needs them.
+%% @doc RTP packets (RFC 3550), as far as a mixer needs them.
 %%
 %% parse/1 is total: whatever a peer sends comes back as a map or as an
 %% error value, never an exception. Header extensions and padding are

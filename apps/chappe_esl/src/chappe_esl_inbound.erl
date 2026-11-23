@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% Inbound connection setup. Starts a chappe_esl_conn linked to the caller and waits
+%% @doc Inbound connection setup. Starts a chappe_esl_conn linked to the caller and waits
 %% for the authentication handshake to finish. The caller becomes the initial
 %% controlling process and receives event messages. On success returns the
 %% connection pid; on failure returns a tagged error.

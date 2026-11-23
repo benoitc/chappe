@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% The fs backend of chappe_mrf_conf (chappe_mrf_conf_backend): a
+%% @doc The fs backend of chappe_mrf_conf (chappe_mrf_conf_backend): a
 %% mod_conference room on one FreeSWITCH node. join/4 runs in the caller
 %% (chappe_mrf_conf_fs_join: an endpoint on the node, made and bridged for
 %% a call, and the PIN); the rest runs in the conference process.

@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% What a tick and an RFC 4733 event do to the legs of one conference, as
+%% @doc What a tick and an RFC 4733 event do to the legs of one conference, as
 %% plain functions over its legs: chappe_mix_conf owns the process, the
 %% clock and the RTCP, and hands the legs here.
 %%

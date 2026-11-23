@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% What a conference backend implements, and the room API it calls.
+%% @doc What a conference backend implements, and the room API it calls.
 %%
 %% A room (chappe_mrf_conf) is one process; its backend is the module
 %% that carries the media: chappe_mrf_conf_native (chappe_mix behind

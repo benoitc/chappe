@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% Moving a cluster room's members to the room that owns its name next.
+%% @doc Moving a cluster room's members to the room that owns its name next.
 %%
 %% Two cases, one way to move:
 %%   - handoff: this node stops cleanly (an application stop, init:stop,

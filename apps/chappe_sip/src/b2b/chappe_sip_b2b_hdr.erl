@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 
-%% The headers a B2BUA carries from one leg to the other: the Reason of a
+%% @doc The headers a B2BUA carries from one leg to the other: the Reason of a
 %% BYE or CANCEL (RFC 3326), the request headers copied from A to B with
 %% Privacy: none always kept and, as a privacy service, the identifying
 %% ones removed (RFC 3323), and the headers of B's 2xx copied to A's.

@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% REFER and a conference (RFC 4579, on chappe_sip_focus's REFER side):
+%% @doc REFER and a conference (RFC 4579, on chappe_sip_focus's REFER side):
 %%
 %% - a REFER to the room's URI asks the focus to bring a party in (5.5):
 %%   the room dials it out and the referrer hears the outcome as NOTIFYs;
@@ -20,9 +20,9 @@
 %% Dialing out: on native, an endpoint of the room's FreeSWITCH pool
 %% (dial_endpoint options, create_endpoint/1's) joins the mixer, then
 %% bridges to the target (the dial option makes the dial string, default
-%% sofia/<dial_profile>/<target>); the referrer gets 200 once the target
+%% `sofia/<dial_profile>/<target>'); the referrer gets 200 once the target
 %% answers. On fs, mod_conference dials the target into the room
-%% (conference <room> bgdial), and the referrer gets 200 when it is in
+%% (`conference <room> bgdial'), and the referrer gets 200 when it is in
 %% (add-member, from the node's events: give the node CUSTOM
 %% conference::maintenance, see chappe_mrf_conf:start/2). A target that
 %% does not answer within dial_timeout (30 s) is given up with 408.

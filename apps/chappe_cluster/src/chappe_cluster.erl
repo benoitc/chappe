@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% chappe_cluster: one owner per key across a region, on Ra.
+%% @doc chappe_cluster: one owner per key across a region, on Ra.
 %%
 %% Leases: claim/2 gives a key one holder in the region, fenced, until the
 %% holder releases it, dies, or its node's liveness lapses. The holder is

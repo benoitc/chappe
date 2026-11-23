@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% FreeSWITCH Event Socket client. Public API for both inbound and outbound
+%% @doc FreeSWITCH Event Socket client. Public API for both inbound and outbound
 %% connections.
 %%
 %% Inbound: connect/1,2 opens a socket to mod_event_socket, authenticates, and

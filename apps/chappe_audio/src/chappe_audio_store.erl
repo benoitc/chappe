@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% The recording store: where a call's audio is kept, found by its
+%% @doc The recording store: where a call's audio is kept, found by its
 %% call_ref, read back and deleted.
 %%
 %% chappe never decides where a recording lives: the app configures the

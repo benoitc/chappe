@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% chappe_audio: take a call's audio in from FreeSWITCH.
+%% @doc chappe_audio: take a call's audio in from FreeSWITCH.
 %%
 %% A listener is a WebSocket server for mod_audio_fork and
 %% mod_audio_stream. You open a stream on it for each fork you start: the

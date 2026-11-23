@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% Streaming frame decoder for the FreeSWITCH Event Socket protocol.
+%% @doc Streaming frame decoder for the FreeSWITCH Event Socket protocol.
 %%
 %% The wire protocol is text. A frame is a header block terminated by a blank
 %% line (two consecutive newlines). Header lines are "Key: Value" separated by

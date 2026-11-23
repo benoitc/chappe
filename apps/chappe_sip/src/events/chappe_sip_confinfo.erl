@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 
-%% RFC 4575 conference-info documents, as the focus sends them in NOTIFY
+%% @doc RFC 4575 conference-info documents, as the focus sends them in NOTIFY
 %% for the `conference` event package.
 %%
 %% full/1 renders the whole conference, always with the

@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% One FreeSWITCH channel under chappe_mrf's control (an endpoint).
+%% @doc One FreeSWITCH channel under chappe_mrf's control (an endpoint).
 %%
 %% It is registered under its correlation id until FreeSWITCH connects
 %% the channel's outbound socket (chappe_mrf_esl); it then starts a

@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% Root supervisor: the registry of the calls waiting for FreeSWITCH, then
+%% @doc Root supervisor: the registry of the calls waiting for FreeSWITCH, then
 %% one pool for endpoints and one for conferences (both temporary: an
 %% endpoint or a conference that stops is not restarted, its owner hears
 %% of it).

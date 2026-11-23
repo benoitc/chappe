@@ -1,7 +1,7 @@
 %% Copyright 2026 Benoit Chesneau
 %% SPDX-License-Identifier: Apache-2.0
 %%
-%% Taps: a conference handing the decoded audio of a party, or of the
+%% @doc Taps: a conference handing the decoded audio of a party, or of the
 %% whole room, to a process, every tick. The conference process
 %% (chappe_mix_conf) holds them and calls here; nothing here owns a
 %% process.
