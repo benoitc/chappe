@@ -25,7 +25,8 @@
 
 -export([build/1, parse/1]).
 -export([interval/5, interval/6, ntp/1, cname/0]).
--export([src_new/4, src_update/4, src_sr/3, src_ssrc/1, report_block/2]).
+-export([src_new/4, src_update/4, src_sr/3, src_ssrc/1, src_highest/1]).
+-export([report_block/2]).
 
 -export_type([ssrc/0, part/0, block/0, src/0]).
 
@@ -340,6 +341,10 @@ src_sr(S, Ntp, Now) ->
 
 -spec src_ssrc(src()) -> ssrc().
 src_ssrc(#src{ssrc = Ssrc}) -> Ssrc.
+
+%% The highest sequence number seen, as on the wire (modulo 2^16).
+-spec src_highest(src()) -> 0..65535.
+src_highest(#src{max = Max}) -> Max band 16#FFFF.
 
 %% The report block for the source at Now (microseconds, monotonic), and
 %% the state that the next one counts its fraction lost from.

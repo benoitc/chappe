@@ -8,10 +8,11 @@ not chappe_sip. The history of chappe_sip before the umbrella (as
 ## Unreleased
 
 - chappe_audio, chappe_mix: a late RTP packet, sent before a source's
-  RTCP BYE but arriving after it, no longer brings the source back. The
-  source is kept for 5 s after its BYE and left out of the reports: the
-  RTP receiver keeps its statistics instead of starting them again, and
-  the mixer no longer mixes that late audio or lists the source again.
+  RTCP BYE but arriving after it, no longer brings the source back: for
+  5 s after the BYE the RTP receiver counts it in the source's
+  statistics instead of starting them again, and the mixer does not mix
+  it. A source that keeps sending new audio after its BYE, as some
+  phones do on hold and unhold, is heard again at once.
 - chappe_sip: the SIPREC recording server now sends RTCP receiver reports
   to the recording client and reads the client's own reports, as RFC 7866
   asks. A client that offers RTCP on the RTP port gets that in the answer;

@@ -8,16 +8,21 @@
 %% this module builds and hands it what arrives.
 %%
 %% A source that sends BYE is marked, not deleted (6.2.1): for ?BYE_GRACE_S
-%% its RTP, a straggler UDP reordered behind the BYE, counts against the
-%% marked entry and rtp_in/4 says `gone', so the conference does not mix
-%% it, and the source is out of the CSRC lists, the report blocks and the
-%% member count. Past the grace the mark goes, at the next report or
-%% packet, and a packet from that SSRC is a new source.
+%% a straggler UDP reordered behind the BYE (a sequence number at or
+%% below the highest one at the BYE) counts against the marked entry and
+%% rtp_in/4 says `gone', so the conference does not mix it, and the
+%% source is out of the CSRC lists, the report blocks and the member
+%% count. A newer sequence number is the source sending again under the
+%% same SSRC (a client that says BYE on hold and goes on after): the mark
+%% ends at once and the entry goes on (A.1). Past the grace the mark
+%% goes, at the next report or packet, and a packet from that SSRC is a
+%% new source. A new far end (clear_bye/1) ends the mark and the entry.
 -module(chappe_mix_session).
 
 -export([new/2, ssrc/1, src_ssrc/1, csrcs/1, info/1]).
 -export([header/1, sent/3, sent_event/2, advance/2]).
 -export([rtp_in/4, renew/2, rtcp_in/5, rtcp_invalid/1, csrc_items/3]).
+-export([clear_bye/1]).
 -export([due/2, timeout/2, report/5, reported/2, sent_any/1]).
 
 -export_type([session/0, ssrc/0, addr/0]).
@@ -52,6 +57,8 @@
     heard_at = 0 :: integer(),
     %% when the source sent BYE (native monotonic): it is marked as gone
     bye_at :: integer() | undefined,
+    %% and its highest sequence number then
+    bye_high = 0 :: 0..65535,
     sdes = #{} :: #{ssrc() => [{cname | name, binary()}]},
     %% addresses that used our SSRC, RTP and RTCP apart (8.2)
     conflicts = [] :: [{rtp | rtcp, addr()}],
@@ -205,14 +212,36 @@ straggler(
 ) ->
     case chappe_mix_rtcp:src_ssrc(Src0) of
         Ssrc ->
-            Arrival =
-                erlang:convert_time_unit(Now, native, microsecond) div 125,
-            {gone, S#sess{
-                src = chappe_mix_rtcp:src_update(Src0, Seq, Ts, Arrival)
-            }};
+            case newer(Seq, S#sess.bye_high) of
+                true ->
+                    %% the source sending again: back in the mix, newly
+                    %% visible in the SSRC space
+                    case rtp_in(S#sess{bye_at = undefined}, P, Addr, Now) of
+                        {ok, S1, _} -> {ok, S1, true};
+                        Other -> Other
+                    end;
+                false ->
+                    Arrival =
+                        erlang:convert_time_unit(Now, native, microsecond) div
+                            125,
+                    {gone, S#sess{
+                        src = chappe_mix_rtcp:src_update(Src0, Seq, Ts, Arrival)
+                    }}
+            end;
         _ ->
             rtp_in(S#sess{src = undefined, bye_at = undefined}, P, Addr, Now)
     end.
+
+%% Seq after High in sequence space (A.1, modulo 2^16)
+newer(Seq, High) ->
+    D = (Seq - High) band 16#FFFF,
+    D >= 1 andalso D < 16#8000.
+
+%% A new far end: a source marked as gone is forgotten, so the first
+%% packet from the new one is a new source.
+-spec clear_bye(session()) -> session().
+clear_bye(#sess{bye_at = undefined} = S) -> S;
+clear_bye(#sess{} = S) -> S#sess{src = undefined, bye_at = undefined}.
 
 %% the mark and the entry of a source whose BYE grace is over, dropped
 expire(#sess{bye_at = undefined} = S, _Now) ->
@@ -283,7 +312,11 @@ part(#{type := bye, ssrcs := Ssrcs}, _Addr, Now, {S, C, Gone}) ->
             %% marked as gone, kept for the grace (6.2.1)
             At = erlang:convert_time_unit(Now, microsecond, native),
             {
-                S#sess{bye_at = At, sdes = maps:remove(Mine, S#sess.sdes)},
+                S#sess{
+                    bye_at = At,
+                    bye_high = chappe_mix_rtcp:src_highest(S#sess.src),
+                    sdes = maps:remove(Mine, S#sess.sdes)
+                },
                 C,
                 [Mine | Gone]
             };

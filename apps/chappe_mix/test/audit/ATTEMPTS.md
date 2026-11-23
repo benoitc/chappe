@@ -61,6 +61,20 @@ against deliberate mutations. A test that cannot fail is worse than no test.
   (both), and the straggler taken into the jitter buffer (wire, by the
   leg's `received` count; the CSRC lists alone did not show it, so the
   case checks it).
+- The BYE grace first muted a source that says BYE and goes on under the
+  same SSRC (pjsip on hold and unhold) for 5 s. A packet newer than the
+  highest sequence number at the BYE now ends the mark.
+  `chappe_mix_rfc_SUITE:bye_resume` and `bye_resume_wrap` and the reworked
+  `chappe_mix_SUITE:bye_grace`, with `bye_then_new_remote`, all failed on
+  the first grace. Five mutations, each caught: no packet ever newer
+  (bye_resume, bye_resume_wrap, wire bye_grace), no 16-bit wrap in the
+  comparison (bye_resume_wrap), the BYE-time highest counted as newer
+  (bye_grace, bye_resume_wrap), `clear_bye/1` doing nothing on a new far
+  end (bye_then_new_remote), and a returning source not flagged new for
+  the SSRC space (bye_resume). In chappe_audio, a mark that never ends on
+  a newer packet, the comparison without the wrap, and the BYE-time highest
+  counted as newer were each caught by
+  `resume_after_bye_test` and `resume_wrap_test`.
 
 ## The first tick-trace run: ticks fire early
 

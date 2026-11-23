@@ -198,7 +198,7 @@ None.
 | R3550-068 | SHOULD | ssrc | demo | untested |  | New sites are added to the count when they are heard, and an entry for each SHOULD be created in a table indexed by the SSRC or CSRC identifier (see Section 8.2) to keep track of them. |
 | R3550-069 | MAY | ssrc | demo | untested |  | New entries MAY be considered not valid until multiple packets carrying the new SSRC have been received (see Appendix A.1), or until an SDES RTCP packet containing a CNAME for that SSRC has been received. |
 | R3550-070 | MAY | ssrc | platform | untested |  | Entries MAY be deleted from the table when an RTCP BYE packet with the corresponding SSRC identifier is received, except that some straggler data packets might arrive after the BYE and cause the entry to be recreated. |
-| R3550-071 | SHOULD | ssrc | platform | pass | chappe_mix_SUITE:bye_grace, chappe_mix_rfc_SUITE:bye_grace | Instead, the entry SHOULD be marked as having received a BYE and then deleted after an appropriate delay. |
+| R3550-071 | SHOULD | ssrc | platform | pass | chappe_mix_SUITE:bye_grace, chappe_mix_SUITE:bye_then_new_remote, chappe_mix_rfc_SUITE:bye_grace, chappe_mix_rfc_SUITE:bye_resume, chappe_mix_rfc_SUITE:bye_resume_wrap | Instead, the entry SHOULD be marked as having received a BYE and then deleted after an appropriate delay. |
 | R3550-073 | SHOULD | rtcp | n/a | n/a |  | Therefore, this multiplier SHOULD be fixed for a particular profile. |
 | R3550-074 | MAY | rtcp | n/a | n/a |  | An implementation MAY use SSRC sampling, as described in [21], to reduce the storage requirements. |
 | R3550-075 | MAY | rtcp | n/a | n/a |  | An implementation MAY use any other algorithm with similar performance. |

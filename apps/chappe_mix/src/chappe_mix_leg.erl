@@ -148,6 +148,8 @@ set_remote(#{remote := Remote} = Opts, L) ->
         remote = Remote,
         source = undefined,
         rtcp_source = undefined,
+        %% a source that said BYE is not the new far end's
+        sess = chappe_mix_session:clear_bye(L#leg.sess),
         %% a new far end: an RTCP address only if it comes with it
         rtcp_remote = maps:get(rtcp_remote, Opts, undefined),
         dtmf_pt = maps:get(dtmf_pt, Opts, L#leg.dtmf_pt),
