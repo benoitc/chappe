@@ -17,6 +17,9 @@ tags. Read this page when you cut a release or publish an app.
   creates its GitHub release, titled `chappe YYYY.MM.N`, whose notes list
   every app's version and the CHANGELOG section of each app whose version
   changed. A merge that bumps no app releases nothing.
+- An app's first release at the version it already carries (`0.1.0` with
+  no bump) is listed in the next bundle's notes as "first release" when its
+  `## [0.1.0]` section is new, but it does not cut a bundle by itself.
 - Never create a bundle tag or release by hand: the workflow counts the
   existing tags to name the next bundle.
 

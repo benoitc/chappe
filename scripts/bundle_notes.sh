@@ -3,14 +3,19 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Release notes of a chappe bundle: every app's version at TO, and the
-# CHANGELOG section of each app whose version changed since FROM.
+# CHANGELOG section of each app released since FROM. An app is released
+# when its version changed, or, at an unchanged version, when the
+# `## [<vsn>]` section of its version is new in TO (a first release at the
+# version the app already carried). Only a version change cuts a bundle:
+# --changed lists bumps alone.
 #
 # Usage: scripts/bundle_notes.sh [--changed] FROM TO
 #   FROM       the previous bundle (a tag or a commit), or - for none: the
 #              apps whose version TO itself changed are listed as changed
 #   TO         the commit of the bundle
 #   --changed  print only the apps whose version changed, one per line
-#              (nothing when no app was bumped: no bundle to release)
+#              (nothing when no app was bumped: no bundle to release);
+#              a first release without a bump is not listed
 #
 # Reads git objects only, so it works on any commit without a checkout.
 set -euo pipefail
@@ -34,6 +39,14 @@ section() {
         on && /^## / { exit }
         on { print }
     ' | sed -e '/./,$!d' || true
+}
+
+# Whether an app's CHANGELOG at a ref has the section of one version.
+has_section() {
+    git show "$1:apps/$2/CHANGELOG.md" 2>/dev/null | awk -v v="$3" '
+        index($0, "## [" v "]") == 1 { found = 1 }
+        END { exit !found }
+    '
 }
 
 apps="$(git ls-tree --name-only "$TO" apps/ | sed 's|apps/||' | sort)"
@@ -67,6 +80,10 @@ for app in $apps; do
         else
             echo "| $app | $new (new) |"
         fi
+    elif has_section "$TO" "$app" "$new" &&
+        ! { [ -n "$FROM" ] && has_section "$FROM" "$app" "$new"; }; then
+        changed+=("$app")
+        echo "| $app | $new (first release) |"
     else
         echo "| $app | $new |"
     fi
@@ -74,7 +91,7 @@ done
 
 if [ ${#changed[@]} -eq 0 ]; then
     echo
-    echo "No app version changed."
+    echo "No app released."
     exit 0
 fi
 
