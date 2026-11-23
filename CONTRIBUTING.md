@@ -40,11 +40,13 @@ CI (`.github/workflows/ci.yml`) also runs line coverage against a floor
 compliance gate (`make compliance GATE=demo`), the NIF under
 AddressSanitizer with a short fuzz run (`make asan`, `make fuzz`) and
 ThreadSanitizer (`make tsan`), the C linters (`make lint-c`), the demo
-compile (`make demo-compile`), the cluster demo walkthrough
+compile (`make demo-compile`), each app's Hex package
+(`scripts/check_package.sh <app>`), the cluster demo walkthrough
 (`make demo-cluster-smoke`), and the docker labs. Separate workflows run
-the advisories check (`advisories.yml`) and a longer scheduled fuzz
-(`fuzz.yml`). What each lab proves
-and how to run it: [labs](docs/contributing/labs.md).
+the advisories check (`advisories.yml`), a longer scheduled fuzz
+(`fuzz.yml`) and the bundle release (`release.yml`, see
+[releasing](docs/contributing/releasing.md)). What each lab proves and how
+to run it: [labs](docs/contributing/labs.md).
 
 Pure Erlang work can skip the C build: `SKIP_ENGINE_BUILD=1 rebar3 compile`
 uses the fake engine.
