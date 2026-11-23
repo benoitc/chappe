@@ -24,5 +24,12 @@
         {storage, #{backend => file, dir => "recordings"}}
     ]},
     {licenses, ["Apache-2.0"]},
-    {links, []}
+    {links, [{"GitHub", "https://github.com/benoitc/chappe"}]},
+    {files, [
+        "src",
+        "rebar.config",
+        "README.md",
+        "LICENSE",
+        "CHANGELOG.md"
+    ]}
 ]}.

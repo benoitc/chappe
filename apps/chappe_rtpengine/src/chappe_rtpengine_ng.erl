@@ -5,19 +5,19 @@
 %% with atom keys, and classifies decoded replies.
 %%
 %% Atom keys map to the NG wire names: underscores become hyphens
-%% (call_id -> <<"call-id">>) with the irregular names handled
-%% explicitly (ice -> <<"ICE">>, media_address -> <<"media address">>,
-%% t38 -> <<"T.38">>, ...). Binary keys and values pass through
+%% (call_id -> `<<"call-id">>') with the irregular names handled
+%% explicitly (ice -> `<<"ICE">>', media_address -> `<<"media address">>',
+%% t38 -> `<<"T.38">>', ...). Binary keys and values pass through
 %% untouched, which is the escape hatch for anything unmapped.
 %%
 %% Atom values: under the option-word keys (flags, replace, rtcp-mux,
 %% ICE, ICE-lite, DTLS, DTLS-reverse, OSRTP, T.38, record call) atoms
 %% are NG option words, written with hyphens in the NG documentation,
-%% so underscores become hyphens (trust_address -> <<"trust-address">>).
+%% so underscores become hyphens (trust_address -> `<<"trust-address">>').
 %% Every other atom value is sent verbatim (atom_to_binary), which
 %% keeps SDES suite names, codec names and interface names intact.
 %% Bencode has no floats or tuples: such a value raises
-%% {bad_param, Key, Value}.
+%% `{bad_param, Key, Value}'.
 %%
 %% Replies keep their wire types: rtpengine flips some fields between
 %% integer and string across versions, so no coercion happens here.
