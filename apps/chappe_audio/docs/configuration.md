@@ -114,7 +114,7 @@ Two timings are fixed:
 | What | Value | What it does |
 |---|---|---|
 | Move grace | 1 s | After `chappe_audio_rtp:remote/2` (the sender moved), packets from the source latched before are dropped for this long. Past it, with no new source latched, that source may latch again when its address is the new remote address (any port), so a sender whose SDP port alone changed is heard again. |
-| BYE grace | 5 s | After a source's RTCP BYE (RFC 3550 6.2.1), its entry is kept, marked: a straggler RTP packet that arrives after the BYE counts in its statistics instead of starting them again, and is still recorded, but the source gets no report block and no longer counts as a member. Past it the entry is removed at the next report or packet, and a packet from that SSRC starts a new entry. 5 s is the minimum report interval (6.2). |
+| BYE grace | 5 s | After a source's RTCP BYE (RFC 3550 6.2.1), its entry is kept, marked: a straggler RTP packet (a sequence number at or below the highest one at the BYE) counts in its statistics instead of starting them again, and is still recorded, but the source gets no report block and no longer counts as a member. A newer sequence number is the source sending again under the same SSRC: the mark ends and its statistics go on. Past the 5 s the entry is removed at the next report or packet, and a packet from that SSRC starts a new entry. 5 s is the minimum report interval (6.2). |
 
 ## Storage options
 

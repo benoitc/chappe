@@ -10,11 +10,14 @@
 %% The receiver and its sources are the members of the session, the
 %% sources its senders (RFC 3550 6.2, A.7); at most 31 sources are kept,
 %% one RR's worth. A source that sends BYE is marked as gone (6.2.1):
-%% for ?BYE_GRACE_US after it, its RTP and RTCP still count against its
-%% entry, so a straggler that UDP reordered behind the BYE does not start
-%% its statistics again, but it is left out of the reports and of the
-%% member count. Past the grace the entry is removed, lazily, at the next
-%% report or packet of that source, and a packet then starts a new one.
+%% for ?BYE_GRACE_US after it, a straggler that UDP reordered behind the
+%% BYE (a sequence number at or below the highest one at the BYE) counts
+%% against its entry, so its statistics do not start again, but it is
+%% left out of the reports and of the member count. A newer sequence
+%% number is the source sending again under the same SSRC: the mark
+%% ends and the entry goes on (A.1). Past the grace the entry is
+%% removed, lazily, at the next report or packet of that source, and a
+%% packet then starts a new one.
 %% A source that takes the receiver's SSRC makes it draw another (8.2).
 %%
 %% The functions taking Now (microseconds, monotonic) are the pure core;
@@ -38,8 +41,11 @@
     ssrc :: chappe_audio_rtcp:ssrc(),
     cname :: binary(),
     sources = #{} :: #{chappe_audio_rtcp:ssrc() => chappe_audio_rtcp:src()},
-    %% the sources that sent BYE, and when (microseconds, monotonic)
-    byes = #{} :: #{chappe_audio_rtcp:ssrc() => integer()},
+    %% the sources that sent BYE: when (microseconds, monotonic), and
+    %% their highest sequence number then (none before any RTP)
+    byes = #{} :: #{
+        chappe_audio_rtcp:ssrc() => {integer(), 0..65535 | undefined}
+    },
     avg_size = 100.0 :: float(),
     initial = true :: boolean(),
     sent = 0 :: non_neg_integer(),
@@ -85,7 +91,7 @@ rtp_stats(
     with_source(
         Ssrc,
         fun(Src) -> chappe_audio_rtcp:src_rtp(Src, Seq, Ts, Arrival) end,
-        collision(Ssrc, expire(Ssrc, Now, S))
+        collision(Ssrc, resume(Ssrc, Seq, expire(Ssrc, Now, S)))
     );
 rtp_stats(S, _Packet, _Now) ->
     S.
@@ -143,16 +149,42 @@ cname({Ssrc, Items}, S) ->
 %% never heard creates nothing
 bye(Ssrc, Now, #session{sources = Srcs, byes = Byes} = S) ->
     case Srcs of
-        #{Ssrc := _} when not is_map_key(Ssrc, Byes) ->
-            S#session{byes = Byes#{Ssrc => Now}};
+        #{Ssrc := Src} when not is_map_key(Ssrc, Byes) ->
+            S#session{byes = Byes#{Ssrc => {Now, highest(Src)}}};
         #{} ->
             S
     end.
 
+highest(Src) ->
+    case chappe_audio_rtcp:src_info(Src) of
+        #{received := 0} -> undefined;
+        #{highest := H} -> H band 16#FFFF
+    end.
+
+%% a marked source sending a sequence number newer than its highest at
+%% the BYE (A.1, modulo 2^16) is back: the mark ends
+resume(Ssrc, Seq, #session{byes = Byes} = S) ->
+    case Byes of
+        #{Ssrc := {_, High}} ->
+            case newer(Seq, High) of
+                true -> S#session{byes = maps:remove(Ssrc, Byes)};
+                false -> S
+            end;
+        #{} ->
+            S
+    end.
+
+%% Seq after High in sequence space; any packet when no RTP came before
+newer(_Seq, undefined) ->
+    true;
+newer(Seq, High) ->
+    D = (Seq - High) band 16#FFFF,
+    D >= 1 andalso D < 16#8000.
+
 %% the entry of a source whose BYE grace is over, removed
 expire(Ssrc, Now, #session{sources = Srcs, byes = Byes} = S) ->
     case Byes of
-        #{Ssrc := At} when Now - At >= ?BYE_GRACE_US ->
+        #{Ssrc := {At, _}} when Now - At >= ?BYE_GRACE_US ->
             S#session{
                 sources = maps:remove(Ssrc, Srcs),
                 byes = maps:remove(Ssrc, Byes)
