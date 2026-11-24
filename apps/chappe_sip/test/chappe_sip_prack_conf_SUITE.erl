@@ -15,33 +15,75 @@
 -include_lib("stdlib/include/assert.hrl").
 
 -import(chappe_sip_core_peer, [
-    open/0, port/1, send/3, recv/3, recv_none/3, collect/3,
-    request/3, response/3, hdr/2, hdrs/2, status/1, uri/1,
-    cseq/1, to_tag/1, from_tag/1, body/1, top_via/1, via_branch/1,
-    tag/0, sdp/0, sdp/1
+    open/0,
+    port/1,
+    send/3,
+    recv/3,
+    recv_none/3,
+    collect/3,
+    request/3,
+    response/3,
+    hdr/2,
+    hdrs/2,
+    status/1,
+    uri/1,
+    cseq/1,
+    to_tag/1,
+    from_tag/1,
+    body/1,
+    top_via/1,
+    via_branch/1,
+    tag/0,
+    sdp/0, sdp/1
 ]).
 
--export([all/0, init_per_suite/1, end_per_suite/1,
-         init_per_testcase/2, end_per_testcase/2]).
--export([uas_100_never_reliable/1, uas_rseq_sequence/1,
-         uas_prack_unknown_rack_481/1, uas_no_reliable_after_final/1,
-         uas_prack_offer_answered/1, b2b_prack_offer_refused/1,
-         uas_offerless_reliable_offer/1,
-         uac_100_reliable_ignored/1, uac_prack_in_early_dialog/1,
-         uac_retransmission_dropped/1, uac_rseq_in_order/1,
-         uac_answer_in_prack/1, uac_require_100rel_invite_only/1]).
+-export([
+    all/0,
+    init_per_suite/1,
+    end_per_suite/1,
+    init_per_testcase/2,
+    end_per_testcase/2
+]).
+-export([
+    uas_100_never_reliable/1,
+    uas_rseq_sequence/1,
+    uas_prack_unknown_rack_481/1,
+    uas_no_reliable_after_final/1,
+    uas_prack_offer_answered/1,
+    b2b_prack_offer_refused/1,
+    uas_offerless_reliable_offer/1,
+    uac_100_reliable_ignored/1,
+    uac_prack_in_early_dialog/1,
+    uac_retransmission_dropped/1,
+    uac_rseq_in_order/1,
+    uac_answer_in_prack/1,
+    uac_require_100rel_invite_only/1
+]).
 
 all() ->
-    [uas_100_never_reliable, uas_rseq_sequence, uas_prack_unknown_rack_481,
-     uas_no_reliable_after_final, uas_prack_offer_answered,
-     b2b_prack_offer_refused, uas_offerless_reliable_offer,
-     uac_100_reliable_ignored, uac_prack_in_early_dialog,
-     uac_retransmission_dropped, uac_rseq_in_order, uac_answer_in_prack,
-     uac_require_100rel_invite_only].
+    [
+        uas_100_never_reliable,
+        uas_rseq_sequence,
+        uas_prack_unknown_rack_481,
+        uas_no_reliable_after_final,
+        uas_prack_offer_answered,
+        b2b_prack_offer_refused,
+        uas_offerless_reliable_offer,
+        uac_100_reliable_ignored,
+        uac_prack_in_early_dialog,
+        uac_retransmission_dropped,
+        uac_rseq_in_order,
+        uac_answer_in_prack,
+        uac_require_100rel_invite_only
+    ].
 
 init_per_suite(Config) ->
-    application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
-                        [{persistent, true}]),
+    application:set_env(
+        chappe_sip,
+        engine_mod,
+        chappe_sip_nif,
+        [{persistent, true}]
+    ),
     {ok, _} = application:ensure_all_started(chappe_sip),
     Config.
 
@@ -76,8 +118,13 @@ uas_100_never_reliable(Config) ->
     Tag = tag(),
     ok = chappe_sip:invite(fun(Req, Res) ->
         ok = chappe_sip_res:send_reliable(
-               Res, #{status => 183, to_tag => Tag, body => sdp(),
-                      headers => [?SDP_CT]}),
+            Res, #{
+                status => 183,
+                to_tag => Tag,
+                body => sdp(),
+                headers => [?SDP_CT]
+            }
+        ),
         {ok, _} = chappe_sip_res:await_prack(Res, 5000),
         {ok, _} = answer(Req, Res, Tag)
     end),
@@ -103,8 +150,13 @@ uas_rseq_sequence(Config) ->
     ok = chappe_sip:invite(fun(Req, Res) ->
         ok = chappe_sip_res:send_reliable(Res, #{status => 180, to_tag => Tag}),
         ok = chappe_sip_res:send_reliable(
-               Res, #{status => 183, to_tag => Tag, body => sdp(),
-                      headers => [?SDP_CT]}),
+            Res, #{
+                status => 183,
+                to_tag => Tag,
+                body => sdp(),
+                headers => [?SDP_CT]
+            }
+        ),
         {ok, _} = chappe_sip_res:await_prack(Res, 8000),
         {ok, _} = chappe_sip_res:await_prack(Res, 8000),
         Test ! uas_two_pracks,
@@ -136,7 +188,10 @@ uas_rseq_sequence(Config) ->
     ?assertEqual(481, status(Again)),
     send(Sock, EP, prack(Sock, Inv, R183, 4)),
     {_, _} = recv(Sock, {status, 200, <<"PRACK">>}, 3000),
-    receive uas_two_pracks -> ok after 5000 -> ct:fail(no_pracks) end,
+    receive
+        uas_two_pracks -> ok
+    after 5000 -> ct:fail(no_pracks)
+    end,
     {R200, _} = recv(Sock, {status, 200, <<"INVITE">>}, 3000),
     send(Sock, EP, chappe_sip_core_peer:ack_for(R200, #{port => port(Sock)})).
 
@@ -148,8 +203,13 @@ uas_prack_unknown_rack_481(Config) ->
     Tag = tag(),
     ok = chappe_sip:invite(fun(Req, Res) ->
         ok = chappe_sip_res:send_reliable(
-               Res, #{status => 183, to_tag => Tag, body => sdp(),
-                      headers => [?SDP_CT]}),
+            Res, #{
+                status => 183,
+                to_tag => Tag,
+                body => sdp(),
+                headers => [?SDP_CT]
+            }
+        ),
         {ok, _} = chappe_sip_res:await_prack(Res, 8000),
         {ok, _} = answer(Req, Res, Tag)
     end),
@@ -175,15 +235,23 @@ uas_no_reliable_after_final(Config) ->
     Test = self(),
     ok = chappe_sip:invite(fun(_Req, Res) ->
         ok = chappe_sip_res:send(Res, 486, #{to_tag => <<"busy">>}),
-        Test ! {late, chappe_sip_res:send_reliable(
-                        Res, #{status => 183, to_tag => <<"busy">>,
-                               body => sdp(), headers => [?SDP_CT]})}
+        Test !
+            {late,
+                chappe_sip_res:send_reliable(
+                    Res, #{
+                        status => 183,
+                        to_tag => <<"busy">>,
+                        body => sdp(),
+                        headers => [?SDP_CT]
+                    }
+                )}
     end),
     Inv = invite(Sock, [{<<"Require">>, <<"100rel">>}]),
     send(Sock, EP, Inv),
     {R486, _} = recv(Sock, {status, 486}, 3000),
     send(Sock, EP, ack_non2xx(Inv, R486)),
-    receive {late, L} -> ?assertEqual({error, already_final}, L)
+    receive
+        {late, L} -> ?assertEqual({error, already_final}, L)
     after 3000 -> ct:fail(no_late_result)
     end,
     ok = recv_none(Sock, fun(B) -> is_1xx(B) end, 1500).
@@ -197,13 +265,20 @@ uas_prack_offer_answered(Config) ->
     Test = self(),
     ok = chappe_sip:invite(fun(Req, Res) ->
         ok = chappe_sip_res:send_reliable(
-               Res, #{status => 183, to_tag => Tag, body => sdp(41000),
-                      headers => [?SDP_CT]}),
+            Res, #{
+                status => 183,
+                to_tag => Tag,
+                body => sdp(41000),
+                headers => [?SDP_CT]
+            }
+        ),
         case chappe_sip_res:await_prack(Res, 5000) of
             {offer, Prack, PRes} ->
                 Test ! {prack_offer, body(Prack)},
-                ok = chappe_sip_res:send(PRes, 200, #{body => sdp(41002),
-                                                      headers => [?SDP_CT]});
+                ok = chappe_sip_res:send(PRes, 200, #{
+                    body => sdp(41002),
+                    headers => [?SDP_CT]
+                });
             Other ->
                 Test ! {prack_offer, Other}
         end,
@@ -218,7 +293,8 @@ uas_prack_offer_answered(Config) ->
     ?assertEqual(200, status(PR)),
     ?assertEqual(sdp(41002), body(PR)),
     ?assertEqual(<<"application/sdp">>, hdr(<<"content-type">>, PR)),
-    receive {prack_offer, O} -> ?assertEqual(sdp(40002), O)
+    receive
+        {prack_offer, O} -> ?assertEqual(sdp(40002), O)
     after 3000 -> ct:fail(no_prack_offer)
     end,
     {R200, _} = recv(Sock, {status, 200, <<"INVITE">>}, 3000),
@@ -236,19 +312,37 @@ uas_offerless_reliable_offer(Config) ->
     ok = chappe_sip:invite(fun(_Req, Res) ->
         _ = chappe_sip_res:send_reliable(Res, #{status => 180, to_tag => Tag}),
         ok = chappe_sip_res:send_reliable(
-               Res, #{status => 183, to_tag => Tag, body => sdp(41000),
-                      headers => [?SDP_CT, {<<"Contact">>, C}]}),
+            Res, #{
+                status => 183,
+                to_tag => Tag,
+                body => sdp(41000),
+                headers => [?SDP_CT, {<<"Contact">>, C}]
+            }
+        ),
         Test ! {prack, chappe_sip_res:await_prack(Res, 5000)},
-        ok = chappe_sip_res:send(Res, 200, #{to_tag => Tag, body => sdp(41000),
-                                             headers => [?SDP_CT,
-                                                         {<<"Contact">>, C}]})
+        ok = chappe_sip_res:send(Res, 200, #{
+            to_tag => Tag,
+            body => sdp(41000),
+            headers => [
+                ?SDP_CT,
+                {<<"Contact">>, C}
+            ]
+        })
     end),
-    Inv = request(<<"INVITE">>, ?APP,
-                  #{port => port(Sock),
-                    headers => [{<<"Supported">>, <<"100rel">>}]}),
+    Inv = request(
+        <<"INVITE">>,
+        ?APP,
+        #{
+            port => port(Sock),
+            headers => [{<<"Supported">>, <<"100rel">>}]
+        }
+    ),
     send(Sock, EP, Inv),
-    {R1xx, _} = recv(Sock, fun(B) -> is_1xx(B) andalso status(B) > 100 end,
-                     3000),
+    {R1xx, _} = recv(
+        Sock,
+        fun(B) -> is_1xx(B) andalso status(B) > 100 end,
+        3000
+    ),
     ?assertEqual(183, status(R1xx)),
     ?assertEqual(sdp(41000), body(R1xx)),
     ?assertNotEqual(undefined, hdr(<<"rseq">>, R1xx)),
@@ -256,7 +350,8 @@ uas_offerless_reliable_offer(Config) ->
     {PR, _} = recv(Sock, resp_to(<<"PRACK">>), 3000),
     ?assertEqual(200, status(PR)),
     ?assertEqual(<<>>, body(PR)),
-    receive {prack, {ok, Raw}} -> ?assertEqual(sdp(40002), body(Raw))
+    receive
+        {prack, {ok, Raw}} -> ?assertEqual(sdp(40002), body(Raw))
     after 3000 -> ct:fail(no_prack)
     end,
     {R200, _} = recv(Sock, {status, 200, <<"INVITE">>}, 3000),
@@ -282,10 +377,21 @@ b2b_prack_offer_refused(Config) ->
     send(Sock, EP, prack(Sock, Inv, R183, 2, undefined, sdp(40002))),
     {PR, _} = recv(Sock, resp_to(<<"PRACK">>), 3000),
     ?assertEqual(488, status(PR)),
-    send(B, EP, response(BInv, 200,
-                         #{to_tag => BTag, body => sdp(42000),
-                           headers => [{<<"Contact">>,
-                                        <<"<", (early_contact(B))/binary, ">">>}]})),
+    send(
+        B,
+        EP,
+        response(
+            BInv,
+            200,
+            #{
+                to_tag => BTag,
+                body => sdp(42000),
+                headers => [
+                    {<<"Contact">>, <<"<", (early_contact(B))/binary, ">">>}
+                ]
+            }
+        )
+    ),
     {_, _} = recv(B, {method, <<"ACK">>}, 3000),
     {R200, _} = recv(Sock, {status, 200, <<"INVITE">>}, 3000),
     send(Sock, EP, chappe_sip_core_peer:ack_for(R200, #{port => port(Sock)})),
@@ -298,12 +404,22 @@ b2b_prack_offer_refused(Config) ->
 %% req: R3262-031
 uac_100_reliable_ignored(Config) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
-    {ok, _} = chappe_sip_uac:start(callee(Sock), #{rel100 => supported,
-                                                   local_sdp => sdp()}),
+    {ok, _} = chappe_sip_uac:start(callee(Sock), #{
+        rel100 => supported,
+        local_sdp => sdp()
+    }),
     {Inv, _} = recv(Sock, {method, <<"INVITE">>}, 3000),
     Tag = tag(),
-    send(Sock, EP, response(Inv, 100, #{headers => [{<<"Require">>, <<"100rel">>},
-                                                    {<<"RSeq">>, <<"1">>}]})),
+    send(
+        Sock,
+        EP,
+        response(Inv, 100, #{
+            headers => [
+                {<<"Require">>, <<"100rel">>},
+                {<<"RSeq">>, <<"1">>}
+            ]
+        })
+    ),
     ok = recv_none(Sock, {method, <<"PRACK">>}, 1000),
     send(Sock, EP, rel1xx(Sock, Inv, 183, Tag, 2, sdp(42000))),
     {Pr, _} = recv(Sock, {method, <<"PRACK">>}, 3000),
@@ -317,8 +433,10 @@ uac_100_reliable_ignored(Config) ->
 %% req: R3262-032 R3262-028
 uac_prack_in_early_dialog(Config) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
-    {ok, _} = chappe_sip_uac:start(callee(Sock), #{rel100 => require,
-                                                   local_sdp => sdp()}),
+    {ok, _} = chappe_sip_uac:start(callee(Sock), #{
+        rel100 => require,
+        local_sdp => sdp()
+    }),
     {Inv, _} = recv(Sock, {method, <<"INVITE">>}, 3000),
     ?assert(lists:member(<<"100rel">>, tokens(hdrs(<<"require">>, Inv)))),
     Tag = tag(),
@@ -330,8 +448,10 @@ uac_prack_in_early_dialog(Config) ->
     ?assertEqual(hdr(<<"call-id">>, Inv), hdr(<<"call-id">>, Pr)),
     {N, <<"INVITE">>} = cseq(Inv),
     ?assertMatch({M, <<"PRACK">>} when M > N, cseq(Pr)),
-    ?assertEqual(<<"77 ", (integer_to_binary(N))/binary, " INVITE">>,
-                 hdr(<<"rack">>, Pr)),
+    ?assertEqual(
+        <<"77 ", (integer_to_binary(N))/binary, " INVITE">>,
+        hdr(<<"rack">>, Pr)
+    ),
     ?assertNot(lists:member(<<"100rel">>, tokens(hdrs(<<"require">>, Pr)))),
     complete_uac(Sock, EP, Inv, Pr, Tag, <<>>).
 
@@ -340,8 +460,10 @@ uac_prack_in_early_dialog(Config) ->
 %% req: R3262-036
 uac_retransmission_dropped(Config) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
-    {ok, Ref} = chappe_sip_uac:start(callee(Sock), #{rel100 => supported,
-                                                     local_sdp => sdp()}),
+    {ok, Ref} = chappe_sip_uac:start(callee(Sock), #{
+        rel100 => supported,
+        local_sdp => sdp()
+    }),
     {Inv, _} = recv(Sock, {method, <<"INVITE">>}, 3000),
     Tag = tag(),
     R183 = rel1xx(Sock, Inv, 183, Tag, 5, sdp(42000)),
@@ -352,7 +474,9 @@ uac_retransmission_dropped(Config) ->
     send(Sock, EP, R183),
     Pracks = [B || {_, B} <- collect(Sock, {method, <<"PRACK">>}, 1500)],
     ?assert(length(Pracks) >= 1),
-    ?assertEqual(1, length(lists:usort([via_branch(top_via(P)) || P <- Pracks]))),
+    ?assertEqual(
+        1, length(lists:usort([via_branch(top_via(P)) || P <- Pracks]))
+    ),
     [Pr | _] = Pracks,
     complete_uac(Sock, EP, Inv, Pr, Tag, <<>>),
     ?assertEqual([183], provisionals(Ref)).
@@ -364,8 +488,10 @@ uac_retransmission_dropped(Config) ->
 %% req: R3262-037 R3262-038 R3262-039 R3262-040
 uac_rseq_in_order(Config) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
-    {ok, Ref} = chappe_sip_uac:start(callee(Sock), #{rel100 => supported,
-                                                     local_sdp => sdp()}),
+    {ok, Ref} = chappe_sip_uac:start(callee(Sock), #{
+        rel100 => supported,
+        local_sdp => sdp()
+    }),
     {Inv, _} = recv(Sock, {method, <<"INVITE">>}, 3000),
     Tag = tag(),
     send(Sock, EP, rel1xx(Sock, Inv, 183, Tag, 10, sdp(42000))),
@@ -383,8 +509,11 @@ uac_rseq_in_order(Config) ->
     %% an old RSeq under a new status: not acknowledged again
     send(Sock, EP, rel1xx(Sock, Inv, 182, Tag, 10, <<>>)),
     ok = recv_none(Sock, {method, <<"PRACK">>}, 1000),
-    R200 = response(Inv, 200, #{to_tag => Tag, body => sdp(42000),
-                                headers => [{<<"Contact">>, <<"<", (early_contact(Sock))/binary, ">">>}]}),
+    R200 = response(Inv, 200, #{
+        to_tag => Tag,
+        body => sdp(42000),
+        headers => [{<<"Contact">>, <<"<", (early_contact(Sock))/binary, ">">>}]
+    }),
     send(Sock, EP, R200),
     {_Ack, _} = recv(Sock, {method, <<"ACK">>}, 3000),
     ?assertEqual([183, 180], provisionals(Ref)).
@@ -398,9 +527,15 @@ uac_answer_in_prack(Config) ->
     Test = self(),
     Answer = sdp(43000),
     {ok, Ref} = chappe_sip_uac:start(
-                  callee(Sock),
-                  #{rel100 => supported,
-                    answer => fun(Offer) -> Test ! {offer, Offer}, {ok, Answer} end}),
+        callee(Sock),
+        #{
+            rel100 => supported,
+            answer => fun(Offer) ->
+                Test ! {offer, Offer},
+                {ok, Answer}
+            end
+        }
+    ),
     {Inv, _} = recv(Sock, {method, <<"INVITE">>}, 3000),
     ?assertEqual(<<>>, body(Inv)),
     Tag = tag(),
@@ -408,13 +543,15 @@ uac_answer_in_prack(Config) ->
     {Pr, _} = recv(Sock, {method, <<"PRACK">>}, 3000),
     ?assertEqual(Answer, body(Pr)),
     ?assertEqual(<<"application/sdp">>, hdr(<<"content-type">>, Pr)),
-    receive {offer, O} -> ?assertEqual(sdp(42000), O)
+    receive
+        {offer, O} -> ?assertEqual(sdp(42000), O)
     after 1000 -> ct:fail(no_offer)
     end,
     {Ack, _} = complete_uac(Sock, EP, Inv, Pr, Tag, sdp(42000)),
     ?assertEqual(<<>>, body(Ack)),
-    receive {chappe_sip_uac, _, {ok, D}} ->
-        ?assertEqual(sdp(42000), chappe_sip_dialog:remote_sdp(D))
+    receive
+        {chappe_sip_uac, _, {ok, D}} ->
+            ?assertEqual(sdp(42000), chappe_sip_dialog:remote_sdp(D))
     after 3000 -> ct:fail(no_dialog)
     end,
     _ = Ref.
@@ -424,21 +561,31 @@ uac_answer_in_prack(Config) ->
 %% req: R3262-028
 uac_require_100rel_invite_only(Config) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
-    [begin
-         {ok, _} = chappe_sip:request(callee(Sock), #{method => M,
-                                                      rel100 => require}),
-         {R, _} = recv(Sock, {method, M}, 3000),
-         ?assertNot(lists:member(<<"100rel">>, tokens(hdrs(<<"require">>, R)))),
-         send(Sock, EP, response(R, 200, #{to_tag => tag()}))
-     end || M <- [<<"OPTIONS">>, <<"MESSAGE">>]],
+    [
+        begin
+            {ok, _} = chappe_sip:request(callee(Sock), #{
+                method => M,
+                rel100 => require
+            }),
+            {R, _} = recv(Sock, {method, M}, 3000),
+            ?assertNot(
+                lists:member(<<"100rel">>, tokens(hdrs(<<"require">>, R)))
+            ),
+            send(Sock, EP, response(R, 200, #{to_tag => tag()}))
+        end
+     || M <- [<<"OPTIONS">>, <<"MESSAGE">>]
+    ],
     ok.
 
 %% ---- helpers ----
 
 %% the caller's INVITE from the peer, with an SDP offer
 invite(Sock, Hdrs) ->
-    request(<<"INVITE">>, ?APP, #{port => port(Sock), body => sdp(),
-                                  headers => Hdrs}).
+    request(<<"INVITE">>, ?APP, #{
+        port => port(Sock),
+        body => sdp(),
+        headers => Hdrs
+    }).
 
 %% a PRACK for the reliable R1xx of Inv, CSeq N; RAck from R1xx unless
 %% RSeq is given
@@ -449,23 +596,36 @@ prack(Sock, Inv, R1xx, N, RSeq) ->
     prack(Sock, Inv, R1xx, N, RSeq, <<>>).
 
 prack(Sock, Inv, R1xx, N, RSeq0, Body) ->
-    RSeq = case RSeq0 of
-               undefined -> hdr(<<"rseq">>, R1xx);
-               R -> integer_to_binary(R)
-           end,
+    RSeq =
+        case RSeq0 of
+            undefined -> hdr(<<"rseq">>, R1xx);
+            R -> integer_to_binary(R)
+        end,
     {IN, _} = cseq(Inv),
-    request(<<"PRACK">>, ?APP,
-            #{port => port(Sock), call_id => hdr(<<"call-id">>, Inv),
-              from_tag => from_tag(Inv), to_tag => to_tag(R1xx), cseq => N,
-              body => Body,
-              headers => [{<<"RAck">>, <<RSeq/binary, " ",
-                                         (integer_to_binary(IN))/binary,
-                                         " INVITE">>}]}).
+    request(
+        <<"PRACK">>,
+        ?APP,
+        #{
+            port => port(Sock),
+            call_id => hdr(<<"call-id">>, Inv),
+            from_tag => from_tag(Inv),
+            to_tag => to_tag(R1xx),
+            cseq => N,
+            body => Body,
+            headers => [
+                {<<"RAck">>,
+                    <<RSeq/binary, " ", (integer_to_binary(IN))/binary,
+                        " INVITE">>}
+            ]
+        }
+    ).
 
 %% the handler's final answer: a dialog on the early dialog's tag
 answer(Req, Res, Tag) ->
-    chappe_sip:create_uas(Req, Res, #{local_sdp => sdp(41000),
-                                      local_tag => Tag}).
+    chappe_sip:create_uas(Req, Res, #{
+        local_sdp => sdp(41000),
+        local_tag => Tag
+    }).
 
 %% PRACK the reliable R1xx, then take the 2xx and ACK it
 finish_uas(Sock, EP, Inv, R1xx) ->
@@ -477,14 +637,29 @@ finish_uas(Sock, EP, Inv, R1xx) ->
 ack_non2xx(Inv, Resp) ->
     {N, _} = cseq(Inv),
     iolist_to_binary(
-      [<<"ACK ">>, uri(Inv), " SIP/2.0\r\n",
-       "Via: ", top_via(Inv), "\r\n",
-       "Max-Forwards: 70\r\n",
-       "From: ", hdr(<<"from">>, Inv), "\r\n",
-       "To: ", hdr(<<"to">>, Resp), "\r\n",
-       "Call-ID: ", hdr(<<"call-id">>, Inv), "\r\n",
-       "CSeq: ", integer_to_binary(N), " ACK\r\n",
-       "Content-Length: 0\r\n\r\n"]).
+        [
+            <<"ACK ">>,
+            uri(Inv),
+            " SIP/2.0\r\n",
+            "Via: ",
+            top_via(Inv),
+            "\r\n",
+            "Max-Forwards: 70\r\n",
+            "From: ",
+            hdr(<<"from">>, Inv),
+            "\r\n",
+            "To: ",
+            hdr(<<"to">>, Resp),
+            "\r\n",
+            "Call-ID: ",
+            hdr(<<"call-id">>, Inv),
+            "\r\n",
+            "CSeq: ",
+            integer_to_binary(N),
+            " ACK\r\n",
+            "Content-Length: 0\r\n\r\n"
+        ]
+    ).
 
 %% the peer's URI as a callee, and the Contact of its early dialog
 callee(Sock) ->
@@ -495,21 +670,38 @@ early_contact(Sock) ->
 
 %% a reliable provisional from the peer as UAS
 rel1xx(Sock, Inv, Status, Tag, RSeq, Body) ->
-    response(Inv, Status,
-             #{to_tag => Tag, body => Body,
-               headers => [{<<"Require">>, <<"100rel">>},
-                           {<<"RSeq">>, integer_to_binary(RSeq)},
-                           {<<"Contact">>,
-                            <<"<", (early_contact(Sock))/binary, ">">>}]}).
+    response(
+        Inv,
+        Status,
+        #{
+            to_tag => Tag,
+            body => Body,
+            headers => [
+                {<<"Require">>, <<"100rel">>},
+                {<<"RSeq">>, integer_to_binary(RSeq)},
+                {<<"Contact">>, <<"<", (early_contact(Sock))/binary, ">">>}
+            ]
+        }
+    ).
 
 %% answer the PRACK, send the 2xx (with Body) and take the ACK
 complete_uac(Sock, EP, Inv, Pr, Tag, Body) ->
     send(Sock, EP, response(Pr, 200, #{})),
-    send(Sock, EP, response(Inv, 200,
-                            #{to_tag => Tag, body => Body,
-                              headers => [{<<"Contact">>,
-                                           <<"<", (early_contact(Sock))/binary,
-                                             ">">>}]})),
+    send(
+        Sock,
+        EP,
+        response(
+            Inv,
+            200,
+            #{
+                to_tag => Tag,
+                body => Body,
+                headers => [
+                    {<<"Contact">>, <<"<", (early_contact(Sock))/binary, ">">>}
+                ]
+            }
+        )
+    ),
     recv(Sock, {method, <<"ACK">>}, 3000).
 
 %% the statuses of the provisionals the app was given, in order
@@ -528,8 +720,9 @@ is_1xx(_) -> false.
 
 %% any response to a Method request
 resp_to(Method) ->
-    fun(<<"SIP/2.0 ", _/binary>> = B) -> element(2, cseq(B)) =:= Method;
-       (_) -> false
+    fun
+        (<<"SIP/2.0 ", _/binary>> = B) -> element(2, cseq(B)) =:= Method;
+        (_) -> false
     end.
 
 tokens(Values) ->

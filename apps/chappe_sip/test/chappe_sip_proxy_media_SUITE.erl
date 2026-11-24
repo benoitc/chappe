@@ -15,16 +15,25 @@
 -include_lib("common_test/include/ct.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
--export([all/0, init_per_suite/1, end_per_suite/1,
-         init_per_testcase/2, end_per_testcase/2]).
+-export([
+    all/0,
+    init_per_suite/1,
+    end_per_suite/1,
+    init_per_testcase/2,
+    end_per_testcase/2
+]).
 -export([anchor_call/1, no_media_passthrough/1]).
 
 all() ->
     [anchor_call, no_media_passthrough].
 
 init_per_suite(Config) ->
-    application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
-                        [{persistent, true}]),
+    application:set_env(
+        chappe_sip,
+        engine_mod,
+        chappe_sip_nif,
+        [{persistent, true}]
+    ),
     {ok, _} = application:ensure_all_started(chappe_sip),
     Config.
 
@@ -37,9 +46,19 @@ end_per_suite(_Config) ->
 init_per_testcase(_Case, Config) ->
     RtpPort = start_fake(self()),
     ok = chappe_sip_media:configure(
-        #{rtpengine =>
-              #{nodes => [#{name => chappe_rtpengine_test, host => "127.0.0.1",
-                            port => RtpPort}]}}),
+        #{
+            rtpengine =>
+                #{
+                    nodes => [
+                        #{
+                            name => chappe_rtpengine_test,
+                            host => "127.0.0.1",
+                            port => RtpPort
+                        }
+                    ]
+                }
+        }
+    ),
     Config.
 
 end_per_testcase(_Case, _Config) ->
@@ -64,9 +83,21 @@ anchor_call(_Config) ->
         %% the caller's offer was anchored: the callee sees the fake's SDP
         Test ! {fwd_offer, body_of(Inv)},
         RR = record_route_of(Inv),
-        send(Sock, PSrc, resp(Inv, 200, <<"OK">>, tag(),
-                              [{<<"Contact">>, ctc(CP)},
-                               {<<"Record-Route">>, RR}], sdp(<<"callee">>))),
+        send(
+            Sock,
+            PSrc,
+            resp(
+                Inv,
+                200,
+                <<"OK">>,
+                tag(),
+                [
+                    {<<"Contact">>, ctc(CP)},
+                    {<<"Record-Route">>, RR}
+                ],
+                sdp(<<"callee">>)
+            )
+        ),
         {_Ack, _} = recv(Sock, <<"ACK">>),
         {Bye, BSrc} = recv(Sock, <<"BYE">>),
         send(Sock, BSrc, resp(Bye, 200, <<"OK">>, tag(), [], <<>>)),
@@ -112,8 +143,18 @@ no_media_passthrough(_Config) ->
     peer(CP, fun(Sock) ->
         {Inv, PSrc} = recv(Sock, <<"INVITE">>),
         Test ! {fwd_offer, body_of(Inv)},
-        send(Sock, PSrc, resp(Inv, 200, <<"OK">>, tag(),
-                              [{<<"Contact">>, ctc(CP)}], sdp(<<"callee">>))),
+        send(
+            Sock,
+            PSrc,
+            resp(
+                Inv,
+                200,
+                <<"OK">>,
+                tag(),
+                [{<<"Contact">>, ctc(CP)}],
+                sdp(<<"callee">>)
+            )
+        ),
         {_Ack, _} = recv(Sock, <<"ACK">>)
     end),
 
@@ -140,26 +181,39 @@ proxy_app(CP, Opts) ->
 
 setup() ->
     EP = pick(),
-    ok = chappe_sip:start(#{contact => <<"sip:127.0.0.1:",
-                                   (integer_to_binary(EP))/binary>>}),
+    ok = chappe_sip:start(#{
+        contact => <<"sip:127.0.0.1:", (integer_to_binary(EP))/binary>>
+    }),
     {EP, pick()}.
 
 peer(Port, Fun) ->
     Parent = self(),
     Pid = spawn_link(fun() ->
-        {ok, Sock} = gen_udp:open(Port, [binary, {active, true},
-                                         {ip, {127, 0, 0, 1}}]),
+        {ok, Sock} = gen_udp:open(Port, [
+            binary,
+            {active, true},
+            {ip, {127, 0, 0, 1}}
+        ]),
         Parent ! {peer_ready, self()},
         Fun(Sock)
     end),
-    receive {peer_ready, Pid} -> ok after 2000 -> ct:fail(peer_not_ready) end,
+    receive
+        {peer_ready, Pid} -> ok
+    after 2000 -> ct:fail(peer_not_ready)
+    end,
     Pid.
 
 expect(Msg) ->
-    receive Msg -> ok after 6000 -> ct:fail({expected, Msg}) end.
+    receive
+        Msg -> ok
+    after 6000 -> ct:fail({expected, Msg})
+    end.
 
 expect_val(Tag) ->
-    receive {Tag, V} -> V after 6000 -> ct:fail({expected, Tag}) end.
+    receive
+        {Tag, V} -> V
+    after 6000 -> ct:fail({expected, Tag})
+    end.
 
 %% ---- SIP helpers ----
 
@@ -173,16 +227,20 @@ branch() ->
     <<"z9hG4bK", (binary:encode_hex(crypto:strong_rand_bytes(6)))/binary>>.
 sdp(Who) ->
     <<"v=0 ", Who/binary>>.
-lport(Sock) -> {ok, P} = inet:port(Sock), P.
+lport(Sock) ->
+    {ok, P} = inet:port(Sock),
+    P.
 send(Sock, DstPort, Bin) -> gen_udp:send(Sock, {127, 0, 0, 1}, DstPort, Bin).
 
 recv(Sock, Method) ->
     L = byte_size(Method),
     receive
-        {udp, Sock, _, Src, <<M:L/binary, " ", _/binary>> = Bin}
-          when M =:= Method ->
+        {udp, Sock, _, Src, <<M:L/binary, " ", _/binary>> = Bin} when
+            M =:= Method
+        ->
             {Bin, Src};
-        {udp, Sock, _, _, _} -> recv(Sock, Method)
+        {udp, Sock, _, _, _} ->
+            recv(Sock, Method)
     after 6000 -> ct:fail({no_req, Method})
     end.
 
@@ -190,13 +248,20 @@ recv_status(Sock, Code) ->
     CB = integer_to_binary(Code),
     receive
         {udp, Sock, _, _, <<"SIP/2.0 ", C:3/binary, _/binary>> = Bin} ->
-            case C of CB -> Bin; _ -> recv_status(Sock, Code) end
+            case C of
+                CB -> Bin;
+                _ -> recv_status(Sock, Code)
+            end
     after 6000 -> ct:fail({no_status, Code})
     end.
 
-to_tag(Resp) -> {ok, M} = chappe_sip_msg:parse(Resp), chappe_sip_msg:to_tag(M).
+to_tag(Resp) ->
+    {ok, M} = chappe_sip_msg:parse(Resp),
+    chappe_sip_msg:to_tag(M).
 
-body_of(Bin) -> {ok, M} = chappe_sip_msg:parse(Bin), chappe_sip_msg:body(M).
+body_of(Bin) ->
+    {ok, M} = chappe_sip_msg:parse(Bin),
+    chappe_sip_msg:body(M).
 
 record_route_of(Bin) ->
     {ok, M} = chappe_sip_msg:parse(Bin),
@@ -212,40 +277,60 @@ contact_of(Bin) ->
 invite(Sock, Call, FT, S) ->
     P = integer_to_binary(lport(Sock)),
     L = integer_to_binary(byte_size(S)),
-    <<"INVITE sip:callee@127.0.0.1 SIP/2.0\r\n"
-      "Via: SIP/2.0/UDP 127.0.0.1:", P/binary, ";rport;branch=",
-      (branch())/binary,
-      "\r\nMax-Forwards: 70\r\n"
-      "From: Caller <sip:caller@127.0.0.1:", P/binary, ">;tag=", FT/binary,
-      "\r\nTo: <sip:callee@127.0.0.1>\r\n"
-      "Contact: <sip:caller@127.0.0.1:", P/binary, ">\r\n"
-      "Call-ID: ", Call/binary, "\r\nCSeq: 1 INVITE\r\n"
-      "Content-Type: application/sdp\r\n"
-      "Content-Length: ", L/binary, "\r\n\r\n", S/binary>>.
+    <<
+        "INVITE sip:callee@127.0.0.1 SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:",
+        P/binary,
+        ";rport;branch=",
+        (branch())/binary,
+        "\r\nMax-Forwards: 70\r\n"
+        "From: Caller <sip:caller@127.0.0.1:",
+        P/binary,
+        ">;tag=",
+        FT/binary,
+        "\r\nTo: <sip:callee@127.0.0.1>\r\n"
+        "Contact: <sip:caller@127.0.0.1:",
+        P/binary,
+        ">\r\n"
+        "Call-ID: ",
+        Call/binary,
+        "\r\nCSeq: 1 INVITE\r\n"
+        "Content-Type: application/sdp\r\n"
+        "Content-Length: ",
+        L/binary,
+        "\r\n\r\n",
+        S/binary
+    >>.
 
 ack(Sock, Call, FT, TT, RR, RURI, CSeq) ->
     P = integer_to_binary(lport(Sock)),
     CS = integer_to_binary(CSeq),
     RouteLine = route_line(RR),
-    <<"ACK ", RURI/binary, " SIP/2.0\r\n"
-      "Via: SIP/2.0/UDP 127.0.0.1:", P/binary, ";branch=", (branch())/binary,
-      "\r\nMax-Forwards: 70\r\n", RouteLine/binary,
-      "From: Caller <sip:caller@127.0.0.1:", P/binary, ">;tag=", FT/binary,
-      "\r\nTo: <sip:callee@127.0.0.1>;tag=", TT/binary, "\r\n"
-      "Call-ID: ", Call/binary, "\r\nCSeq: ", CS/binary, " ACK\r\n"
-      "Content-Length: 0\r\n\r\n">>.
+    <<"ACK ", RURI/binary,
+        " SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:", P/binary, ";branch=", (branch())/binary,
+        "\r\nMax-Forwards: 70\r\n", RouteLine/binary,
+        "From: Caller <sip:caller@127.0.0.1:", P/binary, ">;tag=", FT/binary,
+        "\r\nTo: <sip:callee@127.0.0.1>;tag=", TT/binary,
+        "\r\n"
+        "Call-ID: ", Call/binary, "\r\nCSeq: ", CS/binary,
+        " ACK\r\n"
+        "Content-Length: 0\r\n\r\n">>.
 
 bye(Sock, Call, FT, TT, RR, RURI, CSeq) ->
     P = integer_to_binary(lport(Sock)),
     CS = integer_to_binary(CSeq),
     RouteLine = route_line(RR),
-    <<"BYE ", RURI/binary, " SIP/2.0\r\n"
-      "Via: SIP/2.0/UDP 127.0.0.1:", P/binary, ";branch=", (branch())/binary,
-      "\r\nMax-Forwards: 70\r\n", RouteLine/binary,
-      "From: Caller <sip:caller@127.0.0.1:", P/binary, ">;tag=", FT/binary,
-      "\r\nTo: <sip:callee@127.0.0.1>;tag=", TT/binary, "\r\n"
-      "Call-ID: ", Call/binary, "\r\nCSeq: ", CS/binary, " BYE\r\n"
-      "Content-Length: 0\r\n\r\n">>.
+    <<"BYE ", RURI/binary,
+        " SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:", P/binary, ";branch=", (branch())/binary,
+        "\r\nMax-Forwards: 70\r\n", RouteLine/binary,
+        "From: Caller <sip:caller@127.0.0.1:", P/binary, ">;tag=", FT/binary,
+        "\r\nTo: <sip:callee@127.0.0.1>;tag=", TT/binary,
+        "\r\n"
+        "Call-ID: ", Call/binary, "\r\nCSeq: ", CS/binary,
+        " BYE\r\n"
+        "Content-Length: 0\r\n\r\n">>.
 
 route_line(<<>>) -> <<>>;
 route_line(RR) -> <<"Route: ", RR/binary, "\r\n">>.
@@ -255,24 +340,53 @@ resp(ReqBin, Status, Reason, ToTag, ExtraHeaders, Body) ->
     Vias = chappe_sip_msg:get_all(<<"via">>, Msg),
     From = chappe_sip_msg:get(<<"from">>, Msg),
     To0 = chappe_sip_msg:get(<<"to">>, Msg),
-    To = case {chappe_sip_msg:to_tag(Msg), ToTag} of
-             {undefined, keep} -> To0;
-             {undefined, _} when Status > 100 ->
-                 <<To0/binary, ";tag=", ToTag/binary>>;
-             _ -> To0
-         end,
+    To =
+        case {chappe_sip_msg:to_tag(Msg), ToTag} of
+            {undefined, keep} ->
+                To0;
+            {undefined, _} when Status > 100 ->
+                <<To0/binary, ";tag=", ToTag/binary>>;
+            _ ->
+                To0
+        end,
     Call = chappe_sip_msg:call_id(Msg),
     CSeq = chappe_sip_msg:get(<<"cseq">>, Msg),
     ViaLines = [[<<"Via: ">>, V, <<"\r\n">>] || V <- Vias],
     Extra = [[N, <<": ">>, Val, <<"\r\n">>] || {N, Val} <- ExtraHeaders],
-    CT = case Body of <<>> -> []; _ -> [<<"Content-Type: application/sdp\r\n">>]
-         end,
+    CT =
+        case Body of
+            <<>> -> [];
+            _ -> [<<"Content-Type: application/sdp\r\n">>]
+        end,
     CL = integer_to_binary(byte_size(Body)),
     iolist_to_binary(
-      [<<"SIP/2.0 ">>, integer_to_binary(Status), <<" ">>, Reason, <<"\r\n">>,
-       ViaLines, <<"From: ">>, From, <<"\r\n">>, <<"To: ">>, To, <<"\r\n">>,
-       <<"Call-ID: ">>, Call, <<"\r\n">>, <<"CSeq: ">>, CSeq, <<"\r\n">>, Extra,
-       CT, <<"Content-Length: ">>, CL, <<"\r\n\r\n">>, Body]).
+        [
+            <<"SIP/2.0 ">>,
+            integer_to_binary(Status),
+            <<" ">>,
+            Reason,
+            <<"\r\n">>,
+            ViaLines,
+            <<"From: ">>,
+            From,
+            <<"\r\n">>,
+            <<"To: ">>,
+            To,
+            <<"\r\n">>,
+            <<"Call-ID: ">>,
+            Call,
+            <<"\r\n">>,
+            <<"CSeq: ">>,
+            CSeq,
+            <<"\r\n">>,
+            Extra,
+            CT,
+            <<"Content-Length: ">>,
+            CL,
+            <<"\r\n\r\n">>,
+            Body
+        ]
+    ).
 
 %% ---- fake rtpengine NG node (reused pattern from chappe_sip_media_SUITE) ----
 
@@ -283,8 +397,10 @@ tag_of(Name, Key, Cmds) ->
     end.
 
 has_cmd(Name, Cmds) ->
-    lists:any(fun(C) -> maps:get(<<"command">>, C, undefined) =:= Name end,
-              Cmds).
+    lists:any(
+        fun(C) -> maps:get(<<"command">>, C, undefined) =:= Name end,
+        Cmds
+    ).
 
 drain_cmds() -> drain_cmds([]).
 
@@ -306,8 +422,11 @@ start_fake(Collector) ->
 
 stop_fake() ->
     case get(fake_pid) of
-        undefined -> ok;
-        Pid -> Pid ! stop, ok
+        undefined ->
+            ok;
+        Pid ->
+            Pid ! stop,
+            ok
     end.
 
 fake_init(Starter, Collector) ->
@@ -324,8 +443,12 @@ fake_loop(Sock, Collector) ->
             Collector ! {fake_cmd, Cmd},
             Reply = fake_reply(maps:get(<<"command">>, Cmd, <<>>)),
             RBin = chappe_rtpengine_bencode:encode_to_binary(Reply),
-            ok = gen_udp:send(Sock, IP, PPort,
-                              <<Cookie/binary, " ", RBin/binary>>),
+            ok = gen_udp:send(
+                Sock,
+                IP,
+                PPort,
+                <<Cookie/binary, " ", RBin/binary>>
+            ),
             fake_loop(Sock, Collector);
         stop ->
             gen_udp:close(Sock)

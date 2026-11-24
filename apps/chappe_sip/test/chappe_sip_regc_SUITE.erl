@@ -10,25 +10,59 @@
 -include_lib("stdlib/include/assert.hrl").
 
 -import(chappe_sip_core_peer, [
-    open/0, port/1, send/3, recv/3, recv_none/3, response/3, tag/0,
-    hdr/2, hdrs/2, cseq/1
+    open/0,
+    port/1,
+    send/3,
+    recv/3,
+    recv_none/3,
+    response/3,
+    tag/0,
+    hdr/2,
+    hdrs/2,
+    cseq/1
 ]).
 
--export([all/0, init_per_suite/1, end_per_suite/1,
-         init_per_testcase/2, end_per_testcase/2]).
--export([digest_and_refresh/1, digest_reuse_refused/1, min_expires_423/1, failure_backoff/1,
-         expiry/1, unregister/1, from_app_env/1, not_found/1,
-         stop_unregisters/1]).
+-export([
+    all/0,
+    init_per_suite/1,
+    end_per_suite/1,
+    init_per_testcase/2,
+    end_per_testcase/2
+]).
+-export([
+    digest_and_refresh/1,
+    digest_reuse_refused/1,
+    min_expires_423/1,
+    failure_backoff/1,
+    expiry/1,
+    unregister/1,
+    from_app_env/1,
+    not_found/1,
+    stop_unregisters/1
+]).
 
 -define(AOR, <<"sip:alice@example.com">>).
 
 all() ->
-    [digest_and_refresh, digest_reuse_refused, min_expires_423, failure_backoff, expiry, unregister,
-     from_app_env, not_found, stop_unregisters].
+    [
+        digest_and_refresh,
+        digest_reuse_refused,
+        min_expires_423,
+        failure_backoff,
+        expiry,
+        unregister,
+        from_app_env,
+        not_found,
+        stop_unregisters
+    ].
 
 init_per_suite(Config) ->
-    application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
-                        [{persistent, true}]),
+    application:set_env(
+        chappe_sip,
+        engine_mod,
+        chappe_sip_nif,
+        [{persistent, true}]
+    ),
     {ok, _} = application:ensure_all_started(chappe_sip),
     Config.
 
@@ -39,9 +73,16 @@ end_per_suite(_Config) ->
 
 init_per_testcase(from_app_env, Config) ->
     Sock = open(),
-    application:set_env(chappe_sip, registrations,
-                        #{env_trunk => #{aor => ?AOR,
-                                         registrar => registrar(Sock)}}),
+    application:set_env(
+        chappe_sip,
+        registrations,
+        #{
+            env_trunk => #{
+                aor => ?AOR,
+                registrar => registrar(Sock)
+            }
+        }
+    ),
     start(Sock, Config);
 init_per_testcase(_Case, Config) ->
     start(open(), Config).
@@ -54,8 +95,10 @@ start(Sock, Config) ->
 
 end_per_testcase(_Case, Config) ->
     application:unset_env(chappe_sip, registrations),
-    [chappe_sip_regc_sup:delete_child(N)
-     || {N, _} <- chappe_sip_regc_sup:children()],
+    [
+        chappe_sip_regc_sup:delete_child(N)
+     || {N, _} <- chappe_sip_regc_sup:children()
+    ],
     chappe_sip_core_peer:close(?config(sock, Config)),
     _ = chappe_sip:stop(),
     ok.
@@ -67,8 +110,11 @@ end_per_testcase(_Case, Config) ->
 digest_and_refresh(Config) ->
     Sock = ?config(sock, Config),
     ok = chappe_sip:register_client(trunk, #{
-        aor => ?AOR, registrar => registrar(Sock), expires => 3,
-        auth => #{user => <<"alice">>, pass => <<"secret">>}}),
+        aor => ?AOR,
+        registrar => registrar(Sock),
+        expires => 3,
+        auth => #{user => <<"alice">>, pass => <<"secret">>}
+    }),
     R1 = register(Sock),
     ?assertEqual(<<"3">>, hdr(<<"expires">>, R1)),
     ?assertEqual(<<"<", ?AOR/binary, ">">>, hdr(<<"to">>, R1)),
@@ -104,8 +150,11 @@ digest_and_refresh(Config) ->
 digest_reuse_refused(Config) ->
     Sock = ?config(sock, Config),
     ok = chappe_sip:register_client(tre, #{
-        aor => ?AOR, registrar => registrar(Sock), expires => 2,
-        auth => #{user => <<"alice">>, pass => <<"secret">>}}),
+        aor => ?AOR,
+        registrar => registrar(Sock),
+        expires => 2,
+        auth => #{user => <<"alice">>, pass => <<"secret">>}
+    }),
     R1 = register(Sock),
     challenge(Sock, R1),
     R2 = register(Sock),
@@ -121,11 +170,14 @@ digest_reuse_refused(Config) ->
     {ok, <<"alice">>} = verify(R5),
     ok(Sock, R5, 2),
     R6 = register(Sock),
-    reply(Sock, R6, 401, [{<<"WWW-Authenticate">>,
-                           chappe_sip_digest:challenge(<<"lab">>, true)}]),
+    reply(Sock, R6, 401, [
+        {<<"WWW-Authenticate">>, chappe_sip_digest:challenge(<<"lab">>, true)}
+    ]),
     R7 = register(Sock),
-    ?assertNotEqual(maps:get(<<"nonce">>, auth_params(R6)),
-                    maps:get(<<"nonce">>, auth_params(R7))),
+    ?assertNotEqual(
+        maps:get(<<"nonce">>, auth_params(R6)),
+        maps:get(<<"nonce">>, auth_params(R7))
+    ),
     {ok, <<"alice">>} = verify(R7),
     ok(Sock, R7, 3600),
     no_event(tre, 300).
@@ -135,7 +187,8 @@ digest_reuse_refused(Config) ->
 min_expires_423(Config) ->
     Sock = ?config(sock, Config),
     ok = chappe_sip:register_client(t423, #{
-        aor => ?AOR, registrar => registrar(Sock), expires => 30}),
+        aor => ?AOR, registrar => registrar(Sock), expires => 30
+    }),
     R1 = register(Sock),
     reply(Sock, R1, 423, [{<<"Min-Expires">>, <<"120">>}]),
     R2 = register(Sock),
@@ -149,7 +202,8 @@ min_expires_423(Config) ->
 failure_backoff(Config) ->
     Sock = ?config(sock, Config),
     ok = chappe_sip:register_client(tfail, #{
-        aor => ?AOR, registrar => registrar(Sock), retry_min_ms => 300}),
+        aor => ?AOR, registrar => registrar(Sock), retry_min_ms => 300
+    }),
     R1 = register(Sock),
     reply(Sock, R1, 403, []),
     failed = event(tfail),
@@ -176,8 +230,11 @@ failure_backoff(Config) ->
 expiry(Config) ->
     Sock = ?config(sock, Config),
     ok = chappe_sip:register_client(texp, #{
-        aor => ?AOR, registrar => registrar(Sock), expires => 2,
-        retry_min_ms => 5000}),
+        aor => ?AOR,
+        registrar => registrar(Sock),
+        expires => 2,
+        retry_min_ms => 5000
+    }),
     R1 = register(Sock),
     ok(Sock, R1, 2),
     registered = event(texp),
@@ -194,23 +251,30 @@ expiry(Config) ->
 unregister(Config) ->
     Sock = ?config(sock, Config),
     ok = chappe_sip:register_client(tun, #{
-        aor => ?AOR, registrar => registrar(Sock)}),
+        aor => ?AOR, registrar => registrar(Sock)
+    }),
     R1 = register(Sock),
     ok(Sock, R1, 3600),
     registered = event(tun),
     Self = self(),
-    spawn_link(fun() -> Self ! {unregistered, chappe_sip:unregister_client(tun)} end),
+    spawn_link(fun() ->
+        Self ! {unregistered, chappe_sip:unregister_client(tun)}
+    end),
     R2 = register(Sock),
     ?assertEqual(<<"0">>, hdr(<<"expires">>, R2)),
     ?assertEqual(hdr(<<"contact">>, R1), hdr(<<"contact">>, R2)),
     ?assertEqual(hdr(<<"call-id">>, R1), hdr(<<"call-id">>, R2)),
     ok(Sock, R2, 0),
-    receive {unregistered, ok} -> ok after 5000 -> ct:fail(no_unregister) end,
+    receive
+        {unregistered, ok} -> ok
+    after 5000 -> ct:fail(no_unregister)
+    end,
     {error, not_found} = chappe_sip:register_status(tun),
     {error, not_found} = chappe_sip:unregister_client(tun),
     %% the name can be used again
     ok = chappe_sip:register_client(tun, #{
-        aor => ?AOR, registrar => registrar(Sock)}),
+        aor => ?AOR, registrar => registrar(Sock)
+    }),
     _ = register(Sock).
 
 %% The registrations setting is started with the stack.
@@ -219,8 +283,10 @@ from_app_env(Config) ->
     R1 = register(Sock),
     ok(Sock, R1, 3600),
     registered = event(env_trunk),
-    {error, already_started} = chappe_sip:register_client(env_trunk,
-                                                          #{aor => ?AOR}).
+    {error, already_started} = chappe_sip:register_client(
+        env_trunk,
+        #{aor => ?AOR}
+    ).
 
 not_found(_Config) ->
     {error, not_found} = chappe_sip:register_status(nobody),
@@ -233,7 +299,8 @@ not_found(_Config) ->
 stop_unregisters(Config) ->
     Sock = ?config(sock, Config),
     ok = chappe_sip:register_client(tstop, #{
-        aor => ?AOR, registrar => registrar(Sock)}),
+        aor => ?AOR, registrar => registrar(Sock)
+    }),
     R1 = register(Sock),
     ok(Sock, R1, 3600),
     registered = event(tstop),
@@ -253,10 +320,15 @@ register(Sock) ->
 verify(Req) ->
     M = chappe_sip_core_peer:parse(Req),
     chappe_sip_digest:verify(#{
-        method => <<"REGISTER">>, realm => <<"lab">>,
-        secret => fun(<<"alice">>) -> {ok, <<"secret">>}; (_) -> error end,
+        method => <<"REGISTER">>,
+        realm => <<"lab">>,
+        secret => fun
+            (<<"alice">>) -> {ok, <<"secret">>};
+            (_) -> error
+        end,
         authorization => chappe_sip_msg:get(<<"authorization">>, M),
-        request_uri => chappe_sip_msg:uri(M)}).
+        request_uri => chappe_sip_msg:uri(M)
+    }).
 
 auth_params(Req) ->
     {ok, #{params := P}} = chappe_sip_hdr:auth(hdr(<<"authorization">>, Req)),
@@ -267,17 +339,32 @@ seq(Bin) ->
     N.
 
 challenge(Sock, Req) ->
-    reply(Sock, Req, 401,
-          [{<<"WWW-Authenticate">>, chappe_sip_digest:challenge(<<"lab">>)}]).
+    reply(
+        Sock,
+        Req,
+        401,
+        [{<<"WWW-Authenticate">>, chappe_sip_digest:challenge(<<"lab">>)}]
+    ).
 
 ok(Sock, Req, Expires) ->
     [Contact] = hdrs(<<"contact">>, Req),
-    reply(Sock, Req, 200,
-          [{<<"Contact">>,
-            <<Contact/binary, ";expires=", (integer_to_binary(Expires))/binary>>}]).
+    reply(
+        Sock,
+        Req,
+        200,
+        [
+            {<<"Contact">>,
+                <<Contact/binary, ";expires=",
+                    (integer_to_binary(Expires))/binary>>}
+        ]
+    ).
 
 reply(Sock, Req, Status, Hdrs) ->
-    send(Sock, src_port(Req), response(Req, Status, #{to_tag => tag(), headers => Hdrs})).
+    send(
+        Sock,
+        src_port(Req),
+        response(Req, Status, #{to_tag => tag(), headers => Hdrs})
+    ).
 
 %% the engine's port, from the top Via of its request
 src_port(Req) ->
@@ -286,12 +373,14 @@ src_port(Req) ->
     binary_to_integer(P).
 
 event(Name) ->
-    receive {chappe_sip_regc, Name, E} -> E
+    receive
+        {chappe_sip_regc, Name, E} -> E
     after 6000 -> ct:fail({no_regc_event, Name})
     end.
 
 no_event(Name, T) ->
-    receive {chappe_sip_regc, Name, E} -> ct:fail({unexpected, E})
+    receive
+        {chappe_sip_regc, Name, E} -> ct:fail({unexpected, E})
     after T -> ok
     end.
 

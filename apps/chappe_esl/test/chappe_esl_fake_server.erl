@@ -436,15 +436,25 @@ channel_event(Name, Headers, #{opts := Opts}) ->
 
 channel_data(#{opts := Opts}) ->
     Uuid = maps:get(channel, Opts, <<"fake-uuid-1">>),
-    <<"Content-Type: command/reply\nReply-Text: +OK\n"
-        "Unique-ID: ", Uuid/binary, "\nChannel-Unique-ID: ", Uuid/binary,
+    <<
+        "Content-Type: command/reply\nReply-Text: +OK\n"
+        "Unique-ID: ",
+        Uuid/binary,
+        "\nChannel-Unique-ID: ",
+        Uuid/binary,
         "\nChannel-Name: sofia/internal/1000\n"
-        "Caller-Caller-ID-Number: 1000\n\n">>.
+        "Caller-Caller-ID-Number: 1000\n\n"
+    >>.
 
 %% "event json HEARTBEAT ..." starts the heartbeat when one is configured.
 subscribed(Spec, #{opts := Opts} = State) ->
     [Format | Names] = binary:split(Spec, <<" ">>, [global, trim_all]),
-    case {maps:get(heartbeat, Opts, undefined), lists:member(<<"HEARTBEAT">>, Names)} of
+    case
+        {
+            maps:get(heartbeat, Opts, undefined),
+            lists:member(<<"HEARTBEAT">>, Names)
+        }
+    of
         {Ms, true} when is_integer(Ms) ->
             Ms > 0 andalso erlang:send_after(Ms, self(), heartbeat),
             State#{hb_format := Format};
@@ -462,7 +472,9 @@ send_heartbeat(#{sock := Sock, hb_format := Format, load := Load} = State) ->
             _ -> plain_event(<<"HEARTBEAT">>, Headers)
         end,
     _ = gen_tcp:send(Sock, Frame),
-    erlang:send_after(maps:get(heartbeat, maps:get(opts, State)), self(), heartbeat),
+    erlang:send_after(
+        maps:get(heartbeat, maps:get(opts, State)), self(), heartbeat
+    ),
     State.
 
 default_load() ->

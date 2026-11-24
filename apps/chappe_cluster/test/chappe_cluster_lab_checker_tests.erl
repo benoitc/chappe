@@ -313,7 +313,9 @@ kill_bound_ends_at_the_restart_test() ->
     ],
     Opts = #{kill_bound_us => 100},
     ?assertEqual(ok, ?C:check(Log, Opts)),
-    Early = [E || {T, _, _, _, _} = E <- Log, T =/= 35] ++ [{28, b(), k, claim_ok, f(2)}],
+    Early =
+        [E || {T, _, _, _, _} = E <- Log, T =/= 35] ++
+            [{28, b(), k, claim_ok, f(2)}],
     ?assertEqual(overlap, kind(?C:check(Early, Opts))).
 
 hlc(W, L) -> {timestamp, W, L}.

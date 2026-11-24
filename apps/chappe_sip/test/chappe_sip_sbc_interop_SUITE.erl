@@ -17,20 +17,44 @@
 -include_lib("stdlib/include/assert.hrl").
 
 -export([all/0, suite/0, init_per_suite/1, end_per_suite/1]).
--export([direct_call/1, anchored_call/1, hold_from_sipp/1, hold_from_fs/1,
-         offerless_reinvite/1, update_offer/1, glare/1,
-         set_media_both_ways/1, session_timer_refresh/1,
-         options_failover/1, kamailio_pings/1, replace_b/1,
-         fork_webrtc_and_plain/1, nat_public_call/1, nat_local_call/1]).
+-export([
+    direct_call/1,
+    anchored_call/1,
+    hold_from_sipp/1,
+    hold_from_fs/1,
+    offerless_reinvite/1,
+    update_offer/1,
+    glare/1,
+    set_media_both_ways/1,
+    session_timer_refresh/1,
+    options_failover/1,
+    kamailio_pings/1,
+    replace_b/1,
+    fork_webrtc_and_plain/1,
+    nat_public_call/1,
+    nat_local_call/1
+]).
 
 all() ->
     case os:getenv("INTEROP") of
         "1" ->
-            [kamailio_pings, direct_call, anchored_call, hold_from_sipp,
-             hold_from_fs, offerless_reinvite, update_offer, glare,
-             set_media_both_ways, session_timer_refresh, replace_b,
-             fork_webrtc_and_plain, nat_public_call, nat_local_call,
-             options_failover];
+            [
+                kamailio_pings,
+                direct_call,
+                anchored_call,
+                hold_from_sipp,
+                hold_from_fs,
+                offerless_reinvite,
+                update_offer,
+                glare,
+                set_media_both_ways,
+                session_timer_refresh,
+                replace_b,
+                fork_webrtc_and_plain,
+                nat_public_call,
+                nat_local_call,
+                options_failover
+            ];
         _ ->
             {skip, "set INTEROP=1 (needs docker) to run the SBC lab"}
     end.
@@ -53,7 +77,8 @@ init_per_suite(Config) ->
     end.
 
 end_per_suite(Config) ->
-    _ = case os:getenv("SBC_KEEP") of
+    _ =
+        case os:getenv("SBC_KEEP") of
             "1" -> ok;
             _ -> run(?config(lab, Config), "down", 120000)
         end,
@@ -62,8 +87,12 @@ end_per_suite(Config) ->
 lab(Config) ->
     Data = ?config(data_dir, Config),
     %% the suite's data dir is a copy; the lab is in the source tree
-    Root = filename:join(lists:takewhile(fun(P) -> P =/= "_build" end,
-                                         filename:split(Data))),
+    Root = filename:join(
+        lists:takewhile(
+            fun(P) -> P =/= "_build" end,
+            filename:split(Data)
+        )
+    ),
     filename:join([Root, "apps", "chappe_sip", "interop", "sbc", "lab.sh"]).
 
 %% ---- cases ----
@@ -72,10 +101,19 @@ lab(Config) ->
 %% peer of group kam): both see the other up.
 kamailio_pings(Config) ->
     Lab = ?config(lab, Config),
-    ok = until(fun() -> has(cmd(Lab, "logs"), "options from 10.253.9.40") end, 30),
-    ok = until(fun() -> lists:member({kam, up}, ctl(Lab, "peers", "[]")) end, 30),
-    ok = until(fun() -> has(cmd(Lab, "kam"), "FLAGS: AP") orelse
-                            has(cmd(Lab, "kam"), "FLAGS: A") end, 30).
+    ok = until(
+        fun() -> has(cmd(Lab, "logs"), "options from 10.253.9.40") end, 30
+    ),
+    ok = until(
+        fun() -> lists:member({kam, up}, ctl(Lab, "peers", "[]")) end, 30
+    ),
+    ok = until(
+        fun() ->
+            has(cmd(Lab, "kam"), "FLAGS: AP") orelse
+                has(cmd(Lab, "kam"), "FLAGS: A")
+        end,
+        30
+    ).
 
 %% A direct call: the SDP SIPp gets names FreeSWITCH.
 direct_call(Config) ->
@@ -124,13 +162,27 @@ hold_from_fs(Config) ->
 %% SIPp's re-INVITE without an offer: FreeSWITCH's offer comes back
 %% through the SBC in the 2xx, SIPp's answer goes on in the ACK.
 offerless_reinvite(Config) ->
-    _ = done(sipp(?config(lab, Config), "reinvite_offerless", "uas", 1000,
-                  "offerless-1@lab")).
+    _ = done(
+        sipp(
+            ?config(lab, Config),
+            "reinvite_offerless",
+            "uas",
+            1000,
+            "offerless-1@lab"
+        )
+    ).
 
 %% An UPDATE with an offer in the confirmed call, answered by FreeSWITCH.
 update_offer(Config) ->
-    _ = done(sipp(?config(lab, Config), "update_offer", "uas", 1000,
-                  "update-1@lab")).
+    _ = done(
+        sipp(
+            ?config(lab, Config),
+            "update_offer",
+            "uas",
+            1000,
+            "update-1@lab"
+        )
+    ).
 
 %% The SBC re-INVITEs SIPp right after the ACK (set_media), SIPp's own
 %% re-INVITE crosses it: each side gets 491 (RFC 3261 14.2).
@@ -154,8 +206,16 @@ set_media_both_ways(Config) ->
 %% SIPp refreshes its session timer (RFC 4028) through the SBC; the A leg
 %% answers it and no BYE comes before the refreshed expiry.
 session_timer_refresh(Config) ->
-    _ = done(sipp(?config(lab, Config), "st_refresh_uac", "uas", 1000,
-                  "st-1@lab"), 150000).
+    _ = done(
+        sipp(
+            ?config(lab, Config),
+            "st_refresh_uac",
+            "uas",
+            1000,
+            "st-1@lab"
+        ),
+        150000
+    ).
 
 %% An anchored call on fs1 moves to fs2 (replace_b/3): SIPp sees no
 %% re-INVITE (its scenario takes none), fs2 gets the call and fs1 its BYE,
@@ -204,8 +264,16 @@ nat_public_call(Config) ->
 %% A caller on the local network (10.253.10.0/26) gets the local address.
 nat_local_call(Config) ->
     Lab = ?config(lab, Config),
-    Out = done(sipp_nat(Lab, "sbc_call", "direct", 1000, "nat-loc-1@lab",
-                        "10.253.10.50")),
+    Out = done(
+        sipp_nat(
+            Lab,
+            "sbc_call",
+            "direct",
+            1000,
+            "nat-loc-1@lab",
+            "10.253.10.50"
+        )
+    ),
     A = answer(Out),
     ?assert(has(A, "Contact: <sip:10.253.10.10")),
     ?assertNot(has(A, "203.0.113.10")).
@@ -215,11 +283,15 @@ nat_local_call(Config) ->
 options_failover(Config) ->
     Lab = ?config(lab, Config),
     _ = cmd(Lab, "stop fs1"),
-    ok = until(fun() -> lists:member({fs1, down}, ctl(Lab, "peers", "[]")) end, 30),
+    ok = until(
+        fun() -> lists:member({fs1, down}, ctl(Lab, "peers", "[]")) end, 30
+    ),
     Out = done(sipp(Lab, "sbc_call", "direct", 1000, "failover-1@lab")),
     ?assert(has(answer(Out), "c=IN IP4 10.253.9.32")),
     _ = cmd(Lab, "start fs1"),
-    ok = until(fun() -> lists:member({fs1, up}, ctl(Lab, "peers", "[]")) end, 60).
+    ok = until(
+        fun() -> lists:member({fs1, up}, ctl(Lab, "peers", "[]")) end, 60
+    ).
 
 %% ---- helpers ----
 
@@ -228,11 +300,14 @@ run(Lab, Args, Timeout) ->
     Self = self(),
     Pid = spawn(fun() -> Self ! {self(), sh(Lab ++ " " ++ Args)} end),
     receive
-        {Pid, {0, _}} -> ct:pal("~s ~s: ok", [Lab, Args]), ok;
+        {Pid, {0, _}} ->
+            ct:pal("~s ~s: ok", [Lab, Args]),
+            ok;
         %% ct:pal, not ct:log: the CI job keeps no CT logs, so a lab step
         %% that fails must say why in the job output
-        {Pid, {Rc, Out}} -> ct:pal("~s ~s: rc=~p~n~s", [Lab, Args, Rc, Out]),
-                            {error, {Args, Rc}}
+        {Pid, {Rc, Out}} ->
+            ct:pal("~s ~s: rc=~p~n~s", [Lab, Args, Rc, Out]),
+            {error, {Args, Rc}}
     after Timeout ->
         ct:pal("~s ~s: no exit after ~p s", [Lab, Args, Timeout div 1000]),
         ct:fail({timeout, Args})
@@ -243,24 +318,31 @@ cmd(Lab, Args) ->
     Out.
 
 sh(Cmd) ->
-    Env = case os:getenv("SBC_LAB") of
-              false -> "";
-              Name -> "SBC_LAB=" ++ Name ++ " "
-          end,
+    Env =
+        case os:getenv("SBC_LAB") of
+            false -> "";
+            Name -> "SBC_LAB=" ++ Name ++ " "
+        end,
     Out = os:cmd(Env ++ Cmd ++ " 2>&1; echo \"\nrc=$?\""),
     [Rc | Rev] = lists:reverse(string:split(string:trim(Out), "\n", all)),
-    {list_to_integer(string:prefix(Rc, "rc=")), lists:join("\n", lists:reverse(Rev))}.
+    {
+        list_to_integer(string:prefix(Rc, "rc=")),
+        lists:join("\n", lists:reverse(Rev))
+    }.
 
 %% an erl_call on the node, its result read back as a term
 ctl(Lab, Fun, Args) ->
-    Out = string:trim(lists:flatten(cmd(Lab, "ctl " ++ Fun ++ " '" ++ Args ++ "'"))),
+    Out = string:trim(
+        lists:flatten(cmd(Lab, "ctl " ++ Fun ++ " '" ++ Args ++ "'"))
+    ),
     case erl_scan:string(Out ++ ".") of
         {ok, Toks, _} ->
             case erl_parse:parse_term(Toks) of
                 {ok, T} -> T;
                 _ -> {unparsed, Out}
             end;
-        _ -> {unparsed, Out}
+        _ ->
+            {unparsed, Out}
     end.
 
 mode(Lab, Cid) ->
@@ -291,12 +373,23 @@ channels(Lab, N) ->
 
 %% the FreeSWITCH node with a channel, and that channel's uuid
 fs_channel(Lab) ->
-    Found = [{N, Uuid} || N <- ["1", "2"],
-                          Line <- [lists:nth(2, string:split(
-                                                  cmd(Lab, "fs " ++ N ++ " 'show channels'")
-                                                  ++ "\n\n", "\n", all))],
-                          [Uuid | _] <- [string:split(Line, ",")],
-                          length(Uuid) =:= 36],
+    Found = [
+        {N, Uuid}
+     || N <- ["1", "2"],
+        Line <- [
+            lists:nth(
+                2,
+                string:split(
+                    cmd(Lab, "fs " ++ N ++ " 'show channels'") ++
+                        "\n\n",
+                    "\n",
+                    all
+                )
+            )
+        ],
+        [Uuid | _] <- [string:split(Line, ",")],
+        length(Uuid) =:= 36
+    ],
     case Found of
         [F | _] -> F;
         [] -> ct:fail(no_fs_channel)
@@ -304,13 +397,19 @@ fs_channel(Lab) ->
 
 sipp(Lab, Scen, User, Pause, Cid) ->
     Self = self(),
-    Args = lists:flatten(io_lib:format("sipp ~s ~s ~b ~s", [Scen, User, Pause, Cid])),
+    Args = lists:flatten(
+        io_lib:format("sipp ~s ~s ~b ~s", [Scen, User, Pause, Cid])
+    ),
     spawn(fun() -> Self ! {sipp, self(), sh(Lab ++ " " ++ Args)} end).
 
 sipp_nat(Lab, Scen, User, Pause, Cid, Ip) ->
     Self = self(),
-    Args = lists:flatten(io_lib:format("sipp-nat ~s ~s ~b ~s ~s",
-                                       [Scen, User, Pause, Cid, Ip])),
+    Args = lists:flatten(
+        io_lib:format(
+            "sipp-nat ~s ~s ~b ~s ~s",
+            [Scen, User, Pause, Cid, Ip]
+        )
+    ),
     spawn(fun() -> Self ! {sipp, self(), sh(Lab ++ " " ++ Args)} end).
 
 done(Pid) -> done(Pid, 90000).
@@ -333,9 +432,19 @@ answer(Out) ->
 
 has(Text, Part) -> string:find(lists:flatten(Text), Part) =/= nomatch.
 
-until(_Fun, 0) -> {error, timeout};
+until(_Fun, 0) ->
+    {error, timeout};
 until(Fun, N) ->
-    case try Fun() catch _:_ -> false end of
-        true -> ok;
-        _ -> timer:sleep(1000), until(Fun, N - 1)
+    case
+        try
+            Fun()
+        catch
+            _:_ -> false
+        end
+    of
+        true ->
+            ok;
+        _ ->
+            timer:sleep(1000),
+            until(Fun, N - 1)
     end.

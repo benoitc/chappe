@@ -35,8 +35,9 @@ skip_test() ->
     Csrc = <<1:32, 2:32>>,
     Ext = <<16#BEDE:16, 1:16, 0:32>>,
     Pad = <<0, 0, 3>>,
-    {ok, P} = chappe_mix_rtp:parse(<<Hdr/binary, Csrc/binary, Ext/binary,
-        "abc", Pad/binary>>),
+    {ok, P} = chappe_mix_rtp:parse(
+        <<Hdr/binary, Csrc/binary, Ext/binary, "abc", Pad/binary>>
+    ),
     ?assertMatch(#{pt := 8, seq := 7, ts := 160, ssrc := 42}, P),
     ?assertEqual(<<"abc">>, maps:get(payload, P)).
 
@@ -82,7 +83,9 @@ csrc_test() ->
 %% 192..223 (PT 64..95 after the marker bit) is RTCP, not only SR..APP; RTP PT 0
 %% and 8 with or without the marker, and PT 96..127, stay RTP.
 demux_test_() ->
-    Rtcp = fun(B) -> chappe_mix_rtp:parse(<<2:2, 0:6, B, 0:16, 0:32, 0:32>>) end,
+    Rtcp = fun(B) ->
+        chappe_mix_rtp:parse(<<2:2, 0:6, B, 0:16, 0:32, 0:32>>)
+    end,
     [?_assertEqual({error, rtcp}, Rtcp(B)) || B <- lists:seq(192, 223)] ++
         [
             ?_assertMatch({ok, _}, Rtcp(B))

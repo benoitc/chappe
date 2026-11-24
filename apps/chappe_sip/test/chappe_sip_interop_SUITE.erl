@@ -17,8 +17,13 @@
 -include_lib("common_test/include/ct.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
--export([all/0, init_per_suite/1, end_per_suite/1,
-         init_per_testcase/2, end_per_testcase/2]).
+-export([
+    all/0,
+    init_per_suite/1,
+    end_per_suite/1,
+    init_per_testcase/2,
+    end_per_testcase/2
+]).
 -export([jssip_register/1, jssip_call/1, kamailio_options/1]).
 
 -define(KAM_IMAGE, "ghcr.io/kamailio/kamailio-ci:5.8").
@@ -39,8 +44,12 @@ init_per_suite(Config) ->
         {_, false} ->
             {skip, "node not found on PATH"};
         {true, _} ->
-            application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
-                                [{persistent, true}]),
+            application:set_env(
+                chappe_sip,
+                engine_mod,
+                chappe_sip_nif,
+                [{persistent, true}]
+            ),
             {ok, _} = application:ensure_all_started(chappe_sip),
             [{interop_dir, Dir}, {node, Node} | Config]
     end.
@@ -51,21 +60,25 @@ end_per_suite(_Config) ->
     ok.
 
 init_per_testcase(kamailio_options, Config) ->
-    Img = case os:getenv("KAMAILIO_IMAGE") of
-              false -> ?KAM_IMAGE;
-              I -> I
-          end,
+    Img =
+        case os:getenv("KAMAILIO_IMAGE") of
+            false -> ?KAM_IMAGE;
+            I -> I
+        end,
     case docker_image_ready(Img) of
         ok ->
-            CN = "chappe-kam-" ++
-                 integer_to_list(erlang:unique_integer([positive])),
+            CN =
+                "chappe-kam-" ++
+                    integer_to_list(erlang:unique_integer([positive])),
             [{kam_image, Img}, {kam_container, CN} | Config];
         {skip, R} ->
             {skip, R}
     end;
 init_per_testcase(jssip_call, Config) ->
     Dir = ?config(interop_dir, Config),
-    case filelib:is_dir(filename:join([Dir, "node_modules", "@roamhq", "wrtc"])) of
+    case
+        filelib:is_dir(filename:join([Dir, "node_modules", "@roamhq", "wrtc"]))
+    of
         true -> Config;
         false -> {skip, "install @roamhq/wrtc in interop/ for the media call"}
     end;
@@ -73,8 +86,10 @@ init_per_testcase(_Case, Config) ->
     Config.
 
 end_per_testcase(kamailio_options, Config) ->
-    _ = os:cmd("docker rm -f " ++ ?config(kam_container, Config) ++
-               " >/dev/null 2>&1"),
+    _ = os:cmd(
+        "docker rm -f " ++ ?config(kam_container, Config) ++
+            " >/dev/null 2>&1"
+    ),
     cleanup();
 end_per_testcase(_Case, _Config) ->
     cleanup().
@@ -92,19 +107,32 @@ jssip_register(Config) ->
     WP = pick(),
     EP = pick(),
     ok = chappe_sip:start(#{contact => contact(EP), ws => #{port => WP}}),
-    ok = chappe_sip:register(chappe_sip:registrar(#{allow_unauthenticated => true})),
+    ok = chappe_sip:register(
+        chappe_sip:registrar(#{allow_unauthenticated => true})
+    ),
     Aor = <<"sip:alice@127.0.0.1">>,
     Self = self(),
     _ = spawn(fun() ->
-        Self ! {node_out, run_node(Config, "jssip_register.js",
-                                   [{"WS_URL", ws_url(WP)},
-                                    {"SIP_URI", binary_to_list(Aor)},
-                                    {"EXPIRES", "60"},
-                                    {"HOLD_MS", "4000"},
-                                    {"TIMEOUT_MS", "8000"}])}
+        Self !
+            {node_out,
+                run_node(
+                    Config,
+                    "jssip_register.js",
+                    [
+                        {"WS_URL", ws_url(WP)},
+                        {"SIP_URI", binary_to_list(Aor)},
+                        {"EXPIRES", "60"},
+                        {"HOLD_MS", "4000"},
+                        {"TIMEOUT_MS", "8000"}
+                    ]
+                )}
     end),
     ok = poll_present(Aor, 60),
-    Out = receive {node_out, O} -> O after 15000 -> ct:fail(node_timeout) end,
+    Out =
+        receive
+            {node_out, O} -> O
+        after 15000 -> ct:fail(node_timeout)
+        end,
     ct:pal("jssip_register:~n~s", [Out]),
     match = re:run(Out, "RESULT registered", [{capture, none}]),
     ok.
@@ -117,7 +145,9 @@ jssip_call(Config) ->
     WP = pick(),
     EP = pick(),
     ok = chappe_sip:start(#{contact => contact(EP), ws => #{port => WP}}),
-    ok = chappe_sip:register(chappe_sip:registrar(#{allow_unauthenticated => true})),
+    ok = chappe_sip:register(
+        chappe_sip:registrar(#{allow_unauthenticated => true})
+    ),
     Callee = <<"sip:callee@127.0.0.1">>,
     ok = chappe_sip:invite(fun(Req, Res) ->
         case chappe_sip:location_flow(Callee) of
@@ -130,11 +160,16 @@ jssip_call(Config) ->
                 chappe_sip_res:send(Res, 480)
         end
     end),
-    Out = run_node(Config, "jssip_call.js",
-                   [{"WS_URL", ws_url(WP)},
-                    {"CALLER_URI", "sip:caller@127.0.0.1"},
-                    {"CALLEE_URI", binary_to_list(Callee)},
-                    {"TIMEOUT_MS", "20000"}]),
+    Out = run_node(
+        Config,
+        "jssip_call.js",
+        [
+            {"WS_URL", ws_url(WP)},
+            {"CALLER_URI", "sip:caller@127.0.0.1"},
+            {"CALLEE_URI", binary_to_list(Callee)},
+            {"TIMEOUT_MS", "20000"}
+        ]
+    ),
     ct:pal("jssip_call:~n~s", [Out]),
     match = re:run(Out, "RESULT established", [{capture, none}]),
     ok.
@@ -160,23 +195,37 @@ kamailio_options(Config) ->
     CN = ?config(kam_container, Config),
     {NetOpt, Target} =
         case os:type() of
-            {unix, linux} -> {"--network host", "127.0.0.1"};
+            {unix, linux} ->
+                {"--network host", "127.0.0.1"};
             _ ->
                 {"--add-host=host.docker.internal:host-gateway",
                     "host.docker.internal"}
         end,
     DList = filename:join(?config(priv_dir, Config), "dispatcher.list"),
-    ok = file:write_file(DList, io_lib:format(
-           "1 sip:~s:~w 0 0~n", [Target, EP])),
-    Cfg = filename:join([?config(interop_dir, Config),
-                         "kamailio", "kamailio.cfg"]),
-    _ = os:cmd(lists:flatten(io_lib:format(
-          "docker run -d --name ~s ~s "
-          "-v ~s:/etc/kamailio/kamailio.cfg:ro "
-          "-v ~s:/etc/kamailio/dispatcher.list:ro ~s >/dev/null 2>&1",
-          [CN, NetOpt, shell_quote(Cfg), shell_quote(DList), Img]))),
+    ok = file:write_file(
+        DList,
+        io_lib:format(
+            "1 sip:~s:~w 0 0~n", [Target, EP]
+        )
+    ),
+    Cfg = filename:join([
+        ?config(interop_dir, Config),
+        "kamailio",
+        "kamailio.cfg"
+    ]),
+    _ = os:cmd(
+        lists:flatten(
+            io_lib:format(
+                "docker run -d --name ~s ~s "
+                "-v ~s:/etc/kamailio/kamailio.cfg:ro "
+                "-v ~s:/etc/kamailio/dispatcher.list:ro ~s >/dev/null 2>&1",
+                [CN, NetOpt, shell_quote(Cfg), shell_quote(DList), Img]
+            )
+        )
+    ),
     %% chappe must receive an OPTIONS ping from Kamailio.
-    receive options_ping -> ok
+    receive
+        options_ping -> ok
     after 30000 ->
         ct:log("kamailio logs:~n~s", [os:cmd("docker logs " ++ CN ++ " 2>&1")]),
         ct:fail(no_options_from_kamailio)
@@ -190,39 +239,66 @@ run_node(Config, Script, Env) ->
     Node = ?config(node, Config),
     Dir = ?config(interop_dir, Config),
     Prefix = [K ++ "=" ++ shell_quote(V) ++ " " || {K, V} <- Env],
-    Cmd = lists:flatten(["cd ", shell_quote(Dir), " && ", Prefix,
-                         shell_quote(Node), " ", Script, " 2>&1"]),
+    Cmd = lists:flatten([
+        "cd ",
+        shell_quote(Dir),
+        " && ",
+        Prefix,
+        shell_quote(Node),
+        " ",
+        Script,
+        " 2>&1"
+    ]),
     os:cmd(Cmd).
 
-poll_present(_Aor, 0) -> ct:fail(no_binding);
+poll_present(_Aor, 0) ->
+    ct:fail(no_binding);
 poll_present(Aor, N) ->
     case chappe_sip:location(Aor) of
-        [_ | _] -> ok;
-        [] -> timer:sleep(100), poll_present(Aor, N - 1)
+        [_ | _] ->
+            ok;
+        [] ->
+            timer:sleep(100),
+            poll_present(Aor, N - 1)
     end.
 
-poll_active(_CN, 0) -> false;
+poll_active(_CN, 0) ->
+    false;
 poll_active(CN, N) ->
-    Out = os:cmd("docker exec " ++ CN ++
-                 " kamcmd -s unix:/tmp/kamailio_ctl dispatcher.list 2>/dev/null"),
+    Out = os:cmd(
+        "docker exec " ++ CN ++
+            " kamcmd -s unix:/tmp/kamailio_ctl dispatcher.list 2>/dev/null"
+    ),
     case re:run(Out, "FLAGS:\\s*A", [{capture, none}]) of
-        match -> true;
-        nomatch -> timer:sleep(1000), poll_active(CN, N - 1)
+        match ->
+            true;
+        nomatch ->
+            timer:sleep(1000),
+            poll_active(CN, N - 1)
     end.
 
 docker_image_ready(Img) ->
     case os:find_executable("docker") of
-        false -> {skip, "docker not found on PATH"};
+        false ->
+            {skip, "docker not found on PATH"};
         _ ->
             case sh("docker info >/dev/null 2>&1 && echo ok") of
                 "ok" ->
-                    case sh("docker image inspect " ++ shell_quote(Img) ++
-                            " >/dev/null 2>&1 && echo ok") of
-                        "ok" -> ok;
-                        _ -> {skip, "pull the Kamailio image first: docker pull "
-                                    ++ Img}
+                    case
+                        sh(
+                            "docker image inspect " ++ shell_quote(Img) ++
+                                " >/dev/null 2>&1 && echo ok"
+                        )
+                    of
+                        "ok" ->
+                            ok;
+                        _ ->
+                            {skip,
+                                "pull the Kamailio image first: docker pull " ++
+                                    Img}
                     end;
-                _ -> {skip, "docker daemon not running"}
+                _ ->
+                    {skip, "docker daemon not running"}
             end
     end.
 
@@ -237,9 +313,12 @@ interop_dir() ->
     case os:getenv("CHAPPE_SIP_INTEROP_DIR") of
         false ->
             Src = proplists:get_value(source, ?MODULE:module_info(compile)),
-            filename:join(filename:dirname(filename:dirname(Src)),
-                          "interop");
-        D -> D
+            filename:join(
+                filename:dirname(filename:dirname(Src)),
+                "interop"
+            );
+        D ->
+            D
     end.
 
 contact(Port) ->

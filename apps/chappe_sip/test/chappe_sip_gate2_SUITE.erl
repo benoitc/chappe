@@ -97,7 +97,10 @@ end_per_suite(_Config) ->
 init_per_testcase(Case, Config) ->
     EP = ?config(ep, Config),
     ok = ?FOCUS:install(),
-    UAs = [{K, ?UA:start(atom_to_binary(K), EP)} || K <- [host, watcher, p1, p2, p3]],
+    UAs = [
+        {K, ?UA:start(atom_to_binary(K), EP)}
+     || K <- [host, watcher, p1, p2, p3]
+    ],
     C = UAs ++ Config,
     case lists:member(Case, ?NO_CONF) of
         true -> C;
@@ -113,7 +116,9 @@ end_per_testcase(_Case, Config) ->
 
 %% a conference hosted by `host', NOTIFYs at most every 300 ms
 start_conference(Opts, Config) ->
-    Uri = <<"sip:conf-", (hex(4))/binary, "@127.0.0.1:", (port(?config(ep, Config)))/binary>>,
+    Uri =
+        <<"sip:conf-", (hex(4))/binary, "@127.0.0.1:",
+            (port(?config(ep, Config)))/binary>>,
     {ok, _} = ?FOCUS:start(Uri, Opts#{min_interval => 300}),
     {ok, Call, Resp} = ?UA:invite(?config(host, Config), Uri, []),
     [{conf_uri, Uri}, {host_call, Call}, {host_2xx, Resp} | Config].
@@ -142,7 +147,12 @@ factory_creates_conference(Config) ->
 document_names_the_conference(Config) ->
     W = ?config(watcher, Config),
     Uri = ?config(conf_uri, Config),
-    ?assert(lists:member(<<"conference">>, tokens(hdr(?config(host_2xx, Config), 'allow-events')))),
+    ?assert(
+        lists:member(
+            <<"conference">>,
+            tokens(hdr(?config(host_2xx, Config), 'allow-events'))
+        )
+    ),
     {ok, Sub, R200} = ?UA:subscribe(W, Uri, <<"conference">>, []),
     ?assertEqual(200, chappe_sip_msg:status(R200)),
     ?assert(lists:member(<<"conference">>, tokens(hdr(R200, 'allow-events')))),
@@ -197,9 +207,14 @@ keys_unique_among_siblings(Config) ->
     {ok, _, _} = ?UA:invite(P1, Uri, []),
     {ok, _, _} = ?UA:invite(P1, Uri, []),
     %% a full document: p1 once, with both endpoints
-    Full = wait_full(W, Sub, fun(D) -> length(endpoints_of(D, ua_uri(P1))) >= 2 end),
+    Full = wait_full(W, Sub, fun(D) ->
+        length(endpoints_of(D, ua_uri(P1))) >= 2
+    end),
     [check_keys(D) || D <- docs(W, Sub)],
-    P1Users = [U || U <- users(Full), attr(U, entity) =:= binary_to_list(ua_uri(P1))],
+    P1Users = [
+        U
+     || U <- users(Full), attr(U, entity) =:= binary_to_list(ua_uri(P1))
+    ],
     ?assertMatch([_], P1Users),
     ?assertEqual(2, length(children(hd(P1Users), endpoint))).
 
@@ -212,7 +227,10 @@ check_keys(Doc) ->
                 begin
                     Eps = children(U, endpoint),
                     unique([attr(E, entity) || E <- Eps]),
-                    [unique([attr(M, id) || M <- children(E, media)]) || E <- Eps]
+                    [
+                        unique([attr(M, id) || M <- children(E, media)])
+                     || E <- Eps
+                    ]
                 end
              || U <- Users
             ]
@@ -231,7 +249,9 @@ conf_uris_unique(Config) ->
     Uri = ?config(conf_uri, Config),
     Tel = <<"tel:+15555550100">>,
     ok = ?FOCUS:set_description(#{
-        conf_uris => [#{uri => Uri}, #{uri => Tel}, #{uri => Uri, purpose => <<"again">>}]
+        conf_uris => [
+            #{uri => Uri}, #{uri => Tel}, #{uri => Uri, purpose => <<"again">>}
+        ]
     }),
     {ok, Sub, _} = ?UA:subscribe(W, Uri, <<"conference">>, []),
     [N] = wait_notifies(W, Sub, 1),
@@ -284,18 +304,26 @@ dial_out_progress(Config) ->
     wait_notifies(W, Sub, 1),
     P2Uri = ua_uri(P2),
     HostUri = ua_uri(Host),
-    {ok, 200} = ?UA:refer(Host, ?config(host_call, Config), <<"<", P2Uri/binary, ">">>, [
-        {<<"Referred-By">>, <<"<", HostUri/binary, ">">>}
-    ]),
+    {ok, 200} = ?UA:refer(
+        Host, ?config(host_call, Config), <<"<", P2Uri/binary, ">">>, [
+            {<<"Referred-By">>, <<"<", HostUri/binary, ">">>}
+        ]
+    ),
     wait_status(W, Sub, P2Uri, "connected"),
     Seen = ep_values(docs(W, Sub), P2Uri, status),
     ct:log("p2 status ~p", [Seen]),
     ?assertEqual(["dialing-out", "alerting", "connected"], Seen),
-    ?assertEqual(["dialed-out"], ep_values(docs(W, Sub), P2Uri, 'joining-method')),
-    ?assertEqual(["dialed-in"], ep_values(docs(W, Sub), HostUri, 'joining-method')),
+    ?assertEqual(
+        ["dialed-out"], ep_values(docs(W, Sub), P2Uri, 'joining-method')
+    ),
+    ?assertEqual(
+        ["dialed-in"], ep_values(docs(W, Sub), HostUri, 'joining-method')
+    ),
     By = [
         text(R, by)
-     || D <- docs(W, Sub), Ep <- endpoints_of(D, P2Uri), R <- children(Ep, referred)
+     || D <- docs(W, Sub),
+        Ep <- endpoints_of(D, P2Uri),
+        R <- children(Ep, referred)
     ],
     ?assertNotEqual([], By),
     ?assertEqual([binary_to_list(HostUri)], lists:usort(By)),
@@ -323,13 +351,18 @@ hold_and_leave(Config) ->
         ["connected", "on-hold", "connected", "disconnected"],
         ep_values(docs(W, Sub), P1Uri, status)
     ),
-    ?assertEqual(["departed"], ep_values(docs(W, Sub), P1Uri, 'disconnection-method')).
+    ?assertEqual(
+        ["departed"], ep_values(docs(W, Sub), P1Uri, 'disconnection-method')
+    ).
 
 %% RFC 4575 5.7.6: the focus's BYE is booted, a 486 to its INVITE busy,
 %% any other failure failed.
 %% req: R4575-47
 disconnection_methods(Config) ->
-    [Host, W, P1, P2, P3] = [?config(K, Config) || K <- [host, watcher, p1, p2, p3]],
+    [Host, W, P1, P2, P3] = [
+        ?config(K, Config)
+     || K <- [host, watcher, p1, p2, p3]
+    ],
     Uri = ?config(conf_uri, Config),
     {ok, Sub, _} = ?UA:subscribe(W, Uri, <<"conference">>, []),
     {ok, _, _} = ?UA:invite(P1, Uri, []),
@@ -349,7 +382,9 @@ disconnection_methods(Config) ->
     Docs = docs(W, Sub),
     ?assertEqual(["booted"], ep_values(Docs, P1Uri, 'disconnection-method')),
     ?assertEqual(["busy"], ep_values(Docs, ua_uri(P2), 'disconnection-method')),
-    ?assertEqual(["failed"], ep_values(Docs, ua_uri(P3), 'disconnection-method')).
+    ?assertEqual(
+        ["failed"], ep_values(Docs, ua_uri(P3), 'disconnection-method')
+    ).
 
 %% RFC 4575 5.7.9: the dialog identifiers are shown only when the focus's
 %% policy allows it (it does not by default).
@@ -360,14 +395,21 @@ call_info_needs_policy(Config) ->
     {ok, Sub, _} = ?UA:subscribe(W, Uri, <<"conference">>, []),
     {ok, _, _} = ?UA:invite(P1, Uri, []),
     wait_status(W, Sub, ua_uri(P1), "connected"),
-    [?assertEqual(nomatch, binary:match(chappe_sip_msg:body(N), <<"<call-info">>)) || N <- notifies(W, Sub)],
+    [
+        ?assertEqual(
+            nomatch, binary:match(chappe_sip_msg:body(N), <<"<call-info">>)
+        )
+     || N <- notifies(W, Sub)
+    ],
     %% a focus whose policy shows them
     ok = ?FOCUS:stop(),
     C2 = start_conference(#{call_info => true}, Config),
     Uri2 = ?config(conf_uri, C2),
     {ok, Sub2, _} = ?UA:subscribe(W, Uri2, <<"conference">>, []),
     [N2 | _] = wait_notifies(W, Sub2, 1),
-    ?assertNotEqual(nomatch, binary:match(chappe_sip_msg:body(N2), <<"<call-info">>)).
+    ?assertNotEqual(
+        nomatch, binary:match(chappe_sip_msg:body(N2), <<"<call-info">>)
+    ).
 
 %% RFC 4575 5.6, 8.2: two anonymous participants get distinct URIs in the
 %% .invalid domain.
@@ -376,17 +418,28 @@ anonymous_uris_unique(Config) ->
     [W, P1, P2] = [?config(K, Config) || K <- [watcher, p1, p2]],
     Uri = ?config(conf_uri, Config),
     {ok, Sub, _} = ?UA:subscribe(W, Uri, <<"conference">>, []),
-    [{ok, _, _} = ?UA:invite(P, Uri, [{<<"Privacy">>, <<"id">>}]) || P <- [P1, P2]],
+    [
+        {ok, _, _} = ?UA:invite(P, Uri, [{<<"Privacy">>, <<"id">>}])
+     || P <- [P1, P2]
+    ],
     Doc = wait_full(W, Sub, fun(D) -> length(anonymous(D)) >= 2 end),
     Anon = anonymous(Doc),
     unique(Anon),
     [
-        ?assertMatch({ok, #{host := <<"anonymous.invalid">>}}, chappe_sip_uri:parse(list_to_binary(A)))
+        ?assertMatch(
+            {ok, #{host := <<"anonymous.invalid">>}},
+            chappe_sip_uri:parse(list_to_binary(A))
+        )
      || A <- Anon
     ].
 
 anonymous(Doc) ->
-    [E || U <- users(Doc), E <- [attr(U, entity)], string:find(E, ".invalid") =/= nomatch].
+    [
+        E
+     || U <- users(Doc),
+        E <- [attr(U, entity)],
+        string:find(E, ".invalid") =/= nomatch
+    ].
 
 %% ---- subscriptions (RFC 6665) ----
 
@@ -396,7 +449,9 @@ anonymous(Doc) ->
 notify_expires_never_lengthens(Config) ->
     W = ?config(watcher, Config),
     Uri = ?config(conf_uri, Config),
-    {ok, Sub, R200} = ?UA:subscribe(W, Uri, <<"conference">>, [{<<"Expires">>, <<"60">>}]),
+    {ok, Sub, R200} = ?UA:subscribe(W, Uri, <<"conference">>, [
+        {<<"Expires">>, <<"60">>}
+    ]),
     Granted = binary_to_integer(hdr(R200, expires)),
     ?assert(Granted =< 60),
     [N1] = wait_notifies(W, Sub, 1),
@@ -405,7 +460,9 @@ notify_expires_never_lengthens(Config) ->
     [_, N2] = wait_notifies(W, Sub, 2),
     ?assert(notify_expires(N2) =< 20),
     %% a fetch: whatever comes is terminated or states 0
-    {ok, Fetch, F200} = ?UA:subscribe(W, Uri, <<"conference">>, [{<<"Expires">>, <<"0">>}]),
+    {ok, Fetch, F200} = ?UA:subscribe(W, Uri, <<"conference">>, [
+        {<<"Expires">>, <<"0">>}
+    ]),
     ?assertEqual(<<"0">>, hdr(F200, expires)),
     [F1 | _] = wait_notifies(W, Fetch, 1),
     ?assert(notify_expires(F1) =< 0).
@@ -422,7 +479,9 @@ no_notify_without_subscribe(Config) ->
     ),
     ?assertMatch(
         {error, _},
-        chappe_sip_dialog:notify(D, #{event => <<"conference">>, state => active})
+        chappe_sip_dialog:notify(D, #{
+            event => <<"conference">>, state => active
+        })
     ),
     %% the conference changes; p1 never subscribed
     {ok, _, _} = ?UA:invite(?config(p2, Config), Uri, []),
@@ -438,7 +497,11 @@ answered_without_waiting(Config) ->
     W = ?config(watcher, Config),
     application:set_env(chappe_sip, handler_deadline_ms, 60000),
     application:set_env(chappe_sip, non_invite_deadline_ms, 1500),
-    Waits = fun(_Req, _Res) -> receive never -> ok end end,
+    Waits = fun(_Req, _Res) ->
+        receive
+            never -> ok
+        end
+    end,
     ok = chappe_sip:subscribe(Waits),
     ok = chappe_sip:refer(Waits),
     Target = <<"sip:user@127.0.0.1:", (port(EP))/binary>>,
@@ -455,7 +518,9 @@ answered_without_waiting(Config) ->
     ok = ?FOCUS:install(),
     C = start_conference(#{}, Config),
     T3 = now_ms(),
-    {ok, _, R200} = ?UA:subscribe(W, ?config(conf_uri, C), <<"conference">>, []),
+    {ok, _, R200} = ?UA:subscribe(
+        W, ?config(conf_uri, C), <<"conference">>, []
+    ),
     ?assertEqual(200, chappe_sip_msg:status(R200)),
     ?assert(now_ms() - T3 < 2000).
 
@@ -501,20 +566,35 @@ replacement_needs_authorization(Config) ->
     end),
     Uri = <<"sip:app@127.0.0.1:", (port(EP))/binary>>,
     {ok, Call, R} = ?UA:invite(P1, Uri, []),
-    Old = receive {dialog, D} -> D after 5000 -> ct:fail(no_dialog) end,
+    Old =
+        receive
+            {dialog, D} -> D
+        after 5000 -> ct:fail(no_dialog)
+        end,
     Replaces = iolist_to_binary([
-        Call, <<";to-tag=">>, chappe_sip_msg:to_tag(R),
-        <<";from-tag=">>, chappe_sip_msg:from_tag(R)
+        Call,
+        <<";to-tag=">>,
+        chappe_sip_msg:to_tag(R),
+        <<";from-tag=">>,
+        chappe_sip_msg:from_tag(R)
     ]),
     {error, 403, _} = ?UA:invite(P2, Uri, [{<<"Replaces">>, Replaces}]),
-    ?assertEqual({ok, Old}, chappe_sip:find_dialog(Call, chappe_sip_msg:to_tag(R), chappe_sip_msg:from_tag(R))),
+    ?assertEqual(
+        {ok, Old},
+        chappe_sip:find_dialog(
+            Call, chappe_sip_msg:to_tag(R), chappe_sip_msg:from_tag(R)
+        )
+    ),
     timer:sleep(500),
     ?assertEqual([], [M || {<<"BYE">>, M, _} <- ?UA:requests(P1)]),
     %% authorized, it replaces
     persistent_term:put({?MODULE, allow}, true),
     try
         {ok, _, _} = ?UA:invite(P2, Uri, [{<<"Replaces">>, Replaces}]),
-        ok = wait_until(fun() -> [M || {<<"BYE">>, M, _} <- ?UA:requests(P1)] =/= [] end, 5000)
+        ok = wait_until(
+            fun() -> [M || {<<"BYE">>, M, _} <- ?UA:requests(P1)] =/= [] end,
+            5000
+        )
     after
         persistent_term:erase({?MODULE, allow})
     end.
@@ -536,7 +616,9 @@ anonymous_from_keeps_a_tag(Config) ->
     ?assertEqual(2, length(Froms)),
     Tags = [
         begin
-            {ok, #{uri := U, params := #{<<"tag">> := T}}} = chappe_sip_hdr:name_addr(F),
+            {ok, #{uri := U, params := #{<<"tag">> := T}}} = chappe_sip_hdr:name_addr(
+                F
+            ),
             ?assertEqual(<<"sip:anonymous@anonymous.invalid">>, U),
             ?assertNotEqual(<<>>, T),
             T
@@ -572,7 +654,9 @@ privacy_none_relayed(Config) ->
         {ok, C2, _} = ?UA:invite(P1, Uri, Hdrs),
         [_, {_, I2, _}] = [X || {<<"INVITE">>, _, _} = X <- ?UA:requests(P2)],
         ?assertEqual([<<"none">>], chappe_sip_msg:get_all(<<"privacy">>, I2)),
-        ?assertEqual([PAI], chappe_sip_msg:get_all(<<"p-asserted-identity">>, I2)),
+        ?assertEqual(
+            [PAI], chappe_sip_msg:get_all(<<"p-asserted-identity">>, I2)
+        ),
         {ok, 200} = ?UA:bye(P1, C2)
     after
         persistent_term:erase({?MODULE, b2b})
@@ -587,24 +671,36 @@ privacy_none_relayed(Config) ->
 privacy_critical_unsupported(Config) ->
     [P1, P2] = [?config(K, Config) || K <- [p1, p2]],
     Uri = b2b_app(ua_uri(P2), #{privacy => true}, Config),
-    {error, 500, R} = ?UA:invite(P1, Uri, [{<<"Privacy">>, <<"session;critical">>}]),
+    {error, 500, R} = ?UA:invite(P1, Uri, [
+        {<<"Privacy">>, <<"session;critical">>}
+    ]),
     Reason = chappe_sip_msg:reason(R),
     ct:log("500 reason: ~s", [Reason]),
-    ?assertNotEqual(nomatch, binary:match(string:lowercase(Reason), <<"privacy">>)),
+    ?assertNotEqual(
+        nomatch, binary:match(string:lowercase(Reason), <<"privacy">>)
+    ),
     ?assertNotEqual(nomatch, binary:match(Reason, <<"session">>)),
     ?assertEqual(nomatch, binary:match(Reason, <<"user">>)),
     %% an extension token it does not know, critical: also refused
-    {error, 500, R2} = ?UA:invite(P1, Uri, [{<<"Privacy">>, <<"user; x-mine; critical">>}]),
-    ?assertNotEqual(nomatch, binary:match(chappe_sip_msg:reason(R2), <<"x-mine">>)),
+    {error, 500, R2} = ?UA:invite(P1, Uri, [
+        {<<"Privacy">>, <<"user; x-mine; critical">>}
+    ]),
+    ?assertNotEqual(
+        nomatch, binary:match(chappe_sip_msg:reason(R2), <<"x-mine">>)
+    ),
     timer:sleep(300),
     ?assertEqual([], [X || {<<"INVITE">>, _, _} = X <- ?UA:requests(P2)]),
     %% levels it applies, critical: relayed
-    {ok, C1, _} = ?UA:invite(P1, Uri, [{<<"Privacy">>, <<"user;header;id;critical">>}]),
+    {ok, C1, _} = ?UA:invite(P1, Uri, [
+        {<<"Privacy">>, <<"user;header;id;critical">>}
+    ]),
     {ok, 200} = ?UA:bye(P1, C1),
     %% session without critical: best effort, relayed
     {ok, C2, _} = ?UA:invite(P1, Uri, [{<<"Privacy">>, <<"session">>}]),
     {ok, 200} = ?UA:bye(P1, C2),
-    ?assertEqual(2, length([X || {<<"INVITE">>, _, _} = X <- ?UA:requests(P2)])).
+    ?assertEqual(
+        2, length([X || {<<"INVITE">>, _, _} = X <- ?UA:requests(P2)])
+    ).
 
 %% RFC 3323 5.3: under user (or header) privacy the service removes the
 %% informational headers the user agent added, even when every header is
@@ -612,7 +708,9 @@ privacy_critical_unsupported(Config) ->
 %% req: R3323-16 R3323-11 R3323-09
 privacy_strips_user_headers(Config) ->
     [P1, P2] = [?config(K, Config) || K <- [p1, p2]],
-    Uri = b2b_app(ua_uri(P2), #{privacy => true, proxy_request_headers => all}, Config),
+    Uri = b2b_app(
+        ua_uri(P2), #{privacy => true, proxy_request_headers => all}, Config
+    ),
     Info = [
         {<<"Subject">>, <<"lunch with p1">>},
         {<<"Call-Info">>, <<"<http://p1.example.com/me.png>;purpose=icon">>},
@@ -622,13 +720,22 @@ privacy_strips_user_headers(Config) ->
         {<<"In-Reply-To">>, <<"earlier-call@p1.example.com">>},
         {<<"X-Keep">>, <<"kept">>}
     ],
-    PAI = {<<"P-Asserted-Identity">>, <<"<sip:+15555550123@carrier.example.net>">>},
+    PAI =
+        {<<"P-Asserted-Identity">>,
+            <<"<sip:+15555550123@carrier.example.net>">>},
     Seen = fun(Privacy) ->
         N = length([X || {<<"INVITE">>, _, _} = X <- ?UA:requests(P2)]),
         {ok, C, _} = ?UA:invite(P1, Uri, [{<<"Privacy">>, Privacy}, PAI | Info]),
-        {<<"INVITE">>, I, _} = lists:nth(N + 1, [X || {<<"INVITE">>, _, _} = X <- ?UA:requests(P2)]),
+        {<<"INVITE">>, I, _} = lists:nth(N + 1, [
+            X
+         || {<<"INVITE">>, _, _} = X <- ?UA:requests(P2)
+        ]),
         {ok, 200} = ?UA:bye(P1, C),
-        [V || {Name, V} <- [PAI | Info], lists:member(V, chappe_sip_msg:get_all(string:lowercase(Name), I))]
+        [
+            V
+         || {Name, V} <- [PAI | Info],
+            lists:member(V, chappe_sip_msg:get_all(string:lowercase(Name), I))
+        ]
     end,
     UserValues = [V || {N, V} <- Info, N =/= <<"X-Keep">>],
     [
@@ -638,7 +745,9 @@ privacy_strips_user_headers(Config) ->
     %% id: the asserted identity goes too, the rest is relayed
     ?assertEqual(UserValues ++ [<<"kept">>], Seen(<<"id">>)),
     %% none: everything as it came
-    ?assertEqual([element(2, PAI) | UserValues] ++ [<<"kept">>], Seen(<<"none">>)).
+    ?assertEqual(
+        [element(2, PAI) | UserValues] ++ [<<"kept">>], Seen(<<"none">>)
+    ).
 
 %% a b2bua to B with Opts on an app URI of this node
 b2b_app(B, Opts, Config) ->
@@ -653,7 +762,11 @@ b2b_app(B, Opts, Config) ->
 %% ---- helpers: NOTIFYs and documents ----
 
 notifies(UA, Sub) ->
-    [M || {<<"NOTIFY">>, M, _} <- ?UA:requests(UA), chappe_sip_msg:call_id(M) =:= Sub].
+    [
+        M
+     || {<<"NOTIFY">>, M, _} <- ?UA:requests(UA),
+        chappe_sip_msg:call_id(M) =:= Sub
+    ].
 
 wait_notifies(UA, Sub, N) ->
     ok = wait_until(fun() -> length(notifies(UA, Sub)) >= N end, 15000),
@@ -689,8 +802,9 @@ wait_full(UA, Sub, F, Tries) ->
 %% the endpoint of the user Uri (or one whose URI contains it) reaches Status
 wait_status(UA, Sub, Uri, Status) ->
     ok = wait_until(
-        fun() -> lists:member(Status, ep_values(docs(UA, Sub), Uri, status)) andalso
-                 lists:last(ep_values(docs(UA, Sub), Uri, status)) =:= Status
+        fun() ->
+            lists:member(Status, ep_values(docs(UA, Sub), Uri, status)) andalso
+                lists:last(ep_values(docs(UA, Sub), Uri, status)) =:= Status
         end,
         15000
     ).
@@ -698,7 +812,10 @@ wait_status(UA, Sub, Uri, Status) ->
 %% every value a child element of Uri's endpoints takes, in document
 %% order, repeats folded
 ep_values(Docs, Uri, Field) ->
-    Vs = [text(Ep, Field) || D <- Docs, Ep <- endpoints_of(D, Uri), children(Ep, Field) =/= []],
+    Vs = [
+        text(Ep, Field)
+     || D <- Docs, Ep <- endpoints_of(D, Uri), children(Ep, Field) =/= []
+    ],
     fold_repeats(Vs).
 
 fold_repeats([A, A | T]) -> fold_repeats([A | T]);
@@ -713,7 +830,10 @@ endpoints_of(Doc, Uri) ->
             nomatch -> fun(E) -> string:find(E, U) =/= nomatch end;
             _ -> fun(E) -> E =:= U end
         end,
-    [E || Us <- users(Doc), Match(attr(Us, entity)), E <- children(Us, endpoint)].
+    [
+        E
+     || Us <- users(Doc), Match(attr(Us, entity)), E <- children(Us, endpoint)
+    ].
 
 users(Doc) ->
     [U || Us <- children(Doc, users), U <- children(Us, user)].
@@ -738,7 +858,9 @@ notify_expires(N) ->
         <<"terminated", _/binary>> ->
             0;
         V ->
-            {match, [E]} = re:run(V, "expires=(\\d+)", [{capture, all_but_first, binary}]),
+            {match, [E]} = re:run(V, "expires=(\\d+)", [
+                {capture, all_but_first, binary}
+            ]),
             binary_to_integer(E)
     end.
 
@@ -767,7 +889,10 @@ contact_uri(M) ->
 tokens(undefined) ->
     [];
 tokens(V) ->
-    [string:lowercase(string:trim(T)) || T <- binary:split(V, <<",">>, [global])].
+    [
+        string:lowercase(string:trim(T))
+     || T <- binary:split(V, <<",">>, [global])
+    ].
 
 ua_uri(UA) -> ?UA:uri(UA).
 port(P) -> integer_to_binary(P).

@@ -44,7 +44,8 @@ renew(Node, S) ->
 %% A request for a new epoch from the node's (one) incarnation, replacing
 %% its current epoch.
 new_req(Node, S) ->
-    {new, max(1, ?M:incarnation(Node, S)), maps:get(Node, ?M:epochs(S), undefined), make_ref()}.
+    {new, max(1, ?M:incarnation(Node, S)),
+        maps:get(Node, ?M:epochs(S), undefined), make_ref()}.
 
 %% Incarnate the node once, as an app start does.
 incarnated(Node, S) ->
@@ -86,7 +87,9 @@ renew_keeps_epoch_test() ->
     ?assertEqual(E1, E2).
 
 renew_arms_the_leader_timer_test() ->
-    {S1, {ok, E}, Effs} = ap({renew, a, new_req(a, init()), ?LEASE, []}, init()),
+    {S1, {ok, E}, Effs} = ap(
+        {renew, a, new_req(a, init()), ?LEASE, []}, init()
+    ),
     [{expire, a, E, C1} = N1] = armed(Effs),
     ?assert(lists:member({timer, N1, ?LEASE}, Effs)),
     {_, {ok, E}, Effs2} = ap({renew, a, E, ?LEASE, []}, S1),
@@ -99,7 +102,9 @@ renew_arms_the_leader_timer_test() ->
 %% stalled: when it applies, the renew already kept the epoch, so the
 %% stale timer ends nothing.
 expire_queued_behind_a_renew_is_stale_test() ->
-    {S1, {ok, E}, Effs} = ap({renew, a, new_req(a, init()), ?LEASE, []}, init()),
+    {S1, {ok, E}, Effs} = ap(
+        {renew, a, new_req(a, init()), ?LEASE, []}, init()
+    ),
     [Old] = armed(Effs),
     {S2, {ok, _}, _} = claim(k, a, E, pid(1), S1),
     {Eb, S3} = renew(b, S2),
@@ -206,7 +211,9 @@ duplicated_new_epoch_request_after_a_newer_epoch_is_stale_test() ->
 new_incarnation_replaces_and_retires_the_old_test() ->
     {E1, S1} = renew(a, init()),
     {S1b, {ok, 2}, _} = ap({incarnate, a}, S1),
-    {S2, {ok, E2}, _} = ap({renew, a, {new, 2, undefined, make_ref()}, ?LEASE, []}, S1b),
+    {S2, {ok, E2}, _} = ap(
+        {renew, a, {new, 2, undefined, make_ref()}, ?LEASE, []}, S1b
+    ),
     ?assert(E2 > E1),
     {S3, R, []} = ap({renew, a, {new, 1, E1, make_ref()}, ?LEASE, []}, S2),
     ?assertEqual({error, stale_epoch}, R),
@@ -226,7 +233,14 @@ claim_and_owned_test() ->
     {Eb, S2} = renew(b, S1),
     {S3, {ok, L}, Effs} = claim(k, a, Ea, pid(1), S2),
     ?assertMatch(
-        #{key := k, node := a, epoch := Ea, region := r1, hlc := #timestamp{wall_time = 1}}, L
+        #{
+            key := k,
+            node := a,
+            epoch := Ea,
+            region := r1,
+            hlc := #timestamp{wall_time = 1}
+        },
+        L
     ),
     ?assert(lists:member({monitor, process, pid(1)}, Effs)),
     {_, R, _} = claim(k, b, Eb, pid(2), S3),
@@ -313,14 +327,20 @@ owner_query_test() ->
         ?M:query_owner(k, S2)
     ),
     ?assertEqual(none, ?M:query_owner(other, S2)),
-    ?assertMatch([#{key := k, fence := Fence, hlc := #timestamp{wall_time = 1}}], ?M:leases(S2)).
+    ?assertMatch(
+        [#{key := k, fence := Fence, hlc := #timestamp{wall_time = 1}}],
+        ?M:leases(S2)
+    ).
 
 release_cursor_after_n_entries_test() ->
     {E, S1} = renew(a, init()),
     {S2, _, E2} = ap(4095, {renew, a, E, ?LEASE, []}, S1),
     ?assertEqual([], [X || {release_cursor, _, _} = X <- E2]),
     {S3, _, E3} = ap(4097, {renew, a, E, ?LEASE, []}, S2),
-    ?assertMatch([{release_cursor, 4097, _}], [X || {release_cursor, _, _} = X <- E3]),
+    ?assertMatch([{release_cursor, 4097, _}], [
+        X
+     || {release_cursor, _, _} = X <- E3
+    ]),
     {_, _, E4} = ap(4098, {renew, a, E, ?LEASE, []}, S3),
     ?assertEqual([], [X || {release_cursor, _, _} = X <- E4]).
 
@@ -332,10 +352,16 @@ release_cursor_after_n_entries_test() ->
 claim_after_release_is_later_in_hlc_test() ->
     {Ea, S1} = renew(a, init()),
     {Eb, S2} = renew(b, S1),
-    {S3, {ok, La}, _} = ap({claim, k, a, Ea, pid(1), make_ref(), 100, hlc(1000)}, S2),
-    {S4, {ok, Released}, _} = ap({release, k, maps:get(seq, La), hlc(2000)}, S3),
+    {S3, {ok, La}, _} = ap(
+        {claim, k, a, Ea, pid(1), make_ref(), 100, hlc(1000)}, S2
+    ),
+    {S4, {ok, Released}, _} = ap(
+        {release, k, maps:get(seq, La), hlc(2000)}, S3
+    ),
     ?assert(Released >= hlc(2000)),
-    {S5, {ok, Lb}, _} = ap({claim, k, b, Eb, pid(2), make_ref(), 100, hlc(10)}, S4),
+    {S5, {ok, Lb}, _} = ap(
+        {claim, k, b, Eb, pid(2), make_ref(), 100, hlc(10)}, S4
+    ),
     ?assert(maps:get(hlc, Lb) > Released),
     {_, {ok, _, Put}, _} = ap({put, <<"x">>, 1, 10, hlc(20)}, S5),
     ?assert(Put > maps:get(hlc, Lb)).
@@ -343,7 +369,9 @@ claim_after_release_is_later_in_hlc_test() ->
 %% A stamp ahead of everything the region saw stays as it is.
 a_later_stamp_is_kept_test() ->
     {Ea, S1} = renew(a, init()),
-    {_, {ok, L}, _} = ap({claim, k, a, Ea, pid(1), make_ref(), 100, hlc(500)}, S1),
+    {_, {ok, L}, _} = ap(
+        {claim, k, a, Ea, pid(1), make_ref(), 100, hlc(500)}, S1
+    ),
     ?assertEqual(hlc(500), maps:get(hlc, L)).
 
 %% ---- KV ----
@@ -354,7 +382,9 @@ kv_put_get_delete_test() ->
     ?assertMatch(
         [
             {send_msg, {chappe_cluster_watch, a},
-                {chappe_cluster_kv, put, <<"a/1">>, x, #timestamp{wall_time = 1}},
+                {chappe_cluster_kv, put, <<"a/1">>, x, #timestamp{
+                    wall_time = 1
+                }},
                 [local]}
         ],
         E1
@@ -364,7 +394,14 @@ kv_put_get_delete_test() ->
     ?assert(V2 > V1),
     {S3, {ok, _}, E3} = ap({delete, <<"a/1">>, hlc(3)}, S2),
     ?assertMatch(
-        [{send_msg, _, {chappe_cluster_kv, delete, <<"a/1">>, y, #timestamp{wall_time = 3}}, _}], E3
+        [
+            {send_msg, _,
+                {chappe_cluster_kv, delete, <<"a/1">>, y, #timestamp{
+                    wall_time = 3
+                }},
+                _}
+        ],
+        E3
     ),
     ?assertEqual(not_found, ?M:query_get(<<"a/1">>, S3)),
     {_, {ok, _}, []} = ap({delete, <<"a/1">>, hlc(4)}, S3).
@@ -372,7 +409,10 @@ kv_put_get_delete_test() ->
 kv_cas_test() ->
     S0 = init(),
     {S1, {ok, V1, _}, _} = ap({cas, <<"k">>, 0, x, 10, hlc(1)}, S0),
-    ?assertEqual({error, {version, V1}}, element(2, ap({cas, <<"k">>, 0, y, 10, hlc(2)}, S1))),
+    ?assertEqual(
+        {error, {version, V1}},
+        element(2, ap({cas, <<"k">>, 0, y, 10, hlc(2)}, S1))
+    ),
     {S2, {ok, V2, _}, _} = ap({cas, <<"k">>, V1, y, 10, hlc(3)}, S1),
     ?assert(V2 > V1),
     {_, {error, {version, V2}}, _} = ap({cas, <<"k">>, V1, z, 10, hlc(4)}, S2).
@@ -383,10 +423,15 @@ kv_versioned_delete_test() ->
     S0 = init(),
     {S1, {ok, V1, _}, _} = ap({cas, <<"k">>, 0, x, 10, hlc(1)}, S0),
     {S2, {ok, V2, _}, _} = ap({cas, <<"k">>, V1, y, 10, hlc(2)}, S1),
-    ?assertEqual({error, {version, V2}}, element(2, ap({delete, <<"k">>, V1, hlc(3)}, S2))),
+    ?assertEqual(
+        {error, {version, V2}},
+        element(2, ap({delete, <<"k">>, V1, hlc(3)}, S2))
+    ),
     {S3, {ok, _}, _} = ap({delete, <<"k">>, V2, hlc(4)}, S2),
     ?assertEqual(not_found, ?M:query_get(<<"k">>, S3)),
-    ?assertEqual({error, {version, 0}}, element(2, ap({delete, <<"k">>, V2, hlc(5)}, S3))).
+    ?assertEqual(
+        {error, {version, 0}}, element(2, ap({delete, <<"k">>, V2, hlc(5)}, S3))
+    ).
 
 kv_keys_by_prefix_test() ->
     S = lists:foldl(
@@ -394,7 +439,10 @@ kv_keys_by_prefix_test() ->
         init(),
         [<<"reg/b">>, <<"reg/a">>, <<"re">>, <<"other">>]
     ),
-    ?assertEqual({[<<"reg/a">>, <<"reg/b">>], done}, ?M:query_keys(<<"reg/">>, start, 10, S)),
+    ?assertEqual(
+        {[<<"reg/a">>, <<"reg/b">>], done},
+        ?M:query_keys(<<"reg/">>, start, 10, S)
+    ),
     ?assertMatch({[_, _, _, _], done}, ?M:query_keys(<<>>, start, 10, S)),
     ?assertEqual({[], done}, ?M:query_keys(<<"zz">>, start, 10, S)).
 
@@ -403,28 +451,42 @@ kv_keys_by_prefix_test() ->
 %% holds more than its limit.
 kv_keys_on_a_large_kv_test() ->
     Prefixes = [<<"a/">>, <<"reg/">>, <<"reg">>, <<"reh/">>, <<"z">>],
-    All = [<<P/binary, (integer_to_binary(I))/binary>> || I <- lists:seq(1, 5000), P <- Prefixes],
+    All = [
+        <<P/binary, (integer_to_binary(I))/binary>>
+     || I <- lists:seq(1, 5000), P <- Prefixes
+    ],
     S1 = lists:foldl(
         fun(K, Acc) -> element(1, ap({put, K, 1, 100000, hlc(1)}, Acc)) end,
         init(),
         All
     ),
     Gone = [K || K <- All, erlang:phash2(K, 7) =:= 0],
-    S = lists:foldl(fun(K, Acc) -> element(1, ap({delete, K, hlc(2)}, Acc)) end, S1, Gone),
+    S = lists:foldl(
+        fun(K, Acc) -> element(1, ap({delete, K, hlc(2)}, Acc)) end, S1, Gone
+    ),
     Live = All -- Gone,
     lists:foreach(
         fun({Prefix, Limit}) ->
             N = byte_size(Prefix),
-            Want = lists:sort([K || <<P:N/binary, _/binary>> = K <- Live, P =:= Prefix]),
+            Want = lists:sort([
+                K
+             || <<P:N/binary, _/binary>> = K <- Live, P =:= Prefix
+            ]),
             Got = pages(Prefix, start, Limit, S, []),
             ?assert(lists:all(fun(Page) -> length(Page) =< Limit end, Got)),
             ?assertEqual(Want, lists:append(Got))
         end,
-        [{P, L} || P <- [<<"reg/">>, <<"reg">>, <<"re">>, <<"z">>, <<>>, <<"q">>], L <- [1, 7, 1000, 30000]]
+        [
+            {P, L}
+         || P <- [<<"reg/">>, <<"reg">>, <<"re">>, <<"z">>, <<>>, <<"q">>],
+            L <- [1, 7, 1000, 30000]
+        ]
     ),
     %% the index is the map's keys, also after a snapshot round trip
     Snap = binary_to_term(term_to_binary(S)),
-    ?assertEqual(lists:sort(Live), element(1, ?M:query_keys(<<>>, start, 100000, Snap))).
+    ?assertEqual(
+        lists:sort(Live), element(1, ?M:query_keys(<<>>, start, 100000, Snap))
+    ).
 
 pages(Prefix, Cursor, Limit, S, Acc) ->
     case ?M:query_keys(Prefix, Cursor, Limit, S) of
@@ -435,7 +497,9 @@ pages(Prefix, Cursor, Limit, S, Acc) ->
 kv_max_keys_test() ->
     {S1, {ok, _, _}, _} = ap({put, <<"a">>, 1, 1, hlc(1)}, init()),
     {S2, {ok, _, _}, _} = ap({put, <<"a">>, 2, 1, hlc(2)}, S1),
-    ?assertEqual({error, max_keys}, element(2, ap({put, <<"b">>, 1, 1, hlc(3)}, S2))).
+    ?assertEqual(
+        {error, max_keys}, element(2, ap({put, <<"b">>, 1, 1, hlc(3)}, S2))
+    ).
 
 %% ---- property: adversarial schedules ----
 
@@ -606,16 +670,20 @@ step({renew_old, N, Back, AsNew}, M = #{seen := Seen, epochs := Es, s := S}) ->
             %% a new one that names an old epoch (or an old incarnation)
             Given =
                 case AsNew of
-                    true -> {new, max(1, inc(N, M) - Back rem 2), E, make_ref()};
-                    false -> E
+                    true ->
+                        {new, max(1, inc(N, M) - Back rem 2), E, make_ref()};
+                    false ->
+                        E
                 end,
             Current = maps:find(N, Es),
             case apply_cmd({renew, N, Given, ?LEASE, []}, M) of
                 {{ok, E2}, M1} when AsNew ->
                     %% only the current incarnation replacing the current
                     %% epoch, or a newer one, may start an epoch
-                    ?assert(Current =:= {ok, E} orelse Current =:= error orelse
-                        element(2, Given) =/= current_inc_of(N, S)),
+                    ?assert(
+                        Current =:= {ok, E} orelse Current =:= error orelse
+                            element(2, Given) =/= current_inc_of(N, S)
+                    ),
                     renewed(N, E2, news(N, Given, E2, M1));
                 {{ok, E}, M1} ->
                     ?assertEqual({ok, E}, maps:find(N, Es)),
@@ -668,7 +736,10 @@ listed(#{s := S, kv := Kv}) ->
     lists:foreach(
         fun(Prefix) ->
             N = byte_size(Prefix),
-            Want = lists:sort([K || <<P:N/binary, _/binary>> = K := _ <- Kv, P =:= Prefix]),
+            Want = lists:sort([
+                K
+             || <<P:N/binary, _/binary>> = K := _ <- Kv, P =:= Prefix
+            ]),
             ?assertEqual(Want, lists:append(pages(Prefix, start, 1, S, [])))
         end,
         [<<>>, <<"x">>, <<"x/">>, <<"q">>]
@@ -693,7 +764,9 @@ claimed({ok, L}, K, N, Pid, CRef, Timeout, M) ->
         true ->
             %% the caller timed out: nobody believes it holds the key, and
             %% the next renewal gives it back
-            queue(N, {claim, K, CRef}, M#{held := maps:remove(K, Held), seqs := Seqs#{K => Seq}});
+            queue(N, {claim, K, CRef}, M#{
+                held := maps:remove(K, Held), seqs := Seqs#{K => Seq}
+            });
         false ->
             M#{held := Held#{K => {N, E, Pid, Seq}}, seqs := Seqs#{K => Seq}}
     end;
@@ -721,7 +794,9 @@ news(_N, _Epoch, _E, M) ->
 kill(N, E, M = #{dead := Dead, held := Held}) ->
     M#{
         dead := Dead#{{N, E} => true},
-        held := maps:filter(fun(_, {HN, HE, _, _}) -> {HN, HE} =/= {N, E} end, Held)
+        held := maps:filter(
+            fun(_, {HN, HE, _, _}) -> {HN, HE} =/= {N, E} end, Held
+        )
     }.
 
 queue(N, Item, M = #{pending := P}) ->
@@ -730,7 +805,10 @@ queue(N, Item, M = #{pending := P}) ->
 %% The same log applied again with other stamps, and a snapshot taken half
 %% way plus the rest of the log, give the same state.
 replays(#{s := S, log := Log0}) ->
-    Log = [{meta(maps:get(index, Meta)), Cmd} || {Meta, Cmd} <- lists:reverse(Log0)],
+    Log = [
+        {meta(maps:get(index, Meta)), Cmd}
+     || {Meta, Cmd} <- lists:reverse(Log0)
+    ],
     Fold = fun(Entries, From) ->
         lists:foldl(
             fun({Meta, Cmd}, SA) -> element(1, ?M:apply(Meta, Cmd, SA)) end,
@@ -816,7 +894,12 @@ prop_no_overlap_under_ra() ->
             non_empty(list(boolean()))
         },
         begin
-            sim(Renews * ?R, list_to_tuple(Delays), LeaderAt, list_to_tuple(Dups)),
+            sim(
+                Renews * ?R,
+                list_to_tuple(Delays),
+                LeaderAt,
+                list_to_tuple(Dups)
+            ),
             true
         end
     ).
@@ -864,7 +947,10 @@ sim_loop(W0) ->
 
 leader_change(W = #{t := T, leader_at := T, s := S}) ->
     Timers = maps:from_list(
-        [{Name, T + Ms} || {timer, Name, Ms} <- ?M:state_enter(leader, S), is_integer(Ms)]
+        [
+            {Name, T + Ms}
+         || {timer, Name, Ms} <- ?M:state_enter(leader, S), is_integer(Ms)
+        ]
     ),
     W#{timers := Timers};
 leader_change(W) ->
@@ -892,11 +978,16 @@ sends(W = #{t := T, stop_at := Stop}) ->
             false -> W1
         end,
     W3 =
-        case maps:get(holder, W2) =:= none andalso T < Stop andalso live(n, W2) of
+        case
+            maps:get(holder, W2) =:= none andalso T < Stop andalso live(n, W2)
+        of
             true -> send_claim(n, W2);
             false -> W2
         end,
-    case T rem (?R div 2) =:= 0 andalso live(m, W3) andalso maps:get(claimed, W3) =:= false of
+    case
+        T rem (?R div 2) =:= 0 andalso live(m, W3) andalso
+            maps:get(claimed, W3) =:= false
+    of
         true -> send_claim(m, W3);
         false -> W3
     end.
@@ -909,7 +1000,11 @@ send_renew(X, W = #{t := T, idx := I, dups := Dups}) ->
     A = maps:get(X, W),
     case live(X, W) of
         true ->
-            append({renew, X, maps:get(epoch, A), ?LEASE, []}, {renew, X, T, none}, W);
+            append(
+                {renew, X, maps:get(epoch, A), ?LEASE, []},
+                {renew, X, T, none},
+                W
+            );
         false ->
             Ref =
                 case maps:get(ref, A) of
@@ -929,8 +1024,15 @@ send_renew(X, W = #{t := T, idx := I, dups := Dups}) ->
 
 send_claim(X, W) ->
     #{epoch := E} = maps:get(X, W),
-    Pid = pid(case X of n -> 1; m -> 2 end),
-    W1 = append({claim, k, X, E, Pid, make_ref(), 100, hlc(0)}, {claim, X, E}, W),
+    Pid = pid(
+        case X of
+            n -> 1;
+            m -> 2
+        end
+    ),
+    W1 = append(
+        {claim, k, X, E, Pid, make_ref(), 100, hlc(0)}, {claim, X, E}, W
+    ),
     case X of
         n -> W1#{holder := pending};
         m -> W1#{claimed := pending}
@@ -974,7 +1076,10 @@ reply(twin, Reply, W) ->
     W#{twin := Reply};
 reply({retry, X, Sent, Ref}, Reply, W = #{twin := Twin}) ->
     %% applied right behind its twin: stale only when the twin was
-    ?assert(Reply =/= {error, stale_epoch} orelse Twin =:= Reply, {wasted_round, X, Twin}),
+    ?assert(
+        Reply =/= {error, stale_epoch} orelse Twin =:= Reply,
+        {wasted_round, X, Twin}
+    ),
     reply({renew, X, Sent, Ref}, Reply, W#{twin := none});
 reply({renew, X, Sent, Ref}, {ok, E}, W0 = #{t := T}) ->
     A0 = answered(Ref, maps:get(X, W0)),
@@ -983,10 +1088,11 @@ reply({renew, X, Sent, Ref}, {ok, E}, W0 = #{t := T}) ->
     Deadline = Sent + ?LEASE - ?R div 2,
     case T < Deadline of
         true ->
-            W1 = case maps:get(epoch, A) of
-                E -> W;
-                _ -> lose(X, W)
-            end,
+            W1 =
+                case maps:get(epoch, A) of
+                    E -> W;
+                    _ -> lose(X, W)
+                end,
             W1#{X := A#{epoch := E, deadline := Deadline}};
         false ->
             W

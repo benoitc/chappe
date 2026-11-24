@@ -92,7 +92,9 @@ event_xml_raw_test() ->
 
 disconnect_notice_test() ->
     F = frame(<<"text/disconnect-notice">>, #{}, <<"Disconnected\n">>),
-    ?assertMatch({disconnect, _, <<"Disconnected\n">>}, chappe_esl_event:decode(F)).
+    ?assertMatch(
+        {disconnect, _, <<"Disconnected\n">>}, chappe_esl_event:decode(F)
+    ).
 
 log_data_test() ->
     F = frame(<<"log/data">>, #{<<"Log-Level">> => <<"7">>}, <<"line\n">>),

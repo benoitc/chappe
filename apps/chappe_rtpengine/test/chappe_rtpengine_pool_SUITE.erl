@@ -51,7 +51,9 @@ end_per_testcase(_Case, _Config) ->
 %% helpers
 
 add_fake_node(Name, NodeOpts) ->
-    add_fake_node(Name, NodeOpts, fun chappe_rtpengine_fake_server:default_handler/2).
+    add_fake_node(
+        Name, NodeOpts, fun chappe_rtpengine_fake_server:default_handler/2
+    ).
 
 add_fake_node(Name, NodeOpts, Handler) ->
     {ok, Server, Port} = chappe_rtpengine_fake_server:start(Handler),
@@ -99,7 +101,9 @@ pin_and_unpin_track_counters(_Config) ->
     ok = chappe_rtpengine_pool:unpin(<<"call-c-1">>),
     #{pinned := 0} = chappe_rtpengine_pool:node_info(pool_counters),
     error = chappe_rtpengine_pool:pinned(<<"call-c-1">>),
-    {error, not_managed} = chappe_rtpengine_pool:pin_to(<<"call-c-2">>, nonexistent),
+    {error, not_managed} = chappe_rtpengine_pool:pin_to(
+        <<"call-c-2">>, nonexistent
+    ),
     ok.
 
 timeout_reports_mark_node_down(_Config) ->
@@ -146,7 +150,9 @@ health_ping_recovers_and_bumps_generation(_Config) ->
         Server, fun chappe_rtpengine_fake_server:default_handler/2
     ),
     wait_event({node_up, pool_recovery, 2}),
-    #{status := up, generation := 2} = chappe_rtpengine_pool:node_info(pool_recovery),
+    #{status := up, generation := 2} = chappe_rtpengine_pool:node_info(
+        pool_recovery
+    ),
     {ok, pool_recovery} = chappe_rtpengine_pool:select(),
     ok.
 

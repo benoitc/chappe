@@ -55,7 +55,9 @@ end_per_suite(_Config) ->
     ok = application:stop(chappe_rtpengine).
 
 ping(_Config) ->
-    {ok, #{<<"result">> := <<"pong">>}} = chappe_rtpengine:ping(chappe_rtpengine_live),
+    {ok, #{<<"result">> := <<"pong">>}} = chappe_rtpengine:ping(
+        chappe_rtpengine_live
+    ),
     ok.
 
 offer_answer_query_delete(_Config) ->
@@ -84,7 +86,9 @@ offer_answer_query_delete(_Config) ->
     }),
     ?assertNotEqual(undefined, chappe_rtpengine_ng:sdp(AnswerReply)),
 
-    {ok, QueryReply} = chappe_rtpengine:query(chappe_rtpengine_live, #{call_id => CallId}),
+    {ok, QueryReply} = chappe_rtpengine:query(chappe_rtpengine_live, #{
+        call_id => CallId
+    }),
     ?assert(maps:is_key(<<"created">>, QueryReply)),
 
     {ok, _} = chappe_rtpengine:delete(chappe_rtpengine_live, #{
@@ -92,7 +96,9 @@ offer_answer_query_delete(_Config) ->
     }),
 
     %% the session is gone now
-    {error, _, _} = chappe_rtpengine:query(chappe_rtpengine_live, #{call_id => CallId}),
+    {error, _, _} = chappe_rtpengine:query(chappe_rtpengine_live, #{
+        call_id => CallId
+    }),
     ok.
 
 %% list/2 finds a call the node runs, statistics/1 reads its counters,
@@ -101,7 +107,9 @@ list_statistics_forwarding(_Config) ->
     Node = chappe_rtpengine_live,
     Suffix = integer_to_binary(erlang:unique_integer([positive])),
     CallId = <<"chappe-rtpengine-list-", Suffix/binary>>,
-    {ok, Sess} = chappe_rtpengine:start_session(#{call_id => CallId, node => Node}),
+    {ok, Sess} = chappe_rtpengine:start_session(#{
+        call_id => CallId, node => Node
+    }),
     {ok, _} = chappe_rtpengine_session:offer(Sess, #{
         from_tag => <<"from-", Suffix/binary>>,
         sdp => sdp(<<"198.51.100.1">>, 30000),
@@ -141,12 +149,14 @@ tcp_transport(_Config) ->
             Suffix = integer_to_binary(erlang:unique_integer([positive])),
             CallId = <<"chappe-rtpengine-tcp-", Suffix/binary>>,
             FromTag = <<"from-", Suffix/binary>>,
-            {ok, OfferReply} = chappe_rtpengine:offer(chappe_rtpengine_live_tcp, #{
-                call_id => CallId,
-                from_tag => FromTag,
-                sdp => sdp(<<"198.51.100.1">>, 30000),
-                ice => remove
-            }),
+            {ok, OfferReply} = chappe_rtpengine:offer(
+                chappe_rtpengine_live_tcp, #{
+                    call_id => CallId,
+                    from_tag => FromTag,
+                    sdp => sdp(<<"198.51.100.1">>, 30000),
+                    ice => remove
+                }
+            ),
             ?assertNotEqual(undefined, chappe_rtpengine_ng:sdp(OfferReply)),
             {ok, _} = chappe_rtpengine:delete(chappe_rtpengine_live_tcp, #{
                 call_id => CallId, from_tag => FromTag
@@ -173,12 +183,14 @@ ws_transport(_Config) ->
             Suffix = integer_to_binary(erlang:unique_integer([positive])),
             CallId = <<"chappe-rtpengine-ws-", Suffix/binary>>,
             FromTag = <<"from-", Suffix/binary>>,
-            {ok, OfferReply} = chappe_rtpengine:offer(chappe_rtpengine_live_ws, #{
-                call_id => CallId,
-                from_tag => FromTag,
-                sdp => sdp(<<"198.51.100.1">>, 30000),
-                ice => remove
-            }),
+            {ok, OfferReply} = chappe_rtpengine:offer(
+                chappe_rtpengine_live_ws, #{
+                    call_id => CallId,
+                    from_tag => FromTag,
+                    sdp => sdp(<<"198.51.100.1">>, 30000),
+                    ice => remove
+                }
+            ),
             ?assertNotEqual(undefined, chappe_rtpengine_ng:sdp(OfferReply)),
             {ok, _} = chappe_rtpengine:delete(chappe_rtpengine_live_ws, #{
                 call_id => CallId, from_tag => FromTag
@@ -210,12 +222,14 @@ wss_transport(_Config) ->
             Suffix = integer_to_binary(erlang:unique_integer([positive])),
             CallId = <<"chappe-rtpengine-wss-", Suffix/binary>>,
             FromTag = <<"from-", Suffix/binary>>,
-            {ok, OfferReply} = chappe_rtpengine:offer(chappe_rtpengine_live_wss, #{
-                call_id => CallId,
-                from_tag => FromTag,
-                sdp => sdp(<<"198.51.100.1">>, 30000),
-                ice => remove
-            }),
+            {ok, OfferReply} = chappe_rtpengine:offer(
+                chappe_rtpengine_live_wss, #{
+                    call_id => CallId,
+                    from_tag => FromTag,
+                    sdp => sdp(<<"198.51.100.1">>, 30000),
+                    ice => remove
+                }
+            ),
             ?assertNotEqual(undefined, chappe_rtpengine_ng:sdp(OfferReply)),
             {ok, _} = chappe_rtpengine:delete(chappe_rtpengine_live_wss, #{
                 call_id => CallId, from_tag => FromTag

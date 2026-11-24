@@ -11,12 +11,24 @@
 -include_lib("common_test/include/ct.hrl").
 
 -export([all/0, init_per_suite/1, end_per_suite/1, end_per_testcase/2]).
--export([options_200/1, start_twice/1, bind_failure/1, start_stop_cycles/1,
-         health_roundtrip/1, stats_events_dropped/1]).
+-export([
+    options_200/1,
+    start_twice/1,
+    bind_failure/1,
+    start_stop_cycles/1,
+    health_roundtrip/1,
+    stats_events_dropped/1
+]).
 
 all() ->
-    [options_200, start_twice, bind_failure, start_stop_cycles,
-     health_roundtrip, stats_events_dropped].
+    [
+        options_200,
+        start_twice,
+        bind_failure,
+        start_stop_cycles,
+        health_roundtrip,
+        stats_events_dropped
+    ].
 
 init_per_suite(Config) ->
     {ok, _} = application:ensure_all_started(chappe_sip),
@@ -60,7 +72,9 @@ options_200(_Config) ->
 start_twice(_Config) ->
     Port = pick_port(),
     ok = chappe_sip_engine:start(#{contact => contact(Port)}),
-    {error, already_started} = chappe_sip_engine:start(#{contact => contact(Port + 1)}),
+    {error, already_started} = chappe_sip_engine:start(#{
+        contact => contact(Port + 1)
+    }),
     ok = chappe_sip_engine:stop().
 
 bind_failure(_Config) ->
@@ -68,8 +82,9 @@ bind_failure(_Config) ->
     %% barrier must surface the failure with the thread joined.
     Port = pick_port(),
     {ok, L} = gen_tcp:listen(Port, [{ip, {127, 0, 0, 1}}]),
-    Contact = <<"sip:127.0.0.1:", (integer_to_binary(Port))/binary,
-                ";transport=tcp">>,
+    Contact =
+        <<"sip:127.0.0.1:", (integer_to_binary(Port))/binary,
+            ";transport=tcp">>,
     {error, {engine_start, Why}} = chappe_sip_engine:start(#{contact => Contact}),
     true = is_binary(Why),
     gen_tcp:close(L),
@@ -80,10 +95,12 @@ bind_failure(_Config) ->
 start_stop_cycles(_Config) ->
     Port = pick_port(),
     lists:foreach(
-      fun(_) ->
-              ok = chappe_sip_engine:start(#{contact => contact(Port)}),
-              ok = chappe_sip_engine:stop()
-      end, lists:seq(1, 5)).
+        fun(_) ->
+            ok = chappe_sip_engine:start(#{contact => contact(Port)}),
+            ok = chappe_sip_engine:stop()
+        end,
+        lists:seq(1, 5)
+    ).
 
 health_roundtrip(_Config) ->
     ok = chappe_sip_engine:start(#{contact => contact(pick_port())}),
@@ -93,8 +110,12 @@ health_roundtrip(_Config) ->
 %% the engine stats carry the count of events the shim could not deliver
 stats_events_dropped(_Config) ->
     ok = chappe_sip_engine:start(#{contact => contact(pick_port())}),
-    #{incoming := _, discarded := _, events_dropped := D,
-      alloc_failed := A} = chappe_sip_engine:stats(),
+    #{
+        incoming := _,
+        discarded := _,
+        events_dropped := D,
+        alloc_failed := A
+    } = chappe_sip_engine:stats(),
     true = is_integer(D) andalso D >= 0,
     true = is_integer(A) andalso A >= 0,
     ok = chappe_sip_engine:stop().
@@ -109,12 +130,19 @@ contact(Port) ->
 
 options_msg(LocalPort) ->
     P = integer_to_binary(LocalPort),
-    <<"OPTIONS sip:m0@127.0.0.1 SIP/2.0\r\n"
-      "Via: SIP/2.0/UDP 127.0.0.1:", P/binary,
-      ";rport;branch=z9hG4bKm0test", P/binary, "\r\n"
-      "Max-Forwards: 70\r\n"
-      "From: <sip:ct@127.0.0.1>;tag=m0tag\r\n"
-      "To: <sip:m0@127.0.0.1>\r\n"
-      "Call-ID: m0-", P/binary, "@127.0.0.1\r\n"
-      "CSeq: 1 OPTIONS\r\n"
-      "Content-Length: 0\r\n\r\n">>.
+    <<
+        "OPTIONS sip:m0@127.0.0.1 SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:",
+        P/binary,
+        ";rport;branch=z9hG4bKm0test",
+        P/binary,
+        "\r\n"
+        "Max-Forwards: 70\r\n"
+        "From: <sip:ct@127.0.0.1>;tag=m0tag\r\n"
+        "To: <sip:m0@127.0.0.1>\r\n"
+        "Call-ID: m0-",
+        P/binary,
+        "@127.0.0.1\r\n"
+        "CSeq: 1 OPTIONS\r\n"
+        "Content-Length: 0\r\n\r\n"
+    >>.

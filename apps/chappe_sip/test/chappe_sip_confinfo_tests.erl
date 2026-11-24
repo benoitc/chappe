@@ -244,7 +244,9 @@ one_user_per_entity_test() ->
     U1 = #{entity => <<"sip:a@x">>, endpoints => [Ep(<<"sip:a@h">>, <<"1">>)]},
     U2 = #{
         entity => <<"sip:a@x">>,
-        endpoints => [Ep(<<"sip:a@h">>, <<"2">>), Ep(<<"sip:a@h;ep=2">>, <<"3">>)]
+        endpoints => [
+            Ep(<<"sip:a@h">>, <<"2">>), Ep(<<"sip:a@h;ep=2">>, <<"3">>)
+        ]
     },
     Doc = check(chappe_sip_confinfo:full(conf(1, [U1, U2]))),
     ?assertMatch([_], kids(user, kid(users, Doc))),
@@ -257,7 +259,9 @@ one_user_per_entity_test() ->
 
 endpoint_entity_suffix_before_headers_test() ->
     E = <<"sip:a@h?subject=x">>,
-    U = #{entity => <<"sip:a@x">>, endpoints => [#{entity => E}, #{entity => E}]},
+    U = #{
+        entity => <<"sip:a@x">>, endpoints => [#{entity => E}, #{entity => E}]
+    },
     Doc = check(chappe_sip_confinfo:full(conf(1, [U]))),
     ?assertEqual(
         [E, <<"sip:a@h;ep=2?subject=x">>],
@@ -298,11 +302,18 @@ label_names_available_media_test() ->
         #{id => <<"1">>, type => audio, label => <<"main">>},
         #{id => <<"2">>, type => video, label => <<"gone">>}
     ],
-    U = #{entity => <<"sip:a@x">>, endpoints => [#{entity => <<"e">>, media => Media}]},
-    C = (conf(1, [U]))#{
-        description => #{available_media => [#{label => <<"main">>, type => audio}]}
+    U = #{
+        entity => <<"sip:a@x">>,
+        endpoints => [#{entity => <<"e">>, media => Media}]
     },
-    [E] = kids(endpoint, user(<<"sip:a@x">>, check(chappe_sip_confinfo:full(C)))),
+    C = (conf(1, [U]))#{
+        description => #{
+            available_media => [#{label => <<"main">>, type => audio}]
+        }
+    },
+    [E] = kids(
+        endpoint, user(<<"sip:a@x">>, check(chappe_sip_confinfo:full(C)))
+    ),
     ?assertEqual(
         [[<<"main">>], []],
         [[L || {label, _, [L]} <- Ks] || {media, _, Ks} <- kids(media, E)]
@@ -317,18 +328,26 @@ values_outside_the_rfc_left_out_test() ->
         media => [#{id => <<"1">>, type => smell, status => loud}]
     },
     U = #{entity => <<"sip:a@x">>, endpoints => [Ep]},
-    [E] = kids(endpoint, user(<<"sip:a@x">>, check(chappe_sip_confinfo:full(conf(1, [U]))))),
+    [E] = kids(
+        endpoint,
+        user(<<"sip:a@x">>, check(chappe_sip_confinfo:full(conf(1, [U]))))
+    ),
     ?assertEqual([], [N || {N, _, _} <- element(3, E), N =/= media]),
     ?assertEqual([{media, [{id, <<"1">>}], []}], kids(media, E)).
 
 referred_test() ->
     Ep = #{
         entity => <<"e">>,
-        referred => #{by => <<"sip:host@x">>, reason => <<"Ad-hoc Invitation">>},
+        referred => #{
+            by => <<"sip:host@x">>, reason => <<"Ad-hoc Invitation">>
+        },
         status => dialing_out
     },
     U = #{entity => <<"sip:a@x">>, endpoints => [Ep]},
-    [E] = kids(endpoint, user(<<"sip:a@x">>, check(chappe_sip_confinfo:full(conf(1, [U]))))),
+    [E] = kids(
+        endpoint,
+        user(<<"sip:a@x">>, check(chappe_sip_confinfo:full(conf(1, [U]))))
+    ),
     R = kid(referred, E),
     ?assertEqual(<<"sip:host@x">>, text(by, R)),
     ?assertEqual(<<"Ad-hoc Invitation">>, text(reason, R)).
@@ -468,7 +487,8 @@ partial_description_change_test() ->
     {ok, Bin} = chappe_sip_confinfo:partial(Old, New, 2),
     Doc = check(Bin),
     ?assertEqual(
-        <<"Weekly sync moved">>, text(subject, kid('conference-description', Doc))
+        <<"Weekly sync moved">>,
+        text(subject, kid('conference-description', Doc))
     ),
     ?assertEqual([], kids(users, Doc)).
 
@@ -565,4 +585,6 @@ anonymize_endpoints_unique_test() ->
         ?assertMatch({_, _}, binary:match(E, <<"@anonymous.invalid">>))
      || E <- Entities
     ],
-    ?assertEqual(nomatch, binary:match(iolist_to_binary(Entities), <<"second">>)).
+    ?assertEqual(
+        nomatch, binary:match(iolist_to_binary(Entities), <<"second">>)
+    ).

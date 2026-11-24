@@ -152,8 +152,12 @@ refusals(Config) ->
     {Path, Token} = path_token(Url),
     Good = fun(P) -> upgrade(<<"GET">>, P, <<"13">>) end,
     ?assertEqual(404, status(Port, Good(<<"/other/x?token=", Token/binary>>))),
-    ?assertEqual(404, status(Port, Good(<<"/audio/a/b?token=", Token/binary>>))),
-    ?assertEqual(401, status(Port, Good(<<"/audio/nope?token=", Token/binary>>))),
+    ?assertEqual(
+        404, status(Port, Good(<<"/audio/a/b?token=", Token/binary>>))
+    ),
+    ?assertEqual(
+        401, status(Port, Good(<<"/audio/nope?token=", Token/binary>>))
+    ),
     ?assertEqual(401, status(Port, Good(<<Path/binary, "?token=bad">>))),
     ?assertEqual(401, status(Port, Good(Path))),
     Full = <<Path/binary, "?token=", Token/binary>>,
@@ -163,7 +167,9 @@ refusals(Config) ->
         400,
         status(Port, <<"GET ", Full/binary, " HTTP/1.1\r\nhost: x\r\n\r\n">>)
     ),
-    ?assertEqual(400, status(Port, <<"GET ", Full/binary, " HTTP/1.0\r\n\r\n">>)),
+    ?assertEqual(
+        400, status(Port, <<"GET ", Full/binary, " HTTP/1.0\r\n\r\n">>)
+    ),
     Big = binary:copy(<<"x-pad: 0123456789\r\n">>, 1000),
     ?assertEqual(
         400, status(Port, <<"GET ", Full/binary, " HTTP/1.1\r\n", Big/binary>>)
@@ -189,7 +195,9 @@ second_connection_refused(Config) ->
 %% A client that never finishes its request is cut at handshake_timeout.
 slow_handshake(_Config) ->
     {ok, L} = chappe_audio:listen(#{handshake_timeout => 300}),
-    {ok, Sock} = gen_tcp:connect({127, 0, 0, 1}, port(L), [binary, {active, false}]),
+    {ok, Sock} = gen_tcp:connect({127, 0, 0, 1}, port(L), [
+        binary, {active, false}
+    ]),
     ok = gen_tcp:send(Sock, <<"GET /audio/x HTTP/1.1\r\n">>),
     T0 = erlang:monotonic_time(millisecond),
     ?assertEqual({error, closed}, gen_tcp:recv(Sock, 0, 5000)),
@@ -202,11 +210,15 @@ max_pending(_Config) ->
     {ok, L} = chappe_audio:listen(#{max_pending => 3, handshake_timeout => 2000}),
     Port = port(L),
     Idle = [
-        element(2, gen_tcp:connect({127, 0, 0, 1}, Port, [binary, {active, false}]))
+        element(
+            2, gen_tcp:connect({127, 0, 0, 1}, Port, [binary, {active, false}])
+        )
      || _ <- lists:seq(1, 3)
     ],
     timer:sleep(200),
-    {ok, Extra} = gen_tcp:connect({127, 0, 0, 1}, Port, [binary, {active, false}]),
+    {ok, Extra} = gen_tcp:connect({127, 0, 0, 1}, Port, [
+        binary, {active, false}
+    ]),
     ?assertEqual({error, closed}, gen_tcp:recv(Extra, 0, 1500)),
     [gen_tcp:close(I) || I <- Idle],
     timer:sleep(1500),
@@ -219,10 +231,19 @@ max_pending(_Config) ->
 %% next connection is closed at once, though the listener has room, and
 %% once they end it is served again.
 max_pending_per_ip(_Config) ->
-    {ok, L} = chappe_audio:listen(#{max_pending_per_ip => 2, handshake_timeout => 2000}),
-    ?assertEqual({error, {bad_option, max_pending_per_ip}}, chappe_audio:listen(#{max_pending_per_ip => 0})),
+    {ok, L} = chappe_audio:listen(#{
+        max_pending_per_ip => 2, handshake_timeout => 2000
+    }),
+    ?assertEqual(
+        {error, {bad_option, max_pending_per_ip}},
+        chappe_audio:listen(#{max_pending_per_ip => 0})
+    ),
     Port = port(L),
-    Conn = fun() -> element(2, gen_tcp:connect({127, 0, 0, 1}, Port, [binary, {active, false}])) end,
+    Conn = fun() ->
+        element(
+            2, gen_tcp:connect({127, 0, 0, 1}, Port, [binary, {active, false}])
+        )
+    end,
     Idle = [Conn() || _ <- lists:seq(1, 2)],
     timer:sleep(200),
     Extra = Conn(),
@@ -362,7 +383,9 @@ child_spec_restarts(_Config) ->
     {ok, Probe} = gen_tcp:listen(0, [{ip, {127, 0, 0, 1}}]),
     {ok, Port} = inet:port(Probe),
     ok = gen_tcp:close(Probe),
-    Spec = chappe_audio:child_spec(#{port => Port, register => audio_test_listener}),
+    Spec = chappe_audio:child_spec(#{
+        port => Port, register => audio_test_listener
+    }),
     ?assertMatch(#{id := _, start := {_, _, _}}, Spec),
     {ok, Sup} = supervisor:start_link(?MODULE, {test_sup, [Spec]}),
     L = whereis(audio_test_listener),
@@ -391,7 +414,9 @@ child_spec_restarts(_Config) ->
     unlink(Sup),
     Mon = monitor(process, Sup),
     exit(Sup, shutdown),
-    receive {'DOWN', Mon, process, Sup, _} -> ok end,
+    receive
+        {'DOWN', Mon, process, Sup, _} -> ok
+    end,
     ?assertEqual(undefined, whereis(audio_test_listener)).
 
 init({test_sup, Specs}) ->
@@ -403,7 +428,9 @@ init({test_sup, Specs}) ->
 handshake_crash(Config) ->
     L = ?config(listener, Config),
     {ok, S, Url} = chappe_audio:open(L, #{}),
-    {ok, Sock} = gen_tcp:connect({127, 0, 0, 1}, port(L), [binary, {active, false}]),
+    {ok, Sock} = gen_tcp:connect({127, 0, 0, 1}, port(L), [
+        binary, {active, false}
+    ]),
     ok = gen_tcp:send(Sock, <<"GET /audio/x HTTP/1.1\r\n">>),
     wait(fun() -> supervisor:which_children(chappe_audio_conn_sup) =/= [] end),
     [{_, Conn, _, _}] = supervisor:which_children(chappe_audio_conn_sup),
@@ -444,7 +471,12 @@ flood_bound(Config) ->
     {ok, C} = chappe_audio_test_ws:connect(Url),
     wait(fun() -> maps:get(phase, chappe_audio:info(S)) =:= connected end),
     Frame = tone(320, 1),
-    Send = fun(N) -> [ok = chappe_audio_test_ws:send(C, {binary, Frame}) || _ <- lists:seq(1, N)] end,
+    Send = fun(N) ->
+        [
+            ok = chappe_audio_test_ws:send(C, {binary, Frame})
+         || _ <- lists:seq(1, N)
+        ]
+    end,
     Send(2000),
     wait(fun() -> maps:get(frames, chappe_audio:info(S)) =:= 2000 end),
     %% what each process holds, not a heap not yet collected
@@ -467,19 +499,29 @@ flood_bound(Config) ->
 %% The bound is in bytes too: with large messages, max_queue_bytes waiting
 %% at the owner stops the stream sending long before max_queue messages.
 flood_bytes(Config) ->
-    Owner = spawn(fun() -> receive stop -> ok end end),
+    Owner = spawn(fun() ->
+        receive
+            stop -> ok
+        end
+    end),
     {ok, S, Url} = chappe_audio:open(?config(listener, Config), #{
         owner => Owner, max_queue => 1000, max_queue_bytes => 100000
     }),
     {ok, C} = chappe_audio_test_ws:connect(Url),
     wait(fun() -> maps:get(phase, chappe_audio:info(S)) =:= connected end),
     Frame = binary:copy(<<0>>, 32000),
-    [ok = chappe_audio_test_ws:send(C, {binary, Frame}) || _ <- lists:seq(1, 50)],
+    [
+        ok = chappe_audio_test_ws:send(C, {binary, Frame})
+     || _ <- lists:seq(1, 50)
+    ],
     wait(fun() -> maps:get(frames, chappe_audio:info(S)) =:= 50 end),
     {message_queue_len, Q} = process_info(Owner, message_queue_len),
     ct:pal("owner queue ~p", [Q]),
     ?assert(Q =< 4),
-    ?assertEqual({error, {bad_option, max_queue_bytes}}, chappe_audio:open(?config(listener, Config), #{max_queue_bytes => 0})),
+    ?assertEqual(
+        {error, {bad_option, max_queue_bytes}},
+        chappe_audio:open(?config(listener, Config), #{max_queue_bytes => 0})
+    ),
     ok = chappe_audio:close(S),
     exit(Owner, kill).
 
@@ -491,9 +533,13 @@ bad_options(Config) ->
         {error, {bad_option, format}},
         chappe_audio:open(L, #{format => #{channels => 3}})
     ),
-    ?assertEqual({error, {bad_option, nope}}, chappe_audio:open(L, #{nope => 1})),
+    ?assertEqual(
+        {error, {bad_option, nope}}, chappe_audio:open(L, #{nope => 1})
+    ),
     ?assertEqual({error, badarg}, chappe_audio:open(L, nope)),
-    ?assertEqual({error, {bad_option, port}}, chappe_audio:listen(#{port => -1})),
+    ?assertEqual(
+        {error, {bad_option, port}}, chappe_audio:listen(#{port => -1})
+    ),
     ?assertEqual({error, no_listener}, chappe_audio:open(#{})).
 
 %% wss: the listener terminates TLS with the options it is given.
@@ -508,7 +554,9 @@ tls(_Config) ->
     {ok, S, Url} = chappe_audio:open(L, #{}),
     ?assertMatch(<<"wss://", _/binary>>, Url),
     {ok, C} = chappe_audio_test_ws:connect(Url, #{
-        ssl_opts => [{verify, verify_peer}, {server_name_indication, disable} | Client]
+        ssl_opts => [
+            {verify, verify_peer}, {server_name_indication, disable} | Client
+        ]
     }),
     {chappe_audio, S, {connected, _}} = recv(),
     ok = chappe_audio_test_ws:send(C, {binary, <<1, 0>>}),
@@ -522,7 +570,9 @@ from_peer_node(Config) ->
     ok = chappe_audio_test_dist:ensure(),
     L = ?config(listener, Config),
     Paths = lists:append([["-pa", P] || P <- code:get_path()]),
-    {ok, Peer, Node} = peer:start_link(#{name => peer:random_name(), args => Paths, connection => standard_io}),
+    {ok, Peer, Node} = peer:start_link(#{
+        name => peer:random_name(), args => Paths, connection => standard_io
+    }),
     {ok, _} = peer:call(Peer, application, ensure_all_started, [chappe_audio]),
     Test = self(),
     Ref = <<"peer-call">>,
@@ -553,7 +603,8 @@ raw(Url) ->
         binary, {active, false}
     ]),
     ok = gen_tcp:send(
-        Sock, upgrade(<<"GET">>, <<Path/binary, "?token=", Token/binary>>, <<"13">>)
+        Sock,
+        upgrade(<<"GET">>, <<Path/binary, "?token=", Token/binary>>, <<"13">>)
     ),
     {ok, <<"HTTP/1.1 101", _/binary>> = Resp} = gen_tcp:recv(Sock, 0, 5000),
     [_, <<>>] = binary:split(Resp, <<"\r\n\r\n">>),
@@ -575,18 +626,25 @@ close_code(Sock, P) ->
     case [C || {close, C, _} <- Msgs] of
         [Code | _] ->
             %% complete the closing handshake (RFC 6455 5.5.1)
-            _ = gen_tcp:send(Sock, ws_frame:encode({close, Code, <<>>}, client)),
+            _ = gen_tcp:send(
+                Sock, ws_frame:encode({close, Code, <<>>}, client)
+            ),
             Code;
-        [] -> close_code(Sock, P1)
+        [] ->
+            close_code(Sock, P1)
     end.
 
 %% The next message, leaving a client's end of session in the mailbox
 %% for the cases that wait on it.
 recv() ->
     receive
-        M when not is_tuple(M); element(1, M) =/= ws_client; tuple_size(M) =/= 3 ->
+        M when
+            not is_tuple(M); element(1, M) =/= ws_client; tuple_size(M) =/= 3
+        ->
             M;
-        {ws_client, _, Msg} = M when not is_tuple(Msg); element(1, Msg) =/= closed ->
+        {ws_client, _, Msg} = M when
+            not is_tuple(Msg); element(1, Msg) =/= closed
+        ->
             M
     after 5000 -> ct:fail(timeout)
     end.
@@ -595,7 +653,8 @@ recv() ->
 %% stream
 event(S, Ref) ->
     receive
-        {chappe_audio, S, _, _} -> ct:fail(four_tuple);
+        {chappe_audio, S, _, _} ->
+            ct:fail(four_tuple);
         {chappe_audio, S, E} ->
             ?assert(lists:member(chappe_audio:ref(S), [Ref, {error, closed}])),
             E
@@ -612,7 +671,10 @@ fwd(To) ->
     end.
 
 tone(Bytes, Seed) ->
-    <<<<((I * Seed) rem 2000 - 1000):16/little-signed>> || I <- lists:seq(1, Bytes div 2)>>.
+    <<
+        <<((I * Seed) rem 2000 - 1000):16/little-signed>>
+     || I <- lists:seq(1, Bytes div 2)
+    >>.
 
 id(Url) ->
     {Path, _} = path_token(Url),
@@ -674,4 +736,3 @@ retained(S, Owner) ->
 
 wait_dead(Pid) ->
     wait(fun() -> not is_process_alive(Pid) end).
-

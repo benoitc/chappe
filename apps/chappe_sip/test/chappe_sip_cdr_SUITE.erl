@@ -17,31 +17,79 @@
 -include("chappe_sip.hrl").
 
 -import(chappe_sip_core_peer, [
-    open/0, port/1, send/3, recv/3, request/3, response/3, hdr/2, status/1,
-    to_tag/1, from_tag/1, tag/0, sdp/0
+    open/0,
+    port/1,
+    send/3,
+    recv/3,
+    request/3,
+    response/3,
+    hdr/2,
+    status/1,
+    to_tag/1,
+    from_tag/1,
+    tag/0,
+    sdp/0
 ]).
 
--export([all/0, init_per_suite/1, end_per_suite/1, init_per_testcase/2,
-         end_per_testcase/2]).
--export([uas_bye_remote/1, uas_bye_local/1, uas_reject/1,
-         uas_cancel_ringing/1, uas_cancel_early_dialog/1,
-         uas_dialog_killed/1, uas_dialog_shutdown/1, uas_engine_stop/1,
-         uas_owner_down/1, uac_answered/1, uac_failed/1, uac_cancelled/1,
-         uac_owner_down/1, b2b_linked/1, ws_flow_lost/1,
-         proxy_record_routed/1, proxy_rejected/1, subscriber_monitored/1,
-         no_subscriber_no_record/1]).
+-export([
+    all/0,
+    init_per_suite/1,
+    end_per_suite/1,
+    init_per_testcase/2,
+    end_per_testcase/2
+]).
+-export([
+    uas_bye_remote/1,
+    uas_bye_local/1,
+    uas_reject/1,
+    uas_cancel_ringing/1,
+    uas_cancel_early_dialog/1,
+    uas_dialog_killed/1,
+    uas_dialog_shutdown/1,
+    uas_engine_stop/1,
+    uas_owner_down/1,
+    uac_answered/1,
+    uac_failed/1,
+    uac_cancelled/1,
+    uac_owner_down/1,
+    b2b_linked/1,
+    ws_flow_lost/1,
+    proxy_record_routed/1,
+    proxy_rejected/1,
+    subscriber_monitored/1,
+    no_subscriber_no_record/1
+]).
 
 all() ->
-    [uas_bye_remote, uas_bye_local, uas_reject, uas_cancel_ringing,
-     uas_cancel_early_dialog, uas_dialog_killed, uas_dialog_shutdown,
-     uas_engine_stop, uas_owner_down, uac_answered, uac_failed,
-     uac_cancelled, uac_owner_down, b2b_linked, ws_flow_lost,
-     proxy_record_routed, proxy_rejected, subscriber_monitored,
-     no_subscriber_no_record].
+    [
+        uas_bye_remote,
+        uas_bye_local,
+        uas_reject,
+        uas_cancel_ringing,
+        uas_cancel_early_dialog,
+        uas_dialog_killed,
+        uas_dialog_shutdown,
+        uas_engine_stop,
+        uas_owner_down,
+        uac_answered,
+        uac_failed,
+        uac_cancelled,
+        uac_owner_down,
+        b2b_linked,
+        ws_flow_lost,
+        proxy_record_routed,
+        proxy_rejected,
+        subscriber_monitored,
+        no_subscriber_no_record
+    ].
 
 init_per_suite(Config) ->
-    application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
-                        [{persistent, true}]),
+    application:set_env(
+        chappe_sip,
+        engine_mod,
+        chappe_sip_nif,
+        [{persistent, true}]
+    ),
     {ok, _} = application:ensure_all_started(chappe_sip),
     Config.
 
@@ -106,8 +154,14 @@ uas_reject(Config) ->
     {_, _} = recv(Sock, {status, 486}, 3000),
     #{id := Id} = cdr(attempt),
     R = stop_once(Id),
-    ?assertMatch(#{reason := {final, 486}, final_status := 486,
-                   answered_at := undefined}, R),
+    ?assertMatch(
+        #{
+            reason := {final, 486},
+            final_status := 486,
+            answered_at := undefined
+        },
+        R
+    ),
     ?assertNotEqual(undefined, maps:get(ringing_at, R)),
     no_event(start, Id).
 
@@ -116,7 +170,10 @@ uas_cancel_ringing(Config) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
     ok = chappe_sip:invite(fun(_Req, Res) ->
         ok = chappe_sip_res:send(Res, 180),
-        receive stop -> ok after 5000 -> ok end
+        receive
+            stop -> ok
+        after 5000 -> ok
+        end
     end),
     Inv = invite(Sock),
     send(Sock, EP, Inv),
@@ -133,19 +190,29 @@ uas_cancel_early_dialog(Config) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
     Test = self(),
     ok = chappe_sip:invite(fun(Req, Res) ->
-        {ok, D} = chappe_sip:create_uas(Req, Res, #{status => 180,
-                                                    owner => Test}),
+        {ok, D} = chappe_sip:create_uas(Req, Res, #{
+            status => 180,
+            owner => Test
+        }),
         Test ! {dialog, D},
-        receive stop -> ok after 5000 -> ok end
+        receive
+            stop -> ok
+        after 5000 -> ok
+        end
     end),
     Inv = invite(Sock),
     send(Sock, EP, Inv),
     {_, _} = recv(Sock, {status, 180}, 3000),
-    D = receive {dialog, D0} -> D0 after 3000 -> ct:fail(no_dialog) end,
+    D =
+        receive
+            {dialog, D0} -> D0
+        after 3000 -> ct:fail(no_dialog)
+        end,
     #{id := Id} = cdr(attempt),
     send(Sock, EP, cancel_for(Inv)),
     {_, _} = recv(Sock, {status, 487, <<"INVITE">>}, 3000),
-    receive {chappe_sip_dialog, D, destroy, cancel} -> ok
+    receive
+        {chappe_sip_dialog, D, destroy, cancel} -> ok
     after 3000 -> ct:fail(no_destroy)
     end,
     ?assertMatch(#{reason := cancel}, stop_once(Id)).
@@ -164,8 +231,10 @@ uas_dialog_shutdown(Config) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
     {_Inv, D, _R200} = answered_call(Sock, EP),
     #{id := Id} = cdr(attempt),
-    ok = supervisor:terminate_child(chappe_sip_dialog_sup,
-                                    chappe_sip_dialog:pid(D)),
+    ok = supervisor:terminate_child(
+        chappe_sip_dialog_sup,
+        chappe_sip_dialog:pid(D)
+    ),
     ?assertMatch(#{reason := {process_down, shutdown}}, stop_once(Id)).
 
 %% chappe_sip:stop/0 tells the dialogs their SIP state is gone, as a
@@ -176,7 +245,8 @@ uas_engine_stop(Config) ->
     {_Inv, D, _R200} = answered_call(Sock, EP),
     #{id := Id} = cdr(attempt),
     ok = chappe_sip:stop(),
-    receive {chappe_sip_dialog, D, destroy, engine_restart} -> ok
+    receive
+        {chappe_sip_dialog, D, destroy, engine_restart} -> ok
     after 3000 -> ct:fail(no_destroy)
     end,
     ?assertMatch(#{reason := engine_restart}, stop_once(Id)).
@@ -184,7 +254,11 @@ uas_engine_stop(Config) ->
 %% The owner of an answered call exits: the dialog BYEs, owner_down.
 uas_owner_down(Config) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
-    Owner = spawn(fun() -> receive stop -> ok end end),
+    Owner = spawn(fun() ->
+        receive
+            stop -> ok
+        end
+    end),
     {_Inv, _D, _R200} = answered_call(Sock, EP, Owner),
     #{id := Id} = cdr(attempt),
     Owner ! stop,
@@ -200,8 +274,10 @@ uac_answered(Config) ->
     {EP, Callee} = {?config(ep, Config), ?config(callee, Config)},
     Test = self(),
     Call = async(fun() ->
-        chappe_sip:create_uac(callee(Callee), #{local_sdp => sdp(),
-                                                owner => Test})
+        chappe_sip:create_uac(callee(Callee), #{
+            local_sdp => sdp(),
+            owner => Test
+        })
     end),
     {Inv, _} = recv(Callee, {method, <<"INVITE">>}, 3000),
     #{id := Id} = A = cdr(attempt),
@@ -253,7 +329,9 @@ uac_owner_down(Config) ->
     Uri = callee(Callee),
     Owner = spawn(fun() ->
         {ok, _} = chappe_sip_uac:start(Uri, #{local_sdp => sdp()}),
-        receive stop -> ok end
+        receive
+            stop -> ok
+        end
     end),
     {Inv, _} = recv(Callee, {method, <<"INVITE">>}, 3000),
     send(Callee, EP, response(Inv, 180, #{})),
@@ -270,8 +348,9 @@ uac_owner_down(Config) ->
 %% A b2bua call: a b2b_a and a b2b_b record naming each other, both
 %% answered, both ended once by the caller's BYE.
 b2b_linked(Config) ->
-    {EP, Sock, Callee} = {?config(ep, Config), ?config(sock, Config),
-                          ?config(callee, Config)},
+    {EP, Sock, Callee} = {
+        ?config(ep, Config), ?config(sock, Config), ?config(callee, Config)
+    },
     Uri = callee(Callee),
     ok = chappe_sip:invite(fun(Req, Res) ->
         {ok, Legs} = chappe_sip:create_b2bua(Req, Res, Uri, #{}),
@@ -285,8 +364,11 @@ b2b_linked(Config) ->
     {R200, _} = recv(Sock, {status, 200, <<"INVITE">>}, 3000),
     send(Sock, EP, chappe_sip_core_peer:ack_for(R200, #{port => port(Sock)})),
     Attempts = [cdr(attempt), cdr(attempt)],
-    [#{id := AId}] = [R || #{call_id := C} = R <- Attempts,
-                           C =:= hdr(<<"call-id">>, Inv)],
+    [#{id := AId}] = [
+        R
+     || #{call_id := C} = R <- Attempts,
+        C =:= hdr(<<"call-id">>, Inv)
+    ],
     [#{id := BId}] = [R || #{id := I} = R <- Attempts, I =/= AId],
     send(Sock, EP, bye(Sock, Inv, R200)),
     {ByeB, _} = recv(Callee, {method, <<"BYE">>}, 3000),
@@ -309,21 +391,30 @@ ws_flow_lost(_Config) ->
     ok = chappe_sip:ws_listen(#{port => WP}),
     Test = self(),
     ok = chappe_sip:invite(fun(Req, Res) ->
-        {ok, D} = chappe_sip:create_uas(Req, Res, #{local_sdp => sdp(),
-                                                    owner => Test}),
+        {ok, D} = chappe_sip:create_uas(Req, Res, #{
+            local_sdp => sdp(),
+            owner => Test
+        }),
         Test ! {dialog, D}
     end),
     Url = <<"ws://127.0.0.1:", (integer_to_binary(WP))/binary, "/ws">>,
-    {ok, C} = ws:connect(Url, #{handler => chappe_sip_ws_test_client,
-                                handler_opts => #{notify => self()},
-                                subprotocols => [<<"sip">>]}),
+    {ok, C} = ws:connect(Url, #{
+        handler => chappe_sip_ws_test_client,
+        handler_opts => #{notify => self()},
+        subprotocols => [<<"sip">>]
+    }),
     ws:send(C, {text, ws_invite()}),
     R200 = recv_ws(200),
     ws:send(C, {text, ws_ack(to_tag(R200))}),
-    D = receive {dialog, D0} -> D0 after 3000 -> ct:fail(no_dialog) end,
+    D =
+        receive
+            {dialog, D0} -> D0
+        after 3000 -> ct:fail(no_dialog)
+        end,
     #{id := Id} = cdr(attempt),
     ws:close(C, 1000),
-    receive {chappe_sip_dialog, D, destroy, flow_lost} -> ok
+    receive
+        {chappe_sip_dialog, D, destroy, flow_lost} -> ok
     after 5000 -> ct:fail(no_destroy)
     end,
     ?assertMatch(#{reason := flow_lost, transport := _}, stop_once(Id)).
@@ -333,8 +424,9 @@ ws_flow_lost(_Config) ->
 %% A record-routed proxied call: role proxy, answered, and ended once by
 %% the BYE passing through.
 proxy_record_routed(Config) ->
-    {EP, Sock, Callee} = {?config(ep, Config), ?config(sock, Config),
-                          ?config(callee, Config)},
+    {EP, Sock, Callee} = {
+        ?config(ep, Config), ?config(sock, Config), ?config(callee, Config)
+    },
     Uri = callee(Callee),
     ok = chappe_sip:invite(fun(Req, _Res) ->
         chappe_sip:proxy_request(Req, [Uri], #{record_route => true})
@@ -343,18 +435,30 @@ proxy_record_routed(Config) ->
     send(Sock, EP, Inv),
     {PInv, PSrc} = recv(Callee, {method, <<"INVITE">>}, 3000),
     RR = hdr(<<"record-route">>, PInv),
-    send(Callee, PSrc, response(PInv, 200, #{
-        to_tag => <<"px">>, body => sdp(),
-        headers => [{<<"Contact">>, <<"<", Uri/binary, ">">>},
-                    {<<"Record-Route">>, RR}]})),
+    send(
+        Callee,
+        PSrc,
+        response(PInv, 200, #{
+            to_tag => <<"px">>,
+            body => sdp(),
+            headers => [
+                {<<"Contact">>, <<"<", Uri/binary, ">">>},
+                {<<"Record-Route">>, RR}
+            ]
+        })
+    ),
     {R200, _} = recv(Sock, {status, 200, <<"INVITE">>}, 3000),
     #{id := Id} = A = cdr(attempt),
     ?assertMatch(#{role := proxy}, cdr(start)),
     ?assertMatch(#{role := uas}, A),
     Bye = request(<<"BYE">>, Uri, #{
-        port => port(Sock), call_id => hdr(<<"call-id">>, Inv),
-        from_tag => from_tag(Inv), to_tag => to_tag(R200), cseq => 2,
-        headers => [{<<"Route">>, RR}]}),
+        port => port(Sock),
+        call_id => hdr(<<"call-id">>, Inv),
+        from_tag => from_tag(Inv),
+        to_tag => to_tag(R200),
+        cseq => 2,
+        headers => [{<<"Route">>, RR}]
+    }),
     send(Sock, EP, Bye),
     {PBye, BSrc} = recv(Callee, {method, <<"BYE">>}, 3000),
     send(Callee, BSrc, response(PBye, 200, #{})),
@@ -363,8 +467,9 @@ proxy_record_routed(Config) ->
 
 %% A proxied INVITE rejected downstream: {final, 486}.
 proxy_rejected(Config) ->
-    {EP, Sock, Callee} = {?config(ep, Config), ?config(sock, Config),
-                          ?config(callee, Config)},
+    {EP, Sock, Callee} = {
+        ?config(ep, Config), ?config(sock, Config), ?config(callee, Config)
+    },
     Uri = callee(Callee),
     ok = chappe_sip:invite(fun(Req, _Res) ->
         chappe_sip:proxy_request(Req, [Uri], #{})
@@ -382,12 +487,18 @@ proxy_rejected(Config) ->
 %% record.
 subscriber_monitored(_Config) ->
     ok = chappe_sip_cdr:unsubscribe(self()),
-    Sub = spawn(fun() -> receive stop -> ok end end),
+    Sub = spawn(fun() ->
+        receive
+            stop -> ok
+        end
+    end),
     ok = chappe_sip_cdr:subscribe(Sub),
     ?assert(chappe_sip_cdr:active()),
     MRef = erlang:monitor(process, Sub),
     Sub ! stop,
-    receive {'DOWN', MRef, _, _, _} -> ok end,
+    receive
+        {'DOWN', MRef, _, _, _} -> ok
+    end,
     ok = wait_until(fun() -> not chappe_sip_cdr:active() end),
     ok = chappe_sip_cdr:subscribe(self()).
 
@@ -399,19 +510,22 @@ no_subscriber_no_record(Config) ->
     send(Sock, EP, invite(Sock)),
     {_, _} = recv(Sock, {status, 486}, 3000),
     ?assertEqual([], chappe_sip_cdr:open_records()),
-    receive {chappe_sip_cdr, _, _} = E -> ct:fail({unexpected, E})
+    receive
+        {chappe_sip_cdr, _, _} = E -> ct:fail({unexpected, E})
     after 300 -> ok
     end.
 
 %% ---- helpers ----
 
 cdr(Event) ->
-    receive {chappe_sip_cdr, Event, R} -> R
+    receive
+        {chappe_sip_cdr, Event, R} -> R
     after 5000 -> ct:fail({no_cdr, Event})
     end.
 
 stop_of(Id) ->
-    receive {chappe_sip_cdr, stop, #{id := Id} = R} -> R
+    receive
+        {chappe_sip_cdr, stop, #{id := Id} = R} -> R
     after 8000 -> ct:fail({no_stop, Id})
     end.
 
@@ -422,7 +536,8 @@ stop_once(Id) ->
     R.
 
 no_event(Event, Id) ->
-    receive {chappe_sip_cdr, Event, #{id := Id}} = E -> ct:fail({twice, E})
+    receive
+        {chappe_sip_cdr, Event, #{id := Id}} = E -> ct:fail({twice, E})
     after 500 -> ok
     end.
 
@@ -433,44 +548,76 @@ answered_call(Sock, EP) ->
 answered_call(Sock, EP, Owner) ->
     Test = self(),
     ok = chappe_sip:invite(fun(Req, Res) ->
-        {ok, D} = chappe_sip:create_uas(Req, Res, #{local_sdp => sdp(),
-                                                    owner => Owner}),
+        {ok, D} = chappe_sip:create_uas(Req, Res, #{
+            local_sdp => sdp(),
+            owner => Owner
+        }),
         Test ! {dialog, D}
     end),
     Inv = invite(Sock),
     send(Sock, EP, Inv),
     {R200, _} = recv(Sock, {status, 200}, 3000),
     send(Sock, EP, chappe_sip_core_peer:ack_for(R200, #{port => port(Sock)})),
-    D = receive {dialog, D0} -> D0 after 3000 -> ct:fail(no_dialog) end,
+    D =
+        receive
+            {dialog, D0} -> D0
+        after 3000 -> ct:fail(no_dialog)
+        end,
     {Inv, D, R200}.
 
 invite(Sock) ->
-    request(<<"INVITE">>, <<"sip:app@127.0.0.1">>,
-            #{port => port(Sock), body => sdp()}).
+    request(
+        <<"INVITE">>,
+        <<"sip:app@127.0.0.1">>,
+        #{port => port(Sock), body => sdp()}
+    ).
 
 bye(Sock, Inv, R200) ->
-    request(<<"BYE">>, <<"sip:app@127.0.0.1">>,
-            #{port => port(Sock), call_id => hdr(<<"call-id">>, Inv),
-              from_tag => from_tag(Inv), to_tag => to_tag(R200), cseq => 2}).
+    request(
+        <<"BYE">>,
+        <<"sip:app@127.0.0.1">>,
+        #{
+            port => port(Sock),
+            call_id => hdr(<<"call-id">>, Inv),
+            from_tag => from_tag(Inv),
+            to_tag => to_tag(R200),
+            cseq => 2
+        }
+    ).
 
 cancel_for(InvBin) ->
     Inv = chappe_sip_core_peer:parse(InvBin),
     iolist_to_binary(
-      [<<"CANCEL ">>, chappe_sip_msg:uri(Inv), " SIP/2.0\r\n",
-       "Via: ", chappe_sip_core_peer:top_via(Inv), "\r\n",
-       "Max-Forwards: 70\r\n",
-       "From: ", hdr(<<"from">>, Inv), "\r\n",
-       "To: ", hdr(<<"to">>, Inv), "\r\n",
-       "Call-ID: ", hdr(<<"call-id">>, Inv), "\r\n",
-       "CSeq: 1 CANCEL\r\nContent-Length: 0\r\n\r\n"]).
+        [
+            <<"CANCEL ">>,
+            chappe_sip_msg:uri(Inv),
+            " SIP/2.0\r\n",
+            "Via: ",
+            chappe_sip_core_peer:top_via(Inv),
+            "\r\n",
+            "Max-Forwards: 70\r\n",
+            "From: ",
+            hdr(<<"from">>, Inv),
+            "\r\n",
+            "To: ",
+            hdr(<<"to">>, Inv),
+            "\r\n",
+            "Call-ID: ",
+            hdr(<<"call-id">>, Inv),
+            "\r\n",
+            "CSeq: 1 CANCEL\r\nContent-Length: 0\r\n\r\n"
+        ]
+    ).
 
 callee(Sock) ->
     <<"sip:callee@127.0.0.1:", (integer_to_binary(port(Sock)))/binary>>.
 
 answer(Callee, Inv, ToTag) ->
     response(Inv, 200, #{
-        to_tag => ToTag, body => sdp(),
-        headers => [{<<"Contact">>, <<"<", (callee(Callee))/binary, ">">>}]}).
+        to_tag => ToTag,
+        body => sdp(),
+        headers => [{<<"Contact">>, <<"<", (callee(Callee))/binary, ">">>}]
+    }).
 
 async(F) ->
     Test = self(),
@@ -479,15 +626,22 @@ async(F) ->
     Ref.
 
 await(Ref) ->
-    receive {Ref, R} -> R after 10000 -> ct:fail(no_result) end.
+    receive
+        {Ref, R} -> R
+    after 10000 -> ct:fail(no_result)
+    end.
 
 wait_until(F) -> wait_until(F, 50).
 
-wait_until(_F, 0) -> {error, timeout};
+wait_until(_F, 0) ->
+    {error, timeout};
 wait_until(F, N) ->
     case F() of
-        true -> ok;
-        false -> timer:sleep(20), wait_until(F, N - 1)
+        true ->
+            ok;
+        false ->
+            timer:sleep(20),
+            wait_until(F, N - 1)
     end.
 
 recv_ws(Code) ->
@@ -503,20 +657,29 @@ recv_ws(Code) ->
 ws_invite() ->
     S = sdp(),
     L = integer_to_binary(byte_size(S)),
-    <<"INVITE sip:app@127.0.0.1 SIP/2.0\r\n"
-      "Via: SIP/2.0/WS df7jal23ls0d.invalid;branch=z9hG4bKcdrinv\r\n"
-      "Max-Forwards: 70\r\n"
-      "From: Alice <sip:alice@127.0.0.1>;tag=cdrinv\r\n"
-      "To: <sip:app@127.0.0.1>\r\n"
-      "Contact: <sip:alice@df7jal23ls0d.invalid;transport=ws>\r\n"
-      "Call-ID: cdrcall@ct\r\nCSeq: 1 INVITE\r\n"
-      "Content-Type: application/sdp\r\n"
-      "Content-Length: ", L/binary, "\r\n\r\n", S/binary>>.
+    <<
+        "INVITE sip:app@127.0.0.1 SIP/2.0\r\n"
+        "Via: SIP/2.0/WS df7jal23ls0d.invalid;branch=z9hG4bKcdrinv\r\n"
+        "Max-Forwards: 70\r\n"
+        "From: Alice <sip:alice@127.0.0.1>;tag=cdrinv\r\n"
+        "To: <sip:app@127.0.0.1>\r\n"
+        "Contact: <sip:alice@df7jal23ls0d.invalid;transport=ws>\r\n"
+        "Call-ID: cdrcall@ct\r\nCSeq: 1 INVITE\r\n"
+        "Content-Type: application/sdp\r\n"
+        "Content-Length: ",
+        L/binary,
+        "\r\n\r\n",
+        S/binary
+    >>.
 
 ws_ack(TT) ->
-    <<"ACK sip:app@127.0.0.1 SIP/2.0\r\n"
-      "Via: SIP/2.0/WS df7jal23ls0d.invalid;branch=z9hG4bKcdrack\r\n"
-      "Max-Forwards: 70\r\n"
-      "From: Alice <sip:alice@127.0.0.1>;tag=cdrinv\r\n"
-      "To: <sip:app@127.0.0.1>;tag=", TT/binary, "\r\n"
-      "Call-ID: cdrcall@ct\r\nCSeq: 1 ACK\r\nContent-Length: 0\r\n\r\n">>.
+    <<
+        "ACK sip:app@127.0.0.1 SIP/2.0\r\n"
+        "Via: SIP/2.0/WS df7jal23ls0d.invalid;branch=z9hG4bKcdrack\r\n"
+        "Max-Forwards: 70\r\n"
+        "From: Alice <sip:alice@127.0.0.1>;tag=cdrinv\r\n"
+        "To: <sip:app@127.0.0.1>;tag=",
+        TT/binary,
+        "\r\n"
+        "Call-ID: cdrcall@ct\r\nCSeq: 1 ACK\r\nContent-Length: 0\r\n\r\n"
+    >>.

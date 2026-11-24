@@ -388,8 +388,10 @@ fixture_failures(Bin) ->
         "<testcase\\b[^>]*?\\bname=\"fixture (?:setup|cleanup) [^\"]*\"",
     Suite = "<testsuite\\b[^>]*?\\bname=\"module '([^']+)'",
     case
-        {re:run(Bin, Fixture),
-            re:run(Bin, Suite, [{capture, all_but_first, binary}])}
+        {
+            re:run(Bin, Fixture),
+            re:run(Bin, Suite, [{capture, all_but_first, binary}])
+        }
     of
         {{match, _}, {match, [Mod]}} -> [{<<Mod/binary, ":*">>, fail}];
         _ -> []

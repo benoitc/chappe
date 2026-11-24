@@ -209,8 +209,13 @@ every_boundary_test_() ->
 bad_content_length_test_() ->
     [
         fun() ->
-            Bin = <<(reply_ok())/binary, "Content-Type: api/response\n",
-                "Content-Length: ", CL/binary, "\n\nbody">>,
+            Bin = <<
+                (reply_ok())/binary,
+                "Content-Type: api/response\n",
+                "Content-Length: ",
+                CL/binary,
+                "\n\nbody"
+            >>,
             {Frames, P} = feed_all([Bin]),
             ?assertEqual([reply_ok_frame()], Frames),
             ?assertEqual(
@@ -269,6 +274,8 @@ overflow_drops_further_input_test() ->
 %% stream leaves the parser un-overflowed.
 
 no_overflow_when_under_cap_test() ->
-    {Frames, P} = chappe_esl_parser:feed(reply_ok(), chappe_esl_parser:new(1024)),
+    {Frames, P} = chappe_esl_parser:feed(
+        reply_ok(), chappe_esl_parser:new(1024)
+    ),
     ?assertEqual([reply_ok_frame()], Frames),
     ?assertNot(chappe_esl_parser:overflowed(P)).

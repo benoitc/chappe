@@ -55,8 +55,12 @@ conn_closed_trimmed(_Config) ->
     closed(Ids),
     Half = ?MAX_CLOSED div 2,
     ?assertNot(lists:any(fun ?CONNS:conn_closed/1, lists:seq(1, Half - 1))),
-    ?assert(lists:all(fun ?CONNS:conn_closed/1, lists:seq(Half, ?MAX_CLOSED + 1))),
-    ?assertEqual(?MAX_CLOSED - Half + 2, ets:info(chappe_sip_closed_conns, size)).
+    ?assert(
+        lists:all(fun ?CONNS:conn_closed/1, lists:seq(Half, ?MAX_CLOSED + 1))
+    ),
+    ?assertEqual(
+        ?MAX_CLOSED - Half + 2, ets:info(chappe_sip_closed_conns, size)
+    ).
 
 %% a new engine starts with no record of closed connections
 conn_closed_cleared_on_start(_Config) ->
@@ -95,6 +99,9 @@ start(Port) ->
 %% feed flow_closed events in, as the WS transport would, and wait until
 %% the engine has handled them
 closed(Ids) ->
-    _ = [chappe_sip_engine ! {chappe_sip_engine, ws, {flow_closed, Id}} || Id <- Ids],
+    _ = [
+        chappe_sip_engine ! {chappe_sip_engine, ws, {flow_closed, Id}}
+     || Id <- Ids
+    ],
     _ = sys:get_state(chappe_sip_engine),
     ok.

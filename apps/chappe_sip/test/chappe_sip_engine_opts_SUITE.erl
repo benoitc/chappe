@@ -12,21 +12,38 @@
 -include_lib("stdlib/include/assert.hrl").
 
 -export([all/0, init_per_suite/1, end_per_suite/1, end_per_testcase/2]).
--export([t1_sets_retransmissions/1, timer_a_starts_at_t1/1, udp_mtu_moves_to_tcp/1,
-         tcp_keepalive_pings/1, outbound_proxy_takes_requests/1,
-         outbound_route_preloaded/1,
-         aliases_are_own/1, bad_options/1]).
+-export([
+    t1_sets_retransmissions/1,
+    timer_a_starts_at_t1/1,
+    udp_mtu_moves_to_tcp/1,
+    tcp_keepalive_pings/1,
+    outbound_proxy_takes_requests/1,
+    outbound_route_preloaded/1,
+    aliases_are_own/1,
+    bad_options/1
+]).
 
 -define(LO, {127, 0, 0, 1}).
 
 all() ->
-    [t1_sets_retransmissions, timer_a_starts_at_t1, udp_mtu_moves_to_tcp, tcp_keepalive_pings,
-     outbound_proxy_takes_requests, outbound_route_preloaded, aliases_are_own,
-     bad_options].
+    [
+        t1_sets_retransmissions,
+        timer_a_starts_at_t1,
+        udp_mtu_moves_to_tcp,
+        tcp_keepalive_pings,
+        outbound_proxy_takes_requests,
+        outbound_route_preloaded,
+        aliases_are_own,
+        bad_options
+    ].
 
 init_per_suite(Config) ->
-    application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
-                        [{persistent, true}]),
+    application:set_env(
+        chappe_sip,
+        engine_mod,
+        chappe_sip_nif,
+        [{persistent, true}]
+    ),
     {ok, _} = application:ensure_all_started(chappe_sip),
     Config.
 
@@ -98,8 +115,12 @@ timer_a_starts_at_t1(_Config) ->
 %% and TCP arrives over TCP.
 udp_mtu_moves_to_tcp(_Config) ->
     start(#{udp_mtu => 576}),
-    {ok, L} = gen_tcp:listen(0, [binary, {ip, ?LO}, {active, false},
-                                 {reuseaddr, true}]),
+    {ok, L} = gen_tcp:listen(0, [
+        binary,
+        {ip, ?LO},
+        {active, false},
+        {reuseaddr, true}
+    ]),
     {ok, Port} = inet:port(L),
     {ok, U} = gen_udp:open(Port, [binary, {ip, ?LO}, {active, true}]),
     {ok, _Ref} = chappe_sip:request(target(Port), #{
@@ -141,11 +162,15 @@ tcp_keepalive_pings(_Config) ->
 outbound_proxy_takes_requests(_Config) ->
     {ok, S} = gen_udp:open(0, [binary, {ip, ?LO}, {active, true}]),
     {ok, Port} = inet:port(S),
-    start(#{outbound_proxy =>
-                <<"sip:127.0.0.1:", (integer_to_binary(Port))/binary,
-                  ";transport=udp">>}),
-    {ok, _Ref} = chappe_sip:request(<<"sip:far@192.0.2.99:5070">>,
-                                    #{method => <<"OPTIONS">>}),
+    start(#{
+        outbound_proxy =>
+            <<"sip:127.0.0.1:", (integer_to_binary(Port))/binary,
+                ";transport=udp">>
+    }),
+    {ok, _Ref} = chappe_sip:request(
+        <<"sip:far@192.0.2.99:5070">>,
+        #{method => <<"OPTIONS">>}
+    ),
     receive
         {udp, S, _, _, <<"OPTIONS sip:far@192.0.2.99:5070 SIP/2.0", _/binary>>} ->
             ok
@@ -162,19 +187,28 @@ outbound_route_preloaded(_Config) ->
     {ok, Port} = inet:port(S),
     PB = integer_to_binary(Port),
     start(#{outbound_route => <<"sip:127.0.0.1:", PB/binary, ";transport=udp">>}),
-    {ok, _} = chappe_sip:request(<<"sip:far@192.0.2.99:5070">>,
-                                 #{method => <<"OPTIONS">>}),
-    Req = receive
-              {udp, S, _, _, <<"OPTIONS sip:far@192.0.2.99:5070 SIP/2.0", _/binary>> = B} -> B
-          after 5000 -> ct:fail(not_at_proxy)
-          end,
+    {ok, _} = chappe_sip:request(
+        <<"sip:far@192.0.2.99:5070">>,
+        #{method => <<"OPTIONS">>}
+    ),
+    Req =
+        receive
+            {udp, S, _, _,
+                <<"OPTIONS sip:far@192.0.2.99:5070 SIP/2.0", _/binary>> = B} ->
+                B
+        after 5000 -> ct:fail(not_at_proxy)
+        end,
     {ok, M} = chappe_sip_msg:parse(Req),
-    ?assertEqual(<<"<sip:127.0.0.1:", PB/binary, ";transport=udp;lr>">>,
-                 chappe_sip_msg:get(<<"route">>, M)),
+    ?assertEqual(
+        <<"<sip:127.0.0.1:", PB/binary, ";transport=udp;lr>">>,
+        chappe_sip_msg:get(<<"route">>, M)
+    ),
     {ok, S2} = gen_udp:open(0, [binary, {ip, ?LO}, {active, true}]),
     {ok, Port2} = inet:port(S2),
-    {ok, _} = chappe_sip:request(target(Port2),
-                                 #{method => <<"OPTIONS">>, proxy => target(Port2)}),
+    {ok, _} = chappe_sip:request(
+        target(Port2),
+        #{method => <<"OPTIONS">>, proxy => target(Port2)}
+    ),
     receive
         {udp, S2, _, _, <<"OPTIONS ", _/binary>> = B2} ->
             {ok, M2} = chappe_sip_msg:parse(B2),
@@ -187,22 +221,37 @@ outbound_route_preloaded(_Config) ->
 %% aliases: other names of the node, with or without a port, are its own
 %% addresses (a Route naming one is ours to pop).
 aliases_are_own(_Config) ->
-    P = start(#{aliases => [<<"sbc.example.com">>,
-                            <<"sip:edge.example.com:5099">>]}),
+    P = start(#{
+        aliases => [
+            <<"sbc.example.com">>,
+            <<"sip:edge.example.com:5099">>
+        ]
+    }),
     PB = integer_to_binary(P),
-    [?assert(chappe_sip_proxy_rules:is_own_address(U))
-     || U <- [<<"sip:sbc.example.com:", PB/binary>>,
-              <<"<sip:sbc.example.com:", PB/binary, ";lr>">>,
-              <<"sip:edge.example.com:5099">>]],
-    [?assertNot(chappe_sip_proxy_rules:is_own_address(U))
-     || U <- [<<"sip:other.example.com:", PB/binary>>,
-              <<"sip:edge.example.com:", PB/binary>>]].
+    [
+        ?assert(chappe_sip_proxy_rules:is_own_address(U))
+     || U <- [
+            <<"sip:sbc.example.com:", PB/binary>>,
+            <<"<sip:sbc.example.com:", PB/binary, ";lr>">>,
+            <<"sip:edge.example.com:5099">>
+        ]
+    ],
+    [
+        ?assertNot(chappe_sip_proxy_rules:is_own_address(U))
+     || U <- [
+            <<"sip:other.example.com:", PB/binary>>,
+            <<"sip:edge.example.com:", PB/binary>>
+        ]
+    ].
 
 %% Out of bounds or of the wrong shape: the start fails with the option;
 %% outbound_route and outbound_proxy together are refused.
 bad_options(_Config) ->
-    [?assertEqual({error, {Key, V}},
-                  chappe_sip:start(#{contact => contact(), Key => V}))
+    [
+        ?assertEqual(
+            {error, {Key, V}},
+            chappe_sip:start(#{contact => contact(), Key => V})
+        )
      || {Key, V} <- [
             {sip_timers, #{t1 => 5}},
             {sip_timers, #{t1 => 1000, t2 => 500}},
@@ -225,11 +274,16 @@ bad_options(_Config) ->
             {aliases, [<<"sip:u@sbc.example.com">>]},
             {aliases, [<<"sbc.example.com;lr">>]},
             {aliases, lists:duplicate(17, <<"a.example.com">>)}
-        ]],
-    ?assertMatch({error, {outbound_route, {with_outbound_proxy, _}}},
-                 chappe_sip:start(#{contact => contact(),
-                                    outbound_proxy => <<"sip:a">>,
-                                    outbound_route => <<"sip:b">>})).
+        ]
+    ],
+    ?assertMatch(
+        {error, {outbound_route, {with_outbound_proxy, _}}},
+        chappe_sip:start(#{
+            contact => contact(),
+            outbound_proxy => <<"sip:a">>,
+            outbound_route => <<"sip:b">>
+        })
+    ).
 
 %% ---- helpers ----
 
@@ -246,7 +300,7 @@ contact(P) ->
 
 target(Port) ->
     <<"sip:peer@127.0.0.1:", (integer_to_binary(Port))/binary,
-      ";transport=udp">>.
+        ";transport=udp">>.
 
 recv_udp(S) ->
     recv_udp(S, <<"OPTIONS">>).
@@ -261,15 +315,20 @@ recv_udp(S, Method) ->
 
 options(LPort, P) ->
     iolist_to_binary([
-        "OPTIONS sip:x@127.0.0.1:", integer_to_binary(P), ";transport=tcp",
+        "OPTIONS sip:x@127.0.0.1:",
+        integer_to_binary(P),
+        ";transport=tcp",
         " SIP/2.0\r\n",
-        "Via: SIP/2.0/TCP 127.0.0.1:", integer_to_binary(LPort),
-        ";branch=z9hG4bKka", integer_to_binary(erlang:unique_integer([positive])),
+        "Via: SIP/2.0/TCP 127.0.0.1:",
+        integer_to_binary(LPort),
+        ";branch=z9hG4bKka",
+        integer_to_binary(erlang:unique_integer([positive])),
         "\r\n",
         "Max-Forwards: 70\r\n",
         "From: <sip:ka@127.0.0.1>;tag=ka1\r\n",
         "To: <sip:x@127.0.0.1>\r\n",
-        "Call-ID: ka-", integer_to_binary(erlang:unique_integer([positive])),
+        "Call-ID: ka-",
+        integer_to_binary(erlang:unique_integer([positive])),
         "\r\n",
         "CSeq: 1 OPTIONS\r\n",
         "Content-Length: 0\r\n\r\n"

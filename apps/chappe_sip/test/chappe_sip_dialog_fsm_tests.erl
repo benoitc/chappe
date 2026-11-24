@@ -23,15 +23,18 @@ bye_in_setup_test() ->
         role => uas,
         opts => #{}
     }),
-    Bye = <<"BYE sip:a@example.com SIP/2.0\r\n"
-            "Via: SIP/2.0/UDP 127.0.0.1:5070;branch=z9hG4bKsetup\r\n"
-            "From: <sip:b@example.com>;tag=b\r\n"
-            "To: <sip:a@example.com>;tag=a\r\n"
-            "Call-ID: setup-bye\r\nCSeq: 2 BYE\r\nContent-Length: 0\r\n\r\n">>,
+    Bye = <<
+        "BYE sip:a@example.com SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:5070;branch=z9hG4bKsetup\r\n"
+        "From: <sip:b@example.com>;tag=b\r\n"
+        "To: <sip:a@example.com>;tag=a\r\n"
+        "Call-ID: setup-bye\r\nCSeq: 2 BYE\r\nContent-Length: 0\r\n\r\n"
+    >>,
     Fsm ! {chappe_sip_indialog, 1, 77, #{}, Bye},
     %% still in setup: nothing answered yet
     receive
-        {engine_call, {txn, {dialog_respond, 77, _, _, _, _, _}}} -> ?assert(false)
+        {engine_call, {txn, {dialog_respond, 77, _, _, _, _, _}}} ->
+            ?assert(false)
     after 200 -> ok
     end,
     Fsm ! {chappe_sip_op, 1, ok},
@@ -69,11 +72,13 @@ ack_on_txn_in_setup_test() ->
         role => uas,
         opts => #{}
     }),
-    Ack = <<"ACK sip:a@example.com SIP/2.0\r\n"
-            "Via: SIP/2.0/UDP 127.0.0.1:5070;branch=z9hG4bKsetupack\r\n"
-            "From: <sip:b@example.com>;tag=b\r\n"
-            "To: <sip:a@example.com>;tag=a\r\n"
-            "Call-ID: setup-ack\r\nCSeq: 1 ACK\r\nContent-Length: 0\r\n\r\n">>,
+    Ack = <<
+        "ACK sip:a@example.com SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:5070;branch=z9hG4bKsetupack\r\n"
+        "From: <sip:b@example.com>;tag=b\r\n"
+        "To: <sip:a@example.com>;tag=a\r\n"
+        "Call-ID: setup-ack\r\nCSeq: 1 ACK\r\nContent-Length: 0\r\n\r\n"
+    >>,
     Fsm ! {chappe_sip_ack, 5, Ack},
     Fsm ! {chappe_sip_op, 1, ok},
     ?assertEqual({ok, 1}, gen_statem:call(Fsm, await_ready)),

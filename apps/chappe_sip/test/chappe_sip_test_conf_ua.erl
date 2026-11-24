@@ -24,9 +24,13 @@
 
 %% An audio offer or answer with the given direction, sending SSRC 1234.
 sdp(Dir) ->
-    <<"v=0\r\no=ua 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\n"
-    "t=0 0\r\nm=audio 40010 RTP/AVP 0\r\na=", Dir/binary, "\r\n"
-    "a=ssrc:1234 cname:ua\r\n">>.
+    <<
+        "v=0\r\no=ua 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\n"
+        "t=0 0\r\nm=audio 40010 RTP/AVP 0\r\na=",
+        Dir/binary,
+        "\r\n"
+        "a=ssrc:1234 cname:ua\r\n"
+    >>.
 
 start(Name, EP) ->
     Parent = self(),
@@ -179,7 +183,8 @@ handle({reinvite, Call, Dir}, S) ->
     {{ok, St}, S1} = Reply = in_dialog(<<"INVITE">>, Call, [], sdp(Dir), S),
     case St of
         200 ->
-            #{target := T, cseq := C} = D = maps:get(Call, maps:get(dialogs, S1)),
+            #{target := T, cseq := C} =
+                D = maps:get(Call, maps:get(dialogs, S1)),
             send(S1, request(<<"ACK">>, T, S1, D#{call => Call, cseq => C})),
             Reply;
         _ ->
@@ -258,8 +263,10 @@ incoming(Bin, Src, #{reqs := Reqs, seen := Seen} = S) ->
 
 answer_invite(M, Src, #{answer := {Status, Ring, Final}} = S) ->
     case Ring of
-        none -> ok;
-        _ -> erlang:send_after(Ring, self(), {final, resp(M, 180, <<>>, S), Src})
+        none ->
+            ok;
+        _ ->
+            erlang:send_after(Ring, self(), {final, resp(M, 180, <<>>, S), Src})
     end,
     Body =
         case Status of

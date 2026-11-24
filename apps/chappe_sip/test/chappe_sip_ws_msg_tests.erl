@@ -35,8 +35,10 @@ msg(Bin) ->
 
 add_received_rport_test() ->
     ?assertEqual(
-        <<"SIP/2.0/WS abc.invalid;branch=z9hG4bKx;received=192.0.2.1;"
-          "rport=4321">>,
+        <<
+            "SIP/2.0/WS abc.invalid;branch=z9hG4bKx;received=192.0.2.1;"
+            "rport=4321"
+        >>,
         ?M:add_received(
             <<"SIP/2.0/WS abc.invalid;branch=z9hG4bKx;rport">>,
             {{192, 0, 2, 1}, 4321}
@@ -65,11 +67,15 @@ add_received_same_host_test() ->
 add_received_replaces_test() ->
     %% values the client put there are replaced, never repeated
     ?assertEqual(
-        <<"SIP/2.0/WS abc.invalid;branch=z9hG4bKx;received=192.0.2.1;"
-          "rport=4321">>,
+        <<
+            "SIP/2.0/WS abc.invalid;branch=z9hG4bKx;received=192.0.2.1;"
+            "rport=4321"
+        >>,
         ?M:add_received(
-            <<"SIP/2.0/WS abc.invalid;received=1.1.1.1;branch=z9hG4bKx;"
-              "rport=9">>,
+            <<
+                "SIP/2.0/WS abc.invalid;received=1.1.1.1;branch=z9hG4bKx;"
+                "rport=9"
+            >>,
             {{192, 0, 2, 1}, 4321}
         )
     ).
@@ -84,20 +90,26 @@ add_received_ipv6_test() ->
     ).
 
 add_received_no_peer_test() ->
-    ?assertEqual(<<"SIP/2.0/WS h;b">>, ?M:add_received(<<"SIP/2.0/WS h;b">>, undefined)).
+    ?assertEqual(
+        <<"SIP/2.0/WS h;b">>, ?M:add_received(<<"SIP/2.0/WS h;b">>, undefined)
+    ).
 
 insert_via_test() ->
     Raw = <<"OPTIONS sip:a@b SIP/2.0\r\nCall-ID: x\r\n\r\n">>,
     ?assertEqual(
-        <<"OPTIONS sip:a@b SIP/2.0\r\n"
-          "Via: SIP/2.0/WS chappe.invalid;branch=z9hG4bKb1\r\n"
-          "Call-ID: x\r\n\r\n">>,
+        <<
+            "OPTIONS sip:a@b SIP/2.0\r\n"
+            "Via: SIP/2.0/WS chappe.invalid;branch=z9hG4bKb1\r\n"
+            "Call-ID: x\r\n\r\n"
+        >>,
         ?M:insert_via(Raw, ws, <<"z9hG4bKb1">>)
     ),
     ?assertEqual(
-        <<"OPTIONS sip:a@b SIP/2.0\r\n"
-          "Via: SIP/2.0/WSS chappe.invalid;branch=z9hG4bKb1\r\n"
-          "Call-ID: x\r\n\r\n">>,
+        <<
+            "OPTIONS sip:a@b SIP/2.0\r\n"
+            "Via: SIP/2.0/WSS chappe.invalid;branch=z9hG4bKb1\r\n"
+            "Call-ID: x\r\n\r\n"
+        >>,
         ?M:insert_via(Raw, wss, <<"z9hG4bKb1">>)
     ),
     ?assertEqual(
@@ -106,24 +118,29 @@ insert_via_test() ->
     ).
 
 ensure_via_test() ->
-    WithVia = <<"ACK sip:a@b SIP/2.0\r\nVia: SIP/2.0/WS h;branch=z9hG4bKq\r\n\r\n">>,
+    WithVia =
+        <<"ACK sip:a@b SIP/2.0\r\nVia: SIP/2.0/WS h;branch=z9hG4bKq\r\n\r\n">>,
     ?assertEqual(WithVia, ?M:ensure_via(WithVia, ws)),
     Added = ?M:ensure_via(<<"ACK sip:a@b SIP/2.0\r\nCall-ID: x\r\n\r\n">>, wss),
     ?assertMatch(
         <<"ACK sip:a@b SIP/2.0\r\nVia: SIP/2.0/WSS chappe.invalid;branch=z9hG4bK",
-          _/binary>>,
+            _/binary>>,
         Added
     ).
 
 via_branch_test() ->
     ?assertEqual(<<"z9hG4bKinv1">>, ?M:via_branch(msg(?INVITE))),
-    NoBranch = <<"OPTIONS sip:a@b SIP/2.0\r\nVia: SIP/2.0/WS h\r\n"
-                 "From: <sip:a@b>;tag=1\r\nTo: <sip:a@b>\r\nCall-ID: c\r\n"
-                 "CSeq: 1 OPTIONS\r\n\r\n">>,
+    NoBranch = <<
+        "OPTIONS sip:a@b SIP/2.0\r\nVia: SIP/2.0/WS h\r\n"
+        "From: <sip:a@b>;tag=1\r\nTo: <sip:a@b>\r\nCall-ID: c\r\n"
+        "CSeq: 1 OPTIONS\r\n\r\n"
+    >>,
     ?assertEqual(<<>>, ?M:via_branch(msg(NoBranch))),
-    NoVia = <<"OPTIONS sip:a@b SIP/2.0\r\n"
-              "From: <sip:a@b>;tag=1\r\nTo: <sip:a@b>\r\nCall-ID: c\r\n"
-              "CSeq: 1 OPTIONS\r\n\r\n">>,
+    NoVia = <<
+        "OPTIONS sip:a@b SIP/2.0\r\n"
+        "From: <sip:a@b>;tag=1\r\nTo: <sip:a@b>\r\nCall-ID: c\r\n"
+        "CSeq: 1 OPTIONS\r\n\r\n"
+    >>,
     ?assertEqual(<<>>, ?M:via_branch(msg(NoVia))).
 
 %% ---- CANCEL and ACK ----
@@ -211,7 +228,12 @@ build_response_test() ->
             "abc"
         >>,
         ?M:build_response(
-            Req, 180, <<>>, [<<"X-A: 1\r\n">>], <<"abc">>, <<"tt">>,
+            Req,
+            180,
+            <<>>,
+            [<<"X-A: 1\r\n">>],
+            <<"abc">>,
+            <<"tt">>,
             {{192, 0, 2, 1}, 4321}
         )
     ).
@@ -243,10 +265,15 @@ build_response_mints_tag_test() ->
 
 build_response_keeps_tag_test() ->
     InDialog = binary:replace(
-        ?INVITE, <<"To: <sip:bob@example.com>">>,
+        ?INVITE,
+        <<"To: <sip:bob@example.com>">>,
         <<"To: <sip:bob@example.com>;tag=have">>
     ),
-    R = msg(?M:build_response(msg(InDialog), 200, <<>>, <<>>, <<>>, <<"x">>, undefined)),
+    R = msg(
+        ?M:build_response(
+            msg(InDialog), 200, <<>>, <<>>, <<>>, <<"x">>, undefined
+        )
+    ),
     ?assertEqual(<<"have">>, chappe_sip_msg:to_tag(R)),
     ?assertEqual(<<"OK">>, chappe_sip_msg:reason(R)).
 
@@ -266,12 +293,15 @@ reason_test() ->
 %% ---- header checks ----
 
 content_length_test() ->
-    Base = <<"MESSAGE sip:a@b SIP/2.0\r\nVia: SIP/2.0/WS h;branch=z9hG4bK1\r\n"
-             "From: <sip:a@b>;tag=1\r\nTo: <sip:a@b>\r\nCall-ID: c\r\n"
-             "CSeq: 1 MESSAGE\r\n">>,
+    Base = <<
+        "MESSAGE sip:a@b SIP/2.0\r\nVia: SIP/2.0/WS h;branch=z9hG4bK1\r\n"
+        "From: <sip:a@b>;tag=1\r\nTo: <sip:a@b>\r\nCall-ID: c\r\n"
+        "CSeq: 1 MESSAGE\r\n"
+    >>,
     ?assertEqual(ok, ?M:content_length(msg(<<Base/binary, "\r\nhi">>))),
     ?assertEqual(
-        ok, ?M:content_length(msg(<<Base/binary, "Content-Length: 2\r\n\r\nhi">>))
+        ok,
+        ?M:content_length(msg(<<Base/binary, "Content-Length: 2\r\n\r\nhi">>))
     ),
     ?assertEqual(
         ok,
@@ -288,14 +318,19 @@ content_length_test() ->
     ?assertEqual(
         <<"Bad Content-Length">>,
         ?M:content_length(
-            msg(<<Base/binary, "Content-Length: 2\r\nContent-Length: 2\r\n\r\nhi">>)
+            msg(
+                <<Base/binary,
+                    "Content-Length: 2\r\nContent-Length: 2\r\n\r\nhi">>
+            )
         )
     ).
 
 rack_test() ->
     P = fun(RAck) ->
-        msg(<<"PRACK sip:a@b SIP/2.0\r\n", RAck/binary,
-              "Call-ID: c\r\nCSeq: 2 PRACK\r\n\r\n">>)
+        msg(
+            <<"PRACK sip:a@b SIP/2.0\r\n", RAck/binary,
+                "Call-ID: c\r\nCSeq: 2 PRACK\r\n\r\n">>
+        )
     end,
     ?assertEqual({ok, 5, 7}, ?M:rack(P(<<"RAck: 5 7 INVITE\r\n">>))),
     ?assertEqual({ok, 5, 7}, ?M:rack(P(<<"RAck:  5\t7  INVITE \r\n">>))),

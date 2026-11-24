@@ -12,24 +12,54 @@
 -include_lib("stdlib/include/assert.hrl").
 
 -import(chappe_sip_core_peer, [
-    open/0, port/1, send/3, recv/3, request/3, response/3, hdr/2, hdrs/2,
-    status/1, method/1, cseq/1, to_tag/1, from_tag/1, tag/0, sdp/0, sdp/1
+    open/0,
+    port/1,
+    send/3,
+    recv/3,
+    request/3,
+    response/3,
+    hdr/2,
+    hdrs/2,
+    status/1,
+    method/1,
+    cseq/1,
+    to_tag/1,
+    from_tag/1,
+    tag/0,
+    sdp/0, sdp/1
 ]).
 
--export([all/0, init_per_suite/1, end_per_suite/1,
-         init_per_testcase/2, end_per_testcase/2]).
--export([event_only_in_subscribe_notify/1, reason_one_per_protocol/1,
-         update_contact_matches_2xx/1, refused_update_keeps_session/1,
-         response_on_sent_by_port/1]).
+-export([
+    all/0,
+    init_per_suite/1,
+    end_per_suite/1,
+    init_per_testcase/2,
+    end_per_testcase/2
+]).
+-export([
+    event_only_in_subscribe_notify/1,
+    reason_one_per_protocol/1,
+    update_contact_matches_2xx/1,
+    refused_update_keeps_session/1,
+    response_on_sent_by_port/1
+]).
 
 all() ->
-    [event_only_in_subscribe_notify, reason_one_per_protocol,
-     update_contact_matches_2xx, refused_update_keeps_session,
-     response_on_sent_by_port].
+    [
+        event_only_in_subscribe_notify,
+        reason_one_per_protocol,
+        update_contact_matches_2xx,
+        refused_update_keeps_session,
+        response_on_sent_by_port
+    ].
 
 init_per_suite(Config) ->
-    application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
-                        [{persistent, true}]),
+    application:set_env(
+        chappe_sip,
+        engine_mod,
+        chappe_sip_nif,
+        [{persistent, true}]
+    ),
     {ok, _} = application:ensure_all_started(chappe_sip),
     Config.
 
@@ -64,26 +94,48 @@ event_only_in_subscribe_notify(Config) ->
     ok = chappe_sip:subscribe(fun(Req, Res) ->
         {ok, D} = chappe_sip:create_uas(Req, Res, #{expires => 600}),
         Test ! {notified, chappe_sip_dialog:notify(D, #{state => active})},
-        receive stop -> ok after 5000 -> ok end
+        receive
+            stop -> ok
+        after 5000 -> ok
+        end
     end),
     ok = chappe_sip:invite(fun(Req, Res) ->
         {ok, _} = chappe_sip:create_uas(Req, Res, #{local_sdp => sdp()})
     end),
     %% SUBSCRIBE: its 200 has no Event, the NOTIFY has
-    Sub = request(<<"SUBSCRIBE">>, ?APP,
-                  #{port => LP, headers => [{<<"Event">>, <<"conference">>},
-                                            {<<"Expires">>, <<"600">>}]}),
+    Sub = request(
+        <<"SUBSCRIBE">>,
+        ?APP,
+        #{
+            port => LP,
+            headers => [
+                {<<"Event">>, <<"conference">>},
+                {<<"Expires">>, <<"600">>}
+            ]
+        }
+    ),
     send(Sock, EP, Sub),
     {R200s, _} = recv(Sock, {status, 200, <<"SUBSCRIBE">>}, 3000),
     {Notify, NSrc} = recv(Sock, {method, <<"NOTIFY">>}, 3000),
     ?assertEqual(<<"conference">>, hdr(<<"event">>, Notify)),
     send(Sock, NSrc, response(Notify, 200, #{})),
-    receive {notified, {ok, _}} -> ok after 3000 -> ct:fail(no_notify) end,
+    receive
+        {notified, {ok, _}} -> ok
+    after 3000 -> ct:fail(no_notify)
+    end,
     %% a NOTIFY chappe has no subscription for: its answer has no Event
-    Stray = request(<<"NOTIFY">>, ?APP,
-                    #{port => LP, to_tag => tag(),
-                      headers => [{<<"Event">>, <<"dialog">>},
-                                  {<<"Subscription-State">>, <<"active">>}]}),
+    Stray = request(
+        <<"NOTIFY">>,
+        ?APP,
+        #{
+            port => LP,
+            to_tag => tag(),
+            headers => [
+                {<<"Event">>, <<"dialog">>},
+                {<<"Subscription-State">>, <<"active">>}
+            ]
+        }
+    ),
     send(Sock, EP, Stray),
     {RStray, _} = recv(Sock, fun(B) -> is_response(B, <<"NOTIFY">>) end, 3000),
     %% INVITE answered by the app: the 100 and the 200
@@ -96,8 +148,10 @@ event_only_in_subscribe_notify(Config) ->
     {ok, _} = chappe_sip_uac:start(peer_uri(Sock), #{local_sdp => sdp()}),
     {Out, _} = recv(Sock, {method, <<"INVITE">>}, 3000),
     send(Sock, EP, response(Out, 486, #{to_tag => tag()})),
-    [?assertEqual([], hdrs(<<"event">>, M), M)
-     || M <- [R200s, RStray, R100, R200i, Out]].
+    [
+        ?assertEqual([], hdrs(<<"event">>, M), M)
+     || M <- [R200s, RStray, R100, R200i, Out]
+    ].
 
 %% RFC 3326 2: several Reason values may go on a request, each of a
 %% different protocol. The B2BUA repeats A's BYE Reason on B's BYE: when
@@ -114,21 +168,39 @@ reason_one_per_protocol(Config) ->
     Inv = request(<<"INVITE">>, ?APP, #{port => port(A), body => sdp()}),
     send(A, EP, Inv),
     {BInv, BSrc} = recv(B, {method, <<"INVITE">>}, 3000),
-    send(B, BSrc, response(BInv, 200,
-                           #{to_tag => tag(), body => sdp(42000),
-                             headers => [{<<"Contact">>,
-                                          <<"<", Callee/binary, ">">>}]})),
+    send(
+        B,
+        BSrc,
+        response(
+            BInv,
+            200,
+            #{
+                to_tag => tag(),
+                body => sdp(42000),
+                headers => [{<<"Contact">>, <<"<", Callee/binary, ">">>}]
+            }
+        )
+    ),
     {_, _} = recv(B, {method, <<"ACK">>}, 3000),
     {R200, _} = recv(A, {status, 200, <<"INVITE">>}, 3000),
     send(A, EP, chappe_sip_core_peer:ack_for(R200, #{port => port(A)})),
-    Reasons = [<<"Q.850;cause=16;text=\"Normal, call clearing\"">>,
-               <<"SIP;cause=200;text=\"Call completed elsewhere\"">>,
-               <<"Q.850;cause=31">>],
-    Bye = request(<<"BYE">>, contact_uri(R200),
-                  #{port => port(A), call_id => hdr(<<"call-id">>, Inv),
-                    from_tag => from_tag(Inv), to_tag => to_tag(R200),
-                    cseq => 2,
-                    headers => [{<<"Reason">>, R} || R <- Reasons]}),
+    Reasons = [
+        <<"Q.850;cause=16;text=\"Normal, call clearing\"">>,
+        <<"SIP;cause=200;text=\"Call completed elsewhere\"">>,
+        <<"Q.850;cause=31">>
+    ],
+    Bye = request(
+        <<"BYE">>,
+        contact_uri(R200),
+        #{
+            port => port(A),
+            call_id => hdr(<<"call-id">>, Inv),
+            from_tag => from_tag(Inv),
+            to_tag => to_tag(R200),
+            cseq => 2,
+            headers => [{<<"Reason">>, R} || R <- Reasons]
+        }
+    ),
     send(A, EP, Bye),
     {BBye, BS} = recv(B, {method, <<"BYE">>}, 3000),
     send(B, BS, response(BBye, 200, #{})),
@@ -145,16 +217,20 @@ update_contact_matches_2xx(Config) ->
     {Inv, D, R200} = call(Sock, EP, #{handled_events => [modify]}),
     ReInv = indialog(<<"INVITE">>, Inv, R200, LP, 2, sdp(40002)),
     send(Sock, EP, ReInv),
-    Res = receive {chappe_sip_dialog, D, modify, _, Res0} -> Res0
-          after 3000 -> ct:fail(no_modify)
-          end,
+    Res =
+        receive
+            {chappe_sip_dialog, D, modify, _, Res0} -> Res0
+        after 3000 -> ct:fail(no_modify)
+        end,
     %% a target refresh without an offer, in the middle of the re-INVITE
     Upd = indialog(<<"UPDATE">>, Inv, R200, LP, 3, <<>>),
     send(Sock, EP, Upd),
     {RUpd, _} = recv(Sock, fun(B) -> is_response(B, <<"UPDATE">>) end, 3000),
     ?assertEqual(200, status(RUpd)),
-    ok = chappe_sip_res:send(Res, 200, #{body => sdp(41000),
-                                         headers => [?SDP_CT]}),
+    ok = chappe_sip_res:send(Res, 200, #{
+        body => sdp(41000),
+        headers => [?SDP_CT]
+    }),
     {R2, _} = recv(Sock, {status, 200, <<"INVITE">>}, 3000),
     send(Sock, EP, chappe_sip_core_peer:ack_for(R2, #{port => LP})),
     ?assertNotEqual(undefined, hdr(<<"contact">>, RUpd)),
@@ -169,9 +245,11 @@ refused_update_keeps_session(Config) ->
     Local0 = chappe_sip_dialog:local_sdp(D),
     Remote0 = chappe_sip_dialog:remote_sdp(D),
     Upd = async(fun() ->
-        chappe_sip_dialog:request(D, #{method => <<"UPDATE">>,
-                                       content_type => <<"application/sdp">>,
-                                       body => sdp(45000)})
+        chappe_sip_dialog:request(D, #{
+            method => <<"UPDATE">>,
+            content_type => <<"application/sdp">>,
+            body => sdp(45000)
+        })
     end),
     {U, USrc} = recv(Sock, {method, <<"UPDATE">>}, 3000),
     send(Sock, USrc, response(U, 488, #{reason => <<"Not Acceptable Here">>})),
@@ -182,8 +260,13 @@ refused_update_keeps_session(Config) ->
     %% the next offer builds on the session the INVITE set
     Mod = async(fun() -> chappe_sip_dialog:modify(D, hold) end),
     {ReInv, RSrc} = recv(Sock, {method, <<"INVITE">>}, 3000),
-    ?assertEqual(nomatch, binary:match(chappe_sip_core_peer:body(ReInv),
-                                       <<"45000">>)),
+    ?assertEqual(
+        nomatch,
+        binary:match(
+            chappe_sip_core_peer:body(ReInv),
+            <<"45000">>
+        )
+    ),
     send(Sock, RSrc, response(ReInv, 200, #{body => sdp()})),
     {ok, _} = await(Mod).
 
@@ -219,8 +302,11 @@ contact_uri(Msg) ->
     U.
 
 sent_by_port(Via) ->
-    {match, [P]} = re:run(Via, "^SIP/2.0/[A-Z]+ [^:;]+:([0-9]+)",
-                          [{capture, all_but_first, binary}]),
+    {match, [P]} = re:run(
+        Via,
+        "^SIP/2.0/[A-Z]+ [^:;]+:([0-9]+)",
+        [{capture, all_but_first, binary}]
+    ),
     binary_to_integer(P).
 
 %% A confirmed call from the peer (INVITE, 200, ACK); the test process
@@ -229,8 +315,16 @@ call(Sock, EP, UasOpts) ->
     Test = self(),
     ok = chappe_sip:invite(fun(Req, Res) ->
         {ok, D} = chappe_sip:create_uas(
-                    Req, Res, maps:merge(#{local_sdp => sdp(41000),
-                                           owner => Test}, UasOpts)),
+            Req,
+            Res,
+            maps:merge(
+                #{
+                    local_sdp => sdp(41000),
+                    owner => Test
+                },
+                UasOpts
+            )
+        ),
         Test ! {dialog, D}
     end),
     LP = port(Sock),
@@ -238,18 +332,31 @@ call(Sock, EP, UasOpts) ->
     send(Sock, EP, Inv),
     {R200, _} = recv(Sock, {status, 200, <<"INVITE">>}, 3000),
     send(Sock, EP, chappe_sip_core_peer:ack_for(R200, #{port => LP})),
-    D = receive {dialog, D0} -> D0 after 3000 -> ct:fail(no_dialog) end,
-    receive {chappe_sip_dialog, D, ack, _, _} -> ok
+    D =
+        receive
+            {dialog, D0} -> D0
+        after 3000 -> ct:fail(no_dialog)
+        end,
+    receive
+        {chappe_sip_dialog, D, ack, _, _} -> ok
     after 3000 -> ct:fail(no_ack)
     end,
     {Inv, D, R200}.
 
 %% an in-dialog request from the peer, CSeq N, with an optional offer
 indialog(Method, Inv, R200, LP, N, Body) ->
-    request(Method, contact_uri(R200),
-            #{port => LP, call_id => hdr(<<"call-id">>, Inv),
-              from_tag => from_tag(Inv), to_tag => to_tag(R200), cseq => N,
-              body => Body}).
+    request(
+        Method,
+        contact_uri(R200),
+        #{
+            port => LP,
+            call_id => hdr(<<"call-id">>, Inv),
+            from_tag => from_tag(Inv),
+            to_tag => to_tag(R200),
+            cseq => N,
+            body => Body
+        }
+    ).
 
 async(F) ->
     Test = self(),
@@ -258,4 +365,7 @@ async(F) ->
     Ref.
 
 await(Ref) ->
-    receive {Ref, R} -> R after 10000 -> ct:fail(no_result) end.
+    receive
+        {Ref, R} -> R
+    after 10000 -> ct:fail(no_result)
+    end.

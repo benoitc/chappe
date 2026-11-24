@@ -57,8 +57,12 @@ all() ->
     ].
 
 init_per_suite(Config) ->
-    application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
-                        [{persistent, true}]),
+    application:set_env(
+        chappe_sip,
+        engine_mod,
+        chappe_sip_nif,
+        [{persistent, true}]
+    ),
     {ok, _} = application:ensure_all_started(chappe_sip),
     Config.
 
@@ -86,7 +90,8 @@ subscribe_initial_notify(_Config) ->
     {_Dlg, H} = dialog(),
     run_async(H, fun(D) ->
         chappe_sip_dialog:notify(D, #{
-            state => active, body => <<"<conference-info/>">>,
+            state => active,
+            body => <<"<conference-info/>">>,
             content_type => ?CT
         })
     end),
@@ -110,13 +115,18 @@ event_id_echoed(_Config) ->
     S = sub(EP, <<"t18">>),
     _R200 = send_subscribe(S, 1, 300, undefined, 200, <<"conference;id=7">>),
     {_Dlg, H} = dialog(),
-    [begin
-         run_async(H, fun(D) -> chappe_sip_dialog:notify(D, #{state => State}) end),
-         {Notify, NSrc} = recv_req(S, <<"NOTIFY">>),
-         ?assertEqual(<<"conference;id=7">>, hdr(Notify, <<"event">>)),
-         reply(S, Notify, NSrc, 200),
-         {ok, _} = ran()
-     end || State <- [active, {terminated, noresource}]].
+    [
+        begin
+            run_async(H, fun(D) ->
+                chappe_sip_dialog:notify(D, #{state => State})
+            end),
+            {Notify, NSrc} = recv_req(S, <<"NOTIFY">>),
+            ?assertEqual(<<"conference;id=7">>, hdr(Notify, <<"event">>)),
+            reply(S, Notify, NSrc, 200),
+            {ok, _} = ran()
+        end
+     || State <- [active, {terminated, noresource}]
+    ].
 
 %% A CANCEL for a SUBSCRIBE the app has not answered yet gets 200 and is
 %% otherwise ignored: the SUBSCRIBE still gets its 200 and the NOTIFY
@@ -128,28 +138,46 @@ cancel_pending_subscribe(_Config) ->
     Test = self(),
     ok = chappe_sip:subscribe(fun(Req, Res) ->
         Test ! {held, self()},
-        receive go -> ok after 5000 -> ok end,
+        receive
+            go -> ok
+        after 5000 -> ok
+        end,
         {ok, Dlg} = chappe_sip:create_uas(Req, Res, #{expires => 600}),
         Test ! {dialog, Dlg, self()},
         relay(Test, Dlg)
     end),
     #{sock := Sock, ft := FT, call := Call} = S = sub(EP, <<"t19">>),
     P = integer_to_binary(lport(Sock)),
-    Via = <<"SIP/2.0/UDP 127.0.0.1:", P/binary, ";rport;branch=",
+    Via =
+        <<"SIP/2.0/UDP 127.0.0.1:", P/binary, ";rport;branch=",
             (branch())/binary>>,
-    Common = <<"Max-Forwards: 70\r\n"
-               "From: <sip:sub@127.0.0.1:", P/binary, ">;tag=", FT/binary, "\r\n"
-               "To: <sip:conf@127.0.0.1>\r\n"
-               "Call-ID: ", Call/binary, "\r\n">>,
-    Sub = <<"SUBSCRIBE sip:conf@127.0.0.1 SIP/2.0\r\nVia: ", Via/binary, "\r\n",
-            Common/binary,
-            "Contact: <sip:sub@127.0.0.1:", P/binary, ">\r\n"
+    Common = <<
+        "Max-Forwards: 70\r\n"
+        "From: <sip:sub@127.0.0.1:",
+        P/binary,
+        ">;tag=",
+        FT/binary,
+        "\r\n"
+        "To: <sip:conf@127.0.0.1>\r\n"
+        "Call-ID: ",
+        Call/binary,
+        "\r\n"
+    >>,
+    Sub =
+        <<"SUBSCRIBE sip:conf@127.0.0.1 SIP/2.0\r\nVia: ", Via/binary, "\r\n",
+            Common/binary, "Contact: <sip:sub@127.0.0.1:", P/binary,
+            ">\r\n"
             "CSeq: 1 SUBSCRIBE\r\nEvent: conference\r\nExpires: 600\r\n"
             "Content-Length: 0\r\n\r\n">>,
-    Cancel = <<"CANCEL sip:conf@127.0.0.1 SIP/2.0\r\nVia: ", Via/binary, "\r\n",
-               Common/binary, "CSeq: 1 CANCEL\r\nContent-Length: 0\r\n\r\n">>,
+    Cancel =
+        <<"CANCEL sip:conf@127.0.0.1 SIP/2.0\r\nVia: ", Via/binary, "\r\n",
+            Common/binary, "CSeq: 1 CANCEL\r\nContent-Length: 0\r\n\r\n">>,
     ok = gen_udp:send(Sock, {127, 0, 0, 1}, EP, Sub),
-    H = receive {held, H0} -> H0 after 4000 -> ct:fail(no_handler) end,
+    H =
+        receive
+            {held, H0} -> H0
+        after 4000 -> ct:fail(no_handler)
+        end,
     ok = gen_udp:send(Sock, {127, 0, 0, 1}, EP, Cancel),
     C200 = recv_cseq(Sock, <<"1 CANCEL">>),
     ct:log("CANCEL answer: ~s", [C200]),
@@ -203,7 +231,8 @@ min_expires_423(_Config) ->
     R423 = send_subscribe(S, 1, 10, undefined, 423),
     ?assertEqual(<<"60">>, hdr(R423, <<"min-expires">>)),
     receive
-        {create_uas, Err} -> ?assertEqual({error, {interval_too_brief, 60}}, Err)
+        {create_uas, Err} ->
+            ?assertEqual({error, {interval_too_brief, 60}}, Err)
     after 4000 -> ct:fail(no_create_uas_result)
     end.
 
@@ -245,7 +274,8 @@ unsubscribe(_Config) ->
     ok = expect({owner, unsubscribed}),
     run_async(H, fun(D) ->
         chappe_sip_dialog:notify(D, #{
-            state => {terminated, timeout}, body => <<"<x/>">>,
+            state => {terminated, timeout},
+            body => <<"<x/>">>,
             content_type => ?CT
         })
     end),
@@ -314,8 +344,22 @@ notify_481_terminates(_Config) ->
 %% req: R6665-14
 notify_failure_removes(_Config) ->
     EP = setup(#{expires => 600}),
-    Codes = [404, 405, 408, 410, 416, 480, 481, 482, 483, 484, 485, 489, 501,
-             604],
+    Codes = [
+        404,
+        405,
+        408,
+        410,
+        416,
+        480,
+        481,
+        482,
+        483,
+        484,
+        485,
+        489,
+        501,
+        604
+    ],
     lists:foreach(
         fun(Code) ->
             S = sub(EP, <<"tf">>),
@@ -426,7 +470,8 @@ notify_in_invite_dialog(_Config) ->
     {Dlg, H} = dialog(),
     run_async(H, fun(D) ->
         chappe_sip_dialog:notify(D, #{
-            event => <<"refer">>, state => active,
+            event => <<"refer">>,
+            state => active,
             body => <<"SIP/2.0 100 Trying\r\n">>,
             content_type => <<"message/sipfrag">>
         })
@@ -438,7 +483,8 @@ notify_in_invite_dialog(_Config) ->
     {ok, _} = ran(),
     run_async(H, fun(D) ->
         chappe_sip_dialog:notify(D, #{
-            event => <<"refer">>, state => {terminated, noresource},
+            event => <<"refer">>,
+            state => {terminated, noresource},
             body => <<"SIP/2.0 200 OK\r\n">>,
             content_type => <<"message/sipfrag">>
         })
@@ -500,17 +546,29 @@ ws_subscribe(Call, CSeq, Expires, TT) ->
             undefined -> <<>>;
             _ -> <<";tag=", TT/binary>>
         end,
-    <<"SUBSCRIBE sip:conf@127.0.0.1 SIP/2.0\r\n"
-      "Via: SIP/2.0/WS df7jal23ls0d.invalid;branch=", (branch())/binary, "\r\n"
-      "Max-Forwards: 70\r\n"
-      "From: <sip:sub@127.0.0.1>;tag=wssub\r\n"
-      "To: <sip:conf@127.0.0.1>", ToTag/binary, "\r\n"
-      "Contact: <sip:sub@df7jal23ls0d.invalid;transport=ws>\r\n"
-      "Call-ID: ", Call/binary, "\r\n"
-      "CSeq: ", (integer_to_binary(CSeq))/binary, " SUBSCRIBE\r\n"
-      "Event: conference\r\n"
-      "Expires: ", (integer_to_binary(Expires))/binary, "\r\n"
-      "Content-Length: 0\r\n\r\n">>.
+    <<
+        "SUBSCRIBE sip:conf@127.0.0.1 SIP/2.0\r\n"
+        "Via: SIP/2.0/WS df7jal23ls0d.invalid;branch=",
+        (branch())/binary,
+        "\r\n"
+        "Max-Forwards: 70\r\n"
+        "From: <sip:sub@127.0.0.1>;tag=wssub\r\n"
+        "To: <sip:conf@127.0.0.1>",
+        ToTag/binary,
+        "\r\n"
+        "Contact: <sip:sub@df7jal23ls0d.invalid;transport=ws>\r\n"
+        "Call-ID: ",
+        Call/binary,
+        "\r\n"
+        "CSeq: ",
+        (integer_to_binary(CSeq))/binary,
+        " SUBSCRIBE\r\n"
+        "Event: conference\r\n"
+        "Expires: ",
+        (integer_to_binary(Expires))/binary,
+        "\r\n"
+        "Content-Length: 0\r\n\r\n"
+    >>.
 
 recv_ws_status(Code) ->
     CB = integer_to_binary(Code),
@@ -613,7 +671,9 @@ flush() ->
 sub(EP, FT) ->
     {ok, Sock} = gen_udp:open(0, [binary, {active, true}, {ip, {127, 0, 0, 1}}]),
     #{
-        sock => Sock, ep => EP, ft => <<FT/binary, (rand_hex(3))/binary>>,
+        sock => Sock,
+        ep => EP,
+        ft => <<FT/binary, (rand_hex(3))/binary>>,
         call => <<"sub-", (rand_hex(4))/binary, "@ct">>,
         target => <<"sip:conf@127.0.0.1">>
     }.
@@ -633,49 +693,82 @@ send_subscribe(#{ep := EP} = S, CSeq, Expires, TT, Want, Event) ->
             _ -> <<";tag=", TT/binary>>
         end,
     Req =
-        <<"SUBSCRIBE ", Target/binary, " SIP/2.0\r\n"
-          "Via: SIP/2.0/UDP 127.0.0.1:", P/binary, ";rport;branch=",
-          (branch())/binary, "\r\n"
-          "Max-Forwards: 70\r\n"
-          "From: <sip:sub@127.0.0.1:", P/binary, ">;tag=", FT/binary, "\r\n"
-          "To: <sip:conf@127.0.0.1>", ToTag/binary, "\r\n"
-          "Contact: <sip:sub@127.0.0.1:", P/binary, ">\r\n"
-          "Call-ID: ", Call/binary, "\r\n"
-          "CSeq: ", (integer_to_binary(CSeq))/binary, " SUBSCRIBE\r\n",
-          (case Event of
-               none -> <<>>;
-               _ -> <<"Event: ", Event/binary, "\r\n">>
-           end)/binary,
-          "Accept: application/conference-info+xml\r\n"
-          "Expires: ", (integer_to_binary(Expires))/binary, "\r\n"
-          "Content-Length: 0\r\n\r\n">>,
+        <<"SUBSCRIBE ", Target/binary,
+            " SIP/2.0\r\n"
+            "Via: SIP/2.0/UDP 127.0.0.1:", P/binary, ";rport;branch=",
+            (branch())/binary,
+            "\r\n"
+            "Max-Forwards: 70\r\n"
+            "From: <sip:sub@127.0.0.1:", P/binary, ">;tag=", FT/binary,
+            "\r\n"
+            "To: <sip:conf@127.0.0.1>", ToTag/binary,
+            "\r\n"
+            "Contact: <sip:sub@127.0.0.1:", P/binary,
+            ">\r\n"
+            "Call-ID: ", Call/binary,
+            "\r\n"
+            "CSeq: ", (integer_to_binary(CSeq))/binary, " SUBSCRIBE\r\n",
+            (case Event of
+                none -> <<>>;
+                _ -> <<"Event: ", Event/binary, "\r\n">>
+            end)/binary,
+            "Accept: application/conference-info+xml\r\n"
+            "Expires: ", (integer_to_binary(Expires))/binary,
+            "\r\n"
+            "Content-Length: 0\r\n\r\n">>,
     ok = gen_udp:send(Sock, {127, 0, 0, 1}, EP, Req),
     recv_status(Sock, Want).
 
 send_invite(#{sock := Sock, ft := FT, call := Call, ep := EP}) ->
     P = integer_to_binary(lport(Sock)),
     Req =
-        <<"INVITE sip:app@127.0.0.1 SIP/2.0\r\n"
-          "Via: SIP/2.0/UDP 127.0.0.1:", P/binary, ";rport;branch=",
-          (branch())/binary, "\r\n"
-          "Max-Forwards: 70\r\n"
-          "From: <sip:caller@127.0.0.1:", P/binary, ">;tag=", FT/binary, "\r\n"
-          "To: <sip:app@127.0.0.1>\r\n"
-          "Contact: <sip:caller@127.0.0.1:", P/binary, ">\r\n"
-          "Call-ID: ", Call/binary, "\r\nCSeq: 1 INVITE\r\n"
-          "Content-Length: 0\r\n\r\n">>,
+        <<
+            "INVITE sip:app@127.0.0.1 SIP/2.0\r\n"
+            "Via: SIP/2.0/UDP 127.0.0.1:",
+            P/binary,
+            ";rport;branch=",
+            (branch())/binary,
+            "\r\n"
+            "Max-Forwards: 70\r\n"
+            "From: <sip:caller@127.0.0.1:",
+            P/binary,
+            ">;tag=",
+            FT/binary,
+            "\r\n"
+            "To: <sip:app@127.0.0.1>\r\n"
+            "Contact: <sip:caller@127.0.0.1:",
+            P/binary,
+            ">\r\n"
+            "Call-ID: ",
+            Call/binary,
+            "\r\nCSeq: 1 INVITE\r\n"
+            "Content-Length: 0\r\n\r\n"
+        >>,
     ok = gen_udp:send(Sock, {127, 0, 0, 1}, EP, Req),
     R200 = recv_status(Sock, 200),
     TT = to_tag(R200),
     Ack =
-        <<"ACK sip:app@127.0.0.1 SIP/2.0\r\n"
-          "Via: SIP/2.0/UDP 127.0.0.1:", P/binary, ";branch=",
-          (branch())/binary, "\r\n"
-          "Max-Forwards: 70\r\n"
-          "From: <sip:caller@127.0.0.1:", P/binary, ">;tag=", FT/binary, "\r\n"
-          "To: <sip:app@127.0.0.1>;tag=", TT/binary, "\r\n"
-          "Call-ID: ", Call/binary, "\r\nCSeq: 1 ACK\r\n"
-          "Content-Length: 0\r\n\r\n">>,
+        <<
+            "ACK sip:app@127.0.0.1 SIP/2.0\r\n"
+            "Via: SIP/2.0/UDP 127.0.0.1:",
+            P/binary,
+            ";branch=",
+            (branch())/binary,
+            "\r\n"
+            "Max-Forwards: 70\r\n"
+            "From: <sip:caller@127.0.0.1:",
+            P/binary,
+            ">;tag=",
+            FT/binary,
+            "\r\n"
+            "To: <sip:app@127.0.0.1>;tag=",
+            TT/binary,
+            "\r\n"
+            "Call-ID: ",
+            Call/binary,
+            "\r\nCSeq: 1 ACK\r\n"
+            "Content-Length: 0\r\n\r\n"
+        >>,
     ok = gen_udp:send(Sock, {127, 0, 0, 1}, EP, Ack),
     R200.
 
@@ -722,12 +815,24 @@ resp(ReqBin, Status, Reason, ToTag) ->
             _ -> To0
         end,
     iolist_to_binary([
-        <<"SIP/2.0 ">>, integer_to_binary(Status), <<" ">>, Reason, <<"\r\n">>,
+        <<"SIP/2.0 ">>,
+        integer_to_binary(Status),
+        <<" ">>,
+        Reason,
+        <<"\r\n">>,
         [[<<"Via: ">>, V, <<"\r\n">>] || V <- Vias],
-        <<"From: ">>, chappe_sip_msg:get(<<"from">>, Msg), <<"\r\n">>,
-        <<"To: ">>, To, <<"\r\n">>,
-        <<"Call-ID: ">>, chappe_sip_msg:call_id(Msg), <<"\r\n">>,
-        <<"CSeq: ">>, chappe_sip_msg:get(<<"cseq">>, Msg), <<"\r\n">>,
+        <<"From: ">>,
+        chappe_sip_msg:get(<<"from">>, Msg),
+        <<"\r\n">>,
+        <<"To: ">>,
+        To,
+        <<"\r\n">>,
+        <<"Call-ID: ">>,
+        chappe_sip_msg:call_id(Msg),
+        <<"\r\n">>,
+        <<"CSeq: ">>,
+        chappe_sip_msg:get(<<"cseq">>, Msg),
+        <<"\r\n">>,
         <<"Content-Length: 0\r\n\r\n">>
     ]).
 

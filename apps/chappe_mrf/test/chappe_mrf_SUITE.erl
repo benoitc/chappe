@@ -137,7 +137,9 @@ all() ->
     ].
 
 init_per_suite(Config) ->
-    application:set_env(chappe_sip, engine_mod, chappe_sip_nif, [{persistent, true}]),
+    application:set_env(chappe_sip, engine_mod, chappe_sip_nif, [
+        {persistent, true}
+    ]),
     {ok, _} = application:ensure_all_started(chappe_mrf),
     Config.
 
@@ -150,7 +152,9 @@ end_per_suite(_Config) ->
 
 init_per_testcase(_Case, Config) ->
     EP = ?F:pick(),
-    ok = chappe_sip:start(#{contact => <<"sip:127.0.0.1:", (integer_to_binary(EP))/binary>>}),
+    ok = chappe_sip:start(#{
+        contact => <<"sip:127.0.0.1:", (integer_to_binary(EP))/binary>>
+    }),
     LP = ?F:pick(),
     ok = chappe_mrf:start(#{esl_port => LP}),
     Rtpe = ?F:rtpe_start(self()),
@@ -170,7 +174,8 @@ end_per_testcase(_Case, Config) ->
 %% ---- helpers ----
 
 fs_uri(Config) ->
-    <<"sip:127.0.0.1:", (integer_to_binary(?F:fs_port(?config(fs, Config))))/binary>>.
+    <<"sip:127.0.0.1:",
+        (integer_to_binary(?F:fs_port(?config(fs, Config))))/binary>>.
 
 %% Every INVITE goes to connect_caller/3 on the fake node; the handler
 %% hands {Ep, B2b} to the test and stays the endpoint's owner until told.
@@ -284,7 +289,9 @@ connect_caller_ivr(Config) ->
     ?assertEqual(
         {ok, <<"1">>},
         in_owner(Owner, fun() ->
-            chappe_mrf:play_collect(Ep, #{file => <<"/media/menu.wav">>, max => 1})
+            chappe_mrf:play_collect(Ep, #{
+                file => <<"/media/menu.wav">>, max => 1
+            })
         end)
     ),
     ok = ?F:fs_dtmf(?config(fs, Config), <<"5">>),
@@ -331,10 +338,14 @@ refer_removes_member(Config) ->
     ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
     ivr(Config),
     Policy = fun(#{referrer := R}) -> has(R, <<"boss@">>) end,
-    {ok, Conf} = chappe_mrf:conference(<<"rroom">>, #{focus => true, refer_policy => Policy}),
+    {ok, Conf} = chappe_mrf:conference(<<"rroom">>, #{
+        focus => true, refer_policy => Policy
+    }),
     #{entity := Entity} = chappe_mrf_conf:info(Conf),
     {Ua, _Ep, B2b, _Owner} = call_in(Config),
-    {ok, M} = chappe_mrf_conf:join(Conf, B2b, #{uri => <<"sip:caller@127.0.0.1">>}),
+    {ok, M} = chappe_mrf_conf:join(Conf, B2b, #{
+        uri => <<"sip:caller@127.0.0.1">>
+    }),
     {joined, M, _} = joined(Conf),
     Bye = <<"<sip:caller@127.0.0.1;method=BYE>">>,
     {Sock, _} = refer(Config, Entity, <<"intruder">>, Bye),
@@ -345,7 +356,9 @@ refer_removes_member(Config) ->
     ?assertEqual([<<"SIP/2.0 100">>, <<"SIP/2.0 200">>], frags(Sock2, 2)),
     _ = ua_event(Ua, bye),
     conf_event(Conf, {left, M, kicked}),
-    {Sock3, _} = refer(Config, Entity, <<"boss">>, <<"<sip:nobody@127.0.0.1;method=BYE>">>),
+    {Sock3, _} = refer(
+        Config, Entity, <<"boss">>, <<"<sip:nobody@127.0.0.1;method=BYE>">>
+    ),
     ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(Sock3)),
     ?assertEqual([<<"SIP/2.0 100">>, <<"SIP/2.0 404">>], frags(Sock3, 2)).
 
@@ -373,7 +386,10 @@ refer_adds_native(Config) ->
     {joined, M, #{uri := <<"sip:carol@10.0.0.9">>}} = joined(Conf),
     ok = ?F:fs_event(?config(fs, Config), <<"CHANNEL_BRIDGE">>, []),
     ?assertEqual(<<"SIP/2.0 200">>, final_frag(Sock)),
-    ?assertMatch([#{id := M, uri := <<"sip:carol@10.0.0.9">>}], chappe_mrf_conf:members(Conf)).
+    ?assertMatch(
+        [#{id := M, uri := <<"sip:carol@10.0.0.9">>}],
+        chappe_mrf_conf:members(Conf)
+    ).
 
 %% fs: mod_conference dials the party into the room under our uuid; its
 %% add-member makes it a member and the referrer gets NOTIFY 200; a
@@ -382,31 +398,45 @@ refer_adds_native(Config) ->
 refer_adds_fs(Config) ->
     ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
     {ok, Conf} = chappe_mrf:conference(<<"fsadd">>, #{
-        backend => fs, node => fs1, focus => true, refer_policy => fun(_) -> true end
+        backend => fs,
+        node => fs1,
+        focus => true,
+        refer_policy => fun(_) -> true end
     }),
     {ok, Ep} = chappe_mrf:create_endpoint(#{targets => [{fs1, fs_uri(Config)}]}),
     {ok, First} = chappe_mrf_conf:join(Conf, Ep, #{}),
     {joined, First, _} = joined(Conf),
-    Entity = <<"sip:fsadd@127.0.0.1:", (integer_to_binary(?config(ep, Config)))/binary>>,
+    Entity =
+        <<"sip:fsadd@127.0.0.1:",
+            (integer_to_binary(?config(ep, Config)))/binary>>,
     {Sock, _} = refer(Config, Entity, <<"boss">>, <<"<sip:dave@10.0.0.8>">>),
     ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(Sock)),
     {fake_fs, _, _, {cmd, Dial}} = fs_cmd(<<"conference fsadd bgdial">>),
     ?assert(has(Dial, <<"sofia/external/dave@10.0.0.8">>)),
     ?assert(has(Dial, <<"sip_contact_user=fsadd">>)),
     ?assert(has(Dial, <<"sip_invite_contact_params=~isfocus">>)),
-    {match, [Uuid]} = re:run(Dial, <<"origination_uuid=([^,}]+)">>, [{capture, all_but_first, binary}]),
+    {match, [Uuid]} = re:run(Dial, <<"origination_uuid=([^,}]+)">>, [
+        {capture, all_but_first, binary}
+    ]),
     ?assertEqual([<<"SIP/2.0 100">>], frags(Sock, 1)),
-    Conf ! {chappe_esl_node, fs1, {event, #{body => <<>>, headers => #{
-        <<"Event-Name">> => <<"CUSTOM">>,
-        <<"Event-Subclass">> => <<"conference::maintenance">>,
-        <<"Conference-Name">> => <<"fsadd">>,
-        <<"Action">> => <<"add-member">>,
-        <<"Member-ID">> => <<"77">>,
-        <<"Unique-ID">> => Uuid}
-    }}},
+    Conf !
+        {chappe_esl_node, fs1,
+            {event, #{
+                body => <<>>,
+                headers => #{
+                    <<"Event-Name">> => <<"CUSTOM">>,
+                    <<"Event-Subclass">> => <<"conference::maintenance">>,
+                    <<"Conference-Name">> => <<"fsadd">>,
+                    <<"Action">> => <<"add-member">>,
+                    <<"Member-ID">> => <<"77">>,
+                    <<"Unique-ID">> => Uuid
+                }
+            }}},
     ?assertEqual(<<"SIP/2.0 200">>, final_frag(Sock)),
     {joined, <<"77">>, #{uri := <<"sip:dave@10.0.0.8">>}} = joined(Conf),
-    {Sock2, _} = refer(Config, Entity, <<"boss">>, <<"<sip:dave@10.0.0.8;method=BYE>">>),
+    {Sock2, _} = refer(
+        Config, Entity, <<"boss">>, <<"<sip:dave@10.0.0.8;method=BYE>">>
+    ),
     ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(Sock2)),
     _ = fs_cmd(<<"conference fsadd kick 77">>),
     conf_event(Conf, {left, <<"77">>, kicked}),
@@ -452,7 +482,8 @@ refer_hostile_target(Config) ->
     {Sock2, _} = refer(Config, Entity, <<"boss">>, <<"<sip:carol@10.0.0.9>">>),
     ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(Sock2)),
     receive
-        {policy, #{action := add, dial := <<"sofia/external/carol@10.0.0.9">>}} -> ok
+        {policy, #{action := add, dial := <<"sofia/external/carol@10.0.0.9">>}} ->
+            ok
     after 2000 -> ct:fail(no_dial_in_policy)
     end.
 
@@ -462,32 +493,45 @@ refer_hostile_target(Config) ->
 %% (bgdial-result) is the referrer's final status.
 refer_bgdial(Config) ->
     ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
-    Slow = ?F:fs_start(<<"slow">>, #{esl_port => ?config(lp, Config), dial_delay => 4000}),
+    Slow = ?F:fs_start(<<"slow">>, #{
+        esl_port => ?config(lp, Config), dial_delay => 4000
+    }),
     {ok, Conf} = chappe_mrf:conference(<<"bgroom">>, #{
         backend => fs, node => slow, refer_policy => fun(_) -> true end
     }),
-    {ok, Ep} = chappe_mrf:create_endpoint(#{targets => [{slow, uri_of(?F:fs_port(Slow))}]}),
+    {ok, Ep} = chappe_mrf:create_endpoint(#{
+        targets => [{slow, uri_of(?F:fs_port(Slow))}]
+    }),
     {ok, _First} = chappe_mrf_conf:join(Conf, Ep, #{}),
     {joined, _, _} = joined(Conf),
-    Entity = <<"sip:bgroom@127.0.0.1:", (integer_to_binary(?config(ep, Config)))/binary>>,
+    Entity =
+        <<"sip:bgroom@127.0.0.1:",
+            (integer_to_binary(?config(ep, Config)))/binary>>,
     {Sock, _} = refer(Config, Entity, <<"boss">>, <<"<sip:busy@10.0.0.8>">>),
     ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(Sock)),
     {fake_fs, _, _, {cmd, Dial}} = fs_cmd(<<"conference bgroom bgdial">>),
     %% a room without focus => true does not say it is a focus (4.2)
     ?assertNot(has(Dial, <<"isfocus">>)),
-    {match, [Uuid]} = re:run(Dial, <<"origination_uuid=([^,}]+)">>, [{capture, all_but_first, binary}]),
+    {match, [Uuid]} = re:run(Dial, <<"origination_uuid=([^,}]+)">>, [
+        {capture, all_but_first, binary}
+    ]),
     T0 = erlang:monotonic_time(millisecond),
     #{members := 1} = chappe_mrf_conf:info(Conf),
     ?assert(erlang:monotonic_time(millisecond) - T0 < 1000),
-    Conf ! {chappe_esl_node, slow, {event, #{body => <<>>, headers => #{
-        <<"Event-Name">> => <<"CUSTOM">>,
-        <<"Event-Subclass">> => <<"conference::maintenance">>,
-        <<"Conference-Name">> => <<"bgroom">>,
-        <<"Action">> => <<"bgdial-result">>,
-        <<"Result">> => <<"USER_BUSY">>,
-        <<"Job-UUID">> => <<"job-1">>,
-        <<"Peer-UUID">> => Uuid}
-    }}},
+    Conf !
+        {chappe_esl_node, slow,
+            {event, #{
+                body => <<>>,
+                headers => #{
+                    <<"Event-Name">> => <<"CUSTOM">>,
+                    <<"Event-Subclass">> => <<"conference::maintenance">>,
+                    <<"Conference-Name">> => <<"bgroom">>,
+                    <<"Action">> => <<"bgdial-result">>,
+                    <<"Result">> => <<"USER_BUSY">>,
+                    <<"Job-UUID">> => <<"job-1">>,
+                    <<"Peer-UUID">> => Uuid
+                }
+            }}},
     ?assertEqual(<<"SIP/2.0 486">>, final_frag(Sock)),
     ?assertMatch(#{members := 1}, chappe_mrf_conf:info(Conf)),
     ok = chappe_mrf:destroy(Ep),
@@ -499,25 +543,37 @@ refer_bgdial(Config) ->
 dialed_party_leaves(Config) ->
     ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
     {ok, Conf} = chappe_mrf:conference(<<"leaveroom">>, #{
-        backend => fs, node => fs1, max_members => 2, refer_policy => fun(_) -> true end
+        backend => fs,
+        node => fs1,
+        max_members => 2,
+        refer_policy => fun(_) -> true end
     }),
     {ok, Ep} = chappe_mrf:create_endpoint(#{targets => [{fs1, fs_uri(Config)}]}),
     {ok, _} = chappe_mrf_conf:join(Conf, Ep, #{}),
     {joined, _, _} = joined(Conf),
-    Entity = <<"sip:leaveroom@127.0.0.1:", (integer_to_binary(?config(ep, Config)))/binary>>,
+    Entity =
+        <<"sip:leaveroom@127.0.0.1:",
+            (integer_to_binary(?config(ep, Config)))/binary>>,
     {Sock, _} = refer(Config, Entity, <<"boss">>, <<"<sip:dave@10.0.0.8>">>),
     ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(Sock)),
     {fake_fs, _, _, {cmd, Dial}} = fs_cmd(<<"conference leaveroom bgdial">>),
-    {match, [Uuid]} = re:run(Dial, <<"origination_uuid=([^,}]+)">>, [{capture, all_but_first, binary}]),
+    {match, [Uuid]} = re:run(Dial, <<"origination_uuid=([^,}]+)">>, [
+        {capture, all_but_first, binary}
+    ]),
     Maint = fun(Action) ->
-        Conf ! {chappe_esl_node, fs1, {event, #{body => <<>>, headers => #{
-            <<"Event-Name">> => <<"CUSTOM">>,
-            <<"Event-Subclass">> => <<"conference::maintenance">>,
-            <<"Conference-Name">> => <<"leaveroom">>,
-            <<"Action">> => Action,
-            <<"Member-ID">> => <<"88">>,
-            <<"Unique-ID">> => Uuid}
-        }}}
+        Conf !
+            {chappe_esl_node, fs1,
+                {event, #{
+                    body => <<>>,
+                    headers => #{
+                        <<"Event-Name">> => <<"CUSTOM">>,
+                        <<"Event-Subclass">> => <<"conference::maintenance">>,
+                        <<"Conference-Name">> => <<"leaveroom">>,
+                        <<"Action">> => Action,
+                        <<"Member-ID">> => <<"88">>,
+                        <<"Unique-ID">> => Uuid
+                    }
+                }}}
     end,
     Maint(<<"add-member">>),
     {joined, <<"88">>, _} = joined(Conf),
@@ -537,26 +593,36 @@ dialed_party_flags(Config) ->
     {ok, Ep} = chappe_mrf:create_endpoint(#{targets => [{fs1, fs_uri(Config)}]}),
     {ok, _} = chappe_mrf_conf:join(Conf, Ep, #{}),
     {joined, _, _} = joined(Conf),
-    Entity = <<"sip:flagroom@127.0.0.1:", (integer_to_binary(?config(ep, Config)))/binary>>,
+    Entity =
+        <<"sip:flagroom@127.0.0.1:",
+            (integer_to_binary(?config(ep, Config)))/binary>>,
     {Sock, _} = refer(Config, Entity, <<"boss">>, <<"<sip:dave@10.0.0.8>">>),
     ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(Sock)),
     {fake_fs, _, _, {cmd, Dial}} = fs_cmd(<<"conference flagroom bgdial">>),
-    {match, [Uuid]} = re:run(Dial, <<"origination_uuid=([^,}]+)">>, [{capture, all_but_first, binary}]),
-    Conf ! {chappe_esl_node, fs1, {event, #{body => <<>>, headers => #{
-        <<"Event-Name">> => <<"CUSTOM">>,
-        <<"Event-Subclass">> => <<"conference::maintenance">>,
-        <<"Conference-Name">> => <<"flagroom">>,
-        <<"Action">> => <<"add-member">>,
-        <<"Member-ID">> => <<"66">>,
-        <<"Unique-ID">> => Uuid}
-    }}},
+    {match, [Uuid]} = re:run(Dial, <<"origination_uuid=([^,}]+)">>, [
+        {capture, all_but_first, binary}
+    ]),
+    Conf !
+        {chappe_esl_node, fs1,
+            {event, #{
+                body => <<>>,
+                headers => #{
+                    <<"Event-Name">> => <<"CUSTOM">>,
+                    <<"Event-Subclass">> => <<"conference::maintenance">>,
+                    <<"Conference-Name">> => <<"flagroom">>,
+                    <<"Action">> => <<"add-member">>,
+                    <<"Member-ID">> => <<"66">>,
+                    <<"Unique-ID">> => Uuid
+                }
+            }}},
     {joined, <<"66">>, _} = joined(Conf),
     ok = chappe_mrf_conf:mute(Conf, <<"66">>),
     _ = fs_cmd(<<"conference flagroom mute 66">>),
     ok = chappe_mrf_conf:deaf(Conf, <<"66">>),
     _ = fs_cmd(<<"conference flagroom deaf 66">>),
     ?assertMatch([#{mute := true, deaf := true}], [
-        M || #{id := <<"66">>} = M <- chappe_mrf_conf:members(Conf)
+        M
+     || #{id := <<"66">>} = M <- chappe_mrf_conf:members(Conf)
     ]),
     ok = chappe_mrf:destroy(Ep).
 
@@ -566,16 +632,24 @@ dialed_party_flags(Config) ->
 %% FreeSWITCH writes it.
 session_recording_waits_for_close(Config) ->
     ivr(Config),
-    ok = chappe_audio_store:configure(#{dir => filename:join(?config(priv_dir, Config), "store")}),
-    Path = iolist_to_binary(filename:join(?config(priv_dir, Config), "sess.wav")),
+    ok = chappe_audio_store:configure(#{
+        dir => filename:join(?config(priv_dir, Config), "store")
+    }),
+    Path = iolist_to_binary(
+        filename:join(?config(priv_dir, Config), "sess.wav")
+    ),
     ok = file:write_file(Path, chappe_audio_wav:header(8000, 1, 0)),
     {_Ua, Ep, _B2b, Owner} = call_in(Config),
-    ok = in_owner(Owner, fun() -> chappe_mrf:record_session(Ep, Path, #{store => default}) end),
+    ok = in_owner(Owner, fun() ->
+        chappe_mrf:record_session(Ep, Path, #{store => default})
+    end),
     _ = fs_cmd(<<"RECORD_STOP">>),
     ok = in_owner(Owner, fun() -> chappe_mrf:record_session_stop(Ep, Path) end),
     timer:sleep(800),
     ?assert(filelib:is_regular(Path)),
-    ok = ?F:fs_event(?config(fs, Config), <<"RECORD_STOP">>, [{<<"Record-File-Path">>, Path}]),
+    ok = ?F:fs_event(?config(fs, Config), <<"RECORD_STOP">>, [
+        {<<"Record-File-Path">>, Path}
+    ]),
     Id =
         receive
             {owner, {chappe_mrf, Ep, {recorded, R}}} -> R
@@ -588,30 +662,45 @@ session_recording_waits_for_close(Config) ->
 %% A room recording is adopted on mod_conference's stop-recording (the
 %% file closed), not when `recording stop all' returns.
 room_recording_waits_for_close(Config) ->
-    ok = chappe_audio_store:configure(#{dir => filename:join(?config(priv_dir, Config), "store")}),
-    Path = iolist_to_binary(filename:join(?config(priv_dir, Config), "room.wav")),
+    ok = chappe_audio_store:configure(#{
+        dir => filename:join(?config(priv_dir, Config), "store")
+    }),
+    Path = iolist_to_binary(
+        filename:join(?config(priv_dir, Config), "room.wav")
+    ),
     ok = file:write_file(Path, chappe_audio_wav:header(8000, 1, 0)),
-    {ok, Conf} = chappe_mrf:conference(<<"recroom">>, #{backend => fs, node => fs1}),
+    {ok, Conf} = chappe_mrf:conference(<<"recroom">>, #{
+        backend => fs, node => fs1
+    }),
     {ok, Ep} = chappe_mrf:create_endpoint(#{targets => [{fs1, fs_uri(Config)}]}),
     {ok, _} = chappe_mrf_conf:join(Conf, Ep, #{}),
     {joined, _, _} = joined(Conf),
-    ok = chappe_mrf_conf:record(Conf, Path, #{store => default, ref => <<"room-r">>}),
+    ok = chappe_mrf_conf:record(Conf, Path, #{
+        store => default, ref => <<"room-r">>
+    }),
     ok = chappe_mrf_conf:stop_record(Conf),
     receive
         {chappe_mrf_conf, Conf, {recorded, _, _}} = M -> ct:fail({too_early, M})
     after 800 -> ok
     end,
     ?assert(filelib:is_regular(Path)),
-    Conf ! {chappe_esl_node, fs1, {event, #{body => <<>>, headers => #{
-        <<"Event-Name">> => <<"CUSTOM">>,
-        <<"Event-Subclass">> => <<"conference::maintenance">>,
-        <<"Conference-Name">> => <<"recroom">>,
-        <<"Action">> => <<"stop-recording">>,
-        <<"Path">> => Path}
-    }}},
+    Conf !
+        {chappe_esl_node, fs1,
+            {event, #{
+                body => <<>>,
+                headers => #{
+                    <<"Event-Name">> => <<"CUSTOM">>,
+                    <<"Event-Subclass">> => <<"conference::maintenance">>,
+                    <<"Conference-Name">> => <<"recroom">>,
+                    <<"Action">> => <<"stop-recording">>,
+                    <<"Path">> => Path
+                }
+            }}},
     receive
         {chappe_mrf_conf, Conf, {recorded, _, {ok, Id}}} ->
-            ?assertMatch({ok, #{call_ref := <<"room-r">>}}, chappe_audio_store:get(Id))
+            ?assertMatch(
+                {ok, #{call_ref := <<"room-r">>}}, chappe_audio_store:get(Id)
+            )
     after 5000 -> ct:fail(no_recorded)
     end,
     ok = chappe_mrf:destroy(Ep).
@@ -633,7 +722,10 @@ focus_member_refer_adds(Config) ->
     ?assert(has(Contact, Entity)),
     ?assert(has(Contact, <<";isfocus">>)),
     _ = M,
-    ok = ?F:ua_refer(Ua, <<"<sip:carol@10.0.0.9?Replaces=c1%40h%3Bto-tag%3Dt1%3Bfrom-tag%3Df1>">>),
+    ok = ?F:ua_refer(
+        Ua,
+        <<"<sip:carol@10.0.0.9?Replaces=c1%40h%3Bto-tag%3Dt1%3Bfrom-tag%3Df1>">>
+    ),
     {ua, Ua, {response, R}} = ua_msg(Ua, response),
     ?assertMatch(<<"SIP/2.0 200", _/binary>>, R),
     {fake_fs, _, _, {cmd, Bridge}} = fs_cmd(<<"execute-app-name: bridge">>),
@@ -678,7 +770,10 @@ focus_member_refer_removes(Config) ->
     {ua, Ua1, {final, 200, _}} = ua_answer(Ua1),
     {Ua2, M2} = room_caller(Config, Conf),
     {ua, Ua2, {final, 200, _}} = ua_answer(Ua2),
-    [#{uri := U2}] = [Mb || #{id := Id} = Mb <- chappe_mrf_conf:members(Conf), Id =:= M2],
+    [#{uri := U2}] = [
+        Mb
+     || #{id := Id} = Mb <- chappe_mrf_conf:members(Conf), Id =:= M2
+    ],
     ok = ?F:ua_refer(Ua1, <<"<", U2/binary, ";method=BYE>">>),
     {ua, Ua1, {response, R}} = ua_msg(Ua1, response),
     ?assertMatch(<<"SIP/2.0 200", _/binary>>, R),
@@ -702,12 +797,17 @@ bye_refused_without_focus(Config) ->
     {ua, Ua1, {final, 200, _}} = ua_answer(Ua1),
     {Ua2, M2} = room_caller(Config, Conf),
     {ua, Ua2, {final, 200, _}} = ua_answer(Ua2),
-    [#{uri := U2}] = [Mb || #{id := Id} = Mb <- chappe_mrf_conf:members(Conf), Id =:= M2],
+    [#{uri := U2}] = [
+        Mb
+     || #{id := Id} = Mb <- chappe_mrf_conf:members(Conf), Id =:= M2
+    ],
     Bye = <<"<", U2/binary, ";method=BYE>">>,
     ok = ?F:ua_refer(Ua1, Bye),
     {ua, Ua1, {response, R}} = ua_msg(Ua1, response),
     ?assertMatch(<<"SIP/2.0 403", _/binary>>, R),
-    Uri = <<"sip:nobye@127.0.0.1:", (integer_to_binary(?config(ep, Config)))/binary>>,
+    Uri =
+        <<"sip:nobye@127.0.0.1:",
+            (integer_to_binary(?config(ep, Config)))/binary>>,
     {Sock, _} = refer(Config, Uri, <<"boss">>, Bye),
     ?assertMatch(<<"SIP/2.0 403", _/binary>>, sip_response(Sock)),
     no_ua_event(Ua2, bye, 500),
@@ -721,7 +821,10 @@ bye_refused_without_focus(Config) ->
 fs_focus_member_isfocus(Config) ->
     meck_targets(Config),
     {ok, Conf} = chappe_mrf:conference(<<"fsfocus">>, #{
-        backend => fs, node => fs1, focus => true, refer_policy => fun(_) -> true end
+        backend => fs,
+        node => fs1,
+        focus => true,
+        refer_policy => fun(_) -> true end
     }),
     #{entity := Entity} = chappe_mrf_conf:info(Conf),
     {Ua, _M} = room_caller(Config, Conf),
@@ -735,8 +838,12 @@ fs_focus_member_isfocus(Config) ->
     %% over the node's connection, or a member's once that one is down
     Dial =
         receive
-            {fake_esl, _, {api, <<"api conference fsfocus bgdial", _/binary>> = D}} -> D;
-            {fake_fs, _, _, {cmd, <<"api conference fsfocus bgdial", _/binary>> = D}} -> D
+            {fake_esl, _,
+                {api, <<"api conference fsfocus bgdial", _/binary>> = D}} ->
+                D;
+            {fake_fs, _, _,
+                {cmd, <<"api conference fsfocus bgdial", _/binary>> = D}} ->
+                D
         after 5000 -> ct:fail(no_bgdial)
         end,
     ?assert(has(Dial, <<"carol@10.0.0.9">>)),
@@ -750,7 +857,11 @@ room_caller(Config, Conf) ->
         Test ! {join, chappe_mrf_conf:join(Conf, {call, Req, Res}, #{})}
     end),
     Ua = ?F:ua_call(?config(ep, Config), #{}),
-    {ok, M} = receive {join, J} -> J after 10000 -> ct:fail(no_join) end,
+    {ok, M} =
+        receive
+            {join, J} -> J
+        after 10000 -> ct:fail(no_join)
+        end,
     {joined, M, _} = joined(Conf),
     {Ua, M}.
 
@@ -784,15 +895,27 @@ member_transferred(Config) ->
     ivr(Config),
     {ok, Conf} = chappe_mrf:conference(<<"xroom">>, #{}),
     {_Ua, _Ep, {_, Ref} = B2b, _Owner} = call_in(Config),
-    {ok, M} = chappe_mrf_conf:join(Conf, B2b, #{uri => <<"sip:caller@127.0.0.1">>}),
+    {ok, M} = chappe_mrf_conf:join(Conf, B2b, #{
+        uri => <<"sip:caller@127.0.0.1">>
+    }),
     {joined, M, _} = joined(Conf),
-    ok = chappe_mrf_conf:b2b_event(Conf, {chappe_sip_b2b, make_ref(), {transferred, a, #{}}}),
-    ok = chappe_mrf_conf:b2b_event(Conf, {chappe_sip_b2b, Ref, {transferred, a, #{
-        target => <<"sip:erin@10.0.0.7">>, kind => blind
-    }}}),
+    ok = chappe_mrf_conf:b2b_event(
+        Conf, {chappe_sip_b2b, make_ref(), {transferred, a, #{}}}
+    ),
+    ok = chappe_mrf_conf:b2b_event(
+        Conf,
+        {chappe_sip_b2b, Ref,
+            {transferred, a, #{
+                target => <<"sip:erin@10.0.0.7">>, kind => blind
+            }}}
+    ),
     conf_event(Conf, {left, M, transferred}),
-    {joined, M, #{uri := <<"sip:erin@10.0.0.7">>}} = {joined, M, _} = joined(Conf),
-    ?assertMatch([#{id := M, uri := <<"sip:erin@10.0.0.7">>}], chappe_mrf_conf:members(Conf)).
+    {joined, M, #{uri := <<"sip:erin@10.0.0.7">>}} =
+        {joined, M, _} = joined(Conf),
+    ?assertMatch(
+        [#{id := M, uri := <<"sip:erin@10.0.0.7">>}],
+        chappe_mrf_conf:members(Conf)
+    ).
 
 joined(Conf) ->
     receive
@@ -805,12 +928,19 @@ refer(Config, Uri, User, ReferTo) ->
     {ok, Sock} = gen_udp:open(0, [binary, {active, true}, {ip, {127, 0, 0, 1}}]),
     {ok, P} = inet:port(Sock),
     Pb = integer_to_binary(P),
-    CallId = <<"refer-", (integer_to_binary(erlang:unique_integer([positive])))/binary>>,
+    CallId =
+        <<"refer-",
+            (integer_to_binary(erlang:unique_integer([positive])))/binary>>,
     Req = iolist_to_binary([
-        <<"REFER ">>, Uri, <<" SIP/2.0\r\n">>,
-        <<"Via: SIP/2.0/UDP 127.0.0.1:", Pb/binary, ";rport;branch=z9hG4bK", CallId/binary, "\r\n">>,
-        <<"Max-Forwards: 70\r\nFrom: <sip:", User/binary, "@127.0.0.1>;tag=r1\r\n">>,
-        <<"To: <", Uri/binary, ">\r\nCall-ID: ", CallId/binary, "\r\nCSeq: 1 REFER\r\n">>,
+        <<"REFER ">>,
+        Uri,
+        <<" SIP/2.0\r\n">>,
+        <<"Via: SIP/2.0/UDP 127.0.0.1:", Pb/binary, ";rport;branch=z9hG4bK",
+            CallId/binary, "\r\n">>,
+        <<"Max-Forwards: 70\r\nFrom: <sip:", User/binary,
+            "@127.0.0.1>;tag=r1\r\n">>,
+        <<"To: <", Uri/binary, ">\r\nCall-ID: ", CallId/binary,
+            "\r\nCSeq: 1 REFER\r\n">>,
         <<"Contact: <sip:", User/binary, "@127.0.0.1:", Pb/binary, ">\r\n">>,
         <<"Refer-To: ", ReferTo/binary, "\r\nContent-Length: 0\r\n\r\n">>
     ]),
@@ -879,13 +1009,17 @@ caller_hangup(Config) ->
 %% A channel whose X-Chappe-Call nobody waits for is hung up.
 %% req: MRF-02
 unknown_channel_refused(Config) ->
-    {ok, Tcp} = gen_tcp:connect({127, 0, 0, 1}, ?config(lp, Config), [binary, {active, false}]),
+    {ok, Tcp} = gen_tcp:connect({127, 0, 0, 1}, ?config(lp, Config), [
+        binary, {active, false}
+    ]),
     ok = gen_tcp:send(Tcp, <<>>),
     {ok, <<"connect\n\n">>} = gen_tcp:recv(Tcp, 0, 5000),
     ok = gen_tcp:send(
         Tcp,
-        <<"Content-Type: command/reply\nReply-Text: +OK\nUnique-ID: u1\n"
-            "variable_sip_h_X-Chappe-Call: nobody\n\n">>
+        <<
+            "Content-Type: command/reply\nReply-Text: +OK\nUnique-ID: u1\n"
+            "variable_sip_h_X-Chappe-Call: nobody\n\n"
+        >>
     ),
     {ok, Next} = recv_until(Tcp, <<"hangup">>, <<>>),
     ?assert(has(Next, <<"execute-app-name: hangup">>)),
@@ -909,7 +1043,9 @@ owner_death_kills_channel(Config) ->
     ivr(Config),
     {Ua, Ep, _B2b, Owner} = call_in(Config),
     {ok, Uuid} = chappe_mrf:uuid(Ep),
-    ok = in_owner(Owner, fun() -> chappe_mrf:fork_audio_start(Ep, <<"ws://127.0.0.1:1/x">>, #{}) end),
+    ok = in_owner(Owner, fun() ->
+        chappe_mrf:fork_audio_start(Ep, <<"ws://127.0.0.1:1/x">>, #{})
+    end),
     exit(Owner, kill),
     _ = fs_cmd(<<"uuid_audio_fork ", Uuid/binary, " stop">>),
     _ = fs_cmd(<<"uuid_kill ", Uuid/binary>>),
@@ -960,7 +1096,9 @@ bridge_to_uri(Config) ->
     ivr(Config),
     {Ua, _Ep, B2b, Owner} = call_in(Config),
     {_Callee, CP} = ?F:callee_start(<<"calleetag">>),
-    ok = chappe_mrf:bridge(B2b, <<"sip:bob@127.0.0.1:", (integer_to_binary(CP))/binary>>),
+    ok = chappe_mrf:bridge(
+        B2b, <<"sip:bob@127.0.0.1:", (integer_to_binary(CP))/binary>>
+    ),
     receive
         {callee, invite, _} -> ok
     after 5000 -> ct:fail(no_callee)
@@ -1008,7 +1146,9 @@ endpoint_commands(Config) ->
 %% played, and play_collect/2 can return the whole result.
 play_results(Config) ->
     {ok, Ep} = chappe_mrf:create_endpoint(#{targets => [{fs1, fs_uri(Config)}]}),
-    ?assertEqual({error, not_found}, chappe_mrf:play(Ep, <<"/media/missing.wav">>)),
+    ?assertEqual(
+        {error, not_found}, chappe_mrf:play(Ep, <<"/media/missing.wav">>)
+    ),
     ?assertEqual(
         {error, not_found},
         chappe_mrf:play(Ep, [<<"/a.wav">>, <<"/missing.wav">>, <<"/b.wav">>])
@@ -1042,7 +1182,9 @@ endpoint_more_commands(Config) ->
     _ = fs_cmd(<<"uuid_getvar ", Uuid/binary, " a">>),
     ok = chappe_mrf:say(Ep, <<"7">>, #{type => number}),
     _ = fs_cmd(<<"execute-app-arg: en number pronounced 7">>),
-    ok = chappe_mrf:speak(Ep, <<"hello">>, #{engine => <<"flite">>, voice => <<"kal">>}),
+    ok = chappe_mrf:speak(Ep, <<"hello">>, #{
+        engine => <<"flite">>, voice => <<"kal">>
+    }),
     _ = fs_cmd(<<"execute-app-arg: flite|kal|hello">>),
     ok = chappe_mrf:detect_tones(Ep, <<"chappe">>),
     _ = fs_cmd(<<"event plain DETECTED_TONE">>),
@@ -1116,7 +1258,9 @@ owner_events(Config) ->
     Fs = ?config(fs, Config),
     File = [{<<"Playback-File-Path">>, <<"/a.wav">>}],
     ?F:fs_event(Fs, <<"PLAYBACK_START">>, File),
-    ?F:fs_event(Fs, <<"PLAYBACK_STOP">>, [{<<"Playback-Status">>, <<"break">>} | File]),
+    ?F:fs_event(Fs, <<"PLAYBACK_STOP">>, [
+        {<<"Playback-Status">>, <<"break">>} | File
+    ]),
     ?F:fs_event(Fs, <<"CUSTOM">>, [{<<"Event-Subclass">>, <<"other::y">>}]),
     ?F:fs_event(Fs, <<"CUSTOM">>, [{<<"Event-Subclass">>, <<"chappe::x">>}]),
     ?F:fs_event(Fs, <<"CHANNEL_PARK">>, []),
@@ -1196,7 +1340,9 @@ native_record_to_store(Config) ->
         fun(Req, Res) ->
             case chappe_sip_req:uri(Req) of
                 <<"sip:srs@", _/binary>> ->
-                    {ok, Srs} = chappe_sip_siprec_srs:serve(Req, Res, #{store => default}),
+                    {ok, Srs} = chappe_sip_siprec_srs:serve(Req, Res, #{
+                        store => default
+                    }),
                     chappe_sip_siprec_srs:run(Srs);
                 _ ->
                     {ok, Ep, B2b} = chappe_mrf:connect_caller(
@@ -1212,20 +1358,31 @@ native_record_to_store(Config) ->
     {Ua, _Ep, B2b, _Owner} = call_in(Config),
     {ok, _M} = chappe_mrf_conf:join(Conf, B2b, #{}),
     _ = fs_what(bye),
-    Srs = <<"sip:srs@127.0.0.1:", (integer_to_binary(?config(ep, Config)))/binary>>,
+    Srs =
+        <<"sip:srs@127.0.0.1:",
+            (integer_to_binary(?config(ep, Config)))/binary>>,
     ok = chappe_mrf_conf:record(Conf, Srs, #{ref => <<"natrec-ref">>}),
     timer:sleep(500),
     ok = chappe_mrf_conf:stop_record(Conf),
     [R] = stored(<<"natrec-ref">>, 50),
-    ?assertMatch(#{source := <<"siprec">>, parties := [<<"sip:mrf-natrec@chappe.invalid">>]}, R),
+    ?assertMatch(
+        #{
+            source := <<"siprec">>,
+            parties := [<<"sip:mrf-natrec@chappe.invalid">>]
+        },
+        R
+    ),
     ?F:ua_bye(Ua).
 
 stored(Ref, 0) ->
     ct:fail({not_stored, Ref, chappe_audio_store:find(Ref)});
 stored(Ref, N) ->
     case chappe_audio_store:find(Ref) of
-        [_ | _] = Recs -> Recs;
-        [] -> timer:sleep(100), stored(Ref, N - 1)
+        [_ | _] = Recs ->
+            Recs;
+        [] ->
+            timer:sleep(100),
+            stored(Ref, N - 1)
     end.
 
 %% Three callers in a native room: each joins through a loopback INVITE
@@ -1239,7 +1396,9 @@ native_conference(Config) ->
     Calls = [call_in(Config) || _ <- [1, 2, 3]],
     Members = [
         begin
-            {ok, M} = chappe_mrf_conf:join(Conf, B2b, #{name => <<"p">>, deaf => true}),
+            {ok, M} = chappe_mrf_conf:join(Conf, B2b, #{
+                name => <<"p">>, deaf => true
+            }),
             _ = fs_what(bye),
             no_ua_event(Ua, reinvite, 100),
             M
@@ -1247,11 +1406,13 @@ native_conference(Config) ->
      || {Ua, _Ep, B2b, _Owner} <- Calls
     ],
     [M1, M2, M3] = Members,
-    [receive
-         {chappe_mrf_conf, Conf, {joined, M, #{name := <<"p">>}}} -> ok
-     after 2000 -> ct:fail({no_joined, M})
-     end
-     || M <- Members],
+    [
+        receive
+            {chappe_mrf_conf, Conf, {joined, M, #{name := <<"p">>}}} -> ok
+        after 2000 -> ct:fail({no_joined, M})
+        end
+     || M <- Members
+    ],
     ?assertEqual(3, length(chappe_mrf_conf:members(Conf))),
     ok = chappe_mrf_conf:mute(Conf, M2),
     ok = chappe_mrf_conf:deaf(Conf, M2),
@@ -1314,11 +1475,17 @@ native_join_unanswered(Config) ->
     {ok, Conf} = chappe_mrf:conference(<<"room4">>, #{}),
     Test = self(),
     ok = chappe_sip:invite(fun(Req, Res) ->
-        Test ! {join, chappe_mrf_conf:join(Conf, {call, Req, Res}, #{name => <<"u">>})}
+        Test !
+            {join,
+                chappe_mrf_conf:join(Conf, {call, Req, Res}, #{name => <<"u">>})}
     end),
     Ua = ?F:ua_call(?config(ep, Config), #{}),
     {ok, 200} = ua_final(Ua),
-    {ok, M} = receive {join, R} -> R after 10000 -> ct:fail(no_join) end,
+    {ok, M} =
+        receive
+            {join, R} -> R
+        after 10000 -> ct:fail(no_join)
+        end,
     receive
         {chappe_mrf_conf, Conf, {joined, M, #{name := <<"u">>}}} -> ok
     after 2000 -> ct:fail(no_joined)
@@ -1365,10 +1532,14 @@ native_talking(Config) ->
 %% and kick are conference api commands.
 %% req: MRF-08 MRF-09 MRF-10
 fs_conference_pin(Config) ->
-    {ok, Conf} = chappe_mrf:conference(<<"fsroom">>, #{backend => fs, node => fs1}),
+    {ok, Conf} = chappe_mrf:conference(<<"fsroom">>, #{
+        backend => fs, node => fs1
+    }),
     {ok, Ep} = chappe_mrf:create_endpoint(#{targets => [{fs1, fs_uri(Config)}]}),
     fs_set_digits(Config, <<"1234">>),
-    {ok, Id} = chappe_mrf_conf:join(Conf, Ep, #{pin => <<"1234">>, moderator => true}),
+    {ok, Id} = chappe_mrf_conf:join(Conf, Ep, #{
+        pin => <<"1234">>, moderator => true
+    }),
     ?assert(is_binary(Id)),
     _ = fs_cmd(<<"execute-app-name: play_and_get_digits">>),
     {fake_fs, _, _, {cmd, Join}} = fs_cmd(<<"execute-app-name: conference">>),
@@ -1386,7 +1557,9 @@ fs_conference_pin(Config) ->
         {chappe_mrf_conf, Conf, {left, Id, kicked}} -> ok
     after 2000 -> ct:fail(no_left)
     end,
-    ?assertMatch({error, {unsupported, fs}}, chappe_mrf_conf:relate(Conf, Id, Id, hear)),
+    ?assertMatch(
+        {error, {unsupported, fs}}, chappe_mrf_conf:relate(Conf, Id, Id, hear)
+    ),
     chappe_mrf:destroy(Ep).
 
 %% Room flags go on the joining channel, max_members refuses the next
@@ -1395,7 +1568,9 @@ fs_conference_pin(Config) ->
 %% node's events).
 fs_conference_room(Config) ->
     {ok, Conf} = chappe_mrf:conference(<<"fsroom3">>, #{
-        backend => fs, node => fs1, max_members => 1,
+        backend => fs,
+        node => fs1,
+        max_members => 1,
         room_flags => [<<"wait-mod">>, <<"audio-always">>]
     }),
     {ok, Ep} = chappe_mrf:create_endpoint(#{targets => [{fs1, fs_uri(Config)}]}),
@@ -1406,10 +1581,14 @@ fs_conference_room(Config) ->
     ?assertEqual({error, full}, chappe_mrf_conf:join(Conf, Ep2, #{})),
     ok = chappe_mrf:destroy(Ep2),
     ok = chappe_mrf_conf:record(Conf, <<"/media/room 3.wav">>),
-    _ = fs_cmd(<<"api conference fsroom3 recording start '/media/room 3.wav'">>),
+    _ = fs_cmd(
+        <<"api conference fsroom3 recording start '/media/room 3.wav'">>
+    ),
     ok = chappe_mrf_conf:stop_record(Conf),
     _ = fs_cmd(<<"api conference fsroom3 recording stop all">>),
-    ?assertEqual({error, {bad_option, path}}, chappe_mrf_conf:record(Conf, <<"a\nb">>)),
+    ?assertEqual(
+        {error, {bad_option, path}}, chappe_mrf_conf:record(Conf, <<"a\nb">>)
+    ),
     Fs = ?config(fs, Config),
     Maint = fun(Action, Extra) ->
         ?F:fs_event(Fs, <<"CUSTOM">>, [
@@ -1427,13 +1606,18 @@ fs_conference_room(Config) ->
     conf_event(Conf, {play_done, Id, <<"/media/hi.wav">>}),
     ?F:fs_dtmf(Fs, <<"7">>),
     conf_event(Conf, {dtmf, Id, <<"7">>}),
-    Conf ! {chappe_esl_node, fs1, {event, #{body => <<>>, headers => #{
-        <<"Event-Name">> => <<"CUSTOM">>,
-        <<"Event-Subclass">> => <<"conference::maintenance">>,
-        <<"Conference-Name">> => <<"fsroom3">>,
-        <<"Action">> => <<"play-file-done">>,
-        <<"File">> => <<"/media/all.wav">>}
-    }}},
+    Conf !
+        {chappe_esl_node, fs1,
+            {event, #{
+                body => <<>>,
+                headers => #{
+                    <<"Event-Name">> => <<"CUSTOM">>,
+                    <<"Event-Subclass">> => <<"conference::maintenance">>,
+                    <<"Conference-Name">> => <<"fsroom3">>,
+                    <<"Action">> => <<"play-file-done">>,
+                    <<"File">> => <<"/media/all.wav">>
+                }
+            }}},
     conf_event(Conf, {play_done, <<"/media/all.wav">>}),
     {ok, Native} = chappe_mrf:conference(<<"nat3">>, #{}),
     %% native: the target is a recording server's URI, not a path
@@ -1460,9 +1644,15 @@ fs_conference_transfer(Config) ->
     ?assertEqual([], chappe_mrf_conf:members(A)),
     ?assertMatch([#{id := NewId}], chappe_mrf_conf:members(B)),
     {ok, N} = chappe_mrf:conference(<<"nat4">>, #{}),
-    ?assertEqual({error, backend_mismatch}, chappe_mrf_conf:transfer(B, NewId, N)),
-    ?assertEqual({error, not_member}, chappe_mrf_conf:transfer(A, <<"nobody">>, B)),
-    ?assertEqual({error, same_conference}, chappe_mrf_conf:transfer(B, NewId, B)),
+    ?assertEqual(
+        {error, backend_mismatch}, chappe_mrf_conf:transfer(B, NewId, N)
+    ),
+    ?assertEqual(
+        {error, not_member}, chappe_mrf_conf:transfer(A, <<"nobody">>, B)
+    ),
+    ?assertEqual(
+        {error, same_conference}, chappe_mrf_conf:transfer(B, NewId, B)
+    ),
     ok = chappe_mrf:destroy(Ep).
 
 %% The process moving an fs member dies before the other room adopted
@@ -1475,9 +1665,14 @@ fs_mover_dies(Config) ->
     Self = self(),
     Mover = spawn(fun() ->
         Self ! {marked, gen_server:call(A, {transfer, out, Id})},
-        receive stop -> ok end
+        receive
+            stop -> ok
+        end
     end),
-    receive {marked, {ok, {fs, Ep, _, _}}} -> ok after 5000 -> ct:fail(no_mark) end,
+    receive
+        {marked, {ok, {fs, Ep, _, _}}} -> ok
+    after 5000 -> ct:fail(no_mark)
+    end,
     exit(Mover, kill),
     ok = unmarked(A, Id, 50),
     ok = chappe_mrf:destroy(Ep).
@@ -1486,8 +1681,11 @@ unmarked(_A, Id, 0) ->
     ct:fail({still_marked, Id});
 unmarked(A, Id, N) ->
     case maps:get(Id, element(9, sys:get_state(A)), #{}) of
-        #{transfer := true} -> timer:sleep(100), unmarked(A, Id, N - 1);
-        _ -> ok
+        #{transfer := true} ->
+            timer:sleep(100),
+            unmarked(A, Id, N - 1);
+        _ ->
+            ok
     end.
 
 %% transfer/3 between two native rooms: the member's call is re-anchored
@@ -1521,7 +1719,9 @@ conf_event(Conf, Event) ->
 %% req: MRF-10
 fs_conference_bad_pin(Config) ->
     ivr(Config),
-    {ok, Conf} = chappe_mrf:conference(<<"fsroom2">>, #{backend => fs, node => fs1}),
+    {ok, Conf} = chappe_mrf:conference(<<"fsroom2">>, #{
+        backend => fs, node => fs1
+    }),
     {Ua, _Ep, B2b, _Owner} = call_in(Config),
     fs_set_digits(Config, <<"0000">>),
     meck_targets(Config),
@@ -1549,7 +1749,9 @@ fs_set_digits(Config, Digits) ->
 
 %% focus => true: a SUBSCRIBE to the conference gets its state.
 conference_focus(Config) ->
-    ok = chappe_sip:event_package(<<"conference">>, fun chappe_mrf:focus_subscribe/2),
+    ok = chappe_sip:event_package(
+        <<"conference">>, fun chappe_mrf:focus_subscribe/2
+    ),
     {ok, Conf} = chappe_mrf:conference(<<"focusroom">>, #{focus => true}),
     #{entity := Entity} = chappe_mrf_conf:info(Conf),
     ?assert(has(Entity, <<"focusroom@">>)),
@@ -1557,11 +1759,16 @@ conference_focus(Config) ->
     {ok, P} = inet:port(Sock),
     Pb = integer_to_binary(P),
     Sub = iolist_to_binary([
-        <<"SUBSCRIBE ">>, Entity, <<" SIP/2.0\r\n">>,
-        <<"Via: SIP/2.0/UDP 127.0.0.1:", Pb/binary, ";rport;branch=z9hG4bKsub1\r\n">>,
+        <<"SUBSCRIBE ">>,
+        Entity,
+        <<" SIP/2.0\r\n">>,
+        <<"Via: SIP/2.0/UDP 127.0.0.1:", Pb/binary,
+            ";rport;branch=z9hG4bKsub1\r\n">>,
         <<"Max-Forwards: 70\r\nFrom: <sip:w@127.0.0.1>;tag=w1\r\n">>,
-        <<"To: <", Entity/binary, ">\r\nCall-ID: sub-1\r\nCSeq: 1 SUBSCRIBE\r\n">>,
-        <<"Contact: <sip:w@127.0.0.1:", Pb/binary, ">\r\nEvent: conference\r\n">>,
+        <<"To: <", Entity/binary,
+            ">\r\nCall-ID: sub-1\r\nCSeq: 1 SUBSCRIBE\r\n">>,
+        <<"Contact: <sip:w@127.0.0.1:", Pb/binary,
+            ">\r\nEvent: conference\r\n">>,
         <<"Accept: application/conference-info+xml\r\nExpires: 60\r\n">>,
         <<"Content-Length: 0\r\n\r\n">>
     ]),
@@ -1588,11 +1795,22 @@ ok_for(Req) ->
     {ok, M} = chappe_sip_msg:parse(Req),
     iolist_to_binary([
         <<"SIP/2.0 200 OK\r\n">>,
-        [[<<"Via: ">>, V, <<"\r\n">>] || V <- chappe_sip_msg:get_all(<<"via">>, M)],
-        <<"From: ">>, chappe_sip_msg:get(<<"from">>, M), <<"\r\n">>,
-        <<"To: ">>, chappe_sip_msg:get(<<"to">>, M), <<"\r\n">>,
-        <<"Call-ID: ">>, chappe_sip_msg:call_id(M), <<"\r\n">>,
-        <<"CSeq: ">>, chappe_sip_msg:get(<<"cseq">>, M), <<"\r\n">>,
+        [
+            [<<"Via: ">>, V, <<"\r\n">>]
+         || V <- chappe_sip_msg:get_all(<<"via">>, M)
+        ],
+        <<"From: ">>,
+        chappe_sip_msg:get(<<"from">>, M),
+        <<"\r\n">>,
+        <<"To: ">>,
+        chappe_sip_msg:get(<<"to">>, M),
+        <<"\r\n">>,
+        <<"Call-ID: ">>,
+        chappe_sip_msg:call_id(M),
+        <<"\r\n">>,
+        <<"CSeq: ">>,
+        chappe_sip_msg:get(<<"cseq">>, M),
+        <<"\r\n">>,
         <<"Content-Length: 0\r\n\r\n">>
     ]).
 
@@ -1604,12 +1822,17 @@ uri_of(Port) ->
 %% A node whose dialplan never hands the call to the socket: the caller
 %% is hung up and connect_caller/3 says why; create_endpoint/1 the same.
 attach_timeout(Config) ->
-    Silent = ?F:fs_start(<<"silent">>, #{esl_port => ?config(lp, Config), no_socket => true}),
+    Silent = ?F:fs_start(<<"silent">>, #{
+        esl_port => ?config(lp, Config), no_socket => true
+    }),
     Test = self(),
     ok = chappe_sip:invite(fun(Req, Res) ->
-        Test ! {result, chappe_mrf:connect_caller(Req, Res, #{
-            targets => [{silent, uri_of(?F:fs_port(Silent))}], attach_timeout => 500
-        })}
+        Test !
+            {result,
+                chappe_mrf:connect_caller(Req, Res, #{
+                    targets => [{silent, uri_of(?F:fs_port(Silent))}],
+                    attach_timeout => 500
+                })}
     end),
     Ua = ?F:ua_call(?config(ep, Config), #{}),
     {ok, 200} = ua_final(Ua),
@@ -1621,7 +1844,8 @@ attach_timeout(Config) ->
     ?assertEqual(
         {error, timeout},
         chappe_mrf:create_endpoint(#{
-            targets => [{silent, uri_of(?F:fs_port(Silent))}], attach_timeout => 500
+            targets => [{silent, uri_of(?F:fs_port(Silent))}],
+            attach_timeout => 500
         })
     ),
     ?F:fs_stop(Silent).
@@ -1635,9 +1859,14 @@ failover(Config) ->
     ivr(Config, #{targets => Targets}),
     {Ua, Ep, _, Owner} = call_in(Config),
     ?assertEqual({ok, fs1}, chappe_mrf:node(Ep)),
-    {ok, Ep2} = chappe_mrf:create_endpoint(#{targets => Targets, timeout => 2000}),
+    {ok, Ep2} = chappe_mrf:create_endpoint(#{
+        targets => Targets, timeout => 2000
+    }),
     ?assertEqual({ok, fs1}, chappe_mrf:node(Ep2)),
-    ?assertMatch({error, _}, chappe_mrf:create_endpoint(#{targets => [{dead, Dead}], timeout => 1000})),
+    ?assertMatch(
+        {error, _},
+        chappe_mrf:create_endpoint(#{targets => [{dead, Dead}], timeout => 1000})
+    ),
     chappe_mrf:destroy(Ep2),
     ?F:ua_bye(Ua),
     Owner ! stop.
@@ -1646,9 +1875,13 @@ failover(Config) ->
 connect_failure(Config) ->
     Test = self(),
     ok = chappe_sip:invite(fun(Req, Res) ->
-        Test ! {result, chappe_mrf:connect_caller(Req, Res, #{
-            targets => [{dead, uri_of(element(2, ?F:refuser_start(486)))}]
-        })}
+        Test !
+            {result,
+                chappe_mrf:connect_caller(Req, Res, #{
+                    targets => [
+                        {dead, uri_of(element(2, ?F:refuser_start(486)))}
+                    ]
+                })}
     end),
     Ua = ?F:ua_call(?config(ep, Config), #{}),
     {ok, 486} = ua_final(Ua),
@@ -1666,14 +1899,21 @@ endpoint_errors(Config) ->
     {Ua, Ep1, B2b, Owner} = call_in(Config),
     {ok, Ep2} = chappe_mrf:create_endpoint(#{targets => [{fs1, fs_uri(Config)}]}),
     ?assertEqual({error, not_anchored}, chappe_mrf:bridge(B2b, Ep2)),
-    ?assertMatch(#{bridged := false, dialog := D} when D =/= undefined, chappe_mrf:info(Ep2)),
-    ?assertEqual({error, no_dialog}, chappe_mrf:modify(Ep1, chappe_mrf:inactive_sdp())),
+    ?assertMatch(
+        #{bridged := false, dialog := D} when D =/= undefined,
+        chappe_mrf:info(Ep2)
+    ),
+    ?assertEqual(
+        {error, no_dialog}, chappe_mrf:modify(Ep1, chappe_mrf:inactive_sdp())
+    ),
     ?assertEqual({error, no_dialog}, chappe_mrf:bridge(B2b, Ep1)),
     chappe_mrf:destroy(Ep2),
     ?assertEqual({error, gone}, chappe_mrf:uuid(Ep2)),
     ?assertEqual({error, gone}, chappe_mrf:node(Ep2)),
     ?assertEqual({error, gone}, chappe_mrf:modify(Ep2, <<"v=0">>)),
-    ?assertEqual({error, gone}, chappe_mrf:play(Ep2, [<<"/a.wav">>, <<"/b.wav">>])),
+    ?assertEqual(
+        {error, gone}, chappe_mrf:play(Ep2, [<<"/a.wav">>, <<"/b.wav">>])
+    ),
     ?F:ua_bye(Ua),
     Owner ! stop.
 
@@ -1681,33 +1921,51 @@ endpoint_errors(Config) ->
 %% a second attach refused, the hangup, then the linger.
 endpoint_socket(Config) ->
     Id = <<"sock-1">>,
-    {ok, Ep} = chappe_mrf_endpoint:start(#{id => Id, answer => false, linger => 200}),
-    ?assertMatch({error, {already_registered, _}}, chappe_mrf_endpoint:start(#{id => Id})),
+    {ok, Ep} = chappe_mrf_endpoint:start(#{
+        id => Id, answer => false, linger => 200
+    }),
+    ?assertMatch(
+        {error, {already_registered, _}}, chappe_mrf_endpoint:start(#{id => Id})
+    ),
     ?assertEqual({error, timeout}, chappe_mrf_endpoint:await(Ep, 100)),
-    Sock = ?F:socket_start(?config(lp, Config), [{<<"variable_sip_h_X-Chappe-Call">>, Id}], ok),
+    Sock = ?F:socket_start(
+        ?config(lp, Config), [{<<"variable_sip_h_X-Chappe-Call">>, Id}], ok
+    ),
     {ok, <<"sock-uuid">>} = chappe_mrf_endpoint:await(Ep, 5000),
     ?assertMatch(#{node := undefined, state := ready}, chappe_mrf:info(Ep)),
-    Watcher = spawn(fun() -> receive stop -> ok end end),
+    Watcher = spawn(fun() ->
+        receive
+            stop -> ok
+        end
+    end),
     ok = chappe_mrf_endpoint:watch(Ep, self()),
     ok = chappe_mrf_endpoint:watch(Ep, self()),
     ok = chappe_mrf_endpoint:watch(Ep, Watcher),
     exit(Watcher, kill),
-    ?assertEqual({error, attached}, chappe_mrf_endpoint:attach(Ep, self(), #{headers => #{}})),
+    ?assertEqual(
+        {error, attached},
+        chappe_mrf_endpoint:attach(Ep, self(), #{headers => #{}})
+    ),
     ?assertEqual({error, no_dialog}, chappe_mrf_endpoint:handed(Ep)),
-    ok = ?F:socket_event(Sock, <<"CUSTOM">>, [{<<"Event-Subclass">>, <<"x::y">>}]),
+    ok = ?F:socket_event(Sock, <<"CUSTOM">>, [
+        {<<"Event-Subclass">>, <<"x::y">>}
+    ]),
     receive
         {chappe_mrf_endpoint, Ep, {event, _}} -> ok
     after 2000 -> ct:fail(no_event)
     end,
     ok = ?F:socket_event(Sock, <<"CHANNEL_EXECUTE_COMPLETE">>, [
-        {<<"Application">>, <<"playback">>}, {<<"Application-UUID">>, <<"nobody">>}
+        {<<"Application">>, <<"playback">>},
+        {<<"Application-UUID">>, <<"nobody">>}
     ]),
     receive
         {chappe_mrf_endpoint, Ep, {complete, <<"playback">>, _}} -> ok
     after 2000 -> ct:fail(no_complete)
     end,
     ok = ?F:socket_event(Sock, <<"HEARTBEAT">>, []),
-    ok = ?F:socket_event(Sock, <<"CHANNEL_HANGUP">>, [{<<"Hangup-Cause">>, <<"USER_BUSY">>}]),
+    ok = ?F:socket_event(Sock, <<"CHANNEL_HANGUP">>, [
+        {<<"Hangup-Cause">>, <<"USER_BUSY">>}
+    ]),
     receive
         {chappe_mrf, Ep, {hangup, <<"USER_BUSY">>}} -> ok
     after 2000 -> ct:fail(no_hangup)
@@ -1726,7 +1984,11 @@ endpoint_socket(Config) ->
 %% req: MRF-02
 endpoint_socket_errors(Config) ->
     {ok, Ep} = chappe_mrf_endpoint:start(#{id => <<"sock-2">>, answer => false}),
-    Sock = ?F:socket_start(?config(lp, Config), [{<<"variable_sip_h_X-Chappe-Call">>, <<"sock-2">>}], ok),
+    Sock = ?F:socket_start(
+        ?config(lp, Config),
+        [{<<"variable_sip_h_X-Chappe-Call">>, <<"sock-2">>}],
+        ok
+    ),
     {ok, _} = chappe_mrf_endpoint:await(Ep, 5000),
     ?F:socket_stop(Sock),
     receive
@@ -1735,7 +1997,11 @@ endpoint_socket_errors(Config) ->
     end,
     ok = chappe_mrf:destroy(Ep),
     {ok, Ep3} = chappe_mrf_endpoint:start(#{id => <<"sock-3">>}),
-    Sock3 = ?F:socket_start(?config(lp, Config), [{<<"variable_sip_h_X-Chappe-Call">>, <<"sock-3">>}], err),
+    Sock3 = ?F:socket_start(
+        ?config(lp, Config),
+        [{<<"variable_sip_h_X-Chappe-Call">>, <<"sock-3">>}],
+        err
+    ),
     receive
         {chappe_mrf, Ep3, {hangup, _}} -> ok
     after 3000 -> ct:fail(no_answer_error)
@@ -1745,7 +2011,11 @@ endpoint_socket_errors(Config) ->
     timer:sleep(300),
     ?F:socket_stop(Anon),
     %% the owner dies before any socket
-    Owner = spawn(fun() -> receive stop -> ok end end),
+    Owner = spawn(fun() ->
+        receive
+            stop -> ok
+        end
+    end),
     {ok, Ep4} = chappe_mrf_endpoint:start(#{id => <<"sock-4">>, owner => Owner}),
     M4 = monitor(process, Ep4),
     exit(Owner, kill),
@@ -1791,12 +2061,21 @@ setup_edges(Config) ->
 listener_ip_allow(Config) ->
     ok = chappe_mrf:stop_listener(),
     Port = ?F:pick(),
-    Opts = #{esl_port => Port, esl_ip => {127, 0, 0, 1}, esl_allow => [<<"192.0.2.0/24">>]},
-    ?assertEqual({error, {bad_option, allow}}, chappe_mrf:start(Opts#{esl_allow => [nope]})),
+    Opts = #{
+        esl_port => Port,
+        esl_ip => {127, 0, 0, 1},
+        esl_allow => [<<"192.0.2.0/24">>]
+    },
+    ?assertEqual(
+        {error, {bad_option, allow}},
+        chappe_mrf:start(Opts#{esl_allow => [nope]})
+    ),
     try
         ok = chappe_mrf:start(Opts),
         ?assertMatch(#{ip := {127, 0, 0, 1}}, chappe_esl:listener_stats(Port)),
-        {ok, S} = gen_tcp:connect({127, 0, 0, 1}, Port, [binary, {active, false}]),
+        {ok, S} = gen_tcp:connect({127, 0, 0, 1}, Port, [
+            binary, {active, false}
+        ]),
         ?assertEqual({error, closed}, gen_tcp:recv(S, 0, 5000)),
         ?assertMatch(#{refused := 1}, chappe_esl:listener_stats(Port)),
         ok = chappe_mrf:stop_listener(),
@@ -1804,7 +2083,9 @@ listener_ip_allow(Config) ->
         ok = application:set_env(chappe_mrf, esl_port, Port),
         ok = application:set_env(chappe_mrf, esl_allow, ["192.0.2.0/24"]),
         ok = application:start(chappe_mrf),
-        {ok, S2} = gen_tcp:connect({127, 0, 0, 1}, Port, [binary, {active, false}]),
+        {ok, S2} = gen_tcp:connect({127, 0, 0, 1}, Port, [
+            binary, {active, false}
+        ]),
         ?assertEqual({error, closed}, gen_tcp:recv(S2, 0, 5000))
     after
         _ = application:unset_env(chappe_mrf, esl_port),
@@ -1852,7 +2133,9 @@ registry_edges(_Config) ->
     ?assertEqual({error, exists}, chappe_mrf_registry:put(Key, self())),
     ok = chappe_mrf_registry:delete(Key),
     ?assertEqual(error, chappe_mrf_registry:lookup(Key)),
-    ?assertEqual({error, unknown_call}, gen_server:call(chappe_mrf_registry, junk)),
+    ?assertEqual(
+        {error, unknown_call}, gen_server:call(chappe_mrf_registry, junk)
+    ),
     gen_server:cast(chappe_mrf_registry, junk),
     chappe_mrf_registry ! junk,
     chappe_mrf_registry ! {'DOWN', make_ref(), process, self(), x},
@@ -1864,13 +2147,19 @@ registry_edges(_Config) ->
 sip_edges(Config) ->
     %% the middleware runs in front of the app's INVITE handler
     ok = chappe_sip:invite(fun(_Req, Res) -> chappe_sip_res:send(Res, 480) end),
-    Ua = ?F:ua_call(?config(ep, Config), #{ruri => <<"sip:mrf-mix-nobody@127.0.0.1">>}),
+    Ua = ?F:ua_call(?config(ep, Config), #{
+        ruri => <<"sip:mrf-mix-nobody@127.0.0.1">>
+    }),
     {ok, 404} = ua_final(Ua),
     {ok, Conf} = chappe_mrf:conference(<<"edges">>, #{}),
     ok = chappe_mrf_registry:put({loop, <<"stale">>}, Conf),
-    Ua2 = ?F:ua_call(?config(ep, Config), #{ruri => <<"sip:mrf-mix-stale@127.0.0.1">>}),
+    Ua2 = ?F:ua_call(?config(ep, Config), #{
+        ruri => <<"sip:mrf-mix-stale@127.0.0.1">>
+    }),
     {ok, 488} = ua_final(Ua2),
-    ok = chappe_sip:event_package(<<"conference">>, fun chappe_mrf:focus_subscribe/2),
+    ok = chappe_sip:event_package(
+        <<"conference">>, fun chappe_mrf:focus_subscribe/2
+    ),
     ?assertEqual(404, subscribe_status(Config, <<"sip:nowhere@127.0.0.1">>)),
     ?assertEqual(489, subscribe_status(Config, <<"sip:edges@127.0.0.1">>)).
 
@@ -1879,11 +2168,16 @@ subscribe_status(Config, Uri) ->
     {ok, P} = inet:port(Sock),
     Pb = integer_to_binary(P),
     Sub = iolist_to_binary([
-        <<"SUBSCRIBE ">>, Uri, <<" SIP/2.0\r\n">>,
-        <<"Via: SIP/2.0/UDP 127.0.0.1:", Pb/binary, ";rport;branch=z9hG4bK", (integer_to_binary(P))/binary, "\r\n">>,
+        <<"SUBSCRIBE ">>,
+        Uri,
+        <<" SIP/2.0\r\n">>,
+        <<"Via: SIP/2.0/UDP 127.0.0.1:", Pb/binary, ";rport;branch=z9hG4bK",
+            (integer_to_binary(P))/binary, "\r\n">>,
         <<"Max-Forwards: 70\r\nFrom: <sip:w@127.0.0.1>;tag=w1\r\n">>,
-        <<"To: <", Uri/binary, ">\r\nCall-ID: sub-", Pb/binary, "\r\nCSeq: 1 SUBSCRIBE\r\n">>,
-        <<"Contact: <sip:w@127.0.0.1:", Pb/binary, ">\r\nEvent: conference\r\n">>,
+        <<"To: <", Uri/binary, ">\r\nCall-ID: sub-", Pb/binary,
+            "\r\nCSeq: 1 SUBSCRIBE\r\n">>,
+        <<"Contact: <sip:w@127.0.0.1:", Pb/binary,
+            ">\r\nEvent: conference\r\n">>,
         <<"Content-Length: 0\r\n\r\n">>
     ]),
     ok = gen_udp:send(Sock, {127, 0, 0, 1}, ?config(ep, Config), Sub),
@@ -1893,8 +2187,10 @@ subscribe_status(Config, Uri) ->
 
 sub_final(Sock) ->
     receive
-        {udp, Sock, _, _, <<"SIP/2.0 1", _/binary>>} -> sub_final(Sock);
-        {udp, Sock, _, _, <<"SIP/2.0 ", C:3/binary, _/binary>>} -> binary_to_integer(C)
+        {udp, Sock, _, _, <<"SIP/2.0 1", _/binary>>} ->
+            sub_final(Sock);
+        {udp, Sock, _, _, <<"SIP/2.0 ", C:3/binary, _/binary>>} ->
+            binary_to_integer(C)
     after 5000 -> timeout
     end.
 
@@ -1903,10 +2199,20 @@ sub_final(Sock) ->
 %% leave/2, a member prompt, and an fs room with no node.
 conf_edges(Config) ->
     ivr(Config, #{media => direct}),
-    Owner = spawn(fun() -> receive stop -> ok end end),
-    {ok, Conf} = chappe_mrf:conference(<<"edges2">>, #{owner => Owner, entity => <<"sip:edges2@x">>, focus => true}),
+    Owner = spawn(fun() ->
+        receive
+            stop -> ok
+        end
+    end),
+    {ok, Conf} = chappe_mrf:conference(<<"edges2">>, #{
+        owner => Owner, entity => <<"sip:edges2@x">>, focus => true
+    }),
     ?assertMatch(#{entity := <<"sip:edges2@x">>}, chappe_mrf_conf:info(Conf)),
-    Listener = spawn(fun() -> receive stop -> ok end end),
+    Listener = spawn(fun() ->
+        receive
+            stop -> ok
+        end
+    end),
     ok = chappe_mrf_conf:events(Conf, Listener),
     ok = chappe_mrf_conf:events(Conf, Listener),
     exit(Listener, kill),
@@ -1915,7 +2221,9 @@ conf_edges(Config) ->
     Conf ! junk,
     {Ua, _Ep, B2b, IvrOwner} = call_in(Config),
     ?assertEqual({error, not_anchored}, chappe_mrf_conf:join(Conf, B2b, #{})),
-    ?assertEqual({error, not_member}, chappe_mrf_conf:play(Conf, <<"x">>, <<"/a.wav">>)),
+    ?assertEqual(
+        {error, not_member}, chappe_mrf_conf:play(Conf, <<"x">>, <<"/a.wav">>)
+    ),
     ?assertEqual({error, not_member}, chappe_mrf_conf:leave(Conf, <<"x">>)),
     MRef = monitor(process, Conf),
     exit(Owner, kill),
@@ -1924,7 +2232,9 @@ conf_edges(Config) ->
     after 3000 -> ct:fail(conf_not_stopped)
     end,
     ?assertEqual({error, noproc}, chappe_mrf_conf:info(Conf)),
-    ?assertMatch({error, _}, chappe_mrf:conference(<<"nonode">>, #{backend => fs})),
+    ?assertMatch(
+        {error, _}, chappe_mrf:conference(<<"nonode">>, #{backend => fs})
+    ),
     ?F:ua_bye(Ua),
     IvrOwner ! stop.
 
@@ -1953,8 +2263,12 @@ native_endpoint(Config) ->
     after 3000 -> ct:fail(no_hangup_left)
     end,
     %% a node that refuses the re-INVITE, and an endpoint already gone
-    Picky = ?F:fs_start(<<"picky">>, #{esl_port => ?config(lp, Config), reject_reinvite => true}),
-    {ok, EpP} = chappe_mrf:create_endpoint(#{targets => [{picky, uri_of(?F:fs_port(Picky))}]}),
+    Picky = ?F:fs_start(<<"picky">>, #{
+        esl_port => ?config(lp, Config), reject_reinvite => true
+    }),
+    {ok, EpP} = chappe_mrf:create_endpoint(#{
+        targets => [{picky, uri_of(?F:fs_port(Picky))}]
+    }),
     ?assertMatch({error, _}, chappe_mrf_conf:join(Conf, EpP, #{})),
     chappe_mrf:destroy(EpP),
     ?assertEqual({error, gone}, chappe_mrf_conf:join(Conf, EpP, #{})),
@@ -1970,15 +2284,21 @@ native_endpoint(Config) ->
 %% member that never shows up, one that hangs up first, unmute and
 %% undeaf, unlock, and a member that hangs up in the room.
 fs_conference_edges(Config) ->
-    {ok, Conf} = chappe_mrf:conference(<<"fse">>, #{backend => fs, node => fs1, join_timeout => 500}),
+    {ok, Conf} = chappe_mrf:conference(<<"fse">>, #{
+        backend => fs, node => fs1, join_timeout => 500
+    }),
     {ok, Ep} = chappe_mrf:create_endpoint(#{targets => [{fs1, fs_uri(Config)}]}),
-    {ok, Id} = chappe_mrf_conf:join(Conf, Ep, #{mute => true, deaf => true, flags => [nomoh]}),
+    {ok, Id} = chappe_mrf_conf:join(Conf, Ep, #{
+        mute => true, deaf => true, flags => [nomoh]
+    }),
     {fake_fs, _, _, {cmd, Join}} = fs_cmd(<<"execute-app-name: conference">>),
     ?assert(has(Join, <<"+flags{mute|deaf|nomoh}">>)),
     Ev = fun(Action, Room) ->
         ?F:fs_event(?config(fs, Config), <<"CUSTOM">>, [
             {<<"Event-Subclass">>, <<"conference::maintenance">>},
-            {<<"Action">>, Action}, {<<"Conference-Name">>, Room}, {<<"Member-ID">>, Id}
+            {<<"Action">>, Action},
+            {<<"Conference-Name">>, Room},
+            {<<"Member-ID">>, Id}
         ])
     end,
     Ev(<<"start-talking">>, <<"fse">>),
@@ -2010,15 +2330,25 @@ fs_conference_edges(Config) ->
     end,
     %% an endpoint on another node
     {ok, EpX} = chappe_mrf:create_endpoint(#{targets => [{fs9, fs_uri(Config)}]}),
-    ?assertEqual({error, {wrong_node, fs9}}, chappe_mrf_conf:join(Conf, EpX, #{})),
+    ?assertEqual(
+        {error, {wrong_node, fs9}}, chappe_mrf_conf:join(Conf, EpX, #{})
+    ),
     chappe_mrf:destroy(EpX),
     %% a room that never adds the member, and one whose member hangs up first
-    Silent = ?F:fs_start(<<"fs2">>, #{esl_port => ?config(lp, Config), silent_conference => true}),
-    {ok, Conf2} = chappe_mrf:conference(<<"fse2">>, #{backend => fs, node => fs2, join_timeout => 500}),
-    {ok, Ep2} = chappe_mrf:create_endpoint(#{targets => [{fs2, uri_of(?F:fs_port(Silent))}]}),
+    Silent = ?F:fs_start(<<"fs2">>, #{
+        esl_port => ?config(lp, Config), silent_conference => true
+    }),
+    {ok, Conf2} = chappe_mrf:conference(<<"fse2">>, #{
+        backend => fs, node => fs2, join_timeout => 500
+    }),
+    {ok, Ep2} = chappe_mrf:create_endpoint(#{
+        targets => [{fs2, uri_of(?F:fs_port(Silent))}]
+    }),
     ?assertEqual({error, timeout}, chappe_mrf_conf:join(Conf2, Ep2, #{})),
     Self = self(),
-    _ = spawn(fun() -> Self ! {joined, chappe_mrf_conf:join(Conf2, Ep2, #{})} end),
+    _ = spawn(fun() ->
+        Self ! {joined, chappe_mrf_conf:join(Conf2, Ep2, #{})}
+    end),
     timer:sleep(200),
     ?F:fs_hangup(Silent, <<"NORMAL_CLEARING">>),
     receive

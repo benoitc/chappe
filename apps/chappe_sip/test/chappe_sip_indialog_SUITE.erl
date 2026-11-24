@@ -207,7 +207,9 @@ claimed_reinvite_tracks_sdp(Config) ->
 reinvite_glare_491(Config) ->
     {Peer, Dlg} = establish(Config, #{local_sdp => ?P:sdp(<<"app">>)}),
     Self = self(),
-    spawn_link(fun() -> Self ! {modified, chappe_sip_dialog:modify(Dlg, hold)} end),
+    spawn_link(fun() ->
+        Self ! {modified, chappe_sip_dialog:modify(Dlg, hold)}
+    end),
     {Ours, _, Src} = ?P:recv_request(Peer, <<"INVITE">>),
     {N, P1} = ?P:request(Peer, <<"INVITE">>, [], ?P:sdp(<<"caller2">>)),
     ?assertEqual(491, ?P:status(?P:recv_final(P1, N, <<"INVITE">>))),
@@ -268,12 +270,17 @@ update_overlap_500(Config) ->
 update_glare_491(Config) ->
     {Peer, Dlg} = establish(Config, #{local_sdp => ?P:sdp(<<"app">>)}),
     Self = self(),
-    spawn_link(fun() -> Self ! {modified, chappe_sip_dialog:modify(Dlg, hold)} end),
+    spawn_link(fun() ->
+        Self ! {modified, chappe_sip_dialog:modify(Dlg, hold)}
+    end),
     {Ours, _, Src} = ?P:recv_request(Peer, <<"INVITE">>),
     {N, P1} = ?P:request(Peer, <<"UPDATE">>, [], ?P:sdp(<<"u1">>)),
     ?assertEqual(491, ?P:status(?P:recv_final(P1, N, <<"UPDATE">>))),
     ok = ?P:reply(P1, Ours, Src, 200, ?P:sdp(<<"held">>)),
-    receive {modified, {ok, _}} -> ok after 5000 -> ct:fail(no_modify) end,
+    receive
+        {modified, {ok, _}} -> ok
+    after 5000 -> ct:fail(no_modify)
+    end,
     spawn_link(fun() ->
         Self !
             {updated,
@@ -287,7 +294,10 @@ update_glare_491(Config) ->
     {N2, P2} = ?P:request(P1, <<"UPDATE">>, [], ?P:sdp(<<"u2">>)),
     ?assertEqual(491, ?P:status(?P:recv_final(P2, N2, <<"UPDATE">>))),
     ok = ?P:reply(P2, OurUpd, USrc, 200, ?P:sdp(<<"u3">>)),
-    receive {updated, {ok, _}} -> ok after 5000 -> ct:fail(no_update) end,
+    receive
+        {updated, {ok, _}} -> ok
+    after 5000 -> ct:fail(no_update)
+    end,
     %% the 2xx to our UPDATE offer carried the answer
     ?assertEqual(?P:sdp(<<"u3">>), chappe_sip_dialog:remote_sdp(Dlg)),
     hangup(P2, Dlg).
@@ -321,7 +331,9 @@ update_while_offer_received_500(Config) ->
 uac_491_surfaced(Config) ->
     {Peer, Dlg} = establish(Config, #{local_sdp => ?P:sdp(<<"app">>)}),
     Self = self(),
-    spawn_link(fun() -> Self ! {modified, chappe_sip_dialog:modify(Dlg, hold)} end),
+    spawn_link(fun() ->
+        Self ! {modified, chappe_sip_dialog:modify(Dlg, hold)}
+    end),
     {Ours, _, Src} = ?P:recv_request(Peer, <<"INVITE">>),
     ok = ?P:reply(Peer, Ours, Src, 491, <<>>),
     receive
@@ -380,7 +392,8 @@ acks(#{sock := S} = Peer, T) ->
 
 via_branch(M) ->
     {match, [B]} = re:run(
-        chappe_sip_msg:get(<<"via">>, M), "branch=([^;,\\s]+)",
+        chappe_sip_msg:get(<<"via">>, M),
+        "branch=([^;,\\s]+)",
         [{capture, all_but_first, binary}]
     ),
     B.
@@ -417,20 +430,27 @@ uac_491_retry_not_owner(Config) ->
 uac_491_retry_owner(Config) ->
     EP = ?config(ep, Config),
     Peer0 = ?P:open(EP),
-    Uri = <<"sip:callee@127.0.0.1:", (integer_to_binary(?P:port(Peer0)))/binary>>,
+    Uri =
+        <<"sip:callee@127.0.0.1:", (integer_to_binary(?P:port(Peer0)))/binary>>,
     Self = self(),
     spawn_link(fun() ->
         {ok, D} = chappe_sip:create_uac(Uri, #{
             local_sdp => ?P:sdp(<<"app">>), owner => Self
         }),
         Self ! {uac, D},
-        receive stop -> ok end
+        receive
+            stop -> ok
+        end
     end),
     {Inv, _, ISrc} = ?P:recv_request(Peer0, <<"INVITE">>),
     Peer = Peer0#{ft => <<"calleetag">>},
     ok = ?P:reply(Peer, Inv, ISrc, 200, ?P:sdp(<<"callee">>)),
     _ = ?P:recv_request(Peer, <<"ACK">>),
-    Dlg = receive {uac, D} -> D after 5000 -> ct:fail(no_uac) end,
+    Dlg =
+        receive
+            {uac, D} -> D
+        after 5000 -> ct:fail(no_uac)
+        end,
     spawn_link(fun() ->
         Self !
             {modified,
@@ -454,7 +474,10 @@ uac_491_retry_owner(Config) ->
     spawn_link(fun() -> Self ! {bye, chappe_sip_dialog:destroy(Dlg)} end),
     {Bye, _, BSrc} = ?P:recv_request(Peer, <<"BYE">>),
     ok = ?P:reply(Peer, Bye, BSrc, 200, <<>>),
-    receive {bye, ok} -> ok after 5000 -> ct:fail(no_bye) end.
+    receive
+        {bye, ok} -> ok
+    after 5000 -> ct:fail(no_bye)
+    end.
 
 %% ---- default answers ----
 
@@ -530,7 +553,8 @@ dialog_state_stream(Config) ->
         receive
             {chappe_sip_dialog_event, #{
                 dialog := Dlg, state := confirmed, role := uas, call_ref := R
-            }} when is_binary(R) -> R
+            }} when is_binary(R) ->
+                R
         after 5000 -> ct:fail(no_confirmed)
         end,
     {ok, #{dialogs := [Dlg]}} = chappe_sip:calls(#{call_ref => Ref}),
@@ -549,7 +573,8 @@ dialog_state_stream(Config) ->
 dialog_state_killed(Config) ->
     ok = chappe_sip:dialog_events(self()),
     {Peer, Dlg} = establish(Config, #{local_sdp => ?P:sdp(<<"app">>)}),
-    receive {chappe_sip_dialog_event, #{dialog := Dlg, state := confirmed}} -> ok
+    receive
+        {chappe_sip_dialog_event, #{dialog := Dlg, state := confirmed}} -> ok
     after 5000 -> ct:fail(no_confirmed)
     end,
     exit(chappe_sip_dialog:pid(Dlg), kill),
@@ -567,7 +592,8 @@ reinvite(Peer, Sdp) ->
     P1.
 
 session_event(Dlg, Ev) ->
-    receive {chappe_sip_dialog, Dlg, Ev, _Req} -> ok
+    receive
+        {chappe_sip_dialog, Dlg, Ev, _Req} -> ok
     after 5000 -> ct:fail({no_session_event, Ev})
     end.
 
@@ -575,13 +601,17 @@ session_event(Dlg, Ev) ->
 local_sdp_fun(Config) ->
     {Peer, Dlg} = establish_raw(Config, #{
         local_sdp => fun(Offer) ->
-            <<(?P:sdp(<<"app">>))/binary,
-              (integer_to_binary(byte_size(Offer)))/binary>>
+            <<
+                (?P:sdp(<<"app">>))/binary,
+                (integer_to_binary(byte_size(Offer)))/binary
+            >>
         end
     }),
     {R, P1} = Peer,
-    Want = <<(?P:sdp(<<"app">>))/binary,
-             (integer_to_binary(byte_size(?P:sdp(<<"caller">>))))/binary>>,
+    Want = <<
+        (?P:sdp(<<"app">>))/binary,
+        (integer_to_binary(byte_size(?P:sdp(<<"caller">>))))/binary
+    >>,
     ?assertEqual(Want, ?P:body(R)),
     ?assertEqual(Want, chappe_sip_dialog:local_sdp(Dlg)),
     hangup(P1, Dlg).
@@ -596,7 +626,9 @@ options_indialog(Config) ->
     ?assertEqual(200, ?P:status(R)),
     assert_allow(R),
     ?assertEqual(<<"application/sdp">>, ?P:header(<<"accept">>, R)),
-    ?assertMatch({_, _}, binary:match(?P:header(<<"supported">>, R), <<"replaces">>)),
+    ?assertMatch(
+        {_, _}, binary:match(?P:header(<<"supported">>, R), <<"replaces">>)
+    ),
     hangup(P1, Dlg).
 
 %% ---- Reason on BYE (RFC 3326) ----
@@ -617,7 +649,10 @@ bye_with_reason(Config) ->
     {Bye, M, Src} = ?P:recv_request(Peer, <<"BYE">>),
     ?assertEqual(Reason, ?P:header(<<"reason">>, M)),
     ok = ?P:reply(Peer, Bye, Src, 200, <<>>),
-    receive {bye, ok} -> ok after 5000 -> ct:fail(no_bye) end.
+    receive
+        {bye, ok} -> ok
+    after 5000 -> ct:fail(no_bye)
+    end.
 
 %% A received BYE's Reason reaches the owner on the destroy event.
 %% req: R3326-01
@@ -640,7 +675,8 @@ bye_reason_received(Config) ->
 uac_cancel_with_reason(Config) ->
     EP = ?config(ep, Config),
     Peer0 = ?P:open(EP),
-    Uri = <<"sip:callee@127.0.0.1:", (integer_to_binary(?P:port(Peer0)))/binary>>,
+    Uri =
+        <<"sip:callee@127.0.0.1:", (integer_to_binary(?P:port(Peer0)))/binary>>,
     {ok, Ref} = chappe_sip_uac:start(Uri, #{local_sdp => ?P:sdp(<<"app">>)}),
     {Inv, _, Src} = ?P:recv_request(Peer0, <<"INVITE">>),
     Peer = Peer0#{ft => <<"calleetag">>},
@@ -652,7 +688,8 @@ uac_cancel_with_reason(Config) ->
     ok = ?P:reply(Peer, Can, CSrc, 200, <<>>),
     ok = ?P:reply(Peer, Inv, Src, 487, <<>>),
     ?assertMatch(
-        {error, #chappe_sip_error{status = 487}}, chappe_sip_uac:await(Ref, 5000)
+        {error, #chappe_sip_error{status = 487}},
+        chappe_sip_uac:await(Ref, 5000)
     ).
 
 %% A received CANCEL reaches the INVITE handler with the CANCEL request, so
@@ -697,12 +734,19 @@ early_dialog_update_and_bye(Config) ->
             status => 183, local_sdp => ?P:sdp(<<"app">>), owner => Test
         }),
         Test ! {dialog, D},
-        receive stop -> ok after 60000 -> ok end
+        receive
+            stop -> ok
+        after 60000 -> ok
+        end
     end),
     Peer0 = ?P:invite(?P:open(EP), <<"caller">>, #{}),
     R183 = recv_provisional(Peer0, 183),
     Peer = Peer0#{tt => chappe_sip_msg:to_tag(R183)},
-    Dlg = receive {dialog, D} -> D after 5000 -> ct:fail(no_dialog) end,
+    Dlg =
+        receive
+            {dialog, D} -> D
+        after 5000 -> ct:fail(no_dialog)
+        end,
     {N1, P1} = ?P:request(Peer, <<"UPDATE">>, [], ?P:sdp(<<"u1">>)),
     R1 = ?P:recv_final(P1, N1, <<"UPDATE">>),
     ?assertEqual(200, ?P:status(R1)),
@@ -759,14 +803,21 @@ establish(Config, Opts) ->
     ok = chappe_sip:invite(fun(Req, Res) ->
         {ok, D} = chappe_sip:create_uas(Req, Res, Opts#{owner => Test}),
         Test ! {dialog, D},
-        receive stop -> ok after 60000 -> ok end
+        receive
+            stop -> ok
+        after 60000 -> ok
+        end
     end),
     Peer0 = ?P:invite(?P:open(EP), <<"caller">>, #{}),
     R = ?P:recv_final(Peer0, 1, <<"INVITE">>),
     200 = ?P:status(R),
     Peer = Peer0#{tt => chappe_sip_msg:to_tag(R)},
     ok = ?P:ack(Peer, 1, <<>>),
-    Dlg = receive {dialog, D} -> D after 5000 -> ct:fail(no_dialog) end,
+    Dlg =
+        receive
+            {dialog, D} -> D
+        after 5000 -> ct:fail(no_dialog)
+        end,
     {Peer, Dlg}.
 
 %% establish/2, returning the 2xx too: {{R200, Peer}, Dlg}
@@ -776,14 +827,21 @@ establish_raw(Config, Opts) ->
     ok = chappe_sip:invite(fun(Req, Res) ->
         {ok, D} = chappe_sip:create_uas(Req, Res, Opts#{owner => Test}),
         Test ! {dialog, D},
-        receive stop -> ok after 60000 -> ok end
+        receive
+            stop -> ok
+        after 60000 -> ok
+        end
     end),
     Peer0 = ?P:invite(?P:open(EP), <<"caller">>, #{}),
     R = ?P:recv_final(Peer0, 1, <<"INVITE">>),
     200 = ?P:status(R),
     Peer = Peer0#{tt => chappe_sip_msg:to_tag(R)},
     ok = ?P:ack(Peer, 1, <<>>),
-    Dlg = receive {dialog, D} -> D after 5000 -> ct:fail(no_dialog) end,
+    Dlg =
+        receive
+            {dialog, D} -> D
+        after 5000 -> ct:fail(no_dialog)
+        end,
     {{R, Peer}, Dlg}.
 
 hangup(Peer, Dlg) ->
@@ -791,7 +849,10 @@ hangup(Peer, Dlg) ->
     spawn_link(fun() -> Self ! {hung_up, chappe_sip_dialog:destroy(Dlg)} end),
     {Bye, _, Src} = ?P:recv_request(Peer, <<"BYE">>),
     ok = ?P:reply(Peer, Bye, Src, 200, <<>>),
-    receive {hung_up, ok} -> ok after 5000 -> ct:fail(no_hangup) end,
+    receive
+        {hung_up, ok} -> ok
+    after 5000 -> ct:fail(no_hangup)
+    end,
     ?P:close(Peer).
 
 claimed(Dlg, Event) ->

@@ -71,40 +71,60 @@ start(File) ->
     SipPort = env("DEMO_SIP_PORT", maps:get(sip_port, Cfg)),
     ok = chappe_sip:start(#{
         contact => iolist_to_binary(["sip:", Ip, ":", SipPort]),
-        ws => #{port => list_to_integer(env("DEMO_WS_PORT", maps:get(ws_port, Cfg)))},
+        ws => #{
+            port => list_to_integer(env("DEMO_WS_PORT", maps:get(ws_port, Cfg)))
+        },
         media => #{
             rtpengine => #{nodes => [maps:get(rtpengine, Cfg)]},
             %% conference rooms on this host; rtpengine reaches them at
             %% DEMO_MEDIA_IP (make demo finds it)
-            mix => #{ip => {0, 0, 0, 0}, advertise => env("DEMO_MEDIA_IP", "127.0.0.1")}
+            mix => #{
+                ip => {0, 0, 0, 0},
+                advertise => env("DEMO_MEDIA_IP", "127.0.0.1")
+            }
         }
     }),
-    {ok, MrfIp} = inet:parse_address(env("DEMO_MRF_IP", maps:get(mrf_ip, Cfg, "127.0.0.1"))),
+    {ok, MrfIp} = inet:parse_address(
+        env("DEMO_MRF_IP", maps:get(mrf_ip, Cfg, "127.0.0.1"))
+    ),
     ok = chappe_mrf:start(#{
-        esl_port => list_to_integer(env("DEMO_MRF_PORT", maps:get(mrf_port, Cfg, 18084))),
+        esl_port => list_to_integer(
+            env("DEMO_MRF_PORT", maps:get(mrf_port, Cfg, 18084))
+        ),
         esl_ip => MrfIp,
         esl_allow => mrf_allow(Cfg)
     }),
     ok = prompts(env("DEMO_MEDIA_DIR", "_build/demo-media")),
     ok = chappe_sip:peer_subscribe(Keeper),
-    _ = [chappe_sip:peer_add(Name, Opts) || {Name, Opts} <- maps:get(peers, Cfg, [])],
+    _ = [
+        chappe_sip:peer_add(Name, Opts)
+     || {Name, Opts} <- maps:get(peers, Cfg, [])
+    ],
     Users = maps:get(users, Cfg),
     Registrar = chappe_sip:registrar(#{
-        auth => #{realm => maps:get(realm, Cfg), domain => domains(Cfg),
-                  secret => fun(U) -> secret(U, Users) end},
+        auth => #{
+            realm => maps:get(realm, Cfg),
+            domain => domains(Cfg),
+            secret => fun(U) -> secret(U, Users) end
+        },
         domains => any,
         qualify_interval_ms => 30000
     }),
     ok = chappe_sip:register(Registrar),
     %% siprec: the demo is its own recording server too (sip:srs@)
-    ok = chappe_sip:handle(<<"INVITE">>, fun(Req, Res) -> invite(Keeper, Req, Res) end,
-                           #{option_tags => [<<"siprec">>]}),
+    ok = chappe_sip:handle(
+        <<"INVITE">>,
+        fun(Req, Res) -> invite(Keeper, Req, Res) end,
+        #{option_tags => [<<"siprec">>]}
+    ),
     ok = http(
         list_to_integer(env("DEMO_HTTP_PORT", maps:get(http_port, Cfg))),
         filename:join(filename:dirname(File), "web/index.html")
     ),
     log("demo up: SIP ~s:~s, WS ~s, page http://localhost:~s/", [
-        Ip, SipPort, env("DEMO_WS_PORT", maps:get(ws_port, Cfg)),
+        Ip,
+        SipPort,
+        env("DEMO_WS_PORT", maps:get(ws_port, Cfg)),
         env("DEMO_HTTP_PORT", maps:get(http_port, Cfg))
     ]),
     ok.
@@ -114,15 +134,23 @@ start(File) ->
 %% the nodes reach at host.docker.internal.
 audio(Cfg) ->
     Media = env("DEMO_MEDIA_DIR", "_build/demo-media"),
-    ok = application:set_env(chappe_mrf, shared_dir, #{freeswitch => "/media", local => Media}),
+    ok = application:set_env(chappe_mrf, shared_dir, #{
+        freeswitch => "/media", local => Media
+    }),
     {ok, _} = application:ensure_all_started(chappe_audio),
-    Dir = env("DEMO_RECORDINGS", maps:get(recordings, Cfg, "demo/sbc/recordings")),
+    Dir = env(
+        "DEMO_RECORDINGS", maps:get(recordings, Cfg, "demo/sbc/recordings")
+    ),
     ok = chappe_audio_store:configure(#{dir => Dir}),
-    Port = list_to_integer(env("DEMO_AUDIO_PORT", maps:get(audio_port, Cfg, 18090))),
+    Port = list_to_integer(
+        env("DEMO_AUDIO_PORT", maps:get(audio_port, Cfg, 18090))
+    ),
     {ok, L} = chappe_audio:listen(#{
         ip => {0, 0, 0, 0},
         port => Port,
-        url => iolist_to_binary(["ws://host.docker.internal:", integer_to_list(Port)])
+        url => iolist_to_binary([
+            "ws://host.docker.internal:", integer_to_list(Port)
+        ])
     }),
     persistent_term:put({?MODULE, audio}, L),
     ok.
@@ -130,7 +158,10 @@ audio(Cfg) ->
 %% The recordings of a call, wherever they were made, from the store.
 -spec recordings(binary()) -> [map()].
 recordings(Ref) ->
-    [maps:with([id, source, duration_ms, path], R) || R <- chappe_audio_store:find(Ref)].
+    [
+        maps:with([id, source, duration_ms, path], R)
+     || R <- chappe_audio_store:find(Ref)
+    ].
 
 %% DEMO_MRF_ALLOW (comma-separated) wins over mrf_allow; neither, any peer.
 mrf_allow(Cfg) ->
@@ -160,12 +191,15 @@ secret(User, Users) ->
 
 %% Where a dialled user's call goes, and the options it needs:
 %% {ok, Target, Opts} or {error, Status}.
--spec route(binary()) -> {ok, chappe_sip_b2b:target(), map()} | {error, 400..699}.
+-spec route(binary()) ->
+    {ok, chappe_sip_b2b:target(), map()} | {error, 400..699}.
 route(User) ->
     Cfg = persistent_term:get({?MODULE, cfg}),
     case
-        {lists:keymember(User, 1, maps:get(users, Cfg)),
-            lists:member(User, maps:get(extensions, Cfg, []))}
+        {
+            lists:keymember(User, 1, maps:get(users, Cfg)),
+            lists:member(User, maps:get(extensions, Cfg, []))
+        }
     of
         {true, _} -> registered(User, Cfg);
         {_, true} -> pool(User);
@@ -185,7 +219,11 @@ pool(Ext) ->
             {error, _} ->
                 []
         end,
-    Rest = [U || U <- chappe_sip_peers:candidates(fs, priority), not lists:member(U, First)],
+    Rest = [
+        U
+     || U <- chappe_sip_peers:candidates(fs, priority),
+        not lists:member(U, First)
+    ],
     case [with_user(U, Ext) || U <- First ++ Rest] of
         [] ->
             {error, 503};
@@ -231,7 +269,10 @@ located(User, [D | Ds]) ->
     end.
 
 domains(Cfg) ->
-    lists:usort([list_to_binary(env("DEMO_IP", maps:get(ip, Cfg))) | maps:get(domains, Cfg)]).
+    lists:usort([
+        list_to_binary(env("DEMO_IP", maps:get(ip, Cfg)))
+        | maps:get(domains, Cfg)
+    ]).
 
 %% the targets that are not registered users (demo.config `routes')
 extra_route(User, Cfg) ->
@@ -284,8 +325,11 @@ bridge(CallId, Called, Req, Res, Target, Opts) ->
             %% this process runs the call's relay once bridge/6 returns, so
             %% the recording starts from another one (it reads the call);
             %% the keeper owns it, and the call's end stops it
-            _ = maps:get(record, Opts, false) andalso
-                spawn(fun() -> record_call(CallId, B2b, maps:get(notify, Opts)) end),
+            _ =
+                maps:get(record, Opts, false) andalso
+                    spawn(fun() ->
+                        record_call(CallId, B2b, maps:get(notify, Opts))
+                    end),
             Done = chappe_sip_b2b:relay(Legs),
             ets:delete(?CALLS, CallId),
             ets:delete(?FS, CallId),
@@ -346,8 +390,12 @@ recorded_call(Keeper, CallId, Req, Res) ->
 
 record_call(CallId, B2b, Owner) ->
     Cfg = persistent_term:get({?MODULE, cfg}),
-    Srs = iolist_to_binary(["sip:srs@", env("DEMO_IP", maps:get(ip, Cfg)), ":",
-                            env("DEMO_SIP_PORT", maps:get(sip_port, Cfg))]),
+    Srs = iolist_to_binary([
+        "sip:srs@",
+        env("DEMO_IP", maps:get(ip, Cfg)),
+        ":",
+        env("DEMO_SIP_PORT", maps:get(sip_port, Cfg))
+    ]),
     case chappe_sip_siprec:start(B2b, Srs, #{owner => Owner}) of
         {ok, _Rec} -> log("call ~s recorded to ~s", [CallId, Srs]);
         {error, Why} -> log("call ~s not recorded: ~p", [CallId, Why])
@@ -356,16 +404,20 @@ record_call(CallId, B2b, Owner) ->
 %% the recording server: rtpengine sends the streams to this host
 %% (DEMO_MEDIA_IP), each one written to the recording store
 recording_server(Req, Res) ->
-    case chappe_sip_siprec_srs:serve(Req, Res, #{
-        store => default,
-        ip => {0, 0, 0, 0},
-        advertise => list_to_binary(env("DEMO_MEDIA_IP", "127.0.0.1"))
-    }) of
+    case
+        chappe_sip_siprec_srs:serve(Req, Res, #{
+            store => default,
+            ip => {0, 0, 0, 0},
+            advertise => list_to_binary(env("DEMO_MEDIA_IP", "127.0.0.1"))
+        })
+    of
         {ok, #{call_ref := Ref, streams := Streams} = Srs} ->
             log("recording ~s: ~b streams", [Ref, length(Streams)]),
             {stopped, _} = chappe_sip_siprec_srs:run(Srs),
             %% each stream's writer closes when this handler returns
-            log("recording ~s ended: demo_sbc:recordings(<<\"~s\">>)", [Ref, Ref]);
+            log("recording ~s ended: demo_sbc:recordings(<<\"~s\">>)", [
+                Ref, Ref
+            ]);
         {error, not_recording_session} ->
             _ = chappe_sip_res:send(Res, 404);
         {error, Why} ->
@@ -382,9 +434,14 @@ to_fs() ->
 to_host(BSide) ->
     Webrtc =
         case BSide of
-            ws -> #{ice => force, transport_protocol => <<"UDP/TLS/RTP/SAVPF">>,
-                    rtcp_mux => [offer, require]};
-            _ -> #{}
+            ws ->
+                #{
+                    ice => force,
+                    transport_protocol => <<"UDP/TLS/RTP/SAVPF">>,
+                    rtcp_mux => [offer, require]
+                };
+            _ ->
+                #{}
         end,
     #{b => Webrtc#{direction => [host, host]}}.
 
@@ -406,15 +463,29 @@ menu(_Ep, B2b, CallId, 0) ->
     log("call ~s: no choice, bye", [CallId]),
     chappe_sip_b2b:hangup(B2b, #{});
 menu(Ep, B2b, CallId, Tries) ->
-    case chappe_mrf:play_collect(Ep, #{file => prompt(menu), max => 1, timeout => 8000}) of
-        {ok, <<"1">>} -> to_bob(Ep, B2b, CallId);
-        {ok, <<"2">>} -> echo(B2b, CallId);
-        {ok, <<"3">>} -> native_conf(B2b, CallId);
-        {ok, <<"4">>} -> fs_conf(B2b, CallId);
-        {ok, <<"8">>} -> fork(Ep, CallId), menu(Ep, B2b, CallId, 3);
-        {ok, <<"9">>} -> record(Ep, CallId), menu(Ep, B2b, CallId, 3);
-        {ok, _} -> menu(Ep, B2b, CallId, Tries - 1);
-        {error, Why} -> log("call ~s left the IVR: ~p", [CallId, Why])
+    case
+        chappe_mrf:play_collect(Ep, #{
+            file => prompt(menu), max => 1, timeout => 8000
+        })
+    of
+        {ok, <<"1">>} ->
+            to_bob(Ep, B2b, CallId);
+        {ok, <<"2">>} ->
+            echo(B2b, CallId);
+        {ok, <<"3">>} ->
+            native_conf(B2b, CallId);
+        {ok, <<"4">>} ->
+            fs_conf(B2b, CallId);
+        {ok, <<"8">>} ->
+            fork(Ep, CallId),
+            menu(Ep, B2b, CallId, 3);
+        {ok, <<"9">>} ->
+            record(Ep, CallId),
+            menu(Ep, B2b, CallId, 3);
+        {ok, _} ->
+            menu(Ep, B2b, CallId, Tries - 1);
+        {error, Why} ->
+            log("call ~s left the IVR: ~p", [CallId, Why])
     end.
 
 %% 1: bob takes the call; the IVR's channel goes, the caller sees no
@@ -448,7 +519,9 @@ echo(B2b, CallId) ->
 
 %% 3: the room on chappe_mix (it outlives every caller)
 native_conf(B2b, CallId) ->
-    {ok, Conf} = chappe_mrf:conference(<<"demo-native">>, #{anchor_params => to_host(undefined)}),
+    {ok, Conf} = chappe_mrf:conference(<<"demo-native">>, #{
+        anchor_params => to_host(undefined)
+    }),
     {ok, Member} = chappe_mrf_conf:join(Conf, B2b, #{name => CallId}),
     log("call ~s: member ~s of demo-native", [CallId, Member]),
     wait_end(B2b, CallId).
@@ -473,14 +546,22 @@ fs_conf(B2b, CallId) ->
 fork(Ep, CallId) ->
     Ref = call_ref(Ep),
     Printer = spawn(fun() -> levels(CallId, Ref, 0, []) end),
-    {ok, Stream, Url} = chappe_audio:open(persistent_term:get({?MODULE, audio}), #{
-        ref => Ref, owner => Printer, store => default
-    }),
+    {ok, Stream, Url} = chappe_audio:open(
+        persistent_term:get({?MODULE, audio}), #{
+            ref => Ref, owner => Printer, store => default
+        }
+    ),
     _ = chappe_mrf:play(Ep, prompt(speak)),
     Meta = iolist_to_binary(["{\"call\":\"", Ref, "\"}"]),
-    case chappe_mrf:fork_audio_start(Ep, Url, #{mix => mono, rate => 8000, metadata => Meta}) of
+    case
+        chappe_mrf:fork_audio_start(Ep, Url, #{
+            mix => mono, rate => 8000, metadata => Meta
+        })
+    of
         ok ->
-            log("call ~s: forking to ~s", [CallId, hd(binary:split(Url, <<"?">>))]),
+            log("call ~s: forking to ~s", [
+                CallId, hd(binary:split(Url, <<"?">>))
+            ]),
             timer:sleep(10000),
             _ = chappe_mrf:fork_audio_stop(Ep);
         {error, Why} ->
@@ -499,14 +580,19 @@ levels(CallId, Ref, N, Lv) ->
             log("call ~s: fork metadata ~s", [CallId, Meta]),
             levels(CallId, Ref, N, Lv);
         {chappe_audio, _, {frame, Pcm}} when N =:= 24 ->
-            Db = lists:max([db(L) || L <- [hd(chappe_audio:levels(Pcm, 1)) | Lv]]),
+            Db = lists:max([
+                db(L)
+             || L <- [hd(chappe_audio:levels(Pcm, 1)) | Lv]
+            ]),
             Bar = lists:duplicate(max(0, round((Db + 60) / 2)), $#),
             log("call ~s: ~6.1f dBFS ~s", [CallId, Db, Bar]),
             levels(CallId, Ref, 0, []);
         {chappe_audio, _, {frame, Pcm}} ->
             levels(CallId, Ref, N + 1, [hd(chappe_audio:levels(Pcm, 1)) | Lv]);
         {chappe_audio, _, {closed, Why}} ->
-            log("call ~s: fork closed (~p); recordings: ~p", [CallId, Why, recordings(Ref)])
+            log("call ~s: fork closed (~p); recordings: ~p", [
+                CallId, Why, recordings(Ref)
+            ])
     end.
 
 db('-inf') -> -90.0;
@@ -525,19 +611,26 @@ record(Ep, CallId) ->
     Id = binary:encode_hex(crypto:hash(md5, CallId), lowercase),
     File = <<"/media/msg-", Id/binary, ".wav">>,
     _ = chappe_mrf:play(Ep, prompt(record)),
-    _ = chappe_mrf:record(Ep, File, #{max_secs => 10, silence_thresh => 200, silence_hits => 3}),
+    _ = chappe_mrf:record(Ep, File, #{
+        max_secs => 10, silence_thresh => 200, silence_hits => 3
+    }),
     log("call ~s: recorded ~s", [CallId, File]),
     _ = chappe_mrf:play(Ep, File),
     Ref = call_ref(Ep),
     case chappe_mrf_store:adopt(File, Ref, #{}) of
-        {ok, Rec} -> log("call ~s: message ~s in the store: ~p", [CallId, Rec, recordings(Ref)]);
-        {error, Why} -> log("call ~s: message not stored: ~p", [CallId, Why])
+        {ok, Rec} ->
+            log("call ~s: message ~s in the store: ~p", [
+                CallId, Rec, recordings(Ref)
+            ]);
+        {error, Why} ->
+            log("call ~s: message not stored: ~p", [CallId, Why])
     end.
 
 %% the call runs in its own process; this one waits for its end
 wait_end({_, Ref}, CallId) ->
     receive
-        {chappe_sip_b2b, Ref, {done, Why}} -> log("call ~s ended ~p", [CallId, Why])
+        {chappe_sip_b2b, Ref, {done, Why}} ->
+            log("call ~s ended ~p", [CallId, Why])
     end.
 
 %% The IVR's prompts, in /media of the FreeSWITCH nodes: spoken by macOS
@@ -545,15 +638,19 @@ wait_end({_, Ref}, CallId) ->
 prompts(Dir) ->
     ok = filelib:ensure_path(Dir),
     Texts = [
-        {menu, 440, "Press 1 for bob, 2 for an echo, 3 for the chappe conference, "
-                    "4 for the FreeSWITCH conference, 8 to see your voice level, "
-                    "or 9 to record a message."},
+        {menu, 440,
+            "Press 1 for bob, 2 for an echo, 3 for the chappe conference, "
+            "4 for the FreeSWITCH conference, 8 to see your voice level, "
+            "or 9 to record a message."},
         {speak, 600, "Speak now. The demo prints your level for ten seconds."},
         {pin, 520, "Enter the conference PIN."},
-        {record, 700, "Record your message after the beep. Stop talking to hear it back."},
+        {record, 700,
+            "Record your message after the beep. Stop talking to hear it back."},
         {sorry, 300, "Bob is not available."}
     ],
-    lists:foreach(fun({Name, Freq, Text}) -> prompt_file(Dir, Name, Freq, Text) end, Texts).
+    lists:foreach(
+        fun({Name, Freq, Text}) -> prompt_file(Dir, Name, Freq, Text) end, Texts
+    ).
 
 prompt_file(Dir, Name, Freq, Text) ->
     Path = filename:join(Dir, atom_to_list(Name) ++ ".wav"),
@@ -562,25 +659,39 @@ prompt_file(Dir, Name, Freq, Text) ->
             false ->
                 tone_wav(Path, Freq);
             Say ->
-                _ = os:cmd(Say ++ " -o '" ++ Path ++ "' --data-format=LEI16@8000 '" ++ Text ++ "'"),
+                _ = os:cmd(
+                    Say ++ " -o '" ++ Path ++ "' --data-format=LEI16@8000 '" ++
+                        Text ++ "'"
+                ),
                 filelib:is_regular(Path) orelse tone_wav(Path, Freq)
         end,
     _ = file:change_mode(Path, 8#644),
     ok.
 
 tone_wav(Path, Freq) ->
-    Data = <<<<(round(8000 * math:sin(2 * math:pi() * Freq * I / 8000))):16/little-signed>>
-             || I <- lists:seq(0, 7999)>>,
+    Data = <<
+        <<
+            (round(8000 * math:sin(2 * math:pi() * Freq * I / 8000))):16/little-signed
+        >>
+     || I <- lists:seq(0, 7999)
+    >>,
     Size = byte_size(Data),
-    file:write_file(Path, <<"RIFF", (36 + Size):32/little, "WAVE", "fmt ", 16:32/little,
-                            1:16/little, 1:16/little, 8000:32/little, 16000:32/little,
-                            2:16/little, 16:16/little, "data", Size:32/little, Data/binary>>).
+    file:write_file(
+        Path,
+        <<"RIFF", (36 + Size):32/little, "WAVE", "fmt ", 16:32/little,
+            1:16/little, 1:16/little, 8000:32/little, 16000:32/little,
+            2:16/little, 16:16/little, "data", Size:32/little, Data/binary>>
+    ).
 
 %% The conferences running: name, backend, member count.
 -spec confs() -> [{binary(), atom(), non_neg_integer()}].
 confs() ->
-    [{Name, maps:get(backend, I), maps:get(members, I)}
-     || {Name, C} <- chappe_mrf:conferences(), I <- [chappe_mrf_conf:info(C)], is_map(I)].
+    [
+        {Name, maps:get(backend, I), maps:get(members, I)}
+     || {Name, C} <- chappe_mrf:conferences(),
+        I <- [chappe_mrf_conf:info(C)],
+        is_map(I)
+    ].
 
 -spec members(binary() | string()) -> [map()] | {error, term()}.
 members(Name) ->
@@ -588,7 +699,9 @@ members(Name) ->
 
 -spec kick(binary() | string(), binary() | string()) -> ok | {error, term()}.
 kick(Name, Member) ->
-    with_conf(Name, fun(C) -> chappe_mrf_conf:kick(C, iolist_to_binary(Member)) end).
+    with_conf(Name, fun(C) ->
+        chappe_mrf_conf:kick(C, iolist_to_binary(Member))
+    end).
 
 with_conf(Name, Fun) ->
     case lists:keyfind(iolist_to_binary(Name), 1, chappe_mrf:conferences()) of
@@ -598,10 +711,15 @@ with_conf(Name, Fun) ->
 
 %% ---- the shell ----
 
--spec calls() -> [#{call_id := binary(), from := binary(), to := binary(), media := atom()}].
+-spec calls() ->
+    [#{call_id := binary(), from := binary(), to := binary(), media := atom()}].
 calls() ->
-    [maps:merge(#{call_id => C, from => F, to => T, media => mode(B2b)}, fs_of(C))
-     || {C, B2b, F, T} <- ets:tab2list(?CALLS)].
+    [
+        maps:merge(
+            #{call_id => C, from => F, to => T, media => mode(B2b)}, fs_of(C)
+        )
+     || {C, B2b, F, T} <- ets:tab2list(?CALLS)
+    ].
 
 fs_of(CallId) ->
     case ets:lookup(?FS, CallId) of
@@ -641,7 +759,10 @@ resume(Node) -> chappe_esl:node_resume(Node).
 
 -spec peers() -> [{term(), atom(), term()}].
 peers() ->
-    [{N, maps:get(state, I), maps:get(last_status, I)} || {N, I} <- chappe_sip:peers()].
+    [
+        {N, maps:get(state, I), maps:get(last_status, I)}
+     || {N, I} <- chappe_sip:peers()
+    ].
 
 mode(B2b) ->
     case chappe_sip_b2b:info(B2b) of
@@ -660,7 +781,9 @@ keeper() ->
         Self ! {keeper, self()},
         keep()
     end),
-    receive {keeper, Pid} -> Pid end.
+    receive
+        {keeper, Pid} -> Pid
+    end.
 
 keep() ->
     receive
@@ -712,12 +835,19 @@ http(Port, Page) ->
     %% the listener lives in its own process, not the one that starts us
     Self = self(),
     _ = spawn(fun() ->
-        {ok, L} = gen_tcp:listen(Port, [binary, {active, false}, {reuseaddr, true},
-                                        {packet, http_bin}]),
+        {ok, L} = gen_tcp:listen(Port, [
+            binary,
+            {active, false},
+            {reuseaddr, true},
+            {packet, http_bin}
+        ]),
         Self ! {http, self()},
         accept(L, Page)
     end),
-    receive {http, _} -> ok after 5000 -> {error, http_listen} end.
+    receive
+        {http, _} -> ok
+    after 5000 -> {error, http_listen}
+    end.
 
 accept(L, Page) ->
     {ok, S} = gen_tcp:accept(L),
@@ -727,9 +857,13 @@ accept(L, Page) ->
 serve(S, Page) ->
     _ = gen_tcp:recv(S, 0, 5000),
     {ok, Body} = file:read_file(Page),
-    _ = gen_tcp:send(S, [<<"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n">>,
-                         <<"Content-Length: ">>, integer_to_binary(byte_size(Body)),
-                         <<"\r\nConnection: close\r\n\r\n">>, Body]),
+    _ = gen_tcp:send(S, [
+        <<"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n">>,
+        <<"Content-Length: ">>,
+        integer_to_binary(byte_size(Body)),
+        <<"\r\nConnection: close\r\n\r\n">>,
+        Body
+    ]),
     gen_tcp:close(S).
 
 log(Fmt, Args) ->

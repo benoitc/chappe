@@ -15,32 +15,65 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -export([all/0, init_per_suite/1, end_per_suite/1, end_per_testcase/2]).
--export([tls_options/1, udp_still_works/1, tls_bad_verify/1,
-         verify_none_needs_insecure/1, old_versions_refused/1,
-         client_cert_required/1, outbound_verified/1, outbound_untrusted/1,
-         record_route_sips/1, record_route_tls_to_sip/1,
-         sip_request_to_sips_target/1, sips_request_to_sip_target/1,
-         uas_contact_sips/1, forked_2xx_over_tls/1,
-         sips_request_sips_contact/1, subscribe_notify_over_tls/1]).
--export([uac_secure_contact/1, uac_dialog_sips_contact/1,
-         sips_ruri_via_sip_proxy/1, sips_transport_udp_refused/1]).
+-export([
+    tls_options/1,
+    udp_still_works/1,
+    tls_bad_verify/1,
+    verify_none_needs_insecure/1,
+    old_versions_refused/1,
+    client_cert_required/1,
+    outbound_verified/1,
+    outbound_untrusted/1,
+    record_route_sips/1,
+    record_route_tls_to_sip/1,
+    sip_request_to_sips_target/1,
+    sips_request_to_sip_target/1,
+    uas_contact_sips/1,
+    forked_2xx_over_tls/1,
+    sips_request_sips_contact/1,
+    subscribe_notify_over_tls/1
+]).
+-export([
+    uac_secure_contact/1,
+    uac_dialog_sips_contact/1,
+    sips_ruri_via_sip_proxy/1,
+    sips_transport_udp_refused/1
+]).
 %% the CA, the TLS listener and the UDP port, for the TLS cases of other
 %% suites (chappe_sip_siprec_SUITE)
 -export([with_ca/3, start_tls/2, engine_port/0, tls_next_msg/2]).
 
 all() ->
-    [tls_options, udp_still_works, tls_bad_verify, verify_none_needs_insecure,
-     old_versions_refused, client_cert_required, outbound_verified,
-     outbound_untrusted, record_route_sips, record_route_tls_to_sip,
-     sip_request_to_sips_target, sips_request_to_sip_target,
-     uas_contact_sips, forked_2xx_over_tls, sips_request_sips_contact,
-     subscribe_notify_over_tls, uac_secure_contact,
-     uac_dialog_sips_contact, sips_ruri_via_sip_proxy,
-     sips_transport_udp_refused].
+    [
+        tls_options,
+        udp_still_works,
+        tls_bad_verify,
+        verify_none_needs_insecure,
+        old_versions_refused,
+        client_cert_required,
+        outbound_verified,
+        outbound_untrusted,
+        record_route_sips,
+        record_route_tls_to_sip,
+        sip_request_to_sips_target,
+        sips_request_to_sip_target,
+        uas_contact_sips,
+        forked_2xx_over_tls,
+        sips_request_sips_contact,
+        subscribe_notify_over_tls,
+        uac_secure_contact,
+        uac_dialog_sips_contact,
+        sips_ruri_via_sip_proxy,
+        sips_transport_udp_refused
+    ].
 
 init_per_suite(Config) ->
-    application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
-                        [{persistent, true}]),
+    application:set_env(
+        chappe_sip,
+        engine_mod,
+        chappe_sip_nif,
+        [{persistent, true}]
+    ),
     {ok, _} = application:ensure_all_started(chappe_sip),
     {ok, _} = application:ensure_all_started(ssl),
     Config.
@@ -67,19 +100,29 @@ tls_options(Config) ->
             TP = pick(),
             ok = chappe_sip:start(#{
                 contact => <<"sip:127.0.0.1:", (integer_to_binary(EP))/binary>>,
-                tls => #{contact => <<"sips:127.0.0.1:",
-                                      (integer_to_binary(TP))/binary,
-                                      ";transport=tls">>,
-                         cert_dir => list_to_binary(CertDir),
-                         verify => none,
-                         allow_insecure => true}}),
+                tls => #{
+                    contact =>
+                        <<"sips:127.0.0.1:", (integer_to_binary(TP))/binary,
+                            ";transport=tls">>,
+                    cert_dir => list_to_binary(CertDir),
+                    verify => none,
+                    allow_insecure => true
+                }
+            }),
             ok = chappe_sip:options(fun(_Req, Res) ->
                 chappe_sip_res:send(Res, 200, #{reason => <<"OK">>})
             end),
-            {ok, S} = ssl:connect("127.0.0.1", TP,
-                                  [{verify, verify_none}, binary,
-                                   {active, false}, {versions, ['tlsv1.2']}],
-                                  5000),
+            {ok, S} = ssl:connect(
+                "127.0.0.1",
+                TP,
+                [
+                    {verify, verify_none},
+                    binary,
+                    {active, false},
+                    {versions, ['tlsv1.2']}
+                ],
+                5000
+            ),
             ok = ssl:send(S, options_req()),
             {ok, Data} = ssl:recv(S, 0, 5000),
             ?assertMatch(<<"SIP/2.0 200", _/binary>>, Data),
@@ -93,9 +136,13 @@ tls_bad_verify(_Config) ->
     TP = pick(),
     R = chappe_sip:start(#{
         contact => <<"sip:127.0.0.1:", (integer_to_binary(EP))/binary>>,
-        tls => #{contact => <<"sips:127.0.0.1:", (integer_to_binary(TP))/binary,
-                              ";transport=tls">>,
-                 verify => banana}}),
+        tls => #{
+            contact =>
+                <<"sips:127.0.0.1:", (integer_to_binary(TP))/binary,
+                    ";transport=tls">>,
+            verify => banana
+        }
+    }),
     ?assertMatch({error, {tls, {bad_verify, banana}}}, R).
 
 %% Turning certificate verification off takes an explicit allow_insecure:
@@ -106,24 +153,43 @@ verify_none_needs_insecure(_Config) ->
     TP = pick(),
     R = chappe_sip:start(#{
         contact => <<"sip:127.0.0.1:", (integer_to_binary(EP))/binary>>,
-        tls => #{contact => <<"sips:127.0.0.1:", (integer_to_binary(TP))/binary,
-                              ";transport=tls">>,
-                 verify => none}}),
+        tls => #{
+            contact =>
+                <<"sips:127.0.0.1:", (integer_to_binary(TP))/binary,
+                    ";transport=tls">>,
+            verify => none
+        }
+    }),
     ?assertMatch({error, {tls, insecure_verify_none}}, R).
 
 %% The listener takes TLS 1.2 and up: a TLS 1.1 client is refused.
 old_versions_refused(Config) ->
     with_ca(Config, "old", fun(Dir) ->
         TP = start_tls(Dir, #{}),
-        Old = ssl:connect("127.0.0.1", TP,
-                          [{verify, verify_none}, binary, {active, false},
-                           {versions, ['tlsv1.1']},
-                           {ciphers, ssl:cipher_suites(all, 'tlsv1.1')}],
-                          5000),
+        Old = ssl:connect(
+            "127.0.0.1",
+            TP,
+            [
+                {verify, verify_none},
+                binary,
+                {active, false},
+                {versions, ['tlsv1.1']},
+                {ciphers, ssl:cipher_suites(all, 'tlsv1.1')}
+            ],
+            5000
+        ),
         ?assertMatch({error, _}, Old),
-        {ok, S} = ssl:connect("127.0.0.1", TP,
-                              [{verify, verify_none}, binary, {active, false},
-                               {versions, ['tlsv1.2']}], 5000),
+        {ok, S} = ssl:connect(
+            "127.0.0.1",
+            TP,
+            [
+                {verify, verify_none},
+                binary,
+                {active, false},
+                {versions, ['tlsv1.2']}
+            ],
+            5000
+        ),
         ok = ssl:close(S)
     end).
 
@@ -136,8 +202,12 @@ client_cert_required(Config) ->
         ok = chappe_sip:options(fun(_Req, Res) ->
             chappe_sip_res:send(Res, 200, #{reason => <<"OK">>})
         end),
-        Base = [{verify, verify_none}, binary, {active, false},
-                {versions, ['tlsv1.2']}],
+        Base = [
+            {verify, verify_none},
+            binary,
+            {active, false},
+            {versions, ['tlsv1.2']}
+        ],
         case ssl:connect("127.0.0.1", TP, Base, 5000) of
             {ok, Bare} ->
                 %% the server's refusal may surface on the first read
@@ -146,10 +216,16 @@ client_cert_required(Config) ->
             {error, _} ->
                 ok
         end,
-        {ok, S} = ssl:connect("127.0.0.1", TP,
-                              [{certfile, file(Dir, "client.pem")},
-                               {keyfile, file(Dir, "client.key")} | Base],
-                              5000),
+        {ok, S} = ssl:connect(
+            "127.0.0.1",
+            TP,
+            [
+                {certfile, file(Dir, "client.pem")},
+                {keyfile, file(Dir, "client.key")}
+                | Base
+            ],
+            5000
+        ),
         ok = ssl:send(S, options_req()),
         {ok, Data} = ssl:recv(S, 0, 5000),
         ?assertMatch(<<"SIP/2.0 200", _/binary>>, Data),
@@ -162,7 +238,9 @@ client_cert_required(Config) ->
 outbound_verified(Config) ->
     with_ca(Config, "outok", fun(Dir) ->
         _ = start_tls(Dir, #{}),
-        {SP, Got} = tls_server(file(Dir, "server.pem"), file(Dir, "server.key")),
+        {SP, Got} = tls_server(
+            file(Dir, "server.pem"), file(Dir, "server.key")
+        ),
         {ok, _} = chappe_sip:request(sips_uri(SP), #{}),
         ?assertMatch({data, <<"OPTIONS ", _/binary>>}, Got())
     end).
@@ -184,14 +262,22 @@ outbound_untrusted(Config) ->
 record_route_sips(Config) ->
     with_ca(Config, "rr", fun(Dir) ->
         _ = start_tls(Dir, #{}),
-        {SP, Got} = tls_server(file(Dir, "server.pem"), file(Dir, "server.key")),
+        {SP, Got} = tls_server(
+            file(Dir, "server.pem"), file(Dir, "server.key")
+        ),
         ok = chappe_sip:invite(fun(Req, _Res) ->
-            chappe_sip:proxy_request(Req, [sips_uri(SP)], #{record_route => true})
+            chappe_sip:proxy_request(Req, [sips_uri(SP)], #{
+                record_route => true
+            })
         end),
         EP = engine_port(),
-        {ok, U} = gen_udp:open(0, [binary, {active, true}, {ip, {127,0,0,1}}]),
-        ok = gen_udp:send(U, {127,0,0,1}, EP,
-                          invite_udp(U, <<"sips:callee@127.0.0.1">>)),
+        {ok, U} = gen_udp:open(0, [binary, {active, true}, {ip, {127, 0, 0, 1}}]),
+        ok = gen_udp:send(
+            U,
+            {127, 0, 0, 1},
+            EP,
+            invite_udp(U, <<"sips:callee@127.0.0.1">>)
+        ),
         {data, Inv} = Got(),
         {ok, M} = chappe_sip_msg:parse(Inv),
         RR = chappe_sip_msg:get(<<"record-route">>, M),
@@ -208,13 +294,19 @@ record_route_sips(Config) ->
 sip_request_to_sips_target(Config) ->
     with_ca(Config, "s2s", fun(Dir) ->
         _ = start_tls(Dir, #{}),
-        {SP, Got} = tls_server(file(Dir, "server.pem"), file(Dir, "server.key")),
+        {SP, Got} = tls_server(
+            file(Dir, "server.pem"), file(Dir, "server.key")
+        ),
         ok = chappe_sip:invite(fun(Req, _Res) ->
             chappe_sip:proxy_request(Req, [sips_uri(SP)], #{})
         end),
-        {ok, U} = gen_udp:open(0, [binary, {active, true}, {ip, {127,0,0,1}}]),
-        ok = gen_udp:send(U, {127,0,0,1}, engine_port(),
-                          invite_udp(U, <<"sip:callee@127.0.0.1">>)),
+        {ok, U} = gen_udp:open(0, [binary, {active, true}, {ip, {127, 0, 0, 1}}]),
+        ok = gen_udp:send(
+            U,
+            {127, 0, 0, 1},
+            engine_port(),
+            invite_udp(U, <<"sip:callee@127.0.0.1">>)
+        ),
         {data, Inv} = Got(),
         {ok, M} = chappe_sip_msg:parse(Inv),
         ?assertMatch(<<"sip:srv@127.0.0.1:", _/binary>>, chappe_sip_msg:uri(M)),
@@ -229,12 +321,18 @@ sips_request_to_sip_target(Config) ->
         D = pick(),
         ok = chappe_sip:invite(fun(Req, _Res) ->
             chappe_sip:proxy_request(
-                Req, [<<"sip:bob@127.0.0.1:", (integer_to_binary(D))/binary>>],
-                #{})
+                Req,
+                [<<"sip:bob@127.0.0.1:", (integer_to_binary(D))/binary>>],
+                #{}
+            )
         end),
-        {ok, U} = gen_udp:open(0, [binary, {active, true}, {ip, {127,0,0,1}}]),
-        ok = gen_udp:send(U, {127,0,0,1}, engine_port(),
-                          invite_udp(U, <<"sips:callee@127.0.0.1">>)),
+        {ok, U} = gen_udp:open(0, [binary, {active, true}, {ip, {127, 0, 0, 1}}]),
+        ok = gen_udp:send(
+            U,
+            {127, 0, 0, 1},
+            engine_port(),
+            invite_udp(U, <<"sips:callee@127.0.0.1">>)
+        ),
         Final = recv_udp_final(U),
         ?assertMatch(<<"SIP/2.0 480", _/binary>>, Final),
         gen_udp:close(U)
@@ -251,22 +349,30 @@ record_route_tls_to_sip(Config) ->
         D = pick(),
         ok = chappe_sip:invite(fun(Req, _Res) ->
             chappe_sip:proxy_request(
-                Req, [<<"127.0.0.1:", (integer_to_binary(D))/binary>>],
-                #{record_route => true})
+                Req,
+                [<<"127.0.0.1:", (integer_to_binary(D))/binary>>],
+                #{record_route => true}
+            )
         end),
-        {ok, U} = gen_udp:open(D, [binary, {active, true}, {ip, {127,0,0,1}}]),
+        {ok, U} = gen_udp:open(D, [binary, {active, true}, {ip, {127, 0, 0, 1}}]),
         S = tls_client(TP),
         ok = ssl:send(S, invite_tls()),
-        {Inv, Src} = receive
-                         {udp, U, _, SrcP, <<"INVITE", _/binary>> = I} -> {I, SrcP}
-                     after 5000 -> ct:fail(no_forwarded_invite)
-                     end,
+        {Inv, Src} =
+            receive
+                {udp, U, _, SrcP, <<"INVITE", _/binary>> = I} -> {I, SrcP}
+            after 5000 -> ct:fail(no_forwarded_invite)
+            end,
         {ok, M} = chappe_sip_msg:parse(Inv),
         RRs = rr_values(M),
-        ?assertMatch([<<"<sip:127.0.0.1:", _/binary>>,
-                      <<"<sips:127.0.0.1:", _/binary>>], RRs),
+        ?assertMatch(
+            [
+                <<"<sip:127.0.0.1:", _/binary>>,
+                <<"<sips:127.0.0.1:", _/binary>>
+            ],
+            RRs
+        ),
         RR = iolist_to_binary(lists:join(<<", ">>, RRs)),
-        ok = gen_udp:send(U, {127,0,0,1}, Src, ok200(M, RR)),
+        ok = gen_udp:send(U, {127, 0, 0, 1}, Src, ok200(M, RR)),
         R200 = recv_tls_final(S),
         {ok, M200} = chappe_sip_msg:parse(R200),
         %% unchanged: the caller reverses it, its first hop is the sips one
@@ -282,14 +388,19 @@ uas_contact_sips(Config) ->
         TP = start_tls(Dir, #{}),
         ok = chappe_sip:invite(fun(Req, Res) ->
             {ok, _} = chappe_sip:create_uas(Req, Res, #{local_sdp => sdp()}),
-            receive stop -> ok after 3000 -> ok end
+            receive
+                stop -> ok
+            after 3000 -> ok
+            end
         end),
         S = tls_client(TP),
         ok = ssl:send(S, invite_tls()),
         R200 = recv_tls_final(S),
         {ok, M} = chappe_sip_msg:parse(R200),
-        ?assertMatch(<<"<sips:127.0.0.1:", _/binary>>,
-                     chappe_sip_msg:get(<<"contact">>, M)),
+        ?assertMatch(
+            <<"<sips:127.0.0.1:", _/binary>>,
+            chappe_sip_msg:get(<<"contact">>, M)
+        ),
         ssl:close(S)
     end).
 
@@ -304,35 +415,54 @@ sips_request_sips_contact(Config) ->
         ok = chappe_sip:invite(fun(Req, Res) ->
             {ok, _} = chappe_sip:create_uas(Req, Res, #{local_sdp => sdp()})
         end),
-        {ok, U} = gen_udp:open(0, [binary, {active, true}, {ip, {127,0,0,1}}]),
+        {ok, U} = gen_udp:open(0, [binary, {active, true}, {ip, {127, 0, 0, 1}}]),
         LP = lport(U),
         Call = fun(RUri, Hdrs) ->
             Inv = chappe_sip_core_peer:request(
-                    <<"INVITE">>, RUri,
-                    #{port => LP, body => sdp(), headers => Hdrs,
-                      to => <<"<sip:callee@127.0.0.1>">>}),
-            ok = gen_udp:send(U, {127,0,0,1}, engine_port(), Inv),
+                <<"INVITE">>,
+                RUri,
+                #{
+                    port => LP,
+                    body => sdp(),
+                    headers => Hdrs,
+                    to => <<"<sip:callee@127.0.0.1>">>
+                }
+            ),
+            ok = gen_udp:send(U, {127, 0, 0, 1}, engine_port(), Inv),
             R200 = recv_udp_final(U),
             ?assertMatch(<<"SIP/2.0 200", _/binary>>, R200),
-            ok = gen_udp:send(U, {127,0,0,1}, engine_port(),
-                              chappe_sip_core_peer:ack_for(R200, #{port => LP})),
+            ok = gen_udp:send(
+                U,
+                {127, 0, 0, 1},
+                engine_port(),
+                chappe_sip_core_peer:ack_for(R200, #{port => LP})
+            ),
             {ok, M} = chappe_sip_msg:parse(R200),
             Contact = chappe_sip_msg:get(<<"contact">>, M),
             ct:log("~s -> Contact ~s", [RUri, Contact]),
             Contact
         end,
-        ?assertMatch(<<"<sips:127.0.0.1:", _/binary>>,
-                     Call(<<"sips:callee@127.0.0.1">>, [])),
-        ?assertMatch(<<"<sips:127.0.0.1:", _/binary>>,
-                     Call(<<"sip:callee@127.0.0.1">>,
-                          [{<<"Record-Route">>,
-                            <<"<sips:proxy.example.invalid;lr>">>},
-                           {<<"Record-Route">>,
-                            <<"<sip:inner.example.invalid;lr>">>}])),
-        ?assertMatch(<<"<sip:127.0.0.1:", _/binary>>,
-                     Call(<<"sip:callee@127.0.0.1">>,
-                          [{<<"Record-Route">>,
-                            <<"<sip:proxy.example.invalid;lr>">>}])),
+        ?assertMatch(
+            <<"<sips:127.0.0.1:", _/binary>>,
+            Call(<<"sips:callee@127.0.0.1">>, [])
+        ),
+        ?assertMatch(
+            <<"<sips:127.0.0.1:", _/binary>>,
+            Call(
+                <<"sip:callee@127.0.0.1">>,
+                [
+                    {<<"Record-Route">>, <<"<sips:proxy.example.invalid;lr>">>},
+                    {<<"Record-Route">>, <<"<sip:inner.example.invalid;lr>">>}
+                ]
+            )
+        ),
+        ?assertMatch(
+            <<"<sip:127.0.0.1:", _/binary>>,
+            Call(
+                <<"sip:callee@127.0.0.1">>,
+                [{<<"Record-Route">>, <<"<sip:proxy.example.invalid;lr>">>}]
+            )
+        ),
         gen_udp:close(U)
     end).
 
@@ -347,37 +477,58 @@ subscribe_notify_over_tls(Config) ->
         Test = self(),
         ok = chappe_sip:subscribe(fun(Req, Res) ->
             {ok, D} = chappe_sip:create_uas(Req, Res, #{expires => 600}),
-            Test ! {notified, chappe_sip_dialog:notify(D, #{
-                state => active, body => <<"<conference-info/>">>,
-                content_type => <<"application/conference-info+xml">>})},
-            receive stop -> ok after 5000 -> ok end
+            Test !
+                {notified,
+                    chappe_sip_dialog:notify(D, #{
+                        state => active,
+                        body => <<"<conference-info/>">>,
+                        content_type => <<"application/conference-info+xml">>
+                    })},
+            receive
+                stop -> ok
+            after 5000 -> ok
+            end
         end),
         S = tls_client(TP),
         {ok, {_, LP}} = ssl:sockname(S),
         P = integer_to_binary(LP),
-        Sub = <<"SUBSCRIBE sips:conf@127.0.0.1 SIP/2.0\r\n"
-                "Via: SIP/2.0/TLS 127.0.0.1:", P/binary, ";branch=z9hG4bK",
-                (binary:encode_hex(crypto:strong_rand_bytes(6)))/binary, "\r\n"
-                "Max-Forwards: 70\r\n"
-                "From: <sips:sub@127.0.0.1>;tag=st1\r\n"
-                "To: <sips:conf@127.0.0.1>\r\n"
-                "Contact: <sips:sub@127.0.0.1:", P/binary, ">\r\n"
-                "Call-ID: subtls-", P/binary, "@ct\r\nCSeq: 1 SUBSCRIBE\r\n"
-                "Event: conference\r\nExpires: 600\r\n"
-                "Content-Length: 0\r\n\r\n">>,
+        Sub = <<
+            "SUBSCRIBE sips:conf@127.0.0.1 SIP/2.0\r\n"
+            "Via: SIP/2.0/TLS 127.0.0.1:",
+            P/binary,
+            ";branch=z9hG4bK",
+            (binary:encode_hex(crypto:strong_rand_bytes(6)))/binary,
+            "\r\n"
+            "Max-Forwards: 70\r\n"
+            "From: <sips:sub@127.0.0.1>;tag=st1\r\n"
+            "To: <sips:conf@127.0.0.1>\r\n"
+            "Contact: <sips:sub@127.0.0.1:",
+            P/binary,
+            ">\r\n"
+            "Call-ID: subtls-",
+            P/binary,
+            "@ct\r\nCSeq: 1 SUBSCRIBE\r\n"
+            "Event: conference\r\nExpires: 600\r\n"
+            "Content-Length: 0\r\n\r\n"
+        >>,
         ok = ssl:send(S, Sub),
         {R200, Rest} = tls_next_msg(S, <<>>),
         ?assertMatch(<<"SIP/2.0 200", _/binary>>, R200),
         {ok, M200} = chappe_sip_msg:parse(R200),
-        ?assertMatch(<<"<sips:", _/binary>>, chappe_sip_msg:get(<<"contact">>, M200)),
+        ?assertMatch(
+            <<"<sips:", _/binary>>, chappe_sip_msg:get(<<"contact">>, M200)
+        ),
         {Notify, _} = tls_next_msg(S, Rest),
         ct:log("over TLS:~n~s", [Notify]),
         {ok, N} = chappe_sip_msg:parse(Notify),
         ?assertEqual(<<"NOTIFY">>, chappe_sip_msg:method(N)),
         ?assertEqual(<<"<conference-info/>">>, chappe_sip_msg:body(N)),
-        ?assertMatch(<<"SIP/2.0/TLS ", _/binary>>, chappe_sip_msg:get(<<"via">>, N)),
+        ?assertMatch(
+            <<"SIP/2.0/TLS ", _/binary>>, chappe_sip_msg:get(<<"via">>, N)
+        ),
         ok = ssl:send(S, resp_2xx(N, <<"st2">>)),
-        receive {notified, R} -> ?assertMatch({ok, _}, R)
+        receive
+            {notified, R} -> ?assertMatch({ok, _}, R)
         after 5000 -> ct:fail(no_notify_result)
         end,
         ssl:close(S)
@@ -390,9 +541,13 @@ subscribe_notify_over_tls(Config) ->
 forked_2xx_over_tls(Config) ->
     with_ca(Config, "fork", fun(Dir) ->
         _ = start_tls(Dir, #{}),
-        {ok, L} = ssl:listen(0, [{certfile, file(Dir, "server.pem")},
-                                 {keyfile, file(Dir, "server.key")}, binary,
-                                 {active, false}, {reuseaddr, true}]),
+        {ok, L} = ssl:listen(0, [
+            {certfile, file(Dir, "server.pem")},
+            {keyfile, file(Dir, "server.key")},
+            binary,
+            {active, false},
+            {reuseaddr, true}
+        ]),
         {ok, {_, SP}} = ssl:sockname(L),
         _ = spawn_link(fun() ->
             {ok, T} = ssl:transport_accept(L, 5000),
@@ -407,9 +562,13 @@ forked_2xx_over_tls(Config) ->
         ok = chappe_sip:invite(fun(Req, _Res) ->
             chappe_sip:proxy_request(Req, [sips_uri(SP)], #{})
         end),
-        {ok, U} = gen_udp:open(0, [binary, {active, true}, {ip, {127,0,0,1}}]),
-        ok = gen_udp:send(U, {127,0,0,1}, engine_port(),
-                          invite_udp(U, <<"sip:callee@127.0.0.1">>)),
+        {ok, U} = gen_udp:open(0, [binary, {active, true}, {ip, {127, 0, 0, 1}}]),
+        ok = gen_udp:send(
+            U,
+            {127, 0, 0, 1},
+            engine_port(),
+            invite_udp(U, <<"sip:callee@127.0.0.1">>)
+        ),
         ?assertEqual([<<"fa">>, <<"fb">>], lists:usort(udp_2xx_tags(U, [], 2))),
         gen_udp:close(U)
     end).
@@ -422,18 +581,28 @@ uac_secure_contact(Config) ->
         _ = start_tls(Dir, #{}),
         SP = tls_uas(Dir),
         Sip = <<"sip:srv@127.0.0.1:", (integer_to_binary(SP))/binary>>,
-        Cases = [{sips_uri(SP), #{}},
-                 {Sip, #{proxy => sips_uri(SP)}},
-                 {<<"sip:srv@far.invalid">>,
-                  #{route_set => [<<"<sips:127.0.0.1:",
-                                    (integer_to_binary(SP))/binary, ";lr>">>]}}],
-        [begin
-             {ok, _} = chappe_sip:request(Uri, Opts),
-             {S, M} = tls_next(<<"OPTIONS">>),
-             ok = ssl:send(S, tls_resp(M, 200, <<"o1">>, <<>>, <<>>)),
-             ?assertMatch(<<"<sips:", _/binary>>,
-                          chappe_sip_msg:get(<<"contact">>, M))
-         end || {Uri, Opts} <- Cases]
+        Cases = [
+            {sips_uri(SP), #{}},
+            {Sip, #{proxy => sips_uri(SP)}},
+            {<<"sip:srv@far.invalid">>, #{
+                route_set => [
+                    <<"<sips:127.0.0.1:", (integer_to_binary(SP))/binary,
+                        ";lr>">>
+                ]
+            }}
+        ],
+        [
+            begin
+                {ok, _} = chappe_sip:request(Uri, Opts),
+                {S, M} = tls_next(<<"OPTIONS">>),
+                ok = ssl:send(S, tls_resp(M, 200, <<"o1">>, <<>>, <<>>)),
+                ?assertMatch(
+                    <<"<sips:", _/binary>>,
+                    chappe_sip_msg:get(<<"contact">>, M)
+                )
+            end
+         || {Uri, Opts} <- Cases
+        ]
     end).
 
 %% An INVITE to a sips target forms a secure dialog: the INVITE and the
@@ -447,27 +616,49 @@ uac_dialog_sips_contact(Config) ->
         Me = <<"<sips:callee@127.0.0.1:", (integer_to_binary(SP))/binary, ">">>,
         Test = self(),
         _ = spawn_link(fun() ->
-            Test ! {uac, chappe_sip:create_uac(sips_uri(SP),
-                                               #{local_sdp => sdp(),
-                                                 owner => Test})}
+            Test !
+                {uac,
+                    chappe_sip:create_uac(
+                        sips_uri(SP),
+                        #{
+                            local_sdp => sdp(),
+                            owner => Test
+                        }
+                    )}
         end),
         {S, Inv} = tls_next(<<"INVITE">>),
-        ?assertMatch(<<"<sips:", _/binary>>,
-                     chappe_sip_msg:get(<<"contact">>, Inv)),
+        ?assertMatch(
+            <<"<sips:", _/binary>>,
+            chappe_sip_msg:get(<<"contact">>, Inv)
+        ),
         ok = ssl:send(S, tls_resp(Inv, 200, <<"d1">>, Me, sdp())),
-        D = receive {uac, {ok, D0}} -> D0 after 5000 -> ct:fail(no_dialog) end,
+        D =
+            receive
+                {uac, {ok, D0}} -> D0
+            after 5000 -> ct:fail(no_dialog)
+            end,
         {_, _} = tls_next(<<"ACK">>),
-        _ = spawn_link(fun() -> Test ! {mod, chappe_sip_dialog:modify(D, sdp())} end),
+        _ = spawn_link(fun() ->
+            Test ! {mod, chappe_sip_dialog:modify(D, sdp())}
+        end),
         {S2, ReInv} = tls_next(<<"INVITE">>),
-        ?assertMatch(<<"<sips:", _/binary>>,
-                     chappe_sip_msg:get(<<"contact">>, ReInv)),
+        ?assertMatch(
+            <<"<sips:", _/binary>>,
+            chappe_sip_msg:get(<<"contact">>, ReInv)
+        ),
         ok = ssl:send(S2, tls_resp(ReInv, 200, <<>>, Me, sdp())),
-        receive {mod, {ok, _}} -> ok after 5000 -> ct:fail(no_modify) end,
+        receive
+            {mod, {ok, _}} -> ok
+        after 5000 -> ct:fail(no_modify)
+        end,
         {_, _} = tls_next(<<"ACK">>),
         _ = spawn_link(fun() -> Test ! {bye, chappe_sip_dialog:destroy(D)} end),
         {S3, Bye} = tls_next(<<"BYE">>),
         ok = ssl:send(S3, tls_resp(Bye, 200, <<>>, <<>>, <<>>)),
-        receive {bye, _} -> ok after 5000 -> ct:fail(no_bye) end
+        receive
+            {bye, _} -> ok
+        after 5000 -> ct:fail(no_bye)
+        end
     end).
 
 %% A sips Request-URI sent through a sip: outbound proxy is resolved as
@@ -477,8 +668,11 @@ sips_ruri_via_sip_proxy(Config) ->
     with_ca(Config, "sipx", fun(Dir) ->
         _ = start_tls(Dir, #{}),
         SP = tls_uas(Dir),
-        {ok, U} = gen_udp:open(SP, [binary, {active, true},
-                                    {ip, {127,0,0,1}}]),
+        {ok, U} = gen_udp:open(SP, [
+            binary,
+            {active, true},
+            {ip, {127, 0, 0, 1}}
+        ]),
         Proxy = <<"sip:127.0.0.1:", (integer_to_binary(SP))/binary>>,
         {ok, _} = chappe_sip:request(sips_uri(SP), #{proxy => Proxy}),
         {S, M} = tls_next(<<"OPTIONS">>),
@@ -497,18 +691,26 @@ sips_ruri_via_sip_proxy(Config) ->
 sips_transport_udp_refused(Config) ->
     with_ca(Config, "sudp", fun(Dir) ->
         _ = start_tls(Dir, #{}),
-        {ok, T} = gen_udp:open(0, [binary, {active, true},
-                                   {ip, {127,0,0,1}}]),
-        Bad = <<"sips:bob@127.0.0.1:", (integer_to_binary(lport(T)))/binary,
+        {ok, T} = gen_udp:open(0, [
+            binary,
+            {active, true},
+            {ip, {127, 0, 0, 1}}
+        ]),
+        Bad =
+            <<"sips:bob@127.0.0.1:", (integer_to_binary(lport(T)))/binary,
                 ";transport=udp">>,
         ?assertMatch({error, _}, chappe_sip:request(Bad, #{})),
         ?assertMatch({error, _}, chappe_sip:create_uac(Bad, #{})),
         ok = chappe_sip:invite(fun(Req, _Res) ->
             chappe_sip:proxy_request(Req, [Bad], #{})
         end),
-        {ok, U} = gen_udp:open(0, [binary, {active, true}, {ip, {127,0,0,1}}]),
-        ok = gen_udp:send(U, {127,0,0,1}, engine_port(),
-                          invite_udp(U, <<"sips:callee@127.0.0.1">>)),
+        {ok, U} = gen_udp:open(0, [binary, {active, true}, {ip, {127, 0, 0, 1}}]),
+        ok = gen_udp:send(
+            U,
+            {127, 0, 0, 1},
+            engine_port(),
+            invite_udp(U, <<"sips:callee@127.0.0.1">>)
+        ),
         ?assertMatch(<<"SIP/2.0 480", _/binary>>, recv_udp_final(U)),
         receive
             {udp, T, _, _, Got} -> ct:fail({sent_over_udp, Got})
@@ -530,17 +732,23 @@ udp_still_works(Config) ->
             TP = pick(),
             ok = chappe_sip:start(#{
                 contact => <<"sip:127.0.0.1:", (integer_to_binary(EP))/binary>>,
-                tls => #{contact => <<"sips:127.0.0.1:",
-                                      (integer_to_binary(TP))/binary,
-                                      ";transport=tls">>,
-                         cert_dir => list_to_binary(CertDir)}}),
+                tls => #{
+                    contact =>
+                        <<"sips:127.0.0.1:", (integer_to_binary(TP))/binary,
+                            ";transport=tls">>,
+                    cert_dir => list_to_binary(CertDir)
+                }
+            }),
             ok = chappe_sip:options(fun(_Req, Res) ->
                 chappe_sip_res:send(Res, 200, #{reason => <<"OK">>})
             end),
-            {ok, Sock} = gen_udp:open(0, [binary, {active, true},
-                                          {ip, {127,0,0,1}}]),
+            {ok, Sock} = gen_udp:open(0, [
+                binary,
+                {active, true},
+                {ip, {127, 0, 0, 1}}
+            ]),
             P = integer_to_binary(lport(Sock)),
-            gen_udp:send(Sock, {127,0,0,1}, EP, options_udp(P)),
+            gen_udp:send(Sock, {127, 0, 0, 1}, EP, options_udp(P)),
             receive
                 {udp, Sock, _, _, <<"SIP/2.0 200", _/binary>>} -> ok
             after 5000 -> ct:fail(no_udp_answer)
@@ -565,26 +773,47 @@ gen_ca(Dir) ->
     Run = fun(Fmt, Args) ->
         os:cmd(lists:flatten(io_lib:format(Fmt, Args)) ++ " 2>/dev/null")
     end,
-    _ = Run("openssl req -x509 -newkey rsa:2048 -keyout ~ts -out ~ts -days 2 "
-            "-nodes -subj '/CN=chappe test CA'", [F("ca.key"), F("ca.pem")]),
+    _ = Run(
+        "openssl req -x509 -newkey rsa:2048 -keyout ~ts -out ~ts -days 2 "
+        "-nodes -subj '/CN=chappe test CA'",
+        [F("ca.key"), F("ca.pem")]
+    ),
     Ext = F("ext.cnf"),
     %% sofia matches the target host against the DNS and URI subjectAltNames
     %% (RFC 5922 7.1), not IP ones
-    ok = file:write_file(Ext, "subjectAltName=URI:sip:127.0.0.1,DNS:localhost\n"),
+    ok = file:write_file(
+        Ext, "subjectAltName=URI:sip:127.0.0.1,DNS:localhost\n"
+    ),
     Sign = fun(Who, CN) ->
-        _ = Run("openssl req -newkey rsa:2048 -keyout ~ts -out ~ts -nodes "
-                "-subj '/CN=~ts'", [F(Who ++ ".key"), F(Who ++ ".csr"), CN]),
-        Run("openssl x509 -req -in ~ts -CA ~ts -CAkey ~ts -CAcreateserial "
+        _ = Run(
+            "openssl req -newkey rsa:2048 -keyout ~ts -out ~ts -nodes "
+            "-subj '/CN=~ts'",
+            [F(Who ++ ".key"), F(Who ++ ".csr"), CN]
+        ),
+        Run(
+            "openssl x509 -req -in ~ts -CA ~ts -CAkey ~ts -CAcreateserial "
             "-out ~ts -days 2 -extfile ~ts",
-            [F(Who ++ ".csr"), F("ca.pem"), F("ca.key"), F(Who ++ ".pem"), Ext])
+            [F(Who ++ ".csr"), F("ca.pem"), F("ca.key"), F(Who ++ ".pem"), Ext]
+        )
     end,
     _ = Sign("server", "127.0.0.1"),
     _ = Sign("client", "client"),
-    _ = Run("openssl req -x509 -newkey rsa:2048 -keyout ~ts -out ~ts -days 2 "
-            "-nodes -subj '/CN=127.0.0.1'", [F("rogue.key"), F("rogue.pem")]),
-    case lists:all(fun filelib:is_file/1,
-                   [F("ca.pem"), F("server.pem"), F("client.pem"),
-                    F("rogue.pem")]) of
+    _ = Run(
+        "openssl req -x509 -newkey rsa:2048 -keyout ~ts -out ~ts -days 2 "
+        "-nodes -subj '/CN=127.0.0.1'",
+        [F("rogue.key"), F("rogue.pem")]
+    ),
+    case
+        lists:all(
+            fun filelib:is_file/1,
+            [
+                F("ca.pem"),
+                F("server.pem"),
+                F("client.pem"),
+                F("rogue.pem")
+            ]
+        )
+    of
         false ->
             {error, no_openssl};
         true ->
@@ -603,16 +832,30 @@ start_tls(Dir, Extra) ->
     TP = pick(),
     ok = chappe_sip:start(#{
         contact => <<"sip:127.0.0.1:", (integer_to_binary(EP))/binary>>,
-        tls => maps:merge(#{contact => <<"sips:127.0.0.1:",
-                                          (integer_to_binary(TP))/binary,
-                                          ";transport=tls">>,
-                            cert_dir => list_to_binary(Dir)}, Extra)}),
+        tls => maps:merge(
+            #{
+                contact =>
+                    <<"sips:127.0.0.1:", (integer_to_binary(TP))/binary,
+                        ";transport=tls">>,
+                cert_dir => list_to_binary(Dir)
+            },
+            Extra
+        )
+    }),
     TP.
 
 tls_client(TP) ->
-    {ok, S} = ssl:connect("127.0.0.1", TP,
-                          [{verify, verify_none}, binary, {active, false},
-                           {versions, ['tlsv1.2']}], 5000),
+    {ok, S} = ssl:connect(
+        "127.0.0.1",
+        TP,
+        [
+            {verify, verify_none},
+            binary,
+            {active, false},
+            {versions, ['tlsv1.2']}
+        ],
+        5000
+    ),
     S.
 
 recv_tls_final(S) ->
@@ -625,13 +868,19 @@ recv_tls_final(S) ->
 %% a TLS server on a free port; Got() returns what the first connection
 %% sent: {data, Bin}, or the error
 tls_server(Cert, Key) ->
-    {ok, L} = ssl:listen(0, [{certfile, Cert}, {keyfile, Key}, binary,
-                             {active, false}, {reuseaddr, true}]),
+    {ok, L} = ssl:listen(0, [
+        {certfile, Cert},
+        {keyfile, Key},
+        binary,
+        {active, false},
+        {reuseaddr, true}
+    ]),
     {ok, {_, Port}} = ssl:sockname(L),
     Parent = self(),
     Ref = make_ref(),
     _ = spawn_link(fun() ->
-        R = case ssl:transport_accept(L, 5000) of
+        R =
+            case ssl:transport_accept(L, 5000) of
                 {ok, T} ->
                     case ssl:handshake(T, 5000) of
                         {ok, S} ->
@@ -639,21 +888,32 @@ tls_server(Cert, Key) ->
                                 {ok, D} -> {data, D};
                                 E -> E
                             end;
-                        E -> E
+                        E ->
+                            E
                     end;
-                E -> E
+                E ->
+                    E
             end,
         Parent ! {Ref, R},
         ssl:close(L)
     end),
-    {Port, fun() -> receive {Ref, R} -> R after 9000 -> timeout end end}.
+    {Port, fun() ->
+        receive
+            {Ref, R} -> R
+        after 9000 -> timeout
+        end
+    end}.
 
 %% A TLS UAS on a free port with the CA-signed certificate: every message
 %% of every connection reaches the test as {tls_msg, Sock, Bin}.
 tls_uas(Dir) ->
-    {ok, L} = ssl:listen(0, [{certfile, file(Dir, "server.pem")},
-                             {keyfile, file(Dir, "server.key")}, binary,
-                             {active, false}, {reuseaddr, true}]),
+    {ok, L} = ssl:listen(0, [
+        {certfile, file(Dir, "server.pem")},
+        {keyfile, file(Dir, "server.key")},
+        binary,
+        {active, false},
+        {reuseaddr, true}
+    ]),
     {ok, {_, Port}} = ssl:sockname(L),
     Test = self(),
     _ = spawn_link(fun() -> tls_accept(L, Test) end),
@@ -665,7 +925,9 @@ tls_accept(L, Test) ->
             case ssl:handshake(T, 5000) of
                 {ok, S} ->
                     Pid = spawn(fun() ->
-                        receive go -> tls_read(S, Test, <<>>) end
+                        receive
+                            go -> tls_read(S, Test, <<>>)
+                        end
                     end),
                     ok = ssl:controlling_process(S, Pid),
                     Pid ! go;
@@ -694,7 +956,9 @@ tls_frame(Buf) ->
     case binary:split(Buf, <<"\r\n\r\n">>) of
         [Head, Tail] ->
             {ok, M} = chappe_sip_msg:parse(<<Head/binary, "\r\n\r\n">>),
-            Len = binary_to_integer(chappe_sip_msg:get(<<"content-length">>, M)),
+            Len = binary_to_integer(
+                chappe_sip_msg:get(<<"content-length">>, M)
+            ),
             case Tail of
                 <<Body:Len/binary, Rest/binary>> ->
                     {<<Head/binary, "\r\n\r\n", Body/binary>>, Rest};
@@ -722,40 +986,86 @@ tls_next(Method) ->
 %% a response to M over TLS; ToTag <<>> keeps the To as it is, Contact
 %% <<>> sends none
 tls_resp(M, Status, ToTag, Contact, Body) ->
-    Vias = [[<<"Via: ">>, V, <<"\r\n">>] || V <- chappe_sip_msg:get_all(<<"via">>, M)],
-    To = case ToTag of
-             <<>> -> chappe_sip_msg:get(<<"to">>, M);
-             _ -> <<(chappe_sip_msg:get(<<"to">>, M))/binary, ";tag=", ToTag/binary>>
-         end,
+    Vias = [
+        [<<"Via: ">>, V, <<"\r\n">>]
+     || V <- chappe_sip_msg:get_all(<<"via">>, M)
+    ],
+    To =
+        case ToTag of
+            <<>> ->
+                chappe_sip_msg:get(<<"to">>, M);
+            _ ->
+                <<
+                    (chappe_sip_msg:get(<<"to">>, M))/binary,
+                    ";tag=",
+                    ToTag/binary
+                >>
+        end,
     iolist_to_binary(
-      [<<"SIP/2.0 ">>, integer_to_binary(Status), <<" OK\r\n">>, Vias,
-       <<"From: ">>, chappe_sip_msg:get(<<"from">>, M), <<"\r\n">>,
-       <<"To: ">>, To, <<"\r\n">>,
-       <<"Call-ID: ">>, chappe_sip_msg:call_id(M), <<"\r\n">>,
-       <<"CSeq: ">>, chappe_sip_msg:get(<<"cseq">>, M), <<"\r\n">>,
-       [[<<"Contact: ">>, Contact, <<"\r\n">>] || Contact =/= <<>>],
-       [<<"Content-Type: application/sdp\r\n">> || Body =/= <<>>],
-       <<"Content-Length: ">>, integer_to_binary(byte_size(Body)),
-       <<"\r\n\r\n">>, Body]).
+        [
+            <<"SIP/2.0 ">>,
+            integer_to_binary(Status),
+            <<" OK\r\n">>,
+            Vias,
+            <<"From: ">>,
+            chappe_sip_msg:get(<<"from">>, M),
+            <<"\r\n">>,
+            <<"To: ">>,
+            To,
+            <<"\r\n">>,
+            <<"Call-ID: ">>,
+            chappe_sip_msg:call_id(M),
+            <<"\r\n">>,
+            <<"CSeq: ">>,
+            chappe_sip_msg:get(<<"cseq">>, M),
+            <<"\r\n">>,
+            [[<<"Contact: ">>, Contact, <<"\r\n">>] || Contact =/= <<>>],
+            [<<"Content-Type: application/sdp\r\n">> || Body =/= <<>>],
+            <<"Content-Length: ">>,
+            integer_to_binary(byte_size(Body)),
+            <<"\r\n\r\n">>,
+            Body
+        ]
+    ).
 
 sips_uri(Port) ->
     <<"sips:srv@127.0.0.1:", (integer_to_binary(Port))/binary>>.
 
 %% a callee 200 to the forwarded INVITE M, echoing its Record-Route
 rr_values(M) ->
-    [V || H <- chappe_sip_msg:get_all(<<"record-route">>, M),
-          V <- chappe_sip_hdr:split_list(H)].
+    [
+        V
+     || H <- chappe_sip_msg:get_all(<<"record-route">>, M),
+        V <- chappe_sip_hdr:split_list(H)
+    ].
 
 ok200(M, RR) ->
-    Vias = [[<<"Via: ">>, V, <<"\r\n">>] || V <- chappe_sip_msg:get_all(<<"via">>, M)],
+    Vias = [
+        [<<"Via: ">>, V, <<"\r\n">>]
+     || V <- chappe_sip_msg:get_all(<<"via">>, M)
+    ],
     iolist_to_binary(
-      [<<"SIP/2.0 200 OK\r\n">>, Vias,
-       <<"Record-Route: ">>, RR, <<"\r\n">>,
-       <<"From: ">>, chappe_sip_msg:get(<<"from">>, M), <<"\r\n">>,
-       <<"To: ">>, chappe_sip_msg:get(<<"to">>, M), <<";tag=cal\r\n">>,
-       <<"Call-ID: ">>, chappe_sip_msg:call_id(M), <<"\r\n">>,
-       <<"CSeq: ">>, chappe_sip_msg:get(<<"cseq">>, M), <<"\r\n">>,
-       <<"Contact: <sip:callee@127.0.0.1:9>\r\nContent-Length: 0\r\n\r\n">>]).
+        [
+            <<"SIP/2.0 200 OK\r\n">>,
+            Vias,
+            <<"Record-Route: ">>,
+            RR,
+            <<"\r\n">>,
+            <<"From: ">>,
+            chappe_sip_msg:get(<<"from">>, M),
+            <<"\r\n">>,
+            <<"To: ">>,
+            chappe_sip_msg:get(<<"to">>, M),
+            <<";tag=cal\r\n">>,
+            <<"Call-ID: ">>,
+            chappe_sip_msg:call_id(M),
+            <<"\r\n">>,
+            <<"CSeq: ">>,
+            chappe_sip_msg:get(<<"cseq">>, M),
+            <<"\r\n">>,
+            <<"Contact: <sip:callee@127.0.0.1:9>\r\nContent-Length: 0\r\n\r\n">>
+        ]
+    ).
 
 %% the To-tags of the 2xx the caller gets, until N distinct ones
 udp_2xx_tags(U, Acc, N) ->
@@ -779,7 +1089,8 @@ tls_recv_msg(S, Buf) ->
         [Head, Tail] ->
             {ok, M} = chappe_sip_msg:parse(<<Head/binary, "\r\n\r\n">>),
             Len = binary_to_integer(
-                    chappe_sip_msg:get(<<"content-length">>, M)),
+                chappe_sip_msg:get(<<"content-length">>, M)
+            ),
             case Tail of
                 <<Body:Len/binary, _/binary>> ->
                     <<Head/binary, "\r\n\r\n", Body/binary>>;
@@ -796,7 +1107,8 @@ tls_next_msg(S, Buf) ->
         [Head, Tail] ->
             {ok, M} = chappe_sip_msg:parse(<<Head/binary, "\r\n\r\n">>),
             Len = binary_to_integer(
-                    chappe_sip_msg:get(<<"content-length">>, M)),
+                chappe_sip_msg:get(<<"content-length">>, M)
+            ),
             case Tail of
                 <<Body:Len/binary, Rest/binary>> ->
                     {<<Head/binary, "\r\n\r\n", Body/binary>>, Rest};
@@ -815,14 +1127,31 @@ tls_recv_more(S, Buf) ->
 
 %% a callee 2xx to the forwarded INVITE M with To-tag Tag
 resp_2xx(M, Tag) ->
-    Vias = [[<<"Via: ">>, V, <<"\r\n">>] || V <- chappe_sip_msg:get_all(<<"via">>, M)],
+    Vias = [
+        [<<"Via: ">>, V, <<"\r\n">>]
+     || V <- chappe_sip_msg:get_all(<<"via">>, M)
+    ],
     iolist_to_binary(
-      [<<"SIP/2.0 200 OK\r\n">>, Vias,
-       <<"From: ">>, chappe_sip_msg:get(<<"from">>, M), <<"\r\n">>,
-       <<"To: ">>, chappe_sip_msg:get(<<"to">>, M), <<";tag=">>, Tag, <<"\r\n">>,
-       <<"Call-ID: ">>, chappe_sip_msg:call_id(M), <<"\r\n">>,
-       <<"CSeq: ">>, chappe_sip_msg:get(<<"cseq">>, M), <<"\r\n">>,
-       <<"Contact: <sips:callee@127.0.0.1:9>\r\nContent-Length: 0\r\n\r\n">>]).
+        [
+            <<"SIP/2.0 200 OK\r\n">>,
+            Vias,
+            <<"From: ">>,
+            chappe_sip_msg:get(<<"from">>, M),
+            <<"\r\n">>,
+            <<"To: ">>,
+            chappe_sip_msg:get(<<"to">>, M),
+            <<";tag=">>,
+            Tag,
+            <<"\r\n">>,
+            <<"Call-ID: ">>,
+            chappe_sip_msg:call_id(M),
+            <<"\r\n">>,
+            <<"CSeq: ">>,
+            chappe_sip_msg:get(<<"cseq">>, M),
+            <<"\r\n">>,
+            <<"Contact: <sips:callee@127.0.0.1:9>\r\nContent-Length: 0\r\n\r\n">>
+        ]
+    ).
 
 recv_udp_final(U) ->
     receive
@@ -845,44 +1174,63 @@ invite_udp(Sock, RUri) ->
     {ok, Port} = inet:port(Sock),
     P = integer_to_binary(Port),
     S = sdp(),
-    <<"INVITE ", RUri/binary, " SIP/2.0\r\n"
-      "Via: SIP/2.0/UDP 127.0.0.1:", P/binary, ";rport;branch=z9hG4bK",
-      (binary:encode_hex(crypto:strong_rand_bytes(4)))/binary, "\r\n"
-      "Max-Forwards: 70\r\n"
-      "From: <sip:caller@127.0.0.1>;tag=ru1\r\n"
-      "To: <sip:callee@127.0.0.1>\r\n"
-      "Contact: <sip:caller@127.0.0.1:", P/binary, ">\r\n"
-      "Call-ID: rrs-", P/binary, "@ct\r\nCSeq: 1 INVITE\r\n"
-      "Content-Type: application/sdp\r\n"
-      "Content-Length: ", (integer_to_binary(byte_size(S)))/binary,
-      "\r\n\r\n", S/binary>>.
+    <<"INVITE ", RUri/binary,
+        " SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:", P/binary, ";rport;branch=z9hG4bK",
+        (binary:encode_hex(crypto:strong_rand_bytes(4)))/binary,
+        "\r\n"
+        "Max-Forwards: 70\r\n"
+        "From: <sip:caller@127.0.0.1>;tag=ru1\r\n"
+        "To: <sip:callee@127.0.0.1>\r\n"
+        "Contact: <sip:caller@127.0.0.1:", P/binary,
+        ">\r\n"
+        "Call-ID: rrs-", P/binary,
+        "@ct\r\nCSeq: 1 INVITE\r\n"
+        "Content-Type: application/sdp\r\n"
+        "Content-Length: ", (integer_to_binary(byte_size(S)))/binary,
+        "\r\n\r\n", S/binary>>.
 
 sdp() ->
-    <<"v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\n"
-      "t=0 0\r\nm=audio 40000 RTP/AVP 0\r\n">>.
+    <<
+        "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\n"
+        "t=0 0\r\nm=audio 40000 RTP/AVP 0\r\n"
+    >>.
 
 invite_tls() ->
     S = sdp(),
-    Call = <<"tls-", (binary:encode_hex(crypto:strong_rand_bytes(4)))/binary,
-             "@ct">>,
+    Call =
+        <<"tls-", (binary:encode_hex(crypto:strong_rand_bytes(4)))/binary,
+            "@ct">>,
     Br = <<"z9hG4bK", (binary:encode_hex(crypto:strong_rand_bytes(6)))/binary>>,
-    <<"INVITE sip:callee@127.0.0.1 SIP/2.0\r\n"
-      "Via: SIP/2.0/TLS 127.0.0.1:12345;branch=", Br/binary, "\r\n"
-      "Max-Forwards: 70\r\n"
-      "From: <sip:caller@127.0.0.1>;tag=tl1\r\n"
-      "To: <sip:callee@127.0.0.1>\r\n"
-      "Contact: <sips:caller@127.0.0.1:12345>\r\n"
-      "Call-ID: ", Call/binary, "\r\nCSeq: 1 INVITE\r\n"
-      "Content-Type: application/sdp\r\n"
-      "Content-Length: ", (integer_to_binary(byte_size(S)))/binary,
-      "\r\n\r\n", S/binary>>.
+    <<
+        "INVITE sip:callee@127.0.0.1 SIP/2.0\r\n"
+        "Via: SIP/2.0/TLS 127.0.0.1:12345;branch=",
+        Br/binary,
+        "\r\n"
+        "Max-Forwards: 70\r\n"
+        "From: <sip:caller@127.0.0.1>;tag=tl1\r\n"
+        "To: <sip:callee@127.0.0.1>\r\n"
+        "Contact: <sips:caller@127.0.0.1:12345>\r\n"
+        "Call-ID: ",
+        Call/binary,
+        "\r\nCSeq: 1 INVITE\r\n"
+        "Content-Type: application/sdp\r\n"
+        "Content-Length: ",
+        (integer_to_binary(byte_size(S)))/binary,
+        "\r\n\r\n",
+        S/binary
+    >>.
 
 gen_certs(Dir) ->
     Key = filename:join(Dir, "key.pem"),
     Cert = filename:join(Dir, "cert.pem"),
-    Cmd = lists:flatten(io_lib:format(
-        "openssl req -x509 -newkey rsa:2048 -keyout ~ts -out ~ts -days 2 "
-        "-nodes -subj '/CN=127.0.0.1' 2>/dev/null", [Key, Cert])),
+    Cmd = lists:flatten(
+        io_lib:format(
+            "openssl req -x509 -newkey rsa:2048 -keyout ~ts -out ~ts -days 2 "
+            "-nodes -subj '/CN=127.0.0.1' 2>/dev/null",
+            [Key, Cert]
+        )
+    ),
     _ = os:cmd(Cmd),
     case filelib:is_file(Cert) andalso filelib:is_file(Key) of
         false ->
@@ -890,29 +1238,43 @@ gen_certs(Dir) ->
         true ->
             {ok, CertBin} = file:read_file(Cert),
             {ok, KeyBin} = file:read_file(Key),
-            ok = file:write_file(filename:join(Dir, "agent.pem"),
-                                 [CertBin, KeyBin]),
+            ok = file:write_file(
+                filename:join(Dir, "agent.pem"),
+                [CertBin, KeyBin]
+            ),
             ok = file:write_file(filename:join(Dir, "cafile.pem"), CertBin),
             ok
     end.
 
 pick() -> chappe_sip_test_port:pick().
-lport(Sock) -> {ok, P} = inet:port(Sock), P.
+lport(Sock) ->
+    {ok, P} = inet:port(Sock),
+    P.
 
 options_req() ->
-    <<"OPTIONS sip:app@127.0.0.1 SIP/2.0\r\n"
-      "Via: SIP/2.0/TLS 127.0.0.1:12345;branch=z9hG4bKtls1\r\n"
-      "Max-Forwards: 70\r\n"
-      "From: <sip:p@127.0.0.1>;tag=t1\r\n"
-      "To: <sip:app@127.0.0.1>\r\n"
-      "Call-ID: tls-test@ct\r\n"
-      "CSeq: 1 OPTIONS\r\nContent-Length: 0\r\n\r\n">>.
+    <<
+        "OPTIONS sip:app@127.0.0.1 SIP/2.0\r\n"
+        "Via: SIP/2.0/TLS 127.0.0.1:12345;branch=z9hG4bKtls1\r\n"
+        "Max-Forwards: 70\r\n"
+        "From: <sip:p@127.0.0.1>;tag=t1\r\n"
+        "To: <sip:app@127.0.0.1>\r\n"
+        "Call-ID: tls-test@ct\r\n"
+        "CSeq: 1 OPTIONS\r\nContent-Length: 0\r\n\r\n"
+    >>.
 
 options_udp(P) ->
-    <<"OPTIONS sip:app@127.0.0.1 SIP/2.0\r\n"
-      "Via: SIP/2.0/UDP 127.0.0.1:", P/binary, ";rport;branch=z9hG4bKu1\r\n"
-      "Max-Forwards: 70\r\n"
-      "From: <sip:p@127.0.0.1:", P/binary, ">;tag=t2\r\n"
-      "To: <sip:app@127.0.0.1>\r\n"
-      "Call-ID: udp-test-", P/binary, "@ct\r\n"
-      "CSeq: 1 OPTIONS\r\nContent-Length: 0\r\n\r\n">>.
+    <<
+        "OPTIONS sip:app@127.0.0.1 SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:",
+        P/binary,
+        ";rport;branch=z9hG4bKu1\r\n"
+        "Max-Forwards: 70\r\n"
+        "From: <sip:p@127.0.0.1:",
+        P/binary,
+        ">;tag=t2\r\n"
+        "To: <sip:app@127.0.0.1>\r\n"
+        "Call-ID: udp-test-",
+        P/binary,
+        "@ct\r\n"
+        "CSeq: 1 OPTIONS\r\nContent-Length: 0\r\n\r\n"
+    >>.

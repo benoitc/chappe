@@ -15,78 +15,168 @@
 -include("chappe_sip.hrl").
 
 -export([all/0, init_per_suite/1, end_per_suite/1, end_per_testcase/2]).
--export([reinvite_a_to_b/1, reinvite_b_to_a/1, update_relayed/1,
-         reinvite_failure_relayed/1, glare_491_on_crossing_reinvite/1,
-         glare_491_relayed/1, second_reinvite_500/1,
-         refresh_answered_per_leg/1, session_timers_per_leg/1,
-         early_media_relayed/1, reliable_1xx_each_leg/1,
-         reliable_1xx_prack_after_2xx/1, require_100rel_forces_reliable/1, proxy_response_headers_named/1,
-         proxy_response_headers_all/1, bye_reason_a_to_b/1,
-         bye_reason_b_to_a/1, cancel_reason_relayed/1,
-         reinvite_b_right_after_ack/1, bye_b_right_after_ack/1]).
--export([rewrite_sdp_offer_answer/1, rewrite_sdp_two_arity/1,
-         rewrite_sdp_reject/1, anchor_call_and_reoffers/1,
-         anchor_rejected_reoffer_restores/1, hold_events/1,
-         offerless_reinvite_a/1, offerless_reinvite_b/1,
-         set_media_anchor_and_back/1, set_media_busy/1,
-         early_update_a_to_b/1, early_update_b_to_a/1,
-         anchor_late_offer/1, nated_caller_reached_at_source/1]).
--export([hangup_reason_both_legs/1, requests_surfaced/1,
-         requests_default_answers/1, relay_info_forwarded/1,
-         replace_b_anchored/1, replace_b_failure_keeps_b/1,
-         replace_b_not_anchored/1, fork_anchored_per_branch/1,
-         replace_b_aborted_when_call_ends/1, replace_b_dialog/1,
-         replace_b_anchor_params/1, relay_async_outlives_handler/1,
-         replace_b_keeps_a_ports/1, fork_replace_second_answers/1,
-         fork_replace_late_2xx_gets_bye/1, fork_replace_all_busy/1,
-         fork_replace_timer_c/1, fork_replace_caller_hangs_up/1,
-         fork_replace_failed_then_replace/1, fork_replace_own_flags/1,
-         fork_replace_own_flags_fail/1, fork_replace_late_offer/1,
-         fork_replace_empty/1, fork_replace_offer_refused/1,
-         fork_replace_offer_half_refused/1, fork_replace_hook_rejects/1,
-         fork_replace_helper_dies/1, reinvite_helper_dies/1,
-         replace_b_new_b_dies/1, info_follows_replace/1,
-         replace_clears_hold/1, replace_b_bad_arguments/1,
-         replace_b_failure_other_flags/1, replace_b_from/1,
-         fork_replace_from/1, replace_b_dialog_keeps_from/1,
-         replace_b_bad_from/1, replace_b_from_refused/1]).
+-export([
+    reinvite_a_to_b/1,
+    reinvite_b_to_a/1,
+    update_relayed/1,
+    reinvite_failure_relayed/1,
+    glare_491_on_crossing_reinvite/1,
+    glare_491_relayed/1,
+    second_reinvite_500/1,
+    refresh_answered_per_leg/1,
+    session_timers_per_leg/1,
+    early_media_relayed/1,
+    reliable_1xx_each_leg/1,
+    reliable_1xx_prack_after_2xx/1,
+    require_100rel_forces_reliable/1,
+    proxy_response_headers_named/1,
+    proxy_response_headers_all/1,
+    bye_reason_a_to_b/1,
+    bye_reason_b_to_a/1,
+    cancel_reason_relayed/1,
+    reinvite_b_right_after_ack/1,
+    bye_b_right_after_ack/1
+]).
+-export([
+    rewrite_sdp_offer_answer/1,
+    rewrite_sdp_two_arity/1,
+    rewrite_sdp_reject/1,
+    anchor_call_and_reoffers/1,
+    anchor_rejected_reoffer_restores/1,
+    hold_events/1,
+    offerless_reinvite_a/1,
+    offerless_reinvite_b/1,
+    set_media_anchor_and_back/1,
+    set_media_busy/1,
+    early_update_a_to_b/1,
+    early_update_b_to_a/1,
+    anchor_late_offer/1,
+    nated_caller_reached_at_source/1
+]).
+-export([
+    hangup_reason_both_legs/1,
+    requests_surfaced/1,
+    requests_default_answers/1,
+    relay_info_forwarded/1,
+    replace_b_anchored/1,
+    replace_b_failure_keeps_b/1,
+    replace_b_not_anchored/1,
+    fork_anchored_per_branch/1,
+    replace_b_aborted_when_call_ends/1,
+    replace_b_dialog/1,
+    replace_b_anchor_params/1,
+    relay_async_outlives_handler/1,
+    replace_b_keeps_a_ports/1,
+    fork_replace_second_answers/1,
+    fork_replace_late_2xx_gets_bye/1,
+    fork_replace_all_busy/1,
+    fork_replace_timer_c/1,
+    fork_replace_caller_hangs_up/1,
+    fork_replace_failed_then_replace/1,
+    fork_replace_own_flags/1,
+    fork_replace_own_flags_fail/1,
+    fork_replace_late_offer/1,
+    fork_replace_empty/1,
+    fork_replace_offer_refused/1,
+    fork_replace_offer_half_refused/1,
+    fork_replace_hook_rejects/1,
+    fork_replace_helper_dies/1,
+    reinvite_helper_dies/1,
+    replace_b_new_b_dies/1,
+    info_follows_replace/1,
+    replace_clears_hold/1,
+    replace_b_bad_arguments/1,
+    replace_b_failure_other_flags/1,
+    replace_b_from/1,
+    fork_replace_from/1,
+    replace_b_dialog_keeps_from/1,
+    replace_b_bad_from/1,
+    replace_b_from_refused/1
+]).
 
 all() ->
-    [reinvite_a_to_b, reinvite_b_to_a, update_relayed,
-     reinvite_failure_relayed, glare_491_on_crossing_reinvite,
-     glare_491_relayed, second_reinvite_500, refresh_answered_per_leg,
-     session_timers_per_leg, early_media_relayed, reliable_1xx_each_leg,
-     reliable_1xx_prack_after_2xx, require_100rel_forces_reliable,
-     proxy_response_headers_named,
-     proxy_response_headers_all, bye_reason_a_to_b, bye_reason_b_to_a,
-     cancel_reason_relayed, reinvite_b_right_after_ack,
-     bye_b_right_after_ack,
-     rewrite_sdp_offer_answer, rewrite_sdp_two_arity, rewrite_sdp_reject,
-     anchor_call_and_reoffers, anchor_rejected_reoffer_restores, hold_events,
-     offerless_reinvite_a, offerless_reinvite_b, set_media_anchor_and_back,
-     set_media_busy, early_update_a_to_b, early_update_b_to_a,
-     anchor_late_offer, nated_caller_reached_at_source,
-     hangup_reason_both_legs, requests_surfaced, requests_default_answers,
-     relay_info_forwarded, replace_b_anchored, replace_b_failure_keeps_b,
-     replace_b_not_anchored, fork_anchored_per_branch,
-     replace_b_aborted_when_call_ends, replace_b_dialog,
-     replace_b_anchor_params, relay_async_outlives_handler,
-     replace_b_keeps_a_ports, fork_replace_second_answers,
-     fork_replace_late_2xx_gets_bye, fork_replace_all_busy,
-     fork_replace_timer_c, fork_replace_caller_hangs_up,
-     fork_replace_failed_then_replace, fork_replace_own_flags,
-     fork_replace_own_flags_fail, fork_replace_late_offer,
-     fork_replace_empty, fork_replace_offer_refused,
-     fork_replace_offer_half_refused, fork_replace_hook_rejects,
-     fork_replace_helper_dies, reinvite_helper_dies, replace_b_new_b_dies,
-     info_follows_replace, replace_clears_hold, replace_b_bad_arguments,
-     replace_b_failure_other_flags, replace_b_from, fork_replace_from,
-     replace_b_dialog_keeps_from, replace_b_bad_from,
-     replace_b_from_refused].
+    [
+        reinvite_a_to_b,
+        reinvite_b_to_a,
+        update_relayed,
+        reinvite_failure_relayed,
+        glare_491_on_crossing_reinvite,
+        glare_491_relayed,
+        second_reinvite_500,
+        refresh_answered_per_leg,
+        session_timers_per_leg,
+        early_media_relayed,
+        reliable_1xx_each_leg,
+        reliable_1xx_prack_after_2xx,
+        require_100rel_forces_reliable,
+        proxy_response_headers_named,
+        proxy_response_headers_all,
+        bye_reason_a_to_b,
+        bye_reason_b_to_a,
+        cancel_reason_relayed,
+        reinvite_b_right_after_ack,
+        bye_b_right_after_ack,
+        rewrite_sdp_offer_answer,
+        rewrite_sdp_two_arity,
+        rewrite_sdp_reject,
+        anchor_call_and_reoffers,
+        anchor_rejected_reoffer_restores,
+        hold_events,
+        offerless_reinvite_a,
+        offerless_reinvite_b,
+        set_media_anchor_and_back,
+        set_media_busy,
+        early_update_a_to_b,
+        early_update_b_to_a,
+        anchor_late_offer,
+        nated_caller_reached_at_source,
+        hangup_reason_both_legs,
+        requests_surfaced,
+        requests_default_answers,
+        relay_info_forwarded,
+        replace_b_anchored,
+        replace_b_failure_keeps_b,
+        replace_b_not_anchored,
+        fork_anchored_per_branch,
+        replace_b_aborted_when_call_ends,
+        replace_b_dialog,
+        replace_b_anchor_params,
+        relay_async_outlives_handler,
+        replace_b_keeps_a_ports,
+        fork_replace_second_answers,
+        fork_replace_late_2xx_gets_bye,
+        fork_replace_all_busy,
+        fork_replace_timer_c,
+        fork_replace_caller_hangs_up,
+        fork_replace_failed_then_replace,
+        fork_replace_own_flags,
+        fork_replace_own_flags_fail,
+        fork_replace_late_offer,
+        fork_replace_empty,
+        fork_replace_offer_refused,
+        fork_replace_offer_half_refused,
+        fork_replace_hook_rejects,
+        fork_replace_helper_dies,
+        reinvite_helper_dies,
+        replace_b_new_b_dies,
+        info_follows_replace,
+        replace_clears_hold,
+        replace_b_bad_arguments,
+        replace_b_failure_other_flags,
+        replace_b_from,
+        fork_replace_from,
+        replace_b_dialog_keeps_from,
+        replace_b_bad_from,
+        replace_b_from_refused
+    ].
 
 init_per_suite(Config) ->
-    application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
-                        [{persistent, true}]),
+    application:set_env(
+        chappe_sip,
+        engine_mod,
+        chappe_sip_nif,
+        [{persistent, true}]
+    ),
     {ok, _} = application:ensure_all_started(chappe_sip),
     Config.
 
@@ -96,9 +186,13 @@ end_per_suite(_Config) ->
     ok.
 
 end_per_testcase(_Case, _Config) ->
-    _ = case whereis(b2b_test_rtpe) of
-            undefined -> ok;
-            Rtpe -> unregister(b2b_test_rtpe), chappe_sip_test_rtpe:stop(Rtpe)
+    _ =
+        case whereis(b2b_test_rtpe) of
+            undefined ->
+                ok;
+            Rtpe ->
+                unregister(b2b_test_rtpe),
+                chappe_sip_test_rtpe:stop(Rtpe)
         end,
     _ = sys:remove(chappe_sip_engine, b2b_hold),
     _ = chappe_sip:stop(),
@@ -118,13 +212,25 @@ reinvite_a_to_b(_Config) ->
     callee(CP, fun(Sock, _D) ->
         {Re, S} = ?UA:recv_req(Sock, <<"INVITE">>),
         tell({b_reinvite, Re}),
-        ?UA:send(Sock, S, ?UA:resp(Re, 200, <<"OK">>, <<>>, [contact(Sock)],
-                                   ?UA:sdp(<<"callee">>, <<"1">>))),
+        ?UA:send(
+            Sock,
+            S,
+            ?UA:resp(
+                Re,
+                200,
+                <<"OK">>,
+                <<>>,
+                [contact(Sock)],
+                ?UA:sdp(<<"callee">>, <<"1">>)
+            )
+        ),
         {_Ack, _} = ?UA:recv_req(Sock, <<"ACK">>),
         tell(b_acked)
     end),
     caller(EP, #{}, fun(Sock, D) ->
-        {Re, _} = ?UA:in_dialog(D, <<"INVITE">>, [], ?UA:sdp(<<"caller">>, <<"1">>)),
+        {Re, _} = ?UA:in_dialog(
+            D, <<"INVITE">>, [], ?UA:sdp(<<"caller">>, <<"1">>)
+        ),
         ?UA:send(Sock, EP, Re),
         R = ?UA:recv_status(Sock, 200),
         ?UA:ack(D#{invite_cseq := maps:get(seq, ?UA:cseq(Re))}, EP),
@@ -142,7 +248,9 @@ reinvite_a_to_b(_Config) ->
 reinvite_b_to_a(_Config) ->
     {EP, CP} = setup(#{}),
     callee(CP, fun(Sock, D) ->
-        {Re, _} = ?UA:in_dialog(D, <<"INVITE">>, [], ?UA:sdp(<<"callee">>, <<"1">>)),
+        {Re, _} = ?UA:in_dialog(
+            D, <<"INVITE">>, [], ?UA:sdp(<<"callee">>, <<"1">>)
+        ),
         ?UA:send(Sock, EP, Re),
         R = ?UA:recv_status(Sock, 200),
         ?UA:ack(D#{invite_cseq := maps:get(seq, ?UA:cseq(Re))}, EP),
@@ -151,8 +259,18 @@ reinvite_b_to_a(_Config) ->
     caller(EP, #{}, fun(Sock, _D) ->
         {Re, S} = ?UA:recv_req(Sock, <<"INVITE">>),
         tell({a_reinvite, Re}),
-        ?UA:send(Sock, S, ?UA:resp(Re, 200, <<"OK">>, <<>>, [contact(Sock)],
-                                   ?UA:sdp(<<"caller">>, <<"1">>))),
+        ?UA:send(
+            Sock,
+            S,
+            ?UA:resp(
+                Re,
+                200,
+                <<"OK">>,
+                <<>>,
+                [contact(Sock)],
+                ?UA:sdp(<<"caller">>, <<"1">>)
+            )
+        ),
         {_Ack, _} = ?UA:recv_req(Sock, <<"ACK">>),
         tell(a_acked)
     end),
@@ -170,11 +288,23 @@ update_relayed(_Config) ->
     callee(CP, fun(Sock, _D) ->
         {U, S} = ?UA:recv_req(Sock, <<"UPDATE">>),
         tell({b_update, U}),
-        ?UA:send(Sock, S, ?UA:resp(U, 200, <<"OK">>, <<>>, [contact(Sock)],
-                                   ?UA:sdp(<<"callee">>, <<"1">>)))
+        ?UA:send(
+            Sock,
+            S,
+            ?UA:resp(
+                U,
+                200,
+                <<"OK">>,
+                <<>>,
+                [contact(Sock)],
+                ?UA:sdp(<<"callee">>, <<"1">>)
+            )
+        )
     end),
     caller(EP, #{}, fun(Sock, D) ->
-        {U, _} = ?UA:in_dialog(D, <<"UPDATE">>, [], ?UA:sdp(<<"caller">>, <<"1">>)),
+        {U, _} = ?UA:in_dialog(
+            D, <<"UPDATE">>, [], ?UA:sdp(<<"caller">>, <<"1">>)
+        ),
         ?UA:send(Sock, EP, U),
         tell({a_200, ?UA:recv_status(Sock, 200)})
     end),
@@ -189,10 +319,16 @@ reinvite_failure_relayed(_Config) ->
     {EP, CP} = setup(#{}),
     callee(CP, fun(Sock, _D) ->
         {Re, S} = ?UA:recv_req(Sock, <<"INVITE">>),
-        ?UA:send(Sock, S, ?UA:resp(Re, 488, <<"Not Acceptable Here">>, <<>>, [], <<>>))
+        ?UA:send(
+            Sock,
+            S,
+            ?UA:resp(Re, 488, <<"Not Acceptable Here">>, <<>>, [], <<>>)
+        )
     end),
     caller(EP, #{}, fun(Sock, D) ->
-        {Re, _} = ?UA:in_dialog(D, <<"INVITE">>, [], ?UA:sdp(<<"caller">>, <<"1">>)),
+        {Re, _} = ?UA:in_dialog(
+            D, <<"INVITE">>, [], ?UA:sdp(<<"caller">>, <<"1">>)
+        ),
         ?UA:send(Sock, EP, Re),
         tell({a_final, ?UA:recv_any(Sock, 6000)})
     end),
@@ -205,14 +341,28 @@ glare_491_on_crossing_reinvite(_Config) ->
     {EP, CP} = setup(#{}),
     callee(CP, fun(Sock, D) ->
         {Re, S} = ?UA:recv_req(Sock, <<"INVITE">>),
-        {Mine, _} = ?UA:in_dialog(D, <<"INVITE">>, [], ?UA:sdp(<<"callee">>, <<"1">>)),
+        {Mine, _} = ?UA:in_dialog(
+            D, <<"INVITE">>, [], ?UA:sdp(<<"callee">>, <<"1">>)
+        ),
         ?UA:send(Sock, EP, Mine),
         tell({b_final, ?UA:recv_any(Sock, 6000)}),
-        ?UA:send(Sock, S, ?UA:resp(Re, 200, <<"OK">>, <<>>, [contact(Sock)],
-                                   ?UA:sdp(<<"callee">>, <<"2">>)))
+        ?UA:send(
+            Sock,
+            S,
+            ?UA:resp(
+                Re,
+                200,
+                <<"OK">>,
+                <<>>,
+                [contact(Sock)],
+                ?UA:sdp(<<"callee">>, <<"2">>)
+            )
+        )
     end),
     caller(EP, #{}, fun(Sock, D) ->
-        {Re, _} = ?UA:in_dialog(D, <<"INVITE">>, [], ?UA:sdp(<<"caller">>, <<"1">>)),
+        {Re, _} = ?UA:in_dialog(
+            D, <<"INVITE">>, [], ?UA:sdp(<<"caller">>, <<"1">>)
+        ),
         ?UA:send(Sock, EP, Re),
         tell({a_200, ?UA:recv_status(Sock, 200)})
     end),
@@ -225,10 +375,14 @@ glare_491_relayed(_Config) ->
     {EP, CP} = setup(#{}),
     callee(CP, fun(Sock, _D) ->
         {Re, S} = ?UA:recv_req(Sock, <<"INVITE">>),
-        ?UA:send(Sock, S, ?UA:resp(Re, 491, <<"Request Pending">>, <<>>, [], <<>>))
+        ?UA:send(
+            Sock, S, ?UA:resp(Re, 491, <<"Request Pending">>, <<>>, [], <<>>)
+        )
     end),
     caller(EP, #{}, fun(Sock, D) ->
-        {Re, _} = ?UA:in_dialog(D, <<"INVITE">>, [], ?UA:sdp(<<"caller">>, <<"1">>)),
+        {Re, _} = ?UA:in_dialog(
+            D, <<"INVITE">>, [], ?UA:sdp(<<"caller">>, <<"1">>)
+        ),
         ?UA:send(Sock, EP, Re),
         tell({a_final, ?UA:recv_any(Sock, 6000)})
     end),
@@ -242,20 +396,36 @@ second_reinvite_500(_Config) ->
     callee(CP, fun(Sock, _D) ->
         {Re, S} = ?UA:recv_req(Sock, <<"INVITE">>),
         timer:sleep(1500),
-        ?UA:send(Sock, S, ?UA:resp(Re, 200, <<"OK">>, <<>>, [contact(Sock)],
-                                   ?UA:sdp(<<"callee">>, <<"1">>)))
+        ?UA:send(
+            Sock,
+            S,
+            ?UA:resp(
+                Re,
+                200,
+                <<"OK">>,
+                <<>>,
+                [contact(Sock)],
+                ?UA:sdp(<<"callee">>, <<"1">>)
+            )
+        )
     end),
     caller(EP, #{}, fun(Sock, D) ->
-        {Re1, D1} = ?UA:in_dialog(D, <<"INVITE">>, [], ?UA:sdp(<<"caller">>, <<"1">>)),
+        {Re1, D1} = ?UA:in_dialog(
+            D, <<"INVITE">>, [], ?UA:sdp(<<"caller">>, <<"1">>)
+        ),
         ?UA:send(Sock, EP, Re1),
         timer:sleep(300),
-        {Re2, _} = ?UA:in_dialog(D1, <<"INVITE">>, [], ?UA:sdp(<<"caller">>, <<"2">>)),
+        {Re2, _} = ?UA:in_dialog(
+            D1, <<"INVITE">>, [], ?UA:sdp(<<"caller">>, <<"2">>)
+        ),
         ?UA:send(Sock, EP, Re2),
         tell({a_second, ?UA:recv_any(Sock, 6000)})
     end),
     R = got(a_second),
     ?assertEqual(500, ?UA:status(R)),
-    RA = binary_to_integer(hd(binary:split(?UA:hdr(R, <<"retry-after">>), <<" ">>))),
+    RA = binary_to_integer(
+        hd(binary:split(?UA:hdr(R, <<"retry-after">>), <<" ">>))
+    ),
     ?assert(RA >= 0 andalso RA =< 10).
 
 %% A re-INVITE with the unchanged SDP (same o= version) and an UPDATE
@@ -291,29 +461,59 @@ refresh_answered_per_leg(_Config) ->
 session_timers_per_leg(_Config) ->
     %% min_se lets the test use second-long intervals on both legs
     {EP, CP} = setup(#{min_se => 1}),
-    callee(CP, #{headers => [{<<"Session-Expires">>, <<"4;refresher=uac">>},
-                             {<<"Require">>, <<"timer">>},
-                             {<<"Allow">>, <<"INVITE, ACK, BYE, UPDATE">>}]},
-           fun(Sock, _D) ->
-        T0 = now_ms(),
-        {U, S} = ?UA:recv_req(Sock, <<"UPDATE">>, 6000),
-        tell({b_update, U, now_ms() - T0}),
-        ?UA:send(Sock, S, ?UA:resp(U, 200, <<"OK">>, <<>>,
-                                   [{<<"Session-Expires">>, <<"4;refresher=uac">>}], <<>>))
-    end),
-    caller(EP, #{headers => [{<<"Supported">>, <<"timer">>},
-                             {<<"Session-Expires">>, <<"3">>}]},
-           fun(Sock, D) ->
-        timer:sleep(1000),
-        {U, _} = ?UA:in_dialog(D, <<"UPDATE">>,
-                               [{<<"Supported">>, <<"timer">>},
-                                {<<"Session-Expires">>, <<"3;refresher=uac">>}], <<>>),
-        ?UA:send(Sock, EP, U),
-        R = ?UA:recv_status(Sock, 200),
-        %% the A leg's first expiry (2 s after its INVITE) passes: no BYE
-        ok = ?UA:no_req(Sock, <<"BYE">>, 1500),
-        tell({a_refreshed, R})
-    end),
+    callee(
+        CP,
+        #{
+            headers => [
+                {<<"Session-Expires">>, <<"4;refresher=uac">>},
+                {<<"Require">>, <<"timer">>},
+                {<<"Allow">>, <<"INVITE, ACK, BYE, UPDATE">>}
+            ]
+        },
+        fun(Sock, _D) ->
+            T0 = now_ms(),
+            {U, S} = ?UA:recv_req(Sock, <<"UPDATE">>, 6000),
+            tell({b_update, U, now_ms() - T0}),
+            ?UA:send(
+                Sock,
+                S,
+                ?UA:resp(
+                    U,
+                    200,
+                    <<"OK">>,
+                    <<>>,
+                    [{<<"Session-Expires">>, <<"4;refresher=uac">>}],
+                    <<>>
+                )
+            )
+        end
+    ),
+    caller(
+        EP,
+        #{
+            headers => [
+                {<<"Supported">>, <<"timer">>},
+                {<<"Session-Expires">>, <<"3">>}
+            ]
+        },
+        fun(Sock, D) ->
+            timer:sleep(1000),
+            {U, _} = ?UA:in_dialog(
+                D,
+                <<"UPDATE">>,
+                [
+                    {<<"Supported">>, <<"timer">>},
+                    {<<"Session-Expires">>, <<"3;refresher=uac">>}
+                ],
+                <<>>
+            ),
+            ?UA:send(Sock, EP, U),
+            R = ?UA:recv_status(Sock, 200),
+            %% the A leg's first expiry (2 s after its INVITE) passes: no BYE
+            ok = ?UA:no_req(Sock, <<"BYE">>, 1500),
+            tell({a_refreshed, R})
+        end
+    ),
     {U, Dt} = got2(b_update),
     ?assertEqual(<<"4;refresher=uac">>, ?UA:hdr(U, <<"session-expires">>)),
     ?assert(Dt >= 1500 andalso Dt < 3500),
@@ -331,15 +531,37 @@ early_media_relayed(_Config) ->
     ?UA:peer(CP, fun(Sock) ->
         {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
         Tag = ?UA:tag(),
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 183, <<"Session Progress">>, Tag,
-                                     [contact(Sock)], ?UA:sdp(<<"early">>))),
+        ?UA:send(
+            Sock,
+            Src,
+            ?UA:resp(
+                Inv,
+                183,
+                <<"Session Progress">>,
+                Tag,
+                [contact(Sock)],
+                ?UA:sdp(<<"early">>)
+            )
+        ),
         timer:sleep(300),
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, Tag, [contact(Sock)],
-                                     ?UA:sdp(<<"callee">>))),
+        ?UA:send(
+            Sock,
+            Src,
+            ?UA:resp(
+                Inv,
+                200,
+                <<"OK">>,
+                Tag,
+                [contact(Sock)],
+                ?UA:sdp(<<"callee">>)
+            )
+        ),
         {_, _} = ?UA:recv_req(Sock, <<"ACK">>)
     end),
     ?UA:peer(0, fun(Sock) ->
-        Inv = ?UA:invite(Sock, EP, #{call_id => ?UA:callid(), from_tag => ?UA:tag()}),
+        Inv = ?UA:invite(Sock, EP, #{
+            call_id => ?UA:callid(), from_tag => ?UA:tag()
+        }),
         ?UA:send(Sock, EP, Inv),
         R183 = ?UA:recv_status(Sock, 183),
         R200 = ?UA:recv_status(Sock, 200),
@@ -363,26 +585,55 @@ reliable_1xx_each_leg(_Config) ->
         {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
         tell({b_invite, Inv}),
         Tag = ?UA:tag(),
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 183, <<"Session Progress">>, Tag,
-                                     [contact(Sock), {<<"Require">>, <<"100rel">>},
-                                      {<<"RSeq">>, <<"7">>}], ?UA:sdp(<<"early">>))),
+        ?UA:send(
+            Sock,
+            Src,
+            ?UA:resp(
+                Inv,
+                183,
+                <<"Session Progress">>,
+                Tag,
+                [
+                    contact(Sock),
+                    {<<"Require">>, <<"100rel">>},
+                    {<<"RSeq">>, <<"7">>}
+                ],
+                ?UA:sdp(<<"early">>)
+            )
+        ),
         {Pr, PS} = ?UA:recv_req(Sock, <<"PRACK">>),
         tell({b_prack, Pr}),
         ?UA:send(Sock, PS, ?UA:resp(Pr, 200, <<"OK">>, <<>>, [], <<>>)),
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, Tag, [contact(Sock)],
-                                     ?UA:sdp(<<"callee">>))),
+        ?UA:send(
+            Sock,
+            Src,
+            ?UA:resp(
+                Inv,
+                200,
+                <<"OK">>,
+                Tag,
+                [contact(Sock)],
+                ?UA:sdp(<<"callee">>)
+            )
+        ),
         {_, _} = ?UA:recv_req(Sock, <<"ACK">>)
     end),
     ?UA:peer(0, fun(Sock) ->
         Call = ?UA:callid(),
         FT = ?UA:tag(),
-        Inv = ?UA:invite(Sock, EP, #{call_id => Call, from_tag => FT,
-                                     headers => [{<<"Supported">>, <<"100rel">>}]}),
+        Inv = ?UA:invite(Sock, EP, #{
+            call_id => Call,
+            from_tag => FT,
+            headers => [{<<"Supported">>, <<"100rel">>}]
+        }),
         ?UA:send(Sock, EP, Inv),
         R183 = ?UA:recv_status(Sock, 183),
         %% the 2xx must not come before our PRACK
-        Early = receive {udp, Sock, _, _, <<"SIP/2.0 200", _/binary>> = B} -> B
-                after 800 -> none end,
+        Early =
+            receive
+                {udp, Sock, _, _, <<"SIP/2.0 200", _/binary>> = B} -> B
+            after 800 -> none
+            end,
         Pr = prack(Sock, Inv, R183),
         ?UA:send(Sock, EP, Pr),
         R200 = recv_invite_2xx(Sock),
@@ -390,14 +641,20 @@ reliable_1xx_each_leg(_Config) ->
         tell({a_side, R183, Early, R200})
     end),
     BInv = got(b_invite),
-    ?assert(lists:member(<<"100rel">>, tokens(?UA:hdrs(BInv, <<"supported">>)))),
+    ?assert(
+        lists:member(<<"100rel">>, tokens(?UA:hdrs(BInv, <<"supported">>)))
+    ),
     BPr = got(b_prack),
     ?assertEqual(<<"7 1 INVITE">>, ?UA:hdr(BPr, <<"rack">>)),
     receive
         {a_side, R183, Early, R200} ->
             ?assertEqual(none, Early),
             ?assertNotEqual(undefined, ?UA:hdr(R183, <<"rseq">>)),
-            ?assert(lists:member(<<"100rel">>, tokens(?UA:hdrs(R183, <<"require">>)))),
+            ?assert(
+                lists:member(
+                    <<"100rel">>, tokens(?UA:hdrs(R183, <<"require">>))
+                )
+            ),
             ?assertEqual(?UA:sdp(<<"early">>), ?UA:body(R183)),
             %% B answered in its 183; the different SDP of its 200 is
             %% ignored (RFC 3261 13.2.1), so A's 200 repeats the answer
@@ -414,18 +671,44 @@ reliable_1xx_prack_after_2xx(_Config) ->
     ?UA:peer(CP, fun(Sock) ->
         {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
         Tag = ?UA:tag(),
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 180, <<"Ringing">>, Tag,
-                                     [contact(Sock), {<<"Require">>, <<"100rel">>},
-                                      {<<"RSeq">>, <<"1">>}], <<>>)),
+        ?UA:send(
+            Sock,
+            Src,
+            ?UA:resp(
+                Inv,
+                180,
+                <<"Ringing">>,
+                Tag,
+                [
+                    contact(Sock),
+                    {<<"Require">>, <<"100rel">>},
+                    {<<"RSeq">>, <<"1">>}
+                ],
+                <<>>
+            )
+        ),
         {Pr, PS} = ?UA:recv_req(Sock, <<"PRACK">>),
         ?UA:send(Sock, PS, ?UA:resp(Pr, 200, <<"OK">>, <<>>, [], <<>>)),
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, Tag, [contact(Sock)],
-                                     ?UA:sdp(<<"callee">>))),
+        ?UA:send(
+            Sock,
+            Src,
+            ?UA:resp(
+                Inv,
+                200,
+                <<"OK">>,
+                Tag,
+                [contact(Sock)],
+                ?UA:sdp(<<"callee">>)
+            )
+        ),
         {_, _} = ?UA:recv_req(Sock, <<"ACK">>)
     end),
     ?UA:peer(0, fun(Sock) ->
-        Inv = ?UA:invite(Sock, EP, #{call_id => ?UA:callid(), from_tag => ?UA:tag(),
-                                     headers => [{<<"Supported">>, <<"100rel">>}]}),
+        Inv = ?UA:invite(Sock, EP, #{
+            call_id => ?UA:callid(),
+            from_tag => ?UA:tag(),
+            headers => [{<<"Supported">>, <<"100rel">>}]
+        }),
         ?UA:send(Sock, EP, Inv),
         R180 = ?UA:recv_status(Sock, 180),
         R200 = recv_invite_2xx(Sock),
@@ -446,15 +729,32 @@ require_100rel_forces_reliable(_Config) ->
     ?UA:peer(CP, fun(Sock) ->
         {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
         Tag = ?UA:tag(),
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 180, <<"Ringing">>, Tag, [contact(Sock)], <<>>)),
+        ?UA:send(
+            Sock,
+            Src,
+            ?UA:resp(Inv, 180, <<"Ringing">>, Tag, [contact(Sock)], <<>>)
+        ),
         timer:sleep(1500),
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, Tag, [contact(Sock)],
-                                     ?UA:sdp(<<"callee">>))),
+        ?UA:send(
+            Sock,
+            Src,
+            ?UA:resp(
+                Inv,
+                200,
+                <<"OK">>,
+                Tag,
+                [contact(Sock)],
+                ?UA:sdp(<<"callee">>)
+            )
+        ),
         {_, _} = ?UA:recv_req(Sock, <<"ACK">>)
     end),
     ?UA:peer(0, fun(Sock) ->
-        Inv = ?UA:invite(Sock, EP, #{call_id => ?UA:callid(), from_tag => ?UA:tag(),
-                                     headers => [{<<"Require">>, <<"100rel">>}]}),
+        Inv = ?UA:invite(Sock, EP, #{
+            call_id => ?UA:callid(),
+            from_tag => ?UA:tag(),
+            headers => [{<<"Require">>, <<"100rel">>}]
+        }),
         ?UA:send(Sock, EP, Inv),
         R180 = ?UA:recv_status(Sock, 180),
         ?UA:send(Sock, EP, prack(Sock, Inv, R180)),
@@ -470,8 +770,16 @@ require_100rel_forces_reliable(_Config) ->
 %% req: R3261-8.2.6-1
 proxy_response_headers_named(_Config) ->
     {EP, CP} = setup(#{proxy_response_headers => [<<"X-Custom">>]}),
-    callee(CP, #{headers => [{<<"X-Custom">>, <<"foo">>},
-                             {<<"X-Other">>, <<"bar">>}]}, fun(_Sock, _D) -> ok end),
+    callee(
+        CP,
+        #{
+            headers => [
+                {<<"X-Custom">>, <<"foo">>},
+                {<<"X-Other">>, <<"bar">>}
+            ]
+        },
+        fun(_Sock, _D) -> ok end
+    ),
     R = caller_2xx(EP, #{}),
     ?assertEqual(<<"foo">>, ?UA:hdr(R, <<"x-custom">>)),
     ?assertEqual(undefined, ?UA:hdr(R, <<"x-other">>)).
@@ -481,9 +789,17 @@ proxy_response_headers_named(_Config) ->
 %% req: R3261-8.2.6-1 R4028-4-3
 proxy_response_headers_all(_Config) ->
     {EP, CP} = setup(#{proxy_response_headers => all}),
-    callee(CP, #{headers => [{<<"X-Custom">>, <<"foo">>},
-                             {<<"Session-Expires">>, <<"1800;refresher=uac">>},
-                             {<<"Require">>, <<"timer">>}]}, fun(_Sock, _D) -> ok end),
+    callee(
+        CP,
+        #{
+            headers => [
+                {<<"X-Custom">>, <<"foo">>},
+                {<<"Session-Expires">>, <<"1800;refresher=uac">>},
+                {<<"Require">>, <<"timer">>}
+            ]
+        },
+        fun(_Sock, _D) -> ok end
+    ),
     R = caller_2xx(EP, #{}),
     ?assertEqual(<<"foo">>, ?UA:hdr(R, <<"x-custom">>)),
     ?assertEqual(undefined, ?UA:hdr(R, <<"session-expires">>)),
@@ -539,14 +855,20 @@ cancel_reason_relayed(_Config) ->
         ?UA:send(Sock, Src, ?UA:resp(Inv, 180, <<"Ringing">>, Tag, [], <<>>)),
         {Cancel, CS} = ?UA:recv_req(Sock, <<"CANCEL">>),
         ?UA:send(Sock, CS, ?UA:resp(Cancel, 200, <<"OK">>, Tag, [], <<>>)),
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 487, <<"Request Terminated">>, Tag, [], <<>>)),
+        ?UA:send(
+            Sock,
+            Src,
+            ?UA:resp(Inv, 487, <<"Request Terminated">>, Tag, [], <<>>)
+        ),
         tell({b_cancel, Cancel})
     end),
     ?UA:peer(0, fun(Sock) ->
         Br = ?UA:branch(),
         Call = ?UA:callid(),
         FT = ?UA:tag(),
-        Inv = ?UA:invite(Sock, EP, #{call_id => Call, from_tag => FT, branch => Br}),
+        Inv = ?UA:invite(Sock, EP, #{
+            call_id => Call, from_tag => FT, branch => Br
+        }),
         ?UA:send(Sock, EP, Inv),
         _ = ?UA:recv_status(Sock, 180),
         ?UA:send(Sock, EP, cancel(Inv, Reason)),
@@ -564,7 +886,9 @@ reinvite_b_right_after_ack(_Config) ->
     {EP, CP} = setup(#{}),
     hold_uac_after_ack(500),
     callee(CP, fun(Sock, D) ->
-        {Re, _} = ?UA:in_dialog(D, <<"INVITE">>, [], ?UA:sdp(<<"callee">>, <<"1">>)),
+        {Re, _} = ?UA:in_dialog(
+            D, <<"INVITE">>, [], ?UA:sdp(<<"callee">>, <<"1">>)
+        ),
         ?UA:send(Sock, EP, Re),
         R = ?UA:recv_any(Sock, 6000),
         ?UA:ack(D#{invite_cseq := maps:get(seq, ?UA:cseq(Re))}, EP),
@@ -573,8 +897,18 @@ reinvite_b_right_after_ack(_Config) ->
     caller(EP, #{}, fun(Sock, _D) ->
         {Re, S} = ?UA:recv_req(Sock, <<"INVITE">>),
         tell({a_reinvite, Re}),
-        ?UA:send(Sock, S, ?UA:resp(Re, 200, <<"OK">>, <<>>, [contact(Sock)],
-                                   ?UA:sdp(<<"caller">>, <<"1">>)))
+        ?UA:send(
+            Sock,
+            S,
+            ?UA:resp(
+                Re,
+                200,
+                <<"OK">>,
+                <<>>,
+                [contact(Sock)],
+                ?UA:sdp(<<"caller">>, <<"1">>)
+            )
+        )
     end),
     ok = ?UA:expect(uac_released),
     ?assertEqual(200, ?UA:status(got(b_final))),
@@ -608,18 +942,30 @@ bye_b_right_after_ack(_Config) ->
 %% req: R3264-8-1
 rewrite_sdp_offer_answer(_Config) ->
     Rw = fun(Leg, Kind, Sdp) ->
-                 <<Sdp/binary, "a=x-", (atom_to_binary(Leg))/binary, "-",
-                   (atom_to_binary(Kind))/binary, "\r\n">>
-         end,
+        <<Sdp/binary, "a=x-", (atom_to_binary(Leg))/binary, "-",
+            (atom_to_binary(Kind))/binary, "\r\n">>
+    end,
     {EP, CP} = setup(#{rewrite_sdp => Rw}),
     callee(CP, fun(Sock, _D) ->
         {Re, S} = ?UA:recv_req(Sock, <<"INVITE">>),
         tell({b_reinvite, Re}),
-        ?UA:send(Sock, S, ?UA:resp(Re, 200, <<"OK">>, <<>>, [contact(Sock)],
-                                   ?UA:sdp(<<"callee">>, <<"1">>)))
+        ?UA:send(
+            Sock,
+            S,
+            ?UA:resp(
+                Re,
+                200,
+                <<"OK">>,
+                <<>>,
+                [contact(Sock)],
+                ?UA:sdp(<<"callee">>, <<"1">>)
+            )
+        )
     end),
     caller(EP, #{}, fun(Sock, D) ->
-        {Re, _} = ?UA:in_dialog(D, <<"INVITE">>, [], ?UA:sdp(<<"caller">>, <<"1">>)),
+        {Re, _} = ?UA:in_dialog(
+            D, <<"INVITE">>, [], ?UA:sdp(<<"caller">>, <<"1">>)
+        ),
         ?UA:send(Sock, EP, Re),
         tell({a_200, ?UA:recv_status(Sock, 200)})
     end),
@@ -629,16 +975,30 @@ rewrite_sdp_offer_answer(_Config) ->
 %% The older fun(Leg, Sdp) still works.
 %% req: R3264-8-1
 rewrite_sdp_two_arity(_Config) ->
-    Rw = fun(Leg, Sdp) -> <<Sdp/binary, "a=x-", (atom_to_binary(Leg))/binary, "\r\n">> end,
+    Rw = fun(Leg, Sdp) ->
+        <<Sdp/binary, "a=x-", (atom_to_binary(Leg))/binary, "\r\n">>
+    end,
     {EP, CP} = setup(#{rewrite_sdp => Rw}),
     callee(CP, fun(Sock, _D) ->
         {Re, S} = ?UA:recv_req(Sock, <<"INVITE">>),
         tell({b_reinvite, Re}),
-        ?UA:send(Sock, S, ?UA:resp(Re, 200, <<"OK">>, <<>>, [contact(Sock)],
-                                   ?UA:sdp(<<"callee">>, <<"1">>)))
+        ?UA:send(
+            Sock,
+            S,
+            ?UA:resp(
+                Re,
+                200,
+                <<"OK">>,
+                <<>>,
+                [contact(Sock)],
+                ?UA:sdp(<<"callee">>, <<"1">>)
+            )
+        )
     end),
     caller(EP, #{}, fun(Sock, D) ->
-        {Re, _} = ?UA:in_dialog(D, <<"INVITE">>, [], ?UA:sdp(<<"caller">>, <<"1">>)),
+        {Re, _} = ?UA:in_dialog(
+            D, <<"INVITE">>, [], ?UA:sdp(<<"caller">>, <<"1">>)
+        ),
         ?UA:send(Sock, EP, Re),
         tell({a_200, ?UA:recv_status(Sock, 200)})
     end),
@@ -649,20 +1009,24 @@ rewrite_sdp_two_arity(_Config) ->
 %% leg sees nothing.
 %% req: R3261-233
 rewrite_sdp_reject(_Config) ->
-    Rw = fun(a, offer, Sdp) ->
-                 case has(Sdp, <<"o=caller 1 1 ">>) of
-                     true -> {reject, 488};
-                     false -> Sdp
-                 end;
-            (_, _, Sdp) -> Sdp
-         end,
+    Rw = fun
+        (a, offer, Sdp) ->
+            case has(Sdp, <<"o=caller 1 1 ">>) of
+                true -> {reject, 488};
+                false -> Sdp
+            end;
+        (_, _, Sdp) ->
+            Sdp
+    end,
     {EP, CP} = setup(#{rewrite_sdp => Rw}),
     callee(CP, fun(Sock, _D) ->
         ok = ?UA:no_req(Sock, <<"INVITE">>, 1500),
         tell(b_quiet)
     end),
     caller(EP, #{}, fun(Sock, D) ->
-        {Re, _} = ?UA:in_dialog(D, <<"INVITE">>, [], ?UA:sdp(<<"caller">>, <<"1">>)),
+        {Re, _} = ?UA:in_dialog(
+            D, <<"INVITE">>, [], ?UA:sdp(<<"caller">>, <<"1">>)
+        ),
         ?UA:send(Sock, EP, Re),
         tell({a_final, ?UA:recv_any(Sock, 6000)})
     end),
@@ -682,11 +1046,23 @@ anchor_call_and_reoffers(_Config) ->
         {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
         tell({b_invite, Inv}),
         Tag = <<"btag">>,
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, Tag, [contact(Sock)],
-                                     ?UA:sdp(<<"callee">>))),
+        ?UA:send(
+            Sock,
+            Src,
+            ?UA:resp(
+                Inv,
+                200,
+                <<"OK">>,
+                Tag,
+                [contact(Sock)],
+                ?UA:sdp(<<"callee">>)
+            )
+        ),
         {_, _} = ?UA:recv_req(Sock, <<"ACK">>),
         D = ?UA:dialog_from_invite(Sock, Inv, Tag, Src),
-        {Re, D1} = ?UA:in_dialog(D, <<"INVITE">>, [], ?UA:sdp(<<"callee">>, <<"1">>)),
+        {Re, D1} = ?UA:in_dialog(
+            D, <<"INVITE">>, [], ?UA:sdp(<<"callee">>, <<"1">>)
+        ),
         ?UA:send(Sock, EP, Re),
         R = ?UA:recv_status(Sock, 200),
         ?UA:ack(D1, EP),
@@ -694,15 +1070,27 @@ anchor_call_and_reoffers(_Config) ->
         timer:sleep(infinity)
     end),
     ?UA:peer(0, fun(Sock) ->
-        Inv = ?UA:invite(Sock, EP, #{call_id => ?UA:callid(), from_tag => <<"atag">>}),
+        Inv = ?UA:invite(Sock, EP, #{
+            call_id => ?UA:callid(), from_tag => <<"atag">>
+        }),
         ?UA:send(Sock, EP, Inv),
         R = ?UA:recv_status(Sock, 200),
         ?UA:ack(?UA:dialog_from_2xx(Sock, Inv, R), EP),
         tell({a_200, R}),
         {Re, S} = ?UA:recv_req(Sock, <<"INVITE">>),
         tell({a_reinvite, Re}),
-        ?UA:send(Sock, S, ?UA:resp(Re, 200, <<"OK">>, <<>>, [contact(Sock)],
-                                   ?UA:sdp(<<"caller">>, <<"1">>))),
+        ?UA:send(
+            Sock,
+            S,
+            ?UA:resp(
+                Re,
+                200,
+                <<"OK">>,
+                <<>>,
+                [contact(Sock)],
+                ?UA:sdp(<<"caller">>, <<"1">>)
+            )
+        ),
         timer:sleep(infinity)
     end),
     ?assert(has(?UA:body(got(b_invite)), <<"a=rtpe-offer:atag">>)),
@@ -720,27 +1108,57 @@ anchor_rejected_reoffer_restores(_Config) ->
     {EP, CP} = setup(#{media => anchor}),
     callee(CP, fun(Sock, _D) ->
         {Re, S} = ?UA:recv_req(Sock, <<"INVITE">>),
-        ?UA:send(Sock, S, ?UA:resp(Re, 488, <<"Not Acceptable Here">>, <<>>, [], <<>>)),
+        ?UA:send(
+            Sock,
+            S,
+            ?UA:resp(Re, 488, <<"Not Acceptable Here">>, <<>>, [], <<>>)
+        ),
         {Re2, S2} = ?UA:recv_req(Sock, <<"INVITE">>),
-        ?UA:send(Sock, S2, ?UA:resp(Re2, 200, <<"OK">>, <<>>, [contact(Sock)],
-                                    ?UA:sdp(<<"callee">>, <<"1">>)))
+        ?UA:send(
+            Sock,
+            S2,
+            ?UA:resp(
+                Re2,
+                200,
+                <<"OK">>,
+                <<>>,
+                [contact(Sock)],
+                ?UA:sdp(<<"callee">>, <<"1">>)
+            )
+        )
     end),
     caller(EP, #{}, fun(Sock, D) ->
-        {Re, D1} = ?UA:in_dialog(D, <<"INVITE">>, [], ?UA:sdp(<<"caller">>, <<"1">>)),
+        {Re, D1} = ?UA:in_dialog(
+            D, <<"INVITE">>, [], ?UA:sdp(<<"caller">>, <<"1">>)
+        ),
         ?UA:send(Sock, EP, Re),
         tell({a_first, ?UA:recv_any(Sock, 6000)}),
-        {Re2, _} = ?UA:in_dialog(D1, <<"INVITE">>, [], ?UA:sdp(<<"caller">>, <<"2">>)),
+        {Re2, _} = ?UA:in_dialog(
+            D1, <<"INVITE">>, [], ?UA:sdp(<<"caller">>, <<"2">>)
+        ),
         ?UA:send(Sock, EP, Re2),
         tell({a_second, ?UA:recv_any(Sock, 6000)})
     end),
     ?assertEqual(488, ?UA:status(got(a_first))),
     ?assertEqual(200, ?UA:status(got(a_second))),
-    Cmds = [maps:get(<<"command">>, C) || {rtpe_cmd, C} <- drain(),
-                                          maps:is_key(<<"sdp">>, C)],
+    Cmds = [
+        maps:get(<<"command">>, C)
+     || {rtpe_cmd, C} <- drain(),
+        maps:is_key(<<"sdp">>, C)
+    ],
     %% initial offer/answer, the refused re-offer and its restoring answer,
     %% then the second re-offer and its answer
-    ?assertEqual([<<"offer">>, <<"answer">>, <<"offer">>, <<"answer">>,
-                  <<"offer">>, <<"answer">>], Cmds).
+    ?assertEqual(
+        [
+            <<"offer">>,
+            <<"answer">>,
+            <<"offer">>,
+            <<"answer">>,
+            <<"offer">>,
+            <<"answer">>
+        ],
+        Cmds
+    ).
 
 %% A re-offer whose streams stop receiving puts its leg on hold; the
 %% notify process sees hold, then unhold.
@@ -748,19 +1166,40 @@ anchor_rejected_reoffer_restores(_Config) ->
 hold_events(_Config) ->
     {EP, CP} = setup(#{notify => self()}),
     callee(CP, fun(Sock, _D) ->
-        lists:foreach(fun(V) ->
-            {Re, S} = ?UA:recv_req(Sock, <<"INVITE">>),
-            ?UA:send(Sock, S, ?UA:resp(Re, 200, <<"OK">>, <<>>, [contact(Sock)],
-                                       ?UA:sdp(<<"callee">>, V)))
-        end, [<<"1">>, <<"2">>])
+        lists:foreach(
+            fun(V) ->
+                {Re, S} = ?UA:recv_req(Sock, <<"INVITE">>),
+                ?UA:send(
+                    Sock,
+                    S,
+                    ?UA:resp(
+                        Re,
+                        200,
+                        <<"OK">>,
+                        <<>>,
+                        [contact(Sock)],
+                        ?UA:sdp(<<"callee">>, V)
+                    )
+                )
+            end,
+            [<<"1">>, <<"2">>]
+        )
     end),
     caller(EP, #{}, fun(Sock, D) ->
-        {Re, D1} = ?UA:in_dialog(D, <<"INVITE">>, [],
-                                 sdp_dir(<<"caller">>, <<"1">>, <<"sendonly">>)),
+        {Re, D1} = ?UA:in_dialog(
+            D,
+            <<"INVITE">>,
+            [],
+            sdp_dir(<<"caller">>, <<"1">>, <<"sendonly">>)
+        ),
         ?UA:send(Sock, EP, Re),
         _ = ?UA:recv_status(Sock, 200),
-        {Re2, _} = ?UA:in_dialog(D1, <<"INVITE">>, [],
-                                 sdp_dir(<<"caller">>, <<"2">>, <<"sendrecv">>)),
+        {Re2, _} = ?UA:in_dialog(
+            D1,
+            <<"INVITE">>,
+            [],
+            sdp_dir(<<"caller">>, <<"2">>, <<"sendrecv">>)
+        ),
         ?UA:send(Sock, EP, Re2),
         _ = ?UA:recv_status(Sock, 200)
     end),
@@ -778,8 +1217,18 @@ offerless_reinvite_a(_Config) ->
     callee(CP, fun(Sock, _D) ->
         {Re, S} = ?UA:recv_req(Sock, <<"INVITE">>),
         tell({b_reinvite, Re}),
-        ?UA:send(Sock, S, ?UA:resp(Re, 200, <<"OK">>, <<>>, [contact(Sock)],
-                                   ?UA:sdp(<<"callee">>, <<"1">>))),
+        ?UA:send(
+            Sock,
+            S,
+            ?UA:resp(
+                Re,
+                200,
+                <<"OK">>,
+                <<>>,
+                [contact(Sock)],
+                ?UA:sdp(<<"callee">>, <<"1">>)
+            )
+        ),
         {Ack, _} = ?UA:recv_req(Sock, <<"ACK">>),
         tell({b_ack, Ack})
     end),
@@ -808,8 +1257,18 @@ offerless_reinvite_b(_Config) ->
     caller(EP, #{}, fun(Sock, _D) ->
         {Re, S} = ?UA:recv_req(Sock, <<"INVITE">>),
         tell({a_reinvite, Re}),
-        ?UA:send(Sock, S, ?UA:resp(Re, 200, <<"OK">>, <<>>, [contact(Sock)],
-                                   ?UA:sdp(<<"caller">>, <<"1">>))),
+        ?UA:send(
+            Sock,
+            S,
+            ?UA:resp(
+                Re,
+                200,
+                <<"OK">>,
+                <<>>,
+                [contact(Sock)],
+                ?UA:sdp(<<"caller">>, <<"1">>)
+            )
+        ),
         {Ack, _} = ?UA:recv_req(Sock, <<"ACK">>),
         tell({a_ack, Ack})
     end),
@@ -827,22 +1286,48 @@ set_media_anchor_and_back(_Config) ->
     rtpe(),
     {EP, CP} = setup(#{}),
     callee(CP, fun(Sock, _D) ->
-        lists:foreach(fun(V) ->
-            {Re, S} = ?UA:recv_req(Sock, <<"INVITE">>),
-            tell({b_reinvite, Re}),
-            ?UA:send(Sock, S, ?UA:resp(Re, 200, <<"OK">>, <<>>, [contact(Sock)],
-                                       ?UA:sdp(<<"callee">>, V))),
-            {_, _} = ?UA:recv_req(Sock, <<"ACK">>)
-        end, [<<"1">>, <<"2">>])
+        lists:foreach(
+            fun(V) ->
+                {Re, S} = ?UA:recv_req(Sock, <<"INVITE">>),
+                tell({b_reinvite, Re}),
+                ?UA:send(
+                    Sock,
+                    S,
+                    ?UA:resp(
+                        Re,
+                        200,
+                        <<"OK">>,
+                        <<>>,
+                        [contact(Sock)],
+                        ?UA:sdp(<<"callee">>, V)
+                    )
+                ),
+                {_, _} = ?UA:recv_req(Sock, <<"ACK">>)
+            end,
+            [<<"1">>, <<"2">>]
+        )
     end),
     caller(EP, #{}, fun(Sock, _D) ->
-        lists:foreach(fun(V) ->
-            {Re, S} = ?UA:recv_req(Sock, <<"INVITE">>),
-            ?UA:send(Sock, S, ?UA:resp(Re, 200, <<"OK">>, <<>>, [contact(Sock)],
-                                       ?UA:sdp(<<"caller">>, V))),
-            {Ack, _} = ?UA:recv_req(Sock, <<"ACK">>),
-            tell({a_ack, Re, Ack})
-        end, [<<"1">>, <<"2">>])
+        lists:foreach(
+            fun(V) ->
+                {Re, S} = ?UA:recv_req(Sock, <<"INVITE">>),
+                ?UA:send(
+                    Sock,
+                    S,
+                    ?UA:resp(
+                        Re,
+                        200,
+                        <<"OK">>,
+                        <<>>,
+                        [contact(Sock)],
+                        ?UA:sdp(<<"caller">>, V)
+                    )
+                ),
+                {Ack, _} = ?UA:recv_req(Sock, <<"ACK">>),
+                tell({a_ack, Re, Ack})
+            end,
+            [<<"1">>, <<"2">>]
+        )
     end),
     #{b2b := B2b} = got(legs),
     ?assertMatch(#{media := direct}, chappe_sip_b2b:info(B2b)),
@@ -857,11 +1342,18 @@ set_media_anchor_and_back(_Config) ->
     B2 = ?UA:body(got(b_reinvite)),
     ?assertNot(has(B2, <<"a=rtpe-">>)),
     ?assertEqual(?UA:sdp(<<"callee">>, <<"2">>), ?UA:body(Ack2)),
-    ?assertMatch(#{media := direct, session := undefined},
-                 chappe_sip_b2b:info(B2b)),
-    ?assert(lists:any(fun({rtpe_cmd, C}) ->
-                              maps:get(<<"command">>, C) =:= <<"delete">>
-                      end, drain())).
+    ?assertMatch(
+        #{media := direct, session := undefined},
+        chappe_sip_b2b:info(B2b)
+    ),
+    ?assert(
+        lists:any(
+            fun({rtpe_cmd, C}) ->
+                maps:get(<<"command">>, C) =:= <<"delete">>
+            end,
+            drain()
+        )
+    ).
 
 %% While an offer of the call is pending, set_media/2 is busy.
 %% req: R3261-14.2-1
@@ -870,12 +1362,27 @@ set_media_busy(_Config) ->
     Callee = callee(CP, fun(Sock, _D) ->
         {Re, S} = ?UA:recv_req(Sock, <<"INVITE">>),
         tell(b_got_reinvite),
-        receive go -> ok after 5000 -> ok end,
-        ?UA:send(Sock, S, ?UA:resp(Re, 200, <<"OK">>, <<>>, [contact(Sock)],
-                                   ?UA:sdp(<<"callee">>, <<"1">>)))
+        receive
+            go -> ok
+        after 5000 -> ok
+        end,
+        ?UA:send(
+            Sock,
+            S,
+            ?UA:resp(
+                Re,
+                200,
+                <<"OK">>,
+                <<>>,
+                [contact(Sock)],
+                ?UA:sdp(<<"callee">>, <<"1">>)
+            )
+        )
     end),
     caller(EP, #{}, fun(Sock, D) ->
-        {Re, _} = ?UA:in_dialog(D, <<"INVITE">>, [], ?UA:sdp(<<"caller">>, <<"1">>)),
+        {Re, _} = ?UA:in_dialog(
+            D, <<"INVITE">>, [], ?UA:sdp(<<"caller">>, <<"1">>)
+        ),
         ?UA:send(Sock, EP, Re),
         tell({a_200, ?UA:recv_status(Sock, 200)})
     end),
@@ -895,24 +1402,61 @@ early_update_a_to_b(_Config) ->
     ?UA:peer(CP, fun(Sock) ->
         {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
         Tag = ?UA:tag(),
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 183, <<"Session Progress">>, Tag,
-                                     [contact(Sock)], ?UA:sdp(<<"early">>))),
+        ?UA:send(
+            Sock,
+            Src,
+            ?UA:resp(
+                Inv,
+                183,
+                <<"Session Progress">>,
+                Tag,
+                [contact(Sock)],
+                ?UA:sdp(<<"early">>)
+            )
+        ),
         {U, US} = ?UA:recv_req(Sock, <<"UPDATE">>),
         tell({b_update, U}),
-        ?UA:send(Sock, US, ?UA:resp(U, 200, <<"OK">>, <<>>, [contact(Sock)],
-                                    ?UA:sdp(<<"early">>, <<"1">>))),
-        receive go -> ok after 5000 -> ok end,
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, Tag, [contact(Sock)],
-                                     ?UA:sdp(<<"early">>, <<"1">>))),
+        ?UA:send(
+            Sock,
+            US,
+            ?UA:resp(
+                U,
+                200,
+                <<"OK">>,
+                <<>>,
+                [contact(Sock)],
+                ?UA:sdp(<<"early">>, <<"1">>)
+            )
+        ),
+        receive
+            go -> ok
+        after 5000 -> ok
+        end,
+        ?UA:send(
+            Sock,
+            Src,
+            ?UA:resp(
+                Inv,
+                200,
+                <<"OK">>,
+                Tag,
+                [contact(Sock)],
+                ?UA:sdp(<<"early">>, <<"1">>)
+            )
+        ),
         {_, _} = ?UA:recv_req(Sock, <<"ACK">>),
         timer:sleep(infinity)
     end),
     ?UA:peer(0, fun(Sock) ->
-        Inv = ?UA:invite(Sock, EP, #{call_id => ?UA:callid(), from_tag => ?UA:tag()}),
+        Inv = ?UA:invite(Sock, EP, #{
+            call_id => ?UA:callid(), from_tag => ?UA:tag()
+        }),
         ?UA:send(Sock, EP, Inv),
         R183 = ?UA:recv_status(Sock, 183),
         D = ?UA:dialog_from_2xx(Sock, Inv, R183),
-        {U, _} = ?UA:in_dialog(D, <<"UPDATE">>, [], ?UA:sdp(<<"caller">>, <<"1">>)),
+        {U, _} = ?UA:in_dialog(
+            D, <<"UPDATE">>, [], ?UA:sdp(<<"caller">>, <<"1">>)
+        ),
         ?UA:send(Sock, EP, U),
         tell({a_update_200, ?UA:recv_status(Sock, 200)}),
         R200 = ?UA:recv_status(Sock, 200),
@@ -932,35 +1476,81 @@ early_update_b_to_a(_Config) ->
     ?UA:peer(CP, fun(Sock) ->
         {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
         Tag = ?UA:tag(),
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 183, <<"Session Progress">>, Tag,
-                                     [contact(Sock)], ?UA:sdp(<<"early">>))),
+        ?UA:send(
+            Sock,
+            Src,
+            ?UA:resp(
+                Inv,
+                183,
+                <<"Session Progress">>,
+                Tag,
+                [contact(Sock)],
+                ?UA:sdp(<<"early">>)
+            )
+        ),
         D = ?UA:dialog_from_invite(Sock, Inv, Tag, Src),
         timer:sleep(300),
-        {U, D1} = ?UA:in_dialog(D, <<"UPDATE">>, [], ?UA:sdp(<<"early">>, <<"1">>)),
+        {U, D1} = ?UA:in_dialog(
+            D, <<"UPDATE">>, [], ?UA:sdp(<<"early">>, <<"1">>)
+        ),
         ?UA:send(Sock, EP, U),
         tell({b_update_200, ?UA:recv_status(Sock, 200)}),
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, Tag, [contact(Sock)],
-                                     ?UA:sdp(<<"early">>, <<"1">>))),
+        ?UA:send(
+            Sock,
+            Src,
+            ?UA:resp(
+                Inv,
+                200,
+                <<"OK">>,
+                Tag,
+                [contact(Sock)],
+                ?UA:sdp(<<"early">>, <<"1">>)
+            )
+        ),
         {_, _} = ?UA:recv_req(Sock, <<"ACK">>),
-        {Re, _} = ?UA:in_dialog(D1, <<"INVITE">>, [], ?UA:sdp(<<"early">>, <<"2">>)),
+        {Re, _} = ?UA:in_dialog(
+            D1, <<"INVITE">>, [], ?UA:sdp(<<"early">>, <<"2">>)
+        ),
         ?UA:send(Sock, EP, Re),
         _ = ?UA:recv_status(Sock, 200),
         timer:sleep(infinity)
     end),
     ?UA:peer(0, fun(Sock) ->
-        Inv = ?UA:invite(Sock, EP, #{call_id => ?UA:callid(), from_tag => ?UA:tag()}),
+        Inv = ?UA:invite(Sock, EP, #{
+            call_id => ?UA:callid(), from_tag => ?UA:tag()
+        }),
         ?UA:send(Sock, EP, Inv),
         _ = ?UA:recv_status(Sock, 183),
         {U, US} = ?UA:recv_req(Sock, <<"UPDATE">>),
         tell({a_update, U}),
-        ?UA:send(Sock, US, ?UA:resp(U, 200, <<"OK">>, <<>>, [contact(Sock)],
-                                    ?UA:sdp(<<"caller">>, <<"1">>))),
+        ?UA:send(
+            Sock,
+            US,
+            ?UA:resp(
+                U,
+                200,
+                <<"OK">>,
+                <<>>,
+                [contact(Sock)],
+                ?UA:sdp(<<"caller">>, <<"1">>)
+            )
+        ),
         R200 = ?UA:recv_status(Sock, 200),
         ?UA:ack(?UA:dialog_from_2xx(Sock, Inv, R200), EP),
         {Re, RS} = ?UA:recv_req(Sock, <<"INVITE">>),
         tell({a_reinvite, Re}),
-        ?UA:send(Sock, RS, ?UA:resp(Re, 200, <<"OK">>, <<>>, [contact(Sock)],
-                                    ?UA:sdp(<<"caller">>, <<"2">>))),
+        ?UA:send(
+            Sock,
+            RS,
+            ?UA:resp(
+                Re,
+                200,
+                <<"OK">>,
+                <<>>,
+                [contact(Sock)],
+                ?UA:sdp(<<"caller">>, <<"2">>)
+            )
+        ),
         timer:sleep(infinity)
     end),
     U = got(a_update),
@@ -980,15 +1570,28 @@ anchor_late_offer(_Config) ->
     ?UA:peer(CP, fun(Sock) ->
         {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
         tell({b_invite, Inv}),
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, <<"btag">>, [contact(Sock)],
-                                     ?UA:sdp(<<"callee">>))),
+        ?UA:send(
+            Sock,
+            Src,
+            ?UA:resp(
+                Inv,
+                200,
+                <<"OK">>,
+                <<"btag">>,
+                [contact(Sock)],
+                ?UA:sdp(<<"callee">>)
+            )
+        ),
         {Ack, _} = ?UA:recv_req(Sock, <<"ACK">>),
         tell({b_ack, Ack}),
         timer:sleep(infinity)
     end),
     ?UA:peer(0, fun(Sock) ->
-        Inv = ?UA:invite(Sock, EP, #{call_id => ?UA:callid(), from_tag => <<"atag">>,
-                                     body => <<>>}),
+        Inv = ?UA:invite(Sock, EP, #{
+            call_id => ?UA:callid(),
+            from_tag => <<"atag">>,
+            body => <<>>
+        }),
         ?UA:send(Sock, EP, Inv),
         R = ?UA:recv_status(Sock, 200),
         tell({a_200, R}),
@@ -1013,9 +1616,14 @@ nated_caller_reached_at_source(_Config) ->
     end),
     ?UA:peer(0, fun(Sock) ->
         P = integer_to_binary(?UA:lport(Sock)),
-        Inv0 = ?UA:invite(Sock, EP, #{call_id => ?UA:callid(), from_tag => ?UA:tag()}),
-        Inv = binary:replace(Inv0, <<"Contact: <sip:caller@127.0.0.1:", P/binary, ">">>,
-                             <<"Contact: <sip:caller@10.99.99.99:5999>">>),
+        Inv0 = ?UA:invite(Sock, EP, #{
+            call_id => ?UA:callid(), from_tag => ?UA:tag()
+        }),
+        Inv = binary:replace(
+            Inv0,
+            <<"Contact: <sip:caller@127.0.0.1:", P/binary, ">">>,
+            <<"Contact: <sip:caller@10.99.99.99:5999>">>
+        ),
         ?UA:send(Sock, EP, Inv),
         R = ?UA:recv_status(Sock, 200),
         ?UA:ack(?UA:dialog_from_2xx(Sock, Inv, R), EP),
@@ -1044,13 +1652,18 @@ hangup_reason_both_legs(_Config) ->
     caller(EP, #{}, Bye(a_bye)),
     #{b2b := B2b} = got(legs),
     Reason = <<"Q.850;cause=16">>,
-    ok = chappe_sip_b2b:hangup(B2b, #{reason => Reason,
-                                      headers => [{<<"X-Why">>, <<"done">>}]}),
-    lists:foreach(fun(Tag) ->
-        B = got(Tag),
-        ?assertEqual([Reason], ?UA:hdrs(B, <<"reason">>)),
-        ?assertEqual([<<"done">>], ?UA:hdrs(B, <<"x-why">>))
-    end, [a_bye, b_bye]),
+    ok = chappe_sip_b2b:hangup(B2b, #{
+        reason => Reason,
+        headers => [{<<"X-Why">>, <<"done">>}]
+    }),
+    lists:foreach(
+        fun(Tag) ->
+            B = got(Tag),
+            ?assertEqual([Reason], ?UA:hdrs(B, <<"reason">>)),
+            ?assertEqual([<<"done">>], ?UA:hdrs(B, <<"x-why">>))
+        end,
+        [a_bye, b_bye]
+    ),
     ok = ?UA:expect({relay_done, {done, hangup}}).
 
 %% ---- in-dialog requests (requests, relay_info) ----
@@ -1060,14 +1673,20 @@ hangup_reason_both_legs(_Config) ->
 requests_surfaced(_Config) ->
     {EP, CP} = setup(#{requests => [refer, message], notify => self()}),
     callee(CP, fun(Sock, D) ->
-        receive after 300 -> ok end,
+        receive
+        after 300 -> ok
+        end,
         {M, _} = ?UA:in_dialog(D, <<"MESSAGE">>, [], <<"hello">>),
         ?UA:send(Sock, EP, M),
         tell({b_final, ?UA:recv_any(Sock, 6000)})
     end),
     caller(EP, #{}, fun(Sock, D) ->
-        {R, D1} = ?UA:in_dialog(D, <<"REFER">>,
-                                [{<<"Refer-To">>, <<"<sip:carol@127.0.0.1>">>}], <<>>),
+        {R, D1} = ?UA:in_dialog(
+            D,
+            <<"REFER">>,
+            [{<<"Refer-To">>, <<"<sip:carol@127.0.0.1>">>}],
+            <<>>
+        ),
         ?UA:send(Sock, EP, R),
         tell({a_refer_final, ?UA:recv_any(Sock, 6000)}),
         {I, _} = ?UA:in_dialog(D1, <<"INFO">>, [], <<"x">>),
@@ -1094,8 +1713,12 @@ requests_surfaced(_Config) ->
 requests_default_answers(_Config) ->
     {EP, _CP} = setup_callee(#{requests => [refer]}),
     caller(EP, #{}, fun(Sock, D) ->
-        {R, _} = ?UA:in_dialog(D, <<"REFER">>,
-                               [{<<"Refer-To">>, <<"<sip:carol@127.0.0.1>">>}], <<>>),
+        {R, _} = ?UA:in_dialog(
+            D,
+            <<"REFER">>,
+            [{<<"Refer-To">>, <<"<sip:carol@127.0.0.1>">>}],
+            <<>>
+        ),
         ?UA:send(Sock, EP, R),
         tell({a_refer_final, ?UA:recv_any(Sock, 6000)})
     end),
@@ -1112,8 +1735,12 @@ relay_info_forwarded(_Config) ->
         ?UA:send(Sock, S, ?UA:resp(I, 202, <<"Accepted">>, <<>>, [], <<>>))
     end),
     caller(EP, #{}, fun(Sock, D) ->
-        {I, _} = ?UA:in_dialog(D, <<"INFO">>,
-                               [{<<"Info-Package">>, <<"dtmf">>}], Body),
+        {I, _} = ?UA:in_dialog(
+            D,
+            <<"INFO">>,
+            [{<<"Info-Package">>, <<"dtmf">>}],
+            Body
+        ),
         ?UA:send(Sock, EP, I),
         tell({a_final, ?UA:recv_any(Sock, 6000)})
     end),
@@ -1140,8 +1767,18 @@ replace_b_anchored(_Config) ->
     ?UA:peer(NP, fun(Sock) ->
         {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
         tell({new_b_invite, Inv}),
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, <<"newtag">>,
-                                     [contact(Sock)], ?UA:sdp(<<"newcallee">>))),
+        ?UA:send(
+            Sock,
+            Src,
+            ?UA:resp(
+                Inv,
+                200,
+                <<"OK">>,
+                <<"newtag">>,
+                [contact(Sock)],
+                ?UA:sdp(<<"newcallee">>)
+            )
+        ),
         {_, _} = ?UA:recv_req(Sock, <<"ACK">>),
         {B, S} = ?UA:recv_req(Sock, <<"BYE">>),
         ?UA:send(Sock, S, ?UA:resp(B, 200, <<"OK">>, <<>>, [], <<>>)),
@@ -1150,7 +1787,9 @@ replace_b_anchored(_Config) ->
     end),
     caller(EP, #{}, fun(Sock, D) ->
         register(b2b_test_caller, self()),
-        receive go -> ok end,
+        receive
+            go -> ok
+        end,
         ok = ?UA:no_req(Sock, <<"INVITE">>, 1000),
         {B, _} = ?UA:in_dialog(D, <<"BYE">>, [], <<>>),
         ?UA:send(Sock, EP, B),
@@ -1161,12 +1800,16 @@ replace_b_anchored(_Config) ->
     _ = drain(),
     NewUri = <<"sip:new@127.0.0.1:", (integer_to_binary(NP))/binary>>,
     ok = chappe_sip_b2b:replace_b(B2b, NewUri, #{}),
-    receive {chappe_sip_b2b, Ref, {replaced, b}} -> ok
+    receive
+        {chappe_sip_b2b, Ref, {replaced, b}} -> ok
     after 5000 -> ct:fail(no_replaced_event)
     end,
     ?assert(has(?UA:body(got(new_b_invite)), <<"a=rtpe-offer:">>)),
     _ = got(old_b_bye),
-    Answers = [C || {rtpe_cmd, #{<<"command">> := <<"answer">>} = C} <- drain()],
+    Answers = [
+        C
+     || {rtpe_cmd, #{<<"command">> := <<"answer">>} = C} <- drain()
+    ],
     %% rtpengine keeps leg B under its first tag: a new to-tag would be a
     %% new branch, with ports the new B was never given
     ?assertMatch([#{<<"to-tag">> := OldTag}], Answers),
@@ -1179,8 +1822,10 @@ replace_b_anchored(_Config) ->
 %% rtpengine's offer for it, and the call keeps them afterwards.
 replace_b_anchor_params(_Config) ->
     rtpe(),
-    {EP, CP} = setup(#{media => anchor,
-                       anchor_params => #{b => #{direction => [<<"host">>, <<"docker">>]}}}),
+    {EP, CP} = setup(#{
+        media => anchor,
+        anchor_params => #{b => #{direction => [<<"host">>, <<"docker">>]}}
+    }),
     NP = ?UA:pick(),
     callee(CP, fun(Sock, _D) ->
         {B, S} = ?UA:recv_req(Sock, <<"BYE">>),
@@ -1188,8 +1833,18 @@ replace_b_anchor_params(_Config) ->
     end),
     ?UA:peer(NP, fun(Sock) ->
         {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, <<"newtag">>,
-                                     [contact(Sock)], ?UA:sdp(<<"mixer">>))),
+        ?UA:send(
+            Sock,
+            Src,
+            ?UA:resp(
+                Inv,
+                200,
+                <<"OK">>,
+                <<"newtag">>,
+                [contact(Sock)],
+                ?UA:sdp(<<"mixer">>)
+            )
+        ),
         {_, _} = ?UA:recv_req(Sock, <<"ACK">>),
         timer:sleep(infinity)
     end),
@@ -1215,8 +1870,18 @@ replace_b_keeps_a_ports(_Config) ->
     end),
     ?UA:peer(NP, fun(Sock) ->
         {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, <<"newtag">>,
-                                     [contact(Sock)], ?UA:sdp(<<"new">>))),
+        ?UA:send(
+            Sock,
+            Src,
+            ?UA:resp(
+                Inv,
+                200,
+                <<"OK">>,
+                <<"newtag">>,
+                [contact(Sock)],
+                ?UA:sdp(<<"new">>)
+            )
+        ),
         {_, _} = ?UA:recv_req(Sock, <<"ACK">>),
         timer:sleep(infinity)
     end),
@@ -1226,9 +1891,14 @@ replace_b_keeps_a_ports(_Config) ->
     NewUri = <<"sip:new@127.0.0.1:", (integer_to_binary(NP))/binary>>,
     ok = chappe_sip_b2b:replace_b(B2b, NewUri, #{}),
     Cmds = [C || {rtpe_cmd, C} <- drain(), maps:is_key(<<"sdp">>, C)],
-    ?assertMatch([#{<<"command">> := <<"offer">>}, #{<<"command">> := <<"answer">>}], Cmds),
+    ?assertMatch(
+        [#{<<"command">> := <<"offer">>}, #{<<"command">> := <<"answer">>}],
+        Cmds
+    ),
     [Offer, Answer] = Cmds,
-    ?assertNot(lists:member(<<"port-latching">>, maps:get(<<"flags">>, Offer, []))),
+    ?assertNot(
+        lists:member(<<"port-latching">>, maps:get(<<"flags">>, Offer, []))
+    ),
     ?assert(lists:member(<<"port-latching">>, maps:get(<<"flags">>, Answer))).
 
 %% relay_async/2 carries an anchored call in its own process: the handler
@@ -1238,14 +1908,19 @@ relay_async_outlives_handler(_Config) ->
     rtpe(),
     EP = ?UA:pick(),
     CP = ?UA:pick(),
-    ok = chappe_sip:start(#{contact => <<"sip:127.0.0.1:", (integer_to_binary(EP))/binary>>}),
+    ok = chappe_sip:start(#{
+        contact => <<"sip:127.0.0.1:", (integer_to_binary(EP))/binary>>
+    }),
     Test = self(),
     register(b2b_relay_test, Test),
     Callee = <<"sip:callee@127.0.0.1:", (integer_to_binary(CP))/binary>>,
     ok = chappe_sip:invite(fun(Req, Res) ->
-        {ok, Legs} = chappe_sip:create_b2bua(Req, Res, Callee, #{media => anchor}),
+        {ok, Legs} = chappe_sip:create_b2bua(Req, Res, Callee, #{
+            media => anchor
+        }),
         Test ! b2b_up,
-        Test ! {async, chappe_sip_b2b:relay_async(Legs, #{notify => Test}), self()}
+        Test !
+            {async, chappe_sip_b2b:relay_async(Legs, #{notify => Test}), self()}
     end),
     callee(CP, fun(Sock, _D) ->
         {B, S} = ?UA:recv_req(Sock, <<"BYE">>, 20000),
@@ -1254,24 +1929,31 @@ relay_async_outlives_handler(_Config) ->
     end),
     caller(EP, #{}, fun(Sock, D) ->
         register(b2b_test_caller, self()),
-        receive go -> ok end,
+        receive
+            go -> ok
+        end,
         {B, _} = ?UA:in_dialog(D, <<"BYE">>, [], <<>>),
         ?UA:send(Sock, EP, B),
         tell({a_bye_final, ?UA:recv_any(Sock, 6000)})
     end),
     {{ok, {Relay, Ref} = B2b}, Worker} = got2(async),
     WRef = monitor(process, Worker),
-    receive {'DOWN', WRef, process, Worker, _} -> ok
+    receive
+        {'DOWN', WRef, process, Worker, _} -> ok
     after 5000 -> ct:fail(handler_still_running)
     end,
     ?assertNotEqual(Worker, Relay),
     timer:sleep(200),
     ?assertMatch(#{media := anchor}, chappe_sip_b2b:info(B2b)),
-    ?assertEqual([], [C || {rtpe_cmd, #{<<"command">> := <<"delete">>} = C} <- drain()]),
+    ?assertEqual([], [
+        C
+     || {rtpe_cmd, #{<<"command">> := <<"delete">>} = C} <- drain()
+    ]),
     caller_go(),
     ?assertEqual(200, ?UA:status(got(a_bye_final))),
     _ = got(b_bye),
-    receive {chappe_sip_b2b, Ref, {done, {done, a_bye}}} -> ok
+    receive
+        {chappe_sip_b2b, Ref, {done, {done, a_bye}}} -> ok
     after 5000 -> ct:fail(no_done)
     end.
 
@@ -1288,12 +1970,16 @@ replace_b_failure_keeps_b(_Config) ->
     end),
     ?UA:peer(NP, fun(Sock) ->
         {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 486, <<"Busy Here">>, ?UA:tag(), [], <<>>)),
+        ?UA:send(
+            Sock, Src, ?UA:resp(Inv, 486, <<"Busy Here">>, ?UA:tag(), [], <<>>)
+        ),
         timer:sleep(infinity)
     end),
     caller(EP, #{}, fun(Sock, D) ->
         register(b2b_test_caller, self()),
-        receive go -> ok end,
+        receive
+            go -> ok
+        end,
         {B, _} = ?UA:in_dialog(D, <<"BYE">>, [], <<>>),
         ?UA:send(Sock, EP, B),
         tell({a_bye_final, ?UA:recv_any(Sock, 6000)})
@@ -1301,13 +1987,22 @@ replace_b_failure_keeps_b(_Config) ->
     #{b2b := B2b, uac := OldB} = got(legs),
     _ = drain(),
     NewUri = <<"sip:new@127.0.0.1:", (integer_to_binary(NP))/binary>>,
-    ?assertMatch({error, #chappe_sip_error{status = 486}},
-                 chappe_sip_b2b:replace_b(B2b, NewUri, #{})),
+    ?assertMatch(
+        {error, #chappe_sip_error{status = 486}},
+        chappe_sip_b2b:replace_b(B2b, NewUri, #{})
+    ),
     Cmds = [C || {rtpe_cmd, C} <- drain(), maps:is_key(<<"sdp">>, C)],
-    ?assertMatch([#{<<"command">> := <<"offer">>},
-                  #{<<"command">> := <<"answer">>}], Cmds),
+    ?assertMatch(
+        [
+            #{<<"command">> := <<"offer">>},
+            #{<<"command">> := <<"answer">>}
+        ],
+        Cmds
+    ),
     [_, Restore] = Cmds,
-    ?assertEqual(chappe_sip_dialog:remote_tag(OldB), maps:get(<<"to-tag">>, Restore)),
+    ?assertEqual(
+        chappe_sip_dialog:remote_tag(OldB), maps:get(<<"to-tag">>, Restore)
+    ),
     caller_go(),
     ?assertEqual(200, ?UA:status(got(a_bye_final))),
     ok = ?UA:expect(old_b_bye),
@@ -1318,8 +2013,10 @@ replace_b_not_anchored(_Config) ->
     {EP, _CP} = setup_callee(#{}),
     caller(EP, #{}, fun(_Sock, _D) -> ok end),
     #{b2b := B2b} = got(legs),
-    ?assertEqual({error, not_anchored},
-                 chappe_sip_b2b:replace_b(B2b, <<"sip:x@127.0.0.1">>, #{})).
+    ?assertEqual(
+        {error, not_anchored},
+        chappe_sip_b2b:replace_b(B2b, <<"sip:x@127.0.0.1">>, #{})
+    ).
 
 %% An anchored fork: each branch gets the same rtpengine offer, and each
 %% branch's answer goes to rtpengine under that branch's To-tag.
@@ -1328,38 +2025,79 @@ fork_anchored_per_branch(_Config) ->
     EP = ?UA:pick(),
     C1 = ?UA:pick(),
     C2 = ?UA:pick(),
-    ok = chappe_sip:start(#{contact => <<"sip:127.0.0.1:", (integer_to_binary(EP))/binary>>}),
+    ok = chappe_sip:start(#{
+        contact => <<"sip:127.0.0.1:", (integer_to_binary(EP))/binary>>
+    }),
     Test = self(),
     register(b2b_relay_test, Test),
-    Uris = [<<"sip:c@127.0.0.1:", (integer_to_binary(P))/binary>> || P <- [C1, C2]],
+    Uris = [
+        <<"sip:c@127.0.0.1:", (integer_to_binary(P))/binary>>
+     || P <- [C1, C2]
+    ],
     ok = chappe_sip:invite(fun(Req, Res) ->
-        {ok, Legs} = chappe_sip:create_b2bua(Req, Res, {parallel, Uris},
-                                             #{media => anchor}),
+        {ok, Legs} = chappe_sip:create_b2bua(
+            Req,
+            Res,
+            {parallel, Uris},
+            #{media => anchor}
+        ),
         Test ! b2b_up,
         Test ! {relay_done, chappe_sip_b2b:relay(Legs)}
     end),
     ?UA:peer(C1, fun(Sock) ->
         {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
         tell({c1_invite, Inv}),
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 183, <<"Session Progress">>, <<"c1tag">>,
-                                     [contact(Sock)], ?UA:sdp(<<"early1">>))),
+        ?UA:send(
+            Sock,
+            Src,
+            ?UA:resp(
+                Inv,
+                183,
+                <<"Session Progress">>,
+                <<"c1tag">>,
+                [contact(Sock)],
+                ?UA:sdp(<<"early1">>)
+            )
+        ),
         {C, CS} = ?UA:recv_req(Sock, <<"CANCEL">>),
         ?UA:send(Sock, CS, ?UA:resp(C, 200, <<"OK">>, <<"c1tag">>, [], <<>>)),
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 487, <<"Request Terminated">>,
-                                     <<"c1tag">>, [], <<>>)),
+        ?UA:send(
+            Sock,
+            Src,
+            ?UA:resp(
+                Inv,
+                487,
+                <<"Request Terminated">>,
+                <<"c1tag">>,
+                [],
+                <<>>
+            )
+        ),
         timer:sleep(infinity)
     end),
     ?UA:peer(C2, fun(Sock) ->
         {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
         tell({c2_invite, Inv}),
         timer:sleep(300),
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, <<"c2tag">>,
-                                     [contact(Sock)], ?UA:sdp(<<"callee2">>))),
+        ?UA:send(
+            Sock,
+            Src,
+            ?UA:resp(
+                Inv,
+                200,
+                <<"OK">>,
+                <<"c2tag">>,
+                [contact(Sock)],
+                ?UA:sdp(<<"callee2">>)
+            )
+        ),
         {_, _} = ?UA:recv_req(Sock, <<"ACK">>),
         timer:sleep(infinity)
     end),
     ?UA:peer(0, fun(Sock) ->
-        Inv = ?UA:invite(Sock, EP, #{call_id => ?UA:callid(), from_tag => <<"atag">>}),
+        Inv = ?UA:invite(Sock, EP, #{
+            call_id => ?UA:callid(), from_tag => <<"atag">>
+        }),
         ?UA:send(Sock, EP, Inv),
         R = ?UA:recv_status(Sock, 200),
         ?UA:ack(?UA:dialog_from_2xx(Sock, Inv, R), EP),
@@ -1373,8 +2111,10 @@ fork_anchored_per_branch(_Config) ->
     Offers = [C || {rtpe_cmd, #{<<"command">> := <<"offer">>} = C} <- Cmds],
     ?assertMatch([_], Offers),
     %% the losing branch's early media session is deleted by its to-tag
-    Deletes = [maps:get(<<"to-tag">>, C, undefined)
-               || {rtpe_cmd, #{<<"command">> := <<"delete">>} = C} <- Cmds],
+    Deletes = [
+        maps:get(<<"to-tag">>, C, undefined)
+     || {rtpe_cmd, #{<<"command">> := <<"delete">>} = C} <- Cmds
+    ],
     ?assertEqual([<<"c1tag">>], Deletes).
 
 %% A hangs up while the new B of replace_b/3 still rings: that INVITE is
@@ -1385,12 +2125,16 @@ replace_b_aborted_when_call_ends(_Config) ->
     EP = ?UA:pick(),
     CP = ?UA:pick(),
     NP = ?UA:pick(),
-    ok = chappe_sip:start(#{contact => <<"sip:127.0.0.1:", (integer_to_binary(EP))/binary>>}),
+    ok = chappe_sip:start(#{
+        contact => <<"sip:127.0.0.1:", (integer_to_binary(EP))/binary>>
+    }),
     Test = self(),
     register(b2b_relay_test, Test),
     Callee = <<"sip:callee@127.0.0.1:", (integer_to_binary(CP))/binary>>,
     ok = chappe_sip:invite(fun(Req, Res) ->
-        {ok, Legs} = chappe_sip:create_b2bua(Req, Res, Callee, #{media => anchor}),
+        {ok, Legs} = chappe_sip:create_b2bua(Req, Res, Callee, #{
+            media => anchor
+        }),
         Test ! {legs, Legs},
         Test ! b2b_up,
         Test ! {relay_done, chappe_sip_b2b:relay(Legs)},
@@ -1403,25 +2147,41 @@ replace_b_aborted_when_call_ends(_Config) ->
     end),
     ?UA:peer(NP, fun(Sock) ->
         {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 180, <<"Ringing">>, <<"ntag">>, [], <<>>)),
+        ?UA:send(
+            Sock, Src, ?UA:resp(Inv, 180, <<"Ringing">>, <<"ntag">>, [], <<>>)
+        ),
         tell(new_b_ringing),
         {C, CS} = ?UA:recv_req(Sock, <<"CANCEL">>),
         tell(new_b_cancel),
         ?UA:send(Sock, CS, ?UA:resp(C, 200, <<"OK">>, <<"ntag">>, [], <<>>)),
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 487, <<"Request Terminated">>,
-                                     <<"ntag">>, [], <<>>)),
+        ?UA:send(
+            Sock,
+            Src,
+            ?UA:resp(
+                Inv,
+                487,
+                <<"Request Terminated">>,
+                <<"ntag">>,
+                [],
+                <<>>
+            )
+        ),
         timer:sleep(infinity)
     end),
     caller(EP, #{}, fun(Sock, D) ->
         register(b2b_test_caller, self()),
-        receive go -> ok end,
+        receive
+            go -> ok
+        end,
         {B, _} = ?UA:in_dialog(D, <<"BYE">>, [], <<>>),
         ?UA:send(Sock, EP, B),
         _ = ?UA:recv_any(Sock, 6000)
     end),
     #{b2b := B2b} = got(legs),
     NewUri = <<"sip:new@127.0.0.1:", (integer_to_binary(NP))/binary>>,
-    spawn_link(fun() -> Test ! {replace_result, chappe_sip_b2b:replace_b(B2b, NewUri, #{})} end),
+    spawn_link(fun() ->
+        Test ! {replace_result, chappe_sip_b2b:replace_b(B2b, NewUri, #{})}
+    end),
     ok = ?UA:expect(new_b_ringing),
     T0 = now_ms(),
     caller_go(),
@@ -1441,8 +2201,10 @@ replace_b_dialog(_Config) ->
 replace_b_dialog_keeps_from(_Config) ->
     Re = dialog_replace(#{from => ?NEW_FROM}),
     ?assertNot(has(?UA:hdr(Re, <<"from">>), <<"Alice">>)),
-    ?assertEqual(from_tag(?UA:hdr(got(first_invite), <<"from">>)),
-                 from_tag(?UA:hdr(Re, <<"from">>))).
+    ?assertEqual(
+        from_tag(?UA:hdr(got(first_invite), <<"from">>)),
+        from_tag(?UA:hdr(Re, <<"from">>))
+    ).
 
 dialog_replace(Opts) ->
     rtpe(),
@@ -1457,17 +2219,41 @@ dialog_replace(Opts) ->
         {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
         tell({first_invite, Inv}),
         Tag = <<"dtag">>,
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, Tag, [contact(Sock)],
-                                     ?UA:sdp(<<"endpoint">>))),
+        ?UA:send(
+            Sock,
+            Src,
+            ?UA:resp(
+                Inv,
+                200,
+                <<"OK">>,
+                Tag,
+                [contact(Sock)],
+                ?UA:sdp(<<"endpoint">>)
+            )
+        ),
         {_, _} = ?UA:recv_req(Sock, <<"ACK">>),
         {Re, S} = ?UA:recv_req(Sock, <<"INVITE">>),
         tell({reinvite, Re}),
-        ?UA:send(Sock, S, ?UA:resp(Re, 200, <<"OK">>, <<>>, [contact(Sock)],
-                                   ?UA:sdp(<<"endpoint">>, <<"1">>))),
+        ?UA:send(
+            Sock,
+            S,
+            ?UA:resp(
+                Re,
+                200,
+                <<"OK">>,
+                <<>>,
+                [contact(Sock)],
+                ?UA:sdp(<<"endpoint">>, <<"1">>)
+            )
+        ),
         {_, _} = ?UA:recv_req(Sock, <<"ACK">>),
-        receive go -> ok end,
+        receive
+            go -> ok
+        end,
         D = ?UA:dialog_from_invite(Sock, Inv, Tag, Src),
-        {Re2, D1} = ?UA:in_dialog(D, <<"INVITE">>, [], ?UA:sdp(<<"endpoint">>, <<"2">>)),
+        {Re2, D1} = ?UA:in_dialog(
+            D, <<"INVITE">>, [], ?UA:sdp(<<"endpoint">>, <<"2">>)
+        ),
         ?UA:send(Sock, EP, Re2),
         tell({ep_final, ?UA:recv_any(Sock, 6000)}),
         ?UA:ack(D1, EP),
@@ -1476,8 +2262,18 @@ dialog_replace(Opts) ->
     caller(EP, #{}, fun(Sock, _D) ->
         {Re, S} = ?UA:recv_req(Sock, <<"INVITE">>),
         tell({a_reinvite, Re}),
-        ?UA:send(Sock, S, ?UA:resp(Re, 200, <<"OK">>, <<>>, [contact(Sock)],
-                                   ?UA:sdp(<<"caller">>, <<"1">>))),
+        ?UA:send(
+            Sock,
+            S,
+            ?UA:resp(
+                Re,
+                200,
+                <<"OK">>,
+                <<>>,
+                [contact(Sock)],
+                ?UA:sdp(<<"caller">>, <<"1">>)
+            )
+        ),
         timer:sleep(infinity)
     end),
     #{b2b := B2b} = got(legs),
@@ -1493,7 +2289,6 @@ dialog_replace(Opts) ->
     ?assert(has(?UA:body(got(a_reinvite)), <<"endpoint">>)),
     ?assertEqual(200, ?UA:status(got(ep_final))),
     Re.
-
 
 b2b_request(Ref) ->
     receive
@@ -1519,14 +2314,24 @@ fork_dest(Name, Fun) ->
         timer:sleep(infinity)
     end),
     <<"sip:", (atom_to_binary(Name))/binary, "@127.0.0.1:",
-      (integer_to_binary(P))/binary>>.
+        (integer_to_binary(P))/binary>>.
 
 %% it answers 200 under To-tag Tag after Ms; a BYE then comes to the test
 answers(Name, Tag, Ms) ->
     fun(Sock, Inv, Src) ->
         timer:sleep(Ms),
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, Tag, [contact(Sock)],
-                                     ?UA:sdp(<<"forked">>))),
+        ?UA:send(
+            Sock,
+            Src,
+            ?UA:resp(
+                Inv,
+                200,
+                <<"OK">>,
+                Tag,
+                [contact(Sock)],
+                ?UA:sdp(<<"forked">>)
+            )
+        ),
         {_, _} = ?UA:recv_req(Sock, <<"ACK">>),
         {B, S} = ?UA:recv_req(Sock, <<"BYE">>, 20000),
         ?UA:send(Sock, S, ?UA:resp(B, 200, <<"OK">>, <<>>, [], <<>>)),
@@ -1541,15 +2346,35 @@ rings(Name) ->
         tell({ringing, Name}),
         {C, CS} = ?UA:recv_req(Sock, <<"CANCEL">>, 20000),
         ?UA:send(Sock, CS, ?UA:resp(C, 200, <<"OK">>, Tag, [], <<>>)),
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 487, <<"Request Terminated">>, Tag,
-                                     [], <<>>)),
+        ?UA:send(
+            Sock,
+            Src,
+            ?UA:resp(
+                Inv,
+                487,
+                <<"Request Terminated">>,
+                Tag,
+                [],
+                <<>>
+            )
+        ),
         tell({cancel_of, Name, C})
     end.
 
 busy() ->
     fun(Sock, Inv, Src) ->
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 486, <<"Busy Here">>, ?UA:tag(),
-                                     [], <<>>))
+        ?UA:send(
+            Sock,
+            Src,
+            ?UA:resp(
+                Inv,
+                486,
+                <<"Busy Here">>,
+                ?UA:tag(),
+                [],
+                <<>>
+            )
+        )
     end.
 
 %% an anchored call whose old B gets a BYE when it goes, and whose caller
@@ -1564,7 +2389,9 @@ fork_call() ->
     end),
     caller(EP, #{}, fun(Sock, D) ->
         register(b2b_test_caller, self()),
-        receive go -> ok end,
+        receive
+            go -> ok
+        end,
         ok = ?UA:no_req(Sock, <<"INVITE">>, 100),
         {B, _} = ?UA:in_dialog(D, <<"BYE">>, [], <<>>),
         ?UA:send(Sock, EP, B),
@@ -1592,12 +2419,17 @@ fork_replace_second_answers(_Config) ->
     {{_, Ref} = B2b, OldTag} = fork_call(),
     U1 = fork_dest(one, rings(one)),
     U2 = fork_dest(two, fun(S, I, Src) ->
-        receive after 300 -> ok end,
+        receive
+        after 300 -> ok
+        end,
         (answers(two, <<"twotag">>, 0))(S, I, Src)
     end),
-    ?assertMatch({ok, #{winner := #{uri := U2, index := 2, opts := #{}}}},
-                 chappe_sip_b2b:replace_b(B2b, {parallel, [U1, U2]}, #{})),
-    receive {chappe_sip_b2b, Ref, {replaced, b}} -> ok
+    ?assertMatch(
+        {ok, #{winner := #{uri := U2, index := 2, opts := #{}}}},
+        chappe_sip_b2b:replace_b(B2b, {parallel, [U1, U2]}, #{})
+    ),
+    receive
+        {chappe_sip_b2b, Ref, {replaced, b}} -> ok
     after 5000 -> ct:fail(no_replaced_event)
     end,
     ?assert(has(?UA:body(got(one)), <<"a=rtpe-offer:">>)),
@@ -1609,9 +2441,16 @@ fork_replace_second_answers(_Config) ->
     end,
     ok = ?UA:expect(old_b_bye),
     Cmds = sdp_cmds(),
-    ?assertMatch([#{<<"command">> := <<"offer">>},
-                  #{<<"command">> := <<"answer">>,
-                    <<"to-tag">> := OldTag}], Cmds),
+    ?assertMatch(
+        [
+            #{<<"command">> := <<"offer">>},
+            #{
+                <<"command">> := <<"answer">>,
+                <<"to-tag">> := OldTag
+            }
+        ],
+        Cmds
+    ),
     [_, Answer] = Cmds,
     ?assert(lists:member(<<"port-latching">>, maps:get(<<"flags">>, Answer))),
     hang_up(),
@@ -1621,22 +2460,38 @@ fork_replace_second_answers(_Config) ->
 fork_replace_late_2xx_gets_bye(_Config) ->
     {B2b, _OldTag} = fork_call(),
     U1 = fork_dest(one, fun(Sock, Inv, Src) ->
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 180, <<"Ringing">>, <<"onetag">>, [], <<>>)),
+        ?UA:send(
+            Sock, Src, ?UA:resp(Inv, 180, <<"Ringing">>, <<"onetag">>, [], <<>>)
+        ),
         {C, CS} = ?UA:recv_req(Sock, <<"CANCEL">>),
         ?UA:send(Sock, CS, ?UA:resp(C, 200, <<"OK">>, <<"onetag">>, [], <<>>)),
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, <<"onetag">>,
-                                     [contact(Sock)], ?UA:sdp(<<"one">>))),
+        ?UA:send(
+            Sock,
+            Src,
+            ?UA:resp(
+                Inv,
+                200,
+                <<"OK">>,
+                <<"onetag">>,
+                [contact(Sock)],
+                ?UA:sdp(<<"one">>)
+            )
+        ),
         {_, _} = ?UA:recv_req(Sock, <<"ACK">>),
         {B, S} = ?UA:recv_req(Sock, <<"BYE">>),
         ?UA:send(Sock, S, ?UA:resp(B, 200, <<"OK">>, <<>>, [], <<>>)),
         tell({bye_of, one})
     end),
     U2 = fork_dest(two, fun(S, I, Src) ->
-        receive after 300 -> ok end,
+        receive
+        after 300 -> ok
+        end,
         (answers(two, <<"twotag">>, 0))(S, I, Src)
     end),
-    ?assertMatch({ok, #{winner := #{index := 2}}},
-                 chappe_sip_b2b:replace_b(B2b, {parallel, [U1, U2]}, #{})),
+    ?assertMatch(
+        {ok, #{winner := #{index := 2}}},
+        chappe_sip_b2b:replace_b(B2b, {parallel, [U1, U2]}, #{})
+    ),
     ok = ?UA:expect({bye_of, one}),
     hang_up(),
     ok = ?UA:expect({bye_of, two}).
@@ -1646,11 +2501,20 @@ fork_replace_late_2xx_gets_bye(_Config) ->
 fork_replace_all_busy(_Config) ->
     {B2b, OldTag} = fork_call(),
     Uris = [fork_dest(one, busy()), fork_dest(two, busy())],
-    ?assertMatch({error, #chappe_sip_error{status = 486}},
-                 chappe_sip_b2b:replace_b(B2b, {parallel, Uris}, #{})),
-    ?assertMatch([#{<<"command">> := <<"offer">>},
-                  #{<<"command">> := <<"answer">>,
-                    <<"to-tag">> := OldTag}], sdp_cmds()),
+    ?assertMatch(
+        {error, #chappe_sip_error{status = 486}},
+        chappe_sip_b2b:replace_b(B2b, {parallel, Uris}, #{})
+    ),
+    ?assertMatch(
+        [
+            #{<<"command">> := <<"offer">>},
+            #{
+                <<"command">> := <<"answer">>,
+                <<"to-tag">> := OldTag
+            }
+        ],
+        sdp_cmds()
+    ),
     hang_up(),
     ok = ?UA:expect(old_b_bye).
 
@@ -1659,14 +2523,32 @@ fork_replace_all_busy(_Config) ->
 fork_replace_timer_c(_Config) ->
     {B2b, OldTag} = fork_call(),
     Uris = [fork_dest(one, rings(one)), fork_dest(two, rings(two))],
-    ?assertEqual({error, timeout},
-                 chappe_sip_b2b:replace_b(B2b, {parallel, Uris},
-                                          #{timer_c => 500})),
-    receive {cancel_of, one, _} -> ok after 5000 -> ct:fail(no_cancel_1) end,
-    receive {cancel_of, two, _} -> ok after 5000 -> ct:fail(no_cancel_2) end,
-    ?assertMatch([#{<<"command">> := <<"offer">>},
-                  #{<<"command">> := <<"answer">>,
-                    <<"to-tag">> := OldTag}], sdp_cmds()),
+    ?assertEqual(
+        {error, timeout},
+        chappe_sip_b2b:replace_b(
+            B2b,
+            {parallel, Uris},
+            #{timer_c => 500}
+        )
+    ),
+    receive
+        {cancel_of, one, _} -> ok
+    after 5000 -> ct:fail(no_cancel_1)
+    end,
+    receive
+        {cancel_of, two, _} -> ok
+    after 5000 -> ct:fail(no_cancel_2)
+    end,
+    ?assertMatch(
+        [
+            #{<<"command">> := <<"offer">>},
+            #{
+                <<"command">> := <<"answer">>,
+                <<"to-tag">> := OldTag
+            }
+        ],
+        sdp_cmds()
+    ),
     hang_up(),
     ok = ?UA:expect(old_b_bye).
 
@@ -1677,15 +2559,22 @@ fork_replace_caller_hangs_up(_Config) ->
     Uris = [fork_dest(one, rings(one)), fork_dest(two, rings(two))],
     Test = self(),
     spawn_link(fun() ->
-        Test ! {replace_result,
+        Test !
+            {replace_result,
                 chappe_sip_b2b:replace_b(B2b, {parallel, Uris}, #{})}
     end),
     ok = ?UA:expect({ringing, one}),
     ok = ?UA:expect({ringing, two}),
     T0 = now_ms(),
     hang_up(),
-    receive {cancel_of, one, _} -> ok after 3000 -> ct:fail(no_cancel_1) end,
-    receive {cancel_of, two, _} -> ok after 3000 -> ct:fail(no_cancel_2) end,
+    receive
+        {cancel_of, one, _} -> ok
+    after 3000 -> ct:fail(no_cancel_1)
+    end,
+    receive
+        {cancel_of, two, _} -> ok
+    after 3000 -> ct:fail(no_cancel_2)
+    end,
     ?assert(now_ms() - T0 < 3000),
     ?assertEqual({error, call_ended}, got(replace_result)).
 
@@ -1696,10 +2585,14 @@ fork_replace_failed_then_replace(_Config) ->
     Busy = [fork_dest(one, busy()), fork_dest(two, busy())],
     {error, #chappe_sip_error{status = 486}} =
         chappe_sip_b2b:replace_b(B2b, {parallel, Busy}, #{}),
-    Dests = [fork_dest(three, rings(three)),
-             fork_dest(four, answers(four, <<"fourtag">>, 200))],
-    ?assertMatch({ok, #{winner := #{index := 2}}},
-                 chappe_sip_b2b:replace_b(B2b, {parallel, Dests}, #{})),
+    Dests = [
+        fork_dest(three, rings(three)),
+        fork_dest(four, answers(four, <<"fourtag">>, 200))
+    ],
+    ?assertMatch(
+        {ok, #{winner := #{index := 2}}},
+        chappe_sip_b2b:replace_b(B2b, {parallel, Dests}, #{})
+    ),
     ok = ?UA:expect(old_b_bye),
     Uri = fork_dest(five, answers(five, <<"fivetag">>, 0)),
     ?assertEqual(ok, chappe_sip_b2b:replace_b(B2b, Uri, #{})),
@@ -1715,30 +2608,53 @@ fork_replace_failed_then_replace(_Config) ->
 fork_replace_own_flags(_Config) ->
     {B2b, _OldTag} = fork_call(),
     U1 = fork_dest(one, rings(one)),
-    Own = #{anchor_params => #{a => #{flags => [<<"x-a">>]},
-                               b => #{<<"x-leg">> => <<"two">>}}},
+    Own = #{
+        anchor_params => #{
+            a => #{flags => [<<"x-a">>]},
+            b => #{<<"x-leg">> => <<"two">>}
+        }
+    },
     U2 = fork_dest(two, fun(S, I, Src) ->
-        receive after 300 -> ok end,
+        receive
+        after 300 -> ok
+        end,
         (answers(two, <<"twotag">>, 0))(S, I, Src)
     end),
-    ?assertMatch({ok, #{winner := #{index := 2, opts := Own}}},
-                 chappe_sip_b2b:replace_b(B2b, {parallel, [U1, {U2, Own}]}, #{})),
+    ?assertMatch(
+        {ok, #{winner := #{index := 2, opts := Own}}},
+        chappe_sip_b2b:replace_b(B2b, {parallel, [U1, {U2, Own}]}, #{})
+    ),
     One = ?UA:body(got(one)),
     Two = ?UA:body(got(two)),
     Cmds = sdp_cmds(),
     [Offer1, Offer2, Answer] = Cmds,
-    ?assertMatch(#{<<"command">> := <<"offer">>,
-                   <<"via-branch">> := <<"chappe-1">>}, Offer1),
-    ?assertMatch(#{<<"command">> := <<"offer">>,
-                   <<"via-branch">> := <<"chappe-2">>,
-                   <<"x-leg">> := <<"two">>}, Offer2),
+    ?assertMatch(
+        #{
+            <<"command">> := <<"offer">>,
+            <<"via-branch">> := <<"chappe-1">>
+        },
+        Offer1
+    ),
+    ?assertMatch(
+        #{
+            <<"command">> := <<"offer">>,
+            <<"via-branch">> := <<"chappe-2">>,
+            <<"x-leg">> := <<"two">>
+        },
+        Offer2
+    ),
     ?assertNot(maps:is_key(<<"to-tag">>, Offer1)),
     ?assertNot(maps:is_key(<<"to-tag">>, Offer2)),
     ?assert(has(One, <<"a=rtpe-via:chappe-1">>)),
     ?assert(has(Two, <<"a=rtpe-via:chappe-2">>)),
-    ?assertMatch(#{<<"command">> := <<"answer">>,
-                   <<"to-tag">> := <<"twotag">>,
-                   <<"via-branch">> := <<"chappe-2">>}, Answer),
+    ?assertMatch(
+        #{
+            <<"command">> := <<"answer">>,
+            <<"to-tag">> := <<"twotag">>,
+            <<"via-branch">> := <<"chappe-2">>
+        },
+        Answer
+    ),
     ?assert(lists:member(<<"port-latching">>, maps:get(<<"flags">>, Answer))),
     ?assert(lists:member(<<"x-a">>, maps:get(<<"flags">>, Answer))),
     ok = ?UA:expect(old_b_bye),
@@ -1746,9 +2662,13 @@ fork_replace_own_flags(_Config) ->
     Uri = fork_dest(five, answers(five, <<"fivetag">>, 0)),
     ?assertEqual(ok, chappe_sip_b2b:replace_b(B2b, Uri, #{})),
     Later = sdp_cmds(),
-    ?assertMatch([#{<<"command">> := <<"offer">>, <<"to-tag">> := <<"twotag">>},
-                  #{<<"command">> := <<"answer">>, <<"to-tag">> := <<"twotag">>}],
-                 Later),
+    ?assertMatch(
+        [
+            #{<<"command">> := <<"offer">>, <<"to-tag">> := <<"twotag">>},
+            #{<<"command">> := <<"answer">>, <<"to-tag">> := <<"twotag">>}
+        ],
+        Later
+    ),
     ?assertEqual([], [C || C <- Later, maps:is_key(<<"via-branch">>, C)]),
     ok = ?UA:expect({bye_of, two}),
     hang_up(),
@@ -1763,21 +2683,34 @@ fork_replace_own_flags_fail(_Config) ->
     {error, #chappe_sip_error{status = 486}} =
         chappe_sip_b2b:replace_b(B2b, {parallel, Dests}, #{}),
     [_Offer1, _Offer2, Restore, Reopen, Reanswer] = sdp_cmds(),
-    ?assertMatch(#{<<"command">> := <<"answer">>, <<"to-tag">> := OldTag},
-                 Restore),
+    ?assertMatch(
+        #{<<"command">> := <<"answer">>, <<"to-tag">> := OldTag},
+        Restore
+    ),
     %% the first offer took the old B's media: one more exchange gives it
     %% its flags back
-    ?assertMatch(#{<<"command">> := <<"offer">>, <<"to-tag">> := OldTag}, Reopen),
-    ?assertMatch(#{<<"command">> := <<"answer">>, <<"to-tag">> := OldTag}, Reanswer),
-    [begin
-         ?assertNot(maps:is_key(<<"via-branch">>, C)),
-         ?assertNot(maps:is_key(<<"x-leg">>, C))
-     end || C <- [Restore, Reopen, Reanswer]],
+    ?assertMatch(
+        #{<<"command">> := <<"offer">>, <<"to-tag">> := OldTag}, Reopen
+    ),
+    ?assertMatch(
+        #{<<"command">> := <<"answer">>, <<"to-tag">> := OldTag}, Reanswer
+    ),
+    [
+        begin
+            ?assertNot(maps:is_key(<<"via-branch">>, C)),
+            ?assertNot(maps:is_key(<<"x-leg">>, C))
+        end
+     || C <- [Restore, Reopen, Reanswer]
+    ],
     Uri = fork_dest(three, answers(three, <<"threetag">>, 0)),
     ?assertEqual(ok, chappe_sip_b2b:replace_b(B2b, Uri, #{})),
-    ?assertMatch([#{<<"command">> := <<"offer">>, <<"to-tag">> := OldTag},
-                  #{<<"command">> := <<"answer">>, <<"to-tag">> := OldTag}],
-                 sdp_cmds()),
+    ?assertMatch(
+        [
+            #{<<"command">> := <<"offer">>, <<"to-tag">> := OldTag},
+            #{<<"command">> := <<"answer">>, <<"to-tag">> := OldTag}
+        ],
+        sdp_cmds()
+    ),
     ok = ?UA:expect(old_b_bye),
     hang_up(),
     ok = ?UA:expect({bye_of, three}).
@@ -1789,8 +2722,18 @@ fork_replace_late_offer(_Config) ->
     {EP, CP} = setup(#{media => anchor}),
     ?UA:peer(CP, fun(Sock) ->
         {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, <<"btag">>, [contact(Sock)],
-                                     ?UA:sdp(<<"callee">>))),
+        ?UA:send(
+            Sock,
+            Src,
+            ?UA:resp(
+                Inv,
+                200,
+                <<"OK">>,
+                <<"btag">>,
+                [contact(Sock)],
+                ?UA:sdp(<<"callee">>)
+            )
+        ),
         {_, _} = ?UA:recv_req(Sock, <<"ACK">>),
         {B, S} = ?UA:recv_req(Sock, <<"BYE">>),
         ?UA:send(Sock, S, ?UA:resp(B, 200, <<"OK">>, <<>>, [], <<>>)),
@@ -1798,8 +2741,11 @@ fork_replace_late_offer(_Config) ->
         timer:sleep(infinity)
     end),
     ?UA:peer(0, fun(Sock) ->
-        Inv = ?UA:invite(Sock, EP, #{call_id => ?UA:callid(), from_tag => <<"atag">>,
-                                     body => <<>>}),
+        Inv = ?UA:invite(Sock, EP, #{
+            call_id => ?UA:callid(),
+            from_tag => <<"atag">>,
+            body => <<>>
+        }),
         ?UA:send(Sock, EP, Inv),
         R = ?UA:recv_status(Sock, 200),
         D = ?UA:dialog_from_2xx(Sock, Inv, R),
@@ -1810,17 +2756,28 @@ fork_replace_late_offer(_Config) ->
     timer:sleep(300),
     _ = drain(),
     Own = #{anchor_params => #{b => #{<<"x-leg">> => <<"two">>}}},
-    ?assertEqual({error, {rejected, 488}},
-                 chappe_sip_b2b:replace_b(
-                     B2b, {parallel, [<<"sip:x@127.0.0.1">>,
-                                      {<<"sip:y@127.0.0.1">>, Own}]}, #{})),
+    ?assertEqual(
+        {error, {rejected, 488}},
+        chappe_sip_b2b:replace_b(
+            B2b,
+            {parallel, [
+                <<"sip:x@127.0.0.1">>,
+                {<<"sip:y@127.0.0.1">>, Own}
+            ]},
+            #{}
+        )
+    ),
     ?assertMatch(#{pending := false}, chappe_sip_b2b:info(B2b)),
     %% no offer went out, so rtpengine gets nothing at all
     ?assertEqual([], drain()),
-    Uris = [fork_dest(one, busy()),
-            fork_dest(two, answers(two, <<"twotag">>, 100))],
-    ?assertMatch({ok, #{winner := #{index := 2}}},
-                 chappe_sip_b2b:replace_b(B2b, {parallel, Uris}, #{})),
+    Uris = [
+        fork_dest(one, busy()),
+        fork_dest(two, answers(two, <<"twotag">>, 100))
+    ],
+    ?assertMatch(
+        {ok, #{winner := #{index := 2}}},
+        chappe_sip_b2b:replace_b(B2b, {parallel, Uris}, #{})
+    ),
     ok = ?UA:expect(old_b_bye).
 
 %% A failed replace to another interface: rtpengine gets the old B's
@@ -1831,14 +2788,22 @@ replace_b_failure_other_flags(_Config) ->
     {B2b, OldTag} = fork_call(),
     Uri = fork_dest(one, busy()),
     Other = #{anchor_params => #{b => #{<<"x-leg">> => <<"other">>}}},
-    ?assertMatch({error, #chappe_sip_error{status = 486}},
-                 chappe_sip_b2b:replace_b(B2b, Uri, Other)),
+    ?assertMatch(
+        {error, #chappe_sip_error{status = 486}},
+        chappe_sip_b2b:replace_b(B2b, Uri, Other)
+    ),
     [Offer, Restore, Reopen, Reanswer] = sdp_cmds(),
     ?assertMatch(#{<<"x-leg">> := <<"other">>}, Offer),
-    ?assertMatch(#{<<"command">> := <<"answer">>, <<"to-tag">> := OldTag}, Restore),
-    ?assertMatch(#{<<"command">> := <<"offer">>, <<"to-tag">> := OldTag}, Reopen),
+    ?assertMatch(
+        #{<<"command">> := <<"answer">>, <<"to-tag">> := OldTag}, Restore
+    ),
+    ?assertMatch(
+        #{<<"command">> := <<"offer">>, <<"to-tag">> := OldTag}, Reopen
+    ),
     ?assertNot(maps:is_key(<<"x-leg">>, Reopen)),
-    ?assertMatch(#{<<"command">> := <<"answer">>, <<"to-tag">> := OldTag}, Reanswer),
+    ?assertMatch(
+        #{<<"command">> := <<"answer">>, <<"to-tag">> := OldTag}, Reanswer
+    ),
     ?assertMatch(#{pending := false}, chappe_sip_b2b:info(B2b)),
     hang_up(),
     ok = ?UA:expect(old_b_bye).
@@ -1848,8 +2813,10 @@ fork_replace_offer_refused(_Config) ->
     {B2b, _OldTag} = fork_call(),
     Fail = #{anchor_params => #{b => #{<<"x-fail">> => <<"1">>}}},
     Dests = [{<<"sip:x@127.0.0.1">>, Fail}, {<<"sip:y@127.0.0.1">>, Fail}],
-    ?assertEqual({error, {rejected, 500}},
-                 chappe_sip_b2b:replace_b(B2b, {parallel, Dests}, #{})),
+    ?assertEqual(
+        {error, {rejected, 500}},
+        chappe_sip_b2b:replace_b(B2b, {parallel, Dests}, #{})
+    ),
     ?assertMatch([#{<<"command">> := <<"offer">>}], sdp_cmds()),
     hang_up(),
     ok = ?UA:expect(old_b_bye).
@@ -1860,11 +2827,15 @@ fork_replace_offer_half_refused(_Config) ->
     {B2b, OldTag} = fork_call(),
     Fail = #{anchor_params => #{b => #{<<"x-fail">> => <<"1">>}}},
     Dests = [<<"sip:x@127.0.0.1">>, {<<"sip:y@127.0.0.1">>, Fail}],
-    ?assertEqual({error, {rejected, 500}},
-                 chappe_sip_b2b:replace_b(B2b, {parallel, Dests}, #{})),
+    ?assertEqual(
+        {error, {rejected, 500}},
+        chappe_sip_b2b:replace_b(B2b, {parallel, Dests}, #{})
+    ),
     Restore = lists:last(sdp_cmds()),
-    ?assertMatch(#{<<"command">> := <<"answer">>, <<"to-tag">> := OldTag},
-                 Restore),
+    ?assertMatch(
+        #{<<"command">> := <<"answer">>, <<"to-tag">> := OldTag},
+        Restore
+    ),
     ?assertNot(maps:is_key(<<"via-branch">>, Restore)),
     hang_up(),
     ok = ?UA:expect(old_b_bye).
@@ -1915,15 +2886,18 @@ fork_replace_helper_dies(_Config) ->
     Test = self(),
     Ringing = fork_dest(one, rings(one)),
     spawn_link(fun() ->
-        Test ! {replace_result,
+        Test !
+            {replace_result,
                 chappe_sip_b2b:replace_b(B2b, {parallel, [Ringing]}, #{})}
     end),
     ok = ?UA:expect({ringing, one}),
     exit(helper(Relay, Legs), kill),
     ?assertMatch({error, {helper_down, killed}}, got(replace_result)),
     ?assertMatch(#{pending := false}, chappe_sip_b2b:info(B2b)),
-    ?assertMatch(#{<<"command">> := <<"answer">>, <<"to-tag">> := OldTag},
-                 lists:last(sdp_cmds())),
+    ?assertMatch(
+        #{<<"command">> := <<"answer">>, <<"to-tag">> := OldTag},
+        lists:last(sdp_cmds())
+    ),
     Uri = fork_dest(two, answers(two, <<"twotag">>, 0)),
     ?assertEqual(ok, chappe_sip_b2b:replace_b(B2b, Uri, #{})),
     ok = ?UA:expect(old_b_bye).
@@ -1937,7 +2911,9 @@ reinvite_helper_dies(_Config) ->
         tell({b_reinvite, Re})
     end),
     caller(EP, #{}, fun(Sock, D) ->
-        {Re, _} = ?UA:in_dialog(D, <<"INVITE">>, [], ?UA:sdp(<<"caller">>, <<"1">>)),
+        {Re, _} = ?UA:in_dialog(
+            D, <<"INVITE">>, [], ?UA:sdp(<<"caller">>, <<"1">>)
+        ),
         ?UA:send(Sock, EP, Re),
         tell({a_refused, ?UA:recv_status(Sock, 500)})
     end),
@@ -1960,7 +2936,8 @@ replace_b_new_b_dies(_Config) ->
     Test = self(),
     Uri = fork_dest(one, answers(one, <<"onetag">>, 300)),
     spawn_link(fun() ->
-        Test ! {replace_result,
+        Test !
+            {replace_result,
                 chappe_sip_b2b:replace_b(B2b, {parallel, [Uri]}, #{})}
     end),
     _ = got(one),
@@ -1972,8 +2949,10 @@ replace_b_new_b_dies(_Config) ->
     true = erlang:resume_process(Helper),
     ?assertMatch({error, {new_b_down, _}}, got(replace_result)),
     ?assertMatch(#{pending := false}, chappe_sip_b2b:info(B2b)),
-    ?assertMatch(#{<<"command">> := <<"answer">>, <<"to-tag">> := OldTag},
-                 lists:last(sdp_cmds())).
+    ?assertMatch(
+        #{<<"command">> := <<"answer">>, <<"to-tag">> := OldTag},
+        lists:last(sdp_cmds())
+    ).
 
 new_b_dialog(_Helper, 0) ->
     ct:fail(no_new_b_dialog);
@@ -1990,8 +2969,12 @@ new_b_dialog(Helper, N) ->
 %% info/1 follows leg B: after a fork its winner, after a URI none.
 info_follows_replace(_Config) ->
     {B2b, _OldTag} = fork_call(),
-    Uris = [fork_dest(one, busy()), fork_dest(two, answers(two, <<"twotag">>, 0))],
-    {ok, #{winner := Winner}} = chappe_sip_b2b:replace_b(B2b, {parallel, Uris}, #{}),
+    Uris = [
+        fork_dest(one, busy()), fork_dest(two, answers(two, <<"twotag">>, 0))
+    ],
+    {ok, #{winner := Winner}} = chappe_sip_b2b:replace_b(
+        B2b, {parallel, Uris}, #{}
+    ),
     ?assertMatch(#{index := 2}, Winner),
     ?assertMatch(#{winner := Winner}, chappe_sip_b2b:info(B2b)),
     Uri = fork_dest(three, answers(three, <<"threetag">>, 0)),
@@ -2006,18 +2989,33 @@ replace_clears_hold(_Config) ->
     rtpe(),
     {EP, CP} = setup(#{media => anchor, notify => self()}),
     callee(CP, fun(Sock, D) ->
-        {Re, _} = ?UA:in_dialog(D, <<"INVITE">>, [],
-                                sdp_dir(<<"callee">>, <<"1">>, <<"sendonly">>)),
+        {Re, _} = ?UA:in_dialog(
+            D,
+            <<"INVITE">>,
+            [],
+            sdp_dir(<<"callee">>, <<"1">>, <<"sendonly">>)
+        ),
         ?UA:send(Sock, EP, Re),
         tell({b_hold, ?UA:recv_status(Sock, 200)})
     end),
     caller(EP, #{}, fun(Sock, _D) ->
         {Re, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
-        ?UA:send(Sock, Src, ?UA:resp(Re, 200, <<"OK">>, <<>>, [contact(Sock)],
-                                     ?UA:sdp(<<"caller">>, <<"1">>)))
+        ?UA:send(
+            Sock,
+            Src,
+            ?UA:resp(
+                Re,
+                200,
+                <<"OK">>,
+                <<>>,
+                [contact(Sock)],
+                ?UA:sdp(<<"caller">>, <<"1">>)
+            )
+        )
     end),
     #{b2b := {_, Ref} = B2b} = got(legs),
-    receive {chappe_sip_b2b, Ref, {hold, b}} -> ok
+    receive
+        {chappe_sip_b2b, Ref, {hold, b}} -> ok
     after 6000 -> ct:fail(no_hold)
     end,
     _ = got(b_hold),
@@ -2025,7 +3023,8 @@ replace_clears_hold(_Config) ->
     Uris = [fork_dest(one, answers(one, <<"onetag">>, 0))],
     {ok, _} = chappe_sip_b2b:replace_b(B2b, {parallel, Uris}, #{}),
     ?assertMatch(#{hold := #{b := false}}, chappe_sip_b2b:info(B2b)),
-    receive {chappe_sip_b2b, Ref, {unhold, b}} -> ok
+    receive
+        {chappe_sip_b2b, Ref, {unhold, b}} -> ok
     after 2000 -> ct:fail(no_unhold)
     end.
 
@@ -2043,15 +3042,22 @@ replace_b_bad_arguments(_Config) ->
         {{parallel, [{<<"sip:x@h">>, #{headers => [nottuple]}}]}, #{}},
         {{parallel, [{<<"sip:x@h">>, #{anchor_params => nomap}}]}, #{}},
         {{parallel, [{<<"sip:x@h">>, #{anchor_params => #{c => #{}}}}]}, #{}},
-        {{parallel, [{<<"sip:x@h">>, #{anchor_params => #{a => #{flags => x}}}}]}, #{}},
+        {
+            {parallel, [
+                {<<"sip:x@h">>, #{anchor_params => #{a => #{flags => x}}}}
+            ]},
+            #{}
+        },
         {notatarget, #{}},
         {<<"sip:x@h">>, notamap},
         {<<"sip:x@h">>, #{anchor_params => nomap}},
         {<<"sip:x@h">>, #{headers => nolist}},
         {<<"sip:x@h">>, #{anchor_params => #{a => #{flags => x}}}}
     ],
-    [?assertEqual({error, badarg}, chappe_sip_b2b:replace_b(B2b, T, O))
-     || {T, O} <- Bad],
+    [
+        ?assertEqual({error, badarg}, chappe_sip_b2b:replace_b(B2b, T, O))
+     || {T, O} <- Bad
+    ],
     ?assert(is_process_alive(Relay)),
     ?assertMatch(#{pending := false}, chappe_sip_b2b:info(B2b)),
     ?assertEqual([], sdp_cmds()),
@@ -2076,12 +3082,17 @@ fork_replace_from(_Config) ->
     {B2b, _OldTag} = fork_call(),
     U1 = fork_dest(one, rings(one)),
     U2 = fork_dest(two, fun(S, I, Src) ->
-        receive after 300 -> ok end,
+        receive
+        after 300 -> ok
+        end,
         (answers(two, <<"twotag">>, 0))(S, I, Src)
     end),
     {ok, #{winner := #{index := 2}}} =
-        chappe_sip_b2b:replace_b(B2b, {parallel, [U1, U2]},
-                                 #{from => ?NEW_FROM}),
+        chappe_sip_b2b:replace_b(
+            B2b,
+            {parallel, [U1, U2]},
+            #{from => ?NEW_FROM}
+        ),
     F1 = ?UA:hdr(got(one), <<"from">>),
     F2 = ?UA:hdr(got(two), <<"from">>),
     assert_new_from(F1),
@@ -2112,9 +3123,13 @@ replace_b_bad_from(_Config) ->
     ],
     Fork = {parallel, [<<"sip:x@127.0.0.1:9">>]},
     Targets = [<<"sip:x@127.0.0.1:9">>, Fork, {dialog, app_dialog}],
-    [?assertEqual({error, badarg},
-                  chappe_sip_b2b:replace_b(B2b, T, #{from => F, timer_c => 500}))
-     || F <- Bad, T <- Targets],
+    [
+        ?assertEqual(
+            {error, badarg},
+            chappe_sip_b2b:replace_b(B2b, T, #{from => F, timer_c => 500})
+        )
+     || F <- Bad, T <- Targets
+    ],
     ?assert(is_process_alive(Relay)),
     ?assertMatch(#{pending := false}, chappe_sip_b2b:info(B2b)),
     ?assertEqual([], sdp_cmds()),
@@ -2126,9 +3141,12 @@ replace_b_bad_from(_Config) ->
 replace_b_from_refused(_Config) ->
     {{Relay, _} = B2b, _OldTag} = fork_call(),
     Uri = fork_dest(one, busy()),
-    ?assertMatch({error, _},
-                 chappe_sip_b2b:replace_b(B2b, Uri, #{from => <<"<sip:a@b>;=">>})),
-    receive {one, _} -> ct:fail(invite_sent)
+    ?assertMatch(
+        {error, _},
+        chappe_sip_b2b:replace_b(B2b, Uri, #{from => <<"<sip:a@b>;=">>})
+    ),
+    receive
+        {one, _} -> ct:fail(invite_sent)
     after 200 -> ok
     end,
     ?assert(is_process_alive(Relay)),
@@ -2137,10 +3155,14 @@ replace_b_from_refused(_Config) ->
     ok = ?UA:expect(old_b_bye).
 
 assert_new_from(From) ->
-    ?assertMatch({ok, #{display := <<"Alice">>,
-                        uri := <<"sip:alice@example.com">>,
-                        params := #{<<"tag">> := _}}},
-                 chappe_sip_hdr:name_addr(From)).
+    ?assertMatch(
+        {ok, #{
+            display := <<"Alice">>,
+            uri := <<"sip:alice@example.com">>,
+            params := #{<<"tag">> := _}
+        }},
+        chappe_sip_hdr:name_addr(From)
+    ).
 
 from_tag(From) ->
     {ok, #{params := #{<<"tag">> := Tag}}} = chappe_sip_hdr:name_addr(From),
@@ -2149,8 +3171,10 @@ from_tag(From) ->
 %% No destination at all.
 fork_replace_empty(_Config) ->
     {B2b, _OldTag} = fork_call(),
-    ?assertEqual({error, none_up},
-                 chappe_sip_b2b:replace_b(B2b, {parallel, []}, #{})),
+    ?assertEqual(
+        {error, none_up},
+        chappe_sip_b2b:replace_b(B2b, {parallel, []}, #{})
+    ),
     ?assertEqual([], sdp_cmds()),
     hang_up(),
     ok = ?UA:expect(old_b_bye).
@@ -2171,7 +3195,9 @@ setup(Opts) ->
 setup_raw(Opts) ->
     EP = ?UA:pick(),
     CP = ?UA:pick(),
-    ok = chappe_sip:start(#{contact => <<"sip:127.0.0.1:", (integer_to_binary(EP))/binary>>}),
+    ok = chappe_sip:start(#{
+        contact => <<"sip:127.0.0.1:", (integer_to_binary(EP))/binary>>
+    }),
     Test = self(),
     register(b2b_relay_test, Test),
     Callee = <<"sip:callee@127.0.0.1:", (integer_to_binary(CP))/binary>>,
@@ -2205,21 +3231,35 @@ hold_uac_after_ack(Ms) ->
         end
     end),
     Hold = fun
-        (_, {in, {'$gen_call', {Pid, _},
-                  {txn, {send_stateless, _, <<"ACK ", _/binary>>, _}}}}, _) ->
+        (
+            _,
+            {in,
+                {'$gen_call', {Pid, _},
+                    {txn, {send_stateless, _, <<"ACK ", _/binary>>, _}}}},
+            _
+        ) ->
             Ref = make_ref(),
             Holder ! {hold, Pid, self(), Ref},
-            receive {Ref, held} -> done after 1000 -> done end;
+            receive
+                {Ref, held} -> done
+            after 1000 -> done
+            end;
         (St, _, _) ->
             St
     end,
     ok = sys:install(chappe_sip_engine, {b2b_hold, Hold, armed}).
 
 got(Tag) ->
-    receive {Tag, V} -> V after 10000 -> ct:fail({missing, Tag}) end.
+    receive
+        {Tag, V} -> V
+    after 10000 -> ct:fail({missing, Tag})
+    end.
 
 got2(Tag) ->
-    receive {Tag, V, W} -> {V, W} after 10000 -> ct:fail({missing, Tag}) end.
+    receive
+        {Tag, V, W} -> {V, W}
+    after 10000 -> ct:fail({missing, Tag})
+    end.
 
 now_ms() -> erlang:monotonic_time(millisecond).
 
@@ -2231,7 +3271,10 @@ rtpe() ->
     ok.
 
 drain() ->
-    receive {rtpe_cmd, _} = C -> [C | drain()] after 200 -> [] end.
+    receive
+        {rtpe_cmd, _} = C -> [C | drain()]
+    after 200 -> []
+    end.
 
 sdp_dir(Marker, Version, Dir) ->
     <<(?UA:sdp(Marker, Version))/binary, "a=", Dir/binary, "\r\n">>.
@@ -2246,8 +3289,9 @@ tokens(Values) ->
     [string:trim(T) || V <- Values, T <- binary:split(V, <<",">>, [global])].
 
 contact(Sock) ->
-    {<<"Contact">>, <<"<sip:peer@127.0.0.1:",
-                      (integer_to_binary(?UA:lport(Sock)))/binary, ">">>}.
+    {<<"Contact">>,
+        <<"<sip:peer@127.0.0.1:", (integer_to_binary(?UA:lport(Sock)))/binary,
+            ">">>}.
 
 %% The callee (leg B): answers 200 with Headers, waits for the ACK, then
 %% runs Fun(Sock, RawDialog).
@@ -2257,9 +3301,18 @@ callee(CP, Opts, Fun) ->
     ?UA:peer(CP, fun(Sock) ->
         {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
         Tag = ?UA:tag(),
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, Tag,
-                                     [contact(Sock) | maps:get(headers, Opts, [])],
-                                     ?UA:sdp(<<"callee">>))),
+        ?UA:send(
+            Sock,
+            Src,
+            ?UA:resp(
+                Inv,
+                200,
+                <<"OK">>,
+                Tag,
+                [contact(Sock) | maps:get(headers, Opts, [])],
+                ?UA:sdp(<<"callee">>)
+            )
+        ),
         {_Ack, _} = ?UA:recv_req(Sock, <<"ACK">>),
         Fun(Sock, ?UA:dialog_from_invite(Sock, Inv, Tag, Src)),
         timer:sleep(infinity)
@@ -2269,8 +3322,11 @@ callee(CP, Opts, Fun) ->
 %% Fun(Sock, RawDialog).
 caller(EP, Opts, Fun) ->
     ?UA:peer(0, fun(Sock) ->
-        Inv = ?UA:invite(Sock, EP, #{call_id => ?UA:callid(), from_tag => ?UA:tag(),
-                                     headers => maps:get(headers, Opts, [])}),
+        Inv = ?UA:invite(Sock, EP, #{
+            call_id => ?UA:callid(),
+            from_tag => ?UA:tag(),
+            headers => maps:get(headers, Opts, [])
+        }),
         ?UA:send(Sock, EP, Inv),
         R = ?UA:recv_status(Sock, 200),
         D = ?UA:dialog_from_2xx(Sock, Inv, R),
@@ -2292,15 +3348,30 @@ prack(Sock, InvBin, R1xx) ->
     {ok, R} = chappe_sip_msg:parse(R1xx),
     RSeq = chappe_sip_msg:get(<<"rseq">>, R),
     iolist_to_binary(
-      [<<"PRACK sip:app@127.0.0.1 SIP/2.0\r\n">>,
-       <<"Via: SIP/2.0/UDP 127.0.0.1:">>, P, <<";rport;branch=">>, ?UA:branch(), <<"\r\n">>,
-       <<"Max-Forwards: 70\r\n">>,
-       <<"From: ">>, chappe_sip_msg:get(<<"from">>, I), <<"\r\n">>,
-       <<"To: ">>, chappe_sip_msg:get(<<"to">>, R), <<"\r\n">>,
-       <<"Call-ID: ">>, chappe_sip_msg:call_id(I), <<"\r\n">>,
-       <<"CSeq: 2 PRACK\r\n">>,
-       <<"RAck: ">>, RSeq, <<" 1 INVITE\r\n">>,
-       <<"Content-Length: 0\r\n\r\n">>]).
+        [
+            <<"PRACK sip:app@127.0.0.1 SIP/2.0\r\n">>,
+            <<"Via: SIP/2.0/UDP 127.0.0.1:">>,
+            P,
+            <<";rport;branch=">>,
+            ?UA:branch(),
+            <<"\r\n">>,
+            <<"Max-Forwards: 70\r\n">>,
+            <<"From: ">>,
+            chappe_sip_msg:get(<<"from">>, I),
+            <<"\r\n">>,
+            <<"To: ">>,
+            chappe_sip_msg:get(<<"to">>, R),
+            <<"\r\n">>,
+            <<"Call-ID: ">>,
+            chappe_sip_msg:call_id(I),
+            <<"\r\n">>,
+            <<"CSeq: 2 PRACK\r\n">>,
+            <<"RAck: ">>,
+            RSeq,
+            <<" 1 INVITE\r\n">>,
+            <<"Content-Length: 0\r\n\r\n">>
+        ]
+    ).
 
 %% the INVITE's 2xx (the PRACK's own 200 is skipped)
 recv_invite_2xx(Sock) ->
@@ -2314,12 +3385,27 @@ recv_invite_2xx(Sock) ->
 cancel(InvBin, Reason) ->
     {ok, I} = chappe_sip_msg:parse(InvBin),
     iolist_to_binary(
-      [<<"CANCEL ">>, chappe_sip_msg:uri(I), <<" SIP/2.0\r\n">>,
-       <<"Via: ">>, chappe_sip_msg:get(<<"via">>, I), <<"\r\n">>,
-       <<"Max-Forwards: 70\r\n">>,
-       <<"From: ">>, chappe_sip_msg:get(<<"from">>, I), <<"\r\n">>,
-       <<"To: ">>, chappe_sip_msg:get(<<"to">>, I), <<"\r\n">>,
-       <<"Call-ID: ">>, chappe_sip_msg:call_id(I), <<"\r\n">>,
-       <<"CSeq: 1 CANCEL\r\n">>,
-       <<"Reason: ">>, Reason, <<"\r\n">>,
-       <<"Content-Length: 0\r\n\r\n">>]).
+        [
+            <<"CANCEL ">>,
+            chappe_sip_msg:uri(I),
+            <<" SIP/2.0\r\n">>,
+            <<"Via: ">>,
+            chappe_sip_msg:get(<<"via">>, I),
+            <<"\r\n">>,
+            <<"Max-Forwards: 70\r\n">>,
+            <<"From: ">>,
+            chappe_sip_msg:get(<<"from">>, I),
+            <<"\r\n">>,
+            <<"To: ">>,
+            chappe_sip_msg:get(<<"to">>, I),
+            <<"\r\n">>,
+            <<"Call-ID: ">>,
+            chappe_sip_msg:call_id(I),
+            <<"\r\n">>,
+            <<"CSeq: 1 CANCEL\r\n">>,
+            <<"Reason: ">>,
+            Reason,
+            <<"\r\n">>,
+            <<"Content-Length: 0\r\n\r\n">>
+        ]
+    ).

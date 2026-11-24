@@ -61,9 +61,15 @@ start(Ip) ->
                 local_nets => [<<"10.253.10.0/26">>]
             }
         ],
-        media => #{rtpengine => #{nodes => [#{name => rtpe, host => ?RTPE, port => 2223}]}}
+        media => #{
+            rtpengine => #{
+                nodes => [#{name => rtpe, host => ?RTPE, port => 2223}]
+            }
+        }
     }),
-    Peer = #{interval_ms => 1000, timeout_ms => 1000, up_after => 1, down_after => 2},
+    Peer = #{
+        interval_ms => 1000, timeout_ms => 1000, up_after => 1, down_after => 2
+    },
     ok = chappe_sip:peer_add(fs1, Peer#{uri => ?FS1, group => fs, priority => 1}),
     ok = chappe_sip:peer_add(fs2, Peer#{uri => ?FS2, group => fs, priority => 2}),
     ok = chappe_sip:peer_add(kam, Peer#{uri => ?KAM, group => kam}),
@@ -87,7 +93,9 @@ keeper() ->
         Self ! {keeper, self()},
         keep()
     end),
-    receive {keeper, Pid} -> Pid end.
+    receive
+        {keeper, Pid} -> Pid
+    end.
 
 keep() ->
     receive
@@ -116,9 +124,13 @@ invite(Keeper, Req, Res) ->
             true = ets:insert(sbc_calls, {CallId, B2b, User}),
             _ =
                 is_tuple(target(User)) andalso
-                    ets:insert(sbc_events, {CallId, {winner, maps:get(index, W)}}),
+                    ets:insert(
+                        sbc_events, {CallId, {winner, maps:get(index, W)}}
+                    ),
             log("call ~s up media ~p to ~s", [
-                CallId, chappe_sip_b2b_media:mode(M), chappe_sip_dialog:call_id(B)
+                CallId,
+                chappe_sip_b2b_media:mode(M),
+                chappe_sip_dialog:call_id(B)
             ]),
             _ = User =:= <<"glare">> andalso glare(CallId, B2b),
             Done = chappe_sip_b2b:relay(Legs),
@@ -133,10 +145,14 @@ target(<<"fork", _/binary>>) ->
 target(_User) ->
     {peer_group, fs}.
 
-media(<<"fork", _/binary>>) -> anchor;
-media(<<"anchor", _/binary>>) -> anchor;
-media(<<"direct", _/binary>>) -> direct;
-media(<<"glare">>) -> direct;
+media(<<"fork", _/binary>>) ->
+    anchor;
+media(<<"anchor", _/binary>>) ->
+    anchor;
+media(<<"direct", _/binary>>) ->
+    direct;
+media(<<"glare">>) ->
+    direct;
 media(_) ->
     fun(#{sdp := Sdp, source := Source}) ->
         %% leg B is a FreeSWITCH of the lab network
@@ -149,7 +165,9 @@ media(_) ->
 %% our re-INVITE goes once the caller's ACK is in; its own crosses it
 glare(CallId, B2b) ->
     spawn(fun() ->
-        log("call ~s set_media anchor ~p", [CallId, chappe_sip_b2b:set_media(B2b, anchor)])
+        log("call ~s set_media anchor ~p", [
+            CallId, chappe_sip_b2b:set_media(B2b, anchor)
+        ])
     end).
 
 user(Req) ->
@@ -169,7 +187,10 @@ mode(B2b) ->
 %% Call-IDs as strings: erl_call prints a binary as #Bin<...>
 -spec calls() -> [{string(), atom()}].
 calls() ->
-    [{binary_to_list(CallId), mode(B2b)} || {CallId, B2b, _} <- ets:tab2list(sbc_calls)].
+    [
+        {binary_to_list(CallId), mode(B2b)}
+     || {CallId, B2b, _} <- ets:tab2list(sbc_calls)
+    ].
 
 -spec set_media(binary() | string(), direct | anchor) -> ok | {error, term()}.
 set_media(CallId, Mode) ->

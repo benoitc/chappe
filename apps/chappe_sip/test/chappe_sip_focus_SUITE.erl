@@ -84,7 +84,8 @@ end_per_suite(_Config) ->
 %% every case starts with a conference hosted by `host'
 init_per_testcase(_Case, Config) ->
     EP = ?config(ep, Config),
-    Uri = <<"sip:conf-", (rand_hex(4))/binary, "@127.0.0.1:", (port(EP))/binary>>,
+    Uri =
+        <<"sip:conf-", (rand_hex(4))/binary, "@127.0.0.1:", (port(EP))/binary>>,
     {ok, _} = chappe_sip_test_focus:start(Uri),
     UAs = [
         {K, ua_start(Name, EP)}
@@ -123,7 +124,9 @@ subscription_dialog(Config) ->
     ?assertMatch(#{state := "full", version := 1}, info(First)),
     ?assertEqual(<<"conference">>, hdr(First, event)),
     ?assertEqual(?CI, hdr(First, 'content-type')),
-    ?assertMatch(<<"active;expires=", _/binary>>, hdr(First, 'subscription-state')),
+    ?assertMatch(
+        <<"active;expires=", _/binary>>, hdr(First, 'subscription-state')
+    ),
     ?assertNotEqual(nomatch, binary:match(hdr(First, contact), <<"isfocus">>)),
     %% the host is in it, with its role
     ?assert(mentions(W, Sub, ua_uri(?config(host, Config)))),
@@ -158,7 +161,9 @@ versions_per_subscription(Config) ->
 %% req: R4575-03 R6665-09
 refresh_gets_full_state(Config) ->
     W = ?config(watcher, Config),
-    {ok, Sub, _} = subscribe(W, ?config(conf_uri, Config), <<"conference">>, []),
+    {ok, Sub, _} = subscribe(
+        W, ?config(conf_uri, Config), <<"conference">>, []
+    ),
     wait_notifies(W, Sub, 1),
     {ok, 200} = refresh(W, Sub, 600),
     [_, Second] = wait_notifies(W, Sub, 2),
@@ -249,7 +254,9 @@ conference_end_terminates(Config) ->
         ]
     end,
     ok = wait_until(
-        fun() -> Terminated(W, Sub) =/= [] andalso Terminated(P1, SubP) =/= [] end,
+        fun() ->
+            Terminated(W, Sub) =/= [] andalso Terminated(P1, SubP) =/= []
+        end,
         15000
     ),
     %% the notifier's retransmit window and the owner-exit teardown have
@@ -285,8 +292,10 @@ refer_bye_removes_participant(Config) ->
     [Host, P2] = [?config(K, Config) || K <- [host, p2]],
     Uri = ?config(conf_uri, Config),
     ok = chappe_sip_test_focus:refer_policy(fun
-        (#{action := remove, referrer := R}) -> binary:match(R, <<"host@">>) =/= nomatch;
-        (_) -> true
+        (#{action := remove, referrer := R}) ->
+            binary:match(R, <<"host@">>) =/= nomatch;
+        (_) ->
+            true
     end),
     {ok, _, _} = invite(P2, Uri, []),
     ok = joined(P2),
@@ -302,8 +311,10 @@ refer_not_allowed(Config) ->
     [P1, P2] = [?config(K, Config) || K <- [p1, p2]],
     Uri = ?config(conf_uri, Config),
     ok = chappe_sip_test_focus:refer_policy(fun
-        (#{action := remove, referrer := R}) -> binary:match(R, <<"host@">>) =/= nomatch;
-        (_) -> true
+        (#{action := remove, referrer := R}) ->
+            binary:match(R, <<"host@">>) =/= nomatch;
+        (_) ->
+            true
     end),
     {ok, Call1, _} = invite(P1, Uri, []),
     {ok, _, _} = invite(P2, Uri, []),
@@ -328,11 +339,22 @@ refer_keeps_replaces(Config) ->
     R = #{call_id => <<"p2p@ct">>, to_tag => <<"tt">>, from_tag => <<"ft">>},
     Target = chappe_sip_hdr:refer_to_value(#{uri => ua_uri(P2), replaces => R}),
     {ok, 200} = ua_call(P1, {refer, Call, Target}),
-    Info = receive {refer_info, I} -> I after 5000 -> ct:fail(no_policy) end,
-    ?assertMatch(#{action := add, replaces := #{call_id := <<"p2p@ct">>,
-                                               to_tag := <<"tt">>,
-                                               from_tag := <<"ft">>}},
-                 Info),
+    Info =
+        receive
+            {refer_info, I} -> I
+        after 5000 -> ct:fail(no_policy)
+        end,
+    ?assertMatch(
+        #{
+            action := add,
+            replaces := #{
+                call_id := <<"p2p@ct">>,
+                to_tag := <<"tt">>,
+                from_tag := <<"ft">>
+            }
+        },
+        Info
+    ),
     Invites = fun() -> [M || {<<"INVITE">>, M, _} <- ua_call(P2, requests)] end,
     ok = wait_until(fun() -> Invites() =/= [] end, 10000),
     [Inv | _] = Invites(),
@@ -353,9 +375,16 @@ refer_without_isfocus_is_transfer(Config) ->
     try
         {ok, Call, Resp} = invite(P1, ?config(conf_uri, Config), []),
         ?assertEqual(nomatch, binary:match(hdr(Resp, contact), <<"isfocus">>)),
-        {ok, 403} = ua_call(P1, {refer, Call, <<"<", (ua_uri(P2))/binary, ">">>}),
-        ?assertMatch(#{action := transfer},
-                     receive {refer_info, I} -> I after 5000 -> ct:fail(no_policy) end)
+        {ok, 403} = ua_call(
+            P1, {refer, Call, <<"<", (ua_uri(P2))/binary, ">">>}
+        ),
+        ?assertMatch(
+            #{action := transfer},
+            receive
+                {refer_info, I} -> I
+            after 5000 -> ct:fail(no_policy)
+            end
+        )
     after
         chappe_sip_test_focus:hide_focus(false)
     end.
@@ -416,14 +445,23 @@ every_watcher_gets_each_change(Config) ->
     {ok, 200} = bye(P1, C1),
     Docs = [wait_notifies(UA, S, 3) || {UA, S} <- [{W, SubW}, {Host, SubH}]],
     [Seen, Seen] = [
-        [{maps:get(version, info(N)), maps:get(state, info(N)),
-          users_status(N, P1Uri)} || N <- Ns]
+        [
+            {
+                maps:get(version, info(N)),
+                maps:get(state, info(N)),
+                users_status(N, P1Uri)
+            }
+         || N <- Ns
+        ]
      || Ns <- Docs
     ],
     ct:log("each watcher saw ~p", [Seen]),
     ?assertMatch(
-        [{1, "full", _}, {2, "partial", ["connected"]},
-         {3, "partial", ["disconnected"]}],
+        [
+            {1, "full", _},
+            {2, "partial", ["connected"]},
+            {3, "partial", ["disconnected"]}
+        ],
         Seen
     ).
 
@@ -446,7 +484,10 @@ view_per_subscriber(Config) ->
     wait_notifies(W, SubW, 1),
     {ok, _, _} = invite(P1, Uri, []),
     ok = wait_until(
-        fun() -> mentions(Host, SubH, ua_uri(P1)) andalso mentions(W, SubW, ua_uri(P1)) end,
+        fun() ->
+            mentions(Host, SubH, ua_uri(P1)) andalso
+                mentions(W, SubW, ua_uri(P1))
+        end,
         15000
     ),
     ?assert(mentions(Host, SubH, <<"<call-info">>)),
@@ -477,7 +518,9 @@ denied_gets_empty_roster(Config) ->
     ?assertNot(mentions(W, SubW, <<"<user ">>)).
 
 from_user(Req) ->
-    {ok, #{uri := U}} = chappe_sip_msg:parsed(<<"from">>, chappe_sip_req:msg(Req)),
+    {ok, #{uri := U}} = chappe_sip_msg:parsed(
+        <<"from">>, chappe_sip_req:msg(Req)
+    ),
     {ok, #{user := User}} = chappe_sip_uri:parse(U),
     User.
 
@@ -496,7 +539,10 @@ users_status(M, Uri) ->
     case binary:split(Body, <<"entity=\"", Uri/binary, "\"">>) of
         [_, After] ->
             Re = "<status>([a-z-]+)</status>",
-            [St || {match, [St]} <- [re:run(After, Re, [{capture, [1], list}])]];
+            [
+                St
+             || {match, [St]} <- [re:run(After, Re, [{capture, [1], list}])]
+            ];
         [_] ->
             []
     end.
@@ -648,7 +694,13 @@ ua_handle({invite, Uri, Hdrs}, S) ->
                 call => Call, ft => FT, tt => TT, to => Uri, cseq => 1
             }),
             send(S1, Ack),
-            D = #{ft => FT, tt => TT, to => Uri, target => contact_uri(R), cseq => 1},
+            D = #{
+                ft => FT,
+                tt => TT,
+                to => Uri,
+                target => contact_uri(R),
+                cseq => 1
+            },
             {{ok, Call, R}, add_dialog(Call, D, S1)};
         St ->
             {{error, St, R}, S1}
@@ -660,7 +712,11 @@ ua_handle({subscribe, Uri, Event, Hdrs}, S) ->
     Names = [string:lowercase(N) || {N, _} <- Hdrs],
     All =
         [{<<"Event">>, Event}] ++ Hdrs ++
-            [H || {N, _} = H <- Defaults, not lists:member(string:lowercase(N), Names)],
+            [
+                H
+             || {N, _} = H <- Defaults,
+                not lists:member(string:lowercase(N), Names)
+            ],
     Bin = request(<<"SUBSCRIBE">>, Uri, S, #{
         call => Call, ft => FT, to => Uri, cseq => 1, hdrs => All
     }),
@@ -680,7 +736,9 @@ ua_handle({subscribe, Uri, Event, Hdrs}, S) ->
             {{error, St, R}, S1}
     end;
 ua_handle({refresh, Call, Expires}, S) ->
-    in_dialog(<<"SUBSCRIBE">>, Call, [{<<"Expires">>, integer_to_binary(Expires)}], S);
+    in_dialog(
+        <<"SUBSCRIBE">>, Call, [{<<"Expires">>, integer_to_binary(Expires)}], S
+    );
 ua_handle({refer, Call, Target}, S) ->
     in_dialog(<<"REFER">>, Call, [{<<"Refer-To">>, Target}], S);
 ua_handle({bye, Call}, S) ->
@@ -699,7 +757,9 @@ in_dialog(Method, Call, Hdrs, #{dialogs := Ds} = S) ->
             #{event := E} -> [{<<"Event">>, E}];
             _ -> []
         end,
-    Bin = request(Method, Target, S, D#{call => Call, cseq => C + 1, hdrs => Ev ++ Hdrs}),
+    Bin = request(Method, Target, S, D#{
+        call => Call, cseq => C + 1, hdrs => Ev ++ Hdrs
+    }),
     {R, S1} = transact(Bin, Call, add_dialog(Call, D#{cseq => C + 1}, S)),
     {{ok, chappe_sip_msg:status(R)}, S1}.
 
@@ -733,8 +793,11 @@ ua_incoming(Bin, #{reqs := Reqs, seen := Seen} = S) ->
     {ok, M} = chappe_sip_msg:parse(Bin),
     Method = chappe_sip_msg:method(M),
     case Method of
-        <<"ACK">> -> ok;
-        _ -> slow_final(M, S), send(S, resp(M, 200, <<"OK">>))
+        <<"ACK">> ->
+            ok;
+        _ ->
+            slow_final(M, S),
+            send(S, resp(M, 200, <<"OK">>))
     end,
     Key = {chappe_sip_msg:call_id(M), chappe_sip_msg:get(<<"cseq">>, M)},
     case maps:is_key(Key, Seen) of
@@ -767,16 +830,39 @@ request(Method, RUri, S, #{call := Call, ft := FT, to := To, cseq := CSeq} = O) 
     Display = <<(string:uppercase(Name))/binary, " Phone">>,
     Hdrs = maps:get(hdrs, O, []),
     iolist_to_binary([
-        Method, <<" ">>, RUri, <<" SIP/2.0\r\n">>,
-        <<"Via: SIP/2.0/UDP 127.0.0.1:">>, port(P), <<";rport;branch=">>,
-            branch(), <<"\r\n">>,
+        Method,
+        <<" ">>,
+        RUri,
+        <<" SIP/2.0\r\n">>,
+        <<"Via: SIP/2.0/UDP 127.0.0.1:">>,
+        port(P),
+        <<";rport;branch=">>,
+        branch(),
+        <<"\r\n">>,
         <<"Max-Forwards: 70\r\n">>,
-        <<"From: \"">>, Display, <<"\" <">>, self_uri(S), <<">;tag=">>, FT,
-            <<"\r\n">>,
-        <<"To: <">>, To, <<">">>, ToTag, <<"\r\n">>,
-        <<"Contact: <">>, self_uri(S), <<">\r\n">>,
-        <<"Call-ID: ">>, Call, <<"\r\n">>,
-        <<"CSeq: ">>, integer_to_binary(CSeq), <<" ">>, Method, <<"\r\n">>,
+        <<"From: \"">>,
+        Display,
+        <<"\" <">>,
+        self_uri(S),
+        <<">;tag=">>,
+        FT,
+        <<"\r\n">>,
+        <<"To: <">>,
+        To,
+        <<">">>,
+        ToTag,
+        <<"\r\n">>,
+        <<"Contact: <">>,
+        self_uri(S),
+        <<">\r\n">>,
+        <<"Call-ID: ">>,
+        Call,
+        <<"\r\n">>,
+        <<"CSeq: ">>,
+        integer_to_binary(CSeq),
+        <<" ">>,
+        Method,
+        <<"\r\n">>,
         [[K, <<": ">>, V, <<"\r\n">>] || {K, V} <- Hdrs],
         <<"Content-Length: 0\r\n\r\n">>
     ]).
@@ -789,12 +875,27 @@ resp(M, Status, Reason) ->
             _ -> To0
         end,
     iolist_to_binary([
-        <<"SIP/2.0 ">>, integer_to_binary(Status), <<" ">>, Reason, <<"\r\n">>,
-        [[<<"Via: ">>, V, <<"\r\n">>] || V <- chappe_sip_msg:get_all(<<"via">>, M)],
-        <<"From: ">>, chappe_sip_msg:get(<<"from">>, M), <<"\r\n">>,
-        <<"To: ">>, To, <<"\r\n">>,
-        <<"Call-ID: ">>, chappe_sip_msg:call_id(M), <<"\r\n">>,
-        <<"CSeq: ">>, chappe_sip_msg:get(<<"cseq">>, M), <<"\r\n">>,
+        <<"SIP/2.0 ">>,
+        integer_to_binary(Status),
+        <<" ">>,
+        Reason,
+        <<"\r\n">>,
+        [
+            [<<"Via: ">>, V, <<"\r\n">>]
+         || V <- chappe_sip_msg:get_all(<<"via">>, M)
+        ],
+        <<"From: ">>,
+        chappe_sip_msg:get(<<"from">>, M),
+        <<"\r\n">>,
+        <<"To: ">>,
+        To,
+        <<"\r\n">>,
+        <<"Call-ID: ">>,
+        chappe_sip_msg:call_id(M),
+        <<"\r\n">>,
+        <<"CSeq: ">>,
+        chappe_sip_msg:get(<<"cseq">>, M),
+        <<"\r\n">>,
         <<"Content-Length: 0\r\n\r\n">>
     ]).
 

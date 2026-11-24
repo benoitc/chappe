@@ -102,10 +102,17 @@ layout_and_atomic_write(Config) ->
     ?assertEqual(filename:absname(Wav), filename:absname(maps:get(path, R))),
     {ok, Bin} = file:read_file(Wav),
     ?assertMatch(
-        {ok, #{rate := 16000, channels := 2, data_bytes := 256000, data_offset := 44}},
+        {ok, #{
+            rate := 16000,
+            channels := 2,
+            data_bytes := 256000,
+            data_offset := 44
+        }},
         chappe_audio_wav:info(Bin)
     ),
-    {ok, Json} = file:read_file(filename:join([Dir, Day, "call-42", <<Id/binary, ".json">>])),
+    {ok, Json} = file:read_file(
+        filename:join([Dir, Day, "call-42", <<Id/binary, ".json">>])
+    ),
     ?assertMatch(#{<<"call_ref">> := Ref, <<"start">> := _}, json:decode(Json)),
     ?assertEqual({ok, R}, chappe_audio_store:get(Id)).
 
@@ -116,10 +123,15 @@ unsafe_call_ref(Config) ->
     Refs = [<<"../../etc">>, <<"a/b">>, <<255, 0, 1>>, <<".hidden">>],
     Ids = [element(2, record(Ref, <<0, 0>>)) || Ref <- Refs],
     [
-        ?assertMatch([#{id := Id, call_ref := Ref}], chappe_audio_store:find(Ref))
+        ?assertMatch(
+            [#{id := Id, call_ref := Ref}], chappe_audio_store:find(Ref)
+        )
      || {Ref, Id} <- lists:zip(Refs, Ids)
     ],
-    Folders = [lists:last(filename:split(F)) || F <- filelib:wildcard("*/*/*/*", Dir)],
+    Folders = [
+        lists:last(filename:split(F))
+     || F <- filelib:wildcard("*/*/*/*", Dir)
+    ],
     ?assert(lists:all(fun(F) -> lists:prefix("x-", F) end, Folders)),
     ?assertEqual([], filelib:wildcard("etc", filename:dirname(Dir))).
 
@@ -147,7 +159,9 @@ adopt_wav(Config) ->
     Src = filename:join(?config(priv_dir, Config), "fs-rec.wav"),
     Data = binary:copy(<<0, 1>>, 8000 * 3),
     List = <<"LIST", 4:32/little, "INFO">>,
-    <<Riff:12/binary, Fmt:24/binary, _:8/binary>> = chappe_audio_wav:header(8000, 1, 0),
+    <<Riff:12/binary, Fmt:24/binary, _:8/binary>> = chappe_audio_wav:header(
+        8000, 1, 0
+    ),
     ok = file:write_file(
         Src, [Riff, Fmt, List, <<"data", 16#FFFFFFFF:32/little>>, Data]
     ),
@@ -184,8 +198,15 @@ adopt_in_job(Config) ->
     }),
     Me = self(),
     Other = spawn(fun() ->
-        Me ! {other, chappe_audio_store:adopt(Src, <<"call-job">>, #{}, #{notify => self()}),
-            receive M -> M after 5000 -> none end}
+        Me !
+            {other,
+                chappe_audio_store:adopt(Src, <<"call-job">>, #{}, #{
+                    notify => self()
+                }),
+                receive
+                    M -> M
+                after 5000 -> none
+                end}
     end),
     #{dir := _} = chappe_audio_store:config(),
     ?assert(erlang:monotonic_time(millisecond) - T0 < 1000),
@@ -196,7 +217,8 @@ adopt_in_job(Config) ->
         after 5000 -> ct:fail(no_outcome)
         end,
     receive
-        {other, {ok, Job}, {chappe_audio_store, Job, {adopted, Key, {ok, Id}}}} -> ok
+        {other, {ok, Job}, {chappe_audio_store, Job, {adopted, Key, {ok, Id}}}} ->
+            ok
     after 5000 -> ct:fail(no_other)
     end,
     _ = Other,
@@ -207,7 +229,10 @@ adopt_in_job(Config) ->
         {chappe_audio_store, J2, {adopted, _, {error, enoent}}} -> ok
     after 5000 -> ct:fail(no_error)
     end,
-    ?assertEqual({error, badarg}, chappe_audio_store:adopt(Src, <<"x">>, #{}, #{nope => 1})).
+    ?assertEqual(
+        {error, badarg},
+        chappe_audio_store:adopt(Src, <<"x">>, #{}, #{nope => 1})
+    ).
 
 %% Another file keeps its extension and the format the caller gives;
 %% keep => true copies and leaves the source.
@@ -230,9 +255,17 @@ retention_and_stale_parts(Config) ->
     {ok, OldId} = chappe_audio_store:adopt(Src, <<"old-call">>, #{start => Old}),
     {ok, NewId} = record(<<"new-call">>, <<0, 0>>),
     {ok, Writer} = chappe_audio_store:open(#{call_ref => <<"live">>}, #{}),
-    Stale = filename:join(filename:dirname(maps:get(path, ok(chappe_audio_store:get(NewId)))), "dead.wav.part"),
+    Stale = filename:join(
+        filename:dirname(maps:get(path, ok(chappe_audio_store:get(NewId)))),
+        "dead.wav.part"
+    ),
     ok = file:write_file(Stale, <<"x">>),
-    ok = file:change_time(Stale, calendar:system_time_to_local_time(os:system_time(second) - 7200, second)),
+    ok = file:change_time(
+        Stale,
+        calendar:system_time_to_local_time(
+            os:system_time(second) - 7200, second
+        )
+    ),
     {ok, 0} = chappe_audio_store:sweep(),
     ?assertNot(filelib:is_regular(Stale)),
     ?assertEqual(1, length(filelib:wildcard("*/*/*/live/*.part", Dir))),
@@ -249,28 +282,44 @@ retention_and_stale_parts(Config) ->
 sweep_guard_skips(Config) ->
     Dir = ?config(dir, Config),
     {ok, Id} = record(<<"guarded">>, <<0, 0>>),
-    Stale = filename:join(filename:dirname(maps:get(path, ok(chappe_audio_store:get(Id)))), "dead.wav.part"),
-    Old = calendar:system_time_to_local_time(os:system_time(second) - 7200, second),
+    Stale = filename:join(
+        filename:dirname(maps:get(path, ok(chappe_audio_store:get(Id)))),
+        "dead.wav.part"
+    ),
+    Old = calendar:system_time_to_local_time(
+        os:system_time(second) - 7200, second
+    ),
     ok = file:write_file(Stale, <<"x">>),
     ok = file:change_time(Stale, Old),
     Self = self(),
-    No = fun() -> Self ! guard_asked, false end,
-    ok = chappe_audio_store:configure(#{dir => Dir, sweep_guard => No, sweep_interval => 100}),
+    No = fun() ->
+        Self ! guard_asked,
+        false
+    end,
+    ok = chappe_audio_store:configure(#{
+        dir => Dir, sweep_guard => No, sweep_interval => 100
+    }),
     receive
         guard_asked -> ok
     after 2000 -> ct:fail(guard_not_asked)
     end,
     {ok, 0} = chappe_audio_store:sweep(),
     ?assert(filelib:is_regular(Stale)),
-    ok = chappe_audio_store:configure(#{dir => Dir, sweep_guard => fun() -> error(boom) end}),
+    ok = chappe_audio_store:configure(#{
+        dir => Dir, sweep_guard => fun() -> error(boom) end
+    }),
     {ok, 0} = chappe_audio_store:sweep(),
     ?assert(filelib:is_regular(Stale)),
-    ok = chappe_audio_store:configure(#{dir => Dir, sweep_guard => {erlang, is_atom, [x]}}),
+    ok = chappe_audio_store:configure(#{
+        dir => Dir, sweep_guard => {erlang, is_atom, [x]}
+    }),
     {ok, 0} = chappe_audio_store:sweep(),
     ?assertNot(filelib:is_regular(Stale)),
     ?assertEqual(
         {error, {bad_option, sweep_guard}},
-        chappe_audio_store:configure(#{dir => Dir, sweep_guard => fun(_) -> true end})
+        chappe_audio_store:configure(#{
+            dir => Dir, sweep_guard => fun(_) -> true end
+        })
     ),
     ok = chappe_audio_store:configure(#{dir => Dir}).
 
@@ -283,8 +332,13 @@ sweep_spares_live_writers(Config) ->
     ok = chappe_audio_store:write(Rec, <<0, 0>>),
     W = chappe_audio_store:writer(Rec),
     _ = sys:get_state(W),
-    [Part] = [filename:join(Dir, P) || P <- filelib:wildcard("*/*/*/paused/*.part", Dir)],
-    Old = calendar:system_time_to_local_time(os:system_time(second) - 7200, second),
+    [Part] = [
+        filename:join(Dir, P)
+     || P <- filelib:wildcard("*/*/*/paused/*.part", Dir)
+    ],
+    Old = calendar:system_time_to_local_time(
+        os:system_time(second) - 7200, second
+    ),
     ok = file:change_time(Part, Old),
     {ok, 0} = chappe_audio_store:sweep(),
     ?assert(filelib:is_regular(Part)),
@@ -335,7 +389,9 @@ writer_crash(Config) ->
 %% A writer that cannot keep up (suspended here): past max_queue writes
 %% waiting, write/2 drops and says so, and the queue stays bounded.
 writer_bound(_Config) ->
-    {ok, Rec} = chappe_audio_store:open(#{call_ref => <<"slow">>}, #{max_queue => 50}),
+    {ok, Rec} = chappe_audio_store:open(#{call_ref => <<"slow">>}, #{
+        max_queue => 50
+    }),
     W = chappe_audio_store:writer(Rec),
     ok = sys:suspend(W),
     Frame = binary:copy(<<0>>, 320),
@@ -358,7 +414,10 @@ stream_to_store(_Config) ->
     {ok, C} = chappe_audio_test_ws:connect(Url),
     {chappe_audio, S, {connected, _}} = recv(),
     Frame = binary:copy(<<3, 0>>, 160),
-    [ok = chappe_audio_test_ws:send(C, {binary, Frame}) || _ <- lists:seq(1, 10)],
+    [
+        ok = chappe_audio_test_ws:send(C, {binary, Frame})
+     || _ <- lists:seq(1, 10)
+    ],
     [{chappe_audio, S, {frame, Frame}} = recv() || _ <- lists:seq(1, 10)],
     ?assert(is_pid(maps:get(recording, chappe_audio:info(S)))),
     ok = chappe_audio:close(S),
@@ -373,18 +432,38 @@ stream_to_store(_Config) ->
 
 bad_arguments(Config) ->
     ?assertEqual({error, badarg}, chappe_audio_store:open(#{}, #{})),
-    ?assertEqual({error, badarg}, chappe_audio_store:open(#{call_ref => <<>>}, #{})),
+    ?assertEqual(
+        {error, badarg}, chappe_audio_store:open(#{call_ref => <<>>}, #{})
+    ),
     ?assertEqual(
         {error, badarg},
-        chappe_audio_store:open(#{call_ref => <<"x">>, parties => [{bad, tuple}]}, #{})
+        chappe_audio_store:open(
+            #{call_ref => <<"x">>, parties => [{bad, tuple}]}, #{}
+        )
     ),
-    ?assertEqual({error, badarg}, chappe_audio_store:open(#{call_ref => <<"x">>, nope => 1}, #{})),
-    ?assertEqual({error, badarg}, chappe_audio_store:adopt("x", not_binary, #{})),
-    ?assertEqual({error, {bad_option, backend}}, chappe_audio_store:configure(#{backend => no_such_mod})),
-    ?assertEqual({error, {bad_option, retention_days}}, chappe_audio_store:configure(#{retention_days => 0})),
-    ?assertEqual({error, {bad_option, store}}, chappe_audio:open(chappe_audio_listener, #{store => s3})),
+    ?assertEqual(
+        {error, badarg},
+        chappe_audio_store:open(#{call_ref => <<"x">>, nope => 1}, #{})
+    ),
+    ?assertEqual(
+        {error, badarg}, chappe_audio_store:adopt("x", not_binary, #{})
+    ),
+    ?assertEqual(
+        {error, {bad_option, backend}},
+        chappe_audio_store:configure(#{backend => no_such_mod})
+    ),
+    ?assertEqual(
+        {error, {bad_option, retention_days}},
+        chappe_audio_store:configure(#{retention_days => 0})
+    ),
+    ?assertEqual(
+        {error, {bad_option, store}},
+        chappe_audio:open(chappe_audio_listener, #{store => s3})
+    ),
     ?assertMatch(#{dir := _}, chappe_audio_store:config()),
-    ?assertEqual(?config(dir, Config), maps:get(dir, chappe_audio_store:config())).
+    ?assertEqual(
+        ?config(dir, Config), maps:get(dir, chappe_audio_store:config())
+    ).
 
 %% Each node keeps its recordings; find/1 from either node returns the
 %% call's recordings of both, and get/1 and read/2 reach the one held
@@ -402,15 +481,23 @@ find_across_nodes(Config) ->
     Ref = <<"two-nodes">>,
     {ok, Here} = record(Ref, <<1, 0>>),
     {ok, There} = peer:call(Peer, ?MODULE, record, [Ref, <<2, 0>>]),
-    wait(fun() -> length(pg:get_members(chappe_audio, chappe_audio_store)) =:= 2 end),
+    wait(fun() ->
+        length(pg:get_members(chappe_audio, chappe_audio_store)) =:= 2
+    end),
     Found = chappe_audio_store:find(Ref),
-    ?assertEqual(lists:sort([Here, There]), lists:sort([I || #{id := I} <- Found])),
-    ?assertEqual(lists:sort([node(), Node]), lists:sort([N || #{node := N} <- Found])),
+    ?assertEqual(
+        lists:sort([Here, There]), lists:sort([I || #{id := I} <- Found])
+    ),
+    ?assertEqual(
+        lists:sort([node(), Node]), lists:sort([N || #{node := N} <- Found])
+    ),
     ?assertEqual(2, length(peer:call(Peer, chappe_audio_store, find, [Ref]))),
     {ok, #{node := Node}} = chappe_audio_store:get(There),
     {ok, <<2, 0>>} = chappe_audio_store:read(There, {44, 2}),
     peer:stop(Peer),
-    wait(fun() -> length(pg:get_members(chappe_audio, chappe_audio_store)) =:= 1 end),
+    wait(fun() ->
+        length(pg:get_members(chappe_audio, chappe_audio_store)) =:= 1
+    end),
     ?assertMatch([#{id := Here}], chappe_audio_store:find(Ref)).
 
 %% ---- helpers ----
@@ -441,4 +528,3 @@ wait(F, N) ->
             timer:sleep(50),
             wait(F, N - 1)
     end.
-

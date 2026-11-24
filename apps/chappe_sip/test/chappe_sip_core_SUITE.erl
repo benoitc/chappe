@@ -15,81 +15,195 @@
 -include_lib("stdlib/include/assert.hrl").
 
 -import(chappe_sip_core_peer, [
-    open/0, port/1, send/3, recv/3, recv_none/3, collect/3, drain/1,
-    request/3, response/3, hdr/2, hdrs/2, status/1, method/1, uri/1,
-    cseq/1, to_tag/1, from_tag/1, body/1, top_via/1, via_branch/1,
-    branch/0, tag/0, call_id/0, sdp/0
+    open/0,
+    port/1,
+    send/3,
+    recv/3,
+    recv_none/3,
+    collect/3,
+    drain/1,
+    request/3,
+    response/3,
+    hdr/2,
+    hdrs/2,
+    status/1,
+    method/1,
+    uri/1,
+    cseq/1,
+    to_tag/1,
+    from_tag/1,
+    body/1,
+    top_via/1,
+    via_branch/1,
+    branch/0,
+    tag/0,
+    call_id/0,
+    sdp/0
 ]).
 
--export([all/0, groups/0, init_per_suite/1, end_per_suite/1,
-         init_per_testcase/2, end_per_testcase/2]).
--export([invite_dialog_forming/1, indialog_requests_follow_dialog/1,
-         indialog_no_route_set/1, remote_cseq_rules/1,
-         bye_no_dialog_481/1, bye_ends_dialog/1, unknown_to_tag_481/1,
-         bye_waits_for_ack/1, no_ack_ends_session/1,
-         invite_retransmit_gets_provisional/1, error_response_retransmits/1,
-         error_response_timer_h/1, non_invite_final_only/1,
-         non_invite_provisionals/1, non_invite_timer_j/1,
-         cancel_pending_invite/1, cancel_no_match_481/1,
-         options_default/1, received_param/1, response_to_sent_by/1,
-         tcp_listener/1, large_udp_request/1, trailing_bytes_dropped/1,
-         short_datagram_400/1, unsupported_scheme_416/1, tel_to_accepted/1,
-         empty_user_rejected/1, missing_mandatory_400/1, cseq_range/1,
-         require_unknown_420/1, no_reliable_without_support/1,
-         bad_header_named_400/1, bye_answers_pending_reinvite/1,
-         target_refresh_accepted/1, target_refresh_rejected/1,
-         reinvite_waits_for_ack/1, reinvite_one_at_a_time/1,
-         request_during_reinvite/1, early_uas_no_bye/1,
-         indialog_481_ends_dialog/1, session_over_at_bye/1,
-         indialog_timeout_ends_dialog/1, bye_timeout_ends_dialog/1,
-         offerless_invite/1, offerless_reinvite/1, reoffer_bumps_version/1,
-         tagless_from_accepted/1, merged_request_482/1, contact_reachable/1,
-         reliable_provisional_require/1, unsupported_body_415/1,
-         content_encoding_415/1, response_not_encoded/1,
-         cseq_method_mismatch_400/1, no_max_forwards_served/1,
-         uas_ignores_proxy_require/1, proxy_route_checks_proxy_require/1,
-         siprec_require/1, indialog_require_420/1,
-         ack_cancel_require_ignored/1]).
--export([tcp_no_content_length/1, via_maddr_response/1,
-         unknown_encoding_415/1, na_request_headers_ignored/1,
-         provisional_every_minute/1]).
+-export([
+    all/0,
+    groups/0,
+    init_per_suite/1,
+    end_per_suite/1,
+    init_per_testcase/2,
+    end_per_testcase/2
+]).
+-export([
+    invite_dialog_forming/1,
+    indialog_requests_follow_dialog/1,
+    indialog_no_route_set/1,
+    remote_cseq_rules/1,
+    bye_no_dialog_481/1,
+    bye_ends_dialog/1,
+    unknown_to_tag_481/1,
+    bye_waits_for_ack/1,
+    no_ack_ends_session/1,
+    invite_retransmit_gets_provisional/1,
+    error_response_retransmits/1,
+    error_response_timer_h/1,
+    non_invite_final_only/1,
+    non_invite_provisionals/1,
+    non_invite_timer_j/1,
+    cancel_pending_invite/1,
+    cancel_no_match_481/1,
+    options_default/1,
+    received_param/1,
+    response_to_sent_by/1,
+    tcp_listener/1,
+    large_udp_request/1,
+    trailing_bytes_dropped/1,
+    short_datagram_400/1,
+    unsupported_scheme_416/1,
+    tel_to_accepted/1,
+    empty_user_rejected/1,
+    missing_mandatory_400/1,
+    cseq_range/1,
+    require_unknown_420/1,
+    no_reliable_without_support/1,
+    bad_header_named_400/1,
+    bye_answers_pending_reinvite/1,
+    target_refresh_accepted/1,
+    target_refresh_rejected/1,
+    reinvite_waits_for_ack/1,
+    reinvite_one_at_a_time/1,
+    request_during_reinvite/1,
+    early_uas_no_bye/1,
+    indialog_481_ends_dialog/1,
+    session_over_at_bye/1,
+    indialog_timeout_ends_dialog/1,
+    bye_timeout_ends_dialog/1,
+    offerless_invite/1,
+    offerless_reinvite/1,
+    reoffer_bumps_version/1,
+    tagless_from_accepted/1,
+    merged_request_482/1,
+    contact_reachable/1,
+    reliable_provisional_require/1,
+    unsupported_body_415/1,
+    content_encoding_415/1,
+    response_not_encoded/1,
+    cseq_method_mismatch_400/1,
+    no_max_forwards_served/1,
+    uas_ignores_proxy_require/1,
+    proxy_route_checks_proxy_require/1,
+    siprec_require/1,
+    indialog_require_420/1,
+    ack_cancel_require_ignored/1
+]).
+-export([
+    tcp_no_content_length/1,
+    via_maddr_response/1,
+    unknown_encoding_415/1,
+    na_request_headers_ignored/1,
+    provisional_every_minute/1
+]).
 
 all() ->
     [{group, wire}, {group, timers}, {group, minute}].
 
 groups() ->
-    [{wire, [], [invite_dialog_forming, indialog_requests_follow_dialog,
-     indialog_no_route_set, remote_cseq_rules, bye_no_dialog_481,
-     bye_ends_dialog, unknown_to_tag_481, bye_waits_for_ack,
-     invite_retransmit_gets_provisional, error_response_retransmits,
-     non_invite_final_only, non_invite_provisionals, cancel_pending_invite,
-     cancel_no_match_481, options_default, received_param,
-     response_to_sent_by, tcp_listener, large_udp_request,
-     trailing_bytes_dropped, short_datagram_400, unsupported_scheme_416,
-     tel_to_accepted, empty_user_rejected, missing_mandatory_400, cseq_range,
-     require_unknown_420, no_reliable_without_support,
-     bad_header_named_400, bye_answers_pending_reinvite,
-     target_refresh_accepted, target_refresh_rejected, reinvite_waits_for_ack,
-     reinvite_one_at_a_time, request_during_reinvite, early_uas_no_bye,
-     indialog_481_ends_dialog, session_over_at_bye, offerless_invite,
-     offerless_reinvite, reoffer_bumps_version, tagless_from_accepted,
-     merged_request_482, contact_reachable, reliable_provisional_require,
-     unsupported_body_415, content_encoding_415, response_not_encoded,
-     cseq_method_mismatch_400, no_max_forwards_served,
-     uas_ignores_proxy_require, proxy_route_checks_proxy_require,
-     siprec_require, indialog_require_420, ack_cancel_require_ignored,
-     tcp_no_content_length, via_maddr_response, unknown_encoding_415,
-     na_request_headers_ignored]},
-     %% each waits 64*T1 (32 s)
-     {timers, [],
-      [no_ack_ends_session, error_response_timer_h, non_invite_timer_j,
-       indialog_timeout_ends_dialog, bye_timeout_ends_dialog]},
-     %% waits for the 180 resent after a minute (66 s)
-     {minute, [], [provisional_every_minute]}].
+    [
+        {wire, [], [
+            invite_dialog_forming,
+            indialog_requests_follow_dialog,
+            indialog_no_route_set,
+            remote_cseq_rules,
+            bye_no_dialog_481,
+            bye_ends_dialog,
+            unknown_to_tag_481,
+            bye_waits_for_ack,
+            invite_retransmit_gets_provisional,
+            error_response_retransmits,
+            non_invite_final_only,
+            non_invite_provisionals,
+            cancel_pending_invite,
+            cancel_no_match_481,
+            options_default,
+            received_param,
+            response_to_sent_by,
+            tcp_listener,
+            large_udp_request,
+            trailing_bytes_dropped,
+            short_datagram_400,
+            unsupported_scheme_416,
+            tel_to_accepted,
+            empty_user_rejected,
+            missing_mandatory_400,
+            cseq_range,
+            require_unknown_420,
+            no_reliable_without_support,
+            bad_header_named_400,
+            bye_answers_pending_reinvite,
+            target_refresh_accepted,
+            target_refresh_rejected,
+            reinvite_waits_for_ack,
+            reinvite_one_at_a_time,
+            request_during_reinvite,
+            early_uas_no_bye,
+            indialog_481_ends_dialog,
+            session_over_at_bye,
+            offerless_invite,
+            offerless_reinvite,
+            reoffer_bumps_version,
+            tagless_from_accepted,
+            merged_request_482,
+            contact_reachable,
+            reliable_provisional_require,
+            unsupported_body_415,
+            content_encoding_415,
+            response_not_encoded,
+            cseq_method_mismatch_400,
+            no_max_forwards_served,
+            uas_ignores_proxy_require,
+            proxy_route_checks_proxy_require,
+            siprec_require,
+            indialog_require_420,
+            ack_cancel_require_ignored,
+            tcp_no_content_length,
+            via_maddr_response,
+            unknown_encoding_415,
+            na_request_headers_ignored
+        ]},
+        %% each waits 64*T1 (32 s)
+        {timers, [], [
+            no_ack_ends_session,
+            error_response_timer_h,
+            non_invite_timer_j,
+            indialog_timeout_ends_dialog,
+            bye_timeout_ends_dialog
+        ]},
+        %% waits for the 180 resent after a minute (66 s)
+        {minute, [], [provisional_every_minute]}
+    ].
 
 init_per_suite(Config) ->
-    application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
-                        [{persistent, true}]),
+    application:set_env(
+        chappe_sip,
+        engine_mod,
+        chappe_sip_nif,
+        [{persistent, true}]
+    ),
     {ok, _} = application:ensure_all_started(chappe_sip),
     Config.
 
@@ -130,45 +244,67 @@ invite_dialog_forming(Config) ->
     ok = chappe_sip:invite(fun(Req, Res) ->
         Test ! {invite, Req},
         ok = chappe_sip_res:send(Res, 180),
-        ok = chappe_sip_res:send(Res, 183, #{body => sdp(),
-                                             headers => [{<<"Content-Type">>,
-                                                          <<"application/sdp">>}]}),
-        {ok, D} = chappe_sip:create_uas(Req, Res, #{local_sdp => sdp(),
-                                                    owner => Test}),
+        ok = chappe_sip_res:send(Res, 183, #{
+            body => sdp(),
+            headers => [{<<"Content-Type">>, <<"application/sdp">>}]
+        }),
+        {ok, D} = chappe_sip:create_uas(Req, Res, #{
+            local_sdp => sdp(),
+            owner => Test
+        }),
         Test ! {dialog, D}
     end),
     LP = port(Sock),
     P = integer_to_binary(LP),
-    RR = [<<"<sip:p2.example.invalid;lr;x-u=1>;x-p=2">>,
-          <<"<sip:p1.example.invalid;lr>">>],
-    Vias = <<"SIP/2.0/UDP 127.0.0.1:", P/binary, ";branch=", (branch())/binary,
-             ", SIP/2.0/UDP 192.0.2.9:5070;branch=z9hG4bKlower;received=192.0.2.9">>,
-    Inv = request(<<"INVITE">>, <<"sip:app@127.0.0.1;x-unknown=yes">>,
-                  #{port => LP, via => Vias, body => sdp(),
-                    to => <<"<sip:app@127.0.0.1;x-unknown=yes>;x-hp=1">>,
-                    contact => <<"<sip:peer@127.0.0.1:", P/binary,
-                                 ";x-cp=1>;x-hp=2">>,
-                    headers => [{<<"Record-Route">>, lists:nth(1, RR)},
-                                {<<"Record-Route">>, lists:nth(2, RR)},
-                                {<<"X-Foo">>, <<"bar">>},
-                                {<<"Date">>, <<"not a date">>},
-                                {<<"Expires">>, <<"soon">>}]}),
+    RR = [
+        <<"<sip:p2.example.invalid;lr;x-u=1>;x-p=2">>,
+        <<"<sip:p1.example.invalid;lr>">>
+    ],
+    Vias =
+        <<"SIP/2.0/UDP 127.0.0.1:", P/binary, ";branch=", (branch())/binary,
+            ", SIP/2.0/UDP 192.0.2.9:5070;branch=z9hG4bKlower;received=192.0.2.9">>,
+    Inv = request(
+        <<"INVITE">>,
+        <<"sip:app@127.0.0.1;x-unknown=yes">>,
+        #{
+            port => LP,
+            via => Vias,
+            body => sdp(),
+            to => <<"<sip:app@127.0.0.1;x-unknown=yes>;x-hp=1">>,
+            contact => <<"<sip:peer@127.0.0.1:", P/binary, ";x-cp=1>;x-hp=2">>,
+            headers => [
+                {<<"Record-Route">>, lists:nth(1, RR)},
+                {<<"Record-Route">>, lists:nth(2, RR)},
+                {<<"X-Foo">>, <<"bar">>},
+                {<<"Date">>, <<"not a date">>},
+                {<<"Expires">>, <<"soon">>}
+            ]
+        }
+    ),
     send(Sock, Port, Inv),
-    receive {invite, _} -> ok after 3000 -> ct:log("~p", [collect(Sock, any, 500)]), ct:fail(no_invite) end,
+    receive
+        {invite, _} -> ok
+    after 3000 ->
+        ct:log("~p", [collect(Sock, any, 500)]),
+        ct:fail(no_invite)
+    end,
     {R180, _} = recv(Sock, {status, 180}, 3000),
     {R183, _} = recv(Sock, {status, 183}, 3000),
     {R200, _} = recv(Sock, {status, 200}, 3000),
     InvM = chappe_sip_core_peer:parse(Inv),
     Tag = to_tag(R200),
     ?assertNotEqual(undefined, Tag),
-    [begin
-         ?assertEqual(hdr(<<"from">>, InvM), hdr(<<"from">>, R)),
-         ?assertEqual(hdr(<<"call-id">>, InvM), hdr(<<"call-id">>, R)),
-         ?assertEqual(hdr(<<"cseq">>, InvM), hdr(<<"cseq">>, R)),
-         ?assertEqual(via_list(InvM), via_list(R)),
-         ?assertEqual(Tag, to_tag(R)),
-         ?assertEqual(to_uri(InvM), to_uri(R))
-     end || R <- [R180, R183, R200]],
+    [
+        begin
+            ?assertEqual(hdr(<<"from">>, InvM), hdr(<<"from">>, R)),
+            ?assertEqual(hdr(<<"call-id">>, InvM), hdr(<<"call-id">>, R)),
+            ?assertEqual(hdr(<<"cseq">>, InvM), hdr(<<"cseq">>, R)),
+            ?assertEqual(via_list(InvM), via_list(R)),
+            ?assertEqual(Tag, to_tag(R)),
+            ?assertEqual(to_uri(InvM), to_uri(R))
+        end
+     || R <- [R180, R183, R200]
+    ],
     ?assertEqual(RR, hdrs(<<"record-route">>, R200)),
     Contact = hdr(<<"contact">>, R200),
     ?assertMatch(<<"<sip:", _/binary>>, Contact),
@@ -176,12 +312,17 @@ invite_dialog_forming(Config) ->
     ?assertEqual(body(R183), body(R200)),
     ?assert(byte_size(Tag) >= 8),
     ?assertEqual(<<"application/sdp">>, hdr(<<"content-type">>, R200)),
-    ?assertEqual(integer_to_binary(byte_size(body(R200))),
-                 hdr(<<"content-length">>, R200)),
+    ?assertEqual(
+        integer_to_binary(byte_size(body(R200))),
+        hdr(<<"content-length">>, R200)
+    ),
     ?assertEqual(<<"0">>, hdr(<<"content-length">>, R180)),
     ?assertNotEqual(undefined, hdr(<<"allow">>, R200)),
     ?assertNotEqual(undefined, hdr(<<"supported">>, R200)),
-    receive {dialog, _} -> ok after 3000 -> ct:fail(no_dialog) end.
+    receive
+        {dialog, _} -> ok
+    after 3000 -> ct:fail(no_dialog)
+    end.
 
 %% After the dialog is formed from an INVITE with a Record-Route, the app's
 %% in-dialog requests (INFO then BYE) follow the UAS dialog state: Route is
@@ -204,41 +345,51 @@ indialog_requests_follow_dialog(Config) ->
     Contact = <<"sip:peer@127.0.0.1:", P/binary, ";x-c=1">>,
     {Inv, D, R200} = call(Sock, Port, #{
         contact => <<"<", Contact/binary, ">">>,
-        headers => [{<<"Record-Route">>, RR}]}),
+        headers => [{<<"Record-Route">>, RR}]
+    }),
     LocalTag = to_tag(R200),
     RemoteTag = from_tag(Inv),
-    Infos = [begin
-                 Info = async(fun() ->
-                     chappe_sip_dialog:request(D, #{method => <<"INFO">>})
-                 end),
-                 {InfoReq, _} = recv(Sock, {method, <<"INFO">>}, 3000),
-                 send(Sock, Port, response(InfoReq, 200, #{})),
-                 {ok, _} = await(Info),
-                 InfoReq
-             end || _ <- [1, 2]],
+    Infos = [
+        begin
+            Info = async(fun() ->
+                chappe_sip_dialog:request(D, #{method => <<"INFO">>})
+            end),
+            {InfoReq, _} = recv(Sock, {method, <<"INFO">>}, 3000),
+            send(Sock, Port, response(InfoReq, 200, #{})),
+            {ok, _} = await(Info),
+            InfoReq
+        end
+     || _ <- [1, 2]
+    ],
     Bye = async(fun() -> chappe_sip_dialog:destroy(D) end),
     {ByeReq, _} = recv(Sock, {method, <<"BYE">>}, 3000),
     send(Sock, Port, response(ByeReq, 200, #{})),
     ok = await(Bye),
     Sent = Infos ++ [ByeReq],
-    [begin
-         ?assertEqual(Contact, uri(R)),
-         ?assertEqual([RR], hdrs(<<"route">>, R)),
-         ?assertEqual(hdr(<<"call-id">>, Inv), hdr(<<"call-id">>, R)),
-         ?assertEqual(LocalTag, from_tag(R)),
-         ?assertEqual(RemoteTag, to_tag(R)),
-         ?assertEqual(to_uri(Inv), from_uri(R)),
-         ?assertEqual(from_uri(Inv), to_uri(R)),
-         ?assertEqual(<<"70">>, hdr(<<"max-forwards">>, R)),
-         ?assertEqual(<<"0">>, hdr(<<"content-length">>, R)),
-         [Via] = via_list(R),
-         ?assertMatch(<<"SIP/2.0/UDP 127.0.0.1:", _/binary>>, Via),
-         ?assertEqual(integer_to_binary(Port), sent_by_port(Via)),
-         ?assertMatch(<<"z9hG4bK", _/binary>>, via_branch(Via))
-     end || R <- Sent],
+    [
+        begin
+            ?assertEqual(Contact, uri(R)),
+            ?assertEqual([RR], hdrs(<<"route">>, R)),
+            ?assertEqual(hdr(<<"call-id">>, Inv), hdr(<<"call-id">>, R)),
+            ?assertEqual(LocalTag, from_tag(R)),
+            ?assertEqual(RemoteTag, to_tag(R)),
+            ?assertEqual(to_uri(Inv), from_uri(R)),
+            ?assertEqual(from_uri(Inv), to_uri(R)),
+            ?assertEqual(<<"70">>, hdr(<<"max-forwards">>, R)),
+            ?assertEqual(<<"0">>, hdr(<<"content-length">>, R)),
+            [Via] = via_list(R),
+            ?assertMatch(<<"SIP/2.0/UDP 127.0.0.1:", _/binary>>, Via),
+            ?assertEqual(integer_to_binary(Port), sent_by_port(Via)),
+            ?assertMatch(<<"z9hG4bK", _/binary>>, via_branch(Via))
+        end
+     || R <- Sent
+    ],
     %% Contact is not applicable to BYE (RFC 3261 20, table 3)
     ?assertEqual(undefined, hdr(<<"contact">>, ByeReq)),
-    [{N1, <<"INFO">>}, {N2, <<"INFO">>}, {N3, <<"BYE">>}] = [cseq(R) || R <- Sent],
+    [{N1, <<"INFO">>}, {N2, <<"INFO">>}, {N3, <<"BYE">>}] = [
+        cseq(R)
+     || R <- Sent
+    ],
     ?assert(N1 < 1 bsl 31),
     ?assertEqual([N1 + 1, N1 + 2], [N2, N3]),
     Branches = [via_branch(top_via(R)) || R <- Sent],
@@ -253,7 +404,9 @@ indialog_no_route_set(Config) ->
     LP = port(Sock),
     Contact = <<"sip:peer@127.0.0.1:", (integer_to_binary(LP))/binary>>,
     {_Inv, D, _R200} = call(Sock, Port, #{}),
-    Info = async(fun() -> chappe_sip_dialog:request(D, #{method => <<"INFO">>}) end),
+    Info = async(fun() ->
+        chappe_sip_dialog:request(D, #{method => <<"INFO">>})
+    end),
     {InfoReq, _} = recv(Sock, {method, <<"INFO">>}, 3000),
     send(Sock, Port, response(InfoReq, 200, #{})),
     {ok, _} = await(Info),
@@ -269,10 +422,17 @@ remote_cseq_rules(Config) ->
     LP = port(Sock),
     {Inv, _D, R200} = call(Sock, Port, #{cseq => 5}),
     InDialog = fun(Method, N) ->
-        request(Method, <<"sip:app@127.0.0.1">>,
-                #{port => LP, call_id => hdr(<<"call-id">>, Inv),
-                  from_tag => from_tag(Inv), to_tag => to_tag(R200),
-                  cseq => N})
+        request(
+            Method,
+            <<"sip:app@127.0.0.1">>,
+            #{
+                port => LP,
+                call_id => hdr(<<"call-id">>, Inv),
+                from_tag => from_tag(Inv),
+                to_tag => to_tag(R200),
+                cseq => N
+            }
+        )
     end,
     send(Sock, Port, InDialog(<<"INFO">>, 3)),
     {R1, _} = recv(Sock, final, 3000),
@@ -297,8 +457,11 @@ remote_cseq_rules(Config) ->
 bye_no_dialog_481(Config) ->
     {Port, Sock} = {?config(port, Config), ?config(sock, Config)},
     ok = chappe_sip:invite(fun(_Req, Res) -> chappe_sip_res:send(Res, 486) end),
-    Bye = request(<<"BYE">>, <<"sip:app@127.0.0.1">>,
-                  #{port => port(Sock), to_tag => tag(), cseq => 2}),
+    Bye = request(
+        <<"BYE">>,
+        <<"sip:app@127.0.0.1">>,
+        #{port => port(Sock), to_tag => tag(), cseq => 2}
+    ),
     send(Sock, Port, Bye),
     {R, _} = recv(Sock, final, 3000),
     ?assertEqual(481, status(R)).
@@ -311,14 +474,22 @@ bye_ends_dialog(Config) ->
     {Port, Sock} = {?config(port, Config), ?config(sock, Config)},
     LP = port(Sock),
     {Inv, D, R200} = call(Sock, Port, #{}),
-    Bye = request(<<"BYE">>, <<"sip:app@127.0.0.1">>,
-                  #{port => LP, call_id => hdr(<<"call-id">>, Inv),
-                    from_tag => from_tag(Inv), to_tag => to_tag(R200),
-                    cseq => 2}),
+    Bye = request(
+        <<"BYE">>,
+        <<"sip:app@127.0.0.1">>,
+        #{
+            port => LP,
+            call_id => hdr(<<"call-id">>, Inv),
+            from_tag => from_tag(Inv),
+            to_tag => to_tag(R200),
+            cseq => 2
+        }
+    ),
     send(Sock, Port, Bye),
     {R, _} = recv(Sock, final, 3000),
     ?assertEqual(200, status(R)),
-    receive {chappe_sip_dialog, D, destroy, _} -> ok
+    receive
+        {chappe_sip_dialog, D, destroy, _} -> ok
     after 3000 -> ct:fail(no_destroy)
     end.
 
@@ -336,19 +507,38 @@ unknown_to_tag_481(Config) ->
         Test ! {info, Req},
         chappe_sip_res:send(Res, 200)
     end),
-    [begin
-         R0 = request(M, <<"sip:app@127.0.0.1">>,
-                      #{port => port(Sock), to_tag => tag(), cseq => 7,
-                        body => case M of <<"INVITE">> -> sdp(); _ -> <<>> end}),
-         send(Sock, Port, R0),
-         {R, _} = recv(Sock, final, 3000),
-         ?assertEqual(481, status(R)),
-         case M of
-             <<"INVITE">> -> send(Sock, Port, chappe_sip_core_peer:ack_for(R, #{}));
-             _ -> ok
-         end
-     end || M <- [<<"INVITE">>, <<"INFO">>]],
-    receive {Kind, _} -> ct:fail({handler_ran, Kind}) after 300 -> ok end.
+    [
+        begin
+            R0 = request(
+                M,
+                <<"sip:app@127.0.0.1">>,
+                #{
+                    port => port(Sock),
+                    to_tag => tag(),
+                    cseq => 7,
+                    body =>
+                        case M of
+                            <<"INVITE">> -> sdp();
+                            _ -> <<>>
+                        end
+                }
+            ),
+            send(Sock, Port, R0),
+            {R, _} = recv(Sock, final, 3000),
+            ?assertEqual(481, status(R)),
+            case M of
+                <<"INVITE">> ->
+                    send(Sock, Port, chappe_sip_core_peer:ack_for(R, #{}));
+                _ ->
+                    ok
+            end
+        end
+     || M <- [<<"INVITE">>, <<"INFO">>]
+    ],
+    receive
+        {Kind, _} -> ct:fail({handler_ran, Kind})
+    after 300 -> ok
+    end.
 
 %% ---- dialog state and overlapping transactions (8.2, 12.2, 14, 15) ----
 
@@ -361,7 +551,8 @@ bye_answers_pending_reinvite(Config) ->
     {Inv, D, R200} = call(Sock, Port, #{}, #{handled_events => [modify]}),
     ReInv = indialog(<<"INVITE">>, Inv, R200, LP, 2, #{body => sdp()}),
     send(Sock, Port, ReInv),
-    receive {chappe_sip_dialog, D, modify, _, _} -> ok
+    receive
+        {chappe_sip_dialog, D, modify, _, _} -> ok
     after 3000 -> ct:fail(no_modify)
     end,
     send(Sock, Port, indialog(<<"BYE">>, Inv, R200, LP, 3, #{})),
@@ -379,16 +570,25 @@ target_refresh_accepted(Config) ->
     {Inv, D, R200} = call(Sock, Port, #{}),
     NewContact = <<"sip:moved@127.0.0.1:", (integer_to_binary(LP))/binary>>,
     Offer = chappe_sip_core_peer:sdp(40002),
-    ReInv = indialog(<<"INVITE">>, Inv, R200, LP, 2,
-                     #{body => Offer,
-                       contact => <<"<", NewContact/binary, ">">>,
-                       headers => [{<<"Record-Route">>,
-                                    <<"<sip:rr.example.invalid;lr>">>}]}),
+    ReInv = indialog(
+        <<"INVITE">>,
+        Inv,
+        R200,
+        LP,
+        2,
+        #{
+            body => Offer,
+            contact => <<"<", NewContact/binary, ">">>,
+            headers => [{<<"Record-Route">>, <<"<sip:rr.example.invalid;lr>">>}]
+        }
+    ),
     send(Sock, Port, ReInv),
     {R2, _} = recv(Sock, {status, 200, <<"INVITE">>}, 3000),
     send(Sock, Port, chappe_sip_core_peer:ack_for(R2, #{port => LP})),
     ?assertEqual(Offer, chappe_sip_dialog:remote_sdp(D)),
-    Info = async(fun() -> chappe_sip_dialog:request(D, #{method => <<"INFO">>}) end),
+    Info = async(fun() ->
+        chappe_sip_dialog:request(D, #{method => <<"INFO">>})
+    end),
     {InfoReq, _} = recv(Sock, {method, <<"INFO">>}, 3000),
     send(Sock, Port, response(InfoReq, 200, #{})),
     {ok, _} = await(Info),
@@ -405,9 +605,17 @@ target_refresh_rejected(Config) ->
     {Inv, D, R200} = call(Sock, Port, #{}, #{handled_events => [modify]}),
     OldSdp = chappe_sip_dialog:remote_sdp(D),
     NewContact = <<"sip:moved@127.0.0.1:", (integer_to_binary(LP))/binary>>,
-    ReInv = indialog(<<"INVITE">>, Inv, R200, LP, 2,
-                     #{body => chappe_sip_core_peer:sdp(40004),
-                       contact => <<"<", NewContact/binary, ">">>}),
+    ReInv = indialog(
+        <<"INVITE">>,
+        Inv,
+        R200,
+        LP,
+        2,
+        #{
+            body => chappe_sip_core_peer:sdp(40004),
+            contact => <<"<", NewContact/binary, ">">>
+        }
+    ),
     send(Sock, Port, ReInv),
     receive
         {chappe_sip_dialog, D, modify, _, Res} ->
@@ -417,7 +625,9 @@ target_refresh_rejected(Config) ->
     {R488, _} = recv(Sock, {status, 488}, 3000),
     send(Sock, Port, ack_non2xx(ReInv, R488)),
     ?assertEqual(OldSdp, chappe_sip_dialog:remote_sdp(D)),
-    Info = async(fun() -> chappe_sip_dialog:request(D, #{method => <<"INFO">>}) end),
+    Info = async(fun() ->
+        chappe_sip_dialog:request(D, #{method => <<"INFO">>})
+    end),
     {InfoReq, _} = recv(Sock, {method, <<"INFO">>}, 3000),
     send(Sock, Port, response(InfoReq, 200, #{})),
     {ok, _} = await(Info),
@@ -455,17 +665,25 @@ reinvite_one_at_a_time(Config) ->
     M2 = async(fun() -> chappe_sip_dialog:modify(D, unhold) end),
     %% retransmissions of the first are fine, a new INVITE is not
     FirstSeq = cseq(First),
-    recv_none(Sock, fun(B) ->
-                            method(B) =:= <<"INVITE">> andalso
-                                cseq(B) =/= FirstSeq
-                    end, 1500),
+    recv_none(
+        Sock,
+        fun(B) ->
+            method(B) =:= <<"INVITE">> andalso
+                cseq(B) =/= FirstSeq
+        end,
+        1500
+    ),
     send(Sock, Port, response(First, 200, #{body => sdp()})),
     {ok, _} = await(M1),
     %% the second re-INVITE, not a retransmission of the first
-    {Second, _} = recv(Sock, fun(B) ->
-                                     method(B) =:= <<"INVITE">> andalso
-                                         cseq(B) =/= FirstSeq
-                             end, 3000),
+    {Second, _} = recv(
+        Sock,
+        fun(B) ->
+            method(B) =:= <<"INVITE">> andalso
+                cseq(B) =/= FirstSeq
+        end,
+        3000
+    ),
     send(Sock, Port, response(Second, 200, #{body => sdp()})),
     {ok, _} = await(M2).
 
@@ -478,16 +696,21 @@ request_during_reinvite(Config) ->
     {Inv, D, R200} = call(Sock, Port, #{}, #{handled_events => [modify]}),
     ReInv = indialog(<<"INVITE">>, Inv, R200, LP, 2, #{body => sdp()}),
     send(Sock, Port, ReInv),
-    Res = receive {chappe_sip_dialog, D, modify, _, Res0} -> Res0
-          after 3000 -> ct:fail(no_modify)
-          end,
-    Info = async(fun() -> chappe_sip_dialog:request(D, #{method => <<"INFO">>}) end),
+    Res =
+        receive
+            {chappe_sip_dialog, D, modify, _, Res0} -> Res0
+        after 3000 -> ct:fail(no_modify)
+        end,
+    Info = async(fun() ->
+        chappe_sip_dialog:request(D, #{method => <<"INFO">>})
+    end),
     {InfoReq, _} = recv(Sock, {method, <<"INFO">>}, 3000),
     send(Sock, Port, response(InfoReq, 200, #{})),
     {ok, _} = await(Info),
-    ok = chappe_sip_res:send(Res, 200, #{body => sdp(),
-                                        headers => [{<<"Content-Type">>,
-                                                     <<"application/sdp">>}]}),
+    ok = chappe_sip_res:send(Res, 200, #{
+        body => sdp(),
+        headers => [{<<"Content-Type">>, <<"application/sdp">>}]
+    }),
     {R2, _} = recv(Sock, {status, 200, <<"INVITE">>}, 3000),
     send(Sock, Port, chappe_sip_core_peer:ack_for(R2, #{port => LP})).
 
@@ -498,20 +721,32 @@ early_uas_no_bye(Config) ->
     {Port, Sock} = {?config(port, Config), ?config(sock, Config)},
     Test = self(),
     ok = chappe_sip:invite(fun(Req, Res) ->
-        {ok, D} = chappe_sip:create_uas(Req, Res, #{status => 180,
-                                                    reason => <<"Ringing">>,
-                                                    owner => Test}),
+        {ok, D} = chappe_sip:create_uas(Req, Res, #{
+            status => 180,
+            reason => <<"Ringing">>,
+            owner => Test
+        }),
         Test ! {dialog, D}
     end),
-    Inv = request(<<"INVITE">>, <<"sip:app@127.0.0.1">>,
-                  #{port => port(Sock), body => sdp()}),
+    Inv = request(
+        <<"INVITE">>,
+        <<"sip:app@127.0.0.1">>,
+        #{port => port(Sock), body => sdp()}
+    ),
     send(Sock, Port, Inv),
     {_, _} = recv(Sock, {status, 180}, 3000),
-    D = receive {dialog, D0} -> D0 after 3000 -> ct:fail(no_dialog) end,
+    D =
+        receive
+            {dialog, D0} -> D0
+        after 3000 -> ct:fail(no_dialog)
+        end,
     Bye = async(fun() -> chappe_sip_dialog:destroy(D) end),
     Seen = collect(Sock, any, 1500),
     ?assertEqual([], [B || {_, B} <- Seen, method(B) =:= <<"BYE">>]),
-    [Final | _] = [B || {_, B} <- Seen, is_integer(status(B)), status(B) >= 300],
+    [Final | _] = [
+        B
+     || {_, B} <- Seen, is_integer(status(B)), status(B) >= 300
+    ],
     ct:log("final: ~s", [hd(binary:split(Final, <<"\r\n">>))]),
     ok = await(Bye),
     send(Sock, Port, ack_non2xx(Inv, Final)).
@@ -521,11 +756,14 @@ early_uas_no_bye(Config) ->
 indialog_481_ends_dialog(Config) ->
     {Port, Sock} = {?config(port, Config), ?config(sock, Config)},
     {_Inv, D, _R200} = call(Sock, Port, #{}),
-    Info = async(fun() -> chappe_sip_dialog:request(D, #{method => <<"INFO">>}) end),
+    Info = async(fun() ->
+        chappe_sip_dialog:request(D, #{method => <<"INFO">>})
+    end),
     {InfoReq, _} = recv(Sock, {method, <<"INFO">>}, 3000),
     send(Sock, Port, response(InfoReq, 481, #{})),
     {ok, _} = await(Info),
-    receive {chappe_sip_dialog, D, destroy, {request_failed, 481}} -> ok
+    receive
+        {chappe_sip_dialog, D, destroy, {request_failed, 481}} -> ok
     after 3000 -> ct:fail(dialog_kept)
     end,
     recv_none(Sock, {method, <<"BYE">>}, 500).
@@ -538,11 +776,12 @@ session_over_at_bye(Config) ->
     {_Inv, D, _R200} = call(Sock, Port, #{}),
     Bye = async(fun() -> chappe_sip_dialog:destroy(D) end),
     {ByeReq, _} = recv(Sock, {method, <<"BYE">>}, 3000),
-    ?assertEqual({error, terminating},
-                 chappe_sip_dialog:request(D, #{method => <<"INFO">>})),
+    ?assertEqual(
+        {error, terminating},
+        chappe_sip_dialog:request(D, #{method => <<"INFO">>})
+    ),
     send(Sock, Port, response(ByeReq, 200, #{})),
     ok = await(Bye).
-
 
 %% ---- offer/answer as UAS (13.2.1, 13.3.1, 14.1, 14.2) ----
 
@@ -553,21 +792,41 @@ offerless_invite(Config) ->
     {Port, Sock} = {?config(port, Config), ?config(sock, Config)},
     Test = self(),
     ok = chappe_sip:invite(fun(Req, Res) ->
-        {ok, D} = chappe_sip:create_uas(Req, Res, #{local_sdp => sdp(),
-                                                    owner => Test}),
+        {ok, D} = chappe_sip:create_uas(Req, Res, #{
+            local_sdp => sdp(),
+            owner => Test
+        }),
         Test ! {dialog, D}
     end),
     LP = port(Sock),
-    send(Sock, Port, request(<<"INVITE">>, <<"sip:app@127.0.0.1">>,
-                             #{port => LP})),
+    send(
+        Sock,
+        Port,
+        request(
+            <<"INVITE">>,
+            <<"sip:app@127.0.0.1">>,
+            #{port => LP}
+        )
+    ),
     {R200, _} = recv(Sock, {status, 200}, 3000),
     ?assertEqual(sdp(), body(R200)),
-    D = receive {dialog, D0} -> D0 after 3000 -> ct:fail(no_dialog) end,
+    D =
+        receive
+            {dialog, D0} -> D0
+        after 3000 -> ct:fail(no_dialog)
+        end,
     Answer = chappe_sip_core_peer:sdp(45000),
-    send(Sock, Port, chappe_sip_core_peer:ack_for(R200, #{
-        port => LP, body => Answer,
-        headers => [{<<"Content-Type">>, <<"application/sdp">>}]})),
-    receive {chappe_sip_dialog, D, ack, _, _} -> ok
+    send(
+        Sock,
+        Port,
+        chappe_sip_core_peer:ack_for(R200, #{
+            port => LP,
+            body => Answer,
+            headers => [{<<"Content-Type">>, <<"application/sdp">>}]
+        })
+    ),
+    receive
+        {chappe_sip_dialog, D, ack, _, _} -> ok
     after 3000 -> ct:fail(no_ack)
     end,
     ?assertEqual(Answer, chappe_sip_dialog:remote_sdp(D)).
@@ -584,10 +843,17 @@ offerless_reinvite(Config) ->
     {R2, _} = recv(Sock, {status, 200, <<"INVITE">>}, 3000),
     ?assertEqual(mlines(body(R200)), mlines(body(R2))),
     Answer = chappe_sip_core_peer:sdp(46000),
-    send(Sock, Port, chappe_sip_core_peer:ack_for(R2, #{
-        port => LP, body => Answer,
-        headers => [{<<"Content-Type">>, <<"application/sdp">>}]})),
-    receive {chappe_sip_dialog, D, ack, _, _} -> ok
+    send(
+        Sock,
+        Port,
+        chappe_sip_core_peer:ack_for(R2, #{
+            port => LP,
+            body => Answer,
+            headers => [{<<"Content-Type">>, <<"application/sdp">>}]
+        })
+    ),
+    receive
+        {chappe_sip_dialog, D, ack, _, _} -> ok
     after 3000 -> ct:fail(no_ack)
     end,
     ?assertEqual(Answer, chappe_sip_dialog:remote_sdp(D)).
@@ -601,7 +867,9 @@ reoffer_bumps_version(Config) ->
     {ReInv, _} = recv(Sock, {method, <<"INVITE">>}, 3000),
     send(Sock, Port, response(ReInv, 200, #{body => sdp()})),
     {ok, _} = await(Mod),
-    ct:log("before: ~p after: ~p", [sdp_version(body(R200)), sdp_version(body(ReInv))]),
+    ct:log("before: ~p after: ~p", [
+        sdp_version(body(R200)), sdp_version(body(ReInv))
+    ]),
     ?assert(sdp_version(body(ReInv)) > sdp_version(body(R200))).
 
 %% ---- tags (12.1.1, 12.2.1.1, 19.3) ----
@@ -626,14 +894,23 @@ merged_request_482(Config) ->
     {Port, Sock} = {?config(port, Config), ?config(sock, Config)},
     ok = chappe_sip:invite(fun(_Req, Res) ->
         ok = chappe_sip_res:send(Res, 180),
-        receive stop -> ok after 3000 -> chappe_sip_res:send(Res, 486) end
+        receive
+            stop -> ok
+        after 3000 -> chappe_sip_res:send(Res, 486)
+        end
     end),
-    Base = #{port => port(Sock), body => sdp(), call_id => call_id(),
-             from_tag => tag()},
+    Base = #{
+        port => port(Sock),
+        body => sdp(),
+        call_id => call_id(),
+        from_tag => tag()
+    },
     Inv1 = request(<<"INVITE">>, <<"sip:app@127.0.0.1">>, Base),
     send(Sock, Port, Inv1),
     {_, _} = recv(Sock, {status, 180}, 3000),
-    Inv2 = request(<<"INVITE">>, <<"sip:app@127.0.0.1">>, Base#{branch => branch()}),
+    Inv2 = request(<<"INVITE">>, <<"sip:app@127.0.0.1">>, Base#{
+        branch => branch()
+    }),
     send(Sock, Port, Inv2),
     {R482, _} = recv(Sock, {status, 482}, 3000),
     ?assertEqual(via_branch(top_via(Inv2)), via_branch(top_via(R482))),
@@ -647,7 +924,9 @@ contact_reachable(Config) ->
     {Port, Sock} = {?config(port, Config), ?config(sock, Config)},
     ok = chappe_sip:options(fun(_Req, Res) -> chappe_sip_res:send(Res, 200) end),
     {_Inv, _D, R200} = call(Sock, Port, #{}),
-    {ok, #{uri := Contact}} = chappe_sip_hdr:name_addr(hdr(<<"contact">>, R200)),
+    {ok, #{uri := Contact}} = chappe_sip_hdr:name_addr(
+        hdr(<<"contact">>, R200)
+    ),
     send(Sock, Port, request(<<"OPTIONS">>, Contact, #{port => port(Sock)})),
     {R, _} = recv(Sock, {status, 200, <<"OPTIONS">>}, 3000),
     ?assertEqual(200, status(R)).
@@ -660,31 +939,53 @@ reliable_provisional_require(Config) ->
     Test = self(),
     ok = chappe_sip:invite(fun(Req, Res) ->
         ok = chappe_sip_res:send_reliable(
-               Res, #{status => 183, body => sdp(), to_tag => <<"rel2">>,
-                      headers => [{<<"Content-Type">>, <<"application/sdp">>}]}),
+            Res, #{
+                status => 183,
+                body => sdp(),
+                to_tag => <<"rel2">>,
+                headers => [{<<"Content-Type">>, <<"application/sdp">>}]
+            }
+        ),
         {ok, _} = chappe_sip_res:await_prack(Res, 5000),
-        {ok, D} = chappe_sip:create_uas(Req, Res, #{local_sdp => sdp(),
-                                                    local_tag => <<"rel2">>,
-                                                    owner => Test}),
+        {ok, D} = chappe_sip:create_uas(Req, Res, #{
+            local_sdp => sdp(),
+            local_tag => <<"rel2">>,
+            owner => Test
+        }),
         Test ! {dialog, D}
     end),
     LP = port(Sock),
-    Inv = request(<<"INVITE">>, <<"sip:app@127.0.0.1">>,
-                  #{port => LP, body => sdp(),
-                    headers => [{<<"Supported">>, <<"100rel">>}]}),
+    Inv = request(
+        <<"INVITE">>,
+        <<"sip:app@127.0.0.1">>,
+        #{
+            port => LP,
+            body => sdp(),
+            headers => [{<<"Supported">>, <<"100rel">>}]
+        }
+    ),
     send(Sock, Port, Inv),
     {R183, _} = recv(Sock, {status, 183}, 3000),
     ?assertEqual(<<"100rel">>, hdr(<<"require">>, R183)),
     RSeq = hdr(<<"rseq">>, R183),
     ?assertNotEqual(undefined, RSeq),
     {N, _} = cseq(Inv),
-    Prack = request(<<"PRACK">>, <<"sip:app@127.0.0.1">>,
-                    #{port => LP, call_id => hdr(<<"call-id">>, Inv),
-                      from_tag => from_tag(Inv), to_tag => to_tag(R183),
-                      cseq => N + 1,
-                      headers => [{<<"RAck">>, <<RSeq/binary, " ",
-                                                  (integer_to_binary(N))/binary,
-                                                  " INVITE">>}]}),
+    Prack = request(
+        <<"PRACK">>,
+        <<"sip:app@127.0.0.1">>,
+        #{
+            port => LP,
+            call_id => hdr(<<"call-id">>, Inv),
+            from_tag => from_tag(Inv),
+            to_tag => to_tag(R183),
+            cseq => N + 1,
+            headers => [
+                {<<"RAck">>,
+                    <<RSeq/binary, " ", (integer_to_binary(N))/binary,
+                        " INVITE">>}
+            ]
+        }
+    ),
     send(Sock, Port, Prack),
     {_, _} = recv(Sock, {status, 200, <<"PRACK">>}, 3000),
     {R200, _} = recv(Sock, {status, 200, <<"INVITE">>}, 3000),
@@ -702,9 +1003,16 @@ unsupported_body_415(Config) ->
         chappe_sip_res:send(Res, 486)
     end),
     Try = fun(Hdrs, CT) ->
-        Inv = request(<<"INVITE">>, <<"sip:app@127.0.0.1">>,
-                      #{port => port(Sock), body => <<"opaque">>,
-                        content_type => CT, headers => Hdrs}),
+        Inv = request(
+            <<"INVITE">>,
+            <<"sip:app@127.0.0.1">>,
+            #{
+                port => port(Sock),
+                body => <<"opaque">>,
+                content_type => CT,
+                headers => Hdrs
+            }
+        ),
         send(Sock, Port, Inv),
         {R, _} = recv(Sock, final, 3000),
         send(Sock, Port, ack_non2xx(Inv, R)),
@@ -712,12 +1020,23 @@ unsupported_body_415(Config) ->
     end,
     R415 = Try([], <<"application/x-foo">>),
     ?assertEqual(415, status(R415)),
-    ?assertMatch({match, _}, re:run(hdr(<<"accept">>, R415), "application/sdp")),
-    receive {handler, _} -> ct:fail(handler_ran) after 300 -> ok end,
+    ?assertMatch(
+        {match, _}, re:run(hdr(<<"accept">>, R415), "application/sdp")
+    ),
+    receive
+        {handler, _} -> ct:fail(handler_ran)
+    after 300 -> ok
+    end,
     ?assertEqual(486, status(Try([], <<"multipart/mixed;boundary=x">>))),
-    ?assertEqual(486, status(Try([{<<"Content-Disposition">>,
-                                   <<"render;handling=optional">>}],
-                                 <<"application/x-foo">>))).
+    ?assertEqual(
+        486,
+        status(
+            Try(
+                [{<<"Content-Disposition">>, <<"render;handling=optional">>}],
+                <<"application/x-foo">>
+            )
+        )
+    ).
 
 %% An INVITE whose SDP carries a Content-Encoding we do not apply (br)
 %% gets 415 with Accept-Encoding listing
@@ -730,15 +1049,24 @@ unknown_encoding_415(Config) ->
         Test ! handler,
         chappe_sip_res:send(Res, 486)
     end),
-    Inv = request(<<"INVITE">>, <<"sip:app@127.0.0.1">>,
-                  #{port => port(Sock), body => sdp(),
-                    headers => [{<<"Content-Encoding">>, <<"br">>}]}),
+    Inv = request(
+        <<"INVITE">>,
+        <<"sip:app@127.0.0.1">>,
+        #{
+            port => port(Sock),
+            body => sdp(),
+            headers => [{<<"Content-Encoding">>, <<"br">>}]
+        }
+    ),
     send(Sock, Port, Inv),
     {R, _} = recv(Sock, final, 3000),
     send(Sock, Port, ack_non2xx(Inv, R)),
     ?assertEqual(415, status(R)),
     ?assertEqual(<<"identity">>, hdr(<<"accept-encoding">>, R)),
-    receive handler -> ct:fail(handler_ran) after 300 -> ok end.
+    receive
+        handler -> ct:fail(handler_ran)
+    after 300 -> ok
+    end.
 
 %% Header fields not applicable to an INVITE (WWW-Authenticate,
 %% Min-Expires, Server, Retry-After, Unsupported: response or other-method
@@ -751,14 +1079,26 @@ na_request_headers_ignored(Config) ->
         {ok, _} = chappe_sip:create_uas(Req, Res, #{local_sdp => sdp()})
     end),
     LP = port(Sock),
-    send(Sock, Port, request(<<"INVITE">>, <<"sip:app@127.0.0.1">>,
-                             #{port => LP, body => sdp(),
-                               headers => [{<<"WWW-Authenticate">>,
-                                            <<"Digest realm=\"x\", nonce=\"y\"">>},
-                                           {<<"Min-Expires">>, <<"3600">>},
-                                           {<<"Server">>, <<"misplaced/1.0">>},
-                                           {<<"Retry-After">>, <<"120">>},
-                                           {<<"Unsupported">>, <<"100rel">>}]})),
+    send(
+        Sock,
+        Port,
+        request(
+            <<"INVITE">>,
+            <<"sip:app@127.0.0.1">>,
+            #{
+                port => LP,
+                body => sdp(),
+                headers => [
+                    {<<"WWW-Authenticate">>,
+                        <<"Digest realm=\"x\", nonce=\"y\"">>},
+                    {<<"Min-Expires">>, <<"3600">>},
+                    {<<"Server">>, <<"misplaced/1.0">>},
+                    {<<"Retry-After">>, <<"120">>},
+                    {<<"Unsupported">>, <<"100rel">>}
+                ]
+            }
+        )
+    ),
     {R, _} = recv(Sock, final, 3000),
     ?assertEqual(200, status(R)),
     ?assertMatch(<<"v=0", _/binary>>, body(R)),
@@ -777,27 +1117,46 @@ content_encoding_415(Config) ->
         chappe_sip_res:send(Res, 486)
     end),
     ok = chappe_sip:message(fun(Req, Res) ->
-        Test ! {message, chappe_sip_req:get(<<"content-encoding">>, Req),
+        Test !
+            {message, chappe_sip_req:get(<<"content-encoding">>, Req),
                 chappe_sip_req:body(Req)},
         chappe_sip_res:send(Res, 200)
     end),
     Gz = zlib:gzip(sdp()),
-    Inv = request(<<"INVITE">>, <<"sip:app@127.0.0.1">>,
-                  #{port => port(Sock), body => Gz,
-                    content_type => <<"application/sdp">>,
-                    headers => [{<<"Content-Encoding">>, <<"gzip">>}]}),
+    Inv = request(
+        <<"INVITE">>,
+        <<"sip:app@127.0.0.1">>,
+        #{
+            port => port(Sock),
+            body => Gz,
+            content_type => <<"application/sdp">>,
+            headers => [{<<"Content-Encoding">>, <<"gzip">>}]
+        }
+    ),
     send(Sock, Port, Inv),
     {R, _} = recv(Sock, final, 3000),
     send(Sock, Port, ack_non2xx(Inv, R)),
     ?assertEqual(415, status(R)),
     ?assertEqual(<<"identity">>, hdr(<<"accept-encoding">>, R)),
-    receive invite_handler -> ct:fail(handler_ran) after 300 -> ok end,
+    receive
+        invite_handler -> ct:fail(handler_ran)
+    after 300 -> ok
+    end,
     Text = zlib:gzip(<<"hello, compressed">>),
-    send(Sock, Port, request(<<"MESSAGE">>, <<"sip:app@127.0.0.1">>,
-                             #{port => port(Sock), body => Text,
-                               content_type => <<"text/plain">>,
-                               headers => [{<<"Content-Encoding">>,
-                                            <<"gzip">>}]})),
+    send(
+        Sock,
+        Port,
+        request(
+            <<"MESSAGE">>,
+            <<"sip:app@127.0.0.1">>,
+            #{
+                port => port(Sock),
+                body => Text,
+                content_type => <<"text/plain">>,
+                headers => [{<<"Content-Encoding">>, <<"gzip">>}]
+            }
+        )
+    ),
     {R200, _} = recv(Sock, final, 3000),
     ?assertEqual(200, status(R200)),
     receive
@@ -820,12 +1179,20 @@ response_not_encoded(Config) ->
             headers => [{<<"Content-Type">>, <<"text/plain">>}]
         })
     end),
-    send(Sock, Port, request(<<"MESSAGE">>, <<"sip:app@127.0.0.1">>,
-                             #{port => port(Sock),
-                               body => zlib:compress(<<"hello, deflated">>),
-                               content_type => <<"text/plain">>,
-                               headers => [{<<"Content-Encoding">>,
-                                            <<"deflate">>}]})),
+    send(
+        Sock,
+        Port,
+        request(
+            <<"MESSAGE">>,
+            <<"sip:app@127.0.0.1">>,
+            #{
+                port => port(Sock),
+                body => zlib:compress(<<"hello, deflated">>),
+                content_type => <<"text/plain">>,
+                headers => [{<<"Content-Encoding">>, <<"deflate">>}]
+            }
+        )
+    ),
     {R, _} = recv(Sock, final, 3000),
     ?assertEqual(200, status(R)),
     ?assertEqual(undefined, hdr(<<"content-encoding">>, R)),
@@ -841,15 +1208,28 @@ bye_waits_for_ack(Config) ->
     {Port, Sock} = {?config(port, Config), ?config(sock, Config)},
     Test = self(),
     ok = chappe_sip:invite(fun(Req, Res) ->
-        {ok, D} = chappe_sip:create_uas(Req, Res, #{local_sdp => sdp(),
-                                                    owner => Test}),
+        {ok, D} = chappe_sip:create_uas(Req, Res, #{
+            local_sdp => sdp(),
+            owner => Test
+        }),
         Test ! {dialog, D}
     end),
     LP = port(Sock),
-    send(Sock, Port, request(<<"INVITE">>, <<"sip:app@127.0.0.1">>,
-                             #{port => LP, body => sdp()})),
+    send(
+        Sock,
+        Port,
+        request(
+            <<"INVITE">>,
+            <<"sip:app@127.0.0.1">>,
+            #{port => LP, body => sdp()}
+        )
+    ),
     {R200, _} = recv(Sock, {status, 200}, 3000),
-    D = receive {dialog, D0} -> D0 after 3000 -> ct:fail(no_dialog) end,
+    D =
+        receive
+            {dialog, D0} -> D0
+        after 3000 -> ct:fail(no_dialog)
+        end,
     Bye = async(fun() -> chappe_sip_dialog:destroy(D) end),
     Seen = collect(Sock, any, 2500),
     ?assertEqual([], [B || {_, B} <- Seen, method(B) =:= <<"BYE">>]),
@@ -869,12 +1249,21 @@ no_ack_ends_session(Config) ->
     {Port, Sock} = {?config(port, Config), ?config(sock, Config)},
     Test = self(),
     ok = chappe_sip:invite(fun(Req, Res) ->
-        {ok, D} = chappe_sip:create_uas(Req, Res, #{local_sdp => sdp(),
-                                                    owner => Test}),
+        {ok, D} = chappe_sip:create_uas(Req, Res, #{
+            local_sdp => sdp(),
+            owner => Test
+        }),
         Test ! {dialog, D}
     end),
-    send(Sock, Port, request(<<"INVITE">>, <<"sip:app@127.0.0.1">>,
-                             #{port => port(Sock), body => sdp()})),
+    send(
+        Sock,
+        Port,
+        request(
+            <<"INVITE">>,
+            <<"sip:app@127.0.0.1">>,
+            #{port => port(Sock), body => sdp()}
+        )
+    ),
     Seen = collect(Sock, any, 36000),
     [{T0, _} | _] = Oks = [{T, B} || {T, B} <- Seen, status(B) =:= 200],
     ct:log("200 at ~p", [[T - T0 || {T, _} <- Oks]]),
@@ -883,8 +1272,13 @@ no_ack_ends_session(Config) ->
     ct:log("BYE after ~p ms", [TB - T0]),
     ?assert(TB - T0 >= 31500),
     send(Sock, Port, response(ByeReq, 200, #{})),
-    D = receive {dialog, D0} -> D0 after 0 -> ct:fail(no_dialog) end,
-    receive {chappe_sip_dialog, D, destroy, no_ack} -> ok
+    D =
+        receive
+            {dialog, D0} -> D0
+        after 0 -> ct:fail(no_dialog)
+        end,
+    receive
+        {chappe_sip_dialog, D, destroy, no_ack} -> ok
     after 3000 -> ct:fail(no_destroy)
     end.
 
@@ -899,16 +1293,29 @@ invite_retransmit_gets_provisional(Config) ->
     ok = chappe_sip:invite(fun(_Req, Res) ->
         Test ! {handler, self()},
         ok = chappe_sip_res:send(Res, 180),
-        receive go -> chappe_sip_res:send(Res, 486) after 10000 -> ok end
+        receive
+            go -> chappe_sip_res:send(Res, 486)
+        after 10000 -> ok
+        end
     end),
-    Inv = request(<<"INVITE">>, <<"sip:app@127.0.0.1">>,
-                  #{port => port(Sock), body => sdp()}),
+    Inv = request(
+        <<"INVITE">>,
+        <<"sip:app@127.0.0.1">>,
+        #{port => port(Sock), body => sdp()}
+    ),
     send(Sock, Port, Inv),
-    H = receive {handler, H0} -> H0 after 3000 -> ct:fail(no_handler) end,
+    H =
+        receive
+            {handler, H0} -> H0
+        after 3000 -> ct:fail(no_handler)
+        end,
     {_, _} = recv(Sock, {status, 180}, 3000),
     send(Sock, Port, Inv),
     {_, _} = recv(Sock, {status, 180}, 1000),
-    receive {handler, _} -> ct:fail(handler_ran_twice) after 300 -> ok end,
+    receive
+        {handler, _} -> ct:fail(handler_ran_twice)
+    after 300 -> ok
+    end,
     H ! go,
     {R486, _} = recv(Sock, {status, 486}, 3000),
     send(Sock, Port, ack_non2xx(Inv, R486)).
@@ -925,12 +1332,24 @@ error_response_retransmits(Config) ->
         Test ! handler,
         chappe_sip_res:send(Res, 486)
     end),
-    Inv = request(<<"INVITE">>, <<"sip:app@127.0.0.1">>,
-                  #{port => port(Sock), body => sdp()}),
+    Inv = request(
+        <<"INVITE">>,
+        <<"sip:app@127.0.0.1">>,
+        #{port => port(Sock), body => sdp()}
+    ),
     send(Sock, Port, Inv),
-    Busy = [{T, B} || {T, B} <- collect(Sock, any, 4200),
-                      status(B) =:= 486],
-    ?assertEqual(ok, receive handler -> ok after 0 -> none end),
+    Busy = [
+        {T, B}
+     || {T, B} <- collect(Sock, any, 4200),
+        status(B) =:= 486
+    ],
+    ?assertEqual(
+        ok,
+        receive
+            handler -> ok
+        after 0 -> none
+        end
+    ),
     check_backoff([T || {T, _} <- Busy], 500, 4000),
     ?assert(length(Busy) >= 4),
     send(Sock, Port, Inv),
@@ -939,13 +1358,19 @@ error_response_retransmits(Config) ->
     send(Sock, Port, ack_non2xx(Inv, B486)),
     recv_none(Sock, {status, 486}, 4000),
     send(Sock, Port, Inv),
-    receive handler -> ct:fail(handler_ran_in_confirmed) after 1000 -> ok end,
+    receive
+        handler -> ct:fail(handler_ran_in_confirmed)
+    after 1000 -> ok
+    end,
     drain(Sock),
     %% Timer I (T4, 5 s from the ACK) has fired: the INVITE is new again
     timer:sleep(2000),
     send(Sock, Port, Inv),
     {R2, _} = recv(Sock, {status, 486}, 3000),
-    receive handler -> ok after 1000 -> ct:fail(no_new_transaction) end,
+    receive
+        handler -> ok
+    after 1000 -> ct:fail(no_new_transaction)
+    end,
     send(Sock, Port, ack_non2xx(Inv, R2)).
 
 %% Without an ACK the 486 is retransmitted until Timer H (64*T1), then
@@ -954,8 +1379,15 @@ error_response_retransmits(Config) ->
 error_response_timer_h(Config) ->
     {Port, Sock} = {?config(port, Config), ?config(sock, Config)},
     ok = chappe_sip:invite(fun(_Req, Res) -> chappe_sip_res:send(Res, 486) end),
-    send(Sock, Port, request(<<"INVITE">>, <<"sip:app@127.0.0.1">>,
-                             #{port => port(Sock), body => sdp()})),
+    send(
+        Sock,
+        Port,
+        request(
+            <<"INVITE">>,
+            <<"sip:app@127.0.0.1">>,
+            #{port => port(Sock), body => sdp()}
+        )
+    ),
     Busy = [T || {T, B} <- collect(Sock, any, 38000), status(B) =:= 486],
     [T0 | _] = Busy,
     ct:log("486 at ~p", [[T - T0 || T <- Busy]]),
@@ -972,19 +1404,30 @@ provisional_every_minute(Config) ->
     {Port, Sock} = {?config(port, Config), ?config(sock, Config)},
     Test = self(),
     ok = chappe_sip:invite(fun(Req, Res) ->
-        {ok, D} = chappe_sip:create_uas(Req, Res, #{status => 180,
-                                                    owner => Test}),
+        {ok, D} = chappe_sip:create_uas(Req, Res, #{
+            status => 180,
+            owner => Test
+        }),
         Test ! {dialog, D}
     end),
-    Inv = request(<<"INVITE">>, <<"sip:app@127.0.0.1">>,
-                  #{port => port(Sock), body => sdp()}),
+    Inv = request(
+        <<"INVITE">>,
+        <<"sip:app@127.0.0.1">>,
+        #{port => port(Sock), body => sdp()}
+    ),
     send(Sock, Port, Inv),
-    D = receive {dialog, D0} -> D0 after 3000 -> ct:fail(no_dialog) end,
+    D =
+        receive
+            {dialog, D0} -> D0
+        after 3000 -> ct:fail(no_dialog)
+        end,
     Seen = [{T, B} || {T, B} <- collect(Sock, any, 66000), status(B) =:= 180],
     ct:log("180 at ~p", [[T - element(1, hd(Seen)) || {T, _} <- Seen]]),
     ?assert(length(Seen) >= 2),
-    [?assert(I >= 59000 andalso I =< 63000, {interval, I})
-     || I <- intervals([T || {T, _} <- Seen])],
+    [
+        ?assert(I >= 59000 andalso I =< 63000, {interval, I})
+     || I <- intervals([T || {T, _} <- Seen])
+    ],
     Bye = async(fun() -> chappe_sip_dialog:destroy(D) end),
     {Final, _} = recv(Sock, final, 3000),
     ok = await(Bye),
@@ -1001,25 +1444,42 @@ non_invite_final_only(Config) ->
     ok = chappe_sip:options(fun(_Req, Res) -> chappe_sip_res:send(Res, 200) end),
     LP = port(Sock),
     T0 = erlang:monotonic_time(millisecond),
-    send(Sock, Port, request(<<"OPTIONS">>, <<"sip:app@127.0.0.1">>,
-                             #{port => LP})),
+    send(
+        Sock,
+        Port,
+        request(
+            <<"OPTIONS">>,
+            <<"sip:app@127.0.0.1">>,
+            #{port => LP}
+        )
+    ),
     {R1, _} = recv(Sock, any, 3000),
     ?assertEqual(200, status(R1)),
     ?assert(erlang:monotonic_time(millisecond) - T0 < 500),
     {Inv, _D, R200} = call(Sock, Port, #{}),
     InDialog = fun(Method, N) ->
-        request(Method, <<"sip:app@127.0.0.1">>,
-                #{port => LP, call_id => hdr(<<"call-id">>, Inv),
-                  from_tag => from_tag(Inv), to_tag => to_tag(R200),
-                  cseq => N})
+        request(
+            Method,
+            <<"sip:app@127.0.0.1">>,
+            #{
+                port => LP,
+                call_id => hdr(<<"call-id">>, Inv),
+                from_tag => from_tag(Inv),
+                to_tag => to_tag(R200),
+                cseq => N
+            }
+        )
     end,
-    [begin
-         Req = InDialog(M, N),
-         send(Sock, Port, Req),
-         {R, _} = recv(Sock, any, 3000),
-         ?assertEqual(200, status(R)),
-         ?assertEqual(hdr(<<"to">>, Req), hdr(<<"to">>, R))
-     end || {M, N} <- [{<<"INFO">>, 2}, {<<"BYE">>, 3}]].
+    [
+        begin
+            Req = InDialog(M, N),
+            send(Sock, Port, Req),
+            {R, _} = recv(Sock, any, 3000),
+            ?assertEqual(200, status(R)),
+            ?assertEqual(hdr(<<"to">>, Req), hdr(<<"to">>, R))
+        end
+     || {M, N} <- [{<<"INFO">>, 2}, {<<"BYE">>, 3}]
+    ].
 
 %% Provisionals the app sends to a MESSAGE go out and the last one answers
 %% a retransmission; the final goes out and answers the next one; a second
@@ -1032,15 +1492,29 @@ non_invite_provisionals(Config) ->
     ok = chappe_sip:message(fun(_Req, Res) ->
         Test ! {handler, self()},
         ok = chappe_sip_res:send(Res, 100),
-        receive p2 -> ok = chappe_sip_res:send(Res, 181) end,
-        receive final -> ok = chappe_sip_res:send(Res, 200) end,
+        receive
+            p2 -> ok = chappe_sip_res:send(Res, 181)
+        end,
+        receive
+            final -> ok = chappe_sip_res:send(Res, 200)
+        end,
         Test ! {again, chappe_sip_res:send(Res, 202)}
     end),
-    Msg = request(<<"MESSAGE">>, <<"sip:app@127.0.0.1">>,
-                  #{port => port(Sock), body => <<"hi">>,
-                    content_type => <<"text/plain">>}),
+    Msg = request(
+        <<"MESSAGE">>,
+        <<"sip:app@127.0.0.1">>,
+        #{
+            port => port(Sock),
+            body => <<"hi">>,
+            content_type => <<"text/plain">>
+        }
+    ),
     send(Sock, Port, Msg),
-    H = receive {handler, H0} -> H0 after 3000 -> ct:fail(no_handler) end,
+    H =
+        receive
+            {handler, H0} -> H0
+        after 3000 -> ct:fail(no_handler)
+        end,
     {_, _} = recv(Sock, {status, 100}, 3000),
     H ! p2,
     {_, _} = recv(Sock, {status, 181}, 3000),
@@ -1050,11 +1524,15 @@ non_invite_provisionals(Config) ->
     {_, _} = recv(Sock, {status, 200}, 3000),
     send(Sock, Port, Msg),
     {_, _} = recv(Sock, {status, 200}, 1000),
-    receive {again, Again} -> ?assertEqual({error, already_final}, Again)
+    receive
+        {again, Again} -> ?assertEqual({error, already_final}, Again)
     after 3000 -> ct:fail(no_second_final)
     end,
     recv_none(Sock, {status, 202}, 500),
-    receive {handler, _} -> ct:fail(handler_ran_twice) after 0 -> ok end.
+    receive
+        {handler, _} -> ct:fail(handler_ran_twice)
+    after 0 -> ok
+    end.
 
 %% A retransmitted OPTIONS gets the same final response from the completed
 %% transaction for 64*T1 (Timer J); after that it is a new request.
@@ -1066,21 +1544,31 @@ non_invite_timer_j(Config) ->
         Test ! handler,
         chappe_sip_res:send(Res, 200)
     end),
-    Opt = request(<<"OPTIONS">>, <<"sip:app@127.0.0.1">>,
-                  #{port => port(Sock)}),
+    Opt = request(
+        <<"OPTIONS">>,
+        <<"sip:app@127.0.0.1">>,
+        #{port => port(Sock)}
+    ),
     send(Sock, Port, Opt),
     {_, _} = recv(Sock, {status, 200}, 3000),
-    receive handler -> ok after 1000 -> ct:fail(no_handler) end,
+    receive
+        handler -> ok
+    after 1000 -> ct:fail(no_handler)
+    end,
     timer:sleep(30000),
     send(Sock, Port, Opt),
     {_, _} = recv(Sock, {status, 200}, 1000),
-    receive handler -> ct:fail(new_transaction_before_timer_j)
+    receive
+        handler -> ct:fail(new_transaction_before_timer_j)
     after 300 -> ok
     end,
     timer:sleep(3500),
     send(Sock, Port, Opt),
     {_, _} = recv(Sock, {status, 200}, 3000),
-    receive handler -> ok after 1000 -> ct:fail(timer_j_never_fired) end.
+    receive
+        handler -> ok
+    after 1000 -> ct:fail(timer_j_never_fired)
+    end.
 
 %% ---- CANCEL (9.2) ----
 
@@ -1091,10 +1579,16 @@ cancel_pending_invite(Config) ->
     {Port, Sock} = {?config(port, Config), ?config(sock, Config)},
     ok = chappe_sip:invite(fun(_Req, Res) ->
         ok = chappe_sip_res:send(Res, 180),
-        receive stop -> ok after 5000 -> ok end
+        receive
+            stop -> ok
+        after 5000 -> ok
+        end
     end),
-    Inv = request(<<"INVITE">>, <<"sip:app@127.0.0.1">>,
-                  #{port => port(Sock), body => sdp()}),
+    Inv = request(
+        <<"INVITE">>,
+        <<"sip:app@127.0.0.1">>,
+        #{port => port(Sock), body => sdp()}
+    ),
     send(Sock, Port, Inv),
     {R180, _} = recv(Sock, {status, 180}, 3000),
     send(Sock, Port, cancel_for(Inv, [{<<"Require">>, <<"foo">>}])),
@@ -1109,8 +1603,11 @@ cancel_pending_invite(Config) ->
 cancel_no_match_481(Config) ->
     {Port, Sock} = {?config(port, Config), ?config(sock, Config)},
     ok = chappe_sip:invite(fun(_Req, Res) -> chappe_sip_res:send(Res, 486) end),
-    Inv = request(<<"INVITE">>, <<"sip:app@127.0.0.1">>,
-                  #{port => port(Sock), body => sdp()}),
+    Inv = request(
+        <<"INVITE">>,
+        <<"sip:app@127.0.0.1">>,
+        #{port => port(Sock), body => sdp()}
+    ),
     send(Sock, Port, cancel_for(Inv, [])),
     {R, _} = recv(Sock, any, 3000),
     ?assertEqual(481, status(R)).
@@ -1123,14 +1620,29 @@ cancel_no_match_481(Config) ->
 options_default(Config) ->
     {Port, Sock} = {?config(port, Config), ?config(sock, Config)},
     ok = chappe_sip:invite(fun(_Req, Res) -> chappe_sip_res:send(Res, 486) end),
-    send(Sock, Port, request(<<"OPTIONS">>, <<"sip:app@127.0.0.1">>,
-                             #{port => port(Sock)})),
+    send(
+        Sock,
+        Port,
+        request(
+            <<"OPTIONS">>,
+            <<"sip:app@127.0.0.1">>,
+            #{port => port(Sock)}
+        )
+    ),
     {R, _} = recv(Sock, any, 3000),
     ?assertEqual(200, status(R)),
-    Allow = [string:trim(M) || M <- binary:split(hdr(<<"allow">>, R), <<",">>,
-                                                  [global])],
-    [?assert(lists:member(M, Allow), M)
-     || M <- [<<"INVITE">>, <<"ACK">>, <<"CANCEL">>, <<"BYE">>, <<"OPTIONS">>]],
+    Allow = [
+        string:trim(M)
+     || M <- binary:split(
+            hdr(<<"allow">>, R),
+            <<",">>,
+            [global]
+        )
+    ],
+    [
+        ?assert(lists:member(M, Allow), M)
+     || M <- [<<"INVITE">>, <<"ACK">>, <<"CANCEL">>, <<"BYE">>, <<"OPTIONS">>]
+    ],
     ?assertMatch(<<"application/sdp", _/binary>>, hdr(<<"accept">>, R)),
     ?assertNotEqual(undefined, hdr(<<"supported">>, R)).
 
@@ -1144,10 +1656,18 @@ received_param(Config) ->
     {Port, Sock} = {?config(port, Config), ?config(sock, Config)},
     ok = chappe_sip:options(fun(_Req, Res) -> chappe_sip_res:send(Res, 200) end),
     LP = integer_to_binary(port(Sock)),
-    Via = <<"SIP/2.0/UDP peer.example.invalid:", LP/binary, ";branch=",
+    Via =
+        <<"SIP/2.0/UDP peer.example.invalid:", LP/binary, ";branch=",
             (branch())/binary>>,
-    send(Sock, Port, request(<<"OPTIONS">>, <<"sip:app@127.0.0.1">>,
-                             #{port => port(Sock), via => Via})),
+    send(
+        Sock,
+        Port,
+        request(
+            <<"OPTIONS">>,
+            <<"sip:app@127.0.0.1">>,
+            #{port => port(Sock), via => Via}
+        )
+    ),
     {R, _} = recv(Sock, any, 3000),
     ?assertEqual(200, status(R)),
     ?assertMatch({match, _}, re:run(top_via(R), ";received=127\\.0\\.0\\.1")).
@@ -1160,9 +1680,17 @@ response_to_sent_by(Config) ->
     ok = chappe_sip:options(fun(_Req, Res) -> chappe_sip_res:send(Res, 200) end),
     Other = open(),
     OP = integer_to_binary(port(Other)),
-    Via = <<"SIP/2.0/UDP 127.0.0.1:", OP/binary, ";branch=", (branch())/binary>>,
-    send(Sock, Port, request(<<"OPTIONS">>, <<"sip:app@127.0.0.1">>,
-                             #{port => port(Sock), via => Via})),
+    Via =
+        <<"SIP/2.0/UDP 127.0.0.1:", OP/binary, ";branch=", (branch())/binary>>,
+    send(
+        Sock,
+        Port,
+        request(
+            <<"OPTIONS">>,
+            <<"sip:app@127.0.0.1">>,
+            #{port => port(Sock), via => Via}
+        )
+    ),
     {R, _} = recv(Other, any, 3000),
     ?assertEqual(200, status(R)),
     chappe_sip_core_peer:close(Other).
@@ -1179,12 +1707,20 @@ tcp_listener(Config) ->
     {ok, LP} = inet:port(T),
     P = integer_to_binary(LP),
     Via = <<"SIP/2.0/TCP 127.0.0.1:", P/binary, ";branch=", (branch())/binary>>,
-    ok = gen_tcp:send(T, request(<<"OPTIONS">>, <<"sip:app@127.0.0.1">>,
-                                 #{port => LP, via => Via})),
+    ok = gen_tcp:send(
+        T,
+        request(
+            <<"OPTIONS">>,
+            <<"sip:app@127.0.0.1">>,
+            #{port => LP, via => Via}
+        )
+    ),
     R = chappe_sip_core_peer:tcp_recv(T, 3000),
     ?assertEqual(200, status(R)),
-    ?assertEqual(integer_to_binary(byte_size(body(R))),
-                 hdr(<<"content-length">>, R)),
+    ?assertEqual(
+        integer_to_binary(byte_size(body(R))),
+        hdr(<<"content-length">>, R)
+    ),
     gen_tcp:close(T).
 
 %% An OPTIONS over TCP without Content-Length cannot be framed: it never
@@ -1204,7 +1740,10 @@ tcp_no_content_length(Config) ->
         {ok, Bin} -> ?assertNotEqual(200, status(Bin));
         {error, _} -> ok
     end,
-    receive handler -> ct:fail(handler_ran) after 0 -> ok end,
+    receive
+        handler -> ct:fail(handler_ran)
+    after 0 -> ok
+    end,
     gen_tcp:close(T1),
     {T2, {ok, R}} = tcp_options(Port, false),
     ?assertEqual(200, status(R)),
@@ -1215,14 +1754,19 @@ tcp_no_content_length(Config) ->
 tcp_options(Port, Strip) ->
     {ok, T} = gen_tcp:connect({127, 0, 0, 1}, Port, [binary, {active, false}]),
     {ok, LP} = inet:port(T),
-    Via = <<"SIP/2.0/TCP 127.0.0.1:", (integer_to_binary(LP))/binary,
-            ";branch=", (branch())/binary>>,
-    Req0 = request(<<"OPTIONS">>, <<"sip:app@127.0.0.1">>,
-                   #{port => LP, via => Via}),
-    Req = case Strip of
-              true -> binary:replace(Req0, <<"Content-Length: 0\r\n">>, <<>>);
-              false -> Req0
-          end,
+    Via =
+        <<"SIP/2.0/TCP 127.0.0.1:", (integer_to_binary(LP))/binary, ";branch=",
+            (branch())/binary>>,
+    Req0 = request(
+        <<"OPTIONS">>,
+        <<"sip:app@127.0.0.1">>,
+        #{port => LP, via => Via}
+    ),
+    Req =
+        case Strip of
+            true -> binary:replace(Req0, <<"Content-Length: 0\r\n">>, <<>>);
+            false -> Req0
+        end,
     ok = gen_tcp:send(T, Req),
     {T, gen_tcp:recv(T, 0, 2000)}.
 
@@ -1242,15 +1786,25 @@ via_maddr_response(Config) ->
             {ok, Far} = gen_udp:open(0, [binary, {active, true}, {ip, Ip}]),
             {ok, FP} = inet:port(Far),
             Addr = list_to_binary(inet:ntoa(Ip)),
-            Via = <<"SIP/2.0/UDP 127.0.0.1:", (integer_to_binary(FP))/binary,
+            Via =
+                <<"SIP/2.0/UDP 127.0.0.1:", (integer_to_binary(FP))/binary,
                     ";maddr=", Addr/binary, ";branch=", (branch())/binary>>,
-            send(Sock, Port, request(<<"OPTIONS">>, <<"sip:app@127.0.0.1">>,
-                                     #{port => port(Sock), via => Via})),
-            Got = receive {udp, Far, _, _, B} -> B
-                  after 3000 ->
-                      ct:log("~p", [collect(Sock, any, 200)]),
-                      ct:fail(nothing_at_maddr)
-                  end,
+            send(
+                Sock,
+                Port,
+                request(
+                    <<"OPTIONS">>,
+                    <<"sip:app@127.0.0.1">>,
+                    #{port => port(Sock), via => Via}
+                )
+            ),
+            Got =
+                receive
+                    {udp, Far, _, _, B} -> B
+                after 3000 ->
+                    ct:log("~p", [collect(Sock, any, 200)]),
+                    ct:fail(nothing_at_maddr)
+                end,
             ?assertEqual(200, status(Got)),
             recv_none(Sock, any, 300),
             gen_udp:close(Far)
@@ -1266,12 +1820,25 @@ large_udp_request(Config) ->
         chappe_sip_res:send(Res, 200)
     end),
     Body = binary:copy(<<"x">>, 64000),
-    send(Sock, Port, request(<<"MESSAGE">>, <<"sip:app@127.0.0.1">>,
-                             #{port => port(Sock), body => Body,
-                               content_type => <<"text/plain">>})),
+    send(
+        Sock,
+        Port,
+        request(
+            <<"MESSAGE">>,
+            <<"sip:app@127.0.0.1">>,
+            #{
+                port => port(Sock),
+                body => Body,
+                content_type => <<"text/plain">>
+            }
+        )
+    ),
     {R, _} = recv(Sock, any, 3000),
     ?assertEqual(200, status(R)),
-    receive {body, N} -> ?assertEqual(64000, N) after 1000 -> ct:fail(no_body) end.
+    receive
+        {body, N} -> ?assertEqual(64000, N)
+    after 1000 -> ct:fail(no_body)
+    end.
 
 %% Bytes after Content-Length in a datagram are discarded.
 %% req: R3261-371
@@ -1282,13 +1849,20 @@ trailing_bytes_dropped(Config) ->
         Test ! {body, chappe_sip_req:body(Req)},
         chappe_sip_res:send(Res, 200)
     end),
-    Req = request(<<"MESSAGE">>, <<"sip:app@127.0.0.1">>,
-                  #{port => port(Sock), body => <<"hello">>,
-                    content_type => <<"text/plain">>}),
+    Req = request(
+        <<"MESSAGE">>,
+        <<"sip:app@127.0.0.1">>,
+        #{
+            port => port(Sock),
+            body => <<"hello">>,
+            content_type => <<"text/plain">>
+        }
+    ),
     send(Sock, Port, <<Req/binary, "TRAILING-GARBAGE">>),
     {R, _} = recv(Sock, any, 3000),
     ?assertEqual(200, status(R)),
-    receive {body, B} -> ?assertEqual(<<"hello">>, B)
+    receive
+        {body, B} -> ?assertEqual(<<"hello">>, B)
     after 1000 -> ct:fail(no_body)
     end.
 
@@ -1297,10 +1871,20 @@ trailing_bytes_dropped(Config) ->
 short_datagram_400(Config) ->
     {Port, Sock} = {?config(port, Config), ?config(sock, Config)},
     ok = chappe_sip:message(fun(_Req, Res) -> chappe_sip_res:send(Res, 200) end),
-    send(Sock, Port, request(<<"MESSAGE">>, <<"sip:app@127.0.0.1">>,
-                             #{port => port(Sock), body => <<"hello">>,
-                               content_type => <<"text/plain">>,
-                               content_length => 500})),
+    send(
+        Sock,
+        Port,
+        request(
+            <<"MESSAGE">>,
+            <<"sip:app@127.0.0.1">>,
+            #{
+                port => port(Sock),
+                body => <<"hello">>,
+                content_type => <<"text/plain">>,
+                content_length => 500
+            }
+        )
+    ),
     {R, _} = recv(Sock, any, 3000),
     ?assertEqual(400, status(R)).
 
@@ -1311,9 +1895,18 @@ short_datagram_400(Config) ->
 unsupported_scheme_416(Config) ->
     {Port, Sock} = {?config(port, Config), ?config(sock, Config)},
     ok = chappe_sip:options(fun(_Req, Res) -> chappe_sip_res:send(Res, 200) end),
-    send(Sock, Port, request(<<"OPTIONS">>, <<"mailto:app@example.invalid">>,
-                             #{port => port(Sock),
-                               to => <<"<sip:app@127.0.0.1>">>})),
+    send(
+        Sock,
+        Port,
+        request(
+            <<"OPTIONS">>,
+            <<"mailto:app@example.invalid">>,
+            #{
+                port => port(Sock),
+                to => <<"<sip:app@127.0.0.1>">>
+            }
+        )
+    ),
     {R, _} = recv(Sock, any, 3000),
     ?assertEqual(416, status(R)).
 
@@ -1324,9 +1917,19 @@ tel_to_accepted(Config) ->
     ok = chappe_sip:invite(fun(Req, Res) ->
         {ok, _} = chappe_sip:create_uas(Req, Res, #{local_sdp => sdp()})
     end),
-    send(Sock, Port, request(<<"INVITE">>, <<"sip:app@127.0.0.1">>,
-                             #{port => port(Sock), body => sdp(),
-                               to => <<"<tel:+15551234567>">>})),
+    send(
+        Sock,
+        Port,
+        request(
+            <<"INVITE">>,
+            <<"sip:app@127.0.0.1">>,
+            #{
+                port => port(Sock),
+                body => sdp(),
+                to => <<"<tel:+15551234567>">>
+            }
+        )
+    ),
     {R, _} = recv(Sock, final, 3000),
     ?assertEqual(200, status(R)),
     send(Sock, Port, chappe_sip_core_peer:ack_for(R, #{port => port(Sock)})).
@@ -1340,11 +1943,21 @@ empty_user_rejected(Config) ->
         Test ! handler,
         chappe_sip_res:send(Res, 200)
     end),
-    send(Sock, Port, request(<<"OPTIONS">>, <<"sip:@127.0.0.1">>,
-                             #{port => port(Sock)})),
+    send(
+        Sock,
+        Port,
+        request(
+            <<"OPTIONS">>,
+            <<"sip:@127.0.0.1">>,
+            #{port => port(Sock)}
+        )
+    ),
     {R, _} = recv(Sock, any, 3000),
     ?assertEqual(400, status(R)),
-    receive handler -> ct:fail(handler_ran) after 0 -> ok end.
+    receive
+        handler -> ct:fail(handler_ran)
+    after 0 -> ok
+    end.
 
 %% ---- header rules (8.2.2, 20) ----
 
@@ -1357,14 +1970,27 @@ missing_mandatory_400(Config) ->
         Test ! handler,
         chappe_sip_res:send(Res, 200)
     end),
-    [begin
-         send(Sock, Port, request(<<"OPTIONS">>, <<"sip:app@127.0.0.1">>,
-                                  #{port => port(Sock), omit => [H]})),
-         {R, _} = recv(Sock, any, 3000),
-         ct:log("without ~s: ~s", [H, hd(binary:split(R, <<"\r\n">>))]),
-         ?assertEqual(400, status(R))
-     end || H <- [<<"call-id">>, <<"from">>, <<"to">>, <<"cseq">>]],
-    receive handler -> ct:fail(handler_ran) after 0 -> ok end.
+    [
+        begin
+            send(
+                Sock,
+                Port,
+                request(
+                    <<"OPTIONS">>,
+                    <<"sip:app@127.0.0.1">>,
+                    #{port => port(Sock), omit => [H]}
+                )
+            ),
+            {R, _} = recv(Sock, any, 3000),
+            ct:log("without ~s: ~s", [H, hd(binary:split(R, <<"\r\n">>))]),
+            ?assertEqual(400, status(R))
+        end
+     || H <- [<<"call-id">>, <<"from">>, <<"to">>, <<"cseq">>]
+    ],
+    receive
+        handler -> ct:fail(handler_ran)
+    after 0 -> ok
+    end.
 
 %% A malformed header the request cannot be processed without gets a 400
 %% whose reason phrase names it.
@@ -1372,9 +1998,18 @@ missing_mandatory_400(Config) ->
 bad_header_named_400(Config) ->
     {Port, Sock} = {?config(port, Config), ?config(sock, Config)},
     ok = chappe_sip:options(fun(_Req, Res) -> chappe_sip_res:send(Res, 200) end),
-    send(Sock, Port, request(<<"OPTIONS">>, <<"sip:app@127.0.0.1">>,
-                             #{port => port(Sock),
-                               headers => [{<<"Content-Type">>, <<"???">>}]})),
+    send(
+        Sock,
+        Port,
+        request(
+            <<"OPTIONS">>,
+            <<"sip:app@127.0.0.1">>,
+            #{
+                port => port(Sock),
+                headers => [{<<"Content-Type">>, <<"???">>}]
+            }
+        )
+    ),
     {R, _} = recv(Sock, any, 3000),
     ?assertEqual(400, status(R)),
     Reason = chappe_sip_msg:reason(chappe_sip_core_peer:parse(R)),
@@ -1387,12 +2022,26 @@ bad_header_named_400(Config) ->
 cseq_range(Config) ->
     {Port, Sock} = {?config(port, Config), ?config(sock, Config)},
     ok = chappe_sip:options(fun(_Req, Res) -> chappe_sip_res:send(Res, 200) end),
-    send(Sock, Port, request(<<"OPTIONS">>, <<"sip:app@127.0.0.1">>,
-                             #{port => port(Sock), cseq => (1 bsl 32) - 1})),
+    send(
+        Sock,
+        Port,
+        request(
+            <<"OPTIONS">>,
+            <<"sip:app@127.0.0.1">>,
+            #{port => port(Sock), cseq => (1 bsl 32) - 1}
+        )
+    ),
     {R1, _} = recv(Sock, any, 3000),
     ?assertEqual(200, status(R1)),
-    send(Sock, Port, request(<<"OPTIONS">>, <<"sip:app@127.0.0.1">>,
-                             #{port => port(Sock), cseq => 1 bsl 32})),
+    send(
+        Sock,
+        Port,
+        request(
+            <<"OPTIONS">>,
+            <<"sip:app@127.0.0.1">>,
+            #{port => port(Sock), cseq => 1 bsl 32}
+        )
+    ),
     {R2, _} = recv(Sock, any, 3000),
     ?assertEqual(400, status(R2)).
 
@@ -1403,9 +2052,15 @@ require_unknown_420(Config) ->
     ok = chappe_sip:invite(fun(Req, Res) ->
         {ok, _} = chappe_sip:create_uas(Req, Res, #{local_sdp => sdp()})
     end),
-    Inv = request(<<"INVITE">>, <<"sip:app@127.0.0.1">>,
-                  #{port => port(Sock), body => sdp(),
-                    headers => [{<<"Require">>, <<"foo">>}]}),
+    Inv = request(
+        <<"INVITE">>,
+        <<"sip:app@127.0.0.1">>,
+        #{
+            port => port(Sock),
+            body => sdp(),
+            headers => [{<<"Require">>, <<"foo">>}]
+        }
+    ),
     send(Sock, Port, Inv),
     {R, _} = recv(Sock, final, 3000),
     ?assertEqual(420, status(R)),
@@ -1420,13 +2075,27 @@ no_reliable_without_support(Config) ->
     {Port, Sock} = {?config(port, Config), ?config(sock, Config)},
     ok = chappe_sip:invite(fun(Req, Res) ->
         _ = chappe_sip_res:send_reliable(
-              Res, #{status => 183, body => sdp(), to_tag => <<"rel1">>,
-                     headers => [{<<"Content-Type">>, <<"application/sdp">>}]}),
-        {ok, _} = chappe_sip:create_uas(Req, Res, #{local_sdp => sdp(),
-                                                    local_tag => <<"rel1">>})
+            Res, #{
+                status => 183,
+                body => sdp(),
+                to_tag => <<"rel1">>,
+                headers => [{<<"Content-Type">>, <<"application/sdp">>}]
+            }
+        ),
+        {ok, _} = chappe_sip:create_uas(Req, Res, #{
+            local_sdp => sdp(),
+            local_tag => <<"rel1">>
+        })
     end),
-    send(Sock, Port, request(<<"INVITE">>, <<"sip:app@127.0.0.1">>,
-                             #{port => port(Sock), body => sdp()})),
+    send(
+        Sock,
+        Port,
+        request(
+            <<"INVITE">>,
+            <<"sip:app@127.0.0.1">>,
+            #{port => port(Sock), body => sdp()}
+        )
+    ),
     {R183, _} = recv(Sock, {status, 183}, 3000),
     ?assertEqual(undefined, hdr(<<"rseq">>, R183)),
     ?assertEqual(undefined, hdr(<<"require">>, R183)),
@@ -1445,7 +2114,9 @@ indialog_timeout_ends_dialog(Config) ->
     {Port, Sock} = {?config(port, Config), ?config(sock, Config)},
     {_Inv, D, _R200} = call(Sock, Port, #{}),
     T0 = erlang:monotonic_time(millisecond),
-    Info = async(fun() -> chappe_sip_dialog:request(D, #{method => <<"INFO">>}) end),
+    Info = async(fun() ->
+        chappe_sip_dialog:request(D, #{method => <<"INFO">>})
+    end),
     Sent = [T || {T, _} <- collect(Sock, {method, <<"INFO">>}, 34000)],
     ct:log("INFO at ~p", [[T - T0 || T <- Sent]]),
     [First | _] = intervals(Sent),
@@ -1454,7 +2125,8 @@ indialog_timeout_ends_dialog(Config) ->
     ?assert(lists:last(Sent) - hd(Sent) >= 27000),
     {ok, Resp} = await(Info),
     ?assertEqual(408, chappe_sip_msg:status(Resp)),
-    receive {chappe_sip_dialog, D, destroy, {request_failed, 408}} -> ok
+    receive
+        {chappe_sip_dialog, D, destroy, {request_failed, 408}} -> ok
     after 3000 -> ct:fail(dialog_kept)
     end,
     _ = Port.
@@ -1467,22 +2139,28 @@ bye_timeout_ends_dialog(Config) ->
     {_Inv, D, _R200} = call(Sock, Port, #{}),
     Bye = async(fun() -> chappe_sip_dialog:destroy(D) end),
     {_, _} = recv(Sock, {method, <<"BYE">>}, 3000),
-    receive {Bye, R} -> ct:log("destroy: ~p", [R])
+    receive
+        {Bye, R} -> ct:log("destroy: ~p", [R])
     after 36000 -> ct:fail(bye_never_ended)
     end,
-    receive {chappe_sip_dialog, D, destroy, _} -> ok
+    receive
+        {chappe_sip_dialog, D, destroy, _} -> ok
     after 1000 -> ct:fail(no_destroy)
     end,
     _ = Port.
-
 
 %% ---- helpers ----
 
 %% a non-loopback, non-link-local IPv4 address of this host, or undefined
 local_ipv4() ->
     {ok, Ifs} = inet:getifaddrs(),
-    Addrs = [A || {_, Opts} <- Ifs, {addr, {N, M, _, _} = A} <- Opts,
-                  N =/= 127, {N, M} =/= {169, 254}],
+    Addrs = [
+        A
+     || {_, Opts} <- Ifs,
+        {addr, {N, M, _, _} = A} <- Opts,
+        N =/= 127,
+        {N, M} =/= {169, 254}
+    ],
     case Addrs of
         [A | _] -> A;
         [] -> undefined
@@ -1490,21 +2168,37 @@ local_ipv4() ->
 
 %% the m= lines of an SDP body
 mlines(Sdp) ->
-    [L || L <- binary:split(Sdp, <<"\r\n">>, [global]),
-          binary:match(L, <<"m=">>) =:= {0, 2}].
+    [
+        L
+     || L <- binary:split(Sdp, <<"\r\n">>, [global]),
+        binary:match(L, <<"m=">>) =:= {0, 2}
+    ].
 
 %% the session version of the o= line
 sdp_version(Sdp) ->
-    {match, [V]} = re:run(Sdp, "o=\\S+ \\S+ ([0-9]+) ",
-                          [{capture, all_but_first, binary}]),
+    {match, [V]} = re:run(
+        Sdp,
+        "o=\\S+ \\S+ ([0-9]+) ",
+        [{capture, all_but_first, binary}]
+    ),
     binary_to_integer(V).
 
 %% An in-dialog request from the caller of a call/3,4 dialog.
 indialog(Method, Inv, R200, LP, N, Opts) ->
-    request(Method, <<"sip:app@127.0.0.1">>,
-            maps:merge(#{port => LP, call_id => hdr(<<"call-id">>, Inv),
-                         from_tag => from_tag(Inv), to_tag => to_tag(R200),
-                         cseq => N}, Opts)).
+    request(
+        Method,
+        <<"sip:app@127.0.0.1">>,
+        maps:merge(
+            #{
+                port => LP,
+                call_id => hdr(<<"call-id">>, Inv),
+                from_tag => from_tag(Inv),
+                to_tag => to_tag(R200),
+                cseq => N
+            },
+            Opts
+        )
+    ).
 
 %% Retransmission times (ms, the first is the original) whose intervals
 %% start at Base and double up to Cap. Load only delays a timer, so an
@@ -1530,29 +2224,58 @@ ack_non2xx(InvBin, Resp) ->
     Inv = chappe_sip_core_peer:parse(InvBin),
     {N, _} = cseq(InvBin),
     iolist_to_binary(
-      [<<"ACK ">>, uri(Inv), " SIP/2.0\r\n",
-       "Via: ", top_via(Inv), "\r\n",
-       "Max-Forwards: 70\r\n",
-       "From: ", hdr(<<"from">>, Inv), "\r\n",
-       "To: ", hdr(<<"to">>, Resp), "\r\n",
-       "Call-ID: ", hdr(<<"call-id">>, Inv), "\r\n",
-       "CSeq: ", integer_to_binary(N), " ACK\r\n",
-       "Content-Length: 0\r\n\r\n"]).
+        [
+            <<"ACK ">>,
+            uri(Inv),
+            " SIP/2.0\r\n",
+            "Via: ",
+            top_via(Inv),
+            "\r\n",
+            "Max-Forwards: 70\r\n",
+            "From: ",
+            hdr(<<"from">>, Inv),
+            "\r\n",
+            "To: ",
+            hdr(<<"to">>, Resp),
+            "\r\n",
+            "Call-ID: ",
+            hdr(<<"call-id">>, Inv),
+            "\r\n",
+            "CSeq: ",
+            integer_to_binary(N),
+            " ACK\r\n",
+            "Content-Length: 0\r\n\r\n"
+        ]
+    ).
 
 cancel_for(InvBin, Extra) ->
     Inv = chappe_sip_core_peer:parse(InvBin),
     {N, _} = cseq(InvBin),
     iolist_to_binary(
-      [<<"CANCEL ">>, uri(Inv), " SIP/2.0\r\n",
-       "Via: ", top_via(Inv), "\r\n",
-       "Max-Forwards: 70\r\n",
-       "From: ", hdr(<<"from">>, Inv), "\r\n",
-       "To: ", hdr(<<"to">>, Inv), "\r\n",
-       "Call-ID: ", hdr(<<"call-id">>, Inv), "\r\n",
-       "CSeq: ", integer_to_binary(N), " CANCEL\r\n",
-       [[H, ": ", V, "\r\n"] || {H, V} <- Extra],
-       "Content-Length: 0\r\n\r\n"]).
-
+        [
+            <<"CANCEL ">>,
+            uri(Inv),
+            " SIP/2.0\r\n",
+            "Via: ",
+            top_via(Inv),
+            "\r\n",
+            "Max-Forwards: 70\r\n",
+            "From: ",
+            hdr(<<"from">>, Inv),
+            "\r\n",
+            "To: ",
+            hdr(<<"to">>, Inv),
+            "\r\n",
+            "Call-ID: ",
+            hdr(<<"call-id">>, Inv),
+            "\r\n",
+            "CSeq: ",
+            integer_to_binary(N),
+            " CANCEL\r\n",
+            [[H, ": ", V, "\r\n"] || {H, V} <- Extra],
+            "Content-Length: 0\r\n\r\n"
+        ]
+    ).
 
 %% Set up a confirmed call from the peer: INVITE (with Opts merged), 200,
 %% ACK. The test process owns the dialog. Returns {Invite, Dialog, 200}.
@@ -1562,19 +2285,35 @@ call(Sock, Port, Opts) ->
 call(Sock, Port, Opts, UasOpts) ->
     Test = self(),
     ok = chappe_sip:invite(fun(Req, Res) ->
-        {ok, D} = chappe_sip:create_uas(Req, Res,
-                                        maps:merge(#{local_sdp => sdp(),
-                                                     owner => Test}, UasOpts)),
+        {ok, D} = chappe_sip:create_uas(
+            Req,
+            Res,
+            maps:merge(
+                #{
+                    local_sdp => sdp(),
+                    owner => Test
+                },
+                UasOpts
+            )
+        ),
         Test ! {dialog, D}
     end),
     LP = port(Sock),
-    Inv = request(<<"INVITE">>, <<"sip:app@127.0.0.1">>,
-                  maps:merge(#{port => LP, body => sdp()}, Opts)),
+    Inv = request(
+        <<"INVITE">>,
+        <<"sip:app@127.0.0.1">>,
+        maps:merge(#{port => LP, body => sdp()}, Opts)
+    ),
     send(Sock, Port, Inv),
     {R200, _} = recv(Sock, {status, 200}, 3000),
     send(Sock, Port, chappe_sip_core_peer:ack_for(R200, #{port => LP})),
-    D = receive {dialog, D0} -> D0 after 3000 -> ct:fail(no_dialog) end,
-    receive {chappe_sip_dialog, D, ack, _, _} -> ok
+    D =
+        receive
+            {dialog, D0} -> D0
+        after 3000 -> ct:fail(no_dialog)
+        end,
+    receive
+        {chappe_sip_dialog, D, ack, _, _} -> ok
     after 3000 -> ct:fail(no_ack)
     end,
     {chappe_sip_core_peer:parse(Inv), D, R200}.
@@ -1586,15 +2325,23 @@ async(F) ->
     Ref.
 
 await(Ref) ->
-    receive {Ref, R} -> R after 10000 -> ct:fail(no_result) end.
+    receive
+        {Ref, R} -> R
+    after 10000 -> ct:fail(no_result)
+    end.
 
 via_list(X) ->
-    lists:append([[string:trim(V) || V <- binary:split(H, <<",">>, [global])]
-                  || H <- hdrs(<<"via">>, X)]).
+    lists:append([
+        [string:trim(V) || V <- binary:split(H, <<",">>, [global])]
+     || H <- hdrs(<<"via">>, X)
+    ]).
 
 sent_by_port(Via) ->
-    {match, [P]} = re:run(Via, "^SIP/2.0/[A-Z]+ [^:;]+:([0-9]+)",
-                          [{capture, all_but_first, binary}]),
+    {match, [P]} = re:run(
+        Via,
+        "^SIP/2.0/[A-Z]+ [^:;]+:([0-9]+)",
+        [{capture, all_but_first, binary}]
+    ),
     P.
 
 to_uri(X) -> addr_uri(hdr(<<"to">>, X)).
@@ -1616,19 +2363,36 @@ cseq_method_mismatch_400(Config) ->
         Test ! handler,
         chappe_sip_res:send(Res, 200)
     end),
-    send(Sock, Port, request(<<"OPTIONS">>, <<"sip:app@127.0.0.1">>,
-                             #{port => port(Sock), cseq_method => <<"INVITE">>})),
+    send(
+        Sock,
+        Port,
+        request(
+            <<"OPTIONS">>,
+            <<"sip:app@127.0.0.1">>,
+            #{port => port(Sock), cseq_method => <<"INVITE">>}
+        )
+    ),
     {R, _} = recv(Sock, any, 3000),
     ?assertEqual(400, status(R)),
-    receive handler -> ct:fail(handler_ran) after 0 -> ok end.
+    receive
+        handler -> ct:fail(handler_ran)
+    after 0 -> ok
+    end.
 
 %% A request without Max-Forwards (an RFC 2543 peer) is still served.
 %% req: R3261-U-05
 no_max_forwards_served(Config) ->
     {Port, Sock} = {?config(port, Config), ?config(sock, Config)},
     ok = chappe_sip:options(fun(_Req, Res) -> chappe_sip_res:send(Res, 200) end),
-    send(Sock, Port, request(<<"OPTIONS">>, <<"sip:app@127.0.0.1">>,
-                             #{port => port(Sock), max_forwards => false})),
+    send(
+        Sock,
+        Port,
+        request(
+            <<"OPTIONS">>,
+            <<"sip:app@127.0.0.1">>,
+            #{port => port(Sock), max_forwards => false}
+        )
+    ),
     {R, _} = recv(Sock, any, 3000),
     ?assertEqual(200, status(R)).
 
@@ -1639,9 +2403,19 @@ uas_ignores_proxy_require(Config) ->
     ok = chappe_sip:invite(fun(Req, Res) ->
         {ok, _} = chappe_sip:create_uas(Req, Res, #{local_sdp => sdp()})
     end),
-    send(Sock, Port, request(<<"INVITE">>, <<"sip:app@127.0.0.1">>,
-                             #{port => port(Sock), body => sdp(),
-                               headers => [{<<"Proxy-Require">>, <<"foo">>}]})),
+    send(
+        Sock,
+        Port,
+        request(
+            <<"INVITE">>,
+            <<"sip:app@127.0.0.1">>,
+            #{
+                port => port(Sock),
+                body => sdp(),
+                headers => [{<<"Proxy-Require">>, <<"foo">>}]
+            }
+        )
+    ),
     {R, _} = recv(Sock, final, 3000),
     ?assertEqual(200, status(R)),
     send(Sock, Port, chappe_sip_core_peer:ack_for(R, #{port => port(Sock)})).
@@ -1652,23 +2426,51 @@ uas_ignores_proxy_require(Config) ->
 proxy_route_checks_proxy_require(Config) ->
     {Port, Sock} = {?config(port, Config), ?config(sock, Config)},
     Test = self(),
-    ok = chappe_sip:handle(<<"OPTIONS">>, fun(_Req, Res) ->
-        Test ! handler,
-        chappe_sip_res:send(Res, 200)
-    end, #{proxy => true}),
-    send(Sock, Port, request(<<"OPTIONS">>, <<"sip:app@127.0.0.1">>,
-                             #{port => port(Sock),
-                               headers => [{<<"Require">>, <<"foo">>}]})),
+    ok = chappe_sip:handle(
+        <<"OPTIONS">>,
+        fun(_Req, Res) ->
+            Test ! handler,
+            chappe_sip_res:send(Res, 200)
+        end,
+        #{proxy => true}
+    ),
+    send(
+        Sock,
+        Port,
+        request(
+            <<"OPTIONS">>,
+            <<"sip:app@127.0.0.1">>,
+            #{
+                port => port(Sock),
+                headers => [{<<"Require">>, <<"foo">>}]
+            }
+        )
+    ),
     {R1, _} = recv(Sock, any, 3000),
     ?assertEqual(200, status(R1)),
-    receive handler -> ok after 1000 -> ct:fail(handler_not_run) end,
-    send(Sock, Port, request(<<"OPTIONS">>, <<"sip:app@127.0.0.1">>,
-                             #{port => port(Sock),
-                               headers => [{<<"Proxy-Require">>, <<"foo">>}]})),
+    receive
+        handler -> ok
+    after 1000 -> ct:fail(handler_not_run)
+    end,
+    send(
+        Sock,
+        Port,
+        request(
+            <<"OPTIONS">>,
+            <<"sip:app@127.0.0.1">>,
+            #{
+                port => port(Sock),
+                headers => [{<<"Proxy-Require">>, <<"foo">>}]
+            }
+        )
+    ),
     {R2, _} = recv(Sock, any, 3000),
     ?assertEqual(420, status(R2)),
     ?assertEqual(<<"foo">>, hdr(<<"unsupported">>, R2)),
-    receive handler -> ct:fail(handler_ran) after 0 -> ok end.
+    receive
+        handler -> ct:fail(handler_ran)
+    after 0 -> ok
+    end.
 
 %% An SRC's INVITE requires siprec: a plain route answers 420 (a UA that
 %% is not a recording server), a route that takes siprec answers it, and
@@ -1680,41 +2482,68 @@ siprec_require(Config) ->
     LP = port(Sock),
     Test = self(),
     Answer = fun(Req, Res) ->
-        {ok, D} = chappe_sip:create_uas(Req, Res, #{local_sdp => sdp(),
-                                                    owner => Test}),
+        {ok, D} = chappe_sip:create_uas(Req, Res, #{
+            local_sdp => sdp(),
+            owner => Test
+        }),
         Test ! {dialog, D}
     end,
     Siprec = [{<<"Require">>, <<"siprec">>}],
     ok = chappe_sip:invite(Answer),
-    Inv1 = request(<<"INVITE">>, <<"sip:srs@127.0.0.1">>,
-                   #{port => LP, body => sdp(), headers => Siprec}),
+    Inv1 = request(
+        <<"INVITE">>,
+        <<"sip:srs@127.0.0.1">>,
+        #{port => LP, body => sdp(), headers => Siprec}
+    ),
     send(Sock, Port, Inv1),
     {R1, _} = recv(Sock, final, 3000),
     ?assertEqual(420, status(R1)),
     ?assertEqual(<<"siprec">>, hdr(<<"unsupported">>, R1)),
     send(Sock, Port, ack_non2xx(Inv1, R1)),
-    ok = chappe_sip:handle(<<"INVITE">>, Answer, #{option_tags => [<<"siprec">>]}),
-    Inv2 = request(<<"INVITE">>, <<"sip:srs@127.0.0.1">>,
-                   #{port => LP, body => sdp(), headers => Siprec}),
+    ok = chappe_sip:handle(<<"INVITE">>, Answer, #{
+        option_tags => [<<"siprec">>]
+    }),
+    Inv2 = request(
+        <<"INVITE">>,
+        <<"sip:srs@127.0.0.1">>,
+        #{port => LP, body => sdp(), headers => Siprec}
+    ),
     send(Sock, Port, Inv2),
     {R2, _} = recv(Sock, final, 3000),
     ?assertEqual(200, status(R2)),
     send(Sock, Port, chappe_sip_core_peer:ack_for(R2, #{port => LP})),
-    receive {dialog, _} -> ok after 3000 -> ct:fail(no_dialog) end,
+    receive
+        {dialog, _} -> ok
+    after 3000 -> ct:fail(no_dialog)
+    end,
     {ok, I2} = chappe_sip_msg:parse(Inv2),
-    Info = request(<<"INFO">>, <<"sip:srs@127.0.0.1">>,
-                   #{port => LP, call_id => chappe_sip_msg:call_id(I2),
-                     from_tag => chappe_sip_msg:from_tag(I2),
-                     to_tag => to_tag(R2), cseq => 2, headers => Siprec}),
+    Info = request(
+        <<"INFO">>,
+        <<"sip:srs@127.0.0.1">>,
+        #{
+            port => LP,
+            call_id => chappe_sip_msg:call_id(I2),
+            from_tag => chappe_sip_msg:from_tag(I2),
+            to_tag => to_tag(R2),
+            cseq => 2,
+            headers => Siprec
+        }
+    ),
     send(Sock, Port, Info),
     {R3, _} = recv(Sock, final, 3000),
     ?assertEqual(200, status(R3)),
-    application:set_env(chappe_sip, supported_option_tags,
-                        [<<"100rel">>, <<"replaces">>, <<"timer">>, <<"siprec">>]),
+    application:set_env(
+        chappe_sip,
+        supported_option_tags,
+        [<<"100rel">>, <<"replaces">>, <<"timer">>, <<"siprec">>]
+    ),
     try
         ok = chappe_sip:invite(Answer),
-        Inv3 = request(<<"INVITE">>, <<"sip:srs@127.0.0.1">>,
-                       #{port => LP, body => sdp(), headers => Siprec}),
+        Inv3 = request(
+            <<"INVITE">>,
+            <<"sip:srs@127.0.0.1">>,
+            #{port => LP, body => sdp(), headers => Siprec}
+        ),
         send(Sock, Port, Inv3),
         {R4, _} = recv(Sock, final, 3000),
         ?assertEqual(200, status(R4)),
@@ -1731,10 +2560,18 @@ indialog_require_420(Config) ->
     LP = port(Sock),
     {Inv, _D, R200} = call(Sock, Port, #{}),
     InDialog = fun(N, Hdrs) ->
-        request(<<"INFO">>, <<"sip:app@127.0.0.1">>,
-                #{port => LP, call_id => hdr(<<"call-id">>, Inv),
-                  from_tag => from_tag(Inv), to_tag => to_tag(R200),
-                  cseq => N, headers => Hdrs})
+        request(
+            <<"INFO">>,
+            <<"sip:app@127.0.0.1">>,
+            #{
+                port => LP,
+                call_id => hdr(<<"call-id">>, Inv),
+                from_tag => from_tag(Inv),
+                to_tag => to_tag(R200),
+                cseq => N,
+                headers => Hdrs
+            }
+        )
     end,
     send(Sock, Port, InDialog(2, [{<<"Require">>, <<"foo, timer">>}])),
     {R1, _} = recv(Sock, final, 3000),
@@ -1749,40 +2586,71 @@ indialog_require_420(Config) ->
 %% req: R3261-086
 ack_cancel_require_ignored(_Config) ->
     Test = self(),
-    [begin
-         Res = chappe_sip_res:new(99, fun(_, Code, _Opts) ->
-             Test ! {response, Code}, ok
-         end),
-         Raw = worker_req(Method, <<"Require: foo\r\nProxy-Require: bar\r\n">>),
-         {ok, _} = chappe_sip_request_worker:start_link(
-                     #{raw => Raw, txn => 99, meta => #{}, res => Res,
-                       middlewares => [],
-                       handler => fun(_, _) -> Test ! {handler, Method} end}),
-         receive {handler, Method} -> ok
-         after 1000 -> ct:fail({not_dispatched, Method})
-         end,
-         receive {response, Code} -> ct:fail({answered, Method, Code})
-         after 0 -> ok
-         end
-     end || Method <- [<<"ACK">>, <<"CANCEL">>]],
+    [
+        begin
+            Res = chappe_sip_res:new(99, fun(_, Code, _Opts) ->
+                Test ! {response, Code},
+                ok
+            end),
+            Raw = worker_req(
+                Method, <<"Require: foo\r\nProxy-Require: bar\r\n">>
+            ),
+            {ok, _} = chappe_sip_request_worker:start_link(
+                #{
+                    raw => Raw,
+                    txn => 99,
+                    meta => #{},
+                    res => Res,
+                    middlewares => [],
+                    handler => fun(_, _) -> Test ! {handler, Method} end
+                }
+            ),
+            receive
+                {handler, Method} -> ok
+            after 1000 -> ct:fail({not_dispatched, Method})
+            end,
+            receive
+                {response, Code} -> ct:fail({answered, Method, Code})
+            after 0 -> ok
+            end
+        end
+     || Method <- [<<"ACK">>, <<"CANCEL">>]
+    ],
     %% the probe: an INVITE requiring siprec on a route without it is a 420
     Res = chappe_sip_res:new(99, fun(_, Code, Opts) ->
-        Test ! {response, Code, Opts}, ok
+        Test ! {response, Code, Opts},
+        ok
     end),
     {ok, _} = chappe_sip_request_worker:start_link(
-                #{raw => worker_req(<<"INVITE">>, <<"Require: siprec\r\n">>),
-                  txn => 99, meta => #{}, res => Res, middlewares => [],
-                  handler => fun(_, _) -> Test ! handler_called end}),
-    receive {response, 420, #{headers := H}} ->
-        ?assertEqual([{<<"Unsupported">>, <<"siprec">>}], H)
+        #{
+            raw => worker_req(<<"INVITE">>, <<"Require: siprec\r\n">>),
+            txn => 99,
+            meta => #{},
+            res => Res,
+            middlewares => [],
+            handler => fun(_, _) -> Test ! handler_called end
+        }
+    ),
+    receive
+        {response, 420, #{headers := H}} ->
+            ?assertEqual([{<<"Unsupported">>, <<"siprec">>}], H)
     after 1000 -> ct:fail(no_420)
     end.
 
 worker_req(Method, Extra) ->
     iolist_to_binary(
-      [Method, <<" sip:example.com SIP/2.0\r\n"
-                 "Via: SIP/2.0/UDP 192.0.2.1;branch=z9hG4bKw\r\n"
-                 "From: <sip:alice@example.com>;tag=a\r\n"
-                 "To: <sip:alice@example.com>\r\n"
-                 "Call-ID: worker\r\nCSeq: 10 ">>, Method,
-       <<"\r\nMax-Forwards: 70\r\n">>, Extra, <<"Content-Length: 0\r\n\r\n">>]).
+        [
+            Method,
+            <<
+                " sip:example.com SIP/2.0\r\n"
+                "Via: SIP/2.0/UDP 192.0.2.1;branch=z9hG4bKw\r\n"
+                "From: <sip:alice@example.com>;tag=a\r\n"
+                "To: <sip:alice@example.com>\r\n"
+                "Call-ID: worker\r\nCSeq: 10 "
+            >>,
+            Method,
+            <<"\r\nMax-Forwards: 70\r\n">>,
+            Extra,
+            <<"Content-Length: 0\r\n\r\n">>
+        ]
+    ).

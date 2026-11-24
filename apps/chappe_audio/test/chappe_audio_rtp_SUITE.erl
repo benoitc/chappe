@@ -404,7 +404,9 @@ srtcp_report(_Config) ->
     ok = chappe_audio_rtp:rekey(R, ctx(?SRTP:master()), ctx(Out2)),
     ok = chappe_audio_rtp:stop(R),
     Bye = udp_in(Src, 2000),
-    ?assertEqual({error, auth}, chappe_audio_srtp:unprotect_rtcp(Bye, ctx(Out))),
+    ?assertEqual(
+        {error, auth}, chappe_audio_srtp:unprotect_rtcp(Bye, ctx(Out))
+    ),
     {ok, ByePlain, _} = chappe_audio_srtp:unprotect_rtcp(Bye, ctx(Out2)),
     ?assertMatch({ok, [_, _, #{type := bye}]}, ?RTCP:parse(ByePlain)),
     ByeSkip = byte_size(Bye) - 14,
@@ -434,7 +436,9 @@ rtcp_none_sends_nothing(_Config) ->
     ?assertEqual(undefined, chappe_audio_rtp:rtcp_port(R1)),
     ok = gen_udp:send(Src, ?LO, P1, rtp(0, 1, <<16#FF>>)),
     ok = gen_udp:send(Src, ?LO, P1, sr(16#1234, <<"s">>)),
-    ok = gen_udp:send(Src, ?LO, P2, ?SRTP:protect(rtp(0, 1, <<16#FF>>), 0, Snd)),
+    ok = gen_udp:send(
+        Src, ?LO, P2, ?SRTP:protect(rtp(0, 1, <<16#FF>>), 0, Snd)
+    ),
     no_udp(Src, 4000),
     ?assertEqual(
         #{packets => 1, failed => 0, replayed => 0},
@@ -521,7 +525,9 @@ rtcp_feedback_and_unknown(_Config) ->
     Compound = iolist_to_binary([
         ?RTCP:build([#{type => rr, ssrc => 16#1234, blocks => []}]),
         App,
-        ?RTCP:build([#{type => sdes, chunks => [{16#1234, [{cname, <<"app">>}]}]}])
+        ?RTCP:build([
+            #{type => sdes, chunks => [{16#1234, [{cname, <<"app">>}]}]}
+        ])
     ]),
     ok = gen_udp:send(Src, ?LO, MP, Compound),
     wait_rtcp(M, 1, 50),
@@ -539,7 +545,6 @@ rtcp_feedback_and_unknown(_Config) ->
     gen_udp:close(Src).
 
 %% ---- a store module, for store_sink ----
-
 
 open(#{meta := Test}, #{owner := _}) ->
     Test ! {store, opened},

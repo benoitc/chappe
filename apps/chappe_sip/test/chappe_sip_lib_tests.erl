@@ -5,11 +5,15 @@
 -include_lib("eunit/include/eunit.hrl").
 
 lower_test() ->
-    ?assertEqual(<<"invite sip:a@b">>, chappe_sip_lib:lower(<<"INVITE SIP:A@B">>)),
+    ?assertEqual(
+        <<"invite sip:a@b">>, chappe_sip_lib:lower(<<"INVITE SIP:A@B">>)
+    ),
     ?assertEqual(<<>>, chappe_sip_lib:lower(<<>>)),
     %% bytes outside A-Z, UTF-8 or not, are left alone
-    ?assertEqual(<<"caf", 16#C3, 16#89, 16#FF>>,
-                 chappe_sip_lib:lower(<<"CAF", 16#C3, 16#89, 16#FF>>)).
+    ?assertEqual(
+        <<"caf", 16#C3, 16#89, 16#FF>>,
+        chappe_sip_lib:lower(<<"CAF", 16#C3, 16#89, 16#FF>>)
+    ).
 
 trim_test() ->
     ?assertEqual(<<"a b">>, chappe_sip_lib:trim(<<" \ta b\t ">>)),
@@ -19,8 +23,10 @@ trim_test() ->
     ?assertEqual(<<"\r\na\n">>, chappe_sip_lib:trim(<<" \r\na\n ">>)).
 
 unhex_test() ->
-    ?assertEqual([0, 9, 10, 15, 10, 15],
-                 [chappe_sip_lib:unhex(C) || C <- "09afAF"]),
+    ?assertEqual(
+        [0, 9, 10, 15, 10, 15],
+        [chappe_sip_lib:unhex(C) || C <- "09afAF"]
+    ),
     ?assertEqual(error, chappe_sip_lib:unhex($g)),
     ?assertEqual(error, chappe_sip_lib:unhex($%)).
 

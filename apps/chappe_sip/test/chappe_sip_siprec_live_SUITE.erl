@@ -45,11 +45,18 @@ init_per_suite(Config) ->
         {_, M} when M =:= false; M =:= "" ->
             {skip, "RTPENGINE_MEDIA_IP not set"};
         {Host, MediaIp} ->
-            application:set_env(chappe_sip, engine_mod, chappe_sip_nif, [{persistent, true}]),
+            application:set_env(chappe_sip, engine_mod, chappe_sip_nif, [
+                {persistent, true}
+            ]),
             {ok, _} = application:ensure_all_started(chappe_sip),
             Port = list_to_integer(os:getenv("RTPENGINE_PORT", "2223")),
             ok = chappe_sip_media:configure(
-                   #{rtpengine => #{nodes => [#{name => ?NODE, host => Host, port => Port}]}}),
+                #{
+                    rtpengine => #{
+                        nodes => [#{name => ?NODE, host => Host, port => Port}]
+                    }
+                }
+            ),
             {ok, RtpeIp} = inet:parse_address(Host),
             [{rtpe_ip, RtpeIp}, {media_ip, list_to_binary(MediaIp)} | Config]
     end.
@@ -83,30 +90,42 @@ record(Config, Mode) ->
     Test = self(),
     EP = ?UA:pick(),
     CP = ?UA:pick(),
-    ok = chappe_sip:start(#{contact => <<"sip:127.0.0.1:", (integer_to_binary(EP))/binary>>}),
-    ok = chappe_sip:handle(<<"INVITE">>, fun(Req, Res) ->
-        case chappe_sip_req:uri(Req) of
-            <<"sip:srs@", _/binary>> ->
-                {ok, #{streams := Streams} = Srs} =
-                    chappe_sip_siprec_srs:serve(Req, Res, #{
-                        sink => Test, ip => {0, 0, 0, 0}, advertise => MediaIp,
-                        %% the lab sends the RS over plain UDP
-                        keys_over_tls => false,
-                        %% the lab's rtpengine is behind docker's NAT: its
-                        %% SDP says 127.0.0.1, its RTP comes from the
-                        %% container's address (on Linux)
-                        rtp_source => learn
-                    }),
-                Test ! {srs_streams, Streams},
-                Test ! {srs_offer, chappe_sip_req:body(Req)},
-                chappe_sip_siprec_srs:run(Srs);
-            _ ->
-                Callee = <<"sip:callee@127.0.0.1:", (integer_to_binary(CP))/binary>>,
-                {ok, Legs} = chappe_sip:create_b2bua(Req, Res, Callee, b2b_opts(Mode)),
-                Test ! {legs, Legs},
-                chappe_sip_b2b:relay(Legs)
-        end
-    end, #{option_tags => [<<"siprec">>]}),
+    ok = chappe_sip:start(#{
+        contact => <<"sip:127.0.0.1:", (integer_to_binary(EP))/binary>>
+    }),
+    ok = chappe_sip:handle(
+        <<"INVITE">>,
+        fun(Req, Res) ->
+            case chappe_sip_req:uri(Req) of
+                <<"sip:srs@", _/binary>> ->
+                    {ok, #{streams := Streams} = Srs} =
+                        chappe_sip_siprec_srs:serve(Req, Res, #{
+                            sink => Test,
+                            ip => {0, 0, 0, 0},
+                            advertise => MediaIp,
+                            %% the lab sends the RS over plain UDP
+                            keys_over_tls => false,
+                            %% the lab's rtpengine is behind docker's NAT: its
+                            %% SDP says 127.0.0.1, its RTP comes from the
+                            %% container's address (on Linux)
+                            rtp_source => learn
+                        }),
+                    Test ! {srs_streams, Streams},
+                    Test ! {srs_offer, chappe_sip_req:body(Req)},
+                    chappe_sip_siprec_srs:run(Srs);
+                _ ->
+                    Callee =
+                        <<"sip:callee@127.0.0.1:",
+                            (integer_to_binary(CP))/binary>>,
+                    {ok, Legs} = chappe_sip:create_b2bua(
+                        Req, Res, Callee, b2b_opts(Mode)
+                    ),
+                    Test ! {legs, Legs},
+                    chappe_sip_b2b:relay(Legs)
+            end
+        end,
+        #{option_tags => [<<"siprec">>]}
+    ),
     {MA, PA} = media_socket(),
     {MB, PB} = media_socket(),
     %% each party's own SRTP key (srtp mode)
@@ -117,15 +136,27 @@ record(Config, Mode) ->
         {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
         Test ! {b_offer, ?UA:body(Inv)},
         Test ! {b_offer_sdp, ?UA:body(Inv)},
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, ?UA:tag(),
-                                     [{<<"Contact">>, contact(Sock)}],
-                                     sdp(MediaIp, PB, profile(?UA:body(Inv)), KB))),
+        ?UA:send(
+            Sock,
+            Src,
+            ?UA:resp(
+                Inv,
+                200,
+                <<"OK">>,
+                ?UA:tag(),
+                [{<<"Contact">>, contact(Sock)}],
+                sdp(MediaIp, PB, profile(?UA:body(Inv)), KB)
+            )
+        ),
         {_, _} = ?UA:recv_req(Sock, <<"ACK">>),
         timer:sleep(infinity)
     end),
     ?UA:peer(0, fun(Sock) ->
-        Inv = ?UA:invite(Sock, EP, #{call_id => ?UA:callid(), from_tag => ?UA:tag(),
-                                     body => sdp(MediaIp, PA, Mode, KA)}),
+        Inv = ?UA:invite(Sock, EP, #{
+            call_id => ?UA:callid(),
+            from_tag => ?UA:tag(),
+            body => sdp(MediaIp, PA, Mode, KA)
+        }),
         ?UA:send(Sock, EP, Inv),
         R = ?UA:recv_status(Sock, 200),
         ?UA:ack(?UA:dialog_from_2xx(Sock, Inv, R), EP),
@@ -136,12 +167,20 @@ record(Config, Mode) ->
     #{b2b := B2b, call_ref := Ref} = got(legs),
     ToA = audio_port(got(a_answer)),
     ToB = audio_port(got(b_offer)),
-    {ok, Rec} = chappe_sip_siprec:start(B2b, <<"sip:srs@127.0.0.1:", (integer_to_binary(EP))/binary>>, #{}),
+    {ok, Rec} = chappe_sip_siprec:start(
+        B2b, <<"sip:srs@127.0.0.1:", (integer_to_binary(EP))/binary>>, #{}
+    ),
     {started, #{call_ref := Ref}} = event(Rec),
-    [#{pid := S1, label := <<"1">>, profile := Prof1},
-     #{pid := S2, label := <<"2">>, profile := Prof2}] = got(srs_streams),
+    [
+        #{pid := S1, label := <<"1">>, profile := Prof1},
+        #{pid := S2, label := <<"2">>, profile := Prof2}
+    ] = got(srs_streams),
     ct:log("SRS offer:~n~s", [got(srs_offer)]),
-    Profile = case Mode of plain -> <<"RTP/AVP">>; srtp -> <<"RTP/SAVP">> end,
+    Profile =
+        case Mode of
+            plain -> <<"RTP/AVP">>;
+            srtp -> <<"RTP/SAVP">>
+        end,
     ?assertEqual({Profile, Profile}, {Prof1, Prof2}),
     SendA = sender(Mode, KA),
     %% the callee answers in the profile rtpengine offered it
@@ -159,7 +198,9 @@ record(Config, Mode) ->
     timer:sleep(500),
     {N1, L1} = levels(S1),
     {N2, L2} = levels(S2),
-    ct:log("recorded: caller ~p frames ~p, callee ~p frames ~p", [N1, L1, N2, L2]),
+    ct:log("recorded: caller ~p frames ~p, callee ~p frames ~p", [
+        N1, L1, N2, L2
+    ]),
     LA = level(?A_BYTE),
     LB = level(?B_BYTE),
     ?assert(N1 > 0 andalso N2 > 0),
@@ -174,7 +215,9 @@ record(Config, Mode) ->
     ct:log("A's answer:~n~s~nB's offer:~n~s", [AAnswer, BOffer]),
     %% the caller is answered in its own profile, with a key of rtpengine's
     ?assertEqual(Mode, profile(AAnswer)),
-    ?assertEqual(Mode =:= srtp, binary:match(AAnswer, <<"a=crypto:">>) =/= nomatch),
+    ?assertEqual(
+        Mode =:= srtp, binary:match(AAnswer, <<"a=crypto:">>) =/= nomatch
+    ),
     ?assertEqual([LB], heard(MA, receiver(profile(AAnswer), AAnswer)) -- [0]),
     ?assertEqual([LA], heard(MB, receiver(profile(BOffer), BOffer)) -- [0]),
     ok = chappe_sip_siprec:stop(Rec),
@@ -190,14 +233,14 @@ media_socket() ->
 
 sdp(Ip, Port, plain, _Key) ->
     <<"v=0\r\no=- 1 1 IN IP4 ", Ip/binary, "\r\ns=-\r\nc=IN IP4 ", Ip/binary,
-      "\r\nt=0 0\r\nm=audio ", (integer_to_binary(Port))/binary,
-      " RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\na=sendrecv\r\n">>;
+        "\r\nt=0 0\r\nm=audio ", (integer_to_binary(Port))/binary,
+        " RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\na=sendrecv\r\n">>;
 sdp(Ip, Port, srtp, Key) ->
     <<"v=0\r\no=- 1 1 IN IP4 ", Ip/binary, "\r\ns=-\r\nc=IN IP4 ", Ip/binary,
-      "\r\nt=0 0\r\nm=audio ", (integer_to_binary(Port))/binary,
-      " RTP/SAVP 0\r\na=rtpmap:0 PCMU/8000\r\na=sendrecv\r\n"
-      "a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:",
-      (chappe_audio_test_srtp:inline(Key))/binary, "\r\n">>.
+        "\r\nt=0 0\r\nm=audio ", (integer_to_binary(Port))/binary,
+        " RTP/SAVP 0\r\na=rtpmap:0 PCMU/8000\r\na=sendrecv\r\n"
+        "a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:",
+        (chappe_audio_test_srtp:inline(Key))/binary, "\r\n">>.
 
 %% the anchor as it is: an SRTP caller is answered SRTP by itself
 b2b_opts(_Mode) ->
@@ -224,18 +267,24 @@ receiver(plain, _Sdp) ->
 receiver(srtp, Sdp) ->
     {_, [[_M | Lines] | _]} = chappe_sip_sdp:sections(Sdp),
     {ok, C} = chappe_sip_sdes:select(Lines),
-    {ok, Ctx0} = chappe_audio_srtp:new(maps:with([suite, key, salt, mki, lifetime], C)),
+    {ok, Ctx0} = chappe_audio_srtp:new(
+        maps:with([suite, key, salt, mki, lifetime], C)
+    ),
     Ref = make_ref(),
     put(Ref, Ctx0),
     fun(Pkt) ->
         case chappe_audio_srtp:unprotect(Pkt, get(Ref)) of
-            {ok, Rtp, Ctx} -> put(Ref, Ctx), {ok, Rtp};
-            {error, _} = E -> E
+            {ok, Rtp, Ctx} ->
+                put(Ref, Ctx),
+                {ok, Rtp};
+            {error, _} = E ->
+                E
         end
     end.
 
 contact(Sock) ->
-    <<"<sip:peer@127.0.0.1:", (integer_to_binary(?UA:lport(Sock)))/binary, ">">>.
+    <<"<sip:peer@127.0.0.1:", (integer_to_binary(?UA:lport(Sock)))/binary,
+        ">">>.
 
 audio_port(Sdp) ->
     {_, [#{port := P} | _]} = chappe_sip_sdp:parse(Sdp),
@@ -243,7 +292,7 @@ audio_port(Sdp) ->
 
 rtp(Ssrc, Seq, Byte) ->
     <<2:2, 0:6, 0:1, 0:7, Seq:16, (Seq * 160):32, Ssrc:32,
-      (binary:copy(<<Byte>>, 160))/binary>>.
+        (binary:copy(<<Byte>>, 160))/binary>>.
 
 %% the stream's stats once it has sent a report, polled N times 200 ms apart
 reported(S, 0) ->
@@ -284,8 +333,16 @@ heard(Sock, Recv, Acc) ->
             case Recv(Pkt) of
                 {ok, <<2:2, _:6, _:1, 0:7, _:80, Payload/binary>>} ->
                     Pcm = chappe_audio_pcm:decode(ulaw, Payload),
-                    heard(Sock, Recv, lists:umerge(Acc, lists:usort(
-                        [S || <<S:16/little-signed>> <= Pcm])));
+                    heard(
+                        Sock,
+                        Recv,
+                        lists:umerge(
+                            Acc,
+                            lists:usort(
+                                [S || <<S:16/little-signed>> <= Pcm]
+                            )
+                        )
+                    );
                 _ ->
                     heard(Sock, Recv, Acc)
             end
@@ -294,7 +351,13 @@ heard(Sock, Recv, Acc) ->
     end.
 
 event(Rec) ->
-    receive {chappe_sip_siprec, Rec, Ev} -> Ev after 15000 -> ct:fail(no_event) end.
+    receive
+        {chappe_sip_siprec, Rec, Ev} -> Ev
+    after 15000 -> ct:fail(no_event)
+    end.
 
 got(Tag) ->
-    receive {Tag, V} -> V after 10000 -> ct:fail({missing, Tag}) end.
+    receive
+        {Tag, V} -> V
+    after 10000 -> ct:fail({missing, Tag})
+    end.

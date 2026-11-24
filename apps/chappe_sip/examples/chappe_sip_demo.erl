@@ -20,7 +20,9 @@
 -spec echo(inet:port_number()) -> ok.
 echo(Port) ->
     ok = chappe_sip:start(#{contact => contact(Port)}),
-    ok = chappe_sip:invite(fun(Req, Res) -> chappe_sip_handler:start(?MODULE, Req, Res) end),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        chappe_sip_handler:start(?MODULE, Req, Res)
+    end),
     ok.
 
 %% chappe_sip_handler callbacks for the echo UAS
@@ -60,7 +62,9 @@ registrar(Port) ->
     ok = chappe_sip:start(#{contact => contact(Port)}),
     %% chappe_sip:registrar/1 records contacts and answers 200 with the live
     %% bindings; chappe_sip:location/1 resolves an AOR to its contacts.
-    ok = chappe_sip:register(chappe_sip:registrar(#{allow_unauthenticated => true})),
+    ok = chappe_sip:register(
+        chappe_sip:registrar(#{allow_unauthenticated => true})
+    ),
     ok.
 
 contact(Port) ->

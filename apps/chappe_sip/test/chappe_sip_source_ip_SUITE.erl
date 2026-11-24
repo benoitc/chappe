@@ -17,8 +17,12 @@ all() ->
     [source_ip_reported].
 
 init_per_suite(Config) ->
-    application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
-                        [{persistent, true}]),
+    application:set_env(
+        chappe_sip,
+        engine_mod,
+        chappe_sip_nif,
+        [{persistent, true}]
+    ),
     {ok, _} = application:ensure_all_started(chappe_sip),
     Config.
 
@@ -34,11 +38,14 @@ end_per_testcase(_Case, _Config) ->
 
 source_ip_reported(_Config) ->
     EP = chappe_sip_test_port:pick(),
-    ok = chappe_sip:start(#{contact => <<"sip:127.0.0.1:",
-                                   (integer_to_binary(EP))/binary>>}),
+    ok = chappe_sip:start(#{
+        contact => <<"sip:127.0.0.1:", (integer_to_binary(EP))/binary>>
+    }),
     Test = self(),
     ok = chappe_sip:options(fun(Req, Res) ->
-        Test ! {src, chappe_sip_req:source_ip(Req), chappe_sip_req:source_port(Req)},
+        Test !
+            {src, chappe_sip_req:source_ip(Req),
+                chappe_sip_req:source_port(Req)},
         _ = chappe_sip_res:send(Res, 200),
         ok
     end),
@@ -46,13 +53,22 @@ source_ip_reported(_Config) ->
     {ok, LP} = inet:port(Sock),
     LPB = integer_to_binary(LP),
     Br = binary:encode_hex(crypto:strong_rand_bytes(6), lowercase),
-    Msg = <<"OPTIONS sip:127.0.0.1 SIP/2.0\r\n"
-            "Via: SIP/2.0/UDP 127.0.0.1:", LPB/binary, ";rport;branch=z9hG4bK",
-            Br/binary, "\r\nMax-Forwards: 70\r\n"
-            "From: <sip:probe@127.0.0.1:", LPB/binary, ">;tag=si1\r\n"
-            "To: <sip:127.0.0.1>\r\n"
-            "Call-ID: si-", Br/binary, "@ct\r\nCSeq: 1 OPTIONS\r\n"
-            "Content-Length: 0\r\n\r\n">>,
+    Msg = <<
+        "OPTIONS sip:127.0.0.1 SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:",
+        LPB/binary,
+        ";rport;branch=z9hG4bK",
+        Br/binary,
+        "\r\nMax-Forwards: 70\r\n"
+        "From: <sip:probe@127.0.0.1:",
+        LPB/binary,
+        ">;tag=si1\r\n"
+        "To: <sip:127.0.0.1>\r\n"
+        "Call-ID: si-",
+        Br/binary,
+        "@ct\r\nCSeq: 1 OPTIONS\r\n"
+        "Content-Length: 0\r\n\r\n"
+    >>,
     ok = gen_udp:send(Sock, {127, 0, 0, 1}, EP, Msg),
     receive
         {src, Ip, Port} ->
