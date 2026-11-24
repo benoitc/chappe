@@ -16,13 +16,15 @@
 
 -export([start/1, run/2, stop/1, percentile/2]).
 
--define(FRAME, 160).
+%% the default sample rate (the rate option changes it)
+-define(RATE, 8000).
 -define(LOUD, 4000).
 %% whole numbers of cycles in a 20 ms frame, so the three are orthogonal
 -define(TONES, [700, 1100, 1500]).
 
-%% Opts: ip (bind address, default loopback), law (default ulaw).
-%% Returns {Pid, PortA, PortB}.
+%% Opts: ip (bind address, default loopback), law (ulaw | alaw | l16,
+%% default ulaw; l16 is RFC 3551 L16 on payload type 96), rate (sample
+%% rate and RTP clock, default 8000). Returns {Pid, PortA, PortB}.
 start(Opts) ->
     Parent = self(),
     Pid = spawn_link(fun() -> init(Parent, Opts) end),
@@ -74,14 +76,17 @@ init(Parent, Opts) ->
     {ok, PB} = inet:port(B),
     Parent ! {self(), ports, PA, PB},
     Law = maps:get(law, Opts, ulaw),
-    idle(#{a => A, b => B, law => Law}).
+    Rate = maps:get(rate, Opts, ?RATE),
+    idle(#{a => A, b => B, law => Law, rate => Rate}).
 
 idle(S) ->
     receive
         {run, From, Opts} ->
-            Law = maps:get(law, S),
+            #{law := Law, rate := Rate} = S,
             Bursts = list_to_tuple([
-                chappe_mix_g711:encode_frame(Law, tone(F, 16000))
+                chappe_mix_test_tone:encode(
+                    Law, chappe_mix_test_tone:tone(F, 16000, frame(Rate), Rate)
+                )
              || F <- ?TONES
             ]),
             S1 = S#{
@@ -92,8 +97,8 @@ idle(S) ->
                 gap => maps:get(gap, Opts, 20),
                 settle => maps:get(settle, Opts, 25),
                 bframes => maps:get(burst_frames, Opts, 1),
-                silence => chappe_mix_g711:encode_frame(
-                    Law, lists:duplicate(?FRAME, 0)
+                silence => chappe_mix_test_tone:encode(
+                    Law, lists:duplicate(frame(Rate), 0)
                 ),
                 bursts => Bursts,
                 k => 0,
@@ -189,9 +194,9 @@ send(Side, Payload, S) ->
         end,
     Seq = maps:get(SeqK, S),
     Pkt = chappe_mix_rtp:build(#{
-        pt => law_pt(maps:get(law, S)),
+        pt => chappe_mix_test_tone:law_pt(maps:get(law, S)),
         seq => Seq band 16#FFFF,
-        ts => (Seq * ?FRAME) band 16#FFFFFFFF,
+        ts => (Seq * frame(maps:get(rate, S))) band 16#FFFFFFFF,
         ssrc => maps:get(SsrcK, S),
         marker => false,
         payload => Payload
@@ -203,11 +208,14 @@ send(Side, Payload, S) ->
 %% Only the law's payload type counts: comfort noise from a real peer
 %% decoded as G.711 could read as loud.
 received(Sock, Pkt, Now, #{b := Sock, pending := {T0, Idx}} = S) ->
-    PT = law_pt(maps:get(law, S)),
+    PT = chappe_mix_test_tone:law_pt(maps:get(law, S)),
     case chappe_mix_rtp:parse(Pkt) of
         {ok, #{pt := PT, payload := P}} ->
-            Samples = chappe_mix_g711:decode_frame(maps:get(law, S), P),
-            case loud(Samples) andalso dominant(Samples, Idx) of
+            Samples = chappe_mix_test_tone:decode(maps:get(law, S), P),
+            case
+                loud(Samples) andalso
+                    dominant(Samples, Idx, maps:get(rate, S))
+            of
                 true ->
                     S#{
                         pending => undefined,
@@ -231,31 +239,25 @@ finish(#{from := From, lat := Lat, missed := Missed} = S) ->
             frames => maps:get(n, S),
             b_gaps_us => lists:reverse(maps:get(b_gaps, S))
         }},
-    idle(maps:with([a, b, law], S)).
+    idle(maps:with([a, b, law, rate], S)).
 
 loud(Samples) ->
     lists:any(fun(X) -> abs(X) > ?LOUD end, Samples).
 
 %% The burst's own tone carries at least four times the power of each of
 %% the other two.
-dominant(Samples, Idx) ->
-    Powers = [power(Samples, F) || F <- ?TONES],
+dominant(Samples, Idx, Rate) ->
+    Powers = [power(Samples, F, Rate) || F <- ?TONES],
     Own = lists:nth(Idx + 1, Powers),
     Others = lists:sublist(Powers, Idx) ++ lists:nthtail(Idx + 1, Powers),
     lists:all(fun(O) -> Own > 4 * O end, Others).
 
-power(Samples, F) ->
-    Coeff = 2 * math:cos(2 * math:pi() * F / 8000),
+power(Samples, F, Rate) ->
+    Coeff = 2 * math:cos(2 * math:pi() * F / Rate),
     {S1, S2} = lists:foldl(
         fun(X, {P1, P2}) -> {X + Coeff * P1 - P2, P1} end, {0.0, 0.0}, Samples
     ),
     S1 * S1 + S2 * S2 - Coeff * S1 * S2.
 
-law_pt(ulaw) -> 0;
-law_pt(alaw) -> 8.
-
-tone(Freq, Amp) ->
-    [
-        round(Amp * math:sin(2 * math:pi() * Freq * I / 8000))
-     || I <- lists:seq(0, ?FRAME - 1)
-    ].
+%% samples in a 20 ms frame
+frame(Rate) -> Rate div 50.

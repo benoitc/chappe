@@ -743,3 +743,70 @@ order held at load 4.8 too):
   the arm puts each listener's gain back to unity every tick, so every
   tick takes the attack and the scaled encode. The row is recorded as
   missed; the arm is unchanged.
+
+## rtpengine 26.3 in the labs, the L16 gate and the band check
+
+The 16 kHz room needs rtpengine to hand the mixer L16/16000 whatever the
+caller speaks. Ubuntu 24.04's package, 11.5.1.18-1ubuntu1.2, has no L16 RTP
+codec; upstream 13.x is the first with one.
+
+- The lab image now builds upstream `sipwise/rtpengine` tag `mr26.3.1.4`
+  (commit `1165c63`) on `ubuntu:26.04` (pinned by digest), the userspace
+  daemon only: `mk-build-deps`, `dpkg-buildpackage -B`, install
+  `ngcp-rtpengine-daemon`. `rtpengine --codecs`: L16, X-L16, opus, G722,
+  PCMU and telephone-event fully supported. 26.x defaults `table` to -1,
+  so no kernel table is tried. The compose command lines needed no change.
+- What the upgrade broke, both in `make interop`'s siprec suite: the
+  `siprec` flag of a subscription now relabels the streams `["0"]`,
+  `["1"]`, `["2"]` (11.5 added the zero-based label beside the source
+  one); and a `delete` reply with statistics is 10276 bytes for a
+  three-stream publish with three forks. Inside the docker network it
+  arrives; through the Mac's published UDP port (OrbStack) it never did,
+  and the session's stop timed out. The session never reads those
+  statistics, so its deletes now carry the `fast` flag (no statistics).
+- Build: 101 s from nothing on the 14-CPU Mac (load 4 to 13), 101 s again
+  on a builder held to 4 CPUs; apt (about 50 s) and the compile (22 to
+  28 s) dominate. CI's interop jobs take 3 to 7 minutes against 45 to 75
+  minute timeouts, so they build it without a layer cache.
+
+The L16 gate, one NG offer and answer against the new daemon (a scratch
+escript, not kept). The caller offers opus/48000/2 (96), G722/8000 (9),
+PCMU (0) and telephone-event/8000 (101); the offer carries
+`codec => #{mask => [<<"all">>], transcode => [<<"L16/16000/1">>,
+<<"telephone-event/16000">>]}`. The mixer side answers with exactly what
+it was offered.
+
+- Toward the mixer: `m=audio ... RTP/AVP 97 98`, `L16/16000` and
+  `telephone-event/16000` (fmtp 0-15), nothing else.
+- Toward the caller: `opus/48000/2` alone. Its telephone-event/8000 is
+  dropped: RFC 4733 events run on the audio codec's clock, and the caller
+  offered none at 48000. The same offer without opus comes back
+  `G722/8000` with `telephone-event/8000` (101). The caller keeps its
+  wideband codec either way, and rtpengine transcodes to L16.
+
+The band check (`chappe_mix_test_tone:band_check/2,3`): a 16 kHz probe of
+1000 and 2500 Hz (the narrow band) and 5000 and 6000 Hz (above it),
+Goertzel over 3200-sample windows, the median window per tone. A path
+passes when each tone is within 3 dB of its calibration (6 dB through a
+codec) and the bins at 2000 and 3000 Hz, where 6000 and 5000 Hz fold when a
+path drops to 8 kHz, are 40 dB below the quietest tone.
+
+- Written before the helper: the 7 eunit cases failed on `undef`.
+- The identity path passes. A correct narrowband round trip (127-tap
+  Blackman low-pass at 3.4 kHz, decimate to 8 kHz, zero-stuff, the same
+  low-pass) fails on the high tones only. Naive decimation with
+  sample-and-hold fails on both alias bins, at 3 and 6 dB: the folded tones
+  land within 2 dB of full level.
+- Mutations: the alias test turned off (limit raised by 1000 dB) failed the
+  naive control; the Goertzel at 8 kHz instead of 16 kHz failed 5 of 7.
+- On real codecs, two lab pjsua calling each other at a 16 kHz clock
+  (`hd.sh`), the callee's recording judged over 4 s: G.722 and Opus pass
+  at 3 dB (5000 and 6000 Hz within 0.6 dB, alias bins at -60 to -80
+  dBFS), PCMU fails (5000 and 6000 Hz at -97 and -105 dBFS).
+- The FreeSWITCH reference (`interop/freeswitch`, mod_opus and mod_spandsp
+  loaded, codecs `OPUS,G722,PCMU,PCMA`): two G.722 pjsua in one room, one
+  playing the probe, the other recording. In `wconf-<name>` (the
+  `wideband` profile, 16 kHz) every tone arrives at -16.3 to -17.1 dBFS
+  against -16.3 sent; in `conf-<name>` (`default`, 8 kHz, the control)
+  1000 and 2500 Hz arrive at -16.3 and 5000 and 6000 Hz at -89 to
+  -113 dBFS.
