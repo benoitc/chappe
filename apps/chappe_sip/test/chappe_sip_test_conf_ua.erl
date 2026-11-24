@@ -8,7 +8,7 @@
 %% each recorded once with its arrival time.
 -module(chappe_sip_test_conf_ua).
 
--export([start/2, stop/1, uri/1, requests/1, set_answer/2]).
+-export([start/2, stop/1, uri/1, requests/1, set_answer/2, dialog/2]).
 -export([
     invite/3,
     subscribe/4,
@@ -16,6 +16,7 @@
     bye/2,
     hold/2,
     refer/4,
+    refer_out/4,
     options/2
 ]).
 -export([sdp/1]).
@@ -77,7 +78,12 @@ bye(UA, Call) -> call(UA, {bye, Call}).
 %% re-INVITE with the given direction (sendonly holds, sendrecv resumes)
 hold(UA, {Call, Dir}) -> call(UA, {reinvite, Call, Dir}).
 refer(UA, Call, Target, Hdrs) -> call(UA, {refer, Call, Target, Hdrs}).
+%% A REFER outside any dialog to Uri: {ok, Call, Response} on a 2xx (the
+%% subscription's dialog is kept), {error, Status, Response} otherwise.
+refer_out(UA, Uri, Target, Hdrs) -> call(UA, {refer_out, Uri, Target, Hdrs}).
 options(UA, Uri) -> call(UA, {options, Uri}).
+%% The dialog of Call as this UA sees it: #{ft, tt, to, target, cseq}.
+dialog(UA, Call) -> call(UA, {dialog, Call}).
 
 call(UA, Req) ->
     Ref = monitor(process, UA),
@@ -194,6 +200,32 @@ handle({refer, Call, Target, Hdrs}, S) ->
     in_dialog(
         <<"REFER">>, Call, [{<<"Refer-To">>, Target} | Hdrs], <<>>, S
     );
+handle({refer_out, Uri, Target, Hdrs}, S) ->
+    Call = <<"ref-", (hex(5))/binary, "@ct">>,
+    FT = hex(4),
+    Bin = request(<<"REFER">>, Uri, S, #{
+        call => Call,
+        ft => FT,
+        to => Uri,
+        cseq => 1,
+        hdrs => [{<<"Refer-To">>, Target} | Hdrs]
+    }),
+    {R, S1} = transact(Bin, Call, 1, S),
+    case chappe_sip_msg:status(R) of
+        St when St >= 200, St < 300 ->
+            D = #{
+                ft => FT,
+                tt => chappe_sip_msg:to_tag(R),
+                to => Uri,
+                target => contact_uri(R),
+                cseq => 1
+            },
+            {{ok, Call, R}, add_dialog(Call, D, S1)};
+        St ->
+            {{error, St, R}, S1}
+    end;
+handle({dialog, Call}, #{dialogs := Ds} = S) ->
+    {maps:get(Call, Ds, undefined), S};
 handle({options, Uri}, S) ->
     Call = <<"opt-", (hex(5))/binary, "@ct">>,
     Bin = request(<<"OPTIONS">>, Uri, S, #{

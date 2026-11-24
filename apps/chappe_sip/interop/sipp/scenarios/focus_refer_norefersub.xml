@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!-- Copyright 2026 Benoit Chesneau
+     SPDX-License-Identifier: Apache-2.0
+
+     A REFER to the conference URI with Refer-Sub: false from a UA that
+     supports norefersub. RFC 4488 section 4: the focus says Refer-Sub:
+     false in the 200 (whose Contact is still the conference URI with
+     isfocus), sends no NOTIFY (SIPp waits 3 s and fails on one), and
+     still brings the target in (focus_refer_target.xml). -->
+<scenario name="focus_refer_norefersub">
+  <send retrans="500">
+    <![CDATA[
+      REFER sip:conf@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:sipp@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:conf@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 REFER
+      Max-Forwards: 70
+      Contact: <sip:sipp@[local_ip]:[local_port]>
+      Refer-To: <sip:target@[local_ip]:5070>
+      Refer-Sub: false
+      Supported: norefersub
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv response="100" optional="true"/>
+  <recv response="200">
+    <action>
+      <ereg regexp="false" search_in="hdr" header="Refer-Sub:" check_it="true" assign_to="chk"/>
+      <ereg regexp="sip:conf@[^&gt;]*&gt;.*;isfocus" search_in="hdr" header="Contact:" check_it="true" assign_to="chk"/>
+    </action>
+  </recv>
+  <recv request="NOTIFY" timeout="3000" ontimeout="done">
+    <action>
+      <ereg regexp="NO-NOTIFY-EXPECTED" search_in="msg" check_it="true" assign_to="chk"/>
+    </action>
+  </recv>
+  <label id="done"/>
+  <!-- a call that ends on a timeout counts as failed: end it on a step -->
+  <pause milliseconds="100"/>
+
+  <Reference variables="chk"/>
+</scenario>

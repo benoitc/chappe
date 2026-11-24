@@ -13,6 +13,11 @@
 #   refer_*       a second instance on port 5070 plays the transfer
 #                 target (scenarios/refer_target.xml); its outcome is not
 #                 the case's
+#   focus_refer_* a second instance on port 5070 plays the party a REFER
+#                 to the conference focus brings in
+#                 (scenarios/focus_refer_target.xml), and its checks count;
+#                 focus_refer_tdialog adds SIPp 3PCC twins as the
+#                 replaces_* cases do
 #   replaces_confirmed, replaces_early
 #                 two twin instances (SIPp 3PCC mode): CASE-a.xml holds
 #                 the first dialog, CASE-b.xml sends the INVITE with
@@ -47,6 +52,45 @@ show() {
 
 rc=0
 case "$CASE" in
+    focus_refer_tdialog)
+        # the party the focus brings in on 5070, then twin b (5072) that
+        # REFERs with the Target-Dialog twin a hands it; Call-IDs of the
+        # case's own, so no dialog a case before left behind matches
+        COMMON="$COMMON -cid_str %u-%p-$CASE@%s"
+        # shellcheck disable=SC2086
+        sipp $COMMON -sf "$SCEN/focus_refer_target.xml" -p 5070 \
+            "$NODE:5060" > "$OUT/target.out" 2>&1 &
+        TARGET=$!
+        # shellcheck disable=SC2086
+        sipp $COMMON -sf "$SCEN/$CASE-b.xml" -p 5072 \
+            -3pcc 127.0.0.1:5679 "$NODE:5060" > "$OUT/b.out" 2>&1 &
+        B=$!
+        sleep 1
+        # shellcheck disable=SC2086
+        sipp $COMMON -sf "$SCEN/$CASE-a.xml" -p 5060 \
+            -3pcc 127.0.0.1:5679 "$NODE:5060" > "$OUT/a.out" 2>&1 || rc=$?
+        wait "$B" || rc=$((rc + $?))
+        wait "$TARGET" || rc=$((rc + $?))
+        ;;
+    focus_refer_*)
+        # the party the focus brings in, on 5070: its checks count
+        COMMON="$COMMON -cid_str %u-%p-$CASE@%s"
+        # shellcheck disable=SC2086
+        sipp $COMMON -sf "$SCEN/focus_refer_target.xml" -p 5070 \
+            "$NODE:5060" > "$OUT/target.out" 2>&1 &
+        TARGET=$!
+        # shellcheck disable=SC2086
+        sipp $COMMON -sf "$SCEN/$CASE.xml" -p 5060 "$NODE:5060" \
+            > "$OUT/main.out" 2>&1 || rc=$?
+        wait "$TARGET" || rc=$((rc + $?))
+        if [ "$CASE" = focus_refer_retrans ]; then
+            # one REFER, retransmitted: one INVITE to the target
+            N=$(cat "$OUT"/focus_refer_target_*_messages.log 2>/dev/null \
+                | grep -c '^INVITE sip:')
+            echo "===== target INVITEs: $N"
+            [ "$N" = 1 ] || rc=$((rc + 1))
+        fi
+        ;;
     refer_*)
         # one transfer per REFER: refer_event_id sends two
         CALLS=1

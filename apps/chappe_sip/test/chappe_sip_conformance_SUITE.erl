@@ -51,6 +51,10 @@
     refer_notify/1,
     refer_event_id/1,
     refer_norefersub/1,
+    focus_refer_add/1,
+    focus_refer_norefersub/1,
+    focus_refer_tdialog/1,
+    focus_refer_retrans/1,
     st_negotiate/1,
     st_422/1,
     st_refresh_uac/1,
@@ -100,6 +104,10 @@ groups() ->
             refer_notify,
             refer_event_id,
             refer_norefersub,
+            focus_refer_add,
+            focus_refer_norefersub,
+            focus_refer_tdialog,
+            focus_refer_retrans,
             b2b_refer_refused,
             st_negotiate,
             st_422,
@@ -246,6 +254,30 @@ refer_event_id(Config) -> sipp(?FUNCTION_NAME, Config).
 %% RFC 4488 4: Refer-Sub: false in the 2xx and no NOTIFY.
 %% req: R4488-01 R4488-03
 refer_norefersub(Config) -> sipp(?FUNCTION_NAME, Config).
+
+%% ---- REFER to a conference focus ----
+
+%% RFC 4579 5.5: a REFER to the conference URI is answered 200 (RFC 7647
+%% 5) with the conference URI and isfocus as Contact, and the focus
+%% INVITEs the target with that Contact; NOTIFY 100, then the final 200.
+%% req: R4579-12 R7647-04 R3515-05 R3515-10 R3515-23
+focus_refer_add(Config) -> sipp(?FUNCTION_NAME, Config).
+
+%% RFC 4488 4: Refer-Sub: false to the focus: 200 with Refer-Sub: false,
+%% no NOTIFY, and the target is still brought in.
+%% req: R4488-01
+focus_refer_norefersub(Config) -> sipp(?FUNCTION_NAME, Config).
+
+%% RFC 7647 4, RFC 4538 4: a REFER outside the dialog naming a
+%% participant's dialog with Target-Dialog is authorized by it; one whose
+%% Target-Dialog names no dialog proves nothing (here: 403).
+%% req: R7647-03 R4538-010 R4538-013 R4538-014
+focus_refer_tdialog(Config) -> sipp(?FUNCTION_NAME, Config).
+
+%% RFC 3261 17.2.2: a retransmitted REFER to the focus gets the same 200
+%% and is carried out once: one subscription, one INVITE.
+%% req: R3515-27
+focus_refer_retrans(Config) -> sipp(?FUNCTION_NAME, Config).
 
 %% A B2BUA call (transfer => auto) refuses what it must not carry out:
 %% an off-net target (403), a REFER for a BYE (403), several targets

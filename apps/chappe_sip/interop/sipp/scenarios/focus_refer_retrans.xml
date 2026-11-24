@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!-- Copyright 2026 Benoit Chesneau
+     SPDX-License-Identifier: Apache-2.0
+
+     A REFER to the conference URI sent twice, the second a retransmission
+     (the same branch and CSeq). RFC 3261 section 17.2.2: the server
+     transaction absorbs it and answers it with the same 200; the focus
+     acts once: one subscription (NOTIFY 100, then the final 200), and
+     one INVITE to the target (run.sh counts the INVITEs
+     focus_refer_target.xml received). -->
+<scenario name="focus_refer_retrans">
+  <send>
+    <![CDATA[
+      REFER sip:conf@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=z9hG4bK-retrans-[call_number];rport
+      From: <sip:sipp@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:conf@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 REFER
+      Max-Forwards: 70
+      Contact: <sip:sipp@[local_ip]:[local_port]>
+      Refer-To: <sip:target@[local_ip]:5070>
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv response="100" optional="true"/>
+  <recv response="200"/>
+  <send>
+    <![CDATA[
+      REFER sip:conf@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=z9hG4bK-retrans-[call_number];rport
+      From: <sip:sipp@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:conf@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 REFER
+      Max-Forwards: 70
+      Contact: <sip:sipp@[local_ip]:[local_port]>
+      Refer-To: <sip:target@[local_ip]:5070>
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv response="200" optional="true"/>
+  <recv request="NOTIFY">
+    <action>
+      <ereg regexp="^SIP/2.0 100" search_in="body" check_it="true" assign_to="chk"/>
+    </action>
+  </recv>
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <!-- each copy of the REFER may get its own copy of the 200 -->
+  <recv response="200" optional="true"/>
+  <recv request="NOTIFY" timeout="15000">
+    <action>
+      <ereg regexp="terminated" search_in="hdr" header="Subscription-State:" check_it="true" assign_to="chk"/>
+      <ereg regexp="^SIP/2.0 200" search_in="body" check_it="true" assign_to="chk"/>
+    </action>
+  </recv>
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <!-- a second subscription would send a second NOTIFY 100 -->
+  <recv request="NOTIFY" timeout="3000" ontimeout="done">
+    <action>
+      <ereg regexp="NO-SECOND-SUBSCRIPTION" search_in="msg" check_it="true" assign_to="chk"/>
+    </action>
+  </recv>
+  <label id="done"/>
+  <!-- a call that ends on a timeout counts as failed: end it on a step -->
+  <pause milliseconds="100"/>
+
+  <Reference variables="chk"/>
+</scenario>
