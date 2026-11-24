@@ -83,6 +83,8 @@ each app's `CHANGELOG.md`, indexed in the root
 ### You contribute to chappe
 
 - [CONTRIBUTING](../CONTRIBUTING.md): checks, conventions, PRs.
+- [SECURITY](../SECURITY.md): how to report a vulnerability, and what
+  counts as one rather than a specification bug.
 - [If you want to change something](#if-you-want-to-change-something):
   one workflow per task.
 - [Plans](plans/): maintainer plans such as

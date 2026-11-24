@@ -34,3 +34,6 @@ apps/chappe_sip/c_src/sofia-sip/**/*.so
 apps/chappe_sip/c_src/sofia-sip/autom4te.cache/
 __pycache__/
 *.pyc
+
+# local agent settings
+.claude/settings.local.json
