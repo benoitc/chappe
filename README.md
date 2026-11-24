@@ -134,13 +134,17 @@ The interop labs run against real rtpengine, FreeSWITCH, Kamailio and SIPp
 in docker: `make interop`, `interop-conformance`, `interop-sbc`,
 `interop-mix`, `interop-esl`, `interop-mrf`, `interop-cluster`, and
 `demo-esl`; see [the labs](docs/contributing/labs.md). How to get a change in:
-[CONTRIBUTING.md](CONTRIBUTING.md).
+[CONTRIBUTING.md](CONTRIBUTING.md). How to report a vulnerability, and what
+counts as one: [SECURITY.md](SECURITY.md).
 
 ## Links
 
 - [Documentation map](docs/README.md)
 - [CHANGELOG](CHANGELOG.md)
 - [CONTRIBUTING](CONTRIBUTING.md)
+- [SECURITY](SECURITY.md)
+- [Agents](AGENTS.md): rules for AI coding agents, and the specifications
+  chappe follows
 - [Decisions](docs/decisions/README.md)
 
 ## License
