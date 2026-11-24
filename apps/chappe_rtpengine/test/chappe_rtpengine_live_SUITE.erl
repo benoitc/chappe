@@ -16,6 +16,7 @@
     ping/1,
     offer_answer_query_delete/1,
     list_statistics_forwarding/1,
+    losing_branch_delete_keeps_call/1,
     media_subscription/1,
     tcp_transport/1,
     ws_transport/1,
@@ -27,6 +28,7 @@ all() ->
         ping,
         offer_answer_query_delete,
         list_statistics_forwarding,
+        losing_branch_delete_keeps_call,
         media_subscription,
         tcp_transport,
         ws_transport,
@@ -130,6 +132,47 @@ list_statistics_forwarding(_Config) ->
     ?assertMatch({ok, _}, Fwd),
     ?assertMatch({ok, _}, chappe_rtpengine_cmd:stop_forwarding(Sess)),
     ok = chappe_rtpengine_session:stop(Sess),
+    ok.
+
+%% Two forked branches answer on the one offer; when one wins, the call
+%% and the winner's media must stay (rtpengine 13 and later keep the
+%% losing to-tag as an alias of the winner, so deleting it would end the
+%% call).
+losing_branch_delete_keeps_call(_Config) ->
+    Node = chappe_rtpengine_live,
+    Suffix = integer_to_binary(erlang:unique_integer([positive])),
+    CallId = <<"chappe-rtpengine-fork-", Suffix/binary>>,
+    {ok, Sess} = chappe_rtpengine:start_session(#{
+        call_id => CallId, node => Node
+    }),
+    {ok, _} = chappe_rtpengine_session:offer(Sess, #{
+        from_tag => <<"from-", Suffix/binary>>,
+        sdp => sdp(<<"198.51.100.1">>, 30000),
+        ice => remove
+    }),
+    Lose = <<"lose-", Suffix/binary>>,
+    Win = <<"win-", Suffix/binary>>,
+    {ok, _} = chappe_rtpengine_session:answer(Sess, #{
+        to_tag => Lose, sdp => sdp(<<"198.51.100.2">>, 40000), ice => remove
+    }),
+    {ok, _} = chappe_rtpengine_session:answer(Sess, #{
+        to_tag => Win, sdp => sdp(<<"198.51.100.3">>, 42000), ice => remove
+    }),
+    {ok, _} = chappe_rtpengine_session:answer(Sess, #{
+        to_tag => Win,
+        sdp => sdp(<<"198.51.100.3">>, 42000),
+        ice => remove,
+        final => true
+    }),
+    #{branches := [Win]} = chappe_rtpengine_session:info(Sess),
+    %% the losing branch's delete is asynchronous: give it time to land
+    timer:sleep(500),
+    {ok, Query} = chappe_rtpengine:query(Node, #{call_id => CallId}),
+    Tags = maps:get(<<"tags">>, Query, #{}),
+    ct:pal("tags after the winner settled: ~p", [maps:keys(Tags)]),
+    ?assert(maps:is_key(Win, Tags)),
+    ok = chappe_rtpengine_session:stop(Sess),
+    {error, _, _} = chappe_rtpengine:query(Node, #{call_id => CallId}),
     ok.
 
 %% Needs RTPENGINE_TCP_PORT pointing at a --listen-tcp-ng listener.

@@ -55,7 +55,7 @@ Hold itself is an SDP concern (`a=sendonly` in the re-INVITE offer); your SIP st
 
 ## Forked calls
 
-Answer once per branch with its to-tag; mark the winner and the session deletes the losing branches on rtpengine:
+Answer once per branch with its to-tag and mark the winner. A branch that had an offer of its own (a `via_branch` in its answer) is deleted on rtpengine when another branch wins; branches answered on the one offer share the callee's side, which the winner's answer takes over, so nothing is deleted for them (on rtpengine 13 and later a losing tag is an alias of the winner, and its delete would end the call):
 
 ```erlang
 {ok, _} = chappe_rtpengine_session:answer(Sess, #{to_tag => Branch1Tag, sdp => SDP1}),

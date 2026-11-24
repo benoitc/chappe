@@ -72,6 +72,8 @@
     %% true while the open offer is a re-INVITE of an established call
     reoffer = false :: boolean(),
     branches = [] :: [binary()],
+    %% the via-branch each branch answered under, when it had its own offer
+    branch_vias = #{} :: #{binary() => binary()},
     media_lost = false :: boolean(),
     %% the app's opaque reference (a call ref): in every owner event, and
     %% sent to the daemon as call metadata
@@ -469,14 +471,15 @@ do_answer(From, Params0, StateKind, Data) ->
             ),
             Params = maps:merge(Tags, Params1),
             Kind = {answer_sent, StateKind, BranchTag, Final, PrevToTag},
+            DataV = note_via(BranchTag, Params1, Data),
             {Next, Data1} =
                 case {StateKind, BranchTag} of
                     {answering, none} ->
-                        {answering, Data};
+                        {answering, DataV};
                     {answering, _} ->
-                        {answering, Data#data{to_tag = BranchTag}};
+                        {answering, DataV#data{to_tag = BranchTag}};
                     {established, _} ->
-                        {keep, Data}
+                        {keep, DataV}
                 end,
             send(answer, Params, {From, Kind}, Next, Data1);
         {error, _} = Error ->
@@ -549,20 +552,34 @@ stopped_replies(Data) ->
      || {From, _Kind} <- maps:values(Data#data.pending)
     ]).
 
+note_via(none, _Params, Data) ->
+    Data;
+note_via(BranchTag, #{via_branch := Via}, #data{branch_vias = Vias} = Data) ->
+    Data#data{branch_vias = Vias#{BranchTag => Via}};
+note_via(_BranchTag, _Params, Data) ->
+    Data.
+
 %% Record the branch tag; on the final answer, best-effort delete of
-%% every losing branch by its to-tag.
+%% every losing branch that had an offer of its own (a via-branch).
+%% Branches answered on one offer share the callee's monologue: from
+%% rtpengine 13 on, a later to-tag renames it and keeps the earlier ones
+%% as aliases of the winner, so deleting a losing tag would end the call;
+%% they need no delete.
 settle_answer(none, _Final, Data) ->
     Data;
 settle_answer(BranchTag, false, Data) ->
     Branches = lists:usort([BranchTag | Data#data.branches]),
     Data#data{branches = Branches};
-settle_answer(BranchTag, true, Data) ->
-    Losing = lists:usort(Data#data.branches) -- [BranchTag],
+settle_answer(BranchTag, true, #data{branch_vias = Vias} = Data) ->
+    Losing = [
+        {Tag, Via}
+     || Tag <- lists:usort(Data#data.branches) -- [BranchTag],
+        {ok, Via} <- [maps:find(Tag, Vias)]
+    ],
     Data1 = lists:foldl(
-        fun(LosingTag, Acc) ->
-            case
-                send_async(delete, delete_params(#{to_tag => LosingTag}), Acc)
-            of
+        fun({LosingTag, Via}, Acc) ->
+            Params = #{to_tag => LosingTag, via_branch => Via},
+            case send_async(delete, delete_params(Params), Acc) of
                 {ok, Ref, Acc1} ->
                     add_pending(Ref, undefined, branch_delete, Acc1);
                 {error, _} ->
@@ -572,7 +589,11 @@ settle_answer(BranchTag, true, Data) ->
         Data,
         Losing
     ),
-    Data1#data{branches = [BranchTag], to_tag = BranchTag}.
+    Data1#data{
+        branches = [BranchTag],
+        branch_vias = maps:with([BranchTag], Vias),
+        to_tag = BranchTag
+    }.
 
 delete_result({ok, _}) -> ok;
 delete_result({error, Reason, _Reply}) -> {error, Reason};
@@ -687,11 +708,18 @@ final_delete(_State, _Data) ->
     ok.
 
 %% The session never reads a delete's call statistics, so it asks for
-%% none (`fast'): with them the reply of a call with many streams grows
-%% past what one UDP datagram carries on some paths (10 KB for a
-%% three-stream recording with three forks on rtpengine 26.3).
+%% none (`fast'): with them the reply of a call with many streams is
+%% large enough to be split into IP fragments, which some paths drop
+%% (10 KB for a three-stream recording with three forks on rtpengine
+%% 26.3). A delete naming a to-tag (a losing branch) carries the `to-tag'
+%% flag: rtpengine 13 and later ignore the to-tag without it and delete
+%% the whole call. Older rtpengine ignores both flags.
 delete_params(Params) ->
-    Params#{flags => [fast]}.
+    Fast = chappe_rtpengine_offer:add_flag(fast, Params),
+    case Params of
+        #{to_tag := _} -> chappe_rtpengine_offer:add_flag(to_tag, Fast);
+        #{} -> Fast
+    end.
 
 safe_call(Session, Request) ->
     try

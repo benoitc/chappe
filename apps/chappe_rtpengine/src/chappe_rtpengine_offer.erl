@@ -15,7 +15,7 @@
 -module(chappe_rtpengine_offer).
 
 -export([reoffer_tags/4, answer_tags/4, pinned_state/1, negotiated/3]).
--export([params/5, resolve_party/4]).
+-export([params/5, resolve_party/4, add_flag/2]).
 
 -export_type([tag/0, kind/0, initiator/0, update/0]).
 
@@ -209,6 +209,8 @@ targeted(Params) ->
         [from_tag, to_tag, label, to_label, address, flags]
     ).
 
+%% Add one NG option word to the `flags' of a command's params, once.
+-spec add_flag(atom(), map()) -> map().
 add_flag(Flag, Params) ->
     Flags = maps:get(flags, Params, []),
     case lists:member(Flag, Flags) of

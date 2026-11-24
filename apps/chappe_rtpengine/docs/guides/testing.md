@@ -36,7 +36,7 @@ One command, needs docker:
 make interop
 ```
 
-That runs `test/e2e.sh`, which brings up `interop/docker-compose.yml`: a transcoding-enabled rtpengine built from `interop/Dockerfile` (Ubuntu's rtpengine package, native arch, subscribe/playback/silence available), NG on UDP and TCP, a published media port range, media bound on the container interface but advertised as 127.0.0.1. The script discovers the address rtpengine can reach your machine at, runs `chappe_rtpengine_live_SUITE`, `chappe_rtpengine_e2e_SUITE` and `chappe_rtpengine_siprec_SUITE`, and tears the stack down. See `interop/README.md` for running the stack by hand.
+That runs `test/e2e.sh`, which brings up `interop/docker-compose.yml`: a transcoding-enabled rtpengine built from `interop/Dockerfile` (upstream rtpengine 26.3.1.4 built as a userspace daemon, native arch, subscribe/playback/silence and L16 available), NG on UDP and TCP, a published media port range, media bound on the container interface but advertised as 127.0.0.1. The script discovers the address rtpengine can reach your machine at, runs `chappe_rtpengine_live_SUITE`, `chappe_rtpengine_e2e_SUITE` and `chappe_rtpengine_siprec_SUITE`, and tears the stack down. See `interop/README.md` for running the stack by hand.
 
 What the end-to-end suites prove:
 
