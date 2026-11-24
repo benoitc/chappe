@@ -8,7 +8,7 @@ on:
 
 env:
   OTP: '29.1.2'
-  REBAR3: '3.25.0'
+  REBAR3: '3.28.0'
 
 permissions:
   contents: read
