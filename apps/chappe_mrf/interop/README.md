@@ -92,10 +92,12 @@ PCMU, silent, in the middle. `native_hd_room` runs it in a native room at
 `wideband` profile, the reference. Each direction passes the band check of
 `chappe_mix_test_tone` with C in and after it left, and C hears both.
 
-- `hd.sh` builds the `chappe-conf-pjsua` image only when it is missing:
-  rebuild it from your branch (`docker build -t chappe-conf-pjsua
-  apps/chappe_sip/interop/pjsua`) when another checkout built it, or the
-  Opus caller has no codec and offers `m=audio 0`.
+- The suite builds its own pjsua image, `chappe-hd-pjsua`, from this
+  checkout (cached after the first build) and gives it to `hd.sh` with
+  `-i`. `hd.sh`'s default, `chappe-conf-pjsua`, is shared with the
+  conformance lab and built only when missing: one built by a checkout
+  without Opus leaves the Opus caller with no codec (it offers
+  `m=audio 0`).
 - The callers start 2 s apart: two pjsua started in the same second draw the
   same Call-ID and tags.
 - pjsua's SIP ports start at `MRF_PJSUA_SIP` (19560, three of them), its RTP

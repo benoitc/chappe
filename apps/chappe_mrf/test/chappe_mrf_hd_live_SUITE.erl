@@ -35,9 +35,20 @@ init_per_suite(Config) ->
         _ ->
             case ?LIVE:init_per_suite(Config) of
                 {skip, _} = Skip -> Skip;
-                Config1 -> [{hd_sh, hd_sh()} | Config1]
+                Config1 -> [{hd_sh, hd_sh()}, {image, pjsua_image()} | Config1]
             end
     end.
+
+%% The pjsua of this checkout, under a tag of its own: `chappe-conf-pjsua',
+%% hd.sh's default, is shared with the conformance lab, and a checkout
+%% whose Dockerfile has no Opus overwrites it. Cached after the first
+%% build.
+pjsua_image() ->
+    Tag = "chappe-hd-pjsua",
+    Dir = filename:dirname(hd_sh()),
+    Out = os:cmd("docker build -q -t " ++ Tag ++ " " ++ Dir ++ " 2>&1"),
+    ct:log("pjsua image ~s: ~s", [Tag, Out]),
+    Tag.
 
 end_per_suite(Config) ->
     ?LIVE:end_per_suite(Config).
@@ -207,7 +218,9 @@ pjsua(Config, Name, Opts, Target) ->
             "-m",
             integer_to_list(env_port("MRF_PJSUA_RTP", 19600) + 20 * K),
             "-N",
-            "laneh2-hd-" ++ N
+            "chappe-hd-" ++ N,
+            "-i",
+            ?config(image, Config)
         ] ++
             case maps:find(play, Opts) of
                 {ok, P} -> ["-p", P];

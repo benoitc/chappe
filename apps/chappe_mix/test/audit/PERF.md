@@ -34,7 +34,7 @@ missed here, never redefined after the numbers arrive.
 | Memory per 4-party 16 kHz room, set 2026-11-24 | <= 512 KiB (twice the 8 kHz row) | n/a | void only: 102.6 KiB of Erlang memory (8 kHz beside it: 96.9 to 101.0) | open, rerun |
 | Latency and tick jitter in a 16 kHz room, set 2026-11-24 | the 8 kHz rows: <= 25 / 45 ms p50 / p99 added; tick p99 <= 2 ms idle | n/a | void only: 6.8 / 26.9 and 26.5 / 27.1 ms (8 kHz beside it: 7.9 / 27.9, 25.1 / 25.4); tick p99 0.63 ms and 13.6 ms | open, rerun |
 | Limiter distortion at 16 kHz, set 2026-11-24 | the 8 kHz row: 8 talkers at -6 dBFS, THD+N <= -26 dB | n/a | -30.50 dB (hard clip -10.27 dB) | met |
-| rtpengine CPU per transcoded leg into a 16 kHz room, set 2026-11-24 | informational, no threshold | n/a | not measured | open |
+| rtpengine CPU per transcoded leg into a 16 kHz room, set 2026-11-24 | informational, no threshold | 2.0% of a CPU for the same three callers, relayed to the `wideband` room | 39.9% of a CPU for three callers (G.722, Opus, PCMU), about 13% a call, both its legs transcoded; load 12 to 17 | recorded |
 
 The numbers in the table are the quiet-box ones from "2026-10-01: native
 reference" below, minimum of the runs unless that section says otherwise.
@@ -882,4 +882,9 @@ Not timed, so not void:
 - The band through real codecs (`chappe_mix_live_SUITE`, rtpengine
   26.3.1.4): G.722 and Opus carry 5000 and 6000 Hz both ways into and out
   of a 16 kHz room; PCMU drops them to -106 to -132 dBFS.
-- rtpengine CPU per transcoded leg: not measured in this run.
+- rtpengine CPU, informational (`docker stats` every 2 s during
+  `chappe_mrf_hd_live_SUITE`, rtpengine 26.3.1.4, load 12 to 17): three pjsua
+  callers (G.722, Opus, PCMU) in the native 16 kHz room, each call transcoded
+  on both its legs (the caller's codec to L16 and back): 39.9% of one CPU
+  on average, 51.1% at most, about 13% a call. The same callers in the
+  FreeSWITCH `wideband` room, where rtpengine only relays: 2.0%.
