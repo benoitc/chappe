@@ -111,16 +111,12 @@ or a remote crash. Treat it as a bug:
 - when it arrived as an advisory, close the advisory as not a
   vulnerability and link the pull request that fixes it.
 
-Only a problem that is not a spec deviation goes through
-[SECURITY.md](SECURITY.md): code execution, including memory corruption in
-the sofia-sip NIF or its C engine; a peer accepted without the
-authentication the configuration asks for (digest, TLS certificate and
-hostname checks, the ESL address list and password, the distribution
-cookie); one call's signalling, media, recording or keys reaching another
-party; chappe weakening TLS or SRTP below what the configuration allows.
-Peer authentication stays a security issue even where a spec describes the
-check. If unsure, ask the maintainer before treating anything as a
-security issue.
+Only the problems listed in
+[SECURITY.md](SECURITY.md#what-is-a-security-issue) go through private
+reporting. Memory corruption or a VM crash through the NIF, and peer
+authentication, stay security issues even where a spec describes the
+input or the check. If unsure, ask the maintainer before treating anything
+as a security issue.
 
 ## Required Checks
 
@@ -178,8 +174,10 @@ request per change. Docs and CHANGELOG entries go in the same pull request.
 
 The specs chappe implements, at the version the code follows. Where a newer
 one exists it is listed under [Pending updates](#pending-updates). Each app
-claims what it implements in `apps/<app>/docs/compliance/requirements.tsv`,
-and `make compliance GATE=demo` checks the claims against the tests.
+that speaks a protocol claims what it implements in
+`apps/<app>/docs/compliance/requirements.tsv` (chappe_cluster speaks none
+and has no matrix), and `make compliance GATE=demo` checks the claims
+against the tests.
 Last checked: 2026-11-24.
 
 ### SIP core
@@ -189,11 +187,12 @@ Last checked: 2026-11-24.
 | RFC 3261 SIP | messages, transactions (sofia-sip nta in the NIF), dialogs, UAC, UAS, B2BUA, stateful proxy, registrar | `chappe_sip_engine`, `chappe_sip_msg`, `chappe_sip_hdr`, `chappe_sip_uri`, `chappe_sip_dialog_fsm`, `chappe_sip_uac_fsm`, `chappe_sip_b2b`, `chappe_sip_proxy`, `chappe_sip_registrar` |
 | RFC 3263 locating SIP servers | where the requests chappe sends go | `chappe_sip_engine` (sofia-sip nta), `chappe_sip_b2b_fork` |
 | RFC 6026 2xx responses to INVITE | the proxy's Accepted state, 2xx retransmission | `chappe_sip_proxy_accepted`, `chappe_sip_engine` |
-| RFC 3581 rport | responses to the source address and port | `chappe_sip_flow`, `chappe_sip_location` |
+| RFC 3581 rport | responses to the source address and port | `chappe_sip_flow`, `chappe_sip_ws_msg` |
 | RFC 5626 outbound, RFC 3327 Path | flows, keepalives, Path on registration | `chappe_sip_engine_conns`, `chappe_sip_flow`, `chappe_sip_registrar`, `chappe_sip_registry`, `chappe_sip_qualify` |
 | RFC 5658 Record-Route | double Record-Route in the proxy | `chappe_sip_proxy`, `chappe_sip_route` |
 | RFC 5630 SIPS, RFC 5922 domain certificates | `sips:` routing, TLS peer names | `chappe_sip_proxy_rules`, `chappe_sip_engine_opts` |
 | RFC 7118 SIP over WebSocket, RFC 6455 WebSocket | ws and wss in Erlang (sofia-sip's own transport is not built) | `chappe_sip_ws_*`, `chappe_audio_conn` |
+| RFC 8996 TLS 1.0 and 1.1 deprecated | a TLS 1.2 floor on SIP over TLS and on wss | `c_src/nif/stack.c`, `chappe_sip_ws_listener` |
 
 ### SIP extensions
 
@@ -201,10 +200,11 @@ Last checked: 2026-11-24.
 |---|---|---|
 | RFC 3262 PRACK | reliable provisional responses | `chappe_sip_uac_early`, `chappe_sip_res`, `chappe_sip_b2b_early` |
 | RFC 3311 UPDATE | offer/answer inside a dialog | `chappe_sip_dialog_offer`, `chappe_sip_b2b_relay` |
+| RFC 6086 INFO | INFO relayed across the B2BUA | `chappe_sip_b2b_requests` |
 | RFC 4028 session timers | refresh and expiry | `chappe_sip_session_timer`, `chappe_sip_b2b_hdr` |
 | RFC 3326 Reason | Reason on BYE and CANCEL | `chappe_sip_b2b_hdr`, `chappe_sip_dialog` |
 | RFC 3323 privacy, RFC 3325 asserted identity | Privacy and P-Asserted-Identity at trust boundaries | `chappe_sip_b2b_hdr` |
-| RFC 8760 and RFC 7616 digest | SHA-256 and MD5 digest, nonce counts | `chappe_sip_digest`, `chappe_sip_digest_nc`, `chappe_sip_uac_auth`, `chappe_sip_registrar` |
+| RFC 8760 and RFC 7616 digest (RFC 7616 obsoletes RFC 2617) | SHA-256 and MD5 digest, nonce counts | `chappe_sip_digest`, `chappe_sip_digest_nc`, `chappe_sip_uac_auth`, `chappe_sip_registrar` |
 
 ### Events
 
@@ -306,20 +306,24 @@ citations and the table, with no CHANGELOG entry.
 ### Pending updates
 
 Found on 2026-11-24 in the `updated_by` lists of the RFCs above. None has
-been diffed yet (step 2).
+been diffed yet (step 2). The last two rows are citations to move to the
+current RFC, section by section.
 
 | Spec followed | Newer document | Known to differ |
 |---|---|---|
-| RFC 3261 SIP | RFC 3853, 4320, 4916, 5393, 5621, 5954, 6141, 6878, 7462, 7463, 8591, 8898, 8996 | RFC 4320 is cited by the engine; the others are not cited in the code. RFC 8996 deprecates TLS 1.0 and 1.1; RFC 5393 adds loop and fork-bomb limits for proxies. |
+| RFC 3261 SIP | RFC 3853, 4320, 4916, 5393, 5621, 5954, 6141, 6878, 7462, 7463, 8591, 8898 | RFC 4320 is cited by the engine; the others are not cited in the code. RFC 5393 adds loop and fork-bomb limits for proxies. |
 | RFC 3263 locating SIP servers | RFC 7984, RFC 8553 | Not diffed. |
 | RFC 3264 offer/answer | RFC 6157, RFC 8843 (obsoleted by RFC 9143) | BUNDLE is handled by rtpengine; not diffed. |
+| RFC 3325 asserted identity | RFC 5876, RFC 8217 | RFC 5876 allows P-Asserted-Identity in more requests. |
 | RFC 3326 Reason | RFC 8606, RFC 9366 | RFC 9366 allows several Reason values, one per protocol. |
 | RFC 3550 RTP | RFC 5506, 6051, 6222, 7160, 7164, 8083, 8108, 8860 | RFC 5506 allows reduced-size RTCP; RFC 8083 adds circuit breakers. |
-| RFC 3711 SRTP | RFC 6904, RFC 9335 | Encryption of header extensions and of the whole header. |
+| RFC 3551 audio profile | RFC 5761, RFC 7007, RFC 8860 | RFC 7007 updates the RTCP rules when RTCP is not sent. |
+| RFC 3711 SRTP | RFC 5506, RFC 6904, RFC 9335 | Reduced-size SRTCP; encryption of header extensions and of the whole header. |
 | RFC 5761 rtcp-mux | RFC 8035, RFC 8858 | `a=rtcp-mux-only`. |
 | RFC 5368 multiple REFER targets | RFC 8262 | Content-ID header field. |
 | RFC 6455 WebSocket | RFC 7936, RFC 8307, RFC 8441 | RFC 8441 bootstraps WebSocket over HTTP/2. |
-| RFC 3856, RFC 3903 | RFC 8996 | TLS 1.0 and 1.1 deprecated. |
+| RFC 8866 SDP | (citations) | The code still cites RFC 4566, which RFC 8866 obsoletes, with RFC 4566 section numbers. |
+| RFC 7616 digest | (citations) | `chappe_sip_digest` and two requirement rows still cite RFC 2617, which RFC 7616 obsoletes. |
 
 A newer version found later goes in this table, with what is known to
 differ, and needs the diff in step 2 before any code changes.

@@ -52,15 +52,19 @@ tags. Read this page when you cut a release or publish an app.
    ]}.
    ```
 
-4. Check the notes the bundle will carry, against `main`:
+4. Check the specification list in
+   [AGENTS.md](../../AGENTS.md#keeping-the-specifications-current) for the
+   apps you release: a newer RFC or draft found goes under Pending updates,
+   and "Last checked" gets today's date.
+5. Check the notes the bundle will carry, against `main`:
 
    ```sh
    scripts/bundle_notes.sh origin/main HEAD
    ```
 
-5. Open the pull request. Its `Release` dry run builds the same notes and
+6. Open the pull request. Its `Release` dry run builds the same notes and
    uploads them as the `notes` artifact.
-6. Merge it. CI tags the bundle and creates the release.
+7. Merge it. CI tags the bundle and creates the release.
 
 ## What CI does
 

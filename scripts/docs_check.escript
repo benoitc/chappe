@@ -364,9 +364,10 @@ config_lines(Config) ->
 %% ---- Links -------------------------------------------------------------
 
 md_files() ->
-    Roots = ["README.md", "CONTRIBUTING.md", "AGENTS.md"],
+    Roots = ["README.md", "CONTRIBUTING.md", "AGENTS.md", "SECURITY.md"],
     Trees =
-        wildcard(".", "docs/**/*.md") ++
+        wildcard(".", ".agents/skills/*/SKILL.md") ++
+            wildcard(".", "docs/**/*.md") ++
             wildcard(".", "apps/*/docs/**/*.md") ++
             wildcard(".", "apps/*/README.md"),
     Skip = [

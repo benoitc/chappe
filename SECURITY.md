@@ -15,18 +15,42 @@ Erlang/OTP 29.1.2 or later.
 
 ## What is a security issue
 
-Private reports are for problems that are not a deviation from a
-specification chappe implements:
+Private reports are for these problems. This is the one list;
+[CONTRIBUTING.md](CONTRIBUTING.md#security-issues-and-specification-bugs)
+and [AGENTS.md](AGENTS.md#specification-issues-are-bugs-not-security-issues)
+link to it.
 
-- code execution, including memory corruption in the sofia-sip NIF or
-  its C engine;
-- a peer accepted without the authentication the configuration asks for:
-  digest authentication, TLS certificate and hostname checks, the
-  FreeSWITCH event socket address list and password, the Erlang
-  distribution cookie;
-- one call's signalling, media, recording or keys reaching another party
-  or another call;
+- Code execution, including memory corruption or a VM crash through the
+  sofia-sip NIF or its C engine. This stays a security issue even when the
+  input that triggers it breaks a specification.
+- A peer accepted without the authentication the configuration asks for:
+  digest authentication (including nonce replay), TLS certificate and
+  hostname checks, the FreeSWITCH event socket address list and password,
+  the Erlang distribution cookie. This stays a security issue even where a
+  specification describes the check.
+- Toll fraud or a policy bypass: a request routed, relayed, redirected or
+  transferred (REFER, 3xx, Refer-To) past the routing, trust or transfer
+  policy the configuration sets.
+- One call's signalling, media, recording or keys reaching another party
+  or another call.
+- Secrets written where others can read them: digest credentials, SDES and
+  SRTP keys, TLS keys or the event socket password in logs, HEP captures,
+  metrics or crash reports.
+- Files read or written outside the directories the configuration gives,
+  such as the recording store.
+- The whole node exhausted by peer input that no specification or option
+  bounds: atoms created from input, tables or processes that grow without
+  a limit. A missing bound that a specification or an option defines is a
+  bug (below).
 - chappe weakening TLS or SRTP below what the configuration allows.
+
+## Not in scope
+
+- The demo and lab credentials and cookies (the cluster demo's cookie, the
+  event socket password of the labs) and test-only TLS settings: they are
+  there to be known.
+- Bugs in Erlang/OTP, rtpengine, FreeSWITCH or other software chappe runs
+  next to: report them upstream. The vendored sofia-sip is in scope.
 
 ## What is a bug
 
@@ -34,7 +58,8 @@ When the fix is to make chappe follow a specification it implements (SIP
 and its extensions, SDP, RTP, RTCP, SRTP, WebSocket and the others listed
 in [AGENTS.md](AGENTS.md#specifications)), it is a bug. That holds even
 when the report describes it as amplification, denial of service or a
-remote crash of an Erlang process. Report it as a public bug and cite the
+remote crash of an Erlang process, unless it is in the list above (memory
+corruption in the NIF always is). Report it as a public bug and cite the
 specification section; see
 [Security issues and specification bugs](CONTRIBUTING.md#security-issues-and-specification-bugs).
 We don't publish advisories or request CVEs for these, and advisories filed

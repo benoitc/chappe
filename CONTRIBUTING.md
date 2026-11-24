@@ -70,11 +70,10 @@ The fix goes in a public pull request and in the app's CHANGELOG under
 Fixed. We don't publish advisories or request CVEs for them, and advisories
 filed for them are closed with a link to the fix.
 
-Only problems that are not a specification deviation go through
-[SECURITY.md](SECURITY.md): code execution (including memory corruption in
-the NIF), a peer accepted without the authentication the configuration
-asks for, one call's signalling, media or recording reaching someone else,
-or chappe weakening TLS or SRTP below what the configuration allows.
+Only the problems listed in
+[SECURITY.md](SECURITY.md#what-is-a-security-issue) go through private
+reporting. Memory corruption or a VM crash through the NIF is always one of
+them, even when the input breaks a specification.
 
 ## Keeping the specifications current
 
@@ -123,7 +122,7 @@ request. The static checks fail fast; the build and tests wait for them.
 | Job | What it proves |
 |-----|----------------|
 | erlfmt, Elvis lint, XRef, Dialyzer | Formatting, lint, cross references and types |
-| Docs check | `make docs-check`: links, named modules and functions, and commands in the docs match the code |
+| Docs check | `make docs-check`: every module is in an ex_doc group and named in its app's design overview, has a module doc and the right public or internal row in the navigation; every doc is an ex_doc extra; every relative link resolves |
 | Package | Each app builds as a Hex package (`scripts/check_package.sh <app>`), and chappe_sip builds its NIF from the unpacked package with no git or network |
 | Build (sofia NIF) | The vendored sofia-sip and the NIF build; `make demo-compile` |
 | EUnit, Common Test | Unit and property tests, the suites, and line coverage over the `MIN_COVERAGE` floor (raise it, never lower it) |
@@ -136,7 +135,8 @@ request. The static checks fail fast; the build and tests wait for them.
 
 Separate workflows run the advisories check (`advisories.yml`, `make
 advisories-test` first), CodeQL (`codeql.yml`), a longer scheduled fuzz
-(`fuzz.yml`) and the bundle release (`release.yml`, see
+(`fuzz.yml`), the benchmark pass you start by hand (`bench.yml`) and the
+bundle release (`release.yml`, see
 [releasing](docs/contributing/releasing.md)). What each lab proves and how
 to run it: [labs](docs/contributing/labs.md).
 
