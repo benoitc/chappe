@@ -8,8 +8,8 @@ description: Run the three required checks (compliance, latest specification, sa
 chappe talks to untrusted peers: phones, carriers, browsers, and whatever reaches its
 listening ports. A change is done when it matches the spec, the spec is the current one,
 and a hostile peer cannot use it. Run the three checks below on each commit; a PR with
-several commits gets one verdict per commit. The spec list is in the
-[rfc-compliance](../rfc-compliance/SKILL.md) skill.
+several commits gets one verdict per commit. The spec list is in
+[AGENTS.md](../../../AGENTS.md#specifications).
 
 ## 1. Compliance
 
@@ -41,7 +41,9 @@ Then run what the change touches (commands in `AGENTS.md` and `docs/contributing
 4. For a protocol with no RFC (rtpengine NG, FreeSWITCH ESL, mod_audio_fork,
    mod_audio_stream, HEP), name the version or commit of the source you read, and check
    it against the version the labs run.
-5. Write the versions and the date checked in the PR description. If the latest text
+5. A newer version you find goes under
+   [Pending updates](../../../AGENTS.md#pending-updates), with what is known to differ.
+6. Write the versions and the date checked in the PR description. If the latest text
    disagrees with the code, fix it in the change or say in the PR that it is out of
    scope, and record it as an open compliance row.
 
