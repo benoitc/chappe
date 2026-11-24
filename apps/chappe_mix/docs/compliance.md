@@ -5,7 +5,7 @@ the `%% req:` annotations in `test/*_SUITE.erl` and `test/*_tests.erl`, and
 the results of the newest Common Test run and EUnit reports. Do not edit
 by hand.
 
-308 requirements: 87 pass, 0 fail, 59 untested, 162 n/a, 0 deviation, 0 spec defect
+310 requirements: 90 pass, 0 fail, 59 untested, 161 n/a, 0 deviation, 0 spec defect
 
 What chappe does not meet on purpose, and why, is listed under
 [Deviations](#deviations).
@@ -18,8 +18,9 @@ None.
 
 | Row | pass | fail | untested | other |
 | --- | ---: | ---: | ---: | ---: |
-| dtmf | 9 | 0 | 0 | 1 |
-| g711 | 4 | 0 | 1 | 30 |
+| dtmf | 10 | 0 | 0 | 1 |
+| g711 | 5 | 0 | 1 | 29 |
+| l16 | 1 | 0 | 0 | 0 |
 | mix | 4 | 0 | 0 | 3 |
 | rtcp | 42 | 0 | 37 | 72 |
 | rtcp-mux | 4 | 0 | 0 | 16 |
@@ -85,12 +86,12 @@ None.
 | R3551-027 | SHOULD | g711 | n/a | n/a |  | The sampling frequency SHOULD be drawn from the set: 8,000, 11,025, 16,000, 22,050, 24,000, 32,000, 44,100 and 48,000 Hz. |
 | R3551-028 | SHOULD | g711 | n/a | n/a |  | Receivers SHOULD be prepared to accept multi-channel audio, but MAY choose to only play a single channel. |
 | R3551-029 | SHOULD | rtp | demo | pass | chappe_mix_rfc_SUITE:sender_10ms, chappe_mix_rfc_SUITE:sender_30ms | Applications SHOULD be prepared to handle other values. |
-| R3551-030 | SHOULD | rtp | demo | pass | chappe_mix_SUITE:timestamp_after_overrun | For packetized audio, the default packetization interval SHOULD have a duration of 20 ms or one frame, whichever is longer, unless otherwise noted in Table 1 (column "ms/packet"). |
+| R3551-030 | SHOULD | rtp | demo | pass | chappe_mix_SUITE:timestamp_after_overrun, chappe_mix_rfc_SUITE:l16_octets_through_the_mix | For packetized audio, the default packetization interval SHOULD have a duration of 20 ms or one frame, whichever is longer, unless otherwise noted in Table 1 (column "ms/packet"). |
 | R3551-031 | MAY | rtp | n/a | n/a |  | For non-interactive applications such as lectures or for links with severe bandwidth constraints, a higher packetization delay MAY be used. |
 | R3551-032 | SHOULD | rtp | demo | pass | chappe_mix_rfc_SUITE:sender_200ms | A receiver SHOULD accept packets representing between 0 and 200 ms of audio data. |
 | R3551-033 | SHOULD | rtp | n/a | n/a |  | (For framed audio encodings, a receiver SHOULD accept packets with a number of frames equal to 200 ms divided by the frame duration, rounded up.) This restriction allows reasonable buffer sizing for the receiver. |
 | R3551-034 | SHOULD | g711 | n/a | n/a |  | For sample-based encodings producing one or more octets per sample, samples from different channels sampled at the same sampling instant SHOULD be packed in consecutive octets. |
-| R3551-035 | SHOULD | g711 | n/a | n/a |  | For multi-octet encodings, octets SHOULD be transmitted in network byte order (i.e., most significant octet first). |
+| R3551-035 | SHOULD | g711 | platform | pass | chappe_mix_rfc_SUITE:l16_octets_through_the_mix | For multi-octet encodings, octets SHOULD be transmitted in network byte order (i.e., most significant octet first). |
 | R3551-036 | MAY | g711 | n/a | n/a |  | For frame-based encodings, the sender MAY choose to combine several such frames into a single RTP packet. |
 | R3551-037 | MUST | g711 | n/a | n/a |  | If not, the frames MUST indicate their size. |
 | R3551-038 | SHOULD | g711 | n/a | n/a |  | That is, for two-channel audio, right and left samples SHOULD be coded independently, with the encoded frame for the left channel preceding that for the right channel. |
@@ -226,7 +227,7 @@ None.
 | R3550-097 | MUST | rtcp | demo | pass | chappe_mix_rfc_SUITE:rtcp_on_the_wire | Thus, padding MUST only be added to the last individual packet, and if padding is added to that packet, the padding bit MUST be set only on that packet. |
 | R3550-098 | MAY | rtcp | n/a | n/a |  | On a system that has no notion of wallclock time but does have some system-specific clock such as "system uptime", a sender MAY use that clock as a reference to calculate relative NTP timestamps. |
 | R3550-099 | MAY | rtcp | n/a | n/a |  | A sender that has no notion of wallclock or elapsed time MAY set the NTP timestamp to zero. |
-| R3550-100 | MUST | rtcp | demo | pass | chappe_mix_SUITE:rtcp_sender_reports | Rather, it MUST be calculated from the corresponding NTP timestamp using the relationship between the RTP timestamp counter and real time as maintained by periodically checking the wallclock time at a sampling instant. |
+| R3550-100 | MUST | rtcp | demo | pass | chappe_mix_SUITE:rtcp_sender_reports, chappe_mix_rfc_SUITE:l16_sr_clock | Rather, it MUST be calculated from the corresponding NTP timestamp using the relationship between the RTP timestamp counter and real time as maintained by periodically checking the wallclock time at a sampling instant. |
 | R3550-101 | SHOULD | rtcp | demo | untested |  | The count SHOULD be reset if the sender changes its SSRC identifier. |
 | R3550-102 | SHOULD NOT | rtcp | demo | untested |  | Receivers SHOULD NOT carry over statistics when a source changes its SSRC identifier due to a collision. |
 | R3550-103 | SHOULD | rtcp | demo | untested |  | The interarrival jitter SHOULD be calculated continuously as each data packet i is received from source SSRC_n, using this difference D for that packet and the previous packet i-1 in order of arrival (not necessarily in sequence), according to the formula |
@@ -326,7 +327,7 @@ None.
 | R3550-214 | MUST | rtp | n/a | n/a |  | When IP multicast is used, the addresses MUST also be distinct because multicast routing and group membership are managed on an address granularity. |
 | R3550-215 | MUST | rtp | n/a | n/a |  | If RTP packets are to be carried in an underlying protocol that provides the abstraction of a continuous octet stream rather than messages (packets), an encapsulation of the RTP packets MUST be defined to provide a framing mechanism. |
 | R3550-216 | MAY | rtp | n/a | n/a |  | A profile MAY specify a framing method to be used even when RTP is carried in protocols that do provide framing in order to allow carrying several RTP packets in one lower-layer protocol data unit, such as a UDP packet. |
-| R4733-001 | MUST | dtmf | platform | pass | chappe_mix_rfc_SUITE:dtmf_forwarded | Named telephone events are carried as part of the audio stream and MUST use the same sequence number and timestamp base as the regular audio channel to simplify the generation of audio waveforms at a gateway. |
+| R4733-001 | MUST | dtmf | platform | pass | chappe_mix_rfc_SUITE:dtmf_forwarded, chappe_mix_rfc_SUITE:l16_dtmf | Named telephone events are carried as part of the audio stream and MUST use the same sequence number and timestamp base as the regular audio channel to simplify the generation of audio waveforms at a gateway. |
 | R4733-002 | MUST | dtmf | platform | pass | chappe_mix_rfc_SUITE:dtmf_forwarded | The update packets MUST have the same RTP timestamp value as the initial packet for the event, but the duration MUST be increased to reflect the total cumulative duration since the beginning of the event. |
 | R4733-003 | MUST | dtmf | platform | pass | chappe_mix_rfc_SUITE:dtmf_forwarded | The first packet for an event MUST have the M bit set. |
 | R4733-004 | MUST | dtmf | platform | pass | chappe_mix_rfc_SUITE:dtmf_forwarded | The final packet for an event MUST have the E bit set, but setting of the "E" bit MAY be deferred until the final packet is retransmitted (see Section 2.5.1.4). |
@@ -338,3 +339,5 @@ None.
 | R4733-010 | MUST | dtmf | n/a | n/a |  | SDP descriptions using the event payload MUST contain an fmtp format attribute that lists the event values that the receiver can process. |
 | R3605-001 | MUST NOT | rtcp | platform | pass | chappe_mix_rfc_SUITE:rtcp_to_the_given_port | The RTCP attribute MAY be used as a media level attribute; it MUST NOT be used as a session level attribute. |
 | R3605-002 | SHOULD NOT | rtcp | n/a | n/a |  | The RTCP attribute SHOULD NOT be used for other applications. |
+| R3551-063 | desc | l16 | platform | pass | chappe_mix_rfc_SUITE:l16_octets_through_the_mix | L16 denotes uncompressed audio data samples, using 16-bit signed representation with 65,535 equally divided steps between minimum and maximum signal level, ranging from -32,768 to 32,767.  The value is represented in two's complement notation and transmitted in network byte order (most significant byte first). |
+| R4733-011 | desc | dtmf | platform | pass | chappe_mix_rfc_SUITE:l16_dtmf | The "rate" parameter describes the sampling rate, in Hertz, and hence the units for the RTP timestamp and event duration fields. |
