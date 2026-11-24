@@ -16,6 +16,7 @@
 
 -export([reoffer_tags/4, answer_tags/4, pinned_state/1, negotiated/3]).
 -export([params/5, resolve_party/4, add_flag/2]).
+-export([delete_params/1, delete_result/1, note_via/3, losing_deletes/3]).
 
 -export_type([tag/0, kind/0, initiator/0, update/0]).
 
@@ -217,3 +218,49 @@ add_flag(Flag, Params) ->
         true -> Params;
         false -> Params#{flags => Flags ++ [Flag]}
     end.
+
+%% The params of a delete the session sends. It never reads the call's
+%% statistics, so it asks for none (`fast'): with them the reply of a
+%% call with many streams is large enough to be split into IP fragments,
+%% which some paths drop (10 KB for a three-stream recording with three
+%% forks on rtpengine 26.3). A delete naming a to-tag (a losing branch)
+%% carries the `to-tag' flag: rtpengine 13 and later ignore the to-tag
+%% without it and delete the whole call. Older rtpengine ignores both.
+-spec delete_params(map()) -> map().
+delete_params(Params) ->
+    Fast = add_flag(fast, Params),
+    case Params of
+        #{to_tag := _} -> add_flag(to_tag, Fast);
+        #{} -> Fast
+    end.
+
+%% Remember the via-branch a branch answered under, when it had an offer
+%% of its own.
+-spec note_via(tag() | none, map(), #{binary() => binary()}) ->
+    #{binary() => binary()}.
+note_via(none, _Params, Vias) ->
+    Vias;
+note_via(BranchTag, #{via_branch := Via}, Vias) ->
+    Vias#{BranchTag => Via};
+note_via(_BranchTag, _Params, Vias) ->
+    Vias.
+
+%% The deletes of the losing branches once Winner's answer is final: only
+%% branches that had an offer of their own (a via-branch). Branches
+%% answered on one offer share the callee's monologue: from rtpengine 13
+%% on, a later to-tag renames it and keeps the earlier ones as aliases of
+%% the winner, so deleting a losing tag would end the call.
+-spec losing_deletes(binary(), [binary()], #{binary() => binary()}) ->
+    [map()].
+losing_deletes(Winner, Branches, Vias) ->
+    [
+        delete_params(#{to_tag => Tag, via_branch => Via})
+     || Tag <- lists:usort(Branches) -- [Winner],
+        {ok, Via} <- [maps:find(Tag, Vias)]
+    ].
+
+%% What stop/1 returns for a delete's reply.
+-spec delete_result(term()) -> ok | {error, term()} | term().
+delete_result({ok, _}) -> ok;
+delete_result({error, Reason, _Reply}) -> {error, Reason};
+delete_result(Other) -> Other.

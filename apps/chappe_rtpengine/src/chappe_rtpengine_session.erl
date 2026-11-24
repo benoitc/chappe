@@ -266,7 +266,7 @@ call(From, stop, idle, _Data) ->
 call(From, stop, deleting, _Data) ->
     reply_now(From, {error, busy});
 call(From, stop, _State, Data) ->
-    case send_async(delete, delete_params(#{}), Data) of
+    case send_async(delete, chappe_rtpengine_offer:delete_params(#{}), Data) of
         {ok, Ref, Data1} ->
             {next_state, deleting, add_pending(Ref, From, delete, Data1)};
         {error, Reason} ->
@@ -351,7 +351,7 @@ reply_now(From, Reply) ->
 
 %% The first offer, or a publish: it sets the caller's tag.
 first_offer(From, Command, Params, Next, Data) ->
-    case require([from_tag, sdp], Params) of
+    case chappe_rtpengine_ng:require([from_tag, sdp], Params) of
         ok ->
             Data1 = Data#data{from_tag = maps:get(from_tag, Params)},
             send(Command, Params, {From, Command}, Next, Data1);
@@ -369,7 +369,7 @@ started(_State) -> ok.
 reoffer(From, Params0, Data) ->
     Initiator = maps:get(initiator, Params0, caller),
     Params1 = maps:remove(initiator, Params0),
-    case require([sdp], Params1) of
+    case chappe_rtpengine_ng:require([sdp], Params1) of
         ok when Initiator =:= callee, Data#data.to_tag =:= undefined ->
             reply_now(From, {error, no_to_tag});
         ok ->
@@ -441,7 +441,7 @@ owner_down(idle, _Data) ->
 owner_down(deleting, _Data) ->
     keep_state_and_data;
 owner_down(_State, Data) ->
-    case send_async(delete, delete_params(#{}), Data) of
+    case send_async(delete, chappe_rtpengine_offer:delete_params(#{}), Data) of
         {ok, Ref, Data1} ->
             {next_state, deleting, add_pending(Ref, undefined, delete, Data1)};
         {error, _} ->
@@ -459,19 +459,21 @@ do_answer(From, Params0, StateKind, Data) ->
         Data#data.reoffer_initiator =:= caller andalso
             Data#data.to_tag =:= undefined andalso
             not maps:is_key(to_tag, Params1),
-    case require([sdp | [to_tag || NeedToTag]], Params1) of
+    case chappe_rtpengine_ng:require([sdp | [to_tag || NeedToTag]], Params1) of
         ok ->
             #data{
                 reoffer_initiator = Initiator,
                 from_tag = FromTag,
-                to_tag = ToTag
+                to_tag = ToTag,
+                branch_vias = Vias0
             } = Data,
             {Tags, BranchTag} = chappe_rtpengine_offer:answer_tags(
                 Initiator, Params1, FromTag, ToTag
             ),
             Params = maps:merge(Tags, Params1),
             Kind = {answer_sent, StateKind, BranchTag, Final, PrevToTag},
-            DataV = note_via(BranchTag, Params1, Data),
+            Vias = chappe_rtpengine_offer:note_via(BranchTag, Params1, Vias0),
+            DataV = Data#data{branch_vias = Vias},
             {Next, Data1} =
                 case {StateKind, BranchTag} of
                     {answering, none} ->
@@ -520,7 +522,11 @@ reply(delete, undefined, _Result, _State, Data) ->
     {stop_and_reply, normal, stopped_replies(Data), Data};
 reply(delete, From, Result, _State, Data) ->
     {stop_and_reply, normal,
-        [{reply, From, delete_result(Result)} | stopped_replies(Data)], Data};
+        [
+            {reply, From, chappe_rtpengine_offer:delete_result(Result)}
+            | stopped_replies(Data)
+        ],
+        Data};
 reply(Kind, From, Result, State, Data) ->
     negotiated(Kind, From, Result, State, Data).
 
@@ -552,34 +558,20 @@ stopped_replies(Data) ->
      || {From, _Kind} <- maps:values(Data#data.pending)
     ]).
 
-note_via(none, _Params, Data) ->
-    Data;
-note_via(BranchTag, #{via_branch := Via}, #data{branch_vias = Vias} = Data) ->
-    Data#data{branch_vias = Vias#{BranchTag => Via}};
-note_via(_BranchTag, _Params, Data) ->
-    Data.
-
 %% Record the branch tag; on the final answer, best-effort delete of
-%% every losing branch that had an offer of its own (a via-branch).
-%% Branches answered on one offer share the callee's monologue: from
-%% rtpengine 13 on, a later to-tag renames it and keeps the earlier ones
-%% as aliases of the winner, so deleting a losing tag would end the call;
-%% they need no delete.
+%% the losing branches chappe_rtpengine_offer:losing_deletes/3 names.
 settle_answer(none, _Final, Data) ->
     Data;
 settle_answer(BranchTag, false, Data) ->
     Branches = lists:usort([BranchTag | Data#data.branches]),
     Data#data{branches = Branches};
 settle_answer(BranchTag, true, #data{branch_vias = Vias} = Data) ->
-    Losing = [
-        {Tag, Via}
-     || Tag <- lists:usort(Data#data.branches) -- [BranchTag],
-        {ok, Via} <- [maps:find(Tag, Vias)]
-    ],
+    Deletes = chappe_rtpengine_offer:losing_deletes(
+        BranchTag, Data#data.branches, Vias
+    ),
     Data1 = lists:foldl(
-        fun({LosingTag, Via}, Acc) ->
-            Params = #{to_tag => LosingTag, via_branch => Via},
-            case send_async(delete, delete_params(Params), Acc) of
+        fun(Params, Acc) ->
+            case send_async(delete, Params, Acc) of
                 {ok, Ref, Acc1} ->
                     add_pending(Ref, undefined, branch_delete, Acc1);
                 {error, _} ->
@@ -587,17 +579,9 @@ settle_answer(BranchTag, true, #data{branch_vias = Vias} = Data) ->
             end
         end,
         Data,
-        Losing
+        Deletes
     ),
-    Data1#data{
-        branches = [BranchTag],
-        branch_vias = maps:with([BranchTag], Vias),
-        to_tag = BranchTag
-    }.
-
-delete_result({ok, _}) -> ok;
-delete_result({error, Reason, _Reply}) -> {error, Reason};
-delete_result(Other) -> Other.
+    Data1#data{branches = [BranchTag], branch_vias = #{}, to_tag = BranchTag}.
 
 %% An "unknown call-id" error on a session we believe exists means the
 %% node lost it (restart without the health check noticing, or manual
@@ -680,9 +664,6 @@ release(_Command, _Params, Data) ->
 add_pending(Ref, From, Kind, Data) ->
     Data#data{pending = maps:put(Ref, {From, Kind}, Data#data.pending)}.
 
-require(Keys, Params) ->
-    chappe_rtpengine_ng:require(Keys, Params).
-
 %% Best-effort synchronous delete for exits that bypassed the deleting
 %% state (crash, supervisor shutdown, unreachable client at stop).
 final_delete(State, #data{from_tag = FromTag} = Data) when
@@ -693,7 +674,7 @@ final_delete(State, #data{from_tag = FromTag} = Data) when
             try
                 chappe_rtpengine:delete(
                     Data#data.node,
-                    delete_params(#{
+                    chappe_rtpengine_offer:delete_params(#{
                         call_id => Data#data.call_id,
                         from_tag => FromTag
                     })
@@ -706,20 +687,6 @@ final_delete(State, #data{from_tag = FromTag} = Data) when
     end;
 final_delete(_State, _Data) ->
     ok.
-
-%% The session never reads a delete's call statistics, so it asks for
-%% none (`fast'): with them the reply of a call with many streams is
-%% large enough to be split into IP fragments, which some paths drop
-%% (10 KB for a three-stream recording with three forks on rtpengine
-%% 26.3). A delete naming a to-tag (a losing branch) carries the `to-tag'
-%% flag: rtpengine 13 and later ignore the to-tag without it and delete
-%% the whole call. Older rtpengine ignores both flags.
-delete_params(Params) ->
-    Fast = chappe_rtpengine_offer:add_flag(fast, Params),
-    case Params of
-        #{to_tag := _} -> chappe_rtpengine_offer:add_flag(to_tag, Fast);
-        #{} -> Fast
-    end.
 
 safe_call(Session, Request) ->
     try
