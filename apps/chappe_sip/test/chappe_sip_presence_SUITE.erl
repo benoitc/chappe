@@ -15,58 +15,168 @@
 -include_lib("stdlib/include/assert.hrl").
 
 -import(chappe_sip_core_peer, [
-    open/0, port/1, send/3, recv/3, recv_none/3, request/3, response/3,
-    hdr/2, hdrs/2, status/1, body/1, from_tag/1, to_tag/1, cseq/1, tag/0,
+    open/0,
+    port/1,
+    send/3,
+    recv/3,
+    recv_none/3,
+    request/3,
+    response/3,
+    hdr/2,
+    hdrs/2,
+    status/1,
+    body/1,
+    from_tag/1,
+    to_tag/1,
+    cseq/1,
+    tag/0,
     call_id/0
 ]).
 
--export([all/0, groups/0, init_per_suite/1, end_per_suite/1,
-         init_per_testcase/2, end_per_testcase/2]).
--export([esc_lifecycle/1, esc_default_expires/1, esc_423/1, esc_489/1,
-         esc_two_etags_400/1, esc_no_body_400/1, esc_415/1, esc_404/1,
-         esc_digest/1, esc_options/1, presence_start_option/1]).
--export([esc_cross_user_403/1, esc_unauthenticated_403/1, esc_own_aor/1,
-         esc_resources_with_auth/1, esc_authorize_hook/1, esc_max_total/1,
-         esc_max_per_resource/1, esc_body_413/1, esc_watch_once/1]).
--export([pa_full_state/1, pa_rate/1, pa_accept_406/1, pa_deny_403/1,
-         pa_pending/1, pa_polite/1, pa_digest/1, pa_fetch/1]).
--export([mwi_initial_and_update/1, mwi_rate/1, mwi_auth/1,
-         mwi_other_node/1, mwi_order_across_nodes/1,
-         mwi_clock_ahead_does_not_shadow/1, ahead_ms/0]).
--export([epa_lifecycle/1, epa_one_at_a_time/1, epa_412/1, epa_423/1,
-         epa_digest/1]).
--export([watcher_pidf/1, watcher_mwi/1, watcher_one_dialog/1,
-         watcher_digest/1]).
+-export([
+    all/0,
+    groups/0,
+    init_per_suite/1,
+    end_per_suite/1,
+    init_per_testcase/2,
+    end_per_testcase/2
+]).
+-export([
+    esc_lifecycle/1,
+    esc_default_expires/1,
+    esc_423/1,
+    esc_489/1,
+    esc_two_etags_400/1,
+    esc_no_body_400/1,
+    esc_415/1,
+    esc_404/1,
+    esc_digest/1,
+    esc_options/1,
+    presence_start_option/1
+]).
+-export([
+    esc_cross_user_403/1,
+    esc_unauthenticated_403/1,
+    esc_own_aor/1,
+    esc_resources_with_auth/1,
+    esc_authorize_hook/1,
+    esc_max_total/1,
+    esc_max_per_resource/1,
+    esc_body_413/1,
+    esc_watch_once/1
+]).
+-export([
+    pa_full_state/1,
+    pa_rate/1,
+    pa_accept_406/1,
+    pa_deny_403/1,
+    pa_pending/1,
+    pa_polite/1,
+    pa_digest/1,
+    pa_fetch/1
+]).
+-export([
+    mwi_initial_and_update/1,
+    mwi_rate/1,
+    mwi_auth/1,
+    mwi_other_node/1,
+    mwi_order_across_nodes/1,
+    mwi_clock_ahead_does_not_shadow/1,
+    ahead_ms/0
+]).
+-export([
+    epa_lifecycle/1,
+    epa_one_at_a_time/1,
+    epa_412/1,
+    epa_423/1,
+    epa_digest/1
+]).
+-export([
+    watcher_pidf/1,
+    watcher_mwi/1,
+    watcher_one_dialog/1,
+    watcher_digest/1
+]).
 -export([pidf_render/1, pidf_parse/1, pidf_compose/1, mwi_codec/1]).
 
 -define(PIDF, <<"application/pidf+xml">>).
 -define(MWI, <<"application/simple-message-summary">>).
 
 all() ->
-    [{group, esc}, {group, pa}, {group, mwi}, {group, epa},
-     {group, watcher}, {group, codecs}].
+    [
+        {group, esc},
+        {group, pa},
+        {group, mwi},
+        {group, epa},
+        {group, watcher},
+        {group, codecs}
+    ].
 
 groups() ->
-    [{esc, [], [esc_lifecycle, esc_default_expires, esc_423, esc_489,
-                esc_two_etags_400, esc_no_body_400, esc_415, esc_404,
-                esc_digest, esc_options, presence_start_option,
-                esc_cross_user_403, esc_unauthenticated_403, esc_own_aor,
-                esc_resources_with_auth, esc_authorize_hook, esc_max_total,
-                esc_max_per_resource, esc_body_413, esc_watch_once]},
-     {pa, [], [pa_full_state, pa_rate, pa_accept_406, pa_deny_403,
-               pa_pending, pa_polite, pa_digest, pa_fetch]},
-     {mwi, [], [mwi_initial_and_update, mwi_rate, mwi_auth,
-                 mwi_other_node, mwi_order_across_nodes,
-                 mwi_clock_ahead_does_not_shadow]},
-     {epa, [], [epa_lifecycle, epa_one_at_a_time, epa_412, epa_423,
-                epa_digest]},
-     {watcher, [], [watcher_pidf, watcher_mwi, watcher_one_dialog,
-                    watcher_digest]},
-     {codecs, [], [pidf_render, pidf_parse, pidf_compose, mwi_codec]}].
+    [
+        {esc, [], [
+            esc_lifecycle,
+            esc_default_expires,
+            esc_423,
+            esc_489,
+            esc_two_etags_400,
+            esc_no_body_400,
+            esc_415,
+            esc_404,
+            esc_digest,
+            esc_options,
+            presence_start_option,
+            esc_cross_user_403,
+            esc_unauthenticated_403,
+            esc_own_aor,
+            esc_resources_with_auth,
+            esc_authorize_hook,
+            esc_max_total,
+            esc_max_per_resource,
+            esc_body_413,
+            esc_watch_once
+        ]},
+        {pa, [], [
+            pa_full_state,
+            pa_rate,
+            pa_accept_406,
+            pa_deny_403,
+            pa_pending,
+            pa_polite,
+            pa_digest,
+            pa_fetch
+        ]},
+        {mwi, [], [
+            mwi_initial_and_update,
+            mwi_rate,
+            mwi_auth,
+            mwi_other_node,
+            mwi_order_across_nodes,
+            mwi_clock_ahead_does_not_shadow
+        ]},
+        {epa, [], [
+            epa_lifecycle,
+            epa_one_at_a_time,
+            epa_412,
+            epa_423,
+            epa_digest
+        ]},
+        {watcher, [], [
+            watcher_pidf,
+            watcher_mwi,
+            watcher_one_dialog,
+            watcher_digest
+        ]},
+        {codecs, [], [pidf_render, pidf_parse, pidf_compose, mwi_codec]}
+    ].
 
 init_per_suite(Config) ->
-    application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
-                        [{persistent, true}]),
+    application:set_env(
+        chappe_sip,
+        engine_mod,
+        chappe_sip_nif,
+        [{persistent, true}]
+    ),
     {ok, _} = application:ensure_all_started(chappe_sip),
     Config.
 
@@ -96,13 +206,16 @@ end_per_testcase(_Case, Config) ->
 %% req: R3903-23 R3903-24 R3903-29 R3903-31 R3903-32 R3903-37 R3903-38
 %% req: R3903-40 R3903-41 R3903-42 R3903-43
 esc_lifecycle(Config) ->
-    {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
-                        ?config(user, Config)},
+    {EP, Sock, User} = {
+        ?config(ep, Config), ?config(sock, Config), ?config(user, Config)
+    },
     ok = chappe_sip:publish(open_esc()),
     Uri = res(User),
-    R1 = pub(Sock, EP, Uri, #{expires => 120, body => pidf(Uri, <<"t1">>),
-                              headers => [{<<"Record-Route">>,
-                                           <<"<sip:rr@127.0.0.1;lr>">>}]}),
+    R1 = pub(Sock, EP, Uri, #{
+        expires => 120,
+        body => pidf(Uri, <<"t1">>),
+        headers => [{<<"Record-Route">>, <<"<sip:rr@127.0.0.1;lr>">>}]
+    }),
     ?assertEqual(200, status(R1)),
     ?assertEqual(<<"120">>, hdr(<<"expires">>, R1)),
     ?assertEqual(undefined, hdr(<<"record-route">>, R1)),
@@ -127,8 +240,9 @@ esc_lifecycle(Config) ->
 %% No Expires: the configured default.
 %% req: R3903-33
 esc_default_expires(Config) ->
-    {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
-                        ?config(user, Config)},
+    {EP, Sock, User} = {
+        ?config(ep, Config), ?config(sock, Config), ?config(user, Config)
+    },
     ok = chappe_sip:publish((open_esc())#{default_expires => 1800}),
     Uri = res(User),
     R = pub(Sock, EP, Uri, #{body => pidf(Uri, <<"t1">>)}),
@@ -137,8 +251,9 @@ esc_default_expires(Config) ->
 %% Below min_expires: 423 with Min-Expires.
 %% req: R3903-34
 esc_423(Config) ->
-    {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
-                        ?config(user, Config)},
+    {EP, Sock, User} = {
+        ?config(ep, Config), ?config(sock, Config), ?config(user, Config)
+    },
     ok = chappe_sip:publish((open_esc())#{min_expires => 60}),
     Uri = res(User),
     R = pub(Sock, EP, Uri, #{expires => 10, body => pidf(Uri, <<"t1">>)}),
@@ -148,12 +263,15 @@ esc_423(Config) ->
 %% A package not served, or no Event: 489 with Allow-Events.
 %% req: R3903-28
 esc_489(Config) ->
-    {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
-                        ?config(user, Config)},
+    {EP, Sock, User} = {
+        ?config(ep, Config), ?config(sock, Config), ?config(user, Config)
+    },
     ok = chappe_sip:publish(open_esc()),
     Uri = res(User),
-    R1 = pub(Sock, EP, Uri, #{event => <<"dialog">>,
-                              body => pidf(Uri, <<"t1">>)}),
+    R1 = pub(Sock, EP, Uri, #{
+        event => <<"dialog">>,
+        body => pidf(Uri, <<"t1">>)
+    }),
     ?assertEqual(489, status(R1)),
     ?assertEqual(<<"presence">>, hdr(<<"allow-events">>, R1)),
     R2 = pub(Sock, EP, Uri, #{event => none, body => pidf(Uri, <<"t1">>)}),
@@ -162,8 +280,9 @@ esc_489(Config) ->
 %% Two entity-tags in SIP-If-Match: 400.
 %% req: R3903-30
 esc_two_etags_400(Config) ->
-    {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
-                        ?config(user, Config)},
+    {EP, Sock, User} = {
+        ?config(ep, Config), ?config(sock, Config), ?config(user, Config)
+    },
     ok = chappe_sip:publish(open_esc()),
     Uri = res(User),
     ?assertEqual(400, status(pub(Sock, EP, Uri, #{if_match => <<"a, b">>}))).
@@ -171,31 +290,45 @@ esc_two_etags_400(Config) ->
 %% Neither a body nor an entity-tag: 400.
 %% req: R3903-36
 esc_no_body_400(Config) ->
-    {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
-                        ?config(user, Config)},
+    {EP, Sock, User} = {
+        ?config(ep, Config), ?config(sock, Config), ?config(user, Config)
+    },
     ok = chappe_sip:publish(open_esc()),
     ?assertEqual(400, status(pub(Sock, EP, res(User), #{}))).
 
 %% A body the package does not take: 415 with Accept.
 %% req: R3903-35
 esc_415(Config) ->
-    {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
-                        ?config(user, Config)},
+    {EP, Sock, User} = {
+        ?config(ep, Config), ?config(sock, Config), ?config(user, Config)
+    },
     ok = chappe_sip:publish(open_esc()),
-    R = pub(Sock, EP, res(User), #{body => <<"online">>,
-                                    content_type => <<"text/plain">>}),
+    R = pub(Sock, EP, res(User), #{
+        body => <<"online">>,
+        content_type => <<"text/plain">>
+    }),
     ?assertEqual(415, status(R)),
     ?assertEqual(?PIDF, hdr(<<"accept">>, R)).
 
 %% A resource we keep no state for: 404.
 %% req: R3903-27
 esc_404(Config) ->
-    {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
-                        ?config(user, Config)},
+    {EP, Sock, User} = {
+        ?config(ep, Config), ?config(sock, Config), ?config(user, Config)
+    },
     ok = chappe_sip:publish((open_esc())#{resources => fun(_Aor) -> false end}),
     Uri = res(User),
-    ?assertEqual(404, status(pub(Sock, EP, Uri,
-                                 #{body => pidf(Uri, <<"t1">>)}))).
+    ?assertEqual(
+        404,
+        status(
+            pub(
+                Sock,
+                EP,
+                Uri,
+                #{body => pidf(Uri, <<"t1">>)}
+            )
+        )
+    ).
 
 %% Digest: 401 with a challenge, 200 once the PUBLISH answers it.
 %% req: R3903-52
@@ -206,8 +339,10 @@ esc_digest(Config) ->
     R1 = pub(Sock, EP, Uri, #{body => pidf(Uri, <<"t1">>)}),
     ?assertEqual(401, status(R1)),
     Creds = credentials(<<"PUBLISH">>, Uri, hdr(<<"www-authenticate">>, R1)),
-    R2 = pub(Sock, EP, Uri, #{body => pidf(Uri, <<"t1">>),
-                              headers => [{<<"Authorization">>, Creds}]}),
+    R2 = pub(Sock, EP, Uri, #{
+        body => pidf(Uri, <<"t1">>),
+        headers => [{<<"Authorization">>, Creds}]
+    }),
     ?assertEqual(200, status(R2)).
 
 %% OPTIONS lists PUBLISH in Allow and presence in Allow-Events.
@@ -215,8 +350,15 @@ esc_digest(Config) ->
 esc_options(Config) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
     ok = chappe_sip_presence:serve(#{authorize => fun allow/3}),
-    send(Sock, EP, request(<<"OPTIONS">>, <<"sip:app@127.0.0.1">>,
-                           #{port => port(Sock)})),
+    send(
+        Sock,
+        EP,
+        request(
+            <<"OPTIONS">>,
+            <<"sip:app@127.0.0.1">>,
+            #{port => port(Sock)}
+        )
+    ),
     {R, _} = recv(Sock, {status, 200, <<"OPTIONS">>}, 3000),
     ?assert(lists:member(<<"PUBLISH">>, tokens(hdr(<<"allow">>, R)))),
     ?assert(lists:member(<<"presence">>, tokens(hdr(<<"allow-events">>, R)))).
@@ -225,10 +367,19 @@ esc_options(Config) ->
 presence_start_option(Config) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
     ok = chappe_sip:stop(),
-    ok = chappe_sip:start(#{contact => chappe_sip_core_peer:contact(EP),
-                            presence => #{authorize => fun allow/3}}),
-    send(Sock, EP, request(<<"OPTIONS">>, <<"sip:app@127.0.0.1">>,
-                           #{port => port(Sock)})),
+    ok = chappe_sip:start(#{
+        contact => chappe_sip_core_peer:contact(EP),
+        presence => #{authorize => fun allow/3}
+    }),
+    send(
+        Sock,
+        EP,
+        request(
+            <<"OPTIONS">>,
+            <<"sip:app@127.0.0.1">>,
+            #{port => port(Sock)}
+        )
+    ),
     {R, _} = recv(Sock, {status, 200, <<"OPTIONS">>}, 3000),
     ?assert(lists:member(<<"PUBLISH">>, tokens(hdr(<<"allow">>, R)))),
     ?assertEqual([<<"presence">>], tokens(hdr(<<"allow-events">>, R))).
@@ -240,22 +391,50 @@ esc_cross_user_403(Config) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
     ok = chappe_sip:publish(#{auth => local_auth()}),
     Alice = res(<<"alice">>),
-    ?assertEqual(403, status(auth_pub(Sock, EP, Alice,
-                                      #{body => pidf(Alice, <<"t1">>)}))),
+    ?assertEqual(
+        403,
+        status(
+            auth_pub(
+                Sock,
+                EP,
+                Alice,
+                #{body => pidf(Alice, <<"t1">>)}
+            )
+        )
+    ),
     ?assertEqual([], chappe_sip_esc:publications(Alice, <<"presence">>)).
 
 %% No auth and no opt-in: every PUBLISH gets 403; with
 %% allow_unauthenticated => true it is taken.
 esc_unauthenticated_403(Config) ->
-    {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
-                        ?config(user, Config)},
+    {EP, Sock, User} = {
+        ?config(ep, Config), ?config(sock, Config), ?config(user, Config)
+    },
     Uri = res(User),
     ok = chappe_sip:publish(#{}),
-    ?assertEqual(403, status(pub(Sock, EP, Uri,
-                                 #{body => pidf(Uri, <<"t1">>)}))),
+    ?assertEqual(
+        403,
+        status(
+            pub(
+                Sock,
+                EP,
+                Uri,
+                #{body => pidf(Uri, <<"t1">>)}
+            )
+        )
+    ),
     ok = chappe_sip:publish(open_esc()),
-    ?assertEqual(200, status(pub(Sock, EP, Uri,
-                                 #{body => pidf(Uri, <<"t1">>)}))).
+    ?assertEqual(
+        200,
+        status(
+            pub(
+                Sock,
+                EP,
+                Uri,
+                #{body => pidf(Uri, <<"t1">>)}
+            )
+        )
+    ).
 
 %% Bob publishing his own AOR, in the auth domain: 200. Another domain
 %% for the same user: 403.
@@ -263,20 +442,49 @@ esc_own_aor(Config) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
     ok = chappe_sip:publish(#{auth => local_auth()}),
     Bob = res(<<"bob">>),
-    ?assertEqual(200, status(auth_pub(Sock, EP, Bob,
-                                      #{body => pidf(Bob, <<"t1">>)}))),
+    ?assertEqual(
+        200,
+        status(
+            auth_pub(
+                Sock,
+                EP,
+                Bob,
+                #{body => pidf(Bob, <<"t1">>)}
+            )
+        )
+    ),
     Other = <<"sip:bob@elsewhere.example">>,
-    ?assertEqual(403, status(auth_pub(Sock, EP, Other,
-                                      #{body => pidf(Other, <<"t1">>)}))).
+    ?assertEqual(
+        403,
+        status(
+            auth_pub(
+                Sock,
+                EP,
+                Other,
+                #{body => pidf(Other, <<"t1">>)}
+            )
+        )
+    ).
 
 %% The resource allow list still applies to an authenticated owner.
 esc_resources_with_auth(Config) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
-    ok = chappe_sip:publish(#{auth => local_auth(),
-                              resources => fun(_Aor) -> false end}),
+    ok = chappe_sip:publish(#{
+        auth => local_auth(),
+        resources => fun(_Aor) -> false end
+    }),
     Bob = res(<<"bob">>),
-    ?assertEqual(404, status(auth_pub(Sock, EP, Bob,
-                                      #{body => pidf(Bob, <<"t1">>)}))).
+    ?assertEqual(
+        404,
+        status(
+            auth_pub(
+                Sock,
+                EP,
+                Bob,
+                #{body => pidf(Bob, <<"t1">>)}
+            )
+        )
+    ).
 
 %% An authorize hook replaces the own-AOR rule: it sees the user, the
 %% realm, the resource and the package, and false is 403.
@@ -284,20 +492,46 @@ esc_authorize_hook(Config) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
     Self = self(),
     Alice = res(<<"alice">>),
-    Authorize = fun(#{user := U, realm := R, resource := A, event := E,
-                      req := _}) ->
-                        Self ! {authorize, U, R, A, E},
-                        A =:= Alice
-                end,
+    Authorize = fun(
+        #{
+            user := U,
+            realm := R,
+            resource := A,
+            event := E,
+            req := _
+        }
+    ) ->
+        Self ! {authorize, U, R, A, E},
+        A =:= Alice
+    end,
     ok = chappe_sip:publish(#{auth => local_auth(), authorize => Authorize}),
-    ?assertEqual(200, status(auth_pub(Sock, EP, Alice,
-                                      #{body => pidf(Alice, <<"t1">>)}))),
-    receive {authorize, <<"bob">>, <<"lab">>, Alice, <<"presence">>} -> ok
+    ?assertEqual(
+        200,
+        status(
+            auth_pub(
+                Sock,
+                EP,
+                Alice,
+                #{body => pidf(Alice, <<"t1">>)}
+            )
+        )
+    ),
+    receive
+        {authorize, <<"bob">>, <<"lab">>, Alice, <<"presence">>} -> ok
     after 1000 -> ct:fail(no_authorize_call)
     end,
     Bob = res(<<"bob">>),
-    ?assertEqual(403, status(auth_pub(Sock, EP, Bob,
-                                      #{body => pidf(Bob, <<"t1">>)}))).
+    ?assertEqual(
+        403,
+        status(
+            auth_pub(
+                Sock,
+                EP,
+                Bob,
+                #{body => pidf(Bob, <<"t1">>)}
+            )
+        )
+    ).
 
 %% esc_max_publications: a new publication past it gets 503 with
 %% Retry-After; a refresh of a live one is still taken.
@@ -313,42 +547,77 @@ esc_max_total(Config) ->
     R2 = pub(Sock, EP, B, #{body => pidf(B, <<"t1">>)}),
     ?assertEqual(503, status(R2)),
     ?assertNotEqual(undefined, hdr(<<"retry-after">>, R2)),
-    ?assertEqual(200, status(pub(Sock, EP, A,
-                                 #{if_match => hdr(<<"sip-etag">>, R1)}))).
+    ?assertEqual(
+        200,
+        status(
+            pub(
+                Sock,
+                EP,
+                A,
+                #{if_match => hdr(<<"sip-etag">>, R1)}
+            )
+        )
+    ).
 
 %% esc_max_publications_per_resource: a third publication for one resource
 %% gets 503; another resource is still taken.
 esc_max_per_resource(Config) ->
-    {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
-                        ?config(user, Config)},
+    {EP, Sock, User} = {
+        ?config(ep, Config), ?config(sock, Config), ?config(user, Config)
+    },
     ok = fresh_esc(),
     application:set_env(chappe_sip, esc_max_publications_per_resource, 2),
     ok = chappe_sip:publish(open_esc()),
     Uri = res(User),
-    [?assertEqual(200, status(pub(Sock, EP, Uri, #{body => pidf(Uri, T)})))
-     || T <- [<<"t1">>, <<"t2">>]],
+    [
+        ?assertEqual(200, status(pub(Sock, EP, Uri, #{body => pidf(Uri, T)})))
+     || T <- [<<"t1">>, <<"t2">>]
+    ],
     R = pub(Sock, EP, Uri, #{body => pidf(Uri, <<"t3">>)}),
     ?assertEqual(503, status(R)),
     ?assertNotEqual(undefined, hdr(<<"retry-after">>, R)),
     ?assertEqual(2, length(chappe_sip_esc:publications(Uri, <<"presence">>))),
     Other = res(<<User/binary, "_other">>),
-    ?assertEqual(200, status(pub(Sock, EP, Other,
-                                 #{body => pidf(Other, <<"t1">>)}))).
+    ?assertEqual(
+        200,
+        status(
+            pub(
+                Sock,
+                EP,
+                Other,
+                #{body => pidf(Other, <<"t1">>)}
+            )
+        )
+    ).
 
 %% A body over esc_max_body_size: 413, nothing stored.
 esc_body_413(Config) ->
-    {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
-                        ?config(user, Config)},
+    {EP, Sock, User} = {
+        ?config(ep, Config), ?config(sock, Config), ?config(user, Config)
+    },
     application:set_env(chappe_sip, esc_max_body_size, 64),
     ok = chappe_sip:publish(open_esc()),
     Uri = res(User),
-    ?assertEqual(413, status(pub(Sock, EP, Uri,
-                                 #{body => pidf(Uri, <<"t1">>)}))),
+    ?assertEqual(
+        413,
+        status(
+            pub(
+                Sock,
+                EP,
+                Uri,
+                #{body => pidf(Uri, <<"t1">>)}
+            )
+        )
+    ),
     ?assertEqual([], chappe_sip_esc:publications(Uri, <<"presence">>)).
 
 %% watch/2 twice for one pid: one monitor, removed when the pid exits.
 esc_watch_once(_Config) ->
-    Pid = spawn(fun() -> receive stop -> ok end end),
+    Pid = spawn(fun() ->
+        receive
+            stop -> ok
+        end
+    end),
     ok = chappe_sip_esc:watch(<<"presence">>, Pid),
     ok = chappe_sip_esc:watch(<<"presence">>, Pid),
     ok = chappe_sip_esc:watch(<<"dialog">>, Pid),
@@ -368,47 +637,75 @@ esc_monitors(Pid) ->
 %% req: R3856-03 R3856-10 R3856-12 R3863-01 R3863-03 R3863-04 R3863-05
 %% req: R3863-11 R3863-12 R3863-13 R3863-15
 pa_full_state(Config) ->
-    {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
-                        ?config(user, Config)},
-    ok = chappe_sip_presence:serve(#{esc => open_esc(), authorize => fun allow/3}),
+    {EP, Sock, User} = {
+        ?config(ep, Config), ?config(sock, Config), ?config(user, Config)
+    },
+    ok = chappe_sip_presence:serve(#{
+        esc => open_esc(), authorize => fun allow/3
+    }),
     Uri = res(User),
-    200 = status(pub(Sock, EP, Uri, #{body => pidf(Uri, [{<<"a">>, open},
-                                                         {<<"b">>, open}])})),
+    200 = status(
+        pub(Sock, EP, Uri, #{
+            body => pidf(Uri, [
+                {<<"a">>, open},
+                {<<"b">>, open}
+            ])
+        })
+    ),
     timer:sleep(10),
     200 = status(pub(Sock, EP, Uri, #{body => pidf(Uri, [{<<"a">>, closed}])})),
     {_Sub, N} = watch(Sock, EP, Uri, #{}),
     ?assertEqual(?PIDF, hdr(<<"content-type">>, N)),
     Body = body(N),
-    ?assertMatch(<<"<?xml version=\"1.0\" encoding=\"UTF-8\"?>", _/binary>>, Body),
+    ?assertMatch(
+        <<"<?xml version=\"1.0\" encoding=\"UTF-8\"?>", _/binary>>, Body
+    ),
     {ok, #{entity := Uri, tuples := Tuples}} = chappe_sip_pidf:parse(Body),
-    ?assertEqual([{<<"a">>, closed}, {<<"b">>, open}],
-                 lists:sort([{Id, B} || #{id := Id, basic := B} <- Tuples])),
-    [?assertMatch({match, _}, re:run(TS, "^\\d{4}-\\d\\d-\\d\\dT[0-9:.]+Z$"))
-     || #{timestamp := TS} <- Tuples],
-    ?assertMatch({_, _}, binary:match(Body,
-                                      <<"xmlns=\"urn:ietf:params:xml:ns:pidf\"">>)).
+    ?assertEqual(
+        [{<<"a">>, closed}, {<<"b">>, open}],
+        lists:sort([{Id, B} || #{id := Id, basic := B} <- Tuples])
+    ),
+    [
+        ?assertMatch({match, _}, re:run(TS, "^\\d{4}-\\d\\d-\\d\\dT[0-9:.]+Z$"))
+     || #{timestamp := TS} <- Tuples
+    ],
+    ?assertMatch(
+        {_, _},
+        binary:match(
+            Body,
+            <<"xmlns=\"urn:ietf:params:xml:ns:pidf\"">>
+        )
+    ).
 
 %% A change reaches the watcher, never sooner than min_interval after the
 %% NOTIFY before.
 %% req: R3856-13
 pa_rate(Config) ->
-    {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
-                        ?config(user, Config)},
-    ok = chappe_sip_presence:serve(#{esc => open_esc(), authorize => fun allow/3,
-                                     min_interval => 1000}),
+    {EP, Sock, User} = {
+        ?config(ep, Config), ?config(sock, Config), ?config(user, Config)
+    },
+    ok = chappe_sip_presence:serve(#{
+        esc => open_esc(),
+        authorize => fun allow/3,
+        min_interval => 1000
+    }),
     Uri = res(User),
     R = pub(Sock, EP, Uri, #{body => pidf(Uri, [{<<"a">>, open}])}),
     E1 = hdr(<<"sip-etag">>, R),
     {Sub, _N1} = watch(Sock, EP, Uri, #{}),
     T1 = now_ms(),
-    R2 = pub(Sock, EP, Uri, #{if_match => E1,
-                              body => pidf(Uri, [{<<"a">>, closed}])}),
+    R2 = pub(Sock, EP, Uri, #{
+        if_match => E1,
+        body => pidf(Uri, [{<<"a">>, closed}])
+    }),
     {N2, _} = recv_notify(Sock, EP),
     T2 = now_ms(),
     ?assert(T2 - T1 >= 900, {too_soon, T2 - T1}),
     {ok, #{tuples := [#{basic := closed}]}} = chappe_sip_pidf:parse(body(N2)),
-    _ = pub(Sock, EP, Uri, #{if_match => hdr(<<"sip-etag">>, R2),
-                             body => pidf(Uri, [{<<"a">>, open}])}),
+    _ = pub(Sock, EP, Uri, #{
+        if_match => hdr(<<"sip-etag">>, R2),
+        body => pidf(Uri, [{<<"a">>, open}])
+    }),
     {_, _} = recv_notify(Sock, EP),
     ?assert(now_ms() - T2 >= 900),
     _ = Sub.
@@ -416,19 +713,31 @@ pa_rate(Config) ->
 %% An Accept without application/pidf+xml: 406.
 %% req: R3856-10
 pa_accept_406(Config) ->
-    {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
-                        ?config(user, Config)},
-    ok = chappe_sip_presence:serve(#{esc => open_esc(), authorize => fun allow/3}),
-    send(Sock, EP, subscribe(Sock, res(User), <<"presence">>,
-                             [{<<"Accept">>, <<"application/xpidf+xml">>}])),
+    {EP, Sock, User} = {
+        ?config(ep, Config), ?config(sock, Config), ?config(user, Config)
+    },
+    ok = chappe_sip_presence:serve(#{
+        esc => open_esc(), authorize => fun allow/3
+    }),
+    send(
+        Sock,
+        EP,
+        subscribe(
+            Sock,
+            res(User),
+            <<"presence">>,
+            [{<<"Accept">>, <<"application/xpidf+xml">>}]
+        )
+    ),
     {R, _} = recv(Sock, final, 3000),
     ?assertEqual(406, status(R)).
 
 %% Not authorized by the presentity: 403.
 %% req: R3856-06
 pa_deny_403(Config) ->
-    {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
-                        ?config(user, Config)},
+    {EP, Sock, User} = {
+        ?config(ep, Config), ?config(sock, Config), ?config(user, Config)
+    },
     ok = chappe_sip_presence:serve(#{authorize => fun(_, _, _) -> deny end}),
     send(Sock, EP, subscribe(Sock, res(User), <<"presence">>, [])),
     {R, _} = recv(Sock, final, 3000),
@@ -438,11 +747,14 @@ pa_deny_403(Config) ->
 %% active NOTIFY with the state.
 %% req: R3856-07 R3856-09
 pa_pending(Config) ->
-    {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
-                        ?config(user, Config)},
-    ok = chappe_sip_presence:serve(#{esc => open_esc(),
-                                     authorize => fun(_, _, _) -> pending end,
-                                     min_interval => 0}),
+    {EP, Sock, User} = {
+        ?config(ep, Config), ?config(sock, Config), ?config(user, Config)
+    },
+    ok = chappe_sip_presence:serve(#{
+        esc => open_esc(),
+        authorize => fun(_, _, _) -> pending end,
+        min_interval => 0
+    }),
     Uri = res(User),
     200 = status(pub(Sock, EP, Uri, #{body => pidf(Uri, [{<<"a">>, open}])})),
     {_Sub, N1} = watch(Sock, EP, Uri, #{}),
@@ -457,10 +769,13 @@ pa_pending(Config) ->
 %% Polite blocking: 200 and an active NOTIFY saying closed.
 %% req: R3856-08
 pa_polite(Config) ->
-    {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
-                        ?config(user, Config)},
-    ok = chappe_sip_presence:serve(#{esc => open_esc(),
-                                     authorize => fun(_, _, _) -> polite end}),
+    {EP, Sock, User} = {
+        ?config(ep, Config), ?config(sock, Config), ?config(user, Config)
+    },
+    ok = chappe_sip_presence:serve(#{
+        esc => open_esc(),
+        authorize => fun(_, _, _) -> polite end
+    }),
     Uri = res(User),
     200 = status(pub(Sock, EP, Uri, #{body => pidf(Uri, [{<<"a">>, open}])})),
     {_Sub, N} = watch(Sock, EP, Uri, #{}),
@@ -470,27 +785,47 @@ pa_polite(Config) ->
 %% Every subscription is authenticated: 401 without credentials.
 %% req: R3856-05
 pa_digest(Config) ->
-    {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
-                        ?config(user, Config)},
+    {EP, Sock, User} = {
+        ?config(ep, Config), ?config(sock, Config), ?config(user, Config)
+    },
     ok = chappe_sip_presence:serve(#{authorize => fun allow/3, auth => auth()}),
     Uri = res(User),
     send(Sock, EP, subscribe(Sock, Uri, <<"presence">>, [])),
     {R, _} = recv(Sock, final, 3000),
     ?assertEqual(401, status(R)),
     Creds = credentials(<<"SUBSCRIBE">>, Uri, hdr(<<"www-authenticate">>, R)),
-    send(Sock, EP, subscribe(Sock, Uri, <<"presence">>,
-                             [{<<"Authorization">>, Creds}])),
+    send(
+        Sock,
+        EP,
+        subscribe(
+            Sock,
+            Uri,
+            <<"presence">>,
+            [{<<"Authorization">>, Creds}]
+        )
+    ),
     {200, _} = ok_and_notify(Sock).
 
 %% A fetch (Expires: 0) gets the state once, in a terminated NOTIFY.
 pa_fetch(Config) ->
-    {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
-                        ?config(user, Config)},
-    ok = chappe_sip_presence:serve(#{esc => open_esc(), authorize => fun allow/3}),
+    {EP, Sock, User} = {
+        ?config(ep, Config), ?config(sock, Config), ?config(user, Config)
+    },
+    ok = chappe_sip_presence:serve(#{
+        esc => open_esc(), authorize => fun allow/3
+    }),
     Uri = res(User),
     200 = status(pub(Sock, EP, Uri, #{body => pidf(Uri, [{<<"a">>, open}])})),
-    send(Sock, EP, subscribe(Sock, Uri, <<"presence">>,
-                             [{<<"Expires">>, <<"0">>}])),
+    send(
+        Sock,
+        EP,
+        subscribe(
+            Sock,
+            Uri,
+            <<"presence">>,
+            [{<<"Expires">>, <<"0">>}]
+        )
+    ),
     {200, N} = ok_and_notify(Sock),
     ?assertMatch(<<"terminated", _/binary>>, hdr(<<"subscription-state">>, N)),
     {ok, #{tuples := [_]}} = chappe_sip_pidf:parse(body(N)).
@@ -501,26 +836,33 @@ pa_fetch(Config) ->
 %% type), with the account, and every update after.
 %% req: R3842-01 R3842-02 R3842-03 R3842-15 R3842-17 R3842-18
 mwi_initial_and_update(Config) ->
-    {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
-                        ?config(user, Config)},
+    {EP, Sock, User} = {
+        ?config(ep, Config), ?config(sock, Config), ?config(user, Config)
+    },
     Acc = res(User),
     ok = chappe_sip_mwi:serve(#{summary => fun(_) -> #{} end}),
     send(Sock, EP, subscribe(Sock, Acc, <<"message-summary">>, [])),
     {200, N1} = ok_and_notify(Sock),
     ?assertEqual(?MWI, hdr(<<"content-type">>, N1)),
-    ?assertEqual(<<"Messages-Waiting: no\r\nMessage-Account: ", Acc/binary,
-                   "\r\n">>, body(N1)),
+    ?assertEqual(
+        <<"Messages-Waiting: no\r\nMessage-Account: ", Acc/binary, "\r\n">>,
+        body(N1)
+    ),
     timer:sleep(1100),
     ok = chappe_sip_mwi:update(Acc, #{messages => #{voice => {2, 1}}}),
     {N2, _} = recv_notify(Sock, EP),
-    ?assertEqual(<<"Messages-Waiting: yes\r\nMessage-Account: ", Acc/binary,
-                   "\r\nVoice-Message: 2/1\r\n">>, body(N2)).
+    ?assertEqual(
+        <<"Messages-Waiting: yes\r\nMessage-Account: ", Acc/binary,
+            "\r\nVoice-Message: 2/1\r\n">>,
+        body(N2)
+    ).
 
 %% update/2 on another node reaches a subscriber of this one: the
 %% notifiers of every node share a pg group, with no cluster configured.
 mwi_other_node(Config) ->
-    {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
-                        ?config(user, Config)},
+    {EP, Sock, User} = {
+        ?config(ep, Config), ?config(sock, Config), ?config(user, Config)
+    },
     ok = chappe_sip_test_cluster:ensure(),
     {Peer, Node} = chappe_sip_test_cluster:peer("mwi"),
     try
@@ -531,12 +873,23 @@ mwi_other_node(Config) ->
         {200, _} = ok_and_notify(Sock),
         Here = node(),
         ok = wait_until(fun() ->
-            lists:member(Here, [node(P) || P <- erpc:call(Node, pg, get_members,
-                [chappe_sip_call:scope(), chappe_sip_mwi])])
+            lists:member(Here, [
+                node(P)
+             || P <- erpc:call(
+                    Node,
+                    pg,
+                    get_members,
+                    [chappe_sip_call:scope(), chappe_sip_mwi]
+                )
+            ])
         end),
         timer:sleep(1100),
-        ok = erpc:call(Node, chappe_sip_mwi, update,
-                       [Acc, #{messages => #{voice => {4, 0}}}]),
+        ok = erpc:call(
+            Node,
+            chappe_sip_mwi,
+            update,
+            [Acc, #{messages => #{voice => {4, 0}}}]
+        ),
         {N2, _} = recv_notify(Sock, EP),
         ?assertMatch({_, _}, binary:match(body(N2), <<"Voice-Message: 4/0">>))
     after
@@ -553,8 +906,15 @@ mwi_order_across_nodes(_Config) ->
         Acc = <<"sip:order@127.0.0.1">>,
         Here = node(),
         ok = wait_until(fun() ->
-            lists:member(Here, [node(P) || P <- erpc:call(Node, pg, get_members,
-                [chappe_sip_call:scope(), chappe_sip_mwi])])
+            lists:member(Here, [
+                node(P)
+             || P <- erpc:call(
+                    Node,
+                    pg,
+                    get_members,
+                    [chappe_sip_call:scope(), chappe_sip_mwi]
+                )
+            ])
         end),
         Remote = erpc:call(Node, erlang, whereis, [chappe_sip_mwi_notifier]),
         %% the peer's notifier holds its mail: the older update, made
@@ -564,17 +924,30 @@ mwi_order_across_nodes(_Config) ->
         Newer = #{messages => #{voice => {9, 0}}},
         Self = self(),
         _ = spawn(fun() ->
-                      Self ! {older, erpc:call(Node, chappe_sip_mwi, update, [Acc, Older])}
-                  end),
+            Self !
+                {older, erpc:call(Node, chappe_sip_mwi, update, [Acc, Older])}
+        end),
         timer:sleep(200),
         ok = chappe_sip_mwi:update(Acc, Newer),
         ok = sys:resume(Remote),
-        receive {older, ok} -> ok after 5000 -> ct:fail(no_older) end,
+        receive
+            {older, ok} -> ok
+        after 5000 -> ct:fail(no_older)
+        end,
         timer:sleep(300),
         Key = chappe_sip_esc:resource(Acc),
-        ?assertEqual(Newer, chappe_sip_notifier:get(chappe_sip_mwi_notifier, Key)),
-        ?assertEqual(Newer, erpc:call(Node, chappe_sip_notifier, get,
-                                      [chappe_sip_mwi_notifier, Key]))
+        ?assertEqual(
+            Newer, chappe_sip_notifier:get(chappe_sip_mwi_notifier, Key)
+        ),
+        ?assertEqual(
+            Newer,
+            erpc:call(
+                Node,
+                chappe_sip_notifier,
+                get,
+                [chappe_sip_mwi_notifier, Key]
+            )
+        )
     after
         chappe_sip_test_cluster:stop_peer(Peer)
     end.
@@ -586,19 +959,34 @@ mwi_clock_ahead_does_not_shadow(_Config) ->
     ok = chappe_sip_test_cluster:ensure(),
     {Peer, Node} = chappe_sip_test_cluster:peer("mwic"),
     try
-        ok = erpc:call(Node, application, set_env,
-                       [chappe_sip, wall_clock, {?MODULE, ahead_ms, []}]),
+        ok = erpc:call(
+            Node,
+            application,
+            set_env,
+            [chappe_sip, wall_clock, {?MODULE, ahead_ms, []}]
+        ),
         {ok, _} = erpc:call(Node, application, ensure_all_started, [chappe_sip]),
         Acc = <<"sip:clock@127.0.0.1">>,
         Key = chappe_sip_esc:resource(Acc),
         Here = node(),
         ok = wait_until(fun() ->
-            lists:member(Here, [node(P) || P <- erpc:call(Node, pg, get_members,
-                [chappe_sip_call:scope(), chappe_sip_mwi])])
+            lists:member(Here, [
+                node(P)
+             || P <- erpc:call(
+                    Node,
+                    pg,
+                    get_members,
+                    [chappe_sip_call:scope(), chappe_sip_mwi]
+                )
+            ])
         end),
         ok = wait_until(fun() ->
-            lists:member(Node, [node(P) || P <- pg:get_members(
-                chappe_sip_call:scope(), chappe_sip_mwi)])
+            lists:member(Node, [
+                node(P)
+             || P <- pg:get_members(
+                    chappe_sip_call:scope(), chappe_sip_mwi
+                )
+            ])
         end),
         First = #{messages => #{voice => {1, 0}}},
         Later = #{messages => #{voice => {7, 0}}},
@@ -608,9 +996,18 @@ mwi_clock_ahead_does_not_shadow(_Config) ->
         end),
         ok = chappe_sip_mwi:update(Acc, Later),
         timer:sleep(300),
-        ?assertEqual(Later, chappe_sip_notifier:get(chappe_sip_mwi_notifier, Key)),
-        ?assertEqual(Later, erpc:call(Node, chappe_sip_notifier, get,
-                                      [chappe_sip_mwi_notifier, Key]))
+        ?assertEqual(
+            Later, chappe_sip_notifier:get(chappe_sip_mwi_notifier, Key)
+        ),
+        ?assertEqual(
+            Later,
+            erpc:call(
+                Node,
+                chappe_sip_notifier,
+                get,
+                [chappe_sip_mwi_notifier, Key]
+            )
+        )
     after
         chappe_sip_test_cluster:stop_peer(Peer)
     end.
@@ -620,18 +1017,23 @@ ahead_ms() ->
     erlang:system_time(millisecond) + 3600 * 1000.
 
 wait_until(F) -> wait_until(F, 50).
-wait_until(_F, 0) -> {error, timeout};
+wait_until(_F, 0) ->
+    {error, timeout};
 wait_until(F, N) ->
     case F() of
-        true -> ok;
-        false -> timer:sleep(100), wait_until(F, N - 1)
+        true ->
+            ok;
+        false ->
+            timer:sleep(100),
+            wait_until(F, N - 1)
     end.
 
 %% Never more than one NOTIFY a second to a subscriber.
 %% req: R3842-20
 mwi_rate(Config) ->
-    {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
-                        ?config(user, Config)},
+    {EP, Sock, User} = {
+        ?config(ep, Config), ?config(sock, Config), ?config(user, Config)
+    },
     Acc = res(User),
     ok = chappe_sip_mwi:serve(#{summary => fun(_) -> #{} end}),
     send(Sock, EP, subscribe(Sock, Acc, <<"message-summary">>, [])),
@@ -648,17 +1050,29 @@ mwi_rate(Config) ->
 %% Subscriptions are authenticated and authorized.
 %% req: R3842-14 R3842-21
 mwi_auth(Config) ->
-    {EP, Sock, User} = {?config(ep, Config), ?config(sock, Config),
-                        ?config(user, Config)},
+    {EP, Sock, User} = {
+        ?config(ep, Config), ?config(sock, Config), ?config(user, Config)
+    },
     Acc = res(User),
-    ok = chappe_sip_mwi:serve(#{summary => fun(_) -> #{} end, auth => auth(),
-                                authorize => fun(U, _, _) -> U =/= <<"bob">> end}),
+    ok = chappe_sip_mwi:serve(#{
+        summary => fun(_) -> #{} end,
+        auth => auth(),
+        authorize => fun(U, _, _) -> U =/= <<"bob">> end
+    }),
     send(Sock, EP, subscribe(Sock, Acc, <<"message-summary">>, [])),
     {R, _} = recv(Sock, final, 3000),
     ?assertEqual(401, status(R)),
     Creds = credentials(<<"SUBSCRIBE">>, Acc, hdr(<<"www-authenticate">>, R)),
-    send(Sock, EP, subscribe(Sock, Acc, <<"message-summary">>,
-                             [{<<"Authorization">>, Creds}])),
+    send(
+        Sock,
+        EP,
+        subscribe(
+            Sock,
+            Acc,
+            <<"message-summary">>,
+            [{<<"Authorization">>, Creds}]
+        )
+    ),
     {R2, _} = recv(Sock, final, 3000),
     ?assertEqual(403, status(R2)).
 
@@ -673,17 +1087,31 @@ mwi_auth(Config) ->
 epa_lifecycle(Config) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
     Uri = esc_uri(Sock),
-    Doc = chappe_sip_pidf:render(#{entity => Uri,
-                                   tuples => [#{id => <<"t">>, basic => open}]}),
-    {ok, Pub} = chappe_sip:publish_state(Uri, <<"presence">>, Doc,
-                                         #{expires => 3}),
+    Doc = chappe_sip_pidf:render(#{
+        entity => Uri,
+        tuples => [#{id => <<"t">>, basic => open}]
+    }),
+    {ok, Pub} = chappe_sip:publish_state(
+        Uri,
+        <<"presence">>,
+        Doc,
+        #{expires => 3}
+    ),
     {P1, _} = recv(Sock, {method, <<"PUBLISH">>}, 3000),
     ?assertEqual([<<"presence">>], hdrs(<<"event">>, P1)),
     ?assertEqual([], hdrs(<<"sip-if-match">>, P1)),
     ?assertEqual(Doc, body(P1)),
     ?assertEqual(?PIDF, hdr(<<"content-type">>, P1)),
-    send(Sock, EP, ok_pub(P1, <<"e1">>, 3,
-                          [{<<"Record-Route">>, <<"<sip:rr@10.0.0.9;lr>">>}])),
+    send(
+        Sock,
+        EP,
+        ok_pub(
+            P1,
+            <<"e1">>,
+            3,
+            [{<<"Record-Route">>, <<"<sip:rr@10.0.0.9;lr>">>}]
+        )
+    ),
     {published, 3} = pub_event(Pub),
     {P2, _} = recv(Sock, {method, <<"PUBLISH">>}, 3000),
     ?assertEqual([<<"e1">>], hdrs(<<"sip-if-match">>, P2)),
@@ -691,8 +1119,10 @@ epa_lifecycle(Config) ->
     ?assertEqual([], hdrs(<<"route">>, P2)),
     ?assertEqual([<<"presence">>], hdrs(<<"event">>, P2)),
     send(Sock, EP, ok_pub(P2, <<"e2">>, 60, [])),
-    Doc2 = chappe_sip_pidf:render(#{entity => Uri,
-                                    tuples => [#{id => <<"t">>, basic => closed}]}),
+    Doc2 = chappe_sip_pidf:render(#{
+        entity => Uri,
+        tuples => [#{id => <<"t">>, basic => closed}]
+    }),
     ok = chappe_sip_publisher:update(Pub, Doc2),
     {P3, _} = recv(Sock, {method, <<"PUBLISH">>}, 3000),
     ?assertEqual([<<"e2">>], hdrs(<<"sip-if-match">>, P3)),
@@ -712,8 +1142,12 @@ epa_lifecycle(Config) ->
 epa_one_at_a_time(Config) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
     Uri = esc_uri(Sock),
-    {ok, Pub} = chappe_sip:publish_state(Uri, <<"presence">>, doc(Uri, open),
-                                         #{}),
+    {ok, Pub} = chappe_sip:publish_state(
+        Uri,
+        <<"presence">>,
+        doc(Uri, open),
+        #{}
+    ),
     {P1, _} = recv(Sock, {method, <<"PUBLISH">>}, 3000),
     ok = chappe_sip_publisher:update(Pub, doc(Uri, closed)),
     Seq1 = cseq(P1),
@@ -721,8 +1155,11 @@ epa_one_at_a_time(Config) ->
     send(Sock, EP, ok_pub(P1, <<"e1">>, 3600, [])),
     %% the next PUBLISH, not a retransmission of the first (Timer E runs
     %% at T1 while it waits for the 200)
-    {P2, _} = recv(Sock, fun(B) -> is_publish(B) andalso cseq(B) =/= Seq1 end,
-                   3000),
+    {P2, _} = recv(
+        Sock,
+        fun(B) -> is_publish(B) andalso cseq(B) =/= Seq1 end,
+        3000
+    ),
     ?assertEqual([<<"e1">>], hdrs(<<"sip-if-match">>, P2)),
     ?assertEqual(doc(Uri, closed), body(P2)).
 
@@ -732,8 +1169,12 @@ epa_one_at_a_time(Config) ->
 epa_412(Config) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
     Uri = esc_uri(Sock),
-    {ok, Pub} = chappe_sip:publish_state(Uri, <<"presence">>, doc(Uri, open),
-                                         #{expires => 3}),
+    {ok, Pub} = chappe_sip:publish_state(
+        Uri,
+        <<"presence">>,
+        doc(Uri, open),
+        #{expires => 3}
+    ),
     {P1, _} = recv(Sock, {method, <<"PUBLISH">>}, 3000),
     send(Sock, EP, ok_pub(P1, <<"e1">>, 3, [])),
     {published, 3} = pub_event(Pub),
@@ -754,11 +1195,22 @@ epa_412(Config) ->
 epa_423(Config) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
     Uri = esc_uri(Sock),
-    {ok, _Pub} = chappe_sip:publish_state(Uri, <<"presence">>, doc(Uri, open),
-                                          #{expires => 30}),
+    {ok, _Pub} = chappe_sip:publish_state(
+        Uri,
+        <<"presence">>,
+        doc(Uri, open),
+        #{expires => 30}
+    ),
     {P1, _} = recv(Sock, {method, <<"PUBLISH">>}, 3000),
-    send(Sock, EP, response(P1, 423, #{to_tag => tag(), headers =>
-                                       [{<<"Min-Expires">>, <<"120">>}]})),
+    send(
+        Sock,
+        EP,
+        response(P1, 423, #{
+            to_tag => tag(),
+            headers =>
+                [{<<"Min-Expires">>, <<"120">>}]
+        })
+    ),
     {P2, _} = recv(Sock, {method, <<"PUBLISH">>}, 3000),
     ?assertEqual(<<"120">>, hdr(<<"expires">>, P2)),
     ?assertEqual([], hdrs(<<"sip-if-match">>, P2)).
@@ -769,11 +1221,22 @@ epa_digest(Config) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
     Uri = esc_uri(Sock),
     {ok, _Pub} = chappe_sip:publish_state(
-        Uri, <<"presence">>, doc(Uri, open),
-        #{auth => #{user => <<"alice">>, pass => <<"secret">>}}),
+        Uri,
+        <<"presence">>,
+        doc(Uri, open),
+        #{auth => #{user => <<"alice">>, pass => <<"secret">>}}
+    ),
     {P1, _} = recv(Sock, {method, <<"PUBLISH">>}, 3000),
-    send(Sock, EP, response(P1, 401, #{to_tag => tag(), headers => [
-        {<<"WWW-Authenticate">>, chappe_sip_digest:challenge(<<"lab">>)}]})),
+    send(
+        Sock,
+        EP,
+        response(P1, 401, #{
+            to_tag => tag(),
+            headers => [
+                {<<"WWW-Authenticate">>, chappe_sip_digest:challenge(<<"lab">>)}
+            ]
+        })
+    ),
     {P2, _} = recv(Sock, {method, <<"PUBLISH">>}, 3000),
     ?assertNotEqual(undefined, hdr(<<"authorization">>, P2)),
     ?assertEqual(doc(Uri, open), body(P2)).
@@ -795,10 +1258,19 @@ watcher_pidf(Config) ->
     {_, _} = recv(Sock, {status, 200, <<"NOTIFY">>}, 3000),
     {notify, #{doc := Doc}} = sub_event(Sub),
     #{entity := <<"pres:someone@example.com">>, tuples := Tuples} = Doc,
-    [A, B] = lists:sort(fun(X, Y) -> maps:get(id, X) =< maps:get(id, Y) end,
-                        Tuples),
-    ?assertMatch(#{id := <<"a">>, basic := open,
-                   contact := <<"tel:+09012345678">>, priority := +0.0}, A),
+    [A, B] = lists:sort(
+        fun(X, Y) -> maps:get(id, X) =< maps:get(id, Y) end,
+        Tuples
+    ),
+    ?assertMatch(
+        #{
+            id := <<"a">>,
+            basic := open,
+            contact := <<"tel:+09012345678">>,
+            priority := +0.0
+        },
+        A
+    ),
     ?assertMatch(#{id := <<"b">>, priority := +0.0}, B),
     ?assertEqual([{<<"fr">>, <<"caf", 16#c3, 16#a9>>}], maps:get(notes, A)).
 
@@ -807,17 +1279,28 @@ watcher_pidf(Config) ->
 %% req: R3842-05 R3842-12
 watcher_mwi(Config) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
-    {ok, Sub} = chappe_sip:subscribe_to(esc_uri(Sock), <<"message-summary">>,
-                                         #{}),
+    {ok, Sub} = chappe_sip:subscribe_to(
+        esc_uri(Sock),
+        <<"message-summary">>,
+        #{}
+    ),
     {S1, _} = recv(Sock, {method, <<"SUBSCRIBE">>}, 3000),
     ?assertEqual(?MWI, hdr(<<"accept">>, S1)),
-    Body = <<"Messages-Waiting: yes\r\nMessage-Account: sip:a@b\r\n"
-             "Voice-Message: 9999999999/1 (0/1)\r\n">>,
+    Body = <<
+        "Messages-Waiting: yes\r\nMessage-Account: sip:a@b\r\n"
+        "Voice-Message: 9999999999/1 (0/1)\r\n"
+    >>,
     send(Sock, EP, notify(Sock, S1, <<"w2">>, Body, ?MWI)),
     {_, _} = recv(Sock, {status, 200, <<"NOTIFY">>}, 3000),
     {notify, #{doc := Summary}} = sub_event(Sub),
-    ?assertEqual(#{waiting => true, account => <<"sip:a@b">>,
-                   messages => #{voice => {4294967295, 1, 0, 1}}}, Summary).
+    ?assertEqual(
+        #{
+            waiting => true,
+            account => <<"sip:a@b">>,
+            messages => #{voice => {4294967295, 1, 0, 1}}
+        },
+        Summary
+    ).
 
 %% Presence makes one dialog per SUBSCRIBE (RFC 3856 6.9): a NOTIFY from
 %% another fork gets 481.
@@ -836,11 +1319,21 @@ watcher_one_dialog(Config) ->
 watcher_digest(Config) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
     {ok, _Sub} = chappe_sip:subscribe_to(
-        esc_uri(Sock), <<"presence">>,
-        #{auth => #{user => <<"alice">>, pass => <<"secret">>}}),
+        esc_uri(Sock),
+        <<"presence">>,
+        #{auth => #{user => <<"alice">>, pass => <<"secret">>}}
+    ),
     {S1, _} = recv(Sock, {method, <<"SUBSCRIBE">>}, 3000),
-    send(Sock, EP, response(S1, 401, #{to_tag => tag(), headers => [
-        {<<"WWW-Authenticate">>, chappe_sip_digest:challenge(<<"lab">>)}]})),
+    send(
+        Sock,
+        EP,
+        response(S1, 401, #{
+            to_tag => tag(),
+            headers => [
+                {<<"WWW-Authenticate">>, chappe_sip_digest:challenge(<<"lab">>)}
+            ]
+        })
+    ),
     {S2, _} = recv(Sock, {method, <<"SUBSCRIBE">>}, 3000),
     ?assertNotEqual(undefined, hdr(<<"authorization">>, S2)).
 
@@ -853,48 +1346,88 @@ watcher_digest(Config) ->
 %% req: R3863-01 R3863-06 R3863-08 R3863-11 R3863-12 R3863-13 R3863-15
 %% req: R3863-19
 pidf_render(_Config) ->
-    Doc = #{entity => <<"sip:a@b">>,
-            tuples => [#{id => <<"x">>, basic => open,
-                         contact => <<"sip:a@c">>, priority => 0.12345},
-                       #{id => <<"x">>, basic => closed},
-                       #{id => <<"y">>, basic => closed, contact => <<"sip:a@d">>,
-                         priority => 2, notes => [<<"bient", 16#c3, 16#b4, "t">>]}]},
+    Doc = #{
+        entity => <<"sip:a@b">>,
+        tuples => [
+            #{
+                id => <<"x">>,
+                basic => open,
+                contact => <<"sip:a@c">>,
+                priority => 0.12345
+            },
+            #{id => <<"x">>, basic => closed},
+            #{
+                id => <<"y">>,
+                basic => closed,
+                contact => <<"sip:a@d">>,
+                priority => 2,
+                notes => [<<"bient", 16#c3, 16#b4, "t">>]
+            }
+        ]
+    },
     Bin = chappe_sip_pidf:render(Doc),
-    ?assertMatch(<<"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n", _/binary>>, Bin),
+    ?assertMatch(
+        <<"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n", _/binary>>, Bin
+    ),
     ?assertMatch({_, _}, binary:match(Bin, <<"priority=\"0.123\"">>)),
     ?assertEqual(1, length(binary:matches(Bin, <<"priority=">>))),
     ?assertEqual(2, length(binary:matches(Bin, <<"<tuple ">>))),
     {ok, #{tuples := [X, Y]}} = chappe_sip_pidf:parse(Bin),
     ?assertMatch(#{id := <<"x">>, basic := open, priority := 0.123}, X),
-    ?assertMatch(#{id := <<"y">>, notes := [<<"bient", 16#c3, 16#b4, "t">>]}, Y),
-    [?assertMatch({match, _}, re:run(T, "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d(\\.\\d+)?Z$"))
-     || #{timestamp := T} <- [X, Y]].
+    ?assertMatch(
+        #{id := <<"y">>, notes := [<<"bient", 16#c3, 16#b4, "t">>]}, Y
+    ),
+    [
+        ?assertMatch(
+            {match, _},
+            re:run(T, "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d(\\.\\d+)?Z$")
+        )
+     || #{timestamp := T} <- [X, Y]
+    ].
 
 %% parse/1: entity required, a tuple without an id dropped, no priority or
 %% one out of range the lowest, other namespaces skipped, no DOCTYPE.
 %% req: R3863-02 R3863-03 R3863-05 R3863-09 R3863-10 R3863-16 R3863-17
 pidf_parse(_Config) ->
-    ?assertEqual({error, no_entity}, chappe_sip_pidf:parse(
-        <<"<?xml version=\"1.0\"?><presence xmlns=\"urn:ietf:params:xml:ns:pidf\"/>">>)),
+    ?assertEqual(
+        {error, no_entity},
+        chappe_sip_pidf:parse(
+            <<"<?xml version=\"1.0\"?><presence xmlns=\"urn:ietf:params:xml:ns:pidf\"/>">>
+        )
+    ),
     {ok, #{tuples := Ts}} = chappe_sip_pidf:parse(
-        <<"<?xml version=\"1.0\"?><presence xmlns=\"urn:ietf:params:xml:ns:pidf\""
-          " xmlns:e=\"urn:x\" entity=\"sip:a@b\"><tuple><status><basic>open</basic>"
-          "</status></tuple><tuple id=\"k\"><status><basic>closed</basic>"
-          "<e:mood mustUnderstand=\"true\">sad</e:mood></status>"
-          "<e:x><tuple id=\"inner\"/></e:x>"
-          "<contact priority=\"7\">sip:a@c</contact></tuple></presence>">>),
+        <<
+            "<?xml version=\"1.0\"?><presence xmlns=\"urn:ietf:params:xml:ns:pidf\""
+            " xmlns:e=\"urn:x\" entity=\"sip:a@b\"><tuple><status><basic>open</basic>"
+            "</status></tuple><tuple id=\"k\"><status><basic>closed</basic>"
+            "<e:mood mustUnderstand=\"true\">sad</e:mood></status>"
+            "<e:x><tuple id=\"inner\"/></e:x>"
+            "<contact priority=\"7\">sip:a@c</contact></tuple></presence>"
+        >>
+    ),
     ?assertMatch([#{id := <<"k">>, basic := closed, priority := +0.0}], Ts),
-    ?assertMatch({error, doctype}, chappe_sip_pidf:parse(
-        <<"<?xml version=\"1.0\"?><!DOCTYPE p [<!ENTITY a \"b\">]><p/>">>)),
-    {ok, #{tuples := [#{notes := [N]}]}} = chappe_sip_pidf:parse(foreign_pidf2()),
+    ?assertMatch(
+        {error, doctype},
+        chappe_sip_pidf:parse(
+            <<"<?xml version=\"1.0\"?><!DOCTYPE p [<!ENTITY a \"b\">]><p/>">>
+        )
+    ),
+    {ok, #{tuples := [#{notes := [N]}]}} = chappe_sip_pidf:parse(
+        foreign_pidf2()
+    ),
     ?assertEqual(<<"caf", 16#c3, 16#a9>>, N).
 
 %% compose/2: one tuple per id, the first (newest) document's winning.
 %% req: R3863-06 R3856-12
 pidf_compose(_Config) ->
     New = #{entity => <<"e">>, tuples => [#{id => <<"a">>, basic => closed}]},
-    Old = #{entity => <<"e">>, tuples => [#{id => <<"a">>, basic => open},
-                                          #{id => <<"b">>, basic => open}]},
+    Old = #{
+        entity => <<"e">>,
+        tuples => [
+            #{id => <<"a">>, basic => open},
+            #{id => <<"b">>, basic => open}
+        ]
+    },
     #{tuples := [A, B]} = chappe_sip_pidf:compose(<<"e">>, [New, Old]),
     ?assertMatch(#{id := <<"a">>, basic := closed}, A),
     ?assertMatch(#{id := <<"b">>}, B).
@@ -903,17 +1436,34 @@ pidf_compose(_Config) ->
 %% counts capped at 2^32-1 both ways.
 %% req: R3842-03 R3842-04 R3842-05
 mwi_codec(_Config) ->
-    Bin = chappe_sip_mwi:render(#{account => <<"<sip:a@b>">>,
-                                  messages => #{voice => {1 bsl 40, 0, 1, 0},
-                                                fax => {0, 2}}}),
-    ?assertEqual(<<"Messages-Waiting: yes\r\nMessage-Account: sip:a@b\r\n"
-                   "Voice-Message: 4294967295/0 (1/0)\r\nFax-Message: 0/2\r\n">>,
-                 Bin),
-    ?assertEqual({ok, #{waiting => true, account => <<"sip:a@b">>,
-                        messages => #{voice => {4294967295, 0, 1, 0},
-                                      fax => {0, 2}}}},
-                 chappe_sip_mwi:parse(Bin)),
-    ?assertEqual({error, no_status}, chappe_sip_mwi:parse(<<"Voice-Message: 1/0\r\n">>)).
+    Bin = chappe_sip_mwi:render(#{
+        account => <<"<sip:a@b>">>,
+        messages => #{
+            voice => {1 bsl 40, 0, 1, 0},
+            fax => {0, 2}
+        }
+    }),
+    ?assertEqual(
+        <<
+            "Messages-Waiting: yes\r\nMessage-Account: sip:a@b\r\n"
+            "Voice-Message: 4294967295/0 (1/0)\r\nFax-Message: 0/2\r\n"
+        >>,
+        Bin
+    ),
+    ?assertEqual(
+        {ok, #{
+            waiting => true,
+            account => <<"sip:a@b">>,
+            messages => #{
+                voice => {4294967295, 0, 1, 0},
+                fax => {0, 2}
+            }
+        }},
+        chappe_sip_mwi:parse(Bin)
+    ),
+    ?assertEqual(
+        {error, no_status}, chappe_sip_mwi:parse(<<"Voice-Message: 1/0\r\n">>)
+    ).
 
 %% ---- helpers ----
 
@@ -933,8 +1483,11 @@ auth_pub(Sock, EP, Uri, Opts) ->
     pub(Sock, EP, Uri, Opts#{headers => [{<<"Authorization">>, Creds}]}).
 
 esc_limit_keys() ->
-    [esc_max_publications, esc_max_publications_per_resource,
-     esc_max_body_size].
+    [
+        esc_max_publications,
+        esc_max_publications_per_resource,
+        esc_max_body_size
+    ].
 
 %% a new ESC with no publications (and the notifiers after it, rest_for_one)
 fresh_esc() ->
@@ -949,18 +1502,30 @@ wait_new(Name, _Old, 0) ->
 wait_new(Name, Old, N) ->
     case whereis(Name) of
         P when is_pid(P), P =/= Old -> ok;
-        _ -> timer:sleep(20), wait_new(Name, Old, N - 1)
+        _ ->
+            timer:sleep(20),
+            wait_new(Name, Old, N - 1)
     end.
 
 auth() ->
-    #{realm => <<"lab">>,
-      secret => fun(<<"bob">>) -> {ok, <<"pw">>}; (_) -> error end}.
+    #{
+        realm => <<"lab">>,
+        secret => fun
+            (<<"bob">>) -> {ok, <<"pw">>};
+            (_) -> error
+        end
+    }.
 
 credentials(Method, Uri, Chal) ->
     {ok, C} = chappe_sip_hdr:auth(Chal),
     {ok, V} = chappe_sip_digest:credentials(#{
-        method => Method, uri => Uri, username => <<"bob">>,
-        password => <<"pw">>, challenge => C, nc => 1}),
+        method => Method,
+        uri => Uri,
+        username => <<"bob">>,
+        password => <<"pw">>,
+        challenge => C,
+        nc => 1
+    }),
     V.
 
 res(User) -> <<"sip:", User/binary, "@127.0.0.1">>.
@@ -970,20 +1535,28 @@ esc_uri(Sock) ->
 
 %% one PUBLISH to the ESC and its final response
 pub(Sock, EP, Uri, Opts) ->
-    Event = case maps:get(event, Opts, <<"presence">>) of
-                none -> [];
-                E -> [{<<"Event">>, E}]
-            end,
-    Exp = [{<<"Expires">>, integer_to_binary(X)}
-           || X <- [maps:get(expires, Opts, none)], is_integer(X)],
-    IfM = [{<<"SIP-If-Match">>, M} || M <- [maps:get(if_match, Opts, none)],
-                                      is_binary(M)],
+    Event =
+        case maps:get(event, Opts, <<"presence">>) of
+            none -> [];
+            E -> [{<<"Event">>, E}]
+        end,
+    Exp = [
+        {<<"Expires">>, integer_to_binary(X)}
+     || X <- [maps:get(expires, Opts, none)], is_integer(X)
+    ],
+    IfM = [
+        {<<"SIP-If-Match">>, M}
+     || M <- [maps:get(if_match, Opts, none)],
+        is_binary(M)
+    ],
     Body = maps:get(body, Opts, <<>>),
     Req = request(<<"PUBLISH">>, Uri, #{
-        port => port(Sock), contact => <<"<sip:epa@127.0.0.1>">>,
+        port => port(Sock),
+        contact => <<"<sip:epa@127.0.0.1>">>,
         headers => Event ++ Exp ++ IfM ++ maps:get(headers, Opts, []),
         body => Body,
-        content_type => maps:get(content_type, Opts, ?PIDF)}),
+        content_type => maps:get(content_type, Opts, ?PIDF)
+    }),
     send(Sock, EP, Req),
     CallId = hdr(<<"call-id">>, Req),
     {R, _} = recv(Sock, fun(B) -> final_of(CallId, B) end, 3000),
@@ -995,41 +1568,61 @@ final_of(_CallId, _B) ->
     false.
 
 pidf(Uri, Tuples) when is_list(Tuples) ->
-    chappe_sip_pidf:render(#{entity => Uri,
-                             tuples => [#{id => I, basic => B} || {I, B} <- Tuples]});
+    chappe_sip_pidf:render(#{
+        entity => Uri,
+        tuples => [#{id => I, basic => B} || {I, B} <- Tuples]
+    });
 pidf(Uri, Id) ->
     pidf(Uri, [{Id, open}]).
 
 doc(Uri, Basic) ->
     iolist_to_binary(
-      [<<"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<presence xmlns=\""
-         "urn:ietf:params:xml:ns:pidf\" entity=\"">>, Uri,
-       <<"\"><tuple id=\"t\"><status><basic>">>, atom_to_binary(Basic),
-       <<"</basic></status></tuple></presence>\n">>]).
+        [
+            <<
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<presence xmlns=\""
+                "urn:ietf:params:xml:ns:pidf\" entity=\""
+            >>,
+            Uri,
+            <<"\"><tuple id=\"t\"><status><basic>">>,
+            atom_to_binary(Basic),
+            <<"</basic></status></tuple></presence>\n">>
+        ]
+    ).
 
 foreign_pidf() ->
-    <<"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-      "<impp:presence xmlns:impp=\"urn:ietf:params:xml:ns:pidf\""
-      " xmlns:x=\"urn:example:ext\" entity=\"pres:someone@example.com\">"
-      "<impp:tuple id=\"a\"><impp:status><impp:basic>open</impp:basic>"
-      "<x:busy mustUnderstand=\"1\">yes</x:busy></impp:status>"
-      "<impp:contact>tel:+09012345678</impp:contact>"
-      "<impp:note xml:lang=\"fr\">caf", 16#c3, 16#a9, "</impp:note></impp:tuple>"
-      "<impp:tuple id=\"b\"><impp:status><impp:basic>closed</impp:basic>"
-      "</impp:status><impp:contact priority=\"1.5\">sip:x@y</impp:contact>"
-      "</impp:tuple></impp:presence>">>.
+    <<
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        "<impp:presence xmlns:impp=\"urn:ietf:params:xml:ns:pidf\""
+        " xmlns:x=\"urn:example:ext\" entity=\"pres:someone@example.com\">"
+        "<impp:tuple id=\"a\"><impp:status><impp:basic>open</impp:basic>"
+        "<x:busy mustUnderstand=\"1\">yes</x:busy></impp:status>"
+        "<impp:contact>tel:+09012345678</impp:contact>"
+        "<impp:note xml:lang=\"fr\">caf",
+        16#c3,
+        16#a9,
+        "</impp:note></impp:tuple>"
+        "<impp:tuple id=\"b\"><impp:status><impp:basic>closed</impp:basic>"
+        "</impp:status><impp:contact priority=\"1.5\">sip:x@y</impp:contact>"
+        "</impp:tuple></impp:presence>"
+    >>.
 
 foreign_pidf2() ->
-    <<"<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
-      "<presence xmlns=\"urn:ietf:params:xml:ns:pidf\" entity=\"sip:a@b\">"
-      "<tuple id=\"n\"><status><basic>open</basic></status>"
-      "<note>caf", 16#c3, 16#a9, "</note></tuple></presence>">>.
+    <<
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+        "<presence xmlns=\"urn:ietf:params:xml:ns:pidf\" entity=\"sip:a@b\">"
+        "<tuple id=\"n\"><status><basic>open</basic></status>"
+        "<note>caf",
+        16#c3,
+        16#a9,
+        "</note></tuple></presence>"
+    >>.
 
 %% a SUBSCRIBE from the peer, to chappe
 subscribe(Sock, Uri, Event, Extra) ->
     request(<<"SUBSCRIBE">>, Uri, #{
         port => port(Sock),
-        headers => [{<<"Event">>, Event} | Extra]}).
+        headers => [{<<"Event">>, Event} | Extra]
+    }).
 
 %% subscribe the peer to Uri's presence; the 200 and the first NOTIFY
 watch(Sock, EP, Uri, _Opts) ->
@@ -1073,26 +1666,41 @@ recv_notify(Sock, EP) ->
 notify(Sock, Sub, Tag, Body, CT) ->
     {ok, #{uri := Contact}} = chappe_sip_hdr:name_addr(hdr(<<"contact">>, Sub)),
     request(<<"NOTIFY">>, Contact, #{
-        port => port(Sock), call_id => hdr(<<"call-id">>, Sub),
-        from => addr(hdr(<<"to">>, Sub)), from_tag => Tag,
-        to => addr(hdr(<<"from">>, Sub)), to_tag => from_tag(Sub),
-        cseq => 1, contact => <<"<", (esc_uri(Sock))/binary, ">">>,
-        headers => [{<<"Event">>, hdr(<<"event">>, Sub)},
-                    {<<"Subscription-State">>, <<"active;expires=600">>}],
-        body => Body, content_type => CT}).
+        port => port(Sock),
+        call_id => hdr(<<"call-id">>, Sub),
+        from => addr(hdr(<<"to">>, Sub)),
+        from_tag => Tag,
+        to => addr(hdr(<<"from">>, Sub)),
+        to_tag => from_tag(Sub),
+        cseq => 1,
+        contact => <<"<", (esc_uri(Sock))/binary, ">">>,
+        headers => [
+            {<<"Event">>, hdr(<<"event">>, Sub)},
+            {<<"Subscription-State">>, <<"active;expires=600">>}
+        ],
+        body => Body,
+        content_type => CT
+    }).
 
 ok_pub(Req, ETag, Expires, Extra) ->
-    response(Req, 200, #{to_tag => tag(), headers =>
-                         [{<<"SIP-ETag">>, ETag},
-                          {<<"Expires">>, integer_to_binary(Expires)}] ++ Extra}).
+    response(Req, 200, #{
+        to_tag => tag(),
+        headers =>
+            [
+                {<<"SIP-ETag">>, ETag},
+                {<<"Expires">>, integer_to_binary(Expires)}
+            ] ++ Extra
+    }).
 
 pub_event(Pub) ->
-    receive {chappe_sip_publication, Pub, E} -> E
+    receive
+        {chappe_sip_publication, Pub, E} -> E
     after 6000 -> ct:fail({no_publication_event, Pub})
     end.
 
 sub_event(Sub) ->
-    receive {chappe_sip_subscription, Sub, E} -> E
+    receive
+        {chappe_sip_subscription, Sub, E} -> E
     after 6000 -> ct:fail({no_subscription_event, Sub})
     end.
 

@@ -21,7 +21,11 @@ parse_test() ->
         <<(fork_request())/binary, "rest">>
     ),
     ?assertMatch(
-        #{method := <<"GET">>, path := <<"/audio/abc">>, query := <<"token=T0k-_">>},
+        #{
+            method := <<"GET">>,
+            path := <<"/audio/abc">>,
+            query := <<"token=T0k-_">>
+        },
         Req
     ),
     Headers = maps:get(headers, Req),
@@ -45,7 +49,9 @@ split_test() ->
 %% 4.2.1: an absolute URI holding the resource name is a Request-URI too
 absolute_uri_test() ->
     {ok, #{path := <<"/audio/x">>, query := <<"token=t">>}, <<>>} =
-        chappe_audio_http:parse(<<"GET http://h:80/audio/x?token=t HTTP/1.1\r\n\r\n">>).
+        chappe_audio_http:parse(
+            <<"GET http://h:80/audio/x?token=t HTTP/1.1\r\n\r\n">>
+        ).
 
 bad_requests_test() ->
     [
@@ -70,10 +76,14 @@ route_test() ->
 
 token_test() ->
     Req = fun(Q, H) -> #{query => Q, headers => H} end,
-    ?assertEqual(<<"a b">>, chappe_audio_http:token(Req(<<"x=1&token=a%20b">>, []))),
+    ?assertEqual(
+        <<"a b">>, chappe_audio_http:token(Req(<<"x=1&token=a%20b">>, []))
+    ),
     ?assertEqual(
         <<"bt">>,
-        chappe_audio_http:token(Req(<<>>, [{<<"authorization">>, <<"Bearer bt">>}]))
+        chappe_audio_http:token(
+            Req(<<>>, [{<<"authorization">>, <<"Bearer bt">>}])
+        )
     ),
     Basic = <<"Basic ", (base64:encode(<<"user:pw:with:colons">>))/binary>>,
     ?assertEqual(

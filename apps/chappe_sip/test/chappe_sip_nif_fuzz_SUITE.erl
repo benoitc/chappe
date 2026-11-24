@@ -19,10 +19,20 @@
 
 -include_lib("common_test/include/ct.hrl").
 
--export([all/0, init_per_suite/1, end_per_suite/1, init_per_testcase/2,
-         end_per_testcase/2]).
--export([nif_args/1, op_sequences/1, start_options/1, udp_datagrams/1,
-         tcp_stream/1]).
+-export([
+    all/0,
+    init_per_suite/1,
+    end_per_suite/1,
+    init_per_testcase/2,
+    end_per_testcase/2
+]).
+-export([
+    nif_args/1,
+    op_sequences/1,
+    start_options/1,
+    udp_datagrams/1,
+    tcp_stream/1
+]).
 
 -define(NIF, chappe_sip_nif).
 -define(LOCAL, {127, 0, 0, 1}).
@@ -39,8 +49,10 @@ init_per_suite(Config) ->
             Seed = seed(),
             Iters = iters(),
             Corpus = corpus(Config),
-            ct:pal("nif fuzz: FUZZ_SEED=~b FUZZ_ITERS=~b, ~b corpus messages",
-                   [Seed, Iters, length(Corpus)]),
+            ct:pal(
+                "nif fuzz: FUZZ_SEED=~b FUZZ_ITERS=~b, ~b corpus messages",
+                [Seed, Iters, length(Corpus)]
+            ),
             [{seed, Seed}, {iters, Iters}, {corpus, Corpus} | Config];
         _ ->
             {skip, "set FUZZ=1 (make fuzz)"}
@@ -159,8 +171,9 @@ tcp_stream(Config) ->
         case gen_tcp:connect(?LOCAL, Port, [binary, {active, false}], 2000) of
             {ok, S} ->
                 lists:foreach(
-                  fun(_) -> _ = send_chunks(S, raw(Ctx)) end,
-                  lists:seq(1, rand:uniform(4))),
+                    fun(_) -> _ = send_chunks(S, raw(Ctx)) end,
+                    lists:seq(1, rand:uniform(4))
+                ),
                 _ = gen_tcp:recv(S, 0, 10),
                 gen_tcp:close(S);
             {error, _} ->
@@ -203,77 +216,146 @@ handles() ->
 %% ---- NIFs and argument kinds --------------------------------------------
 
 funs() ->
-    [{respond, [engine, handle, status, bin, hdrs, body, bin]},
-     {reliable_respond, [engine, handle, status, bin, hdrs, body, bin]},
-     {request, [engine, route, raw]},
-     {request, [engine, route, raw, bin]},
-     {request, [engine, route, raw, bin, bin]},
-     {proxy_mark, [engine, handle]},
-     {send, [engine, route, raw]},
-     {send, [engine, route, raw, bin]},
-     {send_response, [engine, raw]},
-     {relay, [engine, handle, status, raw]},
-     {cancel, [engine, handle]},
-     {cancel, [engine, handle, hdrs]},
-     {txn_done, [engine, handle]},
-     {leg_create, [engine, bin, addr, addr]},
-     {leg_destroy, [engine, handle]},
-     {health, [engine]},
-     {discard, [engine, handle]},
-     {block, [ip, ttl]},
-     {stats, []},
-     {stop, [junk]}].
+    [
+        {respond, [engine, handle, status, bin, hdrs, body, bin]},
+        {reliable_respond, [engine, handle, status, bin, hdrs, body, bin]},
+        {request, [engine, route, raw]},
+        {request, [engine, route, raw, bin]},
+        {request, [engine, route, raw, bin, bin]},
+        {proxy_mark, [engine, handle]},
+        {send, [engine, route, raw]},
+        {send, [engine, route, raw, bin]},
+        {send_response, [engine, raw]},
+        {relay, [engine, handle, status, raw]},
+        {cancel, [engine, handle]},
+        {cancel, [engine, handle, hdrs]},
+        {txn_done, [engine, handle]},
+        {leg_create, [engine, bin, addr, addr]},
+        {leg_destroy, [engine, handle]},
+        {health, [engine]},
+        {discard, [engine, handle]},
+        {block, [ip, ttl]},
+        {stats, []},
+        {stop, [junk]}
+    ].
 
 handle_funs() ->
     [FK || {_, [engine, handle | _]} = FK <- funs()].
 
 %% stop/1 never gets the live engine: the other calls need it
-arg(junk, Ctx) -> any(Ctx#{engine := make_ref()});
+arg(junk, Ctx) ->
+    any(Ctx#{engine := make_ref()});
 arg(K, Ctx) ->
     case rand:uniform(100) =< 85 of
         true -> typed(K, Ctx);
         false -> any(Ctx)
     end.
 
-typed(engine, #{engine := E}) -> E;
-typed(handle, Ctx) -> handle(Ctx);
-typed(status, _) -> pick([100, 180, 183, 200, 202, 302, 404, 487, 500, 603,
-                          699, 99, 0, 700, 1000, -1, 65536 + 200]);
-typed(bin, _) -> bin();
-typed(hdrs, _) -> hdrs();
-typed(body, _) -> body();
-typed(route, _) -> route();
-typed(raw, Ctx) -> raw(Ctx);
-typed(addr, _) -> addr();
-typed(ip, _) -> pick([<<"10.9.8.7">>, <<"::2">>, <<"300.1.1.1">>, <<>>,
-                      <<"10.0.0.1", 0, "x">>, rand_bytes(20)]);
-typed(ttl, _) -> pick([0, 1, 50, 1 bsl 32, 1 bsl 64, -1]).
+typed(engine, #{engine := E}) ->
+    E;
+typed(handle, Ctx) ->
+    handle(Ctx);
+typed(status, _) ->
+    pick([
+        100,
+        180,
+        183,
+        200,
+        202,
+        302,
+        404,
+        487,
+        500,
+        603,
+        699,
+        99,
+        0,
+        700,
+        1000,
+        -1,
+        65536 + 200
+    ]);
+typed(bin, _) ->
+    bin();
+typed(hdrs, _) ->
+    hdrs();
+typed(body, _) ->
+    body();
+typed(route, _) ->
+    route();
+typed(raw, Ctx) ->
+    raw(Ctx);
+typed(addr, _) ->
+    addr();
+typed(ip, _) ->
+    pick([
+        <<"10.9.8.7">>,
+        <<"::2">>,
+        <<"300.1.1.1">>,
+        <<>>,
+        <<"10.0.0.1", 0, "x">>,
+        rand_bytes(20)
+    ]);
+typed(ttl, _) ->
+    pick([0, 1, 50, 1 bsl 32, 1 bsl 64, -1]).
 
 handle(#{sink := Sink}) ->
     Seen = sink_handles(Sink) ++ handles(),
     case {Seen, rand:uniform(10)} of
         {[_ | _], N} when N =< 7 -> pick(Seen);
-        _ -> pick([0, 1, 2, 1 bsl 31, 1 bsl 32, 1 bsl 63, 1 bsl 64 - 1,
-                   rand:uniform(1000)])
+        _ ->
+            pick([
+                0,
+                1,
+                2,
+                1 bsl 31,
+                1 bsl 32,
+                1 bsl 63,
+                1 bsl 64 - 1,
+                rand:uniform(1000)
+            ])
     end.
 
 any(Ctx) ->
     case rand:uniform(14) of
-        1 -> maps:get(engine, Ctx);
-        2 -> make_ref();
-        3 -> pick([0, 1, -1, 1 bsl 31, 1 bsl 32, 1 bsl 63, 1 bsl 64,
-                   -(1 bsl 63), 1 bsl 200]);
-        4 -> rand_bytes(rand:uniform(64));
-        5 -> pick([undefined, ok, true, false, nil, '']);
-        6 -> [bin(), 1];
-        7 -> {bin(), 2};
-        8 -> #{contact => bin()};
-        9 -> self();
-        10 -> 1.5;
-        11 -> <<>>;
-        12 -> big_bin();
-        13 -> list_to_binary(lists:duplicate(rand:uniform(8), 0));
-        14 -> fun() -> ok end
+        1 ->
+            maps:get(engine, Ctx);
+        2 ->
+            make_ref();
+        3 ->
+            pick([
+                0,
+                1,
+                -1,
+                1 bsl 31,
+                1 bsl 32,
+                1 bsl 63,
+                1 bsl 64,
+                -(1 bsl 63),
+                1 bsl 200
+            ]);
+        4 ->
+            rand_bytes(rand:uniform(64));
+        5 ->
+            pick([undefined, ok, true, false, nil, '']);
+        6 ->
+            [bin(), 1];
+        7 ->
+            {bin(), 2};
+        8 ->
+            #{contact => bin()};
+        9 ->
+            self();
+        10 ->
+            1.5;
+        11 ->
+            <<>>;
+        12 ->
+            big_bin();
+        13 ->
+            list_to_binary(lists:duplicate(rand:uniform(8), 0));
+        14 ->
+            fun() -> ok end
     end.
 
 bin() ->
@@ -288,18 +370,36 @@ bin() ->
     end.
 
 hdrs() ->
-    Lines = [pick([<<"X-Fuzz: 1">>, <<"Contact: <sip:127.0.0.1>">>,
-                   <<"Require: 100rel">>, <<"Supported: timer">>,
-                   <<"Content-Type: application/sdp">>, <<"Via: bogus">>,
-                   <<"Content-Length: 99999">>, <<"CSeq: x">>,
-                   <<"Route: <sip:127.0.0.1;lr>">>, <<"X-Nul: a", 0, "b">>,
-                   <<":">>, <<"\r\n">>, printable(60), rand_bytes(30)])
-             || _ <- lists:seq(1, rand:uniform(6))],
+    Lines = [
+        pick([
+            <<"X-Fuzz: 1">>,
+            <<"Contact: <sip:127.0.0.1>">>,
+            <<"Require: 100rel">>,
+            <<"Supported: timer">>,
+            <<"Content-Type: application/sdp">>,
+            <<"Via: bogus">>,
+            <<"Content-Length: 99999">>,
+            <<"CSeq: x">>,
+            <<"Route: <sip:127.0.0.1;lr>">>,
+            <<"X-Nul: a", 0, "b">>,
+            <<":">>,
+            <<"\r\n">>,
+            printable(60),
+            rand_bytes(30)
+        ])
+     || _ <- lists:seq(1, rand:uniform(6))
+    ],
     mutate(iolist_to_binary(lists:join(<<"\r\n">>, Lines)), 1).
 
 body() ->
-    pick([<<>>, sdp(), mutate(sdp(), 3), rand_bytes(100), big_bin(),
-          <<"v=0", 0, "\r\n">>]).
+    pick([
+        <<>>,
+        sdp(),
+        mutate(sdp(), 3),
+        rand_bytes(100),
+        big_bin(),
+        <<"v=0", 0, "\r\n">>
+    ]).
 
 route() ->
     case rand:uniform(6) of
@@ -311,9 +411,14 @@ route() ->
 %% stays on the loopback so a fuzzed request never leaves the host
 local_route() ->
     P = integer_to_binary(5000 + rand:uniform(1000)),
-    R = <<"sip:127.0.0.1:", P/binary,
-          (pick([<<>>, <<";lr">>, <<";transport=tcp">>,
-                 <<";transport=udp;lr">>]))/binary>>,
+    R =
+        <<"sip:127.0.0.1:", P/binary,
+            (pick([
+                <<>>,
+                <<";lr">>,
+                <<";transport=tcp">>,
+                <<";transport=udp;lr">>
+            ]))/binary>>,
     case rand:uniform(5) of
         1 -> <<R/binary, (pick([<<0>>, <<";">>, <<"%00">>, <<">">>]))/binary>>;
         _ -> R
@@ -321,10 +426,13 @@ local_route() ->
 
 addr() ->
     case rand:uniform(5) of
-        1 -> rand_bytes(rand:uniform(80));
-        2 -> big_bin();
-        _ -> <<"<sip:", (printable(8))/binary, "@127.0.0.1>;tag=",
-               (printable(6))/binary>>
+        1 ->
+            rand_bytes(rand:uniform(80));
+        2 ->
+            big_bin();
+        _ ->
+            <<"<sip:", (printable(8))/binary, "@127.0.0.1>;tag=",
+                (printable(6))/binary>>
     end.
 
 big_bin() ->
@@ -334,7 +442,7 @@ rand_bytes(N) ->
     rand:bytes(N).
 
 printable(N) ->
-    << <<(32 + rand:uniform(94))>> || _ <- lists:seq(1, N) >>.
+    <<<<(32 + rand:uniform(94))>> || _ <- lists:seq(1, N)>>.
 
 pick(L) ->
     lists:nth(rand:uniform(length(L)), L).
@@ -342,83 +450,156 @@ pick(L) ->
 %% ---- SIP inputs -----------------------------------------------------------
 
 raw(#{corpus := Corpus}) ->
-    Base = case rand:uniform(3) of
-               1 when Corpus =/= [] -> pick(Corpus);
-               _ -> template()
-           end,
+    Base =
+        case rand:uniform(3) of
+            1 when Corpus =/= [] -> pick(Corpus);
+            _ -> template()
+        end,
     mutate(Base, rand:uniform(5) - 1).
 
 template() ->
     Branch = <<"z9hG4bK", (integer_to_binary(rand:uniform(1 bsl 40)))/binary>>,
     CallId = integer_to_binary(rand:uniform(1 bsl 40)),
     Via = <<"Via: SIP/2.0/UDP 127.0.0.1:5999;rport;branch=", Branch/binary>>,
-    Common = [Via, <<"Max-Forwards: 70">>,
-              <<"From: <sip:fuzz@127.0.0.1>;tag=f1">>,
-              <<"To: <sip:uas@127.0.0.1>">>,
-              <<"Call-ID: ", CallId/binary, "@127.0.0.1">>],
+    Common = [
+        Via,
+        <<"Max-Forwards: 70">>,
+        <<"From: <sip:fuzz@127.0.0.1>;tag=f1">>,
+        <<"To: <sip:uas@127.0.0.1>">>,
+        <<"Call-ID: ", CallId/binary, "@127.0.0.1">>
+    ],
     case rand:uniform(5) of
-        1 -> msg(<<"OPTIONS sip:uas@127.0.0.1 SIP/2.0">>,
-                 Common ++ [<<"CSeq: 1 OPTIONS">>], <<>>);
-        2 -> msg(<<"INVITE sip:uas@127.0.0.1 SIP/2.0">>,
-                 Common ++ [<<"CSeq: 1 INVITE">>,
-                            <<"Contact: <sip:fuzz@127.0.0.1:5999>">>,
-                            <<"Supported: 100rel, timer">>,
-                            <<"Session-Expires: 90">>,
-                            <<"Content-Type: application/sdp">>], sdp());
-        3 -> msg(<<"SIP/2.0 200 OK">>,
-                 Common ++ [<<"CSeq: 1 INVITE">>], <<>>);
-        4 -> msg(<<"ACK sip:uas@127.0.0.1 SIP/2.0">>,
-                 Common ++ [<<"CSeq: 1 ACK">>], <<>>);
-        5 -> msg(<<"SUBSCRIBE sip:uas@127.0.0.1 SIP/2.0">>,
-                 Common ++ [<<"CSeq: 1 SUBSCRIBE">>, <<"Event: presence">>,
-                            <<"Expires: 60">>], <<>>)
+        1 ->
+            msg(
+                <<"OPTIONS sip:uas@127.0.0.1 SIP/2.0">>,
+                Common ++ [<<"CSeq: 1 OPTIONS">>],
+                <<>>
+            );
+        2 ->
+            msg(
+                <<"INVITE sip:uas@127.0.0.1 SIP/2.0">>,
+                Common ++
+                    [
+                        <<"CSeq: 1 INVITE">>,
+                        <<"Contact: <sip:fuzz@127.0.0.1:5999>">>,
+                        <<"Supported: 100rel, timer">>,
+                        <<"Session-Expires: 90">>,
+                        <<"Content-Type: application/sdp">>
+                    ],
+                sdp()
+            );
+        3 ->
+            msg(
+                <<"SIP/2.0 200 OK">>,
+                Common ++ [<<"CSeq: 1 INVITE">>],
+                <<>>
+            );
+        4 ->
+            msg(
+                <<"ACK sip:uas@127.0.0.1 SIP/2.0">>,
+                Common ++ [<<"CSeq: 1 ACK">>],
+                <<>>
+            );
+        5 ->
+            msg(
+                <<"SUBSCRIBE sip:uas@127.0.0.1 SIP/2.0">>,
+                Common ++
+                    [
+                        <<"CSeq: 1 SUBSCRIBE">>,
+                        <<"Event: presence">>,
+                        <<"Expires: 60">>
+                    ],
+                <<>>
+            )
     end.
 
 msg(Start, Hdrs, Body) ->
     Len = integer_to_binary(byte_size(Body)),
     iolist_to_binary(
-      [Start, <<"\r\n">>,
-       [[H, <<"\r\n">>] || H <- Hdrs],
-       <<"Content-Length: ", Len/binary, "\r\n\r\n">>, Body]).
+        [
+            Start,
+            <<"\r\n">>,
+            [[H, <<"\r\n">>] || H <- Hdrs],
+            <<"Content-Length: ", Len/binary, "\r\n\r\n">>,
+            Body
+        ]
+    ).
 
 sdp() ->
-    <<"v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\n"
-      "t=0 0\r\nm=audio 4000 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n">>.
+    <<
+        "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\n"
+        "t=0 0\r\nm=audio 4000 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n"
+    >>.
 
 mutate(B, 0) -> B;
 mutate(B, N) -> mutate(mutate1(B), N - 1).
 
-mutate1(<<>>) -> rand_bytes(rand:uniform(16));
+mutate1(<<>>) ->
+    rand_bytes(rand:uniform(16));
 mutate1(B) ->
     Sz = byte_size(B),
     P = rand:uniform(Sz) - 1,
     <<Pre:P/binary, Post/binary>> = B,
     case rand:uniform(11) of
-        1 -> <<Pre/binary, (rand:uniform(256) - 1), (drop(Post, 1))/binary>>;
-        2 -> <<Pre/binary, (rand_bytes(rand:uniform(8)))/binary, Post/binary>>;
-        3 -> <<Pre/binary, (drop(Post, rand:uniform(16)))/binary>>;
-        4 -> <<Pre/binary, 0, Post/binary>>;
-        5 -> Pre;
-        6 -> <<Pre/binary, (take(Post, 40))/binary, Post/binary>>;
-        7 -> <<Pre/binary, (pick([<<"\r\n">>, <<"\r\n\r\n">>, <<"\n">>,
-                                  <<"\r">>, <<" ">>, <<"\t">>, <<",">>,
-                                  <<";">>, <<"<">>, <<"\"">>,
-                                  <<"%">>]))/binary, Post/binary>>;
-        8 -> <<Pre/binary, "Content-Length: ",
-               (pick([<<"0">>, <<"-1">>, <<"4294967296">>,
-                      <<"99999999999999999999">>, <<"1">>]))/binary,
-               "\r\n", Post/binary>>;
-        9 -> <<Pre/binary, (binary:copy(take(Post, 8), rand:uniform(200)))/binary,
-               Post/binary>>;
-        10 -> <<Pre/binary, (pick([<<"Via: SIP/2.0/UDP ">>, <<"CSeq: ">>,
-                                   <<"Call-ID: ">>, <<"To: ">>, <<"From: ">>,
-                                   <<"Contact: ">>, <<"Route: ">>,
-                                   <<"Record-Route: ">>, <<"RSeq: ">>,
-                                   <<"RAck: ">>, <<"Expires: ">>,
-                                   <<"Content-Encoding: gzip\r\n">>,
-                                   <<"Content-Type: multipart/mixed;boundary=x\r\n">>]))/binary,
+        1 ->
+            <<Pre/binary, (rand:uniform(256) - 1), (drop(Post, 1))/binary>>;
+        2 ->
+            <<Pre/binary, (rand_bytes(rand:uniform(8)))/binary, Post/binary>>;
+        3 ->
+            <<Pre/binary, (drop(Post, rand:uniform(16)))/binary>>;
+        4 ->
+            <<Pre/binary, 0, Post/binary>>;
+        5 ->
+            Pre;
+        6 ->
+            <<Pre/binary, (take(Post, 40))/binary, Post/binary>>;
+        7 ->
+            <<Pre/binary,
+                (pick([
+                    <<"\r\n">>,
+                    <<"\r\n\r\n">>,
+                    <<"\n">>,
+                    <<"\r">>,
+                    <<" ">>,
+                    <<"\t">>,
+                    <<",">>,
+                    <<";">>,
+                    <<"<">>,
+                    <<"\"">>,
+                    <<"%">>
+                ]))/binary, Post/binary>>;
+        8 ->
+            <<Pre/binary, "Content-Length: ",
+                (pick([
+                    <<"0">>,
+                    <<"-1">>,
+                    <<"4294967296">>,
+                    <<"99999999999999999999">>,
+                    <<"1">>
+                ]))/binary, "\r\n", Post/binary>>;
+        9 ->
+            <<Pre/binary,
+                (binary:copy(take(Post, 8), rand:uniform(200)))/binary,
                 Post/binary>>;
-        11 -> <<Post/binary, Pre/binary>>
+        10 ->
+            <<Pre/binary,
+                (pick([
+                    <<"Via: SIP/2.0/UDP ">>,
+                    <<"CSeq: ">>,
+                    <<"Call-ID: ">>,
+                    <<"To: ">>,
+                    <<"From: ">>,
+                    <<"Contact: ">>,
+                    <<"Route: ">>,
+                    <<"Record-Route: ">>,
+                    <<"RSeq: ">>,
+                    <<"RAck: ">>,
+                    <<"Expires: ">>,
+                    <<"Content-Encoding: gzip\r\n">>,
+                    <<"Content-Type: multipart/mixed;boundary=x\r\n">>
+                ]))/binary, Post/binary>>;
+        11 ->
+            <<Post/binary, Pre/binary>>
     end.
 
 drop(B, N) when byte_size(B) =< N -> <<>>;
@@ -428,35 +609,78 @@ take(B, N) -> binary:part(B, 0, min(N, byte_size(B))).
 
 %% the RFC 4475 torture messages, next to this suite's beam
 corpus(_Config) ->
-    Dir = filename:join([filename:dirname(code:which(?MODULE)),
-                         "chappe_sip_rfc4475_SUITE_data", "rfc4475"]),
-    [B || F <- filelib:wildcard(filename:join(Dir, "*.dat")),
-          {ok, B} <- [file:read_file(F)]].
+    Dir = filename:join([
+        filename:dirname(code:which(?MODULE)),
+        "chappe_sip_rfc4475_SUITE_data",
+        "rfc4475"
+    ]),
+    [
+        B
+     || F <- filelib:wildcard(filename:join(Dir, "*.dat")),
+        {ok, B} <- [file:read_file(F)]
+    ].
 
 start_opts() ->
     P = integer_to_binary(chappe_sip_test_port:pick()),
-    Contact = mutate(<<"sip:127.0.0.1:", P/binary,
-                       (pick([<<>>, <<";transport=udp">>, <<";transport=tcp">>,
-                              <<";maddr=127.0.0.1">>]))/binary>>,
-                     rand:uniform(3) - 1),
+    Contact = mutate(
+        <<"sip:127.0.0.1:", P/binary,
+            (pick([
+                <<>>,
+                <<";transport=udp">>,
+                <<";transport=tcp">>,
+                <<";maddr=127.0.0.1">>
+            ]))/binary>>,
+        rand:uniform(3) - 1
+    ),
     Base = #{contact => Contact},
-    Extra = [{ident, pick([bin(), <<"a">>, 7])},
-             {contacts, pick([[], [{<<"sip:127.0.0.1:", P/binary, "1">>,
-                                    <<"b">>}],
-                              [bin()], [{bin(), bin(), bin()}], bin()])},
-             {max_message_size, pick([0, 1, 512, 1024, 65536, 1 bsl 32,
-                                      1 bsl 33 + 7, 1 bsl 64, -5, foo])},
-             {capture, pick([<<"udp:127.0.0.1:9;hep=3;capture_id=1">>,
-                             <<"udp:127.0.0.1:0;hep=99">>, <<"udp:">>,
-                             <<"udp:127.0.0.1:", 0, ";hep=3">>,
-                             <<"udp:127.0.0.1:70000;hep=3">>, bin()])},
-             {tls, pick([#{}, #{contact => bin()},
-                         #{contact => <<"sips:127.0.0.1:", P/binary, "2">>,
-                           cert_dir => <<"/nonexistent">>,
-                           verify => pick([none, peer, sometimes])},
-                         bin()])}],
-    maps:from_list([KV || KV <- Extra, rand:uniform(3) =:= 1]
-                   ++ maps:to_list(Base)).
+    Extra = [
+        {ident, pick([bin(), <<"a">>, 7])},
+        {contacts,
+            pick([
+                [],
+                [{<<"sip:127.0.0.1:", P/binary, "1">>, <<"b">>}],
+                [bin()],
+                [{bin(), bin(), bin()}],
+                bin()
+            ])},
+        {max_message_size,
+            pick([
+                0,
+                1,
+                512,
+                1024,
+                65536,
+                1 bsl 32,
+                1 bsl 33 + 7,
+                1 bsl 64,
+                -5,
+                foo
+            ])},
+        {capture,
+            pick([
+                <<"udp:127.0.0.1:9;hep=3;capture_id=1">>,
+                <<"udp:127.0.0.1:0;hep=99">>,
+                <<"udp:">>,
+                <<"udp:127.0.0.1:", 0, ";hep=3">>,
+                <<"udp:127.0.0.1:70000;hep=3">>,
+                bin()
+            ])},
+        {tls,
+            pick([
+                #{},
+                #{contact => bin()},
+                #{
+                    contact => <<"sips:127.0.0.1:", P/binary, "2">>,
+                    cert_dir => <<"/nonexistent">>,
+                    verify => pick([none, peer, sometimes])
+                },
+                bin()
+            ])}
+    ],
+    maps:from_list(
+        [KV || KV <- Extra, rand:uniform(3) =:= 1] ++
+            maps:to_list(Base)
+    ).
 
 %% ---- engine, sink and helpers --------------------------------------------
 
@@ -477,8 +701,11 @@ engine(Config) ->
     ?config(engine, Config).
 
 ctx(Config) ->
-    #{engine => ?config(engine, Config), sink => ?config(sink, Config),
-      corpus => ?config(corpus, Config)}.
+    #{
+        engine => ?config(engine, Config),
+        sink => ?config(sink, Config),
+        corpus => ?config(corpus, Config)
+    }.
 
 %% The engine's owner: answers the requests that reach it (so respond runs
 %% on live transactions), remembers the handles it sees, relays health.
@@ -506,8 +733,15 @@ sink(E, Hs, Waiter) ->
                 true ->
                     %% a handle a stop already released gives badarg
                     try
-                        ?NIF:respond(E, TxnH, pick([100, 180, 200, 404, 500]),
-                                     <<"Fuzz">>, <<>>, <<>>, <<"t1">>)
+                        ?NIF:respond(
+                            E,
+                            TxnH,
+                            pick([100, 180, 200, 404, 500]),
+                            <<"Fuzz">>,
+                            <<>>,
+                            <<>>,
+                            <<"t1">>
+                        )
                     catch
                         error:badarg -> ok
                     end;
@@ -515,8 +749,10 @@ sink(E, Hs, Waiter) ->
                     ok
             end,
             sink(E, lists:sublist([TxnH | Hs], 64), Waiter);
-        {chappe_sip_engine, _, Ev} when is_tuple(Ev),
-                                       is_integer(element(2, Ev)) ->
+        {chappe_sip_engine, _, Ev} when
+            is_tuple(Ev),
+            is_integer(element(2, Ev))
+        ->
             sink(E, lists:sublist([element(2, Ev) | Hs], 64), Waiter);
         _ ->
             sink(E, Hs, Waiter)

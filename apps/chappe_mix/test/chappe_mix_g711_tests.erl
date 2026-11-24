@@ -55,11 +55,17 @@ roundtrip_test_() ->
 %% error stays inside the segment step, which bounds it to 1/16 of the
 %% magnitude plus the smallest step.
 quantisation_test_() ->
-    [{atom_to_list(Law), fun() -> quantisation(Law) end} || Law <- [ulaw, alaw]].
+    [
+        {atom_to_list(Law), fun() -> quantisation(Law) end}
+     || Law <- [ulaw, alaw]
+    ].
 
 quantisation(Law) ->
     Xs = lists:seq(-32768, 32767),
-    Ys = [chappe_mix_g711:decode(Law, chappe_mix_g711:encode(Law, X)) || X <- Xs],
+    Ys = [
+        chappe_mix_g711:decode(Law, chappe_mix_g711:encode(Law, X))
+     || X <- Xs
+    ],
     ?assert(monotone(Ys)),
     Bad = [
         {X, Y}
@@ -112,12 +118,19 @@ pcm_test_() ->
 dsp_pcm_test_() ->
     Loud = chappe_mix_dsp:mixed(
         lists:foldl(
-            fun(_, Acc) -> chappe_mix_dsp:add(Acc, ulaw, binary:copy(<<16#80>>, 160)) end,
+            fun(_, Acc) ->
+                chappe_mix_dsp:add(Acc, ulaw, binary:copy(<<16#80>>, 160))
+            end,
             chappe_mix_dsp:new(),
             [1, 2]
         )
     ),
     [
-        ?_assertEqual(<<0:2560>>, chappe_mix_dsp:pcm(chappe_mix_dsp:mixed(chappe_mix_dsp:new()))),
-        ?_assertEqual(binary:copy(<<32767:16/little>>, 160), chappe_mix_dsp:pcm(Loud))
+        ?_assertEqual(
+            <<0:2560>>,
+            chappe_mix_dsp:pcm(chappe_mix_dsp:mixed(chappe_mix_dsp:new()))
+        ),
+        ?_assertEqual(
+            binary:copy(<<32767:16/little>>, 160), chappe_mix_dsp:pcm(Loud)
+        )
     ].

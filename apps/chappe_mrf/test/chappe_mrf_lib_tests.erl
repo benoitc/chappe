@@ -16,7 +16,9 @@ done_test() ->
 
 api_ok_test() ->
     ?assertEqual(ok, chappe_mrf_lib:api_ok({ok, <<"+OK">>})),
-    ?assertEqual({error, <<"-ERR no">>}, chappe_mrf_lib:api_ok({ok, <<"-ERR no">>})),
+    ?assertEqual(
+        {error, <<"-ERR no">>}, chappe_mrf_lib:api_ok({ok, <<"-ERR no">>})
+    ),
     ?assertEqual({error, closed}, chappe_mrf_lib:api_ok({error, closed})).
 
 new_id_test() ->

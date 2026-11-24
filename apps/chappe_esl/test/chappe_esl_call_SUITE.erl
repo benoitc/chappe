@@ -235,7 +235,9 @@ raw_timeout_breaks(_Config) ->
 %% stop_record_session take the path as is.
 %% req: ESL-37
 args_with_spaces(_Config) ->
-    Owner = spawn(fun() -> receive after infinity -> ok end end),
+    Owner = spawn(fun() -> receive
+        after infinity -> ok
+        end end),
     {Call, _Fake} = outbound(#{}, Owner),
     {ok, _} = chappe_esl_call:record(Call, "/r/my msg.wav", #{max_secs => 5}),
     expect_app(<<"record">>, <<"'/r/my msg.wav' 5">>),
@@ -278,9 +280,11 @@ raw_exec_interleaved(_Config) ->
         channel => <<"in-1">>, apps => Apps
     }),
     {ok, Conn} = chappe_esl:connect(#{host => {127, 0, 0, 1}, port => Port}),
-    Stray = chappe_esl_fake_server:plain_event(<<"CHANNEL_EXECUTE_COMPLETE">>, [
-        {<<"Application-UUID">>, <<"other">>}
-    ]),
+    Stray = chappe_esl_fake_server:plain_event(
+        <<"CHANNEL_EXECUTE_COMPLETE">>, [
+            {<<"Application-UUID">>, <<"other">>}
+        ]
+    ),
     ok = chappe_esl_fake_server:inject(Fake, Stray),
     {ok, Ev} = chappe_esl_call:exec(Conn, <<"in-1">>, "playback", "b.wav", #{}),
     ?assertEqual(<<"b.wav">>, hdr(<<"Application-Data">>, Ev)),
@@ -349,7 +353,9 @@ call_ref(_Config) ->
         {error, {bad_option, ref}},
         chappe_esl_call:start(Conn, #{uuid => <<"in-2">>, ref => call})
     ),
-    {ok, Call} = chappe_esl_call:start(Conn, #{uuid => <<"in-2">>, ref => <<"c-7">>}),
+    {ok, Call} = chappe_esl_call:start(Conn, #{
+        uuid => <<"in-2">>, ref => <<"c-7">>
+    }),
     ?assertEqual(<<"c-7">>, chappe_esl_call:ref(Call)),
     ok = chappe_esl_fake_server:dtmf(Fake, <<"3">>),
     %% one message shape with or without a ref; ref/1 gives the ref
@@ -425,11 +431,14 @@ detection(_Config) ->
     },
     {Call, Fake} = outbound(#{apps => Apps}),
     ok = chappe_esl_call:detect_tones(Call, <<"chappe">>),
-    ?assertEqual(<<"event plain DETECTED_TONE">>, block_with(<<"event plain">>)),
+    ?assertEqual(
+        <<"event plain DETECTED_TONE">>, block_with(<<"event plain">>)
+    ),
     expect_app(<<"spandsp_start_tone_detect">>, <<"chappe">>),
     ok = chappe_esl_call:detect_fax(Call, #{tone => ced, timeout => 30}),
     expect_app(
-        <<"spandsp_start_fax_detect">>, <<"set chappe_fax_detected=true 30 ced">>
+        <<"spandsp_start_fax_detect">>,
+        <<"set chappe_fax_detected=true 30 ced">>
     ),
     Inject = fun(Headers) ->
         chappe_esl_fake_server:inject(
@@ -507,7 +516,9 @@ say_and_speak(_Config) ->
     ok = chappe_esl_call:say(Call, <<"42">>, #{}),
     expect_app(<<"say">>, <<"en number pronounced 42">>),
     ok = chappe_esl_call:say(Call, "2026-11-14 10:00", #{
-        language => fr, type => current_date, method => pronounced,
+        language => fr,
+        type => current_date,
+        method => pronounced,
         gender => feminine
     }),
     expect_app(
@@ -553,7 +564,9 @@ say_and_speak(_Config) ->
 %% tracked; the owner's death stops each fork still running by its name.
 %% req: ESL-37 ESL-39
 fork_commands(_Config) ->
-    Owner = spawn(fun() -> receive after infinity -> ok end end),
+    Owner = spawn(fun() -> receive
+        after infinity -> ok
+        end end),
     {Call, _Fake} = outbound(#{}, Owner),
     ok = chappe_esl_call:audio_fork_start(Call, "ws://a", #{
         bugname => <<"left">>, mix => stereo, rate => 8000
@@ -633,15 +646,18 @@ fork_commands(_Config) ->
         <<"api uuid_audio_stream fake-uuid-1 stop">>,
         block_with(<<"stop">>)
     ),
-    ?assertMatch(<<"api uuid_kill fake-uuid-1", _/binary>>, block_with(<<"uuid_kill">>)).
+    ?assertMatch(
+        <<"api uuid_kill fake-uuid-1", _/binary>>, block_with(<<"uuid_kill">>)
+    ).
 
 %% multiset picks a delimiter no value contains; getvar and dump read the
 %% channel over api; mute and unmute use uuid_audio. Bad input is refused
 %% before anything is sent.
 %% req: ESL-37
 variables_and_audio(_Config) ->
-    Dump = <<"{\"Unique-ID\": \"fake-uuid-1\", \"variable_a\": \"1\", ",
-        "\"variable_b\": \"x|y\"}">>,
+    Dump =
+        <<"{\"Unique-ID\": \"fake-uuid-1\", \"variable_a\": \"1\", ",
+            "\"variable_b\": \"x|y\"}">>,
     {Call, _Fake} = outbound(#{
         api => #{
             <<"uuid_getvar fake-uuid-1 a">> => <<"1">>,
@@ -801,7 +817,10 @@ helpers(_Config) ->
 audio_stream_commands(_Config) ->
     {Call, _Fake} = outbound(#{}),
     ok = chappe_esl_call:audio_fork_start(Call, "ws://x/y", #{
-        module => audio_stream, mix => stereo, rate => 8000, metadata => <<"{}">>
+        module => audio_stream,
+        mix => stereo,
+        rate => 8000,
+        metadata => <<"{}">>
     }),
     ?assertEqual(
         <<"api uuid_audio_stream fake-uuid-1 start ws://x/y stereo 8k {}">>,
@@ -843,7 +862,9 @@ audio_stream_commands(_Config) ->
 %% channel is killed, and the call process and connection end.
 %% req: ESL-39
 owner_death_cleanup(_Config) ->
-    Owner = spawn(fun() -> receive after infinity -> ok end end),
+    Owner = spawn(fun() -> receive
+        after infinity -> ok
+        end end),
     {Call, _Fake} = outbound(#{}, Owner),
     ok = chappe_esl_call:audio_fork_start(Call, "ws://x", #{}),
     ok = chappe_esl_call:record_session(Call, "/tmp/s1.wav"),
@@ -869,7 +890,9 @@ owner_death_cleanup(_Config) ->
 %% A mod_audio_stream fork is stopped with its own command before the kill.
 %% req: ESL-39
 owner_death_audio_stream(_Config) ->
-    Owner = spawn(fun() -> receive after infinity -> ok end end),
+    Owner = spawn(fun() -> receive
+        after infinity -> ok
+        end end),
     {Call, _Fake} = outbound(#{}, Owner),
     ok = chappe_esl_call:audio_fork_start(Call, "ws://x", #{
         module => audio_stream
@@ -887,7 +910,9 @@ owner_death_audio_stream(_Config) ->
 %% After the hangup there is nothing left to kill.
 %% req: ESL-39
 owner_death_after_hangup(_Config) ->
-    Owner = spawn(fun() -> receive after infinity -> ok end end),
+    Owner = spawn(fun() -> receive
+        after infinity -> ok
+        end end),
     {Call, Fake} = outbound(#{}, Owner),
     ok = chappe_esl_fake_server:hangup(Fake, <<"NORMAL_CLEARING">>),
     %% the call has seen the hangup once a later request is refused
@@ -1049,7 +1074,9 @@ api_held_past_send_limit(_Config) ->
 %% req: ESL-39
 api_held_owner_death(_Config) ->
     Start = <<"uuid_audio_fork fake-uuid-1 start ws://x mono 16000">>,
-    Owner = spawn(fun() -> receive after infinity -> ok end end),
+    Owner = spawn(fun() -> receive
+        after infinity -> ok
+        end end),
     {Call, _Fake} = outbound(#{api => #{Start => {hold, <<"+OK">>}}}, Owner),
     Self = self(),
     spawn(fun() ->
@@ -1079,7 +1106,9 @@ api_held_owner_death(_Config) ->
 %% req: ESL-39
 api_held_fork_stop_owner_death(_Config) ->
     Stop = <<"uuid_audio_fork fake-uuid-1 stop">>,
-    Owner = spawn(fun() -> receive after infinity -> ok end end),
+    Owner = spawn(fun() -> receive
+        after infinity -> ok
+        end end),
     {Call, _Fake} = outbound(#{api => #{Stop => {hold, <<"+OK">>}}}, Owner),
     ok = chappe_esl_call:audio_fork_start(Call, "ws://x", #{}),
     flush_blocks(),
@@ -1194,7 +1223,9 @@ log(#{msg := Msg}, #{config := Pid}) ->
 %% req: ESL-39
 fork_start_failed(_Config) ->
     Start = <<"uuid_audio_fork fake-uuid-1 start ws://x mono 16000">>,
-    Owner = spawn(fun() -> receive after infinity -> ok end end),
+    Owner = spawn(fun() -> receive
+        after infinity -> ok
+        end end),
     {Call, _Fake} = outbound(#{api => #{Start => <<"-ERR no">>}}, Owner),
     ?assertMatch(
         {error, _}, chappe_esl_call:audio_fork_start(Call, "ws://x", #{})
@@ -1207,7 +1238,9 @@ fork_start_failed(_Config) ->
 %% req: ESL-39
 fork_start_failed_while_running(_Config) ->
     Second = <<"uuid_audio_fork fake-uuid-1 start ws://y mono 16000">>,
-    Owner = spawn(fun() -> receive after infinity -> ok end end),
+    Owner = spawn(fun() -> receive
+        after infinity -> ok
+        end end),
     {Call, _Fake} = outbound(#{api => #{Second => <<"-ERR busy">>}}, Owner),
     ok = chappe_esl_call:audio_fork_start(Call, "ws://x", #{}),
     ?assertMatch(

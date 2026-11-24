@@ -35,12 +35,18 @@ b2_aes_cm_keystream_test() ->
 b3_key_derivation_test() ->
     Mk = h(<<"E1F97A0D3E018BE0D64FA32C06DE4139">>),
     Ms = h(<<"0EC675AD498AFEEBB6960B3AABE6">>),
-    ?assertEqual(h(<<"C61E7A93744F39EE10734AFE3FF7A087">>), ?S:derive(Mk, Ms, 0, 16)),
-    ?assertEqual(h(<<"30CBBC08863D8C85D49DB34A9AE1">>), ?S:derive(Mk, Ms, 2, 14)),
     ?assertEqual(
-        h(<<"CEBE321F6FF7716B6FD4AB49AF256A156D38BAA48F0A0ACF3C34E2359E6CDBCE"
+        h(<<"C61E7A93744F39EE10734AFE3FF7A087">>), ?S:derive(Mk, Ms, 0, 16)
+    ),
+    ?assertEqual(
+        h(<<"30CBBC08863D8C85D49DB34A9AE1">>), ?S:derive(Mk, Ms, 2, 14)
+    ),
+    ?assertEqual(
+        h(<<
+            "CEBE321F6FF7716B6FD4AB49AF256A156D38BAA48F0A0ACF3C34E2359E6CDBCE"
             "E049646C43D9327AD175578EF72270986371C10C9A369AC2F94A8C5FBCDDDC25"
-            "6D6E919A48B610EF17C2041E474035766B68642C59BBFC2F34DB60DBDFB2">>),
+            "6D6E919A48B610EF17C2041E474035766B68642C59BBFC2F34DB60DBDFB2"
+        >>),
         ?S:derive(Mk, Ms, 1, 94)
     ),
     %% the reference sender derives the same keys
@@ -57,28 +63,37 @@ ctx() -> ctx(#{}).
 
 ctx(Opts) ->
     <<K:16/binary, S:14/binary>> = maps:get(master, Opts, libsrtp_master()),
-    {ok, C} = ?S:new(maps:merge(
-        #{suite => aes_cm_128_hmac_sha1_80, key => K, salt => S},
-        maps:remove(master, Opts)
-    )),
+    {ok, C} = ?S:new(
+        maps:merge(
+            #{suite => aes_cm_128_hmac_sha1_80, key => K, salt => S},
+            maps:remove(master, Opts)
+        )
+    ),
     C.
 
 libsrtp_rtp_test() ->
     Plain = h(<<"800f1234decafbadcafebabeabababababababababababababababab">>),
-    Cipher = h(<<"800f1234decafbadcafebabe4e55dc4ce79978d88ca4d215949d2402b78d6acc99ea179b8dbb">>),
+    Cipher = h(
+        <<"800f1234decafbadcafebabe4e55dc4ce79978d88ca4d215949d2402b78d6acc99ea179b8dbb">>
+    ),
     ?assertMatch({ok, Plain, _}, ?S:unprotect(Cipher, ctx())),
     ?assertEqual(Cipher, ?T:protect(Plain, 0, ?T:sender(libsrtp_master()))).
 
 libsrtp_rtcp_test() ->
     Plain = h(<<"81c8000bcafebabeabababababababababababababababab">>),
-    Cipher = h(<<"81c8000bcafebabe7128035be487b9bdbef89041f977a5a880000001993e08cd54d6c1230798">>),
+    Cipher = h(
+        <<"81c8000bcafebabe7128035be487b9bdbef89041f977a5a880000001993e08cd54d6c1230798">>
+    ),
     ?assertMatch({ok, Plain, _}, ?S:unprotect_rtcp(Cipher, ctx())),
-    ?assertEqual(Cipher, ?T:protect_rtcp(Plain, 1, ?T:sender(libsrtp_master()))).
+    ?assertEqual(
+        Cipher, ?T:protect_rtcp(Plain, 1, ?T:sender(libsrtp_master()))
+    ).
 
 %% ---- property: what the reference sender protects decrypts back ----
 
 rtp(Seq, Ssrc, Payload) ->
-    <<2:2, 0:1, 0:1, 0:4, 0:1, 0:7, Seq:16, (Seq * 160):32, Ssrc:32, Payload/binary>>.
+    <<2:2, 0:1, 0:1, 0:4, 0:1, 0:7, Seq:16, (Seq * 160):32, Ssrc:32,
+        Payload/binary>>.
 
 %% Random keys, suites, SSRCs, starting sequence numbers (near the wrap
 %% too), header shapes and payload sizes, a few packets each in order:
@@ -98,15 +113,24 @@ round_trip() ->
     ]),
     Mki = lists:nth(rand:uniform(3), [<<>>, <<1>>, <<0, 0, 4, 2>>]),
     Opts = #{master => Master, suite => Suite},
-    C0 = ctx(case Mki of <<>> -> Opts; _ -> Opts#{mki => Mki} end),
+    C0 = ctx(
+        case Mki of
+            <<>> -> Opts;
+            _ -> Opts#{mki => Mki}
+        end
+    ),
     Snd = ?T:sender(Master, #{tag => TagLen, mki => Mki}),
     Ssrc = rand:uniform(16#FFFFFFFF),
-    Start = lists:nth(rand:uniform(2), [rand:uniform(65536) - 1, 65530 + rand:uniform(5)]),
+    Start = lists:nth(rand:uniform(2), [
+        rand:uniform(65536) - 1, 65530 + rand:uniform(5)
+    ]),
     lists:foldl(
         fun(N, C) ->
             Seq0 = Start + N,
             Rtp = random_rtp(Seq0 rem 65536, Ssrc),
-            {ok, Got, C1} = ?S:unprotect(?T:protect(Rtp, Seq0 div 65536, Snd), C),
+            {ok, Got, C1} = ?S:unprotect(
+                ?T:protect(Rtp, Seq0 div 65536, Snd), C
+            ),
             ?assertEqual(Rtp, Got),
             C1
         end,
@@ -116,8 +140,12 @@ round_trip() ->
     %% and SRTCP, a few indices
     lists:foldl(
         fun(I, C) ->
-            Rtcp = <<2:2, 0:1, 0:5, 201:8, 1:16, Ssrc:32, (rand:bytes(rand:uniform(40)))/binary>>,
-            {ok, Rtcp, C1} = ?S:unprotect_rtcp(?T:protect_rtcp(Rtcp, I, Snd), C),
+            Rtcp =
+                <<2:2, 0:1, 0:5, 201:8, 1:16, Ssrc:32,
+                    (rand:bytes(rand:uniform(40)))/binary>>,
+            {ok, Rtcp, C1} = ?S:unprotect_rtcp(
+                ?T:protect_rtcp(Rtcp, I, Snd), C
+            ),
             C1
         end,
         C0,
@@ -129,12 +157,15 @@ random_rtp(Seq, Ssrc) ->
     Csrc = rand:bytes(CC * 4),
     {X, Ext} =
         case rand:uniform(2) of
-            1 -> {0, <<>>};
-            2 -> L = rand:uniform(3) - 1, {1, <<16#BEDE:16, L:16, (rand:bytes(L * 4))/binary>>}
+            1 ->
+                {0, <<>>};
+            2 ->
+                L = rand:uniform(3) - 1,
+                {1, <<16#BEDE:16, L:16, (rand:bytes(L * 4))/binary>>}
         end,
     Payload = rand:bytes(rand:uniform(200) - 1),
-    <<2:2, 0:1, X:1, CC:4, 0:1, 0:7, Seq:16, 1234:32, Ssrc:32, Csrc/binary, Ext/binary,
-      Payload/binary>>.
+    <<2:2, 0:1, X:1, CC:4, 0:1, 0:7, Seq:16, 1234:32, Ssrc:32, Csrc/binary,
+        Ext/binary, Payload/binary>>.
 
 %% ---- the rollover counter and index estimation (RFC 3711 3.3.1) ----
 
@@ -212,30 +243,41 @@ forged_test() ->
 
 malformed_test() ->
     C = ctx(),
-    Good = ?T:protect(rtp(10, 7, <<"payload">>), 0, ?T:sender(libsrtp_master())),
-    [?assertEqual({error, malformed}, ?S:unprotect(B, C)) || B <- [
-        <<>>,
-        <<1, 2, 3>>,
-        %% version 1
-        <<1:2, 0:6, 0, 0:80>>,
-        %% header with no room for the tag
-        binary:part(rtp(1, 2, <<>>), 0, 12),
-        <<(binary:part(rtp(1, 2, <<>>), 0, 12))/binary, 0:72>>,
-        %% CSRC count past the end
-        <<2:2, 0:2, 15:4, 0:8, 1:16, 0:32, 7:32, 0:80>>,
-        %% extension length past the end
-        <<2:2, 0:1, 1:1, 0:4, 0:8, 1:16, 0:32, 7:32, 16#BEDE:16, 200:16, 0:80>>,
-        %% truncated
-        binary:part(Good, 0, 21)
-    ]],
-    [?assertEqual({error, malformed}, ?S:unprotect_rtcp(B, C)) || B <- [
-        <<>>, <<16#81, 16#c8, 0, 1>>, <<0:8, 16#c8, 0:(8 * 26)>>
-    ]],
+    Good = ?T:protect(
+        rtp(10, 7, <<"payload">>), 0, ?T:sender(libsrtp_master())
+    ),
+    [
+        ?assertEqual({error, malformed}, ?S:unprotect(B, C))
+     || B <- [
+            <<>>,
+            <<1, 2, 3>>,
+            %% version 1
+            <<1:2, 0:6, 0, 0:80>>,
+            %% header with no room for the tag
+            binary:part(rtp(1, 2, <<>>), 0, 12),
+            <<(binary:part(rtp(1, 2, <<>>), 0, 12))/binary, 0:72>>,
+            %% CSRC count past the end
+            <<2:2, 0:2, 15:4, 0:8, 1:16, 0:32, 7:32, 0:80>>,
+            %% extension length past the end
+            <<2:2, 0:1, 1:1, 0:4, 0:8, 1:16, 0:32, 7:32, 16#BEDE:16, 200:16,
+                0:80>>,
+            %% truncated
+            binary:part(Good, 0, 21)
+        ]
+    ],
+    [
+        ?assertEqual({error, malformed}, ?S:unprotect_rtcp(B, C))
+     || B <- [
+            <<>>, <<16#81, 16#c8, 0, 1>>, <<0:8, 16#c8, 0:(8 * 26)>>
+        ]
+    ],
     %% SRTCP with E clear: not without UNENCRYPTED_SRTCP (RFC 4568 6.3.2)
     Rtcp = h(<<"81c8000bcafebabeabababababababababababababababab">>),
     #{rtcp_auth := A} = ?T:sender(libsrtp_master()),
     Body = <<Rtcp/binary, 0:1, 1:31>>,
-    Clear = <<Body/binary, (binary:part(crypto:mac(hmac, sha, A, Body), 0, 10))/binary>>,
+    Clear =
+        <<Body/binary,
+            (binary:part(crypto:mac(hmac, sha, A, Body), 0, 10))/binary>>,
     ?assertEqual({error, malformed}, ?S:unprotect_rtcp(Clear, C)).
 
 %% Random bytes never crash it, and never pass.
@@ -266,7 +308,10 @@ lifetime_test() ->
     C0 = ctx(#{lifetime => 2}),
     {ok, _, C1} = ?S:unprotect(?T:protect(rtp(1, 7, <<"x">>), 0, Snd), C0),
     {ok, _, C2} = ?S:unprotect(?T:protect(rtp(2, 7, <<"x">>), 0, Snd), C1),
-    ?assertEqual({error, expired}, ?S:unprotect(?T:protect(rtp(3, 7, <<"x">>), 0, Snd), C2)).
+    ?assertEqual(
+        {error, expired},
+        ?S:unprotect(?T:protect(rtp(3, 7, <<"x">>), 0, Snd), C2)
+    ).
 
 %% Late binding: an SSRC gets a context only once its packet authenticates,
 %% and a context holds max_ssrcs of them.
@@ -277,34 +322,50 @@ ssrcs_test() ->
     ?assertEqual({error, auth}, ?S:unprotect(Forged, C0)),
     {ok, _, C1} = ?S:unprotect(?T:protect(rtp(1, 1, <<"x">>), 0, Snd), C0),
     {ok, _, C2} = ?S:unprotect(?T:protect(rtp(1, 2, <<"x">>), 0, Snd), C1),
-    ?assertEqual({error, too_many_ssrcs}, ?S:unprotect(?T:protect(rtp(1, 3, <<"x">>), 0, Snd), C2)),
+    ?assertEqual(
+        {error, too_many_ssrcs},
+        ?S:unprotect(?T:protect(rtp(1, 3, <<"x">>), 0, Snd), C2)
+    ),
     {ok, _, _} = ?S:unprotect(?T:protect(rtp(2, 1, <<"x">>), 0, Snd), C2).
 
 %% A new master key keeps the stream's index and replay list.
 rekey_test() ->
     Old = libsrtp_master(),
     New = ?T:master(),
-    {ok, _, C1} = ?S:unprotect(?T:protect(rtp(10, 7, <<"x">>), 0, ?T:sender(Old)), ctx()),
+    {ok, _, C1} = ?S:unprotect(
+        ?T:protect(rtp(10, 7, <<"x">>), 0, ?T:sender(Old)), ctx()
+    ),
     C2 = ?S:rekey(C1, ctx(#{master => New})),
-    {ok, _, C3} = ?S:unprotect(?T:protect(rtp(11, 7, <<"x">>), 0, ?T:sender(New)), C2),
-    ?assertEqual({error, replay}, ?S:unprotect(?T:protect(rtp(11, 7, <<"x">>), 0, ?T:sender(New)), C3)),
-    ?assertEqual({error, auth}, ?S:unprotect(?T:protect(rtp(12, 7, <<"x">>), 0, ?T:sender(Old)), C3)).
+    {ok, _, C3} = ?S:unprotect(
+        ?T:protect(rtp(11, 7, <<"x">>), 0, ?T:sender(New)), C2
+    ),
+    ?assertEqual(
+        {error, replay},
+        ?S:unprotect(?T:protect(rtp(11, 7, <<"x">>), 0, ?T:sender(New)), C3)
+    ),
+    ?assertEqual(
+        {error, auth},
+        ?S:unprotect(?T:protect(rtp(12, 7, <<"x">>), 0, ?T:sender(Old)), C3)
+    ).
 
 bad_options_test() ->
     <<K:16/binary, S:14/binary>> = libsrtp_master(),
     Base = #{suite => aes_cm_128_hmac_sha1_80, key => K, salt => S},
-    [?assertEqual({error, badarg}, ?S:new(O)) || O <- [
-        #{},
-        Base#{suite => f8_128_hmac_sha1_80},
-        Base#{key => <<K/binary, 0>>},
-        Base#{salt => <<1>>},
-        Base#{mki => <<>>},
-        Base#{lifetime => 0},
-        Base#{lifetime => 1 bsl 49},
-        Base#{window => 63},
-        Base#{window => 1 bsl 20},
-        Base#{max_ssrcs => 0}
-    ]].
+    [
+        ?assertEqual({error, badarg}, ?S:new(O))
+     || O <- [
+            #{},
+            Base#{suite => f8_128_hmac_sha1_80},
+            Base#{key => <<K/binary, 0>>},
+            Base#{salt => <<1>>},
+            Base#{mki => <<>>},
+            Base#{lifetime => 0},
+            Base#{lifetime => 1 bsl 49},
+            Base#{window => 63},
+            Base#{window => 1 bsl 20},
+            Base#{max_ssrcs => 0}
+        ]
+    ].
 
 %% ---- no key material out of the module ----
 
@@ -314,7 +375,10 @@ no_key_printed_test() ->
     C = ctx(),
     Printed = iolist_to_binary(io_lib:format("~p ~w", [C, C])),
     Keys = maps:values(maps:remove(tag, maps:remove(mki, ?T:sender(Master)))),
-    [?assertEqual(nomatch, binary:match(Printed, [hex(B), dec(B)])) || B <- [K, S | Keys]].
+    [
+        ?assertEqual(nomatch, binary:match(Printed, [hex(B), dec(B)]))
+     || B <- [K, S | Keys]
+    ].
 
 hex(B) -> binary:encode_hex(B, lowercase).
 
@@ -338,7 +402,9 @@ protect_rtcp_matches_reference_test() ->
     {ok, P1, _} = ?S:protect_rtcp(Rtcp, C1),
     ?assertEqual(?T:protect_rtcp(Rtcp, 1, Snd), P1),
     %% and the receive side takes it back
-    {ok, Plain, _} = ?S:unprotect_rtcp(P1, ctx(#{master => Master, mki => <<1, 2>>})),
+    {ok, Plain, _} = ?S:unprotect_rtcp(
+        P1, ctx(#{master => Master, mki => <<1, 2>>})
+    ),
     ?assertEqual(Rtcp, Plain).
 
 %% a new key keeps the index going: it MUST NOT be reset (3.4)
@@ -393,11 +459,19 @@ fuzz_one(Snd, C) ->
     {Good, Fun} =
         case rand:uniform(2) of
             1 ->
-                {?T:protect(random_rtp(rand:uniform(65536) - 1, Ssrc), 0, Snd),
-                 fun ?S:unprotect/2};
+                {
+                    ?T:protect(
+                        random_rtp(rand:uniform(65536) - 1, Ssrc), 0, Snd
+                    ),
+                    fun ?S:unprotect/2
+                };
             2 ->
-                Rtcp = <<2:2, 0:6, 200:8, 6:16, Ssrc:32, (rand:bytes(20))/binary>>,
-                {?T:protect_rtcp(Rtcp, rand:uniform(1000), Snd), fun ?S:unprotect_rtcp/2}
+                Rtcp =
+                    <<2:2, 0:6, 200:8, 6:16, Ssrc:32, (rand:bytes(20))/binary>>,
+                {
+                    ?T:protect_rtcp(Rtcp, rand:uniform(1000), Snd),
+                    fun ?S:unprotect_rtcp/2
+                }
         end,
     Bad = mutate(Good),
     case Fun(Bad, C) of

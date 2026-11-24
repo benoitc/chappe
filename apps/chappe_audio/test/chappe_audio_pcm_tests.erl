@@ -19,4 +19,6 @@ g711_decode_test() ->
     ?assertEqual(8, D(alaw, 16#D5)),
     ?assertEqual(-8, D(alaw, 16#55)),
     ?assertEqual(32256, D(alaw, 16#AA)),
-    ?assertEqual(320, byte_size(chappe_audio_pcm:decode(ulaw, binary:copy(<<0>>, 160)))).
+    ?assertEqual(
+        320, byte_size(chappe_audio_pcm:decode(ulaw, binary:copy(<<0>>, 160)))
+    ).

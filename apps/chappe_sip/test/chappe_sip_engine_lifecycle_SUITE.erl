@@ -21,8 +21,12 @@ all() ->
     [op_vs_stop_stress, restart_under_traffic].
 
 init_per_suite(Config) ->
-    application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
-                        [{persistent, true}]),
+    application:set_env(
+        chappe_sip,
+        engine_mod,
+        chappe_sip_nif,
+        [{persistent, true}]
+    ),
     {ok, _} = application:ensure_all_started(chappe_sip),
     Config.
 
@@ -41,57 +45,86 @@ end_per_testcase(_Case, _Config) ->
 %% active exactly as teardown runs.
 op_vs_stop_stress(_Config) ->
     Rounds = 60,
-    lists:foreach(fun(N) ->
-        Port = 47000 + N,
-        ok = start_retry(Port, 30),
-        ok = chappe_sip:options(fun(_R, Res) -> chappe_sip_res:send(Res, 200, #{}) end),
-        Firers = fire_traffic(Port, 6, 15),
-        _ = chappe_sip_engine:stop(),
-        drain(Firers)
-    end, lists:seq(1, Rounds)).
+    lists:foreach(
+        fun(N) ->
+            Port = 47000 + N,
+            ok = start_retry(Port, 30),
+            ok = chappe_sip:options(fun(_R, Res) ->
+                chappe_sip_res:send(Res, 200, #{})
+            end),
+            Firers = fire_traffic(Port, 6, 15),
+            _ = chappe_sip_engine:stop(),
+            drain(Firers)
+        end,
+        lists:seq(1, Rounds)
+    ).
 
 %% Cycle restart_engine (stop + re-establish the native stack) under sustained
 %% traffic on a stable port.
 restart_under_traffic(_Config) ->
     Port = 46000 + rand:uniform(500),
     ok = start_retry(Port, 30),
-    ok = chappe_sip:options(fun(_R, Res) -> chappe_sip_res:send(Res, 200, #{}) end),
-    lists:foreach(fun(_) ->
-        Firers = fire_traffic(Port, 4, 20),
-        _ = chappe_sip_engine:restart_engine(),
-        drain(Firers)
-    end, lists:seq(1, 20)),
+    ok = chappe_sip:options(fun(_R, Res) ->
+        chappe_sip_res:send(Res, 200, #{})
+    end),
+    lists:foreach(
+        fun(_) ->
+            Firers = fire_traffic(Port, 4, 20),
+            _ = chappe_sip_engine:restart_engine(),
+            drain(Firers)
+        end,
+        lists:seq(1, 20)
+    ),
     _ = chappe_sip_engine:stop().
 
 %% ---- helpers ----
 
 %% start can briefly see {error, stopping} while a prior engine tears down;
 %% retry a bounded number of times.
-start_retry(_Port, 0) -> {error, gave_up};
+start_retry(_Port, 0) ->
+    {error, gave_up};
 start_retry(Port, N) ->
     case chappe_sip_engine:start(#{contact => contact(Port)}) of
-        ok -> ok;
-        {error, stopping} -> timer:sleep(20), start_retry(Port, N - 1);
-        {error, already_started} -> _ = chappe_sip_engine:stop(),
-            timer:sleep(20), start_retry(Port, N - 1);
-        Other -> Other
+        ok ->
+            ok;
+        {error, stopping} ->
+            timer:sleep(20),
+            start_retry(Port, N - 1);
+        {error, already_started} ->
+            _ = chappe_sip_engine:stop(),
+            timer:sleep(20),
+            start_retry(Port, N - 1);
+        Other ->
+            Other
     end.
 
 fire_traffic(Port, Workers, PerWorker) ->
     Self = self(),
-    [spawn(fun() ->
-        {ok, Sock} = gen_udp:open(0, [binary, {active, false}, {ip, {127,0,0,1}}]),
-        lists:foreach(fun(_) ->
-            _ = gen_udp:send(Sock, {127,0,0,1}, Port, options(Sock)),
-            timer:sleep(1)
-        end, lists:seq(1, PerWorker)),
-        gen_udp:close(Sock),
-        Self ! {fired, self()}
-     end) || _ <- lists:seq(1, Workers)].
+    [
+        spawn(fun() ->
+            {ok, Sock} = gen_udp:open(0, [
+                binary, {active, false}, {ip, {127, 0, 0, 1}}
+            ]),
+            lists:foreach(
+                fun(_) ->
+                    _ = gen_udp:send(Sock, {127, 0, 0, 1}, Port, options(Sock)),
+                    timer:sleep(1)
+                end,
+                lists:seq(1, PerWorker)
+            ),
+            gen_udp:close(Sock),
+            Self ! {fired, self()}
+        end)
+     || _ <- lists:seq(1, Workers)
+    ].
 
-drain([]) -> ok;
+drain([]) ->
+    ok;
 drain([P | Ps]) ->
-    receive {fired, P} -> ok after 8000 -> ok end,
+    receive
+        {fired, P} -> ok
+    after 8000 -> ok
+    end,
     drain(Ps).
 
 contact(Port) ->
@@ -101,10 +134,21 @@ options(Sock) ->
     {ok, P0} = inet:port(Sock),
     P = integer_to_binary(P0),
     Br = binary:encode_hex(crypto:strong_rand_bytes(6), lowercase),
-    <<"OPTIONS sip:app@127.0.0.1 SIP/2.0\r\n"
-      "Via: SIP/2.0/UDP 127.0.0.1:", P/binary, ";rport;branch=z9hG4bK", Br/binary,
-      "\r\nMax-Forwards: 70\r\n"
-      "From: <sip:p@127.0.0.1:", P/binary, ">;tag=", Br/binary, "\r\n"
-      "To: <sip:app@127.0.0.1>\r\n"
-      "Call-ID: st-", Br/binary, "@ct\r\nCSeq: 1 OPTIONS\r\n"
-      "Content-Length: 0\r\n\r\n">>.
+    <<
+        "OPTIONS sip:app@127.0.0.1 SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:",
+        P/binary,
+        ";rport;branch=z9hG4bK",
+        Br/binary,
+        "\r\nMax-Forwards: 70\r\n"
+        "From: <sip:p@127.0.0.1:",
+        P/binary,
+        ">;tag=",
+        Br/binary,
+        "\r\n"
+        "To: <sip:app@127.0.0.1>\r\n"
+        "Call-ID: st-",
+        Br/binary,
+        "@ct\r\nCSeq: 1 OPTIONS\r\n"
+        "Content-Length: 0\r\n\r\n"
+    >>.

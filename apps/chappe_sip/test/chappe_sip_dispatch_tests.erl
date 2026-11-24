@@ -10,12 +10,17 @@
 
 req(Method, Extra) ->
     iolist_to_binary([
-        Method, " sip:bob@example.com SIP/2.0\r\n",
+        Method,
+        " sip:bob@example.com SIP/2.0\r\n",
         "Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK-1\r\n",
         "From: <sip:alice@example.com>;tag=ft\r\n",
-        "To: <sip:bob@example.com>", Extra, "\r\n",
+        "To: <sip:bob@example.com>",
+        Extra,
+        "\r\n",
         "Call-ID: c1\r\n",
-        "CSeq: 1 ", Method, "\r\n",
+        "CSeq: 1 ",
+        Method,
+        "\r\n",
         "Content-Length: 0\r\n\r\n"
     ]).
 
@@ -81,7 +86,8 @@ route_for_package_test() ->
         )
     ),
     ?assertEqual(
-        none, ?D:route_for(<<"SUBSCRIBE">>, sub("dialog"), #{}, {#{}, undefined})
+        none,
+        ?D:route_for(<<"SUBSCRIBE">>, sub("dialog"), #{}, {#{}, undefined})
     ).
 
 bad_event_test() ->
@@ -102,12 +108,16 @@ unrouted_test() ->
     ?assertMatch({481, _, []}, ?D:unrouted(<<"CANCEL">>, Routes, E)),
     {405, _, [{<<"Allow">>, Allow}]} = ?D:unrouted(<<"INFO">>, Routes, E),
     ?assertEqual(<<"ACK, BYE, CANCEL, INVITE, NOTIFY, OPTIONS">>, Allow),
-    ?assertMatch({501, _, [{<<"Allow">>, _}]}, ?D:unrouted(<<"FOO">>, Routes, E)),
+    ?assertMatch(
+        {501, _, [{<<"Allow">>, _}]}, ?D:unrouted(<<"FOO">>, Routes, E)
+    ),
     {200, _, Hdrs} = ?D:unrouted(<<"OPTIONS">>, Routes, E),
     ?assertMatch({_, _}, lists:keyfind(<<"Accept">>, 1, Hdrs)),
     ?assertEqual(false, lists:keyfind(<<"Allow-Events">>, 1, Hdrs)),
     {200, _, Hdrs2} =
-        ?D:unrouted(<<"OPTIONS">>, Routes, {#{<<"presence">> => h()}, [<<"dialog">>]}),
+        ?D:unrouted(
+            <<"OPTIONS">>, Routes, {#{<<"presence">> => h()}, [<<"dialog">>]}
+        ),
     ?assertEqual(
         {<<"Allow-Events">>, <<"dialog, presence">>},
         lists:keyfind(<<"Allow-Events">>, 1, Hdrs2)
@@ -119,7 +129,10 @@ allow_events_test() ->
     ?assertEqual(any, ?D:allow_events(#{}, undefined)),
     ?assertEqual(any, ?D:allow_events(#{<<"a">> => h()}, any)),
     ?assertEqual([<<"a">>], ?D:allow_events(#{<<"a">> => h()}, undefined)),
-    ?assertEqual([<<"a">>, <<"b">>], ?D:allow_events(#{<<"a">> => h()}, [<<"b">>, <<"a">>])).
+    ?assertEqual(
+        [<<"a">>, <<"b">>],
+        ?D:allow_events(#{<<"a">> => h()}, [<<"b">>, <<"a">>])
+    ).
 
 event_package_test() ->
     ?assertEqual(<<"presence">>, ?D:event_package(sub(" Presence ;id=2"))),
@@ -132,7 +145,9 @@ merge_test() ->
     ?assertEqual({<<"ft">>, <<"c1">>, 1, <<"INVITE">>}, Key),
     ?assertEqual(none, ?D:merge_key(req("INVITE", ";tag=tt"))),
     ?assertEqual(none, ?D:merge_check(<<"ACK">>, Raw, #{}, #{})),
-    ?assertEqual({Key, <<"z9hG4bK-1">>}, ?D:merge_check(<<"INVITE">>, Raw, #{}, #{})),
+    ?assertEqual(
+        {Key, <<"z9hG4bK-1">>}, ?D:merge_check(<<"INVITE">>, Raw, #{}, #{})
+    ),
     Pid = self(),
     %% the same key on another branch: merged, unless that one is proxied
     Idx = #{Key => {<<"z9hG4bK-other">>, 7, Pid}},
@@ -143,8 +158,12 @@ merge_test() ->
     ),
     %% the same branch is a retransmission, not a merge
     Same = #{Key => {<<"z9hG4bK-1">>, 7, Pid}},
-    ?assertEqual({Key, <<"z9hG4bK-1">>}, ?D:merge_check(<<"INVITE">>, Raw, Same, #{})).
+    ?assertEqual(
+        {Key, <<"z9hG4bK-1">>}, ?D:merge_check(<<"INVITE">>, Raw, Same, #{})
+    ).
 
 own_route_test() ->
-    ?assertNot(?D:is_own_route(req("BYE", ";tag=tt"), <<"sip:127.0.0.1:5060">>)),
+    ?assertNot(
+        ?D:is_own_route(req("BYE", ";tag=tt"), <<"sip:127.0.0.1:5060">>)
+    ),
     ?assertNot(?D:is_own_route(<<"espx= junk">>, <<"sip:127.0.0.1:5060">>)).

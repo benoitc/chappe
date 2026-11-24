@@ -49,10 +49,23 @@ init_per_testcase(Case, Config) ->
     Peers = [peer("clc" ++ integer_to_list(I)) || I <- [1, 2, 3]],
     Nodes = [N || {_, N} <- Peers],
     [ok = start_cluster(N, Nodes, Dir) || N <- Nodes],
-    [wait(fun() -> erpc:call(N, chappe_cluster_node, live, []) =/= not_live end, 300) || N <- Nodes],
+    [
+        wait(
+            fun() ->
+                erpc:call(N, chappe_cluster_node, live, []) =/= not_live
+            end,
+            300
+        )
+     || N <- Nodes
+    ],
     Both = [start_sip(N) || N <- Nodes],
-    [{peers, Peers}, {nodes, Nodes}, {ports, [P || {P, _} <- Both]},
-     {ws_ports, [W || {_, W} <- Both]} | Config].
+    [
+        {peers, Peers},
+        {nodes, Nodes},
+        {ports, [P || {P, _} <- Both]},
+        {ws_ports, [W || {_, W} <- Both]}
+        | Config
+    ].
 
 end_per_testcase(_Case, Config) ->
     [stop_peer(P) || {P, _} <- ?config(peers, Config)],
@@ -75,7 +88,9 @@ udp_call_through_the_edge(Config) ->
     ?assertEqual(N1, maps:get(node, B)),
     ?assertMatch([<<"<sip:127.0.0.1:", _/binary>>], maps:get(path, B)),
     ?assertEqual(undefined, maps:get(send_flow, B)),
-    ?assertMatch({route, <<"sip:alice@192.0.2.50:5060">>, [_]}, maps:get(target, B)),
+    ?assertMatch(
+        {route, <<"sip:alice@192.0.2.50:5060">>, [_]}, maps:get(target, B)
+    ),
     {ok, Caller} = udp(),
     send(Caller, P2, invite(lport(Caller), <<"cu1">>)),
     {Inv, P1} = recv_req(Dev, <<"INVITE">>),
@@ -97,8 +112,10 @@ tcp_call_through_the_edge(Config) ->
     [N1, N2, _] = ?config(nodes, Config),
     [P1, P2, _] = ?config(ports, Config),
     {ok, T} = gen_tcp:connect({127, 0, 0, 1}, P1, [binary, {active, false}]),
-    Ct = <<"<sip:alice@192.0.2.9:5070;transport=tcp;ob>"
-           ";+sip.instance=\"<urn:uuid:t1>\";reg-id=1">>,
+    Ct = <<
+        "<sip:alice@192.0.2.9:5070;transport=tcp;ob>"
+        ";+sip.instance=\"<urn:uuid:t1>\";reg-id=1"
+    >>,
     ok = gen_tcp:send(T, tcp_register(lport(T), Ct, 1)),
     {ok, R} = chappe_sip_msg:parse(tcp_recv(T, <<"SIP/2.0">>)),
     ?assertEqual(200, chappe_sip_msg:status(R)),
@@ -108,8 +125,10 @@ tcp_call_through_the_edge(Config) ->
     {ok, Caller} = udp(),
     send(Caller, P2, invite(lport(Caller), <<"ct1">>)),
     {ok, Inv} = chappe_sip_msg:parse(tcp_recv(T, <<"INVITE">>)),
-    ?assertEqual(<<"sip:alice@192.0.2.9:5070;transport=tcp;ob">>,
-                 chappe_sip_msg:uri(Inv)),
+    ?assertEqual(
+        <<"sip:alice@192.0.2.9:5070;transport=tcp;ob">>,
+        chappe_sip_msg:uri(Inv)
+    ),
     ok = gen_tcp:send(T, busy(Inv)),
     _ = recv_status(Caller, 486),
     gen_tcp:close(T).
@@ -134,14 +153,24 @@ ws_call_through_the_edge(Config) ->
     {ok, Caller} = udp(),
     send(Caller, P2, invite(lport(Caller), <<"cw1">>)),
     {ok, M} = chappe_sip_msg:parse(recv_ws(<<"INVITE ">>)),
-    ?assertEqual(<<"sip:alice@df7jal23ls0d.invalid;transport=ws">>,
-                 chappe_sip_msg:uri(M)),
+    ?assertEqual(
+        <<"sip:alice@df7jal23ls0d.invalid;transport=ws">>,
+        chappe_sip_msg:uri(M)
+    ),
     RRs = chappe_sip_msg:get_all(<<"record-route">>, M),
     ?assertEqual(2, length(RRs)),
     ok = ws:send(C, {text, ws_ok_for(M, RRs)}),
     _ = recv_status(Caller, 200),
-    send(Caller, P1, bye_to(lport(Caller), <<"cw1">>, ws_contact_uri(),
-                            lists:reverse(RRs))),
+    send(
+        Caller,
+        P1,
+        bye_to(
+            lport(Caller),
+            <<"cw1">>,
+            ws_contact_uri(),
+            lists:reverse(RRs)
+        )
+    ),
     {ok, Bye} = chappe_sip_msg:parse(recv_ws(<<"BYE ">>)),
     ok = ws:send(C, {text, response(<<"200 OK">>, Bye, [])}),
     _ = recv_status(Caller, 200),
@@ -160,20 +189,45 @@ ws_call_through_the_edge(Config) ->
 %% is another device's.
 conn_token_refused_on_another_node(Config) ->
     [N1, N2, _] = ?config(nodes, Config),
-    RR = erpc:call(N1, chappe_sip_route, record_route,
-                   [<<"sip:127.0.0.1:5060">>, {undefined, {conn, 5}}, <<"cn1">>]),
-    ?assert(erpc:call(N1, chappe_sip_route, is_self, [RR, undefined, <<"cn1">>])),
-    ?assertNot(erpc:call(N2, chappe_sip_route, is_self, [RR, undefined, <<"cn1">>])),
+    RR = erpc:call(
+        N1,
+        chappe_sip_route,
+        record_route,
+        [<<"sip:127.0.0.1:5060">>, {undefined, {conn, 5}}, <<"cn1">>]
+    ),
+    ?assert(
+        erpc:call(N1, chappe_sip_route, is_self, [RR, undefined, <<"cn1">>])
+    ),
+    ?assertNot(
+        erpc:call(N2, chappe_sip_route, is_self, [RR, undefined, <<"cn1">>])
+    ),
     Exp = erlang:system_time(second) + 60,
-    Edge = erpc:call(N1, chappe_sip_flow, edge_route,
-                     [<<"sip:127.0.0.1:5060">>, {conn, 5}, <<"tcp">>, Exp]),
-    ?assert(erpc:call(N1, chappe_sip_route, is_self, [Edge, undefined, <<"x">>])),
-    ?assertNot(erpc:call(N2, chappe_sip_route, is_self, [Edge, undefined, <<"x">>])),
+    Edge = erpc:call(
+        N1,
+        chappe_sip_flow,
+        edge_route,
+        [<<"sip:127.0.0.1:5060">>, {conn, 5}, <<"tcp">>, Exp]
+    ),
+    ?assert(
+        erpc:call(N1, chappe_sip_route, is_self, [Edge, undefined, <<"x">>])
+    ),
+    ?assertNot(
+        erpc:call(N2, chappe_sip_route, is_self, [Edge, undefined, <<"x">>])
+    ),
     %% a UDP address is the same place from either node
-    Udp = erpc:call(N1, chappe_sip_route, record_route,
-                    [<<"sip:127.0.0.1:5060">>, {undefined, {udp, <<"192.0.2.7">>, 5070}},
-                     <<"cn1">>]),
-    ?assert(erpc:call(N2, chappe_sip_route, is_self, [Udp, undefined, <<"cn1">>])).
+    Udp = erpc:call(
+        N1,
+        chappe_sip_route,
+        record_route,
+        [
+            <<"sip:127.0.0.1:5060">>,
+            {undefined, {udp, <<"192.0.2.7">>, 5070}},
+            <<"cn1">>
+        ]
+    ),
+    ?assert(
+        erpc:call(N2, chappe_sip_route, is_self, [Udp, undefined, <<"cn1">>])
+    ).
 
 %% The connection an edge route names is gone without the edge hearing of
 %% it: the edge answers 430 Flow Failed (RFC 5626 5.3) and drops the
@@ -197,7 +251,9 @@ dead_flow_at_the_edge(Config) ->
         send(Caller, P1, invite_routed(lport(Caller), <<"cf2">>, Edge)),
         _ = recv_status(Caller, 430),
         %% still stored: node 1 could not write the removal
-        ?assertMatch({ok, [_], _}, erpc:call(N2, chappe_cluster, get, [key(?AOR)]))
+        ?assertMatch(
+            {ok, [_], _}, erpc:call(N2, chappe_cluster, get, [key(?AOR)])
+        )
     after
         heal(N1, [N2, N3])
     end,
@@ -212,22 +268,41 @@ flow_index_follows_a_sweep(Config) ->
     {ok, Sweeper} = wait_sweeper(N0),
     %% a node the sweep does not run on
     [N1 | _] = Nodes -- [node(Sweeper)],
-    {ok, [_]} = erpc:call(N1, chappe_sip_registry, register_contacts,
-                          [reg_req([contact(1, 2)], <<"ix1">>, 1), #{flow => 7}]),
+    {ok, [_]} = erpc:call(
+        N1,
+        chappe_sip_registry,
+        register_contacts,
+        [reg_req([contact(1, 2)], <<"ix1">>, 1), #{flow => 7}]
+    ),
     ?assertNotEqual([], flow_index(N1)),
-    wait(fun() -> erpc:call(N1, chappe_cluster, get, [key(aor())]) =:= not_found end, 300),
+    wait(
+        fun() ->
+            erpc:call(N1, chappe_cluster, get, [key(aor())]) =:= not_found
+        end,
+        300
+    ),
     wait(fun() -> flow_index(N1) =:= [] end, 100).
 
 %% The device registers again through node 2: its binding is node 2's now,
 %% and node 1's index lets go of it.
 flow_index_follows_a_move(Config) ->
     [N1, N2 | _] = ?config(nodes, Config),
-    {ok, [_]} = erpc:call(N1, chappe_sip_registry, register_contacts,
-                          [reg_req([contact(1, 3600)], <<"ix2">>, 1), #{flow => 7}]),
+    {ok, [_]} = erpc:call(
+        N1,
+        chappe_sip_registry,
+        register_contacts,
+        [reg_req([contact(1, 3600)], <<"ix2">>, 1), #{flow => 7}]
+    ),
     ?assertNotEqual([], flow_index(N1)),
-    wait(fun() -> length(erpc:call(N2, chappe_sip_registry, bindings, [aor()])) =:= 1 end),
-    {ok, [B]} = erpc:call(N2, chappe_sip_registry, register_contacts,
-                          [reg_req([contact(1, 3600)], <<"ix3">>, 1), #{flow => 9}]),
+    wait(fun() ->
+        length(erpc:call(N2, chappe_sip_registry, bindings, [aor()])) =:= 1
+    end),
+    {ok, [B]} = erpc:call(
+        N2,
+        chappe_sip_registry,
+        register_contacts,
+        [reg_req([contact(1, 3600)], <<"ix3">>, 1), #{flow => 9}]
+    ),
     ?assertEqual(N2, maps:get(node, B)),
     wait(fun() -> flow_index(N1) =:= [] end, 100),
     ?assertNotEqual([], flow_index(N2)).
@@ -237,11 +312,24 @@ flow_index_follows_a_move(Config) ->
 %% is still handled at once.
 resync_without_quorum_does_not_block(Config) ->
     [N1, N2, N3] = ?config(nodes, Config),
-    [{ok, [_]} = erpc:call(N1, chappe_sip_registry, register_contacts,
-                           [reg_req(<<"<sip:u", (integer_to_binary(I))/binary, "@example.com>">>,
-                                    [contact(1, 3600)], <<"rq">>, 1),
-                            #{flow => 100 + I}])
-     || I <- lists:seq(1, 20)],
+    [
+        {ok, [_]} = erpc:call(
+            N1,
+            chappe_sip_registry,
+            register_contacts,
+            [
+                reg_req(
+                    <<"<sip:u", (integer_to_binary(I))/binary,
+                        "@example.com>">>,
+                    [contact(1, 3600)],
+                    <<"rq">>,
+                    1
+                ),
+                #{flow => 100 + I}
+            ]
+        )
+     || I <- lists:seq(1, 20)
+    ],
     Reg = erpc:call(N1, erlang, whereis, [chappe_sip_registry]),
     cut(N1, [N2, N3]),
     try
@@ -265,15 +353,28 @@ reg_req(Contacts, CallId, CSeq) ->
 
 reg_req(Aor, Contacts, CallId, CSeq) ->
     Raw = iolist_to_binary(
-      [<<"REGISTER sip:example.com SIP/2.0\r\n">>,
-       <<"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKix">>, CallId, <<"\r\n">>,
-       <<"Max-Forwards: 70\r\n">>,
-       <<"From: ">>, Aor, <<";tag=ft\r\n">>,
-       <<"To: ">>, Aor, <<"\r\n">>,
-       <<"Call-ID: ">>, CallId, <<"@ct\r\n">>,
-       <<"CSeq: ">>, integer_to_binary(CSeq), <<" REGISTER\r\n">>,
-       [[<<"Contact: ">>, C, <<"\r\n">>] || C <- Contacts],
-       <<"Content-Length: 0\r\n\r\n">>]),
+        [
+            <<"REGISTER sip:example.com SIP/2.0\r\n">>,
+            <<"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKix">>,
+            CallId,
+            <<"\r\n">>,
+            <<"Max-Forwards: 70\r\n">>,
+            <<"From: ">>,
+            Aor,
+            <<";tag=ft\r\n">>,
+            <<"To: ">>,
+            Aor,
+            <<"\r\n">>,
+            <<"Call-ID: ">>,
+            CallId,
+            <<"@ct\r\n">>,
+            <<"CSeq: ">>,
+            integer_to_binary(CSeq),
+            <<" REGISTER\r\n">>,
+            [[<<"Contact: ">>, C, <<"\r\n">>] || C <- Contacts],
+            <<"Content-Length: 0\r\n\r\n">>
+        ]
+    ),
     {ok, Msg} = chappe_sip_msg:parse(Raw),
     chappe_sip_req:new(Msg, undefined, #{}).
 
@@ -310,8 +411,10 @@ transport_503_on_a_closed_flow(Config) ->
     [N1, N2, _] = ?config(nodes, Config),
     [P1, P2, _] = ?config(ports, Config),
     {ok, T} = gen_tcp:connect({127, 0, 0, 1}, P1, [binary, {active, false}]),
-    Ct = <<"<sip:alice@192.0.2.9:5070;transport=tcp;ob>"
-           ";+sip.instance=\"<urn:uuid:t5>\";reg-id=1">>,
+    Ct = <<
+        "<sip:alice@192.0.2.9:5070;transport=tcp;ob>"
+        ";+sip.instance=\"<urn:uuid:t5>\";reg-id=1"
+    >>,
     ok = gen_tcp:send(T, tcp_register(lport(T), Ct, 1)),
     {ok, _} = chappe_sip_msg:parse(tcp_recv(T, <<"SIP/2.0">>)),
     [_] = wait_bindings(N2, 1),
@@ -337,50 +440,82 @@ transport_503_on_a_closed_flow(Config) ->
 %% an RFC 5626 TCP binding on Node whose connection does not exist
 dead_conn_binding(Node, CallId) ->
     Raw = iolist_to_binary(
-      [<<"REGISTER sip:127.0.0.1 SIP/2.0\r\n">>,
-       <<"Via: SIP/2.0/TCP 127.0.0.1:5999;branch=z9hG4bK", CallId/binary, "\r\n">>,
-       <<"Max-Forwards: 70\r\n">>,
-       <<"From: <sip:alice@127.0.0.1>;tag=ft\r\n">>,
-       <<"To: <sip:alice@127.0.0.1>\r\n">>,
-       <<"Call-ID: ", CallId/binary, "@ct\r\nCSeq: 1 REGISTER\r\n">>,
-       <<"Contact: <sip:alice@192.0.2.9:5070;transport=tcp;ob>"
-         ";+sip.instance=\"<urn:uuid:", CallId/binary, ">\";reg-id=1\r\n">>,
-       <<"Supported: outbound\r\nExpires: 3600\r\nContent-Length: 0\r\n\r\n">>]),
+        [
+            <<"REGISTER sip:127.0.0.1 SIP/2.0\r\n">>,
+            <<"Via: SIP/2.0/TCP 127.0.0.1:5999;branch=z9hG4bK", CallId/binary,
+                "\r\n">>,
+            <<"Max-Forwards: 70\r\n">>,
+            <<"From: <sip:alice@127.0.0.1>;tag=ft\r\n">>,
+            <<"To: <sip:alice@127.0.0.1>\r\n">>,
+            <<"Call-ID: ", CallId/binary, "@ct\r\nCSeq: 1 REGISTER\r\n">>,
+            <<
+                "Contact: <sip:alice@192.0.2.9:5070;transport=tcp;ob>"
+                ";+sip.instance=\"<urn:uuid:",
+                CallId/binary,
+                ">\";reg-id=1\r\n"
+            >>,
+            <<"Supported: outbound\r\nExpires: 3600\r\nContent-Length: 0\r\n\r\n">>
+        ]
+    ),
     {ok, Msg} = chappe_sip_msg:parse(Raw),
-    erpc:call(Node, chappe_sip_registry, register_contacts,
-              [chappe_sip_req:new(Msg, undefined, #{}),
-               #{outbound_flow => {conn, 987654}, transport => <<"tcp">>}]).
+    erpc:call(
+        Node,
+        chappe_sip_registry,
+        register_contacts,
+        [
+            chappe_sip_req:new(Msg, undefined, #{}),
+            #{outbound_flow => {conn, 987654}, transport => <<"tcp">>}
+        ]
+    ).
 
 invite_routed(LP, CallId, Route) ->
     P = integer_to_binary(LP),
-    <<"INVITE sip:alice@192.0.2.9:5070;transport=tcp;ob SIP/2.0\r\n"
-      "Via: SIP/2.0/UDP 127.0.0.1:", P/binary, ";rport;branch=z9hG4bKcr", CallId/binary, "\r\n"
-      "Route: ", Route/binary, "\r\n"
-      "Max-Forwards: 70\r\n"
-      "From: <sip:bob@127.0.0.1>;tag=cb\r\n"
-      "To: <sip:alice@127.0.0.1>\r\n"
-      "Contact: <sip:bob@127.0.0.1:", P/binary, ">\r\n"
-      "Call-ID: ", CallId/binary, "@ct\r\nCSeq: 1 INVITE\r\n"
-      "Content-Length: 0\r\n\r\n">>.
+    <<
+        "INVITE sip:alice@192.0.2.9:5070;transport=tcp;ob SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:",
+        P/binary,
+        ";rport;branch=z9hG4bKcr",
+        CallId/binary,
+        "\r\n"
+        "Route: ",
+        Route/binary,
+        "\r\n"
+        "Max-Forwards: 70\r\n"
+        "From: <sip:bob@127.0.0.1>;tag=cb\r\n"
+        "To: <sip:alice@127.0.0.1>\r\n"
+        "Contact: <sip:bob@127.0.0.1:",
+        P/binary,
+        ">\r\n"
+        "Call-ID: ",
+        CallId/binary,
+        "@ct\r\nCSeq: 1 INVITE\r\n"
+        "Content-Length: 0\r\n\r\n"
+    >>.
 
 %% Node can no longer reach Others, nor they it (a cookie apart, so
 %% distribution does not reconnect)
 cut(Node, Others) ->
-    [begin
-         true = erpc:call(Node, erlang, set_cookie, [N, 'clc-cut-a']),
-         true = erpc:call(N, erlang, set_cookie, [Node, 'clc-cut-b']),
-         _ = erpc:call(Node, erlang, disconnect_node, [N]),
-         _ = erpc:call(N, erlang, disconnect_node, [Node])
-     end || N <- Others],
+    [
+        begin
+            true = erpc:call(Node, erlang, set_cookie, [N, 'clc-cut-a']),
+            true = erpc:call(N, erlang, set_cookie, [Node, 'clc-cut-b']),
+            _ = erpc:call(Node, erlang, disconnect_node, [N]),
+            _ = erpc:call(N, erlang, disconnect_node, [Node])
+        end
+     || N <- Others
+    ],
     ok.
 
 heal(Node, Others) ->
     Cookie = erlang:get_cookie(),
-    [begin
-         _ = erpc:call(Node, erlang, set_cookie, [N, Cookie]),
-         _ = erpc:call(N, erlang, set_cookie, [Node, Cookie]),
-         _ = erpc:call(N, net_kernel, connect_node, [Node])
-     end || N <- Others],
+    [
+        begin
+            _ = erpc:call(Node, erlang, set_cookie, [N, Cookie]),
+            _ = erpc:call(N, erlang, set_cookie, [Node, Cookie]),
+            _ = erpc:call(N, net_kernel, connect_node, [Node])
+        end
+     || N <- Others
+    ],
     ok.
 
 %% A UA reachable at its Contact gets no edge route: node 2 sends to it
@@ -405,9 +540,15 @@ public_contact_is_sent_directly(Config) ->
 cseq_and_expires_across_nodes(Config) ->
     [N1, N2, N3] = ?config(nodes, Config),
     {ok, [_]} = reg(N1, [contact(1, 3600)], undefined, <<"c1">>, 5),
-    wait(fun() -> length(erpc:call(N2, chappe_sip_registry, bindings, [aor()])) =:= 1 end),
-    ?assertEqual({error, 400}, reg(N2, [contact(1, 1800)], undefined, <<"c1">>, 5)),
-    ?assertEqual({error, 400}, reg(N2, [contact(1, 1800)], undefined, <<"c1">>, 4)),
+    wait(fun() ->
+        length(erpc:call(N2, chappe_sip_registry, bindings, [aor()])) =:= 1
+    end),
+    ?assertEqual(
+        {error, 400}, reg(N2, [contact(1, 1800)], undefined, <<"c1">>, 5)
+    ),
+    ?assertEqual(
+        {error, 400}, reg(N2, [contact(1, 1800)], undefined, <<"c1">>, 4)
+    ),
     {ok, [B2]} = reg(N2, [contact(1, 60)], undefined, <<"c1">>, 6),
     ?assert(maps:get(expires, B2) =< 60),
     wait(fun() ->
@@ -415,11 +556,15 @@ cseq_and_expires_across_nodes(Config) ->
         E =< 60
     end),
     {ok, []} = reg(N3, [contact(1, 0)], undefined, <<"c1">>, 7),
-    wait(fun() -> erpc:call(N1, chappe_sip_registry, bindings, [aor()]) =:= [] end),
+    wait(fun() ->
+        erpc:call(N1, chappe_sip_registry, bindings, [aor()]) =:= []
+    end),
     {ok, [_]} = reg(N1, [contact(2, 3600)], undefined, <<"c2">>, 1),
     {ok, [_, _]} = reg(N2, [contact(3, 3600)], undefined, <<"c3">>, 1),
     {ok, []} = reg(N3, [<<"*">>], 0, <<"c4">>, 1),
-    wait(fun() -> erpc:call(N1, chappe_sip_registry, bindings, [aor()]) =:= [] end),
+    wait(fun() ->
+        erpc:call(N1, chappe_sip_registry, bindings, [aor()]) =:= []
+    end),
     ?assertEqual(not_found, erpc:call(N1, chappe_cluster, get, [key(aor())])).
 
 %% Node 1 stops: its UDP binding behind a NAT is reached directly at its
@@ -432,8 +577,10 @@ edge_node_down(Config) ->
     send(Dev, P1, register_req(lport(Dev), 3600, 1, ?NAT_CONTACT)),
     _ = recv_status(Dev, 200),
     {ok, T} = gen_tcp:connect({127, 0, 0, 1}, P1, [binary, {active, false}]),
-    Ct = <<"<sip:alice@192.0.2.9:5070;transport=tcp;ob>"
-           ";+sip.instance=\"<urn:uuid:t2>\";reg-id=1">>,
+    Ct = <<
+        "<sip:alice@192.0.2.9:5070;transport=tcp;ob>"
+        ";+sip.instance=\"<urn:uuid:t2>\";reg-id=1"
+    >>,
     ok = gen_tcp:send(T, tcp_register(lport(T), Ct, 1)),
     {ok, _} = chappe_sip_msg:parse(tcp_recv(T, <<"SIP/2.0">>)),
     [_, _] = wait_bindings(N2, 2),
@@ -482,30 +629,56 @@ sweep_singleton_moves(Config) ->
     {ok, [_]} = reg(Other, [contact(1, 2)], undefined, <<"s1">>, 1),
     {Peer, Owner} = lists:keyfind(Owner, 2, Peers),
     ok = stop_peer(Peer),
-    wait(fun() ->
-        case erpc:call(Other, chappe_cluster, whereis_singleton, [sweep_name()]) of
-            {ok, P} -> node(P) =/= Owner;
-            none -> false
-        end
-    end, 300),
-    wait(fun() -> erpc:call(Other, chappe_cluster, get, [key(aor())]) =:= not_found end, 300).
+    wait(
+        fun() ->
+            case
+                erpc:call(Other, chappe_cluster, whereis_singleton, [
+                    sweep_name()
+                ])
+            of
+                {ok, P} -> node(P) =/= Owner;
+                none -> false
+            end
+        end,
+        300
+    ),
+    wait(
+        fun() ->
+            erpc:call(Other, chappe_cluster, get, [key(aor())]) =:= not_found
+        end,
+        300
+    ).
 
 %% Kill the sweep: a new one starts, found from every node.
 sweep_child_restarts_after_a_crash(Config) ->
     Nodes = [N1 | _] = ?config(nodes, Config),
     {ok, Pid} = wait_sweeper(N1),
     exit(Pid, kill),
-    wait(fun() ->
-        lists:all(
-          fun(N) ->
-              case erpc:call(N, chappe_cluster, whereis_singleton, [sweep_name()]) of
-                  {ok, P} -> P =/= Pid andalso is_pid(P);
-                  none -> false
-              end
-          end, Nodes)
-    end, 300),
+    wait(
+        fun() ->
+            lists:all(
+                fun(N) ->
+                    case
+                        erpc:call(N, chappe_cluster, whereis_singleton, [
+                            sweep_name()
+                        ])
+                    of
+                        {ok, P} -> P =/= Pid andalso is_pid(P);
+                        none -> false
+                    end
+                end,
+                Nodes
+            )
+        end,
+        300
+    ),
     {ok, [_]} = reg(N1, [contact(1, 2)], undefined, <<"s2">>, 1),
-    wait(fun() -> erpc:call(N1, chappe_cluster, get, [key(aor())]) =:= not_found end, 300).
+    wait(
+        fun() ->
+            erpc:call(N1, chappe_cluster, get, [key(aor())]) =:= not_found
+        end,
+        300
+    ).
 
 %% ---- peer nodes ----
 
@@ -521,7 +694,9 @@ dist() ->
     end.
 
 peer(Base) ->
-    Name = list_to_atom(Base ++ "_" ++ integer_to_list(erlang:unique_integer([positive]))),
+    Name = list_to_atom(
+        Base ++ "_" ++ integer_to_list(erlang:unique_integer([positive]))
+    ),
     Paths = lists:append([["-pa", P] || P <- code:get_path()]),
     [_, Host] = string:split(atom_to_list(node()), "@"),
     {ok, Peer, Node} = peer:start_link(#{
@@ -537,8 +712,11 @@ connect(Node, 0) ->
     error({no_connection, Node});
 connect(Node, N) ->
     case net_kernel:connect_node(Node) of
-        true -> ok;
-        _ -> timer:sleep(200), connect(Node, N - 1)
+        true ->
+            ok;
+        _ ->
+            timer:sleep(200),
+            connect(Node, N - 1)
     end.
 
 stop_peer(Peer) ->
@@ -550,21 +728,36 @@ stop_peer(Peer) ->
 
 %% chappe_cluster on Node, one of Voters
 start_cluster(Node, Voters, Dir) ->
-    Cluster = #{voters => Voters, lease_ms => ?LEASE, renew_ms => ?RENEW,
-                command_timeout => 2000, data_dir => Dir},
+    Cluster = #{
+        voters => Voters,
+        lease_ms => ?LEASE,
+        renew_ms => ?RENEW,
+        command_timeout => 2000,
+        data_dir => Dir
+    },
     ok = erpc:call(Node, application, load, [chappe_cluster]),
-    [ok = erpc:call(Node, application, set_env, [chappe_cluster, K, V]) || K := V <- Cluster],
+    [
+        ok = erpc:call(Node, application, set_env, [chappe_cluster, K, V])
+     || K := V <- Cluster
+    ],
     {ok, _} = erpc:call(Node, application, ensure_all_started, [chappe_cluster]),
     ok.
 
 %% chappe_sip on a cluster, a registrar and the call handler; the engine's
 %% port
 start_sip(Node) ->
-    Sip = #{engine_mod => chappe_sip_nif, cluster => chappe_cluster,
-            registrar_min_expires => 0, registrar_sweep_ms => 300,
-            flow_token_secret => <<"clc-shared-secret-0123">>},
+    Sip = #{
+        engine_mod => chappe_sip_nif,
+        cluster => chappe_cluster,
+        registrar_min_expires => 0,
+        registrar_sweep_ms => 300,
+        flow_token_secret => <<"clc-shared-secret-0123">>
+    },
     ok = erpc:call(Node, application, load, [chappe_sip]),
-    [ok = erpc:call(Node, application, set_env, [chappe_sip, K, V]) || K := V <- Sip],
+    [
+        ok = erpc:call(Node, application, set_env, [chappe_sip, K, V])
+     || K := V <- Sip
+    ],
     {ok, _} = erpc:call(Node, application, ensure_all_started, [chappe_sip]),
     Port = pick(),
     WsPort = pick(),
@@ -573,9 +766,13 @@ start_sip(Node) ->
 
 %% runs on the peer
 serve(Port, WsPort) ->
-    ok = chappe_sip:start(#{contact => <<"sip:127.0.0.1:", (integer_to_binary(Port))/binary>>,
-                            ws => #{port => WsPort}}),
-    ok = chappe_sip:register(chappe_sip:registrar(#{allow_unauthenticated => true})),
+    ok = chappe_sip:start(#{
+        contact => <<"sip:127.0.0.1:", (integer_to_binary(Port))/binary>>,
+        ws => #{port => WsPort}
+    }),
+    ok = chappe_sip:register(
+        chappe_sip:registrar(#{allow_unauthenticated => true})
+    ),
     chappe_sip:invite(fun ?MODULE:call/2).
 
 call(Req, Res) ->
@@ -591,28 +788,41 @@ pick() ->
 pick(0) ->
     error(no_free_port);
 pick(N) ->
-    Port = 17000 + (erlang:phash2(os:getpid(), 1000) +
-                    erlang:unique_integer([positive, monotonic])) rem 1000,
+    Port =
+        17000 +
+            (erlang:phash2(os:getpid(), 1000) +
+                erlang:unique_integer([positive, monotonic])) rem 1000,
     case gen_udp:open(Port, [{ip, {127, 0, 0, 1}}]) of
         {ok, S} ->
             ok = gen_udp:close(S),
             case gen_tcp:listen(Port, [{ip, {127, 0, 0, 1}}]) of
-                {ok, L} -> ok = gen_tcp:close(L), Port;
-                {error, _} -> pick(N - 1)
+                {ok, L} ->
+                    ok = gen_tcp:close(L),
+                    Port;
+                {error, _} ->
+                    pick(N - 1)
             end;
         {error, _} ->
             pick(N - 1)
     end.
 
 wait_sweeper(Node) ->
-    wait(fun() -> erpc:call(Node, chappe_cluster, whereis_singleton, [sweep_name()]) =/= none end, 300),
+    wait(
+        fun() ->
+            erpc:call(Node, chappe_cluster, whereis_singleton, [sweep_name()]) =/=
+                none
+        end,
+        300
+    ),
     erpc:call(Node, chappe_cluster, whereis_singleton, [sweep_name()]).
 
 sweep_name() ->
     chappe_sip_registry_sweep.
 
 wait_bindings(Node, N) ->
-    wait(fun() -> length(erpc:call(Node, chappe_sip, bindings, [?AOR])) =:= N end),
+    wait(fun() ->
+        length(erpc:call(Node, chappe_sip, bindings, [?AOR])) =:= N
+    end),
     erpc:call(Node, chappe_sip, bindings, [?AOR]).
 
 wait(F) ->
@@ -621,9 +831,18 @@ wait(F) ->
 wait(F, 0) ->
     ?assert(F());
 wait(F, N) ->
-    case try F() catch _:_ -> false end of
-        true -> ok;
-        _ -> timer:sleep(100), wait(F, N - 1)
+    case
+        try
+            F()
+        catch
+            _:_ -> false
+        end
+    of
+        true ->
+            ok;
+        _ ->
+            timer:sleep(100),
+            wait(F, N - 1)
     end.
 
 key(Aor) ->
@@ -641,22 +860,37 @@ contact(N, Exp) ->
 reg(Node, Contacts, ExpiresHdr, CallId, CSeq) ->
     CS = integer_to_binary(CSeq),
     Raw = iolist_to_binary(
-      [<<"REGISTER sip:example.com SIP/2.0\r\n">>,
-       <<"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKreg\r\n">>,
-       <<"Max-Forwards: 70\r\n">>,
-       <<"From: ">>, aor(), <<";tag=ft\r\n">>,
-       <<"To: ">>, aor(), <<"\r\n">>,
-       <<"Call-ID: ">>, CallId, <<"@ct\r\n">>,
-       <<"CSeq: ">>, CS, <<" REGISTER\r\n">>,
-       [[<<"Contact: ">>, C, <<"\r\n">>] || C <- Contacts],
-       case ExpiresHdr of
-           undefined -> [];
-           E -> [<<"Expires: ">>, integer_to_binary(E), <<"\r\n">>]
-       end,
-       <<"Content-Length: 0\r\n\r\n">>]),
+        [
+            <<"REGISTER sip:example.com SIP/2.0\r\n">>,
+            <<"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKreg\r\n">>,
+            <<"Max-Forwards: 70\r\n">>,
+            <<"From: ">>,
+            aor(),
+            <<";tag=ft\r\n">>,
+            <<"To: ">>,
+            aor(),
+            <<"\r\n">>,
+            <<"Call-ID: ">>,
+            CallId,
+            <<"@ct\r\n">>,
+            <<"CSeq: ">>,
+            CS,
+            <<" REGISTER\r\n">>,
+            [[<<"Contact: ">>, C, <<"\r\n">>] || C <- Contacts],
+            case ExpiresHdr of
+                undefined -> [];
+                E -> [<<"Expires: ">>, integer_to_binary(E), <<"\r\n">>]
+            end,
+            <<"Content-Length: 0\r\n\r\n">>
+        ]
+    ),
     {ok, Msg} = chappe_sip_msg:parse(Raw),
-    erpc:call(Node, chappe_sip_registry, register_contacts,
-              [chappe_sip_req:new(Msg, undefined, #{}), #{}]).
+    erpc:call(
+        Node,
+        chappe_sip_registry,
+        register_contacts,
+        [chappe_sip_req:new(Msg, undefined, #{}), #{}]
+    ).
 
 own_contact(Sock) ->
     <<"<sip:alice@127.0.0.1:", (integer_to_binary(lport(Sock)))/binary, ">">>.
@@ -665,42 +899,73 @@ register_req(LP, Exp, CSeq, Contact) ->
     P = integer_to_binary(LP),
     CS = integer_to_binary(CSeq),
     iolist_to_binary(
-      [<<"REGISTER sip:127.0.0.1 SIP/2.0\r\n">>,
-       <<"Via: SIP/2.0/UDP 127.0.0.1:", P/binary, ";rport;branch=z9hG4bKr", CS/binary, "\r\n">>,
-       <<"Max-Forwards: 70\r\n">>,
-       <<"From: Alice <sip:alice@127.0.0.1>;tag=ft\r\n">>,
-       <<"To: Alice <sip:alice@127.0.0.1>\r\n">>,
-       <<"Contact: ">>, Contact, <<"\r\n">>,
-       <<"Expires: ">>, integer_to_binary(Exp), <<"\r\n">>,
-       <<"Call-ID: reg-">>, P, <<"@ct\r\n">>,
-       <<"CSeq: ">>, CS, <<" REGISTER\r\nContent-Length: 0\r\n\r\n">>]).
+        [
+            <<"REGISTER sip:127.0.0.1 SIP/2.0\r\n">>,
+            <<"Via: SIP/2.0/UDP 127.0.0.1:", P/binary, ";rport;branch=z9hG4bKr",
+                CS/binary, "\r\n">>,
+            <<"Max-Forwards: 70\r\n">>,
+            <<"From: Alice <sip:alice@127.0.0.1>;tag=ft\r\n">>,
+            <<"To: Alice <sip:alice@127.0.0.1>\r\n">>,
+            <<"Contact: ">>,
+            Contact,
+            <<"\r\n">>,
+            <<"Expires: ">>,
+            integer_to_binary(Exp),
+            <<"\r\n">>,
+            <<"Call-ID: reg-">>,
+            P,
+            <<"@ct\r\n">>,
+            <<"CSeq: ">>,
+            CS,
+            <<" REGISTER\r\nContent-Length: 0\r\n\r\n">>
+        ]
+    ).
 
 tcp_register(LP, Contact, CSeq) ->
     P = integer_to_binary(LP),
     iolist_to_binary(
-      [<<"REGISTER sip:127.0.0.1 SIP/2.0\r\n">>,
-       <<"Via: SIP/2.0/TCP 127.0.0.1:", P/binary, ";branch=z9hG4bKt">>,
-       integer_to_binary(CSeq), <<"\r\n">>,
-       <<"Max-Forwards: 70\r\n">>,
-       <<"From: Alice <sip:alice@127.0.0.1>;tag=ft\r\n">>,
-       <<"To: Alice <sip:alice@127.0.0.1>\r\n">>,
-       <<"Contact: ">>, Contact, <<"\r\n">>,
-       <<"Supported: outbound\r\n">>,
-       <<"Expires: 3600\r\n">>,
-       <<"Call-ID: treg-">>, P, <<"@ct\r\n">>,
-       <<"CSeq: ">>, integer_to_binary(CSeq),
-       <<" REGISTER\r\nContent-Length: 0\r\n\r\n">>]).
+        [
+            <<"REGISTER sip:127.0.0.1 SIP/2.0\r\n">>,
+            <<"Via: SIP/2.0/TCP 127.0.0.1:", P/binary, ";branch=z9hG4bKt">>,
+            integer_to_binary(CSeq),
+            <<"\r\n">>,
+            <<"Max-Forwards: 70\r\n">>,
+            <<"From: Alice <sip:alice@127.0.0.1>;tag=ft\r\n">>,
+            <<"To: Alice <sip:alice@127.0.0.1>\r\n">>,
+            <<"Contact: ">>,
+            Contact,
+            <<"\r\n">>,
+            <<"Supported: outbound\r\n">>,
+            <<"Expires: 3600\r\n">>,
+            <<"Call-ID: treg-">>,
+            P,
+            <<"@ct\r\n">>,
+            <<"CSeq: ">>,
+            integer_to_binary(CSeq),
+            <<" REGISTER\r\nContent-Length: 0\r\n\r\n">>
+        ]
+    ).
 
 invite(LP, CallId) ->
     P = integer_to_binary(LP),
-    <<"INVITE sip:alice@127.0.0.1 SIP/2.0\r\n"
-      "Via: SIP/2.0/UDP 127.0.0.1:", P/binary, ";rport;branch=z9hG4bKci", CallId/binary, "\r\n"
-      "Max-Forwards: 70\r\n"
-      "From: <sip:bob@127.0.0.1>;tag=cb\r\n"
-      "To: <sip:alice@127.0.0.1>\r\n"
-      "Contact: <sip:bob@127.0.0.1:", P/binary, ">\r\n"
-      "Call-ID: ", CallId/binary, "@ct\r\nCSeq: 1 INVITE\r\n"
-      "Content-Length: 0\r\n\r\n">>.
+    <<
+        "INVITE sip:alice@127.0.0.1 SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:",
+        P/binary,
+        ";rport;branch=z9hG4bKci",
+        CallId/binary,
+        "\r\n"
+        "Max-Forwards: 70\r\n"
+        "From: <sip:bob@127.0.0.1>;tag=cb\r\n"
+        "To: <sip:alice@127.0.0.1>\r\n"
+        "Contact: <sip:bob@127.0.0.1:",
+        P/binary,
+        ">\r\n"
+        "Call-ID: ",
+        CallId/binary,
+        "@ct\r\nCSeq: 1 INVITE\r\n"
+        "Content-Length: 0\r\n\r\n"
+    >>.
 
 bye(LP, CallId, Routes) ->
     bye_to(LP, CallId, <<"sip:alice@192.0.2.50:5060">>, Routes).
@@ -708,78 +973,113 @@ bye(LP, CallId, Routes) ->
 bye_to(LP, CallId, Target, Routes) ->
     P = integer_to_binary(LP),
     iolist_to_binary(
-      [<<"BYE ", Target/binary, " SIP/2.0\r\n">>,
-       <<"Via: SIP/2.0/UDP 127.0.0.1:", P/binary, ";rport;branch=z9hG4bKby", CallId/binary, "\r\n">>,
-       [[<<"Route: ">>, R, <<"\r\n">>] || R <- Routes],
-       <<"Max-Forwards: 70\r\n">>,
-       <<"From: <sip:bob@127.0.0.1>;tag=cb\r\n">>,
-       <<"To: <sip:alice@127.0.0.1>;tag=al\r\n">>,
-       <<"Call-ID: ", CallId/binary, "@ct\r\nCSeq: 2 BYE\r\n">>,
-       <<"Content-Length: 0\r\n\r\n">>]).
+        [
+            <<"BYE ", Target/binary, " SIP/2.0\r\n">>,
+            <<"Via: SIP/2.0/UDP 127.0.0.1:", P/binary,
+                ";rport;branch=z9hG4bKby", CallId/binary, "\r\n">>,
+            [[<<"Route: ">>, R, <<"\r\n">>] || R <- Routes],
+            <<"Max-Forwards: 70\r\n">>,
+            <<"From: <sip:bob@127.0.0.1>;tag=cb\r\n">>,
+            <<"To: <sip:alice@127.0.0.1>;tag=al\r\n">>,
+            <<"Call-ID: ", CallId/binary, "@ct\r\nCSeq: 2 BYE\r\n">>,
+            <<"Content-Length: 0\r\n\r\n">>
+        ]
+    ).
 
 %% a 200 to M echoing its Vias and Record-Routes
 ok_for(M, RRs) ->
-    response(<<"200 OK">>, M,
-             [[<<"Record-Route: ">>, R, <<"\r\n">>] || R <- RRs] ++
-                 [<<"Contact: <sip:alice@192.0.2.50:5060>\r\n">>]).
+    response(
+        <<"200 OK">>,
+        M,
+        [[<<"Record-Route: ">>, R, <<"\r\n">>] || R <- RRs] ++
+            [<<"Contact: <sip:alice@192.0.2.50:5060>\r\n">>]
+    ).
 
 busy(M) ->
     response(<<"486 Busy Here">>, M, []).
 
 response(Status, M, Extra) ->
-    Vias = [[<<"Via: ">>, V, <<"\r\n">>] || V <- chappe_sip_msg:get_all(<<"via">>, M)],
+    Vias = [
+        [<<"Via: ">>, V, <<"\r\n">>]
+     || V <- chappe_sip_msg:get_all(<<"via">>, M)
+    ],
     iolist_to_binary(
-      [<<"SIP/2.0 ">>, Status, <<"\r\n">>, Vias,
-       <<"From: ">>, chappe_sip_msg:get(<<"from">>, M), <<"\r\n">>,
-       <<"To: ">>, chappe_sip_msg:get(<<"to">>, M),
-       case chappe_sip_msg:to_tag(M) of
-           undefined -> <<";tag=al">>;
-           _ -> <<>>
-       end, <<"\r\n">>,
-       <<"Call-ID: ">>, chappe_sip_msg:call_id(M), <<"\r\n">>,
-       <<"CSeq: ">>, chappe_sip_msg:get(<<"cseq">>, M), <<"\r\n">>,
-       Extra,
-       <<"Content-Length: 0\r\n\r\n">>]).
+        [
+            <<"SIP/2.0 ">>,
+            Status,
+            <<"\r\n">>,
+            Vias,
+            <<"From: ">>,
+            chappe_sip_msg:get(<<"from">>, M),
+            <<"\r\n">>,
+            <<"To: ">>,
+            chappe_sip_msg:get(<<"to">>, M),
+            case chappe_sip_msg:to_tag(M) of
+                undefined -> <<";tag=al">>;
+                _ -> <<>>
+            end,
+            <<"\r\n">>,
+            <<"Call-ID: ">>,
+            chappe_sip_msg:call_id(M),
+            <<"\r\n">>,
+            <<"CSeq: ">>,
+            chappe_sip_msg:get(<<"cseq">>, M),
+            <<"\r\n">>,
+            Extra,
+            <<"Content-Length: 0\r\n\r\n">>
+        ]
+    ).
 
 %% ---- WebSocket UA ----
 
 ws_connect(WP) ->
     Url = <<"ws://127.0.0.1:", (integer_to_binary(WP))/binary, "/ws">>,
-    {ok, C} = ws:connect(Url, #{handler => chappe_sip_ws_test_client,
-                                handler_opts => #{notify => self()},
-                                subprotocols => [<<"sip">>]}),
+    {ok, C} = ws:connect(Url, #{
+        handler => chappe_sip_ws_test_client,
+        handler_opts => #{notify => self()},
+        subprotocols => [<<"sip">>]
+    }),
     C.
 
 ws_contact_uri() ->
     <<"sip:alice@df7jal23ls0d.invalid;transport=ws">>.
 
 ws_register() ->
-    <<"REGISTER sip:127.0.0.1 SIP/2.0\r\n"
-      "Via: SIP/2.0/WS df7jal23ls0d.invalid;branch=z9hG4bKwsreg\r\n"
-      "Max-Forwards: 70\r\n"
-      "From: <sip:alice@127.0.0.1>;tag=wsreg\r\n"
-      "To: <sip:alice@127.0.0.1>\r\n"
-      "Contact: <sip:alice@df7jal23ls0d.invalid;transport=ws>\r\n"
-      "Call-ID: wsreg-call@ct\r\n"
-      "CSeq: 1 REGISTER\r\nExpires: 3600\r\nContent-Length: 0\r\n\r\n">>.
+    <<
+        "REGISTER sip:127.0.0.1 SIP/2.0\r\n"
+        "Via: SIP/2.0/WS df7jal23ls0d.invalid;branch=z9hG4bKwsreg\r\n"
+        "Max-Forwards: 70\r\n"
+        "From: <sip:alice@127.0.0.1>;tag=wsreg\r\n"
+        "To: <sip:alice@127.0.0.1>\r\n"
+        "Contact: <sip:alice@df7jal23ls0d.invalid;transport=ws>\r\n"
+        "Call-ID: wsreg-call@ct\r\n"
+        "CSeq: 1 REGISTER\r\nExpires: 3600\r\nContent-Length: 0\r\n\r\n"
+    >>.
 
 ws_ok_for(M, RRs) ->
-    response(<<"200 OK">>, M,
-             [[<<"Record-Route: ">>, R, <<"\r\n">>] || R <- RRs] ++
-                 [<<"Contact: <">>, ws_contact_uri(), <<">\r\n">>]).
+    response(
+        <<"200 OK">>,
+        M,
+        [[<<"Record-Route: ">>, R, <<"\r\n">>] || R <- RRs] ++
+            [<<"Contact: <">>, ws_contact_uri(), <<">\r\n">>]
+    ).
 
 %% the UA's BYE: its route set is the Record-Route as it got it
 ws_bye(CallerPort, CallId, RRs) ->
     P = integer_to_binary(CallerPort),
     iolist_to_binary(
-      [<<"BYE sip:bob@127.0.0.1:", P/binary, " SIP/2.0\r\n">>,
-       <<"Via: SIP/2.0/WS df7jal23ls0d.invalid;branch=z9hG4bKwsbye", CallId/binary, "\r\n">>,
-       [[<<"Route: ">>, R, <<"\r\n">>] || R <- RRs],
-       <<"Max-Forwards: 70\r\n">>,
-       <<"From: <sip:alice@127.0.0.1>;tag=al\r\n">>,
-       <<"To: <sip:bob@127.0.0.1>;tag=cb\r\n">>,
-       <<"Call-ID: ", CallId/binary, "@ct\r\nCSeq: 1 BYE\r\n">>,
-       <<"Content-Length: 0\r\n\r\n">>]).
+        [
+            <<"BYE sip:bob@127.0.0.1:", P/binary, " SIP/2.0\r\n">>,
+            <<"Via: SIP/2.0/WS df7jal23ls0d.invalid;branch=z9hG4bKwsbye",
+                CallId/binary, "\r\n">>,
+            [[<<"Route: ">>, R, <<"\r\n">>] || R <- RRs],
+            <<"Max-Forwards: 70\r\n">>,
+            <<"From: <sip:alice@127.0.0.1>;tag=al\r\n">>,
+            <<"To: <sip:bob@127.0.0.1>;tag=cb\r\n">>,
+            <<"Call-ID: ", CallId/binary, "@ct\r\nCSeq: 1 BYE\r\n">>,
+            <<"Content-Length: 0\r\n\r\n">>
+        ]
+    ).
 
 %% the next text frame starting with Prefix
 recv_ws(Prefix) ->
@@ -820,7 +1120,8 @@ recv_status(Sock, Code, Timeout) ->
 recv_req(Sock, Method) ->
     L = byte_size(Method),
     receive
-        {udp, Sock, _, Port, <<Method:L/binary, " ", _/binary>> = Bin} -> {Bin, Port}
+        {udp, Sock, _, Port, <<Method:L/binary, " ", _/binary>> = Bin} ->
+            {Bin, Port}
     after 8000 -> ct:fail({no_request, Method})
     end.
 
@@ -848,7 +1149,9 @@ tcp_frame(Buf) ->
     case binary:split(Buf, <<"\r\n\r\n">>) of
         [Head, Tail] ->
             {ok, M} = chappe_sip_msg:parse(<<Head/binary, "\r\n\r\n">>),
-            Len = binary_to_integer(chappe_sip_msg:get(<<"content-length">>, M)),
+            Len = binary_to_integer(
+                chappe_sip_msg:get(<<"content-length">>, M)
+            ),
             case Tail of
                 <<Body:Len/binary, Rest/binary>> ->
                     {ok, <<Head/binary, "\r\n\r\n", Body/binary>>, Rest};

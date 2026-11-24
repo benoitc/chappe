@@ -356,14 +356,18 @@ tcp_consume(Socket, Handler, N, Log, Buffer) ->
                     case Handler(N, Cmd) of
                         {reply, Map} ->
                             ok = gen_tcp:send(Socket, [
-                                Cookie, $\s, chappe_rtpengine_bencode:encode(Map)
+                                Cookie,
+                                $\s,
+                                chappe_rtpengine_bencode:encode(Map)
                             ]),
                             tcp_consume(
                                 Socket, Handler, N + 1, Log1, Remainder
                             );
                         {reply_split, Map} ->
                             Bin = iolist_to_binary([
-                                Cookie, $\s, chappe_rtpengine_bencode:encode(Map)
+                                Cookie,
+                                $\s,
+                                chappe_rtpengine_bencode:encode(Map)
                             ]),
                             Half = byte_size(Bin) div 2,
                             <<A:Half/binary, B/binary>> = Bin,

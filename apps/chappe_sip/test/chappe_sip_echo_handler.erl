@@ -10,7 +10,8 @@
 
 init(Req) ->
     Test = get(test_pid),
-    {answer, #{local_sdp => chappe_sip_req:body(Req), handled_events => [info]}, Test}.
+    {answer, #{local_sdp => chappe_sip_req:body(Req), handled_events => [info]},
+        Test}.
 
 handle_dialog(info, _Req, Res, Test) ->
     _ = chappe_sip_res:send(Res, 200, #{reason => <<"OK">>}),

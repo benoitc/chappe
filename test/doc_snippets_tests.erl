@@ -114,7 +114,8 @@ fallback(Start, _N) -> Start.
 
 is_erlang_fence(Line) ->
     Trimmed = string:trim(Line, leading),
-    binary:part(pad(Trimmed), 0, min(9, byte_size(pad(Trimmed)))) =:= <<"```erlang">>.
+    binary:part(pad(Trimmed), 0, min(9, byte_size(pad(Trimmed)))) =:=
+        <<"```erlang">>.
 
 is_fence(Line) ->
     Trimmed = string:trim(Line, leading),
@@ -142,8 +143,12 @@ block_cases(Rel, Line, Src) ->
 %% the real calls around the elision are still verified.
 normalize(Src) ->
     S0 = unicode:characters_to_list(Src),
-    S1 = re:replace(S0, "#\\{\\s*\\.\\.\\.\\s*\\}", "#{}", [global, {return, list}]),
-    S2 = re:replace(S1, "\\[\\s*\\.\\.\\.\\s*\\]", "[]", [global, {return, list}]),
+    S1 = re:replace(S0, "#\\{\\s*\\.\\.\\.\\s*\\}", "#{}", [
+        global, {return, list}
+    ]),
+    S2 = re:replace(S1, "\\[\\s*\\.\\.\\.\\s*\\]", "[]", [
+        global, {return, list}
+    ]),
     re:replace(S2, "\\.\\.\\.", "_Elided", [global, {return, list}]).
 
 forms_cases(Where, Chunks) ->

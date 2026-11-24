@@ -20,7 +20,10 @@ h(Hex) -> binary:decode_hex(Hex).
 %% req: R5761-4-1
 is_rtcp_test() ->
     ?assert(?R:is_rtcp(h(<<"81c8000bcafebabe">>))),
-    [?assert(?R:is_rtcp(<<16#80, (128 + PT), 0, 0>>)) || PT <- lists:seq(72, 76)],
+    [
+        ?assert(?R:is_rtcp(<<16#80, (128 + PT), 0, 0>>))
+     || PT <- lists:seq(72, 76)
+    ],
     ?assert(?R:is_rtcp(<<16#80, 223, 0, 0>>)),
     ?assertNot(?R:is_rtcp(<<16#80, 0, 0, 1>>)),
     ?assertNot(?R:is_rtcp(<<16#80, (128 + 8), 0, 1>>)),
@@ -110,7 +113,9 @@ parse_invalid_test() ->
     %% padding on the last packet is allowed
     ?assertMatch(
         {ok, [#{type := rr}, #{type := bye, ssrcs := [1]}]},
-        ?R:parse(<<Rr/binary, (h(<<"a1cb0002" "00000001" "00000004">>))/binary>>)
+        ?R:parse(
+            <<Rr/binary, (h(<<"a1cb0002" "00000001" "00000004">>))/binary>>
+        )
     ).
 
 %% ---- build ----
@@ -147,7 +152,9 @@ build_rr_sdes_test() ->
         >>),
         Bin
     ),
-    ?assertMatch({ok, [#{type := rr, blocks := [Block]}, #{type := sdes}]}, ?R:parse(Bin)).
+    ?assertMatch(
+        {ok, [#{type := rr, blocks := [Block]}, #{type := sdes}]}, ?R:parse(Bin)
+    ).
 
 %% an empty RR (RC 0, 6.4.2), then SDES and BYE
 %% req: R3550-6.4.2-1
@@ -157,7 +164,19 @@ build_empty_rr_bye_test() ->
         #{type => sdes, chunks => [{1, [{cname, <<"abc">>}]}]},
         #{type => bye, ssrcs => [1]}
     ]),
-    ?assertEqual(h(<<"80c90001" "00000001" "81ca0003" "00000001" "01036162" "63000000" "81cb0001" "00000001">>), Bin),
+    ?assertEqual(
+        h(<<
+            "80c90001"
+            "00000001"
+            "81ca0003"
+            "00000001"
+            "01036162"
+            "63000000"
+            "81cb0001"
+            "00000001"
+        >>),
+        Bin
+    ),
     ?assertEqual(0, byte_size(Bin) rem 4).
 
 %% ---- reception statistics (A.1, A.3, A.8) ----
@@ -167,7 +186,10 @@ build_empty_rr_bye_test() ->
 %% req: R3550-6.4.1-1 R3550-6.4.1-2
 loss_test() ->
     Lost = [5, 10, 20, 30, 40, 50, 60, 70, 80, 90],
-    S = feed(?R:src_new(7), [Q || Q <- lists:seq(1, 100), not lists:member(Q, Lost)]),
+    S = feed(?R:src_new(7), [
+        Q
+     || Q <- lists:seq(1, 100), not lists:member(Q, Lost)
+    ]),
     {B, S1} = ?R:block(S, 0),
     ?assertMatch(#{ssrc := 7, fraction := 25, lost := 10, highest := 100}, B),
     %% the next interval loses nothing: fraction 0, cumulative kept
@@ -260,7 +282,13 @@ lsr_dlsr_test() ->
 info_test() ->
     S = ?R:src_cname(feed(?R:src_new(7), [1, 2, 4]), <<"src@x">>),
     ?assertMatch(
-        #{ssrc := 7, cname := <<"src@x">>, received := 3, lost := 1, highest := 4},
+        #{
+            ssrc := 7,
+            cname := <<"src@x">>,
+            received := 3,
+            lost := 1,
+            highest := 4
+        },
         ?R:src_info(S)
     ),
     ?assertNot(?R:src_heard(?R:src_new(9))),

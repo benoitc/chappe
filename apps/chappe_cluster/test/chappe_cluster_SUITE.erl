@@ -102,7 +102,12 @@ claim_owner_release(_Config) ->
     Owner = #{node => node(), pid => self(), fence => Fence},
     ?assertEqual({ok, Owner}, chappe_cluster:owner(k_basic)),
     ?assertEqual({ok, Owner}, chappe_cluster:owner(k_basic, consistent)),
-    ?assert(lists:member(Owner#{key => k_basic}, [maps:remove(hlc, R) || R <- chappe_cluster:leases()])),
+    ?assert(
+        lists:member(Owner#{key => k_basic}, [
+            maps:remove(hlc, R)
+         || R <- chappe_cluster:leases()
+        ])
+    ),
     ok = chappe_cluster:release(L),
     ?assertEqual(none, chappe_cluster:owner(k_basic)),
     ?assertEqual(none, chappe_cluster:owner(k_basic, consistent)).
@@ -162,7 +167,9 @@ agent_crash_keeps_leases(_Config) ->
         end
     end),
     ok = wait_live(),
-    ?assertMatch({ok, #{pid := P}} when P =:= self(), chappe_cluster:owner(k_agent)),
+    ?assertMatch(
+        {ok, #{pid := P}} when P =:= self(), chappe_cluster:owner(k_agent)
+    ),
     wait(fun() -> tracked(k_agent) end),
     receive
         {chappe_cluster, _, lost} = M -> ct:fail({unexpected, M})
@@ -282,10 +289,15 @@ commands_keep_their_deadline(_Config) ->
         {ok, L} = chappe_cluster:claim(k_deadline, #{timeout => 1000}),
         ?assert(erlang:monotonic_time(millisecond) - T0 < 500),
         ok = chappe_cluster:release(L),
-        ok = chappe_cluster_tab:set_members([{hung_member, node()}, {hung_member2, node()}]),
+        ok = chappe_cluster_tab:set_members([
+            {hung_member, node()}, {hung_member2, node()}
+        ]),
         ok = chappe_cluster_tab:set_leader({hung_member2, node()}),
         T1 = erlang:monotonic_time(millisecond),
-        ?assertEqual({error, no_quorum}, chappe_cluster:claim(k_deadline, #{timeout => 1000})),
+        ?assertEqual(
+            {error, no_quorum},
+            chappe_cluster:claim(k_deadline, #{timeout => 1000})
+        ),
         ?assert(erlang:monotonic_time(millisecond) - T1 < 1300)
     after
         ok = chappe_cluster_tab:set_members(Members),
@@ -319,20 +331,36 @@ lapse_rearms_from_the_table(_Config) ->
 %% not crowd them out.
 pending_releases_are_bounded_on_their_own(_Config) ->
     H = spawn_holder(),
-    Leases = [L || I <- lists:seq(1, 20), {ok, L} <- [chappe_cluster:claim({k_pb, I}, #{pid => H})]],
+    Leases = [
+        L
+     || I <- lists:seq(1, 20),
+        {ok, L} <- [chappe_cluster:claim({k_pb, I}, #{pid => H})]
+    ],
     Agent = whereis(chappe_cluster_node),
     ok = sys:suspend(Agent),
     try
-        [ok = chappe_cluster_tab:queue({claim, {k_pq, I}, make_ref()}) || I <- lists:seq(1, 3 * ?MAX_LEASES - 10)],
+        [
+            ok = chappe_cluster_tab:queue({claim, {k_pq, I}, make_ref()})
+         || I <- lists:seq(1, 3 * ?MAX_LEASES - 10)
+        ],
         ok = chappe_cluster_tab:queue({seq, k_pkeep, 7}),
         ?assert(lists:member({seq, k_pkeep, 7}, chappe_cluster_tab:pending())),
         %% a release keeps one row per key (the newer seq replaces the
         %% older); every abandoned try keeps its own
         ok = chappe_cluster_tab:queue({seq, k_pkeep, 8}),
-        ?assertEqual([{seq, k_pkeep, 8}], [I || {seq, k_pkeep, _} = I <- chappe_cluster_tab:pending()]),
+        ?assertEqual([{seq, k_pkeep, 8}], [
+            I
+         || {seq, k_pkeep, _} = I <- chappe_cluster_tab:pending()
+        ]),
         ok = chappe_cluster_tab:queue({claim, {k_pq, 1}, newer}),
-        ?assertEqual(2, length([x || {claim, {k_pq, 1}, _} <- chappe_cluster_tab:pending()])),
-        [ok = chappe_cluster_tab:queue({claim, {k_over, I}, make_ref()}) || I <- lists:seq(1, 50)],
+        ?assertEqual(
+            2,
+            length([x || {claim, {k_pq, 1}, _} <- chappe_cluster_tab:pending()])
+        ),
+        [
+            ok = chappe_cluster_tab:queue({claim, {k_over, I}, make_ref()})
+         || I <- lists:seq(1, 50)
+        ],
         ?assert(length(chappe_cluster_tab:pending()) =< 3 * ?MAX_LEASES)
     after
         sys:resume(Agent)
@@ -355,10 +383,12 @@ every_abandoned_try_is_given_back(_Config) ->
         ok = chappe_cluster_tab:queue({claim, k_tries, C2}),
         %% try 1 lands late and is granted, try 2 is refused
         {ok, {ok, _}} = chappe_cluster_ra:command(
-            {claim, k_tries, node(), E, self(), C1, 100, chappe_cluster:now()}, 2000
+            {claim, k_tries, node(), E, self(), C1, 100, chappe_cluster:now()},
+            2000
         ),
         {ok, {error, {owned, _}}} = chappe_cluster_ra:command(
-            {claim, k_tries, node(), E, self(), C2, 100, chappe_cluster:now()}, 2000
+            {claim, k_tries, node(), E, self(), C2, 100, chappe_cluster:now()},
+            2000
         )
     after
         sys:resume(Agent)
@@ -404,7 +434,9 @@ lapse_tells_the_holder(_Config) ->
 no_quorum_is_bounded(_Config) ->
     with_member_suspended(fun() ->
         T0 = erlang:monotonic_time(millisecond),
-        ?assertEqual({error, no_quorum}, chappe_cluster:claim(k_nq, #{timeout => 1000})),
+        ?assertEqual(
+            {error, no_quorum}, chappe_cluster:claim(k_nq, #{timeout => 1000})
+        ),
         ?assert(erlang:monotonic_time(millisecond) - T0 < 1500),
         wait(fun() -> chappe_cluster_node:live() =:= not_live end),
         T1 = erlang:monotonic_time(millisecond),
@@ -418,10 +450,26 @@ no_quorum_is_bounded(_Config) ->
 %% Bound: max_leases per node.
 max_leases_bound(_Config) ->
     H = spawn_holder(),
-    Base = length([L || #{node := N} = L <- chappe_cluster:leases(), N =:= node()]),
-    Results = [chappe_cluster:claim({k_max, I}, #{pid => H}) || I <- lists:seq(1, ?MAX_LEASES - Base)],
-    ?assert(lists:all(fun({ok, _}) -> true; (_) -> false end, Results)),
-    ?assertEqual({error, max_leases}, chappe_cluster:claim({k_max, over}, #{pid => H})),
+    Base = length([
+        L
+     || #{node := N} = L <- chappe_cluster:leases(), N =:= node()
+    ]),
+    Results = [
+        chappe_cluster:claim({k_max, I}, #{pid => H})
+     || I <- lists:seq(1, ?MAX_LEASES - Base)
+    ],
+    ?assert(
+        lists:all(
+            fun
+                ({ok, _}) -> true;
+                (_) -> false
+            end,
+            Results
+        )
+    ),
+    ?assertEqual(
+        {error, max_leases}, chappe_cluster:claim({k_max, over}, #{pid => H})
+    ),
     exit(H, kill),
     wait(fun() -> chappe_cluster:owner({k_max, 1}) =:= none end),
     {ok, _} = chappe_cluster:claim({k_max, over}, #{}).
@@ -445,8 +493,14 @@ kv_put_get_cas_delete(_Config) ->
 
 %% Bound: max_value_bytes and max_keys.
 kv_bounds(_Config) ->
-    ?assertEqual({error, too_large}, chappe_cluster:put(<<"kv/big">>, binary:copy(<<0>>, 2048))),
-    Keys = [<<"kv/n/", (integer_to_binary(I))/binary>> || I <- lists:seq(1, ?MAX_KEYS + 5)],
+    ?assertEqual(
+        {error, too_large},
+        chappe_cluster:put(<<"kv/big">>, binary:copy(<<0>>, 2048))
+    ),
+    Keys = [
+        <<"kv/n/", (integer_to_binary(I))/binary>>
+     || I <- lists:seq(1, ?MAX_KEYS + 5)
+    ],
     try
         Results = [chappe_cluster:put(K, I) || {I, K} <- lists:enumerate(Keys)],
         ?assertEqual(5, length([R || {error, max_keys} = R <- Results])),
@@ -527,7 +581,8 @@ watch_overflow_bound(_Config) ->
     N = 3 * ?MAX_MAILBOX,
     [{ok, _} = chappe_cluster:put(<<"wo/k">>, I) || I <- lists:seq(1, N)],
     wait(fun() ->
-        pg:get_local_members(chappe_cluster, {chappe_cluster_watch, <<"wo/">>}) =:= []
+        pg:get_local_members(chappe_cluster, {chappe_cluster_watch, <<"wo/">>}) =:=
+            []
     end),
     {message_queue_len, Len} = process_info(W, message_queue_len),
     ?assert(Len =< ?MAX_MAILBOX + 1),
@@ -545,11 +600,17 @@ watch_overflow_bound(_Config) ->
 
 singleton_runs_one_child(_Config) ->
     ok = chappe_cluster:singleton(s_one, child_spec(s_one)),
-    ?assertEqual({error, already_started}, chappe_cluster:singleton(s_one, child_spec(s_one))),
+    ?assertEqual(
+        {error, already_started},
+        chappe_cluster:singleton(s_one, child_spec(s_one))
+    ),
     Pid = wait_singleton(s_one, undefined),
     ?assertEqual(node(), node(Pid)),
     {ok, Fence} = chappe_cluster:singleton_fence(s_one),
-    ?assertMatch({ok, #{fence := Fence}}, chappe_cluster:owner({chappe_cluster_singleton, s_one})),
+    ?assertMatch(
+        {ok, #{fence := Fence}},
+        chappe_cluster:owner({chappe_cluster_singleton, s_one})
+    ),
     ok = chappe_cluster:stop_singleton(s_one).
 
 singleton_child_crash_restarts_it(_Config) ->
@@ -570,7 +631,12 @@ singleton_contender_crash_stops_its_child(_Config) ->
     ok = chappe_cluster:singleton(s_cont, child_spec(s_cont)),
     P1 = wait_singleton(s_cont, undefined),
     Ref = erlang:monitor(process, P1),
-    [Contender] = [C || {s_cont, C, _, _} <- supervisor:which_children(chappe_cluster_singleton_sup)],
+    [Contender] = [
+        C
+     || {s_cont, C, _, _} <- supervisor:which_children(
+            chappe_cluster_singleton_sup
+        )
+    ],
     exit(Contender, kill),
     receive
         {'DOWN', Ref, process, P1, _} -> ok
@@ -628,7 +694,9 @@ stop_singleton(_Config) ->
     ok = chappe_cluster:stop_singleton(s_stop),
     ?assertNot(is_process_alive(P)),
     wait(fun() -> chappe_cluster:whereis_singleton(s_stop) =:= none end),
-    wait(fun() -> chappe_cluster:owner({chappe_cluster_singleton, s_stop}) =:= none end),
+    wait(fun() ->
+        chappe_cluster:owner({chappe_cluster_singleton, s_stop}) =:= none
+    end),
     ?assertEqual({error, not_found}, chappe_cluster:stop_singleton(s_stop)).
 
 %% ---- directory and region ----
@@ -636,20 +704,30 @@ stop_singleton(_Config) ->
 directory_local(_Config) ->
     ?assertEqual(default, chappe_cluster:home({room, <<"r1">>})),
     ?assertEqual(not_found, chappe_cluster_directory:resolve({room, <<"r1">>})),
-    ok = chappe_cluster_directory:publish({room, <<"r1">>}, default, #{node => node()}),
+    ok = chappe_cluster_directory:publish({room, <<"r1">>}, default, #{
+        node => node()
+    }),
     ?assertEqual(
         {ok, #{region => default, info => #{node => node()}}},
         chappe_cluster_directory:resolve({room, <<"r1">>})
     ),
-    ?assertEqual({error, badarg}, chappe_cluster_directory:publish(k, "r", #{})).
+    ?assertEqual(
+        {error, badarg}, chappe_cluster_directory:publish(k, "r", #{})
+    ).
 
 %% The HLC moves forward, and a lease carries the stamp of its claim.
 now_never_goes_back(_Config) ->
     Stamps = [chappe_cluster:now() || _ <- lists:seq(1, 1000)],
-    [?assert(hlc:less(A, B)) || {A, B} <- lists:zip(lists:droplast(Stamps), tl(Stamps))],
+    [
+        ?assert(hlc:less(A, B))
+     || {A, B} <- lists:zip(lists:droplast(Stamps), tl(Stamps))
+    ],
     {ok, #{hlc := H} = L} = chappe_cluster:claim(k_hlc, #{}),
     ?assert(hlc:less(lists:last(Stamps), H)),
-    ?assertMatch([#{hlc := H}], [R || #{key := k_hlc} = R <- chappe_cluster:leases()]),
+    ?assertMatch([#{hlc := H}], [
+        R
+     || #{key := k_hlc} = R <- chappe_cluster:leases()
+    ]),
     ok = chappe_cluster:release(L).
 
 %% A stamp from a node whose wall clock is an hour ahead does not drag
@@ -665,7 +743,9 @@ bad_arguments(_Config) ->
     ?assertEqual({error, badarg}, chappe_cluster:claim(k, nomap)),
     ?assertEqual({error, badarg}, chappe_cluster:claim(k, #{pid => notapid})),
     ?assertEqual({error, badarg}, chappe_cluster:claim(k, #{timeout => -1})),
-    ?assertEqual({error, badarg}, chappe_cluster:claim(k, #{timeout => infinity})),
+    ?assertEqual(
+        {error, badarg}, chappe_cluster:claim(k, #{timeout => infinity})
+    ),
     ?assertEqual({error, badarg}, chappe_cluster:release(nolease)),
     ?assertEqual({error, badarg}, chappe_cluster:owner(k, sometimes)),
     ?assertEqual({error, badarg}, chappe_cluster:get(notbinary)),

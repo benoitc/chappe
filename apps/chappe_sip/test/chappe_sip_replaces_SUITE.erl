@@ -52,20 +52,41 @@
 -define(TAB, chappe_sip_dialog_index).
 
 all() ->
-    [uas_find_dialog, uas_indexed_before_2xx, setup_failed_no_confirmed,
-     setup_failed_postponed_call, uas_find_replaced_live, find_replaced_rules,
-     find_replaced_rejects, uac_orientation, removed_after_peer_bye,
-     removed_after_local_bye, terminated_while_bye_in_flight,
-     removed_after_owner_death, removed_after_fsm_crash,
-     removed_after_engine_restart, response_rules, response_terminated_603,
-     response_early_not_ours_481, response_live_481, uac_early_replaceable,
-     uac_early_then_confirmed, supported_on_uas_2xx,
-     require_replaces_accepted, replaces_non_invite_dialog_481,
-     replaces_needs_authorization, replaces_digest_on_the_wire].
+    [
+        uas_find_dialog,
+        uas_indexed_before_2xx,
+        setup_failed_no_confirmed,
+        setup_failed_postponed_call,
+        uas_find_replaced_live,
+        find_replaced_rules,
+        find_replaced_rejects,
+        uac_orientation,
+        removed_after_peer_bye,
+        removed_after_local_bye,
+        terminated_while_bye_in_flight,
+        removed_after_owner_death,
+        removed_after_fsm_crash,
+        removed_after_engine_restart,
+        response_rules,
+        response_terminated_603,
+        response_early_not_ours_481,
+        response_live_481,
+        uac_early_replaceable,
+        uac_early_then_confirmed,
+        supported_on_uas_2xx,
+        require_replaces_accepted,
+        replaces_non_invite_dialog_481,
+        replaces_needs_authorization,
+        replaces_digest_on_the_wire
+    ].
 
 init_per_suite(Config) ->
-    application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
-                        [{persistent, true}]),
+    application:set_env(
+        chappe_sip,
+        engine_mod,
+        chappe_sip_nif,
+        [{persistent, true}]
+    ),
     {ok, _} = application:ensure_all_started(chappe_sip),
     Config.
 
@@ -76,7 +97,11 @@ end_per_suite(_Config) ->
 
 end_per_testcase(_Case, _Config) ->
     %% never leave the index server suspended for the next case
-    try sys:resume(chappe_sip_dialog_index) catch _:_ -> ok end,
+    try
+        sys:resume(chappe_sip_dialog_index)
+    catch
+        _:_ -> ok
+    end,
     _ = chappe_sip:stop(),
     _ = chappe_sip_engine:reset_routes(),
     ok.
@@ -93,11 +118,15 @@ uas_find_dialog(_Config) ->
     ?assertEqual({error, not_found}, chappe_sip:find_dialog(Call, FT, TT)),
     ?assertEqual({error, not_found}, chappe_sip:find_dialog(Call, TT, <<"x">>)),
     ?assertEqual({error, not_found}, chappe_sip:find_dialog(Call, <<"x">>, FT)),
-    ?assertEqual({error, not_found},
-                 chappe_sip:find_dialog(<<"nope@ct">>, TT, FT)),
+    ?assertEqual(
+        {error, not_found},
+        chappe_sip:find_dialog(<<"nope@ct">>, TT, FT)
+    ),
     %% call-id and tags compare case-sensitively
-    ?assertEqual({error, not_found},
-                 chappe_sip:find_dialog(string:uppercase(Call), TT, FT)),
+    ?assertEqual(
+        {error, not_found},
+        chappe_sip:find_dialog(string:uppercase(Call), TT, FT)
+    ),
     hangup(Sock, Dlg, TT).
 
 %% The UAS dialog is in the index before its 2xx leaves: a peer that acts
@@ -106,20 +135,35 @@ uas_find_dialog(_Config) ->
 %% is answered at once; a call that goes on the wire waits for the dialog
 %% to be confirmed instead of failing.
 uas_indexed_before_2xx(_Config) ->
-    #{sock := Sock, ep := EP, call := Call, ft := FT, tt := TT, pid := Pid,
-      handler := Handler, found := Found} = held_setup(),
+    #{
+        sock := Sock,
+        ep := EP,
+        call := Call,
+        ft := FT,
+        tt := TT,
+        pid := Pid,
+        handler := Handler,
+        found := Found
+    } = held_setup(),
     ?assertEqual(Pid, Found#dialog.pid),
     ?assertEqual(FT, chappe_sip_dialog:remote_tag(Found)),
     Self = self(),
     spawn_link(fun() ->
-        Self ! {notified, chappe_sip_dialog:notify(
-                            Found, #{event => <<"x">>, state => active})}
+        Self !
+            {notified,
+                chappe_sip_dialog:notify(
+                    Found, #{event => <<"x">>, state => active}
+                )}
     end),
-    receive {notified, Early} -> ct:fail({answered_in_setup, Early})
+    receive
+        {notified, Early} -> ct:fail({answered_in_setup, Early})
     after 300 -> ok
     end,
     Handler ! release,
-    receive {dialog, Found, _} -> ok after 5000 -> ct:fail(no_dialog) end,
+    receive
+        {dialog, Found, _} -> ok
+    after 5000 -> ct:fail(no_dialog)
+    end,
     send(Sock, EP, ack(Sock, Call, FT, TT)),
     ok = await_notified(Sock, TT),
     hangup(Sock, Found, TT).
@@ -148,18 +192,23 @@ setup_failed_postponed_call(_Config) ->
     #{handler := Handler, found := Found} = held_setup(),
     Self = self(),
     spawn(fun() ->
-        R = try
+        R =
+            try
                 chappe_sip_dialog:notify(
-                  Found, #{event => <<"x">>, state => active})
-            catch C:E -> {C, E}
+                    Found, #{event => <<"x">>, state => active}
+                )
+            catch
+                C:E -> {C, E}
             end,
         Self ! {notified, R}
     end),
-    receive {notified, Early} -> ct:fail({answered_in_setup, Early})
+    receive
+        {notified, Early} -> ct:fail({answered_in_setup, Early})
     after 300 -> ok
     end,
     exit(Handler, kill),
-    receive {notified, R} -> ?assertEqual({error, terminated}, R)
+    receive
+        {notified, R} -> ?assertEqual({error, terminated}, R)
     after 5000 -> ct:fail(no_reply)
     end.
 
@@ -167,32 +216,46 @@ setup_failed_postponed_call(_Config) ->
 %% called until the handler gets `release'
 held_setup() ->
     EP = chappe_sip_test_port:pick(),
-    ok = chappe_sip:start(#{contact => <<"sip:127.0.0.1:",
-                                         (integer_to_binary(EP))/binary>>}),
+    ok = chappe_sip:start(#{
+        contact => <<"sip:127.0.0.1:", (integer_to_binary(EP))/binary>>
+    }),
     Test = self(),
     ok = chappe_sip:invite(fun(Req, Res) ->
         {ok, Pid} = chappe_sip_engine:create_uas(
             Req, #{owner => self(), local_sdp => sdp()}
         ),
         Test ! {setup, Pid, self()},
-        receive release -> ok end,
+        receive
+            release -> ok
+        end,
         {ok, Id} = gen_statem:call(Pid, await_ready, 5000),
         chappe_sip_res:mark_final(Res),
         Dlg = chappe_sip_dialog:make(Pid, Id),
         Test ! {dialog, Dlg, self()},
         owner_loop(Test, Dlg)
     end),
-    {ok, Sock} = gen_udp:open(0, [binary, {active, true}, {ip, {127,0,0,1}}]),
+    {ok, Sock} = gen_udp:open(0, [binary, {active, true}, {ip, {127, 0, 0, 1}}]),
     Call = callid(),
     FT = <<"ft", (binary:encode_hex(crypto:strong_rand_bytes(3)))/binary>>,
     send(Sock, EP, invite(Sock, Call, FT, [])),
-    {Pid, Handler} = receive {setup, P, H} -> {P, H}
-                     after 5000 -> ct:fail(no_setup) end,
+    {Pid, Handler} =
+        receive
+            {setup, P, H} -> {P, H}
+        after 5000 -> ct:fail(no_setup)
+        end,
     {ok, M} = chappe_sip_msg:parse(recv_status(Sock, 200)),
     TT = chappe_sip_msg:to_tag(M),
     {ok, Found} = chappe_sip:find_dialog(Call, TT, FT),
-    #{sock => Sock, ep => EP, call => Call, ft => FT, tt => TT, pid => Pid,
-      handler => Handler, found => Found}.
+    #{
+        sock => Sock,
+        ep => EP,
+        call => Call,
+        ft => FT,
+        tt => TT,
+        pid => Pid,
+        handler => Handler,
+        found => Found
+    }.
 
 %% the postponed notify/2 is answered once the dialog is confirmed; a
 %% NOTIFY it puts on the wire is answered 200
@@ -216,14 +279,27 @@ uas_find_replaced_live(_Config) ->
     receive
         {replaced, R1} ->
             ?assertEqual(
-               {ok, Dlg, #{state => confirmed, role => uas,
-                           early_only => false}}, R1)
+                {ok, Dlg, #{
+                    state => confirmed,
+                    role => uas,
+                    early_only => false
+                }},
+                R1
+            )
     after 5000 -> ct:fail(no_replaced)
     end,
     _ = recv_status(Sock, 486),
     Swapped = <<Call/binary, ";to-tag=", FT/binary, ";from-tag=", TT/binary>>,
-    send(Sock, EP, invite(Sock, callid(), <<"r2">>,
-                          [{<<"Replaces">>, Swapped}])),
+    send(
+        Sock,
+        EP,
+        invite(
+            Sock,
+            callid(),
+            <<"r2">>,
+            [{<<"Replaces">>, Swapped}]
+        )
+    ),
     receive
         {replaced, R2} -> ?assertEqual({error, not_found}, R2)
     after 5000 -> ct:fail(no_replaced)
@@ -236,49 +312,85 @@ find_replaced_rules(_Config) ->
     {Call, FT, TT, Dlg, _Owner} = establish(EP, Sock),
     Base = <<Call/binary, ";to-tag=", TT/binary, ";from-tag=", FT/binary>>,
     ?assertEqual(
-       {ok, Dlg, #{state => confirmed, role => uas, early_only => true}},
-       chappe_sip:find_replaced(req(<<"INVITE">>,
-                                    [{<<"Replaces">>,
-                                      <<Base/binary, ";early-only">>}]))),
+        {ok, Dlg, #{state => confirmed, role => uas, early_only => true}},
+        chappe_sip:find_replaced(
+            req(
+                <<"INVITE">>,
+                [{<<"Replaces">>, <<Base/binary, ";early-only">>}]
+            )
+        )
+    ),
     %% header name in any case, params in any order
     ?assertMatch(
-       {ok, Dlg, #{early_only := false}},
-       chappe_sip:find_replaced(
-         req(<<"INVITE">>,
-             [{<<"replaces">>, <<Call/binary, ";from-tag=", FT/binary,
-                                 ";to-tag=", TT/binary>>}]))),
+        {ok, Dlg, #{early_only := false}},
+        chappe_sip:find_replaced(
+            req(
+                <<"INVITE">>,
+                [
+                    {<<"replaces">>,
+                        <<Call/binary, ";from-tag=", FT/binary, ";to-tag=",
+                            TT/binary>>}
+                ]
+            )
+        )
+    ),
     %% the same identity under a wrong tag is not this dialog
     ?assertEqual(
-       {error, not_found},
-       chappe_sip:find_replaced(
-         req(<<"INVITE">>,
-             [{<<"Replaces">>, <<Call/binary, ";to-tag=", TT/binary,
-                                 ";from-tag=zz">>}]))),
+        {error, not_found},
+        chappe_sip:find_replaced(
+            req(
+                <<"INVITE">>,
+                [
+                    {<<"Replaces">>,
+                        <<Call/binary, ";to-tag=", TT/binary, ";from-tag=zz">>}
+                ]
+            )
+        )
+    ),
     hangup(Sock, Dlg, TT).
 
 %% RFC 3891 section 3: no header, a malformed header, two headers, or
 %% Replaces on something other than INVITE
 find_replaced_rejects(_Config) ->
     V = <<"c@h;to-tag=a;from-tag=b">>,
-    ?assertEqual({error, no_replaces},
-                 chappe_sip:find_replaced(req(<<"INVITE">>, []))),
-    ?assertEqual({error, bad_request},
-                 chappe_sip:find_replaced(
-                   req(<<"INVITE">>, [{<<"Replaces">>, <<"c@h;to-tag=a">>}]))),
-    ?assertEqual({error, bad_request},
-                 chappe_sip:find_replaced(
-                   req(<<"INVITE">>, [{<<"Replaces">>, V},
-                                      {<<"Replaces">>, V}]))),
-    ?assertEqual({error, bad_request},
-                 chappe_sip:find_replaced(
-                   req(<<"INVITE">>, [{<<"Replaces">>, <<V/binary, ",", V/binary>>}]))),
-    ?assertEqual({error, bad_request},
-                 chappe_sip:find_replaced(
-                   req(<<"REFER">>, [{<<"Replaces">>, V}]))),
+    ?assertEqual(
+        {error, no_replaces},
+        chappe_sip:find_replaced(req(<<"INVITE">>, []))
+    ),
+    ?assertEqual(
+        {error, bad_request},
+        chappe_sip:find_replaced(
+            req(<<"INVITE">>, [{<<"Replaces">>, <<"c@h;to-tag=a">>}])
+        )
+    ),
+    ?assertEqual(
+        {error, bad_request},
+        chappe_sip:find_replaced(
+            req(<<"INVITE">>, [
+                {<<"Replaces">>, V},
+                {<<"Replaces">>, V}
+            ])
+        )
+    ),
+    ?assertEqual(
+        {error, bad_request},
+        chappe_sip:find_replaced(
+            req(<<"INVITE">>, [{<<"Replaces">>, <<V/binary, ",", V/binary>>}])
+        )
+    ),
+    ?assertEqual(
+        {error, bad_request},
+        chappe_sip:find_replaced(
+            req(<<"REFER">>, [{<<"Replaces">>, V}])
+        )
+    ),
     %% a well-formed value naming nothing
-    ?assertEqual({error, not_found},
-                 chappe_sip:find_replaced(
-                   req(<<"INVITE">>, [{<<"Replaces">>, V}]))).
+    ?assertEqual(
+        {error, not_found},
+        chappe_sip:find_replaced(
+            req(<<"INVITE">>, [{<<"Replaces">>, V}])
+        )
+    ).
 
 %% a UAC dialog: our local tag is the From tag we sent, the remote tag is the
 %% peer's To tag
@@ -290,30 +402,53 @@ uac_orientation(_Config) ->
     spawn_link(fun() ->
         R = chappe_sip:create_uac(Uri, #{contact => ctc(EP), local_sdp => sdp()}),
         Test ! {uac, R},
-        receive stop -> ok end
+        receive
+            stop -> ok
+        end
     end),
     {Inv, Src} = recv(Sock, <<"INVITE">>),
     {ok, InvMsg} = chappe_sip_msg:parse(Inv),
     Call = chappe_sip_msg:call_id(InvMsg),
     LT = chappe_sip_msg:from_tag(InvMsg),
     PT = <<"peer", (binary:encode_hex(crypto:strong_rand_bytes(3)))/binary>>,
-    send(Sock, Src, resp(Inv, 200, <<"OK">>, PT,
-                         [{<<"Contact">>, peer_ctc(UasPort)}], sdp())),
+    send(
+        Sock,
+        Src,
+        resp(
+            Inv,
+            200,
+            <<"OK">>,
+            PT,
+            [{<<"Contact">>, peer_ctc(UasPort)}],
+            sdp()
+        )
+    ),
     _ = recv(Sock, <<"ACK">>),
-    Dlg = receive {uac, {ok, D}} -> D after 5000 -> ct:fail(no_uac) end,
+    Dlg =
+        receive
+            {uac, {ok, D}} -> D
+        after 5000 -> ct:fail(no_uac)
+        end,
     ?assertEqual({ok, Dlg}, chappe_sip:find_dialog(Call, LT, PT)),
     ?assertEqual({error, not_found}, chappe_sip:find_dialog(Call, PT, LT)),
     ?assertEqual(
-       {ok, Dlg, #{state => confirmed, role => uac, early_only => false}},
-       chappe_sip:find_replaced(
-         req(<<"INVITE">>, [{<<"Replaces">>, <<Call/binary, ";to-tag=",
-                                                LT/binary, ";from-tag=",
-                                                PT/binary>>}]))),
+        {ok, Dlg, #{state => confirmed, role => uac, early_only => false}},
+        chappe_sip:find_replaced(
+            req(<<"INVITE">>, [
+                {<<"Replaces">>,
+                    <<Call/binary, ";to-tag=", LT/binary, ";from-tag=",
+                        PT/binary>>}
+            ])
+        )
+    ),
     Self = self(),
     spawn_link(fun() -> Self ! {destroyed, chappe_sip_dialog:destroy(Dlg)} end),
     {Bye, BSrc} = recv(Sock, <<"BYE">>),
     send(Sock, BSrc, resp(Bye, 200, <<"OK">>, PT, [], <<>>)),
-    receive {destroyed, ok} -> ok after 5000 -> ct:fail(no_destroy) end.
+    receive
+        {destroyed, ok} -> ok
+    after 5000 -> ct:fail(no_destroy)
+    end.
 
 %% peer BYE: once the owner is told the dialog is gone, it is not findable
 removed_after_peer_bye(_Config) ->
@@ -323,7 +458,10 @@ removed_after_peer_bye(_Config) ->
     ok = sys:suspend(chappe_sip_dialog_index),
     send(Sock, EP, bye(Sock, Call, FT, TT)),
     _ = recv_status(Sock, 200),
-    receive {destroyed, Dlg} -> ok after 5000 -> ct:fail(no_destroy) end,
+    receive
+        {destroyed, Dlg} -> ok
+    after 5000 -> ct:fail(no_destroy)
+    end,
     ?assertEqual({error, not_found}, chappe_sip:find_dialog(Call, TT, FT)),
     ?assertNot(ets:member(?TAB, {Call, TT, FT})),
     ok = sys:resume(chappe_sip_dialog_index).
@@ -334,10 +472,15 @@ removed_after_local_bye(_Config) ->
     {Call, FT, TT, Dlg, _Owner} = establish(EP, Sock),
     ok = sys:suspend(chappe_sip_dialog_index),
     Self = self(),
-    spawn_link(fun() -> Self ! {destroy_done, chappe_sip_dialog:destroy(Dlg)} end),
+    spawn_link(fun() ->
+        Self ! {destroy_done, chappe_sip_dialog:destroy(Dlg)}
+    end),
     {Bye, BSrc} = recv(Sock, <<"BYE">>),
     send(Sock, BSrc, resp(Bye, 200, <<"OK">>, TT, [], <<>>)),
-    receive {destroy_done, ok} -> ok after 5000 -> ct:fail(no_destroy) end,
+    receive
+        {destroy_done, ok} -> ok
+    after 5000 -> ct:fail(no_destroy)
+    end,
     ?assertEqual({error, not_found}, chappe_sip:find_dialog(Call, TT, FT)),
     ?assertNot(ets:member(?TAB, {Call, TT, FT})),
     ok = sys:resume(chappe_sip_dialog_index).
@@ -347,14 +490,20 @@ terminated_while_bye_in_flight(_Config) ->
     {EP, Sock} = setup(),
     {Call, FT, TT, Dlg, _Owner} = establish(EP, Sock),
     Self = self(),
-    spawn_link(fun() -> Self ! {destroy_done, chappe_sip_dialog:destroy(Dlg)} end),
+    spawn_link(fun() ->
+        Self ! {destroy_done, chappe_sip_dialog:destroy(Dlg)}
+    end),
     {Bye, BSrc} = recv(Sock, <<"BYE">>),
     Val = <<Call/binary, ";to-tag=", TT/binary, ";from-tag=", FT/binary>>,
     ?assertMatch(
-       {ok, Dlg, #{state := terminated}},
-       chappe_sip:find_replaced(req(<<"INVITE">>, [{<<"Replaces">>, Val}]))),
+        {ok, Dlg, #{state := terminated}},
+        chappe_sip:find_replaced(req(<<"INVITE">>, [{<<"Replaces">>, Val}]))
+    ),
     send(Sock, BSrc, resp(Bye, 200, <<"OK">>, TT, [], <<>>)),
-    receive {destroy_done, ok} -> ok after 5000 -> ct:fail(no_destroy) end,
+    receive
+        {destroy_done, ok} -> ok
+    after 5000 -> ct:fail(no_destroy)
+    end,
     ?assertEqual({error, not_found}, chappe_sip:find_dialog(Call, TT, FT)).
 
 %% the owner dies: the fsm BYEs and forgets the dialog on its own
@@ -366,8 +515,10 @@ removed_after_owner_death(_Config) ->
     Owner ! exit_owner,
     {Bye, BSrc} = recv(Sock, <<"BYE">>),
     send(Sock, BSrc, resp(Bye, 200, <<"OK">>, TT, [], <<>>)),
-    receive {'DOWN', MRef, process, _, _} -> ok
-    after 5000 -> ct:fail(fsm_alive) end,
+    receive
+        {'DOWN', MRef, process, _, _} -> ok
+    after 5000 -> ct:fail(fsm_alive)
+    end,
     ?assertNot(ets:member(?TAB, {Call, TT, FT})),
     ?assertEqual({error, not_found}, chappe_sip:find_dialog(Call, TT, FT)),
     ok = sys:resume(chappe_sip_dialog_index).
@@ -387,7 +538,10 @@ removed_after_engine_restart(_Config) ->
     {Call, FT, TT, Dlg, _Owner} = establish(EP, Sock),
     ?assertEqual({ok, Dlg}, chappe_sip:find_dialog(Call, TT, FT)),
     ok = chappe_sip_engine:restart_engine(),
-    receive {destroyed, Dlg} -> ok after 5000 -> ct:fail(no_teardown) end,
+    receive
+        {destroyed, Dlg} -> ok
+    after 5000 -> ct:fail(no_teardown)
+    end,
     ?assertEqual(ok, wait_gone({Call, TT, FT}, 40)),
     ?assertEqual({error, not_found}, chappe_sip:find_dialog(Call, TT, FT)).
 
@@ -402,23 +556,39 @@ response_rules(_Config) ->
     {Call, FT, TT, Dlg, _Owner} = establish(EP, Sock),
     V = <<Call/binary, ";to-tag=", TT/binary, ";from-tag=", FT/binary>>,
     R = fun(Method, Hs) ->
-            chappe_sip:replaces_response(req(Method, Hs), allow())
-        end,
+        chappe_sip:replaces_response(req(Method, Hs), allow())
+    end,
     ?assertEqual(no_replaces, R(<<"INVITE">>, [])),
-    ?assertMatch({accept, Dlg, #{state := confirmed, role := uas}},
-                 R(<<"INVITE">>, [{<<"Replaces">>, V}])),
-    ?assertEqual({reject, 486},
-                 R(<<"INVITE">>, [{<<"Replaces">>, <<V/binary, ";early-only">>}])),
-    ?assertEqual({reject, 481},
-                 R(<<"INVITE">>, [{<<"Replaces">>, <<"nope@ct;to-tag=a;from-tag=b">>}])),
-    ?assertEqual({reject, 400},
-                 R(<<"INVITE">>, [{<<"Replaces">>, V}, {<<"Replaces">>, V}])),
-    ?assertEqual({reject, 400},
-                 R(<<"INVITE">>, [{<<"Replaces">>, <<Call/binary, ";to-tag=", TT/binary>>}])),
+    ?assertMatch(
+        {accept, Dlg, #{state := confirmed, role := uas}},
+        R(<<"INVITE">>, [{<<"Replaces">>, V}])
+    ),
+    ?assertEqual(
+        {reject, 486},
+        R(<<"INVITE">>, [{<<"Replaces">>, <<V/binary, ";early-only">>}])
+    ),
+    ?assertEqual(
+        {reject, 481},
+        R(<<"INVITE">>, [{<<"Replaces">>, <<"nope@ct;to-tag=a;from-tag=b">>}])
+    ),
+    ?assertEqual(
+        {reject, 400},
+        R(<<"INVITE">>, [{<<"Replaces">>, V}, {<<"Replaces">>, V}])
+    ),
+    ?assertEqual(
+        {reject, 400},
+        R(<<"INVITE">>, [
+            {<<"Replaces">>, <<Call/binary, ";to-tag=", TT/binary>>}
+        ])
+    ),
     ?assertEqual({reject, 400}, R(<<"REFER">>, [{<<"Replaces">>, V}])),
-    ?assertEqual({reject, 400},
-                 R(<<"INVITE">>, [{<<"Replaces">>, V},
-                                  {<<"Join">>, V}])),
+    ?assertEqual(
+        {reject, 400},
+        R(<<"INVITE">>, [
+            {<<"Replaces">>, V},
+            {<<"Join">>, V}
+        ])
+    ),
     hangup(Sock, Dlg, TT).
 
 %% a dialog whose BYE is in flight is terminated: 603
@@ -427,13 +597,20 @@ response_terminated_603(_Config) ->
     {EP, Sock} = setup(),
     {Call, FT, TT, Dlg, _Owner} = establish(EP, Sock),
     Self = self(),
-    spawn_link(fun() -> Self ! {destroy_done, chappe_sip_dialog:destroy(Dlg)} end),
+    spawn_link(fun() ->
+        Self ! {destroy_done, chappe_sip_dialog:destroy(Dlg)}
+    end),
     {Bye, BSrc} = recv(Sock, <<"BYE">>),
     V = <<Call/binary, ";to-tag=", TT/binary, ";from-tag=", FT/binary>>,
-    ?assertEqual({reject, 603},
-                 chappe_sip:replaces_response(req(<<"INVITE">>, [{<<"Replaces">>, V}]))),
+    ?assertEqual(
+        {reject, 603},
+        chappe_sip:replaces_response(req(<<"INVITE">>, [{<<"Replaces">>, V}]))
+    ),
     send(Sock, BSrc, resp(Bye, 200, <<"OK">>, TT, [], <<>>)),
-    receive {destroy_done, ok} -> ok after 5000 -> ct:fail(no_destroy) end.
+    receive
+        {destroy_done, ok} -> ok
+    after 5000 -> ct:fail(no_destroy)
+    end.
 
 %% an early dialog we did not originate (we are its UAS) is not replaceable:
 %% 481, early-only or not
@@ -442,10 +619,15 @@ response_early_not_ours_481(_Config) ->
     {EP, Sock} = setup(),
     Test = self(),
     ok = chappe_sip:invite(fun(Req, Res) ->
-        {ok, D} = chappe_sip:create_uas(Req, Res, #{status => 180,
-                                                     reason => <<"Ringing">>}),
+        {ok, D} = chappe_sip:create_uas(Req, Res, #{
+            status => 180,
+            reason => <<"Ringing">>
+        }),
         Test ! {dialog, D, self()},
-        receive stop -> ok after 30000 -> ok end
+        receive
+            stop -> ok
+        after 30000 -> ok
+        end
     end),
     Call = callid(),
     FT = <<"ft", (binary:encode_hex(crypto:strong_rand_bytes(3)))/binary>>,
@@ -453,14 +635,22 @@ response_early_not_ours_481(_Config) ->
     R180 = recv_status(Sock, 180),
     {ok, M} = chappe_sip_msg:parse(R180),
     TT = chappe_sip_msg:to_tag(M),
-    receive {dialog, _, _} -> ok after 5000 -> ct:fail(no_dialog) end,
+    receive
+        {dialog, _, _} -> ok
+    after 5000 -> ct:fail(no_dialog)
+    end,
     V = <<Call/binary, ";to-tag=", TT/binary, ";from-tag=", FT/binary>>,
     ok = wait_found(V, 40),
-    ?assertEqual({reject, 481},
-                 chappe_sip:replaces_response(req(<<"INVITE">>, [{<<"Replaces">>, V}]))),
-    ?assertEqual({reject, 481},
-                 chappe_sip:replaces_response(
-                   req(<<"INVITE">>, [{<<"Replaces">>, <<V/binary, ";early-only">>}]))).
+    ?assertEqual(
+        {reject, 481},
+        chappe_sip:replaces_response(req(<<"INVITE">>, [{<<"Replaces">>, V}]))
+    ),
+    ?assertEqual(
+        {reject, 481},
+        chappe_sip:replaces_response(
+            req(<<"INVITE">>, [{<<"Replaces">>, <<V/binary, ";early-only">>}])
+        )
+    ).
 
 %% the status goes on the wire as the handler sends it
 %% req: R3891-04
@@ -470,8 +660,16 @@ response_live_481(_Config) ->
         {reject, Status} = chappe_sip:replaces_response(Req),
         chappe_sip_res:send(Res, Status)
     end),
-    send(Sock, EP, invite(Sock, callid(), <<"lv">>,
-                          [{<<"Replaces">>, <<"gone@ct;to-tag=a;from-tag=b">>}])),
+    send(
+        Sock,
+        EP,
+        invite(
+            Sock,
+            callid(),
+            <<"lv">>,
+            [{<<"Replaces">>, <<"gone@ct;to-tag=a;from-tag=b">>}]
+        )
+    ),
     _ = recv_status(Sock, 481).
 
 %% a Replaces naming a dialog a SUBSCRIBE formed, or the subscription an
@@ -489,40 +687,72 @@ replaces_non_invite_dialog_481(_Config) ->
     ok = chappe_sip:subscribe(fun(Req, Res) ->
         {ok, D} = chappe_sip:create_uas(Req, Res, #{expires => 600}),
         Test ! {subscription, D},
-        receive stop -> ok after 10000 -> ok end
+        receive
+            stop -> ok
+        after 10000 -> ok
+        end
     end),
     ok = chappe_sip:refer(fun(Req, Res) ->
         {ok, Refer} = chappe_sip_refer:accept(Req, Res, #{owner => Test}),
         Test ! {refer, Refer},
-        receive stop -> ok after 10000 -> ok end
+        receive
+            stop -> ok
+        after 10000 -> ok
+        end
     end),
     LP = lport(Sock),
     Ask = fun(Method, Hdrs) ->
         Call = callid(),
         FT = <<"nd", (binary:encode_hex(crypto:strong_rand_bytes(3)))/binary>>,
-        send(Sock, EP, chappe_sip_core_peer:request(
-                         Method, <<"sip:app@127.0.0.1">>,
-                         #{port => LP, call_id => Call, from_tag => FT,
-                           headers => Hdrs})),
+        send(
+            Sock,
+            EP,
+            chappe_sip_core_peer:request(
+                Method,
+                <<"sip:app@127.0.0.1">>,
+                #{
+                    port => LP,
+                    call_id => Call,
+                    from_tag => FT,
+                    headers => Hdrs
+                }
+            )
+        ),
         R200 = recv_status(Sock, 200),
         {ok, M} = chappe_sip_msg:parse(R200),
         <<Call/binary, ";to-tag=", (chappe_sip_msg:to_tag(M))/binary,
-          ";from-tag=", FT/binary>>
+            ";from-tag=", FT/binary>>
     end,
-    Sub = Ask(<<"SUBSCRIBE">>, [{<<"Event">>, <<"conference">>},
-                                {<<"Expires">>, <<"600">>}]),
-    receive {subscription, _} -> ok after 5000 -> ct:fail(no_subscription) end,
+    Sub = Ask(<<"SUBSCRIBE">>, [
+        {<<"Event">>, <<"conference">>},
+        {<<"Expires">>, <<"600">>}
+    ]),
+    receive
+        {subscription, _} -> ok
+    after 5000 -> ct:fail(no_subscription)
+    end,
     Ref = Ask(<<"REFER">>, [{<<"Refer-To">>, <<"<sip:carol@127.0.0.1>">>}]),
-    receive {refer, _} -> ok after 5000 -> ct:fail(no_refer) end,
+    receive
+        {refer, _} -> ok
+    after 5000 -> ct:fail(no_refer)
+    end,
     {Notify, NSrc} = recv(Sock, <<"NOTIFY">>),
     send(Sock, NSrc, resp(Notify, 200, <<"OK">>, <<"x">>, [], <<>>)),
-    [begin
-         send(Sock, EP, invite(Sock, callid(), <<"nd">>, [{<<"Replaces">>, V}])),
-         receive {verdict, Verdict} -> ?assertEqual({reject, 481}, Verdict)
-         after 5000 -> ct:fail(no_verdict)
-         end,
-         _ = recv_status(Sock, 481)
-     end || V <- [Sub, Ref]].
+    [
+        begin
+            send(
+                Sock,
+                EP,
+                invite(Sock, callid(), <<"nd">>, [{<<"Replaces">>, V}])
+            ),
+            receive
+                {verdict, Verdict} -> ?assertEqual({reject, 481}, Verdict)
+            after 5000 -> ct:fail(no_verdict)
+            end,
+            _ = recv_status(Sock, 481)
+        end
+     || V <- [Sub, Ref]
+    ].
 
 %% our own early (ringing) dialog is indexed and replaceable, early-only or
 %% not; destroying it sends a CANCEL carrying the given headers
@@ -535,23 +765,43 @@ uac_early_replaceable(_Config) ->
     {ok, Ref} = chappe_sip_uac:start(Uri, #{local_sdp => sdp()}),
     {Inv, Src} = recv(Sock, <<"INVITE">>),
     {ok, InvMsg} = chappe_sip_msg:parse(Inv),
-    ?assertMatch({_, _}, binary:match(chappe_sip_msg:get(<<"supported">>, InvMsg),
-                                      <<"replaces">>)),
+    ?assertMatch(
+        {_, _},
+        binary:match(
+            chappe_sip_msg:get(<<"supported">>, InvMsg),
+            <<"replaces">>
+        )
+    ),
     Call = chappe_sip_msg:call_id(InvMsg),
     LT = chappe_sip_msg:from_tag(InvMsg),
     PT = <<"early", (binary:encode_hex(crypto:strong_rand_bytes(3)))/binary>>,
-    send(Sock, Src, resp(Inv, 180, <<"Ringing">>, PT,
-                         [{<<"Contact">>, peer_ctc(UasPort)}], <<>>)),
+    send(
+        Sock,
+        Src,
+        resp(
+            Inv,
+            180,
+            <<"Ringing">>,
+            PT,
+            [{<<"Contact">>, peer_ctc(UasPort)}],
+            <<>>
+        )
+    ),
     V = <<Call/binary, ";to-tag=", LT/binary, ";from-tag=", PT/binary>>,
     ok = wait_found(V, 40),
     {accept, Early, Info} =
-        chappe_sip:replaces_response(req(<<"INVITE">>, [{<<"Replaces">>, V}]),
-                                     allow()),
+        chappe_sip:replaces_response(
+            req(<<"INVITE">>, [{<<"Replaces">>, V}]),
+            allow()
+        ),
     ?assertEqual(#{state => early, role => uac, early_only => false}, Info),
-    ?assertMatch({accept, Early, #{early_only := true}},
-                 chappe_sip:replaces_response(
-                   req(<<"INVITE">>, [{<<"Replaces">>, <<V/binary, ";early-only">>}]),
-                   allow())),
+    ?assertMatch(
+        {accept, Early, #{early_only := true}},
+        chappe_sip:replaces_response(
+            req(<<"INVITE">>, [{<<"Replaces">>, <<V/binary, ";early-only">>}]),
+            allow()
+        )
+    ),
     Reason = <<"SIP;cause=200">>,
     ok = chappe_sip_dialog:destroy(Early, #{headers => [{<<"Reason">>, Reason}]}),
     {Can, CSrc} = recv(Sock, <<"CANCEL">>),
@@ -559,8 +809,10 @@ uac_early_replaceable(_Config) ->
     ?assertEqual(Reason, chappe_sip_msg:get(<<"reason">>, CanMsg)),
     send(Sock, CSrc, resp(Can, 200, <<"OK">>, PT, [], <<>>)),
     send(Sock, Src, resp(Inv, 487, <<"Request Terminated">>, PT, [], <<>>)),
-    ?assertMatch({error, #chappe_sip_error{status = 487}},
-                 chappe_sip_uac:await(Ref, 5000)),
+    ?assertMatch(
+        {error, #chappe_sip_error{status = 487}},
+        chappe_sip_uac:await(Ref, 5000)
+    ),
     ?assertEqual(ok, wait_gone({Call, LT, PT}, 40)).
 
 %% once answered, the same identity names the confirmed dialog
@@ -571,31 +823,71 @@ uac_early_then_confirmed(_Config) ->
     Uri = <<"sip:callee@127.0.0.1:", (integer_to_binary(UasPort))/binary>>,
     Test = self(),
     spawn_link(fun() ->
-        Test ! {uac, chappe_sip:create_uac(Uri, #{local_sdp => sdp(),
-                                                   owner => Test})},
-        receive stop -> ok end
+        Test !
+            {uac,
+                chappe_sip:create_uac(Uri, #{
+                    local_sdp => sdp(),
+                    owner => Test
+                })},
+        receive
+            stop -> ok
+        end
     end),
     {Inv, Src} = recv(Sock, <<"INVITE">>),
     {ok, InvMsg} = chappe_sip_msg:parse(Inv),
     Call = chappe_sip_msg:call_id(InvMsg),
     LT = chappe_sip_msg:from_tag(InvMsg),
     PT = <<"conf", (binary:encode_hex(crypto:strong_rand_bytes(3)))/binary>>,
-    send(Sock, Src, resp(Inv, 180, <<"Ringing">>, PT,
-                         [{<<"Contact">>, peer_ctc(UasPort)}], <<>>)),
+    send(
+        Sock,
+        Src,
+        resp(
+            Inv,
+            180,
+            <<"Ringing">>,
+            PT,
+            [{<<"Contact">>, peer_ctc(UasPort)}],
+            <<>>
+        )
+    ),
     V = <<Call/binary, ";to-tag=", LT/binary, ";from-tag=", PT/binary>>,
     ok = wait_found(V, 40),
-    send(Sock, Src, resp(Inv, 200, <<"OK">>, PT,
-                         [{<<"Contact">>, peer_ctc(UasPort)}], sdp())),
+    send(
+        Sock,
+        Src,
+        resp(
+            Inv,
+            200,
+            <<"OK">>,
+            PT,
+            [{<<"Contact">>, peer_ctc(UasPort)}],
+            sdp()
+        )
+    ),
     _ = recv(Sock, <<"ACK">>),
-    Dlg = receive {uac, {ok, D}} -> D after 5000 -> ct:fail(no_uac) end,
-    ?assertEqual({accept, Dlg, #{state => confirmed, role => uac,
-                                 early_only => false}},
-                 chappe_sip:replaces_response(req(<<"INVITE">>, [{<<"Replaces">>, V}]),
-                                              allow())),
+    Dlg =
+        receive
+            {uac, {ok, D}} -> D
+        after 5000 -> ct:fail(no_uac)
+        end,
+    ?assertEqual(
+        {accept, Dlg, #{
+            state => confirmed,
+            role => uac,
+            early_only => false
+        }},
+        chappe_sip:replaces_response(
+            req(<<"INVITE">>, [{<<"Replaces">>, V}]),
+            allow()
+        )
+    ),
     spawn_link(fun() -> Test ! {destroyed, chappe_sip_dialog:destroy(Dlg)} end),
     {Bye, BSrc} = recv(Sock, <<"BYE">>),
     send(Sock, BSrc, resp(Bye, 200, <<"OK">>, PT, [], <<>>)),
-    receive {destroyed, ok} -> ok after 5000 -> ct:fail(no_destroy) end.
+    receive
+        {destroyed, ok} -> ok
+    after 5000 -> ct:fail(no_destroy)
+    end.
 
 %% the 2xx that forms an INVITE dialog lists replaces in Supported
 %% req: R3891-16
@@ -605,11 +897,20 @@ supported_on_uas_2xx(_Config) ->
     send(Sock, EP, invite(Sock, Call, <<"sup">>, [])),
     R200 = recv_status(Sock, 200),
     {ok, M} = chappe_sip_msg:parse(R200),
-    ?assertMatch({_, _}, binary:match(chappe_sip_msg:get(<<"supported">>, M),
-                                      <<"replaces">>)),
+    ?assertMatch(
+        {_, _},
+        binary:match(
+            chappe_sip_msg:get(<<"supported">>, M),
+            <<"replaces">>
+        )
+    ),
     TT = chappe_sip_msg:to_tag(M),
     send(Sock, EP, ack(Sock, Call, <<"sup">>, TT)),
-    Dlg = receive {dialog, D, _} -> D after 5000 -> ct:fail(no_dialog) end,
+    Dlg =
+        receive
+            {dialog, D, _} -> D
+        after 5000 -> ct:fail(no_dialog)
+        end,
     hangup(Sock, Dlg, TT).
 
 %% Require: replaces is understood, so it is no 420
@@ -617,12 +918,20 @@ supported_on_uas_2xx(_Config) ->
 require_replaces_accepted(_Config) ->
     {EP, Sock} = setup(),
     Call = callid(),
-    send(Sock, EP, invite(Sock, Call, <<"req">>, [{<<"Require">>, <<"replaces">>}])),
+    send(
+        Sock,
+        EP,
+        invite(Sock, Call, <<"req">>, [{<<"Require">>, <<"replaces">>}])
+    ),
     R200 = recv_status(Sock, 200),
     {ok, M} = chappe_sip_msg:parse(R200),
     TT = chappe_sip_msg:to_tag(M),
     send(Sock, EP, ack(Sock, Call, <<"req">>, TT)),
-    Dlg = receive {dialog, D, _} -> D after 5000 -> ct:fail(no_dialog) end,
+    Dlg =
+        receive
+            {dialog, D, _} -> D
+        after 5000 -> ct:fail(no_dialog)
+        end,
     hangup(Sock, Dlg, TT).
 
 %% ---- authenticating the replacement (RFC 3891 section 8) ----
@@ -638,36 +947,54 @@ replaces_needs_authorization(_Config) ->
     V = <<Call/binary, ";to-tag=", TT/binary, ";from-tag=", FT/binary>>,
     Hs = [{<<"Replaces">>, V}],
     %% the default: refused
-    ?assertEqual({reject, 403}, chappe_sip:replaces_response(req(<<"INVITE">>, Hs))),
-    ?assertEqual({reject, 403},
-                 chappe_sip:replaces_response(req(<<"INVITE">>, Hs), #{})),
+    ?assertEqual(
+        {reject, 403}, chappe_sip:replaces_response(req(<<"INVITE">>, Hs))
+    ),
+    ?assertEqual(
+        {reject, 403},
+        chappe_sip:replaces_response(req(<<"INVITE">>, Hs), #{})
+    ),
     %% the app's policy
-    ?assertMatch({accept, Dlg, _},
-                 chappe_sip:replaces_response(req(<<"INVITE">>, Hs), allow())),
-    ?assertEqual({reject, 403},
-                 chappe_sip:replaces_response(
-                   req(<<"INVITE">>, Hs), #{authorize => fun(_, _) -> false end})),
+    ?assertMatch(
+        {accept, Dlg, _},
+        chappe_sip:replaces_response(req(<<"INVITE">>, Hs), allow())
+    ),
+    ?assertEqual(
+        {reject, 403},
+        chappe_sip:replaces_response(
+            req(<<"INVITE">>, Hs), #{authorize => fun(_, _) -> false end}
+        )
+    ),
     %% digest: challenged first
     Auth = #{realm => <<"ct">>, secret => fun secret/1},
     {reject, 401, [{<<"WWW-Authenticate">>, Chal}]} =
         chappe_sip:replaces_response(req(<<"INVITE">>, Hs), #{auth => Auth}),
     %% a wrong password is challenged again
     {ok, Bad} = authorization(Chal, <<"alice">>, <<"nope">>),
-    ?assertMatch({reject, 401, [{<<"WWW-Authenticate">>, _}]},
-                 chappe_sip:replaces_response(
-                   req(<<"INVITE">>, [{<<"Authorization">>, Bad} | Hs]),
-                   #{auth => Auth})),
+    ?assertMatch(
+        {reject, 401, [{<<"WWW-Authenticate">>, _}]},
+        chappe_sip:replaces_response(
+            req(<<"INVITE">>, [{<<"Authorization">>, Bad} | Hs]),
+            #{auth => Auth}
+        )
+    ),
     {ok, Good} = authorization(Chal, <<"alice">>, <<"secret">>),
-    ?assertMatch({accept, Dlg, _},
-                 chappe_sip:replaces_response(
-                   req(<<"INVITE">>, [{<<"Authorization">>, Good} | Hs]),
-                   #{auth => Auth})),
+    ?assertMatch(
+        {accept, Dlg, _},
+        chappe_sip:replaces_response(
+            req(<<"INVITE">>, [{<<"Authorization">>, Good} | Hs]),
+            #{auth => Auth}
+        )
+    ),
     %% authenticated but not authorized
     {ok, Good2} = authorization(Chal, <<"alice">>, <<"secret">>, 2),
-    ?assertEqual({reject, 403},
-                 chappe_sip:replaces_response(
-                   req(<<"INVITE">>, [{<<"Authorization">>, Good2} | Hs]),
-                   #{auth => Auth, authorize => fun(_, _) -> false end})),
+    ?assertEqual(
+        {reject, 403},
+        chappe_sip:replaces_response(
+            req(<<"INVITE">>, [{<<"Authorization">>, Good2} | Hs]),
+            #{auth => Auth, authorize => fun(_, _) -> false end}
+        )
+    ),
     %% the dialog was never touched
     ?assertEqual({ok, Dlg}, chappe_sip:find_dialog(Call, TT, FT)),
     hangup(Sock, Dlg, TT).
@@ -688,11 +1015,17 @@ replaces_digest_on_the_wire(_Config) ->
             {reject, St, Hdrs} ->
                 chappe_sip_res:send(Res, St, #{headers => Hdrs});
             {accept, Old, _} ->
-                {ok, New} = chappe_sip:create_uas(Req, Res,
-                                                  #{local_sdp => sdp()}),
+                {ok, New} = chappe_sip:create_uas(
+                    Req,
+                    Res,
+                    #{local_sdp => sdp()}
+                ),
                 Test ! {replaced_by, New},
                 ok = chappe_sip_dialog:destroy(Old),
-                receive stop -> ok after 30000 -> ok end
+                receive
+                    stop -> ok
+                after 30000 -> ok
+                end
         end
     end),
     V = <<Call/binary, ";to-tag=", TT/binary, ";from-tag=", FT/binary>>,
@@ -703,12 +1036,24 @@ replaces_digest_on_the_wire(_Config) ->
     ?assertEqual({ok, Dlg}, chappe_sip:find_dialog(Call, TT, FT)),
     {ok, Cred} = authorization(Chal, <<"alice">>, <<"secret">>),
     Call2 = callid(),
-    send(Sock, EP, invite(Sock, Call2, <<"r2">>,
-                          [{<<"Replaces">>, V}, {<<"Authorization">>, Cred}])),
+    send(
+        Sock,
+        EP,
+        invite(
+            Sock,
+            Call2,
+            <<"r2">>,
+            [{<<"Replaces">>, V}, {<<"Authorization">>, Cred}]
+        )
+    ),
     {ok, R200} = chappe_sip_msg:parse(recv_status(Sock, 200)),
     TT2 = chappe_sip_msg:to_tag(R200),
     send(Sock, EP, ack(Sock, Call2, <<"r2">>, TT2)),
-    New = receive {replaced_by, N} -> N after 5000 -> ct:fail(no_replacement) end,
+    New =
+        receive
+            {replaced_by, N} -> N
+        after 5000 -> ct:fail(no_replacement)
+        end,
     {Bye, BSrc} = recv(Sock, <<"BYE">>),
     {ok, ByeMsg} = chappe_sip_msg:parse(Bye),
     ?assertEqual(Call, chappe_sip_msg:call_id(ByeMsg)),
@@ -726,8 +1071,12 @@ authorization(Chal, User, Pass) -> authorization(Chal, User, Pass, 1).
 authorization(Chal, User, Pass, Nc) ->
     {ok, C} = chappe_sip_hdr:auth(Chal),
     chappe_sip_digest:credentials(#{
-        method => <<"INVITE">>, uri => <<"sip:app@127.0.0.1">>,
-        username => User, password => Pass, challenge => C, nc => Nc
+        method => <<"INVITE">>,
+        uri => <<"sip:app@127.0.0.1">>,
+        username => User,
+        password => Pass,
+        challenge => C,
+        nc => Nc
     }).
 
 %% ---- helpers ----
@@ -737,17 +1086,21 @@ wait_found(V, 0) ->
     ct:fail({not_indexed, V});
 wait_found(V, N) ->
     case chappe_sip:find_replaced(req(<<"INVITE">>, [{<<"Replaces">>, V}])) of
-        {ok, _, _} -> ok;
-        _ -> timer:sleep(50), wait_found(V, N - 1)
+        {ok, _, _} ->
+            ok;
+        _ ->
+            timer:sleep(50),
+            wait_found(V, N - 1)
     end.
 
 setup() ->
     EP = chappe_sip_test_port:pick(),
-    ok = chappe_sip:start(#{contact => <<"sip:127.0.0.1:",
-                                         (integer_to_binary(EP))/binary>>}),
+    ok = chappe_sip:start(#{
+        contact => <<"sip:127.0.0.1:", (integer_to_binary(EP))/binary>>
+    }),
     Test = self(),
     ok = chappe_sip:invite(handler(Test)),
-    {ok, Sock} = gen_udp:open(0, [binary, {active, true}, {ip, {127,0,0,1}}]),
+    {ok, Sock} = gen_udp:open(0, [binary, {active, true}, {ip, {127, 0, 0, 1}}]),
     {EP, Sock}.
 
 %% a plain INVITE forms a dialog owned by the handler process; an INVITE
@@ -756,8 +1109,11 @@ handler(Test) ->
     fun(Req, Res) ->
         case chappe_sip_req:get(<<"replaces">>, Req) of
             undefined ->
-                {ok, Dlg} = chappe_sip:create_uas(Req, Res,
-                                                  #{local_sdp => sdp()}),
+                {ok, Dlg} = chappe_sip:create_uas(
+                    Req,
+                    Res,
+                    #{local_sdp => sdp()}
+                ),
                 Test ! {dialog, Dlg, self()},
                 owner_loop(Test, Dlg);
             _ ->
@@ -781,8 +1137,11 @@ establish(EP, Sock) ->
     {ok, M} = chappe_sip_msg:parse(R200),
     TT = chappe_sip_msg:to_tag(M),
     send(Sock, EP, ack(Sock, Call, FT, TT)),
-    {Dlg, Owner} = receive {dialog, D, O} -> {D, O}
-                   after 5000 -> ct:fail(no_dialog) end,
+    {Dlg, Owner} =
+        receive
+            {dialog, D, O} -> {D, O}
+        after 5000 -> ct:fail(no_dialog)
+        end,
     {Call, FT, TT, Dlg, Owner}.
 
 %% app BYE, answered by the peer (the test process owns the peer socket, so
@@ -792,25 +1151,41 @@ hangup(Sock, Dlg, TT) ->
     spawn_link(fun() -> Self ! {hung_up, chappe_sip_dialog:destroy(Dlg)} end),
     {Bye, BSrc} = recv(Sock, <<"BYE">>),
     send(Sock, BSrc, resp(Bye, 200, <<"OK">>, TT, [], <<>>)),
-    receive {hung_up, ok} -> ok after 5000 -> ct:fail(no_hangup) end.
+    receive
+        {hung_up, ok} -> ok
+    after 5000 -> ct:fail(no_hangup)
+    end.
 
-wait_gone(_Key, 0) -> still_there;
+wait_gone(_Key, 0) ->
+    still_there;
 wait_gone(Key, N) ->
     case ets:member(?TAB, Key) of
-        false -> ok;
-        true -> timer:sleep(50), wait_gone(Key, N - 1)
+        false ->
+            ok;
+        true ->
+            timer:sleep(50),
+            wait_gone(Key, N - 1)
     end.
 
 %% a request handle built from raw bytes, as a handler would see it
 req(Method, Headers) ->
     Hs = [[Nm, <<": ">>, V, <<"\r\n">>] || {Nm, V} <- Headers],
     Bin = iolist_to_binary(
-            [Method, <<" sip:app@127.0.0.1 SIP/2.0\r\n"
-                       "Via: SIP/2.0/UDP 127.0.0.1:5999;branch=z9hG4bKx\r\n"
-                       "From: <sip:x@127.0.0.1>;tag=nf\r\n"
-                       "To: <sip:app@127.0.0.1>\r\n"
-                       "Call-ID: fresh@ct\r\nCSeq: 1 ">>, Method, <<"\r\n">>,
-             Hs, <<"Content-Length: 0\r\n\r\n">>]),
+        [
+            Method,
+            <<
+                " sip:app@127.0.0.1 SIP/2.0\r\n"
+                "Via: SIP/2.0/UDP 127.0.0.1:5999;branch=z9hG4bKx\r\n"
+                "From: <sip:x@127.0.0.1>;tag=nf\r\n"
+                "To: <sip:app@127.0.0.1>\r\n"
+                "Call-ID: fresh@ct\r\nCSeq: 1 "
+            >>,
+            Method,
+            <<"\r\n">>,
+            Hs,
+            <<"Content-Length: 0\r\n\r\n">>
+        ]
+    ),
     {ok, Msg} = chappe_sip_msg:parse(Bin),
     chappe_sip_req:new(Msg, undefined, #{}).
 
@@ -821,16 +1196,21 @@ callid() ->
 branch() ->
     <<"z9hG4bK", (binary:encode_hex(crypto:strong_rand_bytes(6)))/binary>>.
 sdp() ->
-    <<"v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\n"
-      "t=0 0\r\nm=audio 40000 RTP/AVP 0\r\na=sendrecv\r\n">>.
-lport(Sock) -> {ok, P} = inet:port(Sock), P.
-send(Sock, Dst, Bin) -> ok = gen_udp:send(Sock, {127,0,0,1}, Dst, Bin).
+    <<
+        "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\n"
+        "t=0 0\r\nm=audio 40000 RTP/AVP 0\r\na=sendrecv\r\n"
+    >>.
+lport(Sock) ->
+    {ok, P} = inet:port(Sock),
+    P.
+send(Sock, Dst, Bin) -> ok = gen_udp:send(Sock, {127, 0, 0, 1}, Dst, Bin).
 
 recv(Sock, Method) ->
     L = byte_size(Method),
     receive
-        {udp, Sock, _, Src, <<M:L/binary, " ", _/binary>> = Bin}
-          when M =:= Method ->
+        {udp, Sock, _, Src, <<M:L/binary, " ", _/binary>> = Bin} when
+            M =:= Method
+        ->
             {Bin, Src}
     after 6000 -> ct:fail({no_req, Method})
     end.
@@ -847,33 +1227,73 @@ invite(Sock, Call, FT, Extra) ->
     S = sdp(),
     L = integer_to_binary(byte_size(S)),
     Hs = iolist_to_binary([[N, <<": ">>, V, <<"\r\n">>] || {N, V} <- Extra]),
-    <<"INVITE sip:app@127.0.0.1 SIP/2.0\r\n"
-      "Via: SIP/2.0/UDP 127.0.0.1:", P/binary, ";rport;branch=",
-      (branch())/binary, "\r\nMax-Forwards: 70\r\n"
-      "From: Caller <sip:caller@127.0.0.1:", P/binary, ">;tag=", FT/binary,
-      "\r\nTo: <sip:app@127.0.0.1>\r\n"
-      "Contact: <sip:caller@127.0.0.1:", P/binary, ">\r\n"
-      "Call-ID: ", Call/binary, "\r\nCSeq: 1 INVITE\r\n", Hs/binary,
-      "Content-Type: application/sdp\r\n"
-      "Content-Length: ", L/binary, "\r\n\r\n", S/binary>>.
+    <<
+        "INVITE sip:app@127.0.0.1 SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:",
+        P/binary,
+        ";rport;branch=",
+        (branch())/binary,
+        "\r\nMax-Forwards: 70\r\n"
+        "From: Caller <sip:caller@127.0.0.1:",
+        P/binary,
+        ">;tag=",
+        FT/binary,
+        "\r\nTo: <sip:app@127.0.0.1>\r\n"
+        "Contact: <sip:caller@127.0.0.1:",
+        P/binary,
+        ">\r\n"
+        "Call-ID: ",
+        Call/binary,
+        "\r\nCSeq: 1 INVITE\r\n",
+        Hs/binary,
+        "Content-Type: application/sdp\r\n"
+        "Content-Length: ",
+        L/binary,
+        "\r\n\r\n",
+        S/binary
+    >>.
 
 ack(Sock, Call, FT, TT) ->
     P = integer_to_binary(lport(Sock)),
-    <<"ACK sip:app@127.0.0.1 SIP/2.0\r\n"
-      "Via: SIP/2.0/UDP 127.0.0.1:", P/binary, ";branch=", (branch())/binary,
-      "\r\nMax-Forwards: 70\r\n"
-      "From: Caller <sip:caller@127.0.0.1:", P/binary, ">;tag=", FT/binary,
-      "\r\nTo: <sip:app@127.0.0.1>;tag=", TT/binary, "\r\n"
-      "Call-ID: ", Call/binary, "\r\nCSeq: 1 ACK\r\nContent-Length: 0\r\n\r\n">>.
+    <<
+        "ACK sip:app@127.0.0.1 SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:",
+        P/binary,
+        ";branch=",
+        (branch())/binary,
+        "\r\nMax-Forwards: 70\r\n"
+        "From: Caller <sip:caller@127.0.0.1:",
+        P/binary,
+        ">;tag=",
+        FT/binary,
+        "\r\nTo: <sip:app@127.0.0.1>;tag=",
+        TT/binary,
+        "\r\n"
+        "Call-ID: ",
+        Call/binary,
+        "\r\nCSeq: 1 ACK\r\nContent-Length: 0\r\n\r\n"
+    >>.
 
 bye(Sock, Call, FT, TT) ->
     P = integer_to_binary(lport(Sock)),
-    <<"BYE sip:app@127.0.0.1 SIP/2.0\r\n"
-      "Via: SIP/2.0/UDP 127.0.0.1:", P/binary, ";rport;branch=",
-      (branch())/binary, "\r\nMax-Forwards: 70\r\n"
-      "From: Caller <sip:caller@127.0.0.1:", P/binary, ">;tag=", FT/binary,
-      "\r\nTo: <sip:app@127.0.0.1>;tag=", TT/binary, "\r\n"
-      "Call-ID: ", Call/binary, "\r\nCSeq: 2 BYE\r\nContent-Length: 0\r\n\r\n">>.
+    <<
+        "BYE sip:app@127.0.0.1 SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:",
+        P/binary,
+        ";rport;branch=",
+        (branch())/binary,
+        "\r\nMax-Forwards: 70\r\n"
+        "From: Caller <sip:caller@127.0.0.1:",
+        P/binary,
+        ">;tag=",
+        FT/binary,
+        "\r\nTo: <sip:app@127.0.0.1>;tag=",
+        TT/binary,
+        "\r\n"
+        "Call-ID: ",
+        Call/binary,
+        "\r\nCSeq: 2 BYE\r\nContent-Length: 0\r\n\r\n"
+    >>.
 
 %% a response to an inbound request, echoing Via/From/To/Call-ID/CSeq
 resp(ReqBin, Status, Reason, ToTag, ExtraHeaders, Body) ->
@@ -881,21 +1301,46 @@ resp(ReqBin, Status, Reason, ToTag, ExtraHeaders, Body) ->
     Vias = chappe_sip_msg:get_all(<<"via">>, Msg),
     From = chappe_sip_msg:get(<<"from">>, Msg),
     To0 = chappe_sip_msg:get(<<"to">>, Msg),
-    To = case chappe_sip_msg:to_tag(Msg) of
-             undefined -> <<To0/binary, ";tag=", ToTag/binary>>;
-             _ -> To0
-         end,
+    To =
+        case chappe_sip_msg:to_tag(Msg) of
+            undefined -> <<To0/binary, ";tag=", ToTag/binary>>;
+            _ -> To0
+        end,
     Call = chappe_sip_msg:call_id(Msg),
     CSeq = chappe_sip_msg:get(<<"cseq">>, Msg),
     ViaLines = [[<<"Via: ">>, V, <<"\r\n">>] || V <- Vias],
     Extra = [[N, <<": ">>, Val, <<"\r\n">>] || {N, Val} <- ExtraHeaders],
-    CT = case Body of
-             <<>> -> [];
-             _ -> <<"Content-Type: application/sdp\r\n">>
-         end,
+    CT =
+        case Body of
+            <<>> -> [];
+            _ -> <<"Content-Type: application/sdp\r\n">>
+        end,
     CL = integer_to_binary(byte_size(Body)),
     iolist_to_binary(
-      [<<"SIP/2.0 ">>, integer_to_binary(Status), <<" ">>, Reason, <<"\r\n">>,
-       ViaLines, <<"From: ">>, From, <<"\r\n">>, <<"To: ">>, To, <<"\r\n">>,
-       <<"Call-ID: ">>, Call, <<"\r\n">>, <<"CSeq: ">>, CSeq, <<"\r\n">>, Extra,
-       CT, <<"Content-Length: ">>, CL, <<"\r\n\r\n">>, Body]).
+        [
+            <<"SIP/2.0 ">>,
+            integer_to_binary(Status),
+            <<" ">>,
+            Reason,
+            <<"\r\n">>,
+            ViaLines,
+            <<"From: ">>,
+            From,
+            <<"\r\n">>,
+            <<"To: ">>,
+            To,
+            <<"\r\n">>,
+            <<"Call-ID: ">>,
+            Call,
+            <<"\r\n">>,
+            <<"CSeq: ">>,
+            CSeq,
+            <<"\r\n">>,
+            Extra,
+            CT,
+            <<"Content-Length: ">>,
+            CL,
+            <<"\r\n\r\n">>,
+            Body
+        ]
+    ).

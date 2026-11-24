@@ -106,7 +106,9 @@ nul_in_reply_fields(Config) ->
     Bad = <<"a", 0, "b">>,
     [
         ?assertError(badarg, F(E, 1, St, R, H, B, T))
-     || F <- [fun chappe_sip_nif:respond/7, fun chappe_sip_nif:reliable_respond/7],
+     || F <- [
+            fun chappe_sip_nif:respond/7, fun chappe_sip_nif:reliable_respond/7
+        ],
         St <- [180],
         {R, H, B, T} <- [
             {Bad, Hdr, <<>>, <<>>},
@@ -223,27 +225,28 @@ agent_options_bounds(_Config) ->
     Big = binary:copy(<<"p">>, 600),
     [
         refused(O#{contact => C})
-     || O <- [
-            #{sip_t1 => V}
-         || V <- [0, 9, 60001, -1, big, <<"500">>, 1.5]
-        ] ++
-            [#{sip_t2 => V} || V <- [9, 600001, 400]] ++
-            [#{sip_t4 => V} || V <- [0, 9, 600001]] ++
-            [#{sip_t1 => 1000, sip_t2 => 999}] ++
-            [#{udp_mtu => V} || V <- [0, 575, 65536]] ++
-            [#{tcp_keepalive_ms => V} || V <- [0, 999, 3600001, true]] ++
+     || O <-
             [
-                #{outbound_proxy => V}
-             || V <- [
-                    <<>>,
-                    <<"http://127.0.0.1">>,
-                    <<"tel:+15551234">>,
-                    <<"sip:127.0.0.1", 0, ":5060">>,
-                    <<"sip:", Big/binary>>,
-                    "sip:127.0.0.1",
-                    42
+                #{sip_t1 => V}
+             || V <- [0, 9, 60001, -1, big, <<"500">>, 1.5]
+            ] ++
+                [#{sip_t2 => V} || V <- [9, 600001, 400]] ++
+                [#{sip_t4 => V} || V <- [0, 9, 600001]] ++
+                [#{sip_t1 => 1000, sip_t2 => 999}] ++
+                [#{udp_mtu => V} || V <- [0, 575, 65536]] ++
+                [#{tcp_keepalive_ms => V} || V <- [0, 999, 3600001, true]] ++
+                [
+                    #{outbound_proxy => V}
+                 || V <- [
+                        <<>>,
+                        <<"http://127.0.0.1">>,
+                        <<"tel:+15551234">>,
+                        <<"sip:127.0.0.1", 0, ":5060">>,
+                        <<"sip:", Big/binary>>,
+                        "sip:127.0.0.1",
+                        42
+                    ]
                 ]
-            ]
     ],
     [
         started(O#{contact => contact()})
@@ -296,7 +299,9 @@ refused_starts_keep_the_vm(_Config) ->
         #{contact => C, max_message_size => 0}
     ],
     lists:foreach(
-        fun(_) -> [{error, badarg} = chappe_sip_nif:start(O, self()) || O <- Bad] end,
+        fun(_) ->
+            [{error, badarg} = chappe_sip_nif:start(O, self()) || O <- Bad]
+        end,
         lists:seq(1, 100)
     ),
     %% the singleton is free again: a good start works
@@ -396,11 +401,17 @@ stop_with_internal_reply_queued(_Config) ->
 
 unsendable_request(N) ->
     Id = integer_to_binary(N),
-    <<"OPTIONS sip:uas@127.0.0.1 SIP/2.0\r\n"
-      "Via: SIP/2.0/UDP 127.0.0.1:5999;rport;branch=z9hG4bK", Id/binary, "\r\n"
-      "Max-Forwards: 70\r\n"
-      "From: <sip:a@127.0.0.1>;tag=f1\r\n"
-      "To: <sip:uas@127.0.0.1>\r\n"
-      "Call-ID: ", Id/binary, "@127.0.0.1\r\n"
-      "CSeq: 1 OPTIONS\r\n"
-      "Content-Length: 0\r\n\r\n">>.
+    <<
+        "OPTIONS sip:uas@127.0.0.1 SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:5999;rport;branch=z9hG4bK",
+        Id/binary,
+        "\r\n"
+        "Max-Forwards: 70\r\n"
+        "From: <sip:a@127.0.0.1>;tag=f1\r\n"
+        "To: <sip:uas@127.0.0.1>\r\n"
+        "Call-ID: ",
+        Id/binary,
+        "@127.0.0.1\r\n"
+        "CSeq: 1 OPTIONS\r\n"
+        "Content-Length: 0\r\n\r\n"
+    >>.

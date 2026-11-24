@@ -123,7 +123,10 @@ n_minus_one(Config, Kinds) ->
 taps_through_rtpengine(Config) ->
     {ok, Conf} = chappe_mix:start(#{ip => {0, 0, 0, 0}}),
     [#{leg := LA}, _] =
-        Parties = [party(Config, Conf, Kind, F) || {Kind, F} <- [{pcma, 440}, {pcmu, 1100}]],
+        Parties = [
+            party(Config, Conf, Kind, F)
+         || {Kind, F} <- [{pcma, 440}, {pcmu, 1100}]
+        ],
     timer:sleep(2000),
     {ok, TA} = chappe_mix:tap(Conf, LA, #{}),
     {ok, TR} = chappe_mix:tap(Conf, room, #{}),
@@ -131,7 +134,9 @@ taps_through_rtpengine(Config) ->
     Room = tap_samples(Conf, TR, 100),
     [cleanup(P) || P <- Parties],
     ok = chappe_mix:stop(Conf),
-    [{440, A440}, {1100, A1100}] = chappe_mix_test_tone:levels(Party, [440, 1100]),
+    [{440, A440}, {1100, A1100}] = chappe_mix_test_tone:levels(Party, [
+        440, 1100
+    ]),
     [{440, R440}, {1100, R1100}] = chappe_mix_test_tone:levels(Room, [440, 1100]),
     ct:log("party tap 440 ~.1f 1100 ~.1f, room tap 440 ~.1f 1100 ~.1f", [
         A440, A1100, R440, R1100
@@ -146,7 +151,8 @@ tap_samples(_Conf, _Tap, 0) ->
 tap_samples(Conf, Tap, N) ->
     receive
         {chappe_mix, Conf, {tap, Tap, Pcm}} ->
-            [S || <<S:16/little-signed>> <= Pcm] ++ tap_samples(Conf, Tap, N - 1)
+            [S || <<S:16/little-signed>> <= Pcm] ++
+                tap_samples(Conf, Tap, N - 1)
     after 2000 -> ct:fail(no_tap)
     end.
 
@@ -209,8 +215,9 @@ dtmf_through_rtpengine(Config) ->
         Ev(104, false, 1, 640),
         Ev(105, false, 1, 640)
     ],
-    Plan = [Audio(N) || N <- lists:seq(1, 99)] ++ Digit ++
-        [Audio(N) || N <- lists:seq(106, 130)],
+    Plan =
+        [Audio(N) || N <- lists:seq(1, 99)] ++ Digit ++
+            [Audio(N) || N <- lists:seq(106, 130)],
     %% B sends silence too, so rtpengine has both sides flowing
     BPlan = [Audio(N) || N <- lists:seq(1, 130)],
     T0 = erlang:monotonic_time(millisecond),
@@ -236,7 +243,10 @@ dtmf_through_rtpengine(Config) ->
     [chappe_rtpengine_session:stop(S) || S <- [SessA, SessB]],
     [gen_udp:close(S) || S <- [SA, SB]],
     ok = chappe_mix:stop(Conf),
-    Sent = [maps:get(payload, P) || {ok, P} <- [chappe_mix_rtp:parse(D) || D <- Digit]],
+    Sent = [
+        maps:get(payload, P)
+     || {ok, P} <- [chappe_mix_rtp:parse(D) || D <- Digit]
+    ],
     ?assertEqual(Sent, [maps:get(payload, P) || P <- Got]),
     ?assertEqual(
         [true, false, false, false, false, false],
@@ -406,9 +416,12 @@ sdp(Ip, Port, Codec) ->
 sdp(Ip, Port, Codec, Ptime) ->
     {Pts, Maps} =
         case Codec of
-            pcmu -> {<<"0">>, [<<"a=rtpmap:0 PCMU/8000\r\n">>]};
-            pcma -> {<<"8">>, [<<"a=rtpmap:8 PCMA/8000\r\n">>]};
-            opus -> {<<"96">>, [<<"a=rtpmap:96 opus/48000/2\r\n">>]};
+            pcmu ->
+                {<<"0">>, [<<"a=rtpmap:0 PCMU/8000\r\n">>]};
+            pcma ->
+                {<<"8">>, [<<"a=rtpmap:8 PCMA/8000\r\n">>]};
+            opus ->
+                {<<"96">>, [<<"a=rtpmap:96 opus/48000/2\r\n">>]};
             pcmu_dtmf ->
                 {<<"0 101">>, [
                     <<"a=rtpmap:0 PCMU/8000\r\n">>,

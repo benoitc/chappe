@@ -225,7 +225,10 @@ filtered_events(_Config) ->
     {Fake, Port} = fake(#{heartbeat => 60000}),
     ok = add(fs1, Port, #{heartbeat_interval_ms => 60000}),
     ok = wait_state(fs1, up),
-    Match = #{<<"Event-Subclass">> => <<"conference::maintenance">>, <<"Conference-Name">> => <<"r1">>},
+    Match = #{
+        <<"Event-Subclass">> => <<"conference::maintenance">>,
+        <<"Conference-Name">> => <<"r1">>
+    },
     ok = chappe_esl:node_events(fs1, Match),
     ?assertEqual({error, badarg}, chappe_esl:node_events(fs1, #{1 => 2})),
     Room = fun(R) ->
@@ -235,7 +238,9 @@ filtered_events(_Config) ->
             {<<"Action">>, <<"add-member">>}
         ])
     end,
-    Create = chappe_esl_fake_server:json_event(<<"CHANNEL_CREATE">>, [{<<"Unique-ID">>, <<"u-9">>}]),
+    Create = chappe_esl_fake_server:json_event(<<"CHANNEL_CREATE">>, [
+        {<<"Unique-ID">>, <<"u-9">>}
+    ]),
     chappe_esl_fake_server:inject(Fake, [Create, Room(<<"r2">>), Room(<<"r1">>)]),
     Ev = expect_event(fs1, <<"CUSTOM">>),
     ?assertEqual(<<"r1">>, chappe_esl_event:header(<<"Conference-Name">>, Ev)),

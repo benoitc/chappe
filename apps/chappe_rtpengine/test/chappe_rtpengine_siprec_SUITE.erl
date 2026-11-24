@@ -85,7 +85,9 @@ publish_anchors_every_stream(_Config) ->
     ),
     %% the recording server only receives
     ?assertEqual(?STREAMS, count(Answer, <<"a=recvonly">>)),
-    ?assertEqual(established, maps:get(state, chappe_rtpengine_session:info(Sess))),
+    ?assertEqual(
+        established, maps:get(state, chappe_rtpengine_session:info(Sess))
+    ),
 
     {ok, Sub} = subscribe(Sess, SrcTag),
     Streams = chappe_rtpengine_sdp:streams(chappe_rtpengine_ng:sdp(Sub)),
@@ -140,7 +142,11 @@ per_stream_fork_to_receivers(_Config) ->
             {ok, Answer} = chappe_rtpengine_sdp:fork_answer(
                 chappe_rtpengine_ng:sdp(Sub),
                 {label, label(I)},
-                #{address => MediaIP, port => port_of(I, Receivers), ptime => 20}
+                #{
+                    address => MediaIP,
+                    port => port_of(I, Receivers),
+                    ptime => 20
+                }
             ),
             {ok, _} = chappe_rtpengine_cmd:subscribe_answer(Sess, #{
                 to_tag => SubTag,
@@ -369,7 +375,8 @@ decoded(Sock) ->
 
 decoded(Sock, N, Levels) ->
     receive
-        {udp, Sock, _IP, _Port, <<2:2, _:6, _:8, _:16, _:32, _:32, Payload/binary>>} ->
+        {udp, Sock, _IP, _Port,
+            <<2:2, _:6, _:8, _:16, _:32, _:32, Payload/binary>>} ->
             Seen = lists:usort([
                 unulaw(B)
              || <<B>> <= binary:part(Payload, 0, min(80, byte_size(Payload)))
@@ -460,8 +467,10 @@ audio_port(SDP) ->
 
 tags(Kind) ->
     Suffix = integer_to_binary(erlang:unique_integer([positive])),
-    {<<"chappe-siprec-", Kind/binary, "-", Suffix/binary>>,
-        <<"from-", Suffix/binary>>}.
+    {
+        <<"chappe-siprec-", Kind/binary, "-", Suffix/binary>>,
+        <<"from-", Suffix/binary>>
+    }.
 
 socket() ->
     {ok, Sock} = gen_udp:open(0, [binary, {active, true}]),

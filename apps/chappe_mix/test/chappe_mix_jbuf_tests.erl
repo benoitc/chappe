@@ -205,7 +205,9 @@ ts_wrap_test() ->
 
 %% Waiting for the first frame of a stream is not an underrun.
 no_underrun_before_start_test() ->
-    J = chappe_mix_jbuf:push(1, 1, 0, bytes(0, 80), chappe_mix_jbuf:new(3, 16#FF)),
+    J = chappe_mix_jbuf:push(
+        1, 1, 0, bytes(0, 80), chappe_mix_jbuf:new(3, 16#FF)
+    ),
     {[silence, silence], J1} = pops(J, 2),
     ?assertMatch(#{underruns := 0}, chappe_mix_jbuf:stats(J1)).
 
@@ -246,13 +248,17 @@ prefill_stays_by_default_test() ->
         P(P(J1, 2), 3),
         lists:seq(4, 603)
     ),
-    ?assertMatch(#{prefill := 2, prefill_shrunk := 0}, chappe_mix_jbuf:stats(J2)).
+    ?assertMatch(
+        #{prefill := 2, prefill_shrunk := 0}, chappe_mix_jbuf:stats(J2)
+    ).
 
 %% A prefill of 1 does not shrink, and nothing is skipped.
 prefill_floor_test() ->
     {J, Out} = lists:foldl(
         fun(N, {J0, Acc}) ->
-            {F, J1} = chappe_mix_jbuf:pop(chappe_mix_jbuf:push(1, N, <<N:16>>, J0)),
+            {F, J1} = chappe_mix_jbuf:pop(
+                chappe_mix_jbuf:push(1, N, <<N:16>>, J0)
+            ),
             {J1, [F | Acc]}
         end,
         {chappe_mix_jbuf:new(3), []},

@@ -129,7 +129,9 @@ refresh_target_test() ->
 auto_answer_modify_test() ->
     D = data(#{local_sdp => ?LOCAL_SDP, local_contact => <<"<sip:a@h>">>}),
     Offer = req(<<"INVITE">>, [], ?OFFER_SDP),
-    {200, <<"OK">>, Hdrs, ?LOCAL_SDP, D1} = ?OFFER:auto_answer(modify, Offer, D),
+    {200, <<"OK">>, Hdrs, ?LOCAL_SDP, D1} = ?OFFER:auto_answer(
+        modify, Offer, D
+    ),
     ?assertEqual(
         [
             {<<"Content-Type">>, <<"application/sdp">>},
@@ -160,7 +162,9 @@ auto_answer_update_test() ->
 auto_answer_others_test() ->
     D = data(#{}),
     R = req(<<"INFO">>, [], <<>>),
-    ?assertMatch({603, <<"Declined">>, [], <<>>, _}, ?OFFER:auto_answer(refer, R, D)),
+    ?assertMatch(
+        {603, <<"Declined">>, [], <<>>, _}, ?OFFER:auto_answer(refer, R, D)
+    ),
     {200, <<"OK">>, Opts, <<>>, _} = ?OFFER:auto_answer(options, R, D),
     ?assertEqual(
         [<<"Allow">>, <<"Accept">>, <<"Supported">>], [N || {N, _} <- Opts]
@@ -198,7 +202,8 @@ require_check_test() ->
     R = req(<<"INFO">>, [{<<"Require">>, <<"foo, bar">>}], <<>>),
     ?assertEqual({keep_state, D}, ?ROUTE:require_check(41, R, D)),
     receive
-        {engine_call, {txn, {dialog_respond, 41, 420, Reason, Hdrs, <<>>, <<>>}}} ->
+        {engine_call,
+            {txn, {dialog_respond, 41, 420, Reason, Hdrs, <<>>, <<>>}}} ->
             ?assertEqual(<<"Bad Extension">>, Reason),
             ?assertEqual(<<"Unsupported: foo, bar\r\n">>, Hdrs)
     after 2000 -> ?assert(false)
@@ -258,8 +263,12 @@ st_response_test() ->
     ?assertEqual({D, []}, ?ST:st_response(200, resp(200, <<"INFO">>, Se), D)),
     ?assertEqual({D, []}, ?ST:st_response(486, resp(486, <<"INVITE">>, Se), D)),
     %% a 2xx without Session-Expires keeps a running timer and re-arms it
-    St = #{interval => 90, refresher => local, min_se => 0, peer_update => false},
-    {D2, Rearm} = ?ST:st_response(200, resp(200, <<"INVITE">>, []), data(#{st => St})),
+    St = #{
+        interval => 90, refresher => local, min_se => 0, peer_update => false
+    },
+    {D2, Rearm} = ?ST:st_response(
+        200, resp(200, <<"INVITE">>, []), data(#{st => St})
+    ),
     ?assertEqual(St, D2#data.st),
     ?assertEqual(chappe_sip_session_timer:timeouts(St), Rearm).
 
@@ -271,12 +280,14 @@ indialog_request_loose_test() ->
         Dlg, <<"INFO">>, [{<<"X-A">>, <<"1">>}], <<"hi">>
     ),
     ?assertEqual(
-        <<"INFO sip:b@10.0.0.2 SIP/2.0\r\n"
-          "Route: <sip:p1.example.com;lr>\r\n"
-          "From: <sip:a@example.com>;tag=a\r\n"
-          "To: <sip:b@example.com>;tag=b\r\n"
-          "Call-ID: c1\r\nCSeq: 7 INFO\r\nMax-Forwards: 70\r\n"
-          "X-A: 1\r\nSupported: timer\r\nContent-Length: 2\r\n\r\nhi">>,
+        <<
+            "INFO sip:b@10.0.0.2 SIP/2.0\r\n"
+            "Route: <sip:p1.example.com;lr>\r\n"
+            "From: <sip:a@example.com>;tag=a\r\n"
+            "To: <sip:b@example.com>;tag=b\r\n"
+            "Call-ID: c1\r\nCSeq: 7 INFO\r\nMax-Forwards: 70\r\n"
+            "X-A: 1\r\nSupported: timer\r\nContent-Length: 2\r\n\r\nhi"
+        >>,
         Raw
     ),
     ?assertEqual(<<"sip:p1.example.com;lr">>, Route).
@@ -287,13 +298,15 @@ indialog_request_strict_test() ->
         Dlg, <<"UPDATE">>, [], <<>>
     ),
     ?assertEqual(
-        <<"UPDATE sip:p1.example.com SIP/2.0\r\n"
-          "Route: <sip:b@10.0.0.2>\r\n"
-          "From: <sip:a@example.com>;tag=a\r\n"
-          "To: <sip:b@example.com>;tag=b\r\n"
-          "Call-ID: c1\r\nCSeq: 7 UPDATE\r\nMax-Forwards: 70\r\n"
-          "Contact: <sip:a@10.0.0.1>\r\nSupported: timer\r\n"
-          "Content-Length: 0\r\n\r\n">>,
+        <<
+            "UPDATE sip:p1.example.com SIP/2.0\r\n"
+            "Route: <sip:b@10.0.0.2>\r\n"
+            "From: <sip:a@example.com>;tag=a\r\n"
+            "To: <sip:b@example.com>;tag=b\r\n"
+            "Call-ID: c1\r\nCSeq: 7 UPDATE\r\nMax-Forwards: 70\r\n"
+            "Contact: <sip:a@10.0.0.1>\r\nSupported: timer\r\n"
+            "Content-Length: 0\r\n\r\n"
+        >>,
         Raw
     ).
 
@@ -306,11 +319,13 @@ indialog_request_no_route_test() ->
     ),
     ?assertEqual(undefined, Route),
     ?assertEqual(
-        <<"ACK sip:b@10.0.0.2 SIP/2.0\r\n"
-          "From: <sip:a@example.com>;tag=a\r\n"
-          "To: <sip:b@example.com>;tag=b\r\n"
-          "Call-ID: c1\r\nCSeq: 7 ACK\r\nMax-Forwards: 70\r\n"
-          "Contact: <sip:x@h>\r\nContent-Length: 0\r\n\r\n">>,
+        <<
+            "ACK sip:b@10.0.0.2 SIP/2.0\r\n"
+            "From: <sip:a@example.com>;tag=a\r\n"
+            "To: <sip:b@example.com>;tag=b\r\n"
+            "Call-ID: c1\r\nCSeq: 7 ACK\r\nMax-Forwards: 70\r\n"
+            "Contact: <sip:x@h>\r\nContent-Length: 0\r\n\r\n"
+        >>,
         Raw
     ).
 
@@ -359,32 +374,38 @@ set(st, V, D) -> D#data{st = V}.
 req(Method, Hdrs, Body) ->
     Extra = iolist_to_binary([[N, <<": ">>, V, <<"\r\n">>] || {N, V} <- Hdrs]),
     CL = integer_to_binary(byte_size(Body)),
-    Raw = <<Method/binary, " sip:a@example.com SIP/2.0\r\n"
+    Raw =
+        <<Method/binary,
+            " sip:a@example.com SIP/2.0\r\n"
             "Via: SIP/2.0/UDP 10.0.0.2;branch=z9hG4bKparts\r\n"
             "From: <sip:b@example.com>;tag=b\r\n"
             "To: <sip:a@example.com>;tag=a\r\n"
-            "Call-ID: c1\r\nCSeq: 3 ", Method/binary, "\r\n",
-            Extra/binary, "Content-Length: ", CL/binary, "\r\n\r\n",
-            Body/binary>>,
+            "Call-ID: c1\r\nCSeq: 3 ", Method/binary, "\r\n", Extra/binary,
+            "Content-Length: ", CL/binary, "\r\n\r\n", Body/binary>>,
     {ok, Msg} = chappe_sip_msg:parse(Raw),
     chappe_sip_req:new(Msg, 41, #{}, undefined).
 
 req_cseq(N) ->
-    Raw = <<"INFO sip:a@example.com SIP/2.0\r\n"
-            "Via: SIP/2.0/UDP 10.0.0.2;branch=z9hG4bKparts\r\n"
-            "Call-ID: c1\r\nCSeq: ", (integer_to_binary(N))/binary, " INFO\r\n"
-            "Content-Length: 0\r\n\r\n">>,
+    Raw = <<
+        "INFO sip:a@example.com SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 10.0.0.2;branch=z9hG4bKparts\r\n"
+        "Call-ID: c1\r\nCSeq: ",
+        (integer_to_binary(N))/binary,
+        " INFO\r\n"
+        "Content-Length: 0\r\n\r\n"
+    >>,
     {ok, Msg} = chappe_sip_msg:parse(Raw),
     chappe_sip_req:new(Msg, 41, #{}, undefined).
 
 resp(Status, Method, Hdrs) ->
     Extra = iolist_to_binary([[N, <<": ">>, V, <<"\r\n">>] || {N, V} <- Hdrs]),
-    <<"SIP/2.0 ", (integer_to_binary(Status))/binary, " X\r\n"
-      "Via: SIP/2.0/UDP 10.0.0.1;branch=z9hG4bKparts\r\n"
-      "From: <sip:a@example.com>;tag=a\r\n"
-      "To: <sip:b@example.com>;tag=b\r\n"
-      "Call-ID: c1\r\nCSeq: 2 ", Method/binary, "\r\n",
-      Extra/binary, "Content-Length: 0\r\n\r\n">>.
+    <<"SIP/2.0 ", (integer_to_binary(Status))/binary,
+        " X\r\n"
+        "Via: SIP/2.0/UDP 10.0.0.1;branch=z9hG4bKparts\r\n"
+        "From: <sip:a@example.com>;tag=a\r\n"
+        "To: <sip:b@example.com>;tag=b\r\n"
+        "Call-ID: c1\r\nCSeq: 2 ", Method/binary, "\r\n", Extra/binary,
+        "Content-Length: 0\r\n\r\n">>.
 
 mock_engine(Test) ->
     Pid = spawn(fun() -> engine_loop(Test) end),

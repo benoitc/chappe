@@ -260,9 +260,13 @@ interpreter_primitives(_Config) ->
             %% 3) duck the caller direction and restore it
             {ok, _} = chappe_rtpengine_cmd:block_media(Sess, #{party => caller}),
             ok = assert_blocked(SockA, RtpeIP, ToCallerPort, SockB),
-            {ok, _} = chappe_rtpengine_cmd:unblock_media(Sess, #{party => caller}),
+            {ok, _} = chappe_rtpengine_cmd:unblock_media(Sess, #{
+                party => caller
+            }),
             ok = relay(SockA, RtpeIP, ToCallerPort, SockB, rtp(60, Payload)),
-            {ok, _} = chappe_rtpengine_cmd:silence_media(Sess, #{party => caller}),
+            {ok, _} = chappe_rtpengine_cmd:silence_media(Sess, #{
+                party => caller
+            }),
             {ok, _} = chappe_rtpengine_cmd:unsilence_media(Sess, #{
                 party => caller
             }),
@@ -416,7 +420,9 @@ ws_blob_playback_over_mtu(_Config) ->
     %% one second of audio, about 16 KiB with the WAV header
     Blob = wav_blob(8000),
     ?assert(byte_size(Blob) > 1500),
-    case chappe_rtpengine_cmd:play_media(Sess, #{blob => Blob, party => callee}) of
+    case
+        chappe_rtpengine_cmd:play_media(Sess, #{blob => Blob, party => callee})
+    of
         {error, <<"Unrecognized command">>, _} ->
             ok = chappe_rtpengine_session:stop(Sess),
             gen_udp:close(SockA),

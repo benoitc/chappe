@@ -170,7 +170,9 @@ full_lifecycle(Config) ->
     }),
     ?assertNotEqual(
         nomatch,
-        binary:match(chappe_rtpengine_ng:sdp(OfferReply), <<"a=rtpengine:fake">>)
+        binary:match(
+            chappe_rtpengine_ng:sdp(OfferReply), <<"a=rtpengine:fake">>
+        )
     ),
     #{state := offered} = chappe_rtpengine_session:info(Sess),
 
@@ -280,8 +282,12 @@ reinvite_glare_rejected(Config) ->
 
 establish(CallId, FromTag, ToTag) ->
     {ok, Sess} = chappe_rtpengine:start_session(#{call_id => CallId}),
-    {ok, _} = chappe_rtpengine_session:offer(Sess, #{from_tag => FromTag, sdp => sdp()}),
-    {ok, _} = chappe_rtpengine_session:answer(Sess, #{to_tag => ToTag, sdp => sdp()}),
+    {ok, _} = chappe_rtpengine_session:offer(Sess, #{
+        from_tag => FromTag, sdp => sdp()
+    }),
+    {ok, _} = chappe_rtpengine_session:answer(Sess, #{
+        to_tag => ToTag, sdp => sdp()
+    }),
     #{state := established} = chappe_rtpengine_session:info(Sess),
     Sess.
 
@@ -344,9 +350,15 @@ final_answer_deletes_losing_branches(Config) ->
         from_tag => <<"ft-f">>, sdp => sdp()
     }),
     %% two forked branches answer with distinct to-tags
-    {ok, _} = chappe_rtpengine_session:answer(Sess, #{to_tag => <<"tt-1">>, sdp => sdp()}),
-    {ok, _} = chappe_rtpengine_session:answer(Sess, #{to_tag => <<"tt-2">>, sdp => sdp()}),
-    #{branches := [<<"tt-1">>, <<"tt-2">>]} = chappe_rtpengine_session:info(Sess),
+    {ok, _} = chappe_rtpengine_session:answer(Sess, #{
+        to_tag => <<"tt-1">>, sdp => sdp()
+    }),
+    {ok, _} = chappe_rtpengine_session:answer(Sess, #{
+        to_tag => <<"tt-2">>, sdp => sdp()
+    }),
+    #{branches := [<<"tt-1">>, <<"tt-2">>]} = chappe_rtpengine_session:info(
+        Sess
+    ),
     %% branch tt-2 wins; the session prunes tt-1 with a targeted delete
     {ok, _} = chappe_rtpengine_session:answer(Sess, #{
         to_tag => <<"tt-2">>, sdp => sdp(), final => true
@@ -429,7 +441,9 @@ session_ref(Config) ->
     #{ref := <<"call-9">>} = chappe_rtpengine_session:info(Sess),
     [Offer, Answer] = [
         C
-     || {_, #{<<"command">> := N} = C} <- chappe_rtpengine_fake_server:received(Server),
+     || {_, #{<<"command">> := N} = C} <- chappe_rtpengine_fake_server:received(
+            Server
+        ),
         N =/= <<"ping">>
     ],
     ?assertEqual(<<"call_ref:call-9">>, maps:get(<<"metadata">>, Offer)),
@@ -439,20 +453,28 @@ session_ref(Config) ->
     {ok, Sess2} = chappe_rtpengine:start_session(#{
         call_id => <<"sess-ref2">>, ref => <<"a|evil:1%">>
     }),
-    {ok, _} = chappe_rtpengine_session:offer(Sess2, #{from_tag => <<"f2">>, sdp => sdp()}),
+    {ok, _} = chappe_rtpengine_session:offer(Sess2, #{
+        from_tag => <<"f2">>, sdp => sdp()
+    }),
     [Offer2] = [
         C
-     || {_, #{<<"command">> := <<"offer">>, <<"call-id">> := <<"sess-ref2">>} = C} <-
+     || {_,
+            #{<<"command">> := <<"offer">>, <<"call-id">> := <<"sess-ref2">>} =
+                C} <-
             chappe_rtpengine_fake_server:received(Server)
     ],
-    ?assertEqual(<<"call_ref:a%7Cevil:1%25">>, maps:get(<<"metadata">>, Offer2)),
+    ?assertEqual(
+        <<"call_ref:a%7Cevil:1%25">>, maps:get(<<"metadata">>, Offer2)
+    ),
     ok = chappe_rtpengine_session:stop(Sess2),
     chappe_rtpengine_fake_server:set_handler(Server, fun(_N, _Cmd) -> drop end),
     %% one message shape with or without a ref: the ref is read from
     %% the handle
     receive
-        {chappe_rtpengine_session, Sess, {node_down, Node}} -> ok;
-        {chappe_rtpengine_session, Sess, {node_down, Node}, _} -> error(four_tuple)
+        {chappe_rtpengine_session, Sess, {node_down, Node}} ->
+            ok;
+        {chappe_rtpengine_session, Sess, {node_down, Node}, _} ->
+            error(four_tuple)
     after 5000 -> error(no_node_down)
     end,
     ?assertMatch(#{ref := <<"call-9">>}, chappe_rtpengine_session:info(Sess)),
@@ -483,7 +505,9 @@ node_restart_notifies_owner(Config) ->
         {chappe_rtpengine_session, Sess, {node_restarted, Node}} -> ok
     after 5000 -> error(no_node_restarted_notice)
     end,
-    #{generation := 2, media_lost := true} = chappe_rtpengine_session:info(Sess),
+    #{generation := 2, media_lost := true} = chappe_rtpengine_session:info(
+        Sess
+    ),
     %% owner decides: teardown
     ok = chappe_rtpengine_session:stop(Sess),
     wait_dead(Sess),
@@ -500,7 +524,8 @@ unknown_call_id_notifies_owner_once(Config) ->
     %% the notification fires once, not per failing command
     {error, <<"Unknown call-ID">>, _} = chappe_rtpengine_session:query(Sess),
     receive
-        {chappe_rtpengine_session, Sess, _} = Extra -> error({unexpected, Extra})
+        {chappe_rtpengine_session, Sess, _} = Extra ->
+            error({unexpected, Extra})
     after 200 -> ok
     end,
     #{media_lost := true} = chappe_rtpengine_session:info(Sess),
@@ -678,9 +703,11 @@ stop_while_offer_pending(Config) ->
     Mon = erlang:monitor(process, Sess),
     Test = self(),
     spawn_link(fun() ->
-        Test ! {offer, chappe_rtpengine_session:offer(Sess, #{
-            from_tag => <<"ft-sp">>, sdp => sdp()
-        })}
+        Test !
+            {offer,
+                chappe_rtpengine_session:offer(Sess, #{
+                    from_tag => <<"ft-sp">>, sdp => sdp()
+                })}
     end),
     ok = wait_until(fun() ->
         maps:get(state, chappe_rtpengine_session:info(Sess)) =:= offering
@@ -792,7 +819,9 @@ reoffer_rejected_rolls_back(Config) ->
 competing_offers_are_glare(Config) ->
     Server = ?config(server, Config),
     chappe_rtpengine_fake_server:set_handler(Server, fun
-        (_N, #{<<"command">> := C}) when C =:= <<"offer">>; C =:= <<"answer">> ->
+        (_N, #{<<"command">> := C}) when
+            C =:= <<"offer">>; C =:= <<"answer">>
+        ->
             {reply_after, 200, #{<<"result">> => <<"ok">>, <<"sdp">> => sdp()}};
         (N, Cmd) ->
             chappe_rtpengine_fake_server:default_handler(N, Cmd)
@@ -984,7 +1013,8 @@ stale_node_up_is_ignored(Config) ->
     Sess ! {chappe_rtpengine_pool, {node_up, Node, Gen}},
     Sess ! {chappe_rtpengine_pool, {node_up, Node, Gen - 1}},
     receive
-        {chappe_rtpengine_session, Sess, _} = Extra -> error({unexpected, Extra})
+        {chappe_rtpengine_session, Sess, _} = Extra ->
+            error({unexpected, Extra})
     after 200 -> ok
     end,
     #{generation := Gen, media_lost := false} =

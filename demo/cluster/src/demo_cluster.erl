@@ -49,7 +49,9 @@ start() ->
         contact => iolist_to_binary(["sip:", Ip, ":5060"]),
         media => #{
             rtpengine => #{
-                nodes => [#{name => rtpe, host => env("RTPENGINE_IP"), port => 22222}]
+                nodes => [
+                    #{name => rtpe, host => env("RTPENGINE_IP"), port => 22222}
+                ]
             },
             mix => #{ip => {0, 0, 0, 0}, advertise => Ip}
         }
@@ -127,7 +129,9 @@ call_user(User, Req, Res) ->
                 {C, #{flow => F, route_set => Path}}
              || #{contact := C, send_flow := F, path := Path} <- Bindings
             ],
-            log("call to ~s: ~p", [User, [{N, C} || #{node := N, contact := C} <- Bindings]]),
+            log("call to ~s: ~p", [
+                User, [{N, C} || #{node := N, contact := C} <- Bindings]
+            ]),
             case chappe_sip:create_b2bua(Req, Res, {parallel, Dests}, #{}) of
                 {ok, Legs} -> _ = chappe_sip_b2b:relay(Legs);
                 {error, Why} -> log("call to ~s failed: ~p", [User, Why])

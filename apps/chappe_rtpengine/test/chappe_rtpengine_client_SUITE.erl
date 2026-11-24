@@ -395,7 +395,9 @@ offer_answer_query_delete(Config) ->
 list_and_statistics(Config) ->
     Node = ?config(node, Config),
     Server = ?config(server, Config),
-    ?assertEqual({ok, [<<"c1">>, <<"c2">>, <<"c3">>]}, chappe_rtpengine:list(Node)),
+    ?assertEqual(
+        {ok, [<<"c1">>, <<"c2">>, <<"c3">>]}, chappe_rtpengine:list(Node)
+    ),
     ?assertEqual({ok, [<<"c1">>]}, chappe_rtpengine:list(Node, #{limit => 1})),
     ?assertEqual(
         {ok, #{<<"currentstatistics">> => #{<<"sessionstotal">> => 3}}},
@@ -521,7 +523,9 @@ client_down(_Config) ->
 duplicate_request_served_from_cache(Config) ->
     Port = ?config(fake_port, Config),
     {ok, Sock} = gen_udp:open(0, [binary, {active, true}]),
-    Body = chappe_rtpengine_bencode:encode_to_binary(#{<<"command">> => <<"ping">>}),
+    Body = chappe_rtpengine_bencode:encode_to_binary(#{
+        <<"command">> => <<"ping">>
+    }),
     Datagram = <<"cache-cookie-1 ", Body/binary>>,
 
     ok = gen_udp:send(Sock, {127, 0, 0, 1}, Port, Datagram),
@@ -557,7 +561,9 @@ tcp_commands(Config) ->
     }),
     ?assertNotEqual(
         nomatch,
-        binary:match(chappe_rtpengine_ng:sdp(OfferReply), <<"a=rtpengine:fake">>)
+        binary:match(
+            chappe_rtpengine_ng:sdp(OfferReply), <<"a=rtpengine:fake">>
+        )
     ),
     {ok, _} = chappe_rtpengine:query(Node, #{call_id => CallId}),
     {ok, _} = chappe_rtpengine:delete(Node, #{
@@ -654,7 +660,9 @@ ws_commands(Config) ->
     }),
     ?assertNotEqual(
         nomatch,
-        binary:match(chappe_rtpengine_ng:sdp(OfferReply), <<"a=rtpengine:fake">>)
+        binary:match(
+            chappe_rtpengine_ng:sdp(OfferReply), <<"a=rtpengine:fake">>
+        )
     ),
     {ok, _} = chappe_rtpengine:query(Node, #{call_id => CallId}),
     {ok, _} = chappe_rtpengine:delete(Node, #{
@@ -722,7 +730,9 @@ wss_commands(Config) ->
     }),
     ?assertNotEqual(
         nomatch,
-        binary:match(chappe_rtpengine_ng:sdp(OfferReply), <<"a=rtpengine:fake">>)
+        binary:match(
+            chappe_rtpengine_ng:sdp(OfferReply), <<"a=rtpengine:fake">>
+        )
     ),
     {ok, _} = chappe_rtpengine:delete(Node, #{
         call_id => <<"wss-call-1">>, from_tag => <<"ft">>

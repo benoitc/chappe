@@ -28,7 +28,9 @@ ensure() ->
 %% A peer node named after `Base', with this node's code path.
 -spec peer(string()) -> {pid(), node()}.
 peer(Base) ->
-    Name = list_to_atom(Base ++ "_" ++ integer_to_list(erlang:unique_integer([positive]))),
+    Name = list_to_atom(
+        Base ++ "_" ++ integer_to_list(erlang:unique_integer([positive]))
+    ),
     Paths = lists:append([["-pa", P] || P <- code:get_path()]),
     %% the peer takes this node's host part (localhost when ensure/0
     %% started it)
@@ -62,7 +64,10 @@ connect(Node, N) ->
 start_app(Node, Env, DataDir) ->
     Env1 = Env#{data_dir => DataDir},
     ok = erpc:call(Node, application, load, [chappe_cluster]),
-    [ok = erpc:call(Node, application, set_env, [chappe_cluster, K, V]) || K := V <- Env1],
+    [
+        ok = erpc:call(Node, application, set_env, [chappe_cluster, K, V])
+     || K := V <- Env1
+    ],
     {ok, _} = erpc:call(Node, application, ensure_all_started, [chappe_cluster]),
     ok.
 

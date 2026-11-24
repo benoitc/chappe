@@ -8,18 +8,19 @@
 
 metrics_test_() ->
     {setup,
-     fun() ->
-             {ok, _} = application:ensure_all_started(instrument),
-             ok = chappe_sip_metrics:setup()
-     end,
-     fun(_) -> ok end,
-     [fun counts_requests/0,
-      fun counts_responses/0,
-      fun unknown_method_is_other/0,
-      fun setup_twice/0,
-      fun disabled_records_nothing/0,
-      fun refresh_without_stack/0,
-      fun prometheus_text/0]}.
+        fun() ->
+            {ok, _} = application:ensure_all_started(instrument),
+            ok = chappe_sip_metrics:setup()
+        end,
+        fun(_) -> ok end, [
+            fun counts_requests/0,
+            fun counts_responses/0,
+            fun unknown_method_is_other/0,
+            fun setup_twice/0,
+            fun disabled_records_nothing/0,
+            fun refresh_without_stack/0,
+            fun prometheus_text/0
+        ]}.
 
 counts_requests() ->
     B = count(chappe_sip_requests, [<<"in">>, <<"INVITE">>]),

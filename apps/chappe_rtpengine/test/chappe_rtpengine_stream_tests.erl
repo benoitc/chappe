@@ -127,11 +127,17 @@ fragmented_cost_is_linear_test() ->
 %% req: RNG-02
 bad_prefix_test() ->
     New = chappe_rtpengine_stream:new(),
-    ?assertMatch({error, _, []}, chappe_rtpengine_stream:feed(<<"c i01">>, New)),
-    ?assertMatch({error, _, []}, chappe_rtpengine_stream:feed(<<"c i-0">>, New)),
+    ?assertMatch(
+        {error, _, []}, chappe_rtpengine_stream:feed(<<"c i01">>, New)
+    ),
+    ?assertMatch(
+        {error, _, []}, chappe_rtpengine_stream:feed(<<"c i-0">>, New)
+    ),
     ?assertMatch({error, _, []}, chappe_rtpengine_stream:feed(<<"c 01">>, New)),
     ?assertMatch({error, _, []}, chappe_rtpengine_stream:feed(<<"c 1x">>, New)),
-    ?assertMatch({error, _, []}, chappe_rtpengine_stream:feed(<<"c di1e">>, New)),
+    ?assertMatch(
+        {error, _, []}, chappe_rtpengine_stream:feed(<<"c di1e">>, New)
+    ),
     ?assertMatch({error, _, []}, chappe_rtpengine_stream:feed(<<"c e">>, New)).
 
 %% req: RNG-02

@@ -262,7 +262,13 @@ sends_to_configured_remote(_Config) ->
     {S2, _P2} = open(),
     {ok, Leg, #{port := M}} = chappe_mix:add_leg(Conf, #{remote => {?LO, P1}}),
     Pkts = [
-        rtp(#{pt => 0, seq => N, ts => N * 160, ssrc => 16#A, payload => frame(ulaw)})
+        rtp(#{
+            pt => 0,
+            seq => N,
+            ts => N * 160,
+            ssrc => 16#A,
+            payload => frame(ulaw)
+        })
      || N <- lists:seq(1, 170)
     ],
     Pid = spawn_link(fun() -> stream(S2, {?LO, M}, Pkts) end),
@@ -413,7 +419,11 @@ dtmf_forwarded(_Config) ->
     Audio = fun(N) ->
         {audio,
             rtp(#{
-                pt => 0, seq => N, ts => Clock(N), ssrc => 16#A, payload => Frame
+                pt => 0,
+                seq => N,
+                ts => Clock(N),
+                ssrc => 16#A,
+                payload => Frame
             })}
     end,
     Ev = fun(Seq, Event, M, E, Dur, Ts) ->
@@ -438,8 +448,15 @@ dtmf_forwarded(_Config) ->
             Ev(Seq0 + 5, Event, false, 1, 640, Ts)
         ]
     end,
-    Odd = {audio,
-        rtp(#{pt => 97, seq => 47, ts => 47 * 160, ssrc => 16#A, payload => Frame})},
+    Odd =
+        {audio,
+            rtp(#{
+                pt => 97,
+                seq => 47,
+                ts => 47 * 160,
+                ssrc => 16#A,
+                payload => Frame
+            })},
     Plan =
         [Audio(N) || N <- lists:seq(1, 20)] ++ Digit(21, 1) ++
             [Audio(N) || N <- lists:seq(27, 40)] ++ Digit(41, 11) ++
@@ -458,10 +475,16 @@ dtmf_forwarded(_Config) ->
         length(B), length(BEv), EventsIn, OtherIn
     ]),
     ?assertEqual({12, 1}, {EventsIn, OtherIn}),
-    SentEv = [{T, P} || {T, {event, Bin}} <- Sent, {ok, P} <- [chappe_mix_rtp:parse(Bin)]],
+    SentEv = [
+        {T, P}
+     || {T, {event, Bin}} <- Sent, {ok, P} <- [chappe_mix_rtp:parse(Bin)]
+    ],
     %% every event packet, payload for payload, in order
     ?assertEqual(
-        [Pl || {_, #{payload := Pl}} <- SentEv], [Pl || {_, #{payload := Pl}} <- BEv]
+        [Pl || {_, #{payload := Pl}} <- SentEv], [
+            Pl
+         || {_, #{payload := Pl}} <- BEv
+        ]
     ),
     %% M on the first packet of each event only
     ?assertEqual(
@@ -492,7 +515,8 @@ dtmf_forwarded(_Config) ->
     %% C negotiated no events; D only 0 to 9
     ?assertEqual([0], lists:usort([PT || {_, #{pt := PT}} <- C])),
     ?assertEqual(
-        [1], lists:usort([E || {_, #{pt := 101, payload := <<E, _/binary>>}} <- D])
+        [1],
+        lists:usort([E || {_, #{pt := 101, payload := <<E, _/binary>>}} <- D])
     ),
     ?assertEqual(6, length([x || {_, #{pt := 101}} <- D])),
     %% never mixed: the audio is A's frame or silence
@@ -500,11 +524,18 @@ dtmf_forwarded(_Config) ->
     Silent = binary:copy(<<16#FF>>, 160),
     [
         ?assertEqual(
-            [], [Pl || {_, #{pt := 0, payload := Pl}} <- X, Pl =/= Expect, Pl =/= Silent]
+            [], [
+                Pl
+             || {_, #{pt := 0, payload := Pl}} <- X,
+                Pl =/= Expect,
+                Pl =/= Silent
+            ]
         )
      || X <- [B, C, D]
     ],
-    ?assert(length([x || {_, #{pt := 0, payload := Pl}} <- B, Pl =:= Expect]) >= 20).
+    ?assert(
+        length([x || {_, #{pt := 0, payload := Pl}} <- B, Pl =:= Expect]) >= 20
+    ).
 
 %% Events go where audio goes: B, kept from hearing A, gets none of A's
 %% events; C, which the room sends nothing (recvonly), gets none; D gets
@@ -684,7 +715,12 @@ rtcp_on_the_wire(_Config) ->
     %% 4 + 2 + 1 = 7 (one null), 4 + 2 + 2 + 2 + 3 = 13 (three)
     sdes(PA, MA, 16#A, [{cname, <<"a">>}]),
     sdes(PB, MB, 16#B, [{cname, <<"bb">>}, {name, <<"Bob">>}]),
-    wait(fun() -> length(mixer_rtcp(PA)) >= 1 andalso length(mixer_rtcp(PB)) >= 1 end, 3078 + 1000),
+    wait(
+        fun() ->
+            length(mixer_rtcp(PA)) >= 1 andalso length(mixer_rtcp(PB)) >= 1
+        end,
+        3078 + 1000
+    ),
     %% an SSRC collision on A: BYE with a reason
     #{ssrc := Old} = leg(Conf, LA),
     ok = chappe_mix_test_peer:set(PA, ssrc, Old),
@@ -698,21 +734,34 @@ rtcp_on_the_wire(_Config) ->
     Firsts = lists:usort([PT || [{PT, _, _} | _] <- Walked]),
     ct:log("first packet types: ~p", [Firsts]),
     ?assertEqual([], Firsts -- [200, 201]),
-    ?assertEqual(length(All), length([W || [{PT, _, _} | _] = W <- Walked,
-                                           PT =:= 200 orelse PT =:= 201])),
+    ?assertEqual(
+        length(All),
+        length([
+            W
+         || [{PT, _, _} | _] = W <- Walked,
+            PT =:= 200 orelse PT =:= 201
+        ])
+    ),
     Sdes = [P || Ps <- Walked, {202, _, _} = P <- Ps],
-    Pads = lists:usort(lists:append([chunk_pads(Body, N) || {202, N, Body} <- Sdes])),
+    Pads = lists:usort(
+        lists:append([chunk_pads(Body, N) || {202, N, Body} <- Sdes])
+    ),
     ct:log("SDES chunk padding seen: ~p", [Pads]),
     %% a whole word of nulls, and two other paddings
     ?assert(lists:member(4, Pads) andalso length(Pads) >= 3, Pads),
     Byes = [P || Ps <- Walked, {203, _, _} = P <- Ps],
     ?assert(length(Byes) >= 3),
-    ?assert(lists:any(fun({203, N, Body}) -> bye_reason(Body, N) =/= none end, Byes)),
+    ?assert(
+        lists:any(fun({203, N, Body}) -> bye_reason(Body, N) =/= none end, Byes)
+    ),
     [chappe_mix_test_peer:stop(P) || P <- [PA, PB]].
 
 has_reason(B) ->
     lists:any(
-        fun({203, N, Body}) -> bye_reason(Body, N) =/= none; (_) -> false end,
+        fun
+            ({203, N, Body}) -> bye_reason(Body, N) =/= none;
+            (_) -> false
+        end,
         walk(B)
     ).
 
@@ -784,8 +833,16 @@ no_bye_from_a_leg_that_never_sent(_Config) ->
     Rm = spawn(fun() -> Self ! {removed, chappe_mix:remove_leg(Conf, 1)} end),
     wait(fun() -> queued(Conf) >= 3 end, 1000),
     ok = sys:resume(Conf),
-    {ok, 1, _} = receive {added, A} -> A after 2000 -> ct:fail(no_add) end,
-    ok = receive {removed, R} -> R after 2000 -> ct:fail(no_remove) end,
+    {ok, 1, _} =
+        receive
+            {added, A} -> A
+        after 2000 -> ct:fail(no_add)
+        end,
+    ok =
+        receive
+            {removed, R} -> R
+        after 2000 -> ct:fail(no_remove)
+        end,
     timer:sleep(300),
     ok = chappe_mix:stop(Conf),
     ?assertEqual([], drain(S)),
@@ -834,15 +891,36 @@ conflicts_rtp_and_rtcp_apart(_Config) ->
     {ok, L, #{port := M, rtcp_port := M}} =
         chappe_mix:add_leg(Conf, #{remote => {?LO, P}}),
     Rtp = fun(Ssrc, N) ->
-        ok = gen_udp:send(S, ?LO, M, rtp(#{pt => 0, seq => N, ts => N * 160,
-                                           ssrc => Ssrc,
-                                           payload => frame(ulaw)}))
+        ok = gen_udp:send(
+            S,
+            ?LO,
+            M,
+            rtp(#{
+                pt => 0,
+                seq => N,
+                ts => N * 160,
+                ssrc => Ssrc,
+                payload => frame(ulaw)
+            })
+        )
     end,
     Sr = fun(Ssrc) ->
-        ok = gen_udp:send(S, ?LO, M, chappe_mix_rtcp:build([
-            #{type => sr, ssrc => Ssrc, ntp => 0, ts => 0, packets => 1,
-              octets => 160, blocks => []}
-        ]))
+        ok = gen_udp:send(
+            S,
+            ?LO,
+            M,
+            chappe_mix_rtcp:build([
+                #{
+                    type => sr,
+                    ssrc => Ssrc,
+                    ntp => 0,
+                    ts => 0,
+                    packets => 1,
+                    octets => 160,
+                    blocks => []
+                }
+            ])
+        )
     end,
     Counts = fun() ->
         #{collisions := C, loops := Lo, ssrc := Ss} = leg(Conf, L),
@@ -888,9 +966,13 @@ interval_bounds(_Config) ->
     %% 100 members, 2 senders: a sender shares 25% of 500 B/s with one
     %% other sender, a receiver 75% with 97 others
     Near(1000.0 * 2 / 125.0 * 0.5 / Comp, I(100, 2, true, 1000.0, false, Low)),
-    Near(1000.0 * 98 / 375.0 * 1.5 / Comp, I(100, 2, false, 1000.0, false, High)),
+    Near(
+        1000.0 * 98 / 375.0 * 1.5 / Comp, I(100, 2, false, 1000.0, false, High)
+    ),
     %% senders above a quarter: everyone shares the whole bandwidth
-    Near(1000.0 * 100 / 500.0 * 0.5 / Comp, I(100, 50, true, 1000.0, false, Low)),
+    Near(
+        1000.0 * 100 / 500.0 * 0.5 / Comp, I(100, 50, true, 1000.0, false, Low)
+    ),
     %% the drawn factor spreads over the whole range
     Draws = [
         chappe_mix_rtcp:interval(2, 2, true, 100.0, false)
@@ -919,7 +1001,9 @@ empty_rr_first(_Config) ->
     {Bye, _} = chappe_mix_session:report(
         S1, <<"cn">>, NoChunks, [#{type => bye, ssrcs => [16#1234]}], 0
     ),
-    [{201, 0, <<16#1234:32>>}, {202, 1, _}, {203, 1, <<16#1234:32>>}] = walk(Bye).
+    [{201, 0, <<16#1234:32>>}, {202, 1, _}, {203, 1, <<16#1234:32>>}] = walk(
+        Bye
+    ).
 
 %% RFC 3550 6.2.1: a source that sent BYE is marked, not deleted. A
 %% straggler from it (a sequence number at or below the highest one at
@@ -1196,7 +1280,10 @@ wait(Fun, Deadline, Ms) ->
             ok;
         false ->
             case erlang:monotonic_time(millisecond) > Deadline of
-                true -> ct:fail({timeout, Ms});
-                false -> timer:sleep(20), wait(Fun, Deadline, Ms)
+                true ->
+                    ct:fail({timeout, Ms});
+                false ->
+                    timer:sleep(20),
+                    wait(Fun, Deadline, Ms)
             end
     end.

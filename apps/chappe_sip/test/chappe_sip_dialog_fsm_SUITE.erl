@@ -104,7 +104,9 @@ set_owner_moves_events(_Config) ->
 %% 2.1 to 4 s, with the next CSeq (RFC 4028 10). An interval of 30 s
 %% refreshes at 15 s, retries by 19 s and expires at 20 s.
 st_refresh_glare_retry(_Config) ->
-    St = #{interval => 30, refresher => local, min_se => 0, peer_update => true},
+    St = #{
+        interval => 30, refresher => local, min_se => 0, peer_update => true
+    },
     Fsm = start_dialog(#{role => uac, session_timer => St}),
     First = expect_request(17000),
     ?assertMatch(<<"UPDATE ", _/binary>>, First),
@@ -154,22 +156,28 @@ refute_request(Timeout) ->
     end.
 
 sdp() ->
-    <<"v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\n"
-      "t=0 0\r\nm=audio 4000 RTP/AVP 0\r\na=sendrecv\r\n">>.
+    <<
+        "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\n"
+        "t=0 0\r\nm=audio 4000 RTP/AVP 0\r\na=sendrecv\r\n"
+    >>.
 
 ack() ->
-    <<"ACK sip:a@example.com SIP/2.0\r\n"
-      "Via: SIP/2.0/UDP 127.0.0.1:5070;branch=z9hG4bKsuiteack\r\n"
-      "From: <sip:b@example.com>;tag=b\r\n"
-      "To: <sip:a@example.com>;tag=a\r\n"
-      "Call-ID: fsm-suite\r\nCSeq: 1 ACK\r\nContent-Length: 0\r\n\r\n">>.
+    <<
+        "ACK sip:a@example.com SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:5070;branch=z9hG4bKsuiteack\r\n"
+        "From: <sip:b@example.com>;tag=b\r\n"
+        "To: <sip:a@example.com>;tag=a\r\n"
+        "Call-ID: fsm-suite\r\nCSeq: 1 ACK\r\nContent-Length: 0\r\n\r\n"
+    >>.
 
 info() ->
-    <<"INFO sip:a@example.com SIP/2.0\r\n"
-      "Via: SIP/2.0/UDP 127.0.0.1:5070;branch=z9hG4bKsuiteinfo\r\n"
-      "From: <sip:b@example.com>;tag=b\r\n"
-      "To: <sip:a@example.com>;tag=a\r\n"
-      "Call-ID: fsm-suite\r\nCSeq: 2 INFO\r\nContent-Length: 0\r\n\r\n">>.
+    <<
+        "INFO sip:a@example.com SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:5070;branch=z9hG4bKsuiteinfo\r\n"
+        "From: <sip:b@example.com>;tag=b\r\n"
+        "To: <sip:a@example.com>;tag=a\r\n"
+        "Call-ID: fsm-suite\r\nCSeq: 2 INFO\r\nContent-Length: 0\r\n\r\n"
+    >>.
 
 %% a response to Raw, the request we sent: its CSeq line, no body
 status(Raw, Status) ->
@@ -177,12 +185,14 @@ status(Raw, Status) ->
     {ok, #{seq := Seq, method := M}} = chappe_sip_msg:cseq(Msg),
     S = integer_to_binary(Status),
     N = integer_to_binary(Seq),
-    <<"SIP/2.0 ", S/binary, " Status\r\n"
-      "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKsuite\r\n"
-      "From: <sip:a@example.com>;tag=a\r\n"
-      "To: <sip:b@example.com>;tag=b\r\n"
-      "Call-ID: fsm-suite\r\nCSeq: ", N/binary, " ", M/binary, "\r\n"
-      "Content-Length: 0\r\n\r\n">>.
+    <<"SIP/2.0 ", S/binary,
+        " Status\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKsuite\r\n"
+        "From: <sip:a@example.com>;tag=a\r\n"
+        "To: <sip:b@example.com>;tag=b\r\n"
+        "Call-ID: fsm-suite\r\nCSeq: ", N/binary, " ", M/binary,
+        "\r\n"
+        "Content-Length: 0\r\n\r\n">>.
 
 ok_200(Raw) ->
     status(Raw, 200).

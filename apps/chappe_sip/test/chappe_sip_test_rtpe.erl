@@ -20,20 +20,37 @@
 start(Collector) ->
     Self = self(),
     Pid = spawn(fun() ->
-        {ok, Sock} = gen_udp:open(0, [binary, {active, true},
-                                      {ip, {127, 0, 0, 1}}]),
+        {ok, Sock} = gen_udp:open(0, [
+            binary,
+            {active, true},
+            {ip, {127, 0, 0, 1}}
+        ]),
         {ok, Port} = inet:port(Sock),
         Self ! {rtpe_port, self(), Port},
         loop(Sock, Collector)
     end),
-    Port = receive {rtpe_port, Pid, P} -> P after 2000 -> exit(no_rtpe) end,
+    Port =
+        receive
+            {rtpe_port, Pid, P} -> P
+        after 2000 -> exit(no_rtpe)
+        end,
     ok = configure(Port),
     Pid.
 
 configure(Port) ->
     chappe_sip_media:configure(
-      #{rtpengine => #{nodes => [#{name => ?NODE, host => "127.0.0.1",
-                                    port => Port}]}}).
+        #{
+            rtpengine => #{
+                nodes => [
+                    #{
+                        name => ?NODE,
+                        host => "127.0.0.1",
+                        port => Port
+                    }
+                ]
+            }
+        }
+    ).
 
 stop(Pid) ->
     _ = chappe_rtpengine:remove_node(?NODE),
@@ -52,7 +69,9 @@ loop(Sock, Collector) ->
             {ok, Cmd} = chappe_rtpengine_bencode:decode(Body),
             Collector ! {rtpe_cmd, Cmd},
             Reply = chappe_rtpengine_bencode:encode_to_binary(reply(Cmd)),
-            ok = gen_udp:send(Sock, Ip, Port, <<Cookie/binary, " ", Reply/binary>>),
+            ok = gen_udp:send(
+                Sock, Ip, Port, <<Cookie/binary, " ", Reply/binary>>
+            ),
             loop(Sock, Collector);
         stop ->
             gen_udp:close(Sock)
@@ -70,23 +89,34 @@ reply(#{<<"command">> := <<"subscribe request">>} = Cmd) ->
     Tags = maps:get(<<"from-tags">>, Cmd, [<<"all">>]),
     N = erlang:unique_integer([positive]),
     Media = [
-        [<<"m=audio ">>, integer_to_binary(20000 + (N rem 10000) * 2),
-         <<" RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\na=sendonly\r\na=rtpe-sub:">>,
-         T, <<"\r\n">>]
+        [
+            <<"m=audio ">>,
+            integer_to_binary(20000 + (N rem 10000) * 2),
+            <<" RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\na=sendonly\r\na=rtpe-sub:">>,
+            T,
+            <<"\r\n">>
+        ]
      || T <- Tags
     ],
-    #{<<"result">> => <<"ok">>,
-      <<"to-tag">> => <<"sub-", (integer_to_binary(N))/binary>>,
-      <<"sdp">> => iolist_to_binary([
-          <<"v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\n">>,
-          Media
-      ])};
+    #{
+        <<"result">> => <<"ok">>,
+        <<"to-tag">> => <<"sub-", (integer_to_binary(N))/binary>>,
+        <<"sdp">> => iolist_to_binary([
+            <<"v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\n">>,
+            Media
+        ])
+    };
 reply(_Cmd) ->
     #{<<"result">> => <<"ok">>}.
 
-via(Sdp, #{<<"via-branch">> := V}) -> <<Sdp/binary, "a=rtpe-via:", V/binary, "\r\n">>;
-via(Sdp, _Cmd) -> Sdp.
+via(Sdp, #{<<"via-branch">> := V}) ->
+    <<Sdp/binary, "a=rtpe-via:", V/binary, "\r\n">>;
+via(Sdp, _Cmd) ->
+    Sdp.
 
 ok(Sdp, What, Tag) ->
-    #{<<"result">> => <<"ok">>,
-      <<"sdp">> => <<Sdp/binary, "a=rtpe-", What/binary, ":", Tag/binary, "\r\n">>}.
+    #{
+        <<"result">> => <<"ok">>,
+        <<"sdp">> =>
+            <<Sdp/binary, "a=rtpe-", What/binary, ":", Tag/binary, "\r\n">>
+    }.

@@ -59,8 +59,12 @@ start(Ip) ->
     application:set_env(chappe_sip, engine_mod, chappe_sip_nif),
     {ok, _} = application:ensure_all_started(chappe_sip),
     Contact = iolist_to_binary(["sip:", Ip, ":5060"]),
-    ok = chappe_sip:start(maps:merge(#{contact => Contact},
-                                     maps:merge(tls(Ip), hep()))),
+    ok = chappe_sip:start(
+        maps:merge(
+            #{contact => Contact},
+            maps:merge(tls(Ip), hep())
+        )
+    ),
     IpBin = list_to_binary(Ip),
     persistent_term:put({?MODULE, ip}, IpBin),
     ok = chappe_sip:invite(fun(Req, Res) -> invite(IpBin, Req, Res) end),
@@ -131,27 +135,48 @@ b2b_events() ->
 fake_rtpengine() ->
     Self = self(),
     _ = spawn(fun() ->
-        {ok, Sock} = gen_udp:open(22222, [binary, {active, true},
-                                          {ip, {127, 0, 0, 1}}]),
+        {ok, Sock} = gen_udp:open(22222, [
+            binary,
+            {active, true},
+            {ip, {127, 0, 0, 1}}
+        ]),
         Self ! rtpe_up,
         rtpe_loop(Sock)
     end),
-    receive rtpe_up -> ok after 5000 -> error(rtpe) end,
+    receive
+        rtpe_up -> ok
+    after 5000 -> error(rtpe)
+    end,
     chappe_sip_media:configure(
-      #{rtpengine => #{nodes => [#{name => conf_rtpe, host => "127.0.0.1",
-                                    port => 22222}]}}).
+        #{
+            rtpengine => #{
+                nodes => [
+                    #{
+                        name => conf_rtpe,
+                        host => "127.0.0.1",
+                        port => 22222
+                    }
+                ]
+            }
+        }
+    ).
 
 rtpe_loop(Sock) ->
     receive
         {udp, Sock, Ip, Port, Packet} ->
             [Cookie, Body] = binary:split(Packet, <<" ">>),
             {ok, Cmd} = chappe_rtpengine_bencode:decode(Body),
-            Reply = case Cmd of
-                #{<<"sdp">> := Sdp} -> #{<<"result">> => <<"ok">>, <<"sdp">> => Sdp};
-                _ -> #{<<"result">> => <<"ok">>}
-            end,
+            Reply =
+                case Cmd of
+                    #{<<"sdp">> := Sdp} ->
+                        #{<<"result">> => <<"ok">>, <<"sdp">> => Sdp};
+                    _ ->
+                        #{<<"result">> => <<"ok">>}
+                end,
             Out = chappe_rtpengine_bencode:encode_to_binary(Reply),
-            ok = gen_udp:send(Sock, Ip, Port, <<Cookie/binary, " ", Out/binary>>),
+            ok = gen_udp:send(
+                Sock, Ip, Port, <<Cookie/binary, " ", Out/binary>>
+            ),
             rtpe_loop(Sock)
     end.
 
@@ -263,7 +288,9 @@ transfer(Refer) ->
     #{target := Uri, headers := Headers} = chappe_sip_refer:target(Refer),
     log("REFER to ~s ~p", [Uri, Headers]),
     Ip = local_ip(),
-    case chappe_sip:create_uac(Uri, #{local_sdp => sdp(Ip), headers => Headers}) of
+    case
+        chappe_sip:create_uac(Uri, #{local_sdp => sdp(Ip), headers => Headers})
+    of
         {ok, D} ->
             ok = chappe_sip_refer:final(Refer, 200),
             serve(D, uas);
@@ -281,11 +308,15 @@ message(Req, Res) ->
     case user(Req) of
         <<"mwi">> ->
             [Account, New, Old] = binary:split(
-                string:trim(chappe_sip_req:body(Req)), <<" ">>, [global, trim_all]
+                string:trim(chappe_sip_req:body(Req)), <<" ">>, [
+                    global, trim_all
+                ]
             ),
             log("mwi ~s ~s/~s", [Account, New, Old]),
             ok = chappe_sip_mwi:update(Account, #{
-                messages => #{voice => {binary_to_integer(New), binary_to_integer(Old)}}
+                messages => #{
+                    voice => {binary_to_integer(New), binary_to_integer(Old)}
+                }
             }),
             chappe_sip_res:send(Res, 200);
         <<"dial">> ->
@@ -320,16 +351,27 @@ hep() ->
             #{};
         HostPort ->
             [Host, Port] = string:split(HostPort, ":", trailing),
-            #{hep => #{host => Host, port => list_to_integer(Port),
-                       capture_id => 2001},
-              ws => #{port => 5066}}
+            #{
+                hep => #{
+                    host => Host,
+                    port => list_to_integer(Port),
+                    capture_id => 2001
+                },
+                ws => #{port => 5066}
+            }
     end.
 
 tls(Ip) ->
     case filelib:is_regular("/certs/agent.pem") of
         true ->
-            #{tls => #{contact => iolist_to_binary(["sips:", Ip, ":5061;transport=tls"]),
-                       cert_dir => <<"/certs">>}};
+            #{
+                tls => #{
+                    contact => iolist_to_binary([
+                        "sips:", Ip, ":5061;transport=tls"
+                    ]),
+                    cert_dir => <<"/certs">>
+                }
+            };
         false ->
             #{}
     end.
@@ -375,8 +417,12 @@ subscribe(Req, Res) ->
                 headers => [{<<"Allow-Events">>, <<"conference">>}]
             });
         true ->
-            case chappe_sip:create_uas(Req, Res, #{expires => 3600,
-                                                   min_expires => 60}) of
+            case
+                chappe_sip:create_uas(Req, Res, #{
+                    expires => 3600,
+                    min_expires => 60
+                })
+            of
                 {ok, D} ->
                     {ok, _} = chappe_sip_dialog:notify(D, conf_notify(active)),
                     sub_loop(D);
@@ -449,28 +495,57 @@ hep_call(tcp, Ip, _Node) ->
     call({tcp, S}, <<"TCP">>, LP);
 hep_call(tls, Ip, _Node) ->
     %% the lab's own certificates; the call is what is checked, not TLS
-    {ok, S} = ssl:connect(Ip, 5061, [binary, {active, false},
-                                     {verify, verify_none}], 5000),
+    {ok, S} = ssl:connect(
+        Ip,
+        5061,
+        [
+            binary,
+            {active, false},
+            {verify, verify_none}
+        ],
+        5000
+    ),
     {ok, {_, LP}} = ssl:sockname(S),
     call({tls, S}, <<"TLS">>, LP);
 hep_call(ws, _Ip, Node) ->
     Url = iolist_to_binary(["ws://", Node, ":5066/ws"]),
-    {ok, C} = ws:connect(Url, #{handler => ?MODULE,
-                                handler_opts => #{notify => self()},
-                                subprotocols => [<<"sip">>]}),
+    {ok, C} = ws:connect(Url, #{
+        handler => ?MODULE,
+        handler_opts => #{notify => self()},
+        subprotocols => [<<"sip">>]
+    }),
     call({ws, C}, <<"WS">>, 0).
 
 call(Conn, Via, LP) ->
-    CallId = iolist_to_binary(["hep-", Via, "-",
-                               integer_to_list(erlang:unique_integer([positive])),
-                               "@lab"]),
+    CallId = iolist_to_binary([
+        "hep-",
+        Via,
+        "-",
+        integer_to_list(erlang:unique_integer([positive])),
+        "@lab"
+    ]),
     FT = integer_to_binary(erlang:unique_integer([positive])),
     Ip = local_ip_of(Conn),
-    ok = csend(Conn, req(<<"INVITE">>, Via, Ip, LP, CallId, FT, undefined, 1,
-                         sdp(Ip))),
+    ok = csend(
+        Conn,
+        req(
+            <<"INVITE">>,
+            Via,
+            Ip,
+            LP,
+            CallId,
+            FT,
+            undefined,
+            1,
+            sdp(Ip)
+        )
+    ),
     Ok = await(Conn, <<"200">>, <<"INVITE">>, <<>>),
-    {match, [TT]} = re:run(Ok, "\r\nTo:[^\r]*;tag=([^;\r>]+)",
-                           [caseless, {capture, all_but_first, binary}]),
+    {match, [TT]} = re:run(
+        Ok,
+        "\r\nTo:[^\r]*;tag=([^;\r>]+)",
+        [caseless, {capture, all_but_first, binary}]
+    ),
     ok = csend(Conn, req(<<"ACK">>, Via, Ip, LP, CallId, FT, TT, 1, <<>>)),
     timer:sleep(200),
     ok = csend(Conn, req(<<"BYE">>, Via, Ip, LP, CallId, FT, TT, 2, <<>>)),
@@ -479,39 +554,73 @@ call(Conn, Via, LP) ->
 
 local_ip_of(_Conn) ->
     {ok, Addrs} = inet:getifaddrs(),
-    hd([list_to_binary(inet:ntoa(A))
-        || {_, Opts} <- Addrs, {addr, {10, 253, 7, _} = A} <- Opts] ++
-       [<<"127.0.0.1">>]).
+    hd(
+        [
+            list_to_binary(inet:ntoa(A))
+         || {_, Opts} <- Addrs, {addr, {10, 253, 7, _} = A} <- Opts
+        ] ++
+            [<<"127.0.0.1">>]
+    ).
 
 req(Method, Via, Ip, LP, CallId, FT, TT, CSeq, Body) ->
-    To = case TT of
-        undefined -> <<"<sip:uas@chappe>">>;
-        _ -> <<"<sip:uas@chappe>;tag=", TT/binary>>
-    end,
+    To =
+        case TT of
+            undefined -> <<"<sip:uas@chappe>">>;
+            _ -> <<"<sip:uas@chappe>;tag=", TT/binary>>
+        end,
     iolist_to_binary([
-        Method, " sip:uas@chappe SIP/2.0\r\n",
-        "Via: SIP/2.0/", Via, " ", Ip, ":", integer_to_binary(LP),
-        ";branch=z9hG4bK", integer_to_binary(erlang:unique_integer([positive])),
+        Method,
+        " sip:uas@chappe SIP/2.0\r\n",
+        "Via: SIP/2.0/",
+        Via,
+        " ",
+        Ip,
+        ":",
+        integer_to_binary(LP),
+        ";branch=z9hG4bK",
+        integer_to_binary(erlang:unique_integer([positive])),
         ";rport\r\n",
         "Max-Forwards: 70\r\n",
-        "From: <sip:caller@lab>;tag=", FT, "\r\n",
-        "To: ", To, "\r\n",
-        "Call-ID: ", CallId, "\r\n",
-        "CSeq: ", integer_to_binary(CSeq), " ", Method, "\r\n",
-        "Contact: <sip:caller@", Ip, ":", integer_to_binary(LP),
-        ";transport=", string:lowercase(Via), ">\r\n",
+        "From: <sip:caller@lab>;tag=",
+        FT,
+        "\r\n",
+        "To: ",
+        To,
+        "\r\n",
+        "Call-ID: ",
+        CallId,
+        "\r\n",
+        "CSeq: ",
+        integer_to_binary(CSeq),
+        " ",
+        Method,
+        "\r\n",
+        "Contact: <sip:caller@",
+        Ip,
+        ":",
+        integer_to_binary(LP),
+        ";transport=",
+        string:lowercase(Via),
+        ">\r\n",
         case Body of
             <<>> -> [];
             _ -> "Content-Type: application/sdp\r\n"
         end,
-        "Content-Length: ", integer_to_binary(byte_size(Body)), "\r\n\r\n",
+        "Content-Length: ",
+        integer_to_binary(byte_size(Body)),
+        "\r\n\r\n",
         Body
     ]).
 
-csend({udp, S, Ip}, Bin) -> gen_udp:send(S, Ip, 5060, Bin);
-csend({tcp, S}, Bin) -> gen_tcp:send(S, Bin);
-csend({tls, S}, Bin) -> ssl:send(S, Bin);
-csend({ws, C}, Bin) -> ws:send(C, {text, Bin}), ok.
+csend({udp, S, Ip}, Bin) ->
+    gen_udp:send(S, Ip, 5060, Bin);
+csend({tcp, S}, Bin) ->
+    gen_tcp:send(S, Bin);
+csend({tls, S}, Bin) ->
+    ssl:send(S, Bin);
+csend({ws, C}, Bin) ->
+    ws:send(C, {text, Bin}),
+    ok.
 
 %% the next response with this status and CSeq method
 await(Conn, Status, Method, Buf) ->
@@ -529,8 +638,10 @@ await(Conn, Status, Method, Buf) ->
 crecv({udp, S, _}) ->
     {ok, {_, _, D}} = gen_udp:recv(S, 0, 10000),
     {ok, D};
-crecv({tcp, S}) -> gen_tcp:recv(S, 0, 10000);
-crecv({tls, S}) -> ssl:recv(S, 0, 10000);
+crecv({tcp, S}) ->
+    gen_tcp:recv(S, 0, 10000);
+crecv({tls, S}) ->
+    ssl:recv(S, 0, 10000);
 crecv({ws, _}) ->
     receive
         {ws_in, D} -> {ok, D}
@@ -540,8 +651,11 @@ crecv({ws, _}) ->
 is_resp(Msg, Status, Method) ->
     case Msg of
         <<"SIP/2.0 ", Status:3/binary, _/binary>> ->
-            re:run(Msg, ["\\r\\nCSeq:[ \\t]*[0-9]+ ", Method],
-                   [caseless]) =/= nomatch;
+            re:run(
+                Msg,
+                ["\\r\\nCSeq:[ \\t]*[0-9]+ ", Method],
+                [caseless]
+            ) =/= nomatch;
         _ ->
             false
     end.
@@ -552,12 +666,17 @@ next_msg(Buf) ->
         nomatch ->
             more;
         {Pos, 4} ->
-            Len = case re:run(binary:part(Buf, 0, Pos),
-                              "\\r\\n(?:content-length|l)[ \\t]*:[ \\t]*([0-9]+)",
-                              [caseless, {capture, all_but_first, binary}]) of
-                {match, [L]} -> binary_to_integer(L);
-                nomatch -> 0
-            end,
+            Len =
+                case
+                    re:run(
+                        binary:part(Buf, 0, Pos),
+                        "\\r\\n(?:content-length|l)[ \\t]*:[ \\t]*([0-9]+)",
+                        [caseless, {capture, all_but_first, binary}]
+                    )
+                of
+                    {match, [L]} -> binary_to_integer(L);
+                    nomatch -> 0
+                end,
             Total = Pos + 4 + Len,
             case byte_size(Buf) >= Total of
                 true ->
@@ -570,36 +689,46 @@ next_msg(Buf) ->
 
 %% ws_handler: every message to the caller
 init(_Req, #{notify := Pid}) -> {ok, Pid}.
-handle_in({text, D}, Pid) -> Pid ! {ws_in, D}, {ok, Pid};
-handle_in({binary, D}, Pid) -> Pid ! {ws_in, D}, {ok, Pid};
-handle_in(_Frame, Pid) -> {ok, Pid}.
+handle_in({text, D}, Pid) ->
+    Pid ! {ws_in, D},
+    {ok, Pid};
+handle_in({binary, D}, Pid) ->
+    Pid ! {ws_in, D},
+    {ok, Pid};
+handle_in(_Frame, Pid) ->
+    {ok, Pid}.
 handle_info(_Msg, Pid) -> {ok, Pid}.
 terminate(_Reason, _Pid) -> ok.
 
 %% ---- helpers ----
 
 user(Req) ->
-    case re:run(chappe_sip_req:uri(Req), "^sips?:([^@;>]+)@",
-                [{capture, all_but_first, binary}]) of
+    case
+        re:run(
+            chappe_sip_req:uri(Req),
+            "^sips?:([^@;>]+)@",
+            [{capture, all_but_first, binary}]
+        )
+    of
         {match, [U]} -> U;
         nomatch -> <<>>
     end.
 
 sdp(Ip) ->
     Id = integer_to_binary(erlang:unique_integer([positive])),
-    <<"v=0\r\n",
-      "o=chappe ", Id/binary, " 1 IN IP4 ", Ip/binary, "\r\n",
-      "s=chappe\r\n",
-      "c=IN IP4 ", Ip/binary, "\r\n",
-      "t=0 0\r\n",
-      "m=audio 40000 RTP/AVP 0\r\n",
-      "a=rtpmap:0 PCMU/8000\r\n",
-      "a=sendrecv\r\n">>.
+    <<"v=0\r\n", "o=chappe ", Id/binary, " 1 IN IP4 ", Ip/binary, "\r\n",
+        "s=chappe\r\n", "c=IN IP4 ", Ip/binary, "\r\n", "t=0 0\r\n",
+        "m=audio 40000 RTP/AVP 0\r\n", "a=rtpmap:0 PCMU/8000\r\n",
+        "a=sendrecv\r\n">>.
 
 local_ip() -> persistent_term:get({?MODULE, ip}).
 
 call_id(D) ->
-    try chappe_sip_dialog:call_id(D) catch _:_ -> <<"?">> end.
+    try
+        chappe_sip_dialog:call_id(D)
+    catch
+        _:_ -> <<"?">>
+    end.
 
 method(Req) ->
     try chappe_sip_req:method(Req) of
@@ -619,7 +748,12 @@ why(Why) ->
     end.
 
 log(Fmt, Args) ->
-    io:format("[conf ~s] " ++ Fmt ++ "~n",
-              [calendar:system_time_to_rfc3339(
-                   erlang:system_time(millisecond), [{unit, millisecond}])
-               | Args]).
+    io:format(
+        "[conf ~s] " ++ Fmt ++ "~n",
+        [
+            calendar:system_time_to_rfc3339(
+                erlang:system_time(millisecond), [{unit, millisecond}]
+            )
+            | Args
+        ]
+    ).

@@ -29,11 +29,21 @@
 -export([status/1, reloadxml/1, originate_and_events/1, conference/1]).
 -export([nodes_up_with_load/1, sessions_rise/1, stop_and_restart/1]).
 -export([
-    call_playback/1, call_digits/1, call_dtmf_event/1, call_record/1,
-    call_owner_death/1, call_timeout_breaks/1, call_paths_with_spaces/1,
-    call_audio_fork/1, call_audio_stream/1, call_linger_notice/1,
-    call_playback_results/1, call_events_and_variables/1,
-    call_fork_controls/1, call_stream_controls/1, call_say_speak/1,
+    call_playback/1,
+    call_digits/1,
+    call_dtmf_event/1,
+    call_record/1,
+    call_owner_death/1,
+    call_timeout_breaks/1,
+    call_paths_with_spaces/1,
+    call_audio_fork/1,
+    call_audio_stream/1,
+    call_linger_notice/1,
+    call_playback_results/1,
+    call_events_and_variables/1,
+    call_fork_controls/1,
+    call_stream_controls/1,
+    call_say_speak/1,
     call_detect/1
 ]).
 -export([handle_channel/3]).
@@ -64,7 +74,9 @@ groups() ->
     [
         {conn, [], [status, reloadxml, originate_and_events, conference]},
         {call, [], ?CALL_CASES},
-        {nodes, [sequence], [nodes_up_with_load, sessions_rise, stop_and_restart]}
+        {nodes, [sequence], [
+            nodes_up_with_load, sessions_rise, stop_and_restart
+        ]}
     ].
 
 init_per_suite(Config) ->
@@ -104,7 +116,9 @@ init_per_group(call, Config) ->
             Digits = filename:join([Dir, "sounds", "digits"]),
             ok = filelib:ensure_path(Digits),
             [
-                ok = write_wav(filename:join(Digits, integer_to_list(N) ++ ".wav"), 1)
+                ok = write_wav(
+                    filename:join(Digits, integer_to_list(N) ++ ".wav"), 1
+                )
              || N <- lists:seq(0, 19) ++ lists:seq(20, 90, 10)
             ],
             Port = list_to_integer(os:getenv("ESL_SOCKET_PORT", "18084")),
@@ -124,7 +138,9 @@ end_per_group(_Group, _Config) ->
 %% process that connects, and init_per_suite's exits before any case runs.
 %% Node notices go to the case process, so it subscribes itself.
 init_per_testcase(Case, Config) when
-    Case =:= nodes_up_with_load; Case =:= sessions_rise; Case =:= stop_and_restart
+    Case =:= nodes_up_with_load;
+    Case =:= sessions_rise;
+    Case =:= stop_and_restart
 ->
     ok = chappe_esl:node_subscribe(all),
     Config;
@@ -283,7 +299,9 @@ call_record(Config) ->
 %% The owner dies: the call kills the channel, and fs1's leg hangs up.
 %% req: ESL-39
 call_owner_death(Config) ->
-    Owner = spawn(fun() -> receive after infinity -> ok end end),
+    Owner = spawn(fun() -> receive
+        after infinity -> ok
+        end end),
     Call = live_call(Config, Owner),
     ok = chappe_esl_call:answer(Call),
     ok = chappe_esl_call:record_session(Call, "/media/owner-death.wav"),
@@ -445,8 +463,12 @@ call_events_and_variables(Config) ->
     ok = chappe_esl_call:multiset(Call, #{
         <<"chappe_a">> => <<"one two">>, <<"chappe_b">> => <<"x|y">>
     }),
-    ?assertEqual({ok, <<"one two">>}, chappe_esl_call:getvar(Call, <<"chappe_a">>)),
-    ?assertEqual({ok, undefined}, chappe_esl_call:getvar(Call, <<"chappe_none">>)),
+    ?assertEqual(
+        {ok, <<"one two">>}, chappe_esl_call:getvar(Call, <<"chappe_a">>)
+    ),
+    ?assertEqual(
+        {ok, undefined}, chappe_esl_call:getvar(Call, <<"chappe_none">>)
+    ),
     {ok, Vars} = chappe_esl_call:dump(Call),
     ?assertMatch(#{<<"chappe_b">> := <<"x|y">>}, Vars),
     ok = chappe_esl_call:mute(Call, read),
@@ -550,11 +572,15 @@ call_say_speak(Config) ->
     %% mod_say_en picks forty and two, then plays both one-second files
     ?assertEqual([<<"file_string://digits/40.wav!digits/2.wav">>], Played),
     ?assert(Said > 1800),
-    {ok, <<"true", _/binary>>} = chappe_esl_call:api(Call, "module_exists mod_flite"),
+    {ok, <<"true", _/binary>>} = chappe_esl_call:api(
+        Call, "module_exists mod_flite"
+    ),
     T0 = erlang:monotonic_time(millisecond),
-    ok = chappe_esl_call:speak(Call, <<"Thank you for calling the chappe lab">>, #{
-        engine => <<"flite">>, voice => <<"kal">>
-    }),
+    ok = chappe_esl_call:speak(
+        Call, <<"Thank you for calling the chappe lab">>, #{
+            engine => <<"flite">>, voice => <<"kal">>
+        }
+    ),
     Took = erlang:monotonic_time(millisecond) - T0,
     ct:pal("speak took ~p ms", [Took]),
     ?assert(Took > 1000).
@@ -571,7 +597,8 @@ call_detect(Config) ->
     ok = chappe_esl_call:detect_fax(Call, #{}),
     Conn = ?config(conn, Config),
     {ok, _} = chappe_esl:api(Conn, [
-        "uuid_broadcast ", ?config(a_uuid, Config),
+        "uuid_broadcast ",
+        ?config(a_uuid, Config),
         " tone_stream://%(500,3000,1100);loops=4 aleg"
     ]),
     ?assertEqual({fax, detected}, call_msg(Call, fax)),
@@ -596,7 +623,10 @@ played_files() ->
         {chappe_esl_call, _, {event, Ev}} ->
             case chappe_esl_event:name(Ev) of
                 <<"PLAYBACK_START">> ->
-                    [chappe_esl_event:header(<<"Playback-File-Path">>, Ev) | played_files()];
+                    [
+                        chappe_esl_event:header(<<"Playback-File-Path">>, Ev)
+                        | played_files()
+                    ];
                 _ ->
                     played_files()
             end
@@ -615,7 +645,8 @@ audio_bytes() ->
 
 audio_bytes(Acc) ->
     receive
-        {ws_audio, Sink, N} -> audio_bytes(Acc#{Sink => maps:get(Sink, Acc, 0) + N})
+        {ws_audio, Sink, N} ->
+            audio_bytes(Acc#{Sink => maps:get(Sink, Acc, 0) + N})
     after 0 -> Acc
     end.
 
@@ -717,7 +748,12 @@ stop_and_restart(_Config) ->
 start_socket(Config) ->
     Port = ?config(socket_port, Config),
     {ok, Ip} = inet:parse_address(os:getenv("ESL_SOCKET_IP", "0.0.0.0")),
-    Allow = string:lexemes(os:getenv("ESL_SOCKET_ALLOW", "127.0.0.0/8,172.16.0.0/12,192.168.0.0/16"), ","),
+    Allow = string:lexemes(
+        os:getenv(
+            "ESL_SOCKET_ALLOW", "127.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+        ),
+        ","
+    ),
     {ok, _} = chappe_esl:start_listener(Port, ?MODULE, self(), #{
         ip => Ip, allow => Allow
     }),
@@ -900,7 +936,9 @@ ws_msg() ->
 write_wav(Path, Secs) ->
     Rate = 8000,
     Samples = <<
-        <<(round(8000 * math:sin(2 * math:pi() * 440 * I / Rate))):16/little-signed>>
+        <<
+            (round(8000 * math:sin(2 * math:pi() * 440 * I / Rate))):16/little-signed
+        >>
      || I <- lists:seq(0, Rate * Secs - 1)
     >>,
     Size = byte_size(Samples),
@@ -970,7 +1008,9 @@ wait_call(CallId) ->
             case
                 {
                     chappe_esl_event:name(Ev),
-                    chappe_esl_event:header(<<"variable_sip_h_X-Chappe-Call">>, Ev)
+                    chappe_esl_event:header(
+                        <<"variable_sip_h_X-Chappe-Call">>, Ev
+                    )
                 }
             of
                 {<<"CHANNEL_CREATE">>, CallId} ->

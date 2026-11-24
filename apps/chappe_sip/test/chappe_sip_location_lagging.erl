@@ -68,7 +68,8 @@ write_mode() -> cas.
 start() -> ok.
 stop() -> ok.
 periodic(_Registry, Job) -> Job.
-held(Aor, Bs, Drop, Stamp) -> chappe_sip_location_cluster:held(Aor, Bs, Drop, Stamp).
+held(Aor, Bs, Drop, Stamp) ->
+    chappe_sip_location_cluster:held(Aor, Bs, Drop, Stamp).
 mine() -> chappe_sip_location_cluster:mine().
 view(B, Now) -> chappe_sip_location_cluster:view(B, Now).
 edge(B) -> B.

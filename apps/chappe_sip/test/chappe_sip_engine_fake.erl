@@ -12,13 +12,34 @@
 -behaviour(gen_server).
 
 %% chappe_sip_nif call surface
--export([start/2, stop/1, respond/7, reliable_respond/7, request/3, request/4,
-         proxy_mark/2, send/3,
-         send_response/2, relay/4, cancel/2, cancel/3, txn_done/2, leg_create/4,
-         leg_destroy/2, health/1, discard/2, block/2, stats/0]).
+-export([
+    start/2,
+    stop/1,
+    respond/7,
+    reliable_respond/7,
+    request/3, request/4,
+    proxy_mark/2,
+    send/3,
+    send_response/2,
+    relay/4,
+    cancel/2, cancel/3,
+    txn_done/2,
+    leg_create/4,
+    leg_destroy/2,
+    health/1,
+    discard/2,
+    block/2,
+    stats/0
+]).
 %% test driver API
--export([boot/0, shutdown/0, inject_request/2, inject_indialog/3, set_health/1,
-         await_response/1, await_response/2]).
+-export([
+    boot/0,
+    shutdown/0,
+    inject_request/2,
+    inject_indialog/3,
+    set_health/1,
+    await_response/1, await_response/2
+]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 start(Opts, Owner) ->
@@ -28,12 +49,14 @@ stop(_Ref) ->
     gen_server:call(?MODULE, nif_stop).
 
 respond(_Ref, TxnH, Status, Reason, Headers, Body, ToTag) ->
-    gen_server:call(?MODULE, {nif_respond, TxnH, Status, Reason, Headers,
-                              Body, ToTag}).
+    gen_server:call(
+        ?MODULE, {nif_respond, TxnH, Status, Reason, Headers, Body, ToTag}
+    ).
 
 reliable_respond(_Ref, TxnH, Status, Reason, Headers, Body, ToTag) ->
-    gen_server:call(?MODULE, {nif_respond, TxnH, Status, Reason, Headers,
-                              Body, ToTag}).
+    gen_server:call(
+        ?MODULE, {nif_respond, TxnH, Status, Reason, Headers, Body, ToTag}
+    ).
 
 request(_Ref, Route, Raw) ->
     gen_server:call(?MODULE, {nif_request, Route, Raw}).
@@ -120,8 +143,12 @@ await_response(TxnH, Timeout) ->
 %% gen_server
 
 init([]) ->
-    {ok, #{owner => undefined, started => false, observers => #{},
-           seq => 0}}.
+    {ok, #{
+        owner => undefined,
+        started => false,
+        observers => #{},
+        seq => 0
+    }}.
 
 handle_call({nif_start, _Opts, Owner}, _From, #{started := true} = S) ->
     {reply, {error, already_started}, S#{owner => Owner}};
@@ -134,30 +161,47 @@ handle_call({nif_start, Opts, Owner}, _From, S) ->
     end;
 handle_call(nif_stop, _From, S) ->
     {reply, ok, S#{started => false}};
-handle_call({nif_respond, TxnH, Status, Reason, Headers, Body, ToTag}, _From,
-            #{observers := Obs} = S) ->
+handle_call(
+    {nif_respond, TxnH, Status, Reason, Headers, Body, ToTag},
+    _From,
+    #{observers := Obs} = S
+) ->
     case Obs of
         #{TxnH := Pid} ->
-            Pid ! {fake_response, TxnH,
-                   #{status => Status, reason => Reason,
-                     headers => Headers, body => Body, to_tag => ToTag}};
+            Pid !
+                {fake_response, TxnH, #{
+                    status => Status,
+                    reason => Reason,
+                    headers => Headers,
+                    body => Body,
+                    to_tag => ToTag
+                }};
         _ ->
             ok
     end,
     {reply, ok, S};
-handle_call({nif_request, _Route, _Raw}, _From,
-            #{owner := Owner, seq := Seq} = S) ->
+handle_call(
+    {nif_request, _Route, _Raw},
+    _From,
+    #{owner := Owner, seq := Seq} = S
+) ->
     H = Seq + 1,
     %% confirm the op like the real shim
     Owner ! {chappe_sip_engine, self(), {op_ok, H}},
     {reply, {ok, H}, S#{seq => H}};
-handle_call({nif_send, _Route, _Raw}, _From,
-            #{owner := Owner, seq := Seq} = S) ->
+handle_call(
+    {nif_send, _Route, _Raw},
+    _From,
+    #{owner := Owner, seq := Seq} = S
+) ->
     H = Seq + 1,
     Owner ! {chappe_sip_engine, self(), {op_ok, H}},
     {reply, {ok, H}, S#{seq => H}};
-handle_call({nif_leg_create, _CallId, _Local, _Remote}, _From,
-            #{owner := Owner, seq := Seq} = S) ->
+handle_call(
+    {nif_leg_create, _CallId, _Local, _Remote},
+    _From,
+    #{owner := Owner, seq := Seq} = S
+) ->
     H = Seq + 1,
     Owner ! {chappe_sip_engine, self(), {op_ok, H}},
     {reply, {ok, H}, S#{seq => H}};
@@ -170,14 +214,20 @@ handle_call(nif_health, _From, #{silent := true} = S) ->
 handle_call(nif_health, _From, #{owner := Owner, seq := Seq} = S) ->
     Owner ! {chappe_sip_engine, self(), {health_ok, Seq + 1}},
     {reply, ok, S#{seq => Seq + 1}};
-handle_call({inject, TxnH, Raw, Observer}, _From,
-            #{owner := Owner, observers := Obs} = S) ->
+handle_call(
+    {inject, TxnH, Raw, Observer},
+    _From,
+    #{owner := Owner, observers := Obs} = S
+) ->
     {ok, Msg} = chappe_sip_msg:parse(Raw),
     Meta = #{method => chappe_sip_msg:method(Msg)},
     Owner ! {chappe_sip_engine, self(), {request, TxnH, undefined, Meta, Raw}},
     {reply, ok, S#{observers => Obs#{TxnH => Observer}}};
-handle_call({inject_indialog, LegH, TxnH, Raw, Observer}, _From,
-            #{owner := Owner, observers := Obs} = S) ->
+handle_call(
+    {inject_indialog, LegH, TxnH, Raw, Observer},
+    _From,
+    #{owner := Owner, observers := Obs} = S
+) ->
     {ok, Msg} = chappe_sip_msg:parse(Raw),
     Meta = #{method => chappe_sip_msg:method(Msg)},
     Owner ! {chappe_sip_engine, self(), {request, TxnH, LegH, Meta, Raw}},

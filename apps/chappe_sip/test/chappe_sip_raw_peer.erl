@@ -65,7 +65,9 @@ invite(Peer, Marker, Opts) ->
 %% CANCEL the initial INVITE (same branch and CSeq number, RFC 3261 9.1).
 -spec cancel(peer(), [{binary(), binary()}]) -> ok.
 cancel(#{branch := Branch} = Peer, Hdrs) ->
-    send_raw(Peer, build(<<"CANCEL">>, maps:remove(tt, Peer), 1, Hdrs, <<>>, Branch)).
+    send_raw(
+        Peer, build(<<"CANCEL">>, maps:remove(tt, Peer), 1, Hdrs, <<>>, Branch)
+    ).
 
 %% ACK the 2xx to the INVITE with CSeq N (optionally carrying an answer).
 -spec ack(peer(), pos_integer(), binary()) -> ok.
@@ -170,7 +172,8 @@ reply(#{sock := S} = Peer, ReqBin, Src, Status, Hdrs, Body) ->
     To =
         case chappe_sip_msg:to_tag(Msg) of
             undefined when Status > 100 ->
-                <<To0/binary, ";tag=", (maps:get(ft, Peer, <<"peer">>))/binary>>;
+                <<To0/binary, ";tag=",
+                    (maps:get(ft, Peer, <<"peer">>))/binary>>;
             _ ->
                 To0
         end,
@@ -231,7 +234,9 @@ sdp(Marker) ->
 build(Method, Peer, N, Hdrs, Body) ->
     build(Method, Peer, N, Hdrs, Body, <<"z9hG4bK", (hex(6))/binary>>).
 
-build(Method, #{lport := LP, call := Call, ft := FT} = Peer, N, Hdrs, Body, Branch) ->
+build(
+    Method, #{lport := LP, call := Call, ft := FT} = Peer, N, Hdrs, Body, Branch
+) ->
     P = integer_to_binary(LP),
     To =
         case maps:get(tt, Peer, undefined) of

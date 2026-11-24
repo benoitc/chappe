@@ -10,7 +10,9 @@ encode_integer_test() ->
     ?assertEqual(<<"i0e">>, chappe_rtpengine_bencode:encode_to_binary(0)).
 
 encode_string_test() ->
-    ?assertEqual(<<"4:ping">>, chappe_rtpengine_bencode:encode_to_binary(<<"ping">>)),
+    ?assertEqual(
+        <<"4:ping">>, chappe_rtpengine_bencode:encode_to_binary(<<"ping">>)
+    ),
     ?assertEqual(<<"0:">>, chappe_rtpengine_bencode:encode_to_binary(<<>>)),
     %% atoms encode as strings
     ?assertEqual(<<"4:ping">>, chappe_rtpengine_bencode:encode_to_binary(ping)).
@@ -28,7 +30,9 @@ encode_dict_canonical_order_test() ->
     %% map internals
     ?assertEqual(
         <<"d1:a1:x1:bi1ee">>,
-        chappe_rtpengine_bencode:encode_to_binary(#{<<"b">> => 1, <<"a">> => <<"x">>})
+        chappe_rtpengine_bencode:encode_to_binary(#{
+            <<"b">> => 1, <<"a">> => <<"x">>
+        })
     ),
     %% "Z" (0x5A) sorts before "a" (0x61) bytewise
     ?assertEqual(
@@ -74,7 +78,9 @@ roundtrip_test() ->
     },
     ?assertEqual(
         {ok, Term},
-        chappe_rtpengine_bencode:decode(chappe_rtpengine_bencode:encode_to_binary(Term))
+        chappe_rtpengine_bencode:decode(
+            chappe_rtpengine_bencode:encode_to_binary(Term)
+        )
     ).
 
 %% Generative roundtrip: random nested terms limited to the canonical
@@ -139,7 +145,9 @@ stream_split_at_every_boundary_test() ->
             end,
             ?assertEqual(
                 {ok, Expected, <<>>},
-                chappe_rtpengine_bencode:decode_prefix(<<Head/binary, Tail/binary>>)
+                chappe_rtpengine_bencode:decode_prefix(
+                    <<Head/binary, Tail/binary>>
+                )
             )
         end,
         lists:seq(0, byte_size(Frame))
@@ -171,7 +179,9 @@ stream_incremental_growth_test() ->
     lists:foreach(
         fun(Len) ->
             <<Head:Len/binary, _/binary>> = Frame,
-            ?assertEqual(incomplete, chappe_rtpengine_bencode:decode_prefix(Head))
+            ?assertEqual(
+                incomplete, chappe_rtpengine_bencode:decode_prefix(Head)
+            )
         end,
         lists:seq(0, Full - 1)
     ),
@@ -179,18 +189,26 @@ stream_incremental_growth_test() ->
 
 stream_malformed_head_test_() ->
     [
-        ?_assertMatch({error, _}, chappe_rtpengine_bencode:decode_prefix(<<"x">>)),
+        ?_assertMatch(
+            {error, _}, chappe_rtpengine_bencode:decode_prefix(<<"x">>)
+        ),
         ?_assertMatch(
             {error, _}, chappe_rtpengine_bencode:decode_prefix(<<"d1:ai1ex">>)
         ),
-        ?_assertMatch({error, _}, chappe_rtpengine_bencode:decode_prefix(<<"iXe">>)),
+        ?_assertMatch(
+            {error, _}, chappe_rtpengine_bencode:decode_prefix(<<"iXe">>)
+        ),
         ?_assertEqual(incomplete, chappe_rtpengine_bencode:decode_prefix(<<>>)),
-        ?_assertEqual(incomplete, chappe_rtpengine_bencode:decode_prefix(<<"d">>)),
+        ?_assertEqual(
+            incomplete, chappe_rtpengine_bencode:decode_prefix(<<"d">>)
+        ),
         %% truncated but valid prefixes stay incomplete, never error
         ?_assertEqual(
             incomplete, chappe_rtpengine_bencode:decode_prefix(<<"d1:ai1e">>)
         ),
-        ?_assertEqual(incomplete, chappe_rtpengine_bencode:decode_prefix(<<"5:ab">>))
+        ?_assertEqual(
+            incomplete, chappe_rtpengine_bencode:decode_prefix(<<"5:ab">>)
+        )
     ].
 
 %% The body of a captured rtpengine offer reply, rebuilt canonically:
@@ -215,28 +233,38 @@ real_reply_frame() ->
 
 decode_error_test_() ->
     [
-        ?_assertMatch({error, invalid}, chappe_rtpengine_bencode:decode(<<"x">>)),
-        ?_assertMatch({error, unexpected_end}, chappe_rtpengine_bencode:decode(<<>>)),
         ?_assertMatch(
-            {error, unterminated_integer}, chappe_rtpengine_bencode:decode(<<"i12">>)
+            {error, invalid}, chappe_rtpengine_bencode:decode(<<"x">>)
         ),
         ?_assertMatch(
-            {error, {bad_integer, _}}, chappe_rtpengine_bencode:decode(<<"iabce">>)
+            {error, unexpected_end}, chappe_rtpengine_bencode:decode(<<>>)
         ),
         ?_assertMatch(
-            {error, truncated_string}, chappe_rtpengine_bencode:decode(<<"5:abc">>)
+            {error, unterminated_integer},
+            chappe_rtpengine_bencode:decode(<<"i12">>)
         ),
         ?_assertMatch(
-            {error, unterminated_list}, chappe_rtpengine_bencode:decode(<<"li1e">>)
+            {error, {bad_integer, _}},
+            chappe_rtpengine_bencode:decode(<<"iabce">>)
+        ),
+        ?_assertMatch(
+            {error, truncated_string},
+            chappe_rtpengine_bencode:decode(<<"5:abc">>)
+        ),
+        ?_assertMatch(
+            {error, unterminated_list},
+            chappe_rtpengine_bencode:decode(<<"li1e">>)
         ),
         ?_assertMatch(
             {error, unterminated_dict}, chappe_rtpengine_bencode:decode(<<"d">>)
         ),
         ?_assertMatch(
-            {error, {bad_dict_key, 1}}, chappe_rtpengine_bencode:decode(<<"di1ei2ee">>)
+            {error, {bad_dict_key, 1}},
+            chappe_rtpengine_bencode:decode(<<"di1ei2ee">>)
         ),
         ?_assertMatch(
-            {error, {trailing_bytes, 1}}, chappe_rtpengine_bencode:decode(<<"i1ee">>)
+            {error, {trailing_bytes, 1}},
+            chappe_rtpengine_bencode:decode(<<"i1ee">>)
         )
     ].
 
@@ -245,18 +273,32 @@ decode_error_test_() ->
 %% req: RNG-08
 non_canonical_integer_rejected_test_() ->
     [
-        ?_assertMatch({error, {bad_integer, _}}, chappe_rtpengine_bencode:decode(B))
-     || B <- [<<"i03e">>, <<"i-0e">>, <<"i+1e">>, <<"i-e">>, <<"ie">>, <<"i-01e">>]
+        ?_assertMatch(
+            {error, {bad_integer, _}}, chappe_rtpengine_bencode:decode(B)
+        )
+     || B <- [
+            <<"i03e">>, <<"i-0e">>, <<"i+1e">>, <<"i-e">>, <<"ie">>, <<"i-01e">>
+        ]
     ] ++
         [
             ?_assertEqual({ok, 0}, chappe_rtpengine_bencode:decode(<<"i0e">>)),
-            ?_assertEqual({ok, -10}, chappe_rtpengine_bencode:decode(<<"i-10e">>)),
+            ?_assertEqual(
+                {ok, -10}, chappe_rtpengine_bencode:decode(<<"i-10e">>)
+            ),
             %% an unfinished canonical integer is incomplete on a stream,
             %% a prefix that can never become canonical is an error
-            ?_assertEqual(incomplete, chappe_rtpengine_bencode:decode_prefix(<<"i0">>)),
-            ?_assertEqual(incomplete, chappe_rtpengine_bencode:decode_prefix(<<"i-">>)),
-            ?_assertMatch({error, _}, chappe_rtpengine_bencode:decode_prefix(<<"i00">>)),
-            ?_assertMatch({error, _}, chappe_rtpengine_bencode:decode_prefix(<<"i-0">>))
+            ?_assertEqual(
+                incomplete, chappe_rtpengine_bencode:decode_prefix(<<"i0">>)
+            ),
+            ?_assertEqual(
+                incomplete, chappe_rtpengine_bencode:decode_prefix(<<"i-">>)
+            ),
+            ?_assertMatch(
+                {error, _}, chappe_rtpengine_bencode:decode_prefix(<<"i00">>)
+            ),
+            ?_assertMatch(
+                {error, _}, chappe_rtpengine_bencode:decode_prefix(<<"i-0">>)
+            )
         ].
 
 %% String length prefixes are canonical too.
@@ -264,11 +306,16 @@ non_canonical_integer_rejected_test_() ->
 non_canonical_length_rejected_test_() ->
     [
         ?_assertMatch(
-            {error, {bad_length, _}}, chappe_rtpengine_bencode:decode(<<"05:hello">>)
+            {error, {bad_length, _}},
+            chappe_rtpengine_bencode:decode(<<"05:hello">>)
         ),
-        ?_assertMatch({error, _}, chappe_rtpengine_bencode:decode_prefix(<<"00">>)),
+        ?_assertMatch(
+            {error, _}, chappe_rtpengine_bencode:decode_prefix(<<"00">>)
+        ),
         ?_assertEqual({ok, <<>>}, chappe_rtpengine_bencode:decode(<<"0:">>)),
-        ?_assertEqual({ok, <<"hello">>}, chappe_rtpengine_bencode:decode(<<"5:hello">>))
+        ?_assertEqual(
+            {ok, <<"hello">>}, chappe_rtpengine_bencode:decode(<<"5:hello">>)
+        )
     ].
 
 nested(0) -> <<"i1e">>;
@@ -278,7 +325,9 @@ nested(N) -> <<"l", (nested(N - 1))/binary, "e">>.
 %% req: RNG-09
 nesting_depth_bounded_test() ->
     ?assertMatch({ok, _}, chappe_rtpengine_bencode:decode(nested(64))),
-    ?assertEqual({error, too_deep}, chappe_rtpengine_bencode:decode(nested(65))),
+    ?assertEqual(
+        {error, too_deep}, chappe_rtpengine_bencode:decode(nested(65))
+    ),
     ?assertEqual(
         {error, too_deep}, chappe_rtpengine_bencode:decode_prefix(nested(65))
     ).
@@ -297,15 +346,22 @@ encode_duplicate_key_rejected_test() ->
 %% req: RNG-02
 stream_need_test_() ->
     [
-        ?_assertEqual({more, 3}, chappe_rtpengine_bencode:decode_stream(<<"5:ab">>)),
         ?_assertEqual(
-            {more, 7}, chappe_rtpengine_bencode:decode_stream(<<"d3:sdp10:abc">>)
+            {more, 3}, chappe_rtpengine_bencode:decode_stream(<<"5:ab">>)
         ),
-        ?_assertEqual({more, 1}, chappe_rtpengine_bencode:decode_stream(<<"d">>)),
+        ?_assertEqual(
+            {more, 7},
+            chappe_rtpengine_bencode:decode_stream(<<"d3:sdp10:abc">>)
+        ),
+        ?_assertEqual(
+            {more, 1}, chappe_rtpengine_bencode:decode_stream(<<"d">>)
+        ),
         ?_assertEqual({more, 1}, chappe_rtpengine_bencode:decode_stream(<<>>)),
         ?_assertEqual(
             {ok, 1, <<"rest">>},
             chappe_rtpengine_bencode:decode_stream(<<"i1erest">>)
         ),
-        ?_assertMatch({error, _}, chappe_rtpengine_bencode:decode_stream(<<"x">>))
+        ?_assertMatch(
+            {error, _}, chappe_rtpengine_bencode:decode_stream(<<"x">>)
+        )
     ].
