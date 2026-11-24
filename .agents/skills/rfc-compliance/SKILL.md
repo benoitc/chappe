@@ -10,15 +10,9 @@ applies to one commit at a time; a PR with several commits gets one verdict per 
 
 ## The specs chappe follows
 
-| Area | Specs |
-|---|---|
-| SIP core | RFC 3261, 3263 (locating servers), 6026 (2xx handling), 3581 (rport), 5626 (outbound), 3327 (Path), 5627 (GRUU) |
-| SIP extensions | RFC 3262 (PRACK), 3311 (UPDATE), 4028 (session timers), 3326 (Reason), 3323 and 3325 (privacy, asserted identity), 8760 (digest), 7118 (SIP over WebSocket) |
-| Events | RFC 6665 (updated by 7621), 3856 and 3863 (presence, PIDF), 3842 (MWI), 4235 (dialog event), 4575 (conference event) |
-| REFER and transfer | RFC 3515 (updated by 7647, 8217), 7647, 3420 (sipfrag), 3891 (Replaces), 3892 (Referred-By, updated by 8217), 4488 (Refer-Sub), 7614 (explicit REFER subscriptions), 4538 (Target-Dialog), 4508 (feature tags in Refer-To), 5589 (transfer flows), 4579 (conferencing for user agents), 5368 (multiple REFER targets) |
-| Recording | RFC 6341 (requirements), 7865 (metadata model), 7866 (recording protocol, updated by 9806) |
-| Media description | RFC 8866 (SDP), 3264 (offer/answer), 3550 and 3551 (RTP, RTCP), 4733 (DTMF events, updated by 4734 and 5244) |
-| Transport | RFC 6455 (WebSocket), the TLS version the engine negotiates |
+The list, with the version each app follows, the modules that follow it and the
+newer versions not yet followed, is in
+[AGENTS.md](../../../AGENTS.md#specifications). Check a spec there before you cite it.
 
 Each app claims what it implements in `apps/<app>/docs/compliance/requirements.tsv`,
 and `make compliance GATE=demo` checks the claims against the tests.
