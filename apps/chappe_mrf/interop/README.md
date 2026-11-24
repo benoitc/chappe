@@ -46,7 +46,7 @@ checks that the fakes tell the truth.
 | Service | Ports on the host | Role |
 |---|---|---|
 | `rtpengine` | NG `MRF_NG_PORT` (17222/udp), RTP `MRF_RTP_MIN`-`MRF_RTP_MAX` (31200-31299/udp) | anchors callers; interface `host` advertised as 127.0.0.1, `docker` as its own address |
-| `fs1`, `fs2` | SIP `MRF_FS1_SIP`/`MRF_FS2_SIP` (17081, 17082/udp), ESL `MRF_FS1_ESL`/`MRF_FS2_ESL` (127.0.0.1:17031, 17032) | FreeSWITCH (`chappe-esl-fs:lab`, built from `apps/chappe_esl/interop/freeswitch`) with `conf/freeswitch.xml` (an `en` language on `/media/sounds`, the `chappe_700` tone descriptor): the `mrf` extension hands the channel to the chappe_mrf listener at `host.docker.internal:MRF_SOCKET_PORT` |
+| `fs1`, `fs2` | SIP `MRF_FS1_SIP`/`MRF_FS2_SIP` (17081, 17082/udp), ESL `MRF_FS1_ESL`/`MRF_FS2_ESL` (127.0.0.1:17031, 17032) | FreeSWITCH (`chappe-esl-fs:lab`, built from `apps/chappe_esl/interop/freeswitch`) with `conf/freeswitch.xml` (an `en` language on `/media/sounds`, the `chappe_700` tone descriptor, codecs OPUS, G722, PCMU, PCMA in that order, conference profiles `default` at 8 kHz and `wideband` at 16 kHz): the `mrf` extension hands the channel to the chappe_mrf listener at `host.docker.internal:MRF_SOCKET_PORT` |
 
 The chappe node listens for SIP on `MRF_SIP_PORT` (17060) and for outbound
 event sockets on `MRF_SOCKET_PORT` (17084). `MRF_MEDIA_DIR`
@@ -95,8 +95,9 @@ first.
 ## Troubleshooting
 
 - "the lab did not become healthy": `e2e.sh` prints the compose logs. The
-  FreeSWITCH image is large; pull its base once with
-  `docker pull drachtio/drachtio-freeswitch-mrf:latest`.
+  FreeSWITCH image is large; pull its base once, the digest the
+  `FS_IMAGE` argument of `apps/chappe_esl/interop/freeswitch/Dockerfile`
+  pins.
 - No audio in a case: `MRF_MEDIA_IP` is empty when `host.docker.internal`
   does not resolve inside the rtpengine container. On Linux the compose file
   maps it to `host-gateway`.

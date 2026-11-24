@@ -20,7 +20,9 @@ you change mixing, timing, the jitter buffer, RTCP or the leg SDP.
 - `interop-ref` runs `freeswitch/docker-compose.yml` (project
   `chappe-mix-ref`, container `chappe-mix-fs`): FreeSWITCH 1.10.10 on one CPU
   (`FS_CPUS`), SIP on 15060/udp, RTP 16384-16583/udp, config in
-  `freeswitch/conf/`. The `bench` profile adds an `erlang:29.1.2` container next
+  `freeswitch/conf/`: `conf-<name>` joins the 8 kHz `default` room (the
+  G.711 control), `wconf-<name>` the 16 kHz `wideband` one; codecs OPUS,
+  G722, PCMU, PCMA in that order. The `bench` profile adds an `erlang:29.1.2` container next
   to it for bench arms.
 
 ## Run them

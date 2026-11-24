@@ -4,7 +4,9 @@
 
      TEST-ONLY, INSECURE. The whole configuration of the reference mixer
      for chappe_mix: one unauthenticated SIP profile on 15060/udp, and a
-     dialplan that answers conf-<name> and joins conference <name>@default.
+     dialplan that answers conf-<name> and joins conference <name>@default
+     (8 kHz, the G.711 control), or wconf-<name> and joins <name>@wideband
+     (16 kHz).
      It replaces the image's stock tree (FreeSWITCH is started with -conf
      pointing here). Never ship an unauthenticated profile.
 
@@ -40,6 +42,9 @@
         <load module="mod_conference"/>
         <load module="mod_dptools"/>
         <load module="mod_dialplan_xml"/>
+        <!-- the wideband codecs: G722 is mod_spandsp's, OPUS mod_opus's -->
+        <load module="mod_spandsp"/>
+        <load module="mod_opus"/>
       </modules>
     </configuration>
 
@@ -76,8 +81,8 @@
             <param name="rtp-ip" value="$${local_ip_v4}"/>
             <param name="sip-port" value="15060"/>
             <param name="auth-calls" value="false"/>
-            <param name="inbound-codec-prefs" value="PCMU,PCMA"/>
-            <param name="outbound-codec-prefs" value="PCMU,PCMA"/>
+            <param name="inbound-codec-prefs" value="OPUS,G722,PCMU,PCMA"/>
+            <param name="outbound-codec-prefs" value="OPUS,G722,PCMU,PCMA"/>
             <param name="inbound-codec-negotiation" value="generous"/>
             <param name="rtp-timer-name" value="soft"/>
             <param name="apply-nat-acl" value="none"/>
@@ -106,6 +111,15 @@
           <param name="caller-controls" value="none"/>
           <param name="comfort-noise" value="false"/>
         </profile>
+        <!-- the same at 16 kHz: the reference for a wideband room -->
+        <profile name="wideband">
+          <param name="domain" value="$${domain}"/>
+          <param name="rate" value="16000"/>
+          <param name="interval" value="20"/>
+          <param name="energy-level" value="0"/>
+          <param name="caller-controls" value="none"/>
+          <param name="comfort-noise" value="false"/>
+        </profile>
       </profiles>
     </configuration>
   </section>
@@ -117,6 +131,13 @@
                    expression="^conf-([A-Za-z0-9_.-]+)$">
           <action application="answer"/>
           <action application="conference" data="$1@default"/>
+        </condition>
+      </extension>
+      <extension name="wideband">
+        <condition field="destination_number"
+                   expression="^wconf-([A-Za-z0-9_.-]+)$">
+          <action application="answer"/>
+          <action application="conference" data="$1@wideband"/>
         </condition>
       </extension>
       <extension name="reject">
