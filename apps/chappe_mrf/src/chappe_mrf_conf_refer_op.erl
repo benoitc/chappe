@@ -21,8 +21,8 @@
 -module(chappe_mrf_conf_refer_op).
 
 -export([new/0, key/3, aor/1, lookup/2, reserve/3, start/3, attach/3]).
--export([progress/3, final/3, abort/2, in_flight/1, count/1]).
--export([data/2, set_data/3, adding/2, by_mon/2]).
+-export([progress/3, final/3, in_flight/1, count/1]).
+-export([data/2, set_data/3, adding/2, wait/4, leave/3, by_mon/2]).
 -export([lookup/3, reserve/4, in_flight/2]).
 
 -export_type([ops/0, key/0]).
@@ -159,14 +159,6 @@ final(Key, St, Ops) ->
             Ops
     end.
 
-%% A reserved Key whose REFER was not accepted after all.
--spec abort(key(), ops()) -> ops().
-abort(Key, Ops) ->
-    case Ops of
-        #{Key := #{state := {reserved, _}}} -> maps:remove(Key, Ops);
-        #{} -> Ops
-    end.
-
 %% The ops under way (reserved in time, or running), with their data.
 -spec in_flight(ops()) -> [{key(), map()}].
 in_flight(Ops) ->
@@ -197,14 +189,49 @@ adding(Aor, Ops) ->
         [] -> none
     end.
 
-%% The reserved op whose REFER's worker the room watches with Mon.
+%% A reserved op lives while a worker waits on it: the one of the REFER
+%% it was reserved for, and those of REFERs attached to it before it
+%% started (its data's waiting, monitor => worker, the room's monitors).
+%% Worker, watched with Mon, waits on Key: {ok, Ops}, or none when Key is
+%% no reserved op.
+-spec wait(key(), reference(), pid(), ops()) -> {ok, ops()} | none.
+wait(Key, Mon, Worker, Ops) ->
+    case Ops of
+        #{Key := #{state := {reserved, _}, data := #{waiting := W} = D} = Op} ->
+            {ok, Ops#{Key := Op#{data := D#{waiting := W#{Mon => Worker}}}}};
+        #{} ->
+            none
+    end.
+
+%% The workers waiting on the reserved op Key that Gone(Mon, Worker)
+%% picks stop waiting, and an op nobody waits on any more is dropped:
+%% their monitors, for the room to take down, and the ops. A running or
+%% done op is left as it is.
+-spec leave(key(), fun((reference(), pid()) -> boolean()), ops()) ->
+    {[reference()], ops()}.
+leave(Key, Gone, Ops) ->
+    case Ops of
+        #{Key := #{state := {reserved, _}, data := #{waiting := W} = D} = Op} ->
+            Out = [Mon || Mon := Pid <- W, Gone(Mon, Pid)],
+            case maps:without(Out, W) of
+                In when map_size(In) =:= 0 ->
+                    {Out, maps:remove(Key, Ops)};
+                In ->
+                    {Out, Ops#{Key := Op#{data := D#{waiting := In}}}}
+            end;
+        #{} ->
+            {[], Ops}
+    end.
+
+%% The reserved op one of whose waiting workers the room watches with
+%% Mon.
 -spec by_mon(reference(), ops()) -> {ok, key()} | none.
 by_mon(Mon, Ops) ->
     case
         [
             K
-         || K := #{state := {reserved, _}, data := #{mon := M}} <- Ops,
-            M =:= Mon
+         || K := #{state := {reserved, _}, data := #{waiting := W}} <- Ops,
+            is_map_key(Mon, W)
         ]
     of
         [K | _] -> {ok, K};

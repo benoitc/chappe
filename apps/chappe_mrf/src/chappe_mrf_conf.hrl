@@ -26,14 +26,17 @@
     max_members = infinity :: pos_integer() | infinity,
     focus :: chappe_sip_focus:focus() | undefined,
     entity :: binary() | undefined,
-    %% REFER to the room (chappe_mrf_conf_refer): who decides, how a
-    %% target is dialed (dial fun, profile, timeout, endpoint options), the
+    %% REFER to the room (chappe_mrf_conf_refer): who decides (and who
+    %% decides a call's Replaces of a member, chappe_mrf_conf_refer_member),
+    %% how a target is dialed (dial fun, profile, timeout, endpoint
+    %% options), the
     %% dial-outs under way by their channel ({ep, Ep}, {uuid, Uuid}) or
     %% helper ({helper, Pid}), the REFERs in flight and done
     %% (chappe_mrf_conf_refer_op), and what marks this room's dial-outs on
     %% their node (the chappe_dial channel variable) with the nodes whose
     %% events it takes for them
     refer_policy :: fun((map()) -> boolean() | {reject, 300..699}) | undefined,
+    replaces_policy :: fun((map()) -> boolean()) | undefined,
     dial = #{} :: map(),
     dialing = #{} :: #{term() => map()},
     refer_ops = #{} :: chappe_mrf_conf_refer_op:ops(),

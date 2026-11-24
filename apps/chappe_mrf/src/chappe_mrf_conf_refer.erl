@@ -29,7 +29,8 @@
 %%   3. the room's refer_policy, given chappe_sip_focus:refer_info/2's map
 %%      plus member (the referrer's member id, from its dialog or the
 %%      dialog its Target-Dialog names), dial (add: the dial string it
-%%      would run) and removes (remove: the member it names), every key
+%%      would run, made by the room's dial fun; one that crashes is 403,
+%%      logged) and removes (remove: the member it names), every key
 %%      there for every action (undefined when it does not apply): false
 %%      is 403, {reject, Code} is Code, a policy that crashes is 403 (and
 %%      logged), and no policy refuses every REFER;
@@ -47,7 +48,10 @@
 %% and target, chappe_mrf_conf_refer_op), or one from another origin for
 %% a party being dialed already, dials nobody again: it hears the first
 %% one's outcome. Adding a member that is already in answers 200 at once.
-%% The op of a REFER whose worker dies before it answered it is dropped.
+%% An op reserved for a REFER lives until one of the workers waiting on
+%% it (the first one's, and those of the REFERs attached to it) starts
+%% it; a worker that dies, or cannot accept its REFER, gives up its own
+%% part only, and the op goes with the last one.
 %% A party being dialed is no member until it answered; a dial that
 %% fails leaves the room as it was. When the room ends, the REFERs still
 %% under way hear 487 and their dials are given up.
@@ -59,11 +63,10 @@
 -include("chappe_mrf_conf.hrl").
 
 -export([refer/3, focus/2, b2b_event/2, setup/2, call/2, stop/1]).
--export([member_opts/2, keep_dialog/2, from_uri/1]).
 -export([admission/2, info/2, progress/3, final/3]).
 %% for a member's side (chappe_mrf_conf_refer_member)
--export([decide/2, start/3, policy/2, member_of/2, reject/3]).
--export([policy_view/1, down/2]).
+-export([decide/2, start/3, abort/3, policy/2, member_of/2, reject/3]).
+-export([policy_view/1, down/2, guarded/4]).
 %% the backends' events about a dial (chappe_mrf_conf_refer_dial)
 -export([native_event/3, fs_added/3, fs_result/3, fs_started/3]).
 
@@ -126,7 +129,8 @@ accept_out(Conf, Key, AOpts, Req, Res) ->
                     Err
             end;
         {error, _} = Err ->
-            _ = chappe_mrf_conf:call(Conf, {refer, {abort, Key}}, 5000),
+            Abort = {refer, {abort, Key, self()}},
+            _ = chappe_mrf_conf:call(Conf, Abort, 5000),
             Err
     end.
 
@@ -174,13 +178,15 @@ info({chappe_sip_b2b, Ref, {refer, Info}}, S) ->
     {ok, chappe_mrf_conf_refer_member:transfer(Ref, Info, S)};
 info({chappe_sip_b2b, Ref, {transferred, _Leg, Info}}, S) ->
     {ok, chappe_mrf_conf_refer_member:transferred(Ref, Info, S)};
+info({timeout, _, {refer_replace, Id, Hold}}, S) ->
+    {ok, chappe_mrf_conf_refer_member:unhold(Id, Hold, S)};
 info(Msg, S) ->
     chappe_mrf_conf_refer_dial:info(Msg, S).
 
 %% ---- in the conference process ----
 
-%% The REFER settings of start/2's options: the policy, and how a target
-%% is dialed.
+%% The REFER settings of start/2's options: the policies (REFERs, and a
+%% call's Replaces of a member), and how a target is dialed.
 -spec setup(map(), #state{}) -> #state{}.
 setup(Opts, S) ->
     Dial = maps:from_list(
@@ -197,6 +203,7 @@ setup(Opts, S) ->
     ),
     S#state{
         refer_policy = maps:get(refer_policy, Opts, undefined),
+        replaces_policy = maps:get(replaces_policy, Opts, undefined),
         dial = Dial,
         dial_tag = chappe_mrf_lib:new_id()
     }.
@@ -212,8 +219,8 @@ call({decide, Info, Worker}, S) ->
     end;
 call({start, Key, Refer}, S) ->
     {reply, ok, start(Key, Refer, S)};
-call({abort, Key}, S) ->
-    {reply, ok, abort(Key, S)};
+call({abort, Key, Worker}, S) ->
+    {reply, ok, abort(Key, Worker, S)};
 call({dialing, Key, Ep}, S) ->
     {Reply, S1} = chappe_mrf_conf_refer_dial:dialing(Key, Ep, S),
     {reply, Reply, S1};
@@ -320,7 +327,10 @@ check_action(add, #{target := Target} = Info, S) ->
         }
     of
         {true, {ok, Headers}} ->
-            {add, key(Info), data(add, Target, Headers, S)};
+            case add_data(Target, Headers, S) of
+                {ok, Data} -> {add, key(Info), Data};
+                error -> {reject, 403}
+            end;
         _ ->
             %% hostile to a dial string, the room itself (a loop), or a
             %% Replaces FreeSWITCH could not carry as it was given
@@ -342,7 +352,12 @@ check_action(refer, #{target := Target, nested := Nested} = Info, S) ->
             %% anything else could have it REFER itself in a loop
             {reject, 403};
         true ->
-            {refer, key(Info), data(refer, Target, #{}, S)}
+            Data = #{
+                action => refer,
+                target => Target,
+                op_id => chappe_mrf_lib:new_id()
+            },
+            {refer, key(Info), Data}
     end.
 
 %% whether a URI is the room's own: its conference URI, or the URI the
@@ -371,16 +386,22 @@ key(#{origin := Origin, method := M, target := Target}) ->
 known(Key, #state{refer_ops = Ops}) ->
     chappe_mrf_conf_refer_op:lookup(Key, Ops) =/= none.
 
-%% what an op needs to carry the REFER out: for an add, the dial string,
-%% made once (the policy sees it, the backend dials it)
-data(add, Target, Headers, S) ->
+%% what an op needs to carry an add out: the dial string, made once (the
+%% policy sees it, the backend dials it) by the room's dial fun, guarded
+%% as the policy is: error when it crashes or makes no iodata
+add_data(Target, Headers, S) ->
     D = Headers#{
         action => add, target => Target, op_id => chappe_mrf_lib:new_id()
     },
-    Dial = chappe_mrf_conf_refer_dial:dial_string(dial_cfg(S, D), Target),
-    D#{dial => iolist_to_binary(Dial)};
-data(refer, Target, _Headers, _S) ->
-    #{action => refer, target => Target, op_id => chappe_mrf_lib:new_id()}.
+    Make = fun() ->
+        iolist_to_binary(
+            chappe_mrf_conf_refer_dial:dial_string(dial_cfg(S, D), Target)
+        )
+    end,
+    case guarded(dial, Target, Make, S) of
+        {ok, Dial} -> {ok, D#{dial => Dial}};
+        error -> error
+    end.
 
 %% What the INVITE to the party carries of the REFER, made safe for a
 %% FreeSWITCH dial string: the Refer-To's Replaces (RFC 4579 5.10),
@@ -428,21 +449,33 @@ dial_cfg(#state{dial = Dial, entity = E}, Data) ->
 -spec policy(map(), #state{}) -> true | false | {reject, 300..699}.
 policy(_Info, #state{refer_policy = undefined}) ->
     false;
-policy(Info, #state{refer_policy = P, name = Name}) ->
-    try P(policy_view(Info)) of
-        true ->
+policy(Info, #state{refer_policy = P} = S) ->
+    About = maps:get(action, Info, undefined),
+    case guarded(refer_policy, About, fun() -> P(policy_view(Info)) end, S) of
+        {ok, true} ->
             true;
-        {reject, Code} when is_integer(Code), Code >= 300, Code =< 699 ->
+        {ok, {reject, Code}} when
+            is_integer(Code), Code >= 300, Code =< 699
+        ->
             {reject, Code};
         _ ->
             false
+    end.
+
+%% Code of the app the room runs (a policy, its dial fun) on About: {ok,
+%% what it returned}, or error when it raised, logged once; the room and
+%% its members go on.
+-spec guarded(atom(), term(), fun(() -> T), #state{}) -> {ok, T} | error.
+guarded(Hook, About, F, #state{name = Name}) ->
+    try F() of
+        R -> {ok, R}
     catch
         Class:Why ->
             logger:warning(
-                "chappe_mrf_conf ~ts: refer_policy failed on ~p: ~0p",
-                [Name, maps:get(action, Info, undefined), {Class, Why}]
+                "chappe_mrf_conf ~ts: ~ts failed on ~0p: ~0p",
+                [Name, Hook, About, {Class, Why}]
             ),
-            false
+            error
     end.
 
 %% The policy said yes; now the room's state answers: a REFER asking for
@@ -455,7 +488,7 @@ admit(unresolved, _Key, #{status := St}, _Worker, _S) ->
     {reject, St};
 admit(Kind, Key, Data, Worker, S) ->
     case {known(Key, S), Kind} of
-        {true, _} -> {accept, Key, S};
+        {true, _} -> {accept, Key, wait(Key, Worker, S)};
         {false, add} -> admit_add(Key, Data, Worker, S);
         {false, remove} -> reserve(remove, Key, Data, Worker, S);
         {false, refer} -> admit_new(Key, Data, Worker, S)
@@ -473,7 +506,7 @@ admit_add(Key, #{target := Target} = Data, Worker, #state{members = M} = S) ->
             reserve(existing, Key, Data, Worker, S);
         {[], {ok, Other}} ->
             %% another origin is bringing the same party in: one dial
-            {accept, Other, S};
+            {accept, Other, wait(Other, Worker, S)};
         {[], none} ->
             admit_new(Key, Data, Worker, S)
     end.
@@ -485,49 +518,59 @@ admit_new(Key, Data, Worker, S) ->
     end.
 
 reserve(Kind, Key, Data, Worker, #state{refer_ops = Ops} = S) ->
-    Mon = watch(Worker),
     case
         chappe_mrf_conf_refer_op:reserve(
-            Key, Data#{kind => Kind, mon => Mon}, Ops
+            Key, Data#{kind => Kind, waiting => #{}}, Ops
         )
     of
         {ok, Ops1} ->
-            {accept, Key, S#state{refer_ops = Ops1}};
+            {accept, Key, wait(Key, Worker, S#state{refer_ops = Ops1})};
         {error, exists} ->
-            unwatch(Mon),
-            {accept, Key, S};
+            {accept, Key, wait(Key, Worker, S)};
         {error, full} ->
-            unwatch(Mon),
             {reject, 503}
     end.
 
-watch(undefined) -> undefined;
-watch(Pid) -> erlang:monitor(process, Pid).
-
-unwatch(undefined) -> ok;
-unwatch(Mon) -> erlang:demonitor(Mon, [flush]).
-
-%% A reserved op whose REFER was not accepted after all.
-abort(Key, #state{refer_ops = Ops} = S) ->
-    _ = unwatch_op(Key, Ops),
-    S#state{refer_ops = chappe_mrf_conf_refer_op:abort(Key, Ops)}.
-
-unwatch_op(Key, Ops) ->
-    case chappe_mrf_conf_refer_op:data(Key, Ops) of
-        #{mon := Mon} -> unwatch(Mon);
-        _ -> ok
+%% The worker of a REFER (undefined: the room's own, in a member's
+%% dialog) waits on the op of Key while that op is reserved, watched: the
+%% op lives until one of its workers starts it or the last one gives it
+%% up (chappe_mrf_conf_refer_op:leave/3).
+wait(_Key, undefined, S) ->
+    S;
+wait(Key, Worker, #state{refer_ops = Ops} = S) ->
+    Mon = erlang:monitor(process, Worker),
+    case chappe_mrf_conf_refer_op:wait(Key, Mon, Worker, Ops) of
+        {ok, Ops1} -> S#state{refer_ops = Ops1};
+        none -> unwatch([Mon], S)
     end.
 
-%% A process the room watched went down: the worker of a reserved op
-%% (it died between the decision and the answer) frees that op.
+%% The REFER Worker decided for Key was not accepted after all: Worker
+%% stops waiting on that op, and a reserved op nobody waits on any more
+%% is dropped. Another origin's REFER attached to it is not touched.
+-spec abort(term(), pid() | undefined, #state{}) -> #state{}.
+abort(Key, Worker, S) ->
+    leave(Key, fun(_Mon, Pid) -> Pid =:= Worker end, S).
+
+leave(Key, Gone, #state{refer_ops = Ops} = S) ->
+    {Mons, Ops1} = chappe_mrf_conf_refer_op:leave(Key, Gone, Ops),
+    unwatch(Mons, S#state{refer_ops = Ops1}).
+
+unwatch(Mons, S) ->
+    _ = [erlang:demonitor(Mon, [flush]) || Mon <- Mons],
+    S.
+
+%% A process the room watched went down: a worker waiting on a reserved
+%% op (it died between the decision and the answer) gives up its part of
+%% that op, and a caller replacing a member releases it
+%% (chappe_mrf_conf_refer_member).
 -spec down(reference(), #state{}) -> #state{}.
 down(Mon, #state{refer_ops = Ops} = S) ->
-    case chappe_mrf_conf_refer_op:by_mon(Mon, Ops) of
-        {ok, Key} ->
-            S#state{refer_ops = chappe_mrf_conf_refer_op:abort(Key, Ops)};
-        none ->
-            S
-    end.
+    S1 =
+        case chappe_mrf_conf_refer_op:by_mon(Mon, Ops) of
+            {ok, Key} -> leave(Key, fun(M, _Pid) -> M =:= Mon end, S);
+            none -> S
+        end,
+    chappe_mrf_conf_refer_member:hold_down(Mon, S1).
 
 %% The member whose call's leg A (its dialog with the room) is dialog
 %% process Pid, or undefined.
@@ -600,13 +643,15 @@ by_entity(_Target, _E, _M) ->
 -spec start(term(), chappe_sip_refer:refer(), #state{}) -> #state{}.
 start(Key, Refer, #state{refer_ops = Ops} = S) ->
     case chappe_mrf_conf_refer_op:lookup(Key, Ops) of
-        {reserved, Data0} ->
-            _ = unwatch_op(Key, Ops),
+        {reserved, #{waiting := W} = Data0} ->
+            %% its workers are done with it
+            _ = unwatch(maps:keys(W), S),
             %% the <referred> of the party it brings in (RFC 4575 5.7.2),
             %% and the REFER's own Referred-By, for a nested REFER
             Data = Data0#{
                 referred => chappe_sip_focus:referred(Refer),
-                referred_by_raw => chappe_sip_refer:referred_by(Refer)
+                referred_by_raw => chappe_sip_refer:referred_by(Refer),
+                waiting => #{}
             },
             Ops1 = chappe_mrf_conf_refer_op:set_data(
                 Key, Data, chappe_mrf_conf_refer_op:start(Key, Refer, Ops)
@@ -677,36 +722,3 @@ fs_result(Uuid, Cause, S) ->
 -spec fs_started(binary(), ok | {error, term()}, #state{}) -> #state{}.
 fs_started(Uuid, Result, S) ->
     chappe_mrf_conf_refer_dial:fs_started(Uuid, Result, S).
-
-%% ---- members ----
-
-%% The create_b2bua/4 options of a caller the room answers itself. A
-%% focus room answers with the conference URI and isfocus as the member's
-%% Contact (RFC 4579 4.2) and takes the REFERs in that dialog
-%% (member_refer/4); a room without focus has the call carry its
-%% transfers out once the room said yes (transfer => notify).
--spec member_opts(pid(), binary() | undefined) -> map().
-member_opts(Conf, undefined) ->
-    #{transfer => notify, notify => Conf};
-member_opts(Conf, Entity) ->
-    Contact = chappe_sip_focus:contact(Entity),
-    #{
-        requests => [refer],
-        notify => Conf,
-        a_headers => chappe_sip_focus:headers(Contact)
-    }.
-
-%% Keep a call's dialog with the caller (leg A) for as long as the call
-%% runs, so a REFER it hands a room can be answered in that dialog.
--spec keep_dialog(chappe_sip_b2b:b2b(), chappe_sip_b2b:legs()) -> ok.
-keep_dialog({Pid, Ref}, #{uas := Uas}) ->
-    _ = chappe_mrf_registry:put({a_dialog, Ref, Uas}, Pid),
-    ok.
-
-%% Who a caller is, for a REFER's method=BYE: the URI it calls from.
--spec from_uri(chappe_sip_req:req()) -> binary() | undefined.
-from_uri(Req) ->
-    case chappe_sip_hdr:name_addr(chappe_sip_req:get(<<"from">>, Req)) of
-        {ok, #{uri := U}} -> U;
-        _ -> undefined
-    end.

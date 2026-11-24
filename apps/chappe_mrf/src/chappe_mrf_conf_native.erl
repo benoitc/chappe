@@ -265,13 +265,15 @@ join_b2b(B2b, Opts, From, S) ->
 %% which then runs in a process of its own.
 join_call(Conf, Req, Res, Opts0) ->
     %% who the member is, for a REFER's method=BYE: the URI it calls from
-    Opts = maps:merge(#{uri => chappe_mrf_conf_refer:from_uri(Req)}, Opts0),
+    Opts = maps:merge(
+        #{uri => chappe_mrf_conf_refer_member:from_uri(Req)}, Opts0
+    ),
     case chappe_mrf_conf:call(Conf, {join, {call, Opts}}, 5000) of
         {ok, Token, Uri, AP, Entity} ->
             %% the room's REFERs come to the room (chappe_mrf_conf_refer);
             %% a focus room answers with the conference URI and isfocus
             %% as the member's Contact (RFC 4579 4.2)
-            B2bOpts = (chappe_mrf_conf_refer:member_opts(Conf, Entity))#{
+            B2bOpts = (chappe_mrf_conf_refer_member:member_opts(Conf, Entity))#{
                 media => anchor,
                 anchor_params => AP
             },
@@ -294,7 +296,7 @@ join_call(Conf, Req, Res, Opts0) ->
 relay(Legs, Conf) ->
     case chappe_sip_b2b:relay_async(Legs, #{notify => Conf}) of
         {ok, B2b} = Ok ->
-            ok = chappe_mrf_conf_refer:keep_dialog(B2b, Legs),
+            ok = chappe_mrf_conf_refer_member:keep_dialog(B2b, Legs),
             Ok;
         Err ->
             Err

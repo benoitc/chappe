@@ -45,10 +45,11 @@
 %% toggles quoting on `''; the application running it expands `${...}'
 %% (and `${api(...)}', on by default) and `\' escapes. Only the
 %% characters of a plain SIP URI pass: letters, digits and - . _ ~ ! * +
-%% = ; @ : %, and never `:_:'.
+%% = ; @ : %, and never `:_:'. Both checks hold to the last byte (`\z':
+%% `$' would let a trailing newline through).
 -spec dialable(binary()) -> boolean().
 dialable(Target) when is_binary(Target), byte_size(Target) =< 256 ->
-    re:run(Target, <<"^[A-Za-z0-9._~!*+=;@:%-]+$">>, [{capture, none}]) =:=
+    re:run(Target, <<"^[A-Za-z0-9._~!*+=;@:%-]+\\z">>, [{capture, none}]) =:=
         match andalso
         binary:match(Target, <<":_:">>) =:= nomatch;
 dialable(_) ->
@@ -61,7 +62,7 @@ dialable(_) ->
 %% `]' `<' `>' `'' `$' `\' `|', spaces) is refused, never trimmed.
 -spec safe_value(binary()) -> boolean().
 safe_value(V) when is_binary(V), byte_size(V) =< 256 ->
-    re:run(V, <<"^[A-Za-z0-9._~!*+=;@:%/()?-]+$">>, [{capture, none}]) =:=
+    re:run(V, <<"^[A-Za-z0-9._~!*+=;@:%/()?-]+\\z">>, [{capture, none}]) =:=
         match andalso
         binary:match(V, <<":_:">>) =:= nomatch;
 safe_value(_) ->

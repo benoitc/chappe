@@ -264,14 +264,14 @@ map plus the room's view:
 
 | Key | What it is |
 |---|---|
-| `action` | `add`, `remove` or `refer` |
+| `action` | `add`, `remove`, `refer`, or `transfer` (a member of a room without focus transferring itself, below) |
 | `target` | the Refer-To URI, without its method |
 | `referrer` | the REFER's From, what its dialog or your digest vouches for |
-| `referred_by` | the REFER's Referred-By: only claimed, never grant on it alone |
+| `referred_by` | the REFER's Referred-By, as the referrer claims it: the room checks nothing of it, so do not grant a REFER on it alone |
 | `member` | the referrer's member id: its dialog with the room, or the one its Target-Dialog names (RFC 4538); else `undefined` |
 | `target_dialog`, `origin` | the dialog a Target-Dialog names, and who sent the REFER |
 | `replaces`, `nested` | the Refer-To's Replaces, and for `refer` the Refer-To it carries |
-| `dial` | add: the dial string the room would run |
+| `dial` | add: the dial string the room would run, made by your `dial` fun when you gave one (one that crashes refuses the REFER 403) |
 | `removes` | remove: the member it names, or `undefined` |
 
 Decide on where the call goes (`dial`), not only on who asks: that is what
@@ -322,30 +322,56 @@ the conference URI with `isfocus` as its Contact in a `focus => true` room
 
 A caller whose INVITE carries Replaces (RFC 3891) naming a member's call
 in this room takes that member's place (RFC 4579 5.9): it joins, then the
-member it replaces is hung up and leaves with reason `replaced`. RFC
-3891 8 accepts a replacement only from an authenticated and authorized
-peer: authenticate the INVITE before you call `join/3`. The room then
-allows the member itself (its From has the member's address-of-record)
-and a caller that member referred (Referred-By naming it); your
-`refer_policy` may allow more, given `action => replace`, `member` (the
-member it would replace), `target` (that member's URI), `referrer` (the
-caller's From) and `referred_by`:
+member it replaces is hung up and leaves with reason `replaced`. Who may
+do so is a separate decision from a REFER's: the room never asks your
+`refer_policy`, so a policy that lets every REFER in, or lets members
+REFER, lets nobody replace anyone.
+
+Without a `replaces_policy` the room allows:
+
+- the member itself: the caller's From has the member's
+  address-of-record (another device of the same user);
+- a caller the member referred: its Referred-By names the member (an
+  attended transfer into the room).
+
+An anonymous caller (`anonymous.invalid`, or the user `anonymous`) never
+passes this default: every anonymous caller shares one
+address-of-record. This rests on what the INVITE carries, and the room
+authenticates none of it: the caller must name the member's dialog with
+the room in its Replaces (its Call-ID and both tags, which only a party
+to that dialog or one it told knows) and the member in its From or
+Referred-By. On a network you do not trust, authenticate the INVITE
+(digest, RFC 3891 8) in your handler before you call `join/3`, and
+tighten with `replaces_policy`:
 
 ```erlang
 {ok, Conf} = chappe_mrf:conference(<<"board">>, #{
     focus => true,
-    refer_policy => fun
-        (#{action := replace, referrer := R}) -> is_moderator(R);
-        (#{action := add}) -> true;
-        (_) -> false
+    replaces_policy => fun(#{caller := C, replaced_aor := Aor}) ->
+        is_moderator(C) orelse C =:= Aor
     end
 }).
 ```
 
-Anyone else gets 403, a Replaces naming no call 481, a call of no member
-of this room 403, and a second caller replacing a member another one is
-replacing 603; the room does not change. The roster shows a caller whose
-INVITE had Referred-By as `referred` by that URI.
+Once you give it, the policy alone decides: `true` lets the caller
+replace the member, anything else refuses it 403, and a policy that
+crashes refuses it too (logged; the room goes on). It runs in the room
+process and gets these keys, `undefined` where one is unknown:
+
+| Key | What it is |
+|---|---|
+| `caller` | the URI of the INVITE's From |
+| `referred_by` | the URI of its Referred-By, as the caller claims it |
+| `request` | the INVITE (`chappe_sip_req`), for what your handler or middleware attached to it |
+| `replaced` | the member id the Replaces names |
+| `replaced_aor` | that member's address-of-record |
+
+Whatever decides, a Replaces naming no call gets 481, a call of no
+member of this room 403, and a second caller replacing a member another
+one is replacing 603; the room does not change. The member stays held
+for the first caller only while its join runs: a join that fails or
+raises, a caller that dies, or 95 seconds, release it. The roster shows a caller
+whose INVITE had Referred-By as `referred` by that URI.
 
 A call you answered yourself (`connect_caller/3`) carries the Contact you
 gave it: for a focus room pass

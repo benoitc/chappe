@@ -220,7 +220,7 @@ connect(Req, Res, Opts) ->
                             #{notify => Notify}, maps:get(relay, Opts, #{})
                         )
                     ),
-                    ok = chappe_mrf_conf_refer:keep_dialog(B2b, Legs),
+                    ok = chappe_mrf_conf_refer_member:keep_dialog(B2b, Legs),
                     Timeout = maps:get(attach_timeout, Opts, 10000),
                     case chappe_mrf_endpoint:await(Ep, Timeout) of
                         {ok, _Uuid} ->

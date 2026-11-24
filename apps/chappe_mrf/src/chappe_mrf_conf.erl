@@ -108,13 +108,25 @@
 %%                referrer, referred_by, target_dialog, origin, nested)
 %%                plus member (the referrer's member id), dial (add: the
 %%                dial string) and removes (remove: the member it names),
-%%                every key there, undefined when it does not apply; also
-%%                asked, with action replace, about a caller whose
-%%                Replaces names a member it is not. Without one every
-%%                REFER is refused 403. It runs in the room process; one
-%%                that crashes refuses.
+%%                every key there, undefined when it does not apply.
+%%                Without one every REFER is refused 403. It runs in the
+%%                room process; one that crashes refuses.
+%%   replaces_policy => fun((Info) -> boolean()): decides a call joined
+%%                with join/3 whose Replaces names a member's call
+%%                (chappe_mrf_conf_refer_member). Info has caller (its
+%%                From's URI), referred_by (its Referred-By's URI),
+%%                request (the INVITE), replaced (the member id) and
+%%                replaced_aor (that member's address-of-record), every
+%%                key there, undefined when unknown; true lets it replace
+%%                the member, anything else is 403. Without one the room
+%%                lets the member itself (its address-of-record) or a
+%%                caller whose Referred-By names it, never an anonymous
+%%                caller. The refer_policy is never asked. It runs in the
+%%                room process; one that crashes refuses.
 %%   dial      => fun((Target) -> iodata()): the dial string of a party a
-%%                REFER brings in (default sofia/<dial_profile>/<target>)
+%%                REFER brings in (default sofia/<dial_profile>/<target>);
+%%                it runs in the room process, and one that crashes, or
+%%                gives no iodata, refuses the REFER 403
 %%   dial_profile => the sofia profile of that default (<<"external">>)
 %%   dial_timeout => ms the party has to answer (30000), then 408
 %%   dial_endpoint => native: create_endpoint/1 options (node, select,
