@@ -23,7 +23,8 @@
 init() ->
     chappe_mix_g711:init().
 
-%% Start a group feeding Dsts ([{Ip, Port}]) with Kind (tone | silence |
+%% Start a group feeding Dsts ([{Ip, Port}]) with Kind ({at, Rate, Kind}:
+%% the same at 16000, L16 on payload type 96; else PCMU at 8000: tone | silence |
 %% {lossy, Fraction}: the tone, each packet dropped with that probability
 %% before it is sent). The process is not linked to the caller; it lives
 %% until the node goes.
@@ -66,16 +67,17 @@ group_sent(G) ->
     end.
 
 %% Run chappe_mix_probe here against A and B legs of a mixer; Opts as
-%% chappe_mix_probe:run/2 takes them.
+%% chappe_mix_probe:run/2 takes them, and probe: the probe's own options
+%% (law and rate, for a 16 kHz room).
 latency(Opts) ->
-    {Probe, _, _} = chappe_mix_probe:start(#{}),
+    {Probe, _, _} = chappe_mix_probe:start(maps:get(probe, Opts, #{})),
     R = chappe_mix_probe:run(Probe, Opts),
     chappe_mix_probe:stop(Probe),
     R.
 
 %% ---- group ----
 
-group(Parent, Kind, Bind) ->
+group(Parent, Kind0, Bind) ->
     {ok, Sock} = gen_udp:open(0, [
         binary, {ip, Bind}, {active, false}, {recbuf, 4096}
     ]),
@@ -85,7 +87,8 @@ group(Parent, Kind, Bind) ->
         receive
             {feed, D} -> D
         end,
-    Frames = list_to_tuple(frames(Kind)),
+    {Rate, Kind} = at(Kind0),
+    Frames = {list_to_tuple(frames(Kind, Rate)), pt(Rate), Rate div 50},
     Loss =
         case Kind of
             {lossy, F} -> F;
@@ -99,8 +102,8 @@ group(Parent, Kind, Bind) ->
     loop(Sock, Frames, Legs, 0, 0, erlang:monotonic_time(millisecond)).
 
 %% Sent counts the sends the socket accepted, not the ones attempted.
-loop(Sock, Frames, Legs, N, Sent, Next) ->
-    Payload = element(N rem tuple_size(Frames) + 1, Frames),
+loop(Sock, {Payloads, Pt, Step} = Frames, Legs, N, Sent, Next) ->
+    Payload = element(N rem tuple_size(Payloads) + 1, Payloads),
     Loss = get(loss),
     Results = [
         send_or_drop(
@@ -109,9 +112,9 @@ loop(Sock, Frames, Legs, N, Sent, Next) ->
             Ip,
             Port,
             chappe_mix_rtp:build(#{
-                pt => 0,
+                pt => Pt,
                 seq => (Seq + N) band 16#FFFF,
-                ts => ((Seq + N) * ?FRAME) band 16#FFFFFFFF,
+                ts => ((Seq + N) * Step) band 16#FFFFFFFF,
                 ssrc => Ssrc,
                 marker => false,
                 payload => Payload
@@ -142,19 +145,31 @@ wait_tick(Sent) ->
     end.
 
 %% Ten frames of a 500 Hz tone at -14.7 dBFS (a whole number of cycles in
-%% 200 ms, so the cycle is seamless), or one frame of silence.
-frames(tone) ->
+%% 200 ms, so the cycle is seamless), or one frame of silence: PCMU at
+%% 8000, L16 (big-endian) at 16000.
+frames(tone, Rate) ->
+    F = Rate div 50,
     [
-        chappe_mix_g711:encode_frame(
-            ulaw,
-            [
-                round(6000 * math:sin(2 * math:pi() * 500 * I / 8000))
-             || I <- lists:seq(K * ?FRAME, K * ?FRAME + ?FRAME - 1)
-            ]
-        )
+        encode(Rate, [
+            round(6000 * math:sin(2 * math:pi() * 500 * I / Rate))
+         || I <- lists:seq(K * F, K * F + F - 1)
+        ])
      || K <- lists:seq(0, 9)
     ];
-frames({lossy, _}) ->
-    frames(tone);
-frames(silence) ->
-    [binary:copy(<<16#FF>>, ?FRAME)].
+frames({lossy, _}, Rate) ->
+    frames(tone, Rate);
+frames(silence, 8000) ->
+    [binary:copy(<<16#FF>>, ?FRAME)];
+frames(silence, Rate) ->
+    [<<0:(Rate div 50 * 16)>>].
+
+encode(8000, Samples) -> chappe_mix_g711:encode_frame(ulaw, Samples);
+encode(_Rate, Samples) -> <<<<S:16/big-signed>> || S <- Samples>>.
+
+%% A kind of traffic at a rate ({at, Rate, Kind}), else PCMU at 8000.
+at({at, Rate, Kind}) -> {Rate, Kind};
+at(Kind) -> {8000, Kind}.
+
+%% the payload type of each rate's format, as the mixer's legs take it
+pt(8000) -> 0;
+pt(_Rate) -> 96.

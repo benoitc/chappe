@@ -16,7 +16,7 @@ network (the optical semaphore telegraph, 1794).
 |---|---|---|---|
 | chappe_sip | The SIP stack: sofia-sip's transaction layer in a C NIF, everything above it in Erlang. WebSocket, TLS, SIPREC, the media facade `chappe_sip_media`. | chappe_rtpengine, chappe_mix (on demand), chappe_audio (optional, SIPREC), chappe_cluster (started when `cluster => chappe_cluster`) | [README](apps/chappe_sip/README.md), [getting started](apps/chappe_sip/docs/guides/getting-started.md) |
 | chappe_rtpengine | A client for rtpengine's NG control protocol: anchoring, recording, playback, forks. Leaf, SIP-free. | none | [README](apps/chappe_rtpengine/README.md) |
-| chappe_mix | An RTP audio conference mixer: G.711, N-1 mix, one process per room. Leaf, SIP-free. | none | [README](apps/chappe_mix/README.md) |
+| chappe_mix | An RTP audio conference mixer: G.711 at 8 kHz or L16 at 16 kHz, N-1 mix, one process per room. Leaf, SIP-free. | none | [README](apps/chappe_mix/README.md) |
 | chappe_esl | A FreeSWITCH Event Socket client: inbound and outbound, a node registry, typed call control. Leaf, SIP-free. | none | [README](apps/chappe_esl/README.md) |
 | chappe_audio | Takes a call's audio in and keeps it: a WebSocket sink for audio forks, SIPREC audio, the recording store. Leaf, SIP-free. | none | [README](apps/chappe_audio/README.md) |
 | chappe_cluster | One owner per key across a region's nodes, on Ra (Raft): fenced leases, a small KV, singletons. Leaf, SIP-free. | none | [README](apps/chappe_cluster/README.md) |

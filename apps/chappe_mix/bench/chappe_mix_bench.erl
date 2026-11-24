@@ -177,14 +177,17 @@ latency(Arm, Bursts, Extra, Kind, Load) ->
         {ok, _, #{port := P}} <- [chappe_mix:add_leg(Conf, #{})]
     ],
     _ = [
-        peer_call(Peer, chappe_mix_bench_load, start_group, [ExtraDsts, Kind])
+        peer_call(Peer, chappe_mix_bench_load, start_group, [
+            ExtraDsts, kind(Kind)
+        ])
      || Extra > 0
     ],
     R = peer_call(Peer, chappe_mix_bench_load, latency, [
         #{
             a_dst => {{127, 0, 0, 1}, PA},
             b_dst => {{127, 0, 0, 1}, PB},
-            bursts => Bursts
+            bursts => Bursts,
+            probe => probe_opts()
         }
     ]),
     Ticks = ticks(Collector),
@@ -321,7 +324,7 @@ new_conf(Peer, Trace) ->
      || _ <- lists:seq(1, 4),
         {ok, _, #{port := P}} <- [chappe_mix:add_leg(Conf, #{})]
     ],
-    G = peer_call(Peer, chappe_mix_bench_load, start_group, [Dsts, tone]),
+    G = peer_call(Peer, chappe_mix_bench_load, start_group, [Dsts, kind(tone)]),
     {Conf, G}.
 
 snapshot(Confs) ->
@@ -446,10 +449,13 @@ mix_cost(N, K, Load) ->
             fit -> min(6000, 32000 div N);
             _ -> 6000
         end,
+    %% PCMU at 8000, L16 at 16000 (CHAPPE_MIX_BENCH_CONF=rate=16000; the
+    %% plain and fit arms only)
+    Rate = rate(),
     Frames = [
-        chappe_mix_g711:encode_frame(ulaw, [
-            round(Amp * math:sin(2 * math:pi() * (300 + 100 * T) * I / 8000))
-         || I <- lists:seq(0, ?FRAME - 1)
+        bench_encode(Rate, [
+            round(Amp * math:sin(2 * math:pi() * (300 + 100 * T) * I / Rate))
+         || I <- lists:seq(0, Rate div 50 - 1)
         ])
      || T <- lists:seq(1, N)
     ],
@@ -465,6 +471,8 @@ mix_cost(N, K, Load) ->
             {true, _} when K =:= talk -> fun mix_tick_talk/1;
             {true, _} when is_integer(K), K > 0 ->
                 fun(Fs) -> mix_tick_nohear(Fs, K) end;
+            {true, _} when Rate =:= 16000 ->
+                fun mix_tick_l16/1;
             {true, _} ->
                 fun mix_tick/1;
             {false, true} ->
@@ -516,6 +524,33 @@ mix_tick(Frames) ->
         })
      || {K, F} <- lists:zip(Ids, Frames)
     ].
+
+%% mix_tick/1 in a 16 kHz room: 320 L16 samples a leg, on payload type 96.
+mix_tick_l16(Frames) ->
+    Sum = lists:foldl(
+        fun(F, Acc) -> chappe_mix_dsp:add(Acc, l16, F) end,
+        chappe_mix_dsp:new(320),
+        Frames
+    ),
+    Mixed = chappe_mix_dsp:mixed(Sum),
+    Ids = lists:seq(1, length(Frames)),
+    [
+        chappe_mix_rtp:build(#{
+            pt => 96,
+            seq => 1,
+            ts => 320,
+            ssrc => 42,
+            marker => false,
+            csrcs => lists:sublist(Ids -- [K], 15),
+            payload => element(
+                1, chappe_mix_dsp:encode(Mixed, l16, {l16, F}, 1.0)
+            )
+        })
+     || {K, F} <- lists:zip(Ids, Frames)
+    ].
+
+bench_encode(8000, Samples) -> chappe_mix_g711:encode_frame(ulaw, Samples);
+bench_encode(_Rate, Samples) -> <<<<S:16/big-signed>> || S <- Samples>>.
 
 %% As mix_tick/1, each frame's energy taken as it is added.
 mix_tick_talk(Frames) ->
@@ -1071,7 +1106,7 @@ new_room(#{mixer := chappe, peer := Peer}, Kind, Legs) ->
      || _ <- lists:seq(1, Legs),
         {ok, _, #{port := P}} <- [chappe_mix:add_leg(Conf, #{})]
     ],
-    G = peer_call(Peer, chappe_mix_bench_load, start_group, [Dsts, Kind]),
+    G = peer_call(Peer, chappe_mix_bench_load, start_group, [Dsts, kind(Kind)]),
     {chappe, Conf, G};
 new_room(#{mixer := fs, peer := Peer, bind := Bind, env := Env}, Kind, Legs) ->
     {G, GPort} = peer_call(Peer, chappe_mix_bench_load, open_group, [
@@ -1144,7 +1179,7 @@ probe_legs(#{mixer := chappe, peer := Peer}, _PA, _PB) ->
      || _ <- [1, 2],
         {ok, _, #{port := P}} <- [chappe_mix:add_leg(Conf, #{})]
     ],
-    G = peer_call(Peer, chappe_mix_bench_load, start_group, [Sil, silence]),
+    G = peer_call(Peer, chappe_mix_bench_load, start_group, [Sil, kind(silence)]),
     {{chappe, Conf, G}, {{127, 0, 0, 1}, MA}, {{127, 0, 0, 1}, MB}};
 probe_legs(#{mixer := fs, peer := Peer, bind := Bind, env := Env}, PA, PB) ->
     #{host := Host} = Env,
@@ -1360,9 +1395,29 @@ peer_call(Peer, M, F, A) ->
 
 %% Conference options from CHAPPE_MIX_BENCH_CONF, a comma-separated list
 %% such as "tick_ceiling=true,prefill_shrink=false" (a bare name means
-%% true): the A/B of an option on one build. Only these two are taken.
+%% true): the A/B of an option on one build. Only these and rate=16000
+%% (every room at 16 kHz, the senders and the probe speaking L16) are
+%% taken.
 conf_opts(Base) ->
     maps:merge(Base, bench_conf()).
+
+%% the rate the arm runs its rooms at
+rate() ->
+    maps:get(rate, bench_conf(), 8000).
+
+%% a sender group's traffic at that rate (chappe_mix_bench_load)
+kind(Kind) ->
+    case rate() of
+        8000 -> Kind;
+        Rate -> {at, Rate, Kind}
+    end.
+
+%% the latency probe's format at that rate
+probe_opts() ->
+    case rate() of
+        8000 -> #{};
+        Rate -> #{law => l16, rate => Rate}
+    end.
 
 bench_conf() ->
     case os:getenv("CHAPPE_MIX_BENCH_CONF") of
@@ -1377,6 +1432,10 @@ bench_conf() ->
 
 conf_opt([K]) ->
     conf_opt([K, "true"]);
+conf_opt(["rate", "16000"]) ->
+    {rate, 16000};
+conf_opt(["rate", "8000"]) ->
+    {rate, 8000};
 conf_opt([K, V]) ->
     Key =
         case K of

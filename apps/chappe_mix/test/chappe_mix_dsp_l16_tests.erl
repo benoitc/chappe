@@ -191,6 +191,64 @@ level_test() ->
         lists:sum([(I - 160) * (I - 160) || I <- lists:seq(1, 320)]), E
     ).
 
+%% The limiter row of PERF.md at 16 kHz: eight talkers on distinct tones
+%% at -6 dBFS each, heard by a ninth leg that says nothing, over 1 s (50
+%% frames, the gain carried from frame to frame). THD+N at the listener
+%% (what is left once the eight tones are taken out, over the tones) is
+%% at most -26 dB; the hard clip is the baseline.
+gain_distortion_test() ->
+    Freqs = [310, 470, 660, 830, 1090, 1370, 1710, 2290, 3130],
+    Tones = lists:sublist(Freqs, 8),
+    Frame = fun(F, K) ->
+        <<
+            <<
+                (round(16384 * math:sin(2 * math:pi() * F * I / 16000 + F))):16/big-signed
+            >>
+         || I <- lists:seq(K * ?FRAME, K * ?FRAME + ?FRAME - 1)
+        >>
+    end,
+    {Agc, Hard, _} = lists:foldl(
+        fun(K, {AccA, AccH, G}) ->
+            Fs = [Frame(F, K) || F <- Tones],
+            Mixed = chappe_mix_dsp:mixed(
+                lists:foldl(
+                    fun(P, A) -> chappe_mix_dsp:add(A, l16, P) end,
+                    chappe_mix_dsp:new(?FRAME),
+                    Fs
+                )
+            ),
+            {Out, G1} = chappe_mix_dsp:encode(Mixed, l16, none, G),
+            Sum = lists:foldl(
+                fun add/2, hd([pcm(P) || P <- Fs]), tl([pcm(P) || P <- Fs])
+            ),
+            Clipped = [max(-32768, min(32767, S)) || S <- Sum],
+            {[AccA, [X || <<X:16/big-signed>> <= Out]], [AccH, Clipped], G1}
+        end,
+        {[], [], 1.0},
+        lists:seq(0, 49)
+    ),
+    A = thdn(lists:flatten(Agc), Tones),
+    H = thdn(lists:flatten(Hard), Tones),
+    ?debugFmt(
+        "16 kHz THD+N at the listener: hard clip ~.2f dB, gain control ~.2f dB",
+        [H, A]
+    ),
+    ?assert(A =< -26.0, {A, H}).
+
+%% Power outside the tone bins over the power in them, dB.
+thdn(Samples, Freqs) ->
+    N = length(Samples),
+    Total = lists:sum([X * X || X <- Samples]),
+    Tones = lists:sum([2 * goertzel(Samples, F) / N || F <- Freqs]),
+    10 * math:log10(max(Total - Tones, 1.0e-9) / Tones).
+
+goertzel(Samples, F) ->
+    C = 2 * math:cos(2 * math:pi() * F / 16000),
+    {S1, S2} = lists:foldl(
+        fun(X, {P1, P2}) -> {X + C * P1 - P2, P1} end, {0.0, 0.0}, Samples
+    ),
+    S1 * S1 + S2 * S2 - C * S1 * S2.
+
 %% The gain control at 16 kHz: a loud room is scaled, never clipped, and
 %% the gain comes back to unity by the release step once it is quiet.
 gain_test() ->

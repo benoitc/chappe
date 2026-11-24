@@ -53,8 +53,9 @@ Accepted (the maintainer's decision, 2026-10-02 and 2026-11-24). Amends
   mixer.
 - A 16 kHz room costs more per tick (twice the samples, two octets each)
   and more per leg in rtpengine (a transcode both ways for every caller,
-  PCMU ones included). `PERF.md`, "16 kHz rooms", has the thresholds and the
-  runs.
+  PCMU ones included). `PERF.md` has the thresholds (the rows set
+  2026-11-24) and the first runs, void on a loaded box: the mix at 1.5 to
+  1.8 times the 8 kHz one; the rest is to be measured on a quiet box.
 - A PCMU caller in a 16 kHz room hears the HD parties through 8 kHz and is
   heard as 8 kHz audio; the others keep their band.
 - A leg moves only between rooms of one rate.
