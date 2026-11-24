@@ -32,3 +32,5 @@ apps/chappe_sip/c_src/sofia-sip/**/*.lo
 apps/chappe_sip/c_src/sofia-sip/**/*.la
 apps/chappe_sip/c_src/sofia-sip/**/*.so
 apps/chappe_sip/c_src/sofia-sip/autom4te.cache/
+__pycache__/
+*.pyc

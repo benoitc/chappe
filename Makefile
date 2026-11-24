@@ -41,10 +41,10 @@ dialyzer:
 	rebar3 dialyzer
 
 fmt:
-	rebar3 fmt -w
+	rebar3 fmt
 
 fmt-check:
-	rebar3 fmt -c
+	rebar3 fmt --check
 
 test: eunit ct
 
