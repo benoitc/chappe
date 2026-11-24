@@ -39,6 +39,7 @@
     stop_record/1,
     dtmf/2,
     conference/2, conference/3,
+    mixer_params/2,
     leave/1,
     mute/1,
     unmute/1,
@@ -251,11 +252,15 @@ dtmf(_S, _Params) ->
     {error, {unsupported, dtmf}}.
 
 %% Join the session to a conference room (chappe_mix backend) and get the
-%% G.711 SDP to send toward the call. Opts: room (required), sdp (the
+%% SDP to send toward the call: G.711 in an 8 kHz room, L16/16000 in a
+%% 16 kHz one. Opts: room (required), sdp (the
 %% call's offer: the mixer answers it; without it the mixer offers and you
 %% pass the answer to set_remote/2), owner (owner of a room this join
 %% creates), persist (true: that room stays up with no leg, until its
-%% owner exits), law (ulaw | alaw, for an offer), mute, name, direction
+%% owner exits), rate (8000 | 16000: the rate of a room this join creates,
+%% default the configured one; a join asking another rate than a running
+%% room's gets {error, {rate_mismatch, RoomRate}}), law (ulaw | alaw, for
+%% an offer in an 8 kHz room), mute, name, direction
 %% (sendrecv | sendonly | recvonly | inactive, seen from the room),
 %% talk_events (true: the caller gets {chappe_sip_media, {talking, Room,
 %% true | false}}), talk_tag (the event is then {chappe_sip_media,
@@ -272,6 +277,34 @@ conference(_S, _Opts) ->
     {ok, binary()} | {error, term()}.
 conference(S, Room, Opts) ->
     conference(S, Opts#{room => Room}).
+
+%% The rtpengine flags that put a call in front of a mixer room of Rate,
+%% for the offer going Toward: mixer (a caller's offer on its way to the
+%% mixer leg: rtpengine offers the mixer only the room's format, L16/16000
+%% and telephone-event/16000, and transcodes the caller's codec to it) or
+%% endpoint (the mixer's offer on its way to an endpoint: rtpengine offers
+%% it G.722, PCMU, PCMA and telephone-event/8000 in place of L16). An
+%% 8 kHz room needs none: #{}. Merge them under your own anchor params,
+%% yours winning. A 16 kHz room needs rtpengine 13.4 or later.
+-spec mixer_params(8000 | 16000, mixer | endpoint) -> map().
+mixer_params(8000, _Toward) ->
+    #{};
+mixer_params(16000, mixer) ->
+    #{
+        codec => #{
+            mask => [<<"all">>],
+            transcode => [<<"L16/16000/1">>, <<"telephone-event/16000">>]
+        }
+    };
+mixer_params(16000, endpoint) ->
+    #{
+        codec => #{
+            mask => [<<"all">>],
+            transcode => [
+                <<"G722">>, <<"PCMU">>, <<"PCMA">>, <<"telephone-event/8000">>
+            ]
+        }
+    }.
 
 %% Take the session's leg out of its room. The room stops with its last
 %% leg.

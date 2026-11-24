@@ -45,6 +45,7 @@
 -export([
     room_recorded/1,
     room_not_up/1,
+    room_16khz_refused/1,
     server_sink_bound/1,
     server_metadata_update/1,
     room_ends_recording/1,
@@ -133,6 +134,7 @@ all() ->
         server_metadata_update,
         room_recorded,
         room_not_up,
+        room_16khz_refused,
         room_ends_recording,
         recording_over_tls,
         server_writes_audio_store,
@@ -1243,6 +1245,24 @@ room_not_up(_Config) ->
         {error, badarg},
         chappe_sip_siprec:start({room, <<"a b">>}, srs_uri(1), #{})
     ).
+
+%% SIPREC of a 16 kHz room is refused for now (decision 0017): the
+%% recording's leg would be L16, which a recording server is not offered.
+%% The room and its party go on.
+room_16khz_refused(_Config) ->
+    ok = chappe_sip_media:configure(#{mix => #{ip => {127, 0, 0, 1}}}),
+    _ = start_app(),
+    {ok, Party} = chappe_sip_media:session(
+        #{call_id => <<"room-party-hd">>},
+        #{capability => conference}
+    ),
+    {ok, _} = chappe_sip_media:conference(Party, <<"r-hd">>, #{rate => 16000}),
+    {ok, Rec} = chappe_sip_siprec:start(
+        {room, <<"r-hd">>}, srs_uri(?UA:pick()), #{}
+    ),
+    {stopped, #{reason := {error, {unsupported, {rate, 16000}}}}} = event(Rec),
+    ?assertMatch(#{rate := 16000}, chappe_sip_media:info(Party)),
+    ok = chappe_sip_media:stop(Party).
 
 rtp(PT, Payload) ->
     rtp(PT, 1, Payload).

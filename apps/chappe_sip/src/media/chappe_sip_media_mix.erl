@@ -18,11 +18,14 @@
 %% process that started its media session: when that process exits, the
 %% leg leaves.
 %%
-%% The mixer speaks G.711 over plain RTP/AVP; it takes packets of any
-%% size and sends 20 ms ones. For any
-%% other call (another codec, SRTP, DTLS-SRTP), anchor it on rtpengine and
-%% give the mixer the offer rtpengine sends toward it; rtpengine transcodes
-%% and terminates the crypto. See docs/design/media.md.
+%% The mixer speaks G.711 over plain RTP/AVP in an 8 kHz room and L16 at
+%% 16000 in a 16 kHz one; it takes packets of any size and sends 20 ms
+%% ones. A room's rate is set by the join that creates it (its `rate', else
+%% the configured one, default 8000) and kept for the room's life. For any
+%% other call (another codec, SRTP, DTLS-SRTP), anchor it on rtpengine
+%% (chappe_sip_media:mixer_params/2 gives the flags) and give the mixer the
+%% offer rtpengine sends toward it; rtpengine transcodes and terminates the
+%% crypto. See docs/design/media.md.
 -module(chappe_sip_media_mix).
 -behaviour(gen_server).
 
@@ -49,17 +52,21 @@
 
 %% ip: the address legs bind to (default 127.0.0.1). advertise: the
 %% address put in the SDP, default ip (set it when ip is a wildcard).
-%% law: default codec of a leg offered without a remote SDP. depth: the
-%% jitter buffer depth in frames.
+%% rate: the rate of a room a join creates without saying one, 8000
+%% (default) or 16000. law: default codec of a leg offered without a
+%% remote SDP, in an 8 kHz room. depth: the jitter buffer depth in frames.
 -type config() :: #{
     ip => inet:ip_address() | string() | binary(),
     advertise => inet:ip_address() | string() | binary(),
+    rate => 8000 | 16000,
     law => ulaw | alaw,
     depth => pos_integer()
 }.
 
 -record(room, {
     conf :: pid(),
+    %% fixed by the join that made it
+    rate :: 8000 | 16000,
     conf_mon :: reference(),
     owner_mon :: reference(),
     %% up until the owner exits, even with no leg
@@ -70,7 +77,8 @@
 -record(leg, {
     room :: binary(),
     leg :: chappe_mix:leg(),
-    law :: ulaw | alaw,
+    %% the leg's format: G.711 in an 8 kHz room, l16 in a 16 kHz one
+    law :: chappe_sip_media_mix_sdp:law(),
     local :: {inet:ip_address(), inet:port_number()},
     mon :: reference(),
     muted = false :: boolean(),
@@ -89,6 +97,7 @@
 -record(state, {
     conf_opts :: map(),
     advertise :: inet:ip_address() | undefined,
+    rate = 8000 :: 8000 | 16000,
     law :: ulaw | alaw,
     rooms = #{} :: #{binary() => #room{}},
     legs = #{} :: #{reference() => #leg{}}
@@ -96,8 +105,6 @@
 -type state() :: #state{}.
 
 -define(SERVER, ?MODULE).
-%% the telephone-event payload type the mixer offers
--define(DTMF_PT, 101).
 
 %% ---- backend API ----
 
@@ -138,8 +145,10 @@ start(_Id, _Opts) ->
 %% leg, until its owner exits), create (false: join only a room that is
 %% up, else {error, no_room}; a SIPREC recording of the room, say),
 %% observer (true: the leg does not keep the room up, which ends when its
-%% last other leg leaves), law
-%% (codec of an offer, ignored when
+%% last other leg leaves), rate (8000 | 16000: the rate of a room this
+%% join creates; a join asking another rate than the room's gets
+%% {error, {rate_mismatch, RoomRate}}, a join without one takes the
+%% room's), law (codec of an offer in an 8 kHz room, ignored when
 %% answering), mute, name (SDES NAME the other legs see), direction (what
 %% the room may do with the leg, default sendrecv), talk_events (true: the
 %% calling process gets {chappe_sip_media, {talking, Room, true | false}}
@@ -237,73 +246,48 @@ handle_info(_Info, S) ->
 %% ---- join / leave ----
 
 join(#{id := Id, owner := Owner}, #{room := Room} = Opts, S) ->
-    case leg_plan(Opts, S) of
-        {ok, Plan} ->
-            RoomOwner = maps:get(owner, Opts, Owner),
-            Persist = maps:get(persist, Opts, false),
-            case
-                ensure_room(
-                    Room, RoomOwner, Persist, maps:get(create, Opts, true), S
-                )
-            of
-                {ok, R, S1} -> add_leg(Id, Owner, Room, R, Plan, Opts, S1);
-                {error, _} = Err -> {reply, Err, S}
-            end;
-        {error, _} = Err ->
-            {reply, Err, S}
+    maybe
+        {ok, Rate} ?= room_rate(Room, Opts, S),
+        {ok, Plan} ?= leg_plan(Opts, Rate, S),
+        RoomOwner = maps:get(owner, Opts, Owner),
+        Persist = maps:get(persist, Opts, false),
+        Create = maps:get(create, Opts, true),
+        {ok, R, S1} ?= ensure_room(Room, RoomOwner, Persist, Create, Rate, S),
+        add_leg(Id, Owner, Room, R, Plan, Opts, S1)
+    else
+        {error, _} = Err -> {reply, Err, S}
     end.
 
-%% What the leg looks like before it exists: answering an offer fixes the
-%% law, RTCP mux and far end; offering uses the configured law and muxes.
-leg_plan(#{sdp := Offer} = Opts, _S) ->
-    case chappe_sip_media_mix_sdp:accept_offer(Offer) of
-        {ok, #{
-            endpoint := Ep,
-            law := Law,
-            mux := Mux,
-            ptime := Ptime,
-            dtmf := Dtmf,
-            rtcp := Rtcp,
-            direction := Dir
-        }} ->
-            {ok, #{
-                law => Law,
-                mux => Mux,
-                ptime => Ptime,
-                dtmf => Dtmf,
-                rtcp_remote => Rtcp,
-                remote => Ep,
-                answer_to => Offer,
-                mute => maps:get(mute, Opts, false),
-                %% what the offer allows and the join asks, both
-                dir => chappe_sip_media_mix_sdp:combine(
-                    maps:get(direction, Opts, sendrecv), Dir
-                )
-            }};
-        {error, _} = Err ->
-            Err
-    end;
-leg_plan(Opts, S) ->
-    {ok, #{
-        law => maps:get(law, Opts, S#state.law),
-        mux => true,
-        %% offered; the leg takes it when the answer does
-        dtmf_offer => ?DTMF_PT,
-        mute => maps:get(mute, Opts, false),
-        dir => maps:get(direction, Opts, sendrecv)
-    }}.
+%% The rate the join runs at: the room's when it is up (a join asking
+%% another is refused, before anything is made), else the join's, else
+%% the configured one.
+room_rate(_Room, #{rate := R}, _S) when R =/= 8000, R =/= 16000 ->
+    {error, {bad_option, rate}};
+room_rate(Room, Opts, #state{rooms = Rooms} = S) ->
+    case {maps:find(Room, Rooms), maps:get(rate, Opts, undefined)} of
+        {{ok, #room{rate = R}}, undefined} -> {ok, R};
+        {{ok, #room{rate = R}}, R} -> {ok, R};
+        {{ok, #room{rate = R}}, _} -> {error, {rate_mismatch, R}};
+        {error, undefined} -> {ok, S#state.rate};
+        {error, R} -> {ok, R}
+    end.
 
-ensure_room(Room, Owner, Persist, Create, #state{rooms = Rooms} = S) ->
+%% What the leg looks like before it exists (chappe_sip_media_mix_sdp:plan/3).
+leg_plan(Opts, Rate, S) ->
+    chappe_sip_media_mix_sdp:plan(Opts, Rate, S#state.law).
+
+ensure_room(Room, Owner, Persist, Create, Rate, #state{rooms = Rooms} = S) ->
     case maps:find(Room, Rooms) of
         {ok, R} ->
             {ok, R, S};
         error when not Create ->
             {error, no_room};
         error ->
-            case chappe_mix:start(S#state.conf_opts) of
+            case chappe_mix:start((S#state.conf_opts)#{rate => Rate}) of
                 {ok, Conf} ->
                     R = #room{
                         conf = Conf,
+                        rate = Rate,
                         conf_mon = monitor(process, Conf),
                         owner_mon = monitor(process, Owner),
                         persist = Persist
@@ -315,8 +299,7 @@ ensure_room(Room, Owner, Persist, Create, #state{rooms = Rooms} = S) ->
     end.
 
 add_leg(Id, Owner, Room, #room{conf = Conf} = R, Plan, Opts, S) ->
-    LegOpts0 = #{
-        law => maps:get(law, Plan),
+    LegOpts0 = (codec_opts(Plan))#{
         direction => effective(
             maps:get(dir, Plan), maps:get(mute, Plan), false
         ),
@@ -366,24 +349,15 @@ add_leg(Id, Owner, Room, #room{conf = Conf} = R, Plan, Opts, S) ->
             {reply, Err, maybe_close_room(Room, S)}
     end.
 
+%% The leg's format as chappe_mix takes it: the law in an 8 kHz room, the
+%% payload type the offer named in a 16 kHz one (chappe_mix's default when
+%% the mixer offers).
+codec_opts(#{law := l16, pt := Pt}) -> #{pt => Pt};
+codec_opts(#{law := l16}) -> #{};
+codec_opts(#{law := Law}) -> #{law => Law}.
+
 sdp(Plan, Ip, Port, S) ->
-    Local0 = #{
-        addr => advertised(Ip, S),
-        port => Port,
-        law => maps:get(law, Plan),
-        mux => maps:get(mux, Plan),
-        direction => maps:get(dir, Plan)
-    },
-    Local =
-        case Plan of
-            #{dtmf := #{pt := Pt}} -> Local0#{dtmf_pt => Pt};
-            #{dtmf_offer := Pt} -> Local0#{dtmf_pt => Pt};
-            _ -> Local0
-        end,
-    case maps:find(answer_to, Plan) of
-        {ok, Offer} -> chappe_sip_media_mix_sdp:answer(Offer, Local);
-        error -> chappe_sip_media_mix_sdp:offer(Local)
-    end.
+    chappe_sip_media_mix_sdp:leg_sdp(Plan, advertised(Ip, S), Port).
 
 advertised(Ip, #state{advertise = undefined}) -> Ip;
 advertised(_Ip, #state{advertise = Adv}) -> Adv.
@@ -562,12 +536,13 @@ dtmf_opts(#{pt := Pt, events := Events}, Opts) ->
     Opts#{dtmf_pt => Pt, dtmf_events => Events}.
 
 leg_info(#leg{room = Room, leg = Leg, law = Law, local = Local} = L, S) ->
-    #room{conf = Conf} = maps:get(Room, S#state.rooms),
+    #room{conf = Conf, rate = Rate} = maps:get(Room, S#state.rooms),
     #{
         backend => mix,
         room => Room,
         conf => Conf,
         leg => Leg,
+        rate => Rate,
         law => Law,
         local => Local,
         muted => L#leg.muted,
@@ -577,6 +552,8 @@ leg_info(#leg{room = Room, leg = Leg, law = Law, local = Local} = L, S) ->
 
 %% ---- config ----
 
+parse_config(#{rate := R}) when R =/= 8000, R =/= 16000 ->
+    {error, {bad_config, {rate, R}}};
 parse_config(Config) when is_map(Config) ->
     case
         {
@@ -588,6 +565,7 @@ parse_config(Config) when is_map(Config) ->
             {ok, #{
                 ip => Ip,
                 advertise => Adv,
+                rate => maps:get(rate, Config, 8000),
                 law => maps:get(law, Config, ulaw),
                 depth => maps:get(depth, Config, undefined)
             }};
@@ -611,10 +589,12 @@ addr(Str) when is_list(Str) ->
         {error, _} -> {error, {bad_address, Str}}
     end.
 
-apply_config(#{ip := Ip, advertise := Adv, law := Law, depth := Depth}, S) ->
+apply_config(#{ip := Ip, advertise := Adv, law := Law, depth := Depth} = C, S) ->
     Opts0 = put_opt(ip, Ip, #{}),
     Opts = put_opt(depth, Depth, Opts0),
-    S#state{conf_opts = Opts, advertise = Adv, law = Law}.
+    S#state{
+        conf_opts = Opts, advertise = Adv, rate = maps:get(rate, C), law = Law
+    }.
 
 %% ---- helpers ----
 

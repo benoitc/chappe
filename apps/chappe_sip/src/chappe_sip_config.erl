@@ -174,7 +174,8 @@ default(proxy_accepted_ms) -> t64();
 %% nothing in chappe_rtpengine/chappe_mix is started. Shape:
 %%   #{rtpengine => #{nodes => [#{name := atom(), host := _, port := _}]},
 %%     mix => #{ip => inet:ip_address(), advertise => inet:ip_address(),
-%%              law => ulaw | alaw, depth => pos_integer()}}
+%%              rate => 8000 | 16000, law => ulaw | alaw,
+%%              depth => pos_integer()}}
 default(media) -> #{};
 %% OPTIONS-monitored peers (chappe_sip_peers) added at start: a list of
 %% {Name, Opts}, or a map Name => Opts.

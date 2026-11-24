@@ -6,6 +6,20 @@ says how apps are released.
 
 ## [Unreleased]
 
+### New
+
+- HD conference rooms: join with `rate => 16000` (or set `rate` in the
+  `mix` media config) and the room mixes at 16 kHz, its legs speaking
+  L16/16000 and telephone-event/16000. `chappe_sip_media:mixer_params/2`
+  gives the rtpengine flags that transcode G.722, Opus and G.711 callers
+  to it; rtpengine 13.4 or later is needed.
+
+### Changed
+
+- A room keeps the rate it was made with: a join asking another rate gets
+  `{error, {rate_mismatch, Rate}}`, and a SIPREC recording of a 16 kHz
+  room is refused for now.
+
 ## [0.3.0] - 2026-11-23
 
 ### Before you upgrade
