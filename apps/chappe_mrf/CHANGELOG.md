@@ -6,6 +6,14 @@ says how apps are released.
 
 ## [Unreleased]
 
+### New
+
+- HD native rooms: `chappe_mrf:conference(Name, #{rate => 16000})` mixes
+  at 16 kHz, so members on G.722 or Opus keep their full band. The room
+  asks rtpengine (13.4 or later) to transcode every member to the mixer's
+  format; your own anchor and endpoint params still win. An fs room
+  refuses `rate`: its rate is its profile's.
+
 ## [0.1.0] - 2026-11-23
 
 ### New

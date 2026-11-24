@@ -76,6 +76,32 @@ between the mixer and the node when they differ:
 {ok, Member} = chappe_mrf_conf:join(Conf, Ep, #{}).
 ```
 
+### Run an HD (16 kHz) native room
+
+Callers on G.722 or Opus keep their band when the room mixes at 16 kHz.
+Give the room its rate when you start it:
+
+```erlang
+{ok, Conf} = chappe_mrf:conference(<<"hd">>, #{rate => 16000}),
+{ok, Member} = chappe_mrf_conf:join(Conf, B2b, #{}).
+```
+
+- The chappe_mix room mixes L16 at 16000, and rtpengine transcodes every
+  member to it and back: the room lays
+  `chappe_sip_media:mixer_params(16000, mixer)` under your `b` anchor
+  params and `mixer_params(16000, endpoint)` under your endpoint `offer`
+  params. Your own keys win.
+- rtpengine 13.4 or later is needed; earlier ones have no L16.
+- A PCMU member is heard, and hears the room, through 8 kHz; the others
+  keep their band.
+- The rate is fixed: `rate` is 8000 (default) or 16000, anything else is
+  `{error, {bad_option, rate}}`.
+- SIPREC of a 16 kHz room is refused for now
+  (`{error, {unsupported, {rate, 16000}}}`).
+- The FreeSWITCH equivalent is an fs room with a 16 kHz profile
+  (`profile => <<"wideband">>` in the labs); an fs room refuses `rate`
+  with `{error, {unsupported, rate}}`.
+
 ### Record a native room
 
 A native room is recorded through SIPREC: its mix goes to the recording

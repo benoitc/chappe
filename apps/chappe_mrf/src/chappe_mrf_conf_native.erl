@@ -3,7 +3,10 @@
 %%
 %% @doc The native backend of chappe_mrf_conf (chappe_mrf_conf_backend): a
 %% chappe_mix room behind rtpengine, reached by a loopback INVITE (see
-%% chappe_mrf_conf).
+%% chappe_mrf_conf). The room's rate (8000 or 16000, fixed) goes with every
+%% join of the mixer, and rtpengine's flags for it
+%% (chappe_sip_media:mixer_params/2) lie under the app's anchor and
+%% endpoint params, so a caller on any codec is transcoded to the room's.
 -module(chappe_mrf_conf_native).
 -behaviour(chappe_mrf_conf_backend).
 
@@ -13,9 +16,11 @@
 -export([handle_info/2]).
 -export([set_flag/5, hangup/3, left/2, play/3, portable/0]).
 -export([relate/4, record/3, stop_record/1, handover/1, dial/4, dial_out/4]).
--export([loop_invite/4]).
+-export([loop_invite/4, check_rate/1]).
 
 -record(native, {
+    %% the mixer room's sample rate
+    rate = 8000 :: 8000 | 16000,
     anchor_params = #{} :: map(),
     %% rtpengine flags between the mixer and an endpoint's node:
     %% #{offer => map(), answer => map()}
@@ -28,14 +33,42 @@
 %% ---- the backend ----
 
 init(_Name, Opts) ->
+    Rate = maps:get(rate, Opts, 8000),
+    AP = maps:get(anchor_params, Opts, #{}),
+    EP = maps:get(endpoint_params, Opts, #{}),
     {ok, #native{
-        anchor_params = maps:get(anchor_params, Opts, #{}),
-        endpoint_params = maps:get(endpoint_params, Opts, #{}),
+        rate = Rate,
+        %% toward the mixer (leg b of a member's call) and toward an
+        %% endpoint's node (the offer): the room's format, the app's keys
+        %% on top
+        anchor_params = under(
+            b, chappe_sip_media:mixer_params(Rate, mixer), AP
+        ),
+        endpoint_params = under(
+            offer, chappe_sip_media:mixer_params(Rate, endpoint), EP
+        ),
         bridge = maps:get(bridge, Opts, #{})
     }}.
 
-info(#native{bridge = Bridge}) ->
-    #{node => undefined, bridge => Bridge}.
+%% A room's rate, checked in the caller of chappe_mrf_conf:start/2: 8000 or
+%% 16000 on native (the default backend); any other backend refuses one,
+%% its rate being its own (an fs room's is its profile's).
+-spec check_rate(map()) -> ok | {error, term()}.
+check_rate(#{rate := R}) when R =/= 8000, R =/= 16000 ->
+    {error, {bad_option, rate}};
+check_rate(#{rate := _, backend := B}) when B =/= native ->
+    {error, {unsupported, rate}};
+check_rate(_Opts) ->
+    ok.
+
+%% Params under the app's map at Key, the app's keys winning.
+under(_Key, Params, App) when map_size(Params) =:= 0 ->
+    App;
+under(Key, Params, App) ->
+    App#{Key => maps:merge(Params, maps:get(Key, App, #{}))}.
+
+info(#native{bridge = Bridge, rate = Rate}) ->
+    #{node => undefined, bridge => Bridge, rate => Rate}.
 
 %% in the caller
 join(Conf, _Info, {call, Req, Res}, Opts) ->
@@ -341,8 +374,9 @@ offer(Token, Offer, #state{pending = P} = S) ->
             {reply, {error, unknown_join}, S}
     end.
 
-mixer_answer(Token, Offer, Opts, #state{room = Room, name = Name}) ->
+mixer_answer(Token, Offer, Opts, #state{room = Room, name = Name} = S) ->
     CallId = <<"mrf-", Name/binary, "-", Token/binary>>,
+    #native{rate = Rate} = chappe_mrf_conf_backend:bstate(S),
     maybe
         {ok, MS} ?=
             chappe_sip_media:session(#{call_id => CallId}, #{
@@ -350,6 +384,7 @@ mixer_answer(Token, Offer, Opts, #state{room = Room, name = Name}) ->
             }),
         JoinOpts = #{
             sdp => Offer,
+            rate => Rate,
             owner => self(),
             persist => true,
             talk_events => true,
@@ -418,11 +453,13 @@ join_endpoint(Ep, Opts, #state{name = Name, room = Room} = S) ->
     end.
 
 endpoint_media(CallId, Id, D, Room, Opts, S) ->
-    #native{endpoint_params = EP} = chappe_mrf_conf_backend:bstate(S),
+    #native{endpoint_params = EP, rate = Rate} =
+        chappe_mrf_conf_backend:bstate(S),
     {ok, MS} = chappe_sip_media:session(#{call_id => CallId}, #{
         capability => conference
     }),
     JoinOpts = with_name(Opts, #{
+        rate => Rate,
         owner => self(),
         persist => true,
         talk_events => true,
