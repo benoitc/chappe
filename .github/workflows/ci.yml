@@ -10,7 +10,7 @@ env:
   OTP: '29.1.2'
   # line coverage floor for `make cover`; raise it as coverage grows
   MIN_COVERAGE: '80'
-  REBAR3: '3.25.0'
+  REBAR3: '3.28.0'
   # the NIF shim's warnings are errors in CI (c_src/build.sh); local builds
   # only warn
   ENGINE_WERROR: '1'

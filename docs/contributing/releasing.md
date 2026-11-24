@@ -130,10 +130,12 @@ Hex: before, it only warns.
 - An optional sibling (one chappe_sip starts on demand) is not a dep: a
   node that uses it adds it to its own deps.
 - Hex rejects git deps: keep every dep of a published app on Hex.
-- `rebar3_hex` is pinned to 7.2.0: 7.3.0 with hex_core 0.19.0 crashes on
-  publish (a `badmatch` on `cli_auth_callbacks`). Check
-  `ls _build/default/plugins` after a build and keep the pin until a fixed
-  release is out.
+- `rebar3_hex` is pinned to 7.5.0, which needs rebar3 3.27 or later
+  (`rebar3 version`; `rebar3 local upgrade` updates it). hex.pm signs you
+  in by its device flow: `rebar3 hex user auth` prints a code and a URL,
+  you confirm in the browser (with your two-factor code if it is on), and
+  publishing then needs no passphrase. Older plugins, such as 7.2.0,
+  cannot do that flow and fail at publish.
 - The `files` list in each `.app.src` is what ships. Keep it current when
   you add a directory the build needs; chappe_sip ships `c_src` without
   its fuzz harness or build output.
