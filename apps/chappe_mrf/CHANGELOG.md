@@ -6,6 +6,14 @@ says how apps are released.
 
 ## [Unreleased]
 
+### Breaking
+
+- A conference backend of your own must update its dial callback: it now
+  receives the REFER operation it dials for, so the room can report the
+  outcome to every referrer and refuse a second dial of the same party,
+  and the separate dial-out callback is gone. The two backends chappe
+  ships are updated.
+
 ### Fixed
 
 - A party a REFER brings into a native conference was a member, and could
