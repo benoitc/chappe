@@ -170,10 +170,34 @@ apps/chappe_sip/interop/pjsua/hd.sh -c G722 -r 16000 -p probe.wav \
     -o out/rec.wav -d 8 -n my-lab-net sip:room@10.0.0.5:5060
 ```
 
-`-c opus -r 48000` for Opus. The recording and the pjsua log (`NAME.log`)
-land in the directory of `-o`. Feed it the band probe
-(`chappe_mix_test_tone:band_probe/1`) and judge the recording with
-`band_check/3`: a G.722 or Opus path passes, a G.711 hop does not.
+Use `-c opus` for Opus. The recording and the pjsua log (`NAME.log`) land
+in the directory of `-o`. To check a path for wideband audio, keep the
+clock at 16 kHz (`-r 16000`), which is the rate the band check reads:
+
+1. Write the band probe from an Erlang shell:
+
+   ```erlang
+   Probe = chappe_mix_test_tone:band_probe(8000),
+   Pcm = << <<S:16/signed-little>> || S <- Probe >>,
+   Header = chappe_audio_wav:header(16000, 1, byte_size(Pcm)),
+   ok = file:write_file("probe.wav", [Header, Pcm]).
+   ```
+
+2. Run `hd.sh` with `-p probe.wav -r 16000`.
+3. Read the recording back and judge it:
+
+   ```erlang
+   {ok, Wav} = file:read_file("out/rec.wav"),
+   {ok, #{rate := 16000, data_offset := Off, data_bytes := N}} =
+       chappe_audio_wav:info(Wav),
+   <<_:Off/binary, Data:N/binary, _/binary>> = Wav,
+   Got = [S || <<S:16/signed-little>> <= Data],
+   Cal = chappe_mix_test_tone:band_calibrate(Probe),
+   chappe_mix_test_tone:band_check(Got, Cal, #{tolerance => 6.0}).
+   ```
+
+A G.722 or Opus path gives `ok`; a G.711 hop gives `{error, Faults}` with
+the 5000 and 6000 Hz tones missing.
 
 ## Tests to add or run
 

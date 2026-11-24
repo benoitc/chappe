@@ -247,17 +247,10 @@ loud(Samples) ->
 %% The burst's own tone carries at least four times the power of each of
 %% the other two.
 dominant(Samples, Idx, Rate) ->
-    Powers = [power(Samples, F, Rate) || F <- ?TONES],
+    Powers = [chappe_mix_test_tone:power(Samples, F, Rate) || F <- ?TONES],
     Own = lists:nth(Idx + 1, Powers),
     Others = lists:sublist(Powers, Idx) ++ lists:nthtail(Idx + 1, Powers),
     lists:all(fun(O) -> Own > 4 * O end, Others).
-
-power(Samples, F, Rate) ->
-    Coeff = 2 * math:cos(2 * math:pi() * F / Rate),
-    {S1, S2} = lists:foldl(
-        fun(X, {P1, P2}) -> {X + Coeff * P1 - P2, P1} end, {0.0, 0.0}, Samples
-    ),
-    S1 * S1 + S2 * S2 - Coeff * S1 * S2.
 
 %% samples in a 20 ms frame
 frame(Rate) -> Rate div 50.

@@ -64,6 +64,16 @@ filtered_round_trip_fails_test() ->
      || Tol <- [3.0, 6.0]
     ].
 
+%% Calibrating on a narrowband capture would make every level check pass
+%% vacuously: band_calibrate/1 refuses a tone far below what the probe
+%% sends.
+calibration_refuses_narrowband_test() ->
+    Out = filtered_round_trip(probe()),
+    ?assertError(
+        {bad_calibration, 5000, _},
+        chappe_mix_test_tone:band_calibrate(Out)
+    ).
+
 %% (b) A careless one: drop every other sample, hold each one twice. The
 %% high tones fold to 3000 and 2000 Hz; even with the codec tolerance the
 %% alias bins give it away.

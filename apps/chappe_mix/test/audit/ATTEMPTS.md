@@ -802,7 +802,17 @@ path drops to 8 kHz, are 40 dB below the quietest tone.
 - On real codecs, two lab pjsua calling each other at a 16 kHz clock
   (`hd.sh`), the callee's recording judged over 4 s: G.722 and Opus pass
   at 3 dB (5000 and 6000 Hz within 0.6 dB, alias bins at -60 to -80
-  dBFS), PCMU fails (5000 and 6000 Hz at -97 and -105 dBFS).
+  dBFS), PCMU fails (5000 and 6000 Hz at -97 and -105 dBFS). Which codec
+  gave the -60 dBFS end was not recorded. G.722's QMF filter bank folds
+  5000 and 6000 Hz onto exactly 3000 and 2000 Hz, so its alias bins sit
+  about 4 dB inside the -56.3 dBFS limit: measure each codec on its own
+  before a CI gate relies on that margin.
+- Review follow-up: `band_calibrate/1` refuses a tone more than 10 dB
+  below what the probe sends, so a calibration taken on a narrowband
+  capture cannot make the level checks pass. Seen failing on the filtered
+  round trip before the check existed; with the limit mutated to 1000 dB
+  the new case fails again. The chappe_mix test helpers now share one
+  Goertzel (`chappe_mix_test_tone:power/3`).
 - The FreeSWITCH reference (`interop/freeswitch`, mod_opus and mod_spandsp
   loaded, codecs `OPUS,G722,PCMU,PCMA`): two G.722 pjsua in one room, one
   playing the probe, the other recording. In `wconf-<name>` (the
