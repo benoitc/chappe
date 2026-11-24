@@ -81,6 +81,26 @@ moved) and run
 `MRF_PROJECT` and the `MRF_*` ports move a second copy out of the way of the
 first.
 
+## HD rooms
+
+`apps/chappe_mrf/test/chappe_mrf_hd_live_SUITE.erl` (run by `e2e.sh` after
+the live suite) calls the room with three lab pjsua through
+`apps/chappe_sip/interop/pjsua/hd.sh`, on the host network: A on G.722, B on
+Opus, each playing the 16 kHz band probe for part of the call, and C on
+PCMU, silent, in the middle. `native_hd_room` runs it in a native room at
+`rate => 16000`, `fs_wideband_room` in a mod_conference room on the
+`wideband` profile, the reference. Each direction passes the band check of
+`chappe_mix_test_tone` with C in and after it left, and C hears both.
+
+- `hd.sh` builds the `chappe-conf-pjsua` image only when it is missing:
+  rebuild it from your branch (`docker build -t chappe-conf-pjsua
+  apps/chappe_sip/interop/pjsua`) when another checkout built it, or the
+  Opus caller has no codec and offers `m=audio 0`.
+- The callers start 2 s apart: two pjsua started in the same second draw the
+  same Call-ID and tags.
+- pjsua's SIP ports start at `MRF_PJSUA_SIP` (19560, three of them), its RTP
+  ports at `MRF_PJSUA_RTP` (19600, 20 per caller).
+
 ## Add a case
 
 1. Add the flow to `chappe_mrf_SUITE` first, on `chappe_mrf_fake`, with its

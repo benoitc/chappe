@@ -27,7 +27,9 @@
     transcoded_n_minus_one/1,
     thirty_ms_n_minus_one/1,
     dtmf_through_rtpengine/1,
-    taps_through_rtpengine/1
+    taps_through_rtpengine/1,
+    hd_band_through_rtpengine/1,
+    hd_dtmf_through_rtpengine/1
 ]).
 
 -define(NODE, chappe_mix_live).
@@ -41,7 +43,9 @@ all() ->
         transcoded_n_minus_one,
         thirty_ms_n_minus_one,
         dtmf_through_rtpengine,
-        taps_through_rtpengine
+        taps_through_rtpengine,
+        hd_band_through_rtpengine,
+        hd_dtmf_through_rtpengine
     ].
 
 init_per_suite(Config) ->
@@ -254,6 +258,287 @@ dtmf_through_rtpengine(Config) ->
     ),
     ?assertMatch([_], lists:usort([maps:get(ts, P) || P <- Got])).
 
+%% ---- a 16 kHz room ----
+
+%% A 16 kHz room behind rtpengine 26.3: four parties, each an L16/16000
+%% tone endpoint whose leg to the mixer goes through a real codec. l16
+%% is relayed as it is; g722, opus and pcmu speak L16 into a first
+%% rtpengine call that encodes the codec, a relay carries it to a second
+%% call that decodes it to L16/16000 for the mixer (the 16 kHz flags of
+%% chappe_sip_media:mixer_params/2), and back. One party at a time plays
+%% the 16 kHz band probe, the others are silent, and each listener's
+%% recording goes through the band check: the four probe tones within
+%% 6 dB (a codec), nothing folded onto 2000 and 3000 Hz. The G.722 and
+%% Opus paths carry the whole band both ways; the PCMU one drops 5000 and
+%% 6000 Hz, both ways, and fails.
+hd_band_through_rtpengine(Config) ->
+    {ok, Conf} = chappe_mix:start(#{ip => {0, 0, 0, 0}, rate => 16000}),
+    Parties = [hd_party(Config, Conf, K) || K <- [l16, g722, opus, pcmu]],
+    Probe = list_to_tuple(chappe_mix_test_tone:band_probe(200)),
+    Cal = chappe_mix_test_tone:band_calibrate(tuple_to_list(Probe)),
+    timer:sleep(2000),
+    ct:log("mixer legs: ~p", [chappe_mix:legs(Conf)]),
+    Round = fun(Sender, Listeners) ->
+        [Ep ! {signal, {0}} || #{ep := Ep} <- Parties],
+        #{ep := S} = hd_kind(Sender, Parties),
+        S ! {signal, Probe},
+        timer:sleep(1500),
+        Eps = [{K, maps:get(ep, hd_kind(K, Parties))} || K <- Listeners],
+        [chappe_mix_test_tone:clear(Ep) || {_, Ep} <- Eps],
+        timer:sleep(2500),
+        [
+            {Sender, K,
+                chappe_mix_test_tone:band_check(
+                    chappe_mix_test_tone:samples(Ep), Cal, #{tolerance => 6.0}
+                )}
+         || {K, Ep} <- Eps
+        ]
+    end,
+    Results =
+        Round(l16, [g722, opus, pcmu]) ++ Round(g722, [l16]) ++
+            Round(opus, [l16]) ++ Round(pcmu, [l16]),
+    ct:log("band checks (sender, listener, result): ~p", [Results]),
+    [cleanup(P) || P <- Parties],
+    ok = chappe_mix:stop(Conf),
+    Want = fun
+        (pcmu, _) -> fail;
+        (_, pcmu) -> fail;
+        (_, _) -> ok
+    end,
+    [
+        ?assertEqual(Want(S, L), verdict(R), {S, L, R})
+     || {S, L, R} <- Results
+    ],
+    ok.
+
+verdict(ok) -> ok;
+verdict({error, _}) -> fail.
+
+%% telephone-event/16000 out of a G.722 caller: party A speaks G.722 and
+%% telephone-event/8000 (G.722's RTP clock) into rtpengine, which hands
+%% the mixer L16/16000 and telephone-event/16000; party B is relayed as
+%% L16 and telephone-event/16000. A's digit reaches B through the mixer
+%% on B's telephone-event, at 16000: the event code, the M bit on the
+%% first packet only, one timestamp, the end bit on the last ones.
+hd_dtmf_through_rtpengine(Config) ->
+    Media = ?config(media_ip, Config),
+    RtpeIp = ?config(rtpe_ip, Config),
+    {ok, Conf} = chappe_mix:start(#{ip => {0, 0, 0, 0}, rate => 16000}),
+    Open = fun() ->
+        {ok, S} = gen_udp:open(0, [binary, {ip, {0, 0, 0, 0}}, {active, true}]),
+        {ok, P} = inet:port(S),
+        {S, P}
+    end,
+    {SA, PA} = Open(),
+    {SB, PB} = Open(),
+    %% A: G.722 with telephone-event/8000, transcoded to the room's L16
+    {SessA, ToA, ToMixerA, LA} = call_with(
+        Media,
+        sdp(Media, PA, g722_dtmf),
+        #{codec => #{mask => [<<"all">>], transcode => l16_flags()}},
+        fun(ToMixer) -> mixer_leg(Conf, Media, ToMixer) end
+    ),
+    %% B: L16 with telephone-event/16000, relayed
+    {SessB, ToB, ToMixerB, LB} = call_with(
+        Media,
+        sdp(Media, PB, l16_dtmf),
+        #{},
+        fun(ToMixer) -> mixer_leg(Conf, Media, ToMixer) end
+    ),
+    ok = chappe_mix:set_remote(Conf, LA, {RtpeIp, ToMixerA}),
+    ok = chappe_mix:set_remote(Conf, LB, {RtpeIp, ToMixerB}),
+    G722 = binary:copy(<<0>>, 160),
+    AudioA = fun(N) ->
+        chappe_mix_rtp:build(#{
+            pt => 9,
+            seq => N,
+            ts => N * 160,
+            ssrc => 16#A,
+            marker => false,
+            payload => G722
+        })
+    end,
+    AudioB = fun(N) ->
+        chappe_mix_rtp:build(#{
+            pt => 96,
+            seq => N,
+            ts => N * 320,
+            ssrc => 16#B,
+            marker => false,
+            payload => <<0:5120>>
+        })
+    end,
+    Ev = fun(N, M, E, Dur) ->
+        chappe_mix_rtp:build(#{
+            pt => 101,
+            seq => N,
+            ts => 100 * 160,
+            ssrc => 16#A,
+            marker => M,
+            payload => <<5, E:1, 0:1, 10:6, Dur:16>>
+        })
+    end,
+    Digit = [
+        Ev(100, true, 0, 160),
+        Ev(101, false, 0, 320),
+        Ev(102, false, 0, 480),
+        Ev(103, false, 1, 640),
+        Ev(104, false, 1, 640),
+        Ev(105, false, 1, 640)
+    ],
+    Plan =
+        [AudioA(N) || N <- lists:seq(1, 99)] ++ Digit ++
+            [AudioA(N) || N <- lists:seq(106, 140)],
+    BPlan = [AudioB(N) || N <- lists:seq(1, 140)],
+    T0 = erlang:monotonic_time(millisecond),
+    lists:foldl(
+        fun({XA, XB}, K) ->
+            wait_ms(T0 + 20 * K),
+            {IpA, PortA} = {RtpeIp, ToA},
+            {IpB, PortB} = {RtpeIp, ToB},
+            ok = gen_udp:send(SA, IpA, PortA, XA),
+            ok = gen_udp:send(SB, IpB, PortB, XB),
+            K + 1
+        end,
+        0,
+        lists:zip(Plan, BPlan)
+    ),
+    timer:sleep(500),
+    ct:log("mixer legs: ~p", [chappe_mix:legs(Conf)]),
+    Got = [
+        P
+     || {ok, #{pt := 101} = P} <- [chappe_mix_rtp:parse(B) || B <- udp_all(SB)]
+    ],
+    ct:log("B got ~p event packets: ~p", [length(Got), Got]),
+    Durations = [D || #{payload := <<_, _, D:16>>} <- Got],
+    ct:log("durations at B: ~w (A sent 160 to 640 at 8000)", [Durations]),
+    [chappe_rtpengine_session:stop(S) || S <- [SessA, SessB]],
+    [gen_udp:close(S) || S <- [SA, SB]],
+    ok = chappe_mix:stop(Conf),
+    ?assertNotEqual([], Got),
+    %% rtpengine takes the 8000 durations to 16000 on the way in, and the
+    %% mixer forwards them as they are: the room's clock
+    ?assertEqual([320, 640, 960, 1280, 1280, 1280], Durations),
+    ?assertEqual([5], lists:usort([E || #{payload := <<E, _/binary>>} <- Got])),
+    ?assertMatch([#{marker := true} | _], Got),
+    ?assertEqual([false], lists:usort([M || #{marker := M} <- tl(Got)])),
+    ?assertMatch([_], lists:usort([Ts || #{ts := Ts} <- Got])),
+    ?assertMatch(
+        #{payload := <<5, 1:1, _:7, _:16>>}, lists:last(Got)
+    ).
+
+l16_flags() ->
+    [<<"L16/16000/1">>, <<"telephone-event/16000">>].
+
+%% A mixer leg for the L16 (and telephone-event/16000) rtpengine offers
+%% toward the mixer, on the payload types it chose; the SDP answering it.
+mixer_leg(Conf, Media, ToMixer) ->
+    Pt = rtpmap_pt(ToMixer, <<"L16/16000">>),
+    Te = rtpmap_pt(ToMixer, <<"telephone-event/16000">>),
+    Opts =
+        case Te of
+            undefined -> #{rtcp => pair, pt => Pt};
+            _ -> #{rtcp => pair, pt => Pt, dtmf_pt => Te}
+        end,
+    {ok, Leg, #{port := MixPort}} = chappe_mix:add_leg(Conf, Opts),
+    {sdp(Media, MixPort, {l16, Pt, Te}), Leg}.
+
+rtpmap_pt(Sdp, Codec) ->
+    case
+        re:run(
+            Sdp,
+            <<"a=rtpmap:([0-9]+) ", Codec/binary, "\r\n">>,
+            [{capture, all_but_first, binary}, caseless]
+        )
+    of
+        {match, [Pt]} -> binary_to_integer(Pt);
+        nomatch -> undefined
+    end.
+
+%% One 16 kHz party: an L16/16000 endpoint and the rtpengine call or
+%% calls between it and its mixer leg.
+hd_party(Config, Conf, Kind) ->
+    Media = ?config(media_ip, Config),
+    RtpeIp = ?config(rtpe_ip, Config),
+    {Ep, EpPort} = chappe_mix_test_tone:endpoint(#{
+        freq => 0,
+        signal => {0},
+        ip => {0, 0, 0, 0},
+        law => l16,
+        rate => 16000
+    }),
+    Mixer = fun(ToMixer) -> mixer_leg(Conf, Media, ToMixer) end,
+    {Sessions, ToParty, Leg, Relay} =
+        case Kind of
+            l16 ->
+                {S, To, ToMixer, L} = call_with(
+                    Media, sdp(Media, EpPort, l16), #{}, Mixer
+                ),
+                ok = chappe_mix:set_remote(Conf, L, {RtpeIp, ToMixer}),
+                {[S], To, L, undefined};
+            _ ->
+                Codec = codec_name(Kind),
+                {Relay0, H1, H2} = relay_start(),
+                %% call 1: the party's L16 <-> the codec toward the relay
+                {S1, To, ToRelay1} = call(
+                    Media,
+                    sdp(Media, EpPort, l16),
+                    #{codec => #{mask => [<<"all">>], transcode => [Codec]}},
+                    sdp(Media, H1, Kind)
+                ),
+                %% call 2: the codec from the relay <-> L16 for the mixer
+                {S2, ToRelay2, ToMixer2, L} = call_with(
+                    Media,
+                    sdp(Media, H2, Kind),
+                    #{
+                        codec => #{
+                            mask => [<<"all">>], transcode => l16_flags()
+                        }
+                    },
+                    Mixer
+                ),
+                ok = chappe_mix:set_remote(Conf, L, {RtpeIp, ToMixer2}),
+                Relay0 ! {peers, {RtpeIp, ToRelay1}, {RtpeIp, ToRelay2}},
+                {[S1, S2], To, L, Relay0}
+        end,
+    Ep ! {dst, {RtpeIp, ToParty}},
+    #{kind => Kind, ep => Ep, leg => Leg, sessions => Sessions, relay => Relay}.
+
+codec_name(g722) -> <<"G722">>;
+codec_name(opus) -> <<"opus">>;
+codec_name(pcmu) -> <<"PCMU">>.
+
+hd_kind(K, Parties) ->
+    hd([P || #{kind := K1} = P <- Parties, K1 =:= K]).
+
+%% An offer from the caller side, then the answer AnswerFun writes from
+%% what rtpengine offers the callee (returning {Sdp, Extra}). Returns the
+%% session, the rtpengine ports the caller and the callee send to, and
+%% Extra.
+call_with(_Media, OfferSdp, Flags, AnswerFun) ->
+    Suffix = integer_to_binary(erlang:unique_integer([positive])),
+    CallId = <<"chappe-mix-live-", Suffix/binary>>,
+    {ok, S} = chappe_rtpengine:start_session(#{call_id => CallId, node => ?NODE}),
+    {ok, Offer} = chappe_rtpengine_session:offer(
+        S,
+        maps:merge(
+            #{
+                from_tag => <<"caller-", Suffix/binary>>,
+                sdp => OfferSdp,
+                ice => remove
+            },
+            Flags
+        )
+    ),
+    OfferOut = chappe_rtpengine_ng:sdp(Offer),
+    {AnswerSdp, Extra} = AnswerFun(OfferOut),
+    {ok, Answer} = chappe_rtpengine_session:answer(S, #{
+        to_tag => <<"callee-", Suffix/binary>>, sdp => AnswerSdp, ice => remove
+    }),
+    AnswerOut = chappe_rtpengine_ng:sdp(Answer),
+    ct:log("offer out:~n~s~nanswer out:~n~s", [OfferOut, AnswerOut]),
+    {S, audio_port(AnswerOut), audio_port(OfferOut), Extra}.
+
 wait_ms(T) ->
     case T - erlang:monotonic_time(millisecond) of
         W when W > 0 -> timer:sleep(W);
@@ -427,6 +712,33 @@ sdp(Ip, Port, Codec, Ptime) ->
                     <<"a=rtpmap:0 PCMU/8000\r\n">>,
                     <<"a=rtpmap:101 telephone-event/8000\r\n">>,
                     <<"a=fmtp:101 0-16\r\n">>
+                ]};
+            g722 ->
+                {<<"9">>, [<<"a=rtpmap:9 G722/8000\r\n">>]};
+            g722_dtmf ->
+                {<<"9 101">>, [
+                    <<"a=rtpmap:9 G722/8000\r\n">>,
+                    <<"a=rtpmap:101 telephone-event/8000\r\n">>,
+                    <<"a=fmtp:101 0-16\r\n">>
+                ]};
+            l16 ->
+                {<<"96">>, [<<"a=rtpmap:96 L16/16000\r\n">>]};
+            l16_dtmf ->
+                {<<"96 101">>, [
+                    <<"a=rtpmap:96 L16/16000\r\n">>,
+                    <<"a=rtpmap:101 telephone-event/16000\r\n">>,
+                    <<"a=fmtp:101 0-16\r\n">>
+                ]};
+            {l16, Pt, undefined} ->
+                P = integer_to_binary(Pt),
+                {P, [<<"a=rtpmap:", P/binary, " L16/16000\r\n">>]};
+            {l16, Pt, Te} ->
+                P = integer_to_binary(Pt),
+                T = integer_to_binary(Te),
+                {<<P/binary, " ", T/binary>>, [
+                    <<"a=rtpmap:", P/binary, " L16/16000\r\n">>,
+                    <<"a=rtpmap:", T/binary, " telephone-event/16000\r\n">>,
+                    <<"a=fmtp:", T/binary, " 0-16\r\n">>
                 ]}
         end,
     iolist_to_binary([

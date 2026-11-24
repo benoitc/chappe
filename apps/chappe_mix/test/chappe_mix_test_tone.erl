@@ -44,7 +44,9 @@
 %% (packets), ip (bind address, default loopback), law (ulaw | alaw |
 %% l16, both ways, default ulaw; l16 is RFC 3551 L16, 16-bit big-endian),
 %% pt (payload type, default 0, 8 or 96 by law), rate (sample rate and
-%% RTP clock, default 8000), ptime (ms per packet sent, default 20)}. Only
+%% RTP clock, default 8000), ptime (ms per packet sent, default 20),
+%% signal (a tuple of samples played in a loop in place of the tone; Pid !
+%% {signal, Sig} changes it, a tuple of zeros for silence)}. Only
 %% packets carrying the payload type are recorded, so comfort noise or
 %% telephone-event from a real peer is not decoded as audio. Returns
 %% {Pid, LocalPort}.
@@ -189,7 +191,9 @@ loop(S) ->
         clear ->
             loop(S#{rx => []});
         {dst, Dst} ->
-            loop(S#{dst => Dst})
+            loop(S#{dst => Dst});
+        {signal, Sig} ->
+            loop(S#{signal => Sig})
     end.
 
 send_frame(#{dst := undefined} = S) ->
@@ -205,10 +209,19 @@ send_frame(#{n := N, switch := Switch} = S0) ->
     #{sock := Sock, dst := {Ip, Port}, freq := F, amp := A, seq := Seq} = S,
     Rate = maps:get(rate, S),
     Frame = maps:get(ptime, S) * Rate div 1000,
-    Samples = [
-        round(A * math:sin(2 * math:pi() * F * I / Rate))
-     || I <- lists:seq(N * Frame, N * Frame + Frame - 1)
-    ],
+    Samples =
+        case maps:get(signal, S, undefined) of
+            undefined ->
+                [
+                    round(A * math:sin(2 * math:pi() * F * I / Rate))
+                 || I <- lists:seq(N * Frame, N * Frame + Frame - 1)
+                ];
+            Sig ->
+                [
+                    element(I rem tuple_size(Sig) + 1, Sig)
+                 || I <- lists:seq(N * Frame, N * Frame + Frame - 1)
+                ]
+        end,
     Law = maps:get(law, S),
     Pkt = chappe_mix_rtp:build(#{
         pt => maps:get(pt, S),

@@ -370,7 +370,8 @@ touched.
 - Modules: `chappe_mrf_conf` (API and process), `chappe_mrf_conf_native`,
   `chappe_mrf_conf_fs`; the loopback middleware is in `chappe_mrf`
 - Tests: `apps/chappe_mrf/test/chappe_mrf_SUITE.erl`,
-  `chappe_mrf_live_SUITE.erl`, `chappe_mrf_cluster_SUITE.erl` (rooms on
+  `chappe_mrf_live_SUITE.erl`, `chappe_mrf_hd_live_SUITE.erl` (HD rooms with
+  pjsua callers), `chappe_mrf_cluster_SUITE.erl` (rooms on
   three peer nodes)
 - Lab: `make interop-mrf` (native and FreeSWITCH rooms)
 - Design: [overview](../design/overview.md#native-conferences-and-the-loopback-middleware)

@@ -837,3 +837,28 @@ path drops to 8 kHz, are 40 dB below the quietest tone.
   I + 1 failed it. A report-jitter clock off by one part in a million did
   not (the jitter is truncated to whole units); the session tests cover
   the clock (`chappe_mix_session_tests`, a 16 kHz sender read at 8 kHz).
+
+## HD rooms in the labs
+
+- `chappe_mix_live_SUITE`, `hd_band_through_rtpengine`: a 16 kHz room with
+  four L16 endpoints, three of them through a real codec (two rtpengine
+  calls and a relay, as for the opus party). Band check per direction:
+  G.722 and Opus pass both ways, PCMU fails both ways (5000 and 6000 Hz at
+  -106 to -132 dBFS). `hd_dtmf_through_rtpengine`: telephone-event/8000
+  from a G.722 party reaches an L16 party as telephone-event/16000;
+  rtpengine doubles the durations (160 to 640 become 320 to 1280) and the
+  mixer forwards them as they are.
+- `chappe_mrf_hd_live_SUITE` with pjsua (`hd.sh`): the image that
+  `hd.sh` found was an older `chappe-conf-pjsua` without Opus (another
+  checkout had built it): the Opus caller offered `m=audio 0`. Rebuilt from
+  the branch. Two pjsua started in the same second then drew the same
+  Call-ID and From tag (pjsua seeds its PRNG from the time): rtpengine and
+  the B2BUA saw one call. The callers now start 2 s apart.
+- pjsua's G.722 path comes in 6.0 dB below the probe in every tone, the
+  same in the native room and in the FreeSWITCH `wideband` room, so it is
+  pjsua's gain, not the band. The suite moves the calibration by what
+  1000 Hz lost and checks the shape within 3 dB.
+- Control: the same calls in an 8 kHz native room (rtpengine told to
+  transcode to PCMU) fail every direction, 5000 and 6000 Hz at -88 to
+  -110 dBFS; without the transcode the mixer refuses the G.722 offer
+  (488).

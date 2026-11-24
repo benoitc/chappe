@@ -2,7 +2,8 @@
 # Copyright 2026 Benoit Chesneau
 # SPDX-License-Identifier: Apache-2.0
 #
-# Runs chappe_mrf_live_SUITE against the lab of
+# Runs chappe_mrf_live_SUITE and chappe_mrf_hd_live_SUITE (pjsua callers
+# through apps/chappe_sip/interop/pjsua/hd.sh) against the lab of
 # apps/chappe_mrf/interop/docker-compose.yml (rtpengine, fs1, fs2),
 # brought up and torn down here. `up --wait' blocks on the FreeSWITCH
 # healthchecks; MRF=1 makes the suite run instead of skip. The suite stops
@@ -44,7 +45,8 @@ MEDIA_IP="$($COMPOSE exec -T rtpengine getent hosts host.docker.internal \
     2>/dev/null | awk '{print $1}')"
 
 MRF=1 MRF_MEDIA_IP="$MEDIA_IP" MRF_COMPOSE="$COMPOSE" \
-    rebar3 ct --dir apps/chappe_mrf/test --suite chappe_mrf_live_SUITE
+    rebar3 ct --dir apps/chappe_mrf/test \
+    --suite chappe_mrf_live_SUITE,chappe_mrf_hd_live_SUITE
 RC=$?
 
 if [ "${MRF_KEEP:-0}" != "1" ]; then
