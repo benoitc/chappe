@@ -68,7 +68,29 @@ third one, in chappe_mrf or in your own app, or change one of the two.
    `record/3`, `stop_record/1`, `handover/1`, `dial/4`, ...). The room
    answers `{error, {unsupported, Backend}}` for them. For a flag you cannot
    set, return `{error, unsupported}` from `set_flag/5`.
-5. Start a room on it by module name:
+5. To bring in the parties a REFER to the room asks for, export `dial/4`.
+   The room calls it, in its own process, once the REFER was decided and
+   answered: `dial(Target, Key, Cfg, Room)`, with `Key` the REFER's op and
+   `Cfg` the room's dial options plus `replaces`, `referred_by` and
+   `dial_string` (dial that string: it is what the room's policy saw).
+   Return `{ok, Room}` once the dial is under way, `{{error, Why}, Room}`
+   if it cannot start (the referrer hears 503). Report what happens, in
+   the room, with `chappe_mrf_conf_backend:refer_progress/3` (180, 183)
+   and `refer_final/3`; add the party as a member with `joined/3` only
+   once it answered, then report 200:
+
+   ```erlang
+   dial(Target, Key, Cfg, Room) ->
+       ok = my_media:call(Target, maps:get(dial_string, Cfg), Key),
+       {ok, Room}.
+
+   handle_info({my_answered, Key, Id, Mb}, Room) ->
+       Room1 = chappe_mrf_conf_backend:joined(Id, Mb, Room),
+       {noreply, chappe_mrf_conf_backend:refer_final(Key, 200, Room1)};
+   handle_info({my_failed, Key, Status}, Room) ->
+       {noreply, chappe_mrf_conf_backend:refer_final(Key, Status, Room)}.
+   ```
+6. Start a room on it by module name:
 
    ```erlang
    {ok, Conf} = chappe_mrf_conf:start(<<"room1">>, #{backend => my_backend}).

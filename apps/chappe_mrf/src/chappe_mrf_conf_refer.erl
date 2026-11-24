@@ -26,26 +26,29 @@
 %%      room without focus => true); the Refer-To of a REFER for a REFER
 %%      is a plain reference to this room, and no party is the room
 %%      itself (else 403: either could loop);
-%%   3. room for one more (add and refer): a locked room 403, a full one
-%%      486, the parties being dialed counting as members (the same check
-%%      as join/3's, chappe_mrf_conf_backend:admission/1);
-%%   4. the room's refer_policy, given chappe_sip_focus:refer_info/2's map
+%%   3. the room's refer_policy, given chappe_sip_focus:refer_info/2's map
 %%      plus member (the referrer's member id, from its dialog or the
-%%      dialog its Target-Dialog names, else undefined), dial (add: the
-%%      dial string it would run) and removes (remove: the member it
-%%      names): false is 403, {reject, Code} is Code, and no policy
-%%      refuses every REFER;
-%%   5. for a removal, the member: the one whose endpoint entity
-%%      (<conference URI>;member=Id) the Refer-To is, else the one member
-%%      with that address-of-record; none is 404, more than one 485.
-%%      Only this room's members are looked at.
+%%      dialog its Target-Dialog names), dial (add: the dial string it
+%%      would run) and removes (remove: the member it names), every key
+%%      there for every action (undefined when it does not apply): false
+%%      is 403, {reject, Code} is Code, a policy that crashes is 403 (and
+%%      logged), and no policy refuses every REFER;
+%%   4. only then the room's state, so a refused referrer learns nothing
+%%      of it: for a removal the member (the one whose endpoint entity,
+%%      <conference URI>;member=Id, the Refer-To is, else the one member
+%%      with that address-of-record; none is 404, more than one 485, only
+%%      this room's members looked at), and room for one more (add and
+%%      refer: a locked room 403, a full one 486, the parties being
+%%      dialed counting as members, chappe_mrf_conf_backend:admission/1).
 %%
 %% Then the REFER is answered 200 (with the conference URI and isfocus as
 %% Contact in a focus room) and NOTIFY 100, and carried out
 %% (chappe_mrf_conf_refer_dial). A repeated REFER (the same origin, method
-%% and target, chappe_mrf_conf_refer_op) dials nobody again: it hears the
-%% first one's outcome. Adding a member that is already in answers 200 at
-%% once. A party being dialed is no member until it answered; a dial that
+%% and target, chappe_mrf_conf_refer_op), or one from another origin for
+%% a party being dialed already, dials nobody again: it hears the first
+%% one's outcome. Adding a member that is already in answers 200 at once.
+%% The op of a REFER whose worker dies before it answered it is dropped.
+%% A party being dialed is no member until it answered; a dial that
 %% fails leaves the room as it was. When the room ends, the REFERs still
 %% under way hear 487 and their dials are given up.
 %%
@@ -60,6 +63,7 @@
 -export([admission/2, info/2, progress/3, final/3]).
 %% for a member's side (chappe_mrf_conf_refer_member)
 -export([decide/2, start/3, policy/2, member_of/2, reject/3]).
+-export([policy_view/1, down/2]).
 %% the backends' events about a dial (chappe_mrf_conf_refer_dial)
 -export([native_event/3, fs_added/3, fs_result/3, fs_started/3]).
 
@@ -91,8 +95,12 @@ refer(Conf, Req, Res) ->
     case chappe_sip_focus:refer_info(undefined, Req) of
         {reject, St, Reason} ->
             reject(Res, St, Reason);
-        {ok, Info} ->
-            case chappe_mrf_conf:call(Conf, {refer, {decide, Info}}, 30000) of
+        {ok, Info0} ->
+            %% the URI it was sent to is the room's too (a room without
+            %% focus has no entity)
+            Info = Info0#{room_uri => chappe_sip_req:uri(Req)},
+            Decide = {refer, {decide, Info, self()}},
+            case chappe_mrf_conf:call(Conf, Decide, 30000) of
                 {accept, Key, AOpts} ->
                     accept_out(Conf, Key, AOpts, Req, Res);
                 {reject, St} ->
@@ -195,22 +203,22 @@ setup(Opts, S) ->
 
 %% The room's REFER requests, sent as {refer, Req}.
 -spec call(term(), #state{}) -> {reply, term(), #state{}}.
-call({decide, Info}, S) ->
-    case decide(Info, S) of
+call({decide, Info, Worker}, S) ->
+    %% the worker that will accept the REFER is watched until it starts
+    %% or aborts the op it reserves
+    case decide(Info, Worker, S) of
         {accept, Key, S1} -> {reply, {accept, Key, accept_opts(S1)}, S1};
         {reject, St} -> {reply, {reject, St}, S}
     end;
 call({start, Key, Refer}, S) ->
     {reply, ok, start(Key, Refer, S)};
-call({abort, Key}, #state{refer_ops = Ops} = S) ->
-    {reply, ok, S#state{refer_ops = chappe_mrf_conf_refer_op:abort(Key, Ops)}};
+call({abort, Key}, S) ->
+    {reply, ok, abort(Key, S)};
 call({dialing, Key, Ep}, S) ->
     {Reply, S1} = chappe_mrf_conf_refer_dial:dialing(Key, Ep, S),
     {reply, Reply, S1};
-call({leg, Pid}, S) ->
-    {reply, member_of(Pid, S), S};
-call({replaced, Old, New}, S) ->
-    {reply, ok, chappe_mrf_conf_refer_member:replaced(Old, New, S)};
+call({replace, Step}, S) ->
+    chappe_mrf_conf_refer_member:replace(Step, S);
 call(_Req, S) ->
     {reply, {error, unknown_call}, S}.
 
@@ -234,19 +242,47 @@ accept_opts(#state{entity = E}) -> #{contact => chappe_sip_focus:contact(E)}.
 
 %% ---- the decision ----
 
+%% The keys every policy Info has, undefined when the action has none, so
+%% a policy can match any of them whatever the action.
+-define(INFO_KEYS, [
+    action,
+    target,
+    method,
+    replaces,
+    refer_to,
+    nested,
+    referrer,
+    referred_by,
+    target_dialog,
+    origin,
+    member,
+    dial,
+    removes
+]).
+
+%% Info with every policy key (?INFO_KEYS), undefined when missing.
+-spec policy_view(map()) -> map().
+policy_view(Info) ->
+    maps:merge(maps:from_keys(?INFO_KEYS, undefined), Info).
+
 %% What the room makes of a REFER (refer_info/2's map, with member when
-%% the caller knows it): {accept, Key, S} with the op reserved (or a
-%% repeat to attach), or {reject, Status}.
+%% the caller knows it): {accept, Key, S} with the op reserved (or one to
+%% attach to), or {reject, Status}. The room's own checks on the request
+%% come first; nothing that tells the room's state (its members, whether
+%% it is full) is answered before the policy said yes.
 -spec decide(map(), #state{}) ->
     {accept, term(), #state{}} | {reject, 300..699}.
-decide(Info0, S) ->
+decide(Info, S) ->
+    decide(Info, undefined, S).
+
+decide(Info0, Worker, S) ->
     Info = Info0#{member => maps:get(member, Info0, referrer(Info0, S))},
     case check(Info, S) of
         {reject, _} = Rej ->
             Rej;
         {Kind, Key, Data} ->
             case policy(maps:merge(Info, policy_info(Kind, Data)), S) of
-                true -> admit(Kind, Key, Data, S);
+                true -> admit(Kind, Key, Data, Worker, S);
                 {reject, Code} -> {reject, Code};
                 false -> {reject, 403}
             end
@@ -258,89 +294,70 @@ policy_info(_Kind, #{dial := Dial}) -> #{dial => Dial};
 policy_info(remove, #{member := Id}) -> #{removes => Id};
 policy_info(_Kind, _Data) -> #{}.
 
-%% what the REFER asks for, checked against the room: {Kind, Key, Data}
-%% with Kind repeat (an op under way or done), existing (the target is a
-%% member), new, remove, or unresolved (a removal naming no one member)
+%% what the REFER asks for, checked against the request and the room's
+%% configuration only: {Kind, Key, Data}, Kind add, remove, unresolved (a
+%% removal naming no one member) or refer
 check(#{action := Action} = Info, S) ->
     case focus_only(Action, S) of
         ok -> check_action(Action, Info, S);
         Rej -> Rej
     end.
 
-focus_only(Action, #state{entity = undefined}) when
-    Action =:= remove; Action =:= refer
-->
-    %% RFC 4579 5.11 and 5.7: a focus's (RFC 3515 2.4.2 leaves the 4xx-6xx
-    %% to RFC 3261)
-    {reject, 403};
-focus_only(transfer, _S) ->
-    %% a member of a room that is no focus transfers through its call
-    {reject, 403};
-focus_only(_Action, _S) ->
-    ok.
+%% RFC 4579 5.11 and 5.7: removal and REFER for a REFER are a focus's (RFC
+%% 3515 2.4.2 leaves the 4xx-6xx to RFC 3261); a member of a room that is
+%% no focus transfers through its call
+focus_only(remove, #state{entity = undefined}) -> {reject, 403};
+focus_only(refer, #state{entity = undefined}) -> {reject, 403};
+focus_only(transfer, _S) -> {reject, 403};
+focus_only(_Action, _S) -> ok.
 
 check_action(add, #{target := Target} = Info, S) ->
     case
-        chappe_mrf_conf_refer_dial:dialable(Target) andalso
-            not is_room(Target, S)
+        {
+            chappe_mrf_conf_refer_dial:dialable(Target) andalso
+                not is_room(Target, Info, S),
+            dial_headers(Info)
+        }
     of
-        false ->
-            %% hostile to a dial string, or the room itself (a loop)
-            {reject, 403};
-        true ->
-            Key = key(Info),
-            case known(Key, S) of
-                true -> {repeat, Key, #{}};
-                false -> add_kind(Key, Target, Info, S)
-            end
+        {true, {ok, Headers}} ->
+            {add, key(Info), data(add, Target, Headers, S)};
+        _ ->
+            %% hostile to a dial string, the room itself (a loop), or a
+            %% Replaces FreeSWITCH could not carry as it was given
+            {reject, 403}
     end;
-check_action(remove, #{target := Target} = Info, S) ->
-    Key = key(Info),
+check_action(remove, #{origin := Origin, target := Target}, S) ->
     case resolve(Target, S) of
-        {ok, Id} -> {remove, Key, #{member => Id}};
-        {error, St} -> {unresolved, Key, #{status => St}}
+        {ok, Id} ->
+            Key = chappe_mrf_conf_refer_op:key(Origin, <<"BYE">>, Id),
+            {remove, Key, #{action => remove, member => Id}};
+        {error, St} ->
+            {unresolved, undefined, #{status => St}}
     end;
 check_action(refer, #{target := Target, nested := Nested} = Info, S) ->
-    case plain_room(Nested, S) andalso not is_room(Target, S) of
+    case plain_room(Nested, Info, S) andalso not is_room(Target, Info, S) of
         false ->
             %% a focus refers parties to its own conference only, with a
             %% plain Refer-To (an INVITE, no headers), and never itself:
             %% anything else could have it REFER itself in a loop
             {reject, 403};
         true ->
-            Key = key(Info),
-            case {known(Key, S), admission(S)} of
-                {true, _} -> {repeat, Key, #{}};
-                {false, ok} -> {new, Key, data(refer, Target, Info, S)};
-                {false, {error, Why}} -> {reject, admission_status(Why)}
-            end
+            {refer, key(Info), data(refer, Target, #{}, S)}
     end.
 
-%% whether a URI is the room's own (its conference URI)
-is_room(_Uri, #state{entity = undefined}) ->
-    false;
-is_room(Uri, #state{entity = E}) ->
-    chappe_mrf_conf_refer_op:aor(Uri) =:= chappe_mrf_conf_refer_op:aor(E).
+%% whether a URI is the room's own: its conference URI, or the URI the
+%% REFER was sent to
+is_room(Uri, Info, #state{entity = E}) ->
+    Aor = chappe_mrf_conf_refer_op:aor(Uri),
+    lists:member(Aor, [
+        chappe_mrf_conf_refer_op:aor(R)
+     || R <- [E, maps:get(room_uri, Info, undefined)], is_binary(R)
+    ]).
 
-plain_room(#{uri := U, method := <<"INVITE">>, headers := []}, S) ->
-    is_room(U, S);
-plain_room(_Nested, _S) ->
+plain_room(#{uri := U, method := <<"INVITE">>, headers := []}, Info, S) ->
+    is_room(U, Info, S);
+plain_room(_Nested, _Info, _S) ->
     false.
-
-add_kind(Key, Target, Info, #state{members = M} = S) ->
-    Aor = chappe_mrf_conf_refer_op:aor(Target),
-    case
-        [Id || Id := #{uri := U} <- M, chappe_mrf_conf_refer_op:aor(U) =:= Aor]
-    of
-        [_ | _] ->
-            %% in already: nobody is dialed
-            {existing, Key, #{action => add, target => Target}};
-        [] ->
-            case admission(S) of
-                ok -> {new, Key, data(add, Target, Info, S)};
-                {error, Why} -> {reject, admission_status(Why)}
-            end
-    end.
 
 admission(S) ->
     chappe_mrf_conf_backend:admission(S).
@@ -354,82 +371,162 @@ key(#{origin := Origin, method := M, target := Target}) ->
 known(Key, #state{refer_ops = Ops}) ->
     chappe_mrf_conf_refer_op:lookup(Key, Ops) =/= none.
 
-%% what an op needs to carry the REFER out
-data(Action, Target, Info, S) ->
-    Base = #{
-        action => Action, target => Target, op_id => chappe_mrf_lib:new_id()
+%% what an op needs to carry the REFER out: for an add, the dial string,
+%% made once (the policy sees it, the backend dials it)
+data(add, Target, Headers, S) ->
+    D = Headers#{
+        action => add, target => Target, op_id => chappe_mrf_lib:new_id()
     },
-    D = maps:merge(Base, dial_headers(Info)),
-    case Action of
-        add ->
-            Cfg = dial_cfg(S, D),
-            D#{
-                dial => iolist_to_binary(
-                    chappe_mrf_conf_refer_dial:dial_string(Cfg, Target)
-                )
-            };
-        refer ->
-            #{nested := #{uri := N}} = Info,
-            D#{nested => N}
+    Dial = chappe_mrf_conf_refer_dial:dial_string(dial_cfg(S, D), Target),
+    D#{dial => iolist_to_binary(Dial)};
+data(refer, Target, _Headers, _S) ->
+    #{action => refer, target => Target, op_id => chappe_mrf_lib:new_id()}.
+
+%% What the INVITE to the party carries of the REFER, made safe for a
+%% FreeSWITCH dial string: the Refer-To's Replaces (RFC 4579 5.10),
+%% refused when it could not go as it is, and the Referred-By's URI
+%% (RFC 3892 2.2 wants the whole value copied; only its URI survives the
+%% dial string: a deviation, MRF-23).
+dial_headers(Info) ->
+    case replaces(Info) of
+        {ok, Rep} -> {ok, maps:merge(Rep, referred_uri(Info))};
+        error -> error
     end.
 
-%% the Referred-By the dialed INVITE (or the nested REFER) carries, as a
-%% bare URI safe in a FreeSWITCH variable (RFC 3892 2.2 wants it copied;
-%% only its URI survives the dial string), and the Replaces of the
-%% Refer-To (RFC 4579 5.10), safe there too
-dial_headers(#{referred_by := RB} = Info) when is_binary(RB) ->
-    By =
-        case chappe_sip_hdr:name_addr(RB) of
-            {ok, #{uri := U}} ->
-                case chappe_mrf_conf_refer_dial:dialable(U) of
-                    true -> #{referred_by => <<"<", U/binary, ">">>};
-                    false -> #{}
-                end;
-            _ ->
-                #{}
-        end,
-    maps:merge(By, replaces(Info));
-dial_headers(Info) ->
-    replaces(Info).
+referred_uri(#{referred_by := RB}) when is_binary(RB) ->
+    case chappe_sip_hdr:name_addr(RB) of
+        {ok, #{uri := U}} ->
+            case chappe_mrf_conf_refer_dial:dialable(U) of
+                true -> #{referred_by => <<"<", U/binary, ">">>};
+                false -> #{}
+            end;
+        _ ->
+            #{}
+    end;
+referred_uri(_Info) ->
+    #{}.
 
 replaces(#{replaces := R}) when R =/= undefined ->
     V = chappe_sip_hdr:replaces_value(R),
-    case chappe_mrf_conf_refer_dial:dialable(V) of
-        true -> #{replaces => V};
-        false -> #{}
+    case chappe_mrf_conf_refer_dial:safe_value(V) of
+        true -> {ok, #{replaces => V}};
+        false -> error
     end;
 replaces(_Info) ->
-    #{}.
+    {ok, #{}}.
 
-%% the room's dial options with what the REFER asked for
+%% the room's dial options with what the REFER asked for, and the dial
+%% string the policy saw
 dial_cfg(#state{dial = Dial, entity = E}, Data) ->
     Base = maps:merge(#{endpoint => #{}}, Dial#{entity => E}),
-    maps:merge(Base, maps:with([replaces, referred_by], Data)).
+    maps:merge(Base, maps:with([replaces, referred_by, dial_string], Data)).
 
-%% The room's policy; without one every REFER is refused.
+%% The room's policy, given Info with every policy key; without one every
+%% REFER is refused. It runs in the room: one that crashes (a clause that
+%% does not match the action, say) refuses the REFER, and the room goes
+%% on.
 -spec policy(map(), #state{}) -> true | false | {reject, 300..699}.
 policy(_Info, #state{refer_policy = undefined}) ->
     false;
-policy(Info, #state{refer_policy = P}) ->
-    case P(Info) of
+policy(Info, #state{refer_policy = P, name = Name}) ->
+    try P(policy_view(Info)) of
         true ->
             true;
         {reject, Code} when is_integer(Code), Code >= 300, Code =< 699 ->
             {reject, Code};
         _ ->
             false
+    catch
+        Class:Why ->
+            logger:warning(
+                "chappe_mrf_conf ~ts: refer_policy failed on ~p: ~0p",
+                [Name, maps:get(action, Info, undefined), {Class, Why}]
+            ),
+            false
     end.
 
-%% the policy said yes: an op is reserved (a repeat attaches when it is
-%% accepted; a removal naming no one member is refused now)
-admit(repeat, Key, _Data, S) ->
-    {accept, Key, S};
-admit(unresolved, _Key, #{status := St}, _S) ->
+%% The policy said yes; now the room's state answers: a REFER asking for
+%% what an op under way or done asks (from this origin, or another one
+%% adding the same party) joins it, a party already in is 200 at once, a
+%% removal naming no one member is refused, and anything that brings
+%% someone in must find room (admission, 403 locked, 486 full). Then an
+%% op is reserved, its worker watched until it starts or aborts it.
+admit(unresolved, _Key, #{status := St}, _Worker, _S) ->
     {reject, St};
-admit(Kind, Key, Data, #state{refer_ops = Ops} = S) ->
-    case chappe_mrf_conf_refer_op:reserve(Key, Data#{kind => Kind}, Ops) of
-        {ok, Ops1} -> {accept, Key, S#state{refer_ops = Ops1}};
-        {error, full} -> {reject, 503}
+admit(Kind, Key, Data, Worker, S) ->
+    case {known(Key, S), Kind} of
+        {true, _} -> {accept, Key, S};
+        {false, add} -> admit_add(Key, Data, Worker, S);
+        {false, remove} -> reserve(remove, Key, Data, Worker, S);
+        {false, refer} -> admit_new(Key, Data, Worker, S)
+    end.
+
+admit_add(Key, #{target := Target} = Data, Worker, #state{members = M} = S) ->
+    Aor = chappe_mrf_conf_refer_op:aor(Target),
+    In = [
+        Id
+     || Id := #{uri := U} <- M, chappe_mrf_conf_refer_op:aor(U) =:= Aor
+    ],
+    case {In, chappe_mrf_conf_refer_op:adding(Aor, S#state.refer_ops)} of
+        {[_ | _], _} ->
+            %% in already: nobody is dialed
+            reserve(existing, Key, Data, Worker, S);
+        {[], {ok, Other}} ->
+            %% another origin is bringing the same party in: one dial
+            {accept, Other, S};
+        {[], none} ->
+            admit_new(Key, Data, Worker, S)
+    end.
+
+admit_new(Key, Data, Worker, S) ->
+    case admission(S) of
+        ok -> reserve(new, Key, Data, Worker, S);
+        {error, Why} -> {reject, admission_status(Why)}
+    end.
+
+reserve(Kind, Key, Data, Worker, #state{refer_ops = Ops} = S) ->
+    Mon = watch(Worker),
+    case
+        chappe_mrf_conf_refer_op:reserve(
+            Key, Data#{kind => Kind, mon => Mon}, Ops
+        )
+    of
+        {ok, Ops1} ->
+            {accept, Key, S#state{refer_ops = Ops1}};
+        {error, exists} ->
+            unwatch(Mon),
+            {accept, Key, S};
+        {error, full} ->
+            unwatch(Mon),
+            {reject, 503}
+    end.
+
+watch(undefined) -> undefined;
+watch(Pid) -> erlang:monitor(process, Pid).
+
+unwatch(undefined) -> ok;
+unwatch(Mon) -> erlang:demonitor(Mon, [flush]).
+
+%% A reserved op whose REFER was not accepted after all.
+abort(Key, #state{refer_ops = Ops} = S) ->
+    _ = unwatch_op(Key, Ops),
+    S#state{refer_ops = chappe_mrf_conf_refer_op:abort(Key, Ops)}.
+
+unwatch_op(Key, Ops) ->
+    case chappe_mrf_conf_refer_op:data(Key, Ops) of
+        #{mon := Mon} -> unwatch(Mon);
+        _ -> ok
+    end.
+
+%% A process the room watched went down: the worker of a reserved op
+%% (it died between the decision and the answer) frees that op.
+-spec down(reference(), #state{}) -> #state{}.
+down(Mon, #state{refer_ops = Ops} = S) ->
+    case chappe_mrf_conf_refer_op:by_mon(Mon, Ops) of
+        {ok, Key} ->
+            S#state{refer_ops = chappe_mrf_conf_refer_op:abort(Key, Ops)};
+        none ->
+            S
     end.
 
 %% The member whose call's leg A (its dialog with the room) is dialog
@@ -504,8 +601,13 @@ by_entity(_Target, _E, _M) ->
 start(Key, Refer, #state{refer_ops = Ops} = S) ->
     case chappe_mrf_conf_refer_op:lookup(Key, Ops) of
         {reserved, Data0} ->
-            %% the <referred> of the party it brings in (RFC 4575 5.7.2)
-            Data = Data0#{referred => chappe_sip_focus:referred(Refer)},
+            _ = unwatch_op(Key, Ops),
+            %% the <referred> of the party it brings in (RFC 4575 5.7.2),
+            %% and the REFER's own Referred-By, for a nested REFER
+            Data = Data0#{
+                referred => chappe_sip_focus:referred(Refer),
+                referred_by_raw => chappe_sip_refer:referred_by(Refer)
+            },
             Ops1 = chappe_mrf_conf_refer_op:set_data(
                 Key, Data, chappe_mrf_conf_refer_op:start(Key, Refer, Ops)
             ),
@@ -528,10 +630,12 @@ carry_out(Key, #{kind := remove, member := Id}, #state{members = M} = S) ->
         #{} ->
             final(Key, 404, S)
     end;
-carry_out(Key, #{kind := new, action := refer, target := T, nested := N}, S) ->
-    chappe_mrf_conf_refer_dial:nested(Key, T, N, S);
-carry_out(Key, #{kind := new, action := add, target := T} = Data, S) ->
-    Cfg = dial_cfg(S, Data),
+carry_out(Key, #{kind := new, action := refer, target := T}, S) ->
+    %% the party is referred to the conference URI itself, whatever
+    %% parameters the referrer's Refer-To had
+    chappe_mrf_conf_refer_dial:nested(Key, T, S#state.entity, S);
+carry_out(Key, #{kind := new, action := add, target := T, dial := D} = Data, S) ->
+    Cfg = dial_cfg(S, Data#{dial_string => D}),
     Dialed = chappe_mrf_conf_backend:supported(dial, 4, S, fun(Mod) ->
         {Reply, S1} = Mod:dial(T, Key, Cfg, S),
         {reply, Reply, S1}

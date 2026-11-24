@@ -105,11 +105,14 @@
 %%                (chappe_mrf_conf_refer). Info is
 %%                chappe_sip_focus:refer_info/2's map (action add |
 %%                remove | refer | transfer, target, method, replaces,
-%%                referrer, referred_by, target_dialog, origin, ...) plus
-%%                member (the referrer's member id, or undefined), dial
-%%                (add: the dial string) and removes (remove: the member
-%%                it names). Without one every REFER is refused 403. It
-%%                runs in the room process.
+%%                referrer, referred_by, target_dialog, origin, nested)
+%%                plus member (the referrer's member id), dial (add: the
+%%                dial string) and removes (remove: the member it names),
+%%                every key there, undefined when it does not apply; also
+%%                asked, with action replace, about a caller whose
+%%                Replaces names a member it is not. Without one every
+%%                REFER is refused 403. It runs in the room process; one
+%%                that crashes refuses.
 %%   dial      => fun((Target) -> iodata()): the dial string of a party a
 %%                REFER brings in (default sofia/<dial_profile>/<target>)
 %%   dial_profile => the sofia profile of that default (<<"external">>)
@@ -662,11 +665,13 @@ handle_info({'DOWN', Mon, process, Pid, _}, #state{listeners = L} = S) ->
         #{Pid := Mon} ->
             {noreply, S#state{listeners = maps:remove(Pid, L)}};
         _ ->
+            %% a mover, or the worker of a REFER the room reserved for
+            S1 = chappe_mrf_conf_refer:down(Mon, S),
             {M, Actions} = chappe_mrf_conf_transfer:mover_down(
-                Mon, S#state.members
+                Mon, S1#state.members
             ),
             {noreply,
-                chappe_mrf_conf_transfer:run(Actions, S#state{members = M})}
+                chappe_mrf_conf_transfer:run(Actions, S1#state{members = M})}
     end;
 handle_info({'EXIT', Pid, Why}, S) ->
     %% a REFER's dial helper, or a link of no interest

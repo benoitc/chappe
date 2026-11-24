@@ -181,7 +181,6 @@ talk to the room with `chappe_mrf_conf:call/3`):
 |---|---|---|
 | `join/4` | yes | a call or an endpoint joins; the room checks its lease, lock and member limit, then hands the request to `admit/3` |
 | `transfer_check/2`, `transfer_in/3` | no | a member moves between rooms |
-| `dial_out/4` | no | a REFER to the room brings a party in, in the REFER's request worker |
 
 Callbacks that run in the room process on its state and return it:
 

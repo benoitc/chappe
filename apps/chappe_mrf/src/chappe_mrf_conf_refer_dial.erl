@@ -27,7 +27,7 @@
 
 -include("chappe_mrf_conf.hrl").
 
--export([dialable/1, dial_string/2, dial_vars/1]).
+-export([dialable/1, safe_value/1, dial_string/2, dial_vars/1]).
 -export([native/4, fs/3, nested/4]).
 -export([dialing/3, hidden/3, native_event/3]).
 -export([fs_added/3, fs_result/3, fs_started/3]).
@@ -54,9 +54,25 @@ dialable(Target) when is_binary(Target), byte_size(Target) =< 256 ->
 dialable(_) ->
     false.
 
+%% Whether a header value (a Replaces) can go in a FreeSWITCH channel
+%% variable of the dial string as it is: dialable/1's characters, plus
+%% the ones a Call-ID may also have that FreeSWITCH reads as nothing
+%% special there (/ ( ) ?). A value with anything else (`,' `{' `}' `['
+%% `]' `<' `>' `'' `$' `\' `|', spaces) is refused, never trimmed.
+-spec safe_value(binary()) -> boolean().
+safe_value(V) when is_binary(V), byte_size(V) =< 256 ->
+    re:run(V, <<"^[A-Za-z0-9._~!*+=;@:%/()?-]+$">>, [{capture, none}]) =:=
+        match andalso
+        binary:match(V, <<":_:">>) =:= nomatch;
+safe_value(_) ->
+    false.
+
 %% The dial string of a target: the room's dial fun, else
 %% sofia/<dial_profile>/<the URI without its scheme>.
 -spec dial_string(map(), binary()) -> iodata().
+dial_string(#{dial_string := Dial}, _Target) ->
+    %% made once, when the room decided: what its policy saw
+    Dial;
 dial_string(#{dial := F}, Target) when is_function(F, 1) ->
     F(Target);
 dial_string(Cfg, Target) ->
@@ -145,6 +161,10 @@ native(Target, Key, Cfg, #state{entity = E} = S) ->
     Join = (maps:with([referred], Data))#{
         name => T, uri => T, refer => Key, joining => dialed_out
     },
+    %% a helper of the room, linked: the room traps exits and fails the
+    %% REFER on its abnormal end (exited/3); if the room goes first, the
+    %% helper's calls to it fail and it ends, and the endpoint, the
+    %% room's, is destroyed with its owner
     Pid = spawn_link(fun() -> native_helper(Conf, Key, EpOpts, Join, Dial) end),
     {ok, put_dial({helper, Pid}, #{key => Key}, S)}.
 
@@ -353,13 +373,18 @@ fs_started(Uuid, {error, _}, #state{dialing = D} = S) ->
 -spec nested(term(), binary(), binary(), #state{}) -> #state{}.
 nested(Key, Target, NestedUri, #state{entity = Entity, refer_ops = Ops} = S) ->
     Data = chappe_mrf_conf_refer_op:data(Key, Ops),
+    %% no FreeSWITCH here: the Referred-By goes as the REFER had it (RFC
+    %% 3892 2.2)
     Opts = #{
         from => <<"<", Entity/binary, ">">>,
         contact => Entity,
         contact_params => chappe_sip_focus:contact_params(),
-        referred_by => maps:get(referred_by, Data, undefined)
+        referred_by => maps:get(referred_by_raw, Data, undefined)
     },
     Conf = self(),
+    %% linked as the native helper is, and it watches the room: it ends
+    %% with it, at the latest when the REFER's transaction (32 s) and the
+    %% target's NOTIFYs (?NESTED_FOLLOW) are over
     Pid = spawn_link(fun() ->
         nested_helper(
             Conf, Key, Target, NestedUri, maps:filter(fun known/2, Opts)

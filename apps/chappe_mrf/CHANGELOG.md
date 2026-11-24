@@ -13,6 +13,10 @@ says how apps are released.
   outcome to every referrer and refuse a second dial of the same party,
   and the separate dial-out callback is gone. The two backends chappe
   ships are updated.
+- In a conference without focus, a member's REFER handed to the room as
+  a request in its dialog is now refused: the member's call carries its
+  transfer out once the room agrees. A call you answer yourself and hand
+  to such a room must be made with the transfer notify mode instead.
 
 ### Fixed
 
@@ -37,6 +41,18 @@ says how apps are released.
 - The call a REFER asked to replace (Replaces) now reaches the party the
   conference dials: FreeSWITCH never sent it the way it was passed. A
   party's early media no longer makes it a member before it answers.
+- A conference policy that fails on a REFER it did not expect no longer
+  takes the conference and its calls down: the REFER is refused.
+- A referrer the conference does not trust can no longer tell whether
+  the conference is full.
+- A REFER whose answer was never sent no longer holds a place in the
+  conference: the room forgets it when the process handling it dies.
+- Two REFERs bringing the same party in, from different callers, dial it
+  once; two removals of different members from one caller both happen.
+- A Replaces the conference cannot pass on as it is now refuses the
+  REFER instead of being dropped, and a REFER asking the conference to
+  refer a party passes the referrer's Referred-By on unchanged.
+- A conference without focus refuses to dial its own address.
 
 ### New
 
@@ -50,8 +66,10 @@ says how apps are released.
   (method=REFER): it sends that party a REFER to the conference, and the
   referrer hears how the party answered.
 - A caller whose INVITE replaces a member's call (Replaces) takes that
-  member's place in the conference, and the member is hung up; a
-  Replaces naming any other call is refused and changes nothing.
+  member's place in the conference, and the member is hung up, when the
+  caller is that member or was referred by it, or the conference's
+  policy allows it; anyone else is refused, and so is a second caller
+  replacing the same member.
 - A member of a conference without focus can transfer itself attended
   (with Replaces) as well as blind; its call carries the transfer out
   once the conference's policy agrees.

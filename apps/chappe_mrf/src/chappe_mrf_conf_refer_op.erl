@@ -3,23 +3,27 @@
 %%
 %% @doc The REFERs a room carries out (chappe_mrf_conf_refer), as a value
 %% the room keeps in its state. An op is one thing REFERs asked the room
-%% for, keyed {Origin, Method, AOR}: who asked (chappe_sip_refer:origin/1:
-%% a dialog, or a request's Call-ID and From tag), the Refer-To method,
-%% and the target's address-of-record (chappe_sip_uri:aor/1). A REFER
-%% that asks again for the same thing from the same origin (a UA that
-%% sends a new REFER when the first one's answer was lost, or a user who
-%% asks twice) is the same op: it is attached to the op in flight and
-%% hears the same progress and final status, or, once the op is done,
-%% its final status at once. Nothing is dialed twice.
+%% for, keyed {Origin, Method, Subject}: who asked
+%% (chappe_sip_refer:origin/1: a dialog, or a request's Call-ID and From
+%% tag), the Refer-To method, and what it is about: the target's
+%% address-of-record (chappe_sip_uri:aor/1), or for a removal the member
+%% it names. A REFER that asks again for the same thing from the same
+%% origin (a UA that sends a new REFER when the first one's answer was
+%% lost, or a user who asks twice) is the same op: it is attached to the
+%% op in flight and hears the same progress and final status, or, once
+%% the op is done, its final status at once. Nothing is dialed twice.
 %%
-%% Bounds: a done op is kept 32 s (64*T1, the lifetime of the REFER's
-%% transaction, RFC 3261 17.1.2.2), then forgotten; a room keeps at most
-%% 64 ops, and a new one past that is refused (the caller answers 503).
+%% Bounds: an op reserved for a REFER that is never accepted, and a done
+%% op, are kept 32 s (64*T1, the lifetime of the REFER's transaction, RFC
+%% 3261 17.1.2.2), then forgotten; a room keeps at most 64 ops, and a new
+%% one past that is refused (the caller answers 503). The functions that
+%% take Now (monotonic milliseconds) are the same with the time given.
 -module(chappe_mrf_conf_refer_op).
 
 -export([new/0, key/3, aor/1, lookup/2, reserve/3, start/3, attach/3]).
 -export([progress/3, final/3, abort/2, in_flight/1, count/1]).
--export([data/2, set_data/3]).
+-export([data/2, set_data/3, adding/2, by_mon/2]).
+-export([lookup/3, reserve/4, in_flight/2]).
 
 -export_type([ops/0, key/0]).
 
@@ -30,7 +34,7 @@
 -type status() :: 100..699.
 -type op() :: #{
     refers := [chappe_sip_refer:refer()],
-    state := reserved | running | {done, 200..699, integer()},
+    state := {reserved, integer()} | running | {done, 200..699, integer()},
     progress := status() | undefined,
     data := map()
 }.
@@ -39,8 +43,11 @@
 -spec new() -> ops().
 new() -> #{}.
 
-%% The key of a REFER from Origin asking Method for Target.
+%% The key of a REFER from Origin asking Method for Subject: a target URI
+%% (compared by its address-of-record) or a member id.
 -spec key(chappe_sip_refer:origin(), binary(), binary()) -> key().
+key(Origin, <<"BYE">> = M, Member) ->
+    {Origin, M, Member};
 key(Origin, Method, Target) ->
     {Origin, Method, aor(Target)}.
 
@@ -59,30 +66,49 @@ aor(Uri) when is_binary(Uri) ->
 -spec lookup(key(), ops()) ->
     {reserved | running, map()} | {done, 200..699} | none.
 lookup(Key, Ops) ->
-    case maps:find(Key, prune(Ops)) of
+    lookup(Key, now_ms(), Ops).
+
+-spec lookup(key(), integer(), ops()) ->
+    {reserved | running, map()} | {done, 200..699} | none.
+lookup(Key, Now, Ops) ->
+    case maps:find(Key, prune(Now, Ops)) of
         {ok, #{state := {done, St, _}}} -> {done, St};
-        {ok, #{state := State, data := Data}} -> {State, Data};
+        {ok, #{state := {reserved, _}, data := Data}} -> {reserved, Data};
+        {ok, #{state := running, data := Data}} -> {running, Data};
         error -> none
     end.
 
 %% Hold Key for a REFER the room is about to accept (Data: what the room
-%% needs to carry it out). {error, full} past the room's bound.
--spec reserve(key(), map(), ops()) -> {ok, ops()} | {error, full}.
-reserve(Key, Data, Ops0) ->
-    Ops = prune(Ops0),
-    case map_size(Ops) >= ?MAX_OPS of
-        true ->
+%% needs to carry it out). {error, full} past the room's bound, {error,
+%% exists} for a key the room knows (a repeat, never overwritten).
+-spec reserve(key(), map(), ops()) -> {ok, ops()} | {error, full | exists}.
+reserve(Key, Data, Ops) ->
+    reserve(Key, Data, now_ms(), Ops).
+
+-spec reserve(key(), map(), integer(), ops()) ->
+    {ok, ops()} | {error, full | exists}.
+reserve(Key, Data, Now, Ops0) ->
+    Ops = prune(Now, Ops0),
+    case Ops of
+        #{Key := _} ->
+            {error, exists};
+        #{} when map_size(Ops) >= ?MAX_OPS ->
             {error, full};
-        false ->
-            Op = #{refers => [], state => reserved, progress => undefined},
-            {ok, Ops#{Key => Op#{data => Data}}}
+        #{} ->
+            Op = #{
+                refers => [],
+                state => {reserved, Now},
+                progress => undefined,
+                data => Data
+            },
+            {ok, Ops#{Key => Op}}
     end.
 
 %% The REFER of a reserved Key was accepted: the op runs.
 -spec start(key(), chappe_sip_refer:refer(), ops()) -> ops().
 start(Key, Refer, Ops) ->
     case Ops of
-        #{Key := #{state := reserved} = Op} ->
+        #{Key := #{state := {reserved, _}} = Op} ->
             Ops#{Key := Op#{state := running, refers := [Refer]}};
         #{} ->
             Ops
@@ -125,9 +151,9 @@ final(Key, St, Ops) ->
     case Ops of
         #{Key := #{state := running, refers := Rs} = Op} ->
             [ok = chappe_sip_refer:final(R, St) || R <- lists:reverse(Rs)],
-            Done = {done, St, erlang:monotonic_time(millisecond)},
+            Done = {done, St, now_ms()},
             Ops#{Key := Op#{state := Done, refers := []}};
-        #{Key := #{state := reserved}} ->
+        #{Key := #{state := {reserved, _}}} ->
             maps:remove(Key, Ops);
         #{} ->
             Ops
@@ -137,16 +163,55 @@ final(Key, St, Ops) ->
 -spec abort(key(), ops()) -> ops().
 abort(Key, Ops) ->
     case Ops of
-        #{Key := #{state := reserved}} -> maps:remove(Key, Ops);
+        #{Key := #{state := {reserved, _}}} -> maps:remove(Key, Ops);
         #{} -> Ops
     end.
 
-%% The ops under way, with their data.
+%% The ops under way (reserved in time, or running), with their data.
 -spec in_flight(ops()) -> [{key(), map()}].
 in_flight(Ops) ->
-    [{K, D} || K := #{state := S, data := D} <- Ops, not is_tuple(S)].
+    in_flight(now_ms(), Ops).
 
-%% The data of an op under way, or undefined.
+-spec in_flight(integer(), ops()) -> [{key(), map()}].
+in_flight(Now, Ops) ->
+    [
+        {K, D}
+     || K := #{state := S, data := D} <- prune(Now, Ops), not done(S)
+    ].
+
+done({done, _, _}) -> true;
+done(_State) -> false.
+
+%% The op under way that adds the party with address-of-record Aor, from
+%% any origin: a second REFER for it joins that op.
+-spec adding(binary(), ops()) -> {ok, key()} | none.
+adding(Aor, Ops) ->
+    case
+        [
+            K
+         || {{_, <<"INVITE">>, A} = K, #{action := add}} <- in_flight(Ops),
+            A =:= Aor
+        ]
+    of
+        [K | _] -> {ok, K};
+        [] -> none
+    end.
+
+%% The reserved op whose REFER's worker the room watches with Mon.
+-spec by_mon(reference(), ops()) -> {ok, key()} | none.
+by_mon(Mon, Ops) ->
+    case
+        [
+            K
+         || K := #{state := {reserved, _}, data := #{mon := M}} <- Ops,
+            M =:= Mon
+        ]
+    of
+        [K | _] -> {ok, K};
+        [] -> none
+    end.
+
+%% The data of an op, or undefined.
 -spec data(key(), ops()) -> map() | undefined.
 data(Key, Ops) ->
     case Ops of
@@ -169,13 +234,17 @@ set_data(Key, Data, Ops) ->
 count(Ops) ->
     map_size(Ops).
 
-%% done ops past their time are forgotten
-prune(Ops) ->
-    Now = erlang:monotonic_time(millisecond),
+%% reserved ops never accepted, and done ops, past their time are
+%% forgotten
+prune(Now, Ops) ->
     maps:filter(
         fun
             (_K, #{state := {done, _, T}}) -> Now - T < ?KEEP_MS;
+            (_K, #{state := {reserved, T}}) -> Now - T < ?KEEP_MS;
             (_K, _Op) -> true
         end,
         Ops
     ).
+
+now_ms() ->
+    erlang:monotonic_time(millisecond).

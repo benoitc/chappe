@@ -223,11 +223,11 @@ this order:
    reference to this room's URI (no method, no headers), and a party that
    is the room itself: each could make the room REFER or call itself in a
    loop;
-3. room for one more, for an add or a refer: a locked room refuses 403, a
-   full one 486; the parties being dialed count as members, the same rule
-   `join/3` follows;
-4. the policy (below): `false` is 403, `{reject, Code}` is Code;
-5. for a removal, the member it names: none is 404, more than one 485.
+3. the policy (below): `false` is 403, `{reject, Code}` is Code;
+4. the room's state, only once the policy said yes: for a removal the
+   member it names (none is 404, more than one 485), and room for one
+   more, for an add or a refer (a locked room 403, a full one 486, the
+   parties being dialed counting as members, the rule `join/3` follows).
 
 Then the REFER gets 200, with the conference URI and `isfocus` as Contact
 in a focus room, and NOTIFY 100, and the room carries it out:
@@ -256,8 +256,11 @@ in a focus room, and NOTIFY 100, and the room carries it out:
 - When the room ends, the REFERs still under way get a final NOTIFY 487
   and their dials are given up.
 
-The policy runs in the room process and sees
-`chappe_sip_focus:refer_info/2`'s map plus the room's view:
+The policy runs in the room process and gets the same keys for every
+action, `undefined` where one does not apply, so a clause can match any
+of them; one that crashes (no clause for the action, say) refuses the
+REFER 403 and the room goes on. It sees `chappe_sip_focus:refer_info/2`'s
+map plus the room's view:
 
 | Key | What it is |
 |---|---|
@@ -319,9 +322,29 @@ the conference URI with `isfocus` as its Contact in a `focus => true` room
 
 A caller whose INVITE carries Replaces (RFC 3891) naming a member's call
 in this room takes that member's place (RFC 4579 5.9): it joins, then the
-member it replaces is hung up and leaves with reason `replaced`. A
-Replaces naming any other call is refused (403, or 481 when it names
-none) and the room does not change. The roster shows a caller whose
+member it replaces is hung up and leaves with reason `replaced`. RFC
+3891 8 accepts a replacement only from an authenticated and authorized
+peer: authenticate the INVITE before you call `join/3`. The room then
+allows the member itself (its From has the member's address-of-record)
+and a caller that member referred (Referred-By naming it); your
+`refer_policy` may allow more, given `action => replace`, `member` (the
+member it would replace), `target` (that member's URI), `referrer` (the
+caller's From) and `referred_by`:
+
+```erlang
+{ok, Conf} = chappe_mrf:conference(<<"board">>, #{
+    focus => true,
+    refer_policy => fun
+        (#{action := replace, referrer := R}) -> is_moderator(R);
+        (#{action := add}) -> true;
+        (_) -> false
+    end
+}).
+```
+
+Anyone else gets 403, a Replaces naming no call 481, a call of no member
+of this room 403, and a second caller replacing a member another one is
+replacing 603; the room does not change. The roster shows a caller whose
 INVITE had Referred-By as `referred` by that URI.
 
 A call you answered yourself (`connect_caller/3`) carries the Contact you

@@ -291,7 +291,7 @@ transfer_in(To, {fs, Ep, Owned, Opts}, #{name := FromName, member := Id}) ->
 %% mod_conference dials the party into the room (with the Replaces and
 %% Referred-By of the REFER, when it has them)
 dial(Target, Key, Cfg, #state{dial = Dial} = S) ->
-    Extra = maps:with([replaces, referred_by], Cfg),
+    Extra = maps:with([replaces, referred_by, dial_string], Cfg),
     Room = S#state{dial = maps:merge(Dial, Extra)},
     {Reply, S1} = chappe_mrf_conf_refer_dial:fs(Target, Key, Room),
     {Reply, S1#state{dial = Dial}}.

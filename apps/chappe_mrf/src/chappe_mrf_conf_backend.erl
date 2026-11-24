@@ -57,6 +57,10 @@
 %%   admission(Room)                 ok, or {error, locked | full}: may
 %%                                   one more come in (members, joins
 %%                                   and REFER dial-outs under way count)
+%%   refer_progress(Key, St, Room)   for dial/4: the party's 180 or 183,
+%%                                   to the referrers of op Key
+%%   refer_final(Key, St, Room)      for dial/4: its final status (200
+%%                                   once it is a member, joined/3)
 -module(chappe_mrf_conf_backend).
 
 -include("chappe_mrf_conf.hrl").
@@ -66,7 +70,7 @@
 -export([bstate/1, bstate/2, name/1, members/1, member_by/3]).
 -export([member/3, put_member/3, joined/3, public/2]).
 -export([emit/2, publish/1, talking/3, gone/2, gone/3, drop_member/3]).
--export([close_if_empty/1, admission/1]).
+-export([close_if_empty/1, admission/1, refer_progress/3, refer_final/3]).
 
 -export_type([room/0, member/0, member_info/0]).
 
@@ -127,10 +131,12 @@
 -callback handover(member_info()) ->
     {ok, Handover :: tuple(), Watch :: boolean()} | {error, term()}.
 %% Dial a party in for a REFER (chappe_mrf_conf_refer), in the room, for
-%% the op Key; Cfg has the room's dial options and what the REFER asked
-%% for (replaces, referred_by). ok once it is under way; then report, in
-%% the room, with chappe_mrf_conf_refer:progress/3 and final/3 (200 once
-%% the party is a member). An error fails the REFER with 503.
+%% the op Key; Cfg has the room's dial options, what the REFER asked for
+%% (replaces, referred_by) and dial_string, the dial string the room's
+%% policy saw (dial it, do not make another). ok once it is under way;
+%% then report, in the room, with refer_progress/3 and refer_final/3 (200
+%% once the party is a member: add it with joined/3 when it answered).
+%% An error fails the REFER with 503.
 -callback dial(
     Target :: binary(), Key :: term(), Cfg :: map(), room()
 ) -> {ok | {error, term()}, room()}.
@@ -319,6 +325,18 @@ dials(#state{refer_ops = Ops}) ->
             Ops
         )
     ]).
+
+%% A party a backend's dial/4 brings in for op Key rings (180) or has
+%% early media (183): the referrers hear it.
+-spec refer_progress(term(), 101..199, room()) -> room().
+refer_progress(Key, St, S) ->
+    chappe_mrf_conf_refer:progress(Key, St, S).
+
+%% That party's final status: 200 once it is a member, the failure
+%% otherwise; the op is done.
+-spec refer_final(term(), 200..699, room()) -> room().
+refer_final(Key, St, S) ->
+    chappe_mrf_conf_refer:final(Key, St, S).
 
 %% A room that lost its name ends with its last member.
 -spec close_if_empty(room()) -> ok.
