@@ -55,7 +55,10 @@ party_and_room(_Config) ->
     ?assert(R440 > -30 andalso R1100 > -30),
     ?assertMatch(
         [#{source := room, dropped := 0}, #{source := LA, dropped := 0}],
-        lists:sort(fun(X, Y) -> maps:get(source, X) >= maps:get(source, Y) end, chappe_mix:taps(Conf))
+        lists:sort(
+            fun(X, Y) -> maps:get(source, X) >= maps:get(source, Y) end,
+            chappe_mix:taps(Conf)
+        )
     ),
     [chappe_mix_test_tone:stop(P) || P <- [A, B]],
     ok = chappe_mix:stop(Conf).
@@ -86,8 +89,13 @@ refs(_Config) ->
     {chappe_mix, Conf, {tap, T1, <<_:2560>>}} = tap_msg(T1),
     {chappe_mix, Conf, {tap, T2, _}} = tap_msg(T2),
     {chappe_mix, Conf, {tap, T3, _}} = tap_msg(T3),
-    Refs = maps:from_list([{T, R} || #{tap := T, ref := R} <- chappe_mix:taps(Conf)]),
-    ?assertEqual(#{T1 => <<"leg-ref">>, T2 => <<"room-ref">>, T3 => <<"own">>}, Refs),
+    Refs = maps:from_list([
+        {T, R}
+     || #{tap := T, ref := R} <- chappe_mix:taps(Conf)
+    ]),
+    ?assertEqual(
+        #{T1 => <<"leg-ref">>, T2 => <<"room-ref">>, T3 => <<"own">>}, Refs
+    ),
     ?assertEqual(<<"room-ref">>, chappe_mix:ref(Conf)),
     ok = chappe_mix:stop(Conf).
 
@@ -112,7 +120,11 @@ leg_leaves(_Config) ->
 %% The receiver dies: the conference drops its tap and goes on.
 receiver_death(_Config) ->
     {ok, Conf} = chappe_mix:start(#{}),
-    Pid = spawn(fun() -> receive stop -> ok end end),
+    Pid = spawn(fun() ->
+        receive
+            stop -> ok
+        end
+    end),
     {ok, _} = chappe_mix:tap(Conf, room, #{to => Pid}),
     [_] = chappe_mix:taps(Conf),
     exit(Pid, kill),
@@ -147,7 +159,9 @@ untap_and_errors(_Config) ->
     ?assertEqual({error, not_found}, chappe_mix:tap(Conf, 99, #{})),
     ?assertEqual({error, badarg}, chappe_mix:tap(Conf, nope, #{})),
     ?assertEqual({error, badarg}, chappe_mix:tap(Conf, room, #{to => x})),
-    ?assertEqual({error, badarg}, chappe_mix:tap(Conf, room, #{max_queue => 0})),
+    ?assertEqual(
+        {error, badarg}, chappe_mix:tap(Conf, room, #{max_queue => 0})
+    ),
     ?assertEqual({error, badarg}, chappe_mix:tap(Conf, room, #{ref => 1})),
     ok = chappe_mix:stop(Conf).
 
@@ -157,7 +171,11 @@ untap_and_errors(_Config) ->
 flood_bound(_Config) ->
     {ok, Conf} = chappe_mix:start(#{}),
     {LA, A} = sender(Conf, 440),
-    Pid = spawn(fun() -> receive stop -> ok end end),
+    Pid = spawn(fun() ->
+        receive
+            stop -> ok
+        end
+    end),
     {ok, _} = chappe_mix:tap(Conf, LA, #{to => Pid, max_queue => 20}),
     {ok, _} = chappe_mix:tap(Conf, room, #{to => Pid, max_queue => 20}),
     timer:sleep(1000),
@@ -269,4 +287,3 @@ wait(F, N) ->
             timer:sleep(50),
             wait(F, N - 1)
     end.
-

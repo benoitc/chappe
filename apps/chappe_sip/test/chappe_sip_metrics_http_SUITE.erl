@@ -9,12 +9,22 @@
 -include_lib("stdlib/include/assert.hrl").
 
 -export([all/0, init_per_testcase/2, end_per_testcase/2]).
--export([listen_serves_metrics/1, listener_at_boot/1, bad_options/1,
-         service_crash_restarts/1, stop_listening/1]).
+-export([
+    listen_serves_metrics/1,
+    listener_at_boot/1,
+    bad_options/1,
+    service_crash_restarts/1,
+    stop_listening/1
+]).
 
 all() ->
-    [listen_serves_metrics, listener_at_boot, bad_options,
-     service_crash_restarts, stop_listening].
+    [
+        listen_serves_metrics,
+        listener_at_boot,
+        bad_options,
+        service_crash_restarts,
+        stop_listening
+    ].
 
 init_per_testcase(listener_at_boot, Config) ->
     P = chappe_sip_test_port:pick(),
@@ -49,10 +59,18 @@ listener_at_boot(Config) ->
     {200, _} = get(?config(port, Config), <<"/metrics">>).
 
 bad_options(_Config) ->
-    [?assertEqual({error, badarg}, chappe_sip_metrics:listen(O))
-     || O <- [#{}, #{port => 0}, #{port => 70000}, #{port => <<"80">>},
-              #{port => 9999, ip => "127.0.0.1"},
-              #{port => 9999, other => 1}, not_a_map]].
+    [
+        ?assertEqual({error, badarg}, chappe_sip_metrics:listen(O))
+     || O <- [
+            #{},
+            #{port => 0},
+            #{port => 70000},
+            #{port => <<"80">>},
+            #{port => 9999, ip => "127.0.0.1"},
+            #{port => 9999, other => 1},
+            not_a_map
+        ]
+    ].
 
 %% The livery service dying takes the listener down with it; the
 %% supervisor starts a fresh one from the setting and it serves again.
@@ -61,16 +79,19 @@ service_crash_restarts(Config) ->
     Old = whereis(chappe_sip_metrics_http),
     {state, Svc, _, _} = sys:get_state(chappe_sip_metrics_http),
     exit(Svc, kill),
-    ok = wait(fun() ->
-        New = whereis(chappe_sip_metrics_http),
-        is_pid(New) andalso New =/= Old andalso
-            try get(P, <<"/metrics">>) of
-                {200, _} -> true;
-                _ -> false
-            catch
-                _:_ -> false
-            end
-    end, 50),
+    ok = wait(
+        fun() ->
+            New = whereis(chappe_sip_metrics_http),
+            is_pid(New) andalso New =/= Old andalso
+                try get(P, <<"/metrics">>) of
+                    {200, _} -> true;
+                    _ -> false
+                catch
+                    _:_ -> false
+                end
+        end,
+        50
+    ),
     {200, _} = get(P, <<"/metrics">>).
 
 %% stop_listening/0 closes the port.
@@ -80,16 +101,26 @@ stop_listening(Config) ->
     {200, _} = get(P, <<"/metrics">>),
     ok = chappe_sip_metrics:stop_listening(),
     ?assertEqual(undefined, chappe_sip_metrics_http:port()),
-    ?assertMatch({error, _},
-                 gen_tcp:connect({127, 0, 0, 1}, P, [binary], 1000)).
+    ?assertMatch(
+        {error, _},
+        gen_tcp:connect({127, 0, 0, 1}, P, [binary], 1000)
+    ).
 
 %% ---- helpers ----
 
 get(Port, Path) ->
-    {ok, S} = gen_tcp:connect({127, 0, 0, 1}, Port,
-                              [binary, {active, false}], 2000),
-    ok = gen_tcp:send(S, [<<"GET ">>, Path, <<" HTTP/1.1\r\n">>,
-                          <<"Host: localhost\r\nConnection: close\r\n\r\n">>]),
+    {ok, S} = gen_tcp:connect(
+        {127, 0, 0, 1},
+        Port,
+        [binary, {active, false}],
+        2000
+    ),
+    ok = gen_tcp:send(S, [
+        <<"GET ">>,
+        Path,
+        <<" HTTP/1.1\r\n">>,
+        <<"Host: localhost\r\nConnection: close\r\n\r\n">>
+    ]),
     Resp = recv_all(S, <<>>),
     gen_tcp:close(S),
     <<"HTTP/1.1 ", Code:3/binary, _/binary>> = Resp,
@@ -107,6 +138,9 @@ wait(_F, 0) ->
     ct:fail(not_restarted);
 wait(F, N) ->
     case F() of
-        true -> ok;
-        _ -> timer:sleep(100), wait(F, N - 1)
+        true ->
+            ok;
+        _ ->
+            timer:sleep(100),
+            wait(F, N - 1)
     end.

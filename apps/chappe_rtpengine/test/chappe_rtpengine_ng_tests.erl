@@ -90,7 +90,9 @@ atom_value_rule_test() ->
         #{<<"transcode">> => [<<"opus">>], <<"mask">> => [<<"G722_1">>]},
         maps:get(<<"codec">>, Dict)
     ),
-    ?assertEqual([<<"pub_net">>, <<"priv_net">>], maps:get(<<"direction">>, Dict)).
+    ?assertEqual(
+        [<<"pub_net">>, <<"priv_net">>], maps:get(<<"direction">>, Dict)
+    ).
 
 %% Bencode has no floats or tuples: a clear error, not a function_clause.
 bad_value_rejected_test() ->
@@ -122,7 +124,9 @@ decode_reply_keeps_warning_test() ->
     ?assertEqual({ok, Reply}, chappe_rtpengine_ng:decode_reply(Reply)).
 
 binary_key_passthrough_test() ->
-    Dict = chappe_rtpengine_ng:command(offer, #{<<"generic key">> => <<"value">>}),
+    Dict = chappe_rtpengine_ng:command(offer, #{
+        <<"generic key">> => <<"value">>
+    }),
     ?assertEqual(<<"value">>, maps:get(<<"generic key">>, Dict)).
 
 nested_map_test() ->
@@ -130,7 +134,9 @@ nested_map_test() ->
     ?assertEqual(#{<<"mask">> => [<<"all">>]}, maps:get(<<"codec">>, Dict)).
 
 command_name_test() ->
-    Name = fun(Cmd) -> maps:get(<<"command">>, chappe_rtpengine_ng:command(Cmd, #{})) end,
+    Name = fun(Cmd) ->
+        maps:get(<<"command">>, chappe_rtpengine_ng:command(Cmd, #{}))
+    end,
     ?assertEqual(<<"ping">>, Name(ping)),
     ?assertEqual(<<"query">>, Name(query)),
     ?assertEqual(<<"start recording">>, Name(start_recording)),
@@ -158,7 +164,9 @@ media_control_wire_test() ->
     ),
     ?assertEqual(
         <<"unsilence media">>,
-        maps:get(<<"command">>, chappe_rtpengine_ng:command(unsilence_media, #{}))
+        maps:get(
+            <<"command">>, chappe_rtpengine_ng:command(unsilence_media, #{})
+        )
     ).
 
 play_media_wire_test() ->
@@ -236,7 +244,9 @@ decode_reply_error_test() ->
 
 decode_reply_error_without_reason_test() ->
     Reply = #{<<"result">> => <<"error">>},
-    ?assertEqual({error, <<"unknown">>, Reply}, chappe_rtpengine_ng:decode_reply(Reply)).
+    ?assertEqual(
+        {error, <<"unknown">>, Reply}, chappe_rtpengine_ng:decode_reply(Reply)
+    ).
 
 decode_reply_missing_result_test() ->
     ?assertMatch(

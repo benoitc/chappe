@@ -65,9 +65,12 @@ sdes_wire_test_() ->
         ),
         %% two chunks, CNAME and NAME in the second
         ?_assertEqual(
-            <<2:2, 0:1, 2:5, 202, 6:16, 9:32, 1, 1, "a", 0, 10:32, 1, 1, "b",
-                2, 3, "Bob", 0, 0, 0, 0>>,
-            Build([{9, [{cname, <<"a">>}]}, {10, [{cname, <<"b">>}, {name, <<"Bob">>}]}])
+            <<2:2, 0:1, 2:5, 202, 6:16, 9:32, 1, 1, "a", 0, 10:32, 1, 1, "b", 2,
+                3, "Bob", 0, 0, 0, 0>>,
+            Build([
+                {9, [{cname, <<"a">>}]},
+                {10, [{cname, <<"b">>}, {name, <<"Bob">>}]}
+            ])
         )
     ].
 
@@ -131,9 +134,13 @@ validity_test_() ->
     Rr = chappe_mix_rtcp:build([#{type => rr, ssrc => 1, blocks => []}]),
     Bye = chappe_mix_rtcp:build([#{type => bye, ssrcs => [1]}]),
     Sdes = chappe_mix_rtcp:build([#{type => sdes, chunks => [{1, []}]}]),
-    Bad = fun(B) -> ?_assertEqual({error, invalid}, chappe_mix_rtcp:parse(B)) end,
+    Bad = fun(B) ->
+        ?_assertEqual({error, invalid}, chappe_mix_rtcp:parse(B))
+    end,
     [
-        ?_assertMatch({ok, [_, _]}, chappe_mix_rtcp:parse(<<Rr/binary, Bye/binary>>)),
+        ?_assertMatch(
+            {ok, [_, _]}, chappe_mix_rtcp:parse(<<Rr/binary, Bye/binary>>)
+        ),
         Bad(<<>>),
         %% version 1
         Bad(<<1:2, 0:1, 0:5, 201, 1:16, 1:32>>),
@@ -160,9 +167,23 @@ validity_test_() ->
 interval_test_() ->
     C = 2.71828 - 1.5,
     [
-        ?_assert(close(2.5 * 0.5 / C, chappe_mix_rtcp:interval(2, 2, true, 100.0, true, 0.0))),
-        ?_assert(close(5.0 * 1.5 / C, chappe_mix_rtcp:interval(2, 2, true, 100.0, false, 1.0))),
-        ?_assert(close(5.0 / C, chappe_mix_rtcp:interval(2, 2, true, 100.0, false, 0.5))),
+        ?_assert(
+            close(
+                2.5 * 0.5 / C,
+                chappe_mix_rtcp:interval(2, 2, true, 100.0, true, 0.0)
+            )
+        ),
+        ?_assert(
+            close(
+                5.0 * 1.5 / C,
+                chappe_mix_rtcp:interval(2, 2, true, 100.0, false, 1.0)
+            )
+        ),
+        ?_assert(
+            close(
+                5.0 / C, chappe_mix_rtcp:interval(2, 2, true, 100.0, false, 0.5)
+            )
+        ),
         %% 200 members, one sender, not us: receivers share 75% of the
         %% 500 octet/s RTCP bandwidth, 199 of them at 100 octets each
         ?_assert(
@@ -173,7 +194,10 @@ interval_test_() ->
         ),
         %% the same with us the sender: the 25% share among 1 sender
         ?_assert(
-            close(5.0 / C, chappe_mix_rtcp:interval(200, 1, true, 100.0, false, 0.5))
+            close(
+                5.0 / C,
+                chappe_mix_rtcp:interval(200, 1, true, 100.0, false, 0.5)
+            )
         )
     ].
 
@@ -203,7 +227,9 @@ report_block_test() ->
     ),
     %% no loss since: fraction 0, cumulative unchanged
     Src2 = lists:foldl(
-        fun(S, A) -> chappe_mix_rtcp:src_update(A, S, S * 160, 1000 + S * 160) end,
+        fun(S, A) ->
+            chappe_mix_rtcp:src_update(A, S, S * 160, 1000 + S * 160)
+        end,
         Src1,
         [6, 7]
     ),
@@ -230,7 +256,9 @@ jitter_test() ->
 
 feed([S0 | Seqs], Off) ->
     lists:foldl(
-        fun(S, A) -> chappe_mix_rtcp:src_update(A, S, S * 160, Off + S * 160) end,
+        fun(S, A) ->
+            chappe_mix_rtcp:src_update(A, S, S * 160, Off + S * 160)
+        end,
         chappe_mix_rtcp:src_new(77, S0, S0 * 160, Off + S0 * 160),
         Seqs
     ).
@@ -238,7 +266,9 @@ feed([S0 | Seqs], Off) ->
 %% NTP time: seconds since 1900 in the high word, the fraction in the low.
 ntp_test() ->
     ?assertEqual(2208988800 bsl 32, chappe_mix_rtcp:ntp(0)),
-    ?assertEqual((2208988801 bsl 32) + (1 bsl 31), chappe_mix_rtcp:ntp(1500000)).
+    ?assertEqual(
+        (2208988801 bsl 32) + (1 bsl 31), chappe_mix_rtcp:ntp(1500000)
+    ).
 
 %% RFC 7022: a CNAME is 96 random bits, base64, different each time.
 cname_test() ->

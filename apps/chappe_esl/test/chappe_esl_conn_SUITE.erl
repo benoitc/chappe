@@ -118,7 +118,9 @@ connect_auth(Config) ->
 api(Config) ->
     Conn = ?config(conn, Config),
     ?assertEqual({ok, <<"7200000">>}, chappe_esl:api(Conn, "uptime")),
-    ?assertEqual({ok, <<"UP 0 years, 0 days">>}, chappe_esl:api(Conn, "status")).
+    ?assertEqual(
+        {ok, <<"UP 0 years, 0 days">>}, chappe_esl:api(Conn, "status")
+    ).
 
 %% req: ESL-17
 bgapi(Config) ->
@@ -155,7 +157,9 @@ subscribe_event(Config) ->
 %% req: ESL-21
 execute(Config) ->
     Conn = ?config(conn, Config),
-    ?assertEqual(ok, chappe_esl:execute(Conn, "uuid-1", "playback", "tone.wav")).
+    ?assertEqual(
+        ok, chappe_esl:execute(Conn, "uuid-1", "playback", "tone.wav")
+    ).
 
 change_controlling_process(Config) ->
     Conn = ?config(conn, Config),

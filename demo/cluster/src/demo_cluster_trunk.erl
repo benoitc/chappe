@@ -51,7 +51,9 @@ ok(Req) ->
     Keep = [
         tag_to(L)
      || L <- Lines,
-        lists:member(name(L), [<<"via">>, <<"from">>, <<"to">>, <<"call-id">>, <<"cseq">>])
+        lists:member(name(L), [
+            <<"via">>, <<"from">>, <<"to">>, <<"call-id">>, <<"cseq">>
+        ])
     ],
     iolist_to_binary([
         <<"SIP/2.0 200 OK\r\n">>,

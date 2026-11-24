@@ -49,7 +49,8 @@ init_per_testcase(_Case, Config) ->
     {ok, L} = chappe_audio:listen(#{
         ip => {0, 0, 0, 0},
         port => Port,
-        url => <<"ws://host.docker.internal:", (integer_to_binary(Port))/binary>>
+        url =>
+            <<"ws://host.docker.internal:", (integer_to_binary(Port))/binary>>
     }),
     {ok, Conn} = chappe_esl:connect(?config(fs, Config)),
     Uuid = call(Conn),
@@ -110,8 +111,13 @@ stream_module(Config) ->
     {ok, S, Url} = chappe_audio:open(?config(listener, Config), #{
         ref => <<"live-stream">>
     }),
-    api(Config, ["uuid_audio_stream ", ?config(uuid, Config), " start ", Url,
-        " mixed 8k {\"call\":\"lab\"}"]),
+    api(Config, [
+        "uuid_audio_stream ",
+        ?config(uuid, Config),
+        " start ",
+        Url,
+        " mixed 8k {\"call\":\"lab\"}"
+    ]),
     {connected, #{subprotocol := undefined}} = event(S),
     ?assertEqual({text, <<"{\"call\":\"lab\"}">>}, event(S)),
     ?assert(loudest(frames(S, 50), 1) > -40),

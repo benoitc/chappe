@@ -83,7 +83,13 @@ pause_and_skew_ranges_test() ->
     %% past lease_ms (6000), or about renew_ms / 2 (1000)
     ?assert(lists:any(fun(Ms) -> Ms > 6000 end, Pauses)),
     ?assert(lists:any(fun(Ms) -> Ms >= 750 andalso Ms =< 1250 end, Pauses)),
-    [?assert((Ms > 6000 andalso Ms =< 11000) orelse (Ms >= 750 andalso Ms =< 1250)) || Ms <- Pauses],
+    [
+        ?assert(
+            (Ms > 6000 andalso Ms =< 11000) orelse
+                (Ms >= 750 andalso Ms =< 1250)
+        )
+     || Ms <- Pauses
+    ],
     %% below and above renew_ms / 2, both ways
     ?assert(lists:any(fun(Ms) -> abs(Ms) < 1000 end, Skews)),
     ?assert(lists:any(fun(Ms) -> abs(Ms) > 1000 end, Skews)),

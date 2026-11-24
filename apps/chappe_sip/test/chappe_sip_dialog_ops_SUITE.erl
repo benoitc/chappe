@@ -12,16 +12,30 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -export([all/0, init_per_suite/1, end_per_suite/1, end_per_testcase/2]).
--export([reinvite_hold/1, indialog_info/1, getters_during_request/1,
-         engine_restart_tears_down/1, engine_crash_reestablishes/1]).
+-export([
+    reinvite_hold/1,
+    indialog_info/1,
+    getters_during_request/1,
+    engine_restart_tears_down/1,
+    engine_crash_reestablishes/1
+]).
 
 all() ->
-    [reinvite_hold, indialog_info, getters_during_request,
-     engine_restart_tears_down, engine_crash_reestablishes].
+    [
+        reinvite_hold,
+        indialog_info,
+        getters_during_request,
+        engine_restart_tears_down,
+        engine_crash_reestablishes
+    ].
 
 init_per_suite(Config) ->
-    application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
-                        [{persistent, true}]),
+    application:set_env(
+        chappe_sip,
+        engine_mod,
+        chappe_sip_nif,
+        [{persistent, true}]
+    ),
     {ok, _} = application:ensure_all_started(chappe_sip),
     Config.
 
@@ -40,7 +54,9 @@ reinvite_hold(_Config) ->
     EP = setup(),
     Test = self(),
     ok = chappe_sip:invite(fun(Req, Res) ->
-        {ok, Dlg} = chappe_sip:create_uas(Req, Res, #{local_sdp => sdp(<<"app">>)}),
+        {ok, Dlg} = chappe_sip:create_uas(Req, Res, #{
+            local_sdp => sdp(<<"app">>)
+        }),
         Test ! {dialog, Dlg, self()},
         receive
             do_hold ->
@@ -59,24 +75,39 @@ reinvite_hold(_Config) ->
         Test ! caller_up,
         %% receive the re-INVITE, answer 200, expect ACK
         {Re, RSrc} = recv(Sock, <<"INVITE">>),
-        {_, _} = binary:match(Re, <<"sendonly">>),      % hold offer
+        % hold offer
+        {_, _} = binary:match(Re, <<"sendonly">>),
         %% the Contact of a 2xx to a target refresh is the new remote
         %% target (RFC 3261 12.2.1.2): ours, so the ACK comes back here
-        send(Sock, RSrc, resp(Re, 200, <<"OK">>, TT,
-                              [{<<"Contact">>, ctc(lport(Sock))}],
-                              sdp(<<"callee">>))),
+        send(
+            Sock,
+            RSrc,
+            resp(
+                Re,
+                200,
+                <<"OK">>,
+                TT,
+                [{<<"Contact">>, ctc(lport(Sock))}],
+                sdp(<<"callee">>)
+            )
+        ),
         {_Ack, _} = recv(Sock, <<"ACK">>),
         Test ! reinvite_acked,
         {_Bye, BSrc} = recv(Sock, <<"BYE">>),
         send(Sock, BSrc, resp(_Bye, 200, <<"OK">>, TT, [], <<>>))
     end),
-    {Dlg, Handler} = receive {dialog, D, H} -> {D, H}
-                     after 4000 -> ct:fail(no_dialog) end,
+    {Dlg, Handler} =
+        receive
+            {dialog, D, H} -> {D, H}
+        after 4000 -> ct:fail(no_dialog)
+        end,
     ok = expect(caller_up),
     Handler ! do_hold,
-    receive {hold_result, {ok, RemoteSdp}} ->
-        {_, _} = binary:match(RemoteSdp, <<"callee">>)
-    after 5000 -> ct:fail(no_hold_result) end,
+    receive
+        {hold_result, {ok, RemoteSdp}} ->
+            {_, _} = binary:match(RemoteSdp, <<"callee">>)
+    after 5000 -> ct:fail(no_hold_result)
+    end,
     ok = expect(reinvite_acked),
     ok = chappe_sip_dialog:destroy(Dlg).
 
@@ -85,13 +116,17 @@ indialog_info(_Config) ->
     EP = setup(),
     Test = self(),
     ok = chappe_sip:invite(fun(Req, Res) ->
-        {ok, Dlg} = chappe_sip:create_uas(Req, Res, #{local_sdp => sdp(<<"app">>)}),
+        {ok, Dlg} = chappe_sip:create_uas(Req, Res, #{
+            local_sdp => sdp(<<"app">>)
+        }),
         Test ! {dialog, Dlg, self()},
         receive
             do_info ->
-                R = chappe_sip_dialog:request(Dlg, #{method => <<"INFO">>,
-                                               content_type => <<"application/dtmf">>,
-                                               body => <<"1">>}),
+                R = chappe_sip_dialog:request(Dlg, #{
+                    method => <<"INFO">>,
+                    content_type => <<"application/dtmf">>,
+                    body => <<"1">>
+                }),
                 Test ! {info_result, R}
         end,
         {destroyed, _} = chappe_sip_dialog:wait(Dlg)
@@ -110,13 +145,18 @@ indialog_info(_Config) ->
         {_Bye, BSrc} = recv(Sock, <<"BYE">>),
         send(Sock, BSrc, resp(_Bye, 200, <<"OK">>, TT, [], <<>>))
     end),
-    {Dlg, Handler} = receive {dialog, D, H} -> {D, H}
-                     after 4000 -> ct:fail(no_dialog) end,
+    {Dlg, Handler} =
+        receive
+            {dialog, D, H} -> {D, H}
+        after 4000 -> ct:fail(no_dialog)
+        end,
     ok = expect(caller_up),
     Handler ! do_info,
-    receive {info_result, {ok, Msg}} ->
-        ?assertEqual(200, chappe_sip_msg:status(Msg))
-    after 5000 -> ct:fail(no_info_result) end,
+    receive
+        {info_result, {ok, Msg}} ->
+            ?assertEqual(200, chappe_sip_msg:status(Msg))
+    after 5000 -> ct:fail(no_info_result)
+    end,
     ok = chappe_sip_dialog:destroy(Dlg).
 
 %% the query and set_handled calls answer while an app-initiated in-dialog
@@ -125,7 +165,9 @@ getters_during_request(_Config) ->
     EP = setup(),
     Test = self(),
     ok = chappe_sip:invite(fun(Req, Res) ->
-        {ok, Dlg} = chappe_sip:create_uas(Req, Res, #{local_sdp => sdp(<<"app">>)}),
+        {ok, Dlg} = chappe_sip:create_uas(Req, Res, #{
+            local_sdp => sdp(<<"app">>)
+        }),
         Test ! {dialog, Dlg, self()},
         receive
             do_info ->
@@ -144,13 +186,19 @@ getters_during_request(_Config) ->
         Test ! caller_up,
         {Info, ISrc} = recv(Sock, <<"INFO">>),
         Test ! info_held,
-        receive release -> ok after 6000 -> ok end,
+        receive
+            release -> ok
+        after 6000 -> ok
+        end,
         send(Sock, ISrc, resp(Info, 200, <<"OK">>, TT, [], <<>>)),
         {_Bye, BSrc} = recv(Sock, <<"BYE">>),
         send(Sock, BSrc, resp(_Bye, 200, <<"OK">>, TT, [], <<>>))
     end),
-    {Dlg, Handler} = receive {dialog, D, H} -> {D, H}
-                     after 4000 -> ct:fail(no_dialog) end,
+    {Dlg, Handler} =
+        receive
+            {dialog, D, H} -> {D, H}
+        after 4000 -> ct:fail(no_dialog)
+        end,
     ok = expect(caller_up),
     Handler ! do_info,
     ok = expect(info_held),
@@ -160,9 +208,11 @@ getters_during_request(_Config) ->
     ?assertMatch(<<"v=0", _/binary>>, chappe_sip_dialog:remote_sdp(Dlg)),
     ?assertEqual(ok, chappe_sip_dialog:set_handled(Dlg, [info])),
     Caller ! release,
-    receive {info_result, {ok, Msg}} ->
-        ?assertEqual(200, chappe_sip_msg:status(Msg))
-    after 5000 -> ct:fail(no_info_result) end,
+    receive
+        {info_result, {ok, Msg}} ->
+            ?assertEqual(200, chappe_sip_msg:status(Msg))
+    after 5000 -> ct:fail(no_info_result)
+    end,
     ok = chappe_sip_dialog:destroy(Dlg).
 
 %% a controlled engine restart terminates live dialogs with engine_restart
@@ -171,7 +221,9 @@ engine_restart_tears_down(_Config) ->
     EP = setup(),
     Test = self(),
     ok = chappe_sip:invite(fun(Req, Res) ->
-        {ok, Dlg} = chappe_sip:create_uas(Req, Res, #{local_sdp => sdp(<<"app">>)}),
+        {ok, Dlg} = chappe_sip:create_uas(Req, Res, #{
+            local_sdp => sdp(<<"app">>)
+        }),
         {destroyed, Why} = chappe_sip_dialog:wait(Dlg),
         Test ! {torn_down, Why}
     end),
@@ -187,10 +239,14 @@ engine_restart_tears_down(_Config) ->
     ok = expect(caller_up),
     timer:sleep(200),
     ok = chappe_sip_engine:restart_engine(),
-    receive {torn_down, engine_restart} -> ok
-    after 5000 -> ct:fail(no_teardown) end,
+    receive
+        {torn_down, engine_restart} -> ok
+    after 5000 -> ct:fail(no_teardown)
+    end,
     %% engine is back: a fresh OPTIONS is answered
-    ok = chappe_sip:options(fun(_Req, Res) -> chappe_sip_res:send(Res, 200, #{}) end),
+    ok = chappe_sip:options(fun(_Req, Res) ->
+        chappe_sip_res:send(Res, 200, #{})
+    end),
     caller(EP, fun(Sock, Port) ->
         send(Sock, Port, options(Sock)),
         _ = recv_status(Sock, 200),
@@ -202,18 +258,24 @@ engine_restart_tears_down(_Config) ->
 %% persisted config (opts + routes), so SIP recovers without a manual start.
 engine_crash_reestablishes(_Config) ->
     EP = setup(),
-    ok = chappe_sip:options(fun(_Req, Res) -> chappe_sip_res:send(Res, 200, #{}) end),
-    ?assertEqual(ok, poll_options(EP, 8)),         % answered before the crash
+    ok = chappe_sip:options(fun(_Req, Res) ->
+        chappe_sip_res:send(Res, 200, #{})
+    end),
+    % answered before the crash
+    ?assertEqual(ok, poll_options(EP, 8)),
     exit(whereis(chappe_sip_engine), kill),
     timer:sleep(300),
-    ?assertEqual(ok, poll_options(EP, 80)).        % answered again after recovery
+    % answered again after recovery
+    ?assertEqual(ok, poll_options(EP, 80)).
 
 %% Send an OPTIONS and look for a 200, retrying (recovery is asynchronous).
-poll_options(_EP, 0) -> timeout;
+poll_options(_EP, 0) ->
+    timeout;
 poll_options(EP, N) ->
-    {ok, Sock} = gen_udp:open(0, [binary, {active, true}, {ip, {127,0,0,1}}]),
-    _ = gen_udp:send(Sock, {127,0,0,1}, EP, options(Sock)),
-    R = receive
+    {ok, Sock} = gen_udp:open(0, [binary, {active, true}, {ip, {127, 0, 0, 1}}]),
+    _ = gen_udp:send(Sock, {127, 0, 0, 1}, EP, options(Sock)),
+    R =
+        receive
             {udp, Sock, _, _, <<"SIP/2.0 200", _/binary>>} -> ok
         after 500 -> retry
         end,
@@ -227,21 +289,31 @@ poll_options(EP, N) ->
 
 setup() ->
     EP = pick(),
-    ok = chappe_sip:start(#{contact => <<"sip:127.0.0.1:",
-                                   (integer_to_binary(EP))/binary>>}),
+    ok = chappe_sip:start(#{
+        contact => <<"sip:127.0.0.1:", (integer_to_binary(EP))/binary>>
+    }),
     EP.
 
 caller(EnginePort, Fun) ->
     Parent = self(),
     Pid = spawn_link(fun() ->
-        {ok, Sock} = gen_udp:open(0, [binary, {active, true}, {ip, {127,0,0,1}}]),
+        {ok, Sock} = gen_udp:open(0, [
+            binary, {active, true}, {ip, {127, 0, 0, 1}}
+        ]),
         Parent ! {caller_ready, self()},
         Fun(Sock, EnginePort)
     end),
-    receive {caller_ready, Pid} -> ok after 2000 -> ct:fail(caller_not_ready) end,
+    receive
+        {caller_ready, Pid} -> ok
+    after 2000 -> ct:fail(caller_not_ready)
+    end,
     Pid.
 
-expect(Msg) -> receive Msg -> ok after 6000 -> ct:fail({expected, Msg}) end.
+expect(Msg) ->
+    receive
+        Msg -> ok
+    after 6000 -> ct:fail({expected, Msg})
+    end.
 
 pick() -> chappe_sip_test_port:pick().
 ctc(P) -> <<"sip:x@127.0.0.1:", (integer_to_binary(P))/binary>>.
@@ -250,18 +322,24 @@ callid() ->
 branch() ->
     <<"z9hG4bK", (binary:encode_hex(crypto:strong_rand_bytes(6)))/binary>>.
 sdp(Marker) ->
-    <<"v=0\r\no=", Marker/binary, " 0 0 IN IP4 127.0.0.1\r\ns=-\r\n"
-      "c=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 40000 RTP/AVP 0\r\n"
-      "a=sendrecv\r\n">>.
-lport(Sock) -> {ok, P} = inet:port(Sock), P.
-send(Sock, Dst, Bin) -> gen_udp:send(Sock, {127,0,0,1}, Dst, Bin).
+    <<"v=0\r\no=", Marker/binary,
+        " 0 0 IN IP4 127.0.0.1\r\ns=-\r\n"
+        "c=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 40000 RTP/AVP 0\r\n"
+        "a=sendrecv\r\n">>.
+lport(Sock) ->
+    {ok, P} = inet:port(Sock),
+    P.
+send(Sock, Dst, Bin) -> gen_udp:send(Sock, {127, 0, 0, 1}, Dst, Bin).
 
 recv(Sock, Method) ->
     L = byte_size(Method),
     receive
-        {udp, Sock, _, Src, <<M:L/binary, " ", _/binary>> = Bin} when M =:= Method ->
+        {udp, Sock, _, Src, <<M:L/binary, " ", _/binary>> = Bin} when
+            M =:= Method
+        ->
             {Bin, Src};
-        {udp, Sock, _, _, _} -> recv(Sock, Method)
+        {udp, Sock, _, _, _} ->
+            recv(Sock, Method)
     after 6000 -> ct:fail({no_req, Method})
     end.
 
@@ -269,61 +347,129 @@ recv_status(Sock, Code) ->
     CB = integer_to_binary(Code),
     receive
         {udp, Sock, _, _, <<"SIP/2.0 ", C:3/binary, _/binary>> = Bin} ->
-            case C of CB -> Bin; _ -> recv_status(Sock, Code) end
+            case C of
+                CB -> Bin;
+                _ -> recv_status(Sock, Code)
+            end
     after 6000 -> ct:fail({no_status, Code})
     end.
 
-to_tag(Resp) -> {ok, M} = chappe_sip_msg:parse(Resp), chappe_sip_msg:to_tag(M).
+to_tag(Resp) ->
+    {ok, M} = chappe_sip_msg:parse(Resp),
+    chappe_sip_msg:to_tag(M).
 
 invite(Sock, Call, FT) ->
     P = integer_to_binary(lport(Sock)),
     S = sdp(<<"caller">>),
     L = integer_to_binary(byte_size(S)),
-    <<"INVITE sip:app@127.0.0.1 SIP/2.0\r\n"
-      "Via: SIP/2.0/UDP 127.0.0.1:", P/binary, ";rport;branch=", (branch())/binary,
-      "\r\nMax-Forwards: 70\r\n"
-      "From: Caller <sip:caller@127.0.0.1:", P/binary, ">;tag=", FT/binary, "\r\n"
-      "To: <sip:app@127.0.0.1>\r\n"
-      "Contact: <sip:caller@127.0.0.1:", P/binary, ">\r\n"
-      "Call-ID: ", Call/binary, "\r\nCSeq: 1 INVITE\r\n"
-      "Content-Type: application/sdp\r\n"
-      "Content-Length: ", L/binary, "\r\n\r\n", S/binary>>.
+    <<
+        "INVITE sip:app@127.0.0.1 SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:",
+        P/binary,
+        ";rport;branch=",
+        (branch())/binary,
+        "\r\nMax-Forwards: 70\r\n"
+        "From: Caller <sip:caller@127.0.0.1:",
+        P/binary,
+        ">;tag=",
+        FT/binary,
+        "\r\n"
+        "To: <sip:app@127.0.0.1>\r\n"
+        "Contact: <sip:caller@127.0.0.1:",
+        P/binary,
+        ">\r\n"
+        "Call-ID: ",
+        Call/binary,
+        "\r\nCSeq: 1 INVITE\r\n"
+        "Content-Type: application/sdp\r\n"
+        "Content-Length: ",
+        L/binary,
+        "\r\n\r\n",
+        S/binary
+    >>.
 
 ack(Sock, Call, FT, TT) ->
     P = integer_to_binary(lport(Sock)),
-    <<"ACK sip:app@127.0.0.1 SIP/2.0\r\n"
-      "Via: SIP/2.0/UDP 127.0.0.1:", P/binary, ";branch=", (branch())/binary,
-      "\r\nMax-Forwards: 70\r\n"
-      "From: Caller <sip:caller@127.0.0.1:", P/binary, ">;tag=", FT/binary, "\r\n"
-      "To: <sip:app@127.0.0.1>;tag=", TT/binary, "\r\n"
-      "Call-ID: ", Call/binary, "\r\nCSeq: 1 ACK\r\nContent-Length: 0\r\n\r\n">>.
+    <<
+        "ACK sip:app@127.0.0.1 SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:",
+        P/binary,
+        ";branch=",
+        (branch())/binary,
+        "\r\nMax-Forwards: 70\r\n"
+        "From: Caller <sip:caller@127.0.0.1:",
+        P/binary,
+        ">;tag=",
+        FT/binary,
+        "\r\n"
+        "To: <sip:app@127.0.0.1>;tag=",
+        TT/binary,
+        "\r\n"
+        "Call-ID: ",
+        Call/binary,
+        "\r\nCSeq: 1 ACK\r\nContent-Length: 0\r\n\r\n"
+    >>.
 
 options(Sock) ->
     P = integer_to_binary(lport(Sock)),
-    <<"OPTIONS sip:app@127.0.0.1 SIP/2.0\r\n"
-      "Via: SIP/2.0/UDP 127.0.0.1:", P/binary, ";rport;branch=", (branch())/binary,
-      "\r\nMax-Forwards: 70\r\n"
-      "From: <sip:p@127.0.0.1:", P/binary, ">;tag=opt\r\n"
-      "To: <sip:app@127.0.0.1>\r\n"
-      "Call-ID: opt-", P/binary, "@ct\r\nCSeq: 1 OPTIONS\r\n"
-      "Content-Length: 0\r\n\r\n">>.
+    <<
+        "OPTIONS sip:app@127.0.0.1 SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:",
+        P/binary,
+        ";rport;branch=",
+        (branch())/binary,
+        "\r\nMax-Forwards: 70\r\n"
+        "From: <sip:p@127.0.0.1:",
+        P/binary,
+        ">;tag=opt\r\n"
+        "To: <sip:app@127.0.0.1>\r\n"
+        "Call-ID: opt-",
+        P/binary,
+        "@ct\r\nCSeq: 1 OPTIONS\r\n"
+        "Content-Length: 0\r\n\r\n"
+    >>.
 
 resp(ReqBin, Status, Reason, ToTag, ExtraHeaders, Body) ->
     {ok, Msg} = chappe_sip_msg:parse(ReqBin),
     Vias = chappe_sip_msg:get_all(<<"via">>, Msg),
     From = chappe_sip_msg:get(<<"from">>, Msg),
     To0 = chappe_sip_msg:get(<<"to">>, Msg),
-    To = case chappe_sip_msg:to_tag(Msg) of
-             undefined when Status > 100 -> <<To0/binary, ";tag=", ToTag/binary>>;
-             _ -> To0
-         end,
+    To =
+        case chappe_sip_msg:to_tag(Msg) of
+            undefined when Status > 100 ->
+                <<To0/binary, ";tag=", ToTag/binary>>;
+            _ ->
+                To0
+        end,
     Call = chappe_sip_msg:call_id(Msg),
     CSeq = chappe_sip_msg:get(<<"cseq">>, Msg),
     ViaLines = [[<<"Via: ">>, V, <<"\r\n">>] || V <- Vias],
     Extra = [[N, <<": ">>, Val, <<"\r\n">>] || {N, Val} <- ExtraHeaders],
     CL = integer_to_binary(byte_size(Body)),
     iolist_to_binary(
-      [<<"SIP/2.0 ">>, integer_to_binary(Status), <<" ">>, Reason, <<"\r\n">>,
-       ViaLines, <<"From: ">>, From, <<"\r\n">>, <<"To: ">>, To, <<"\r\n">>,
-       <<"Call-ID: ">>, Call, <<"\r\n">>, <<"CSeq: ">>, CSeq, <<"\r\n">>, Extra,
-       <<"Content-Length: ">>, CL, <<"\r\n\r\n">>, Body]).
+        [
+            <<"SIP/2.0 ">>,
+            integer_to_binary(Status),
+            <<" ">>,
+            Reason,
+            <<"\r\n">>,
+            ViaLines,
+            <<"From: ">>,
+            From,
+            <<"\r\n">>,
+            <<"To: ">>,
+            To,
+            <<"\r\n">>,
+            <<"Call-ID: ">>,
+            Call,
+            <<"\r\n">>,
+            <<"CSeq: ">>,
+            CSeq,
+            <<"\r\n">>,
+            Extra,
+            <<"Content-Length: ">>,
+            CL,
+            <<"\r\n\r\n">>,
+            Body
+        ]
+    ).

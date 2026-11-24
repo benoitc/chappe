@@ -22,18 +22,60 @@ pkt() ->
 by_hand() ->
     Payload = <<"OPTIONS sip:a@b SIP/2.0\r\n\r\n">>,
     Chunks = <<
-        0:16, 1:16, 7:16, 2:8,
-        0:16, 2:16, 7:16, 6:8,
-        0:16, 3:16, 10:16, 10, 0, 0, 1,
-        0:16, 4:16, 10:16, 10, 0, 0, 2,
-        0:16, 7:16, 8:16, 5060:16,
-        0:16, 8:16, 8:16, 40000:16,
-        0:16, 9:16, 10:16, 1700000000:32,
-        0:16, 10:16, 10:16, 123456:32,
-        0:16, 11:16, 7:16, 1:8,
-        0:16, 12:16, 10:16, 2001:32,
-        0:16, 15:16, (6 + byte_size(Payload)):16, Payload/binary,
-        0:16, 17:16, 14:16, "abc@host"
+        0:16,
+        1:16,
+        7:16,
+        2:8,
+        0:16,
+        2:16,
+        7:16,
+        6:8,
+        0:16,
+        3:16,
+        10:16,
+        10,
+        0,
+        0,
+        1,
+        0:16,
+        4:16,
+        10:16,
+        10,
+        0,
+        0,
+        2,
+        0:16,
+        7:16,
+        8:16,
+        5060:16,
+        0:16,
+        8:16,
+        8:16,
+        40000:16,
+        0:16,
+        9:16,
+        10:16,
+        1700000000:32,
+        0:16,
+        10:16,
+        10:16,
+        123456:32,
+        0:16,
+        11:16,
+        7:16,
+        1:8,
+        0:16,
+        12:16,
+        10:16,
+        2001:32,
+        0:16,
+        15:16,
+        (6 + byte_size(Payload)):16,
+        Payload/binary,
+        0:16,
+        17:16,
+        14:16,
+        "abc@host"
     >>,
     <<"HEP3", (6 + byte_size(Chunks)):16, Chunks/binary>>.
 
@@ -58,51 +100,83 @@ decode_rejects_test() ->
     ?assertEqual({error, not_hep3}, chappe_sip_hep:decode(<<"HEP2", 0:16>>)),
     %% the length must cover the packet exactly
     Bin = by_hand(),
-    ?assertEqual({error, not_hep3},
-                 chappe_sip_hep:decode(<<Bin/binary, 0>>)),
+    ?assertEqual(
+        {error, not_hep3},
+        chappe_sip_hep:decode(<<Bin/binary, 0>>)
+    ),
     %% a chunk running past the end
     <<"HEP3", _:16, Rest/binary>> = Bin,
     Bad = <<0:16, 15:16, 60000:16>>,
     Len = 6 + byte_size(Rest) + byte_size(Bad),
-    ?assertEqual({error, bad_chunk},
-                 chappe_sip_hep:decode(<<"HEP3", Len:16, Rest/binary, Bad/binary>>)).
+    ?assertEqual(
+        {error, bad_chunk},
+        chappe_sip_hep:decode(<<"HEP3", Len:16, Rest/binary, Bad/binary>>)
+    ).
 
 validate_test_() ->
     [
         ?_assertEqual(
-            {ok, #{host => {127, 0, 0, 1}, port => 9060, version => 3,
-                   capture_id => 200}},
+            {ok, #{
+                host => {127, 0, 0, 1},
+                port => 9060,
+                version => 3,
+                capture_id => 200
+            }},
             chappe_sip_hep:validate(#{host => "127.0.0.1", port => 9060})
         ),
         ?_assertEqual(
-            {ok, #{host => {0, 0, 0, 0, 0, 0, 0, 1}, port => 9060,
-                   version => 3, capture_id => 7}},
-            chappe_sip_hep:validate(#{host => <<"::1">>, port => 9060,
-                                      capture_id => 7})
+            {ok, #{
+                host => {0, 0, 0, 0, 0, 0, 0, 1},
+                port => 9060,
+                version => 3,
+                capture_id => 7
+            }},
+            chappe_sip_hep:validate(#{
+                host => <<"::1">>,
+                port => 9060,
+                capture_id => 7
+            })
         ),
-        ?_assertMatch({error, {hep, {bad_port, 1023}}},
-                      chappe_sip_hep:validate(#{host => "127.0.0.1",
-                                                port => 1023})),
-        ?_assertMatch({error, {hep, {bad_capture_id, 0}}},
-                      chappe_sip_hep:validate(#{host => "127.0.0.1",
-                                                port => 9060,
-                                                capture_id => 0})),
-        ?_assertMatch({error, {hep, {bad_options, _}}},
-                      chappe_sip_hep:validate(#{port => 9060}))
+        ?_assertMatch(
+            {error, {hep, {bad_port, 1023}}},
+            chappe_sip_hep:validate(#{
+                host => "127.0.0.1",
+                port => 1023
+            })
+        ),
+        ?_assertMatch(
+            {error, {hep, {bad_capture_id, 0}}},
+            chappe_sip_hep:validate(#{
+                host => "127.0.0.1",
+                port => 9060,
+                capture_id => 0
+            })
+        ),
+        ?_assertMatch(
+            {error, {hep, {bad_options, _}}},
+            chappe_sip_hep:validate(#{port => 9060})
+        )
     ].
 
 native_url_test_() ->
     [
         ?_assertEqual(
             <<"udp:127.0.0.1:9060;hep=3;capture_id=200">>,
-            chappe_sip_hep:native_url(#{host => {127, 0, 0, 1}, port => 9060,
-                                        version => 3, capture_id => 200})
+            chappe_sip_hep:native_url(#{
+                host => {127, 0, 0, 1},
+                port => 9060,
+                version => 3,
+                capture_id => 200
+            })
         ),
         ?_assertEqual(
             <<"udp:[::1]:9060;hep=3;capture_id=5">>,
-            chappe_sip_hep:native_url(#{host => {0, 0, 0, 0, 0, 0, 0, 1},
-                                        port => 9060, version => 3,
-                                        capture_id => 5})
+            chappe_sip_hep:native_url(#{
+                host => {0, 0, 0, 0, 0, 0, 0, 1},
+                port => 9060,
+                version => 3,
+                capture_id => 5
+            })
         )
     ].
 

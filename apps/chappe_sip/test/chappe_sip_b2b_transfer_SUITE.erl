@@ -16,45 +16,103 @@
 
 -export([all/0, init_per_suite/1, end_per_suite/1, end_per_testcase/2]).
 -export([peer_node_calls/2]).
--export([notify_accept/1, notify_reject/1, notify_retarget/1,
-         notify_from_another_node/1]).
+-export([
+    notify_accept/1,
+    notify_reject/1,
+    notify_retarget/1,
+    notify_from_another_node/1
+]).
 -export([attended_ending_dialog_declined/1, attended_join_across_nodes/1]).
--export([attended_join_fails_keeps_calls/1, attended_needs_principal/1,
-         attended_policy_sees_principals/1]).
--export([maddr_refused/1, own_host_other_port_refused/1, no_user_refused/1,
-         domain_port_refused/1, redirect_not_followed/1]).
--export([attended_local_join/1, attended_remote_replaces/1,
-         attended_other_party_refused/1]).
--export([blind_from_a/1, blind_keeps_identity/1, blind_keeps_call_ref/1,
-         blind_progress_notified/1]).
--export([transferor_bye_keeps_transferee/1,
-         transferor_bye_then_failure_ends_call/1]).
--export([blind_from_b/1, blind_target_fails/1, offnet_refused/1,
-         policy_rejects/1, policy_sees_untrusted_referred_by/1,
-         direct_media_refused/1, transfer_limit/1, bye_method_refused/1,
-         one_transfer_at_a_time/1, transfer_crash_call_goes_on/1,
-         call_end_stops_transfer/1, multiple_refer_unsupported/1]).
+-export([
+    attended_join_fails_keeps_calls/1,
+    attended_needs_principal/1,
+    attended_policy_sees_principals/1
+]).
+-export([
+    maddr_refused/1,
+    own_host_other_port_refused/1,
+    no_user_refused/1,
+    domain_port_refused/1,
+    redirect_not_followed/1
+]).
+-export([
+    attended_local_join/1,
+    attended_remote_replaces/1,
+    attended_other_party_refused/1
+]).
+-export([
+    blind_from_a/1,
+    blind_keeps_identity/1,
+    blind_keeps_call_ref/1,
+    blind_progress_notified/1
+]).
+-export([
+    transferor_bye_keeps_transferee/1,
+    transferor_bye_then_failure_ends_call/1
+]).
+-export([
+    blind_from_b/1,
+    blind_target_fails/1,
+    offnet_refused/1,
+    policy_rejects/1,
+    policy_sees_untrusted_referred_by/1,
+    direct_media_refused/1,
+    transfer_limit/1,
+    bye_method_refused/1,
+    one_transfer_at_a_time/1,
+    transfer_crash_call_goes_on/1,
+    call_end_stops_transfer/1,
+    multiple_refer_unsupported/1
+]).
 
 all() ->
-    [blind_from_b, blind_from_a, blind_keeps_identity, blind_keeps_call_ref,
-     blind_progress_notified, transferor_bye_keeps_transferee,
-     transferor_bye_then_failure_ends_call,
-     blind_target_fails, attended_local_join, attended_join_fails_keeps_calls,
-     attended_needs_principal, attended_policy_sees_principals,
-     attended_ending_dialog_declined, attended_join_across_nodes, attended_remote_replaces,
-     attended_other_party_refused, notify_accept, notify_reject,
-     notify_retarget, notify_from_another_node, offnet_refused,
-     maddr_refused, own_host_other_port_refused, no_user_refused,
-     domain_port_refused, redirect_not_followed, policy_rejects,
-     policy_sees_untrusted_referred_by, direct_media_refused, transfer_limit,
-     bye_method_refused, one_transfer_at_a_time, transfer_crash_call_goes_on,
-     call_end_stops_transfer, multiple_refer_unsupported].
+    [
+        blind_from_b,
+        blind_from_a,
+        blind_keeps_identity,
+        blind_keeps_call_ref,
+        blind_progress_notified,
+        transferor_bye_keeps_transferee,
+        transferor_bye_then_failure_ends_call,
+        blind_target_fails,
+        attended_local_join,
+        attended_join_fails_keeps_calls,
+        attended_needs_principal,
+        attended_policy_sees_principals,
+        attended_ending_dialog_declined,
+        attended_join_across_nodes,
+        attended_remote_replaces,
+        attended_other_party_refused,
+        notify_accept,
+        notify_reject,
+        notify_retarget,
+        notify_from_another_node,
+        offnet_refused,
+        maddr_refused,
+        own_host_other_port_refused,
+        no_user_refused,
+        domain_port_refused,
+        redirect_not_followed,
+        policy_rejects,
+        policy_sees_untrusted_referred_by,
+        direct_media_refused,
+        transfer_limit,
+        bye_method_refused,
+        one_transfer_at_a_time,
+        transfer_crash_call_goes_on,
+        call_end_stops_transfer,
+        multiple_refer_unsupported
+    ].
 
 -define(UA, chappe_sip_test_ua).
 
 init_per_suite(Config) ->
-    application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
-                        [{persistent, true}]),
+    application:set_env(
+        chappe_sip,
+        engine_mod,
+        chappe_sip_nif,
+        [{persistent, true}]
+    ),
     {ok, _} = application:ensure_all_started(chappe_sip),
     Config.
 
@@ -64,9 +122,13 @@ end_per_suite(_Config) ->
     ok.
 
 end_per_testcase(_Case, _Config) ->
-    _ = case whereis(xfer_test_rtpe) of
-            undefined -> ok;
-            Rtpe -> unregister(xfer_test_rtpe), chappe_sip_test_rtpe:stop(Rtpe)
+    _ =
+        case whereis(xfer_test_rtpe) of
+            undefined ->
+                ok;
+            Rtpe ->
+                unregister(xfer_test_rtpe),
+                chappe_sip_test_rtpe:stop(Rtpe)
         end,
     _ = [unregister(xfer_test) || whereis(xfer_test) =/= undefined],
     _ = chappe_sip:stop(),
@@ -95,16 +157,20 @@ blind_from_b(_Config) ->
     ?assertEqual(200, ?UA:status(got(refer_answer))),
     N1 = got(notify),
     ?assertEqual(<<"SIP/2.0 100 Trying\r\n">>, ?UA:body(N1)),
-    ?assertMatch(<<"message/sipfrag", _/binary>>,
-                 ?UA:hdr(N1, <<"content-type">>)),
+    ?assertMatch(
+        <<"message/sipfrag", _/binary>>,
+        ?UA:hdr(N1, <<"content-type">>)
+    ),
     ?assertMatch(<<"refer", _/binary>>, ?UA:hdr(N1, <<"event">>)),
     ?assertMatch(<<"active", _/binary>>, ?UA:hdr(N1, <<"subscription-state">>)),
     Inv = got(target_invite),
     ?assert(chappe_sip_test_rtpe:marked(?UA:body(Inv), offer)),
     N2 = got(notify),
     ?assertEqual(<<"SIP/2.0 200 OK\r\n">>, ?UA:body(N2)),
-    ?assertEqual(<<"terminated;reason=noresource">>,
-                 ?UA:hdr(N2, <<"subscription-state">>)),
+    ?assertEqual(
+        <<"terminated;reason=noresource">>,
+        ?UA:hdr(N2, <<"subscription-state">>)
+    ),
     %% the BYE comes after the final NOTIFY
     _ = got(bye),
     ok = ?UA:expect(caller_no_reinvite, 6000),
@@ -125,8 +191,12 @@ blind_from_a(_Config) ->
     end),
     target(NP, answer),
     caller(EP, fun(Sock, D) ->
-        {Refer, _} = ?UA:in_dialog(D, <<"REFER">>,
-                                   [{<<"Refer-To">>, refer_to(NP)}], <<>>),
+        {Refer, _} = ?UA:in_dialog(
+            D,
+            <<"REFER">>,
+            [{<<"Refer-To">>, refer_to(NP)}],
+            <<>>
+        ),
         ?UA:send(Sock, EP, Refer),
         serve(Sock, <<>>)
     end),
@@ -308,8 +378,10 @@ attended_join_fails_keeps_calls(_Config) ->
     ?assertEqual(200, ?UA:status(got(refer_answer))),
     ?assertEqual(<<"SIP/2.0 100 Trying\r\n">>, ?UA:body(got(notify))),
     _ = got(carol_reinvite),
-    ?assertEqual(<<"SIP/2.0 488 Not Acceptable Here\r\n">>,
-                 ?UA:body(got(notify))),
+    ?assertEqual(
+        <<"SIP/2.0 488 Not Acceptable Here\r\n">>,
+        ?UA:body(got(notify))
+    ),
     no_message(carol_bye, 1000),
     no_message(bye, 200),
     ?assertMatch(#{media := anchor}, chappe_sip_b2b:info(B2b1)),
@@ -347,16 +419,31 @@ attended_ending_dialog_declined(_Config) ->
     ?UA:peer(CP, fun(Sock) ->
         {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
         Tag = ?UA:tag(),
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, Tag, [contact(Sock)],
-                                     ?UA:sdp(<<"callee">>))),
+        ?UA:send(
+            Sock,
+            Src,
+            ?UA:resp(
+                Inv,
+                200,
+                <<"OK">>,
+                Tag,
+                [contact(Sock)],
+                ?UA:sdp(<<"callee">>)
+            )
+        ),
         {_Ack, _} = ?UA:recv_req(Sock, <<"ACK">>),
         D1 = ?UA:dialog_from_invite(Sock, Inv, Tag, Src),
         C2 = ?UA:callid(),
         BT2 = ?UA:tag(),
         Inv2 = binary:replace(
-                 ?UA:invite(Sock, EP, #{call_id => C2, from_tag => BT2,
-                                        ruri => <<"sip:carol@127.0.0.1">>}),
-                 <<"From: <sip:caller@">>, <<"From: <sip:callee@">>),
+            ?UA:invite(Sock, EP, #{
+                call_id => C2,
+                from_tag => BT2,
+                ruri => <<"sip:carol@127.0.0.1">>
+            }),
+            <<"From: <sip:caller@">>,
+            <<"From: <sip:callee@">>
+        ),
         ?UA:send(Sock, EP, Inv2),
         R2 = ?UA:recv_status(Sock, 200),
         ?UA:ack(?UA:dialog_from_2xx(Sock, Inv2, R2), EP),
@@ -365,11 +452,18 @@ attended_ending_dialog_declined(_Config) ->
         {_Bye, _} = ?UA:recv_req(Sock, <<"BYE">>),
         RT = chappe_sip_hdr:refer_to_value(#{
             uri => <<"sip:carol@127.0.0.1:", (integer_to_binary(NP))/binary>>,
-            replaces => #{call_id => C2, to_tag => ?UA:to_tag(R2),
-                          from_tag => BT2}
+            replaces => #{
+                call_id => C2,
+                to_tag => ?UA:to_tag(R2),
+                from_tag => BT2
+            }
         }),
-        {Refer, _} = ?UA:in_dialog(D1, <<"REFER">>,
-                                   [{<<"Refer-To">>, RT}], <<>>),
+        {Refer, _} = ?UA:in_dialog(
+            D1,
+            <<"REFER">>,
+            [{<<"Refer-To">>, RT}],
+            <<>>
+        ),
         ?UA:send(Sock, EP, Refer),
         refer_answer(Sock)
     end),
@@ -399,18 +493,29 @@ refer_answer(Sock) ->
 %% referrer's leg and the one of the leg the Replaces names.
 attended_policy_sees_principals(_Config) ->
     Test = self(),
-    Policy = fun(Info) -> Test ! {policy_info, Info}, false end,
-    {EP, CP} = setup(#{principals => {#{b => <<"bob">>}, #{a => <<"eve">>}},
-                       transfer_opts => #{policy => Policy}}),
+    Policy = fun(Info) ->
+        Test ! {policy_info, Info},
+        false
+    end,
+    {EP, CP} = setup(#{
+        principals => {#{b => <<"bob">>}, #{a => <<"eve">>}},
+        transfer_opts => #{policy => Policy}
+    }),
     NP = route_carol(?UA:pick()),
     carol(NP),
     bob_consults(CP, EP, fun(_C2, _BT2, _TT2) -> NP end),
     caller(EP, fun(_Sock, _D) -> ok end),
     _ = got(legs),
     _ = got(legs_carol),
-    ?assertMatch(#{kind := attended, local := true, principal := <<"bob">>,
-                   replaces_principal := <<"eve">>},
-                 got(policy_info)),
+    ?assertMatch(
+        #{
+            kind := attended,
+            local := true,
+            principal := <<"bob">>,
+            replaces_principal := <<"eve">>
+        },
+        got(policy_info)
+    ),
     ?assertEqual(403, ?UA:status(got(refer_answer))).
 
 %% Bob is the callee of the first call and the caller of his call with
@@ -426,8 +531,11 @@ attended_remote_replaces(_Config) ->
     NP = ?UA:pick(),
     RT = chappe_sip_hdr:refer_to_value(#{
         uri => <<"sip:carol@127.0.0.1:", (integer_to_binary(NP))/binary>>,
-        replaces => #{call_id => <<"elsewhere@h">>, to_tag => <<"t1">>,
-                      from_tag => <<"f1">>}
+        replaces => #{
+            call_id => <<"elsewhere@h">>,
+            to_tag => <<"t1">>,
+            from_tag => <<"f1">>
+        }
     }),
     callee_refers(CP, EP, RT, []),
     target(NP, answer),
@@ -435,8 +543,10 @@ attended_remote_replaces(_Config) ->
     _ = got(legs),
     ?assertEqual(200, ?UA:status(got(refer_answer))),
     Inv = got(target_invite),
-    ?assertEqual(<<"elsewhere@h;to-tag=t1;from-tag=f1">>,
-                 ?UA:hdr(Inv, <<"replaces">>)),
+    ?assertEqual(
+        <<"elsewhere@h;to-tag=t1;from-tag=f1">>,
+        ?UA:hdr(Inv, <<"replaces">>)
+    ),
     ?assertEqual(<<"replaces">>, ?UA:hdr(Inv, <<"require">>)),
     _ = got(notify),
     ?assertEqual(<<"SIP/2.0 200 OK\r\n">>, ?UA:body(got(notify))).
@@ -451,9 +561,11 @@ attended_other_party_refused(_Config) ->
     %% Dave calls Carol
     Test = self(),
     ?UA:peer(0, fun(Sock) ->
-        Inv = ?UA:invite(Sock, EP, #{call_id => ?UA:callid(),
-                                     from_tag => ?UA:tag(),
-                                     ruri => <<"sip:carol@127.0.0.1">>}),
+        Inv = ?UA:invite(Sock, EP, #{
+            call_id => ?UA:callid(),
+            from_tag => ?UA:tag(),
+            ruri => <<"sip:carol@127.0.0.1">>
+        }),
         ?UA:send(Sock, EP, Inv),
         R = ?UA:recv_status(Sock, 200),
         D = ?UA:dialog_from_2xx(Sock, Inv, R),
@@ -489,8 +601,10 @@ notify_accept(_Config) ->
     caller(EP, fun(_Sock, _D) -> ok end),
     #{b2b := {_, Ref}} = got(legs),
     Info = refer_event(Ref),
-    ?assertMatch(#{kind := blind, leg := b, referrer := <<"<sip:callee@", _/binary>>},
-                 Info),
+    ?assertMatch(
+        #{kind := blind, leg := b, referrer := <<"<sip:callee@", _/binary>>},
+        Info
+    ),
     no_message(refer_answer, 300),
     ok = chappe_sip_b2b_transfer:accept(Info, #{}),
     ?assertEqual(200, ?UA:status(got(refer_answer))),
@@ -530,8 +644,10 @@ notify_retarget(_Config) ->
 notify_from_another_node(_Config) ->
     ok = chappe_sip_test_dist:ensure(),
     Paths = lists:append([["-pa", P] || P <- code:get_path()]),
-    {ok, Peer, Node} = peer:start_link(#{name => peer:random_name(),
-                                         args => Paths}),
+    {ok, Peer, Node} = peer:start_link(#{
+        name => peer:random_name(),
+        args => Paths
+    }),
     try
         Test = self(),
         Remote = erpc:call(Node, erlang, spawn, [fun() -> remote_app(Test) end]),
@@ -558,8 +674,10 @@ notify_from_another_node(_Config) ->
 attended_join_across_nodes(_Config) ->
     ok = chappe_sip_test_dist:ensure(),
     Paths = lists:append([["-pa", P] || P <- code:get_path()]),
-    {ok, Peer, Node} = peer:start_link(#{name => peer:random_name(),
-                                         args => Paths}),
+    {ok, Peer, Node} = peer:start_link(#{
+        name => peer:random_name(),
+        args => Paths
+    }),
     try
         {EP, CP} = setup(#{principal => #{b => <<"bob">>}}),
         NP = ?UA:pick(),
@@ -591,13 +709,18 @@ attended_join_across_nodes(_Config) ->
 %% rtpengine of its own, bridging every INVITE to Carol (port NP) with
 %% Bob recorded as its caller. Returns its port.
 peer_node_calls(Test, NP) ->
-    application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
-                        [{persistent, true}]),
+    application:set_env(
+        chappe_sip,
+        engine_mod,
+        chappe_sip_nif,
+        [{persistent, true}]
+    ),
     {ok, _} = application:ensure_all_started(chappe_sip),
     _ = chappe_sip_test_rtpe:start(spawn(fun sink/0)),
     EP2 = ?UA:pick(),
-    ok = chappe_sip:start(#{contact => <<"sip:127.0.0.1:",
-                                         (integer_to_binary(EP2))/binary>>}),
+    ok = chappe_sip:start(#{
+        contact => <<"sip:127.0.0.1:", (integer_to_binary(EP2))/binary>>
+    }),
     Carol = <<"sip:carol@127.0.0.1:", (integer_to_binary(NP))/binary>>,
     ok = chappe_sip:invite(fun(Req, Res) ->
         {ok, Legs} = chappe_sip:create_b2bua(Req, Res, Carol, #{
@@ -622,9 +745,9 @@ remote_app(Test) ->
             remote_app(Test)
     end.
 
-
 refer_event(Ref) ->
-    receive {chappe_sip_b2b, Ref, {refer, Info}} -> Info
+    receive
+        {chappe_sip_b2b, Ref, {refer, Info}} -> Info
     after 10000 -> ct:fail(no_refer_event)
     end.
 
@@ -648,8 +771,13 @@ offnet_refused(_Config) ->
 maddr_refused(_Config) ->
     {EP, CP} = setup(#{}),
     NP = ?UA:pick(),
-    callee_refers(CP, EP, <<"<sip:carol@127.0.0.1:", (integer_to_binary(NP))/binary,
-                            ";maddr=203.0.113.9>">>, []),
+    callee_refers(
+        CP,
+        EP,
+        <<"<sip:carol@127.0.0.1:", (integer_to_binary(NP))/binary,
+            ";maddr=203.0.113.9>">>,
+        []
+    ),
     caller(EP, fun(_Sock, _D) -> ok end),
     _ = got(legs),
     ?assertEqual(403, ?UA:status(got(refer_answer))),
@@ -672,8 +800,9 @@ own_host_other_port_refused(_Config) ->
 no_user_refused(_Config) ->
     {EP, CP} = setup(#{}),
     NP = ?UA:pick(),
-    callee_refers(CP, EP, <<"<sip:127.0.0.1:", (integer_to_binary(NP))/binary,
-                            ">">>, []),
+    callee_refers(
+        CP, EP, <<"<sip:127.0.0.1:", (integer_to_binary(NP))/binary, ">">>, []
+    ),
     caller(EP, fun(_Sock, _D) -> ok end),
     _ = got(legs),
     ?assertEqual(403, ?UA:status(got(refer_answer))).
@@ -723,11 +852,18 @@ policy_rejects(_Config) ->
 %% req: R5589-07
 policy_sees_untrusted_referred_by(_Config) ->
     Test = self(),
-    Policy = fun(Info) -> Test ! {policy_info, Info}, false end,
+    Policy = fun(Info) ->
+        Test ! {policy_info, Info},
+        false
+    end,
     {EP, CP} = setup(#{transfer_opts => #{policy => Policy}}),
     NP = ?UA:pick(),
-    callee_refers(CP, EP, refer_to(NP),
-                  [{<<"Referred-By">>, <<"<sip:ceo@example.com>">>}]),
+    callee_refers(
+        CP,
+        EP,
+        refer_to(NP),
+        [{<<"Referred-By">>, <<"<sip:ceo@example.com>">>}]
+    ),
     caller(EP, fun(_Sock, _D) -> ok end),
     _ = got(legs),
     #{referrer := Referrer, referred_by := Claimed, leg := b, kind := blind} =
@@ -739,8 +875,11 @@ policy_sees_untrusted_referred_by(_Config) ->
 %% A direct-media call cannot take a new party behind the anchor: 488,
 %% and the call goes on.
 direct_media_refused(_Config) ->
-    {EP, CP} = setup_opts(#{media => direct, notify => self(),
-                            transfer => auto}),
+    {EP, CP} = setup_opts(#{
+        media => direct,
+        notify => self(),
+        transfer => auto
+    }),
     NP = ?UA:pick(),
     callee_refers(CP, EP, refer_to(NP), []),
     caller(EP, fun(_Sock, _D) -> ok end),
@@ -762,7 +901,8 @@ transfer_limit(_Config) ->
 bye_method_refused(_Config) ->
     {EP, CP} = setup(#{}),
     NP = ?UA:pick(),
-    Uri = <<"<sip:new@127.0.0.1:", (integer_to_binary(NP))/binary,
+    Uri =
+        <<"<sip:new@127.0.0.1:", (integer_to_binary(NP))/binary,
             ";method=BYE>">>,
     callee_refers(CP, EP, Uri, []),
     caller(EP, fun(_Sock, _D) -> ok end),
@@ -779,8 +919,13 @@ one_transfer_at_a_time(_Config) ->
     target(NP, ring),
     caller(EP, fun(_Sock, _D) -> ok end),
     _ = got(legs),
-    Answers = lists:sort([{?UA:status(R), R} || R <- [got(refer_answer),
-                                                      got(refer_answer)]]),
+    Answers = lists:sort([
+        {?UA:status(R), R}
+     || R <- [
+            got(refer_answer),
+            got(refer_answer)
+        ]
+    ]),
     ?assertMatch([{200, _}, {500, _}], Answers),
     [_, {500, R2}] = Answers,
     ?assertNotEqual(undefined, ?UA:hdr(R2, <<"retry-after">>)).
@@ -815,7 +960,8 @@ call_end_stops_transfer(_Config) ->
     [T] = transfers(),
     Mon = erlang:monitor(process, T),
     ok = chappe_sip_b2b:hangup(B2b, #{}),
-    receive {'DOWN', Mon, process, T, _} -> ok
+    receive
+        {'DOWN', Mon, process, T, _} -> ok
     after 5000 -> ct:fail(transfer_outlived_call)
     end.
 
@@ -824,8 +970,12 @@ call_end_stops_transfer(_Config) ->
 %% req: R5368-01
 multiple_refer_unsupported(_Config) ->
     {EP, CP} = setup(#{}),
-    callee_refers(CP, EP, <<"<cid:list@example.com>">>,
-                  [{<<"Require">>, <<"multiple-refer">>}]),
+    callee_refers(
+        CP,
+        EP,
+        <<"<cid:list@example.com>">>,
+        [{<<"Require">>, <<"multiple-refer">>}]
+    ),
     caller(EP, fun(_Sock, _D) -> ok end),
     _ = got(legs),
     R = got(refer_answer),
@@ -837,18 +987,26 @@ multiple_refer_unsupported(_Config) ->
 %% the call's domains take loopback on any port: the targets of these
 %% cases are peers on ports of their own
 setup(Opts) ->
-    setup_opts(maps:merge(#{media => anchor, notify => self(),
-                            transfer => auto,
-                            transfer_opts => #{domains => [<<"127.0.0.1">>]}},
-                          Opts)).
+    setup_opts(
+        maps:merge(
+            #{
+                media => anchor,
+                notify => self(),
+                transfer => auto,
+                transfer_opts => #{domains => [<<"127.0.0.1">>]}
+            },
+            Opts
+        )
+    ).
 
 %% the app bridges every INVITE to the callee port and relays
 setup_opts(Opts) ->
     rtpe(),
     EP = ?UA:pick(),
     CP = ?UA:pick(),
-    ok = chappe_sip:start(#{contact => <<"sip:127.0.0.1:",
-                                         (integer_to_binary(EP))/binary>>}),
+    ok = chappe_sip:start(#{
+        contact => <<"sip:127.0.0.1:", (integer_to_binary(EP))/binary>>
+    }),
     Test = self(),
     register(xfer_test, Test),
     Callee = <<"sip:callee@127.0.0.1:", (integer_to_binary(CP))/binary>>,
@@ -857,7 +1015,8 @@ setup_opts(Opts) ->
         case chappe_sip_uri:parse(chappe_sip_req:uri(Req)) of
             {ok, #{user := <<"carol">>}} ->
                 NP = persistent_term:get(xfer_carol),
-                Carol = <<"sip:carol@127.0.0.1:", (integer_to_binary(NP))/binary>>,
+                Carol =
+                    <<"sip:carol@127.0.0.1:", (integer_to_binary(NP))/binary>>,
                 {ok, Legs} = chappe_sip:create_b2bua(Req, Res, Carol, Carols),
                 Test ! {legs_carol, Legs},
                 Test ! {relay_done_carol, chappe_sip_b2b:relay(Legs)};
@@ -886,7 +1045,10 @@ rtpe() ->
     register(xfer_test_rtpe, chappe_sip_test_rtpe:start(spawn(fun sink/0))),
     ok.
 
-sink() -> receive _ -> sink() end.
+sink() ->
+    receive
+        _ -> sink()
+    end.
 
 %% a peer may outlive its case: what it says then goes nowhere
 tell(Msg) ->
@@ -908,18 +1070,34 @@ callee_refers(CP, EP, ReferTo, Hdrs, N) ->
     ?UA:peer(CP, fun(Sock) ->
         {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
         Tag = ?UA:tag(),
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, Tag, [contact(Sock)],
-                                     ?UA:sdp(<<"callee">>))),
+        ?UA:send(
+            Sock,
+            Src,
+            ?UA:resp(
+                Inv,
+                200,
+                <<"OK">>,
+                Tag,
+                [contact(Sock)],
+                ?UA:sdp(<<"callee">>)
+            )
+        ),
         {_Ack, _} = ?UA:recv_req(Sock, <<"ACK">>),
         D0 = ?UA:dialog_from_invite(Sock, Inv, Tag, Src),
         lists:foldl(
-          fun(_, D) ->
-              {Refer, D1} = ?UA:in_dialog(D, <<"REFER">>,
-                                          [{<<"Refer-To">>, ReferTo} | Hdrs],
-                                          <<>>),
-              ?UA:send(Sock, EP, Refer),
-              D1
-          end, D0, lists:seq(1, N)),
+            fun(_, D) ->
+                {Refer, D1} = ?UA:in_dialog(
+                    D,
+                    <<"REFER">>,
+                    [{<<"Refer-To">>, ReferTo} | Hdrs],
+                    <<>>
+                ),
+                ?UA:send(Sock, EP, Refer),
+                D1
+            end,
+            D0,
+            lists:seq(1, N)
+        ),
         serve(Sock, Tag)
     end).
 
@@ -929,12 +1107,26 @@ callee_refers_then_bye(CP, EP, ReferTo) ->
     ?UA:peer(CP, fun(Sock) ->
         {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
         Tag = ?UA:tag(),
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, Tag, [contact(Sock)],
-                                     ?UA:sdp(<<"callee">>))),
+        ?UA:send(
+            Sock,
+            Src,
+            ?UA:resp(
+                Inv,
+                200,
+                <<"OK">>,
+                Tag,
+                [contact(Sock)],
+                ?UA:sdp(<<"callee">>)
+            )
+        ),
         {_Ack, _} = ?UA:recv_req(Sock, <<"ACK">>),
         D0 = ?UA:dialog_from_invite(Sock, Inv, Tag, Src),
-        {Refer, D1} = ?UA:in_dialog(D0, <<"REFER">>,
-                                    [{<<"Refer-To">>, ReferTo}], <<>>),
+        {Refer, D1} = ?UA:in_dialog(
+            D0,
+            <<"REFER">>,
+            [{<<"Refer-To">>, ReferTo}],
+            <<>>
+        ),
         ?UA:send(Sock, EP, Refer),
         refer_ok(Sock, Tag),
         {Bye, _} = ?UA:in_dialog(D1, <<"BYE">>, [], <<>>),
@@ -1000,8 +1192,18 @@ carol(NP, How) ->
     ?UA:peer(NP, fun(Sock) ->
         {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
         Tag = ?UA:tag(),
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, Tag, [contact(Sock)],
-                                     ?UA:sdp(<<"carol">>))),
+        ?UA:send(
+            Sock,
+            Src,
+            ?UA:resp(
+                Inv,
+                200,
+                <<"OK">>,
+                Tag,
+                [contact(Sock)],
+                ?UA:sdp(<<"carol">>)
+            )
+        ),
         {_, _} = ?UA:recv_req(Sock, <<"ACK">>),
         carol_loop(Sock, Tag, How)
     end).
@@ -1015,13 +1217,31 @@ carol_loop(Sock, Tag, How) ->
             end,
             case How of
                 accept_reinvite ->
-                    ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, Tag,
-                                                 [contact(Sock)],
-                                                 ?UA:sdp(<<"carol">>, <<"1">>)));
+                    ?UA:send(
+                        Sock,
+                        Src,
+                        ?UA:resp(
+                            Inv,
+                            200,
+                            <<"OK">>,
+                            Tag,
+                            [contact(Sock)],
+                            ?UA:sdp(<<"carol">>, <<"1">>)
+                        )
+                    );
                 refuse_reinvite ->
-                    ?UA:send(Sock, Src, ?UA:resp(Inv, 488,
-                                                 <<"Not Acceptable Here">>,
-                                                 Tag, [], <<>>))
+                    ?UA:send(
+                        Sock,
+                        Src,
+                        ?UA:resp(
+                            Inv,
+                            488,
+                            <<"Not Acceptable Here">>,
+                            Tag,
+                            [],
+                            <<>>
+                        )
+                    )
             end,
             carol_loop(Sock, Tag, How);
         {udp, Sock, _, Src, <<"BYE ", _/binary>> = B} ->
@@ -1043,16 +1263,31 @@ bob_consults(CP, EP, EP2, Port) ->
     ?UA:peer(CP, fun(Sock) ->
         {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
         Tag = ?UA:tag(),
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, Tag, [contact(Sock)],
-                                     ?UA:sdp(<<"callee">>))),
+        ?UA:send(
+            Sock,
+            Src,
+            ?UA:resp(
+                Inv,
+                200,
+                <<"OK">>,
+                Tag,
+                [contact(Sock)],
+                ?UA:sdp(<<"callee">>)
+            )
+        ),
         {_Ack, _} = ?UA:recv_req(Sock, <<"ACK">>),
         D1 = ?UA:dialog_from_invite(Sock, Inv, Tag, Src),
         C2 = ?UA:callid(),
         BT2 = ?UA:tag(),
         Inv2 = binary:replace(
-                 ?UA:invite(Sock, EP2, #{call_id => C2, from_tag => BT2,
-                                         ruri => <<"sip:carol@127.0.0.1">>}),
-                 <<"From: <sip:caller@">>, <<"From: <sip:callee@">>),
+            ?UA:invite(Sock, EP2, #{
+                call_id => C2,
+                from_tag => BT2,
+                ruri => <<"sip:carol@127.0.0.1">>
+            }),
+            <<"From: <sip:caller@">>,
+            <<"From: <sip:callee@">>
+        ),
         ?UA:send(Sock, EP2, Inv2),
         R2 = ?UA:recv_status(Sock, 200),
         D2 = ?UA:dialog_from_2xx(Sock, Inv2, R2),
@@ -1063,8 +1298,12 @@ bob_consults(CP, EP, EP2, Port) ->
             uri => <<"sip:carol@127.0.0.1:", (integer_to_binary(NP))/binary>>,
             replaces => #{call_id => C2, to_tag => TT2, from_tag => BT2}
         }),
-        {Refer, _} = ?UA:in_dialog(D1, <<"REFER">>,
-                                   [{<<"Refer-To">>, RT}], <<>>),
+        {Refer, _} = ?UA:in_dialog(
+            D1,
+            <<"REFER">>,
+            [{<<"Refer-To">>, RT}],
+            <<>>
+        ),
         ?UA:send(Sock, EP, Refer),
         serve(Sock, Tag)
     end).
@@ -1074,8 +1313,18 @@ callee(CP, Fun) ->
     ?UA:peer(CP, fun(Sock) ->
         {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
         Tag = ?UA:tag(),
-        ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, Tag, [contact(Sock)],
-                                     ?UA:sdp(<<"callee">>))),
+        ?UA:send(
+            Sock,
+            Src,
+            ?UA:resp(
+                Inv,
+                200,
+                <<"OK">>,
+                Tag,
+                [contact(Sock)],
+                ?UA:sdp(<<"callee">>)
+            )
+        ),
         {_Ack, _} = ?UA:recv_req(Sock, <<"ACK">>),
         Fun(Sock),
         serve(Sock, Tag)
@@ -1109,40 +1358,119 @@ target(Port, How) ->
         Tag = ?UA:tag(),
         case How of
             answer ->
-                ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, Tag,
-                                             [contact(Sock)],
-                                             ?UA:sdp(<<"carol">>))),
+                ?UA:send(
+                    Sock,
+                    Src,
+                    ?UA:resp(
+                        Inv,
+                        200,
+                        <<"OK">>,
+                        Tag,
+                        [contact(Sock)],
+                        ?UA:sdp(<<"carol">>)
+                    )
+                ),
                 {_, _} = ?UA:recv_req(Sock, <<"ACK">>),
                 serve(Sock, Tag);
             busy ->
-                ?UA:send(Sock, Src, ?UA:resp(Inv, 486, <<"Busy Here">>, Tag,
-                                             [], <<>>)),
+                ?UA:send(
+                    Sock,
+                    Src,
+                    ?UA:resp(
+                        Inv,
+                        486,
+                        <<"Busy Here">>,
+                        Tag,
+                        [],
+                        <<>>
+                    )
+                ),
                 serve(Sock, Tag);
             ring ->
-                ?UA:send(Sock, Src, ?UA:resp(Inv, 180, <<"Ringing">>, Tag,
-                                             [contact(Sock)], <<>>)),
+                ?UA:send(
+                    Sock,
+                    Src,
+                    ?UA:resp(
+                        Inv,
+                        180,
+                        <<"Ringing">>,
+                        Tag,
+                        [contact(Sock)],
+                        <<>>
+                    )
+                ),
                 serve(Sock, Tag);
             redirect ->
-                Moved = {<<"Contact">>, <<"<sip:dave@127.0.0.1:",
-                                          (integer_to_binary(Port))/binary,
-                                          ">">>},
-                ?UA:send(Sock, Src, ?UA:resp(Inv, 302, <<"Moved Temporarily">>,
-                                             Tag, [Moved], <<>>)),
+                Moved =
+                    {<<"Contact">>,
+                        <<"<sip:dave@127.0.0.1:",
+                            (integer_to_binary(Port))/binary, ">">>},
+                ?UA:send(
+                    Sock,
+                    Src,
+                    ?UA:resp(
+                        Inv,
+                        302,
+                        <<"Moved Temporarily">>,
+                        Tag,
+                        [Moved],
+                        <<>>
+                    )
+                ),
                 serve_invites(Sock);
             ring_then_busy ->
-                ?UA:send(Sock, Src, ?UA:resp(Inv, 180, <<"Ringing">>, Tag,
-                                             [contact(Sock)], <<>>)),
+                ?UA:send(
+                    Sock,
+                    Src,
+                    ?UA:resp(
+                        Inv,
+                        180,
+                        <<"Ringing">>,
+                        Tag,
+                        [contact(Sock)],
+                        <<>>
+                    )
+                ),
                 timer:sleep(1500),
-                ?UA:send(Sock, Src, ?UA:resp(Inv, 486, <<"Busy Here">>, Tag,
-                                             [], <<>>)),
+                ?UA:send(
+                    Sock,
+                    Src,
+                    ?UA:resp(
+                        Inv,
+                        486,
+                        <<"Busy Here">>,
+                        Tag,
+                        [],
+                        <<>>
+                    )
+                ),
                 serve(Sock, Tag);
             ring_then_answer ->
-                ?UA:send(Sock, Src, ?UA:resp(Inv, 180, <<"Ringing">>, Tag,
-                                             [contact(Sock)], <<>>)),
+                ?UA:send(
+                    Sock,
+                    Src,
+                    ?UA:resp(
+                        Inv,
+                        180,
+                        <<"Ringing">>,
+                        Tag,
+                        [contact(Sock)],
+                        <<>>
+                    )
+                ),
                 timer:sleep(1500),
-                ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, Tag,
-                                             [contact(Sock)],
-                                             ?UA:sdp(<<"carol">>))),
+                ?UA:send(
+                    Sock,
+                    Src,
+                    ?UA:resp(
+                        Inv,
+                        200,
+                        <<"OK">>,
+                        Tag,
+                        [contact(Sock)],
+                        ?UA:sdp(<<"carol">>)
+                    )
+                ),
                 {_, _} = ?UA:recv_req(Sock, <<"ACK">>),
                 serve(Sock, Tag)
         end
@@ -1151,8 +1479,10 @@ target(Port, How) ->
 %% The caller (Alice): INVITEs the app, ACKs its 2xx, then runs Fun.
 caller(EP, Fun) ->
     ?UA:peer(0, fun(Sock) ->
-        Inv = ?UA:invite(Sock, EP, #{call_id => ?UA:callid(),
-                                     from_tag => ?UA:tag()}),
+        Inv = ?UA:invite(Sock, EP, #{
+            call_id => ?UA:callid(),
+            from_tag => ?UA:tag()
+        }),
         ?UA:send(Sock, EP, Inv),
         R = ?UA:recv_status(Sock, 200),
         D = ?UA:dialog_from_2xx(Sock, Inv, R),
@@ -1163,17 +1493,27 @@ caller(EP, Fun) ->
     ok = ?UA:expect(b2b_up).
 
 contact(Sock) ->
-    {<<"Contact">>, <<"<sip:peer@127.0.0.1:",
-                      (integer_to_binary(?UA:lport(Sock)))/binary, ">">>}.
+    {<<"Contact">>,
+        <<"<sip:peer@127.0.0.1:", (integer_to_binary(?UA:lport(Sock)))/binary,
+            ">">>}.
 
 got(Tag) ->
-    receive {Tag, V} -> V after 10000 -> ct:fail({missing, Tag}) end.
+    receive
+        {Tag, V} -> V
+    after 10000 -> ct:fail({missing, Tag})
+    end.
 
 got2(Tag) ->
-    receive {Tag, V, W} -> {V, W} after 10000 -> ct:fail({missing, Tag}) end.
+    receive
+        {Tag, V, W} -> {V, W}
+    after 10000 -> ct:fail({missing, Tag})
+    end.
 
 no_message(Tag, Ms) ->
-    receive {Tag, V} -> ct:fail({unexpected, Tag, V}) after Ms -> ok end.
+    receive
+        {Tag, V} -> ct:fail({unexpected, Tag, V})
+    after Ms -> ok
+    end.
 
 %% the next event of the call with this tag and leg
 expect_event(Ref, {Tag, Leg}) ->
@@ -1184,5 +1524,8 @@ expect_event(Ref, {Tag, Leg}) ->
     end.
 
 transfers() ->
-    [P || {_, P, _, _} <- supervisor:which_children(chappe_sip_b2b_transfers),
-          is_pid(P)].
+    [
+        P
+     || {_, P, _, _} <- supervisor:which_children(chappe_sip_b2b_transfers),
+        is_pid(P)
+    ].

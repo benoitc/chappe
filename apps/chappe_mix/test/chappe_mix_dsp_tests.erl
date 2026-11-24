@@ -28,7 +28,9 @@ reference(Legs) ->
                 none;
             [T | Ts] ->
                 lists:foldl(
-                    fun(A, B) -> lists:zipwith(fun(X, Y) -> X + Y end, A, B) end,
+                    fun(A, B) ->
+                        lists:zipwith(fun(X, Y) -> X + Y end, A, B)
+                    end,
                     T,
                     Ts
                 )
@@ -137,10 +139,15 @@ clips_like_reference_test() ->
     setup(),
     Loud = [
         {Law, binary:copy(<<C>>, ?FRAME), false}
-     || {Law, C} <- lists:flatten(lists:duplicate(8, [{ulaw, 16#80}, {alaw, 16#AA}, {ulaw, 16#00}]))
+     || {Law, C} <- lists:flatten(
+            lists:duplicate(8, [{ulaw, 16#80}, {alaw, 16#AA}, {ulaw, 16#00}])
+        )
     ],
     check(Loud),
-    check([{ulaw, binary:copy(<<16#80>>, ?FRAME), false} || _ <- lists:seq(1, 64)]).
+    check([
+        {ulaw, binary:copy(<<16#80>>, ?FRAME), false}
+     || _ <- lists:seq(1, 64)
+    ]).
 
 %% A listener can be kept from hearing more than itself: encode/4 takes a
 %% list of frames to take out of the sum, which is the reference mix with
@@ -152,7 +159,9 @@ several_left_out_test() ->
         begin
             Legs = [{Law, rand:bytes(?FRAME), false} || Law <- Laws],
             Sum = lists:foldl(
-                fun({Law, Codes, _}, Acc) -> chappe_mix_dsp:add(Acc, Law, Codes) end,
+                fun({Law, Codes, _}, Acc) ->
+                    chappe_mix_dsp:add(Acc, Law, Codes)
+                end,
                 chappe_mix_dsp:new(),
                 Legs
             ),
@@ -226,9 +235,11 @@ scaled(X) ->
 gain_distortion_test() ->
     setup(),
     {Hard, Agc, _} = loud_room(50),
-    ?debugFmt("THD+N at the listener: hard clip ~.2f dB, gain control ~.2f dB", [
-        Hard, Agc
-    ]),
+    ?debugFmt(
+        "THD+N at the listener: hard clip ~.2f dB, gain control ~.2f dB", [
+            Hard, Agc
+        ]
+    ),
     ?assert(Agc =< -26.0, {Agc, Hard}).
 
 %% In that steady loud room the gain settles and does not pump: after the
@@ -292,7 +303,9 @@ gain_recovers_test() ->
             chappe_mix_g711:encode_frame(ulaw, [
                 round(X * (From + (To - From) * I / ?FRAME))
              || {I, X} <- lists:enumerate(
-                    chappe_mix_g711:decode_frame(ulaw, tone_frame(1100, 3000, K))
+                    chappe_mix_g711:decode_frame(
+                        ulaw, tone_frame(1100, 3000, K)
+                    )
                 )
             ]),
             O,
@@ -331,8 +344,11 @@ loud_room(N) ->
         chappe_mix_g711:decode_frame(ulaw, O)
      || O <- lists:reverse(Outs)
     ]),
-    {thdn(lists:sublist(Ref, 8000), Freqs), thdn(lists:sublist(Agc, 8000), Freqs),
-        lists:reverse(Gains)}.
+    {
+        thdn(lists:sublist(Ref, 8000), Freqs),
+        thdn(lists:sublist(Agc, 8000), Freqs),
+        lists:reverse(Gains)
+    }.
 
 tone_frame(F, Amp, K) ->
     chappe_mix_g711:encode_frame(ulaw, [

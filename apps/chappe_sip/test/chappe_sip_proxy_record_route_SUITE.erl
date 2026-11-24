@@ -14,16 +14,30 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -export([all/0, init_per_suite/1, end_per_suite/1, end_per_testcase/2]).
--export([record_route_call/1, callee_bye/1, reinvite_through_proxy/1,
-         forged_route_marker_not_relayed/1, require_left_to_uas/1]).
+-export([
+    record_route_call/1,
+    callee_bye/1,
+    reinvite_through_proxy/1,
+    forged_route_marker_not_relayed/1,
+    require_left_to_uas/1
+]).
 
 all() ->
-    [record_route_call, callee_bye, reinvite_through_proxy,
-     forged_route_marker_not_relayed, require_left_to_uas].
+    [
+        record_route_call,
+        callee_bye,
+        reinvite_through_proxy,
+        forged_route_marker_not_relayed,
+        require_left_to_uas
+    ].
 
 init_per_suite(Config) ->
-    application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
-                        [{persistent, true}]),
+    application:set_env(
+        chappe_sip,
+        engine_mod,
+        chappe_sip_nif,
+        [{persistent, true}]
+    ),
     {ok, _} = application:ensure_all_started(chappe_sip),
     Config.
 
@@ -49,9 +63,21 @@ record_route_call(_Config) ->
     peer(CP, fun(Sock) ->
         {Inv, PSrc} = recv(Sock, <<"INVITE">>),
         RR = record_route_of(Inv),
-        send(Sock, PSrc, resp(Inv, 200, <<"OK">>, tag(),
-                              [{<<"Contact">>, ctc(CP)},
-                               {<<"Record-Route">>, RR}], sdp())),
+        send(
+            Sock,
+            PSrc,
+            resp(
+                Inv,
+                200,
+                <<"OK">>,
+                tag(),
+                [
+                    {<<"Contact">>, ctc(CP)},
+                    {<<"Record-Route">>, RR}
+                ],
+                sdp()
+            )
+        ),
         {_Ack, _} = recv(Sock, <<"ACK">>),
         Test ! callee_got_ack,
         {Bye, BSrc} = recv(Sock, <<"BYE">>),
@@ -89,9 +115,21 @@ callee_bye(_Config) ->
         RR = record_route_of(Inv),
         Caller = contact_of(Inv),
         CTag = tag(),
-        send(Sock, PSrc, resp(Inv, 200, <<"OK">>, CTag,
-                              [{<<"Contact">>, ctc(CP)},
-                               {<<"Record-Route">>, RR}], sdp())),
+        send(
+            Sock,
+            PSrc,
+            resp(
+                Inv,
+                200,
+                <<"OK">>,
+                CTag,
+                [
+                    {<<"Contact">>, ctc(CP)},
+                    {<<"Record-Route">>, RR}
+                ],
+                sdp()
+            )
+        ),
         {_Ack, _} = recv(Sock, <<"ACK">>),
         %% callee-initiated BYE, routed through the proxy
         send(Sock, EP, callee_bye_req(Sock, Call, CTag, FT, RR, Caller)),
@@ -126,13 +164,29 @@ reinvite_through_proxy(_Config) ->
     peer(CP, fun(Sock) ->
         {Inv, PSrc} = recv(Sock, <<"INVITE">>),
         RR = record_route_of(Inv),
-        send(Sock, PSrc, resp(Inv, 200, <<"OK">>, tag(),
-                              [{<<"Contact">>, ctc(CP)},
-                               {<<"Record-Route">>, RR}], sdp())),
+        send(
+            Sock,
+            PSrc,
+            resp(
+                Inv,
+                200,
+                <<"OK">>,
+                tag(),
+                [
+                    {<<"Contact">>, ctc(CP)},
+                    {<<"Record-Route">>, RR}
+                ],
+                sdp()
+            )
+        ),
         {_Ack, _} = recv(Sock, <<"ACK">>),
         {Re, RSrc} = recv(Sock, <<"INVITE">>),
         Test ! callee_got_reinvite,
-        send(Sock, RSrc, resp(Re, 200, <<"OK">>, keep, [{<<"Contact">>, ctc(CP)}], sdp())),
+        send(
+            Sock,
+            RSrc,
+            resp(Re, 200, <<"OK">>, keep, [{<<"Contact">>, ctc(CP)}], sdp())
+        ),
         {_Ack2, _} = recv(Sock, <<"ACK">>),
         {Bye, BSrc} = recv(Sock, <<"BYE">>),
         send(Sock, BSrc, resp(Bye, 200, <<"OK">>, tag(), [], <<>>))
@@ -175,15 +229,39 @@ forged_route_marker_not_relayed(_Config) ->
         %% a short marker (wrong length) must not crash the engine's compare,
         %% and a full-length but wrong MAC must not be accepted either
         Short = <<"<sip:127.0.0.1:", EPB/binary, ";lr;espx=abc>">>,
-        send(Sock, EP, bye(Sock, Call, <<"atk">>, <<"vtag">>, Short,
-                           ctc(VictimP), 2)),
+        send(
+            Sock,
+            EP,
+            bye(
+                Sock,
+                Call,
+                <<"atk">>,
+                <<"vtag">>,
+                Short,
+                ctc(VictimP),
+                2
+            )
+        ),
         %% a BYE naming no dialog of ours (RFC 3261 15.1.2)
         _ = recv_status(Sock, 481),
-        Full = <<"<sip:127.0.0.1:", EPB/binary,
-                 ";lr;espx=00000000000000000000000000000000>">>,
-        send(Sock, EP, bye(Sock, Call, <<"atk">>, <<"vtag">>, Full,
-                           ctc(VictimP), 3)),
-        _ = recv_status(Sock, 481),          % refused, not relayed
+        Full =
+            <<"<sip:127.0.0.1:", EPB/binary,
+                ";lr;espx=00000000000000000000000000000000>">>,
+        send(
+            Sock,
+            EP,
+            bye(
+                Sock,
+                Call,
+                <<"atk">>,
+                <<"vtag">>,
+                Full,
+                ctc(VictimP),
+                3
+            )
+        ),
+        % refused, not relayed
+        _ = recv_status(Sock, 481),
         Test ! atk_refused
     end),
     ok = expect(atk_refused),
@@ -199,9 +277,13 @@ forged_route_marker_not_relayed(_Config) ->
 require_left_to_uas(_Config) ->
     {EP, CP} = setup(),
     Test = self(),
-    ok = chappe_sip:handle(<<"INVITE">>, fun(Req, _Res) ->
-        chappe_sip:proxy_request(Req, [dest(CP)], #{record_route => true})
-    end, #{proxy => true}),
+    ok = chappe_sip:handle(
+        <<"INVITE">>,
+        fun(Req, _Res) ->
+            chappe_sip:proxy_request(Req, [dest(CP)], #{record_route => true})
+        end,
+        #{proxy => true}
+    ),
     Call = callid(),
     FT = <<"rq1">>,
     Req = <<"Require: x-far-end\r\n">>,
@@ -209,9 +291,21 @@ require_left_to_uas(_Config) ->
         {Inv, PSrc} = recv(Sock, <<"INVITE">>),
         Test ! {callee_invite, Inv},
         RR = record_route_of(Inv),
-        send(Sock, PSrc, resp(Inv, 200, <<"OK">>, tag(),
-                              [{<<"Contact">>, ctc(CP)},
-                               {<<"Record-Route">>, RR}], sdp())),
+        send(
+            Sock,
+            PSrc,
+            resp(
+                Inv,
+                200,
+                <<"OK">>,
+                tag(),
+                [
+                    {<<"Contact">>, ctc(CP)},
+                    {<<"Record-Route">>, RR}
+                ],
+                sdp()
+            )
+        ),
         {_Ack, _} = recv(Sock, <<"ACK">>),
         {Bye, BSrc} = recv(Sock, <<"BYE">>),
         Test ! {callee_bye, Bye},
@@ -224,13 +318,23 @@ require_left_to_uas(_Config) ->
         RR = record_route_of(R200),
         Callee = contact_of(R200),
         send(Sock, EP, ack(Sock, Call, FT, TT, RR, Callee, 1)),
-        send(Sock, EP, with_header(bye(Sock, Call, FT, TT, RR, Callee, 2), Req)),
+        send(
+            Sock, EP, with_header(bye(Sock, Call, FT, TT, RR, Callee, 2), Req)
+        ),
         _ = recv_status(Sock, 200),
         Test ! caller_got_bye_200
     end),
-    Inv = receive {callee_invite, I} -> I after 6000 -> ct:fail(no_invite) end,
+    Inv =
+        receive
+            {callee_invite, I} -> I
+        after 6000 -> ct:fail(no_invite)
+        end,
     ?assertNotEqual(nomatch, binary:match(Inv, <<"x-far-end">>)),
-    Bye = receive {callee_bye, B} -> B after 6000 -> ct:fail(no_bye) end,
+    Bye =
+        receive
+            {callee_bye, B} -> B
+        after 6000 -> ct:fail(no_bye)
+        end,
     ?assertNotEqual(nomatch, binary:match(Bye, <<"x-far-end">>)),
     ok = expect(caller_got_bye_200).
 
@@ -246,23 +350,33 @@ proxy_app(CP) ->
 
 setup() ->
     EP = pick(),
-    ok = chappe_sip:start(#{contact => <<"sip:127.0.0.1:",
-                                   (integer_to_binary(EP))/binary>>}),
+    ok = chappe_sip:start(#{
+        contact => <<"sip:127.0.0.1:", (integer_to_binary(EP))/binary>>
+    }),
     {EP, pick()}.
 
 peer(Port, Fun) ->
     Parent = self(),
     Pid = spawn_link(fun() ->
-        {ok, Sock} = gen_udp:open(Port, [binary, {active, true},
-                                         {ip, {127,0,0,1}}]),
+        {ok, Sock} = gen_udp:open(Port, [
+            binary,
+            {active, true},
+            {ip, {127, 0, 0, 1}}
+        ]),
         Parent ! {peer_ready, self()},
         Fun(Sock)
     end),
-    receive {peer_ready, Pid} -> ok after 2000 -> ct:fail(peer_not_ready) end,
+    receive
+        {peer_ready, Pid} -> ok
+    after 2000 -> ct:fail(peer_not_ready)
+    end,
     Pid.
 
 expect(Msg) ->
-    receive Msg -> ok after 6000 -> ct:fail({expected, Msg}) end.
+    receive
+        Msg -> ok
+    after 6000 -> ct:fail({expected, Msg})
+    end.
 
 %% ---- SIP helpers ----
 
@@ -275,17 +389,24 @@ callid() ->
 branch() ->
     <<"z9hG4bK", (binary:encode_hex(crypto:strong_rand_bytes(6)))/binary>>.
 sdp() ->
-    <<"v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\n"
-      "t=0 0\r\nm=audio 40000 RTP/AVP 0\r\n">>.
-lport(Sock) -> {ok, P} = inet:port(Sock), P.
-send(Sock, DstPort, Bin) -> gen_udp:send(Sock, {127,0,0,1}, DstPort, Bin).
+    <<
+        "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\n"
+        "t=0 0\r\nm=audio 40000 RTP/AVP 0\r\n"
+    >>.
+lport(Sock) ->
+    {ok, P} = inet:port(Sock),
+    P.
+send(Sock, DstPort, Bin) -> gen_udp:send(Sock, {127, 0, 0, 1}, DstPort, Bin).
 
 recv(Sock, Method) ->
     L = byte_size(Method),
     receive
-        {udp, Sock, _, Src, <<M:L/binary, " ", _/binary>> = Bin} when M =:= Method ->
+        {udp, Sock, _, Src, <<M:L/binary, " ", _/binary>> = Bin} when
+            M =:= Method
+        ->
             {Bin, Src};
-        {udp, Sock, _, _, _} -> recv(Sock, Method)
+        {udp, Sock, _, _, _} ->
+            recv(Sock, Method)
     after 6000 -> ct:fail({no_req, Method})
     end.
 
@@ -293,11 +414,16 @@ recv_status(Sock, Code) ->
     CB = integer_to_binary(Code),
     receive
         {udp, Sock, _, _, <<"SIP/2.0 ", C:3/binary, _/binary>> = Bin} ->
-            case C of CB -> Bin; _ -> recv_status(Sock, Code) end
+            case C of
+                CB -> Bin;
+                _ -> recv_status(Sock, Code)
+            end
     after 6000 -> ct:fail({no_status, Code})
     end.
 
-to_tag(Resp) -> {ok, M} = chappe_sip_msg:parse(Resp), chappe_sip_msg:to_tag(M).
+to_tag(Resp) ->
+    {ok, M} = chappe_sip_msg:parse(Resp),
+    chappe_sip_msg:to_tag(M).
 
 record_route_of(Bin) ->
     {ok, M} = chappe_sip_msg:parse(Bin),
@@ -314,66 +440,104 @@ invite(Sock, Call, FT) ->
     P = integer_to_binary(lport(Sock)),
     S = sdp(),
     L = integer_to_binary(byte_size(S)),
-    <<"INVITE sip:callee@127.0.0.1 SIP/2.0\r\n"
-      "Via: SIP/2.0/UDP 127.0.0.1:", P/binary, ";rport;branch=", (branch())/binary,
-      "\r\nMax-Forwards: 70\r\n"
-      "From: Caller <sip:caller@127.0.0.1:", P/binary, ">;tag=", FT/binary, "\r\n"
-      "To: <sip:callee@127.0.0.1>\r\n"
-      "Contact: <sip:caller@127.0.0.1:", P/binary, ">\r\n"
-      "Call-ID: ", Call/binary, "\r\nCSeq: 1 INVITE\r\n"
-      "Content-Type: application/sdp\r\n"
-      "Content-Length: ", L/binary, "\r\n\r\n", S/binary>>.
+    <<
+        "INVITE sip:callee@127.0.0.1 SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:",
+        P/binary,
+        ";rport;branch=",
+        (branch())/binary,
+        "\r\nMax-Forwards: 70\r\n"
+        "From: Caller <sip:caller@127.0.0.1:",
+        P/binary,
+        ">;tag=",
+        FT/binary,
+        "\r\n"
+        "To: <sip:callee@127.0.0.1>\r\n"
+        "Contact: <sip:caller@127.0.0.1:",
+        P/binary,
+        ">\r\n"
+        "Call-ID: ",
+        Call/binary,
+        "\r\nCSeq: 1 INVITE\r\n"
+        "Content-Type: application/sdp\r\n"
+        "Content-Length: ",
+        L/binary,
+        "\r\n\r\n",
+        S/binary
+    >>.
 
 reinvite(Sock, Call, FT, TT, RR, RURI, CSeq) ->
     P = integer_to_binary(lport(Sock)),
     S = sdp(),
     L = integer_to_binary(byte_size(S)),
     CS = integer_to_binary(CSeq),
-    <<"INVITE ", RURI/binary, " SIP/2.0\r\n"
-      "Via: SIP/2.0/UDP 127.0.0.1:", P/binary, ";rport;branch=", (branch())/binary,
-      "\r\nMax-Forwards: 70\r\n"
-      "Route: ", RR/binary, "\r\n"
-      "From: Caller <sip:caller@127.0.0.1:", P/binary, ">;tag=", FT/binary, "\r\n"
-      "To: <sip:callee@127.0.0.1>;tag=", TT/binary, "\r\n"
-      "Contact: <sip:caller@127.0.0.1:", P/binary, ">\r\n"
-      "Call-ID: ", Call/binary, "\r\nCSeq: ", CS/binary, " INVITE\r\n"
-      "Content-Type: application/sdp\r\n"
-      "Content-Length: ", L/binary, "\r\n\r\n", S/binary>>.
+    <<"INVITE ", RURI/binary,
+        " SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:", P/binary, ";rport;branch=",
+        (branch())/binary,
+        "\r\nMax-Forwards: 70\r\n"
+        "Route: ", RR/binary,
+        "\r\n"
+        "From: Caller <sip:caller@127.0.0.1:", P/binary, ">;tag=", FT/binary,
+        "\r\n"
+        "To: <sip:callee@127.0.0.1>;tag=", TT/binary,
+        "\r\n"
+        "Contact: <sip:caller@127.0.0.1:", P/binary,
+        ">\r\n"
+        "Call-ID: ", Call/binary, "\r\nCSeq: ", CS/binary,
+        " INVITE\r\n"
+        "Content-Type: application/sdp\r\n"
+        "Content-Length: ", L/binary, "\r\n\r\n", S/binary>>.
 
 ack(Sock, Call, FT, TT, RR, RURI, CSeq) ->
     P = integer_to_binary(lport(Sock)),
     CS = integer_to_binary(CSeq),
-    <<"ACK ", RURI/binary, " SIP/2.0\r\n"
-      "Via: SIP/2.0/UDP 127.0.0.1:", P/binary, ";branch=", (branch())/binary,
-      "\r\nMax-Forwards: 70\r\n"
-      "Route: ", RR/binary, "\r\n"
-      "From: Caller <sip:caller@127.0.0.1:", P/binary, ">;tag=", FT/binary, "\r\n"
-      "To: <sip:callee@127.0.0.1>;tag=", TT/binary, "\r\n"
-      "Call-ID: ", Call/binary, "\r\nCSeq: ", CS/binary, " ACK\r\n"
-      "Content-Length: 0\r\n\r\n">>.
+    <<"ACK ", RURI/binary,
+        " SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:", P/binary, ";branch=", (branch())/binary,
+        "\r\nMax-Forwards: 70\r\n"
+        "Route: ", RR/binary,
+        "\r\n"
+        "From: Caller <sip:caller@127.0.0.1:", P/binary, ">;tag=", FT/binary,
+        "\r\n"
+        "To: <sip:callee@127.0.0.1>;tag=", TT/binary,
+        "\r\n"
+        "Call-ID: ", Call/binary, "\r\nCSeq: ", CS/binary,
+        " ACK\r\n"
+        "Content-Length: 0\r\n\r\n">>.
 
 bye(Sock, Call, FT, TT, RR, RURI, CSeq) ->
     P = integer_to_binary(lport(Sock)),
     CS = integer_to_binary(CSeq),
-    <<"BYE ", RURI/binary, " SIP/2.0\r\n"
-      "Via: SIP/2.0/UDP 127.0.0.1:", P/binary, ";branch=", (branch())/binary,
-      "\r\nMax-Forwards: 70\r\n"
-      "Route: ", RR/binary, "\r\n"
-      "From: Caller <sip:caller@127.0.0.1:", P/binary, ">;tag=", FT/binary, "\r\n"
-      "To: <sip:callee@127.0.0.1>;tag=", TT/binary, "\r\n"
-      "Call-ID: ", Call/binary, "\r\nCSeq: ", CS/binary, " BYE\r\n"
-      "Content-Length: 0\r\n\r\n">>.
+    <<"BYE ", RURI/binary,
+        " SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:", P/binary, ";branch=", (branch())/binary,
+        "\r\nMax-Forwards: 70\r\n"
+        "Route: ", RR/binary,
+        "\r\n"
+        "From: Caller <sip:caller@127.0.0.1:", P/binary, ">;tag=", FT/binary,
+        "\r\n"
+        "To: <sip:callee@127.0.0.1>;tag=", TT/binary,
+        "\r\n"
+        "Call-ID: ", Call/binary, "\r\nCSeq: ", CS/binary,
+        " BYE\r\n"
+        "Content-Length: 0\r\n\r\n">>.
 
 %% callee-originated BYE: From is the callee (with its tag), To is the caller.
 callee_bye_req(Sock, Call, CTag, FT, RR, RURI) ->
     P = integer_to_binary(lport(Sock)),
-    <<"BYE ", RURI/binary, " SIP/2.0\r\n"
-      "Via: SIP/2.0/UDP 127.0.0.1:", P/binary, ";branch=", (branch())/binary,
-      "\r\nMax-Forwards: 70\r\n"
-      "Route: ", RR/binary, "\r\n"
-      "From: <sip:x@127.0.0.1:", P/binary, ">;tag=", CTag/binary, "\r\n"
-      "To: Caller <sip:caller@127.0.0.1>;tag=", FT/binary, "\r\n"
-      "Call-ID: ", Call/binary, "\r\nCSeq: 1 BYE\r\nContent-Length: 0\r\n\r\n">>.
+    <<"BYE ", RURI/binary,
+        " SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP 127.0.0.1:", P/binary, ";branch=", (branch())/binary,
+        "\r\nMax-Forwards: 70\r\n"
+        "Route: ", RR/binary,
+        "\r\n"
+        "From: <sip:x@127.0.0.1:", P/binary, ">;tag=", CTag/binary,
+        "\r\n"
+        "To: Caller <sip:caller@127.0.0.1>;tag=", FT/binary,
+        "\r\n"
+        "Call-ID: ", Call/binary,
+        "\r\nCSeq: 1 BYE\r\nContent-Length: 0\r\n\r\n">>.
 
 %% Response echoing all Vias; keeps the To tag if present, else adds ToTag
 %% (or `keep` to leave To untouched).
@@ -382,18 +546,44 @@ resp(ReqBin, Status, Reason, ToTag, ExtraHeaders, Body) ->
     Vias = chappe_sip_msg:get_all(<<"via">>, Msg),
     From = chappe_sip_msg:get(<<"from">>, Msg),
     To0 = chappe_sip_msg:get(<<"to">>, Msg),
-    To = case {chappe_sip_msg:to_tag(Msg), ToTag} of
-             {undefined, keep} -> To0;
-             {undefined, _} when Status > 100 -> <<To0/binary, ";tag=", ToTag/binary>>;
-             _ -> To0
-         end,
+    To =
+        case {chappe_sip_msg:to_tag(Msg), ToTag} of
+            {undefined, keep} ->
+                To0;
+            {undefined, _} when Status > 100 ->
+                <<To0/binary, ";tag=", ToTag/binary>>;
+            _ ->
+                To0
+        end,
     Call = chappe_sip_msg:call_id(Msg),
     CSeq = chappe_sip_msg:get(<<"cseq">>, Msg),
     ViaLines = [[<<"Via: ">>, V, <<"\r\n">>] || V <- Vias],
     Extra = [[N, <<": ">>, Val, <<"\r\n">>] || {N, Val} <- ExtraHeaders],
     CL = integer_to_binary(byte_size(Body)),
     iolist_to_binary(
-      [<<"SIP/2.0 ">>, integer_to_binary(Status), <<" ">>, Reason, <<"\r\n">>,
-       ViaLines, <<"From: ">>, From, <<"\r\n">>, <<"To: ">>, To, <<"\r\n">>,
-       <<"Call-ID: ">>, Call, <<"\r\n">>, <<"CSeq: ">>, CSeq, <<"\r\n">>, Extra,
-       <<"Content-Length: ">>, CL, <<"\r\n\r\n">>, Body]).
+        [
+            <<"SIP/2.0 ">>,
+            integer_to_binary(Status),
+            <<" ">>,
+            Reason,
+            <<"\r\n">>,
+            ViaLines,
+            <<"From: ">>,
+            From,
+            <<"\r\n">>,
+            <<"To: ">>,
+            To,
+            <<"\r\n">>,
+            <<"Call-ID: ">>,
+            Call,
+            <<"\r\n">>,
+            <<"CSeq: ">>,
+            CSeq,
+            <<"\r\n">>,
+            Extra,
+            <<"Content-Length: ">>,
+            CL,
+            <<"\r\n\r\n">>,
+            Body
+        ]
+    ).

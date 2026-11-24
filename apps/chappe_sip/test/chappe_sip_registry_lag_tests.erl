@@ -70,8 +70,15 @@ stale_replica_keeps_the_flow_index_test() ->
     ?assertEqual([], flow_aors(7)).
 
 flow_aors(Flow) ->
-    [A || {{flow, F, A}, _} <- ets:tab2list(chappe_sip_registry_flows), F =:= Flow] ++
-        [A || {{flow, F, A}} <- ets:tab2list(chappe_sip_registry_flows), F =:= Flow].
+    [
+        A
+     || {{flow, F, A}, _} <- ets:tab2list(chappe_sip_registry_flows), F =:= Flow
+    ] ++
+        [
+            A
+         || {{flow, F, A}} <- ets:tab2list(chappe_sip_registry_flows),
+            F =:= Flow
+        ].
 
 %% A resync read that began before a REGISTER (it saw no binding of this
 %% node) does not remove the AOR from what this node holds: the entry the
@@ -119,6 +126,10 @@ resync_ends_with_its_registry_test() ->
     ok = ?STORE:new(),
     Dead = spawn(fun() -> ok end),
     Ref = monitor(process, Dead),
-    receive {'DOWN', Ref, process, Dead, _} -> ok end,
-    ok = chappe_sip_registry:resync_reads_for_test(?STORE, [?AOR, <<"sip:b@x">>], Dead),
+    receive
+        {'DOWN', Ref, process, Dead, _} -> ok
+    end,
+    ok = chappe_sip_registry:resync_reads_for_test(
+        ?STORE, [?AOR, <<"sip:b@x">>], Dead
+    ),
     ?assertEqual(0, proplists:get_value(consistent, ?STORE:reads(), 0)).

@@ -12,35 +12,64 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -export([all/0, init_per_suite/1, end_per_suite/1, end_per_testcase/2]).
--export([uas_require_timer_accepted/1, uas_422_below_min_se/1,
-         uas_default_min_se_is_90/1, uas_no_timer_support/1,
-         uas_keeps_uac_choice/1, uas_reduces_interval/1,
-         uas_inserts_when_configured/1, uas_no_timer_by_default/1,
-         uas_refreshes_by_update/1, uas_refreshes_by_reinvite/1,
-         uas_bye_on_expiry/1, uas_refresh_rearms/1,
-         uas_refresh_below_min_se/1,
-         uac_supported_timer_always/1, uac_requests_when_configured/1,
-         uac_retries_after_422/1, uac_refreshes_when_refresher/1,
-         uac_refreshes_without_uas_support/1, uac_bye_when_peer_silent/1,
-         uac_bye_on_refresh_481/1, uac_arms_on_unrequested_se/1,
-         uac_refresh_422_raises_min_se/1]).
+-export([
+    uas_require_timer_accepted/1,
+    uas_422_below_min_se/1,
+    uas_default_min_se_is_90/1,
+    uas_no_timer_support/1,
+    uas_keeps_uac_choice/1,
+    uas_reduces_interval/1,
+    uas_inserts_when_configured/1,
+    uas_no_timer_by_default/1,
+    uas_refreshes_by_update/1,
+    uas_refreshes_by_reinvite/1,
+    uas_bye_on_expiry/1,
+    uas_refresh_rearms/1,
+    uas_refresh_below_min_se/1,
+    uac_supported_timer_always/1,
+    uac_requests_when_configured/1,
+    uac_retries_after_422/1,
+    uac_refreshes_when_refresher/1,
+    uac_refreshes_without_uas_support/1,
+    uac_bye_when_peer_silent/1,
+    uac_bye_on_refresh_481/1,
+    uac_arms_on_unrequested_se/1,
+    uac_refresh_422_raises_min_se/1
+]).
 
 all() ->
-    [uas_require_timer_accepted, uas_422_below_min_se,
-     uas_default_min_se_is_90, uas_no_timer_support, uas_keeps_uac_choice,
-     uas_reduces_interval, uas_inserts_when_configured,
-     uas_no_timer_by_default, uas_refreshes_by_update,
-     uas_refreshes_by_reinvite, uas_bye_on_expiry, uas_refresh_rearms,
-     uas_refresh_below_min_se,
-     uac_supported_timer_always, uac_requests_when_configured,
-     uac_retries_after_422, uac_refreshes_when_refresher,
-     uac_refreshes_without_uas_support, uac_bye_when_peer_silent,
-     uac_bye_on_refresh_481, uac_arms_on_unrequested_se,
-     uac_refresh_422_raises_min_se].
+    [
+        uas_require_timer_accepted,
+        uas_422_below_min_se,
+        uas_default_min_se_is_90,
+        uas_no_timer_support,
+        uas_keeps_uac_choice,
+        uas_reduces_interval,
+        uas_inserts_when_configured,
+        uas_no_timer_by_default,
+        uas_refreshes_by_update,
+        uas_refreshes_by_reinvite,
+        uas_bye_on_expiry,
+        uas_refresh_rearms,
+        uas_refresh_below_min_se,
+        uac_supported_timer_always,
+        uac_requests_when_configured,
+        uac_retries_after_422,
+        uac_refreshes_when_refresher,
+        uac_refreshes_without_uas_support,
+        uac_bye_when_peer_silent,
+        uac_bye_on_refresh_481,
+        uac_arms_on_unrequested_se,
+        uac_refresh_422_raises_min_se
+    ].
 
 init_per_suite(Config) ->
-    application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
-                        [{persistent, true}]),
+    application:set_env(
+        chappe_sip,
+        engine_mod,
+        chappe_sip_nif,
+        [{persistent, true}]
+    ),
     {ok, _} = application:ensure_all_started(chappe_sip),
     Config.
 
@@ -64,9 +93,11 @@ end_per_testcase(_Case, _Config) ->
 uas_require_timer_accepted(_Config) ->
     EP = setup(),
     answer(#{local_sdp => ?UA:sdp(<<"app">>)}),
-    R = call_app(EP, [{<<"Supported">>, <<"timer">>},
-                      {<<"Require">>, <<"timer">>},
-                      {<<"Session-Expires">>, <<"1800">>}]),
+    R = call_app(EP, [
+        {<<"Supported">>, <<"timer">>},
+        {<<"Require">>, <<"timer">>},
+        {<<"Session-Expires">>, <<"1800">>}
+    ]),
     ?assertEqual(200, ?UA:status(R)),
     ?assertEqual(<<"1800;refresher=uac">>, ?UA:hdr(R, <<"session-expires">>)),
     ?assertEqual([<<"timer">>], ?UA:hdrs(R, <<"require">>)),
@@ -79,8 +110,10 @@ uas_require_timer_accepted(_Config) ->
 uas_422_below_min_se(_Config) ->
     EP = setup(),
     answer(#{local_sdp => ?UA:sdp(<<"app">>), min_se => 120}),
-    R = call_app(EP, [{<<"Supported">>, <<"timer">>},
-                      {<<"Session-Expires">>, <<"100">>}]),
+    R = call_app(EP, [
+        {<<"Supported">>, <<"timer">>},
+        {<<"Session-Expires">>, <<"100">>}
+    ]),
     ?assertEqual(422, ?UA:status(R)),
     ?assertEqual(<<"120">>, ?UA:hdr(R, <<"min-se">>)),
     ok = ?UA:expect({uas_result, {error, {session_interval_too_small, 120}}}).
@@ -90,12 +123,16 @@ uas_422_below_min_se(_Config) ->
 uas_default_min_se_is_90(_Config) ->
     EP = setup(),
     answer(#{local_sdp => ?UA:sdp(<<"app">>)}),
-    R = call_app(EP, [{<<"Supported">>, <<"timer">>},
-                      {<<"Session-Expires">>, <<"89">>}]),
+    R = call_app(EP, [
+        {<<"Supported">>, <<"timer">>},
+        {<<"Session-Expires">>, <<"89">>}
+    ]),
     ?assertEqual(422, ?UA:status(R)),
     ?assertEqual(<<"90">>, ?UA:hdr(R, <<"min-se">>)),
-    R2 = call_app(EP, [{<<"Supported">>, <<"timer">>},
-                       {<<"Session-Expires">>, <<"91">>}]),
+    R2 = call_app(EP, [
+        {<<"Supported">>, <<"timer">>},
+        {<<"Session-Expires">>, <<"91">>}
+    ]),
     ?assertEqual(200, ?UA:status(R2)),
     ?assertEqual(<<"91;refresher=uac">>, ?UA:hdr(R2, <<"session-expires">>)).
 
@@ -115,8 +152,10 @@ uas_no_timer_support(_Config) ->
 uas_keeps_uac_choice(_Config) ->
     EP = setup(),
     answer(#{local_sdp => ?UA:sdp(<<"app">>), session_refresher => uac}),
-    R = call_app(EP, [{<<"Supported">>, <<"timer">>},
-                      {<<"Session-Expires">>, <<"1800;refresher=uas">>}]),
+    R = call_app(EP, [
+        {<<"Supported">>, <<"timer">>},
+        {<<"Session-Expires">>, <<"1800;refresher=uas">>}
+    ]),
     ?assertEqual(<<"1800;refresher=uas">>, ?UA:hdr(R, <<"session-expires">>)),
     ?assertEqual([<<"timer">>], ?UA:hdrs(R, <<"require">>)).
 
@@ -125,17 +164,22 @@ uas_keeps_uac_choice(_Config) ->
 uas_reduces_interval(_Config) ->
     EP = setup(),
     answer(#{local_sdp => ?UA:sdp(<<"app">>), session_expires => 300}),
-    R = call_app(EP, [{<<"Supported">>, <<"timer">>},
-                      {<<"Min-SE">>, <<"600">>},
-                      {<<"Session-Expires">>, <<"1800">>}]),
+    R = call_app(EP, [
+        {<<"Supported">>, <<"timer">>},
+        {<<"Min-SE">>, <<"600">>},
+        {<<"Session-Expires">>, <<"1800">>}
+    ]),
     ?assertEqual(<<"600;refresher=uac">>, ?UA:hdr(R, <<"session-expires">>)).
 
 %% Supported: timer and no Session-Expires: a configured UAS asks for one.
 %% req: R4028-34 R4028-36 R4028-9-1
 uas_inserts_when_configured(_Config) ->
     EP = setup(),
-    answer(#{local_sdp => ?UA:sdp(<<"app">>), session_expires => 1200,
-             session_refresher => uas}),
+    answer(#{
+        local_sdp => ?UA:sdp(<<"app">>),
+        session_expires => 1200,
+        session_refresher => uas
+    }),
     R = call_app(EP, [{<<"Supported">>, <<"timer">>}]),
     ?assertEqual(<<"1200;refresher=uas">>, ?UA:hdr(R, <<"session-expires">>)),
     ?assertEqual([<<"timer">>], ?UA:hdrs(R, <<"require">>)).
@@ -158,14 +202,26 @@ uas_refreshes_by_update(_Config) ->
     answer(#{local_sdp => ?UA:sdp(<<"app">>), min_se => 1}),
     Test = self(),
     ?UA:peer(0, fun(Sock) ->
-        {_, D} = establish(Sock, EP, [{<<"Session-Expires">>, <<"4">>},
-                                      {<<"Min-SE">>, <<"3">>},
-                                      {<<"Allow">>, <<"INVITE, ACK, BYE, UPDATE">>}]),
+        {_, D} = establish(Sock, EP, [
+            {<<"Session-Expires">>, <<"4">>},
+            {<<"Min-SE">>, <<"3">>},
+            {<<"Allow">>, <<"INVITE, ACK, BYE, UPDATE">>}
+        ]),
         T0 = now_ms(),
         {U1, S1} = ?UA:recv_req(Sock, <<"UPDATE">>, 8000),
         T1 = now_ms(),
-        ?UA:send(Sock, S1, ?UA:resp(U1, 200, <<"OK">>, <<>>,
-                                    [{<<"Session-Expires">>, <<"4;refresher=uac">>}], <<>>)),
+        ?UA:send(
+            Sock,
+            S1,
+            ?UA:resp(
+                U1,
+                200,
+                <<"OK">>,
+                <<>>,
+                [{<<"Session-Expires">>, <<"4;refresher=uac">>}],
+                <<>>
+            )
+        ),
         {U2, S2} = ?UA:recv_req(Sock, <<"UPDATE">>, 8000),
         T2 = now_ms(),
         ?UA:send(Sock, S2, ?UA:resp(U2, 200, <<"OK">>, <<>>, [], <<>>)),
@@ -173,7 +229,9 @@ uas_refreshes_by_update(_Config) ->
     end),
     receive
         {updates, U1, Dt1, Dt2, _} ->
-            ?assertEqual(<<"4;refresher=uac">>, ?UA:hdr(U1, <<"session-expires">>)),
+            ?assertEqual(
+                <<"4;refresher=uac">>, ?UA:hdr(U1, <<"session-expires">>)
+            ),
             %% the INVITE's Min-SE is repeated on every refresh
             ?assertEqual(<<"3">>, ?UA:hdr(U1, <<"min-se">>)),
             ?assertEqual([<<"timer">>], ?UA:hdrs(U1, <<"supported">>)),
@@ -195,18 +253,33 @@ uas_refreshes_by_reinvite(_Config) ->
     ?UA:peer(0, fun(Sock) ->
         {_, _D} = establish(Sock, EP, [{<<"Session-Expires">>, <<"4">>}]),
         {Re, S} = ?UA:recv_req(Sock, <<"INVITE">>, 8000),
-        ?UA:send(Sock, S, ?UA:resp(Re, 200, <<"OK">>, <<>>,
-                                   [{<<"Contact">>, <<"<sip:caller@127.0.0.1>">>},
-                                    {<<"Session-Expires">>, <<"4;refresher=uac">>}],
-                                   ?UA:sdp(<<"caller">>))),
+        ?UA:send(
+            Sock,
+            S,
+            ?UA:resp(
+                Re,
+                200,
+                <<"OK">>,
+                <<>>,
+                [
+                    {<<"Contact">>, <<"<sip:caller@127.0.0.1>">>},
+                    {<<"Session-Expires">>, <<"4;refresher=uac">>}
+                ],
+                ?UA:sdp(<<"caller">>)
+            )
+        ),
         {Ack, _} = ?UA:recv_req(Sock, <<"ACK">>),
         Test ! {reinvite, Re, Ack}
     end),
     receive
         {reinvite, Re, Ack} ->
-            ?assertEqual(<<"4;refresher=uac">>, ?UA:hdr(Re, <<"session-expires">>)),
+            ?assertEqual(
+                <<"4;refresher=uac">>, ?UA:hdr(Re, <<"session-expires">>)
+            ),
             ?assertEqual(AppSdp, ?UA:body(Re)),
-            ?assertEqual(maps:get(seq, ?UA:cseq(Re)), maps:get(seq, ?UA:cseq(Ack)))
+            ?assertEqual(
+                maps:get(seq, ?UA:cseq(Re)), maps:get(seq, ?UA:cseq(Ack))
+            )
     after 12000 -> ct:fail(no_reinvite)
     end.
 
@@ -219,8 +292,10 @@ uas_bye_on_expiry(_Config) ->
     answer(#{local_sdp => ?UA:sdp(<<"app">>), min_se => 1}),
     Test = self(),
     ?UA:peer(0, fun(Sock) ->
-        {R, _} = establish(Sock, EP, [{<<"Supported">>, <<"timer">>},
-                                      {<<"Session-Expires">>, <<"3">>}]),
+        {R, _} = establish(Sock, EP, [
+            {<<"Supported">>, <<"timer">>},
+            {<<"Session-Expires">>, <<"3">>}
+        ]),
         T0 = now_ms(),
         {Bye, S} = ?UA:recv_req(Sock, <<"BYE">>, 8000),
         Dt = now_ms() - T0,
@@ -229,7 +304,9 @@ uas_bye_on_expiry(_Config) ->
     end),
     receive
         {bye, R, Bye, Dt} ->
-            ?assertEqual(<<"3;refresher=uac">>, ?UA:hdr(R, <<"session-expires">>)),
+            ?assertEqual(
+                <<"3;refresher=uac">>, ?UA:hdr(R, <<"session-expires">>)
+            ),
             ?assertEqual([<<"timer">>], ?UA:hdrs(Bye, <<"supported">>)),
             ct:pal("BYE after ~p ms", [Dt]),
             ?assert(Dt >= 1700 andalso Dt < 2900)
@@ -245,12 +322,20 @@ uas_refresh_rearms(_Config) ->
     answer(#{local_sdp => ?UA:sdp(<<"app">>), min_se => 1}),
     Test = self(),
     ?UA:peer(0, fun(Sock) ->
-        {_, D} = establish(Sock, EP, [{<<"Supported">>, <<"timer">>},
-                                      {<<"Session-Expires">>, <<"3">>}]),
+        {_, D} = establish(Sock, EP, [
+            {<<"Supported">>, <<"timer">>},
+            {<<"Session-Expires">>, <<"3">>}
+        ]),
         timer:sleep(1000),
-        {U, _} = ?UA:in_dialog(D, <<"UPDATE">>,
-                               [{<<"Supported">>, <<"timer">>},
-                                {<<"Session-Expires">>, <<"3;refresher=uac">>}], <<>>),
+        {U, _} = ?UA:in_dialog(
+            D,
+            <<"UPDATE">>,
+            [
+                {<<"Supported">>, <<"timer">>},
+                {<<"Session-Expires">>, <<"3;refresher=uac">>}
+            ],
+            <<>>
+        ),
         ?UA:send(Sock, EP, U),
         R = ?UA:recv_status(Sock, 200),
         T0 = now_ms(),
@@ -263,7 +348,9 @@ uas_refresh_rearms(_Config) ->
     end),
     receive
         {refreshed, R, Dt} ->
-            ?assertEqual(<<"3;refresher=uac">>, ?UA:hdr(R, <<"session-expires">>)),
+            ?assertEqual(
+                <<"3;refresher=uac">>, ?UA:hdr(R, <<"session-expires">>)
+            ),
             ?assertEqual([<<"timer">>], ?UA:hdrs(R, <<"require">>)),
             ct:pal("BYE ~p ms after the refresh", [Dt]),
             ?assert(Dt >= 1700 andalso Dt < 2900)
@@ -277,11 +364,19 @@ uas_refresh_below_min_se(_Config) ->
     answer(#{local_sdp => ?UA:sdp(<<"app">>), min_se => 2}),
     Test = self(),
     ?UA:peer(0, fun(Sock) ->
-        {_, D} = establish(Sock, EP, [{<<"Supported">>, <<"timer">>},
-                                      {<<"Session-Expires">>, <<"30">>}]),
-        {U, _} = ?UA:in_dialog(D, <<"UPDATE">>,
-                               [{<<"Supported">>, <<"timer">>},
-                                {<<"Session-Expires">>, <<"1">>}], <<>>),
+        {_, D} = establish(Sock, EP, [
+            {<<"Supported">>, <<"timer">>},
+            {<<"Session-Expires">>, <<"30">>}
+        ]),
+        {U, _} = ?UA:in_dialog(
+            D,
+            <<"UPDATE">>,
+            [
+                {<<"Supported">>, <<"timer">>},
+                {<<"Session-Expires">>, <<"1">>}
+            ],
+            <<>>
+        ),
         ?UA:send(Sock, EP, U),
         Test ! {resp, ?UA:recv_any(Sock, 6000)}
     end),
@@ -322,24 +417,42 @@ uac_retries_after_422(_Config) ->
     Test = self(),
     ?UA:peer(UP, fun(Sock) ->
         {I1, S1} = ?UA:recv_req(Sock, <<"INVITE">>),
-        ?UA:send(Sock, S1, ?UA:resp(I1, 422, <<"Session Interval Too Small">>,
-                                    ?UA:tag(), [{<<"Min-SE">>, <<"1800">>}], <<>>)),
+        ?UA:send(
+            Sock,
+            S1,
+            ?UA:resp(
+                I1,
+                422,
+                <<"Session Interval Too Small">>,
+                ?UA:tag(),
+                [{<<"Min-SE">>, <<"1800">>}],
+                <<>>
+            )
+        ),
         {I2, S2} = ?UA:recv_req(Sock, <<"INVITE">>),
-        ?UA:send(Sock, S2, ?UA:resp(I2, 486, <<"Busy Here">>, ?UA:tag(), [], <<>>)),
+        ?UA:send(
+            Sock, S2, ?UA:resp(I2, 486, <<"Busy Here">>, ?UA:tag(), [], <<>>)
+        ),
         Test ! {invites, I1, I2}
     end),
-    {error, _} = chappe_sip:create_uac(callee(UP), #{contact => contact(EP),
-                                                     local_sdp => ?UA:sdp(<<"app">>),
-                                                     session_expires => 900}),
+    {error, _} = chappe_sip:create_uac(callee(UP), #{
+        contact => contact(EP),
+        local_sdp => ?UA:sdp(<<"app">>),
+        session_expires => 900
+    }),
     receive
         {invites, I1, I2} ->
             ?assertEqual(<<"900">>, ?UA:hdr(I1, <<"session-expires">>)),
             ?assertEqual(<<"1800">>, ?UA:hdr(I2, <<"session-expires">>)),
             ?assertEqual(<<"1800">>, ?UA:hdr(I2, <<"min-se">>)),
-            ?assertEqual(?UA:hdr(I1, <<"call-id">>), ?UA:hdr(I2, <<"call-id">>)),
+            ?assertEqual(
+                ?UA:hdr(I1, <<"call-id">>), ?UA:hdr(I2, <<"call-id">>)
+            ),
             ?assertEqual(?UA:hdr(I1, <<"from">>), ?UA:hdr(I2, <<"from">>)),
             ?assertEqual(?UA:hdr(I1, <<"to">>), ?UA:hdr(I2, <<"to">>)),
-            ?assertEqual(maps:get(seq, ?UA:cseq(I1)) + 1, maps:get(seq, ?UA:cseq(I2)))
+            ?assertEqual(
+                maps:get(seq, ?UA:cseq(I1)) + 1, maps:get(seq, ?UA:cseq(I2))
+            )
     after 8000 -> ct:fail(no_retry)
     end.
 
@@ -350,22 +463,38 @@ uac_refreshes_when_refresher(_Config) ->
     {EP, UP} = setup2(),
     Test = self(),
     ?UA:peer(UP, fun(Sock) ->
-        {_D, T0} = uas_answer(Sock, [{<<"Session-Expires">>, <<"4;refresher=uac">>},
-                                     {<<"Require">>, <<"timer">>},
-                                     {<<"Allow">>, <<"INVITE, ACK, BYE, UPDATE">>}]),
+        {_D, T0} = uas_answer(Sock, [
+            {<<"Session-Expires">>, <<"4;refresher=uac">>},
+            {<<"Require">>, <<"timer">>},
+            {<<"Allow">>, <<"INVITE, ACK, BYE, UPDATE">>}
+        ]),
         {U, S} = ?UA:recv_req(Sock, <<"UPDATE">>, 8000),
         Dt = now_ms() - T0,
-        ?UA:send(Sock, S, ?UA:resp(U, 200, <<"OK">>, <<>>,
-                                   [{<<"Session-Expires">>, <<"4;refresher=uac">>}], <<>>)),
+        ?UA:send(
+            Sock,
+            S,
+            ?UA:resp(
+                U,
+                200,
+                <<"OK">>,
+                <<>>,
+                [{<<"Session-Expires">>, <<"4;refresher=uac">>}],
+                <<>>
+            )
+        ),
         Test ! {update, U, Dt}
     end),
-    {ok, _Dlg} = chappe_sip:create_uac(callee(UP), #{contact => contact(EP),
-                                                     local_sdp => ?UA:sdp(<<"app">>),
-                                                     session_expires => 4,
-                                                     min_se => 1}),
+    {ok, _Dlg} = chappe_sip:create_uac(callee(UP), #{
+        contact => contact(EP),
+        local_sdp => ?UA:sdp(<<"app">>),
+        session_expires => 4,
+        min_se => 1
+    }),
     receive
         {update, U, Dt} ->
-            ?assertEqual(<<"4;refresher=uac">>, ?UA:hdr(U, <<"session-expires">>)),
+            ?assertEqual(
+                <<"4;refresher=uac">>, ?UA:hdr(U, <<"session-expires">>)
+            ),
             ct:pal("UPDATE after ~p ms", [Dt]),
             ?assert(Dt >= 1700 andalso Dt < 3500)
     after 12000 -> ct:fail(no_update)
@@ -382,19 +511,33 @@ uac_refreshes_without_uas_support(_Config) ->
         {_D, T0} = uas_answer(Sock, []),
         {Re, S} = ?UA:recv_req(Sock, <<"INVITE">>, 8000),
         Dt = now_ms() - T0,
-        ?UA:send(Sock, S, ?UA:resp(Re, 200, <<"OK">>, <<>>,
-                                   [{<<"Contact">>, contact(UP)}], ?UA:sdp(<<"callee">>))),
+        ?UA:send(
+            Sock,
+            S,
+            ?UA:resp(
+                Re,
+                200,
+                <<"OK">>,
+                <<>>,
+                [{<<"Contact">>, contact(UP)}],
+                ?UA:sdp(<<"callee">>)
+            )
+        ),
         {_Ack, _} = ?UA:recv_req(Sock, <<"ACK">>),
         Test ! {reinvite, Re, Dt}
     end),
-    {ok, _Dlg} = chappe_sip:create_uac(callee(UP), #{contact => contact(EP),
-                                                     local_sdp => AppSdp,
-                                                     session_expires => 4,
-                                                     min_se => 1}),
+    {ok, _Dlg} = chappe_sip:create_uac(callee(UP), #{
+        contact => contact(EP),
+        local_sdp => AppSdp,
+        session_expires => 4,
+        min_se => 1
+    }),
     receive
         {reinvite, Re, Dt} ->
             ?assertEqual(AppSdp, ?UA:body(Re)),
-            ?assertEqual(<<"4;refresher=uac">>, ?UA:hdr(Re, <<"session-expires">>)),
+            ?assertEqual(
+                <<"4;refresher=uac">>, ?UA:hdr(Re, <<"session-expires">>)
+            ),
             ct:pal("re-INVITE after ~p ms", [Dt]),
             ?assert(Dt >= 1700 andalso Dt < 3500)
     after 12000 -> ct:fail(no_reinvite)
@@ -407,23 +550,28 @@ uac_bye_when_peer_silent(_Config) ->
     {EP, UP} = setup2(),
     Test = self(),
     ?UA:peer(UP, fun(Sock) ->
-        {_D, T0} = uas_answer(Sock, [{<<"Session-Expires">>, <<"3;refresher=uas">>},
-                                     {<<"Require">>, <<"timer">>}]),
+        {_D, T0} = uas_answer(Sock, [
+            {<<"Session-Expires">>, <<"3;refresher=uas">>},
+            {<<"Require">>, <<"timer">>}
+        ]),
         {Bye, S} = ?UA:recv_req(Sock, <<"BYE">>, 8000),
         Dt = now_ms() - T0,
         ?UA:send(Sock, S, ?UA:resp(Bye, 200, <<"OK">>, <<>>, [], <<>>)),
         Test ! {bye, Dt}
     end),
-    {ok, Dlg} = chappe_sip:create_uac(callee(UP), #{contact => contact(EP),
-                                                    local_sdp => ?UA:sdp(<<"app">>),
-                                                    min_se => 1}),
+    {ok, Dlg} = chappe_sip:create_uac(callee(UP), #{
+        contact => contact(EP),
+        local_sdp => ?UA:sdp(<<"app">>),
+        min_se => 1
+    }),
     receive
         {bye, Dt} ->
             ct:pal("BYE after ~p ms", [Dt]),
             ?assert(Dt >= 1700 andalso Dt < 2900)
     after 12000 -> ct:fail(no_bye)
     end,
-    receive {chappe_sip_dialog, Dlg, destroy, session_expired} -> ok
+    receive
+        {chappe_sip_dialog, Dlg, destroy, session_expired} -> ok
     after 4000 -> ct:fail(no_destroy)
     end.
 
@@ -433,24 +581,39 @@ uac_bye_on_refresh_481(_Config) ->
     {EP, UP} = setup2(),
     Test = self(),
     ?UA:peer(UP, fun(Sock) ->
-        {_D, _} = uas_answer(Sock, [{<<"Session-Expires">>, <<"4;refresher=uac">>},
-                                    {<<"Allow">>, <<"UPDATE">>}]),
+        {_D, _} = uas_answer(Sock, [
+            {<<"Session-Expires">>, <<"4;refresher=uac">>},
+            {<<"Allow">>, <<"UPDATE">>}
+        ]),
         {U, S} = ?UA:recv_req(Sock, <<"UPDATE">>, 8000),
-        ?UA:send(Sock, S, ?UA:resp(U, 481, <<"Call/Transaction Does Not Exist">>,
-                                   <<>>, [], <<>>)),
+        ?UA:send(
+            Sock,
+            S,
+            ?UA:resp(
+                U,
+                481,
+                <<"Call/Transaction Does Not Exist">>,
+                <<>>,
+                [],
+                <<>>
+            )
+        ),
         T0 = now_ms(),
         {Bye, BS} = ?UA:recv_req(Sock, <<"BYE">>, 4000),
         ?UA:send(Sock, BS, ?UA:resp(Bye, 200, <<"OK">>, <<>>, [], <<>>)),
         Test ! {bye, now_ms() - T0}
     end),
-    {ok, Dlg} = chappe_sip:create_uac(callee(UP), #{contact => contact(EP),
-                                                    local_sdp => ?UA:sdp(<<"app">>),
-                                                    min_se => 1}),
+    {ok, Dlg} = chappe_sip:create_uac(callee(UP), #{
+        contact => contact(EP),
+        local_sdp => ?UA:sdp(<<"app">>),
+        min_se => 1
+    }),
     receive
         {bye, Dt} -> ?assert(Dt < 1000)
     after 12000 -> ct:fail(no_bye)
     end,
-    receive {chappe_sip_dialog, Dlg, destroy, {refresh_failed, 481}} -> ok
+    receive
+        {chappe_sip_dialog, Dlg, destroy, {refresh_failed, 481}} -> ok
     after 4000 -> ct:fail(no_destroy)
     end.
 
@@ -461,20 +624,26 @@ uac_arms_on_unrequested_se(_Config) ->
     {EP, UP} = setup2(),
     Test = self(),
     ?UA:peer(UP, fun(Sock) ->
-        {_D, T0} = uas_answer(Sock, [{<<"Session-Expires">>, <<"4;refresher=uac">>},
-                                     {<<"Require">>, <<"timer">>},
-                                     {<<"Allow">>, <<"UPDATE">>}]),
+        {_D, T0} = uas_answer(Sock, [
+            {<<"Session-Expires">>, <<"4;refresher=uac">>},
+            {<<"Require">>, <<"timer">>},
+            {<<"Allow">>, <<"UPDATE">>}
+        ]),
         {U, S} = ?UA:recv_req(Sock, <<"UPDATE">>, 8000),
         Dt = now_ms() - T0,
         ?UA:send(Sock, S, ?UA:resp(U, 200, <<"OK">>, <<>>, [], <<>>)),
         Test ! {update, U, Dt}
     end),
-    {ok, _Dlg} = chappe_sip:create_uac(callee(UP), #{contact => contact(EP),
-                                                     local_sdp => ?UA:sdp(<<"app">>),
-                                                     min_se => 1}),
+    {ok, _Dlg} = chappe_sip:create_uac(callee(UP), #{
+        contact => contact(EP),
+        local_sdp => ?UA:sdp(<<"app">>),
+        min_se => 1
+    }),
     receive
         {update, U, Dt} ->
-            ?assertEqual(<<"4;refresher=uac">>, ?UA:hdr(U, <<"session-expires">>)),
+            ?assertEqual(
+                <<"4;refresher=uac">>, ?UA:hdr(U, <<"session-expires">>)
+            ),
             ?assert(Dt >= 1700 andalso Dt < 3500)
     after 12000 -> ct:fail(no_update)
     end.
@@ -486,33 +655,63 @@ uac_refresh_422_raises_min_se(_Config) ->
     {EP, UP} = setup2(),
     Test = self(),
     ?UA:peer(UP, fun(Sock) ->
-        {_D, _} = uas_answer(Sock, [{<<"Session-Expires">>, <<"4;refresher=uac">>},
-                                    {<<"Require">>, <<"timer">>},
-                                    {<<"Allow">>, <<"UPDATE">>}]),
+        {_D, _} = uas_answer(Sock, [
+            {<<"Session-Expires">>, <<"4;refresher=uac">>},
+            {<<"Require">>, <<"timer">>},
+            {<<"Allow">>, <<"UPDATE">>}
+        ]),
         {U1, S1} = ?UA:recv_req(Sock, <<"UPDATE">>, 8000),
-        ?UA:send(Sock, S1, ?UA:resp(U1, 422, <<"Session Interval Too Small">>, <<>>,
-                                    [{<<"Min-SE">>, <<"6">>}], <<>>)),
+        ?UA:send(
+            Sock,
+            S1,
+            ?UA:resp(
+                U1,
+                422,
+                <<"Session Interval Too Small">>,
+                <<>>,
+                [{<<"Min-SE">>, <<"6">>}],
+                <<>>
+            )
+        ),
         T0 = now_ms(),
         {U2, S2} = ?UA:recv_req(Sock, <<"UPDATE">>, 4000),
         Dt = now_ms() - T0,
-        ?UA:send(Sock, S2, ?UA:resp(U2, 200, <<"OK">>, <<>>,
-                                    [{<<"Session-Expires">>, <<"6;refresher=uac">>}], <<>>)),
+        ?UA:send(
+            Sock,
+            S2,
+            ?UA:resp(
+                U2,
+                200,
+                <<"OK">>,
+                <<>>,
+                [{<<"Session-Expires">>, <<"6;refresher=uac">>}],
+                <<>>
+            )
+        ),
         {U3, S3} = ?UA:recv_req(Sock, <<"UPDATE">>, 8000),
         ?UA:send(Sock, S3, ?UA:resp(U3, 200, <<"OK">>, <<>>, [], <<>>)),
         Test ! {updates, U1, U2, U3, Dt}
     end),
-    {ok, _Dlg} = chappe_sip:create_uac(callee(UP), #{contact => contact(EP),
-                                                     local_sdp => ?UA:sdp(<<"app">>),
-                                                     min_se => 1}),
+    {ok, _Dlg} = chappe_sip:create_uac(callee(UP), #{
+        contact => contact(EP),
+        local_sdp => ?UA:sdp(<<"app">>),
+        min_se => 1
+    }),
     receive
         {updates, U1, U2, U3, Dt} ->
             ?assertEqual(undefined, ?UA:hdr(U1, <<"min-se">>)),
-            ?assertEqual(<<"6;refresher=uac">>, ?UA:hdr(U2, <<"session-expires">>)),
+            ?assertEqual(
+                <<"6;refresher=uac">>, ?UA:hdr(U2, <<"session-expires">>)
+            ),
             ?assertEqual(<<"6">>, ?UA:hdr(U2, <<"min-se">>)),
-            ?assertEqual(maps:get(seq, ?UA:cseq(U1)) + 1, maps:get(seq, ?UA:cseq(U2))),
+            ?assertEqual(
+                maps:get(seq, ?UA:cseq(U1)) + 1, maps:get(seq, ?UA:cseq(U2))
+            ),
             ?assert(Dt < 1000),
             ?assertEqual(<<"6">>, ?UA:hdr(U3, <<"min-se">>)),
-            ?assertEqual(<<"6;refresher=uac">>, ?UA:hdr(U3, <<"session-expires">>))
+            ?assertEqual(
+                <<"6;refresher=uac">>, ?UA:hdr(U3, <<"session-expires">>)
+            )
     after 16000 -> ct:fail(no_updates)
     end.
 
@@ -520,7 +719,9 @@ uac_refresh_422_raises_min_se(_Config) ->
 
 setup() ->
     EP = ?UA:pick(),
-    ok = chappe_sip:start(#{contact => <<"sip:127.0.0.1:", (integer_to_binary(EP))/binary>>}),
+    ok = chappe_sip:start(#{
+        contact => <<"sip:127.0.0.1:", (integer_to_binary(EP))/binary>>
+    }),
     EP.
 
 setup2() ->
@@ -553,18 +754,27 @@ answer(Opts) ->
 call_app(EP, Headers) ->
     Test = self(),
     ?UA:peer(0, fun(Sock) ->
-        Inv = ?UA:invite(Sock, EP, #{call_id => ?UA:callid(), from_tag => ?UA:tag(),
-                                     headers => Headers}),
+        Inv = ?UA:invite(Sock, EP, #{
+            call_id => ?UA:callid(),
+            from_tag => ?UA:tag(),
+            headers => Headers
+        }),
         ?UA:send(Sock, EP, Inv),
         Test ! {final, ?UA:recv_any(Sock, 6000)},
         timer:sleep(infinity)
     end),
-    receive {final, R} -> R after 8000 -> ct:fail(no_final) end.
+    receive
+        {final, R} -> R
+    after 8000 -> ct:fail(no_final)
+    end.
 
 %% In a peer: INVITE the app, ACK its 2xx; returns {The2xx, RawDialog}.
 establish(Sock, EP, Headers) ->
-    Inv = ?UA:invite(Sock, EP, #{call_id => ?UA:callid(), from_tag => ?UA:tag(),
-                                 headers => Headers}),
+    Inv = ?UA:invite(Sock, EP, #{
+        call_id => ?UA:callid(),
+        from_tag => ?UA:tag(),
+        headers => Headers
+    }),
     ?UA:send(Sock, EP, Inv),
     R = ?UA:recv_status(Sock, 200),
     D = ?UA:dialog_from_2xx(Sock, Inv, R),
@@ -577,9 +787,21 @@ uas_answer(Sock, Headers) ->
     {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
     Tag = ?UA:tag(),
     P = integer_to_binary(?UA:lport(Sock)),
-    ?UA:send(Sock, Src, ?UA:resp(Inv, 200, <<"OK">>, Tag,
-                                 [{<<"Contact">>, <<"<sip:callee@127.0.0.1:", P/binary, ">">>}
-                                  | Headers], ?UA:sdp(<<"callee">>))),
+    ?UA:send(
+        Sock,
+        Src,
+        ?UA:resp(
+            Inv,
+            200,
+            <<"OK">>,
+            Tag,
+            [
+                {<<"Contact">>, <<"<sip:callee@127.0.0.1:", P/binary, ">">>}
+                | Headers
+            ],
+            ?UA:sdp(<<"callee">>)
+        )
+    ),
     T0 = now_ms(),
     {_Ack, _} = ?UA:recv_req(Sock, <<"ACK">>),
     {?UA:dialog_from_invite(Sock, Inv, Tag, Src), T0}.
@@ -589,9 +811,16 @@ uac_first_invite(EP, UP, Opts) ->
     Test = self(),
     ?UA:peer(UP, fun(Sock) ->
         {Inv, S} = ?UA:recv_req(Sock, <<"INVITE">>),
-        ?UA:send(Sock, S, ?UA:resp(Inv, 486, <<"Busy Here">>, ?UA:tag(), [], <<>>)),
+        ?UA:send(
+            Sock, S, ?UA:resp(Inv, 486, <<"Busy Here">>, ?UA:tag(), [], <<>>)
+        ),
         Test ! {invite, Inv}
     end),
-    {error, _} = chappe_sip:create_uac(callee(UP), Opts#{contact => contact(EP),
-                                                          local_sdp => ?UA:sdp(<<"app">>)}),
-    receive {invite, Inv} -> Inv after 6000 -> ct:fail(no_invite) end.
+    {error, _} = chappe_sip:create_uac(callee(UP), Opts#{
+        contact => contact(EP),
+        local_sdp => ?UA:sdp(<<"app">>)
+    }),
+    receive
+        {invite, Inv} -> Inv
+    after 6000 -> ct:fail(no_invite)
+    end.

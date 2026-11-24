@@ -9,23 +9,50 @@
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
 
--import(chappe_sip_core_peer, [open/0, port/1, send/3, recv/3, request/3,
-                               hdr/2, hdrs/2, status/1]).
+-import(chappe_sip_core_peer, [
+    open/0,
+    port/1,
+    send/3,
+    recv/3,
+    request/3,
+    hdr/2,
+    hdrs/2,
+    status/1
+]).
 
--export([all/0, init_per_suite/1, end_per_suite/1,
-         init_per_testcase/2, end_per_testcase/2]).
--export([nonce_count_replay/1, uri_mismatch/1, qop_required/1,
-         aor_domain_checked/1, sha256_and_md5_challenges/1]).
+-export([
+    all/0,
+    init_per_suite/1,
+    end_per_suite/1,
+    init_per_testcase/2,
+    end_per_testcase/2
+]).
+-export([
+    nonce_count_replay/1,
+    uri_mismatch/1,
+    qop_required/1,
+    aor_domain_checked/1,
+    sha256_and_md5_challenges/1
+]).
 
 -define(REALM, <<"chappe.test">>).
 
 all() ->
-    [nonce_count_replay, uri_mismatch, qop_required, aor_domain_checked,
-     sha256_and_md5_challenges].
+    [
+        nonce_count_replay,
+        uri_mismatch,
+        qop_required,
+        aor_domain_checked,
+        sha256_and_md5_challenges
+    ].
 
 init_per_suite(Config) ->
-    application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
-                        [{persistent, true}]),
+    application:set_env(
+        chappe_sip,
+        engine_mod,
+        chappe_sip_nif,
+        [{persistent, true}]
+    ),
     {ok, _} = application:ensure_all_started(chappe_sip),
     Config.
 
@@ -55,9 +82,16 @@ nonce_count_replay(Config) ->
     A1 = creds(Chal, #{nc => 1}),
     ?assertEqual(200, register(Sock, EP, <<"alice">>, A1, 2)),
     R = register_resp(Sock, EP, <<"alice">>, A1, 3, 401),
-    ?assertMatch({_, _}, binary:match(hdr(<<"www-authenticate">>, R),
-                                      <<"stale=true">>)),
-    ?assertEqual(200, register(Sock, EP, <<"alice">>, creds(Chal, #{nc => 2}), 4)).
+    ?assertMatch(
+        {_, _},
+        binary:match(
+            hdr(<<"www-authenticate">>, R),
+            <<"stale=true">>
+        )
+    ),
+    ?assertEqual(
+        200, register(Sock, EP, <<"alice">>, creds(Chal, #{nc => 2}), 4)
+    ).
 
 %% A digest uri naming another resource than the Request-URI: 400.
 %% req: R7616-04 R2617-02 R8760-05
@@ -84,12 +118,19 @@ qop_required(Config) ->
 aor_domain_checked(Config) ->
     {EP, Sock} = registrar(Config, #{}),
     Chal = challenge(Sock, EP, <<"alice">>),
-    Other = register_req(Sock, <<"alice">>, <<"other.example">>,
-                         creds(Chal, #{}), 2),
+    Other = register_req(
+        Sock,
+        <<"alice">>,
+        <<"other.example">>,
+        creds(Chal, #{}),
+        2
+    ),
     send(Sock, EP, Other),
     {R, _} = recv(Sock, final, 3000),
     ?assertEqual(403, status(R)),
-    ?assertEqual(200, register(Sock, EP, <<"alice">>, creds(Chal, #{nc => 2}), 3)).
+    ?assertEqual(
+        200, register(Sock, EP, <<"alice">>, creds(Chal, #{nc => 2}), 3)
+    ).
 
 %% An app challenges with challenges/2: one WWW-Authenticate per
 %% algorithm, SHA-256 first, one nonce. An answer to either passes.
@@ -97,25 +138,36 @@ aor_domain_checked(Config) ->
 sha256_and_md5_challenges(Config) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
     ok = chappe_sip:options(fun(Req, Res) ->
-        Args = #{method => <<"OPTIONS">>, realm => ?REALM,
-                 secret => fun(<<"alice">>) -> {ok, <<"secret">>};
-                              (_) -> error end,
-                 request_uri => chappe_sip_req:uri(Req),
-                 authorization => chappe_sip_req:get(<<"authorization">>, Req)},
+        Args = #{
+            method => <<"OPTIONS">>,
+            realm => ?REALM,
+            secret => fun
+                (<<"alice">>) -> {ok, <<"secret">>};
+                (_) -> error
+            end,
+            request_uri => chappe_sip_req:uri(Req),
+            authorization => chappe_sip_req:get(<<"authorization">>, Req)
+        },
         case chappe_sip_digest:verify(Args) of
             {ok, _} ->
                 chappe_sip_res:send(Res, 200);
             _ ->
-                Hdrs = [{<<"WWW-Authenticate">>, V}
-                        || V <- chappe_sip_digest:challenges(?REALM, #{})],
+                Hdrs = [
+                    {<<"WWW-Authenticate">>, V}
+                 || V <- chappe_sip_digest:challenges(?REALM, #{})
+                ],
                 chappe_sip_res:send(Res, 401, #{headers => Hdrs})
         end
     end),
     RUri = <<"sip:app@127.0.0.1">>,
     Opt = fun(Hdrs, CSeq) ->
-        request(<<"OPTIONS">>, RUri, #{port => port(Sock), headers => Hdrs,
-                                       call_id => <<"dig-opt@ct">>,
-                                       from_tag => <<"ft">>, cseq => CSeq})
+        request(<<"OPTIONS">>, RUri, #{
+            port => port(Sock),
+            headers => Hdrs,
+            call_id => <<"dig-opt@ct">>,
+            from_tag => <<"ft">>,
+            cseq => CSeq
+        })
     end,
     send(Sock, EP, Opt([], 1)),
     {R401, _} = recv(Sock, {status, 401}, 3000),
@@ -127,8 +179,15 @@ sha256_and_md5_challenges(Config) ->
     ?assertEqual(nonce(ShaC), nonce(Md5C)),
     Answer = fun(C, Nc) ->
         {ok, V} = chappe_sip_digest:credentials(
-            #{method => <<"OPTIONS">>, uri => RUri, username => <<"alice">>,
-              password => <<"secret">>, challenge => C, nc => Nc}),
+            #{
+                method => <<"OPTIONS">>,
+                uri => RUri,
+                username => <<"alice">>,
+                password => <<"secret">>,
+                challenge => C,
+                nc => Nc
+            }
+        ),
         [{<<"Authorization">>, V}]
     end,
     send(Sock, EP, Opt(Answer(ShaC, 1), 2)),
@@ -141,9 +200,17 @@ sha256_and_md5_challenges(Config) ->
 %% ---- helpers ----
 
 registrar(Config, Extra) ->
-    Auth = maps:merge(#{realm => ?REALM, domain => <<"127.0.0.1">>,
-                        secret => fun(<<"alice">>) -> {ok, <<"secret">>};
-                                     (_) -> error end}, Extra),
+    Auth = maps:merge(
+        #{
+            realm => ?REALM,
+            domain => <<"127.0.0.1">>,
+            secret => fun
+                (<<"alice">>) -> {ok, <<"secret">>};
+                (_) -> error
+            end
+        },
+        Extra
+    ),
     ok = chappe_sip:register(chappe_sip:registrar(#{auth => Auth})),
     {?config(ep, Config), ?config(sock, Config)}.
 
@@ -155,10 +222,19 @@ challenge(Sock, EP, User) ->
     Chal.
 
 creds(Chal, Opts) ->
-    {ok, V} = chappe_sip_digest:credentials(maps:merge(
-        #{method => <<"REGISTER">>, uri => <<"sip:127.0.0.1">>,
-          username => <<"alice">>, password => <<"secret">>,
-          challenge => Chal, nc => 1}, Opts)),
+    {ok, V} = chappe_sip_digest:credentials(
+        maps:merge(
+            #{
+                method => <<"REGISTER">>,
+                uri => <<"sip:127.0.0.1">>,
+                username => <<"alice">>,
+                password => <<"secret">>,
+                challenge => Chal,
+                nc => 1
+            },
+            Opts
+        )
+    ),
     V.
 
 register(Sock, EP, User, Auth, CSeq) ->
@@ -176,10 +252,15 @@ register_req(Sock, User, Domain, Auth, CSeq) ->
     Aor = <<"<sip:", User/binary, "@", Domain/binary, ">">>,
     AuthHdr = [{<<"Authorization">>, Auth} || Auth =/= none],
     request(<<"REGISTER">>, <<"sip:127.0.0.1">>, #{
-        port => port(Sock), from => Aor, to => Aor, from_tag => <<"rt">>,
-        call_id => <<"dig-reg-", P/binary, "@ct">>, cseq => CSeq,
+        port => port(Sock),
+        from => Aor,
+        to => Aor,
+        from_tag => <<"rt">>,
+        call_id => <<"dig-reg-", P/binary, "@ct">>,
+        cseq => CSeq,
         contact => <<"<sip:", User/binary, "@127.0.0.1:", P/binary, ">">>,
-        headers => [{<<"Expires">>, <<"60">>} | AuthHdr]}).
+        headers => [{<<"Expires">>, <<"60">>} | AuthHdr]
+    }).
 
 aor(User, Domain) -> <<"sip:", User/binary, "@", Domain/binary>>.
 

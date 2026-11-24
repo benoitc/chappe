@@ -473,7 +473,9 @@ rtcp_sender_reports(_Config) ->
         T1 - T0, T2 - T1, Sr1, Sdes1, Sr2
     ]),
     ?assert(T1 - T0 >= 1026 andalso T1 - T0 =< 3078 + 120, {first, T1 - T0}),
-    ?assert(T2 - T1 >= 2052 - 20 andalso T2 - T1 =< 6156 + 120, {next, T2 - T1}),
+    ?assert(
+        T2 - T1 >= 2052 - 20 andalso T2 - T1 =< 6156 + 120, {next, T2 - T1}
+    ),
     #{ssrc := Mine} = leg_stats(Conf, Leg),
     ?assertMatch(#{type := sr, ssrc := Mine}, Sr1),
     ?assertMatch(
@@ -537,7 +539,9 @@ rtcp_port_pair(_Config) ->
     ?assertEqual(
         [{?LO, RPort}], lists:usort([From || {rtcp, From, _, _} <- Pkts])
     ),
-    ?assertMatch(#{rtcp_received := 1, rtcp_port := RPort}, leg_stats(Conf, Leg)),
+    ?assertMatch(
+        #{rtcp_received := 1, rtcp_port := RPort}, leg_stats(Conf, Leg)
+    ),
     chappe_mix_test_peer:stop(Peer),
     ok = chappe_mix:stop(Conf).
 
@@ -725,7 +729,9 @@ csrc_list_capped(_Config) ->
     Peers = [peer_leg(Conf, Ssrc) || Ssrc <- lists:seq(1, 17)],
     {P1, _} = hd(Peers),
     wait_until(
-        fun() -> is_list(csrcs_seen(P1)) andalso length(csrcs_seen(P1)) =:= 15 end,
+        fun() ->
+            is_list(csrcs_seen(P1)) andalso length(csrcs_seen(P1)) =:= 15
+        end,
         3000
     ),
     Lists = [
@@ -1136,7 +1142,8 @@ relate_pairs(_Config) ->
     steady(Back, erlang:monotonic_time(millisecond) + 5000),
     judge(Conf, Back, 1000, 3),
     ?assertEqual(
-        lists:sort([SB, SC]), lists:sort(maps:get(csrcs, leg_stats(Conf, leg(A))))
+        lists:sort([SB, SC]),
+        lists:sort(maps:get(csrcs, leg_stats(Conf, leg(A))))
     ),
     ?assertEqual(
         {error, not_found}, chappe_mix:relate(Conf, leg(A), 99, nohear)
@@ -1193,7 +1200,9 @@ talker_events(_Config) ->
     Off = talk_event(Conf, 2000),
     T3 = erlang:monotonic_time(millisecond),
     ?assertEqual({LA, false}, Off),
-    ct:log("talking after ~p ms, stopped ~p ms after the tone", [T1 - T0, T3 - T2]),
+    ct:log("talking after ~p ms, stopped ~p ms after the tone", [
+        T1 - T0, T3 - T2
+    ]),
     %% 60 ms of tone (three frames) and at most 100 ms, give or take the
     %% frame the jitter buffer holds; 300 ms of none and at most 340
     ?assert(T1 - T0 >= 40 andalso T1 - T0 =< 100 + 40, {start, T1 - T0}),
@@ -1257,9 +1266,14 @@ talker_refs(_Config) ->
     {B, _} = chappe_mix_test_tone:endpoint(#{freq => 1100, dst => {?LO, MB}}),
     ?assertEqual({LB, true, <<"room-1">>}, ref_event(Conf)),
     chappe_mix_test_tone:stop(B),
-    Refs = lists:sort([{Id, R} || #{id := Id, ref := R} <- chappe_mix:legs(Conf)]),
+    Refs = lists:sort([
+        {Id, R}
+     || #{id := Id, ref := R} <- chappe_mix:legs(Conf)
+    ]),
     ?assertEqual(lists:sort([{LA, <<"call-a">>}, {LB, undefined}]), Refs),
-    ?assertEqual({error, {bad_option, ref}}, chappe_mix:add_leg(Conf, #{ref => 1})),
+    ?assertEqual(
+        {error, {bad_option, ref}}, chappe_mix:add_leg(Conf, #{ref => 1})
+    ),
     ?assertEqual({error, {bad_option, ref}}, chappe_mix:start(#{ref => x})),
     ok = chappe_mix:stop(Conf).
 

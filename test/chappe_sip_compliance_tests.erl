@@ -226,7 +226,8 @@ gate_test() ->
     ),
     None = chappe_sip_compliance:matrix(Reqs, [], #{}),
     ?assertEqual(
-        {error, [<<"R3515-01">>]}, chappe_sip_compliance:gate(None, [<<"demo">>])
+        {error, [<<"R3515-01">>]},
+        chappe_sip_compliance:gate(None, [<<"demo">>])
     ).
 
 %% `--gate TIER,...' names the gated tiers; a bare `--gate' keeps `table';
@@ -244,7 +245,9 @@ args_test() ->
     ),
     ?assertEqual(
         {P, [<<"demo">>], #{expected_fail => "ef"}},
-        chappe_sip_compliance:args(P ++ ["--expected-fail", "ef", "--gate", "demo"])
+        chappe_sip_compliance:args(
+            P ++ ["--expected-fail", "ef", "--gate", "demo"]
+        )
     ),
     ?assertEqual(
         {P, [<<"table">>], #{expected_fail => "ef"}},
@@ -296,7 +299,10 @@ unknown_ids_test() ->
 %% pass there and not pass here is a regression; the reverse is a gain.
 check_against_test() ->
     {ok, Reqs} = chappe_sip_compliance:parse_requirements(tsv()),
-    Ann = [{<<"s:a">>, [<<"X-4.7-14">>, <<"R4579-07">>]}, {<<"s:b">>, [<<"R4028-01">>]}],
+    Ann = [
+        {<<"s:a">>, [<<"X-4.7-14">>, <<"R4579-07">>]},
+        {<<"s:b">>, [<<"R4028-01">>]}
+    ],
     Committed = iolist_to_binary(
         chappe_sip_compliance:render(
             chappe_sip_compliance:matrix(Reqs, Ann, #{<<"s:a">> => pass})
@@ -310,7 +316,9 @@ check_against_test() ->
         chappe_sip_compliance:check_against(Committed, Now)
     ),
     Same = chappe_sip_compliance:matrix(Reqs, Ann, #{<<"s:a">> => pass}),
-    ?assertEqual({[], []}, chappe_sip_compliance:check_against(Committed, Same)).
+    ?assertEqual(
+        {[], []}, chappe_sip_compliance:check_against(Committed, Same)
+    ).
 
 %% `--check-against FILE' names the committed matrix to compare with.
 check_args_test() ->
@@ -323,7 +331,9 @@ check_args_test() ->
 render_test() ->
     {ok, Reqs} = chappe_sip_compliance:parse_requirements(tsv()),
     Md = iolist_to_binary(
-        chappe_sip_compliance:render(chappe_sip_compliance:matrix(Reqs, [], #{}))
+        chappe_sip_compliance:render(
+            chappe_sip_compliance:matrix(Reqs, [], #{})
+        )
     ),
     ?assertNotEqual(nomatch, binary:match(Md, <<"| X-4.7-14 |">>)),
     ?assertNotEqual(nomatch, binary:match(Md, <<"untested">>)),
@@ -331,7 +341,9 @@ render_test() ->
     ?assertNotEqual(nomatch, binary:match(Md, <<"(#deviations)">>)),
     ?assertNotEqual(
         nomatch,
-        binary:match(Md, <<"| R4579-23 | RFC 4579 | 6 | S/MIME | TLS instead |">>)
+        binary:match(
+            Md, <<"| R4579-23 | RFC 4579 | 6 | S/MIME | TLS instead |">>
+        )
     ),
     {Dev, _} = binary:match(Md, <<"## Deviations">>),
     {Rows, _} = binary:match(Md, <<"## Requirements">>),

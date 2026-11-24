@@ -33,11 +33,15 @@ patch_test() ->
 
 %% other chunks before the data, an odd-sized one padded to a word
 chunks_test() ->
-    <<Riff:12/binary, Fmt:24/binary, Data:8/binary>> = chappe_audio_wav:header(8000, 1, 10),
+    <<Riff:12/binary, Fmt:24/binary, Data:8/binary>> = chappe_audio_wav:header(
+        8000, 1, 10
+    ),
     Odd = <<"junk", 3:32/little, "abc", 0>>,
     List = <<"LIST", 4:32/little, "INFO">>,
     {ok, #{data_offset := Off, data_bytes := 10}} =
-        chappe_audio_wav:info(<<Riff/binary, Odd/binary, Fmt/binary, List/binary, Data/binary>>),
+        chappe_audio_wav:info(
+            <<Riff/binary, Odd/binary, Fmt/binary, List/binary, Data/binary>>
+        ),
     ?assertEqual(12 + 12 + 24 + 12 + 8, Off).
 
 not_wave_test() ->
@@ -57,8 +61,18 @@ not_wave_test() ->
     ].
 
 ref_dir_test() ->
-    ?assertEqual(<<"call-1.a_b">>, chappe_audio_store_file:ref_dir(<<"call-1.a_b">>)),
+    ?assertEqual(
+        <<"call-1.a_b">>, chappe_audio_store_file:ref_dir(<<"call-1.a_b">>)
+    ),
     [
         ?assertMatch(<<"x-", _:64/binary>>, chappe_audio_store_file:ref_dir(R))
-     || R <- [<<"..">>, <<".">>, <<"a/b">>, <<"a\\b">>, <<>>, <<0>>, binary:copy(<<"a">>, 129)]
+     || R <- [
+            <<"..">>,
+            <<".">>,
+            <<"a/b">>,
+            <<"a\\b">>,
+            <<>>,
+            <<0>>,
+            binary:copy(<<"a">>, 129)
+        ]
     ].

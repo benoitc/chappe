@@ -16,7 +16,9 @@ reoffer_tags_test_() ->
             F(caller, #{}, <<"a">>, <<"b">>)
         ),
         %% no to-tag yet: from-tag only
-        ?_assertEqual(#{from_tag => <<"a">>}, F(caller, #{}, <<"a">>, undefined)),
+        ?_assertEqual(
+            #{from_tag => <<"a">>}, F(caller, #{}, <<"a">>, undefined)
+        ),
         %% a via_branch opens a branch: no to-tag on the wire
         ?_assertEqual(
             #{from_tag => <<"a">>},
@@ -61,7 +63,9 @@ pinned_state_test_() ->
         ?_assertEqual(offering, P(offer)),
         ?_assertEqual(publishing, P(publish)),
         ?_assertEqual(reoffering, P(reoffer)),
-        ?_assertEqual(answering, P({answer_sent, answering, <<"b">>, false, u})),
+        ?_assertEqual(
+            answering, P({answer_sent, answering, <<"b">>, false, u})
+        ),
         ?_assertEqual(any, P({answer_sent, established, <<"b">>, false, u})),
         ?_assertEqual(any, P(query)),
         ?_assertEqual(any, P(aux)),
@@ -81,7 +85,9 @@ negotiated_test_() ->
         ?_assertEqual({idle, []}, N(offer, {error, timeout}, offering)),
         ?_assertEqual({established, []}, N(publish, ?OK, publishing)),
         ?_assertEqual({idle, []}, N(publish, ?ERR, publishing)),
-        ?_assertEqual({offered, [{reoffer, true}]}, N(reoffer, ?OK, reoffering)),
+        ?_assertEqual(
+            {offered, [{reoffer, true}]}, N(reoffer, ?OK, reoffering)
+        ),
         ?_assertEqual(
             {established, [{reoffer_initiator, caller}]},
             N(reoffer, ?ERR, reoffering)

@@ -94,7 +94,9 @@ setup(Config) ->
     Int = fun(K, D) -> list_to_integer(Env(K, D)) end,
     Media = Env("MRF_MEDIA_DIR", "/tmp/chappe-mrf-media"),
     write_prompts(Media),
-    application:set_env(chappe_sip, engine_mod, chappe_sip_nif, [{persistent, true}]),
+    application:set_env(chappe_sip, engine_mod, chappe_sip_nif, [
+        {persistent, true}
+    ]),
     {ok, _} = application:ensure_all_started(chappe_mrf),
     SipPort = Int("MRF_SIP_PORT", "17060"),
     ok = chappe_sip:start(#{
@@ -107,13 +109,24 @@ setup(Config) ->
     ok = chappe_mrf:start(#{
         esl_port => Int("MRF_SOCKET_PORT", "17084"),
         esl_ip => EslIp,
-        esl_allow => string:lexemes(Env("MRF_ESL_ALLOW", "127.0.0.0/8,172.16.0.0/12,192.168.0.0/16"), ",")
+        esl_allow => string:lexemes(
+            Env("MRF_ESL_ALLOW", "127.0.0.0/8,172.16.0.0/12,192.168.0.0/16"),
+            ","
+        )
     }),
     ok = chappe_sip_media:configure(#{
         rtpengine => #{
-            nodes => [#{name => ?RTPE, host => "127.0.0.1", port => Int("MRF_NG_PORT", "17222")}]
+            nodes => [
+                #{
+                    name => ?RTPE,
+                    host => "127.0.0.1",
+                    port => Int("MRF_NG_PORT", "17222")
+                }
+            ]
         },
-        mix => #{ip => {0, 0, 0, 0}, advertise => Env("MRF_MEDIA_IP", "127.0.0.1")}
+        mix => #{
+            ip => {0, 0, 0, 0}, advertise => Env("MRF_MEDIA_IP", "127.0.0.1")
+        }
     }),
     Nodes = [
         {fs1, Int("MRF_FS1_ESL", "17031"), Int("MRF_FS1_SIP", "17081")},
@@ -137,9 +150,18 @@ setup(Config) ->
     [wait_node(N, up, 20000) || {N, _, _} <- Nodes],
     %% the nodes record into /media, which is Media here; recordings
     %% asked with store => default are adopted into the store from there
-    ok = application:set_env(chappe_mrf, shared_dir, #{freeswitch => "/media", local => Media}),
-    ok = chappe_audio_store:configure(#{dir => filename:join(?config(priv_dir, Config), "recordings")}),
-    [{sip_port, SipPort}, {media, Media}, {compose, Env("MRF_COMPOSE", "")} | Config].
+    ok = application:set_env(chappe_mrf, shared_dir, #{
+        freeswitch => "/media", local => Media
+    }),
+    ok = chappe_audio_store:configure(#{
+        dir => filename:join(?config(priv_dir, Config), "recordings")
+    }),
+    [
+        {sip_port, SipPort},
+        {media, Media},
+        {compose, Env("MRF_COMPOSE", "")}
+        | Config
+    ].
 
 end_per_suite(_Config) ->
     _ = chappe_sip:stop(),
@@ -166,7 +188,9 @@ write_prompts(Dir) ->
     Digits = filename:join([Dir, "sounds", "digits"]),
     ok = filelib:ensure_path(Digits),
     [
-        ?UA:write_wav(filename:join(Digits, integer_to_list(N) ++ ".wav"), 300, 500)
+        ?UA:write_wav(
+            filename:join(Digits, integer_to_list(N) ++ ".wav"), 300, 500
+        )
      || N <- lists:seq(0, 19) ++ lists:seq(20, 90, 10)
     ],
     ok.
@@ -176,7 +200,10 @@ write_prompts(Dir) ->
 %% rtpengine's interfaces: callers and chappe_mix on the host, FreeSWITCH
 %% on the docker network
 to_fs() ->
-    #{a => #{direction => [<<"docker">>, <<"host">>]}, b => #{direction => [<<"host">>, <<"docker">>]}}.
+    #{
+        a => #{direction => [<<"docker">>, <<"host">>]},
+        b => #{direction => [<<"host">>, <<"docker">>]}
+    }.
 
 to_host() ->
     #{b => #{direction => [<<"host">>, <<"host">>]}}.
@@ -307,7 +334,8 @@ bridge_sip_target(Config) ->
     ivr(fun park/2),
     {Ua, Ep, B2b, Owner} = call_in(Config, 600),
     Callee = ?UA:callee(#{freq => 900}),
-    Uri = <<"sip:bob@127.0.0.1:", (integer_to_binary(?UA:port(Callee)))/binary>>,
+    Uri =
+        <<"sip:bob@127.0.0.1:", (integer_to_binary(?UA:port(Callee)))/binary>>,
     ok = chappe_mrf:bridge(B2b, Uri, #{anchor_params => to_host()}),
     ua_got(Callee, invite, 5000),
     ?assert(?UA:hears(Ua, 900, 6000)),
@@ -360,7 +388,9 @@ same_flags(Uris) -> {parallel, Uris}.
 
 %% flags of their own: one offer each, each under its via-branch
 own_flags([First | Rest]) ->
-    {parallel, [First | [{U, #{anchor_params => #{b => #{ptime => 20}}}} || U <- Rest]]}.
+    {parallel, [
+        First | [{U, #{anchor_params => #{b => #{ptime => 20}}}} || U <- Rest]
+    ]}.
 
 %% After a menu, the caller rings two softphones at once. It keeps hearing
 %% the endpoint while they ring, Winner answers: audio goes through both
@@ -398,10 +428,13 @@ fork_after_menu(Config, Target, Winner) ->
     _ = spawn(fun() -> chappe_mrf:play(Ep, <<"/media/one.wav">>) end),
     Self = self(),
     _ = spawn(fun() ->
-        Self ! {forked, chappe_mrf:bridge(
-            B2b, Target([callee_uri(U1), callee_uri(U2)]),
-            #{anchor_params => to_host()}
-        )}
+        Self !
+            {forked,
+                chappe_mrf:bridge(
+                    B2b,
+                    Target([callee_uri(U1), callee_uri(U2)]),
+                    #{anchor_params => to_host()}
+                )}
     end),
     ua_got(U1, invite, 5000),
     ua_got(U2, invite, 5000),
@@ -443,7 +476,8 @@ fork_failed_then_bridge(Config, Target) ->
     ?assertMatch(
         {error, _},
         chappe_mrf:bridge(
-            B2b, Target([callee_uri(U) || U <- Busy]),
+            B2b,
+            Target([callee_uri(U) || U <- Busy]),
             #{anchor_params => to_host()}
         )
     ),
@@ -459,16 +493,23 @@ fork_failed_then_bridge(Config, Target) ->
         {played, ok} -> ok
     after 10000 -> ct:fail(no_played)
     end,
-    Name = <<"rec-fail-", (integer_to_binary(erlang:unique_integer([positive])))/binary, ".wav">>,
+    Name =
+        <<"rec-fail-",
+            (integer_to_binary(erlang:unique_integer([positive])))/binary,
+            ".wav">>,
     ok = chappe_mrf:record(Ep, <<"/media/", Name/binary>>, #{max_secs => 2}),
     Level = ?UA:wav_level(media(Config, binary_to_list(Name)), 600),
     ct:log("the endpoint recorded the caller at ~.1f dBFS", [Level]),
     ?assert(Level > -40.0),
-    Callees = [?UA:callee(#{freq => F, answer => {after_ms, 200}}) || F <- [900, 1300]],
+    Callees = [
+        ?UA:callee(#{freq => F, answer => {after_ms, 200}})
+     || F <- [900, 1300]
+    ],
     ?assertMatch(
         {ok, #{winner := _}},
         chappe_mrf:bridge(
-            B2b, Target([callee_uri(U) || U <- Callees]),
+            B2b,
+            Target([callee_uri(U) || U <- Callees]),
             #{anchor_params => to_host()}
         )
     ),
@@ -491,7 +532,8 @@ fork_failed_keeps_callee(Config, Target) ->
     ?assertMatch(
         {error, _},
         chappe_mrf:bridge(
-            B2b, Target([callee_uri(U) || U <- Busy]),
+            B2b,
+            Target([callee_uri(U) || U <- Busy]),
             #{anchor_params => to_host()}
         )
     ),
@@ -515,9 +557,14 @@ failed_bridge_other_interface(Config) ->
     ivr(fun park/2),
     {Ua, Ep, B2b, Owner} = call_in(Config, 600),
     Busy = ?UA:callee(#{answer => {status, 486}}),
-    {error, _} = chappe_mrf:bridge(B2b, callee_uri(Busy), #{anchor_params => to_host()}),
+    {error, _} = chappe_mrf:bridge(B2b, callee_uri(Busy), #{
+        anchor_params => to_host()
+    }),
     ok = chappe_mrf:play(Ep, <<"/media/two.wav">>),
-    Name = <<"rec-iface-", (integer_to_binary(erlang:unique_integer([positive])))/binary, ".wav">>,
+    Name =
+        <<"rec-iface-",
+            (integer_to_binary(erlang:unique_integer([positive])))/binary,
+            ".wav">>,
     ok = chappe_mrf:record(Ep, <<"/media/", Name/binary>>, #{max_secs => 2}),
     Level = ?UA:wav_level(media(Config, binary_to_list(Name)), 600),
     ct:log("the endpoint recorded the caller at ~.1f dBFS", [Level]),
@@ -546,7 +593,8 @@ fork_round(B2b, Ua, Win, WinFreq) ->
     ?assertMatch(
         {ok, #{winner := #{index := Win}}},
         chappe_mrf:bridge(
-            B2b, own_flags([callee_uri(U) || U <- Ordered]),
+            B2b,
+            own_flags([callee_uri(U) || U <- Ordered]),
             #{anchor_params => to_host()}
         )
     ),
@@ -591,7 +639,8 @@ fork_fails_after_win(Config) ->
             ?assertMatch(
                 {error, _},
                 chappe_mrf:bridge(
-                    B2b, own_flags([callee_uri(U) || U <- Busy]),
+                    B2b,
+                    own_flags([callee_uri(U) || U <- Busy]),
                     #{anchor_params => to_host()}
                 )
             ),
@@ -630,8 +679,10 @@ reinvite_after_win(Config) ->
 %% again on it, under the same via-branch names.
 fork_after_create_b2bua_fork(Config) ->
     Test = self(),
-    Host = #{a => #{direction => [<<"host">>, <<"host">>]},
-             b => #{direction => [<<"host">>, <<"host">>]}},
+    Host = #{
+        a => #{direction => [<<"host">>, <<"host">>]},
+        b => #{direction => [<<"host">>, <<"host">>]}
+    },
     First = ?UA:callee(#{freq => 900, answer => {after_ms, 300}}),
     Other = ?UA:callee(#{answer => ring}),
     Target = own_flags([callee_uri(Other), callee_uri(First)]),
@@ -680,7 +731,9 @@ endpoint_bridge(Config) ->
 %% record/3 writes the caller's audio to the shared volume, and playing
 %% the file back brings the caller's tone back.
 record_playback(Config) ->
-    Name = <<"rec-", (integer_to_binary(erlang:unique_integer([positive])))/binary, ".wav">>,
+    Name =
+        <<"rec-", (integer_to_binary(erlang:unique_integer([positive])))/binary,
+            ".wav">>,
     Test = self(),
     ivr(fun(Ep, _B2b) ->
         R = chappe_mrf:record(Ep, <<"/media/", Name/binary>>, #{max_secs => 3}),
@@ -699,7 +752,9 @@ record_playback(Config) ->
     ?assert(Size > 8000),
     ?UA:tone(Ua, none),
     ?UA:clear(Ua),
-    _ = in_owner(Owner, fun() -> spawn(fun() -> chappe_mrf:play(Ep, <<"/media/", Name/binary>>) end) end),
+    _ = in_owner(Owner, fun() ->
+        spawn(fun() -> chappe_mrf:play(Ep, <<"/media/", Name/binary>>) end)
+    end),
     ?assert(?UA:hears(Ua, 600, 6000)),
     ?UA:bye(Ua),
     Owner ! stop.
@@ -710,31 +765,69 @@ record_playback(Config) ->
 %% one outside the shared folder is refused before FreeSWITCH sees it.
 stored_recordings(Config) ->
     Name = fun(P) ->
-        <<"/media/", P/binary, (integer_to_binary(erlang:unique_integer([positive])))/binary,
+        <<"/media/", P/binary,
+            (integer_to_binary(erlang:unique_integer([positive])))/binary,
             ".wav">>
     end,
     Test = self(),
     ivr(fun(Ep, _B2b) ->
         %% the endpoint's call_ref, else its id: what the store files under
         Test ! {ref, store_ref(chappe_mrf_endpoint:info(Ep))},
-        Test ! {recorded, chappe_mrf:record(Ep, Name(<<"store-">>), #{max_secs => 2, store => default})},
-        Test ! {outside, chappe_mrf:record_session(Ep, <<"/tmp/x.wav">>, #{store => default})},
-        Test ! {session, chappe_mrf:record_session(Ep, Name(<<"sess-">>), #{store => default})},
+        Test !
+            {recorded,
+                chappe_mrf:record(Ep, Name(<<"store-">>), #{
+                    max_secs => 2, store => default
+                })},
+        Test !
+            {outside,
+                chappe_mrf:record_session(Ep, <<"/tmp/x.wav">>, #{
+                    store => default
+                })},
+        Test !
+            {session,
+                chappe_mrf:record_session(Ep, Name(<<"sess-">>), #{
+                    store => default
+                })},
         fwd_loop(Test)
     end),
     {Ua, _Ep, _B2b, _Owner} = call_in(Config, 600),
-    Ref = receive {ref, R} -> R after 10000 -> ct:fail(no_ref) end,
-    {ok, Id} = receive {recorded, Rec} -> Rec after 15000 -> ct:fail(no_record) end,
-    {ok, #{call_ref := Ref, source := <<"freeswitch">>, duration_ms := Ms, path := Path}} =
+    Ref =
+        receive
+            {ref, R} -> R
+        after 10000 -> ct:fail(no_ref)
+        end,
+    {ok, Id} =
+        receive
+            {recorded, Rec} -> Rec
+        after 15000 -> ct:fail(no_record)
+        end,
+    {ok, #{
+        call_ref := Ref,
+        source := <<"freeswitch">>,
+        duration_ms := Ms,
+        path := Path
+    }} =
         chappe_audio_store:get(Id),
     ct:log("adopted ~s: ~p ms at ~s", [Id, Ms, Path]),
     ?assert(Ms > 1000),
     ?assertNot(filelib:is_regular(media(Config, filename:basename(Path)))),
-    {error, not_shared} = receive {outside, O} -> O after 5000 -> ct:fail(no_outside) end,
-    ok = receive {session, S} -> S after 5000 -> ct:fail(no_session) end,
+    {error, not_shared} =
+        receive
+            {outside, O} -> O
+        after 5000 -> ct:fail(no_outside)
+        end,
+    ok =
+        receive
+            {session, S} -> S
+        after 5000 -> ct:fail(no_session)
+        end,
     timer:sleep(1500),
     ?UA:bye(Ua),
-    SessId = receive {fwd, {chappe_mrf, _, {recorded, SId}}} -> SId after 15000 -> ct:fail(no_recorded) end,
+    SessId =
+        receive
+            {fwd, {chappe_mrf, _, {recorded, SId}}} -> SId
+        after 15000 -> ct:fail(no_recorded)
+        end,
     Found = [I || #{id := I} <- chappe_audio_store:find(Ref)],
     ?assertEqual(lists:sort([Id, SessId]), lists:sort(Found)).
 
@@ -755,7 +848,9 @@ fwd_loop(Test) ->
 %% events arrive, and the room outlives its first caller.
 native_conference(Config) ->
     ivr(fun park/2),
-    {ok, Conf} = chappe_mrf:conference(<<"live-native">>, #{anchor_params => to_host()}),
+    {ok, Conf} = chappe_mrf:conference(<<"live-native">>, #{
+        anchor_params => to_host()
+    }),
     Calls = [call_in(Config, F) || F <- [500, none, none]],
     [M1, M2, M3] = [
         begin
@@ -816,7 +911,10 @@ native_endpoint(Config) ->
     {ok, M} = chappe_mrf_conf:join(Conf, Ep, #{name => <<"ep">>}),
     _ = spawn(fun() -> chappe_mrf:play(Ep, <<"/media/one.wav">>) end),
     ?assert(?UA:hears(Ua, ?ONE, 6000)),
-    Name = <<"rec-ep-", (integer_to_binary(erlang:unique_integer([positive])))/binary, ".wav">>,
+    Name =
+        <<"rec-ep-",
+            (integer_to_binary(erlang:unique_integer([positive])))/binary,
+            ".wav">>,
     ok = chappe_mrf:record(Ep, <<"/media/", Name/binary>>, #{max_secs => 3}),
     Level = ?UA:wav_level(media(Config, binary_to_list(Name)), 500),
     ct:log("endpoint recorded 500 Hz at ~.1f dBFS", [Level]),
@@ -839,9 +937,12 @@ fs_conference(Config) ->
     Members = [
         begin
             _ = spawn(fun() ->
-                Test ! {joined, Ua, chappe_mrf_conf:join(Conf, B2b, #{
-                    pin => <<"1234">>, pin_prompt => <<"/media/pin.wav">>
-                })}
+                Test !
+                    {joined, Ua,
+                        chappe_mrf_conf:join(Conf, B2b, #{
+                            pin => <<"1234">>,
+                            pin_prompt => <<"/media/pin.wav">>
+                        })}
             end),
             ?assert(?UA:hears(Ua, ?PIN, 8000)),
             ?UA:dtmf(Ua, <<"1234">>),
@@ -877,7 +978,9 @@ endpoint_verbs(Config) ->
         events => [playback_start, playback_stop]
     }),
     {Ua, Ep, _B2b, Owner} = call_in(Config, ?ONE),
-    ?assertEqual({error, not_found}, chappe_mrf:play(Ep, <<"/media/missing.wav">>)),
+    ?assertEqual(
+        {error, not_found}, chappe_mrf:play(Ep, <<"/media/missing.wav">>)
+    ),
     {ok, #{ms := Ms, response := <<"FILE PLAYED">>}} =
         chappe_mrf:play_info(Ep, <<"/media/pin.wav">>, #{}),
     ?assert(Ms > 2500 andalso Ms < 3500),
@@ -892,7 +995,9 @@ endpoint_verbs(Config) ->
     ok = chappe_mrf:say(Ep, <<"42">>, #{}),
     %% mod_say_en picks forty and two and plays both half-second files
     ?assert(erlang:monotonic_time(millisecond) - S0 > 900),
-    ?assertEqual([<<"file_string://digits/40.wav!digits/2.wav">>], started_files()),
+    ?assertEqual(
+        [<<"file_string://digits/40.wav!digits/2.wav">>], started_files()
+    ),
     ok = chappe_mrf:speak(Ep, <<"Welcome to the chappe lab">>, #{
         engine => <<"flite">>, voice => <<"slt">>
     }),
@@ -957,14 +1062,17 @@ fs_conference_record_transfer(Config) ->
     {U2, _, B2, _} = call_in(Config, none),
     {ok, M1} = chappe_mrf_conf:join(A, B1, #{name => <<"one">>}),
     {ok, _M2} = chappe_mrf_conf:join(B, B2, #{}),
-    Rec = "conf-" ++ integer_to_list(erlang:unique_integer([positive])) ++ ".wav",
+    Rec =
+        "conf-" ++ integer_to_list(erlang:unique_integer([positive])) ++ ".wav",
     ok = chappe_mrf_conf:record(A, <<"/media/", (list_to_binary(Rec))/binary>>),
     timer:sleep(2000),
     ok = chappe_mrf_conf:stop_record(A),
     ok = wait(fun() -> filelib:file_size(media(Config, Rec)) > 8000 end, 100),
     %% stored: stop_record/1 returns the id in the store, under the ref
     Stored = <<"/media/stored-", (list_to_binary(Rec))/binary>>,
-    ok = chappe_mrf_conf:record(A, Stored, #{store => default, ref => <<"room-a">>}),
+    ok = chappe_mrf_conf:record(A, Stored, #{
+        store => default, ref => <<"room-a">>
+    }),
     timer:sleep(2000),
     ok = chappe_mrf_conf:stop_record(A),
     RoomRec =
@@ -972,7 +1080,9 @@ fs_conference_record_transfer(Config) ->
             {chappe_mrf_conf, A, {recorded, _, {ok, RR}}} -> RR
         after 15000 -> ct:fail(no_room_recorded)
         end,
-    {ok, #{call_ref := <<"room-a">>, source := <<"room">>, duration_ms := RoomMs}} =
+    {ok, #{
+        call_ref := <<"room-a">>, source := <<"room">>, duration_ms := RoomMs
+    }} =
         chappe_audio_store:get(RoomRec),
     ?assert(RoomMs > 1000),
     ok = chappe_mrf_conf:mute(A, M1),
@@ -1001,8 +1111,12 @@ fs_conference_record_transfer(Config) ->
 %% without a re-INVITE.
 native_conference_transfer(Config) ->
     ivr(fun park/2),
-    {ok, A} = chappe_mrf:conference(<<"live-nat-a">>, #{anchor_params => to_host()}),
-    {ok, B} = chappe_mrf:conference(<<"live-nat-b">>, #{anchor_params => to_host()}),
+    {ok, A} = chappe_mrf:conference(<<"live-nat-a">>, #{
+        anchor_params => to_host()
+    }),
+    {ok, B} = chappe_mrf:conference(<<"live-nat-b">>, #{
+        anchor_params => to_host()
+    }),
     {U1, _, B1, _} = call_in(Config, 500),
     {U2, _, B2, _} = call_in(Config, none),
     {ok, M1} = chappe_mrf_conf:join(A, B1, #{}),
@@ -1037,7 +1151,10 @@ owner_killed(Config) ->
     Test = self(),
     ivr(fun(Ep, _B2b) ->
         R = chappe_mrf:fork_audio_start(
-            Ep, <<"ws://host.docker.internal:", (integer_to_binary(WsPort))/binary>>, #{}
+            Ep,
+            <<"ws://host.docker.internal:",
+                (integer_to_binary(WsPort))/binary>>,
+            #{}
         ),
         Test ! {forked, R},
         park_loop()
@@ -1052,7 +1169,10 @@ owner_killed(Config) ->
     exit(Owner, kill),
     ua_got(Ua, bye, 8000),
     timer:sleep(500),
-    ?assertMatch({ok, <<"false", _/binary>>}, chappe_esl:node_api(Node, [<<"uuid_exists ">>, Uuid])),
+    ?assertMatch(
+        {ok, <<"false", _/binary>>},
+        chappe_esl:node_api(Node, [<<"uuid_exists ">>, Uuid])
+    ),
     gen_tcp:close(L).
 
 %% fs1 stops under a live endpoint: its owner hears node_down, and the

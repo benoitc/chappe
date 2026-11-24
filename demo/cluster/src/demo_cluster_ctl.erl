@@ -90,8 +90,11 @@ run(["trunk", State]) ->
     wait(?WAIT, fun() ->
         Seen = [state_of(rpc(N, demo_cluster, trunk, [])) || N <- up()],
         case lists:usort(Seen) of
-            [Want] -> {ok, io_lib:format("trunk ~s on ~b nodes", [State, length(Seen)])};
-            _ -> false
+            [Want] ->
+                {ok,
+                    io_lib:format("trunk ~s on ~b nodes", [State, length(Seen)])};
+            _ ->
+                false
         end
     end);
 run(["live", Node]) ->
@@ -121,8 +124,10 @@ room() ->
 live(N) ->
     net_adm:ping(N) =:= pong andalso
         case rpc(N, chappe_cluster, status, []) of
-            #{live := true} -> rpc(N, erlang, whereis, [chappe_sip_peers]) =/= undefined;
-            _ -> false
+            #{live := true} ->
+                rpc(N, erlang, whereis, [chappe_sip_peers]) =/= undefined;
+            _ ->
+                false
         end.
 
 rpc(N, M, F, A) ->

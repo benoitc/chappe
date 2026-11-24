@@ -176,7 +176,9 @@ linger_then_disconnect(_Config) ->
         ?assertEqual({chappe_esl_linger, Conn}, relayed()),
         ok = gen_tcp:send(
             S,
-            chappe_esl_fake_server:plain_event(<<"CHANNEL_HANGUP_COMPLETE">>, [])
+            chappe_esl_fake_server:plain_event(
+                <<"CHANNEL_HANGUP_COMPLETE">>, []
+            )
         ),
         {chappe_esl_event, Conn, Event} = relayed(),
         ?assertEqual(
@@ -420,7 +422,9 @@ bad_listener_options(_Config) ->
 %% helpers
 
 conn_count() ->
-    proplists:get_value(active, supervisor:count_children(chappe_esl_outbound_sup)).
+    proplists:get_value(
+        active, supervisor:count_children(chappe_esl_outbound_sup)
+    ).
 
 wait_stats(Port, Want, 0) ->
     ct:fail({stats, chappe_esl:listener_stats(Port), Want});

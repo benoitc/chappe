@@ -16,15 +16,21 @@
 -include_lib("chappe_sip/include/chappe_sip_uac.hrl").
 
 -export([start/1, start/2, stop/0, install/0]).
--export([set_description/1, kick/1, members/0, uri/0, set_private/1,
-         subscribe_policy/1]).
+-export([
+    set_description/1,
+    kick/1,
+    members/0,
+    uri/0,
+    set_private/1,
+    subscribe_policy/1
+]).
 -export([refer_policy/1, hide_focus/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
--define(ANSWER,
-    <<"v=0\r\no=focus 1 1 IN IP4 127.0.0.1\r\ns=conf\r\nc=IN IP4 127.0.0.1\r\n"
-    "t=0 0\r\nm=audio 40020 RTP/AVP 0\r\na=sendrecv\r\n">>
-).
+-define(ANSWER, <<
+    "v=0\r\no=focus 1 1 IN IP4 127.0.0.1\r\ns=conf\r\nc=IN IP4 127.0.0.1\r\n"
+    "t=0 0\r\nm=audio 40020 RTP/AVP 0\r\na=sendrecv\r\n"
+>>).
 -define(AVAILABLE, [
     #{label => <<"main-audio">>, type => audio, status => sendrecv}
 ]).
@@ -215,7 +221,8 @@ handle_call(uri, _From, S) ->
 handle_call({private, Uri}, _From, S) ->
     {reply, ok, S#state{private = [Uri | S#state.private]}};
 handle_call({description, D}, _From, S) ->
-    {reply, ok, changed(S#state{description = maps:merge(S#state.description, D)})};
+    {reply, ok,
+        changed(S#state{description = maps:merge(S#state.description, D)})};
 handle_call(members, _From, S) ->
     {reply,
         [
@@ -252,7 +259,10 @@ handle_cast({joined, D, Summary}, S) ->
     #{uri := Uri, private := Asked} = Summary,
     Private = Asked orelse lists:member(Uri, S#state.private),
     Leg = (maps:with([uri, display], Summary))#{private => Private},
-    {noreply, changed(add_leg(chappe_sip_dialog:id(D), Leg#{dialog => D, ep => Ep}, S))}.
+    {noreply,
+        changed(
+            add_leg(chappe_sip_dialog:id(D), Leg#{dialog => D, ep => Ep}, S)
+        )}.
 
 add_leg(Key, Leg, S) ->
     N = S#state.seq + 1,
@@ -284,7 +294,13 @@ leg_info({chappe_sip_dialog, D, refer, Req, Res}, S) ->
             {noreply, changed(dial(Target, Refer, S))};
         {remove, Target, Refer} ->
             {reply, N, S1} = handle_call({kick, Target}, self(), S),
-            ok = chappe_sip_refer:final(Refer, case N of 0 -> 404; _ -> 200 end),
+            ok = chappe_sip_refer:final(
+                Refer,
+                case N of
+                    0 -> 404;
+                    _ -> 200
+                end
+            ),
             {noreply, S1};
         {error, _} ->
             {noreply, S}
@@ -316,7 +332,11 @@ leg_info({chappe_sip_uac, Ref, {provisional, Msg}}, S) ->
     case chappe_sip_msg:status(Msg) of
         St when St >= 180 ->
             {noreply,
-                changed(update_ep({dial, Ref}, fun(Ep) -> Ep#{status => alerting} end, S))};
+                changed(
+                    update_ep(
+                        {dial, Ref}, fun(Ep) -> Ep#{status => alerting} end, S
+                    )
+                )};
         _ ->
             {noreply, S}
     end;
@@ -338,7 +358,9 @@ leg_info({chappe_sip_uac, Ref, {ok, D}}, S) ->
     ok = chappe_sip_refer:final(maps:get(refer, Leg), 200),
     %% the leg is known by its dialog from now on
     Legs = maps:put(
-        chappe_sip_dialog:id(D), Leg#{dialog => D}, maps:remove(Key, S1#state.legs)
+        chappe_sip_dialog:id(D),
+        Leg#{dialog => D},
+        maps:remove(Key, S1#state.legs)
     ),
     {noreply, changed(S1#state{legs = Legs})};
 leg_info({chappe_sip_uac, Ref, {error, E}}, S) ->

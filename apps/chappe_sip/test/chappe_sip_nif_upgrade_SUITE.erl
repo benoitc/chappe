@@ -80,7 +80,9 @@ failed_reload_frees_slot(_Config) ->
 
 in_peer(F, Args) ->
     Paths = lists:append([["-pa", P] || P <- code:get_path()]),
-    {ok, Peer, _Node} = peer:start_link(#{connection => standard_io, args => Paths}),
+    {ok, Peer, _Node} = peer:start_link(#{
+        connection => standard_io, args => Paths
+    }),
     try
         ?assertEqual(ok, peer:call(Peer, ?MODULE, F, Args, 60000))
     after
@@ -174,7 +176,8 @@ reserved_scenario() ->
     ?assertEqual(replacing, chappe_sip_nif:engine_state()),
     ?assertEqual({error, replacing}, chappe_sip_nif:reserve_slot()),
     ?assertEqual(
-        {error, replacing}, chappe_sip_nif:start(#{contact => contact(P)}, self())
+        {error, replacing},
+        chappe_sip_nif:start(#{contact => contact(P)}, self())
     ),
     ?assertEqual({error, replacing}, chappe_sip_nif:replace()),
     ?assertEqual(ok, chappe_sip_nif:release_slot()),
@@ -260,7 +263,9 @@ load(Bin) ->
 
 %% the built shim under another name, as a release ships a new library
 copy_nif(Dir) ->
-    Src = filename:join([code:priv_dir(chappe_sip), "lib", "chappe_sip_engine_nif.so"]),
+    Src = filename:join([
+        code:priv_dir(chappe_sip), "lib", "chappe_sip_engine_nif.so"
+    ]),
     Base = filename:join(Dir, "chappe_sip_engine_nif_next"),
     {ok, _} = file:copy(Src, Base ++ ".so"),
     Base.
@@ -270,7 +275,9 @@ upgraded_module(Path) ->
     Beam = code:which(chappe_sip_nif),
     {ok, {_, [{abstract_code, {raw_abstract_v1, Forms}}]}} =
         beam_lib:chunks(Beam, [abstract_code]),
-    Src = lists:flatten(io_lib:format("init() -> erlang:load_nif(~p, 0).", [Path])),
+    Src = lists:flatten(
+        io_lib:format("init() -> erlang:load_nif(~p, 0).", [Path])
+    ),
     {ok, Toks, _} = erl_scan:string(Src),
     {ok, Init} = erl_parse:parse_form(Toks),
     Forms1 = [
@@ -290,7 +297,9 @@ round_trip(E, Port) ->
     ok = gen_udp:send(Sock, {127, 0, 0, 1}, Port, options_msg(Local)),
     Txn =
         receive
-            {chappe_sip_engine, E, {request, T, _, _, <<"OPTIONS ", _/binary>>}} -> T
+            {chappe_sip_engine, E,
+                {request, T, _, _, <<"OPTIONS ", _/binary>>}} ->
+                T
         after 5000 -> error(no_request)
         end,
     ok = chappe_sip_nif:respond(E, Txn, 200, <<"OK">>, <<>>, <<>>, <<>>),

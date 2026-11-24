@@ -14,33 +14,81 @@
 -include_lib("stdlib/include/assert.hrl").
 
 -import(chappe_sip_core_peer, [
-    open/0, port/1, send/3, recv/3, recv_none/3, request/3, response/3,
-    hdr/2, hdrs/2, status/1, from_tag/1, to_tag/1, cseq/1, tag/0
+    open/0,
+    port/1,
+    send/3,
+    recv/3,
+    recv_none/3,
+    request/3,
+    response/3,
+    hdr/2,
+    hdrs/2,
+    status/1,
+    from_tag/1,
+    to_tag/1,
+    cseq/1,
+    tag/0
 ]).
 
--export([all/0, init_per_suite/1, end_per_suite/1, init_per_testcase/2,
-         end_per_testcase/2]).
--export([subscribe_refresh_unsubscribe/1, notify_before_2xx/1,
-         notify_expires_authoritative/1, pending_expires/1,
-         terminated_ends/1, terminated_expires_ignored/1,
-         deactivated_resubscribes/1, timeout_resubscribes/1,
-         probation_waits/1, giveup_waits/1, unknown_reason_waits/1,
-         invariant_stops/1, refresh_481_ends/1, timer_n_then_481/1,
-         forked_notify/1, unmatched_notify_481/1, subscribe_rejected/1,
-         package_routes/1, package_489/1]).
+-export([
+    all/0,
+    init_per_suite/1,
+    end_per_suite/1,
+    init_per_testcase/2,
+    end_per_testcase/2
+]).
+-export([
+    subscribe_refresh_unsubscribe/1,
+    notify_before_2xx/1,
+    notify_expires_authoritative/1,
+    pending_expires/1,
+    terminated_ends/1,
+    terminated_expires_ignored/1,
+    deactivated_resubscribes/1,
+    timeout_resubscribes/1,
+    probation_waits/1,
+    giveup_waits/1,
+    unknown_reason_waits/1,
+    invariant_stops/1,
+    refresh_481_ends/1,
+    timer_n_then_481/1,
+    forked_notify/1,
+    unmatched_notify_481/1,
+    subscribe_rejected/1,
+    package_routes/1,
+    package_489/1
+]).
 
 all() ->
-    [subscribe_refresh_unsubscribe, notify_before_2xx,
-     notify_expires_authoritative, pending_expires, terminated_ends,
-     terminated_expires_ignored, deactivated_resubscribes,
-     timeout_resubscribes, probation_waits, giveup_waits,
-     unknown_reason_waits, invariant_stops, refresh_481_ends,
-     timer_n_then_481, forked_notify, unmatched_notify_481,
-     subscribe_rejected, package_routes, package_489].
+    [
+        subscribe_refresh_unsubscribe,
+        notify_before_2xx,
+        notify_expires_authoritative,
+        pending_expires,
+        terminated_ends,
+        terminated_expires_ignored,
+        deactivated_resubscribes,
+        timeout_resubscribes,
+        probation_waits,
+        giveup_waits,
+        unknown_reason_waits,
+        invariant_stops,
+        refresh_481_ends,
+        timer_n_then_481,
+        forked_notify,
+        unmatched_notify_481,
+        subscribe_rejected,
+        package_routes,
+        package_489
+    ].
 
 init_per_suite(Config) ->
-    application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
-                        [{persistent, true}]),
+    application:set_env(
+        chappe_sip,
+        engine_mod,
+        chappe_sip_nif,
+        [{persistent, true}]
+    ),
     {ok, _} = application:ensure_all_started(chappe_sip),
     Config.
 
@@ -66,15 +114,28 @@ end_per_testcase(_Case, Config) ->
 %% req: R6665-35 R6665-36 R6665-53 R6665-34
 subscribe_refresh_unsubscribe(Config) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
-    {ok, Sub} = chappe_sip:subscribe_to(notifier(Sock), <<"presence">>,
-                                         #{expires => 2}),
+    {ok, Sub} = chappe_sip:subscribe_to(
+        notifier(Sock),
+        <<"presence">>,
+        #{expires => 2}
+    ),
     {S1, _} = recv(Sock, {method, <<"SUBSCRIBE">>}, 3000),
     ?assertEqual([<<"presence">>], hdrs(<<"event">>, S1)),
     ?assertEqual(<<"2">>, hdr(<<"expires">>, S1)),
     ?assertEqual(undefined, to_tag(S1)),
     send(Sock, EP, ok_2xx(Sock, S1, <<"n1">>, 2)),
-    send(Sock, EP, notify(Sock, S1, <<"n1">>, 1, <<"active;expires=2">>,
-                          <<"doc">>)),
+    send(
+        Sock,
+        EP,
+        notify(
+            Sock,
+            S1,
+            <<"n1">>,
+            1,
+            <<"active;expires=2">>,
+            <<"doc">>
+        )
+    ),
     {N200, _} = recv(Sock, {status, 200, <<"NOTIFY">>}, 3000),
     ?assertEqual(undefined, hdr(<<"event">>, N200)),
     {notify, #{state := active, expires := 2, body := <<"doc">>}} =
@@ -88,8 +149,18 @@ subscribe_refresh_unsubscribe(Config) ->
     ?assertEqual([<<"presence">>], hdrs(<<"event">>, S2)),
     ?assertEqual(<<"2">>, hdr(<<"expires">>, S2)),
     send(Sock, EP, ok_2xx(Sock, S2, <<"n1">>, 60)),
-    send(Sock, EP, notify(Sock, S1, <<"n1">>, 2, <<"active;expires=60">>,
-                          <<"doc2">>)),
+    send(
+        Sock,
+        EP,
+        notify(
+            Sock,
+            S1,
+            <<"n1">>,
+            2,
+            <<"active;expires=60">>,
+            <<"doc2">>
+        )
+    ),
     {_, _} = recv(Sock, {status, 200, <<"NOTIFY">>}, 3000),
     {notify, #{expires := 60}} = sub_event(Sub),
     ok = chappe_sip:unsubscribe(Sub),
@@ -97,8 +168,18 @@ subscribe_refresh_unsubscribe(Config) ->
     ?assertEqual(<<"0">>, hdr(<<"expires">>, S3)),
     ?assertEqual([<<"presence">>], hdrs(<<"event">>, S3)),
     send(Sock, EP, ok_2xx(Sock, S3, <<"n1">>, 0)),
-    send(Sock, EP, notify(Sock, S1, <<"n1">>, 3,
-                          <<"terminated;reason=timeout">>, <<>>)),
+    send(
+        Sock,
+        EP,
+        notify(
+            Sock,
+            S1,
+            <<"n1">>,
+            3,
+            <<"terminated;reason=timeout">>,
+            <<>>
+        )
+    ),
     {_, _} = recv(Sock, {status, 200, <<"NOTIFY">>}, 3000),
     {notify, #{state := terminated}} = sub_event(Sub),
     {terminated, unsubscribed} = sub_event(Sub),
@@ -111,13 +192,33 @@ notify_before_2xx(Config) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
     {ok, Sub} = chappe_sip:subscribe_to(notifier(Sock), <<"presence">>, #{}),
     {S1, _} = recv(Sock, {method, <<"SUBSCRIBE">>}, 3000),
-    send(Sock, EP, notify(Sock, S1, <<"nb">>, 1, <<"active;expires=600">>,
-                          <<"first">>)),
+    send(
+        Sock,
+        EP,
+        notify(
+            Sock,
+            S1,
+            <<"nb">>,
+            1,
+            <<"active;expires=600">>,
+            <<"first">>
+        )
+    ),
     {_, _} = recv(Sock, {status, 200, <<"NOTIFY">>}, 3000),
     {notify, #{body := <<"first">>}} = sub_event(Sub),
     send(Sock, EP, ok_2xx(Sock, S1, <<"nb">>, 600)),
-    send(Sock, EP, notify(Sock, S1, <<"nb">>, 2, <<"active;expires=600">>,
-                          <<"second">>)),
+    send(
+        Sock,
+        EP,
+        notify(
+            Sock,
+            S1,
+            <<"nb">>,
+            2,
+            <<"active;expires=600">>,
+            <<"second">>
+        )
+    ),
     {_, _} = recv(Sock, {status, 200, <<"NOTIFY">>}, 3000),
     {notify, #{body := <<"second">>}} = sub_event(Sub),
     stop(Sub).
@@ -163,8 +264,18 @@ invariant_stops(Config) ->
 ends(Config, Reason) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
     {Sub, S1} = active_sub(Sock, EP),
-    send(Sock, EP, notify(Sock, S1, <<"na">>, 2,
-                          <<"terminated;reason=", Reason/binary>>, <<>>)),
+    send(
+        Sock,
+        EP,
+        notify(
+            Sock,
+            S1,
+            <<"na">>,
+            2,
+            <<"terminated;reason=", Reason/binary>>,
+            <<>>
+        )
+    ),
     {_, _} = recv(Sock, {status, 200, <<"NOTIFY">>}, 3000),
     {notify, #{state := terminated}} = sub_event(Sub),
     {terminated, Why} = sub_event(Sub),
@@ -199,8 +310,18 @@ resubscribes(Config, Reason, MinWait) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
     {Sub, S1} = active_sub(Sock, EP),
     T0 = erlang:monotonic_time(millisecond),
-    send(Sock, EP, notify(Sock, S1, <<"na">>, 2,
-                          <<"terminated;reason=", Reason/binary>>, <<>>)),
+    send(
+        Sock,
+        EP,
+        notify(
+            Sock,
+            S1,
+            <<"na">>,
+            2,
+            <<"terminated;reason=", Reason/binary>>,
+            <<>>
+        )
+    ),
     {_, _} = recv(Sock, {status, 200, <<"NOTIFY">>}, 3000),
     {notify, #{state := terminated}} = sub_event(Sub),
     {retrying, _, _} = sub_event(Sub),
@@ -212,8 +333,18 @@ resubscribes(Config, Reason, MinWait) ->
     ?assertNotEqual(hdr(<<"call-id">>, S1), hdr(<<"call-id">>, S2)),
     ?assertNotEqual(from_tag(S1), from_tag(S2)),
     send(Sock, EP, ok_2xx(Sock, S2, <<"nr">>, 600)),
-    send(Sock, EP, notify(Sock, S2, <<"nr">>, 1, <<"active;expires=600">>,
-                          <<"again">>)),
+    send(
+        Sock,
+        EP,
+        notify(
+            Sock,
+            S2,
+            <<"nr">>,
+            1,
+            <<"active;expires=600">>,
+            <<"again">>
+        )
+    ),
     {_, _} = recv(Sock, {status, 200, <<"NOTIFY">>}, 3000),
     {notify, #{body := <<"again">>}} = sub_event(Sub),
     stop(Sub).
@@ -222,12 +353,25 @@ resubscribes(Config, Reason, MinWait) ->
 %% req: R6665-37
 refresh_481_ends(Config) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
-    {ok, Sub} = chappe_sip:subscribe_to(notifier(Sock), <<"presence">>,
-                                         #{expires => 2}),
+    {ok, Sub} = chappe_sip:subscribe_to(
+        notifier(Sock),
+        <<"presence">>,
+        #{expires => 2}
+    ),
     {S1, _} = recv(Sock, {method, <<"SUBSCRIBE">>}, 3000),
     send(Sock, EP, ok_2xx(Sock, S1, <<"nf">>, 2)),
-    send(Sock, EP, notify(Sock, S1, <<"nf">>, 1, <<"active;expires=2">>,
-                          <<>>)),
+    send(
+        Sock,
+        EP,
+        notify(
+            Sock,
+            S1,
+            <<"nf">>,
+            1,
+            <<"active;expires=2">>,
+            <<>>
+        )
+    ),
     {_, _} = recv(Sock, {status, 200, <<"NOTIFY">>}, 3000),
     {notify, _} = sub_event(Sub),
     {S2, _} = recv(Sock, {method, <<"SUBSCRIBE">>}, 2500),
@@ -240,13 +384,26 @@ refresh_481_ends(Config) ->
 %% req: R6665-38
 timer_n_then_481(Config) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
-    {ok, Sub} = chappe_sip:subscribe_to(notifier(Sock), <<"presence">>,
-                                         #{timer_n => 500}),
+    {ok, Sub} = chappe_sip:subscribe_to(
+        notifier(Sock),
+        <<"presence">>,
+        #{timer_n => 500}
+    ),
     {S1, _} = recv(Sock, {method, <<"SUBSCRIBE">>}, 3000),
     send(Sock, EP, ok_2xx(Sock, S1, <<"nt">>, 600)),
     {terminated, timer_n} = sub_event(Sub),
-    send(Sock, EP, notify(Sock, S1, <<"nt">>, 1, <<"active;expires=600">>,
-                          <<>>)),
+    send(
+        Sock,
+        EP,
+        notify(
+            Sock,
+            S1,
+            <<"nt">>,
+            1,
+            <<"active;expires=600">>,
+            <<>>
+        )
+    ),
     {R, _} = recv(Sock, {status, 481, <<"NOTIFY">>}, 3000),
     ?assertEqual(481, status(R)).
 
@@ -256,8 +413,18 @@ timer_n_then_481(Config) ->
 forked_notify(Config) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
     {Sub, S1} = active_sub(Sock, EP),
-    send(Sock, EP, notify(Sock, S1, <<"fork2">>, 1, <<"active;expires=600">>,
-                          <<"other">>)),
+    send(
+        Sock,
+        EP,
+        notify(
+            Sock,
+            S1,
+            <<"fork2">>,
+            1,
+            <<"active;expires=600">>,
+            <<"other">>
+        )
+    ),
     {_, _} = recv(Sock, {status, 200, <<"NOTIFY">>}, 3000),
     {forked, Sub2} = sub_event(Sub),
     {notify, #{body := <<"other">>}} = sub_event(Sub2),
@@ -273,9 +440,13 @@ forked_notify(Config) ->
 unmatched_notify_481(Config) ->
     {EP, Sock} = {?config(ep, Config), ?config(sock, Config)},
     N = request(<<"NOTIFY">>, <<"sip:app@127.0.0.1">>, #{
-        port => port(Sock), to_tag => tag(),
-        headers => [{<<"Event">>, <<"presence">>},
-                    {<<"Subscription-State">>, <<"active">>}]}),
+        port => port(Sock),
+        to_tag => tag(),
+        headers => [
+            {<<"Event">>, <<"presence">>},
+            {<<"Subscription-State">>, <<"active">>}
+        ]
+    }),
     send(Sock, EP, N),
     {R, _} = recv(Sock, final, 3000),
     ?assertEqual(481, status(R)).
@@ -306,10 +477,16 @@ package_routes(Config) ->
     end),
     send(Sock, EP, subscribe_req(Sock, <<"presence">>)),
     {_, _} = recv(Sock, {status, 403}, 3000),
-    receive presence -> ok after 2000 -> ct:fail(no_package_handler) end,
+    receive
+        presence -> ok
+    after 2000 -> ct:fail(no_package_handler)
+    end,
     send(Sock, EP, subscribe_req(Sock, <<"dialog">>)),
     {_, _} = recv(Sock, {status, 403}, 3000),
-    receive catch_all -> ok after 2000 -> ct:fail(no_catch_all) end.
+    receive
+        catch_all -> ok
+    after 2000 -> ct:fail(no_catch_all)
+    end.
 
 %% With packages only, a SUBSCRIBE for another gets 489 with Allow-Events
 %% listing them, and OPTIONS lists them in Allow-Events.
@@ -321,13 +498,24 @@ package_489(Config) ->
     ok = chappe_sip:event_package(<<"message-summary">>, Fun),
     send(Sock, EP, subscribe_req(Sock, <<"dialog">>)),
     {R, _} = recv(Sock, {status, 489}, 3000),
-    ?assertEqual([<<"message-summary">>, <<"presence">>],
-                 tokens(hdr(<<"allow-events">>, R))),
-    send(Sock, EP, request(<<"OPTIONS">>, <<"sip:app@127.0.0.1">>,
-                           #{port => port(Sock)})),
+    ?assertEqual(
+        [<<"message-summary">>, <<"presence">>],
+        tokens(hdr(<<"allow-events">>, R))
+    ),
+    send(
+        Sock,
+        EP,
+        request(
+            <<"OPTIONS">>,
+            <<"sip:app@127.0.0.1">>,
+            #{port => port(Sock)}
+        )
+    ),
     {O, _} = recv(Sock, {status, 200, <<"OPTIONS">>}, 3000),
-    ?assertEqual([<<"message-summary">>, <<"presence">>],
-                 tokens(hdr(<<"allow-events">>, O))),
+    ?assertEqual(
+        [<<"message-summary">>, <<"presence">>],
+        tokens(hdr(<<"allow-events">>, O))
+    ),
     Allow = tokens(hdr(<<"allow">>, O)),
     ?assert(lists:member(<<"SUBSCRIBE">>, Allow)),
     ?assert(lists:member(<<"NOTIFY">>, Allow)).
@@ -342,8 +530,18 @@ active_sub(Sock, EP) ->
     {ok, Sub} = chappe_sip:subscribe_to(notifier(Sock), <<"dialog">>, #{}),
     {S1, _} = recv(Sock, {method, <<"SUBSCRIBE">>}, 3000),
     send(Sock, EP, ok_2xx(Sock, S1, <<"na">>, 600)),
-    send(Sock, EP, notify(Sock, S1, <<"na">>, 1, <<"active;expires=600">>,
-                          <<>>)),
+    send(
+        Sock,
+        EP,
+        notify(
+            Sock,
+            S1,
+            <<"na">>,
+            1,
+            <<"active;expires=600">>,
+            <<>>
+        )
+    ),
     {_, _} = recv(Sock, {status, 200, <<"NOTIFY">>}, 3000),
     {notify, _} = sub_event(Sub),
     {Sub, S1}.
@@ -351,37 +549,49 @@ active_sub(Sock, EP) ->
 ok_2xx(Sock, Sub, Tag, Expires) ->
     response(Sub, 200, #{
         to_tag => Tag,
-        headers => [{<<"Contact">>, <<"<", (notifier(Sock))/binary, ">">>},
-                    {<<"Expires">>, integer_to_binary(Expires)}]}).
+        headers => [
+            {<<"Contact">>, <<"<", (notifier(Sock))/binary, ">">>},
+            {<<"Expires">>, integer_to_binary(Expires)}
+        ]
+    }).
 
 %% a NOTIFY in the dialog of SUBSCRIBE Sub, the notifier's tag Tag
 notify(Sock, Sub, Tag, CSeq, State, Body) ->
     request(<<"NOTIFY">>, contact_of(Sub), #{
         port => port(Sock),
         call_id => hdr(<<"call-id">>, Sub),
-        from => addr(hdr(<<"to">>, Sub)), from_tag => Tag,
-        to => addr(hdr(<<"from">>, Sub)), to_tag => from_tag(Sub),
+        from => addr(hdr(<<"to">>, Sub)),
+        from_tag => Tag,
+        to => addr(hdr(<<"from">>, Sub)),
+        to_tag => from_tag(Sub),
         cseq => CSeq,
         contact => <<"<", (notifier(Sock))/binary, ">">>,
-        headers => [{<<"Event">>, hdr(<<"event">>, Sub)},
-                    {<<"Subscription-State">>, State}],
+        headers => [
+            {<<"Event">>, hdr(<<"event">>, Sub)},
+            {<<"Subscription-State">>, State}
+        ],
         body => Body,
-        content_type => <<"application/pidf+xml">>}).
+        content_type => <<"application/pidf+xml">>
+    }).
 
 subscribe_req(Sock, Event) ->
     request(<<"SUBSCRIBE">>, <<"sip:app@127.0.0.1">>, #{
         port => port(Sock),
-        headers => [{<<"Event">>, Event}, {<<"Expires">>, <<"60">>}]}).
+        headers => [{<<"Event">>, Event}, {<<"Expires">>, <<"60">>}]
+    }).
 
 sub_event(Sub) ->
-    receive {chappe_sip_subscription, Sub, E} -> E
+    receive
+        {chappe_sip_subscription, Sub, E} -> E
     after 6000 -> ct:fail({no_subscription_event, Sub})
     end.
 
 stop(Sub) ->
     MRef = erlang:monitor(process, Sub),
     exit(Sub, kill),
-    receive {'DOWN', MRef, _, _, _} -> ok end.
+    receive
+        {'DOWN', MRef, _, _, _} -> ok
+    end.
 
 contact_of(Msg) ->
     {ok, #{uri := U}} = chappe_sip_hdr:name_addr(hdr(<<"contact">>, Msg)),
@@ -389,6 +599,7 @@ contact_of(Msg) ->
 
 addr(V) -> re:replace(V, ";tag=[^;]*", "", [{return, binary}]).
 
-tokens(undefined) -> [];
+tokens(undefined) ->
+    [];
 tokens(V) ->
     lists:sort([string:trim(T) || T <- binary:split(V, <<",">>, [global])]).

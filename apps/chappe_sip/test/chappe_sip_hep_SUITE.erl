@@ -10,21 +10,46 @@
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
 
--export([all/0, init_per_suite/1, end_per_suite/1,
-         init_per_testcase/2, end_per_testcase/2]).
--export([udp_call/1, tcp_call/1, tls_call/1, ws_call/1, off_by_default/1,
-         bad_option/1, app_setting/1, restart_closes_socket/1]).
+-export([
+    all/0,
+    init_per_suite/1,
+    end_per_suite/1,
+    init_per_testcase/2,
+    end_per_testcase/2
+]).
+-export([
+    udp_call/1,
+    tcp_call/1,
+    tls_call/1,
+    ws_call/1,
+    off_by_default/1,
+    bad_option/1,
+    app_setting/1,
+    restart_closes_socket/1
+]).
 
 -define(LO, {127, 0, 0, 1}).
 -define(CAPTURE_ID, 2001).
 
 all() ->
-    [udp_call, tcp_call, tls_call, ws_call, off_by_default, bad_option,
-     app_setting, restart_closes_socket].
+    [
+        udp_call,
+        tcp_call,
+        tls_call,
+        ws_call,
+        off_by_default,
+        bad_option,
+        app_setting,
+        restart_closes_socket
+    ].
 
 init_per_suite(Config) ->
-    application:set_env(chappe_sip, engine_mod, chappe_sip_nif,
-                        [{persistent, true}]),
+    application:set_env(
+        chappe_sip,
+        engine_mod,
+        chappe_sip_nif,
+        [{persistent, true}]
+    ),
     {ok, _} = application:ensure_all_started(chappe_sip),
     {ok, _} = application:ensure_all_started(ssl),
     Config.
@@ -78,15 +103,25 @@ tls_call(Config) ->
         ok ->
             TP = chappe_sip_test_port:pick(),
             _ = start(Config, #{
-                tls => #{contact => <<"sips:127.0.0.1:",
-                                      (integer_to_binary(TP))/binary,
-                                      ";transport=tls">>,
-                         cert_dir => list_to_binary(Dir),
-                         verify => none,
-                         allow_insecure => true}}),
-            {ok, S} = ssl:connect("127.0.0.1", TP,
-                                  [{verify, verify_none}, binary,
-                                   {active, false}], 5000),
+                tls => #{
+                    contact =>
+                        <<"sips:127.0.0.1:", (integer_to_binary(TP))/binary,
+                            ";transport=tls">>,
+                    cert_dir => list_to_binary(Dir),
+                    verify => none,
+                    allow_insecure => true
+                }
+            }),
+            {ok, S} = ssl:connect(
+                "127.0.0.1",
+                TP,
+                [
+                    {verify, verify_none},
+                    binary,
+                    {active, false}
+                ],
+                5000
+            ),
             {ok, {_, LP}} = ssl:sockname(S),
             CallId = call({tls, S}, <<"TLS">>, LP),
             ssl:close(S),
@@ -100,9 +135,11 @@ ws_call(Config) ->
     WP = chappe_sip_test_port:pick(),
     _ = start(Config, #{ws => #{port => WP}}),
     Url = <<"ws://127.0.0.1:", (integer_to_binary(WP))/binary, "/ws">>,
-    {ok, C} = ws:connect(Url, #{handler => chappe_sip_ws_test_client,
-                                handler_opts => #{notify => self()},
-                                subprotocols => [<<"sip">>]}),
+    {ok, C} = ws:connect(Url, #{
+        handler => chappe_sip_ws_test_client,
+        handler_opts => #{notify => self()},
+        subprotocols => [<<"sip">>]
+    }),
     CallId = call({ws, C}, <<"WS">>, 0),
     ws:close(C, 1000),
     check(Config, CallId, tcp, any, WP, #{correlation_id => CallId}).
@@ -123,24 +160,47 @@ off_by_default(Config) ->
 bad_option(Config) ->
     EP = chappe_sip_test_port:pick(),
     Base = #{contact => contact(EP)},
-    ?assertMatch({error, {hep, {bad_port, 80}}},
-                 chappe_sip:start(Base#{hep => #{host => "127.0.0.1",
-                                                 port => 80}})),
+    ?assertMatch(
+        {error, {hep, {bad_port, 80}}},
+        chappe_sip:start(Base#{
+            hep => #{
+                host => "127.0.0.1",
+                port => 80
+            }
+        })
+    ),
     HP = ?config(hep_port, Config),
-    ?assertMatch({error, {hep, {bad_version, 2}}},
-                 chappe_sip:start(Base#{hep => #{host => "127.0.0.1",
-                                                 port => HP,
-                                                 version => 2}})),
-    ?assertMatch({error, {hep, {bad_host, _, _}}},
-                 chappe_sip:start(Base#{hep => #{host => "no.such.host.invalid",
-                                                 port => HP}})).
+    ?assertMatch(
+        {error, {hep, {bad_version, 2}}},
+        chappe_sip:start(Base#{
+            hep => #{
+                host => "127.0.0.1",
+                port => HP,
+                version => 2
+            }
+        })
+    ),
+    ?assertMatch(
+        {error, {hep, {bad_host, _, _}}},
+        chappe_sip:start(Base#{
+            hep => #{
+                host => "no.such.host.invalid",
+                port => HP
+            }
+        })
+    ).
 
 %% The hep application setting is used when start/1 has none.
 app_setting(Config) ->
-    application:set_env(chappe_sip, hep,
-                        #{host => <<"127.0.0.1">>,
-                          port => ?config(hep_port, Config),
-                          capture_id => ?CAPTURE_ID}),
+    application:set_env(
+        chappe_sip,
+        hep,
+        #{
+            host => <<"127.0.0.1">>,
+            port => ?config(hep_port, Config),
+            capture_id => ?CAPTURE_ID
+        }
+    ),
     EP = chappe_sip_test_port:pick(),
     ok = chappe_sip:start(#{contact => contact(EP)}),
     ok = answer(),
@@ -156,8 +216,10 @@ restart_closes_socket(Config) ->
     HP = ?config(hep_port, Config),
     Cycle = fun() ->
         EP = chappe_sip_test_port:pick(),
-        ok = chappe_sip:start(#{contact => contact(EP),
-                                hep => #{host => "127.0.0.1", port => HP}}),
+        ok = chappe_sip:start(#{
+            contact => contact(EP),
+            hep => #{host => "127.0.0.1", port => HP}
+        }),
         ok = chappe_sip:stop()
     end,
     Cycle(),
@@ -171,11 +233,19 @@ restart_closes_socket(Config) ->
 
 start(Config, Extra) ->
     EP = chappe_sip_test_port:pick(),
-    ok = chappe_sip:start(maps:merge(#{
-        contact => contact(EP),
-        hep => #{host => "127.0.0.1", port => ?config(hep_port, Config),
-                 capture_id => ?CAPTURE_ID}
-    }, Extra)),
+    ok = chappe_sip:start(
+        maps:merge(
+            #{
+                contact => contact(EP),
+                hep => #{
+                    host => "127.0.0.1",
+                    port => ?config(hep_port, Config),
+                    capture_id => ?CAPTURE_ID
+                }
+            },
+            Extra
+        )
+    ),
     ok = answer(),
     EP.
 
@@ -201,38 +271,70 @@ call(Conn, Via, LP) ->
 
 request(Method, Via, LP, CallId, FT, TT, CSeq, Body) ->
     Proto = string:lowercase(Via),
-    To = case TT of
-        undefined -> <<"<sip:uas@127.0.0.1>">>;
-        _ -> <<"<sip:uas@127.0.0.1>;tag=", TT/binary>>
-    end,
+    To =
+        case TT of
+            undefined -> <<"<sip:uas@127.0.0.1>">>;
+            _ -> <<"<sip:uas@127.0.0.1>;tag=", TT/binary>>
+        end,
     iolist_to_binary([
-        Method, " sip:uas@127.0.0.1 SIP/2.0\r\n",
-        "Via: SIP/2.0/", Via, " 127.0.0.1:", integer_to_binary(LP),
-        ";branch=z9hG4bK", hex(6), ";rport\r\n",
+        Method,
+        " sip:uas@127.0.0.1 SIP/2.0\r\n",
+        "Via: SIP/2.0/",
+        Via,
+        " 127.0.0.1:",
+        integer_to_binary(LP),
+        ";branch=z9hG4bK",
+        hex(6),
+        ";rport\r\n",
         "Max-Forwards: 70\r\n",
-        "From: <sip:caller@127.0.0.1>;tag=", FT, "\r\n",
-        "To: ", To, "\r\n",
-        "Call-ID: ", CallId, "\r\n",
-        "CSeq: ", integer_to_binary(CSeq), " ", Method, "\r\n",
-        "Contact: <sip:caller@127.0.0.1:", integer_to_binary(LP),
-        ";transport=", Proto, ">\r\n",
+        "From: <sip:caller@127.0.0.1>;tag=",
+        FT,
+        "\r\n",
+        "To: ",
+        To,
+        "\r\n",
+        "Call-ID: ",
+        CallId,
+        "\r\n",
+        "CSeq: ",
+        integer_to_binary(CSeq),
+        " ",
+        Method,
+        "\r\n",
+        "Contact: <sip:caller@127.0.0.1:",
+        integer_to_binary(LP),
+        ";transport=",
+        Proto,
+        ">\r\n",
         case Body of
             <<>> -> [];
             _ -> "Content-Type: application/sdp\r\n"
         end,
-        "Content-Length: ", integer_to_binary(byte_size(Body)), "\r\n\r\n",
+        "Content-Length: ",
+        integer_to_binary(byte_size(Body)),
+        "\r\n\r\n",
         Body
     ]).
 
-send({udp, S, EP}, Bin) -> gen_udp:send(S, ?LO, EP, Bin);
-send({tcp, S}, Bin) -> gen_tcp:send(S, Bin);
-send({tls, S}, Bin) -> ssl:send(S, Bin);
-send({ws, C}, Bin) -> ws:send(C, {text, Bin}), ok.
+send({udp, S, EP}, Bin) ->
+    gen_udp:send(S, ?LO, EP, Bin);
+send({tcp, S}, Bin) ->
+    gen_tcp:send(S, Bin);
+send({tls, S}, Bin) ->
+    ssl:send(S, Bin);
+send({ws, C}, Bin) ->
+    ws:send(C, {text, Bin}),
+    ok.
 
 %% the next response with this status and CSeq method
 recv_status(Conn, Status, Method) ->
-    recv_status(Conn, Status, Method, <<>>,
-                erlang:monotonic_time(millisecond) + 5000).
+    recv_status(
+        Conn,
+        Status,
+        Method,
+        <<>>,
+        erlang:monotonic_time(millisecond) + 5000
+    ).
 
 recv_status(Conn, Status, Method, Buf, Deadline) ->
     case frame(Buf) of
@@ -245,8 +347,13 @@ recv_status(Conn, Status, Method, Buf, Deadline) ->
             Left = max(0, Deadline - erlang:monotonic_time(millisecond)),
             case recv(Conn, Left) of
                 {ok, Data} ->
-                    recv_status(Conn, Status, Method, <<Buf/binary, Data/binary>>,
-                                Deadline);
+                    recv_status(
+                        Conn,
+                        Status,
+                        Method,
+                        <<Buf/binary, Data/binary>>,
+                        Deadline
+                    );
                 {error, Why} ->
                     ct:fail({no_response, Status, Method, Why})
             end
@@ -257,8 +364,10 @@ recv({udp, S, _}, T) ->
         {ok, {_, _, D}} -> {ok, D};
         E -> E
     end;
-recv({tcp, S}, T) -> gen_tcp:recv(S, 0, T);
-recv({tls, S}, T) -> ssl:recv(S, 0, T);
+recv({tcp, S}, T) ->
+    gen_tcp:recv(S, 0, T);
+recv({tls, S}, T) ->
+    ssl:recv(S, 0, T);
 recv({ws, _}, T) ->
     receive
         {ws_in, D} -> {ok, D}
@@ -269,7 +378,8 @@ is_status(Msg, Status, Method) ->
     case chappe_sip_msg:parse(Msg) of
         {ok, M} ->
             chappe_sip_msg:status(M) =:= Status andalso
-                binary:match(chappe_sip_msg:get(<<"cseq">>, M), Method) =/= nomatch;
+                binary:match(chappe_sip_msg:get(<<"cseq">>, M), Method) =/=
+                    nomatch;
         _ ->
             false
     end.
@@ -281,11 +391,17 @@ frame(Buf) ->
             more;
         {Pos, 4} ->
             Head = binary:part(Buf, 0, Pos),
-            Len = case re:run(Head, "\\r\\n(?:content-length|l)[ \\t]*:[ \\t]*(\\d+)",
-                              [caseless, {capture, all_but_first, binary}]) of
-                {match, [L]} -> binary_to_integer(L);
-                nomatch -> 0
-            end,
+            Len =
+                case
+                    re:run(
+                        Head,
+                        "\\r\\n(?:content-length|l)[ \\t]*:[ \\t]*(\\d+)",
+                        [caseless, {capture, all_but_first, binary}]
+                    )
+                of
+                    {match, [L]} -> binary_to_integer(L);
+                    nomatch -> 0
+                end,
             Total = Pos + 4 + Len,
             case byte_size(Buf) >= Total of
                 true ->
@@ -308,16 +424,27 @@ check(Config, CallId, Proto, PeerPort, OurPort, Extra) ->
     Now = os:system_time(second),
     lists:foreach(
         fun(P) ->
-            ?assertMatch(#{capture_id := ?CAPTURE_ID, family := inet,
-                           proto_type := 1}, P),
+            ?assertMatch(
+                #{
+                    capture_id := ?CAPTURE_ID,
+                    family := inet,
+                    proto_type := 1
+                },
+                P
+            ),
             ?assertEqual(proto(Proto), maps:get(proto, P)),
             {Sec, _} = maps:get(time, P),
             ?assert(abs(Now - Sec) < 30, {clock, Sec, Now}),
-            maps:foreach(fun(K, V) -> ?assertEqual(V, maps:get(K, P)) end,
-                         Extra)
+            maps:foreach(
+                fun(K, V) -> ?assertEqual(V, maps:get(K, P)) end,
+                Extra
+            )
         end,
-        [In(<<"INVITE ">>), In(<<"BYE ">>),
-         Out(<<"SIP/2.0 200">>)]
+        [
+            In(<<"INVITE ">>),
+            In(<<"BYE ">>),
+            Out(<<"SIP/2.0 200">>)
+        ]
     ),
     ok.
 
@@ -349,9 +476,12 @@ collect(Sock, CallId, Deadline, Acc) ->
 
 %% the packet whose payload starts with Start, in the given direction
 find(Pkts, Start, Dir, PeerPort, OurPort) ->
-    Match = [P || #{payload := Pl, src := {_, SP}, dst := {_, DP}} = P <- Pkts,
-                  binary:longest_common_prefix([Pl, Start]) =:= byte_size(Start),
-                  dir_ok(Dir, SP, DP, PeerPort, OurPort)],
+    Match = [
+        P
+     || #{payload := Pl, src := {_, SP}, dst := {_, DP}} = P <- Pkts,
+        binary:longest_common_prefix([Pl, Start]) =:= byte_size(Start),
+        dir_ok(Dir, SP, DP, PeerPort, OurPort)
+    ],
     case Match of
         [P | _] -> P;
         [] -> ct:fail({not_captured, Dir, Start, Pkts})
@@ -372,8 +502,10 @@ contact(Port) ->
     <<"sip:127.0.0.1:", (integer_to_binary(Port))/binary>>.
 
 sdp() ->
-    <<"v=0\r\no=hep 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\n"
-      "t=0 0\r\nm=audio 40000 RTP/AVP 0\r\n">>.
+    <<
+        "v=0\r\no=hep 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\n"
+        "t=0 0\r\nm=audio 40000 RTP/AVP 0\r\n"
+    >>.
 
 hex(N) ->
     binary:encode_hex(crypto:strong_rand_bytes(N), lowercase).
@@ -381,9 +513,13 @@ hex(N) ->
 gen_certs(Dir) ->
     Key = filename:join(Dir, "key.pem"),
     Cert = filename:join(Dir, "cert.pem"),
-    Cmd = lists:flatten(io_lib:format(
-        "openssl req -x509 -newkey rsa:2048 -keyout ~ts -out ~ts -days 2 "
-        "-nodes -subj '/CN=127.0.0.1' 2>/dev/null", [Key, Cert])),
+    Cmd = lists:flatten(
+        io_lib:format(
+            "openssl req -x509 -newkey rsa:2048 -keyout ~ts -out ~ts -days 2 "
+            "-nodes -subj '/CN=127.0.0.1' 2>/dev/null",
+            [Key, Cert]
+        )
+    ),
     _ = os:cmd(Cmd),
     case filelib:is_file(Cert) andalso filelib:is_file(Key) of
         false ->
@@ -391,8 +527,10 @@ gen_certs(Dir) ->
         true ->
             {ok, CertBin} = file:read_file(Cert),
             {ok, KeyBin} = file:read_file(Key),
-            ok = file:write_file(filename:join(Dir, "agent.pem"),
-                                 [CertBin, KeyBin]),
+            ok = file:write_file(
+                filename:join(Dir, "agent.pem"),
+                [CertBin, KeyBin]
+            ),
             ok = file:write_file(filename:join(Dir, "cafile.pem"), CertBin),
             ok
     end.

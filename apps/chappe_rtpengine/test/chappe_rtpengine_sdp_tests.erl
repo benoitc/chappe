@@ -112,7 +112,9 @@ fork_answer_selects_one_stream_test() ->
         ],
         chappe_rtpengine_sdp:streams(Answer)
     ),
-    ?assertNotEqual(nomatch, binary:match(Answer, <<"c=IN IP4 192.0.2.7\r\n">>)),
+    ?assertNotEqual(
+        nomatch, binary:match(Answer, <<"c=IN IP4 192.0.2.7\r\n">>)
+    ),
     ?assertNotEqual(nomatch, binary:match(Answer, <<"a=rtpmap:0 PCMU/8000">>)),
     ?assertNotEqual(nomatch, binary:match(Answer, <<"a=ptime:20">>)),
     ?assertNotEqual(nomatch, binary:match(Answer, <<"a=recvonly">>)),
@@ -141,8 +143,12 @@ fork_answer_many_destinations_test() ->
         [41000, 0, 41002],
         [P || #{port := P} <- chappe_rtpengine_sdp:streams(Answer)]
     ),
-    ?assertNotEqual(nomatch, binary:match(Answer, <<"c=IN IP4 192.0.2.1\r\n">>)),
-    ?assertNotEqual(nomatch, binary:match(Answer, <<"c=IN IP4 192.0.2.3\r\n">>)).
+    ?assertNotEqual(
+        nomatch, binary:match(Answer, <<"c=IN IP4 192.0.2.1\r\n">>)
+    ),
+    ?assertNotEqual(
+        nomatch, binary:match(Answer, <<"c=IN IP4 192.0.2.3\r\n">>)
+    ).
 
 fork_answer_unknown_stream_test() ->
     ?assertEqual(
@@ -195,8 +201,12 @@ fork_answer_ipv6_test() ->
     ?assertNotEqual(
         nomatch, binary:match(Answer, <<"o=- 1 1 IN IP6 2001:db8::7\r\n">>)
     ),
-    ?assertNotEqual(nomatch, binary:match(Answer, <<"c=IN IP6 2001:db8::7\r\n">>)),
-    ?assertNotEqual(nomatch, binary:match(Answer, <<"c=IN IP4 192.0.2.3\r\n">>)),
+    ?assertNotEqual(
+        nomatch, binary:match(Answer, <<"c=IN IP6 2001:db8::7\r\n">>)
+    ),
+    ?assertNotEqual(
+        nomatch, binary:match(Answer, <<"c=IN IP4 192.0.2.3\r\n">>)
+    ),
     ?assertEqual(nomatch, binary:match(Answer, <<"IN IP4 2001">>)).
 
 %% An m-line the offerer already rejected (port 0) cannot carry a fork.

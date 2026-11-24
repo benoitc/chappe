@@ -19,7 +19,9 @@ all() ->
     [join_and_events, unsupported, verbs].
 
 init_per_suite(Config) ->
-    application:set_env(chappe_sip, engine_mod, chappe_sip_nif, [{persistent, true}]),
+    application:set_env(chappe_sip, engine_mod, chappe_sip_nif, [
+        {persistent, true}
+    ]),
     {ok, _} = application:ensure_all_started(chappe_mrf),
     Config.
 

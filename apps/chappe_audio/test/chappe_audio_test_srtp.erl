@@ -39,7 +39,9 @@ protect(<<_:16, Seq:16, _:32, Ssrc:32, _/binary>> = Rtp, Roc, S) ->
     <<Hdr:HL/binary, Payload/binary>> = Rtp,
     #{rtp_enc := K, rtp_salt := Salt, rtp_auth := A, tag := T, mki := Mki} = S,
     Enc = xor_ks(K, iv(Salt, Ssrc, (Roc bsl 16) + Seq), Payload),
-    Tag = trunc(crypto:mac(hmac, sha, A, <<Hdr/binary, Enc/binary, Roc:32>>), T),
+    Tag = trunc(
+        crypto:mac(hmac, sha, A, <<Hdr/binary, Enc/binary, Roc:32>>), T
+    ),
     <<Hdr/binary, Enc/binary, Mki/binary, Tag/binary>>.
 
 %% An RTCP compound packet protected with SRTCP index Index, E set.
@@ -69,7 +71,11 @@ iv(Salt, Ssrc, Index) ->
 xor_ks(K, Iv, Data) ->
     N = (byte_size(Data) + 15) div 16,
     Ks = <<
-        <<(crypto:crypto_one_time(aes_128_ecb, K, <<((Iv + B) rem (1 bsl 128)):128>>, true))/binary>>
+        <<
+            (crypto:crypto_one_time(
+                aes_128_ecb, K, <<((Iv + B) rem (1 bsl 128)):128>>, true
+            ))/binary
+        >>
      || B <- lists:seq(0, N - 1)
     >>,
     crypto:exor(Data, binary:part(Ks, 0, byte_size(Data))).

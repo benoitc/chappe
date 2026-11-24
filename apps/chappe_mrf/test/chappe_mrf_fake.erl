@@ -59,7 +59,9 @@ pick() ->
 fs_start(Name, Opts) ->
     Parent = self(),
     Pid = spawn(fun() ->
-        {ok, Sock} = gen_udp:open(0, [binary, {active, true}, {ip, {127, 0, 0, 1}}]),
+        {ok, Sock} = gen_udp:open(0, [
+            binary, {active, true}, {ip, {127, 0, 0, 1}}
+        ]),
         {ok, Port} = inet:port(Sock),
         Parent ! {fs_ready, self(), Port},
         fs_loop(#{
@@ -108,7 +110,9 @@ fs_event({Pid, _}, Name, Headers) ->
 refuser_start(Status) ->
     Parent = self(),
     Pid = spawn_link(fun() ->
-        {ok, Sock} = gen_udp:open(0, [binary, {active, true}, {ip, {127, 0, 0, 1}}]),
+        {ok, Sock} = gen_udp:open(0, [
+            binary, {active, true}, {ip, {127, 0, 0, 1}}
+        ]),
         Parent ! {refuser, self(), element(2, inet:port(Sock))},
         refuse_loop(Sock, Status)
     end),
@@ -120,7 +124,12 @@ refuser_start(Status) ->
 refuse_loop(Sock, Status) ->
     receive
         {udp, Sock, _, Src, <<"INVITE ", _/binary>> = I} ->
-            _ = gen_udp:send(Sock, {127, 0, 0, 1}, Src, resp(I, Status, <<"Nope">>, tag(), [], <<>>)),
+            _ = gen_udp:send(
+                Sock,
+                {127, 0, 0, 1},
+                Src,
+                resp(I, Status, <<"Nope">>, tag(), [], <<>>)
+            ),
             refuse_loop(Sock, Status);
         {udp, Sock, _, _, _} ->
             refuse_loop(Sock, Status)
@@ -134,7 +143,9 @@ refuse_loop(Sock, Status) ->
 socket_start(Port, Headers, Mode) ->
     Parent = self(),
     spawn_link(fun() ->
-        {ok, S} = gen_tcp:connect({127, 0, 0, 1}, Port, [binary, {packet, raw}, {active, true}], 5000),
+        {ok, S} = gen_tcp:connect(
+            {127, 0, 0, 1}, Port, [binary, {packet, raw}, {active, true}], 5000
+        ),
         Parent ! {socket_up, self()},
         sock_loop(S, Headers, Mode, <<>>)
     end).
@@ -151,7 +162,12 @@ socket_stop(Sock) ->
 sock_loop(S, Headers, Mode, Buf) ->
     receive
         {tcp, S, Data} ->
-            sock_loop(S, Headers, Mode, sock_cmds(S, Headers, Mode, <<Buf/binary, Data/binary>>));
+            sock_loop(
+                S,
+                Headers,
+                Mode,
+                sock_cmds(S, Headers, Mode, <<Buf/binary, Data/binary>>)
+            );
         {tcp_closed, S} ->
             ok;
         {event, Name, H} ->
@@ -176,11 +192,19 @@ sock_cmds(S, Headers, Mode, Buf) ->
             _ =
                 case {First, Mode} of
                     {<<"connect", _/binary>>, _} ->
-                        Lines = [[K, <<": ">>, V, <<"\n">>] || {K, V} <- Headers],
-                        gen_tcp:send(S, iolist_to_binary([
-                            <<"Content-Type: command/reply\nReply-Text: +OK\n">>,
-                            <<"Unique-ID: sock-uuid\n">>, Lines, <<"\n">>
-                        ]));
+                        Lines = [
+                            [K, <<": ">>, V, <<"\n">>]
+                         || {K, V} <- Headers
+                        ],
+                        gen_tcp:send(
+                            S,
+                            iolist_to_binary([
+                                <<"Content-Type: command/reply\nReply-Text: +OK\n">>,
+                                <<"Unique-ID: sock-uuid\n">>,
+                                Lines,
+                                <<"\n">>
+                            ])
+                        );
                     {<<"sendmsg", _/binary>>, err} ->
                         gen_tcp:send(S, reply(<<"-ERR no">>));
                     {<<"api ", _/binary>>, _} ->
@@ -229,7 +253,9 @@ fs_sip(Bin, Src, #{calls := Calls} = S) ->
                 <<"ACK">> ->
                     S;
                 _ ->
-                    send_sip(S, Src, resp(Bin, 481, <<"No Dialog">>, <<>>, [], <<>>)),
+                    send_sip(
+                        S, Src, resp(Bin, 481, <<"No Dialog">>, <<>>, [], <<>>)
+                    ),
                     S
             end
     end.
@@ -246,7 +272,10 @@ channel(Invite, Src, #{opts := Opts, name := Name} = Node) ->
                 undefined;
             false ->
                 {ok, T} = gen_tcp:connect(
-                    {127, 0, 0, 1}, maps:get(esl_port, Opts), [binary, {packet, raw}, {active, true}], 5000
+                    {127, 0, 0, 1},
+                    maps:get(esl_port, Opts),
+                    [binary, {packet, raw}, {active, true}],
+                    5000
                 ),
                 T
         end,
@@ -267,7 +296,11 @@ channel(Invite, Src, #{opts := Opts, name := Name} = Node) ->
         undefined ->
             %% a node whose dialplan never reaches the socket
             Sdp = sdp(<<"fs-", Name/binary>>, 40100),
-            send_sip(Node, Src, resp(Invite, 200, <<"OK">>, Tag, [contact(Node)], Sdp)),
+            send_sip(
+                Node,
+                Src,
+                resp(Invite, 200, <<"OK">>, Tag, [contact(Node)], Sdp)
+            ),
             chan_loop_sip_only(C0#{answered := true});
         _ ->
             chan_loop(C0)
@@ -276,7 +309,9 @@ channel(Invite, Src, #{opts := Opts, name := Name} = Node) ->
 chan_loop(#{tcp := Tcp} = C) ->
     receive
         {tcp, Tcp, Data} ->
-            chan_loop(esl_in(C#{buf := <<(maps:get(buf, C))/binary, Data/binary>>}));
+            chan_loop(
+                esl_in(C#{buf := <<(maps:get(buf, C))/binary, Data/binary>>})
+            );
         {tcp_closed, Tcp} ->
             chan_loop_sip_only(C);
         {sip, Bin, Src} ->
@@ -322,11 +357,26 @@ chan_sip(Bin, Src, #{node := Node} = C) ->
             #{opts := NOpts} = Node,
             _ =
                 maps:get(reject_reinvite, NOpts, false) andalso
-                    send_sip(Node, Src, resp(Bin, 488, <<"Not Here">>, <<>>, [], <<>>)),
+                    send_sip(
+                        Node,
+                        Src,
+                        resp(Bin, 488, <<"Not Here">>, <<>>, [], <<>>)
+                    ),
             Sdp = sdp(<<"fs-", (maps:get(name, C))/binary>>, 40100),
             _ =
                 maps:get(reject_reinvite, NOpts, false) orelse
-                    send_sip(Node, Src, resp(Bin, 200, <<"OK">>, maps:get(tag, C), [contact(Node)], Sdp)),
+                    send_sip(
+                        Node,
+                        Src,
+                        resp(
+                            Bin,
+                            200,
+                            <<"OK">>,
+                            maps:get(tag, C),
+                            [contact(Node)],
+                            Sdp
+                        )
+                    ),
             C;
         <<"ACK">> ->
             C;
@@ -353,22 +403,33 @@ send_bye(C) ->
     send_in_dialog(C, <<"200 BYE">>, []).
 
 send_refer(#{node := Node} = C, ReferTo) ->
-    send_in_dialog(C, <<"150 REFER">>, [{<<"Refer-To">>, ReferTo}, contact(Node)]).
+    send_in_dialog(C, <<"150 REFER">>, [
+        {<<"Refer-To">>, ReferTo}, contact(Node)
+    ]).
 
-send_in_dialog(#{invite := Inv, tag := Tag, src := Src, node := Node}, CSeq, Extra) ->
+send_in_dialog(
+    #{invite := Inv, tag := Tag, src := Src, node := Node}, CSeq, Extra
+) ->
     {ok, #{uri := Target}} = chappe_sip_hdr:name_addr(hdr(Inv, <<"contact">>)),
     P = integer_to_binary(maps:get(port, Node)),
     To = hdr(Inv, <<"from">>),
     From = <<(hdr(Inv, <<"to">>))/binary, ";tag=", Tag/binary>>,
     [_, Method] = binary:split(CSeq, <<" ">>),
-    Req = build(Method, Target, [
-        {<<"Via">>, <<"SIP/2.0/UDP 127.0.0.1:", P/binary, ";branch=", (branch())/binary>>},
-        {<<"Max-Forwards">>, <<"70">>},
-        {<<"From">>, From},
-        {<<"To">>, To},
-        {<<"Call-ID">>, hdr(Inv, <<"call-id">>)},
-        {<<"CSeq">>, CSeq}
-    ] ++ Extra, <<>>),
+    Req = build(
+        Method,
+        Target,
+        [
+            {<<"Via">>,
+                <<"SIP/2.0/UDP 127.0.0.1:", P/binary, ";branch=",
+                    (branch())/binary>>},
+            {<<"Max-Forwards">>, <<"70">>},
+            {<<"From">>, From},
+            {<<"To">>, To},
+            {<<"Call-ID">>, hdr(Inv, <<"call-id">>)},
+            {<<"CSeq">>, CSeq}
+        ] ++ Extra,
+        <<>>
+    ),
     send_sip(Node, Src, Req),
     ok.
 
@@ -384,7 +445,11 @@ esl_in(#{buf := Buf} = C) ->
                     esl_in(esl_cmd(Block, C#{buf := Rest}));
                 N when byte_size(Rest) >= N ->
                     <<Body:N/binary, Rest1/binary>> = Rest,
-                    esl_in(esl_cmd(<<Block/binary, "\n\n", Body/binary>>, C#{buf := Rest1}));
+                    esl_in(
+                        esl_cmd(<<Block/binary, "\n\n", Body/binary>>, C#{
+                            buf := Rest1
+                        })
+                    );
                 _ ->
                     C
             end
@@ -427,7 +492,12 @@ api(<<"conference ", Rest/binary>>, #{tcp := Tcp, node := #{opts := Opts}} = C) 
             C;
         [Room, <<"transfer">>, To, Id] ->
             member_event(C, Room, <<"del-member">>, Id),
-            member_event(C, To, <<"add-member">>, integer_to_binary(erlang:unique_integer([positive]))),
+            member_event(
+                C,
+                To,
+                <<"add-member">>,
+                integer_to_binary(erlang:unique_integer([positive]))
+            ),
             C;
         _ ->
             C
@@ -458,7 +528,14 @@ app(<<"answer">>, _Arg, Common, #{node := Node} = C) ->
     send_sip(
         Node,
         maps:get(src, C),
-        resp(maps:get(invite, C), 200, <<"OK">>, maps:get(tag, C), [contact(Node)], Sdp)
+        resp(
+            maps:get(invite, C),
+            200,
+            <<"OK">>,
+            maps:get(tag, C),
+            [contact(Node)],
+            Sdp
+        )
     ),
     complete(C, Common, []),
     C#{answered := true};
@@ -468,13 +545,20 @@ app(<<"play_and_get_digits">>, Arg, Common, #{node := #{opts := Opts}} = C) ->
     complete(C, Common, [{<<"variable_", Var/binary>>, Digits}]),
     C;
 app(<<"spandsp_start_tone_detect">>, _Arg, Common, C) ->
-    event(C, <<"CHANNEL_EXECUTE_COMPLETE">>, Common ++ [{<<"Application-Response">>, <<"+OK started">>}]),
+    event(
+        C,
+        <<"CHANNEL_EXECUTE_COMPLETE">>,
+        Common ++ [{<<"Application-Response">>, <<"+OK started">>}]
+    ),
     C;
 app(<<"playback">>, Arg, Common, C) ->
     Extra =
         case binary:match(Arg, <<"missing">>) of
             nomatch ->
-                [{<<"Application-Response">>, <<"FILE PLAYED">>}, {<<"variable_playback_ms">>, <<"1234">>}];
+                [
+                    {<<"Application-Response">>, <<"FILE PLAYED">>},
+                    {<<"variable_playback_ms">>, <<"1234">>}
+                ];
             _ ->
                 [{<<"Application-Response">>, <<"FILE NOT FOUND">>}]
         end,
@@ -483,7 +567,9 @@ app(<<"playback">>, Arg, Common, C) ->
 app(<<"conference">>, Arg, _Common, #{node := #{opts := Opts}} = C) ->
     [Room | _] = binary:split(Arg, <<"@">>),
     Id = integer_to_binary(erlang:unique_integer([positive])),
-    _ = maps:get(silent_conference, Opts, false) orelse member_event(C, Room, <<"add-member">>, Id),
+    _ =
+        maps:get(silent_conference, Opts, false) orelse
+            member_event(C, Room, <<"add-member">>, Id),
     C;
 %% bridge runs as long as the bridged call: no completion until then
 app(<<"bridge">>, _Arg, _Common, C) ->
@@ -501,7 +587,11 @@ member_event(C, Room, Action, Id) ->
     ]).
 
 complete(C, Common, Extra) ->
-    event(C, <<"CHANNEL_EXECUTE_COMPLETE">>, Common ++ [{<<"Application-Response">>, <<"_none_">>} | Extra]).
+    event(
+        C,
+        <<"CHANNEL_EXECUTE_COMPLETE">>,
+        Common ++ [{<<"Application-Response">>, <<"_none_">>} | Extra]
+    ).
 
 event(#{tcp := undefined}, _Name, _Headers) ->
     ok;
@@ -514,7 +604,9 @@ event(#{tcp := Tcp, uuid := Uuid}, Name, Headers) ->
     ]),
     tcp(Tcp, frame(<<"text/event-plain">>, Inner)).
 
-channel_data(#{uuid := Uuid, id := Id, invite := Invite, node := #{port := Port}}) ->
+channel_data(#{
+    uuid := Uuid, id := Id, invite := Invite, node := #{port := Port}
+}) ->
     IdLine0 =
         case Id of
             undefined -> <<>>;
@@ -522,8 +614,11 @@ channel_data(#{uuid := Uuid, id := Id, invite := Invite, node := #{port := Port}
         end,
     IdLine =
         case hdr(Invite, <<"x-chappe-endpoint">>) of
-            undefined -> IdLine0;
-            EpId -> <<IdLine0/binary, "variable_sip_h_X-Chappe-Endpoint: ", EpId/binary, "\n">>
+            undefined ->
+                IdLine0;
+            EpId ->
+                <<IdLine0/binary, "variable_sip_h_X-Chappe-Endpoint: ",
+                    EpId/binary, "\n">>
         end,
     <<"Content-Type: command/reply\nReply-Text: +OK\nUnique-ID: ", Uuid/binary,
         "\nChannel-Unique-ID: ", Uuid/binary, "\n", IdLine/binary,
@@ -543,13 +638,20 @@ block_headers(Block) ->
     ]).
 
 clen(Block) ->
-    case re:run(Block, <<"(?i)content-length: *([0-9]+)">>, [{capture, all_but_first, binary}]) of
+    case
+        re:run(Block, <<"(?i)content-length: *([0-9]+)">>, [
+            {capture, all_but_first, binary}
+        ])
+    of
         {match, [N]} -> binary_to_integer(N);
         nomatch -> 0
     end.
 
-tcp(undefined, _) -> ok;
-tcp(Tcp, Bytes) -> _ = gen_tcp:send(Tcp, Bytes), ok.
+tcp(undefined, _) ->
+    ok;
+tcp(Tcp, Bytes) ->
+    _ = gen_tcp:send(Tcp, Bytes),
+    ok.
 
 reply(Text) ->
     <<"Content-Type: command/reply\nReply-Text: ", Text/binary, "\n\n">>.
@@ -559,8 +661,12 @@ api_resp(Body) ->
 
 frame(Type, Body) ->
     iolist_to_binary([
-        <<"Content-Type: ">>, Type, <<"\nContent-Length: ">>,
-        integer_to_binary(byte_size(Body)), <<"\n\n">>, Body
+        <<"Content-Type: ">>,
+        Type,
+        <<"\nContent-Length: ">>,
+        integer_to_binary(byte_size(Body)),
+        <<"\n\n">>,
+        Body
     ]).
 
 %% ---- a bare inbound event socket ----
@@ -568,7 +674,9 @@ frame(Type, Body) ->
 esl_start() ->
     Parent = self(),
     Pid = spawn(fun() ->
-        {ok, L} = gen_tcp:listen(0, [binary, {active, false}, {reuseaddr, true}, {ip, {127, 0, 0, 1}}]),
+        {ok, L} = gen_tcp:listen(0, [
+            binary, {active, false}, {reuseaddr, true}, {ip, {127, 0, 0, 1}}
+        ]),
         {ok, Port} = inet:port(L),
         Parent ! {esl_ready, self(), Port},
         esl_accept(L, Parent)
@@ -599,7 +707,9 @@ esl_accept(L, Parent) ->
 esl_serve(L, S, Buf, Parent) ->
     receive
         {tcp, S, Data} ->
-            esl_serve(L, S, esl_answer(S, <<Buf/binary, Data/binary>>, Parent), Parent);
+            esl_serve(
+                L, S, esl_answer(S, <<Buf/binary, Data/binary>>, Parent), Parent
+            );
         {tcp_closed, S} ->
             esl_accept(L, Parent);
         stop ->
@@ -628,7 +738,9 @@ esl_answer(S, Buf, Parent) ->
 rtpe_start(Collector) ->
     Self = self(),
     Pid = spawn(fun() ->
-        {ok, Sock} = gen_udp:open(0, [binary, {active, true}, {ip, {127, 0, 0, 1}}]),
+        {ok, Sock} = gen_udp:open(0, [
+            binary, {active, true}, {ip, {127, 0, 0, 1}}
+        ]),
         {ok, Port} = inet:port(Sock),
         Self ! {rtpe_port, self(), Port},
         rtpe_loop(Sock, Collector)
@@ -639,7 +751,9 @@ rtpe_start(Collector) ->
         after 2000 -> exit(no_rtpe)
         end,
     ok = chappe_sip_media:configure(#{
-        rtpengine => #{nodes => [#{name => ?RTPE_NODE, host => "127.0.0.1", port => Port}]},
+        rtpengine => #{
+            nodes => [#{name => ?RTPE_NODE, host => "127.0.0.1", port => Port}]
+        },
         mix => #{ip => {127, 0, 0, 1}}
     }),
     Pid.
@@ -656,7 +770,9 @@ rtpe_loop(Sock, Collector) ->
             {ok, Cmd} = chappe_rtpengine_bencode:decode(Body),
             Collector ! {rtpe_cmd, Cmd},
             Reply = chappe_rtpengine_bencode:encode_to_binary(rtpe_reply(Cmd)),
-            ok = gen_udp:send(Sock, Ip, Port, <<Cookie/binary, " ", Reply/binary>>),
+            ok = gen_udp:send(
+                Sock, Ip, Port, <<Cookie/binary, " ", Reply/binary>>
+            ),
             rtpe_loop(Sock, Collector);
         stop ->
             gen_udp:close(Sock)
@@ -672,7 +788,8 @@ rtpe_reply(_Cmd) ->
 marked(Sdp, What, Tag) ->
     #{
         <<"result">> => <<"ok">>,
-        <<"sdp">> => <<Sdp/binary, "a=rtpe-", What/binary, ":", Tag/binary, "\r\n">>
+        <<"sdp">> =>
+            <<Sdp/binary, "a=rtpe-", What/binary, ":", Tag/binary, "\r\n">>
     }.
 
 %% ---- a caller ----
@@ -683,26 +800,46 @@ marked(Sdp, What, Tag) ->
 ua_call(EnginePort, Opts) ->
     Parent = self(),
     spawn_link(fun() ->
-        {ok, Sock} = gen_udp:open(0, [binary, {active, true}, {ip, {127, 0, 0, 1}}]),
-        {ok, Rtp} = gen_udp:open(0, [binary, {active, true}, {ip, {127, 0, 0, 1}}]),
+        {ok, Sock} = gen_udp:open(0, [
+            binary, {active, true}, {ip, {127, 0, 0, 1}}
+        ]),
+        {ok, Rtp} = gen_udp:open(0, [
+            binary, {active, true}, {ip, {127, 0, 0, 1}}
+        ]),
         {ok, RtpPort} = inet:port(Rtp),
         P = integer_to_binary(element(2, inet:port(Sock))),
         CallId = <<"ua-", (tag())/binary>>,
         FromTag = tag(),
         Ruri = maps:get(ruri, Opts, <<"sip:ivr@127.0.0.1">>),
-        Inv = build(<<"INVITE">>, Ruri, [
-            {<<"Via">>, <<"SIP/2.0/UDP 127.0.0.1:", P/binary, ";rport;branch=", (branch())/binary>>},
-            {<<"Max-Forwards">>, <<"70">>},
-            {<<"From">>, <<"<sip:caller@127.0.0.1:", P/binary, ">;tag=", FromTag/binary>>},
-            {<<"To">>, <<"<", Ruri/binary, ">">>},
-            {<<"Contact">>, <<"<sip:caller@127.0.0.1:", P/binary, ">">>},
-            {<<"Call-ID">>, CallId},
-            {<<"CSeq">>, <<"1 INVITE">>},
-            {<<"Content-Type">>, <<"application/sdp">>}
-        ], sdp(<<"caller">>, RtpPort)),
+        Inv = build(
+            <<"INVITE">>,
+            Ruri,
+            [
+                {<<"Via">>,
+                    <<"SIP/2.0/UDP 127.0.0.1:", P/binary, ";rport;branch=",
+                        (branch())/binary>>},
+                {<<"Max-Forwards">>, <<"70">>},
+                {<<"From">>,
+                    <<"<sip:caller@127.0.0.1:", P/binary, ">;tag=",
+                        FromTag/binary>>},
+                {<<"To">>, <<"<", Ruri/binary, ">">>},
+                {<<"Contact">>, <<"<sip:caller@127.0.0.1:", P/binary, ">">>},
+                {<<"Call-ID">>, CallId},
+                {<<"CSeq">>, <<"1 INVITE">>},
+                {<<"Content-Type">>, <<"application/sdp">>}
+            ],
+            sdp(<<"caller">>, RtpPort)
+        ),
         ok = gen_udp:send(Sock, {127, 0, 0, 1}, EnginePort, Inv),
-        ua_wait(#{sock => Sock, rtp => Rtp, parent => Parent, engine => EnginePort,
-                  invite => Inv, port => P, heard => false})
+        ua_wait(#{
+            sock => Sock,
+            rtp => Rtp,
+            parent => Parent,
+            engine => EnginePort,
+            invite => Inv,
+            port => P,
+            heard => false
+        })
     end).
 
 ua_bye(Ua) ->
@@ -740,25 +877,54 @@ ua_wait(#{sock := Sock, parent := Parent, engine := EP, invite := Inv} = U) ->
                         target => contact_uri(R),
                         remote => remote_rtp(body(R))
                     },
-                    ok = gen_udp:send(Sock, {127, 0, 0, 1}, EP, ua_req(<<"ACK">>, 1, U, D)),
+                    ok = gen_udp:send(
+                        Sock, {127, 0, 0, 1}, EP, ua_req(<<"ACK">>, 1, U, D)
+                    ),
                     ua_up(U#{dialog => D, cseq => 1});
                 _ ->
-                    ok = gen_udp:send(Sock, {127, 0, 0, 1}, EP, ack_failure(Inv, R)),
+                    ok = gen_udp:send(
+                        Sock, {127, 0, 0, 1}, EP, ack_failure(Inv, R)
+                    ),
                     ok
             end
     after 15000 -> Parent ! {ua, self(), timeout}
     end.
 
-ua_up(#{sock := Sock, rtp := Rtp, parent := Parent, engine := EP, dialog := D, cseq := N} = U) ->
+ua_up(
+    #{
+        sock := Sock,
+        rtp := Rtp,
+        parent := Parent,
+        engine := EP,
+        dialog := D,
+        cseq := N
+    } = U
+) ->
     receive
         {udp, Sock, _, Src, <<"BYE ", _/binary>> = B} ->
-            ok = gen_udp:send(Sock, {127, 0, 0, 1}, Src, resp(B, 200, <<"OK">>, <<>>, [], <<>>)),
+            ok = gen_udp:send(
+                Sock,
+                {127, 0, 0, 1},
+                Src,
+                resp(B, 200, <<"OK">>, <<>>, [], <<>>)
+            ),
             Parent ! {ua, self(), {bye, B}},
             ua_done(U);
         {udp, Sock, _, Src, <<"INVITE ", _/binary>> = I} ->
             Parent ! {ua, self(), {reinvite, I}},
-            ok = gen_udp:send(Sock, {127, 0, 0, 1}, Src,
-                              resp(I, 200, <<"OK">>, <<>>, [], sdp(<<"caller">>, element(2, inet:port(Rtp))))),
+            ok = gen_udp:send(
+                Sock,
+                {127, 0, 0, 1},
+                Src,
+                resp(
+                    I,
+                    200,
+                    <<"OK">>,
+                    <<>>,
+                    [],
+                    sdp(<<"caller">>, element(2, inet:port(Rtp)))
+                )
+            ),
             ua_up(U);
         {udp, Sock, _, _, <<"SIP/2.0 1", _/binary>>} ->
             ua_up(U);
@@ -766,7 +932,12 @@ ua_up(#{sock := Sock, rtp := Rtp, parent := Parent, engine := EP, dialog := D, c
             Parent ! {ua, self(), {response, R}},
             ua_up(U);
         {udp, Sock, _, Src, <<M, _/binary>> = Req} when M >= $A, M =< $Z ->
-            _ = gen_udp:send(Sock, {127, 0, 0, 1}, Src, resp(Req, 200, <<"OK">>, <<>>, [], <<>>)),
+            _ = gen_udp:send(
+                Sock,
+                {127, 0, 0, 1},
+                Src,
+                resp(Req, 200, <<"OK">>, <<>>, [], <<>>)
+            ),
             Parent ! {ua, self(), {request, Req}},
             ua_up(U);
         {udp, Sock, _, _, _} ->
@@ -777,15 +948,20 @@ ua_up(#{sock := Sock, rtp := Rtp, parent := Parent, engine := EP, dialog := D, c
         {udp, Rtp, _, _, _} ->
             ua_up(U);
         bye ->
-            ok = gen_udp:send(Sock, {127, 0, 0, 1}, EP, ua_req(<<"BYE">>, N + 1, U, D)),
+            ok = gen_udp:send(
+                Sock, {127, 0, 0, 1}, EP, ua_req(<<"BYE">>, N + 1, U, D)
+            ),
             ua_up(U#{cseq := N + 1});
         {refer, ReferTo} ->
             #{port := P} = U,
             Refer = ua_req(<<"REFER">>, N + 1, U, D),
             [Head, _] = binary:split(Refer, <<"\r\n\r\n">>),
-            Extra = <<"\r\nRefer-To: ", ReferTo/binary, "\r\nContact: <sip:caller@127.0.0.1:", P/binary, ">">>,
+            Extra =
+                <<"\r\nRefer-To: ", ReferTo/binary,
+                    "\r\nContact: <sip:caller@127.0.0.1:", P/binary, ">">>,
             Head1 = binary:replace(Head, <<"\r\nContent-Length: 0">>, <<>>),
-            Msg = <<Head1/binary, Extra/binary, "\r\nContent-Length: 0\r\n\r\n">>,
+            Msg =
+                <<Head1/binary, Extra/binary, "\r\nContent-Length: 0\r\n\r\n">>,
             ok = gen_udp:send(Sock, {127, 0, 0, 1}, EP, Msg),
             ua_up(U#{cseq := N + 1});
         {rtp, Ms} ->
@@ -803,24 +979,36 @@ ua_done(_U) ->
     end.
 
 ua_req(Method, N, #{port := P, invite := Inv}, #{to := To, target := T}) ->
-    build(Method, T, [
-        {<<"Via">>, <<"SIP/2.0/UDP 127.0.0.1:", P/binary, ";rport;branch=", (branch())/binary>>},
-        {<<"Max-Forwards">>, <<"70">>},
-        {<<"From">>, hdr(Inv, <<"from">>)},
-        {<<"To">>, To},
-        {<<"Call-ID">>, hdr(Inv, <<"call-id">>)},
-        {<<"CSeq">>, <<(integer_to_binary(N))/binary, " ", Method/binary>>}
-    ], <<>>).
+    build(
+        Method,
+        T,
+        [
+            {<<"Via">>,
+                <<"SIP/2.0/UDP 127.0.0.1:", P/binary, ";rport;branch=",
+                    (branch())/binary>>},
+            {<<"Max-Forwards">>, <<"70">>},
+            {<<"From">>, hdr(Inv, <<"from">>)},
+            {<<"To">>, To},
+            {<<"Call-ID">>, hdr(Inv, <<"call-id">>)},
+            {<<"CSeq">>, <<(integer_to_binary(N))/binary, " ", Method/binary>>}
+        ],
+        <<>>
+    ).
 
 ack_failure(Inv, R) ->
-    build(<<"ACK">>, ruri(Inv), [
-        {<<"Via">>, hdr(Inv, <<"via">>)},
-        {<<"Max-Forwards">>, <<"70">>},
-        {<<"From">>, hdr(Inv, <<"from">>)},
-        {<<"To">>, hdr(R, <<"to">>)},
-        {<<"Call-ID">>, hdr(Inv, <<"call-id">>)},
-        {<<"CSeq">>, <<"1 ACK">>}
-    ], <<>>).
+    build(
+        <<"ACK">>,
+        ruri(Inv),
+        [
+            {<<"Via">>, hdr(Inv, <<"via">>)},
+            {<<"Max-Forwards">>, <<"70">>},
+            {<<"From">>, hdr(Inv, <<"from">>)},
+            {<<"To">>, hdr(R, <<"to">>)},
+            {<<"Call-ID">>, hdr(Inv, <<"call-id">>)},
+            {<<"CSeq">>, <<"1 ACK">>}
+        ],
+        <<>>
+    ).
 
 send_rtp(_Rtp, undefined, _Ms) ->
     ok;
@@ -829,7 +1017,9 @@ send_rtp(Rtp, To, Ms) ->
     Loud = binary:copy(<<16#10>>, 160),
     lists:foreach(
         fun(I) ->
-            Pkt = <<2:2, 0:1, 0:1, 0:4, 0:1, 0:7, I:16, (I * 160):32, 4242:32, Loud/binary>>,
+            Pkt =
+                <<2:2, 0:1, 0:1, 0:4, 0:1, 0:7, I:16, (I * 160):32, 4242:32,
+                    Loud/binary>>,
             _ = gen_udp:send(Rtp, To, Pkt),
             timer:sleep(20)
         end,
@@ -838,8 +1028,14 @@ send_rtp(Rtp, To, Ms) ->
 
 remote_rtp(Sdp) ->
     case
-        {re:run(Sdp, <<"c=IN IP4 ([0-9.]+)">>, [{capture, all_but_first, list}]),
-            re:run(Sdp, <<"m=audio ([0-9]+)">>, [{capture, all_but_first, binary}])}
+        {
+            re:run(Sdp, <<"c=IN IP4 ([0-9.]+)">>, [
+                {capture, all_but_first, list}
+            ]),
+            re:run(Sdp, <<"m=audio ([0-9]+)">>, [
+                {capture, all_but_first, binary}
+            ])
+        }
     of
         {{match, [Ip]}, {match, [Port]}} ->
             {ok, A} = inet:parse_address(Ip),
@@ -852,7 +1048,9 @@ remote_rtp(Sdp) ->
 callee_start(Tag) ->
     Parent = self(),
     Pid = spawn_link(fun() ->
-        {ok, Sock} = gen_udp:open(0, [binary, {active, true}, {ip, {127, 0, 0, 1}}]),
+        {ok, Sock} = gen_udp:open(0, [
+            binary, {active, true}, {ip, {127, 0, 0, 1}}
+        ]),
         Parent ! {callee_ready, self(), element(2, inet:port(Sock))},
         callee_loop(Sock, Parent, Tag)
     end),
@@ -867,11 +1065,21 @@ callee_loop(Sock, Parent, Tag) ->
             Parent ! {callee, invite, I},
             P = integer_to_binary(element(2, inet:port(Sock))),
             C = {<<"Contact">>, <<"<sip:callee@127.0.0.1:", P/binary, ">">>},
-            ok = gen_udp:send(Sock, {127, 0, 0, 1}, Src, resp(I, 200, <<"OK">>, Tag, [C], sdp(<<"callee">>, 40200))),
+            ok = gen_udp:send(
+                Sock,
+                {127, 0, 0, 1},
+                Src,
+                resp(I, 200, <<"OK">>, Tag, [C], sdp(<<"callee">>, 40200))
+            ),
             callee_loop(Sock, Parent, Tag);
         {udp, Sock, _, Src, <<"BYE ", _/binary>> = B} ->
             Parent ! {callee, bye, B},
-            ok = gen_udp:send(Sock, {127, 0, 0, 1}, Src, resp(B, 200, <<"OK">>, <<>>, [], <<>>)),
+            ok = gen_udp:send(
+                Sock,
+                {127, 0, 0, 1},
+                Src,
+                resp(B, 200, <<"OK">>, <<>>, [], <<>>)
+            ),
             callee_loop(Sock, Parent, Tag);
         {udp, Sock, _, _, _} ->
             callee_loop(Sock, Parent, Tag)
@@ -881,16 +1089,19 @@ callee_loop(Sock, Parent, Tag) ->
 
 sdp(Marker, Port) ->
     P = integer_to_binary(Port),
-    <<"v=0\r\no=", Marker/binary, " 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\n"
-      "t=0 0\r\nm=audio ", P/binary, " RTP/AVP 0 101\r\na=rtpmap:0 PCMU/8000\r\n"
-      "a=rtpmap:101 telephone-event/8000\r\na=ptime:20\r\na=sendrecv\r\n">>.
+    <<"v=0\r\no=", Marker/binary,
+        " 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\n"
+        "t=0 0\r\nm=audio ", P/binary,
+        " RTP/AVP 0 101\r\na=rtpmap:0 PCMU/8000\r\n"
+        "a=rtpmap:101 telephone-event/8000\r\na=ptime:20\r\na=sendrecv\r\n">>.
 
 send_sip(#{sock := Sock}, {Ip, Port}, Bin) ->
     _ = gen_udp:send(Sock, Ip, Port, Bin),
     ok.
 
 contact(#{port := Port}) ->
-    {<<"Contact">>, <<"<sip:fs@127.0.0.1:", (integer_to_binary(Port))/binary, ">">>}.
+    {<<"Contact">>,
+        <<"<sip:fs@127.0.0.1:", (integer_to_binary(Port))/binary, ">">>}.
 
 method(Bin) ->
     [M | _] = binary:split(Bin, <<" ">>),
@@ -902,9 +1113,15 @@ ruri(Bin) ->
 
 build(Method, RUri, Headers, Body) ->
     iolist_to_binary([
-        Method, <<" ">>, RUri, <<" SIP/2.0\r\n">>,
+        Method,
+        <<" ">>,
+        RUri,
+        <<" SIP/2.0\r\n">>,
         [[N, <<": ">>, V, <<"\r\n">>] || {N, V} <- Headers],
-        <<"Content-Length: ">>, integer_to_binary(byte_size(Body)), <<"\r\n\r\n">>, Body
+        <<"Content-Length: ">>,
+        integer_to_binary(byte_size(Body)),
+        <<"\r\n\r\n">>,
+        Body
     ]).
 
 resp(ReqBin, Status, Reason, ToTag, Extra, Body) ->
@@ -913,8 +1130,10 @@ resp(ReqBin, Status, Reason, ToTag, Extra, Body) ->
     To0 = chappe_sip_msg:get(<<"to">>, Msg),
     To =
         case chappe_sip_msg:to_tag(Msg) of
-            undefined when Status > 100, ToTag =/= <<>> -> <<To0/binary, ";tag=", ToTag/binary>>;
-            _ -> To0
+            undefined when Status > 100, ToTag =/= <<>> ->
+                <<To0/binary, ";tag=", ToTag/binary>>;
+            _ ->
+                To0
         end,
     CT =
         case Body of
@@ -922,15 +1141,30 @@ resp(ReqBin, Status, Reason, ToTag, Extra, Body) ->
             _ -> [<<"Content-Type: application/sdp\r\n">>]
         end,
     iolist_to_binary([
-        <<"SIP/2.0 ">>, integer_to_binary(Status), <<" ">>, Reason, <<"\r\n">>,
+        <<"SIP/2.0 ">>,
+        integer_to_binary(Status),
+        <<" ">>,
+        Reason,
+        <<"\r\n">>,
         [[<<"Via: ">>, V, <<"\r\n">>] || V <- Vias],
-        <<"From: ">>, chappe_sip_msg:get(<<"from">>, Msg), <<"\r\n">>,
-        <<"To: ">>, To, <<"\r\n">>,
-        <<"Call-ID: ">>, chappe_sip_msg:call_id(Msg), <<"\r\n">>,
-        <<"CSeq: ">>, chappe_sip_msg:get(<<"cseq">>, Msg), <<"\r\n">>,
+        <<"From: ">>,
+        chappe_sip_msg:get(<<"from">>, Msg),
+        <<"\r\n">>,
+        <<"To: ">>,
+        To,
+        <<"\r\n">>,
+        <<"Call-ID: ">>,
+        chappe_sip_msg:call_id(Msg),
+        <<"\r\n">>,
+        <<"CSeq: ">>,
+        chappe_sip_msg:get(<<"cseq">>, Msg),
+        <<"\r\n">>,
         [[N, <<": ">>, V, <<"\r\n">>] || {N, V} <- Extra],
         CT,
-        <<"Content-Length: ">>, integer_to_binary(byte_size(Body)), <<"\r\n\r\n">>, Body
+        <<"Content-Length: ">>,
+        integer_to_binary(byte_size(Body)),
+        <<"\r\n\r\n">>,
+        Body
     ]).
 
 hdr(Bin, Name) ->

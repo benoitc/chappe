@@ -23,20 +23,53 @@
 
 -include_lib("common_test/include/ct.hrl").
 
--export([all/0, groups/0, suite/0, init_per_suite/1, end_per_suite/1,
-         init_per_testcase/2, end_per_testcase/2]).
--export([options/1, unknown_method/1, unknown_method_indialog/1,
-         trying_100/1, rport_response/1, rport_received/1, rport_request/1,
-         bye_reason/1,
-         reinvite_offer/1, reinvite_offerless/1, update_offer/1, glare/1,
-         replaces_nomatch/1, replaces_confirmed/1, replaces_early/1,
-         refer_notify/1, refer_event_id/1, refer_norefersub/1,
-         st_negotiate/1, st_422/1, st_refresh_uac/1, st_refresh_uas/1,
-         st_expiry/1, subscribe/1, subscribe_489/1, presence/1, mwi/1,
-         dns_srv/1, dns_sips_failover/1,
-         pjsua_refer_blind/1, pjsua_refer_attended/1, b2b_refer_refused/1,
-         pjsua_b2b_refer_blind/1, pjsua_b2b_refer_attended/1,
-         pjsua_session_timer/1, hep_capture/1]).
+-export([
+    all/0,
+    groups/0,
+    suite/0,
+    init_per_suite/1,
+    end_per_suite/1,
+    init_per_testcase/2,
+    end_per_testcase/2
+]).
+-export([
+    options/1,
+    unknown_method/1,
+    unknown_method_indialog/1,
+    trying_100/1,
+    rport_response/1,
+    rport_received/1,
+    rport_request/1,
+    bye_reason/1,
+    reinvite_offer/1,
+    reinvite_offerless/1,
+    update_offer/1,
+    glare/1,
+    replaces_nomatch/1,
+    replaces_confirmed/1,
+    replaces_early/1,
+    refer_notify/1,
+    refer_event_id/1,
+    refer_norefersub/1,
+    st_negotiate/1,
+    st_422/1,
+    st_refresh_uac/1,
+    st_refresh_uas/1,
+    st_expiry/1,
+    subscribe/1,
+    subscribe_489/1,
+    presence/1,
+    mwi/1,
+    dns_srv/1,
+    dns_sips_failover/1,
+    pjsua_refer_blind/1,
+    pjsua_refer_attended/1,
+    b2b_refer_refused/1,
+    pjsua_b2b_refer_blind/1,
+    pjsua_b2b_refer_attended/1,
+    pjsua_session_timer/1,
+    hep_capture/1
+]).
 
 suite() -> [{timetrap, {minutes, 5}}].
 
@@ -47,19 +80,48 @@ all() ->
     end.
 
 groups() ->
-    [{sipp, [], [options, unknown_method, unknown_method_indialog,
-                 trying_100, rport_response, rport_received, rport_request,
-                 bye_reason,
-                 reinvite_offer, reinvite_offerless, update_offer, glare,
-                 replaces_nomatch, replaces_confirmed, replaces_early,
-                 refer_notify, refer_event_id, refer_norefersub,
-                 b2b_refer_refused, st_negotiate, st_422, st_refresh_uac, st_refresh_uas,
-                 st_expiry, subscribe, subscribe_489, presence, mwi,
-                 dns_srv, dns_sips_failover]},
-     {pjsua, [], [pjsua_refer_blind, pjsua_refer_attended,
-                  pjsua_b2b_refer_blind, pjsua_b2b_refer_attended,
-                  pjsua_session_timer]},
-     {hep, [], [hep_capture]}].
+    [
+        {sipp, [], [
+            options,
+            unknown_method,
+            unknown_method_indialog,
+            trying_100,
+            rport_response,
+            rport_received,
+            rport_request,
+            bye_reason,
+            reinvite_offer,
+            reinvite_offerless,
+            update_offer,
+            glare,
+            replaces_nomatch,
+            replaces_confirmed,
+            replaces_early,
+            refer_notify,
+            refer_event_id,
+            refer_norefersub,
+            b2b_refer_refused,
+            st_negotiate,
+            st_422,
+            st_refresh_uac,
+            st_refresh_uas,
+            st_expiry,
+            subscribe,
+            subscribe_489,
+            presence,
+            mwi,
+            dns_srv,
+            dns_sips_failover
+        ]},
+        {pjsua, [], [
+            pjsua_refer_blind,
+            pjsua_refer_attended,
+            pjsua_b2b_refer_blind,
+            pjsua_b2b_refer_attended,
+            pjsua_session_timer
+        ]},
+        {hep, [], [hep_capture]}
+    ].
 
 init_per_suite(Config) ->
     %% building the lab images takes longer than a case may on a busy
@@ -72,8 +134,12 @@ init_per_suite(Config) ->
             Dir = interop_dir(),
             Lab = filename:join([Dir, "conformance", "lab.sh"]),
             ok = build(Lab),
-            [{lab, Lab}, {interop_dir, Dir},
-             {xfail, expected_fail(Dir)} | Config];
+            [
+                {lab, Lab},
+                {interop_dir, Dir},
+                {xfail, expected_fail(Dir)}
+                | Config
+            ];
         {skip, _} = Skip ->
             Skip
     end.
@@ -304,10 +370,20 @@ hep_capture(Config) ->
     ],
     Stored = [{P, Id, stored(Config, Id, 30)} || {P, Id} <- Calls],
     ct:log("stored (sent, received) per call: ~p", [Stored]),
-    Missing = [udp, tcp, tls, ws] -- [P || {P, _, {S, R}} <- Stored,
-                                          S >= 2, R >= 2],
-    verdict(?FUNCTION_NAME, Missing =:= [], {missing, Missing, Stored},
-            Config).
+    Missing =
+        [udp, tcp, tls, ws] --
+            [
+                P
+             || {P, _, {S, R}} <- Stored,
+                S >= 2,
+                R >= 2
+            ],
+    verdict(
+        ?FUNCTION_NAME,
+        Missing =:= [],
+        {missing, Missing, Stored},
+        Config
+    ).
 
 %% (sent, received) rows heplify-server stored for CallId; it writes in
 %% batches, so ask again until both are there
@@ -330,7 +406,9 @@ sent_received(Config, CallId) ->
     end.
 
 matches(Out, Re) ->
-    case re:run(Out, Re, [global, multiline, {capture, all_but_first, binary}]) of
+    case
+        re:run(Out, Re, [global, multiline, {capture, all_but_first, binary}])
+    of
         {match, Ms} -> Ms;
         nomatch -> []
     end.
@@ -349,9 +427,10 @@ verdict(Case, Passed, Detail, Config) ->
         {true, false} ->
             ok;
         {true, {_, Why}} ->
-            ct:fail({unexpected_pass, Case,
-                     "remove it from interop/conformance/expected-fail",
-                     Why});
+            ct:fail(
+                {unexpected_pass, Case,
+                    "remove it from interop/conformance/expected-fail", Why}
+            );
         {false, false} ->
             ct:fail({failed, Case, Detail});
         {false, {_, Why}} ->
@@ -367,13 +446,20 @@ alive(Config) ->
 %% The agents sit next to the node: caller 10.253.7.20, target .21, and
 %% transfer ones (target of the transfer) .22. See interop/pjsua/agent.sh.
 pjsua(Kind, Config) ->
-    Script = filename:join([?config(interop_dir, Config), "pjsua",
-                            "scenario.sh"]),
+    Script = filename:join([
+        ?config(interop_dir, Config),
+        "pjsua",
+        "scenario.sh"
+    ]),
     {Status, Out} = cmd(Script, [atom_to_list(Kind)], 240000),
     ct:log("pjsua ~p exit ~p:~n~s", [Kind, Status, Out]),
     Alive = alive(Config),
-    verdict(list_to_atom("pjsua_" ++ atom_to_list(Kind)),
-            Status =:= 0 andalso Alive, {Status, Alive}, Config).
+    verdict(
+        list_to_atom("pjsua_" ++ atom_to_list(Kind)),
+        Status =:= 0 andalso Alive,
+        {Status, Alive},
+        Config
+    ).
 
 %% ---- lab ----
 
@@ -409,9 +495,17 @@ cmd(Script, Args, Timeout) ->
     cmd(Script, Args, Timeout, []).
 
 cmd(Script, Args, Timeout, Env) ->
-    Port = open_port({spawn_executable, "/bin/sh"},
-                     [{args, [Script | Args]}, {env, Env}, exit_status,
-                      binary, stderr_to_stdout, use_stdio]),
+    Port = open_port(
+        {spawn_executable, "/bin/sh"},
+        [
+            {args, [Script | Args]},
+            {env, Env},
+            exit_status,
+            binary,
+            stderr_to_stdout,
+            use_stdio
+        ]
+    ),
     collect(Port, [], erlang:monotonic_time(millisecond) + Timeout).
 
 collect(Port, Acc, Deadline) ->
@@ -431,8 +525,14 @@ docker_ready() ->
         false ->
             {skip, "docker not found on PATH"};
         _ ->
-            case string:trim(os:cmd("docker info >/dev/null 2>&1 "
-                                    "&& echo ok")) of
+            case
+                string:trim(
+                    os:cmd(
+                        "docker info >/dev/null 2>&1 "
+                        "&& echo ok"
+                    )
+                )
+            of
                 "ok" -> ok;
                 _ -> {skip, "docker daemon not running"}
             end
@@ -462,8 +562,10 @@ interop_dir() ->
     case os:getenv("CHAPPE_SIP_INTEROP_DIR") of
         false ->
             Src = proplists:get_value(source, ?MODULE:module_info(compile)),
-            filename:join(filename:dirname(filename:dirname(Src)),
-                          "interop");
+            filename:join(
+                filename:dirname(filename:dirname(Src)),
+                "interop"
+            );
         D ->
             D
     end.
