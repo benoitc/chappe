@@ -51,6 +51,7 @@ under chappe_esl's supervisor.
 | `chappe_mrf_conf_transfer` | Moving a member from one conference to another (`chappe_mrf_conf:transfer/3`). |
 | `chappe_mrf_conf_refer` | REFER to and from a conference (RFC 4579): the checks, the policy, the answer. |
 | `chappe_mrf_conf_refer_dial` | The parties a REFER brings in (native endpoint or fs bgdial), their progress and the nested REFER of `method=REFER`. |
+| `chappe_mrf_conf_refer_member` | A member's side of REFER: its REFER to the focus, its own transfer in a room without focus, a call whose Replaces names it. |
 | `chappe_mrf_conf_refer_op` | The REFERs a room carries out, keyed by origin, method and target, so a repeated one dials nobody again. |
 | `chappe_mrf_conf_focus` | A room as an RFC 4575 conference focus. |
 | `chappe_mrf_store` | FreeSWITCH recordings adopted into the recording store (chappe_audio). |

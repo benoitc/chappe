@@ -40,7 +40,8 @@
 %%                                   moderator; uri and b2b kept)
 %%   put_member(Id, Mb, Room)        keep Mb, no event
 %%   joined(Id, Mb, Room)            keep Mb, emit {joined, Id, Info},
-%%                                   publish
+%%                                   publish (a party a REFER dials, its
+%%                                   Mb with refer: once it answered)
 %%   public(Id, Mb)                  the Info members/1 shows
 %%   emit(Event, Room)               {chappe_mrf_conf, Conf, Event} to
 %%                                   the room's receivers
@@ -220,9 +221,10 @@ member(Opts, Id, Base0) ->
     %% b2b: its call, for a transfer (when the backend's own base has
     %% none); joining, referred: how it came (a dial-out, a referred
     %% INVITE) for the roster (RFC 4575 5.7.2), private: its caller asked
-    %% for privacy (RFC 4579 6)
+    %% for privacy (RFC 4579 6), refer: the REFER op that dials it, which
+    %% keeps it out of sight until it answered
     Base = maps:merge(
-        maps:with([uri, b2b, joining, referred, private], Opts), Base0
+        maps:with([uri, b2b, joining, referred, private, refer], Opts), Base0
     ),
     Base#{
         name => chappe_mrf_lib:to_bin(maps:get(name, Opts, Id)),
@@ -237,6 +239,9 @@ put_member(Id, Mb, #state{members = M} = S) ->
     S#state{members = M#{Id => Mb}}.
 
 -spec joined(member(), member_info(), room()) -> room().
+joined(Id, #{refer := _} = Mb, S) ->
+    %% a party a REFER dials: out of sight until it answered
+    chappe_mrf_conf_refer_dial:hidden(Id, Mb, S);
 joined(Id, Mb, S) ->
     publish(emit({joined, Id, public(Id, Mb)}, put_member(Id, Mb, S))).
 

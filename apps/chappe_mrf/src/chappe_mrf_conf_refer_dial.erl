@@ -6,11 +6,12 @@
 %% for a REFER with method=REFER.
 %%
 %% native: a helper makes an endpoint of the room's FreeSWITCH pool
-%% (dial_endpoint options) and has it bridge to the target (the dial
-%% option makes the dial string, default `sofia/<dial_profile>/<target>').
-%% The endpoint joins the mixer only once the target answered (its
-%% CHANNEL_BRIDGE), so nothing the target plays before reaches the room
-%% and the room shows nobody until then. fs: mod_conference dials the
+%% (dial_endpoint options), joins it to the mixer out of sight, then has
+%% it bridge to the target (the dial option makes the dial string,
+%% default `sofia/<dial_profile>/<target>'). The originate waits for the
+%% answer (ignore_early_media), so nothing the target plays before
+%% reaches the room, and the room shows the endpoint as a member only
+%% once the target answered (its CHANNEL_BRIDGE). fs: mod_conference dials the
 %% target into the room (`conference <room> bgdial'); it is a member once
 %% its add-member comes. Either way the referrer hears 200 once the party
 %% is in, the target's status when it failed (busy 486, declined 603, no
@@ -28,7 +29,7 @@
 
 -export([dialable/1, dial_string/2, dial_vars/1]).
 -export([native/4, fs/3, nested/4]).
--export([dialing/3, joined/4, native_event/3]).
+-export([dialing/3, hidden/3, native_event/3]).
 -export([fs_added/3, fs_result/3, fs_started/3]).
 -export([exited/3, info/2, cancel_all/1]).
 
@@ -69,10 +70,11 @@ dial_string(Cfg, Target) ->
     [<<"sofia/">>, Profile, <<"/">>, Bare].
 
 %% The channel variables of the INVITE to a party the room dials: the
-%% Replaces a REFER to the focus carries, as a header (RFC 4579 5.10),
-%% the REFER's Referred-By (RFC 3892 2.2), and in a focus room the
-%% conference's user and isfocus in its Contact (5.5). In FreeSWITCH's
-%% sofia (sofia_glue.c) sip_contact_user is the Contact's user, and
+%% Replaces a REFER to the focus carries (RFC 4579 5.10), the REFER's
+%% Referred-By (RFC 3892 2.2), and in a focus room the conference's user
+%% and isfocus in its Contact (5.5). In FreeSWITCH's sofia (sofia_glue.c)
+%% _sofia_replaces_ is the INVITE's Replaces (a sip_h_Replaces header is
+%% not sent as one), sip_contact_user is the Contact's user, and
 %% sip_invite_contact_params with a leading `~' adds header parameters
 %% after the URI; the host stays the FreeSWITCH node's, which holds that
 %% dialog.
@@ -80,7 +82,7 @@ dial_string(Cfg, Target) ->
 dial_vars(Cfg) ->
     Rep =
         case Cfg of
-            #{replaces := R} -> [{<<"sip_h_Replaces">>, R}];
+            #{replaces := R} -> [{<<"_sofia_replaces_">>, R}];
             _ -> []
         end,
     RB =
@@ -110,7 +112,10 @@ marks(Key, #state{dial_tag = Tag, refer_ops = Ops}) ->
     [
         {<<"chappe_dial">>, Tag},
         {<<"chappe_dial_op">>, OpId},
-        {<<"verbose_events">>, <<"true">>}
+        {<<"verbose_events">>, <<"true">>},
+        %% the originate waits for the answer: early media neither
+        %% bridges (native) nor joins mod_conference (fs)
+        {<<"ignore_early_media">>, <<"true">>}
     ].
 
 %% the {...} block of channel variables (never empty: a dial has its marks)
@@ -133,17 +138,26 @@ native(Target, Key, Cfg, #state{entity = E} = S) ->
         dial_string(Cfg, Target)
     ],
     EpOpts = maps:get(endpoint, Cfg, #{}),
-    Pid = spawn_link(fun() -> native_helper(Conf, Key, EpOpts, Dial) end),
+    #{target := T} =
+        Data = chappe_mrf_conf_refer_op:data(Key, S#state.refer_ops),
+    %% the join options of the party: refer marks it the op's, so the room
+    %% keeps it out of sight until it answered (hidden/3)
+    Join = (maps:with([referred], Data))#{
+        name => T, uri => T, refer => Key, joining => dialed_out
+    },
+    Pid = spawn_link(fun() -> native_helper(Conf, Key, EpOpts, Join, Dial) end),
     {ok, put_dial({helper, Pid}, #{key => Key}, S)}.
 
-native_helper(Conf, Key, EpOpts, Dial) ->
+native_helper(Conf, Key, EpOpts, Join, Dial) ->
     Ep0 = EpOpts#{owner => Conf, events => [{channel, <<"CHANNEL_BRIDGE">>}]},
     case chappe_mrf:create_endpoint(Ep0) of
         {ok, Ep} ->
-            case
-                chappe_mrf_conf:call(Conf, {refer, {dialing, Key, Ep}}, 30000)
-            of
-                ok ->
+            Dialing = chappe_mrf_conf:call(
+                Conf, {refer, {dialing, Key, Ep}}, 30000
+            ),
+            case Dialing =:= ok andalso chappe_mrf_conf:join(Conf, Ep, Join) of
+                {ok, _} ->
+                    %% in the mixer, out of sight; the bridge comes next
                     ok = chappe_mrf:set(Ep, #{
                         <<"hangup_after_bridge">> => <<"true">>
                     }),
@@ -151,9 +165,11 @@ native_helper(Conf, Key, EpOpts, Dial) ->
                         wait => false
                     }),
                     ok;
-                _ ->
+                false ->
                     %% the REFER is over (the room ended, it was given up)
-                    chappe_mrf:destroy(Ep)
+                    chappe_mrf:destroy(Ep);
+                {error, Why} ->
+                    exit({dial_failed, Why})
             end;
         {error, Why} ->
             exit({dial_failed, Why})
@@ -174,59 +190,57 @@ dialing(Key, Ep, #state{refer_ops = Ops} = S) ->
     end.
 
 %% A dialing endpoint's news. The target answered (the bridge is up): the
-%% endpoint joins the mixer. The bridge ended before that: the target's
-%% status. Anything else is a member's.
+%% endpoint, in the mixer already, becomes a member. The bridge ended
+%% before that: the target's status. Anything else is a member's.
 -spec native_event(pid(), term(), #state{}) -> #state{}.
 native_event(Ep, Event, #state{dialing = D} = S) ->
     case {D, Event} of
-        {#{{ep, Ep} := #{answered := true}}, _} ->
-            S;
         {#{{ep, Ep} := E}, {channel, <<"CHANNEL_BRIDGE">>, _}} ->
             answered(Ep, E, S);
         {#{{ep, Ep} := E}, {complete, <<"bridge">>, Ev}} ->
             failed({ep, Ep}, E, status(Ev), S);
-        {#{{ep, Ep} := E}, {hangup, _}} ->
-            failed({ep, Ep}, E, 487, S);
+        {#{{ep, Ep} := E}, {hangup, Cause}} ->
+            %% the endpoint went with the bridge's failure (its cause),
+            %% or was hung up (487)
+            failed({ep, Ep}, E, hangup_status(Cause), S);
         _ ->
             S
     end.
 
-%% the target answered: the endpoint joins the room, in a helper (a join
-%% calls the room)
-answered(Ep, #{key := Key, timer := T} = E, #state{refer_ops = Ops} = S) ->
-    _ = erlang:cancel_timer(T),
-    #{target := Target} = Data = chappe_mrf_conf_refer_op:data(Key, Ops),
-    Opts = (maps:with([referred], Data))#{
-        name => Target,
-        uri => Target,
-        refer => Key,
-        joining => dialed_out
-    },
-    Conf = self(),
-    Pid = spawn_link(fun() ->
-        Result = chappe_mrf_conf:join(Conf, Ep, Opts),
-        chappe_mrf_conf:call(Conf, {refer, {joined, Key, Ep, Result}}, 30000)
-    end),
-    put_dial(
-        {helper, Pid},
-        #{key => Key},
-        put_dial({ep, Ep}, E#{answered => true}, S)
-    ).
+%% The endpoint of op Key joined the mixer (the backend's join, through
+%% chappe_mrf_conf_backend:joined/3): it is no member until its target
+%% answered, kept here with its dial.
+-spec hidden(binary(), map(), #state{}) -> #state{}.
+hidden(Id, #{refer := Key, ep := Ep} = Mb, #state{dialing = D} = S) ->
+    case D of
+        #{{ep, Ep} := #{key := Key} = E} ->
+            put_dial({ep, Ep}, E#{member => {Id, Mb}}, S);
+        #{} ->
+            S
+    end.
 
-%% The answered endpoint is in the room (a member, joined), or it could
-%% not join: the referrer hears which.
--spec joined(term(), pid(), {ok, binary()} | {error, term()}, #state{}) ->
-    #state{}.
-joined(Key, Ep, {ok, _Id}, S) ->
-    final(Key, 200, drop_dial({ep, Ep}, S));
-joined(Key, Ep, {error, _}, S) ->
-    _ = spawn(fun() -> chappe_mrf:destroy(Ep) end),
-    final(Key, 503, drop_dial({ep, Ep}, S)).
+%% the target answered (the bridge is up): the endpoint, in the mixer
+%% already, is a member now, and the referrer hears 200
+answered(Ep, #{key := Key, member := {Id, Mb}} = E, S) ->
+    _ = cancel(E),
+    S1 = drop_dial({ep, Ep}, S),
+    final(
+        Key, 200, chappe_mrf_conf_backend:joined(Id, maps:remove(refer, Mb), S1)
+    );
+answered(Ep, E, S) ->
+    %% answered before it was in the mixer: it cannot join any more
+    failed({ep, Ep}, E, 503, S).
 
 %% a dial that ended before its party was in: the referrer hears St, the
 %% room is left as it was
-failed({ep, Ep} = DK, #{key := Key} = E, St, S) ->
+failed({ep, Ep} = DK, #{key := Key} = E, St, #state{mod = Mod} = S) ->
     _ = cancel(E),
+    %% out of the mixer, quietly: the room never showed it
+    _ =
+        case E of
+            #{member := {_Id, Mb}} -> Mod:left(Mb, failed);
+            #{} -> ok
+        end,
     _ = spawn(fun() -> chappe_mrf:destroy(Ep) end),
     final(Key, St, drop_dial(DK, S));
 failed({uuid, Uuid} = DK, #{key := Key} = E, St, S) ->
@@ -410,7 +424,6 @@ event(_Key, _Ev, S) ->
 %% A dial-out the target never answered: 408, and the dial is given up.
 timeout(DK, #state{dialing = D} = S) ->
     case D of
-        #{DK := #{answered := true}} -> S;
         #{DK := E} -> failed(DK, E#{timer => undefined}, 408, S);
         #{} -> S
     end.
@@ -533,6 +546,12 @@ status(Ev) ->
         ])
     ),
     cause(Cause).
+
+hangup_status(Cause) ->
+    case cause(chappe_mrf_lib:to_bin(Cause)) of
+        503 -> 487;
+        St -> St
+    end.
 
 first([undefined | T]) -> first(T);
 first([V | _]) -> V;

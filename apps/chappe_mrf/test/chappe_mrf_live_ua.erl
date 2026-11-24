@@ -12,9 +12,15 @@
 %% answer option says: now (the default), {after_ms, Ms} (180, then 200),
 %% ring (180, until a CANCEL) or {status, St}. The test gets {ua, Ua,
 %% Event}: {final, Status}, invite, cancel, reinvite, bye.
+%%
+%% refer/4 and subscribe/3 are signalling only (no RTP): a REFER outside
+%% any dialog, whose answer and NOTIFYs come as {ua, Ua, {refer, Status}}
+%% and {ua, Ua, {notify, StatusLine, SubscriptionState}}, and a SUBSCRIBE
+%% to the conference package, whose NOTIFY bodies come as {ua, Ua,
+%% {conference, Body}}. Every NOTIFY is answered 200.
 -module(chappe_mrf_live_ua).
 
--export([call/2, callee/1, port/1, stop/1]).
+-export([call/2, callee/1, port/1, stop/1, refer/4, subscribe/3]).
 -export([tone/2, dtmf/2, bye/1, reinvite/1, clear/1, hears/3, silent/3, level/2]).
 -export([write_wav/3, write_wav/4, wav_level/2]).
 
@@ -23,7 +29,8 @@
 
 %% ---- start ----
 
-%% Opts: freq (what to send, default none: silence), ruri.
+%% Opts: freq (what to send, default none: silence), ruri, headers (more
+%% INVITE headers, such as Replaces).
 call(EnginePort, Opts) ->
     start(#{mode => {call, EnginePort}, opts => Opts}).
 
@@ -116,7 +123,8 @@ init(Parent, #{mode := Mode, opts := Opts}) ->
         rx => [],
         dtmf => [],
         dialog => undefined,
-        cseq => 1
+        cseq => 1,
+        headers => maps:get(headers, Opts, [])
     },
     Parent ! {self(), ready},
     self() ! tick,
@@ -146,7 +154,7 @@ invite(EP, Ruri, #{sip := Sip, sip_port := P0, rtp_port := RP} = S) ->
             {<<"Call-ID">>, CallId},
             {<<"CSeq">>, <<"1 INVITE">>},
             {<<"Content-Type">>, <<"application/sdp">>}
-        ],
+        ] ++ maps:get(headers, S, []),
         sdp(RP)
     ),
     ok = gen_udp:send(Sip, {127, 0, 0, 1}, EP, Inv),
@@ -346,6 +354,89 @@ send_bye(#{dialog := #{dst := {Ip, Port}} = D, sip := Sip, cseq := N} = S) ->
 tell(#{parent := P}, Event) ->
     P ! {ua, self(), Event},
     ok.
+
+%% ---- REFER and SUBSCRIBE, signalling only ----
+
+%% A REFER to Uri (the engine at EnginePort) outside any dialog, Refer-To
+%% ReferTo, with Hdrs more headers.
+refer(EnginePort, Uri, ReferTo, Hdrs) ->
+    signal(EnginePort, <<"REFER">>, Uri, [{<<"Refer-To">>, ReferTo} | Hdrs]).
+
+%% A SUBSCRIBE to the conference package of Uri.
+subscribe(EnginePort, Uri, Hdrs) ->
+    signal(
+        EnginePort,
+        <<"SUBSCRIBE">>,
+        Uri,
+        [
+            {<<"Event">>, <<"conference">>},
+            {<<"Accept">>, <<"application/conference-info+xml">>},
+            {<<"Expires">>, <<"120">>}
+            | Hdrs
+        ]
+    ).
+
+signal(EP, Method, Uri, Hdrs) ->
+    Parent = self(),
+    Pid = spawn(fun() ->
+        {ok, Sip} = gen_udp:open(0, [
+            binary, {active, true}, {ip, {127, 0, 0, 1}}
+        ]),
+        P = integer_to_binary(element(2, inet:port(Sip))),
+        Req = build(
+            Method,
+            Uri,
+            [
+                {<<"Via">>,
+                    <<"SIP/2.0/UDP 127.0.0.1:", P/binary, ";rport;branch=",
+                        (branch())/binary>>},
+                {<<"Max-Forwards">>, <<"70">>},
+                {<<"From">>,
+                    <<"<sip:boss@127.0.0.1:", P/binary, ">;tag=",
+                        (tag())/binary>>},
+                {<<"To">>, <<"<", Uri/binary, ">">>},
+                {<<"Contact">>, <<"<sip:boss@127.0.0.1:", P/binary, ">">>},
+                {<<"Call-ID">>, <<"sig-", (tag())/binary>>},
+                {<<"CSeq">>, <<"1 ", Method/binary>>}
+            ] ++ Hdrs,
+            <<>>
+        ),
+        ok = gen_udp:send(Sip, {127, 0, 0, 1}, EP, Req),
+        Parent ! {self(), ready},
+        signal_loop(Sip, Parent, Method)
+    end),
+    receive
+        {Pid, ready} -> Pid
+    after 5000 -> error(ua_start)
+    end.
+
+signal_loop(Sip, Parent, Method) ->
+    receive
+        {udp, Sip, _, _, <<"SIP/2.0 1", _/binary>>} ->
+            signal_loop(Sip, Parent, Method);
+        {udp, Sip, _, _, <<"SIP/2.0 ", Code:3/binary, _/binary>>} ->
+            Kind =
+                case Method of
+                    <<"REFER">> -> refer;
+                    <<"SUBSCRIBE">> -> subscribe
+                end,
+            Parent ! {ua, self(), {Kind, binary_to_integer(Code)}},
+            signal_loop(Sip, Parent, Method);
+        {udp, Sip, _, Src, <<"NOTIFY ", _/binary>> = N} ->
+            ok = gen_udp:send(
+                Sip, {127, 0, 0, 1}, Src, resp(N, 200, <<"OK">>, <<>>, [], <<>>)
+            ),
+            Parent ! {ua, self(), notified(Method, N)},
+            signal_loop(Sip, Parent, Method);
+        {udp, Sip, _, _, _} ->
+            signal_loop(Sip, Parent, Method)
+    end.
+
+notified(<<"REFER">>, N) ->
+    [Line | _] = binary:split(body(N), <<"\r\n">>),
+    {notify, Line, hdr(N, <<"subscription-state">>)};
+notified(<<"SUBSCRIBE">>, N) ->
+    {conference, body(N)}.
 
 %% ---- RTP ----
 

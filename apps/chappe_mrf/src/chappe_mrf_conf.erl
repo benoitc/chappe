@@ -118,7 +118,7 @@
 %%                targets) of the endpoint that dials it
 %% The 180 and 183 of a dialed party reach the referrer when the node's
 %% events carry CHANNEL_PROGRESS and CHANNEL_PROGRESS_MEDIA (chappe_esl:
-%% node_add/2's events).
+%% node_add/2's events, before CUSTOM).
 %% fs:
 %%   node      => the chappe_esl node (default chappe_esl:node_select/1
 %%                with select => Opts)
@@ -207,8 +207,7 @@ join(Conf, Target, Opts) ->
     case info(Conf) of
         #{backend := B} = Info ->
             Mod = chappe_mrf_conf_backend:module(B),
-            Opts1 = chappe_mrf_conf_refer:call_opts(Target, Opts),
-            Mod:join(Conf, Info, Target, Opts1);
+            chappe_mrf_conf_refer_member:join(Conf, Mod, Info, Target, Opts);
         Err ->
             Err
     end.
@@ -309,8 +308,10 @@ loop_invite(Conf, Token, Req, Res) ->
 %% process gets them): {chappe_sip_b2b, Ref, {transferred, Leg, Info}}
 %% shows the member as {left, Member, transferred}, then the target as
 %% {joined, Member, Info} in its place; {chappe_sip_b2b, Ref, {request,
-%% Leg, refer, Req, Res}} (requests => [refer]) is a member's REFER, which
-%% the room answers (see chappe_mrf_conf_refer). Other events are
+%% Leg, refer, Req, Res}} (requests => [refer], a focus room) is a
+%% member's REFER to the focus, and {chappe_sip_b2b, Ref, {refer, Info}}
+%% (transfer => notify, a room without focus) a member's transfer, both
+%% decided by the room (see chappe_mrf_conf_refer). Other events are
 %% ignored. A caller the room answers itself (join/3 with {call, Req,
 %% Res}) needs none of this: the room is its notify process.
 -spec b2b_event(conf(), term()) -> ok.
@@ -634,7 +635,7 @@ handle_cast({backend, Msg}, #state{mod = Mod} = S) ->
         false -> {noreply, S}
     end;
 handle_cast({transferred, Ref, Info}, S) ->
-    {noreply, chappe_mrf_conf_refer:transferred(Ref, Info, S)};
+    {noreply, chappe_mrf_conf_refer_member:transferred(Ref, Info, S)};
 handle_cast(lost_empty, S) ->
     lost_empty(S);
 handle_cast(_Msg, S) ->
@@ -649,8 +650,6 @@ handle_info({chappe_sip_dialog, D, destroy, _Why}, S) ->
     end;
 handle_info({chappe_sip_media, {talking, _Room, Id, Talking}}, S) ->
     {noreply, chappe_mrf_conf_backend:talking(Id, Talking, S)};
-handle_info({chappe_sip_b2b, Ref, {request, _Leg, refer, Req, Res}}, S) ->
-    {noreply, chappe_mrf_conf_refer:member_refer(Ref, Req, Res, S)};
 handle_info({chappe_cluster, Lost, lost}, #state{lease = Lease} = S) ->
     case chappe_mrf_conf_cluster:same_lease(Lost, Lease) of
         true -> {noreply, lose(S)};
@@ -675,11 +674,10 @@ handle_info({'EXIT', Pid, Why}, S) ->
 handle_info(Info, S) ->
     backend_info(Info, S).
 
-%% A message the room does not know: a REFER's dial-out's
-%% (chappe_mrf_conf_refer_dial:info/2), else the backend's, else the
-%% focus's.
+%% A message the room does not know: a REFER's (a member's, a dial-out's:
+%% chappe_mrf_conf_refer:info/2), else the backend's, else the focus's.
 backend_info(Info, #state{mod = Mod} = S) ->
-    case chappe_mrf_conf_refer_dial:info(Info, S) of
+    case chappe_mrf_conf_refer:info(Info, S) of
         {ok, S1} ->
             {noreply, S1};
         ignore ->

@@ -26,6 +26,9 @@ says how apps are released.
 - When a conference ends, the REFERs still under way now get a final
   answer (487) and their calls are given up.
 - A member joining a FreeSWITCH conference now shows in its roster.
+- The call a REFER asked to replace (Replaces) now reaches the party the
+  conference dials: FreeSWITCH never sent it the way it was passed. A
+  party's early media no longer makes it a member before it answers.
 
 ### New
 
@@ -35,6 +38,15 @@ says how apps are released.
   removal names.
 - The referrer hears when the party rings (180 or 183), when the
   FreeSWITCH node sends those events.
+- A focus conference can be asked by REFER to refer a party into it
+  (method=REFER): it sends that party a REFER to the conference, and the
+  referrer hears how the party answered.
+- A caller whose INVITE replaces a member's call (Replaces) takes that
+  member's place in the conference, and the member is hung up; a
+  Replaces naming any other call is refused and changes nothing.
+- A member of a conference without focus can transfer itself attended
+  (with Replaces) as well as blind; its call carries the transfer out
+  once the conference's policy agrees.
 - The conference roster shows each participant under its own address,
   one entry per call, marks parties a REFER brought in as dialed out and
   callers referred by someone as referred, keeps callers who asked for
