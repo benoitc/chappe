@@ -6,6 +6,14 @@ says how apps are released.
 
 ## [Unreleased]
 
+### Fixed
+
+- Stopping a session no longer times out on calls with many streams, such
+  as a recorded call with several forks: the session now asks rtpengine to
+  leave the call statistics out of its delete reply, which it never used
+  and which could grow past what one UDP datagram carries. Older rtpengine
+  versions ignore the request and answer as before.
+
 ## [0.2.0] - 2026-11-23
 
 ### Before you upgrade
