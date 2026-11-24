@@ -194,6 +194,10 @@ full_lifecycle(Config) ->
     {_, Delete} = lists:last(chappe_rtpengine_fake_server:received(Server)),
     ?assertEqual(<<"ft-1">>, maps:get(<<"from-tag">>, Delete)),
     ?assertEqual(CallId, maps:get(<<"call-id">>, Delete)),
+    %% the session never reads the call's statistics: `fast' keeps them
+    %% out of the reply, which grows past a UDP datagram on a call with
+    %% many streams
+    ?assertEqual([<<"fast">>], maps:get(<<"flags">>, Delete)),
     error = chappe_rtpengine_pool:pinned(CallId),
     ok.
 
@@ -218,6 +222,8 @@ owner_crash_sends_delete(Config) ->
         end,
     wait_dead(Sess),
     ?assertEqual([<<"offer">>, <<"delete">>], commands(Server)),
+    {_, Delete} = lists:last(chappe_rtpengine_fake_server:received(Server)),
+    ?assertEqual([<<"fast">>], maps:get(<<"flags">>, Delete)),
     error = chappe_rtpengine_pool:pinned(<<"sess-crash">>),
     ok.
 
@@ -367,7 +373,8 @@ final_answer_deletes_losing_branches(Config) ->
         lists:any(
             fun({_, Cmd}) ->
                 maps:get(<<"command">>, Cmd) =:= <<"delete">> andalso
-                    maps:get(<<"to-tag">>, Cmd, undefined) =:= <<"tt-1">>
+                    maps:get(<<"to-tag">>, Cmd, undefined) =:= <<"tt-1">> andalso
+                    maps:get(<<"flags">>, Cmd, []) =:= [<<"fast">>]
             end,
             chappe_rtpengine_fake_server:received(Server)
         )

@@ -36,7 +36,7 @@ volumes:
     external: true
 
 x-freeswitch: &freeswitch
-  image: drachtio/drachtio-freeswitch-mrf:latest
+  image: drachtio/drachtio-freeswitch-mrf@sha256:2f1583c31259fbf38df3df2e0955e2ffda7f6d2410888718de110b568ea9dac3
   # the image's entrypoint edits its stock tree; this config replaces
   # that tree, so start FreeSWITCH directly
   entrypoint: ["/usr/local/freeswitch/bin/freeswitch"]

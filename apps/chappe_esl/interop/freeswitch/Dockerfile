@@ -16,7 +16,7 @@
 #   from the FreeSWITCH commit the base image runs, its source checked by
 #   sha256, linked against Debian's flite (CMU, BSD-style licence).
 
-ARG FS_IMAGE=drachtio/drachtio-freeswitch-mrf:latest
+ARG FS_IMAGE=drachtio/drachtio-freeswitch-mrf@sha256:2f1583c31259fbf38df3df2e0955e2ffda7f6d2410888718de110b568ea9dac3
 
 FROM ${FS_IMAGE} AS build
 ARG AUDIO_STREAM_TAG=v1.1.0

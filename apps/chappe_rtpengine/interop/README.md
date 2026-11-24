@@ -18,8 +18,9 @@ mixer's live suite.
 
 ## Services
 
-One container, `rtpe-e2e`, built from `Dockerfile` (Ubuntu's rtpengine
-package, which carries transcoding):
+One container, `rtpe-e2e`, built from `Dockerfile` (rtpengine 26.3 built
+from its upstream release tag, userspace only, with transcoding; see
+[Pinned images](../../../docs/contributing/labs.md#pinned-images)):
 
 | Listener | Host port |
 |---|---|
@@ -85,7 +86,9 @@ file maps it to `host-gateway`, so the same lookup works.
   deleted sessions hold their ports for 30 seconds. A three-stream recording
   fork alone takes 24 ports.
 - Publish/subscribe, playback or silence cases skip: the image is a minimal
-  build. This Dockerfile's package has them.
+  build. This Dockerfile's build has them.
+- The first build compiles rtpengine: about two minutes; later builds come
+  from the layer cache.
 - A large `play media` blob fails over UDP: it rides inside one NG datagram.
   Use TCP or WebSocket for a real-size clip; the suites keep UDP blobs under
   one MTU.

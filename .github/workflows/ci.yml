@@ -394,7 +394,7 @@ jobs:
             _build
             ~/.cache/rebar3
           key: build-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config', 'apps/chappe_sip/c_src/build.sh') }}
-      - run: docker pull drachtio/drachtio-freeswitch-mrf:latest
+      - run: docker pull drachtio/drachtio-freeswitch-mrf@sha256:2f1583c31259fbf38df3df2e0955e2ffda7f6d2410888718de110b568ea9dac3
       - run: docker pull ghcr.io/kamailio/kamailio-ci:5.8
       # the lab stays up after the run, so its logs can be read below
       - run: scripts/fetch_deps.sh
@@ -499,7 +499,7 @@ jobs:
             _build
             ~/.cache/rebar3
           key: build-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config', 'apps/chappe_sip/c_src/build.sh') }}
-      - run: docker pull drachtio/drachtio-freeswitch-mrf:latest
+      - run: docker pull drachtio/drachtio-freeswitch-mrf@sha256:2f1583c31259fbf38df3df2e0955e2ffda7f6d2410888718de110b568ea9dac3
       - run: scripts/fetch_deps.sh
       - run: make interop-mrf
       - name: Test logs

@@ -264,7 +264,7 @@ call(From, stop, idle, _Data) ->
 call(From, stop, deleting, _Data) ->
     reply_now(From, {error, busy});
 call(From, stop, _State, Data) ->
-    case send_async(delete, #{}, Data) of
+    case send_async(delete, delete_params(#{}), Data) of
         {ok, Ref, Data1} ->
             {next_state, deleting, add_pending(Ref, From, delete, Data1)};
         {error, Reason} ->
@@ -439,7 +439,7 @@ owner_down(idle, _Data) ->
 owner_down(deleting, _Data) ->
     keep_state_and_data;
 owner_down(_State, Data) ->
-    case send_async(delete, #{}, Data) of
+    case send_async(delete, delete_params(#{}), Data) of
         {ok, Ref, Data1} ->
             {next_state, deleting, add_pending(Ref, undefined, delete, Data1)};
         {error, _} ->
@@ -560,7 +560,9 @@ settle_answer(BranchTag, true, Data) ->
     Losing = lists:usort(Data#data.branches) -- [BranchTag],
     Data1 = lists:foldl(
         fun(LosingTag, Acc) ->
-            case send_async(delete, #{to_tag => LosingTag}, Acc) of
+            case
+                send_async(delete, delete_params(#{to_tag => LosingTag}), Acc)
+            of
                 {ok, Ref, Acc1} ->
                     add_pending(Ref, undefined, branch_delete, Acc1);
                 {error, _} ->
@@ -668,10 +670,13 @@ final_delete(State, #data{from_tag = FromTag} = Data) when
     case active(State) of
         true ->
             try
-                chappe_rtpengine:delete(Data#data.node, #{
-                    call_id => Data#data.call_id,
-                    from_tag => FromTag
-                })
+                chappe_rtpengine:delete(
+                    Data#data.node,
+                    delete_params(#{
+                        call_id => Data#data.call_id,
+                        from_tag => FromTag
+                    })
+                )
             catch
                 _:_ -> ok
             end;
@@ -680,6 +685,13 @@ final_delete(State, #data{from_tag = FromTag} = Data) when
     end;
 final_delete(_State, _Data) ->
     ok.
+
+%% The session never reads a delete's call statistics, so it asks for
+%% none (`fast'): with them the reply of a call with many streams grows
+%% past what one UDP datagram carries on some paths (10 KB for a
+%% three-stream recording with three forks on rtpengine 26.3).
+delete_params(Params) ->
+    Params#{flags => [fast]}.
 
 safe_call(Session, Request) ->
     try
