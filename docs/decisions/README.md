@@ -29,6 +29,7 @@ the record writes down a boundary the merged code already holds.
 | [0014](0014-optional-siblings.md) | chappe_cluster and chappe_audio are optional siblings | Accepted, records the code |
 | [0015](0015-location-behaviour.md) | Registrar bindings sit behind a location behaviour; cross-node calls go through the edge node | Accepted (2026-11-17) |
 | [0016](0016-security-defaults.md) | Security defaults | Accepted, records the code |
+| [0017](0017-chappe-mix-16khz-l16.md) | A chappe_mix room runs at 8 or 16 kHz, on L16 at 16 kHz | Accepted (2026-11-24) |
 
 ## Add a record
 

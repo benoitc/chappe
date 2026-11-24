@@ -22,7 +22,9 @@ all() ->
         conference_crash,
         untap_and_errors,
         flood_bound,
-        from_peer_node
+        from_peer_node,
+        wideband_tap,
+        cross_rate_move
     ].
 
 init_per_suite(Config) ->
@@ -221,20 +223,91 @@ from_peer_node(_Config) ->
     wait(fun() -> chappe_mix:taps(Conf) =:= [] end),
     ok = chappe_mix:stop(Conf).
 
+%% A 16 kHz room: a party sending 6000 Hz, above what 8 kHz can carry,
+%% and one at 1000 Hz. Every tap message is 20 ms at 16 kHz, 640 bytes;
+%% the party's tap carries its 6000 Hz and the room's carries both, so
+%% the tap is wideband; taps/1 says the rate. A silent leg's tap is 640
+%% bytes of zeros.
+wideband_tap(_Config) ->
+    {ok, Conf} = chappe_mix:start(#{rate => 16000}),
+    {LA, A} = sender(Conf, 6000, #{law => l16, rate => 16000}),
+    {_LB, B} = sender(Conf, 1000, #{law => l16, rate => 16000}),
+    {ok, LQ, _} = chappe_mix:add_leg(Conf, #{}),
+    {ok, TA} = chappe_mix:tap(Conf, LA, #{}),
+    {ok, TR} = chappe_mix:tap(Conf, room, #{}),
+    {ok, TQ} = chappe_mix:tap(Conf, LQ, #{}),
+    timer:sleep(300),
+    flush_taps(),
+    PcmA = collect(Conf, TA, 25, 640),
+    PcmR = collect(Conf, TR, 25, 640),
+    PcmQ = collect(Conf, TQ, 5, 640),
+    Lv = fun(Pcm) ->
+        chappe_mix_test_tone:levels(
+            [S || <<S:16/little-signed>> <= Pcm], [1000, 2000, 6000], 16000
+        )
+    end,
+    [{1000, A1}, {2000, A2}, {6000, A6}] = Lv(PcmA),
+    [{1000, R1}, {2000, R2}, {6000, R6}] = Lv(PcmR),
+    ct:pal("party: 1000 ~.1f 2000 ~.1f 6000 ~.1f; room: ~.1f ~.1f ~.1f", [
+        A1, A2, A6, R1, R2, R6
+    ]),
+    ?assert(A6 > -30),
+    ?assert(A1 < A6 - 30),
+    %% 6000 Hz folds onto 2000 Hz on a path through 8 kHz: nothing there
+    ?assert(A2 < A6 - 40),
+    ?assert(R6 > -30 andalso R1 > -30),
+    ?assertEqual(<<0:(5 * 640 * 8)>>, PcmQ),
+    ?assertEqual(
+        [16000], lists:usort([R || #{rate := R} <- chappe_mix:taps(Conf)])
+    ),
+    ?assertMatch(#{rate := 16000}, chappe_mix:stats(Conf)),
+    [chappe_mix_test_tone:stop(P) || P <- [A, B]],
+    ok = chappe_mix:stop(Conf).
+
+%% A leg moves only to a room of its rate: the far end speaks the
+%% source's format, so a move across rates is refused and the leg stays
+%% where it was, its tap still running; a move to a room of the same
+%% rate goes.
+cross_rate_move(_Config) ->
+    {ok, R8} = chappe_mix:start(#{}),
+    {ok, R16} = chappe_mix:start(#{rate => 16000}),
+    {ok, R16b} = chappe_mix:start(#{rate => 16000}),
+    {ok, L, _} = chappe_mix:add_leg(R16, #{}),
+    {ok, T} = chappe_mix:tap(R16, L, #{}),
+    ?assertEqual({error, refused}, chappe_mix:move_leg(R16, L, R8)),
+    ?assertMatch([#{id := L, rate := 16000}], chappe_mix:legs(R16)),
+    ?assertEqual([], chappe_mix:legs(R8)),
+    flush_taps(),
+    {chappe_mix, R16, {tap, T, <<_:(640 * 8)>>}} = tap_msg(T),
+    {ok, L2} = chappe_mix:move_leg(R16, L, R16b),
+    ?assertMatch([#{id := L2, rate := 16000}], chappe_mix:legs(R16b)),
+    {ok, L8, _} = chappe_mix:add_leg(R8, #{}),
+    ?assertEqual({error, refused}, chappe_mix:move_leg(R8, L8, R16)),
+    ?assertMatch([_], chappe_mix:legs(R8)),
+    [ok = chappe_mix:stop(C) || C <- [R8, R16, R16b]].
+
 %% ---- helpers ----
 
 sender(Conf, Freq) ->
+    sender(Conf, Freq, #{}).
+
+sender(Conf, Freq, Opts) ->
     {ok, Leg, #{port := P}} = chappe_mix:add_leg(Conf, #{}),
-    {Pid, _} = chappe_mix_test_tone:endpoint(#{freq => Freq, dst => {?LO, P}}),
+    {Pid, _} = chappe_mix_test_tone:endpoint(
+        Opts#{freq => Freq, dst => {?LO, P}}
+    ),
     {Leg, Pid}.
 
-collect(_Conf, _T, 0) ->
-    <<>>;
 collect(Conf, T, N) ->
+    collect(Conf, T, N, 320).
+
+collect(_Conf, _T, 0, _Size) ->
+    <<>>;
+collect(Conf, T, N, Size) ->
     receive
         {chappe_mix, Conf, {tap, T, Pcm}} ->
-            ?assertEqual(320, byte_size(Pcm)),
-            <<Pcm/binary, (collect(Conf, T, N - 1))/binary>>
+            ?assertEqual(Size, byte_size(Pcm)),
+            <<Pcm/binary, (collect(Conf, T, N - 1, Size))/binary>>
     after 2000 -> ct:fail(no_tap)
     end.
 

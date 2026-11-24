@@ -39,6 +39,17 @@ run(From, Id, To) ->
     {ok, pos_integer()}
     | {error, not_found | source_down | destination_down | refused}.
 move(From, Id, To) ->
+    %% rooms of two rates: the far end speaks the source's format, so the
+    %% leg is not touched (its taps go on, nobody hears it leave). Rates
+    %% are fixed, so the answer holds for the rest of the move.
+    case {call(From, rate), call(To, rate)} of
+        {{error, down}, _} -> {error, source_down};
+        {_, {error, down}} -> {error, destination_down};
+        {Rate, Rate} -> detach(From, Id, To);
+        {_, _} -> {error, refused}
+    end.
+
+detach(From, Id, To) ->
     case call(From, {detach_leg, Id, self()}) of
         {ok, Leg} -> adopt(Leg, From, To);
         {error, down} -> {error, source_down};

@@ -8,7 +8,8 @@ Instructions for AI coding agents working on this app.
 umbrella. It is SIP-free: it takes RTP on UDP sockets it owns, mixes each
 listener's audio from every other participant, and sends the result back. It
 never touches a dialog or an SDP body. SRTP, DTLS and codec transcoding stay in
-rtpengine in front of it, so the mixer only handles G.711. Facade module:
+rtpengine in front of it, so the mixer only handles G.711 (8 kHz rooms) and
+L16 (16 kHz rooms). Facade module:
 `chappe_mix`. Internal module prefix: `chappe_mix_*`.
 
 ## Required Checks

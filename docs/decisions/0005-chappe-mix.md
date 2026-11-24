@@ -46,7 +46,9 @@ Conferences run on chappe_mix by default (`conference` routes to `mix` in
 `chappe_sip_media`, `native` is the default backend of `chappe_mrf_conf`).
 `mod_conference` stays available through chappe_mrf's `fs` backend.
 chappe_mix mixes G.711 only, one process per room, with rtpengine in front
-for every other codec and for SRTP.
+for every other codec and for SRTP. Amended by
+[0017](0017-chappe-mix-16khz-l16.md): a room may run at 16 kHz on L16,
+rtpengine still transcoding every other codec.
 
 ## Consequences
 

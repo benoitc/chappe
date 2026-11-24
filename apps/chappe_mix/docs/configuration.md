@@ -14,7 +14,8 @@ Passed to `chappe_mix:start/1`.
 |---|---|---|
 | `ip` | `{127, 0, 0, 1}` | Address legs bind to and report. Loopback, so nothing is exposed until you choose. |
 | `owner` | the caller | The conference stops when this process exits. |
-| `law` | `ulaw` | Default codec of a leg (`ulaw` is PCMU, `alaw` PCMA). |
+| `rate` | `8000` | The room's sample rate, for good: `8000` (G.711 legs) or `16000` (L16 legs, rtpengine 13.4 or later in front). Anything else is `{error, {bad_option, rate}}`. |
+| `law` | `ulaw` | Default codec of a leg in an 8 kHz room (`ulaw` is PCMU, `alaw` PCMA). A bad option at 16000. |
 | `depth` | `3` | Jitter buffer depth, in 20 ms frames. |
 | `events` | none | Process that gets `{chappe_mix, Conf, {talking, Leg, true \| false}}`. Unset, levels are not computed. |
 | `talk_threshold` | `-40` | dBFS RMS over a frame that counts as talk. |
@@ -42,7 +43,8 @@ Passed to `chappe_mix:add_leg/2`.
 | Key | Default | What it does |
 |---|---|---|
 | `remote` | learnt from the first packet | Where to send the mix. |
-| `law` | the conference's | This leg's codec. |
+| `law` | the conference's | This leg's codec in an 8 kHz room. A bad option at 16000. |
+| `pt` | `96` | The payload type of an L16 leg, both ways, as its SDP says. A bad option at 8000 (G.711 uses 0 and 8). |
 | `rtcp` | `mux` | `mux`: RTCP on the RTP port (SDP with `a=rtcp-mux`). `pair`: even RTP port, RTCP on the next one. |
 | `rtcp_remote` | the RTP port, or the one after | Where RTCP goes when the far end names it with `a=rtcp`. |
 | `ptime` | `20` | What the far end sends, reported by `legs/1`. Packets of any size up to 200 ms are taken anyway. |
@@ -77,7 +79,7 @@ decoded audio to a process as `{chappe_mix, Conf, {tap, Tap, Pcm}}` every
 ## From chappe_sip
 
 When you use the mixer through `chappe_sip_media`, its settings go under
-`media => #{mix => ...}` in `chappe_sip:start/1`: `ip`, `advertise`, `law`
+`media => #{mix => ...}` in `chappe_sip:start/1`: `ip`, `advertise`, `rate`, `law`
 and `depth`. The join options (`persist`, `talk_events`, `talk_tag`, ...)
 are those of `chappe_sip_media:conference/3`. See the chappe_sip
 [media design](../../chappe_sip/docs/design/media.md).

@@ -9,7 +9,8 @@ rooms, whispers or listen-only participants to a service.
 
 - You want the room in your own Erlang node, with per-pair control over who
   hears whom.
-- Your legs are G.711, or rtpengine can transcode them to G.711.
+- Your legs are G.711, or rtpengine can transcode them to G.711 (an
+  8 kHz room) or to L16 (a 16 kHz room, for HD callers).
 - You do not need mod_conference features (recording into the room, PIN
   prompts, TTS). For those, use a FreeSWITCH room through `chappe_mrf`.
 
@@ -28,6 +29,32 @@ nothing is exposed until you choose an address.
 
 The room is bound to the process that called `start/1` and stops when it
 exits. Pass `owner => Pid` to bind it to another process.
+
+## Run a 16 kHz (HD) room
+
+An 8 kHz room, the default, cuts every caller to the telephone band. For
+callers on G.722 or Opus, start the room at 16 kHz: every leg then speaks
+L16 at 16000 (RFC 3551 4.5.11, 16-bit samples, most significant octet
+first) and rtpengine turns each caller's codec into it and back.
+
+```erlang
+{ok, Hd} = chappe_mix:start(#{ip => {10, 0, 0, 5}, rate => 16000}),
+{ok, Leg, #{ip := Ip, port := Port}} = chappe_mix:add_leg(Hd, #{pt => 97}).
+```
+
+Write `a=rtpmap:97 L16/16000` (and `telephone-event/16000` for digits) in
+the SDP toward rtpengine for that leg. `pt` defaults to 96.
+
+- The rate is fixed: `rate` is 8000 or 16000, anything else is
+  `{error, {bad_option, rate}}`. `law` is a bad option in a 16 kHz room,
+  `pt` in an 8 kHz one.
+- rtpengine 13.4 or later is needed: earlier ones have no L16 codec. The
+  offer toward the mixer carries `codec => #{mask => [<<"all">>],
+  transcode => [<<"L16/16000/1">>, <<"telephone-event/16000">>]}`;
+  `chappe_sip_media:mixer_params/2` gives you these flags.
+- A PCMU caller in a 16 kHz room is heard and hears through 8 kHz; the
+  others keep their band.
+- A leg moves only to a room of its rate.
 
 ## Tell a leg where to send
 
@@ -88,6 +115,8 @@ needs no new SDP. The leg's relations are dropped.
   nothing.
 - If `Room2` is gone you get `{error, destination_down}` and the leg stays
   in `Conf` under its id. `{error, not_found}` means `Conf` has no such leg.
+- A room of another rate refuses the leg (`{error, refused}`): the leg
+  stays where it is, untouched.
 - Moves between the same two rooms can run at the same time, in either
   direction: the rooms never wait on each other.
 
@@ -104,7 +133,7 @@ Every leg gets an RTCP BYE when it is removed or the room stops.
 
 ## Put rtpengine in front
 
-The mixer only takes G.711 over plain RTP/AVP. A WebRTC caller, an SRTP
+The mixer only takes G.711 (or L16 in a 16 kHz room) over plain RTP/AVP. A WebRTC caller, an SRTP
 call or an Opus leg reaches it through rtpengine: rtpengine answers the
 caller and offers towards the mixer leg in PCMU or PCMA.
 
@@ -179,7 +208,8 @@ end,
 ok = chappe_mix:untap(Conf, Tap).
 ```
 
-`Pcm` is 320 bytes of 16-bit signed little-endian PCM at 8 kHz. A party's
+`Pcm` is 20 ms of 16-bit signed little-endian PCM at the room's rate: 320
+bytes at 8 kHz, 640 at 16 kHz (`chappe_mix:taps/1` gives the rate). A party's
 tap carries what the room takes from it (silence while it is muted or
 sends nothing); the room's carries every talker. A tap's ref (its own
 `ref`, else the leg's, else the room's) is in `chappe_mix:taps/1`.
@@ -196,8 +226,13 @@ sends nothing); the room's carries every talker. A tap's ref (its own
 ## Notes
 
 - The mixer always sends 20 ms packets and takes any size up to 200 ms.
-- The codec is per leg (`law`): a PCMU leg and a PCMA leg can share a room.
+- The codec is per leg (`law`): a PCMU leg and a PCMA leg can share an
+  8 kHz room. Every leg of a 16 kHz room is L16.
 - RFC 4733 events are forwarded, never mixed, to legs that set `dtmf_pt`.
+  They run on the room's clock: telephone-event/8000 in an 8 kHz room,
+  telephone-event/16000 in a 16 kHz one.
+- RTCP runs the same at both rates; the jitter of the reports counts
+  timestamp units of the room's rate.
 - Numbers for latency, capacity and cost are in
   [`test/audit/PERF.md`](../../test/audit/PERF.md).
 

@@ -35,7 +35,6 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -define(PTIME, 20).
--define(FRAME_SAMPLES, 160).
 -define(ACTIVE, 64).
 %% tick lateness histogram bounds, microseconds
 -define(BUCKETS, [500, 1000, 2000, 5000, 10000, 20000]).
@@ -57,6 +56,9 @@
     },
     ip :: inet:ip_address(),
     law :: chappe_mix_g711:law(),
+    %% the room's sample rate, fixed at start, and its frame in samples
+    rate = 8000 :: chappe_mix_fmt:rate(),
+    frame = 160 :: pos_integer(),
     depth :: pos_integer(),
     %% opt-in until measured (test/audit/PERF.md): the tick armed at the
     %% millisecond ceiling, and a grown prefill shrinking
@@ -99,14 +101,19 @@ init(#{owner := Owner} = Opts) ->
     Period = erlang:convert_time_unit(?PTIME, millisecond, native),
     Next = erlang:monotonic_time() + Period,
     arm(Next, maps:get(tick_ceiling, Opts, true)),
+    Rate = maps:get(rate, Opts, 8000),
     {ok, #state{
         owner = Owner,
         ref = maps:get(ref, Opts, undefined),
         trace = maps:get(trace, Opts, undefined),
         events = maps:get(events, Opts, undefined),
-        talk_params = talk_params(Opts),
+        talk_params = chappe_mix_room:talk_params(
+            Opts, chappe_mix_fmt:frame(Rate)
+        ),
         ip = maps:get(ip, Opts, {127, 0, 0, 1}),
         law = maps:get(law, Opts, ulaw),
+        rate = Rate,
+        frame = chappe_mix_fmt:frame(Rate),
         depth = maps:get(depth, Opts, 3),
         tick_ceiling = maps:get(tick_ceiling, Opts, true),
         prefill_shrink = maps:get(prefill_shrink, Opts, false),
@@ -120,6 +127,7 @@ handle_call({add_leg, Opts}, _From, #state{next_id = Id} = S) ->
     Defaults = #{
         ip => S#state.ip,
         law => S#state.law,
+        rate => S#state.rate,
         depth => S#state.depth,
         prefill_shrink => S#state.prefill_shrink,
         ssrc => new_ssrc(S)
@@ -143,8 +151,8 @@ handle_call({detach_leg, Id, To}, _From, S) ->
         {Leg, Legs} -> detach(Leg, Legs, To, S);
         error -> {reply, {error, not_found}, S}
     end;
-handle_call({adopt_leg, Leg}, _From, #state{next_id = Id} = S) ->
-    {reply, {ok, Id}, insert(Leg#leg{id = Id}, S)};
+handle_call({adopt_leg, Leg}, _From, S) ->
+    adopt(Leg, S);
 handle_call({return_leg, #leg{id = Id} = Leg}, _From, S) ->
     {reply, {ok, Id}, insert(Leg, S)};
 handle_call({set_remote, Id, #{remote := _} = Opts}, _From, S) ->
@@ -169,9 +177,11 @@ handle_call(stats, _From, S) ->
     {reply, stats(S), S};
 handle_call(ref, _From, S) ->
     {reply, S#state.ref, S};
-handle_call({taps, Req}, _From, #state{taps = Taps} = S) ->
-    {Reply, Taps1} = chappe_mix_tap:call(Req, Taps, S#state.legs, S#state.ref),
-    {reply, Reply, S#state{taps = Taps1}};
+handle_call(rate, _From, S) ->
+    {reply, S#state.rate, S};
+handle_call({taps, Req}, _From, #state{taps = T, legs = L, ref = R} = S) ->
+    {Reply, Taps} = chappe_mix_tap:call(Req, T, L, R, S#state.rate),
+    {reply, Reply, S#state{taps = Taps}};
 handle_call(_Req, _From, S) ->
     {reply, {error, unknown_call}, S}.
 
@@ -237,6 +247,14 @@ detach(Leg, Legs, To, S) ->
             %% the mover is gone: the leg stays
             {reply, {error, not_found}, S}
     end.
+
+%% A leg moved in from another room; one of another rate (its far end
+%% speaks another format) is refused, and chappe_mix_move checks the
+%% rates before it detaches anything.
+adopt(#leg{rate = R}, #state{rate = Rate} = S) when R =/= Rate ->
+    {reply, {error, {rate, Rate}}, S};
+adopt(Leg, #state{next_id = Id} = S) ->
+    {reply, {ok, Id}, insert(Leg#leg{id = Id}, S)}.
 
 has_leg(Id, S) ->
     case maps:is_key(Id, S#state.legs) of
@@ -310,6 +328,7 @@ stats(S) ->
     ),
     maps:merge(maps:from_list([{K, 0} || K <- ?TOTALS]), Totals#{
         legs => map_size(S#state.legs),
+        rate => S#state.rate,
         ticks => S#state.ticks,
         overruns => S#state.overruns,
         late_max_us => S#state.late_max,
@@ -615,22 +634,12 @@ mix(#state{legs = Legs, events = Pid} = S, Missed) ->
             undefined -> undefined;
             _ -> S#state.talk_params
         end,
-    {Legs1, Events, Frames, Mixed} = chappe_mix_room:mix(Legs, Missed, Talk),
+    {Legs1, Events, Frames, Mixed} = chappe_mix_room:mix(
+        Legs, Missed, Talk, S#state.frame
+    ),
     [talking(Pid, Id, T) || {Id, T} <- Events],
-    Taps = chappe_mix_tap:send_all(S#state.taps, Frames, Mixed),
+    Taps = chappe_mix_tap:send_all(S#state.taps, Frames, Mixed, S#state.frame),
     S#state{legs = Legs1, taps = Taps}.
 
 talking(Pid, Id, T) ->
     Pid ! {chappe_mix, self(), {talking, Id, T}}.
-
-%% Talker detection: a frame counts as talk over Db dBFS RMS (default
-%% -40), talk starts after StartMs of it and stops after StopMs without
-%% (defaults 60 and 300), each rounded to whole frames.
-talk_params(Opts) ->
-    Db = maps:get(talk_threshold, Opts, -40),
-    Rms = 32768 * math:pow(10, Db / 20),
-    #{
-        threshold => ?FRAME_SAMPLES * Rms * Rms,
-        start => max(1, maps:get(talk_start_ms, Opts, 60) div ?PTIME),
-        stop => max(1, maps:get(talk_stop_ms, Opts, 300) div ?PTIME)
-    }.

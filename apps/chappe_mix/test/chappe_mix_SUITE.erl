@@ -10,7 +10,9 @@
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
 
--export([all/0, init_per_suite/1, end_per_suite/1]).
+-export([all/0, groups/0, init_per_suite/1, end_per_suite/1]).
+-export([init_per_group/2, end_per_group/2]).
+-export([rate_options/1]).
 -export([
     three_party/1,
     four_party/1,
@@ -96,7 +98,27 @@ all() ->
         ssrc_collision,
         member_timeout,
         bye_grace,
-        bye_then_new_remote
+        bye_then_new_remote,
+        {group, rate16}
+    ].
+
+%% The same contract in a 16 kHz room: every leg L16 at 16000 on payload
+%% type 96, the tone endpoints speaking it, the Goertzel judge at 16 kHz.
+groups() ->
+    [
+        {rate16, [], [
+            rate_options,
+            three_party,
+            four_party,
+            mute,
+            loss_on_one_leg,
+            directions,
+            relate_pairs,
+            injected_media,
+            talker_events,
+            loud_room_gain,
+            timestamp_after_overrun
+        ]}
     ].
 
 init_per_suite(Config) ->
@@ -106,15 +128,71 @@ init_per_suite(Config) ->
 end_per_suite(_Config) ->
     ok = application:stop(chappe_mix).
 
+init_per_group(rate16, Config) ->
+    [{rate, 16000} | Config].
+
+end_per_group(_Group, _Config) ->
+    ok.
+
 %% ---- cases ----
 
-three_party(_Config) ->
-    {Conf, Eps} = conference(lists:sublist(?F, 3)),
+%% A room's rate is 8000 or 16000 and fixed: anything else is refused at
+%% start, a law is refused at 16000 (every leg is L16) and a payload type
+%% at 8000 (G.711 has its own), in the caller's process; stats/1 and
+%% legs/1 report the rate, the format and the payload type. In a 16 kHz
+%% room PCMU on 0 is not the leg's format: counted, not mixed.
+rate_options(Config) ->
+    [
+        ?assertEqual(
+            {error, {bad_option, rate}}, chappe_mix:start(#{rate => R})
+        )
+     || R <- [0, 8001, 44100, 48000, 16000.0, fast]
+    ],
+    ?assertEqual(
+        {error, {bad_option, law}},
+        chappe_mix:start(#{rate => 16000, law => alaw})
+    ),
+    ?assertEqual({error, {bad_option, law}}, chappe_mix:start(#{law => l16})),
+    {ok, C8} = chappe_mix:start(#{}),
+    ?assertMatch(#{rate := 8000}, chappe_mix:stats(C8)),
+    ?assertEqual(
+        {error, {bad_option, pt}}, chappe_mix:add_leg(C8, #{pt => 96})
+    ),
+    {ok, L8, _} = chappe_mix:add_leg(C8, #{law => alaw}),
+    ?assertMatch(#{rate := 8000, law := alaw, pt := 8}, leg_stats(C8, L8)),
+    ok = chappe_mix:stop(C8),
+    {ok, Conf} = chappe_mix:start(room(Config)),
+    ?assertMatch(#{rate := 16000}, chappe_mix:stats(Conf)),
+    [
+        ?assertEqual(
+            {error, {bad_option, law}}, chappe_mix:add_leg(Conf, #{law => L})
+        )
+     || L <- [ulaw, alaw]
+    ],
+    [
+        ?assertEqual(
+            {error, {bad_option, pt}}, chappe_mix:add_leg(Conf, #{pt => P})
+        )
+     || P <- [-1, 128, <<"96">>]
+    ],
+    {ok, L1, _} = chappe_mix:add_leg(Conf, #{}),
+    {ok, L2, #{port := P2}} = chappe_mix:add_leg(Conf, #{pt => 118}),
+    ?assertMatch(#{rate := 16000, law := l16, pt := 96}, leg_stats(Conf, L1)),
+    ?assertMatch(#{pt := 118}, leg_stats(Conf, L2)),
+    %% PCMU at 8 kHz into a 16 kHz leg: not its payload type
+    {S, _} = chappe_mix_test_tone:endpoint(#{freq => 1100, dst => {?LO, P2}}),
+    wait_until(fun() -> maps:get(other_pt, leg_stats(Conf, L2)) > 5 end, 2000),
+    #{received := 0} = leg_stats(Conf, L2),
+    chappe_mix_test_tone:stop(S),
+    ok = chappe_mix:stop(Conf).
+
+three_party(Config) ->
+    {Conf, Eps} = conference(Config, lists:sublist(?F, 3)),
     judge_n_minus_one(Conf, Eps),
     close(Conf, Eps).
 
-four_party(_Config) ->
-    {Conf, Eps} = conference(?F),
+four_party(Config) ->
+    {Conf, Eps} = conference(Config, ?F),
     judge_n_minus_one(Conf, Eps),
     close(Conf, Eps).
 
@@ -133,8 +211,8 @@ join_and_leave(_Config) ->
     close(Conf, Eps ++ [C]).
 
 %% A muted party hears everyone and is heard by no one.
-mute(_Config) ->
-    {Conf, [A, _B, C] = Eps} = conference([440, 1100, 1700]),
+mute(Config) ->
+    {Conf, [A, _B, C] = Eps} = conference(Config, [440, 1100, 1700]),
     ok = chappe_mix:mute(Conf, leg(C), true),
     listen(Eps, 1000),
     assert_hears(A, [1100], [440, 1700]),
@@ -146,8 +224,8 @@ mute(_Config) ->
 
 %% 5% random loss on one leg: the others are still heard cleanly, the
 %% lossy one is still heard, and the loss is counted.
-loss_on_one_leg(_Config) ->
-    {ok, Conf} = chappe_mix:start(#{}),
+loss_on_one_leg(Config) ->
+    {ok, Conf} = chappe_mix:start(room(Config)),
     A = join(Conf, 440),
     B = join(Conf, 1100),
     C = join(Conf, 1700, #{loss => 0.05}),
@@ -815,9 +893,11 @@ far_end_wins_the_latch(_Config) ->
 %% both come from the conference in order, and the ticks before the leg
 %% existed report no leg.
 %% req: R3550-008 R3550-009 R3551-024 R3551-030
-timestamp_after_overrun(_Config) ->
-    {ok, Conf} = chappe_mix:start(#{trace => self()}),
-    {Peer, PPort} = chappe_mix_test_peer:start(#{sending => false}),
+timestamp_after_overrun(Config) ->
+    {ok, Conf} = chappe_mix:start((room(Config))#{trace => self()}),
+    {Peer, PPort} = chappe_mix_test_peer:start(#{
+        sending => false, rate => rate(Config)
+    }),
     {ok, _, _} = chappe_mix:add_leg(Conf, #{remote => {?LO, PPort}}),
     Traces0 = drain_ticks(Conf, 10),
     ok = sys:suspend(Conf),
@@ -841,6 +921,8 @@ timestamp_after_overrun(_Config) ->
     ?assert(lists:sum(Missed) >= 3, {no_overrun, Missed}),
     N = min(length(Pkts), length(Missed)),
     ?assert(N >= 25, {packets, length(Pkts), length(Missed)}),
+    %% a frame of samples at the room's rate: 160 at 8 kHz, 320 at 16
+    Step = rate(Config) div 50,
     Pairs = lists:zip3(
         lists:sublist(Pkts, N - 1),
         tl(lists:sublist(Pkts, N)),
@@ -850,13 +932,24 @@ timestamp_after_overrun(_Config) ->
         begin
             ?assertEqual((Seq + 1) band 16#FFFF, Seq1),
             ?assertEqual(
-                (Ts + 160 * (1 + M)) band 16#FFFFFFFF, Ts1, {ts, Ts, Ts1, M}
+                (Ts + Step * (1 + M)) band 16#FFFFFFFF, Ts1, {ts, Ts, Ts1, M}
             )
         end
      || {#{seq := Seq, ts := Ts}, #{seq := Seq1, ts := Ts1}, M} <- Pairs
     ],
     %% no silence suppression, so no talkspurt to mark, first packet too
     ?assertEqual([false], lists:usort([M || #{marker := M} <- Pkts])),
+    %% 20 ms of the room's format on its payload type: 160 PCMU octets,
+    %% or 320 L16 samples (640 octets) on 96
+    {Pt, Octets} =
+        case rate(Config) of
+            8000 -> {0, 160};
+            16000 -> {96, 640}
+        end,
+    ?assertEqual([Pt], lists:usort([P || #{pt := P} <- Pkts])),
+    ?assertEqual(
+        [Octets], lists:usort([byte_size(B) || #{payload := B} <- Pkts])
+    ),
     ok.
 
 %% A peer using the mixer's own SSRC on that leg: the mixer says BYE for
@@ -1077,8 +1170,8 @@ wait_until(Fun, Deadline, Ms) ->
 %% is mixed into nothing, like a recorder; C (recvonly: the room only
 %% takes from it) is heard by everyone and is sent nothing, like a prompt
 %% player; D (inactive) neither.
-directions(_Config) ->
-    {ok, Conf} = chappe_mix:start(#{}),
+directions(Config) ->
+    {ok, Conf} = chappe_mix:start(room(Config)),
     A = join(Conf, 440),
     B = join(Conf, 1100, #{}, #{direction => sendonly}),
     C = join(Conf, 1700, #{}, #{direction => recvonly}),
@@ -1124,8 +1217,8 @@ mute_is_a_direction(_Config) ->
 
 %% Per-pair relations: A stops hearing B (B still hears A, C hears both);
 %% B leaves A's CSRC list with its audio. Hearing again restores it.
-relate_pairs(_Config) ->
-    {Conf, [A, B, C] = Eps} = conference([440, 1100, 1700]),
+relate_pairs(Config) ->
+    {Conf, [A, B, C] = Eps} = conference(Config, [440, 1100, 1700]),
     ok = chappe_mix:relate(Conf, leg(A), leg(B), nohear),
     Checks = [
         {element(1, A), [1700], [440, 1100]},
@@ -1155,8 +1248,8 @@ relate_pairs(_Config) ->
 %% every leg that hears it, the CSRC list names the mixer's own SSRC on
 %% that leg, not the prompt leg's source (RFC 3550 7.1).
 %% req: R3550-21
-injected_media(_Config) ->
-    {Conf, [A, B] = Eps} = conference([440, 1100]),
+injected_media(Config) ->
+    {Conf, [A, B] = Eps} = conference(Config, [440, 1100]),
     P = join(Conf, 1700, #{}, #{direction => recvonly, injected => true}),
     Checks = [
         {element(1, A), [1100, 1700], [440]},
@@ -1179,17 +1272,21 @@ injected_media(_Config) ->
 %% it for 300 ms. A leg that sends only silence never talks; a removed
 %% leg that was talking stops. A conference without a subscriber sends
 %% nothing.
-talker_events(_Config) ->
-    {ok, Quiet} = chappe_mix:start(#{}),
-    {ok, Conf} = chappe_mix:start(#{events => self()}),
-    {Peer, PPort} = chappe_mix_test_peer:start(#{}),
+talker_events(Config) ->
+    {ok, Quiet} = chappe_mix:start(room(Config)),
+    {ok, Conf} = chappe_mix:start((room(Config))#{events => self()}),
+    {Peer, PPort} = chappe_mix_test_peer:start(#{rate => rate(Config)}),
     {ok, LS, #{port := MS}} = chappe_mix:add_leg(Conf, #{remote => {?LO, PPort}}),
     ok = chappe_mix_test_peer:set(Peer, dst, {?LO, MS}),
     {ok, LA, #{port := MA}} = chappe_mix:add_leg(Conf, #{}),
     {ok, _, #{port := MQ}} = chappe_mix:add_leg(Quiet, #{}),
     T0 = erlang:monotonic_time(millisecond),
-    {A, _} = chappe_mix_test_tone:endpoint(#{freq => 1100, dst => {?LO, MA}}),
-    {Q, _} = chappe_mix_test_tone:endpoint(#{freq => 1100, dst => {?LO, MQ}}),
+    {A, _} = chappe_mix_test_tone:endpoint(
+        tone(Config, #{freq => 1100, dst => {?LO, MA}})
+    ),
+    {Q, _} = chappe_mix_test_tone:endpoint(
+        tone(Config, #{freq => 1100, dst => {?LO, MQ}})
+    ),
     On = talk_event(Conf, 2000),
     T1 = erlang:monotonic_time(millisecond),
     ?assertEqual({LA, true}, On),
@@ -1209,7 +1306,9 @@ talker_events(_Config) ->
     ?assert(T3 - T2 >= 260 andalso T3 - T2 =< 340 + 40, {stop, T3 - T2}),
     %% talking again (another sender, so the leg is pointed at it), then
     %% the leg goes
-    {A2, P2} = chappe_mix_test_tone:endpoint(#{freq => 1100, dst => {?LO, MA}}),
+    {A2, P2} = chappe_mix_test_tone:endpoint(
+        tone(Config, #{freq => 1100, dst => {?LO, MA}})
+    ),
     ok = chappe_mix:set_remote(Conf, LA, {?LO, P2}),
     ?assertEqual({LA, true}, talk_event(Conf, 2000)),
     ok = chappe_mix:remove_leg(Conf, LA),
@@ -1229,17 +1328,17 @@ talker_events(_Config) ->
 %% Eight talkers at -6 dBFS each: what a silent listener hears would clip,
 %% so its gain control comes down and stays down, carried from tick to
 %% tick; once they stop, it is back at unity within two seconds.
-loud_room_gain(_Config) ->
-    {ok, Conf} = chappe_mix:start(#{}),
+loud_room_gain(Config) ->
+    {ok, Conf} = chappe_mix:start(room(Config)),
     {ok, LL, _} = chappe_mix:add_leg(Conf, #{remote => {?LO, 9}}),
     Talkers = [
         begin
             {ok, _, #{port := P}} = chappe_mix:add_leg(Conf, #{}),
             element(
                 1,
-                chappe_mix_test_tone:endpoint(#{
-                    freq => F, amp => 16384, dst => {?LO, P}
-                })
+                chappe_mix_test_tone:endpoint(
+                    tone(Config, #{freq => F, amp => 16384, dst => {?LO, P}})
+                )
             )
         end
      || F <- [310, 470, 660, 830, 1090, 1370, 1710, 2290]
@@ -1300,10 +1399,33 @@ talk_event(Conf, Ms) ->
 
 %% ---- helpers ----
 
+%% The room's rate in this group: 8000 unless the rate16 group says 16000.
+rate(Config) ->
+    proplists:get_value(rate, Config, 8000).
+
+%% The conference options of the group's room: the default 8 kHz room, or
+%% a 16 kHz one.
+room(Config) ->
+    case rate(Config) of
+        8000 -> #{};
+        Rate -> #{rate => Rate}
+    end.
+
+%% Tone endpoint options speaking the room's format: PCMU at 8 kHz, L16
+%% (on payload type 96, the legs' default) at 16 kHz.
+tone(Config, Opts) ->
+    maps:merge(tone_format(rate(Config)), Opts).
+
+tone_format(8000) -> #{};
+tone_format(Rate) -> #{law => l16, rate => Rate}.
+
 %% A conference with one endpoint per frequency. Endpoints are
 %% {Pid, Leg, Freq}.
 conference(Freqs) ->
-    {ok, Conf} = chappe_mix:start(#{}),
+    conference([], Freqs).
+
+conference(Config, Freqs) ->
+    {ok, Conf} = chappe_mix:start(room(Config)),
     {Conf, [join(Conf, F) || F <- Freqs]}.
 
 join(Conf, Freq) ->
@@ -1312,10 +1434,14 @@ join(Conf, Freq) ->
 join(Conf, Freq, Opts) ->
     join(Conf, Freq, Opts, #{}).
 
+%% The endpoint speaks the conference's format, whatever its rate.
 join(Conf, Freq, Opts, LegOpts) ->
     {ok, Leg, #{port := MixPort}} = chappe_mix:add_leg(Conf, LegOpts),
+    #{rate := Rate} = chappe_mix:stats(Conf),
     {Pid, _} = chappe_mix_test_tone:endpoint(
-        Opts#{freq => Freq, dst => {{127, 0, 0, 1}, MixPort}}
+        maps:merge(tone_format(Rate), Opts#{
+            freq => Freq, dst => {{127, 0, 0, 1}, MixPort}
+        })
     ),
     {Pid, Leg, Freq}.
 
@@ -1397,7 +1523,9 @@ steady(Checks, Start, Deadline, Good) ->
 last_window_ok({P, Present, Absent}) ->
     S = chappe_mix_test_tone:samples(P),
     N = length(S),
-    N >= 1600 andalso
+    Rate = chappe_mix_test_tone:rate(P),
+    W = Rate div 5,
+    N >= W andalso
         lists:all(
             fun({F, L}) ->
                 case lists:member(F, Absent) of
@@ -1406,7 +1534,7 @@ last_window_ok({P, Present, Absent}) ->
                 end
             end,
             chappe_mix_test_tone:levels(
-                lists:nthtail(N - 1600, S), Absent ++ Present
+                lists:nthtail(N - W, S), Absent ++ Present, Rate
             )
         ).
 

@@ -12,6 +12,7 @@
     endpoint/1,
     stop/1,
     samples/1,
+    rate/1,
     frames/1,
     gaps/2,
     weak_frames/3,
@@ -59,6 +60,14 @@ stop(Pid) ->
     unlink(Pid),
     exit(Pid, kill),
     ok.
+
+%% The endpoint's sample rate (its rate option).
+rate(Pid) ->
+    Pid ! {rate, self()},
+    receive
+        {Pid, rate, R} -> R
+    after 2000 -> error(endpoint_rate)
+    end.
 
 %% Decoded samples received so far, in arrival order.
 samples(Pid) ->
@@ -174,6 +183,9 @@ loop(S) ->
                  || F <- lists:reverse(maps:get(rx, S))
                 ]},
             loop(S);
+        {rate, From} ->
+            From ! {self(), rate, maps:get(rate, S)},
+            loop(S);
         clear ->
             loop(S#{rx => []});
         {dst, Dst} ->
@@ -234,10 +246,10 @@ decode(Law, P) -> chappe_mix_g711:decode_frame(Law, P).
 %% 164 ms late at a load average of 34), and a stalled sender is a gap,
 %% not a wrong mix. Present means within 3 dB of a 6000-amplitude tone
 %% (Present dBFS), absent means 40 dB below it (Absent dBFS). Returns
-%% {ok, Windows} or {error, Reason, Windows}. hears/4 takes the
-%% endpoint's sample rate (its rate option).
+%% {ok, Windows} or {error, Reason, Windows}, at the endpoint's own rate
+%% (its rate option); hears/4 takes the rate to judge at.
 hears(Pid, Dbs, Tones) ->
-    hears(Pid, Dbs, Tones, ?RATE).
+    hears(Pid, Dbs, Tones, rate(Pid)).
 
 hears(Pid, {PresentDb, AbsentDb}, {Present, Absent}, Rate) ->
     Samples = samples(Pid),

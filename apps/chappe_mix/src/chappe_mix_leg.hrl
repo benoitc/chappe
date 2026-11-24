@@ -12,7 +12,11 @@
     remote :: {inet:ip_address(), inet:port_number()} | undefined,
     %% the address RTP is taken from, latched on the first packet
     source :: {inet:ip_address(), inet:port_number()} | undefined,
-    law :: chappe_mix_g711:law(),
+    %% the room's rate and the leg's payload format at it (G.711 at
+    %% 8 kHz, L16 at 16 kHz) with the payload type it goes on both ways
+    rate = 8000 :: chappe_mix_fmt:rate(),
+    codec :: chappe_mix_fmt:codec(),
+    pt :: 0..127,
     %% the packet time the far end sends, in ms (informational: the
     %% jitter buffer takes any size, and the mix always goes out in 20 ms)
     ptime = 20 :: pos_integer(),

@@ -7,8 +7,12 @@
 %% it takes one frame from each leg's jitter buffer (legs may send
 %% packets of 10, 30 or any other number of ms), sums the unmuted ones,
 %% and sends each leg the sum minus its own contribution (N-1), so nobody
-%% hears themselves. G.711 only: put rtpengine in front for SRTP,
-%% DTLS and every other codec.
+%% hears themselves. A room runs at one rate, fixed when it starts: 8 kHz
+%% with G.711 legs (PCMU or PCMA, the default), or 16 kHz with L16 legs
+%% (RFC 3551 4.5.11, on a dynamic payload type). The mixer has no other
+%% codec: put rtpengine in front for SRTP, DTLS and every other codec
+%% (Opus, G.722, ...), and let it transcode to the room's format; a
+%% 16 kHz room needs rtpengine 13.4 or later, the first with L16.
 %%
 %% Each leg is an RTP session of its own and the mixer behaves on it as
 %% an RFC 3550 mixer: mixed packets name their sources in the CSRC list,
@@ -64,8 +68,13 @@
 -type direction() :: sendrecv | sendonly | recvonly | inactive.
 
 %% ip: the address legs bind to and advertise (default 127.0.0.1, so
-%% nothing is exposed unless you say so). law: the conference default
-%% codec. depth: jitter buffer depth in frames. trace: a process that
+%% nothing is exposed unless you say so). rate: 8000 (default) or 16000,
+%% the room's sample rate and RTP clock, for good: every leg speaks
+%% G.711 at 8000 and L16 at 16000, the RTP timestamp of a 20 ms frame
+%% steps by 160 or 320, taps carry 320 or 640 bytes, and a leg moves
+%% only to a room of the same rate. law: the conference default codec,
+%% ulaw (default) or alaw, of an 8 kHz room; a bad option at 16000.
+%% depth: jitter buffer depth in frames. trace: a process that
 %% gets `{chappe_mix_tick, Conf, #{due, start, done, legs}}' after every
 %% tick (native monotonic times: when the tick was due, when it fired, when
 %% the last packet was sent); for measurement, off by default. cname: the
@@ -95,6 +104,7 @@
     talk_start_ms => pos_integer(),
     talk_stop_ms => pos_integer(),
     ip => inet:ip_address(),
+    rate => chappe_mix_fmt:rate(),
     law => chappe_mix_g711:law(),
     depth => pos_integer(),
     cname => binary(),
@@ -104,8 +114,13 @@
 
 %% remote: where to send the mix; unset, it is learnt from the first
 %% packet received. Once a packet has come in, RTP from any other address
-%% is dropped until set_remote/3. law: this leg's codec, default the
-%% conference's. rtcp: `mux' (default) sends and takes RTCP on the RTP
+%% is dropped until set_remote/3. law: this leg's codec in an 8 kHz room,
+%% default the conference's; a bad option in a 16 kHz room, where every
+%% leg is L16. pt: the payload type of an L16 leg, both ways (a dynamic
+%% one, default 96), as the SDP toward the leg says; a bad option in an
+%% 8 kHz room, where the law's static type (0 or 8) is used. An L16
+%% payload of an odd length is counted as bad and dropped. rtcp: `mux'
+%% (default) sends and takes RTCP on the RTP
 %% port, so the SDP for this leg must carry a=rtcp-mux (RFC 5761);
 %% `pair' opens an even RTP port and RTCP on the next one, which is what
 %% an SDP without a=rtcp-mux means. name: the SDES NAME the other legs
@@ -126,6 +141,7 @@
 -type leg_opts() :: #{
     remote => endpoint(),
     law => chappe_mix_g711:law(),
+    pt => 0..127,
     ptime => pos_integer(),
     dtmf_pt => 0..127,
     dtmf_events => [0..255],
@@ -153,6 +169,12 @@
 -spec start(conf_opts()) -> {ok, conf()} | {error, term()}.
 start(#{ref := Ref}) when not is_binary(Ref) ->
     {error, {bad_option, ref}};
+start(#{rate := Rate}) when Rate =/= 8000, Rate =/= 16000 ->
+    {error, {bad_option, rate}};
+start(#{rate := 16000, law := _}) ->
+    {error, {bad_option, law}};
+start(#{law := Law}) when Law =/= ulaw, Law =/= alaw ->
+    {error, {bad_option, law}};
 start(Opts) ->
     Owner = maps:get(owner, Opts, self()),
     supervisor:start_child(chappe_mix_conf_sup, [Opts#{owner => Owner}]).
@@ -162,7 +184,9 @@ stop(Conf) ->
     chappe_mix_conf:stop(Conf).
 
 %% Open a leg. Returns the address the far end must send to, and the
-%% port its RTCP goes to (the same port with rtcp => mux).
+%% port its RTCP goes to (the same port with rtcp => mux). An option the
+%% room's rate does not take (law at 16 kHz, pt at 8 kHz) is
+%% {error, {bad_option, Key}}.
 -spec add_leg(conf(), leg_opts()) ->
     {ok, leg(), #{
         ip := inet:ip_address(),
@@ -172,6 +196,10 @@ stop(Conf) ->
     | {error, term()}.
 add_leg(_Conf, #{ref := Ref}) when not is_binary(Ref) ->
     {error, {bad_option, ref}};
+add_leg(_Conf, #{law := Law}) when Law =/= ulaw, Law =/= alaw ->
+    {error, {bad_option, law}};
+add_leg(_Conf, #{pt := Pt}) when not is_integer(Pt); Pt < 0; Pt > 127 ->
+    {error, {bad_option, pt}};
 add_leg(Conf, Opts) ->
     gen_server:call(Conf, {add_leg, Opts}).
 
@@ -187,7 +215,8 @@ remove_leg(Conf, Leg) ->
 %%
 %% The move runs in a short-lived process, so neither conference waits on
 %% the other. When the destination is gone (destination_down) or refuses
-%% the leg (refused), the leg stays in the source under its id.
+%% the leg (refused: it runs at another rate, so the far end would need
+%% another codec), the leg stays in the source under its id.
 -spec move_leg(conf(), leg(), conf()) ->
     {ok, leg()}
     | {error, not_found | source_down | destination_down | refused}.
@@ -237,7 +266,8 @@ ref(Conf) ->
 
 %% Hand the decoded audio of a party (a leg) or of the room to a
 %% process, every 20 ms: {chappe_mix, Conf, {tap, Tap, Pcm}}, where Pcm
-%% is 320 bytes of 16-bit signed little-endian PCM at 8 kHz. A party's tap carries
+%% is 20 ms of 16-bit signed little-endian PCM at the room's rate: 320
+%% bytes at 8 kHz, 640 at 16 kHz (taps/1 has the rate). A party's tap carries
 %% what the room takes from the leg (silence when it sends nothing or is
 %% muted); the room's carries every talker. Opts: to (default the
 %% caller), max_queue (default 500: past that many messages waiting at
@@ -280,15 +310,17 @@ untap(Conf, Tap) ->
 taps(Conf) ->
     gen_server:call(Conf, {taps, list}).
 
-%% Per-leg state and counters, among them: ssrc (ours on that leg),
+%% Per-leg state and counters, among them: rate, law (ulaw, alaw, or
+%% l16 in a 16 kHz room), pt, ssrc (ours on that leg),
 %% source_ssrc, csrcs (of the last packet), filtered (RTP or RTCP from
-%% an address other than the latched one), collisions, loops,
+%% an address other than the latched one), bad (malformed packets, and
+%% L16 payloads of an odd length), collisions, loops,
 %% rtcp_sent, rtcp_received, rtcp_invalid.
 -spec legs(conf()) -> [map()].
 legs(Conf) ->
     gen_server:call(Conf, legs).
 
-%% Conference counters: ticks, overruns, the tick lateness histogram,
+%% Conference counters: rate, ticks, overruns, the tick lateness histogram,
 %% and the leg counters filtered, collisions, loops, rtcp_sent,
 %% rtcp_received and rtcp_invalid summed over its legs, removed ones
 %% included.

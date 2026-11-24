@@ -6,6 +6,21 @@ says how apps are released.
 
 ## [Unreleased]
 
+### New
+
+- HD rooms: start a room with `rate => 16000` and every party is mixed at
+  16 kHz, so callers on G.722 or Opus keep the band above 3.4 kHz. The
+  mixer speaks L16 to rtpengine, which needs to be 13.4 or later and turns
+  each caller's codec into it and back. Taps of such a room carry 640
+  bytes every 20 ms, and digits run at 16000.
+- `stats/1`, `legs/1` and `taps/1` report the room's rate.
+
+### Changed
+
+- A room's rate is fixed when it starts: a leg cannot move to a room of
+  another rate, a `law` is refused in a 16 kHz room, and a `pt` in an
+  8 kHz one. An 8 kHz room mixes exactly as before.
+
 ## [0.1.0] - 2026-11-23
 
 ### New

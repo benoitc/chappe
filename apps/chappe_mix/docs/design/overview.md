@@ -9,10 +9,15 @@ reverted is in [`test/audit/ATTEMPTS.md`](../../test/audit/ATTEMPTS.md).
 
 ## Scope
 
-chappe_mix takes G.711 RTP on UDP sockets it owns, mixes, and sends it back.
-It has no SIP, no SDP and no codec other than G.711: rtpengine in front of
-it handles SRTP, DTLS, ICE and transcoding. The SDP for a mixer leg is
-written by its caller (`chappe_sip_media_mix_sdp` in chappe_sip).
+chappe_mix takes RTP on UDP sockets it owns, mixes, and sends it back. A
+room runs at one rate, fixed when it starts: 8 kHz with G.711 legs (the
+default) or 16 kHz with L16 legs (RFC 3551 4.5.11). It has no SIP, no SDP
+and no other codec: rtpengine in front of it handles SRTP, DTLS, ICE and
+transcoding to the room's format (L16 needs rtpengine 13.4 or later). The
+SDP for a mixer leg is written by its caller (`chappe_sip_media_mix_sdp` in
+chappe_sip). Decision
+[0017](../../../../docs/decisions/0017-chappe-mix-16khz-l16.md) has the
+why.
 
 ## Process model
 
@@ -37,6 +42,7 @@ an RTCP BYE and its sockets close.
 | `chappe_mix_conf` | The process: sockets, clock, RTCP schedule, SSRC space, crossing BYEs and SDES between legs. |
 | `chappe_mix_room` | What one tick and one RFC 4733 event do to the legs, as plain functions. |
 | `chappe_mix_dsp` | The compute of one tick: the sum, the N-1 outputs, the gain control, talker levels. |
+| `chappe_mix_fmt` | The format facts of a rate: samples per 20 ms frame, octets per sample, silence, payload type, a payload as PCM. |
 | `chappe_mix_jbuf` | One leg's jitter buffer, as plain data. |
 | `chappe_mix_leg` | One leg on its own: open sockets, filter what arrives, send its share. |
 | `chappe_mix_session` | One leg's RTP session as RFC 3550 sees it (SSRC, sender and receiver state, RTCP timing). |
@@ -83,10 +89,14 @@ rtpengine never goes quiet.
 ## N-1 mixing (`chappe_mix_dsp`)
 
 Every talker's frame is decoded straight into one sum: an `atomics` array of
-160 signed slots that lives only for the tick. Once every talker is in, the
-sum is read out into a tuple, and each listener's output is encoded from it
-less its own frame, decoded again from the code words it came in. No decoded
-frame is kept as a list, and every per-sample lookup is `element/2`.
+one signed slot per sample of the frame (160 at 8 kHz, 320 at 16 kHz) that
+lives only for the tick. Once every talker is in, the sum is read out into a
+tuple, and each listener's output is encoded from it less its own frame,
+decoded again from the payload it came in. No decoded frame is kept as a
+list, and every per-sample lookup is `element/2`. At 8 kHz a sample is a
+G.711 code word through the law's tables, and the bytes are those of the
+G.711-only mixer (`chappe_mix_golden_tests` pins them); at 16 kHz it is an
+L16 sample, read and written big-endian, and the mix is linear end to end.
 ATTEMPTS.md ("The mix on lists, binaries or atomics", "element/2 for every
 per-sample lookup", "A NIF for the mix: not written") records the
 alternatives and their numbers.
@@ -150,6 +160,33 @@ The mixer follows RFC 3550 7.3 on it:
 
 RTCP runs on the RTP port by default (`rtcp => mux`) or on the next port
 (`rtcp => pair`). RTCP-mux demultiplexing follows RFC 5761 4.
+
+## The room's rate (`chappe_mix_fmt`)
+
+`rate` is a start option, 8000 (default) or 16000, and never changes.
+`chappe_mix_fmt` holds what follows from it; nothing else in the app knows a
+frame size or a payload type.
+
+| | 8 kHz | 16 kHz |
+|---|---|---|
+| leg format | G.711, the leg's `law` | L16, network byte order |
+| payload type | 0 or 8 (static) | the leg's `pt`, default 96 |
+| 20 ms frame | 160 samples, 160 octets | 320 samples, 640 octets |
+| timestamp step per tick | 160 | 320 |
+| tap message | 320 bytes | 640 bytes |
+| telephone-event clock | 8000 | 16000 |
+
+- The jitter buffer counts samples, so its depth, its gaps and its resync
+  bound are the same in time at both rates; an L16 payload of an odd
+  length is counted as bad and not played.
+- The jitter of the reports is in timestamp units of the rate (A.8).
+- The RTCP interval does not depend on the rate: it comes from the member
+  count, the report size and the 5 s minimum.
+- Every leg's clock runs at the room's rate, so an RFC 4733 event goes to
+  the others as it came, its duration in the units of the listener's clock
+  too.
+- A leg moves only to a room of its rate (`{error, refused}` otherwise, the
+  leg untouched): its far end speaks the source's format.
 
 ## Sockets and `move_leg`
 
@@ -235,8 +272,10 @@ exist in chappe_mix itself:
 - Code: `apps/chappe_mix/src/`
 - Tests: `chappe_mix_SUITE` (rooms on loopback), `chappe_mix_rfc_SUITE`
   (RFC 3550 and 4733 rules on the wire), `chappe_mix_tap_SUITE` (taps),
-  eunit for `jbuf`, `dsp`, `rtp`,
-  `rtcp`, `g711`
+  eunit for `jbuf`, `dsp`, `fmt`, `session`, `rtp`, `rtcp`, `g711`, the
+  L16 paths (`chappe_mix_dsp_l16_tests`, `chappe_mix_jbuf_l16_tests`) and
+  the 8 kHz digest (`chappe_mix_golden_tests`); the `rate16` group of
+  `chappe_mix_SUITE` runs the room contract at 16 kHz
 - Labs: `make interop-mix` (behind rtpengine, `chappe_mix_live_SUITE`),
   `make interop-ref` (against mod_conference, `chappe_mix_ref_SUITE`)
 - Bench: `apps/chappe_mix/bench/README.md`

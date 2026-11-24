@@ -810,3 +810,30 @@ path drops to 8 kHz, are 40 dB below the quietest tone.
   against -16.3 sent; in `conf-<name>` (`default`, 8 kHz, the control)
   1000 and 2500 Hz arrive at -16.3 and 5000 and 6000 Hz at -89 to
   -113 dBFS.
+
+## The 16 kHz room: the 8 kHz digest and the L16 tests
+
+- The 8 kHz path is pinned before the refactor: `chappe_mix_golden_tests`
+  hashes a seeded run of the jitter buffer, the sum, the N-1 encode with
+  the gain carried, the room's and a party's PCM, and the report jitter,
+  taken on the G.711-only mixer (the commit before the room's rate).
+- First digest: `term_to_binary/1` of the run. It changed when another
+  eunit module ran first: OTP orders the keys of a small map by atom
+  index, and the jitter buffer's stats map came out as `dropped, buffered,
+  late` or `dropped, late, buffered` with what had created those atoms
+  before. Same values, other bytes. Kept: `term_to_binary(T,
+  [deterministic])`, digest taken again on the parent.
+- `chappe_mix_dsp_l16_tests` checks the L16 mix against a list reference
+  over seeded rooms of 1 to 64 legs. Mutations, 3, all caught: samples
+  written little-endian (11 of 14 failed), the own frame added instead of
+  taken out (10 of 14), a sample skipped in the own-frame loop (10 of 14).
+- `chappe_mix_jbuf_l16_tests`: offsets not scaled by the sample width (2
+  of 10 failed), a gap of N octets instead of N samples (2), the resync
+  bound in octets instead of samples (1).
+- A stale beam: after restoring a mutated file with `cp` inside the same
+  second, rebar3 kept the mutated beam and a passing test read as failing.
+  Touch the file after restoring it.
+- The digest catches an 8 kHz change: the gain ramp stepped by I instead of
+  I + 1 failed it. A report-jitter clock off by one part in a million did
+  not (the jitter is truncated to whole units); the session tests cover
+  the clock (`chappe_mix_session_tests`, a 16 kHz sender read at 8 kHz).
