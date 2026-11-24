@@ -6,6 +6,41 @@ says how apps are released.
 
 ## [Unreleased]
 
+### Fixed
+
+- A party a REFER brings into a native conference was a member, and could
+  be heard, while it was still ringing; it now joins only once it
+  answers, and a party that does not answer leaves the room as it was.
+- A REFER could bring a party into a locked or full FreeSWITCH
+  conference; both backends now check the lock and the member limit
+  before dialing, counting the parties being dialed.
+- A REFER sent again for the same party dialed it a second time; it now
+  hears the outcome of the first one. Asking to add someone who is
+  already in answers at once.
+- A REFER to a conference's address dropped the call it asked to replace
+  (Replaces) and the Referred-By on the way to the party.
+- Removing a member by REFER picked the first member with a matching
+  address; it now takes the member the roster names, refuses an
+  ambiguous request (485), never looks at other conferences, and tells a
+  referrer it does not trust nothing about who is in.
+- When a conference ends, the REFERs still under way now get a final
+  answer (487) and their calls are given up.
+- A member joining a FreeSWITCH conference now shows in its roster.
+
+### New
+
+- A REFER to a conference is answered only after the room's checks and
+  its policy, which now also sees who the referrer is in the room
+  (including from the call a Target-Dialog names) and which member a
+  removal names.
+- The referrer hears when the party rings (180 or 183), when the
+  FreeSWITCH node sends those events.
+- The conference roster shows each participant under its own address,
+  one entry per call, marks parties a REFER brought in as dialed out and
+  callers referred by someone as referred, keeps callers who asked for
+  privacy anonymous, and shows a member who leaves as disconnected before
+  it goes.
+
 ## [0.1.0] - 2026-11-23
 
 ### New

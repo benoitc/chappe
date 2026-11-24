@@ -97,18 +97,28 @@
 %%                conference URI, defaults to sip:Name@<this node>); the
 %%                parties a REFER brings in are dialed with isfocus in
 %%                their Contact, and only such a room removes a member
-%%                for a REFER with method=BYE (RFC 4579 5.5, 5.11)
+%%                for a REFER with method=BYE or refers a party for a
+%%                REFER with method=REFER (RFC 4579 5.5, 5.7, 5.11)
 %%   refer_policy => fun((Info) -> boolean() | {reject, Code}): decides a
-%%                REFER to the room (chappe_mrf:focus_refer/2), Info as
-%%                chappe_sip_focus:refer/4 gives it (action add | remove,
-%%                target, referrer, referred_by); without one every REFER
-%%                is refused 403
+%%                REFER to the room (chappe_mrf:focus_refer/2) or from a
+%%                member, after the room's own checks
+%%                (chappe_mrf_conf_refer). Info is
+%%                chappe_sip_focus:refer_info/2's map (action add |
+%%                remove | refer | transfer, target, method, replaces,
+%%                referrer, referred_by, target_dialog, origin, ...) plus
+%%                member (the referrer's member id, or undefined), dial
+%%                (add: the dial string) and removes (remove: the member
+%%                it names). Without one every REFER is refused 403. It
+%%                runs in the room process.
 %%   dial      => fun((Target) -> iodata()): the dial string of a party a
 %%                REFER brings in (default sofia/<dial_profile>/<target>)
 %%   dial_profile => the sofia profile of that default (<<"external">>)
 %%   dial_timeout => ms the party has to answer (30000), then 408
 %%   dial_endpoint => native: create_endpoint/1 options (node, select,
 %%                targets) of the endpoint that dials it
+%% The 180 and 183 of a dialed party reach the referrer when the node's
+%% events carry CHANNEL_PROGRESS and CHANNEL_PROGRESS_MEDIA (chappe_esl:
+%% node_add/2's events).
 %% fs:
 %%   node      => the chappe_esl node (default chappe_esl:node_select/1
 %%                with select => Opts)
@@ -197,7 +207,8 @@ join(Conf, Target, Opts) ->
     case info(Conf) of
         #{backend := B} = Info ->
             Mod = chappe_mrf_conf_backend:module(B),
-            Mod:join(Conf, Info, Target, Opts);
+            Opts1 = chappe_mrf_conf_refer:call_opts(Target, Opts),
+            Mod:join(Conf, Info, Target, Opts1);
         Err ->
             Err
     end.
@@ -542,20 +553,20 @@ handle_call(_Req, _From, S) ->
     {reply, {error, unknown_call}, S}.
 
 %% Every way in for a member, sent as {join, Req}. A join already under
-%% way still completes; a locked room takes no new member, whatever the
-%% way in. The backend takes the rest (admit/3).
-join_open(_Req, _From, #state{locked = true} = S) ->
-    {reply, {error, locked}, S};
-join_open(
-    _Req, _From, #state{members = M, pending = P, max_members = Max} = S
-) when
-    map_size(M) + map_size(P) >= Max
-->
-    {reply, {error, full}, S};
-join_open(check, _From, S) ->
+%% way still completes; a locked or full room takes no new member,
+%% whatever the way in (chappe_mrf_conf_backend:admission/1). The party a
+%% REFER brought in was admitted when the REFER was. The backend takes
+%% the rest (admit/3).
+join_open(Req, From, S) ->
+    case chappe_mrf_conf_refer:admission(Req, S) of
+        ok -> admit(Req, From, S);
+        {error, _} = Err -> {reply, Err, S}
+    end.
+
+admit(check, _From, S) ->
     %% may a member come in now (the lease, the lock, the limit)
     {reply, ok, S};
-join_open(Req, From, #state{mod = Mod} = S) ->
+admit(Req, From, #state{mod = Mod} = S) ->
     Mod:admit(Req, From, S).
 
 %% Run a call that brings someone in (a join, a REFER, a recording) only
@@ -640,8 +651,6 @@ handle_info({chappe_sip_media, {talking, _Room, Id, Talking}}, S) ->
     {noreply, chappe_mrf_conf_backend:talking(Id, Talking, S)};
 handle_info({chappe_sip_b2b, Ref, {request, _Leg, refer, Req, Res}}, S) ->
     {noreply, chappe_mrf_conf_refer:member_refer(Ref, Req, Res, S)};
-handle_info({timeout, _, {refer_dial, Key}}, S) ->
-    {noreply, chappe_mrf_conf_refer:timeout(Key, S)};
 handle_info({chappe_cluster, Lost, lost}, #state{lease = Lease} = S) ->
     case chappe_mrf_conf_cluster:same_lease(Lost, Lease) of
         true -> {noreply, lose(S)};
@@ -660,17 +669,25 @@ handle_info({'DOWN', Mon, process, Pid, _}, #state{listeners = L} = S) ->
             {noreply,
                 chappe_mrf_conf_transfer:run(Actions, S#state{members = M})}
     end;
-handle_info({'EXIT', _, _}, S) ->
-    {noreply, S};
+handle_info({'EXIT', Pid, Why}, S) ->
+    %% a REFER's dial helper, or a link of no interest
+    {noreply, chappe_mrf_conf_refer_dial:exited(Pid, Why, S)};
 handle_info(Info, S) ->
     backend_info(Info, S).
 
-%% A message the room does not know: the backend's, else the focus's.
+%% A message the room does not know: a REFER's dial-out's
+%% (chappe_mrf_conf_refer_dial:info/2), else the backend's, else the
+%% focus's.
 backend_info(Info, #state{mod = Mod} = S) ->
-    Has = chappe_mrf_conf_backend:has(handle_info, 2, S),
-    case Has andalso Mod:handle_info(Info, S) of
-        {noreply, _} = Reply -> Reply;
-        _NotTheBackends -> chappe_mrf_conf_focus:handle_info(Info, S)
+    case chappe_mrf_conf_refer_dial:info(Info, S) of
+        {ok, S1} ->
+            {noreply, S1};
+        ignore ->
+            Has = chappe_mrf_conf_backend:has(handle_info, 2, S),
+            case Has andalso Mod:handle_info(Info, S) of
+                {noreply, _} = Reply -> Reply;
+                _NotTheBackends -> chappe_mrf_conf_focus:handle_info(Info, S)
+            end
     end.
 
 %% Every step runs, whatever one member's does. Outside a drain, a
@@ -679,6 +696,8 @@ backend_info(Info, #state{mod = Mod} = S) ->
 %% drain_ms; one not done by then is hung up here, on purpose, rather
 %% than left to a job the stop kills next.
 terminate(_Reason, #state{members = M0, focus = F, mod = Mod} = S) ->
+    %% the REFERs under way hear 487, their dials stop
+    _ = safely(fun() -> chappe_mrf_conf_refer:stop(S) end),
     Draining = chappe_mrf_conf_move:draining(),
     M = maps:filter(
         fun(_Id, Mb) ->

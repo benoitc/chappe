@@ -288,11 +288,12 @@ transfer_in(To, {fs, Ep, Owned, Opts}, #{name := FromName, member := Id}) ->
         ?MRF_JOIN_TIMEOUT + 5000
     ).
 
-%% mod_conference dials the party into the room (with the Replaces of a
-%% member's REFER, when it has one)
-dial(Target, Refer, Cfg, #state{dial = Dial} = S) ->
-    Room = S#state{dial = maps:merge(Dial, maps:with([replaces], Cfg))},
-    {Reply, S1} = chappe_mrf_conf_refer:fs_dial(Target, Refer, Room),
+%% mod_conference dials the party into the room (with the Replaces and
+%% Referred-By of the REFER, when it has them)
+dial(Target, Key, Cfg, #state{dial = Dial} = S) ->
+    Extra = maps:with([replaces, referred_by], Cfg),
+    Room = S#state{dial = maps:merge(Dial, Extra)},
+    {Reply, S1} = chappe_mrf_conf_refer_dial:fs(Target, Key, Room),
     {Reply, S1#state{dial = Dial}}.
 
 %% ---- in the room ----
@@ -466,11 +467,8 @@ action(<<"add-member">>, Id, Ep, _Ev, #state{pending = P} = S) ->
                 ep => Ep, owned => Owned
             }),
             gen_server:reply(From, {ok, Id}),
-            S1 = chappe_mrf_conf_backend:put_member(Id, Mb, S#state{
-                pending = P1
-            }),
-            Info = chappe_mrf_conf_backend:public(Id, Mb),
-            chappe_mrf_conf_backend:emit({joined, Id, Info}, S1);
+            %% in the roster too (a focus room's conference-info)
+            chappe_mrf_conf_backend:joined(Id, Mb, S#state{pending = P1});
         error ->
             S
     end;

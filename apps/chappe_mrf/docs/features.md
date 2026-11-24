@@ -54,8 +54,8 @@ that shows you how to use it.
 - **Move a member** to another room of the same backend (`transfer/3`).
   [Conference guide](guides/conference.md#move-a-member-to-another-room)
 - **REFER in rooms**, both backends: a member transfers itself out, blind
-  or attended, and a REFER to the room adds or removes a party under your
-  policy. [Conference guide](guides/conference.md#add-or-remove-a-party-by-refer)
+  or attended, and a REFER to the room adds, removes or refers a party
+  under your policy. [Conference guide](guides/conference.md#add-remove-or-refer-a-party-by-refer)
 - **RFC 4575 conference state** for native rooms (`focus => true`,
   `focus_subscribe/2`). [Conference guide](guides/conference.md)
 - **Cleanup**: an endpoint's channel is killed when its owner exits, after
