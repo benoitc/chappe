@@ -24,6 +24,7 @@
     callee_reinvite_swaps_tags/1,
     reoffer_with_via_branch/1,
     final_answer_deletes_losing_branches/1,
+    final_answer_keeps_shared_branches/1,
     media_commands/1,
     node_restart_notifies_owner/1,
     unknown_call_id_notifies_owner_once/1,
@@ -54,6 +55,7 @@ all() ->
         callee_reinvite_swaps_tags,
         reoffer_with_via_branch,
         final_answer_deletes_losing_branches,
+        final_answer_keeps_shared_branches,
         media_commands,
         node_restart_notifies_owner,
         unknown_call_id_notifies_owner_once,
@@ -194,6 +196,10 @@ full_lifecycle(Config) ->
     {_, Delete} = lists:last(chappe_rtpengine_fake_server:received(Server)),
     ?assertEqual(<<"ft-1">>, maps:get(<<"from-tag">>, Delete)),
     ?assertEqual(CallId, maps:get(<<"call-id">>, Delete)),
+    %% the session never reads the call's statistics: `fast' keeps them
+    %% out of the reply, which grows past a UDP datagram on a call with
+    %% many streams
+    ?assertEqual([<<"fast">>], maps:get(<<"flags">>, Delete)),
     error = chappe_rtpengine_pool:pinned(CallId),
     ok.
 
@@ -218,6 +224,8 @@ owner_crash_sends_delete(Config) ->
         end,
     wait_dead(Sess),
     ?assertEqual([<<"offer">>, <<"delete">>], commands(Server)),
+    {_, Delete} = lists:last(chappe_rtpengine_fake_server:received(Server)),
+    ?assertEqual([<<"fast">>], maps:get(<<"flags">>, Delete)),
     error = chappe_rtpengine_pool:pinned(<<"sess-crash">>),
     ok.
 
@@ -349,17 +357,20 @@ final_answer_deletes_losing_branches(Config) ->
     {ok, _} = chappe_rtpengine_session:offer(Sess, #{
         from_tag => <<"ft-f">>, sdp => sdp()
     }),
-    %% two forked branches answer with distinct to-tags
+    %% two forked branches, each on an offer of its own (a via-branch),
+    %% answer with distinct to-tags
     {ok, _} = chappe_rtpengine_session:answer(Sess, #{
-        to_tag => <<"tt-1">>, sdp => sdp()
+        to_tag => <<"tt-1">>, via_branch => <<"vb-1">>, sdp => sdp()
     }),
     {ok, _} = chappe_rtpengine_session:answer(Sess, #{
-        to_tag => <<"tt-2">>, sdp => sdp()
+        to_tag => <<"tt-2">>, via_branch => <<"vb-2">>, sdp => sdp()
     }),
     #{branches := [<<"tt-1">>, <<"tt-2">>]} = chappe_rtpengine_session:info(
         Sess
     ),
-    %% branch tt-2 wins; the session prunes tt-1 with a targeted delete
+    %% branch tt-2 wins; the session prunes tt-1 with a targeted delete.
+    %% rtpengine 13 and later honour the to-tag of a delete only with the
+    %% `to-tag' flag; without it the delete takes the whole call.
     {ok, _} = chappe_rtpengine_session:answer(Sess, #{
         to_tag => <<"tt-2">>, sdp => sdp(), final => true
     }),
@@ -367,13 +378,53 @@ final_answer_deletes_losing_branches(Config) ->
         lists:any(
             fun({_, Cmd}) ->
                 maps:get(<<"command">>, Cmd) =:= <<"delete">> andalso
-                    maps:get(<<"to-tag">>, Cmd, undefined) =:= <<"tt-1">>
+                    maps:get(<<"to-tag">>, Cmd, undefined) =:= <<"tt-1">> andalso
+                    maps:get(<<"via-branch">>, Cmd, undefined) =:=
+                        <<"vb-1">> andalso
+                    maps:get(<<"flags">>, Cmd, []) =:=
+                        [<<"fast">>, <<"to-tag">>]
             end,
             chappe_rtpengine_fake_server:received(Server)
         )
     end),
     #{state := established, branches := [<<"tt-2">>], to_tag := <<"tt-2">>} =
         chappe_rtpengine_session:info(Sess),
+    ok = chappe_rtpengine_session:stop(Sess),
+    wait_dead(Sess),
+    ok.
+
+%% Branches answered on the one offer share the callee's monologue: the
+%% winner's answer renames it, so the session deletes nothing (a delete of
+%% a losing tag would end the call on rtpengine 13 and later).
+final_answer_keeps_shared_branches(Config) ->
+    Server = ?config(server, Config),
+    {ok, Sess} = chappe_rtpengine:start_session(#{
+        call_id => <<"sess-fork-shared">>
+    }),
+    {ok, _} = chappe_rtpengine_session:offer(Sess, #{
+        from_tag => <<"ft-s">>, sdp => sdp()
+    }),
+    {ok, _} = chappe_rtpengine_session:answer(Sess, #{
+        to_tag => <<"ts-1">>, sdp => sdp()
+    }),
+    {ok, _} = chappe_rtpengine_session:answer(Sess, #{
+        to_tag => <<"ts-2">>, sdp => sdp()
+    }),
+    {ok, _} = chappe_rtpengine_session:answer(Sess, #{
+        to_tag => <<"ts-2">>, sdp => sdp(), final => true
+    }),
+    #{state := established, branches := [<<"ts-2">>], to_tag := <<"ts-2">>} =
+        chappe_rtpengine_session:info(Sess),
+    Deletes = [
+        Cmd
+     || {_,
+            #{
+                <<"command">> := <<"delete">>,
+                <<"call-id">> := <<"sess-fork-shared">>
+            } =
+                Cmd} <- chappe_rtpengine_fake_server:received(Server)
+    ],
+    ?assertEqual([], Deletes),
     ok = chappe_rtpengine_session:stop(Sess),
     wait_dead(Sess),
     ok.

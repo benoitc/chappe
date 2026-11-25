@@ -187,8 +187,10 @@ answer(Y, Sdp, M0, Extra) ->
     end.
 
 %% The answer of the winning branch of a fork: anchored, rtpengine takes
-%% it as the final one and deletes the other branches' to-tags (their
-%% early media answers). The call's later answers carry no via-branch.
+%% it as the final one. Branches with an offer of their own (a via-branch)
+%% are deleted; branches answered on the one offer share the callee's
+%% monologue, which this answer takes over. The call's later answers
+%% carry no via-branch.
 -spec final_answer(leg(), binary(), state()) ->
     {ok, binary(), state()} | {reject, 300..699}.
 final_answer(Y, Sdp, M) ->

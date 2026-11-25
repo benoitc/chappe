@@ -45,6 +45,9 @@ Changes to the repository that are not part of any app's package.
   and by hand (`make interop`, `interop-sbc`, `interop-esl`, `interop-mrf`).
 - Each app has its own changelog, and a merge that bumps an app's version
   releases a dated bundle of all the apps.
+- The labs run rtpengine 26.3, built from its upstream release, so they can
+  carry 16 kHz audio; FreeSWITCH and pjsua are pinned to exact images, and
+  the lab pjsua places Opus and G.722 calls.
 
 ### 0.1.0
 

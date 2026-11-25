@@ -16,8 +16,9 @@
 
 -export([call/2, callee/1, port/1, stop/1]).
 -export([tone/2, dtmf/2, bye/1, reinvite/1, clear/1, hears/3, silent/3, level/2]).
--export([write_wav/3, write_wav/4, wav_level/2]).
+-export([write_wav/3, write_wav/4, write_wav/5, wav_level/2]).
 
+%% the RTP stream is PCMU, so 8 kHz; the wav helpers take other rates
 -define(RATE, 8000).
 -define(PRESENT_DB, -40.0).
 
@@ -87,7 +88,10 @@ silent(Ua, Freq, Ms) ->
 %% The loudest 200 ms window of Freq heard since the last clear/1.
 level(Ua, Freq) ->
     Samples = req(Ua, samples),
-    lists:max([-200.0 | [goertzel(W, Freq) || W <- windows(Samples, 1600)]]).
+    lists:max([
+        -200.0
+        | [goertzel(W, Freq, ?RATE) || W <- windows(Samples, 1600)]
+    ]).
 
 req(Ua, What) ->
     Ua ! {What, self()},
@@ -467,9 +471,9 @@ windows(Samples, N) when length(Samples) >= N ->
 windows(_, _) ->
     [].
 
-goertzel(Samples, F) ->
+goertzel(Samples, F, Rate) ->
     N = length(Samples),
-    W = 2 * math:pi() * F / ?RATE,
+    W = 2 * math:pi() * F / Rate,
     Coeff = 2 * math:cos(W),
     {S1, S2} = lists:foldl(
         fun(X, {P1, P2}) -> {X + Coeff * P1 - P2, P1} end, {0.0, 0.0}, Samples
@@ -478,12 +482,20 @@ goertzel(Samples, F) ->
     Amp = 2 * math:sqrt(max(Power, 0.0)) / N,
     20 * math:log10(max(Amp, 1.0e-9) / 32768).
 
-%% The loudest 200 ms window of Freq in a 16-bit 8 kHz mono wav.
+%% The loudest 200 ms window of Freq in a 16-bit mono wav, at the sample
+%% rate its fmt chunk names (8 or 16 kHz, ...).
 wav_level(Path, Freq) ->
     {ok, Bin} = file:read_file(Path),
+    Rate = wav_rate(Bin),
     {_, Data} = split_data(Bin),
     Samples = [X || <<X:16/little-signed>> <= Data],
-    lists:max([-200.0 | [goertzel(W, Freq) || W <- windows(Samples, 1600)]]).
+    lists:max([
+        -200.0
+        | [goertzel(W, Freq, Rate) || W <- windows(Samples, Rate div 5)]
+    ]).
+
+wav_rate(<<"fmt ", _:32, _:16, _:16, Rate:32/little, _/binary>>) -> Rate;
+wav_rate(<<_, Rest/binary>>) -> wav_rate(Rest).
 
 split_data(<<"data", _Size:32/little, Data/binary>>) -> {ok, Data};
 split_data(<<_, Rest/binary>>) -> split_data(Rest).
@@ -495,17 +507,21 @@ write_wav(Path, Freq, Ms) ->
     write_wav(Path, Freq, Ms, 8000).
 
 write_wav(Path, Freq, Ms, Amp) ->
-    N = Ms * ?RATE div 1000,
+    write_wav(Path, Freq, Ms, Amp, ?RATE).
+
+%% The same at Rate samples per second (16000 for a wideband prompt).
+write_wav(Path, Freq, Ms, Amp, Rate) ->
+    N = Ms * Rate div 1000,
     Data = <<
         <<
-            (round(Amp * math:sin(2 * math:pi() * Freq * I / ?RATE))):16/little-signed
+            (round(Amp * math:sin(2 * math:pi() * Freq * I / Rate))):16/little-signed
         >>
      || I <- lists:seq(0, N - 1)
     >>,
     Size = byte_size(Data),
     Wav =
         <<"RIFF", (36 + Size):32/little, "WAVE", "fmt ", 16:32/little,
-            1:16/little, 1:16/little, ?RATE:32/little, (?RATE * 2):32/little,
+            1:16/little, 1:16/little, Rate:32/little, (Rate * 2):32/little,
             2:16/little, 16:16/little, "data", Size:32/little, Data/binary>>,
     ok = file:write_file(Path, Wav),
     ok = file:change_mode(Path, 8#644).
