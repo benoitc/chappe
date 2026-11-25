@@ -1,0 +1,19 @@
+{
+  "system": {"name": "chappe", "revision": "bee9adf"},
+  "images": [
+    {"name": "freeswitch",
+     "image": "drachtio/drachtio-freeswitch-mrf@sha256:2f1583c31259fbf38df3df2e0955e2ffda7f6d2410888718de110b568ea9dac3",
+     "digest": "sha256:534f085ed9140e41a8038b43bca62768ade59f8bfb156b0ad59486f3909b31ed",
+     "version": "1.10.10 git 4cb05e7 (not on this path)"}
+  ],
+  "rtpengine": {"name": "rtpengine", "version": "26.3.1.4+0~mr26.3.1.4",
+                "image": "chappe-rtpengine-interop",
+                "digest": "sha256:9cf8018bf440af17bc2157314ec37a67ea3c1adcb8c04d2d11dbaea984fc8638"},
+  "internal_legs": [
+    {"name": "rtpengine-chappe_mix",
+     "codec": {"name": "L16", "clock_rate": 16000, "channels": 1, "ptime": 20},
+     "processing_rate": 16000}
+  ],
+  "host": {"name": "macOS 27.2 arm64, 14 cores, OrbStack docker 29.8.2",
+           "clock_source": "not synchronized by taq live"}
+}
