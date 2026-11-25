@@ -99,12 +99,15 @@
     listener_options_differ/1,
     registry_edges/1,
     registry_restart/1,
+    registry_put_restart/1,
+    registry_dead_entry/1,
     native_loop_fails/1,
     native_endpoint_fails/1,
     native_join_worker_dies/1,
     native_join_bad_handle/1,
     invite_replaces_stale_hold/1,
     invite_replaces_after_transfer/1,
+    invite_replaces_member_left/1,
     sip_edges/1,
     conf_edges/1,
     native_endpoint/1,
@@ -203,12 +206,15 @@ all() ->
         listener_options_differ,
         registry_edges,
         registry_restart,
+        registry_put_restart,
+        registry_dead_entry,
         native_loop_fails,
         native_endpoint_fails,
         native_join_worker_dies,
         native_join_bad_handle,
         invite_replaces_stale_hold,
         invite_replaces_after_transfer,
+        invite_replaces_member_left,
         sip_edges,
         conf_edges,
         native_endpoint,
@@ -2085,16 +2091,22 @@ invite_replaces_caller_dies(Config) ->
 
 %% A caller whose hold on a member ran out is too late: a second caller
 %% holds the member now, so the first one's join, completing, gets
-%% {error, expired} and its call is hung up, not the member; the second
-%% caller then replaces it.
+%% {error, expired} and its call is hung up, not the member (the roster
+%% shows it booted); the second caller then replaces it.
 %% req: MRF-27
 invite_replaces_stale_hold(Config) ->
+    ok = chappe_sip:event_package(
+        <<"conference">>, fun chappe_mrf:focus_subscribe/2
+    ),
     {ok, Conf} = chappe_mrf:conference(<<"repstale">>, #{
         focus => true, backend => chappe_mrf_conf_gate_backend
     }),
+    #{entity := Entity} = chappe_mrf_conf:info(Conf),
     {Ua1, M1} = room_caller(Config, Conf),
     {ua, Ua1, {final, 200, Ok}} = ua_answer(Ua1),
     [#{uri := U1}] = chappe_mrf_conf:members(Conf),
+    W = watch(Config, Entity),
+    _ = roster(W),
     gated(Conf),
     Opts = #{from => U1, headers => [{<<"Replaces">>, replaces_of(Ok)}]},
     A = ?F:ua_call(?config(ep, Config), Opts),
@@ -2108,6 +2120,12 @@ invite_replaces_stale_hold(Config) ->
     _ = ua_event(A, bye),
     ?assertMatch([#{id := M1}], chappe_mrf_conf:members(Conf)),
     no_ua_event(Ua1, bye, 200),
+    ?assert(
+        roster_until(
+            W, <<"<disconnection-method>booted</disconnection-method>">>
+        )
+    ),
+    gen_udp:close(W),
     GateB ! {gate, go},
     {ua, B, {final, 200, _}} = ua_answer(B),
     {ok, MB} = join_result(),
@@ -2145,6 +2163,30 @@ invite_replaces_after_transfer(Config) ->
     _ = ua_event(A, bye),
     ?assertMatch([#{id := M1, uri := Erin}], chappe_mrf_conf:members(Conf)),
     no_ua_event(Ua1, bye, 200).
+
+%% A member that leaves while a caller replacing it is on its way leaves
+%% its place to that caller: the caller's join completes, its call is not
+%% hung up, and it stays in the room.
+%% req: MRF-27
+invite_replaces_member_left(Config) ->
+    {ok, Conf} = chappe_mrf:conference(<<"repleft">>, #{
+        focus => true, backend => chappe_mrf_conf_gate_backend
+    }),
+    {Ua1, M1} = room_caller(Config, Conf),
+    {ua, Ua1, {final, 200, Ok}} = ua_answer(Ua1),
+    [#{uri := U1}] = chappe_mrf_conf:members(Conf),
+    gated(Conf),
+    A = ?F:ua_call(?config(ep, Config), #{
+        from => U1, headers => [{<<"Replaces">>, replaces_of(Ok)}]
+    }),
+    GateA = gate(),
+    ok = ?F:ua_bye(Ua1),
+    conf_event(Conf, {left, M1, departed}),
+    GateA ! {gate, go},
+    {ua, A, {final, 200, _}} = ua_answer(A),
+    {ok, MA} = join_result(),
+    no_ua_event(A, bye, 300),
+    ?assertMatch([#{id := MA}], chappe_mrf_conf:members(Conf)).
 
 %% the timer of member Id's hold fires now
 expire_hold(Conf, Id) ->
@@ -3594,11 +3636,16 @@ listener_options_differ(Config) ->
         ok = chappe_mrf:start(#{esl_port => ?config(lp, Config)})
     end.
 
-%% The registry refuses a live key, and ignores what it does not know.
+%% The registry refuses a key another live process holds (its own again
+%% is ok) and a put of no pid, and ignores what it does not know.
 registry_edges(_Config) ->
     Key = {test, make_ref()},
     ok = chappe_mrf_registry:put(Key, self()),
-    ?assertEqual({error, exists}, chappe_mrf_registry:put(Key, self())),
+    ?assertEqual(ok, chappe_mrf_registry:put(Key, self())),
+    Other = idle(),
+    ?assertEqual({error, exists}, chappe_mrf_registry:put(Key, Other)),
+    Other ! stop,
+    ?assertError(function_clause, chappe_mrf_registry:put(Key, not_a_pid)),
     ok = chappe_mrf_registry:delete(Key),
     ?assertEqual(error, chappe_mrf_registry:lookup(Key)),
     ?assertEqual(
@@ -3664,6 +3711,104 @@ registry_restart(_Config) ->
             chappe_mrf_registry:lookup({loop, <<"regloop">>}) =:= error
     end),
     ok = chappe_mrf_conf:stop(Conf2).
+
+%% A put or a delete the registry had queued when it was killed is made by
+%% the next one: its caller never sees the restart. A put of a key its own
+%% process holds already answers ok; a key another live process holds
+%% stays taken.
+%% req: MRF-24
+registry_put_restart(_Config) ->
+    P = idle(),
+    ok = chappe_mrf_registry:put({call, <<"q-del">>}, P),
+    Reg = whereis(chappe_mrf_registry),
+    ok = sys:suspend(Reg),
+    Put = registry_async(fun() ->
+        chappe_mrf_registry:put({call, <<"q-put">>}, P)
+    end),
+    Del = registry_async(fun() ->
+        chappe_mrf_registry:delete({call, <<"q-del">>})
+    end),
+    until(fun() ->
+        element(2, process_info(Reg, message_queue_len)) >= 2
+    end),
+    exit(Reg, kill),
+    ?FAULTS:restart_registry(Reg),
+    ?assertEqual(ok, registry_result(Put)),
+    ?assertEqual(ok, registry_result(Del)),
+    ?assertEqual({ok, P}, chappe_mrf_registry:lookup({call, <<"q-put">>})),
+    ?assertEqual(error, chappe_mrf_registry:lookup({call, <<"q-del">>})),
+    ?assertEqual(ok, chappe_mrf_registry:put({call, <<"q-put">>}, P)),
+    ?assertEqual(
+        {error, exists}, chappe_mrf_registry:put({call, <<"q-put">>}, self())
+    ),
+    exit(P, kill),
+    until(fun() ->
+        chappe_mrf_registry:lookup({call, <<"q-put">>}) =:= error
+    end).
+
+%% A key whose process died before the registry saw it go is taken by
+%% the next put: an entry a killed registry left behind, or one whose
+%% 'DOWN' is still on its way, which then leaves the new entry alone.
+%% req: MRF-24
+registry_dead_entry(_Config) ->
+    Dead = idle(),
+    exit(Dead, kill),
+    until(fun() -> not is_process_alive(Dead) end),
+    %% as a registry killed before it saw Dead go leaves it
+    true = ets:insert(chappe_mrf_registry, {{call, <<"left">>}, Dead}),
+    P = idle(),
+    ?assertEqual(ok, chappe_mrf_registry:put({call, <<"left">>}, P)),
+    ?assertEqual({ok, P}, chappe_mrf_registry:lookup({call, <<"left">>})),
+    %% Q's 'DOWN' reaches the registry after the put that takes its key
+    Q = idle(),
+    ok = chappe_mrf_registry:put({call, <<"late">>}, Q),
+    Reg = whereis(chappe_mrf_registry),
+    ok = sys:suspend(Reg),
+    Put = registry_async(fun() ->
+        chappe_mrf_registry:put({call, <<"late">>}, P)
+    end),
+    until(fun() ->
+        element(2, process_info(Reg, message_queue_len)) >= 1
+    end),
+    exit(Q, kill),
+    until(fun() -> not is_process_alive(Q) end),
+    ok = sys:resume(Reg),
+    ?assertEqual(ok, registry_result(Put)),
+    _ = sys:get_state(Reg),
+    ?assertEqual({ok, P}, chappe_mrf_registry:lookup({call, <<"late">>})),
+    %% and P is watched for both
+    exit(P, kill),
+    until(fun() ->
+        chappe_mrf_registry:lookup({call, <<"late">>}) =:= error andalso
+            chappe_mrf_registry:lookup({call, <<"left">>}) =:= error
+    end).
+
+%% a process that waits for nothing
+idle() ->
+    spawn(fun() ->
+        receive
+            stop -> ok
+        end
+    end).
+
+%% Fun() in a process of its own, its result or how it failed
+registry_async(Fun) ->
+    Test = self(),
+    spawn(fun() ->
+        R =
+            try
+                Fun()
+            catch
+                Class:Why -> {Class, Why}
+            end,
+        Test ! {registry, self(), R}
+    end).
+
+registry_result(Pid) ->
+    receive
+        {registry, Pid, R} -> R
+    after 5000 -> ct:fail(registry_no_result)
+    end.
 
 %% Fun() holds within 5 s
 until(Fun) ->

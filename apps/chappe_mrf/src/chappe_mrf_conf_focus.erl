@@ -59,8 +59,9 @@ publish(S) ->
 
 %% Member Id is leaving for Why: the roster shows its endpoint
 %% disconnected, with how it left (RFC 4575 5.7.6: departed, or booted
-%% when the room removed it), before the next publish/1 deletes it. A
-%% member moving to another room just goes.
+%% when the room removed it: kicked, or a call that came in to replace a
+%% member too late), before the next publish/1 deletes it. A member
+%% moving to another room just goes.
 -spec departed(binary(), map(), atom(), #state{}) -> #state{}.
 departed(_Id, _Mb, transferred, S) ->
     S;
@@ -68,6 +69,7 @@ departed(Id, _Mb, Why, S) ->
     publish(#{Id => disconnection(Why)}, S).
 
 disconnection(kicked) -> booted;
+disconnection(expired) -> booted;
 disconnection(_Why) -> departed.
 
 publish(_Gone, #state{focus = undefined} = S) ->

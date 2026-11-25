@@ -55,8 +55,10 @@ call_opts(_Target, Opts) ->
 %% member of this room 403; a member another call is replacing already
 %% 603. A join that fails, raises or never ends leaves the member as it
 %% was: its hold goes with the join, the caller, or ?HOLD_MS. One that
-%% completes once its hold went (?HOLD_MS, or the member's call was
-%% transferred) is too late: the new call is hung up, {error, expired}.
+%% completes once its hold went (?HOLD_MS, another caller holds the
+%% member, or the member's call was transferred) is too late: the new call
+%% is hung up, {error, expired}. A member that left meanwhile leaves its
+%% place to the new call, which stays.
 -spec join(pid(), module(), map(), term(), map()) ->
     {ok, binary()} | {error, term()}.
 join(Conf, Mod, Info, Target, Opts0) ->
@@ -127,8 +129,10 @@ replacing(_Conf, _Target) ->
 %% (whether Who may replace the member whose leg is dialog process Pid),
 %% hold (keep that member for the call of Caller, watched: a second call
 %% for it gets 603), done (the new call is in: the member it replaces is
-%% hung up, while it is still held for this call; else the new call is,
-%% {error, expired}) and release (the new call failed: the member stays).
+%% hung up, while it is still held for this call; a member still in but
+%% not held for it any more stays, and the new call is hung up, {error,
+%% expired}; a member that left lets the new call stay) and release (the
+%% new call failed: the member stays).
 %% The hold also goes when Caller dies (hold_down/2), after ?HOLD_MS, or
 %% when the member's call is transferred (transferred/3).
 -spec replace(term(), #state{}) -> {reply, term(), #state{}}.
@@ -159,12 +163,15 @@ replace({done, Old, New, Hold}, #state{members = M} = S) ->
         #{Old := #{replacing := {Hold, _}}} ->
             S1 = unhold(Old, Hold, S),
             chappe_mrf_conf_backend:drop_member(Old, replaced, S1);
-        #{} ->
+        #{Old := _} ->
             %% the hold went before the new call was in (its time ran
             %% out, another caller holds the member, the member's call was
-            %% transferred, the member left): the new call goes, not the
-            %% member
-            {reply, {error, expired}, late(New, unhold(Old, Hold, S))}
+            %% transferred): the new call goes, not the member
+            {reply, {error, expired}, late(New, unhold(Old, Hold, S))};
+        #{} ->
+            %% the member left first: nobody to replace, the new call
+            %% stays
+            {reply, ok, unhold(Old, Hold, S)}
     end;
 replace({release, Old, Hold}, S) ->
     {reply, ok, unhold(Old, Hold, S)}.

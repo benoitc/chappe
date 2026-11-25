@@ -458,8 +458,10 @@ for the first caller only while its join runs: a join that fails or
 raises, a caller that dies, or 95 seconds, release it. A transfer of the
 member's call releases it too. A caller whose join gets in after that is
 too late: the member stays, the late call is hung up and leaves with
-reason `expired`, and its `join/3` returns `{error, expired}`. The roster
-shows a caller whose INVITE had Referred-By as `referred` by that URI.
+reason `expired` (the roster shows it `booted`), and its `join/3`
+returns `{error, expired}`. A member that hung up before the caller got
+in leaves its place to it: that call stays. The roster shows a caller
+whose INVITE had Referred-By as `referred` by that URI.
 
 A call you answered yourself (`connect_caller/3`) carries the Contact you
 gave it: for a focus room pass

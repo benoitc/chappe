@@ -14,7 +14,9 @@
 %% not to this server: a registry that restarts finds every entry, and
 %% watches their processes again (one that died meanwhile loses its
 %% entries at once), so a room keeps its name and a join under way is
-%% still found. Readers never wait on the server.
+%% still found. The table is public so that readers never wait on the
+%% server, but only this server writes it (put/2 and delete/1 go through
+%% it): an entry another process wrote would be watched by nobody.
 -module(chappe_mrf_registry).
 -behaviour(gen_server).
 
@@ -39,9 +41,13 @@ new_table() ->
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
-%% Key now names Pid. {error, exists} when it names a live process.
+%% Key now names Pid. {error, exists} when it names another live
+%% process; ok when it names Pid already, so a put made again after a
+%% restart of the registry (call/2) is no error. Pid is checked here: no
+%% write can make the server crash, so none is made again on a crash of
+%% its own.
 -spec put(term(), pid()) -> ok | {error, exists}.
-put(Key, Pid) ->
+put(Key, Pid) when is_pid(Pid) ->
     call({put, Key, Pid}, ?RESTART_TRIES).
 
 -spec delete(term()) -> ok.
@@ -67,13 +73,17 @@ select(Pattern) ->
         error:badarg -> []
     end.
 
-%% The writes go through the server, which watches each process; while
-%% its supervisor restarts it they wait a little, then fail as before.
+%% The writes go through the server, which watches each process. One the
+%% server did not answer because it went down (before it took the
+%% request, with the request queued, or after it made the change) is made
+%% again once its supervisor restarted it: both writes may run twice. They
+%% wait a little, then fail as before; a server that does not answer in
+%% time is no restart, and fails at once.
 call(Req, Tries) ->
     try
         gen_server:call(?MODULE, Req)
     catch
-        exit:{noproc, _} when Tries > 0 ->
+        exit:{Why, {gen_server, call, _}} when Why =/= timeout, Tries > 0 ->
             timer:sleep(?RESTART_WAIT),
             call(Req, Tries - 1)
     end.
@@ -105,11 +115,15 @@ handle_call(_Req, _From, S) ->
 watch(Key, Pid, #state{mons = M} = S) ->
     S#state{mons = M#{monitor(process, Pid) => Key}}.
 
-%% Key is taken: by a live process, or by one of this node that died
-%% before its 'DOWN' reached this server (after a restart), whose entry
-%% goes now; its 'DOWN' then finds the entry another's and leaves it.
+%% Key is taken: by Pid itself (a put made again, call/2), by a live
+%% process, or by one of this node that died before its 'DOWN' reached
+%% this server (after a restart), whose entry goes now; its 'DOWN' then
+%% finds the entry another's and leaves it.
 taken(Key, Pid, S) ->
     case ets:lookup(?TAB, Key) of
+        [{_, Pid}] ->
+            %% watched already: by the server that put it, or by init/1
+            {reply, ok, S};
         [{_, Old}] when node(Old) =:= node() ->
             case is_process_alive(Old) of
                 true ->

@@ -70,7 +70,8 @@ says how apps are released.
   mixer while the first still ran, and the end of the first cut the mixer
   under the second. Rooms keep their names across the restart now, and
   endpoints waiting for FreeSWITCH, joins under way and members' calls
-  are still found.
+  are still found. A room or a join registering itself at that moment no
+  longer fails.
 - A native conference join that failed could leave a mixer leg, an
   rtpengine session and a place in the room behind until the room ended,
   and a failed loopback call kept its caller waiting 95 seconds. A failed
@@ -84,8 +85,11 @@ says how apps are released.
 - A call replacing a conference member that got in late, after its hold
   on the member had run out or passed to another caller, or after the
   member's call was transferred, still hung that member up. It now
-  replaces the member only while the hold is its own; a late call is hung
-  up instead and the member stays.
+  replaces the member only while the hold is its own. A late call is hung
+  up instead and the member stays: its join fails as expired, the room
+  reports it leaving with the reason expired, and the roster shows it
+  removed by the conference. A member that hung up first leaves its place
+  to the call, which stays.
 
 ### New
 
