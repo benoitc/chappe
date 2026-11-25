@@ -285,7 +285,8 @@ conference(S, Room, Opts) ->
 %% endpoint (the mixer's offer on its way to an endpoint: rtpengine offers
 %% it G.722, PCMU, PCMA and telephone-event/8000 in place of L16). An
 %% 8 kHz room needs none: #{}. Merge them under your own anchor params,
-%% yours winning. A 16 kHz room needs rtpengine 13.4 or later.
+%% yours winning. A 16 kHz room needs an rtpengine with L16 (tested on
+%% 26.3.1.4; 11.5.1.18 has none; upstream tags have it from 13.4.1.1).
 -spec mixer_params(8000 | 16000, mixer | endpoint) -> map().
 mixer_params(8000, _Toward) ->
     #{};

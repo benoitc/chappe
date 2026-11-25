@@ -79,6 +79,8 @@
     leg :: chappe_mix:leg(),
     %% the leg's format: G.711 in an 8 kHz room, l16 in a 16 kHz one
     law :: chappe_sip_media_mix_sdp:law(),
+    %% an L16 leg's payload type, which it takes and sends on
+    pt :: 0..127 | undefined,
     local :: {inet:ip_address(), inet:port_number()},
     mon :: reference(),
     muted = false :: boolean(),
@@ -325,6 +327,7 @@ add_leg(Id, Owner, Room, #room{conf = Conf} = R, Plan, Opts, S) ->
                 room = Room,
                 leg = Leg,
                 law = maps:get(law, Plan),
+                pt = maps:get(pt, Plan, undefined),
                 local = {Ip, Port},
                 mon = monitor(process, Owner),
                 owner = Owner,
@@ -350,10 +353,9 @@ add_leg(Id, Owner, Room, #room{conf = Conf} = R, Plan, Opts, S) ->
     end.
 
 %% The leg's format as chappe_mix takes it: the law in an 8 kHz room, the
-%% payload type the offer named in a 16 kHz one (chappe_mix's default when
-%% the mixer offers).
+%% payload type of the offer (the far end's, or the mixer's) in a 16 kHz
+%% one.
 codec_opts(#{law := l16, pt := Pt}) -> #{pt => Pt};
-codec_opts(#{law := l16}) -> #{};
 codec_opts(#{law := Law}) -> #{law => Law}.
 
 sdp(Plan, Ip, Port, S) ->
@@ -502,9 +504,9 @@ do_relate(#leg{room = Room, leg = Leg}, Other, Rel, S) ->
             {reply, {error, not_joined}, S}
     end.
 
-do_set_remote(Id, #leg{room = Room, leg = Leg, law = Law} = L, Remote, S) ->
+do_set_remote(Id, #leg{room = Room, leg = Leg} = L, Remote, S) ->
     #room{conf = Conf} = maps:get(Room, S#state.rooms),
-    case remote_endpoint(Remote, Law) of
+    case remote_endpoint(Remote, L) of
         {ok, To, Dir} ->
             case safe(fun() -> chappe_mix:set_remote(Conf, Leg, To) end) of
                 ok ->
@@ -518,10 +520,17 @@ do_set_remote(Id, #leg{room = Room, leg = Leg, law = Law} = L, Remote, S) ->
             {reply, Err, S}
     end.
 
-remote_endpoint({Ip, Port} = Ep, _Law) when is_tuple(Ip), is_integer(Port) ->
+%% The far end of an answer to the mixer's offer. An L16 leg sends on the
+%% payload type it offered (one per leg, both ways), so an answer mapping
+%% L16 to another one (RFC 3264 6.1 only says it SHOULD keep the offer's)
+%% is {error, {pt_mismatch, Pt}}: the far end would drop what the mixer
+%% sends.
+remote_endpoint({Ip, Port} = Ep, _L) when is_tuple(Ip), is_integer(Port) ->
     {ok, Ep, sendrecv};
-remote_endpoint(Sdp, Law) ->
+remote_endpoint(Sdp, #leg{law = Law, pt = Mine}) ->
     case chappe_sip_media_mix_sdp:read_answer(Sdp, Law) of
+        {ok, #{pt := Pt}} when Law =:= l16, Pt =/= Mine ->
+            {error, {pt_mismatch, Pt}};
         {ok, #{endpoint := Ep, rtcp := Rtcp, dtmf := Dtmf, direction := Dir}} ->
             {ok, dtmf_opts(Dtmf, put_opt(rtcp_remote, Rtcp, #{remote => Ep})),
                 Dir};

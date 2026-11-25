@@ -37,6 +37,7 @@
     jitter_formula/1,
     l16_octets_through_the_mix/1,
     l16_sr_clock/1,
+    l16_jitter/1,
     l16_dtmf/1
 ]).
 
@@ -76,6 +77,7 @@ groups() ->
         {l16, [], [
             l16_octets_through_the_mix,
             l16_sr_clock,
+            l16_jitter,
             l16_dtmf
         ]}
     ].
@@ -1279,6 +1281,41 @@ l16_sr_clock(_Config) ->
         lists:member(TsSr, [Ts || {_, #{ts := Ts}} <- Rtp]),
         {sr_ts_not_sent, TsSr}
     ).
+
+%% The jitter a 16 kHz leg reports counts in 16 kHz units (A.8: the units
+%% of the RTP timestamp, which here runs at 16000). A sender keeping time,
+%% a packet every 20 ms 320 on from the last, is reported what the
+%% scheduler adds, a few ms worth; arrival counted at 8000 would put each
+%% packet 160 units off the last, a jitter near 160.
+%% req: R3550-104
+l16_jitter(_Config) ->
+    {ok, Conf} = chappe_mix:start(#{rate => 16000}),
+    {S, P} = open(),
+    {ok, _, #{port := M}} = chappe_mix:add_leg(Conf, #{remote => {?LO, P}}),
+    Pkts = [
+        rtp(#{
+            pt => 96,
+            seq => N,
+            ts => N * 320,
+            ssrc => 16#B0,
+            payload => <<0:5120>>
+        })
+     || N <- lists:seq(1, 400)
+    ],
+    %% 8 s: the first report is due within 7.5 s
+    ok = stream(S, {?LO, M}, Pkts),
+    ok = chappe_mix:stop(Conf),
+    Jitter = [
+        J
+     || {_, B} <- drain(S),
+        is_rtcp(B),
+        {ok, Parts} <- [chappe_mix_rtcp:parse(B)],
+        #{blocks := Blocks} <- Parts,
+        #{ssrc := 16#B0, jitter := J} <- Blocks
+    ],
+    ct:log("jitter reported (16 kHz units): ~p", [Jitter]),
+    ?assertNotEqual([], Jitter),
+    ?assert(lists:last(Jitter) < 100, Jitter).
 
 recorded(Pid) ->
     Pid ! {get, self()},

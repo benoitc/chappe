@@ -14,7 +14,7 @@ Passed to `chappe_mix:start/1`.
 |---|---|---|
 | `ip` | `{127, 0, 0, 1}` | Address legs bind to and report. Loopback, so nothing is exposed until you choose. |
 | `owner` | the caller | The conference stops when this process exits. |
-| `rate` | `8000` | The room's sample rate, for good: `8000` (G.711 legs) or `16000` (L16 legs, rtpengine 13.4 or later in front). Anything else is `{error, {bad_option, rate}}`. |
+| `rate` | `8000` | The room's sample rate, for good: `8000` (G.711 legs) or `16000` (L16 legs, rtpengine with L16 in front: tested on 26.3.1.4, none in 11.5.1.18, upstream from 13.4.1.1). Anything else is `{error, {bad_option, rate}}`. |
 | `law` | `ulaw` | Default codec of a leg in an 8 kHz room (`ulaw` is PCMU, `alaw` PCMA). A bad option at 16000. |
 | `depth` | `3` | Jitter buffer depth, in 20 ms frames. |
 | `events` | none | Process that gets `{chappe_mix, Conf, {talking, Leg, true \| false}}`. Unset, levels are not computed. |
@@ -48,7 +48,7 @@ Passed to `chappe_mix:add_leg/2`.
 | `rtcp` | `mux` | `mux`: RTCP on the RTP port (SDP with `a=rtcp-mux`). `pair`: even RTP port, RTCP on the next one. |
 | `rtcp_remote` | the RTP port, or the one after | Where RTCP goes when the far end names it with `a=rtcp`. |
 | `ptime` | `20` | What the far end sends, reported by `legs/1`. Packets of any size up to 200 ms are taken anyway. |
-| `dtmf_pt` | none | RFC 4733 payload type. Unset, the leg takes and gets no events. |
+| `dtmf_pt` | none | RFC 4733 payload type. Unset, the leg takes and gets no events. The leg's audio payload type is `{error, {bad_option, dtmf_pt}}`. |
 | `dtmf_events` | `0` to `15` | Event codes the leg is sent. |
 | `direction` | `sendrecv` | `sendrecv`, `sendonly`, `recvonly` or `inactive`, seen from the room. |
 | `mute` | `false` | On top of `direction`, as `mute/3` does. |

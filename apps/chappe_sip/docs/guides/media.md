@@ -51,7 +51,7 @@ The `mix` keys:
 |---|---|---|
 | `ip` | `{127, 0, 0, 1}` | Address the mixer legs bind to. |
 | `advertise` | `ip` | Address written in the leg SDP; set it when `ip` is `{0, 0, 0, 0}`. |
-| `rate` | `8000` | Rate of a room a join creates without a `rate`: `8000` (G.711) or `16000` (L16, rtpengine 13.4 or later in front). |
+| `rate` | `8000` | Rate of a room a join creates without a `rate`: `8000` (G.711) or `16000` (L16, rtpengine with L16 in front: tested on 26.3.1.4, upstream from 13.4.1.1). |
 | `law` | `ulaw` | Codec of a leg the mixer offers in an 8 kHz room (`ulaw` is PCMU, `alaw` PCMA). |
 | `depth` | chappe_mix default | Jitter buffer depth in frames. |
 
@@ -312,8 +312,9 @@ tears down the rtpengine call and takes the leg out of the room.
 ### An HD (16 kHz) room
 
 For callers on G.722 or Opus, make the room at 16 kHz and let rtpengine
-(13.4 or later, the first with L16) transcode each caller to L16/16000 and
-back. `chappe_sip_media:mixer_params/2` gives the flags for each side:
+transcode each caller to L16/16000 and back. It needs rtpengine's L16
+codec: the labs test 26.3.1.4, 11.5.1.18 (Ubuntu 24.04) has none, and
+upstream tags have it from 13.4.1.1 (not tested here). `chappe_sip_media:mixer_params/2` gives the flags for each side:
 `mixer` for a caller's offer on its way to the mixer, `endpoint` for the
 mixer's offer on its way to an endpoint.
 
@@ -339,7 +340,9 @@ is `#{}` at 8000.
   16 kHz room is refused with `{error, no_common_codec}`; a SIPREC
   recording of a 16 kHz room with `{error, {unsupported, {rate, 16000}}}`.
 - One codec per leg, fixed when the leg opens. An answer in another law is
-  refused with `{error, {law_mismatch, Law}}`.
+  refused with `{error, {law_mismatch, Law}}`, and an answer putting L16
+  on another payload type than the mixer's offer with
+  `{error, {pt_mismatch, Pt}}`: the leg sends on the one it offered.
 - A leg's direction follows SDP: an offer that only sends (`a=sendonly`, at
   media or session level) gets `a=recvonly` back and a leg the room only
   takes from; `a=recvonly` gets `a=sendonly`; `a=inactive` gets

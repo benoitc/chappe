@@ -48,7 +48,9 @@ the SDP toward rtpengine for that leg. `pt` defaults to 96.
 - The rate is fixed: `rate` is 8000 or 16000, anything else is
   `{error, {bad_option, rate}}`. `law` is a bad option in a 16 kHz room,
   `pt` in an 8 kHz one.
-- rtpengine 13.4 or later is needed: earlier ones have no L16 codec. The
+- rtpengine needs the L16 codec: the labs test 26.3.1.4, 11.5.1.18
+  (Ubuntu 24.04) has none, and upstream tags have it from 13.4.1.1 (not
+  tested here). The
   offer toward the mixer carries `codec => #{mask => [<<"all">>],
   transcode => [<<"L16/16000/1">>, <<"telephone-event/16000">>]}`;
   `chappe_sip_media:mixer_params/2` gives you these flags.

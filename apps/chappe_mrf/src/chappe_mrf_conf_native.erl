@@ -16,7 +16,7 @@
 -export([handle_info/2]).
 -export([set_flag/5, hangup/3, left/2, play/3, portable/0]).
 -export([relate/4, record/3, stop_record/1, handover/1, dial/4, dial_out/4]).
--export([loop_invite/4, check_rate/1]).
+-export([loop_invite/4, check_rate/1, same_rate/2]).
 
 -record(native, {
     %% the mixer room's sample rate
@@ -61,11 +61,34 @@ check_rate(#{rate := _, backend := B}) when B =/= native ->
 check_rate(_Opts) ->
     ok.
 
-%% Params under the app's map at Key, the app's keys winning.
+%% The room that start/2 found or started, for Opts: asked a rate, it
+%% must run at that rate, as a chappe_sip_media join asking another rate
+%% than its room's is refused. A room of a backend with no rate (fs)
+%% takes none. A start that failed is returned as it is.
+-spec same_rate({ok, pid()} | {error, term()}, map()) ->
+    {ok, pid()} | {error, term()}.
+same_rate({ok, Conf}, #{rate := Want}) ->
+    case chappe_mrf_conf:info(Conf) of
+        #{rate := Want} -> {ok, Conf};
+        #{rate := Rate} -> {error, {rate_mismatch, Rate}};
+        #{} -> {error, {unsupported, rate}};
+        {error, _} = Err -> Err
+    end;
+same_rate(Found, _Opts) ->
+    Found.
+
+%% Params under the app's map at Key, the app's keys winning; inside
+%% codec too, key by key, so an app's codec flags (strip, offer, a
+%% transcode of its own) do not drop the room's mask and transcode.
 under(_Key, Params, App) when map_size(Params) =:= 0 ->
     App;
 under(Key, Params, App) ->
-    App#{Key => maps:merge(Params, maps:get(Key, App, #{}))}.
+    App#{Key => merge_params(Params, maps:get(Key, App, #{}))}.
+
+merge_params(#{codec := Room} = Params, #{codec := Codec} = App) ->
+    maps:merge(Params, App#{codec := maps:merge(Room, Codec)});
+merge_params(Params, App) ->
+    maps:merge(Params, App).
 
 info(#native{bridge = Bridge, rate = Rate}) ->
     #{node => undefined, bridge => Bridge, rate => Rate}.

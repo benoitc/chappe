@@ -593,7 +593,8 @@ conference_persist(_Config) ->
 %% asking another rate is refused before any leg is made, a join without
 %% one takes the room's, and the leg's SDP follows the rate (L16/16000 and
 %% telephone-event/16000 at 16 kHz). A PCMU-only offer cannot join a
-%% 16 kHz room; a bad rate is refused. The configured rate is the default
+%% 16 kHz room, an answer cannot move L16 to another payload type than
+%% the mixer's offer; a bad rate is refused. The configured rate is the default
 %% of new rooms.
 conference_rate(_Config) ->
     Room = room(),
@@ -634,7 +635,13 @@ conference_rate(_Config) ->
         [{96, l16}, {97, l16}],
         lists:sort([{P, L} || #{pt := P, law := L} <- chappe_mix:legs(Conf)])
     ),
-    %% the answer to the mixer's L16 offer is read at 16 kHz
+    %% the answer to the mixer's L16 offer is read at 16 kHz, on the
+    %% payload type the mixer offered and sends on (96): an answer taking
+    %% L16 on another one is refused
+    ?assertEqual(
+        {error, {pt_mismatch, 97}},
+        chappe_sip_media:set_remote(SA, l16_sdp(4004, 97))
+    ),
     ok = chappe_sip_media:set_remote(SA, l16_sdp(4004, 96)),
     ?assertEqual(
         {error, no_common_codec},

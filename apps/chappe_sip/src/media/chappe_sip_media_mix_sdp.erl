@@ -163,19 +163,19 @@ plan(#{sdp := Offer} = Opts, Rate, _Law) ->
             Err
     end;
 plan(Opts, Rate, Law) ->
-    {ok, #{
-        law => offer_law(Rate, maps:get(law, Opts, Law)),
-        mux => true,
-        %% offered; the leg takes it when the answer does
-        dtmf_offer => ?DTMF_PT,
-        mute => maps:get(mute, Opts, false),
-        dir => maps:get(direction, Opts, sendrecv)
-    }}.
+    {ok,
+        maps:merge(offer_codec(Rate, maps:get(law, Opts, Law)), #{
+            mux => true,
+            %% offered; the leg takes it when the answer does
+            dtmf_offer => ?DTMF_PT,
+            mute => maps:get(mute, Opts, false),
+            dir => maps:get(direction, Opts, sendrecv)
+        })}.
 
-%% what the mixer offers: L16 at 16 kHz (on its default payload type), a
-%% law at 8 kHz
-offer_law(16000, _Law) -> l16;
-offer_law(8000, Law) -> Law.
+%% what the mixer offers: L16 at 16 kHz, on its payload type, a law at
+%% 8 kHz
+offer_codec(16000, _Law) -> #{law => l16, pt => ?L16_PT};
+offer_codec(8000, Law) -> #{law => Law}.
 
 %% The SDP of a planned leg advertised at Addr and Port: the answer to
 %% the offer it answers, or its offer.

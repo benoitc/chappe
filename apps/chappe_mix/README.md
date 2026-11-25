@@ -20,7 +20,7 @@ It knows nothing about SIP or SDP.
 | Rooms in your own node, controlled per pair of legs (`relate/4`), talker events, no media server to run | chappe_mix |
 | Low latency and density: see the measured numbers in [`test/audit/PERF.md`](test/audit/PERF.md) | chappe_mix |
 | Recording, playback, TTS or PIN prompts inside the room, mod_conference features | a FreeSWITCH room (`chappe_mrf`, backend `fs`) |
-| Wideband (G.722, Opus mixed at 16 kHz, rtpengine 13.4 or later in front) | chappe_mix, `rate => 16000` ([guide](docs/guides/conference.md#run-a-16-khz-hd-room)) |
+| Wideband (G.722, Opus mixed at 16 kHz, rtpengine with L16 in front: tested on 26.3.1.4, upstream has it from 13.4.1.1) | chappe_mix, `rate => 16000` ([guide](docs/guides/conference.md#run-a-16-khz-hd-room)) |
 
 `chappe_mrf` drives both kinds of room behind one API (backend `native` is
 chappe_mix, backend `fs` is FreeSWITCH).

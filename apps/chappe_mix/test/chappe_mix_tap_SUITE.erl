@@ -267,7 +267,7 @@ wideband_tap(_Config) ->
 %% A leg moves only to a room of its rate: the far end speaks the
 %% source's format, so a move across rates is refused and the leg stays
 %% where it was, its tap still running; a move to a room of the same
-%% rate goes.
+%% rate goes. An unknown leg is not_found before any rate is looked at.
 cross_rate_move(_Config) ->
     {ok, R8} = chappe_mix:start(#{}),
     {ok, R16} = chappe_mix:start(#{rate => 16000}),
@@ -284,6 +284,21 @@ cross_rate_move(_Config) ->
     {ok, L8, _} = chappe_mix:add_leg(R8, #{}),
     ?assertEqual({error, refused}, chappe_mix:move_leg(R8, L8, R16)),
     ?assertMatch([_], chappe_mix:legs(R8)),
+    %% a leg the source does not have is not_found, whatever the
+    %% destination
+    {ok, Dead} = chappe_mix:start(#{}),
+    ok = chappe_mix:stop(Dead),
+    [
+        ?assertEqual({error, not_found}, chappe_mix:move_leg(R16, 999, To))
+     || To <- [R8, R16b, Dead]
+    ],
+    %% behind the move's check, the destination's own: a leg of another
+    %% rate handed to a room is refused there
+    {ok, L3, _} = chappe_mix:add_leg(R16, #{}),
+    {ok, Leg3} = gen_server:call(R16, {detach_leg, L3, self()}),
+    ?assertEqual({error, {rate, 8000}}, gen_server:call(R8, {adopt_leg, Leg3})),
+    ?assertMatch([_], chappe_mix:legs(R8)),
+    ok = chappe_mix_leg:close(Leg3),
     [ok = chappe_mix:stop(C) || C <- [R8, R16, R16b]].
 
 %% ---- helpers ----

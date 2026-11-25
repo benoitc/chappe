@@ -16,12 +16,13 @@ Accepted (the maintainer's decision, 2026-10-02 and 2026-11-24). Amends
   band above 3.4 kHz away from every one of them, even when two HD phones
   talk.
 - rtpengine already sits in front of every mixer leg to transcode and to
-  terminate SRTP ([0004](0004-rtpengine-external.md)). From 13.x it has an
-  L16 RTP codec: the lab's mr26.3.1.4 converts Opus and G.722 callers to and
-  from `L16/16000` with `codec => #{mask => [<<"all">>], transcode =>
-  [<<"L16/16000/1">>, <<"telephone-event/16000">>]}` on the offer
-  toward the mixer (`apps/chappe_mix/test/audit/ATTEMPTS.md`, "the L16
-  gate"). Ubuntu 24.04's 11.5 has no L16.
+  terminate SRTP ([0004](0004-rtpengine-external.md)). Upstream tags have
+  an L16 RTP codec from mr13.4.1.1 on (mr13.3.1.1 has none). The one
+  version tested, the lab's mr26.3.1.4, converts Opus and G.722 callers to
+  and from `L16/16000` with `codec => #{mask => [<<"all">>], transcode =>
+  [<<"L16/16000/1">>, <<"telephone-event/16000">>]}` on the offer toward
+  the mixer (`apps/chappe_mix/test/audit/ATTEMPTS.md`, "the L16 gate").
+  Ubuntu 24.04's 11.5.1.18 has no L16.
 - The band check of the test tone helper (`chappe_mix_test_tone:band_check/3`)
   tells a 16 kHz path from one that went through 8 kHz: G.722 and Opus pjsua
   calls pass it, PCMU fails, and a FreeSWITCH `wideband` room passes it.
@@ -41,16 +42,20 @@ Accepted (the maintainer's decision, 2026-10-02 and 2026-11-24). Amends
 - In `chappe_sip_media`, the join that creates a room sets its rate; a join
   asking another rate gets `{error, {rate_mismatch, Rate}}`.
   `chappe_sip_media:mixer_params/2` gives the rtpengine flags for each side.
-- In chappe_mrf, a native room takes `rate => 16000`; an `fs` room refuses
-  `rate` (`{error, {unsupported, rate}}`) and gets 16 kHz from its
-  mod_conference profile (`profile => <<"wideband">>`).
-- A 16 kHz room needs rtpengine 13.4 or later.
+- In chappe_mrf, a native room takes `rate => 16000`, and asking a running
+  room for another rate than its own gets `{error, {rate_mismatch,
+  Rate}}`; an `fs` room refuses `rate` (`{error, {unsupported, rate}}`)
+  and gets 16 kHz from its mod_conference profile (`profile =>
+  <<"wideband">>`).
+- A 16 kHz room needs an rtpengine with L16: tested on mr26.3.1.4;
+  11.5.1.18 has none; upstream tags have it from mr13.4.1.1 (not tested).
 
 ## Consequences
 
 - An 8 kHz room is the mixer of before, byte for byte:
-  `chappe_mix_golden_tests` pins a seeded digest taken on the G.711-only
-  mixer.
+  `chappe_mix_golden_tests` pins two seeded digests taken on the
+  G.711-only mixer, one of the tick's parts and one of the tick itself
+  (the packets each leg sends, the taps).
 - A 16 kHz room costs more per tick (twice the samples, two octets each)
   and more per leg in rtpengine (a transcode both ways for every caller,
   PCMU ones included). `PERF.md` has the thresholds (the rows set

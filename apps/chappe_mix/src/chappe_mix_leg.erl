@@ -26,13 +26,19 @@
 %% and the SSRC it starts under. The rate decides the format: G.711 (the
 %% leg's law, else the room's) at 8 kHz, L16 at 16 kHz, where a law is a
 %% bad option; pt is the payload type of an L16 leg (default 96), a bad
-%% option at 8 kHz, where the law's static type is used.
+%% option at 8 kHz, where the law's static type is used. A dtmf_pt on the
+%% audio's payload type is a bad option at both: every packet would be
+%% taken as audio.
 -spec open(pos_integer(), map(), map()) -> {ok, #leg{}} | {error, term()}.
 open(Id, Opts, #{rate := Rate} = Dfl) ->
-    case codec(Rate, Opts, Dfl) of
-        {ok, Codec, Pt} -> open(Id, Opts, Dfl, Codec, Pt);
-        {error, _} = Err -> Err
+    maybe
+        {ok, Codec, Pt} ?= codec(Rate, Opts, Dfl),
+        ok ?= own_dtmf_pt(Opts, Pt),
+        open(Id, Opts, Dfl, Codec, Pt)
     end.
+
+own_dtmf_pt(#{dtmf_pt := Pt}, Pt) -> {error, {bad_option, dtmf_pt}};
+own_dtmf_pt(_Opts, _Pt) -> ok.
 
 codec(16000, #{law := _}, _Dfl) ->
     {error, {bad_option, law}};
@@ -170,9 +176,16 @@ info(#leg{} = L) ->
     ).
 
 %% A new far end (and the leg options that come with it): the source
-%% latches are reset, so its first packet is taken.
--spec set_remote(map(), #leg{}) -> #leg{}.
-set_remote(#{remote := Remote} = Opts, L) ->
+%% latches are reset, so its first packet is taken. A telephone-event on
+%% the leg's own payload type is refused, as at open/3.
+-spec set_remote(map(), #leg{}) -> #leg{} | {error, {bad_option, dtmf_pt}}.
+set_remote(#{remote := Remote} = Opts, #leg{pt = Pt} = L) ->
+    case own_dtmf_pt(Opts, Pt) of
+        ok -> remote(Remote, Opts, L);
+        {error, _} = Err -> Err
+    end.
+
+remote(Remote, Opts, L) ->
     L#leg{
         remote = Remote,
         source = undefined,

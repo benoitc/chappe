@@ -5,24 +5,39 @@
 %% a tick (the jitter buffer, the sum, the N-1 encode with each
 %% listener's gain carried from frame to frame, the room's PCM, a party's
 %% PCM, the jitter of the reports) is hashed, and the hash is the one the
-%% G.711 mixer gave before the 16 kHz room was added. A change that moves
-%% one byte of what an 8 kHz room sends, or one jitter estimate, changes
-%% the hash.
+%% G.711 mixer gave before the 16 kHz room was added. A second seeded run
+%% drives the tick itself, as chappe_mix_conf does: legs, their packets,
+%% chappe_mix_room:mix and the taps, and hashes every packet each leg
+%% sends and every tap frame. A change that moves one byte of what an
+%% 8 kHz room sends, one tap sample or one jitter estimate, changes a hash.
 -module(chappe_mix_golden_tests).
 
 -include_lib("eunit/include/eunit.hrl").
+-include_lib("chappe_mix/src/chappe_mix_leg.hrl").
 
--export([run/0, digest/1]).
+-export([run/0, tick_run/0, digest/1]).
 
 %% digest(run()), taken on the G.711-only mixer (the parent of this test)
 -define(GOLDEN,
     <<"6310f464955ba51d5e8349d36d5f5803a47c4af8a294f69c0415486867ee463b">>
 ).
 
+%% digest(tick_run()), taken on 374b478, the G.711-only mixer, with the
+%% three calls of tick/3 in their form of then (see there)
+-define(GOLDEN_TICK,
+    <<"b641b11efa208a46508e6c4679ce8c3483b72855d1bb1973b771d1c696d46aa6">>
+).
+
 golden_test_() ->
     {timeout, 120, fun() ->
         chappe_mix_g711:init(),
         ?assertEqual(?GOLDEN, digest(run()))
+    end}.
+
+tick_golden_test_() ->
+    {timeout, 120, fun() ->
+        chappe_mix_g711:init(),
+        ?assertEqual(?GOLDEN_TICK, digest(tick_run()))
     end}.
 
 %% Deterministic: the keys of a map are encoded in sorted order, not in
@@ -204,7 +219,8 @@ push(Pkts, J) ->
         lists:reverse(Pkts)
     ).
 
-%% A party's tap: its frame as 16-bit little-endian PCM.
+%% A party's frame as 16-bit little-endian PCM, through the G.711 decode
+%% (the tap's own path, chappe_mix_fmt:pcm/3, runs in tick_run/0).
 party() ->
     chappe_mix_g711:pcm(
         law(), rand:bytes(lists:nth(rand:uniform(3), [80, 160, 200]))
@@ -241,3 +257,167 @@ jitter(K) ->
     ),
     {ok, [#{type := rr, blocks := Blocks} | _]} = chappe_mix_rtcp:parse(Pkt),
     Blocks.
+
+%% ---- the tick ----
+
+%% Nine legs of an 8 kHz room, of both laws and every direction, one kept
+%% from hearing another, one from hearing two, one carrying injected
+%% media, each with a party tap, and a room tap. Over 300 ticks each leg's
+%% far end sends 10 to 30 ms packets, a few lost, a few of another payload
+%% type, loud and quiet in turns; chappe_mix_leg:take/3 takes them (latch,
+%% payload type, jitter buffer), chappe_mix_room:mix runs the tick (pop,
+%% sum, N-1 encode with the gain carried, CSRC lists, talker events, the
+%% timestamp over skipped ticks) and chappe_mix_tap hands out the PCM.
+%% Returned: each tick's talker events, frames in the sum and tap frames,
+%% and every packet each far end received.
+tick_run() ->
+    rand:seed(exsss, {2026, 11, 25}),
+    Dirs = [
+        sendrecv,
+        sendrecv,
+        sendrecv,
+        sendonly,
+        recvonly,
+        sendrecv,
+        sendrecv,
+        inactive,
+        sendrecv
+    ],
+    Ids = lists:seq(1, length(Dirs)),
+    Rx = #{I => rx() || I <- Ids},
+    Laws = #{I => law() || I <- Ids},
+    Legs0 =
+        #{
+            I => leg(I, maps:get(I, Laws), lists:nth(I, Dirs), maps:get(I, Rx))
+         || I <- Ids
+        },
+    #{2 := L2, 6 := L6} = Legs0,
+    Legs = Legs0#{2 := L2#leg{nohear = [3]}, 6 := L6#leg{nohear = [1, 2]}},
+    {Taps, Srcs} = lists:foldl(
+        fun(Src, {T, Acc}) ->
+            {{ok, Id}, T1} = add_tap(Src, T, Legs),
+            {T1, [{Src, Id} | Acc]}
+        end,
+        {#{}, []},
+        [room | Ids]
+    ),
+    Talk = #{
+        threshold => 160 * math:pow(32768 * math:pow(10, -40 / 20), 2),
+        start => 3,
+        stop => 15
+    },
+    {Out, _, _} = lists:foldl(
+        fun(T, {Acc, Ls, Ts}) ->
+            Fed = maps:map(
+                fun(I, L) -> feed(T, I, maps:get(I, Laws), L) end, Ls
+            ),
+            Missed =
+                case rand:uniform(15) of
+                    1 -> 1 + rand:uniform(2);
+                    _ -> 0
+                end,
+            {Ls1, Events, Frames, Mixed} = tick(Fed, Missed, Talk),
+            Ts1 = send_taps(Ts, Frames, Mixed),
+            Pcm = [{Src, tap_frame(Id)} || {Src, Id} <- lists:reverse(Srcs)],
+            {[{Events, Frames, Pcm} | Acc], Ls1, Ts1}
+        end,
+        {[], Legs, Taps},
+        lists:seq(1, 300)
+    ),
+    Got = [drain(maps:get(I, Rx), []) || I <- Ids],
+    [chappe_mix_leg:close(L) || L <- maps:values(Legs)],
+    [gen_udp:close(S) || S <- maps:values(Rx)],
+    {lists:reverse(Out), Got}.
+
+%% The three calls the 16 kHz room changed. On 374b478 they were
+%% chappe_mix_room:mix/3, chappe_mix_tap:send_all/3 and
+%% chappe_mix_tap:call/4, the frame being 160 samples: GOLDEN_TICK is
+%% this run with those.
+tick(Legs, Missed, Talk) ->
+    chappe_mix_room:mix(Legs, Missed, Talk, 160).
+
+send_taps(Taps, Frames, Mixed) ->
+    chappe_mix_tap:send_all(Taps, Frames, Mixed, 160).
+
+add_tap(Src, Taps, Legs) ->
+    chappe_mix_tap:call(
+        {add, Src, self(), 1000, undefined}, Taps, Legs, undefined, 8000
+    ).
+
+%% where leg I's mix goes
+rx() ->
+    {ok, S} = gen_udp:open(0, [
+        binary, {active, false}, {ip, {127, 0, 0, 1}}, {recbuf, 1000000}
+    ]),
+    S.
+
+leg(I, Law, Dir, Rx) ->
+    {ok, P} = inet:port(Rx),
+    Dfl = #{
+        ip => {127, 0, 0, 1},
+        law => ulaw,
+        rate => 8000,
+        depth => 3,
+        ssrc => 16#1000 + I
+    },
+    {ok, L} = chappe_mix_leg:open(
+        I,
+        #{
+            remote => {{127, 0, 0, 1}, P},
+            law => Law,
+            direction => Dir,
+            injected => I =:= 7
+        },
+        Dfl
+    ),
+    L.
+
+%% What leg I's far end sends at tick T: nothing one time in ten, comfort
+%% noise one time in thirty, else 10 to 30 ms of its law, loud for 20
+%% ticks then quiet for 20 (the talker events), out of turn with the
+%% legs of the other parity.
+feed(T, I, Law, L) ->
+    case rand:uniform(30) of
+        N when N =< 3 ->
+            L;
+        4 ->
+            take(13, T, I, <<0>>, L);
+        _ ->
+            Dur = lists:nth(rand:uniform(4), [80, 160, 160, 240]),
+            Payload =
+                case (T div 20) rem 2 =:= I rem 2 of
+                    true -> rand:bytes(Dur);
+                    false -> binary:copy(<<(silence(Law))>>, Dur)
+                end,
+            take(static_pt(Law), T, I, Payload, L)
+    end.
+
+take(Pt, T, I, Payload, L) ->
+    Pkt = #{
+        pt => Pt,
+        ssrc => 16#A0 + I,
+        seq => T,
+        ts => T * 160,
+        csrcs => [],
+        marker => false,
+        payload => Payload
+    },
+    chappe_mix_leg:take(Pkt, {{127, 0, 0, 1}, 5000 + I}, L).
+
+silence(ulaw) -> 16#FF;
+silence(alaw) -> 16#D5.
+
+static_pt(ulaw) -> 0;
+static_pt(alaw) -> 8.
+
+tap_frame(Id) ->
+    receive
+        {chappe_mix, _, {tap, Id, Pcm}} -> Pcm
+    after 0 -> none
+    end.
+
+drain(S, Acc) ->
+    case gen_udp:recv(S, 0, 200) of
+        {ok, {_, _, Pkt}} -> drain(S, [Pkt | Acc]);
+        {error, timeout} -> lists:reverse(Acc)
+    end.

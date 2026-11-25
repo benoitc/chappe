@@ -12,7 +12,8 @@
 %% (RFC 3551 4.5.11, on a dynamic payload type). The mixer has no other
 %% codec: put rtpengine in front for SRTP, DTLS and every other codec
 %% (Opus, G.722, ...), and let it transcode to the room's format; a
-%% 16 kHz room needs rtpengine 13.4 or later, the first with L16.
+%% 16 kHz room needs an rtpengine with L16 (tested on 26.3.1.4; 11.5.1.18
+%% has none; upstream tags have it from 13.4.1.1).
 %%
 %% Each leg is an RTP session of its own and the mixer behaves on it as
 %% an RFC 3550 mixer: mixed packets name their sources in the CSRC list,
@@ -186,7 +187,8 @@ stop(Conf) ->
 %% Open a leg. Returns the address the far end must send to, and the
 %% port its RTCP goes to (the same port with rtcp => mux). An option the
 %% room's rate does not take (law at 16 kHz, pt at 8 kHz) is
-%% {error, {bad_option, Key}}.
+%% {error, {bad_option, Key}}, and so is a dtmf_pt on the leg's audio
+%% payload type (the law's static one, or pt).
 -spec add_leg(conf(), leg_opts()) ->
     {ok, leg(), #{
         ip := inet:ip_address(),
@@ -228,8 +230,11 @@ move_leg(From, Leg, To) ->
 %% Send the mix to Remote from now on, and take RTP from the next
 %% address that sends (the source latch is reset). Given as a map, its
 %% rtcp_remote replaces the leg's (none in the map: none any more), and
-%% the telephone-event options there replace the leg's.
--spec set_remote(conf(), leg(), remote()) -> ok | {error, not_found}.
+%% the telephone-event options there replace the leg's; a dtmf_pt on the
+%% leg's audio payload type is {error, {bad_option, dtmf_pt}} and changes
+%% nothing.
+-spec set_remote(conf(), leg(), remote()) ->
+    ok | {error, not_found | {bad_option, dtmf_pt}}.
 set_remote(Conf, Leg, Remote) ->
     gen_server:call(Conf, {set_remote, Leg, Remote}).
 

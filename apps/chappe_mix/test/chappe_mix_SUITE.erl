@@ -138,9 +138,10 @@ end_per_group(_Group, _Config) ->
 
 %% A room's rate is 8000 or 16000 and fixed: anything else is refused at
 %% start, a law is refused at 16000 (every leg is L16) and a payload type
-%% at 8000 (G.711 has its own), in the caller's process; stats/1 and
-%% legs/1 report the rate, the format and the payload type. In a 16 kHz
-%% room PCMU on 0 is not the leg's format: counted, not mixed.
+%% at 8000 (G.711 has its own), in the caller's process, and at both a
+%% telephone-event on the audio's payload type; stats/1 and legs/1 report
+%% the rate, the format and the payload type. In a 16 kHz room PCMU on 0
+%% is not the leg's format: counted, not mixed.
 rate_options(Config) ->
     [
         ?assertEqual(
@@ -158,8 +159,17 @@ rate_options(Config) ->
     ?assertEqual(
         {error, {bad_option, pt}}, chappe_mix:add_leg(C8, #{pt => 96})
     ),
+    %% telephone-event cannot share the audio's payload type
+    ?assertEqual(
+        {error, {bad_option, dtmf_pt}},
+        chappe_mix:add_leg(C8, #{law => alaw, dtmf_pt => 8})
+    ),
     {ok, L8, _} = chappe_mix:add_leg(C8, #{law => alaw}),
     ?assertMatch(#{rate := 8000, law := alaw, pt := 8}, leg_stats(C8, L8)),
+    ?assertEqual(
+        {error, {bad_option, dtmf_pt}},
+        chappe_mix:set_remote(C8, L8, #{remote => {?LO, 4000}, dtmf_pt => 8})
+    ),
     ok = chappe_mix:stop(C8),
     {ok, Conf} = chappe_mix:start(room(Config)),
     ?assertMatch(#{rate := 16000}, chappe_mix:stats(Conf)),
@@ -175,8 +185,19 @@ rate_options(Config) ->
         )
      || P <- [-1, 128, <<"96">>]
     ],
+    [
+        ?assertEqual(
+            {error, {bad_option, dtmf_pt}}, chappe_mix:add_leg(Conf, O)
+        )
+     || O <- [#{dtmf_pt => 96}, #{pt => 101, dtmf_pt => 101}]
+    ],
     {ok, L1, _} = chappe_mix:add_leg(Conf, #{}),
     {ok, L2, #{port := P2}} = chappe_mix:add_leg(Conf, #{pt => 118}),
+    ?assertEqual(
+        {error, {bad_option, dtmf_pt}},
+        chappe_mix:set_remote(Conf, L2, #{remote => {?LO, 4000}, dtmf_pt => 118})
+    ),
+    ?assertMatch(#{remote := undefined}, leg_stats(Conf, L2)),
     ?assertMatch(#{rate := 16000, law := l16, pt := 96}, leg_stats(Conf, L1)),
     ?assertMatch(#{pt := 118}, leg_stats(Conf, L2)),
     %% PCMU at 8 kHz into a 16 kHz leg: not its payload type

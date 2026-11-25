@@ -13,7 +13,8 @@ chappe_mix takes RTP on UDP sockets it owns, mixes, and sends it back. A
 room runs at one rate, fixed when it starts: 8 kHz with G.711 legs (the
 default) or 16 kHz with L16 legs (RFC 3551 4.5.11). It has no SIP, no SDP
 and no other codec: rtpengine in front of it handles SRTP, DTLS, ICE and
-transcoding to the room's format (L16 needs rtpengine 13.4 or later). The
+transcoding to the room's format (L16 needs an rtpengine with that codec:
+tested on 26.3.1.4, none in 11.5.1.18, upstream from 13.4.1.1). The
 SDP for a mixer leg is written by its caller (`chappe_sip_media_mix_sdp` in
 chappe_sip). Decision
 [0017](../../../../docs/decisions/0017-chappe-mix-16khz-l16.md) has the

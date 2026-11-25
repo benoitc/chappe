@@ -90,12 +90,18 @@ Give the room its rate when you start it:
   member to it and back: the room lays
   `chappe_sip_media:mixer_params(16000, mixer)` under your `b` anchor
   params and `mixer_params(16000, endpoint)` under your endpoint `offer`
-  params. Your own keys win.
-- rtpengine 13.4 or later is needed; earlier ones have no L16.
+  params. Your own keys win, and inside `codec` key by key: a `codec` map
+  of yours (`strip`, say) adds to the room's `mask` and `transcode`, and
+  your `transcode` replaces the room's.
+- rtpengine needs the L16 codec: the labs test 26.3.1.4, 11.5.1.18
+  (Ubuntu 24.04) has none, and upstream tags have it from 13.4.1.1 (not
+  tested here).
 - A PCMU member is heard, and hears the room, through 8 kHz; the others
   keep their band.
 - The rate is fixed: `rate` is 8000 (default) or 16000, anything else is
-  `{error, {bad_option, rate}}`.
+  `{error, {bad_option, rate}}`. `conference/2` on a room that runs
+  returns it at its own rate or with no `rate`; another rate is
+  `{error, {rate_mismatch, RoomRate}}`.
 - SIPREC of a 16 kHz room is refused for now
   (`{error, {unsupported, {rate, 16000}}}`).
 - The FreeSWITCH equivalent is an fs room with a 16 kHz profile

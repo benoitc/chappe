@@ -314,11 +314,13 @@ forward_pending(Sock, To) ->
 
 update_leg(Id, Fun, S) ->
     case maps:find(Id, S#state.legs) of
-        {ok, L} ->
-            {reply, ok, S#state{legs = maps:put(Id, Fun(L), S#state.legs)}};
-        error ->
-            {reply, {error, not_found}, S}
+        {ok, L} -> put_leg(Id, Fun(L), S);
+        error -> {reply, {error, not_found}, S}
     end.
+
+%% a change the leg refused (chappe_mix_leg:set_remote/2) leaves it as it was
+put_leg(_Id, {error, _} = Err, S) -> {reply, Err, S};
+put_leg(Id, L, S) -> {reply, ok, S#state{legs = maps:put(Id, L, S#state.legs)}}.
 
 stats(S) ->
     Totals = maps:fold(

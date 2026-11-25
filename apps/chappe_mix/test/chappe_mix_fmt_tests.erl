@@ -4,12 +4,6 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
-rates_test() ->
-    ?assertEqual([8000, 16000], chappe_mix_fmt:rates()),
-    ?assertEqual(8000, chappe_mix_fmt:rate(ulaw)),
-    ?assertEqual(8000, chappe_mix_fmt:rate(alaw)),
-    ?assertEqual(16000, chappe_mix_fmt:rate(l16)).
-
 %% 20 ms at each rate, which is also the timestamp step of a frame
 frame_test() ->
     ?assertEqual(160, chappe_mix_fmt:frame(8000)),

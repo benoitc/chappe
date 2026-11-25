@@ -2243,9 +2243,11 @@ conf_edges(Config) ->
 %% A 16 kHz native room: a caller's offer toward the mixer asks rtpengine
 %% for the room's format only (mask all, transcode L16/16000 and
 %% telephone-event/16000), the mixer takes the L16 it gets in a 16 kHz
-%% chappe_mix room, and the app's own codec flags toward the mixer win.
-%% An 8 kHz room asks for no transcode; a rate is refused on fs and a
-%% rate other than 8000 or 16000 everywhere.
+%% chappe_mix room, an endpoint's node is offered G.722 and G.711 in place
+%% of the mixer's L16, and the app's own codec flags toward the mixer win,
+%% key by key inside codec. An 8 kHz room asks for no transcode; a rate
+%% is refused on fs and a rate other than 8000 or 16000 everywhere, and
+%% asking a running room for another rate than its own is refused.
 native_hd_room(Config) ->
     ivr(Config),
     ?assertEqual(
@@ -2258,8 +2260,19 @@ native_hd_room(Config) ->
             backend => fs, node => fs1, rate => 16000
         })
     ),
+    %% refused before the room is made
+    ?assertEqual(
+        false, lists:keymember(<<"hdf">>, 1, chappe_mrf:conferences())
+    ),
     {ok, Conf} = chappe_mrf:conference(<<"hd">>, #{rate => 16000}),
     ?assertMatch(#{rate := 16000}, chappe_mrf_conf:info(Conf)),
+    %% the running room, at its rate or with none; another rate is refused
+    ?assertEqual({ok, Conf}, chappe_mrf:conference(<<"hd">>, #{rate => 16000})),
+    ?assertEqual({ok, Conf}, chappe_mrf:conference(<<"hd">>, #{})),
+    ?assertEqual(
+        {error, {rate_mismatch, 16000}},
+        chappe_mrf:conference(<<"hd">>, #{rate => 8000})
+    ),
     {Ua, _Ep, B2b, Owner} = call_in(Config),
     _ = rtpe_offers(),
     {ok, M} = chappe_mrf_conf:join(Conf, B2b, #{name => <<"hd">>}),
@@ -2275,33 +2288,71 @@ native_hd_room(Config) ->
         Codec
     ),
     ?assertMatch([#{id := M}], chappe_mrf_conf:members(Conf)),
+    %% an endpoint in it: the mixer's offer goes to its node as G.722 and
+    %% G.711 with telephone-event/8000, and the answer comes back on the
+    %% mixer's own L16 payload type
+    {ok, Ep} = chappe_mrf:create_endpoint(#{targets => [{fs1, fs_uri(Config)}]}),
+    _ = rtpe_offers(),
+    {ok, MEp} = chappe_mrf_conf:join(Conf, Ep, #{name => <<"ep">>}),
+    ?assertEqual(
+        [
+            #{
+                <<"mask">> => [<<"all">>],
+                <<"transcode">> => [
+                    <<"G722">>,
+                    <<"PCMU">>,
+                    <<"PCMA">>,
+                    <<"telephone-event/8000">>
+                ]
+            }
+        ],
+        [C || #{<<"codec">> := C} <- rtpe_offers()]
+    ),
+    ok = chappe_mrf_conf:kick(Conf, MEp),
+    chappe_mrf:destroy(Ep),
     ok = chappe_mrf_conf:kick(Conf, M),
     _ = ua_event(Ua, bye),
     ok = chappe_mrf_conf:stop(Conf),
     Owner ! stop,
-    %% the app's flags toward the mixer win over the room's
+    %% the app's flags toward the mixer win over the room's, key by key
+    %% inside codec: its transcode replaces the room's, the room's mask
+    %% stays, and a codec key of its own is added
     {ok, Own} = chappe_mrf:conference(<<"hd-own">>, #{
         rate => 16000,
         anchor_params => #{
-            b => #{codec => #{transcode => [<<"L16/16000/1">>]}}
+            b => #{
+                codec => #{
+                    transcode => [<<"L16/16000/1">>],
+                    strip => [<<"CN">>]
+                }
+            }
         }
     }),
     {_Ua2, _, B2b2, Owner2} = call_in(Config),
     _ = rtpe_offers(),
     {ok, _} = chappe_mrf_conf:join(Own, B2b2, #{}),
     ?assertMatch(
-        [#{<<"codec">> := #{<<"transcode">> := [<<"L16/16000/1">>]}} | _],
         [
-            O
-         || #{<<"codec">> := C} = O <- rtpe_offers(),
-            not is_map_key(<<"mask">>, C)
-        ]
+            #{
+                <<"codec">> := #{
+                    <<"mask">> := [<<"all">>],
+                    <<"transcode">> := [<<"L16/16000/1">>],
+                    <<"strip">> := [<<"CN">>]
+                }
+            }
+            | _
+        ],
+        [O || #{<<"codec">> := _} = O <- rtpe_offers()]
     ),
     ok = chappe_mrf_conf:stop(Own),
     Owner2 ! stop,
     %% an 8 kHz room: G.711 through, no transcode asked
     {ok, Nb} = chappe_mrf:conference(<<"nb">>, #{}),
     ?assertMatch(#{rate := 8000}, chappe_mrf_conf:info(Nb)),
+    ?assertEqual(
+        {error, {rate_mismatch, 8000}},
+        chappe_mrf:conference(<<"nb">>, #{rate => 16000})
+    ),
     {_Ua3, _, B2b3, Owner3} = call_in(Config),
     _ = rtpe_offers(),
     {ok, _} = chappe_mrf_conf:join(Nb, B2b3, #{}),
