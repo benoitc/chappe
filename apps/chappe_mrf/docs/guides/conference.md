@@ -341,9 +341,19 @@ refused rather than carried out by FreeSWITCH, out of the room's sight.
 On native, the node bridges the party from the room's endpoint, and
 FreeSWITCH would offer it only the codec that endpoint speaks (G.722 in a
 16 kHz room, PCMU in an 8 kHz one). So the default dial string offers the
-party `OPUS,G722,PCMU,PCMA` as its leg's `absolute_codec_string`. Change
-the list with `dial_codecs`, or keep FreeSWITCH's own choice with
-`dial_codecs => inherit`:
+party every codec of the lab as its leg's `absolute_codec_string`, in the
+order of the room's rate:
+
+| Room | Offered to the party |
+|---|---|
+| native, 16 kHz | `OPUS,G722,PCMU,PCMA` |
+| native, 8 kHz | `PCMU,PCMA,G722,OPUS` (a G.711 party needs no transcoding) |
+| fs | nothing added: FreeSWITCH offers the profile's codecs |
+
+The `dial` value your `refer_policy` sees starts with that block
+(`[^^:absolute_codec_string=OPUS,G722,PCMU,PCMA]sofia/external/...`).
+Change the list with `dial_codecs`, or keep FreeSWITCH's own choice on
+native too with `dial_codecs => inherit`:
 
 ```erlang
 {ok, Conf} = chappe_mrf:conference(<<"hd">>, #{
@@ -355,6 +365,17 @@ the list with `dial_codecs`, or keep FreeSWITCH's own choice with
 
 A `dial` fun of your own builds the whole dial string: put the codecs in
 it yourself (`[^^:absolute_codec_string=...]` before `sofia/...`).
+`chappe_mrf:dial_codecs(Opts)` gives the default list for the room's
+options (`inherit` on fs):
+
+```erlang
+Opts = #{rate => 16000, focus => true},
+Codecs = chappe_mrf:dial_codecs(Opts),    %% <<"OPUS,G722,PCMU,PCMA">>
+Dial = fun(<<"sip:", Bare/binary>>) ->
+    [<<"[^^:absolute_codec_string=">>, Codecs, <<"]sofia/carrier/">>, Bare]
+end,
+{ok, Conf} = chappe_mrf:conference(<<"hd">>, Opts#{dial => Dial}).
+```
 
 A caller the room answers itself (`join/3` with `{call, Req, Res}`) gets
 the conference URI with `isfocus` as its Contact in a `focus => true` room

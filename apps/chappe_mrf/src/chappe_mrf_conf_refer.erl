@@ -202,10 +202,11 @@ setup(Opts, S) ->
             {ok, V} <- [maps:find(O, Opts)]
         ]
     ),
+    Codecs = chappe_mrf_conf_refer_dial:default_codecs(Opts),
     S#state{
         refer_policy = maps:get(refer_policy, Opts, undefined),
         replaces_policy = maps:get(replaces_policy, Opts, undefined),
-        dial = Dial,
+        dial = maps:merge(#{codecs => Codecs}, Dial),
         dial_tag = chappe_mrf_lib:new_id()
     }.
 

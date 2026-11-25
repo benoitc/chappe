@@ -13,7 +13,9 @@
 %% narrow band. A FreeSWITCH endpoint joins a native 16 kHz room too, and
 %% keeps the band both ways. A REFER to a native 16 kHz room's URI brings
 %% in a G.722 callee through the dial-out path, which keeps the band both
-%% ways once it answered. The setup is chappe_mrf_live_SUITE's.
+%% ways once it answered, and a PCMU-only callee, which answers only
+%% because the room offers it G.711 too. The setup is
+%% chappe_mrf_live_SUITE's.
 %% Skipped unless MRF=1 (apps/chappe_mrf/test/e2e.sh) and docker runs.
 %% MRF_PJSUA_NAME (chappe-hd) prefixes the pjsua container names.
 -module(chappe_mrf_hd_live_SUITE).
@@ -24,14 +26,20 @@
 -export([all/0, init_per_suite/1, end_per_suite/1]).
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([native_hd_room/1, native_hd_endpoint/1, fs_wideband_room/1]).
--export([refer_hd_dial_out/1]).
+-export([refer_hd_dial_out/1, refer_pcmu_dial_out/1]).
 
 -define(LIVE, chappe_mrf_live_SUITE).
 
 -define(RATE, 16000).
 
 all() ->
-    [native_hd_room, native_hd_endpoint, fs_wideband_room, refer_hd_dial_out].
+    [
+        native_hd_room,
+        native_hd_endpoint,
+        fs_wideband_room,
+        refer_hd_dial_out,
+        refer_pcmu_dial_out
+    ].
 
 init_per_suite(Config) ->
     case os:find_executable("docker") of
@@ -285,16 +293,58 @@ fs_wideband_room(Config) ->
 %% directions keep the band. The REFER is chappe_sip_refer:send/3 from
 %% this node to the room's URI, out of any dialog, as the demo sends it.
 refer_hd_dial_out(Config) ->
-    case lab_network(?config(compose, Config)) of
-        undefined -> {skip, "no compose project (MRF_COMPOSE) for the callee"};
-        Net -> refer_hd_dial_out(Config, Net)
-    end.
+    Probe = chappe_mix_test_tone:band_probe(8000),
+    Play = wav(?config(priv_dir, Config), "probe.wav", Probe, ?RATE),
+    Callee = #{codec => "G722", rate => 16000, play => Play},
+    {ok, In, RecA, RecCallee} =
+        refer_dial_out(Config, <<"hd-refer">>, Callee, #{}),
+    Cal = chappe_mix_test_tone:band_calibrate(lists:sublist(Probe, ?RATE * 2)),
+    From = In div 1000 + 2,
+    Checks = [
+        {a_to_callee, band_shape(window(RecCallee, ?RATE, 3, 6), Cal)},
+        {callee_to_a, band_shape(window(RecA, ?RATE, From, From + 3), Cal)}
+    ],
+    ct:log("~p", [Checks]),
+    [?assertEqual({W, ok}, {W, R}) || {W, R} <- Checks].
 
-refer_hd_dial_out(Config, Net) ->
+%% The same REFER to a PCMU-only callee: the room's endpoint speaks G.722,
+%% and only the codecs the default dial string offers (PCMU among them)
+%% let the callee answer; FreeSWITCH's own choice (dial_codecs =>
+%% inherit) offers it G.722 alone, which it refuses (488). Once in, it
+%% hears the room's caller in the narrow band (1000 and 2500 Hz of the
+%% probe), and the caller hears its own two tones.
+refer_pcmu_dial_out(Config) ->
+    Dir = ?config(priv_dir, Config),
+    Probe = chappe_mix_test_tone:band_probe(8000),
+    Play = wav(Dir, "probe.wav", Probe, ?RATE),
+    Tones = narrow_tones(8),
+    Callee = #{
+        codec => "PCMU",
+        rate => 8000,
+        play => wav(Dir, "nb-play.wav", Tones, 8000)
+    },
+    {ok, In, RecA, RecCallee} =
+        refer_dial_out(Config, <<"hd-refer-nb">>, Callee, #{play => Play}),
+    Lv = fun(S, Rate) -> chappe_mix_test_tone:levels(S, [1000, 2500], Rate) end,
+    From = In div 1000 + 2,
+    Hears = [
+        {callee_hears_a, Lv(window(RecCallee, 8000, 3, 6), 8000)},
+        {a_hears_callee, Lv(window(RecA, ?RATE, From, From + 3), ?RATE)}
+    ],
+    ct:log("~p", [Hears]),
+    [?assert(L > -40.0, {W, F, L}) || {W, Ls} <- Hears, {F, L} <- Ls].
+
+%% A G.722 caller in a native 16 kHz focus room, then a REFER to the
+%% room's URI bringing in a pjsua callee (Callee: codec, rate, play) on
+%% the lab's network. {ok, In, RecA, RecCallee}: In is the ms from the
+%% caller's answer, where its recording starts, to the callee's
+%% (NOTIFY 200); the callee is in for 14 s from then.
+refer_dial_out(Config, Room, Callee, AOpts) ->
+    Net = lab_network(Config),
     Dir = ?config(priv_dir, Config),
     Test = self(),
     ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
-    {ok, Conf} = chappe_mrf:conference(<<"hd-refer">>, #{
+    {ok, Conf} = chappe_mrf:conference(Room, #{
         rate => 16000,
         focus => true,
         refer_policy => fun(#{action := Action}) -> Action =:= add end,
@@ -310,25 +360,21 @@ refer_hd_dial_out(Config, Net) ->
     ok = chappe_sip:invite(fun(Req, Res) ->
         Test ! {joined, chappe_mrf_conf:join(Conf, {call, Req, Res}, #{})}
     end),
-    Probe = chappe_mix_test_tone:band_probe(8000),
-    Play = wav(Dir, "probe.wav", Probe, ?RATE),
-    T0 = erlang:monotonic_time(millisecond),
+    Play = maps:get(play, AOpts, maps:get(play, Callee)),
     A = pjsua(
         Config,
         a,
         #{codec => "G722", rate => 16000, play => Play, dur => 26},
-        target(Config, <<"hd-refer">>)
+        target(Config, Room)
     ),
     joined(1),
+    %% A's recording starts about when the room answered it: hd.sh's
+    %% docker build and the container's start are behind us
+    T0 = erlang:monotonic_time(millisecond),
     %% the callee answers the room's call on the lab's network, where fs1
     %% reaches it by its container name
     Name = container(callee),
-    Callee = pjsua(
-        Config,
-        callee,
-        #{codec => "G722", rate => 16000, play => Play, dur => 14, net => Net},
-        none
-    ),
+    CalleeP = pjsua(Config, callee, Callee#{dur => 14, net => Net}, none),
     ok = running(Name, 20),
     #{entity := Entity} = chappe_mrf_conf:info(Conf),
     {Sip, _} = ports(callee),
@@ -336,33 +382,45 @@ refer_hd_dial_out(Config, Net) ->
         ["sip:", Name, "@", Name, ":", integer_to_list(Sip)]
     ),
     {ok, Id, #{status := 200}} = chappe_sip_refer:send(Entity, Party, #{}),
-    ?assertEqual(200, refer_final(Id)),
+    Final = refer_final(Id),
     In = erlang:monotonic_time(millisecond) - T0,
     Members = chappe_mrf_conf:members(Conf),
+    ct:log("callee ~p: NOTIFY ~p at ~p ms; members ~p", [
+        maps:with([codec, rate], Callee), Final, In, Members
+    ]),
+    ?assertEqual(200, Final),
     ?assertMatch([_, _], Members),
     ?assert(lists:any(fun(#{uri := U}) -> U =:= Party end, Members)),
-    [wait_pjsua(P, 60000) || P <- [Callee, A]],
-    Cal = chappe_mix_test_tone:band_calibrate(lists:sublist(Probe, ?RATE * 2)),
+    [wait_pjsua(P, 60000) || P <- [CalleeP, A]],
+    ok = chappe_mrf_conf:stop(Conf),
     RecA = wav_samples(filename:join(Dir, "a.wav")),
     RecCallee = wav_samples(filename:join(Dir, "callee.wav")),
-    %% A's recording starts when its call does, before In: from In on the
-    %% callee is in, for 14 s
-    From = In div 1000 + 2,
-    Checks = [
-        {a_to_callee, band_shape(window(RecCallee, ?RATE, 3, 6), Cal)},
-        {callee_to_a, band_shape(window(RecA, ?RATE, From, From + 3), Cal)}
-    ],
-    ct:log("callee in at ~p ms; ~p~nrecordings: A ~p, callee ~p samples", [
-        In, Checks, length(RecA), length(RecCallee)
+    ct:log("recordings: A ~p, callee ~p samples", [
+        length(RecA), length(RecCallee)
     ]),
-    ok = chappe_mrf_conf:stop(Conf),
-    [?assertEqual({W, ok}, {W, R}) || {W, R} <- Checks].
+    {ok, In, RecA, RecCallee}.
+
+%% Secs of 1000 and 2500 Hz at 8 kHz, 5000 of amplitude each: the narrow
+%% band of the probe, which a G.711 party sends
+narrow_tones(Secs) ->
+    [T1, T2] = [
+        chappe_mix_test_tone:tone(F, 5000, Secs * 8000, 8000)
+     || F <- [1000, 2500]
+    ],
+    lists:zipwith(fun erlang:'+'/2, T1, T2).
 
 %% The docker network of the lab's fs1, from the compose command e2e.sh
-%% passes (MRF_COMPOSE); undefined without one.
-lab_network("") ->
+%% passes (MRF_COMPOSE). The suite runs only under MRF=1, with the lab
+%% up: no network there is a broken lab, and the case fails.
+lab_network(Config) ->
+    case network(?config(compose, Config)) of
+        undefined -> ct:fail({no_lab_network, ?config(compose, Config)});
+        Net -> Net
+    end.
+
+network("") ->
     undefined;
-lab_network(Compose) ->
+network(Compose) ->
     case string:trim(os:cmd(Compose ++ " ps -q fs1 2>/dev/null")) of
         "" ->
             undefined;

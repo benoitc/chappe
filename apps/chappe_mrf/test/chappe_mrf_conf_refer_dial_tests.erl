@@ -51,3 +51,49 @@ check_codecs_test() ->
             pcmu
         ]
     ].
+
+%% The codecs a room's default dial string offers: on native by the
+%% room's rate, the wideband ones first at 16 kHz and G.711 first at 8 kHz
+%% (a G.711 party needs no transcoding); on fs FreeSWITCH's own choice,
+%% as before dial_codecs (bgdial has no A-leg: the profile's codecs).
+default_codecs_test() ->
+    ?assertEqual(
+        <<"OPUS,G722,PCMU,PCMA">>, ?D:default_codecs(#{rate => 16000})
+    ),
+    ?assertEqual(
+        <<"OPUS,G722,PCMU,PCMA">>,
+        ?D:default_codecs(#{backend => native, rate => 16000})
+    ),
+    ?assertEqual(<<"PCMU,PCMA,G722,OPUS">>, ?D:default_codecs(#{})),
+    ?assertEqual(<<"PCMU,PCMA,G722,OPUS">>, ?D:default_codecs(#{rate => 8000})),
+    ?assertEqual(inherit, ?D:default_codecs(#{backend => fs})),
+    ?assertEqual(inherit, ?D:default_codecs(#{backend => my_backend})),
+    %% the facade's, for a dial fun of your own
+    ?assertEqual(
+        <<"OPUS,G722,PCMU,PCMA">>, chappe_mrf:dial_codecs(#{rate => 16000})
+    ),
+    ?assertEqual(inherit, chappe_mrf:dial_codecs(#{backend => fs})).
+
+%% The default dial string: the codecs as the party's own leg variable
+%% before sofia/<profile>/<target>, nothing with inherit or without
+%% codecs; a dial fun's string is its own.
+dial_string_test() ->
+    D = fun(Cfg) -> iolist_to_binary(?D:dial_string(Cfg, <<"sip:c@h">>)) end,
+    ?assertEqual(
+        <<"[^^:absolute_codec_string=OPUS,G722,PCMU,PCMA]sofia/external/c@h">>,
+        D(#{codecs => ?D:default_codecs(#{rate => 16000})})
+    ),
+    ?assertEqual(
+        <<"[^^:absolute_codec_string=PCMU,PCMA,G722,OPUS]sofia/carrier/c@h">>,
+        D(#{codecs => ?D:default_codecs(#{}), profile => <<"carrier">>})
+    ),
+    ?assertEqual(
+        <<"sofia/external/c@h">>,
+        D(#{codecs => ?D:default_codecs(#{backend => fs})})
+    ),
+    ?assertEqual(<<"sofia/external/c@h">>, D(#{codecs => inherit})),
+    ?assertEqual(<<"sofia/external/c@h">>, D(#{})),
+    ?assertEqual(
+        <<"sofia/mine/c@h">>,
+        D(#{codecs => <<"PCMU">>, dial => fun(_) -> <<"sofia/mine/c@h">> end})
+    ).

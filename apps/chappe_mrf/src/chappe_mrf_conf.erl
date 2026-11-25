@@ -136,15 +136,18 @@
 %%                caller. The refer_policy is never asked. It runs in the
 %%                room process; one that crashes refuses.
 %%   dial      => fun((Target) -> iodata()): the dial string of a party a
-%%                REFER brings in (default sofia/<dial_profile>/<target>);
-%%                it runs in the room process, and one that crashes, or
-%%                gives no iodata, refuses the REFER 403
+%%                REFER brings in (default [^^:absolute_codec_string=
+%%                <dial_codecs>]sofia/<dial_profile>/<target>, without the
+%%                codec block when dial_codecs is inherit); it runs in the
+%%                room process, and one that crashes, or gives no iodata,
+%%                refuses the REFER 403
 %%   dial_profile => the sofia profile of that default (<<"external">>)
 %%   dial_codecs => the codecs that default offers the party, as its leg's
-%%                absolute_codec_string (<<"OPUS,G722,PCMU,PCMA">>), or
-%%                inherit for FreeSWITCH's own choice. On native the party
-%%                is bridged from the room's endpoint, which would offer
-%%                only its own codec (G.722 in a 16 kHz room).
+%%                absolute_codec_string, or inherit for FreeSWITCH's own
+%%                choice. Default: native <<"OPUS,G722,PCMU,PCMA">> at
+%%                16 kHz, <<"PCMU,PCMA,G722,OPUS">> at 8 kHz (the party is
+%%                bridged from the room's endpoint, which would offer only
+%%                its own codec), fs inherit (the profile's codecs).
 %%   dial_timeout => ms the party has to answer (30000), then 408
 %%   dial_endpoint => native: create_endpoint/1 options (node, select,
 %%                targets) of the endpoint that dials it

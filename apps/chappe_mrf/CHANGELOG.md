@@ -22,9 +22,12 @@ says how apps are released.
 
 - A party a native conference dials (by REFER) was offered only the codec
   of the room's media endpoint, G.722 in a 16 kHz room, so a phone
-  without it refused the call. The party is now offered Opus, G.722, PCMU
-  and PCMA; a conference option changes the list.
-
+  without it refused the call. It is now offered Opus, G.722, PCMU and
+  PCMA, wideband first in a 16 kHz room and G.711 first in an 8 kHz one;
+  a conference option changes the list, and a new function gives it to a
+  dial function of your own. The dial string a REFER policy sees now
+  starts with that codec list. FreeSWITCH conferences still offer their
+  profile's codecs.
 - A party a REFER brings into a native conference was a member, and could
   be heard, while it was still ringing; it now joins only once it
   answers, and a party that does not answer leaves the room as it was.
