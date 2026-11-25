@@ -447,7 +447,13 @@ log shows the call, `{hold,a}` and `{unhold,a}`.
     call anyone outside the demo, and it cannot pass as the demo shell
     without its token, which never leaves the node;
   - read an HD room's roster (who is in, from which address) the same
-    way.
+    way;
+  - take a member's place in an HD room with an INVITE whose Replaces
+    names that member's call with the room, by putting a registered user
+    in the From or the Referred-By (`replaces_policy/2` trusts the same
+    senders as `refer_policy/2`). The room checks only that the Replaces
+    names a member's call (its Call-ID and both tags), which a party to
+    that call or one it told knows.
 
   Before the demo leaves your machine, change the passwords, keep the
   node on a network you trust, and authenticate INVITE, REFER and

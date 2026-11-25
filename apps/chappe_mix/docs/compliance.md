@@ -300,7 +300,7 @@ None.
 | R3550-186 | SHOULD | ssrc | demo | untested |  | Furthermore, for applications such as telephony in which some sources such as mobile entities may change addresses during the course of an RTP session, the RTP implementation SHOULD modify the collision detection algorithm to accept packets from the new source transport address. |
 | R3550-187 | SHOULD | ssrc | platform | untested |  | To guard against flip-flopping between addresses if a genuine collision does occur, the algorithm SHOULD include some means to detect this case and avoid switching. |
 | R3550-188 | SHOULD | ssrc | demo | untested |  | When a new SSRC identifier is chosen due to a collision, the candidate identifier SHOULD first be looked up in the source identifier table to see if it was already in use by some other source. |
-| R3550-189 | MUST | ssrc | demo | pass | chappe_mix_rfc_SUITE:new_ssrc_not_seen | If so, another candidate MUST be generated and the process repeated. |
+| R3550-189 | MUST | ssrc | demo | pass | chappe_mix_rfc_SUITE:new_ssrc_draw_capped, chappe_mix_rfc_SUITE:new_ssrc_not_seen | If so, another candidate MUST be generated and the process repeated. |
 | R3550-191 | SHOULD | ssrc | platform | untested |  | An error condition SHOULD be indicated as appropriate. |
 | R3550-192 | MAY | ssrc | platform | untested |  | Transmission MAY be attempted again periodically after a long, random time (on the order of minutes). |
 | R3550-193 | SHOULD | ssrc | n/a | n/a |  | For layered encodings transmitted on separate RTP sessions (see Section 2.4), a single SSRC identifier space SHOULD be used across the sessions of all layers and the core (base) layer SHOULD be used for SSRC identifier allocation and collision resolution. |

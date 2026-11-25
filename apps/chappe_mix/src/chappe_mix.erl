@@ -82,7 +82,8 @@
 %% RTCP CNAME the mixer uses on every leg, default 96 random bits in
 %% base64 (RFC 7022). ssrc_draw: a fun that draws a candidate SSRC,
 %% default a cryptographic random; a candidate already in use in the
-%% conference is drawn again. Set it in tests to script the draws.
+%% conference is drawn again, 16 times at most, then the mixer draws its
+%% own. Set it in tests to script the draws.
 %% events: a process that gets `{chappe_mix, Conf, {talking, Leg, true |
 %% false}}' when a leg starts or stops talking (off by default, and then
 %% the levels are not computed at all); talk_threshold (dBFS RMS over a
