@@ -14,8 +14,9 @@ participants on request (RFC 4579).
 - You transfer a call yourself (you are the sender).
 - A B2BUA call carries a transfer out itself, blind or attended
   (`transfer => auto`, below).
-- A conference focus handles REFERs to add (`method=INVITE`), remove
-  (`method=BYE`) or refer (`method=REFER`) a participant.
+- A conference focus handles REFERs to add (`method=INVITE`, the default),
+  remove (`method=BYE`) or refer (`method=REFER`) a participant
+  (`chappe_sip_focus:refer_info/2` and `refer/4`, below).
 
 ## Accept a REFER inside a call
 
@@ -275,24 +276,43 @@ ms) the REFER gets 603. Both calls work from any node.
   caller sees neither the REFER nor a re-INVITE.
 - A conference member's REFER on its call is a transfer of that call: the
   target takes the member's place, on either backend.
-- A REFER to the focus (RFC 4579) goes through `chappe_sip_focus:refer/4`:
+- A REFER to the focus (RFC 4579) goes through `chappe_sip_focus:refer/4`.
+  Out of any dialog (a REFER to the conference URI), give it the
+  conference's Contact so the REFER's subscription is the focus's:
 
 ```erlang
-case chappe_sip_focus:refer(Dialog, RReq, RRes, #{policy => Policy}) of
+Opts = #{policy => Policy, owner => Conf,
+         contact => chappe_sip_focus:contact(ConfUri)},
+case chappe_sip_focus:refer(undefined, RReq, RRes, Opts) of
     {add, Uri, Refer} -> dial_in(Uri, Refer);
     {transfer, Uri, Refer} -> replace_member(Uri, Refer);
     {remove, Uri, Refer} -> kick(Uri, Refer);
+    {refer, Uri, Refer} -> refer_in(Uri, Refer);
     {error, _} -> ok
 end.
 ```
 
-What a REFER means follows where it was sent. To the conference URI, or
-in a dialog whose Contact carries `isfocus`, a Refer-To for an INVITE is
-`add` (5.5). In a dialog of a room that hides it is a focus (no
-`isfocus`, 4.2), it is `transfer`: an RFC 3515 transfer of that member.
-`remove` is a Refer-To with `method=BYE` (5.11). The policy gets `action`,
-`target`, `replaces`, `referrer` and `referred_by`; without one all are
-refused 403. Report with `chappe_sip_refer:final/2`.
+What a REFER means follows where it was sent and the Refer-To's method.
+To the conference URI, or in a dialog whose Contact carries `isfocus`, an
+INVITE (the default) is `add` (5.5). In a dialog of a room that hides it
+is a focus (no `isfocus`, 4.2), it is `transfer`: an RFC 3515 transfer of
+that member. `method=BYE` is `remove` (5.11). `method=REFER` is `refer`
+(5.7): the Refer-To carries, escaped, the Refer-To the focus sends the
+target in a REFER of its own, normally the conference URI; a REFER for a
+REFER without one gets 400. Any other method gets 403. Report with
+`chappe_sip_refer:final/2`; for `refer`, the status the target answered
+your REFER with.
+
+The policy gets `chappe_sip_focus:refer_info/2`'s map: `action`, `target`,
+`method`, `replaces`, `refer_to` (the parsed Refer-To), `nested` (for
+`refer`), `referrer`, `referred_by`, `target_dialog` and `origin`; without
+a policy all are refused 403. `target_dialog` is the dialog of this node a
+Target-Dialog header names (RFC 4538): a REFER outside any dialog that
+names a participant's dialog with the focus proves it knows that call. A
+Target-Dialog that names none is ignored. `origin`
+(`chappe_sip_refer:origin/1`) is that dialog, the REFER's own dialog, or
+its Call-ID and From tag: use it to tell a repeated REFER from a new one.
+Call `refer_info/2` yourself when you answer the REFER on your own.
 
 When `replaces` is set, put it on your INVITE to the target: that brings a
 point-to-point call into the conference (5.10). `chappe_sip_refer:target/1`
@@ -323,8 +343,9 @@ their whole Contact with
 
 - `chappe_sip_sipfrag` builds and parses the message/sipfrag bodies
   (`build(200)` is `<<"SIP/2.0 200 OK\r\n">>`).
-- The Contact of the REFER's 200 is the stack's contact, not a GRUU
-  (RFC 7647 3 asks for one); chappe_sip has no GRUU support.
+- The Contact of the REFER's 200 is the stack's contact (or the `contact`
+  option of `accept/3,4`), not a GRUU (RFC 7647 3 asks for one); chappe_sip
+  has no GRUU support.
 - Inside a dialog, the REFER package's SUBSCRIBEs and NOTIFYs only reach
   `chappe_sip_refer` once it has accepted or sent a REFER in that dialog;
   before that they go to the owner as usual.

@@ -33,6 +33,7 @@
     send_in_dialog/1,
     send_out_of_dialog/1,
     send_refer_sub_false_and_reject/1,
+    send_in_dialog_norefersub/1,
     tel_refer_sip_status_lines/1
 ]).
 
@@ -56,6 +57,7 @@ all() ->
         send_in_dialog,
         send_out_of_dialog,
         send_refer_sub_false_and_reject,
+        send_in_dialog_norefersub,
         tel_refer_sip_status_lines
     ].
 
@@ -427,7 +429,7 @@ refer_bye_needs_authorization(_Config) ->
 
 %% RFC 4579 5.7: Refer-To with method=REFER and an escaped Refer-To: the
 %% focus reads the nested target and REFERs the participant to it (5.6)
-%% req: R4579-14 R4579-13
+%% req: R4579-13
 refer_with_refer(_Config) ->
     {S, D} = call(),
     B = peer(maps:get(ep, S), <<"b">>),
@@ -740,6 +742,34 @@ send_refer_sub_false_and_reject(_Config) ->
     send(S, Src2, resp(Refer2, 603, <<"Declined">>, <<"unused">>, [])),
     ?assertMatch({error, {rejected, 603, _}}, sent_result(Sender2)),
     no_msg(500),
+    hangup(S, D).
+
+%% RFC 7647 4: a REFER asked to create no subscription (Refer-Sub: false,
+%% Supported: norefersub) may go in the dialog, with the dialog's own
+%% Contact. A recipient may still create one (RFC 4488 4: a 2xx without
+%% Refer-Sub: false): its NOTIFYs then come in that dialog and reach the
+%% owner.
+%% req: R7647-06 R4488-02
+send_in_dialog_norefersub(_Config) ->
+    {S, D} = call(),
+    Sender = send_async(D, <<"sip:carol@127.0.0.1">>, #{refer_sub => false}),
+    {Refer, Src} = recv_req(S, <<"REFER">>),
+    ?assertEqual(<<"false">>, hdr(Refer, <<"refer-sub">>)),
+    ?assertEqual(maps:get(ft, S), to_tag(Refer)),
+    {ok, #{uri := Own}} = chappe_sip_hdr:name_addr(
+        chappe_sip_dialog:local_contact(D)
+    ),
+    ?assertEqual(Own, contact_uri(Refer)),
+    send(S, Src, resp(Refer, 200, <<"OK">>, <<"unused">>, [])),
+    {ok, Id, #{subscription := true}} = sent_result(Sender),
+    ok = send_notify(S, 10, <<"refer">>, <<"active">>, 100),
+    _ = recv_status(maps:get(sock, S), 200),
+    ?assertEqual({refer_progress, Id, 100}, recv_msg()),
+    ok = send_notify(
+        S, 11, <<"refer">>, <<"terminated;reason=noresource">>, 200
+    ),
+    _ = recv_status(maps:get(sock, S), 200),
+    ?assertEqual({refer_done, Id, 200}, recv_msg()),
     hangup(S, D).
 
 %% ---- app side ----

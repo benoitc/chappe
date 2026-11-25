@@ -25,6 +25,14 @@
 %% node dials the target (with its Replaces, for an attended transfer) and
 %% reports the outcome, as the REFER guide shows.
 %%
+%% `conf' is a conference focus (RFC 4579) with no media: an INVITE to it
+%% is answered with the conference URI and isfocus as Contact, and a
+%% REFER to it outside any dialog goes through chappe_sip_focus:refer/4,
+%% answered with that Contact: the focus INVITEs the Refer-To target as
+%% the conference (5.5). A REFER whose Target-Dialog names no dialog of
+%% the node is refused 403 (RFC 4538 4: it proves nothing); one without
+%% Target-Dialog, or naming a call to `conf', is let through.
+%%
 %% An INVITE with Replaces goes through chappe_sip:find_replaced/1 with the
 %% response rules of the answer-calls guide. SUBSCRIBE serves the
 %% `conference' package (RFC 6665), and, on a stack that has them,
@@ -72,6 +80,7 @@ start(Ip) ->
     ok = subscribe_handler(),
     ok = events(),
     ok = chappe_sip:message(fun message/2),
+    ok = focus_handler(),
     ok = fake_rtpengine(),
     log("chappe_conf_node up on ~s", [Contact]),
     ok.
@@ -208,6 +217,12 @@ answer(<<"slow">>, Ip, Req, Res) ->
     %% past the 200 ms of RFC 3261 17.2.1, so the stack owes a 100 Trying
     timer:sleep(1000),
     answer(<<"uas">>, Ip, Req, Res);
+answer(<<"conf">>, Ip, Req, Res) ->
+    Opts = (uas_opts(Ip))#{
+        headers => chappe_sip_focus:headers(focus_contact())
+    },
+    {ok, D} = chappe_sip:create_uas(Req, Res, Opts),
+    serve(D, uas);
 answer(User, Ip, Req, Res) ->
     {ok, D} = chappe_sip:create_uas(Req, Res, uas_opts(Ip)),
     serve(D, role(User)).
@@ -299,6 +314,82 @@ transfer(Refer) ->
             ok = chappe_sip_refer:final(Refer, element(2, Err));
         {error, Why} ->
             log("transfer failed: ~p", [Why]),
+            ok = chappe_sip_refer:final(Refer, 503)
+    end.
+
+%% ---- the conference focus ----
+
+%% A stack without chappe_sip_focus:refer/4 leaves REFERs alone.
+focus_handler() ->
+    {module, chappe_sip_focus} = code:ensure_loaded(chappe_sip_focus),
+    case erlang:function_exported(chappe_sip_focus, refer_info, 2) of
+        true -> chappe_sip:refer(fun focus_refer/2);
+        false -> ok
+    end.
+
+conf_uri() ->
+    <<"sip:conf@", (persistent_term:get({?MODULE, ip}))/binary, ":5060">>.
+
+focus_contact() ->
+    chappe_sip_focus:contact(conf_uri()).
+
+%% a REFER to the conference URI: the dialer owns the REFER's
+%% subscription and outlives this request worker
+focus_refer(Req, Res) ->
+    log("REFER ~s ~s", [chappe_sip_req:uri(Req), chappe_sip_req:call_id(Req)]),
+    case user(Req) of
+        <<"conf">> ->
+            Dialer = spawn(fun focus_dialer/0),
+            Named = chappe_sip_req:get(<<"target-dialog">>, Req) =/= undefined,
+            Policy = fun
+                (#{target_dialog := undefined}) when Named -> false;
+                (#{}) -> true
+            end,
+            Opts = #{
+                policy => Policy, owner => Dialer, contact => focus_contact()
+            },
+            case chappe_sip_focus:refer(undefined, Req, Res, Opts) of
+                {error, Why} ->
+                    log("focus REFER refused: ~p", [Why]),
+                    Dialer ! stop;
+                Verdict ->
+                    Dialer ! {go, Verdict}
+            end;
+        _ ->
+            reply(Res, 404)
+    end.
+
+focus_dialer() ->
+    receive
+        {go, {add, Target, Refer}} ->
+            log("focus dials ~s", [Target]),
+            focus_dial(Target, Refer);
+        {go, {Action, _Target, Refer}} ->
+            log("focus REFER not carried out: ~p", [Action]),
+            ok = chappe_sip_refer:final(Refer, 501);
+        stop ->
+            ok
+    after 35000 -> ok
+    end.
+
+%% RFC 4579 5.5: the INVITE to the new participant has the conference URI
+%% with isfocus as Contact
+focus_dial(Target, Refer) ->
+    Ip = local_ip(),
+    Opts = #{
+        local_sdp => sdp(Ip),
+        from => <<"<", (conf_uri())/binary, ">">>,
+        contact => conf_uri(),
+        contact_params => chappe_sip_focus:contact_params()
+    },
+    case chappe_sip:create_uac(Target, Opts) of
+        {ok, D} ->
+            ok = chappe_sip_refer:final(Refer, 200),
+            serve(D, uas);
+        {error, Err} when element(1, Err) =:= chappe_sip_error ->
+            ok = chappe_sip_refer:final(Refer, element(2, Err));
+        {error, Why} ->
+            log("focus dial failed: ~p", [Why]),
             ok = chappe_sip_refer:final(Refer, 503)
     end.
 

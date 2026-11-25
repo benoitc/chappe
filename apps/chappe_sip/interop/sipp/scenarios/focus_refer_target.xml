@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!-- Copyright 2026 Benoit Chesneau
+     SPDX-License-Identifier: Apache-2.0
+
+     The party a REFER to the conference focus brings in, on port 5070.
+     RFC 4579 section 5.5: the focus's INVITE carries a Contact with the
+     conference URI and the isfocus feature parameter; the call fails
+     otherwise, and so does the case. It answers and leaves the call up. -->
+<scenario name="focus_refer_target">
+  <recv request="INVITE" timeout="30000">
+    <action>
+      <ereg regexp="sip:conf@[^&gt;]*&gt;.*;isfocus" search_in="hdr" header="Contact:" check_it="true" assign_to="chk"/>
+    </action>
+  </recv>
+  <send>
+    <![CDATA[
+      SIP/2.0 180 Ringing
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=[pid]F[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:];tag=[pid]F[call_number]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Contact: <sip:sipp@[local_ip]:[local_port]>
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=sipp 1 1 IN IP[local_ip_type] [local_ip]
+      s=-
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0
+      a=rtpmap:0 PCMU/8000
+
+    ]]>
+  </send>
+  <recv request="ACK"/>
+  <!-- the call stays up: its end is not the case's -->
+  <pause milliseconds="500"/>
+
+  <Reference variables="chk"/>
+</scenario>

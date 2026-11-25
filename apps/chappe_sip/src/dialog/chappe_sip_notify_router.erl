@@ -5,7 +5,7 @@
 %%
 %% The engine runs handler/1 for every such NOTIFY: a subscription of ours
 %% (chappe_sip_subscriber) by Call-ID, our tag and the peer's, then a
-%% REFER we sent (chappe_sip_refer:handle_notify/2), then your
+%% REFER we sent (chappe_sip_refer_notify:handle_notify/2), then your
 %% chappe_sip:notify/1 handler; with none of them, 481 (RFC 6665 4.1.3).
 -module(chappe_sip_notify_router).
 
@@ -21,7 +21,7 @@ handler(App) ->
             handled ->
                 ok;
             pass ->
-                case chappe_sip_refer:handle_notify(Req, Res) of
+                case chappe_sip_refer_notify:handle_notify(Req, Res) of
                     handled ->
                         ok;
                     pass when is_function(App, 2) ->

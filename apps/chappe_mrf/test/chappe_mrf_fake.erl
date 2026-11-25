@@ -26,7 +26,15 @@
 %% re-INVITE (and reports them), and sends BYE or RTP.
 -module(chappe_mrf_fake).
 
--export([fs_start/2, fs_stop/1, fs_dtmf/2, fs_hangup/2, fs_port/1, fs_refer/2]).
+-export([
+    fs_bridge/2,
+    fs_start/2,
+    fs_stop/1,
+    fs_dtmf/2,
+    fs_hangup/2,
+    fs_port/1,
+    fs_refer/2
+]).
 -export([fs_event/3, socket_start/3, socket_event/3, socket_stop/1]).
 -export([refuser_start/1]).
 -export([esl_start/0, esl_stop/1]).
@@ -104,6 +112,13 @@ fs_refer({Pid, _}, ReferTo) ->
 %% an event on every channel of the node
 fs_event({Pid, _}, Name, Headers) ->
     Pid ! {all, {event, Name, Headers}},
+    ok.
+
+%% The bridge every channel runs ends: answered (CHANNEL_BRIDGE), or
+%% {failed, Cause}: its completion with that originate disposition, as
+%% FreeSWITCH reports a bridge whose target did not answer.
+fs_bridge({Pid, _}, Outcome) ->
+    Pid ! {all, {bridge, Outcome}},
     ok.
 
 %% A SIP peer that answers every INVITE with Status: {Pid, Port}.
@@ -330,6 +345,8 @@ chan_loop(#{tcp := Tcp} = C) ->
         {event, Name, Headers} ->
             event(C, Name, Headers),
             chan_loop(C);
+        {bridge, Outcome} ->
+            chan_loop(bridged(Outcome, C));
         {set_digits, D} ->
             #{node := #{opts := O} = N} = C,
             chan_loop(C#{node := N#{opts := O#{digits => D}}})
@@ -572,10 +589,20 @@ app(<<"conference">>, Arg, _Common, #{node := #{opts := Opts}} = C) ->
             member_event(C, Room, <<"add-member">>, Id),
     C;
 %% bridge runs as long as the bridged call: no completion until then
-app(<<"bridge">>, _Arg, _Common, C) ->
-    C;
+%% (fs_bridge/2 ends it)
+app(<<"bridge">>, _Arg, Common, C) ->
+    C#{bridging => Common};
 app(_App, _Arg, Common, C) ->
     complete(C, Common, []),
+    C.
+
+bridged(answered, #{bridging := _} = C) ->
+    event(C, <<"CHANNEL_BRIDGE">>, []),
+    C;
+bridged({failed, Cause}, #{bridging := Common} = C) ->
+    complete(C, Common, [{<<"variable_originate_disposition">>, Cause}]),
+    maps:remove(bridging, C);
+bridged(_Outcome, C) ->
     C.
 
 member_event(C, Room, Action, Id) ->
@@ -811,6 +838,7 @@ ua_call(EnginePort, Opts) ->
         CallId = <<"ua-", (tag())/binary>>,
         FromTag = tag(),
         Ruri = maps:get(ruri, Opts, <<"sip:ivr@127.0.0.1">>),
+        From = maps:get(from, Opts, <<"sip:caller@127.0.0.1:", P/binary>>),
         Inv = build(
             <<"INVITE">>,
             Ruri,
@@ -819,15 +847,13 @@ ua_call(EnginePort, Opts) ->
                     <<"SIP/2.0/UDP 127.0.0.1:", P/binary, ";rport;branch=",
                         (branch())/binary>>},
                 {<<"Max-Forwards">>, <<"70">>},
-                {<<"From">>,
-                    <<"<sip:caller@127.0.0.1:", P/binary, ">;tag=",
-                        FromTag/binary>>},
+                {<<"From">>, <<"<", From/binary, ">;tag=", FromTag/binary>>},
                 {<<"To">>, <<"<", Ruri/binary, ">">>},
                 {<<"Contact">>, <<"<sip:caller@127.0.0.1:", P/binary, ">">>},
                 {<<"Call-ID">>, CallId},
                 {<<"CSeq">>, <<"1 INVITE">>},
                 {<<"Content-Type">>, <<"application/sdp">>}
-            ],
+            ] ++ maps:get(headers, Opts, []),
             sdp(<<"caller">>, RtpPort)
         ),
         ok = gen_udp:send(Sock, {127, 0, 0, 1}, EnginePort, Inv),

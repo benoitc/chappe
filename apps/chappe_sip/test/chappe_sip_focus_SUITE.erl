@@ -33,6 +33,12 @@
     refer_not_allowed/1,
     refer_keeps_replaces/1,
     refer_without_isfocus_is_transfer/1,
+    refer_method_refer/1,
+    refer_dials_isfocus/1,
+    ood_refer_target_dialog/1,
+    ood_refer_no_target_dialog/1,
+    refer_answered_200/1,
+    refer_sub_false/1,
     invite_answer_advertises_focus/1,
     options_advertises_focus/1,
     privacy_from_the_api/1,
@@ -42,6 +48,7 @@
 ]).
 
 -define(CI, <<"application/conference-info+xml">>).
+-define(UA, chappe_sip_test_conf_ua).
 
 all() ->
     [
@@ -57,6 +64,12 @@ all() ->
         refer_not_allowed,
         refer_keeps_replaces,
         refer_without_isfocus_is_transfer,
+        refer_method_refer,
+        refer_dials_isfocus,
+        ood_refer_target_dialog,
+        ood_refer_no_target_dialog,
+        refer_answered_200,
+        refer_sub_false,
         invite_answer_advertises_focus,
         options_advertises_focus,
         privacy_from_the_api,
@@ -388,6 +401,224 @@ refer_without_isfocus_is_transfer(Config) ->
     after
         chappe_sip_test_focus:hide_focus(false)
     end.
+
+%% RFC 4579 5.7: a participant asks the focus to REFER p2 into the
+%% conference: Refer-To p2;method=REFER with an escaped Refer-To naming
+%% the conference URI. The focus sends p2 that REFER as the focus
+%% (isfocus in its Contact) and the referrer hears its answer. A REFER for
+%% a REFER that carries no Refer-To of its own is 400.
+%% req: R4579-14
+refer_method_refer(Config) ->
+    EP = ?config(ep, Config),
+    Uri = ?config(conf_uri, Config),
+    P1 = ?UA:start(<<"r1">>, EP),
+    P2 = ?UA:start(<<"r2">>, EP),
+    try
+        {ok, Call, _} = ?UA:invite(P1, Uri, []),
+        Target = chappe_sip_hdr:refer_to_value(#{
+            uri => ?UA:uri(P2),
+            method => <<"REFER">>,
+            headers => [{<<"Refer-To">>, Uri}]
+        }),
+        {ok, 200} = ?UA:refer(P1, Call, Target, []),
+        Refers = fun() -> [M || {<<"REFER">>, M, _} <- ?UA:requests(P2)] end,
+        ok = wait_until(fun() -> Refers() =/= [] end, 10000),
+        [Refer] = Refers(),
+        ?assertEqual(Uri, refer_to_uri(Refer)),
+        ?assertEqual(Uri, contact_uri(Refer)),
+        ?assertNotEqual(
+            nomatch, binary:match(hdr(Refer, contact), <<"isfocus">>)
+        ),
+        %% p2 answered 200: so does the referrer's final NOTIFY
+        ok = wait_until(
+            fun() -> final_frag(P1) =:= <<"SIP/2.0 200">> end, 10000
+        ),
+        NoNested = chappe_sip_hdr:refer_to_value(#{
+            uri => ?UA:uri(P2), method => <<"REFER">>
+        }),
+        {ok, 400} = ?UA:refer(P1, Call, NoNested, [])
+    after
+        [?UA:stop(U) || U <- [P1, P2]]
+    end.
+
+%% RFC 4579 5.5: a REFER to the conference URI is answered with the
+%% conference URI and isfocus as Contact (the subscription is the
+%% focus's), and the focus INVITEs the target with that Contact.
+%% req: R4579-12 R7647-04 R3515-05
+refer_dials_isfocus(Config) ->
+    EP = ?config(ep, Config),
+    Uri = ?config(conf_uri, Config),
+    W = ?UA:start(<<"w1">>, EP),
+    P2 = ?UA:start(<<"d2">>, EP),
+    try
+        {ok, _Call, R200} = ?UA:refer_out(
+            W, Uri, <<"<", (?UA:uri(P2))/binary, ">">>, []
+        ),
+        ?assertEqual(200, chappe_sip_msg:status(R200)),
+        ?assertEqual(Uri, contact_uri(R200)),
+        ?assertNotEqual(
+            nomatch, binary:match(hdr(R200, contact), <<"isfocus">>)
+        ),
+        Invites = fun() -> [M || {<<"INVITE">>, M, _} <- ?UA:requests(P2)] end,
+        ok = wait_until(fun() -> Invites() =/= [] end, 10000),
+        [Inv] = Invites(),
+        ?assertEqual(Uri, contact_uri(Inv)),
+        ?assertNotEqual(
+            nomatch, binary:match(hdr(Inv, contact), <<"isfocus">>)
+        ),
+        ok = wait_until(fun() -> final_frag(W) =:= <<"SIP/2.0 200">> end, 10000)
+    after
+        [?UA:stop(U) || U <- [W, P2]]
+    end.
+
+%% RFC 4538 4 and RFC 7647 4: a REFER to the conference URI naming, with
+%% Target-Dialog, the dialog of a participant with the focus proves it
+%% knows that dialog: the policy sees that dialog and the REFER's origin
+%% is that dialog, the same as a REFER sent in it.
+%% req: R4538-010 R4538-013 R7647-03
+ood_refer_target_dialog(Config) ->
+    EP = ?config(ep, Config),
+    Uri = ?config(conf_uri, Config),
+    Test = self(),
+    %% only who knows a participant's dialog may REFER
+    ok = chappe_sip_test_focus:refer_policy(fun(Info) ->
+        Test ! {refer_info, Info},
+        case Info of
+            #{origin := {dialog, _, _, _}} -> true;
+            #{} -> false
+        end
+    end),
+    P1 = ?UA:start(<<"t1">>, EP),
+    P2 = ?UA:start(<<"t2">>, EP),
+    try
+        {ok, Call, _} = ?UA:invite(P1, Uri, []),
+        #{ft := FT, tt := TT} = ?UA:dialog(P1, Call),
+        TD =
+            <<Call/binary, ";local-tag=", TT/binary, ";remote-tag=",
+                FT/binary>>,
+        {ok, _, R200} = ?UA:refer_out(
+            P1,
+            Uri,
+            <<"<", (?UA:uri(P2))/binary, ">">>,
+            [{<<"Target-Dialog">>, TD}, {<<"Require">>, <<"tdialog">>}]
+        ),
+        ?assertEqual(200, chappe_sip_msg:status(R200)),
+        Info = policy_info(),
+        #{target_dialog := D, origin := Origin} = Info,
+        ?assertEqual(Call, chappe_sip_dialog:call_id(D)),
+        ?assertEqual({dialog, Call, TT, FT}, Origin),
+        %% the REFER in that dialog has the same origin
+        {ok, 200} = ?UA:refer(P1, Call, <<"<", (?UA:uri(P2))/binary, ">">>, []),
+        ?assertMatch(#{origin := Origin}, policy_info())
+    after
+        [?UA:stop(U) || U <- [P1, P2]]
+    end.
+
+%% RFC 4538 4: without a Target-Dialog, or with one that names no dialog,
+%% the REFER proves nothing: target_dialog is undefined, its origin is
+%% the request itself, and the policy may still let it through.
+%% req: R4538-011 R4538-014
+ood_refer_no_target_dialog(Config) ->
+    EP = ?config(ep, Config),
+    Uri = ?config(conf_uri, Config),
+    Test = self(),
+    ok = chappe_sip_test_focus:refer_policy(fun(Info) ->
+        Test ! {refer_info, Info},
+        true
+    end),
+    W = ?UA:start(<<"n1">>, EP),
+    P2 = ?UA:start(<<"n2">>, EP),
+    try
+        Target = <<"<", (?UA:uri(P2))/binary, ">">>,
+        {ok, Call, R200} = ?UA:refer_out(W, Uri, Target, []),
+        ?assertEqual(200, chappe_sip_msg:status(R200)),
+        #{ft := FT} = ?UA:dialog(W, Call),
+        ?assertMatch(
+            #{target_dialog := undefined, origin := {request, Call, FT}},
+            policy_info()
+        ),
+        Bogus = <<"nope@ct;local-tag=a;remote-tag=b">>,
+        {ok, _, _} = ?UA:refer_out(
+            W, Uri, Target, [{<<"Target-Dialog">>, Bogus}]
+        ),
+        ?assertMatch(
+            #{target_dialog := undefined, origin := {request, _, _}},
+            policy_info()
+        )
+    after
+        [?UA:stop(U) || U <- [W, P2]]
+    end.
+
+%% RFC 7647 5: an accepted REFER to the focus gets 200, never 202, in a
+%% participant's dialog and outside one.
+%% req: R7647-04
+refer_answered_200(Config) ->
+    EP = ?config(ep, Config),
+    Uri = ?config(conf_uri, Config),
+    P1 = ?UA:start(<<"a1">>, EP),
+    P2 = ?UA:start(<<"a2">>, EP),
+    try
+        Target = <<"<", (?UA:uri(P2))/binary, ">">>,
+        {ok, Call, _} = ?UA:invite(P1, Uri, []),
+        ?assertEqual({ok, 200}, ?UA:refer(P1, Call, Target, [])),
+        {ok, _, R200} = ?UA:refer_out(P1, Uri, Target, []),
+        ?assertEqual(200, chappe_sip_msg:status(R200))
+    after
+        [?UA:stop(U) || U <- [P1, P2]]
+    end.
+
+%% RFC 4488 4: a REFER to the conference URI with Refer-Sub: false from a
+%% UA that supports norefersub gets 200 with Refer-Sub: false (and the
+%% focus's Contact), no NOTIFY, and the target is still dialed.
+%% req: R4488-01
+refer_sub_false(Config) ->
+    EP = ?config(ep, Config),
+    Uri = ?config(conf_uri, Config),
+    W = ?UA:start(<<"s1">>, EP),
+    P2 = ?UA:start(<<"s2">>, EP),
+    try
+        {ok, _, R200} = ?UA:refer_out(
+            W,
+            Uri,
+            <<"<", (?UA:uri(P2))/binary, ">">>,
+            [
+                {<<"Refer-Sub">>, <<"false">>},
+                {<<"Supported">>, <<"norefersub">>}
+            ]
+        ),
+        ?assertEqual(<<"false">>, hdr(R200, 'refer-sub')),
+        ?assertNotEqual(
+            nomatch, binary:match(hdr(R200, contact), <<"isfocus">>)
+        ),
+        Invites = fun() -> [M || {<<"INVITE">>, M, _} <- ?UA:requests(P2)] end,
+        ok = wait_until(fun() -> Invites() =/= [] end, 10000),
+        timer:sleep(1500),
+        ?assertEqual([], [M || {<<"NOTIFY">>, M, _} <- ?UA:requests(W)])
+    after
+        [?UA:stop(U) || U <- [W, P2]]
+    end.
+
+policy_info() ->
+    receive
+        {refer_info, I} -> I
+    after 5000 -> ct:fail(no_policy)
+    end.
+
+%% the sipfrag status line of the last terminated refer NOTIFY UA got
+final_frag(UA) ->
+    Finals = [
+        M
+     || {<<"NOTIFY">>, M, _} <- ?UA:requests(UA),
+        <<"terminated", _/binary>> <- [hdr(M, 'subscription-state')]
+    ],
+    case lists:reverse(Finals) of
+        [N | _] -> binary:part(chappe_sip_msg:body(N), 0, 11);
+        [] -> undefined
+    end.
+
+refer_to_uri(M) ->
+    {ok, #{uri := U}} = chappe_sip_hdr:name_addr(hdr(M, 'refer-to')),
+    U.
 
 %% OPTIONS to the conference URI discovers a focus (RFC 4579 4.3).
 %% req: R4579-07 R4579-01

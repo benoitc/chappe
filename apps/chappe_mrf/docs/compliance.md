@@ -5,14 +5,16 @@ the `%% req:` annotations in `test/*_SUITE.erl` and `test/*_tests.erl`, and
 the results of the newest Common Test run and EUnit reports. Do not edit
 by hand.
 
-10 requirements: 10 pass, 0 fail, 0 untested, 0 n/a, 0 deviation, 0 spec defect
+23 requirements: 22 pass, 0 fail, 0 untested, 0 n/a, 1 deviation, 0 spec defect
 
 What chappe does not meet on purpose, and why, is listed under
 [Deviations](#deviations).
 
 ## Deviations
 
-None.
+| ID | Source | Section | Requirement | Reason |
+| --- | --- | --- | --- | --- |
+| MRF-23 | chappe_mrf | refer | The INVITE a conference sends a party a REFER brings in carries the REFER's Referred-By unchanged... | deviation: through FreeSWITCH it carries the Referred-By's URI only (a dial string cannot hold the whole value safely); the REFER of a REFER with method=REFER, sent by chappe, carries it unchanged |
 
 ## By row
 
@@ -23,6 +25,10 @@ None.
 | conference | 4 | 0 | 0 | 0 |
 | correlation | 2 | 0 | 0 | 0 |
 | events | 1 | 0 | 0 | 0 |
+| refer | 10 | 0 | 0 | 0 |
+| referred-by | 0 | 0 | 0 | 1 |
+| replaces | 1 | 0 | 0 | 0 |
+| roster | 1 | 0 | 0 | 0 |
 
 ## Requirements
 
@@ -38,3 +44,16 @@ None.
 | MRF-08 | MUST | conference | platform | pass | chappe_mrf_SUITE:fs_conference_pin, chappe_mrf_SUITE:native_conference | Members join and leave with events to the conference receivers, and can be muted, made deaf, played to and kicked, on both backends. |
 | MRF-09 | MUST | conference | platform | pass | chappe_mrf_SUITE:fs_conference_pin, chappe_mrf_SUITE:native_conference | A locked conference refuses joins. |
 | MRF-10 | MUST | conference | platform | pass | chappe_mrf_SUITE:fs_conference_bad_pin, chappe_mrf_SUITE:fs_conference_pin | A member that has to enter a PIN joins only with the right one. |
+| MRF-11 | MUST | refer | platform | pass | chappe_mrf_SUITE:refer_admission_probe, chappe_mrf_SUITE:refer_bye_unauthorized, chappe_mrf_SUITE:refer_dial_fun_crash, chappe_mrf_SUITE:refer_dial_fun_once, chappe_mrf_SUITE:refer_dial_own_uri_no_focus, chappe_mrf_SUITE:refer_lock_max_both_backends, chappe_mrf_SUITE:refer_native_joined_on_answer, chappe_mrf_SUITE:refer_norefersub, chappe_mrf_SUITE:refer_policy_crash, chappe_mrf_conf_refer_dial_tests:dialable_test | A REFER to a room is accepted only once the room's own checks (lease, target, admission) and its refer_policy allowed it; until then nothing is answered 200 and nothing is dialed. |
+| MRF-12 | MUST | refer | platform | pass | chappe_mrf_SUITE:refer_native_joined_on_answer | A party a REFER brings in becomes a member only once it answered: before that it is not listed, not in the roster, and nothing it sends reaches the room. |
+| MRF-13 | MUST | refer | platform | pass | chappe_mrf_SUITE:refer_outcomes | A dial-out that fails (busy, declined, no answer, timeout) tells the referrer the status and leaves the room's members as they were. |
+| MRF-14 | MUST | refer | platform | pass | chappe_mrf_SUITE:refer_admission_probe, chappe_mrf_SUITE:refer_lock_max_both_backends | A REFER that adds a party is admitted before anything is dialed, on both backends: a locked room refuses it 403, a full one 486, the parties being dialed counting as members. |
+| MRF-15 | MUST | refer | platform | pass | chappe_mrf_SUITE:refer_abort_other_origin, chappe_mrf_SUITE:refer_bye_two_members_one_origin, chappe_mrf_SUITE:refer_idempotent, chappe_mrf_SUITE:refer_two_origins_one_dial, chappe_mrf_SUITE:refer_worker_dies, chappe_mrf_conf_refer_op_tests:cap_of_64_test, chappe_mrf_conf_refer_op_tests:reserve_never_overwrites_test, chappe_mrf_conf_refer_op_tests:reserved_expires_test | A REFER repeated from the same origin for the same target dials nobody again and hears the first one's outcome; adding a member already in answers 200 at once. |
+| MRF-16 | MUST | refer | platform | pass | chappe_mrf_SUITE:refer_bye_ambiguous_485, chappe_mrf_SUITE:refer_bye_cross_room, chappe_mrf_SUITE:refer_bye_roster_uri, chappe_mrf_SUITE:refer_bye_two_members_one_origin, chappe_mrf_SUITE:refer_bye_unauthorized | A REFER with method=BYE removes the member whose endpoint entity the Refer-To is, else the one member with that address-of-record; more than one is 485, none 404, a referrer the policy refuses 403, and members of other rooms are never looked at. |
+| MRF-17 | MUST | refer | platform | pass | chappe_mrf_SUITE:focus_member_refer_adds, chappe_mrf_SUITE:member_transfer_attended, chappe_mrf_SUITE:refer_ood_replaces, chappe_mrf_SUITE:refer_replaces_callid_chars, chappe_mrf_conf_refer_dial_tests:safe_value_test | The Replaces a Refer-To carries is put on the INVITE to the party, for a REFER in a member's dialog and outside any dialog. |
+| MRF-18 | MUST | refer | platform | pass | chappe_mrf_SUITE:refer_nested_refer | A REFER with method=REFER makes the focus REFER the target to the conference URI, and the referrer's final status is the target's answer to that REFER. |
+| MRF-19 | MUST | roster | platform | pass | chappe_mrf_SUITE:refer_bye_roster_uri, chappe_mrf_SUITE:refer_native_joined_on_answer, chappe_mrf_SUITE:referred_invite_joins, chappe_mrf_SUITE:transferred_drops_privacy | The roster shows a party a REFER brought in as dialed-out and one that came with Referred-By as referred by that URI, each participant as a user by its address-of-record with one endpoint per member, and a member that leaves as disconnected (departed or booted) before it is deleted. |
+| MRF-20 | MUST | refer | platform | pass | chappe_mrf_SUITE:refer_room_end_487 | When a room ends, every REFER still under way gets a final NOTIFY 487 and its dial is given up. |
+| MRF-21 | MUST | refer | platform | pass | chappe_mrf_SUITE:ood_target_dialog_member | An out-of-dialog REFER whose Target-Dialog names a member's dialog with the room is from that member. |
+| MRF-22 | MUST | replaces | platform | pass | chappe_mrf_SUITE:invite_replaces_anonymous, chappe_mrf_SUITE:invite_replaces_caller_dies, chappe_mrf_SUITE:invite_replaces_default, chappe_mrf_SUITE:invite_replaces_member, chappe_mrf_SUITE:invite_replaces_policy, chappe_mrf_SUITE:invite_replaces_race | An incoming call whose Replaces names a member's call in the room takes that member's place: it joins, then the member is hung up; a Replaces naming any other call is refused and the room does not change. |
+| MRF-23 | MUST | referred-by | deviation | deviation |  | The INVITE a conference sends a party a REFER brings in carries the REFER's Referred-By unchanged (RFC 3892 2.2). |

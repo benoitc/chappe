@@ -6,6 +6,20 @@ says how apps are released.
 
 ## [Unreleased]
 
+### New
+
+- A conference focus now handles a REFER that asks it to refer a
+  participant into the conference (a Refer-To with method=REFER, RFC 4579
+  5.7); before, such a REFER was refused with 403, although the guide
+  said it worked. A REFER of that kind with no Refer-To of its own is
+  refused with 400.
+- You can read what a REFER to a focus asks for without answering it,
+  including the dialog a Target-Dialog header names and who sent the
+  REFER, so you can tell a repeated REFER from a new one.
+- A REFER accepted outside any dialog can be answered with the
+  conference's own address as its contact, so the participant knows it
+  talks to the conference.
+
 ### Fixed
 
 - Ending a call the proxy anchored on rtpengine no longer waits on a reply

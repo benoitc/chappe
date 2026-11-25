@@ -133,6 +133,11 @@
             <param name="aggressive-nat-detection" value="true"/>
             <param name="manage-presence" value="false"/>
             <param name="tls" value="false"/>
+            <!-- a REFER on a call of this profile gets 403 (mod_sofia
+                 clears MFLAG_REFER): a party a conference dialed out
+                 cannot be transferred by FreeSWITCH behind the room's
+                 back; chappe sends no REFER to FreeSWITCH -->
+            <param name="disable-transfer" value="true"/>
           </settings>
         </profile>
       </profiles>
@@ -178,6 +183,43 @@
       <extension name="mrf">
         <condition field="destination_number" expression="^mrf$">
           <action application="socket" data="$${mrf_socket} async full"/>
+        </condition>
+      </extension>
+      <!-- parties a REFER to a conference brings in (the live suite's
+           refer_* cases dial them on the other node): refer-tone rings,
+           answers and plays 900 Hz; refer-early plays 700 Hz as early
+           media first; refer-busy, refer-decline and refer-ring answer
+           486, 603 and never -->
+      <extension name="refer-tone">
+        <condition field="destination_number" expression="^refer-tone$">
+          <action application="ring_ready"/>
+          <action application="sleep" data="1500"/>
+          <action application="answer"/>
+          <action application="endless_playback" data="tone_stream://%(1000,0,900)"/>
+        </condition>
+      </extension>
+      <extension name="refer-early">
+        <condition field="destination_number" expression="^refer-early$">
+          <action application="pre_answer"/>
+          <action application="playback" data="tone_stream://%(2500,0,700)"/>
+          <action application="answer"/>
+          <action application="endless_playback" data="tone_stream://%(1000,0,900)"/>
+        </condition>
+      </extension>
+      <extension name="refer-busy">
+        <condition field="destination_number" expression="^refer-busy$">
+          <action application="respond" data="486"/>
+        </condition>
+      </extension>
+      <extension name="refer-decline">
+        <condition field="destination_number" expression="^refer-decline$">
+          <action application="respond" data="603"/>
+        </condition>
+      </extension>
+      <extension name="refer-ring">
+        <condition field="destination_number" expression="^refer-ring$">
+          <action application="ring_ready"/>
+          <action application="sleep" data="60000"/>
         </condition>
       </extension>
       <extension name="reject">

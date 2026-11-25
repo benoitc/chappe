@@ -18,7 +18,7 @@
 %% A NOTIFY for a REFER we do not know is answered 481 (RFC 6665 4.1.3).
 %%
 %% Inside a dialog the dialog fsm hands the package's SUBSCRIBEs and
-%% NOTIFYs to route/3. Outside one, the stack's NOTIFY router
+%% NOTIFYs to chappe_sip_refer_notify:route/3. Outside one, the stack's NOTIFY router
 %% (chappe_sip_notify_router) calls handle_notify/2 before your own NOTIFY
 %% handler; notify_handler/0 is still there for a handler of yours.
 -module(chappe_sip_refer).
@@ -27,11 +27,10 @@
 
 -export([check/1, check/2, accept/3, accept/4]).
 -export([progress/2, progress/3, final/2, final/3]).
--export([target/1, referred_by/1, target_dialog/1, subscription/1]).
+-export([target/1, referred_by/1, target_dialog/1, origin/1, subscription/1]).
 -export([send/3, handle_notify/2, notify_handler/0]).
--export([route/3]).
 
--export_type([refer/0, target/0]).
+-export_type([refer/0, target/0, origin/0]).
 
 -record(refer, {
     pid :: pid() | undefined,
@@ -41,6 +40,10 @@
 }).
 -opaque refer() :: #refer{}.
 -type target() :: chappe_sip_hdr:refer_to().
+%% Who sent a REFER (origin/1): a dialog by its Call-ID, local and remote
+%% tags, or a request outside any dialog by its Call-ID and From tag.
+-type origin() ::
+    {dialog, binary(), binary(), binary()} | {request, binary(), binary()}.
 
 %% the NOTIFY gap of RFC 3515 3.10, and the default subscription length
 -define(GAP, 1000).
@@ -115,7 +118,10 @@ authorized(Target, Req, Fun) ->
 %% and norefersub (RFC 4488 4) there is neither. Opts: check/2's, plus
 %%   expires => seconds (default 60), max_expires => seconds (the most a
 %%   refresh gets, default 3600), owner => pid() (default self(); if it
-%%   dies the subscription ends), notify_gap => ms (default 1000).
+%%   dies the subscription ends), notify_gap => ms (default 1000),
+%%   contact => NameAddr: the 200's Contact and the subscription's local
+%%   target (default the engine's), such as a conference URI with isfocus
+%%   (chappe_sip_focus:contact/1) for a REFER to a focus.
 -spec accept(chappe_sip_req:req(), chappe_sip_res:res(), map()) ->
     {ok, refer()} | {error, {rejected, 400..699} | term()}.
 accept(Req, Res, Opts) ->
@@ -125,7 +131,8 @@ accept(Req, Res, Opts) ->
         {ok, Target} ->
             case no_subscription(Req) of
                 true ->
-                    ok = ok_no_sub(Res, [{<<"Contact">>, engine_contact()}]),
+                    Contact = maps:get(contact, Opts, engine_contact()),
+                    ok = ok_no_sub(Res, [{<<"Contact">>, Contact}]),
                     {ok, #refer{target = Target, referred_by = rb(Req)}};
                 false ->
                     accept_ood(Req, Res, Target, Opts)
@@ -142,7 +149,10 @@ accept_ood(Req, Res, Target, Opts) ->
         event => <<"refer">>,
         keep_body => true
     },
-    DOpts = #{owner => Pid, subscription => Sub, headers => refer_sub(Req)},
+    Headers = [{<<"Contact">>, C} || {ok, C} <- [maps:find(contact, Opts)]],
+    DOpts = #{
+        owner => Pid, subscription => Sub, headers => Headers ++ refer_sub(Req)
+    },
     case chappe_sip_dialog:create_uas(Req, Res, DOpts) of
         {ok, D} ->
             ok = gen_server:call(Pid, {attach, D}),
@@ -158,7 +168,8 @@ accept_ood(Req, Res, Target, Opts) ->
 %% Accept a REFER received in Dialog (the {chappe_sip_dialog, Dialog, refer,
 %% Req, Res} event). The implicit subscription shares the dialog; its
 %% NOTIFYs carry Event: refer for the first REFER in the dialog and
-%% refer;id=<CSeq> after that (RFC 3515 2.4.6). Opts as accept/3.
+%% refer;id=<CSeq> after that (RFC 3515 2.4.6). Opts as accept/3; the 200
+%% carries the dialog's own Contact unless contact gives one.
 -spec accept(
     chappe_sip_dialog:dialog(),
     chappe_sip_req:req(),
@@ -173,10 +184,12 @@ accept(D, Req, Res, Opts) ->
         {reject, Status, Reason} ->
             reject(Res, Status, Reason);
         {ok, Target} ->
-            Contact = [
-                {<<"Contact">>, C}
-             || C <- [chappe_sip_dialog:local_contact(D)], C =/= undefined
-            ],
+            Own =
+                case Opts of
+                    #{contact := C0} -> C0;
+                    #{} -> chappe_sip_dialog:local_contact(D)
+                end,
+            Contact = [{<<"Contact">>, C} || C <- [Own], C =/= undefined],
             case no_subscription(Req) of
                 true ->
                     ok = ok_no_sub(Res, Contact),
@@ -333,6 +346,27 @@ target_dialog(Req) ->
             end
     end.
 
+%% Who sent a REFER, to tell a repeated one from a new one: the dialog it
+%% came in, or the one its Target-Dialog names (target_dialog/1), by
+%% Call-ID, local tag and remote tag; outside any dialog the request's
+%% Call-ID and From tag. A REFER in a dialog and one outside it naming
+%% that dialog have the same origin.
+-spec origin(chappe_sip_req:req()) -> origin().
+origin(Req) ->
+    Msg = chappe_sip_req:msg(Req),
+    CallId = chappe_sip_msg:call_id(Msg),
+    FromTag = chappe_sip_msg:from_tag(Msg),
+    case {chappe_sip_msg:to_tag(Msg), target_dialog(Req)} of
+        {ToTag, _} when is_binary(ToTag) ->
+            {dialog, CallId, ToTag, FromTag};
+        {undefined, {ok, D}} ->
+            {dialog, chappe_sip_dialog:call_id(D),
+                chappe_sip_dialog:local_tag(D),
+                chappe_sip_dialog:remote_tag(D)};
+        {undefined, {error, _}} ->
+            {request, CallId, FromTag}
+    end.
+
 %% ---- sender ----
 
 %% Send a REFER, in Dialog or outside any dialog to Uri, and wait for its
@@ -487,145 +521,18 @@ from_base(_) ->
 
 %% Answer a NOTIFY received outside any dialog when it belongs to a REFER
 %% sent by send/3 outside a dialog. pass when it does not (another package,
-%% or no REFER of ours): the caller answers it.
+%% or no REFER of ours): the caller answers it. See chappe_sip_refer_notify.
 -spec handle_notify(chappe_sip_req:req(), chappe_sip_res:res()) ->
     handled | pass.
 handle_notify(Req, Res) ->
-    Msg = chappe_sip_req:msg(Req),
-    case {refer_event(Req), chappe_sip_msg:to_tag(Msg)} of
-        {{ok, IdParam}, Tag} when is_binary(Tag) ->
-            case chappe_sip_refer_registry:rows(subscriber, {tag, Tag}) of
-                [] -> pass;
-                Rows -> deliver(match(IdParam, Rows), Req, Res)
-            end;
-        _ ->
-            pass
-    end.
+    chappe_sip_refer_notify:handle_notify(Req, Res).
 
 %% A NOTIFY handler for chappe_sip:notify/1: REFER NOTIFYs go to their
 %% owner, anything else is answered 481 (RFC 6665 4.1.3).
 -spec notify_handler() ->
     fun((chappe_sip_req:req(), chappe_sip_res:res()) -> ok).
 notify_handler() ->
-    fun(Req, Res) ->
-        case handle_notify(Req, Res) of
-            handled -> ok;
-            pass -> no_subscription_481(Res)
-        end
-    end.
-
-%% ---- in-dialog routing (called by chappe_sip_dialog_fsm) ----
-
-%% A SUBSCRIBE or NOTIFY of the refer package in a dialog where this module
-%% accepted (SUBSCRIBE) or sent (NOTIFY) a REFER: answered here, or passed
-%% to the dialog's owner when the dialog never used the package.
--spec route(
-    chappe_sip_dialog:dialog(), chappe_sip_req:req(), chappe_sip_res:res()
-) ->
-    handled | pass.
-route(D, Req, Res) ->
-    DPid = chappe_sip_dialog:pid(D),
-    case {chappe_sip_req:method(Req), refer_event(Req)} of
-        {<<"SUBSCRIBE">>, {ok, IdParam}} ->
-            route_subscribe(DPid, IdParam, Req, Res);
-        {<<"NOTIFY">>, {ok, IdParam}} ->
-            case chappe_sip_refer_registry:count(sent, DPid) of
-                0 ->
-                    pass;
-                _ ->
-                    Rows = chappe_sip_refer_registry:rows(
-                        subscriber, {dialog, DPid}
-                    ),
-                    deliver(match(IdParam, Rows), Req, Res)
-            end;
-        _ ->
-            pass
-    end.
-
-%% RFC 3515 2.4.4: a SUBSCRIBE to refer that names no existing subscription
-%% (a wrong id, or one that has ended) is refused 403
-route_subscribe(DPid, IdParam, Req, Res) ->
-    case chappe_sip_refer_registry:count(received, DPid) of
-        0 ->
-            pass;
-        _ ->
-            Rows = chappe_sip_refer_registry:rows(notifier, {dialog, DPid}),
-            case [P || {_, _, _, P, #{id := I}} <- Rows, I =:= IdParam] of
-                [Pid | _] ->
-                    Pid ! {subscribe, Req, Res},
-                    handled;
-                [] ->
-                    _ = chappe_sip_res:send(Res, 403, #{
-                        reason => <<"Forbidden">>
-                    }),
-                    handled
-            end
-    end.
-
-refer_event(Req) ->
-    case chappe_sip_hdr:event(chappe_sip_req:get(<<"event">>, Req)) of
-        {ok, #{type := <<"refer">>, id := Id}} -> {ok, Id};
-        _ -> error
-    end.
-
-%% RFC 3515 2.4.6: id=<CSeq> names the REFER; no id names the first REFER
-%% sent in the dialog. A REFER still waiting for its response (its CSeq
-%% not known yet) takes a NOTIFY that beats the response.
-match(IdParam, Rows) ->
-    Pick =
-        case IdParam of
-            undefined ->
-                [R || {_, _, _, _, #{first := true}} = R <- Rows];
-            _ ->
-                [
-                    R
-                 || {_, _, _, _, #{cseq := C}} = R <- Rows, same_seq(C, IdParam)
-                ] ++
-                    [R || {_, _, _, _, #{cseq := C}} = R <- Rows, C =:= pending]
-        end,
-    case {Pick, Rows} of
-        {[Row | _], _} -> {ok, Row};
-        {[], [{_, _, {tag, _}, _, _} = Row]} -> {ok, Row};
-        _ -> error
-    end.
-
-same_seq(any, _IdParam) -> true;
-same_seq(C, IdParam) when is_integer(C) -> integer_to_binary(C) =:= IdParam;
-same_seq(_, _) -> false.
-
-%% answer the NOTIFY and tell the owner what the referenced request did
-deliver(error, _Req, Res) ->
-    no_subscription_481(Res),
-    handled;
-deliver({ok, {Id, _, _, Owner, _}}, Req, Res) ->
-    case chappe_sip_sipfrag:parse(chappe_sip_req:body(Req)) of
-        {ok, #{status := Status}} ->
-            _ = chappe_sip_res:send(Res, 200, #{reason => <<"OK">>}),
-            case terminated(Req) of
-                true ->
-                    ok = chappe_sip_refer_registry:delete(Id),
-                    Owner ! {refer_done, Id, Status};
-                false ->
-                    Owner ! {refer_progress, Id, Status}
-            end,
-            handled;
-        _ ->
-            %% RFC 3515 2.4.5: every NOTIFY starts with a status line
-            _ = chappe_sip_res:send(Res, 400, #{reason => <<"Bad Request">>}),
-            handled
-    end.
-
-terminated(Req) ->
-    case chappe_sip_req:get(<<"subscription-state">>, Req) of
-        undefined -> false;
-        V -> string:lowercase(first_token(V)) =:= <<"terminated">>
-    end.
-
-no_subscription_481(Res) ->
-    _ = chappe_sip_res:send(Res, 481, #{
-        reason => <<"Subscription Does Not Exist">>
-    }),
-    ok.
+    chappe_sip_refer_notify:notify_handler().
 
 %% the engine's bound contact as a name-addr (what a dialog-forming 2xx
 %% carries by default)

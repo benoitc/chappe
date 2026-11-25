@@ -12,7 +12,7 @@
 %% Two modes:
 %%   - invite: the REFER came inside an INVITE dialog. This process keeps
 %%     the expiry itself and answers the refreshing SUBSCRIBEs that
-%%     chappe_sip_refer:route/3 hands it. The call outlives the
+%%     chappe_sip_refer_notify:route/3 hands it. The call outlives the
 %%     subscription.
 %%   - sub: the REFER came outside any dialog and formed its own
 %%     subscription dialog (chappe_sip_dialog_fsm keeps the expiry and
