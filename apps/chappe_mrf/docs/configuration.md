@@ -63,7 +63,7 @@ app env, or an earlier `start/1`), `start/1` keeps it only if you ask for
 the same `esl_ip` and `esl_allow`. Otherwise it returns
 `{error, {listener_running, RunningOpts}}` and the running listener stays
 as it is: stop it with `chappe_mrf:stop_listener/0`, then start again.
-See [Outbound connections](../../chappe_esl/docs/guides/outbound.md).
+See [Outbound connections](https://github.com/benoitc/chappe/blob/main/apps/chappe_esl/docs/guides/outbound.md).
 
 ## Record options
 
@@ -76,7 +76,7 @@ FreeSWITCH's own options:
 | `ref` | the endpoint's call_ref (else its id); the room's name | The call_ref the recording is filed under. |
 | `parties` | `[]` | Who is on the call, for the sidecar. |
 
-See [Record a call](../../chappe_audio/docs/guides/record.md).
+See [Record a call](https://github.com/benoitc/chappe/blob/main/apps/chappe_audio/docs/guides/record.md).
 
 ## connect_caller/3 options
 

@@ -1,7 +1,7 @@
 # Remote apps and the outbound connection model (draft)
 
 Status: planned, not implemented. The phases below ship in order
-([decision 0008](../../../../docs/decisions/0008-remote-app-model.md)).
+([decision 0008](https://github.com/benoitc/chappe/blob/main/docs/decisions/0008-remote-app-model.md)).
 
 This is a design draft for review. No code exists for it yet. It describes
 how a chappe_sip node could serve applications that run outside its VM:
@@ -58,7 +58,7 @@ Each item below is a reason an app cannot simply run on another node.
 | Media | `chappe_sip_media` `#media_session{backend, ref, identity}` | Session lifetime is bound to the calling process (the rtpengine session's owner monitor). |
 | ETS state | `chappe_sip_dialog_index` (Call-ID and tags to fsm), `chappe_sip_registry` (location), `chappe_sip_refer_registry`, `chappe_sip_digest_nc` | Belongs with the stack; fine to stay on the SIP node. |
 | Secrets | `persistent_term`: flow token secret and boot time (`chappe_sip_route`), nonce secret (`chappe_sip_digest`), media caps | Per node. The nonce secret is random per boot; the flow token secret is random unless `flow_token_secret` is configured. Matters when an app spans several SIP nodes. |
-| Distribution | `config/vm.args.src`, `chappe_sip_app:insecure_cookie/1` | Distribution and epmd are bound to loopback; the node refuses to boot with the placeholder cookie. Distribution is intentionally not an external interface today. |
+| Distribution | `config/vm.args.src`, the cookie check in `chappe_sip_app` | Distribution and epmd are bound to loopback; the node refuses to boot with the placeholder cookie. Distribution is intentionally not an external interface today. |
 
 The short version: requests and dialog handles are mostly data plus pids,
 but everything that answers or acts (`Res`, routes, middleware, option
@@ -238,7 +238,8 @@ stays a SIP-node configuration.
   and waits for a reattach.
 - **App lost mid-call.** Dialogs in destroy mode end as today. Dialogs in
   continue mode wait `owner_grace_ms`. The restarted app calls
-  `chappe_sip_dialog:list/1` and `attach/2` for each, then rebuilds from
+  a call that lists its dialogs (planned, not in the code yet) and
+  `attach/2` for each, then rebuilds from
   `app_data`.
 - **SIP node restart.** Every remote monitor fires `noconnection`. The app
   library reconnects, re-registers its routes, and treats every dialog it

@@ -82,7 +82,7 @@ When you use the mixer through `chappe_sip_media`, its settings go under
 `media => #{mix => ...}` in `chappe_sip:start/1`: `ip`, `advertise`, `rate`, `law`
 and `depth`. The join options (`persist`, `talk_events`, `talk_tag`, ...)
 are those of `chappe_sip_media:conference/3`. See the chappe_sip
-[media design](../../chappe_sip/docs/design/media.md).
+[media design](https://github.com/benoitc/chappe/blob/main/apps/chappe_sip/docs/design/media.md).
 
 ## Where it lives
 

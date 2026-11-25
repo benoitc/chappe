@@ -26,14 +26,14 @@ backend. To use it, read the [media guide](../guides/media.md).
   SIPREC recording server's stream process (`chappe_audio_rtp`, in chappe_audio), the
   media's last stop: it decrypts SRTP itself (`chappe_audio_srtp`, receive
   only), and never relays or sends media
-  ([decision 0009](../../../../docs/decisions/0009-srtp-in-erlang.md)).
+  ([decision 0009](https://github.com/benoitc/chappe/blob/main/docs/decisions/0009-srtp-in-erlang.md)).
 - The engines are driven by SIP-free leaf apps: `chappe_rtpengine` speaks
   the rtpengine NG protocol, `chappe_mix` mixes RTP. See
-  [chappe_rtpengine](../../../chappe_rtpengine/README.md) and
-  [chappe_mix](../../../chappe_mix/README.md).
+  [chappe_rtpengine](https://github.com/benoitc/chappe/blob/main/apps/chappe_rtpengine/README.md) and
+  [chappe_mix](https://github.com/benoitc/chappe/blob/main/apps/chappe_mix/README.md).
 - FreeSWITCH (IVR, bridging, conferences on a media server) is driven by
   chappe_mrf, an orchestration app above chappe_sip, not by this facade. See
-  [chappe_mrf](../../../chappe_mrf/README.md).
+  [chappe_mrf](https://github.com/benoitc/chappe/blob/main/apps/chappe_mrf/README.md).
 
 ## Why this lives in chappe_sip
 

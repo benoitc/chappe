@@ -5,7 +5,7 @@ the Ra machine the region shares, how a lease lives and ends, and the
 singletons, watches, directory and clock on top of it. Read it before you
 change the machine, the lease timings or anything a holder relies on. The
 reasons behind each rule are in
-[decision 0010](../../../../docs/decisions/0010-cluster-ownership.md).
+[decision 0010](https://github.com/benoitc/chappe/blob/main/docs/decisions/0010-cluster-ownership.md).
 
 ## Supervision
 

@@ -193,7 +193,7 @@ end).
 
 To put rtpengine in front of the mixer for that call, anchor it with an
 `anchor` session and give the mixer the offer rtpengine makes: the steps
-are in the chappe_sip [media design](../../../chappe_sip/docs/design/media.md),
+are in the chappe_sip [media design](https://github.com/benoitc/chappe/blob/main/apps/chappe_sip/docs/design/media.md),
 section "Put rtpengine in front of the mixer".
 
 ## Tap a party or the room
@@ -223,7 +223,7 @@ sends nothing); the room's carries every talker. A tap's ref (its own
   dropped and counted in `chappe_mix:taps/1`; the room's clock never
   waits for a reader.
 - To keep the audio, write it to the recording store
-  ([Record a call](../../../chappe_audio/docs/guides/record.md)).
+  ([Record a call](https://github.com/benoitc/chappe/blob/main/apps/chappe_audio/docs/guides/record.md)).
 
 ## Notes
 
@@ -236,7 +236,7 @@ sends nothing); the room's carries every talker. A tap's ref (its own
 - RTCP runs the same at both rates; the jitter of the reports counts
   timestamp units of the room's rate.
 - Numbers for latency, capacity and cost are in
-  [`test/audit/PERF.md`](../../test/audit/PERF.md).
+  [`test/audit/PERF.md`](https://github.com/benoitc/chappe/blob/main/apps/chappe_mix/test/audit/PERF.md).
 
 ## Where it lives
 

@@ -32,7 +32,7 @@ that shows you how to use it.
 - **Recordings into the store**: `record/3`, `record_session/3` and room
   recordings with `store => default` are adopted into chappe_audio's store
   under the call's `call_ref`.
-  [Record a call](../../chappe_audio/docs/guides/record.md)
+  [Record a call](https://github.com/benoitc/chappe/blob/main/apps/chappe_audio/docs/guides/record.md)
 - **Endpoints with no caller** (`create_endpoint/1`), bridged in later.
   [Bridge guide](guides/bridge.md)
 - **Bridge without a re-INVITE** to the caller (`bridge/2,3`): to another

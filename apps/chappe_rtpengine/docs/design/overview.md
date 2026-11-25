@@ -216,7 +216,7 @@ subscribes itself and forwards the digits to its owner. See
 
 chappe_rtpengine is a leaf app: it depends on nothing else in the umbrella
 and is published on its own. The rule and its reasons are recorded in
-[decision 0003](../../../../docs/decisions/0003-leaf-apps.md).
+[decision 0003](https://github.com/benoitc/chappe/blob/main/docs/decisions/0003-leaf-apps.md).
 
 ## Where it lives
 

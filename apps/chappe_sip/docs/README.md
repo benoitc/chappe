@@ -5,7 +5,7 @@ page and the references. Start with [getting started](guides/getting-started.md)
 if you are new, check [features](features.md) to see whether a capability
 exists, and read the [design overview](design/overview.md) before you change
 the code. Documentation that spans the apps (concepts, architecture,
-decisions, contributing) is in the [umbrella docs](../../../docs/README.md).
+decisions, contributing) is in the [umbrella docs](https://github.com/benoitc/chappe/blob/main/docs/README.md).
 
 ## Start
 
@@ -110,4 +110,4 @@ decisions, contributing) is in the [umbrella docs](../../../docs/README.md).
 - [Compliance catalogue](compliance/README.md): how rows and claims work
   here.
 - [Plan history](history/plan.md): the milestone log of the original port.
-- [AGENTS.md](../AGENTS.md): notes for AI coding agents.
+- [AGENTS.md](https://github.com/benoitc/chappe/blob/main/apps/chappe_sip/AGENTS.md): notes for AI coding agents.

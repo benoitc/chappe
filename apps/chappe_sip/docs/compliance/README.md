@@ -4,7 +4,7 @@
 implements, one row each, and `make compliance` joins it with the tests that
 claim each row into [compliance.md](../compliance.md). How rows, tiers,
 `%% req:` claims and gates work is shared by every app and described in
-[contributing: compliance](../../../../docs/contributing/compliance.md).
+[contributing: compliance](https://github.com/benoitc/chappe/blob/main/docs/contributing/compliance.md).
 
 ## Notes for chappe_sip
 

@@ -44,7 +44,7 @@ symbol but `nif_init` (`-fvisibility=hidden`; `make lint-c` checks it).
 ## Why a NIF
 
 The decision and its alternatives are recorded in
-[decision 0001](../../../../docs/decisions/0001-sofia-nta-nif.md).
+[decision 0001](https://github.com/benoitc/chappe/blob/main/docs/decisions/0001-sofia-nta-nif.md).
 What the repository itself shows:
 
 - sofia-sip's nta already implements the RFC 3261 transaction layer, RFC
@@ -362,7 +362,7 @@ run them under the sanitizers when you touch it.
 ## Safety rules
 
 The NIF runs inside the VM, so a fault in it takes the node down
-([decision 0001](../../../../docs/decisions/0001-sofia-nta-nif.md)). Every
+([decision 0001](https://github.com/benoitc/chappe/blob/main/docs/decisions/0001-sofia-nta-nif.md)). Every
 change to the NIF sources under `c_src/nif/` keeps these rules:
 
 - **Explicit lengths, checked sizes.** A binary is copied with its length,
