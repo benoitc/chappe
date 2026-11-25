@@ -129,7 +129,10 @@ anchor_call(_Config) ->
     ?assertEqual(Call, tag_of(<<"offer">>, <<"call-id">>, Cmds)),
     ?assert(has_cmd(<<"answer">>, Cmds)),
     ?assertNotEqual(undefined, tag_of(<<"answer">>, <<"to-tag">>, Cmds)),
-    ?assertEqual(Call, tag_of(<<"delete">>, <<"call-id">>, Cmds)).
+    ?assertEqual(Call, tag_of(<<"delete">>, <<"call-id">>, Cmds)),
+    %% the proxy never reads the call's statistics: `fast' leaves them out
+    %% of a reply that could otherwise be split into IP fragments
+    ?assertEqual([<<"fast">>], tag_of(<<"delete">>, <<"flags">>, Cmds)).
 
 %% Without the media option the proxy forwards SDP unchanged and emits no NG.
 no_media_passthrough(_Config) ->

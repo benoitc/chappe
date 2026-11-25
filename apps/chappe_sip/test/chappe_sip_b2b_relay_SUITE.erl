@@ -2110,12 +2110,15 @@ fork_anchored_per_branch(_Config) ->
     Cmds = drain(),
     Offers = [C || {rtpe_cmd, #{<<"command">> := <<"offer">>} = C} <- Cmds],
     ?assertMatch([_], Offers),
-    %% the losing branch's early media session is deleted by its to-tag
+    %% both branches answered the one offer, so they share the callee's
+    %% monologue on rtpengine and the winner's answer renamed it: the
+    %% losing to-tag is not deleted (from rtpengine 13 on it is an alias of
+    %% the winner, and its delete would end the call)
     Deletes = [
-        maps:get(<<"to-tag">>, C, undefined)
+        C
      || {rtpe_cmd, #{<<"command">> := <<"delete">>} = C} <- Cmds
     ],
-    ?assertEqual([<<"c1tag">>], Deletes).
+    ?assertEqual([], Deletes).
 
 %% A hangs up while the new B of replace_b/3 still rings: that INVITE is
 %% CANCELled at once (the app's process lives on), and replace_b/3 says

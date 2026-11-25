@@ -61,9 +61,9 @@ case $RATE in
     *) echo "hd.sh: clock rate $RATE: 8000, 16000 or 48000" >&2; exit 2 ;;
 esac
 
-if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-    docker build -q -t "$IMAGE" "$HERE" >/dev/null
-fi
+# always build: an older image of the same name may lack Opus, and the
+# layer cache makes an up-to-date build cheap
+docker build -q -t "$IMAGE" "$HERE" >/dev/null
 
 abs() { (cd "$(dirname "$1")" && echo "$(pwd)/$(basename "$1")"); }
 

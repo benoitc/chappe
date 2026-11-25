@@ -8,18 +8,18 @@ says how apps are released.
 
 ### New
 
-- HD rooms: start a room with `rate => 16000` and every party is mixed at
-  16 kHz, so callers on G.722 or Opus keep the band above 3.4 kHz. The
-  mixer speaks L16 to rtpengine, which needs to be 13.4 or later and turns
-  each caller's codec into it and back. Taps of such a room carry 640
-  bytes every 20 ms, and digits run at 16000.
-- `stats/1`, `legs/1` and `taps/1` report the room's rate.
+- HD rooms: a room can mix at 16 kHz instead of 8 kHz, so callers on
+  G.722 or Opus keep the band above 3.4 kHz. The mixer then exchanges
+  16-bit linear audio with rtpengine, which must be 13.4 or later and
+  converts each caller's codec to it and back. Taps of such a room carry
+  16 kHz audio, and DTMF events use the 16 kHz clock.
+- A room's statistics, leg list and taps report its rate.
 
 ### Changed
 
 - A room's rate is fixed when it starts: a leg cannot move to a room of
-  another rate, a `law` is refused in a 16 kHz room, and a `pt` in an
-  8 kHz one. An 8 kHz room mixes exactly as before.
+  another rate, and a G.711 leg cannot join a 16 kHz room directly
+  (rtpengine converts it). An 8 kHz room mixes exactly as before.
 
 ## [0.1.0] - 2026-11-23
 

@@ -226,7 +226,7 @@ N ?= n1
 
 demo-cluster:
 	$(DEMO_CLUSTER_COMPOSE) build build
-	$(DEMO_CLUSTER_COMPOSE) up -d
+	$(DEMO_CLUSTER_COMPOSE) up -d --build
 	$(DEMO_CLUSTER_COMPOSE) exec -T ctl demo-node ctl-run ready
 	@echo "demo-cluster: up; see demo/cluster/README.md"
 

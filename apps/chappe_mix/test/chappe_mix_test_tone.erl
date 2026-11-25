@@ -25,6 +25,7 @@
 -export([levels/3, tone/4, weak_frames/4, hears/4]).
 -export([law_pt/1, encode/2, decode/2]).
 -export([band_probe/1, band_calibrate/1, band_check/2, band_check/3]).
+-export([power/3]).
 
 %% the default sample rate of every helper; the rate option or argument
 %% changes it
@@ -316,9 +317,16 @@ band_probe(Ms) ->
 
 %% The level of each probe tone in Samples (16 kHz): what band_check/2
 %% compares against. Calibrate on what the path is fed, or on the same
-%% path at a known-good setting.
+%% path at a known-good setting. A tone more than 10 dB below what the
+%% probe sends raises {bad_calibration, Freq, Level}: a calibration taken
+%% on a narrowband path would make every level check pass.
 band_calibrate(Samples) ->
-    maps:from_list(band_levels(Samples, ?BAND_TONES)).
+    Nominal = 20 * math:log10(?BAND_AMP / 32768),
+    Levels = band_levels(Samples, ?BAND_TONES),
+    case [{F, L} || {F, L} <- Levels, L < Nominal - 10.0] of
+        [] -> maps:from_list(Levels);
+        [{F, L} | _] -> erlang:error({bad_calibration, F, L})
+    end.
 
 band_check(Samples, Cal) ->
     band_check(Samples, Cal, #{}).
@@ -372,15 +380,19 @@ median(L) ->
 
 %% ---- Goertzel ----
 
-level(_Samples, 0, _F, _Rate) ->
-    -200.0;
-level(Samples, N, F, Rate) ->
-    W = 2 * math:pi() * F / Rate,
-    Coeff = 2 * math:cos(W),
+%% The Goertzel power of Samples (at Rate) in the bin of F: the one
+%% detector the chappe_mix test helpers share.
+power(Samples, F, Rate) ->
+    Coeff = 2 * math:cos(2 * math:pi() * F / Rate),
     {S1, S2} = lists:foldl(
         fun(X, {P1, P2}) -> {X + Coeff * P1 - P2, P1} end, {0.0, 0.0}, Samples
     ),
-    Power = S1 * S1 + S2 * S2 - Coeff * S1 * S2,
+    S1 * S1 + S2 * S2 - Coeff * S1 * S2.
+
+level(_Samples, 0, _F, _Rate) ->
+    -200.0;
+level(Samples, N, F, Rate) ->
+    Power = power(Samples, F, Rate),
     %% amplitude of the component, relative to 16-bit full scale
     Amp = 2 * math:sqrt(max(Power, 0.0)) / N,
     20 * math:log10(max(Amp, 1.0e-9) / 32768).
