@@ -3,7 +3,7 @@
 
 %% @doc A REFER to a conference focus (RFC 4579 5.5, 5.7, 5.10, 5.11), for
 %% chappe_sip_focus: what it asks for (refer_info/2), the app's policy
-%% and the answer (refer/4), and the <referred> of an endpoint it brought
+%% and the answer (refer/4), and the `referred' element of an endpoint it brought
 %% in (referred/1, referred_by/1). chappe_sip_focus exports each of them.
 -module(chappe_sip_focus_refer).
 

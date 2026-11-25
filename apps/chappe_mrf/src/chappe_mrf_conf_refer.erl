@@ -36,7 +36,7 @@
 %%      logged), and no policy refuses every REFER;
 %%   4. only then the room's state, so a refused referrer learns nothing
 %%      of it: for a removal the member (the one whose endpoint entity,
-%%      <conference URI>;member=Id, the Refer-To is, else the one member
+%%      `<conference URI>;member=Id', the Refer-To is, else the one member
 %%      with that address-of-record; none is 404, more than one 485, only
 %%      this room's members looked at), and room for one more (add and
 %%      refer: a locked room 403, a full one 486, the parties being
