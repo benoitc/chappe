@@ -973,3 +973,44 @@ pinned digest there too. Mutations, all caught by the tick digest and
 none by `run/0`: `chappe_mix_fmt:pcm/3` decoding A-law as mu-law, the tap
 of a silent leg 160 bytes instead of 320, skipped ticks not advancing the
 timestamp, nohear ignored in the N-1 sum.
+
+## The gain path at 8 kHz after the 16 kHz room: a call per sample
+
+The bench's `hd` group on a quiet GitHub runner (4 vCPU Xeon 6975P, `+S 1`,
+load 0.28 to 0.99, five rounds, minimum of five) found the 8 kHz mix slower
+where the gain control runs: `mix_cost` plain at 64 legs (amp 6000, every
+listener clips, so every one takes the scaled encode) 1056.60 us against
+839.82 us on `374b478`, +25.8% against the 3% threshold. At 4 legs (24.04
+against 23.53 us) and in `fit` at 64 legs (323.88 against 323.82 us), where
+nothing clips, the unity loops ran as before.
+
+- Cause, as far as the Mac can show it (the runner's rerun says whether it
+  is all of the x86 loss): the refactor made the ramp shared by both rates. `ramp/5` kept
+  the ramp as a tuple `{From, To, Frame}` and called `scale/3` for every
+  sample, a local call that reads the tuple and computes `(I + 1)` again,
+  on top of the call to `clip/2`; `374b478`'s `ramp/6` had the arithmetic
+  in the loop, From and To as arguments and the frame the literal 160. The
+  BEAM assembly shows the difference: two calls per sample against one.
+- Reproduced on the Mac (arm64, void, load 12 to 16), smaller than on the
+  x86 runner: the gain path alone (64 listeners, gain 0.5, `encode/4`
+  straight to the ramp) 671 to 682 us against 642; `mix_cost` 64 legs
+  +3.5%.
+- Fix, kept: `ramp/7` and `ramp_l16/6` take From, D = To - From and the
+  frame as a float, the sample index from 1, and `clip/2` is inlined:
+  neither loop calls anything or opens a stack frame per sample (checked
+  in the assembly). Each sample still takes `From + D * I / F`: the same
+  float operations in the same order as `374b478` (D is the same float as
+  `To - From` computed per sample, and dividing by 160.0 is dividing by
+  160), so the bytes are the same: both golden digests, the dsp tests and
+  the L16 tests pass unchanged.
+- After it, on the Mac, void, interleaved with the build before the fix:
+  the gain path alone 593 to 598 us (base 636 to 659); `mix_cost` 64 legs
+  at 8 kHz 716 to 719 us (before 804 to 814, base 780 to 793), at 16 kHz
+  1337 to 1346 us (before 1435 to 1464); 4 legs unchanged. The runner's
+  numbers are to be taken again there.
+- Mutations: the sample index from 0 fails both golden digests and
+  `gain_recovers_test`. The gain step precomputed (`D / F * I` for
+  `D * I / F`) is not caught, and is equivalent in practice: a search over
+  eight release gains, every sample index and every positive 16-bit sample
+  found no input where the two round differently. The parent's order is
+  kept anyway.

@@ -234,11 +234,13 @@ less_own(Sum, Own) ->
 %% still would not fit; scale and encode.
 enc_gain(Xs, Enc, Frame, Gain0) ->
     Gain = gain(Xs, Gain0),
-    {ramp(Xs, Enc, {min(Gain0, Gain), Gain, Frame}, 0, <<>>), Gain}.
+    From = min(Gain0, Gain),
+    {ramp(Xs, Enc, From, Gain - From, float(Frame), 1, <<>>), Gain}.
 
 l16_gain(Xs, Frame, Gain0) ->
     Gain = gain(Xs, Gain0),
-    {ramp_l16(Xs, {min(Gain0, Gain), Gain, Frame}, 0, <<>>), Gain}.
+    From = min(Gain0, Gain),
+    {ramp_l16(Xs, From, Gain - From, float(Frame), 1, <<>>), Gain}.
 
 gain(Xs, Gain0) ->
     Peak = lists:max([abs(X) || X <- Xs]),
@@ -247,24 +249,28 @@ gain(Xs, Gain0) ->
         false -> release(Gain0)
     end.
 
-%% Scale by a gain that moves from From to To across the frame of Frame
-%% samples: a rising gain (release) is spread over the frame rather than
-%% stepped at its start, and every sample's gain is at most To, so
-%% nothing clips.
-ramp([], _Enc, _Ramp, _I, Acc) ->
+%% Scale by a gain that moves from From to From + D across the frame of
+%% F samples (a float): a rising gain (release) is spread over the frame
+%% rather than stepped at its start, and every sample's gain is at most
+%% the last, so nothing clips. Sample I (from 1) takes From + D * I / F,
+%% the float operations of the 8 kHz mix of before in their order, so the
+%% bytes are the same. Nothing is called per sample (clip/2 and scale/5
+%% are inlined; test/audit/ATTEMPTS.md, the gain path at 8 kHz).
+ramp([], _Enc, _From, _D, _F, _I, Acc) ->
     Acc;
-ramp([X | Xs], Enc, R, I, Acc) ->
-    ramp(Xs, Enc, R, I + 1, <<Acc/binary, (clip(Enc, scale(X, R, I)))>>).
+ramp([X | Xs], Enc, From, D, F, I, Acc) ->
+    S = clip(Enc, scale(X, From, D, F, I)),
+    ramp(Xs, Enc, From, D, F, I + 1, <<Acc/binary, S>>).
 
-ramp_l16([], _Ramp, _I, Acc) ->
+ramp_l16([], _From, _D, _F, _I, Acc) ->
     Acc;
-ramp_l16([X | Xs], R, I, Acc) ->
-    S = max(-32768, min(?FULL, scale(X, R, I))),
-    ramp_l16(Xs, R, I + 1, <<Acc/binary, S:16/signed-big>>).
+ramp_l16([X | Xs], From, D, F, I, Acc) ->
+    S = max(-32768, min(?FULL, scale(X, From, D, F, I))),
+    ramp_l16(Xs, From, D, F, I + 1, <<Acc/binary, S:16/signed-big>>).
 
-%% Sample I of the frame at its point of the ramp
-scale(X, {From, To, Frame}, I) ->
-    round(X * (From + (To - From) * (I + 1) / Frame)).
+%% Sample I at its point of the ramp (inlined into both loops)
+scale(X, From, D, F, I) ->
+    round(X * (From + D * I / F)).
 
 release(G) when G * ?RELEASE >= 1.0 -> 1.0;
 release(G) -> G * ?RELEASE.
@@ -292,7 +298,7 @@ enc_sum(Sum, Enc, I, Acc) ->
     enc_sum(Sum, Enc, I + 1, <<Acc/binary, (code(Enc, element(I, Sum)))>>).
 
 %% A sample past 16 bits at unity: the frame is scaled instead.
--compile({inline, [code/2, fits/1]}).
+-compile({inline, [code/2, fits/1, clip/2, scale/5]}).
 code(_Enc, S) when S > ?FULL; S < -32768 ->
     error(clip);
 code(Enc, S) ->
