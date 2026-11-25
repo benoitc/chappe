@@ -108,6 +108,8 @@
     native_join_worker_dies/1,
     native_join_does_not_block/1,
     native_join_helper_killed/1,
+    native_join_deadline_first/1,
+    native_join_twice/1,
     refer_attach_cap/1,
     native_join_bad_handle/1,
     join_timeout_refused/1,
@@ -224,6 +226,8 @@ all() ->
         native_join_worker_dies,
         native_join_does_not_block,
         native_join_helper_killed,
+        native_join_deadline_first,
+        native_join_twice,
         refer_attach_cap,
         native_join_bad_handle,
         join_timeout_refused,
@@ -4283,10 +4287,12 @@ native_join_does_not_block(Config) ->
 %% An endpoint's join whose helper is killed with its re-INVITE out fails
 %% with {error, join_failed}: the room gives back its mixer leg and
 %% rtpengine session and counts it no more, and the endpoint is hung up
-%% (its BYE once the re-INVITE ended), as its media may have moved. A
-%% join that outlasts join_timeout the same, with {error, timeout}, and
-%% its helper is gone. A room that ends while an endpoint joins takes the
-%% join's media sessions with it, and its helper ends.
+%% (its BYE once the re-INVITE ended), as its media may have moved. The
+%% same when the helper's re-INVITE ends with no answer from the node
+%% (the dialog's own timeout): that is no refusal. A join that outlasts
+%% join_timeout the same, with {error, timeout}, and its helper is gone.
+%% A room that ends while an endpoint joins takes the join's media
+%% sessions with it, and stops its helper at once.
 %% req: MRF-28 MRF-26
 native_join_helper_killed(Config) ->
     Slow = ?F:fs_start(<<"slow">>, #{
@@ -4310,6 +4316,18 @@ native_join_helper_killed(Config) ->
     back_to(Conf, Base),
     ok = channel_bye(Uuid),
     until(fun() -> ep_gone(Ep) end),
+    %% the helper's re-INVITE ends with no answer (its call's own
+    %% timeout, as the helper reports it): the endpoint is hung up
+    Ep3 = NewEp(),
+    Uuid3 = uuid_of(Ep3),
+    _ = join_async(Conf, Ep3),
+    _ = reinvite_on(<<"slow">>),
+    [Id3] = maps:keys(element(10, sys:get_state(Conf))),
+    Conf ! {ep_join, Id3, {done, {error, {timeout, {gen_statem, call, []}}}}},
+    ?assertMatch({error, {timeout, _}}, join_within(2000)),
+    back_to(Conf, Base),
+    ok = channel_bye(Uuid3),
+    until(fun() -> ep_gone(Ep3) end),
     %% a join that outlasts join_timeout
     {ok, Short} = chappe_mrf:conference(<<"slowdeadline">>, #{
         join_timeout => 1000
@@ -4330,6 +4348,7 @@ native_join_helper_killed(Config) ->
     _ = join_async(Gone, NewEp()),
     _ = reinvite_on(<<"slow">>),
     ok = chappe_mrf_conf:stop(Gone),
+    ?assert(?FAULTS:eventually(fun() -> ?FAULTS:join_helpers() =:= [] end, 5)),
     ?assertMatch({error, _}, join_within(2000)),
     until(fun() ->
         ?FAULTS:join_helpers() =:= [] andalso rtpe_sessions() =:= Rtpe
@@ -4337,6 +4356,79 @@ native_join_helper_killed(Config) ->
     ok = chappe_mrf_conf:stop(Short),
     ok = chappe_mrf_conf:stop(Conf),
     ?F:fs_stop(Slow).
+
+%% An endpoint's join whose deadline the room takes before its helper is
+%% at the re-INVITE sends none: the helper asks the room first, and the
+%% room, its join over, says no. The endpoint (and the room) held up
+%% until the deadline is in the room's mailbox, the helper goes on to its
+%% re-INVITE; the joiner hears {error, timeout}, the node gets no
+%% re-INVITE and the endpoint keeps its media, and the room is as it was.
+%% req: MRF-28
+native_join_deadline_first(Config) ->
+    {ok, Conf} = chappe_mrf:conference(<<"deadfirst">>, #{join_timeout => 300}),
+    Base = holdings(Conf),
+    {ok, Ep} = chappe_mrf:create_endpoint(#{targets => [{fs1, fs_uri(Config)}]}),
+    Uuid = uuid_of(Ep),
+    ok = sys:suspend(Ep),
+    _ = join_async(Conf, Ep),
+    until(fun() -> map_size(element(10, sys:get_state(Conf))) =:= 1 end),
+    ok = sys:suspend(Conf),
+    until(fun() -> queued(Conf, fun({native_join_timeout, _}) -> true end) end),
+    ok = sys:resume(Ep),
+    %% the helper's next word to the room is behind the deadline
+    until(fun() -> queue_len(Conf) >= 2 end),
+    ok = sys:resume(Conf),
+    ?assertEqual({error, timeout}, join_within(3000)),
+    receive
+        {fake_fs, _, _, {reinvite, _}} -> ct:fail(reinvite_after_deadline)
+    after 1000 -> ok
+    end,
+    ok = channel_after_failure(Ep, Uuid, kept),
+    back_to(Conf, Base),
+    chappe_mrf:destroy(Ep),
+    ok = chappe_mrf_conf:stop(Conf).
+
+%% An endpoint joins a native room once: a second join while its first
+%% is under way gets {error, already_joining}, one once it is a member
+%% {error, already_member}, and the first join completes alone.
+native_join_twice(Config) ->
+    Slow = ?F:fs_start(<<"slow">>, #{
+        esl_port => ?config(lp, Config), reinvite_delay => 1000
+    }),
+    {ok, Conf} = chappe_mrf:conference(<<"twice">>, #{}),
+    {ok, Ep} = chappe_mrf:create_endpoint(#{
+        targets => [{slow, uri_of(?F:fs_port(Slow))}]
+    }),
+    _ = join_async(Conf, Ep),
+    _ = reinvite_on(<<"slow">>),
+    ?assertEqual(
+        {error, already_joining}, chappe_mrf_conf:join(Conf, Ep, #{})
+    ),
+    {ok, Id} = join_within(5000),
+    ?assertEqual({error, already_member}, chappe_mrf_conf:join(Conf, Ep, #{})),
+    ?assertMatch([#{id := Id}], chappe_mrf_conf:members(Conf)),
+    ?assertMatch(#{pending := 0}, holdings(Conf)),
+    ok = chappe_mrf_conf:stop(Conf),
+    chappe_mrf:destroy(Ep),
+    ?F:fs_stop(Slow).
+
+%% whether Pid has a message Match takes in its mailbox
+queued(Pid, Match) ->
+    {messages, Ms} = process_info(Pid, messages),
+    lists:any(
+        fun(M) ->
+            try
+                Match(M)
+            catch
+                error:function_clause -> false
+            end
+        end,
+        Ms
+    ).
+
+queue_len(Pid) ->
+    {message_queue_len, N} = process_info(Pid, message_queue_len),
+    N.
 
 %% One REFER operation takes at most refer_attach_max REFERs (16 by
 %% default). Repeats of a REFER under way attach to it up to the cap and

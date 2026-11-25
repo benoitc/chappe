@@ -775,7 +775,8 @@ terminate(_Reason, #state{members = M0, focus = F, mod = Mod} = S) ->
         M0
     ),
     _ = safely(fun() -> F =/= undefined andalso chappe_sip_focus:stop(F) end),
-    %% the room's end stops what the backend runs (fs: its recordings)
+    %% the room's end stops what the backend runs (fs: its recordings,
+    %% native: the helpers of its joins)
     _ = safely(fun() ->
         chappe_mrf_conf_backend:has(terminate, 1, S) andalso Mod:terminate(S)
     end),

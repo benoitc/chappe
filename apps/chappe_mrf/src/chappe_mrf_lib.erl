@@ -5,7 +5,7 @@
 -module(chappe_mrf_lib).
 
 -export([new_id/0, to_bin/1, destroy_dialog/1, destroy_later/1, done/1]).
--export([api_ok/1, playback_result/1]).
+-export([with_name/2, api_ok/1, playback_result/1]).
 
 %% A random id, hex: correlation ids, member ids, loopback tokens.
 -spec new_id() -> binary().
@@ -33,6 +33,12 @@ destroy_dialog(D) ->
 destroy_later(D) ->
     _ = spawn(fun() -> destroy_dialog(D) end),
     ok.
+
+%% The mixer join options JoinOpts with the name a join asked for (Opts'
+%% name), as the mixer's SDES name of the leg.
+-spec with_name(map(), map()) -> map().
+with_name(#{name := N}, JoinOpts) -> JoinOpts#{name => to_bin(N)};
+with_name(_Opts, JoinOpts) -> JoinOpts.
 
 %% {ok, _} -> ok, anything else as is.
 -spec done(term()) -> term().
