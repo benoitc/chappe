@@ -212,18 +212,19 @@ The run used the earlier scripts, which could exit 0 after a failed
 capture: `run1.sh` printed the capture's status and exited 0 anyway, and
 `campaign.sh` never looked at it. Every capture of the run was checked
 by hash afterwards, and an outside review verified all 52. The fixed
-scripts are taq's own (its `runs/hd-room-2026-11-25/`) with this
-checkout's paths: `run1.sh` exits non-zero when the capture, the PCMU
-caller or the warning count fails, and `campaign.sh` runs every trial,
-lists the failed ones and exits non-zero. Both need bash; `RUN_DIR`,
-`META_DIR` and `HD_SH` move the run directory, the meta files and
-`hd.sh`.
+scripts are the same as taq's (its `runs/hd-room-2026-11-25/`), with this
+checkout's paths. `run1.sh` exits non-zero when the capture fails, when
+the PCMU caller fails or records nothing, or when the capture log has a
+warning (or cannot be read); `campaign.sh` runs every trial, lists the
+failed ones and exits non-zero. Both need bash; `RUN_DIR`, `META_DIR`
+and `HD_SH` move the run directory, the meta files and `hd.sh`, and
+`PCMU_DELAY` the seconds before the PCMU caller joins (5).
 
 | File | What it is |
 | --- | --- |
 | [`manifest-margins.json`](quality/manifest-margins.json) | the manifest as written at 06:36:44Z, margins and no trials: the declaration of the margins. taq has no command for it; each `taq live --into` then adds its trial |
 | [`live2.py`](quality/live2.py) | `taq live` with a codec and clock rate per participant: the talker (alice) and the listener (bob) get their own, the rest is `taq live` as it ships (it enables one codec for every participant) |
-| [`run1.sh`](quality/run1.sh) | one trial: arm, rep, direction, clip, and `pcmu` for a PCMU caller that joins 5 s in |
+| [`run1.sh`](quality/run1.sh) | one trial: arm, rep, direction, clip, and `pcmu` for a PCMU caller that joins `PCMU_DELAY` (5) s in |
 | [`campaign.sh`](quality/campaign.sh) | the whole run, in the order above |
 | [`meta-baseline.json`](quality/meta-baseline.json), [`meta-candidate.json`](quality/meta-candidate.json) | what each arm runs on, recorded with its trials |
 

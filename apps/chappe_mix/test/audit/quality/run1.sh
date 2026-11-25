@@ -56,6 +56,13 @@ RC=0
 PRC=0
 if [ -n "$PCMU_PID" ]; then wait "$PCMU_PID" || PRC=$?; fi
 WARN=$(grep -c warning "$OUT.live.log" || true)
+# no count at all (the log could not be read) is a failure too
+case $WARN in '' | *[!0-9]*) WARN=1 ;; esac
+# the PCMU caller's exit status is pjsua's, often 0 for a refused call:
+# it must also have recorded something
+if [ -n "$PCMU_PID" ] && [ "$PRC" -eq 0 ] && [ ! -s "$OUT-pcmu-caller/pcmu.wav" ]; then
+    PRC=1
+fi
 echo "$ID rc=$RC pcmu_rc=$PRC $WARN warnings"
 if [ "$RC" -ne 0 ] || [ "$PRC" -ne 0 ] || [ "$WARN" -ne 0 ]; then
     echo "$ID failed: see $OUT.live.log${PCMU_PID:+ and $OUT-pcmu-caller.out}" >&2

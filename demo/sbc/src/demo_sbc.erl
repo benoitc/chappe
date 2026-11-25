@@ -797,15 +797,39 @@ allowed(false) -> "refused".
 %% From) or as who referred it (its Referred-By: an attended transfer
 %% into the room). Nothing authenticates either header (the README's
 %% Notes). The room checks that the Replaces names a member.
-replaces_policy(Room, #{caller := Caller, referred_by := By, replaced := Id}) ->
-    Who = trusted([Caller, By], persistent_term:get({?MODULE, cfg})),
-    Ok = Who =/= refused,
-    log("~s: Replaces of member ~s from ~s: ~s", [
-        Room, Id, sender_name(Who, Caller), allowed(Ok)
+replaces_policy(Room, Info) ->
+    #{caller := Caller, replaced := Id} = Info,
+    {Ok, Why} = may_replace(Info, persistent_term:get({?MODULE, cfg})),
+    log("~s: Replaces of member ~s from ~s (~s): ~s", [
+        Room, Id, Caller, Why, allowed(Ok)
     ]),
     Ok.
 
-%% the first of these URIs sender/2 trusts, else refused
+%% Never an anonymous caller. Otherwise: the member itself, or a caller
+%% whose Referred-By names it (chappe_mrf's own default), or a caller the
+%% demo trusts as a REFER sender, by its From or its Referred-By. None of
+%% it is authenticated.
+may_replace(#{caller := Caller} = Info, Cfg) ->
+    case anonymous(Caller) of
+        true -> {false, "anonymous"};
+        false -> may_replace_named(Info, Cfg)
+    end.
+
+may_replace_named(
+    #{caller := Caller, referred_by := By, replaced_aor := Own}, Cfg
+) ->
+    case lists:member(Own, [aor(Caller), aor(By)]) of
+        true ->
+            {true, "the member or a caller it referred"};
+        false ->
+            case trusted([Caller, By], Cfg) of
+                refused -> {false, "nobody the demo trusts"};
+                {shell, _} -> {true, "vouched for by the demo shell"};
+                {_Who, Uri} -> {true, ["vouched for by ", Uri]}
+            end
+    end.
+
+%% the first of these URIs sender/2 trusts, with the URI, else refused
 trusted([], _Cfg) ->
     refused;
 trusted([undefined | Uris], Cfg) ->
@@ -813,7 +837,22 @@ trusted([undefined | Uris], Cfg) ->
 trusted([Uri | Uris], Cfg) ->
     case sender(Uri, Cfg) of
         refused -> trusted(Uris, Cfg);
-        Who -> Who
+        Who -> {Who, Uri}
+    end.
+
+aor(undefined) -> undefined;
+aor(Uri) -> chappe_mrf_conf_refer_op:aor(addr(Uri)).
+
+%% RFC 3323 4: a URI that names nobody (user anonymous, or host
+%% anonymous.invalid), or none
+anonymous(undefined) ->
+    true;
+anonymous(Uri) ->
+    case chappe_sip_uri:parse(addr(Uri)) of
+        {ok, #{user := <<"anonymous">>}} -> true;
+        {ok, #{host := <<"anonymous.invalid">>}} -> true;
+        {ok, _} -> false;
+        error -> true
     end.
 
 target_allowed(remove, _Target, _Cfg) -> true;
