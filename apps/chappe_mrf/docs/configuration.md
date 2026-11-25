@@ -123,7 +123,8 @@ Passed to `chappe_mrf:conference/2`.
 | `bridge` | fs | `#{}` | `chappe_mrf:bridge/3` options for a caller joined from a call. |
 | `join_timeout` | fs | `15000` | Milliseconds a member may take to appear in the room. |
 | `refer_policy` | both | none | `fun(Info) -> boolean() \| {reject, Code}` for a REFER to the room; unset, REFERs are refused 403. |
-| `dial` | both | `sofia/<dial_profile>/<target>` | `fun(Target) -> iodata()`: the dial string of a party a REFER adds. |
+| `replaces_policy` | both | the member itself or a caller it referred | `fun(Info) -> boolean()` for a call whose Replaces names a member; `false` or a crash is 403. Never anonymous callers by default. |
+| `dial` | both | `sofia/<dial_profile>/<target>` | `fun(Target) -> iodata()`: the dial string of a party a REFER adds; one that crashes refuses the REFER 403. |
 | `dial_profile` | both | `<<"external">>` | The sofia profile of the default dial string. |
 | `dial_timeout` | both | `30000` | Milliseconds the added party has to answer. |
 | `dial_endpoint` | native | `#{}` | `create_endpoint/1` options (`node`, `select`, `targets`) of the endpoint that dials it. |

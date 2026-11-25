@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!-- Copyright 2026 Benoit Chesneau
+     SPDX-License-Identifier: Apache-2.0
+
+     A REFER to the conference URI, outside any dialog, asking the focus
+     to bring the target on port 5070 in (RFC 4579 section 5.5). RFC 7647
+     section 5: 200, never 202; its Contact is the conference URI with
+     isfocus. RFC 3515 section 2.4.4 to 2.4.7: a NOTIFY 100 Trying, then
+     the final one, terminated, with the 200 the target answered the
+     focus's INVITE with (focus_refer_target.xml checks that INVITE). -->
+<scenario name="focus_refer_add">
+  <send retrans="500">
+    <![CDATA[
+      REFER sip:conf@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:sipp@[local_ip]:[local_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:conf@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 REFER
+      Max-Forwards: 70
+      Contact: <sip:sipp@[local_ip]:[local_port]>
+      Refer-To: <sip:target@[local_ip]:5070>
+      Referred-By: <sip:sipp@[local_ip]:[local_port]>
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv response="100" optional="true"/>
+  <recv response="200">
+    <action>
+      <ereg regexp="sip:conf@[^&gt;]*&gt;.*;isfocus" search_in="hdr" header="Contact:" check_it="true" assign_to="chk"/>
+    </action>
+  </recv>
+  <recv request="NOTIFY">
+    <action>
+      <ereg regexp="refer" search_in="hdr" header="Event:" check_it="true" assign_to="chk"/>
+      <ereg regexp="active" search_in="hdr" header="Subscription-State:" check_it="true" assign_to="chk"/>
+      <ereg regexp="^SIP/2.0 100" search_in="body" check_it="true" assign_to="chk"/>
+    </action>
+  </recv>
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv request="NOTIFY" timeout="15000">
+    <action>
+      <ereg regexp="terminated" search_in="hdr" header="Subscription-State:" check_it="true" assign_to="chk"/>
+      <ereg regexp="^SIP/2.0 200" search_in="body" check_it="true" assign_to="chk"/>
+    </action>
+  </recv>
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <Reference variables="chk"/>
+</scenario>

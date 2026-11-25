@@ -113,7 +113,30 @@ install() ->
     ok = chappe_sip:invite(fun invite/2),
     ok = chappe_sip:options(fun options/2),
     ok = chappe_sip:event_package(<<"conference">>, fun subscribe/2),
+    ok = chappe_sip:refer(fun refer/2),
     ok.
+
+%% A REFER to the conference URI, outside any dialog: decided here, in the
+%% request worker, carried out by the conference, which owns the REFER's
+%% subscription (its Contact is the conference's, with isfocus).
+refer(Req, Res) ->
+    case whereis(?MODULE) of
+        undefined ->
+            chappe_sip_res:send(Res, 404);
+        Conf ->
+            Policy = persistent_term:get(
+                {?MODULE, refer_policy}, fun(_) -> true end
+            ),
+            Opts = #{
+                policy => Policy,
+                owner => Conf,
+                contact => gen_server:call(Conf, contact)
+            },
+            case chappe_sip_focus:refer(undefined, Req, Res, Opts) of
+                {error, _} -> ok;
+                Verdict -> gen_server:cast(Conf, {refer, Verdict})
+            end
+    end.
 
 invite(Req, Res) ->
     case conference(Req) of
@@ -247,6 +270,8 @@ handle_call({kick, Uri}, _From, S) ->
     [spawn(fun() -> hangup(D) end) || D <- Ds],
     {reply, length(Ds), S}.
 
+handle_cast({refer, Verdict}, S) ->
+    leg_info({focus_refer, Verdict}, S);
 handle_cast({joined, D, Summary}, S) ->
     #{contact := Contact, sdp := Sdp} = Summary,
     Ep = #{
@@ -287,11 +312,19 @@ handle_info(Msg, S) ->
 %% remove a participant (5.11)
 leg_info({chappe_sip_dialog, D, refer, Req, Res}, S) ->
     Policy = persistent_term:get({?MODULE, refer_policy}, fun(_) -> true end),
-    case chappe_sip_focus:refer(D, Req, Res, #{policy => Policy}) of
+    leg_info(
+        {focus_refer, chappe_sip_focus:refer(D, Req, Res, #{policy => Policy})},
+        S
+    );
+leg_info({focus_refer, Verdict}, S) ->
+    case Verdict of
         {add, Target, Refer} ->
             {noreply, changed(dial(Target, Refer, S))};
         {transfer, Target, Refer} ->
             {noreply, changed(dial(Target, Refer, S))};
+        {refer, Target, Refer} ->
+            ok = refer_target(Target, Refer, S),
+            {noreply, S};
         {remove, Target, Refer} ->
             {reply, N, S1} = handle_call({kick, Target}, self(), S),
             ok = chappe_sip_refer:final(
@@ -407,6 +440,31 @@ dial(Target, Refer, S) ->
         refer => Refer
     },
     add_leg({dial, Ref}, Leg, S).
+
+%% RFC 4579 5.7: the focus REFERs Target to the Refer-To the REFER
+%% carried (the conference URI), outside any dialog, as the focus; the
+%% referrer hears the answer to that REFER
+refer_target(Target, Refer, S) ->
+    #{headers := Hdrs} = chappe_sip_refer:target(Refer),
+    [Nested] = [V || {N, V} <- Hdrs, string:lowercase(N) =:= <<"refer-to">>],
+    {ok, #{uri := NestedUri}} = chappe_sip_hdr:refer_to(Nested),
+    Uri = S#state.uri,
+    _ = spawn(fun() ->
+        Status =
+            case
+                chappe_sip_refer:send(Target, #{uri => NestedUri}, #{
+                    from => <<"<", Uri/binary, ">">>,
+                    contact => Uri,
+                    contact_params => chappe_sip_focus:contact_params()
+                })
+            of
+                {ok, _, #{status := St}} -> St;
+                {error, {rejected, St, _}} -> St;
+                {error, _} -> 503
+            end,
+        chappe_sip_refer:final(Refer, Status)
+    end),
+    ok.
 
 replaces(#{replaces := R}) when R =/= undefined ->
     [{<<"Replaces">>, chappe_sip_hdr:replaces_value(R)}];

@@ -220,7 +220,7 @@ connect(Req, Res, Opts) ->
                             #{notify => Notify}, maps:get(relay, Opts, #{})
                         )
                     ),
-                    ok = chappe_mrf_conf_refer:keep_dialog(B2b, Legs),
+                    ok = chappe_mrf_conf_refer_member:keep_dialog(B2b, Legs),
                     Timeout = maps:get(attach_timeout, Opts, 10000),
                     case chappe_mrf_endpoint:await(Ep, Timeout) of
                         {ok, _Uuid} ->
@@ -665,17 +665,18 @@ conferences() ->
      || {{conf, N}, P} <- chappe_mrf_registry:select({conf, '_'})
     ]).
 
-%% A SUBSCRIBE to the conference package for a conference of ours (the
-%% user of the Request-URI names it): chappe_sip_focus serves it. Register
-%% it with chappe_sip:event_package(<<"conference">>, fun
-%% chappe_mrf:focus_subscribe/2).
 %% A chappe_sip:refer/1 handler for REFERs to a conference's URI: the
-%% room named by the Request-URI's user takes it (chappe_mrf_conf_refer:refer/3),
-%% 404 when there is none.
+%% room named by the Request-URI's user decides and carries it out
+%% (chappe_mrf_conf_refer), 404 when there is none. Register it with
+%% chappe_sip:refer(fun chappe_mrf:focus_refer/2).
 -spec focus_refer(chappe_sip_req:req(), chappe_sip_res:res()) -> ok.
 focus_refer(Req, Res) ->
     chappe_mrf_conf_refer:focus(Req, Res).
 
+%% A SUBSCRIBE to the conference package for a conference of ours (the
+%% user of the Request-URI names it): chappe_sip_focus serves it. Register
+%% it with chappe_sip:event_package(<<"conference">>, fun
+%% chappe_mrf:focus_subscribe/2).
 -spec focus_subscribe(chappe_sip_req:req(), chappe_sip_res:res()) -> ok.
 focus_subscribe(Req, Res) ->
     Name =

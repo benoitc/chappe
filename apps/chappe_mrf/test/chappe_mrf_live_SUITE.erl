@@ -6,7 +6,9 @@
 %% node; its callers and callees are chappe_mrf_live_ua softphones on the
 %% host, whose audio goes through rtpengine. Prompts are wav files of one
 %% marker tone each, written to the shared /media, so a caller tells which
-%% prompt played by the tone it hears. It runs only with MRF=1.
+%% prompt played by the tone it hears. The refer_* cases have fs1 dial
+%% parties of fs2's dialplan (conf/freeswitch.xml: refer-tone,
+%% refer-early, refer-busy, ...). It runs only with MRF=1.
 -module(chappe_mrf_live_SUITE).
 
 -include_lib("common_test/include/ct.hrl").
@@ -41,7 +43,14 @@
     fs_conference_record_transfer/1,
     native_conference_transfer/1,
     owner_killed/1,
-    node_down_failover/1
+    node_down_failover/1,
+    refer_dial_out_native/1,
+    refer_dial_out_fs/1,
+    refer_dial_out_busy/1,
+    refer_dial_out_declined/1,
+    refer_dial_out_no_answer/1,
+    refer_attended_ood/1,
+    refer_bye_from_roster/1
 ]).
 
 -define(UA, chappe_mrf_live_ua).
@@ -80,6 +89,13 @@ all() ->
         fs_conference_record_transfer,
         native_conference_transfer,
         owner_killed,
+        refer_dial_out_native,
+        refer_dial_out_fs,
+        refer_dial_out_busy,
+        refer_dial_out_declined,
+        refer_dial_out_no_answer,
+        refer_attended_ood,
+        refer_bye_from_roster,
         node_down_failover
     ].
 
@@ -142,8 +158,16 @@ setup(Config) ->
             probe_interval_ms => 2000,
             backoff_max_ms => 2000,
             %% a room's own events (stop-recording, bgdial-result) come
-            %% from the node's connection
-            events => [<<"CUSTOM">>, <<"conference::maintenance">>]
+            %% from the node's connection, and so does the progress of
+            %% the parties a REFER has it dial
+            %% (CUSTOM last: the event command reads every name after
+            %% it as a subclass)
+            events => [
+                <<"CHANNEL_PROGRESS">>,
+                <<"CHANNEL_PROGRESS_MEDIA">>,
+                <<"CUSTOM">>,
+                <<"conference::maintenance">>
+            ]
         })
      || {N, Esl, Sip} <- Nodes
     ],
@@ -158,6 +182,7 @@ setup(Config) ->
     }),
     [
         {sip_port, SipPort},
+        {fs2_sip, Int("MRF_FS2_SIP", "17082")},
         {media, Media},
         {compose, Env("MRF_COMPOSE", "")}
         | Config
@@ -295,6 +320,211 @@ media(Config, File) ->
     filename:join(?config(media, Config), File).
 
 %% ---- cases ----
+
+%% ---- REFER to a room ----
+
+%% native: a REFER to the room's URI brings in a party on the other node
+%% that sends early media (700 Hz) before it answers: the referrer hears
+%% NOTIFY 100, 183 and 200, the room hears nothing of the party until it
+%% answered, then its 900 Hz. The REFER's 200 has the conference URI and
+%% isfocus as Contact.
+refer_dial_out_native(Config) ->
+    {Conf, Ua} = refer_room(Config, <<"live-refer-n">>, native),
+    R = ?UA:refer(
+        ?config(sip_port, Config),
+        entity(Conf),
+        target(Config, <<"refer-early">>),
+        []
+    ),
+    refer_answered(R, 200),
+    ?assertEqual(<<"SIP/2.0 100 Trying">>, next_notify(R)),
+    ?assert(?UA:silent(Ua, 700, 1500)),
+    ?assertEqual(1, length(chappe_mrf_conf:members(Conf))),
+    ?assertMatch(<<"SIP/2.0 183", _/binary>>, next_notify(R)),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, final_notify(R)),
+    ?UA:clear(Ua),
+    ?assert(?UA:hears(Ua, 900, 6000)),
+    ?assertEqual(2, length(chappe_mrf_conf:members(Conf))),
+    ?UA:bye(Ua).
+
+%% fs: mod_conference dials the party; the referrer hears 100, 180 (the
+%% node's CHANNEL_PROGRESS of the dialed leg) and 200 once it is in the
+%% room, whose members then hear it.
+refer_dial_out_fs(Config) ->
+    {Conf, Ua} = refer_room(Config, <<"live-refer-f">>, fs),
+    R = ?UA:refer(
+        ?config(sip_port, Config),
+        entity(Conf),
+        target(Config, <<"refer-tone">>),
+        []
+    ),
+    refer_answered(R, 200),
+    ?assertEqual(<<"SIP/2.0 100 Trying">>, next_notify(R)),
+    ?assertMatch(<<"SIP/2.0 180", _/binary>>, next_notify(R)),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, final_notify(R)),
+    ?UA:clear(Ua),
+    ?assert(?UA:hears(Ua, 900, 8000)),
+    ?assertEqual(2, length(chappe_mrf_conf:members(Conf))),
+    ?UA:bye(Ua).
+
+refer_dial_out_busy(Config) ->
+    refer_fails(Config, <<"live-refer-busy">>, <<"refer-busy">>, 486).
+
+refer_dial_out_declined(Config) ->
+    refer_fails(Config, <<"live-refer-decl">>, <<"refer-decline">>, 603).
+
+refer_dial_out_no_answer(Config) ->
+    refer_fails(Config, <<"live-refer-ring">>, <<"refer-ring">>, 408).
+
+%% A party that does not come: the referrer hears why, the room keeps its
+%% one member and the call goes on.
+refer_fails(Config, Name, User, Status) ->
+    {Conf, Ua} = refer_room(Config, Name, native),
+    R = ?UA:refer(
+        ?config(sip_port, Config), entity(Conf), target(Config, User), []
+    ),
+    refer_answered(R, 200),
+    Want = <<"SIP/2.0 ", (integer_to_binary(Status))/binary>>,
+    ?assertMatch(<<Want:11/binary, _/binary>>, final_notify(R)),
+    ?assertEqual(1, length(chappe_mrf_conf:members(Conf))),
+    no_reinvite(Ua),
+    ?UA:bye(Ua).
+
+%% RFC 4579 5.10 outside any dialog: a REFER whose Refer-To carries
+%% Replaces has the party's INVITE carry it (FreeSWITCH's
+%% _sofia_replaces_). The party here is fs2, which takes a Replaces
+%% naming no call of its own as a plain call (sofia.c, where RFC 3891 3
+%% wants 481; chappe's own 481 is replaces_nomatch in the conformance
+%% lab): it answers, and fs2 shows the INVITE had the Replaces
+%% (sip_replaces_call_id), by hanging up the channels that have it. The
+%% room and its member's call carry on.
+refer_attended_ood(Config) ->
+    {Conf, Ua} = refer_room(Config, <<"live-refer-rep">>, native),
+    Replaces = <<"?Replaces=nobody%40h%3Bto-tag%3Da%3Bfrom-tag%3Db">>,
+    <<"<", T/binary>> = target(Config, <<"refer-tone">>),
+    RT =
+        <<"<", (binary:part(T, 0, byte_size(T) - 1))/binary, Replaces/binary,
+            ">">>,
+    R = ?UA:refer(?config(sip_port, Config), entity(Conf), RT, []),
+    refer_answered(R, 200),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, final_notify(R)),
+    [M] = [
+        Id
+     || #{id := Id, uri := U} <- chappe_mrf_conf:members(Conf),
+        binary:match(U, <<"refer-tone">>) =/= nomatch
+    ],
+    _ = chappe_esl:node_api(
+        fs2, <<"hupall NORMAL_CLEARING sip_replaces_call_id nobody@h">>
+    ),
+    receive
+        {chappe_mrf_conf, Conf, {left, M, _}} -> ok
+    after 8000 -> ct:fail(replaces_not_sent)
+    end,
+    ?assertEqual(1, length(chappe_mrf_conf:members(Conf))),
+    no_reinvite(Ua),
+    ?UA:bye(Ua).
+
+%% A watcher reads the roster (RFC 4575), then REFERs the room to remove a
+%% member by the endpoint entity it shows (RFC 4579 5.11): that caller
+%% gets a BYE and the roster shows it booted.
+refer_bye_from_roster(Config) ->
+    ok = chappe_sip:event_package(
+        <<"conference">>, fun chappe_mrf:focus_subscribe/2
+    ),
+    {Conf, Ua1} = refer_room(Config, <<"live-refer-bye">>, native),
+    {Ua2, _, B2, _} = call_in(Config, none),
+    {ok, M2} = chappe_mrf_conf:join(Conf, B2, #{}),
+    W = ?UA:subscribe(?config(sip_port, Config), entity(Conf), []),
+    Entity = <<(entity(Conf))/binary, ";member=", M2/binary>>,
+    ?assert(roster_has(W, <<"<endpoint entity=\"", Entity/binary, "\"">>)),
+    R = ?UA:refer(
+        ?config(sip_port, Config),
+        entity(Conf),
+        <<"<", Entity/binary, ";method=BYE>">>,
+        []
+    ),
+    refer_answered(R, 200),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, final_notify(R)),
+    ua_got(Ua2, bye, 5000),
+    ?assert(
+        roster_has(W, <<"<disconnection-method>booted</disconnection-method>">>)
+    ),
+    ?assertEqual(1, length(chappe_mrf_conf:members(Conf))),
+    ?UA:bye(Ua1).
+
+%% a room taking REFERs, with one caller in it (no tone); native joins
+%% the parties it dials from an endpoint on fs1, fs mod_conference on fs1
+refer_room(Config, Name, Backend) ->
+    ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
+    ivr(fun park/2),
+    Common = #{
+        focus => true,
+        refer_policy => fun(_) -> true end,
+        dial_profile => <<"mrf">>,
+        dial_timeout => 6000
+    },
+    Opts =
+        case Backend of
+            native ->
+                Common#{
+                    anchor_params => to_host(),
+                    endpoint_params => #{
+                        offer => #{direction => [<<"host">>, <<"docker">>]},
+                        answer => #{direction => [<<"docker">>, <<"host">>]}
+                    },
+                    dial_endpoint => #{node => fs1}
+                };
+            fs ->
+                Common#{
+                    backend => fs,
+                    node => fs1,
+                    bridge => #{anchor_params => to_fs()}
+                }
+        end,
+    {ok, Conf} = chappe_mrf:conference(Name, Opts),
+    {Ua, _, B2b, _} = call_in(Config, none),
+    {ok, _} = chappe_mrf_conf:join(Conf, B2b, #{}),
+    {Conf, Ua}.
+
+entity(Conf) ->
+    #{entity := E} = chappe_mrf_conf:info(Conf),
+    E.
+
+%% a party on fs2, as fs1 reaches it on the lab's network
+target(Config, User) ->
+    <<"<sip:", User/binary, "@fs2:",
+        (integer_to_binary(?config(fs2_sip, Config)))/binary, ">">>.
+
+refer_answered(R, Status) ->
+    receive
+        {ua, R, {refer, St}} -> ?assertEqual(Status, St)
+    after 10000 -> ct:fail(no_refer_answer)
+    end.
+
+%% the status line of the referrer's next NOTIFY
+next_notify(R) ->
+    receive
+        {ua, R, {notify, Line, _State}} -> Line
+    after 20000 -> ct:fail(no_notify)
+    end.
+
+%% the status line of the NOTIFY that ends the subscription
+final_notify(R) ->
+    receive
+        {ua, R, {notify, Line, <<"terminated", _/binary>>}} -> Line;
+        {ua, R, {notify, _, _}} -> final_notify(R)
+    after 30000 -> ct:fail(no_final_notify)
+    end.
+
+%% whether a conference-info document with Part comes to watcher W
+roster_has(W, Part) ->
+    receive
+        {ua, W, {conference, Body}} ->
+            binary:match(Body, Part) =/= nomatch orelse roster_has(W, Part);
+        {ua, W, {subscribe, _}} ->
+            roster_has(W, Part)
+    after 10000 -> false
+    end.
 
 %% The IVR plays the menu (its tone reaches the caller), the caller
 %% presses 2 (RFC 2833 through rtpengine), play_collect returns it, and

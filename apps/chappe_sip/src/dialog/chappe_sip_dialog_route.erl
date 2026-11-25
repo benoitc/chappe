@@ -88,7 +88,7 @@ route_indialog(TxnH, Req, #data{sub = undefined} = D) ->
     Method = chappe_sip_req:method(Req),
     Routed =
         (Method =:= <<"SUBSCRIBE">> orelse Method =:= <<"NOTIFY">>) andalso
-            chappe_sip_refer:route(
+            chappe_sip_refer_notify:route(
                 chappe_sip_dialog_owner:dialog(D),
                 Req,
                 %% neither method refreshes the session: its timer stays

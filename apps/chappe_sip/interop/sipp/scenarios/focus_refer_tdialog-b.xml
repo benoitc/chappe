@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!-- Copyright 2026 Benoit Chesneau
+     SPDX-License-Identifier: Apache-2.0
+
+     Twin b of focus_refer_tdialog. RFC 7647 section 4 and RFC 4538
+     section 4: a REFER to the conference URI outside any dialog names a's
+     dialog with the focus in Target-Dialog (tags as the focus sees them,
+     Require: tdialog). The focus finds that dialog, so the REFER is
+     authorized: 200 with the conference's Contact, NOTIFY 100, then the
+     final 200 once the target on port 5070 answered. A second REFER whose
+     Target-Dialog names no dialog proves nothing; this focus wants that
+     proof once a REFER offers one, and refuses it 403. -->
+<scenario name="focus_refer_tdialog-b">
+  <recvCmd>
+    <action>
+      <ereg regexp="[^ ]+" search_in="hdr" header="X-Td-Call-Id:" check_it="true" assign_to="tcid"/>
+      <ereg regexp="[^ ]+" search_in="hdr" header="X-Td-Local-Tag:" check_it="true" assign_to="tlocal"/>
+      <ereg regexp="[^ ]+" search_in="hdr" header="X-Td-Remote-Tag:" check_it="true" assign_to="tremote"/>
+    </action>
+  </recvCmd>
+  <send retrans="500">
+    <![CDATA[
+      REFER sip:conf@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:sipp@[local_ip]:[local_port]>;tag=[pid]SIPpTag01[call_number]
+      To: <sip:conf@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 REFER
+      Max-Forwards: 70
+      Contact: <sip:sipp@[local_ip]:[local_port]>
+      Refer-To: <sip:target@[local_ip]:5070>
+      Target-Dialog: [$tcid];local-tag=[$tlocal];remote-tag=[$tremote]
+      Require: tdialog
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv response="100" optional="true"/>
+  <recv response="200">
+    <action>
+      <ereg regexp="isfocus" search_in="hdr" header="Contact:" check_it="true" assign_to="chk"/>
+    </action>
+  </recv>
+  <recv request="NOTIFY">
+    <action>
+      <ereg regexp="^SIP/2.0 100" search_in="body" check_it="true" assign_to="chk"/>
+    </action>
+  </recv>
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv request="NOTIFY" timeout="15000">
+    <action>
+      <ereg regexp="terminated" search_in="hdr" header="Subscription-State:" check_it="true" assign_to="chk"/>
+      <ereg regexp="^SIP/2.0 200" search_in="body" check_it="true" assign_to="chk"/>
+    </action>
+  </recv>
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <send retrans="500">
+    <![CDATA[
+      REFER sip:conf@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      From: <sip:sipp@[local_ip]:[local_port]>;tag=[pid]SIPpTag02[call_number]
+      To: <sip:conf@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 2 REFER
+      Max-Forwards: 70
+      Contact: <sip:sipp@[local_ip]:[local_port]>
+      Refer-To: <sip:target@[local_ip]:5070>
+      Target-Dialog: [$tcid];local-tag=nobody;remote-tag=[$tremote]
+      Require: tdialog
+      Content-Length: 0
+
+    ]]>
+  </send>
+  <recv response="100" optional="true"/>
+  <recv response="403"/>
+  <sendCmd>
+    <![CDATA[
+      Call-ID: [$tcid]
+
+    ]]>
+  </sendCmd>
+
+  <Reference variables="chk,tcid,tlocal,tremote"/>
+</scenario>

@@ -15,7 +15,7 @@
 -export([init/2, info/1, join/4, admit/3, handle_call/3, handle_cast/2]).
 -export([handle_info/2]).
 -export([set_flag/5, hangup/3, left/2, play/3, portable/0]).
--export([relate/4, record/3, stop_record/1, handover/1, dial/4, dial_out/4]).
+-export([relate/4, record/3, stop_record/1, handover/1, dial/4]).
 -export([loop_invite/4, check_rate/1, same_rate/2]).
 
 -record(native, {
@@ -270,18 +270,10 @@ handover(#{rtpe := _}) ->
 handover(_Mb) ->
     {error, not_member}.
 
-%% An endpoint joins the mixer, then bridges to the target. A REFER to
-%% the room: in its request worker, which hears the outcome.
-dial_out(Conf, Target, Refer, Cfg) ->
-    chappe_mrf_conf_refer:dial_native(Conf, Target, Refer, Cfg).
-
-%% A member's REFER: in a helper, since it waits for the endpoint.
-dial(Target, Refer, Cfg, S) ->
-    Conf = self(),
-    _ = spawn(fun() ->
-        chappe_mrf_conf_refer:dial_native(Conf, Target, Refer, Cfg)
-    end),
-    {ok, S}.
+%% A REFER brings Target in: an endpoint bridges to it, and joins the
+%% mixer once it answered (chappe_mrf_conf_refer_dial).
+dial(Target, Key, Cfg, S) ->
+    chappe_mrf_conf_refer_dial:native(Target, Key, Cfg, S).
 
 %% The loopback INVITE of a native join reached this node: the mixer
 %% answers its offer, and the dialog is the conference's. Runs in the
@@ -329,13 +321,15 @@ join_b2b(B2b, Opts, From, S) ->
 %% which then runs in a process of its own.
 join_call(Conf, Req, Res, Opts0) ->
     %% who the member is, for a REFER's method=BYE: the URI it calls from
-    Opts = maps:merge(#{uri => chappe_mrf_conf_refer:from_uri(Req)}, Opts0),
+    Opts = maps:merge(
+        #{uri => chappe_mrf_conf_refer_member:from_uri(Req)}, Opts0
+    ),
     case chappe_mrf_conf:call(Conf, {join, {call, Opts}}, 5000) of
         {ok, Token, Uri, AP, Entity} ->
             %% the room's REFERs come to the room (chappe_mrf_conf_refer);
             %% a focus room answers with the conference URI and isfocus
             %% as the member's Contact (RFC 4579 4.2)
-            B2bOpts = (chappe_mrf_conf_refer:member_opts(Conf, Entity))#{
+            B2bOpts = (chappe_mrf_conf_refer_member:member_opts(Conf, Entity))#{
                 media => anchor,
                 anchor_params => AP
             },
@@ -358,7 +352,7 @@ join_call(Conf, Req, Res, Opts0) ->
 relay(Legs, Conf) ->
     case chappe_sip_b2b:relay_async(Legs, #{notify => Conf}) of
         {ok, B2b} = Ok ->
-            ok = chappe_mrf_conf_refer:keep_dialog(B2b, Legs),
+            ok = chappe_mrf_conf_refer_member:keep_dialog(B2b, Legs),
             Ok;
         Err ->
             Err

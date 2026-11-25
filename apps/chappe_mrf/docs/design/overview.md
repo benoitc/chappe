@@ -49,7 +49,10 @@ under chappe_esl's supervisor.
 | `chappe_mrf_conf_cluster` | A cluster room: the start in the caller and the lease decisions in the room. |
 | `chappe_mrf_conf_move` | Moving a cluster room's members to the room that owns its name next. |
 | `chappe_mrf_conf_transfer` | Moving a member from one conference to another (`chappe_mrf_conf:transfer/3`). |
-| `chappe_mrf_conf_refer` | REFER to and from a conference (RFC 4579). |
+| `chappe_mrf_conf_refer` | REFER to and from a conference (RFC 4579): the checks, the policy, the answer. |
+| `chappe_mrf_conf_refer_dial` | The parties a REFER brings in (native endpoint or fs bgdial), their progress and the nested REFER of `method=REFER`. |
+| `chappe_mrf_conf_refer_member` | A member's side of REFER: its REFER to the focus, its own transfer in a room without focus, a call whose Replaces names it (the `replaces_policy`), and the call options that let the room take a member's REFERs. |
+| `chappe_mrf_conf_refer_op` | The REFERs a room carries out, keyed by origin, method and target, so a repeated one dials nobody again. |
 | `chappe_mrf_conf_focus` | A room as an RFC 4575 conference focus. |
 | `chappe_mrf_store` | FreeSWITCH recordings adopted into the recording store (chappe_audio). |
 | `chappe_mrf_app`, `chappe_mrf_sup` | Boot (chappe_cluster, the ESL listener) and the root supervisor. |
@@ -178,7 +181,6 @@ talk to the room with `chappe_mrf_conf:call/3`):
 |---|---|---|
 | `join/4` | yes | a call or an endpoint joins; the room checks its lease, lock and member limit, then hands the request to `admit/3` |
 | `transfer_check/2`, `transfer_in/3` | no | a member moves between rooms |
-| `dial_out/4` | no | a REFER to the room brings a party in, in the REFER's request worker |
 
 Callbacks that run in the room process on its state and return it:
 

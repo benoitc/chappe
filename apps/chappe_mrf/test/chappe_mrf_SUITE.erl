@@ -17,7 +17,38 @@
     connect_caller_ivr/1,
     fs_refer_transfers_caller/1,
     refer_removes_member/1,
-    refer_adds_native/1,
+    refer_native_joined_on_answer/1,
+    refer_outcomes/1,
+    refer_lock_max_both_backends/1,
+    refer_idempotent/1,
+    refer_ood_replaces/1,
+    refer_bye_roster_uri/1,
+    refer_bye_ambiguous_485/1,
+    refer_bye_cross_room/1,
+    refer_bye_unauthorized/1,
+    refer_room_end_487/1,
+    refer_norefersub/1,
+    ood_target_dialog_member/1,
+    refer_nested_refer/1,
+    referred_invite_joins/1,
+    member_transfer_attended/1,
+    invite_replaces_member/1,
+    refer_policy_crash/1,
+    refer_admission_probe/1,
+    refer_worker_dies/1,
+    refer_bye_two_members_one_origin/1,
+    refer_two_origins_one_dial/1,
+    refer_dial_fun_once/1,
+    refer_dial_fun_crash/1,
+    refer_abort_other_origin/1,
+    refer_dial_own_uri_no_focus/1,
+    refer_replaces_callid_chars/1,
+    invite_replaces_policy/1,
+    invite_replaces_default/1,
+    invite_replaces_anonymous/1,
+    invite_replaces_race/1,
+    invite_replaces_caller_dies/1,
+    transferred_drops_privacy/1,
     refer_adds_fs/1,
     refer_hostile_target/1,
     refer_bgdial/1,
@@ -81,7 +112,38 @@ all() ->
         connect_caller_ivr,
         fs_refer_transfers_caller,
         refer_removes_member,
-        refer_adds_native,
+        refer_native_joined_on_answer,
+        refer_outcomes,
+        refer_lock_max_both_backends,
+        refer_idempotent,
+        refer_ood_replaces,
+        refer_bye_roster_uri,
+        refer_bye_ambiguous_485,
+        refer_bye_cross_room,
+        refer_bye_unauthorized,
+        refer_room_end_487,
+        refer_norefersub,
+        ood_target_dialog_member,
+        refer_nested_refer,
+        referred_invite_joins,
+        member_transfer_attended,
+        invite_replaces_member,
+        refer_policy_crash,
+        refer_admission_probe,
+        refer_worker_dies,
+        refer_bye_two_members_one_origin,
+        refer_two_origins_one_dial,
+        refer_dial_fun_once,
+        refer_dial_fun_crash,
+        refer_abort_other_origin,
+        refer_dial_own_uri_no_focus,
+        refer_replaces_callid_chars,
+        invite_replaces_policy,
+        invite_replaces_default,
+        invite_replaces_anonymous,
+        invite_replaces_race,
+        invite_replaces_caller_dies,
+        transferred_drops_privacy,
         refer_adds_fs,
         refer_hostile_target,
         refer_bgdial,
@@ -335,7 +397,8 @@ fs_refer_transfers_caller(Config) ->
 %% A REFER to the room's URI with method=BYE (RFC 4579 5.11) removes the
 %% member with that URI, when the room's policy lets the referrer: 200,
 %% NOTIFY 100 then 200, the member leaves kicked. Someone the policy does
-%% not let is refused 403 and the member stays; an unknown URI is 404.
+%% not let is refused 403 and the member stays; an unknown URI is refused
+%% 404.
 refer_removes_member(Config) ->
     ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
     ivr(Config),
@@ -361,37 +424,7 @@ refer_removes_member(Config) ->
     {Sock3, _} = refer(
         Config, Entity, <<"boss">>, <<"<sip:nobody@127.0.0.1;method=BYE>">>
     ),
-    ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(Sock3)),
-    ?assertEqual([<<"SIP/2.0 100">>, <<"SIP/2.0 404">>], frags(Sock3, 2)).
-
-%% native: a REFER to the room adds its Refer-To party (5.5). An endpoint
-%% of the pool joins the mixer and bridges to the target; once the
-%% target answers (CHANNEL_BRIDGE) the referrer gets NOTIFY 200, and the
-%% member is the target.
-refer_adds_native(Config) ->
-    ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
-    {ok, Conf} = chappe_mrf:conference(<<"addroom">>, #{
-        focus => true,
-        refer_policy => fun(#{action := add}) -> true end,
-        dial_endpoint => #{targets => [{fs1, fs_uri(Config)}]},
-        dial_profile => <<"carrier">>
-    }),
-    #{entity := Entity} = chappe_mrf_conf:info(Conf),
-    {Sock, _} = refer(Config, Entity, <<"boss">>, <<"<sip:carol@10.0.0.9>">>),
-    ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(Sock)),
-    ?assertEqual([<<"SIP/2.0 100">>], frags(Sock, 1)),
-    _ = fs_what(reinvite),
-    {fake_fs, _, _, {cmd, Bridge}} = fs_cmd(<<"execute-app-name: bridge">>),
-    ?assert(has(Bridge, <<"sofia/carrier/carol@10.0.0.9">>)),
-    ?assert(has(Bridge, <<"sip_contact_user=addroom">>)),
-    ?assert(has(Bridge, <<"sip_invite_contact_params=~isfocus">>)),
-    {joined, M, #{uri := <<"sip:carol@10.0.0.9">>}} = joined(Conf),
-    ok = ?F:fs_event(?config(fs, Config), <<"CHANNEL_BRIDGE">>, []),
-    ?assertEqual(<<"SIP/2.0 200">>, final_frag(Sock)),
-    ?assertMatch(
-        [#{id := M, uri := <<"sip:carol@10.0.0.9">>}],
-        chappe_mrf_conf:members(Conf)
-    ).
+    ?assertMatch(<<"SIP/2.0 404", _/binary>>, sip_response(Sock3)).
 
 %% fs: mod_conference dials the party into the room under our uuid; its
 %% add-member makes it a member and the referrer gets NOTIFY 200; a
@@ -711,6 +744,7 @@ room_recording_waits_for_close(Config) ->
 %% URI and isfocus as its Contact. A REFER in that dialog is a REFER to the
 %% focus (5.5): its Refer-To party is dialed into the room, with the
 %% Replaces the Refer-To carries on that INVITE (5.10).
+%% req: MRF-17
 focus_member_refer_adds(Config) ->
     {ok, Conf} = chappe_mrf:conference(<<"froom">>, #{
         focus => true,
@@ -732,7 +766,7 @@ focus_member_refer_adds(Config) ->
     ?assertMatch(<<"SIP/2.0 200", _/binary>>, R),
     {fake_fs, _, _, {cmd, Bridge}} = fs_cmd(<<"execute-app-name: bridge">>),
     ?assert(has(Bridge, <<"sofia/external/carol@10.0.0.9">>)),
-    ?assert(has(Bridge, <<"sip_h_Replaces=c1@h;to-tag=t1;from-tag=f1">>)),
+    ?assert(has(Bridge, <<"_sofia_replaces_=c1@h;to-tag=t1;from-tag=f1">>)),
     %% 5.5: the INVITE to the party has the conference's user and isfocus
     %% in its Contact (sofia's sip_contact_user, sip_invite_contact_params)
     ?assert(has(Bridge, <<"sip_contact_user=froom">>)),
@@ -852,13 +886,1333 @@ fs_focus_member_isfocus(Config) ->
     ?assert(has(Dial, <<"sip_invite_contact_params=~isfocus">>)),
     ok = chappe_mrf_conf:stop(Conf).
 
-%% A caller answered straight into Conf (join/3 with {call, Req, Res}).
-room_caller(Config, Conf) ->
+%% ---- REFER to a room: the decision and the dial-outs ----
+
+%% native: the party a REFER to the room brings in is dialed by an
+%% endpoint of the pool, in the mixer out of sight first, and is no
+%% member until it answers: no member, no roster entry, and a bridge that
+%% waits for the answer (ignore_early_media) while it rings. Its 180 reaches the referrer (the node's
+%% CHANNEL_PROGRESS, marked by the dial's chappe_dial variables); once it
+%% answers (CHANNEL_BRIDGE) the endpoint joins the mixer and the referrer
+%% hears 200. The REFER's 200 has the conference URI and isfocus as
+%% Contact; the roster shows the party dialed out.
+%% req: MRF-11 MRF-12 MRF-19
+refer_native_joined_on_answer(Config) ->
+    ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
+    ok = chappe_sip:event_package(
+        <<"conference">>, fun chappe_mrf:focus_subscribe/2
+    ),
+    {ok, Conf} = chappe_mrf:conference(<<"ansroom">>, #{
+        focus => true,
+        refer_policy => fun(#{action := add}) -> true end,
+        dial_endpoint => #{targets => [{fs1, fs_uri(Config)}]},
+        dial_profile => <<"carrier">>
+    }),
+    #{entity := Entity} = chappe_mrf_conf:info(Conf),
+    W = watch(Config, Entity),
+    _ = roster(W),
+    {Sock, _} = refer(Config, Entity, <<"boss">>, <<"<sip:carol@10.0.0.9>">>),
+    R = sip_response(Sock),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, R),
+    ?assert(has(?F:hdr(R, <<"contact">>), <<Entity/binary, ">;isfocus">>)),
+    ?assertEqual([<<"SIP/2.0 100">>], frags(Sock, 1)),
+    %% in the mixer first, out of sight, then the bridge, which waits for
+    %% the answer: nothing it plays before reaches the room
+    _ = fs_what(reinvite),
+    {fake_fs, _, _, {cmd, Bridge}} = fs_cmd(<<"execute-app-name: bridge">>),
+    ?assert(has(Bridge, <<"sofia/carrier/carol@10.0.0.9">>)),
+    ?assert(has(Bridge, <<"sip_contact_user=ansroom">>)),
+    ?assert(has(Bridge, <<"sip_invite_contact_params=~isfocus">>)),
+    ?assert(has(Bridge, <<"ignore_early_media=true">>)),
+    ?assertEqual([], chappe_mrf_conf:members(Conf)),
+    no_joined(Conf),
+    {Tag, Op} = dial_marks(Bridge),
+    Conf ! progress_event(fs1, <<"CHANNEL_PROGRESS">>, Tag, Op),
+    ?assertEqual([<<"SIP/2.0 180">>], frags(Sock, 1)),
+    %% another room's mark is not this room's
+    Conf ! progress_event(fs1, <<"CHANNEL_PROGRESS_MEDIA">>, <<"x">>, Op),
+    ok = ?F:fs_bridge(?config(fs, Config), answered),
+    {joined, M, #{uri := <<"sip:carol@10.0.0.9">>}} = joined(Conf),
+    ?assertEqual(<<"SIP/2.0 200">>, final_frag(Sock)),
+    ?assertMatch([#{id := M}], chappe_mrf_conf:members(Conf)),
+    %% the roster shows it dialed out, referred by nobody (no Referred-By)
+    ?assert(roster_until(W, <<"<joining-method>dialed-out</joining-method>">>)),
+    gen_udp:close(W).
+
+%% A dial-out that fails tells the referrer how (busy 486, declined 603,
+%% no answer 480, no answer in dial_timeout 408), and the room is left as
+%% it was: no member, no joined or left event.
+%% req: MRF-13
+refer_outcomes(Config) ->
+    ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
+    {ok, Conf} = chappe_mrf:conference(<<"failroom">>, #{
+        focus => true,
+        refer_policy => fun(_) -> true end,
+        dial_timeout => 800,
+        dial_endpoint => #{targets => [{fs1, fs_uri(Config)}]}
+    }),
+    #{entity := Entity} = chappe_mrf_conf:info(Conf),
+    Fs = ?config(fs, Config),
+    lists:foreach(
+        fun({Outcome, Want}) ->
+            {Sock, _} = refer(
+                Config, Entity, <<"boss">>, <<"<sip:dave@10.0.0.9>">>
+            ),
+            ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(Sock)),
+            ?assertEqual([<<"SIP/2.0 100">>], frags(Sock, 1)),
+            _ = fs_cmd(<<"execute-app-name: bridge">>),
+            _ =
+                case Outcome of
+                    timeout -> ok;
+                    Cause -> ?F:fs_bridge(Fs, {failed, Cause})
+                end,
+            ?assertEqual(Want, final_frag(Sock)),
+            ?assertEqual([], chappe_mrf_conf:members(Conf)),
+            gen_udp:close(Sock)
+        end,
+        [
+            {<<"USER_BUSY">>, <<"SIP/2.0 486">>},
+            {<<"CALL_REJECTED">>, <<"SIP/2.0 603">>},
+            {<<"NO_ANSWER">>, <<"SIP/2.0 480">>},
+            {timeout, <<"SIP/2.0 408">>}
+        ]
+    ),
+    no_joined(Conf),
+    receive
+        {chappe_mrf_conf, Conf, {left, _, _} = L} -> ct:fail({left, L})
+    after 0 -> ok
+    end.
+
+%% Admission before anything is dialed, on both backends: a locked room
+%% refuses a REFER that adds a party 403 and a full one 486, a party being
+%% dialed counting as a member; nothing is dialed then.
+%% req: MRF-14 MRF-11
+refer_lock_max_both_backends(Config) ->
+    ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
+    Targets = [{fs1, fs_uri(Config)}],
+    {ok, N} = chappe_mrf:conference(<<"maxnative">>, #{
+        focus => true,
+        max_members => 1,
+        refer_policy => fun(_) -> true end,
+        dial_endpoint => #{targets => Targets}
+    }),
+    #{entity := NE} = chappe_mrf_conf:info(N),
+    %% one being dialed fills the room
+    {S1, _} = refer(Config, NE, <<"boss">>, <<"<sip:a@10.0.0.9>">>),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(S1)),
+    _ = fs_cmd(<<"execute-app-name: bridge">>),
+    {S2, _} = refer(Config, NE, <<"boss">>, <<"<sip:b@10.0.0.9>">>),
+    ?assertMatch(<<"SIP/2.0 486", _/binary>>, sip_response(S2)),
+    ok = ?F:fs_bridge(?config(fs, Config), {failed, <<"USER_BUSY">>}),
+    ?assertEqual(<<"SIP/2.0 486">>, final_frag(S1)),
+    ok = chappe_mrf_conf:lock(N),
+    {S3, _} = refer(Config, NE, <<"boss">>, <<"<sip:c@10.0.0.9>">>),
+    ?assertMatch(<<"SIP/2.0 403", _/binary>>, sip_response(S3)),
+    no_fs_cmd(<<"execute-app-name: bridge">>, 300),
+    %% fs: the same before bgdial
+    {ok, F} = chappe_mrf:conference(<<"maxfs">>, #{
+        backend => fs,
+        node => fs1,
+        focus => true,
+        max_members => 1,
+        refer_policy => fun(_) -> true end
+    }),
+    {ok, Ep} = chappe_mrf:create_endpoint(#{targets => Targets}),
+    {ok, _} = chappe_mrf_conf:join(F, Ep, #{}),
+    {joined, _, _} = joined(F),
+    FE =
+        <<"sip:maxfs@127.0.0.1:",
+            (integer_to_binary(?config(ep, Config)))/binary>>,
+    {S4, _} = refer(Config, FE, <<"boss">>, <<"<sip:d@10.0.0.8>">>),
+    ?assertMatch(<<"SIP/2.0 486", _/binary>>, sip_response(S4)),
+    ok = chappe_mrf_conf:lock(F),
+    {S5, _} = refer(Config, FE, <<"boss">>, <<"<sip:d@10.0.0.8>">>),
+    ?assertMatch(<<"SIP/2.0 403", _/binary>>, sip_response(S5)),
+    no_fs_cmd(<<"bgdial">>, 300),
+    ok = chappe_mrf:destroy(Ep).
+
+%% A REFER repeated from the same origin (Call-ID and From tag) for the
+%% same target is the same request: it is answered (200, NOTIFY 100) but
+%% nobody is dialed again, and both hear the outcome; one after the
+%% outcome hears it at once. Adding a member already in is 200 at once.
+%% req: MRF-15
+refer_idempotent(Config) ->
+    ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
+    {ok, Conf} = chappe_mrf:conference(<<"idemroom">>, #{
+        focus => true,
+        refer_policy => fun(_) -> true end,
+        dial_endpoint => #{targets => [{fs1, fs_uri(Config)}]}
+    }),
+    #{entity := Entity} = chappe_mrf_conf:info(Conf),
+    Carol = <<"<sip:carol@10.0.0.9>">>,
+    Same = #{call_id => <<"idem-1">>, from_tag => <<"same">>},
+    {S1, _} = refer(Config, Entity, <<"boss">>, Carol, Same#{cseq => 1}),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(S1)),
+    _ = fs_cmd(<<"execute-app-name: bridge">>),
+    {S2, _} = refer(Config, Entity, <<"boss">>, Carol, Same#{cseq => 2}),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(S2)),
+    ?assertEqual([<<"SIP/2.0 100">>], frags(S2, 1)),
+    no_fs_cmd(<<"execute-app-name: bridge">>, 500),
+    ok = ?F:fs_bridge(?config(fs, Config), answered),
+    {joined, _, _} = joined(Conf),
+    ?assertEqual(<<"SIP/2.0 200">>, final_frag(S1)),
+    ?assertEqual(<<"SIP/2.0 200">>, final_frag(S2)),
+    {S3, _} = refer(Config, Entity, <<"boss">>, Carol, Same#{cseq => 3}),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(S3)),
+    ?assertEqual(<<"SIP/2.0 200">>, final_frag(S3)),
+    %% another origin asking for carol, now a member
+    {S4, _} = refer(Config, Entity, <<"boss">>, Carol),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(S4)),
+    ?assertEqual(<<"SIP/2.0 200">>, final_frag(S4)),
+    no_fs_cmd(<<"execute-app-name: bridge">>, 300),
+    ?assertMatch([_], chappe_mrf_conf:members(Conf)).
+
+%% RFC 4579 5.10, outside any dialog: the Replaces of the Refer-To goes on
+%% the INVITE to the party, and so does the REFER's Referred-By (RFC 3892
+%% 2.2), as a bare URI.
+%% req: MRF-17
+refer_ood_replaces(Config) ->
+    ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
+    {ok, Conf} = chappe_mrf:conference(<<"reproom">>, #{
+        focus => true,
+        refer_policy => fun(_) -> true end,
+        dial_endpoint => #{targets => [{fs1, fs_uri(Config)}]}
+    }),
+    #{entity := Entity} = chappe_mrf_conf:info(Conf),
+    RT =
+        <<"<sip:carol@10.0.0.9?Replaces=c1%40h%3Bto-tag%3Dt1%3Bfrom-tag%3Df1>">>,
+    {Sock, _} = refer(Config, Entity, <<"boss">>, RT, #{
+        headers => [{<<"Referred-By">>, <<"\"Boss\" <sip:boss@127.0.0.1>">>}]
+    }),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(Sock)),
+    {fake_fs, _, _, {cmd, Bridge}} = fs_cmd(<<"execute-app-name: bridge">>),
+    ?assert(has(Bridge, <<"_sofia_replaces_=c1@h;to-tag=t1;from-tag=f1">>)),
+    ?assert(has(Bridge, <<"sip_h_Referred-By=<sip:boss@127.0.0.1>">>)).
+
+%% RFC 4579 5.11: a REFER with method=BYE whose Refer-To is a member's
+%% endpoint entity (<conference URI>;member=Id) removes that member. The
+%% roster has each participant as a user by its address-of-record with an
+%% endpoint per member; the removed one shows disconnected, booted, then
+%% is deleted.
+%% req: MRF-16 MRF-19
+refer_bye_roster_uri(Config) ->
+    ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
+    ok = chappe_sip:event_package(
+        <<"conference">>, fun chappe_mrf:focus_subscribe/2
+    ),
+    {ok, Conf} = chappe_mrf:conference(<<"rosroom">>, #{
+        focus => true, refer_policy => fun(_) -> true end
+    }),
+    #{entity := Entity} = chappe_mrf_conf:info(Conf),
+    {Ua1, M1} = room_caller(Config, Conf),
+    {ua, Ua1, {final, 200, _}} = ua_answer(Ua1),
+    {Ua2, M2} = room_caller(Config, Conf),
+    {ua, Ua2, {final, 200, _}} = ua_answer(Ua2),
+    [#{uri := U2}] = [
+        Mb
+     || #{id := Id} = Mb <- chappe_mrf_conf:members(Conf), Id =:= M2
+    ],
+    W = watch(Config, Entity),
+    Full = roster(W),
+    Aor2 = chappe_mrf_conf_refer_op:aor(U2),
+    ?assert(has(Full, <<"<user entity=\"", Aor2/binary, "\"">>)),
+    ?assert(
+        has(
+            Full,
+            <<"<endpoint entity=\"", Entity/binary, ";member=", M2/binary,
+                "\"">>
+        )
+    ),
+    ?assert(has(Full, <<"<joining-method>dialed-in</joining-method>">>)),
+    Bye = <<"<", Entity/binary, ";member=", M2/binary, ";method=BYE>">>,
+    {Sock, _} = refer(Config, Entity, <<"boss">>, Bye),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(Sock)),
+    conf_event(Conf, {left, M2, kicked}),
+    _ = ua_event(Ua2, bye),
+    ?assertEqual(<<"SIP/2.0 200">>, final_frag(Sock)),
+    ?assert(
+        roster_until(
+            W, <<"<disconnection-method>booted</disconnection-method>">>
+        )
+    ),
+    ?assert(roster_until(W, <<"state=\"deleted\"">>)),
+    ?assertMatch([#{id := M1}], chappe_mrf_conf:members(Conf)),
+    gen_udp:close(W).
+
+%% Two members with the same address-of-record: a removal by that URI is
+%% ambiguous (485) and both stay.
+%% req: MRF-16
+refer_bye_ambiguous_485(Config) ->
+    ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
+    {ok, Conf} = chappe_mrf:conference(<<"dupl">>, #{
+        focus => true, refer_policy => fun(_) -> true end
+    }),
+    #{entity := Entity} = chappe_mrf_conf:info(Conf),
+    Dup = #{from => <<"sip:twin@127.0.0.1">>},
+    {Ua1, _} = room_caller(Config, Conf, Dup),
+    {ua, Ua1, {final, 200, _}} = ua_answer(Ua1),
+    {Ua2, _} = room_caller(Config, Conf, Dup),
+    {ua, Ua2, {final, 200, _}} = ua_answer(Ua2),
+    {Sock, _} = refer(
+        Config, Entity, <<"boss">>, <<"<sip:twin@127.0.0.1;method=BYE>">>
+    ),
+    ?assertMatch(<<"SIP/2.0 485", _/binary>>, sip_response(Sock)),
+    no_ua_event(Ua1, bye, 300),
+    ?assertEqual(2, length(chappe_mrf_conf:members(Conf))).
+
+%% A removal only looks at the room it was sent to: a member of another
+%% room, by its URI or its endpoint entity there, is not found (404) and
+%% stays.
+%% req: MRF-16
+refer_bye_cross_room(Config) ->
+    ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
+    Policy = #{focus => true, refer_policy => fun(_) -> true end},
+    {ok, A} = chappe_mrf:conference(<<"rooma">>, Policy),
+    {ok, B} = chappe_mrf:conference(<<"roomb">>, Policy),
+    #{entity := EA} = chappe_mrf_conf:info(A),
+    #{entity := EB} = chappe_mrf_conf:info(B),
+    {Ua, M} = room_caller(Config, B),
+    {ua, Ua, {final, 200, _}} = ua_answer(Ua),
+    [#{uri := U}] = chappe_mrf_conf:members(B),
+    lists:foreach(
+        fun(RT) ->
+            {Sock, _} = refer(Config, EA, <<"boss">>, RT),
+            ?assertMatch(<<"SIP/2.0 404", _/binary>>, sip_response(Sock))
+        end,
+        [
+            <<"<", U/binary, ";method=BYE>">>,
+            <<"<", EB/binary, ";member=", M/binary, ";method=BYE>">>
+        ]
+    ),
+    no_ua_event(Ua, bye, 300),
+    ?assertMatch([#{id := M}], chappe_mrf_conf:members(B)).
+
+%% A referrer the policy refuses gets 403 for a removal, whether the
+%% member it names is in or not: it learns nothing of the roster.
+%% req: MRF-16 MRF-11
+refer_bye_unauthorized(Config) ->
+    ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
+    Policy = fun(#{referrer := R}) -> has(R, <<"boss@">>) end,
+    {ok, Conf} = chappe_mrf:conference(<<"authroom">>, #{
+        focus => true, refer_policy => Policy
+    }),
+    #{entity := Entity} = chappe_mrf_conf:info(Conf),
+    {Ua, M} = room_caller(Config, Conf),
+    {ua, Ua, {final, 200, _}} = ua_answer(Ua),
+    [#{uri := U}] = chappe_mrf_conf:members(Conf),
+    lists:foreach(
+        fun(RT) ->
+            {Sock, _} = refer(Config, Entity, <<"intruder">>, RT),
+            ?assertMatch(<<"SIP/2.0 403", _/binary>>, sip_response(Sock))
+        end,
+        [
+            <<"<", U/binary, ";method=BYE>">>,
+            <<"<sip:nobody@127.0.0.1;method=BYE>">>
+        ]
+    ),
+    no_ua_event(Ua, bye, 300),
+    ?assertMatch([#{id := M}], chappe_mrf_conf:members(Conf)).
+
+%% The room ends while a party it dials rings: the referrer hears 487 and
+%% the dial is given up, on both backends (native: the dialing endpoint
+%% is hung up; fs: the dialed uuid is killed).
+%% req: MRF-20
+refer_room_end_487(Config) ->
+    ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
+    {ok, N} = chappe_mrf:conference(<<"endnative">>, #{
+        focus => true,
+        refer_policy => fun(_) -> true end,
+        dial_endpoint => #{targets => [{fs1, fs_uri(Config)}]}
+    }),
+    #{entity := NE} = chappe_mrf_conf:info(N),
+    {S1, _} = refer(Config, NE, <<"boss">>, <<"<sip:carol@10.0.0.9>">>),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(S1)),
+    ?assertEqual([<<"SIP/2.0 100">>], frags(S1, 1)),
+    _ = fs_cmd(<<"execute-app-name: bridge">>),
+    ok = chappe_mrf_conf:stop(N),
+    _ = fs_cmd(<<"uuid_kill ">>),
+    ?assertEqual(<<"SIP/2.0 487">>, final_frag(S1)),
+    {ok, F} = chappe_mrf:conference(<<"endfs">>, #{
+        backend => fs,
+        node => fs1,
+        focus => true,
+        refer_policy => fun(_) -> true end
+    }),
+    {ok, Ep} = chappe_mrf:create_endpoint(#{targets => [{fs1, fs_uri(Config)}]}),
+    {ok, _} = chappe_mrf_conf:join(F, Ep, #{}),
+    {joined, _, _} = joined(F),
+    FE =
+        <<"sip:endfs@127.0.0.1:",
+            (integer_to_binary(?config(ep, Config)))/binary>>,
+    {S2, _} = refer(Config, FE, <<"boss">>, <<"<sip:dave@10.0.0.8>">>),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(S2)),
+    {fake_fs, _, _, {cmd, Dial}} = fs_cmd(<<"conference endfs bgdial">>),
+    {match, [Uuid]} = re:run(Dial, <<"origination_uuid=([^,}]+)">>, [
+        {capture, all_but_first, binary}
+    ]),
+    ok = chappe_mrf_conf:stop(F),
+    _ = fs_cmd(<<"uuid_kill ", Uuid/binary>>),
+    ?assertEqual(<<"SIP/2.0 487">>, final_frag(S2)),
+    ok = chappe_mrf:destroy(Ep).
+
+%% RFC 4488 4 on a room: Refer-Sub: false with norefersub gets 200 with
+%% Refer-Sub: false and the conference's Contact, no NOTIFY, and the
+%% party is still brought in.
+%% req: MRF-11
+refer_norefersub(Config) ->
+    ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
+    {ok, Conf} = chappe_mrf:conference(<<"nosubroom">>, #{
+        focus => true,
+        refer_policy => fun(_) -> true end,
+        dial_endpoint => #{targets => [{fs1, fs_uri(Config)}]}
+    }),
+    #{entity := Entity} = chappe_mrf_conf:info(Conf),
+    {Sock, _} = refer(
+        Config, Entity, <<"boss">>, <<"<sip:carol@10.0.0.9>">>, #{
+            headers => [
+                {<<"Refer-Sub">>, <<"false">>},
+                {<<"Supported">>, <<"norefersub">>}
+            ]
+        }
+    ),
+    R = sip_response(Sock),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, R),
+    ?assertEqual(<<"false">>, ?F:hdr(R, <<"refer-sub">>)),
+    ?assert(has(?F:hdr(R, <<"contact">>), <<";isfocus">>)),
+    _ = fs_cmd(<<"execute-app-name: bridge">>),
+    ok = ?F:fs_bridge(?config(fs, Config), answered),
+    {joined, _, _} = joined(Conf),
+    receive
+        {udp, Sock, _, _, <<"NOTIFY", _/binary>> = N} -> ct:fail({notify, N})
+    after 1500 -> ok
+    end.
+
+%% RFC 4538 4: a REFER to the room's URI whose Target-Dialog names a
+%% member's dialog with the room comes from that member (the policy sees
+%% member => Id); one naming no dialog of the room comes from nobody.
+%% req: MRF-21
+ood_target_dialog_member(Config) ->
+    ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
+    Test = self(),
+    {ok, Conf} = chappe_mrf:conference(<<"tdroom">>, #{
+        focus => true,
+        refer_policy => fun(Info) ->
+            Test ! {policy, Info},
+            maps:get(member, Info) =/= undefined
+        end,
+        dial_endpoint => #{targets => [{fs1, fs_uri(Config)}]}
+    }),
+    #{entity := Entity} = chappe_mrf_conf:info(Conf),
+    {Ua, M} = room_caller(Config, Conf),
+    {ua, Ua, {final, 200, Ok}} = ua_answer(Ua),
+    Call = ?F:hdr(Ok, <<"call-id">>),
+    {ok, Msg} = chappe_sip_msg:parse(Ok),
+    TD =
+        <<Call/binary, ";local-tag=", (chappe_sip_msg:to_tag(Msg))/binary,
+            ";remote-tag=", (chappe_sip_msg:from_tag(Msg))/binary>>,
+    {S1, _} = refer(Config, Entity, <<"boss">>, <<"<sip:carol@10.0.0.9>">>, #{
+        headers => [{<<"Target-Dialog">>, TD}, {<<"Require">>, <<"tdialog">>}]
+    }),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(S1)),
+    ?assertMatch({policy, #{member := M}}, policy_info()),
+    Bogus = <<Call/binary, ";local-tag=nope;remote-tag=nope">>,
+    {S2, _} = refer(Config, Entity, <<"boss">>, <<"<sip:dave@10.0.0.9>">>, #{
+        headers => [{<<"Target-Dialog">>, Bogus}]
+    }),
+    ?assertMatch(<<"SIP/2.0 403", _/binary>>, sip_response(S2)),
+    ?assertMatch({policy, #{member := undefined}}, policy_info()).
+
+%% RFC 4579 5.7: a REFER with method=REFER whose Refer-To carries this
+%% room's URI makes the focus REFER the party to the conference, as the
+%% focus (its URI, isfocus in its Contact, the REFER's Referred-By); the
+%% referrer's final status is the party's answer to that REFER. One
+%% naming another conference is refused 403.
+%% req: MRF-18
+refer_nested_refer(Config) ->
+    ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
+    {ok, Conf} = chappe_mrf:conference(<<"nestroom">>, #{
+        focus => true, refer_policy => fun(_) -> true end
+    }),
+    #{entity := Entity} = chappe_mrf_conf:info(Conf),
+    {ok, Bob} = gen_udp:open(0, [binary, {active, true}, {ip, {127, 0, 0, 1}}]),
+    {ok, BP} = inet:port(Bob),
+    BobUri = <<"sip:bob@127.0.0.1:", (integer_to_binary(BP))/binary>>,
+    Nested = fun(To, Rt) ->
+        chappe_sip_hdr:refer_to_value(#{
+            uri => To, method => <<"REFER">>, headers => [{<<"Refer-To">>, Rt}]
+        })
+    end,
+    RB = <<"\"Boss\" <sip:boss@127.0.0.1>;cid=x1">>,
+    lists:foreach(
+        fun({Rt, Answer}) ->
+            {Sock, _} = refer(
+                Config, Entity, <<"boss">>, Nested(BobUri, Rt), #{
+                    headers => [{<<"Referred-By">>, RB}]
+                }
+            ),
+            ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(Sock)),
+            {Refer, Src} = udp_request(Bob, <<"REFER">>),
+            {ok, #{uri := RT}} = chappe_sip_hdr:name_addr(
+                ?F:hdr(Refer, <<"refer-to">>)
+            ),
+            ?assertEqual(Entity, RT),
+            ?assert(has(?F:hdr(Refer, <<"contact">>), <<";isfocus">>)),
+            ?assert(has(?F:hdr(Refer, <<"from">>), Entity)),
+            %% RFC 3892 2.2: as the REFER had it
+            ?assertEqual(RB, ?F:hdr(Refer, <<"referred-by">>)),
+            ok = gen_udp:send(
+                Bob, {127, 0, 0, 1}, Src, answer(Refer, Answer, BobUri)
+            ),
+            ?assertEqual(
+                <<"SIP/2.0 ", (integer_to_binary(Answer))/binary>>,
+                final_frag(Sock)
+            ),
+            gen_udp:close(Sock)
+        end,
+        %% a Refer-To to the room with parameters (maddr) still refers
+        %% the party to the conference URI itself
+        [{Entity, 200}, {<<Entity/binary, ";maddr=10.9.9.9">>, 603}]
+    ),
+    Other =
+        <<"sip:otherroom@127.0.0.1:",
+            (integer_to_binary(?config(ep, Config)))/binary>>,
+    %% nothing that could make the focus REFER, or dial, itself in a loop:
+    %% another conference, a Refer-To that is no plain INVITE to the room,
+    %% the room as the party
+    Loop = chappe_sip_hdr:refer_to_value(#{uri => Entity, method => <<"REFER">>}),
+    lists:foreach(
+        fun(RT) ->
+            {S2, _} = refer(Config, Entity, <<"boss">>, RT),
+            ?assertMatch(<<"SIP/2.0 403", _/binary>>, sip_response(S2))
+        end,
+        [
+            Nested(BobUri, Other),
+            Nested(BobUri, Loop),
+            Nested(Entity, Entity),
+            <<"<", Entity/binary, ">">>
+        ]
+    ),
+    no_udp(Bob, 300),
+    gen_udp:close(Bob).
+
+no_udp(Sock, Ms) ->
+    receive
+        {udp, Sock, _, _, Bin} -> ct:fail({unexpected, Bin})
+    after Ms -> ok
+    end.
+
+%% A caller referred to the room (its INVITE carries Referred-By, RFC 4579
+%% 5.6) joins as any caller, and the roster shows who referred it (RFC
+%% 4575 5.7.2); one that asked for privacy is anonymous there.
+%% req: MRF-19
+referred_invite_joins(Config) ->
+    ok = chappe_sip:event_package(
+        <<"conference">>, fun chappe_mrf:focus_subscribe/2
+    ),
+    {ok, Conf} = chappe_mrf:conference(<<"refdroom">>, #{focus => true}),
+    #{entity := Entity} = chappe_mrf_conf:info(Conf),
+    W = watch(Config, Entity),
+    _ = roster(W),
+    {Ua, _M} = room_caller(Config, Conf, #{
+        headers => [{<<"Referred-By">>, <<"\"Alice\" <sip:alice@127.0.0.1>">>}]
+    }),
+    {ua, Ua, {final, 200, _}} = ua_answer(Ua),
+    ?assert(roster_until(W, <<"<by>sip:alice@127.0.0.1</by>">>)),
+    {Ua2, _} = room_caller(Config, Conf, #{
+        from => <<"sip:shy@127.0.0.1">>,
+        headers => [{<<"Privacy">>, <<"id">>}]
+    }),
+    {ua, Ua2, {final, 200, _}} = ua_answer(Ua2),
+    ?assert(roster_until(W, <<"anonymous.invalid">>)),
+    ?assertNot(has(roster_now(W), <<"shy@">>)),
+    gen_udp:close(W).
+
+%% A member of a room without focus transfers itself, attended (its
+%% Refer-To carries Replaces, RFC 5589 7): the room's policy decides
+%% (action transfer, kind attended), the member's call carries it out with
+%% an INVITE with Replaces to the target, and the target takes the
+%% member's place.
+%% req: MRF-17
+member_transfer_attended(Config) ->
+    {_Callee, CP} = ?F:callee_start(<<"erin">>),
+    Test = self(),
+    {ok, Conf} = chappe_mrf:conference(<<"attroom">>, #{
+        focus => false,
+        refer_policy => fun(Info) ->
+            Test ! {policy, Info},
+            true
+        end
+    }),
+    {Ua, M} = room_caller(Config, Conf),
+    {ua, Ua, {final, 200, _}} = ua_answer(Ua),
+    Target = <<"sip:erin@127.0.0.1:", (integer_to_binary(CP))/binary>>,
+    RT = chappe_sip_hdr:refer_to_value(#{
+        uri => Target,
+        replaces => #{
+            call_id => <<"x1@h">>, to_tag => <<"t1">>, from_tag => <<"f1">>
+        }
+    }),
+    ok = ?F:ua_refer(Ua, RT),
+    {ua, Ua, {response, R}} = ua_msg(Ua, response),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, R),
+    ?assertMatch(
+        {policy, #{action := transfer, kind := attended, member := M}},
+        policy_info()
+    ),
+    Inv =
+        receive
+            {callee, invite, I} -> I
+        after 5000 -> ct:fail(no_target_invite)
+        end,
+    ?assertEqual(<<"x1@h;to-tag=t1;from-tag=f1">>, ?F:hdr(Inv, <<"replaces">>)),
+    conf_event(Conf, {left, M, transferred}),
+    {joined, M, #{uri := Target}} = joined(Conf),
+    ok = chappe_mrf_conf:stop(Conf).
+
+%% RFC 3891 and RFC 4579 5.9: an INVITE to the room with Replaces naming a
+%% member's call, from that member, takes its place: the new caller joins, then
+%% the member it replaces gets a BYE and leaves (replaced). A Replaces
+%% naming no call is 481 and changes nothing.
+%% req: MRF-22
+invite_replaces_member(Config) ->
+    {ok, Conf} = chappe_mrf:conference(<<"reproom2">>, #{focus => true}),
+    {Ua1, M1} = room_caller(Config, Conf),
+    {ua, Ua1, {final, 200, Ok}} = ua_answer(Ua1),
+    [#{uri := U1}] = chappe_mrf_conf:members(Conf),
+    Rep = replaces_of(Ok),
+    %% the member itself, from another device (its address-of-record)
+    {Ua2, M2} = room_caller(Config, Conf, #{
+        from => U1, headers => [{<<"Replaces">>, Rep}]
+    }),
+    {ua, Ua2, {final, 200, _}} = ua_answer(Ua2),
+    _ = ua_event(Ua1, bye),
+    conf_event(Conf, {left, M1, replaced}),
+    ?assertMatch([#{id := M2}], chappe_mrf_conf:members(Conf)),
     Test = self(),
     ok = chappe_sip:invite(fun(Req, Res) ->
         Test ! {join, chappe_mrf_conf:join(Conf, {call, Req, Res}, #{})}
     end),
-    Ua = ?F:ua_call(?config(ep, Config), #{}),
+    Ua3 = ?F:ua_call(?config(ep, Config), #{
+        headers => [{<<"Replaces">>, <<"nobody@h;to-tag=a;from-tag=b">>}]
+    }),
+    {ua, Ua3, {final, 481, _}} = ua_answer(Ua3),
+    ?assertMatch([#{id := M2}], chappe_mrf_conf:members(Conf)).
+
+%% a request to a raw socket: {Bin, Src}
+udp_request(Sock, Method) ->
+    receive
+        {udp, Sock, _, Src,
+            <<Method:(byte_size(Method))/binary, " ", _/binary>> = Bin} ->
+            {Bin, Src};
+        {udp, Sock, _, _, _} ->
+            udp_request(Sock, Method)
+    after 5000 -> ct:fail({no_request, Method})
+    end.
+
+%% a final answer to a request, with a To tag and a Contact
+answer(Req, Status, Contact) ->
+    {ok, M} = chappe_sip_msg:parse(Req),
+    iolist_to_binary([
+        <<"SIP/2.0 ">>,
+        integer_to_binary(Status),
+        <<" Answer\r\n">>,
+        [
+            [<<"Via: ">>, V, <<"\r\n">>]
+         || V <- chappe_sip_msg:get_all(<<"via">>, M)
+        ],
+        <<"From: ">>,
+        chappe_sip_msg:get(<<"from">>, M),
+        <<"\r\nTo: ">>,
+        chappe_sip_msg:get(<<"to">>, M),
+        <<";tag=bob1\r\nCall-ID: ">>,
+        chappe_sip_msg:call_id(M),
+        <<"\r\nCSeq: ">>,
+        chappe_sip_msg:get(<<"cseq">>, M),
+        <<"\r\nContact: <">>,
+        Contact,
+        <<">\r\nContent-Length: 0\r\n\r\n">>
+    ]).
+
+%% the conference-info bodies the watcher has now
+roster_now(Sock) ->
+    receive
+        {udp, Sock, _, Src, <<"NOTIFY ", _/binary>> = Bin} ->
+            _ = gen_udp:send(Sock, {127, 0, 0, 1}, Src, ok_for(Bin)),
+            <<(?F:body(Bin))/binary, (roster_now(Sock))/binary>>
+    after 300 -> <<>>
+    end.
+
+%% ---- review: the decision cannot be crashed, probed or flooded ----
+
+%% A policy is code of the app run in the room: one that does not match
+%% what it is given (a clause for adds only, given a removal) refuses the
+%% REFER 403, and the room and its members carry on. Every action gives
+%% the policy the same keys, undefined when they do not apply.
+%% req: MRF-11
+refer_policy_crash(Config) ->
+    ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
+    Test = self(),
+    {ok, Conf} = chappe_mrf:conference(<<"crashroom">>, #{
+        focus => true,
+        refer_policy => fun(#{action := add} = Info) ->
+            Test ! {policy, Info},
+            true
+        end,
+        dial_endpoint => #{targets => [{fs1, fs_uri(Config)}]}
+    }),
+    #{entity := Entity} = chappe_mrf_conf:info(Conf),
+    {Ua, M} = room_caller(Config, Conf),
+    {ua, Ua, {final, 200, _}} = ua_answer(Ua),
+    [#{uri := U}] = chappe_mrf_conf:members(Conf),
+    {S1, _} = refer(
+        Config, Entity, <<"boss">>, <<"<", U/binary, ";method=BYE>">>
+    ),
+    ?assertMatch(<<"SIP/2.0 403", _/binary>>, sip_response(S1)),
+    ?assert(is_process_alive(Conf)),
+    no_ua_event(Ua, bye, 300),
+    ?assertMatch([#{id := M}], chappe_mrf_conf:members(Conf)),
+    {S2, _} = refer(Config, Entity, <<"boss">>, <<"<sip:carol@10.0.0.9>">>),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(S2)),
+    {policy, Info} = policy_info(),
+    [
+        ?assert(is_map_key(K, Info))
+     || K <- [
+            action,
+            target,
+            method,
+            replaces,
+            refer_to,
+            nested,
+            referrer,
+            referred_by,
+            target_dialog,
+            origin,
+            member,
+            dial,
+            removes
+        ]
+    ],
+    ?assertMatch(#{nested := undefined, removes := undefined}, Info).
+
+%% A referrer the policy refuses learns nothing of the room: a full room
+%% answers it 403, as any room does, not 486.
+%% req: MRF-11 MRF-14
+refer_admission_probe(Config) ->
+    ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
+    {ok, Conf} = chappe_mrf:conference(<<"proberoom">>, #{
+        focus => true,
+        max_members => 1,
+        refer_policy => fun(#{referrer := R}) -> has(R, <<"boss@">>) end,
+        dial_endpoint => #{targets => [{fs1, fs_uri(Config)}]}
+    }),
+    #{entity := Entity} = chappe_mrf_conf:info(Conf),
+    {Ua, _} = room_caller(Config, Conf),
+    {ua, Ua, {final, 200, _}} = ua_answer(Ua),
+    {S1, _} = refer(Config, Entity, <<"intruder">>, <<"<sip:carol@10.0.0.9>">>),
+    ?assertMatch(<<"SIP/2.0 403", _/binary>>, sip_response(S1)),
+    {S2, _} = refer(Config, Entity, <<"boss">>, <<"<sip:carol@10.0.0.9>">>),
+    ?assertMatch(<<"SIP/2.0 486", _/binary>>, sip_response(S2)).
+
+%% The process that asked the room to decide a REFER dies before it
+%% answered it: the op it reserved goes with it, and stops counting as a
+%% dial under way.
+%% req: MRF-15
+refer_worker_dies(Config) ->
+    {ok, Conf} = chappe_mrf:conference(<<"leakroom">>, #{
+        focus => true,
+        max_members => 1,
+        refer_policy => fun(_) -> true end,
+        dial_endpoint => #{targets => [{fs1, fs_uri(Config)}]}
+    }),
+    #{entity := Entity} = chappe_mrf_conf:info(Conf),
+    Info = #{
+        action => add,
+        target => <<"sip:carol@10.0.0.9">>,
+        method => <<"INVITE">>,
+        replaces => undefined,
+        referrer => <<"<sip:boss@127.0.0.1>">>,
+        referred_by => undefined,
+        target_dialog => undefined,
+        origin => {request, <<"leak-1">>, <<"t">>},
+        room_uri => Entity
+    },
+    {Pid, Mon} = spawn_monitor(fun() ->
+        exit(chappe_mrf_conf:call(Conf, {refer, {decide, Info, self()}}, 5000))
+    end),
+    receive
+        {'DOWN', Mon, process, Pid, {accept, _, _}} -> ok
+    after 5000 -> ct:fail(no_decision)
+    end,
+    ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
+    {S1, _} = refer(Config, Entity, <<"boss">>, <<"<sip:dave@10.0.0.9>">>),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(S1)).
+
+%% Two removals from one origin, of two members by their endpoint
+%% entities (which share the room's address-of-record), are two ops: both
+%% members go.
+%% req: MRF-15 MRF-16
+refer_bye_two_members_one_origin(Config) ->
+    ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
+    {ok, Conf} = chappe_mrf:conference(<<"twobye">>, #{
+        focus => true, refer_policy => fun(_) -> true end
+    }),
+    #{entity := Entity} = chappe_mrf_conf:info(Conf),
+    {Ua1, M1} = room_caller(Config, Conf),
+    {ua, Ua1, {final, 200, _}} = ua_answer(Ua1),
+    {Ua2, M2} = room_caller(Config, Conf),
+    {ua, Ua2, {final, 200, _}} = ua_answer(Ua2),
+    Same = #{call_id => <<"twobye-1">>, from_tag => <<"same">>},
+    lists:foreach(
+        fun({M, N}) ->
+            Bye = <<"<", Entity/binary, ";member=", M/binary, ";method=BYE>">>,
+            {Sock, _} = refer(Config, Entity, <<"boss">>, Bye, Same#{cseq => N}),
+            ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(Sock)),
+            conf_event(Conf, {left, M, kicked})
+        end,
+        [{M1, 1}, {M2, 2}]
+    ),
+    ?assertEqual([], chappe_mrf_conf:members(Conf)).
+
+%% Two origins asking for the same party while it is being dialed: it is
+%% dialed once, and both hear the outcome.
+%% req: MRF-15
+refer_two_origins_one_dial(Config) ->
+    ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
+    {ok, Conf} = chappe_mrf:conference(<<"tworigin">>, #{
+        focus => true,
+        refer_policy => fun(_) -> true end,
+        dial_endpoint => #{targets => [{fs1, fs_uri(Config)}]}
+    }),
+    #{entity := Entity} = chappe_mrf_conf:info(Conf),
+    Carol = <<"<sip:carol@10.0.0.9>">>,
+    {S1, _} = refer(Config, Entity, <<"boss">>, Carol),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(S1)),
+    _ = fs_cmd(<<"execute-app-name: bridge">>),
+    {S2, _} = refer(Config, Entity, <<"other">>, Carol),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(S2)),
+    no_fs_cmd(<<"execute-app-name: bridge">>, 500),
+    ok = ?F:fs_bridge(?config(fs, Config), answered),
+    {joined, _, _} = joined(Conf),
+    ?assertEqual(<<"SIP/2.0 200">>, final_frag(S1)),
+    ?assertEqual(<<"SIP/2.0 200">>, final_frag(S2)).
+
+%% The room's dial fun makes the dial string once: the policy sees it and
+%% the backend dials it.
+%% req: MRF-11
+refer_dial_fun_once(Config) ->
+    ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
+    Test = self(),
+    {ok, Conf} = chappe_mrf:conference(<<"dialfun">>, #{
+        focus => true,
+        refer_policy => fun(_) -> true end,
+        dial => fun(T) ->
+            Test ! {dial_fun, T},
+            [<<"sofia/once/">>, binary:part(T, 4, byte_size(T) - 4)]
+        end,
+        dial_endpoint => #{targets => [{fs1, fs_uri(Config)}]}
+    }),
+    #{entity := Entity} = chappe_mrf_conf:info(Conf),
+    {Sock, _} = refer(Config, Entity, <<"boss">>, <<"<sip:carol@10.0.0.9>">>),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(Sock)),
+    {fake_fs, _, _, {cmd, Bridge}} = fs_cmd(<<"execute-app-name: bridge">>),
+    ?assert(has(Bridge, <<"sofia/once/carol@10.0.0.9">>)),
+    ?assertEqual(1, length(dial_funs())).
+
+dial_funs() ->
+    receive
+        {dial_fun, T} -> [T | dial_funs()]
+    after 300 -> []
+    end.
+
+%% The room's dial fun is code of the app run in the room, like its
+%% policy: one that crashes on a target (or makes no iodata) refuses the
+%% REFER 403, dials nothing, and the room and its members carry on.
+%% req: MRF-11
+refer_dial_fun_crash(Config) ->
+    ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
+    {ok, Conf} = chappe_mrf:conference(<<"dialcrash">>, #{
+        focus => true,
+        refer_policy => fun(_) -> true end,
+        dial => fun
+            (<<"sip:carol@", R/binary>>) -> [<<"sofia/ok/carol@">>, R];
+            (<<"sip:erin@", _/binary>>) -> not_iodata
+        end,
+        dial_endpoint => #{targets => [{fs1, fs_uri(Config)}]}
+    }),
+    #{entity := Entity} = chappe_mrf_conf:info(Conf),
+    {Ua, M} = room_caller(Config, Conf),
+    {ua, Ua, {final, 200, _}} = ua_answer(Ua),
+    lists:foreach(
+        fun(Target) ->
+            {S, _} = refer(Config, Entity, <<"boss">>, Target),
+            ?assertMatch(<<"SIP/2.0 403", _/binary>>, sip_response(S))
+        end,
+        [<<"<sip:dave@10.0.0.9>">>, <<"<sip:erin@10.0.0.9>">>]
+    ),
+    ?assert(is_process_alive(Conf)),
+    no_fs_cmd(<<"execute-app-name: bridge">>, 300),
+    ?assertMatch([#{id := M}], chappe_mrf_conf:members(Conf)),
+    {S1, _} = refer(Config, Entity, <<"boss">>, <<"<sip:carol@10.0.0.9>">>),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(S1)),
+    {fake_fs, _, _, {cmd, Bridge}} = fs_cmd(<<"execute-app-name: bridge">>),
+    ?assert(has(Bridge, <<"sofia/ok/carol@10.0.0.9">>)).
+
+%% A second origin attached to the op the first one reserved, whose own
+%% REFER then could not be accepted, gives up its own part only: the
+%% first one's op still holds its place (and will carry the REFER the
+%% first one answered), until its worker gives it up too.
+%% req: MRF-15
+refer_abort_other_origin(Config) ->
+    {ok, Conf} = chappe_mrf:conference(<<"abortroom">>, #{
+        focus => true,
+        max_members => 1,
+        refer_policy => fun(_) -> true end,
+        dial_endpoint => #{targets => [{fs1, fs_uri(Config)}]}
+    }),
+    #{entity := Entity} = chappe_mrf_conf:info(Conf),
+    Info = fun(Origin) ->
+        #{
+            action => add,
+            target => <<"sip:carol@10.0.0.9">>,
+            method => <<"INVITE">>,
+            replaces => undefined,
+            referrer => <<"<sip:boss@127.0.0.1>">>,
+            referred_by => undefined,
+            target_dialog => undefined,
+            origin => {request, Origin, <<"t">>},
+            room_uri => Entity
+        }
+    end,
+    [W1, W2] = [
+        spawn(fun() ->
+            receive
+                stop -> ok
+            end
+        end)
+     || _ <- [1, 2]
+    ],
+    Decide = fun(Origin, W) ->
+        chappe_mrf_conf:call(Conf, {refer, {decide, Info(Origin), W}}, 5000)
+    end,
+    {accept, K1, _} = Decide(<<"abort-1">>, W1),
+    %% another origin asking for the same party joins that op
+    {accept, K1, _} = Decide(<<"abort-2">>, W2),
+    ok = chappe_mrf_conf:call(Conf, {refer, {abort, K1, W2}}, 5000),
+    ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
+    {S1, _} = refer(Config, Entity, <<"boss">>, <<"<sip:dave@10.0.0.9>">>),
+    ?assertMatch(<<"SIP/2.0 486", _/binary>>, sip_response(S1)),
+    exit(W1, kill),
+    {S2, _} = refer(Config, Entity, <<"boss">>, <<"<sip:dave@10.0.0.9>">>),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(S2)).
+
+%% A room without focus has no conference URI, but the URI a REFER is
+%% sent to is its own: a REFER asking it to dial that URI is a loop and is
+%% refused 403, nothing dialed.
+%% req: MRF-11
+refer_dial_own_uri_no_focus(Config) ->
+    ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
+    {ok, _Conf} = chappe_mrf:conference(<<"selfroom">>, #{
+        focus => false,
+        refer_policy => fun(_) -> true end,
+        dial_endpoint => #{targets => [{fs1, fs_uri(Config)}]}
+    }),
+    Uri =
+        <<"sip:selfroom@127.0.0.1:",
+            (integer_to_binary(?config(ep, Config)))/binary>>,
+    {Sock, _} = refer(Config, Uri, <<"boss">>, <<"<", Uri/binary, ">">>),
+    ?assertMatch(<<"SIP/2.0 403", _/binary>>, sip_response(Sock)),
+    no_fs_cmd(<<"execute-app-name: bridge">>, 300).
+
+%% RFC 4579 5.10: a Replaces whose Call-ID has characters a Call-ID may
+%% have (/ and parentheses) goes on the INVITE as it is; one FreeSWITCH
+%% could not carry as it is (braces, legal in a Call-ID) is refused 403,
+%% never dropped.
+%% req: MRF-17
+refer_replaces_callid_chars(Config) ->
+    ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
+    {ok, Conf} = chappe_mrf:conference(<<"callidroom">>, #{
+        focus => true,
+        refer_policy => fun(_) -> true end,
+        dial_endpoint => #{targets => [{fs1, fs_uri(Config)}]}
+    }),
+    #{entity := Entity} = chappe_mrf_conf:info(Conf),
+    RT = fun(CallId) ->
+        chappe_sip_hdr:refer_to_value(#{
+            uri => <<"sip:carol@10.0.0.9">>,
+            replaces => #{
+                call_id => CallId, to_tag => <<"t1">>, from_tag => <<"f1">>
+            }
+        })
+    end,
+    {S1, _} = refer(Config, Entity, <<"boss">>, RT(<<"a/b(c)@h">>)),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(S1)),
+    {fake_fs, _, _, {cmd, Bridge}} = fs_cmd(<<"execute-app-name: bridge">>),
+    ?assert(has(Bridge, <<"_sofia_replaces_=a/b(c)@h;to-tag=t1;from-tag=f1">>)),
+    {S2, _} = refer(Config, Entity, <<"other">>, RT(<<"a{b}@h">>)),
+    ?assertMatch(<<"SIP/2.0 403", _/binary>>, sip_response(S2)).
+
+%% RFC 4579 5.9 and RFC 3891 8: who may replace a member is the room's
+%% replaces_policy, given its own keys (the caller, the member it would
+%% replace, the Referred-By, the INVITE); the refer_policy is never asked.
+%% A caller it refuses, or one it crashes on, is 403 and the member stays.
+%% req: MRF-22
+invite_replaces_policy(Config) ->
+    Test = self(),
+    {ok, Conf} = chappe_mrf:conference(<<"reppol">>, #{
+        focus => true,
+        refer_policy => fun(Info) ->
+            Test ! {refer_policy, Info},
+            true
+        end,
+        replaces_policy => fun(#{caller := C} = Info) ->
+            Test ! {policy, Info},
+            case has(C, <<"crash@">>) of
+                true -> error(boom);
+                false -> has(C, <<"boss@">>)
+            end
+        end
+    }),
+    {Ua1, M1} = room_caller(Config, Conf),
+    {ua, Ua1, {final, 200, Ok}} = ua_answer(Ua1),
+    [#{uri := U1}] = chappe_mrf_conf:members(Conf),
+    Rep = replaces_of(Ok),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        Test ! {join, chappe_mrf_conf:join(Conf, {call, Req, Res}, #{})}
+    end),
+    lists:foreach(
+        fun(From) ->
+            Ua = ?F:ua_call(?config(ep, Config), #{
+                from => From, headers => [{<<"Replaces">>, Rep}]
+            }),
+            {ua, Ua, {final, 403, _}} = ua_answer(Ua),
+            {error, _} = join_result()
+        end,
+        [<<"sip:stranger@127.0.0.1">>, <<"sip:crash@127.0.0.1">>]
+    ),
+    {policy, Info} = policy_info(),
+    ?assertMatch(
+        #{
+            caller := <<"sip:stranger@127.0.0.1">>,
+            replaced := M1,
+            referred_by := undefined
+        },
+        Info
+    ),
+    ?assertEqual(
+        chappe_mrf_conf_refer_op:aor(U1), maps:get(replaced_aor, Info)
+    ),
+    ?assert(is_map_key(request, Info)),
+    {policy, _} = policy_info(),
+    ?assert(is_process_alive(Conf)),
+    ?assertMatch([#{id := M1}], chappe_mrf_conf:members(Conf)),
+    no_ua_event(Ua1, bye, 300),
+    %% the policy widens it: boss may
+    {Boss, M2} = room_caller(Config, Conf, #{
+        from => <<"sip:boss@127.0.0.1">>, headers => [{<<"Replaces">>, Rep}]
+    }),
+    {ua, Boss, {final, 200, _}} = ua_answer(Boss),
+    _ = ua_event(Ua1, bye),
+    conf_event(Conf, {left, M1, replaced}),
+    ?assertMatch([#{id := M2}], chappe_mrf_conf:members(Conf)),
+    receive
+        {refer_policy, P} -> ct:fail({refer_policy_asked, P})
+    after 0 -> ok
+    end.
+
+%% A refer_policy that lets every REFER in says nothing about Replaces:
+%% without a replaces_policy the room allows the member itself and a
+%% caller whose Referred-By names it, and refuses anyone else 403.
+%% req: MRF-22
+invite_replaces_default(Config) ->
+    {ok, Conf} = chappe_mrf:conference(<<"repdef">>, #{
+        focus => true, refer_policy => fun(_) -> true end
+    }),
+    {Ua1, M1} = room_caller(Config, Conf),
+    {ua, Ua1, {final, 200, Ok}} = ua_answer(Ua1),
+    [#{uri := U1}] = chappe_mrf_conf:members(Conf),
+    Rep = replaces_of(Ok),
+    Test = self(),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        Test ! {join, chappe_mrf_conf:join(Conf, {call, Req, Res}, #{})}
+    end),
+    Stranger = ?F:ua_call(?config(ep, Config), #{
+        from => <<"sip:stranger@127.0.0.1">>, headers => [{<<"Replaces">>, Rep}]
+    }),
+    {ua, Stranger, {final, 403, _}} = ua_answer(Stranger),
+    {error, _} = join_result(),
+    ?assertMatch([#{id := M1}], chappe_mrf_conf:members(Conf)),
+    no_ua_event(Ua1, bye, 300),
+    %% a caller the member referred
+    {Referred, M2} = room_caller(Config, Conf, #{
+        from => <<"sip:carol@127.0.0.1">>,
+        headers => [
+            {<<"Replaces">>, Rep},
+            {<<"Referred-By">>, <<"<", U1/binary, ">">>}
+        ]
+    }),
+    {ua, Referred, {final, 200, _}} = ua_answer(Referred),
+    _ = ua_event(Ua1, bye),
+    conf_event(Conf, {left, M1, replaced}),
+    ?assertMatch([#{id := M2}], chappe_mrf_conf:members(Conf)).
+
+%% Anonymous callers share one address-of-record: one never replaces an
+%% anonymous member by the room's default, only through its
+%% replaces_policy.
+%% req: MRF-22
+invite_replaces_anonymous(Config) ->
+    Anon = <<"sip:anonymous@anonymous.invalid">>,
+    Test = self(),
+    Rooms = [
+        {<<"repanon">>, #{focus => true}, 403},
+        {<<"repanon2">>,
+            #{
+                focus => true,
+                replaces_policy => fun(#{caller := C}) -> C =:= Anon end
+            },
+            200}
+    ],
+    lists:foreach(
+        fun({Name, Opts, Status}) ->
+            {ok, Conf} = chappe_mrf:conference(Name, Opts),
+            {Ua1, M1} = room_caller(Config, Conf, #{from => Anon}),
+            {ua, Ua1, {final, 200, Ok}} = ua_answer(Ua1),
+            ok = chappe_sip:invite(fun(Req, Res) ->
+                Test ! {join, chappe_mrf_conf:join(Conf, {call, Req, Res}, #{})}
+            end),
+            Ua = ?F:ua_call(?config(ep, Config), #{
+                from => Anon, headers => [{<<"Replaces">>, replaces_of(Ok)}]
+            }),
+            {ua, Ua, {final, Status, _}} = ua_answer(Ua),
+            _ = join_result(),
+            case Status of
+                403 ->
+                    no_ua_event(Ua1, bye, 300),
+                    ?assertMatch([#{id := M1}], chappe_mrf_conf:members(Conf));
+                200 ->
+                    _ = ua_event(Ua1, bye),
+                    conf_event(Conf, {left, M1, replaced})
+            end,
+            ok = chappe_mrf_conf:stop(Conf)
+        end,
+        Rooms
+    ).
+
+%% Two calls replacing the same member at once: the first, held inside
+%% its join until the second came, takes its place; the second is refused
+%% 603 (RFC 3891 3, as for a dialog already being replaced).
+%% req: MRF-22
+invite_replaces_race(Config) ->
+    {ok, Conf} = chappe_mrf:conference(<<"reprace">>, #{
+        focus => true, backend => chappe_mrf_conf_gate_backend
+    }),
+    {Ua1, M1} = room_caller(Config, Conf),
+    {ua, Ua1, {final, 200, Ok}} = ua_answer(Ua1),
+    [#{uri := U1}] = chappe_mrf_conf:members(Conf),
+    gated(Conf),
+    Opts = #{from => U1, headers => [{<<"Replaces">>, replaces_of(Ok)}]},
+    A = ?F:ua_call(?config(ep, Config), Opts),
+    Held = gate(),
+    B = ?F:ua_call(?config(ep, Config), Opts),
+    {ua, B, {final, 603, _}} = ua_answer(B),
+    Held ! {gate, go},
+    {ua, A, {final, 200, _}} = ua_answer(A),
+    _ = ua_event(Ua1, bye),
+    conf_event(Conf, {left, M1, replaced}),
+    ?assertMatch([_], chappe_mrf_conf:members(Conf)).
+
+%% A member held for a caller replacing it is released when that caller
+%% dies inside its join, or its join raises: a later caller replaces it.
+%% req: MRF-22
+invite_replaces_caller_dies(Config) ->
+    {ok, Conf} = chappe_mrf:conference(<<"repdies">>, #{
+        focus => true, backend => chappe_mrf_conf_gate_backend
+    }),
+    {Ua1, M1} = room_caller(Config, Conf),
+    {ua, Ua1, {final, 200, Ok}} = ua_answer(Ua1),
+    [#{uri := U1}] = chappe_mrf_conf:members(Conf),
+    gated(Conf),
+    Opts = #{from => U1, headers => [{<<"Replaces">>, replaces_of(Ok)}]},
+    _A = ?F:ua_call(?config(ep, Config), Opts),
+    Dies = gate(),
+    Mon = monitor(process, Dies),
+    exit(Dies, kill),
+    receive
+        {'DOWN', Mon, process, Dies, _} -> ok
+    after 5000 -> ct:fail(no_down)
+    end,
+    B = ?F:ua_call(?config(ep, Config), Opts),
+    gate() ! {gate, raise},
+    {ua, B, {final, _, _}} = ua_answer(B),
+    ?assertMatch([#{id := M1}], chappe_mrf_conf:members(Conf)),
+    C = ?F:ua_call(?config(ep, Config), Opts),
+    gate() ! {gate, go},
+    {ua, C, {final, 200, _}} = ua_answer(C),
+    _ = ua_event(Ua1, bye),
+    conf_event(Conf, {left, M1, replaced}).
+
+%% what the next join/3 of the INVITE handler returned
+join_result() ->
+    receive
+        {join, J} -> J
+    after 10000 -> ct:fail(no_join)
+    end.
+
+%% every call joins through the gate of chappe_mrf_conf_gate_backend
+gated(Conf) ->
+    Test = self(),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        Test !
+            {join,
+                chappe_mrf_conf:join(Conf, {call, Req, Res}, #{gate => Test})}
+    end).
+
+%% the next join held at the gate
+gate() ->
+    receive
+        {gate, Pid} -> Pid
+    after 10000 -> ct:fail(no_gate)
+    end.
+
+%% the Replaces naming a caller's dialog with the room, from its 200
+replaces_of(Ok) ->
+    {ok, Msg} = chappe_sip_msg:parse(Ok),
+    <<
+        (chappe_sip_msg:call_id(Msg))/binary,
+        ";to-tag=",
+        (chappe_sip_msg:to_tag(Msg))/binary,
+        ";from-tag=",
+        (chappe_sip_msg:from_tag(Msg))/binary
+    >>.
+
+%% A member's call transferred to someone else: the roster shows the
+%% target as itself, not under the privacy the old caller asked for.
+%% req: MRF-19
+transferred_drops_privacy(Config) ->
+    ivr(Config),
+    ok = chappe_sip:event_package(
+        <<"conference">>, fun chappe_mrf:focus_subscribe/2
+    ),
+    {ok, Conf} = chappe_mrf:conference(<<"privroom">>, #{focus => true}),
+    #{entity := Entity} = chappe_mrf_conf:info(Conf),
+    {_Ua, _Ep, {_, Ref} = B2b, _Owner} = call_in(Config),
+    {ok, M} = chappe_mrf_conf:join(Conf, B2b, #{
+        uri => <<"sip:shy@127.0.0.1">>, private => true
+    }),
+    {joined, M, _} = joined(Conf),
+    W = watch(Config, Entity),
+    ?assert(roster_until(W, <<"anonymous.invalid">>)),
+    ok = chappe_mrf_conf:b2b_event(
+        Conf,
+        {chappe_sip_b2b, Ref,
+            {transferred, a, #{target => <<"sip:erin@10.0.0.7">>}}}
+    ),
+    ?assert(roster_until(W, <<"user entity=\"sip:erin@10.0.0.7\"">>)),
+    gen_udp:close(W).
+
+policy_info() ->
+    receive
+        {policy, _} = P -> P
+    after 5000 -> ct:fail(no_policy)
+    end.
+
+%% the chappe_dial marks of a dial command
+dial_marks(Cmd) ->
+    {match, [Tag]} = re:run(Cmd, <<"chappe_dial=([^,}]+)">>, [
+        {capture, all_but_first, binary}
+    ]),
+    {match, [Op]} = re:run(Cmd, <<"chappe_dial_op=([^,}]+)">>, [
+        {capture, all_but_first, binary}
+    ]),
+    {Tag, Op}.
+
+%% a node event of the dialed leg, as chappe_esl:node_events/2 delivers it
+progress_event(Node, Name, Tag, Op) ->
+    {chappe_esl_node, Node,
+        {event, #{
+            body => <<>>,
+            headers => #{
+                <<"Event-Name">> => Name,
+                <<"variable_chappe_dial">> => Tag,
+                <<"variable_chappe_dial_op">> => Op
+            }
+        }}}.
+
+no_joined(Conf) ->
+    receive
+        {chappe_mrf_conf, Conf, {joined, _, _} = J} -> ct:fail({joined, J})
+    after 0 -> ok
+    end.
+
+no_fs_cmd(Pattern, Ms) ->
+    receive
+        {fake_fs, _, _, {cmd, Block}} = M ->
+            case has(Block, Pattern) of
+                true -> ct:fail({unexpected, M});
+                false -> no_fs_cmd(Pattern, Ms)
+            end;
+        {fake_esl, _, {api, Block}} = M ->
+            case has(Block, Pattern) of
+                true -> ct:fail({unexpected, M});
+                false -> no_fs_cmd(Pattern, Ms)
+            end
+    after Ms -> ok
+    end.
+
+%% a watcher of the room's conference package: its socket
+watch(Config, Entity) ->
+    {ok, Sock} = gen_udp:open(0, [binary, {active, true}, {ip, {127, 0, 0, 1}}]),
+    {ok, P} = inet:port(Sock),
+    Pb = integer_to_binary(P),
+    Sub = iolist_to_binary([
+        <<"SUBSCRIBE ">>,
+        Entity,
+        <<" SIP/2.0\r\n">>,
+        <<"Via: SIP/2.0/UDP 127.0.0.1:", Pb/binary,
+            ";rport;branch=z9hG4bKros1\r\n">>,
+        <<"Max-Forwards: 70\r\nFrom: <sip:w@127.0.0.1>;tag=w1\r\n">>,
+        <<"To: <", Entity/binary,
+            ">\r\nCall-ID: ros-1\r\nCSeq: 1 SUBSCRIBE\r\n">>,
+        <<"Contact: <sip:w@127.0.0.1:", Pb/binary,
+            ">\r\nEvent: conference\r\n">>,
+        <<"Accept: application/conference-info+xml\r\nExpires: 60\r\n">>,
+        <<"Content-Length: 0\r\n\r\n">>
+    ]),
+    ok = gen_udp:send(Sock, {127, 0, 0, 1}, ?config(ep, Config), Sub),
+    Sock.
+
+%% the next conference-info body the watcher gets
+roster(Sock) ->
+    receive
+        {udp, Sock, _, Src, <<"NOTIFY ", _/binary>> = Bin} ->
+            _ = gen_udp:send(Sock, {127, 0, 0, 1}, Src, ok_for(Bin)),
+            ?F:body(Bin);
+        {udp, Sock, _, _, _} ->
+            roster(Sock)
+    after 5000 -> ct:fail(no_roster)
+    end.
+
+%% whether a conference-info body with Part comes
+roster_until(Sock, Part) ->
+    receive
+        {udp, Sock, _, Src, <<"NOTIFY ", _/binary>> = Bin} ->
+            _ = gen_udp:send(Sock, {127, 0, 0, 1}, Src, ok_for(Bin)),
+            has(?F:body(Bin), Part) orelse roster_until(Sock, Part);
+        {udp, Sock, _, _, _} ->
+            roster_until(Sock, Part)
+    after 5000 -> false
+    end.
+
+%% A caller answered straight into Conf (join/3 with {call, Req, Res}).
+room_caller(Config, Conf) ->
+    room_caller(Config, Conf, #{}).
+
+%% UaOpts: ?F:ua_call/2's (from, headers)
+room_caller(Config, Conf, UaOpts) ->
+    Test = self(),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        Test ! {join, chappe_mrf_conf:join(Conf, {call, Req, Res}, #{})}
+    end),
+    Ua = ?F:ua_call(?config(ep, Config), UaOpts),
     {ok, M} =
         receive
             {join, J} -> J
@@ -927,23 +2281,30 @@ joined(Conf) ->
 
 %% A REFER out of dialog to Uri from User, Refer-To ReferTo, over UDP.
 refer(Config, Uri, User, ReferTo) ->
+    refer(Config, Uri, User, ReferTo, #{}).
+
+%% Opts: call_id and from_tag (a REFER from the same origin as another),
+%% cseq, headers
+refer(Config, Uri, User, ReferTo, Opts) ->
     {ok, Sock} = gen_udp:open(0, [binary, {active, true}, {ip, {127, 0, 0, 1}}]),
     {ok, P} = inet:port(Sock),
     Pb = integer_to_binary(P),
-    CallId =
-        <<"refer-",
-            (integer_to_binary(erlang:unique_integer([positive])))/binary>>,
+    N = integer_to_binary(erlang:unique_integer([positive])),
+    CallId = maps:get(call_id, Opts, <<"refer-", N/binary>>),
+    FromTag = maps:get(from_tag, Opts, <<"r1">>),
+    CSeq = integer_to_binary(maps:get(cseq, Opts, 1)),
     Req = iolist_to_binary([
         <<"REFER ">>,
         Uri,
         <<" SIP/2.0\r\n">>,
         <<"Via: SIP/2.0/UDP 127.0.0.1:", Pb/binary, ";rport;branch=z9hG4bK",
-            CallId/binary, "\r\n">>,
-        <<"Max-Forwards: 70\r\nFrom: <sip:", User/binary,
-            "@127.0.0.1>;tag=r1\r\n">>,
-        <<"To: <", Uri/binary, ">\r\nCall-ID: ", CallId/binary,
-            "\r\nCSeq: 1 REFER\r\n">>,
+            CallId/binary, "-", N/binary, "\r\n">>,
+        <<"Max-Forwards: 70\r\nFrom: <sip:", User/binary, "@127.0.0.1>;tag=",
+            FromTag/binary, "\r\n">>,
+        <<"To: <", Uri/binary, ">\r\nCall-ID: ", CallId/binary, "\r\nCSeq: ",
+            CSeq/binary, " REFER\r\n">>,
         <<"Contact: <sip:", User/binary, "@127.0.0.1:", Pb/binary, ">\r\n">>,
+        [[K, <<": ">>, V, <<"\r\n">>] || {K, V} <- maps:get(headers, Opts, [])],
         <<"Refer-To: ", ReferTo/binary, "\r\nContent-Length: 0\r\n\r\n">>
     ]),
     ok = gen_udp:send(Sock, {127, 0, 0, 1}, ?config(ep, Config), Req),

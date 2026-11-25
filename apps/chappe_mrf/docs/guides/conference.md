@@ -226,11 +226,12 @@ other mixer through rtpengine, without a re-INVITE. The member leaves the
 first room with reason `transferred`. An endpoint you joined to a native
 room cannot move this way (`{error, {unsupported, endpoint_member}}`).
 
-## Add or remove a party by REFER
+## Add, remove or refer a party by REFER
 
-A REFER to the room's URI asks it to bring a party in, or, with
-`method=BYE` in the Refer-To, to remove one (RFC 4579 5.5, 5.11). Give the
-room a policy and route REFERs to it:
+A REFER to the room's URI asks it to bring a party in, with `method=BYE`
+in the Refer-To to remove one, or with `method=REFER` to have a party
+REFERred to the conference (RFC 4579 5.5, 5.11, 5.7). Give the room a
+policy and route REFERs to it:
 
 ```erlang
 ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
@@ -243,44 +244,177 @@ ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
 {ok, M} = chappe_mrf_conf:join(Conf, B2b, #{uri => <<"sip:alice@example.com">>}).
 ```
 
-- An added party is dialed into the room: on native an endpoint of the
-  pool joins the mixer and bridges to it, on fs mod_conference dials it
-  into the room. In a `focus => true` room (native or fs) that INVITE
-  carries the room's name as its Contact user and `isfocus` (RFC 4579
-  5.5); the Contact's host is the FreeSWITCH node that holds the call. It joins as `{joined, Member, #{uri := Target}}`, and the
-  referrer gets NOTIFY 200 once it answers (408 after `dial_timeout`, or
-  the party's status).
-- `method=BYE` removes the member whose `uri` matches (the join's `uri`,
-  or a dialed party's); 404 when none does. Only a `focus => true` room
-  removes: any other room refuses it 403, whatever its policy says.
-- Without `refer_policy` every REFER is refused 403. The policy sees
-  `#{action, target, referrer, referred_by}`, and for an add the dial
-  string it would run as `dial`; `referred_by` is only claimed, never
-  grant on it alone. Decide on where the call goes (`dial`), not only on
-  who asks: that is what a toll-fraud REFER aims at.
-- A target URI with anything FreeSWITCH reads as dial-string syntax
-  (`, | [ ] { } < > ' $ \`, `:_:`, spaces) is refused 403 before the
-  policy runs: only letters, digits and `- . _ ~ ! * + = ; @ : %` pass.
+The room answers a REFER only after its own checks and the policy, in
+this order:
+
+1. the room owns its name (cluster lease), else 503;
+2. the request: a target FreeSWITCH would read as dial-string syntax
+   (`, | [ ] { } < > ' $ \`, `:_:`, spaces) is refused 403 before the
+   policy runs, as are removal and `method=REFER` in a room without
+   `focus => true`, a `method=REFER` whose own Refer-To is not a plain
+   reference to this room's URI (no method, no headers), and a party that
+   is the room itself: each could make the room REFER or call itself in a
+   loop;
+3. the policy (below): `false` is 403, `{reject, Code}` is Code;
+4. the room's state, only once the policy said yes: for a removal the
+   member it names (none is 404, more than one 485), and room for one
+   more, for an add or a refer (a locked room 403, a full one 486, the
+   parties being dialed counting as members, the rule `join/3` follows).
+
+Then the REFER gets 200, with the conference URI and `isfocus` as Contact
+in a focus room, and NOTIFY 100, and the room carries it out:
+
+- An added party is dialed: on native an endpoint of the pool joins the
+  mixer out of sight, then bridges to it; on fs mod_conference dials it
+  into the room. The INVITE carries the Refer-To's Replaces (5.10), the
+  REFER's Referred-By (its URI only), and in a focus room the room's name
+  as its Contact user and `isfocus` (5.5; the Contact's host is the
+  FreeSWITCH node). The party is no member, and nothing it plays reaches
+  the room, until it answered; then it joins as
+  `{joined, Member, #{uri := Target}}` and the referrer hears 200. A
+  party that does not answer gives its status (486, 603, 480), 408 after
+  `dial_timeout`, and the room stays as it was.
+- `method=BYE` removes the member whose endpoint entity
+  (`<conference URI>;member=Id`, as the roster shows it) the Refer-To is,
+  else the one member with that address-of-record; it leaves `kicked`.
+  Only this room's members are looked at.
+- `method=REFER` makes the focus REFER the party to the conference URI,
+  as the focus; the referrer's final status is the party's answer to that
+  REFER. The party then calls in like anyone (its PIN, if `join/3` asks
+  one).
+- A REFER repeated from the same dialog (or the same Call-ID and From
+  tag) for the same target dials nobody again: it hears the first one's
+  outcome. Adding a member already in answers 200 at once.
+- When the room ends, the REFERs still under way get a final NOTIFY 487
+  and their dials are given up.
+
+The policy runs in the room process and gets the same keys for every
+action, `undefined` where one does not apply, so a clause can match any
+of them; one that crashes (no clause for the action, say) refuses the
+REFER 403 and the room goes on. It sees `chappe_sip_focus:refer_info/2`'s
+map plus the room's view:
+
+| Key | What it is |
+|---|---|
+| `action` | `add`, `remove`, `refer`, or `transfer` (a member of a room without focus transferring itself, below) |
+| `target` | the Refer-To URI, without its method |
+| `referrer` | the REFER's From, what its dialog or your digest vouches for |
+| `referred_by` | the REFER's Referred-By, as the referrer claims it: the room checks nothing of it, so do not grant a REFER on it alone |
+| `member` | the referrer's member id: its dialog with the room, or the one its Target-Dialog names (RFC 4538); else `undefined` |
+| `target_dialog`, `origin` | the dialog a Target-Dialog names, and who sent the REFER |
+| `replaces`, `nested` | the Refer-To's Replaces, and for `refer` the Refer-To it carries |
+| `dial` | add: the dial string the room would run, made by your `dial` fun when you gave one (one that crashes refuses the REFER 403) |
+| `removes` | remove: the member it names, or `undefined` |
+
+Decide on where the call goes (`dial`), not only on who asks: that is what
+a toll-fraud REFER aims at. A party a REFER dials out never enters a PIN;
+one that calls in, referred or not, goes through `join/3` and its options.
+
+For the referrer to hear the party's 180 and 183, give the node those
+events: the room follows the dialed leg on the node's event connection,
+marked with the `chappe_dial` channel variables. Put `CUSTOM` last: the
+event command reads every name after it as a subclass.
+
+```erlang
+ok = chappe_esl:node_add(fs1, #{
+    host => "10.0.0.5", port => 8021,
+    events => [<<"CHANNEL_PROGRESS">>, <<"CHANNEL_PROGRESS_MEDIA">>,
+               <<"CUSTOM">>, <<"conference::maintenance">>]
+}).
+```
+
+A dial-out waits for the party's answer (`ignore_early_media`): what it
+plays before that reaches neither the room nor the referrer, who hears
+its 183 only.
+
+The roster of a focus room has each participant as a user under the
+address-of-record it called from (anonymous when it asked for privacy),
+one endpoint `<conference URI>;member=Id` per member, `dialed-out` for a
+party a REFER brought in and `referred` by the Referred-By an incoming
+INVITE carried. A member that leaves shows `disconnected` (`departed`, or
+`booted` when removed) before it is deleted.
+
+Parties a room dials out stay FreeSWITCH calls: give the profile that
+dials them `disable-transfer` (mod_sofia) so a REFER on such a call is
+refused rather than carried out by FreeSWITCH, out of the room's sight.
 
 A caller the room answers itself (`join/3` with `{call, Req, Res}`) gets
 the conference URI with `isfocus` as its Contact in a `focus => true` room
 (RFC 4579 4.2), and the room takes the REFERs in its dialog:
 
-- in a focus room a REFER is to the focus: its Refer-To party is dialed
-  in, with the Refer-To's Replaces on that INVITE (5.10), or with
-  `method=BYE` the member it names is removed (5.11);
-- in a room without `focus => true` it is an RFC 3515 transfer (and
-  `method=BYE` is refused 403): the target takes the member's place on
-  its call, shown as
+- in a focus room a REFER is to the focus, decided as one to the room's
+  URI with that member as `member`: add, remove or refer, as above;
+- in a room without `focus => true` it is an RFC 3515 transfer of that
+  member (and `method=BYE` is refused 403). The member's call carries it
+  out (`transfer => notify`, `chappe_sip_b2b_transfer`) once the policy
+  says yes, with `action => transfer`, `member`, and the call's `kind`
+  (`blind`, or `attended` with the Refer-To's Replaces, RFC 5589): the
+  target takes the member's place on its call, shown as
   `{left, Member, transferred}` then `{joined, Member, #{uri := Target}}`.
 
-The room's `refer_policy` decides each. A call you answered yourself
-(`connect_caller/3`) carries the Contact you gave it: pass
-`contact_params => #{a => chappe_sip_focus:contact_params()}` there for a
-focus room, and `requests => [refer]`, then hand the room each
-`{chappe_sip_b2b, Ref, {request, a, refer, Req, Res}}` with `b2b_event/2`.
-Parties dialed in come from FreeSWITCH, with the room's name and
-`isfocus` in its Contact in a focus room.
+A caller whose INVITE carries Replaces (RFC 3891) naming a member's call
+in this room takes that member's place (RFC 4579 5.9): it joins, then the
+member it replaces is hung up and leaves with reason `replaced`. Who may
+do so is a separate decision from a REFER's: the room never asks your
+`refer_policy`, so a policy that lets every REFER in, or lets members
+REFER, lets nobody replace anyone.
+
+Without a `replaces_policy` the room allows:
+
+- the member itself: the caller's From has the member's
+  address-of-record (another device of the same user);
+- a caller the member referred: its Referred-By names the member (an
+  attended transfer into the room).
+
+An anonymous caller (`anonymous.invalid`, or the user `anonymous`) never
+passes this default: every anonymous caller shares one
+address-of-record. This rests on what the INVITE carries, and the room
+authenticates none of it: the caller must name the member's dialog with
+the room in its Replaces (its Call-ID and both tags, which only a party
+to that dialog or one it told knows) and the member in its From or
+Referred-By. On a network you do not trust, authenticate the INVITE
+(digest, RFC 3891 8) in your handler before you call `join/3`, and
+tighten with `replaces_policy`:
+
+```erlang
+{ok, Conf} = chappe_mrf:conference(<<"board">>, #{
+    focus => true,
+    replaces_policy => fun(#{caller := C, replaced_aor := Aor}) ->
+        is_moderator(C) orelse C =:= Aor
+    end
+}).
+```
+
+Once you give it, the policy alone decides: `true` lets the caller
+replace the member, anything else refuses it 403, and a policy that
+crashes refuses it too (logged; the room goes on). It runs in the room
+process and gets these keys, `undefined` where one is unknown:
+
+| Key | What it is |
+|---|---|
+| `caller` | the URI of the INVITE's From |
+| `referred_by` | the URI of its Referred-By, as the caller claims it |
+| `request` | the INVITE (`chappe_sip_req`), for what your handler or middleware attached to it |
+| `replaced` | the member id the Replaces names |
+| `replaced_aor` | that member's address-of-record |
+
+Whatever decides, a Replaces naming no call gets 481, a call of no
+member of this room 403, and a second caller replacing a member another
+one is replacing 603; the room does not change. The member stays held
+for the first caller only while its join runs: a join that fails or
+raises, a caller that dies, or 95 seconds, release it. The roster shows a caller
+whose INVITE had Referred-By as `referred` by that URI.
+
+A call you answered yourself (`connect_caller/3`) carries the Contact you
+gave it: for a focus room pass
+`contact_params => #{a => chappe_sip_focus:contact_params()}` and
+`requests => [refer]`, then hand the room each
+`{chappe_sip_b2b, Ref, {request, a, refer, Req, Res}}` with `b2b_event/2`;
+for a room without focus pass `transfer => notify` and hand it each
+`{chappe_sip_b2b, Ref, {refer, Info}}` and
+`{chappe_sip_b2b, Ref, {transferred, Leg, Info}}`. Parties dialed in come
+from FreeSWITCH, with the room's name and `isfocus` in its Contact in a
+focus room.
 
 A member's own REFER on a call with `transfer => auto` is carried out by
 its B2BUA: the target takes the member's place. Hand the room the call's
@@ -374,7 +508,11 @@ touched.
 ## Where it lives
 
 - Modules: `chappe_mrf_conf` (API and process), `chappe_mrf_conf_native`,
-  `chappe_mrf_conf_fs`; the loopback middleware is in `chappe_mrf`
+  `chappe_mrf_conf_fs`, `chappe_mrf_conf_refer` (REFER: the decision),
+  `chappe_mrf_conf_refer_dial` (the dial-outs and the nested REFER),
+  `chappe_mrf_conf_refer_member` (a member's REFER, transfer and Replaces),
+  `chappe_mrf_conf_refer_op` (repeated REFERs); the loopback middleware is
+  in `chappe_mrf`
 - Tests: `apps/chappe_mrf/test/chappe_mrf_SUITE.erl`,
   `chappe_mrf_live_SUITE.erl`, `chappe_mrf_hd_live_SUITE.erl` (HD rooms with
   pjsua callers), `chappe_mrf_cluster_SUITE.erl` (rooms on

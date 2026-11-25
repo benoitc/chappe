@@ -9,11 +9,11 @@
 %% option names it: native, fs, or any module with this behaviour.
 %%
 %% Two sides:
-%%   - join/4, transfer_check/2, transfer_in/3 and dial_out/4 run in the
-%%     caller of chappe_mrf_conf (join/3, transfer/3, a REFER's request
-%%     worker): they may block, and talk to the room with
-%%     chappe_mrf_conf:call/3. A join sends {join, Req}: the room checks
-%%     its lease, lock and member limit, then hands Req to admit/3.
+%%   - join/4, transfer_check/2 and transfer_in/3 run in the caller of
+%%     chappe_mrf_conf (join/3, transfer/3): they may block, and talk to
+%%     the room with chappe_mrf_conf:call/3. A join sends {join, Req}: the
+%%     room checks its lease, then admission/1 (the lock and the member
+%%     limit), then hands Req to admit/3.
 %%   - every other callback runs in the room process on room(), the
 %%     room's state, and returns it. The backend keeps its own state in
 %%     it: bstate/1 reads it, bstate/2 sets it (init/2 gives the first).
@@ -40,7 +40,8 @@
 %%                                   moderator; uri and b2b kept)
 %%   put_member(Id, Mb, Room)        keep Mb, no event
 %%   joined(Id, Mb, Room)            keep Mb, emit {joined, Id, Info},
-%%                                   publish
+%%                                   publish (a party a REFER dials, its
+%%                                   Mb with refer: once it answered)
 %%   public(Id, Mb)                  the Info members/1 shows
 %%   emit(Event, Room)               {chappe_mrf_conf, Conf, Event} to
 %%                                   the room's receivers
@@ -53,6 +54,13 @@
 %%                                   gone
 %%   member_by(Key, Value, Room)     {ok, Id} of the member whose Mb has
 %%                                   Key => Value, or error
+%%   admission(Room)                 ok, or {error, locked | full}: may
+%%                                   one more come in (members, joins
+%%                                   and REFER dial-outs under way count)
+%%   refer_progress(Key, St, Room)   for dial/4: the party's 180 or 183,
+%%                                   to the referrers of op Key
+%%   refer_final(Key, St, Room)      for dial/4: its final status (200
+%%                                   once it is a member, joined/3)
 -module(chappe_mrf_conf_backend).
 
 -include("chappe_mrf_conf.hrl").
@@ -62,7 +70,7 @@
 -export([bstate/1, bstate/2, name/1, members/1, member_by/3]).
 -export([member/3, put_member/3, joined/3, public/2]).
 -export([emit/2, publish/1, talking/3, gone/2, gone/3, drop_member/3]).
--export([close_if_empty/1]).
+-export([close_if_empty/1, admission/1, refer_progress/3, refer_final/3]).
 
 -export_type([room/0, member/0, member_info/0]).
 
@@ -85,15 +93,6 @@
     Handover :: tuple(),
     From :: #{name := binary(), member := member()}
 ) -> {ok, member()} | {error, term()}.
-%% Dial a party a REFER to the room brings in, in the REFER's request
-%% worker (without it the room's dial/4 does); ok once it is under way,
-%% the referrer told the outcome.
--callback dial_out(
-    Conf :: pid(),
-    Target :: binary(),
-    Refer :: chappe_sip_refer:refer(),
-    Cfg :: map()
-) -> ok | {error, term()}.
 
 %% ---- in the room ----
 
@@ -131,16 +130,21 @@
 %% owns) when it dies.
 -callback handover(member_info()) ->
     {ok, Handover :: tuple(), Watch :: boolean()} | {error, term()}.
-%% Dial a party in for a REFER (chappe_mrf_conf_refer).
+%% Dial a party in for a REFER (chappe_mrf_conf_refer), in the room, for
+%% the op Key; Cfg has the room's dial options, what the REFER asked for
+%% (replaces, referred_by) and dial_string, the dial string the room's
+%% policy saw (dial it, do not make another). ok once it is under way;
+%% then report, in the room, with refer_progress/3 and refer_final/3 (200
+%% once the party is a member: add it with joined/3 when it answered).
+%% An error fails the REFER with 503.
 -callback dial(
-    Target :: binary(), Refer :: chappe_sip_refer:refer(), Cfg :: map(), room()
+    Target :: binary(), Key :: term(), Cfg :: map(), room()
 ) -> {ok | {error, term()}, room()}.
 -callback terminate(room()) -> ok.
 
 -optional_callbacks([
     transfer_check/2,
     transfer_in/3,
-    dial_out/4,
     handle_call/3,
     handle_cast/2,
     handle_info/2,
@@ -219,9 +223,15 @@ member_by(Key, Value, #state{members = M}) ->
 %% join asked for.
 -spec member(map(), member(), map()) -> member_info().
 member(Opts, Id, Base0) ->
-    %% uri: who the member is, for a REFER's method=BYE; b2b: its call,
-    %% for a transfer (when the backend's own base has none)
-    Base = maps:merge(maps:with([uri, b2b], Opts), Base0),
+    %% uri: who the member is, for a REFER's method=BYE and the roster;
+    %% b2b: its call, for a transfer (when the backend's own base has
+    %% none); joining, referred: how it came (a dial-out, a referred
+    %% INVITE) for the roster (RFC 4575 5.7.2), private: its caller asked
+    %% for privacy (RFC 4579 6), refer: the REFER op that dials it, which
+    %% keeps it out of sight until it answered
+    Base = maps:merge(
+        maps:with([uri, b2b, joining, referred, private, refer], Opts), Base0
+    ),
     Base#{
         name => chappe_mrf_lib:to_bin(maps:get(name, Opts, Id)),
         mute => maps:get(mute, Opts, false),
@@ -235,6 +245,9 @@ put_member(Id, Mb, #state{members = M} = S) ->
     S#state{members = M#{Id => Mb}}.
 
 -spec joined(member(), member_info(), room()) -> room().
+joined(Id, #{refer := _} = Mb, S) ->
+    %% a party a REFER dials: out of sight until it answered
+    chappe_mrf_conf_refer_dial:hidden(Id, Mb, S);
 joined(Id, Mb, S) ->
     publish(emit({joined, Id, public(Id, Mb)}, put_member(Id, Mb, S))).
 
@@ -278,7 +291,9 @@ gone(Id, Reason, #state{members = M, mod = Mod} = S) ->
                     _ -> Reason
                 end,
             ok = Mod:left(Mb, Why),
-            S1 = publish(emit({left, Id, Why}, S#state{members = M1})),
+            %% the roster shows it disconnected, then without it
+            S0 = chappe_mrf_conf_focus:departed(Id, Mb, Why, S),
+            S1 = publish(emit({left, Id, Why}, S0#state{members = M1})),
             ok = close_if_empty(S1),
             S1;
         error ->
@@ -290,6 +305,38 @@ gone(Id, Reason, #state{members = M, mod = Mod} = S) ->
 drop_member(Id, Reason, #state{members = M, mod = Mod} = S) ->
     _ = Mod:hangup(Id, maps:get(Id, M), S),
     {reply, ok, gone(Id, Reason, S)}.
+
+%% Whether one more may come in: not into a locked room, nor past
+%% max_members, the joins (pending) and the REFER dial-outs under way
+%% counting as members.
+-spec admission(room()) -> ok | {error, locked | full}.
+admission(#state{locked = true}) ->
+    {error, locked};
+admission(#state{members = M, pending = P, max_members = Max} = S) ->
+    case map_size(M) + map_size(P) + dials(S) >= Max of
+        true -> {error, full};
+        false -> ok
+    end.
+
+dials(#state{refer_ops = Ops}) ->
+    length([
+        K
+     || {K, #{kind := new, action := add}} <- chappe_mrf_conf_refer_op:in_flight(
+            Ops
+        )
+    ]).
+
+%% A party a backend's dial/4 brings in for op Key rings (180) or has
+%% early media (183): the referrers hear it.
+-spec refer_progress(term(), 101..199, room()) -> room().
+refer_progress(Key, St, S) ->
+    chappe_mrf_conf_refer:progress(Key, St, S).
+
+%% That party's final status: 200 once it is a member, the failure
+%% otherwise; the op is done.
+-spec refer_final(term(), 200..699, room()) -> room().
+refer_final(Key, St, S) ->
+    chappe_mrf_conf_refer:final(Key, St, S).
 
 %% A room that lost its name ends with its last member.
 -spec close_if_empty(room()) -> ok.

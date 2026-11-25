@@ -28,11 +28,13 @@ join(Conf, Node, Bridge, Target, Opts) ->
     end.
 
 %% An incoming call not answered yet, in its request worker: chappe's
-%% B2BUA answers the caller (chappe_mrf_conf_refer:member_opts/2) and
+%% B2BUA answers the caller (chappe_mrf_conf_refer_member:member_opts/2) and
 %% bridges it to an endpoint on the room's node, which then joins.
 join_call(Conf, #{node := Node, bridge := Bridge} = Info, Req, Res, Opts0) ->
-    Opts = maps:merge(#{uri => chappe_mrf_conf_refer:from_uri(Req)}, Opts0),
-    Member = chappe_mrf_conf_refer:member_opts(
+    Opts = maps:merge(
+        #{uri => chappe_mrf_conf_refer_member:from_uri(Req)}, Opts0
+    ),
+    Member = chappe_mrf_conf_refer_member:member_opts(
         Conf, maps:get(entity, Info, undefined)
     ),
     CallOpts = maps:merge(maps:with([anchor_params], Bridge), Member#{
