@@ -8,8 +8,8 @@ your code calls directly. There is no separate signalling daemon and no
 control protocol. Media stays outside: chappe_sip drives rtpengine and
 chappe_mix through its media facade, and chappe_mrf builds on it to drive
 FreeSWITCH. How the apps fit together is in the
-[umbrella documentation](../../docs/README.md) and the vocabulary in
-[concepts](../../docs/concepts.md).
+[umbrella documentation](https://github.com/benoitc/chappe/blob/main/docs/README.md) and the vocabulary in
+[concepts](https://github.com/benoitc/chappe/blob/main/docs/concepts.md).
 
 On several nodes, the `cluster => chappe_cluster` setting shares the
 registrar's location store and lets one node ping a peer for all of them.
@@ -86,8 +86,8 @@ is in `demo/sbc` (`make demo` from the umbrella root).
 - [Features](docs/features.md): what chappe_sip does today.
 - [Design overview](docs/design/overview.md): supervision, layers, entry
   points, tests.
-- [Concepts](../../docs/concepts.md): the words used across chappe.
-- [CHANGELOG](CHANGELOG.md).
+- [Concepts](https://github.com/benoitc/chappe/blob/main/docs/concepts.md): the words used across chappe.
+- [CHANGELOG](https://github.com/benoitc/chappe/blob/main/apps/chappe_sip/CHANGELOG.md).
 
 ## License
 

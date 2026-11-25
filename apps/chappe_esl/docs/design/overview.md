@@ -168,7 +168,7 @@ caller, and a command on a connection that is gone returns
 
 chappe_esl is a leaf app: it depends on nothing else in the umbrella and is
 published on its own. The rule and its reasons are recorded in
-[decision 0003](../../../../docs/decisions/0003-leaf-apps.md). Settings are
+[decision 0003](https://github.com/benoitc/chappe/blob/main/docs/decisions/0003-leaf-apps.md). Settings are
 listed in [Configuration](../configuration.md).
 
 ## Where it lives

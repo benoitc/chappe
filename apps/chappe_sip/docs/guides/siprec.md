@@ -377,4 +377,4 @@ called from any node with the call's `b2b` handle (from
   `chappe_sip_siprec_live_SUITE` (`make interop`).
 - Specs: RFC 7866 (updated by RFC 9806), RFC 7865, RFC 6341, RFC 3711,
   RFC 4568, RFC 3550, RFC 5761, RFC 3605, RFC 7022. Why chappe decrypts SRTP itself here:
-  [decision 0009](../../../../docs/decisions/0009-srtp-in-erlang.md).
+  [decision 0009](https://github.com/benoitc/chappe/blob/main/docs/decisions/0009-srtp-in-erlang.md).

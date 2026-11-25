@@ -73,7 +73,7 @@
 -export([emit/2, publish/1, talking/3, gone/2, gone/3, drop_member/3]).
 -export([close_if_empty/1, admission/1, refer_progress/3, refer_final/3]).
 
--export_type([room/0, member/0, member_info/0]).
+-export_type([room/0, member/0, member_info/0, reply/0]).
 
 -type room() :: #state{}.
 -type member() :: binary().

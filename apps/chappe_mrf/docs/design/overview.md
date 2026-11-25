@@ -205,7 +205,7 @@ The room API a backend calls, exported by `chappe_mrf_conf_backend`:
 `close_if_empty/1`.
 
 To write a backend, follow
-[add a conference backend](../../../../docs/contributing/add-mrf-conference-backend.md).
+[add a conference backend](https://github.com/benoitc/chappe/blob/main/docs/contributing/add-mrf-conference-backend.md).
 
 ## Rooms in a cluster
 
@@ -214,7 +214,7 @@ the lease `{chappe_mrf_conf, Name}`
 (`chappe_mrf_conf_cluster:lease_key/1`). `chappe_mrf_app:start/2` starts
 chappe_cluster before the supervisor, so it stops after chappe_mrf and the
 rooms can still hand their leases off in `prep_stop/1`
-([decision 0014](../../../../docs/decisions/0014-optional-siblings.md)).
+([decision 0014](https://github.com/benoitc/chappe/blob/main/docs/decisions/0014-optional-siblings.md)).
 The guide shows the setup:
 [run rooms on a cluster](../guides/conference.md#run-rooms-on-a-cluster).
 

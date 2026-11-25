@@ -17,7 +17,7 @@ traffic, so something must play nta's role for them: match retransmissions,
 run the RFC 3261 timers, match responses to client transactions, and match
 in-dialog requests to legs. Doing that in Erlang keeps the C surface small.
 The reasoning and its cost are recorded in
-[decision 0007](../../../../docs/decisions/0007-ws-transaction-layer.md).
+[decision 0007](https://github.com/benoitc/chappe/blob/main/docs/decisions/0007-ws-transaction-layer.md).
 
 ## Shape
 
@@ -98,7 +98,7 @@ frames are dropped while its mailbox is deeper than
 `ws_transport_max_mailbox`. It is one gen_server process; its code is
 split across the four modules above, which share its `#state{}` through
 `src/ws/chappe_sip_ws_transport.hrl` (finding M4 in the
-[documentation plan](../../../../docs/plans/documentation-and-maintainability.md)).
+[documentation plan](https://github.com/benoitc/chappe/blob/main/docs/plans/documentation-and-maintainability.md)).
 
 ## Tests
 

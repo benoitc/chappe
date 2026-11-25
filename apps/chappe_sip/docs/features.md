@@ -115,7 +115,7 @@ These functions are exported and supported, but no guide shows them yet.
 - A remote-app model (apps outside the SIP node's VM, in the spirit of
   drachtio's control socket): a [draft design](design/remote-app.md),
   not implemented; its status is recorded in
-  [decision 0008](../../../docs/decisions/0008-remote-app-model.md).
+  [decision 0008](https://github.com/benoitc/chappe/blob/main/docs/decisions/0008-remote-app-model.md).
 
 ## Non-goals
 

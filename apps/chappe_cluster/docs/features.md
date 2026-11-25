@@ -50,7 +50,7 @@ These functions are exported and supported, but no guide shows them yet.
 - A cross-region directory backend on barrel_p2p, behind
   `chappe_cluster_directory`: it publishes where a resource lives between
   regions and never decides its owner
-  ([decision 0010](../../../docs/decisions/0010-cluster-ownership.md)).
+  ([decision 0010](https://github.com/benoitc/chappe/blob/main/docs/decisions/0010-cluster-ownership.md)).
   `home/1` returns this node's region until then.
 - Rehoming a resource between regions, as an explicit fenced operator
   action, is an open question of the same plan.

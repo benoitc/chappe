@@ -4,7 +4,7 @@
 implements, one row each. How rows are written, claimed in a test with a
 `%% req:` line and turned into the generated [matrix](../compliance.md) is
 the same for every app: see the shared
-[compliance page](../../../../docs/contributing/compliance.md). This page
+[compliance page](https://github.com/benoitc/chappe/blob/main/docs/contributing/compliance.md). This page
 only keeps what is specific to chappe_esl.
 
 ## What is specific here
