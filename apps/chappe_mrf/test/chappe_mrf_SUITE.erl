@@ -106,6 +106,8 @@
     native_call_loop_fails/1,
     native_endpoint_fails/1,
     native_join_worker_dies/1,
+    native_join_does_not_block/1,
+    native_join_helper_killed/1,
     native_join_bad_handle/1,
     join_timeout_refused/1,
     invite_replaces_stale_hold/1,
@@ -219,6 +221,8 @@ all() ->
         native_call_loop_fails,
         native_endpoint_fails,
         native_join_worker_dies,
+        native_join_does_not_block,
+        native_join_helper_killed,
         native_join_bad_handle,
         join_timeout_refused,
         invite_replaces_stale_hold,
@@ -3933,15 +3937,19 @@ holdings(Conf) ->
         admission => chappe_mrf_conf_backend:admission(S),
         pending => map_size(element(10, S)),
         legs => ?FAULTS:mix_legs(<<"mrf-", Name/binary>>),
-        rtpe => proplists:get_value(
-            active, supervisor:count_children(chappe_rtpengine_session_sup)
-        ),
+        rtpe => rtpe_sessions(),
         loops => [
             T
          || {{loop, T}, P} <- chappe_mrf_registry:select({loop, '_'}),
             P =:= Conf
         ]
     }.
+
+%% the rtpengine sessions of this node
+rtpe_sessions() ->
+    proplists:get_value(
+        active, supervisor:count_children(chappe_rtpengine_session_sup)
+    ).
 
 %% the room is back to Base (its cleanups may be under way)
 back_to(Conf, Base) ->
@@ -4198,6 +4206,150 @@ native_join_worker_dies(Config) ->
     Owner ! stop,
     ok = chappe_mrf_conf:stop(Slow),
     ok = chappe_mrf_conf:stop(Conf).
+
+%% A native room answers while an endpoint's join waits on its node. An
+%% endpoint whose node takes 10 s to answer the re-INVITE joins, and
+%% meanwhile the room's info/1, a member's mute, a REFER to the room and
+%% another endpoint's join are each answered within 1 s. The REFER's own
+%% party, dialed by an endpoint of that slow node, joins the mixer behind
+%% it: it was admitted with its REFER and does not count twice, so the
+%% other join finds room. Both slow joins then complete, and the party is
+%% a member once it answers.
+%% req: MRF-28
+native_join_does_not_block(Config) ->
+    ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
+    Slow = ?F:fs_start(<<"slow">>, #{
+        esl_port => ?config(lp, Config), reinvite_delay => 10000
+    }),
+    SlowUri = uri_of(?F:fs_port(Slow)),
+    {ok, Conf} = chappe_mrf:conference(<<"slowjoin">>, #{
+        focus => true,
+        max_members => 4,
+        refer_policy => fun(_) -> true end,
+        dial_endpoint => #{targets => [{slow, SlowUri}]}
+    }),
+    #{entity := Entity} = chappe_mrf_conf:info(Conf),
+    Fast = fun() ->
+        {ok, E} = chappe_mrf:create_endpoint(#{
+            targets => [{fs1, fs_uri(Config)}]
+        }),
+        E
+    end,
+    {ok, M1} = chappe_mrf_conf:join(Conf, Fast(), #{}),
+    {ok, SlowEp} = chappe_mrf:create_endpoint(#{targets => [{slow, SlowUri}]}),
+    T0 = erlang:monotonic_time(millisecond),
+    _ = join_async(Conf, SlowEp),
+    _ = reinvite_on(<<"slow">>),
+    ?assertMatch(
+        #{members := 1}, within_1s(fun() -> chappe_mrf_conf:info(Conf) end)
+    ),
+    ?assertEqual(ok, within_1s(fun() -> chappe_mrf_conf:mute(Conf, M1) end)),
+    {Sock, _} = refer(Config, Entity, <<"boss">>, <<"<sip:carol@10.0.0.9>">>),
+    ?assertMatch(
+        <<"SIP/2.0 200", _/binary>>, within_1s(fun() -> sip_response(Sock) end)
+    ),
+    %% the party's endpoint, on the slow node, is joining the mixer too
+    _ = reinvite_on(<<"slow">>),
+    ?assertMatch(#{pending := 2}, holdings(Conf)),
+    E2 = Fast(),
+    ?assertMatch(
+        {ok, _}, within_1s(fun() -> chappe_mrf_conf:join(Conf, E2, #{}) end)
+    ),
+    {ok, SlowId} = join_within(15000),
+    ?assert(erlang:monotonic_time(millisecond) - T0 >= 10000),
+    ?assert(
+        lists:member(SlowId, [
+            Id
+         || #{id := Id} <- chappe_mrf_conf:members(Conf)
+        ])
+    ),
+    %% the party, in the mixer out of sight, is bridged, then answers
+    _ = fs_cmd(<<"execute-app-name: bridge">>, 15000),
+    ok = ?F:fs_bridge(Slow, answered),
+    receive
+        {chappe_mrf_conf, Conf,
+            {joined, _, #{uri := <<"sip:carol@10.0.0.9">>}}} ->
+            ok
+    after 5000 -> ct:fail(party_not_joined)
+    end,
+    ?assertEqual(<<"SIP/2.0 200">>, final_frag(Sock)),
+    ?assertMatch(#{pending := 0}, holdings(Conf)),
+    ?assertEqual(4, length(chappe_mrf_conf:members(Conf))),
+    ok = chappe_mrf_conf:stop(Conf),
+    ?F:fs_stop(Slow).
+
+%% An endpoint's join whose helper is killed with its re-INVITE out fails
+%% with {error, join_failed}: the room gives back its mixer leg and
+%% rtpengine session and counts it no more, and the endpoint is hung up
+%% (its BYE once the re-INVITE ended), as its media may have moved. A
+%% join that outlasts join_timeout the same, with {error, timeout}, and
+%% its helper is gone. A room that ends while an endpoint joins takes the
+%% join's media sessions with it, and its helper ends.
+%% req: MRF-28 MRF-26
+native_join_helper_killed(Config) ->
+    Slow = ?F:fs_start(<<"slow">>, #{
+        esl_port => ?config(lp, Config), reinvite_delay => 3000
+    }),
+    SlowUri = uri_of(?F:fs_port(Slow)),
+    NewEp = fun() ->
+        {ok, E} = chappe_mrf:create_endpoint(#{targets => [{slow, SlowUri}]}),
+        E
+    end,
+    {ok, Conf} = chappe_mrf:conference(<<"slowkill">>, #{max_members => 1}),
+    Base = holdings(Conf),
+    Ep = NewEp(),
+    Uuid = uuid_of(Ep),
+    _ = join_async(Conf, Ep),
+    _ = reinvite_on(<<"slow">>),
+    ?assertMatch(#{pending := 1, admission := {error, full}}, holdings(Conf)),
+    [Helper] = ?FAULTS:join_helpers(),
+    exit(Helper, kill),
+    ?assertEqual({error, join_failed}, join_within(2000)),
+    back_to(Conf, Base),
+    ok = channel_bye(Uuid),
+    until(fun() -> ep_gone(Ep) end),
+    %% a join that outlasts join_timeout
+    {ok, Short} = chappe_mrf:conference(<<"slowdeadline">>, #{
+        join_timeout => 1000
+    }),
+    ShortBase = holdings(Short),
+    Ep2 = NewEp(),
+    Uuid2 = uuid_of(Ep2),
+    _ = join_async(Short, Ep2),
+    _ = reinvite_on(<<"slow">>),
+    ?assertEqual({error, timeout}, join_within(3000)),
+    until(fun() -> ?FAULTS:join_helpers() =:= [] end),
+    back_to(Short, ShortBase),
+    ok = channel_bye(Uuid2),
+    %% the room ends while an endpoint joins: its joiner hears it, the
+    %% media sessions end with the room and the helper ends
+    Rtpe = rtpe_sessions(),
+    {ok, Gone} = chappe_mrf:conference(<<"slowgone">>, #{}),
+    _ = join_async(Gone, NewEp()),
+    _ = reinvite_on(<<"slow">>),
+    ok = chappe_mrf_conf:stop(Gone),
+    ?assertMatch({error, _}, join_within(2000)),
+    until(fun() ->
+        ?FAULTS:join_helpers() =:= [] andalso rtpe_sessions() =:= Rtpe
+    end),
+    ok = chappe_mrf_conf:stop(Short),
+    ok = chappe_mrf_conf:stop(Conf),
+    ?F:fs_stop(Slow).
+
+%% the next re-INVITE that Node got
+reinvite_on(Node) ->
+    receive
+        {fake_fs, Node, _, {reinvite, Bin}} -> Bin
+    after 5000 -> ct:fail({no_reinvite, Node})
+    end.
+
+%% Fun(), answered within 1 s
+within_1s(Fun) ->
+    {Us, R} = timer:tc(Fun),
+    case Us < 1000000 of
+        true -> R;
+        false -> ct:fail({slow_answer, Us div 1000, R})
+    end.
 
 %% A join_timeout that is not a number of milliseconds from 1 to 95000 is
 %% refused on either backend before any room runs.

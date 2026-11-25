@@ -30,7 +30,8 @@ restart_registry(Old) ->
     _ = sys:get_state(chappe_mrf_registry),
     ok.
 
-%% the processes running a native call's join (its replace_b/3)
+%% the processes running a native join: a call's (its replace_b/3), an
+%% endpoint's (its media steps, chappe_mrf_conf_native_ep)
 join_helpers() ->
     [
         P
@@ -41,6 +42,8 @@ join_helpers() ->
 
 join_frame({chappe_mrf_conf_native, F, _, _}) ->
     lists:prefix("-join_b2b/", atom_to_list(F));
+join_frame({chappe_mrf_conf_native_ep, F, _, _}) ->
+    lists:prefix("-start/", atom_to_list(F));
 join_frame(_Frame) ->
     false.
 

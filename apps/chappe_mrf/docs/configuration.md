@@ -121,7 +121,7 @@ Passed to `chappe_mrf:conference/2`.
 | `select` | fs | `#{}` | Options for that selection. |
 | `profile` | fs | `<<"default">>` | mod_conference profile. |
 | `bridge` | fs | `#{}` | `chappe_mrf:bridge/3` options for a caller joined from a call. |
-| `join_timeout` | both | fs: `15000`; native: `95000` | fs: milliseconds a member may take to appear in the room; its `join/3`, and a `transfer/3` into the room, wait that long and 5000 more, so the room answers first. native: milliseconds a call's join may take; past it the join fails with `{error, timeout}` and the room gives back what it took. An integer from 1 to `95000` on both; any other value is refused with `{error, {bad_option, join_timeout}}`. |
+| `join_timeout` | both | fs: `15000`; native: `95000` | fs: milliseconds a member may take to appear in the room; its `join/3`, and a `transfer/3` into the room, wait that long and 5000 more, so the room answers first. native: milliseconds a join (a call's or an endpoint's) may take; past it the join fails with `{error, timeout}` and the room gives back what it took. An integer from 1 to `95000` on both; any other value is refused with `{error, {bad_option, join_timeout}}`. |
 | `refer_policy` | both | none | `fun(Info) -> boolean() \| {reject, Code}` for a REFER to the room; unset, REFERs are refused 403. |
 | `replaces_policy` | both | the member itself or a caller it referred | `fun(Info) -> boolean()` for a call whose Replaces names a member; `false` or a crash is 403. Never anonymous callers by default. |
 | `dial` | both | `[^^:absolute_codec_string=<dial_codecs>]sofia/<dial_profile>/<target>`, the codec block left out with `inherit` | `fun(Target) -> iodata()`: the dial string of a party a REFER adds; one that crashes refuses the REFER 403. |

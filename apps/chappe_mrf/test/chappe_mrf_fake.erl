@@ -66,7 +66,9 @@ pick() ->
 %% Opts: esl_port (the chappe_mrf listener), dial_delay (ms a
 %% `conference <room> dial' takes before it answers, as the real one
 %% originates first), digits (what
-%% play_and_get_digits collects, default <<"1">>), name.
+%% play_and_get_digits collects, default <<"1">>), name, reject_reinvite
+%% (a re-INVITE gets 488), reinvite_delay (ms a re-INVITE waits for its
+%% 200, after a 100 Trying).
 fs_start(Name, Opts) ->
     Parent = self(),
     Pid = spawn(fun() ->
@@ -337,6 +339,10 @@ chan_loop(#{tcp := Tcp} = C) ->
         {sip_resp, R} ->
             report(C, {response, R}),
             chan_loop(C);
+        {sip_out, Src, Bin} ->
+            %% a delayed answer (reinvite_delay)
+            send_sip(maps:get(node, C), Src, Bin),
+            chan_loop(C);
         {refer, ReferTo} ->
             send_refer(C, ReferTo),
             chan_loop(C);
@@ -383,20 +389,22 @@ chan_sip(Bin, Src, #{node := Node} = C) ->
                         resp(Bin, 488, <<"Not Here">>, <<>>, [], <<>>)
                     ),
             Sdp = sdp(<<"fs-", (maps:get(name, C))/binary>>, 40100),
+            Ok = resp(
+                Bin, 200, <<"OK">>, maps:get(tag, C), [contact(Node)], Sdp
+            ),
             _ =
                 maps:get(reject_reinvite, NOpts, false) orelse
-                    send_sip(
-                        Node,
-                        Src,
-                        resp(
-                            Bin,
-                            200,
-                            <<"OK">>,
-                            maps:get(tag, C),
-                            [contact(Node)],
-                            Sdp
-                        )
-                    ),
+                    case maps:get(reinvite_delay, NOpts, 0) of
+                        0 ->
+                            send_sip(Node, Src, Ok);
+                        Ms ->
+                            %% 100 Trying stops the retransmissions
+                            Trying = resp(
+                                Bin, 100, <<"Trying">>, <<>>, [], <<>>
+                            ),
+                            send_sip(Node, Src, Trying),
+                            erlang:send_after(Ms, self(), {sip_out, Src, Ok})
+                    end,
             C;
         <<"ACK">> ->
             C;

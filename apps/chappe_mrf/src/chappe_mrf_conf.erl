@@ -108,8 +108,9 @@
 %%                moved into the mixer (the mixer runs on this host)
 %%   endpoint_params => #{offer, answer => map()}: rtpengine flags between
 %%                the mixer and an endpoint's node (offer: toward the node)
-%%   join_timeout => ms a call's join may take, 95000 at most and by
-%%                default: past it the join fails with {error, timeout}
+%%   join_timeout => ms a join (a call's, an endpoint's) may take, 95000
+%%                at most and by default: past it the join fails with
+%%                {error, timeout}
 %%                and the room gives back what it took. On either
 %%                backend start/2 refuses a join_timeout that is no
 %%                integer from 1 to 95000: {error, {bad_option,
@@ -241,8 +242,10 @@ events(Conf, Pid) ->
 %% through rtpengine, fs bridges it to an endpoint on the room's node),
 %% or an endpoint. On native, the
 %% endpoint must be one of create_endpoint/1 not bridged: its dialog is
-%% re-INVITEd to the mixer through rtpengine, and a join that fails once
-%% the node answered that re-INVITE hangs the endpoint up (its media is
+%% re-INVITEd to the mixer through rtpengine, by a helper of the room so
+%% that the room answers meanwhile, and a join that fails once the node
+%% answered that re-INVITE (or may have: the helper died, or the
+%% join_timeout came, with it out) hangs the endpoint up (its media is
 %% gone). On
 %% fs, it must be on the conference's node. Opts: name, mute,
 %% deaf, moderator; fs also pin (the PIN to enter first), pin_prompt

@@ -310,15 +310,20 @@ drop_member(Id, Reason, #state{members = M, mod = Mod} = S) ->
 
 %% Whether one more may come in: not into a locked room, nor past
 %% max_members, the joins (pending) and the REFER dial-outs under way
-%% counting as members.
+%% counting as members. The join of a party a REFER dials is its dial's,
+%% counted once.
 -spec admission(room()) -> ok | {error, locked | full}.
 admission(#state{locked = true}) ->
     {error, locked};
 admission(#state{members = M, pending = P, max_members = Max} = S) ->
-    case map_size(M) + map_size(P) + dials(S) >= Max of
+    Joining = length([J || J <- maps:values(P), not refer_party(J)]),
+    case map_size(M) + Joining + dials(S) >= Max of
         true -> {error, full};
         false -> ok
     end.
+
+refer_party(#{opts := #{refer := _}}) -> true;
+refer_party(_Join) -> false.
 
 dials(#state{refer_ops = Ops}) ->
     length([

@@ -4,8 +4,8 @@
 %% @doc Small helpers shared by the chappe_mrf modules.
 -module(chappe_mrf_lib).
 
--export([new_id/0, to_bin/1, destroy_dialog/1, done/1, api_ok/1]).
--export([playback_result/1]).
+-export([new_id/0, to_bin/1, destroy_dialog/1, destroy_later/1, done/1]).
+-export([api_ok/1, playback_result/1]).
 
 %% A random id, hex: correlation ids, member ids, loopback tokens.
 -spec new_id() -> binary().
@@ -26,6 +26,13 @@ destroy_dialog(D) ->
     catch
         exit:_ -> ok
     end.
+
+%% destroy_dialog/1 in a process of its own, for a caller that must not
+%% wait: the BYE may wait for a transaction under way, then Timer F.
+-spec destroy_later(chappe_sip_dialog:dialog()) -> ok.
+destroy_later(D) ->
+    _ = spawn(fun() -> destroy_dialog(D) end),
+    ok.
 
 %% {ok, _} -> ok, anything else as is.
 -spec done(term()) -> term().

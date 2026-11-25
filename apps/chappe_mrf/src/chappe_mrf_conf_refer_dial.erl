@@ -287,13 +287,16 @@ native_event(Ep, Event, #state{dialing = D} = S) ->
 
 %% The endpoint of op Key joined the mixer (the backend's join, through
 %% chappe_mrf_conf_backend:joined/3): it is no member until its target
-%% answered, kept here with its dial.
+%% answered, kept here with its dial. A dial that ended while its
+%% endpoint joined (given up, timed out) has its mixer leg go: the room
+%% never showed it.
 -spec hidden(binary(), map(), #state{}) -> #state{}.
-hidden(Id, #{refer := Key, ep := Ep} = Mb, #state{dialing = D} = S) ->
+hidden(Id, #{refer := Key, ep := Ep} = Mb, #state{dialing = D, mod = Mod} = S) ->
     case D of
         #{{ep, Ep} := #{key := Key} = E} ->
             put_dial({ep, Ep}, E#{member => {Id, Mb}}, S);
         #{} ->
+            ok = Mod:left(Mb, failed),
             S
     end.
 

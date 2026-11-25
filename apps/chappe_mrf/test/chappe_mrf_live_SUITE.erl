@@ -1162,11 +1162,12 @@ native_endpoint(Config) ->
 %% its name and its members still hear each other. Then, rtpengine paused
 %% so that each join hangs on its offer (the room has that one join
 %% pending), join workers are killed within 500 ms (a call's helper, an
-%% incoming caller's INVITE worker): a call's join fails with {error,
-%% join_failed}, a caller's is dropped, and the room has no join pending
-%% after either. Once those callers are gone the room's mixer legs and the
-%% calls rtpengine runs are what they were, and the node has no more
-%% processes or ports than before.
+%% incoming caller's INVITE worker, an endpoint's helper): a call's or an
+%% endpoint's join fails with {error, join_failed}, a caller's is
+%% dropped, and the room has no join pending after either; while an
+%% endpoint's join waits, the room answers within 1 s. Once those callers
+%% are gone the room's mixer legs and the calls rtpengine runs are what
+%% they were, and the node has no more processes or ports than before.
 native_faults(Config) ->
     case ?config(compose, Config) of
         "" -> {skip, "MRF_COMPOSE not set"};
@@ -1188,7 +1189,7 @@ native_faults(Config, Compose) ->
     ?assertEqual({ok, Conf}, chappe_mrf:conference(Name, #{})),
     ?UA:clear(U2),
     ?assert(?UA:hears(U2, 500, 4000)),
-    Ways = lists:append(lists:duplicate(4, [b2b, call])),
+    Ways = lists:append(lists:duplicate(4, [b2b, call, ep])),
     Killed = [
         try
             kill_join(Config, Compose, Conf, Way)
@@ -1246,8 +1247,36 @@ settled(Name, Counts, Same) ->
 %% waits on its offer, the room has it pending), within 500 ms: a call's
 %% (Way b2b, its replace_b/3 helper), which fails with {error,
 %% join_failed}, or an incoming caller's (Way call, its INVITE's request
-%% worker), which never returns and whose join the room drops. The room
-%% then has no join pending; the caller goes.
+%% worker), which never returns and whose join the room drops, or an
+%% endpoint's (Way ep, the helper of its media steps), which fails with
+%% {error, join_failed} and leaves the endpoint as it was (its re-INVITE
+%% never went out); the room answers info/1 within 1 s while that one
+%% waits. The room then has no join pending; the caller goes.
+kill_join(_Config, Compose, Conf, ep) ->
+    {ok, Ep} = chappe_mrf:create_endpoint(#{}),
+    Test = self(),
+    _ = os:cmd(Compose ++ " pause rtpengine"),
+    _ = spawn(fun() -> Test ! {join, chappe_mrf_conf:join(Conf, Ep, #{})} end),
+    ?assert(?FAULTS:eventually(fun() -> ?FAULTS:join_helpers() =/= [] end, 20)),
+    {Us, Info} = timer:tc(fun() -> chappe_mrf_conf:info(Conf) end),
+    ct:log("info/1 answered in ~b ms while an endpoint joins", [Us div 1000]),
+    ?assertMatch(#{members := 2}, Info),
+    ?assert(Us < 1000000),
+    ?assertEqual(1, pending(Conf)),
+    timer:sleep(rand:uniform(500) - 1),
+    Helpers = [exit(P, kill) || P <- ?FAULTS:join_helpers()],
+    ?assertEqual([true], Helpers),
+    R =
+        receive
+            {join, J} -> J
+        after 2000 -> ct:fail(join_not_failed)
+        end,
+    ?assertEqual({error, join_failed}, R),
+    ?assertEqual(0, pending(Conf)),
+    _ = os:cmd(Compose ++ " unpause rtpengine"),
+    ?assertMatch(#{bridged := false}, chappe_mrf:info(Ep)),
+    ok = chappe_mrf:destroy(Ep),
+    {ep, R};
 kill_join(Config, Compose, Conf, b2b) ->
     ivr(fun park/2),
     {Ua, _, B2b, Owner} = call_in(Config, none),
