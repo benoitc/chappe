@@ -118,7 +118,7 @@ Notes:
 
 - No from-tag is injected automatically on subscription commands. On every other session command the stored from-tag identifies the call; here it selects which participant to tap, so the default is yours to choose.
 - Without a session, the same commands work on a node: `chappe_rtpengine:cmd(Node, subscribe_request, #{call_id => CallId, flags => [all]})`.
-- rtpengine has no built-in audio mixer for live conferencing. For mixed conferences, put a mixer behind it: chappe_mix in the umbrella (see its [conference guide](../../../chappe_mix/docs/guides/conference.md)), or a media server such as FreeSWITCH.
+- rtpengine has no built-in audio mixer for live conferencing. For mixed conferences, put a mixer behind it: chappe_mix in the umbrella (see its [conference guide](https://github.com/benoitc/chappe/blob/main/apps/chappe_mix/docs/guides/conference.md)), or a media server such as FreeSWITCH.
 
 ## Where it lives
 

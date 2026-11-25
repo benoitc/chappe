@@ -31,6 +31,12 @@ says how apps are released.
   it opens and when its far end changes. Before, every such packet was
   taken as audio and the digits were lost.
 
+### Fixed
+
+- A room given an `ssrc_draw` function that only returned SSRCs already
+  in use hung when a leg joined or an SSRC collided: it asked for another
+  one forever. It now asks 16 times, then picks a free SSRC itself.
+
 ## [0.1.0] - 2026-11-23
 
 ### New

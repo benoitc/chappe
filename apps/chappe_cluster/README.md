@@ -56,7 +56,7 @@ Call it on every node that may run it; one node runs it at a time.
 - [Features](docs/features.md): what works and what is planned.
 - [Design overview](docs/design/overview.md): the machine, leases,
   singletons, watches, the directory and the HLC.
-- Why it works this way: [decision 0010](../../docs/decisions/0010-cluster-ownership.md).
+- Why it works this way: [decision 0010](https://github.com/benoitc/chappe/blob/main/docs/decisions/0010-cluster-ownership.md).
 
 ## Configuration
 

@@ -736,8 +736,9 @@ hd_call(CallId, Room, Backend, Req, Res) ->
     end.
 
 %% Both rooms are focus rooms (RFC 4575 roster, REFERs to the room's
-%% URI), their events to the keeper, who may REFER and where to, and how
-%% a party is dialed, with the codecs chappe_mrf would offer it.
+%% URI), their events to the keeper, who may REFER and where to, who may
+%% take a member's place (Replaces), and how a party is dialed, with the
+%% codecs chappe_mrf would offer it.
 hd_conf(Room, Backend) ->
     Opts = hd_backend(Backend),
     Codecs = chappe_mrf:dial_codecs(Opts),
@@ -745,6 +746,7 @@ hd_conf(Room, Backend) ->
         focus => true,
         notify => persistent_term:get({?MODULE, keeper}),
         refer_policy => fun(Info) -> refer_policy(Room, Info) end,
+        replaces_policy => fun(Info) -> replaces_policy(Room, Info) end,
         dial => fun(Target) -> dial(Room, Codecs, Target) end
     }).
 
@@ -788,6 +790,70 @@ refer_policy(Room, #{action := Action, target := Target, referrer := From}) ->
 
 allowed(true) -> "allowed";
 allowed(false) -> "refused".
+
+%% Who may take a member's place in an HD room with an INVITE whose
+%% Replaces names the member's call: the senders refer_policy/2 trusts,
+%% the demo shell and the users registered here, as the caller (its
+%% From) or as who referred it (its Referred-By: an attended transfer
+%% into the room). Nothing authenticates either header (the README's
+%% Notes). The room checks that the Replaces names a member.
+replaces_policy(Room, Info) ->
+    #{caller := Caller, replaced := Id} = Info,
+    {Ok, Why} = may_replace(Info, persistent_term:get({?MODULE, cfg})),
+    log("~s: Replaces of member ~s from ~s (~s): ~s", [
+        Room, Id, Caller, Why, allowed(Ok)
+    ]),
+    Ok.
+
+%% Never an anonymous caller. Otherwise: the member itself, or a caller
+%% whose Referred-By names it (chappe_mrf's own default), or a caller the
+%% demo trusts as a REFER sender, by its From or its Referred-By. None of
+%% it is authenticated.
+may_replace(#{caller := Caller} = Info, Cfg) ->
+    case anonymous(Caller) of
+        true -> {false, "anonymous"};
+        false -> may_replace_named(Info, Cfg)
+    end.
+
+may_replace_named(
+    #{caller := Caller, referred_by := By, replaced_aor := Own}, Cfg
+) ->
+    case lists:member(Own, [aor(Caller), aor(By)]) of
+        true ->
+            {true, "the member or a caller it referred"};
+        false ->
+            case trusted([Caller, By], Cfg) of
+                refused -> {false, "nobody the demo trusts"};
+                {shell, _} -> {true, "vouched for by the demo shell"};
+                {_Who, Uri} -> {true, ["vouched for by ", Uri]}
+            end
+    end.
+
+%% the first of these URIs sender/2 trusts, with the URI, else refused
+trusted([], _Cfg) ->
+    refused;
+trusted([undefined | Uris], Cfg) ->
+    trusted(Uris, Cfg);
+trusted([Uri | Uris], Cfg) ->
+    case sender(Uri, Cfg) of
+        refused -> trusted(Uris, Cfg);
+        Who -> {Who, Uri}
+    end.
+
+aor(undefined) -> undefined;
+aor(Uri) -> chappe_mrf_conf_refer_op:aor(addr(Uri)).
+
+%% RFC 3323 4: a URI that names nobody (user anonymous, or host
+%% anonymous.invalid), or none
+anonymous(undefined) ->
+    true;
+anonymous(Uri) ->
+    case chappe_sip_uri:parse(addr(Uri)) of
+        {ok, #{user := <<"anonymous">>}} -> true;
+        {ok, #{host := <<"anonymous.invalid">>}} -> true;
+        {ok, _} -> false;
+        error -> true
+    end.
 
 target_allowed(remove, _Target, _Cfg) -> true;
 target_allowed(add, Target, Cfg) -> ours(Target, Cfg);
@@ -1054,10 +1120,11 @@ mode(B2b) ->
         _ -> unknown
     end.
 
-%% the calls table, and the process that logs peer and hold events
+%% the calls table, and the process that logs peer and hold events; the
+%% start fails if the keeper dies or is not up within 10 s
 keeper() ->
     Self = self(),
-    Pid = spawn(fun() ->
+    {Pid, Mon} = spawn_monitor(fun() ->
         _ = ets:new(?CALLS, [named_table, public]),
         _ = ets:new(?FS, [named_table, public]),
         ok = chappe_esl:node_subscribe(all),
@@ -1066,7 +1133,15 @@ keeper() ->
         keep()
     end),
     receive
-        {keeper, Pid} -> Pid
+        {keeper, Pid} ->
+            true = erlang:demonitor(Mon, [flush]),
+            Pid;
+        {'DOWN', Mon, process, Pid, Why} ->
+            error({keeper, Why})
+    after 10000 ->
+        true = erlang:demonitor(Mon, [flush]),
+        exit(Pid, kill),
+        error({keeper, timeout})
     end.
 
 keep() ->

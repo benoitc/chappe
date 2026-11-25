@@ -47,7 +47,7 @@ The bounds, checked in `commit/3` before the write:
 `chappe_sip_location:backend/0` reads the `cluster` setting:
 `chappe_sip_location_ets` by default, `chappe_sip_location_cluster` with
 `cluster => chappe_cluster`. The registry never names a backend
-([decision 0015](../../../../docs/decisions/0015-location-behaviour.md)).
+([decision 0015](https://github.com/benoitc/chappe/blob/main/docs/decisions/0015-location-behaviour.md)).
 
 | Callback | What it does |
 |---|---|
@@ -232,5 +232,5 @@ table) is a 500, and the binding stays.
   `chappe_sip_registry_lag_tests` with `chappe_sip_location_lagging`;
   `chappe_sip_flow_tests`.
 - Lab: `make demo-cluster` (see `demo/cluster/README.md`).
-- Decisions: [0010](../../../../docs/decisions/0010-cluster-ownership.md),
-  [0015](../../../../docs/decisions/0015-location-behaviour.md).
+- Decisions: [0010](https://github.com/benoitc/chappe/blob/main/docs/decisions/0010-cluster-ownership.md),
+  [0015](https://github.com/benoitc/chappe/blob/main/docs/decisions/0015-location-behaviour.md).

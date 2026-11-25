@@ -14,7 +14,7 @@ What chappe does not meet on purpose, and why, is listed under
 
 | ID | Source | Section | Requirement | Reason |
 | --- | --- | --- | --- | --- |
-| MRF-23 | chappe_mrf | refer | The INVITE a conference sends a party a REFER brings in carries the REFER's Referred-By unchanged... | deviation: through FreeSWITCH it carries the Referred-By's URI only (a dial string cannot hold the whole value safely); the REFER of a REFER with method=REFER, sent by chappe, carries it unchanged |
+| MRF-23 | chappe_mrf | refer | The INVITE a conference sends a party a REFER brings in carries the REFER's Referred-By unchanged... | deviation: through FreeSWITCH it carries the Referred-By's URI only (a dial string cannot hold the whole value safely), and no Referred-By when that URI fails the dial-string check (dropped, never shortened); the REFER of a REFER with method=REFER, sent by chappe, carries it unchanged |
 
 ## By row
 

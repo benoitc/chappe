@@ -12,7 +12,7 @@ To use the B2BUA, read the guides: [B2BUA](../guides/b2bua.md),
 ## Modules
 
 All live in `src/api/` today (see finding M5 of the
-[documentation plan](../../../../docs/plans/documentation-and-maintainability.md)).
+[documentation plan](https://github.com/benoitc/chappe/blob/main/docs/plans/documentation-and-maintainability.md)).
 
 | Module | Owns |
 |---|---|

@@ -118,7 +118,7 @@ init(#{owner := Owner} = Opts) ->
         tick_ceiling = maps:get(tick_ceiling, Opts, true),
         prefill_shrink = maps:get(prefill_shrink, Opts, false),
         cname = maps:get(cname, Opts, chappe_mix_rtcp:cname()),
-        draw = maps:get(ssrc_draw, Opts, fun random32/0),
+        draw = maps:get(ssrc_draw, Opts, fun chappe_mix_session:random_ssrc/0),
         next_tick = Next,
         period = Period
     }}.
@@ -350,7 +350,8 @@ add_totals(Info, Acc) ->
 src_ssrc(#leg{sess = Sess}) -> chappe_mix_session:src_ssrc(Sess).
 
 %% A random SSRC not already seen in the conference, ours or theirs
-%% (8.2: a candidate already known is drawn again).
+%% (8.2: a candidate already known is drawn again; the ssrc_draw option
+%% gets a bounded number of tries, chappe_mix_session:pick_ssrc/2).
 new_ssrc(S) ->
     Taken = maps:fold(
         fun(_, #leg{sess = Sess}, Acc) ->
@@ -363,18 +364,7 @@ new_ssrc(S) ->
         [],
         S#state.legs
     ),
-    new_ssrc(S#state.draw, Taken).
-
-new_ssrc(Draw, Taken) ->
-    Cand = Draw(),
-    case lists:member(Cand, Taken) of
-        true -> new_ssrc(Draw, Taken);
-        false -> Cand
-    end.
-
-random32() ->
-    <<N:32>> = crypto:strong_rand_bytes(4),
-    N.
+    chappe_mix_session:pick_ssrc(S#state.draw, Taken).
 
 %% ---- receiving ----
 

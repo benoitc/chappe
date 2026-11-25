@@ -66,7 +66,7 @@ monitor.
 A SIPREC recording server (`chappe_sip_siprec_srs` in chappe_sip) does
 the SIP and asks chappe_audio for one receiver per recorded stream with
 `chappe_audio:rtp_receiver/1`. The design of both sides is in the
-[SIPREC design page](../../../chappe_sip/docs/design/siprec.md).
+[SIPREC design page](https://github.com/benoitc/chappe/blob/main/apps/chappe_sip/docs/design/siprec.md).
 
 - **One process per stream.** Each receiver is a `chappe_audio_rtp` under
   `chappe_audio_rtp_sup`, owned by the process that started it. It stops
@@ -87,7 +87,7 @@ the SIP and asks chappe_audio for one receiver per recorded stream with
   authenticates. Failed packets are counted (`chappe_audio_rtp:stats/1`)
   and logged at most once per 10 s. `chappe_audio_rtp:rekey/2` takes the
   sender's new key. The keys stay in a closure and out of every report
-  ([decision 0009](../../../../docs/decisions/0009-srtp-in-erlang.md)).
+  ([decision 0009](https://github.com/benoitc/chappe/blob/main/docs/decisions/0009-srtp-in-erlang.md)).
 - **RTCP.** With `rtcp => mux` (RTCP on the RTP port, RFC 5761) or
   `rtcp => port` (an even RTP port, RTCP on the next one), the receiver
   keeps each source's reception statistics (`chappe_audio_rtcp`, RFC 3550
@@ -114,7 +114,7 @@ the SIP and asks chappe_audio for one receiver per recorded stream with
 - **It outlives the store.** `chappe_audio_rtp_sup` is the first child of
   the `rest_for_one` root, needing none of the others, so a crash of the
   store or the registry never drops a live stream
-  ([decision 0011](../../../../docs/decisions/0011-chappe-audio-leaf.md)).
+  ([decision 0011](https://github.com/benoitc/chappe/blob/main/docs/decisions/0011-chappe-audio-leaf.md)).
 
 ## The store
 

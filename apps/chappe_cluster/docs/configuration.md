@@ -54,7 +54,7 @@ leave a holder time to give up before the leader expires its node
   drift as a fraction: a slow node and a fast leader still agree.
 
 With the defaults the margin covers a drift of about 9 %
-([decision 0010](../../../docs/decisions/0010-cluster-ownership.md)).
+([decision 0010](https://github.com/benoitc/chappe/blob/main/docs/decisions/0010-cluster-ownership.md)).
 
 ## Notes
 

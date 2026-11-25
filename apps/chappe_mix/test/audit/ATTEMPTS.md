@@ -1014,3 +1014,19 @@ nothing clips, the unity loops ran as before.
   eight release gains, every sample index and every positive 16-bit sample
   found no input where the two round differently. The parent's order is
   kept anyway.
+
+## A capped ssrc_draw (`new_ssrc_draw_capped`)
+
+- An outside review found that `chappe_mix_conf:new_ssrc/2` drew again
+  for as long as the `ssrc_draw` option returned an SSRC in use: a draw
+  that never gives a free one held the room in `add_leg` or in a
+  collision, forever. `chappe_mix_session:pick_ssrc/2` now gives the
+  option 16 draws; past them it takes its own cryptographic random,
+  still checked against the SSRCs in use. The loop moved to the session
+  module to keep `chappe_mix_conf` under elvis's 500-line limit.
+- Seen failing first: `new_ssrc_draw_capped` draws 1111 every time and
+  raises past 64 calls, so the old loop crashed the room in the second
+  leg's `add_leg` (`too_many_draws`) instead of spinning.
+- Mutations, both caught: a cap of 20 (17 draws expected after the second
+  leg, 21 made); the fallback drawing from the option again
+  (`too_many_draws`).

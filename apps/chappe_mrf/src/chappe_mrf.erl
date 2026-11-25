@@ -16,7 +16,7 @@
 %% FreeSWITCH mod_conference (fs); see chappe_mrf_conf.
 %%
 %% Each FreeSWITCH node needs a dialplan extension that hands the call to
-%% this node: <action application="socket" data="Host:Port async full"/>
+%% this node: `<action application="socket" data="Host:Port async full"/>'
 %% for the user the INVITE is sent to (`mrf' by default), where Port is
 %% the listener of start/1 (or the `esl_port' app env). The listener binds
 %% 127.0.0.1 unless esl_ip is given; with FreeSWITCH on another host, set

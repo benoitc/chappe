@@ -22,7 +22,7 @@ To use it from your own project, depend on the umbrella repository and list `cha
 ]}.
 ```
 
-If you drive rtpengine from a chappe_sip service, you usually do not call this app directly: configure `media => #{rtpengine => ...}` in `chappe_sip:start/1` and use `chappe_sip_media` (see the chappe_sip [media design](../../../chappe_sip/docs/design/media.md)).
+If you drive rtpengine from a chappe_sip service, you usually do not call this app directly: configure `media => #{rtpengine => ...}` in `chappe_sip:start/1` and use `chappe_sip_media` (see the chappe_sip [media design](https://github.com/benoitc/chappe/blob/main/apps/chappe_sip/docs/design/media.md)).
 
 ## Run an rtpengine for development
 

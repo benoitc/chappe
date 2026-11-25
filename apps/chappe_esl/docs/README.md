@@ -20,7 +20,7 @@ This is the map of the chappe_esl pages. Start with the app
 
 - [Design overview](design/overview.md): modules, supervision, the
   connection FSM, call control, the node registry, framing, failures
-- [Decision 0003](../../../docs/decisions/0003-leaf-apps.md): why it is a
+- [Decision 0003](https://github.com/benoitc/chappe/blob/main/docs/decisions/0003-leaf-apps.md): why it is a
   leaf app, with no SIP dependency
 - [Features](features.md)
 

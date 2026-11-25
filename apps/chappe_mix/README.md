@@ -18,7 +18,7 @@ It knows nothing about SIP or SDP.
 | You want | Use |
 |---|---|
 | Rooms in your own node, controlled per pair of legs (`relate/4`), talker events, no media server to run | chappe_mix |
-| Low latency and density: see the measured numbers in [`test/audit/PERF.md`](test/audit/PERF.md) | chappe_mix |
+| Low latency and density: see the measured numbers in [`test/audit/PERF.md`](https://github.com/benoitc/chappe/blob/main/apps/chappe_mix/test/audit/PERF.md) | chappe_mix |
 | Recording, playback, TTS or PIN prompts inside the room, mod_conference features | a FreeSWITCH room (`chappe_mrf`, backend `fs`) |
 | Wideband (G.722, Opus mixed at 16 kHz, rtpengine with L16 in front: tested on 26.3.1.4, upstream has it from 13.4.1.1) | chappe_mix, `rate => 16000` ([guide](docs/guides/conference.md#run-a-16-khz-hd-room)) |
 
@@ -56,8 +56,8 @@ internal.
 - [Design overview](docs/design/overview.md): the clock, the mix, the
   jitter buffer, RTCP, sockets
 - [Features](docs/features.md)
-- Evidence: [`test/audit/PERF.md`](test/audit/PERF.md) (measurements
-  against thresholds) and [`test/audit/ATTEMPTS.md`](test/audit/ATTEMPTS.md)
+- Evidence: [`test/audit/PERF.md`](https://github.com/benoitc/chappe/blob/main/apps/chappe_mix/test/audit/PERF.md) (measurements
+  against thresholds) and [`test/audit/ATTEMPTS.md`](https://github.com/benoitc/chappe/blob/main/apps/chappe_mix/test/audit/ATTEMPTS.md)
   (what was tried and kept or reverted)
 
 Render the guides and the API reference with `rebar3 ex_doc` from this
@@ -73,7 +73,7 @@ make interop-mix                       # behind a real rtpengine (docker)
 make interop-ref                       # against FreeSWITCH mod_conference
 ```
 
-The bench arms are in [`bench/`](bench/README.md).
+The bench arms are in [`bench/`](https://github.com/benoitc/chappe/blob/main/apps/chappe_mix/bench/README.md).
 
 ## License
 

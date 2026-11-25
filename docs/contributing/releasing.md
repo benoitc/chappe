@@ -98,12 +98,6 @@ is on Hex:
 | 6 | chappe_sip | (chappe_rtpengine, chappe_mix, chappe_cluster, chappe_audio: optional) |
 | 7 | chappe_mrf | chappe_sip, chappe_esl, chappe_audio |
 
-Before their first publish, chappe_sip, chappe_esl and chappe_rtpengine
-must be bumped (to 0.3.0, 0.2.0 and 0.2.0, in the release pull request):
-their current `## [0.2.0]` and `## [0.1.0]` sections describe older code,
-released before the umbrella, not what the package would carry. The
-`~>` pins of chappe_mrf on chappe_sip and chappe_esl follow those bumps.
-
 For each app, from a clean tree on the merged commit:
 
 ```sh
@@ -118,6 +112,21 @@ rebar3 hex publish
 
 Run `scripts/check_package.sh` again for an app once its siblings are on
 Hex: before, it only warns.
+
+`rebar3 hex publish` sends the app's documentation to hexdocs.pm with the
+package: every app sets `{hex, [{doc, #{provider => ex_doc}}]}`, and
+`scripts/check_package.sh` fails when `rebar3 hex build` makes no docs
+tarball. For a version already on Hex without its docs, publish them
+alone, from the app's directory on the commit that released it:
+
+```sh
+cd apps/chappe_sip
+rebar3 hex publish doc
+```
+
+Links in an app's docs to files outside its docs pages (the umbrella's
+decisions, a sibling app's guides) are full GitHub URLs, so they work on
+hexdocs.pm too.
 
 ## Notes
 
