@@ -355,8 +355,12 @@ band_shape(Samples, Cal) ->
                     Gain = Got - maps:get(1000, Cal),
                     ct:log("path gain at 1000 Hz: ~.1f dB", [Gain]),
                     Shifted = maps:map(fun(_, L) -> L + Gain end, Cal),
+                    %% G.722 is on every path here: its QMF bank folds
+                    %% 5000 and 6000 Hz onto the alias bins at about 60 dB
+                    %% down, so they get 30 dB (a careless drop to 8 kHz
+                    %% folds them within a few dB of full level)
                     chappe_mix_test_tone:band_check(Samples, Shifted, #{
-                        tolerance => 3.0
+                        tolerance => 3.0, alias_db => 30.0
                     })
             catch
                 %% a tone 10 dB down or more: the path lost the band

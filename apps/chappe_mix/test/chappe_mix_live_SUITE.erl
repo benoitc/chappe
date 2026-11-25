@@ -271,6 +271,17 @@ dtmf_through_rtpengine(Config) ->
 %% 6 dB (a codec), nothing folded onto 2000 and 3000 Hz. The G.722 and
 %% Opus paths carry the whole band both ways; the PCMU one drops 5000 and
 %% 6000 Hz, both ways, and fails.
+%% Through a codec: 6 dB per tone. Where G.722 is on the path, the alias
+%% bins get 30 dB, not 40: its QMF bank folds 5000 and 6000 Hz onto
+%% exactly 3000 and 2000 Hz at about 60 dB down, 4 dB inside the default
+%% limit (one loaded run read -56.24 dBFS against -56.33), while a path
+%% that drops to 8 kHz carelessly folds them within a few dB of full level
+%% (chappe_mix_band_tests).
+band_opts(Sender, Listener) when Sender =:= g722; Listener =:= g722 ->
+    #{tolerance => 6.0, alias_db => 30.0};
+band_opts(_Sender, _Listener) ->
+    #{tolerance => 6.0}.
+
 hd_band_through_rtpengine(Config) ->
     {ok, Conf} = chappe_mix:start(#{ip => {0, 0, 0, 0}, rate => 16000}),
     Parties = [hd_party(Config, Conf, K) || K <- [l16, g722, opus, pcmu]],
@@ -289,7 +300,7 @@ hd_band_through_rtpengine(Config) ->
         [
             {Sender, K,
                 chappe_mix_test_tone:band_check(
-                    chappe_mix_test_tone:samples(Ep), Cal, #{tolerance => 6.0}
+                    chappe_mix_test_tone:samples(Ep), Cal, band_opts(Sender, K)
                 )}
          || {K, Ep} <- Eps
         ]

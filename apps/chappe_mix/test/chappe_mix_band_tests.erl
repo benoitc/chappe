@@ -90,6 +90,18 @@ naive_decimation_fails_test() ->
      || Tol <- [3.0, 6.0]
     ].
 
+%% The live G.722 paths take a 30 dB alias limit (G.722's QMF bank folds
+%% 5000 and 6000 Hz onto 3000 and 2000 Hz, about 60 dB down): careless
+%% decimation folds the tones within a few dB of full level, so it still
+%% fails there.
+naive_decimation_fails_at_codec_alias_limit_test() ->
+    P = probe(),
+    Cal = chappe_mix_test_tone:band_calibrate(P),
+    {error, Faults} = chappe_mix_test_tone:band_check(
+        naive_round_trip(P), Cal, #{tolerance => 6.0, alias_db => 30.0}
+    ),
+    ?assertEqual([2000, 3000], lists:sort(aliases(Faults))).
+
 too_short_test() ->
     P = probe(),
     Cal = chappe_mix_test_tone:band_calibrate(P),
