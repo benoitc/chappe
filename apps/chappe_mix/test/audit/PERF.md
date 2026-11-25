@@ -28,11 +28,11 @@ missed here, never redefined after the numbers arrive.
 | Per-pair relations, cost, set 2026-10-03 | `mix_cost` at 4 and 64 legs with no relation set rises by no more than 5%; the cost of each exclusion is measured and recorded | n/a | runner, against `c9f377d`: -1.1% at 4 legs; at 64 legs the arm rises +157%, the gain control's (a room that fits: -1.3%); each listener kept from one leg: 71.9 / 2307 us (+43 / +1312 us), from four: 104.8 / 3214 us | met |
 | Talker events, latency, set 2026-10-03 | `{talking, Leg, true}` within 100 ms of the first loud frame entering the mix (60 ms hysteresis plus up to two ticks), `false` within 340 ms of the last one (300 ms plus two ticks), at the defaults | n/a | runner: true after 59 ms and false after 299 ms of the tone, in all 100 rounds | met |
 | Talker events, cost, set 2026-10-03 | `mix_cost` at 4 and 64 legs with a subscriber set rises by no more than 5% | n/a | runner: +3.5% / +2.1% (29.8 / 1016.1 us) | met |
-| 8 kHz mix compute after the 16 kHz room, set 2026-11-24 | `mix_cost` at 4 and 64 legs within 3% of the parent (`374b478`), interleaved on one box | n/a | void only (load 7.5 to 8.9): -6.9% / +3.3%, a room that fits -6.7% / -0.1%; the bytes are the same (seeded digest) | open, rerun |
-| 16 kHz mix compute, set 2026-11-24 | `mix_cost` with `rate=16000` at 4 and 64 legs at most 2.2 times the 8 kHz arm of the same build | n/a | void only: x1.67 / x1.75, a room that fits x1.71 / x1.48 | open, rerun |
-| Capacity, 4-party 16 kHz rooms, one scheduler, every tick in budget, set 2026-11-24 | >= 100 rooms (400 legs) | n/a | void only (load 16.7): none in budget, overruns at 25 rooms with the scheduler at 0.19; 8 kHz beside it held 75 | open, rerun |
-| Memory per 4-party 16 kHz room, set 2026-11-24 | <= 512 KiB (twice the 8 kHz row) | n/a | void only: 102.6 KiB of Erlang memory (8 kHz beside it: 96.9 to 101.0) | open, rerun |
-| Latency and tick jitter in a 16 kHz room, set 2026-11-24 | the 8 kHz rows: <= 25 / 45 ms p50 / p99 added; tick p99 <= 2 ms idle | n/a | void only: 6.8 / 26.9 and 26.5 / 27.1 ms (8 kHz beside it: 7.9 / 27.9, 25.1 / 25.4); tick p99 0.63 ms and 13.6 ms | open, rerun |
+| 8 kHz mix compute after the 16 kHz room, set 2026-11-24 | `mix_cost` at 4 and 64 legs within 3% of the parent (`374b478`), interleaved on one box | n/a | runner (`2b1734a`): 31.85 / 1118.56 us against 32.35 / 1365.71 us (-1.5% / -18.1%), a room that fits 31.58 / 436.97 against 32.30 / 430.21 (-2.2% / +1.6%); the bytes are the same (seeded digests). At `1e1b548`, on another runner, 64 legs was +25.8% (1056.60 against 839.82): the gain ramp made a call per sample, fixed in `2b1734a` | met |
+| 16 kHz mix compute, set 2026-11-24 | `mix_cost` with `rate=16000` at 4 and 64 legs at most 2.2 times the 8 kHz arm of the same build | n/a | runner (`2b1734a`): 55.10 / 2064.14 us, x1.73 / x1.85; a room that fits 54.83 / 681.02 us, x1.74 / x1.56 | met |
+| Capacity, 4-party 16 kHz rooms, one scheduler, every tick in budget, set 2026-11-24 | >= 100 rooms (400 legs) | n/a | runner (`2b1734a`, AMD EPYC 7763): 100, 100, 100, 100, 125 rooms in budget (8 kHz beside it: 100 to 150); runner (`1e1b548`, Xeon 6975P-C): 175 to 200 (8 kHz: 225 to 275). At the threshold on the slower host | met |
+| Memory per 4-party 16 kHz room, set 2026-11-24 | <= 512 KiB (twice the 8 kHz row) | n/a | runner (`2b1734a`): 96.8 to 114.0 KiB of Erlang memory per room at capacity (8 kHz beside it: 108.3 to 114.4) | met |
+| Latency and tick jitter in a 16 kHz room, set 2026-11-24 | the 8 kHz rows: <= 25 / 45 ms p50 / p99 added; tick p99 <= 2 ms idle | n/a | runner (`2b1734a`): p50 / p99 1.4 to 5.4 / 1.6 to 5.5 ms (8 kHz beside it: 4.9 to 5.8 / 5.0 to 5.8); idle tick p99 bucket 1 ms at both rates | met |
 | Limiter distortion at 16 kHz, set 2026-11-24 | the 8 kHz row: 8 talkers at -6 dBFS, THD+N <= -26 dB | n/a | -30.50 dB (hard clip -10.27 dB) | met |
 | rtpengine CPU per transcoded leg into a 16 kHz room, set 2026-11-24 | informational, no threshold | 2.0% of a CPU for the same three callers, relayed to the `wideband` room | 39.9% of a CPU for three callers (G.722, Opus, PCMU), about 13% a call, both its legs transcoded; load 12 to 17 | recorded |
 
@@ -822,6 +822,23 @@ nothing refused):
 
 Not measured on the runner: the limiter distortion row (deterministic,
 measured before) and the byte-for-byte row (a suite, not a timing).
+
+### 2026-11-25: 16 kHz rooms on a runner
+
+The bench workflow's `hd` group (`apps/chappe_mix/bench/pass.sh hd`) on a
+GitHub runner, five rounds, the 8 and 16 kHz arms of one build interleaved
+and swapping order every round, the parent `374b478` beside them for the
+8 kHz rows, `+S 1`, minimum of the five. The thresholds above were set in
+the plan on 2026-11-24, before any 16 kHz arm ran.
+
+- Run 45515298576 at `1e1b548`: Intel Xeon 6975P-C, 4 vCPU, load 0.28 to
+  0.99. `mix_cost` 64 legs at 8 kHz was 1056.60 us against the parent's
+  839.82 (+25.8%), a missed threshold: the gain ramp shared with the
+  16 kHz path made a function call per sample. 16 kHz capacity 175 to
+  200 rooms, 8 kHz 225 to 275.
+- Run 45533099370 at `2b1734a` (the ramp without the per-sample calls):
+  AMD EPYC 7763, 4 vCPU, load 0.37 to 0.99. The figures in the rows
+  above.
 
 ### 2026-11-24: 16 kHz rooms, void, load 6.6 to 20.6
 
