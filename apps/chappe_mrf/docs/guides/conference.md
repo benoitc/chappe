@@ -311,8 +311,25 @@ in a focus room, and NOTIFY 100, and the room carries it out:
 - A REFER repeated from the same dialog (or the same Call-ID and From
   tag) for the same target dials nobody again: it hears the first one's
   outcome. Adding a member already in answers 200 at once.
+- One operation holds at most `refer_attach_max` REFERs while it runs (16
+  by default): the first, its repeats, and REFERs from other origins for
+  the same party. Each keeps a subscription, and its dialog when it came
+  in one, so past the cap a REFER gets 503 and nothing is kept. Once the
+  operation is done, a repeat hears its outcome at once.
 - When the room ends, the REFERs still under way get a final NOTIFY 487
   and their dials are given up.
+
+Set the cap on one operation's REFERs with `refer_attach_max`; a value
+that is no positive integer makes `conference/2` return
+`{error, {bad_option, refer_attach_max}}`:
+
+```erlang
+{ok, Conf} = chappe_mrf:conference(<<"board">>, #{
+    focus => true,
+    refer_policy => fun(_) -> true end,
+    refer_attach_max => 4
+}).
+```
 
 The policy runs in the room process and gets the same keys for every
 action, `undefined` where one does not apply, so a clause can match any

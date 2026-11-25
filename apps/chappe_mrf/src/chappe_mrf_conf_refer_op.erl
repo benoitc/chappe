@@ -16,11 +16,14 @@
 %% Bounds: an op reserved for a REFER that is never accepted, and a done
 %% op, are kept 32 s (64*T1, the lifetime of the REFER's transaction, RFC
 %% 3261 17.1.2.2), then forgotten; a room keeps at most 64 ops, and a new
-%% one past that is refused (the caller answers 503). The functions that
-%% take Now (monotonic milliseconds) are the same with the time given.
+%% one past that is refused (the caller answers 503); an op under way
+%% holds at most the room's refer_attach_max REFERs, attached or waiting
+%% (attached/2, attach/4). The functions that take Now (monotonic
+%% milliseconds) are the same with the time given.
 -module(chappe_mrf_conf_refer_op).
 
--export([new/0, key/3, aor/1, lookup/2, reserve/3, start/3, attach/3]).
+-export([new/0, key/3, aor/1, lookup/2, reserve/3, start/3, attach/4]).
+-export([attached/2]).
 -export([progress/3, final/3, in_flight/1, count/1]).
 -export([data/2, set_data/3, adding/2, wait/4, leave/3, by_mon/2]).
 -export([lookup/3, reserve/4, in_flight/2]).
@@ -115,12 +118,17 @@ start(Key, Refer, Ops) ->
     end.
 
 %% Another accepted REFER for Key: it hears what the op heard so far and
-%% what comes; for a done op, its final status now.
--spec attach(key(), chappe_sip_refer:refer(), ops()) -> ops().
-attach(Key, Refer, Ops) ->
+%% what comes; for a done op, its final status now. An op under way
+%% holds at most Max REFERs: one accepted past that (the room decided it
+%% while the op had room left) hears 503 at once and is not kept.
+-spec attach(key(), chappe_sip_refer:refer(), pos_integer(), ops()) -> ops().
+attach(Key, Refer, Max, Ops) ->
     case Ops of
         #{Key := #{state := {done, St, _}}} ->
             ok = chappe_sip_refer:final(Refer, St),
+            Ops;
+        #{Key := #{refers := Rs}} when length(Rs) >= Max ->
+            ok = chappe_sip_refer:final(Refer, 503),
             Ops;
         #{Key := #{refers := Rs, progress := P} = Op} ->
             _ =
@@ -221,6 +229,22 @@ leave(Key, Gone, Ops) ->
             end;
         #{} ->
             {[], Ops}
+    end.
+
+%% How many REFERs op Key holds while it is under way: those attached to
+%% it, and the workers waiting on it while it is reserved. 0 for a done
+%% op (a repeat hears its outcome at once and is not kept) or none.
+-spec attached(key(), ops()) -> non_neg_integer().
+attached(Key, Ops) ->
+    case Ops of
+        #{Key := #{state := {done, _, _}}} ->
+            0;
+        #{Key := #{refers := Rs, data := #{waiting := W}}} ->
+            length(Rs) + map_size(W);
+        #{Key := #{refers := Rs}} ->
+            length(Rs);
+        #{} ->
+            0
     end.
 
 %% The reserved op one of whose waiting workers the room watches with

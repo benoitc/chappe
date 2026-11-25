@@ -3,7 +3,8 @@
 %%
 %% The REFER ops of a room (chappe_mrf_conf_refer_op) with the time given:
 %% a reservation never accepted is forgotten after 32 s, a key is never
-%% overwritten, and a room keeps at most 64 ops.
+%% overwritten, a room keeps at most 64 ops, and what one op holds is
+%% counted.
 -module(chappe_mrf_conf_refer_op_tests).
 
 -include_lib("eunit/include/eunit.hrl").
@@ -61,3 +62,14 @@ remove_key_by_member_test() ->
         ?OP:key(O, <<"INVITE">>, <<"sip:a@h">>),
         ?OP:key(O, <<"INVITE">>, <<"sip:a@h;user=phone">>)
     ).
+
+%% the REFERs an op holds while it is reserved: the workers waiting on it
+%% (the room caps them with refer_attach_max); none for an unknown key
+%% req: MRF-29
+attached_counts_waiting_test() ->
+    {ok, Ops} = ?OP:reserve(key(1), #{waiting => #{}}, 0, ?OP:new()),
+    ?assertEqual(0, ?OP:attached(key(1), Ops)),
+    {ok, Ops1} = ?OP:wait(key(1), make_ref(), self(), Ops),
+    {ok, Ops2} = ?OP:wait(key(1), make_ref(), self(), Ops1),
+    ?assertEqual(2, ?OP:attached(key(1), Ops2)),
+    ?assertEqual(0, ?OP:attached(key(2), Ops2)).

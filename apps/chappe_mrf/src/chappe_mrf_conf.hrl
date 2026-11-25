@@ -14,6 +14,10 @@
 -define(MRF_JOIN_MAX, (?MRF_JOIN_TIMEOUT + 80000)).
 -define(MRF_JOIN_MARGIN, 5000).
 
+%% how many REFERs one REFER operation holds by default (attached to it,
+%% or waiting on it): the refer_attach_max option
+-define(MRF_REFER_ATTACH_MAX, 16).
+
 -record(state, {
     name :: binary(),
     %% the backend start/2 was given (native, fs, or a module) and the
@@ -69,5 +73,8 @@
     %% the members a call with Replaces took the place of, for a while:
     %% the hold of that call, and the timer that forgets it
     %% (chappe_mrf_conf_refer_member)
-    replaced = #{} :: #{binary() => {reference(), reference()}}
+    replaced = #{} :: #{binary() => {reference(), reference()}},
+    %% the most REFERs one REFER op holds (refer_attach_max,
+    %% chappe_mrf_conf_refer_op)
+    refer_attach_max = ?MRF_REFER_ATTACH_MAX :: pos_integer()
 }).

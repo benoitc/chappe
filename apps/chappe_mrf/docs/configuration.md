@@ -129,6 +129,7 @@ Passed to `chappe_mrf:conference/2`.
 | `dial_codecs` | both | native: `<<"OPUS,G722,PCMU,PCMA">>` at 16 kHz, `<<"PCMU,PCMA,G722,OPUS">>` at 8 kHz; fs: `inherit` | The codecs the default dial string offers the party, as its leg's `absolute_codec_string`; `inherit` leaves them to FreeSWITCH. Codec names joined by commas, else `{error, {bad_option, dial_codecs}}`. |
 | `dial_timeout` | both | `30000` | Milliseconds the added party has to answer. |
 | `dial_endpoint` | native | `#{}` | `create_endpoint/1` options (`node`, `select`, `targets`) of the endpoint that dials it. |
+| `refer_attach_max` | both | `16` | How many REFERs one REFER operation holds while it runs: the first, its repeats and REFERs from other origins for the same party. Past it a REFER gets 503. A positive integer, else `{error, {bad_option, refer_attach_max}}`. |
 
 Join options (`chappe_mrf_conf:join/3`): `name`, `mute`, `deaf`,
 `moderator`, `uri` (who the member is, for a REFER's `method=BYE`); on fs

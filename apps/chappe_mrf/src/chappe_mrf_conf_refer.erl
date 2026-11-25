@@ -47,7 +47,9 @@
 %% (chappe_mrf_conf_refer_dial). A repeated REFER (the same origin, method
 %% and target, chappe_mrf_conf_refer_op), or one from another origin for
 %% a party being dialed already, dials nobody again: it hears the first
-%% one's outcome. Adding a member that is already in answers 200 at once.
+%% one's outcome, while that op holds fewer than refer_attach_max REFERs
+%% (16 by default; 503 past it). Adding a member that is already in
+%% answers 200 at once.
 %% An op reserved for a REFER lives until one of the workers waiting on
 %% it (the first one's, and those of the REFERs attached to it) starts
 %% it; a worker that dies, or cannot accept its REFER, gives up its own
@@ -62,7 +64,8 @@
 
 -include("chappe_mrf_conf.hrl").
 
--export([refer/3, focus/2, b2b_event/2, setup/2, call/2, stop/1]).
+-export([refer/3, focus/2, b2b_event/2, setup/2, check_attach_max/1]).
+-export([call/2, stop/1]).
 -export([admission/2, info/2, progress/3, final/3]).
 %% for a member's side (chappe_mrf_conf_refer_member)
 -export([decide/2, start/3, abort/3, policy/2, member_of/2, reject/3]).
@@ -209,8 +212,21 @@ setup(Opts, S) ->
         refer_policy = maps:get(refer_policy, Opts, undefined),
         replaces_policy = maps:get(replaces_policy, Opts, undefined),
         dial = maps:merge(#{codecs => Codecs}, Dial),
-        dial_tag = chappe_mrf_lib:new_id()
+        dial_tag = chappe_mrf_lib:new_id(),
+        refer_attach_max = maps:get(
+            refer_attach_max, Opts, ?MRF_REFER_ATTACH_MAX
+        )
     }.
+
+%% A room's refer_attach_max, checked in the caller of
+%% chappe_mrf_conf:start/2: a positive integer.
+-spec check_attach_max(map()) -> ok | {error, {bad_option, refer_attach_max}}.
+check_attach_max(#{refer_attach_max := N}) when is_integer(N), N > 0 ->
+    ok;
+check_attach_max(#{refer_attach_max := _}) ->
+    {error, {bad_option, refer_attach_max}};
+check_attach_max(#{}) ->
+    ok.
 
 %% The room's REFER requests, sent as {refer, Req}.
 -spec call(term(), #state{}) -> {reply, term(), #state{}}.
@@ -327,7 +343,7 @@ check_action(add, #{target := Target} = Info, S) ->
         {
             chappe_mrf_conf_refer_dial:dialable(Target) andalso
                 not is_room(Target, Info, S),
-            dial_headers(Info)
+            chappe_mrf_conf_refer_dial:dial_headers(Info)
         }
     of
         {true, {ok, Headers}} ->
@@ -407,39 +423,6 @@ add_data(Target, Headers, S) ->
         error -> error
     end.
 
-%% What the INVITE to the party carries of the REFER, made safe for a
-%% FreeSWITCH dial string: the Refer-To's Replaces (RFC 4579 5.10),
-%% refused when it could not go as it is, and the Referred-By's URI
-%% (RFC 3892 2.2 wants the whole value copied; only its URI survives the
-%% dial string: a deviation, MRF-23).
-dial_headers(Info) ->
-    case replaces(Info) of
-        {ok, Rep} -> {ok, maps:merge(Rep, referred_uri(Info))};
-        error -> error
-    end.
-
-referred_uri(#{referred_by := RB}) when is_binary(RB) ->
-    case chappe_sip_hdr:name_addr(RB) of
-        {ok, #{uri := U}} ->
-            case chappe_mrf_conf_refer_dial:dialable(U) of
-                true -> #{referred_by => <<"<", U/binary, ">">>};
-                false -> #{}
-            end;
-        _ ->
-            #{}
-    end;
-referred_uri(_Info) ->
-    #{}.
-
-replaces(#{replaces := R}) when R =/= undefined ->
-    V = chappe_sip_hdr:replaces_value(R),
-    case chappe_mrf_conf_refer_dial:safe_value(V) of
-        true -> {ok, #{replaces => V}};
-        false -> error
-    end;
-replaces(_Info) ->
-    {ok, #{}}.
-
 %% the room's dial options with what the REFER asked for, and the dial
 %% string the policy saw
 dial_cfg(#state{dial = Dial, entity = E}, Data) ->
@@ -484,15 +467,16 @@ guarded(Hook, About, F, #state{name = Name}) ->
 
 %% The policy said yes; now the room's state answers: a REFER asking for
 %% what an op under way or done asks (from this origin, or another one
-%% adding the same party) joins it, a party already in is 200 at once, a
-%% removal naming no one member is refused, and anything that brings
+%% adding the same party) joins it, while that op holds fewer than
+%% refer_attach_max REFERs (else 503), a party already in is 200 at once,
+%% a removal naming no one member is refused, and anything that brings
 %% someone in must find room (admission, 403 locked, 486 full). Then an
 %% op is reserved, its worker watched until it starts or aborts it.
 admit(unresolved, _Key, #{status := St}, _Worker, _S) ->
     {reject, St};
 admit(Kind, Key, Data, Worker, S) ->
     case {known(Key, S), Kind} of
-        {true, _} -> {accept, Key, wait(Key, Worker, S)};
+        {true, _} -> attach_to(Key, Worker, S);
         {false, add} -> admit_add(Key, Data, Worker, S);
         {false, remove} -> reserve(remove, Key, Data, Worker, S);
         {false, refer} -> admit_new(Key, Data, Worker, S)
@@ -510,9 +494,19 @@ admit_add(Key, #{target := Target} = Data, Worker, #state{members = M} = S) ->
             reserve(existing, Key, Data, Worker, S);
         {[], {ok, Other}} ->
             %% another origin is bringing the same party in: one dial
-            {accept, Other, wait(Other, Worker, S)};
+            attach_to(Other, Worker, S);
         {[], none} ->
             admit_new(Key, Data, Worker, S)
+    end.
+
+%% A REFER that hears the outcome of op Key (a repeat, or another origin
+%% adding the same party), while Key holds fewer than refer_attach_max
+%% REFERs, attached or waiting: each keeps a subscription, and a dialog
+%% when it came out of dialog. Past it, 503, and nothing is kept.
+attach_to(Key, Worker, #state{refer_ops = Ops, refer_attach_max = Max} = S) ->
+    case chappe_mrf_conf_refer_op:attached(Key, Ops) < Max of
+        true -> {accept, Key, wait(Key, Worker, S)};
+        false -> {reject, 503}
     end.
 
 admit_new(Key, Data, Worker, S) ->
@@ -662,8 +656,11 @@ start(Key, Refer, #state{refer_ops = Ops} = S) ->
             ),
             carry_out(Key, Data, S#state{refer_ops = Ops1});
         _ ->
+            Max = S#state.refer_attach_max,
             S#state{
-                refer_ops = chappe_mrf_conf_refer_op:attach(Key, Refer, Ops)
+                refer_ops = chappe_mrf_conf_refer_op:attach(
+                    Key, Refer, Max, Ops
+                )
             }
     end.
 

@@ -34,6 +34,7 @@
 -define(NB_CODECS, <<"PCMU,PCMA,G722,OPUS">>).
 -export([check_codecs/1, default_codecs/1]).
 -export([dialable/1, safe_value/1, dial_string/2, dial_vars/1]).
+-export([dial_headers/1]).
 -export([native/4, fs/3, nested/4]).
 -export([dialing/3, hidden/3, native_event/3]).
 -export([fs_added/3, fs_result/3, fs_started/3]).
@@ -142,6 +143,41 @@ codecs(inherit) ->
     [];
 codecs(Codecs) ->
     [<<"[^^:absolute_codec_string=">>, Codecs, <<"]">>].
+
+%% What the INVITE to the party carries of a REFER (Info: its
+%% chappe_sip_focus:refer_info/2 map), made safe for a FreeSWITCH dial
+%% string: the Refer-To's Replaces (RFC 4579 5.10), refused (error) when
+%% it could not go as it is, and the Referred-By's URI (RFC 3892 2.2
+%% wants the whole value copied; only its URI survives the dial string: a
+%% deviation, MRF-23), dropped when it is not dialable/1.
+-spec dial_headers(map()) -> {ok, map()} | error.
+dial_headers(Info) ->
+    case replaces(Info) of
+        {ok, Rep} -> {ok, maps:merge(Rep, referred_uri(Info))};
+        error -> error
+    end.
+
+referred_uri(#{referred_by := RB}) when is_binary(RB) ->
+    case chappe_sip_hdr:name_addr(RB) of
+        {ok, #{uri := U}} ->
+            case dialable(U) of
+                true -> #{referred_by => <<"<", U/binary, ">">>};
+                false -> #{}
+            end;
+        _ ->
+            #{}
+    end;
+referred_uri(_Info) ->
+    #{}.
+
+replaces(#{replaces := R}) when R =/= undefined ->
+    V = chappe_sip_hdr:replaces_value(R),
+    case safe_value(V) of
+        true -> {ok, #{replaces => V}};
+        false -> error
+    end;
+replaces(_Info) ->
+    {ok, #{}}.
 
 %% The channel variables of the INVITE to a party the room dials: the
 %% Replaces a REFER to the focus carries (RFC 4579 5.10), the REFER's

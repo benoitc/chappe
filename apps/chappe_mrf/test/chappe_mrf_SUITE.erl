@@ -108,6 +108,7 @@
     native_join_worker_dies/1,
     native_join_does_not_block/1,
     native_join_helper_killed/1,
+    refer_attach_cap/1,
     native_join_bad_handle/1,
     join_timeout_refused/1,
     invite_replaces_stale_hold/1,
@@ -223,6 +224,7 @@ all() ->
         native_join_worker_dies,
         native_join_does_not_block,
         native_join_helper_killed,
+        refer_attach_cap,
         native_join_bad_handle,
         join_timeout_refused,
         invite_replaces_stale_hold,
@@ -4335,6 +4337,70 @@ native_join_helper_killed(Config) ->
     ok = chappe_mrf_conf:stop(Short),
     ok = chappe_mrf_conf:stop(Conf),
     ?F:fs_stop(Slow).
+
+%% One REFER operation takes at most refer_attach_max REFERs (16 by
+%% default). Repeats of a REFER under way attach to it up to the cap and
+%% hear its outcome; past it a repeat, and a REFER from another origin
+%% for the same party, is refused 503 before it is accepted, and nobody
+%% is dialed again. Once the operation is done a repeat hears its outcome
+%% at once. The room option sets the cap; start/2 refuses one that is no
+%% positive integer.
+%% req: MRF-29
+refer_attach_cap(Config) ->
+    ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
+    Opts = #{
+        focus => true,
+        refer_policy => fun(_) -> true end,
+        dial_endpoint => #{targets => [{fs1, fs_uri(Config)}]}
+    },
+    {ok, Conf} = chappe_mrf:conference(<<"capped">>, Opts),
+    #{entity := Entity} = chappe_mrf_conf:info(Conf),
+    Carol = <<"<sip:carol@10.0.0.9>">>,
+    Same = #{call_id => <<"cap-1">>, from_tag => <<"same">>},
+    Refer = fun(N) ->
+        {S, _} = refer(Config, Entity, <<"boss">>, Carol, Same#{cseq => N}),
+        {S, sip_response(S)}
+    end,
+    Socks = [
+        begin
+            {S, R} = Refer(N),
+            ?assertMatch(<<"SIP/2.0 200", _/binary>>, R),
+            S
+        end
+     || N <- lists:seq(1, 16)
+    ],
+    _ = fs_cmd(<<"execute-app-name: bridge">>),
+    {_, R17} = Refer(17),
+    ?assertMatch(<<"SIP/2.0 503", _/binary>>, R17),
+    {S18, _} = refer(Config, Entity, <<"other">>, Carol),
+    ?assertMatch(<<"SIP/2.0 503", _/binary>>, sip_response(S18)),
+    no_fs_cmd(<<"execute-app-name: bridge">>, 300),
+    ok = ?F:fs_bridge(?config(fs, Config), answered),
+    {joined, _, _} = joined(Conf),
+    [?assertEqual(<<"SIP/2.0 200">>, final_frag(S)) || S <- Socks],
+    {S19, R19} = Refer(19),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, R19),
+    ?assertEqual(<<"SIP/2.0 200">>, final_frag(S19)),
+    %% the room's own cap
+    {ok, One} = chappe_mrf:conference(<<"capone">>, Opts#{
+        refer_attach_max => 1
+    }),
+    #{entity := OneEntity} = chappe_mrf_conf:info(One),
+    Dave = <<"<sip:dave@10.0.0.9>">>,
+    {D1, _} = refer(Config, OneEntity, <<"boss">>, Dave, Same#{cseq => 1}),
+    ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(D1)),
+    {D2, _} = refer(Config, OneEntity, <<"boss">>, Dave, Same#{cseq => 2}),
+    ?assertMatch(<<"SIP/2.0 503", _/binary>>, sip_response(D2)),
+    [
+        ?assertEqual(
+            {error, {bad_option, refer_attach_max}},
+            chappe_mrf:conference(<<"capbad">>, #{refer_attach_max => Bad}),
+            Bad
+        )
+     || Bad <- [0, -1, 1.5, infinity, <<"16">>]
+    ],
+    ok = chappe_mrf_conf:stop(One),
+    ok = chappe_mrf_conf:stop(Conf).
 
 %% the next re-INVITE that Node got
 reinvite_on(Node) ->

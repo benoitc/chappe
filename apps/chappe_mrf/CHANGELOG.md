@@ -107,6 +107,11 @@ says how apps are released.
   one that runs past the join timeout, gives back what it took; when the
   media change was already under way, the endpoint is hung up too, since
   its media may have moved.
+- A REFER repeated for a conference operation under way was held with no
+  limit, each one keeping a subscription open until the operation ended.
+  One operation now holds up to 16 REFERs, counting its repeats and the
+  REFERs from others for the same party; the next ones are refused with
+  503. A conference option changes the limit.
 
 ### New
 

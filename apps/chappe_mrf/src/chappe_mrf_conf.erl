@@ -162,6 +162,13 @@
 %%   dial_timeout => ms the party has to answer (30000), then 408
 %%   dial_endpoint => native: create_endpoint/1 options (node, select,
 %%                targets) of the endpoint that dials it
+%%   refer_attach_max => pos_integer(): how many REFERs one REFER
+%%                operation holds while it is under way, the first one
+%%                and those that hear its outcome (repeats from its
+%%                origin, another origin adding the same party): 16 by
+%%                default; past it a REFER gets 503. start/2 refuses one
+%%                that is no positive integer: {error, {bad_option,
+%%                refer_attach_max}}
 %% The 180 and 183 of a dialed party reach the referrer when the node's
 %% events carry CHANNEL_PROGRESS and CHANNEL_PROGRESS_MEDIA (chappe_esl:
 %% node_add/2's events, before CUSTOM).
