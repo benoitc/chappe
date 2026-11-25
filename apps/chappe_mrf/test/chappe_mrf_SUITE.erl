@@ -101,6 +101,7 @@
     registry_restart/1,
     registry_put_restart/1,
     registry_dead_entry/1,
+    registry_delete_again/1,
     native_loop_fails/1,
     native_call_loop_fails/1,
     native_endpoint_fails/1,
@@ -110,12 +111,15 @@
     invite_replaces_stale_hold/1,
     invite_replaces_after_transfer/1,
     invite_replaces_member_left/1,
+    invite_replaces_taken/1,
+    invite_replaces_member_kicked/1,
     sip_edges/1,
     conf_edges/1,
     native_endpoint/1,
     native_hd_room/1,
     dial_codecs_refused/1,
-    fs_conference_edges/1
+    fs_conference_edges/1,
+    fs_join_waits_its_room/1
 ]).
 
 -define(F, chappe_mrf_fake).
@@ -210,6 +214,7 @@ all() ->
         registry_restart,
         registry_put_restart,
         registry_dead_entry,
+        registry_delete_again,
         native_loop_fails,
         native_call_loop_fails,
         native_endpoint_fails,
@@ -219,12 +224,15 @@ all() ->
         invite_replaces_stale_hold,
         invite_replaces_after_transfer,
         invite_replaces_member_left,
+        invite_replaces_taken,
+        invite_replaces_member_kicked,
         sip_edges,
         conf_edges,
         native_endpoint,
         native_hd_room,
         dial_codecs_refused,
-        fs_conference_edges
+        fs_conference_edges,
+        fs_join_waits_its_room
     ].
 
 init_per_suite(Config) ->
@@ -2192,6 +2200,72 @@ invite_replaces_member_left(Config) ->
     no_ua_event(A, bye, 300),
     ?assertMatch([#{id := MA}], chappe_mrf_conf:members(Conf)).
 
+%% A caller whose hold ran out, while a second caller took the member's
+%% place, is too late when its own join completes: the member is gone
+%% because the second call replaced it, not on its own, so the first call
+%% is hung up and its join gets {error, expired}. One member, one call in
+%% its place. The room forgets who replaced the member after a while.
+%% req: MRF-27
+invite_replaces_taken(Config) ->
+    {ok, Conf} = chappe_mrf:conference(<<"reptaken">>, #{
+        focus => true, backend => chappe_mrf_conf_gate_backend
+    }),
+    {Ua1, M1} = room_caller(Config, Conf),
+    {ua, Ua1, {final, 200, Ok}} = ua_answer(Ua1),
+    [#{uri := U1}] = chappe_mrf_conf:members(Conf),
+    gated(Conf),
+    Opts = #{from => U1, headers => [{<<"Replaces">>, replaces_of(Ok)}]},
+    A = ?F:ua_call(?config(ep, Config), Opts),
+    GateA = gate(),
+    expire_hold(Conf, M1),
+    B = ?F:ua_call(?config(ep, Config), Opts),
+    gate() ! {gate, go},
+    {ua, B, {final, 200, _}} = ua_answer(B),
+    {ok, MB} = join_result(),
+    _ = ua_event(Ua1, bye),
+    conf_event(Conf, {left, M1, replaced}),
+    GateA ! {gate, go},
+    {ua, A, {final, 200, _}} = ua_answer(A),
+    ?assertEqual({error, expired}, join_result()),
+    _ = ua_event(A, bye),
+    no_ua_event(B, bye, 300),
+    ?assertMatch([#{id := MB}], chappe_mrf_conf:members(Conf)),
+    %% its time up, the room forgets who replaced M1
+    #{M1 := {Hold, T}} = replaced_by(Conf),
+    Conf ! {timeout, T, {refer_replaced, M1, Hold}},
+    until(fun() -> replaced_by(Conf) =:= #{} end).
+
+%% A member kicked once the hold of a caller replacing it ran out leaves
+%% its place to that caller all the same: nobody else took it, so the
+%% caller's join completes and its call stays.
+%% req: MRF-27
+invite_replaces_member_kicked(Config) ->
+    {ok, Conf} = chappe_mrf:conference(<<"repkick">>, #{
+        focus => true, backend => chappe_mrf_conf_gate_backend
+    }),
+    {Ua1, M1} = room_caller(Config, Conf),
+    {ua, Ua1, {final, 200, Ok}} = ua_answer(Ua1),
+    [#{uri := U1}] = chappe_mrf_conf:members(Conf),
+    gated(Conf),
+    A = ?F:ua_call(?config(ep, Config), #{
+        from => U1, headers => [{<<"Replaces">>, replaces_of(Ok)}]
+    }),
+    GateA = gate(),
+    expire_hold(Conf, M1),
+    ok = chappe_mrf_conf:kick(Conf, M1),
+    conf_event(Conf, {left, M1, kicked}),
+    _ = ua_event(Ua1, bye),
+    GateA ! {gate, go},
+    {ua, A, {final, 200, _}} = ua_answer(A),
+    {ok, MA} = join_result(),
+    no_ua_event(A, bye, 300),
+    ?assertMatch([#{id := MA}], chappe_mrf_conf:members(Conf)).
+
+%% who replaced which member, as the room keeps it for a while
+%% (#state.replaced)
+replaced_by(Conf) ->
+    element(27, sys:get_state(Conf)).
+
 %% the timer of member Id's hold fires now
 expire_hold(Conf, Id) ->
     #{Id := #{replacing := {Hold, T}}} = element(9, sys:get_state(Conf)),
@@ -3723,15 +3797,30 @@ registry_restart(_Config) ->
 %% req: MRF-24
 registry_put_restart(_Config) ->
     P = idle(),
-    ok = chappe_mrf_registry:put({call, <<"q-del">>}, P),
+    %% the delete comes from the entry's own process, which lives on
+    Test = self(),
+    Del = spawn(fun() ->
+        ok = chappe_mrf_registry:put({call, <<"q-del">>}, self()),
+        Test ! {owns, self()},
+        receive
+            go -> ok
+        end,
+        Test !
+            {registry, self(), chappe_mrf_registry:delete({call, <<"q-del">>})},
+        receive
+            stop -> ok
+        end
+    end),
+    receive
+        {owns, Del} -> ok
+    after 5000 -> ct:fail(no_owner)
+    end,
     Reg = whereis(chappe_mrf_registry),
     ok = sys:suspend(Reg),
     Put = registry_async(fun() ->
         chappe_mrf_registry:put({call, <<"q-put">>}, P)
     end),
-    Del = registry_async(fun() ->
-        chappe_mrf_registry:delete({call, <<"q-del">>})
-    end),
+    Del ! go,
     until(fun() ->
         element(2, process_info(Reg, message_queue_len)) >= 2
     end),
@@ -3741,6 +3830,7 @@ registry_put_restart(_Config) ->
     ?assertEqual(ok, registry_result(Del)),
     ?assertEqual({ok, P}, chappe_mrf_registry:lookup({call, <<"q-put">>})),
     ?assertEqual(error, chappe_mrf_registry:lookup({call, <<"q-del">>})),
+    Del ! stop,
     ?assertEqual(ok, chappe_mrf_registry:put({call, <<"q-put">>}, P)),
     ?assertEqual(
         {error, exists}, chappe_mrf_registry:put({call, <<"q-put">>}, self())
@@ -3786,6 +3876,21 @@ registry_dead_entry(_Config) ->
         chappe_mrf_registry:lookup({call, <<"late">>}) =:= error andalso
             chappe_mrf_registry:lookup({call, <<"left">>}) =:= error
     end).
+
+%% A delete made again (as call/2 makes one the registry made before it
+%% went down) removes only its caller's own entry: a room that took the
+%% name meanwhile keeps it, and is still watched.
+%% req: MRF-24
+registry_delete_again(_Config) ->
+    Key = {conf, <<"again">>},
+    ok = chappe_mrf_registry:put(Key, self()),
+    ok = chappe_mrf_registry:delete(Key),
+    Other = idle(),
+    ok = chappe_mrf_registry:put(Key, Other),
+    ok = chappe_mrf_registry:delete(Key),
+    ?assertEqual({ok, Other}, chappe_mrf_registry:lookup(Key)),
+    exit(Other, kill),
+    until(fun() -> chappe_mrf_registry:lookup(Key) =:= error end).
 
 %% a process that waits for nothing
 idle() ->
@@ -4501,3 +4606,84 @@ fs_conference_edges(Config) ->
     after 3000 -> ct:fail(no_join_hangup)
     end,
     ?F:fs_stop(Silent).
+
+%% An fs join waits on its room for the room's join_timeout and a margin,
+%% so the room's own deadline answers first: a member that shows up late
+%% but within join_timeout gets in, and its caller hears it. A room with
+%% join_timeout 3000 takes an add-member that comes after 2.5 s; one with
+%% join_timeout 30000 is waited on for 35000 ms (20000 before, so a member
+%% the room took after 20 s was in while its caller heard timeout), by a
+%% join and by a transfer into it.
+fs_join_waits_its_room(Config) ->
+    Silent = ?F:fs_start(<<"fs3">>, #{
+        esl_port => ?config(lp, Config), silent_conference => true
+    }),
+    Targets = [{fs3, uri_of(?F:fs_port(Silent))}],
+    Added = fun(Room, Id) ->
+        ?F:fs_event(Silent, <<"CUSTOM">>, [
+            {<<"Event-Subclass">>, <<"conference::maintenance">>},
+            {<<"Action">>, <<"add-member">>},
+            {<<"Conference-Name">>, Room},
+            {<<"Member-ID">>, Id}
+        ])
+    end,
+    {ok, Short} = chappe_mrf:conference(<<"fswait">>, #{
+        backend => fs, node => fs3, join_timeout => 3000
+    }),
+    {ok, Ep} = chappe_mrf:create_endpoint(#{targets => Targets}),
+    J1 = traced(fun() -> chappe_mrf_conf:join(Short, Ep, #{}) end),
+    ?assertEqual(8000, join_wait(J1)),
+    until(fun() -> map_size(element(10, sys:get_state(Short))) =:= 1 end),
+    timer:sleep(2500),
+    Added(<<"fswait">>, <<"31">>),
+    ?assertEqual({ok, <<"31">>}, traced_result(J1)),
+    {ok, Long} = chappe_mrf:conference(<<"fslong">>, #{
+        backend => fs, node => fs3, join_timeout => 30000
+    }),
+    {ok, Ep2} = chappe_mrf:create_endpoint(#{targets => Targets}),
+    J2 = traced(fun() -> chappe_mrf_conf:join(Long, Ep2, #{}) end),
+    ?assertEqual(35000, join_wait(J2)),
+    until(fun() -> map_size(element(10, sys:get_state(Long))) =:= 1 end),
+    Added(<<"fslong">>, <<"32">>),
+    ?assertEqual({ok, <<"32">>}, traced_result(J2)),
+    J3 = traced(fun() -> chappe_mrf_conf:transfer(Short, <<"31">>, Long) end),
+    ?assertEqual(35000, join_wait(J3)),
+    ?assertMatch({ok, _}, traced_result(J3)),
+    ?assertEqual(2, length(chappe_mrf_conf:members(Long))),
+    ok = chappe_mrf:destroy(Ep),
+    ok = chappe_mrf:destroy(Ep2),
+    ?F:fs_stop(Silent).
+
+%% Fun() in a process of its own, whose calls to a room are traced
+traced(Fun) ->
+    Test = self(),
+    Pid = spawn(fun() ->
+        receive
+            go -> Test ! {traced, self(), Fun()}
+        end
+    end),
+    S = trace:session_create(?MODULE, Test, []),
+    1 = trace:function(S, {chappe_mrf_conf, call, 3}, true, []),
+    1 = trace:process(S, Pid, true, [call]),
+    Pid ! go,
+    {Pid, S}.
+
+traced_result({Pid, S}) ->
+    receive
+        {traced, Pid, R} ->
+            _ = trace:session_destroy(S),
+            R
+    after 10000 -> ct:fail(no_traced_result)
+    end.
+
+%% how long the traced process waits on the room for its join
+join_wait({Pid, _S}) ->
+    receive
+        {trace, Pid, call,
+            {chappe_mrf_conf, call, [_, {join, {fs, _, _, _}}, Ms]}} ->
+            Ms;
+        {trace, Pid, call,
+            {chappe_mrf_conf, call, [_, {join, {adopt, _, _, _, _, _}}, Ms]}} ->
+            Ms
+    after 10000 -> ct:fail(no_join_call)
+    end.

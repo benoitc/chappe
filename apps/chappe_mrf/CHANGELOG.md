@@ -71,7 +71,8 @@ says how apps are released.
   under the second. Rooms keep their names across the restart now, and
   endpoints waiting for FreeSWITCH, joins under way and members' calls
   are still found. A room or a join registering itself at that moment no
-  longer fails.
+  longer fails, and a room giving its name up at that moment no longer
+  takes it from a new room that just claimed it.
 - A native conference join that failed could leave a mixer leg, an
   rtpengine session and a place in the room behind until the room ended,
   and a join whose call to the mixer failed kept its caller waiting 95
@@ -90,8 +91,14 @@ says how apps are released.
   replaces the member only while the hold is its own. A late call is hung
   up instead and the member stays: its join fails as expired, the room
   reports it leaving with the reason expired, and the roster shows it
-  removed by the conference. A member that hung up first leaves its place
-  to the call, which stays.
+  removed by the conference. A member that hung up or was removed first
+  leaves its place to the call, which stays; one another call already
+  replaced does not, so two calls never take one member's place.
+- A caller joining a FreeSWITCH conference whose join timeout was above
+  15 seconds gave up after 20 seconds, so a member that showed up later
+  was in the room while its caller had been told the join timed out. A
+  join, and a transfer into such a room, now wait for the room's own
+  timeout.
 
 ### New
 

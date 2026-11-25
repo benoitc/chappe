@@ -14,7 +14,7 @@
 -export([set_flag/5, hangup/3, left/2, play/3, portable/0, lock/2]).
 -export([record/3, stop_record/1, handover/1, transfer_check/2]).
 -export([transfer_in/3, dial/4, terminate/1]).
--export([api_raw/2, api_route/1]).
+-export([api_raw/2, api_route/1, join_wait/1]).
 
 %% how long a stopped recording waits for its stop-recording event
 -define(CLOSE_WAIT, 15000).
@@ -79,8 +79,17 @@ fs_node(Opts) ->
         {error, Why} -> {error, Why}
     end.
 
-info(#fs{node = Node, bridge = Bridge}) ->
-    #{node => Node, bridge => Bridge}.
+info(#fs{node = Node, bridge = Bridge, join_timeout = Ms}) ->
+    #{node => Node, bridge => Bridge, join_timeout => Ms}.
+
+%% How long a joiner waits on the room whose info/1 is Info: past the
+%% room's own deadline (its join_timeout, from when it took the join), so
+%% that the room's answer comes first and a member it takes is never one
+%% whose caller heard timeout. A room that does not say waits the most
+%% any may take.
+-spec join_wait(map()) -> pos_integer().
+join_wait(Info) ->
+    maps:get(join_timeout, Info, ?MRF_JOIN_MAX) + ?MRF_JOIN_MARGIN.
 
 %% in the caller: the lease, the lock and the limit before the caller is
 %% bridged or answered
@@ -281,12 +290,18 @@ transfer_check(#{node := N1}, #{node := N2}) when N1 =/= N2 ->
 transfer_check(_From, _Dest) ->
     ok.
 
+%% the room To takes the member in within its own join_timeout
 transfer_in(To, {fs, Ep, Owned, Opts}, #{name := FromName, member := Id}) ->
-    chappe_mrf_conf:call(
-        To,
-        {join, {adopt, Ep, Owned, Opts, FromName, Id}},
-        ?MRF_JOIN_TIMEOUT + 5000
-    ).
+    case chappe_mrf_conf:info(To) of
+        #{} = Info ->
+            chappe_mrf_conf:call(
+                To,
+                {join, {adopt, Ep, Owned, Opts, FromName, Id}},
+                join_wait(Info)
+            );
+        {error, _} = Err ->
+            Err
+    end.
 
 %% mod_conference dials the party into the room (with the Replaces and
 %% Referred-By of the REFER, when it has them)

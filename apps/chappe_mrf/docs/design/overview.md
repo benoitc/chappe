@@ -132,7 +132,8 @@ restart, and an endpoint, a loopback join or a member's dialog is still
 found. `put/2` and `delete/1` wait up to a second for a registry that is
 being restarted, and a write the old registry took but never answered is
 made again by the new one: a `put/2` of a key its own process holds
-already answers `ok`.
+already answers `ok`, and `delete/1` removes only its caller's own entry,
+so one made again never takes a name another room claimed meanwhile.
 
 ## Native conferences and the loopback middleware
 
@@ -409,12 +410,12 @@ The first four are chappe_mrf settings
 | Endpoint owner exits | `chappe_esl_call` stops the forks and recordings it started and kills the channel; a dialog still owned is torn down |
 | Conference owner exits | the conference stops and every member is hung up (an app's endpoint leaves the room and keeps its channel) |
 | `bridge/2` fails | the endpoint takes its dialog back |
-| fs member never shows up | after `join_timeout` (15 s), `{error, timeout}`; an endpoint made for the join is destroyed |
+| fs member never shows up | after `join_timeout` (15 s), `{error, timeout}` from the room (its joiner waits `join_timeout` and 5 s more); an endpoint made for the join is destroyed |
 | A native join fails (its loopback INVITE, a media step, the endpoint's re-INVITE) | the joiner gets an error at once; the mixer leg, the rtpengine session, the loopback token and the join's place go, and the room goes on; an endpoint whose node answered the re-INVITE is hung up |
 | A native join's worker dies, or the join outlasts `join_timeout` (95 s) | `{error, join_failed}` or `{error, timeout}`, with the same cleanup |
 | A native join given a handle that is no call, incoming call or endpoint | `{error, badarg}` in the caller |
-| A call with Replaces gets in after its hold on the member went (95 s, another caller's hold, the member's call transferred) | the member stays; the new call is hung up (`{left, New, expired}`, `booted` in the roster) and its `join/3` returns `{error, expired}` |
-| The member a call with Replaces names leaves before that call gets in | the new call stays a member; nothing is hung up |
+| A call with Replaces gets in after its hold on the member went (110 s, another caller's hold, the member's call transferred), or after another call replaced the member | the member stays; the new call is hung up (`{left, New, expired}`, `booted` in the roster) and its `join/3` returns `{error, expired}` |
+| The member a call with Replaces names leaves on its own (BYE, kick) before that call gets in | the new call stays a member; nothing is hung up |
 | Clean stop of a room's node (cluster) | the room gives its lease back and its members with calls on other nodes move to a room of the same name on a live node, within `drain_ms`; a move not done by then is hung up; fs rooms only give the name back |
 | Room's lease lost (cluster) | the room takes no new member (`{error, lost}`), sends `lost` and frees its name; a native room moves its members to the next owner for up to `rehome_ms` |
 | Owner node unreachable (cluster) | `conference/2` returns `{error, {owner_unreachable, Node}}` until the lease runs out, then opens the room on a live node |

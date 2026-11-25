@@ -180,6 +180,8 @@ info({chappe_sip_b2b, Ref, {transferred, _Leg, Info}}, S) ->
     {ok, chappe_mrf_conf_refer_member:transferred(Ref, Info, S)};
 info({timeout, _, {refer_replace, Id, Hold}}, S) ->
     {ok, chappe_mrf_conf_refer_member:unhold(Id, Hold, S)};
+info({timeout, _, {refer_replaced, Id, Hold}}, S) ->
+    {ok, chappe_mrf_conf_refer_member:forget_replaced(Id, Hold, S)};
 info(Msg, S) ->
     chappe_mrf_conf_refer_dial:info(Msg, S).
 

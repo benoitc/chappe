@@ -16,7 +16,9 @@
 %% entries at once), so a room keeps its name and a join under way is
 %% still found. The table is public so that readers never wait on the
 %% server, but only this server writes it (put/2 and delete/1 go through
-%% it): an entry another process wrote would be watched by nobody.
+%% it): an entry another process wrote would be watched by nobody. A
+%% process deletes only its own entries, so a delete made again never
+%% takes a key another process holds by then.
 -module(chappe_mrf_registry).
 -behaviour(gen_server).
 
@@ -28,7 +30,7 @@
 -define(RESTART_WAIT, 20).
 -define(RESTART_TRIES, 50).
 
--record(state, {mons = #{} :: #{reference() => term()}}).
+-record(state, {mons = #{} :: #{reference() => {term(), pid()}}}).
 -type state() :: #state{}.
 
 %% The named table, made in the supervisor's init so that it owns it.
@@ -50,9 +52,12 @@ start_link() ->
 put(Key, Pid) when is_pid(Pid) ->
     call({put, Key, Pid}, ?RESTART_TRIES).
 
+%% The caller's own entry at Key goes; an entry of another process stays.
+%% A delete made again after a restart of the registry (call/2) may come
+%% once another process took Key: it leaves that entry alone.
 -spec delete(term()) -> ok.
 delete(Key) ->
-    call({delete, Key}, ?RESTART_TRIES).
+    call({delete, Key, self()}, ?RESTART_TRIES).
 
 -spec lookup(term()) -> {ok, pid()} | error.
 lookup(Key) ->
@@ -92,7 +97,11 @@ call(Req, Tries) ->
 init([]) ->
     %% the entries of the server before this one: watched again, and a
     %% process already gone sends its 'DOWN' at once
-    Mons = #{monitor(process, Pid) => Key || {Key, Pid} <- ets:tab2list(?TAB)},
+    Mons =
+        #{
+            monitor(process, Pid) => {Key, Pid}
+         || {Key, Pid} <- ets:tab2list(?TAB)
+        },
     {ok, #state{mons = Mons}}.
 
 handle_call({put, Key, Pid}, _From, S) ->
@@ -100,11 +109,11 @@ handle_call({put, Key, Pid}, _From, S) ->
         true -> {reply, ok, watch(Key, Pid, S)};
         false -> taken(Key, Pid, S)
     end;
-handle_call({delete, Key}, _From, #state{mons = M} = S) ->
-    true = ets:delete(?TAB, Key),
+handle_call({delete, Key, Pid}, _From, #state{mons = M} = S) ->
+    true = ets:delete_object(?TAB, {Key, Pid}),
     M1 = maps:filter(
-        fun(Ref, K) ->
-            K =/= Key orelse (demonitor(Ref, [flush]) andalso false)
+        fun(Ref, Entry) ->
+            Entry =/= {Key, Pid} orelse (demonitor(Ref, [flush]) andalso false)
         end,
         M
     ),
@@ -113,7 +122,7 @@ handle_call(_Req, _From, S) ->
     {reply, {error, unknown_call}, S}.
 
 watch(Key, Pid, #state{mons = M} = S) ->
-    S#state{mons = M#{monitor(process, Pid) => Key}}.
+    S#state{mons = M#{monitor(process, Pid) => {Key, Pid}}}.
 
 %% Key is taken: by Pid itself (a put made again, call/2), by a live
 %% process, or by one of this node that died before its 'DOWN' reached
@@ -141,7 +150,7 @@ handle_cast(_Msg, S) ->
 
 handle_info({'DOWN', Ref, process, Pid, _}, #state{mons = M} = S) ->
     case maps:take(Ref, M) of
-        {Key, M1} ->
+        {{Key, _Pid}, M1} ->
             _ = ets:delete_object(?TAB, {Key, Pid}),
             {noreply, S#state{mons = M1}};
         error ->

@@ -6,7 +6,13 @@
 %% too. A backend of another app uses the room API of
 %% chappe_mrf_conf_backend instead.
 
+%% an fs room's join_timeout by default; the most any room's may be (and
+%% a native room's by default); how much longer than its room's
+%% join_timeout a joiner waits on the room, so that the room's own answer
+%% at its deadline comes first
 -define(MRF_JOIN_TIMEOUT, 15000).
+-define(MRF_JOIN_MAX, (?MRF_JOIN_TIMEOUT + 80000)).
+-define(MRF_JOIN_MARGIN, 5000).
 
 -record(state, {
     name :: binary(),
@@ -59,5 +65,9 @@
     %% over (a handoff, a lost lease)
     opts = #{} :: map(),
     %% the optional callbacks the backend has (chappe_mrf_conf_backend)
-    callbacks = #{} :: #{{atom(), arity()} => true}
+    callbacks = #{} :: #{{atom(), arity()} => true},
+    %% the members a call with Replaces took the place of, for a while:
+    %% the hold of that call, and the timer that forgets it
+    %% (chappe_mrf_conf_refer_member)
+    replaced = #{} :: #{binary() => {reference(), reference()}}
 }).

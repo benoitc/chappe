@@ -170,7 +170,9 @@
 %%   profile   => the mod_conference profile (default <<"default">>)
 %%   bridge    => chappe_mrf:bridge/3 options for a caller joined from a
 %%                call (anchor_params toward the node)
-%%   join_timeout => ms a member may take to show up in the room (15000)
+%%   join_timeout => ms a member may take to show up in the room (15000);
+%%                its join/3, and a transfer/3 into the room, wait that
+%%                long and 5 s more, so the room's answer comes first
 %%   room_flags => mod_conference conference flags for the room (as
 %%                wait-mod or audio-always), set on each joining channel
 %%                as conference_flags; they apply when the room is made

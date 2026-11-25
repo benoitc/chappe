@@ -15,13 +15,17 @@
 -include("chappe_mrf_conf.hrl").
 
 -export([join/5, call_opts/2, member_refer/4, transfer/3, transferred/3]).
--export([replace/2, hold_down/2, unhold/3]).
+-export([replace/2, hold_down/2, unhold/3, forget_replaced/3]).
 -export([member_opts/2, keep_dialog/2, from_uri/1]).
 
-%% How long a member stays held for a caller replacing it: the longest a
-%% join waits on the room. Past it the hold goes, so a caller stuck in its
-%% join never keeps the member from everyone else.
--define(HOLD_MS, ?MRF_JOIN_TIMEOUT + 80000).
+%% How long a member stays held for a caller replacing it: longer than a
+%% joiner waits on the room (MRF_JOIN_MAX + MRF_JOIN_MARGIN at most), with
+%% 10 s for what it does before it asks (the room's checks, the answer to
+%% its caller), so a join the room completes in time finds its hold. Past
+%% it the hold goes, so a caller stuck in its join never keeps the member
+%% from everyone else. A member a call replaced is remembered as long, so
+%% that a late call finds it taken.
+-define(HOLD_MS, (?MRF_JOIN_MAX + ?MRF_JOIN_MARGIN + 10000)).
 
 %% The keys every replaces_policy Info has, undefined when unknown.
 -define(REPLACES_KEYS, [caller, referred_by, request, replaced, replaced_aor]).
@@ -57,8 +61,9 @@ call_opts(_Target, Opts) ->
 %% was: its hold goes with the join, the caller, or ?HOLD_MS. One that
 %% completes once its hold went (?HOLD_MS, another caller holds the
 %% member, or the member's call was transferred) is too late: the new call
-%% is hung up, {error, expired}. A member that left meanwhile leaves its
-%% place to the new call, which stays.
+%% is hung up, {error, expired}; so is one whose member another call
+%% replaced meanwhile. A member that left on its own meanwhile (its BYE, a
+%% kick) leaves its place to the new call, which stays.
 -spec join(pid(), module(), map(), term(), map()) ->
     {ok, binary()} | {error, term()}.
 join(Conf, Mod, Info, Target, Opts0) ->
@@ -129,10 +134,12 @@ replacing(_Conf, _Target) ->
 %% (whether Who may replace the member whose leg is dialog process Pid),
 %% hold (keep that member for the call of Caller, watched: a second call
 %% for it gets 603), done (the new call is in: the member it replaces is
-%% hung up, while it is still held for this call; a member still in but
-%% not held for it any more stays, and the new call is hung up, {error,
-%% expired}; a member that left lets the new call stay) and release (the
-%% new call failed: the member stays).
+%% hung up, while it is still held for this call, and the room remembers
+%% for ?HOLD_MS which call replaced it; a member still in but not held for
+%% it any more stays, and the new call is hung up, {error, expired}, as it
+%% is when another call replaced the member; a member that left on its
+%% own lets the new call stay) and release (the new call failed: the
+%% member stays).
 %% The hold also goes when Caller dies (hold_down/2), after ?HOLD_MS, or
 %% when the member's call is transferred (transferred/3).
 -spec replace(term(), #state{}) -> {reply, term(), #state{}}.
@@ -158,33 +165,56 @@ replace({hold, Pid, Caller}, #state{members = M} = S) ->
     end;
 replace({done, Old, Old, Hold}, S) ->
     {reply, ok, unhold(Old, Hold, S)};
-replace({done, Old, New, Hold}, #state{members = M} = S) ->
-    case M of
-        #{Old := #{replacing := {Hold, _}}} ->
+replace({done, Old, New, Hold}, #state{members = M, replaced = R} = S) ->
+    case {M, R} of
+        {#{Old := #{replacing := {Hold, _}}}, _} ->
             S1 = unhold(Old, Hold, S),
-            chappe_mrf_conf_backend:drop_member(Old, replaced, S1);
-        #{Old := _} ->
+            {reply, ok, S2} =
+                chappe_mrf_conf_backend:drop_member(Old, replaced, S1),
+            {reply, ok, taken(Old, Hold, S2)};
+        {#{Old := _}, _} ->
             %% the hold went before the new call was in (its time ran
             %% out, another caller holds the member, the member's call was
             %% transferred): the new call goes, not the member
-            {reply, {error, expired}, late(New, unhold(Old, Hold, S))};
-        #{} ->
-            %% the member left first: nobody to replace, the new call
-            %% stays
+            late(Old, New, Hold, S);
+        {#{}, #{Old := _}} ->
+            %% another call took the member's place after this one's hold
+            %% ran out: one member is replaced by one call, this one goes
+            late(Old, New, Hold, S);
+        {#{}, #{}} ->
+            %% the member left on its own first (its BYE, a kick):
+            %% nobody to replace, the new call stays
             {reply, ok, unhold(Old, Hold, S)}
     end;
 replace({release, Old, Hold}, S) ->
     {reply, ok, unhold(Old, Hold, S)}.
 
-%% a call that came in to replace a member too late is hung up
-late(New, #state{members = M} = S) ->
+%% member Id is gone, replaced by the call whose hold was Hold: kept for
+%% ?HOLD_MS, so that a late call that held it before finds it taken
+taken(Id, Hold, #state{replaced = R} = S) ->
+    T = erlang:start_timer(?HOLD_MS, self(), {refer_replaced, Id, Hold}),
+    S#state{replaced = R#{Id => {Hold, T}}}.
+
+%% the {refer_replaced, Id, Hold} timer: who replaced member Id is
+%% forgotten
+-spec forget_replaced(binary(), reference(), #state{}) -> #state{}.
+forget_replaced(Id, Hold, #state{replaced = R} = S) ->
+    case R of
+        #{Id := {Hold, _}} -> S#state{replaced = maps:remove(Id, R)};
+        #{} -> S
+    end.
+
+%% a call that came in to replace member Old too late is hung up, and
+%% its join fails
+late(Old, New, Hold, S) ->
+    #state{members = M} = S1 = unhold(Old, Hold, S),
     case M of
         #{New := _} ->
-            {reply, ok, S1} =
-                chappe_mrf_conf_backend:drop_member(New, expired, S),
-            S1;
+            {reply, ok, S2} =
+                chappe_mrf_conf_backend:drop_member(New, expired, S1),
+            {reply, {error, expired}, S2};
         #{} ->
-            S
+            {reply, {error, expired}, S1}
     end.
 
 %% The hold Hold of member Id ends: its caller's join is over, the caller

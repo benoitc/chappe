@@ -18,12 +18,10 @@
 -export([relate/4, record/3, stop_record/1, handover/1, dial/4]).
 -export([loop_invite/4, check_rate/1, check_join_timeout/1, same_rate/2]).
 
-%% a join's longest life: the most join_timeout may be, and its default
--define(JOIN_MAX, (?MRF_JOIN_TIMEOUT + 80000)).
 %% how long a joiner waits on the room: past the room's own deadline
-%% (JOIN_MAX at most, from when the room took the join), so that the
+%% (MRF_JOIN_MAX at most, from when the room took the join), so that the
 %% room's answer comes first
--define(JOIN_WAIT, (?JOIN_MAX + 5000)).
+-define(JOIN_WAIT, (?MRF_JOIN_MAX + ?MRF_JOIN_MARGIN)).
 
 -record(native, {
     %% the mixer room's sample rate
@@ -36,7 +34,7 @@
     %% the room's SIPREC sessions (chappe_sip_siprec), owned by the room
     siprec = [] :: [pid()],
     %% how long a call's join may take before it fails
-    join_timeout = ?JOIN_MAX :: pos_integer()
+    join_timeout = ?MRF_JOIN_MAX :: pos_integer()
 }).
 
 %% ---- the backend ----
@@ -58,7 +56,7 @@ init(_Name, Opts) ->
         ),
         bridge = maps:get(bridge, Opts, #{}),
         %% checked by start/2 (check_join_timeout/1)
-        join_timeout = maps:get(join_timeout, Opts, ?JOIN_MAX)
+        join_timeout = maps:get(join_timeout, Opts, ?MRF_JOIN_MAX)
     }}.
 
 %% A room's rate, checked in the caller of chappe_mrf_conf:start/2: 8000 or
@@ -73,11 +71,10 @@ check_rate(_Opts) ->
     ok.
 
 %% A room's join_timeout, checked in the caller of chappe_mrf_conf:start/2
-%% on every backend: milliseconds, from 1 to 95000 (JOIN_MAX, the longest
-%% a joiner waits).
+%% on every backend: milliseconds, from 1 to 95000 (MRF_JOIN_MAX).
 -spec check_join_timeout(map()) -> ok | {error, term()}.
 check_join_timeout(#{join_timeout := Ms}) when
-    is_integer(Ms), Ms > 0, Ms =< ?JOIN_MAX
+    is_integer(Ms), Ms > 0, Ms =< ?MRF_JOIN_MAX
 ->
     ok;
 check_join_timeout(#{join_timeout := _}) ->
