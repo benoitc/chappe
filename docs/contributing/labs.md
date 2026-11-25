@@ -199,6 +199,25 @@ clock at 16 kHz (`-r 16000`), which is the rate the band check reads:
 A G.722 or Opus path gives `ok`; a G.711 hop gives `{error, Faults}` with
 the 5000 and 6000 Hz tones missing.
 
+## Score speech through the HD rooms
+
+The band check says a path carries 16 kHz; it does not say how speech
+sounds. To compare what listeners hear in two rooms, use taq
+(telephony audio quality): it plays pinned speech clips through pjsua
+calls, records each listener, and gives the paired ViSQOL and NISQA
+differences with intervals, plus bandwidth, level and dropout checks,
+against margins you declare before the first run.
+
+1. Start the demo (`make demo`): `1004` is the FreeSWITCH 16 kHz room
+   (the baseline), `1003` the chappe_mix one (the candidate).
+2. Write the margins in a taq manifest, then run each clip in each
+   direction, interleaving the arms, and run the baseline twice.
+3. `uv run taq compare <manifest> --out <dir>`, with and without
+   `--require-verified`.
+
+[QUALITY.md](../../apps/chappe_mix/test/audit/QUALITY.md) has the last
+run: its margins, host, versions, results, and the exact commands.
+
 ## Tests to add or run
 
 - After any change: `make check`.

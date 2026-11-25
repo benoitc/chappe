@@ -20,7 +20,8 @@ What chappe_mix does today, and what is planned.
   G.722, PCMU and PCMA callers into L16 and back: tested on 26.3.1.4,
   11.5.1.18 has no L16, upstream has it from 13.4.1.1. The rate is
   fixed for the room's life; an 8 kHz room is the G.711 mix of before,
-  byte for byte (a seeded digest pins it).
+  byte for byte (a seeded digest pins it). Compared with a FreeSWITCH
+  16 kHz room on speech clips in [QUALITY.md](../test/audit/QUALITY.md).
   [Conference guide](guides/conference.md#run-a-16-khz-hd-room)
 - Gain control on what each leg hears: a room that does not clip is
   mixed byte for byte as before; when a listener's frame would clip, its
