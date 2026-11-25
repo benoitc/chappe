@@ -736,8 +736,9 @@ hd_call(CallId, Room, Backend, Req, Res) ->
     end.
 
 %% Both rooms are focus rooms (RFC 4575 roster, REFERs to the room's
-%% URI), their events to the keeper, who may REFER and where to, and how
-%% a party is dialed, with the codecs chappe_mrf would offer it.
+%% URI), their events to the keeper, who may REFER and where to, who may
+%% take a member's place (Replaces), and how a party is dialed, with the
+%% codecs chappe_mrf would offer it.
 hd_conf(Room, Backend) ->
     Opts = hd_backend(Backend),
     Codecs = chappe_mrf:dial_codecs(Opts),
@@ -745,6 +746,7 @@ hd_conf(Room, Backend) ->
         focus => true,
         notify => persistent_term:get({?MODULE, keeper}),
         refer_policy => fun(Info) -> refer_policy(Room, Info) end,
+        replaces_policy => fun(Info) -> replaces_policy(Room, Info) end,
         dial => fun(Target) -> dial(Room, Codecs, Target) end
     }).
 
@@ -788,6 +790,31 @@ refer_policy(Room, #{action := Action, target := Target, referrer := From}) ->
 
 allowed(true) -> "allowed";
 allowed(false) -> "refused".
+
+%% Who may take a member's place in an HD room with an INVITE whose
+%% Replaces names the member's call: the senders refer_policy/2 trusts,
+%% the demo shell and the users registered here, as the caller (its
+%% From) or as who referred it (its Referred-By: an attended transfer
+%% into the room). Nothing authenticates either header (the README's
+%% Notes). The room checks that the Replaces names a member.
+replaces_policy(Room, #{caller := Caller, referred_by := By, replaced := Id}) ->
+    Who = trusted([Caller, By], persistent_term:get({?MODULE, cfg})),
+    Ok = Who =/= refused,
+    log("~s: Replaces of member ~s from ~s: ~s", [
+        Room, Id, sender_name(Who, Caller), allowed(Ok)
+    ]),
+    Ok.
+
+%% the first of these URIs sender/2 trusts, else refused
+trusted([], _Cfg) ->
+    refused;
+trusted([undefined | Uris], Cfg) ->
+    trusted(Uris, Cfg);
+trusted([Uri | Uris], Cfg) ->
+    case sender(Uri, Cfg) of
+        refused -> trusted(Uris, Cfg);
+        Who -> Who
+    end.
 
 target_allowed(remove, _Target, _Cfg) -> true;
 target_allowed(add, Target, Cfg) -> ours(Target, Cfg);
@@ -1054,10 +1081,11 @@ mode(B2b) ->
         _ -> unknown
     end.
 
-%% the calls table, and the process that logs peer and hold events
+%% the calls table, and the process that logs peer and hold events; the
+%% start fails if the keeper dies or is not up within 10 s
 keeper() ->
     Self = self(),
-    Pid = spawn(fun() ->
+    {Pid, Mon} = spawn_monitor(fun() ->
         _ = ets:new(?CALLS, [named_table, public]),
         _ = ets:new(?FS, [named_table, public]),
         ok = chappe_esl:node_subscribe(all),
@@ -1066,7 +1094,15 @@ keeper() ->
         keep()
     end),
     receive
-        {keeper, Pid} -> Pid
+        {keeper, Pid} ->
+            true = erlang:demonitor(Mon, [flush]),
+            Pid;
+        {'DOWN', Mon, process, Pid, Why} ->
+            error({keeper, Why})
+    after 10000 ->
+        true = erlang:demonitor(Mon, [flush]),
+        exit(Pid, kill),
+        error({keeper, timeout})
     end.
 
 keep() ->
