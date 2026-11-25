@@ -2087,6 +2087,7 @@ invite_replaces_caller_dies(Config) ->
 %% holds the member now, so the first one's join, completing, gets
 %% {error, expired} and its call is hung up, not the member; the second
 %% caller then replaces it.
+%% req: MRF-27
 invite_replaces_stale_hold(Config) ->
     {ok, Conf} = chappe_mrf:conference(<<"repstale">>, #{
         focus => true, backend => chappe_mrf_conf_gate_backend
@@ -2117,6 +2118,7 @@ invite_replaces_stale_hold(Config) ->
 %% A member whose call was transferred while a caller was replacing it
 %% keeps the target in its place when that caller's join completes, and
 %% that caller is hung up.
+%% req: MRF-27
 invite_replaces_after_transfer(Config) ->
     {ok, Conf} = chappe_mrf:conference(<<"repxfer">>, #{
         focus => true, backend => chappe_mrf_conf_gate_backend
@@ -3612,6 +3614,7 @@ registry_edges(_Config) ->
 %% room keeps its name (one room per name) and an endpoint, a loopback
 %% join and a member's dialog are still found; a room that ended while
 %% the registry was down loses its name.
+%% req: MRF-24
 registry_restart(_Config) ->
     {ok, Conf} = chappe_mrf:conference(<<"regroom">>, #{}),
     [P1, P2, P3] = [
@@ -3713,6 +3716,7 @@ join_within(Ms) ->
 %% below the node's Min-SE: 422) fails the join at once: the joiner gets
 %% {error, join_failed}, and the room gives its mixer leg, its token and
 %% its join slot back.
+%% req: MRF-25
 native_loop_fails(Config) ->
     ivr(Config),
     Rtpe = ?config(rtpe, Config),
@@ -3743,6 +3747,7 @@ native_loop_fails(Config) ->
 %% mixer, an rtpengine offer or answer refused, an answer the mixer cannot
 %% use, a node that refuses the re-INVITE, an endpoint that does not
 %% answer the room, and a dialog that dies under the re-INVITE.
+%% req: MRF-25
 native_endpoint_fails(Config) ->
     Rtpe = ?config(rtpe, Config),
     {ok, Conf} = chappe_mrf:conference(<<"epfail">>, #{}),
@@ -3806,6 +3811,7 @@ native_endpoint_fails(Config) ->
 %% join, or the INVITE's request worker of a caller joined from its
 %% INVITE) fails, and the room counts it no more; a join that outlasts
 %% join_timeout fails with {error, timeout}.
+%% req: MRF-26
 native_join_worker_dies(Config) ->
     ivr(Config),
     Rtpe = ?config(rtpe, Config),
@@ -3850,6 +3856,7 @@ native_join_worker_dies(Config) ->
 
 %% A handle that is neither a call, an incoming call nor an endpoint is
 %% refused in the caller, and the room counts no join for it.
+%% req: MRF-25
 native_join_bad_handle(_Config) ->
     {ok, Conf} = chappe_mrf:conference(<<"badh">>, #{max_members => 1}),
     Base = holdings(Conf),

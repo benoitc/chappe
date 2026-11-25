@@ -65,6 +65,27 @@ says how apps are released.
   REFER instead of being dropped, and a REFER asking the conference to
   refer a party passes the referrer's Referred-By on unchanged.
 - A conference without focus refuses to dial its own address.
+- When the process that finds conferences by name restarted, every room
+  lost its name: asking for a room then opened a second one on the same
+  mixer while the first still ran, and the end of the first cut the mixer
+  under the second. Rooms keep their names across the restart now, and
+  endpoints waiting for FreeSWITCH, joins under way and members' calls
+  are still found.
+- A native conference join that failed could leave a mixer leg, an
+  rtpengine session and a place in the room behind until the room ended,
+  and a failed loopback call kept its caller waiting 95 seconds. A failed
+  join now answers at once and gives everything back, an endpoint whose
+  media setup fails no longer ends the room for every member, and a join
+  given something that is not a call or an endpoint is refused.
+- A native join whose helper, or whose incoming call's worker, died
+  before it finished counted against the room's member limit for good.
+  It now fails, and native rooms take a join timeout as FreeSWITCH rooms
+  do.
+- A call replacing a conference member that got in late, after its hold
+  on the member had run out or passed to another caller, or after the
+  member's call was transferred, still hung that member up. It now
+  replaces the member only while the hold is its own; a late call is hung
+  up instead and the member stays.
 
 ### New
 

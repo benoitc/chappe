@@ -39,7 +39,8 @@ that shows you how to use it.
   endpoint or to a SIP URI. [Bridge guide](guides/bridge.md)
 - **Native conferences** on chappe_mix behind rtpengine: join a call, a
   caller not answered yet, or an endpoint, mute, deaf, kick, lock, per-pair relations (whisper, listen
-  only), talker events, prompts on each caller's leg.
+  only), talker events, prompts on each caller's leg. A join that fails,
+  or outlasts `join_timeout`, leaves nothing behind.
   [Conference guide](guides/conference.md)
 - **HD native rooms** (`rate => 16000`): the mixer at 16 kHz on L16,
   rtpengine transcoding every member (G.722, Opus, PCMU, PCMA) to it and
