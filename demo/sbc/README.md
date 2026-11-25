@@ -232,8 +232,13 @@ against each other with speech clips.
 
 Both rooms are focus rooms (RFC 4579): their URI, `sip:demo-hd@<the
 node>` (and `sip:demo-hd-fs@...`), takes REFERs that bring a party in or
-remove a member. The demo lets the node itself and the users registered
-here REFER them; anyone else gets 403.
+remove a member. Two senders may REFER them: the users registered here,
+and the demo shell, whose REFERs carry a random token made at start as
+their From user. A party brought in must be a user or a number of the
+demo (`users` and `extensions` in `demo.config`); any other sender or
+target gets 403. The From is not authenticated (see
+[Notes](#notes)). A room's roster (a SUBSCRIBE to its URI, the
+conference package) goes to registered users only, on the same From.
 
 From a phone in the room, press transfer and dial `bob` (registered). Your
 phone sends the REFER in its call with the room, the room dials bob from
@@ -267,9 +272,19 @@ demo_sbc:refer_remove(<<"demo-hd">>, <<"sip:bob@chappe.demo">>).
 The removal sends Refer-To `<sip:bob@chappe.demo;method=BYE>`: bob's phone
 gets a BYE and the log shows `{left,<<"9f00...">>,kicked}`. Bob's phone is
 offered Opus, G.722, PCMU and PCMA, so a PCMU phone can be brought in too
-(narrowband, as when it calls). A party that is not a user of the demo
-(`sip:someone@10.0.0.7:5060`) is called by the FreeSWITCH node directly. A party that does not answer gives its status in
-the final NOTIFY (480, 486, 408 after 30 s), and the room stays as it was.
+(narrowband, as when it calls). The pool calls every party through this
+node, which routes it as any call: it never calls out. A party that is
+neither a user nor a number of the demo (`sip:someone@10.0.0.7:5060`) is
+refused:
+
+```erlang
+demo_sbc:refer_add(<<"demo-hd">>, <<"sip:someone@10.0.0.7:5060">>).
+%% REFER sip:demo-hd@127.0.0.1:5060: 403
+%% {ok,403}
+```
+
+A party that does not answer gives its status in the final NOTIFY (480,
+486, 408 after 30 s), and the room stays as it was.
 
 ### Check the band with pjsua
 
@@ -422,10 +437,21 @@ log shows the call, `{hold,a}` and `{unhold,a}`.
   a registered user, a number of the FreeSWITCH pool (`extensions` in
   `demo.config`), or one of `routes`.
 - `run-sipp.sh 1000` calls the pool with SIPp.
-- The HD rooms' REFER policy (`refer_policy/2` in `demo_sbc.erl`) trusts
-  the REFER's From. Before the demo leaves your machine, authenticate
-  REFERs (digest) and decide on where the call goes as well as on who
-  asks.
+- Nothing but REGISTER is authenticated. Anyone who reaches the node's
+  SIP port (`DEMO_IP` on your LAN, say) can:
+  - call the registered users, the FreeSWITCH numbers, the IVR (which
+    calls bob), `3001` (which records a call to bob) and the HD rooms;
+  - REFER an HD room as a registered user, by putting that user in the
+    From (`refer_policy/2` in `demo_sbc.erl` trusts it): bring in a user
+    or a number of the demo, or remove a member. It cannot make the pool
+    call anyone outside the demo, and it cannot pass as the demo shell
+    without its token, which never leaves the node;
+  - read an HD room's roster (who is in, from which address) the same
+    way.
+
+  Before the demo leaves your machine, change the passwords, keep the
+  node on a network you trust, and authenticate INVITE, REFER and
+  SUBSCRIBE (digest).
 - The IVR listens for the FreeSWITCH event sockets on 18084
   (`DEMO_MRF_PORT`, `mrf_port` in `demo.config`); `make demo` passes the
   same port to the containers. The pool connects from the docker network,

@@ -49,9 +49,10 @@ Changes to the repository that are not part of any app's package.
   carry 16 kHz audio; FreeSWITCH and pjsua are pinned to exact images, and
   the lab pjsua places Opus and G.722 calls.
 - `make demo` has two HD (16 kHz) conference rooms to compare by ear:
-  1003 on chappe_mix and 1004 on FreeSWITCH. Both take REFERs that add and
-  remove members, from a phone's transfer button or from the demo shell,
-  and the demo's FreeSWITCH nodes now speak G.722 and Opus.
+  1003 on chappe_mix and 1004 on FreeSWITCH. Both take REFERs from a
+  registered phone's transfer button or from the demo shell, to add a
+  user or a number of the demo (never an outside address) or remove a
+  member, and the demo's FreeSWITCH nodes now speak G.722 and Opus.
 - The two HD rooms were compared with speech clips through the demo: the
   results, and the commands to measure them again, are in
   `apps/chappe_mix/test/audit/QUALITY.md`.
