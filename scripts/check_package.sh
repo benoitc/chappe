@@ -106,6 +106,15 @@ if ! (cd "$PKG" && rebar3 hex build) >"$LOG" 2>&1; then
 fi
 python3 -I "$ROOT/scripts/check_hex_requirements.py" "$PKG"
 
+# the docs rebar3 hex publish sends to hexdocs.pm with the package
+DOCS="$(find "$PKG/_build" -name "$APP-*docs*.tar*" | head -1)"
+if [ -z "$DOCS" ]; then
+    echo "  error: rebar3 hex build made no docs tarball: set" \
+        "{hex, [{doc, #{provider => ex_doc}}]} in apps/$APP/rebar.config" >&2
+    exit 1
+fi
+echo "  docs:         $(basename "$DOCS"), $(wc -c <"$DOCS" | tr -d ' ') bytes"
+
 TAR="$(find "$PKG/_build" -name "$APP-*.tar" ! -name '*-docs*' | head -1)"
 X="$WORK/unpacked"
 mkdir -p "$X/contents"

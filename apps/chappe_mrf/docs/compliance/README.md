@@ -3,7 +3,7 @@
 `requirements.tsv` lists the behaviours chappe_mrf promises, one row each.
 How rows are written, claimed in a test and turned into the matrix is the
 same for every app: see the shared
-[compliance page](../../../../docs/contributing/compliance.md). This page
+[compliance page](https://github.com/benoitc/chappe/blob/main/docs/contributing/compliance.md). This page
 only keeps what is specific to chappe_mrf.
 
 ## What is specific here

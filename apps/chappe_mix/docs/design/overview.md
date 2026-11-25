@@ -4,8 +4,8 @@ This page explains how chappe_mix is built: the process model, the clock,
 the mix, the jitter buffer, RTCP and socket ownership. Read it before you
 change anything on the tick path, or when a room sounds wrong and you need
 to know which module decides what. Performance claims here cite
-[`test/audit/PERF.md`](../../test/audit/PERF.md); what was tried and
-reverted is in [`test/audit/ATTEMPTS.md`](../../test/audit/ATTEMPTS.md).
+[`test/audit/PERF.md`](https://github.com/benoitc/chappe/blob/main/apps/chappe_mix/test/audit/PERF.md); what was tried and
+reverted is in [`test/audit/ATTEMPTS.md`](https://github.com/benoitc/chappe/blob/main/apps/chappe_mix/test/audit/ATTEMPTS.md).
 
 ## Scope
 
@@ -17,7 +17,7 @@ transcoding to the room's format (L16 needs an rtpengine with that codec:
 tested on 26.3.1.4, none in 11.5.1.18, upstream from 13.4.1.1). The
 SDP for a mixer leg is written by its caller (`chappe_sip_media_mix_sdp` in
 chappe_sip). Decision
-[0017](../../../../docs/decisions/0017-chappe-mix-16khz-l16.md) has the
+[0017](https://github.com/benoitc/chappe/blob/main/docs/decisions/0017-chappe-mix-16khz-l16.md) has the
 why.
 
 ## Process model

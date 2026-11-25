@@ -36,7 +36,7 @@ sequenceDiagram
 - SIP runs in chappe_sip on both sides. RTP never reaches a chappe_sip
   process: on the client it leaves rtpengine (or the chappe_mix room), on
   the server it lands in chappe_audio
-  ([decision 0012](../../../../docs/decisions/0012-siprec-srs.md)).
+  ([decision 0012](https://github.com/benoitc/chappe/blob/main/docs/decisions/0012-siprec-srs.md)).
 - The two sides are independent. chappe can record to any SRS, and any SRC
   can record to chappe.
 
@@ -232,7 +232,7 @@ The notify process (`notify`, else the sink pid) gets:
 ## SRTP
 
 The recording server decrypts SRTP itself, in the receiver, and never
-sends any ([decision 0009](../../../../docs/decisions/0009-srtp-in-erlang.md)).
+sends any ([decision 0009](https://github.com/benoitc/chappe/blob/main/docs/decisions/0009-srtp-in-erlang.md)).
 
 - A stream offered as `RTP/SAVP` or `RTP/SAVPF` with an `a=crypto` line
   `chappe_sip_sdes:select/1` takes (AES_CM_128_HMAC_SHA1_80 or _32) is
@@ -258,7 +258,7 @@ a TLS leg is recorded only to a `sips:` or `transport=tls` SRS (RFC 7866
 | The SRS does not answer in `answer_timeout` | CANCEL (or BYE after a re-INVITE), `stopped` with `{srs, timeout}` |
 | The recording process crashes | no event to the owner (monitor `Rec`); BYE from its dialog; taps removed by the call's media session |
 | A receiver crashes | that stream stops; the store's partial file is left to its sweep; the other streams and the handler go on |
-| The store crashes | the receivers run under `chappe_audio_rtp_sup`, apart from the store, and keep going ([decision 0011](../../../../docs/decisions/0011-chappe-audio-leaf.md)) |
+| The store crashes | the receivers run under `chappe_audio_rtp_sup`, apart from the store, and keep going ([decision 0011](https://github.com/benoitc/chappe/blob/main/docs/decisions/0011-chappe-audio-leaf.md)) |
 | chappe_audio not running | every RS refused 488, `{error, no_audio}` |
 
 ## Where it lives
@@ -270,7 +270,7 @@ a TLS leg is recorded only to a `sips:` or `transport=tls` SRS (RFC 7866
   (`src/siprec/`), `chappe_sip_sdes` and
   `chappe_sip_multipart` (`src/sip/`); the receivers in chappe_audio:
   `chappe_audio_rtp`, `chappe_audio_srtp`, `chappe_audio_pcm` (see the
-  [chappe_audio design](../../../chappe_audio/docs/design/overview.md#recorded-rtp)).
+  [chappe_audio design](https://github.com/benoitc/chappe/blob/main/apps/chappe_audio/docs/design/overview.md#recorded-rtp)).
 - Tests: `chappe_sip_siprec_SUITE` (client against a wire peer and against
   chappe as the SRS, on `chappe_sip_test_rtpe`),
   `chappe_sip_siprec_meta_tests`, `chappe_sip_sdes_tests`;
@@ -278,6 +278,6 @@ a TLS leg is recorded only to a `sips:` or `transport=tls` SRS (RFC 7866
   `chappe_sip_siprec_live_SUITE` against a real rtpengine (`make interop`).
 - Compliance: the RFC 7865 and RFC 7866 rows (`R7865-*`, `R7866-*`) in the
   [compliance matrix](../compliance.md).
-- Decisions: [0009](../../../../docs/decisions/0009-srtp-in-erlang.md),
-  [0011](../../../../docs/decisions/0011-chappe-audio-leaf.md),
-  [0012](../../../../docs/decisions/0012-siprec-srs.md).
+- Decisions: [0009](https://github.com/benoitc/chappe/blob/main/docs/decisions/0009-srtp-in-erlang.md),
+  [0011](https://github.com/benoitc/chappe/blob/main/docs/decisions/0011-chappe-audio-leaf.md),
+  [0012](https://github.com/benoitc/chappe/blob/main/docs/decisions/0012-siprec-srs.md).

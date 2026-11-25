@@ -17,9 +17,9 @@ This is the map of the chappe_mix pages. Start with the app
 
 ## Evidence and compliance
 
-- [Performance record](../test/audit/PERF.md): thresholds and measurements
-- [Attempts](../test/audit/ATTEMPTS.md): what was tried, kept or reverted
-- [Bench arms](../bench/README.md)
+- [Performance record](https://github.com/benoitc/chappe/blob/main/apps/chappe_mix/test/audit/PERF.md): thresholds and measurements
+- [Attempts](https://github.com/benoitc/chappe/blob/main/apps/chappe_mix/test/audit/ATTEMPTS.md): what was tried, kept or reverted
+- [Bench arms](https://github.com/benoitc/chappe/blob/main/apps/chappe_mix/bench/README.md)
 - [Compliance matrix](compliance.md), generated from
   `compliance/requirements.tsv`; how to claim a row is in
-  [the shared compliance page](../../../docs/contributing/compliance.md)
+  [the shared compliance page](https://github.com/benoitc/chappe/blob/main/docs/contributing/compliance.md)

@@ -6,7 +6,7 @@ B2BUA, proxy, registrar, digest, middleware) in Erlang. This page is the map
 of the app for contributors: the supervision tree, what each directory of
 `src/` owns, where execution enters, which modules are public, and which
 tests cover what. Read it before you open the tree. The mental model shared
-by all apps is in [concepts](../../../../docs/concepts.md); the NIF and its
+by all apps is in [concepts](https://github.com/benoitc/chappe/blob/main/docs/concepts.md); the NIF and its
 threads are in [the engine design](engine.md).
 
 ## Layers
@@ -196,7 +196,7 @@ the engine to send (`send_request/3,4`), registers its handle, and receives
 Public modules are the ones your application calls; everything else may
 change between releases. The list is kept in one place, the ex_doc groups
 of `apps/chappe_sip/rebar.config`, and mirrored per app in
-[navigation](../../../../docs/navigation.md#public-and-internal-modules-per-app).
+[navigation](https://github.com/benoitc/chappe/blob/main/docs/navigation.md#public-and-internal-modules-per-app).
 
 ## Protocol behaviour
 

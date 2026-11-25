@@ -5,7 +5,7 @@ chappe_audio meets, one row each: the receiver the SIPREC recording server
 of chappe_sip uses. How rows are written, claimed in a test with a
 `%% req:` line and turned into the generated [matrix](../compliance.md) is
 the same for every app: see the shared
-[compliance page](../../../../docs/contributing/compliance.md). This page
+[compliance page](https://github.com/benoitc/chappe/blob/main/docs/contributing/compliance.md). This page
 only keeps what is specific to chappe_audio.
 
 ## What is specific here

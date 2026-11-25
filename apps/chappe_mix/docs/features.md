@@ -94,7 +94,7 @@ What chappe_mix does today, and what is planned.
 ## Planned
 
 - A room whose rate changes while it runs, and 48 kHz rooms (decision
-  [0017](../../../docs/decisions/0017-chappe-mix-16khz-l16.md)).
+  [0017](https://github.com/benoitc/chappe/blob/main/docs/decisions/0017-chappe-mix-16khz-l16.md)).
 - SIPREC of a 16 kHz room.
 - The SDES (CNAME, NAME) of the sources behind a cascaded mixer's CSRCs.
 - A prefill that shrinks back after a burst without costing underruns.
