@@ -130,6 +130,7 @@ chappe_cluster_sup (rest_for_one)
 
 chappe_mrf_sup (one_for_one)
 |-- chappe_mrf_registry            correlation id and loop token lookup
+|-- chappe_mrf_job_sup             cleanups that wait on a peer (BYEs, deletes)
 |-- chappe_mrf_ep_sup              one chappe_mrf_endpoint per channel
 `-- chappe_mrf_conf_sup            one chappe_mrf_conf per conference
 ```

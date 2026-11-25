@@ -4380,7 +4380,7 @@ native_join_deadline_first(Config) ->
     until(fun() -> queued(Conf, fun({native_join_timeout, _}) -> true end) end),
     ok = sys:resume(Ep),
     %% the helper's next word to the room is behind the deadline
-    until(fun() -> queue_len(Conf) >= 2 end),
+    until(fun() -> queued(Conf, fun reinvite_now_call/1) end),
     ok = sys:resume(Conf),
     ?assertEqual({error, timeout}, join_within(3000)),
     receive
@@ -4466,7 +4466,12 @@ native_join_late_mixer_leg(Config) ->
             rate => 8000, owner => Conf, persist => true
         })
     end),
-    until(fun() -> queue_len(Mix) >= 2 end),
+    until(fun() ->
+        queued(Mix, fun
+            ({'$gen_call', _, {leave, _}}) -> false;
+            ({'$gen_call', _, _}) -> true
+        end)
+    end),
     ok = sys:resume(Mix),
     ?assertEqual({error, timeout}, join_within(3000)),
     ok = sys:resume(Ep),
@@ -4475,6 +4480,14 @@ native_join_late_mixer_leg(Config) ->
     ok = chappe_mrf_conf:stop(Conf).
 
 %% whether Pid has a message Match takes in its mailbox
+%% the helper's ask to let its re-INVITE out, as it waits in the room
+reinvite_now_call(
+    {'$gen_call', _, {within, _, {backend, {ep_join, _, reinvite_now, _}}}}
+) ->
+    true;
+reinvite_now_call({'$gen_call', _, {backend, {ep_join, _, reinvite_now, _}}}) ->
+    true.
+
 queued(Pid, Match) ->
     {messages, Ms} = process_info(Pid, messages),
     lists:any(
@@ -4487,10 +4500,6 @@ queued(Pid, Match) ->
         end,
         Ms
     ).
-
-queue_len(Pid) ->
-    {message_queue_len, N} = process_info(Pid, message_queue_len),
-    N.
 
 %% One REFER operation takes at most refer_attach_max REFERs (16 by
 %% default). Repeats of a REFER under way attach to it up to the cap and

@@ -155,7 +155,8 @@ moved({error, Why} = Error, D, Report) ->
     _ = refused(Why) andalso Report({refused, D}),
     Error.
 
-%% a final non-2xx, or a re-INVITE that never went out
+%% a final non-2xx (a local timeout too: the dialog then ends itself, and
+%% with it the media), or a re-INVITE that never went out
 refused(#chappe_sip_error{}) -> true;
 refused(early) -> true;
 refused(request_pending) -> true;
@@ -202,7 +203,9 @@ agree(Id, D, Pending) ->
 step({moved, D}, J) -> {pending, (maps:remove(reinvite, J))#{moved => D}};
 step({refused, _D}, J) -> {pending, maps:remove(reinvite, J)};
 step({done, {ok, _}}, J) -> {joined, J};
-step({done, {error, _} = Error}, J) -> {failed, J, Error}.
+step({done, {error, _} = Error}, J) -> {failed, J, Error};
+%% a report this room does not know: dropped, never a crash of the room
+step(_Unknown, J) -> {pending, J}.
 
 %% A report of a join that ended meanwhile: the room had let its
 %% re-INVITE out, so the endpoint's dialog goes (the join's end sent its
@@ -215,6 +218,8 @@ late({refused, D}, Room) ->
     ok = chappe_mrf_lib:destroy_later(D),
     Room;
 late({done, _Result}, Room) ->
+    Room;
+late(_Unknown, Room) ->
     Room.
 
 %% In the job that gives a failed join back: the join's helper is gone

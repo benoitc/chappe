@@ -40,8 +40,15 @@ destroy_later(D) ->
 %% tries, a call's).
 -spec later(fun(() -> term())) -> ok.
 later(Fun) ->
-    {ok, _} = chappe_mrf_sup:start_job(Fun),
-    ok.
+    case chappe_mrf_sup:start_job(Fun) of
+        {ok, _} ->
+            ok;
+        {error, _} ->
+            %% the pool is gone (the app is stopping): the cleanup still
+            %% runs, on its own
+            _ = spawn(Fun),
+            ok
+    end.
 
 %% The mixer join options JoinOpts with the name a join asked for (Opts'
 %% name), as the mixer's SDES name of the leg.

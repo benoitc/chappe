@@ -175,8 +175,10 @@ endpoint's dialog, and the node's answer comes back through rtpengine.
 A join stays in the room's `pending` map until the member is in. What it
 waits on from a peer (rtpengine, a FreeSWITCH node, the caller's UA)
 runs outside the room process, so the room answers its other requests
-meanwhile; the room itself only calls the mixer, chappe_mix on its own
-node (a call's mixer answer, a leg's leave). The room watches the
+meanwhile. During a join the room itself only calls the mixer,
+chappe_mix on its own node (a call's mixer answer, a leg's leave);
+outside joins it still calls rtpengine to play a prompt to one member
+(`play_leg`) and starts a room's SIPREC recording (`record/3`). The room watches the
 process that drives a join: the helper that runs `replace_b/3`, the
 INVITE's request worker of a caller joined from its INVITE, or the helper
 of an endpoint's media steps. The join fails when its loopback INVITE

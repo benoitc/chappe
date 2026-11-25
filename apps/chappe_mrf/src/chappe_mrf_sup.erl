@@ -31,10 +31,16 @@ start_conf(Args) ->
 start_job(Fun) ->
     supervisor:start_child(chappe_mrf_job_sup, [Fun]).
 
-%% A job of the pool: Fun in a process linked to it.
+%% A job of the pool: Fun in a process linked to it. It traps exits, so
+%% a stopping pool gives it its shutdown time to finish a cleanup rather
+%% than killing it at once.
 -spec job(fun(() -> term())) -> {ok, pid()}.
 job(Fun) ->
-    {ok, proc_lib:spawn_link(Fun)}.
+    {ok,
+        proc_lib:spawn_link(fun() ->
+            process_flag(trap_exit, true),
+            Fun()
+        end)}.
 
 init(top) ->
     %% the registry's table is the supervisor's: it outlives a restart of
