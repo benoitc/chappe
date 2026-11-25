@@ -24,7 +24,7 @@ leaf apps never depend on it.
 
 ```
 chappe_mrf_sup (one_for_one)
-|-- chappe_mrf_registry   one gen_server, owns the correlation ETS table
+|-- chappe_mrf_registry   one gen_server, writes the correlation ETS table
 |-- chappe_mrf_ep_sup     simple_one_for_one, temporary
 |   `-- chappe_mrf_endpoint   one gen_statem per FreeSWITCH channel
 `-- chappe_mrf_conf_sup   simple_one_for_one, temporary
@@ -116,12 +116,20 @@ a 408, a 503 or a transport error moves to the next node.
 
 ## The registry
 
-`chappe_mrf_registry` owns a protected ETS table with `read_concurrency`.
+`chappe_mrf_registry` keeps a public ETS table with `read_concurrency`.
 Readers (`lookup/1`, `select/1`) read it directly; the gen_server
 serializes writes and monitors each process that put a key, so an entry
 goes with its process. `put/2` refuses a key that names a live process
 (`{error, exists}`), which is how two `conference/2` calls with one name
 end on the same process.
+
+`chappe_mrf_sup` creates the table in its `init/1`, so the table is the
+supervisor's and outlives the registry. A registry that restarts monitors
+every process already in the table; one that died meanwhile sends its
+`'DOWN'` at once and loses its entries. A room keeps its name across the
+restart, and an endpoint, a loopback join or a member's dialog is still
+found. `put/2` and `delete/1` wait up to a second for a registry that is
+being restarted.
 
 ## Native conferences and the loopback middleware
 
@@ -382,6 +390,7 @@ The first four are chappe_mrf settings
 | Outbound socket never arrives | after `attach_timeout`, the call is hung up and the endpoint destroyed |
 | Unknown channel on the socket | hung up with `UNALLOCATED_NUMBER` |
 | Node goes down | the endpoint's owner gets `{chappe_mrf, Ep, {node_down, Node}}` |
+| The registry restarts | its table stays (the supervisor's): rooms keep their names and every entry is found; the new registry watches their processes, and one that died meanwhile loses its entries |
 | Endpoint owner exits | `chappe_esl_call` stops the forks and recordings it started and kills the channel; a dialog still owned is torn down |
 | Conference owner exits | the conference stops and every member is hung up (an app's endpoint leaves the room and keeps its channel) |
 | `bridge/2` fails | the endpoint takes its dialog back |

@@ -98,6 +98,7 @@
     listener_ip_allow/1,
     listener_options_differ/1,
     registry_edges/1,
+    registry_restart/1,
     sip_edges/1,
     conf_edges/1,
     native_endpoint/1,
@@ -107,6 +108,7 @@
 ]).
 
 -define(F, chappe_mrf_fake).
+-define(FAULTS, chappe_mrf_faults).
 
 all() ->
     [
@@ -194,6 +196,7 @@ all() ->
         listener_ip_allow,
         listener_options_differ,
         registry_edges,
+        registry_restart,
         sip_edges,
         conf_edges,
         native_endpoint,
@@ -3521,6 +3524,65 @@ registry_edges(_Config) ->
     chappe_mrf_registry ! junk,
     chappe_mrf_registry ! {'DOWN', make_ref(), process, self(), x},
     ?assert(is_process_alive(whereis(chappe_mrf_registry))).
+
+%% The registry's table outlives its process: killed, the registry
+%% comes back with every entry and watches their processes again, so a
+%% room keeps its name (one room per name) and an endpoint, a loopback
+%% join and a member's dialog are still found; a room that ended while
+%% the registry was down loses its name.
+registry_restart(_Config) ->
+    {ok, Conf} = chappe_mrf:conference(<<"regroom">>, #{}),
+    [P1, P2, P3] = [
+        spawn(fun() ->
+            receive
+                stop -> ok
+            end
+        end)
+     || _ <- "abc"
+    ],
+    Ref = make_ref(),
+    ok = chappe_mrf_registry:put({call, <<"regcall">>}, P1),
+    ok = chappe_mrf_registry:put({loop, <<"regloop">>}, P2),
+    ok = chappe_mrf_registry:put({a_dialog, Ref, dialog}, P3),
+    ?FAULTS:restart_registry(),
+    ?assertEqual({ok, Conf}, chappe_mrf:conference(<<"regroom">>, #{})),
+    ?assertEqual({ok, P1}, chappe_mrf_registry:lookup({call, <<"regcall">>})),
+    ?assertEqual({ok, P2}, chappe_mrf_registry:lookup({loop, <<"regloop">>})),
+    ?assertEqual(
+        [{{a_dialog, Ref, dialog}, P3}],
+        chappe_mrf_registry:select({a_dialog, Ref, '_'})
+    ),
+    ?assertEqual(
+        {error, exists}, chappe_mrf_registry:put({call, <<"regcall">>}, self())
+    ),
+    %% the new registry watches them: an entry goes with its process
+    exit(P1, kill),
+    until(fun() ->
+        chappe_mrf_registry:lookup({call, <<"regcall">>}) =:= error
+    end),
+    %% a room that ends while the registry is down
+    Reg = whereis(chappe_mrf_registry),
+    ok = sys:suspend(Reg),
+    ok = chappe_mrf_conf:stop(Conf),
+    exit(Reg, kill),
+    ?FAULTS:restart_registry(Reg),
+    until(fun() ->
+        chappe_mrf_registry:lookup({conf, <<"regroom">>}) =:= error
+    end),
+    {ok, Conf2} = chappe_mrf:conference(<<"regroom">>, #{}),
+    ?assertNotEqual(Conf, Conf2),
+    ?assertEqual({ok, Conf2}, chappe_mrf:conference(<<"regroom">>, #{})),
+    P2 ! stop,
+    P3 ! stop,
+    until(fun() ->
+        chappe_mrf_registry:select({a_dialog, Ref, '_'}) =:= [] andalso
+            chappe_mrf_registry:lookup({loop, <<"regloop">>}) =:= error
+    end),
+    ok = chappe_mrf_conf:stop(Conf2).
+
+%% Fun() holds within 5 s
+until(Fun) ->
+    ?assert(?FAULTS:eventually(Fun, 50)).
 
 %% SIP edges: a loopback INVITE nobody waits for gets 404, one whose
 %% join is unknown 488; a SUBSCRIBE for an unknown room 404, for a room

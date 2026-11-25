@@ -9,16 +9,31 @@
 %%   {a_dialog, Ref, Dialog} the caller's dialog of the call Ref, under
 %%               the process that runs the call.
 %% An entry goes with the process that put it there.
+%%
+%% The table belongs to the app's supervisor (new_table/0 in its init),
+%% not to this server: a registry that restarts finds every entry, and
+%% watches their processes again (one that died meanwhile loses its
+%% entries at once), so a room keeps its name and a join under way is
+%% still found. Readers never wait on the server.
 -module(chappe_mrf_registry).
 -behaviour(gen_server).
 
--export([start_link/0, put/2, delete/1, lookup/1, select/1]).
+-export([new_table/0, start_link/0, put/2, delete/1, lookup/1, select/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -define(TAB, ?MODULE).
+%% how long put/2 and delete/1 wait for a registry that restarts
+-define(RESTART_WAIT, 20).
+-define(RESTART_TRIES, 50).
 
 -record(state, {mons = #{} :: #{reference() => term()}}).
 -type state() :: #state{}.
+
+%% The named table, made in the supervisor's init so that it owns it.
+-spec new_table() -> ok.
+new_table() ->
+    _ = ets:new(?TAB, [named_table, public, {read_concurrency, true}]),
+    ok.
 
 -spec start_link() -> gen_server:start_ret().
 start_link() ->
@@ -27,35 +42,53 @@ start_link() ->
 %% Key now names Pid. {error, exists} when it names a live process.
 -spec put(term(), pid()) -> ok | {error, exists}.
 put(Key, Pid) ->
-    gen_server:call(?MODULE, {put, Key, Pid}).
+    call({put, Key, Pid}, ?RESTART_TRIES).
 
 -spec delete(term()) -> ok.
 delete(Key) ->
-    gen_server:call(?MODULE, {delete, Key}).
+    call({delete, Key}, ?RESTART_TRIES).
 
 -spec lookup(term()) -> {ok, pid()} | error.
 lookup(Key) ->
-    case ets:lookup(?TAB, Key) of
+    try ets:lookup(?TAB, Key) of
         [{_, Pid}] -> {ok, Pid};
         [] -> error
+    catch
+        %% no table: the app is not running
+        error:badarg -> error
     end.
 
 %% Every {Key, Pid} whose key matches Pattern (an ets match pattern).
 -spec select(term()) -> [{term(), pid()}].
 select(Pattern) ->
-    ets:match_object(?TAB, {Pattern, '_'}).
+    try
+        ets:match_object(?TAB, {Pattern, '_'})
+    catch
+        error:badarg -> []
+    end.
+
+%% The writes go through the server, which watches each process; while
+%% its supervisor restarts it they wait a little, then fail as before.
+call(Req, Tries) ->
+    try
+        gen_server:call(?MODULE, Req)
+    catch
+        exit:{noproc, _} when Tries > 0 ->
+            timer:sleep(?RESTART_WAIT),
+            call(Req, Tries - 1)
+    end.
 
 -spec init([]) -> {ok, state()}.
 init([]) ->
-    _ = ets:new(?TAB, [named_table, protected, {read_concurrency, true}]),
-    {ok, #state{}}.
+    %% the entries of the server before this one: watched again, and a
+    %% process already gone sends its 'DOWN' at once
+    Mons = #{monitor(process, Pid) => Key || {Key, Pid} <- ets:tab2list(?TAB)},
+    {ok, #state{mons = Mons}}.
 
-handle_call({put, Key, Pid}, _From, #state{mons = M} = S) ->
+handle_call({put, Key, Pid}, _From, S) ->
     case ets:insert_new(?TAB, {Key, Pid}) of
-        true ->
-            {reply, ok, S#state{mons = M#{monitor(process, Pid) => Key}}};
-        false ->
-            {reply, {error, exists}, S}
+        true -> {reply, ok, watch(Key, Pid, S)};
+        false -> taken(Key, Pid, S)
     end;
 handle_call({delete, Key}, _From, #state{mons = M} = S) ->
     true = ets:delete(?TAB, Key),
@@ -68,6 +101,26 @@ handle_call({delete, Key}, _From, #state{mons = M} = S) ->
     {reply, ok, S#state{mons = M1}};
 handle_call(_Req, _From, S) ->
     {reply, {error, unknown_call}, S}.
+
+watch(Key, Pid, #state{mons = M} = S) ->
+    S#state{mons = M#{monitor(process, Pid) => Key}}.
+
+%% Key is taken: by a live process, or by one of this node that died
+%% before its 'DOWN' reached this server (after a restart), whose entry
+%% goes now; its 'DOWN' then finds the entry another's and leaves it.
+taken(Key, Pid, S) ->
+    case ets:lookup(?TAB, Key) of
+        [{_, Old}] when node(Old) =:= node() ->
+            case is_process_alive(Old) of
+                true ->
+                    {reply, {error, exists}, S};
+                false ->
+                    true = ets:insert(?TAB, {Key, Pid}),
+                    {reply, ok, watch(Key, Pid, S)}
+            end;
+        _ ->
+            {reply, {error, exists}, S}
+    end.
 
 handle_cast(_Msg, S) ->
     {noreply, S}.
