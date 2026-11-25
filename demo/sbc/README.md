@@ -265,9 +265,10 @@ demo_sbc:refer_remove(<<"demo-hd">>, <<"sip:bob@chappe.demo">>).
 ```
 
 The removal sends Refer-To `<sip:bob@chappe.demo;method=BYE>`: bob's phone
-gets a BYE and the log shows `{left,<<"9f00...">>,kicked}`. A party that
-is not a user of the demo (`sip:someone@10.0.0.7:5060`) is called by the
-FreeSWITCH node directly. A party that does not answer gives its status in
+gets a BYE and the log shows `{left,<<"9f00...">>,kicked}`. Bob's phone is
+offered Opus, G.722, PCMU and PCMA, so a PCMU phone can be brought in too
+(narrowband, as when it calls). A party that is not a user of the demo
+(`sip:someone@10.0.0.7:5060`) is called by the FreeSWITCH node directly. A party that does not answer gives its status in
 the final NOTIFY (480, 486, 408 after 30 s), and the room stays as it was.
 
 ### Check the band with pjsua

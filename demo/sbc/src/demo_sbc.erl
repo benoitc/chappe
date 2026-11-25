@@ -798,14 +798,19 @@ referrer(From) ->
 %% The dial string of a party a REFER brings in. A user of the demo
 %% (sip:bob@chappe.demo) is called through this node, which finds where
 %% it registered: the demo-room parameter tells invite/3 the call comes
-%% from the pool. Any other address the node calls itself.
+%% from the pool. Any other address the node calls itself. A native room
+%% bridges the party from its endpoint, and FreeSWITCH would offer it only
+%% the endpoint's codec (G.722 in a 16 kHz room): the party is offered the
+%% profile's codecs, so a PCMU phone can be brought in too.
 dial(Room, Target) ->
     Cfg = persistent_term:get({?MODULE, cfg}),
     {ok, #{host := Host} = U} = chappe_sip_uri:parse(Target),
     <<"sip:", Bare/binary>> = Target,
+    Codecs = <<"[^^:absolute_codec_string=OPUS,G722,PCMU,PCMA]">>,
     case {lists:member(Host, domains(Cfg)), U} of
         {true, #{user := User}} ->
             [
+                Codecs,
                 <<"sofia/esl/sip:">>,
                 User,
                 <<"@host.docker.internal:">>,
@@ -814,7 +819,7 @@ dial(Room, Target) ->
                 Room
             ];
         {false, _} ->
-            [<<"sofia/esl/">>, Bare]
+            [Codecs, <<"sofia/esl/">>, Bare]
     end.
 
 %% A call a room dials out comes from the pool (docker) to a phone (the
