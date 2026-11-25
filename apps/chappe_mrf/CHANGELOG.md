@@ -106,7 +106,10 @@ says how apps are released.
   endpoint's join completes when its node answers. A join cut short, or
   one that runs past the join timeout, gives back what it took; when the
   media change was already under way, the endpoint is hung up too, since
-  its media may have moved.
+  its media may have moved, and one that times out before the change is
+  sent leaves the endpoint as it was. The room no longer waits on
+  rtpengine either when an endpoint leaves, and an endpoint already in
+  the conference, or already joining it, is refused a second join.
 - A REFER repeated for a conference operation under way was held with no
   limit, each one keeping a subscription open until the operation ended.
   One operation now holds up to 16 REFERs, counting its repeats and the
