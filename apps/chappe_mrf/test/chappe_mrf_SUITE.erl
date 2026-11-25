@@ -436,7 +436,8 @@ refer_adds_fs(Config) ->
         backend => fs,
         node => fs1,
         focus => true,
-        refer_policy => fun(_) -> true end
+        refer_policy => fun(_) -> true end,
+        dial_codecs => <<"PCMU,PCMA">>
     }),
     {ok, Ep} = chappe_mrf:create_endpoint(#{targets => [{fs1, fs_uri(Config)}]}),
     {ok, First} = chappe_mrf_conf:join(Conf, Ep, #{}),
@@ -448,6 +449,10 @@ refer_adds_fs(Config) ->
     ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(Sock)),
     {fake_fs, _, _, {cmd, Dial}} = fs_cmd(<<"conference fsadd bgdial">>),
     ?assert(has(Dial, <<"sofia/external/dave@10.0.0.8">>)),
+    %% the room's dial_codecs, as the party's own leg variable
+    ?assert(
+        has(Dial, <<"[^^:absolute_codec_string=PCMU,PCMA]sofia/external/">>)
+    ),
     ?assert(has(Dial, <<"sip_contact_user=fsadd">>)),
     ?assert(has(Dial, <<"sip_invite_contact_params=~isfocus">>)),
     {match, [Uuid]} = re:run(Dial, <<"origination_uuid=([^,}]+)">>, [
@@ -517,7 +522,12 @@ refer_hostile_target(Config) ->
     {Sock2, _} = refer(Config, Entity, <<"boss">>, <<"<sip:carol@10.0.0.9>">>),
     ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(Sock2)),
     receive
-        {policy, #{action := add, dial := <<"sofia/external/carol@10.0.0.9">>}} ->
+        {policy, #{
+            action := add,
+            dial :=
+                <<"[^^:absolute_codec_string=OPUS,G722,PCMU,PCMA]",
+                    "sofia/external/carol@10.0.0.9">>
+        }} ->
             ok
     after 2000 -> ct:fail(no_dial_in_policy)
     end.
@@ -921,6 +931,14 @@ refer_native_joined_on_answer(Config) ->
     _ = fs_what(reinvite),
     {fake_fs, _, _, {cmd, Bridge}} = fs_cmd(<<"execute-app-name: bridge">>),
     ?assert(has(Bridge, <<"sofia/carrier/carol@10.0.0.9">>)),
+    %% bridged from the room's endpoint, the party would be offered only
+    %% the endpoint's codec: the default offers it every codec of the lab
+    ?assert(
+        has(
+            Bridge,
+            <<"[^^:absolute_codec_string=OPUS,G722,PCMU,PCMA]sofia/carrier/">>
+        )
+    ),
     ?assert(has(Bridge, <<"sip_contact_user=ansroom">>)),
     ?assert(has(Bridge, <<"sip_invite_contact_params=~isfocus">>)),
     ?assert(has(Bridge, <<"ignore_early_media=true">>)),

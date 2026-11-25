@@ -195,6 +195,7 @@ setup(Opts, S) ->
          || {O, K} <- [
                 {dial, dial},
                 {dial_profile, profile},
+                {dial_codecs, codecs},
                 {dial_timeout, timeout},
                 {dial_endpoint, endpoint}
             ],

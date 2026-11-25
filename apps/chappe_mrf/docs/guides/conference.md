@@ -339,21 +339,22 @@ dials them `disable-transfer` (mod_sofia) so a REFER on such a call is
 refused rather than carried out by FreeSWITCH, out of the room's sight.
 
 On native, the node bridges the party from the room's endpoint, and
-FreeSWITCH offers it only the codec that endpoint speaks (G.722 in a
-16 kHz room, PCMU in an 8 kHz one): a party without it answers 488, and
-the referrer's final NOTIFY says 487. To offer it more, set the leg's
-codecs in your `dial` fun:
+FreeSWITCH would offer it only the codec that endpoint speaks (G.722 in a
+16 kHz room, PCMU in an 8 kHz one). So the default dial string offers the
+party `OPUS,G722,PCMU,PCMA` as its leg's `absolute_codec_string`. Change
+the list with `dial_codecs`, or keep FreeSWITCH's own choice with
+`dial_codecs => inherit`:
 
 ```erlang
 {ok, Conf} = chappe_mrf:conference(<<"hd">>, #{
     rate => 16000,
     focus => true,
-    refer_policy => fun(#{dial := Dial}) -> allowed(Dial) end,
-    dial => fun(<<"sip:", Bare/binary>>) ->
-        [<<"[^^:absolute_codec_string=OPUS,G722,PCMU,PCMA]sofia/external/">>, Bare]
-    end
+    dial_codecs => <<"G722,PCMU">>
 }).
 ```
+
+A `dial` fun of your own builds the whole dial string: put the codecs in
+it yourself (`[^^:absolute_codec_string=...]` before `sofia/...`).
 
 A caller the room answers itself (`join/3` with `{call, Req, Res}`) gets
 the conference URI with `isfocus` as its Contact in a `focus => true` room

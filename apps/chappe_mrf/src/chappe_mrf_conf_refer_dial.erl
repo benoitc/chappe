@@ -27,7 +27,8 @@
 
 -include("chappe_mrf_conf.hrl").
 
--export([dialable/1, safe_value/1, dial_string/2, dial_vars/1]).
+-define(DIAL_CODECS, <<"OPUS,G722,PCMU,PCMA">>).
+-export([check_codecs/1, dialable/1, safe_value/1, dial_string/2, dial_vars/1]).
 -export([native/4, fs/3, nested/4]).
 -export([dialing/3, hidden/3, native_event/3]).
 -export([fs_added/3, fs_result/3, fs_started/3]).
@@ -69,7 +70,12 @@ safe_value(_) ->
     false.
 
 %% The dial string of a target: the room's dial fun, else
-%% sofia/<dial_profile>/<the URI without its scheme>.
+%% sofia/<dial_profile>/<the URI without its scheme>, after the codecs to
+%% offer the party (dial_codecs, OPUS,G722,PCMU,PCMA by default) as its
+%% own leg's absolute_codec_string. On native the party is bridged from
+%% the room's endpoint, and FreeSWITCH would offer it only the codec that
+%% endpoint speaks (G.722 in a 16 kHz room), so a party without it would
+%% answer 488; `inherit' keeps FreeSWITCH's own choice.
 -spec dial_string(map(), binary()) -> iodata().
 dial_string(#{dial_string := Dial}, _Target) ->
     %% made once, when the room decided: what its policy saw
@@ -84,7 +90,38 @@ dial_string(Cfg, Target) ->
             <<"sips:", R/binary>> -> R;
             R -> R
         end,
-    [<<"sofia/">>, Profile, <<"/">>, Bare].
+    [
+        codecs(maps:get(codecs, Cfg, ?DIAL_CODECS)),
+        <<"sofia/">>,
+        Profile,
+        <<"/">>,
+        Bare
+    ].
+
+%% The dial_codecs option of a room: inherit, or codec names joined by
+%% commas (letters, digits, `.', `-', `_', `@' and `/'), nothing else
+%% that FreeSWITCH would read in a dial string.
+-spec check_codecs(map()) -> ok | {error, {bad_option, dial_codecs}}.
+check_codecs(#{dial_codecs := inherit}) ->
+    ok;
+check_codecs(#{dial_codecs := C}) when is_binary(C), byte_size(C) =< 256 ->
+    case
+        re:run(C, <<"^[A-Za-z0-9._@/-]+(,[A-Za-z0-9._@/-]+)*\\z">>, [
+            {capture, none}
+        ])
+    of
+        match -> ok;
+        nomatch -> {error, {bad_option, dial_codecs}}
+    end;
+check_codecs(#{dial_codecs := _}) ->
+    {error, {bad_option, dial_codecs}};
+check_codecs(#{}) ->
+    ok.
+
+codecs(inherit) ->
+    [];
+codecs(Codecs) ->
+    [<<"[^^:absolute_codec_string=">>, Codecs, <<"]">>].
 
 %% The channel variables of the INVITE to a party the room dials: the
 %% Replaces a REFER to the focus carries (RFC 4579 5.10), the REFER's

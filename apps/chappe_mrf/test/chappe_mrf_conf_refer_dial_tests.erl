@@ -26,3 +26,28 @@ safe_value_test() ->
     ?assertNot(?D:safe_value(<<"a{b}@h;to-tag=t1;from-tag=f1">>)),
     ?assertNot(?D:safe_value(<<"c1@h;to-tag=t1;from-tag=f1\n">>)),
     ?assertNot(?D:safe_value(<<"c1@h;to-tag=t1\n;from-tag=f1">>)).
+
+%% dial_codecs goes into a dial string: codec names joined by commas, or
+%% inherit; anything FreeSWITCH would read there is refused.
+check_codecs_test() ->
+    C = fun(V) ->
+        chappe_mrf_conf_refer_dial:check_codecs(#{dial_codecs => V})
+    end,
+    ?assertEqual(ok, chappe_mrf_conf_refer_dial:check_codecs(#{})),
+    ?assertEqual(ok, C(inherit)),
+    ?assertEqual(ok, C(<<"OPUS,G722,PCMU,PCMA">>)),
+    ?assertEqual(ok, C(<<"opus@48000h@20i,G722">>)),
+    [
+        ?assertEqual({error, {bad_option, dial_codecs}}, C(Bad))
+     || Bad <- [
+            <<>>,
+            <<"PCMU,">>,
+            <<"PCMU]sofia/x">>,
+            <<"PCMU}">>,
+            <<"PCMU PCMA">>,
+            <<"PCMU\n">>,
+            <<"PCMU:_:x">>,
+            "PCMU",
+            pcmu
+        ]
+    ].

@@ -20,6 +20,11 @@ says how apps are released.
 
 ### Fixed
 
+- A party a native conference dials (by REFER) was offered only the codec
+  of the room's media endpoint, G.722 in a 16 kHz room, so a phone
+  without it refused the call. The party is now offered Opus, G.722, PCMU
+  and PCMA; a conference option changes the list.
+
 - A party a REFER brings into a native conference was a member, and could
   be heard, while it was still ringing; it now joins only once it
   answers, and a party that does not answer leaves the room as it was.
