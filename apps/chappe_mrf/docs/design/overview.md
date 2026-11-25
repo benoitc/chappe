@@ -25,6 +25,8 @@ leaf apps never depend on it.
 ```
 chappe_mrf_sup (one_for_one)
 |-- chappe_mrf_registry   one gen_server, writes the correlation ETS table
+|-- chappe_mrf_job_sup    simple_one_for_one, temporary
+|   `-- a cleanup job      one process per job (chappe_mrf_lib:later/1)
 |-- chappe_mrf_ep_sup     simple_one_for_one, temporary
 |   `-- chappe_mrf_endpoint   one gen_statem per FreeSWITCH channel
 `-- chappe_mrf_conf_sup   simple_one_for_one, temporary
@@ -32,7 +34,11 @@ chappe_mrf_sup (one_for_one)
 ```
 
 Endpoints and conferences are not restarted: their owner hears they are
-gone and decides. The outbound ESL listener is a chappe_esl listener
+gone and decides. A cleanup job is what a room or an endpoint must not
+wait for: a BYE, an rtpengine delete, the hangup of an endpoint. It runs
+once and ends on its own, as what it waits on has its own timeouts. Its
+pool starts before the endpoints' and the conferences', so it stops after
+them and takes the cleanups they start as they stop. The outbound ESL listener is a chappe_esl listener
 (`chappe_esl:start_listener/3`) with `chappe_mrf_esl` as handler; it runs
 under chappe_esl's supervisor.
 
@@ -45,7 +51,7 @@ under chappe_esl's supervisor.
 | `chappe_mrf_conf` | Public conference API and the conference process. |
 | `chappe_mrf_conf_backend` | The conference backend behaviour and the room API backends call. |
 | `chappe_mrf_conf_native`, `chappe_mrf_conf_fs` | The two backends: chappe_mix behind rtpengine, mod_conference. |
-| `chappe_mrf_conf_native_ep` | The media of an endpoint joining a native room, step by step, each failure giving back what the steps before made. |
+| `chappe_mrf_conf_native_ep` | The media of an endpoint joining a native room: the room's media sessions, the helper that runs the steps, and what the room makes of the helper's asks and reports. |
 | `chappe_mrf_conf_fs_join` | The fs backend's join, in the caller: endpoint, bridge, PIN. |
 | `chappe_mrf_conf_cluster` | A cluster room: the start in the caller and the lease decisions in the room. |
 | `chappe_mrf_conf_move` | Moving a cluster room's members to the room that owns its name next. |
@@ -57,7 +63,7 @@ under chappe_esl's supervisor.
 | `chappe_mrf_conf_focus` | A room as an RFC 4575 conference focus. |
 | `chappe_mrf_store` | FreeSWITCH recordings adopted into the recording store (chappe_audio). |
 | `chappe_mrf_app`, `chappe_mrf_sup` | Boot (chappe_cluster, the ESL listener) and the root supervisor. |
-| `chappe_mrf_lib` | Small shared helpers (ids, `api` reply checks). |
+| `chappe_mrf_lib` | Small shared helpers (ids, `api` reply checks, the cleanup jobs). |
 
 ## Endpoint lifecycle
 
@@ -166,17 +172,48 @@ An endpoint of `create_endpoint/1` joins the other way: the mixer offers,
 rtpengine carries the offer to the endpoint's node in a re-INVITE of the
 endpoint's dialog, and the node's answer comes back through rtpengine.
 
-A call's join stays in the room's `pending` map until the member is in.
-The room watches the process that drives it: the helper that runs
-`replace_b/3`, or the INVITE's request worker of a caller joined from its
-INVITE. The join fails when its loopback INVITE fails, when that process
-dies before it reports, or after `join_timeout`. A failed join answers its
-joiner at once and gives back its mixer leg, its loopback token and
-dialog, and its place in `admission/1`. An endpoint's join runs its media
-steps in `chappe_mrf_conf_native_ep`: a step that fails or raises stops
-the rtpengine session, leaves the mixer leg and answers an error, and the
-room goes on. Once the node answered the re-INVITE, a failure also ends
-the endpoint's dialog: its channel would send to the session that went.
+A join stays in the room's `pending` map until the member is in. What it
+waits on from a peer (rtpengine, a FreeSWITCH node, the caller's UA)
+runs outside the room process, so the room answers its other requests
+meanwhile. During a join the room itself only calls the mixer,
+chappe_mix on its own node (a call's mixer answer, a leg's leave);
+outside joins it still calls rtpengine to play a prompt to one member
+(`play_leg`) and starts a room's SIPREC recording (`record/3`). The room watches the
+process that drives a join: the helper that runs `replace_b/3`, the
+INVITE's request worker of a caller joined from its INVITE, or the helper
+of an endpoint's media steps. The join fails when its loopback INVITE
+fails, when that process dies before it reports, or after
+`join_timeout`. A failed join answers its joiner at once and gives back
+its mixer leg, its loopback token and dialog, and its place in
+`admission/1`; the BYEs and the rtpengine delete run as a cleanup job.
+The same job leaves the mixer once more after a helper the room stopped
+is gone: a mixer join it sent just before may reach the mixer after the
+room's leave. A member that leaves has its rtpengine session deleted by
+a job too, so a slow rtpengine never holds the room.
+
+An endpoint's join (`chappe_mrf_conf_native_ep`) has the room make its
+two media sessions, so the room owns them, and a helper run the steps:
+the endpoint's info, the mixer's offer, rtpengine's offer, the re-INVITE,
+rtpengine's answer, the mixer's answer and the endpoint's watch. An
+endpoint joins a room once: a second join while it is a member, or while
+its join is under way, gets `{error, already_member}` or
+`{error, already_joining}`.
+
+The helper sends the re-INVITE only once the room agreed: it asks with a
+call, `{ep_join, Id, reinvite_now, D}`, which the room answers `ok` only
+while the join is under way, noting that the re-INVITE is out. A join the
+room ended first (its deadline, the endpoint's hangup) sends none, and the
+endpoint keeps its media. The helper then reports `{ep_join, Id, Step}`:
+the node taking the re-INVITE (`moved`), refusing it (`refused`: a final
+non-2xx, or a re-INVITE that never went out), and the result; the room
+applies them, adding the member on success. A failure stops the
+rtpengine session, leaves the mixer leg and answers an error, and the
+room goes on. Once the node answered the re-INVITE, or may have (the
+helper died, the deadline came, or the dialog's own 75 s timeout ended
+it, with it out), a failure also ends the endpoint's dialog: its channel
+would send to the session that went. A report that comes after its join
+ended ends that dialog too. A room that stops kills the helpers of the
+joins under way, and its media sessions end with it.
 
 The middleware only runs when chappe_sip runs a request through its chain,
 so your app needs an INVITE handler (`chappe_sip:invite/1`).
@@ -412,7 +449,11 @@ The first four are chappe_mrf settings
 | `bridge/2` fails | the endpoint takes its dialog back |
 | fs member never shows up | after `join_timeout` (15 s), `{error, timeout}` from the room (its joiner waits `join_timeout` and 5 s more); an endpoint made for the join is destroyed |
 | A native join fails (its loopback INVITE, a media step, the endpoint's re-INVITE) | the joiner gets an error at once; the mixer leg, the rtpengine session, the loopback token and the join's place go, and the room goes on; an endpoint whose node answered the re-INVITE is hung up |
-| A native join's worker dies, or the join outlasts `join_timeout` (95 s) | `{error, join_failed}` or `{error, timeout}`, with the same cleanup |
+| A native join's worker dies, or the join outlasts `join_timeout` (95 s) | `{error, join_failed}` or `{error, timeout}`, with the same cleanup; an endpoint whose re-INVITE was out is hung up once that re-INVITE ends; one whose deadline came before its re-INVITE gets none and keeps its media |
+| A native endpoint's node is slow to answer its re-INVITE (up to 75 s) | the room answers its other requests meanwhile: control calls, other joins, REFERs |
+| rtpengine is slow to delete the session of a native member that leaves | the room does not wait: the delete runs as a cleanup job |
+| An endpoint joins a native room it is in, or is joining | `{error, already_member}` or `{error, already_joining}` |
+| More than `refer_attach_max` (16) REFERs for one REFER operation | the next one gets 503 before it is accepted; one the room took while the operation was starting (its REFERs accepted but not yet attached) is accepted, then hears NOTIFY 503 at once. Nothing is kept for either |
 | A native join given a handle that is no call, incoming call or endpoint | `{error, badarg}` in the caller |
 | A call with Replaces gets in after its hold on the member went (110 s, another caller's hold, the member's call transferred), or after another call replaced the member | the member stays; the new call is hung up (`{left, New, expired}`, `booted` in the roster) and its `join/3` returns `{error, expired}` |
 | The member a call with Replaces names leaves on its own (BYE, kick) before that call gets in | the new call stays a member; nothing is hung up |

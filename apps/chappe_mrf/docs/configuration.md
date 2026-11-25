@@ -121,7 +121,7 @@ Passed to `chappe_mrf:conference/2`.
 | `select` | fs | `#{}` | Options for that selection. |
 | `profile` | fs | `<<"default">>` | mod_conference profile. |
 | `bridge` | fs | `#{}` | `chappe_mrf:bridge/3` options for a caller joined from a call. |
-| `join_timeout` | both | fs: `15000`; native: `95000` | fs: milliseconds a member may take to appear in the room; its `join/3`, and a `transfer/3` into the room, wait that long and 5000 more, so the room answers first. native: milliseconds a call's join may take; past it the join fails with `{error, timeout}` and the room gives back what it took. An integer from 1 to `95000` on both; any other value is refused with `{error, {bad_option, join_timeout}}`. |
+| `join_timeout` | both | fs: `15000`; native: `95000` | fs: milliseconds a member may take to appear in the room; its `join/3`, and a `transfer/3` into the room, wait that long and 5000 more, so the room answers first. native: milliseconds a join (a call's or an endpoint's) may take; past it the join fails with `{error, timeout}` and the room gives back what it took. An integer from 1 to `95000` on both; any other value is refused with `{error, {bad_option, join_timeout}}`. |
 | `refer_policy` | both | none | `fun(Info) -> boolean() \| {reject, Code}` for a REFER to the room; unset, REFERs are refused 403. |
 | `replaces_policy` | both | the member itself or a caller it referred | `fun(Info) -> boolean()` for a call whose Replaces names a member; `false` or a crash is 403. Never anonymous callers by default. |
 | `dial` | both | `[^^:absolute_codec_string=<dial_codecs>]sofia/<dial_profile>/<target>`, the codec block left out with `inherit` | `fun(Target) -> iodata()`: the dial string of a party a REFER adds; one that crashes refuses the REFER 403. |
@@ -129,6 +129,7 @@ Passed to `chappe_mrf:conference/2`.
 | `dial_codecs` | both | native: `<<"OPUS,G722,PCMU,PCMA">>` at 16 kHz, `<<"PCMU,PCMA,G722,OPUS">>` at 8 kHz; fs: `inherit` | The codecs the default dial string offers the party, as its leg's `absolute_codec_string`; `inherit` leaves them to FreeSWITCH. Codec names joined by commas, else `{error, {bad_option, dial_codecs}}`. |
 | `dial_timeout` | both | `30000` | Milliseconds the added party has to answer. |
 | `dial_endpoint` | native | `#{}` | `create_endpoint/1` options (`node`, `select`, `targets`) of the endpoint that dials it. |
+| `refer_attach_max` | both | `16` | How many REFERs one REFER operation holds while it runs: the first, its repeats and REFERs from other origins for the same party. Past it a REFER gets 503. A positive integer, else `{error, {bad_option, refer_attach_max}}`. |
 
 Join options (`chappe_mrf_conf:join/3`): `name`, `mute`, `deaf`,
 `moderator`, `uri` (who the member is, for a REFER's `method=BYE`); on fs

@@ -500,8 +500,7 @@ teardown(#state{call = Call, uuid = Uuid} = Data) ->
     _ = is_pid(Call) andalso kill(Call, Uuid),
     case Data of
         #state{dialog = D, handed = false} when D =/= undefined ->
-            _ = spawn(fun() -> chappe_mrf_lib:destroy_dialog(D) end),
-            ok;
+            chappe_mrf_lib:destroy_later(D);
         _ ->
             ok
     end.

@@ -4,8 +4,8 @@
 %% @doc Small helpers shared by the chappe_mrf modules.
 -module(chappe_mrf_lib).
 
--export([new_id/0, to_bin/1, destroy_dialog/1, done/1, api_ok/1]).
--export([playback_result/1]).
+-export([new_id/0, to_bin/1, destroy_dialog/1, destroy_later/1, done/1]).
+-export([later/1, with_name/2, api_ok/1, playback_result/1]).
 
 %% A random id, hex: correlation ids, member ids, loopback tokens.
 -spec new_id() -> binary().
@@ -26,6 +26,35 @@ destroy_dialog(D) ->
     catch
         exit:_ -> ok
     end.
+
+%% destroy_dialog/1 as a job (later/1), for a caller that must not
+%% wait: the BYE may wait for a transaction under way, then Timer F.
+-spec destroy_later(chappe_sip_dialog:dialog()) -> ok.
+destroy_later(D) ->
+    later(fun() -> destroy_dialog(D) end).
+
+%% Fun as a job of the app's pool (chappe_mrf_sup), for a caller that
+%% must not wait on a peer: a BYE, an rtpengine delete, the hangup of an
+%% endpoint. A job is not restarted; it ends on its own, as what it waits
+%% on has its own timeouts (a transaction's, the rtpengine client's
+%% tries, a call's).
+-spec later(fun(() -> term())) -> ok.
+later(Fun) ->
+    case chappe_mrf_sup:start_job(Fun) of
+        {ok, _} ->
+            ok;
+        {error, _} ->
+            %% the pool is gone (the app is stopping): the cleanup still
+            %% runs, on its own
+            _ = spawn(Fun),
+            ok
+    end.
+
+%% The mixer join options JoinOpts with the name a join asked for (Opts'
+%% name), as the mixer's SDES name of the leg.
+-spec with_name(map(), map()) -> map().
+with_name(#{name := N}, JoinOpts) -> JoinOpts#{name => to_bin(N)};
+with_name(_Opts, JoinOpts) -> JoinOpts.
 
 %% {ok, _} -> ok, anything else as is.
 -spec done(term()) -> term().

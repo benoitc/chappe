@@ -40,7 +40,8 @@ that shows you how to use it.
 - **Native conferences** on chappe_mix behind rtpengine: join a call, a
   caller not answered yet, or an endpoint, mute, deaf, kick, lock, per-pair relations (whisper, listen
   only), talker events, prompts on each caller's leg. A join that fails,
-  or outlasts `join_timeout`, leaves nothing behind.
+  or outlasts `join_timeout`, leaves nothing behind, and the room answers
+  while an endpoint's join waits on its node.
   [Conference guide](guides/conference.md)
 - **HD native rooms** (`rate => 16000`): the mixer at 16 kHz on L16,
   rtpengine transcoding every member (G.722, Opus, PCMU, PCMA) to it and
@@ -61,7 +62,8 @@ that shows you how to use it.
   [Conference guide](guides/conference.md#move-a-member-to-another-room)
 - **REFER in rooms**, both backends: a member transfers itself out, blind
   or attended, and a REFER to the room adds, removes or refers a party
-  under your policy. [Conference guide](guides/conference.md#add-remove-or-refer-a-party-by-refer)
+  under your policy; repeats of a REFER hear its outcome, up to
+  `refer_attach_max` per operation. [Conference guide](guides/conference.md#add-remove-or-refer-a-party-by-refer)
 - **RFC 4575 conference state** for native rooms (`focus => true`,
   `focus_subscribe/2`). [Conference guide](guides/conference.md)
 - **Cleanup**: an endpoint's channel is killed when its owner exits, after

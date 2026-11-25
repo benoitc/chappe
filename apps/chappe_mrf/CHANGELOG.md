@@ -99,6 +99,22 @@ says how apps are released.
   was in the room while its caller had been told the join timed out. A
   join, and a transfer into such a room, now wait for the room's own
   timeout.
+- A native conference answered nothing else while an endpoint was
+  joining: as long as the endpoint's FreeSWITCH node took to accept the
+  media change, up to 75 seconds, mute, kick, other joins and REFERs to
+  the room all waited. The room now answers them meanwhile, and the
+  endpoint's join completes when its node answers. A join cut short, or
+  one that runs past the join timeout, gives back what it took; when the
+  media change was already under way, the endpoint is hung up too, since
+  its media may have moved, and one that times out before the change is
+  sent leaves the endpoint as it was. The room no longer waits on
+  rtpengine either when an endpoint leaves, and an endpoint already in
+  the conference, or already joining it, is refused a second join.
+- A REFER repeated for a conference operation under way was held with no
+  limit, each one keeping a subscription open until the operation ended.
+  One operation now holds up to 16 REFERs, counting its repeats and the
+  REFERs from others for the same party; the next ones are refused with
+  503. A conference option changes the limit.
 
 ### New
 

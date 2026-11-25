@@ -310,15 +310,20 @@ drop_member(Id, Reason, #state{members = M, mod = Mod} = S) ->
 
 %% Whether one more may come in: not into a locked room, nor past
 %% max_members, the joins (pending) and the REFER dial-outs under way
-%% counting as members.
+%% counting as members. The join of a party a REFER dials is its dial's,
+%% counted once.
 -spec admission(room()) -> ok | {error, locked | full}.
 admission(#state{locked = true}) ->
     {error, locked};
 admission(#state{members = M, pending = P, max_members = Max} = S) ->
-    case map_size(M) + map_size(P) + dials(S) >= Max of
+    Joining = length([J || J <- maps:values(P), not refer_party(J)]),
+    case map_size(M) + Joining + dials(S) >= Max of
         true -> {error, full};
         false -> ok
     end.
+
+refer_party(#{opts := #{refer := _}}) -> true;
+refer_party(_Join) -> false.
 
 dials(#state{refer_ops = Ops}) ->
     length([
@@ -350,12 +355,13 @@ close_if_empty(#state{lost = Lost, members = M, pending = P}) ->
 
 %% The options of a room that start/2 refuses before any room runs: a
 %% rate the backend cannot mix at, a join_timeout that is no number of
-%% milliseconds up to 95000, and dial_codecs that do not fit in a dial
-%% string.
+%% milliseconds up to 95000, dial_codecs that do not fit in a dial
+%% string, and a refer_attach_max that is no positive integer.
 -spec check_opts(map()) -> ok | {error, term()}.
 check_opts(Opts) ->
     maybe
         ok ?= chappe_mrf_conf_native:check_rate(Opts),
         ok ?= chappe_mrf_conf_native:check_join_timeout(Opts),
-        chappe_mrf_conf_refer_dial:check_codecs(Opts)
+        ok ?= chappe_mrf_conf_refer_dial:check_codecs(Opts),
+        chappe_mrf_conf_refer:check_attach_max(Opts)
     end.

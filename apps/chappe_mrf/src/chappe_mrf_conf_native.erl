@@ -13,7 +13,7 @@
 -include("chappe_mrf_conf.hrl").
 
 -export([init/2, info/1, join/4, admit/3, handle_call/3, handle_cast/2]).
--export([handle_info/2]).
+-export([handle_info/2, terminate/1]).
 -export([set_flag/5, hangup/3, left/2, play/3, portable/0]).
 -export([relate/4, record/3, stop_record/1, handover/1, dial/4]).
 -export([loop_invite/4, check_rate/1, check_join_timeout/1, same_rate/2]).
@@ -125,8 +125,8 @@ join(Conf, _Info, Ep, Opts) when is_pid(Ep) ->
 join(_Conf, _Info, _Target, _Opts) ->
     {error, badarg}.
 
-admit({ep, Ep, Opts}, _From, S) ->
-    join_endpoint(Ep, Opts, S);
+admit({ep, Ep, Opts}, From, S) ->
+    join_endpoint(Ep, Opts, From, S);
 admit({b2b, B2b, Opts}, From, S) ->
     join_b2b(B2b, Opts, From, S);
 admit({call, Opts}, From, S) ->
@@ -141,6 +141,12 @@ handle_call({call_done, Token, Result}, From, #state{pending = P} = S) ->
         #{Token := J} -> {noreply, call_done(Token, J, Result, From, S)};
         _ -> {reply, {error, join_failed}, S}
     end;
+handle_call({ep_join, Id, reinvite_now, D}, _From, #state{pending = P} = S) ->
+    %% the helper of an endpoint's join asks to send its re-INVITE
+    case chappe_mrf_conf_native_ep:agree(Id, D, P) of
+        {ok, P1} -> {reply, ok, S#state{pending = P1}};
+        {error, _} = Err -> {reply, Err, S}
+    end;
 handle_call(_Req, _From, S) ->
     {reply, {error, unknown_call}, S}.
 
@@ -151,7 +157,7 @@ handle_cast({loop_dialog, Token, D}, #state{pending = P} = S) ->
             {noreply, complete(Token, J#{dialog => D}, S)};
         _ ->
             %% its join ended first: the loopback goes too
-            ok = chappe_mrf_lib:destroy_dialog(D),
+            ok = chappe_mrf_lib:destroy_later(D),
             {noreply, S}
     end;
 handle_cast({loop_failed, Token}, #state{pending = P} = S) ->
@@ -171,6 +177,12 @@ handle_info({join_result, Token, Result}, #state{pending = P} = S) ->
     case P of
         #{Token := J} -> {noreply, result(Token, unwatch(J), Result, S)};
         _ -> {noreply, S}
+    end;
+handle_info({ep_join, Id, Step}, #state{pending = P} = S) ->
+    %% the helper of an endpoint's join reports (chappe_mrf_conf_native_ep)
+    case P of
+        #{Id := #{rtpe := _} = J} -> {noreply, ep_step(Id, Step, J, S)};
+        _ -> {noreply, chappe_mrf_conf_native_ep:late(Step, S)}
     end;
 handle_info({native_join_timeout, Token}, #state{pending = P} = S) ->
     case P of
@@ -211,10 +223,17 @@ handle_info({chappe_mrf, Ep, Event}, S) when is_pid(Ep) ->
 handle_info(_Msg, _S) ->
     ignore.
 
-gone_ep(Ep, S) ->
+gone_ep(Ep, #state{pending = P} = S) ->
     case chappe_mrf_conf_backend:member_by(ep, Ep, S) of
-        {ok, Id} -> chappe_mrf_conf_backend:gone(Id, hangup, S);
-        error -> S
+        {ok, Id} ->
+            chappe_mrf_conf_backend:gone(Id, hangup, S);
+        error ->
+            %% one that hangs up before its join's helper reported (the
+            %% room watches it from the join's last step): the join fails
+            case [Id || Id := #{ep := E, rtpe := _} <- P, E =:= Ep] of
+                [Id | _] -> result(Id, maps:get(Id, P), {error, hangup}, S);
+                [] -> S
+            end
     end.
 
 set_flag(_Id, #{session := MS}, deaf, true, S) ->
@@ -242,20 +261,19 @@ hangup(_Id, #{rtpe := _}, _S) ->
     %% an endpoint of the app: out of the room, its channel stays
     ok;
 hangup(_Id, #{dialog := D}, _S) ->
-    _ = spawn(fun() -> chappe_mrf_lib:destroy_dialog(D) end),
-    ok;
+    chappe_mrf_lib:destroy_later(D);
 hangup(_Id, _Mb, _S) ->
     ok.
 
 %% a member gone to another room keeps its call: only its mixer session
-%% goes
+%% goes; an endpoint's rtpengine session, the room's, is deleted by a job
+%% (the delete waits on rtpengine, up to its client's tries)
 left(#{session := MS}, transferred) ->
     _ = chappe_sip_media:leave(MS),
     ok;
 left(#{session := MS, rtpe := RS}, _Why) ->
     _ = chappe_sip_media:leave(MS),
-    _ = chappe_sip_media:stop(RS),
-    ok;
+    chappe_mrf_lib:later(fun() -> chappe_sip_media:stop(RS) end);
 left(#{session := MS}, _Why) ->
     _ = chappe_sip_media:leave(MS),
     ok;
@@ -371,10 +389,11 @@ pending(Token, J, #state{pending = P} = S) ->
     T = erlang:send_after(Ms, self(), {native_join_timeout, Token}),
     S#state{pending = P#{Token => J#{timer => T}}}.
 
-%% the worker reported: its exit is no failure any more
+%% the worker reported: its exit is no failure any more, and a helper
+%% that reported is done
 unwatch(#{mon := Mon} = J) ->
     _ = demonitor(Mon, [flush]),
-    maps:remove(mon, J);
+    maps:without([mon, helper], J);
 unwatch(J) ->
     J.
 
@@ -498,35 +517,67 @@ mixer_answer(Token, Offer, Opts, #state{room = Room, name = Name} = S) ->
             mute => maps:get(mute, Opts, false)
         },
         {ok, Answer} ?=
-            chappe_sip_media:conference(MS, Room, with_name(Opts, JoinOpts)),
+            chappe_sip_media:conference(
+                MS, Room, chappe_mrf_lib:with_name(Opts, JoinOpts)
+            ),
         _ = maps:get(deaf, Opts, false) andalso chappe_sip_media:deaf(MS),
         {ok, MS, Answer}
     end.
 
-with_name(#{name := N}, Opts) -> Opts#{name => chappe_mrf_lib:to_bin(N)};
-with_name(_, Opts) -> Opts.
-
 %% A join's outcome. A failure (its own, its worker's death, its
-%% deadline) answers the joiner when one waits (a caller's worker waits
-%% only from call_done on) and gives back all it took.
+%% deadline) gives back all it took and answers the joiner when one waits
+%% (a caller's worker waits only from call_done on); a room that lost its
+%% name ends once nothing is left in it.
 result(Token, J, ok, S) ->
     complete(Token, J#{result => ok}, S);
 result(Token, J, Error, S) ->
+    ok = forget(Token, J),
+    ok = give_back(J),
     _ =
         case J of
             #{from := From} -> gen_server:reply(From, Error);
             #{} -> ok
         end,
-    ok = forget(Token, J),
-    ok = with_key(session, J, fun chappe_sip_media:leave/1),
-    ok = with_key(dialog, J, fun chappe_mrf_lib:destroy_dialog/1),
-    S#state{pending = maps:remove(Token, S#state.pending)}.
+    S1 = S#state{pending = maps:remove(Token, S#state.pending)},
+    ok = chappe_mrf_conf_backend:close_if_empty(S1),
+    S1.
 
-%% a join that ends, either way: its token, deadline and watch go
+%% a join that ends, either way: its token, deadline and watch go, and a
+%% helper still at work (its deadline came first) is stopped
 forget(Token, J) ->
-    ok = chappe_mrf_registry:delete({loop, Token}),
+    ok = drop_token(Token, J),
     ok = with_key(timer, J, fun erlang:cancel_timer/1),
-    with_key(mon, J, fun(Mon) -> demonitor(Mon, [flush]) end).
+    ok = with_key(mon, J, fun(Mon) -> demonitor(Mon, [flush]) end),
+    with_key(helper, J, fun(Pid) -> exit(Pid, kill) end).
+
+%% an endpoint's join has no loopback
+drop_token(_Id, #{ep := _}) -> ok;
+drop_token(Token, _J) -> chappe_mrf_registry:delete({loop, Token}).
+
+%% What a failed join took goes back: its mixer leg now, and in a job
+%% (chappe_mrf_lib:later/1) what waits on a peer, so the room goes on:
+%% the delete of an endpoint's rtpengine session, then the BYE of the
+%% loopback dialog, or of an endpoint whose media moved or may have (its
+%% re-INVITE out when its helper died or its deadline came). That BYE
+%% waits for the re-INVITE to end. The job first waits for the end of
+%% the join's helper (stopped by forget/2) and leaves the mixer session
+%% again: a mixer join the helper sent just before it was stopped may
+%% reach the mixer after the room's leave.
+give_back(J) ->
+    ok = with_key(session, J, fun chappe_sip_media:leave/1),
+    Late = [{H, MS} || #{helper := H, session := MS} <- [J]],
+    Rtpe = [RS || #{rtpe := RS} <- [J]],
+    Dialogs = [D || K <- [dialog, moved, reinvite], #{K := D} <- [J]],
+    case Late ++ Rtpe ++ Dialogs of
+        [] ->
+            ok;
+        _ ->
+            chappe_mrf_lib:later(fun() ->
+                lists:foreach(fun chappe_mrf_conf_native_ep:late_leave/1, Late),
+                lists:foreach(fun chappe_sip_media:stop/1, Rtpe),
+                lists:foreach(fun chappe_mrf_lib:destroy_dialog/1, Dialogs)
+            end)
+    end.
 
 with_key(Key, Map, Fun) ->
     case Map of
@@ -549,49 +600,62 @@ complete(Token, #{result := ok, dialog := D, session := MS} = J, S) ->
 complete(Token, J, S) ->
     S#state{pending = (S#state.pending)#{Token => J}}.
 
-%% An endpoint of create_endpoint/1 joins: its media is set up in the
-%% room (chappe_mrf_conf_native_ep), and a step that fails answers an
-%% error with nothing left behind.
-join_endpoint(Ep, Opts, #state{name = Name, room = Room} = S) ->
-    case chappe_mrf:info(Ep) of
-        #{dialog := D, bridged := false} when D =/= undefined ->
-            #native{endpoint_params = EP, rate = Rate} =
-                chappe_mrf_conf_backend:bstate(S),
-            Id = chappe_mrf_lib:new_id(),
-            CallId = <<"mrf-", Name/binary, "-", Id/binary>>,
-            Cfg = #{
-                room => Room,
-                params => EP,
-                deaf => maps:get(deaf, Opts, false),
-                join => with_name(Opts, #{
-                    rate => Rate,
-                    owner => self(),
-                    persist => true,
-                    talk_events => true,
-                    talk_tag => Id,
-                    mute => maps:get(mute, Opts, false)
-                })
-            },
-            case chappe_mrf_conf_native_ep:media(Ep, {CallId, Id, D}, Cfg) of
-                {ok, #{ms := MS, rs := RS}} ->
-                    Mb = chappe_mrf_conf_backend:member(Opts, Id, #{
-                        ep => Ep, session => MS, rtpe => RS
-                    }),
-                    {reply, {ok, Id},
-                        chappe_mrf_conf_backend:joined(Id, Mb, S)};
-                {error, _} = Err ->
-                    {reply, Err, S}
-            end;
-        #{} ->
-            {reply, {error, no_dialog}, S};
-        Err ->
+%% An endpoint of create_endpoint/1 joins: the room makes its media
+%% sessions, and a helper it watches sets them up
+%% (chappe_mrf_conf_native_ep), so the room answers its other requests
+%% meanwhile. The joiner waits in pending, and is answered on the
+%% helper's result, at the join's deadline at the latest; a failure
+%% leaves nothing behind (result/4). An endpoint joins once: a member,
+%% or one whose join is under way, is refused.
+join_endpoint(Ep, Opts, From, #state{pending = P} = S) ->
+    Joining = [Id || Id := #{ep := E} <- P, E =:= Ep],
+    case {chappe_mrf_conf_backend:member_by(ep, Ep, S), Joining} of
+        {{ok, _}, _} -> {reply, {error, already_member}, S};
+        {error, [_ | _]} -> {reply, {error, already_joining}, S};
+        {error, []} -> start_endpoint(Ep, Opts, From, S)
+    end.
+
+start_endpoint(Ep, Opts, From, #state{name = Name, room = Room} = S) ->
+    #native{endpoint_params = EP, rate = Rate} =
+        chappe_mrf_conf_backend:bstate(S),
+    Cfg = #{name => Name, room => Room, params => EP, rate => Rate},
+    case chappe_mrf_conf_native_ep:start(Ep, Opts, Cfg) of
+        {ok, Id, Job} ->
+            J = Job#{from => From, ep => Ep, opts => Opts},
+            {noreply, pending(Id, J, S)};
+        {error, _} = Err ->
             {reply, Err, S}
     end.
 
+%% What the helper of an endpoint's join reports, applied in the room
+%% (chappe_mrf_conf_native_ep:step/2): the join goes on, the endpoint is
+%% in, or the join failed.
+ep_step(Id, Step, J, #state{pending = P} = S) ->
+    case chappe_mrf_conf_native_ep:step(Step, J) of
+        {pending, J1} -> S#state{pending = P#{Id := J1}};
+        {joined, J1} -> ep_joined(Id, unwatch(J1), S);
+        {failed, J1, Error} -> result(Id, unwatch(J1), Error, S)
+    end.
+
+%% The room's end: the helpers of the endpoints' joins under way stop
+%% with it (their media sessions are the room's and end with it).
+terminate(#state{pending = P}) ->
+    chappe_mrf_conf_native_ep:stop_helpers(P).
+
+%% the endpoint is in: a member, with the media sessions the room owns
+ep_joined(Id, J, S) ->
+    #{from := From, ep := Ep, opts := Opts, session := MS, rtpe := RS} = J,
+    ok = forget(Id, J),
+    Mb = chappe_mrf_conf_backend:member(Opts, Id, #{
+        ep => Ep, session => MS, rtpe => RS
+    }),
+    gen_server:reply(From, {ok, Id}),
+    S1 = S#state{pending = maps:remove(Id, S#state.pending)},
+    chappe_mrf_conf_backend:joined(Id, Mb, S1).
+
 %% an endpoint member: its node plays the file (a path on the node)
 play_leg(#{ep := Ep, rtpe := _}, File) ->
-    _ = spawn(fun() -> chappe_mrf:play(Ep, File) end),
-    ok;
+    chappe_mrf_lib:later(fun() -> chappe_mrf:play(Ep, File) end);
 %% rtpengine plays the file to the caller of the member's call
 play_leg(#{b2b := B2b}, File) ->
     case chappe_sip_b2b:info(B2b) of

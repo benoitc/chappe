@@ -170,7 +170,7 @@ run([{monitor, Id, Pid} | Rest], Room) ->
 run([{gone, Id, Why} | Rest], Room) ->
     run(Rest, chappe_mrf_conf_backend:gone(Id, Why, Room));
 run([{destroy, Ep} | Rest], Room) ->
-    _ = spawn(fun() -> chappe_mrf:destroy(Ep) end),
+    ok = chappe_mrf_lib:later(fun() -> chappe_mrf:destroy(Ep) end),
     run(Rest, Room).
 
 %% At the room's end: whether a member on its way out is its mover's

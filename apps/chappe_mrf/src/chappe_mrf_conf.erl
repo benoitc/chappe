@@ -108,8 +108,9 @@
 %%                moved into the mixer (the mixer runs on this host)
 %%   endpoint_params => #{offer, answer => map()}: rtpengine flags between
 %%                the mixer and an endpoint's node (offer: toward the node)
-%%   join_timeout => ms a call's join may take, 95000 at most and by
-%%                default: past it the join fails with {error, timeout}
+%%   join_timeout => ms a join (a call's, an endpoint's) may take, 95000
+%%                at most and by default: past it the join fails with
+%%                {error, timeout}
 %%                and the room gives back what it took. On either
 %%                backend start/2 refuses a join_timeout that is no
 %%                integer from 1 to 95000: {error, {bad_option,
@@ -161,6 +162,13 @@
 %%   dial_timeout => ms the party has to answer (30000), then 408
 %%   dial_endpoint => native: create_endpoint/1 options (node, select,
 %%                targets) of the endpoint that dials it
+%%   refer_attach_max => pos_integer(): how many REFERs one REFER
+%%                operation holds while it is under way, the first one
+%%                and those that hear its outcome (repeats from its
+%%                origin, another origin adding the same party): 16 by
+%%                default; past it a REFER gets 503. start/2 refuses one
+%%                that is no positive integer: {error, {bad_option,
+%%                refer_attach_max}}
 %% The 180 and 183 of a dialed party reach the referrer when the node's
 %% events carry CHANNEL_PROGRESS and CHANNEL_PROGRESS_MEDIA (chappe_esl:
 %% node_add/2's events, before CUSTOM).
@@ -241,8 +249,10 @@ events(Conf, Pid) ->
 %% through rtpengine, fs bridges it to an endpoint on the room's node),
 %% or an endpoint. On native, the
 %% endpoint must be one of create_endpoint/1 not bridged: its dialog is
-%% re-INVITEd to the mixer through rtpengine, and a join that fails once
-%% the node answered that re-INVITE hangs the endpoint up (its media is
+%% re-INVITEd to the mixer through rtpengine, by a helper of the room so
+%% that the room answers meanwhile, and a join that fails once the node
+%% answered that re-INVITE (or may have: the helper died, or the
+%% join_timeout came, with it out) hangs the endpoint up (its media is
 %% gone). On
 %% fs, it must be on the conference's node. Opts: name, mute,
 %% deaf, moderator; fs also pin (the PIN to enter first), pin_prompt
@@ -765,7 +775,8 @@ terminate(_Reason, #state{members = M0, focus = F, mod = Mod} = S) ->
         M0
     ),
     _ = safely(fun() -> F =/= undefined andalso chappe_sip_focus:stop(F) end),
-    %% the room's end stops what the backend runs (fs: its recordings)
+    %% the room's end stops what the backend runs (fs: its recordings,
+    %% native: the helpers of its joins)
     _ = safely(fun() ->
         chappe_mrf_conf_backend:has(terminate, 1, S) andalso Mod:terminate(S)
     end),

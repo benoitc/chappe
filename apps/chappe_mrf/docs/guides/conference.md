@@ -76,15 +76,26 @@ between the mixer and the node when they differ:
 {ok, Member} = chappe_mrf_conf:join(Conf, Ep, #{}).
 ```
 
+The room keeps answering while an endpoint joins. The media setup and
+the re-INVITE, which may take up to 75 seconds on a slow node, run in a
+helper of the room, so `info/1`, mute, kick, other joins and REFERs are
+not held behind it. Your `join/3` returns once the endpoint is in. An
+endpoint joins a room once: joining it again while it is a member, or
+while its join runs, returns `{error, already_member}` or
+`{error, already_joining}`.
+
 A join that fails returns its error at once and leaves nothing behind:
 no mixer leg, no rtpengine session, and the room counts it no more
 against `max_members`. The room and its members go on. An endpoint whose
 node already answered the room's re-INVITE when its join failed is hung
 up, since the media it was moved to is gone; its owner gets
-`{chappe_mrf, Ep, {hangup, Cause}}`. A call's join may take
-`join_timeout` milliseconds (95000 by default and at most), then it
-fails. Any other value than 1 to 95000 makes `conference/2` return
-`{error, {bad_option, join_timeout}}`:
+`{chappe_mrf, Ep, {hangup, Cause}}`. The same goes for an endpoint whose
+join's helper died, or whose join timed out, with the re-INVITE out: its
+BYE waits for that re-INVITE to end. A join that timed out before its
+re-INVITE went out sends none, and the endpoint keeps its media. A
+join, a call's or an endpoint's, may take `join_timeout` milliseconds
+(95000 by default and at most), then it fails. Any other value than 1 to 95000 makes `conference/2`
+return `{error, {bad_option, join_timeout}}`:
 
 ```erlang
 {ok, Conf} = chappe_mrf:conference(<<"ops">>, #{join_timeout => 10000}),
@@ -304,8 +315,28 @@ in a focus room, and NOTIFY 100, and the room carries it out:
 - A REFER repeated from the same dialog (or the same Call-ID and From
   tag) for the same target dials nobody again: it hears the first one's
   outcome. Adding a member already in answers 200 at once.
+- One operation holds at most `refer_attach_max` REFERs while it runs (16
+  by default): the first, its repeats, and REFERs from other origins for
+  the same party. Each keeps a subscription, and its dialog when it came
+  in one, so past the cap a REFER gets 503 before it is accepted, and
+  nothing is kept. A REFER the room took while the operation was
+  starting, its first REFERs accepted but not attached yet, may pass the
+  count: it is accepted, then hears NOTIFY 503 at once. Once the
+  operation is done, a repeat hears its outcome at once.
 - When the room ends, the REFERs still under way get a final NOTIFY 487
   and their dials are given up.
+
+Set the cap on one operation's REFERs with `refer_attach_max`; a value
+that is no positive integer makes `conference/2` return
+`{error, {bad_option, refer_attach_max}}`:
+
+```erlang
+{ok, Conf} = chappe_mrf:conference(<<"board">>, #{
+    focus => true,
+    refer_policy => fun(_) -> true end,
+    refer_attach_max => 4
+}).
+```
 
 The policy runs in the room process and gets the same keys for every
 action, `undefined` where one does not apply, so a clause can match any

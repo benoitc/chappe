@@ -165,7 +165,7 @@ hangup(Id, Mb, S) ->
     _ =
         case Mb of
             #{ep := Ep, owned := true} ->
-                spawn(fun() -> chappe_mrf:destroy(Ep) end);
+                chappe_mrf_lib:later(fun() -> chappe_mrf:destroy(Ep) end);
             _ ->
                 ok
         end,
@@ -175,8 +175,7 @@ hangup(Id, Mb, S) ->
 left(_Mb, transferred) ->
     ok;
 left(#{ep := Ep, owned := true}, _Why) ->
-    _ = spawn(fun() -> chappe_mrf:destroy(Ep) end),
-    ok;
+    chappe_mrf_lib:later(fun() -> chappe_mrf:destroy(Ep) end);
 left(_Mb, _Why) ->
     ok.
 
@@ -444,7 +443,9 @@ join_timeout(Ep, #state{pending = P} = S) ->
     case maps:take({ep, Ep}, P) of
         {#{from := From, owned := Owned}, P1} ->
             gen_server:reply(From, {error, timeout}),
-            _ = Owned andalso spawn(fun() -> chappe_mrf:destroy(Ep) end),
+            _ =
+                Owned andalso
+                    chappe_mrf_lib:later(fun() -> chappe_mrf:destroy(Ep) end),
             S#state{pending = P1};
         error ->
             S
