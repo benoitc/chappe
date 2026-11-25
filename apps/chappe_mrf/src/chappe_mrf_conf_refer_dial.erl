@@ -8,15 +8,17 @@
 %% native: a helper makes an endpoint of the room's FreeSWITCH pool
 %% (dial_endpoint options), joins it to the mixer out of sight, then has
 %% it bridge to the target (the dial option makes the dial string,
-%% default `sofia/<dial_profile>/<target>'). The originate waits for the
-%% answer (ignore_early_media), so nothing the target plays before
-%% reaches the room, and the room shows the endpoint as a member only
-%% once the target answered (its CHANNEL_BRIDGE). fs: mod_conference dials the
-%% target into the room (`conference <room> bgdial'); it is a member once
-%% its add-member comes. Either way the referrer hears 200 once the party
-%% is in, the target's status when it failed (busy 486, declined 603, no
-%% answer 480), 408 when it did not answer within dial_timeout (30 s), and
-%% the room is left as it was.
+%% default `[^^:absolute_codec_string=<dial_codecs>]sofia/<dial_profile>/
+%% <target>', the codecs by the room's rate: default_codecs/1). The
+%% originate waits for the answer (ignore_early_media), so nothing the
+%% target plays before reaches the room, and the room shows the endpoint
+%% as a member only once the target answered (its CHANNEL_BRIDGE). fs:
+%% mod_conference dials the target into the room (`conference <room>
+%% bgdial', default `sofia/<dial_profile>/<target>' with the profile's
+%% codecs); it is a member once its add-member comes. Either way the
+%% referrer hears 200 once the party is in, the target's status when it
+%% failed (busy 486, declined 603, no answer 480), 408 when it did not
+%% answer within dial_timeout (30 s), and the room is left as it was.
 %%
 %% Every dial carries two channel variables, chappe_dial (the room's mark)
 %% and chappe_dial_op (the op), so the node's CHANNEL_PROGRESS and
@@ -27,6 +29,10 @@
 
 -include("chappe_mrf_conf.hrl").
 
+%% the codecs a native room offers a party it dials, by its rate
+-define(HD_CODECS, <<"OPUS,G722,PCMU,PCMA">>).
+-define(NB_CODECS, <<"PCMU,PCMA,G722,OPUS">>).
+-export([check_codecs/1, default_codecs/1]).
 -export([dialable/1, safe_value/1, dial_string/2, dial_vars/1]).
 -export([native/4, fs/3, nested/4]).
 -export([dialing/3, hidden/3, native_event/3]).
@@ -69,7 +75,10 @@ safe_value(_) ->
     false.
 
 %% The dial string of a target: the room's dial fun, else
-%% sofia/<dial_profile>/<the URI without its scheme>.
+%% sofia/<dial_profile>/<the URI without its scheme>, after the codecs to
+%% offer the party (Cfg's codecs: the room's dial_codecs, else
+%% default_codecs/1) as its own leg's absolute_codec_string; none with
+%% `inherit'.
 -spec dial_string(map(), binary()) -> iodata().
 dial_string(#{dial_string := Dial}, _Target) ->
     %% made once, when the room decided: what its policy saw
@@ -84,7 +93,55 @@ dial_string(Cfg, Target) ->
             <<"sips:", R/binary>> -> R;
             R -> R
         end,
-    [<<"sofia/">>, Profile, <<"/">>, Bare].
+    [
+        codecs(maps:get(codecs, Cfg, inherit)),
+        <<"sofia/">>,
+        Profile,
+        <<"/">>,
+        Bare
+    ].
+
+%% The dial_codecs option of a room: inherit, or codec names joined by
+%% commas (letters, digits, `.', `-', `_', `@' and `/'), nothing else
+%% that FreeSWITCH would read in a dial string.
+-spec check_codecs(map()) -> ok | {error, {bad_option, dial_codecs}}.
+check_codecs(#{dial_codecs := inherit}) ->
+    ok;
+check_codecs(#{dial_codecs := C}) when is_binary(C), byte_size(C) =< 256 ->
+    case
+        re:run(C, <<"^[A-Za-z0-9._@/-]+(,[A-Za-z0-9._@/-]+)*\\z">>, [
+            {capture, none}
+        ])
+    of
+        match -> ok;
+        nomatch -> {error, {bad_option, dial_codecs}}
+    end;
+check_codecs(#{dial_codecs := _}) ->
+    {error, {bad_option, dial_codecs}};
+check_codecs(#{}) ->
+    ok.
+
+%% The codecs the default dial string offers the party a room dials, by
+%% start/2's options. native: the node bridges the party from the room's
+%% endpoint, and FreeSWITCH would offer it only the codec that endpoint
+%% speaks (G.722 in a 16 kHz room, PCMU in an 8 kHz one), so a party
+%% without it would answer 488: a 16 kHz room offers the wideband codecs
+%% first, an 8 kHz room G.711 first (a G.711 party then needs no
+%% transcoding). fs (and a backend of your own): `inherit', FreeSWITCH's
+%% own choice (mod_conference's bgdial has no A-leg: the profile's
+%% codecs).
+-spec default_codecs(map()) -> binary() | inherit.
+default_codecs(#{backend := B}) when B =/= native ->
+    inherit;
+default_codecs(#{rate := 16000}) ->
+    ?HD_CODECS;
+default_codecs(#{}) ->
+    ?NB_CODECS.
+
+codecs(inherit) ->
+    [];
+codecs(Codecs) ->
+    [<<"[^^:absolute_codec_string=">>, Codecs, <<"]">>].
 
 %% The channel variables of the INVITE to a party the room dials: the
 %% Replaces a REFER to the focus carries (RFC 4579 5.10), the REFER's

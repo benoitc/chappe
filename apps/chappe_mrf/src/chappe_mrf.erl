@@ -51,6 +51,7 @@
 -export([fork_audio_resume/2, fork_audio_send_text/2, fork_audio_send_text/3]).
 -export([modify/2, destroy/1, uuid/1, node/1, info/1]).
 -export([conference/2, conferences/0, focus_subscribe/2, focus_refer/2]).
+-export([dial_codecs/1]).
 -export([inactive_sdp/0, loop_target/1]).
 
 -export_type([endpoint/0]).
@@ -656,6 +657,16 @@ info(Ep) ->
     {ok, chappe_mrf_conf:conf()} | {error, term()}.
 conference(Name, Opts) ->
     chappe_mrf_conf:start(Name, Opts).
+
+%% The codecs the default dial string of a conference started with Opts
+%% offers a party a REFER brings in, when Opts gives no dial_codecs: on
+%% native <<"OPUS,G722,PCMU,PCMA">> at 16 kHz and <<"PCMU,PCMA,G722,OPUS">>
+%% at 8 kHz, on fs inherit (the profile's). For a dial fun of your own,
+%% which builds the whole dial string:
+%% [^^:absolute_codec_string=<codecs>] before sofia/...
+-spec dial_codecs(map()) -> binary() | inherit.
+dial_codecs(Opts) ->
+    chappe_mrf_conf_refer_dial:default_codecs(Opts).
 
 %% The conferences running: [{Name, Conf}].
 -spec conferences() -> [{binary(), chappe_mrf_conf:conf()}].

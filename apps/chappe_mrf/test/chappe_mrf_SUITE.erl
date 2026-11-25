@@ -102,6 +102,7 @@
     conf_edges/1,
     native_endpoint/1,
     native_hd_room/1,
+    dial_codecs_refused/1,
     fs_conference_edges/1
 ]).
 
@@ -197,6 +198,7 @@ all() ->
         conf_edges,
         native_endpoint,
         native_hd_room,
+        dial_codecs_refused,
         fs_conference_edges
     ].
 
@@ -429,7 +431,8 @@ refer_removes_member(Config) ->
 %% fs: mod_conference dials the party into the room under our uuid; its
 %% add-member makes it a member and the referrer gets NOTIFY 200; a
 %% method=BYE then kicks it by its URI. The bgdial INVITE has the
-%% conference's user and isfocus in its Contact (5.5).
+%% conference's user and isfocus in its Contact (5.5), and leaves the
+%% party's codecs to FreeSWITCH (the profile's).
 refer_adds_fs(Config) ->
     ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
     {ok, Conf} = chappe_mrf:conference(<<"fsadd">>, #{
@@ -447,7 +450,8 @@ refer_adds_fs(Config) ->
     {Sock, _} = refer(Config, Entity, <<"boss">>, <<"<sip:dave@10.0.0.8>">>),
     ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(Sock)),
     {fake_fs, _, _, {cmd, Dial}} = fs_cmd(<<"conference fsadd bgdial">>),
-    ?assert(has(Dial, <<"sofia/external/dave@10.0.0.8">>)),
+    ?assert(has(Dial, <<"}sofia/external/dave@10.0.0.8">>)),
+    ?assertNot(has(Dial, <<"absolute_codec_string">>)),
     ?assert(has(Dial, <<"sip_contact_user=fsadd">>)),
     ?assert(has(Dial, <<"sip_invite_contact_params=~isfocus">>)),
     {match, [Uuid]} = re:run(Dial, <<"origination_uuid=([^,}]+)">>, [
@@ -517,7 +521,12 @@ refer_hostile_target(Config) ->
     {Sock2, _} = refer(Config, Entity, <<"boss">>, <<"<sip:carol@10.0.0.9>">>),
     ?assertMatch(<<"SIP/2.0 200", _/binary>>, sip_response(Sock2)),
     receive
-        {policy, #{action := add, dial := <<"sofia/external/carol@10.0.0.9">>}} ->
+        {policy, #{
+            action := add,
+            dial :=
+                <<"[^^:absolute_codec_string=PCMU,PCMA,G722,OPUS]",
+                    "sofia/external/carol@10.0.0.9">>
+        }} ->
             ok
     after 2000 -> ct:fail(no_dial_in_policy)
     end.
@@ -921,6 +930,15 @@ refer_native_joined_on_answer(Config) ->
     _ = fs_what(reinvite),
     {fake_fs, _, _, {cmd, Bridge}} = fs_cmd(<<"execute-app-name: bridge">>),
     ?assert(has(Bridge, <<"sofia/carrier/carol@10.0.0.9">>)),
+    %% bridged from the room's endpoint, the party would be offered only
+    %% the endpoint's codec: the default offers it every codec of the lab,
+    %% G.711 first in this 8 kHz room
+    ?assert(
+        has(
+            Bridge,
+            <<"[^^:absolute_codec_string=PCMU,PCMA,G722,OPUS]sofia/carrier/">>
+        )
+    ),
     ?assert(has(Bridge, <<"sip_contact_user=ansroom">>)),
     ?assert(has(Bridge, <<"sip_invite_contact_params=~isfocus">>)),
     ?assert(has(Bridge, <<"ignore_early_media=true">>)),
@@ -3600,6 +3618,28 @@ conf_edges(Config) ->
     ),
     ?F:ua_bye(Ua),
     IvrOwner ! stop.
+
+%% dial_codecs goes in the dial string of every party a REFER brings in:
+%% anything but codec names joined by commas, or inherit, is refused on
+%% either backend before the room is made.
+dial_codecs_refused(_Config) ->
+    [
+        ?assertEqual(
+            {error, {bad_option, dial_codecs}},
+            chappe_mrf:conference(<<"badcodecs">>, #{dial_codecs => Bad}),
+            Bad
+        )
+     || Bad <- [<<"PCMU]sofia/gateway/gw/1900">>, <<"PCMU,">>, "PCMU", pcmu]
+    ],
+    ?assertEqual(
+        {error, {bad_option, dial_codecs}},
+        chappe_mrf:conference(<<"badcodecs">>, #{
+            backend => fs, node => fs1, dial_codecs => <<"PCMU}">>
+        })
+    ),
+    ?assertEqual(
+        false, lists:keymember(<<"badcodecs">>, 1, chappe_mrf:conferences())
+    ).
 
 %% A 16 kHz native room: a caller's offer toward the mixer asks rtpengine
 %% for the room's format only (mask all, transcode L16/16000 and

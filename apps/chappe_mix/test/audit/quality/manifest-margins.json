@@ -1,0 +1,42 @@
+{
+  "schema": "taq.manifest/1",
+  "manifest_id": "chappe-hd-room-2026-11-25",
+  "description": "Two HD participants exchange the eight pinned VCTK clips through the chappe demo (demo/sbc, make demo): a G.722 talker at 16 kHz and an Opus listener at 48 kHz, and the reverse. Baseline: room 1004, mod_conference on its 16 kHz wideband profile, run twice. Candidate: room 1003, chappe_mix at 16 kHz in L16 behind rtpengine 26.3.1.4. The pcmu-join conditions hold one run per arm and direction during which a silent PCMU caller joins and leaves the room.",
+  "created_at": "2026-11-25T06:36:44Z",
+  "clips": {
+    "set": "vctk-0.92",
+    "file": "../../clips/vctk-0.92.json",
+    "prepared_dir": null
+  },
+  "margins": {
+    "declared_at": "2026-11-25T06:36:44Z",
+    "declared_by": "chappe integration (HD conferences and conference REFER, phase 1), before any capture",
+    "note": "Declared before any capture of either arm. Scorers: the candidate passes when the lower bound of the 95% bootstrap interval of the paired difference (candidate minus baseline, per clip) stays above -0.3 MOS, for ViSQOL and for NISQA. 0.3 sits below the 0.38 NISQA drop the tool measured between a G.722 and a PCMU path, so a narrowband hop fails it, and above the shifts two runs of one path are expected to show. Bandwidth: every candidate capture keeps its 4-7 kHz share within 6 dB of the reference; a hop through 8 kHz reads 33 to 53 dB down. Level within 6 dB, no clipping beyond 1e-4 of the samples, no gap in active speech longer than 40 ms (two 20 ms packets). Delay is not gated: taq live has no synchronized timestamps. The pcmu-join conditions have one clip per arm, so their scorers are reported and not gated; their bandwidth, level, clipping and dropout checks are gated as everywhere.",
+    "default": {
+      "visqol_drop_max": 0.3,
+      "nisqa_drop_max": 0.3,
+      "high_band_min_db": -6.0,
+      "level_change_max_db": 6.0,
+      "clipping_max_fraction": 0.0001,
+      "dropout_max_ms": 40,
+      "delay_max_ms": 400,
+      "confidence": 0.95,
+      "min_clips": 6,
+      "bootstrap_resamples": 10000,
+      "bootstrap_seed": 0
+    },
+    "conditions": {
+      "hd-room/g722-to-opus/pcmu-join/clean": {
+        "visqol_drop_max": null,
+        "nisqa_drop_max": null,
+        "min_clips": 1
+      },
+      "hd-room/opus-to-g722/pcmu-join/clean": {
+        "visqol_drop_max": null,
+        "nisqa_drop_max": null,
+        "min_clips": 1
+      }
+    }
+  },
+  "trials": []
+}
