@@ -78,6 +78,11 @@ CHAPPE_MIX_BENCH_CONF=tick_ceiling=false erl ... main jitter idle 30
 CHAPPE_MIX_BENCH_CONF=tick_ceiling=true erl ... main jitter idle 30
 ```
 
+`rate=16000` runs every room at 16 kHz: the sender groups and the latency
+probe speak L16 on payload type 96, and `mix_cost` (its plain and `fit`
+forms) times the L16 mix of 320-sample frames. Interleave it with
+`rate=8000` on one build to compare the two rates.
+
 It takes `tick_ceiling` and `prefill_shrink`, comma-separated, each
 `=true` or `=false` (a bare name means true). Each arm prints the options
 it ran with on its `conf_opts=` line.

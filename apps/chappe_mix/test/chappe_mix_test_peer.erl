@@ -22,8 +22,9 @@
 %% Opts: dst (endpoint, unset: send nothing), ssrc, seq, sending (default
 %% true), skip (sequence offsets never sent, to make loss), pair (also
 %% open the next port up for RTCP; the RTP port is even), rate (RTP
-%% clock, default 8000: each 20 ms packet carries rate / 50 bytes of
-%% silence and moves the timestamp as much). Returns {Pid, RtpPort}.
+%% clock, default 8000: each 20 ms packet carries a frame of silence,
+%% PCMU (pt 0) at 8000, L16 (pt 96) at 16000, and moves the timestamp
+%% by rate / 50). Returns {Pid, RtpPort}.
 start(Opts) ->
     Parent = self(),
     Pid = spawn_link(fun() -> init(Parent, Opts) end),
@@ -99,6 +100,7 @@ init(Parent, Opts) ->
         skip => maps:get(skip, Opts, []),
         sending => maps:get(sending, Opts, true),
         frame => maps:get(rate, Opts, 8000) div 50,
+        silence => silence(maps:get(rate, Opts, 8000)),
         next => erlang:monotonic_time(millisecond),
         rx => []
     },
@@ -156,6 +158,10 @@ loop(#{rtp := Rtp, rtcp := Rtcp} = S) ->
             loop(S)
     end.
 
+%% the payload type and the frame of silence at a rate
+silence(16000) -> {96, <<0:(320 * 16)>>};
+silence(Rate) -> {0, binary:copy(<<16#FF>>, Rate div 50)}.
+
 send_frame(#{dst := undefined} = S) ->
     S;
 send_frame(#{sending := false} = S) ->
@@ -167,13 +173,13 @@ send_frame(#{dst := {Ip, Port}, n := N, seq := Seq0, frame := Frame} = S) ->
             ok;
         false ->
             Pkt = chappe_mix_rtp:build(#{
-                pt => 0,
+                pt => element(1, maps:get(silence, S)),
                 seq => Seq,
                 ts => (N * Frame) band 16#FFFFFFFF,
                 ssrc => maps:get(ssrc, S),
                 marker => N =:= 0,
                 csrcs => maps:get(csrcs, S, []),
-                payload => binary:copy(<<16#FF>>, Frame)
+                payload => element(2, maps:get(silence, S))
             }),
             ok = gen_udp:send(maps:get(rtp, S), Ip, Port, Pkt)
     end,

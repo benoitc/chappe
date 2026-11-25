@@ -87,6 +87,14 @@ says how apps are released.
   callers referred by someone as referred, keeps callers who asked for
   privacy anonymous, and shows a member who leaves as disconnected before
   it goes.
+- HD native rooms: a native conference can mix at 16 kHz, so members on
+  G.722 or Opus keep their full band. The room asks rtpengine to convert
+  every member to the mixer's audio, which needs its L16 codec (tested
+  with 26.3.1.4; 11.5 has none; upstream has it from 13.4.1.1). Settings
+  you pass for the anchor and the endpoint still win, codec settings one
+  by one, so adding one keeps the room's conversion. Asking for a running
+  room at another rate than its own is refused. A FreeSWITCH conference
+  refuses the option: its rate comes from its profile.
 
 ## [0.1.0] - 2026-11-23
 

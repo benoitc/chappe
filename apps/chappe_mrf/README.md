@@ -4,7 +4,8 @@
 drachtio-fsmrf. It answers a caller with a FreeSWITCH endpoint you drive
 from Erlang (play, collect digits, record, fork audio), moves the caller
 between endpoints and SIP targets without a re-INVITE, and runs
-conferences on chappe_mix (native) or on FreeSWITCH mod_conference. Use it
+conferences on chappe_mix (native, at 8 or 16 kHz) or on FreeSWITCH
+mod_conference. Use it
 when your app needs an IVR, a voicemail, a bridge to a media server or a
 conference room.
 

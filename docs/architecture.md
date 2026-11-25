@@ -309,7 +309,8 @@ sequenceDiagram
 Notes:
 
 - rtpengine stays in front of the mixer: it transcodes and terminates SRTP,
-  so the mixer only sees G.711.
+  so the mixer only sees G.711, or L16 in a 16 kHz room (decision
+  [0017](decisions/0017-chappe-mix-16khz-l16.md)).
 - The room is owned by the conference process and outlives its callers.
 - Mute, deaf, relations and talker events come from the mixer.
 

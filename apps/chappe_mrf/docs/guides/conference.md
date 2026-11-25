@@ -76,6 +76,38 @@ between the mixer and the node when they differ:
 {ok, Member} = chappe_mrf_conf:join(Conf, Ep, #{}).
 ```
 
+### Run an HD (16 kHz) native room
+
+Callers on G.722 or Opus keep their band when the room mixes at 16 kHz.
+Give the room its rate when you start it:
+
+```erlang
+{ok, Conf} = chappe_mrf:conference(<<"hd">>, #{rate => 16000}),
+{ok, Member} = chappe_mrf_conf:join(Conf, B2b, #{}).
+```
+
+- The chappe_mix room mixes L16 at 16000, and rtpengine transcodes every
+  member to it and back: the room lays
+  `chappe_sip_media:mixer_params(16000, mixer)` under your `b` anchor
+  params and `mixer_params(16000, endpoint)` under your endpoint `offer`
+  params. Your own keys win, and inside `codec` key by key: a `codec` map
+  of yours (`strip`, say) adds to the room's `mask` and `transcode`, and
+  your `transcode` replaces the room's.
+- rtpengine needs the L16 codec: the labs test 26.3.1.4, 11.5.1.18
+  (Ubuntu 24.04) has none, and upstream tags have it from 13.4.1.1 (not
+  tested here).
+- A PCMU member is heard, and hears the room, through 8 kHz; the others
+  keep their band.
+- The rate is fixed: `rate` is 8000 (default) or 16000, anything else is
+  `{error, {bad_option, rate}}`. `conference/2` on a room that runs
+  returns it at its own rate or with no `rate`; another rate is
+  `{error, {rate_mismatch, RoomRate}}`.
+- SIPREC of a 16 kHz room is refused for now
+  (`{error, {unsupported, {rate, 16000}}}`).
+- The FreeSWITCH equivalent is an fs room with a 16 kHz profile
+  (`profile => <<"wideband">>` in the labs); an fs room refuses `rate`
+  with `{error, {unsupported, rate}}`.
+
 ### Record a native room
 
 A native room is recorded through SIPREC: its mix goes to the recording
@@ -482,7 +514,8 @@ touched.
   `chappe_mrf_conf_refer_op` (repeated REFERs); the loopback middleware is
   in `chappe_mrf`
 - Tests: `apps/chappe_mrf/test/chappe_mrf_SUITE.erl`,
-  `chappe_mrf_live_SUITE.erl`, `chappe_mrf_cluster_SUITE.erl` (rooms on
+  `chappe_mrf_live_SUITE.erl`, `chappe_mrf_hd_live_SUITE.erl` (HD rooms with
+  pjsua callers), `chappe_mrf_cluster_SUITE.erl` (rooms on
   three peer nodes)
 - Lab: `make interop-mrf` (native and FreeSWITCH rooms)
 - Design: [overview](../design/overview.md#native-conferences-and-the-loopback-middleware)

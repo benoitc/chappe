@@ -18,15 +18,40 @@
 
 -export_type([addr/0]).
 
--define(FRAME, 160).
 -define(ACTIVE, 64).
 
 -type addr() :: {inet:ip_address(), inet:port_number()}.
 
-%% A leg with id Id. Defaults: ip, law and depth of the conference, and
-%% the SSRC it starts under.
+%% A leg with id Id. Defaults: ip, rate, law and depth of the conference,
+%% and the SSRC it starts under. The rate decides the format: G.711 (the
+%% leg's law, else the room's) at 8 kHz, L16 at 16 kHz, where a law is a
+%% bad option; pt is the payload type of an L16 leg (default 96), a bad
+%% option at 8 kHz, where the law's static type is used. A dtmf_pt on the
+%% audio's payload type is a bad option at both: every packet would be
+%% taken as audio.
 -spec open(pos_integer(), map(), map()) -> {ok, #leg{}} | {error, term()}.
-open(Id, Opts, #{ip := Ip, law := Law, depth := Depth, ssrc := Ssrc} = Dfl) ->
+open(Id, Opts, #{rate := Rate} = Dfl) ->
+    maybe
+        {ok, Codec, Pt} ?= codec(Rate, Opts, Dfl),
+        ok ?= own_dtmf_pt(Opts, Pt),
+        open(Id, Opts, Dfl, Codec, Pt)
+    end.
+
+own_dtmf_pt(#{dtmf_pt := Pt}, Pt) -> {error, {bad_option, dtmf_pt}};
+own_dtmf_pt(_Opts, _Pt) -> ok.
+
+codec(16000, #{law := _}, _Dfl) ->
+    {error, {bad_option, law}};
+codec(16000, Opts, _Dfl) ->
+    {ok, l16, maps:get(pt, Opts, chappe_mix_fmt:pt(l16))};
+codec(8000, #{pt := _}, _Dfl) ->
+    {error, {bad_option, pt}};
+codec(8000, Opts, #{law := Law}) ->
+    L = maps:get(law, Opts, Law),
+    {ok, L, chappe_mix_fmt:pt(L)}.
+
+open(Id, Opts, Dfl, Codec, Pt) ->
+    #{ip := Ip, rate := Rate, depth := Depth, ssrc := Ssrc} = Dfl,
     Rtcp = maps:get(rtcp, Opts, mux),
     case open_socks(Rtcp, Ip) of
         {ok, Sock, RtcpSock} ->
@@ -36,7 +61,9 @@ open(Id, Opts, #{ip := Ip, law := Law, depth := Depth, ssrc := Ssrc} = Dfl) ->
                 sock = Sock,
                 port = Port,
                 remote = maps:get(remote, Opts, undefined),
-                law = maps:get(law, Opts, Law),
+                rate = Rate,
+                codec = Codec,
+                pt = Pt,
                 ptime = maps:get(ptime, Opts, 20),
                 direction = initial_direction(Opts),
                 injected = maps:get(injected, Opts, false),
@@ -48,10 +75,16 @@ open(Id, Opts, #{ip := Ip, law := Law, depth := Depth, ssrc := Ssrc} = Dfl) ->
                 ref = maps:get(ref, Opts, undefined),
                 jbuf = chappe_mix_jbuf:new(
                     Depth,
-                    silence_code(maps:get(law, Opts, Law)),
-                    maps:get(prefill_shrink, Dfl, false)
+                    chappe_mix_fmt:fill(Codec),
+                    maps:get(prefill_shrink, Dfl, false),
+                    #{
+                        frame => chappe_mix_fmt:frame(Rate),
+                        width => chappe_mix_fmt:width(Codec)
+                    }
                 ),
-                sess = chappe_mix_session:new(Ssrc, erlang:monotonic_time()),
+                sess = chappe_mix_session:new(
+                    Ssrc, erlang:monotonic_time(), Rate
+                ),
                 rtcp = Rtcp,
                 rtcp_sock = RtcpSock,
                 rtcp_remote = maps:get(rtcp_remote, Opts, undefined),
@@ -117,7 +150,9 @@ info(#leg{} = L) ->
             port => L#leg.port,
             remote => L#leg.remote,
             source => L#leg.source,
-            law => L#leg.law,
+            rate => L#leg.rate,
+            law => L#leg.codec,
+            pt => L#leg.pt,
             ptime => L#leg.ptime,
             mute => not speaks(L),
             direction => L#leg.direction,
@@ -141,9 +176,16 @@ info(#leg{} = L) ->
     ).
 
 %% A new far end (and the leg options that come with it): the source
-%% latches are reset, so its first packet is taken.
--spec set_remote(map(), #leg{}) -> #leg{}.
-set_remote(#{remote := Remote} = Opts, L) ->
+%% latches are reset, so its first packet is taken. A telephone-event on
+%% the leg's own payload type is refused, as at open/3.
+-spec set_remote(map(), #leg{}) -> #leg{} | {error, {bad_option, dtmf_pt}}.
+set_remote(#{remote := Remote} = Opts, #leg{pt = Pt} = L) ->
+    case own_dtmf_pt(Opts, Pt) of
+        ok -> remote(Remote, Opts, L);
+        {error, _} = Err -> Err
+    end.
+
+remote(Remote, Opts, L) ->
     L#leg{
         remote = Remote,
         source = undefined,
@@ -219,7 +261,8 @@ accepts_rtcp(_From, L) ->
 
 %% A packet the session took: latch the addresses (the far end moves the
 %% source latch to itself), buffer the audio by its timestamp, whatever
-%% its size.
+%% its size. An L16 payload of an odd length is not whole samples: it is
+%% counted as bad and not played.
 -spec take(chappe_mix_rtp:packet(), addr(), #leg{}) -> #leg{}.
 take(
     #{pt := PT, ssrc := Ssrc, seq := Seq, ts := Ts, payload := P} = Pkt, From, L
@@ -228,7 +271,9 @@ take(
         source = latch_source(L, From),
         remote = latch(L#leg.remote, From)
     },
-    case PT =:= law_pt(L#leg.law) of
+    case PT =:= L#leg.pt of
+        true when byte_size(P) rem 2 =/= 0, L#leg.codec =:= l16 ->
+            L1#leg{bad = L1#leg.bad + 1};
         true ->
             L1#leg{
                 jbuf = chappe_mix_jbuf:push(Ssrc, Seq, Ts, P, L1#leg.jbuf),
@@ -269,13 +314,11 @@ latch(Addr, _From) -> Addr.
 latch_source(#leg{remote = From}, From) -> From;
 latch_source(#leg{source = Source}, From) -> latch(Source, From).
 
-law_pt(ulaw) -> 0;
-law_pt(alaw) -> 8.
-
 %% ---- out ----
 
-%% This tick's 20 ms frame from the jitter buffer, as code words, or
-%% none. The buffer makes 20 ms frames out of packets of any size.
+%% This tick's 20 ms frame from the jitter buffer, as its payload (G.711
+%% code words or L16 samples), or none. The buffer makes 20 ms frames out
+%% of packets of any size.
 -spec pop(#leg{}) -> {#leg{}, binary() | none}.
 pop(#leg{jbuf = J0} = L) ->
     case chappe_mix_jbuf:pop(J0) of
@@ -283,21 +326,21 @@ pop(#leg{jbuf = J0} = L) ->
         {Payload, J} -> {L#leg{jbuf = J}, Payload}
     end.
 
-%% Send a mixed frame, already encoded in the leg's law (none: silence),
-%% naming Csrcs, if the far end is known. The conference does not call it
-%% for a leg the room sends nothing (see hears/1).
+%% Send a mixed frame, already encoded in the leg's format (none:
+%% silence), naming Csrcs, if the far end is known. The conference does
+%% not call it for a leg the room sends nothing (see hears/1).
 -spec send(#leg{}, binary() | none, [non_neg_integer()]) -> #leg{}.
 send(#leg{remote = undefined} = L, _Mixed, _Csrcs) ->
     L;
-send(#leg{remote = {Ip, Port}, law = Law, sess = Sess} = L, Mixed, Csrcs) ->
+send(#leg{remote = {Ip, Port}, sess = Sess} = L, Mixed, Csrcs) ->
     Payload =
         case Mixed of
-            none -> silence(Law);
+            none -> silence(L);
             _ -> Mixed
         end,
     Hdr = chappe_mix_session:header(Sess),
     Pkt = chappe_mix_rtp:build(Hdr#{
-        pt => law_pt(Law),
+        pt => L#leg.pt,
         %% a packet every tick, no silence suppression: M stays 0
         %% (RFC 3551 4.1)
         marker => false,
@@ -337,10 +380,12 @@ send_event(
 advance(#leg{sess = Sess} = L, Step) ->
     L#leg{sess = chappe_mix_session:advance(Sess, Step)}.
 
-silence(Law) -> binary:copy(<<(silence_code(Law))>>, ?FRAME).
-
-silence_code(ulaw) -> 16#FF;
-silence_code(alaw) -> 16#D5.
+%% A frame of the format's silence, at the room's rate.
+silence(#leg{codec = Codec, rate = Rate}) ->
+    binary:copy(
+        <<(chappe_mix_fmt:fill(Codec))>>,
+        chappe_mix_fmt:frame(Rate) * chappe_mix_fmt:width(Codec)
+    ).
 
 %% Send the leg's compound packet (see chappe_mix_session:report/5),
 %% Extra last, if it has somewhere to go.

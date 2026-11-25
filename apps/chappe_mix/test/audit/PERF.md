@@ -28,6 +28,13 @@ missed here, never redefined after the numbers arrive.
 | Per-pair relations, cost, set 2026-10-03 | `mix_cost` at 4 and 64 legs with no relation set rises by no more than 5%; the cost of each exclusion is measured and recorded | n/a | runner, against `c9f377d`: -1.1% at 4 legs; at 64 legs the arm rises +157%, the gain control's (a room that fits: -1.3%); each listener kept from one leg: 71.9 / 2307 us (+43 / +1312 us), from four: 104.8 / 3214 us | met |
 | Talker events, latency, set 2026-10-03 | `{talking, Leg, true}` within 100 ms of the first loud frame entering the mix (60 ms hysteresis plus up to two ticks), `false` within 340 ms of the last one (300 ms plus two ticks), at the defaults | n/a | runner: true after 59 ms and false after 299 ms of the tone, in all 100 rounds | met |
 | Talker events, cost, set 2026-10-03 | `mix_cost` at 4 and 64 legs with a subscriber set rises by no more than 5% | n/a | runner: +3.5% / +2.1% (29.8 / 1016.1 us) | met |
+| 8 kHz mix compute after the 16 kHz room, set 2026-11-24 | `mix_cost` at 4 and 64 legs within 3% of the parent (`374b478`), interleaved on one box | n/a | runner (`2b1734a`): 31.85 / 1118.56 us against 32.35 / 1365.71 us (-1.5% / -18.1%), a room that fits 31.58 / 436.97 against 32.30 / 430.21 (-2.2% / +1.6%); the bytes are the same (seeded digests). At `1e1b548`, on another runner, 64 legs was +25.8% (1056.60 against 839.82): the gain ramp made a call per sample, fixed in `2b1734a` | met |
+| 16 kHz mix compute, set 2026-11-24 | `mix_cost` with `rate=16000` at 4 and 64 legs at most 2.2 times the 8 kHz arm of the same build | n/a | runner (`2b1734a`): 55.10 / 2064.14 us, x1.73 / x1.85; a room that fits 54.83 / 681.02 us, x1.74 / x1.56 | met |
+| Capacity, 4-party 16 kHz rooms, one scheduler, every tick in budget, set 2026-11-24 | >= 100 rooms (400 legs) | n/a | runner (`2b1734a`, AMD EPYC 7763): 100, 100, 100, 100, 125 rooms in budget (8 kHz beside it: 100 to 150); runner (`1e1b548`, Xeon 6975P-C): 175 to 200 (8 kHz: 225 to 275). At the threshold on the slower host | met |
+| Memory per 4-party 16 kHz room, set 2026-11-24 | <= 512 KiB (twice the 8 kHz row) | n/a | runner (`2b1734a`): 96.8 to 114.0 KiB of Erlang memory per room at capacity (8 kHz beside it: 108.3 to 114.4) | met |
+| Latency and tick jitter in a 16 kHz room, set 2026-11-24 | the 8 kHz rows: <= 25 / 45 ms p50 / p99 added; tick p99 <= 2 ms idle | n/a | runner (`2b1734a`): p50 / p99 1.4 to 5.4 / 1.6 to 5.5 ms (8 kHz beside it: 4.9 to 5.8 / 5.0 to 5.8); idle tick p99 bucket 1 ms at both rates | met |
+| Limiter distortion at 16 kHz, set 2026-11-24 | the 8 kHz row: 8 talkers at -6 dBFS, THD+N <= -26 dB | n/a | -30.50 dB (hard clip -10.27 dB) | met |
+| rtpengine CPU per transcoded leg into a 16 kHz room, set 2026-11-24 | informational, no threshold | 2.0% of a CPU for the same three callers, relayed to the `wideband` room | 39.9% of a CPU for three callers (G.722, Opus, PCMU), about 13% a call, both its legs transcoded; load 12 to 17 | recorded |
 
 The numbers in the table are the quiet-box ones from "2026-10-01: native
 reference" below, minimum of the runs unless that section says otherwise.
@@ -815,3 +822,90 @@ nothing refused):
 
 Not measured on the runner: the limiter distortion row (deterministic,
 measured before) and the byte-for-byte row (a suite, not a timing).
+
+### 2026-11-25: 16 kHz rooms on a runner
+
+The bench workflow's `hd` group (`apps/chappe_mix/bench/pass.sh hd`) on a
+GitHub runner, five rounds, the 8 and 16 kHz arms of one build interleaved
+and swapping order every round, the parent `374b478` beside them for the
+8 kHz rows, `+S 1`, minimum of the five. The thresholds above were set in
+the plan on 2026-11-24, before any 16 kHz arm ran.
+
+- Run 45515298576 at `1e1b548`: Intel Xeon 6975P-C, 4 vCPU, load 0.28 to
+  0.99. `mix_cost` 64 legs at 8 kHz was 1056.60 us against the parent's
+  839.82 (+25.8%), a missed threshold: the gain ramp shared with the
+  16 kHz path made a function call per sample. 16 kHz capacity 175 to
+  200 rooms, 8 kHz 225 to 275.
+- Run 45533099370 at `2b1734a` (the ramp without the per-sample calls):
+  AMD EPYC 7763, 4 vCPU, load 0.37 to 0.99. The figures in the rows
+  above.
+
+### 2026-11-24: 16 kHz rooms, void, load 6.6 to 20.6
+
+Every timed number in this section is **void**: the 14-CPU macOS box ran
+other lanes' builds and labs, the 1-minute load average sat between 6.6 and
+20.6 against the 3.5 limit, and every arm ran with
+`CHAPPE_MIX_BENCH_FORCE=1`. They show the arms run at both rates and the
+shape to check against; none marks a threshold met or missed. **The
+thresholds set 2026-11-24 must be measured again on a quiet box**, with the
+arms below, interleaved, minimum of five.
+
+Those thresholds were set on 2026-11-24 in the lane's plan, before any
+16 kHz arm ran; they reached this file in the same commit as the void
+numbers below, so the commit history does not show that order.
+
+The arms take `CHAPPE_MIX_BENCH_CONF=rate=16000`: every room at 16 kHz, the
+sender groups and the probe on L16 (payload type 96), and `mix_cost`
+timing the L16 mix of 320-sample frames. The 8 kHz side of the comparison
+is the parent `374b478` (the commit before the room's rate, built from its
+`src/` into a scratch directory) against this build with `rate=8000`.
+
+`mix_cost`, five interleaved rounds (parent, this build at 8 kHz, this
+build at 16 kHz), minimum of the five, `+S 1`, load 7.5 to 8.9:
+
+| arm | legs | parent 8 kHz | this build, 8 kHz | this build, 16 kHz |
+| --- | ---: | ---: | ---: | ---: |
+| plain | 4 | 16.80 us | 15.64 us (-6.9%) | 26.14 us (x1.67) |
+| plain | 64 | 848.86 us | 877.05 us (+3.3%) | 1534.70 us (x1.75) |
+| fit | 4 | 16.67 us | 15.56 us (-6.7%) | 26.57 us (x1.71) |
+| fit | 64 | 231.56 us | 231.36 us (-0.1%) | 341.99 us (x1.48) |
+
+- The 8 kHz path: within 3% at 64 legs in a room that fits, +3.3% where
+  every listener takes the gain control's scaled encode, and 7% faster at
+  4 legs on a box this loaded, which says more about the load than the
+  code: the bytes are the same (`chappe_mix_golden_tests`), the loops
+  compare their index against `tuple_size/1` instead of a literal.
+- 16 kHz: 1.48 to 1.75 times the 8 kHz arm for twice the samples. Void,
+  so it says nothing about the threshold until a quiet box reruns it.
+
+`latency` (50 bursts, 2 silent legs) and `jitter idle` (10 s), two
+interleaved rounds, load 7.4 to 20.6:
+
+| arm | 8 kHz | 16 kHz |
+| --- | --- | --- |
+| latency p50 / p99, round 1 | 7.9 / 27.9 ms | 6.8 / 26.9 ms |
+| latency p50 / p99, round 2 | 25.1 / 25.4 ms | 26.5 / 27.1 ms |
+| tick lateness p99 idle, traced, round 1 | 0.44 ms | 13.6 ms, 4 overruns |
+| tick lateness p99 idle, traced, round 2 | 0.14 ms | 0.63 ms |
+
+`capacity` (step 25, 3 s a step), one run each, load 13.4 then 16.7: 8 kHz
+held 75 conferences in budget (100 had an overrun, the scheduler at 0.70);
+16 kHz had 7 overruns at the first step of 25 with the scheduler at 0.19,
+which is the box stalling the node, not the mix. Memory per conference,
+Erlang bytes: 96.9 to 101.0 KiB at 8 kHz, 102.6 KiB at 16 kHz (the leg
+state does not grow with the rate; a tick's sum and frames are transient).
+
+Not timed, so not void:
+
+- Limiter distortion at 16 kHz (`chappe_mix_dsp_l16_tests`,
+  `gain_distortion_test`): eight tones at -6 dBFS, THD+N at the listener
+  -30.50 dB with the gain control, -10.27 dB hard clipped. Met (<= -26 dB).
+- The band through real codecs (`chappe_mix_live_SUITE`, rtpengine
+  26.3.1.4): G.722 and Opus carry 5000 and 6000 Hz both ways into and out
+  of a 16 kHz room; PCMU drops them to -106 to -132 dBFS.
+- rtpengine CPU, informational (`docker stats` every 2 s during
+  `chappe_mrf_hd_live_SUITE`, rtpengine 26.3.1.4, load 12 to 17): three pjsua
+  callers (G.722, Opus, PCMU) in the native 16 kHz room, each call transcoded
+  on both its legs (the caller's codec to L16 and back): 39.9% of one CPU
+  on average, 51.1% at most, about 13% a call. The same callers in the
+  FreeSWITCH `wideband` room, where rtpengine only relays: 2.0%.

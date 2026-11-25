@@ -88,6 +88,18 @@
 %%   max_members => pos_integer(): join/3 returns {error, full} past it
 %%                (joins under way count)
 %% native:
+%%   rate      => 8000 | 16000: the room's sample rate, for good (default
+%%                8000, G.711). At 16000 the chappe_mix room mixes L16 and
+%%                rtpengine (with L16: tested on 26.3.1.4, upstream from
+%%                13.4.1.1) transcodes every member to it
+%%                and back: chappe_sip_media:mixer_params/2 goes under the
+%%                anchor and endpoint params, their own keys winning (in
+%%                codec, key by key). A room that runs already is
+%%                returned only at its own rate: another one is {error,
+%%                {rate_mismatch, RoomRate}}, and without a rate you get
+%%                the room whatever its rate. Any other backend refuses
+%%                it with {error, {unsupported, rate}}: an fs room's rate
+%%                is its profile's (`wideband')
 %%   anchor_params => #{a | b => map()}: rtpengine flags for a caller
 %%                moved into the mixer (the mixer runs on this host)
 %%   endpoint_params => #{offer, answer => map()}: rtpengine flags between
@@ -156,15 +168,20 @@
 %% reach runs out (retry: the name comes free within lease_ms).
 -spec start(binary(), map()) -> {ok, conf()} | {error, term()}.
 start(Name, Opts) ->
-    case chappe_mrf_registry:lookup({conf, Name}) of
-        {ok, Conf} ->
-            {ok, Conf};
-        error ->
-            Args = #{name => Name, opts => Opts, caller => self()},
-            case application:get_env(chappe_mrf, cluster, none) of
-                chappe_cluster -> chappe_mrf_conf_cluster:start(Name, Args);
-                _ -> start_local(Args)
-            end
+    maybe
+        ok ?= chappe_mrf_conf_native:check_rate(Opts),
+        chappe_mrf_conf_native:same_rate(find_or_start(Name, Opts), Opts)
+    end.
+
+%% a room that runs is returned as it is
+find_or_start(Name, Opts) ->
+    maybe
+        error ?= chappe_mrf_registry:lookup({conf, Name}),
+        Args = #{name => Name, opts => Opts, caller => self()},
+        case application:get_env(chappe_mrf, cluster, none) of
+            chappe_cluster -> chappe_mrf_conf_cluster:start(Name, Args);
+            _ -> start_local(Args)
+        end
     end.
 
 start_local(Args) ->

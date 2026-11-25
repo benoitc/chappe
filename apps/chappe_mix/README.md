@@ -7,8 +7,10 @@ voice. You need it when your service runs conference rooms, whispers,
 listen-only supervisors or prompt players next to SIP calls, and you want
 the room to live in your Erlang node instead of on a media server.
 
-It speaks G.711 (PCMU and PCMA) over plain RTP/AVP only. SRTP, DTLS, ICE and
-every other codec stay in rtpengine, which you put in front of the mixer.
+It speaks G.711 (PCMU and PCMA) in an 8 kHz room, the default, and L16 in a
+16 kHz room, over plain RTP/AVP only. SRTP, DTLS, ICE and
+every other codec (Opus, G.722, ...) stay in rtpengine, which you put in
+front of the mixer and which transcodes to the room's format.
 It knows nothing about SIP or SDP.
 
 ## When to use it rather than a FreeSWITCH conference
@@ -18,7 +20,7 @@ It knows nothing about SIP or SDP.
 | Rooms in your own node, controlled per pair of legs (`relate/4`), talker events, no media server to run | chappe_mix |
 | Low latency and density: see the measured numbers in [`test/audit/PERF.md`](test/audit/PERF.md) | chappe_mix |
 | Recording, playback, TTS or PIN prompts inside the room, mod_conference features | a FreeSWITCH room (`chappe_mrf`, backend `fs`) |
-| Wideband (G.722, Opus mixed at 16 kHz) | not yet: see [features](docs/features.md) |
+| Wideband (G.722, Opus mixed at 16 kHz, rtpengine with L16 in front: tested on 26.3.1.4, upstream has it from 13.4.1.1) | chappe_mix, `rate => 16000` ([guide](docs/guides/conference.md#run-a-16-khz-hd-room)) |
 
 `chappe_mrf` drives both kinds of room behind one API (backend `native` is
 chappe_mix, backend `fs` is FreeSWITCH).

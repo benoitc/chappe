@@ -71,6 +71,7 @@ coverage, row by row, is in the [compliance matrix](compliance.md).
 | SIPREC recording server sends RTCP receiver reports (muxed or on the port above, SRTCP on SRTP streams, one CNAME per session) | [SIPREC](guides/siprec.md#rtcp-from-the-recording-server) |
 | SIPREC recording server takes SRTP (RTP/SAVP, RTP/SAVPF, SDES keys) and decrypts it itself | [SIPREC](guides/siprec.md#take-srtp-as-the-recording-server) |
 | Conferences on chappe_mix, rtpengine in front for WebRTC and transcoding | [Media](guides/media.md#run-a-conference-chappe_mix) |
+| HD conferences: a 16 kHz chappe_mix room on L16 (`rate => 16000`), rtpengine transcoding G.722 and Opus callers (L16 tested on 26.3.1.4, upstream from 13.4.1.1), `mixer_params/2` for its flags | [Media](guides/media.md#an-hd-16-khz-room) |
 | Media-anchoring proxy | [Proxy](guides/proxy.md) |
 
 ## Operations

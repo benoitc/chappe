@@ -34,7 +34,11 @@
     cascaded_csrcs/1,
     rtcp_to_the_given_port/1,
     empty_rr_first/1,
-    jitter_formula/1
+    jitter_formula/1,
+    l16_octets_through_the_mix/1,
+    l16_sr_clock/1,
+    l16_jitter/1,
+    l16_dtmf/1
 ]).
 
 -define(LO, {127, 0, 0, 1}).
@@ -56,7 +60,8 @@ all() ->
         dtmf_follows_relations,
         cascaded_csrcs,
         rtcp_to_the_given_port,
-        {group, codec}
+        {group, codec},
+        {group, l16}
     ].
 
 groups() ->
@@ -68,6 +73,12 @@ groups() ->
             bye_grace,
             bye_resume,
             bye_resume_wrap
+        ]},
+        {l16, [], [
+            l16_octets_through_the_mix,
+            l16_sr_clock,
+            l16_jitter,
+            l16_dtmf
         ]}
     ].
 
@@ -1181,6 +1192,207 @@ transit({_, Ts, _} = P, Arrival) -> Arrival(P) - Ts.
 signed32(X) ->
     <<S:32/signed>> = <<X:32>>,
     S.
+
+%% ---- a 16 kHz room: L16 ----
+
+%% Leg A of a 16 kHz room sends one fixed frame of 320 L16 samples whose
+%% two octets always differ (and negative ones, so the sign is in the top
+%% octet); leg B, the only listener, hears A alone, so every mixed packet
+%% it gets is that frame octet for octet, most significant octet first,
+%% or silence. Read or written little-endian, a sample would come back
+%% with its octets swapped. Every packet is 640 octets on the leg's
+%% payload type, 20 ms at 16 kHz, its timestamp 320 on from the last.
+%% req: R3551-063 R3551-035 R3551-030
+l16_octets_through_the_mix(_Config) ->
+    {ok, Conf} = chappe_mix:start(#{rate => 16000}),
+    {SA, PA} = open(),
+    {SB, PB} = open(),
+    {ok, _, #{port := MA}} = chappe_mix:add_leg(
+        Conf, #{remote => {?LO, PA}, pt => 97}
+    ),
+    {ok, _, _} = chappe_mix:add_leg(Conf, #{remote => {?LO, PB}, pt => 98}),
+    Samples = [
+        (I * 257 + 1) *
+            (case I rem 2 of
+                0 -> 1;
+                1 -> -1
+            end)
+     || I <- lists:seq(1, 320)
+    ],
+    Frame = <<<<S:16/big-signed>> || S <- Samples>>,
+    ?assertNotEqual(Frame, <<<<S:16/little-signed>> || S <- Samples>>),
+    Pkts = [
+        rtp(#{pt => 97, seq => N, ts => N * 320, ssrc => 16#A, payload => Frame})
+     || N <- lists:seq(1, 50)
+    ],
+    stream(SA, {?LO, MA}, Pkts),
+    timer:sleep(100),
+    ok = chappe_mix:stop(Conf),
+    Heard = rtp_in(drain(SB)),
+    [gen_udp:close(S) || S <- [SA, SB]],
+    Payloads = [P || {_, #{payload := P}} <- Heard],
+    Silence = <<0:(640 * 8)>>,
+    ct:log("~p packets, ~p the frame", [
+        length(Payloads), length([P || P <- Payloads, P =:= Frame])
+    ]),
+    ?assertEqual([98], lists:usort([PT || {_, #{pt := PT}} <- Heard])),
+    ?assertEqual([640], lists:usort([byte_size(P) || P <- Payloads])),
+    ?assertEqual([], [P || P <- Payloads, P =/= Frame, P =/= Silence]),
+    ?assert(length([P || P <- Payloads, P =:= Frame]) >= 10),
+    Steps = [
+        (T1 - T0) band 16#FFFFFFFF
+     || {{_, #{ts := T0}}, {_, #{ts := T1}}} <- lists:zip(
+            lists:droplast(Heard), tl(Heard)
+        )
+    ],
+    %% a step of 320 per tick, or whole frames more after an overrun
+    ?assertEqual([], [S || S <- Steps, S rem 320 =/= 0]),
+    ?assert(length([S || S <- Steps, S =:= 320]) >= length(Steps) div 2).
+
+%% The SR of a 16 kHz leg counts its RTP timestamp at 16 kHz: between the
+%% first packet B gets and the SR, the timestamp moved by 16000 per
+%% second of wall clock (within 5%, the arrival times bound it), and the
+%% SR's timestamp is that of a packet sent when it was (6.4.1).
+%% req: R3550-100
+l16_sr_clock(_Config) ->
+    {ok, Conf} = chappe_mix:start(#{rate => 16000}),
+    {RB, PB} = recorder(),
+    {ok, _, _} = chappe_mix:add_leg(Conf, #{remote => {?LO, PB}}),
+    %% the first report is due within the first interval, 2.5 s to 7.5 s
+    timer:sleep(8000),
+    ok = chappe_mix:stop(Conf),
+    Pkts = recorded(RB),
+    Rtp = rtp_in(Pkts),
+    Srs = [
+        {T, Ts, Ntp}
+     || {T, B} <- Pkts,
+        is_rtcp(B),
+        {ok, [#{type := sr, ts := Ts, ntp := Ntp} | _]} <- [
+            chappe_mix_rtcp:parse(B)
+        ]
+    ],
+    ?assertNotEqual([], Srs),
+    [{T0, #{ts := Ts0}} | _] = Rtp,
+    [{TSr, TsSr, _} | _] = Srs,
+    Rate = ((TsSr - Ts0) band 16#FFFFFFFF) / ((TSr - T0) / 1000000),
+    ct:log("timestamp rate seen from the SR: ~.1f Hz", [Rate]),
+    ?assert(abs(Rate - 16000) =< 800, Rate),
+    ?assert(
+        lists:member(TsSr, [Ts || {_, #{ts := Ts}} <- Rtp]),
+        {sr_ts_not_sent, TsSr}
+    ).
+
+%% The jitter a 16 kHz leg reports counts in 16 kHz units (A.8: the units
+%% of the RTP timestamp, which here runs at 16000). A sender keeping time,
+%% a packet every 20 ms 320 on from the last, is reported what the
+%% scheduler adds, a few ms worth; arrival counted at 8000 would put each
+%% packet 160 units off the last, a jitter near 160.
+%% req: R3550-104
+l16_jitter(_Config) ->
+    {ok, Conf} = chappe_mix:start(#{rate => 16000}),
+    {S, P} = open(),
+    {ok, _, #{port := M}} = chappe_mix:add_leg(Conf, #{remote => {?LO, P}}),
+    Pkts = [
+        rtp(#{
+            pt => 96,
+            seq => N,
+            ts => N * 320,
+            ssrc => 16#B0,
+            payload => <<0:5120>>
+        })
+     || N <- lists:seq(1, 400)
+    ],
+    %% 8 s: the first report is due within 7.5 s
+    ok = stream(S, {?LO, M}, Pkts),
+    ok = chappe_mix:stop(Conf),
+    Jitter = [
+        J
+     || {_, B} <- drain(S),
+        is_rtcp(B),
+        {ok, Parts} <- [chappe_mix_rtcp:parse(B)],
+        #{blocks := Blocks} <- Parts,
+        #{ssrc := 16#B0, jitter := J} <- Blocks
+    ],
+    ct:log("jitter reported (16 kHz units): ~p", [Jitter]),
+    ?assertNotEqual([], Jitter),
+    ?assert(lists:last(Jitter) < 100, Jitter).
+
+recorded(Pid) ->
+    Pid ! {get, self()},
+    receive
+        {Pid, Pkts} -> Pkts
+    after 2000 -> ct:fail(recorded)
+    end.
+
+%% telephone-event at 16000 in a 16 kHz room: A's event goes to B as it
+%% came, its duration in 16 kHz units unchanged (a room has one clock, so
+%% the units are B's too), M on the first packet, one timestamp for the
+%% event on B's own 16 kHz clock: within a frame or two of the audio
+%% timestamp B got when the event started.
+%% req: R4733-011 R4733-001
+l16_dtmf(_Config) ->
+    {ok, Conf} = chappe_mix:start(#{rate => 16000}),
+    {SA, PA} = open(),
+    {RB, PB} = recorder(),
+    {ok, _, #{port := MA}} = chappe_mix:add_leg(
+        Conf, #{remote => {?LO, PA}, dtmf_pt => 101}
+    ),
+    {ok, _, _} = chappe_mix:add_leg(Conf, #{remote => {?LO, PB}, dtmf_pt => 102}),
+    Audio = fun(N) ->
+        {audio,
+            rtp(#{
+                pt => 96,
+                seq => N,
+                ts => N * 320,
+                ssrc => 16#A,
+                payload => <<0:5120>>
+            })}
+    end,
+    Ev = fun(Seq, M, E, Dur) ->
+        {event,
+            rtp(#{
+                pt => 101,
+                seq => Seq,
+                ts => 21 * 320,
+                ssrc => 16#A,
+                marker => M,
+                payload => <<5, E:1, 0:1, 10:6, Dur:16>>
+            })}
+    end,
+    %% 80 ms of digit 5: 320, 640, 960 and 1280 samples at 16 kHz
+    Digit = [
+        Ev(21, true, 0, 320),
+        Ev(22, false, 0, 640),
+        Ev(23, false, 0, 960),
+        Ev(24, false, 1, 1280),
+        Ev(25, false, 1, 1280),
+        Ev(26, false, 1, 1280)
+    ],
+    Plan =
+        [Audio(N) || N <- lists:seq(1, 20)] ++ Digit ++
+            [Audio(N) || N <- lists:seq(27, 40)],
+    Sent = stream_timed(SA, {?LO, MA}, Plan),
+    timer:sleep(100),
+    ok = chappe_mix:stop(Conf),
+    gen_udp:close(SA),
+    B = rtp_recorded(RB),
+    BEv = [P || {_, #{pt := 102} = P} <- B],
+    SentEv = [
+        P
+     || {_, {event, Bin}} <- Sent, {ok, P} <- [chappe_mix_rtp:parse(Bin)]
+    ],
+    ?assertEqual(
+        [Pl || #{payload := Pl} <- SentEv], [Pl || #{payload := Pl} <- BEv]
+    ),
+    ?assertEqual(
+        [true, false, false, false, false, false], [M || #{marker := M} <- BEv]
+    ),
+    [EvTs] = lists:usort([Ts || #{ts := Ts} <- BEv]),
+    %% the audio B got just before the event started
+    [TEv | _] = [T || {T, #{pt := 102}} <- B],
+    Before = lists:last([Ts || {T, #{pt := 96, ts := Ts}} <- B, T < TEv]),
+    ct:log("event at ~p on B's clock, audio before it at ~p", [EvTs, Before]),
+    ?assert(((EvTs - Before) band 16#FFFFFFFF) =< 3 * 320, {EvTs, Before}).
 
 %% ---- helpers ----
 

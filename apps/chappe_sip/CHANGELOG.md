@@ -19,6 +19,20 @@ says how apps are released.
 - A REFER accepted outside any dialog can be answered with the
   conference's own address as its contact, so the participant knows it
   talks to the conference.
+- HD conference rooms: a room can mix at 16 kHz instead of 8 kHz, so
+  callers on G.722 or Opus hear each other in wideband while G.711
+  callers still join. The media facade gives the rtpengine settings that
+  convert each caller to the room's audio. These rooms need an rtpengine
+  with the L16 codec: tested with 26.3.1.4; 11.5 (Ubuntu 24.04's package)
+  has none, and upstream releases have it from 13.4.1.1 on.
+
+### Changed
+
+- A room keeps the rate it was created with: a join asking for another
+  rate is refused, and recording a 16 kHz room with SIPREC is refused for
+  now. In a 16 kHz room, an answer that moves the audio to another payload
+  type than the mixer offered is refused: the far end would drop what the
+  mixer sends.
 
 ### Fixed
 

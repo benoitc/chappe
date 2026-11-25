@@ -12,6 +12,7 @@
     endpoint/1,
     stop/1,
     samples/1,
+    rate/1,
     frames/1,
     gaps/2,
     weak_frames/3,
@@ -44,7 +45,9 @@
 %% (packets), ip (bind address, default loopback), law (ulaw | alaw |
 %% l16, both ways, default ulaw; l16 is RFC 3551 L16, 16-bit big-endian),
 %% pt (payload type, default 0, 8 or 96 by law), rate (sample rate and
-%% RTP clock, default 8000), ptime (ms per packet sent, default 20)}. Only
+%% RTP clock, default 8000), ptime (ms per packet sent, default 20),
+%% signal (a tuple of samples played in a loop in place of the tone; Pid !
+%% {signal, Sig} changes it, a tuple of zeros for silence)}. Only
 %% packets carrying the payload type are recorded, so comfort noise or
 %% telephone-event from a real peer is not decoded as audio. Returns
 %% {Pid, LocalPort}.
@@ -60,6 +63,14 @@ stop(Pid) ->
     unlink(Pid),
     exit(Pid, kill),
     ok.
+
+%% The endpoint's sample rate (its rate option).
+rate(Pid) ->
+    Pid ! {rate, self()},
+    receive
+        {Pid, rate, R} -> R
+    after 2000 -> error(endpoint_rate)
+    end.
 
 %% Decoded samples received so far, in arrival order.
 samples(Pid) ->
@@ -175,10 +186,15 @@ loop(S) ->
                  || F <- lists:reverse(maps:get(rx, S))
                 ]},
             loop(S);
+        {rate, From} ->
+            From ! {self(), rate, maps:get(rate, S)},
+            loop(S);
         clear ->
             loop(S#{rx => []});
         {dst, Dst} ->
-            loop(S#{dst => Dst})
+            loop(S#{dst => Dst});
+        {signal, Sig} ->
+            loop(S#{signal => Sig})
     end.
 
 send_frame(#{dst := undefined} = S) ->
@@ -194,10 +210,19 @@ send_frame(#{n := N, switch := Switch} = S0) ->
     #{sock := Sock, dst := {Ip, Port}, freq := F, amp := A, seq := Seq} = S,
     Rate = maps:get(rate, S),
     Frame = maps:get(ptime, S) * Rate div 1000,
-    Samples = [
-        round(A * math:sin(2 * math:pi() * F * I / Rate))
-     || I <- lists:seq(N * Frame, N * Frame + Frame - 1)
-    ],
+    Samples =
+        case maps:get(signal, S, undefined) of
+            undefined ->
+                [
+                    round(A * math:sin(2 * math:pi() * F * I / Rate))
+                 || I <- lists:seq(N * Frame, N * Frame + Frame - 1)
+                ];
+            Sig ->
+                [
+                    element(I rem tuple_size(Sig) + 1, Sig)
+                 || I <- lists:seq(N * Frame, N * Frame + Frame - 1)
+                ]
+        end,
     Law = maps:get(law, S),
     Pkt = chappe_mix_rtp:build(#{
         pt => maps:get(pt, S),
@@ -235,10 +260,10 @@ decode(Law, P) -> chappe_mix_g711:decode_frame(Law, P).
 %% 164 ms late at a load average of 34), and a stalled sender is a gap,
 %% not a wrong mix. Present means within 3 dB of a 6000-amplitude tone
 %% (Present dBFS), absent means 40 dB below it (Absent dBFS). Returns
-%% {ok, Windows} or {error, Reason, Windows}. hears/4 takes the
-%% endpoint's sample rate (its rate option).
+%% {ok, Windows} or {error, Reason, Windows}, at the endpoint's own rate
+%% (its rate option); hears/4 takes the rate to judge at.
 hears(Pid, Dbs, Tones) ->
-    hears(Pid, Dbs, Tones, ?RATE).
+    hears(Pid, Dbs, Tones, rate(Pid)).
 
 hears(Pid, {PresentDb, AbsentDb}, {Present, Absent}, Rate) ->
     Samples = samples(Pid),

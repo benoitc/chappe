@@ -14,6 +14,14 @@ What chappe_mix does today, and what is planned.
   early).
 - G.711 mu-law and A-law, per leg, with frame tables built at application
   start.
+- 16 kHz rooms (`rate => 16000`): every leg L16 at 16000 on a dynamic
+  payload type (`pt`, default 96), mixed linearly, 320 samples a frame,
+  taps of 640 bytes, telephone-event at 16000. rtpengine turns Opus,
+  G.722, PCMU and PCMA callers into L16 and back: tested on 26.3.1.4,
+  11.5.1.18 has no L16, upstream has it from 13.4.1.1. The rate is
+  fixed for the room's life; an 8 kHz room is the G.711 mix of before,
+  byte for byte (a seeded digest pins it).
+  [Conference guide](guides/conference.md#run-a-16-khz-hd-room)
 - Gain control on what each leg hears: a room that does not clip is
   mixed byte for byte as before; when a listener's frame would clip, its
   gain drops at once to fit the frame's peak, then comes back by 0.2 dB a
@@ -85,7 +93,9 @@ What chappe_mix does today, and what is planned.
 
 ## Planned
 
-- Wideband: 16 kHz mixing with G.722 and Opus through a NIF.
+- A room whose rate changes while it runs, and 48 kHz rooms (decision
+  [0017](../../../docs/decisions/0017-chappe-mix-16khz-l16.md)).
+- SIPREC of a 16 kHz room.
 - The SDES (CNAME, NAME) of the sources behind a cascaded mixer's CSRCs.
 - A prefill that shrinks back after a burst without costing underruns.
   `prefill_shrink` (off by default) takes a grown prefill back after 10 s

@@ -19,7 +19,7 @@
 %% new source. A new far end (clear_bye/1) ends the mark and the entry.
 -module(chappe_mix_session).
 
--export([new/2, ssrc/1, src_ssrc/1, csrcs/1, info/1]).
+-export([new/2, new/3, ssrc/1, src_ssrc/1, csrcs/1, info/1]).
 -export([header/1, sent/3, sent_event/2, advance/2]).
 -export([rtp_in/4, renew/2, rtcp_in/5, rtcp_invalid/1, csrc_items/3]).
 -export([clear_bye/1]).
@@ -42,6 +42,8 @@
 
 -record(sess, {
     ssrc :: ssrc(),
+    %% the RTP clock, the room's sample rate
+    rate = 8000 :: pos_integer(),
     seq :: 0..65535,
     ts :: 0..16#FFFFFFFF,
     %% timestamp of the last packet sent, for the SR
@@ -75,13 +77,22 @@
 
 -opaque session() :: #sess{}.
 
-%% A session under Ssrc, opened at Now (native monotonic). Sequence and
-%% timestamp start at random (5.1).
+%% A session under Ssrc, opened at Now (native monotonic), on an 8 kHz
+%% clock.
 -spec new(ssrc(), integer()) -> session().
 new(Ssrc, Now) ->
+    new(Ssrc, Now, 8000).
+
+%% The same on a Rate Hz RTP clock: the jitter of the reports counts in
+%% its units (A.8). Sequence and timestamp start at random (5.1). The
+%% RTCP interval does not depend on the rate: it is set by the report
+%% size and the 5 s minimum.
+-spec new(ssrc(), integer(), pos_integer()) -> session().
+new(Ssrc, Now, Rate) ->
     schedule(
         #sess{
             ssrc = Ssrc,
+            rate = Rate,
             seq = rand:uniform(16#10000) - 1,
             ts = rand:uniform(16#100000000) - 1,
             next = Now
@@ -177,9 +188,7 @@ rtp_in(
         true ->
             {loop, S#sess{loops = S#sess.loops + 1}};
         false ->
-            %% arrival in 8 kHz timestamp units, for the jitter (A.8)
-            Arrival =
-                erlang:convert_time_unit(Now, native, microsecond) div 125,
+            Arrival = arrival(Now, S),
             {Src, New} =
                 case S#sess.src of
                     undefined ->
@@ -221,16 +230,21 @@ straggler(
                         Other -> Other
                     end;
                 false ->
-                    Arrival =
-                        erlang:convert_time_unit(Now, native, microsecond) div
-                            125,
                     {gone, S#sess{
-                        src = chappe_mix_rtcp:src_update(Src0, Seq, Ts, Arrival)
+                        src = chappe_mix_rtcp:src_update(
+                            Src0, Seq, Ts, arrival(Now, S)
+                        )
                     }}
             end;
         _ ->
             rtp_in(S#sess{src = undefined, bye_at = undefined}, P, Addr, Now)
     end.
+
+%% The arrival time Now (native monotonic) in timestamp units of the
+%% session's clock, for the jitter (A.8): microseconds times the rate over
+%% a million, which at 8 kHz is the microseconds over 125.
+arrival(Now, #sess{rate = Rate}) ->
+    erlang:convert_time_unit(Now, native, microsecond) * Rate div 1000000.
 
 %% Seq after High in sequence space (A.1, modulo 2^16)
 newer(Seq, High) ->

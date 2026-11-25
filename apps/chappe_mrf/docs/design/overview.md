@@ -398,7 +398,8 @@ The first four are chappe_mrf settings
   `chappe_mrf_cluster_SUITE` (rooms on several nodes),
   `chappe_mrf_conf_backend_SUITE` (a third backend on the behaviour),
   `chappe_mrf_lib_tests`, `chappe_mrf_store_tests`, and
-  `chappe_mrf_live_SUITE` (FreeSWITCH and rtpengine)
+  `chappe_mrf_live_SUITE` (FreeSWITCH and rtpengine), `chappe_mrf_hd_live_SUITE`
+  (16 kHz rooms with pjsua callers on G.722, Opus and PCMU)
 - Lab: `make interop-mrf` (`apps/chappe_mrf/interop/`: rtpengine and two
   FreeSWITCH nodes); `make demo-cluster` (rooms on a cluster,
   `demo/cluster/README.md`)

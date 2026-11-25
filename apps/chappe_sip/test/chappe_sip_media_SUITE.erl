@@ -57,7 +57,10 @@
     conference_deaf_relate/1,
     conference_talking/1,
     conference_persist/1,
-    conference_talk_tag/1
+    conference_talk_tag/1,
+    conference_rate/1,
+    conference_l16_audio/1,
+    mixer_params/1
 ]).
 -export([conference_behind_rtpengine/1]).
 
@@ -98,7 +101,10 @@ groups() ->
             conference_deaf_relate,
             conference_talking,
             conference_persist,
-            conference_talk_tag
+            conference_talk_tag,
+            conference_rate,
+            conference_l16_audio,
+            mixer_params
         ]},
         {rtpengine_live, [], [conference_behind_rtpengine]}
     ].
@@ -582,6 +588,175 @@ conference_persist(_Config) ->
         {'DOWN', MRef, process, Conf, _} -> ok
     after 2000 -> ct:fail(room_not_stopped)
     end.
+
+%% A room's rate is set by the join that creates it and kept: a join
+%% asking another rate is refused before any leg is made, a join without
+%% one takes the room's, and the leg's SDP follows the rate (L16/16000 and
+%% telephone-event/16000 at 16 kHz). A PCMU-only offer cannot join a
+%% 16 kHz room, an answer cannot move L16 to another payload type than
+%% the mixer's offer; a bad rate is refused. The configured rate is the default
+%% of new rooms.
+conference_rate(_Config) ->
+    Room = room(),
+    {ok, SA} = conf_session(),
+    {ok, OfferA} = chappe_sip_media:conference(SA, Room, #{rate => 16000}),
+    [
+        ?assertNotEqual(nomatch, binary:match(OfferA, L), L)
+     || L <- [
+            <<"a=rtpmap:96 L16/16000\r\n">>,
+            <<"a=rtpmap:101 telephone-event/16000\r\n">>
+        ]
+    ],
+    ?assertMatch(#{rate := 16000, law := l16}, chappe_sip_media:info(SA)),
+    #{conf := Conf} = chappe_sip_media:info(SA),
+    ?assertMatch(#{rate := 16000}, chappe_mix:stats(Conf)),
+    {ok, SB} = conf_session(),
+    ?assertEqual(
+        {error, {rate_mismatch, 16000}},
+        chappe_sip_media:conference(SB, Room, #{rate => 8000})
+    ),
+    ?assertEqual(
+        {error, no_common_codec},
+        chappe_sip_media:conference(SB, Room, #{
+            sdp => peer_sdp(4000, ulaw, true)
+        })
+    ),
+    ?assertEqual(
+        {error, {bad_option, rate}},
+        chappe_sip_media:conference(SB, room(), #{rate => 44100})
+    ),
+    L16 = l16_sdp(4002, 97),
+    {ok, AnswerB} = chappe_sip_media:conference(SB, Room, #{sdp => L16}),
+    ?assertNotEqual(
+        nomatch, binary:match(AnswerB, <<"a=rtpmap:97 L16/16000">>)
+    ),
+    ?assertMatch(#{conf := Conf, rate := 16000}, chappe_sip_media:info(SB)),
+    ?assertEqual(
+        [{96, l16}, {97, l16}],
+        lists:sort([{P, L} || #{pt := P, law := L} <- chappe_mix:legs(Conf)])
+    ),
+    %% the answer to the mixer's L16 offer is read at 16 kHz, on the
+    %% payload type the mixer offered and sends on (96): an answer taking
+    %% L16 on another one is refused
+    ?assertEqual(
+        {error, {pt_mismatch, 97}},
+        chappe_sip_media:set_remote(SA, l16_sdp(4004, 97))
+    ),
+    ok = chappe_sip_media:set_remote(SA, l16_sdp(4004, 96)),
+    ?assertEqual(
+        {error, no_common_codec},
+        chappe_sip_media:set_remote(SA, peer_sdp(4006, ulaw, true))
+    ),
+    [ok = chappe_sip_media:leave(S) || S <- [SA, SB]],
+    %% a room made without a rate takes the configured one
+    ok = chappe_sip_media:configure(
+        #{mix => #{ip => {127, 0, 0, 1}, rate => 16000}}
+    ),
+    {ok, SC} = conf_session(),
+    {ok, _} = chappe_sip_media:conference(SC, room(), #{}),
+    ?assertMatch(#{rate := 16000}, chappe_sip_media:info(SC)),
+    ok = chappe_sip_media:leave(SC),
+    ?assertEqual(
+        {error, {bad_config, {rate, 48000}}},
+        chappe_sip_media:configure(#{mix => #{rate => 48000}})
+    ),
+    ok = chappe_sip_media:configure(#{mix => #{ip => {127, 0, 0, 1}}}),
+    {ok, SD} = conf_session(),
+    {ok, _} = chappe_sip_media:conference(SD, room(), #{}),
+    ?assertMatch(#{rate := 8000, law := ulaw}, chappe_sip_media:info(SD)),
+    ok = chappe_sip_media:leave(SD).
+
+%% Two L16 parties in a 16 kHz room hear each other: what A sends (a
+%% constant frame, big-endian) reaches B as A's samples on B's payload
+%% type, 640 octets per 20 ms.
+conference_l16_audio(_Config) ->
+    Room = room(),
+    Open = fun() ->
+        {ok, S} = gen_udp:open(0, [binary, {ip, {127, 0, 0, 1}}, {active, true}]),
+        {ok, P} = inet:port(S),
+        {S, P}
+    end,
+    {SockA, PortA} = Open(),
+    {SockB, PortB} = Open(),
+    {ok, A} = conf_session(),
+    {ok, AnsA} = chappe_sip_media:conference(A, Room, #{
+        rate => 16000, sdp => l16_sdp(PortA, 97)
+    }),
+    {ok, B} = conf_session(),
+    {ok, AnsB} = chappe_sip_media:conference(B, Room, #{
+        sdp => l16_sdp(PortB, 98)
+    }),
+    Frame = <<<<(1000 + I):16/big-signed>> || I <- lists:seq(1, 320)>>,
+    [
+        begin
+            Pkt =
+                <<2:2, 0:6, 0:1, 97:7, N:16, (N * 320):32, 16#A:32,
+                    Frame/binary>>,
+            ok = gen_udp:send(SockA, {127, 0, 0, 1}, audio_port(AnsA), Pkt),
+            timer:sleep(20)
+        end
+     || N <- lists:seq(1, 40)
+    ],
+    _ = AnsB,
+    %% the mixer sends B a packet every 20 ms: take what came meanwhile
+    Got = l16_got(SockB, 60, []),
+    ct:log("B got ~p packets", [length(Got)]),
+    [chappe_sip_media:leave(S) || S <- [A, B]],
+    [gen_udp:close(S) || S <- [SockA, SockB]],
+    ?assertEqual([98], lists:usort([Pt || {Pt, _} <- Got])),
+    ?assertEqual([640], lists:usort([byte_size(P) || {_, P} <- Got])),
+    ?assert(length([x || {_, P} <- Got, P =:= Frame]) >= 10).
+
+l16_got(_Sock, 0, Acc) ->
+    lists:reverse(Acc);
+l16_got(Sock, N, Acc) ->
+    receive
+        {udp, Sock, _, _,
+            <<2:2, 0:1, 0:1, CC:4, _:1, Pt:7, _:16, _:32, _:32,
+                _:CC/binary-unit:32,
+                P/binary>>} when Pt < 72; Pt > 79 ->
+            %% RTP (not RTCP), past the CSRC list naming A
+            l16_got(Sock, N - 1, [{Pt, P} | Acc]);
+        {udp, Sock, _, _, _} ->
+            l16_got(Sock, N, Acc)
+    after 0 -> lists:reverse(Acc)
+    end.
+
+%% The rtpengine flags for each side of a mixer room: none at 8 kHz; at
+%% 16 kHz the caller's offer goes to the mixer as L16 and
+%% telephone-event/16000 only, and the mixer's offer goes to an endpoint
+%% as G.722, PCMU, PCMA and telephone-event/8000.
+mixer_params(_Config) ->
+    ?assertEqual(#{}, chappe_sip_media:mixer_params(8000, mixer)),
+    ?assertEqual(#{}, chappe_sip_media:mixer_params(8000, endpoint)),
+    ?assertEqual(
+        #{
+            codec => #{
+                mask => [<<"all">>],
+                transcode => [<<"L16/16000/1">>, <<"telephone-event/16000">>]
+            }
+        },
+        chappe_sip_media:mixer_params(16000, mixer)
+    ),
+    #{codec := #{mask := [<<"all">>], transcode := T}} =
+        chappe_sip_media:mixer_params(16000, endpoint),
+    ?assertEqual(
+        [<<"G722">>, <<"PCMU">>, <<"PCMA">>, <<"telephone-event/8000">>], T
+    ).
+
+l16_sdp(Port, Pt) ->
+    P = integer_to_binary(Pt),
+    iolist_to_binary([
+        <<"v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\n">>,
+        <<"t=0 0\r\nm=audio ">>,
+        integer_to_binary(Port),
+        <<" RTP/AVP ">>,
+        P,
+        <<" 101\r\na=rtpmap:">>,
+        P,
+        <<" L16/16000\r\na=rtpmap:101 telephone-event/16000\r\n">>,
+        <<"a=ptime:20\r\na=rtcp-mux\r\n">>
+    ]).
 
 %% One process holding several legs tells their talker events apart by
 %% the tag each join gave.

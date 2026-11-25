@@ -20,7 +20,8 @@
 %% makes it go down.
 %%
 %% rtpe_start/1: an rtpengine NG node that passes the SDP through with a
-%% marker line (a=rtpe-offer:<from-tag>, a=rtpe-answer:<to-tag>).
+%% marker line (a=rtpe-offer:<from-tag>, a=rtpe-answer:<to-tag>), and
+%% transcodes as the 16 kHz flags ask (see transcoded/2).
 %%
 %% ua_*: a caller over UDP that INVITEs the engine, ACKs, answers BYE and
 %% re-INVITE (and reports them), and sends BYE or RTP.
@@ -770,7 +771,7 @@ rtpe_start(Collector) ->
         ]),
         {ok, Port} = inet:port(Sock),
         Self ! {rtpe_port, self(), Port},
-        rtpe_loop(Sock, Collector)
+        rtpe_loop(Sock, Collector, #{})
     end),
     Port =
         receive
@@ -790,27 +791,112 @@ rtpe_stop(Pid) ->
     Pid ! stop,
     ok.
 
-rtpe_loop(Sock, Collector) ->
+%% Wide: the calls whose offer came from a 16 kHz mixer toward an
+%% endpoint, by call-id, with the mixer's L16 offer: their answer goes
+%% back to the mixer in it.
+rtpe_loop(Sock, Collector, Wide) ->
     receive
         {udp, Sock, Ip, Port, Packet} ->
             [Cookie, Body] = binary:split(Packet, <<" ">>),
             {ok, Cmd} = chappe_rtpengine_bencode:decode(Body),
             Collector ! {rtpe_cmd, Cmd},
-            Reply = chappe_rtpengine_bencode:encode_to_binary(rtpe_reply(Cmd)),
+            Wide1 = from_mixer(Cmd, Wide),
+            Reply = chappe_rtpengine_bencode:encode_to_binary(
+                rtpe_reply(Cmd, Wide1)
+            ),
             ok = gen_udp:send(
                 Sock, Ip, Port, <<Cookie/binary, " ", Reply/binary>>
             ),
-            rtpe_loop(Sock, Collector);
+            rtpe_loop(Sock, Collector, Wide1);
         stop ->
             gen_udp:close(Sock)
     end.
 
-rtpe_reply(#{<<"command">> := <<"offer">>, <<"sdp">> := Sdp} = Cmd) ->
-    marked(Sdp, <<"offer">>, maps:get(<<"from-tag">>, Cmd, <<>>));
-rtpe_reply(#{<<"command">> := <<"answer">>, <<"sdp">> := Sdp} = Cmd) ->
-    marked(Sdp, <<"answer">>, maps:get(<<"to-tag">>, Cmd, <<>>));
-rtpe_reply(_Cmd) ->
+%% the mixer's offer toward an endpoint, transcoded to G.722 and G.711
+%% (chappe_sip_media:mixer_params(16000, endpoint))
+from_mixer(
+    #{
+        <<"command">> := <<"offer">>,
+        <<"call-id">> := Id,
+        <<"sdp">> := Sdp,
+        <<"codec">> := #{<<"transcode">> := T}
+    },
+    Wide
+) ->
+    case lists:member(<<"G722">>, T) of
+        true -> Wide#{Id => Sdp};
+        false -> Wide
+    end;
+from_mixer(_Cmd, Wide) ->
+    Wide.
+
+rtpe_reply(#{<<"command">> := <<"offer">>, <<"sdp">> := Sdp} = Cmd, _Wide) ->
+    marked(
+        transcoded(Sdp, Cmd), <<"offer">>, maps:get(<<"from-tag">>, Cmd, <<>>)
+    );
+rtpe_reply(#{<<"command">> := <<"answer">>, <<"sdp">> := Sdp} = Cmd, Wide) ->
+    marked(
+        back_to_mixer(Sdp, maps:find(maps:get(<<"call-id">>, Cmd, <<>>), Wide)),
+        <<"answer">>,
+        maps:get(<<"to-tag">>, Cmd, <<>>)
+    );
+rtpe_reply(_Cmd, _Wide) ->
     #{<<"result">> => <<"ok">>}.
+
+%% The endpoint's answer, transcoded back to the mixer's offer: its m-line
+%% port, on the payload types the mixer offered (RFC 3264 6.1), as
+%% rtpengine does.
+back_to_mixer(Answer, {ok, Offer}) ->
+    [Fmts] = [F || <<"m=audio ", F/binary>> <- lines(Offer)],
+    [_Port, _Proto | Pts] = binary:split(Fmts, <<" ">>, [global]),
+    Maps = [L || <<"a=rtpmap:", _/binary>> = L <- lines(Offer)],
+    iolist_to_binary([
+        [
+            [audio_line(L, Pts), <<"\r\n">>]
+         || L <- lines(Answer),
+            binary:match(L, [<<"a=rtpmap:">>, <<"a=fmtp:">>]) =:= nomatch
+        ],
+        [[M, <<"\r\n">>] || M <- Maps]
+    ]);
+back_to_mixer(Answer, error) ->
+    Answer.
+
+audio_line(<<"m=audio ", Rest/binary>>, Pts) ->
+    [Port | _] = binary:split(Rest, <<" ">>),
+    lists:join(<<" ">>, [<<"m=audio">>, Port, <<"RTP/AVP">> | Pts]);
+audio_line(L, _Pts) ->
+    L.
+
+lines(Sdp) ->
+    binary:split(Sdp, <<"\r\n">>, [global, trim_all]).
+
+%% An offer asking rtpengine to transcode to L16/16000 (toward a 16 kHz
+%% mixer, chappe_sip_media:mixer_params/2): the SDP it makes offers only
+%% L16/16000 and telephone-event/16000, as rtpengine 26.3 does.
+transcoded(Sdp, #{<<"codec">> := #{<<"transcode">> := T}}) ->
+    case lists:member(<<"L16/16000/1">>, T) of
+        true -> l16_only(Sdp);
+        false -> Sdp
+    end;
+transcoded(Sdp, _Cmd) ->
+    Sdp.
+
+l16_only(Sdp) ->
+    Lines = binary:split(Sdp, <<"\r\n">>, [global, trim_all]),
+    Kept = [
+        l16_mline(L)
+     || L <- Lines,
+        binary:match(L, [<<"a=rtpmap:">>, <<"a=fmtp:">>]) =:= nomatch
+    ],
+    iolist_to_binary([[L, <<"\r\n">>] || L <- Kept]).
+
+l16_mline(<<"m=audio ", Rest/binary>>) ->
+    [Port | _] = binary:split(Rest, <<" ">>),
+    <<"m=audio ", Port/binary,
+        " RTP/AVP 97 98\r\na=rtpmap:97 L16/16000\r\n"
+        "a=rtpmap:98 telephone-event/16000\r\na=fmtp:98 0-15">>;
+l16_mline(L) ->
+    L.
 
 marked(Sdp, What, Tag) ->
     #{

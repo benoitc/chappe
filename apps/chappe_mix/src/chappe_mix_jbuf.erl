@@ -8,12 +8,14 @@
 %% 200 ms RFC 3551 4.2 asks a receiver to take. The mixer pops one 20 ms
 %% frame (160 samples) per tick, whatever the packets were. Timestamps and
 %% sequence numbers are extended past their wrap, so reordering inside the
-%% buffer is repaired and a wrap is not a gap. The rules, in the order
-%% pop/1 applies them:
+%% buffer is repaired and a wrap is not a gap. Everything is counted in
+%% samples: a 20 ms frame is 160 of them at 8 kHz and 320 at 16 kHz, and
+%% a sample is one octet of G.711 or two of L16 (new/4). The rules, in the
+%% order pop/1 applies them:
 %%
 %%   - the samples of the next frame are there: play them and move on;
 %%   - part of them is missing and later samples are there: the missing
-%%     part is lost, play the law's silence byte for it and move on;
+%%     part is lost, play the format's silence for it and move on;
 %%   - the buffer runs out inside the frame, or is empty: an underrun.
 %%     Play silence and wait, so a packet that is only late (jitter) is
 %%     still played instead of dropped, and a frame is never played half
@@ -43,18 +45,23 @@
 %% stream.
 -module(chappe_mix_jbuf).
 
--export([new/1, new/2, new/3, push/4, push/5, pop/1, stats/1]).
+-export([new/1, new/2, new/3, new/4, push/4, push/5, pop/1, stats/1]).
 
 -export_type([jbuf/0]).
 
--define(FRAME, 160).
+%% the frame of an 8 kHz room, what new/1..3 take
+-define(FRAME8, 160).
+%% a jump of more than this many frames restarts the buffer: 60 s
 -define(RESYNC, 3000).
 %% frames played without an underrun before a grown prefill shrinks: 10 s
 -define(SHRINK, 500).
 
 -record(jbuf, {
     depth :: pos_integer(),
-    %% the law's silence code word, played for lost samples
+    %% samples in a frame, octets in a sample
+    frame = ?FRAME8 :: pos_integer(),
+    width = 1 :: pos_integer(),
+    %% the format's silence octet, played for lost samples
     fill :: byte(),
     ssrc :: non_neg_integer() | undefined,
     %% extended timestamp of the next sample to play; undefined before the
@@ -87,12 +94,12 @@
 
 -opaque jbuf() :: #jbuf{}.
 
-%% A buffer of Depth frames for mu-law (silence 0xFF).
+%% A buffer of Depth frames for mu-law (silence 0xFF) at 8 kHz.
 -spec new(pos_integer()) -> jbuf().
 new(Depth) ->
     new(Depth, 16#FF).
 
-%% A buffer of Depth frames that plays Fill for lost samples.
+%% A buffer of Depth frames that plays Fill for lost samples, at 8 kHz.
 -spec new(pos_integer(), byte()) -> jbuf().
 new(Depth, Fill) ->
     new(Depth, Fill, false).
@@ -100,40 +107,69 @@ new(Depth, Fill) ->
 %% Shrink: whether a prefill that grew is taken back after 10 s without
 %% an underrun.
 -spec new(pos_integer(), byte(), boolean()) -> jbuf().
-new(Depth, Fill, Shrink) when is_integer(Depth), Depth > 0 ->
-    #jbuf{depth = Depth, fill = Fill, shrink = Shrink}.
+new(Depth, Fill, Shrink) ->
+    new(Depth, Fill, Shrink, #{frame => ?FRAME8, width => 1}).
+
+%% A buffer of frames of Frame samples (chappe_mix_fmt:frame/1) of Width
+%% octets each (chappe_mix_fmt:width/1): Fill, the format's silence octet,
+%% is played Width times for a lost sample.
+-spec new(pos_integer(), byte(), boolean(), #{
+    frame := pos_integer(), width := pos_integer()
+}) -> jbuf().
+new(Depth, Fill, Shrink, #{frame := Frame, width := Width}) when
+    is_integer(Depth), Depth > 0
+->
+    #jbuf{
+        depth = Depth,
+        fill = Fill,
+        shrink = Shrink,
+        frame = Frame,
+        width = Width
+    }.
 
 %% A packet of one 20 ms frame, placed by its sequence number alone (its
-%% timestamp taken as Seq x 160).
+%% timestamp taken as Seq x the frame).
 -spec push(non_neg_integer(), 0..65535, binary(), jbuf()) -> jbuf().
-push(Ssrc, Seq, Payload, #jbuf{ssrc = Ssrc, next = Next} = J) when
+push(Ssrc, Seq, Payload, #jbuf{ssrc = Ssrc, next = Next, frame = F} = J) when
     Next =/= undefined
 ->
     Ext = chappe_mix_rtp:extend_seq(Seq, J#jbuf.last_seq),
-    place(Ssrc, Ext, Ext * ?FRAME, Payload, ?FRAME, J);
-push(Ssrc, Seq, Payload, J) ->
-    restart(Ssrc, Seq, Seq * ?FRAME, Payload, ?FRAME, J).
+    {Whole, _} = whole(Payload, J),
+    place(Ssrc, Ext, Ext * F, Whole, F, J);
+push(Ssrc, Seq, Payload, #jbuf{frame = F} = J) ->
+    {Whole, _} = whole(Payload, J),
+    restart(Ssrc, Seq, Seq * F, Whole, F, J).
 
-%% A packet of G.711 code words, one per sample, placed by timestamp.
+%% A packet of samples (one octet each for G.711, two for L16), placed by
+%% timestamp. A trailing part of a sample is not a sample.
 -spec push(non_neg_integer(), 0..65535, 0..16#FFFFFFFF, binary(), jbuf()) ->
     jbuf().
 push(_Ssrc, _Seq, _Ts, <<>>, J) ->
     %% 0 ms: taken, nothing to play
     J#jbuf{received = J#jbuf.received + 1};
-push(Ssrc, Seq, Ts, Payload, #jbuf{ssrc = Ssrc, next = Next} = J) when
+push(Ssrc, Seq, Ts, Payload0, #jbuf{ssrc = Ssrc, next = Next} = J) when
     Next =/= undefined
 ->
     ExtSeq = chappe_mix_rtp:extend_seq(Seq, J#jbuf.last_seq),
     ExtTs = extend_ts(Ts, J#jbuf.last_ts),
-    place(Ssrc, ExtSeq, ExtTs, Payload, byte_size(Payload), J);
-push(Ssrc, Seq, Ts, Payload, J) ->
-    restart(Ssrc, Seq, Ts, Payload, byte_size(Payload), J).
+    {Payload, Dur} = whole(Payload0, J),
+    place(Ssrc, ExtSeq, ExtTs, Payload, Dur, J);
+push(Ssrc, Seq, Ts, Payload0, J) ->
+    {Payload, Dur} = whole(Payload0, J),
+    restart(Ssrc, Seq, Ts, Payload, Dur, J).
+
+%% The whole samples of a payload, and how many.
+whole(Payload, #jbuf{width = 1}) ->
+    {Payload, byte_size(Payload)};
+whole(Payload, #jbuf{width = W}) ->
+    N = byte_size(Payload) div W,
+    {binary:part(Payload, 0, N * W), N}.
 
 -spec pop(jbuf()) -> {binary() | silence, jbuf()}.
 pop(#jbuf{next = undefined} = J) ->
     {silence, J};
-pop(#jbuf{playing = false, prefill = Prefill} = J) ->
-    case buffered(J) < Prefill * ?FRAME of
+pop(#jbuf{playing = false, prefill = Prefill, frame = F} = J) ->
+    case buffered(J) < Prefill * F of
         true -> {silence, underrun_tick(J)};
         false -> steady(play(J))
     end;
@@ -170,28 +206,29 @@ steady({Frame, #jbuf{steady = N} = J}) ->
     {Frame, J#jbuf{steady = N + 1}}.
 
 %% Drop the next frame's worth of samples, if a whole one is buffered.
-skip(#jbuf{chunks = Chunks} = J) ->
-    case buffered(J) >= ?FRAME andalso next_frame(J) of
+skip(#jbuf{chunks = Chunks, frame = F} = J) ->
+    case buffered(J) >= F andalso next_frame(J) of
         {done, _, Pos, Prev1, _, _} -> played(Pos, Prev1, Chunks, J);
         _ -> J
     end.
 
 %% A 20 ms packet right at the playout point is the frame as it came.
-play(#jbuf{next = Next, chunks = Chunks} = J) ->
+play(#jbuf{next = Next, chunks = Chunks, frame = F} = J) ->
     case maps:find(Next, Chunks) of
-        {ok, {Seq, Payload, ?FRAME}} ->
+        {ok, {Seq, Payload, F}} ->
             {Payload,
                 played(
-                    Next + ?FRAME, {Seq, ?FRAME}, maps:remove(Next, Chunks), J
+                    Next + F, {Seq, F}, maps:remove(Next, Chunks), J
                 )};
         _ ->
             assemble(J)
     end.
 
 %% The next frame's samples from the playout point (see frame/8).
-next_frame(#jbuf{next = Next, chunks = Chunks, prev = Prev, fill = Fill}) ->
+next_frame(#jbuf{next = Next, chunks = Chunks, prev = Prev} = J) ->
     Sorted = lists:keysort(1, maps:to_list(Chunks)),
-    frame(Sorted, Next, ?FRAME, Prev, Fill, [], false, false).
+    Fmt = {J#jbuf.fill, J#jbuf.width},
+    frame(Sorted, Next, J#jbuf.frame, Prev, Fmt, [], false, false).
 
 assemble(#jbuf{chunks = Chunks} = J) ->
     case next_frame(J) of
@@ -237,7 +274,7 @@ frame([{Ts, {Seq, _, _}} | _] = Chunks, Pos0, Need, Prev, Fill, Acc, Taken, F) -
     %% filled for their own time only
     Pos = max(Pos0, resume_at(Ts, Seq, Prev)),
     N = min(Need, Ts - Pos),
-    Gap = binary:copy(<<Fill>>, N),
+    Gap = gap(N, Fill),
     frame(
         Chunks,
         Pos + N,
@@ -257,18 +294,23 @@ resume_at(Ts, _Seq, undefined) ->
 resume_at(Ts, Seq, {PSeq, PDur}) ->
     Ts - max(0, Seq - PSeq - 1) * PDur.
 
-%% N samples from offset Off of a payload; a payload shorter than its
-%% duration (push/4) is silence past its end.
-samples(Bin, Off, N, _Fill) when Off + N =< byte_size(Bin) ->
-    binary:part(Bin, Off, N);
-samples(Bin, Off, N, Fill) when Off < byte_size(Bin) ->
-    Have = byte_size(Bin) - Off,
+%% N samples from sample Off of a payload, Fmt being {fill octet, octets
+%% per sample}; a payload shorter than its duration (push/4) is silence
+%% past its end.
+samples(Bin, Off, N, {_Fill, W}) when (Off + N) * W =< byte_size(Bin) ->
+    binary:part(Bin, Off * W, N * W);
+samples(Bin, Off, N, {Fill, W}) when Off * W < byte_size(Bin) ->
+    Have = byte_size(Bin) - Off * W,
     <<
-        (binary:part(Bin, Off, Have))/binary,
-        (binary:copy(<<Fill>>, N - Have))/binary
+        (binary:part(Bin, Off * W, Have))/binary,
+        (binary:copy(<<Fill>>, N * W - Have))/binary
     >>;
-samples(_Bin, _Off, N, Fill) ->
-    binary:copy(<<Fill>>, N).
+samples(_Bin, _Off, N, Fmt) ->
+    gap(N, Fmt).
+
+%% N samples of silence
+gap(N, {Fill, W}) ->
+    binary:copy(<<Fill>>, N * W).
 
 played(Pos, Prev, Chunks, J) ->
     J#jbuf{
@@ -302,7 +344,7 @@ buffered(#jbuf{next = Next, chunks = Chunks}) ->
 %% ---- placing ----
 
 place(Ssrc, Seq, Ts, Payload, Dur, #jbuf{next = Next} = J) when
-    abs(Ts - Next) > ?RESYNC * ?FRAME
+    abs(Ts - Next) > ?RESYNC * J#jbuf.frame
 ->
     restart(Ssrc, Seq, Ts, Payload, Dur, J);
 place(_Ssrc, _Seq, Ts, _Payload, Dur, #jbuf{next = Next} = J) when
@@ -333,8 +375,8 @@ restart(Ssrc, Seq, Ts, Payload, Dur, J) ->
 %% (Dur, the one just placed) raises the bound by what it holds over a
 %% frame, so a 200 ms sender keeps the packet still playing when the next
 %% one comes; for 20 ms packets the bound is the depth.
-trim(Dur, #jbuf{depth = Depth, chunks = Chunks} = J) ->
-    Limit = (Depth - 1) * ?FRAME + max(?FRAME, Dur),
+trim(Dur, #jbuf{depth = Depth, chunks = Chunks, frame = F} = J) ->
+    Limit = (Depth - 1) * F + max(F, Dur),
     case map_size(Chunks) > 1 andalso buffered(J) > Limit of
         true ->
             Oldest = lists:min(maps:keys(Chunks)),

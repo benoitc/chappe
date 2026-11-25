@@ -39,6 +39,27 @@ run(From, Id, To) ->
     {ok, pos_integer()}
     | {error, not_found | source_down | destination_down | refused}.
 move(From, Id, To) ->
+    %% a leg the source does not have is not_found, whatever the
+    %% destination, as before rooms had rates
+    case call(From, {has_leg, Id}) of
+        {ok, Id} -> same_rate(From, Id, To);
+        {error, down} -> {error, source_down};
+        {error, not_found} -> {error, not_found}
+    end.
+
+%% Rooms of two rates: the far end speaks the source's format, so the
+%% leg is not touched (its taps go on, nobody hears it leave). Rates are
+%% fixed, so the answer holds for the rest of the move; the leg may go
+%% meanwhile, and detach/3 then says not_found.
+same_rate(From, Id, To) ->
+    case {call(From, rate), call(To, rate)} of
+        {{error, down}, _} -> {error, source_down};
+        {_, {error, down}} -> {error, destination_down};
+        {Rate, Rate} -> detach(From, Id, To);
+        {_, _} -> {error, refused}
+    end.
+
+detach(From, Id, To) ->
     case call(From, {detach_leg, Id, self()}) of
         {ok, Leg} -> adopt(Leg, From, To);
         {error, down} -> {error, source_down};

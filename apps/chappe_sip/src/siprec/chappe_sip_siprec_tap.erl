@@ -45,11 +45,14 @@ tap(#{party := room}, #{source := {room, Room}, call_ref := Ref}) ->
         })
     of
         {ok, S} ->
+            %% the recording is G.711 at 8 kHz: a 16 kHz room is refused
+            %% for now (decision 0017)
             case
                 chappe_sip_media:conference(S, Room, #{
                     direction => sendonly,
                     create => false,
                     observer => true,
+                    rate => 8000,
                     name => <<"siprec">>
                 })
             of
@@ -57,6 +60,9 @@ tap(#{party := room}, #{source := {room, Room}, call_ref := Ref}) ->
                     {Sess, Media} = chappe_sip_sdp:sections(Offer),
                     Conn = [L || <<"c=", _/binary>> = L <- Sess],
                     {ok, {mix, S}, [with_conn(M, Conn) || M <- Media]};
+                {error, {rate_mismatch, Rate}} ->
+                    chappe_sip_media:stop(S),
+                    {error, {unsupported, {rate, Rate}}};
                 {error, _} = E ->
                     chappe_sip_media:stop(S),
                     E
