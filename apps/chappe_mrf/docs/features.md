@@ -43,7 +43,9 @@ that shows you how to use it.
   [Conference guide](guides/conference.md)
 - **HD native rooms** (`rate => 16000`): the mixer at 16 kHz on L16,
   rtpengine transcoding every member (G.722, Opus, PCMU, PCMA) to it and
-  back (L16 tested on 26.3.1.4, upstream from 13.4.1.1). [Conference guide](guides/conference.md#run-an-hd-16-khz-native-room)
+  back (L16 tested on 26.3.1.4, upstream from 13.4.1.1). A party a REFER
+  to the room brings in keeps the band too, and a G.711-only one is
+  offered G.711 (tested live with a G.722 and a PCMU callee). [Conference guide](guides/conference.md#run-an-hd-16-khz-native-room)
 - **FreeSWITCH conferences** on mod_conference: join, mute, deaf, kick,
   lock, PIN entry, talker events, play into the room, recording, a member
   limit and room flags, mute, DTMF and prompt events.

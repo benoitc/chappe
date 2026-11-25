@@ -124,8 +124,9 @@ Passed to `chappe_mrf:conference/2`.
 | `join_timeout` | fs | `15000` | Milliseconds a member may take to appear in the room. |
 | `refer_policy` | both | none | `fun(Info) -> boolean() \| {reject, Code}` for a REFER to the room; unset, REFERs are refused 403. |
 | `replaces_policy` | both | the member itself or a caller it referred | `fun(Info) -> boolean()` for a call whose Replaces names a member; `false` or a crash is 403. Never anonymous callers by default. |
-| `dial` | both | `sofia/<dial_profile>/<target>` | `fun(Target) -> iodata()`: the dial string of a party a REFER adds; one that crashes refuses the REFER 403. |
+| `dial` | both | `[^^:absolute_codec_string=<dial_codecs>]sofia/<dial_profile>/<target>`, the codec block left out with `inherit` | `fun(Target) -> iodata()`: the dial string of a party a REFER adds; one that crashes refuses the REFER 403. |
 | `dial_profile` | both | `<<"external">>` | The sofia profile of the default dial string. |
+| `dial_codecs` | both | native: `<<"OPUS,G722,PCMU,PCMA">>` at 16 kHz, `<<"PCMU,PCMA,G722,OPUS">>` at 8 kHz; fs: `inherit` | The codecs the default dial string offers the party, as its leg's `absolute_codec_string`; `inherit` leaves them to FreeSWITCH. Codec names joined by commas, else `{error, {bad_option, dial_codecs}}`. |
 | `dial_timeout` | both | `30000` | Milliseconds the added party has to answer. |
 | `dial_endpoint` | native | `#{}` | `create_endpoint/1` options (`node`, `select`, `targets`) of the endpoint that dials it. |
 

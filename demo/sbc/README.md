@@ -10,7 +10,9 @@ before you build your own.
 It also fronts a pool of two FreeSWITCH nodes: `1000` echoes, `1001` plays
 a tone and `1002` joins a conference. `2000` is an IVR built on chappe_mrf:
 a menu that calls bob, echoes, or puts you in a conference on chappe_mix or
-on FreeSWITCH, and records a message.
+on FreeSWITCH, and records a message. `1003` and `1004` are two HD (16 kHz)
+conference rooms, one on chappe_mix and one on FreeSWITCH, that take
+REFERs to add and remove members.
 
 The node runs in the foreground of `make demo` on your machine; rtpengine,
 Kamailio and the FreeSWITCH nodes fs1 and fs2 run in docker
@@ -181,6 +183,130 @@ that call ends, and the next `2000` lands on fs2.
 A browser can call `2000` too. Option 1 calls bob wherever he registered
 (a browser bob gets WebRTC media from rtpengine).
 
+## Talk in an HD room
+
+Dial `1003` or `1004` to land in a 16 kHz conference room, with no IVR in
+front: the room answers your call itself. Use them to hear what wideband
+audio changes in a conference, and to compare chappe's room with the stock
+FreeSWITCH one.
+
+| number | room | what mixes it |
+|--------|------|---------------|
+| 1003 | `demo-hd` | chappe_mix at 16 kHz behind rtpengine: rtpengine converts each caller (G.722, Opus or PCMU) to the room's L16 and back |
+| 1004 | `demo-hd-fs` | mod_conference on its `wideband` profile (16 kHz), each caller bridged to a FreeSWITCH node through rtpengine |
+
+A 16 kHz room needs an rtpengine with the L16 codec, 13.4 or later; the
+demo's is built from `mr26.3.1.4` (`apps/chappe_rtpengine/interop`).
+
+1. Set two phones to G.722 or Opus only, or use the browser page for one
+   of them (a WebRTC peer, which sends Opus). Set a third phone to PCMU
+   only.
+2. Call `1003` from the two HD phones. The log shows each one join:
+
+   ```
+   demo: call 9c1e...@...: member 3f5a... of demo-hd
+   demo: demo-hd: {joined,<<"3f5a...">>,#{id => <<"3f5a...">>,name => <<"9c1e...">>,uri => <<"sip:alice@chappe.demo">>,...}}
+   ```
+
+   You hear each other in wideband: "s", "f" and "th" are crisp, and the
+   voices sound close, not boxed in.
+3. Call `1003` from the PCMU phone. It hears the room, and the room hears
+   it, through 8 kHz: it sounds like an ordinary phone call. The two HD
+   phones keep hearing each other in wideband.
+4. Hang up and do the same on `1004`. The rooms should sound alike;
+   listen for level, delay, and quiet syllables or breaths that
+   mod_conference's energy gate (`energy-level` 100) leaves out.
+
+From `make demo-shell`:
+
+```erlang
+demo_sbc:confs().
+%% [{<<"demo-hd">>, native, 3}, {<<"demo-hd-fs">>, fs, 0}]
+demo_sbc:members(<<"demo-hd">>).
+```
+
+`apps/chappe_mix/test/audit/QUALITY.md` has the two rooms measured
+against each other with speech clips.
+
+### Add and remove members by REFER
+
+Both rooms are focus rooms (RFC 4579): their URI, `sip:demo-hd@<the
+node>` (and `sip:demo-hd-fs@...`), takes REFERs that bring a party in or
+remove a member. Two senders may REFER them: the users registered here,
+and the demo shell, whose REFERs carry a random token made at start as
+their From user. A party brought in must be a user or a number of the
+demo (`users` and `extensions` in `demo.config`); any other sender or
+target gets 403. The From is not authenticated (see
+[Notes](#notes)). A room's roster (a SUBSCRIBE to its URI, the
+conference package) goes to registered users only, on the same From.
+
+From a phone in the room, press transfer and dial `bob` (registered). Your
+phone sends the REFER in its call with the room, the room dials bob from
+the FreeSWITCH pool through this node, and bob's phone rings:
+
+```
+demo: demo-hd: REFER add sip:bob@chappe.demo from <sip:alice@chappe.demo>: allowed
+demo: call fab7...: dialed out by demo-hd
+demo: demo-hd: {joined,<<"9f00...">>,#{id => <<"9f00...">>,name => <<"sip:bob@chappe.demo">>,...}}
+```
+
+Most phones hang up once a blind transfer succeeds: dial `1003` again to
+come back.
+
+From `make demo-shell`, the same REFER, sent by the node to the room's
+URI, with each NOTIFY it gets back:
+
+```erlang
+demo_sbc:refer_add(<<"demo-hd">>, <<"sip:bob@chappe.demo">>).
+%% REFER sip:demo-hd@127.0.0.1:5060: 200
+%% NOTIFY 100
+%% NOTIFY 200 (done)
+%% {ok,200}
+demo_sbc:refer_remove(<<"demo-hd">>, <<"sip:bob@chappe.demo">>).
+%% REFER sip:demo-hd@127.0.0.1:5060: 200
+%% NOTIFY 100
+%% NOTIFY 200 (done)
+%% {ok,200}
+```
+
+The removal sends Refer-To `<sip:bob@chappe.demo;method=BYE>`: bob's phone
+gets a BYE and the log shows `{left,<<"9f00...">>,kicked}`. Bob's phone is
+offered Opus, G.722, PCMU and PCMA, so a PCMU phone can be brought in too
+(narrowband, as when it calls). The pool calls every party through this
+node, which routes it as any call: it never calls out. A party that is
+neither a user nor a number of the demo (`sip:someone@10.0.0.7:5060`) is
+refused:
+
+```erlang
+demo_sbc:refer_add(<<"demo-hd">>, <<"sip:someone@10.0.0.7:5060">>).
+%% REFER sip:demo-hd@127.0.0.1:5060: 403
+%% {ok,403}
+```
+
+A party that does not answer gives its status in the final NOTIFY (480,
+486, 408 after 30 s), and the room stays as it was.
+
+### Check the band with pjsua
+
+Without phones, `apps/chappe_sip/interop/pjsua/hd.sh` places one call
+with one codec, plays a wav and records what it hears. Write the band
+probe and judge the recordings as
+[The HD peer](../../docs/contributing/labs.md#the-hd-peer) shows, then
+call the room from two of them, the second 2 s later (two pjsua started in
+the same second draw the same Call-ID):
+
+```sh
+hd.sh -c G722 -r 16000 -p probe.wav -o out/a.wav -d 20 \
+    -l 25060 -m 25100 sip:1003@127.0.0.1:5060 &
+sleep 2
+hd.sh -c opus -r 16000 -p probe.wav -o out/b.wav -d 16 \
+    -l 25062 -m 25200 sip:1003@127.0.0.1:5060
+```
+
+Each recording holds the other caller's probe (a room never sends you
+your own voice): judge `out/a.wav` from 5 s on and `out/b.wav` from 3 s
+on. Both pass on `1003` and on `1004`.
+
 ## See your voice level, and find the recordings
 
 Press 8 in the IVR and speak. FreeSWITCH forks your audio (mod_audio_fork)
@@ -311,6 +437,21 @@ log shows the call, `{hold,a}` and `{unhold,a}`.
   a registered user, a number of the FreeSWITCH pool (`extensions` in
   `demo.config`), or one of `routes`.
 - `run-sipp.sh 1000` calls the pool with SIPp.
+- Nothing but REGISTER is authenticated. Anyone who reaches the node's
+  SIP port (`DEMO_IP` on your LAN, say) can:
+  - call the registered users, the FreeSWITCH numbers, the IVR (which
+    calls bob), `3001` (which records a call to bob) and the HD rooms;
+  - REFER an HD room as a registered user, by putting that user in the
+    From (`refer_policy/2` in `demo_sbc.erl` trusts it): bring in a user
+    or a number of the demo, or remove a member. It cannot make the pool
+    call anyone outside the demo, and it cannot pass as the demo shell
+    without its token, which never leaves the node;
+  - read an HD room's roster (who is in, from which address) the same
+    way.
+
+  Before the demo leaves your machine, change the passwords, keep the
+  node on a network you trust, and authenticate INVITE, REFER and
+  SUBSCRIBE (digest).
 - The IVR listens for the FreeSWITCH event sockets on 18084
   (`DEMO_MRF_PORT`, `mrf_port` in `demo.config`); `make demo` passes the
   same port to the containers. The pool connects from the docker network,

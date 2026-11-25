@@ -65,6 +65,7 @@
 
 -include("chappe_mrf_conf.hrl").
 
+-export([check_opts/1]).
 -export([module/1, optional/3, callbacks/1, has/3, supported/4]).
 -export([unsupported/1]).
 -export([bstate/1, bstate/2, name/1, members/1, member_by/3]).
@@ -344,4 +345,14 @@ close_if_empty(#state{lost = Lost, members = M, pending = P}) ->
     case chappe_mrf_conf_cluster:closing(Lost, M, P) of
         true -> gen_server:cast(self(), lost_empty);
         false -> ok
+    end.
+
+%% The options of a room that start/2 refuses before any room runs: a
+%% rate the backend cannot mix at, and dial_codecs that do not fit in a
+%% dial string.
+-spec check_opts(map()) -> ok | {error, term()}.
+check_opts(Opts) ->
+    maybe
+        ok ?= chappe_mrf_conf_native:check_rate(Opts),
+        chappe_mrf_conf_refer_dial:check_codecs(Opts)
     end.
