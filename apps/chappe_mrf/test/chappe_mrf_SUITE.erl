@@ -99,6 +99,10 @@
     listener_options_differ/1,
     registry_edges/1,
     registry_restart/1,
+    native_loop_fails/1,
+    native_endpoint_fails/1,
+    native_join_worker_dies/1,
+    native_join_bad_handle/1,
     sip_edges/1,
     conf_edges/1,
     native_endpoint/1,
@@ -197,6 +201,10 @@ all() ->
         listener_options_differ,
         registry_edges,
         registry_restart,
+        native_loop_fails,
+        native_endpoint_fails,
+        native_join_worker_dies,
+        native_join_bad_handle,
         sip_edges,
         conf_edges,
         native_endpoint,
@@ -3583,6 +3591,203 @@ registry_restart(_Config) ->
 %% Fun() holds within 5 s
 until(Fun) ->
     ?assert(?FAULTS:eventually(Fun, 50)).
+
+%% What a native room holds for its joins: whether one more may come in,
+%% its joins under way, its mixer legs (chappe_mix:legs/1), the rtpengine
+%% sessions of this node and its loopback tokens.
+holdings(Conf) ->
+    #{name := Name} = chappe_mrf_conf:info(Conf),
+    S = sys:get_state(Conf),
+    #{
+        admission => chappe_mrf_conf_backend:admission(S),
+        pending => map_size(element(10, S)),
+        legs => ?FAULTS:mix_legs(<<"mrf-", Name/binary>>),
+        rtpe => proplists:get_value(
+            active, supervisor:count_children(chappe_rtpengine_session_sup)
+        ),
+        loops => [
+            T
+         || {{loop, T}, P} <- chappe_mrf_registry:select({loop, '_'}),
+            P =:= Conf
+        ]
+    }.
+
+%% the room is back to Base (its cleanups may be under way)
+back_to(Conf, Base) ->
+    _ = ?FAULTS:eventually(fun() -> holdings(Conf) =:= Base end, 30),
+    ?assertEqual(Base, holdings(Conf)).
+
+%% the next rtpengine offer
+rtpe_offer() ->
+    receive
+        {rtpe_cmd, #{<<"command">> := <<"offer">>} = Cmd} -> Cmd
+    after 5000 -> ct:fail(no_rtpe_offer)
+    end.
+
+%% join/3 in a process of its own: {join, Result} comes back
+join_async(Conf, Target) ->
+    Test = self(),
+    spawn(fun() -> Test ! {join, chappe_mrf_conf:join(Conf, Target, #{})} end).
+
+join_within(Ms) ->
+    receive
+        {join, R} -> R
+    after Ms -> ct:fail(join_not_answered)
+    end.
+
+%% A loopback INVITE the room cannot answer (one asking a session timer
+%% below the node's Min-SE: 422) fails the join at once: the joiner gets
+%% {error, join_failed}, and the room gives its mixer leg, its token and
+%% its join slot back.
+native_loop_fails(Config) ->
+    ivr(Config),
+    Rtpe = ?config(rtpe, Config),
+    {ok, Conf} = chappe_mrf:conference(<<"loopfail">>, #{max_members => 1}),
+    {_Ua, _Ep, B2b, Owner} = call_in(Config),
+    Base = holdings(Conf),
+    _ = rtpe_offers(),
+    %% the call's own loopback INVITE waits on rtpengine
+    ok = ?F:rtpe_fail(Rtpe, #{<<"offer">> => hold}),
+    _ = join_async(Conf, B2b),
+    _ = rtpe_offer(),
+    [Token] = maps:keys(element(10, sys:get_state(Conf))),
+    Loop = ?F:ua_call(?config(ep, Config), #{
+        ruri => chappe_mrf:loop_target(Token),
+        headers => [
+            {<<"Supported">>, <<"timer">>}, {<<"Session-Expires">>, <<"30">>}
+        ]
+    }),
+    {ok, 422} = ua_final(Loop),
+    ?assertEqual({error, join_failed}, join_within(2000)),
+    ok = ?F:rtpe_fail(Rtpe, #{}),
+    back_to(Conf, Base),
+    Owner ! stop,
+    ok = chappe_mrf_conf:stop(Conf).
+
+%% An endpoint's join that fails at any step answers an error, gives the
+%% room's mixer leg and rtpengine session back, and the room goes on: no
+%% mixer, an rtpengine offer or answer refused, an answer the mixer cannot
+%% use, a node that refuses the re-INVITE, an endpoint that does not
+%% answer the room, and a dialog that dies under the re-INVITE.
+native_endpoint_fails(Config) ->
+    Rtpe = ?config(rtpe, Config),
+    {ok, Conf} = chappe_mrf:conference(<<"epfail">>, #{}),
+    {ok, Ep} = chappe_mrf:create_endpoint(#{targets => [{fs1, fs_uri(Config)}]}),
+    %% no mixer at all (its first join: the room has no mixer room yet)
+    ok = supervisor:terminate_child(chappe_sip_media_sup, chappe_sip_media_mix),
+    ?assertMatch({error, _}, chappe_mrf_conf:join(Conf, Ep, #{})),
+    {ok, _} = supervisor:restart_child(
+        chappe_sip_media_sup, chappe_sip_media_mix
+    ),
+    Base = holdings(Conf),
+    lists:foreach(
+        fun(F) ->
+            ok = ?F:rtpe_fail(Rtpe, F),
+            ?assertMatch({error, _}, chappe_mrf_conf:join(Conf, Ep, #{})),
+            ok = ?F:rtpe_fail(Rtpe, #{}),
+            back_to(Conf, Base)
+        end,
+        [
+            #{<<"offer">> => error},
+            #{<<"answer">> => error},
+            #{<<"answer">> => bad_sdp}
+        ]
+    ),
+    %% a node that refuses the re-INVITE
+    Picky = ?F:fs_start(<<"picky">>, #{
+        esl_port => ?config(lp, Config), reject_reinvite => true
+    }),
+    {ok, EpP} = chappe_mrf:create_endpoint(#{
+        targets => [{picky, uri_of(?F:fs_port(Picky))}]
+    }),
+    ?assertMatch({error, _}, chappe_mrf_conf:join(Conf, EpP, #{})),
+    back_to(Conf, Base),
+    chappe_mrf:destroy(EpP),
+    ?F:fs_stop(Picky),
+    %% the endpoint does not answer the room once its media is set
+    #{dialog := D} = chappe_mrf:info(Ep),
+    DPid = chappe_sip_dialog:pid(D),
+    Queued = fun() ->
+        element(2, process_info(DPid, message_queue_len)) > 0
+    end,
+    ok = sys:suspend(DPid),
+    _ = join_async(Conf, Ep),
+    until(Queued),
+    ok = sys:suspend(Ep),
+    ok = sys:resume(DPid),
+    ?assertMatch({error, _}, join_within(15000)),
+    ok = sys:resume(Ep),
+    back_to(Conf, Base),
+    %% its dialog dies under the re-INVITE
+    ok = sys:suspend(DPid),
+    _ = join_async(Conf, Ep),
+    until(Queued),
+    exit(DPid, kill),
+    ?assertMatch({error, _}, join_within(5000)),
+    back_to(Conf, Base),
+    ?assert(is_process_alive(Conf)),
+    ok = chappe_mrf_conf:stop(Conf).
+
+%% A join whose worker dies before it reports (the helper of a call's
+%% join, or the INVITE's request worker of a caller joined from its
+%% INVITE) fails, and the room counts it no more; a join that outlasts
+%% join_timeout fails with {error, timeout}.
+native_join_worker_dies(Config) ->
+    ivr(Config),
+    Rtpe = ?config(rtpe, Config),
+    {ok, Conf} = chappe_mrf:conference(<<"wdies">>, #{max_members => 1}),
+    {_Ua, _Ep, B2b, Owner} = call_in(Config),
+    Base = holdings(Conf),
+    _ = rtpe_offers(),
+    ok = ?F:rtpe_fail(Rtpe, #{<<"offer">> => hold}),
+    %% the helper of a call's join
+    _ = join_async(Conf, B2b),
+    _ = rtpe_offer(),
+    [Helper] = ?FAULTS:join_helpers(),
+    exit(Helper, kill),
+    ?assertEqual({error, join_failed}, join_within(2000)),
+    back_to(Conf, Base),
+    %% the request worker of a caller joined from its INVITE
+    Test = self(),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        Test ! {worker, self()},
+        chappe_mrf_conf:join(Conf, {call, Req, Res}, #{})
+    end),
+    _ = ?F:ua_call(?config(ep, Config), #{}),
+    Worker =
+        receive
+            {worker, W} -> W
+        after 5000 -> ct:fail(no_worker)
+        end,
+    _ = rtpe_offer(),
+    ?assertEqual(1, map_size(element(10, sys:get_state(Conf)))),
+    exit(Worker, kill),
+    back_to(Conf, Base),
+    %% a join that never ends
+    {ok, Slow} = chappe_mrf:conference(<<"wslow">>, #{join_timeout => 300}),
+    SlowBase = holdings(Slow),
+    _ = join_async(Slow, B2b),
+    ?assertEqual({error, timeout}, join_within(2000)),
+    back_to(Slow, SlowBase),
+    ok = ?F:rtpe_fail(Rtpe, #{}),
+    Owner ! stop,
+    ok = chappe_mrf_conf:stop(Slow),
+    ok = chappe_mrf_conf:stop(Conf).
+
+%% A handle that is neither a call, an incoming call nor an endpoint is
+%% refused in the caller, and the room counts no join for it.
+native_join_bad_handle(_Config) ->
+    {ok, Conf} = chappe_mrf:conference(<<"badh">>, #{max_members => 1}),
+    Base = holdings(Conf),
+    lists:foreach(
+        fun(H) ->
+            _ = join_async(Conf, H),
+            ?assertEqual({error, badarg}, join_within(2000))
+        end,
+        [{1, 2}, {self()}, <<"ep">>, {a, b, c, d}]
+    ),
+    back_to(Conf, Base),
+    ok = chappe_mrf_conf:stop(Conf).
 
 %% SIP edges: a loopback INVITE nobody waits for gets 404, one whose
 %% join is unknown 488; a SUBSCRIBE for an unknown room 404, for a room

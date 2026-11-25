@@ -45,6 +45,7 @@ under chappe_esl's supervisor.
 | `chappe_mrf_conf` | Public conference API and the conference process. |
 | `chappe_mrf_conf_backend` | The conference backend behaviour and the room API backends call. |
 | `chappe_mrf_conf_native`, `chappe_mrf_conf_fs` | The two backends: chappe_mix behind rtpengine, mod_conference. |
+| `chappe_mrf_conf_native_ep` | The media of an endpoint joining a native room, step by step, each failure giving back what the steps before made. |
 | `chappe_mrf_conf_fs_join` | The fs backend's join, in the caller: endpoint, bridge, PIN. |
 | `chappe_mrf_conf_cluster` | A cluster room: the start in the caller and the lease decisions in the room. |
 | `chappe_mrf_conf_move` | Moving a cluster room's members to the room that owns its name next. |
@@ -162,6 +163,17 @@ An endpoint of `create_endpoint/1` joins the other way: the mixer offers,
 rtpengine carries the offer to the endpoint's node in a re-INVITE of the
 endpoint's dialog, and the node's answer comes back through rtpengine.
 
+A call's join stays in the room's `pending` map until the member is in.
+The room watches the process that drives it: the helper that runs
+`replace_b/3`, or the INVITE's request worker of a caller joined from its
+INVITE. The join fails when its loopback INVITE fails, when that process
+dies before it reports, or after `join_timeout`. A failed join answers its
+joiner at once and gives back its mixer leg, its loopback token and
+dialog, and its place in `admission/1`. An endpoint's join runs its media
+steps in `chappe_mrf_conf_native_ep`: a step that fails or raises stops
+the rtpengine session, leaves the mixer leg and answers an error, and the
+room goes on.
+
 The middleware only runs when chappe_sip runs a request through its chain,
 so your app needs an INVITE handler (`chappe_sip:invite/1`).
 
@@ -197,7 +209,7 @@ Callbacks that run in the room process on its state and return it:
 | `init/2`, `info/1` | yes | the backend's first state, the keys it adds to `info/1` |
 | `admit/3` | yes | a join the room took |
 | `set_flag/5`, `hangup/3`, `left/2`, `play/3`, `portable/0` | yes | mute and deaf, a member hung up or gone, prompts, whether members can move across nodes |
-| `handle_call/3`, `handle_cast/2`, `handle_info/2` | no | `{backend, Req}`, `{backend, Msg}`, and messages the room does not know |
+| `handle_call/3`, `handle_cast/2`, `handle_info/2` | no | `{backend, Req}`, `{backend, Msg}`, and messages the room does not know, with every `'DOWN'` but the owner's and the event receivers' |
 | `lock/2` | no | the room is locked or unlocked (without it the room only keeps the flag) |
 | `relate/4`, `record/3`, `stop_record/1` | no | who hears whom, room recordings |
 | `handover/1`, `dial/4`, `terminate/1` | no | a transfer out, a REFER dial in the room, the room's end |
@@ -395,6 +407,9 @@ The first four are chappe_mrf settings
 | Conference owner exits | the conference stops and every member is hung up (an app's endpoint leaves the room and keeps its channel) |
 | `bridge/2` fails | the endpoint takes its dialog back |
 | fs member never shows up | after `join_timeout` (15 s), `{error, timeout}`; an endpoint made for the join is destroyed |
+| A native join fails (its loopback INVITE, a media step, the endpoint's re-INVITE) | the joiner gets an error at once; the mixer leg, the rtpengine session, the loopback token and the join's place go, and the room goes on |
+| A native join's worker dies, or the join outlasts `join_timeout` (95 s) | `{error, join_failed}` or `{error, timeout}`, with the same cleanup |
+| A native join given a handle that is no call, incoming call or endpoint | `{error, badarg}` in the caller |
 | Clean stop of a room's node (cluster) | the room gives its lease back and its members with calls on other nodes move to a room of the same name on a live node, within `drain_ms`; a move not done by then is hung up; fs rooms only give the name back |
 | Room's lease lost (cluster) | the room takes no new member (`{error, lost}`), sends `lost` and frees its name; a native room moves its members to the next owner for up to `rehome_ms` |
 | Owner node unreachable (cluster) | `conference/2` returns `{error, {owner_unreachable, Node}}` until the lease runs out, then opens the room on a live node |

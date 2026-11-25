@@ -104,6 +104,9 @@
 %%                moved into the mixer (the mixer runs on this host)
 %%   endpoint_params => #{offer, answer => map()}: rtpengine flags between
 %%                the mixer and an endpoint's node (offer: toward the node)
+%%   join_timeout => ms a call's join may take, 95000 at most and by
+%%                default: past it the join fails with {error, timeout}
+%%                and the room gives back what it took
 %% both:
 %%   focus     => true: serve RFC 4575 conference-info (entity, the
 %%                conference URI, defaults to sip:Name@<this node>); the
@@ -697,18 +700,19 @@ handle_info({chappe_cluster, Lost, lost}, #state{lease = Lease} = S) ->
     end;
 handle_info({'DOWN', Mon, process, _, _}, #state{owner_mon = Mon} = S) ->
     {stop, normal, S};
-handle_info({'DOWN', Mon, process, Pid, _}, #state{listeners = L} = S) ->
+handle_info({'DOWN', Mon, process, Pid, _} = Down, #state{listeners = L} = S) ->
     case L of
         #{Pid := Mon} ->
             {noreply, S#state{listeners = maps:remove(Pid, L)}};
         _ ->
-            %% a mover, or the worker of a REFER the room reserved for
+            %% a mover, the worker of a REFER the room reserved for, or
+            %% the backend's (the worker of a native join)
             S1 = chappe_mrf_conf_refer:down(Mon, S),
             {M, Actions} = chappe_mrf_conf_transfer:mover_down(
                 Mon, S1#state.members
             ),
-            {noreply,
-                chappe_mrf_conf_transfer:run(Actions, S1#state{members = M})}
+            S2 = chappe_mrf_conf_transfer:run(Actions, S1#state{members = M}),
+            backend_info(Down, S2)
     end;
 handle_info({'EXIT', Pid, Why}, S) ->
     %% a REFER's dial helper, or a link of no interest
@@ -718,6 +722,8 @@ handle_info(Info, S) ->
 
 %% A message the room does not know: a REFER's (a member's, a dial-out's:
 %% chappe_mrf_conf_refer:info/2), else the backend's, else the focus's.
+%% A 'DOWN' comes here too, once the room did its part: the backend may
+%% watch a process of its own.
 backend_info(Info, #state{mod = Mod} = S) ->
     case chappe_mrf_conf_refer:info(Info, S) of
         {ok, S1} ->

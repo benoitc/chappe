@@ -21,7 +21,9 @@
 %%
 %% rtpe_start/1: an rtpengine NG node that passes the SDP through with a
 %% marker line (a=rtpe-offer:<from-tag>, a=rtpe-answer:<to-tag>), and
-%% transcodes as the 16 kHz flags ask (see transcoded/2).
+%% transcodes as the 16 kHz flags ask (see transcoded/2). rtpe_fail/2
+%% makes a command fail from then on: error (result error), bad_sdp (an
+%% SDP with no media) or hold (no answer at all).
 %%
 %% ua_*: a caller over UDP that INVITEs the engine, ACKs, answers BYE and
 %% re-INVITE (and reports them), and sends BYE or RTP.
@@ -39,7 +41,7 @@
 -export([fs_event/3, socket_start/3, socket_event/3, socket_stop/1]).
 -export([refuser_start/1]).
 -export([esl_start/0, esl_stop/1]).
--export([rtpe_start/1, rtpe_stop/1]).
+-export([rtpe_start/1, rtpe_stop/1, rtpe_fail/2]).
 -export([ua_call/2, ua_bye/1, ua_refer/2, ua_rtp/2, ua_rtp/3, callee_start/1]).
 -export([pick/0, sdp/2, hdr/2, body/1]).
 
@@ -771,7 +773,7 @@ rtpe_start(Collector) ->
         ]),
         {ok, Port} = inet:port(Sock),
         Self ! {rtpe_port, self(), Port},
-        rtpe_loop(Sock, Collector, #{})
+        rtpe_loop(Sock, Collector, #{}, #{})
     end),
     Port =
         receive
@@ -791,26 +793,45 @@ rtpe_stop(Pid) ->
     Pid ! stop,
     ok.
 
+%% Fails: #{Command => error | bad_sdp | hold}, the commands that fail
+%% (an empty map puts the node back to normal).
+rtpe_fail(Pid, Fails) when is_map(Fails) ->
+    Pid ! {fail, Fails},
+    ok.
+
 %% Wide: the calls whose offer came from a 16 kHz mixer toward an
 %% endpoint, by call-id, with the mixer's L16 offer: their answer goes
-%% back to the mixer in it.
-rtpe_loop(Sock, Collector, Wide) ->
+%% back to the mixer in it. Fails: rtpe_fail/2's.
+rtpe_loop(Sock, Collector, Wide, Fails) ->
     receive
         {udp, Sock, Ip, Port, Packet} ->
             [Cookie, Body] = binary:split(Packet, <<" ">>),
             {ok, Cmd} = chappe_rtpengine_bencode:decode(Body),
             Collector ! {rtpe_cmd, Cmd},
             Wide1 = from_mixer(Cmd, Wide),
-            Reply = chappe_rtpengine_bencode:encode_to_binary(
-                rtpe_reply(Cmd, Wide1)
-            ),
-            ok = gen_udp:send(
-                Sock, Ip, Port, <<Cookie/binary, " ", Reply/binary>>
-            ),
-            rtpe_loop(Sock, Collector, Wide1);
+            Fail = maps:get(maps:get(<<"command">>, Cmd, <<>>), Fails, none),
+            _ =
+                Fail =:= hold orelse
+                    gen_udp:send(Sock, Ip, Port, [
+                        Cookie,
+                        <<" ">>,
+                        chappe_rtpengine_bencode:encode_to_binary(
+                            failed(Fail, rtpe_reply(Cmd, Wide1))
+                        )
+                    ]),
+            rtpe_loop(Sock, Collector, Wide1, Fails);
+        {fail, Fails1} ->
+            rtpe_loop(Sock, Collector, Wide, Fails1);
         stop ->
             gen_udp:close(Sock)
     end.
+
+failed(none, Reply) ->
+    Reply;
+failed(error, _Reply) ->
+    #{<<"result">> => <<"error">>, <<"error-reason">> => <<"fake failure">>};
+failed(bad_sdp, Reply) ->
+    Reply#{<<"sdp">> => <<"v=0\r\n">>}.
 
 %% the mixer's offer toward an endpoint, transcoded to G.722 and G.711
 %% (chappe_sip_media:mixer_params(16000, endpoint))

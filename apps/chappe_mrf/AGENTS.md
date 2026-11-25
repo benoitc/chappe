@@ -20,7 +20,8 @@ X-Chappe-Call), `chappe_mrf_registry` (the ETS table of who waits for
 what), `chappe_mrf_conf` (one gen_server per conference),
 `chappe_mrf_conf_backend` (the backend behaviour and the room API a
 backend calls) with its backends `chappe_mrf_conf_native` (chappe_mix
-behind rtpengine, via a loopback INVITE) and `chappe_mrf_conf_fs`
+behind rtpengine, via a loopback INVITE; an endpoint's media in
+`chappe_mrf_conf_native_ep`) and `chappe_mrf_conf_fs`
 (mod_conference; its caller-side join in `chappe_mrf_conf_fs_join`),
 `chappe_mrf_conf_refer` (REFER to a room and a member's transfer),
 `chappe_mrf_conf_transfer` (`transfer/3` between rooms),

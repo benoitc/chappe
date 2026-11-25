@@ -22,8 +22,9 @@
 %% the REFERs, transfers, the cluster lease). A call {backend, Req} goes
 %% to handle_call/3, a cast {backend, Msg} to handle_cast/2, and any
 %% message the room does not know to handle_info/2 (ignore: not the
-%% backend's, the room's focus may take it). The room reads which
-%% optional callbacks its backend has once, when it starts.
+%% backend's, the room's focus may take it), every 'DOWN' too but the
+%% owner's and the event receivers'. The room reads which optional
+%% callbacks its backend has once, when it starts.
 %%
 %% Callbacks a backend leaves out are features it does not have: the
 %% room answers {error, {unsupported, Backend}} (relate, record,

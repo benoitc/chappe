@@ -42,6 +42,7 @@
     endpoint_verbs/1,
     fs_conference_record_transfer/1,
     native_conference_transfer/1,
+    native_faults/1,
     owner_killed/1,
     node_down_failover/1,
     refer_dial_out_native/1,
@@ -55,6 +56,7 @@
 
 -define(UA, chappe_mrf_live_ua).
 -define(RTPE, chappe_mrf_live_rtpe).
+-define(FAULTS, chappe_mrf_faults).
 
 %% marker tones of the prompts
 -define(MENU, 440).
@@ -88,6 +90,7 @@ all() ->
         endpoint_verbs,
         fs_conference_record_transfer,
         native_conference_transfer,
+        native_faults,
         owner_killed,
         refer_dial_out_native,
         refer_dial_out_fs,
@@ -1154,6 +1157,130 @@ native_endpoint(Config) ->
     ?assertMatch({ok, _}, chappe_mrf:uuid(Ep)),
     chappe_mrf:destroy(Ep),
     ?UA:bye(Ua).
+
+%% Faults in a live native room. The registry is killed: the room keeps
+%% its name and its members still hear each other. Then, rtpengine paused
+%% so that each join hangs on its offer, join workers are killed at a
+%% random point (a call's helper, an incoming caller's INVITE worker):
+%% each join fails, and once those callers are gone the room's mixer legs
+%% and the calls rtpengine runs are what they were, and the node has no
+%% more processes or ports than before.
+native_faults(Config) ->
+    case ?config(compose, Config) of
+        "" -> {skip, "MRF_COMPOSE not set"};
+        Compose -> native_faults(Config, Compose)
+    end.
+
+native_faults(Config, Compose) ->
+    ivr(fun park/2),
+    Name = <<"live-faults">>,
+    {ok, Conf} = chappe_mrf:conference(Name, #{anchor_params => to_host()}),
+    {U1, _, B1, _} = call_in(Config, 500),
+    {U2, _, B2, _} = call_in(Config, none),
+    {ok, M1} = chappe_mrf_conf:join(Conf, B1, #{}),
+    {ok, M2} = chappe_mrf_conf:join(Conf, B2, #{}),
+    ?assert(?UA:hears(U2, 500, 6000)),
+    Base = settled(Name, counts(Name), 0),
+    ct:log("baseline ~p", [Base]),
+    ok = ?FAULTS:restart_registry(),
+    ?assertEqual({ok, Conf}, chappe_mrf:conference(Name, #{})),
+    ?UA:clear(U2),
+    ?assert(?UA:hears(U2, 500, 4000)),
+    Ways = lists:append(lists:duplicate(4, [b2b, call])),
+    Killed = [kill_join(Config, Compose, Conf, Way) || Way <- Ways],
+    ct:log("joins under faults: ~p", [Killed]),
+    ?assertEqual(
+        lists:sort([M1, M2]), lists:sort([Id || #{id := Id} <- members(Conf)])
+    ),
+    ivr(fun park/2),
+    _ = ?FAULTS:eventually(fun() -> within(counts(Name), Base) end, 600),
+    ct:log("after ~p", [counts(Name)]),
+    ?assert(within(counts(Name), Base)),
+    ?UA:clear(U2),
+    ?assert(?UA:hears(U2, 500, 6000)),
+    [?UA:bye(U) || U <- [U1, U2]].
+
+members(Conf) ->
+    chappe_mrf_conf:members(Conf).
+
+%% the node's processes and ports, the room's mixer legs and rtpengine's
+%% calls
+counts(Name) ->
+    {ok, Calls} = chappe_rtpengine:list(?RTPE),
+    #{
+        processes => erlang:system_info(process_count),
+        ports => length(erlang:ports()),
+        legs => ?FAULTS:mix_legs(<<"mrf-", Name/binary>>),
+        rtpe => length(Calls)
+    }.
+
+%% the same legs and rtpengine calls, no more processes or ports
+within(
+    #{processes := P, ports := Po} = Now,
+    #{processes := P0, ports := Po0} = Base
+) ->
+    maps:with([legs, rtpe], Now) =:= maps:with([legs, rtpe], Base) andalso
+        P =< P0 andalso Po =< Po0.
+
+%% the counts once they held for three samples, 2 s apart
+settled(_Name, Counts, 3) ->
+    Counts;
+settled(Name, Counts, Same) ->
+    timer:sleep(2000),
+    case counts(Name) of
+        Counts -> settled(Name, Counts, Same + 1);
+        Other -> settled(Name, Other, 0)
+    end.
+
+%% One join whose worker is killed while rtpengine is paused (the join
+%% waits on its offer): a call's (Way b2b, its replace_b/3 helper) or an
+%% incoming caller's (Way call, its INVITE's request worker), within
+%% 500 ms. The join fails; the caller then goes.
+kill_join(Config, Compose, Conf, b2b) ->
+    ivr(fun park/2),
+    {Ua, _, B2b, Owner} = call_in(Config, none),
+    Test = self(),
+    _ = os:cmd(Compose ++ " pause rtpengine"),
+    _ = spawn(fun() -> Test ! {join, chappe_mrf_conf:join(Conf, B2b, #{})} end),
+    true = ?FAULTS:eventually(fun() -> ?FAULTS:join_helpers() =/= [] end, 20),
+    timer:sleep(rand:uniform(500) - 1),
+    Helpers = [exit(P, kill) || P <- ?FAULTS:join_helpers()],
+    R =
+        receive
+            {join, J} -> J
+        after 2000 -> ct:fail(join_not_failed)
+        end,
+    _ = os:cmd(Compose ++ " unpause rtpengine"),
+    ?UA:bye(Ua),
+    Owner ! stop,
+    timer:sleep(300),
+    ?UA:stop(Ua),
+    {b2b, length(Helpers), R};
+kill_join(Config, Compose, Conf, call) ->
+    Test = self(),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        Test ! {worker, self()},
+        Test ! {join, chappe_mrf_conf:join(Conf, {call, Req, Res}, #{})}
+    end),
+    _ = os:cmd(Compose ++ " pause rtpengine"),
+    Ua = ?UA:call(?config(sip_port, Config), #{freq => none}),
+    Worker =
+        receive
+            {worker, W} -> W
+        after 10000 -> ct:fail(no_worker)
+        end,
+    timer:sleep(rand:uniform(500) - 1),
+    exit(Worker, kill),
+    _ = os:cmd(Compose ++ " unpause rtpengine"),
+    R =
+        receive
+            {join, J} -> J
+        after 0 -> killed
+        end,
+    ?UA:bye(Ua),
+    timer:sleep(300),
+    ?UA:stop(Ua),
+    {call, R}.
 
 %% Three callers in a mod_conference room: each enters the PIN after its
 %% prompt, audio crosses the room, and the moderator kick drops one.
