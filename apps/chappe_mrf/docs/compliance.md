@@ -5,7 +5,7 @@ the `%% req:` annotations in `test/*_SUITE.erl` and `test/*_tests.erl`, and
 the results of the newest Common Test run and EUnit reports. Do not edit
 by hand.
 
-23 requirements: 22 pass, 0 fail, 0 untested, 0 n/a, 1 deviation, 0 spec defect
+27 requirements: 26 pass, 0 fail, 0 untested, 0 n/a, 1 deviation, 0 spec defect
 
 What chappe does not meet on purpose, and why, is listed under
 [Deviations](#deviations).
@@ -21,13 +21,14 @@ What chappe does not meet on purpose, and why, is listed under
 | Row | pass | fail | untested | other |
 | --- | ---: | ---: | ---: | ---: |
 | bridge | 2 | 0 | 0 | 0 |
-| cleanup | 1 | 0 | 0 | 0 |
+| cleanup | 3 | 0 | 0 | 0 |
 | conference | 4 | 0 | 0 | 0 |
 | correlation | 2 | 0 | 0 | 0 |
 | events | 1 | 0 | 0 | 0 |
 | refer | 10 | 0 | 0 | 0 |
 | referred-by | 0 | 0 | 0 | 1 |
-| replaces | 1 | 0 | 0 | 0 |
+| registry | 1 | 0 | 0 | 0 |
+| replaces | 2 | 0 | 0 | 0 |
 | roster | 1 | 0 | 0 | 0 |
 
 ## Requirements
@@ -57,3 +58,7 @@ What chappe does not meet on purpose, and why, is listed under
 | MRF-21 | MUST | refer | platform | pass | chappe_mrf_SUITE:ood_target_dialog_member | An out-of-dialog REFER whose Target-Dialog names a member's dialog with the room is from that member. |
 | MRF-22 | MUST | replaces | platform | pass | chappe_mrf_SUITE:invite_replaces_anonymous, chappe_mrf_SUITE:invite_replaces_caller_dies, chappe_mrf_SUITE:invite_replaces_default, chappe_mrf_SUITE:invite_replaces_member, chappe_mrf_SUITE:invite_replaces_policy, chappe_mrf_SUITE:invite_replaces_race | An incoming call whose Replaces names a member's call in the room takes that member's place: it joins, then the member is hung up; a Replaces naming any other call is refused and the room does not change. |
 | MRF-23 | MUST | referred-by | deviation | deviation |  | The INVITE a conference sends a party a REFER brings in carries the REFER's Referred-By unchanged (RFC 3892 2.2). |
+| MRF-24 | MUST | registry | platform | pass | chappe_mrf_SUITE:registry_dead_entry, chappe_mrf_SUITE:registry_delete_again, chappe_mrf_SUITE:registry_put_restart, chappe_mrf_SUITE:registry_restart | When the registry process restarts, a room keeps its name (conference/2 returns the same room), and the endpoints, loopback joins and member dialogs it holds are still found; the entries of a process that died meanwhile go. A delete made again after the restart removes only its caller's own entry, never one another room took meanwhile. |
+| MRF-25 | MUST | cleanup | platform | pass | chappe_mrf_SUITE:native_call_loop_fails, chappe_mrf_SUITE:native_endpoint_fails, chappe_mrf_SUITE:native_join_bad_handle, chappe_mrf_SUITE:native_loop_fails | A native join that fails (its loopback INVITE, a media step of an endpoint, the endpoint's re-INVITE, a malformed handle) answers its joiner an error at once and gives back the mixer leg, the rtpengine session, the loopback token and its place in the room; the room and its members go on. An endpoint whose node already took the room's media is hung up. |
+| MRF-26 | MUST | cleanup | platform | pass | chappe_mrf_SUITE:join_timeout_refused, chappe_mrf_SUITE:native_join_worker_dies | A native join whose worker dies before it reports (the helper of a call's join, the request worker of an incoming call), or that outlasts join_timeout, fails and gives back what it took. |
+| MRF-27 | MUST | replaces | platform | pass | chappe_mrf_SUITE:invite_replaces_after_transfer, chappe_mrf_SUITE:invite_replaces_member_kicked, chappe_mrf_SUITE:invite_replaces_member_left, chappe_mrf_SUITE:invite_replaces_stale_hold, chappe_mrf_SUITE:invite_replaces_taken | A call whose Replaces names a member takes its place only while the member is still held for that call: once the hold ran out, passed to another caller or went with a transfer of the member's call, the member stays and the late call is hung up; once another call replaced the member, the late call is hung up too. A member that left on its own meanwhile (BYE, kick) leaves its place to the call, which stays. |

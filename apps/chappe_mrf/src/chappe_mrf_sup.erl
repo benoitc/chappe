@@ -4,7 +4,8 @@
 %% @doc Root supervisor: the registry of the calls waiting for FreeSWITCH, then
 %% one pool for endpoints and one for conferences (both temporary: an
 %% endpoint or a conference that stops is not restarted, its owner hears
-%% of it).
+%% of it). The supervisor owns the registry's table, so a registry that
+%% restarts keeps every entry.
 -module(chappe_mrf_sup).
 -behaviour(supervisor).
 
@@ -24,6 +25,9 @@ start_conf(Args) ->
     supervisor:start_child(chappe_mrf_conf_sup, [Args]).
 
 init(top) ->
+    %% the registry's table is the supervisor's: it outlives a restart of
+    %% the registry (chappe_mrf_registry)
+    ok = chappe_mrf_registry:new_table(),
     Flags = #{strategy => one_for_one, intensity => 5, period => 10},
     {ok,
         {Flags, [

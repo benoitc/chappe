@@ -65,6 +65,40 @@ says how apps are released.
   REFER instead of being dropped, and a REFER asking the conference to
   refer a party passes the referrer's Referred-By on unchanged.
 - A conference without focus refuses to dial its own address.
+- When the process that finds conferences by name restarted, every room
+  lost its name: asking for a room then opened a second one on the same
+  mixer while the first still ran, and the end of the first cut the mixer
+  under the second. Rooms keep their names across the restart now, and
+  endpoints waiting for FreeSWITCH, joins under way and members' calls
+  are still found. A room or a join registering itself at that moment no
+  longer fails, and a room giving its name up at that moment no longer
+  takes it from a new room that just claimed it.
+- A native conference join that failed could leave a mixer leg, an
+  rtpengine session and a place in the room behind until the room ended,
+  and a join whose call to the mixer failed kept its caller waiting 95
+  seconds. A failed join now answers at once and gives everything back,
+  and an endpoint whose media setup fails no longer ends the room for
+  every member. An endpoint whose media FreeSWITCH had already moved to
+  the room when its join failed is hung up, since that media is gone. A
+  join given something that is neither a call nor an endpoint fails with
+  badarg.
+- A native conference join cut short by a crash before it finished
+  counted against the room's member limit for good. It now fails and
+  frees its place.
+- A call replacing a conference member that got in late, after its hold
+  on the member had run out or passed to another caller, or after the
+  member's call was transferred, still hung that member up. It now
+  replaces the member only while the hold is its own. A late call is hung
+  up instead and the member stays: its join fails as expired, the room
+  reports it leaving with the reason expired, and the roster shows it
+  removed by the conference. A member that hung up or was removed first
+  leaves its place to the call, which stays; one another call already
+  replaced does not, so two calls never take one member's place.
+- A caller joining a FreeSWITCH conference whose join timeout was above
+  15 seconds gave up after 20 seconds, so a member that showed up later
+  was in the room while its caller had been told the join timed out. A
+  join, and a transfer into such a room, now wait for the room's own
+  timeout.
 
 ### New
 
@@ -103,6 +137,11 @@ says how apps are released.
   by one, so adding one keeps the room's conversion. Asking for a running
   room at another rate than its own is refused. A FreeSWITCH conference
   refuses the option: its rate comes from its profile.
+- A native conference takes a join timeout, as FreeSWITCH conferences
+  do: how long a join may take before it fails with a timeout and the
+  room gives back what it took, 95 seconds by default and at most. A
+  conference given a join timeout that is not a number of milliseconds
+  from 1 to 95000 is refused, on either backend.
 
 ## [0.1.0] - 2026-11-23
 

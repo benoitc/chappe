@@ -22,8 +22,9 @@
 %% the REFERs, transfers, the cluster lease). A call {backend, Req} goes
 %% to handle_call/3, a cast {backend, Msg} to handle_cast/2, and any
 %% message the room does not know to handle_info/2 (ignore: not the
-%% backend's, the room's focus may take it). The room reads which
-%% optional callbacks its backend has once, when it starts.
+%% backend's, the room's focus may take it), every 'DOWN' too but the
+%% owner's and the event receivers'. The room reads which optional
+%% callbacks its backend has once, when it starts.
 %%
 %% Callbacks a backend leaves out are features it does not have: the
 %% room answers {error, {unsupported, Backend}} (relate, record,
@@ -348,11 +349,13 @@ close_if_empty(#state{lost = Lost, members = M, pending = P}) ->
     end.
 
 %% The options of a room that start/2 refuses before any room runs: a
-%% rate the backend cannot mix at, and dial_codecs that do not fit in a
-%% dial string.
+%% rate the backend cannot mix at, a join_timeout that is no number of
+%% milliseconds up to 95000, and dial_codecs that do not fit in a dial
+%% string.
 -spec check_opts(map()) -> ok | {error, term()}.
 check_opts(Opts) ->
     maybe
         ok ?= chappe_mrf_conf_native:check_rate(Opts),
+        ok ?= chappe_mrf_conf_native:check_join_timeout(Opts),
         chappe_mrf_conf_refer_dial:check_codecs(Opts)
     end.

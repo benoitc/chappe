@@ -25,9 +25,13 @@
 %% The event receivers (the caller of start/2, then events/2) get
 %% {chappe_mrf_conf, Conf, Event}:
 %%   {joined, Member, Info}     Info: #{name, mute, deaf, moderator}
-%%   {left, Member, Reason}     departed | kicked | hangup | transferred
-%%                              (transferred: moved by transfer/3, or its
-%%                              call transferred by REFER, see b2b_event/2)
+%%   {left, Member, Reason}     departed | kicked | hangup | transferred |
+%%                              replaced | expired (transferred: moved by
+%%                              transfer/3, or its call transferred by
+%%                              REFER, see b2b_event/2; replaced: a call
+%%                              with Replaces took its place; expired: that
+%%                              call itself, in once its hold on the
+%%                              member had gone)
 %%   lost                       cluster: the region took the room's name
 %%                              back; no new member, the ones in stay
 %%   {talking, Member, boolean()}
@@ -104,6 +108,12 @@
 %%                moved into the mixer (the mixer runs on this host)
 %%   endpoint_params => #{offer, answer => map()}: rtpengine flags between
 %%                the mixer and an endpoint's node (offer: toward the node)
+%%   join_timeout => ms a call's join may take, 95000 at most and by
+%%                default: past it the join fails with {error, timeout}
+%%                and the room gives back what it took. On either
+%%                backend start/2 refuses a join_timeout that is no
+%%                integer from 1 to 95000: {error, {bad_option,
+%%                join_timeout}}
 %% both:
 %%   focus     => true: serve RFC 4575 conference-info (entity, the
 %%                conference URI, defaults to sip:Name@<this node>); the
@@ -160,7 +170,9 @@
 %%   profile   => the mod_conference profile (default <<"default">>)
 %%   bridge    => chappe_mrf:bridge/3 options for a caller joined from a
 %%                call (anchor_params toward the node)
-%%   join_timeout => ms a member may take to show up in the room (15000)
+%%   join_timeout => ms a member may take to show up in the room (15000);
+%%                its join/3, and a transfer/3 into the room, wait that
+%%                long and 5 s more, so the room's answer comes first
 %%   room_flags => mod_conference conference flags for the room (as
 %%                wait-mod or audio-always), set on each joining channel
 %%                as conference_flags; they apply when the room is made
@@ -229,12 +241,16 @@ events(Conf, Pid) ->
 %% through rtpengine, fs bridges it to an endpoint on the room's node),
 %% or an endpoint. On native, the
 %% endpoint must be one of create_endpoint/1 not bridged: its dialog is
-%% re-INVITEd to the mixer through rtpengine. On
+%% re-INVITEd to the mixer through rtpengine, and a join that fails once
+%% the node answered that re-INVITE hangs the endpoint up (its media is
+%% gone). On
 %% fs, it must be on the conference's node. Opts: name, mute,
 %% deaf, moderator; fs also pin (the PIN to enter first), pin_prompt
 %% (the file asking for it), pin_tries (3), flags (more mod_conference
-%% member flags). {ok, Member} once the member is in. Runs in the caller
-%% (the backend's join/4).
+%% member flags). {ok, Member} once the member is in; {error, badarg} for
+%% a Target of no such shape (native), {error, expired} for a call whose
+%% Replaces came too late (chappe_mrf_conf_refer_member:join/5). Runs in
+%% the caller (the backend's join/4).
 -spec join(
     conf(),
     chappe_sip_b2b:b2b()
@@ -697,18 +713,19 @@ handle_info({chappe_cluster, Lost, lost}, #state{lease = Lease} = S) ->
     end;
 handle_info({'DOWN', Mon, process, _, _}, #state{owner_mon = Mon} = S) ->
     {stop, normal, S};
-handle_info({'DOWN', Mon, process, Pid, _}, #state{listeners = L} = S) ->
+handle_info({'DOWN', Mon, process, Pid, _} = Down, #state{listeners = L} = S) ->
     case L of
         #{Pid := Mon} ->
             {noreply, S#state{listeners = maps:remove(Pid, L)}};
         _ ->
-            %% a mover, or the worker of a REFER the room reserved for
+            %% a mover, the worker of a REFER the room reserved for, or
+            %% the backend's (the worker of a native join)
             S1 = chappe_mrf_conf_refer:down(Mon, S),
             {M, Actions} = chappe_mrf_conf_transfer:mover_down(
                 Mon, S1#state.members
             ),
-            {noreply,
-                chappe_mrf_conf_transfer:run(Actions, S1#state{members = M})}
+            S2 = chappe_mrf_conf_transfer:run(Actions, S1#state{members = M}),
+            backend_info(Down, S2)
     end;
 handle_info({'EXIT', Pid, Why}, S) ->
     %% a REFER's dial helper, or a link of no interest
@@ -718,6 +735,8 @@ handle_info(Info, S) ->
 
 %% A message the room does not know: a REFER's (a member's, a dial-out's:
 %% chappe_mrf_conf_refer:info/2), else the backend's, else the focus's.
+%% A 'DOWN' comes here too, once the room did its part: the backend may
+%% watch a process of its own.
 backend_info(Info, #state{mod = Mod} = S) ->
     case chappe_mrf_conf_refer:info(Info, S) of
         {ok, S1} ->

@@ -24,7 +24,7 @@ leaf apps never depend on it.
 
 ```
 chappe_mrf_sup (one_for_one)
-|-- chappe_mrf_registry   one gen_server, owns the correlation ETS table
+|-- chappe_mrf_registry   one gen_server, writes the correlation ETS table
 |-- chappe_mrf_ep_sup     simple_one_for_one, temporary
 |   `-- chappe_mrf_endpoint   one gen_statem per FreeSWITCH channel
 `-- chappe_mrf_conf_sup   simple_one_for_one, temporary
@@ -45,6 +45,7 @@ under chappe_esl's supervisor.
 | `chappe_mrf_conf` | Public conference API and the conference process. |
 | `chappe_mrf_conf_backend` | The conference backend behaviour and the room API backends call. |
 | `chappe_mrf_conf_native`, `chappe_mrf_conf_fs` | The two backends: chappe_mix behind rtpengine, mod_conference. |
+| `chappe_mrf_conf_native_ep` | The media of an endpoint joining a native room, step by step, each failure giving back what the steps before made. |
 | `chappe_mrf_conf_fs_join` | The fs backend's join, in the caller: endpoint, bridge, PIN. |
 | `chappe_mrf_conf_cluster` | A cluster room: the start in the caller and the lease decisions in the room. |
 | `chappe_mrf_conf_move` | Moving a cluster room's members to the room that owns its name next. |
@@ -116,12 +117,23 @@ a 408, a 503 or a transport error moves to the next node.
 
 ## The registry
 
-`chappe_mrf_registry` owns a protected ETS table with `read_concurrency`.
-Readers (`lookup/1`, `select/1`) read it directly; the gen_server
-serializes writes and monitors each process that put a key, so an entry
-goes with its process. `put/2` refuses a key that names a live process
-(`{error, exists}`), which is how two `conference/2` calls with one name
-end on the same process.
+`chappe_mrf_registry` keeps a public ETS table with `read_concurrency`.
+Readers (`lookup/1`, `select/1`) read it directly; only the gen_server
+writes it, serializing the writes and monitoring each process that put a
+key, so an entry goes with its process. `put/2` refuses a key that names
+another live process (`{error, exists}`), which is how two
+`conference/2` calls with one name end on the same process.
+
+`chappe_mrf_sup` creates the table in its `init/1`, so the table is the
+supervisor's and outlives the registry. A registry that restarts monitors
+every process already in the table; one that died meanwhile sends its
+`'DOWN'` at once and loses its entries. A room keeps its name across the
+restart, and an endpoint, a loopback join or a member's dialog is still
+found. `put/2` and `delete/1` wait up to a second for a registry that is
+being restarted, and a write the old registry took but never answered is
+made again by the new one: a `put/2` of a key its own process holds
+already answers `ok`, and `delete/1` removes only its caller's own entry,
+so one made again never takes a name another room claimed meanwhile.
 
 ## Native conferences and the loopback middleware
 
@@ -153,6 +165,18 @@ rtpengine leg (`chappe_sip_media:play/2`).
 An endpoint of `create_endpoint/1` joins the other way: the mixer offers,
 rtpengine carries the offer to the endpoint's node in a re-INVITE of the
 endpoint's dialog, and the node's answer comes back through rtpengine.
+
+A call's join stays in the room's `pending` map until the member is in.
+The room watches the process that drives it: the helper that runs
+`replace_b/3`, or the INVITE's request worker of a caller joined from its
+INVITE. The join fails when its loopback INVITE fails, when that process
+dies before it reports, or after `join_timeout`. A failed join answers its
+joiner at once and gives back its mixer leg, its loopback token and
+dialog, and its place in `admission/1`. An endpoint's join runs its media
+steps in `chappe_mrf_conf_native_ep`: a step that fails or raises stops
+the rtpengine session, leaves the mixer leg and answers an error, and the
+room goes on. Once the node answered the re-INVITE, a failure also ends
+the endpoint's dialog: its channel would send to the session that went.
 
 The middleware only runs when chappe_sip runs a request through its chain,
 so your app needs an INVITE handler (`chappe_sip:invite/1`).
@@ -189,7 +213,7 @@ Callbacks that run in the room process on its state and return it:
 | `init/2`, `info/1` | yes | the backend's first state, the keys it adds to `info/1` |
 | `admit/3` | yes | a join the room took |
 | `set_flag/5`, `hangup/3`, `left/2`, `play/3`, `portable/0` | yes | mute and deaf, a member hung up or gone, prompts, whether members can move across nodes |
-| `handle_call/3`, `handle_cast/2`, `handle_info/2` | no | `{backend, Req}`, `{backend, Msg}`, and messages the room does not know |
+| `handle_call/3`, `handle_cast/2`, `handle_info/2` | no | `{backend, Req}`, `{backend, Msg}`, and messages the room does not know, with every `'DOWN'` but the owner's and the event receivers' |
 | `lock/2` | no | the room is locked or unlocked (without it the room only keeps the flag) |
 | `relate/4`, `record/3`, `stop_record/1` | no | who hears whom, room recordings |
 | `handover/1`, `dial/4`, `terminate/1` | no | a transfer out, a REFER dial in the room, the room's end |
@@ -382,10 +406,16 @@ The first four are chappe_mrf settings
 | Outbound socket never arrives | after `attach_timeout`, the call is hung up and the endpoint destroyed |
 | Unknown channel on the socket | hung up with `UNALLOCATED_NUMBER` |
 | Node goes down | the endpoint's owner gets `{chappe_mrf, Ep, {node_down, Node}}` |
+| The registry restarts | its table stays (the supervisor's): rooms keep their names and every entry is found; the new registry watches their processes, and one that died meanwhile loses its entries |
 | Endpoint owner exits | `chappe_esl_call` stops the forks and recordings it started and kills the channel; a dialog still owned is torn down |
 | Conference owner exits | the conference stops and every member is hung up (an app's endpoint leaves the room and keeps its channel) |
 | `bridge/2` fails | the endpoint takes its dialog back |
-| fs member never shows up | after `join_timeout` (15 s), `{error, timeout}`; an endpoint made for the join is destroyed |
+| fs member never shows up | after `join_timeout` (15 s), `{error, timeout}` from the room (its joiner waits `join_timeout` and 5 s more); an endpoint made for the join is destroyed |
+| A native join fails (its loopback INVITE, a media step, the endpoint's re-INVITE) | the joiner gets an error at once; the mixer leg, the rtpengine session, the loopback token and the join's place go, and the room goes on; an endpoint whose node answered the re-INVITE is hung up |
+| A native join's worker dies, or the join outlasts `join_timeout` (95 s) | `{error, join_failed}` or `{error, timeout}`, with the same cleanup |
+| A native join given a handle that is no call, incoming call or endpoint | `{error, badarg}` in the caller |
+| A call with Replaces gets in after its hold on the member went (110 s, another caller's hold, the member's call transferred), or after another call replaced the member | the member stays; the new call is hung up (`{left, New, expired}`, `booted` in the roster) and its `join/3` returns `{error, expired}` |
+| The member a call with Replaces names leaves on its own (BYE, kick) before that call gets in | the new call stays a member; nothing is hung up |
 | Clean stop of a room's node (cluster) | the room gives its lease back and its members with calls on other nodes move to a room of the same name on a live node, within `drain_ms`; a move not done by then is hung up; fs rooms only give the name back |
 | Room's lease lost (cluster) | the room takes no new member (`{error, lost}`), sends `lost` and frees its name; a native room moves its members to the next owner for up to `rehome_ms` |
 | Owner node unreachable (cluster) | `conference/2` returns `{error, {owner_unreachable, Node}}` until the lease runs out, then opens the room on a live node |

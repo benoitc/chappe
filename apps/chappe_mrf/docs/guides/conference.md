@@ -76,6 +76,25 @@ between the mixer and the node when they differ:
 {ok, Member} = chappe_mrf_conf:join(Conf, Ep, #{}).
 ```
 
+A join that fails returns its error at once and leaves nothing behind:
+no mixer leg, no rtpengine session, and the room counts it no more
+against `max_members`. The room and its members go on. An endpoint whose
+node already answered the room's re-INVITE when its join failed is hung
+up, since the media it was moved to is gone; its owner gets
+`{chappe_mrf, Ep, {hangup, Cause}}`. A call's join may take
+`join_timeout` milliseconds (95000 by default and at most), then it
+fails. Any other value than 1 to 95000 makes `conference/2` return
+`{error, {bad_option, join_timeout}}`:
+
+```erlang
+{ok, Conf} = chappe_mrf:conference(<<"ops">>, #{join_timeout => 10000}),
+case chappe_mrf_conf:join(Conf, B2b, #{}) of
+    {ok, Member} -> Member;
+    {error, timeout} -> retry_later;
+    {error, badarg} -> not_a_call_or_endpoint
+end.
+```
+
 ### Run an HD (16 kHz) native room
 
 Callers on G.722 or Opus keep their band when the room mixes at 16 kHz.
@@ -441,7 +460,12 @@ Whatever decides, a Replaces naming no call gets 481, a call of no
 member of this room 403, and a second caller replacing a member another
 one is replacing 603; the room does not change. The member stays held
 for the first caller only while its join runs: a join that fails or
-raises, a caller that dies, or 95 seconds, release it. The roster shows a caller
+raises, a caller that dies, or 95 seconds, release it. A transfer of the
+member's call releases it too. A caller whose join gets in after that is
+too late: the member stays, the late call is hung up and leaves with
+reason `expired` (the roster shows it `booted`), and its `join/3`
+returns `{error, expired}`. A member that hung up before the caller got
+in leaves its place to it: that call stays. The roster shows a caller
 whose INVITE had Referred-By as `referred` by that URI.
 
 A call you answered yourself (`connect_caller/3`) carries the Contact you
@@ -547,6 +571,7 @@ touched.
 ## Where it lives
 
 - Modules: `chappe_mrf_conf` (API and process), `chappe_mrf_conf_native`,
+  `chappe_mrf_conf_native_ep` (an endpoint's media in a native room),
   `chappe_mrf_conf_fs`, `chappe_mrf_conf_refer` (REFER: the decision),
   `chappe_mrf_conf_refer_dial` (the dial-outs and the nested REFER),
   `chappe_mrf_conf_refer_member` (a member's REFER, transfer and Replaces),

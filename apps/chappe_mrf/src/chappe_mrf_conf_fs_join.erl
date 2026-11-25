@@ -7,8 +7,6 @@
 %% then joins the room ({join, {fs, Ep, Owned, Opts}}).
 -module(chappe_mrf_conf_fs_join).
 
--include("chappe_mrf_conf.hrl").
-
 -export([join/4]).
 
 %% Target: a call, an incoming call not answered yet, or an endpoint on
@@ -16,14 +14,14 @@
 -spec join(pid(), map(), term(), map()) -> {ok, binary()} | {error, term()}.
 join(Conf, Info, {call, Req, Res}, Opts) ->
     join_call(Conf, Info, Req, Res, Opts);
-join(Conf, #{node := Node, bridge := Bridge}, B2b, Opts) when is_tuple(B2b) ->
-    join(Conf, Node, Bridge, B2b, Opts#{b2b => B2b});
-join(Conf, #{node := Node, bridge := Bridge}, Ep, Opts) ->
-    join(Conf, Node, Bridge, Ep, Opts).
+join(Conf, Info, B2b, Opts) when is_tuple(B2b) ->
+    join_target(Conf, Info, B2b, Opts#{b2b => B2b});
+join(Conf, Info, Ep, Opts) ->
+    join_target(Conf, Info, Ep, Opts).
 
-join(Conf, Node, Bridge, Target, Opts) ->
+join_target(Conf, #{node := Node, bridge := Bridge} = Info, Target, Opts) ->
     case endpoint(Conf, Node, Bridge, Target) of
-        {ok, Ep, Owned} -> enter(Conf, Ep, Owned, Opts);
+        {ok, Ep, Owned} -> enter(Conf, Info, Ep, Owned, Opts);
         {error, _} = Err -> Err
     end.
 
@@ -41,20 +39,21 @@ join_call(Conf, #{node := Node, bridge := Bridge} = Info, Req, Res, Opts0) ->
         node => Node, owner => Conf
     }),
     case chappe_mrf:connect_caller(Req, Res, CallOpts) of
-        {ok, Ep, B2b} -> enter(Conf, Ep, true, Opts#{b2b => B2b});
+        {ok, Ep, B2b} -> enter(Conf, Info, Ep, true, Opts#{b2b => B2b});
         {error, _} = Err -> Err
     end.
 
 %% Ep, on the room's node, enters the PIN if the join asks one, then the
-%% room; an endpoint made for the join goes if it does not get in.
-enter(Conf, Ep, Owned, Opts) ->
+%% room, waiting past the room's join_timeout (its answer comes first);
+%% an endpoint made for the join goes if it does not get in.
+enter(Conf, Info, Ep, Owned, Opts) ->
     case check_pin(Ep, Opts) of
         ok ->
             case
                 chappe_mrf_conf:call(
                     Conf,
                     {join, {fs, Ep, Owned, Opts}},
-                    ?MRF_JOIN_TIMEOUT + 5000
+                    chappe_mrf_conf_fs:join_wait(Info)
                 )
             of
                 {ok, _} = Ok ->

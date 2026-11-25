@@ -98,15 +98,32 @@
     listener_ip_allow/1,
     listener_options_differ/1,
     registry_edges/1,
+    registry_restart/1,
+    registry_put_restart/1,
+    registry_dead_entry/1,
+    registry_delete_again/1,
+    native_loop_fails/1,
+    native_call_loop_fails/1,
+    native_endpoint_fails/1,
+    native_join_worker_dies/1,
+    native_join_bad_handle/1,
+    join_timeout_refused/1,
+    invite_replaces_stale_hold/1,
+    invite_replaces_after_transfer/1,
+    invite_replaces_member_left/1,
+    invite_replaces_taken/1,
+    invite_replaces_member_kicked/1,
     sip_edges/1,
     conf_edges/1,
     native_endpoint/1,
     native_hd_room/1,
     dial_codecs_refused/1,
-    fs_conference_edges/1
+    fs_conference_edges/1,
+    fs_join_waits_its_room/1
 ]).
 
 -define(F, chappe_mrf_fake).
+-define(FAULTS, chappe_mrf_faults).
 
 all() ->
     [
@@ -194,12 +211,28 @@ all() ->
         listener_ip_allow,
         listener_options_differ,
         registry_edges,
+        registry_restart,
+        registry_put_restart,
+        registry_dead_entry,
+        registry_delete_again,
+        native_loop_fails,
+        native_call_loop_fails,
+        native_endpoint_fails,
+        native_join_worker_dies,
+        native_join_bad_handle,
+        join_timeout_refused,
+        invite_replaces_stale_hold,
+        invite_replaces_after_transfer,
+        invite_replaces_member_left,
+        invite_replaces_taken,
+        invite_replaces_member_kicked,
         sip_edges,
         conf_edges,
         native_endpoint,
         native_hd_room,
         dial_codecs_refused,
-        fs_conference_edges
+        fs_conference_edges,
+        fs_join_waits_its_room
     ].
 
 init_per_suite(Config) ->
@@ -2068,6 +2101,180 @@ invite_replaces_caller_dies(Config) ->
     _ = ua_event(Ua1, bye),
     conf_event(Conf, {left, M1, replaced}).
 
+%% A caller whose hold on a member ran out is too late: a second caller
+%% holds the member now, so the first one's join, completing, gets
+%% {error, expired} and its call is hung up, not the member (the roster
+%% shows it booted); the second caller then replaces it.
+%% req: MRF-27
+invite_replaces_stale_hold(Config) ->
+    ok = chappe_sip:event_package(
+        <<"conference">>, fun chappe_mrf:focus_subscribe/2
+    ),
+    {ok, Conf} = chappe_mrf:conference(<<"repstale">>, #{
+        focus => true, backend => chappe_mrf_conf_gate_backend
+    }),
+    #{entity := Entity} = chappe_mrf_conf:info(Conf),
+    {Ua1, M1} = room_caller(Config, Conf),
+    {ua, Ua1, {final, 200, Ok}} = ua_answer(Ua1),
+    [#{uri := U1}] = chappe_mrf_conf:members(Conf),
+    W = watch(Config, Entity),
+    _ = roster(W),
+    gated(Conf),
+    Opts = #{from => U1, headers => [{<<"Replaces">>, replaces_of(Ok)}]},
+    A = ?F:ua_call(?config(ep, Config), Opts),
+    GateA = gate(),
+    expire_hold(Conf, M1),
+    B = ?F:ua_call(?config(ep, Config), Opts),
+    GateB = gate(),
+    GateA ! {gate, go},
+    {ua, A, {final, 200, _}} = ua_answer(A),
+    ?assertEqual({error, expired}, join_result()),
+    _ = ua_event(A, bye),
+    ?assertMatch([#{id := M1}], chappe_mrf_conf:members(Conf)),
+    no_ua_event(Ua1, bye, 200),
+    ?assert(
+        roster_until(
+            W, <<"<disconnection-method>booted</disconnection-method>">>
+        )
+    ),
+    gen_udp:close(W),
+    GateB ! {gate, go},
+    {ua, B, {final, 200, _}} = ua_answer(B),
+    {ok, MB} = join_result(),
+    _ = ua_event(Ua1, bye),
+    conf_event(Conf, {left, M1, replaced}),
+    ?assertMatch([#{id := MB}], chappe_mrf_conf:members(Conf)).
+
+%% A member whose call was transferred while a caller was replacing it
+%% keeps the target in its place when that caller's join completes, and
+%% that caller is hung up.
+%% req: MRF-27
+invite_replaces_after_transfer(Config) ->
+    {ok, Conf} = chappe_mrf:conference(<<"repxfer">>, #{
+        focus => true, backend => chappe_mrf_conf_gate_backend
+    }),
+    {Ua1, M1} = room_caller(Config, Conf),
+    {ua, Ua1, {final, 200, Ok}} = ua_answer(Ua1),
+    [#{uri := U1}] = chappe_mrf_conf:members(Conf),
+    gated(Conf),
+    A = ?F:ua_call(?config(ep, Config), #{
+        from => U1, headers => [{<<"Replaces">>, replaces_of(Ok)}]
+    }),
+    GateA = gate(),
+    #{M1 := #{b2b := {_, Ref}, replacing := _}} = element(
+        9, sys:get_state(Conf)
+    ),
+    Erin = <<"sip:erin@10.0.0.7">>,
+    ok = chappe_mrf_conf:b2b_event(
+        Conf, {chappe_sip_b2b, Ref, {transferred, a, #{target => Erin}}}
+    ),
+    conf_event(Conf, {left, M1, transferred}),
+    GateA ! {gate, go},
+    {ua, A, {final, 200, _}} = ua_answer(A),
+    ?assertEqual({error, expired}, join_result()),
+    _ = ua_event(A, bye),
+    ?assertMatch([#{id := M1, uri := Erin}], chappe_mrf_conf:members(Conf)),
+    no_ua_event(Ua1, bye, 200).
+
+%% A member that leaves while a caller replacing it is on its way leaves
+%% its place to that caller: the caller's join completes, its call is not
+%% hung up, and it stays in the room.
+%% req: MRF-27
+invite_replaces_member_left(Config) ->
+    {ok, Conf} = chappe_mrf:conference(<<"repleft">>, #{
+        focus => true, backend => chappe_mrf_conf_gate_backend
+    }),
+    {Ua1, M1} = room_caller(Config, Conf),
+    {ua, Ua1, {final, 200, Ok}} = ua_answer(Ua1),
+    [#{uri := U1}] = chappe_mrf_conf:members(Conf),
+    gated(Conf),
+    A = ?F:ua_call(?config(ep, Config), #{
+        from => U1, headers => [{<<"Replaces">>, replaces_of(Ok)}]
+    }),
+    GateA = gate(),
+    ok = ?F:ua_bye(Ua1),
+    conf_event(Conf, {left, M1, departed}),
+    GateA ! {gate, go},
+    {ua, A, {final, 200, _}} = ua_answer(A),
+    {ok, MA} = join_result(),
+    no_ua_event(A, bye, 300),
+    ?assertMatch([#{id := MA}], chappe_mrf_conf:members(Conf)).
+
+%% A caller whose hold ran out, while a second caller took the member's
+%% place, is too late when its own join completes: the member is gone
+%% because the second call replaced it, not on its own, so the first call
+%% is hung up and its join gets {error, expired}. One member, one call in
+%% its place. The room forgets who replaced the member after a while.
+%% req: MRF-27
+invite_replaces_taken(Config) ->
+    {ok, Conf} = chappe_mrf:conference(<<"reptaken">>, #{
+        focus => true, backend => chappe_mrf_conf_gate_backend
+    }),
+    {Ua1, M1} = room_caller(Config, Conf),
+    {ua, Ua1, {final, 200, Ok}} = ua_answer(Ua1),
+    [#{uri := U1}] = chappe_mrf_conf:members(Conf),
+    gated(Conf),
+    Opts = #{from => U1, headers => [{<<"Replaces">>, replaces_of(Ok)}]},
+    A = ?F:ua_call(?config(ep, Config), Opts),
+    GateA = gate(),
+    expire_hold(Conf, M1),
+    B = ?F:ua_call(?config(ep, Config), Opts),
+    gate() ! {gate, go},
+    {ua, B, {final, 200, _}} = ua_answer(B),
+    {ok, MB} = join_result(),
+    _ = ua_event(Ua1, bye),
+    conf_event(Conf, {left, M1, replaced}),
+    GateA ! {gate, go},
+    {ua, A, {final, 200, _}} = ua_answer(A),
+    ?assertEqual({error, expired}, join_result()),
+    _ = ua_event(A, bye),
+    no_ua_event(B, bye, 300),
+    ?assertMatch([#{id := MB}], chappe_mrf_conf:members(Conf)),
+    %% its time up, the room forgets who replaced M1
+    #{M1 := {Hold, T}} = replaced_by(Conf),
+    Conf ! {timeout, T, {refer_replaced, M1, Hold}},
+    until(fun() -> replaced_by(Conf) =:= #{} end).
+
+%% A member kicked once the hold of a caller replacing it ran out leaves
+%% its place to that caller all the same: nobody else took it, so the
+%% caller's join completes and its call stays.
+%% req: MRF-27
+invite_replaces_member_kicked(Config) ->
+    {ok, Conf} = chappe_mrf:conference(<<"repkick">>, #{
+        focus => true, backend => chappe_mrf_conf_gate_backend
+    }),
+    {Ua1, M1} = room_caller(Config, Conf),
+    {ua, Ua1, {final, 200, Ok}} = ua_answer(Ua1),
+    [#{uri := U1}] = chappe_mrf_conf:members(Conf),
+    gated(Conf),
+    A = ?F:ua_call(?config(ep, Config), #{
+        from => U1, headers => [{<<"Replaces">>, replaces_of(Ok)}]
+    }),
+    GateA = gate(),
+    expire_hold(Conf, M1),
+    ok = chappe_mrf_conf:kick(Conf, M1),
+    conf_event(Conf, {left, M1, kicked}),
+    _ = ua_event(Ua1, bye),
+    GateA ! {gate, go},
+    {ua, A, {final, 200, _}} = ua_answer(A),
+    {ok, MA} = join_result(),
+    no_ua_event(A, bye, 300),
+    ?assertMatch([#{id := MA}], chappe_mrf_conf:members(Conf)).
+
+%% who replaced which member, as the room keeps it for a while
+%% (#state.replaced)
+replaced_by(Conf) ->
+    element(27, sys:get_state(Conf)).
+
+%% the timer of member Id's hold fires now
+expire_hold(Conf, Id) ->
+    #{Id := #{replacing := {Hold, T}}} = element(9, sys:get_state(Conf)),
+    Conf ! {timeout, T, {refer_replace, Id, Hold}},
+    until(fun() ->
+        #{Id := Mb} = element(9, sys:get_state(Conf)),
+        not is_map_key(replacing, Mb)
+    end).
+
 %% what the next join/3 of the INVITE handler returned
 join_result() ->
     receive
@@ -3507,11 +3714,16 @@ listener_options_differ(Config) ->
         ok = chappe_mrf:start(#{esl_port => ?config(lp, Config)})
     end.
 
-%% The registry refuses a live key, and ignores what it does not know.
+%% The registry refuses a key another live process holds (its own again
+%% is ok) and a put of no pid, and ignores what it does not know.
 registry_edges(_Config) ->
     Key = {test, make_ref()},
     ok = chappe_mrf_registry:put(Key, self()),
-    ?assertEqual({error, exists}, chappe_mrf_registry:put(Key, self())),
+    ?assertEqual(ok, chappe_mrf_registry:put(Key, self())),
+    Other = idle(),
+    ?assertEqual({error, exists}, chappe_mrf_registry:put(Key, Other)),
+    Other ! stop,
+    ?assertError(function_clause, chappe_mrf_registry:put(Key, not_a_pid)),
     ok = chappe_mrf_registry:delete(Key),
     ?assertEqual(error, chappe_mrf_registry:lookup(Key)),
     ?assertEqual(
@@ -3521,6 +3733,511 @@ registry_edges(_Config) ->
     chappe_mrf_registry ! junk,
     chappe_mrf_registry ! {'DOWN', make_ref(), process, self(), x},
     ?assert(is_process_alive(whereis(chappe_mrf_registry))).
+
+%% The registry's table outlives its process: killed, the registry
+%% comes back with every entry and watches their processes again, so a
+%% room keeps its name (one room per name) and an endpoint, a loopback
+%% join and a member's dialog are still found; a room that ended while
+%% the registry was down loses its name.
+%% req: MRF-24
+registry_restart(_Config) ->
+    {ok, Conf} = chappe_mrf:conference(<<"regroom">>, #{}),
+    [P1, P2, P3] = [
+        spawn(fun() ->
+            receive
+                stop -> ok
+            end
+        end)
+     || _ <- "abc"
+    ],
+    Ref = make_ref(),
+    ok = chappe_mrf_registry:put({call, <<"regcall">>}, P1),
+    ok = chappe_mrf_registry:put({loop, <<"regloop">>}, P2),
+    ok = chappe_mrf_registry:put({a_dialog, Ref, dialog}, P3),
+    ?FAULTS:restart_registry(),
+    ?assertEqual({ok, Conf}, chappe_mrf:conference(<<"regroom">>, #{})),
+    ?assertEqual({ok, P1}, chappe_mrf_registry:lookup({call, <<"regcall">>})),
+    ?assertEqual({ok, P2}, chappe_mrf_registry:lookup({loop, <<"regloop">>})),
+    ?assertEqual(
+        [{{a_dialog, Ref, dialog}, P3}],
+        chappe_mrf_registry:select({a_dialog, Ref, '_'})
+    ),
+    ?assertEqual(
+        {error, exists}, chappe_mrf_registry:put({call, <<"regcall">>}, self())
+    ),
+    %% the new registry watches them: an entry goes with its process
+    exit(P1, kill),
+    until(fun() ->
+        chappe_mrf_registry:lookup({call, <<"regcall">>}) =:= error
+    end),
+    %% a room that ends while the registry is down
+    Reg = whereis(chappe_mrf_registry),
+    ok = sys:suspend(Reg),
+    ok = chappe_mrf_conf:stop(Conf),
+    exit(Reg, kill),
+    ?FAULTS:restart_registry(Reg),
+    until(fun() ->
+        chappe_mrf_registry:lookup({conf, <<"regroom">>}) =:= error
+    end),
+    {ok, Conf2} = chappe_mrf:conference(<<"regroom">>, #{}),
+    ?assertNotEqual(Conf, Conf2),
+    ?assertEqual({ok, Conf2}, chappe_mrf:conference(<<"regroom">>, #{})),
+    P2 ! stop,
+    P3 ! stop,
+    until(fun() ->
+        chappe_mrf_registry:select({a_dialog, Ref, '_'}) =:= [] andalso
+            chappe_mrf_registry:lookup({loop, <<"regloop">>}) =:= error
+    end),
+    ok = chappe_mrf_conf:stop(Conf2).
+
+%% A put or a delete the registry had queued when it was killed is made by
+%% the next one: its caller never sees the restart. A put of a key its own
+%% process holds already answers ok; a key another live process holds
+%% stays taken.
+%% req: MRF-24
+registry_put_restart(_Config) ->
+    P = idle(),
+    %% the delete comes from the entry's own process, which lives on
+    Test = self(),
+    Del = spawn(fun() ->
+        ok = chappe_mrf_registry:put({call, <<"q-del">>}, self()),
+        Test ! {owns, self()},
+        receive
+            go -> ok
+        end,
+        Test !
+            {registry, self(), chappe_mrf_registry:delete({call, <<"q-del">>})},
+        receive
+            stop -> ok
+        end
+    end),
+    receive
+        {owns, Del} -> ok
+    after 5000 -> ct:fail(no_owner)
+    end,
+    Reg = whereis(chappe_mrf_registry),
+    ok = sys:suspend(Reg),
+    Put = registry_async(fun() ->
+        chappe_mrf_registry:put({call, <<"q-put">>}, P)
+    end),
+    Del ! go,
+    until(fun() ->
+        element(2, process_info(Reg, message_queue_len)) >= 2
+    end),
+    exit(Reg, kill),
+    ?FAULTS:restart_registry(Reg),
+    ?assertEqual(ok, registry_result(Put)),
+    ?assertEqual(ok, registry_result(Del)),
+    ?assertEqual({ok, P}, chappe_mrf_registry:lookup({call, <<"q-put">>})),
+    ?assertEqual(error, chappe_mrf_registry:lookup({call, <<"q-del">>})),
+    Del ! stop,
+    ?assertEqual(ok, chappe_mrf_registry:put({call, <<"q-put">>}, P)),
+    ?assertEqual(
+        {error, exists}, chappe_mrf_registry:put({call, <<"q-put">>}, self())
+    ),
+    exit(P, kill),
+    until(fun() ->
+        chappe_mrf_registry:lookup({call, <<"q-put">>}) =:= error
+    end).
+
+%% A key whose process died before the registry saw it go is taken by
+%% the next put: an entry a killed registry left behind, or one whose
+%% 'DOWN' is still on its way, which then leaves the new entry alone.
+%% req: MRF-24
+registry_dead_entry(_Config) ->
+    Dead = idle(),
+    exit(Dead, kill),
+    until(fun() -> not is_process_alive(Dead) end),
+    %% as a registry killed before it saw Dead go leaves it
+    true = ets:insert(chappe_mrf_registry, {{call, <<"left">>}, Dead}),
+    P = idle(),
+    ?assertEqual(ok, chappe_mrf_registry:put({call, <<"left">>}, P)),
+    ?assertEqual({ok, P}, chappe_mrf_registry:lookup({call, <<"left">>})),
+    %% Q's 'DOWN' reaches the registry after the put that takes its key
+    Q = idle(),
+    ok = chappe_mrf_registry:put({call, <<"late">>}, Q),
+    Reg = whereis(chappe_mrf_registry),
+    ok = sys:suspend(Reg),
+    Put = registry_async(fun() ->
+        chappe_mrf_registry:put({call, <<"late">>}, P)
+    end),
+    until(fun() ->
+        element(2, process_info(Reg, message_queue_len)) >= 1
+    end),
+    exit(Q, kill),
+    until(fun() -> not is_process_alive(Q) end),
+    ok = sys:resume(Reg),
+    ?assertEqual(ok, registry_result(Put)),
+    _ = sys:get_state(Reg),
+    ?assertEqual({ok, P}, chappe_mrf_registry:lookup({call, <<"late">>})),
+    %% and P is watched for both
+    exit(P, kill),
+    until(fun() ->
+        chappe_mrf_registry:lookup({call, <<"late">>}) =:= error andalso
+            chappe_mrf_registry:lookup({call, <<"left">>}) =:= error
+    end).
+
+%% A delete made again (as call/2 makes one the registry made before it
+%% went down) removes only its caller's own entry: a room that took the
+%% name meanwhile keeps it, and is still watched.
+%% req: MRF-24
+registry_delete_again(_Config) ->
+    Key = {conf, <<"again">>},
+    ok = chappe_mrf_registry:put(Key, self()),
+    ok = chappe_mrf_registry:delete(Key),
+    Other = idle(),
+    ok = chappe_mrf_registry:put(Key, Other),
+    ok = chappe_mrf_registry:delete(Key),
+    ?assertEqual({ok, Other}, chappe_mrf_registry:lookup(Key)),
+    exit(Other, kill),
+    until(fun() -> chappe_mrf_registry:lookup(Key) =:= error end).
+
+%% a process that waits for nothing
+idle() ->
+    spawn(fun() ->
+        receive
+            stop -> ok
+        end
+    end).
+
+%% Fun() in a process of its own, its result or how it failed
+registry_async(Fun) ->
+    Test = self(),
+    spawn(fun() ->
+        R =
+            try
+                Fun()
+            catch
+                Class:Why -> {Class, Why}
+            end,
+        Test ! {registry, self(), R}
+    end).
+
+registry_result(Pid) ->
+    receive
+        {registry, Pid, R} -> R
+    after 5000 -> ct:fail(registry_no_result)
+    end.
+
+%% Fun() holds within 5 s
+until(Fun) ->
+    ?assert(?FAULTS:eventually(Fun, 50)).
+
+%% What a native room holds for its joins: whether one more may come in,
+%% its joins under way, its mixer legs (chappe_mix:legs/1), the rtpengine
+%% sessions of this node and its loopback tokens.
+holdings(Conf) ->
+    #{name := Name} = chappe_mrf_conf:info(Conf),
+    S = sys:get_state(Conf),
+    #{
+        admission => chappe_mrf_conf_backend:admission(S),
+        pending => map_size(element(10, S)),
+        legs => ?FAULTS:mix_legs(<<"mrf-", Name/binary>>),
+        rtpe => proplists:get_value(
+            active, supervisor:count_children(chappe_rtpengine_session_sup)
+        ),
+        loops => [
+            T
+         || {{loop, T}, P} <- chappe_mrf_registry:select({loop, '_'}),
+            P =:= Conf
+        ]
+    }.
+
+%% the room is back to Base (its cleanups may be under way)
+back_to(Conf, Base) ->
+    _ = ?FAULTS:eventually(fun() -> holdings(Conf) =:= Base end, 30),
+    ?assertEqual(Base, holdings(Conf)).
+
+%% the next rtpengine offer
+rtpe_offer() ->
+    receive
+        {rtpe_cmd, #{<<"command">> := <<"offer">>} = Cmd} -> Cmd
+    after 5000 -> ct:fail(no_rtpe_offer)
+    end.
+
+%% join/3 in a process of its own: {join, Result} comes back
+join_async(Conf, Target) ->
+    Test = self(),
+    spawn(fun() -> Test ! {join, chappe_mrf_conf:join(Conf, Target, #{})} end).
+
+join_within(Ms) ->
+    receive
+        {join, R} -> R
+    after Ms -> ct:fail(join_not_answered)
+    end.
+
+%% A loopback INVITE the room cannot answer (one asking a session timer
+%% below the node's Min-SE: 422) fails the join at once: the joiner gets
+%% {error, join_failed}, and the room gives its mixer leg, its token and
+%% its join slot back.
+%% req: MRF-25
+native_loop_fails(Config) ->
+    ivr(Config),
+    Rtpe = ?config(rtpe, Config),
+    {ok, Conf} = chappe_mrf:conference(<<"loopfail">>, #{max_members => 1}),
+    {_Ua, _Ep, B2b, Owner} = call_in(Config),
+    Base = holdings(Conf),
+    _ = rtpe_offers(),
+    %% the call's own loopback INVITE waits on rtpengine
+    ok = ?F:rtpe_fail(Rtpe, #{<<"offer">> => hold}),
+    _ = join_async(Conf, B2b),
+    _ = rtpe_offer(),
+    [Token] = maps:keys(element(10, sys:get_state(Conf))),
+    Loop = ?F:ua_call(?config(ep, Config), #{
+        ruri => chappe_mrf:loop_target(Token),
+        headers => [
+            {<<"Supported">>, <<"timer">>}, {<<"Session-Expires">>, <<"30">>}
+        ]
+    }),
+    {ok, 422} = ua_final(Loop),
+    ?assertEqual({error, join_failed}, join_within(2000)),
+    ok = ?F:rtpe_fail(Rtpe, #{}),
+    back_to(Conf, Base),
+    Owner ! stop,
+    ok = chappe_mrf_conf:stop(Conf).
+
+%% The same for a caller joined from its INVITE: its loopback INVITE fails
+%% while the caller's call to the mixer is set up, and the join fails with
+%% {error, join_failed}, the caller is refused, and the room gives back
+%% what it took.
+%% req: MRF-25
+native_call_loop_fails(Config) ->
+    Rtpe = ?config(rtpe, Config),
+    {ok, Conf} = chappe_mrf:conference(<<"callloopfail">>, #{
+        max_members => 1
+    }),
+    Base = holdings(Conf),
+    Test = self(),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        Test ! {join, chappe_mrf_conf:join(Conf, {call, Req, Res}, #{})}
+    end),
+    _ = rtpe_offers(),
+    %% the caller's call to the mixer waits on rtpengine
+    ok = ?F:rtpe_fail(Rtpe, #{<<"offer">> => hold}),
+    Ua = ?F:ua_call(?config(ep, Config), #{}),
+    _ = rtpe_offer(),
+    [Token] = maps:keys(element(10, sys:get_state(Conf))),
+    Loop = ?F:ua_call(?config(ep, Config), #{
+        ruri => chappe_mrf:loop_target(Token),
+        headers => [
+            {<<"Supported">>, <<"timer">>}, {<<"Session-Expires">>, <<"30">>}
+        ]
+    }),
+    {ok, 422} = ua_final(Loop),
+    ok = ?F:rtpe_fail(Rtpe, #{}),
+    ?assertEqual({error, join_failed}, join_within(10000)),
+    {ok, St} = ua_final(Ua),
+    ?assert(St >= 400),
+    back_to(Conf, Base),
+    ok = chappe_mrf_conf:stop(Conf).
+
+%% An endpoint's join that fails at any step answers an error, gives the
+%% room's mixer leg and rtpengine session back, and the room goes on: no
+%% mixer, an rtpengine offer or answer refused, an answer the mixer cannot
+%% use, a node that refuses the re-INVITE, an endpoint that does not
+%% answer the room, and a dialog that dies under the re-INVITE. A failure
+%% once the node took the room's media (its re-INVITE answered) hangs the
+%% endpoint up, as that media is gone; before, the endpoint stays as it
+%% was.
+%% req: MRF-25
+native_endpoint_fails(Config) ->
+    Rtpe = ?config(rtpe, Config),
+    {ok, Conf} = chappe_mrf:conference(<<"epfail">>, #{}),
+    NewEp = fun() ->
+        {ok, E} = chappe_mrf:create_endpoint(#{
+            targets => [{fs1, fs_uri(Config)}]
+        }),
+        E
+    end,
+    Ep = NewEp(),
+    %% no mixer at all (its first join: the room has no mixer room yet)
+    ok = supervisor:terminate_child(chappe_sip_media_sup, chappe_sip_media_mix),
+    ?assertMatch({error, _}, chappe_mrf_conf:join(Conf, Ep, #{})),
+    {ok, _} = supervisor:restart_child(
+        chappe_sip_media_sup, chappe_sip_media_mix
+    ),
+    ok = channel_after_failure(Ep, uuid_of(Ep), kept),
+    Base = holdings(Conf),
+    lists:foreach(
+        fun({F, After}) ->
+            E = NewEp(),
+            ok = ?F:rtpe_fail(Rtpe, F),
+            {ok, Uuid} = chappe_mrf:uuid(E),
+            ?assertMatch({error, _}, chappe_mrf_conf:join(Conf, E, #{})),
+            ok = ?F:rtpe_fail(Rtpe, #{}),
+            ok = channel_after_failure(E, Uuid, After),
+            back_to(Conf, Base),
+            chappe_mrf:destroy(E)
+        end,
+        [
+            {#{<<"offer">> => error}, kept},
+            {#{<<"answer">> => error}, hung_up},
+            {#{<<"answer">> => bad_sdp}, hung_up}
+        ]
+    ),
+    %% a node that refuses the re-INVITE
+    Picky = ?F:fs_start(<<"picky">>, #{
+        esl_port => ?config(lp, Config), reject_reinvite => true
+    }),
+    {ok, EpP} = chappe_mrf:create_endpoint(#{
+        targets => [{picky, uri_of(?F:fs_port(Picky))}]
+    }),
+    ?assertMatch({error, _}, chappe_mrf_conf:join(Conf, EpP, #{})),
+    ok = channel_after_failure(EpP, uuid_of(EpP), kept),
+    back_to(Conf, Base),
+    chappe_mrf:destroy(EpP),
+    ?F:fs_stop(Picky),
+    %% the endpoint does not answer the room once its media is set
+    #{dialog := D} = chappe_mrf:info(Ep),
+    DPid = chappe_sip_dialog:pid(D),
+    Queued = fun(Pid) ->
+        fun() -> element(2, process_info(Pid, message_queue_len)) > 0 end
+    end,
+    Uuid = uuid_of(Ep),
+    ok = sys:suspend(DPid),
+    _ = join_async(Conf, Ep),
+    until(Queued(DPid)),
+    ok = sys:suspend(Ep),
+    ok = sys:resume(DPid),
+    ?assertMatch({error, _}, join_within(15000)),
+    ok = channel_bye(Uuid),
+    ok = sys:resume(Ep),
+    until(fun() -> ep_gone(Ep) end),
+    back_to(Conf, Base),
+    %% its dialog dies under the re-INVITE
+    Ep2 = NewEp(),
+    #{dialog := D2} = chappe_mrf:info(Ep2),
+    DPid2 = chappe_sip_dialog:pid(D2),
+    ok = sys:suspend(DPid2),
+    _ = join_async(Conf, Ep2),
+    until(Queued(DPid2)),
+    exit(DPid2, kill),
+    ?assertMatch({error, _}, join_within(5000)),
+    back_to(Conf, Base),
+    ?assert(is_process_alive(Conf)),
+    chappe_mrf:destroy(Ep2),
+    ok = chappe_mrf_conf:stop(Conf).
+
+%% after a failed join, the endpoint's channel is kept (no BYE, the
+%% endpoint still there) or hung up (its node gets a BYE, the endpoint
+%% goes)
+channel_after_failure(Ep, Uuid, kept) ->
+    receive
+        {fake_fs, _, Uuid, {bye, _}} -> ct:fail({hung_up, Ep})
+    after 300 -> ok
+    end,
+    ?assertMatch(#{bridged := false}, chappe_mrf:info(Ep)),
+    ok;
+channel_after_failure(Ep, Uuid, hung_up) ->
+    ok = channel_bye(Uuid),
+    until(fun() -> ep_gone(Ep) end),
+    ok.
+
+%% the endpoint's channel ended (it lingers a while, gone)
+ep_gone(Ep) ->
+    case chappe_mrf:info(Ep) of
+        #{state := gone} -> true;
+        {error, gone} -> true;
+        _ -> false
+    end.
+
+uuid_of(Ep) ->
+    {ok, Uuid} = chappe_mrf:uuid(Ep),
+    Uuid.
+
+%% the node of channel Uuid got a BYE
+channel_bye(Uuid) ->
+    receive
+        {fake_fs, _, Uuid, {bye, _}} -> ok
+    after 5000 -> ct:fail({no_bye, Uuid})
+    end.
+
+%% A join whose worker dies before it reports (the helper of a call's
+%% join, or the INVITE's request worker of a caller joined from its
+%% INVITE) fails, and the room counts it no more; a join that outlasts
+%% join_timeout fails with {error, timeout}.
+%% req: MRF-26
+native_join_worker_dies(Config) ->
+    ivr(Config),
+    Rtpe = ?config(rtpe, Config),
+    {ok, Conf} = chappe_mrf:conference(<<"wdies">>, #{max_members => 1}),
+    {_Ua, _Ep, B2b, Owner} = call_in(Config),
+    Base = holdings(Conf),
+    _ = rtpe_offers(),
+    ok = ?F:rtpe_fail(Rtpe, #{<<"offer">> => hold}),
+    %% the helper of a call's join
+    _ = join_async(Conf, B2b),
+    _ = rtpe_offer(),
+    [Helper] = ?FAULTS:join_helpers(),
+    exit(Helper, kill),
+    ?assertEqual({error, join_failed}, join_within(2000)),
+    back_to(Conf, Base),
+    %% the request worker of a caller joined from its INVITE
+    Test = self(),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        Test ! {worker, self()},
+        chappe_mrf_conf:join(Conf, {call, Req, Res}, #{})
+    end),
+    _ = ?F:ua_call(?config(ep, Config), #{}),
+    Worker =
+        receive
+            {worker, W} -> W
+        after 5000 -> ct:fail(no_worker)
+        end,
+    _ = rtpe_offer(),
+    ?assertEqual(1, map_size(element(10, sys:get_state(Conf)))),
+    exit(Worker, kill),
+    back_to(Conf, Base),
+    %% a join that never ends
+    {ok, Slow} = chappe_mrf:conference(<<"wslow">>, #{join_timeout => 300}),
+    SlowBase = holdings(Slow),
+    _ = join_async(Slow, B2b),
+    ?assertEqual({error, timeout}, join_within(2000)),
+    back_to(Slow, SlowBase),
+    ok = ?F:rtpe_fail(Rtpe, #{}),
+    Owner ! stop,
+    ok = chappe_mrf_conf:stop(Slow),
+    ok = chappe_mrf_conf:stop(Conf).
+
+%% A join_timeout that is not a number of milliseconds from 1 to 95000 is
+%% refused on either backend before any room runs.
+%% req: MRF-26
+join_timeout_refused(_Config) ->
+    [
+        ?assertEqual(
+            {error, {bad_option, join_timeout}},
+            chappe_mrf:conference(<<"badjt">>, #{join_timeout => Bad}),
+            Bad
+        )
+     || Bad <- [0, -1, 95001, 1.5, infinity, <<"1000">>]
+    ],
+    ?assertEqual(
+        {error, {bad_option, join_timeout}},
+        chappe_mrf:conference(<<"badjt">>, #{
+            backend => fs, node => fs1, join_timeout => 0
+        })
+    ),
+    ?assertEqual(
+        false, lists:keymember(<<"badjt">>, 1, chappe_mrf:conferences())
+    ),
+    {ok, Conf} = chappe_mrf:conference(<<"okjt">>, #{join_timeout => 95000}),
+    ok = chappe_mrf_conf:stop(Conf).
+
+%% A handle that is neither a call, an incoming call nor an endpoint is
+%% refused in the caller, and the room counts no join for it.
+%% req: MRF-25
+native_join_bad_handle(_Config) ->
+    {ok, Conf} = chappe_mrf:conference(<<"badh">>, #{max_members => 1}),
+    Base = holdings(Conf),
+    lists:foreach(
+        fun(H) ->
+            _ = join_async(Conf, H),
+            ?assertEqual({error, badarg}, join_within(2000))
+        end,
+        [{1, 2}, {self()}, <<"ep">>, {a, b, c, d}]
+    ),
+    back_to(Conf, Base),
+    ok = chappe_mrf_conf:stop(Conf).
 
 %% SIP edges: a loopback INVITE nobody waits for gets 404, one whose
 %% join is unknown 488; a SUBSCRIBE for an unknown room 404, for a room
@@ -3889,3 +4606,84 @@ fs_conference_edges(Config) ->
     after 3000 -> ct:fail(no_join_hangup)
     end,
     ?F:fs_stop(Silent).
+
+%% An fs join waits on its room for the room's join_timeout and a margin,
+%% so the room's own deadline answers first: a member that shows up late
+%% but within join_timeout gets in, and its caller hears it. A room with
+%% join_timeout 3000 takes an add-member that comes after 2.5 s; one with
+%% join_timeout 30000 is waited on for 35000 ms (20000 before, so a member
+%% the room took after 20 s was in while its caller heard timeout), by a
+%% join and by a transfer into it.
+fs_join_waits_its_room(Config) ->
+    Silent = ?F:fs_start(<<"fs3">>, #{
+        esl_port => ?config(lp, Config), silent_conference => true
+    }),
+    Targets = [{fs3, uri_of(?F:fs_port(Silent))}],
+    Added = fun(Room, Id) ->
+        ?F:fs_event(Silent, <<"CUSTOM">>, [
+            {<<"Event-Subclass">>, <<"conference::maintenance">>},
+            {<<"Action">>, <<"add-member">>},
+            {<<"Conference-Name">>, Room},
+            {<<"Member-ID">>, Id}
+        ])
+    end,
+    {ok, Short} = chappe_mrf:conference(<<"fswait">>, #{
+        backend => fs, node => fs3, join_timeout => 3000
+    }),
+    {ok, Ep} = chappe_mrf:create_endpoint(#{targets => Targets}),
+    J1 = traced(fun() -> chappe_mrf_conf:join(Short, Ep, #{}) end),
+    ?assertEqual(8000, join_wait(J1)),
+    until(fun() -> map_size(element(10, sys:get_state(Short))) =:= 1 end),
+    timer:sleep(2500),
+    Added(<<"fswait">>, <<"31">>),
+    ?assertEqual({ok, <<"31">>}, traced_result(J1)),
+    {ok, Long} = chappe_mrf:conference(<<"fslong">>, #{
+        backend => fs, node => fs3, join_timeout => 30000
+    }),
+    {ok, Ep2} = chappe_mrf:create_endpoint(#{targets => Targets}),
+    J2 = traced(fun() -> chappe_mrf_conf:join(Long, Ep2, #{}) end),
+    ?assertEqual(35000, join_wait(J2)),
+    until(fun() -> map_size(element(10, sys:get_state(Long))) =:= 1 end),
+    Added(<<"fslong">>, <<"32">>),
+    ?assertEqual({ok, <<"32">>}, traced_result(J2)),
+    J3 = traced(fun() -> chappe_mrf_conf:transfer(Short, <<"31">>, Long) end),
+    ?assertEqual(35000, join_wait(J3)),
+    ?assertMatch({ok, _}, traced_result(J3)),
+    ?assertEqual(2, length(chappe_mrf_conf:members(Long))),
+    ok = chappe_mrf:destroy(Ep),
+    ok = chappe_mrf:destroy(Ep2),
+    ?F:fs_stop(Silent).
+
+%% Fun() in a process of its own, whose calls to a room are traced
+traced(Fun) ->
+    Test = self(),
+    Pid = spawn(fun() ->
+        receive
+            go -> Test ! {traced, self(), Fun()}
+        end
+    end),
+    S = trace:session_create(?MODULE, Test, []),
+    1 = trace:function(S, {chappe_mrf_conf, call, 3}, true, []),
+    1 = trace:process(S, Pid, true, [call]),
+    Pid ! go,
+    {Pid, S}.
+
+traced_result({Pid, S}) ->
+    receive
+        {traced, Pid, R} ->
+            _ = trace:session_destroy(S),
+            R
+    after 10000 -> ct:fail(no_traced_result)
+    end.
+
+%% how long the traced process waits on the room for its join
+join_wait({Pid, _S}) ->
+    receive
+        {trace, Pid, call,
+            {chappe_mrf_conf, call, [_, {join, {fs, _, _, _}}, Ms]}} ->
+            Ms;
+        {trace, Pid, call,
+            {chappe_mrf_conf, call, [_, {join, {adopt, _, _, _, _, _}}, Ms]}} ->
+            Ms
+    after 10000 -> ct:fail(no_join_call)
+    end.
