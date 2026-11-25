@@ -8,7 +8,8 @@
      FS_EXT_IP (the chappe node runs on the host), and a dialplan that hands
      `mrf' to the chappe_mrf listener at MRF_SOCKET (host:port) with the
      dialplan socket application. wav playback and recording (mod_sndfile),
-     tones, mod_conference and mod_audio_fork are loaded; prompts and
+     tones, mod_conference and mod_audio_fork are loaded, with the
+     wideband codecs (G722 from mod_spandsp, OPUS from mod_opus); prompts and
      recordings live in /media, shared with the host and rtpengine. The
      chappe node is behind Docker's NAT as FreeSWITCH sees it, so its
      requests go back where they came from (apply-nat-acl). Never ship an
@@ -51,6 +52,7 @@
         <load module="mod_say_en"/>
         <load module="mod_flite"/>
         <load module="mod_spandsp"/>
+        <load module="mod_opus"/>
       </modules>
     </configuration>
 
@@ -124,8 +126,8 @@
                  record reaches its time limit -->
             <param name="rtp-timer-name" value="soft"/>
             <param name="auth-calls" value="false"/>
-            <param name="inbound-codec-prefs" value="PCMU,PCMA"/>
-            <param name="outbound-codec-prefs" value="PCMU,PCMA"/>
+            <param name="inbound-codec-prefs" value="OPUS,G722,PCMU,PCMA"/>
+            <param name="outbound-codec-prefs" value="OPUS,G722,PCMU,PCMA"/>
             <param name="dtmf-type" value="rfc2833"/>
             <param name="apply-nat-acl" value="chappe_nat"/>
             <param name="aggressive-nat-detection" value="true"/>
@@ -149,6 +151,14 @@
         <profile name="default">
           <param name="domain" value="$${domain}"/>
           <param name="rate" value="8000"/>
+          <param name="interval" value="20"/>
+          <param name="energy-level" value="100"/>
+          <param name="caller-controls" value="none"/>
+        </profile>
+        <!-- the same at 16 kHz; default stays the 8 kHz G.711 control -->
+        <profile name="wideband">
+          <param name="domain" value="$${domain}"/>
+          <param name="rate" value="16000"/>
           <param name="interval" value="20"/>
           <param name="energy-level" value="100"/>
           <param name="caller-controls" value="none"/>

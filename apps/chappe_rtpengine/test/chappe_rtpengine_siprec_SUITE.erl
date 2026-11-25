@@ -101,16 +101,16 @@ publish_anchors_every_stream(_Config) ->
         to_tag => maps:get(<<"to-tag">>, Sub)
     }),
 
-    %% the siprec flag adds a zero-based label beside the source one, so
-    %% a stream is selectable either way. Note they collide: label "1" is
-    %% stream 0's source label and stream 1's added one, and the first
-    %% match wins.
+    %% the siprec flag relabels the streams zero-based, in m-line order:
+    %% the source labels are gone (rtpengine 26.3; 11.5 kept them and
+    %% added the zero-based one beside each, so label "1" named two
+    %% streams)
     {ok, Sub2} = chappe_rtpengine_cmd:subscribe_request(Sess, #{
         from_tags => [SrcTag], flags => [siprec]
     }),
     Labelled = chappe_rtpengine_sdp:streams(chappe_rtpengine_ng:sdp(Sub2)),
     ?assertEqual(
-        [[<<"1">>, <<"0">>], [<<"2">>, <<"1">>], [<<"3">>, <<"2">>]],
+        [[<<"0">>], [<<"1">>], [<<"2">>]],
         [Ls || #{labels := Ls} <- Labelled]
     ),
     {ok, _} = chappe_rtpengine_cmd:unsubscribe(Sess, #{

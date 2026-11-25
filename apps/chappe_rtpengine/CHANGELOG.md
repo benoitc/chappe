@@ -6,6 +6,20 @@ says how apps are released.
 
 ## [Unreleased]
 
+### Fixed
+
+- Stopping a session no longer times out on calls with many streams, such
+  as a recorded call with several forks: the session now asks rtpengine to
+  leave the call statistics out of its delete reply. It never used them,
+  and the reply could be large enough to be split into IP fragments, which
+  some networks drop. Older rtpengine versions ignore the request and answer
+  as before.
+- A forked call no longer ends when one branch wins on rtpengine 13 or
+  later. Branches answered on the one offer share the callee's side there,
+  and deleting a losing branch deleted the whole call; the session now
+  deletes only branches that had an offer of their own, and asks rtpengine
+  to honour the branch's tag.
+
 ## [0.2.0] - 2026-11-23
 
 ### Before you upgrade

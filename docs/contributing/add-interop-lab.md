@@ -82,8 +82,10 @@ Then, for both:
   `src/`.
 - rtpengine needs `--delete-delay=0` in a lab, or deleted sessions hold their
   ports and the range runs out mid-suite.
-- Pin images by tag where you can; `drachtio/drachtio-freeswitch-mrf:latest`
-  is the one exception the labs share today.
+- Pin every image: a base by its multi-arch digest (`image@sha256:...`, which
+  `docker buildx imagetools inspect` prints), a source build by its release
+  tag checked against its commit. A moving tag such as `:latest` changes the
+  lab under you. [labs.md](labs.md#pinned-images) lists what each pin runs.
 
 ## Related
 

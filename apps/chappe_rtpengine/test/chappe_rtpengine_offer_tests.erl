@@ -186,3 +186,44 @@ resolve_party_test_() ->
             R(play_media, #{party => nobody}, <<"a">>, <<"b">>)
         )
     ].
+
+%% A delete asks for no statistics; one naming a to-tag also asks
+%% rtpengine to honour it (13 and later ignore it otherwise).
+delete_params_test() ->
+    ?assertEqual(
+        #{flags => [fast]}, chappe_rtpengine_offer:delete_params(#{})
+    ),
+    ?assertEqual(
+        #{to_tag => <<"t">>, flags => [fast, to_tag]},
+        chappe_rtpengine_offer:delete_params(#{to_tag => <<"t">>})
+    ),
+    ?assertEqual(
+        #{flags => [x, fast]},
+        chappe_rtpengine_offer:delete_params(#{flags => [x]})
+    ).
+
+%% Only losing branches with an offer of their own are deleted; the
+%% winner and branches that shared the one offer are not.
+losing_deletes_test() ->
+    Vias = chappe_rtpengine_offer:note_via(
+        <<"b">>,
+        #{via_branch => <<"vb">>},
+        chappe_rtpengine_offer:note_via(<<"a">>, #{}, #{})
+    ),
+    ?assertEqual(#{<<"b">> => <<"vb">>}, Vias),
+    ?assertEqual(
+        [
+            #{
+                to_tag => <<"b">>,
+                via_branch => <<"vb">>,
+                flags => [fast, to_tag]
+            }
+        ],
+        chappe_rtpengine_offer:losing_deletes(
+            <<"c">>, [<<"a">>, <<"b">>, <<"c">>], Vias
+        )
+    ),
+    ?assertEqual(
+        [],
+        chappe_rtpengine_offer:losing_deletes(<<"b">>, [<<"a">>, <<"b">>], Vias)
+    ).

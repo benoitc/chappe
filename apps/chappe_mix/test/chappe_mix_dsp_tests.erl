@@ -361,15 +361,11 @@ tone_frame(F, Amp, K) ->
 thdn(Samples, Freqs) ->
     N = length(Samples),
     Total = lists:sum([X * X || X <- Samples]),
-    Tones = lists:sum([2 * goertzel(Samples, F) / N || F <- Freqs]),
+    Tones = lists:sum([
+        2 * chappe_mix_test_tone:power(Samples, F, 8000) / N
+     || F <- Freqs
+    ]),
     10 * math:log10(max(Total - Tones, 1.0e-9) / Tones).
-
-goertzel(Samples, F) ->
-    C = 2 * math:cos(2 * math:pi() * F / 8000),
-    {S1, S2} = lists:foldl(
-        fun(X, {P1, P2}) -> {X + C * P1 - P2, P1} end, {0.0, 0.0}, Samples
-    ),
-    S1 * S1 + S2 * S2 - C * S1 * S2.
 
 room() ->
     N = rand:uniform(64),

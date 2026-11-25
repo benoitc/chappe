@@ -253,7 +253,7 @@ Checked against their source, named with the version or commit you read:
 
 | Protocol | Version the labs run | Code |
 |---|---|---|
-| rtpengine NG (`docs/ng_control_protocol.md`, `daemon/call_interfaces.c`) | the Ubuntu 24.04 package, 11.5.1.18 | `chappe_rtpengine_ng`, `chappe_rtpengine_cmd`, `chappe_rtpengine_bencode` |
+| rtpengine NG (`docs/ng_control_protocol.md`, `daemon/call_interfaces.c`) | 26.3.1.4, built from the upstream release (`apps/chappe_rtpengine/interop/Dockerfile`) | `chappe_rtpengine_ng`, `chappe_rtpengine_cmd`, `chappe_rtpengine_bencode` |
 | FreeSWITCH event socket (`mod_event_socket.c` and the dptools apps it drives) | FreeSWITCH 1.10.10 | `chappe_esl_parser`, `chappe_esl_conn`, `chappe_esl_verbs` |
 | mod_audio_fork and mod_audio_stream (each module's README and source) | mod_audio_stream v1.1.0 | `chappe_esl_exec`, `chappe_audio_ws` |
 | HEPv3 (the sipcapture specification) | heplify-server 1.60.3 | `chappe_sip_hep` |

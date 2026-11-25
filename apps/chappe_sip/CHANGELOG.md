@@ -20,6 +20,13 @@ says how apps are released.
   conference's own address as its contact, so the participant knows it
   talks to the conference.
 
+### Fixed
+
+- Ending a call the proxy anchored on rtpengine no longer waits on a reply
+  that may not arrive: the proxy asks rtpengine to leave the call
+  statistics out of the delete reply, which could otherwise be split into
+  IP fragments that some networks drop.
+
 ## [0.3.0] - 2026-11-23
 
 ### Before you upgrade

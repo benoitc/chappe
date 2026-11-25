@@ -200,8 +200,11 @@ anchor_answer(
 anchor_release(#{call_id := CallId, from_tag := FromTag}) ->
     case chappe_rtpengine_pool:pinned(CallId) of
         {ok, Node, _Gen} ->
+            %% `fast': the call's statistics are never read here, and with
+            %% them the reply can be large enough to be split into IP
+            %% fragments, which some paths drop
             _ = chappe_rtpengine:delete(
-                Node, #{call_id => CallId, from_tag => FromTag}
+                Node, #{call_id => CallId, from_tag => FromTag, flags => [fast]}
             ),
             _ = chappe_rtpengine_pool:unpin(CallId),
             ok;

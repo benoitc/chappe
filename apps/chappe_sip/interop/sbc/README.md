@@ -104,8 +104,8 @@ can run next to this one.
   is in the CT log of the case under `_build/test/logs`.
 - A stale node after a code change: `lab.sh build` recompiles into the
   volume; `lab.sh clean` starts from nothing.
-- FreeSWITCH pulls are slow: `docker pull drachtio/drachtio-freeswitch-mrf:latest`
-  and `docker pull ghcr.io/kamailio/kamailio-ci:5.8` once, as CI does.
+- FreeSWITCH pulls are slow: pull the image the compose file pins (by
+  digest) and `ghcr.io/kamailio/kamailio-ci:5.8` once, as CI does.
 - The configs here are test-only (an unauthenticated SIP profile). Never copy
   them to a deployment.
 

@@ -11,6 +11,7 @@ of the CT suites.
 | Conformance | one RFC flow per case against SIPp, pjsua, a DNS server and heplify-server | `make interop-conformance` | [conformance/README.md](conformance/README.md) |
 | SBC | the B2BUA in front of FreeSWITCH, rtpengine and Kamailio | `make interop-sbc` | [sbc/README.md](sbc/README.md) |
 | SIPp scenarios | shared by the conformance and SBC labs | | [sipp/README.md](sipp/README.md) |
+| HD peer | one Opus or G.722 call from pjsua at 16 or 48 kHz, a wav played and the reply recorded | `pjsua/hd.sh` | [labs.md](../../../docs/contributing/labs.md#the-hd-peer) |
 
 ## What the JsSIP and Kamailio suite proves
 
