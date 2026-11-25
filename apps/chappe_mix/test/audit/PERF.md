@@ -833,6 +833,10 @@ shape to check against; none marks a threshold met or missed. **The
 thresholds set 2026-11-24 must be measured again on a quiet box**, with the
 arms below, interleaved, minimum of five.
 
+Those thresholds were set on 2026-11-24 in the lane's plan, before any
+16 kHz arm ran; they reached this file in the same commit as the void
+numbers below, so the commit history does not show that order.
+
 The arms take `CHAPPE_MIX_BENCH_CONF=rate=16000`: every room at 16 kHz, the
 sender groups and the probe on L16 (payload type 96), and `mix_cost`
 timing the L16 mix of 320-sample frames. The 8 kHz side of the comparison
@@ -854,8 +858,8 @@ build at 16 kHz), minimum of the five, `+S 1`, load 7.5 to 8.9:
   4 legs on a box this loaded, which says more about the load than the
   code: the bytes are the same (`chappe_mix_golden_tests`), the loops
   compare their index against `tuple_size/1` instead of a literal.
-- 16 kHz: 1.48 to 1.75 times the 8 kHz arm for twice the samples, inside
-  the 2.2 times of the threshold, if a quiet box agrees.
+- 16 kHz: 1.48 to 1.75 times the 8 kHz arm for twice the samples. Void,
+  so it says nothing about the threshold until a quiet box reruns it.
 
 `latency` (50 bursts, 2 silent legs) and `jitter idle` (10 s), two
 interleaved rounds, load 7.4 to 20.6:

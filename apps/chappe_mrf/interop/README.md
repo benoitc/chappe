@@ -91,6 +91,11 @@ PCMU, silent, in the middle. `native_hd_room` runs it in a native room at
 `rate => 16000`, `fs_wideband_room` in a mod_conference room on the
 `wideband` profile, the reference. Each direction passes the band check of
 `chappe_mix_test_tone` with C in and after it left, and C hears both.
+`native_hd_endpoint` joins a FreeSWITCH endpoint to a native 16 kHz room
+(the node is offered G.722 and G.711, and answers G.722): the endpoint
+records A's probe, then plays it to A, and both pass the band check. Its
+log has the rtpengine offer and answer on the endpoint's side, flags and
+SDP.
 
 - The suite builds its own pjsua image, `chappe-hd-pjsua`, from this
   checkout (cached after the first build) and gives it to `hd.sh` with
@@ -101,7 +106,8 @@ PCMU, silent, in the middle. `native_hd_room` runs it in a native room at
 - The callers start 2 s apart: two pjsua started in the same second draw the
   same Call-ID and tags.
 - pjsua's SIP ports start at `MRF_PJSUA_SIP` (19560, three of them), its RTP
-  ports at `MRF_PJSUA_RTP` (19600, 20 per caller).
+  ports at `MRF_PJSUA_RTP` (19600, 20 per caller), and its containers are
+  named `MRF_PJSUA_NAME` (`chappe-hd`) followed by `-a`, `-b`, `-c`.
 
 ## Add a case
 

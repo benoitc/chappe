@@ -10,8 +10,10 @@
 %% band check (chappe_mix_test_tone:band_check/3) judges each direction.
 %% A PCMU caller joins in the middle, silent, and leaves: the HD pair
 %% keeps its band while it is in, and it hears both probes, cut to the
-%% narrow band. The setup is chappe_mrf_live_SUITE's. Skipped unless MRF=1
-%% (apps/chappe_mrf/test/e2e.sh) and docker runs.
+%% narrow band. A FreeSWITCH endpoint joins a native 16 kHz room too, and
+%% keeps the band both ways. The setup is chappe_mrf_live_SUITE's.
+%% Skipped unless MRF=1 (apps/chappe_mrf/test/e2e.sh) and docker runs.
+%% MRF_PJSUA_NAME (chappe-hd) prefixes the pjsua container names.
 -module(chappe_mrf_hd_live_SUITE).
 
 -include_lib("common_test/include/ct.hrl").
@@ -19,14 +21,14 @@
 
 -export([all/0, init_per_suite/1, end_per_suite/1]).
 -export([init_per_testcase/2, end_per_testcase/2]).
--export([native_hd_room/1, fs_wideband_room/1]).
+-export([native_hd_room/1, native_hd_endpoint/1, fs_wideband_room/1]).
 
 -define(LIVE, chappe_mrf_live_SUITE).
 
 -define(RATE, 16000).
 
 all() ->
-    [native_hd_room, fs_wideband_room].
+    [native_hd_room, native_hd_endpoint, fs_wideband_room].
 
 init_per_suite(Config) ->
     case os:find_executable("docker") of
@@ -57,6 +59,8 @@ init_per_testcase(Case, Config) ->
     ?LIVE:init_per_testcase(Case, Config).
 
 end_per_testcase(Case, Config) ->
+    %% native_hd_endpoint's trace, if it failed before stopping it
+    _ = dbg:stop(),
     ?LIVE:end_per_testcase(Case, Config).
 
 %% A native 16 kHz room: rtpengine transcodes G.722 and Opus to the
@@ -70,6 +74,181 @@ native_hd_room(Config) ->
     }),
     ?assertMatch(#{rate := 16000}, chappe_mrf_conf:info(Conf)),
     run_room(Config, Conf, <<"hd-live">>).
+
+%% A FreeSWITCH endpoint in a native 16 kHz room (join/3 of an endpoint of
+%% create_endpoint/1): the mixer's L16 offer reaches the node through
+%% rtpengine as G.722, PCMU and PCMA (mixer_params(16000, endpoint)), the
+%% node answers G.722 and rtpengine transcodes it to the mixer's L16 and
+%% back. A G.722 pjsua caller plays the band probe while the endpoint
+%% records what the room sends it; then the endpoint plays the probe into
+%% the room while the caller records. Both directions keep the band. The
+%% rtpengine offer and answer on the endpoint's side, flags and SDP, are
+%% in the case's log (apps/chappe_mix/test/audit/ATTEMPTS.md has them).
+native_hd_endpoint(Config) ->
+    Dir = ?config(priv_dir, Config),
+    Probe = chappe_mix_test_tone:band_probe(8000),
+    _ = wav(?config(media, Config), "hd-probe.wav", Probe, ?RATE),
+    {ok, Conf} = chappe_mrf:conference(<<"hd-ep">>, #{
+        rate => 16000,
+        anchor_params => #{b => #{direction => [<<"host">>, <<"host">>]}},
+        endpoint_params => #{
+            offer => #{direction => [<<"host">>, <<"docker">>]},
+            answer => #{direction => [<<"docker">>, <<"host">>]}
+        }
+    }),
+    {ok, Ep} = chappe_mrf:create_endpoint(#{}),
+    ok = trace_ng(),
+    Joined = chappe_mrf_conf:join(Conf, Ep, #{name => <<"ep">>}),
+    Ng = ng_calls(<<"mrf-hd-ep-">>),
+    _ = dbg:stop(),
+    [
+        ct:log(
+            50,
+            "~s~nflags ~0p~nsdp:~n~s~nreply sdp:~n~s",
+            [C, maps:without([<<"sdp">>], D), maps:get(<<"sdp">>, D, <<>>), R],
+            [esc_chars]
+        )
+     || {#{<<"command">> := C} = D, R} <- Ng
+    ],
+    ?assertMatch({ok, _}, Joined),
+    %% the node is offered G.722 first in place of L16, and answers it;
+    %% the mixer gets L16 back on its own payload type
+    [{Offer, ToNode}, {Answer, ToMix}] = [
+        {D, R}
+     || {#{<<"command">> := C} = D, R} <- Ng, C =/= <<"delete">>
+    ],
+    ?assertMatch(
+        #{
+            <<"command">> := <<"offer">>,
+            <<"codec">> := #{<<"mask">> := [<<"all">>]}
+        },
+        Offer
+    ),
+    [
+        ?assert(has(ToNode, L), L)
+     || L <- [<<"RTP/AVP 9 0 8 ">>, <<"G722/8000">>]
+    ],
+    #{<<"command">> := <<"answer">>, <<"sdp">> := NodeAnswer} = Answer,
+    ?assert(has(NodeAnswer, <<"a=rtpmap:9 G722/8000">>), NodeAnswer),
+    [
+        ?assert(has(ToMix, L), L)
+     || L <- [<<"RTP/AVP 96 101">>, <<"a=rtpmap:96 L16/16000">>]
+    ],
+    {ok, Vars} = chappe_mrf:vars(Ep),
+    ct:log("endpoint channel: ~p", [
+        maps:with(
+            [
+                <<"read_codec">>,
+                <<"read_rate">>,
+                <<"write_codec">>,
+                <<"rtp_use_codec_name">>,
+                <<"rtp_use_codec_rate">>
+            ],
+            Vars
+        )
+    ]),
+    Test = self(),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        Test ! {joined, chappe_mrf_conf:join(Conf, {call, Req, Res}, #{})}
+    end),
+    %% A plays its probe from 1 s to 9 s of its call
+    PlayA = wav(Dir, "a-play.wav", zeros(1) ++ Probe ++ zeros(13), ?RATE),
+    A = pjsua(
+        Config,
+        a,
+        #{codec => "G722", rate => 16000, play => PlayA, dur => 22},
+        target(Config, <<"hd-ep">>)
+    ),
+    joined(1),
+    T0 = erlang:monotonic_time(millisecond),
+    %% the endpoint records the room for 7 s, then plays the probe
+    Rec =
+        "hd-ep-" ++ integer_to_list(erlang:unique_integer([positive])) ++
+            ".wav",
+    ok = chappe_mrf:record(Ep, list_to_binary("/media/" ++ Rec), #{
+        max_secs => 7
+    }),
+    Play = erlang:monotonic_time(millisecond) - T0,
+    ok = chappe_mrf:play(Ep, <<"/media/hd-probe.wav">>),
+    wait_pjsua(A, 60000),
+    {RateEp, RecEp} = wav_file(filename:join(?config(media, Config), Rec)),
+    RecA = wav_samples(filename:join(Dir, "a.wav")),
+    Cal = chappe_mix_test_tone:band_calibrate(lists:sublist(Probe, ?RATE * 2)),
+    %% the probe in A's recording: from Play ms on, for 8 s
+    From = Play div 1000 + 2,
+    Checks = [
+        {a_to_endpoint,
+            case RateEp of
+                ?RATE -> band_shape(window(RecEp, ?RATE, 2, 5), Cal);
+                _ -> {error, [{recorded_at, RateEp}]}
+            end},
+        {endpoint_to_a, band_shape(window(RecA, ?RATE, From, From + 3), Cal)}
+    ],
+    ct:log(
+        "endpoint recording at ~p Hz, ~p samples; play at ~p ms~n~p",
+        [RateEp, length(RecEp), Play, Checks]
+    ),
+    ok = chappe_mrf_conf:stop(Conf),
+    chappe_mrf:destroy(Ep),
+    [?assertEqual({W, ok}, {W, R}) || {W, R} <- Checks].
+
+%% Trace the NG commands as they go to rtpengine (chappe_rtpengine_ng:
+%% command/2, flags and SDP) and the SDP of each reply (sdp/1).
+trace_ng() ->
+    Test = self(),
+    {ok, _} = dbg:tracer(
+        process, {
+            fun(M, ok) ->
+                Test ! {ng_trace, M},
+                ok
+            end,
+            ok
+        }
+    ),
+    {ok, _} = dbg:p(all, [c]),
+    {ok, _} = dbg:tpl(
+        chappe_rtpengine_ng, command, 2, [{'_', [], [{return_trace}]}]
+    ),
+    {ok, _} = dbg:tpl(chappe_rtpengine_ng, sdp, 1, []),
+    ok.
+
+%% The offers and answers of the calls whose call-id starts with Prefix,
+%% each with the SDP of the reply that followed it: [{Dict, ReplySdp}].
+ng_calls(Prefix) ->
+    ng_calls(Prefix, []).
+
+ng_calls(Prefix, Acc) ->
+    receive
+        {ng_trace,
+            {trace, _, return_from, {chappe_rtpengine_ng, command, 2},
+                #{<<"call-id">> := Id} = Dict}} ->
+            case binary:longest_common_prefix([Id, Prefix]) of
+                N when N =:= byte_size(Prefix) ->
+                    ng_calls(Prefix, [{Dict, none} | Acc]);
+                _ ->
+                    ng_calls(Prefix, Acc)
+            end;
+        {ng_trace,
+            {trace, _, call, {chappe_rtpengine_ng, sdp, [#{<<"sdp">> := S}]}}} ->
+            case Acc of
+                [{Dict, none} | Rest] -> ng_calls(Prefix, [{Dict, S} | Rest]);
+                _ -> ng_calls(Prefix, Acc)
+            end;
+        {ng_trace, _} ->
+            ng_calls(Prefix, Acc)
+    after 500 -> lists:reverse(Acc)
+    end.
+
+has(Bin, Part) ->
+    is_binary(Bin) andalso binary:match(Bin, Part) =/= nomatch.
+
+%% A wav file's rate and samples.
+wav_file(Path) ->
+    {ok, <<"RIFF", _:32, "WAVE", _/binary>> = Bin} = file:read_file(Path),
+    {match, [{Pos, _}]} = re:run(Bin, <<"fmt ">>),
+    <<_:Pos/binary, "fmt ", _:32/little, _:16/little, _:16/little,
+        Rate:32/little, _/binary>> = Bin,
+    {Rate, [X || <<X:16/little-signed>> <= data(Bin)]}.
 
 %% The reference: the same calls in a mod_conference room on the
 %% `wideband' profile (16 kHz), each caller bridged to a FreeSWITCH
@@ -171,13 +350,18 @@ band_shape(Samples, Cal) ->
         false ->
             {error, [{too_short, length(Samples)}]};
         true ->
-            #{1000 := Got} = chappe_mix_test_tone:band_calibrate(Samples),
-            Gain = Got - maps:get(1000, Cal),
-            ct:log("path gain at 1000 Hz: ~.1f dB", [Gain]),
-            Shifted = maps:map(fun(_, L) -> L + Gain end, Cal),
-            chappe_mix_test_tone:band_check(Samples, Shifted, #{
-                tolerance => 3.0
-            })
+            try chappe_mix_test_tone:band_calibrate(Samples) of
+                #{1000 := Got} ->
+                    Gain = Got - maps:get(1000, Cal),
+                    ct:log("path gain at 1000 Hz: ~.1f dB", [Gain]),
+                    Shifted = maps:map(fun(_, L) -> L + Gain end, Cal),
+                    chappe_mix_test_tone:band_check(Samples, Shifted, #{
+                        tolerance => 3.0
+                    })
+            catch
+                %% a tone 10 dB down or more: the path lost the band
+                error:{bad_calibration, F, L} -> {error, [{missing, F, L}]}
+            end
     end.
 
 zeros(Secs) ->
@@ -218,7 +402,7 @@ pjsua(Config, Name, Opts, Target) ->
             "-m",
             integer_to_list(env_port("MRF_PJSUA_RTP", 19600) + 20 * K),
             "-N",
-            "chappe-hd-" ++ N,
+            os:getenv("MRF_PJSUA_NAME", "chappe-hd") ++ "-" ++ N,
             "-i",
             ?config(image, Config)
         ] ++

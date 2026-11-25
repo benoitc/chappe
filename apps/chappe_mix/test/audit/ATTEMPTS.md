@@ -748,7 +748,8 @@ order held at load 4.8 too):
 
 The 16 kHz room needs rtpengine to hand the mixer L16/16000 whatever the
 caller speaks. Ubuntu 24.04's package, 11.5.1.18-1ubuntu1.2, has no L16 RTP
-codec; upstream 13.x is the first with one.
+codec. Upstream's codec table (`lib/codeclib.c`) has L16 at tag
+`mr13.4.1.1` and not at `mr13.3.1.1`; only `mr26.3.1.4` is tested here.
 
 - The lab image now builds upstream `sipwise/rtpengine` tag `mr26.3.1.4`
   (commit `1165c63`) on `ubuntu:26.04` (pinned by digest), the userspace
@@ -846,7 +847,9 @@ path drops to 8 kHz, are 40 dB below the quietest tone.
 - The digest catches an 8 kHz change: the gain ramp stepped by I instead of
   I + 1 failed it. A report-jitter clock off by one part in a million did
   not (the jitter is truncated to whole units); the session tests cover
-  the clock (`chappe_mix_session_tests`, a 16 kHz sender read at 8 kHz).
+  the clock (`chappe_mix_session_tests`, a 16 kHz sender read at 8 kHz),
+  and since the review `l16_jitter` covers the leg giving its session the
+  room's rate (below).
 
 ## HD rooms in the labs
 
@@ -872,3 +875,101 @@ path drops to 8 kHz, are 40 dB below the quietest tone.
   transcode to PCMU) fail every direction, 5000 and 6000 Hz at -88 to
   -110 dBFS; without the transcode the mixer refuses the G.722 offer
   (488).
+
+## The HD lane's review: the endpoint gate, mutations, the tick digest
+
+The endpoint side of a 16 kHz native room, against the lab's rtpengine
+mr26.3.1.4 (`chappe_mrf_hd_live_SUITE`, `native_hd_endpoint`, 2026-11-25,
+load 10 to 11): a FreeSWITCH endpoint of `create_endpoint/1` joins the
+room, its dialog re-INVITEd to the mixer through rtpengine. The NG
+commands as sent, traced on `chappe_rtpengine_ng:command/2`:
+
+- The offer, mixer to node: `ICE` remove, `transport-protocol` RTP/AVP,
+  `direction` [host, docker], `codec` => `mask` [all], `transcode` [G722,
+  PCMU, PCMA, telephone-event/8000] (`mixer_params(16000, endpoint)`).
+  Its SDP is the mixer's: `m=audio ... RTP/AVP 96 101`, `L16/16000`,
+  `telephone-event/16000` (fmtp 0-16), ptime 20, rtcp-mux.
+- rtpengine's offer to the node: `m=audio ... RTP/AVP 9 0 8 97`,
+  `G722/8000`, `PCMU/8000`, `PCMA/8000`, `telephone-event/8000` (fmtp
+  0-15), rtcp-mux, ptime 20. FreeSWITCH (codec prefs OPUS, G722, PCMU,
+  PCMA) answers `RTP/AVP 9 97`: G.722 and telephone-event/8000.
+- The answer, node to mixer: `ICE` remove, `transport-protocol` RTP/AVP,
+  `direction` [docker, host], no codec flags. rtpengine's answer to the
+  mixer: `RTP/AVP 96 101`, `L16/16000`, `telephone-event/16000` (fmtp
+  0-16): the payload types the mixer offered, so the leg sends on its own.
+- After the re-INVITE the channel has `rtp_use_codec_name` G722 and
+  `write_codec` G722, but `read_codec` still PCMU and `read_rate` 8000,
+  from the endpoint's first, G.711 negotiation: do not read a codec change
+  from `read_codec`. The case asserts on the SDP instead.
+- Band check, a G.722 pjsua caller with the endpoint: the caller's probe
+  recorded by the endpoint passes (the recording is at 16000 Hz, path
+  gain -6.0 dB, pjsua's G.722 as before), the probe the endpoint plays
+  passes at the caller (0.0 dB).
+- Controls: the endpoint offered G.711 only (`mixer_params(16000,
+  endpoint)` without G722, the case's SDP assertions moved to PCMU so the
+  band check decides): FreeSWITCH takes PCMU, records at 8000 Hz, and the
+  caller hears 5000 Hz at -89 dBFS; both directions fail. Without the
+  endpoint flags (`mixer_params(8000, endpoint)`) FreeSWITCH refuses the
+  L16 offer, 488. With G722 dropped and the SDP assertions kept, the case
+  fails on them first.
+- `make interop-mix` on the review's code, load 10 to 14: one run of
+  `hd_band_through_rtpengine` failed on G.722 into the room, the 3000 Hz
+  alias bin at -56.24 dBFS against the -56.33 limit; the rerun passed, 6
+  of 6. That is the thin G.722 margin noted above, not the review's
+  change (nothing on the 16 kHz audio path moved).
+
+Mutations of the review, each run against the suite that claims it, the
+code restored and touched after each (all caught unless said):
+
+- The timestamp step at 160 in a 16 kHz room (the SR clock at 8000):
+  `l16_sr_clock` (the SR's rate off 16000) and `l16_octets_through_the_mix`
+  (steps not 320).
+- The leg's session at 8000 in a 16 kHz room (the report jitter's clock):
+  **not caught** by the rfc `l16` group nor `chappe_mix_session_tests`.
+  Added `l16_jitter`: a sender keeping time is reported 2 to 6 units, 159
+  to 160 with the mutation; it fails on it.
+- Tap PCM left big-endian: `wideband_tap` (2000 Hz no longer 40 dB under
+  6000 Hz).
+- The mixer SDP taking `L16/8000`: `l16_pick_test`.
+- `room_rate` taking any rate: `conference_rate` (the 8 kHz join of a
+  16 kHz room got an SDP).
+- The move's rate check dropped: `cross_rate_move` (the leg left its room
+  and its tap stopped). The adopting room's own check dropped: **not
+  caught**, the move checks first. Added to `cross_rate_move`: a leg of
+  another rate handed straight to a room is refused there; it fails on it.
+- `rate16`: the L16 default payload type at 97 (every tone case fails,
+  too few samples), the jitter buffer cutting 160-sample frames at 16 kHz
+  (tones missing, leaks).
+- `conference_rate`: a new room at the configured rate in place of the
+  join's (the L16 answer refused, `bad_option pt`).
+- chappe_mrf `native_hd_room`: no mixer params toward the mixer (488), none
+  toward an endpoint (no common codec, once the fake rtpengine answers the
+  endpoint side in L16 as the daemon does), a running room of another rate
+  returned, the codec params merged shallow (1e1b548's merge: the room's
+  mask gone), the room's rate ignored. An fs room taking a rate: **not
+  caught**, the running room's rate check refused it after the room was
+  made. The case now checks no room was made; it fails on it.
+- `mixer_params(16000, endpoint)` without G722: `mixer_params` in
+  chappe_sip_media_SUITE and `native_hd_room`.
+- The new checks, each with its test failing on 1e1b548 first: an L16
+  answer on another payload type than the mixer's offer (`pt_mismatch`,
+  `conference_rate`), telephone-event on the audio payload type
+  (`rate_options`), the move of an unknown leg (`cross_rate_move`, which
+  got `refused`), a running native room asked another rate
+  (`native_hd_room`), the codec params merged one level down (fails on
+  the shallow merge, above).
+
+The tick digest: `chappe_mix_golden_tests` pinned the parts of a tick, and
+called `chappe_mix_g711:pcm/2` for a party where the tap now calls
+`chappe_mix_fmt:pcm/3`; no leg or room ran. `tick_run/0` drives nine legs
+(both laws, every direction, nohear relations, an injected leg) through
+`chappe_mix_leg:take/3`, `chappe_mix_room:mix` and the party and room taps
+for 300 ticks, and hashes the talker events, the frames in the sum, every
+tap frame and every packet each far end received over loopback. The
+digest was taken on `374b478`'s `src/`, compiled into a scratch directory,
+with the three calls of then (`mix/3`, `send_all/3`, `call/4`); the same
+module on this branch gives the same digest, twice each. `run/0` gave the
+pinned digest there too. Mutations, all caught by the tick digest and
+none by `run/0`: `chappe_mix_fmt:pcm/3` decoding A-law as mu-law, the tap
+of a silent leg 160 bytes instead of 320, skipped ticks not advancing the
+timestamp, nohear ignored in the N-1 sum.
