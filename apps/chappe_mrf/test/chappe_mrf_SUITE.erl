@@ -102,9 +102,11 @@
     registry_put_restart/1,
     registry_dead_entry/1,
     native_loop_fails/1,
+    native_call_loop_fails/1,
     native_endpoint_fails/1,
     native_join_worker_dies/1,
     native_join_bad_handle/1,
+    join_timeout_refused/1,
     invite_replaces_stale_hold/1,
     invite_replaces_after_transfer/1,
     invite_replaces_member_left/1,
@@ -209,9 +211,11 @@ all() ->
         registry_put_restart,
         registry_dead_entry,
         native_loop_fails,
+        native_call_loop_fails,
         native_endpoint_fails,
         native_join_worker_dies,
         native_join_bad_handle,
+        join_timeout_refused,
         invite_replaces_stale_hold,
         invite_replaces_after_transfer,
         invite_replaces_member_left,
@@ -3887,34 +3891,83 @@ native_loop_fails(Config) ->
     Owner ! stop,
     ok = chappe_mrf_conf:stop(Conf).
 
+%% The same for a caller joined from its INVITE: its loopback INVITE fails
+%% while the caller's call to the mixer is set up, and the join fails with
+%% {error, join_failed}, the caller is refused, and the room gives back
+%% what it took.
+%% req: MRF-25
+native_call_loop_fails(Config) ->
+    Rtpe = ?config(rtpe, Config),
+    {ok, Conf} = chappe_mrf:conference(<<"callloopfail">>, #{
+        max_members => 1
+    }),
+    Base = holdings(Conf),
+    Test = self(),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        Test ! {join, chappe_mrf_conf:join(Conf, {call, Req, Res}, #{})}
+    end),
+    _ = rtpe_offers(),
+    %% the caller's call to the mixer waits on rtpengine
+    ok = ?F:rtpe_fail(Rtpe, #{<<"offer">> => hold}),
+    Ua = ?F:ua_call(?config(ep, Config), #{}),
+    _ = rtpe_offer(),
+    [Token] = maps:keys(element(10, sys:get_state(Conf))),
+    Loop = ?F:ua_call(?config(ep, Config), #{
+        ruri => chappe_mrf:loop_target(Token),
+        headers => [
+            {<<"Supported">>, <<"timer">>}, {<<"Session-Expires">>, <<"30">>}
+        ]
+    }),
+    {ok, 422} = ua_final(Loop),
+    ok = ?F:rtpe_fail(Rtpe, #{}),
+    ?assertEqual({error, join_failed}, join_within(10000)),
+    {ok, St} = ua_final(Ua),
+    ?assert(St >= 400),
+    back_to(Conf, Base),
+    ok = chappe_mrf_conf:stop(Conf).
+
 %% An endpoint's join that fails at any step answers an error, gives the
 %% room's mixer leg and rtpengine session back, and the room goes on: no
 %% mixer, an rtpengine offer or answer refused, an answer the mixer cannot
 %% use, a node that refuses the re-INVITE, an endpoint that does not
-%% answer the room, and a dialog that dies under the re-INVITE.
+%% answer the room, and a dialog that dies under the re-INVITE. A failure
+%% once the node took the room's media (its re-INVITE answered) hangs the
+%% endpoint up, as that media is gone; before, the endpoint stays as it
+%% was.
 %% req: MRF-25
 native_endpoint_fails(Config) ->
     Rtpe = ?config(rtpe, Config),
     {ok, Conf} = chappe_mrf:conference(<<"epfail">>, #{}),
-    {ok, Ep} = chappe_mrf:create_endpoint(#{targets => [{fs1, fs_uri(Config)}]}),
+    NewEp = fun() ->
+        {ok, E} = chappe_mrf:create_endpoint(#{
+            targets => [{fs1, fs_uri(Config)}]
+        }),
+        E
+    end,
+    Ep = NewEp(),
     %% no mixer at all (its first join: the room has no mixer room yet)
     ok = supervisor:terminate_child(chappe_sip_media_sup, chappe_sip_media_mix),
     ?assertMatch({error, _}, chappe_mrf_conf:join(Conf, Ep, #{})),
     {ok, _} = supervisor:restart_child(
         chappe_sip_media_sup, chappe_sip_media_mix
     ),
+    ok = channel_after_failure(Ep, uuid_of(Ep), kept),
     Base = holdings(Conf),
     lists:foreach(
-        fun(F) ->
+        fun({F, After}) ->
+            E = NewEp(),
             ok = ?F:rtpe_fail(Rtpe, F),
-            ?assertMatch({error, _}, chappe_mrf_conf:join(Conf, Ep, #{})),
+            {ok, Uuid} = chappe_mrf:uuid(E),
+            ?assertMatch({error, _}, chappe_mrf_conf:join(Conf, E, #{})),
             ok = ?F:rtpe_fail(Rtpe, #{}),
-            back_to(Conf, Base)
+            ok = channel_after_failure(E, Uuid, After),
+            back_to(Conf, Base),
+            chappe_mrf:destroy(E)
         end,
         [
-            #{<<"offer">> => error},
-            #{<<"answer">> => error},
-            #{<<"answer">> => bad_sdp}
+            {#{<<"offer">> => error}, kept},
+            {#{<<"answer">> => error}, hung_up},
+            {#{<<"answer">> => bad_sdp}, hung_up}
         ]
     ),
     %% a node that refuses the re-INVITE
@@ -3925,32 +3978,74 @@ native_endpoint_fails(Config) ->
         targets => [{picky, uri_of(?F:fs_port(Picky))}]
     }),
     ?assertMatch({error, _}, chappe_mrf_conf:join(Conf, EpP, #{})),
+    ok = channel_after_failure(EpP, uuid_of(EpP), kept),
     back_to(Conf, Base),
     chappe_mrf:destroy(EpP),
     ?F:fs_stop(Picky),
     %% the endpoint does not answer the room once its media is set
     #{dialog := D} = chappe_mrf:info(Ep),
     DPid = chappe_sip_dialog:pid(D),
-    Queued = fun() ->
-        element(2, process_info(DPid, message_queue_len)) > 0
+    Queued = fun(Pid) ->
+        fun() -> element(2, process_info(Pid, message_queue_len)) > 0 end
     end,
+    Uuid = uuid_of(Ep),
     ok = sys:suspend(DPid),
     _ = join_async(Conf, Ep),
-    until(Queued),
+    until(Queued(DPid)),
     ok = sys:suspend(Ep),
     ok = sys:resume(DPid),
     ?assertMatch({error, _}, join_within(15000)),
+    ok = channel_bye(Uuid),
     ok = sys:resume(Ep),
+    until(fun() -> ep_gone(Ep) end),
     back_to(Conf, Base),
     %% its dialog dies under the re-INVITE
-    ok = sys:suspend(DPid),
-    _ = join_async(Conf, Ep),
-    until(Queued),
-    exit(DPid, kill),
+    Ep2 = NewEp(),
+    #{dialog := D2} = chappe_mrf:info(Ep2),
+    DPid2 = chappe_sip_dialog:pid(D2),
+    ok = sys:suspend(DPid2),
+    _ = join_async(Conf, Ep2),
+    until(Queued(DPid2)),
+    exit(DPid2, kill),
     ?assertMatch({error, _}, join_within(5000)),
     back_to(Conf, Base),
     ?assert(is_process_alive(Conf)),
+    chappe_mrf:destroy(Ep2),
     ok = chappe_mrf_conf:stop(Conf).
+
+%% after a failed join, the endpoint's channel is kept (no BYE, the
+%% endpoint still there) or hung up (its node gets a BYE, the endpoint
+%% goes)
+channel_after_failure(Ep, Uuid, kept) ->
+    receive
+        {fake_fs, _, Uuid, {bye, _}} -> ct:fail({hung_up, Ep})
+    after 300 -> ok
+    end,
+    ?assertMatch(#{bridged := false}, chappe_mrf:info(Ep)),
+    ok;
+channel_after_failure(Ep, Uuid, hung_up) ->
+    ok = channel_bye(Uuid),
+    until(fun() -> ep_gone(Ep) end),
+    ok.
+
+%% the endpoint's channel ended (it lingers a while, gone)
+ep_gone(Ep) ->
+    case chappe_mrf:info(Ep) of
+        #{state := gone} -> true;
+        {error, gone} -> true;
+        _ -> false
+    end.
+
+uuid_of(Ep) ->
+    {ok, Uuid} = chappe_mrf:uuid(Ep),
+    Uuid.
+
+%% the node of channel Uuid got a BYE
+channel_bye(Uuid) ->
+    receive
+        {fake_fs, _, Uuid, {bye, _}} -> ok
+    after 5000 -> ct:fail({no_bye, Uuid})
+    end.
 
 %% A join whose worker dies before it reports (the helper of a call's
 %% join, or the INVITE's request worker of a caller joined from its
@@ -3997,6 +4092,30 @@ native_join_worker_dies(Config) ->
     ok = ?F:rtpe_fail(Rtpe, #{}),
     Owner ! stop,
     ok = chappe_mrf_conf:stop(Slow),
+    ok = chappe_mrf_conf:stop(Conf).
+
+%% A join_timeout that is not a number of milliseconds from 1 to 95000 is
+%% refused on either backend before any room runs.
+%% req: MRF-26
+join_timeout_refused(_Config) ->
+    [
+        ?assertEqual(
+            {error, {bad_option, join_timeout}},
+            chappe_mrf:conference(<<"badjt">>, #{join_timeout => Bad}),
+            Bad
+        )
+     || Bad <- [0, -1, 95001, 1.5, infinity, <<"1000">>]
+    ],
+    ?assertEqual(
+        {error, {bad_option, join_timeout}},
+        chappe_mrf:conference(<<"badjt">>, #{
+            backend => fs, node => fs1, join_timeout => 0
+        })
+    ),
+    ?assertEqual(
+        false, lists:keymember(<<"badjt">>, 1, chappe_mrf:conferences())
+    ),
+    {ok, Conf} = chappe_mrf:conference(<<"okjt">>, #{join_timeout => 95000}),
     ok = chappe_mrf_conf:stop(Conf).
 
 %% A handle that is neither a call, an incoming call nor an endpoint is

@@ -78,8 +78,13 @@ between the mixer and the node when they differ:
 
 A join that fails returns its error at once and leaves nothing behind:
 no mixer leg, no rtpengine session, and the room counts it no more
-against `max_members`. The room and its members go on. A call's join may
-take `join_timeout` milliseconds (95000, the most), then it fails:
+against `max_members`. The room and its members go on. An endpoint whose
+node already answered the room's re-INVITE when its join failed is hung
+up, since the media it was moved to is gone; its owner gets
+`{chappe_mrf, Ep, {hangup, Cause}}`. A call's join may take
+`join_timeout` milliseconds (95000 by default and at most), then it
+fails. Any other value than 1 to 95000 makes `conference/2` return
+`{error, {bad_option, join_timeout}}`:
 
 ```erlang
 {ok, Conf} = chappe_mrf:conference(<<"ops">>, #{join_timeout => 10000}),

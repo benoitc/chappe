@@ -110,7 +110,10 @@
 %%                the mixer and an endpoint's node (offer: toward the node)
 %%   join_timeout => ms a call's join may take, 95000 at most and by
 %%                default: past it the join fails with {error, timeout}
-%%                and the room gives back what it took
+%%                and the room gives back what it took. On either
+%%                backend start/2 refuses a join_timeout that is no
+%%                integer from 1 to 95000: {error, {bad_option,
+%%                join_timeout}}
 %% both:
 %%   focus     => true: serve RFC 4575 conference-info (entity, the
 %%                conference URI, defaults to sip:Name@<this node>); the
@@ -236,12 +239,16 @@ events(Conf, Pid) ->
 %% through rtpengine, fs bridges it to an endpoint on the room's node),
 %% or an endpoint. On native, the
 %% endpoint must be one of create_endpoint/1 not bridged: its dialog is
-%% re-INVITEd to the mixer through rtpengine. On
+%% re-INVITEd to the mixer through rtpengine, and a join that fails once
+%% the node answered that re-INVITE hangs the endpoint up (its media is
+%% gone). On
 %% fs, it must be on the conference's node. Opts: name, mute,
 %% deaf, moderator; fs also pin (the PIN to enter first), pin_prompt
 %% (the file asking for it), pin_tries (3), flags (more mod_conference
-%% member flags). {ok, Member} once the member is in. Runs in the caller
-%% (the backend's join/4).
+%% member flags). {ok, Member} once the member is in; {error, badarg} for
+%% a Target of no such shape (native), {error, expired} for a call whose
+%% Replaces came too late (chappe_mrf_conf_refer_member:join/5). Runs in
+%% the caller (the backend's join/4).
 -spec join(
     conf(),
     chappe_sip_b2b:b2b()

@@ -174,7 +174,8 @@ joiner at once and gives back its mixer leg, its loopback token and
 dialog, and its place in `admission/1`. An endpoint's join runs its media
 steps in `chappe_mrf_conf_native_ep`: a step that fails or raises stops
 the rtpengine session, leaves the mixer leg and answers an error, and the
-room goes on.
+room goes on. Once the node answered the re-INVITE, a failure also ends
+the endpoint's dialog: its channel would send to the session that went.
 
 The middleware only runs when chappe_sip runs a request through its chain,
 so your app needs an INVITE handler (`chappe_sip:invite/1`).
@@ -409,7 +410,7 @@ The first four are chappe_mrf settings
 | Conference owner exits | the conference stops and every member is hung up (an app's endpoint leaves the room and keeps its channel) |
 | `bridge/2` fails | the endpoint takes its dialog back |
 | fs member never shows up | after `join_timeout` (15 s), `{error, timeout}`; an endpoint made for the join is destroyed |
-| A native join fails (its loopback INVITE, a media step, the endpoint's re-INVITE) | the joiner gets an error at once; the mixer leg, the rtpengine session, the loopback token and the join's place go, and the room goes on |
+| A native join fails (its loopback INVITE, a media step, the endpoint's re-INVITE) | the joiner gets an error at once; the mixer leg, the rtpengine session, the loopback token and the join's place go, and the room goes on; an endpoint whose node answered the re-INVITE is hung up |
 | A native join's worker dies, or the join outlasts `join_timeout` (95 s) | `{error, join_failed}` or `{error, timeout}`, with the same cleanup |
 | A native join given a handle that is no call, incoming call or endpoint | `{error, badarg}` in the caller |
 | A call with Replaces gets in after its hold on the member went (95 s, another caller's hold, the member's call transferred) | the member stays; the new call is hung up (`{left, New, expired}`, `booted` in the roster) and its `join/3` returns `{error, expired}` |

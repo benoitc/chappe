@@ -1160,11 +1160,13 @@ native_endpoint(Config) ->
 
 %% Faults in a live native room. The registry is killed: the room keeps
 %% its name and its members still hear each other. Then, rtpengine paused
-%% so that each join hangs on its offer, join workers are killed at a
-%% random point (a call's helper, an incoming caller's INVITE worker):
-%% each join fails, and once those callers are gone the room's mixer legs
-%% and the calls rtpengine runs are what they were, and the node has no
-%% more processes or ports than before.
+%% so that each join hangs on its offer (the room has that one join
+%% pending), join workers are killed within 500 ms (a call's helper, an
+%% incoming caller's INVITE worker): a call's join fails with {error,
+%% join_failed}, a caller's is dropped, and the room has no join pending
+%% after either. Once those callers are gone the room's mixer legs and the
+%% calls rtpengine runs are what they were, and the node has no more
+%% processes or ports than before.
 native_faults(Config) ->
     case ?config(compose, Config) of
         "" -> {skip, "MRF_COMPOSE not set"};
@@ -1187,7 +1189,15 @@ native_faults(Config, Compose) ->
     ?UA:clear(U2),
     ?assert(?UA:hears(U2, 500, 4000)),
     Ways = lists:append(lists:duplicate(4, [b2b, call])),
-    Killed = [kill_join(Config, Compose, Conf, Way) || Way <- Ways],
+    Killed = [
+        try
+            kill_join(Config, Compose, Conf, Way)
+        after
+            %% a failed check must not leave the lab without rtpengine
+            os:cmd(Compose ++ " unpause rtpengine")
+        end
+     || Way <- Ways
+    ],
     ct:log("joins under faults: ~p", [Killed]),
     ?assertEqual(
         lists:sort([M1, M2]), lists:sort([Id || #{id := Id} <- members(Conf)])
@@ -1233,29 +1243,35 @@ settled(Name, Counts, Same) ->
     end.
 
 %% One join whose worker is killed while rtpengine is paused (the join
-%% waits on its offer): a call's (Way b2b, its replace_b/3 helper) or an
-%% incoming caller's (Way call, its INVITE's request worker), within
-%% 500 ms. The join fails; the caller then goes.
+%% waits on its offer, the room has it pending), within 500 ms: a call's
+%% (Way b2b, its replace_b/3 helper), which fails with {error,
+%% join_failed}, or an incoming caller's (Way call, its INVITE's request
+%% worker), which never returns and whose join the room drops. The room
+%% then has no join pending; the caller goes.
 kill_join(Config, Compose, Conf, b2b) ->
     ivr(fun park/2),
     {Ua, _, B2b, Owner} = call_in(Config, none),
     Test = self(),
     _ = os:cmd(Compose ++ " pause rtpengine"),
     _ = spawn(fun() -> Test ! {join, chappe_mrf_conf:join(Conf, B2b, #{})} end),
-    true = ?FAULTS:eventually(fun() -> ?FAULTS:join_helpers() =/= [] end, 20),
+    ?assert(?FAULTS:eventually(fun() -> ?FAULTS:join_helpers() =/= [] end, 20)),
+    ?assertEqual(1, pending(Conf)),
     timer:sleep(rand:uniform(500) - 1),
     Helpers = [exit(P, kill) || P <- ?FAULTS:join_helpers()],
+    ?assertEqual([true], Helpers),
     R =
         receive
             {join, J} -> J
         after 2000 -> ct:fail(join_not_failed)
         end,
+    ?assertEqual({error, join_failed}, R),
+    ?assertEqual(0, pending(Conf)),
     _ = os:cmd(Compose ++ " unpause rtpengine"),
     ?UA:bye(Ua),
     Owner ! stop,
     timer:sleep(300),
     ?UA:stop(Ua),
-    {b2b, length(Helpers), R};
+    {b2b, R};
 kill_join(Config, Compose, Conf, call) ->
     Test = self(),
     ok = chappe_sip:invite(fun(Req, Res) ->
@@ -1269,18 +1285,25 @@ kill_join(Config, Compose, Conf, call) ->
             {worker, W} -> W
         after 10000 -> ct:fail(no_worker)
         end,
+    ?assert(?FAULTS:eventually(fun() -> pending(Conf) =:= 1 end, 50)),
     timer:sleep(rand:uniform(500) - 1),
     exit(Worker, kill),
-    _ = os:cmd(Compose ++ " unpause rtpengine"),
+    ?assert(?FAULTS:eventually(fun() -> pending(Conf) =:= 0 end, 10)),
     R =
         receive
             {join, J} -> J
         after 0 -> killed
         end,
+    ?assertEqual(killed, R),
+    _ = os:cmd(Compose ++ " unpause rtpengine"),
     ?UA:bye(Ua),
     timer:sleep(300),
     ?UA:stop(Ua),
     {call, R}.
+
+%% the joins under way in a room
+pending(Conf) ->
+    map_size(element(10, sys:get_state(Conf))).
 
 %% Three callers in a mod_conference room: each enters the PIN after its
 %% prompt, audio crosses the room, and the moderator kick drops one.

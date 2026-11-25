@@ -74,14 +74,16 @@ says how apps are released.
   longer fails.
 - A native conference join that failed could leave a mixer leg, an
   rtpengine session and a place in the room behind until the room ended,
-  and a failed loopback call kept its caller waiting 95 seconds. A failed
-  join now answers at once and gives everything back, an endpoint whose
-  media setup fails no longer ends the room for every member, and a join
-  given something that is not a call or an endpoint is refused.
-- A native join whose helper, or whose incoming call's worker, died
-  before it finished counted against the room's member limit for good.
-  It now fails, and native rooms take a join timeout as FreeSWITCH rooms
-  do.
+  and a join whose call to the mixer failed kept its caller waiting 95
+  seconds. A failed join now answers at once and gives everything back,
+  and an endpoint whose media setup fails no longer ends the room for
+  every member. An endpoint whose media FreeSWITCH had already moved to
+  the room when its join failed is hung up, since that media is gone. A
+  join given something that is neither a call nor an endpoint fails with
+  badarg.
+- A native conference join cut short by a crash before it finished
+  counted against the room's member limit for good. It now fails and
+  frees its place.
 - A call replacing a conference member that got in late, after its hold
   on the member had run out or passed to another caller, or after the
   member's call was transferred, still hung that member up. It now
@@ -128,6 +130,11 @@ says how apps are released.
   by one, so adding one keeps the room's conversion. Asking for a running
   room at another rate than its own is refused. A FreeSWITCH conference
   refuses the option: its rate comes from its profile.
+- A native conference takes a join timeout, as FreeSWITCH conferences
+  do: how long a join may take before it fails with a timeout and the
+  room gives back what it took, 95 seconds by default and at most. A
+  conference given a join timeout that is not a number of milliseconds
+  from 1 to 95000 is refused, on either backend.
 
 ## [0.1.0] - 2026-11-23
 

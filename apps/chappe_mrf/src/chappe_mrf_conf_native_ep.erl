@@ -11,7 +11,10 @@
 %% Each step runs on what the ones before made (ms, the mixer session;
 %% rs, the rtpengine one). A step that fails or raises ends the join with
 %% an error, and what exists so far goes: the rtpengine session is
-%% stopped and the mixer leg left. The room goes on.
+%% stopped and the mixer leg left. A step that fails once the node took
+%% the offer (node_answer) also hangs the endpoint up: its channel sends
+%% to the rtpengine session that goes, and has no media left. The room
+%% goes on.
 -module(chappe_mrf_conf_native_ep).
 
 -export([media/3]).
@@ -61,7 +64,7 @@ media(Ep, {CallId, Id, D}, #{room := Room, join := JoinOpts} = Cfg) ->
         end},
         {watch, fun(_) -> done(chappe_mrf_endpoint:watch(Ep, self())) end}
     ],
-    case run(Steps, #{}) of
+    case run(Steps, D, #{}) of
         {ok, #{ms := MS}} = Ok ->
             _ = maps:get(deaf, Cfg) andalso chappe_sip_media:deaf(MS),
             Ok;
@@ -72,22 +75,24 @@ media(Ep, {CallId, Id, D}, #{room := Room, join := JoinOpts} = Cfg) ->
 done(ok) -> {ok, done};
 done({error, _} = Err) -> Err.
 
-run([], Got) ->
+run([], _D, Got) ->
     {ok, Got};
-run([{Key, Step} | Rest], Got) ->
+run([{Key, Step} | Rest], D, Got) ->
     try Step(Got) of
         {ok, Value} ->
-            run(Rest, Got#{Key => Value});
+            run(Rest, D, Got#{Key => Value});
         {error, _} = Err ->
-            give_back(Got, Err);
+            give_back(Got, D, Err);
         Other ->
-            give_back(Got, {error, Other})
+            give_back(Got, D, {error, Other})
     catch
         _:Why ->
-            give_back(Got, {error, Why})
+            give_back(Got, D, {error, Why})
     end.
 
-give_back(Got, Err) ->
+give_back(Got, D, Err) ->
+    %% the node's channel was moved to the rtpengine session: it ends
+    _ = [chappe_mrf_lib:destroy_dialog(D) || #{node_answer := _} <- [Got]],
     _ = [chappe_sip_media:stop(RS) || #{rs := RS} <- [Got]],
     _ = [chappe_sip_media:leave(MS) || #{ms := MS} <- [Got]],
     Err.

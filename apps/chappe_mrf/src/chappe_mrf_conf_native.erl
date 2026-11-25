@@ -16,10 +16,14 @@
 -export([handle_info/2]).
 -export([set_flag/5, hangup/3, left/2, play/3, portable/0]).
 -export([relate/4, record/3, stop_record/1, handover/1, dial/4]).
--export([loop_invite/4, check_rate/1, same_rate/2]).
+-export([loop_invite/4, check_rate/1, check_join_timeout/1, same_rate/2]).
 
-%% the longest a joiner waits on the room, and so a join's longest life
+%% a join's longest life: the most join_timeout may be, and its default
 -define(JOIN_MAX, (?MRF_JOIN_TIMEOUT + 80000)).
+%% how long a joiner waits on the room: past the room's own deadline
+%% (JOIN_MAX at most, from when the room took the join), so that the
+%% room's answer comes first
+-define(JOIN_WAIT, (?JOIN_MAX + 5000)).
 
 -record(native, {
     %% the mixer room's sample rate
@@ -53,7 +57,8 @@ init(_Name, Opts) ->
             offer, chappe_sip_media:mixer_params(Rate, endpoint), EP
         ),
         bridge = maps:get(bridge, Opts, #{}),
-        join_timeout = min(maps:get(join_timeout, Opts, ?JOIN_MAX), ?JOIN_MAX)
+        %% checked by start/2 (check_join_timeout/1)
+        join_timeout = maps:get(join_timeout, Opts, ?JOIN_MAX)
     }}.
 
 %% A room's rate, checked in the caller of chappe_mrf_conf:start/2: 8000 or
@@ -65,6 +70,19 @@ check_rate(#{rate := R}) when R =/= 8000, R =/= 16000 ->
 check_rate(#{rate := _, backend := B}) when B =/= native ->
     {error, {unsupported, rate}};
 check_rate(_Opts) ->
+    ok.
+
+%% A room's join_timeout, checked in the caller of chappe_mrf_conf:start/2
+%% on every backend: milliseconds, from 1 to 95000 (JOIN_MAX, the longest
+%% a joiner waits).
+-spec check_join_timeout(map()) -> ok | {error, term()}.
+check_join_timeout(#{join_timeout := Ms}) when
+    is_integer(Ms), Ms > 0, Ms =< ?JOIN_MAX
+->
+    ok;
+check_join_timeout(#{join_timeout := _}) ->
+    {error, {bad_option, join_timeout}};
+check_join_timeout(_Opts) ->
     ok.
 
 %% The room that start/2 found or started, for Opts: asked a rate, it
@@ -104,9 +122,9 @@ info(#native{bridge = Bridge, rate = Rate}) ->
 join(Conf, _Info, {call, Req, Res}, Opts) ->
     join_call(Conf, Req, Res, Opts);
 join(Conf, _Info, {Pid, Ref} = B2b, Opts) when is_pid(Pid), is_reference(Ref) ->
-    chappe_mrf_conf:call(Conf, {join, {b2b, B2b, Opts}}, ?JOIN_MAX);
+    chappe_mrf_conf:call(Conf, {join, {b2b, B2b, Opts}}, ?JOIN_WAIT);
 join(Conf, _Info, Ep, Opts) when is_pid(Ep) ->
-    chappe_mrf_conf:call(Conf, {join, {ep, Ep, Opts}}, ?JOIN_MAX);
+    chappe_mrf_conf:call(Conf, {join, {ep, Ep, Opts}}, ?JOIN_WAIT);
 join(_Conf, _Info, _Target, _Opts) ->
     {error, badarg}.
 
@@ -385,11 +403,11 @@ join_call(Conf, Req, Res, Opts0) ->
                     {ok, Legs} -> relay(Legs, Conf);
                     {error, _} = Err -> Err
                 end,
+            %% the room answers once the loopback dialog is in too, or
+            %% at the join's deadline at the latest
             case
                 chappe_mrf_conf:call(
-                    Conf,
-                    {backend, {call_done, Token, Result}},
-                    ?MRF_JOIN_TIMEOUT + 5000
+                    Conf, {backend, {call_done, Token, Result}}, ?JOIN_WAIT
                 )
             of
                 {ok, _} = Joined ->

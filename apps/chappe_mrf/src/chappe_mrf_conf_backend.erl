@@ -349,11 +349,13 @@ close_if_empty(#state{lost = Lost, members = M, pending = P}) ->
     end.
 
 %% The options of a room that start/2 refuses before any room runs: a
-%% rate the backend cannot mix at, and dial_codecs that do not fit in a
-%% dial string.
+%% rate the backend cannot mix at, a join_timeout that is no number of
+%% milliseconds up to 95000, and dial_codecs that do not fit in a dial
+%% string.
 -spec check_opts(map()) -> ok | {error, term()}.
 check_opts(Opts) ->
     maybe
         ok ?= chappe_mrf_conf_native:check_rate(Opts),
+        ok ?= chappe_mrf_conf_native:check_join_timeout(Opts),
         chappe_mrf_conf_refer_dial:check_codecs(Opts)
     end.
