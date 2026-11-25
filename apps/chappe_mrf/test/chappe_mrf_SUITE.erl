@@ -103,6 +103,8 @@
     native_endpoint_fails/1,
     native_join_worker_dies/1,
     native_join_bad_handle/1,
+    invite_replaces_stale_hold/1,
+    invite_replaces_after_transfer/1,
     sip_edges/1,
     conf_edges/1,
     native_endpoint/1,
@@ -205,6 +207,8 @@ all() ->
         native_endpoint_fails,
         native_join_worker_dies,
         native_join_bad_handle,
+        invite_replaces_stale_hold,
+        invite_replaces_after_transfer,
         sip_edges,
         conf_edges,
         native_endpoint,
@@ -2078,6 +2082,76 @@ invite_replaces_caller_dies(Config) ->
     {ua, C, {final, 200, _}} = ua_answer(C),
     _ = ua_event(Ua1, bye),
     conf_event(Conf, {left, M1, replaced}).
+
+%% A caller whose hold on a member ran out is too late: a second caller
+%% holds the member now, so the first one's join, completing, gets
+%% {error, expired} and its call is hung up, not the member; the second
+%% caller then replaces it.
+invite_replaces_stale_hold(Config) ->
+    {ok, Conf} = chappe_mrf:conference(<<"repstale">>, #{
+        focus => true, backend => chappe_mrf_conf_gate_backend
+    }),
+    {Ua1, M1} = room_caller(Config, Conf),
+    {ua, Ua1, {final, 200, Ok}} = ua_answer(Ua1),
+    [#{uri := U1}] = chappe_mrf_conf:members(Conf),
+    gated(Conf),
+    Opts = #{from => U1, headers => [{<<"Replaces">>, replaces_of(Ok)}]},
+    A = ?F:ua_call(?config(ep, Config), Opts),
+    GateA = gate(),
+    expire_hold(Conf, M1),
+    B = ?F:ua_call(?config(ep, Config), Opts),
+    GateB = gate(),
+    GateA ! {gate, go},
+    {ua, A, {final, 200, _}} = ua_answer(A),
+    ?assertEqual({error, expired}, join_result()),
+    _ = ua_event(A, bye),
+    ?assertMatch([#{id := M1}], chappe_mrf_conf:members(Conf)),
+    no_ua_event(Ua1, bye, 200),
+    GateB ! {gate, go},
+    {ua, B, {final, 200, _}} = ua_answer(B),
+    {ok, MB} = join_result(),
+    _ = ua_event(Ua1, bye),
+    conf_event(Conf, {left, M1, replaced}),
+    ?assertMatch([#{id := MB}], chappe_mrf_conf:members(Conf)).
+
+%% A member whose call was transferred while a caller was replacing it
+%% keeps the target in its place when that caller's join completes, and
+%% that caller is hung up.
+invite_replaces_after_transfer(Config) ->
+    {ok, Conf} = chappe_mrf:conference(<<"repxfer">>, #{
+        focus => true, backend => chappe_mrf_conf_gate_backend
+    }),
+    {Ua1, M1} = room_caller(Config, Conf),
+    {ua, Ua1, {final, 200, Ok}} = ua_answer(Ua1),
+    [#{uri := U1}] = chappe_mrf_conf:members(Conf),
+    gated(Conf),
+    A = ?F:ua_call(?config(ep, Config), #{
+        from => U1, headers => [{<<"Replaces">>, replaces_of(Ok)}]
+    }),
+    GateA = gate(),
+    #{M1 := #{b2b := {_, Ref}, replacing := _}} = element(
+        9, sys:get_state(Conf)
+    ),
+    Erin = <<"sip:erin@10.0.0.7">>,
+    ok = chappe_mrf_conf:b2b_event(
+        Conf, {chappe_sip_b2b, Ref, {transferred, a, #{target => Erin}}}
+    ),
+    conf_event(Conf, {left, M1, transferred}),
+    GateA ! {gate, go},
+    {ua, A, {final, 200, _}} = ua_answer(A),
+    ?assertEqual({error, expired}, join_result()),
+    _ = ua_event(A, bye),
+    ?assertMatch([#{id := M1, uri := Erin}], chappe_mrf_conf:members(Conf)),
+    no_ua_event(Ua1, bye, 200).
+
+%% the timer of member Id's hold fires now
+expire_hold(Conf, Id) ->
+    #{Id := #{replacing := {Hold, T}}} = element(9, sys:get_state(Conf)),
+    Conf ! {timeout, T, {refer_replace, Id, Hold}},
+    until(fun() ->
+        #{Id := Mb} = element(9, sys:get_state(Conf)),
+        not is_map_key(replacing, Mb)
+    end).
 
 %% what the next join/3 of the INVITE handler returned
 join_result() ->

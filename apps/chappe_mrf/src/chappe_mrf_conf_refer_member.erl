@@ -54,7 +54,9 @@ call_opts(_Target, Opts) ->
 %% else is refused 403; a Replaces naming no call 481, a call of no
 %% member of this room 403; a member another call is replacing already
 %% 603. A join that fails, raises or never ends leaves the member as it
-%% was: its hold goes with the join, the caller, or ?HOLD_MS.
+%% was: its hold goes with the join, the caller, or ?HOLD_MS. One that
+%% completes once its hold went (?HOLD_MS, or the member's call was
+%% transferred) is too late: the new call is hung up, {error, expired}.
 -spec join(pid(), module(), map(), term(), map()) ->
     {ok, binary()} | {error, term()}.
 join(Conf, Mod, Info, Target, Opts0) ->
@@ -71,12 +73,13 @@ join(Conf, Mod, Info, Target, Opts0) ->
                         _ = step(Conf, {release, Old, Hold}),
                         erlang:raise(Class, Why, Stack)
                 end,
-            _ =
-                case Result of
-                    {ok, New} -> step(Conf, {done, Old, New, Hold});
-                    _ -> step(Conf, {release, Old, Hold})
-                end,
-            Result;
+            case Result of
+                {ok, New} ->
+                    replaced(step(Conf, {done, Old, New, Hold}), Result);
+                _ ->
+                    _ = step(Conf, {release, Old, Hold}),
+                    Result
+            end;
         {reject, St} ->
             {call, _Req, Res} = Target,
             chappe_mrf_conf_refer:reject(Res, St, <<>>)
@@ -84,6 +87,11 @@ join(Conf, Mod, Info, Target, Opts0) ->
 
 step(Conf, Step) ->
     chappe_mrf_conf:call(Conf, {refer, {replace, Step}}, 30000).
+
+%% the new call is in: the member it replaces goes, unless its hold went
+%% first, and the new call was hung up instead
+replaced({error, expired} = Late, _Joined) -> Late;
+replaced(_Done, Joined) -> Joined.
 
 %% the member an incoming call's Replaces names, held for it when the
 %% room lets it replace that member
@@ -119,8 +127,10 @@ replacing(_Conf, _Target) ->
 %% (whether Who may replace the member whose leg is dialog process Pid),
 %% hold (keep that member for the call of Caller, watched: a second call
 %% for it gets 603), done (the new call is in: the member it replaces is
-%% hung up) and release (the new call failed: the member stays). The hold
-%% also goes when Caller dies (hold_down/2) or after ?HOLD_MS.
+%% hung up, while it is still held for this call; else the new call is,
+%% {error, expired}) and release (the new call failed: the member stays).
+%% The hold also goes when Caller dies (hold_down/2), after ?HOLD_MS, or
+%% when the member's call is transferred (transferred/3).
 -spec replace(term(), #state{}) -> {reply, term(), #state{}}.
 replace({check, Pid, Who}, S) ->
     {reply, may_replace(chappe_mrf_conf_refer:member_of(Pid, S), Who, S), S};
@@ -142,16 +152,33 @@ replace({hold, Pid, Caller}, #state{members = M} = S) ->
                     }}
             end
     end;
-replace({done, Old, New, Hold}, S) ->
-    S1 = unhold(Old, Hold, S),
-    case S1#state.members of
-        #{Old := _} when Old =/= New ->
+replace({done, Old, Old, Hold}, S) ->
+    {reply, ok, unhold(Old, Hold, S)};
+replace({done, Old, New, Hold}, #state{members = M} = S) ->
+    case M of
+        #{Old := #{replacing := {Hold, _}}} ->
+            S1 = unhold(Old, Hold, S),
             chappe_mrf_conf_backend:drop_member(Old, replaced, S1);
         #{} ->
-            {reply, ok, S1}
+            %% the hold went before the new call was in (its time ran
+            %% out, another caller holds the member, the member's call was
+            %% transferred, the member left): the new call goes, not the
+            %% member
+            {reply, {error, expired}, late(New, unhold(Old, Hold, S))}
     end;
 replace({release, Old, Hold}, S) ->
     {reply, ok, unhold(Old, Hold, S)}.
+
+%% a call that came in to replace a member too late is hung up
+late(New, #state{members = M} = S) ->
+    case M of
+        #{New := _} ->
+            {reply, ok, S1} =
+                chappe_mrf_conf_backend:drop_member(New, expired, S),
+            S1;
+        #{} ->
+            S
+    end.
 
 %% The hold Hold of member Id ends: its caller's join is over, the caller
 %% died, or its time is up (the {refer_replace, Id, Hold} timer). A hold
@@ -319,10 +346,12 @@ transferred(Ref, Info, #state{members = M} = S) ->
             S1 = chappe_mrf_conf_backend:emit({left, Id, transferred}, S),
             Target = maps:get(target, Info, undefined),
             %% the target is someone else: what the old caller asked for
-            %% itself (privacy) or of the room (a replacement) is not its
-            Old = maps:without([private, replacing, referred], maps:get(Id, M)),
+            %% itself (privacy) or of the room (a replacement: its hold
+            %% goes, and a late done step finds it gone) is not its
+            #state{members = M1} = clear_hold(Id, S1),
+            Old = maps:without([private, referred], maps:get(Id, M1)),
             Mb = Old#{name => name(Target, Id), uri => Target},
-            S2 = S1#state{members = M#{Id := Mb}},
+            S2 = S1#state{members = M1#{Id := Mb}},
             chappe_mrf_conf_backend:publish(
                 chappe_mrf_conf_backend:emit(
                     {joined, Id, chappe_mrf_conf_backend:public(Id, Mb)}, S2
@@ -334,6 +363,13 @@ transferred(Ref, Info, #state{members = M} = S) ->
 
 name(undefined, Id) -> Id;
 name(Target, _Id) -> Target.
+
+%% member Id is held for no one any more
+clear_hold(Id, #state{members = M} = S) ->
+    case M of
+        #{Id := #{replacing := {Hold, _}}} -> unhold(Id, Hold, S);
+        #{} -> S
+    end.
 
 %% ---- a member's call ----
 

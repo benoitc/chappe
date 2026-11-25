@@ -410,6 +410,7 @@ The first four are chappe_mrf settings
 | A native join fails (its loopback INVITE, a media step, the endpoint's re-INVITE) | the joiner gets an error at once; the mixer leg, the rtpengine session, the loopback token and the join's place go, and the room goes on |
 | A native join's worker dies, or the join outlasts `join_timeout` (95 s) | `{error, join_failed}` or `{error, timeout}`, with the same cleanup |
 | A native join given a handle that is no call, incoming call or endpoint | `{error, badarg}` in the caller |
+| A call with Replaces gets in after its hold on the member went (95 s, the member's call transferred) | the member stays; the new call is hung up (`{left, New, expired}`) and its `join/3` returns `{error, expired}` |
 | Clean stop of a room's node (cluster) | the room gives its lease back and its members with calls on other nodes move to a room of the same name on a live node, within `drain_ms`; a move not done by then is hung up; fs rooms only give the name back |
 | Room's lease lost (cluster) | the room takes no new member (`{error, lost}`), sends `lost` and frees its name; a native room moves its members to the next owner for up to `rehome_ms` |
 | Owner node unreachable (cluster) | `conference/2` returns `{error, {owner_unreachable, Node}}` until the lease runs out, then opens the room on a live node |

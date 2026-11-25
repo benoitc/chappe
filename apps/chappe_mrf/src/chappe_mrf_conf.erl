@@ -25,9 +25,13 @@
 %% The event receivers (the caller of start/2, then events/2) get
 %% {chappe_mrf_conf, Conf, Event}:
 %%   {joined, Member, Info}     Info: #{name, mute, deaf, moderator}
-%%   {left, Member, Reason}     departed | kicked | hangup | transferred
-%%                              (transferred: moved by transfer/3, or its
-%%                              call transferred by REFER, see b2b_event/2)
+%%   {left, Member, Reason}     departed | kicked | hangup | transferred |
+%%                              replaced | expired (transferred: moved by
+%%                              transfer/3, or its call transferred by
+%%                              REFER, see b2b_event/2; replaced: a call
+%%                              with Replaces took its place; expired: that
+%%                              call itself, in once its hold on the
+%%                              member had gone)
 %%   lost                       cluster: the region took the room's name
 %%                              back; no new member, the ones in stay
 %%   {talking, Member, boolean()}
