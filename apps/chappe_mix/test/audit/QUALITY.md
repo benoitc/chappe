@@ -205,7 +205,19 @@ sha256 of each prepared clip as the manifest recorded it:
 
 The files the run used are in [`quality/`](quality/), copied with their
 machine paths made variables (`TAQ_DIR` for the taq checkout, the
-scripts' own directory, and `hd.sh` of this checkout):
+scripts' own directory, and `hd.sh` of this checkout), except that
+`run1.sh` and `campaign.sh` have since been fixed.
+
+The run used the earlier scripts, which could exit 0 after a failed
+capture: `run1.sh` printed the capture's status and exited 0 anyway, and
+`campaign.sh` never looked at it. Every capture of the run was checked
+by hash afterwards, and an outside review verified all 52. The fixed
+scripts are taq's own (its `runs/hd-room-2026-11-25/`) with this
+checkout's paths: `run1.sh` exits non-zero when the capture, the PCMU
+caller or the warning count fails, and `campaign.sh` runs every trial,
+lists the failed ones and exits non-zero. Both need bash; `RUN_DIR`,
+`META_DIR` and `HD_SH` move the run directory, the meta files and
+`hd.sh`.
 
 | File | What it is |
 | --- | --- |
@@ -237,7 +249,7 @@ then run every trial:
 docker run -d --rm --name hd-tcpdump --net host -v $TAQ_DIR/$R:/out \
     nicolaka/netshoot:v0.13 tcpdump -i any -n -s 0 -w /out/sip.pcap \
     'udp and (port 5080 or port 15081 or port 15082 or port 22223 or portrange 5170-5175 or port 25080)'
-DEMO_SIP_PORT=5080 sh $Q/campaign.sh
+DEMO_SIP_PORT=5080 bash $Q/campaign.sh
 ```
 
 One trial, as `run1.sh` runs it (here baseline, rep 0, G.722 talker to
