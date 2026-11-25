@@ -5,7 +5,7 @@
 -module(chappe_mrf_lib).
 
 -export([new_id/0, to_bin/1, destroy_dialog/1, destroy_later/1, done/1]).
--export([with_name/2, api_ok/1, playback_result/1]).
+-export([later/1, with_name/2, api_ok/1, playback_result/1]).
 
 %% A random id, hex: correlation ids, member ids, loopback tokens.
 -spec new_id() -> binary().
@@ -27,11 +27,20 @@ destroy_dialog(D) ->
         exit:_ -> ok
     end.
 
-%% destroy_dialog/1 in a process of its own, for a caller that must not
+%% destroy_dialog/1 as a job (later/1), for a caller that must not
 %% wait: the BYE may wait for a transaction under way, then Timer F.
 -spec destroy_later(chappe_sip_dialog:dialog()) -> ok.
 destroy_later(D) ->
-    _ = spawn(fun() -> destroy_dialog(D) end),
+    later(fun() -> destroy_dialog(D) end).
+
+%% Fun as a job of the app's pool (chappe_mrf_sup), for a caller that
+%% must not wait on a peer: a BYE, an rtpengine delete, the hangup of an
+%% endpoint. A job is not restarted; it ends on its own, as what it waits
+%% on has its own timeouts (a transaction's, the rtpengine client's
+%% tries, a call's).
+-spec later(fun(() -> term())) -> ok.
+later(Fun) ->
+    {ok, _} = chappe_mrf_sup:start_job(Fun),
     ok.
 
 %% The mixer join options JoinOpts with the name a join asked for (Opts'

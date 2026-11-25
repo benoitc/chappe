@@ -358,7 +358,7 @@ failed({ep, Ep} = DK, #{key := Key} = E, St, #state{mod = Mod} = S) ->
             #{member := {_Id, Mb}} -> Mod:left(Mb, failed);
             #{} -> ok
         end,
-    _ = spawn(fun() -> chappe_mrf:destroy(Ep) end),
+    ok = chappe_mrf_lib:later(fun() -> chappe_mrf:destroy(Ep) end),
     final(Key, St, drop_dial(DK, S));
 failed({uuid, Uuid} = DK, #{key := Key} = E, St, S) ->
     _ = cancel(E),

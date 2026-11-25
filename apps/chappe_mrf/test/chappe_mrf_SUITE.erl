@@ -110,6 +110,8 @@
     native_join_helper_killed/1,
     native_join_deadline_first/1,
     native_join_twice/1,
+    native_leave_off_room/1,
+    native_join_late_mixer_leg/1,
     refer_attach_cap/1,
     native_join_bad_handle/1,
     join_timeout_refused/1,
@@ -228,6 +230,8 @@ all() ->
         native_join_helper_killed,
         native_join_deadline_first,
         native_join_twice,
+        native_leave_off_room,
+        native_join_late_mixer_leg,
         refer_attach_cap,
         native_join_bad_handle,
         join_timeout_refused,
@@ -4411,6 +4415,64 @@ native_join_twice(Config) ->
     ok = chappe_mrf_conf:stop(Conf),
     chappe_mrf:destroy(Ep),
     ?F:fs_stop(Slow).
+
+%% A native room does not wait on rtpengine when an endpoint member
+%% leaves: with rtpengine not answering the delete of the member's
+%% session (the client gives up after its tries, about 3 s), leave/2 and
+%% the room's info/1 after it are each answered within 1 s, the endpoint
+%% keeps its channel, and the session ends once the delete is done.
+%% req: MRF-28
+native_leave_off_room(Config) ->
+    Rtpe = ?config(rtpe, Config),
+    {ok, Conf} = chappe_mrf:conference(<<"leaveoff">>, #{}),
+    Base = holdings(Conf),
+    {ok, Ep} = chappe_mrf:create_endpoint(#{targets => [{fs1, fs_uri(Config)}]}),
+    {ok, Id} = chappe_mrf_conf:join(Conf, Ep, #{}),
+    ok = ?F:rtpe_fail(Rtpe, #{<<"delete">> => hold}),
+    ?assertEqual(ok, within_1s(fun() -> chappe_mrf_conf:leave(Conf, Id) end)),
+    ?assertMatch(
+        #{members := 0}, within_1s(fun() -> chappe_mrf_conf:info(Conf) end)
+    ),
+    ?assertMatch(#{bridged := false}, chappe_mrf:info(Ep)),
+    back_to(Conf, Base),
+    ok = ?F:rtpe_fail(Rtpe, #{}),
+    chappe_mrf:destroy(Ep),
+    ok = chappe_mrf_conf:stop(Conf).
+
+%% A mixer join that reaches the mixer after the room gave its join back
+%% is released: the join of a helper the room's deadline killed with its
+%% request in flight, queued at the mixer behind the room's own leave.
+%% The room's mixer legs are back to what they were once the helper is
+%% down.
+%% req: MRF-26
+native_join_late_mixer_leg(Config) ->
+    {ok, Conf} = chappe_mrf:conference(<<"lateleg">>, #{join_timeout => 300}),
+    #{room := MixRoom} = chappe_mrf_conf:info(Conf),
+    Base = holdings(Conf),
+    {ok, Ep} = chappe_mrf:create_endpoint(#{targets => [{fs1, fs_uri(Config)}]}),
+    ok = sys:suspend(Ep),
+    _ = join_async(Conf, Ep),
+    until(fun() -> map_size(element(10, sys:get_state(Conf))) =:= 1 end),
+    [#{session := MS}] = maps:values(element(10, sys:get_state(Conf))),
+    Mix = whereis(chappe_sip_media_mix),
+    ok = sys:suspend(Mix),
+    %% the deadline: the room's leave of the join's mixer session waits
+    %% at the mixer, and the late join comes behind it
+    until(fun() ->
+        queued(Mix, fun({'$gen_call', _, {leave, _}}) -> true end)
+    end),
+    _ = spawn(fun() ->
+        chappe_sip_media:conference(MS, MixRoom, #{
+            rate => 8000, owner => Conf, persist => true
+        })
+    end),
+    until(fun() -> queue_len(Mix) >= 2 end),
+    ok = sys:resume(Mix),
+    ?assertEqual({error, timeout}, join_within(3000)),
+    ok = sys:resume(Ep),
+    back_to(Conf, Base),
+    chappe_mrf:destroy(Ep),
+    ok = chappe_mrf_conf:stop(Conf).
 
 %% whether Pid has a message Match takes in its mailbox
 queued(Pid, Match) ->

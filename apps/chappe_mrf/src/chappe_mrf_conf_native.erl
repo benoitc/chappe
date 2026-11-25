@@ -266,14 +266,14 @@ hangup(_Id, _Mb, _S) ->
     ok.
 
 %% a member gone to another room keeps its call: only its mixer session
-%% goes
+%% goes; an endpoint's rtpengine session, the room's, is deleted by a job
+%% (the delete waits on rtpengine, up to its client's tries)
 left(#{session := MS}, transferred) ->
     _ = chappe_sip_media:leave(MS),
     ok;
 left(#{session := MS, rtpe := RS}, _Why) ->
     _ = chappe_sip_media:leave(MS),
-    _ = chappe_sip_media:stop(RS),
-    ok;
+    chappe_mrf_lib:later(fun() -> chappe_sip_media:stop(RS) end);
 left(#{session := MS}, _Why) ->
     _ = chappe_sip_media:leave(MS),
     ok;
@@ -554,25 +554,29 @@ forget(Token, J) ->
 drop_token(_Id, #{ep := _}) -> ok;
 drop_token(Token, _J) -> chappe_mrf_registry:delete({loop, Token}).
 
-%% What a failed join took goes back: its mixer leg now, and in a
-%% process of its own what waits on a peer, so the room goes on: the
-%% delete of an endpoint's rtpengine session, then the BYE of the
+%% What a failed join took goes back: its mixer leg now, and in a job
+%% (chappe_mrf_lib:later/1) what waits on a peer, so the room goes on:
+%% the delete of an endpoint's rtpengine session, then the BYE of the
 %% loopback dialog, or of an endpoint whose media moved or may have (its
 %% re-INVITE out when its helper died or its deadline came). That BYE
-%% waits for the re-INVITE to end.
+%% waits for the re-INVITE to end. The job first waits for the end of
+%% the join's helper (stopped by forget/2) and leaves the mixer session
+%% again: a mixer join the helper sent just before it was stopped may
+%% reach the mixer after the room's leave.
 give_back(J) ->
     ok = with_key(session, J, fun chappe_sip_media:leave/1),
+    Late = [{H, MS} || #{helper := H, session := MS} <- [J]],
     Rtpe = [RS || #{rtpe := RS} <- [J]],
     Dialogs = [D || K <- [dialog, moved, reinvite], #{K := D} <- [J]],
-    case Rtpe ++ Dialogs of
+    case Late ++ Rtpe ++ Dialogs of
         [] ->
             ok;
         _ ->
-            _ = spawn(fun() ->
+            chappe_mrf_lib:later(fun() ->
+                lists:foreach(fun chappe_mrf_conf_native_ep:late_leave/1, Late),
                 lists:foreach(fun chappe_sip_media:stop/1, Rtpe),
                 lists:foreach(fun chappe_mrf_lib:destroy_dialog/1, Dialogs)
-            end),
-            ok
+            end)
     end.
 
 with_key(Key, Map, Fun) ->
@@ -651,8 +655,7 @@ ep_joined(Id, J, S) ->
 
 %% an endpoint member: its node plays the file (a path on the node)
 play_leg(#{ep := Ep, rtpe := _}, File) ->
-    _ = spawn(fun() -> chappe_mrf:play(Ep, File) end),
-    ok;
+    chappe_mrf_lib:later(fun() -> chappe_mrf:play(Ep, File) end);
 %% rtpengine plays the file to the caller of the member's call
 play_leg(#{b2b := B2b}, File) ->
     case chappe_sip_b2b:info(B2b) of

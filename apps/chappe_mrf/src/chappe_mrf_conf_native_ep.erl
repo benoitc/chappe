@@ -40,7 +40,7 @@
 
 -include_lib("chappe_sip/include/chappe_sip.hrl").
 
--export([start/3, agree/3, step/2, late/2, stop_helpers/1]).
+-export([start/3, agree/3, step/2, late/2, late_leave/1, stop_helpers/1]).
 -export_type([cfg/0]).
 
 %% Cfg: the room's name, its mixer room, endpoint_params and rate.
@@ -216,6 +216,21 @@ late({refused, D}, Room) ->
     Room;
 late({done, _Result}, Room) ->
     Room.
+
+%% In the job that gives a failed join back: the join's helper is gone
+%% (the room killed it, so this is soon), then its mixer session leaves
+%% the mixer once more, as a mixer join it sent just before may have
+%% reached the mixer after the room's leave.
+-spec late_leave({pid(), chappe_sip_media:session()}) -> ok.
+late_leave({Helper, MS}) ->
+    Mon = monitor(process, Helper),
+    receive
+        {'DOWN', Mon, process, Helper, _} -> ok
+    after 5000 ->
+        demonitor(Mon, [flush])
+    end,
+    _ = chappe_sip_media:leave(MS),
+    ok.
 
 %% At the room's end: the helpers of its joins under way (Pending) stop.
 -spec stop_helpers(#{term() => map()}) -> ok.
