@@ -22,7 +22,7 @@
 -export([new/2, new/3, ssrc/1, src_ssrc/1, csrcs/1, info/1]).
 -export([header/1, sent/3, sent_event/2, advance/2]).
 -export([rtp_in/4, renew/2, rtcp_in/5, rtcp_invalid/1, csrc_items/3]).
--export([clear_bye/1]).
+-export([clear_bye/1, pick_ssrc/2, random_ssrc/0]).
 -export([due/2, timeout/2, report/5, reported/2, sent_any/1]).
 
 -export_type([session/0, ssrc/0, addr/0]).
@@ -36,6 +36,8 @@
 -define(BYE_GRACE_S, 5).
 -define(MAX_SDES, 4).
 -define(MAX_CONFLICTS, 8).
+%% how many candidates pick_ssrc/2 takes from the draw it is given
+-define(SSRC_DRAWS, 16).
 
 -type ssrc() :: 0..16#FFFFFFFF.
 -type addr() :: {inet:ip_address(), inet:port_number()}.
@@ -275,6 +277,31 @@ conflict(Addr, #sess{conflicts = C} = S) ->
                 conflicts = lists:sublist([Addr | C], ?MAX_CONFLICTS)
             }}
     end.
+
+%% A candidate SSRC from Draw that is not in Taken, the SSRCs seen in
+%% the conference (8.2: a candidate already known is drawn again). Draw
+%% gets ?SSRC_DRAWS tries; past them the candidates are random_ssrc/0's,
+%% so a draw that only gives SSRCs in use cannot hold the conference.
+-spec pick_ssrc(fun(() -> ssrc()), [ssrc()]) -> ssrc().
+pick_ssrc(Draw, Taken) ->
+    pick_ssrc(Draw, Taken, ?SSRC_DRAWS).
+
+pick_ssrc(Draw, Taken, Left) ->
+    Cand =
+        case Left of
+            0 -> random_ssrc();
+            _ -> Draw()
+        end,
+    case lists:member(Cand, Taken) of
+        true -> pick_ssrc(Draw, Taken, max(Left - 1, 0));
+        false -> Cand
+    end.
+
+%% A cryptographic random SSRC (8.1).
+-spec random_ssrc() -> ssrc().
+random_ssrc() ->
+    <<N:32>> = crypto:strong_rand_bytes(4),
+    N.
 
 %% A new SSRC after a collision, with fresh sender counts (6.4.1).
 -spec renew(session(), ssrc()) -> session().

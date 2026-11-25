@@ -20,6 +20,7 @@
     rtcp_on_the_wire/1,
     no_bye_from_a_leg_that_never_sent/1,
     new_ssrc_not_seen/1,
+    new_ssrc_draw_capped/1,
     conflicts_rtp_and_rtcp_apart/1,
     interval_bounds/1,
     bye_grace/1,
@@ -51,6 +52,7 @@ all() ->
         rtcp_on_the_wire,
         no_bye_from_a_leg_that_never_sent,
         new_ssrc_not_seen,
+        new_ssrc_draw_capped,
         conflicts_rtp_and_rtcp_apart,
         sends_to_configured_remote,
         sender_30ms,
@@ -886,6 +888,36 @@ new_ssrc_not_seen(_Config) ->
     wait(fun() -> maps:get(collisions, leg(Conf, LA)) =:= 1 end, 1000),
     ?assertMatch(#{ssrc := 3333}, leg(Conf, LA)),
     ?assertEqual(6, counters:get(C, 1)),
+    [chappe_mix_test_peer:stop(P) || P <- [PA, PB]],
+    ok = chappe_mix:stop(Conf).
+
+%% An ssrc_draw that only ever gives an SSRC in use does not hold the
+%% conference: after 16 draws the mixer takes its own random one, on a
+%% new leg and after a collision alike. The draw raises past 64 calls,
+%% so a mixer that kept drawing fails here instead of spinning.
+%% req: R3550-189
+new_ssrc_draw_capped(_Config) ->
+    C = counters:new(1, []),
+    Draw = fun() ->
+        ok = counters:add(C, 1, 1),
+        case counters:get(C, 1) of
+            N when N > 64 -> error(too_many_draws);
+            _ -> 1111
+        end
+    end,
+    {ok, Conf} = chappe_mix:start(#{ssrc_draw => Draw}),
+    {PA, LA} = peer(Conf, 16#A, #{}),
+    {PB, LB} = peer(Conf, 16#B0B, #{}),
+    ?assertMatch(#{ssrc := 1111}, leg(Conf, LA)),
+    #{ssrc := SB} = leg(Conf, LB),
+    ?assertNotEqual(1111, SB),
+    ?assertEqual(17, counters:get(C, 1)),
+    ok = chappe_mix_test_peer:set(PA, ssrc, 1111),
+    wait(fun() -> maps:get(collisions, leg(Conf, LA)) =:= 1 end, 1000),
+    #{ssrc := SA} = leg(Conf, LA),
+    ?assertNotEqual(1111, SA),
+    ?assertNotEqual(SB, SA),
+    ?assertEqual(33, counters:get(C, 1)),
     [chappe_mix_test_peer:stop(P) || P <- [PA, PB]],
     ok = chappe_mix:stop(Conf).
 

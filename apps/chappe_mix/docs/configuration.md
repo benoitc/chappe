@@ -25,7 +25,7 @@ Passed to `chappe_mix:start/1`.
 | `prefill_shrink` | `false` | Take back a grown jitter buffer prefill after 10 s without an underrun. Off: its A/B raised underruns. |
 | `trace` | none | Process that gets `{chappe_mix_tick, Conf, #{due, start, done, legs}}` after every tick. For measurement. |
 | `cname` | 96 random bits, base64 | RTCP CNAME the mixer uses on every leg (RFC 7022). |
-| `ssrc_draw` | cryptographic random | Fun that draws a candidate SSRC. Set it in tests to script the draws. |
+| `ssrc_draw` | cryptographic random | Fun that draws a candidate SSRC. A candidate in use is drawn again, 16 times at most, then the mixer draws its own. Set it in tests to script the draws. |
 
 ```erlang
 {ok, Conf} = chappe_mix:start(#{
