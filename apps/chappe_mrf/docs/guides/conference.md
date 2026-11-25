@@ -338,6 +338,23 @@ Parties a room dials out stay FreeSWITCH calls: give the profile that
 dials them `disable-transfer` (mod_sofia) so a REFER on such a call is
 refused rather than carried out by FreeSWITCH, out of the room's sight.
 
+On native, the node bridges the party from the room's endpoint, and
+FreeSWITCH offers it only the codec that endpoint speaks (G.722 in a
+16 kHz room, PCMU in an 8 kHz one): a party without it answers 488, and
+the referrer's final NOTIFY says 487. To offer it more, set the leg's
+codecs in your `dial` fun:
+
+```erlang
+{ok, Conf} = chappe_mrf:conference(<<"hd">>, #{
+    rate => 16000,
+    focus => true,
+    refer_policy => fun(#{dial := Dial}) -> allowed(Dial) end,
+    dial => fun(<<"sip:", Bare/binary>>) ->
+        [<<"[^^:absolute_codec_string=OPUS,G722,PCMU,PCMA]sofia/external/">>, Bare]
+    end
+}).
+```
+
 A caller the room answers itself (`join/3` with `{call, Req, Res}`) gets
 the conference URI with `isfocus` as its Contact in a `focus => true` room
 (RFC 4579 4.2), and the room takes the REFERs in its dialog:

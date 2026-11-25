@@ -11,7 +11,9 @@
 %% A PCMU caller joins in the middle, silent, and leaves: the HD pair
 %% keeps its band while it is in, and it hears both probes, cut to the
 %% narrow band. A FreeSWITCH endpoint joins a native 16 kHz room too, and
-%% keeps the band both ways. The setup is chappe_mrf_live_SUITE's.
+%% keeps the band both ways. A REFER to a native 16 kHz room's URI brings
+%% in a G.722 callee through the dial-out path, which keeps the band both
+%% ways once it answered. The setup is chappe_mrf_live_SUITE's.
 %% Skipped unless MRF=1 (apps/chappe_mrf/test/e2e.sh) and docker runs.
 %% MRF_PJSUA_NAME (chappe-hd) prefixes the pjsua container names.
 -module(chappe_mrf_hd_live_SUITE).
@@ -22,13 +24,14 @@
 -export([all/0, init_per_suite/1, end_per_suite/1]).
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([native_hd_room/1, native_hd_endpoint/1, fs_wideband_room/1]).
+-export([refer_hd_dial_out/1]).
 
 -define(LIVE, chappe_mrf_live_SUITE).
 
 -define(RATE, 16000).
 
 all() ->
-    [native_hd_room, native_hd_endpoint, fs_wideband_room].
+    [native_hd_room, native_hd_endpoint, fs_wideband_room, refer_hd_dial_out].
 
 init_per_suite(Config) ->
     case os:find_executable("docker") of
@@ -273,6 +276,131 @@ fs_wideband_room(Config) ->
     ),
     run_room(Config, Conf, <<"hd-fs">>).
 
+%% An authorized REFER to a native 16 kHz room's URI adds a second HD
+%% caller: a G.722 pjsua callee on the lab's network, dialed out from an
+%% endpoint on fs1 that joins the mixer out of sight (G.722 toward the
+%% node, the room's L16 toward the mixer) and bridges to the callee once
+%% it answers. The room's own caller (G.722) and the callee play the band
+%% probe for the whole call, and each records the other (N-1): both
+%% directions keep the band. The REFER is chappe_sip_refer:send/3 from
+%% this node to the room's URI, out of any dialog, as the demo sends it.
+refer_hd_dial_out(Config) ->
+    case lab_network(?config(compose, Config)) of
+        undefined -> {skip, "no compose project (MRF_COMPOSE) for the callee"};
+        Net -> refer_hd_dial_out(Config, Net)
+    end.
+
+refer_hd_dial_out(Config, Net) ->
+    Dir = ?config(priv_dir, Config),
+    Test = self(),
+    ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
+    {ok, Conf} = chappe_mrf:conference(<<"hd-refer">>, #{
+        rate => 16000,
+        focus => true,
+        refer_policy => fun(#{action := Action}) -> Action =:= add end,
+        anchor_params => #{b => #{direction => [<<"host">>, <<"host">>]}},
+        endpoint_params => #{
+            offer => #{direction => [<<"host">>, <<"docker">>]},
+            answer => #{direction => [<<"docker">>, <<"host">>]}
+        },
+        dial_endpoint => #{node => fs1},
+        dial_profile => <<"mrf">>,
+        dial_timeout => 15000
+    }),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        Test ! {joined, chappe_mrf_conf:join(Conf, {call, Req, Res}, #{})}
+    end),
+    Probe = chappe_mix_test_tone:band_probe(8000),
+    Play = wav(Dir, "probe.wav", Probe, ?RATE),
+    T0 = erlang:monotonic_time(millisecond),
+    A = pjsua(
+        Config,
+        a,
+        #{codec => "G722", rate => 16000, play => Play, dur => 26},
+        target(Config, <<"hd-refer">>)
+    ),
+    joined(1),
+    %% the callee answers the room's call on the lab's network, where fs1
+    %% reaches it by its container name
+    Name = container(callee),
+    Callee = pjsua(
+        Config,
+        callee,
+        #{codec => "G722", rate => 16000, play => Play, dur => 14, net => Net},
+        none
+    ),
+    ok = running(Name, 20),
+    #{entity := Entity} = chappe_mrf_conf:info(Conf),
+    {Sip, _} = ports(callee),
+    Party = iolist_to_binary(
+        ["sip:", Name, "@", Name, ":", integer_to_list(Sip)]
+    ),
+    {ok, Id, #{status := 200}} = chappe_sip_refer:send(Entity, Party, #{}),
+    ?assertEqual(200, refer_final(Id)),
+    In = erlang:monotonic_time(millisecond) - T0,
+    Members = chappe_mrf_conf:members(Conf),
+    ?assertMatch([_, _], Members),
+    ?assert(lists:any(fun(#{uri := U}) -> U =:= Party end, Members)),
+    [wait_pjsua(P, 60000) || P <- [Callee, A]],
+    Cal = chappe_mix_test_tone:band_calibrate(lists:sublist(Probe, ?RATE * 2)),
+    RecA = wav_samples(filename:join(Dir, "a.wav")),
+    RecCallee = wav_samples(filename:join(Dir, "callee.wav")),
+    %% A's recording starts when its call does, before In: from In on the
+    %% callee is in, for 14 s
+    From = In div 1000 + 2,
+    Checks = [
+        {a_to_callee, band_shape(window(RecCallee, ?RATE, 3, 6), Cal)},
+        {callee_to_a, band_shape(window(RecA, ?RATE, From, From + 3), Cal)}
+    ],
+    ct:log("callee in at ~p ms; ~p~nrecordings: A ~p, callee ~p samples", [
+        In, Checks, length(RecA), length(RecCallee)
+    ]),
+    ok = chappe_mrf_conf:stop(Conf),
+    [?assertEqual({W, ok}, {W, R}) || {W, R} <- Checks].
+
+%% The docker network of the lab's fs1, from the compose command e2e.sh
+%% passes (MRF_COMPOSE); undefined without one.
+lab_network("") ->
+    undefined;
+lab_network(Compose) ->
+    case string:trim(os:cmd(Compose ++ " ps -q fs1 2>/dev/null")) of
+        "" ->
+            undefined;
+        Id ->
+            Out = os:cmd(
+                "docker inspect -f '{{json .NetworkSettings.Networks}}' " ++ Id
+            ),
+            case maps:keys(json:decode(list_to_binary(string:trim(Out)))) of
+                [Net | _] -> binary_to_list(Net);
+                [] -> undefined
+            end
+    end.
+
+%% wait for a container to run, then for its pjsua to listen
+running(_Name, 0) ->
+    {error, not_running};
+running(Name, N) ->
+    case
+        string:trim(os:cmd("docker inspect -f '{{.State.Running}}' " ++ Name))
+    of
+        "true" ->
+            timer:sleep(1500);
+        _ ->
+            timer:sleep(500),
+            running(Name, N - 1)
+    end.
+
+%% the referrer's NOTIFYs up to the final one: its status
+refer_final(Id) ->
+    receive
+        {refer_progress, Id, St} ->
+            ct:log("NOTIFY ~b", [St]),
+            refer_final(Id);
+        {refer_done, Id, St} ->
+            St
+    after 30000 -> ct:fail(no_final_notify)
+    end.
+
 %% ---- the calls ----
 
 run_room(Config, Conf, User) ->
@@ -385,12 +513,12 @@ target(Config, User) ->
     "sip:" ++ binary_to_list(User) ++ "@127.0.0.1:" ++ Port.
 
 %% A pjsua caller through hd.sh, in the background: its recording lands in
-%% the case's priv_dir as Name.wav.
+%% the case's priv_dir as Name.wav. With Target none it answers the first
+%% call instead; net puts it on a docker network (default the host's).
 pjsua(Config, Name, Opts, Target) ->
     Dir = ?config(priv_dir, Config),
     N = atom_to_list(Name),
-    Off = #{a => 0, b => 1, c => 2},
-    K = maps:get(Name, Off),
+    {Sip, Rtp} = ports(Name),
     Args =
         [
             "-c",
@@ -402,22 +530,44 @@ pjsua(Config, Name, Opts, Target) ->
             "-d",
             integer_to_list(maps:get(dur, Opts)),
             "-l",
-            integer_to_list(env_port("MRF_PJSUA_SIP", 19560) + K),
+            integer_to_list(Sip),
             "-m",
-            integer_to_list(env_port("MRF_PJSUA_RTP", 19600) + 20 * K),
+            integer_to_list(Rtp),
             "-N",
-            os:getenv("MRF_PJSUA_NAME", "chappe-hd") ++ "-" ++ N,
+            container(Name),
             "-i",
             ?config(image, Config)
         ] ++
             case maps:find(play, Opts) of
                 {ok, P} -> ["-p", P];
                 error -> []
-            end ++ [Target],
+            end ++
+            case maps:find(net, Opts) of
+                {ok, Net} -> ["-n", Net];
+                error -> []
+            end ++
+            case Target of
+                none -> [];
+                _ -> [Target]
+            end,
     Port = open_port({spawn_executable, ?config(hd_sh, Config)}, [
         {args, Args}, exit_status, stderr_to_stdout, binary
     ]),
     {Name, Port}.
+
+%% a pjsua's container name (MRF_PJSUA_NAME prefixes it), also its SIP
+%% user
+container(Name) ->
+    os:getenv("MRF_PJSUA_NAME", "chappe-hd") ++ "-" ++ atom_to_list(Name).
+
+%% a pjsua's SIP port and first RTP port, by its rank after the first ones
+%% (MRF_PJSUA_SIP, MRF_PJSUA_RTP)
+ports(Name) ->
+    K = maps:get(Name, #{a => 0, b => 1, c => 2, callee => 3}),
+    {
+        env_port("MRF_PJSUA_SIP", 19560) + K,
+        env_port("MRF_PJSUA_RTP", 19600) + 20 * K
+    }.
 
 %% the first pjsua SIP (MRF_PJSUA_SIP) and RTP (MRF_PJSUA_RTP) ports
 env_port(Var, Default) ->
