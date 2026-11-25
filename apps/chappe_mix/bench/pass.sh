@@ -15,6 +15,10 @@
 #   prefill   latency 100 and loss 100 2, prefill_shrink false against true
 #   events    framing 10 60, framing 30 60, dtmf 20, talk 20
 #   capacity  capacity 25 5 1000
+#   hd        the 16 kHz rows of PERF.md: mix_cost 4 64 and mix_cost fit
+#             4 64 at rate=8000 and rate=16000 (and on BASE), capacity
+#             25 5 1000, latency 50 and jitter idle 10 at both rates; the
+#             two rates swap order every round
 #   ref       ref_latency and ref_capacity against mod_conference (ref.sh vm)
 #   all       every group above but ref, one after the other
 #
@@ -222,6 +226,42 @@ group_capacity() {
     done
 }
 
+# rate_ab ROUND LABEL ARM [ARGS...]: the same arm at rate=8000 and
+# rate=16000, the side that goes first swapped every round.
+rate_ab() {
+    local r="$1" label="$2" order v
+    shift 2
+    if [ $((r % 2)) -eq 1 ]; then
+        order="8000 16000"
+    else
+        order="16000 8000"
+    fi
+    for v in $order; do
+        arm "$label rate=$v round $r" "$CUR" "rate=$v" "$@"
+    done
+}
+
+group_hd() {
+    local r
+    if [ -n "$BASE" ]; then
+        build_base || { log "== base $BASE failed to build"; return 1; }
+    fi
+    r=1
+    while [ "$r" -le "$ROUNDS" ]; do
+        [ -n "$BASE" ] &&
+            arm "mix_cost base $BASE round $r" "$BASEDIR/ebin" "" mix_cost 4 64
+        rate_ab "$r" "mix_cost" mix_cost 4 64
+        [ -n "$BASE" ] &&
+            arm "mix_cost fit base $BASE round $r" "$BASEDIR/ebin" "" \
+                mix_cost fit 4 64
+        rate_ab "$r" "mix_cost fit" mix_cost fit 4 64
+        rate_ab "$r" "capacity" capacity 25 5 1000
+        rate_ab "$r" "latency" latency 50
+        rate_ab "$r" "jitter idle" jitter idle 10
+        r=$((r + 1))
+    done
+}
+
 # Against mod_conference in docker: one FreeSWITCH kept up for every
 # launch (KEEP=1), torn down at the end.
 group_ref() {
@@ -243,9 +283,9 @@ group_ref() {
 }
 
 case "$GROUP" in
-cost | timer | prefill | events | capacity | ref | all) ;;
+cost | timer | prefill | events | capacity | hd | ref | all) ;;
 *)
-    echo "usage: $0 cost|timer|prefill|events|capacity|ref|all [OUT]" >&2
+    echo "usage: $0 cost|timer|prefill|events|capacity|hd|ref|all [OUT]" >&2
     exit 2
     ;;
 esac

@@ -32,8 +32,9 @@ jobs:
     env:
       SKIP_ENGINE_BUILD: '1'
       # the commit before the gain control, the relations and the talker
-      # events, for the cost rows
-      BASE: c9f377d
+      # events, for the cost rows; for the hd group, the commit before the
+      # room's rate
+      BASE: ${{ matrix.group == 'hd' && '374b478' || 'c9f377d' }}
       ROUNDS: ${{ inputs.rounds || '5' }}
     steps:
       - uses: actions/checkout@v5
