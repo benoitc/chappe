@@ -41,6 +41,17 @@
 %% the same recording store, one WAV file per party, found with
 %% demo_sbc:recordings(Ref).
 %%
+%% 1003 and 1004 are HD (16 kHz) rooms, to compare by ear: demo-hd on
+%% chappe_mix (rtpengine converts each caller, G.722, Opus or PCMU, to
+%% the room's L16) and demo-hd-fs, mod_conference on its `wideband'
+%% profile. The room answers the caller itself. Both are focus rooms
+%% whose URI (sip:demo-hd@...) takes REFERs from this node and from
+%% registered users: a member's transfer button, or from the shell
+%%   demo_sbc:refer_add(Room, Uri)     REFER the room to bring Uri in
+%%   demo_sbc:refer_remove(Room, Uri)  REFER it to drop that member
+%% A user of the demo a room dials (sip:bob@chappe.demo) is called from
+%% the pool through this node, which finds where it registered.
+%%
 %% route/1 maps a dialled user to where the call goes. It is the one place
 %% to add targets: a FreeSWITCH pool, for one, is a {peer_group, G} there.
 -module(demo_sbc).
@@ -49,6 +60,7 @@
 -export([calls/0, anchor/1, direct/1, peers/0, nodes/0, drain/1, resume/1]).
 -export([route/1]).
 -export([confs/0, members/1, kick/2, recordings/1]).
+-export([refer_add/2, refer_remove/2]).
 
 -define(CALLS, demo_sbc_calls).
 %% call id => {FreeSWITCH node, channel uuid}
@@ -67,6 +79,8 @@ start(File) ->
     {ok, _} = application:ensure_all_started(chappe_mrf),
     ok = audio(Cfg),
     Keeper = keeper(),
+    %% the HD rooms send it their events
+    persistent_term:put({?MODULE, keeper}, Keeper),
     Ip = env("DEMO_IP", maps:get(ip, Cfg)),
     SipPort = env("DEMO_SIP_PORT", maps:get(sip_port, Cfg)),
     ok = chappe_sip:start(#{
@@ -95,6 +109,11 @@ start(File) ->
         esl_allow => mrf_allow(Cfg)
     }),
     ok = prompts(env("DEMO_MEDIA_DIR", "_build/demo-media")),
+    %% the HD rooms: REFERs to their URI, and SUBSCRIBEs to their roster
+    ok = chappe_sip:refer(fun chappe_mrf:focus_refer/2),
+    ok = chappe_sip:event_package(
+        <<"conference">>, fun chappe_mrf:focus_subscribe/2
+    ),
     ok = chappe_sip:peer_subscribe(Keeper),
     _ = [
         chappe_sip:peer_add(Name, Opts)
@@ -287,10 +306,11 @@ invite(Keeper, Req, Res) ->
     Cfg = persistent_term:get({?MODULE, cfg}),
     Ivr = maps:get(ivr, Cfg, <<"2000">>),
     Recorded = maps:get(record, Cfg, <<"3001">>),
-    case Called of
-        <<"srs">> -> recording_server(Req, Res);
-        Recorded -> recorded_call(Keeper, CallId, Req, Res);
-        _ -> invite(Keeper, CallId, Called, Ivr, Req, Res)
+    case {Called, hd_room(Called)} of
+        {<<"srs">>, _} -> recording_server(Req, Res);
+        {Recorded, _} -> recorded_call(Keeper, CallId, Req, Res);
+        {_, {ok, Room, Backend}} -> hd_call(CallId, Room, Backend, Req, Res);
+        {_, error} -> invite(Keeper, CallId, Called, Ivr, Req, Res)
     end.
 
 invite(Keeper, CallId, Called, Ivr, Req, Res) ->
@@ -305,7 +325,7 @@ invite(Keeper, CallId, Called, Ivr, Req, Res) ->
                 %% FreeSWITCH hands it back in CHANNEL_CREATE
                 b_headers => [{<<"X-Chappe-Call">>, CallId}]
             },
-            bridge(CallId, Called, Req, Res, Target, Opts);
+            bridge(CallId, Called, Req, Res, Target, dialed(Req, Opts));
         {error, Status} ->
             _ = chappe_sip_res:send(Res, Status),
             log("call ~s to ~s: ~b", [CallId, Called, Status])
@@ -362,14 +382,16 @@ policy(BSide) ->
 user(undefined) ->
     undefined;
 user(Value) ->
-    Uri =
-        case chappe_sip_hdr:name_addr(Value) of
-            {ok, #{uri := U}} -> U;
-            _ -> Value
-        end,
-    case chappe_sip_uri:parse(Uri) of
+    case chappe_sip_uri:parse(addr(Value)) of
         {ok, #{user := User}} -> User;
         _ -> undefined
+    end.
+
+%% the URI of a name-addr (a From, a To), or the value as it is
+addr(Value) ->
+    case chappe_sip_hdr:name_addr(Value) of
+        {ok, #{uri := U}} -> U;
+        _ -> Value
     end.
 
 %% ---- 3001: a call to bob, recorded through SIPREC ----
@@ -683,6 +705,194 @@ tone_wav(Path, Freq) ->
             2:16/little, 16:16/little, "data", Size:32/little, Data/binary>>
     ).
 
+%% ---- 1003 and 1004: the HD rooms ----
+
+%% The HD room a dialled user names, by its number (1003) or the room's
+%% name (demo-hd, the user of its conference URI): {ok, Room, Backend}.
+hd_room(User) ->
+    Rooms = maps:get(hd_rooms, persistent_term:get({?MODULE, cfg}), []),
+    case [{R, B} || {N, R, B} <- Rooms, User =:= N orelse User =:= R] of
+        [{Room, Backend} | _] -> {ok, Room, Backend};
+        [] -> error
+    end.
+
+%% The caller joins straight from its INVITE: the room answers it (native:
+%% the mixer through rtpengine; fs: an endpoint on the room's node), and
+%% the call runs on its own once it is in.
+hd_call(CallId, Room, Backend, Req, Res) ->
+    maybe
+        {ok, Conf} ?= hd_conf(Room, Backend),
+        {ok, Member} ?=
+            chappe_mrf_conf:join(Conf, {call, Req, Res}, #{name => CallId}),
+        log("call ~s: member ~s of ~s", [CallId, Member, Room])
+    else
+        {error, Why} ->
+            _ = chappe_sip_res:send(Res, 503),
+            log("call ~s: not in ~s: ~p", [CallId, Room, Why])
+    end.
+
+%% native: chappe_mix at 16 kHz on this host, behind rtpengine; the room
+%% lays the L16 transcoding under these params (its own keys lose). The
+%% endpoint a REFER dials out from joins it from the docker side.
+hd_conf(Room, native) ->
+    chappe_mrf:conference(Room, (hd_opts(Room))#{
+        rate => 16000,
+        anchor_params => to_host(undefined),
+        endpoint_params => #{
+            offer => #{direction => [host, docker]},
+            answer => #{direction => [docker, host]}
+        }
+    });
+%% fs: mod_conference at 16 kHz, each caller bridged to an endpoint on
+%% the room's node through rtpengine
+hd_conf(Room, fs) ->
+    chappe_mrf:conference(Room, (hd_opts(Room))#{
+        backend => fs,
+        profile => <<"wideband">>,
+        bridge => #{anchor_params => to_fs()}
+    }).
+
+%% both rooms: focus (RFC 4575 roster, REFERs to the room's URI), their
+%% events to the keeper, who may REFER, and how a party is dialed
+hd_opts(Room) ->
+    #{
+        focus => true,
+        notify => persistent_term:get({?MODULE, keeper}),
+        refer_policy => fun(Info) -> refer_policy(Room, Info) end,
+        dial => fun(Target) -> dial(Room, Target) end,
+        dial_profile => <<"esl">>
+    }.
+
+%% Who may REFER an HD room: this node (refer_add/2, refer_remove/2, whose
+%% From is sip:demo@<the node>) and the users registered here (a member's
+%% transfer button). Anyone else gets 403. It trusts the From: put the
+%% REFERs behind digest before the demo leaves your machine.
+refer_policy(Room, #{action := Action, target := Target, referrer := From}) ->
+    Cfg = persistent_term:get({?MODULE, cfg}),
+    Domains = domains(Cfg),
+    Ok =
+        case referrer(From) of
+            {<<"demo">>, Host} ->
+                Host =:= list_to_binary(env("DEMO_IP", maps:get(ip, Cfg)));
+            {User, Host} when is_binary(User) ->
+                lists:member(Host, Domains) andalso
+                    element(1, located(User, Domains)) =:= ok;
+            _ ->
+                false
+        end,
+    log("~s: REFER ~p ~s from ~s: ~s", [
+        Room, Action, Target, From, allowed(Ok)
+    ]),
+    Ok.
+
+allowed(true) -> "allowed";
+allowed(false) -> "refused".
+
+%% the user and host of a From
+referrer(From) ->
+    case chappe_sip_uri:parse(addr(From)) of
+        {ok, #{host := Host} = U} -> {maps:get(user, U, undefined), Host};
+        _ -> undefined
+    end.
+
+%% The dial string of a party a REFER brings in. A user of the demo
+%% (sip:bob@chappe.demo) is called through this node, which finds where
+%% it registered: the demo-room parameter tells invite/3 the call comes
+%% from the pool. Any other address the node calls itself.
+dial(Room, Target) ->
+    Cfg = persistent_term:get({?MODULE, cfg}),
+    {ok, #{host := Host} = U} = chappe_sip_uri:parse(Target),
+    <<"sip:", Bare/binary>> = Target,
+    case {lists:member(Host, domains(Cfg)), U} of
+        {true, #{user := User}} ->
+            [
+                <<"sofia/esl/sip:">>,
+                User,
+                <<"@host.docker.internal:">>,
+                env("DEMO_SIP_PORT", maps:get(sip_port, Cfg)),
+                <<";demo-room=">>,
+                Room
+            ];
+        {false, _} ->
+            [<<"sofia/esl/">>, Bare]
+    end.
+
+%% A call a room dials out comes from the pool (docker) to a phone (the
+%% host): anchored, each side on its own rtpengine interface.
+dialed(Req, Opts) ->
+    {ok, #{params := Params}} = chappe_sip_uri:parse(chappe_sip_req:uri(Req)),
+    case maps:get(<<"demo-room">>, Params, false) of
+        Room when is_binary(Room) ->
+            log("call ~s: dialed out by ~s", [
+                chappe_sip_req:call_id(Req), Room
+            ]),
+            Opts#{
+                media => anchor,
+                anchor_params => #{
+                    a => #{direction => [host, docker]},
+                    b => #{direction => [docker, host]}
+                }
+            };
+        _ ->
+            Opts
+    end.
+
+%% Ask an HD room to bring Uri in: an out-of-dialog REFER to the room's
+%% URI with Uri as its Refer-To, as a phone's transfer would send. Prints
+%% the REFER's answer and each NOTIFY; returns the final status.
+-spec refer_add(binary() | string(), binary() | string()) ->
+    {ok, 100..699} | {error, term()}.
+refer_add(Room, Uri) ->
+    refer(Room, #{uri => iolist_to_binary(Uri)}).
+
+%% Ask an HD room to drop the member Uri names, by its address-of-record
+%% (sip:bob@chappe.demo) or its endpoint entity (<room URI>;member=Id, as
+%% the roster shows it): Refer-To <Uri;method=BYE>.
+-spec refer_remove(binary() | string(), binary() | string()) ->
+    {ok, 100..699} | {error, term()}.
+refer_remove(Room, Uri) ->
+    refer(Room, #{uri => iolist_to_binary(Uri), method => <<"BYE">>}).
+
+refer(Room, Target) ->
+    Cfg = persistent_term:get({?MODULE, cfg}),
+    From = iolist_to_binary([
+        "<sip:demo@",
+        env("DEMO_IP", maps:get(ip, Cfg)),
+        ":",
+        env("DEMO_SIP_PORT", maps:get(sip_port, Cfg)),
+        ">"
+    ]),
+    maybe
+        {ok, Conf} ?= room(iolist_to_binary(Room)),
+        #{entity := Entity} ?= chappe_mrf_conf:info(Conf),
+        {ok, Id, #{status := St, subscription := Sub}} ?=
+            chappe_sip_refer:send(Entity, Target, #{from => From}),
+        io:format("REFER ~s: ~b~n", [Entity, St]),
+        case Sub of
+            true -> notifies(Id);
+            false -> {ok, St}
+        end
+    end.
+
+%% a running room, or an HD room started now
+room(Name) ->
+    case {lists:keyfind(Name, 1, chappe_mrf:conferences()), hd_room(Name)} of
+        {{_, Conf}, _} -> {ok, Conf};
+        {false, {ok, Room, Backend}} -> hd_conf(Room, Backend);
+        {false, error} -> {error, no_conference}
+    end.
+
+notifies(Id) ->
+    receive
+        {refer_progress, Id, St} ->
+            io:format("NOTIFY ~b~n", [St]),
+            notifies(Id);
+        {refer_done, Id, St} ->
+            io:format("NOTIFY ~b (done)~n", [St]),
+            {ok, St}
+    after 45000 -> {error, no_final_notify}
+    end.
+
 %% The conferences running: name, backend, member count.
 -spec confs() -> [{binary(), atom(), non_neg_integer()}].
 confs() ->
@@ -810,6 +1020,12 @@ keep() ->
         {chappe_sip_b2b, Ref, Event} ->
             Calls = [C || {C, {_, R}, _, _} <- ets:tab2list(?CALLS), R =:= Ref],
             log("call ~s: ~p", [Calls, Event]);
+        %% the HD rooms' events, which the keeper gets (talking is noise)
+        {chappe_mrf_conf, _Conf, {talking, _, _}} ->
+            ok;
+        {chappe_mrf_conf, Conf, Event} ->
+            Names = [N || {N, C} <- chappe_mrf:conferences(), C =:= Conf],
+            log("~s: ~0p", [Names, Event]);
         _ ->
             ok
     end,
