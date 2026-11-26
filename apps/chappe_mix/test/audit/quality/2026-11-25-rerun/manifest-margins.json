@@ -1,0 +1,43 @@
+{
+ "schema": "taq.manifest/1",
+ "manifest_id": "chappe-hd-room-2026-11-25-rerun",
+ "description": "The joint HD test rerun after the hardening fixes (chappe main 840bb74). Two HD participants exchange the eight pinned VCTK clips through the chappe demo (demo/sbc, make demo): a G.722 talker at 16 kHz and an Opus listener at 48 kHz, and the reverse. Baseline: room 1004, mod_conference on its 16 kHz wideband profile, run twice. Candidate: room 1003, chappe_mix at 16 kHz in L16 behind rtpengine. Interleaved per clip and direction: baseline rep 0, candidate, baseline rep 1. The pcmu-join conditions hold one run per arm and direction during which a silent PCMU caller joins and leaves the room.",
+ "created_at": "2026-11-25T15:40:25Z",
+ "clips": {
+  "set": "vctk-0.92",
+  "file": "../../clips/vctk-0.92.json",
+  "prepared_dir": null
+ },
+ "margins": {
+  "declared_at": "2026-11-25T15:40:25Z",
+  "declared_by": "chappe integration (step Q of the hardening plan: rerun the joint test), before any capture",
+  "note": "Declared before any capture of either arm, in a new run directory, after the 2026-11-25 run (runs/hd-room-2026-11-25), whose level margin compared each capture with the reference and so measured the phone. Scorers: the candidate passes when the lower bound of the 95% bootstrap interval of the paired difference (candidate minus baseline, per clip) stays above -0.3 MOS, for ViSQOL and for NISQA. For NISQA, 0.3 sits below the 0.38 drop taq measured between a G.722 and a PCMU path, so a narrowband hop fails it. NISQA is verified for this run (validation/nisqa.json, 2026-11-25T10:36:32Z: r 0.903 and 0.820 against the published 0.90 and 0.82 on NISQA_VAL_SIM and NISQA_VAL_LIVE). For ViSQOL no drop was measured to back 0.3 (on that same G.722 against PCMU test ViSQOL scored the PCMU arm 0.38 higher): it keeps the earlier run's value so the two runs compare, and the bandwidth check, not ViSQOL, is what catches a narrowband hop. Bandwidth: every candidate capture keeps its 4-7 kHz share within 6 dB of the reference's, as before; G.722 and Opus kept it within 3.5 dB in the earlier run, and a hop through 8 kHz reads 33 to 53 dB down. Level against the reference: not gated (level_change_max_db null). pjsua's G.722 codec is 6 dB off the others in both rooms (a G.722 talker arrives 6 dB low, a G.722 listener hears 6 dB high), so that check measures the phone, not the room. Level against the baseline: gated (level_vs_baseline_max_db 1.5). For each candidate capture, its level change minus the mean level change of the two baseline captures of the same clip and receiver must stay within 1.5 dB, on the worst pair (taq gates every candidate capture, and reports the per-clip mean and its interval without gating it). In the earlier run the arms differed by 0.14 dB at most per clip, so 1.5 dB leaves room for run-to-run change and for the baseline's own gaps, and a gain fault of the mixer of 2 dB or more fails it. Clipping: at most 1e-4 of the samples, as before. Dropouts: no gap in active speech longer than 40 ms (two 20 ms packets) in a candidate capture, as before; a baseline gap is reported, not gated. Delay: not gated (delay_max_ms null), because taq live runs carry no synchronized send and receive timestamps. The pcmu-join conditions have one clip per arm: their scorers are reported and not gated (min_clips 1); their bandwidth, level against the baseline, clipping and dropout checks are gated as everywhere else.",
+  "default": {
+   "visqol_drop_max": 0.3,
+   "nisqa_drop_max": 0.3,
+   "high_band_min_db": -6.0,
+   "level_change_max_db": null,
+   "level_vs_baseline_max_db": 1.5,
+   "clipping_max_fraction": 0.0001,
+   "dropout_max_ms": 40,
+   "delay_max_ms": null,
+   "confidence": 0.95,
+   "min_clips": 6,
+   "bootstrap_resamples": 10000,
+   "bootstrap_seed": 0
+  },
+  "conditions": {
+   "hd-room/g722-to-opus/pcmu-join/clean": {
+    "visqol_drop_max": null,
+    "nisqa_drop_max": null,
+    "min_clips": 1
+   },
+   "hd-room/opus-to-g722/pcmu-join/clean": {
+    "visqol_drop_max": null,
+    "nisqa_drop_max": null,
+    "min_clips": 1
+   }
+  }
+ },
+ "trials": []
+}
