@@ -14,13 +14,14 @@
 # - With DEADLINE set (epoch seconds), no trial and no retry starts after
 #   it: the block stops (exit 5).
 # Every other trial runs, and the block exits 1 if any failed.
+# CLIPS (space separated) replaces the eight clips, for a smoke run.
 # Usage: RUN_DIR=... CHAPPE_DIR=... DEMO_LOG=... DEMO_SIP_PORT=5080 block.sh REP
 set -euo pipefail
 REP=$1
 RUN1=${RUN1:-${TAQ_DIR:?TAQ_DIR}/scripts/campaign/run1.sh}
 RETRIES=${RETRIES:-4}
 DEMO_LOG=${DEMO_LOG:?DEMO_LOG}
-CLIPS="vctk092-p225-01 vctk092-p226-01 vctk092-p234-01 vctk092-p237-01 vctk092-p245-01 vctk092-p248-01 vctk092-p294-01 vctk092-p326-01"
+CLIPS=${CLIPS:-"vctk092-p225-01 vctk092-p226-01 vctk092-p234-01 vctk092-p237-01 vctk092-p245-01 vctk092-p248-01 vctk092-p294-01 vctk092-p326-01"}
 FAILED=()
 ng_down() { grep -q 'node demo_rtpe down' "$DEMO_LOG"; }
 past_deadline() { [ -n "${DEADLINE:-}" ] && [ "$(date +%s)" -ge "$DEADLINE" ]; }
