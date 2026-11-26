@@ -116,7 +116,7 @@ Not a comparison and not a quality result: the old build only, its 15
 candidate and 16 baseline captures at a 1 min load of 6 to 14 when each
 trial started, read hop by hop in the RTP trace (`rtpan.py`) and in the
 mixer's own counters, sampled once a second from the demo node
-(`mixprobe.erl`, `mixan.py`). Per capture: the stream into rtpengine of
+(`mixprobe.erl.txt`, `mixan.py`). Per capture: the stream into rtpengine of
 bob's leg (from chappe_mix, or from FreeSWITCH), rtpengine's stream to bob,
 and the same stream at bob's socket when the docker proxy relays it. The
 spread is the range of arrival time minus RTP time, inside alice's speech.
@@ -171,7 +171,7 @@ directory (`WT`). The scripts of the run are in
 [`quality/2026-11-25-ab/`](quality/2026-11-25-ab/): `ab.sh` (one block:
 demo, traces, mixer probe, trials, teardown, a fresh demo session when
 rtpengine is lost), `block.sh` (the trials of a block), `run-all.sh` (the
-four blocks at the declared gate), `mixprobe.erl`, `rtpan.py`, `mixan.py`,
+four blocks at the declared gate), `mixprobe.erl.txt`, `rtpan.py`, `mixan.py`,
 `makeab.py` (fills the A/B manifest from the two builds' manifests) and
 `summarize.py` (the rows of a results table).
 
@@ -191,7 +191,7 @@ In the taq checkout, make `runs/hd-room-ab-2026-11-25/` with the scripts
 and the declared `manifest.json`, then `strict/manifest.json`,
 `strict/old/` and `strict/new/` (each manifest a copy of the declaration
 with its `clips` path adjusted, no trials, and the meta files of the
-rerun with the build's revision), compile `mixprobe.erl` there, and run:
+rerun with the build's revision), copy `mixprobe.erl.txt` there as `mixprobe.erl` and compile it (it is kept as `.txt` so the test build does not compile it), and run:
 
 ```sh
 WT=$WT bash runs/hd-room-ab-2026-11-25/run-all.sh
