@@ -1,0 +1,36 @@
+2026-11-26T23:34:13Z, before any capture on the runner (the smoke run included):
+The A/B of 2026-11-25-ab runs again, on a GitHub-hosted runner (ubuntu-24.04),
+because the Mac's 1 min load never allowed the declared gate and the gate-8 run
+(2026-11-26-ab-gate8) cannot clear the new build. The gate is the declared one:
+before each trial the 1 min load average (/proc/loadavg) must have stayed at
+most 4.0 (MAX_LOAD) for 30 s in a row (LOAD_QUIET), polled every 5 s, within
+1800 s (MAXWAIT); a load that cannot be read is not quiet. The bar is not
+lowered on the runner.
+
+The design is unchanged from 2026-11-25-ab: four blocks on one runner, old
+(821870c), new (840bb74), old, new, each one baseline trial (FreeSWITCH, room
+1004) and one candidate trial (chappe_mix, room 1003) per clip and direction
+(the 8 VCTK clips, g722-to-opus and opus-to-g722), and the margins block
+declared at 2026-11-25T22:38:12Z unchanged (sha256
+268e6bca4d9306a2a6939ede8017565bcfdf2331786c3c5d9c3840366039a997). As in the
+gate-8 run, a refused trial, the campaign's first included, is tried again up
+to four more times (block.sh's RETRIES), a trial still refused stops the run,
+and the rtpengine-loss sessions stay. No trial and no retry starts after the
+deadline, 285 min after the job's start (the job is cut at 350 min): the run
+then stops at a trial boundary.
+
+What differs from the Mac runs: taq does not run on the runner. trial.sh makes
+taq live's two calls (same order, durations, ports and pjsua options) through
+chappe's hd.sh, with chappe's lab pjsua image (pjproject 2.15.1 with Opus and
+G.722, without taq's config_site.h, whose L16 at 48 kHz, IPv6 and call count
+these trials do not use), built once before the first trial; taq live-import
+finishes the trials on the Mac, where they are scored. The host (a hosted VM,
+described in each trial.json) and the pjsua build differ from the Mac's, so
+absolute scores do not compare with the Mac runs: the question is only old
+against new on one runner. The 1 min, 5 min and 15 min load and the CPU steal
+are sampled every 10 s into hostload.log.
+
+A run stopped by a refusal or by the deadline is recorded as incomplete, with
+what ran, and no score is looked at before the maintainer decides what follows.
+The smoke run (a branch ending in -smoke: one block of the new build on clip
+p225, both directions) checks the pipeline only and is not part of the A/B.
