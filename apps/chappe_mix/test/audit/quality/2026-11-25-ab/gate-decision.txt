@@ -1,0 +1,53 @@
+2026-11-25T22:51:20Z, before any capture of the run (only the pilot, kept out):
+The host's 1 min load has stayed between 8.4 and 17.3 since 22:31Z (median 12.7),
+set by long-running desktop processes (Safari WebContent at 100% for two days,
+NVIDIA Sync, WindowServer, OrbStack). A 30 s window at or under 4.0 has not
+occurred once. Block 1 waits at the declared gate (MAX_LOAD 4.0, MAXWAIT 1800 s).
+If that first trial is refused, every block runs with MAX_LOAD set to the 25th
+percentile of the 1 min load sampled (every 10 s, hostload.log) during the
+refused wait, rounded up to a whole number; LOAD_QUIET 30 s and MAXWAIT 1800 s
+stay. Nothing else changes.
+
+2026-11-25T23:16Z: block 1's first trial was refused at 23:15:22Z after 1800 s
+(the 1 min load never stayed at or under 4.0 for 30 s). Over that wait
+(22:45:22 to 23:15:22, 179 samples) the 1 min load was 9.42 to 32.14,
+median 20.45, 25th percentile 14.87. By the rule above, every block runs
+with MAX_LOAD=15. The refused attempt's logs and empty traces are in refused/.
+
+2026-11-25T23:42:30Z, during block 1 (no score looked at): one trial waited
+1292 s at MAX_LOAD 15 (the load ran 13 to 43). So that a long busy stretch
+does not end the run, block.sh now tries a refused trial again, up to four
+more times (each a full MAXWAIT), and skips trials already captured, so a
+stopped block can be resumed. Blocks 2 to 4 use it; block 1 started with the
+first version (refused/block.sh.first), which stops at a refusal.
+
+2026-11-25T23:49:03Z: block 1 lost rtpengine at 23:26:00Z (no score looked at):
+the in-VM end of OrbStack's forward of the node's NG socket moved from
+127.0.0.1:49269 to [::1]:41489, the docker proxy relayed the requests but no
+reply came back, and the node marked rtpengine down; trial b0 opus-to-g722
+p225 got a 500 (moved to old/failed-ng/). Block 1 was stopped at 23:47:41Z.
+From now on ab.sh runs a block in demo sessions: when the demo log says the
+node lost rtpengine, the block stops before its next trial, the demo is
+restarted with its own logs and traces (-s<n>), and the block resumes, the
+failed trial run again. Block 1 resumes at session 2.
+
+2026-11-26T01:36Z, change of course decided by the coordinator and the
+maintainer before any score was looked at (the maintainer freed the host;
+the 1 min load fell from about 30 to under 12, then to 6): block 1 (old, at
+MAX_LOAD 15) was stopped at a trial boundary at 01:36:30Z, after 31 of its
+32 trials (one, b0 opus-to-g722 p225, failed with the rtpengine loss and
+was run again in session 2; c0 opus-to-g722 p326 was never run), and the
+demo stopped. Everything captured at MAX_LOAD 15 is kept, set aside, in
+set-aside-load15/, and is not part of the comparison. The whole campaign
+restarts in strict/ at the declared gate, MAX_LOAD 4.0, LOAD_QUIET 30 s,
+MAXWAIT 1800 s, for all four blocks (old, new, old, new), with the same
+margins block (sha256 268e6bca...a997). The rtpengine-loss sessions and the
+retries of refused trials stay, except that a refusal of the campaign's
+first trial stops the run (the host cannot be quiet; the bar is not lowered
+again).
+
+2026-11-26T02:08:13Z: the strict campaign's first trial (block 1, old,
+b0 g722-to-opus p225) was refused after 1800 s: from 01:38:13Z to 02:08:13Z
+the 1 min load was 5.86 to 29.36 (median 9.15, 10th percentile 6.50) and
+never stayed at or under 4.0 for 30 s. The run stopped there, as decided
+(the bar is not lowered again). No trial was captured in strict/.

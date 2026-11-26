@@ -9,6 +9,210 @@ capture; a margin that is missed is recorded as missed, never moved after
 the numbers arrive. `PERF.md` is the performance record, this page the
 quality one.
 
+## 2026-11-25 and 26, A/B of main against the build before the hardening: not run
+
+The follow-up to the rerun below, meant to tell a change of chappe from the
+busier host: main `840bb74` ("new") against `821870c` ("old", main after
+#88, before the hardening fixes), each with its own FreeSWITCH baseline, in
+four alternating blocks on a host the campaign waits on until it is quiet.
+It did not run: twice, the campaign's first trial waited the full 30
+minutes for a 1 min load of 4.0 or less and never got it. No capture was
+made at that gate, so there is no comparison and no A/B verdict; no margin
+was passed or missed. One block of the old build captured at a looser gate
+(15) is kept apart, unscored; its packet traces say where the jitter came
+from on that build.
+
+### Margins, declared before any capture
+
+Declared at 2026-11-25T22:38:12Z by writing the manifest
+(`runs/hd-room-ab-2026-11-25/manifest.json` of the taq checkout) with its
+margins and no trials, before any capture of either build; that file is
+[`quality/2026-11-25-ab/manifest-margins.json`](quality/2026-11-25-ab/manifest-margins.json).
+The sha256 of the margins block (its JSON with sorted keys) is
+`268e6bca4d9306a2a6939ede8017565bcfdf2331786c3c5d9c3840366039a997`; the
+per-build manifests and the strict attempt's manifests carry the same
+block. A pilot (one candidate and one baseline trial of the old build at
+22:40, the gate off) checked the traces and the scripts and was kept out
+(`runs/hd-room-ab-2026-11-25-pilot/`).
+
+The margins are the rerun's, so the runs compare:
+
+| Check | Margin |
+| --- | --- |
+| ViSQOL and NISQA, paired difference per clip and receiver | lower bound of the 95% bootstrap interval above -0.3 MOS |
+| Longest gap in active speech, every candidate capture | 40 ms |
+| Level against the baseline, worst pair | 1.5 dB |
+| Bandwidth, every candidate capture | 4-7 kHz share within 6 dB of the reference's |
+| Clipping | at most 1e-4 of the samples |
+| Level against the reference, delay | not gated |
+
+taq compares two arms, baseline and candidate, and cannot compare two
+candidate arms, so the note declared three comparisons, each with this
+block: the A/B (old's chappe_mix captures as the baseline arm, new's as the
+candidate, paired per clip and receiver; its reference variation old's
+block 3 minus block 1), and each build's chappe_mix room against its own
+FreeSWITCH room (both of its blocks), as in the rerun. Bandwidth and
+clipping are per-capture checks of the candidate arm: in the A/B they read
+the same new captures as new's own comparison. The design: four blocks,
+old, new, old, new, the demo stopped between blocks, each build's demo
+(`DEMO_SIP_PORT=5080 make demo`) from a clean worktree of its commit; in
+each block, per clip and direction, one baseline trial (room 1004) then
+one candidate trial (room 1003); no PCMU caller.
+
+### Host, load and the gate
+
+macOS 27.2, arm64, 14 cores, OrbStack docker 29.8.2, shared with other
+jobs. Before every trial, taq's `run1.sh` (taq `78eebde`) waits until the
+1 min load average has stayed at most `MAX_LOAD` for 30 s in a row, for up
+to 1800 s; a trial that never gets quiet fails and runs nothing. The
+declared gate is 4.0. Every decision below is in
+[`gate-decision.txt`](quality/2026-11-25-ab/gate-decision.txt), each
+written when it was made, before any score was computed.
+
+| When (UTC) | Gate | What happened | 1 min load |
+| --- | --- | --- | --- |
+| 25th, 22:45 to 23:15 | 4.0 | block 1 (old): its first trial refused after 1800 s | 9.4 to 32.1, median 20.5 |
+| 25th 23:16 to 26th 01:36 | 15 | block 1 (old) at the fallback written at 22:51Z, before any capture (the 25th percentile of the refused wait, rounded up): 31 of its 32 trials, then stopped at a trial boundary; set aside | 6.0 to 14.1 when a trial started (median 12.4), 5440 s of waiting, the longest 1292 s |
+| 26th, 01:37 to 02:08 | 4.0 | the coordinator's decision at 01:36Z, with the maintainer, before any score: restart all four blocks at the declared gate in `strict/`; block 1's first trial refused after 1800 s, and the run stopped there rather than lower the bar again | 5.9 to 29.4, median 9.2 |
+
+The gate waited 9040 s in all (two refused windows of 1800 s and the
+set-aside block's 5440 s). The load never fell under 5.9: long-running
+desktop processes (a browser tab at 100% of a core for two days, NVIDIA
+Sync, WindowServer, OrbStack, cloudd) hold it there, and other projects'
+test runs pushed it to 30 and more. The new build was built but never ran
+a trial.
+
+The set-aside block also lost rtpengine once: at 23:26:00Z the in-VM end of
+OrbStack's forward of the node's NG socket moved from `127.0.0.1` to
+`[::1]`, the docker proxy passed the requests to rtpengine but no reply came
+back, and the node marked rtpengine down; the next trial got a 500. From
+then on the scripts stop a block when the demo log shows the loss, start a
+fresh demo session (its own logs and traces) and resume, running that
+trial again. A refused trial is tried again up to four more times, except
+the campaign's first.
+
+### Versions
+
+| What | Version |
+| --- | --- |
+| chappe | old `821870c` (`821870cb93ec4df455bbce8a3f7140ebc3530e8d`), new `840bb74` (`840bb749f9ab39585b604857b733ab5d25af5dbe`), each from a clean `git worktree`; Erlang/OTP 29.1.2 (erts 17.1.1) |
+| FreeSWITCH | `drachtio/drachtio-freeswitch-mrf@sha256:2f1583c3...`, as in the rerun |
+| rtpengine | 26.3.1.4+0~mr26.3.1.4, `chappe-rtpengine-interop` (image `sha256:9cf8018b...`, the rerun's) |
+| pjsua | 2.15.1, `taq-pjsua:2.15.1` (`sha256:45c94f10...`) |
+| taq | 0.1.0 at `78eebde` (`78eebde26f5f1d1a984c09315e29323696d4c710`): the rerun's `48f46ad` plus the load gate |
+| Traces | tcpdump 4.99.4 in `nicolaka/netshoot:v0.13` (`sha256:e286c635...`) on the docker host's network: SIP and NG in full, RTP to 128 bytes, one pair of files per block and demo session |
+| Scorers | ViSQOL 3.3.3 and NISQA as in the rerun; not run (nothing to compare) |
+
+### Results
+
+None. No trial ran at the declared gate, so `taq compare` had nothing to
+score in `strict/`, the A/B verdict was not reached, and the question
+(is `840bb74` worse than `821870c`?) stays open. The set-aside block holds
+the old build only and was not scored.
+
+### What the traces of the set-aside block show
+
+Not a comparison and not a quality result: the old build only, its 15
+candidate and 16 baseline captures at a 1 min load of 6 to 14 when each
+trial started, read hop by hop in the RTP trace (`rtpan.py`) and in the
+mixer's own counters, sampled once a second from the demo node
+(`mixprobe.erl`, `mixan.py`). Per capture: the stream into rtpengine of
+bob's leg (from chappe_mix, or from FreeSWITCH), rtpengine's stream to bob,
+and the same stream at bob's socket when the docker proxy relays it. The
+spread is the range of arrival time minus RTP time, inside alice's speech.
+
+- chappe_mix's stream, as it reaches the docker host, was steady while
+  alice spoke: longest inter-arrival gap 21 to 33 ms, spread 1.5 to 13 ms,
+  no lost packet, no timestamp jump. rtpengine's stream to bob kept it:
+  gaps of 23 to 29 ms, spread 3.5 to 13.5 ms, a net drift of at most
+  9.4 ms; the docker proxy added under 1 ms. bob's pjsua ran its jitter
+  buffer empty 0 to 3 times per capture, 5 times in speech in all, and 4
+  of those 5 had no arrival gap over 30 ms at any hop: pjsua's playout,
+  not the network.
+- The mixer's ticks do slip when the host is loaded. In the 15 candidate
+  windows, 4 of about 25,000 ticks fired more than 10 ms late and 2 more
+  than a period late (frames skipped, as designed). With the room empty
+  (between trials, or during a baseline trial), in load bursts of 18 to
+  80, it skipped 307 ticks in all, the latest 296 ms late. That is the
+  Erlang node's timer on a loaded macOS, the same for both builds (the
+  two differ in the mixer only by the SSRC draw of #90).
+- The macOS to docker forward also stalls on its own: in the pilot, at a
+  load of 15, a 53 ms gap arrived on chappe_mix's stream while the mixer's
+  ticks were never more than 8.3 ms late.
+- rtpengine turns some stalls into lasting delay: in the pilot its stream
+  to bob stayed 28 ms later after that 53 ms gap upstream, and in the first
+  candidate capture of the block it stepped by 23 and 30 ms (both before
+  the talker joined) while chappe_mix's stream was steady. A lasting step
+  inside the speech moves the delay inside the capture, which is what the
+  three NISQA misses of the rerun showed (40 to 60 ms).
+- FreeSWITCH's stream stalls the same way, and worse: one baseline
+  capture (p237, Opus to G.722) has gaps of up to 148 ms from FreeSWITCH,
+  lasting steps of 20 to 158 ms at bob and 30 jitter buffer empties;
+  another (p226, G.722 to Opus) one 40 ms step after a 64 ms gap. The
+  p237 steps fall from 00:38:18 to 00:38:22, the seconds in which the
+  empty chappe_mix room skipped 38 ticks and the 1 min load went from 10
+  to 29: one stall of the host, seen by both senders.
+
+So, on the old build at that load, the jitter that reaches bob starts at
+the media senders' scheduling on the loaded host (chappe_mix's ticks on
+macOS, FreeSWITCH in its container) and in the macOS to docker forward,
+and rtpengine can keep part of it as a lasting delay; it does not start in
+chappe_mix's mixing. The rerun's three misses (p226 G.722 to Opus, p225
+and p245 Opus to G.722) cannot be traced: the rerun has no RTP, and the
+same captures of this block (old build) show no lasting step in speech
+(net drift -0.6 to +5.8 ms).
+
+### Reproduce
+
+You need taq at `78eebde26f5f1d1a984c09315e29323696d4c710` (the local
+repository at `~/Projects/telephony-audio-quality`, set up as for the
+rerun) and two clean worktrees, `ab-821870c` and `ab-840bb74`, under one
+directory (`WT`). The scripts of the run are in
+[`quality/2026-11-25-ab/`](quality/2026-11-25-ab/): `ab.sh` (one block:
+demo, traces, mixer probe, trials, teardown, a fresh demo session when
+rtpengine is lost), `block.sh` (the trials of a block), `run-all.sh` (the
+four blocks at the declared gate), `mixprobe.erl`, `rtpan.py`, `mixan.py`,
+`makeab.py` (fills the A/B manifest from the two builds' manifests) and
+`summarize.py` (the rows of a results table).
+
+```sh
+Q=$PWD/apps/chappe_mix/test/audit/quality/2026-11-25-ab
+python3 -c 'import hashlib, json, sys
+m = json.load(open(sys.argv[1]))["margins"]
+print(hashlib.sha256(json.dumps(m, sort_keys=True).encode()).hexdigest())' \
+    $Q/manifest-margins.json
+# 268e6bca4d9306a2a6939ede8017565bcfdf2331786c3c5d9c3840366039a997
+git worktree add --detach $WT/ab-821870c 821870c
+git worktree add --detach $WT/ab-840bb74 840bb74
+(cd $WT/ab-821870c && rebar3 compile); (cd $WT/ab-840bb74 && rebar3 compile)
+```
+
+In the taq checkout, make `runs/hd-room-ab-2026-11-25/` with the scripts
+and the declared `manifest.json`, then `strict/manifest.json`,
+`strict/old/` and `strict/new/` (each manifest a copy of the declaration
+with its `clips` path adjusted, no trials, and the meta files of the
+rerun with the build's revision), compile `mixprobe.erl` there, and run:
+
+```sh
+WT=$WT bash runs/hd-room-ab-2026-11-25/run-all.sh
+python3 runs/hd-room-ab-2026-11-25/makeab.py runs/hd-room-ab-2026-11-25/strict \
+    268e6bca4d9306a2a6939ede8017565bcfdf2331786c3c5d9c3840366039a997
+S=runs/hd-room-ab-2026-11-25/strict
+for m in $S/manifest.json $S/old/manifest.json $S/new/manifest.json; do
+    uv run taq compare $m --out out/hd-room-ab-$(basename $(dirname $m)) --require-verified
+done
+python3 -I runs/hd-room-ab-2026-11-25/rtpan.py $S/pcap/block1-old-s1-rtp.pcap $S/old/[bc]0-*-01
+python3 -I runs/hd-room-ab-2026-11-25/mixan.py $S/block1-old-s1.mix.log $S/old/c0-*-01
+```
+
+The evidence stays in the taq checkout (git-ignored), under
+`runs/hd-room-ab-2026-11-25/`: `refused/` (the first refused wait),
+`set-aside-load15/` (the block at MAX_LOAD 15: run directories, `load.log`,
+traces, demo and mixer logs), `strict/` (the second refused wait), and
+`gate-decision.txt`. The hop-by-hop numbers of the set-aside block are in
+[`set-aside-rtp.json`](quality/2026-11-25-ab/set-aside-rtp.json) and
+[`set-aside-mix.json`](quality/2026-11-25-ab/set-aside-mix.json).
+
 ## 2026-11-25, rerun: HD rooms after the hardening fixes
 
 The joint test of the run below, run again on main after the hardening

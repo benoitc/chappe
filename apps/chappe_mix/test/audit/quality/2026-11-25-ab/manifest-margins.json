@@ -1,0 +1,31 @@
+{
+  "schema": "taq.manifest/1",
+  "manifest_id": "chappe-hd-room-ab-2026-11-25",
+  "description": "A/B of the chappe 16 kHz room: main 840bb74 (new) against 821870c (old, before the hardening fixes), each with its own FreeSWITCH baseline, in four alternating blocks (old, new, old, new) on a load-gated host. This manifest is the A/B comparison: old's chappe_mix captures as baseline, new's as candidate; old/manifest.json and new/manifest.json compare each build with FreeSWITCH.",
+  "created_at": "2026-11-25T22:38:12Z",
+  "clips": {
+    "set": "vctk-0.92",
+    "file": "../../clips/vctk-0.92.json",
+    "prepared_dir": null
+  },
+  "margins": {
+    "declared_at": "2026-11-25T22:38:12Z",
+    "declared_by": "chappe integration (A/B of the 16 kHz rooms, new 840bb74 against old 821870c), before any capture",
+    "note": "Declared before any capture of either build, in a new run directory, after the 2026-11-25 rerun (runs/hd-room-2026-11-25-rerun), which missed NISQA in both directions and the dropout margin on one candidate capture at a median load of 13.2 and could not tell a change of chappe from the busier host. Question: is chappe main 840bb74 (new, after the hardening fixes #89 to #92) worse than 821870c (old, main after #88) in the 16 kHz conference room? Design: each build runs the demo (make demo, DEMO_SIP_PORT=5080) from a clean worktree of its commit; four blocks in the order old, new, old, new, the demo stopped between blocks, so a drift of the host hits both builds. In each block, for each of the eight pinned VCTK 0.92 clips and each direction (g722-to-opus, opus-to-g722), one baseline trial (room 1004, FreeSWITCH mod_conference demo-hd-fs@wideband) then one candidate trial (room 1003, chappe_mix demo-hd at 16 kHz in L16 behind rtpengine). The first block of a build is rep 0, its second rep 1. No PCMU caller. Before every trial the campaign script (taq 78eebde, run1.sh) waits until the 1 min load average has stayed at most 4.0 (14 CPUs) for 30 s in a row, for up to 1800 s; a trial that never gets quiet fails and runs nothing. Each block has its own packet trace (SIP, rtpengine NG and RTP) from the docker host. Comparisons: taq compares two arms, baseline and candidate, and cannot compare two candidate arms directly, so the run is scored as three comparisons, each with this same margins block (same sha256): (1) the A/B, new against old: this manifest, with the chappe_mix captures of old (blocks 1 and 3) as its baseline arm and the chappe_mix captures of new (blocks 2 and 4) as its candidate arm, paired per clip and receiver; its reference variation is old's block 3 minus block 1; (2) old against its own FreeSWITCH baseline (old/manifest.json, both old blocks); (3) new against its own FreeSWITCH baseline (new/manifest.json, both new blocks), as in the rerun. The A/B answers the question: it fails when new is worse than old by more than a margin. (2) and (3) say whether each build keeps the rerun's margins against FreeSWITCH on the same host and hour. Margins, the same as the rerun's so the runs compare: scorers, the lower bound of the 95% bootstrap interval of the paired difference (candidate minus baseline, mean per clip over its reps) above -0.3 MOS, for ViSQOL and NISQA. For NISQA, 0.3 sits below the 0.38 drop taq measured between a G.722 and a PCMU path; NISQA is verified (validation/nisqa.json). For ViSQOL no measured drop backs 0.3; it keeps the earlier runs' value. Dropouts: no gap in active speech longer than 40 ms (two 20 ms packets) in a candidate capture (in the A/B, every new capture); a baseline gap is reported, not gated; the rerun's miss was 80 ms. Level against the baseline: within 1.5 dB on the worst pair (each candidate capture's level change minus the mean of the baseline captures of the same clip and receiver; in the A/B, a new capture against the two old captures); the rerun's arms differed by 0.20 dB at most, and a gain fault of 2 dB or more fails it. Level against the reference: not gated (pjsua's G.722 codec is 6 dB off the others in both rooms). Bandwidth: every candidate capture keeps its 4-7 kHz share within 6 dB of the reference's (a hop through 8 kHz reads 33 to 53 dB down). Clipping: at most 1e-4 of the samples. Bandwidth and clipping are per-capture checks of the candidate arm: in the A/B they read the same new captures as comparison (3), so they repeat that gate rather than add one. Delay: not gated (taq live has no synchronized timestamps). A missed margin is recorded as missed.",
+    "default": {
+      "visqol_drop_max": 0.3,
+      "nisqa_drop_max": 0.3,
+      "high_band_min_db": -6.0,
+      "level_change_max_db": null,
+      "level_vs_baseline_max_db": 1.5,
+      "clipping_max_fraction": 0.0001,
+      "dropout_max_ms": 40,
+      "delay_max_ms": null,
+      "confidence": 0.95,
+      "min_clips": 6,
+      "bootstrap_resamples": 10000,
+      "bootstrap_seed": 0
+    }
+  },
+  "trials": []
+}
