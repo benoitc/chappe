@@ -9,6 +9,304 @@ capture; a margin that is missed is recorded as missed, never moved after
 the numbers arrive. `PERF.md` is the performance record, this page the
 quality one.
 
+## 2026-11-26, A/B of main against the build before the hardening, at a load gate of 8
+
+The A/B that the declared gate did not let run (next section), run at the
+gate the maintainer chose afterwards: a 1 min load of 8.0. All four blocks
+ran, 128 trials, and the gate refused none. Against the old build
+(`821870c`), the new one (`840bb74`) keeps ViSQOL and NISQA within 0.09 MOS
+in both directions, every interval above the margin, and keeps the band,
+the level and clipping. It misses the dropout margin in both directions,
+on one capture each (gaps of 100 and 110 ms), so `taq compare` exits 1 and
+the A/B is a miss. The old build passes every check against its
+FreeSWITCH room. The new one misses only the dropout margin, on the same
+two captures. NISQA, missed in the rerun, passes for both builds. The RTP
+and mixer traces put the start of both gaps before rtpengine and outside
+the mixing. In one, a tick of the mixer fired late on the loaded host and
+its frames were skipped. In the other, the mixer ticked on time and the
+gap opened on the way from macOS to the docker host. rtpengine stretched
+both and kept a lasting delay. Both fell in the new build's first block,
+the block in which the host also cut the demo off from rtpengine and
+FreeSWITCH's stream stalled more than in any other.
+
+### Margins
+
+The block declared at 2026-11-25T22:38:12Z, unchanged: sha256
+`268e6bca4d9306a2a6939ede8017565bcfdf2331786c3c5d9c3840366039a997`, its
+table and file in the next section. The three manifests of the run carry
+it, `makeab.py` checked it before it filled the A/B manifest, and each
+`results.json` reports it. The comparisons are the three declared: the
+A/B (old's chappe_mix captures as the baseline arm, new's as the
+candidate, paired per clip and receiver, the reference variation being
+old's block 3 minus its block 1), and each build's chappe_mix room (1003)
+against its own FreeSWITCH room (1004).
+
+### The gate, load and waits
+
+The decision is in
+[`gate-decision.txt`](quality/2026-11-26-ab-gate8/gate-decision.txt),
+written at 2026-11-26T07:27:26Z, before any capture: `MAX_LOAD` 8.0,
+`LOAD_QUIET` 30 s and `MAXWAIT` 1800 s for all four blocks, because the
+declared gate (4.0) was refused twice. The absolute numbers are therefore
+measured under moderate load; only the comparison of old against new is
+the question. The design is the declared one: blocks old, new, old, new,
+each built from a fresh worktree of its commit, per clip and direction
+one baseline trial then one candidate trial, SIP and RTP traced per demo
+session, the mixer probe on. Two changes to the scripts, written before
+the first trial: `run-gate8.sh` is `run-all.sh` with this gate, the
+campaign's first trial tried again like any other (up to four more
+times), and an 8 hour limit after which `block.sh` starts no trial
+(`DEADLINE`). Neither came into play: no trial was refused, and the run
+took 2 h 51 min.
+
+| Block | Build | When (UTC, 26th) | Trials | Waiting | 1 min load at each trial start | 1 min load while it ran |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | old | 07:30 to 08:10 | 32 | 1696 s, longest 221 s | 3.4 to 7.2, median 5.5 | 3.4 to 18.9, median 6.2 |
+| 2 | new | 08:10 to 08:56, two demo sessions | 32, and one run again | 1983 s, longest 246 s | 3.8 to 7.8, median 6.4 | 3.8 to 29.6, median 7.3 |
+| 3 | old | 08:56 to 09:43 | 32 | 2082 s, longest 417 s | 4.3 to 7.7, median 6.0 | 4.1 to 23.6, median 7.2 |
+| 4 | new | 09:43 to 10:21 | 32 | 1502 s, longest 447 s | 3.7 to 7.6, median 5.5 | 3.5 to 36.4, median 6.3 |
+
+The gate waited 7263 s in all; the median trial waited the minimum, 30 s.
+Sampled every 10 s from 07:29:53 to 10:21:16 (`hostload.log`), the 1 min
+load ran from 3.4 to 36.4, median 6.8, above 8 in 292 of 1028 samples. It
+went under 4.0 at times this morning (27 samples), which it never did in
+the two refused waits.
+
+Block 2 lost rtpengine once, as the set-aside block did. From 08:19:17 to
+08:19:33 the two trace containers exited, the node lost its ESL
+connections to both FreeSWITCH, then got no reply to its NG requests and
+marked rtpengine down. The next trial (baseline, G.722 to Opus, p234) got
+no answer and was moved to `new/failed-ng/`; `ab.sh` started a fresh demo
+session at 08:21:44 and ran that trial again at 08:24:39. The first
+session's traces end at 08:19:17, after the speech of its last capture
+(candidate, Opus to G.722, p226, 08:18:57 to 08:19:20), so the speech of
+every capture of the run is in a trace.
+
+### Versions
+
+| What | Version |
+| --- | --- |
+| chappe | old `821870c` (`821870cb93ec4df455bbce8a3f7140ebc3530e8d`), new `840bb74` (`840bb749f9ab39585b604857b733ab5d25af5dbe`), each from a fresh `git worktree` built for this run; Erlang/OTP 29.1.2 (erts 17.1.1) |
+| FreeSWITCH, rtpengine, pjsua | as in the next section; rtpengine 26.3.1.4+0~mr26.3.1.4, image `sha256:9cf8018b...`, as each session's `.versions` file records |
+| taq | 0.1.0 at `78eebde` (`78eebde26f5f1d1a984c09315e29323696d4c710`) |
+| Scorers | ViSQOL 3.3.3 and NISQA as in the rerun, both verified (`--require-verified`) |
+| Traces | tcpdump in `nicolaka/netshoot:v0.13` on the docker host's network: SIP and NG in full, RTP to 128 bytes, one pair of files per demo session (five sessions) |
+
+### Results
+
+The paired difference is candidate minus baseline, averaged per clip,
+with its 95% bootstrap interval over the 8 clips. In the A/B each arm has
+two captures per clip and receiver (old: blocks 1 and 3; new: blocks 2
+and 4), and the reference variation is old's block 3 minus its block 1.
+Bandwidth is at the listener, median and worst of the arm's captures,
+with the lowest edge. The level rows give each arm's level change against
+the reference (not gated) and, as the difference, the gated level against
+the baseline.
+
+New against old:
+
+| Direction | Check | Old (`821870c`) | New (`840bb74`) | Paired difference [95%] | Reference variation [95%] | Margin | Verdict |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| G.722 to Opus | ViSQOL | 4.371 | 4.379 | +0.008 [-0.037, +0.050] | +0.025 [-0.004, +0.071] | -0.3 | pass |
+| G.722 to Opus | NISQA | 4.060 | 4.001 | -0.058 [-0.159, +0.013] | -0.013 [-0.088, +0.054] | -0.3 | pass |
+| G.722 to Opus | bandwidth at the Opus listener | -2.67 dB, worst -2.95, edge 7.25 kHz | -2.65 dB, worst -2.95, edge 7.25 kHz | | | -6 dB | pass |
+| G.722 to Opus | level against the baseline | -6.01 to -6.42 dB | -6.02 to -6.42 dB | -0.004 dB [-0.011, +0.002], worst pair -0.04 (p294) | | 1.5 dB, worst pair | pass |
+| G.722 to Opus | longest gap | 0 ms | 0 ms, but 100 ms on p225 (block 2) | | | 40 ms | **missed**: 1 of 16 |
+| G.722 to Opus | clipping | none | none | | | 1e-4 | pass |
+| Opus to G.722 | ViSQOL | 4.373 | 4.373 | -0.001 [-0.034, +0.039] | -0.019 [-0.060, +0.013] | -0.3 | pass |
+| Opus to G.722 | NISQA | 3.834 | 3.751 | -0.083 [-0.202, +0.006] | +0.054 [-0.048, +0.197] | -0.3 | pass |
+| Opus to G.722 | bandwidth at the G.722 listener | -2.83 dB, worst -3.44, edge 8.0 kHz | -2.90 dB, worst -4.31, edge 8.0 kHz | | | -6 dB | pass |
+| Opus to G.722 | level against the baseline | +5.62 to +5.95 dB | +5.61 to +5.95 dB | -0.017 dB [-0.035, -0.001], worst pair -0.10 (p234) | | 1.5 dB, worst pair | pass |
+| Opus to G.722 | longest gap | 0 to 40 ms, none over | 0 to 40 ms, but 110 ms on p234 (block 2) | | | 40 ms | **missed**: 1 of 16 |
+| Opus to G.722 | clipping | none | none | | | 1e-4 | pass |
+
+The A/B verdict on the declared margins: **missed**. `taq compare` exits
+1 (regression) on the dropout check, in both directions; every other
+check passes.
+
+Each build against its FreeSWITCH room:
+
+| Direction | Check | Build | FreeSWITCH (1004) | chappe_mix (1003) | Paired difference [95%] | Reference variation [95%] | Verdict |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| G.722 to Opus | ViSQOL | old | 4.134 | 4.371 | +0.237 [+0.193, +0.280] | -0.001 [-0.023, +0.027] | pass |
+| G.722 to Opus | ViSQOL | new | 4.121 | 4.379 | +0.258 [+0.200, +0.319] | -0.015 [-0.069, +0.018] | pass |
+| G.722 to Opus | NISQA | old | 4.068 | 4.060 | -0.008 [-0.174, +0.160] | -0.008 [-0.307, +0.273] | pass |
+| G.722 to Opus | NISQA | new | 4.162 | 4.001 | -0.161 [-0.257, -0.061] | +0.036 [-0.074, +0.162] | pass |
+| G.722 to Opus | bandwidth | old | -3.03 dB, worst -3.45, edge 7.0 kHz | -2.67 dB, worst -2.95, edge 7.25 kHz | | | pass |
+| G.722 to Opus | bandwidth | new | -2.98 dB, worst -3.57, edge 7.0 kHz | -2.65 dB, worst -2.95, edge 7.25 kHz | | | pass |
+| G.722 to Opus | level against the baseline | old | -5.98 to -6.37 dB | -6.01 to -6.42 dB | -0.054 dB [-0.111, -0.013], worst pair -0.24 (p245) | | pass |
+| G.722 to Opus | level against the baseline | new | -5.98 to -6.39 dB | -6.02 to -6.42 dB | -0.057 dB [-0.099, -0.029], worst pair -0.20 (p245) | | pass |
+| G.722 to Opus | longest gap | old | 0 to 90 ms (7 of 16 over 40) | 0 ms | | | pass |
+| G.722 to Opus | longest gap | new | 0 to 90 ms (6 of 16 over 40) | 0 ms, but 100 ms on p225 | | | **missed**: 1 of 16 |
+| G.722 to Opus | clipping | both | none | none | | | pass |
+| Opus to G.722 | ViSQOL | old | 4.175 | 4.373 | +0.198 [+0.106, +0.286] | +0.073 [-0.007, +0.188] | pass |
+| Opus to G.722 | ViSQOL | new | 4.194 | 4.373 | +0.179 [+0.071, +0.278] | -0.053 [-0.125, +0.006] | pass |
+| Opus to G.722 | NISQA | old | 3.503 | 3.834 | +0.330 [+0.104, +0.538] | +0.059 [-0.654, +0.772] | pass |
+| Opus to G.722 | NISQA | new | 3.634 | 3.751 | +0.117 [-0.058, +0.313] | -0.112 [-0.479, +0.350] | pass |
+| Opus to G.722 | bandwidth | old | -2.88 dB, worst -3.08, edge 7.25 kHz | -2.83 dB, worst -3.44, edge 8.0 kHz | | | pass |
+| Opus to G.722 | bandwidth | new | -2.81 dB, worst -3.11, edge 7.25 kHz | -2.90 dB, worst -4.31, edge 8.0 kHz | | | pass |
+| Opus to G.722 | level against the baseline | old | +5.53 to +5.97 dB | +5.62 to +5.95 dB | -0.011 dB [-0.033, +0.010], worst pair -0.09 (p248) | | pass |
+| Opus to G.722 | level against the baseline | new | +5.50 to +5.96 dB | +5.61 to +5.95 dB | -0.022 dB [-0.055, +0.013], worst pair -0.11 (p234) | | pass |
+| Opus to G.722 | longest gap | old | 0 to 60 ms (4 of 16 over 40) | 0 to 40 ms, none over | | | pass |
+| Opus to G.722 | longest gap | new | 0 to 80 ms (4 of 16 over 40) | 0 to 40 ms, but 110 ms on p234 | | | **missed**: 1 of 16 |
+| Opus to G.722 | clipping | both | none | none | | | pass |
+
+The margins are those of the A/B table. The old build's comparison exits
+0 (pass), the new build's exits 1 (regression, the dropout check in both
+directions).
+
+What the numbers say:
+
+- New against old, the scorers do not move: ViSQOL's intervals hold zero,
+  and NISQA's means are 0.06 and 0.08 lower with upper bounds just above
+  zero. The two lowest NISQA differences per clip are the clips of the
+  two dropout misses (p225 from G.722 to Opus, -0.38; p234 from Opus to
+  G.722, -0.46), whose new captures in block 2 score 2.52 and 2.39; the
+  other 14 lie between -0.20 and +0.05. The A/B's reference variation
+  intervals (0.14 and 0.24 wide for NISQA) are narrower than the margin:
+  old's chappe_mix captures repeat closely across its two blocks.
+- Level and band: the builds agree within 0.1 dB on every pair, and both
+  keep the band within 4.4 dB of the reference.
+- Both builds beat FreeSWITCH on ViSQOL by 0.18 to 0.26 MOS with
+  intervals above zero, as in the earlier runs. NISQA passes for both
+  builds; in the rerun, at a median load of 13.2, it missed in both
+  directions. Three of its four reference variation intervals against
+  FreeSWITCH are again wider than the margin (0.58, 0.83 and 1.43):
+  mod_conference's two runs of a clip often differ by more than the
+  margin.
+- mod_conference drops quiet speech as before (6 or 7 of 16 captures over
+  40 ms from G.722 to Opus). A baseline gap does not gate.
+
+### What the traces show
+
+Each candidate capture that missed a margin, read hop by hop as in the
+set-aside block: `rtpan.py` on the session's RTP trace, `mixan.py` and
+`mixsec.py` on the mixer probe's samples. Times are from the trial's
+start; alice speaks from about 3.5 to 12.6 s.
+
+- New, G.722 to Opus, p225 (block 2, first session, 08:12:12Z, 1 min load
+  4.5 at the start). The mixer ticked on time through the gap: in the
+  second from 10.2 to 11.2 s it fired its 50 ticks, none more than 5 ms
+  late. chappe_mix's stream reached the docker host with a 63.9 ms gap at
+  10.8 s, with no loss and no timestamp jump. rtpengine's stream to bob
+  had a 59.3 ms gap there and stayed 27.4 ms later from then on; the
+  docker proxy added nothing. bob's pjsua ran its jitter buffer empty
+  twice at that moment, and taq reads a 100 ms gap. The gap opened after
+  the mixer sent, between macOS and the docker host, and rtpengine kept
+  part of it as a lasting delay.
+- New, Opus to G.722, p234 (block 2, second session, 08:29:01Z, load 5.6
+  at the start). In the second from 10.75 to 11.75 s one tick fired more
+  than 20 ms late, and the mixer skipped two frames (two overruns, 48
+  ticks instead of 50), as it is built to. chappe_mix's stream into
+  rtpengine had a 68.8 ms gap at 11.0 s with one RTP timestamp jump.
+  rtpengine's stream to bob had a 109.9 ms gap and stayed 91.4 ms later.
+  bob's jitter buffer ran empty four times in the speech, and taq reads
+  110 ms. The gap started at the node's timer on the loaded host, and
+  rtpengine stretched it and kept it as delay. An earlier gap of the
+  same capture, 47.9 ms into rtpengine at 9.1 s with the mixer on time,
+  had left a 17 ms step.
+- In both of those seconds the SIP and NG traces hold only the demo's
+  OPTIONS keepalives to the two FreeSWITCH and its rtpengine pings, as in
+  every second of both builds: no call was set up or joined while the
+  gaps opened.
+
+Across the run (`tracesum.py` and `perblock.py` on the traces of
+[`traces/`](quality/2026-11-26-ab-gate8/traces/)):
+
+| Block | Build | Candidate captures with a gap over 40 ms in speech into rtpengine | Mixer ticks over 20 ms late (overruns) | Lasting steps at bob of 15 ms or more in speech, candidate | pjsua empties in speech, candidate | FreeSWITCH captures with a gap over 40 ms into rtpengine |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | old | 0 of 16 | 6 (14) | none | 2 | 1 of 16 |
+| 2 | new | 4 of 16 | 12 (17) | 5, of 17 to 91 ms | 13 | 2 of 16 |
+| 3 | old | 0 of 16 | 0 (0) | none | 1 | 0 of 16 |
+| 4 | new | 1 of 16 (41.3 ms) | 3 (4) | none | 5 | 0 of 16 |
+
+The mixer's counts cover 15 candidate windows per block: the probe stops
+with the demo, so the last candidate trial of each block has no sample
+after it.
+
+So:
+
+- The gaps do not start in chappe_mix's mixing. In both misses the
+  stream left the mixer whole, or with the frames of one late tick
+  skipped. Between the two builds the mixer differs only in how it draws
+  an SSRC when a leg joins (#90), and both gaps fell in the middle of the
+  speech, with no join in progress.
+- The stalls cluster in block 2, the new build's first block: the block
+  that lost rtpengine through the OrbStack forward, and the one in which
+  FreeSWITCH's stream also had the most gaps over 40 ms. Block 4, the new
+  build's second block, is of the order of the old build's two blocks.
+  The traces point at that stretch of the host. But one block is all
+  that separates the builds here, and this run cannot rule out that the
+  new build had a part in it.
+- rtpengine turns a gap upstream into a longer gap and a lasting delay
+  (27 and 91 ms here), as in the set-aside block.
+
+### Reproduce
+
+You need taq at `78eebde26f5f1d1a984c09315e29323696d4c710`, with
+`runs/hd-room-ab-2026-11-25/` set up as in the next section (the scripts,
+`strict/` with its manifests and meta files, `mixprobe.erl` compiled),
+and two fresh worktrees, `ab-821870c` and `ab-840bb74`, under one
+directory (`WT`). The scripts of this run are in
+[`quality/2026-11-26-ab-gate8/`](quality/2026-11-26-ab-gate8/):
+`run-gate8.sh` and the `block.sh` with `DEADLINE`, the unchanged `ab.sh`,
+`mixprobe.erl.txt`, `rtpan.py`, `mixan.py`, `makeab.py` and
+`summarize.py`, and the analysis scripts `tracesum.py`, `perblock.py` and
+`mixsec.py`.
+
+```sh
+Q=$PWD/apps/chappe_mix/test/audit/quality/2026-11-26-ab-gate8
+export TAQ_DIR=~/Projects/telephony-audio-quality
+R=$TAQ_DIR/runs/hd-room-ab-2026-11-25
+git worktree add --detach $WT/ab-821870c 821870c
+git worktree add --detach $WT/ab-840bb74 840bb74
+(cd $WT/ab-821870c && rebar3 compile); (cd $WT/ab-840bb74 && rebar3 compile)
+cp $Q/run-gate8.sh $Q/block.sh $R/
+mkdir -p $R/gate8/old $R/gate8/new
+cp $R/strict/manifest.json $R/gate8/
+for b in old new; do
+    cp $R/strict/$b/manifest.json $R/strict/$b/meta-*.json $R/gate8/$b/
+    : > $R/gate8/$b/load.log
+done
+WT=$WT bash $R/run-gate8.sh
+cd $TAQ_DIR
+python3 $R/makeab.py $R/gate8 \
+    268e6bca4d9306a2a6939ede8017565bcfdf2331786c3c5d9c3840366039a997
+uv run taq compare $R/gate8/manifest.json \
+    --out out/hd-room-ab-gate8-ab --require-verified
+uv run taq compare $R/gate8/old/manifest.json \
+    --out out/hd-room-ab-gate8-old --require-verified
+uv run taq compare $R/gate8/new/manifest.json \
+    --out out/hd-room-ab-gate8-new --require-verified
+for r in ab old new; do
+    python3 $R/summarize.py out/hd-room-ab-gate8-$r/results.json
+done
+```
+
+Then the traces, per demo session (block 2 has two, both over
+`new/[bc]0-*`; block 3 is `old/[bc]1-*`, block 4 `new/[bc]1-*`):
+
+```sh
+cd $R && mkdir -p gate8/an
+python3 -I rtpan.py gate8/pcap/block1-old-s1-rtp.pcap gate8/old/[bc]0-*/ \
+    > gate8/an/block1-old-s1-rtp.json
+python3 -I mixan.py gate8/block1-old-s1.mix.log gate8/old/c0-*/ \
+    > gate8/an/block1-old-s1-mix.json
+python3 -I $Q/tracesum.py gate8/an
+python3 -I $Q/perblock.py gate8 gate8/an
+python3 -I $Q/mixsec.py mixan.py gate8/block2-new-s2.mix.log \
+    gate8/new/c0-opus-to-g722-vctk092-p234-01
+```
+
+The evidence stays in the taq checkout (git-ignored), under
+`runs/hd-room-ab-2026-11-25/gate8/`: the run directories of both builds
+and their `load.log`, `hostload.log`, `blocks.log`, `run-gate8.log`, each
+session's demo, block and mixer logs and versions, the traces in `pcap/`,
+the trial lost with rtpengine in `new/failed-ng/`, and the hop-by-hop
+results in `an/` (the same as `traces/` here, one trial per line). The
+results are under `out/hd-room-ab-gate8-ab`, `-old` and `-new`, each with
+its `compare.log`.
+
 ## 2026-11-25 and 26, A/B of main against the build before the hardening: not run
 
 The follow-up to the rerun below, meant to tell a change of chappe from the
