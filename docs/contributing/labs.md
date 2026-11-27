@@ -135,10 +135,12 @@ Each lab takes a compose project name and its ports from the environment:
 | cluster demo | chappe-demo-cluster (`DEMO_CLUSTER_PROJECT` for the smoke test) | none published; `DEMO_CLUSTER_PREFIX` moves its /24 (172.29.18) |
 
 The conformance lab (network `chappe-conf`) uses fixed names: run one copy
-at a time. The mrf, sbc and demo compose files build to fixed image names
-(`chappe-rtpengine-interop`, `chappe-esl-fs:lab`): two checkouts with
-different Dockerfiles overwrite each other's image, so run them one after
-the other.
+at a time. Every lab builds its images to fixed names
+(`chappe-rtpengine-interop`, `chappe-esl-fs:lab`, `chappe-conf-sipp`, ...)
+through `scripts/lab_image.sh`, which rebuilds an image made from another
+checkout's Dockerfile: two checkouts with different Dockerfiles replace
+each other's image, so run them one after the other. See
+[Add a lab image](add-interop-lab.md#add-a-lab-image).
 
 ## Pinned images
 
