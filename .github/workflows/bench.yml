@@ -40,7 +40,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - uses: erlef/setup-beam@v1
+      - uses: ./.github/actions/setup-beam
         with:
           otp-version: ${{ env.OTP }}
           rebar3-version: ${{ env.REBAR3 }}
