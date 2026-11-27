@@ -23,10 +23,18 @@ ARG AUDIO_STREAM_TAG=v1.1.0
 ARG AUDIO_STREAM_SHA=fe3af21d3058753e024a43ef7ca54af2077634a0
 ARG FS_SHA=4cb05e7f4a23645ec387f3b5391194128be7d193
 ARG FLITE_SRC_SHA256=cac4d9027c910ae6dab856888c81cf4250e6d0cc0ecf597663e2577911038754
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-      build-essential cmake git pkg-config ca-certificates curl \
-      libevent-dev libspeexdsp-dev libssl-dev zlib1g-dev flite1-dev \
+# apt as scripts/ci_apt.sh runs it: a stalled mirror or a stale index fails
+# one bounded attempt, and the next one fetches the index again
+RUN printf 'Acquire::Retries "3";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' \
+      > /etc/apt/apt.conf.d/80-retries \
+ && for i in 1 2 3; do \
+      timeout 300 apt-get update \
+      && timeout 900 apt-get install -y --no-install-recommends \
+           build-essential cmake git pkg-config ca-certificates curl \
+           libevent-dev libspeexdsp-dev libssl-dev zlib1g-dev flite1-dev \
+      && break; \
+      [ "$i" -lt 3 ] || exit 1; sleep $((i * 15)); \
+    done \
  && rm -rf /var/lib/apt/lists/*
 RUN git clone --depth 1 --branch "${AUDIO_STREAM_TAG}" --recurse-submodules \
       https://github.com/amigniter/mod_audio_stream.git /src \
@@ -45,9 +53,15 @@ RUN mkdir /flite \
       -lflite_usenglish -lflite -lm
 
 FROM ${FS_IMAGE}
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-      libevent-2.1-7 libevent-pthreads-2.1-7 libspeexdsp1 libflite1 \
+RUN printf 'Acquire::Retries "3";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' \
+      > /etc/apt/apt.conf.d/80-retries \
+ && for i in 1 2 3; do \
+      timeout 300 apt-get update \
+      && timeout 900 apt-get install -y --no-install-recommends \
+           libevent-2.1-7 libevent-pthreads-2.1-7 libspeexdsp1 libflite1 \
+      && break; \
+      [ "$i" -lt 3 ] || exit 1; sleep $((i * 15)); \
+    done \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/build/mod_audio_stream.so /usr/local/freeswitch/mod/
 COPY --from=build /flite/mod_flite.so /usr/local/freeswitch/mod/

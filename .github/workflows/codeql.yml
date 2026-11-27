@@ -27,7 +27,7 @@ jobs:
       security-events: write
     steps:
       - uses: actions/checkout@v5
-      - uses: erlef/setup-beam@v1
+      - uses: ./.github/actions/setup-beam
         with:
           otp-version: ${{ env.OTP }}
           rebar3-version: ${{ env.REBAR3 }}

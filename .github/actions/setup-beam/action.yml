@@ -1,0 +1,25 @@
+name: Erlang/OTP and rebar3
+description: >-
+  Erlang/OTP through erlef/setup-beam, then a pinned rebar3 fetched without
+  the GitHub API, retried and checked by sha256 (scripts/ci_rebar3.sh).
+  setup-beam's own rebar3 install lists the releases through api.github.com,
+  which rate-limits, and does not retry a 403 on the download.
+inputs:
+  otp-version:
+    description: The Erlang/OTP version.
+    required: true
+  rebar3-version:
+    description: The rebar3 version, which must be pinned in ci_rebar3.sh; none when empty.
+    required: false
+    default: ''
+runs:
+  using: composite
+  steps:
+    - uses: erlef/setup-beam@v1
+      with:
+        otp-version: ${{ inputs.otp-version }}
+    - if: inputs.rebar3-version != ''
+      shell: bash
+      env:
+        REBAR3_VERSION: ${{ inputs.rebar3-version }}
+      run: sh "$GITHUB_ACTION_PATH/../../../scripts/ci_rebar3.sh" "$REBAR3_VERSION"
