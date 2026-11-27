@@ -136,7 +136,7 @@ init_per_suite(Config) ->
     %% runner; the cases keep the suite's 5 minutes. Each build step has
     %% its own, shorter, timeout so a step that hangs is named in the log
     %% before this timetrap fires.
-    ct:timetrap({minutes, 40}),
+    ct:timetrap({minutes, 55}),
     case docker_ready() of
         ok ->
             Dir = interop_dir(),
@@ -498,7 +498,8 @@ pjsua(Kind, Config) ->
 build(Lab) ->
     case os:getenv("CONFORMANCE_NOBUILD") of
         false ->
-            {0, _} = run_logged(Lab, ["images"], 1080000),
+            %% a slow Ubuntu mirror can take most of 30 minutes
+            {0, _} = run_logged(Lab, ["images"], 1800000),
             {0, _} = run_logged(Lab, ["build"], 1080000),
             ok;
         _ ->

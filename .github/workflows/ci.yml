@@ -379,7 +379,7 @@ jobs:
     name: SBC interop (FreeSWITCH, rtpengine, Kamailio)
     needs: [build]
     runs-on: ubuntu-24.04
-    timeout-minutes: 75
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup-beam

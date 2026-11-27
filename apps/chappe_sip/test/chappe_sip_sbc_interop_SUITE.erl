@@ -67,12 +67,14 @@ init_per_suite(Config) ->
         false ->
             {skip, "docker not found"};
         _ ->
-            %% the three steps may take 18 minutes each; this timetrap is
-            %% above their sum so a step that hangs is named by its own
+            %% the images step may take 30 minutes (a slow Ubuntu mirror
+            %% can take most of that), build and up 18 each; this timetrap
+            %% is above their sum so a step that hangs is named by its own
             %% timeout, not cut off by the suite's
-            ct:timetrap({minutes, 60}),
+            ct:timetrap({minutes, 70}),
             Lab = lab(Config),
-            [ok = run(Lab, Step, 1080000) || Step <- ["images", "build", "up"]],
+            ok = run(Lab, "images", 1800000),
+            [ok = run(Lab, Step, 1080000) || Step <- ["build", "up"]],
             [{lab, Lab} | Config]
     end.
 
