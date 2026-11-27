@@ -45,7 +45,7 @@ checks that the fakes tell the truth.
 
 | Service | Ports on the host | Role |
 |---|---|---|
-| `rtpengine` | NG `MRF_NG_PORT` (17222/udp), RTP `MRF_RTP_MIN`-`MRF_RTP_MAX` (31200-31299/udp) | anchors callers; interface `host` advertised as 127.0.0.1, `docker` as its own address |
+| `rtpengine` | NG `MRF_NG_PORT` (17222/udp), RTP `MRF_RTP_MIN`-`MRF_RTP_MAX` (31200-31299/udp) | anchors callers; interface `host` advertised as 127.0.0.1, `docker` as its own address; `--audio-player=play-media`, so a native room's prompt is mixed with the room's audio |
 | `fs1`, `fs2` | SIP `MRF_FS1_SIP`/`MRF_FS2_SIP` (17081, 17082/udp), ESL `MRF_FS1_ESL`/`MRF_FS2_ESL` (127.0.0.1:17031, 17032) | FreeSWITCH (`chappe-esl-fs:lab`, built from `apps/chappe_esl/interop/freeswitch`) with `conf/freeswitch.xml` (an `en` language on `/media/sounds`, the `chappe_700` tone descriptor, codecs OPUS, G722, PCMU, PCMA in that order, conference profiles `default` at 8 kHz and `wideband` at 16 kHz): the `mrf` extension hands the channel to the chappe_mrf listener at `host.docker.internal:MRF_SOCKET_PORT` |
 
 The chappe node listens for SIP on `MRF_SIP_PORT` (17060) and for outbound
@@ -96,6 +96,15 @@ PCMU, silent, in the middle. `native_hd_room` runs it in a native room at
 records A's probe, then plays it to A, and both pass the band check. Its
 log has the rtpengine offer and answer on the endpoint's side, flags and
 SDP.
+
+The prompt cases play the probe as a 16 kHz file to silent callers:
+`native_room_prompt` into a native 16 kHz room (rtpengine plays it on each
+caller's leg), `fs_wideband_prompt` into a `wideband` room, `ivr_prompt_hd`
+from an IVR endpoint to each caller in turn. The G.722 and Opus callers
+pass the band check from 1 s after the prompt came in, and the PCMU caller
+hears 1000 and 2500 Hz above -40 dBFS. `speak_hd` has flite speak to a
+G.722 caller, whose recording must hold energy from 4 to 7 kHz no more
+than 9 dB below the one from 1 to 3 kHz.
 
 - The suite builds `chappe-conf-pjsua`, shared with the conformance lab,
   through `scripts/lab_image.sh` before its first call. The image carries

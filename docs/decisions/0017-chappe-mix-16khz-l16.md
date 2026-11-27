@@ -63,6 +63,12 @@ Accepted (the maintainer's decision, 2026-10-02 and 2026-11-24). Amends
   1.8 times the 8 kHz one; the rest is to be measured on a quiet box.
 - A PCMU caller in a 16 kHz room hears the HD parties through 8 kHz and is
   heard as 8 kHz audio; the others keep their band.
+- A room prompt keeps the band of its file: rtpengine encodes a 16 kHz
+  file to each member's codec, wideband for G.722 and Opus, 8 kHz for
+  PCMU. An 8 kHz file is narrowband for everyone, so HD prompts are
+  16 kHz files. rtpengine needs `--audio-player=play-media` to mix the
+  prompt with the room's audio; without it a G.722 or Opus member hears
+  the prompt garbled.
 - A leg moves only between rooms of one rate.
 - telephone-event runs at the room's clock: 8000 at 8 kHz, 16000 at 16 kHz.
 - SIPREC of a 16 kHz room is refused for now (`{error, {unsupported,
@@ -75,3 +81,5 @@ Accepted (the maintainer's decision, 2026-10-02 and 2026-11-24). Amends
 - Changing a room's rate while it runs (a room that starts at 8 kHz and
   moves up when the second HD caller joins).
 - 48 kHz rooms (Opus fullband).
+- Room prompts mixed by chappe_mix itself, so that an rtpengine without
+  `--audio-player=play-media` plays them clean too.

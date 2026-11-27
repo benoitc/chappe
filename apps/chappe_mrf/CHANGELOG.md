@@ -115,6 +115,8 @@ says how apps are released.
   One operation now holds up to 16 REFERs, counting its repeats and the
   REFERs from others for the same party; the next ones are refused with
   503. A conference option changes the limit.
+- The README said that saying numbers and speaking text were not
+  supported. They are, and the IVR guide shows how.
 
 ### New
 
@@ -158,6 +160,13 @@ says how apps are released.
   room gives back what it took, 95 seconds by default and at most. A
   conference given a join timeout that is not a number of milliseconds
   from 1 to 95000 is refused, on either backend.
+- HD prompts: a 16 kHz prompt reaches G.722 and Opus callers in
+  wideband, played to a 16 kHz native room, to a FreeSWITCH room on a
+  16 kHz profile or by the IVR, and PCMU callers at 8 kHz; so does
+  speech from FreeSWITCH's flite voices. The guides say to record prompts
+  at 16 kHz for HD callers. A prompt in a native room needs rtpengine
+  started with its audio player for media playback: without it, G.722
+  and Opus members hear the prompt garbled.
 
 ## [0.1.0] - 2026-11-23
 

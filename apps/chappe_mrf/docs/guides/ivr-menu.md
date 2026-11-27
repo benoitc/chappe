@@ -147,7 +147,7 @@ ok = chappe_mrf:say(Ep, integer_to_binary(erlang:system_time(second)),
                     #{type => current_time}),
 ok = chappe_mrf:say(Ep, <<"1234">>, #{type => number, method => iterated}),
 ok = chappe_mrf:speak(Ep, <<"Your call is important to us">>,
-                      #{engine => <<"flite">>, voice => <<"kal">>}).
+                      #{engine => <<"flite">>, voice => <<"kal16">>}).
 ```
 
 `say/3` takes `language` (`<<"en">>`), `type`, `method` (`pronounced`,
@@ -164,6 +164,12 @@ configuration, with where its sound files are:
 
 `speak/3` without `engine` and `voice` uses the channel's `tts_engine` and
 `tts_voice`.
+
+For HD callers, use a voice that speaks at 16 kHz. mod_flite speaks every
+voice at 16 kHz (its `kal` plays `kal16`): a G.722 or Opus caller hears it
+in wideband, a PCMU caller at 8 kHz. The same holds for prompt files:
+record them at 16 kHz, since FreeSWITCH only resamples an 8 kHz file and
+an HD caller hears it narrowband.
 
 ## Detect tones and faxes
 

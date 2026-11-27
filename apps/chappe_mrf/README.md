@@ -84,9 +84,12 @@ SBC (`make demo`, `demo/sbc/README.md`) has an IVR on `2000`.
 
 ## Notes
 
-- `say` and `speak` are out of scope: text to speech needs FreeSWITCH
-  modules the lab does not load. Where your nodes have them, run them with
-  `chappe_mrf:execute/3`.
+- `say/3` reads numbers and dates with the node's mod_say, `speak/3`
+  runs a text to speech module (mod_flite in the lab); see
+  [the IVR guide](docs/guides/ivr-menu.md#say-numbers-and-speak-text).
+- For HD callers, give the prompts as 16 kHz files: a G.722 or Opus
+  caller hears them in wideband, a PCMU one at 8 kHz. An 8 kHz file is
+  narrowband for everyone.
 - An endpoint's channel is killed when its owner exits; audio forks and
   session recordings are stopped first.
 - Native conferences bring callers in with a loopback INVITE that
