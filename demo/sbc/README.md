@@ -150,8 +150,9 @@ and waits for a digit:
 | 9 | you record a message after the prompt; it plays back, then the menu again |
 
 The prompts are spoken by macOS `say` when it is there (a tone each
-otherwise), written to `_build/demo-media`, which is `/media` in the
-FreeSWITCH nodes. The log follows the call:
+otherwise), written at 16 kHz to `_build/demo-media`, which is `/media`
+in the FreeSWITCH nodes. An HD phone (G.722 or Opus) hears them in
+wideband, a G.711 one at 8 kHz. The log follows the call:
 
 ```
 demo: call 5c1f...@... in the IVR on fs1
