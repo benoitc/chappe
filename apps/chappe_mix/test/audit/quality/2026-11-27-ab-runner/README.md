@@ -14,6 +14,9 @@ behind the run are in [`gate-decision.txt`](gate-decision.txt).
 | `trial.py` | writes `trial.json` and checks the trial (exit codes, recordings, SDP answers) |
 | `pad.py` | checks the clips against `clips/SHA256SUMS` and writes the played files (2 s of silence added) |
 | `run-runner.sh` | the blocks, through the gate-8 `ab.sh` and `block.sh`, with `trial.sh` as `RUN1` |
+| `rtpan-runner.py` | the gate-8 `rtpan.py` on these trials, alice's speech taken from `trial.json` (no played file is kept) |
+| `perblock-runner.py` | per block: waits, load, CPU steal, mixer ticks and RTP gaps over 40 ms |
+| [`traces/`](traces/) | the hop-by-hop results of the A/B of 2026-11-27, one trial per line |
 | [`clips/`](clips/README.md) | the eight prepared VCTK clips (CC BY 4.0) |
 
 ## Start a run
@@ -24,7 +27,7 @@ runs one job at a time.
 ```sh
 # a pipeline check: one block of the new build, clip p225, both directions
 git push origin HEAD:quality/hd-ab-runner-smoke
-# the A/B: four blocks, 128 trials, about 2.5 h after 20 min of setup
+# the A/B: four blocks, 128 trials, about 1 h 55 min after 7 min of setup
 git push origin HEAD:quality/hd-ab-runner
 ```
 
@@ -46,15 +49,24 @@ the mixer probe logs, `pcap/` and `padded.json`.
 
 ## Import them with taq
 
-Set up each build's manifest as for the gate-8 run (a copy of the margins
-manifest, its clip list path fixed for its depth, no trials), then run
-`taq live-import` per build on the trial directories only (the
-`ID.live.log` files match the same names):
+Make each build's manifest from the gate-8 run's
+(`runs/hd-room-ab-2026-11-25/gate8/old/manifest.json` and `new/`, at the
+same depth, so the clip list resolves) with no trials, and copy that
+build's `meta-baseline.json` and `meta-candidate.json` next to it, with
+`rtpengine.digest` set to the runner's image (each session's `.versions`
+gives it). Then run `taq live-import` per build and arm, with the arm's
+meta file, on the trial directories only (the `ID.live.log` files would
+match `b?-*`):
 
 ```sh
 cd ~/Projects/telephony-audio-quality
 F=runs/hd-room-ab-runner/full
-uv run taq live-import $F/new/[bc][01]-*/ --meta META.json --into $F/new/manifest.json
+for b in old new; do
+    uv run taq live-import $F/$b/b?-*[0-9] --meta $F/$b/meta-baseline.json \
+        --into $F/$b/manifest.json
+    uv run taq live-import $F/$b/c?-*[0-9] --meta $F/$b/meta-candidate.json \
+        --into $F/$b/manifest.json
+done
 ```
 
 `taq live-import` validates each `trial.json` against taq's

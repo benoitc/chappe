@@ -9,6 +9,314 @@ capture; a margin that is missed is recorded as missed, never moved after
 the numbers arrive. `PERF.md` is the performance record, this page the
 quality one.
 
+## 2026-11-27, A/B of main against the build before the hardening, on a GitHub runner
+
+The A/B of the next two sections, run again on a GitHub-hosted runner at
+the declared gate (a 1 min load of at most 4.0), which the Mac never
+allowed. All four blocks ran, 128 trials; the gate refused none and
+rtpengine was never lost. On the declared margins the A/B passes:
+against the old build (`821870c`), the new one (`840bb74`) keeps ViSQOL
+and NISQA within 0.04 MOS in both directions, every interval above the
+margin and holding zero, and keeps the band, the level (within 0.02 dB
+on every pair) and clipping. No candidate capture of either build has a
+gap in speech: the longest is 0 ms in all 64. `taq compare` exits 0.
+Each build also passes every check against its FreeSWITCH room. The
+1 min load stayed between 0.03 and 2.58 (median 0.25), and the CPU steal
+counter never moved. The traces have no miss to explain: no tick of the
+mixer fired more than 5 ms late, and chappe_mix's stream reached
+rtpengine with no gap over 21.6 ms in speech in any capture. The two
+dropout misses of the gate-8 run, both in the new build's first block on
+the loaded Mac, have no counterpart here. On this runner the new build gets
+the same verdict as the old one on every declared margin.
+
+### Margins
+
+The block declared at 2026-11-25T22:38:12Z, unchanged: sha256
+`268e6bca4d9306a2a6939ede8017565bcfdf2331786c3c5d9c3840366039a997`, its
+table and file two sections down. The three manifests of the run carry
+it, `makeab.py` checked it before it filled the A/B manifest, and each
+`results.json` reports it. The comparisons are the three declared, as in
+the gate-8 run: the A/B (old's chappe_mix captures as the baseline arm,
+new's as the candidate, paired per clip and receiver, the reference
+variation being old's block 3 minus its block 1), and each build's
+chappe_mix room (1003) against its own FreeSWITCH room (1004).
+
+### The gate, load and waits
+
+The decision is in
+[`gate-decision.txt`](quality/2026-11-27-ab-runner/gate-decision.txt),
+written at 2026-11-26T23:34:13Z, before any capture on the runner, the
+smoke run included: `MAX_LOAD` 4.0, `LOAD_QUIET` 30 s and `MAXWAIT`
+1800 s, read from `/proc/loadavg`. The design is the gate-8 run's:
+blocks old, new, old, new on one runner, each build from a worktree of
+its commit built in the job, per clip and direction one baseline trial
+then one candidate trial, SIP and RTP traced per demo session, the mixer
+probe on. What differs: `trial.sh` makes taq live's two calls (same
+order, durations, ports and pjsua options) through chappe's `hd.sh`, and
+`taq live-import` finishes the trials on the Mac, where they are scored.
+A refused trial would have been tried again up to four more times, and
+no trial could start after 285 min of the job (04:38:58Z). Neither came
+into play: no trial was refused, and the four blocks took 1 h 54 min of
+a job of 2 h 2 min (23:53:52Z to 01:56:02Z).
+
+| Block | Build | When (UTC, 27th) | Trials | Waiting | 1 min load at each trial start | 1 min load while it ran |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | old | 00:01 to 00:30 | 32 | 960 s, longest 30 s | 0.05 to 1.74, median 0.23 | 0.04 to 1.60, median 0.25 |
+| 2 | new | 00:30 to 00:58 | 32 | 963 s, longest 31 s | 0.04 to 0.49, median 0.23 | 0.03 to 0.74, median 0.24 |
+| 3 | old | 00:58 to 01:27 | 32 | 961 s, longest 31 s | 0.10 to 0.72, median 0.24 | 0.05 to 0.92, median 0.25 |
+| 4 | new | 01:27 to 01:56 | 32 | 963 s, longest 31 s | 0.06 to 0.57, median 0.23 | 0.06 to 0.73, median 0.24 |
+
+The gate waited 3847 s in all, every trial the minimum (30 or 31 s).
+Sampled every 10 s from 00:01:18 to 01:55:32 (`hostload.log`, 686
+samples), the 1 min load ran from 0.03 to 2.58, median 0.25, and never
+reached 4.0. The highest sample, 2.58, is the first one, taken while the
+first demo came up. The 5 min load peaked at 1.75. The CPU steal counter
+of `/proc/stat` stayed at 0 in all 686 samples: the hypervisor reported
+no stolen time. A hypervisor that does not account for steal also reads
+0, so that is all it says. Each block ran in one demo session, and no
+trial was run again.
+
+### Versions
+
+| What | Version |
+| --- | --- |
+| chappe | old `821870c` (`821870cb93ec4df455bbce8a3f7140ebc3530e8d`), new `840bb74` (`840bb749f9ab39585b604857b733ab5d25af5dbe`), each from a `git worktree` of its commit built in the job; Erlang/OTP 29.1.2 (erts 17.1.1), rebar3 3.28.0 |
+| Host | GitHub-hosted runner, `ubuntu-24.04` image 20261122.23.1, AMD EPYC 7763, 4 vCPUs, kernel 7.0.0-1020-azure, clock source tsc; workflow run 45913592269 |
+| FreeSWITCH | `drachtio/drachtio-freeswitch-mrf@sha256:2f1583c3...`, as on the Mac |
+| rtpengine | 26.3.1.4+0~mr26.3.1.4, `chappe-rtpengine-interop` built from source in the job (image `sha256:f4eb82c3...`; the Mac's is `sha256:9cf8018b...`), as each session's `.versions` file records |
+| pjsua | 2.15.1, chappe's lab image `chappe-conf-pjsua` (`sha256:bc752d4e...`), built once before the first trial; the Mac runs used `taq-pjsua:2.15.1` (`sha256:45c94f10...`) |
+| taq | 0.1.0 at `31be153` (`31be15354fea0215f864d144dcc59a12315fa167`): gate-8's `78eebde` plus `taq live-import`; it imported and scored on the Mac and never ran on the runner |
+| Scorers | ViSQOL 3.3.3 and NISQA as in the rerun, both verified (`--require-verified`) |
+| Traces | tcpdump in `nicolaka/netshoot:v0.13` on the runner's host network: SIP and NG in full, RTP to 128 bytes, one pair of files per block (four sessions) |
+
+### Results
+
+The paired difference is candidate minus baseline, averaged per clip,
+with its 95% bootstrap interval over the 8 clips. In the A/B each arm has
+two captures per clip and receiver (old: blocks 1 and 3; new: blocks 2
+and 4), and the reference variation is old's block 3 minus its block 1.
+Bandwidth is at the listener, median and worst of the arm's captures,
+with the lowest edge. The level rows give each arm's level change against
+the reference (not gated) and, as the difference, the gated level against
+the baseline.
+
+New against old:
+
+| Direction | Check | Old (`821870c`) | New (`840bb74`) | Paired difference [95%] | Reference variation [95%] | Margin | Verdict |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| G.722 to Opus | ViSQOL | 4.390 | 4.384 | -0.006 [-0.025, +0.010] | -0.007 [-0.021, +0.003] | -0.3 | pass |
+| G.722 to Opus | NISQA | 4.077 | 4.077 | -0.000 [-0.045, +0.043] | -0.014 [-0.024, -0.004] | -0.3 | pass |
+| G.722 to Opus | bandwidth at the Opus listener | -2.86 dB, worst -3.04, edge 7.25 kHz | -2.76 dB, worst -3.09, edge 7.25 kHz | | | -6 dB | pass |
+| G.722 to Opus | level against the baseline | -6.00 to -6.41 dB | -6.00 to -6.41 dB | +0.000 dB [-0.006, +0.005], worst pair -0.02 (p234) | | 1.5 dB, worst pair | pass |
+| G.722 to Opus | longest gap | 0 ms | 0 ms | | | 40 ms | pass |
+| G.722 to Opus | clipping | none | none | | | 1e-4 | pass |
+| Opus to G.722 | ViSQOL | 4.399 | 4.403 | +0.004 [-0.007, +0.016] | +0.010 [-0.004, +0.032] | -0.3 | pass |
+| Opus to G.722 | NISQA | 3.888 | 3.926 | +0.039 [-0.008, +0.113] | +0.044 [-0.048, +0.202] | -0.3 | pass |
+| Opus to G.722 | bandwidth at the G.722 listener | -2.67 dB, worst -2.98, edge 8.0 kHz | -2.63 dB, worst -2.98, edge 8.0 kHz | | | -6 dB | pass |
+| Opus to G.722 | level against the baseline | +5.61 to +5.96 dB | +5.61 to +5.96 dB | +0.003 dB [+0.000, +0.006], worst pair +0.015 (p226) | | 1.5 dB, worst pair | pass |
+| Opus to G.722 | longest gap | 0 ms | 0 ms | | | 40 ms | pass |
+| Opus to G.722 | clipping | none | none | | | 1e-4 | pass |
+
+The A/B verdict on the declared margins: **pass**. `taq compare` exits
+0, and every check passes in both directions.
+
+Each build against its FreeSWITCH room:
+
+| Direction | Check | Build | FreeSWITCH (1004) | chappe_mix (1003) | Paired difference [95%] | Reference variation [95%] | Verdict |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| G.722 to Opus | ViSQOL | old | 4.124 | 4.390 | +0.265 [+0.211, +0.335] | -0.032 [-0.084, +0.002] | pass |
+| G.722 to Opus | ViSQOL | new | 4.145 | 4.384 | +0.239 [+0.180, +0.317] | +0.017 [-0.000, +0.040] | pass |
+| G.722 to Opus | NISQA | old | 4.182 | 4.077 | -0.105 [-0.211, +0.011] | -0.016 [-0.102, +0.064] | pass |
+| G.722 to Opus | NISQA | new | 4.194 | 4.077 | -0.118 [-0.243, +0.003] | +0.017 [-0.018, +0.055] | pass |
+| G.722 to Opus | bandwidth | old | -2.99 dB, worst -3.47, edge 7.0 kHz | -2.86 dB, worst -3.04, edge 7.25 kHz | | | pass |
+| G.722 to Opus | bandwidth | new | -3.03 dB, worst -3.47, edge 7.0 kHz | -2.76 dB, worst -3.09, edge 7.25 kHz | | | pass |
+| G.722 to Opus | level against the baseline | old | -6.01 to -6.35 dB | -6.00 to -6.41 dB | -0.034 dB [-0.055, -0.014], worst pair -0.10 (p248) | | pass |
+| G.722 to Opus | level against the baseline | new | -6.01 to -6.35 dB | -6.00 to -6.41 dB | -0.040 dB [-0.060, -0.019], worst pair -0.09 (p248) | | pass |
+| G.722 to Opus | longest gap | old | 0 to 90 ms (8 of 16 over 40) | 0 ms | | | pass |
+| G.722 to Opus | longest gap | new | 0 to 90 ms (7 of 16 over 40) | 0 ms | | | pass |
+| G.722 to Opus | clipping | both | none | none | | | pass |
+| Opus to G.722 | ViSQOL | old | 4.210 | 4.399 | +0.188 [+0.092, +0.280] | +0.007 [-0.002, +0.019] | pass |
+| Opus to G.722 | ViSQOL | new | 4.202 | 4.403 | +0.200 [+0.107, +0.291] | -0.015 [-0.055, +0.009] | pass |
+| Opus to G.722 | NISQA | old | 3.974 | 3.888 | -0.087 [-0.213, +0.052] | +0.004 [-0.037, +0.056] | pass |
+| Opus to G.722 | NISQA | new | 3.938 | 3.926 | -0.012 [-0.163, +0.164] | -0.018 [-0.062, +0.012] | pass |
+| Opus to G.722 | bandwidth | old | -2.76 dB, worst -3.25, edge 7.25 kHz | -2.67 dB, worst -2.98, edge 8.0 kHz | | | pass |
+| Opus to G.722 | bandwidth | new | -2.77 dB, worst -3.25, edge 7.25 kHz | -2.63 dB, worst -2.98, edge 8.0 kHz | | | pass |
+| Opus to G.722 | level against the baseline | old | +5.61 to +6.00 dB | +5.61 to +5.96 dB | -0.041 dB [-0.086, -0.013], worst pair -0.19 (p245) | | pass |
+| Opus to G.722 | level against the baseline | new | +5.61 to +6.00 dB | +5.61 to +5.96 dB | -0.039 dB [-0.088, -0.009], worst pair -0.20 (p245) | | pass |
+| Opus to G.722 | longest gap | old | 0 to 60 ms (2 of 16 over 40) | 0 ms | | | pass |
+| Opus to G.722 | longest gap | new | 0 to 60 ms (2 of 16 over 40) | 0 ms | | | pass |
+| Opus to G.722 | clipping | both | none | none | | | pass |
+
+The margins are those of the A/B table. Both builds' comparisons exit 0
+(pass).
+
+What the numbers say:
+
+- New against old, the scorers do not move: every interval holds zero.
+  Per clip, the NISQA differences lie between -0.13 and +0.11 from G.722
+  to Opus and between -0.03 and +0.29 from Opus to G.722. The +0.29
+  (p226) comes from one old capture of block 1 that scores 3.01, against
+  3.58 for the other three captures of that clip (see the traces). One
+  clip scores the same to two decimals in all four blocks (p245 from
+  G.722 to Opus). The A/B's reference variation intervals are at
+  most 0.25 wide, under the margin.
+- Level and band: the builds agree within 0.02 dB on every pair, and both
+  keep the band within 3.1 dB of the reference.
+- Both builds beat FreeSWITCH on ViSQOL by 0.19 to 0.27 MOS with
+  intervals above zero, as in the earlier runs. On NISQA their means are
+  0.01 to 0.12 under FreeSWITCH's, every interval holding zero. All four
+  reference variation intervals against FreeSWITCH are at most 0.17 wide;
+  on the Mac three of four were wider than the margin. On the quiet
+  runner, mod_conference's two runs of a clip repeat closely.
+- mod_conference drops quiet speech as before (7 or 8 of 16 captures over
+  40 ms from G.722 to Opus, 2 from Opus to G.722). Its stream into
+  rtpengine had no gap over 40.8 ms in speech in any capture: the gaps of 50 to
+  90 ms are in the audio it sends, not between its packets. A baseline
+  gap does not gate.
+
+### What the traces show
+
+No capture missed a margin, so there is no miss to trace. The traces of
+the four sessions were read as in the gate-8 run, to set the hops beside
+the Mac's: `rtpan-runner.py` on each session's RTP trace (gate-8's
+`rtpan.py`, with alice's speech taken from `trial.json`, because the
+runner keeps no played file), `mixan.py` on the mixer probe's samples,
+then `tracesum.py` and `perblock-runner.py` on the results in
+[`traces/`](quality/2026-11-27-ab-runner/traces/). Times are from the
+trial's start.
+
+| Block | Build | Candidate captures with a gap over 40 ms in speech into rtpengine | Mixer ticks over 20 ms late (overruns) | Lasting steps at bob of 15 ms or more in speech, candidate | pjsua empties in speech, candidate | FreeSWITCH captures with a gap over 40 ms into rtpengine |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | old | 0 of 16 (longest 21.6 ms) | 0 (0) | none | 1 | 2 of 16 (40.1 and 40.5 ms) |
+| 2 | new | 0 of 16 (longest 21.2 ms) | 0 (0) | none | 0 | 0 of 16 |
+| 3 | old | 0 of 16 (longest 20.9 ms) | 0 (0) | none | 0 | 0 of 16 |
+| 4 | new | 0 of 16 (longest 20.9 ms) | 0 (0) | none | 0 | 1 of 16 (40.8 ms) |
+
+The mixer's counts cover 15 candidate windows per block, as in the
+gate-8 run: the probe stops with the demo, so the last candidate trial of
+each block has no sample after it.
+
+- chappe_mix's stream reached rtpengine whole in every capture of both
+  builds: longest gap in speech 20.1 to 21.6 ms, spread at most 1.7 ms,
+  no lost packet, no timestamp jump. rtpengine's stream to bob kept it
+  (longest gap 21.7 ms, net shift at most 1.8 ms), with no lasting step
+  in speech at bob. On the Mac the same hop had gaps of up to 68.8 ms in
+  the new build's first block.
+- The mixer's ticks held the period: in the 60 candidate windows (about
+  100,000 ticks) none fired more than 5 ms late, and 7 more than 2 ms
+  (0, 5, 1 and 1 per block); no overrun. The gate-8 run counted 21 ticks
+  over 20 ms late.
+- FreeSWITCH's stream had gaps of 40.1 to 40.8 ms into rtpengine in 3
+  of 64 captures, and bob saw 17 lasting steps of +20 or +21 ms in its
+  speech (11 old, 6 new): the stream moves by one frame and stays there.
+  bob's pjsua emptied its jitter buffer 18 times in speech on
+  FreeSWITCH's stream, and once on chappe_mix's (old, block 1, p226 from
+  G.722 to Opus, at 9.4 s, with no gap over 20.1 ms at any hop in the
+  100 ms before it).
+- The one candidate capture that stands out, old block 1, Opus to G.722,
+  p226 (NISQA 3.01 and ViSQOL 4.50, against 3.58 and 4.58 for the other
+  three captures of that clip), is whole at every hop, alice's stream to
+  the mixer included (longest gap 21.2 ms), and the mixer ticked on time.
+  Its only marks: alice's leg in the mixer ran under once and its prefill
+  grew to two frames, as 17 of the run's 120 legs did in both builds; and
+  the capture is 20 ms later than the other three (3052.8 against
+  3032.8 ms), with a lower correlation (0.79 against 0.89). It is an old
+  capture, the A/B's baseline arm, so it raises new's NISQA difference on
+  that clip. The traces do not say why it scored lower.
+
+### Against the gate-8 run on the Mac
+
+Absolute scores do not compare: the host, the pjsua image and the
+rtpengine build differ, as the gate decision says. Only the verdicts of
+old against new do.
+
+| Comparison | Mac, gate 8 (2026-11-26) | Runner, declared gate 4.0 (this run) |
+| --- | --- | --- |
+| A/B, new against old | **missed**: dropouts, one capture per direction (100 and 110 ms), both in new's first block; every other check passes | pass, every check in both directions |
+| old against its FreeSWITCH room | pass | pass |
+| new against its FreeSWITCH room | **missed**: dropouts, the same two captures | pass |
+
+The Mac's traces put the start of both misses outside chappe_mix's
+mixing: a late tick of the node's timer on the loaded host, and a stall
+on the way from macOS to the docker host, in the stretch of the run that
+also cut the demo off from rtpengine. On the runner neither build shows
+such a gap: no candidate capture has a gap in speech, no tick of the
+mixer fired more than 5 ms late, and its stream reached rtpengine
+whole. ViSQOL's
+old-against-new differences hold zero in both runs. NISQA's were 0.06
+and 0.08 lower on the Mac, its lowest clips being those of the two missed
+captures; here they are 0.00 and +0.04.
+
+### Reproduce
+
+You need taq at `31be15354fea0215f864d144dcc59a12315fa167` and the
+gate-8 manifests and meta files in
+`runs/hd-room-ab-2026-11-25/gate8/` of the taq checkout (next
+section). The runner's scripts and the workflow are described in
+[`quality/2026-11-27-ab-runner/`](quality/2026-11-27-ab-runner/README.md);
+the analysis reuses gate-8's `makeab.py`, `summarize.py`, `rtpan.py`,
+`mixan.py` and `tracesum.py` by path, and adds `rtpan-runner.py` and
+`perblock-runner.py`.
+
+```sh
+git push origin HEAD:quality/hd-ab-runner     # the A/B: this job took 2 h 2 min
+export TAQ_DIR=~/Projects/telephony-audio-quality
+F=$TAQ_DIR/runs/hd-room-ab-runner/full
+gh run download RUN_ID -n hd-ab-full -D $F
+```
+
+Make `$F/manifest.json`, `$F/old/manifest.json` and `$F/new/manifest.json`
+from gate-8's (same depth, so the clip list resolves) with no trials and
+this run's ids, the margins block untouched. Copy gate-8's
+`meta-baseline.json` and `meta-candidate.json` of each build next to its
+manifest, with `rtpengine.digest` set to the runner's image (each
+session's `.versions` gives it). Then:
+
+```sh
+Q=$PWD/apps/chappe_mix/test/audit/quality
+cd $TAQ_DIR
+for b in old new; do
+    uv run taq live-import $F/$b/b?-*[0-9] --meta $F/$b/meta-baseline.json \
+        --into $F/$b/manifest.json
+    uv run taq live-import $F/$b/c?-*[0-9] --meta $F/$b/meta-candidate.json \
+        --into $F/$b/manifest.json
+done
+python3 -I $Q/2026-11-26-ab-gate8/makeab.py $F \
+    268e6bca4d9306a2a6939ede8017565bcfdf2331786c3c5d9c3840366039a997
+uv run taq compare $F/manifest.json \
+    --out out/hd-room-ab-runner-ab --require-verified
+uv run taq compare $F/old/manifest.json \
+    --out out/hd-room-ab-runner-old --require-verified
+uv run taq compare $F/new/manifest.json \
+    --out out/hd-room-ab-runner-new --require-verified
+for r in ab old new; do
+    python3 -I $Q/2026-11-26-ab-gate8/summarize.py out/hd-room-ab-runner-$r/results.json
+done
+```
+
+Then the traces, one session per block (block 1 is `old/[bc]0-*`, block
+2 `new/[bc]0-*`, block 3 `old/[bc]1-*`, block 4 `new/[bc]1-*`):
+
+```sh
+cd $F && mkdir -p an
+python3 -I $Q/2026-11-27-ab-runner/rtpan-runner.py $Q/2026-11-26-ab-gate8/rtpan.py \
+    pcap/block1-old-s1-rtp.pcap old/[bc]0-*[0-9] > an/block1-old-s1-rtp.json
+python3 -I $Q/2026-11-26-ab-gate8/mixan.py block1-old-s1.mix.log old/c0-*[0-9] \
+    > an/block1-old-s1-mix.json
+python3 -I $Q/2026-11-26-ab-gate8/tracesum.py an
+python3 -I $Q/2026-11-27-ab-runner/perblock-runner.py . an
+```
+
+The evidence stays in the taq checkout (git-ignored), under
+`runs/hd-room-ab-runner/full/`: the artifact of run 45913592269 (the run
+directories of both builds with their `trial.json` and `ID.live.log`,
+`load.log`, `hostload.log`, `blocks.log`, each session's demo, block and
+mixer logs and versions, the traces in `pcap/`), the manifests, the meta
+files and the import logs, and the hop-by-hop results in `an/` (the same
+as `traces/` here, one trial per line). The results are under
+`out/hd-room-ab-runner-ab`, `-old` and `-new`, each with its
+`compare.log`.
+
 ## 2026-11-26, A/B of main against the build before the hardening, at a load gate of 8
 
 The A/B that the declared gate did not let run (next section), run at the
