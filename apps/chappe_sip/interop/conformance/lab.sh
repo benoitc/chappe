@@ -107,10 +107,9 @@ hep_up() {
 
 case "${1:-}" in
     images)
-        docker build -q -t chappe-conf-node "$HERE/node" >/dev/null
-        docker build -q -t chappe-conf-sipp "$INTEROP/sipp" >/dev/null
-        docker build -q -t chappe-conf-pjsua "$INTEROP/pjsua" >/dev/null
-        docker build -q -t chappe-conf-dns "$HERE/dns" >/dev/null
+        for image in conf-node sipp pjsua conf-dns; do
+            "$ROOT/scripts/lab_image.sh" "$image"
+        done
         ;;
     build)
         # LAB_PROXY: an HTTP proxy the build container reaches hex through,

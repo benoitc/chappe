@@ -272,6 +272,9 @@ jobs:
             ~/.cache/rebar3
           key: build-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config', 'apps/chappe_sip/c_src/build.sh') }}
       - run: scripts/fetch_deps.sh
+      - uses: ./.github/actions/lab-image
+        with:
+          image: rtpengine
       - run: make interop
       - name: Test logs
         if: failure()
@@ -311,6 +314,12 @@ jobs:
             ~/.cache/rebar3
           key: build-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config', 'apps/chappe_sip/c_src/build.sh') }}
       - run: scripts/fetch_deps.sh
+      - uses: ./.github/actions/lab-image
+        with:
+          image: sipp
+      - uses: ./.github/actions/lab-image
+        with:
+          image: pjsua
       # eunit, then one ct run with the conformance lab: the matrices read
       # the newest ct run only
       # CHECK=1: fail on any row the committed matrix shows as pass and
@@ -396,8 +405,14 @@ jobs:
           key: build-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config', 'apps/chappe_sip/c_src/build.sh') }}
       - run: docker pull drachtio/drachtio-freeswitch-mrf@sha256:2f1583c31259fbf38df3df2e0955e2ffda7f6d2410888718de110b568ea9dac3
       - run: docker pull ghcr.io/kamailio/kamailio-ci:5.8
-      # the lab stays up after the run, so its logs can be read below
       - run: scripts/fetch_deps.sh
+      - uses: ./.github/actions/lab-image
+        with:
+          image: rtpengine
+      - uses: ./.github/actions/lab-image
+        with:
+          image: sipp
+      # the lab stays up after the run, so its logs can be read below
       - run: make interop-sbc
         env:
           SBC_KEEP: '1'
@@ -439,6 +454,9 @@ jobs:
             ~/.cache/rebar3
           key: build-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config', 'apps/chappe_sip/c_src/build.sh') }}
       - run: scripts/fetch_deps.sh
+      - uses: ./.github/actions/lab-image
+        with:
+          image: rtpengine
       - run: make interop-mix
       # actions/cache saves _build in its post step, after every step;
       # drop the test logs first so no run's results reach a later job
@@ -470,6 +488,9 @@ jobs:
             ~/.cache/rebar3
           key: build-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config', 'apps/chappe_sip/c_src/build.sh') }}
       - run: scripts/fetch_deps.sh
+      - uses: ./.github/actions/lab-image
+        with:
+          image: esl-fs
       - run: make interop-esl
       # actions/cache saves _build in its post step, after every step;
       # drop the test logs first so no run's results reach a later job
@@ -499,8 +520,16 @@ jobs:
             _build
             ~/.cache/rebar3
           key: build-otp-${{ env.OTP }}-${{ hashFiles('**/rebar.config', 'apps/chappe_sip/c_src/build.sh') }}
-      - run: docker pull drachtio/drachtio-freeswitch-mrf@sha256:2f1583c31259fbf38df3df2e0955e2ffda7f6d2410888718de110b568ea9dac3
       - run: scripts/fetch_deps.sh
+      - uses: ./.github/actions/lab-image
+        with:
+          image: rtpengine
+      - uses: ./.github/actions/lab-image
+        with:
+          image: esl-fs
+      - uses: ./.github/actions/lab-image
+        with:
+          image: pjsua
       - run: make interop-mrf
       - name: Test logs
         if: failure()
@@ -552,6 +581,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - run: docker pull erlang:29.1.2
+      - uses: ./.github/actions/lab-image
+        with:
+          image: rtpengine
+      - uses: ./.github/actions/lab-image
+        with:
+          image: sipp
       - run: make demo-cluster-smoke
       - name: Demo logs
         if: failure()

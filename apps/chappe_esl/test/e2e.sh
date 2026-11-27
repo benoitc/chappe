@@ -4,7 +4,8 @@
 #
 # Runs chappe_esl_live_SUITE against the two FreeSWITCH nodes of
 # apps/chappe_esl/interop/docker-compose.yml, brought up and torn down here.
-# The image is built from interop/freeswitch (cached after the first run).
+# The image is built from interop/freeswitch by scripts/lab_image.sh, only
+# when that directory changed.
 # `docker compose up --wait' blocks on the healthchecks (fs_cli sofia
 # status), so both event sockets listen before the suite connects, and
 # FS_REQUIRED=1 makes an unreachable socket a failure, not a skip. The suite
@@ -33,7 +34,8 @@ export FS1_ESL_PORT FS2_ESL_PORT ESL_SOCKET_PORT ESL_MEDIA_DIR
 # absolute: the suite runs it from the CT log directory
 COMPOSE="docker compose -p ${ESL_PROJECT:-chappe-esl} -f $(pwd)/apps/chappe_esl/interop/docker-compose.yml"
 
-if ! $COMPOSE up -d --build --wait --wait-timeout 120; then
+scripts/lab_image.sh esl-fs || exit 1
+if ! $COMPOSE up -d --wait --wait-timeout 120; then
     echo "FreeSWITCH did not become healthy:" >&2
     $COMPOSE logs >&2
     $COMPOSE down >/dev/null 2>&1

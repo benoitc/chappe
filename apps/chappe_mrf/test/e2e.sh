@@ -33,7 +33,9 @@ export MRF_NG_PORT MRF_RTP_MIN MRF_RTP_MAX MRF_FS1_SIP MRF_FS2_SIP \
 # absolute: the suite runs it from the CT log directory
 COMPOSE="docker compose -p ${MRF_PROJECT:-chappe-mrf} -f $(pwd)/apps/chappe_mrf/interop/docker-compose.yml"
 
-if ! $COMPOSE up -d --build --wait --wait-timeout 180; then
+scripts/lab_image.sh rtpengine || exit 1
+scripts/lab_image.sh esl-fs || exit 1
+if ! $COMPOSE up -d --wait --wait-timeout 180; then
     echo "the lab did not become healthy:" >&2
     $COMPOSE logs >&2
     $COMPOSE down >/dev/null 2>&1

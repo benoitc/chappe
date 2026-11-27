@@ -97,12 +97,11 @@ records A's probe, then plays it to A, and both pass the band check. Its
 log has the rtpengine offer and answer on the endpoint's side, flags and
 SDP.
 
-- The suite builds its own pjsua image, `chappe-hd-pjsua`, from this
-  checkout (cached after the first build) and gives it to `hd.sh` with
-  `-i`. `hd.sh`'s default, `chappe-conf-pjsua`, is shared with the
-  conformance lab and built only when missing: one built by a checkout
-  without Opus leaves the Opus caller with no codec (it offers
-  `m=audio 0`).
+- The suite builds `chappe-conf-pjsua`, shared with the conformance lab,
+  through `scripts/lab_image.sh` before its first call. The image carries
+  the key of its Dockerfile's directory, so one another checkout built is
+  rebuilt, not used: an image without Opus leaves the Opus caller with no
+  codec (it offers `m=audio 0`).
 - The callers start 2 s apart: two pjsua started in the same second draw the
   same Call-ID and tags.
 - pjsua's SIP ports start at `MRF_PJSUA_SIP` (19560, three of them), its RTP

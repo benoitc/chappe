@@ -65,8 +65,9 @@ wait_peers() {
 
 case "${1:-}" in
     images)
-        dc build
-        docker build -q -t chappe-conf-sipp "$INTEROP/sipp" >/dev/null
+        "$ROOT/scripts/lab_image.sh" rtpengine
+        "$ROOT/scripts/lab_image.sh" conf-node
+        "$ROOT/scripts/lab_image.sh" sipp
         ;;
     build)
         docker volume create "$VOLUME" >/dev/null

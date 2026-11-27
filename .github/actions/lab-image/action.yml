@@ -1,0 +1,57 @@
+name: Lab image
+description: >-
+  One lab image restored from the Actions cache, or built by
+  scripts/lab_image.sh and saved there on a miss. The key is lab_image.sh's,
+  the sha256 of the image's build context, so the lab script that runs next
+  finds the image up to date; on a hit no build reaches a package mirror.
+  The cache stays private to the repository's workflows; a registry would
+  publish the GPL builds inside the images.
+inputs:
+  image:
+    description: The image, as scripts/lab_image.sh names it (rtpengine, pjsua, sipp or esl-fs).
+    required: true
+runs:
+  using: composite
+  steps:
+    - id: key
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+      run: |
+        key=$(sh "$GITHUB_ACTION_PATH/../../../scripts/lab_image.sh" --key "$IMAGE")
+        echo "key=lab-$IMAGE-$key" >> "$GITHUB_OUTPUT"
+    - id: restore
+      uses: actions/cache/restore@v5
+      with:
+        path: ${{ runner.temp }}/lab-images/${{ inputs.image }}.tar
+        key: ${{ steps.key.outputs.key }}
+    - if: steps.restore.outputs.cache-hit == 'true'
+      shell: bash
+      env:
+        TAR: ${{ runner.temp }}/lab-images/${{ inputs.image }}.tar
+      run: |
+        docker load -i "$TAR"
+        rm -f "$TAR"
+    - if: steps.restore.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+        TAR: ${{ runner.temp }}/lab-images/${{ inputs.image }}.tar
+      run: |
+        lab_image="$GITHUB_ACTION_PATH/../../../scripts/lab_image.sh"
+        sh "$lab_image" "$IMAGE"
+        mkdir -p "$(dirname "$TAR")"
+        docker save -o "$TAR" "$(sh "$lab_image" --tag "$IMAGE")"
+    # a parallel job of the same run may have saved this key first: that
+    # job's image is the same, so a refused save is not a failure
+    - if: steps.restore.outputs.cache-hit != 'true'
+      continue-on-error: true
+      uses: actions/cache/save@v5
+      with:
+        path: ${{ runner.temp }}/lab-images/${{ inputs.image }}.tar
+        key: ${{ steps.key.outputs.key }}
+    - if: steps.restore.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        TAR: ${{ runner.temp }}/lab-images/${{ inputs.image }}.tar
+      run: rm -f "$TAR"

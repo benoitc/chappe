@@ -52,16 +52,16 @@ init_per_suite(Config) ->
             end
     end.
 
-%% The pjsua of this checkout, under a tag of its own: `chappe-conf-pjsua',
-%% hd.sh's default, is shared with the conformance lab, and a checkout
-%% whose Dockerfile has no Opus overwrites it. Cached after the first
-%% build.
+%% The pjsua of this checkout, built once before the first call. It is
+%% `chappe-conf-pjsua', shared with the conformance lab: lab_image.sh
+%% labels the image with the key of the Dockerfile's directory and
+%% rebuilds one another checkout made (one without Opus, say), so no
+%% tag of its own is needed.
 pjsua_image() ->
-    Tag = "chappe-hd-pjsua",
-    Dir = filename:dirname(hd_sh()),
-    Out = os:cmd("docker build -q -t " ++ Tag ++ " " ++ Dir ++ " 2>&1"),
-    ct:log("pjsua image ~s: ~s", [Tag, Out]),
-    Tag.
+    LabImage = filename:join([root(), "scripts", "lab_image.sh"]),
+    Out = os:cmd(LabImage ++ " pjsua 2>&1"),
+    ct:log("pjsua image: ~s", [Out]),
+    "chappe-conf-pjsua".
 
 end_per_suite(Config) ->
     ?LIVE:end_per_suite(Config).
@@ -639,13 +639,15 @@ wait_pjsua({Name, Port}, Ms) ->
     end.
 
 hd_sh() ->
-    %% _build/test/lib/chappe_mrf/test/<this beam>
-    Root = lists:foldl(
+    filename:join([root(), "apps", "chappe_sip", "interop", "pjsua", "hd.sh"]).
+
+%% the umbrella root: this beam is _build/test/lib/chappe_mrf/test/<beam>
+root() ->
+    lists:foldl(
         fun(_, D) -> filename:dirname(D) end,
         code:which(?MODULE),
         lists:seq(1, 6)
-    ),
-    filename:join([Root, "apps", "chappe_sip", "interop", "pjsua", "hd.sh"]).
+    ).
 
 %% ---- wav ----
 

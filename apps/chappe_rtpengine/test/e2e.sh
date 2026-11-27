@@ -27,7 +27,8 @@ NG_HTTPS_PORT=$RTPE_HTTPS_PORT
 cd "$(dirname "$0")/.."
 COMPOSE="docker compose -p ${RTPE_PROJECT:-interop} -f interop/docker-compose.yml"
 
-$COMPOSE up -d --build --force-recreate || exit 1
+../../scripts/lab_image.sh rtpengine || exit 1
+$COMPOSE up -d --force-recreate || exit 1
 sleep 2
 if ! docker ps --format '{{.Names}}' | grep -q "^$NAME\$"; then
     echo "rtpengine container failed to start:" >&2
