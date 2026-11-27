@@ -13,10 +13,18 @@ ARG BASE=ubuntu:24.04@sha256:562111b88caa79c71391c0c4d3c2114a7d5c35915c20561fd89
 FROM ${BASE} AS build
 ARG PJPROJECT_TAG=2.15.1
 ARG PJPROJECT_SHA256=8f3bd99caf003f96ed8038b8a36031eb9d8cd9eaea1eaff7e01c2eef6bd55706
-RUN apt-get update \
-    && DEBIAN_FRONTEND=noninteractive apt-get install -y \
-        --no-install-recommends build-essential ca-certificates curl \
-        libopus-dev libssl-dev pkg-config python3 \
+# apt as scripts/ci_apt.sh runs it: a stalled mirror or a stale index fails
+# one bounded attempt, and the next one fetches the index again
+RUN printf 'Acquire::Retries "3";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' \
+        > /etc/apt/apt.conf.d/80-retries \
+    && for i in 1 2 3; do \
+        timeout 300 apt-get update \
+        && DEBIAN_FRONTEND=noninteractive timeout 900 apt-get install -y \
+            --no-install-recommends build-essential ca-certificates curl \
+            libopus-dev libssl-dev pkg-config python3 \
+        && break; \
+        [ "$i" -lt 3 ] || exit 1; sleep $((i * 15)); \
+    done \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 RUN curl -fsSL -o /tmp/pj.tar.gz \
@@ -36,9 +44,15 @@ RUN grep -q '^#define PJMEDIA_HAS_OPUS_CODEC 1' \
         pjmedia/include/pjmedia-codec/config_auto.h
 
 FROM ${BASE}
-RUN apt-get update \
-    && DEBIAN_FRONTEND=noninteractive apt-get install -y \
-        --no-install-recommends libopus0 libssl3t64 \
+RUN printf 'Acquire::Retries "3";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' \
+        > /etc/apt/apt.conf.d/80-retries \
+    && for i in 1 2 3; do \
+        timeout 300 apt-get update \
+        && DEBIAN_FRONTEND=noninteractive timeout 900 apt-get install -y \
+            --no-install-recommends libopus0 libssl3t64 \
+        && break; \
+        [ "$i" -lt 3 ] || exit 1; sleep $((i * 15)); \
+    done \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /usr/local/bin/pjsua /usr/local/bin/pjsua
 WORKDIR /work
