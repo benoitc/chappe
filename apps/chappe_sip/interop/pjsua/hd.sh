@@ -20,12 +20,14 @@
 #   -n  docker network (default host)
 #   -l  local SIP port (default 25060), -m first RTP port (default 25100)
 #   -N  container name (default hd-<pid>), also the SIP user
-#   -i  image (default chappe-conf-pjsua; built here if missing)
+#   -i  image (default chappe-conf-pjsua; built here unless up to date)
 #
 # The pjsua log (SIP at level 5) lands next to the recording as
 # NAME.log. Exits with pjsua's status.
 #
-# The image is built before each call (cheap from the layer cache). With
+# Before each call, scripts/lab_image.sh builds the image when its label
+# does not match this directory (an image another checkout made, one
+# without Opus say, is rebuilt); an up-to-date image costs a hash. With
 # HD_SKIP_BUILD=1 the image is used as it is, so that no build runs while
 # a measured call is up: the job builds it once before its first call.
 # hd.sh then fails when the image does not exist.
@@ -66,16 +68,15 @@ case $RATE in
     *) echo "hd.sh: clock rate $RATE: 8000, 16000 or 48000" >&2; exit 2 ;;
 esac
 
-# build by default: an older image of the same name may lack Opus, and
-# the layer cache makes an up-to-date build cheap
+LAB_IMAGE=$(cd "$HERE/../../../.." && pwd)/scripts/lab_image.sh
 if [ "${HD_SKIP_BUILD:-}" = 1 ]; then
     if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
         echo "hd.sh: HD_SKIP_BUILD=1 and no image $IMAGE:" \
-            "docker build -t $IMAGE $HERE" >&2
+            "$LAB_IMAGE pjsua $IMAGE" >&2
         exit 2
     fi
 else
-    docker build -q -t "$IMAGE" "$HERE" >/dev/null
+    "$LAB_IMAGE" pjsua "$IMAGE" >/dev/null
 fi
 
 abs() { (cd "$(dirname "$1")" && echo "$(pwd)/$(basename "$1")"); }

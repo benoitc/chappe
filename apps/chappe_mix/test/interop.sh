@@ -22,7 +22,8 @@ NG_PORT=$RTPE_NG_PORT
 cd "$(dirname "$0")/../../.."
 COMPOSE="docker compose -p ${RTPE_PROJECT:-interop} -f apps/chappe_rtpengine/interop/docker-compose.yml"
 
-$COMPOSE up -d --build --force-recreate || exit 1
+scripts/lab_image.sh rtpengine || exit 1
+$COMPOSE up -d --force-recreate || exit 1
 sleep 2
 if ! docker ps --format '{{.Names}}' | grep -q "^$NAME\$"; then
     echo "rtpengine container failed to start:" >&2

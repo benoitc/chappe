@@ -183,7 +183,8 @@ demo:
 	rebar3 compile
 	mkdir -p _build/demo _build/demo-media
 	chmod 777 _build/demo-media
-	$(DEMO_COMPOSE) up -d --build
+	scripts/lab_image.sh rtpengine
+	$(DEMO_COMPOSE) up -d
 	erlc -o _build/demo demo/sbc/src/demo_sbc.erl
 	DEMO_MEDIA_IP=$$($(DEMO_COMPOSE) exec -T rtpengine getent hosts \
 	    host.docker.internal | awk '{print $$1}') \
@@ -225,8 +226,9 @@ DEMO_CLUSTER_COMPOSE = docker compose -f demo/cluster/docker-compose.yml
 N ?= n1
 
 demo-cluster:
-	$(DEMO_CLUSTER_COMPOSE) build build
-	$(DEMO_CLUSTER_COMPOSE) up -d --build
+	scripts/lab_image.sh demo-cluster
+	scripts/lab_image.sh rtpengine
+	$(DEMO_CLUSTER_COMPOSE) up -d
 	$(DEMO_CLUSTER_COMPOSE) exec -T ctl demo-node ctl-run ready
 	@echo "demo-cluster: up; see demo/cluster/README.md"
 

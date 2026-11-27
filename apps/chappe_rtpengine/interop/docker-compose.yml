@@ -9,6 +9,8 @@
 services:
   rtpengine:
     build: .
+    # shared with the other labs; scripts/lab_image.sh builds it
+    image: chappe-rtpengine-interop
     container_name: ${RTPE_NAME:-rtpe-e2e}
     # Docker Desktop provides host.docker.internal; plain Linux (CI) does
     # not, and without it e2e.sh finds no RTPENGINE_MEDIA_IP and every

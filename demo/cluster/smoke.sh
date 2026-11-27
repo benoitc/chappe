@@ -62,9 +62,10 @@ cleanup() {
 trap cleanup EXIT
 
 say "building and starting (the first build compiles sofia-sip: a few minutes)"
-# the node image first: the other services only run it
-$DC build build
-$DC --profile tools build sipp >/dev/null
+# each image is built only when its context changed; up builds nothing
+for image in demo-cluster rtpengine sipp; do
+    "$HERE/../../scripts/lab_image.sh" "$image"
+done
 $DC up -d
 ctl ready
 
