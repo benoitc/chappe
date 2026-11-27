@@ -58,6 +58,9 @@ init_per_testcase(Case, Config) ->
         )
      || N <- Nodes
     ],
+    %% a live lease is not yet a region that takes writes: a REGISTER sent
+    %% before that gets 503 (no quorum)
+    [wait(fun() -> writable(N) end, 300) || N <- Nodes],
     Both = [start_sip(N) || N <- Nodes],
     [
         {peers, Peers},
@@ -824,6 +827,12 @@ wait_bindings(Node, N) ->
         length(erpc:call(Node, chappe_sip, bindings, [?AOR])) =:= N
     end),
     erpc:call(Node, chappe_sip, bindings, [?AOR]).
+
+writable(Node) ->
+    case erpc:call(Node, chappe_cluster, put, [<<"ct/writable">>, Node]) of
+        {ok, _} -> true;
+        _ -> false
+    end.
 
 wait(F) ->
     wait(F, 100).
