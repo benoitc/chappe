@@ -4,8 +4,9 @@
 %% Test endpoints for the mixer: a sender that streams a pure tone as
 %% PCMU RTP on a 20 ms clock, a receiver that collects what comes back,
 %% and a Goertzel detector that says how loud each tone is in it. The
-%% band check (band_probe/1, band_check/2,3) tells a 16 kHz path from one
-%% that went through 8 kHz on the way.
+%% band check (band_probe/1, band_check/2,3, band_shape/2 through a
+%% codec) tells a 16 kHz path from one that went through 8 kHz on the
+%% way; band_energy/3 does the same for speech.
 -module(chappe_mix_test_tone).
 
 -export([
@@ -25,6 +26,7 @@
 -export([levels/3, tone/4, weak_frames/4, hears/4]).
 -export([law_pt/1, encode/2, decode/2]).
 -export([band_probe/1, band_calibrate/1, band_check/2, band_check/3]).
+-export([band_shape/2, band_energy/3]).
 -export([power/3]).
 
 %% the default sample rate of every helper; the rate option or argument
@@ -367,6 +369,47 @@ band_check(Samples, Cal, Opts) ->
                 _ -> {error, Faults}
             end
     end.
+
+%% The band check on the shape of the band, not on the path's gain, for
+%% a probe that went through a caller's codec: the codec may move the
+%% whole probe a few dB (pjsua's G.722 path comes 6 dB down), so Cal
+%% moves by what 1000 Hz, which any 8 kHz path keeps, lost on the way;
+%% then every tone within 3 dB of it, and the alias bins 30 dB below the
+%% quietest tone. 30 dB, not 40, because G.722's QMF bank folds 5000 and
+%% 6000 Hz onto them at about 60 dB down; a careless drop to 8 kHz folds
+%% them within a few dB of full level. Returns ok or {error, Faults}:
+%% band_check/3's, or {missing, Freq, Level} for a tone 10 dB down or
+%% more (the path lost the band).
+band_shape(Samples, Cal) ->
+    case length(Samples) >= ?BAND_WINDOW of
+        false ->
+            {error, [{too_short, length(Samples)}]};
+        true ->
+            try band_calibrate(Samples) of
+                #{1000 := Got} ->
+                    Gain = Got - maps:get(1000, Cal),
+                    ct:log("path gain at 1000 Hz: ~.1f dB", [Gain]),
+                    Shifted = maps:map(fun(_, L) -> L + Gain end, Cal),
+                    band_check(Samples, Shifted, #{
+                        tolerance => 3.0, alias_db => 30.0
+                    })
+            catch
+                error:{bad_calibration, F, L} -> {error, [{missing, F, L}]}
+            end
+    end.
+
+%% The energy of Samples (at Rate) from Lo to Hi Hz, in dB: the DFT bins
+%% of the band, one every 50 Hz over 20 ms frames, summed over every
+%% frame. It measures a band of speech, whose harmonics fall anywhere,
+%% where levels/3 measures a tone. Compare two bands of one capture; the
+%% absolute value depends on the frame length.
+band_energy(Samples, {Lo, Hi}, Rate) ->
+    Bins = lists:seq(Lo, Hi, 50),
+    P = lists:sum([
+        power(W, F, Rate)
+     || W <- windows(Samples, Rate div 50), F <- Bins
+    ]),
+    10 * math:log10(max(P, 1.0e-12)).
 
 band_levels(Samples, Freqs) ->
     Windows = [

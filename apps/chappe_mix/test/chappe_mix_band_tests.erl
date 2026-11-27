@@ -102,6 +102,41 @@ naive_decimation_fails_at_codec_alias_limit_test() ->
     ),
     ?assertEqual([2000, 3000], lists:sort(aliases(Faults))).
 
+%% band_shape/2, for a probe through a caller's codec: a path 6 dB down
+%% keeps the shape of the band and passes, where band_check/2 fails it;
+%% the narrowband round trip is missing its high tones, and the careless
+%% one folds them onto the alias bins.
+band_shape_test() ->
+    P = probe(),
+    Cal = chappe_mix_test_tone:band_calibrate(P),
+    Down = [round(X * 0.5) || X <- P],
+    ?assertEqual(ok, chappe_mix_test_tone:band_shape(Down, Cal)),
+    ?assertMatch({error, _}, chappe_mix_test_tone:band_check(Down, Cal)),
+    ?assertMatch(
+        {error, [{missing, 5000, _}]},
+        chappe_mix_test_tone:band_shape(filtered_round_trip(P), Cal)
+    ),
+    {error, Faults} = chappe_mix_test_tone:band_shape(naive_round_trip(P), Cal),
+    ?assertEqual([2000, 3000], lists:sort(aliases(Faults))),
+    ?assertEqual(
+        {error, [{too_short, 100}]},
+        chappe_mix_test_tone:band_shape(lists:sublist(P, 100), Cal)
+    ).
+
+%% band_energy/3 of two tones of one level: the band of each holds the
+%% same energy, and a band with neither holds none.
+band_energy_test() ->
+    [T1, T2] = [
+        chappe_mix_test_tone:tone(F, 5000, 8000, ?RATE)
+     || F <- [2000, 5000]
+    ],
+    S = lists:zipwith(fun erlang:'+'/2, T1, T2),
+    Low = chappe_mix_test_tone:band_energy(S, {1000, 3000}, ?RATE),
+    High = chappe_mix_test_tone:band_energy(S, {4000, 7000}, ?RATE),
+    ?assert(abs(High - Low) < 0.5),
+    None = chappe_mix_test_tone:band_energy(T1, {4000, 7000}, ?RATE),
+    ?assert(Low - None > 60.0).
+
 too_short_test() ->
     P = probe(),
     Cal = chappe_mix_test_tone:band_calibrate(P),

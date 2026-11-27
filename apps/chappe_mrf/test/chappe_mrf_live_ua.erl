@@ -22,7 +22,7 @@
 
 -export([call/2, callee/1, port/1, stop/1, refer/4, subscribe/3]).
 -export([tone/2, dtmf/2, bye/1, reinvite/1, clear/1, hears/3, silent/3, level/2]).
--export([write_wav/3, write_wav/4, write_wav/5, wav_level/2]).
+-export([write_wav/3, write_wav/4, write_wav/5, write_samples/3, wav_level/2]).
 
 %% the RTP stream is PCMU, so 8 kHz; the wav helpers take other rates
 -define(RATE, 8000).
@@ -602,13 +602,19 @@ write_wav(Path, Freq, Ms, Amp) ->
 
 %% The same at Rate samples per second (16000 for a wideband prompt).
 write_wav(Path, Freq, Ms, Amp, Rate) ->
-    N = Ms * Rate div 1000,
-    Data = <<
-        <<
-            (round(Amp * math:sin(2 * math:pi() * Freq * I / Rate))):16/little-signed
-        >>
-     || I <- lists:seq(0, N - 1)
-    >>,
+    write_samples(
+        Path,
+        [
+            round(Amp * math:sin(2 * math:pi() * Freq * I / Rate))
+         || I <- lists:seq(0, Ms * Rate div 1000 - 1)
+        ],
+        Rate
+    ).
+
+%% A 16-bit mono wav of Samples at Rate, which the lab's containers can
+%% read.
+write_samples(Path, Samples, Rate) ->
+    Data = <<<<S:16/little-signed>> || S <- Samples>>,
     Size = byte_size(Data),
     Wav =
         <<"RIFF", (36 + Size):32/little, "WAVE", "fmt ", 16:32/little,

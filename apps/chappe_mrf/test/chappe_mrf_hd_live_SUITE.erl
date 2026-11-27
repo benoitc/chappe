@@ -190,10 +190,17 @@ native_hd_endpoint(Config) ->
     Checks = [
         {a_to_endpoint,
             case RateEp of
-                ?RATE -> band_shape(window(RecEp, ?RATE, 2, 5), Cal);
-                _ -> {error, [{recorded_at, RateEp}]}
+                ?RATE ->
+                    chappe_mix_test_tone:band_shape(
+                        window(RecEp, ?RATE, 2, 5), Cal
+                    );
+                _ ->
+                    {error, [{recorded_at, RateEp}]}
             end},
-        {endpoint_to_a, band_shape(window(RecA, ?RATE, From, From + 3), Cal)}
+        {endpoint_to_a,
+            chappe_mix_test_tone:band_shape(
+                window(RecA, ?RATE, From, From + 3), Cal
+            )}
     ],
     ct:log(
         "endpoint recording at ~p Hz, ~p samples; play at ~p ms~n~p",
@@ -301,8 +308,14 @@ refer_hd_dial_out(Config) ->
     Cal = chappe_mix_test_tone:band_calibrate(lists:sublist(Probe, ?RATE * 2)),
     From = In div 1000 + 2,
     Checks = [
-        {a_to_callee, band_shape(window(RecCallee, ?RATE, 3, 6), Cal)},
-        {callee_to_a, band_shape(window(RecA, ?RATE, From, From + 3), Cal)}
+        {a_to_callee,
+            chappe_mix_test_tone:band_shape(
+                window(RecCallee, ?RATE, 3, 6), Cal
+            )},
+        {callee_to_a,
+            chappe_mix_test_tone:band_shape(
+                window(RecA, ?RATE, From, From + 3), Cal
+            )}
     ],
     ct:log("~p", [Checks]),
     [?assertEqual({W, ok}, {W, R}) || {W, R} <- Checks].
@@ -497,7 +510,7 @@ run_room(Config, Conf, User) ->
     RecA = wav_samples(filename:join(Dir, "a.wav")),
     RecB = wav_samples(filename:join(Dir, "b.wav")),
     RecC = wav_samples(filename:join(Dir, "c.wav")),
-    Check = fun(S) -> band_shape(S, Cal) end,
+    Check = fun(S) -> chappe_mix_test_tone:band_shape(S, Cal) end,
     Checks = [
         %% A's probe at B, while C is in (B's time: A's 2 s later)
         {a_to_b_with_c, Check(window(RecB, ?RATE, 3, 5))},
@@ -525,34 +538,6 @@ run_room(Config, Conf, User) ->
     ok = chappe_mrf_conf:stop(Conf),
     [?assertEqual({W, ok}, {W, R}) || {W, R} <- Checks],
     [?assert(L > -40.0, {c_hears, F, L}) || {F, L} <- CHearsA ++ CHearsB].
-
-%% The band check on the shape of the band, not on the path's gain: a
-%% caller's codec may move the whole probe a few dB (pjsua's G.722 path
-%% comes 6 dB down), so the calibration moves by what 1000 Hz, which any
-%% 8 kHz path keeps, lost on the way; then every tone within 3 dB of it,
-%% and nothing folded onto the alias bins.
-band_shape(Samples, Cal) ->
-    case length(Samples) >= 3200 of
-        false ->
-            {error, [{too_short, length(Samples)}]};
-        true ->
-            try chappe_mix_test_tone:band_calibrate(Samples) of
-                #{1000 := Got} ->
-                    Gain = Got - maps:get(1000, Cal),
-                    ct:log("path gain at 1000 Hz: ~.1f dB", [Gain]),
-                    Shifted = maps:map(fun(_, L) -> L + Gain end, Cal),
-                    %% G.722 is on every path here: its QMF bank folds
-                    %% 5000 and 6000 Hz onto the alias bins at about 60 dB
-                    %% down, so they get 30 dB (a careless drop to 8 kHz
-                    %% folds them within a few dB of full level)
-                    chappe_mix_test_tone:band_check(Samples, Shifted, #{
-                        tolerance => 3.0, alias_db => 30.0
-                    })
-            catch
-                %% a tone 10 dB down or more: the path lost the band
-                error:{bad_calibration, F, L} -> {error, [{missing, F, L}]}
-            end
-    end.
 
 zeros(Secs) ->
     lists:duplicate(Secs * ?RATE, 0).
@@ -653,12 +638,7 @@ root() ->
 
 wav(Dir, File, Samples, Rate) ->
     Path = filename:join(Dir, File),
-    Data = <<<<S:16/little-signed>> || S <- Samples>>,
-    Hdr =
-        <<"RIFF", (36 + byte_size(Data)):32/little, "WAVEfmt ", 16:32/little,
-            1:16/little, 1:16/little, Rate:32/little, (Rate * 2):32/little,
-            2:16/little, 16:16/little, "data", (byte_size(Data)):32/little>>,
-    ok = file:write_file(Path, [Hdr, Data]),
+    ok = chappe_mrf_live_ua:write_samples(Path, Samples, Rate),
     Path.
 
 wav_samples(Path) ->
