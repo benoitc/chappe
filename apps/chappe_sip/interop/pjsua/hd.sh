@@ -24,6 +24,11 @@
 #
 # The pjsua log (SIP at level 5) lands next to the recording as
 # NAME.log. Exits with pjsua's status.
+#
+# The image is built before each call (cheap from the layer cache). With
+# HD_SKIP_BUILD=1 the image is used as it is, so that no build runs while
+# a measured call is up: the job builds it once before its first call.
+# hd.sh then fails when the image does not exist.
 set -eu
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -61,9 +66,17 @@ case $RATE in
     *) echo "hd.sh: clock rate $RATE: 8000, 16000 or 48000" >&2; exit 2 ;;
 esac
 
-# always build: an older image of the same name may lack Opus, and the
-# layer cache makes an up-to-date build cheap
-docker build -q -t "$IMAGE" "$HERE" >/dev/null
+# build by default: an older image of the same name may lack Opus, and
+# the layer cache makes an up-to-date build cheap
+if [ "${HD_SKIP_BUILD:-}" = 1 ]; then
+    if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+        echo "hd.sh: HD_SKIP_BUILD=1 and no image $IMAGE:" \
+            "docker build -t $IMAGE $HERE" >&2
+        exit 2
+    fi
+else
+    docker build -q -t "$IMAGE" "$HERE" >/dev/null
+fi
 
 abs() { (cd "$(dirname "$1")" && echo "$(pwd)/$(basename "$1")"); }
 

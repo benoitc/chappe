@@ -1,0 +1,109 @@
+name: Quality
+
+# The HD room A/B (apps/chappe_mix/test/audit/quality/2026-11-27-ab-runner)
+# on a GitHub runner: the build before the hardening (821870c) against the
+# hardened one (840bb74), in blocks old, new, old, new, each trial behind
+# the declared load gate. A push to quality/<name> runs the A/B; to
+# quality/<name>-smoke, one block of the new build on one clip, to check
+# the pipeline. The captures are uploaded; taq imports and scores them on
+# another machine (see that directory's README).
+
+on:
+  push:
+    branches: ['quality/**']
+  workflow_dispatch:
+
+concurrency:
+  group: quality
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  OTP: '29.1.2'
+  REBAR3: '3.28.0'
+  AB: apps/chappe_mix/test/audit/quality/2026-11-27-ab-runner
+  GATE8: apps/chappe_mix/test/audit/quality/2026-11-26-ab-gate8
+
+jobs:
+  ab:
+    name: HD room A/B
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    steps:
+      # the deadline and the backstop below count from here
+      - name: Job start
+        run: echo "JOB_T0=$(date +%s)" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ env.OTP }}
+          rebar3-version: ${{ env.REBAR3 }}
+      - name: System deps (sofia + instrument)
+        run: scripts/ci_apt.sh pkg-config libssl-dev cmake build-essential
+      - name: Mode
+        run: |
+          case $GITHUB_REF_NAME in
+            *-smoke) mode=smoke ;;
+            *) mode=full ;;
+          esac
+          {
+            echo "MODE=$mode"
+            echo "WT=$RUNNER_TEMP/wt"
+            echo "PADDED_DIR=$RUNNER_TEMP/padded"
+            echo "OUT_DIR=$RUNNER_TEMP/out/$mode"
+            echo "HD_SKIP_BUILD=1"
+          } >> "$GITHUB_ENV"
+      - name: Host
+        run: |
+          uptime
+          nproc
+          lscpu | sed -n 's/^Model name: *//p'
+          uname -r
+          echo "ImageOS $ImageOS ImageVersion $ImageVersion"
+      # the short names are the ones ab.sh checks
+      - name: Builds (old 821870c, new 840bb74)
+        run: |
+          for sha in 821870c 840bb74; do
+            git worktree add "$WT/ab-$sha" "$sha"
+            (cd "$WT/ab-$sha" && scripts/fetch_deps.sh && rebar3 compile)
+          done
+      # once, so that no build runs during a trial (the demo's own build
+      # of rtpengine then hits the layer cache)
+      - name: Images
+        run: |
+          docker compose -f demo/sbc/docker-compose.yml build rtpengine
+          docker compose -f demo/sbc/docker-compose.yml pull kamailio fs1 fs2
+          docker pull nicolaka/netshoot:v0.13
+          docker build -t chappe-conf-pjsua apps/chappe_sip/interop/pjsua
+      - name: Mixer probe
+        run: |
+          cp "$GATE8/mixprobe.erl.txt" "$GATE8/mixprobe.erl"
+          erlc -o "$GATE8" "$GATE8/mixprobe.erl"
+      - name: Played files
+        run: |
+          python3 "$AB/pad.py" "$AB/clips" "$PADDED_DIR"
+          mkdir -p "$OUT_DIR"
+          cp "$PADDED_DIR/padded.json" "$OUT_DIR/"
+      # no trial starts after DEADLINE; timeout cuts the run 15 min before
+      # the job's limit, so that the upload still happens
+      - name: Run
+        run: |
+          export DEADLINE=$((JOB_T0 + 285 * 60))
+          left=$((JOB_T0 + 335 * 60 - $(date +%s)))
+          if [ "$MODE" = smoke ]; then
+            BLOCKS="1 new 0" CLIPS=vctk092-p225-01 \
+              timeout -k 60 "$left" "$AB/run-runner.sh"
+          else
+            timeout -k 60 "$left" "$AB/run-runner.sh"
+          fi
+      - name: Captures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hd-ab-${{ env.MODE }}
+          path: ${{ env.OUT_DIR }}
+          retention-days: 30

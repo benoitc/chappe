@@ -16,3 +16,8 @@ This product depends on additional third-party components fetched at build
 time (livery, instrument and their hex dependencies, erlang_ws). They and
 sofia-sip are described in apps/chappe_sip/THIRD_PARTY_LICENSES.md; the
 other apps bundle no third-party code (see each app's LICENSE).
+
+The repository holds eight speech clips prepared from the CSTR VCTK Corpus
+0.92 (CC BY 4.0, Yamagishi, Veaux and MacDonald, University of Edinburgh),
+test data only, in apps/chappe_mix/test/audit/quality/2026-11-27-ab-runner/clips
+(see the README there for the attribution and the changes made).
