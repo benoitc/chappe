@@ -46,8 +46,10 @@ end_per_testcase(_Case, _Config) ->
 op_vs_stop_stress(_Config) ->
     Rounds = 60,
     lists:foreach(
-        fun(N) ->
-            Port = 47000 + N,
+        fun(_) ->
+            %% a fresh port each round, below the ephemeral range (fixed
+            %% ports there collide with the kernel's own allocations)
+            Port = chappe_sip_test_port:pick(),
             ok = start_retry(Port, 30),
             ok = chappe_sip:options(fun(_R, Res) ->
                 chappe_sip_res:send(Res, 200, #{})
@@ -62,7 +64,7 @@ op_vs_stop_stress(_Config) ->
 %% Cycle restart_engine (stop + re-establish the native stack) under sustained
 %% traffic on a stable port.
 restart_under_traffic(_Config) ->
-    Port = 46000 + rand:uniform(500),
+    Port = chappe_sip_test_port:pick(),
     ok = start_retry(Port, 30),
     ok = chappe_sip:options(fun(_R, Res) ->
         chappe_sip_res:send(Res, 200, #{})

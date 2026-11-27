@@ -1507,9 +1507,10 @@ even_ports() ->
 counts(S) ->
     maps:with([packets, failed, replayed], chappe_audio_rtp:stats(S)).
 
-%% N consecutive UDP ports free on 127.0.0.1, the first returned
+%% N consecutive UDP ports free on 127.0.0.1, the first returned; below
+%% Linux's ephemeral range (32768 and up), as chappe_sip_test_port picks
 free_ports(N) ->
-    P = 20000 + rand:uniform(20000),
+    P = 20000 + rand:uniform(9000),
     Socks = [
         gen_udp:open(X, [binary, {ip, {127, 0, 0, 1}}])
      || X <- lists:seq(P, P + N - 1)
