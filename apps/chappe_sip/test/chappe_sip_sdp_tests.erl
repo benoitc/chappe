@@ -140,3 +140,123 @@ bypass_nat_anchors_test() ->
     ?assertEqual(anchor, bypass(A, sdp(<<"198.51.100.7">>))),
     Same = #{sdp => sdp(<<"203.0.113.9">>), source => {203, 0, 113, 9}},
     ?assertEqual(direct, bypass(Same, sdp(<<"198.51.100.7">>))).
+
+%% ---- answered/2 ----
+
+%% an SDP of these media sections, each a list of lines (its m= first)
+media_sdp(Sections) ->
+    iolist_to_binary([
+        <<
+            "v=0\r\no=- 1 2 IN IP4 192.0.2.1\r\ns=-\r\nc=IN IP4 192.0.2.1\r\n"
+            "t=0 0\r\n"
+        >>,
+        [[L, <<"\r\n">>] || S <- Sections, L <- S]
+    ]).
+
+%% A caller that offered speex/16000 before G.722 and was answered G.722
+%% keeps G.722 and the telephone-event of its clock, the others' lines
+%% gone, its own lines otherwise as they were.
+answered_cuts_to_answer_test() ->
+    Offer = media_sdp([
+        [
+            <<"m=audio 4000 RTP/AVP 96 9 120 121">>,
+            <<"a=rtpmap:96 speex/16000">>,
+            <<"a=fmtp:96 vbr=on">>,
+            <<"a=rtpmap:9 G722/8000">>,
+            <<"a=rtpmap:120 telephone-event/16000">>,
+            <<"a=fmtp:120 0-16">>,
+            <<"a=rtpmap:121 telephone-event/8000">>,
+            <<"a=fmtp:121 0-16">>,
+            <<"a=rtcp-fb:96 nack">>,
+            <<"a=rtcp-fb:* ccm fir">>,
+            <<"a=sendrecv">>
+        ]
+    ]),
+    Answer = media_sdp([
+        [
+            <<"m=audio 5000 RTP/AVP 9 121">>,
+            <<"a=rtpmap:9 g722/8000">>,
+            <<"a=rtpmap:121 telephone-event/8000">>
+        ]
+    ]),
+    ?assertEqual(
+        media_sdp([
+            [
+                <<"m=audio 4000 RTP/AVP 9 121">>,
+                <<"a=rtpmap:9 G722/8000">>,
+                <<"a=rtpmap:121 telephone-event/8000">>,
+                <<"a=fmtp:121 0-16">>,
+                <<"a=rtcp-fb:* ccm fir">>,
+                <<"a=sendrecv">>
+            ]
+        ]),
+        chappe_sip_sdp:answered(Offer, Answer)
+    ).
+
+%% A static payload type without its rtpmap is the same codec as one the
+%% answer names with it, under another number too; opus/48000/2 matches
+%% case-insensitively.
+answered_matches_by_codec_test() ->
+    Offer = media_sdp([
+        [
+            <<"m=audio 4000 RTP/AVP 111 0 8">>,
+            <<"a=rtpmap:111 opus/48000/2">>
+        ]
+    ]),
+    ?assertEqual(
+        media_sdp([[<<"m=audio 4000 RTP/AVP 0">>]]),
+        chappe_sip_sdp:answered(
+            Offer,
+            media_sdp([
+                [<<"m=audio 5000 RTP/AVP 0">>, <<"a=rtpmap:0 PCMU/8000">>]
+            ])
+        )
+    ),
+    ?assertEqual(
+        media_sdp([
+            [<<"m=audio 4000 RTP/AVP 111">>, <<"a=rtpmap:111 opus/48000/2">>]
+        ]),
+        chappe_sip_sdp:answered(
+            Offer,
+            media_sdp([
+                [<<"m=audio 5000 RTP/AVP 96">>, <<"a=rtpmap:96 OPUS/48000/2">>]
+            ])
+        )
+    ).
+
+%% Nothing to go by leaves the offer as it is: no answer, an answer with
+%% no media, a section the answer refused or has no counterpart for, one
+%% with no codec in common; each section is cut by its own counterpart.
+answered_keeps_offer_test() ->
+    Offer = media_sdp([
+        [<<"m=audio 4000 RTP/AVP 0 8">>],
+        [<<"m=video 4002 RTP/AVP 96">>, <<"a=rtpmap:96 VP8/90000">>]
+    ]),
+    ?assertEqual(Offer, chappe_sip_sdp:answered(Offer, <<>>)),
+    ?assertEqual(
+        Offer,
+        chappe_sip_sdp:answered(
+            Offer, <<"v=0\r\no=- 1 2 IN IP4 192.0.2.1\r\ns=-\r\n">>
+        )
+    ),
+    ?assertEqual(
+        Offer,
+        chappe_sip_sdp:answered(
+            Offer, media_sdp([[<<"m=audio 0 RTP/AVP 8">>]])
+        )
+    ),
+    ?assertEqual(
+        Offer,
+        chappe_sip_sdp:answered(
+            Offer, media_sdp([[<<"m=audio 5000 RTP/AVP 18">>]])
+        )
+    ),
+    ?assertEqual(
+        media_sdp([
+            [<<"m=audio 4000 RTP/AVP 8">>],
+            [<<"m=video 4002 RTP/AVP 96">>, <<"a=rtpmap:96 VP8/90000">>]
+        ]),
+        chappe_sip_sdp:answered(
+            Offer, media_sdp([[<<"m=audio 5000 RTP/AVP 8">>]])
+        )
+    ).

@@ -7,15 +7,17 @@
 %% connection address and media lines (parse/1), its o= line (an
 %% unchanged one means an unchanged session, RFC 3264 8), whether it puts
 %% the session on hold (RFC 3264 8.4) and whether it comes from a WebRTC
-%% endpoint (DTLS-SRTP with ICE, RFC 8829). SDP is never rewritten here:
-%% rtpengine does that.
+%% endpoint (DTLS-SRTP with ICE, RFC 8829). rtpengine rewrites SDP; the
+%% stack only changes its own offer's direction for a hold (hold/2) and
+%% cuts a party's offer to what it was answered with, for a re-offer that
+%% party never sees (answered/2).
 -module(chappe_sip_sdp).
 
 -export([parse/1, address/1, words/1, rtcp_address/2]).
 -export([origin/1, same_version/2, on_hold/1, webrtc/1, connection/1]).
 -export([sections/1, join/2, refused/1]).
 -export([hold/2, next_version/1]).
--export([set_direction/2]).
+-export([set_direction/2, answered/2]).
 
 -export_type([media/0]).
 
@@ -297,11 +299,7 @@ next_version(Sdp) ->
 %% them. A rejected stream (port 0) is left alone.
 -spec hold(binary(), boolean()) -> binary().
 hold(Sdp, Hold) ->
-    Eol =
-        case binary:match(Sdp, <<"\r\n">>) of
-            nomatch -> <<"\n">>;
-            _ -> <<"\r\n">>
-        end,
+    Eol = eol(Sdp),
     {Session, Medias} = sections(Sdp),
     SessDir = sdp_direction(Session, <<"sendrecv">>),
     Out =
@@ -367,3 +365,102 @@ set_direction(Lines, Dir) ->
         false ->
             Lines ++ [Attr]
     end.
+
+%% the line end an SDP uses: CRLF, or LF when it has no CRLF
+eol(Sdp) ->
+    case binary:match(Sdp, <<"\r\n">>) of
+        nomatch -> <<"\n">>;
+        _ -> <<"\r\n">>
+    end.
+
+%% RFC 3264 6.1: the formats of an answer's stream are the ones the
+%% offerer sends and receives on it from then on. Offer with each RTP
+%% media section cut to the formats its counterpart in Answer (the
+%% section at the same place) names, the a=rtpmap, a=fmtp and a=rtcp-fb
+%% lines of the others dropped: a re-offer made from the offerer's own
+%% SDP, which the offerer never sees, then keeps it on what it was
+%% answered with (chappe_sip_b2b_replace). A format is the same codec in
+%% both by its a=rtpmap, case aside and a channel count of 1 the same as
+%% none, or without one by its static payload type (RFC 3551 6). A section
+%% the answer refused (port 0) or has no counterpart for, or that would
+%% keep no format, stays as offered; so does Offer when Answer has no
+%% media.
+-spec answered(binary(), binary()) -> binary().
+answered(Offer, Answer) ->
+    {Session, Offered} = sections(Offer),
+    {_, Answered} = sections(Answer),
+    case cut_media(Offered, Answered) of
+        Offered ->
+            Offer;
+        Media ->
+            Eol = eol(Offer),
+            iolist_to_binary([[L, Eol] || L <- Session ++ lists:append(Media)])
+    end.
+
+cut_media([O | Os], [A | As]) -> [cut_section(O, A) | cut_media(Os, As)];
+cut_media(Os, []) -> Os;
+cut_media([], _As) -> [].
+
+cut_section([MO | Lines] = O, [MA | ALines]) ->
+    case {words(MO), words(MA)} of
+        {[Kind, Port, Proto | Fmts], [_, APort, _ | AFmts]} when
+            APort =/= <<"0">>
+        ->
+            Codecs = [codec(F, rtpmaps(ALines)) || F <- AFmts],
+            Maps = rtpmaps(Lines),
+            Keep = [F || F <- Fmts, lists:member(codec(F, Maps), Codecs)],
+            case rtp(Proto) andalso Keep =/= [] andalso Keep =/= Fmts of
+                true ->
+                    Gone = Fmts -- Keep,
+                    M = iolist_to_binary(
+                        lists:join(<<" ">>, [Kind, Port, Proto | Keep])
+                    ),
+                    [M | [L || L <- Lines, not lists:member(fmt_of(L), Gone)]];
+                false ->
+                    O
+            end;
+        _ ->
+            O
+    end.
+
+rtp(Proto) ->
+    binary:match(Proto, <<"RTP">>) =/= nomatch.
+
+%% the format an a=rtpmap, a=fmtp or a=rtcp-fb line is about
+fmt_of(<<"a=rtpmap:", V/binary>>) -> first_word(V);
+fmt_of(<<"a=fmtp:", V/binary>>) -> first_word(V);
+fmt_of(<<"a=rtcp-fb:", V/binary>>) -> first_word(V);
+fmt_of(_Line) -> undefined.
+
+first_word(V) ->
+    hd(binary:split(V, <<" ">>)).
+
+%% #{Fmt => codec} of a section's a=rtpmap lines
+rtpmaps(Lines) ->
+    maps:from_list([
+        {Fmt, encoding(Enc)}
+     || <<"a=rtpmap:", V/binary>> <- Lines,
+        [Fmt, Enc] <- [binary:split(V, <<" ">>)]
+    ]).
+
+encoding(Enc) ->
+    case binary:split(string:lowercase(string:trim(Enc)), <<"/">>, [global]) of
+        [Name, Rate, <<"1">>] -> <<Name/binary, "/", Rate/binary>>;
+        Parts -> iolist_to_binary(lists:join(<<"/">>, Parts))
+    end.
+
+%% a format's codec: its a=rtpmap, else its static payload type's
+codec(Fmt, Maps) ->
+    case Maps of
+        #{Fmt := Codec} -> Codec;
+        #{} -> static(Fmt)
+    end.
+
+static(<<"0">>) -> <<"pcmu/8000">>;
+static(<<"3">>) -> <<"gsm/8000">>;
+static(<<"4">>) -> <<"g723/8000">>;
+static(<<"8">>) -> <<"pcma/8000">>;
+static(<<"9">>) -> <<"g722/8000">>;
+static(<<"13">>) -> <<"cn/8000">>;
+static(<<"18">>) -> <<"g729/8000">>;
+static(Fmt) -> {pt, Fmt}.

@@ -119,10 +119,13 @@ B's To tag. `replace_b/3` uses that:
 ```
 
 A keeps sending to the same rtpengine address and port, and rtpengine now
-forwards to the new B, so nothing needs to be renegotiated with A. On a
-failure (`chappe_sip_b2b_replace:abort/3`) rtpengine gets the old B's SDP
-back and the call goes on with the old B. If the call ends while the new B
-rings, the new B is CANCELled. This needs `media => anchor`: with direct
+forwards to the new B, so nothing needs to be renegotiated with A. When
+the new B's flags mask A's codecs (rtpengine converts A, for a 16 kHz
+mixer), the offer is made from A's SDP cut to the codecs A was answered
+with (`chappe_sip_sdp:answered/2`), so rtpengine keeps sending A the codec
+it agreed to. On a failure (`chappe_sip_b2b_replace:abort/3`) rtpengine
+gets the old B's SDP back and the call goes on with the old B. If the call
+ends while the new B rings, the new B is CANCELled. This needs `media => anchor`: with direct
 media there is no rtpengine session to keep A's ports.
 
 ## Tests

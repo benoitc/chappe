@@ -272,7 +272,8 @@ answer_locally(update, <<>>, _Dlg, Res) ->
     _ = chappe_sip_res:send(Res, 200, #{reason => <<"OK">>}),
     ok;
 answer_locally(_Event, _Offer, Dlg, Res) ->
-    _ = chappe_sip_res:send(Res, 200, sdp_reply(local_sdp(Dlg))),
+    Sdp = chappe_sip_b2b:local_sdp(Dlg),
+    _ = chappe_sip_res:send(Res, 200, sdp_reply(Sdp)),
     ok.
 
 %% 500 with Retry-After: another offer, or transfer, of the call is
@@ -334,7 +335,7 @@ step({peer_offer, X, Res}, {ok, PeerOffer}, #{media := M} = S) ->
             S#{media := M1, pending := #{step => {ack, X}}};
         {reject, Code} ->
             _ = chappe_sip_res:send(Res, Code, #{}),
-            ack_leg(Y, local_sdp(maps:get(Y, S)), S),
+            ack_leg(Y, chappe_sip_b2b:local_sdp(maps:get(Y, S)), S),
             S
     end;
 step({peer_offer, _X, Res}, Error, S) ->
@@ -371,7 +372,7 @@ step({replace, From, Params}, Result, S) ->
 %% the switch failed after A's offer: B kept its session, and A gets its
 %% previous answer back in the ACK
 switch_back(From, Old, Error, S) ->
-    ack_leg(a, local_sdp(maps:get(a, S)), S),
+    ack_leg(a, chappe_sip_b2b:local_sdp(maps:get(a, S)), S),
     switch_failed(From, Old, Error, S).
 
 %% the ACK of our 2xx to X's offerless re-INVITE: its answer goes on in
@@ -385,7 +386,7 @@ acked(X, Answer, #{pending := #{step := {ack, X}}, media := M} = S) ->
             S1#{media := M1};
         _ ->
             %% no usable answer: the other leg keeps the session it had
-            ack_leg(Y, local_sdp(maps:get(Y, S)), S1),
+            ack_leg(Y, chappe_sip_b2b:local_sdp(maps:get(Y, S)), S1),
             restore(X, S1)
     end;
 acked(_X, _Answer, S) ->
@@ -613,13 +614,6 @@ sdp_reply(Sdp) ->
         headers => [{<<"Content-Type">>, <<"application/sdp">>}],
         body => Sdp
     }.
-
-local_sdp(Dlg) ->
-    try chappe_sip_dialog:local_sdp(Dlg) of
-        Sdp -> Sdp
-    catch
-        exit:_ -> <<>>
-    end.
 
 sip_error(Status, Msg) ->
     Reason =

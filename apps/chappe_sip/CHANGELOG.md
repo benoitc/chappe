@@ -36,6 +36,12 @@ says how apps are released.
 
 ### Fixed
 
+- A call moved to a new party that rtpengine converts it for, a 16 kHz
+  conference room for one, could leave the caller hearing nothing. When
+  the caller had offered several codecs and been answered with one that
+  was not its first, rtpengine switched what it sent the caller to its
+  first codec, which the caller had never agreed to and could not play.
+  The caller now keeps the codec it was answered with.
 - Ending a call the proxy anchored on rtpengine no longer waits on a reply
   that may not arrive: the proxy asks rtpengine to leave the call
   statistics out of the delete reply, which could otherwise be split into

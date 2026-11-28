@@ -57,7 +57,8 @@
 -export([hangup/2, replace_b/3, replace_leg/4]).
 -export([call/2, call/3, contact/0, contact/1]).
 %% helpers of the chappe_sip_b2b_* modules
--export([timer_c/1, remote_tag/1, remote_sdp/1, destroy_quietly/2]).
+-export([timer_c/1, remote_tag/1, remote_sdp/1, local_sdp/1]).
+-export([destroy_quietly/2]).
 -export([offers/4, dest_bopts/2]).
 -export([parties/1]).
 
@@ -1154,6 +1155,15 @@ call({Pid, Ref}, Req, Timeout) ->
 -spec remote_sdp(chappe_sip_dialog:dialog()) -> binary().
 remote_sdp(Dlg) ->
     try chappe_sip_dialog:remote_sdp(Dlg) of
+        Sdp -> Sdp
+    catch
+        exit:_ -> <<>>
+    end.
+
+%% The SDP the relay last sent on a leg, <<>> once it is gone.
+-spec local_sdp(chappe_sip_dialog:dialog()) -> binary().
+local_sdp(Dlg) ->
+    try chappe_sip_dialog:local_sdp(Dlg) of
         Sdp -> Sdp
     catch
         exit:_ -> <<>>

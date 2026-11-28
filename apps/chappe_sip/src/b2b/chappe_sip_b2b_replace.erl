@@ -5,7 +5,9 @@
 %%
 %% The relay gets rtpengine's offer for A's side of the session (an offer
 %% from A's tag, with A's SDP), so A keeps the addresses it sends to and
-%% sees no re-INVITE. call/4 then brings the new B in, off the relay
+%% sees no re-INVITE; when rtpengine transcodes A for the new B, A's SDP
+%% is cut to the codecs A was answered with first, so A keeps its codec
+%% too (kept_sdp/4). call/4 then brings the new B in, off the relay
 %% loop: a fresh INVITE to a URI, a re-INVITE of a dialog the app made, or
 %% one INVITE per destination of a {parallel, Dests} target. On a 2xx,
 %% swap/4 gives rtpengine the new B's answer and moves the relay onto the
@@ -160,7 +162,7 @@ prepare({Caller, _} = From, Leg, Target, KeepSdp, Opts, #{media := M0} = S) ->
             true -> Caller;
             false -> undefined
         end,
-    case offer(Leg, Target, KeepSdp, Opts, M) of
+    case offer(Leg, Target, kept_sdp(Leg, KeepSdp, M, S), Opts, M) of
         {ok, Target1, Sdp, M1} ->
             Handled = chappe_sip_b2b_requests:handled(
                 maps:get(requests, S), maps:get(relay_info, S)
@@ -179,6 +181,31 @@ prepare({Caller, _} = From, Leg, Target, KeepSdp, Opts, #{media := M0} = S) ->
         {reject, Code, offered} ->
             {reject, Code, Old, M}
     end.
+
+%% The SDP the offer is made from: KeepSdp, what the side that stays
+%% offered. When the flags toward Leg, the new party's, mask every codec
+%% of it (rtpengine transcodes that side to what the new party takes, as
+%% for a 16 kHz conference mixer), it is cut to the codecs that side was
+%% answered with (chappe_sip_sdp:answered/2). That side never sees the
+%% new answer, and from its whole offer rtpengine answers it with the
+%% first codec it can transcode, which need not be the one it was answered
+%% with and decodes: a caller that offered speex before G.722, answered
+%% G.722 by a media server, heard nothing once moved to the mixer. Without
+%% the mask the new party takes a codec of the offer, which rtpengine
+%% forwards as it is.
+kept_sdp(Leg, KeepSdp, #{params := Params}, S) ->
+    case masks_all(maps:get(Leg, Params, #{})) of
+        true ->
+            Answered = chappe_sip_b2b:local_sdp(maps:get(other(Leg), S)),
+            chappe_sip_sdp:answered(KeepSdp, Answered);
+        false ->
+            KeepSdp
+    end.
+
+masks_all(#{codec := #{mask := Mask}}) when is_list(Mask) ->
+    lists:any(fun(C) -> lists:member(C, [<<"all">>, <<"full">>]) end, Mask);
+masks_all(_LegParams) ->
+    false.
 
 %% Whether the offers of Target took other flags toward Leg than the old
 %% party's (M0, the media before them; M1, after them).
