@@ -20,6 +20,11 @@ says how apps are released.
 
 ### Fixed
 
+- A call joined to a native conference could be hung up when the join's
+  timeout came just as the call was moving into the room: the room gave
+  up on the join and cut the call's new leg, ending the call. A join that
+  is that far along now gets a few more seconds to finish, and the call
+  either gets in or keeps the leg it had.
 - A party a native conference dials (by REFER) was offered only the codec
   of the room's media endpoint, G.722 in a 16 kHz room, so a phone
   without it refused the call. It is now offered Opus, G.722, PCMU and

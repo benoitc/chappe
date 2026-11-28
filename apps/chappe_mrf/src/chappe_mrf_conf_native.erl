@@ -24,6 +24,11 @@
 -export([relate/4, record/3, stop_record/1, handover/1, dial/4]).
 -export([loop_invite/4, check_rate/1, check_join_timeout/1, same_rate/2]).
 
+%% how much longer than its deadline a call's join whose loopback the
+%% mixer answered has to report (its leg B may be swapped already):
+%% within MRF_JOIN_MARGIN, so its joiner still waits
+-define(SWAP_GRACE, 3000).
+
 -record(native, {
     %% the mixer room's sample rate
     rate = 8000 :: 8000 | 16000,
@@ -190,7 +195,7 @@ handle_info({ep_join, Id, Step}, #state{pending = P} = S) ->
     end;
 handle_info({native_join_timeout, Token}, #state{pending = P} = S) ->
     case P of
-        #{Token := J} -> {noreply, result(Token, J, {error, timeout}, S)};
+        #{Token := J} -> {noreply, deadline(Token, J, S)};
         _ -> {noreply, S}
     end;
 handle_info({'DOWN', Mon, process, _, _}, #state{pending = P} = S) ->
@@ -372,7 +377,8 @@ loop_invite(Conf, Token, Req, Res) ->
 %% ---- joins ----
 
 %% A call's join: a helper runs replace_b/3, watched by the room, so a
-%% helper that dies before it reports fails the join.
+%% helper that dies before it reports fails the join. swap: the join
+%% replaces the leg B of a call that runs (deadline/3).
 join_b2b(B2b, Opts, From, S) ->
     #native{anchor_params = AP} = chappe_mrf_conf_backend:bstate(S),
     Token = chappe_mrf_lib:new_id(),
@@ -383,7 +389,7 @@ join_b2b(B2b, Opts, From, S) ->
         Result = chappe_sip_b2b:replace_b(B2b, Uri, #{anchor_params => AP}),
         Self ! {join_result, Token, Result}
     end),
-    J = #{from => From, b2b => B2b, opts => Opts, mon => Mon},
+    J = #{from => From, b2b => B2b, opts => Opts, mon => Mon, swap => true},
     {noreply, pending(Token, J, S)}.
 
 %% A call's join behind a PIN: a helper the room watches has the caller
@@ -417,7 +423,8 @@ join_pin(B2b, Ep, Opts, From, S) ->
         b2b => B2b,
         opts => Opts,
         mon => Mon,
-        helper => Pid
+        helper => Pid,
+        swap => true
     },
     {noreply, pending(Token, J, S)}.
 
@@ -428,11 +435,28 @@ pin_moving(Token, J) ->
     maps:remove(helper, J).
 
 %% A join under way, until join_timeout at most: then it fails, and
-%% what it took goes back (result/4).
+%% what it took goes back (deadline/3, result/4).
 pending(Token, J, #state{pending = P} = S) ->
     #native{join_timeout = Ms} = chappe_mrf_conf_backend:bstate(S),
     T = erlang:send_after(Ms, self(), {native_join_timeout, Token}),
     S#state{pending = P#{Token => J#{timer => T}}}.
+
+%% A join's deadline. A call's join (swap) whose loopback INVITE the
+%% mixer answered may have swapped the call's leg B already: failing it
+%% would end the call, as the loopback's BYE ends it. It gets SWAP_GRACE
+%% more to report instead: a swap that went through makes a member, one
+%% that failed left the call its old leg B. Any other join, or one still
+%% not done then, fails with {error, timeout}.
+deadline(Token, #{swap := true, session := _} = J, S) when
+    not is_map_key(overdue, J)
+->
+    ok = with_key(timer, J, fun erlang:cancel_timer/1),
+    T = erlang:send_after(?SWAP_GRACE, self(), {native_join_timeout, Token}),
+    S#state{
+        pending = (S#state.pending)#{Token := J#{timer := T, overdue => true}}
+    };
+deadline(Token, J, S) ->
+    result(Token, J, {error, timeout}, S).
 
 %% the worker reported: its exit is no failure any more, and a helper
 %% that reported is done

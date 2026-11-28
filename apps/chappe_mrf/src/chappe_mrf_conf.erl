@@ -115,7 +115,9 @@
 %%   join_timeout => ms a join (a call's, an endpoint's) may take, 95000
 %%                at most and by default, its PIN included: past it the
 %%                join fails with {error, timeout}
-%%                and the room gives back what it took. On either
+%%                and the room gives back what it took. A call's join
+%%                whose loopback the mixer answered gets 3 s more, its
+%%                leg B being swapped already, maybe. On either
 %%                backend start/2 refuses a join_timeout that is no
 %%                integer from 1 to 95000: {error, {bad_option,
 %%                join_timeout}}

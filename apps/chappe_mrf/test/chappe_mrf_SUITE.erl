@@ -131,7 +131,8 @@
     native_pin_wrong/1,
     native_pin_timeout/1,
     native_pin_b2b/1,
-    native_pin_owner_dies/1
+    native_pin_owner_dies/1,
+    native_join_timeout_after_swap/1
 ]).
 
 -define(F, chappe_mrf_fake).
@@ -256,7 +257,8 @@ all() ->
         native_pin_wrong,
         native_pin_timeout,
         native_pin_b2b,
-        native_pin_owner_dies
+        native_pin_owner_dies,
+        native_join_timeout_after_swap
     ].
 
 init_per_suite(Config) ->
@@ -5227,6 +5229,41 @@ native_pin_owner_dies(Config) ->
     back_to(Conf, Base),
     until(fun() -> endpoint_pids() -- Eps =:= [] end),
     ok = chappe_mrf_conf:stop(Conf).
+
+%% A call's join whose deadline comes once the mixer answered its
+%% loopback INVITE, before the room heard of the swap: the call's leg B
+%% may be the loopback already, so the room does not end it. The swap
+%% goes through, the call is a member, its old leg B got the BYE and the
+%% caller none.
+%% req: MRF-26
+native_join_timeout_after_swap(Config) ->
+    ivr(Config),
+    Rtpe = ?config(rtpe, Config),
+    {ok, Conf} = chappe_mrf:conference(<<"lateswap">>, #{}),
+    {Ua, _Ep, B2b, Owner} = call_in(Config),
+    _ = rtpe_offers(),
+    %% the call's offer toward the loopback waits on rtpengine
+    ok = ?F:rtpe_fail(Rtpe, #{<<"offer">> => hold}),
+    _ = join_async(Conf, B2b),
+    _ = rtpe_offer(),
+    [Token] = maps:keys(element(10, sys:get_state(Conf))),
+    ok = sys:suspend(Conf),
+    %% rtpengine answers the next try: the loopback INVITE reaches the
+    %% room, held, behind which the deadline comes
+    ok = ?F:rtpe_fail(Rtpe, #{}),
+    until(fun() -> queued(Conf, fun loop_offer_call/1) end),
+    Conf ! {native_join_timeout, Token},
+    ok = sys:resume(Conf),
+    {ok, M} = join_within(10000),
+    _ = fs_what(bye),
+    no_ua_event(Ua, bye, 1000),
+    ?assertMatch([#{id := M}], chappe_mrf_conf:members(Conf)),
+    ?assertMatch(#{pending := 0}, holdings(Conf)),
+    Owner ! stop,
+    ok = chappe_mrf_conf:stop(Conf).
+
+loop_offer_call({'$gen_call', _, {within, _, {backend, {loop_offer, _, _}}}}) ->
+    true.
 
 %% A caller dialing Conf, joined from its INVITE with Opts, its PIN
 %% endpoint on the fake node: {join, Result} comes back, and its worker

@@ -15,7 +15,8 @@
 -export([join/4]).
 
 %% how long a joiner waits on the room: past the room's own deadline
-%% (MRF_JOIN_MAX at most, from when the room took the join), so that the
+%% (MRF_JOIN_MAX at most, from when the room took the join, and a call's
+%% join whose loopback the mixer answered gets 3 s more), so that the
 %% room's answer comes first
 -define(JOIN_WAIT, (?MRF_JOIN_MAX + ?MRF_JOIN_MARGIN)).
 

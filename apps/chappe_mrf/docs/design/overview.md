@@ -217,6 +217,12 @@ would send to the session that went. A report that comes after its join
 ended ends that dialog too. A room that stops kills the helpers of the
 joins under way, and its media sessions end with it.
 
+A call's join whose deadline comes once the mixer answered its loopback
+INVITE is not failed then: the call's leg B may be the loopback already,
+and the loopback's BYE would end the call. It gets 3 s more to report: a
+swap that went through makes a member, one that failed left the call its
+old leg B.
+
 ### A PIN before a native room
 
 A join with `pin` has the caller enter it on a FreeSWITCH endpoint
@@ -479,6 +485,7 @@ The first four are chappe_mrf settings
 | A native join fails (its loopback INVITE, a media step, the endpoint's re-INVITE) | the joiner gets an error at once; the mixer leg, the rtpengine session, the loopback token and the join's place go, and the room goes on; an endpoint whose node answered the re-INVITE is hung up |
 | A native PIN join: a wrong PIN | a caller that dialed the room hears `pin_fail_prompt` and its call ends; a call of the app's stays on its endpoint, `{error, bad_pin}` |
 | A native PIN join outlasts `join_timeout` while the caller types | the room stops the helper and answers `{error, timeout}`; the call ends, or stays on the app's endpoint |
+| A call's native join reaches its deadline after the mixer answered its loopback | 3 s more to report: the swap that went through makes a member, the call keeps a working leg either way |
 | A native join's worker dies, or the join outlasts `join_timeout` (95 s) | `{error, join_failed}` or `{error, timeout}`, with the same cleanup; an endpoint whose re-INVITE was out is hung up once that re-INVITE ends; one whose deadline came before its re-INVITE gets none and keeps its media |
 | A native endpoint's node is slow to answer its re-INVITE (up to 75 s) | the room answers its other requests meanwhile: control calls, other joins, REFERs |
 | rtpengine is slow to delete the session of a native member that leaves | the room does not wait: the delete runs as a cleanup job |
