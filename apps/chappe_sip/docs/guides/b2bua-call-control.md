@@ -126,6 +126,13 @@ ok = chappe_sip_b2b:replace_b(B2b, {dialog, D}, #{}).
 `anchor_params => #{b => Flags}` puts the new B on another rtpengine
 interface, for example a media server on a private network.
 
+Flags that mask A's codecs toward the new B (`codec => #{mask =>
+[<<"all">>], transcode => [...]}`, as a 16 kHz conference room's) have
+rtpengine convert A for the new B. A then keeps the codec it was answered
+with: the offer is made from A's SDP cut to that codec and its
+telephone-event. Without a mask the new B is offered A's whole SDP and
+takes one of its codecs, which rtpengine forwards to A as it is.
+
 ### Show the caller to the new B
 
 Without `from`, the INVITE to the new B names your node, so a phone rung after

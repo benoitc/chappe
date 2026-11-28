@@ -67,6 +67,7 @@
     replace_b_anchor_params/1,
     relay_async_outlives_handler/1,
     replace_b_keeps_a_ports/1,
+    replace_b_keeps_a_codec/1,
     fork_replace_second_answers/1,
     fork_replace_late_2xx_gets_bye/1,
     fork_replace_all_busy/1,
@@ -143,6 +144,7 @@ all() ->
         replace_b_anchor_params,
         relay_async_outlives_handler,
         replace_b_keeps_a_ports,
+        replace_b_keeps_a_codec,
         fork_replace_second_answers,
         fork_replace_late_2xx_gets_bye,
         fork_replace_all_busy,
@@ -1901,6 +1903,83 @@ replace_b_keeps_a_ports(_Config) ->
     ),
     ?assert(lists:member(<<"port-latching">>, maps:get(<<"flags">>, Answer))).
 
+%% A offered speex/16000 before G.722 and B answered G.722. A new B the
+%% call's flags let take any codec gets A's whole offer, as before. One
+%% whose flags mask A's codecs (rtpengine transcodes A to it, as for a
+%% 16 kHz mixer) is offered what A was answered with alone (G.722 and its
+%% telephone-event): rtpengine cannot then answer A with speex, which A
+%% would never hear of, since it sees no re-INVITE.
+replace_b_keeps_a_codec(_Config) ->
+    rtpe(),
+    {EP, CP} = setup(#{media => anchor}),
+    G722 = [
+        {<<"9">>, <<"G722/8000">>}, {<<"101">>, <<"telephone-event/8000">>}
+    ],
+    callee(CP, #{sdp => codec_sdp(<<"callee">>, G722)}, fun(Sock, _D) ->
+        {B, S} = ?UA:recv_req(Sock, <<"BYE">>),
+        ?UA:send(Sock, S, ?UA:resp(B, 200, <<"OK">>, <<>>, [], <<>>))
+    end),
+    Offered = [{<<"96">>, <<"speex/16000">>} | G722],
+    caller(
+        EP,
+        #{body => codec_sdp(<<"caller">>, Offered)},
+        fun(_Sock, _D) -> timer:sleep(infinity) end
+    ),
+    #{b2b := B2b} = got(legs),
+    _ = drain(),
+    ok = chappe_sip_b2b:replace_b(B2b, new_b(G722), #{}),
+    [#{<<"sdp">> := Whole}] = offers(),
+    ?assert(has(Whole, <<"m=audio 40000 RTP/AVP 96 9 101\r\n">>), Whole),
+    Mixer = #{
+        codec => #{mask => [<<"all">>], transcode => [<<"L16/16000/1">>]}
+    },
+    ok = chappe_sip_b2b:replace_b(B2b, new_b(G722), #{
+        anchor_params => #{b => Mixer}
+    }),
+    [#{<<"sdp">> := Cut} = Offer] = offers(),
+    ?assert(has(Cut, <<"m=audio 40000 RTP/AVP 9 101\r\n">>), Cut),
+    ?assertNot(has(Cut, <<"speex">>)),
+    ?assertMatch(#{<<"codec">> := #{<<"mask">> := [<<"all">>]}}, Offer).
+
+%% a new B on a port of its own that answers Codecs, then a BYE: its URI
+new_b(Codecs) ->
+    NP = ?UA:pick(),
+    ?UA:peer(NP, fun(Sock) ->
+        {Inv, Src} = ?UA:recv_req(Sock, <<"INVITE">>),
+        ?UA:send(
+            Sock,
+            Src,
+            ?UA:resp(
+                Inv,
+                200,
+                <<"OK">>,
+                ?UA:tag(),
+                [contact(Sock)],
+                codec_sdp(<<"new">>, Codecs)
+            )
+        ),
+        {_, _} = ?UA:recv_req(Sock, <<"ACK">>),
+        {B, S} = ?UA:recv_req(Sock, <<"BYE">>, 20000),
+        ?UA:send(Sock, S, ?UA:resp(B, 200, <<"OK">>, <<>>, [], <<>>)),
+        timer:sleep(infinity)
+    end),
+    <<"sip:new@127.0.0.1:", (integer_to_binary(NP))/binary>>.
+
+%% the offers rtpengine got since the last drain
+offers() ->
+    [C || {rtpe_cmd, #{<<"command">> := <<"offer">>} = C} <- drain()].
+
+%% an SDP offering Codecs, [{PayloadType, Rtpmap}] in order
+codec_sdp(Marker, Codecs) ->
+    iolist_to_binary([
+        <<"v=0\r\no=", Marker/binary,
+            " 1 0 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\n"
+            "t=0 0\r\nm=audio 40000 RTP/AVP">>,
+        [[<<" ">>, Pt] || {Pt, _} <- Codecs],
+        <<"\r\n">>,
+        [[<<"a=rtpmap:">>, Pt, <<" ">>, Map, <<"\r\n">>] || {Pt, Map} <- Codecs]
+    ]).
+
 %% relay_async/2 carries an anchored call in its own process: the handler
 %% returns at once, the call (and its rtpengine session) lives on, the
 %% handle still drives it, and the notify process hears how it ended.
@@ -3296,8 +3375,8 @@ contact(Sock) ->
         <<"<sip:peer@127.0.0.1:", (integer_to_binary(?UA:lport(Sock)))/binary,
             ">">>}.
 
-%% The callee (leg B): answers 200 with Headers, waits for the ACK, then
-%% runs Fun(Sock, RawDialog).
+%% The callee (leg B): answers 200 with Headers (and sdp, its own), waits
+%% for the ACK, then runs Fun(Sock, RawDialog).
 callee(CP, Fun) -> callee(CP, #{}, Fun).
 
 callee(CP, Opts, Fun) ->
@@ -3313,7 +3392,7 @@ callee(CP, Opts, Fun) ->
                 <<"OK">>,
                 Tag,
                 [contact(Sock) | maps:get(headers, Opts, [])],
-                ?UA:sdp(<<"callee">>)
+                maps:get(sdp, Opts, ?UA:sdp(<<"callee">>))
             )
         ),
         {_Ack, _} = ?UA:recv_req(Sock, <<"ACK">>),
@@ -3321,15 +3400,22 @@ callee(CP, Opts, Fun) ->
         timer:sleep(infinity)
     end).
 
-%% The caller (leg A): INVITEs the app, ACKs its 2xx, then runs
-%% Fun(Sock, RawDialog).
+%% The caller (leg A): INVITEs the app (with body, its own SDP), ACKs its
+%% 2xx, then runs Fun(Sock, RawDialog).
 caller(EP, Opts, Fun) ->
     ?UA:peer(0, fun(Sock) ->
-        Inv = ?UA:invite(Sock, EP, #{
-            call_id => ?UA:callid(),
-            from_tag => ?UA:tag(),
-            headers => maps:get(headers, Opts, [])
-        }),
+        Inv = ?UA:invite(
+            Sock,
+            EP,
+            maps:merge(
+                #{
+                    call_id => ?UA:callid(),
+                    from_tag => ?UA:tag(),
+                    headers => maps:get(headers, Opts, [])
+                },
+                maps:with([body], Opts)
+            )
+        ),
         ?UA:send(Sock, EP, Inv),
         R = ?UA:recv_status(Sock, 200),
         D = ?UA:dialog_from_2xx(Sock, Inv, R),

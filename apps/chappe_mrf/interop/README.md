@@ -117,6 +117,29 @@ than 9 dB below the one from 1 to 3 kHz.
   ports at `MRF_PJSUA_RTP` (19600, 20 per caller), and its containers are
   named `MRF_PJSUA_NAME` (`chappe-hd`) followed by `-a`, `-b`, `-c`.
 
+## PIN rooms
+
+`apps/chappe_mrf/test/chappe_mrf_pin_live_SUITE.erl` (run by `e2e.sh` after
+the HD suite) has lab pjsua callers dial a native 16 kHz room that asks a
+PIN. They send the digits as RFC 4733 events (`hd.sh -D`), FreeSWITCH (fs1)
+plays the prompt and reads them, and chappe moves the call into the mixer.
+The prompt is the band probe as a 16 kHz file, so the band check judges it
+too.
+
+| Case | Proves |
+|---|---|
+| `native_pin_g722` | a G.722 caller hears the prompt in wideband, sends the PIN, is moved, and it and an Opus member hear each other in wideband; fs1 had its channel during the PIN and has none after; the caller keeps G.722 (one stream, no re-INVITE, no other payload type). It offers speex/16000 first, which FreeSWITCH does not take: the move must not switch it to speex |
+| `native_pin_opus` | the same for an Opus caller, whose digits go as telephone-event/48000 through rtpengine to FreeSWITCH, with a G.722 member |
+| `native_pin_pcmu` | a PCMU caller hears the prompt at 8 kHz (1000 and 2500 Hz above -40 dBFS), sends the PIN at telephone-event/8000 and is moved into the 16 kHz room, where it hears a G.722 member and is heard by it |
+| `native_pin_wrong` | three wrong PINs: three prompts, the wrong-PIN prompt, the call ends, and rtpengine's calls, the mixer legs, fs1's channels, the endpoints and the room's members are as they were |
+| `b2b_pin_wrong_keeps_call` | a call the test's IVR answered (`connect_caller/3`) joins with `pin` and `endpoint`, enters a wrong PIN and gets `{error, bad_pin}`: the call stays on its endpoint, which records the caller and plays to it |
+| `handoff_failure_keeps_call` | the IVR's call joins a full room and gets `{error, full}`, its media still working; a caller dials a room that is locked while chappe answers it to the PIN endpoint: it hears the busy tone and its call ends, leaving nothing |
+
+- The callers' recordings and pjsua logs land in the suite's
+  `log_private` as `a.wav`, `chappe-hd-a.log`, and the same for `b`.
+- To watch fs1 while a case runs, keep the lab up (`MRF_KEEP=1`) and run
+  `fs_cli -x 'show channels'` in it, as in [Keep it up](#keep-it-up).
+
 ## Add a case
 
 1. Add the flow to `chappe_mrf_SUITE` first, on `chappe_mrf_fake`, with its

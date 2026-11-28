@@ -20,6 +20,11 @@ says how apps are released.
 
 ### Fixed
 
+- A call joined to a native conference could be hung up when the join's
+  timeout came just as the call was moving into the room: the room gave
+  up on the join and cut the call's new leg, ending the call. A join that
+  is that far along now gets a few more seconds to finish, and the call
+  either gets in or keeps the leg it had.
 - A party a native conference dials (by REFER) was offered only the codec
   of the room's media endpoint, G.722 in a 16 kHz room, so a phone
   without it refused the call. It is now offered Opus, G.722, PCMU and
@@ -120,6 +125,18 @@ says how apps are released.
 
 ### New
 
+- Native conferences can ask callers for a PIN. A caller that dials the
+  room enters it on FreeSWITCH, then moves into the native room with the
+  codec it was answered with, and FreeSWITCH leaves the call. After the
+  last wrong entry the caller hears a failure message and the call ends;
+  a caller with the right PIN who still cannot get in (the room filled,
+  the move failed, it took too long) hears a busy tone, or a message you
+  choose, and the call ends. A call your own IVR sends to the room enters
+  the PIN on the IVR's endpoint, and a wrong PIN leaves the call there,
+  still working, for your IVR to decide.
+- On both backends, a conference join takes how long the caller has for
+  each PIN entry and a message played when its tries ran out, and a PIN
+  option of the wrong kind is refused when you join.
 - A REFER to a conference is answered only after the room's checks and
   its policy, which now also sees who the referrer is in the room
   (including from the call a Target-Dialog names) and which member a

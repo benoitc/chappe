@@ -9,9 +9,10 @@
 %%
 %% The room makes both media sessions (start/3), so it owns them: they
 %% end with it. Every step that waits on a peer runs in a helper the room
-%% monitors: the endpoint's info, the mixer's offer, rtpengine's offer
-%% and answer, the re-INVITE (up to 75 s), the mixer's answer and the
-%% endpoint's watch. The room answers its other requests meanwhile.
+%% monitors: the PIN when the join asks one (chappe_mrf_conf_pin), the
+%% endpoint's info, the mixer's offer, rtpengine's offer and answer, the
+%% re-INVITE (up to 75 s), the mixer's answer and the endpoint's watch.
+%% The room answers its other requests meanwhile.
 %%
 %% The re-INVITE goes out only once the room agreed: the helper asks it
 %% with a call, {ep_join, Id, reinvite_now, D}, which the room answers ok
@@ -68,6 +69,7 @@ start(Ep, Opts, #{name := Name, room := MixRoom, rate := Rate} = Cfg) ->
         room => MixRoom,
         params => maps:get(params, Cfg),
         deaf => maps:get(deaf, Opts, false),
+        pin => Opts,
         join => chappe_mrf_lib:with_name(Opts, #{
             rate => Rate,
             owner => Room,
@@ -100,6 +102,9 @@ media(Room, Ep, Id, {MS, RS}, #{room := MixRoom, join := JoinOpts} = Cfg) ->
     Params = fun(Side) -> maps:merge(Plain, maps:get(Side, EP, #{})) end,
     Report = fun(Step) -> Room ! {ep_join, Id, Step} end,
     Steps = [
+        {pin, fun(_) ->
+            done(chappe_mrf_conf_pin:check(Ep, maps:get(pin, Cfg)))
+        end},
         {dialog, fun(_) -> dialog(chappe_mrf:info(Ep)) end},
         {mix_offer, fun(_) ->
             chappe_sip_media:conference(MS, MixRoom, JoinOpts)

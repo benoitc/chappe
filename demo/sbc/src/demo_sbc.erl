@@ -53,6 +53,13 @@
 %% The pool calls the party through this node, which routes it as any
 %% call. Only registered users may SUBSCRIBE to a room's roster.
 %%
+%% 1005 is demo-hd-pin, a room like demo-hd that asks for a PIN (4321 in
+%% demo.config): the caller is answered on the FreeSWITCH pool, which
+%% plays the hd_pin prompt and reads the digits; with the right PIN the
+%% call moves into the chappe_mix room, keeping its codec, and its
+%% FreeSWITCH channel is hung up. Three wrong PINs play bad_pin and end
+%% the call.
+%%
 %% route/1 maps a dialled user to where the call goes. It is the one place
 %% to add targets: a FreeSWITCH pool, for one, is a {peer_group, G} there.
 -module(demo_sbc).
@@ -313,10 +320,14 @@ invite(Keeper, Req, Res) ->
     Ivr = maps:get(ivr, Cfg, <<"2000">>),
     Recorded = maps:get(record, Cfg, <<"3001">>),
     case {Called, hd_room(Called)} of
-        {<<"srs">>, _} -> recording_server(Req, Res);
-        {Recorded, _} -> recorded_call(Keeper, CallId, Req, Res);
-        {_, {ok, Room, Backend}} -> hd_call(CallId, Room, Backend, Req, Res);
-        {_, error} -> invite(Keeper, CallId, Called, Ivr, Req, Res)
+        {<<"srs">>, _} ->
+            recording_server(Req, Res);
+        {Recorded, _} ->
+            recorded_call(Keeper, CallId, Req, Res);
+        {_, {ok, Room, Backend, Join}} ->
+            hd_call(CallId, Room, Backend, Join, Req, Res);
+        {_, error} ->
+            invite(Keeper, CallId, Called, Ivr, Req, Res)
     end.
 
 invite(Keeper, CallId, Called, Ivr, Req, Res) ->
@@ -675,7 +686,9 @@ prompts(Dir) ->
         {pin, 520, "Enter the conference PIN."},
         {record, 700,
             "Record your message after the beep. Stop talking to hear it back."},
-        {sorry, 300, "Bob is not available."}
+        {sorry, 300, "Bob is not available."},
+        {hd_pin, 520, "Welcome to the HD room. Enter its PIN."},
+        {bad_pin, 300, "That PIN is not right. Goodbye."}
     ],
     lists:foreach(
         fun({Name, Freq, Text}) -> prompt_file(Dir, Name, Freq, Text) end, Texts
@@ -714,34 +727,64 @@ tone_wav(Path, Freq) ->
             2:16/little, 16:16/little, "data", Size:32/little, Data/binary>>
     ).
 
-%% ---- 1003 and 1004: the HD rooms ----
+%% ---- 1003, 1004 and 1005: the HD rooms ----
 
 %% The HD room a dialled user names, by its number (1003) or the room's
-%% name (demo-hd, the user of its conference URI): {ok, Room, Backend}.
+%% name (demo-hd, the user of its conference URI): {ok, Room, Backend,
+%% Join}, Join what its callers enter (#{} or #{pin => Pin}).
 hd_room(User) ->
     Rooms = maps:get(hd_rooms, persistent_term:get({?MODULE, cfg}), []),
-    case [{R, B} || {N, R, B} <- Rooms, User =:= N orelse User =:= R] of
-        [{Room, Backend} | _] -> {ok, Room, Backend};
+    case
+        [
+            {R, B, J}
+         || {N, R, B, J} <- [with_join(Room) || Room <- Rooms],
+            User =:= N orelse User =:= R
+        ]
+    of
+        [{Room, Backend, Join} | _] -> {ok, Room, Backend, Join};
         [] -> error
     end.
 
+with_join({N, R, B}) -> {N, R, B, #{}};
+with_join({_N, _R, _B, _J} = Room) -> Room.
+
 %% The caller joins straight from its INVITE: the room answers it (native:
 %% the mixer through rtpengine; fs: an endpoint on the room's node), and
-%% the call runs on its own once it is in.
-hd_call(CallId, Room, Backend, Req, Res) ->
+%% the call runs on its own once it is in. A room with a PIN has the
+%% caller answered on the pool first (join_opts/2); a caller that does
+%% not get in has heard why, and its call is over.
+hd_call(CallId, Room, Backend, Join, Req, Res) ->
     maybe
         {ok, Conf} ?= hd_conf(Room, Backend),
-        {ok, Member} ?=
-            chappe_mrf_conf:join(Conf, {call, Req, Res}, #{name => CallId}),
+        Opts = join_opts(CallId, Join),
+        {ok, Member} ?= chappe_mrf_conf:join(Conf, {call, Req, Res}, Opts),
         log("call ~s: member ~s of ~s", [CallId, Member, Room])
     else
         {error, Why} ->
+            %% a caller answered for its PIN has heard why and its call
+            %% is over: the 503 is then refused (already_final)
             _ = chappe_sip_res:send(Res, 503),
             log("call ~s: not in ~s: ~p", [CallId, Room, Why])
     end.
 
-%% Both rooms are focus rooms (RFC 4575 roster, REFERs to the room's
-%% URI), their events to the keeper, who may REFER and where to, who may
+%% A room with a pin: the caller enters it on an endpoint of the pool,
+%% which it reaches through rtpengine as the IVR's callers do, asked by
+%% the hd_pin prompt (16 kHz, so an HD phone hears it in HD), three tries,
+%% and bad_pin before the call ends.
+join_opts(CallId, #{pin := _} = Join) ->
+    maps:merge(
+        #{
+            pin_prompt => prompt(hd_pin),
+            pin_fail_prompt => prompt(bad_pin),
+            pin_endpoint => #{anchor_params => to_fs()}
+        },
+        Join#{name => CallId}
+    );
+join_opts(CallId, Join) ->
+    Join#{name => CallId}.
+
+%% Every HD room is a focus room (RFC 4575 roster, REFERs to the room's
+%% URI), its events to the keeper, who may REFER and where to, who may
 %% take a member's place (Replaces), and how a party is dialed, with the
 %% codecs chappe_mrf would offer it.
 hd_conf(Room, Backend) ->
@@ -1023,7 +1066,7 @@ sent(_Entity, {error, _} = Err) ->
 room(Name) ->
     case {lists:keyfind(Name, 1, chappe_mrf:conferences()), hd_room(Name)} of
         {{_, Conf}, _} -> {ok, Conf};
-        {false, {ok, Room, Backend}} -> hd_conf(Room, Backend);
+        {false, {ok, Room, Backend, _Join}} -> hd_conf(Room, Backend);
         {false, error} -> {error, no_conference}
     end.
 

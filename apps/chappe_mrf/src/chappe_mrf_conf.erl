@@ -19,8 +19,12 @@
 %% member is an endpoint on that node running the conference
 %% application (a caller is first bridged into a new endpoint); its
 %% member id comes from the conference::maintenance events, and mute,
-%% deaf, kick and lock are `conference <name> ...' api commands. A pin
-%% option has the member enter a PIN (play_collect) before it joins.
+%% deaf, kick and lock are `conference <name> ...' api commands.
+%%
+%% On both, a pin option has the caller enter a PIN on a FreeSWITCH
+%% endpoint before it joins (chappe_mrf_conf_pin); on native the call
+%% then moves from that endpoint into the mixer, and the endpoint's
+%% channel is hung up.
 %%
 %% The event receivers (the caller of start/2, then events/2) get
 %% {chappe_mrf_conf, Conf, Event}:
@@ -109,9 +113,11 @@
 %%   endpoint_params => #{offer, answer => map()}: rtpengine flags between
 %%                the mixer and an endpoint's node (offer: toward the node)
 %%   join_timeout => ms a join (a call's, an endpoint's) may take, 95000
-%%                at most and by default: past it the join fails with
-%%                {error, timeout}
-%%                and the room gives back what it took. On either
+%%                at most and by default, its PIN included: past it the
+%%                join fails with {error, timeout}
+%%                and the room gives back what it took. A call's join
+%%                whose loopback the mixer answered gets 3 s more, its
+%%                leg B being swapped already, maybe. On either
 %%                backend start/2 refuses a join_timeout that is no
 %%                integer from 1 to 95000: {error, {bad_option,
 %%                join_timeout}}
@@ -255,9 +261,33 @@ events(Conf, Pid) ->
 %% join_timeout came, with it out) hangs the endpoint up (its media is
 %% gone). On
 %% fs, it must be on the conference's node. Opts: name, mute,
-%% deaf, moderator; fs also pin (the PIN to enter first), pin_prompt
-%% (the file asking for it), pin_tries (3), flags (more mod_conference
-%% member flags). {ok, Member} once the member is in; {error, badarg} for
+%% deaf, moderator; fs also flags (more mod_conference member flags).
+%%
+%% Both backends take a PIN: pin (the PIN to enter first), pin_prompt
+%% (the file asking for it, silence_stream://250), pin_tries (3),
+%% pin_timeout (ms one entry may take, 5000) and pin_fail_prompt (played
+%% before the call ends when the tries ran out, none by default). Where
+%% the room made the endpoint the caller enters it on (fs; native, a
+%% caller joined from its INVITE), a wrong PIN ends the call. On native:
+%%   - {call, Req, Res}: the caller is answered to an endpoint
+%%     (connect_caller/3 with pin_endpoint's node, select, targets, user,
+%%     attach_timeout, anchor_params), enters the PIN there, and the call
+%%     moves into the mixer; the endpoint is then hung up. A wrong PIN
+%%     ends the call after pin_fail_prompt; a join that fails otherwise
+%%     (the room filled or locked meanwhile, the move into the mixer
+%%     failing, the deadline) after join_fail_prompt (a busy tone by
+%%     default, tone_stream://%(500,500,480,620);loops=3);
+%%   - a call (B2b) needs endpoint => Ep, the endpoint the call is on
+%%     (your IVR's, of connect_caller/3 or bridge/2): the caller enters
+%%     the PIN there and the call moves. A wrong PIN is {error, bad_pin}
+%%     and the call stays on Ep, yours to drive; Ep's channel is hung up
+%%     once the call moved. Without endpoint: {error, {bad_option,
+%%     endpoint}};
+%%   - an endpoint enters it on its own channel.
+%% The room's join_timeout covers the PIN and the move. A PIN option of
+%% the wrong kind is {error, {bad_option, Key}}.
+%%
+%% {ok, Member} once the member is in; {error, badarg} for
 %% a Target of no such shape (native), {error, expired} for a call whose
 %% Replaces came too late (chappe_mrf_conf_refer_member:join/5). Runs in
 %% the caller (the backend's join/4).
@@ -270,12 +300,11 @@ events(Conf, Pid) ->
 ) ->
     {ok, member()} | {error, term()}.
 join(Conf, Target, Opts) ->
-    case info(Conf) of
-        #{backend := B} = Info ->
-            Mod = chappe_mrf_conf_backend:module(B),
-            chappe_mrf_conf_refer_member:join(Conf, Mod, Info, Target, Opts);
-        Err ->
-            Err
+    maybe
+        ok ?= chappe_mrf_conf_pin:check_opts(Opts),
+        #{backend := B} = Info ?= info(Conf),
+        Mod = chappe_mrf_conf_backend:module(B),
+        chappe_mrf_conf_refer_member:join(Conf, Mod, Info, Target, Opts)
     end.
 
 %% The member leaves (its call is hung up).

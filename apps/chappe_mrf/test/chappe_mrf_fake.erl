@@ -66,7 +66,8 @@ pick() ->
 %% Opts: esl_port (the chappe_mrf listener), dial_delay (ms a
 %% `conference <room> dial' takes before it answers, as the real one
 %% originates first), digits (what
-%% play_and_get_digits collects, default <<"1">>), name, reject_reinvite
+%% play_and_get_digits collects, default <<"1">>; hold: it completes
+%% only once digits are set), name, reject_reinvite
 %% (a re-INVITE gets 488), reinvite_delay (ms a re-INVITE waits for its
 %% 200, after a 100 Trying).
 fs_start(Name, Opts) ->
@@ -358,8 +359,18 @@ chan_loop(#{tcp := Tcp} = C) ->
             chan_loop(bridged(Outcome, C));
         {set_digits, D} ->
             #{node := #{opts := O} = N} = C,
-            chan_loop(C#{node := N#{opts := O#{digits => D}}})
+            chan_loop(collected(D, C#{node := N#{opts := O#{digits => D}}}))
     end.
+
+%% a held play_and_get_digits completes once digits are set: the caller
+%% types them now
+collected(hold, C) ->
+    C;
+collected(Digits, #{collecting := {Common, Var}} = C) ->
+    complete(C, Common, [{<<"variable_", Var/binary>>, Digits}]),
+    maps:remove(collecting, C);
+collected(_Digits, C) ->
+    C.
 
 %% the socket is gone (the controller closed it): SIP still answers
 chan_loop_sip_only(C) ->
@@ -569,9 +580,15 @@ app(<<"answer">>, _Arg, Common, #{node := Node} = C) ->
     C#{answered := true};
 app(<<"play_and_get_digits">>, Arg, Common, #{node := #{opts := Opts}} = C) ->
     Var = lists:nth(8, binary:split(Arg, <<" ">>, [global])),
-    Digits = maps:get(digits, Opts, <<"1">>),
-    complete(C, Common, [{<<"variable_", Var/binary>>, Digits}]),
-    C;
+    case maps:get(digits, Opts, <<"1">>) of
+        hold ->
+            %% a caller who enters nothing until fs_set_digits/2 gives
+            %% the digits
+            C#{collecting => {Common, Var}};
+        Digits ->
+            complete(C, Common, [{<<"variable_", Var/binary>>, Digits}]),
+            C
+    end;
 app(<<"spandsp_start_tone_detect">>, _Arg, Common, C) ->
     event(
         C,
