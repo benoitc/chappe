@@ -244,9 +244,10 @@ join does:
    longer stops it at the join's end; before, it does (the deadline, the
    room's end).
 4. The swap BYEs `Ep`'s channel. The worker of a caller that dialed the
-   room then destroys its endpoint; a wrong PIN or a failed join ends it
-   there too, after `pin_fail_prompt`. A call of the app's stays on `Ep`
-   when the join fails.
+   room then destroys its endpoint; a wrong PIN ends it there too, after
+   `pin_fail_prompt`, and any other failure after `join_fail_prompt` (a
+   busy tone by default), what the endpoint still runs stopped first
+   (`uuid_break`). A call of the app's stays on `Ep` when the join fails.
 
 The middleware only runs when chappe_sip runs a request through its chain,
 so your app needs an INVITE handler (`chappe_sip:invite/1`).
@@ -484,7 +485,8 @@ The first four are chappe_mrf settings
 | fs member never shows up | after `join_timeout` (15 s), `{error, timeout}` from the room (its joiner waits `join_timeout` and 5 s more); an endpoint made for the join is destroyed |
 | A native join fails (its loopback INVITE, a media step, the endpoint's re-INVITE) | the joiner gets an error at once; the mixer leg, the rtpengine session, the loopback token and the join's place go, and the room goes on; an endpoint whose node answered the re-INVITE is hung up |
 | A native PIN join: a wrong PIN | a caller that dialed the room hears `pin_fail_prompt` and its call ends; a call of the app's stays on its endpoint, `{error, bad_pin}` |
-| A native PIN join outlasts `join_timeout` while the caller types | the room stops the helper and answers `{error, timeout}`; the call ends, or stays on the app's endpoint |
+| A native PIN join outlasts `join_timeout` while the caller types | the room stops the helper and answers `{error, timeout}`; a caller that dialed the room hears `join_fail_prompt` and its call ends, a call of the app's stays on its endpoint |
+| A native PIN join fails after a right PIN (the move into the mixer, a refusal) | a caller that dialed the room hears `join_fail_prompt` (a busy tone by default) and its call ends, with nothing left behind; a call of the app's stays on its endpoint |
 | A call's native join reaches its deadline after the mixer answered its loopback | 3 s more to report: the swap that went through makes a member, the call keeps a working leg either way |
 | A native join's worker dies, or the join outlasts `join_timeout` (95 s) | `{error, join_failed}` or `{error, timeout}`, with the same cleanup; an endpoint whose re-INVITE was out is hung up once that re-INVITE ends; one whose deadline came before its re-INVITE gets none and keeps its media |
 | A native endpoint's node is slow to answer its re-INVITE (up to 75 s) | the room answers its other requests meanwhile: control calls, other joins, REFERs |

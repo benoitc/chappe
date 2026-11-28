@@ -145,6 +145,7 @@ PIN options, on both backends unless marked
 | `pin_tries` | `3` | How many entries the caller has; then `{error, bad_pin}`. |
 | `pin_timeout` | `5000` | Milliseconds FreeSWITCH waits for one entry. |
 | `pin_fail_prompt` | none | Played after the last wrong entry, before the call ends, where the room made the endpoint (fs; native, a caller joined from its INVITE). |
+| `join_fail_prompt` | `tone_stream://%(500,500,480,620);loops=3`, a busy tone | native, `{call, Req, Res}`: played when the caller does not get in for any other reason (the room filled or locked meanwhile, the move into the mixer failing, the deadline), before the call ends. |
 | `pin_endpoint` | `chappe_esl:node_select/1` | native, `{call, Req, Res}`: `connect_caller/3` options (`node`, `select`, `targets`, `user`, `attach_timeout`, `anchor_params`) of the endpoint the caller enters the PIN on. |
 | `endpoint` | none | native, a call: the endpoint the call is on, where the caller enters the PIN. Required with `pin`, else `{error, {bad_option, endpoint}}`. |
 
@@ -155,6 +156,15 @@ When the PIN is wrong:
   its call ends;
 - a call your IVR sent to a native room with `endpoint` stays on that
   endpoint, and `join/3` returns `{error, bad_pin}`.
+
+When the PIN is right but the caller does not get in (the room filled or
+locked meanwhile, the move into the mixer failing, the deadline):
+
+- a caller that dialed a native room hears `join_fail_prompt` and its
+  call ends; nothing is left of it: endpoint, rtpengine session, loopback
+  token, place in the room;
+- a call your IVR sent stays on its endpoint, and `join/3` returns the
+  error.
 
 A PIN option of the wrong kind is `{error, {bad_option, Key}}`.
 

@@ -268,6 +268,10 @@ end).
    `{ok, Member}`.
 4. After the last wrong entry the caller hears `pin_fail_prompt` and the
    call ends: `{error, bad_pin}`.
+5. When the caller does not get in for another reason (the room filled or
+   was locked meanwhile, the move into the mixer fails, the deadline), it
+   hears `join_fail_prompt`, a busy tone by default, and the call ends:
+   `join/3` returns that error.
 
 ### A call your IVR sends to the room
 
@@ -300,6 +304,7 @@ end.
 | `pin_tries` | `3` | How many entries the caller has. |
 | `pin_timeout` | `5000` | Milliseconds FreeSWITCH waits for one entry. |
 | `pin_fail_prompt` | none | Played after the last wrong entry, before the call ends, where the room made the endpoint. |
+| `join_fail_prompt` | a busy tone (`tone_stream://%(500,500,480,620);loops=3`) | native, `{call, Req, Res}`: played when the caller does not get in for any other reason than a wrong PIN, before the call ends. |
 | `pin_endpoint` | the node chappe_esl picks | native, `{call, Req, Res}`: the `connect_caller/3` options (`node`, `select`, `targets`, `user`, `attach_timeout`, `anchor_params`) of the endpoint the caller enters the PIN on. |
 | `endpoint` | none | native, a call: the endpoint the call is on. |
 
@@ -311,8 +316,9 @@ Notes:
 - The digits are read outside the room process: the room answers its
   other requests while a caller types.
 - A native room's `join_timeout` covers the PIN and the move. A caller
-  still typing at the deadline gets `{error, timeout}`: the call ends, or
-  stays on `Ep` when your IVR sent it.
+  still typing at the deadline gets `{error, timeout}`: it hears
+  `join_fail_prompt` and the call ends, or it stays on `Ep` when your IVR
+  sent it.
 - A caller that dialed the room is answered on FreeSWITCH, so its codec
   is negotiated there first; the move to the mixer reuses the call's
   rtpengine session.

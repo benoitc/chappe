@@ -17,6 +17,11 @@
 %%   pin_fail_prompt the file played to a caller whose tries ran out,
 %%                   before the call ends (none); only where the room
 %%                   made the endpoint, so ends the call
+%%   join_fail_prompt native, a caller joined from its INVITE: the file
+%%                   played when it does not get in for any other reason
+%%                   (the room filled or locked meanwhile, the move into
+%%                   the mixer failing, the deadline), before the call
+%%                   ends; a busy tone by default
 %%   pin_endpoint    native, a caller joined from its INVITE: the
 %%                   connect_caller/3 options of the endpoint it enters
 %%                   the PIN on (node, select, targets, user,
@@ -26,11 +31,13 @@
 %%                   enters it
 -module(chappe_mrf_conf_pin).
 
--export([check_opts/1, check/2, refuse/3, endpoint_opts/1]).
+-export([check_opts/1, check/2, refuse/3, turn_away/3, endpoint_opts/1]).
 
 -define(PROMPT, <<"silence_stream://250">>).
 -define(TRIES, 3).
 -define(TIMEOUT, 5000).
+%% a busy tone, 3 s: what a caller that did not get in hears by default
+-define(JOIN_FAIL_PROMPT, <<"tone_stream://%(500,500,480,620);loops=3">>).
 %% the connect_caller/3 options pin_endpoint may give
 -define(ENDPOINT_KEYS, [
     node, select, targets, user, attach_timeout, anchor_params
@@ -60,7 +67,9 @@ valid(pin, P) ->
     end;
 valid(K, N) when K =:= pin_tries; K =:= pin_timeout ->
     is_integer(N) andalso N > 0;
-valid(K, F) when K =:= pin_prompt; K =:= pin_fail_prompt ->
+valid(K, F) when
+    K =:= pin_prompt; K =:= pin_fail_prompt; K =:= join_fail_prompt
+->
     text(F) =/= error;
 valid(pin_endpoint, M) ->
     is_map(M);
@@ -114,6 +123,32 @@ refuse(Ep, {error, bad_pin}, #{pin_fail_prompt := File}) ->
     chappe_mrf:destroy(Ep);
 refuse(Ep, _Error, _Opts) ->
     chappe_mrf:destroy(Ep).
+
+%% A caller that dialed a native room and did not get in hears why on
+%% its endpoint, then the call ends: pin_fail_prompt after a wrong PIN
+%% (refuse/3), join_fail_prompt after any other failure. What the
+%% endpoint still runs (the PIN's prompt, when the deadline came while
+%% the caller typed) is stopped first.
+-spec turn_away(chappe_mrf:endpoint(), {error, term()}, map()) -> ok.
+turn_away(Ep, {error, bad_pin} = Error, Opts) ->
+    refuse(Ep, Error, Opts);
+turn_away(Ep, _Error, Opts) ->
+    ok = break(Ep),
+    _ = chappe_mrf:play(
+        Ep, maps:get(join_fail_prompt, Opts, ?JOIN_FAIL_PROMPT)
+    ),
+    chappe_mrf:destroy(Ep).
+
+%% uuid_break all: the media of what the channel runs stops, and what is
+%% queued behind it goes
+break(Ep) ->
+    case chappe_mrf:uuid(Ep) of
+        {ok, Uuid} ->
+            _ = chappe_mrf:api(Ep, [<<"uuid_break ">>, Uuid, <<" all">>]),
+            ok;
+        {error, _} ->
+            ok
+    end.
 
 %% The connect_caller/3 options pin_endpoint gives (the others are the
 %% room's: owner, notify, transfer).

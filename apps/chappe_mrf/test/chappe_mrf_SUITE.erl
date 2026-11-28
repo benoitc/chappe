@@ -132,6 +132,7 @@
     native_pin_timeout/1,
     native_pin_b2b/1,
     native_pin_owner_dies/1,
+    native_pin_move_fails/1,
     native_join_timeout_after_swap/1
 ]).
 
@@ -258,6 +259,7 @@ all() ->
         native_pin_timeout,
         native_pin_b2b,
         native_pin_owner_dies,
+        native_pin_move_fails,
         native_join_timeout_after_swap
     ].
 
@@ -5128,6 +5130,9 @@ native_pin_timeout(Config) ->
     ?assert(has(Collect, <<" 7000 ">>)),
     ?assertMatch(#{pending := 1}, holdings(Conf)),
     ?assertEqual({error, timeout}, join_within(5000)),
+    %% it hears join_fail_prompt's default, a busy tone, then the BYE
+    {fake_fs, _, _, {cmd, Busy}} = fs_cmd(<<"execute-app-name: playback">>),
+    ?assert(has(Busy, <<"tone_stream://">>)),
     _ = ua_event(Ua, bye),
     until(fun() -> ?FAULTS:join_helpers() =:= [] end),
     back_to(Conf, Base),
@@ -5228,6 +5233,36 @@ native_pin_owner_dies(Config) ->
     _ = ua_event(Ua2, bye),
     back_to(Conf, Base),
     until(fun() -> endpoint_pids() -- Eps =:= [] end),
+    ok = chappe_mrf_conf:stop(Conf).
+
+%% A caller that dialed a native room enters the right PIN, then the
+%% move into the room fails (rtpengine refuses the move's offer): it hears
+%% join_fail_prompt on the endpoint, then its call ends, and nothing is
+%% left: no endpoint, no loopback token, no rtpengine session, no place in
+%% the room.
+%% req: MRF-30
+native_pin_move_fails(Config) ->
+    Rtpe = ?config(rtpe, Config),
+    {ok, Conf} = chappe_mrf:conference(<<"pinmove">>, #{max_members => 1}),
+    Base = holdings(Conf),
+    Eps = endpoint_pids(),
+    fs_set_digits(Config, hold),
+    Ua = pin_caller(Config, Conf, #{
+        pin => <<"1234">>, join_fail_prompt => <<"/media/sorry.wav">>
+    }),
+    {ok, 200} = ua_final(Ua),
+    _ = fs_cmd(<<"execute-app-name: play_and_get_digits">>),
+    %% the move's offer toward the room fails, then the caller types
+    ok = ?F:rtpe_fail(Rtpe, #{<<"offer">> => error}),
+    fs_set_digits(Config, <<"1234">>),
+    {fake_fs, _, _, {cmd, Sorry}} = fs_cmd(<<"execute-app-name: playback">>),
+    ?assert(has(Sorry, <<"/media/sorry.wav">>)),
+    ?assertMatch({error, _}, join_within(10000)),
+    _ = ua_event(Ua, bye),
+    ok = ?F:rtpe_fail(Rtpe, #{}),
+    back_to(Conf, Base),
+    until(fun() -> endpoint_pids() -- Eps =:= [] end),
+    ?assertEqual([], chappe_mrf_conf:members(Conf)),
     ok = chappe_mrf_conf:stop(Conf).
 
 %% A call's join whose deadline comes once the mixer answered its

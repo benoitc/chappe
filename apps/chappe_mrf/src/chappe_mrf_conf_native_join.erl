@@ -104,10 +104,10 @@ relay(Legs, Conf) ->
 %% pin_endpoint), with the room as the call's notify process; the room
 %% has the caller enter the PIN there and moves the call into the mixer
 %% (a PIN join, chappe_mrf_conf_native). The endpoint then goes: in the
-%% room, its channel got the BYE of the move; out of it (a wrong PIN, a
-%% refusal, a failed move), the call ends with it, after pin_fail_prompt
-%% on a wrong PIN. A worker that dies takes the endpoint, and the call,
-%% with it.
+%% room, its channel got the BYE of the move; out of it, the call ends
+%% with it, after pin_fail_prompt on a wrong PIN and join_fail_prompt on
+%% any other failure (a refusal, a failed move, the deadline). A worker
+%% that dies takes the endpoint, and the call, with it.
 pin_call(Conf, Info, Req, Res, Opts0) ->
     Opts = caller_opts(Req, Opts0),
     Member = chappe_mrf_conf_refer_member:member_opts(
@@ -121,7 +121,7 @@ pin_call(Conf, Info, Req, Res, Opts0) ->
         ok =
             case Result of
                 {ok, _} -> chappe_mrf:destroy(Ep);
-                {error, _} -> chappe_mrf_conf_pin:refuse(Ep, Result, Opts)
+                {error, _} -> chappe_mrf_conf_pin:turn_away(Ep, Result, Opts)
             end,
         Result
     end.

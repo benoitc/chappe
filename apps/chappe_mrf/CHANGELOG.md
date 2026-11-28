@@ -128,7 +128,10 @@ says how apps are released.
 - Native conferences can ask callers for a PIN. A caller that dials the
   room enters it on FreeSWITCH, then moves into the native room, and
   FreeSWITCH leaves the call. After the last wrong entry the caller hears
-  a failure message and the call ends. A call your own IVR sends to the
+  a failure message and the call ends; a caller with the right PIN who
+  still cannot get in (the room filled, the move failed, it took too
+  long) hears a busy tone, or a message you choose, and the call ends.
+  A call your own IVR sends to the
   room enters the PIN on the IVR's endpoint, and a wrong PIN leaves the
   call there, still working, for your IVR to decide.
 - On both backends, a conference join takes how long the caller has for

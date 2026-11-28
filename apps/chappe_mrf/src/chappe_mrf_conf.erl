@@ -272,8 +272,11 @@ events(Conf, Pid) ->
 %%   - {call, Req, Res}: the caller is answered to an endpoint
 %%     (connect_caller/3 with pin_endpoint's node, select, targets, user,
 %%     attach_timeout, anchor_params), enters the PIN there, and the call
-%%     moves into the mixer; the endpoint is then hung up. A wrong PIN,
-%%     or a join that fails after it, ends the call;
+%%     moves into the mixer; the endpoint is then hung up. A wrong PIN
+%%     ends the call after pin_fail_prompt; a join that fails otherwise
+%%     (the room filled or locked meanwhile, the move into the mixer
+%%     failing, the deadline) after join_fail_prompt (a busy tone by
+%%     default, tone_stream://%(500,500,480,620);loops=3);
 %%   - a call (B2b) needs endpoint => Ep, the endpoint the call is on
 %%     (your IVR's, of connect_caller/3 or bridge/2): the caller enters
 %%     the PIN there and the call moves. A wrong PIN is {error, bad_pin}
