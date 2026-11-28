@@ -59,6 +59,10 @@ Changes to the repository that are not part of any app's package.
 - The two HD rooms were compared with speech clips through the demo: the
   results, and the commands to measure them again, are in
   `apps/chappe_mix/test/audit/QUALITY.md`.
+- The demo's IVR prompts are made at 16 kHz, so an HD phone hears them in
+  HD; a narrowband phone hears them as before.
+- The mrf lab starts rtpengine with `--audio-player=play-media`, which a
+  native room needs to play a prompt to its members in HD.
 
 ### 0.1.0
 
