@@ -321,7 +321,11 @@ Notes:
   sent it.
 - A caller that dialed the room is answered on FreeSWITCH, so its codec
   is negotiated there first; the move to the mixer reuses the call's
-  rtpengine session.
+  rtpengine session, and the caller keeps that codec: a G.722 or Opus
+  caller stays wideband, a PCMU one narrowband.
+- The digits travel as RFC 4733 events at the caller's codec clock,
+  telephone-event/48000 for Opus, and rtpengine passes them to
+  FreeSWITCH as they are.
 
 ## Room events
 
@@ -708,7 +712,7 @@ touched.
   in `chappe_mrf`
 - Tests: `apps/chappe_mrf/test/chappe_mrf_SUITE.erl`,
   `chappe_mrf_live_SUITE.erl`, `chappe_mrf_hd_live_SUITE.erl` (HD rooms with
-  pjsua callers), `chappe_mrf_cluster_SUITE.erl` (rooms on
-  three peer nodes)
-- Lab: `make interop-mrf` (native and FreeSWITCH rooms)
+  pjsua callers), `chappe_mrf_pin_live_SUITE.erl` (PIN rooms with pjsua
+  callers), `chappe_mrf_cluster_SUITE.erl` (rooms on three peer nodes)
+- Lab: `make interop-mrf` (native and FreeSWITCH rooms, HD and PIN rooms)
 - Design: [overview](../design/overview.md#native-conferences-and-the-loopback-middleware)

@@ -63,6 +63,9 @@ Changes to the repository that are not part of any app's package.
   HD; a narrowband phone hears them as before.
 - The mrf lab starts rtpengine with `--audio-player=play-media`, which a
   native room needs to play a prompt to its members in HD.
+- The HD lab's pjsua can send DTMF and offer several codecs, and
+  `make interop-mrf` now dials PIN rooms with it: G.722, Opus and PCMU
+  callers entering the PIN, wrong PINs, and calls that cannot get in.
 
 ### 0.1.0
 

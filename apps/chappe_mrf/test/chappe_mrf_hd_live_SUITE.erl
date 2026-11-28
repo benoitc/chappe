@@ -32,6 +32,10 @@
 -export([refer_hd_dial_out/1, refer_pcmu_dial_out/1]).
 -export([native_room_prompt/1, fs_wideband_prompt/1, ivr_prompt_hd/1]).
 -export([speak_hd/1]).
+%% the pjsua callers, the wav files and the windows of a recording, which
+%% chappe_mrf_pin_live_SUITE shares
+-export([pjsua/4, wait_pjsua/2, target/2, to_fs/0, narrow_tones/1]).
+-export([wav/4, wav_samples/1, window/4, heard/3]).
 
 -define(LIVE, chappe_mrf_live_SUITE).
 
@@ -747,8 +751,10 @@ target(Config, User) ->
     "sip:" ++ binary_to_list(User) ++ "@127.0.0.1:" ++ Port.
 
 %% A pjsua caller through hd.sh, in the background: its recording lands in
-%% the case's priv_dir as Name.wav. With Target none it answers the first
-%% call instead; net puts it on a docker network (default the host's).
+%% the case's priv_dir as Name.wav, its log as its container's name with
+%% .log. With Target none it answers the first call instead; net puts it
+%% on a docker network (default the host's); dtmf, a list of {Secs,
+%% Digits}, sends each entry Secs seconds after it starts (hd.sh -D).
 pjsua(Config, Name, Opts, Target) ->
     Dir = ?config(priv_dir, Config),
     N = atom_to_list(Name),
@@ -780,6 +786,10 @@ pjsua(Config, Name, Opts, Target) ->
                 {ok, Net} -> ["-n", Net];
                 error -> []
             end ++
+            lists:append([
+                ["-D", integer_to_list(At) ++ ":" ++ Digits]
+             || {At, Digits} <- maps:get(dtmf, Opts, [])
+            ]) ++
             case Target of
                 none -> [];
                 _ -> [Target]

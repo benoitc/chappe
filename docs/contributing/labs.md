@@ -84,7 +84,7 @@ plain `rebar3 ct` stays green with no docker.
 | `make interop-ref` | `chappe_mix_ref_SUITE` against FreeSWITCH mod_conference | the mixer against its reference, same tones, same judge | `FREESWITCH_HOST` | `KEEP=1` |
 | `make interop-esl` | `chappe_esl_live_SUITE` against two FreeSWITCH nodes, then `chappe_audio_live_SUITE` | auth, api, bgapi, events, outbound sockets, the node registry, a node stopped and restarted; FreeSWITCH audio forks (mod_audio_fork, mod_audio_stream) into a chappe_audio listener and its store | `FS_HOST`; `FS_REQUIRED=1` turns a failed connect into a failure; the audio suite also needs chappe_esl on the code path (`AUDIO_PORT`, default 18085) | none: see [the lab README](../../apps/chappe_esl/interop/README.md) |
 | `make demo-esl` | two FreeSWITCH nodes and a shell with chappe_esl monitoring them | the node registry by hand: nodes up and down, load, drain, selection | none | the shell keeps it up; `q().` stops the nodes, see [the example README](../../apps/chappe_esl/examples/README.md) |
-| `make interop-mrf` | `chappe_mrf_live_SUITE` against rtpengine and two FreeSWITCH nodes | IVR, bridging, recording, native and FreeSWITCH conferences, owner death, node failover | `MRF=1` | `MRF_KEEP=1` |
+| `make interop-mrf` | `chappe_mrf_live_SUITE`, then `chappe_mrf_hd_live_SUITE` and `chappe_mrf_pin_live_SUITE` with pjsua callers, against rtpengine and two FreeSWITCH nodes | IVR, bridging, recording, native and FreeSWITCH conferences, owner death, node failover; HD rooms and prompts; PIN entry and the move into a native room | `MRF=1` | `MRF_KEEP=1` |
 | `make interop-conformance` | `chappe_sip_conformance_SUITE`: SIPp, pjsua, dnsmasq, heplify-server | one RFC flow per case, exact headers, RFC 3263, HEP | `CONFORMANCE=1` | none: drive `lab.sh` by hand, see [the lab README](../../apps/chappe_sip/interop/conformance/README.md) |
 | `make interop-sbc` | `chappe_sip_sbc_interop_SUITE`: SIPp, FreeSWITCH, rtpengine, Kamailio | the B2BUA as an SBC: direct and anchored calls, hold, glare, `set_media`, `replace_b`, failover | `INTEROP=1` | `SBC_KEEP=1` |
 | `make interop-cluster` | three to five chappe_cluster nodes under a seeded schedule of partitions, kills, pauses, delays and clock skews, then `chappe_cluster_lab_checker` over every node's log | no key ever had two valid leases at once; every node claims again after the last heal | none; `SEED` replays a run, `DURATION` (5m), `NODES` (3 to 5), `MODE=proofs` runs each fault against `chappe_cluster_lab_fake` and expects a violation (about 20 minutes, by hand) | `KEEP=1`; logs in `_build/clb/logs/<seed>/`, see [the lab README](../../apps/chappe_cluster/interop/README.md) |
@@ -164,16 +164,18 @@ carries (chappe_rtpengine sessions now delete with `fast`, no statistics).
 ## The HD peer
 
 `apps/chappe_sip/interop/pjsua/hd.sh` places (or, with no target, answers)
-one call from the lab pjsua with a single codec, a wav played into the call
-and a recording of what comes back, at a 16 or 48 kHz clock:
+one call from the lab pjsua with the codecs of `-c` only, a wav played into
+the call and a recording of what comes back, at a 16 or 48 kHz clock:
 
 ```sh
 apps/chappe_sip/interop/pjsua/hd.sh -c G722 -r 16000 -p probe.wav \
     -o out/rec.wav -d 8 -n my-lab-net sip:room@10.0.0.5:5060
 ```
 
-Use `-c opus` for Opus. The recording and the pjsua log (`NAME.log`) land
-in the directory of `-o`. To check a path for wideband audio, keep the
+Use `-c opus` for Opus, or a list offered in its order
+(`-c speex/16000,G722`). `-D 4:4321` sends the digits 4321 as RFC 4733
+events 4 s in; give `-D` again for more entries. The recording and the
+pjsua log (`NAME.log`) land in the directory of `-o`. To check a path for wideband audio, keep the
 clock at 16 kHz (`-r 16000`), which is the rate the band check reads:
 
 1. Write the band probe from an Erlang shell:
