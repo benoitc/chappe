@@ -12,7 +12,8 @@ a tone and `1002` joins a conference. `2000` is an IVR built on chappe_mrf:
 a menu that calls bob, echoes, or puts you in a conference on chappe_mix or
 on FreeSWITCH, and records a message. `1003` and `1004` are two HD (16 kHz)
 conference rooms, one on chappe_mix and one on FreeSWITCH, that take
-REFERs to add and remove members.
+REFERs to add and remove members. `1005` is an HD room on chappe_mix that
+asks for a PIN first.
 
 The node runs in the foreground of `make demo` on your machine; rtpengine,
 Kamailio and the FreeSWITCH nodes fs1 and fs2 run in docker
@@ -307,6 +308,63 @@ hd.sh -c opus -r 16000 -p probe.wav -o out/b.wav -d 16 \
 Each recording holds the other caller's probe (a room never sends you
 your own voice): judge `out/a.wav` from 5 s on and `out/b.wav` from 3 s
 on. Both pass on `1003` and on `1004`.
+
+## Enter a PIN for an HD room
+
+Dial `1005` to reach `demo-hd-pin`, a chappe_mix room at 16 kHz like
+`1003` that asks for a PIN, `4321` (`hd_rooms` in `demo.config`). Use it to
+see a caller enter a PIN on FreeSWITCH and then move into chappe's own
+mixer, keeping its HD codec, with FreeSWITCH out of the call.
+
+1. Call `1005` from a G.722 or Opus phone. A FreeSWITCH node of the pool
+   answers and asks, in wideband, "Welcome to the HD room. Enter its PIN."
+   (a tone when the demo has no macOS `say`).
+2. Press `4321` (RFC 2833 digits, your phone's default). The log shows
+   you join:
+
+   ```
+   demo: call 5d2a...@...: member 8c11... of demo-hd-pin
+   ```
+
+   You are in the room, with the sound of `1003`. Call `1005` from a
+   second phone and you hear each other in wideband; a PCMU phone gets in
+   too, narrowband.
+3. Check that FreeSWITCH left the call: your channel was there while you
+   typed, and is gone once you are in.
+
+   ```sh
+   for n in fs1 fs2; do
+       docker compose -f demo/sbc/docker-compose.yml exec $n \
+           /usr/local/freeswitch/bin/fs_cli -x 'show channels'
+   done
+   ```
+
+4. Call again and press a wrong PIN three times: each try asks again,
+   then you hear "That PIN is not right. Goodbye." and the call ends. The
+   room is as it was.
+
+Without phones, place the call with `hd.sh`, which sends the digits 4 s
+in as RFC 4733 events (`-D`), and records what it hears:
+
+```sh
+apps/chappe_sip/interop/pjsua/hd.sh -c G722 -r 16000 -D 4:4321 \
+    -d 20 -o out/pin.wav sip:1005@127.0.0.1:5060
+```
+
+`out/pin.wav` holds the prompt, then the room. To hear the room's band,
+have a second `hd.sh` in the room play the band probe (`-p probe.wav`, as
+in [Check the band with pjsua](#check-the-band-with-pjsua), with its own
+`-D 4:4321`, `-l` and `-m`, started 2 s apart), and judge the first
+caller's recording from a few seconds after its PIN.
+
+- The PIN prompt is a 16 kHz file, so an HD phone hears it in HD;
+  FreeSWITCH converts it for a PCMU phone.
+- The prompt plays on FreeSWITCH, not in the room: the demo's rtpengine
+  needs no `--audio-player` option for it.
+- A caller that cannot get in after the right PIN (the room was locked,
+  or the move failed) hears a busy tone and the call ends.
+- [Ask callers for a PIN](../../apps/chappe_mrf/docs/guides/conference.md#ask-callers-for-a-pin)
+  has the options, and the IVR's own way to send a call to such a room.
 
 ## See your voice level, and find the recordings
 

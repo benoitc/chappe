@@ -63,6 +63,9 @@ Changes to the repository that are not part of any app's package.
   HD; a narrowband phone hears them as before.
 - The mrf lab starts rtpengine with `--audio-player=play-media`, which a
   native room needs to play a prompt to its members in HD.
+- `make demo` has a third HD room, `1005`, on chappe_mix behind the PIN
+  4321: you enter it on FreeSWITCH, then move into the room in HD, and
+  FreeSWITCH leaves the call. Three wrong PINs end the call.
 - The HD lab's pjsua can send DTMF and offer several codecs, and
   `make interop-mrf` now dials PIN rooms with it: G.722, Opus and PCMU
   callers entering the PIN, wrong PINs, and calls that cannot get in.
