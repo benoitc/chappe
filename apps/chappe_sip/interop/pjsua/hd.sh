@@ -8,8 +8,8 @@
 # With a TARGET it calls it; without one it answers the first call.
 #
 # Usage: hd.sh [-c CODEC] [-r RATE] [-p PLAY.wav] [-o REC.wav]
-#              [-d SECONDS] [-n NETWORK] [-l SIP_PORT] [-m RTP_PORT]
-#              [-N NAME] [-i IMAGE] [TARGET]
+#              [-d SECONDS] [-D DELAY:DIGITS] [-n NETWORK] [-l SIP_PORT]
+#              [-m RTP_PORT] [-N NAME] [-i IMAGE] [TARGET]
 #
 #   -c  the one codec offered: opus, G722, PCMU, ... (default G722)
 #   -r  pjsua's clock rate, of the bridge and the recording: 8000, 16000
@@ -17,13 +17,18 @@
 #   -p  a 16-bit mono wav to play, from the call's start, looped
 #   -o  where to write what pjsua hears (a wav at the clock rate)
 #   -d  seconds the call lasts before pjsua hangs up (default 10)
+#   -D  DELAY seconds after pjsua starts, send DIGITS (0-9, *, #, A-D) on
+#       the call as RFC 4733 events (pjsua's # command); DELAY is a whole
+#       number of seconds, less than the time pjsua runs
 #   -n  docker network (default host)
 #   -l  local SIP port (default 25060), -m first RTP port (default 25100)
 #   -N  container name (default hd-<pid>), also the SIP user
 #   -i  image (default chappe-conf-pjsua; built here unless up to date)
 #
 # The pjsua log (SIP at level 5) lands next to the recording as
-# NAME.log. Exits with pjsua's status.
+# NAME.log: the SDP pjsua offers or answers (its telephone-event), and
+# each digit it receives (`Incoming DTMF on call 0: 4'). Exits with
+# pjsua's status.
 #
 # Before each call, scripts/lab_image.sh builds the image when its label
 # does not match this directory (an image another checkout made, one
@@ -39,25 +44,27 @@ RATE=16000
 PLAY=""
 REC=""
 DUR=10
+DTMF=""
 NET=host
 SIP=25060
 RTP=25100
 NAME="hd-$$"
 IMAGE=chappe-conf-pjsua
 
-while getopts c:r:p:o:d:n:l:m:N:i: opt; do
+while getopts c:r:p:o:d:D:n:l:m:N:i: opt; do
     case $opt in
         c) CODEC=$OPTARG ;;
         r) RATE=$OPTARG ;;
         p) PLAY=$OPTARG ;;
         o) REC=$OPTARG ;;
         d) DUR=$OPTARG ;;
+        D) DTMF=$OPTARG ;;
         n) NET=$OPTARG ;;
         l) SIP=$OPTARG ;;
         m) RTP=$OPTARG ;;
         N) NAME=$OPTARG ;;
         i) IMAGE=$OPTARG ;;
-        *) sed -n '10,24p' "$0" >&2; exit 2 ;;
+        *) sed -n '10,27p' "$0" >&2; exit 2 ;;
     esac
 done
 shift $((OPTIND - 1))
@@ -67,6 +74,32 @@ case $RATE in
     8000|16000|48000) ;;
     *) echo "hd.sh: clock rate $RATE: 8000, 16000 or 48000" >&2; exit 2 ;;
 esac
+
+# pjsua quits on end of input: keep stdin open for the call, then hang
+# up and quit (a callee waits twice as long for its call to come)
+WAIT=$((DUR + 3))
+[ -n "$TARGET" ] || WAIT=$((2 * DUR + 3))
+
+# -D DELAY:DIGITS: the console's # command, then the digits, DELAY
+# seconds in; the rest of WAIT after them
+DELAY=""
+DIGITS=""
+if [ -n "$DTMF" ]; then
+    DELAY=${DTMF%%:*}
+    DIGITS=${DTMF#*:}
+    case $DELAY in
+        ''|*[!0-9]*) DELAY=x ;;
+    esac
+    case $DIGITS in
+        ''|*[!0-9*#A-D]*) DIGITS=x ;;
+    esac
+    if [ "$DTMF" = "$DELAY" ] || [ "$DELAY" = x ] || [ "$DIGITS" = x ] ||
+        [ "$DELAY" -ge "$WAIT" ]; then
+        echo "hd.sh: -D $DTMF: DELAY:DIGITS, DELAY seconds under $WAIT," \
+            "DIGITS of 0-9 * # A-D" >&2
+        exit 2
+    fi
+fi
 
 LAB_IMAGE=$(cd "$HERE/../../../.." && pwd)/scripts/lab_image.sh
 if [ "${HD_SKIP_BUILD:-}" = 1 ]; then
@@ -107,10 +140,17 @@ else
     set -- "$@" --auto-answer 200
 fi
 
-# pjsua quits on end of input: keep stdin open for the call, then hang
-# up and quit (a callee waits twice as long for its call to come)
-WAIT=$((DUR + 3))
-[ -n "$TARGET" ] || WAIT=$((2 * DUR + 3))
+console() {
+    if [ -n "$DIGITS" ]; then
+        sleep "$DELAY"
+        printf '#\n%s\n' "$DIGITS"
+        sleep $((WAIT - DELAY))
+    else
+        sleep "$WAIT"
+    fi
+    printf 'h\nq\n'
+}
+
 # shellcheck disable=SC2086
-(sleep "$WAIT"; printf 'h\nq\n') | docker run --rm -i --name "$NAME" \
+console | docker run --rm -i --name "$NAME" \
     --network "$NET" $VOLS "$IMAGE" "$@"
