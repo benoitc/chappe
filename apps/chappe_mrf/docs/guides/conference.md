@@ -128,6 +128,15 @@ Give the room its rate when you start it:
   tested here).
 - A PCMU member is heard, and hears the room, through 8 kHz; the others
   keep their band.
+- Give the room's prompts as 16 kHz files. `chappe_mrf_conf:play/2` has
+  rtpengine play the file on each member's leg in the member's codec: a
+  G.722 or Opus member hears it in wideband, a PCMU member at 8 kHz. An
+  8 kHz file is narrowband for everyone. The same holds for an fs room on
+  a 16 kHz profile, and for an IVR endpoint's `chappe_mrf:play/2`.
+- Run rtpengine with `--audio-player=play-media` (`audio-player =
+  play-media` in its config file) for room prompts. rtpengine then mixes
+  the prompt with the room's audio while it plays. Without it, a G.722 or
+  Opus member hears the prompt garbled.
 - The rate is fixed: `rate` is 8000 (default) or 16000, anything else is
   `{error, {bad_option, rate}}`. `conference/2` on a room that runs
   returns it at its own rate or with no `rate`; another rate is

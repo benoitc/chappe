@@ -9,7 +9,10 @@
 # ${MRF_RTP_MIN:-31200}-${MRF_RTP_MAX:-31299}/udp published 1:1. Its
 # `host' interface is advertised as 127.0.0.1 (callers and chappe_mix on
 # the host), its `docker' one as its own address (FreeSWITCH); the call
-# picks the pair with anchor_params.
+# picks the pair with anchor_params. --audio-player=play-media mixes a
+# native room's prompt (play media) with the mixer's audio while it
+# plays; without it a G.722 or Opus member of a 16 kHz room hears the
+# prompt garbled (chappe_mrf_hd_live_SUITE:native_room_prompt).
 #
 # fs1 and fs2: SIP on ${MRF_FS1_SIP:-17081} and ${MRF_FS2_SIP:-17082}/udp,
 # ESL on 127.0.0.1:${MRF_FS1_ESL:-17031} and ${MRF_FS2_ESL:-17032}. Their
@@ -67,6 +70,7 @@ services:
       --listen-ng=0.0.0.0:${MRF_NG_PORT:-17222}
       --port-min=${MRF_RTP_MIN:-31200} --port-max=${MRF_RTP_MAX:-31299}
       --delete-delay=0
+      --audio-player=play-media
       --foreground --log-stderr"
 
   fs1:

@@ -14,7 +14,10 @@
 %% keeps the band both ways. A REFER to a native 16 kHz room's URI brings
 %% in a G.722 callee through the dial-out path, which keeps the band both
 %% ways once it answered, and a PCMU-only callee, which answers only
-%% because the room offers it G.711 too. The setup is
+%% because the room offers it G.711 too. A 16 kHz prompt (the probe as
+%% a file) reaches G.722 and Opus callers with its band, and PCMU ones
+%% narrowband, played to a native and to an fs 16 kHz room and by the
+%% IVR; flite's speech reaches a G.722 caller wideband. The setup is
 %% chappe_mrf_live_SUITE's.
 %% Skipped unless MRF=1 (apps/chappe_mrf/test/e2e.sh) and docker runs.
 %% MRF_PJSUA_NAME (chappe-hd) prefixes the pjsua container names.
@@ -27,10 +30,20 @@
 -export([init_per_testcase/2, end_per_testcase/2]).
 -export([native_hd_room/1, native_hd_endpoint/1, fs_wideband_room/1]).
 -export([refer_hd_dial_out/1, refer_pcmu_dial_out/1]).
+-export([native_room_prompt/1, fs_wideband_prompt/1, ivr_prompt_hd/1]).
+-export([speak_hd/1]).
 
 -define(LIVE, chappe_mrf_live_SUITE).
 
 -define(RATE, 16000).
+
+%% speak_hd: the least energy from 4 to 7 kHz, against 1 to 3 kHz, of
+%% the speech a G.722 caller hears from a 16 kHz voice. Measured on this
+%% path with the case's text: flite's kal16 -4.7 dB (its kal, which
+%% mod_flite plays with kal16, the same), slt -2.8 dB; the text spoken
+%% by an 8 kHz voice (macOS say at 8 kHz, played as a file) -13.3 dB.
+%% -9 dB sits between them, about 4 dB from each.
+-define(SPEECH_HIGH_DB, -9.0).
 
 all() ->
     [
@@ -38,7 +51,11 @@ all() ->
         native_hd_endpoint,
         fs_wideband_room,
         refer_hd_dial_out,
-        refer_pcmu_dial_out
+        refer_pcmu_dial_out,
+        native_room_prompt,
+        fs_wideband_prompt,
+        ivr_prompt_hd,
+        speak_hd
     ].
 
 init_per_suite(Config) ->
@@ -190,10 +207,17 @@ native_hd_endpoint(Config) ->
     Checks = [
         {a_to_endpoint,
             case RateEp of
-                ?RATE -> band_shape(window(RecEp, ?RATE, 2, 5), Cal);
-                _ -> {error, [{recorded_at, RateEp}]}
+                ?RATE ->
+                    chappe_mix_test_tone:band_shape(
+                        window(RecEp, ?RATE, 2, 5), Cal
+                    );
+                _ ->
+                    {error, [{recorded_at, RateEp}]}
             end},
-        {endpoint_to_a, band_shape(window(RecA, ?RATE, From, From + 3), Cal)}
+        {endpoint_to_a,
+            chappe_mix_test_tone:band_shape(
+                window(RecA, ?RATE, From, From + 3), Cal
+            )}
     ],
     ct:log(
         "endpoint recording at ~p Hz, ~p samples; play at ~p ms~n~p",
@@ -265,17 +289,7 @@ wav_file(Path) ->
 %% `wideband' profile (16 kHz), each caller bridged to a FreeSWITCH
 %% endpoint through rtpengine.
 fs_wideband_room(Config) ->
-    {ok, Conf} = chappe_mrf:conference(<<"hd-fs">>, #{
-        backend => fs,
-        node => fs1,
-        profile => <<"wideband">>,
-        bridge => #{
-            anchor_params => #{
-                a => #{direction => [<<"docker">>, <<"host">>]},
-                b => #{direction => [<<"host">>, <<"docker">>]}
-            }
-        }
-    }),
+    {ok, Conf} = chappe_mrf:conference(<<"hd-fs">>, fs_wideband()),
     ?assertEqual(
         {error, {unsupported, rate}},
         chappe_mrf:conference(<<"hd-fs-rate">>, #{
@@ -283,6 +297,24 @@ fs_wideband_room(Config) ->
         })
     ),
     run_room(Config, Conf, <<"hd-fs">>).
+
+%% an fs room on fs1's `wideband' profile, its callers bridged to the
+%% node through rtpengine
+fs_wideband() ->
+    #{
+        backend => fs,
+        node => fs1,
+        profile => <<"wideband">>,
+        bridge => #{anchor_params => to_fs()}
+    }.
+
+%% rtpengine's interfaces: callers on the host, FreeSWITCH on the docker
+%% network
+to_fs() ->
+    #{
+        a => #{direction => [<<"docker">>, <<"host">>]},
+        b => #{direction => [<<"host">>, <<"docker">>]}
+    }.
 
 %% An authorized REFER to a native 16 kHz room's URI adds a second HD
 %% caller: a G.722 pjsua callee on the lab's network, dialed out from an
@@ -301,8 +333,14 @@ refer_hd_dial_out(Config) ->
     Cal = chappe_mix_test_tone:band_calibrate(lists:sublist(Probe, ?RATE * 2)),
     From = In div 1000 + 2,
     Checks = [
-        {a_to_callee, band_shape(window(RecCallee, ?RATE, 3, 6), Cal)},
-        {callee_to_a, band_shape(window(RecA, ?RATE, From, From + 3), Cal)}
+        {a_to_callee,
+            chappe_mix_test_tone:band_shape(
+                window(RecCallee, ?RATE, 3, 6), Cal
+            )},
+        {callee_to_a,
+            chappe_mix_test_tone:band_shape(
+                window(RecA, ?RATE, From, From + 3), Cal
+            )}
     ],
     ct:log("~p", [Checks]),
     [?assertEqual({W, ok}, {W, R}) || {W, R} <- Checks].
@@ -459,6 +497,172 @@ refer_final(Id) ->
     after 30000 -> ct:fail(no_final_notify)
     end.
 
+%% ---- prompts ----
+
+%% A 16 kHz prompt in a native 16 kHz room: chappe_mrf_conf:play/2 has
+%% rtpengine play the file on each caller's leg, encoded to the caller's
+%% codec. The G.722 and Opus members hear the whole band of the probe,
+%% the PCMU member its narrow band. rtpengine runs with
+%% --audio-player=play-media (the lab's compose file), which mixes the
+%% prompt with the mixer's audio: without it the G.722 and Opus members
+%% hear the prompt garbled, and an 8 kHz prompt fails here (missing
+%% 5000 Hz).
+native_room_prompt(Config) ->
+    {ok, Conf} = chappe_mrf:conference(<<"hd-prompt">>, #{
+        rate => 16000,
+        anchor_params => #{b => #{direction => [<<"host">>, <<"host">>]}}
+    }),
+    room_prompt(Config, Conf, <<"hd-prompt">>).
+
+%% The same in an fs room on the `wideband' profile: mod_conference plays
+%% the file into the 16 kHz room, and each member's channel encodes it.
+fs_wideband_prompt(Config) ->
+    {ok, Conf} = chappe_mrf:conference(<<"hd-fs-prompt">>, fs_wideband()),
+    room_prompt(Config, Conf, <<"hd-fs-prompt">>).
+
+%% The IVR: the endpoint connect_caller/3 gives plays the probe to a
+%% G.722 caller, then to an Opus one, each at the codec it came with
+%% (FreeSWITCH resamples the file to the channel's rate); both hear the
+%% whole band. A PCMU caller hears its narrow band.
+ivr_prompt_hd(Config) ->
+    File = prompt_file(Config),
+    Play = fun(Ep) -> chappe_mrf:play(Ep, File) end,
+    %% one after the other, each pjsua under its own name
+    Heard = [
+        {Codec, ivr_call(Config, N, #{codec => Codec, rate => R}, Play)}
+     || {N, Codec, R} <- [
+            {a, "G722", ?RATE}, {b, "opus", ?RATE}, {c, "PCMU", 8000}
+        ]
+    ],
+    [?assertEqual({C, ok}, {C, R}) || {C, {R, _}} <- Heard],
+    [{_, {_, RecG722}}, {_, {_, RecOpus}}, {_, {_, RecPcmu}}] = Heard,
+    prompt_checks([{g722, RecG722}, {opus, RecOpus}], RecPcmu).
+
+%% speak/3 with flite's kal16 voice (the guide's), to a G.722 caller.
+%% Speech is not a probe: the check is the energy from 4 to 7 kHz against
+%% the one from 1 to 3 kHz in what the caller heard (?SPEECH_HIGH_DB).
+speak_hd(Config) ->
+    Text =
+        <<
+            "Thank you for calling. Please say the six digits of your "
+            "account, or press star to speak with someone."
+        >>,
+    Opts = #{engine => <<"flite">>, voice => <<"kal16">>},
+    {R, Rec} = ivr_call(
+        Config,
+        a,
+        #{codec => "G722", rate => ?RATE},
+        fun(Ep) -> chappe_mrf:speak(Ep, Text, Opts) end
+    ),
+    ?assertEqual(ok, R),
+    High = chappe_mix_test_tone:band_energy(Rec, {4000, 7000}, ?RATE),
+    Low = chappe_mix_test_tone:band_energy(Rec, {1000, 3000}, ?RATE),
+    ct:log("speak: 4-7 kHz at ~.1f dB against 1-3 kHz (~p samples)", [
+        High - Low, length(Rec)
+    ]),
+    ?assert(High - Low > ?SPEECH_HIGH_DB, {high_band, High - Low}).
+
+%% Three silent callers in Conf (G.722, Opus, PCMU), the prompt played
+%% to the room once all are in.
+room_prompt(Config, Conf, User) ->
+    Test = self(),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        Test ! {joined, chappe_mrf_conf:join(Conf, {call, Req, Res}, #{})}
+    end),
+    File = prompt_file(Config),
+    Target = target(Config, User),
+    %% B and C 2 s apart: pjsua seeds its Call-ID from the time
+    A = pjsua(Config, a, #{codec => "G722", rate => ?RATE, dur => 30}, Target),
+    timer:sleep(2000),
+    B = pjsua(Config, b, #{codec => "opus", rate => ?RATE, dur => 27}, Target),
+    timer:sleep(2000),
+    C = pjsua(Config, c, #{codec => "PCMU", rate => 8000, dur => 24}, Target),
+    joined(3),
+    ok = chappe_mrf_conf:play(Conf, File),
+    [wait_pjsua(P, 60000) || P <- [C, B, A]],
+    ok = chappe_mrf_conf:stop(Conf),
+    Dir = ?config(priv_dir, Config),
+    [RecA, RecB, RecC] = [
+        wav_samples(filename:join(Dir, N))
+     || N <- ["a.wav", "b.wav", "c.wav"]
+    ],
+    prompt_checks([{g722, RecA}, {opus, RecB}], RecC).
+
+%% The HD recordings carry the probe's band, the PCMU one its two narrow
+%% band tones above -40 dB, each judged from 1 s after the prompt came.
+prompt_checks(Hd, Pcmu) ->
+    Cal = chappe_mix_test_tone:band_calibrate(
+        chappe_mix_test_tone:band_probe(2000)
+    ),
+    Checks = [
+        {W,
+            case heard(Rec, ?RATE, 3) of
+                [] -> {error, no_prompt};
+                S -> chappe_mix_test_tone:band_shape(S, Cal)
+            end}
+     || {W, Rec} <- Hd
+    ],
+    Narrow = chappe_mix_test_tone:levels(
+        heard(Pcmu, 8000, 3), [1000, 2500], 8000
+    ),
+    ct:log("~p~nPCMU hears ~p", [Checks, Narrow]),
+    [?assertEqual({W, ok}, {W, R}) || {W, R} <- Checks],
+    [?assert(L > -40.0, {pcmu_hears, F, L}) || {F, L} <- Narrow].
+
+%% The 16 kHz probe for 8 s, a prompt in the shared /media.
+prompt_file(Config) ->
+    Probe = chappe_mix_test_tone:band_probe(8000),
+    _ = wav(?config(media, Config), "hd-prompt.wav", Probe, ?RATE),
+    <<"/media/hd-prompt.wav">>.
+
+%% Secs seconds of Rec (at Rate) from 1 s after the prompt came in, the
+%% first 200 ms where its 1000 Hz tone is above -35 dBFS: each call joins
+%% at its own pace, so where the prompt lands in a recording is not known
+%% in advance. [] when it never came.
+heard(Rec, Rate, Secs) ->
+    Quiet = fun(W) ->
+        [{_, L}] = chappe_mix_test_tone:levels(W, [1000], Rate),
+        L =< -35.0
+    end,
+    case
+        lists:splitwith(Quiet, chappe_mix_test_tone:windows(Rec, Rate div 5))
+    of
+        {_, []} ->
+            [];
+        {Before, _} ->
+            From = length(Before) * (Rate div 5) + Rate,
+            lists:sublist(Rec, min(From, length(Rec)) + 1, Secs * Rate)
+    end.
+
+%% One pjsua caller (Opts as pjsua/4's) through connect_caller/3: the
+%% handler runs Script(Ep) and keeps the endpoint until the caller hangs
+%% up. {Result, Recording}: what Script returned, what the caller heard.
+ivr_call(Config, Name, Opts, Script) ->
+    Test = self(),
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        case chappe_mrf:connect_caller(Req, Res, #{anchor_params => to_fs()}) of
+            {ok, Ep, _B2b} ->
+                Test ! {ivr, Script(Ep)},
+                receive
+                    {chappe_mrf, Ep, {hangup, _}} -> ok
+                after 60000 -> ok
+                end;
+            Err ->
+                Test ! {ivr, Err}
+        end
+    end),
+    P = pjsua(Config, Name, Opts#{dur => 14}, target(Config, <<"ivr">>)),
+    R =
+        receive
+            {ivr, Got} -> Got
+        after 60000 -> ct:fail({no_ivr, Name})
+        end,
+    wait_pjsua(P, 60000),
+    Rec = filename:join(
+        ?config(priv_dir, Config), atom_to_list(Name) ++ ".wav"
+    ),
+    {R, wav_samples(Rec)}.
+
 %% ---- the calls ----
 
 run_room(Config, Conf, User) ->
@@ -497,7 +701,7 @@ run_room(Config, Conf, User) ->
     RecA = wav_samples(filename:join(Dir, "a.wav")),
     RecB = wav_samples(filename:join(Dir, "b.wav")),
     RecC = wav_samples(filename:join(Dir, "c.wav")),
-    Check = fun(S) -> band_shape(S, Cal) end,
+    Check = fun(S) -> chappe_mix_test_tone:band_shape(S, Cal) end,
     Checks = [
         %% A's probe at B, while C is in (B's time: A's 2 s later)
         {a_to_b_with_c, Check(window(RecB, ?RATE, 3, 5))},
@@ -525,34 +729,6 @@ run_room(Config, Conf, User) ->
     ok = chappe_mrf_conf:stop(Conf),
     [?assertEqual({W, ok}, {W, R}) || {W, R} <- Checks],
     [?assert(L > -40.0, {c_hears, F, L}) || {F, L} <- CHearsA ++ CHearsB].
-
-%% The band check on the shape of the band, not on the path's gain: a
-%% caller's codec may move the whole probe a few dB (pjsua's G.722 path
-%% comes 6 dB down), so the calibration moves by what 1000 Hz, which any
-%% 8 kHz path keeps, lost on the way; then every tone within 3 dB of it,
-%% and nothing folded onto the alias bins.
-band_shape(Samples, Cal) ->
-    case length(Samples) >= 3200 of
-        false ->
-            {error, [{too_short, length(Samples)}]};
-        true ->
-            try chappe_mix_test_tone:band_calibrate(Samples) of
-                #{1000 := Got} ->
-                    Gain = Got - maps:get(1000, Cal),
-                    ct:log("path gain at 1000 Hz: ~.1f dB", [Gain]),
-                    Shifted = maps:map(fun(_, L) -> L + Gain end, Cal),
-                    %% G.722 is on every path here: its QMF bank folds
-                    %% 5000 and 6000 Hz onto the alias bins at about 60 dB
-                    %% down, so they get 30 dB (a careless drop to 8 kHz
-                    %% folds them within a few dB of full level)
-                    chappe_mix_test_tone:band_check(Samples, Shifted, #{
-                        tolerance => 3.0, alias_db => 30.0
-                    })
-            catch
-                %% a tone 10 dB down or more: the path lost the band
-                error:{bad_calibration, F, L} -> {error, [{missing, F, L}]}
-            end
-    end.
 
 zeros(Secs) ->
     lists:duplicate(Secs * ?RATE, 0).
@@ -653,12 +829,7 @@ root() ->
 
 wav(Dir, File, Samples, Rate) ->
     Path = filename:join(Dir, File),
-    Data = <<<<S:16/little-signed>> || S <- Samples>>,
-    Hdr =
-        <<"RIFF", (36 + byte_size(Data)):32/little, "WAVEfmt ", 16:32/little,
-            1:16/little, 1:16/little, Rate:32/little, (Rate * 2):32/little,
-            2:16/little, 16:16/little, "data", (byte_size(Data)):32/little>>,
-    ok = file:write_file(Path, [Hdr, Data]),
+    ok = chappe_mrf_live_ua:write_samples(Path, Samples, Rate),
     Path.
 
 wav_samples(Path) ->

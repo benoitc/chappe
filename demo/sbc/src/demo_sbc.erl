@@ -66,6 +66,8 @@
 -define(CALLS, demo_sbc_calls).
 %% call id => {FreeSWITCH node, channel uuid}
 -define(FS, demo_sbc_fs).
+%% the IVR's prompt files: 16 kHz, for HD phones
+-define(PROMPT_RATE, 16000).
 
 %% Start with the settings of File (demo/sbc/demo.config).
 -spec start(file:filename()) -> ok.
@@ -660,7 +662,8 @@ wait_end({_, Ref}, CallId) ->
     end.
 
 %% The IVR's prompts, in /media of the FreeSWITCH nodes: spoken by macOS
-%% `say' when it is there, else a tone each.
+%% `say' when it is there, else a tone each. 16 kHz files, so an HD phone
+%% hears them in wideband; FreeSWITCH resamples them for a G.711 one.
 prompts(Dir) ->
     ok = filelib:ensure_path(Dir),
     Texts = [
@@ -686,26 +689,28 @@ prompt_file(Dir, Name, Freq, Text) ->
                 tone_wav(Path, Freq);
             Say ->
                 _ = os:cmd(
-                    Say ++ " -o '" ++ Path ++ "' --data-format=LEI16@8000 '" ++
-                        Text ++ "'"
+                    Say ++ " -o '" ++ Path ++ "' --data-format=LEI16@" ++
+                        integer_to_list(?PROMPT_RATE) ++ " '" ++ Text ++ "'"
                 ),
                 filelib:is_regular(Path) orelse tone_wav(Path, Freq)
         end,
     _ = file:change_mode(Path, 8#644),
     ok.
 
+%% one second of Freq at ?PROMPT_RATE, 16-bit mono
 tone_wav(Path, Freq) ->
+    Rate = ?PROMPT_RATE,
     Data = <<
         <<
-            (round(8000 * math:sin(2 * math:pi() * Freq * I / 8000))):16/little-signed
+            (round(8000 * math:sin(2 * math:pi() * Freq * I / Rate))):16/little-signed
         >>
-     || I <- lists:seq(0, 7999)
+     || I <- lists:seq(0, Rate - 1)
     >>,
     Size = byte_size(Data),
     file:write_file(
         Path,
         <<"RIFF", (36 + Size):32/little, "WAVE", "fmt ", 16:32/little,
-            1:16/little, 1:16/little, 8000:32/little, 16000:32/little,
+            1:16/little, 1:16/little, Rate:32/little, (2 * Rate):32/little,
             2:16/little, 16:16/little, "data", Size:32/little, Data/binary>>
     ).
 
