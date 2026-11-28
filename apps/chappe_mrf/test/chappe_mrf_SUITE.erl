@@ -126,7 +126,12 @@
     native_hd_room/1,
     dial_codecs_refused/1,
     fs_conference_edges/1,
-    fs_join_waits_its_room/1
+    fs_join_waits_its_room/1,
+    native_pin_call/1,
+    native_pin_wrong/1,
+    native_pin_timeout/1,
+    native_pin_b2b/1,
+    native_pin_owner_dies/1
 ]).
 
 -define(F, chappe_mrf_fake).
@@ -246,7 +251,12 @@ all() ->
         native_hd_room,
         dial_codecs_refused,
         fs_conference_edges,
-        fs_join_waits_its_room
+        fs_join_waits_its_room,
+        native_pin_call,
+        native_pin_wrong,
+        native_pin_timeout,
+        native_pin_b2b,
+        native_pin_owner_dies
     ].
 
 init_per_suite(Config) ->
@@ -5034,6 +5044,213 @@ fs_join_waits_its_room(Config) ->
     ok = chappe_mrf:destroy(Ep),
     ok = chappe_mrf:destroy(Ep2),
     ?F:fs_stop(Silent).
+
+%% A caller dials a native room that asks a PIN: chappe answers it to an
+%% endpoint on pin_endpoint's node, where it enters the PIN, then the room
+%% moves the call into the mixer. The endpoint's channel gets the BYE of
+%% the move and the endpoint goes; the caller sees no re-INVITE. An
+%% endpoint joining with a PIN enters it on its own channel first.
+%% req: MRF-30 MRF-32
+native_pin_call(Config) ->
+    {ok, Conf} = chappe_mrf:conference(<<"pinroom">>, #{}),
+    Eps = endpoint_pids(),
+    fs_set_digits(Config, <<"1234">>),
+    Ua = pin_caller(Config, Conf, #{
+        pin => <<"1234">>, pin_prompt => <<"/media/pin.wav">>
+    }),
+    {ok, 200} = ua_final(Ua),
+    {fake_fs, _, Uuid, {cmd, Collect}} = fs_cmd(
+        <<"execute-app-name: play_and_get_digits">>
+    ),
+    ?assert(has(Collect, <<"/media/pin.wav">>)),
+    {ok, M} = join_within(10000),
+    {joined, M, _} = joined(Conf),
+    ok = channel_bye(Uuid),
+    no_ua_event(Ua, reinvite, 200),
+    until(fun() -> endpoint_pids() -- Eps =:= [] end),
+    ?assertMatch(#{pending := 0, loops := []}, holdings(Conf)),
+    ?assertMatch([#{id := M}], chappe_mrf_conf:members(Conf)),
+    %% an endpoint of the app's enters it on its own channel
+    {ok, Ep} = chappe_mrf:create_endpoint(#{targets => [{fs1, fs_uri(Config)}]}),
+    EpUuid = uuid_of(Ep),
+    {ok, _} = chappe_mrf_conf:join(Conf, Ep, #{pin => 1234}),
+    {fake_fs, _, EpUuid, {cmd, _}} = fs_cmd(
+        <<"execute-app-name: play_and_get_digits">>
+    ),
+    ?assertEqual(2, length(chappe_mrf_conf:members(Conf))),
+    ?F:ua_bye(Ua),
+    receive
+        {chappe_mrf_conf, Conf, {left, M, departed}} -> ok
+    after 5000 -> ct:fail(no_left)
+    end,
+    chappe_mrf:destroy(Ep),
+    ok = chappe_mrf_conf:stop(Conf).
+
+%% Three wrong PINs from a caller that dialed the room: it hears
+%% pin_fail_prompt, then the call ends, and the room is as it was.
+%% req: MRF-30
+native_pin_wrong(Config) ->
+    {ok, Conf} = chappe_mrf:conference(<<"pinwrong">>, #{max_members => 1}),
+    Base = holdings(Conf),
+    Eps = endpoint_pids(),
+    fs_set_digits(Config, <<"0000">>),
+    Ua = pin_caller(Config, Conf, #{
+        pin => <<"1234">>, pin_fail_prompt => <<"/media/bad.wav">>
+    }),
+    {ok, 200} = ua_final(Ua),
+    _ = [fs_cmd(<<"execute-app-name: play_and_get_digits">>) || _ <- [1, 2, 3]],
+    {fake_fs, _, _, {cmd, Fail}} = fs_cmd(<<"execute-app-name: playback">>),
+    ?assert(has(Fail, <<"/media/bad.wav">>)),
+    ?assertEqual({error, bad_pin}, join_within(10000)),
+    _ = ua_event(Ua, bye),
+    back_to(Conf, Base),
+    until(fun() -> endpoint_pids() -- Eps =:= [] end),
+    ?assertEqual([], chappe_mrf_conf:members(Conf)),
+    ok = chappe_mrf_conf:stop(Conf).
+
+%% A caller that enters no PIN before the room's join_timeout: the join
+%% fails with {error, timeout}, its helper is stopped, the call ends and
+%% the room is as it was. pin_timeout is what FreeSWITCH waits for each
+%% entry.
+%% req: MRF-26 MRF-30
+native_pin_timeout(Config) ->
+    {ok, Conf} = chappe_mrf:conference(<<"pinslow">>, #{join_timeout => 1000}),
+    Base = holdings(Conf),
+    Eps = endpoint_pids(),
+    fs_set_digits(Config, hold),
+    Ua = pin_caller(Config, Conf, #{pin => <<"1234">>, pin_timeout => 7000}),
+    {ok, 200} = ua_final(Ua),
+    {fake_fs, _, _, {cmd, Collect}} = fs_cmd(
+        <<"execute-app-name: play_and_get_digits">>
+    ),
+    ?assert(has(Collect, <<" 7000 ">>)),
+    ?assertMatch(#{pending := 1}, holdings(Conf)),
+    ?assertEqual({error, timeout}, join_within(5000)),
+    _ = ua_event(Ua, bye),
+    until(fun() -> ?FAULTS:join_helpers() =:= [] end),
+    back_to(Conf, Base),
+    until(fun() -> endpoint_pids() -- Eps =:= [] end),
+    ok = chappe_mrf_conf:stop(Conf).
+
+%% Your IVR sends a call to a native room with a PIN: the caller enters
+%% it on the endpoint the join names. A wrong PIN is {error, bad_pin}:
+%% the call stays on that endpoint, which still plays, no room prompt is
+%% played, and the room is as it was. The right PIN moves the call, and
+%% the endpoint's channel gets the BYE of the move. A call joined with a
+%% PIN and no endpoint, or with a PIN option of the wrong kind, is
+%% refused before the room.
+%% req: MRF-31 MRF-32
+native_pin_b2b(Config) ->
+    ivr(Config),
+    {ok, Conf} = chappe_mrf:conference(<<"pinivr">>, #{}),
+    {Ua, Ep, B2b, Owner} = call_in(Config),
+    Base = holdings(Conf),
+    Uuid = uuid_of(Ep),
+    ?assertEqual(
+        {error, {bad_option, endpoint}},
+        chappe_mrf_conf:join(Conf, B2b, #{pin => <<"1234">>})
+    ),
+    ?assertEqual(
+        {error, {bad_option, pin}},
+        chappe_mrf_conf:join(Conf, B2b, #{pin => <<"12#">>, endpoint => Ep})
+    ),
+    ?assertEqual(
+        {error, {bad_option, pin_tries}},
+        chappe_mrf_conf:join(Conf, B2b, #{
+            pin => <<"1">>, pin_tries => 0, endpoint => Ep
+        })
+    ),
+    fs_set_digits(Config, <<"9999">>),
+    Opts = #{
+        pin => <<"1234">>,
+        pin_tries => 2,
+        endpoint => Ep,
+        pin_fail_prompt => <<"/media/bad.wav">>
+    },
+    ?assertEqual({error, bad_pin}, chappe_mrf_conf:join(Conf, B2b, Opts)),
+    _ = [fs_cmd(<<"execute-app-name: play_and_get_digits">>) || _ <- [1, 2]],
+    no_ua_event(Ua, bye, 300),
+    back_to(Conf, Base),
+    %% the call is yours, as it was: the next playback is your IVR's
+    ok = in_owner(Owner, fun() -> chappe_mrf:play(Ep, <<"/media/menu.wav">>) end),
+    {fake_fs, _, Uuid, {cmd, Play}} = fs_cmd(<<"execute-app-name: playback">>),
+    ?assert(has(Play, <<"/media/menu.wav">>)),
+    fs_set_digits(Config, <<"1234">>),
+    {ok, M} = chappe_mrf_conf:join(Conf, B2b, Opts),
+    ok = channel_bye(Uuid),
+    _ = owner_msg({hangup, <<"NORMAL_CLEARING">>}),
+    no_ua_event(Ua, reinvite, 100),
+    ?assertMatch([#{id := M}], chappe_mrf_conf:members(Conf)),
+    Owner ! stop,
+    ok = chappe_mrf_conf:stop(Conf).
+
+%% The process that owns the endpoint a caller enters a PIN on dies
+%% meanwhile: the endpoint kills its channel, the call ends and the join
+%% fails, leaving nothing: no endpoint, no loopback token, no rtpengine
+%% session, and the room counts the join no more. The same for a caller
+%% joined from its INVITE whose request worker dies.
+%% req: MRF-26 MRF-30
+native_pin_owner_dies(Config) ->
+    ivr(Config),
+    {ok, Conf} = chappe_mrf:conference(<<"pinowner">>, #{max_members => 1}),
+    Base = holdings(Conf),
+    Eps = endpoint_pids(),
+    {Ua, Ep, B2b, Owner} = call_in(Config),
+    fs_set_digits(Config, hold),
+    Test = self(),
+    _ = spawn(fun() ->
+        Test !
+            {join,
+                chappe_mrf_conf:join(Conf, B2b, #{
+                    pin => <<"1234">>, endpoint => Ep
+                })}
+    end),
+    _ = fs_cmd(<<"execute-app-name: play_and_get_digits">>),
+    ?assertMatch(#{pending := 1, admission := {error, full}}, holdings(Conf)),
+    exit(Owner, kill),
+    _ = ua_event(Ua, bye),
+    ?assertMatch({error, _}, join_within(5000)),
+    back_to(Conf, Base),
+    until(fun() -> endpoint_pids() -- Eps =:= [] end),
+    %% a caller joined from its INVITE: the endpoint is its worker's
+    Ua2 = pin_caller(Config, Conf, #{pin => <<"1234">>}),
+    Worker =
+        receive
+            {pin_worker, W} -> W
+        after 5000 -> ct:fail(no_worker)
+        end,
+    {ok, 200} = ua_final(Ua2),
+    _ = fs_cmd(<<"execute-app-name: play_and_get_digits">>),
+    ?assertMatch(#{pending := 1}, holdings(Conf)),
+    exit(Worker, kill),
+    _ = ua_event(Ua2, bye),
+    back_to(Conf, Base),
+    until(fun() -> endpoint_pids() -- Eps =:= [] end),
+    ok = chappe_mrf_conf:stop(Conf).
+
+%% A caller dialing Conf, joined from its INVITE with Opts, its PIN
+%% endpoint on the fake node: {join, Result} comes back, and its worker
+%% as {pin_worker, Pid}.
+pin_caller(Config, Conf, Opts) ->
+    Test = self(),
+    PinEp = #{pin_endpoint => #{targets => [{fs1, fs_uri(Config)}]}},
+    ok = chappe_sip:invite(fun(Req, Res) ->
+        Test ! {pin_worker, self()},
+        Test !
+            {join,
+                chappe_mrf_conf:join(
+                    Conf, {call, Req, Res}, maps:merge(PinEp, Opts)
+                )}
+    end),
+    ?F:ua_call(?config(ep, Config), #{}).
+
+%% the endpoints running (chappe_mrf_ep_sup's children)
+endpoint_pids() ->
+    [
+        P
+     || {_, P, _, _} <- supervisor:which_children(chappe_mrf_ep_sup),
+        is_pid(P)
+    ].
 
 %% Fun() in a process of its own, whose calls to a room are traced
 traced(Fun) ->

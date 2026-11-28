@@ -3,8 +3,9 @@
 %%
 %% @doc The fs backend's join, in the caller of chappe_mrf_conf:join/3 (after
 %% chappe_mrf_conf_fs:join/4 checked the room): an endpoint on the room's
-%% node, made and bridged for a call, enters the PIN if the join asks one,
-%% then joins the room ({join, {fs, Ep, Owned, Opts}}).
+%% node, made and bridged for a call, enters the PIN if the join asks one
+%% (chappe_mrf_conf_pin), then joins the room ({join, {fs, Ep, Owned,
+%% Opts}}).
 -module(chappe_mrf_conf_fs_join).
 
 -export([join/4]).
@@ -47,7 +48,7 @@ join_call(Conf, #{node := Node, bridge := Bridge} = Info, Req, Res, Opts0) ->
 %% room, waiting past the room's join_timeout (its answer comes first);
 %% an endpoint made for the join goes if it does not get in.
 enter(Conf, Info, Ep, Owned, Opts) ->
-    case check_pin(Ep, Opts) of
+    case chappe_mrf_conf_pin:check(Ep, Opts) of
         ok ->
             case
                 chappe_mrf_conf:call(
@@ -68,7 +69,9 @@ enter(Conf, Info, Ep, Owned, Opts) ->
                     Err
             end;
         {error, _} = Err ->
-            _ = Owned andalso chappe_mrf:destroy(Ep),
+            %% no PIN (a wrong one, the caller gone): the endpoint made
+            %% for the join goes, after pin_fail_prompt on a wrong one
+            _ = Owned andalso chappe_mrf_conf_pin:refuse(Ep, Err, Opts),
             Err
     end.
 
@@ -90,26 +93,4 @@ endpoint(_Conf, Node, _Bridge, Ep) when is_pid(Ep) ->
         {ok, Node} -> {ok, Ep, false};
         {ok, Other} -> {error, {wrong_node, Other}};
         Err -> Err
-    end.
-
-check_pin(Ep, #{pin := Pin} = Opts) ->
-    Prompt = maps:get(pin_prompt, Opts, <<"silence_stream://250">>),
-    check_pin(
-        Ep, chappe_mrf_lib:to_bin(Pin), Prompt, maps:get(pin_tries, Opts, 3)
-    );
-check_pin(_Ep, _Opts) ->
-    ok.
-
-check_pin(_Ep, _Pin, _Prompt, 0) ->
-    {error, bad_pin};
-check_pin(Ep, Pin, Prompt, Tries) ->
-    Len = byte_size(Pin),
-    case
-        chappe_mrf:play_collect(Ep, #{
-            file => Prompt, min => Len, max => Len, timeout => 5000
-        })
-    of
-        {ok, Pin} -> ok;
-        {ok, _} -> check_pin(Ep, Pin, Prompt, Tries - 1);
-        {error, _} = Err -> Err
     end.

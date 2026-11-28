@@ -52,6 +52,11 @@ that shows you how to use it.
   lock, PIN entry, talker events, play into the room, recording, a member
   limit and room flags, mute, DTMF and prompt events.
   [Conference guide](guides/conference.md#freeswitch-rooms)
+- **PIN entry before a room**, on both backends: the caller enters it on a
+  FreeSWITCH endpoint, and on native then moves into the mixer, the
+  endpoint's channel hung up. A wrong PIN ends a caller that dialed the
+  room, and leaves a call your IVR sent where it was.
+  [Conference guide](guides/conference.md#ask-callers-for-a-pin)
 - **Native room recording** through SIPREC to a recording server
   (`record/3` with its URI). [Conference guide](guides/conference.md#record-a-native-room)
 - **Rooms on a cluster**: with `cluster => chappe_cluster`, a room name has

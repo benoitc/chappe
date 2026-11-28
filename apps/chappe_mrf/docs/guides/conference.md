@@ -181,8 +181,8 @@ end).
 - Call it in the INVITE's request worker; it returns once the caller is in.
 - The call then runs in a process of its own (`chappe_sip_b2b:relay_async/2`),
   so the handler may return. The caller hanging up is a `left` event.
-- On fs the join's `pin`, `pin_prompt` and `pin_tries` apply as for a
-  `B2b`.
+- A `pin` has the caller enter it first, on either backend: see
+  [Ask callers for a PIN](#ask-callers-for-a-pin).
 
 Kicking an endpoint takes it out of the room; its channel stays yours.
 An endpoint of `connect_caller/3` already carries a call: join the call
@@ -216,7 +216,8 @@ ok = chappe_sip:event_package(<<"conference">>, fun chappe_mrf:focus_subscribe/2
 ```
 
 A caller joined from its call is bridged into a new endpoint on the
-room's node, enters the PIN (`play_collect`, three tries), then runs the
+room's node, enters the PIN (`play_collect`, three tries; see
+[Ask callers for a PIN](#ask-callers-for-a-pin)), then runs the
 conference application. Member ids are mod_conference's. An endpoint
 already on that node joins as it is: `chappe_mrf_conf:join(Conf, Ep, #{})`.
 
@@ -234,6 +235,87 @@ ok = chappe_mrf_conf:stop_record(Conf).
 
 `max_members` works on both backends: past it `join/3` returns
 `{error, full}`. The recording is a file the node writes.
+
+## Ask callers for a PIN
+
+A join with `pin` has the caller enter a PIN on a FreeSWITCH endpoint
+before it gets in. Use it for a room only some callers may enter. On fs
+the caller is already on the room's node. On native the caller enters it
+on an IVR endpoint and the call then moves into the mixer: FreeSWITCH
+plays the prompt and reads the digits, and leaves the call once it is in
+the room.
+
+### A caller that dials the room
+
+```erlang
+ok = chappe_sip:invite(fun(Req, Res) ->
+    {ok, Conf} = chappe_mrf:conference(<<"board">>, #{rate => 16000}),
+    chappe_mrf_conf:join(Conf, {call, Req, Res}, #{
+        pin => <<"4321">>,
+        pin_prompt => <<"/media/pin.wav">>,
+        pin_fail_prompt => <<"/media/bad-pin.wav">>,
+        pin_endpoint => #{select => #{tags => [ivr]}}
+    })
+end).
+```
+
+1. On native, chappe answers the caller to a FreeSWITCH endpoint
+   (`connect_caller/3` with `pin_endpoint`'s options).
+2. The endpoint plays `pin_prompt` and reads the digits, `pin_tries`
+   times at most.
+3. With the right PIN the call moves into the mixer, the caller seeing no
+   re-INVITE, and the endpoint's channel is hung up. `join/3` returns
+   `{ok, Member}`.
+4. After the last wrong entry the caller hears `pin_fail_prompt` and the
+   call ends: `{error, bad_pin}`.
+
+### A call your IVR sends to the room
+
+Name the endpoint the call is on:
+
+```erlang
+{ok, Ep, B2b} = chappe_mrf:connect_caller(Req, Res, #{}),
+%% your menu runs on Ep, then:
+case chappe_mrf_conf:join(Conf, B2b, #{pin => <<"4321">>, endpoint => Ep}) of
+    {ok, Member} -> {in, Member};
+    {error, bad_pin} -> chappe_mrf:play(Ep, <<"/media/try-later.wav">>)
+end.
+```
+
+- With the right PIN the call moves into the room and `Ep`'s channel is
+  hung up: you get `{chappe_mrf, Ep, {hangup, Cause}}`.
+- A wrong PIN returns `{error, bad_pin}` and the call stays on `Ep`,
+  yours to drive: play, collect, hang up. No `pin_fail_prompt` plays.
+- A move that fails after the PIN leaves the call on `Ep` too.
+- Without `endpoint` a native room refuses the join with
+  `{error, {bad_option, endpoint}}`. An fs room ignores it: it bridges the
+  call into an endpoint of its own, and a wrong PIN ends the call.
+
+### PIN options
+
+| Option | Default | What it does |
+|---|---|---|
+| `pin` | none | The PIN: digits and `*`, as a binary (it keeps leading zeros) or an integer. |
+| `pin_prompt` | `silence_stream://250` | The file that asks for it. |
+| `pin_tries` | `3` | How many entries the caller has. |
+| `pin_timeout` | `5000` | Milliseconds FreeSWITCH waits for one entry. |
+| `pin_fail_prompt` | none | Played after the last wrong entry, before the call ends, where the room made the endpoint. |
+| `pin_endpoint` | the node chappe_esl picks | native, `{call, Req, Res}`: the `connect_caller/3` options (`node`, `select`, `targets`, `user`, `attach_timeout`, `anchor_params`) of the endpoint the caller enters the PIN on. |
+| `endpoint` | none | native, a call: the endpoint the call is on. |
+
+A value of the wrong kind is refused before anything starts:
+`{error, {bad_option, Key}}`.
+
+Notes:
+
+- The digits are read outside the room process: the room answers its
+  other requests while a caller types.
+- A native room's `join_timeout` covers the PIN and the move. A caller
+  still typing at the deadline gets `{error, timeout}`: the call ends, or
+  stays on `Ep` when your IVR sent it.
+- A caller that dialed the room is answered on FreeSWITCH, so its codec
+  is negotiated there first; the move to the mixer reuses the call's
+  rtpengine session.
 
 ## Room events
 
@@ -612,7 +694,8 @@ touched.
 
 - Modules: `chappe_mrf_conf` (API and process), `chappe_mrf_conf_native`,
   `chappe_mrf_conf_native_ep` (an endpoint's media in a native room),
-  `chappe_mrf_conf_fs`, `chappe_mrf_conf_refer` (REFER: the decision),
+  `chappe_mrf_conf_fs`, `chappe_mrf_conf_pin` (the PIN, on both
+  backends), `chappe_mrf_conf_refer` (REFER: the decision),
   `chappe_mrf_conf_refer_dial` (the dial-outs and the nested REFER),
   `chappe_mrf_conf_refer_member` (a member's REFER, transfer and Replaces),
   `chappe_mrf_conf_refer_op` (repeated REFERs); the loopback middleware is

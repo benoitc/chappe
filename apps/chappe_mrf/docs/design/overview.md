@@ -51,8 +51,10 @@ under chappe_esl's supervisor.
 | `chappe_mrf_conf` | Public conference API and the conference process. |
 | `chappe_mrf_conf_backend` | The conference backend behaviour and the room API backends call. |
 | `chappe_mrf_conf_native`, `chappe_mrf_conf_fs` | The two backends: chappe_mix behind rtpengine, mod_conference. |
+| `chappe_mrf_conf_native_join` | The native backend's join, in the caller: a call or an endpoint handed to the room, an incoming call answered into the mixer or, with a PIN, to an endpoint first. |
 | `chappe_mrf_conf_native_ep` | The media of an endpoint joining a native room: the room's media sessions, the helper that runs the steps, and what the room makes of the helper's asks and reports. |
 | `chappe_mrf_conf_fs_join` | The fs backend's join, in the caller: endpoint, bridge, PIN. |
+| `chappe_mrf_conf_pin` | The PIN a join asks for, on both backends: its options, the prompt and the digits on an endpoint, the end of an endpoint made for a join that did not get in. |
 | `chappe_mrf_conf_cluster` | A cluster room: the start in the caller and the lease decisions in the room. |
 | `chappe_mrf_conf_move` | Moving a cluster room's members to the room that owns its name next. |
 | `chappe_mrf_conf_transfer` | Moving a member from one conference to another (`chappe_mrf_conf:transfer/3`). |
@@ -215,6 +217,31 @@ would send to the session that went. A report that comes after its join
 ended ends that dialog too. A room that stops kills the helpers of the
 joins under way, and its media sessions end with it.
 
+### A PIN before a native room
+
+A join with `pin` has the caller enter it on a FreeSWITCH endpoint
+(`chappe_mrf_conf_pin`), then moves the call into the mixer as a call's
+join does:
+
+1. A caller joined from its INVITE: the request worker asks the room
+   whether a member may come in (`{join, check}`), answers the caller to
+   an endpoint of its own (`connect_caller/3`, the room as the call's
+   notify process) and sends the room `{join, {pin, B2b, Ep, Opts}}`. A
+   call of the app's names its endpoint (`endpoint => Ep`), and the
+   request is the same.
+2. The room takes the join (its place counts in `admission/1`, its
+   deadline runs) and starts a helper it monitors. The helper plays the
+   prompt and reads the digits on `Ep`.
+3. With the right PIN the helper asks `{pin_ok, Token}`; the room answers
+   `ok` only while the join is under way, and registers the loopback
+   token. From then on the helper runs `replace_b/3` and the room no
+   longer stops it at the join's end; before, it does (the deadline, the
+   room's end).
+4. The swap BYEs `Ep`'s channel. The worker of a caller that dialed the
+   room then destroys its endpoint; a wrong PIN or a failed join ends it
+   there too, after `pin_fail_prompt`. A call of the app's stays on `Ep`
+   when the join fails.
+
 The middleware only runs when chappe_sip runs a request through its chain,
 so your app needs an INVITE handler (`chappe_sip:invite/1`).
 
@@ -227,7 +254,8 @@ comes from the `conference::maintenance` events the endpoint relays to the
 conference process (`add-member`, `del-member`, `start-talking`,
 `stop-talking`). Mute, deaf, kick, lock and play are
 `conference <name> ...` api commands. A `pin` option has the member enter
-a PIN with `play_collect/2` before joining.
+a PIN with `play_collect/2` before joining (`chappe_mrf_conf_pin`, in the
+joiner's process).
 
 ## The backend behaviour
 
@@ -449,6 +477,8 @@ The first four are chappe_mrf settings
 | `bridge/2` fails | the endpoint takes its dialog back |
 | fs member never shows up | after `join_timeout` (15 s), `{error, timeout}` from the room (its joiner waits `join_timeout` and 5 s more); an endpoint made for the join is destroyed |
 | A native join fails (its loopback INVITE, a media step, the endpoint's re-INVITE) | the joiner gets an error at once; the mixer leg, the rtpengine session, the loopback token and the join's place go, and the room goes on; an endpoint whose node answered the re-INVITE is hung up |
+| A native PIN join: a wrong PIN | a caller that dialed the room hears `pin_fail_prompt` and its call ends; a call of the app's stays on its endpoint, `{error, bad_pin}` |
+| A native PIN join outlasts `join_timeout` while the caller types | the room stops the helper and answers `{error, timeout}`; the call ends, or stays on the app's endpoint |
 | A native join's worker dies, or the join outlasts `join_timeout` (95 s) | `{error, join_failed}` or `{error, timeout}`, with the same cleanup; an endpoint whose re-INVITE was out is hung up once that re-INVITE ends; one whose deadline came before its re-INVITE gets none and keeps its media |
 | A native endpoint's node is slow to answer its re-INVITE (up to 75 s) | the room answers its other requests meanwhile: control calls, other joins, REFERs |
 | rtpengine is slow to delete the session of a native member that leaves | the room does not wait: the delete runs as a cleanup job |

@@ -121,7 +121,7 @@ Passed to `chappe_mrf:conference/2`.
 | `select` | fs | `#{}` | Options for that selection. |
 | `profile` | fs | `<<"default">>` | mod_conference profile. |
 | `bridge` | fs | `#{}` | `chappe_mrf:bridge/3` options for a caller joined from a call. |
-| `join_timeout` | both | fs: `15000`; native: `95000` | fs: milliseconds a member may take to appear in the room; its `join/3`, and a `transfer/3` into the room, wait that long and 5000 more, so the room answers first. native: milliseconds a join (a call's or an endpoint's) may take; past it the join fails with `{error, timeout}` and the room gives back what it took. An integer from 1 to `95000` on both; any other value is refused with `{error, {bad_option, join_timeout}}`. |
+| `join_timeout` | both | fs: `15000`; native: `95000` | fs: milliseconds a member may take to appear in the room; its `join/3`, and a `transfer/3` into the room, wait that long and 5000 more, so the room answers first. native: milliseconds a join (a call's or an endpoint's) may take, its PIN included; past it the join fails with `{error, timeout}` and the room gives back what it took. An integer from 1 to `95000` on both; any other value is refused with `{error, {bad_option, join_timeout}}`. |
 | `refer_policy` | both | none | `fun(Info) -> boolean() \| {reject, Code}` for a REFER to the room; unset, REFERs are refused 403. |
 | `replaces_policy` | both | the member itself or a caller it referred | `fun(Info) -> boolean()` for a call whose Replaces names a member; `false` or a crash is 403. Never anonymous callers by default. |
 | `dial` | both | `[^^:absolute_codec_string=<dial_codecs>]sofia/<dial_profile>/<target>`, the codec block left out with `inherit` | `fun(Target) -> iodata()`: the dial string of a party a REFER adds; one that crashes refuses the REFER 403. |
@@ -133,8 +133,30 @@ Passed to `chappe_mrf:conference/2`.
 
 Join options (`chappe_mrf_conf:join/3`): `name`, `mute`, `deaf`,
 `moderator`, `uri` (who the member is, for a REFER's `method=BYE`); on fs
-also `pin`, `pin_prompt` (default
-`silence_stream://250`), `pin_tries` (`3`) and `flags`.
+also `flags`.
+
+PIN options, on both backends unless marked
+([Ask callers for a PIN](guides/conference.md#ask-callers-for-a-pin)):
+
+| Key | Default | What it does |
+|---|---|---|
+| `pin` | none | The PIN the caller enters before it joins: digits and `*`, a binary or an integer. |
+| `pin_prompt` | `silence_stream://250` | The file that asks for it. |
+| `pin_tries` | `3` | How many entries the caller has; then `{error, bad_pin}`. |
+| `pin_timeout` | `5000` | Milliseconds FreeSWITCH waits for one entry. |
+| `pin_fail_prompt` | none | Played after the last wrong entry, before the call ends, where the room made the endpoint (fs; native, a caller joined from its INVITE). |
+| `pin_endpoint` | `chappe_esl:node_select/1` | native, `{call, Req, Res}`: `connect_caller/3` options (`node`, `select`, `targets`, `user`, `attach_timeout`, `anchor_params`) of the endpoint the caller enters the PIN on. |
+| `endpoint` | none | native, a call: the endpoint the call is on, where the caller enters the PIN. Required with `pin`, else `{error, {bad_option, endpoint}}`. |
+
+When the PIN is wrong:
+
+- a caller that dialed the room (`{call, Req, Res}`, or a call an fs
+  room bridged into an endpoint of its own) hears `pin_fail_prompt` and
+  its call ends;
+- a call your IVR sent to a native room with `endpoint` stays on that
+  endpoint, and `join/3` returns `{error, bad_pin}`.
+
+A PIN option of the wrong kind is `{error, {bad_option, Key}}`.
 
 ## Where it lives
 

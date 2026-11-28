@@ -66,7 +66,8 @@ pick() ->
 %% Opts: esl_port (the chappe_mrf listener), dial_delay (ms a
 %% `conference <room> dial' takes before it answers, as the real one
 %% originates first), digits (what
-%% play_and_get_digits collects, default <<"1">>), name, reject_reinvite
+%% play_and_get_digits collects, default <<"1">>; hold: it never
+%% completes), name, reject_reinvite
 %% (a re-INVITE gets 488), reinvite_delay (ms a re-INVITE waits for its
 %% 200, after a 100 Trying).
 fs_start(Name, Opts) ->
@@ -569,9 +570,14 @@ app(<<"answer">>, _Arg, Common, #{node := Node} = C) ->
     C#{answered := true};
 app(<<"play_and_get_digits">>, Arg, Common, #{node := #{opts := Opts}} = C) ->
     Var = lists:nth(8, binary:split(Arg, <<" ">>, [global])),
-    Digits = maps:get(digits, Opts, <<"1">>),
-    complete(C, Common, [{<<"variable_", Var/binary>>, Digits}]),
-    C;
+    case maps:get(digits, Opts, <<"1">>) of
+        hold ->
+            %% a caller who enters nothing, for longer than the test waits
+            C;
+        Digits ->
+            complete(C, Common, [{<<"variable_", Var/binary>>, Digits}]),
+            C
+    end;
 app(<<"spandsp_start_tone_detect">>, _Arg, Common, C) ->
     event(
         C,
