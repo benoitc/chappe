@@ -4184,6 +4184,17 @@ channel_bye(Uuid) ->
     after 5000 -> ct:fail({no_bye, Uuid})
     end.
 
+%% The channel of a PIN endpoint ended after the move: by the move's BYE,
+%% or by the endpoint's release (uuid_kill, which the fake does not
+%% report), whichever reaches FreeSWITCH first. Either way the endpoint
+%% process is gone.
+channel_ended(Uuid, Eps) ->
+    receive
+        {fake_fs, _, Uuid, {bye, _}} -> ok
+    after 0 ->
+        until(fun() -> endpoint_pids() -- Eps =:= [] end)
+    end.
+
 %% A join whose worker dies before it reports (the helper of a call's
 %% join, or the INVITE's request worker of a caller joined from its
 %% INVITE) fails, and the room counts it no more; a join that outlasts
@@ -5069,7 +5080,7 @@ native_pin_call(Config) ->
     ?assert(has(Collect, <<"/media/pin.wav">>)),
     {ok, M} = join_within(10000),
     {joined, M, _} = joined(Conf),
-    ok = channel_bye(Uuid),
+    ok = channel_ended(Uuid, Eps),
     no_ua_event(Ua, reinvite, 200),
     until(fun() -> endpoint_pids() -- Eps =:= [] end),
     ?assertMatch(#{pending := 0, loops := []}, holdings(Conf)),
